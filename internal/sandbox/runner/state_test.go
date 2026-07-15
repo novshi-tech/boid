@@ -197,7 +197,6 @@ func TestBuildSpecDump_CloneRedactsTokenAndCapturesDeclaration(t *testing.T) {
 			RealGitBin:   "/run/boid/real-git",
 			Branch:       "boid/abcd1234",
 			BaseBranch:   "main",
-			ForkPoint:    "boid/parent12",
 		},
 	}
 	dump := buildSpecDump(spec, nil)

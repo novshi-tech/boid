@@ -105,34 +105,19 @@ func TestPerformClone_RootTaskCheckoutOnly(t *testing.T) {
 	}
 }
 
-func TestPerformClone_ChildTaskForksFromBaseBranch(t *testing.T) {
+// TestPerformClone_ChildTaskChecksOutBaseBranchDirectly pins the
+// branch-policy-simplification behavior (docs/plans/branch-policy-simplification.md
+// Phase 1): a child task's CloneSpec is indistinguishable from a root task's
+// — CheckoutOnly is always true, Branch always equals BaseBranch, and no
+// separate "boid/<id8>" branch or fork-point resolution is involved. The
+// child's base_branch ("feature/BGO-42") already exists on origin (unlike
+// the case-3 tests below), mirroring how a real child task with an explicit,
+// already-pushed base_branch dispatches. This replaces the retired
+// ForksFromBaseBranch/ForksFromExplicitForkPoint tests, which exercised the
+// now-deleted non-CheckoutOnly fork-branch path.
+func TestPerformClone_ChildTaskChecksOutBaseBranchDirectly(t *testing.T) {
 	src := newSourceRepo(t)
-	target := filepath.Join(t.TempDir(), "workspace")
-
-	err := performClone(sandbox.CloneSpec{
-		Enabled:    true,
-		URL:        src,
-		TargetDir:  target,
-		Branch:     "boid/abcd1234",
-		BaseBranch: "main",
-	}, nil)
-	if err != nil {
-		t.Fatalf("performClone: %v", err)
-	}
-
-	if got := currentBranch(t, target); got != "boid/abcd1234" {
-		t.Errorf("checked-out branch = %q, want boid/abcd1234", got)
-	}
-	if got, want := gitRevParse(t, target, "HEAD"), gitRevParse(t, src, "main"); got != want {
-		t.Errorf("HEAD = %s, want %s (forked from base branch tip)", got, want)
-	}
-}
-
-func TestPerformClone_ChildTaskForksFromExplicitForkPoint(t *testing.T) {
-	src := newSourceRepo(t)
-	// Create a second branch ahead of main so ForkPoint resolution is
-	// observably distinct from just forking off BaseBranch.
-	runGitFixture(t, src, "checkout", "-q", "-b", "feature")
+	runGitFixture(t, src, "checkout", "-q", "-b", "feature/BGO-42")
 	if err := os.WriteFile(filepath.Join(src, "feature.txt"), []byte("x\n"), 0o644); err != nil {
 		t.Fatalf("write feature.txt: %v", err)
 	}
@@ -142,26 +127,29 @@ func TestPerformClone_ChildTaskForksFromExplicitForkPoint(t *testing.T) {
 
 	target := filepath.Join(t.TempDir(), "workspace")
 	err := performClone(sandbox.CloneSpec{
-		Enabled:    true,
-		URL:        src,
-		TargetDir:  target,
-		Branch:     "boid/child1234",
-		BaseBranch: "main",
-		ForkPoint:  "feature", // remote-backed fork point (resolves via origin/feature)
+		Enabled:      true,
+		URL:          src,
+		TargetDir:    target,
+		Branch:       "feature/BGO-42",
+		BaseBranch:   "feature/BGO-42",
+		CheckoutOnly: true,
 	}, nil)
 	if err != nil {
 		t.Fatalf("performClone: %v", err)
 	}
 
-	if got := currentBranch(t, target); got != "boid/child1234" {
-		t.Errorf("checked-out branch = %q, want boid/child1234", got)
+	if got := currentBranch(t, target); got != "feature/BGO-42" {
+		t.Errorf("checked-out branch = %q, want feature/BGO-42", got)
 	}
-	if got, want := gitRevParse(t, target, "HEAD"), gitRevParse(t, src, "feature"); got != want {
-		t.Errorf("HEAD = %s, want %s (forked from explicit fork point)", got, want)
+	if got, want := gitRevParse(t, target, "HEAD"), gitRevParse(t, src, "feature/BGO-42"); got != want {
+		t.Errorf("HEAD = %s, want %s (checked out directly from origin/feature/BGO-42, no fork-point resolution)", got, want)
 	}
 }
 
-func TestPerformClone_ForkPointNotFoundReturnsError(t *testing.T) {
+// TestPerformClone_CheckoutOnlyFalseReturnsError pins that the retired
+// per-task fork-branch path (CheckoutOnly=false) now fails loudly instead of
+// silently resolving a fork point — see resolveCloneBranch's doc comment.
+func TestPerformClone_CheckoutOnlyFalseReturnsError(t *testing.T) {
 	src := newSourceRepo(t)
 	target := filepath.Join(t.TempDir(), "workspace")
 
@@ -169,12 +157,12 @@ func TestPerformClone_ForkPointNotFoundReturnsError(t *testing.T) {
 		Enabled:    true,
 		URL:        src,
 		TargetDir:  target,
-		Branch:     "boid/child1234",
+		Branch:     "main",
 		BaseBranch: "main",
-		ForkPoint:  "boid/parent-never-pushed", // worktree-local branch, never exists in a fresh clone
+		// CheckoutOnly left false (zero value).
 	}, nil)
 	if err == nil {
-		t.Fatal("expected error when ForkPoint does not resolve in the clone")
+		t.Fatal("expected error when CheckoutOnly is false (retired fork-branch path)")
 	}
 }
 

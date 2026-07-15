@@ -229,8 +229,13 @@ sequence, and whether the mount side stays in lockstep with the declaration side
   called from `PlanHook` in `planner.go`) for task/hook jobs, and
   `dispatcher.buildSessionCloneDeclaration` (`internal/dispatcher/session_job.go`) for
   session/exec jobs. Both populate `orchestrator.Visibility.Clone` (`*CloneDeclaration`) with
-  `Branch` / `BaseBranch` / `CheckoutOnly` / `ForkPoint` / `BaseBranchForkPoint` — a pure
-  declaration, no git executed yet.
+  `Branch` / `BaseBranch` / `CheckoutOnly` / `BaseBranchForkPoint` — a pure declaration, no git
+  executed yet. **docs/plans/branch-policy-simplification.md Phase 1 (v0.0.11)** removed the
+  per-task `ForkPoint` field entirely (along with `ComputeHeadBranch` / `ComputeForkPoint` and the
+  `parent *Task` argument `BuildCloneDeclaration` used to take): `CheckoutOnly` is now
+  unconditionally `true` and `Branch` always equals `BaseBranch`, for every task kind. Don't
+  confuse the retired per-task `ForkPoint` with `BaseBranchForkPoint` (the unrelated case-3
+  "`base_branch` doesn't exist on origin yet" start point, which is untouched — see End D).
 - **End B (translate)**: `dispatcher.buildCloneSpec` (`internal/dispatcher/sandbox_builder.go`)
   converts the declaration + `Runner`-resolved facts (`rt.GatewayCloneURL`) into
   `sandbox.CloneSpec`, which `BuildSandboxSpec` attaches to `sandbox.Spec.Clone`.
@@ -246,26 +251,30 @@ sequence, and whether the mount side stays in lockstep with the declaration side
   `RunInnerChild` (`internal/sandbox/runner/runner_linux.go`) only when `spec.Clone.Enabled`. Clones
   from `cs.URL` (the gateway clone URL, carrying a live job token — redacted via
   `redactCloneURLToken` before it reaches any error string or `runner-state.json`), optionally with
-  `--reference cs.ReferenceDir`, into `cs.TargetDir` (`/workspace`), then resolves
-  `Branch`/`BaseBranch`/`ForkPoint` against the fresh clone (mirrors
-  `dispatcher.WorktreeManager.Create`'s host-side resolution logic 1:1, minus the pre-fetch — a
-  fresh clone already has every remote ref).
-- **Invariant**: (1) End A's `CheckoutOnly` is true for a root task (`ParentID == ""`) **or** any
-  task with `Worktree == false` — the clone-mode equivalent of the retired worktree=false
-  "run directly in project dir" case (docs/plans/git-gateway-cutover.md). (2) End B/C's
-  `spec.Visibility.Clone != nil` gate must be checked identically everywhere it appears
-  (`resolveWorkDir`, the mount switch, `cloneMounts`, `buildCloneSpec`) — a mismatch between any
-  two of these is exactly the double-mount / no-mount class of bug. (3) End D never gets a real
-  git binary path threaded to it anymore post-cutover (`CloneSpec.RealGitBin` is left unset) — the
-  sandbox's own `git` on `$PATH` is the real binary now that the git-shim overlay is retired
-  (git gateway cutover PR6/PR8); don't reintroduce a bind for this.
+  `--reference cs.ReferenceDir`, into `cs.TargetDir` (`/workspace`), then resolves `Branch`/
+  `BaseBranch` against the fresh clone via `resolveCloneBranch`. `CheckoutOnly` is now the only
+  live branch (`checkout -B Branch <resolved BaseBranch ref>`); the `CheckoutOnly == false` path
+  is a defensive dead-end that returns an error (per-task fork-branch resolution — `resolveCloneRef`
+  — was deleted in Phase 1). `BaseBranchForkPoint`'s `resolveCloneForkStart` (case 3: `BaseBranch`
+  missing from both origin and locally) is untouched and still live.
+- **Invariant**: (1) End A's `CheckoutOnly` is unconditionally `true` for every task as of Phase 1 —
+  `Task.Worktree` is no longer read by `BuildCloneDeclaration` at all (it's still persisted/resolved
+  elsewhere — `behavior_resolve.go`, `task_create.go`'s `ClassifyBaseBranch`-driven computation, the
+  `worktree` DB column — but that value no longer reaches this seam). If a future change makes
+  `BuildCloneDeclaration` branch on anything again, re-check whether `Task.Worktree` should regain a
+  live consumer or whether it should be deprecated outright — leaving it computed-but-unread is a
+  latent trap. (2) End B/C's `spec.Visibility.Clone != nil` gate must be checked identically
+  everywhere it appears (`resolveWorkDir`, the mount switch, `cloneMounts`, `buildCloneSpec`) — a
+  mismatch between any two of these is exactly the double-mount / no-mount class of bug. (3) End D
+  never gets a real git binary path threaded to it anymore post-cutover (`CloneSpec.RealGitBin` is
+  left unset) — the sandbox's own `git` on `$PATH` is the real binary now that the git-shim overlay
+  is retired (git gateway cutover PR6/PR8); don't reintroduce a bind for this.
 - **Past break**: none yet (PR5 was inert; PR6 is this seam's first real-dispatch exercise) — this
   entry exists so the *next* touch has a map, not so it documents a regression already found.
 - **Guard**: `TestCloneMounts_*` / `TestBuildCloneSpec_*` / `TestResolveWorkDir_CloneEnabled_*` /
   `TestBuildSandboxSpec_CloneEnabled_SkipsProjectVisibilityMounts` (`internal/dispatcher/
   sandbox_builder_test.go`), `TestPerformClone_*` (`internal/sandbox/runner/clone_test.go`,
-  `clone_e2e_test.go`), `TestBuildCloneDeclaration_*` (`internal/orchestrator/head_branch_test.go`
-  — add if missing when you next touch End A).
+  `clone_e2e_test.go`), `TestBuildCloneDeclaration_*` (`internal/orchestrator/head_branch_test.go`).
 - **When you touch it**: if you touch any of the four ends, verify the other three still agree —
   in particular, a change to `Visibility.Clone`'s shape (End A) must be reflected in both
   `buildCloneSpec` (End B) and `performClone`'s resolution logic (End D), and a change to the mount

@@ -44,7 +44,7 @@
 | `instructions` | TEXT (JSON) | Instruction の配列 (最後の要素が active、 reopen で append される) |
 | `auto_start` | BOOLEAN | 作成時に自動 start するか |
 | `traits` | TEXT (JSON 配列) | このタスクの behavior が宣言する trait |
-| `readonly` / `worktree` | BOOLEAN | サンドボックスのモード (`worktree` はこのタスクを専用 branch (`boid/<id8>`) 上で走らせるかを表す業務フラグ。実行時の実体は sandbox 内 clone のブランチ宣言 — [git gateway](../reference/project-yaml.md#git-gateway--sandbox-内-clone) 参照。ホスト側の git worktree はもう作られない) |
+| `readonly` / `worktree` | BOOLEAN | サンドボックスのモード (`readonly` はワークディレクトリの read-only マウントを制御する。`worktree` はレガシーフィールドで、 branch-policy-simplification Phase 1 (v0.0.11) 以降 checkout 挙動には影響しない — 全タスクが sandbox 内 clone 上で `base_branch` を直接 checkout する。[git gateway](../reference/project-yaml.md#git-gateway--sandbox-内-clone) 参照。ホスト側の git worktree は作られない) |
 | `branch_prefix` / `base_branch` | TEXT | branch 設定 |
 | `ref` / `parent_id` | TEXT | 親タスク参照 (任意) |
 | `created_at` / `updated_at` | DATETIME | 作成 / 更新時刻 |

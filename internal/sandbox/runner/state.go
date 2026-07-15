@@ -98,7 +98,6 @@ type cloneDump struct {
 	Branch              string `json:"branch,omitempty"`
 	BaseBranch          string `json:"base_branch,omitempty"`
 	CheckoutOnly        bool   `json:"checkout_only,omitempty"`
-	ForkPoint           string `json:"fork_point,omitempty"`
 	BaseBranchForkPoint string `json:"base_branch_fork_point,omitempty"`
 }
 
@@ -160,7 +159,6 @@ func buildSpecDump(spec sandbox.Spec, pastaCmdline []string) specDump {
 			Branch:              spec.Clone.Branch,
 			BaseBranch:          spec.Clone.BaseBranch,
 			CheckoutOnly:        spec.Clone.CheckoutOnly,
-			ForkPoint:           spec.Clone.ForkPoint,
 			BaseBranchForkPoint: spec.Clone.BaseBranchForkPoint,
 		}
 	}

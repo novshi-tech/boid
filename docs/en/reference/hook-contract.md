@@ -49,7 +49,6 @@ The hook runs with the following environment variables set:
 | `BOID_TASK_ID` | Current task ID. |
 | `BOID_JOB_ID` | Current job ID (used by `boid job show <id>`). |
 | `BOID_BASE_BRANCH` | The task's `base_branch` (the PR target branch). Set for both root and child tasks. |
-| `BOID_PARENT_BRANCH` | The parent task's HEAD branch. Empty for root tasks. Used by sub-supervisors (e.g. `git merge $BOID_PARENT_BRANCH`). |
 | `BOID_MODEL` | The model name configured for this task's instruction. |
 | `BOID_INVOKED_ROLE` | The role name that triggered this hook invocation. |
 | `BOID_INVOKED_NAME` | The hook name within the role. |

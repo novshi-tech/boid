@@ -765,99 +765,48 @@ func TestDispatchPlanner_PropagatesAwaitingEnv(t *testing.T) {
 	}
 }
 
-// BOID_PARENT_BRANCH is set to the parent's HEAD branch for child tasks (P3).
-// Root tasks must NOT have BOID_PARENT_BRANCH.
-func TestDispatchPlanner_PropagatesParentBranchEnv(t *testing.T) {
+// TestDispatchPlanner_NoParentBranchEnv pins that BOID_PARENT_BRANCH is never
+// emitted (docs/plans/branch-policy-simplification.md Phase 1, nose
+// 2026-07-15 decision: removed entirely rather than redefined, since a grep
+// across production project.yaml / e2e scripts found zero real use).
+func TestDispatchPlanner_NoParentBranchEnv(t *testing.T) {
 	projectDir := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(projectDir, ".boid", "hooks"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	scriptPath := filepath.Join(projectDir, ".boid/hooks", "hook-1.sh")
 
-	cases := []struct {
-		name           string
-		parent         *Task
-		task           *Task
-		wantParentBranch string
-		wantAbsent     bool
-	}{
-		{
-			name: "child of root task — parent is root so BOID_PARENT_BRANCH = parent.BaseBranch",
-			parent: &Task{
-				ID:         "root00001234567",
-				ProjectID:  "proj-1",
-				BaseBranch: "main",
-				// ParentID == "" → root
-			},
-			task: &Task{
-				ID:         "child0001234567",
-				ProjectID:  "proj-1",
-				Behavior:   "executor",
-				Status:     TaskStatusExecuting,
-				BaseBranch: "main",
-				ParentID:   "root00001234567",
-			},
-			wantParentBranch: "main",
-		},
-		{
-			name: "child of child — parent is itself a child so BOID_PARENT_BRANCH = boid/<parent_id8>",
-			parent: &Task{
-				ID:        "parentab00000000",
-				ProjectID: "proj-1",
-				ParentID:  "grandparent-root",
-			},
-			task: &Task{
-				ID:         "childabc00000000",
-				ProjectID:  "proj-1",
-				Behavior:   "executor",
-				Status:     TaskStatusExecuting,
-				BaseBranch: "main",
-				ParentID:   "parentab00000000",
-			},
-			wantParentBranch: "boid/parentab", // parentab00000000[:8] = "parentab"
-		},
-		{
-			name: "root task — BOID_PARENT_BRANCH must be absent",
-			parent: nil,
-			task: &Task{
-				ID:         "roottask00000000",
-				ProjectID:  "proj-1",
-				Behavior:   "executor",
-				Status:     TaskStatusExecuting,
-				BaseBranch: "main",
-				// ParentID == ""
-			},
-			wantAbsent: true,
-		},
+	parent := &Task{
+		ID:         "root00001234567",
+		ProjectID:  "proj-1",
+		BaseBranch: "main",
+		// ParentID == "" → root
 	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			planner := newPlannerForTestWithParent(
-				&Project{ID: "proj-1", WorkDir: projectDir},
-				TaskBehavior{},
-				tc.task,
-				tc.parent,
-			)
-			req, _, err := planner.PlanHook(&HookFireEvent{
-				EventID:   "event-1",
-				TaskID:    tc.task.ID,
-				ProjectID: "proj-1",
-				Hook:      Hook{ID: "hook-1", ScriptPath: scriptPath},
-			})
-			if err != nil {
-				t.Fatalf("PlanHook: %v", err)
-			}
-			if tc.wantAbsent {
-				if _, ok := req.Env["BOID_PARENT_BRANCH"]; ok {
-					t.Errorf("root task must not have BOID_PARENT_BRANCH, got %q", req.Env["BOID_PARENT_BRANCH"])
-				}
-			} else {
-				if got := req.Env["BOID_PARENT_BRANCH"]; got != tc.wantParentBranch {
-					t.Errorf("BOID_PARENT_BRANCH = %q, want %q", got, tc.wantParentBranch)
-				}
-			}
-		})
+	task := &Task{
+		ID:         "child0001234567",
+		ProjectID:  "proj-1",
+		Behavior:   "executor",
+		Status:     TaskStatusExecuting,
+		BaseBranch: "main",
+		ParentID:   "root00001234567",
+	}
+	planner := newPlannerForTestWithParent(
+		&Project{ID: "proj-1", WorkDir: projectDir},
+		TaskBehavior{},
+		task,
+		parent,
+	)
+	req, _, err := planner.PlanHook(&HookFireEvent{
+		EventID:   "event-1",
+		TaskID:    task.ID,
+		ProjectID: "proj-1",
+		Hook:      Hook{ID: "hook-1", ScriptPath: scriptPath},
+	})
+	if err != nil {
+		t.Fatalf("PlanHook: %v", err)
+	}
+	if _, ok := req.Env["BOID_PARENT_BRANCH"]; ok {
+		t.Errorf("BOID_PARENT_BRANCH must not be set anymore, got %q", req.Env["BOID_PARENT_BRANCH"])
 	}
 }
 

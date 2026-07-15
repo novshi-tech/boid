@@ -18,7 +18,7 @@ Tasks are created with `boid task create` and observed with `boid task list`, `b
 A directory that contains a `.boid/project.yaml` file. The project file declares:
 
 - An `id` (the unique identifier `boid` uses for the project) and a `name` (display name).
-- An optional project-top `worktree: true` flag — whether to give each executor task its own dedicated branch (see [Worktree](#worktree) below).
+- An optional project-top `worktree: true` flag — a legacy field kept for schema compatibility; it no longer affects checkout behaviour (see [Worktree](#worktree) below).
 - The list of **kits** the project uses (`kits:`).
 - One or more **task_behaviors** — a map of behavior names to `default_instruction` templates. Names are free-form (free naming). Each behavior can set `readonly`; the default when omitted is `true` (fail-safe).
 
@@ -121,20 +121,24 @@ Some commands legitimately need to reach outside the sandbox (for example `git p
 
 ## Worktree
 
-For projects that opt in with project-top `worktree: true`, **executor and supervisor** tasks receive a dedicated **branch**.
+`worktree` is a project-top boolean field in `project.yaml`. It used to allocate a dedicated, isolated branch (`boid/<id8>`) to child tasks.
 
-> **Implementation note (git gateway cutover, 2026-07)**: the name is `worktree` for historical reasons, but the implementation no longer uses `git worktree` (the git feature that checks out multiple branches of a repository into separate directories at once). Every project-visible job — regardless of the `worktree` value — freshly clones the project into the sandbox through the git gateway and checks out the branch the dispatcher declared. No per-job worktree directory is created on the host, and nothing is written to the host repo's `.git`; results become visible to other sessions only after a commit is pushed. See [`project.yaml` reference / git gateway](../reference/project-yaml.md#git-gateway--in-sandbox-clone) for the full contract.
+> **Implementation note (git gateway cutover, 2026-07; branch-policy-simplification Phase 1, v0.0.11)**: the name is `worktree` for historical reasons, but the implementation no longer uses `git worktree` (the git feature that checks out multiple branches of a repository into separate directories at once), and — as of Phase 1 — the field no longer affects checkout behaviour at all. Every project-visible job freshly clones the project into the sandbox through the git gateway and checks out `task.BaseBranch` directly, regardless of task kind or the `worktree` value. No per-job worktree directory is created on the host, and nothing is written to the host repo's `.git`; results become visible to other sessions only after a commit is pushed. See [`project.yaml` reference / git gateway](../reference/project-yaml.md#git-gateway--in-sandbox-clone) for the full contract.
 
-Branch allocation varies by task kind (the table itself is unchanged by the clone model):
+The per-task `boid/<id8>` branch and fork-point concepts existed to let a child continue from a parent's in-progress work on a shared `.git` — a worktree-era mechanism. Once every job got its own independent fresh clone (each job's clone is now the isolation unit), that mechanism became both impossible (a fresh clone only ever sees origin's already-pushed refs) and unnecessary (two clones can check out the same branch name without conflict), so it was retired. See docs/plans/branch-policy-simplification.md for the full rationale.
 
-| Task kind | HEAD branch | Fork point | Read-only |
-|---|---|---|---|
-| **root sup / root exec** | `task.BaseBranch` | n/a | sup=true / exec=false |
-| **child sup / child exec** | `boid/<task_id8>` | **parent task's HEAD branch** | sup=true / exec=false |
+Branch allocation is now uniform across task kinds:
 
-- **Root tasks** (no parent): if `base_branch` matches the project's current HEAD (case 1), the clone checks out `base_branch` directly with no new branch created. When they differ (cases 2/3), the clone checks out `base_branch` as HEAD (creating it if needed).
-- **Child tasks** (have a parent): always create a new `boid/<task_id8>` branch and check it out. The fork point is the **parent task's HEAD branch** — only the immediate parent is referenced (1 hop). The parent branch must already be pushed to origin, since the clone only sees origin's pushed refs.
+| Task kind | HEAD branch | Read-only |
+|---|---|---|
+| **root sup / root exec** | `task.BaseBranch` | sup=true / exec=false |
+| **child sup / child exec** | `task.BaseBranch` | sup=true / exec=false |
+
+- **Root tasks** (no parent): the clone checks out `base_branch` directly (no new branch is created). If `base_branch` does not exist on origin yet (case 3), it is created locally from the resolved `fork_point`.
+- **Child tasks** (have a parent): handled identically to root tasks. When `base_branch` is omitted, the child inherits the parent's `base_branch` verbatim, so parent and child check out the same branch unless one is explicitly overridden.
 - `base_branch` propagates to all child tasks as the PR target and is passed to executors as the `BOID_BASE_BRANCH` environment variable.
+
+Sibling executors running in parallel against the same `base_branch` can still collide on push — that is an executor-side rebase/retry contract, unchanged by this refactor. To isolate parallel children, assign each one a distinct `base_branch`.
 
 Hooks run inside the sandbox-internal clone, their commits are pushed, and (if needed) a PR is created. When the task ends, the clone is cleaned up together with the sandbox runtime directory by the regular runtime GC — there is no dedicated worktree cleanup path anymore. The former FIFO serialisation of tasks sharing the same HEAD branch is also retired: multiple tasks targeting the same branch dispatch in parallel now. Concurrent pushes are resolved by the normal git workflow (non-fast-forward reject → fetch + merge/rebase → re-push).
 

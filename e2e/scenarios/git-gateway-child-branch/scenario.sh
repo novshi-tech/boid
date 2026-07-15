@@ -3,24 +3,29 @@ set -euo pipefail
 
 # docs/plans/git-gateway-cutover.md PR7b — worktree-lifecycle シナリオ
 # 書き直し (skip 中 2 本のうちの片方)。
+# docs/plans/branch-policy-simplification.md Phase 1 (v0.0.11) で再度
+# 書き直し: per-task `boid/<id8>` branch と fork point 概念が廃止され、
+# child task も root task と全く同じく `base_branch` を直接 checkout
+# するようになったため、旧アサーション (child が `boid/<id8>` に着地する
+# こと) はもう成立しない。
 #
-# 旧 worktree-lifecycle は退役済み host-side `git worktree add`/`remove`
-# を fake-git.log で pin していたため、 sandbox-internal clone モデル
-# 下では意味を持たなくなっていた (skip ファイル参照)。書き直しの狙いは
-# 「子タスクが `boid/<id8>` branch に着地する」経路 (BuildCloneDeclaration
-# の 非-CheckoutOnly 経路 + runner の resolveCloneBranch) を end-to-end
-# で pin すること。
+# 新しい狙い: 「child task は parent と同じ base_branch を直接 checkout し、
+# parent が push 済みの commit を (auto_start dispatch の時点で) 確実に
+# 見える」経路 (BuildCloneDeclaration の CheckoutOnly 経路 + runner の
+# resolveCloneBranch) を end-to-end で pin すること。
 #
 # 経路:
 #   1. parent task (root, executor 的) の hook が (a) parent-marker.txt を
 #      commit + push、 (b) 子タスク (behavior: child, auto_start: true,
-#      parent_id: $BOID_TASK_ID) を作る。
+#      parent_id: $BOID_TASK_ID, base_branch 省略) を作る。
 #   2. auto_start で child が dispatch される。 dispatch 時点で parent の
 #      commit は既に upstream に到達済み。
-#   3. child の fresh clone は parent の commit を取り込んだ状態から
-#      `boid/<id8>` を切る (Branch=ComputeHeadBranch(child), ForkPoint=
-#      ComputeForkPoint(parent) = "main", CheckoutOnly=false)。
-#   4. child の hook が HEAD ブランチ名 / parent-marker.txt / log を検証。
+#   3. child は base_branch を省略しているので parent の base_branch
+#      ("main") をそのまま継承する。 child の fresh clone はこの "main" を
+#      直接 checkout する (Branch=BaseBranch="main", CheckoutOnly=true) —
+#      root task と全く同じ扱いで、別ブランチは一切作らない。
+#   4. child の hook が HEAD ブランチ名 ("main" そのもの) / parent-marker.txt
+#      / log を検証。
 
 APP_DIR="$E2E_WORKSPACE_DIR/app"
 UPSTREAM_BARE="$E2E_ROOT/upstream-repos/e2e-fixture/app.git"
@@ -86,12 +91,14 @@ child_json="$("$E2E_BIN_DIR/boid-e2e" wait-task-status --timeout 30s --interval 
 printf '%s\n' "$child_json"
 e2e_assert_contains "$child_json" '"status":"done"'
 e2e_assert_contains "$child_json" '"source":"verify-child-branch"'
-e2e_assert_contains "$child_json" '"branch_matches_boid_prefix":true'
+e2e_assert_contains "$child_json" '"branch_matches_base_branch":true'
 e2e_assert_contains "$child_json" '"parent_marker_present":true'
 e2e_assert_contains "$child_json" '"parent_commit_in_log":true'
 
-# The child's reported current_branch should be exactly boid/<child id[:8]>.
-expected_branch="boid/${child_id:0:8}"
+# base_branch is "main" (project-top) and the child omits its own
+# base_branch, so it inherits "main" verbatim and checks it out directly —
+# no separate per-task branch (branch-policy-simplification Phase 1).
+expected_branch="main"
 e2e_assert_contains "$child_json" "\"current_branch\":\"${expected_branch}\""
 
-e2e_log "verified: child task landed on ${expected_branch} with parent's push visible"
+e2e_log "verified: child task landed directly on ${expected_branch} (same as parent) with parent's push visible"

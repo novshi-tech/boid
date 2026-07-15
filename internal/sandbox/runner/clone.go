@@ -161,26 +161,22 @@ func resolveCloneBranch(git string, cs sandbox.CloneSpec, st *State) error {
 	}
 
 	if cs.CheckoutOnly {
-		// Root task: occupy Branch (== BaseBranch by dispatcher's
-		// declaration contract) directly.
+		// Every task occupies Branch (== BaseBranch by dispatcher's
+		// declaration contract) directly — the per-task "boid/<id8>" branch
+		// and its fork-point are retired
+		// (docs/plans/branch-policy-simplification.md Phase 1).
 		if _, err := runGit(git, dir, "checkout", "-B", cs.Branch, baseRef); err != nil {
 			return fmt.Errorf("runner clone: checkout -B %s %s: %w", cs.Branch, baseRef, err)
 		}
 		return nil
 	}
 
-	forkStart := baseRef
-	if cs.ForkPoint != "" {
-		resolved, err := resolveCloneRef(git, dir, cs.ForkPoint)
-		if err != nil {
-			return fmt.Errorf("runner clone: resolve fork point %q: %w", cs.ForkPoint, err)
-		}
-		forkStart = resolved
-	}
-	if _, err := runGit(git, dir, "checkout", "-B", cs.Branch, forkStart); err != nil {
-		return fmt.Errorf("runner clone: checkout -B %s %s: %w", cs.Branch, forkStart, err)
-	}
-	return nil
+	// orchestrator.BuildCloneDeclaration always sets CheckoutOnly=true now,
+	// so this is unreachable in production dispatch. Kept as an explicit,
+	// loud failure (rather than silently falling through to a checkout)
+	// in case a future or test-only CloneSpec ever sets CheckoutOnly=false
+	// again without restoring a real resolution path.
+	return fmt.Errorf("runner clone: CloneSpec.CheckoutOnly is false; per-task fork branches were retired in docs/plans/branch-policy-simplification.md Phase 1")
 }
 
 // resolveCloneForkStart picks the start point for creating BaseBranch
@@ -197,25 +193,6 @@ func resolveCloneForkStart(git, dir, forkPoint string) (start, source string, er
 		return "refs/remotes/origin/HEAD", "origin/HEAD", nil
 	}
 	return "", "", fmt.Errorf("no fork point available: fork_point unset and refs/remotes/origin/HEAD is not resolvable (upstream may not advertise a default branch)")
-}
-
-// resolveCloneRef resolves an arbitrary ref/branch-name declaration (as used
-// for ForkPoint) against the fresh clone at dir. A "boid/<id8>" child-task
-// branch that has not been pushed to origin yet genuinely cannot resolve
-// here, since a fresh clone only ever sees origin's pushed refs — a
-// documented consequence of the clone model's "push only" sharing semantics
-// (docs/plans/container-based-boid.md 「意味論の変化」), not a bug here.
-func resolveCloneRef(git, dir, ref string) (string, error) {
-	if _, err := runGit(git, dir, "rev-parse", "--verify", "--quiet", ref); err == nil {
-		return ref, nil
-	}
-	if !strings.HasPrefix(ref, "origin/") {
-		originRef := "origin/" + ref
-		if _, err := runGit(git, dir, "rev-parse", "--verify", "--quiet", originRef); err == nil {
-			return originRef, nil
-		}
-	}
-	return "", fmt.Errorf("ref %q not found in clone (only origin's pushed refs are visible to a fresh clone)", ref)
 }
 
 // runGit runs git with args, in dir (unless dir is empty, in which case the
