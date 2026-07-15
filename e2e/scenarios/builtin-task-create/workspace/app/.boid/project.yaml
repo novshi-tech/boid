@@ -1,5 +1,10 @@
 id: e2e-builtin-task-create
 name: E2E Builtin Task Create
+# NOTE: sandbox /bin/sh = dash (no pipefail, no `[[ ]]`). hooks[].command below
+# only uses `set -eu` (POSIX, dash-safe) so no `bash <<'HEREDOC'` wrap is
+# needed here — but if you add a `|` pipeline or `[[ ]]` to any hook command
+# in this repo, wrap the body in `bash <<'HEREDOC'` instead. See
+# docs/plans/script-hook-removal.md §R6 for the full explanation and recipe.
 task_behaviors:
   parent:
     hooks:
@@ -57,11 +62,11 @@ task_behaviors:
 
           # hook から boid task create を呼ぶ (hook boid policy が task_create を許可)
           # project_id は broker がコンテキストから自動注入する
-          boid task create <<'YAML'
+          boid task create <<'TASKSPEC'
           title: Hook Spawned Task
           behavior: child
           ref: hook-spawned
-          YAML
+          TASKSPEC
 
           mkdir -p "$HOME/.boid/output"
           cat > "$HOME/.boid/output/payload_patch.json" <<'PATCH'

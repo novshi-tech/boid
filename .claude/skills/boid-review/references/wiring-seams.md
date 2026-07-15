@@ -26,6 +26,7 @@ has the same shape:
 9. [sandbox-clone declaration path](#9-sandbox-clone-declaration-path)
 10. [exec stdin-forward opt-in](#10-exec-stdin-forward-opt-in)
 11. [gitgateway SecretResolver namespace threading](#11-gitgateway-secretresolver-namespace-threading)
+12. [KitMeta.KitRoot ↔ sandbox_builder KitRoots mount](#12-kitmetakitroot--sandbox_builder-kitroots-mount)
 
 ---
 
@@ -354,3 +355,37 @@ namespace).
   `internal/server/wire.go`, verify a token registered under namespace X still resolves
   credentials under namespace X — a change to any one hop without updating the others
   reintroduces the "every workspace shares one PAT" bug this seam exists to prevent.
+
+## 12. KitMeta.KitRoot ↔ sandbox_builder KitRoots mount
+
+Whether a kit's on-disk root directory, collected while merging kit metadata into a
+task behavior, actually ends up bind-mounted into the sandbox for jobs that still rely on the
+legacy "expose the whole kit directory tree" binding path (shell-adapter jobs that predate
+adapter-driven `Bindings()`).
+
+- **End A (collect)**: `ReadKitMeta` (`internal/orchestrator/spec_loader.go`) sets
+  `KitMeta.KitRoot` to the kit's directory. `MergeKitMetaIntoBehavior`
+  (`internal/orchestrator/spec_loader.go`) dedupes and appends each kit's `KitRoot` onto
+  `TaskBehavior.KitRoots`.
+- **End B (relay)**: `DispatchPlanner.PlanHook` (`internal/orchestrator/planner.go`) copies
+  `behavior.KitRoots` straight into `JobSpec.Visibility.KitRoots`.
+- **End C (mount)**: `BuildSandboxSpec` (`internal/dispatcher/sandbox_builder.go`) iterates
+  `spec.Visibility.KitRoots` and emits a read-only `sandbox.Mount{Source: kitRoot, Target:
+  kitRoot}` for each — this is on top of, not instead of, the harness/kit `additional_bindings`
+  mounts (see seam #1).
+- **Invariant**: every kit root collected at End A is still present in `Visibility.KitRoots` by
+  the time End C builds mounts, for **every** JobKind that reaches `PlanHook` (not just the
+  agent-class path that seam #1's guard covers) — this is the one binding surface that still
+  works when a job has no `HarnessAdapter.Bindings()` at all (shell adapter). Consumer example:
+  PR2a (script-hook-removal) uses this path to distribute the `docker-proxy-test.sh` fixture
+  read-only into e2e sandboxes via a kit root.
+- **Guard**: End A = `TestMergeKitMetaIntoBehavior` (`internal/orchestrator/spec_loader_test.go`,
+  asserts `KitRoots == ["/kit"]` after merge). End B = `TestPlanHook_SetsKitRootsFromBehavior`
+  (`internal/orchestrator/planner_test.go`). End C =
+  `TestBuildSandboxSpec_KitRootsAreBound` / `TestBuildSandboxSpec_ShellHarnessKeepsKitRoots`
+  (`internal/dispatcher/sandbox_builder_test.go` — the latter specifically covers the
+  no-`Bindings()` shell-adapter case this seam exists for).
+- **When you touch it**: if you touch `MergeKitMetaIntoBehavior`, the `Visibility.KitRoots`
+  assignment in `PlanHook`, or the kit-root mount loop in `BuildSandboxSpec`, verify a kit root
+  set at End A still lands as a mount at End C — dropping any hop silently removes kit content
+  from sandboxes that have no adapter-driven `Bindings()` to fall back on.

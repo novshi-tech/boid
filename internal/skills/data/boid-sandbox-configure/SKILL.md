@@ -43,9 +43,9 @@ fi
 
 - kit-init は host_commands.path に任意のホストパスを書けて host 実行権を **鋳造**
   できる。project は読まない (信頼できるホストツールのみスキャン)。
-- workspace-configure は project の中身 (package.json / go.mod / hook script) を
-  読む、つまり **untrusted な project 入力を能動的に読む面**。kit を鋳造する力は無い
-  (WorkspaceMeta に host_commands フィールドが無い)。
+- workspace-configure は project の中身 (package.json / go.mod / `.boid/project.yaml`
+  の hooks 定義) を読む、つまり **untrusted な project 入力を能動的に読む面**。
+  kit を鋳造する力は無い (WorkspaceMeta に host_commands フィールドが無い)。
 
 「鋳造能力」と「untrusted な project 入力を読む面」を同一サンドボックスに同居させない
 のがこの分離の目的。統合するのは UX (SKILL.md 1本化) だけで、サンドボックスの
@@ -713,22 +713,20 @@ echo "$BOID_WORKSPACE_PROJECTS"
 |---|---|
 | `<work_dir>/package.json` | Node.js 依存の有無 (scripts, dependencies) |
 | `<work_dir>/go.mod` | Go モジュールの有無 |
-| `<work_dir>/.boid/project.yaml` | task_behaviors の hooks script パス |
+| `<work_dir>/.boid/project.yaml` | task_behaviors の hooks 定義 (`hooks[].command` の中身) |
 | `<work_dir>/Dockerfile` | Docker 使用の有無 |
 | `<work_dir>/docker-compose.yml` または `docker-compose.yaml` | Docker Compose 使用の有無 |
 | `<work_dir>/pyproject.toml` または `<work_dir>/setup.py` | Python 依存の有無 |
 
 ファイルが存在しない場合はスキップして次へ進む (エラーにしない)。
 
-### 3.2 hooks script の確認
+### 3.2 hooks 定義の確認
 
-`project.yaml` の `task_behaviors[].hooks` に script が指定されている場合、
-その script ファイルを Read してどのコマンドが使われているかを確認する。
-
-```bash
-# hook script の例
-cat <work_dir>/.boid/hooks/on-executing.sh 2>/dev/null
-```
+hook は project.yaml に完結している (外部 `.sh` ファイルを参照する経路は
+2026-07 に撤廃済み、`docs/plans/script-hook-removal.md`)。
+`task_behaviors[].hooks[].command` の中身は Step 3.1 で読んだ
+`project.yaml` に既に含まれているので、追加の Read は不要 — その YAML の
+`command:` block scalar をそのまま見て、どのコマンドが使われているかを確認する。
 
 ### 3.3 検出ヒューリスティック
 
@@ -737,8 +735,7 @@ cat <work_dir>/.boid/hooks/on-executing.sh 2>/dev/null
 | `package.json` が存在する | `node` |
 | `go.mod` が存在する | `go-dev` |
 | `Dockerfile` または `docker-compose.yml` が存在する | `docker` |
-| hooks / scripts で `gh` コマンドを使用 | `github-cli` |
-| hooks / scripts で `gh` を使用、または `.boid/project.yaml` に `gh` 参照 | `github-cli` |
+| `hooks[].command` に `gh` コマンドの使用、または `.boid/project.yaml` に `gh` 参照 | `github-cli` |
 | `pyproject.toml` または `setup.py` が存在する | `python` |
 
 ---

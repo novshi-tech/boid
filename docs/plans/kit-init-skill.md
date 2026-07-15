@@ -18,7 +18,7 @@
 
 ## オープンクエスチョン (前 plan からの引き継ぎ + 本 plan で答える)
 
-`kit-workspace-project-reorg.md:673-679` で残されていた 4 件のうち 3 件は本 plan で答える。 残り 1 件 (ScriptPath 配置先) は task hook 経路の話で本 plan のスコープ外。
+`kit-workspace-project-reorg.md:673-679` で残されていた 4 件のうち 3 件は本 plan で答える。 残り 1 件 (旧・外部 script 参照フィールドの配置先) は task hook 経路の話で本 plan のスコープ外だったが、 その後 [script-hook-removal.md](script-hook-removal.md) (2026-07-15、PR #757〜#762) でそのフィールド自体が撤廃されたため、 このオープンクエスチョンは自然消滅した (hook は `hooks[].command` inline または `kind: agent` の 2 経路のみになり、 「配置先」を問う前提が無くなった)。
 
 | # | 質問 | 答え (本 plan 案) |
 |---|---|---|

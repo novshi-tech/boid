@@ -16,19 +16,19 @@ task_behaviors:
           # with id1="" / id2="". Splitting the pipe means the boid failure is
           # captured by `set -e` at the assignment, and the printf | awk pipe
           # cannot fail (both sides are trivial).
-          out1=$(boid task create 2>/dev/null <<'YAML'
+          out1=$(boid task create 2>/dev/null <<'TASKSPEC'
           title: Step A
           behavior: child
           ref: step-a
-          YAML
+          TASKSPEC
           )
           id1=$(printf '%s\n' "$out1" | awk '{print $3}')
 
-          out2=$(boid task create 2>/dev/null <<'YAML'
+          out2=$(boid task create 2>/dev/null <<'TASKSPEC'
           title: Step A
           behavior: child
           ref: step-a
-          YAML
+          TASKSPEC
           )
           id2=$(printf '%s\n' "$out2" | awk '{print $3}')
 

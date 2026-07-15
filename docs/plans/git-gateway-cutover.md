@@ -418,19 +418,33 @@ project は cutover 後の dispatch で hook スクリプトが消える。boid 
 `.boid/project.yaml` を tracked にしているので dogfood は動くが、user 側の
 project は個別確認が要る。
 
-**現在の解決方針** (2026-07-15 nose 決定): docs 追加ではなく、**script hook 機能
+**解決方針** (2026-07-15 nose 決定): docs 追加ではなく、**script hook 機能
 自体を廃止**することで問題を根絶する。詳細は
 [script-hook-removal.md](script-hook-removal.md) 参照。
 
 - production は既に task_behaviors + agent-kind hook 経路に移行済み
   (dogfood と init wizard の実装から確認)
 - e2e が使う script hook は `hooks[].command` inline field に置換
-- `.boid/hooks/*.sh` を参照する経路 (planner の ScriptPath / sandbox_builder の
-  argv remap / spec_resolve.go / HookFile) を全削除
+- `.boid/hooks/*.sh` を外部 file として参照していた旧経路 (hook の実体パスを
+  runtime-resolve していた `Hook` 型のフィールド、その唯一の解決関数、
+  および対応する argv remap 分岐) を全削除
 - 削除後は `.boid/` を参照する主要経路が消えるので gitignore contract 問題は
   自然消滅
 
-**ステータス**: 実装計画確定、実装未着手 (別 plan で管理)。
+**ステータス**: **解消済み** (2026-07-15、PR #757〜#762 で
+[script-hook-removal.md](script-hook-removal.md) 実装完了)。
+
+- 外部 script 実体パスを保持していた旧 `Hook` フィールドとその解決経路、
+  および sandbox_builder の `.boid/hooks/` argv remap は production code から
+  全削除済み (該当シンボル名での grep は `internal/` 配下 0 hit、詳細は
+  [script-hook-removal.md](script-hook-removal.md) 参照)
+- 33 個の e2e script hook は全て `hooks[].command` inline または
+  fixture 集約 (`e2e/fixtures/kits/docker-proxy-test/`) に移行済み
+  (`find e2e/scenarios -path "*/.boid/hooks/*.sh"` = 0 件)
+- 残る hook 経路 (`hooks[].command` inline / `kind: agent`) はどちらも
+  `.boid/` 配下の別ファイルを sandbox 内 clone から探しに行かないため、
+  `.boid/` を gitignore している project でも hook dispatch が silent break
+  しない
 
 ### 4. sandbox 内 clone 先の親 dir 化 (`/workspace/<name>`) — 実装済み
 

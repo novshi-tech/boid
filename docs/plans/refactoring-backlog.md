@@ -168,8 +168,10 @@ TCP ラッパ生成が 1 関数に同居。`mountInfoRoutes` / `mountAPIHandlers
   `injectWorkspaceKits` / `injectWorkspaceEnv` へ抽出、
   stripAliasMirrors→ループ→addAliasMirrors の重複イディオムを `mapBehaviors(out, fn)` で共通化。
 - `ReadProjectMeta` (spec_loader.go:79-163): removed-field 拒否・deprecation 警告・
-  interpolate 3 種・hook スクリプトパス解決・alias 正規化が混在。
-  hook 解決ループと補間ブロックを別関数へ。
+  interpolate 3 種・alias 正規化が混在。
+  **hook スクリプトパス解決 (旧・外部 script 参照フィールドの解決ループ) は
+  [script-hook-removal.md](script-hook-removal.md) (PR3) で丸ごと削除済み**
+  — この項目の対象は「補間ブロックの分離」のみに縮小。
 - `GCTasks` (store.go:291-379): table→GCResult フィールド振り分けの switch が 3 箇所反復。
   `table 名 → *int64` の対応表 1 つに統一。
 - `NotifyTask(ctx, taskID, message, ask, questionID, progress, done, fail string)` の
