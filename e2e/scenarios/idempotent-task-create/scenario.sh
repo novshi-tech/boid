@@ -5,8 +5,9 @@ PROJECT_DIR="$E2E_WORKSPACE_DIR/app"
 
 # Set up workspace for new schema (PR4 hard cutover).
 # The kit is a tool-supply placeholder (no env/host_commands/bindings) and
-# does not provide hooks under the current schema. The spawn hook lives in
-# project.yaml's task_behaviors and references a script under .boid/hooks/.
+# does not provide hooks under the current schema. The spawn hook lives
+# inline in project.yaml's task_behaviors (hooks[].command,
+# docs/plans/script-hook-removal.md).
 WS_SLUG="idempotent-task-create"
 mkdir -p "$XDG_CONFIG_HOME/boid/workspaces"
 cat > "$XDG_CONFIG_HOME/boid/workspaces/${WS_SLUG}.yaml" <<YAML

@@ -3,8 +3,6 @@ package orchestrator
 import (
 	"context"
 	"encoding/json"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
@@ -64,9 +62,6 @@ func (s stubTaskLookup) GetTask(id string) (*Task, error) {
 // from behavior (nil when behavior has none).
 func TestDispatchPlannerInjectsDefaultBuiltinsForHook(t *testing.T) {
 	projectDir := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(projectDir, ".boid", "hooks"), 0o755); err != nil {
-		t.Fatal(err)
-	}
 	planner := newPlannerForTest(&Project{ID: "proj-1", WorkDir: projectDir}, TaskBehavior{}, &Task{ID: "task-1", ProjectID: "proj-1", Behavior: "dev", Status: TaskStatusExecuting})
 
 	hookReq, hookCleanup, err := planner.PlanHook(&HookFireEvent{
@@ -132,9 +127,6 @@ func TestPlanHook_SetsKitRootsFromBehavior(t *testing.T) {
 // comment — unreliable) Projects lookup.
 func TestPlanHook_SetsVisibilityProjectNameFromMeta(t *testing.T) {
 	projectDir := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(projectDir, ".boid", "hooks"), 0o755); err != nil {
-		t.Fatal(err)
-	}
 	proj := &Project{ID: "proj-1", WorkDir: projectDir}
 	task := &Task{ID: "task-1", ProjectID: "proj-1", Behavior: "dev", Status: TaskStatusExecuting}
 	meta := &ProjectMeta{
@@ -220,9 +212,6 @@ func TestPlanHook_AgentHookInteractive(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.agent, func(t *testing.T) {
 			projectDir := t.TempDir()
-			if err := os.MkdirAll(filepath.Join(projectDir, ".boid", "hooks"), 0o755); err != nil {
-				t.Fatal(err)
-			}
 			task := &Task{
 				ID:        "task-1",
 				ProjectID: "proj-1",
@@ -440,13 +429,50 @@ func TestPlanHook_RejectsAgentKindHookWithCommand(t *testing.T) {
 	}
 }
 
+// TestPlanHook_DefaultArmRejectsValidationDrift pins the validation-drift
+// safety net added in the argv switch (docs/plans/script-hook-removal.md):
+// Hook{Kind:"", Agent:"claude-code", Command:""} passes all three
+// validateHookCommandFields rules — rule 1 skips (Kind != HandlerKindAgent),
+// rule 2 skips (Command == ""), rule 3 skips (Agent != "") — yet has no argv
+// source: the Command arm and the agent-kind arm both fall through, so the
+// default arm must reject rather than let an empty Argv reach the shell
+// adapter (which would panic on argv[0]). If a future refactor loosens
+// validation and the default arm becomes unreachable, this test will fail
+// and force a re-evaluation.
+func TestPlanHook_DefaultArmRejectsValidationDrift(t *testing.T) {
+	projectDir := t.TempDir()
+	task := &Task{
+		ID:        "task-1",
+		ProjectID: "proj-1",
+		Behavior:  "executor",
+		Status:    TaskStatusExecuting,
+		Instructions: Instructions{{
+			Agent: "claude-code",
+		}},
+	}
+	planner := newPlannerForTest(&Project{ID: "proj-1", WorkDir: projectDir}, TaskBehavior{}, task)
+
+	_, _, err := planner.PlanHook(&HookFireEvent{
+		EventID:   "event-1",
+		TaskID:    "task-1",
+		ProjectID: "proj-1",
+		Hook: Hook{
+			ID:    "drift",
+			Agent: "claude-code", // Kind == "" (non-agent), Command == ""
+		},
+	})
+	if err == nil {
+		t.Fatal("PlanHook accepted a hook with no argv source (Kind='', Command='', Agent set); want validation-drift error")
+	}
+	if !strings.Contains(err.Error(), "validation drift") {
+		t.Errorf("error = %v, want one mentioning 'validation drift'", err)
+	}
+}
+
 // TestPlanHook_DockerEnabled verifies that capabilities.docker in ProjectMeta
 // flows through to Visibility.DockerEnabled on the resulting JobSpec.
 func TestPlanHook_DockerEnabled_WhenCapabilitySet(t *testing.T) {
 	projectDir := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(projectDir, ".boid", "hooks"), 0o755); err != nil {
-		t.Fatal(err)
-	}
 	dockerCap := &DockerCapability{}
 	planner := newPlannerWithCapabilities(
 		&Project{ID: "proj-1", WorkDir: projectDir},
@@ -473,9 +499,6 @@ func TestPlanHook_DockerEnabled_WhenCapabilitySet(t *testing.T) {
 
 func TestPlanHook_DockerEnabled_WhenCapabilityNotSet(t *testing.T) {
 	projectDir := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(projectDir, ".boid", "hooks"), 0o755); err != nil {
-		t.Fatal(err)
-	}
 	planner := newPlannerWithCapabilities(
 		&Project{ID: "proj-1", WorkDir: projectDir},
 		TaskBehavior{},
@@ -503,9 +526,6 @@ func TestPlanHook_DockerEnabled_WhenCapabilityNotSet(t *testing.T) {
 // RoutedInstruction on JobSpec.
 func TestPlanHook_Instruction_MatchingAgent(t *testing.T) {
 	projectDir := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(projectDir, ".boid", "hooks"), 0o755); err != nil {
-		t.Fatal(err)
-	}
 	task := &Task{
 		ID:        "task-1",
 		ProjectID: "proj-1",
@@ -549,9 +569,6 @@ func TestPlanHook_Instruction_MatchingAgent(t *testing.T) {
 // output.
 func TestPlanHook_TaskSnapshot(t *testing.T) {
 	projectDir := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(projectDir, ".boid", "hooks"), 0o755); err != nil {
-		t.Fatal(err)
-	}
 	task := &Task{
 		ID:          "task-1",
 		ProjectID:   "proj-1",
@@ -589,9 +606,6 @@ func TestPlanHook_TaskSnapshot(t *testing.T) {
 // PrimaryInput gets filtered by the hook's declared trait consumption.
 func TestPlanHook_PrimaryInput_FilteredByConsumes(t *testing.T) {
 	projectDir := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(projectDir, ".boid", "hooks"), 0o755); err != nil {
-		t.Fatal(err)
-	}
 	task := &Task{
 		ID:        "task-1",
 		ProjectID: "proj-1",
@@ -635,9 +649,6 @@ func TestPlanHook_PrimaryInput_FilteredByConsumes(t *testing.T) {
 // worktree.
 func TestDispatchPlanner_PropagatesBaseBranchEnv(t *testing.T) {
 	projectDir := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(projectDir, ".boid", "hooks"), 0o755); err != nil {
-		t.Fatal(err)
-	}
 
 	behavior := TaskBehavior{
 		Env: map[string]string{"KIT_VAR": "kit-value"},
@@ -694,9 +705,6 @@ func TestDispatchPlanner_PropagatesBaseBranchEnv(t *testing.T) {
 // PlanHook propagates behavior.HostCommands into JobSpec.HostCommands.
 func TestPlanHook_PropagatesHostCommands(t *testing.T) {
 	projectDir := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(projectDir, ".boid", "hooks"), 0o755); err != nil {
-		t.Fatal(err)
-	}
 	behavior := TaskBehavior{
 		HostCommands: HostCommands{
 			"gh": {Allow: []string{"pr", "issue"}},
@@ -747,9 +755,6 @@ func TestPlanHook_WritableControlledByTaskReadonly(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			projectDir := t.TempDir()
-			if err := os.MkdirAll(filepath.Join(projectDir, ".boid", "hooks"), 0o755); err != nil {
-				t.Fatal(err)
-			}
 			task := &Task{
 				ID:        "task-1",
 				ProjectID: "proj-1",
@@ -789,9 +794,6 @@ func TestPlanHook_WritableControlledByTaskReadonly(t *testing.T) {
 // must be absent.
 func TestDispatchPlanner_PropagatesAwaitingEnv(t *testing.T) {
 	projectDir := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(projectDir, ".boid", "hooks"), 0o755); err != nil {
-		t.Fatal(err)
-	}
 
 	// Legacy records still hold a session_id; deserialisation must skip it
 	// silently rather than fail, and PlanHook must not surface it as env.
@@ -853,9 +855,6 @@ func TestDispatchPlanner_PropagatesAwaitingEnv(t *testing.T) {
 // a parent read anymore.
 func TestDispatchPlanner_NoParentBranchEnv(t *testing.T) {
 	projectDir := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(projectDir, ".boid", "hooks"), 0o755); err != nil {
-		t.Fatal(err)
-	}
 
 	task := &Task{
 		ID:         "child0001234567",
@@ -887,9 +886,6 @@ func TestDispatchPlanner_NoParentBranchEnv(t *testing.T) {
 // Existing BOID_BASE_BRANCH must still be propagated unchanged (P3 retention test).
 func TestDispatchPlanner_BaseBranchEnvRetained_WithParent(t *testing.T) {
 	projectDir := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(projectDir, ".boid", "hooks"), 0o755); err != nil {
-		t.Fatal(err)
-	}
 	childTask := &Task{
 		ID:         "child12345678901",
 		ProjectID:  "proj-1",
