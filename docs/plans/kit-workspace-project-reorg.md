@@ -571,9 +571,9 @@ project は「node が要る」 を宣言しない (capability の provides / re
 
 **申し送り**: shell adapter (hook script 実行) だけは `Bindings()` が nil のため legacy kit binding 経路 (`internal/dispatcher/sandbox_builder.go:150-159` の `expandedBindings` + `Visibility.KitRoots`) に乗っている。kit が workspace 配下に移行する際、この経路が新しい供給元 (workspace が有効化した kit の host_commands / additional_bindings) を正しく受け取るよう配線を確認すること。落とすと hook script が sandbox に見えず task が死ぬ (PR #594 退行と同じ failure mode)。
 
-### hook script の所在
+### hook script の所在 — 解消済み (外部 script 参照フィールド撤廃)
 
-task_behavior の hook は project に残る。ScriptPath を持つ hook (builtin / script) の実体配置先を確認する (project の `.boid/` 配下か)。agent hook は ScriptPath 不要 (Phase 3-e の fallback 合成)。
+task_behavior の hook は project に残る。 このオープンクエスチョンが問うていた「外部 script 実体を runtime-resolve していた hook フィールドの実体配置先」は、 [script-hook-removal.md](script-hook-removal.md) (2026-07-15、PR #757〜#762) でそのフィールドおよび外部 `.sh` script 参照経路自体が撤廃されたことで解消した。 hook は project.yaml 内に完結する `hooks[].command` (inline shell command) か `kind: agent` (Phase 3-e の fallback 合成、外部 script 参照不要) のいずれかのみとなり、 「project の `.boid/` 配下に script 実体を置く」という配置問題そのものが無くなった。
 
 ### `boid kit init` 生成スキル
 
@@ -671,7 +671,9 @@ type TaskContext struct { /* b 専属: behaviors / worktree / base_branch / ... 
 
 ## オープンクエスチョン
 
-- ScriptPath を持つ hook の実体配置先 (project の `.boid/` 配下か)
+- ~~外部 script 実体を runtime-resolve していた hook フィールドの実体配置先 (project の `.boid/` 配下か)~~ — **解消済み**:
+  [script-hook-removal.md](script-hook-removal.md) (2026-07-15) でそのフィールド自体を撤廃、
+  hook は `hooks[].command` inline か `kind: agent` のみになったため問いが消滅
 - shell adapter 経路 (`sandbox_builder.go:150-159`) の legacy kit binding を、workspace が有効化した kit の供給に繋ぐ具体配線
 - secret-like パターン scan の判定基準 (false positive と感度のバランス、正規表現の具体)
 - `boid kit init` 生成スキル + `boid workspace configure` 生成スキルの実装フォーマット (SKILL.md / scripts / embed 戦略)
