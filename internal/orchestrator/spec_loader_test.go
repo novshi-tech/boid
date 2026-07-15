@@ -81,6 +81,58 @@ task_behaviors:
 	}
 }
 
+// TestReadProjectMeta_HookCommandField verifies that ReadProjectMeta parses
+// the new hooks[].command inline field (script-hook-removal PR1,
+// docs/plans/script-hook-removal.md) from YAML into Hook.Command.
+//
+// The hook below declares kind: agent solely so the loader's existing
+// ScriptPath-resolution loop (spec_loader.go, unchanged by this PR — that
+// removal is scoped to PR3) skips over it without requiring a backing
+// .boid/hooks/<id>.sh file; this test only exercises YAML→struct field
+// wiring for Command, not the Command/Kind exclusivity rule enforced at
+// dispatch time by DispatchPlanner.PlanHook (see TestPlanHook_* in
+// planner_test.go for that).
+func TestReadProjectMeta_HookCommandField(t *testing.T) {
+	dir := t.TempDir()
+	boidDir := filepath.Join(dir, ".boid")
+	if err := os.MkdirAll(boidDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	yaml := `
+id: test-proj
+name: Test Project
+task_behaviors:
+  dev:
+    hooks:
+      - id: assert-clone-cwd
+        kind: agent
+        command: |
+          set -eu
+          echo assert-clone-cwd ok
+`
+	if err := os.WriteFile(filepath.Join(boidDir, "project.yaml"), []byte(yaml), 0o644); err != nil {
+		t.Fatalf("write yaml: %v", err)
+	}
+
+	meta, err := projectspec.ReadProjectMeta(dir)
+	if err != nil {
+		t.Fatalf("read meta: %v", err)
+	}
+
+	behavior, ok := meta.TaskBehaviors["executor"]
+	if !ok {
+		t.Fatalf("expected canonical 'executor' behavior, got %+v", meta.TaskBehaviors)
+	}
+	if len(behavior.Hooks) != 1 {
+		t.Fatalf("hooks = %+v, want 1 entry", behavior.Hooks)
+	}
+	const wantCommand = "set -eu\necho assert-clone-cwd ok\n"
+	if behavior.Hooks[0].Command != wantCommand {
+		t.Errorf("hook.Command = %q, want %q", behavior.Hooks[0].Command, wantCommand)
+	}
+}
+
 func TestReadProjectMeta_RejectedKeys(t *testing.T) {
 	// These keys have been removed from project.yaml in the new schema.
 	// Each one should produce a guidance error.
