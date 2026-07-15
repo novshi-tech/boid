@@ -73,6 +73,8 @@ Cloudflare Tunnel 公開手順は docs/ja/guide/web-ui.md を参照。
 
 Hook と Exec はサンドボックス実行。Gate 機構は廃止済みで、現行 dispatch は hook のみ（`JobKind` は `hook`/`exec`）。サンドボックスの書き込み可否は `task.readonly` および `command.readonly`（Exec の場合）のみで決まる。role による差分はない。
 
+hook の定義経路は `hooks[].command`（inline shell command、`sh -c` 経由で実行）または `kind: agent`（virtual agent hook 合成）の 2 つのみ。`.boid/hooks/*.sh` のような外部 script ファイルを参照する経路（旧 `ScriptPath`）は 2026-07 に撤廃済み（`docs/plans/script-hook-removal.md`）。理由は dead code 化に加え、sandbox 内 clone は tracked file しか持ってこないため `.boid/` を gitignore している project で script hook が silent に ENOENT 落ちする契約問題があり、外部 script 参照経路自体を無くすことで根絶した。詳細は `docs/ja/reference/project-yaml.md` の `hooks` 節を参照。
+
 ## サンドボックス内での Web アクセス
 
 サンドボックス内では `WebFetch` ツールは無効化されている。web ページを読む場合は
