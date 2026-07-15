@@ -410,28 +410,27 @@ gateway:
 **実装スコープ**: `internal/config/config.go` の UnmarshalYAML と test、
 docs (`docs/*/reference/config-yaml.md`) 更新。
 
-### 3. `.boid/` gitignore contract の user-facing 明文化
+### 3. `.boid/` gitignore contract の user-facing 明文化 — 別 plan に分離
 
-**問題**: post-cutover は `.boid/` (project.yaml、hooks/*.sh 等) が sandbox 内
-clone 経由でしか届かない。`.gitignore` で `.boid/` を除外している project は
-cutover 後の dispatch で hook スクリプトが消える (PR6 Opus レビュー finding #7)。
-boid 本体は `.boid/project.yaml` を tracked にしているので dogfood は動くが、
-user 側の project は個別確認が要る。
+**問題** (元の記述): post-cutover は `.boid/` (project.yaml、hooks/*.sh 等) が
+sandbox 内 clone 経由でしか届かない。`.gitignore` で `.boid/` を除外している
+project は cutover 後の dispatch で hook スクリプトが消える。boid 本体は
+`.boid/project.yaml` を tracked にしているので dogfood は動くが、user 側の
+project は個別確認が要る。
 
-**解決方針**: dogfood チェックリスト (本 doc の上節) に以下を明示追加 (計画書
-更新のみ、コード変更なし)。cutover 後に既存 project へ配布する onboarding
-文書 (CLAUDE.md 等) にも「`.boid/` は commit 対象」を明記する。
+**現在の解決方針** (2026-07-15 nose 決定): docs 追加ではなく、**script hook 機能
+自体を廃止**することで問題を根絶する。詳細は
+[script-hook-removal.md](script-hook-removal.md) 参照。
 
-```bash
-# 各 project で
-git check-ignore .boid          # 何も出力されなければ tracked (OK)
-git check-ignore .boid/hooks    # 同上
-```
+- production は既に task_behaviors + agent-kind hook 経路に移行済み
+  (dogfood と init wizard の実装から確認)
+- e2e が使う script hook は `hooks[].command` inline field に置換
+- `.boid/hooks/*.sh` を参照する経路 (planner の ScriptPath / sandbox_builder の
+  argv remap / spec_resolve.go / HookFile) を全削除
+- 削除後は `.boid/` を参照する主要経路が消えるので gitignore contract 問題は
+  自然消滅
 
-出力があった project は `.gitignore` から `.boid/` を除外するか、
-`.boid/hooks/*.sh` だけ tracked にする。
-
-**依存**: 実装 (コード変更) 不要、本 doc の反映と onboarding 文書更新のみ。
+**ステータス**: 実装計画確定、実装未着手 (別 plan で管理)。
 
 ### 4. sandbox 内 clone 先の親 dir 化 (`/workspace/<name>`) — 実装済み
 
