@@ -1,2 +1,15 @@
 env:
   E2E_STATE_DIR: ${E2E_STATE_DIR}
+  # script-hook-removal PR2a (docs/plans/script-hook-removal.md): the 16
+  # docker-proxy-* e2e scenarios shared one identical
+  # `.boid/hooks/run-docker-test.sh` (md5-equal). It now lives once, in this
+  # kit's own directory, as docker-proxy-test.sh. A kit's own directory is
+  # already unconditionally bind-mounted read-only into the sandbox at the
+  # same host path (the "KitRoots" mechanism, see
+  # internal/dispatcher/sandbox_builder.go), so no new e2e bind-injection
+  # infra was needed to make it visible from inside a hook. This env var is
+  # interpolated from the boid daemon's own process env at kit-load time
+  # (same pattern as E2E_STATE_DIR above); e2e/run.sh exports XDG_DATA_HOME
+  # before starting boid with --kits-dir "$XDG_DATA_HOME/boid/kits", so this
+  # always resolves to this kit's on-disk copy for the current e2e run.
+  DOCKER_PROXY_TEST_ROOT: ${XDG_DATA_HOME}/boid/kits/docker-proxy-test
