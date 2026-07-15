@@ -4,6 +4,46 @@ task_behaviors:
   parent:
     hooks:
       - id: spawn-parent
+        command: |
+          set -eu
+
+          PARENT_ID="$BOID_TASK_ID"
+
+          boid task create >&2 <<EOF
+          title: Task A
+          behavior: child
+          ref: task-a
+          parent_id: $PARENT_ID
+          EOF
+
+          boid task create >&2 <<EOF
+          title: Task B
+          behavior: child
+          ref: task-b
+          parent_id: $PARENT_ID
+          EOF
+
+          boid task create >&2 <<EOF
+          title: Task C
+          behavior: child
+          ref: task-c
+          parent_id: $PARENT_ID
+          auto_start: true
+          EOF
+
+          boid task create >&2 <<EOF
+          title: Task D
+          behavior: child
+          ref: task-d
+          parent_id: $PARENT_ID
+          auto_start: true
+          EOF
+
+          # Emit artifact so the parent (one-shot) auto-advances to done.
+          mkdir -p "$HOME/.boid/output"
+          cat > "$HOME/.boid/output/payload_patch.json" <<'PATCH'
+          {"payload_patch":{"artifact":{"summary":"spawned subtasks"}}}
+          PATCH
         traits:
           produces: [artifact]
     traits: []
@@ -12,4 +52,19 @@ task_behaviors:
   hook-parent:
     hooks:
       - id: spawn-hook
+        command: |
+          set -eu
+
+          # hook から boid task create を呼ぶ (hook boid policy が task_create を許可)
+          # project_id は broker がコンテキストから自動注入する
+          boid task create <<'YAML'
+          title: Hook Spawned Task
+          behavior: child
+          ref: hook-spawned
+          YAML
+
+          mkdir -p "$HOME/.boid/output"
+          cat > "$HOME/.boid/output/payload_patch.json" <<'PATCH'
+          {"payload_patch":{"artifact":{}}}
+          PATCH
     traits: []
