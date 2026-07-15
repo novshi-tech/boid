@@ -277,6 +277,12 @@ type Hook struct {
 	Agent      string        `yaml:"agent,omitempty" json:"agent,omitempty"`
 	Kit        string        `yaml:"-" json:"kit,omitempty"`
 	ScriptPath string        `yaml:"-" json:"-"`
+	// Command is an inline shell command, run via `sh -c`. It is the
+	// script-hook-removal (docs/plans/script-hook-removal.md) replacement for
+	// ScriptPath: mutually exclusive with both ScriptPath and Agent, and not
+	// allowed on agent-kind hooks. See DispatchPlanner.PlanHook for the argv
+	// selection and validateHookCommandFields for the exclusivity rules.
+	Command string `yaml:"command,omitempty" json:"command,omitempty"`
 }
 
 // UnmarshalYAML rejects legacy `on:` entries to surface migration breakage clearly.

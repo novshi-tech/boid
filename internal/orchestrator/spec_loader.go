@@ -118,8 +118,13 @@ func ReadProjectMeta(dir string) (*ProjectMeta, error) {
 	}
 
 	// Resolve hook ScriptPaths from the project's .boid/hooks/ directory.
-	// Non-agent hooks (Kind != "agent") require a script file; agent-kind hooks
-	// may omit the script and are dispatched to the HarnessAdapter directly.
+	// Non-agent hooks (Kind != "agent") require an argv source: either an
+	// inline `command:` (script-hook-removal PR1, docs/plans/script-hook-removal.md)
+	// or a backing .boid/hooks/<id>.(sh|py) file resolved into ScriptPath.
+	// Agent-kind hooks omit both and are dispatched to the HarnessAdapter
+	// directly. This whole loop is scoped for removal in PR3 once every
+	// remaining script hook has been migrated to Command; until then both
+	// argv sources must load side by side.
 	projectHooksDir := filepath.Join(dir, ".boid", "hooks")
 	for name, behavior := range meta.TaskBehaviors {
 		for i := range behavior.Hooks {
@@ -129,6 +134,9 @@ func ReadProjectMeta(dir string) (*ProjectMeta, error) {
 			}
 			if h.Kind == HandlerKindAgent {
 				continue // agent hooks do not need a script path
+			}
+			if h.Command != "" {
+				continue // inline command hooks do not need a script path
 			}
 			scriptPath, err := ResolveHookScript(projectHooksDir, h.ID)
 			if err != nil {
@@ -423,10 +431,18 @@ func stripAliasMirrors(behaviors map[string]TaskBehavior) map[string]TaskBehavio
 	return behaviors
 }
 
-// validateHookKind enforces the Hook.Kind / Hook.Agent invariants at load time:
+// validateHookKind enforces the Hook.Kind / Hook.Agent / Hook.Command
+// invariants at load time:
 //   - Kind must be "" or "agent"
 //   - Agent can only be specified on kind: agent hooks; on non-agent hooks
 //     it has no effect and likely indicates that `kind: agent` was forgotten
+//   - Command must NOT be specified on kind: agent hooks; agent hooks are
+//     dispatched to a HarnessAdapter, which builds its own argv, so an
+//     inline command has nowhere to run (script-hook-removal PR1,
+//     docs/plans/script-hook-removal.md). This mirrors the runtime check in
+//     DispatchPlanner.validateHookCommandFields; keeping both is intentional
+//     defense-in-depth (load-time rejects YAML shapes, runtime catches
+//     programmatic construction / kit-merge drift).
 //
 // Agent hooks without an Agent are allowed here (the kit-agent inheritance
 // in MergeKitMetaIntoBehavior may still fill it in); the final "agent requires
@@ -437,6 +453,9 @@ func validateHookKind(h *Hook) error {
 	}
 	if h.Kind != HandlerKindAgent && h.Agent != "" {
 		return fmt.Errorf("hook %q: 'agent' field requires 'kind: agent' (non-agent hooks must not declare agent)", h.ID)
+	}
+	if h.Kind == HandlerKindAgent && h.Command != "" {
+		return fmt.Errorf("hook %q: kind %q does not allow 'command:' (agent hooks are dispatched to a HarnessAdapter, which builds its own argv)", h.ID, h.Kind)
 	}
 	return nil
 }

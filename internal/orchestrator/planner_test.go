@@ -333,8 +333,8 @@ func TestPlanHook_AcceptsScriptlessAgentHook(t *testing.T) {
 	}
 }
 
-// Non-agent hooks (Kind == "") still require ScriptPath: the shell adapter
-// has no way to build an Argv on their behalf.
+// Non-agent hooks (Kind == "") still require a Command or ScriptPath: the
+// shell adapter has no way to build an Argv on their behalf.
 func TestPlanHook_RejectsScriptlessNonAgentHook(t *testing.T) {
 	projectDir := t.TempDir()
 	planner := newPlannerForTest(
@@ -353,10 +353,139 @@ func TestPlanHook_RejectsScriptlessNonAgentHook(t *testing.T) {
 		},
 	})
 	if err == nil {
-		t.Fatal("PlanHook accepted a non-agent hook with empty ScriptPath; want error")
+		t.Fatal("PlanHook accepted a non-agent hook with empty Command and ScriptPath; want error")
 	}
-	if !strings.Contains(err.Error(), "no script path resolved") {
-		t.Errorf("error = %v, want one mentioning 'no script path resolved'", err)
+	if !strings.Contains(err.Error(), "no command or script path resolved") {
+		t.Errorf("error = %v, want one mentioning 'no command or script path resolved'", err)
+	}
+}
+
+// script-hook-removal PR1 (docs/plans/script-hook-removal.md): Hook.Command
+// is an inline shell command. PlanHook must wrap it as `sh -c <command>` so
+// the shell adapter execs it directly, with no on-disk script involved.
+func TestPlanHook_UsesCommandBuildsShArgv(t *testing.T) {
+	projectDir := t.TempDir()
+	planner := newPlannerForTest(
+		&Project{ID: "proj-1", WorkDir: projectDir},
+		TaskBehavior{},
+		&Task{ID: "task-1", ProjectID: "proj-1", Behavior: "executor", Status: TaskStatusExecuting},
+	)
+
+	req, cleanup, err := planner.PlanHook(&HookFireEvent{
+		EventID:   "event-1",
+		TaskID:    "task-1",
+		ProjectID: "proj-1",
+		Hook: Hook{
+			ID:      "assert-clone-cwd",
+			Command: "echo hi",
+		},
+	})
+	if err != nil {
+		t.Fatalf("PlanHook: %v", err)
+	}
+	if cleanup != nil {
+		defer cleanup()
+	}
+	wantArgv := []string{"sh", "-c", "echo hi"}
+	if len(req.Argv) != len(wantArgv) {
+		t.Fatalf("Argv = %v, want %v", req.Argv, wantArgv)
+	}
+	for i := range wantArgv {
+		if req.Argv[i] != wantArgv[i] {
+			t.Errorf("Argv[%d] = %q, want %q", i, req.Argv[i], wantArgv[i])
+		}
+	}
+}
+
+// Command and ScriptPath are mutually exclusive: double-specifying both argv
+// sources on the same hook is rejected rather than silently preferring one.
+func TestPlanHook_RejectsCommandAndScriptPathTogether(t *testing.T) {
+	projectDir := t.TempDir()
+	scriptPath := filepath.Join(projectDir, ".boid", "hooks", "hook-1.sh")
+	planner := newPlannerForTest(
+		&Project{ID: "proj-1", WorkDir: projectDir},
+		TaskBehavior{},
+		&Task{ID: "task-1", ProjectID: "proj-1", Behavior: "executor", Status: TaskStatusExecuting},
+	)
+
+	_, _, err := planner.PlanHook(&HookFireEvent{
+		EventID:   "event-1",
+		TaskID:    "task-1",
+		ProjectID: "proj-1",
+		Hook: Hook{
+			ID:         "double-specified",
+			ScriptPath: scriptPath,
+			Command:    "echo hi",
+		},
+	})
+	if err == nil {
+		t.Fatal("PlanHook accepted a hook with both ScriptPath and Command set; want error")
+	}
+	if !strings.Contains(err.Error(), "mutually exclusive") {
+		t.Errorf("error = %v, want one mentioning 'mutually exclusive'", err)
+	}
+}
+
+// Agent and Command are mutually exclusive: an agent-routed hook and an
+// inline-command hook are different dispatch shapes. This is defense-in-depth
+// against callers that construct HookFireEvent programmatically and bypass
+// ReadProjectMeta / validateHookKind (the latter separately rejects an
+// `agent:` field without `kind: agent` at load time, so YAML-authored hooks
+// cannot reach this shape); PlanHook is the last line of enforcement before
+// the JobSpec is handed to the shell adapter.
+func TestPlanHook_RejectsCommandAndAgentTogether(t *testing.T) {
+	projectDir := t.TempDir()
+	planner := newPlannerForTest(
+		&Project{ID: "proj-1", WorkDir: projectDir},
+		TaskBehavior{},
+		&Task{ID: "task-1", ProjectID: "proj-1", Behavior: "executor", Status: TaskStatusExecuting},
+	)
+
+	_, _, err := planner.PlanHook(&HookFireEvent{
+		EventID:   "event-1",
+		TaskID:    "task-1",
+		ProjectID: "proj-1",
+		Hook: Hook{
+			ID:      "agent-and-command",
+			Agent:   "claude-code",
+			Command: "echo hi",
+		},
+	})
+	if err == nil {
+		t.Fatal("PlanHook accepted a hook with both Agent and Command set; want error")
+	}
+	if !strings.Contains(err.Error(), "mutually exclusive") {
+		t.Errorf("error = %v, want one mentioning 'mutually exclusive'", err)
+	}
+}
+
+// Agent-kind hooks are dispatched to a HarnessAdapter, which builds its own
+// argv — they must not also declare an inline Command.
+func TestPlanHook_RejectsAgentKindHookWithCommand(t *testing.T) {
+	projectDir := t.TempDir()
+	planner := newPlannerForTest(
+		&Project{ID: "proj-1", WorkDir: projectDir},
+		TaskBehavior{},
+		&Task{ID: "task-1", ProjectID: "proj-1", Behavior: "executor", Status: TaskStatusExecuting},
+	)
+
+	_, _, err := planner.PlanHook(&HookFireEvent{
+		EventID:   "event-1",
+		TaskID:    "task-1",
+		ProjectID: "proj-1",
+		Hook: Hook{
+			ID:      "agent-kind-with-command",
+			Kind:    HandlerKindAgent,
+			Command: "echo hi",
+			// Agent intentionally empty, to isolate this from the
+			// Agent+Command exclusivity case above.
+		},
+	})
+	if err == nil {
+		t.Fatal("PlanHook accepted an agent-kind hook with Command set; want error")
+	}
+	if !strings.Contains(err.Error(), "agent-kind hooks do not take") {
+		t.Errorf("error = %v, want one mentioning agent-kind hooks rejecting command", err)
 	}
 }
 

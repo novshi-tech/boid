@@ -81,6 +81,107 @@ task_behaviors:
 	}
 }
 
+// TestReadProjectMeta_HookCommandField verifies that ReadProjectMeta parses
+// the new hooks[].command inline field (script-hook-removal PR1,
+// docs/plans/script-hook-removal.md) from YAML into Hook.Command AND that
+// the loader's script-resolution loop skips a Command-only non-agent hook
+// so it does not require a backing .boid/hooks/<id>.sh file to exist.
+//
+// This is the load-time counterpart of the PR3-scoped ScriptPath removal:
+// during the PR1→PR3 interim, both argv sources must load side by side, and
+// this test pins the new skip. The dispatch-time exclusivity rules for
+// Command / ScriptPath / Agent / Kind live in DispatchPlanner.PlanHook (see
+// TestPlanHook_* in planner_test.go).
+func TestReadProjectMeta_HookCommandField(t *testing.T) {
+	dir := t.TempDir()
+	boidDir := filepath.Join(dir, ".boid")
+	if err := os.MkdirAll(boidDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	// Intentionally do NOT create .boid/hooks/assert-clone-cwd.sh — the
+	// loader must skip ResolveHookScript for a Command-only hook rather than
+	// error out with "script not found". This is the reason the coordinator
+	// flagged the loader skip as PR1-blocking for PR2a〜PR2d migration.
+
+	yaml := `
+id: test-proj
+name: Test Project
+task_behaviors:
+  dev:
+    hooks:
+      - id: assert-clone-cwd
+        command: |
+          set -eu
+          echo assert-clone-cwd ok
+`
+	if err := os.WriteFile(filepath.Join(boidDir, "project.yaml"), []byte(yaml), 0o644); err != nil {
+		t.Fatalf("write yaml: %v", err)
+	}
+
+	meta, err := projectspec.ReadProjectMeta(dir)
+	if err != nil {
+		t.Fatalf("read meta: %v", err)
+	}
+
+	behavior, ok := meta.TaskBehaviors["executor"]
+	if !ok {
+		t.Fatalf("expected canonical 'executor' behavior, got %+v", meta.TaskBehaviors)
+	}
+	if len(behavior.Hooks) != 1 {
+		t.Fatalf("hooks = %+v, want 1 entry", behavior.Hooks)
+	}
+	got := behavior.Hooks[0]
+	const wantCommand = "set -eu\necho assert-clone-cwd ok\n"
+	if got.Command != wantCommand {
+		t.Errorf("hook.Command = %q, want %q", got.Command, wantCommand)
+	}
+	if got.ScriptPath != "" {
+		t.Errorf("hook.ScriptPath = %q, want empty (loader must not resolve a script for Command-only hooks)", got.ScriptPath)
+	}
+	if got.Kind != "" {
+		t.Errorf("hook.Kind = %q, want empty (this hook is non-agent, Command-only)", got.Kind)
+	}
+}
+
+// TestReadProjectMeta_RejectsAgentKindHookWithCommand verifies the load-time
+// counterpart of DispatchPlanner.validateHookCommandFields rule #1: an
+// agent-kind hook must not carry an inline `command:`, because agent hooks
+// are dispatched to a HarnessAdapter that builds its own argv, leaving the
+// inline command with nowhere to run. Load-time rejection catches YAML
+// authoring mistakes long before dispatch; the runtime check in PlanHook
+// remains as defense-in-depth against programmatic construction and
+// kit-merge drift (see spec_loader.go:validateHookKind for the paired
+// rationale).
+func TestReadProjectMeta_RejectsAgentKindHookWithCommand(t *testing.T) {
+	dir := t.TempDir()
+	boidDir := filepath.Join(dir, ".boid")
+	if err := os.MkdirAll(boidDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	yaml := `
+id: test-proj
+name: Test Project
+task_behaviors:
+  dev:
+    hooks:
+      - id: agent-with-command
+        kind: agent
+        command: echo hi
+`
+	if err := os.WriteFile(filepath.Join(boidDir, "project.yaml"), []byte(yaml), 0o644); err != nil {
+		t.Fatalf("write yaml: %v", err)
+	}
+
+	_, err := projectspec.ReadProjectMeta(dir)
+	if err == nil {
+		t.Fatal("ReadProjectMeta accepted agent-kind hook with command; want error")
+	}
+	if !strings.Contains(err.Error(), "does not allow 'command:'") {
+		t.Errorf("error = %v, want one mentioning that kind: agent does not allow command", err)
+	}
+}
+
 func TestReadProjectMeta_RejectedKeys(t *testing.T) {
 	// These keys have been removed from project.yaml in the new schema.
 	// Each one should produce a guidance error.
