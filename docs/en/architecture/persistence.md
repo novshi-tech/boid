@@ -44,7 +44,7 @@ Key columns:
 | `instructions` | TEXT (JSON) | An array of `Instruction`s; the last element is the active one and `reopen` appends to it. |
 | `auto_start` | BOOLEAN | Whether to start automatically on create. |
 | `traits` | TEXT (JSON array) | Trait names declared by the behavior. |
-| `readonly` / `worktree` | BOOLEAN | Sandbox mode flags. `worktree` is now a business flag that marks whether this task should run on a dedicated branch (`boid/<id8>`); the runtime realises it as a branch declaration on the in-sandbox clone — see [git gateway](../reference/project-yaml.md#git-gateway--in-sandbox-clone). Host-side git worktrees are no longer created. |
+| `readonly` / `worktree` | BOOLEAN | Sandbox mode flags. `readonly` controls whether the working directory is mounted read-only. `worktree` is a legacy flag: as of branch-policy-simplification Phase 1 (v0.0.11) it no longer affects checkout behaviour — every task checks out `base_branch` directly on its in-sandbox clone — see [git gateway](../reference/project-yaml.md#git-gateway--in-sandbox-clone). Host-side git worktrees are no longer created. |
 | `branch_prefix` / `base_branch` | TEXT | Branch settings. |
 | `ref` / `parent_id` | TEXT | Optional parent reference. |
 | `created_at` / `updated_at` | DATETIME | Timestamps. |

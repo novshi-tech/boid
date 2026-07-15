@@ -596,7 +596,6 @@ func TestBuildCloneSpec_PopulatesFromDeclarationAndRuntimeInfo(t *testing.T) {
 			Clone: &orchestrator.CloneDeclaration{
 				Branch:              "boid/abcd1234",
 				BaseBranch:          "main",
-				ForkPoint:           "boid/parent1234",
 				BaseBranchForkPoint: "origin/main",
 			},
 		},
@@ -613,7 +612,6 @@ func TestBuildCloneSpec_PopulatesFromDeclarationAndRuntimeInfo(t *testing.T) {
 		TargetDir:           "/workspace/bm-next",
 		Branch:              "boid/abcd1234",
 		BaseBranch:          "main",
-		ForkPoint:           "boid/parent1234",
 		BaseBranchForkPoint: "origin/main",
 	}
 	if got != want {

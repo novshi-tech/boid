@@ -142,12 +142,6 @@ type Visibility struct {
 	// via relative paths (e.g. ${SCRIPT_DIR}/../scripts/lib.sh).
 	KitRoots []string
 
-	// ForkPoint is ProjectMeta.ForkPoint passed through to the dispatcher.
-	// Used as the start point when a task's base_branch does not exist
-	// (ClassifyBaseBranch case 3). Empty means dispatcher falls back to
-	// refs/remotes/origin/HEAD.
-	ForkPoint string
-
 	// DockerEnabled, when true, indicates capabilities.docker was declared in
 	// project.yaml. Dispatcher uses this to start a per-sandbox docker proxy.
 	DockerEnabled bool
@@ -167,35 +161,33 @@ type Visibility struct {
 // merge-base / checkout -B) is deferred to the runner, which performs it
 // against the freshly cloned repo (docs/plans/git-gateway-cutover.md: 「dispatcher
 // は JobSpec に宣言のみ載せる...runner が clone 完了後に解決」).
+//
+// docs/plans/branch-policy-simplification.md Phase 1 retired the per-task
+// "boid/<id8>" branch and its fork-point: every task, root or child, checks
+// out BaseBranch directly (CheckoutOnly is always true now). See
+// BuildCloneDeclaration's doc comment for the rationale.
 type CloneDeclaration struct {
-	// Branch is the branch the runner ends up on inside the clone: equal to
-	// BaseBranch for a root task (CheckoutOnly=true), or "boid/<id8>" for a
-	// child task.
+	// Branch is the branch the runner ends up on inside the clone. Always
+	// equal to BaseBranch — every task occupies its own BaseBranch directly.
 	Branch string
 
 	// BaseBranch is the upstream branch this task's work is based on
 	// (task.BaseBranch). Always required.
 	BaseBranch string
 
-	// CheckoutOnly: when true, Branch is checked out directly (a root task
-	// occupying BaseBranch) rather than created fresh from ForkPoint.
+	// CheckoutOnly is always true (Branch is checked out directly rather than
+	// created fresh from a fork point). Kept as an explicit field — rather
+	// than collapsed away — so CloneSpec / runner-state.json's declaration
+	// shape stays self-describing.
 	CheckoutOnly bool
 
-	// ForkPoint is the start point for `checkout -B Branch <ForkPoint>` when
-	// CheckoutOnly is false. Empty means fork from BaseBranch itself. For a
-	// child task this is typically the parent's own working branch
-	// (dispatcher.ComputeForkPoint(parent)), which must already be pushed to
-	// origin for a fresh clone to see it (docs/plans/container-based-boid.md
-	// 「成果共有は origin 経由のみ」); this is a deliberate, documented
-	// consequence of the clone model, not something this declaration works
-	// around.
-	ForkPoint string
-
-	// BaseBranchForkPoint mirrors Visibility.ForkPoint (ClassifyBaseBranch
-	// case 3): the start point used to create BaseBranch locally when it
-	// exists on neither the clone's origin nor locally. Empty falls back to
-	// refs/remotes/origin/HEAD, resolved by the runner after clone (no extra
-	// fetch needed: `git clone` already brings every remote branch's ref).
+	// BaseBranchForkPoint (ClassifyBaseBranch case 3): the start point used
+	// to create BaseBranch locally when it exists on neither the clone's
+	// origin nor locally. Empty falls back to refs/remotes/origin/HEAD,
+	// resolved by the runner after clone (no extra fetch needed: `git clone`
+	// already brings every remote branch's ref). This is independent of the
+	// retired per-task fork point: it addresses BaseBranch not existing yet
+	// anywhere, not task-to-task isolation.
 	BaseBranchForkPoint string
 }
 

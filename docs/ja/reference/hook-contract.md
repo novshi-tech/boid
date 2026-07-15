@@ -49,7 +49,6 @@ hook の実行コンテキストには次の環境変数が設定されます。
 | `BOID_TASK_ID` | 現在のタスク ID |
 | `BOID_JOB_ID` | 現在のジョブ ID (`boid job show <id>` で参照される) |
 | `BOID_BASE_BRANCH` | タスクの `base_branch` (PR target となるブランチ名)。 root / child ともに設定される |
-| `BOID_PARENT_BRANCH` | 親タスクの HEAD branch。 root task では未設定 (空)。 sub-sup が `git merge $BOID_PARENT_BRANCH` などで使う |
 | `BOID_MODEL` | このタスクの instruction に設定されているモデル名 |
 | `BOID_INVOKED_ROLE` | この hook 呼び出しを起動したロール名 |
 | `BOID_INVOKED_NAME` | ロール内の hook 名 |

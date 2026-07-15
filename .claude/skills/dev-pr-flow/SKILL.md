@@ -83,7 +83,7 @@ In the boid task dev behavior, the `task.exit` gate (auto-merge) merges the PR a
 
 | Aspect | boid task (dev) | this skill alone |
 |--------|----------------|------------------|
-| Branch | boid provides the worktree | any current branch |
+| Branch | executor creates boid/<task_id8> from base_branch | any current branch |
 | title/body source | task.yaml | conversation / user instruction |
 | On CI failure | exit non-zero → boid marks it aborted | exit non-zero → simply stops |
 | Post-completion merge | `task.exit` gate auto-merges | not executed |

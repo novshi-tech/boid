@@ -42,7 +42,7 @@ Reads YAML/JSON from stdin (or `-f <file>`). Prints `task created: <id> (<status
 | `description` | Delivered to the child as the active instruction. |
 | `auto_start` | `true` to start immediately. |
 | `parent_id` | Auto-filled from `BOID_TASK_ID`. Set explicitly only to attach under a different parent. |
-| `base_branch` | Branch the task's own project clone forks from. Inherits the project-top `base_branch`, else the daemon's current HEAD. |
+| `base_branch` | Branch the task's own project clone checks out directly (no separate per-task branch is created). Inherits the parent's `base_branch` verbatim when omitted on a child; falls back to the project-top `base_branch`, else the daemon's current HEAD, for a root task. |
 | `project_id` | Project to create in. Defaults to the same project as the parent. |
 | `behavior_spec` | Inline behavior definition. Not normally needed — prefer named behaviors from `project.yaml`. |
 | `ref` | Child ref name within the parent scope. |

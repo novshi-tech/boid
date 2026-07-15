@@ -18,7 +18,7 @@
 `.boid/project.yaml` を持つディレクトリのこと。 `project.yaml` には次を書きます。
 
 - `id` (この `boid` 内でプロジェクトを一意に識別する文字列) と `name` (表示名)
-- 任意の project トップ `worktree: true` フラグ — executor タスクごとに専用 branch を切るかどうか (詳細は後述 [worktree](#worktree))
+- 任意の project トップ `worktree: true` フラグ — レガシーフィールド。 スキーマ互換のため残っているが checkout 挙動には影響しない (詳細は後述 [worktree](#worktree))
 - このプロジェクトで使う **kit** のリスト (`kits:`)
 - 1 つ以上の **task_behaviors** — behavior 名をキーにして `default_instruction` 雛形を束ねたもの。 名前は自由 (free naming)。 `readonly` は behavior ごとに設定でき、 省略時は `true` (fail-safe)
 
@@ -121,20 +121,24 @@ hook を実行する隔離環境です。 実装としては Linux の mount nam
 
 ## worktree
 
-project トップで `worktree: true` を宣言したプロジェクトでは、 **executor / supervisor** タスクに専用の **branch** が割り当てられます。
+`worktree` は `project.yaml` の project トップ boolean フィールドです。 以前は `true` で child タスクに専用の isolated branch (`boid/<id8>`) を割り当てていました。
 
-> **実装メモ (git gateway cutover, 2026-07 完了)**: 名前は歴史的に `worktree` のままですが、 実装はもう `git worktree` (同じリポジトリの複数ブランチを別ディレクトリに同時チェックアウトする git の機能) を使っていません。 project が可視なジョブは (`worktree` の値に関わらず) 毎回 sandbox 内に project を新規 clone し、 dispatcher が宣言した branch をそこで checkout します。 host 側にはジョブ専用の worktree ディレクトリは一切作られず、 host repo の `.git` にも書き込みません — 成果は commit → push して初めて他セッションに共有されます。 詳細は [`project.yaml` リファレンス / git gateway](../reference/project-yaml.md#git-gateway--sandbox-内-clone) を参照してください。
+> **実装メモ (git gateway cutover, 2026-07 完了 / branch-policy-simplification Phase 1, v0.0.11)**: 名前は歴史的に `worktree` のままですが、 実装はもう `git worktree` (同じリポジトリの複数ブランチを別ディレクトリに同時チェックアウトする git の機能) を使っていません。 さらに Phase 1 以降、 このフィールドは checkout 挙動に一切影響しません。 project が可視なジョブは毎回 sandbox 内に project を新規 clone し、 タスク種別や `worktree` の値に関わらず `task.BaseBranch` を直接 checkout します。 host 側にはジョブ専用の worktree ディレクトリは一切作られず、 host repo の `.git` にも書き込みません — 成果は commit → push して初めて他セッションに共有されます。 詳細は [`project.yaml` リファレンス / git gateway](../reference/project-yaml.md#git-gateway--sandbox-内-clone) を参照してください。
 
-タスク種別によって branch の割り当て方が異なります (この表は clone モデルでも変わりません):
+per-task `boid/<id8>` branch と fork point の概念は、 同一 `.git` を共有する worktree 時代に「child が親の未完了の作業を引き継ぐ」ために存在していました。 各 job が独立した fresh clone を持つようになったことで (clone 自体が isolation 単位)、 この仕組みは不可能 (fresh clone は origin の pushed ref しか見えないため未 push の親の変更は見えない) かつ不要 (別々の clone なら同じ branch 名を checkout しても衝突しない) になり、 廃止されました。 詳細な経緯は docs/plans/branch-policy-simplification.md を参照してください。
 
-| タスク種別 | HEAD branch | fork 元 | readonly |
-|---|---|---|---|
-| **root sup / root exec** | `task.BaseBranch` | n/a | sup=true / exec=false |
-| **child sup / child exec** | `boid/<task_id8>` | **親タスクの HEAD branch** | sup=true / exec=false |
+タスク種別による branch の割り当ては、 現在は一律です:
 
-- **root タスク** (親なし): `base_branch` が project の現 HEAD と一致する場合 (case 1) は clone した上でその `base_branch` を直接 checkout する (新規 branch は作らない)。 不一致の場合 (case 2/3) も同様に clone した上で `base_branch` を HEAD として checkout・必要なら新規作成する
-- **child タスク** (親あり): 常に `boid/<task_id8>` branch を新規作成して checkout する。 fork 元は **親タスクの HEAD branch** であり、 直接の親のみを参照する (1 hop) — 親の branch が origin に push 済みでないと fork 元として解決できない点に注意 (clone は origin の pushed ref のみ見える)
+| タスク種別 | HEAD branch | readonly |
+|---|---|---|
+| **root sup / root exec** | `task.BaseBranch` | sup=true / exec=false |
+| **child sup / child exec** | `task.BaseBranch` | sup=true / exec=false |
+
+- **root タスク** (親なし): clone した上でその `base_branch` を直接 checkout する (新規 branch は作らない)。 `base_branch` が origin にまだ存在しない場合 (case 3) は解決済みの `fork_point` からローカル作成する
+- **child タスク** (親あり): root タスクと全く同じ扱い。 `base_branch` を省略すると親タスクの `base_branch` をそのまま継承するため、 明示指定がない限り親子は同じ branch を checkout する
 - `base_branch` は PR target として全子タスクに継承され、 `BOID_BASE_BRANCH` env で executor に渡る
+
+並列に走る兄弟 executor が同じ `base_branch` へ同時に push すると衝突しますが、 これは今回の変更前から変わらない executor 側の rebase/retry 契約です。 並列 child を isolate したい場合は、 子ごとに異なる `base_branch` を割り当ててください。
 
 hook は sandbox 内の clone の中で動作し、 生成された commit が push され、 必要であれば PR が作成されます。 タスクが終了すると clone は sandbox の runtime ディレクトリごと (通常の runtime GC で) 片付けられます — worktree 専用の cleanup 処理はもうありません。 同一 project 内で同一 HEAD branch を持つタスクの直列実行 (FIFO ロック) も廃止済みで、 同じ branch を対象とする複数タスクも並行して dispatch されます。 同時に push した場合は non-fast-forward reject → fetch + merge/rebase という通常の git の作法で解決してください。
 

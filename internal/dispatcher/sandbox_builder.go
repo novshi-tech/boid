@@ -757,7 +757,6 @@ func buildCloneSpec(spec *orchestrator.JobSpec, rt SandboxRuntimeInfo) sandbox.C
 		Branch:              cd.Branch,
 		BaseBranch:          cd.BaseBranch,
 		CheckoutOnly:        cd.CheckoutOnly,
-		ForkPoint:           cd.ForkPoint,
 		BaseBranchForkPoint: cd.BaseBranchForkPoint,
 	}
 }

@@ -27,7 +27,7 @@ task_behaviors:
 |---|---|---|---|
 | `id` | string | yes | Unique identifier for this project inside `boid`. Tasks reference it via `project_id`. |
 | `name` | string | yes | Display name shown in UIs. |
-| `worktree` | bool | `false` | If `true`, allocates a dedicated **isolated branch** to executor and supervisor tasks. **Root tasks** (no parent) use `base_branch` as HEAD directly (case 1 = when `base_branch` matches the project HEAD, no new branch is created — `base_branch` is checked out as-is). **Child tasks** (have a parent) always create a new `boid/<task_id8>` branch. Implemented as a branch declaration on the in-sandbox clone; no host-side git worktree is created (see [git gateway / in-sandbox clone](#git-gateway--in-sandbox-clone)). See [Task kinds and HEAD branch](#task-kinds-and-head-branch) for the full breakdown. |
+| `worktree` | bool | `false` | Used to allocate a dedicated **isolated branch** (`boid/<id8>`) to executor and supervisor tasks when `true`. **docs/plans/branch-policy-simplification.md Phase 1 (v0.0.11) retired the per-task branch and fork-point concepts**: every task, root or child, now checks out `base_branch` directly on its in-sandbox clone, so this field no longer affects checkout behaviour (it is still accepted for schema compatibility). See [Task kinds and HEAD branch](#task-kinds-and-head-branch) for the full breakdown. |
 | `base_branch` | string | (see below) | The PR target branch, resolved at task creation and stored in the row. **When omitted**: root tasks expand to the daemon's current HEAD branch (`${current_branch}` equivalent) at creation time — a detached-HEAD repository returns 400. Child tasks inherit the parent's `base_branch`. Supports `${TASK_REMOTE_ID}` and `${current_branch}` expansion (see [Dynamic base_branch](#dynamic-base_branch)). |
 | `fork_point` | string | (falls back to `origin/HEAD`) | Fork origin for case 3 (when `base_branch` does not yet exist locally or on `origin`). Any ref resolvable by `git rev-parse --verify` (branch / tag / SHA / `origin/main`). Falls back to `refs/remotes/origin/HEAD`; errors if neither is resolvable. |
 | `kits` | list of KitRef | no | Kits loaded for this project. |
@@ -79,7 +79,7 @@ The fields below used to live under `task_behaviors.<name>.*`. They have been mo
 | Field | Status / Location |
 |---|---|
 | `readonly` | Re-enabled at the behavior level in Track A2. Defaults to `true` (fail-safe); set `readonly: false` for writable behaviors. |
-| `worktree` | Project-top `worktree:` combined with the 3-case `base_branch` classification. Under the git gateway, "worktree" now means "isolated branch on the in-sandbox clone" — no host-side git worktree is created. See [git gateway / in-sandbox clone](#git-gateway--in-sandbox-clone). |
+| `worktree` | Project-top `worktree:`. No longer affects checkout behaviour as of branch-policy-simplification Phase 1 — see the top-level fields table above. |
 | `base_branch` | Project-top `base_branch:`. |
 | `branch_prefix` | Not configurable. Child-task branches are always created under `boid/`. |
 | `default_payload` | Removed. Provide payload at task creation time instead. |
@@ -99,38 +99,39 @@ The fields below used to live under `task_behaviors.<name>.*`. They have been mo
 
 See [docs/workflows.md](../../workflows.md) for end-to-end examples (Workflow 3 is the canonical example of a dynamic supervisor `base_branch`).
 
-For how `worktree: true` behaves, see [Concepts / Worktree](../guide/concepts.md#worktree).
+For the history behind the `worktree` field, see [Concepts / Worktree](../guide/concepts.md#worktree).
 
 ### Task kinds and HEAD branch
 
-Under `worktree: true`, the HEAD branch and fork point differ by task kind. The table itself is unchanged by the clone model — what changed is *how* the task reaches that branch (host worktree → in-sandbox clone + checkout):
+**docs/plans/branch-policy-simplification.md Phase 1 (v0.0.11) retired the per-task branch (`boid/<id8>`) and fork-point concepts.** Regardless of task kind (root / child, supervisor / executor), the in-sandbox clone always checks out `task.BaseBranch` directly. The worktree-era mechanism — giving each child an isolated branch to fork from — is no longer needed now that the clone itself is the isolation unit: two clones can check out the same branch name without conflict.
 
-| Task kind | HEAD branch | Fork point | Read-only |
-|---|---|---|---|
-| **root sup / root exec** | `task.BaseBranch` | n/a | sup=true / exec=false |
-| **child sup / child exec** | `boid/<task_id8>` | **parent task's HEAD branch** | sup=true / exec=false |
+| Task kind | HEAD branch | Read-only |
+|---|---|---|
+| **root sup / root exec** | `task.BaseBranch` | sup=true / exec=false |
+| **child sup / child exec** | `task.BaseBranch` | sup=true / exec=false |
 
-- **Root tasks** (`parent_id == ""`): placed directly on `base_branch`. When `base_branch` matches the project HEAD (case 1), the sandbox-internal clone checks out `base_branch` as-is with no new branch. When they differ (cases 2/3), the clone checks out `base_branch` as HEAD (creating it if needed).
-- **Child tasks** (have a parent): always create and check out a new `boid/<task_id8>` branch. The fork point is the **parent task's HEAD branch** (the parent's `base_branch` if the parent is a root task; `boid/<parent_id8>` if the parent is itself a child task). Only the immediate parent is referenced (1 hop) — **the parent branch must already be pushed to origin**, since the sandbox-internal clone only sees origin's pushed refs.
+- **Root tasks** (`parent_id == ""`): the in-sandbox clone checks out `base_branch` directly (no new branch is created). If `base_branch` does not exist on origin yet (case 3), it is created locally from the resolved `fork_point` start point (see the [top-level fields table](#top-level-fields)).
+- **Child tasks** (have a parent): handled identically to root tasks — `base_branch` is checked out directly. When `base_branch` is omitted, the child inherits the parent's `base_branch` verbatim (no template expansion — see [Dynamic base_branch](#dynamic-base_branch)), so parent and child check out the same branch name unless one is explicitly overridden.
 - `task.BaseBranch` propagates to all child tasks as the PR target and is passed to executors via the `BOID_BASE_BRANCH` environment variable.
+
+**Sibling executors that run in parallel against the same base_branch can collide on push.** This is not a regression — it is the same executor-side rebase/retry contract as before (see the next section). To truly isolate parallel children, have the supervisor assign each one a distinct `base_branch` (e.g. `feature/BGO-214`, `feature/BGO-215`, `feature/BGO-216`).
 
 ### Concurrent tasks on the same HEAD branch
 
-Previously multiple tasks targeting `<projectID>:<HEAD branch>` were serialised by a FIFO lock (a single host git worktree could not host two tasks simultaneously). **That serialisation lock was retired by the git gateway cutover**: each task now holds an independent in-sandbox clone, so multiple tasks against the same branch dispatch in parallel. Concurrent pushes are resolved by the normal git flow — the second push gets a non-fast-forward reject, and the caller fetches + merges/rebases + re-pushes.
+Previously multiple tasks targeting `<projectID>:<HEAD branch>` were serialised by a FIFO lock (a single host git worktree could not host two tasks simultaneously). **That serialisation lock was retired by the git gateway cutover**: each task now holds an independent in-sandbox clone, so multiple tasks against the same branch dispatch in parallel. Concurrent pushes are resolved by the normal git flow — the second push gets a non-fast-forward reject, and the caller fetches + merges/rebases + re-pushes. If you want to avoid the collision entirely, assign distinct `base_branch` values per child as described above.
 
 ### Base synchronisation and merge responsibility
 
-`boid` core does not control child task dispatch order or base synchronisation. A sub-supervisor orchestrates its children:
+`boid` core does not control child task dispatch order or base synchronisation. A sub-supervisor orchestrates its children's dispatch order, but under the clone model there is no longer a sub-supervisor "own branch" to keep in sync — the sub-supervisor's own dispatch is also just a direct `base_branch` checkout:
 
 ```
-A (executor) done → A's PR is merged into base
+A (executor) done → A's PR is merged into base_branch (on origin)
                          ↓
-            sub-sup: git fetch && merge → updates own branch (boid/<subid8>) and pushes
-                         ↓
-            sub-sup dispatches B → B's in-sandbox clone forks from the updated boid/<subid8>
+            sub-sup dispatches B → B's clone fetches fresh from origin,
+                                    so it already includes A's merge
 ```
 
-The merge command, timing, and target are the **responsibility of the project instruction**, not of any skill or boid core component. Core's only contribution is passing `BOID_BASE_BRANCH` and `BOID_PARENT_BRANCH` environment variables to executors. Note that the child branch must be **pushed** before the sub-sup dispatches its next child — the child's clone only sees origin's pushed refs.
+The merge command, timing, and target are the **responsibility of the project instruction**, not of any skill or boid core component. Core's only contribution is passing the `BOID_BASE_BRANCH` environment variable. (`BOID_PARENT_BRANCH` was removed in docs/plans/branch-policy-simplification.md Phase 1 — a grep across production project.yaml / e2e scripts found no real usage.)
 
 ### `default_instruction`
 
@@ -241,7 +242,7 @@ additional_bindings:
 In addition to regular environment variables (`${HOME}`, etc.), `source` and `target` support two tokens that boid resolves at dispatch time:
 
 - `${PROJECT_WORKDIR}` — the host-side project directory (e.g. `/home/you/src/your-project`).
-- `${WORKTREE}` — the sandbox working directory for this task. For `worktree: true` tasks this is the worktree path; for `worktree: false` tasks it equals `${PROJECT_WORKDIR}`.
+- `${WORKTREE}` — the sandbox working directory for this task. For project-visible jobs (project cloned into the sandbox through the git gateway), this is the in-sandbox clone path (e.g. `/workspace/<project-name>`); for jobs where the project is not visible, it equals `${PROJECT_WORKDIR}`.
 
 A binding whose resolved `target` equals its resolved `source` is skipped automatically (self-mount prevention).
 
@@ -353,16 +354,16 @@ The `host_commands` / `additional_bindings` / `env` / `secret_namespace` fields 
 
 ## Example: a real project
 
-An excerpt from `.boid/project.yaml` in the `boid` repository itself, showing the two behaviors (`supervisor`, `executor`) with `worktree: true` declared at the project top level so each executor task gets its own isolated branch on the in-sandbox clone.
+An excerpt from `.boid/project.yaml` in the `boid` repository itself, showing the two behaviors (`supervisor`, `executor`).
 
 ```yaml
 id: boid
 name: boid
 
-# Project-top worktree flag: allocates an isolated branch by task kind.
-# Root task HEAD = base_branch (case 1 → checked out as-is; cases 2/3 → checked out / created).
-# Child tasks always create a new boid/<id8> branch.
-# Both resolve on the in-sandbox clone — no host-side git worktree is created.
+# worktree is a legacy field (no-op since branch-policy-simplification Phase
+# 1): every task, root or child, checks out base_branch directly on its
+# in-sandbox clone regardless of this value — no host-side git worktree is
+# created.
 worktree: true
 
 kits:

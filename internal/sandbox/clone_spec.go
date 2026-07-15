@@ -50,12 +50,11 @@ type CloneSpec struct {
 	// production JobSpecs never set Enabled).
 	RealGitBin string
 
-	// Branch, BaseBranch, CheckoutOnly, ForkPoint and BaseBranchForkPoint
-	// mirror orchestrator.CloneDeclaration 1:1 — see that type's doc
-	// comments for the exact resolution semantics.
+	// Branch, BaseBranch, CheckoutOnly and BaseBranchForkPoint mirror
+	// orchestrator.CloneDeclaration 1:1 — see that type's doc comments for
+	// the exact resolution semantics.
 	Branch              string
 	BaseBranch          string
 	CheckoutOnly        bool
-	ForkPoint           string
 	BaseBranchForkPoint string
 }

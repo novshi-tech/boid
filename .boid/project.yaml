@@ -20,8 +20,22 @@ task_behaviors:
       agent: claude-code
       model: sonnet
       message: |
-        Release step: /dev-pr-flow. The parent supervisor merges the
-        PR after CI passes; do not merge here.
+        First, isolate your work on a task-specific branch so that
+        push does not land directly on base_branch. Post branch-policy
+        simplification (docs/plans/branch-policy-simplification.md
+        Phase 1) the in-sandbox clone checks out base_branch itself,
+        so per-task branch creation lives here in the executor
+        instruction rather than in the dispatcher:
+
+            BRANCH="boid/${BOID_TASK_ID:0:8}"
+            # Adopt origin/<branch> when it exists so a reopen (fresh
+            # clone) continues the same branch history it pushed to
+            # in a prior dispatch; fall back to creating fresh from
+            # base_branch on the first dispatch.
+            git checkout -b "$BRANCH" "origin/$BRANCH" 2>/dev/null || git checkout -b "$BRANCH"
+
+        Then run /dev-pr-flow. The parent supervisor merges the PR
+        after CI passes; do not merge here.
   supervisor:
     default_instruction:
       type: execution

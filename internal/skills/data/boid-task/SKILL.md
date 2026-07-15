@@ -267,8 +267,15 @@ Key fields:
 - `instructions` — 1-entry array for dynamic instruction generation (see above);
   2+ entries = complete replacement.
 - `auto_start: true` — start immediately.
-- `base_branch` — the branch the child's own clone forks from. Inherits
-  project-top if omitted.
+- `base_branch` — the branch the child checks out **directly** inside its own
+  sandbox clone. There is no separate per-task branch anymore (no `boid/<id8>`)
+  — the child's clone is its own isolation unit, and it works on `base_branch`
+  itself. When omitted, the child inherits the parent's `base_branch` verbatim,
+  so by default parent and every child check out the **same** branch.
+  **Children you dispatch in parallel must get distinct `base_branch` values**
+  (e.g. `feature/BGO-214-a`, `feature/BGO-214-b`) — otherwise they push to the
+  same branch and collide. Sequential children sharing the default inherited
+  branch is fine (each pushes and finishes before the next starts).
 
 Full reference: [references/builtins.md](references/builtins.md).
 
@@ -353,15 +360,19 @@ Full status semantics: [references/state-machine.md](references/state-machine.md
 ### Handling Done
 
 ```bash
-short=$(echo "$child" | cut -c1-8)
-
 # Layer A: child's structured self-report
 boid task show "$child" --field payload.artifact.report
 
-# Layer B: independent git check
-git log "main..boid/$short"
-git diff "main..boid/$short"
-gh pr view --head "boid/$short" 2>/dev/null || true
+# Layer B: independent git check. There is no separate per-task branch
+# anymore — the child worked directly on its own base_branch (which, by
+# default, is the same branch you are on unless you gave it a distinct one).
+child_branch=$(boid task show "$child" --field base_branch)
+git fetch origin "$child_branch" 2>/dev/null || true
+git log --oneline -10 "origin/$child_branch"
+if [ "$child_branch" != "$BOID_BASE_BRANCH" ]; then
+  git diff "origin/$BOID_BASE_BRANCH..origin/$child_branch"
+fi
+gh pr view --head "$child_branch" 2>/dev/null || true
 
 # Layer C: shape diagnostics
 last_job=$(boid job list --task "$child" --output json | jq -r '.[0].id')
@@ -417,6 +428,13 @@ last_action=$(boid task show "$child" --field 'actions[-1].type')
 # "fail"  → child self-reported; read action payload + artifact.report
 # "abort" → forced; read lifecycle.abort.message
 ```
+
+Note: a child can no longer abort at dispatch with a "resolve fork point ... not
+found in clone" error — the per-task branch and fork-point machinery that used
+to produce that class of failure is retired (every task, including a readonly
+supervisor's child, just checks out its own `base_branch` directly). If a
+child still fails within seconds of dispatch, look elsewhere (missing
+`base_branch`, sandbox/network setup, hook script errors).
 
 Options: `boid task reopen "$child" -m "<hint>"` / create fresh child / escalate.
 

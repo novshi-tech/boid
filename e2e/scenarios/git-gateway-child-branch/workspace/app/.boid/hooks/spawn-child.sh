@@ -1,23 +1,23 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# PR7b の worktree-lifecycle 書き直し部分の parent 側 hook。
-# 旧 worktree-lifecycle は退役済み host-side `git worktree add`/`remove`
-# を fake-git.log で検証するだけだったので、sandbox-internal clone モデル
-# 下では意味を失っていた。書き直しの狙いは:
-#   - 「子タスクが boid/<id8> branch に着地する」(runner の
-#     resolveCloneBranch + BuildCloneDeclaration の非-CheckoutOnly 経路)
-#     を end-to-end で pin すること。
+# branch-policy-simplification Phase 1 (v0.0.11) 向けの parent 側 hook。
+# 旧版は「子タスクが boid/<id8> branch に着地する」ことを pin していたが、
+# per-task branch と fork point の概念が廃止されたため書き直した。 狙いは:
+#   - 「child task も root task と全く同じく base_branch を直接 checkout
+#     する」(runner の resolveCloneBranch + BuildCloneDeclaration の
+#     CheckoutOnly 経路) を end-to-end で pin すること。
 #
 # 手順:
 #   1. parent 自身 (root task) の clone 上で 1 commit push
 #      → upstream の main tip が parent's commit まで進む
 #   2. `boid task create` で child task (behavior: child, auto_start:
-#      true, parent_id: $BOID_TASK_ID) を作る
+#      true, parent_id: $BOID_TASK_ID, base_branch 省略) を作る
 #      → auto_start でその task が即 dispatch される。 dispatch 時点で
 #         parent の commit は既に upstream に到達済み (push を待ってから
-#         task create を呼ぶ順)。 child の fresh clone は必ず parent の
-#         commit を取り込んだ状態から boid/<id8> を切ることになる。
+#         task create を呼ぶ順)。 child は base_branch を省略しているので
+#         parent の base_branch ("main") をそのまま継承し、その "main" を
+#         直接 checkout する — 別ブランチは一切作らない。
 
 git config user.name  "Boid E2E Parent"
 git config user.email "e2e-parent@boid.test"
