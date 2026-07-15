@@ -768,7 +768,10 @@ func TestDispatchPlanner_PropagatesAwaitingEnv(t *testing.T) {
 // TestDispatchPlanner_NoParentBranchEnv pins that BOID_PARENT_BRANCH is never
 // emitted (docs/plans/branch-policy-simplification.md Phase 1, nose
 // 2026-07-15 decision: removed entirely rather than redefined, since a grep
-// across production project.yaml / e2e scripts found zero real use).
+// across production project.yaml / e2e scripts found zero real use). The
+// parent task doesn't need to exist in the lookup — Phase 1 also removed
+// planner.lookupParent, so a child task with a ParentID set never triggers
+// a parent read anymore.
 func TestDispatchPlanner_NoParentBranchEnv(t *testing.T) {
 	projectDir := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(projectDir, ".boid", "hooks"), 0o755); err != nil {
@@ -776,12 +779,6 @@ func TestDispatchPlanner_NoParentBranchEnv(t *testing.T) {
 	}
 	scriptPath := filepath.Join(projectDir, ".boid/hooks", "hook-1.sh")
 
-	parent := &Task{
-		ID:         "root00001234567",
-		ProjectID:  "proj-1",
-		BaseBranch: "main",
-		// ParentID == "" → root
-	}
 	task := &Task{
 		ID:         "child0001234567",
 		ProjectID:  "proj-1",
@@ -790,11 +787,10 @@ func TestDispatchPlanner_NoParentBranchEnv(t *testing.T) {
 		BaseBranch: "main",
 		ParentID:   "root00001234567",
 	}
-	planner := newPlannerForTestWithParent(
+	planner := newPlannerForTest(
 		&Project{ID: "proj-1", WorkDir: projectDir},
 		TaskBehavior{},
 		task,
-		parent,
 	)
 	req, _, err := planner.PlanHook(&HookFireEvent{
 		EventID:   "event-1",
@@ -816,11 +812,6 @@ func TestDispatchPlanner_BaseBranchEnvRetained_WithParent(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(projectDir, ".boid", "hooks"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	parentTask := &Task{
-		ID:         "parent1234567890",
-		ProjectID:  "proj-1",
-		BaseBranch: "main",
-	}
 	childTask := &Task{
 		ID:         "child12345678901",
 		ProjectID:  "proj-1",
@@ -829,11 +820,10 @@ func TestDispatchPlanner_BaseBranchEnvRetained_WithParent(t *testing.T) {
 		BaseBranch: "feature/BGO-999",
 		ParentID:   "parent1234567890",
 	}
-	planner := newPlannerForTestWithParent(
+	planner := newPlannerForTest(
 		&Project{ID: "proj-1", WorkDir: projectDir},
 		TaskBehavior{},
 		childTask,
-		parentTask,
 	)
 	req, _, err := planner.PlanHook(&HookFireEvent{
 		EventID:   "event-1",
@@ -850,18 +840,6 @@ func TestDispatchPlanner_BaseBranchEnvRetained_WithParent(t *testing.T) {
 }
 
 // --- test helpers ---
-
-type stubMultiTaskLookup struct {
-	tasks map[string]*Task
-}
-
-func (s stubMultiTaskLookup) GetTask(id string) (*Task, error) {
-	t, ok := s.tasks[id]
-	if !ok {
-		return nil, nil
-	}
-	return t, nil
-}
 
 func newPlannerForTest(proj *Project, behavior TaskBehavior, task *Task) *DispatchPlanner {
 	meta := &ProjectMeta{
@@ -890,19 +868,3 @@ func newPlannerWithCapabilities(proj *Project, behavior TaskBehavior, task *Task
 	}
 }
 
-func newPlannerForTestWithParent(proj *Project, behavior TaskBehavior, task *Task, parent *Task) *DispatchPlanner {
-	meta := &ProjectMeta{
-		ID:            proj.ID,
-		TaskBehaviors: map[string]TaskBehavior{task.Behavior: behavior},
-	}
-	tasks := map[string]*Task{task.ID: task}
-	if parent != nil {
-		tasks[parent.ID] = parent
-	}
-	return &DispatchPlanner{
-		Meta:     stubMetaCache{meta: meta},
-		Projects: stubProjectCatalog{projects: []*Project{proj}},
-		Tasks:    stubMultiTaskLookup{tasks: tasks},
-		Adapter:  stubHarnessAdapter{},
-	}
-}

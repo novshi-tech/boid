@@ -28,7 +28,11 @@ task_behaviors:
         instruction rather than in the dispatcher:
 
             BRANCH="boid/${BOID_TASK_ID:0:8}"
-            git checkout -b "$BRANCH"
+            # Adopt origin/<branch> when it exists so a reopen (fresh
+            # clone) continues the same branch history it pushed to
+            # in a prior dispatch; fall back to creating fresh from
+            # base_branch on the first dispatch.
+            git checkout -b "$BRANCH" "origin/$BRANCH" 2>/dev/null || git checkout -b "$BRANCH"
 
         Then run /dev-pr-flow. The parent supervisor merges the PR
         after CI passes; do not merge here.

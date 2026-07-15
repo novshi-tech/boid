@@ -1973,11 +1973,18 @@ func TestReadProjectMeta_BoidSelfProjectYAML_LoadsInCanonicalForm(t *testing.T) 
 			"to the project-top equivalent or remove it. readonly is allowed again as of Track A2.", err)
 	}
 
-	// Project-top worktree must be true (executor tasks branch into a
-	// worktree under boid/<task_id8>). base_branch is intentionally
-	// omitted to let the daemon default to the current HEAD branch.
+	// Project-top worktree must be true. Post
+	// docs/plans/branch-policy-simplification.md Phase 1 this field no longer
+	// affects checkout policy on its own — every task's in-sandbox clone
+	// checks out base_branch directly, and per-task branch creation lives
+	// in the executor's default_instruction (`git checkout -b
+	// boid/${BOID_TASK_ID:0:8}` before /dev-pr-flow). The assertion is kept
+	// so an accidental removal from this repo's own project.yaml is loud,
+	// not because the field currently drives dispatcher behaviour.
+	// base_branch is intentionally omitted so the daemon defaults to the
+	// current HEAD branch.
 	if !meta.Worktree {
-		t.Errorf("expected project-top worktree=true, got false; executor tasks would lose their isolation")
+		t.Errorf("expected project-top worktree=true, got false; the field is inert post-Phase 1 but its removal from this file is still an intentional-only change")
 	}
 
 	// Canonical behaviors must be present.
