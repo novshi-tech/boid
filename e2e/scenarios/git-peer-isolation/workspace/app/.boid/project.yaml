@@ -8,10 +8,10 @@ task_behaviors:
       - id: test-peer-write-reject
         command: |
           set -eu
-          # Sandbox はワークスペースピアを read-only でバインドマウントする。
-          # サンドボックス内から直接ファイルを書こうとすると EROFS で失敗する。
           PEER_DIR="${E2E_PEER_PROJECT_DIR:?}"
 
+          # Sandbox はワークスペースピアを read-only でバインドマウントする。
+          # サンドボックス内から直接ファイルを書こうとすると EROFS で失敗する。
           if touch "$PEER_DIR/evil.txt" 2>/tmp/peer-write-err.txt; then
               printf 'FAIL: direct write to peer project should be rejected (read-only mount)\n' >&2
               exit 1

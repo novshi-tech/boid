@@ -25,7 +25,7 @@ task_behaviors:
           # "readonly の意味論変更: FS-RO → transport-RO"). The
           # sandbox-internal clone (under /workspace/<name>) is always
           # locally writable regardless of task.readonly, so this check is
-          # expected to observe "writable" even for a readonly task -
+          # expected to observe "writable" even for a readonly task —
           # that's the new, correct semantics, not a bug.
           if touch ./boid-readonly-check 2>/dev/null; then
               rm -f ./boid-readonly-check
