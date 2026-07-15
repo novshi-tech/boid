@@ -1,6 +1,6 @@
 # script hook 廃止と inline command 移行計画
 
-ステータス: 計画確定 (2026-07-15、実装未着手)
+ステータス: 実装完了 (2026-07-15、PR #757〜#762 全 landed、PR4 docs 更新は本コミット)
 作成日: 2026-07-15
 親ドキュメント: [git-gateway-cutover.md](git-gateway-cutover.md) — post-cutover 改善候補 §3 の解決策として
 
@@ -283,17 +283,18 @@ run.sh 側の管理でよい。
 
 ## PR 分割案
 
-| PR | 内容 | 前提 | サイズ |
-|---|---|---|---|
-| **PR1** | `Hook.Command` field 新設、planner の argv 変換分岐、validation、unit test | なし | 小 |
-| **PR2a** | e2e `docker-proxy-*` 16 シナリオを fixture 集約 + inline command 化 | PR1 | 中 |
-| **PR2b** | e2e `git-gateway-*` 6 シナリオを inline command 化 | PR1 | 中 |
-| **PR2c** | e2e control-plane 4 シナリオを inline command 化 | PR1 | 小 |
-| **PR2d** | e2e assertion 3 シナリオを inline command 化 | PR1 | 小 |
-| **PR3** | `Hook.ScriptPath` field 削除、`spec_resolve.go` 削除、planner/sandbox_builder の script 分岐削除、`HookFile` 型削除、旧 test 撤去 | PR1〜PR2d | 中 |
-| **PR4** | `docs/plans/git-gateway-cutover.md` §3 を「解消済み」に更新、CLAUDE.md に「hook は command inline or agent kind のみ」を明記、`docs/ja/reference/project-yaml.md` (無ければ新規) に `hooks[].command` の使い方 | PR3 | 小 |
+| PR | 内容 | 前提 | サイズ | Merged |
+|---|---|---|---|---|
+| **PR1** | `Hook.Command` field 新設、planner の argv 変換分岐、validation、unit test | なし | 小 | [x] #757 (`c7a11a5`, branch `refactor/hook-command-inline`) |
+| **PR2a** | e2e `docker-proxy-*` 16 シナリオを fixture 集約 + inline command 化 | PR1 | 中 | [x] #758 (`a5618a0`, branch `refactor/hook-command-e2e-docker-proxy`) |
+| **PR2b** | e2e `git-gateway-*` 6 シナリオを inline command 化 | PR1 | 中 | [x] #761 (`7374366`, branch `refactor/hook-command-e2e-git-gateway`) |
+| **PR2c** | e2e control-plane 4 シナリオを inline command 化 | PR1 | 小 | [x] #760 (`d476180`, branch `refactor/hook-command-e2e-control-plane`) |
+| **PR2d** | e2e assertion 3 シナリオを inline command 化 | PR1 | 小 | [x] #759 (`d6d9e45`, branch `refactor/hook-command-e2e-assertion`) |
+| **PR3** | `Hook.ScriptPath` field 削除、`spec_resolve.go` 削除、planner/sandbox_builder の script 分岐削除、`HookFile` 型削除、旧 test 撤去 | PR1〜PR2d | 中 | [x] #762 (`7088f00`, branch `refactor/hook-scriptpath-removal`) |
+| **PR4** | `docs/plans/git-gateway-cutover.md` §3 を「解消済み」に更新、CLAUDE.md に「hook は command inline or agent kind のみ」を明記、`docs/ja/reference/project-yaml.md` (無ければ新規) に `hooks[].command` の使い方 | PR3 | 小 | [x] docs 更新完了 (branch `docs/script-hook-removal-completion`、この PR 自体) |
 
-PR2a〜PR2d は並列可能。順不同で merge しても良い。
+PR2a〜PR2d は並列可能 (実際に順不同で merge された: #758→#759→#760→#761、つまり
+PR2a→PR2d→PR2c→PR2b の順)。
 
 ---
 
@@ -343,16 +344,64 @@ wizard は既に非使用だが、outside user (もしいれば) が壊れる可
 `AdditionalBindings` に fixture dir を追加する経路が必要。既存の e2e infra
 がどう bind を組んでるか実装時に確認。
 
+### R6: shell dialect (`/bin/sh` = dash) と bash wrap recipe
+
+**発見経緯**: PR2b (`git-gateway-*` inline command 化) の boid-review で判明。
+
+**問題**: sandbox 内の `/bin/sh` は host の `/bin/sh` を rbind mount したもので
+(`internal/sandbox/plan.go:52`)、多くの Linux ディストリでは `/bin/sh` が dash に
+resolve される。`hooks[].command` は `sh -c <command>` として実行される
+(`internal/orchestrator/planner.go` の `PlanHook`) ため、実体は dash 上での実行になる。
+dash は POSIX sh のサブセットで、bash 拡張構文を **reject** する:
+
+- `set -o pipefail` → dash は `set: Illegal option -o pipefail` で即座に non-zero
+  exit する (`set -eu` 単体は POSIX 準拠なので dash でも動く)
+- `[[ ... ]]` (bash 条件式) → dash 未対応
+- 配列 (`arr=(...)`) など他の bash 拡張も同様に非対応
+
+bash 前提で書いた script をそのまま `command:` に貼ると、サイレントに壊れるのではなく
+即座に non-zero exit で fail する (fail-safe ではあるが原因が分かりにくく、
+はまりやすい)。
+
+**対処**: bash 依存の構文 (`pipefail`、パイプラインの失敗伝播、`[[ ]]` 等) が必要な
+hook は、body を `bash <<'HEREDOC'` で wrap する:
+
+```yaml
+hooks:
+  - id: my-hook
+    command: |
+      bash <<'BOID_HOOK_SCRIPT'
+      set -euo pipefail
+      # bash 依存の body はここに書く
+      some_cmd | grep pattern
+      BOID_HOOK_SCRIPT
+```
+
+ヒアドキュメント終端子は **シングルクォート** (`<<'BOID_HOOK_SCRIPT'`) にすること —
+dash が body を byte-for-byte で bash の stdin に渡し、`$VAR` / `` ` `` の展開は
+bash 側が一度だけ行う (クォート無しだと dash が先に展開してしまい二重展開になる)。
+
+**実例**: `e2e/scenarios/git-gateway-push-smoke/workspace/app/.boid/project.yaml`
+の `gateway-push` hook (PR2b で全 6 シナリオに同種の wrap + header comment を適用済み)。
+単純な `set -eu` のみで pipe を使わない hook (control-plane / assertion 系) では
+wrap は不要 — `set -eu` は POSIX 準拠なので dash でもそのまま動く。
+
 ---
 
 ## 完了判定
 
-1. PR1〜PR4 全て main 済み
-2. `find e2e/scenarios -path "*/.boid/hooks/*.sh"` = 0 件
-3. `grep -rn "ScriptPath" internal/` が Hook 型関連で 0 hit
-4. `.boid/` を gitignore してる project でも hook dispatch が silent break しない
-   (実運用 or e2e で確認)
-5. `docs/plans/git-gateway-cutover.md` §3 が解消済み扱いに更新
+1. [x] PR1〜PR3 は main 済み (#757〜#762)。PR4 (本 docs 更新) は branch
+   `docs/script-hook-removal-completion` で作業完了、レビュー待ち
+2. [x] `find e2e/scenarios -path "*/.boid/hooks/*.sh"` = 0 件 (2026-07-15 確認)
+3. [x] `grep -rn "ScriptPath" internal/` = 0 hit (2026-07-15 確認、`git grep` でも同様)
+4. [x] `.boid/` を gitignore してる project でも hook dispatch が silent break しない
+   — script hook 経路 (`.boid/hooks/*.sh` を argv に組んで exec する分岐) が
+   PR3 で完全に削除されたため、`.boid/hooks/` を参照するコードパス自体が
+   もう存在しない。残る hook 経路は `hooks[].command` (inline 文字列、
+   project.yaml 自体に埋め込み) と `kind: agent` (virtual hook 合成) のみで、
+   どちらも `.boid/` 配下の別ファイルを sandbox 内 clone から探しに行かない
+   ため、gitignore 設定に関わらず dispatch が壊れようがない
+5. [x] `docs/plans/git-gateway-cutover.md` §3 が解消済み扱いに更新 (本 PR)
 
 ---
 
@@ -365,12 +414,15 @@ wizard は既に非使用だが、outside user (もしいれば) が壊れる可
 
 ---
 
-## 次セッションでの最初の一手
+## 次セッションでの最初の一手 (historical、全完了済み)
 
-1. plan doc (この文書) を nose に確認 → OK なら PR1 (inline command) から着手
-2. PR1 実装前に PoC: 現存 e2e シナリオ 1 個 (`hook-attach-smoke` あたり)
-   を inline command に手で書き換え、payload_patch.json 経路が等価に動くか実験
-3. PoC 成功なら PR1 → PR2a/b/c/d → PR3 → PR4 で進める
+以下は着手前 (2026-07-15 計画確定時点) に書いた手順。PR1〜PR4 全て完了したため
+今後のアクションは無い。実施記録として残す:
+
+1. ~~plan doc (この文書) を nose に確認 → OK なら PR1 (inline command) から着手~~ 完了
+2. ~~PR1 実装前に PoC: 現存 e2e シナリオ 1 個 (`hook-attach-smoke` あたり)
+   を inline command に手で書き換え、payload_patch.json 経路が等価に動くか実験~~ 完了
+3. ~~PoC 成功なら PR1 → PR2a/b/c/d → PR3 → PR4 で進める~~ 完了 (この順で #757〜#762 が landed)
 
 ## レビュー運用
 
