@@ -12,6 +12,7 @@ import (
 	"sync"
 
 	"github.com/novshi-tech/boid/internal/orchestrator"
+	"gopkg.in/yaml.v3"
 )
 
 type ProjectAppService struct {
@@ -604,6 +605,135 @@ func (s *ProjectAppService) buildWorkspaceDetailFromRevision(slug string, meta *
 		ProjectCount:     len(ids),
 		AssignedProjects: ids,
 	}, nil
+}
+
+// workspaceImportModeCreateOnly / workspaceImportModeReplace are the two
+// supported ?mode= values for POST /api/workspaces/import (docs/plans/
+// workspace-db-consolidation.md PR5 決定 5, Step B/C). create-only is the
+// safe default (never overwrites an existing workspace); replace is an
+// explicit, unconditional upsert (last-write-wins, no If-Match — unlike PUT's
+// optimistic concurrency contract).
+const (
+	workspaceImportModeCreateOnly = "create-only"
+	workspaceImportModeReplace    = "replace"
+)
+
+// ExportWorkspace returns slug's raw yaml body (the marshaled
+// WorkspaceMeta with a top-level "slug:" key inlined) and its current
+// revision (docs/plans/workspace-db-consolidation.md PR5 Step A).
+//
+// The body shape mirrors CreateWorkspace / ImportWorkspace's input shape
+// exactly — same top-level "slug:" key alongside the meta fields, decoded
+// by the same DecodeWorkspaceCreateStrict — so `boid workspace export` can
+// pipe straight into `boid workspace import` (or the API can round-trip
+// export → POST /api/workspaces/import) without any translation step
+// (codex PR5 review, MAJOR: round-trip 非対称は避ける、 CLI --slug は
+// override 用の便宜として残す)。 An earlier iteration deliberately
+// omitted "slug:" from the body — "the slug is already in the URL" —
+// but that meant the exported yaml was NOT a valid import body, which is
+// exactly the shape a round-trip needs.
+//
+// Meta and revision are read from a single atomic snapshot
+// (LoadWithRevision), the same discipline GetWorkspace's MAJOR 1 fix
+// established — see that method's doc comment for why a separate meta/
+// revision query pair would risk straddling a concurrent write.
+func (s *ProjectAppService) ExportWorkspace(slug string) ([]byte, string, error) {
+	if err := orchestrator.ValidWorkspaceSlug(slug); err != nil {
+		return nil, "", &StatusError{Code: http.StatusBadRequest, Message: err.Error()}
+	}
+	if s.Workspaces == nil {
+		return nil, "", &StatusError{Code: http.StatusInternalServerError, Message: "workspace store not wired"}
+	}
+	meta, revision, err := s.Workspaces.LoadWithRevision(slug)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, "", &StatusError{Code: http.StatusNotFound, Message: fmt.Sprintf("workspace %q not found", slug)}
+		}
+		return nil, "", &StatusError{Code: http.StatusInternalServerError, Message: err.Error()}
+	}
+	// Marshal meta first, then splice a top-level "slug:" line onto the
+	// front. Building an ad-hoc struct { Slug string; WorkspaceMeta } with
+	// `yaml:",inline"` also works, but it duplicates the field list
+	// implicitly and would silently drop any future WorkspaceMeta field
+	// that lacks a yaml tag — the splice approach reuses whatever
+	// WorkspaceMeta's own yaml.Marshal produces, so a field addition
+	// there flows into the export body without a separate touch here.
+	metaYAML, err := yaml.Marshal(meta)
+	if err != nil {
+		return nil, "", &StatusError{Code: http.StatusInternalServerError, Message: fmt.Sprintf("marshal workspace meta: %v", err)}
+	}
+	slugLine, err := yaml.Marshal(map[string]string{"slug": slug})
+	if err != nil {
+		return nil, "", &StatusError{Code: http.StatusInternalServerError, Message: fmt.Sprintf("marshal slug: %v", err)}
+	}
+	// slugLine is like "slug: team-a\n" — safe to concat because both are
+	// top-level yaml mappings with no shared keys (WorkspaceMeta itself
+	// has no "slug" field, only body fields).
+	data := append(slugLine, metaYAML...)
+	return data, revision, nil
+}
+
+// ImportWorkspace inserts (mode=create-only) or upserts (mode=replace)
+// slug's workspace meta from a yaml import body (docs/plans/
+// workspace-db-consolidation.md PR5 Step C, POST /api/workspaces/import).
+// The body shape mirrors CreateWorkspace's (slug inlined in the yaml,
+// decoded by the same DecodeWorkspaceCreateStrict the handler calls before
+// this runs) — mode=create-only reuses exactly the same Workspaces.Create
+// path CreateWorkspace does (409 on an existing slug); mode=replace reuses
+// Workspaces.Save, which is upsert-on-conflict (see
+// orchestrator.WorkspaceRepository.Save's doc comment), so it both creates a
+// missing slug and overwrites an existing one wholesale — a true upsert,
+// unlike UpdateWorkspace's PUT semantics which 404 on a missing slug.
+//
+// mode is validated here, not only in the handler (the same
+// belt-and-suspenders duplication ValidWorkspaceSlug gets throughout this
+// file): an unrecognized mode is rejected with 400 before anything is
+// materialized or persisted, so a caller invoking ImportWorkspace directly
+// (bypassing WorkspaceHandler) still gets the same guarantee.
+func (s *ProjectAppService) ImportWorkspace(slug string, meta *orchestrator.WorkspaceMeta, mode string) (*WorkspaceDetail, error) {
+	switch mode {
+	case workspaceImportModeCreateOnly, workspaceImportModeReplace:
+	default:
+		return nil, &StatusError{Code: http.StatusBadRequest, Message: fmt.Sprintf("unknown import mode %q (want %q or %q)", mode, workspaceImportModeCreateOnly, workspaceImportModeReplace)}
+	}
+	if err := orchestrator.ValidWorkspaceSlug(slug); err != nil {
+		return nil, &StatusError{Code: http.StatusBadRequest, Message: err.Error()}
+	}
+	if s.Workspaces == nil {
+		return nil, &StatusError{Code: http.StatusInternalServerError, Message: "workspace store not wired"}
+	}
+
+	// Same critical-section discipline as Create/Update/Remove — see the mu
+	// field's doc comment: import is just as much a workspace-mutating entry
+	// point as those three.
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// Same expand-then-validate ordering as CreateWorkspace/UpdateWorkspace
+	// — see MaterializeWorkspaceKitsForPersist's and validateHostCommandRefs'
+	// call sites there for why this order matters.
+	if err := orchestrator.MaterializeWorkspaceKitsForPersist(s.KitsDir, meta); err != nil {
+		return nil, &StatusError{Code: http.StatusBadRequest, Message: fmt.Sprintf("resolve workspace kits: %v", err)}
+	}
+	if err := s.validateHostCommandRefs(meta.HostCommands); err != nil {
+		return nil, err
+	}
+
+	if mode == workspaceImportModeCreateOnly {
+		if err := s.Workspaces.Create(slug, meta); err != nil {
+			if errors.Is(err, os.ErrExist) {
+				return nil, &StatusError{Code: http.StatusConflict, Message: fmt.Sprintf("workspace %q already exists", slug)}
+			}
+			return nil, &StatusError{Code: http.StatusInternalServerError, Message: err.Error()}
+		}
+		return s.buildWorkspaceDetail(slug, meta)
+	}
+
+	// mode == replace: unconditional upsert.
+	if err := s.Workspaces.Save(slug, meta); err != nil {
+		return nil, &StatusError{Code: http.StatusInternalServerError, Message: err.Error()}
+	}
+	return s.buildWorkspaceDetail(slug, meta)
 }
 
 func (s *ProjectAppService) DeleteProject(id string) error {

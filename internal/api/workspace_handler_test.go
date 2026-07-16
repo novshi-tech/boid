@@ -3,6 +3,7 @@ package api
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -21,6 +22,8 @@ type fakeWorkspaceService struct {
 	updateFn func(slug string, meta *orchestrator.WorkspaceMeta, ifMatch string, force bool) (*WorkspaceDetail, error)
 	removeFn func(slug string) error
 	listFn   func() ([]*orchestrator.WorkspaceSummary, error)
+	exportFn func(slug string) ([]byte, string, error)
+	importFn func(slug string, meta *orchestrator.WorkspaceMeta, mode string) (*WorkspaceDetail, error)
 }
 
 func (s *fakeWorkspaceService) CreateProject(string) (*orchestrator.Project, error) {
@@ -59,6 +62,12 @@ func (s *fakeWorkspaceService) UpdateWorkspace(slug string, meta *orchestrator.W
 }
 func (s *fakeWorkspaceService) RemoveWorkspace(slug string) error {
 	return s.removeFn(slug)
+}
+func (s *fakeWorkspaceService) ExportWorkspace(slug string) ([]byte, string, error) {
+	return s.exportFn(slug)
+}
+func (s *fakeWorkspaceService) ImportWorkspace(slug string, meta *orchestrator.WorkspaceMeta, mode string) (*WorkspaceDetail, error) {
+	return s.importFn(slug, meta, mode)
 }
 
 func doWorkspaceRequest(handler http.Handler, method, path, contentType string, body []byte, headers map[string]string) *httptest.ResponseRecorder {
@@ -283,5 +292,167 @@ func TestWorkspaceHandler_List_StillWorks(t *testing.T) {
 	w := doWorkspaceRequest(h.Routes(), http.MethodGet, "/", "", nil, nil)
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d: %s", w.Code, w.Body.String())
+	}
+}
+
+// --- Export (GET /api/workspaces/{slug}/export, PR5 Step A) ---
+
+func TestWorkspaceHandler_Export_Success(t *testing.T) {
+	svc := &fakeWorkspaceService{
+		exportFn: func(slug string) ([]byte, string, error) {
+			if slug != "team-a" {
+				t.Errorf("slug = %q, want team-a", slug)
+			}
+			return []byte("host_commands:\n  - gh\n"), "rev-7", nil
+		},
+	}
+	h := &WorkspaceHandler{Service: svc}
+	w := doWorkspaceRequest(h.Routes(), http.MethodGet, "/team-a/export", "", nil, nil)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", w.Code, w.Body.String())
+	}
+	if ct := w.Header().Get("Content-Type"); !strings.HasPrefix(ct, "application/yaml") {
+		t.Errorf("Content-Type = %q, want application/yaml", ct)
+	}
+	if got := w.Header().Get("ETag"); got != `"rev-7"` {
+		t.Errorf("ETag = %q, want %q", got, `"rev-7"`)
+	}
+	if w.Body.String() != "host_commands:\n  - gh\n" {
+		t.Errorf("body = %q, want the raw yaml bytes unchanged", w.Body.String())
+	}
+}
+
+func TestWorkspaceHandler_Export_NotFound(t *testing.T) {
+	svc := &fakeWorkspaceService{
+		exportFn: func(slug string) ([]byte, string, error) {
+			return nil, "", &StatusError{Code: http.StatusNotFound, Message: "not found"}
+		},
+	}
+	h := &WorkspaceHandler{Service: svc}
+	w := doWorkspaceRequest(h.Routes(), http.MethodGet, "/ghost/export", "", nil, nil)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404: %s", w.Code, w.Body.String())
+	}
+}
+
+// --- Import (POST /api/workspaces/import?mode=<create-only|replace>, PR5 Step B) ---
+
+func TestWorkspaceHandler_Import_Success(t *testing.T) {
+	var gotSlug, gotMode string
+	svc := &fakeWorkspaceService{
+		importFn: func(slug string, meta *orchestrator.WorkspaceMeta, mode string) (*WorkspaceDetail, error) {
+			gotSlug, gotMode = slug, mode
+			return &WorkspaceDetail{Slug: slug, Meta: meta, Revision: "rev-1"}, nil
+		},
+	}
+	h := &WorkspaceHandler{Service: svc}
+	body := []byte("slug: team-a\nhost_commands:\n  - gh\n")
+	w := doWorkspaceRequest(h.Routes(), http.MethodPost, "/import?mode=replace", "application/yaml", body, nil)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", w.Code, w.Body.String())
+	}
+	if gotSlug != "team-a" {
+		t.Errorf("slug passed to service = %q, want team-a", gotSlug)
+	}
+	if gotMode != "replace" {
+		t.Errorf("mode passed to service = %q, want replace (from ?mode= query param)", gotMode)
+	}
+	if got := w.Header().Get("ETag"); got != `"rev-1"` {
+		t.Errorf("ETag = %q, want %q", got, `"rev-1"`)
+	}
+}
+
+// TestWorkspaceHandler_Import_DefaultsModeWhenQueryParamOmitted pins the
+// "import mode の default 値" judgment call (docs/plans/
+// workspace-db-consolidation.md leaves this unspecified for PR5; create-only
+// is the safe default per the task brief): omitting ?mode= entirely must
+// still pass a concrete mode value through to the service layer, not an
+// empty string (which ImportWorkspace's own switch would otherwise reject as
+// "unknown mode").
+func TestWorkspaceHandler_Import_DefaultsModeWhenQueryParamOmitted(t *testing.T) {
+	var gotMode string
+	svc := &fakeWorkspaceService{
+		importFn: func(slug string, meta *orchestrator.WorkspaceMeta, mode string) (*WorkspaceDetail, error) {
+			gotMode = mode
+			return &WorkspaceDetail{Slug: slug, Meta: meta}, nil
+		},
+	}
+	h := &WorkspaceHandler{Service: svc}
+	w := doWorkspaceRequest(h.Routes(), http.MethodPost, "/import", "application/yaml", []byte("slug: team-a\n"), nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d: %s", w.Code, w.Body.String())
+	}
+	if gotMode != "create-only" {
+		t.Errorf("default mode passed to service = %q, want create-only", gotMode)
+	}
+}
+
+func TestWorkspaceHandler_Import_MissingSlugIs400(t *testing.T) {
+	svc := &fakeWorkspaceService{}
+	h := &WorkspaceHandler{Service: svc}
+	w := doWorkspaceRequest(h.Routes(), http.MethodPost, "/import", "application/yaml", []byte("host_commands: [gh]\n"), nil)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestWorkspaceHandler_Import_BadYAMLIs400(t *testing.T) {
+	svc := &fakeWorkspaceService{}
+	h := &WorkspaceHandler{Service: svc}
+	w := doWorkspaceRequest(h.Routes(), http.MethodPost, "/import", "application/yaml", []byte("slug: team-a\nhostcommands: [gh]\n"), nil)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 (unknown field): %s", w.Code, w.Body.String())
+	}
+}
+
+// TestWorkspaceHandler_Import_RejectsMultipleDocuments pins that Import
+// reuses DecodeWorkspaceCreateStrict (the same strict decode Create uses),
+// so a hand-authored two-document import body is rejected rather than
+// silently importing only the first document.
+func TestWorkspaceHandler_Import_RejectsMultipleDocuments(t *testing.T) {
+	svc := &fakeWorkspaceService{}
+	h := &WorkspaceHandler{Service: svc}
+	twoDocs := []byte("slug: team-a\nhost_commands: [gh]\n---\nhost_commands: [aws]\n")
+	w := doWorkspaceRequest(h.Routes(), http.MethodPost, "/import", "application/yaml", twoDocs, nil)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 (multiple documents): %s", w.Code, w.Body.String())
+	}
+}
+
+func TestWorkspaceHandler_Import_ConflictPropagates409(t *testing.T) {
+	svc := &fakeWorkspaceService{
+		importFn: func(slug string, meta *orchestrator.WorkspaceMeta, mode string) (*WorkspaceDetail, error) {
+			return nil, &StatusError{Code: http.StatusConflict, Message: "already exists"}
+		},
+	}
+	h := &WorkspaceHandler{Service: svc}
+	w := doWorkspaceRequest(h.Routes(), http.MethodPost, "/import", "application/yaml", []byte("slug: team-a\n"), nil)
+	if w.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestWorkspaceHandler_Import_UnknownModePropagates400(t *testing.T) {
+	svc := &fakeWorkspaceService{
+		importFn: func(slug string, meta *orchestrator.WorkspaceMeta, mode string) (*WorkspaceDetail, error) {
+			return nil, &StatusError{Code: http.StatusBadRequest, Message: fmt.Sprintf("unknown import mode %q", mode)}
+		},
+	}
+	h := &WorkspaceHandler{Service: svc}
+	w := doWorkspaceRequest(h.Routes(), http.MethodPost, "/import?mode=bogus", "application/yaml", []byte("slug: team-a\n"), nil)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestWorkspaceHandler_Import_BodyTooLargeIs400(t *testing.T) {
+	svc := &fakeWorkspaceService{}
+	h := &WorkspaceHandler{Service: svc}
+	big := []byte("slug: team-a\nenv:\n  FOO: \"" + strings.Repeat("x", 2<<20) + "\"\n")
+	w := doWorkspaceRequest(h.Routes(), http.MethodPost, "/import", "application/yaml", big, nil)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 (body too large): %s", w.Code, w.Body.String())
 	}
 }

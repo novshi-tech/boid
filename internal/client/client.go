@@ -380,6 +380,61 @@ func (c *Client) GetRaw(path string) (statusCode int, body []byte, err error) {
 	return resp.StatusCode, data, nil
 }
 
+// GetRawWithAccept performs a GET request with a custom Accept header,
+// returning the raw response body and status code regardless of status
+// (mirrors GetRaw) — used by `boid workspace export`
+// (docs/plans/workspace-db-consolidation.md PR5 Step D) to explicitly
+// request the yaml export body, even though the server today always
+// responds with application/yaml regardless of Accept.
+func (c *Client) GetRawWithAccept(path, accept string) (statusCode int, body []byte, err error) {
+	req, err := http.NewRequest("GET", "http://boid"+path, nil)
+	if err != nil {
+		return 0, nil, fmt.Errorf("create request: %w", err)
+	}
+	if accept != "" {
+		req.Header.Set("Accept", accept)
+	}
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return 0, nil, fmt.Errorf("request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return resp.StatusCode, nil, fmt.Errorf("read body: %w", err)
+	}
+	return resp.StatusCode, data, nil
+}
+
+// PostRaw performs a POST request with a custom Content-Type and raw body,
+// returning the raw response status code and body regardless of status
+// (mirrors PutRawWithIfMatch's rationale) — used by `boid workspace import`
+// (docs/plans/workspace-db-consolidation.md PR5 Step E) so the CLI can
+// distinguish 409 (create-only conflict against an existing slug) from 400
+// (bad mode/host_commands reference) from 200 (success) instead of losing
+// that distinction to a single generic error string.
+func (c *Client) PostRaw(path, contentType string, body []byte) (statusCode int, respBody []byte, err error) {
+	req, err := http.NewRequest(http.MethodPost, "http://boid"+path, bytes.NewReader(body))
+	if err != nil {
+		return 0, nil, fmt.Errorf("create request: %w", err)
+	}
+	req.Header.Set("Content-Type", contentType)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return 0, nil, fmt.Errorf("request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return resp.StatusCode, nil, fmt.Errorf("read body: %w", err)
+	}
+	return resp.StatusCode, data, nil
+}
+
 // PutRawWithIfMatch performs a PUT request with a custom Content-Type and
 // (optional) If-Match header, returning the raw response status code and
 // body regardless of status — unlike Do/DoWithContentType, which collapse

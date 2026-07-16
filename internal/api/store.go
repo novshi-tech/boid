@@ -88,6 +88,22 @@ type ProjectService interface {
 	// RemoveWorkspace deletes slug (DELETE /api/workspaces/{slug}).
 	// *StatusError{400} for the reserved default slug, {404} unknown slug.
 	RemoveWorkspace(slug string) error
+
+	// ExportWorkspace returns slug's raw yaml body (the marshaled
+	// WorkspaceMeta, deliberately with no top-level "slug" key — the slug is
+	// already known from the URL this backs) and its current revision (GET
+	// /api/workspaces/{slug}/export, docs/plans/workspace-db-consolidation.md
+	// PR5 Step A). *StatusError{404} when slug is unknown.
+	ExportWorkspace(slug string) (yamlBytes []byte, revision string, err error)
+	// ImportWorkspace inserts (mode="create-only") or upserts
+	// (mode="replace") slug's workspace meta from an import body (POST
+	// /api/workspaces/import?mode=..., PR5 Step B/C). Unlike
+	// CreateWorkspace/UpdateWorkspace, mode="replace" is a true upsert: it
+	// creates slug if absent and overwrites it wholesale (last-write-wins,
+	// no If-Match) if present. *StatusError{409} for mode="create-only"
+	// against an existing slug, {400} for an invalid slug, an unrecognized
+	// mode value, or an unknown host_commands reference.
+	ImportWorkspace(slug string, meta *orchestrator.WorkspaceMeta, mode string) (*WorkspaceDetail, error)
 }
 
 // WorkspaceDetail is the response shape for the workspace create/show/update

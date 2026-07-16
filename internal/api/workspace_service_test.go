@@ -4,11 +4,13 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/novshi-tech/boid/internal/orchestrator"
+	"gopkg.in/yaml.v3"
 )
 
 // stubWorkspaceStore implements the WorkspaceStore interface (Load / Save /
@@ -1062,6 +1064,218 @@ func TestCreateProject_BlockedByAssign(t *testing.T) {
 
 	if got := meta.setWorkspaceIDCalls["new-proj"]; got != "team-b" {
 		t.Errorf("final cached workspace_id for new-proj = %q, want %q (CreateProject's default-assign cache write must never win a race against a concurrent explicit assign)", got, "team-b")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Export / Import (docs/plans/workspace-db-consolidation.md PR5)
+// ---------------------------------------------------------------------------
+
+func TestExportWorkspace_ReturnsYAMLBody(t *testing.T) {
+	ws := newStubWorkspaceStore()
+	ws.metas["team-a"] = &orchestrator.WorkspaceMeta{HostCommands: []string{"gh"}}
+	ws.revisions = map[string]string{"team-a": "rev-1"}
+	svc := newWorkspaceTestService(ws, nil, nil)
+
+	data, revision, err := svc.ExportWorkspace("team-a")
+	if err != nil {
+		t.Fatalf("ExportWorkspace: %v", err)
+	}
+	if len(data) == 0 {
+		t.Fatal("expected non-empty yaml body")
+	}
+	if revision != "rev-1" {
+		t.Errorf("revision = %q, want rev-1", revision)
+	}
+	var parsed map[string]any
+	if err := yaml.Unmarshal(data, &parsed); err != nil {
+		t.Fatalf("exported body did not parse as yaml: %v", err)
+	}
+}
+
+// TestExportWorkspace_YAMLBodyMatchesMeta asserts the exported yaml, decoded
+// back through the same strict decoder POST /api/workspaces/import uses,
+// reconstructs the exact same WorkspaceMeta AND carries a top-level "slug:"
+// key matching the URL slug. This is the shape POST /api/workspaces/import
+// (and CreateWorkspace) expects, so an export → import round-trip can pipe
+// the body verbatim without any translation step (codex PR5 review, MAJOR:
+// round-trip 非対称は避ける).
+func TestExportWorkspace_YAMLBodyMatchesMeta(t *testing.T) {
+	ws := newStubWorkspaceStore()
+	original := &orchestrator.WorkspaceMeta{
+		HostCommands:   []string{"gh", "aws"},
+		Env:            map[string]string{"FOO": "bar"},
+		AllowedDomains: []string{"example.com"},
+	}
+	ws.metas["team-a"] = original
+	ws.revisions = map[string]string{"team-a": "rev-2"}
+	svc := newWorkspaceTestService(ws, nil, nil)
+
+	data, _, err := svc.ExportWorkspace("team-a")
+	if err != nil {
+		t.Fatalf("ExportWorkspace: %v", err)
+	}
+	// The body MUST carry a top-level "slug: team-a" line so the exported
+	// yaml is directly usable as an import body (POST /api/workspaces/import
+	// or `boid workspace import`) without stitching the slug in from
+	// outside — that was the round-trip asymmetry codex PR5 review flagged.
+	if !strings.Contains(string(data), "slug: team-a") {
+		t.Errorf("exported body must contain a top-level 'slug: team-a' key: %s", data)
+	}
+	// The meta payload round-trips through the same strict decoder POST
+	// /api/workspaces/import uses.
+	slug, meta, err := orchestrator.DecodeWorkspaceCreateStrict(data)
+	if err != nil {
+		t.Fatalf("re-decode exported body via DecodeWorkspaceCreateStrict: %v", err)
+	}
+	if slug != "team-a" {
+		t.Errorf("decoded slug = %q, want team-a", slug)
+	}
+	if !equalStringSliceForTest(meta.HostCommands, original.HostCommands) {
+		t.Errorf("HostCommands = %v, want %v", meta.HostCommands, original.HostCommands)
+	}
+	if meta.Env["FOO"] != "bar" {
+		t.Errorf("Env[FOO] = %q, want bar", meta.Env["FOO"])
+	}
+	if !equalStringSliceForTest(meta.AllowedDomains, original.AllowedDomains) {
+		t.Errorf("AllowedDomains = %v, want %v", meta.AllowedDomains, original.AllowedDomains)
+	}
+}
+
+func TestExportWorkspace_404OnMissing(t *testing.T) {
+	svc := newWorkspaceTestService(newStubWorkspaceStore(), nil, nil)
+	_, _, err := svc.ExportWorkspace("ghost")
+	if err == nil {
+		t.Fatal("expected not-found error, got nil")
+	}
+	se, ok := err.(*StatusError)
+	if !ok || se.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 StatusError, got %v", err)
+	}
+}
+
+func TestImportWorkspace_CreateOnlyMode_RejectsExisting(t *testing.T) {
+	ws := newStubWorkspaceStore()
+	ws.metas["team-a"] = &orchestrator.WorkspaceMeta{}
+	svc := newWorkspaceTestService(ws, nil, nil)
+
+	_, err := svc.ImportWorkspace("team-a", &orchestrator.WorkspaceMeta{}, "create-only")
+	if err == nil {
+		t.Fatal("expected conflict error, got nil")
+	}
+	se, ok := err.(*StatusError)
+	if !ok || se.Code != http.StatusConflict {
+		t.Fatalf("expected 409 StatusError, got %v", err)
+	}
+}
+
+func TestImportWorkspace_CreateOnlyMode_CreatesNew(t *testing.T) {
+	ws := newStubWorkspaceStore()
+	summaries := map[string]*orchestrator.WorkspaceSummary{
+		"team-a": {ID: "team-a", Revision: "rev-1"},
+	}
+	svc := newWorkspaceTestService(ws, summaries, nil)
+
+	detail, err := svc.ImportWorkspace("team-a", &orchestrator.WorkspaceMeta{HostCommands: []string{"gh"}}, "create-only")
+	if err != nil {
+		t.Fatalf("ImportWorkspace: %v", err)
+	}
+	if detail.Slug != "team-a" {
+		t.Errorf("Slug = %q, want team-a", detail.Slug)
+	}
+	if !equalStringSliceForTest(ws.metas["team-a"].HostCommands, []string{"gh"}) {
+		t.Errorf("workspace store did not receive Create: %+v", ws.metas)
+	}
+}
+
+func TestImportWorkspace_ReplaceMode_UpsertsExisting(t *testing.T) {
+	ws := newStubWorkspaceStore()
+	ws.metas["team-a"] = &orchestrator.WorkspaceMeta{HostCommands: []string{"gh"}}
+	summaries := map[string]*orchestrator.WorkspaceSummary{
+		"team-a": {ID: "team-a", Revision: "rev-2"},
+	}
+	svc := newWorkspaceTestService(ws, summaries, nil)
+
+	detail, err := svc.ImportWorkspace("team-a", &orchestrator.WorkspaceMeta{HostCommands: []string{"aws"}}, "replace")
+	if err != nil {
+		t.Fatalf("ImportWorkspace replace on existing slug: %v", err)
+	}
+	if !equalStringSliceForTest(detail.Meta.HostCommands, []string{"aws"}) {
+		t.Errorf("Meta.HostCommands = %v, want [aws] (replace must overwrite wholesale)", detail.Meta.HostCommands)
+	}
+	if !equalStringSliceForTest(ws.metas["team-a"].HostCommands, []string{"aws"}) {
+		t.Errorf("persisted HostCommands = %v, want [aws]", ws.metas["team-a"].HostCommands)
+	}
+}
+
+// TestImportWorkspace_ReplaceMode_CreatesWhenMissing pins that mode=replace
+// is a true upsert (docs/plans/workspace-db-consolidation.md decision 5):
+// importing to a slug with no existing row must create it, not 404.
+func TestImportWorkspace_ReplaceMode_CreatesWhenMissing(t *testing.T) {
+	ws := newStubWorkspaceStore()
+	summaries := map[string]*orchestrator.WorkspaceSummary{
+		"team-a": {ID: "team-a", Revision: "rev-1"},
+	}
+	svc := newWorkspaceTestService(ws, summaries, nil)
+
+	detail, err := svc.ImportWorkspace("team-a", &orchestrator.WorkspaceMeta{HostCommands: []string{"gh"}}, "replace")
+	if err != nil {
+		t.Fatalf("ImportWorkspace replace on missing slug: %v", err)
+	}
+	if detail.Slug != "team-a" {
+		t.Errorf("Slug = %q, want team-a", detail.Slug)
+	}
+	if _, ok := ws.metas["team-a"]; !ok {
+		t.Error("expected team-a to be created by a replace-mode import against a missing slug")
+	}
+}
+
+func TestImportWorkspace_RejectsUnknownMode(t *testing.T) {
+	svc := newWorkspaceTestService(newStubWorkspaceStore(), nil, nil)
+	_, err := svc.ImportWorkspace("team-a", &orchestrator.WorkspaceMeta{}, "bogus")
+	if err == nil {
+		t.Fatal("expected error for unknown mode, got nil")
+	}
+	se, ok := err.(*StatusError)
+	if !ok || se.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 StatusError, got %v", err)
+	}
+}
+
+// TestImportWorkspace_RejectsUnknownHostCommand is the import-side
+// counterpart of TestCreateWorkspace_RejectsUnknownHostCommandRef (MAJOR 2,
+// PR4): an unresolvable host_commands reference must be rejected at write
+// time regardless of which of the three write paths (create/update/import)
+// carries it.
+func TestImportWorkspace_RejectsUnknownHostCommand(t *testing.T) {
+	ws := newStubWorkspaceStore()
+	svc := newWorkspaceTestService(ws, nil, nil)
+	svc.HostCommands = func() map[string]orchestrator.HostCommandSpec {
+		return map[string]orchestrator.HostCommandSpec{"gh": {}}
+	}
+
+	_, err := svc.ImportWorkspace("team-a", &orchestrator.WorkspaceMeta{HostCommands: []string{"unknown"}}, "create-only")
+	if err == nil {
+		t.Fatal("expected error for unknown host_commands reference, got nil")
+	}
+	se, ok := err.(*StatusError)
+	if !ok || se.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 StatusError, got %v", err)
+	}
+	if _, exists := ws.metas["team-a"]; exists {
+		t.Error("workspace must not be persisted when host_commands validation fails")
+	}
+}
+
+func TestImportWorkspace_RejectsInvalidSlug(t *testing.T) {
+	svc := newWorkspaceTestService(newStubWorkspaceStore(), nil, nil)
+	_, err := svc.ImportWorkspace("Bad Slug", &orchestrator.WorkspaceMeta{}, "create-only")
+	if err == nil {
+		t.Fatal("expected error for invalid slug, got nil")
+	}
+	se, ok := err.(*StatusError)
+	if !ok || se.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 StatusError, got %v", err)
 	}
 }
 

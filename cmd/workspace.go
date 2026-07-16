@@ -129,6 +129,39 @@ var workspaceRemoveCmd = &cobra.Command{
 	RunE:  runWorkspaceRemove,
 }
 
+// workspaceExportOutput is the optional --output flag value for `workspace
+// export`: a file path to write the exported yaml to, instead of stdout.
+var workspaceExportOutput string
+
+var workspaceExportCmd = &cobra.Command{
+	Use:   "export <slug>",
+	Short: "Export a workspace's definition as yaml (GET /api/workspaces/{slug}/export)",
+	Args:  cobra.ExactArgs(1),
+	RunE:  runWorkspaceExport,
+}
+
+var (
+	// workspaceImportMode is the --mode flag value for `workspace import`:
+	// "create-only" (default, safe — never overwrites an existing slug) or
+	// "replace" (explicit upsert, last-write-wins).
+	workspaceImportMode string
+	// workspaceImportForce is a shorthand for --mode replace.
+	workspaceImportForce bool
+	// workspaceImportSlug is the optional --slug flag value for `workspace
+	// import`: the export endpoint's yaml body carries no "slug" key (see
+	// WorkspaceHandler.Export's doc comment), so import must recover a
+	// target slug from somewhere else — either this flag, or (if omitted)
+	// the import file's basename with its extension stripped.
+	workspaceImportSlug string
+)
+
+var workspaceImportCmd = &cobra.Command{
+	Use:   "import <file>",
+	Short: "Import a workspace definition from yaml (POST /api/workspaces/import?mode=<create-only|replace>)",
+	Args:  cobra.ExactArgs(1),
+	RunE:  runWorkspaceImport,
+}
+
 func init() {
 	// Every workspace subcommand talks to the daemon's HTTP API (including
 	// `configure`, which dispatches a sandbox job through it) — all
@@ -136,6 +169,7 @@ func init() {
 	for _, c := range []*cobra.Command{
 		workspaceListCmd, workspaceShowCmd, workspaceCreateCmd, workspaceEditCmd,
 		workspaceAssignCmd, workspaceClearCmd, workspaceConfigureCmd, workspaceRemoveCmd,
+		workspaceExportCmd, workspaceImportCmd,
 	} {
 		c.Annotations = map[string]string{scopeAnnotationKey: scopeRemote}
 	}
@@ -143,6 +177,10 @@ func init() {
 	workspaceCreateCmd.Flags().StringVar(&workspaceCreateFromFile, "from-file", "", "yaml file describing the workspace meta (optional; omit to create a blank workspace)")
 	workspaceEditCmd.Flags().StringVar(&workspaceEditFromFile, "from-file", "", "yaml file with the new workspace meta (required)")
 	workspaceEditCmd.Flags().BoolVar(&workspaceEditForce, "force", false, "skip the If-Match revision check (last-write-wins)")
+	workspaceExportCmd.Flags().StringVar(&workspaceExportOutput, "output", "", "file path to write the exported yaml to (default: stdout)")
+	workspaceImportCmd.Flags().StringVar(&workspaceImportMode, "mode", "create-only", "import mode: create-only (default, 409 on an existing slug) or replace (upsert)")
+	workspaceImportCmd.Flags().BoolVar(&workspaceImportForce, "force", false, "shorthand for --mode replace")
+	workspaceImportCmd.Flags().StringVar(&workspaceImportSlug, "slug", "", "target workspace slug (default: the import file's basename, extension stripped — the export body itself carries no slug)")
 
 	workspaceCmd.AddCommand(
 		workspaceListCmd,
@@ -153,6 +191,8 @@ func init() {
 		workspaceClearCmd,
 		workspaceConfigureCmd,
 		workspaceRemoveCmd,
+		workspaceExportCmd,
+		workspaceImportCmd,
 	)
 	rootCmd.AddCommand(workspaceCmd)
 }
@@ -1044,6 +1084,133 @@ func runWorkspaceRemove(cmd *cobra.Command, args []string) error {
 	fmt.Fprintf(cmd.OutOrStdout(), "workspace %q removed (any assigned projects were re-assigned to %q).\n",
 		slug, orchestrator.DefaultWorkspaceSlug)
 	return nil
+}
+
+// runWorkspaceExport exports a workspace's definition as yaml via
+// GET /api/workspaces/{slug}/export (docs/plans/workspace-db-consolidation.md
+// PR5 Step D). Unlike every other workspace subcommand, this deliberately
+// does not go through renderOutput: the whole point is to emit the raw yaml
+// document unchanged (to stdout, or --output <path>), not a
+// json/yaml/plain-text rendering of a structured response object.
+func runWorkspaceExport(cmd *cobra.Command, args []string) error {
+	slug := args[0]
+	if err := orchestrator.ValidWorkspaceSlug(slug); err != nil {
+		return err
+	}
+
+	c := client.NewUnixClient(client.DefaultSocketPath())
+	statusCode, body, err := c.GetRawWithAccept("/api/workspaces/"+slug+"/export", "application/yaml")
+	if err != nil {
+		return fmt.Errorf("export workspace: %w", err)
+	}
+	if statusCode != http.StatusOK {
+		return fmt.Errorf("export workspace: %s", formatWorkspaceAPIError(statusCode, body))
+	}
+
+	if workspaceExportOutput != "" {
+		if err := os.WriteFile(workspaceExportOutput, body, 0o644); err != nil {
+			return fmt.Errorf("write --output: %w", err)
+		}
+		fmt.Fprintf(cmd.OutOrStdout(), "workspace %q exported to %s\n", slug, workspaceExportOutput)
+		return nil
+	}
+
+	_, err = cmd.OutOrStdout().Write(body)
+	return err
+}
+
+// runWorkspaceImport imports a workspace definition from a yaml file via
+// POST /api/workspaces/import?mode=<create-only|replace>
+// (docs/plans/workspace-db-consolidation.md PR5 Step E).
+//
+// The export endpoint's body (GET .../export) deliberately carries no
+// top-level "slug" key — the slug is already known from the URL it hangs
+// off of — so import must recover a target slug from elsewhere: --slug when
+// given, otherwise the import file's basename with its extension stripped
+// (e.g. "team-a.yaml" -> "team-a"). This asymmetry is why `workspace
+// export`'s output cannot be piped straight back into `workspace import`
+// without either naming the file after the slug or passing --slug
+// explicitly.
+//
+// --mode defaults to "create-only" (the safe choice per docs/plans/
+// workspace-db-consolidation.md's PR5 note recommending it as the default
+// where the plan doc itself leaves this unspecified); --force is a shorthand
+// for --mode replace, mirroring `workspace edit`'s own --force convention
+// even though the underlying semantics differ (edit's --force skips an
+// If-Match check on an existing row; import's --mode replace is a full
+// create-or-overwrite upsert).
+func runWorkspaceImport(cmd *cobra.Command, args []string) error {
+	file := args[0]
+
+	// --force is a shorthand for --mode replace, but only when --mode was
+	// left at its default. If the caller explicitly set --mode to a value
+	// other than "replace" *and* also passed --force, the two directives
+	// disagree — fail loudly rather than silently letting --force overwrite
+	// an explicit "create-only" (codex PR5 review, minor: --force が
+	// silent に上書きするのは危険、 特に "--mode create-only" は明示的な
+	// 安全宣言なので勝手に replace に翻訳しない).
+	modeFlag := cmd.Flags().Lookup("mode")
+	modeExplicit := modeFlag != nil && modeFlag.Changed
+	mode := workspaceImportMode
+	if workspaceImportForce {
+		if modeExplicit && workspaceImportMode != "replace" {
+			return fmt.Errorf("--force conflicts with --mode %q; either drop --force or set --mode replace explicitly", workspaceImportMode)
+		}
+		mode = "replace"
+	}
+	switch mode {
+	case "create-only", "replace":
+	default:
+		return fmt.Errorf("invalid --mode %q (want create-only or replace)", mode)
+	}
+
+	slug := workspaceImportSlug
+	if slug == "" {
+		base := filepath.Base(file)
+		slug = strings.TrimSuffix(base, filepath.Ext(base))
+	}
+	if err := orchestrator.ValidWorkspaceSlug(slug); err != nil {
+		return fmt.Errorf("resolve target slug (pass --slug explicitly): %w", err)
+	}
+
+	data, err := os.ReadFile(file)
+	if err != nil {
+		return fmt.Errorf("read %s: %w", file, err)
+	}
+
+	// Client-side fail-fast strict validation before making any daemon call
+	// — the same double-validation pattern `workspace create`/`workspace
+	// edit` already follow (see buildWorkspaceCreateBody's and
+	// runWorkspaceEdit's doc comments): the server runs the identical check
+	// again on the constructed body below, but failing here saves a round
+	// trip and works even with no daemon reachable.
+	if _, err := orchestrator.DecodeWorkspaceMetaStrict(data); err != nil {
+		return fmt.Errorf("validate %s: %w", file, err)
+	}
+
+	body, err := buildWorkspaceCreateBody(slug, data)
+	if err != nil {
+		return fmt.Errorf("build import request: %w", err)
+	}
+
+	c := client.NewUnixClient(client.DefaultSocketPath())
+	statusCode, respBody, err := c.PostRaw("/api/workspaces/import?mode="+mode, "application/yaml", body)
+	if err != nil {
+		return fmt.Errorf("import workspace: %w", err)
+	}
+	if statusCode != http.StatusOK {
+		return fmt.Errorf("import workspace: %s", formatWorkspaceAPIError(statusCode, respBody))
+	}
+
+	var detail api.WorkspaceDetail
+	if err := json.Unmarshal(respBody, &detail); err != nil {
+		return fmt.Errorf("decode response: %w", err)
+	}
+
+	return renderOutput(cmd, &detail, func() error {
+		fmt.Fprintf(cmd.OutOrStdout(), "workspace imported: %s (revision %s, mode %s)\n", detail.Slug, detail.Revision, mode)
+		return nil
+	})
 }
 
 // formatStringSlice formats a slice for display: "(none)" when empty, or comma-joined.

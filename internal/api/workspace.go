@@ -18,7 +18,9 @@ func (h *WorkspaceHandler) Routes() chi.Router {
 	r := chi.NewRouter()
 	r.Get("/", h.List)
 	r.Post("/", h.Create)
+	r.Post("/import", h.Import)
 	r.Get("/{slug}", h.Show)
+	r.Get("/{slug}/export", h.Export)
 	r.Put("/{slug}", h.Update)
 	r.Delete("/{slug}", h.Remove)
 	return r
@@ -155,6 +157,66 @@ func (h *WorkspaceHandler) Update(w http.ResponseWriter, r *http.Request) {
 	ifMatch := unquoteETag(r.Header.Get("If-Match"))
 
 	detail, err := h.Service.UpdateWorkspace(slug, meta, ifMatch, force)
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+	setWorkspaceETag(w, detail)
+	writeJSON(w, http.StatusOK, detail)
+}
+
+// Export handles GET /api/workspaces/{slug}/export (docs/plans/
+// workspace-db-consolidation.md PR5 Step A): the response body is the raw
+// yaml the service returns verbatim (the marshaled WorkspaceMeta with a
+// top-level "slug:" key inlined — the exact same shape POST
+// /api/workspaces/import accepts, so an export → import round-trip needs
+// no translation step — see ProjectAppService.ExportWorkspace's doc
+// comment for the rationale). An ETag header mirrors the revision so a
+// caller can round-trip it into a subsequent PUT's If-Match if it chooses
+// that route instead of POST import.
+func (h *WorkspaceHandler) Export(w http.ResponseWriter, r *http.Request) {
+	slug := chi.URLParam(r, "slug")
+	data, revision, err := h.Service.ExportWorkspace(slug)
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+	if revision != "" {
+		w.Header().Set("ETag", `"`+revision+`"`)
+	}
+	w.Header().Set("Content-Type", "application/yaml")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(data)
+}
+
+// Import handles POST /api/workspaces/import?mode=<create-only|replace>
+// (docs/plans/workspace-db-consolidation.md PR5 Step B): the body shape
+// mirrors Create's (top-level "slug:" key alongside the meta fields, decoded
+// by the same DecodeWorkspaceCreateStrict). mode defaults to "create-only"
+// (the safe choice — never overwrites an existing workspace) when the query
+// param is omitted; an unrecognized mode value is rejected by
+// ImportWorkspace itself with 400.
+func (h *WorkspaceHandler) Import(w http.ResponseWriter, r *http.Request) {
+	mode := r.URL.Query().Get("mode")
+	if mode == "" {
+		mode = workspaceImportModeCreateOnly
+	}
+
+	data, ok := readWorkspaceYAMLBody(w, r)
+	if !ok {
+		return
+	}
+	slug, meta, err := orchestrator.DecodeWorkspaceCreateStrict(data)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if slug == "" {
+		writeError(w, http.StatusBadRequest, "slug is required (top-level \"slug:\" key in the request body)")
+		return
+	}
+
+	detail, err := h.Service.ImportWorkspace(slug, meta, mode)
 	if err != nil {
 		writeServiceError(w, err)
 		return

@@ -59,6 +59,12 @@ func (s *stubProjectServiceForExec) UpdateWorkspace(string, *orchestrator.Worksp
 func (s *stubProjectServiceForExec) RemoveWorkspace(string) error {
 	panic("not implemented")
 }
+func (s *stubProjectServiceForExec) ExportWorkspace(string) ([]byte, string, error) {
+	panic("not implemented")
+}
+func (s *stubProjectServiceForExec) ImportWorkspace(string, *orchestrator.WorkspaceMeta, string) (*WorkspaceDetail, error) {
+	panic("not implemented")
+}
 
 // stubExecDispatcher records the request it was called with and returns a
 // configured result/error.
