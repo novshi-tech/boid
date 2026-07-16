@@ -235,6 +235,17 @@ func Apply(conn *sql.DB) error {
 				return !exists, err
 			},
 		},
+		{
+			// docs/plans/workspace-db-consolidation.md PR1: schema
+			// 先置きのみ。workspaces テーブルを作成するが、read/write
+			// の権威は引き続き ~/.config/boid/workspaces/*.yaml のまま
+			// (DB は空、挙動不変)。cutover は PR3 で行う。
+			version: "0030_add_workspaces_table",
+			path:    "migrations/0030_add_workspaces_table.sql",
+			skip: func(tx *sql.Tx) (bool, error) {
+				return tableExists(tx, "workspaces")
+			},
+		},
 	}
 
 	if err := ensureSchemaMigrationsTable(conn); err != nil {
