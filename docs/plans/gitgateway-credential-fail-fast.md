@@ -1,8 +1,30 @@
 # git-gateway credential 解決失敗の fail-fast 化 + sandbox git prompt 抑止
 
-ステータス: 計画中 (2026-07-16)
+ステータス: **実装完了** (2026-07-16、PR #764/#765/#766 全 landed)
 作成日: 2026-07-16
 親ドキュメント: [git-gateway-cutover.md](git-gateway-cutover.md) — post-cutover 改善候補として (§1 workspace-scoped PAT namespace 導入の運用副作用の根治)
+
+## Landed PR
+
+- **PR-A** #764: `refactor: gitgateway.CredentialProvider に Resolve メソッド追加` — `Inject` を `Resolve` + `SetBasicAuth` に分解、fail-fast の足場
+- **PR-C** #765: `feat: sandbox job env に GIT_TERMINAL_PROMPT=0 / GIT_ASKPASS 注入` — defense-in-depth
+- **PR-B** #766: `fix: gitgateway で credential 解決失敗時 fail-fast (502) 化` — 主対策
+  - PR 内 2 commit 目 `6c56517` で **KnowsHost gate 追加** (e2e regression 修正)
+
+## 実装時の学び (計画からの差分)
+
+**KnowsHost gate の必要性は plan doc に書けなかった落とし穴**。 PR-B 初回 push で e2e 30+ scenario が 502 で大量 fail した。 真因: e2e は `httptest.Server` の動的 port を fake upstream に使うため、 `config.Gateway.HostConfigs()` に事前登録不能 → pre-check の Resolve が `no forge configured for host` err を返し全部 502 で殺してた。
+
+対策: `CredentialProvider.KnowsHost(host) bool` を追加、 `ServeHTTP` の pre-check を **host が config に登録済みの時のみ** 実行するよう gate。 未登録 host は pre-PR-B と等価な fail-open + notify を継続 (test upstream + unregistered forge の 2 shape を保持)。 本命の hang 経路 (known host + secret miss、 `BB_TOKEN` 未設定など) は依然 fail-fast 502 で捕獲。
+
+ローカル E2E 全 44 scenario green で検証してから push した ([[git-gateway-cutover-ci-false-positive-lesson]] 教訓、 CI 前に自前ループで確認)。
+
+## 残タスク
+
+**なし** (P0 完了)。 副次的な P1 対応は本 doc §リスク・非スコープ 参照:
+
+- `ubs` / `bm-next` workspace の PAT 移行漏れは nose 手動対応 (私は書き込まない)
+- `boid check` の workspace × forge secret 存在チェックは別 issue (優先度低)
 
 ---
 
