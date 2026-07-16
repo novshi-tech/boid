@@ -75,6 +75,11 @@ func (r stubProjectRepo) ListProjects() ([]*orchestrator.Project, error) {
 
 func (r stubProjectRepo) SetProjectWorkspace(projectID, workspaceID string) error { return nil }
 
+// WorkspaceExists always reports true: these fixtures exercise broker
+// registration / project resolution, never ProjectAppService.SetProjectWorkspace's
+// MAJOR 5 existence check, so a permissive stub keeps them unaffected.
+func (r stubProjectRepo) WorkspaceExists(slug string) (bool, error) { return true, nil }
+
 func (r stubProjectRepo) ListWorkspaces() ([]*orchestrator.WorkspaceSummary, error) {
 	return nil, nil
 }

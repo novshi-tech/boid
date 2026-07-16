@@ -108,7 +108,7 @@ func New(cfg Config) (*Server, error) {
 	conn := d.Conn
 
 	projectRepo := orchestrator.NewProjectRepository(conn)
-	store, hostCommands, err := buildProjectStore(cfg, projectRepo)
+	store, hostCommands, err := buildProjectStore(cfg, conn, projectRepo)
 	if err != nil {
 		conn.Close()
 		return nil, err

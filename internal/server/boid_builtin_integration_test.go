@@ -33,6 +33,9 @@ func TestBoidBuiltinIntegration_RegisterAndCreateAcrossWorkspace(t *testing.T) {
 		}
 	}
 
+	testutil.SeedWorkspace(t, ts, "ws-1")
+	testutil.SeedWorkspace(t, ts, "ws-2")
+
 	for _, id := range []string{"proj-1", "proj-2"} {
 		var updated orchestrator.Project
 		if err := ts.Client.Do("PUT", "/api/projects/"+id+"/workspace", map[string]string{"workspace_id": "ws-1"}, &updated); err != nil {
@@ -164,6 +167,8 @@ func TestBoidBuiltinIntegration_NameBasedPeerProjectCreate(t *testing.T) {
 			t.Fatalf("created project %s had id %q", id, project.ID)
 		}
 	}
+
+	testutil.SeedWorkspace(t, ts, "ws-boid")
 
 	for _, id := range []string{"boid-main", peerUUID} {
 		var updated orchestrator.Project

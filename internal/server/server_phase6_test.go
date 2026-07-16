@@ -156,6 +156,11 @@ func TestServer_TaskDetailIncludesActionsAndJobs(t *testing.T) {
 func newSmokeServer(t *testing.T) *testutil.TestServer {
 	t.Helper()
 
+	// Isolate from the real $XDG_CONFIG_HOME (see testutil.NewTestServer's
+	// doc comment) — this helper constructs *server.Server directly rather
+	// than via testutil.NewTestServer.
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+
 	tmpDir := t.TempDir()
 	sockPath := filepath.Join(tmpDir, "boid.sock")
 	dbPath := filepath.Join(tmpDir, "boid.db")

@@ -162,6 +162,11 @@ type ProjectRepository interface {
 	// docs/plans/git-gateway-cutover.md PR2). Used by ReloadProjects'
 	// recapture and by the daemon-startup backfill.
 	SetProjectUpstreamURL(projectID, upstreamURL string) error
+	// WorkspaceExists reports whether workspaceID refers to an existing
+	// workspaces table row. Used by ProjectAppService.SetProjectWorkspace to
+	// reject assignment to a nonexistent slug (docs/plans/
+	// workspace-db-consolidation.md MAJOR 5 codex review fix).
+	WorkspaceExists(workspaceID string) (bool, error)
 }
 
 // ProjectWorkDirLookup provides read access to a project's working directory.

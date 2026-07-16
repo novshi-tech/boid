@@ -578,3 +578,124 @@ func TestCloneHostCommandsMap_NilInputReturnsNil(t *testing.T) {
 		t.Errorf("expected nil, got %v", got)
 	}
 }
+
+// --- MAJOR 2: ${VAR} expansion for dispatch ---
+
+// TestExpandHostCommandsForDispatch_ExpandsPath pins MAJOR 2 (codex
+// review): the aggregated host_commands.yaml config stores raw/unexpanded
+// path/env values (PR2's "集約 config は raw で保存" decision), but dispatch
+// needs them resolved against the daemon's own environment or
+// exec.LookPath fails on the literal placeholder string.
+// ExpandHostCommandsForDispatch is the bridge — called once at daemon
+// startup on the raw config, its result (not the raw map) is what gets
+// wired into ProjectStore.SetHostCommands.
+func TestExpandHostCommandsForDispatch_ExpandsPath(t *testing.T) {
+	t.Setenv("HOME", "/home/testuser")
+	t.Setenv("GH_TOKEN", "super-secret-token")
+
+	raw := map[string]HostCommandSpec{
+		"gh": {
+			Path: "${HOME}/bin/gh",
+			Env:  map[string]string{"GH_TOKEN": "${GH_TOKEN}"},
+		},
+	}
+
+	got := ExpandHostCommandsForDispatch(raw)
+	gh, ok := got["gh"]
+	if !ok {
+		t.Fatalf("expected 'gh' command, got %v", got)
+	}
+	if gh.Path != "/home/testuser/bin/gh" {
+		t.Errorf("Path = %q, want expanded /home/testuser/bin/gh", gh.Path)
+	}
+	if gh.Env["GH_TOKEN"] != "super-secret-token" {
+		t.Errorf("Env[GH_TOKEN] = %q, want expanded super-secret-token", gh.Env["GH_TOKEN"])
+	}
+}
+
+// TestExpandHostCommandsForDispatch_DoesNotMutateInput pins that raw is
+// never mutated: the returned map (and every nested Env map) must be an
+// independent copy, so the caller's original raw config (e.g. what
+// Server.HostCommands() later hands out as a snapshot) stays unexpanded.
+func TestExpandHostCommandsForDispatch_DoesNotMutateInput(t *testing.T) {
+	t.Setenv("HOME", "/home/testuser")
+
+	raw := map[string]HostCommandSpec{
+		"gh": {
+			Path: "${HOME}/bin/gh",
+			Env:  map[string]string{"FOO": "${HOME}"},
+		},
+	}
+
+	_ = ExpandHostCommandsForDispatch(raw)
+
+	if raw["gh"].Path != "${HOME}/bin/gh" {
+		t.Errorf("input Path was mutated: got %q", raw["gh"].Path)
+	}
+	if raw["gh"].Env["FOO"] != "${HOME}" {
+		t.Errorf("input Env was mutated: got %q", raw["gh"].Env["FOO"])
+	}
+}
+
+// TestExpandHostCommandsForDispatch_NilInputReturnsNil is the same
+// nil-safety contract CloneHostCommandsMap already guarantees, since
+// ExpandHostCommandsForDispatch is built on top of it.
+func TestExpandHostCommandsForDispatch_NilInputReturnsNil(t *testing.T) {
+	if got := ExpandHostCommandsForDispatch(nil); got != nil {
+		t.Errorf("expected nil, got %v", got)
+	}
+}
+
+// --- MAJOR 3 (codex review, 2nd pass): writeHostCommandsConfigIfMissing ---
+
+// TestWriteHostCommandsConfigIfMissing_WritesWhenFileAbsent pins the "fresh
+// install" half of the contract: with no file at path yet, the helper must
+// write spec and report that it did.
+func TestWriteHostCommandsConfigIfMissing_WritesWhenFileAbsent(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "host_commands.yaml")
+	spec := map[string]HostCommandSpec{"gh": {Allow: []string{"pr"}}}
+
+	wrote, err := writeHostCommandsConfigIfMissing(path, spec)
+	if err != nil {
+		t.Fatalf("writeHostCommandsConfigIfMissing: %v", err)
+	}
+	if !wrote {
+		t.Error("expected wrote=true when the file did not exist yet")
+	}
+
+	got, err := LoadHostCommandsConfig(path)
+	if err != nil {
+		t.Fatalf("LoadHostCommandsConfig: %v", err)
+	}
+	if !reflect.DeepEqual(got, spec) {
+		t.Errorf("written config = %+v, want %+v", got, spec)
+	}
+}
+
+// TestWriteHostCommandsConfigIfMissing_SkipsWhenFileExists pins the "do not
+// clobber" half: when a file already exists at path, the helper must leave
+// it untouched and report that no write happened, regardless of what spec
+// would have produced.
+func TestWriteHostCommandsConfigIfMissing_SkipsWhenFileExists(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "host_commands.yaml")
+	existing := map[string]HostCommandSpec{"custom-tool": {Allow: []string{"run"}}}
+	if err := WriteHostCommandsConfig(path, existing); err != nil {
+		t.Fatalf("seed existing config: %v", err)
+	}
+
+	wrote, err := writeHostCommandsConfigIfMissing(path, map[string]HostCommandSpec{"gh": {Allow: []string{"pr"}}})
+	if err != nil {
+		t.Fatalf("writeHostCommandsConfigIfMissing: %v", err)
+	}
+	if wrote {
+		t.Error("expected wrote=false when the file already existed")
+	}
+
+	got, err := LoadHostCommandsConfig(path)
+	if err != nil {
+		t.Fatalf("LoadHostCommandsConfig: %v", err)
+	}
+	if !reflect.DeepEqual(got, existing) {
+		t.Errorf("existing config was modified: got %+v, want %+v", got, existing)
+	}
+}

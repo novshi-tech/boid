@@ -339,6 +339,124 @@ func TestMigration0029_IdempotentOnAlreadyDroppedTable(t *testing.T) {
 	assertVersionRecorded(t, d.Conn, "0029_drop_worktrees_table")
 }
 
+// TestMigration0031_AddsSchemaMigrationsStateAndInputHash covers PR3 of
+// docs/plans/workspace-db-consolidation.md: schema_migrations must gain
+// `state` and `input_hash` columns, and existing rows (every migration
+// version applied earlier in this same Apply() run) must read back with the
+// backward-compatible defaults ('committed' / '').
+func TestMigration0031_AddsSchemaMigrationsStateAndInputHash(t *testing.T) {
+	d, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer d.Close()
+
+	if err := Apply(d.Conn); err != nil {
+		t.Fatalf("apply migrations: %v", err)
+	}
+
+	assertVersionRecorded(t, d.Conn, "0031_add_schema_migrations_state")
+
+	hasState, err := columnExists(d.Conn, "schema_migrations", "state")
+	if err != nil {
+		t.Fatalf("check schema_migrations.state: %v", err)
+	}
+	if !hasState {
+		t.Fatal("expected schema_migrations.state to exist")
+	}
+	hasInputHash, err := columnExists(d.Conn, "schema_migrations", "input_hash")
+	if err != nil {
+		t.Fatalf("check schema_migrations.input_hash: %v", err)
+	}
+	if !hasInputHash {
+		t.Fatal("expected schema_migrations.input_hash to exist")
+	}
+
+	// A migration recorded earlier in the same Apply() run (before 0031 added
+	// these columns) must read back with the backward-compatible defaults.
+	var state, inputHash string
+	if err := d.Conn.QueryRow(
+		`SELECT state, input_hash FROM schema_migrations WHERE version = ?`, "0001_initial",
+	).Scan(&state, &inputHash); err != nil {
+		t.Fatalf("query 0001_initial state/input_hash: %v", err)
+	}
+	if state != "committed" {
+		t.Errorf("0001_initial state = %q, want %q", state, "committed")
+	}
+	if inputHash != "" {
+		t.Errorf("0001_initial input_hash = %q, want empty", inputHash)
+	}
+}
+
+// TestRecordMigrationState_UpsertTransitionsState pins the UPSERT behavior
+// recordMigrationState needs for workspace_db_consolidation's staging →
+// committed state transition (docs/plans/workspace-db-consolidation.md
+// マイグレーション節): calling it twice for the same version must update the
+// existing row in place (not insert a duplicate), and the final read must
+// reflect the latest state/input_hash.
+func TestRecordMigrationState_UpsertTransitionsState(t *testing.T) {
+	d, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer d.Close()
+
+	if err := Apply(d.Conn); err != nil {
+		t.Fatalf("apply migrations: %v", err)
+	}
+
+	tx, err := d.Conn.Begin()
+	if err != nil {
+		t.Fatalf("begin tx: %v", err)
+	}
+	if err := recordMigrationState(tx, "workspace_db_consolidation", "staging", "hash1"); err != nil {
+		t.Fatalf("recordMigrationState (staging): %v", err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+
+	var state, inputHash string
+	if err := d.Conn.QueryRow(
+		`SELECT state, input_hash FROM schema_migrations WHERE version = ?`, "workspace_db_consolidation",
+	).Scan(&state, &inputHash); err != nil {
+		t.Fatalf("query after staging: %v", err)
+	}
+	if state != "staging" || inputHash != "hash1" {
+		t.Fatalf("after staging: state=%q input_hash=%q, want staging/hash1", state, inputHash)
+	}
+
+	tx2, err := d.Conn.Begin()
+	if err != nil {
+		t.Fatalf("begin tx2: %v", err)
+	}
+	if err := recordMigrationState(tx2, "workspace_db_consolidation", "committed", "hash1"); err != nil {
+		t.Fatalf("recordMigrationState (committed): %v", err)
+	}
+	if err := tx2.Commit(); err != nil {
+		t.Fatalf("commit tx2: %v", err)
+	}
+
+	var count int
+	if err := d.Conn.QueryRow(
+		`SELECT COUNT(*) FROM schema_migrations WHERE version = ?`, "workspace_db_consolidation",
+	).Scan(&count); err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("expected a single upserted row, got %d", count)
+	}
+
+	if err := d.Conn.QueryRow(
+		`SELECT state, input_hash FROM schema_migrations WHERE version = ?`, "workspace_db_consolidation",
+	).Scan(&state, &inputHash); err != nil {
+		t.Fatalf("query after committed: %v", err)
+	}
+	if state != "committed" || inputHash != "hash1" {
+		t.Fatalf("after committed: state=%q input_hash=%q, want committed/hash1", state, inputHash)
+	}
+}
+
 func assertVersionRecorded(t *testing.T, conn *sql.DB, version string) {
 	t.Helper()
 

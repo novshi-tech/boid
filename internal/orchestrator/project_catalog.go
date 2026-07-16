@@ -2,6 +2,7 @@ package orchestrator
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"time"
 
@@ -113,6 +114,25 @@ func SetProjectWorkspace(dbtx db.DBTX, projectID, workspaceID string) error {
 		return fmt.Errorf("set project workspace: %w", err)
 	}
 	return nil
+}
+
+// WorkspaceExists reports whether slug has a corresponding row in the
+// workspaces table (MAJOR 5, codex review: SetProjectWorkspace previously
+// assigned any syntactically valid slug without checking it actually
+// existed, leaving a dangling project_workspaces reference — dispatch then
+// runs in a permanently degraded window, and since
+// workspace_db_consolidation's state=committed makes MigrateWorkspaceYAMLToDB
+// a permanent no-op, no later startup ever re-validates and self-heals it).
+func WorkspaceExists(dbtx db.DBTX, slug string) (bool, error) {
+	var exists int
+	err := dbtx.QueryRow(`SELECT 1 FROM workspaces WHERE slug = ? LIMIT 1`, slug).Scan(&exists)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return false, nil
+		}
+		return false, fmt.Errorf("check workspace exists: %w", err)
+	}
+	return true, nil
 }
 
 // AssignDefaultWorkspaceToUnlinked inserts a project_workspaces row pointing

@@ -22,6 +22,11 @@ import (
 // proves the real internal/server/wire.go wiring (gwResolver == nil when
 // secretStore == nil) actually reaches that code path end to end.
 func TestGitGateway_NoSecretStoreRejectsValidTokenWithout503(t *testing.T) {
+	// Isolate from the real $XDG_CONFIG_HOME (see testutil.NewTestServer's
+	// doc comment) — this test constructs *server.Server directly rather
+	// than via testutil.
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+
 	tmpDir := t.TempDir()
 	cfg := Config{
 		DBPath:     ":memory:",

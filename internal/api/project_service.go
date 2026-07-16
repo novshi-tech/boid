@@ -162,6 +162,28 @@ func (s *ProjectAppService) SetProjectWorkspace(id, workspaceID string) (*orches
 		if err := orchestrator.ValidWorkspaceSlug(workspaceID); err != nil {
 			return nil, &StatusError{Code: http.StatusBadRequest, Message: err.Error()}
 		}
+		// MAJOR 5 (codex review): reject assignment to a slug with no
+		// corresponding workspaces row. Before this check, assigning a
+		// project to a nonexistent slug (typo, or a workspace removed out
+		// from under it) silently left a dangling project_workspaces
+		// reference: dispatch runs in a permanently degraded window
+		// (GetWithWorkspace logs "workspace.yaml not found" on every call),
+		// and — because MigrateWorkspaceYAMLToDB only re-validates
+		// project->workspace references once (state=committed skips every
+		// subsequent run) — restarting the daemon never self-heals it.
+		// DefaultWorkspaceSlug is exempt: WorkspaceRepository.EnsureDefault
+		// guarantees it always exists (and self-heals on the next boot even
+		// if the row were somehow missing), so the extra round trip is
+		// unnecessary ceremony for the single most common assignment.
+		if workspaceID != orchestrator.DefaultWorkspaceSlug {
+			exists, err := s.Projects.WorkspaceExists(workspaceID)
+			if err != nil {
+				return nil, &StatusError{Code: http.StatusInternalServerError, Message: err.Error()}
+			}
+			if !exists {
+				return nil, &StatusError{Code: http.StatusNotFound, Message: fmt.Sprintf("workspace %q not found", workspaceID)}
+			}
+		}
 	}
 	project, err := s.Projects.GetProject(id)
 	if err != nil {

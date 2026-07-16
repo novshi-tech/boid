@@ -1,6 +1,7 @@
 package orchestrator
 
 import (
+	"encoding/json"
 	"testing"
 
 	"gopkg.in/yaml.v3"
@@ -215,6 +216,172 @@ func equalStringSlice(a, b []string) bool {
 		}
 	}
 	return true
+}
+
+// TestWorkspaceMeta_HostCommandsRoundTrip covers docs/plans/workspace-db-consolidation.md
+// PR3's WorkspaceMeta.HostCommands field ([]string reference names) round
+// trips through both YAML (workspace.yaml on-disk shape) and JSON (DB /
+// API wire shape).
+func TestWorkspaceMeta_HostCommandsRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	original := WorkspaceMeta{HostCommands: []string{"gh", "aws"}}
+
+	yamlData, err := yaml.Marshal(&original)
+	if err != nil {
+		t.Fatalf("yaml.Marshal: %v", err)
+	}
+	var yamlDecoded WorkspaceMeta
+	if err := yaml.Unmarshal(yamlData, &yamlDecoded); err != nil {
+		t.Fatalf("yaml.Unmarshal: %v", err)
+	}
+	if !equalStringSlice(yamlDecoded.HostCommands, original.HostCommands) {
+		t.Errorf("yaml round-trip: HostCommands = %v, want %v", yamlDecoded.HostCommands, original.HostCommands)
+	}
+
+	jsonData, err := json.Marshal(&original)
+	if err != nil {
+		t.Fatalf("json.Marshal: %v", err)
+	}
+	var jsonDecoded WorkspaceMeta
+	if err := json.Unmarshal(jsonData, &jsonDecoded); err != nil {
+		t.Fatalf("json.Unmarshal: %v", err)
+	}
+	if !equalStringSlice(jsonDecoded.HostCommands, original.HostCommands) {
+		t.Errorf("json round-trip: HostCommands = %v, want %v", jsonDecoded.HostCommands, original.HostCommands)
+	}
+}
+
+// TestWorkspaceMeta_ContainerImageRoundTrip covers the Phase 6-reserved,
+// currently-inert ContainerImage field.
+func TestWorkspaceMeta_ContainerImageRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	original := WorkspaceMeta{ContainerImage: "ghcr.io/example/image:latest"}
+
+	yamlData, err := yaml.Marshal(&original)
+	if err != nil {
+		t.Fatalf("yaml.Marshal: %v", err)
+	}
+	var yamlDecoded WorkspaceMeta
+	if err := yaml.Unmarshal(yamlData, &yamlDecoded); err != nil {
+		t.Fatalf("yaml.Unmarshal: %v", err)
+	}
+	if yamlDecoded.ContainerImage != original.ContainerImage {
+		t.Errorf("yaml round-trip: ContainerImage = %q, want %q", yamlDecoded.ContainerImage, original.ContainerImage)
+	}
+
+	jsonData, err := json.Marshal(&original)
+	if err != nil {
+		t.Fatalf("json.Marshal: %v", err)
+	}
+	var jsonDecoded WorkspaceMeta
+	if err := json.Unmarshal(jsonData, &jsonDecoded); err != nil {
+		t.Fatalf("json.Unmarshal: %v", err)
+	}
+	if jsonDecoded.ContainerImage != original.ContainerImage {
+		t.Errorf("json round-trip: ContainerImage = %q, want %q", jsonDecoded.ContainerImage, original.ContainerImage)
+	}
+}
+
+// TestWorkspaceMeta_AdditionalBindingsRoundTrip covers the workspace-level
+// AdditionalBindings vestige field (decision 4: retained until Phase 4).
+func TestWorkspaceMeta_AdditionalBindingsRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	original := WorkspaceMeta{
+		AdditionalBindings: []BindMount{
+			{Source: "/opt/volta", Target: "/opt/volta", Mode: "rw"},
+		},
+	}
+
+	yamlData, err := yaml.Marshal(&original)
+	if err != nil {
+		t.Fatalf("yaml.Marshal: %v", err)
+	}
+	var yamlDecoded WorkspaceMeta
+	if err := yaml.Unmarshal(yamlData, &yamlDecoded); err != nil {
+		t.Fatalf("yaml.Unmarshal: %v", err)
+	}
+	if len(yamlDecoded.AdditionalBindings) != 1 || yamlDecoded.AdditionalBindings[0] != original.AdditionalBindings[0] {
+		t.Errorf("yaml round-trip: AdditionalBindings = %+v, want %+v", yamlDecoded.AdditionalBindings, original.AdditionalBindings)
+	}
+
+	jsonData, err := json.Marshal(&original)
+	if err != nil {
+		t.Fatalf("json.Marshal: %v", err)
+	}
+	var jsonDecoded WorkspaceMeta
+	if err := json.Unmarshal(jsonData, &jsonDecoded); err != nil {
+		t.Fatalf("json.Unmarshal: %v", err)
+	}
+	if len(jsonDecoded.AdditionalBindings) != 1 || jsonDecoded.AdditionalBindings[0] != original.AdditionalBindings[0] {
+		t.Errorf("json round-trip: AdditionalBindings = %+v, want %+v", jsonDecoded.AdditionalBindings, original.AdditionalBindings)
+	}
+}
+
+// TestWorkspaceMeta_NewFieldsOmittedWhenEmpty extends
+// TestWorkspaceMeta_EmptyOmitsFields to the three PR3 fields: an empty
+// WorkspaceMeta must still marshal to "{}" in YAML with none of
+// HostCommands/ContainerImage/AdditionalBindings appearing.
+func TestWorkspaceMeta_NewFieldsOmittedWhenEmpty(t *testing.T) {
+	t.Parallel()
+
+	meta := WorkspaceMeta{}
+	data, err := yaml.Marshal(&meta)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if s := string(data); s != "{}\n" {
+		t.Errorf("expected empty yaml to omit new PR3 fields, got: %q", s)
+	}
+}
+
+// TestGetWithWorkspace_DoesNotMutateWorkspaceMetaInPlace pins MAJOR 1's
+// clone-before-expand contract: expandWorkspaceRuntimeForDispatch (called by
+// ProjectStore.GetWithWorkspace right after WorkspaceStore.Load, see
+// project_store.go) must not mutate the *WorkspaceMeta it is handed in
+// place. DB/yaml-stored values must stay raw (secret-leak / TOCTOU
+// avoidance — the same reasoning ExpandHostCommandsForDispatch's doc
+// comment gives for HostCommands), and WorkspaceStore.Load's contract
+// should not implicitly depend on every caller getting a freshly allocated
+// value each time (a future caching layer could reuse the same pointer
+// across calls).
+//
+// This is tested directly at the helper level rather than through
+// GetWithWorkspace end-to-end: both WorkspaceStore.Load backends (plain
+// yaml and WorkspaceRepository) always allocate a brand new *WorkspaceMeta
+// per call, so there is no black-box way to observe a pointer-aliasing bug
+// through the public API today — the property only has teeth checked
+// against the function whose contract it actually is.
+func TestGetWithWorkspace_DoesNotMutateWorkspaceMetaInPlace(t *testing.T) {
+	t.Setenv("PROBE_VAR", "expanded-value")
+
+	original := &WorkspaceMeta{
+		Env: map[string]string{"FOO": "${PROBE_VAR}"},
+		AdditionalBindings: []BindMount{
+			{Source: "${PROBE_VAR}/kit", Target: "${PROBE_VAR}/kit"},
+		},
+	}
+
+	expanded := expandWorkspaceRuntimeForDispatch(original)
+
+	if expanded.Env["FOO"] != "expanded-value" {
+		t.Fatalf("expanded.Env[FOO] = %q, want expanded-value", expanded.Env["FOO"])
+	}
+	if original.Env["FOO"] != "${PROBE_VAR}" {
+		t.Errorf("original.Env[FOO] mutated in place: got %q, want raw ${PROBE_VAR}", original.Env["FOO"])
+	}
+
+	if expanded.AdditionalBindings[0].Source != "expanded-value/kit" {
+		t.Fatalf("expanded.AdditionalBindings[0].Source = %q, want expanded-value/kit", expanded.AdditionalBindings[0].Source)
+	}
+	if original.AdditionalBindings[0].Source != "${PROBE_VAR}/kit" {
+		t.Errorf("original.AdditionalBindings[0].Source mutated in place: got %q, want raw ${PROBE_VAR}/kit", original.AdditionalBindings[0].Source)
+	}
+	if original.AdditionalBindings[0].Target != "${PROBE_VAR}/kit" {
+		t.Errorf("original.AdditionalBindings[0].Target mutated in place: got %q, want raw ${PROBE_VAR}/kit", original.AdditionalBindings[0].Target)
+	}
 }
 
 func TestWorkspaceMeta_DockerCapabilityRoundTrip(t *testing.T) {

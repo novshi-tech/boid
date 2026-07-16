@@ -93,6 +93,12 @@ func (r *ProjectRepository) ListWorkspaces() ([]*WorkspaceSummary, error) {
 	return ListWorkspaces(r.db)
 }
 
+// WorkspaceExists reports whether slug refers to an existing workspaces
+// table row (MAJOR 5 fix — see WorkspaceExists' doc comment).
+func (r *ProjectRepository) WorkspaceExists(slug string) (bool, error) {
+	return WorkspaceExists(r.db, slug)
+}
+
 func (r *ProjectRepository) DeleteProject(id string) error {
 	return DeleteProject(r.db, id)
 }

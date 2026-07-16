@@ -12,14 +12,36 @@ import (
 )
 
 // WorkspaceStore provides persistence for WorkspaceMeta values.
-// Each workspace is stored as a YAML file at <dir>/<slug>.yaml.
+//
+// Two backing modes (docs/plans/workspace-db-consolidation.md PR3 cutover):
+//
+//   - repo == nil: legacy yaml mode. Each workspace is read/written as a
+//     YAML file at <dir>/<slug>.yaml. This is the pre-cutover behavior, kept
+//     as-is for callers that never wire a repository — e.g. the CLI
+//     (cmd/workspace.go and friends still read/write the yaml files
+//     directly; PR4 switches them to the API) and
+//     MigrateWorkspaceYAMLToDB's own preflight, which needs to read the
+//     legacy yaml as the migration's source of truth.
+//   - repo != nil (set via SetRepository / NewWorkspaceStoreWithRepo): DB
+//     mode. Every method delegates to repo instead of touching dir. dir is
+//     retained on the struct only as the (now-shadow) yaml location; PR3
+//     does not delete or read it once a repository is wired.
+//
+// Every method's signature is unchanged from the yaml-only era so existing
+// callers (cmd/workspace.go, cmd/project_migrate.go, cmd/kit.go,
+// cmd/kit_cleanup.go, dispatcher.WorkspaceLookup) need zero code changes —
+// only daemon wiring (internal/server/wire.go) opts into DB mode by calling
+// SetRepository.
 type WorkspaceStore struct {
-	dir string
+	dir  string
+	repo *WorkspaceRepository
 }
 
-// NewWorkspaceStore returns a WorkspaceStore backed by dir.
+// NewWorkspaceStore returns a yaml-mode WorkspaceStore backed by dir.
 // If dir is empty, DefaultWorkspaceDir is called to determine the directory.
 // The directory is not created eagerly; it is created on the first Save call.
+// Call SetRepository afterward (or use NewWorkspaceStoreWithRepo) to switch
+// this store into DB mode.
 func NewWorkspaceStore(dir string) *WorkspaceStore {
 	if dir == "" {
 		d, err := DefaultWorkspaceDir()
@@ -30,6 +52,21 @@ func NewWorkspaceStore(dir string) *WorkspaceStore {
 		dir = d
 	}
 	return &WorkspaceStore{dir: dir}
+}
+
+// NewWorkspaceStoreWithRepo returns a DB-mode WorkspaceStore: dir is kept
+// only as the shadow yaml location, and every method delegates to repo.
+func NewWorkspaceStoreWithRepo(dir string, repo *WorkspaceRepository) *WorkspaceStore {
+	s := NewWorkspaceStore(dir)
+	s.repo = repo
+	return s
+}
+
+// SetRepository wires repo as this store's DB backing
+// (docs/plans/workspace-db-consolidation.md PR3 cutover). Once set, every
+// method routes through repo instead of the yaml directory.
+func (s *WorkspaceStore) SetRepository(repo *WorkspaceRepository) {
+	s.repo = repo
 }
 
 // DefaultWorkspaceDir returns the default directory for workspace YAML files:
@@ -48,6 +85,9 @@ func DefaultWorkspaceDir() (string, error) {
 // Load reads and parses the WorkspaceMeta for the given slug.
 // Returns an error wrapping os.ErrNotExist when the file does not exist.
 func (s *WorkspaceStore) Load(slug string) (*WorkspaceMeta, error) {
+	if s.repo != nil {
+		return s.repo.Load(slug)
+	}
 	if err := ValidWorkspaceSlug(slug); err != nil {
 		return nil, err
 	}
@@ -71,6 +111,9 @@ func (s *WorkspaceStore) Load(slug string) (*WorkspaceMeta, error) {
 // The write is atomic: the data is first written to a temporary file in the
 // same directory and then renamed into place.
 func (s *WorkspaceStore) Save(slug string, meta *WorkspaceMeta) error {
+	if s.repo != nil {
+		return s.repo.Save(slug, meta)
+	}
 	if err := ValidWorkspaceSlug(slug); err != nil {
 		return err
 	}
@@ -100,6 +143,9 @@ func (s *WorkspaceStore) Save(slug string, meta *WorkspaceMeta) error {
 // The reserved DefaultWorkspaceSlug cannot be removed.
 // It does not check whether any project references this workspace.
 func (s *WorkspaceStore) Remove(slug string) error {
+	if s.repo != nil {
+		return s.repo.Remove(slug)
+	}
 	if err := ValidWorkspaceSlug(slug); err != nil {
 		return err
 	}
@@ -123,6 +169,9 @@ func (s *WorkspaceStore) Remove(slug string) error {
 // (DefaultWorkspaceDir failure): callers are expected to surface that via
 // the first Load/Save attempt rather than at boot.
 func (s *WorkspaceStore) EnsureDefault() error {
+	if s.repo != nil {
+		return s.repo.EnsureDefault()
+	}
 	if s.dir == "" {
 		return fmt.Errorf("workspace store: dir not configured")
 	}
@@ -139,6 +188,9 @@ func (s *WorkspaceStore) EnsureDefault() error {
 // alphabetically. If the directory does not exist, an empty slice and nil
 // error are returned (degraded window).
 func (s *WorkspaceStore) List() ([]string, error) {
+	if s.repo != nil {
+		return s.repo.List()
+	}
 	entries, err := os.ReadDir(s.dir)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {

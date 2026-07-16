@@ -6,7 +6,26 @@ import (
 	"path/filepath"
 	"sort"
 	"testing"
+
+	"github.com/novshi-tech/boid/internal/db"
+	"github.com/novshi-tech/boid/internal/db/migrate"
 )
+
+// newTestDBBackedStore returns a WorkspaceStore wired to a fresh in-memory
+// SQLite DB via NewWorkspaceStoreWithRepo, exercising the PR3 DB-mode branch
+// of every WorkspaceStore method (docs/plans/workspace-db-consolidation.md).
+func newTestDBBackedStore(t *testing.T) *WorkspaceStore {
+	t.Helper()
+	d, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	t.Cleanup(func() { d.Close() })
+	if err := migrate.Apply(d.Conn); err != nil {
+		t.Fatalf("apply migrations: %v", err)
+	}
+	return NewWorkspaceStoreWithRepo(t.TempDir(), NewWorkspaceRepository(d.Conn))
+}
 
 func newTestStore(t *testing.T) (*WorkspaceStore, string) {
 	t.Helper()
@@ -273,5 +292,159 @@ func TestWorkspaceStore_SaveAtomic_TmpFileInSameDir(t *testing.T) {
 		if filepath.Ext(e.Name()) != ".yaml" {
 			t.Errorf("unexpected file after Save: %q (expected only .yaml files)", e.Name())
 		}
+	}
+}
+
+// --- DB-mode (repo != nil) tests: docs/plans/workspace-db-consolidation.md PR3 ---
+
+func TestWorkspaceStore_DBMode_SaveLoad_RoundTrip(t *testing.T) {
+	t.Parallel()
+	store := newTestDBBackedStore(t)
+
+	meta := &WorkspaceMeta{
+		HostCommands: []string{"gh"},
+		Env:          map[string]string{"FOO": "bar"},
+	}
+	if err := store.Save("my-ws", meta); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	got, err := store.Load("my-ws")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !equalStringSlice(got.HostCommands, []string{"gh"}) {
+		t.Errorf("HostCommands: got %v, want [gh]", got.HostCommands)
+	}
+	if got.Env["FOO"] != "bar" {
+		t.Errorf("Env[FOO]: got %q, want %q", got.Env["FOO"], "bar")
+	}
+}
+
+func TestWorkspaceStore_DBMode_List_MultiSlug(t *testing.T) {
+	t.Parallel()
+	store := newTestDBBackedStore(t)
+
+	for _, slug := range []string{"alpha", "beta", "gamma"} {
+		if err := store.Save(slug, &WorkspaceMeta{}); err != nil {
+			t.Fatalf("Save %q: %v", slug, err)
+		}
+	}
+
+	slugs, err := store.List()
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	sort.Strings(slugs)
+	want := []string{"alpha", "beta", "gamma"}
+	if !equalStringSlice(slugs, want) {
+		t.Errorf("List: got %v, want %v", slugs, want)
+	}
+}
+
+func TestWorkspaceStore_DBMode_Remove_ThenLoadReturnsNotExist(t *testing.T) {
+	t.Parallel()
+	store := newTestDBBackedStore(t)
+
+	if err := store.Save("gone", &WorkspaceMeta{HostCommands: []string{"a"}}); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	if err := store.Remove("gone"); err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+
+	_, err := store.Load("gone")
+	if err == nil {
+		t.Fatal("Load after Remove: expected error, got nil")
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("Load after Remove: error = %v, want os.ErrNotExist wrapped", err)
+	}
+}
+
+func TestWorkspaceStore_DBMode_Remove_RejectsDefault(t *testing.T) {
+	t.Parallel()
+	store := newTestDBBackedStore(t)
+
+	if err := store.EnsureDefault(); err != nil {
+		t.Fatalf("EnsureDefault: %v", err)
+	}
+	if err := store.Remove(DefaultWorkspaceSlug); err == nil {
+		t.Fatal("Remove(default): expected error, got nil")
+	}
+	if _, err := store.Load(DefaultWorkspaceSlug); err != nil {
+		t.Errorf("default workspace was deleted despite rejected Remove: %v", err)
+	}
+}
+
+func TestWorkspaceStore_DBMode_EnsureDefault_Idempotent(t *testing.T) {
+	t.Parallel()
+	store := newTestDBBackedStore(t)
+
+	if err := store.EnsureDefault(); err != nil {
+		t.Fatalf("EnsureDefault (1st): %v", err)
+	}
+	if err := store.Save(DefaultWorkspaceSlug, &WorkspaceMeta{Env: map[string]string{"USER_SET": "yes"}}); err != nil {
+		t.Fatalf("Save(default): %v", err)
+	}
+	if err := store.EnsureDefault(); err != nil {
+		t.Fatalf("EnsureDefault (2nd): %v", err)
+	}
+
+	meta, err := store.Load(DefaultWorkspaceSlug)
+	if err != nil {
+		t.Fatalf("Load(default): %v", err)
+	}
+	if meta.Env["USER_SET"] != "yes" {
+		t.Errorf("EnsureDefault clobbered existing default workspace: Env=%v", meta.Env)
+	}
+}
+
+func TestWorkspaceStore_DBMode_SetRepository_SwitchesFromYAMLMode(t *testing.T) {
+	t.Parallel()
+
+	d, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	t.Cleanup(func() { d.Close() })
+	if err := migrate.Apply(d.Conn); err != nil {
+		t.Fatalf("apply migrations: %v", err)
+	}
+
+	// Start in yaml mode (matches NewWorkspaceStore("") in existing callers),
+	// write a workspace to the yaml dir, then switch to DB mode via
+	// SetRepository and verify the yaml-written workspace is NOT visible
+	// through the DB-backed Load (the two are deliberately independent
+	// stores once the repository is wired — the daemon startup path relies
+	// on MigrateWorkspaceYAMLToDB, not on WorkspaceStore itself, to bridge
+	// yaml content into the DB).
+	dir := t.TempDir()
+	store := NewWorkspaceStore(dir)
+	if err := store.Save("yaml-only", &WorkspaceMeta{HostCommands: []string{"yaml"}}); err != nil {
+		t.Fatalf("Save (yaml mode): %v", err)
+	}
+
+	store.SetRepository(NewWorkspaceRepository(d.Conn))
+
+	if _, err := store.Load("yaml-only"); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("Load(yaml-only) after SetRepository: expected os.ErrNotExist, got %v", err)
+	}
+
+	if err := store.Save("db-only", &WorkspaceMeta{HostCommands: []string{"db"}}); err != nil {
+		t.Fatalf("Save (db mode): %v", err)
+	}
+	got, err := store.Load("db-only")
+	if err != nil {
+		t.Fatalf("Load(db-only): %v", err)
+	}
+	if !equalStringSlice(got.HostCommands, []string{"db"}) {
+		t.Errorf("HostCommands: got %v, want [db]", got.HostCommands)
+	}
+
+	// The yaml file must still exist on disk untouched (shadow copy, PR3
+	// does not delete it).
+	if _, err := os.Stat(filepath.Join(dir, "yaml-only.yaml")); err != nil {
+		t.Errorf("expected yaml-only.yaml to still exist on disk: %v", err)
 	}
 }

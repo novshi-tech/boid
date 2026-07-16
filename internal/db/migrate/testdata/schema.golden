@@ -50,7 +50,7 @@ CREATE TABLE projects (
 CREATE TABLE schema_migrations (
 			version    TEXT PRIMARY KEY,
 			applied_at DATETIME NOT NULL DEFAULT (datetime('now'))
-		);
+		, state TEXT NOT NULL DEFAULT 'committed', input_hash TEXT NOT NULL DEFAULT '');
 
 -- table: secrets
 CREATE TABLE "secrets" (
