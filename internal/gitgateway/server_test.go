@@ -257,31 +257,37 @@ func TestServeHTTP_NotifiesOnUpstream401(t *testing.T) {
 	}
 }
 
-// TestServeHTTP_NotifiesCredentialErrorDistinctlyFromUpstream401 proves the
+// TestServeHTTP_CredentialResolutionFailure_FailsFastWith502 proves the
 // gateway distinguishes a config problem (credential injection itself fails)
-// from an upstream 401 (docs/plans/git-gateway-cutover.md PR4, flagged in
-// PR3's review). The SecretResolver here deliberately errors — standing in
-// for a misconfigured/missing secret_key reference (docs/plans/git-gateway-cutover.md
-// PR4 実装ヒント: 「config error 判定は secret resolver が error を返した /
-// 空文字を返したで判別」) — so Inject fails before the request ever reaches
-// upstream; the request is still forwarded (fail-open, matching the doc's
-// 「gateway 自体は落とさない」), unauthenticated, and the upstream's response
-// (200, since this test upstream requires no auth) must NOT trigger
-// NotifyUpstreamAuthFailure.
-func TestServeHTTP_NotifiesCredentialErrorDistinctlyFromUpstream401(t *testing.T) {
-	var gotAuth string
+// from an upstream 401, AND that the config-problem path returns 502 without
+// ever contacting the upstream — the fail-fast behavior introduced in
+// docs/plans/gitgateway-credential-fail-fast.md PR-B, reversing the pre-PR-B
+// fail-open policy from docs/plans/git-gateway-cutover.md PR4.
+//
+// The SecretResolver here deliberately errors — standing in for a
+// misconfigured/missing secret_key reference (e.g. `boid secret set -n <ws>
+// BB_TOKEN` never ran for the workspace, the real-world hang trigger
+// captured in memo [[gitgateway-credential-fail-hangs-sandbox]]) — so
+// Resolve fails before the request ever reaches upstream. Under the pre-PR-B
+// contract this would forward-without-auth and let the upstream respond
+// 401 (the shape that then produced the sandbox TUI credential prompt hang);
+// under PR-B the gateway 502s and the upstream handler must never be called.
+//
+// NotifyCredentialError must still fire exactly once (the observability
+// contract is unchanged, only the proxy behavior is). NotifyUpstreamAuthFailure
+// must not fire since the upstream is never contacted.
+func TestServeHTTP_CredentialResolutionFailure_FailsFastWith502(t *testing.T) {
 	upstream := newCapturingUpstream(t, func(w http.ResponseWriter, r *http.Request) {
-		gotAuth = r.Header.Get("Authorization")
-		w.WriteHeader(http.StatusOK)
+		t.Fatalf("upstream must not be contacted when credential resolution fails (fail-fast), got request to %s", r.URL.Path)
 	})
 	host := upstreamHost(t, upstream)
 	key := NewRepoKey(host, "owner", "repo")
 
 	reg := NewRegistry()
-	token := reg.Register(map[RepoKey]Permission{key: PermFetch}, "default")
+	token := reg.Register(map[RepoKey]Permission{key: PermFetch}, "khi")
 	creds := NewCredentialProvider([]HostForgeConfig{
-		{Host: host, Forge: ForgeGitHub, SecretKey: "gh-pat", Scheme: "http"},
-	}, func(string, string) (string, error) { return "", fmt.Errorf("secret store: key %q not found", "gh-pat") })
+		{Host: host, Forge: ForgeBitbucket, SecretKey: "BB_TOKEN", Scheme: "http"},
+	}, func(string, string) (string, error) { return "", fmt.Errorf("sql: no rows in result set") })
 
 	var credErrHost string
 	var credErrRepo RepoKey
@@ -305,11 +311,21 @@ func TestServeHTTP_NotifiesCredentialErrorDistinctlyFromUpstream401(t *testing.T
 		t.Fatal(err)
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("status = %d, want 200 (fail-open: request still forwarded, unauthenticated)", resp.StatusCode)
+	if resp.StatusCode != http.StatusBadGateway {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d, want 502 (fail-fast: credential resolution failed, upstream must not be contacted); body=%s", resp.StatusCode, body)
 	}
-	if gotAuth != "" {
-		t.Fatalf("upstream saw Authorization = %q, want none (Inject should have failed)", gotAuth)
+
+	// The 502 body carries diagnostic hints so nose can locate the missing
+	// secret without cross-referencing boid.log: host + namespace + secret
+	// key. These are the same three fields the wrapped Resolve error itself
+	// contains (asserted in credentials_test.go TestResolveResolverError),
+	// re-surfaced through the response body for direct observability.
+	body, _ := io.ReadAll(resp.Body)
+	for _, want := range []string{host, "khi", "BB_TOKEN"} {
+		if !strings.Contains(string(body), want) {
+			t.Errorf("response body = %q, missing %q", body, want)
+		}
 	}
 
 	select {
@@ -327,7 +343,7 @@ func TestServeHTTP_NotifiesCredentialErrorDistinctlyFromUpstream401(t *testing.T
 		t.Fatal("credential error should be non-nil")
 	}
 	if upstreamNotified {
-		t.Fatal("NotifyUpstreamAuthFailure should not fire for a credential-injection error (200 from upstream, not 401)")
+		t.Fatal("NotifyUpstreamAuthFailure should not fire (upstream was never contacted)")
 	}
 }
 
