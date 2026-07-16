@@ -56,11 +56,12 @@ type Server struct {
 	// buildProjectStore's preflight (docs/plans/workspace-db-consolidation.md
 	// PR2): every installed kit.yaml's host_commands, deduped by identical
 	// definition, name-collision-checked, and mirrored to
-	// orchestrator.DefaultHostCommandsPath() on disk. Nothing dispatches
-	// through this yet — the existing per-kit resolver path (KitResolver in
-	// buildProjectStore) remains the live dispatch route during the PR2/PR3
-	// parity-verification window; this field exists so the aggregated config
-	// has a daemon-side read path to compare against before PR3 cuts over.
+	// orchestrator.DefaultHostCommandsPath() on disk. This is the live
+	// dispatch route as of PR3's cutover — workspace.HostCommands ([]string
+	// reference names) resolves against this map in ProjectStore.
+	// GetWithWorkspace. The former per-kit resolver path (KitResolver in
+	// buildProjectStore, kept only for the PR2/PR3 parity-verification
+	// window) was removed in PR6 (kit mechanism retirement).
 	hostCommands map[string]orchestrator.HostCommandSpec
 
 	// gitgateway 4-point set (docs/plans/git-gateway-cutover.md PR4): the

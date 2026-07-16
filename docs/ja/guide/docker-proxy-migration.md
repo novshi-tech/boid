@@ -17,41 +17,50 @@ boid ネイティブプロキシはこれらの問題を解消します:
 
 ## 移行手順
 
-### 1. `project.yaml` の更新
+> **注意:** `capabilities` と `host_commands` はもう `project.yaml` のフィールドではありません。 現行スキーマではどちらもロード時に reject されます — machine-local な実行環境は **workspace** に設定します (`boid workspace create/edit/import`)。 まだ project.yaml がこれらのフィールドを持ったままの旧スキーマの場合は、 先に `boid project migrate <dir> --apply` で workspace へ変換してください ([移行ガイド](migration.md) 参照)。
 
-`kits` リストから docker kit を外し、`capabilities.docker` を追加します。
+### 1. workspace の更新
 
-**変更前:**
+docker kit への参照を workspace の `kits:` (レガシーフィールド) から外し、 `capabilities.docker` を workspace に直接追加します。 まず現在の中身を確認します:
+
+```bash
+boid workspace export <slug> > ws.yaml
+```
+
+**変更前 (`ws.yaml`、 docker kit がまだ `kits:` に入っている状態):**
 
 ```yaml
 kits:
-  - github.com/novshi-tech/boid-kits/claude-code
-  - github.com/novshi-tech/boid-kits/docker   # ← 削除
+  - docker   # ← legacy kit 参照。削除する
 
-task_behaviors:
-  executor:
-    ...
+env:
+  ...
 ```
 
 **変更後:**
 
 ```yaml
-kits:
-  - github.com/novshi-tech/boid-kits/claude-code
-
 capabilities:
   docker: {}   # ← 追加
 
-task_behaviors:
-  executor:
-    ...
+env:
+  ...
 ```
 
-変更後に `boid project reload` を実行して反映します。
+反映します:
+
+```bash
+boid workspace edit <slug> --from-file ws.yaml
+```
+
+| 旧 (`project.yaml`、 撤去済み) | 新 (workspace) |
+|---|---|
+| `kits: [..., docker]` (docker kit を project トップで参照) | workspace の `kits:` から docker kit 名を外し、 `capabilities: { docker: {} }` を直接設定 |
+| `capabilities.docker: {}` (project.yaml トップレベル) | `capabilities.docker: {}` (workspace) — 形は同じ、置き場所だけ変わった |
 
 ### 2. `host_commands` の確認
 
-`capabilities.docker` が有効なプロジェクトで `host_commands` に `docker` をサブコマンド制限なしで登録していると、ジョブ起動時にエラーになります。
+`capabilities.docker` が有効な workspace で `host_commands` に `docker` をサブコマンド制限なしで登録していると、ジョブ起動時にエラーになります。
 
 ```
 host_commands.docker: unrestricted docker access bypasses the docker proxy
@@ -59,16 +68,27 @@ host_commands.docker: unrestricted docker access bypasses the docker proxy
 to specific subcommands (e.g. allow: [build])
 ```
 
-`host_commands` に `docker` が登録されている場合は次のいずれかの対応をしてください:
+`host_commands` は二層構造です — workspace が持つのは参照 **名前** のリストだけで、実際の定義 (`allow`/`deny`/`path` 等) は daemon 側の集約レジストリ `~/.config/boid/host_commands.yaml` にあります。 workspace の `host_commands` に `docker` という名前が入っていて、 レジストリ側のその定義がサブコマンド制限なしの場合は次のいずれかの対応をしてください:
 
-- **削除する（推奨）**: proxy socket 経由で docker CLI / SDK / TestContainers が使えるため、`host_commands` への `docker` 登録は通常不要です
-- **サブコマンドを制限する**: image build 等どうしてもホスト直実行が必要な場合は `allow: [build]` のように制限します
+- **削除する（推奨）**: proxy socket 経由で docker CLI / SDK / TestContainers が使えるため、`host_commands` への `docker` 登録は通常不要です。 workspace の `host_commands` リストから `docker` を外します
+- **サブコマンドを制限する**: image build 等どうしてもホスト直実行が必要な場合は、 daemon 側レジストリの定義を `allow: [build]` のように制限します
 
 ```yaml
+# ~/.config/boid/host_commands.yaml
 host_commands:
   docker:
     allow: [build]   # build サブコマンドのみ許可 (image build 用)
 ```
+
+```bash
+boid host-commands reload
+```
+
+| 旧 (`project.yaml`、 撤去済み) | 新 |
+|---|---|
+| `host_commands.docker: { allow: [...] }` (project.yaml トップレベル) | workspace の `host_commands: [docker]` (参照名) + daemon 側の `~/.config/boid/host_commands.yaml` に `docker: { allow: [...] }` の実定義 |
+
+詳細は [オンボーディング / host_commands を定義する](onboarding.md#host_commands-を定義する-daemon-側の集約レジストリ) を参照してください。
 
 ### 3. cetusguard の撤去
 

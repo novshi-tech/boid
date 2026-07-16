@@ -8,7 +8,7 @@ The keys you can place at the top level of a task payload (the *traits*), and ho
 
 - A payload is the JSON document that grows as the task progresses.
 - Top-level keys of the payload are called *traits*.
-- Which traits a hook may read and write is declared in [`kit.yaml`](../kit-authoring/overview.md) under `traits.consumes` / `traits.produces`.
+- Which traits a hook may read and write is declared on the hook itself, in [`project.yaml`](project-yaml.md)'s `task_behaviors.<name>.hooks[]` entries, under `traits.consumes` / `traits.produces`. Hooks are always authoritative in `project.yaml` — a kit never provides hooks, so `kit.yaml` has no equivalent declaration.
 - Updates flow through payload patches (a JSON document with a `payload_patch` wrapper) emitted by hooks — see [Hook script protocol](hook-contract.md).
 
 ## Defined traits
@@ -104,14 +104,16 @@ When multiple hooks run in parallel, give each one its own sub-key (e.g. `artifa
 
 ## Declaring traits on a hook
 
-[`kit.yaml`](../kit-authoring/overview.md) declares which traits a hook reads and writes:
+A hook's entry under [`project.yaml`](project-yaml.md)'s `task_behaviors.<name>.hooks[]` declares which traits it reads and writes:
 
 ```yaml
-hooks:
-  - id: my-hook
-    traits:
-      consumes: [artifact?]    # values read (delivered through TaskJSON)
-      produces: [artifact]     # values written (anything else in the patch is dropped)
+task_behaviors:
+  executor:
+    hooks:
+      - id: my-hook
+        traits:
+          consumes: [artifact?]    # values read (delivered through TaskJSON)
+          produces: [artifact]     # values written (anything else in the patch is dropped)
 ```
 
 ### Optional consumes (`?` suffix)
@@ -134,5 +136,5 @@ If a hook's payload patch contains a trait not listed in `produces`, `boid` logs
 - [Concepts / Payload and traits](../guide/concepts.md#payload-and-traits) — short introduction.
 - [State machine](../guide/state-machine.md) — how hook completion drives transitions.
 - [Hook script protocol](hook-contract.md) — how to emit payload patches.
-- [Kit authoring overview](../kit-authoring/overview.md) — declaring `traits.consumes` / `produces`.
+- [`project.yaml` reference](project-yaml.md) — declaring `traits.consumes` / `produces` on a hook.
 - [`project.yaml` reference / Instruction](project-yaml.md#instruction) — the shape of `instructions`.

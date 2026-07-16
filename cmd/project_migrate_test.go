@@ -1,15 +1,24 @@
 package cmd
 
 import (
+	"bytes"
+	"context"
+	"errors"
+	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/novshi-tech/boid/internal/api"
+	"github.com/novshi-tech/boid/internal/client"
 	"github.com/novshi-tech/boid/internal/db"
 	"github.com/novshi-tech/boid/internal/db/migrate"
 	"github.com/novshi-tech/boid/internal/dispatcher"
 	"github.com/novshi-tech/boid/internal/orchestrator"
+	"github.com/novshi-tech/boid/internal/server"
+	"github.com/novshi-tech/boid/testutil"
 	"github.com/spf13/cobra"
 )
 
@@ -101,6 +110,21 @@ func invokeMigrate(t *testing.T, dir string, opts migrateOpts) error {
 		t.Setenv("XDG_DATA_HOME", opts.xdgDataHome)
 	}
 
+	// MAJOR 4 (codex review, docs/plans/workspace-db-consolidation.md):
+	// --apply now best-effort-pushes the migrated workspace to whatever
+	// daemon client.DefaultSocketPath() resolves to. Without pinning this to
+	// an isolated, guaranteed-empty path, these tests would silently dial
+	// the machine's real running boid daemon (if any) over its real
+	// $XDG_RUNTIME_DIR/boid.sock and create real workspace rows there.
+	// opts.socketPath lets a test opt into a real (test) daemon instead —
+	// see TestProjectMigrate_Apply_Push* below, which call MigrateProject
+	// directly rather than through this helper.
+	socketPath := opts.socketPath
+	if socketPath == "" {
+		socketPath = filepath.Join(t.TempDir(), "no-daemon-here.sock")
+	}
+	t.Setenv("BOID_SOCKET", socketPath)
+
 	cmd := &cobra.Command{Use: "migrate"}
 	cmd.Flags().StringVar(&migrateWorkspace, "workspace", migrateWorkspace, "")
 	cmd.Flags().BoolVar(&migrateApply, "apply", migrateApply, "")
@@ -119,6 +143,11 @@ type migrateOpts struct {
 	keyPath       string
 	xdgConfigHome string
 	xdgDataHome   string
+	// socketPath overrides the BOID_SOCKET path invokeMigrate pins tests to
+	// (see its doc comment). Empty uses an isolated, guaranteed-unreachable
+	// path so the daemon-push added for MAJOR 4 deterministically takes the
+	// "daemon unreachable" branch.
+	socketPath string
 }
 
 // readProjectYAMLContent reads .boid/project.yaml as a string.
@@ -961,5 +990,741 @@ task_behaviors:
 				t.Errorf("workspace.yaml should not be written on refusal, got stat err: %v", statErr)
 			}
 		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// MAJOR 4 (codex review, docs/plans/workspace-db-consolidation.md): --apply
+// best-effort-pushes the migrated workspace to a live daemon (POST
+// /api/workspaces, create-only), since the plain wsStore.Save (yaml mode)
+// exercised by every test above only ever writes the now-inert shadow file.
+// These use testutil.NewTestServer for a real (test) daemon to push against;
+// invokeMigrate's tests above run with BOID_SOCKET pinned to a guaranteed-
+// unreachable path (see invokeMigrate's doc comment) and so never exercise
+// this branch.
+// ---------------------------------------------------------------------------
+
+// TestProjectMigrate_Apply_PushesNewWorkspaceToLiveDaemon verifies that a
+// brand-new workspace slug (no DB row yet) is created directly in a
+// reachable daemon by --apply, not just written to the shadow yaml.
+func TestProjectMigrate_Apply_PushesNewWorkspaceToLiveDaemon(t *testing.T) {
+	minimalYAML := `id: proj-push-new
+name: Push New
+env:
+  FOO: bar
+`
+	dir := setupMigrateProject(t, minimalYAML)
+	dbFile := setupMigrateDBFile(t)
+	cfgDir := t.TempDir()
+
+	ts := testutil.NewTestServer(t)
+	t.Setenv("BOID_SOCKET", ts.Server.SocketPath())
+	t.Setenv("XDG_CONFIG_HOME", cfgDir)
+
+	var out bytes.Buffer
+	err := MigrateProject(MigrateProjectOptions{
+		Dir:       dir,
+		Workspace: "push-new-ws",
+		Apply:     true,
+		DBPath:    dbFile,
+		Out:       &out,
+	})
+	if err != nil {
+		t.Fatalf("migrate apply: unexpected error: %v", err)
+	}
+
+	var detail api.WorkspaceDetail
+	if err := ts.Client.Do("GET", "/api/workspaces/push-new-ws", nil, &detail); err != nil {
+		t.Fatalf("workspace should have been created in the live daemon: %v", err)
+	}
+	if detail.Meta == nil || detail.Meta.Env["FOO"] != "bar" {
+		t.Errorf("workspace env = %+v, want FOO=bar", detail.Meta)
+	}
+	if strings.Contains(out.String(), "warning:") {
+		t.Errorf("expected no warning when pushing a brand-new workspace, got: %s", out.String())
+	}
+}
+
+// TestProjectMigrate_Apply_ExistingLiveWorkspace_MergesAndUpdates verifies
+// that when the workspace slug already has a DB row in the live daemon,
+// --apply merges the migrated fields into it (GET current content, merge,
+// PUT with If-Match) instead of leaving it untouched behind a 409-style
+// warning (MAJOR 2, codex review, docs/plans/workspace-db-consolidation.md
+// — a create-only POST used to just 409 and never actually apply the
+// migration to an already-existing workspace, the common case for the
+// `default` workspace).
+func TestProjectMigrate_Apply_ExistingLiveWorkspace_MergesAndUpdates(t *testing.T) {
+	minimalYAML := `id: proj-push-existing
+name: Push Existing
+env:
+  FOO: bar
+`
+	dir := setupMigrateProject(t, minimalYAML)
+	dbFile := setupMigrateDBFile(t)
+	cfgDir := t.TempDir()
+
+	ts := testutil.NewTestServer(t)
+	t.Setenv("BOID_SOCKET", ts.Server.SocketPath())
+	t.Setenv("XDG_CONFIG_HOME", cfgDir)
+
+	// Pre-seed the workspace with content distinguishable from what migrate
+	// would compute, so we can tell a real merge from a blind overwrite.
+	repo := orchestrator.NewWorkspaceRepository(ts.Server.DB())
+	if err := repo.Save("push-existing-ws", &orchestrator.WorkspaceMeta{
+		Env: map[string]string{"PRE_EXISTING": "marker"},
+	}); err != nil {
+		t.Fatalf("seed existing workspace: %v", err)
+	}
+
+	var out bytes.Buffer
+	err := MigrateProject(MigrateProjectOptions{
+		Dir:       dir,
+		Workspace: "push-existing-ws",
+		Apply:     true,
+		DBPath:    dbFile,
+		Out:       &out,
+	})
+	if err != nil {
+		t.Fatalf("migrate apply: unexpected error: %v", err)
+	}
+	if strings.Contains(out.String(), "warning:") {
+		t.Errorf("expected no warning for a successful merge, got: %s", out.String())
+	}
+	if !strings.Contains(out.String(), "updated in the daemon") {
+		t.Errorf("expected output to report the workspace was updated, got: %s", out.String())
+	}
+
+	var detail api.WorkspaceDetail
+	if err := ts.Client.Do("GET", "/api/workspaces/push-existing-ws", nil, &detail); err != nil {
+		t.Fatalf("get existing workspace: %v", err)
+	}
+	if detail.Meta == nil || detail.Meta.Env["PRE_EXISTING"] != "marker" {
+		t.Errorf("existing workspace content was lost: %+v", detail.Meta)
+	}
+	if detail.Meta == nil || detail.Meta.Env["FOO"] != "bar" {
+		t.Errorf("migrated env was not merged into the live already-existing workspace: %+v", detail.Meta)
+	}
+}
+
+// TestProjectMigrate_PreservesExistingWorkspaceFields is the exact scenario
+// from the codex MAJOR 2 review: an existing workspace already has its own
+// env entry (EXISTING: yes, authored some other way — hand edit, a prior
+// migration, `boid workspace edit`, ...) that this migration's project.yaml
+// says nothing about. --apply must keep it, in addition to adding the
+// fields this migration actually carries (NEW: yes) — a union, not a
+// replace.
+func TestProjectMigrate_PreservesExistingWorkspaceFields(t *testing.T) {
+	projectYAML := `id: proj-preserve
+name: Preserve Project
+env:
+  NEW: "yes"
+`
+	dir := setupMigrateProject(t, projectYAML)
+	dbFile := setupMigrateDBFile(t)
+	cfgDir := t.TempDir()
+
+	ts := testutil.NewTestServer(t)
+	t.Setenv("BOID_SOCKET", ts.Server.SocketPath())
+	t.Setenv("XDG_CONFIG_HOME", cfgDir)
+
+	repo := orchestrator.NewWorkspaceRepository(ts.Server.DB())
+	if err := repo.Save("preserve-ws", &orchestrator.WorkspaceMeta{
+		Env: map[string]string{"EXISTING": "yes"},
+	}); err != nil {
+		t.Fatalf("seed existing workspace: %v", err)
+	}
+
+	var out bytes.Buffer
+	err := MigrateProject(MigrateProjectOptions{
+		Dir:       dir,
+		Workspace: "preserve-ws",
+		Apply:     true,
+		DBPath:    dbFile,
+		Out:       &out,
+	})
+	if err != nil {
+		t.Fatalf("migrate apply: unexpected error: %v", err)
+	}
+
+	var detail api.WorkspaceDetail
+	if err := ts.Client.Do("GET", "/api/workspaces/preserve-ws", nil, &detail); err != nil {
+		t.Fatalf("get workspace: %v", err)
+	}
+	if detail.Meta == nil {
+		t.Fatalf("workspace meta is nil")
+	}
+	if detail.Meta.Env["EXISTING"] != "yes" {
+		t.Errorf("pre-existing env EXISTING lost: %+v", detail.Meta.Env)
+	}
+	if detail.Meta.Env["NEW"] != "yes" {
+		t.Errorf("migrated env NEW not merged in: %+v", detail.Meta.Env)
+	}
+}
+
+// TestProjectMigrate_Apply_DaemonUnreachable_WarnsButSucceeds verifies that
+// --apply still completes successfully (project.yaml rewritten, shadow yaml
+// written) when no daemon is reachable at all — the daemon push is
+// best-effort and must never turn into a hard failure of the whole command.
+func TestProjectMigrate_Apply_DaemonUnreachable_WarnsButSucceeds(t *testing.T) {
+	minimalYAML := `id: proj-push-unreachable
+name: Push Unreachable
+env:
+  FOO: bar
+`
+	dir := setupMigrateProject(t, minimalYAML)
+	dbFile := setupMigrateDBFile(t)
+	cfgDir := t.TempDir()
+
+	err := invokeMigrate(t, dir, migrateOpts{
+		workspace:     "push-unreachable-ws",
+		apply:         true,
+		dbPath:        dbFile,
+		xdgConfigHome: cfgDir,
+	})
+	if err != nil {
+		t.Fatalf("migrate apply: unexpected error: %v", err)
+	}
+
+	wsStore := orchestrator.NewWorkspaceStore(filepath.Join(cfgDir, "boid", "workspaces"))
+	if _, err := wsStore.Load("push-unreachable-ws"); err != nil {
+		t.Fatalf("shadow workspace.yaml not written: %v", err)
+	}
+}
+
+// TestProjectMigrate_WithHostCommandsAndBindings is MAJOR 1's regression
+// test (codex review, docs/plans/workspace-db-consolidation.md): a legacy
+// project.yaml with host_commands + additional_bindings generates a legacy
+// kit whose name is folded into workspace.Kits. Before the fix, the daemon
+// push (POST /api/workspaces) ran *before* the legacy kit.yaml was written
+// to disk and before the daemon's aggregated host_commands.yaml/live cache
+// knew about the kit's host_commands names, so
+// CreateWorkspace/UpdateWorkspace's post-materialization
+// validateHostCommandRefs check 400'd on "unknown host_commands
+// reference(s)" — project.yaml still got rewritten (silently "succeeding")
+// but the DB never actually gained the migrated workspace content. This
+// exercises the whole path end-to-end against a real daemon: kit.yaml must
+// land on disk, host_commands.yaml must be synced + reloaded, and *then*
+// the workspace create must succeed with host_commands/additional_bindings
+// already resolved.
+func TestProjectMigrate_WithHostCommandsAndBindings(t *testing.T) {
+	projectYAML := `id: proj-hostcmd
+name: Host Cmd Project
+host_commands:
+  gh:
+    allow:
+      - pr
+      - issue
+additional_bindings:
+  - source: /var/data
+    mode: ro
+`
+	dir := setupMigrateProject(t, projectYAML)
+	dbFile := setupMigrateDBFile(t)
+
+	cfgDir := t.TempDir()
+	dataDir := t.TempDir()
+	kitsDir := filepath.Join(dataDir, "boid", "kits")
+
+	// MUST match cmd/start.go's defaultKitsDir() resolution exactly, so the
+	// migrate CLI (writing the legacy kit.yaml) and the daemon (reading it
+	// back via KitsDir) agree on where kits live — testutil.NewTestServer
+	// does not accept a custom KitsDir, so a bespoke server is constructed
+	// here instead (mirrors internal/server/wire_host_commands_test.go's own
+	// pattern for the same reason).
+	t.Setenv("XDG_CONFIG_HOME", cfgDir)
+	t.Setenv("XDG_DATA_HOME", dataDir)
+
+	sockPath := filepath.Join(t.TempDir(), "boid.sock")
+	// MigrateProject's daemon push resolves the socket via
+	// client.DefaultSocketPath(), which falls back to the real
+	// $XDG_RUNTIME_DIR/boid.sock (or /run/user/<uid>/boid.sock) when
+	// $BOID_SOCKET is unset — pin it to this test's isolated server so the
+	// push never reaches a real daemon that happens to be running on the
+	// host (see invokeMigrate's own doc comment for the same concern).
+	t.Setenv("BOID_SOCKET", sockPath)
+
+	srv, err := server.New(server.Config{
+		DBPath:     ":memory:",
+		SocketPath: sockPath,
+		HTTPAddr:   "127.0.0.1:0",
+		KitsDir:    kitsDir,
+	})
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+	if err := srv.Start(context.Background()); err != nil {
+		t.Fatalf("start server: %v", err)
+	}
+	t.Cleanup(func() { _ = srv.Stop() })
+
+	c := client.NewUnixClient(sockPath)
+
+	var out bytes.Buffer
+	err = MigrateProject(MigrateProjectOptions{
+		Dir:       dir,
+		Workspace: "hostcmd-ws",
+		Apply:     true,
+		DBPath:    dbFile,
+		Out:       &out,
+	})
+	if err != nil {
+		t.Fatalf("migrate apply: unexpected error: %v", err)
+	}
+	if strings.Contains(out.String(), "warning:") {
+		t.Errorf("expected no warning, got: %s", out.String())
+	}
+
+	var detail api.WorkspaceDetail
+	if err := c.Do("GET", "/api/workspaces/hostcmd-ws", nil, &detail); err != nil {
+		t.Fatalf("workspace should exist in the live daemon: %v", err)
+	}
+	if detail.Meta == nil {
+		t.Fatalf("workspace meta is nil")
+	}
+
+	hcSet := stringSetFromSlice(detail.Meta.HostCommands)
+	if !hcSet["gh"] {
+		t.Errorf("workspace host_commands missing 'gh' (kit materialization/host_commands sync did not run before the daemon push): %v", detail.Meta.HostCommands)
+	}
+
+	foundBinding := false
+	for _, b := range detail.Meta.AdditionalBindings {
+		if b.Source == "/var/data" {
+			foundBinding = true
+		}
+	}
+	if !foundBinding {
+		t.Errorf("workspace additional_bindings missing /var/data: %v", detail.Meta.AdditionalBindings)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// MAJOR 1 (codex review, 4th pass, docs/plans/workspace-db-consolidation.md):
+// `boid start --auto-migrate` (cmd/start.go's runDaemonParent ->
+// handleMigrationFailure -> runAutoMigrate) calls MigrateProject in-process
+// specifically because the daemon it just tried to start FAILED to start —
+// so the daemon push is never reachable at that call site. Before this fix,
+// pushMigratedWorkspaceToDaemon's HTTP-only push always took the "could not
+// reach the boid daemon" warning branch there and left the `workspaces` DB
+// row completely untouched: auto-migrate looked like it succeeded but never
+// actually applied anything a subsequent successful daemon start would read
+// from. These tests exercise the offline fallback
+// (applyMigratedWorkspaceOffline) through MigrateProject/invokeMigrate with
+// no daemon reachable at all — invokeMigrate's default BOID_SOCKET already
+// points at a guaranteed-empty path (see its own doc comment), matching the
+// auto-migrate call site exactly.
+// ---------------------------------------------------------------------------
+
+// TestProjectMigrate_AutoMigrate_OfflineDaemonMode verifies that --apply,
+// with no daemon reachable, writes the migrated workspace fields (env,
+// host_commands, additional_bindings) directly into the `workspaces` DB row
+// for a brand-new slug, instead of only reaching the (daemon-unread) shadow
+// yaml file.
+func TestProjectMigrate_AutoMigrate_OfflineDaemonMode(t *testing.T) {
+	projectYAML := `id: proj-automigrate-offline
+name: Auto Migrate Offline
+env:
+  FOO: bar
+host_commands:
+  gh:
+    allow:
+      - pr
+additional_bindings:
+  - source: /var/data
+    mode: ro
+`
+	dir := setupMigrateProject(t, projectYAML)
+	dbFile := setupMigrateDBFile(t)
+	cfgDir := t.TempDir()
+	dataDir := t.TempDir()
+
+	err := invokeMigrate(t, dir, migrateOpts{
+		workspace:     "automigrate-offline-ws",
+		apply:         true,
+		dbPath:        dbFile,
+		xdgConfigHome: cfgDir,
+		xdgDataHome:   dataDir,
+	})
+	if err != nil {
+		t.Fatalf("migrate apply: unexpected error: %v", err)
+	}
+
+	boidDB, err := db.Open(dbFile)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer boidDB.Close()
+
+	meta, err := orchestrator.NewWorkspaceRepository(boidDB.Conn).Load("automigrate-offline-ws")
+	if err != nil {
+		t.Fatalf("workspace row should have been created directly in the database: %v", err)
+	}
+	if meta.Env["FOO"] != "bar" {
+		t.Errorf("workspace env = %+v, want FOO=bar", meta.Env)
+	}
+	foundBinding := false
+	for _, b := range meta.AdditionalBindings {
+		if b.Source == "/var/data" {
+			foundBinding = true
+		}
+	}
+	if !foundBinding {
+		t.Errorf("workspace additional_bindings missing /var/data: %v", meta.AdditionalBindings)
+	}
+	hcSet := stringSetFromSlice(meta.HostCommands)
+	if !hcSet["gh"] {
+		t.Errorf("workspace host_commands missing 'gh': %v", meta.HostCommands)
+	}
+}
+
+// TestProjectMigrate_OfflineDaemonMode_MergesExistingWorkspace is the offline
+// counterpart of TestProjectMigrate_PreservesExistingWorkspaceFields: a
+// workspace slug that already has a DB row (the common case — most projects
+// migrate onto an already-existing `default` workspace) must have its
+// existing content preserved, not overwritten, by the offline
+// compare-and-swap merge (MAJOR 1).
+func TestProjectMigrate_OfflineDaemonMode_MergesExistingWorkspace(t *testing.T) {
+	projectYAML := `id: proj-automigrate-merge
+name: Auto Migrate Merge
+env:
+  NEW: "yes"
+`
+	dir := setupMigrateProject(t, projectYAML)
+	dbFile := setupMigrateDBFile(t)
+	cfgDir := t.TempDir()
+
+	seedDB, err := db.Open(dbFile)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	if err := orchestrator.NewWorkspaceRepository(seedDB.Conn).Save("automigrate-merge-ws", &orchestrator.WorkspaceMeta{
+		Env: map[string]string{"EXISTING": "yes"},
+	}); err != nil {
+		t.Fatalf("seed existing workspace: %v", err)
+	}
+	seedDB.Close()
+
+	err = invokeMigrate(t, dir, migrateOpts{
+		workspace:     "automigrate-merge-ws",
+		apply:         true,
+		dbPath:        dbFile,
+		xdgConfigHome: cfgDir,
+	})
+	if err != nil {
+		t.Fatalf("migrate apply: unexpected error: %v", err)
+	}
+
+	boidDB, err := db.Open(dbFile)
+	if err != nil {
+		t.Fatalf("re-open db: %v", err)
+	}
+	defer boidDB.Close()
+	meta, err := orchestrator.NewWorkspaceRepository(boidDB.Conn).Load("automigrate-merge-ws")
+	if err != nil {
+		t.Fatalf("load workspace: %v", err)
+	}
+	if meta.Env["EXISTING"] != "yes" {
+		t.Errorf("pre-existing env EXISTING lost: %+v", meta.Env)
+	}
+	if meta.Env["NEW"] != "yes" {
+		t.Errorf("migrated env NEW not merged in: %+v", meta.Env)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// MAJOR 2 (codex review, 4th pass, docs/plans/workspace-db-consolidation.md):
+// when the legacy kit this migration generates declares a host_commands name
+// that host_commands.yaml already defines, the outcome must depend on
+// whether the two definitions actually match (post-normalization) — an
+// identical definition dedupes (and still resyncs the daemon's live
+// snapshot), a different one aborts the whole migration rather than
+// silently keeping (or silently discarding) either side.
+// ---------------------------------------------------------------------------
+
+// TestProjectMigrate_HostCommandsSameNameSameDefinition_Dedupes verifies
+// that a host_commands name already present in host_commands.yaml with the
+// same (post-normalization) definition this migration's legacy kit would
+// write is deduped: migrate succeeds and the file's existing entry is left
+// as-is.
+func TestProjectMigrate_HostCommandsSameNameSameDefinition_Dedupes(t *testing.T) {
+	projectYAML := `id: proj-hc-dedupe
+name: Host Cmd Dedupe
+host_commands:
+  gh:
+    allow:
+      - pr
+      - issue
+`
+	dir := setupMigrateProject(t, projectYAML)
+	dbFile := setupMigrateDBFile(t)
+	cfgDir := t.TempDir()
+	dataDir := t.TempDir()
+
+	hcPath := filepath.Join(cfgDir, "boid", "host_commands.yaml")
+	if err := orchestrator.WriteHostCommandsConfig(hcPath, map[string]orchestrator.HostCommandSpec{
+		"gh": {Allow: []string{"pr", "issue"}},
+	}); err != nil {
+		t.Fatalf("seed host_commands.yaml: %v", err)
+	}
+
+	err := invokeMigrate(t, dir, migrateOpts{
+		workspace:     "hc-dedupe-ws",
+		apply:         true,
+		dbPath:        dbFile,
+		xdgConfigHome: cfgDir,
+		xdgDataHome:   dataDir,
+	})
+	if err != nil {
+		t.Fatalf("migrate apply: unexpected error: %v", err)
+	}
+
+	got, err := orchestrator.LoadHostCommandsConfig(hcPath)
+	if err != nil {
+		t.Fatalf("reload host_commands.yaml: %v", err)
+	}
+	spec, ok := got["gh"]
+	if !ok {
+		t.Fatalf("host_commands.yaml lost the 'gh' entry: %+v", got)
+	}
+	if len(spec.Allow) != 2 || spec.Allow[0] != "pr" || spec.Allow[1] != "issue" {
+		t.Errorf("host_commands.yaml 'gh' entry changed unexpectedly: %+v", spec)
+	}
+}
+
+// TestProjectMigrate_HostCommandsSameNameDifferentDefinition_FailsMigration
+// verifies that a host_commands name already present in host_commands.yaml
+// with a *different* definition than this migration's legacy kit would
+// write aborts the whole migration (error returned, host_commands.yaml left
+// untouched, project.yaml NOT rewritten) instead of silently keeping the
+// existing definition and reporting success.
+func TestProjectMigrate_HostCommandsSameNameDifferentDefinition_FailsMigration(t *testing.T) {
+	projectYAML := `id: proj-hc-conflict
+name: Host Cmd Conflict
+host_commands:
+  gh:
+    allow:
+      - pr
+      - issue
+`
+	dir := setupMigrateProject(t, projectYAML)
+	dbFile := setupMigrateDBFile(t)
+	cfgDir := t.TempDir()
+	dataDir := t.TempDir()
+
+	hcPath := filepath.Join(cfgDir, "boid", "host_commands.yaml")
+	if err := orchestrator.WriteHostCommandsConfig(hcPath, map[string]orchestrator.HostCommandSpec{
+		"gh": {Allow: []string{"pr"}}, // different from project.yaml's [pr, issue]
+	}); err != nil {
+		t.Fatalf("seed host_commands.yaml: %v", err)
+	}
+	before, err := os.ReadFile(hcPath)
+	if err != nil {
+		t.Fatalf("read seeded host_commands.yaml: %v", err)
+	}
+
+	err = invokeMigrate(t, dir, migrateOpts{
+		workspace:     "hc-conflict-ws",
+		apply:         true,
+		dbPath:        dbFile,
+		xdgConfigHome: cfgDir,
+		xdgDataHome:   dataDir,
+	})
+	if err == nil {
+		t.Fatalf("expected migrate apply to fail on a host_commands definition conflict")
+	}
+	if !strings.Contains(err.Error(), "gh") {
+		t.Errorf("error should name the conflicting command 'gh': %v", err)
+	}
+
+	after, err := os.ReadFile(hcPath)
+	if err != nil {
+		t.Fatalf("read host_commands.yaml after failed migrate: %v", err)
+	}
+	if string(before) != string(after) {
+		t.Errorf("host_commands.yaml was modified despite the conflict:\nbefore: %s\nafter:  %s", before, after)
+	}
+
+	// project.yaml must not have been rewritten either — the whole
+	// migration aborts before "source rewrite" (MAJOR 2).
+	updatedYAML := readProjectYAMLContent(t, dir)
+	if !strings.Contains(updatedYAML, "host_commands:") {
+		t.Errorf("project.yaml was rewritten despite the migration aborting:\n%s", updatedYAML)
+	}
+
+	// The workspace must not have been created in the DB either — nothing
+	// downstream of the conflict runs.
+	boidDB, err := db.Open(dbFile)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer boidDB.Close()
+	if _, err := orchestrator.NewWorkspaceRepository(boidDB.Conn).Load("hc-conflict-ws"); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("workspace %q should not have been created in the database, load returned: %v", "hc-conflict-ws", err)
+	}
+}
+
+// TestProjectMigrate_HostCommandsDedupeStillReloads verifies that even when
+// every legacy-kit host_commands name already exists in host_commands.yaml
+// with a matching definition (so the file itself is not rewritten), the
+// daemon is still asked to reload — otherwise a live daemon whose
+// in-memory snapshot predates a hand-edit to the file would 400 on
+// "unknown host_commands reference" even though the file is objectively
+// correct and unchanged (MAJOR 2).
+func TestProjectMigrate_HostCommandsDedupeStillReloads(t *testing.T) {
+	projectYAML := `id: proj-hc-reload
+name: Host Cmd Reload
+host_commands:
+  gh:
+    allow:
+      - pr
+      - issue
+`
+	dir := setupMigrateProject(t, projectYAML)
+	dbFile := setupMigrateDBFile(t)
+
+	cfgDir := t.TempDir()
+	dataDir := t.TempDir()
+	kitsDir := filepath.Join(dataDir, "boid", "kits")
+	hcPath := filepath.Join(cfgDir, "boid", "host_commands.yaml")
+
+	t.Setenv("XDG_CONFIG_HOME", cfgDir)
+	t.Setenv("XDG_DATA_HOME", dataDir)
+
+	// Seed host_commands.yaml WITHOUT 'gh' so the daemon's startup preflight
+	// (internal/server/wire.go) loads a live snapshot that does not yet
+	// know about it.
+	if err := orchestrator.WriteHostCommandsConfig(hcPath, map[string]orchestrator.HostCommandSpec{
+		"unrelated": {Allow: []string{"x"}},
+	}); err != nil {
+		t.Fatalf("seed host_commands.yaml: %v", err)
+	}
+
+	sockPath := filepath.Join(t.TempDir(), "boid.sock")
+	t.Setenv("BOID_SOCKET", sockPath)
+
+	srv, err := server.New(server.Config{
+		DBPath:     ":memory:",
+		SocketPath: sockPath,
+		HTTPAddr:   "127.0.0.1:0",
+		KitsDir:    kitsDir,
+	})
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+	if err := srv.Start(context.Background()); err != nil {
+		t.Fatalf("start server: %v", err)
+	}
+	t.Cleanup(func() { _ = srv.Stop() })
+
+	// Hand-edit host_commands.yaml to add 'gh' with the SAME definition
+	// project.yaml's legacy kit will produce, *after* the daemon already
+	// started — so its live in-memory snapshot is stale relative to this
+	// file. This is the exact "dedupe" precondition MAJOR 2 targets: the
+	// name is already in the file, but the daemon doesn't know it yet.
+	if err := orchestrator.WriteHostCommandsConfig(hcPath, map[string]orchestrator.HostCommandSpec{
+		"unrelated": {Allow: []string{"x"}},
+		"gh":        {Allow: []string{"pr", "issue"}},
+	}); err != nil {
+		t.Fatalf("hand-edit host_commands.yaml: %v", err)
+	}
+
+	c := client.NewUnixClient(sockPath)
+
+	var out bytes.Buffer
+	err = MigrateProject(MigrateProjectOptions{
+		Dir:       dir,
+		Workspace: "hc-reload-ws",
+		Apply:     true,
+		DBPath:    dbFile,
+		Out:       &out,
+	})
+	if err != nil {
+		t.Fatalf("migrate apply: unexpected error: %v", err)
+	}
+	if strings.Contains(out.String(), "warning:") {
+		t.Errorf("expected no warning, got: %s", out.String())
+	}
+
+	var detail api.WorkspaceDetail
+	if err := c.Do("GET", "/api/workspaces/hc-reload-ws", nil, &detail); err != nil {
+		t.Fatalf("workspace should exist in the live daemon: %v", err)
+	}
+	if detail.Meta == nil {
+		t.Fatalf("workspace meta is nil")
+	}
+	hcSet := stringSetFromSlice(detail.Meta.HostCommands)
+	if !hcSet["gh"] {
+		t.Errorf("workspace host_commands missing 'gh' (dedupe path did not reload the daemon's live snapshot): %v", detail.Meta.HostCommands)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// MAJOR 3 (codex review, 4th pass, docs/plans/workspace-db-consolidation.md):
+// when the PUT that merges a migration into an already-existing live
+// workspace fails, the shadow file the failure message points the user at
+// must be the full merge (existing content + migrated fields), not just the
+// migration's own delta — `boid workspace edit --from-file` is a
+// full-content replace, so a delta-only file would silently drop every
+// field the migration didn't itself touch.
+// ---------------------------------------------------------------------------
+
+// TestProjectMigrate_PutFailure_ShadowFileIsMergedComplete verifies that
+// mergeMigratedWorkspaceIntoDaemon refreshes the on-disk shadow file with
+// the full merge (existing content + migrated fields) before/regardless of
+// the PUT's own outcome, so a PUT failure still leaves a shadow file that is
+// safe to apply via `boid workspace edit --from-file`.
+func TestProjectMigrate_PutFailure_ShadowFileIsMergedComplete(t *testing.T) {
+	cfgDir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", cfgDir)
+
+	const slug = "put-fail-ws"
+
+	sockPath := filepath.Join(t.TempDir(), "always-500.sock")
+	ln, err := net.Listen("unix", sockPath)
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	fakeSrv := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	})}
+	go func() { _ = fakeSrv.Serve(ln) }()
+	t.Cleanup(func() { _ = fakeSrv.Close() })
+
+	c := client.NewUnixClient(sockPath)
+
+	plan := &migratePlan{
+		workspaceSlug: slug,
+		meta: &orchestrator.LegacyProjectMeta{
+			Env: map[string]string{"NEW": "yes"},
+		},
+	}
+	first := api.WorkspaceDetail{
+		Meta: &orchestrator.WorkspaceMeta{
+			Env: map[string]string{"EXISTING": "yes"},
+		},
+		Revision: "2026-01-01T00:00:00.000000000Z",
+	}
+
+	shadowPath, err := workspaceShadowPath(slug)
+	if err != nil {
+		t.Fatalf("workspaceShadowPath: %v", err)
+	}
+
+	var out bytes.Buffer
+	mergeMigratedWorkspaceIntoDaemon(c, plan, first, shadowPath, &out)
+
+	if !strings.Contains(out.String(), "warning:") {
+		t.Fatalf("expected a warning when the PUT fails, got: %s", out.String())
+	}
+
+	shadow, err := orchestrator.NewWorkspaceStore("").Load(slug)
+	if err != nil {
+		t.Fatalf("load shadow file: %v", err)
+	}
+	if shadow.Env["EXISTING"] != "yes" {
+		t.Errorf("shadow file lost the pre-existing field on PUT failure: %+v", shadow.Env)
+	}
+	if shadow.Env["NEW"] != "yes" {
+		t.Errorf("shadow file missing the migrated field on PUT failure: %+v", shadow.Env)
 	}
 }

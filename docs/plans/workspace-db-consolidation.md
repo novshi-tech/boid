@@ -307,12 +307,43 @@ preflight で abort → daemon 起動失敗。手で kit yaml を整理しても
 | PR3 | **migration 本体** (daemon 起動時に workspace yaml + kit expand → workspace DB、`default` 保証、atomicity 手順)。migration 完了後は DB を workspace の権威に切り替え、yaml file は shadow (export 用) 降格。`WorkspaceStore` は DB backed に差し替え。`WorkspaceMeta.HostCommands []string` / `ContainerImage` 追加、`AdditionalBindings` は保持 | PR1-2 |
 | PR4 | **workspace API 追加** (list/show/create/put/remove + `/api/host_commands` list/reload) + CLI 側 `list/show/remove/create/edit` を API 経由に差し替え。`default` 削除禁止 + 削除時 re-assign transaction 実装 | PR3 |
 | PR5 | **yaml export/import** (API + CLI、mode=create-only\|replace) | PR4 |
-| PR6 | **`workspace configure` / `kit init` / `kit list` / `kit remove` コマンド撤去**、`orchestrator.KitRegistry` / `MergeKitRuntime` の kit 集約経路撤去。`AdditionalBindings` merge は残す (Phase 4 まで userns backend が使う) | PR3-5 |
+| PR6 | **`workspace configure` / `kit init` / `kit list` / `kit remove` コマンド撤去**、`orchestrator.KitRegistry` / `MergeKitRuntime` の kit 集約経路撤去。`AdditionalBindings` merge は残す (Phase 4 まで userns backend が使う) — **landed (2026-07-17)**。詳細は本節末尾の footnote 参照 | PR3-5 |
 | PR7 | **`WorkspaceMeta.Kits` フィールド削除**、`Kits` を含む spec loader / dispatcher 経路のクリーンアップ (~500 行想定)。旧 workspace yaml / kits/ ディレクトリ削除 (次リリースで) | PR6 |
 | PR8 (Phase 4 に持ち越し) | `AdditionalBindings` フィールド + `additional_bindings` カラム DROP、dispatch 経路の binding merge 撤去 | Phase 4 の HOME 契約先行 |
 
 PR1-3 は「機構は変わるが挙動不変」、PR4-5 は「新機能追加」、PR6-7 は「退役 + 削除」。
 PR3 の cutover 時点で権威が完全に DB 側に移る (dual-write 期間なし)。
+
+### PR6 landed 記録 (2026-07-17)
+
+- **撤去**: `boid workspace configure` / `boid kit init` / `boid kit list` /
+  `boid kit remove` コマンド (`cmd/kit.go`, `cmd/kit_cleanup.go` ごと削除。
+  `cmd/workspace.go` から configure 一式を削除)。`boid kit` root command は
+  他に subcommand が無くなったため丸ごと撤去
+- **撤去**: `orchestrator.KitRegistry` (`kit_registry.go`)、
+  `orchestrator.MergeKitRuntime` / `MergeKitMetaIntoBehavior` /
+  `ReadKitMeta` / `resolveKitRef` / `ResolveKitAgent` / `IsProjectScopable`
+  (`spec_loader.go`) — project_store.go の `GetWithWorkspace` 内
+  `if len(ws.Kits) > 0` ブロック (per-request kit re-resolve 経路) を削除
+- **残した**: `KitResolver` interface (`ProjectStore.resolver` フィールドと
+  `NewProjectStore(resolver KitResolver)` シグネチャごと、値は常に `nil` —
+  PR7 で `Kits` フィールドと一緒に整理)。`workspace.AdditionalBindings`
+  直接 merge 経路 (`GetWithWorkspace` 内、kit 経由ではない方) はそのまま
+  (決定 4 通り、Phase 4 まで)。`workspace_migration.go`
+  (`MigrateWorkspaceYAMLToDB` / `MaterializeWorkspaceKitsForPersist` /
+  `snapshotAllKitYAMLs` 等、PR3 cutover migration + PR4 API create/update
+  時の legacy `kits:` materialize) は無変更 — これらが kit yaml → DB 展開の
+  唯一の経路になった (per-request 再展開ではなく create/migrate 時の一回展開)
+- **撤去**: embedded skill `boid-sandbox-configure`
+  (`internal/skills/data/boid-sandbox-configure/`) — 呼び出し元コマンドが
+  両方撤去されたため丸ごと孤立し、放置すると「kit.yaml を生成しても二度と
+  読まれない」誤動作を誘発するため合わせて撤去
+- **撤去**: e2e シナリオ `kit-init-basic` (`boid kit init` 専用、他に転用不可)
+- **影響なし (確認済)**: `kits:` を workspace.yaml に書いて
+  `boid workspace assign` の auto-create 経由で DB row を作る e2e シナリオ群
+  (host-command-smoke 等) は `MaterializeWorkspaceKitsForPersist`
+  (create 時展開、未変更) 経由で動き続けるため無修正で pass
+  (host-command-smoke で実機確認済み)
 
 ---
 

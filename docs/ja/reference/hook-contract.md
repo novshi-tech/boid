@@ -127,7 +127,7 @@ payload patch のトップレベルは必ず `payload_patch` キーで、 その
 }
 ```
 
-hook が書ける trait は実質 `artifact` のみで、 何が許されるかは [`kit.yaml`](../kit-authoring/overview.md) の `traits.produces` 宣言で絞られます。 trait の意味は [概念 / payload と trait](../guide/concepts.md#payload-と-trait) を参照。
+hook が書ける trait は実質 `artifact` のみで、 何が許されるかは [`project.yaml`](project-yaml.md) の `task_behaviors.<name>.hooks[].traits.produces` 宣言で絞られます (kit は hook を提供しないため `kit.yaml` にこの宣言はありません)。 trait の意味は [概念 / payload と trait](../guide/concepts.md#payload-と-trait) を参照。
 
 ### stderr (ログ)
 

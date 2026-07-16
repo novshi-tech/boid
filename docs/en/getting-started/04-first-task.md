@@ -84,5 +84,4 @@ This is the end of the Getting started tutorials. For richer project shapes see 
 boid task delete <task-id>
 boid project remove boid-demo
 rm -rf ~/boid-demo
-boid kit remove github.com/novshi-tech/boid-kits
 ```

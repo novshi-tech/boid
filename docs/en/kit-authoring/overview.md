@@ -1,51 +1,31 @@
 # Kit authoring overview
 
-A minimal guide for people who want to write their own kit.
+A minimal guide to the on-disk `kit.yaml` file format.
 
-The definition of "kit" lives in [Concepts](../guide/concepts.md#kit). This page covers the on-disk layout, the main `kit.yaml` fields, the hook script protocol, and how to ship a kit.
+> **Retirement notice (Phase 2.5 PR6, 2026-07)**: the kit *mechanism* has been retired. `boid kit init` / `list` / `remove` and `boid workspace configure` are gone — there is no CLI left to discover, install, or manage a kit. What this page documents is the `kit.yaml` **file format only**, which still gets expanded ("materialized") once into a workspace's `host_commands` / `env` / `additional_bindings` if that workspace's legacy `kits: [...]` list references it (at `boid workspace create/edit/import` or `boid project migrate` time). That `kits:` list itself is a legacy field slated for removal in Phase 2.5 PR7 (see `docs/plans/workspace-db-consolidation.md`). **For any new configuration, skip authoring a kit and set `host_commands` / `env` / `additional_bindings` directly on a workspace** via `boid workspace create`/`edit`/`import` — see [Onboarding](../guide/onboarding.md). This page (and hand-authoring a `kit.yaml` at all) only matters if you are maintaining an existing kit-referencing workspace or reading one someone else wrote.
+>
+> **Kits do not provide hooks or task behaviors.** That was true even before PR6 — hooks have always been a `project.yaml` concern (`task_behaviors.<name>.hooks`), never something a kit supplies. If you are looking at an old kit.yaml with a `hooks:`, `commands:`, `detect:`, `requires:`, or `provides_agent:` key, see [Fields no longer read](#fields-no-longer-read-pre-kit-init-retirement) below — the current loader ignores all of them.
+
+The definition of "kit" lives in [Concepts](../guide/concepts.md#kit).
 
 ## On-disk layout
 
-A kit is a directory that contains a `kit.yaml`. Smallest example:
+A kit is a directory that contains a `kit.yaml`. The loader reads nothing else in the directory:
 
 ```
 my-kit/
-├── kit.yaml
-├── detect.sh         (optional)
-└── hooks/
-    └── my-hook.sh
+└── kit.yaml
 ```
 
-To ship multiple kits in one repository, place each kit in its own subdirectory at the repo root (the official [boid-kits](https://github.com/novshi-tech/boid-kits) follows this layout).
+To ship multiple kits in one repository, place each kit in its own subdirectory at the repo root (the official [boid-kits](https://github.com/novshi-tech/boid-kits) follows this layout, though most of its content predates PR6 and demonstrates fields that are no longer read — see the note below).
 
-## Main `kit.yaml` fields
+## `kit.yaml` fields the current loader reads
 
 ```yaml
 meta:
   name: My kit
   description: One-line description shown in UIs
   category: workflow            # language / vcs / ci / agent / workflow / utility
-
-detect:
-  script: detect.sh             # (optional) applicability detection script
-
-requires:
-  commands:                     # (optional) host commands needed on PATH
-    - gh
-
-provides_agent: my-agent        # (optional) agent name this kit listens for
-
-hooks:
-  - id: my-hook
-    kind: agent                 # (optional) "agent" opts in to instruction routing
-    agent: my-agent             # (optional) instructions addressed to this agent
-    traits:
-      consumes: [artifact?]     # payload traits to read; valid values: artifact, verification, awaiting
-      produces: [artifact]
-
-commands:                       # (optional) commands callable via boid exec inside the sandbox
-  build:
-    command: [make, build]
 
 host_commands:                  # (optional) commands forwarded out of the sandbox to the host
   gh:
@@ -63,95 +43,43 @@ env:                            # (optional) env vars set in the sandbox
   MY_TOOL_FLAG: "1"
 ```
 
-The shared building blocks (`HostCommands`, `BindMount`, `Instruction`) are exactly the same shape used in `project.yaml` — see the [`project.yaml` reference](../reference/project-yaml.md) for their detailed schema.
+`meta` / `host_commands` / `additional_bindings` / `env` are the **only** four top-level keys the current loader (`orchestrator.KitMeta`) understands. Any other key is silently ignored — it is not an error, it just never reaches the sandbox.
+
+The shared building blocks (`HostCommands`, `BindMount`) are exactly the same shape used in `project.yaml` — see the [`project.yaml` reference](../reference/project-yaml.md) for their detailed schema.
 
 ### `meta`
 
 The label `boid` UIs use to identify the kit. By convention, `category` is one of `language`, `vcs`, `ci`, `agent`, `workflow`, or `utility`.
 
-### `detect`
+### `host_commands` / `additional_bindings` / `env`
 
-A POSIX sh script used during setup flows (such as `boid project init`) to decide whether this kit applies to a given project. Print one of:
+Merged into the referencing workspace at materialization time (kit values are defaults; the workspace's own values win on conflict). See [`project.yaml` reference / HostCommands](../reference/project-yaml.md#hostcommands) and [BindMount](../reference/project-yaml.md#bindmount) for the field-level schema.
 
-- `required` — auto-select this kit for the project.
-- `optional` — show as a candidate, do not auto-select.
-- empty / anything else — not applicable.
+## Fields no longer read (pre-kit-init-retirement)
 
-Runs with a 5-second timeout, with the project root as the working directory.
+These keys appear in kits written before Phase 2.5 PR6 (including most of the reference kits in `boid-kits` today). They are harmless to leave in an existing `kit.yaml` — the loader just ignores them — but do not add them to a new one:
 
-### `requires.commands`
-
-Host-side commands that need to be on `PATH` for this kit to function. Used during install and surfaced in UIs.
-
-### `provides_agent`
-
-Declares which agent name's instructions this kit is responsible for. For example, `claude-code` sets `provides_agent: claude-code` and handles any instruction whose `agent:` is `claude-code`.
-
-### `hooks`
-
-The script protocol is in the next section. Hooks always run in `executing`.
-
-`traits.consumes` and `traits.produces` declare which payload traits the hook reads and writes. Suffixing a `consumes` entry with `?` makes it optional (hook fires even if that trait is absent from the payload). Valid trait names are `artifact`, `verification`, and `awaiting`.
-
-## Hook script protocol
-
-This section is the summary; the full reference (context file schemas, all environment variables, the `payload_patch.json` file path, ...) lives in the [Hook script protocol reference](../reference/hook-contract.md).
-
-### Input (context files and environment variables)
-
-Hook jobs run with an interactive PTY session (`Interactive: true`), so **stdin is not used for data delivery**. Task metadata is provided through context files and environment variables instead.
-
-**Context files** (written to `$HOME/.boid/context/` before the hook runs):
-
-- `task.yaml` — task snapshot: `id`, `title`, `status`, `behavior`, `description`
-- `instructions.yaml` — routed instructions for this hook (only for `kind: agent` hooks)
-- `environment.yaml` — environment metadata
-- `payload.yaml` / `payload.json` — the filtered payload (traits declared in `consumes`)
-
-**Environment variables** such as `BOID_TASK_ID` / `BOID_JOB_ID` are set in the sandbox. See the [Hook script protocol reference](../reference/hook-contract.md) for the full list.
-
-### Output (payload patch)
-
-To update the payload, write JSON of this shape to `$HOME/.boid/output/payload_patch.json`:
-
-```json
-{
-  "payload_patch": {
-    "artifact": { "result": "ok" }
-  }
-}
-```
-
-Only when that file is absent does the runtime fall back to stdout, treating its content as the payload patch. New hooks should prefer the file path — agent-style hooks write incidental output to stdout, and the file path avoids mistaking that for a payload patch.
-
-The `payload_patch` body is a JSON merge instruction applied to the payload. Nested keys merge into their corresponding subtrees. If you have nothing to write, output nothing.
-
-### Logs (stderr)
-
-Send progress messages and error detail to stderr. `boid job show <job-id>` surfaces them, so log freely.
-
-### Exit code
-
-- `0` — success.
-- non-zero — failure. The task itself is not aborted; `boid` marks the job as `failed` and the state machine decides whether to retry.
+| Field | What it used to do |
+|---|---|
+| `detect.script` | A POSIX sh script `boid kit init`'s interactive flow ran to decide whether to auto-select this kit for a project. No selection flow exists any more. |
+| `requires.commands` | Host commands the kit needed on `PATH`, checked during `boid kit init`. |
+| `provides_agent` | Declared which agent name's instructions this kit's hook handled. Moot once kits stopped providing hooks/instruction routing. |
+| `hooks` | A hook definition (`id` / `kind: agent` / `agent` / `traits`). Kits never actually own hook *dispatch* any more — hooks are defined in `project.yaml`'s `task_behaviors.<name>.hooks`, which is authoritative; see the [`project.yaml` reference](../reference/project-yaml.md) and the [Hook script protocol reference](../reference/hook-contract.md) for the current (project.yaml-level) hook contract. |
+| `commands` | Named commands callable via `boid exec`. Retired in Phase 3-d; use `boid exec -p <project> -- <argv...>` instead. |
 
 ## Distribution
 
-Kits are distributed as their own git repositories. `boid kit install <git-host>/<owner>/<repo>` clones the repo into `~/.local/share/boid/kits/<git-host>/<owner>/<repo>/`. Users reference individual kits with `<git-host>/<owner>/<repo>/<sub-path>` from `project.yaml`'s `kits:` field.
+There is no `boid kit install` (and never was one — the only kit-facing commands that ever existed, `boid kit init` / `list` / `remove`, are also gone). Place a kit directory containing `kit.yaml` under `~/.local/share/boid/kits/<name>/` by hand (e.g. `git clone` it there, or copy it), then reference `<name>` from a workspace's legacy `kits: [...]` list. It is expanded once, at `boid workspace create/edit/import` or `boid project migrate` time — not read live on every dispatch.
 
-Conventions for publishing:
+Conventions if you maintain a kit repository anyway:
 
-- The README should state what the kit does, which agent's instructions it listens for, and which host commands it requires.
+- The README should state what the kit does and which host commands it requires.
 - If you ship multiple kits in one repo, give each subdirectory its own README.
 - Set `meta.category` to match the kit's actual role.
-- Always declare `requires.commands` — it drives the user's initial setup checks.
-
-## Reference implementations
-
-- [`github.com/novshi-tech/boid-kits`](https://github.com/novshi-tech/boid-kits) — the official kits. `claude-code`, `github-cli`, `go-dev`, and similar are good reference reads for different shapes of kit.
 
 ## Related docs
 
 - [Concepts](../guide/concepts.md) — for the meaning of hook / kit / trait.
-- [`project.yaml` reference](../reference/project-yaml.md) — how `project.yaml` references kits.
+- [`project.yaml` reference](../reference/project-yaml.md) — the current, authoritative hooks schema (`task_behaviors.<name>.hooks`) and the shared `HostCommands`/`BindMount` building blocks.
+- [Onboarding / On the retirement of the kit mechanism](../guide/onboarding.md#on-the-retirement-of-the-kit-mechanism) — what replaced `boid kit init` / `boid workspace configure`.
 - [State machine](../guide/state-machine.md) — when hooks fire.

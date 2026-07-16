@@ -15,22 +15,25 @@
 
 ## プロジェクト (project)
 
-`.boid/project.yaml` を持つディレクトリのこと。 `project.yaml` には次を書きます。
+`.boid/project.yaml` を持つディレクトリのこと。 ポータブルで git 管理される「作業パターン」の定義であり、 machine-local な実行環境設定は一切含みません (それは後述の **workspace** の役割)。 `project.yaml` には次を書きます。
 
 - `id` (この `boid` 内でプロジェクトを一意に識別する文字列) と `name` (表示名)
-- このプロジェクトで使う **kit** のリスト (`kits:`)
-- 1 つ以上の **task_behaviors** — behavior 名をキーにして `default_instruction` 雛形を束ねたもの。 名前は自由 (free naming)。 `readonly` は behavior ごとに設定でき、 省略時は `true` (fail-safe)
+- 1 つ以上の **task_behaviors** — behavior 名をキーにして `hooks` / `default_instruction` 雛形を束ねたもの。 名前は自由 (free naming)。 `readonly` は behavior ごとに設定でき、 省略時は `true` (fail-safe)
 
-プロジェクトは `boid project add <path>` で `boid` に登録します。プロジェクトは何個でも登録でき、各タスクはいずれか 1 つに属します。
+プロジェクトは `boid project add <path>` / `boid project init <path>` で `boid` に登録します。プロジェクトは何個でも登録でき、各タスクはいずれか 1 つに属します。 登録すると自動的に `default` workspace に割り当てられます。
+
+> **歴史的経緯**: 以前は project 自身が `kits:` / `host_commands` / `env` / `additional_bindings` / `secret_namespace` / `capabilities` を直接持っていました (`project.yaml` トップレベル、 または `.boid/project.local.yaml`)。 Phase 2.5 (workspace DB 一元化) でこれらは `project.yaml` からは reject されるようになり、 machine-local な実行環境は全て workspace 側に集約されました。 旧スキーマの `project.yaml` は `boid project migrate <dir>` で変換できます。詳細は [移行ガイド](migration.md) を参照してください。
 
 ## ワークスペース (workspace)
 
-プロジェクトをまとめて分類するためのラベルです。 例えば 「個人」 「業務」 「OSS」 のようにグルーピングしておくと、 Web UI で表示を絞り込めます。 ワークスペースは `project.yaml` には書かず、 `boid workspace assign <project> <workspace-id>` で割り当てます (`boid workspace clear` で解除)。 1 つのプロジェクトは最大 1 つのワークスペースに所属します。
+プロジェクトの **実行環境** です。 単なる分類ラベルではなく、 `host_commands` (参照名) / `env` / `capabilities` / `allowed_domains` / `additional_bindings` を持ち、 サンドボックスの設定に直接効きます。 machine 単位で `workspaces` テーブルに DB 管理され (Phase 2.5)、 project に割り当てて使います。 1 つのプロジェクトは最大 1 つの workspace に所属します。 `default` workspace は daemon 起動時に常に自動生成されるため、 カスタマイズが不要なら何もしなくても動きます。
 
-- `boid workspace list` で登録済みワークスペース一覧
-- `boid workspace show <id>` でそのワークスペースに属するプロジェクトと最近のタスクを表示
+- `boid workspace list` で登録済み workspace 一覧
+- `boid workspace show <slug>` でその workspace の設定内容 (`host_commands`/`env`/`capabilities` 等) と割り当て済みプロジェクト・最近のタスクを表示
+- `boid workspace create <slug>` / `edit <slug>` / `import <yaml>` で中身を作成・変更
+- `boid workspace assign <project> <slug>` で割り当て (`boid workspace clear <project>` で `default` に戻す)。 `boid project init/add --workspace <slug>` は get-or-create (存在しない slug は空の workspace を自動作成してから割り当てる)
 
-ワークスペースは純粋に分類用のメタデータで、 サンドボックスの設定や hook 実行には影響しません。
+`host_commands` は二層構造です — workspace が持つのは参照 **名前** の `[]string` だけで、 実際の定義 (`path`/`allow`/`deny`/`env`) は daemon 側の `~/.config/boid/host_commands.yaml` に集約管理されます。 詳細は [オンボーディング](onboarding.md) を参照してください。
 
 ## behavior
 
@@ -66,15 +69,13 @@ hook と `boid` 本体は、 stdin にタスクの payload、 stdout に payload
 
 ## kit
 
-サンドボックスで動かす作業に必要な部品をひとまとめに束ねた配布単位が **kit** です。 1 つの kit は次のような要素を任意に同梱します:
+サンドボックスの実行環境の一部をまとめて配布するための単位が **kit** です。 **hook や task behavior は kit の役割ではありません** — hook は常に `project.yaml` の `task_behaviors.<name>.hooks` が権威です (kit が hook を提供したことは一度もありません)。 kit が実際に同梱できるのは次の要素だけです:
 
-- **hook** — 上記の executing 中に動くスクリプト
-- **commands** — サンドボックス内から `boid exec` で呼べる named コマンド
 - **host_commands** — サンドボックスから host に流せるコマンドの許可リスト
 - **additional_bindings** — サンドボックスにマウントしたい追加パス
 - **env** — サンドボックス内に設定する環境変数
 
-ディスク上は `kit.yaml` と関連スクリプトを並べたディレクトリで、 1 度インストールすればどのプロジェクトの `kits:` からも参照できます。 公式パッケージは [boid-kits](https://github.com/novshi-tech/boid-kits) リポジトリにあり、 ファイル構造や各フィールドの詳細は [Kit 作者向け 概要](../kit-authoring/overview.md) を参照してください。
+ディスク上は `kit.yaml` と関連ファイルを並べたディレクトリです。 kit は **workspace** の `kits:` (レガシーフィールド、 Phase 2.5 PR7 で撤去予定) から参照して読み込みます — `project.yaml` に `kits:` を書く経路は撤去済みです。 公式パッケージは [boid-kits](https://github.com/novshi-tech/boid-kits) リポジトリにあり、 ファイル構造や各フィールドの詳細は [Kit 作者向け 概要](../kit-authoring/overview.md) を参照してください。 kit 機構自体の退役の経緯は [オンボーディング / kit 機構の退役について](onboarding.md#kit-機構の退役について) を参照してください。
 
 ## ジョブ (job)
 
@@ -99,10 +100,10 @@ boid agent claude   -p <project> --resume <session-id>   # 既存セッション
 | 起動 | `boid task create` | `boid agent <harness>` |
 | 追跡 | status / payload / instructions | なし |
 | 状態機械 | `pending → executing → done` | なし (running のみ) |
-| 設定 | behavior (hook / kit / readonly 等) | プロジェクトのトレイトのみ継承 |
+| 設定 | behavior (hooks / readonly 等) | workspace の設定のみ継承 |
 | 用途 | 自律・長時間タスク | 対話的な作業・試験的なデバッグ |
 
-セッションはプロジェクトの `env` / `host_commands` / `additional_bindings` / `secret_namespace` を継承します。 behavior 定義は参照しません。
+セッションは project が割り当てられている **workspace** の `env` / `host_commands` / `additional_bindings` / `capabilities` を継承します。 secret は workspace 自身の slug をネームスペースとして解決されます。 behavior 定義は参照しません。
 
 セッションを終了するにはエージェントを exit させるか、 `boid agent stop <job-id>` を使います。 ブラウザを閉じてもセッションプロセスは生き続け、 Web UI から再 attach できます。
 
@@ -111,12 +112,12 @@ boid agent claude   -p <project> --resume <session-id>   # 既存セッション
 hook を実行する隔離環境です。 実装としては Linux の mount namespace + chroot を使い、
 
 - 読み書きできるパスは、 project が可視なジョブでは sandbox 内に git gateway 経由で clone された project のコピー ([worktree](#worktree) 参照) のみに絞る
-- ネットワーク接続先は `cmd/start.go` の `defaultAllowedDomains` による組み込みリストと `~/.config/boid/config.yaml` の `sandbox.allowed_domains` をマージした許可リストに限定する。 kit ごとのドメイン宣言は存在せず、 許可リストはグローバルに適用される
+- ネットワーク接続先は `cmd/start.go` の `defaultAllowedDomains` による組み込みリストと `~/.config/boid/config.yaml` の `sandbox.allowed_domains` をマージしたグローバル floor に、 project が割り当てられている **workspace** の `allowed_domains` を additive にマージした許可リストに限定する。 workspace はこの floor を狭められない (削れるのは追加のみ)
 - ホストマシンのその他のディレクトリ (ホーム、 SSH 鍵、 他プロジェクトなど) は見えなくする
 
 という制約をかけます。 これにより、 エージェントが暴走してもタスクの作業領域から外には出られません。
 
-ただし一部のコマンドは作業上どうしても境界の外側に到達する必要があります (例: `git push`, `gh pr merge`, `boid task update`)。 これらは **host command** として kit 側で明示的に宣言した場合に限り、 サンドボックスの外で実行することが許されます。
+ただし一部のコマンドは作業上どうしても境界の外側に到達する必要があります (例: `git push`, `gh pr merge`, `boid task update`)。 これらは **host command** として、 project が割り当てられている workspace の `host_commands` (参照名のリスト。 実体は daemon 側の集約レジストリ `~/.config/boid/host_commands.yaml`、 または workspace が読み込む legacy kit) で明示的に宣言した場合に限り、 サンドボックスの外で実行することが許されます。
 
 ## worktree
 

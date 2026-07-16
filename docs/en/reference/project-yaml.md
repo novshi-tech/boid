@@ -7,9 +7,11 @@ This page is the schema reference. For the meaning of the underlying terms, see 
 ## Role and location
 
 - Path: `.boid/project.yaml` directly under the project root.
-- Role: registers the directory as a `boid` project, declares the kinds of tasks (behaviors) it supports, and the extension packages (kits) the project loads.
+- Role: registers the directory as a `boid` project and declares the kinds of tasks (behaviors) it supports. Portable, checked into git.
 - Registration: `boid project add <project-root>` reads the file into `boid`'s database.
 - Reload: after editing, run `boid project reload`.
+
+> **Note:** `project.yaml` no longer configures the runtime environment (kits / `host_commands` / `env` / `additional_bindings` / `secret_namespace` / `capabilities`). That machine-local configuration lives on a **workspace** instead (`boid workspace create/edit/import`) — see the [Top-level fields](#top-level-fields) table below for what moved where, and [Onboarding](../guide/onboarding.md) for the current setup flow.
 
 ## Minimal example
 
@@ -30,14 +32,14 @@ task_behaviors:
 | `worktree` | bool | `false` | Used to allocate a dedicated **isolated branch** (`boid/<id8>`) to executor and supervisor tasks when `true`. **docs/plans/branch-policy-simplification.md Phase 1 (v0.0.11) retired the per-task branch and fork-point concepts**: every task, root or child, now checks out `base_branch` directly on its in-sandbox clone, so this field no longer affects checkout behaviour (it is still accepted for schema compatibility). See [Task kinds and HEAD branch](#task-kinds-and-head-branch) for the full breakdown. |
 | `base_branch` | string | (see below) | The PR target branch, resolved at task creation and stored in the row. **When omitted**: root tasks expand to the daemon's current HEAD branch (`${current_branch}` equivalent) at creation time — a detached-HEAD repository returns 400. Child tasks inherit the parent's `base_branch`. Supports `${TASK_REMOTE_ID}` and `${current_branch}` expansion (see [Dynamic base_branch](#dynamic-base_branch)). |
 | `fork_point` | string | (falls back to `origin/HEAD`) | Fork origin for case 3 (when `base_branch` does not yet exist locally or on `origin`). Any ref resolvable by `git rev-parse --verify` (branch / tag / SHA / `origin/main`). Falls back to `refs/remotes/origin/HEAD`; errors if neither is resolvable. |
-| `kits` | list of KitRef | no | Kits loaded for this project. |
 | `task_behaviors` | map (string → TaskBehavior) | yes | The kinds of tasks this project can produce. |
-| `host_commands` | HostCommands | no | External commands the sandbox is allowed to forward to the host. |
-| `additional_bindings` | list of BindMount | no | Extra paths to mount into the sandbox. |
-| `env` | map (string → string) | no | Environment variables to set inside the sandbox. |
-| `secret_namespace` | string | no | Namespace under which this project's secrets are resolved. |
-| `capabilities` | Capabilities | no | Declares optional sandbox capabilities. The only supported capability today is `docker`. |
 | `default_task_behavior` | string | no | The behavior to use when `boid task create` omits `--behavior`. When unset, the daemon falls back to `supervisor` if that behavior exists (with a deprecation warning); if neither is configured, `boid task create` returns an error. |
+| `kits` | — | **removed** | Rejected at load time (`project.yaml: top-level "kits" is no longer supported`). Kits are still expandable, but only via a *workspace's* `kits:` list — itself a legacy field slated for removal in Phase 2.5 PR7 (`docs/plans/workspace-db-consolidation.md`). For any new configuration, skip kits and set `host_commands` / `env` / `additional_bindings` directly on a workspace. See [`KitRef`](#kitref) below and the [kit authoring overview](../kit-authoring/overview.md). |
+| `host_commands` | — | **removed** | Rejected at load time. Set on a workspace instead (`boid workspace create/edit/import`) — but note a *workspace's* `host_commands:` is a list of reference **names**, not the map-of-specs shape documented under [HostCommands](#hostcommands) below (that map shape is still used by `kit.yaml` and by the daemon-wide `~/.config/boid/host_commands.yaml` registry a workspace's names resolve against). See [Onboarding / Defining host_commands](../guide/onboarding.md#defining-host_commands-the-daemon-wide-registry). |
+| `additional_bindings` | — | **removed** | Rejected at load time. Set on a workspace instead; shape unchanged, see [BindMount](#bindmount) below. |
+| `env` | — | **removed** | Rejected at load time. Set on a workspace instead (same map shape). |
+| `secret_namespace` | — | **removed** | Rejected at load time. A workspace has no separate secret-namespace field — secrets are resolved under the workspace's own slug as the namespace. |
+| `capabilities` | — | **removed** | Rejected at load time. Set on a workspace instead (`capabilities.docker`, same shape) — see [capabilities](#capabilities) below. |
 
 ## git gateway / in-sandbox clone
 
@@ -68,7 +70,6 @@ Each behavior entry's fields:
 | `readonly` | bool | `true` (fail-safe) | Whether the task's working directory is mounted read-only. `executor` retains `readonly: false` as a compatibility override (with a deprecation warning); all other behaviors default to `true`. Set `readonly: false` explicitly for any writable behavior. |
 | `traits` | list of string | (empty) | Top-level payload trait names this behavior is allowed to use (e.g. `[artifact]`). |
 | `default_instruction` | Instruction | (empty) | A single Instruction template appended to `Task.Instructions` when a task is created. |
-| `kits` | list of KitRef | (empty) | Additional kits loaded only for this behavior, merged with the project-top `kits` list. |
 
 > **Note:** a `name` field under `task_behaviors.<name>` is silently ignored by the loader. Use the map key as the behavior identifier.
 
@@ -78,6 +79,7 @@ The fields below used to live under `task_behaviors.<name>.*`. They have been mo
 
 | Field | Status / Location |
 |---|---|
+| `kits` | **Removed** (rejected at load time: `project.yaml: task_behaviors.<name>.kits is no longer supported`). Kits are no longer a `project.yaml` concept at all — see the [Top-level fields](#top-level-fields) table's `kits` row. |
 | `readonly` | Re-enabled at the behavior level in Track A2. Defaults to `true` (fail-safe); set `readonly: false` for writable behaviors. |
 | `worktree` | Removed. The behavior-level form was retired earlier; the project-top form was retired in branch-policy-simplification Phase 2. Existing `worktree:` lines are silently ignored for BC. Every project-visible job runs in a fresh sandbox clone. |
 | `base_branch` | Project-top `base_branch:`. |
@@ -143,7 +145,11 @@ A `boid task reopen <id> --message "..."` call appends a new Instruction at the 
 
 ### KitRef
 
-Each entry in a `kits` list is either:
+> **Not a `project.yaml` field.** A `kits:` list is no longer accepted in `project.yaml` at all (top level or under `task_behaviors.<name>`) — see the [Top-level fields](#top-level-fields) table. The shape below is documented here because it is what the **legacy** `project.yaml` (the pre-migration schema `boid project migrate` reads via [`ReadProjectMetaLegacy`](../../../internal/orchestrator/spec_loader_legacy.go)) accepted.
+>
+> A *workspace's* own `kits:` (`workspace.yaml`, itself a legacy field slated for removal in Phase 2.5 PR7 — see [kit authoring overview](../kit-authoring/overview.md)) does **not** use this `KitRef` shape — it is `Kits []string` ([`internal/orchestrator/workspace_meta.go`](../../../internal/orchestrator/workspace_meta.go)), a plain list of bare kit slug strings only. The map form (`ref`/`as`) is not supported at the workspace level.
+
+Each entry in the legacy `project.yaml`'s `kits` list (relevant only as `boid project migrate` input — the current `project.yaml` schema rejects this field) is either:
 
 - A string of the form `github.com/<owner>/<repo>/<sub-path>` (e.g. `github.com/novshi-tech/boid-kits/claude-code`), or
 - A map:
@@ -154,9 +160,11 @@ Each entry in a `kits` list is either:
   ```
   `as` assigns an alias, useful when two kits would otherwise collide on agent name.
 
-`<sub-path>` is optional — if the kit lives at the repository root, omit it.
+`<sub-path>` is optional — if the kit lives at the repository root, omit it. `boid project migrate` extracts only the last path segment (e.g. `claude-code`) from `ref` and appends it to the workspace's `kits: []string` as a bare name — the `as` alias is not carried over to the workspace.
 
 ### HostCommands
+
+> **Not a `project.yaml` field.** `project.yaml` no longer has a `host_commands` field (see [Top-level fields](#top-level-fields)). This map-of-specs shape is used by `kit.yaml` and by the daemon-wide aggregate registry, `~/.config/boid/host_commands.yaml`. A *workspace's* own `host_commands:` field (`workspace.yaml`, set via `boid workspace create/edit/import`) is different — a plain list of reference **names** into that registry, not this map shape. See [Onboarding / Defining host_commands](../guide/onboarding.md#defining-host_commands-the-daemon-wide-registry).
 
 By default the sandbox cannot invoke commands on the host. `host_commands` declares an allow-list of what to forward. Two forms are supported.
 
@@ -283,11 +291,13 @@ Migration:
 
 ## capabilities
 
-Top-level field for enabling optional sandbox capabilities.
+> **Not a `project.yaml` field.** `capabilities` is set on a **workspace** now (`workspace.yaml`, via `boid workspace create/edit/import`), not on `project.yaml` — see [Top-level fields](#top-level-fields). Everything below is otherwise unchanged: it is still the same `docker: {}` shape and the same proxy behavior, just reached through the workspace instead.
+
+Field for enabling optional sandbox capabilities.
 
 ### `capabilities.docker`
 
-Declaring `capabilities.docker: {}` enables the **native Docker proxy** for the project's sandboxes.
+Declaring `capabilities.docker: {}` on a workspace enables the **native Docker proxy** for that workspace's sandboxes.
 
 ```yaml
 capabilities:
@@ -321,7 +331,7 @@ host_commands.docker: unrestricted docker access bypasses the docker proxy
 to specific subcommands (e.g. allow: [build])
 ```
 
-If image builds must run on the host, restrict to the `build` subcommand:
+If image builds must run on the host, restrict to the `build` subcommand — define it in `~/.config/boid/host_commands.yaml` (see [Onboarding / Defining host_commands](../guide/onboarding.md#defining-host_commands-the-daemon-wide-registry)) and reference the name from the workspace's own `host_commands: [docker]` list:
 
 ```yaml
 host_commands:
@@ -354,35 +364,25 @@ The `host_commands` / `additional_bindings` / `env` / `secret_namespace` fields 
 
 ## Example: a real project
 
-An excerpt from `.boid/project.yaml` in the `boid` repository itself, showing the two behaviors (`supervisor`, `executor`).
+An excerpt from `.boid/project.yaml` in the `boid` repository itself (this repo), showing the two behaviors (`supervisor`, `executor`). Note there is no `kits:` / `host_commands:` / `env` at the top level — this project's runtime environment (`playwright-cli`, `run-e2e`, etc.) is configured on its workspace instead, not in this file.
 
 ```yaml
-id: boid
+id: 40652295-c610-42da-95c4-6c6e8d28b643
 name: boid
-
-# The project-top `worktree:` field was retired in branch-policy-simplification
-# Phase 2 (v0.0.12). Every task, root or child, checks out base_branch directly
-# on its in-sandbox clone — no host-side git worktree is created. Existing
-# `worktree:` lines are silently ignored for BC.
-
-kits:
-  - github.com/novshi-tech/boid-kits/claude-code
-  - github.com/novshi-tech/boid-kits/go-dev
-  - github.com/novshi-tech/boid-kits/github-cli
-
-host_commands:
-  playwright-cli:
-    allow: ['*']
-  run-e2e:
-    path: e2e/run.sh
 
 task_behaviors:
   executor:
-    name: executor
-    default_instruction: { ... }
+    default_instruction:
+      agent: claude-code
+      model: sonnet
+      message: |
+        ...
   supervisor:
-    name: Supervisor
-    default_instruction: { ... }
+    default_instruction:
+      agent: claude-code
+      model: opus
+      message: |
+        ...
 ```
 
 For a fuller example — and three different workflow shapes built on top of this schema — see [Workflows](../../workflows.md).

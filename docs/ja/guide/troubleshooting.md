@@ -67,7 +67,12 @@ gc:
 
 ## hook 内で "permission denied" や "unknown command" が出る
 
-hook はサンドボックス内で動くため、 kit が `host_commands` に宣言していないコマンドを呼ぼうとすると拒否されます。 不足しているコマンドを kit の `host_commands` リストに追加してください (`git push`、 `gh` などはこの形で許可します)。
+hook はサンドボックス内で動くため、 project が割り当てられている **workspace** の `host_commands` に無い名前のコマンドを呼ぼうとすると拒否されます。 `host_commands` は二層構造であることに注意してください — workspace が持つのは参照 **名前** のリストだけで、 実際の定義 (`path`/`allow`/`deny`/`env`) は daemon 側の集約レジストリ `~/.config/boid/host_commands.yaml` にあります。 不足している場合は次のどちらか (または両方) が必要です:
+
+- `boid workspace edit <slug> --from-file <yaml>` で workspace の `host_commands` リストに名前を追加する
+- 名前がまだ daemon 側レジストリに無ければ `~/.config/boid/host_commands.yaml` に定義を追記し、 `boid host-commands reload` で反映する ([オンボーディング / host_commands を定義する](onboarding.md#host_commands-を定義する-daemon-側の集約レジストリ) 参照)
+
+(`git push`、 `gh` などはこの形で許可します。)
 
 ## Web UI: デバイスが何度もログアウトされる
 

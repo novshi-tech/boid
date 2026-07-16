@@ -16,65 +16,22 @@ type KitResolver interface {
 	Resolve(ref string) (string, error)
 }
 
-// KitRuntime holds the merged runtime fields derived from a set of kits.
-// It covers env, host_commands, and additional_bindings. Hooks and directory
-// metadata are excluded — those are TaskBehavior-specific and handled
-// by MergeKitMetaIntoBehavior.
-type KitRuntime struct {
-	AdditionalBindings []BindMount
-	HostCommands       HostCommands
-	Env                map[string]string
-}
-
-// MergeKitRuntime merges env, host_commands, and additional_bindings from the
-// given kits into a KitRuntime value. kitAgents provides display names for
-// error messages (one per kit).
-func MergeKitRuntime(kits []*KitMeta, kitAgents []string) (KitRuntime, error) {
-	var rt KitRuntime
-	if len(kits) == 0 {
-		return rt, nil
-	}
-
-	// Env: later kit overrides earlier kit.
-	mergedEnv := make(map[string]string)
-	for _, kit := range kits {
-		for k, v := range kit.Env {
-			mergedEnv[k] = v
-		}
-	}
-	if len(mergedEnv) > 0 {
-		rt.Env = mergedEnv
-	}
-
-	// HostCommands: duplicate commands across kits are rejected.
-	mergedCmds := make(HostCommands)
-	kitCmdSource := make(map[string]string)
-	for i, kit := range kits {
-		agent := ""
-		if i < len(kitAgents) {
-			agent = kitAgents[i]
-		}
-		for k, v := range kit.HostCommands {
-			if existingAgent, ok := kitCmdSource[k]; ok {
-				return rt, fmt.Errorf("host_commands: command %q is defined in both kit %q and kit %q; remove the duplicate from one kit or override it in workspace.yaml", k, existingAgent, agent)
-			}
-			kitCmdSource[k] = agent
-			mergedCmds[k] = v
-		}
-	}
-	if len(mergedCmds) > 0 {
-		rt.HostCommands = mergedCmds
-	}
-
-	// AdditionalBindings: union with mode promotion.
-	for _, kit := range kits {
-		rt.AdditionalBindings = unionBindMountSlices(rt.AdditionalBindings, kit.AdditionalBindings)
-	}
-
-	return rt, nil
-}
-
 const projectLocalFilename = "project.local.yaml"
+
+// removedTopLevelKeyGuidance maps a top-level project.yaml key rejected by
+// the loop below to a field-specific migration message. Both keys predate
+// the current schema and were removed for different reasons, so a single
+// shared message (as this used to say — "move it into
+// task_behaviors.<name>.kits ... or define inside a local kit") is wrong for
+// either of them: "hooks" never had anything to do with kits (kits do not
+// supply hooks — see kit.Meta's "Kits do not provide hooks or task_behaviors"
+// doc comment; the authoritative location is task_behaviors.<name>.hooks,
+// which project.yaml itself already supports), and "gates" named the Gate
+// mechanism, which was retired outright with no replacement to move to.
+var removedTopLevelKeyGuidance = map[string]string{
+	"hooks": "move each hook into task_behaviors.<name>.hooks instead (project.yaml is the authoritative source for hooks; kits do not supply them)",
+	"gates": "the Gate mechanism has been retired entirely (dispatch is hook-only now); there is no replacement field, just remove it",
+}
 
 func ReadProjectMeta(dir string) (*ProjectMeta, error) {
 	yamlPath := filepath.Join(dir, ".boid", "project.yaml")
@@ -92,7 +49,7 @@ func ReadProjectMeta(dir string) (*ProjectMeta, error) {
 	}
 	for _, field := range []string{"hooks", "gates"} {
 		if _, ok := raw[field]; ok {
-			return nil, fmt.Errorf("project.yaml: top-level %q is no longer supported; move it into task_behaviors.<name>.kits (for kits) or define inside a local kit under .boid/kits/", field)
+			return nil, fmt.Errorf("project.yaml: top-level %q is no longer supported; %s", field, removedTopLevelKeyGuidance[field])
 		}
 	}
 
@@ -475,47 +432,16 @@ func resolveProjectHostCommandPaths(projectDir string, cmds HostCommands) error 
 	return nil
 }
 
-func resolveKitRef(ref, projectDir string, resolver KitResolver) (string, error) {
-	// "local/<name>" refers to a project-scoped kit in <projectDir>/.boid/kits/<name>.
-	if strings.HasPrefix(ref, "local/") {
-		name := strings.TrimPrefix(ref, "local/")
-		localDir := filepath.Join(projectDir, ".boid", "kits", name)
-		yamlPath := filepath.Join(localDir, "kit.yaml")
-		if _, err := os.Stat(yamlPath); err != nil {
-			return "", fmt.Errorf("local kit %q: kit.yaml not found at %s", ref, localDir)
-		}
-		return localDir, nil
-	}
-
-	// All other refs are resolved through the global kit registry.
-	if resolver == nil {
-		return "", fmt.Errorf("kit %q requires registry but none configured", ref)
-	}
-	return resolver.Resolve(ref)
-}
-
-// ResolveKitAgent derives the agent name for a kit reference.
-// The last path segment of the ref is used.
-func ResolveKitAgent(ref KitRef) string {
-	parts := strings.Split(ref.Ref, "/")
-	return parts[len(parts)-1]
-}
-
-// IsProjectScopable reports whether a kit may be placed in the top-level
-// project.yaml kits field. Kits no longer provide hooks or task_behaviors,
-// so all kits are project-scopable by definition.
-func IsProjectScopable(km *KitMeta) error {
-	return nil
-}
-
 // ReadProjectMetaWithKits reads project.yaml and merges project-level overlays
 // into each behavior.
 // Returns a ProjectMeta whose TaskBehaviors have their resolved Hooks/etc.
 // populated and ready for dispatch.
 //
-// Note: kits are no longer supported in project.yaml (removed in the new schema).
-// Workspace kits are resolved at GetWithWorkspace time via WorkspaceStore.
-// project.local.yaml is deprecated; use workspace.yaml instead.
+// Note: kits are no longer supported in project.yaml (removed in the new
+// schema); the kit mechanism itself was retired in Phase 2.5 PR6
+// (docs/plans/workspace-db-consolidation.md) — resolver is accepted for
+// call-site compatibility but is never used. project.local.yaml is
+// deprecated; use workspace.yaml instead.
 func ReadProjectMetaWithKits(dir string, resolver KitResolver) (*ProjectMeta, error) {
 	meta, err := ReadProjectMeta(dir)
 	if err != nil {
@@ -599,43 +525,6 @@ func emitCanonicalBehaviorDeprecation(dir string, meta *ProjectMeta) {
 	}
 }
 
-func ReadKitMeta(dir string) (*KitMeta, error) {
-	yamlPath := filepath.Join(dir, "kit.yaml")
-	data, err := os.ReadFile(yamlPath)
-	if err != nil {
-		return nil, fmt.Errorf("read kit.yaml: %w", err)
-	}
-
-	var rawTop map[string]any
-	if err := yaml.Unmarshal(data, &rawTop); err != nil {
-		return nil, fmt.Errorf("parse kit.yaml: %w", err)
-	}
-	if err := rejectRemovedBehaviorFields(fmt.Sprintf("kit.yaml (%s)", dir), rawTop); err != nil {
-		return nil, err
-	}
-
-	warnDeprecatedCommandsKey(fmt.Sprintf("kit.yaml (%s)", dir), dir, rawTop)
-
-	var meta KitMeta
-	if err := yaml.Unmarshal(data, &meta); err != nil {
-		return nil, fmt.Errorf("parse kit.yaml: %w", err)
-	}
-
-	interpolateBindMounts(meta.AdditionalBindings)
-	interpolateHostCommands(meta.HostCommands)
-	interpolateEnvMap(meta.Env)
-
-	warnDeprecatedStdin(fmt.Sprintf("kit.yaml (%s)", dir), dir, meta.HostCommands)
-
-	meta.KitRoot = dir
-
-	if _, ok := rawTop["scripts"]; ok {
-		return nil, fmt.Errorf("kit.yaml: 'scripts:' section is no longer supported")
-	}
-
-	return &meta, nil
-}
-
 func ReadProjectLocalMeta(dir string) (*ProjectLocalMeta, error) {
 	yamlPath := filepath.Join(dir, ".boid", projectLocalFilename)
 	data, err := os.ReadFile(yamlPath)
@@ -675,61 +564,6 @@ func ReadProjectLocalMeta(dir string) (*ProjectLocalMeta, error) {
 		return nil, err
 	}
 	return &meta, nil
-}
-
-// MergeKitMetaIntoBehavior merges kit-provided hooks, env, bindings, and
-// host_commands into the given TaskBehavior. Kit hook IDs are prefixed
-// with the agent name. The behavior is modified in place.
-func MergeKitMetaIntoBehavior(behavior *TaskBehavior, kits []*KitMeta, kitAgents []string) error {
-	if len(kits) == 0 {
-		return nil
-	}
-
-	rt, err := MergeKitRuntime(kits, kitAgents)
-	if err != nil {
-		return err
-	}
-
-	// Env: kits are lower priority than any existing behavior.Env.
-	mergedEnv := make(map[string]string)
-	for k, v := range rt.Env {
-		mergedEnv[k] = v
-	}
-	for k, v := range behavior.Env {
-		mergedEnv[k] = v
-	}
-	if len(mergedEnv) > 0 {
-		behavior.Env = mergedEnv
-	}
-
-	// HostCommands: behavior wins over kits.
-	if len(rt.HostCommands) > 0 || len(behavior.HostCommands) > 0 {
-		mergedCmds := make(HostCommands)
-		for k, v := range rt.HostCommands {
-			mergedCmds[k] = v
-		}
-		for k, v := range behavior.HostCommands {
-			mergedCmds[k] = v
-		}
-		behavior.HostCommands = mergedCmds
-	}
-
-	behavior.AdditionalBindings = unionBindMountSlices(rt.AdditionalBindings, behavior.AdditionalBindings)
-
-	// Collect deduplicated kit roots for sandbox bind-mounts.
-	seen := make(map[string]bool)
-	for _, kit := range kits {
-		if kit.KitRoot == "" {
-			continue
-		}
-		if seen[kit.KitRoot] {
-			continue
-		}
-		seen[kit.KitRoot] = true
-		behavior.KitRoots = append(behavior.KitRoots, kit.KitRoot)
-	}
-
-	return nil
 }
 
 func unionBindMountSlices(base, extra []BindMount) []BindMount {

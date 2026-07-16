@@ -20,7 +20,7 @@ go install github.com/novshi-tech/boid@latest
 boid --help
 ```
 
-サブコマンド (`start`, `task`, `job`, `project`, `web`, `kit`, `secret`, `gc`, `stop`, ...) の一覧が表示されれば OK です。
+サブコマンド (`start`, `task`, `job`, `project`, `workspace`, `web`, `secret`, `gc`, `stop`, ...) の一覧が表示されれば OK です。
 
 ## サーバ (daemon) の起動
 

@@ -1,65 +1,131 @@
 # Onboarding
 
-boid setup uses **3 steps**.
+boid's initial setup is **2 steps**. If the `default` workspace is good enough, it's effectively **1 step**.
 
-## The three commands
+## The two steps
 
 | Step | Command | Role |
 |---|---|---|
-| 1 | `boid kit init` | Generate the kit catalog for this machine |
-| 2a | `boid project init [dir]` | Scaffold a new project and register it with the daemon |
-| 2b | `boid project add <dir>` | Register an existing project with the daemon |
-| 3 | `boid workspace configure <slug>` | Generate workspace configuration (select kits, env, host_commands) |
+| 1 | `boid project init [dir]` / `boid project add <dir>` | Register the project with the daemon (scaffolds it too, for a new one) |
+| 2 (optional) | `boid workspace create` / `edit` / `import` + `boid workspace assign` | Set up a dedicated workspace for the project (skip if `default` is enough) |
+
+Registering a project assigns it to the `default` workspace automatically (the daemon guarantees `default` always exists at startup). Only set up a dedicated workspace when you need to customize the runtime environment — `host_commands` / `env` / `capabilities` / `allowed_domains`, etc.
 
 ## Scenarios
 
-### New machine + new project (all 3 steps)
+### New project, `default` workspace is enough (1 step)
 
 ```bash
-boid kit init
+boid project init ~/src/myproject
+```
+
+Omitting `--workspace` puts the project in the `default` workspace.
+
+### New project + dedicated workspace (2 steps)
+
+```bash
 boid project init ~/src/myproject --workspace dev
-boid workspace configure dev
 ```
 
-### New machine + existing project (all 3 steps)
+`--workspace` is get-or-create: if `dev` doesn't exist yet, an empty workspace is created automatically before the project is assigned to it. If you want to fill in its contents (`host_commands`, `env`, etc.), continue with "Creating/editing a workspace" below.
 
-```bash
-boid kit init
-boid project add ~/src/myproject --workspace dev
-boid workspace configure dev
-```
-
-### Existing machine + new project (2 steps)
-
-```bash
-boid project init ~/src/newproject --workspace dev
-boid workspace configure dev   # may be skippable if workspace already exists
-```
-
-### Existing machine + existing project (2 steps)
+### Registering an existing project (2 steps)
 
 ```bash
 boid project add ~/src/myproject --workspace dev
-boid workspace configure dev
 ```
+
+Same get-or-create semantics for `--workspace` as `boid project init`.
 
 ### Adding a project to an existing workspace (1 step)
 
 ```bash
 boid project add ~/src/another --workspace dev
-# kit / env configuration stays the same as the existing workspace
+# dev already exists, so its contents are untouched — only the project's assignment changes
 ```
+
+### Setting up a new machine end to end
+
+```bash
+# First project (creates the workspace while registering)
+boid project init ~/src/myproject --workspace dev
+
+# Fill in the workspace's contents (host_commands / env, etc., all at once)
+boid workspace edit dev --from-file dev-workspace.yaml
+
+# Additional projects just join the same workspace
+boid project add ~/src/another-project --workspace dev
+```
+
+## Creating/editing a workspace
+
+When `default` isn't enough, a workspace's contents can be set up through any of these:
+
+| Method | Command / path |
+|---|---|
+| CLI: create new | `boid workspace create <slug> [--from-file <yaml>]` (omit `--from-file` for a blank workspace) |
+| CLI: replace an existing one wholesale | `boid workspace edit <slug> --from-file <yaml>` |
+| CLI: import from yaml | `boid workspace import <yaml> [--mode create-only\|replace]` |
+| API: direct POST/PUT | `POST /api/workspaces` / `PUT /api/workspaces/{slug}` (body: `application/yaml`) |
+| Legacy path (still supported): hand-edit the yaml | Edit `~/.config/boid/workspaces/<slug>.yaml` directly, then `boid workspace assign <project> <slug>` auto-creates the DB row from it |
+
+Example yaml for `--from-file`:
+
+```yaml
+env:
+  MY_TOKEN: "secret:my-token"
+host_commands:
+  - gh
+allowed_domains:
+  - example.com
+```
+
+`host_commands` here is a list of **reference names**, not definitions — see [Defining host_commands](#defining-host_commands-the-daemon-wide-registry) below for what has to exist before a workspace can reference `gh`. Referencing an undefined name returns `400 unknown host_commands reference(s): ...` from `workspace create`/`edit`/`import`.
+
+Use `boid workspace show <slug>` to inspect a workspace's contents, or `boid workspace export <slug>` to get it back out as yaml.
+
+## Defining host_commands (the daemon-wide registry)
+
+A workspace's `host_commands: [name, ...]` only lists *which* named host commands that workspace's sandboxes may call — it is not where the command itself is defined. The actual definition (binary `path`, `allow`/`deny`/`reject` rules, `env`) lives in a single machine-wide file shared by every workspace: `~/.config/boid/host_commands.yaml`.
+
+Before `kit init` was removed, that file was auto-generated by scanning the host. Now that it's gone, add entries by hand:
+
+```yaml
+host_commands:
+  gh:
+    path: /usr/bin/gh
+    allow: [pr, issue]
+  aws:
+    path: /usr/local/bin/aws
+```
+
+Then tell the running daemon to pick up the change:
+
+```bash
+boid host-commands reload
+```
+
+Check which names the daemon currently knows about:
+
+```bash
+boid host-commands list
+```
+
+See [CLI reference / Host Commands](../reference/cli.md#host-commands) for full command detail.
 
 ## Concepts
 
 - **project**: Work patterns (portable, checked into git). Defined in `.boid/project.yaml`.
-- **workspace**: Environment matching (machine-local). `workspace.yaml` selects which kits and env vars to use.
-- **kit**: Tool supply (globally shared). Provides `host_commands`, `env`, and `additional_bindings`.
+- **workspace**: The runtime environment (machine-scoped, stored in the `workspaces` table). Holds `host_commands` / `env` / `capabilities` / `allowed_domains` / `additional_bindings`, etc., and is assigned to projects. The `default` workspace is always created automatically.
 
-## Migrating from old `boid init`
+## On the retirement of the kit mechanism
 
-The old `boid init` has been removed. Use the 3-step flow above instead.
+Older versions used a 3-step flow: `boid kit init` (generate a machine-wide kit catalog) → `boid project init/add` → `boid workspace configure` (an LLM conversation that generated `workspace.yaml`). Phase 2.5 PR6 (2026-07) removed `kit init` / `workspace configure` and the surrounding commands (`kit list` / `kit remove`). A workspace's contents are now set up via the CLI operations above, or by hand-editing its yaml.
+
+## Migrating from the old `boid init`
+
+The old `boid init` has been removed. Use the flow above instead.
 
 If your `project.yaml` contains legacy fields (`kits`, `env`, `host_commands`, `capabilities`, etc.),
-run `boid project migrate <dir>` to convert automatically.
+run `boid project migrate <dir>` (dry-run by default; pass `--apply` to actually perform it) to convert automatically.
 See `docs/en/guide/migration.md` for details.
