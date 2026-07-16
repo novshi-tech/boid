@@ -84,12 +84,40 @@ func DefaultWorkspaceDir() (string, error) {
 
 // Load reads and parses the WorkspaceMeta for the given slug.
 // Returns an error wrapping os.ErrNotExist when the file does not exist.
+//
+// In DB mode (repo != nil) a not-found row falls back to the yaml file at
+// <dir>/<slug>.yaml (docs/plans/workspace-db-consolidation.md 「rollback
+// 用に旧 workspace yaml は残す」): PR3's cutover only migrates yaml files
+// present at daemon-startup time — anything a user (or an e2e scenario)
+// drops into the workspaces dir *after* startup never made it into the DB
+// migration, and the daemon has no post-cutover create path yet (that is
+// PR4). Rather than let those workspaces silently run in degraded mode
+// ("workspace.yaml not found" warnings + capabilities/kits/env not
+// injected + hooks failing with `command not found` because kit env is
+// missing), we transparently fall back to reading the yaml file when the
+// DB row is absent. PR4 wires the proper POST /api/workspaces path and
+// migrates every yaml on write; at that point this fallback becomes
+// unnecessary and will be removed alongside the CLI cutover.
 func (s *WorkspaceStore) Load(slug string) (*WorkspaceMeta, error) {
 	if s.repo != nil {
-		return s.repo.Load(slug)
+		meta, err := s.repo.Load(slug)
+		if err == nil {
+			return meta, nil
+		}
+		if !errors.Is(err, os.ErrNotExist) {
+			return nil, err
+		}
+		// DB row missing — fall through to the yaml path below. Callers
+		// that only care about the DB view (workspace_migration.go's own
+		// preflight) construct a store with dir set to the yaml dir
+		// they already want to read, so the fallback there is
+		// intentional too.
 	}
 	if err := ValidWorkspaceSlug(slug); err != nil {
 		return nil, err
+	}
+	if s.dir == "" {
+		return nil, fmt.Errorf("workspace %q: %w", slug, os.ErrNotExist)
 	}
 	path := filepath.Join(s.dir, slug+".yaml")
 	data, err := os.ReadFile(path)

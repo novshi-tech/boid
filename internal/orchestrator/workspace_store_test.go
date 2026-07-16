@@ -414,11 +414,14 @@ func TestWorkspaceStore_DBMode_SetRepository_SwitchesFromYAMLMode(t *testing.T) 
 
 	// Start in yaml mode (matches NewWorkspaceStore("") in existing callers),
 	// write a workspace to the yaml dir, then switch to DB mode via
-	// SetRepository and verify the yaml-written workspace is NOT visible
-	// through the DB-backed Load (the two are deliberately independent
-	// stores once the repository is wired — the daemon startup path relies
-	// on MigrateWorkspaceYAMLToDB, not on WorkspaceStore itself, to bridge
-	// yaml content into the DB).
+	// SetRepository. After the switch, Save routes to the DB and Load reads
+	// from the DB first — but PR3's e2e-driven yaml fallback (see
+	// WorkspaceStore.Load's doc comment) means a yaml-only workspace that
+	// was never migrated into the DB is still visible through Load,
+	// transparently backed by <dir>/<slug>.yaml. This keeps existing
+	// "drop a yaml file, then `boid workspace assign`" flows working
+	// after cutover without introducing a POST /api/workspaces path (PR4);
+	// the fallback goes away in PR4 alongside the CLI cutover.
 	dir := t.TempDir()
 	store := NewWorkspaceStore(dir)
 	if err := store.Save("yaml-only", &WorkspaceMeta{HostCommands: []string{"yaml"}}); err != nil {
@@ -427,8 +430,13 @@ func TestWorkspaceStore_DBMode_SetRepository_SwitchesFromYAMLMode(t *testing.T) 
 
 	store.SetRepository(NewWorkspaceRepository(d.Conn))
 
-	if _, err := store.Load("yaml-only"); !errors.Is(err, os.ErrNotExist) {
-		t.Errorf("Load(yaml-only) after SetRepository: expected os.ErrNotExist, got %v", err)
+	// yaml-only is visible via the fallback (DB miss → yaml read).
+	yamlOnly, err := store.Load("yaml-only")
+	if err != nil {
+		t.Fatalf("Load(yaml-only) after SetRepository: %v (expected yaml fallback to succeed)", err)
+	}
+	if !equalStringSlice(yamlOnly.HostCommands, []string{"yaml"}) {
+		t.Errorf("Load(yaml-only) via fallback: HostCommands = %v, want [yaml]", yamlOnly.HostCommands)
 	}
 
 	if err := store.Save("db-only", &WorkspaceMeta{HostCommands: []string{"db"}}); err != nil {
@@ -446,5 +454,12 @@ func TestWorkspaceStore_DBMode_SetRepository_SwitchesFromYAMLMode(t *testing.T) 
 	// does not delete it).
 	if _, err := os.Stat(filepath.Join(dir, "yaml-only.yaml")); err != nil {
 		t.Errorf("expected yaml-only.yaml to still exist on disk: %v", err)
+	}
+
+	// A slug that exists in neither the DB nor as a yaml file must still
+	// surface os.ErrNotExist, so callers that branch on that error
+	// (dispatcher's degraded-mode path) still get the right signal.
+	if _, err := store.Load("missing-everywhere"); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("Load(missing-everywhere): expected os.ErrNotExist, got %v", err)
 	}
 }

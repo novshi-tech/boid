@@ -162,28 +162,23 @@ func (s *ProjectAppService) SetProjectWorkspace(id, workspaceID string) (*orches
 		if err := orchestrator.ValidWorkspaceSlug(workspaceID); err != nil {
 			return nil, &StatusError{Code: http.StatusBadRequest, Message: err.Error()}
 		}
-		// MAJOR 5 (codex review): reject assignment to a slug with no
-		// corresponding workspaces row. Before this check, assigning a
-		// project to a nonexistent slug (typo, or a workspace removed out
-		// from under it) silently left a dangling project_workspaces
-		// reference: dispatch runs in a permanently degraded window
-		// (GetWithWorkspace logs "workspace.yaml not found" on every call),
-		// and — because MigrateWorkspaceYAMLToDB only re-validates
-		// project->workspace references once (state=committed skips every
-		// subsequent run) — restarting the daemon never self-heals it.
-		// DefaultWorkspaceSlug is exempt: WorkspaceRepository.EnsureDefault
-		// guarantees it always exists (and self-heals on the next boot even
-		// if the row were somehow missing), so the extra round trip is
-		// unnecessary ceremony for the single most common assignment.
-		if workspaceID != orchestrator.DefaultWorkspaceSlug {
-			exists, err := s.Projects.WorkspaceExists(workspaceID)
-			if err != nil {
-				return nil, &StatusError{Code: http.StatusInternalServerError, Message: err.Error()}
-			}
-			if !exists {
-				return nil, &StatusError{Code: http.StatusNotFound, Message: fmt.Sprintf("workspace %q not found", workspaceID)}
-			}
-		}
+		// NOTE: codex review 1st pass (MAJOR 5) asked for a
+		// workspaces-row existence check here, but e2e uncovered that
+		// every existing "yaml on disk → `boid workspace assign`" flow
+		// (docker-proxy-* scenarios, daemon-restart-resume) breaks
+		// against it: after PR3's cutover the assign runs against a
+		// live daemon whose migration has already committed, so a slug
+		// backed only by a freshly-dropped yaml file has no
+		// workspaces row and every assign 404s.
+		//
+		// Reintroducing the check requires a paired way to *create* a
+		// workspaces row from outside the migration path (`POST
+		// /api/workspaces` + a CLI counterpart) — that is PR4's whole
+		// job. Blocking the assign here first, before that create
+		// path exists, would ship a broken window nobody can escape
+		// from short of restarting the daemon; PR4 lands the create
+		// path and reinstates this existence check in the same PR.
+		_ = workspaceID // keep the block reachable for PR4's re-add
 	}
 	project, err := s.Projects.GetProject(id)
 	if err != nil {
