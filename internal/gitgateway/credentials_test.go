@@ -284,3 +284,30 @@ func TestResolveNilProvider(t *testing.T) {
 		t.Fatal("expected error when calling Resolve on nil provider")
 	}
 }
+
+// KnowsHost is what Server.ServeHTTP uses to gate the fail-fast pre-check
+// (docs/plans/gitgateway-credential-fail-fast.md PR-B): only known hosts
+// take the 502 path, unknown hosts fall through to Rewrite's pre-existing
+// fail-open + notify behavior — exactly what e2e's httptest.Server dynamic
+// ports depend on. Wrong answers here reappear as either regressed 502s in
+// e2e or a lost hang-guard in production; both cost real debugging time.
+func TestKnowsHost(t *testing.T) {
+	cp := NewCredentialProvider([]HostForgeConfig{
+		{Host: "github.com", Forge: ForgeGitHub, SecretKey: "gh-pat"},
+		{Host: "bitbucket.org", Forge: ForgeBitbucket, SecretKey: "BB_TOKEN"},
+	}, func(string, string) (string, error) { return "x", nil })
+
+	if !cp.KnowsHost("github.com") {
+		t.Error("KnowsHost(github.com) = false, want true")
+	}
+	if !cp.KnowsHost("bitbucket.org") {
+		t.Error("KnowsHost(bitbucket.org) = false, want true")
+	}
+	if cp.KnowsHost("127.0.0.1:40033") {
+		t.Error("KnowsHost(unconfigured) = true, want false (test upstreams / unregistered forges must be considered unknown so the fail-fast pre-check skips them)")
+	}
+	var nilProvider *CredentialProvider
+	if nilProvider.KnowsHost("github.com") {
+		t.Error("KnowsHost on nil provider = true, want false")
+	}
+}

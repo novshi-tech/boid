@@ -74,6 +74,28 @@ func NewServer(registry *Registry, credentials *CredentialProvider, notifier Ups
 			pr.Out.URL.RawQuery = pr.In.URL.RawQuery
 			pr.Out.Host = info.host
 			if s.credentials != nil {
+				// Two Inject-failure shapes reach this callback:
+				//
+				//   - Unknown host (not in config.Gateway.HostConfigs()):
+				//     ServeHTTP's pre-check is gated on KnowsHost, so an
+				//     unknown host bypasses fail-fast and lands here with
+				//     Inject returning "no forge configured for host". This
+				//     is the pre-PR-B fail-open + notify path preserved
+				//     verbatim — test upstreams (httptest.Server dynamic
+				//     ports) and stray unregistered-forge requests both
+				//     take this shape.
+				//
+				//   - Known host + secret race: any Inject failure for a
+				//     known host is a race between pre-check and Rewrite
+				//     (currently no code path unregisters a secret
+				//     mid-request, so effectively unreachable). Same
+				//     fail-open behavior applies; notifier double-fire is
+				//     not a concern because the pre-check already fired
+				//     the primary signal in the non-race case.
+				//
+				// Either way: log for observability, notify (unchanged from
+				// pre-PR-B), and forward unauthenticated. Upstream 401 will
+				// still trip ModifyResponse's NotifyUpstreamAuthFailure.
 				if err := s.credentials.Inject(pr.Out, info.host, info.namespace); err != nil {
 					slog.Warn("gitgateway: credential injection failed; forwarding without auth", "host", info.host, "err", err)
 					s.notifier.NotifyCredentialError(info.host, info.repo, err)
@@ -149,15 +171,65 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// Systemic "no secret resolver at all" case (docs/plans/git-gateway-cutover.md
 	// PR5 review): reject before ever contacting the upstream or invoking
-	// the notifier, distinct from the ordinary per-key-miss path (a
-	// configured resolver that errors for one specific key), which still
-	// falls through to Rewrite's existing fail-open + NotifyCredentialError
-	// behavior below unchanged. s.credentials == nil is a deliberate
+	// the notifier, distinct from the ordinary per-key-miss path handled by
+	// the Resolve pre-check just below. s.credentials == nil is a deliberate
 	// no-auth-injection test/upstream mode (see NewServer's doc comment) and
-	// is intentionally NOT covered by this check.
+	// is intentionally NOT covered by either this check or the Resolve
+	// pre-check.
 	if s.credentials != nil && !s.credentials.Configured() {
 		http.Error(w, "service unavailable: git gateway has no secret resolver configured", http.StatusServiceUnavailable)
 		return
+	}
+
+	// Per-key credential-resolution failure (docs/plans/gitgateway-credential-fail-fast.md
+	// PR-B): call Resolve before ever proxying so that a missing / broken
+	// secret returns 502 instead of forwarding the request unauthenticated
+	// and inheriting the upstream's 401 + WWW-Authenticate: Basic — which
+	// the sandbox-inner git would answer with an interactive credential
+	// prompt, hanging the whole TUI (`Username for 'http://10.0.2.2:...':`
+	// with no way out but Ctrl-C).
+	//
+	// 502 (Bad Gateway) is the intentional shape: git treats it as fatal
+	// (no prompt), and it semantically matches "gateway itself could not
+	// reach the upstream on your behalf" — which is exactly what a
+	// misconfigured secret means from the client's point of view.
+	//
+	// The pre-check is gated on KnowsHost: pre-PR-B, an unknown host also
+	// took the fail-open + notify path (Rewrite's Inject would return
+	// "no forge configured for host" and forward unauthenticated). Test
+	// upstreams (httptest.Server dynamic ports) never appear in
+	// config.Gateway.HostConfigs() and rely on that pre-existing shape —
+	// gating on KnowsHost preserves it while still fail-fast'ing the
+	// intended case (known host + resolver miss, the actual hang trigger
+	// captured in [[gitgateway-credential-fail-hangs-sandbox]]).
+	//
+	// This reverses the pre-cutover fail-open + NotifyCredentialError
+	// behavior (`docs/plans/git-gateway-cutover.md` PR3/PR4: 「gateway 自体は
+	// 落とさない」) ONLY for the known-host-with-secret-miss case. That
+	// principle held while the gateway was still inert (PR3/PR4) and the
+	// only visible consequence of forwarding-without-auth was a 401 in the
+	// log; once PR5+ made real sandbox clients depend on this path, that
+	// same forwarding started producing the TUI hang above — a much worse
+	// failure mode than the honest 502 we now return.
+	//
+	// The notifier fires exactly once (here), so callers such as
+	// internal/server/gitgateway_notify.go still see the same
+	// per-request signal they did before; only the proxy path has changed.
+	// Rewrite's Inject call below is left in place — it will succeed on
+	// the second resolve for any request that made it past this pre-check,
+	// so the cost of the extra lookup is one SecretStore.Get per request
+	// when credentials are healthy (cheap: an in-process DB read).
+	if s.credentials != nil && s.credentials.KnowsHost(rt.host) {
+		if _, _, err := s.credentials.Resolve(rt.host, namespace); err != nil {
+			slog.Warn("gitgateway: credential resolution failed; refusing to forward (fail-fast)",
+				"host", rt.host, "namespace", namespace, "err", err)
+			s.notifier.NotifyCredentialError(rt.host, repo, err)
+			http.Error(w,
+				"bad gateway: git gateway credential resolution failed for host "+
+					rt.host+" (namespace "+namespace+"): "+err.Error(),
+				http.StatusBadGateway)
+			return
+		}
 	}
 
 	// Rewrite the request path in place to the upstream's canonical
