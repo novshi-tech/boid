@@ -3,6 +3,7 @@ package gitgateway
 import (
 	"errors"
 	"net/http"
+	"strings"
 	"testing"
 )
 
@@ -176,5 +177,110 @@ func TestNilCredentialProviderFailsClosed(t *testing.T) {
 	}
 	if got := cp.SchemeFor("github.com"); got != "https" {
 		t.Fatalf("nil CredentialProvider SchemeFor = %q, want https default", got)
+	}
+}
+
+// The Resolve tests below cover the "pre-check" surface introduced in PR-A
+// (docs/plans/gitgateway-credential-fail-fast.md). Inject is now a thin
+// wrapper over Resolve, so its own test cases (above) transitively exercise
+// the same code paths — these tests add coverage for callers that will hit
+// Resolve directly (Server.ServeHTTP's fail-fast pre-check, PR-B).
+
+func TestResolveGitHub(t *testing.T) {
+	resolver := func(namespace, key string) (string, error) {
+		if key != "gh-pat" {
+			t.Fatalf("resolver called with unexpected key %q", key)
+		}
+		if namespace != "ws-1" {
+			t.Fatalf("resolver called with unexpected namespace %q, want ws-1", namespace)
+		}
+		return "sekrit-token", nil
+	}
+	cp := NewCredentialProvider([]HostForgeConfig{
+		{Host: "github.com", Forge: ForgeGitHub, SecretKey: "gh-pat"},
+	}, resolver)
+
+	user, token, err := cp.Resolve("github.com", "ws-1")
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if user != "x-access-token" {
+		t.Fatalf("username = %q, want x-access-token", user)
+	}
+	if token != "sekrit-token" {
+		t.Fatalf("token = %q, want sekrit-token", token)
+	}
+}
+
+func TestResolveBitbucket(t *testing.T) {
+	cp := NewCredentialProvider([]HostForgeConfig{
+		{Host: "bitbucket.org", Forge: ForgeBitbucket, SecretKey: "bb-api-token"},
+	}, func(string, string) (string, error) { return "bb-token", nil })
+
+	user, token, err := cp.Resolve("bitbucket.org", "default")
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if user != "x-bitbucket-api-token-auth" {
+		t.Fatalf("username = %q, want x-bitbucket-api-token-auth", user)
+	}
+	if token != "bb-token" {
+		t.Fatalf("token = %q, want bb-token", token)
+	}
+}
+
+func TestResolveUnknownHost(t *testing.T) {
+	cp := NewCredentialProvider(nil, func(string, string) (string, error) { return "x", nil })
+	user, token, err := cp.Resolve("example.com", "default")
+	if err == nil {
+		t.Fatal("expected error for unconfigured host")
+	}
+	if user != "" || token != "" {
+		t.Fatalf("Resolve(err path) = (%q, %q), want empty strings", user, token)
+	}
+}
+
+func TestResolveResolverError(t *testing.T) {
+	wantErr := errors.New("no rows in result set")
+	cp := NewCredentialProvider([]HostForgeConfig{
+		{Host: "bitbucket.org", Forge: ForgeBitbucket, SecretKey: "BB_TOKEN"},
+	}, func(string, string) (string, error) { return "", wantErr })
+
+	user, token, err := cp.Resolve("bitbucket.org", "khi")
+	if err == nil {
+		t.Fatal("expected error to propagate from resolver")
+	}
+	if !errors.Is(err, wantErr) {
+		t.Errorf("Resolve err = %v, want to wrap %v", err, wantErr)
+	}
+	// The 502 body composed by Server.ServeHTTP (PR-B) needs enough hints
+	// for nose to locate the missing secret (host + namespace + secret key
+	// name), so keep those substrings in the wrapped error message.
+	msg := err.Error()
+	for _, want := range []string{"bitbucket.org", "khi", "BB_TOKEN"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("Resolve err message = %q, missing %q", msg, want)
+		}
+	}
+	if user != "" || token != "" {
+		t.Fatalf("Resolve(err path) = (%q, %q), want empty strings", user, token)
+	}
+}
+
+func TestResolveNilResolver(t *testing.T) {
+	cp := NewCredentialProvider([]HostForgeConfig{
+		{Host: "github.com", Forge: ForgeGitHub, SecretKey: "gh-pat"},
+	}, nil)
+	_, _, err := cp.Resolve("github.com", "default")
+	if err == nil {
+		t.Fatal("expected error when no resolver is configured")
+	}
+}
+
+func TestResolveNilProvider(t *testing.T) {
+	var cp *CredentialProvider
+	_, _, err := cp.Resolve("github.com", "default")
+	if err == nil {
+		t.Fatal("expected error when calling Resolve on nil provider")
 	}
 }

@@ -118,6 +118,42 @@ func (c *CredentialProvider) SchemeFor(host string) string {
 	return "https"
 }
 
+// Resolve looks up host's forge config, resolves its secret key against the
+// requesting job token's workspace-derived namespace (post-cutover 改善 §1),
+// and returns the Basic-auth username / token pair the gateway would use
+// for outbound requests to that host. It returns an error (leaving both
+// strings empty) if host has no configured forge, no resolver is set, or
+// the secret can't be resolved.
+//
+// This is the "pre-check" half of the fail-fast path
+// (docs/plans/gitgateway-credential-fail-fast.md PR-A): Server.ServeHTTP
+// calls Resolve before proxying so it can 502 without ever contacting the
+// upstream when credentials fail to resolve, avoiding the sandbox-side git
+// credential prompt that upstream 401s cause. Inject below is the "apply"
+// half — a thin wrapper for the Rewrite callback path that still needs to
+// SetBasicAuth on an outbound *http.Request.
+func (c *CredentialProvider) Resolve(host, namespace string) (username, token string, err error) {
+	if c == nil {
+		return "", "", fmt.Errorf("gitgateway: no credential provider configured")
+	}
+	cfg, ok := c.hosts[host]
+	if !ok {
+		return "", "", fmt.Errorf("gitgateway: no forge configured for host %q", host)
+	}
+	if c.resolver == nil {
+		return "", "", fmt.Errorf("gitgateway: no secret resolver configured for host %q", host)
+	}
+	tok, err := c.resolver(namespace, cfg.SecretKey)
+	if err != nil {
+		return "", "", fmt.Errorf("gitgateway: resolve secret %q for host %q (namespace %q): %w", cfg.SecretKey, host, namespace, err)
+	}
+	user, err := usernameForForge(cfg.Forge)
+	if err != nil {
+		return "", "", err
+	}
+	return user, tok, nil
+}
+
 // Inject resolves host's configured secret — scoped to namespace, the
 // requesting job token's workspace-derived secret namespace (post-cutover
 // 改善 §1) — and sets Basic auth on req using the forge's username
@@ -127,22 +163,12 @@ func (c *CredentialProvider) SchemeFor(host string) string {
 // misconfigured host is a config problem, not grounds to crash the gateway
 // (docs/plans/git-gateway-cutover.md: 「gateway 自体は落とさない」, said of
 // upstream 401s but applied here in the same spirit).
+//
+// Inject is now a thin wrapper over Resolve (PR-A refactor). Callers that
+// only need to know whether resolution would succeed — without holding an
+// outbound request to modify — should call Resolve directly.
 func (c *CredentialProvider) Inject(req *http.Request, host, namespace string) error {
-	if c == nil {
-		return fmt.Errorf("gitgateway: no credential provider configured")
-	}
-	cfg, ok := c.hosts[host]
-	if !ok {
-		return fmt.Errorf("gitgateway: no forge configured for host %q", host)
-	}
-	if c.resolver == nil {
-		return fmt.Errorf("gitgateway: no secret resolver configured for host %q", host)
-	}
-	token, err := c.resolver(namespace, cfg.SecretKey)
-	if err != nil {
-		return fmt.Errorf("gitgateway: resolve secret %q for host %q (namespace %q): %w", cfg.SecretKey, host, namespace, err)
-	}
-	username, err := usernameForForge(cfg.Forge)
+	username, token, err := c.Resolve(host, namespace)
 	if err != nil {
 		return err
 	}
