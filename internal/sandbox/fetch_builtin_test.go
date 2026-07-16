@@ -294,3 +294,93 @@ func TestExecuteFetch_SSRFPrivateIP(t *testing.T) {
 		t.Errorf("expected SSRF error message, got: %s", resp.Stderr)
 	}
 }
+
+// ---------- HTTP/2 opt-in + Content-Length mismatch detection ----------
+
+// TestDefaultFetchClient_ForceAttemptHTTP2 pins the h2 opt-in on the default
+// transport. When DialContext (SSRF guard) is set, Go disables HTTP/2 unless
+// ForceAttemptHTTP2 is explicitly true — regressing this reintroduces the
+// "status 200 + body 0 bytes" symptom against HTTP/2-preferring origins
+// (raw.githubusercontent.com etc.).
+func TestDefaultFetchClient_ForceAttemptHTTP2(t *testing.T) {
+	c := defaultFetchClient()
+	tr, ok := c.Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("expected *http.Transport, got %T", c.Transport)
+	}
+	if !tr.ForceAttemptHTTP2 {
+		t.Errorf("ForceAttemptHTTP2 must be true — a custom DialContext otherwise disables HTTP/2 and h2-preferring origins yield 200+0B")
+	}
+	if tr.DialContext == nil {
+		t.Errorf("DialContext must remain set (SSRF guard)")
+	}
+}
+
+// mockRoundTripper returns a pre-baked *http.Response verbatim, so tests can
+// exercise defensive checks (e.g. Content-Length mismatch) without needing a
+// real server to violate the transport contract.
+type mockRoundTripper struct {
+	resp *http.Response
+}
+
+func (m *mockRoundTripper) RoundTrip(_ *http.Request) (*http.Response, error) {
+	return m.resp, nil
+}
+
+// TestExecuteFetch_ContentLengthMismatch guards the defense-in-depth check:
+// if the server declared Content-Length > 0 but the body arrived empty, we
+// must surface it as an error rather than treating a broken transport as a
+// successful empty fetch. This is the second line of defense behind the h2
+// opt-in in TestDefaultFetchClient_ForceAttemptHTTP2.
+func TestExecuteFetch_ContentLengthMismatch(t *testing.T) {
+	orig := newFetchClient
+	t.Cleanup(func() { newFetchClient = orig })
+	header := http.Header{}
+	header.Set("Content-Type", "text/plain")
+	header.Set("Content-Length", "42")
+	newFetchClient = func() *http.Client {
+		return &http.Client{
+			Timeout: fetchTimeout,
+			Transport: &mockRoundTripper{
+				resp: &http.Response{
+					StatusCode:    200,
+					Status:        "200 OK",
+					Proto:         "HTTP/1.1",
+					Header:        header,
+					Body:          io.NopCloser(strings.NewReader("")),
+					ContentLength: 42,
+				},
+			},
+		}
+	}
+
+	resp := executeFetch(&FetchRequest{URL: "http://example.com/"})
+	if resp.ExitCode == 0 {
+		t.Errorf("expected non-zero exit for Content-Length mismatch, got exit 0 with stdout=%q", resp.Stdout)
+	}
+	if !strings.Contains(resp.Stderr, "empty body but Content-Length") {
+		t.Errorf("expected 'empty body but Content-Length' in stderr, got: %q", resp.Stderr)
+	}
+}
+
+// TestExecuteFetch_EmptyBodyAcceptedWhenContentLengthZero pins the negative
+// side: a legitimate empty response (Content-Length: 0 or no body / chunked
+// with zero bytes) must still succeed. The defensive check must not degrade
+// this case.
+func TestExecuteFetch_EmptyBodyAcceptedWhenContentLengthZero(t *testing.T) {
+	withNoSSRF(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		w.WriteHeader(http.StatusOK)
+		// intentionally write no body → Go sets Content-Length: 0
+	}))
+	defer srv.Close()
+
+	resp := executeFetch(&FetchRequest{URL: srv.URL})
+	if resp.ExitCode != 0 {
+		t.Fatalf("expected exit 0 for genuine empty response, got %d: %s", resp.ExitCode, resp.Stderr)
+	}
+	if resp.Stdout != "" {
+		t.Errorf("expected empty stdout, got %q", resp.Stdout)
+	}
+}
