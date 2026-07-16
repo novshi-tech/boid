@@ -5,11 +5,11 @@ import (
 	"testing"
 )
 
-// TestMaterializeWorkspaceKitsForPersist_ExpandsAndClearsKits pins the fix
-// for a real e2e regression found while implementing PR4 (docs/plans/
+// TestMaterializeWorkspaceKitsForPersist_Expands pins the fix for a real
+// e2e regression found while implementing PR4 (docs/plans/
 // workspace-db-consolidation.md): the workspaces table has no `kits` column
-// at all, so a *WorkspaceMeta with a non-empty Kits list would silently
-// lose that field on WorkspaceRepository.Create/Save — and, unlike the
+// at all, so a *WorkspaceMeta carrying a kit reference would silently lose
+// that reference on WorkspaceRepository.Create/Save — and, unlike the
 // migration path (which runs materializeKitRuntimeIntoWorkspace before its
 // own save), POST/PUT /api/workspaces had no equivalent step. A workspace
 // created or auto-created (via `boid workspace assign`'s legacy-yaml
@@ -17,7 +17,13 @@ import (
 // with the kit's env/host_commands/additional_bindings silently missing —
 // exactly the docker-proxy-* e2e scenarios' "$DOCKER_PROXY_TEST_ROOT/
 // docker-proxy-test.sh: not found" (exit 127) failure mode.
-func TestMaterializeWorkspaceKitsForPersist_ExpandsAndClearsKits(t *testing.T) {
+//
+// Phase 2.5 PR7 (decision 12) removed WorkspaceMeta.Kits outright: kitRefs
+// is now an explicit parameter the caller sources itself (the one remaining
+// caller, cmd/workspace.go's ensureWorkspaceExistsForAssign, extracts it
+// from the raw shadow yaml) instead of a struct field this function reads
+// and clears.
+func TestMaterializeWorkspaceKitsForPersist_Expands(t *testing.T) {
 	kitsDir := t.TempDir()
 	writeMigrationKitYAML(t, kitsDir, "toolkit", ""+
 		"host_commands:\n  gh:\n    allow: [pr]\n"+
@@ -25,10 +31,9 @@ func TestMaterializeWorkspaceKitsForPersist_ExpandsAndClearsKits(t *testing.T) {
 		"additional_bindings:\n  - source: /opt/kit-tool\n    target: /opt/kit-tool\n    mode: ro\n")
 
 	meta := &WorkspaceMeta{
-		Kits: []string{"toolkit"},
-		Env:  map[string]string{"WORKSPACE_VAR": "from-workspace"},
+		Env: map[string]string{"WORKSPACE_VAR": "from-workspace"},
 	}
-	if err := MaterializeWorkspaceKitsForPersist(kitsDir, meta); err != nil {
+	if err := MaterializeWorkspaceKitsForPersist(kitsDir, []string{"toolkit"}, meta); err != nil {
 		t.Fatalf("MaterializeWorkspaceKitsForPersist: %v", err)
 	}
 
@@ -47,17 +52,14 @@ func TestMaterializeWorkspaceKitsForPersist_ExpandsAndClearsKits(t *testing.T) {
 	if _, ok := findBindMountBySource(meta.AdditionalBindings, filepath.Join(kitsDir, "toolkit")); !ok {
 		t.Errorf("AdditionalBindings = %+v, want an entry for the kit root dir (KitRoots equivalent)", meta.AdditionalBindings)
 	}
-	if len(meta.Kits) != 0 {
-		t.Errorf("Kits = %v, want empty (materialized then cleared, mirroring the migration's contract)", meta.Kits)
-	}
 }
 
-// TestMaterializeWorkspaceKitsForPersist_NoOpWhenKitsEmpty verifies the
+// TestMaterializeWorkspaceKitsForPersist_NoOpWhenKitRefsEmpty verifies the
 // fast path never touches the filesystem for the overwhelming majority of
 // workspaces (which never reference a kit) — kitsDir need not even exist.
-func TestMaterializeWorkspaceKitsForPersist_NoOpWhenKitsEmpty(t *testing.T) {
+func TestMaterializeWorkspaceKitsForPersist_NoOpWhenKitRefsEmpty(t *testing.T) {
 	meta := &WorkspaceMeta{HostCommands: []string{"gh"}}
-	if err := MaterializeWorkspaceKitsForPersist("/nonexistent/kits/dir", meta); err != nil {
+	if err := MaterializeWorkspaceKitsForPersist("/nonexistent/kits/dir", nil, meta); err != nil {
 		t.Fatalf("MaterializeWorkspaceKitsForPersist: %v", err)
 	}
 	if !equalStringSlice(meta.HostCommands, []string{"gh"}) {
@@ -66,13 +68,13 @@ func TestMaterializeWorkspaceKitsForPersist_NoOpWhenKitsEmpty(t *testing.T) {
 }
 
 // TestMaterializeWorkspaceKitsForPersist_UnresolvedKitErrors verifies that a
-// Kits entry with no corresponding kit.yaml aborts with a clear error rather
-// than silently dropping the reference (matching the migration's own
+// kitRefs entry with no corresponding kit.yaml aborts with a clear error
+// rather than silently dropping the reference (matching the migration's own
 // abort-on-unresolved contract, MAJOR 2 codex review).
 func TestMaterializeWorkspaceKitsForPersist_UnresolvedKitErrors(t *testing.T) {
 	kitsDir := t.TempDir()
-	meta := &WorkspaceMeta{Kits: []string{"ghost-kit"}}
-	err := MaterializeWorkspaceKitsForPersist(kitsDir, meta)
+	meta := &WorkspaceMeta{}
+	err := MaterializeWorkspaceKitsForPersist(kitsDir, []string{"ghost-kit"}, meta)
 	if err == nil {
 		t.Fatal("expected error for unresolved kit reference, got nil")
 	}

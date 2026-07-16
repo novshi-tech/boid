@@ -508,23 +508,3 @@ type WorkspaceSummary struct {
 	Revision string `json:"revision,omitempty"`
 }
 
-// KitMeta holds the parsed content of a kit.yaml file.
-// A kit provides tooling only: host_commands, env, and additional_bindings.
-// Kits do not provide hooks or task_behaviors (those are project/workspace concerns).
-type KitMeta struct {
-	HostCommands       HostCommands      `yaml:"host_commands"`
-	AdditionalBindings []BindMount       `yaml:"additional_bindings"`
-	Env                map[string]string `yaml:"env"`
-	KitRoot            string            `yaml:"-"` // directory containing kit.yaml
-
-	// Human-readable metadata — not merged into runtime spec.
-	Meta *KitMetaInfo `yaml:"meta,omitempty"`
-}
-
-// KitMetaInfo holds human-readable metadata for a kit.
-type KitMetaInfo struct {
-	Name        string `yaml:"name"`
-	Description string `yaml:"description"`
-	Category    string `yaml:"category"` // language / vcs / ci / agent / workflow / utility
-}
-

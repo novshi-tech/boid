@@ -2,6 +2,8 @@ package cmd
 
 import (
 	"bytes"
+	"context"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -9,7 +11,9 @@ import (
 	"testing"
 
 	"github.com/novshi-tech/boid/internal/api"
+	"github.com/novshi-tech/boid/internal/client"
 	"github.com/novshi-tech/boid/internal/orchestrator"
+	"github.com/novshi-tech/boid/internal/server"
 	"github.com/novshi-tech/boid/testutil"
 )
 
@@ -521,6 +525,260 @@ func TestRunWorkspaceAssign_AutoCreate_RejectsMultipleDocuments(t *testing.T) {
 	}
 }
 
+// TestExtractLegacyWorkspaceKitRefs_RejectsMultipleDocuments pins MAJOR 3
+// (codex review round 1, docs/plans/workspace-db-consolidation.md): a
+// multi-document local workspace.yaml whose *first* document contains a
+// `kits:` key must still be rejected, not silently truncated. Before the
+// fix, extractLegacyWorkspaceKitRefs unmarshaled raw into a map[string]any
+// (a plain single-document yaml.Unmarshal, which always drops any trailing
+// "---"-delimited document with no error) and then, whenever `kits:` was
+// present, re-marshaled that already-truncated map as `rest` — so the
+// caller's later orchestrator.DecodeWorkspaceMetaStrict(rest) call could
+// never observe the dropped second document, since rest was a fresh marshal
+// of only the first document's fields. (The counterpart test above,
+// TestRunWorkspaceAssign_AutoCreate_RejectsMultipleDocuments, exercises a
+// fixture with NO kits: key — which happened to already work, because `rest`
+// there was the original unmodified raw bytes, not a re-marshal.)
+func TestExtractLegacyWorkspaceKitRefs_RejectsMultipleDocuments(t *testing.T) {
+	twoDocsWithKits := []byte("kits:\n  - kit-a\n---\nkits:\n  - kit-b\n")
+	_, _, err := extractLegacyWorkspaceKitRefs(twoDocsWithKits)
+	if err == nil {
+		t.Fatal("expected an error for a multi-document yaml whose first document has a kits: key, got nil")
+	}
+	if !strings.Contains(err.Error(), "multiple YAML documents") {
+		t.Errorf("expected a multi-document rejection error, got: %v", err)
+	}
+}
+
+// TestExtractLegacyWorkspaceKitRefs_SingleDocumentStillWorks is the negative
+// counterpart of the above: a well-formed single-document yaml with a kits:
+// key must still extract cleanly (no regression from the added trailing-
+// document check).
+func TestExtractLegacyWorkspaceKitRefs_SingleDocumentStillWorks(t *testing.T) {
+	kitRefs, rest, err := extractLegacyWorkspaceKitRefs([]byte("kits:\n  - kit-a\nenv:\n  FOO: bar\n"))
+	if err != nil {
+		t.Fatalf("extractLegacyWorkspaceKitRefs: %v", err)
+	}
+	if len(kitRefs) != 1 || kitRefs[0] != "kit-a" {
+		t.Errorf("kitRefs = %v, want [kit-a]", kitRefs)
+	}
+	if strings.Contains(string(rest), "kits") {
+		t.Errorf("rest still contains a kits key: %s", rest)
+	}
+	if !strings.Contains(string(rest), "FOO") {
+		t.Errorf("rest lost the env field: %s", rest)
+	}
+}
+
+// TestExtractLegacyWorkspaceKitRefs_NullOrEmptyKitsIsAcceptedAsNoRefs pins
+// codex PR7 review round 3's minor finding: `kits: null` and a bare `kits:`
+// with no value both parse to nil under yaml.v3 map decoding — the loose
+// pre-PR7 shadow yaml path treated them as "no refs, key present". A prior
+// draft of the hardening asserted `.([]any)` directly and 500'd on nil,
+// silently breaking `boid workspace assign` for existing shadow yaml files
+// that legitimately carried `kits:` with nothing under it. Both forms must
+// be accepted as the same "no legacy kit refs" state that key-absent yields,
+// and the kits: null line must be scrubbed from the outgoing body so the
+// downstream strict decoder does not choke on it either.
+func TestExtractLegacyWorkspaceKitRefs_NullOrEmptyKitsIsAcceptedAsNoRefs(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		yaml string
+	}{
+		{"kits: null", "kits: null\nenv:\n  FOO: bar\n"},
+		{"bare kits key with no value", "kits:\nenv:\n  FOO: bar\n"},
+		{"empty kits list", "kits: []\nenv:\n  FOO: bar\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			kitRefs, rest, err := extractLegacyWorkspaceKitRefs([]byte(tc.yaml))
+			if err != nil {
+				t.Fatalf("extractLegacyWorkspaceKitRefs(%q): %v", tc.name, err)
+			}
+			if len(kitRefs) != 0 {
+				t.Errorf("kitRefs = %v, want empty (nil/null/[] should mean no refs)", kitRefs)
+			}
+			if strings.Contains(string(rest), "kits") {
+				t.Errorf("rest still contains a kits key (should be scrubbed): %s", rest)
+			}
+			if !strings.Contains(string(rest), "FOO") {
+				t.Errorf("rest lost the env field: %s", rest)
+			}
+		})
+	}
+}
+
+// TestRunWorkspaceAssign_AutoCreate_FailsOnUnresolvedKit pins MAJOR 2 (codex
+// review round 1, docs/plans/workspace-db-consolidation.md): a local
+// workspace.yaml referencing a kit with no corresponding kit.yaml must fail
+// `boid workspace assign`'s auto-create step outright, rather than silently
+// downgrading to a "note:" warning and creating the workspace without the
+// kit's host_commands/env/bindings — a regression from PR6, where the
+// daemon-side CreateWorkspace 400'd on the very same condition and `assign`
+// itself exited non-zero. The workspace must end up with no DB row at all:
+// MaterializeWorkspaceKitsForPersist fails before postWorkspaceCreateBestEffort
+// (the actual POST /api/workspaces call) is ever reached.
+//
+// This constructs its own server (rather than testutil.NewTestServer) with a
+// real, non-empty --kits-dir that deliberately lacks "ghost-kit" — MAJOR 2
+// (codex review round 2) made resolveDaemonKitsDir hard-error on an empty
+// daemon KitsDir (testutil.NewTestServer's default) instead of falling back
+// to this CLI process's own defaultKitsDir(), so this test needs a daemon
+// that actually answers GET /api/config/kits-dir with a real directory in
+// order to reach (and pin) the unresolved-kit failure this test is about,
+// rather than failing one step earlier on the kits-dir lookup itself.
+func TestRunWorkspaceAssign_AutoCreate_FailsOnUnresolvedKit(t *testing.T) {
+	cfgDir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", cfgDir)
+
+	kitsDir := t.TempDir() // the daemon's real --kits-dir, deliberately WITHOUT "ghost-kit".
+
+	sockPath := filepath.Join(t.TempDir(), "boid.sock")
+	t.Setenv("BOID_SOCKET", sockPath)
+
+	srv, err := server.New(server.Config{
+		DBPath:     ":memory:",
+		SocketPath: sockPath,
+		HTTPAddr:   "127.0.0.1:0",
+		KitsDir:    kitsDir,
+	})
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+	if err := srv.Start(context.Background()); err != nil {
+		t.Fatalf("start server: %v", err)
+	}
+	t.Cleanup(func() { _ = srv.Stop() })
+
+	c := client.NewUnixClient(sockPath)
+
+	wsDir, err := orchestrator.DefaultWorkspaceDir()
+	if err != nil {
+		t.Fatalf("DefaultWorkspaceDir: %v", err)
+	}
+	if err := os.MkdirAll(wsDir, 0o755); err != nil {
+		t.Fatalf("mkdir workspace dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(wsDir, "ghost-ws.yaml"), []byte("kits:\n  - ghost-kit\n"), 0o644); err != nil {
+		t.Fatalf("write workspace.yaml: %v", err)
+	}
+
+	dir := writeImportTestProject(t, "assign-proj-ghost", "Assign Proj Ghost")
+	var project orchestrator.Project
+	if err := c.Do("POST", "/api/projects", map[string]string{"work_dir": dir}, &project); err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+
+	cmd := workspaceAssignCmd
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	err = runWorkspaceAssign(cmd, []string{project.ID, "ghost-ws"})
+	if err == nil {
+		t.Fatal("expected an error assigning to a workspace whose local yaml references an unresolved kit, got nil")
+	}
+	if !strings.Contains(err.Error(), "ghost-kit") {
+		t.Errorf("expected the error to mention the unresolved kit name %q: %v", "ghost-kit", err)
+	}
+
+	// The workspace must not have been created at all.
+	if err := c.Do("GET", "/api/workspaces/ghost-ws", nil, &api.WorkspaceDetail{}); err == nil {
+		t.Error("expected ghost-ws to have no DB row after the unresolved-kit assign failure")
+	}
+}
+
+// TestRunWorkspaceAssign_AutoCreate_HonorsCustomKitsDir pins MAJOR 1 (codex
+// review round 1, docs/plans/workspace-db-consolidation.md): a real
+// regression where ensureWorkspaceExistsForAssign's client-side kit
+// materialization called defaultKitsDir() unconditionally — silently
+// ignoring a daemon started with `boid start --kits-dir <custom>` and
+// resolving kit references against the wrong (CLI-local-default) directory
+// instead. testutil.NewTestServer does not accept a custom KitsDir, so this
+// test constructs a bespoke server directly (mirrors cmd/project_migrate_test.go's
+// TestProjectMigrate_WithHostCommandsAndBindings for the same reason). The
+// referenced kit is placed ONLY under the server's custom KitsDir, never
+// under what this test's own ambient $XDG_DATA_HOME would make
+// defaultKitsDir() resolve to — if resolveDaemonKitsDir ever regresses back
+// to defaultKitsDir(), this kit lookup 404s and the assign fails.
+func TestRunWorkspaceAssign_AutoCreate_HonorsCustomKitsDir(t *testing.T) {
+	cfgDir := t.TempDir()
+	dataDir := t.TempDir()      // defaultKitsDir() resolves under here — deliberately WITHOUT the kit.
+	customKitsDir := t.TempDir() // the daemon's actual --kits-dir — WITH the kit.
+
+	t.Setenv("XDG_CONFIG_HOME", cfgDir)
+	t.Setenv("XDG_DATA_HOME", dataDir)
+
+	kitDir := filepath.Join(customKitsDir, "custom-kit")
+	if err := os.MkdirAll(kitDir, 0o755); err != nil {
+		t.Fatalf("mkdir kit dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(kitDir, "kit.yaml"), []byte("host_commands:\n  custom-cmd:\n    allow: [\"*\"]\n"), 0o644); err != nil {
+		t.Fatalf("write kit.yaml: %v", err)
+	}
+
+	sockPath := filepath.Join(t.TempDir(), "boid.sock")
+	t.Setenv("BOID_SOCKET", sockPath)
+
+	srv, err := server.New(server.Config{
+		DBPath:     ":memory:",
+		SocketPath: sockPath,
+		HTTPAddr:   "127.0.0.1:0",
+		KitsDir:    customKitsDir,
+	})
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+	if err := srv.Start(context.Background()); err != nil {
+		t.Fatalf("start server: %v", err)
+	}
+	t.Cleanup(func() { _ = srv.Stop() })
+
+	c := client.NewUnixClient(sockPath)
+
+	hostCommandsPath, err := orchestrator.DefaultHostCommandsPath()
+	if err != nil {
+		t.Fatalf("DefaultHostCommandsPath: %v", err)
+	}
+	if err := orchestrator.WriteHostCommandsConfig(hostCommandsPath, map[string]orchestrator.HostCommandSpec{
+		"custom-cmd": {},
+	}); err != nil {
+		t.Fatalf("WriteHostCommandsConfig: %v", err)
+	}
+	if err := srv.ReloadHostCommands(); err != nil {
+		t.Fatalf("ReloadHostCommands: %v", err)
+	}
+
+	wsDir, err := orchestrator.DefaultWorkspaceDir()
+	if err != nil {
+		t.Fatalf("DefaultWorkspaceDir: %v", err)
+	}
+	if err := os.MkdirAll(wsDir, 0o755); err != nil {
+		t.Fatalf("mkdir workspace dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(wsDir, "custom-kits-ws.yaml"), []byte("kits:\n  - custom-kit\n"), 0o644); err != nil {
+		t.Fatalf("write workspace.yaml: %v", err)
+	}
+
+	dir := writeImportTestProject(t, "assign-proj-customkits", "Assign Proj CustomKits")
+	var project orchestrator.Project
+	if err := c.Do("POST", "/api/projects", map[string]string{"work_dir": dir}, &project); err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+
+	cmd := workspaceAssignCmd
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	if err := runWorkspaceAssign(cmd, []string{project.ID, "custom-kits-ws"}); err != nil {
+		t.Fatalf("runWorkspaceAssign: %v (want success — the kit should resolve via the daemon's actual --kits-dir)", err)
+	}
+
+	var detail api.WorkspaceDetail
+	if err := c.Do("GET", "/api/workspaces/custom-kits-ws", nil, &detail); err != nil {
+		t.Fatalf("verify auto-created workspace: %v", err)
+	}
+	if len(detail.Meta.HostCommands) != 1 || detail.Meta.HostCommands[0] != "custom-cmd" {
+		t.Errorf("HostCommands = %v, want [custom-cmd] (kit resolved from the daemon's custom --kits-dir, not the CLI's own defaultKitsDir())", detail.Meta.HostCommands)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Export / Import (docs/plans/workspace-db-consolidation.md PR5)
 // ---------------------------------------------------------------------------
@@ -949,4 +1207,199 @@ func equalStrSliceForWorkspaceTest(a, b []string) bool {
 		}
 	}
 	return true
+}
+
+// ---------------------------------------------------------------------------
+// MAJOR 2 (codex review round 2, docs/plans/workspace-db-consolidation.md
+// Phase 2.5 PR7): resolveDaemonKitsDir must hard-error on any outcome other
+// than a clean 200 with a non-empty kits_dir, instead of silently falling
+// back to this CLI process's own defaultKitsDir() computation.
+// ---------------------------------------------------------------------------
+
+// newFakeKitsDirServer starts a stub UNIX-socket HTTP server that responds
+// to every request (regardless of path) with the given status code and raw
+// body, returning a *client.Client pointed at it. Used to simulate
+// GET /api/config/kits-dir failure modes (404/5xx/undecodable body) without
+// needing a full testutil.TestServer — mirrors
+// TestProjectMigrate_PutFailure_ShadowFileIsMergedComplete's stub server
+// pattern (cmd/project_migrate_test.go).
+func newFakeKitsDirServer(t *testing.T, statusCode int, body string) *client.Client {
+	t.Helper()
+	sockPath := filepath.Join(t.TempDir(), "fake-kits-dir.sock")
+	ln, err := net.Listen("unix", sockPath)
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	fakeSrv := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(statusCode)
+		_, _ = w.Write([]byte(body))
+	})}
+	go func() { _ = fakeSrv.Serve(ln) }()
+	t.Cleanup(func() { _ = fakeSrv.Close() })
+	return client.NewUnixClient(sockPath)
+}
+
+// TestResolveDaemonKitsDir_404DaemonUpgradeRequired pins MAJOR 2: a daemon
+// that does not expose GET /api/config/kits-dir at all (an older, pre-PR7
+// binary) must hard-error rather than silently falling back to this CLI
+// process's own defaultKitsDir() — the fallback risked resolving (and
+// permanently persisting, via MaterializeWorkspaceKitsForPersist) a
+// workspace's kit references against the wrong directory whenever a
+// same-named kit happened to exist under both locations.
+func TestResolveDaemonKitsDir_404DaemonUpgradeRequired(t *testing.T) {
+	c := newFakeKitsDirServer(t, http.StatusNotFound, `{"error":"not found"}`)
+	_, err := resolveDaemonKitsDir(c)
+	if err == nil {
+		t.Fatal("expected an error for a 404 (endpoint not exposed), got nil")
+	}
+}
+
+// TestResolveDaemonKitsDir_500PropagatesError pins the same hard-error
+// contract for a daemon-side 5xx response.
+func TestResolveDaemonKitsDir_500PropagatesError(t *testing.T) {
+	c := newFakeKitsDirServer(t, http.StatusInternalServerError, `{"error":"boom"}`)
+	_, err := resolveDaemonKitsDir(c)
+	if err == nil {
+		t.Fatal("expected an error for a 500 response, got nil")
+	}
+}
+
+// TestResolveDaemonKitsDir_DecodeFailurePropagatesError pins the hard-error
+// contract for a 200 response whose body does not decode as the expected
+// {"kits_dir": "..."} shape.
+func TestResolveDaemonKitsDir_DecodeFailurePropagatesError(t *testing.T) {
+	c := newFakeKitsDirServer(t, http.StatusOK, `not json at all`)
+	_, err := resolveDaemonKitsDir(c)
+	if err == nil {
+		t.Fatal("expected an error for an undecodable response body, got nil")
+	}
+}
+
+// TestResolveDaemonKitsDir_EmptyKitsDirPropagatesError pins the last
+// hard-error case discussed alongside MAJOR 2: a 200 response that decodes
+// cleanly but reports an empty kits_dir must still hard-error rather than
+// silently falling back to this CLI's own default — an empty value means
+// this CLI does not actually know the running daemon's real kits directory
+// (whatever the reason on the daemon side), and falling back risks
+// resolving against the wrong location exactly like the 404/5xx cases
+// above.
+func TestResolveDaemonKitsDir_EmptyKitsDirPropagatesError(t *testing.T) {
+	c := newFakeKitsDirServer(t, http.StatusOK, `{"kits_dir":""}`)
+	_, err := resolveDaemonKitsDir(c)
+	if err == nil {
+		t.Fatal("expected an error for an empty kits_dir response, got nil")
+	}
+}
+
+// TestResolveDaemonKitsDir_Success is the positive counterpart: a 200
+// response with a non-empty kits_dir is returned as-is, with no error.
+func TestResolveDaemonKitsDir_Success(t *testing.T) {
+	c := newFakeKitsDirServer(t, http.StatusOK, `{"kits_dir":"/custom/kits"}`)
+	got, err := resolveDaemonKitsDir(c)
+	if err != nil {
+		t.Fatalf("resolveDaemonKitsDir: %v", err)
+	}
+	if got != "/custom/kits" {
+		t.Errorf("kits dir = %q, want /custom/kits", got)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// MAJOR 3 (codex review round 2, docs/plans/workspace-db-consolidation.md
+// Phase 2.5 PR7): ensureWorkspaceExistsForAssign must read a local
+// workspace.yaml exactly once, and a read failure other than "file does not
+// exist" must hard-error rather than silently falling through to the
+// kits-oblivious first-read's content.
+// ---------------------------------------------------------------------------
+
+// TestRunWorkspaceAssign_AutoCreate_ReadFailure_HardError pins MAJOR 3: a
+// local workspace.yaml read failure other than "file does not exist" (here,
+// a directory sitting where a file was expected — a portable way to force a
+// non-ENOENT os.ReadFile error without relying on permission bits, which
+// root ignores) must hard-error the auto-create step, not silently produce
+// a confusing downstream 404 the way an unrelated failure being swallowed
+// used to.
+func TestRunWorkspaceAssign_AutoCreate_ReadFailure_HardError(t *testing.T) {
+	ts := testutil.NewTestServer(t)
+	t.Setenv("BOID_SOCKET", ts.Server.SocketPath())
+
+	wsDir, err := orchestrator.DefaultWorkspaceDir()
+	if err != nil {
+		t.Fatalf("DefaultWorkspaceDir: %v", err)
+	}
+	// Force a read failure that is NOT os.ErrNotExist: a directory at the
+	// exact path a workspace.yaml file would live makes os.ReadFile fail
+	// with "is a directory" instead of ENOENT.
+	badPath := filepath.Join(wsDir, "unreadable-ws.yaml")
+	if err := os.MkdirAll(badPath, 0o755); err != nil {
+		t.Fatalf("mkdir (simulating an unreadable workspace.yaml): %v", err)
+	}
+
+	dir := writeImportTestProject(t, "assign-proj-unreadable", "Assign Proj Unreadable")
+	var project orchestrator.Project
+	if err := ts.Client.Do("POST", "/api/projects", map[string]string{"work_dir": dir}, &project); err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+
+	cmd := workspaceAssignCmd
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	err = runWorkspaceAssign(cmd, []string{project.ID, "unreadable-ws"})
+	if err == nil {
+		t.Fatal("expected the local workspace.yaml read failure to surface as a hard error, got nil")
+	}
+	if strings.Contains(err.Error(), "not found") {
+		t.Errorf("error must report the actual read failure, not a generic 'not found': %v", err)
+	}
+}
+
+// TestRunWorkspaceAssign_AutoCreate_SnapshotAvoidsTOCTOU pins MAJOR 3:
+// ensureWorkspaceExistsForAssign must read a local workspace.yaml exactly
+// once, deriving both its meta and its legacy `kits:` reference list from
+// that single byte snapshot — mirroring readWorkspaceYAMLSnapshot's
+// (workspace_migration.go) MAJOR 5 fix on the server side. Before this fix,
+// this function read the file via orchestrator.NewWorkspaceStore("").Load
+// (one os.ReadFile) and then, later, a second independent os.ReadFile of
+// the very same path to extract the kits: list and strictly validate the
+// remainder — a second read this test proves no longer happens.
+func TestRunWorkspaceAssign_AutoCreate_SnapshotAvoidsTOCTOU(t *testing.T) {
+	ts := testutil.NewTestServer(t)
+	t.Setenv("BOID_SOCKET", ts.Server.SocketPath())
+	seedHostCommandsForTest(t, ts, "gh")
+
+	wsDir, err := orchestrator.DefaultWorkspaceDir()
+	if err != nil {
+		t.Fatalf("DefaultWorkspaceDir: %v", err)
+	}
+	if err := os.MkdirAll(wsDir, 0o755); err != nil {
+		t.Fatalf("mkdir workspace dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(wsDir, "toctou-ws.yaml"), []byte("host_commands:\n  - gh\n"), 0o644); err != nil {
+		t.Fatalf("write workspace.yaml: %v", err)
+	}
+
+	readCount := 0
+	orig := localWorkspaceYAMLReadFile
+	localWorkspaceYAMLReadFile = func(path string) ([]byte, error) {
+		readCount++
+		return orig(path)
+	}
+	t.Cleanup(func() { localWorkspaceYAMLReadFile = orig })
+
+	dir := writeImportTestProject(t, "assign-proj-toctou", "Assign Proj TOCTOU")
+	var project orchestrator.Project
+	if err := ts.Client.Do("POST", "/api/projects", map[string]string{"work_dir": dir}, &project); err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+
+	cmd := workspaceAssignCmd
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	if err := runWorkspaceAssign(cmd, []string{project.ID, "toctou-ws"}); err != nil {
+		t.Fatalf("runWorkspaceAssign: %v", err)
+	}
+
+	if readCount != 1 {
+		t.Errorf("localWorkspaceYAMLReadFile called %d times, want exactly 1 (a second read reintroduces the TOCTOU this fix closes)", readCount)
+	}
 }

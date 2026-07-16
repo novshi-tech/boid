@@ -511,7 +511,7 @@ func TestReadProjectMetaWithKits_LocalKits(t *testing.T) {
 			_ = os.MkdirAll(boidDir, 0o755)
 			_ = os.WriteFile(filepath.Join(boidDir, "project.yaml"), []byte("id: test-proj\nname: Test Project\ntask_behaviors:\n  dev:\n    kits:\n      - some-kit\n"), 0o644)
 
-			_, err := projectspec.ReadProjectMetaWithKits(dir, nil)
+			_, err := projectspec.ReadProjectMetaWithKits(dir)
 			if err == nil {
 				t.Fatal("expected removal error for behavior-level kits, got nil")
 			}
@@ -561,7 +561,7 @@ additional_bindings:
 		t.Fatalf("write project.local.yaml: %v", err)
 	}
 
-	meta, err := projectspec.ReadProjectMetaWithKits(baseDir, nil)
+	meta, err := projectspec.ReadProjectMetaWithKits(baseDir)
 	if err != nil {
 		t.Fatalf("ReadProjectMetaWithKits: %v", err)
 	}
@@ -587,7 +587,7 @@ func TestReadProjectMetaWithKits_BehaviorLevelKitsRejected(t *testing.T) {
 		_ = os.WriteFile(filepath.Join(boidDir, "project.yaml"), []byte(projectYAML), 0o644)
 		_ = os.WriteFile(filepath.Join(boidDir, "kits", "go-dev", "kit.yaml"), []byte("env:\n  A: a\n"), 0o644)
 
-		_, err := projectspec.ReadProjectMetaWithKits(dir, nil)
+		_, err := projectspec.ReadProjectMetaWithKits(dir)
 		if err == nil {
 			t.Fatal("expected error for behavior-level kits, got nil")
 		}
@@ -858,7 +858,7 @@ func TestReadProjectMetaWithKits_TopLevelKits_MergesIntoAllBehaviors(t *testing.
 	_ = os.MkdirAll(boidDir, 0o755)
 	_ = os.WriteFile(filepath.Join(boidDir, "project.yaml"), []byte("id: test-proj\nname: Test\nkits:\n  - go-dev\ntask_behaviors:\n  dev:\n    name: dev\n"), 0o644)
 
-	_, err := projectspec.ReadProjectMetaWithKits(dir, nil)
+	_, err := projectspec.ReadProjectMetaWithKits(dir)
 	if err == nil {
 		t.Fatal("expected error for top-level kits in project.yaml, got nil")
 	}
@@ -894,7 +894,7 @@ task_behaviors:
     name: dev
 `), 0o644)
 
-	_, err := projectspec.ReadProjectMetaWithKits(dir, nil)
+	_, err := projectspec.ReadProjectMetaWithKits(dir)
 	if err == nil {
 		t.Fatal("expected error for removed keys in project.yaml, got nil")
 	}
@@ -930,7 +930,7 @@ task_behaviors:
     name: dev
 `), 0o644)
 
-	_, err := projectspec.ReadProjectMetaWithKits(dir, nil)
+	_, err := projectspec.ReadProjectMetaWithKits(dir)
 	if err == nil {
 		t.Fatal("expected error for removed keys in project.yaml, got nil")
 	}
@@ -962,7 +962,7 @@ task_behaviors:
     name: dev
 `), 0o644)
 
-	_, err := projectspec.ReadProjectMetaWithKits(dir, nil)
+	_, err := projectspec.ReadProjectMetaWithKits(dir)
 	if err == nil {
 		t.Fatal("expected error for removed keys in project.yaml, got nil")
 	}
@@ -991,7 +991,7 @@ task_behaviors:
       - github.com/novshi-tech/boid-kits/claude-code
 `), 0o644)
 
-	_, err := projectspec.ReadProjectMetaWithKits(dir, nil)
+	_, err := projectspec.ReadProjectMetaWithKits(dir)
 	if err == nil {
 		t.Fatal("expected error for behavior-level kits in project.yaml, got nil")
 	}
@@ -1008,7 +1008,7 @@ func TestReadProjectMetaWithKits_TopLevelKits_AgentOnlyHooksAllowed(t *testing.T
 
 	_ = os.WriteFile(filepath.Join(boidDir, "project.yaml"), []byte("id: test-proj\nname: Test\nkits:\n  - agent-kit\ntask_behaviors:\n  dev:\n    name: dev\n"), 0o644)
 
-	_, err := projectspec.ReadProjectMetaWithKits(dir, nil)
+	_, err := projectspec.ReadProjectMetaWithKits(dir)
 	if err == nil {
 		t.Fatal("expected error for top-level kits in project.yaml, got nil")
 	}
@@ -1025,7 +1025,7 @@ func TestReadProjectMetaWithKits_TopLevelKits_ScopeValidation_NonAgentHookReject
 
 	_ = os.WriteFile(filepath.Join(boidDir, "project.yaml"), []byte("id: test-proj\nname: Test\nkits:\n  - hook-kit\ntask_behaviors:\n  dev:\n    name: dev\n"), 0o644)
 
-	_, err := projectspec.ReadProjectMetaWithKits(dir, nil)
+	_, err := projectspec.ReadProjectMetaWithKits(dir)
 	if err == nil {
 		t.Fatal("expected error for top-level kits in project.yaml, got nil")
 	}
@@ -1041,7 +1041,7 @@ func TestBindMount_Optional_PropagatedFromKitYAML(t *testing.T) {
 	_ = os.MkdirAll(boidDir, 0o755)
 	_ = os.WriteFile(filepath.Join(boidDir, "project.yaml"), []byte("id: test-proj\nname: Test\ntask_behaviors:\n  dev:\n    name: dev\n    kits:\n      - opt-kit\n"), 0o644)
 
-	_, err := projectspec.ReadProjectMetaWithKits(dir, nil)
+	_, err := projectspec.ReadProjectMetaWithKits(dir)
 	if err == nil {
 		t.Fatal("expected error for behavior-level kits in project.yaml, got nil")
 	}
@@ -1339,7 +1339,7 @@ task_behaviors:
 		t.Fatalf("write yaml: %v", err)
 	}
 
-	meta, err := projectspec.ReadProjectMetaWithKits(dir, nil)
+	meta, err := projectspec.ReadProjectMetaWithKits(dir)
 	if err != nil {
 		t.Fatalf("ReadProjectMetaWithKits: %v", err)
 	}
@@ -1602,7 +1602,7 @@ task_behaviors:
   executor:
     readonly: false
 `)
-	_, err := projectspec.ReadProjectMetaWithKits(dir, nil)
+	_, err := projectspec.ReadProjectMetaWithKits(dir)
 	if err != nil {
 		t.Fatalf("ReadProjectMetaWithKits: %v", err)
 	}
@@ -1629,7 +1629,7 @@ task_behaviors:
     traits:
       - artifact
 `)
-	_, err := projectspec.ReadProjectMetaWithKits(dir, nil)
+	_, err := projectspec.ReadProjectMetaWithKits(dir)
 	if err != nil {
 		t.Fatalf("ReadProjectMetaWithKits (first): %v", err)
 	}
@@ -1639,7 +1639,7 @@ task_behaviors:
 	}
 
 	// Second load of same directory: no new deprecation warnings.
-	_, err = projectspec.ReadProjectMetaWithKits(dir, nil)
+	_, err = projectspec.ReadProjectMetaWithKits(dir)
 	if err != nil {
 		t.Fatalf("ReadProjectMetaWithKits (second): %v", err)
 	}
@@ -1663,7 +1663,7 @@ task_behaviors:
     traits:
       - artifact
 `)
-	_, err := projectspec.ReadProjectMetaWithKits(dir, nil)
+	_, err := projectspec.ReadProjectMetaWithKits(dir)
 	if err != nil {
 		t.Fatalf("ReadProjectMetaWithKits: %v", err)
 	}
@@ -1683,7 +1683,7 @@ name: Executor Compat Test
 task_behaviors:
   executor:
 `)
-	_, err := projectspec.ReadProjectMetaWithKits(dir, nil)
+	_, err := projectspec.ReadProjectMetaWithKits(dir)
 	if err != nil {
 		t.Fatalf("ReadProjectMetaWithKits: %v", err)
 	}
@@ -1705,7 +1705,7 @@ task_behaviors:
   executor:
     readonly: false
 `)
-	_, err := projectspec.ReadProjectMetaWithKits(dir, nil)
+	_, err := projectspec.ReadProjectMetaWithKits(dir)
 	if err != nil {
 		t.Fatalf("ReadProjectMetaWithKits: %v", err)
 	}

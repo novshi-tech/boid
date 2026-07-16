@@ -107,8 +107,17 @@ func (b bindMountStrict) toBindMount() BindMount {
 // field, replacing AdditionalBindings' element type with bindMountStrict so
 // the nested strict-decode guarantee holds (see this file's package doc
 // comment). IMPORTANT: keep in sync with WorkspaceMeta.
+//
+// A `kits:` key in a POST/PUT/import body is deliberately NOT a known field
+// here any more (Phase 2.5 PR7, decision 12: no fallback on the wire): a
+// caller submitting one now gets a loud "unknown field kits" rejection
+// rather than a silent no-op. The two client-side callers that still need to
+// resolve a legacy kits: list (cmd/workspace.go's ensureWorkspaceExistsForAssign,
+// for the `boid workspace assign` auto-create convenience path hand-authored
+// / e2e-fixture shadow yaml files rely on) do so themselves, against the raw
+// yaml, and submit an already-materialized (kits-free) body — see that
+// function's doc comment.
 type workspaceMetaStrict struct {
-	Kits               []string          `yaml:"kits,omitempty"`
 	Env                map[string]string `yaml:"env,omitempty"`
 	Capabilities       Capabilities      `yaml:"capabilities,omitempty"`
 	AllowedDomains     []string          `yaml:"allowed_domains,omitempty"`
@@ -131,7 +140,6 @@ func (s workspaceMetaStrict) toWorkspaceMeta() *WorkspaceMeta {
 		}
 	}
 	return &WorkspaceMeta{
-		Kits:               s.Kits,
 		Env:                s.Env,
 		Capabilities:       s.Capabilities,
 		AllowedDomains:     s.AllowedDomains,
@@ -142,7 +150,7 @@ func (s workspaceMetaStrict) toWorkspaceMeta() *WorkspaceMeta {
 	}
 }
 
-// rejectTrailingYAMLDocument guards against MINOR 2 (codex review round 2,
+// RejectTrailingYAMLDocument guards against MINOR 2 (codex review round 2,
 // docs/plans/workspace-db-consolidation.md): yaml.Decoder.Decode only ever
 // consumes a single "---"-delimited document per call and silently ignores
 // everything after it — a caller who hand-authors a multi-document workspace
@@ -154,7 +162,13 @@ func (s workspaceMetaStrict) toWorkspaceMeta() *WorkspaceMeta {
 // (nothing left); any other outcome — a second document decoding cleanly, or
 // even a malformed one — is reported as an error rather than silently
 // discarded.
-func rejectTrailingYAMLDocument(dec *yaml.Decoder) error {
+//
+// Exported (MAJOR 3, codex review round 1) so cmd/workspace.go's
+// extractLegacyWorkspaceKitRefs can reuse the exact same trailing-document
+// check on the raw local workspace.yaml bytes it reads directly, instead of
+// re-implementing it — see that function's doc comment for why a plain
+// yaml.Unmarshal-into-map there would otherwise defeat this same guard.
+func RejectTrailingYAMLDocument(dec *yaml.Decoder) error {
 	var trailing yaml.Node
 	err := dec.Decode(&trailing)
 	if err == nil {
@@ -173,7 +187,7 @@ func rejectTrailingYAMLDocument(dec *yaml.Decoder) error {
 // declare an empty workspace. A typo'd or unknown field (top-level or
 // nested inside additional_bindings/capabilities) is rejected with an error
 // naming the offending field. A second "---"-delimited document is rejected
-// too (MINOR 2, codex review round 2) — see rejectTrailingYAMLDocument.
+// too (MINOR 2, codex review round 2) — see RejectTrailingYAMLDocument.
 func DecodeWorkspaceMetaStrict(data []byte) (*WorkspaceMeta, error) {
 	if len(bytes.TrimSpace(data)) == 0 {
 		return &WorkspaceMeta{}, nil
@@ -187,7 +201,7 @@ func DecodeWorkspaceMetaStrict(data []byte) (*WorkspaceMeta, error) {
 		}
 		return nil, fmt.Errorf("decode workspace meta: %w", err)
 	}
-	if err := rejectTrailingYAMLDocument(dec); err != nil {
+	if err := RejectTrailingYAMLDocument(dec); err != nil {
 		return nil, fmt.Errorf("decode workspace meta: %w", err)
 	}
 	return strict.toWorkspaceMeta(), nil
@@ -211,7 +225,7 @@ type workspaceCreateStrict struct {
 // empty slug (the caller is expected to reject that with "slug is required")
 // and a zero-value WorkspaceMeta, mirroring DecodeWorkspaceMetaStrict's
 // empty-body handling. A second "---"-delimited document is rejected too
-// (MINOR 2, codex review round 2) — see rejectTrailingYAMLDocument.
+// (MINOR 2, codex review round 2) — see RejectTrailingYAMLDocument.
 func DecodeWorkspaceCreateStrict(data []byte) (slug string, meta *WorkspaceMeta, err error) {
 	if len(bytes.TrimSpace(data)) == 0 {
 		return "", &WorkspaceMeta{}, nil
@@ -225,7 +239,7 @@ func DecodeWorkspaceCreateStrict(data []byte) (slug string, meta *WorkspaceMeta,
 		}
 		return "", nil, fmt.Errorf("decode workspace create body: %w", err)
 	}
-	if err := rejectTrailingYAMLDocument(dec); err != nil {
+	if err := RejectTrailingYAMLDocument(dec); err != nil {
 		return "", nil, fmt.Errorf("decode workspace create body: %w", err)
 	}
 	return strict.Slug, strict.workspaceMetaStrict.toWorkspaceMeta(), nil

@@ -5,18 +5,26 @@ import "strings"
 // WorkspaceMeta holds the machine-local workspace configuration that is
 // stored in ~/.config/boid/workspaces/<slug>.yaml.
 //
-// A workspace defines which kits are active, environment variable overrides,
-// and optional capability flags for sandboxes. Fields that are
+// A workspace defines host_command references, environment variable
+// overrides, and optional capability flags for sandboxes. Fields that are
 // project-specific (secret_namespace, host_commands, additional_bindings,
 // name, description, version) are intentionally absent; they remain in
 // project.yaml.
+//
+// A Kits field used to live here (an ordered list of kit slugs, resolved and
+// merged in at hydration time). The kit mechanism itself was retired in
+// docs/plans/workspace-db-consolidation.md Phase 2.5 PR6, and this field was
+// removed outright in PR7 (decision 12: no fallback for the old field kept).
+// The `workspaces` DB table never had a column for it (WorkspaceRepository.
+// Load/Save never read/wrote it), so removing the struct field is a pure
+// cleanup with no persisted-data migration implied. Two client-side call
+// sites still resolve a legacy `kits:` reference list against
+// MaterializeWorkspaceKitsForPersist, but source it from outside this type
+// now (cmd/workspace.go's ensureWorkspaceExistsForAssign extracts it from the
+// raw shadow yaml; cmd/project_migrate.go folds its own auto-generated
+// legacy kit's fields in directly, without any kit list at all) — see those
+// call sites for why.
 type WorkspaceMeta struct {
-	// Kits is the ordered list of kit slugs active in this workspace.
-	// Kit slugs are resolved by KitRegistry at load time. Kits supply
-	// host_commands / env / additional_bindings and are merged into every
-	// behavior (kits do not provide hooks under the current schema).
-	Kits []string `yaml:"kits,omitempty" json:"kits,omitempty"`
-
 	// Env holds environment variable overrides applied to every sandbox
 	// launched under this workspace. Values here take precedence over
 	// kit-supplied env but are overridden by project.yaml env.

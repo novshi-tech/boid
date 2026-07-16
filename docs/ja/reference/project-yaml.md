@@ -34,7 +34,7 @@ task_behaviors:
 | `fork_point` | string | (省略時 `origin/HEAD` フォールバック) | `base_branch` がまだローカル / origin のどちらにも存在しない状態 (case 3) で branch を作るときの fork 起点。 任意の `git rev-parse --verify` で解決可能な ref を指定 (branch / tag / SHA / `origin/main` など)。 **未設定時は `refs/remotes/origin/HEAD` にフォールバック**。 origin/HEAD も未設定なら case 3 はエラー (`git remote set-head origin --auto` を実行するか、 `fork_point` を設定する)。 **project root の作業ツリー HEAD は意図的に参照されない** — タスク作成からディスパッチまでの間にユーザが root で別 branch をチェックアウトしていても、 fork 起点が暴れない。 詳細は [`fork_point` と case 3](#fork_point-と-case-3) を参照 |
 | `task_behaviors` | map (string → TaskBehavior) | はい | このプロジェクトで作れる「タスクの種類」一覧 |
 | `default_task_behavior` | string | いいえ | `boid task create` で `--behavior` を省略したときに使う behavior の名前。未指定の場合は `task_behaviors` に `supervisor` があれば暗黙で使う (WARN あり)、なければエラー |
-| `kits` | — | **撤去** | ロード時に reject される (`project.yaml: top-level "kits" is no longer supported`)。 kit の読み込み自体は引き続き可能だが、 それは *workspace* の `kits` リスト経由のみ (これ自体も Phase 2.5 PR7 で撤去予定のレガシーフィールド、 `docs/plans/workspace-db-consolidation.md` 参照)。 新規設定では kit を使わず、 `host_commands` / `env` / `additional_bindings` を workspace に直接設定すること。 詳細は下記 [`KitRef`](#kitref) と [Kit 作者向け概要](../kit-authoring/overview.md) を参照 |
+| `kits` | — | **撤去** | ロード時に reject される (`project.yaml: top-level "kits" is no longer supported`)。 kit 機構自体は Phase 2.5 PR6 で退役済み、 *workspace* 側の `kits` フィールド (`WorkspaceMeta.Kits`) も Phase 2.5 PR7 でコードから完全撤去 (`docs/plans/workspace-db-consolidation.md` 参照)。 `host_commands` / `env` / `additional_bindings` を workspace に直接設定すること。 詳細は下記 [`KitRef`](#kitref) と [Kit 作者向け概要](../kit-authoring/overview.md) を参照 |
 | `host_commands` | — | **撤去** | ロード時に reject される。 workspace に設定する (`boid workspace create/edit/import`) — ただし *workspace* の `host_commands:` は参照 **名前** のリストであり、 下記 [HostCommands](#hostcommands) で説明するマップ形式ではない点に注意 (そのマップ形式は `kit.yaml` と daemon-wide の `~/.config/boid/host_commands.yaml` レジストリで使われ、 workspace の名前はそのレジストリを参照して解決される)。 [オンボーディング / host_commands を定義する](../guide/onboarding.md#host_commands-を定義する-daemon-側の集約レジストリ) を参照 |
 | `additional_bindings` | — | **撤去** | ロード時に reject される。 workspace に設定する。 形は変わらない ([BindMount](#bindmount) 参照) |
 | `env` | — | **撤去** | ロード時に reject される。 workspace に設定する (同じ map 形式) |
@@ -198,7 +198,7 @@ hook が宣言を持たない behavior では、 `default_instruction` から vi
 
 > **`project.yaml` のフィールドではありません。** `project.yaml` は top level・`task_behaviors.<name>` のどちらでも `kits:` を受け付けません (上の [トップレベルのフィールド](#トップレベルのフィールド) 表を参照)。 この節を載せているのは、 **legacy** な `project.yaml` (`boid project migrate` が読む旧スキーマ、 [`ReadProjectMetaLegacy`](../../../internal/orchestrator/spec_loader_legacy.go)) だけがこの map/文字列 2 形式の `KitRef` を受け付けるためです。
 >
-> *workspace* 側の `kits:` (`workspace.yaml`、 これ自体も Phase 2.5 PR7 で撤去予定のレガシーフィールド) は **この `KitRef` 形式を使いません** — `Kits []string` ([`internal/orchestrator/workspace_meta.go`](../../../internal/orchestrator/workspace_meta.go)) で、 受け付けるのは単純な kit スラグ文字列のリストのみです。 `ref`/`as` の map 形式は workspace では非対応です。
+> **Phase 2.5 PR7** (`docs/plans/workspace-db-consolidation.md`) で `WorkspaceMeta.Kits` フィールドはコードから完全撤去されました — *workspace* 側の `kits:` はもう存在せず、 `POST`/`PUT`/`import /api/workspaces` に `kits:` キーを含む body を送ると 400 (`unknown field kits`) で reject されます。 `boid project migrate` は引き続き legacy project.yaml の `kits:` (top-level / `task_behaviors.<name>.kits`) を収集・名前検証しますが、 workspace への自動解決/materialize は行わなくなり、 dry-run/apply の出力に「未解決の kit 参照、 必要なら手動で追加を」という informational な note として表示されるのみです。 唯一残っている legacy `kits:` 対応経路は `boid workspace assign` の auto-create 補助 (`cmd/workspace.go` の `ensureWorkspaceExistsForAssign`) で、 手書き/e2e フィクスチャの workspace shadow yaml にある `kits:` をクライアント側でインストール済み kit ディレクトリに対して解決してから (kits: を含まない) body を送信します。
 
 `project.yaml` の legacy `kits` フィールドの各要素は次のどちらかで書けます (`boid project migrate` の変換対象としてのみ有効。 現行スキーマの `project.yaml` では reject されます)。
 
@@ -211,7 +211,7 @@ hook が宣言を持たない behavior では、 `default_instruction` から vi
   ```
   `as` で alias を付けると、別の kit と agent 名が衝突するときに区別できます
 
-`<sub-path>` は省略可。リポジトリ直下に kit がある場合は不要です。 `boid project migrate` はこの `ref` から最後のセグメント (例: `claude-code`) だけを取り出し、 workspace の `kits: []string` に単純名として追記します — `as` alias は workspace には引き継がれません。
+`<sub-path>` は省略可。リポジトリ直下に kit がある場合は不要です。 `boid project migrate` はこの `ref` から最後のセグメント (例: `claude-code`) を名前検証と informational な出力のためだけに取り出します — 上記 Phase 2.5 PR7 の通り、 migrate 先の workspace には一切引き継がれません。
 
 ### HostCommands
 

@@ -317,6 +317,75 @@ func TestMigrateWorkspaceYAMLToDB_CrashRecoveryMatchingHashRollsForward(t *testi
 	}
 }
 
+// TestMigrateWorkspaceYAMLToDB_UpgradeFromPR6StagingHash_RollsForward pins
+// MAJOR 4 (codex review round 1, docs/plans/workspace-db-consolidation.md
+// Phase 2.5 PR7): a state=staging row recorded by a PR6 binary (hashed with
+// the pre-PR7 shape — no WorkspaceKitRefs field) must still roll forward on
+// a restart with the PR7 binary, as long as the on-disk workspace/kit inputs
+// have not actually changed since. Before this fix, PR7's input_hash always
+// includes WorkspaceKitRefs, so comparing a PR6-recorded hash only against
+// the current (PR7) shape would treat every such upgrade-in-place as "the
+// inputs changed" and abort demanding manual intervention — even though
+// nothing on disk actually changed. Seeding the staging row with
+// pre.legacyInputHashPR6 (the same helper preflightWorkspaceMigration itself
+// uses) simulates exactly what a real PR6 binary would have recorded.
+func TestMigrateWorkspaceYAMLToDB_UpgradeFromPR6StagingHash_RollsForward(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	env := newMigrationTestEnv(t)
+
+	writeMigrationWorkspaceYAML(t, env.workspaceDir, "team-a", "env:\n  FOO: bar\n")
+
+	pre, err := preflightWorkspaceMigration(env.workspaceDir, env.kitsDir, env.projectRepo)
+	if err != nil {
+		t.Fatalf("preflightWorkspaceMigration: %v", err)
+	}
+	if pre.legacyInputHashPR6 == pre.inputHash {
+		t.Fatalf("legacyInputHashPR6 (%q) unexpectedly equals the PR7 inputHash — the two hash shapes should differ", pre.legacyInputHashPR6)
+	}
+
+	// Seed the staging row with the *legacy* (pre-PR7) hash shape, simulating
+	// a PR6 binary's interrupted attempt — not pre.inputHash, which is what
+	// TestMigrateWorkspaceYAMLToDB_CrashRecoveryMatchingHashRollsForward
+	// above already covers for the same-binary-version case.
+	tx, err := env.conn.Conn.Begin()
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	if err := upsertMigrationRow(tx, workspaceDBConsolidationVersion, "staging", pre.legacyInputHashPR6); err != nil {
+		t.Fatalf("upsertMigrationRow(staging, legacy hash): %v", err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+
+	if slugs := workspaceSlugs(t, env.conn); len(slugs) != 0 {
+		t.Fatalf("test setup: expected zero workspace rows before roll-forward, got %v", slugs)
+	}
+
+	if err := MigrateWorkspaceYAMLToDB(env.conn.Conn, env.workspaceDir, env.kitsDir, env.projectRepo); err != nil {
+		t.Fatalf("MigrateWorkspaceYAMLToDB (upgrade roll-forward): %v", err)
+	}
+
+	state, inputHash, found := schemaMigrationRow(t, env.conn, workspaceDBConsolidationVersion)
+	if !found || state != "committed" {
+		t.Fatalf("state after upgrade roll-forward = %q (found=%v), want committed", state, found)
+	}
+	// The committed row is re-hashed with the current (PR7) shape, not left
+	// at the legacy hash it was seeded with.
+	if inputHash != pre.inputHash {
+		t.Errorf("input_hash after upgrade roll-forward = %q, want %q (current PR7 shape)", inputHash, pre.inputHash)
+	}
+
+	repo := NewWorkspaceRepository(env.conn.Conn)
+	teamA, err := repo.Load("team-a")
+	if err != nil {
+		t.Fatalf("Load(team-a) after upgrade roll-forward: %v", err)
+	}
+	if teamA.Env["FOO"] != "bar" {
+		t.Errorf("team-a.Env[FOO] after upgrade roll-forward = %q, want bar", teamA.Env["FOO"])
+	}
+}
+
 // TestMigrateWorkspaceYAMLToDB_CrashRecoveryMismatchedHashAborts covers the
 // other crash-recovery branch: a state=staging row whose recorded
 // input_hash no longer matches the freshly recomputed preflight hash (the
@@ -448,14 +517,13 @@ func TestMigrateWorkspaceYAMLToDB_BrokenProjectReferenceAborts(t *testing.T) {
 }
 
 // TestMigrateWorkspaceYAMLToDB_MaterializesKitEnvAndBindings pins BLOCKER 1
-// (codex review): a workspace's Kits contribute more than just
-// host_commands *names* — a kit's Env and AdditionalBindings must also be
-// materialized into the DB-bound WorkspaceMeta, since the workspaces table
-// has no column for Kits at all (WorkspaceRepository never persists it).
-// Before this fix, only host_command names survived the cutover; a kit's
-// env var or bind mount silently vanished the moment the DB became
-// authoritative. Kits must also end up cleared (nil) on the persisted row,
-// since it is now fully folded into the row's own fields.
+// (codex review): a workspace's legacy `kits:` list contributes more than
+// just host_commands *names* — a kit's Env and AdditionalBindings must also
+// be materialized into the DB-bound WorkspaceMeta, since the workspaces
+// table has no column for Kits at all (WorkspaceRepository never persists
+// it, and Phase 2.5 PR7 removed the field from the type outright). Before
+// this fix, only host_command names survived the cutover; a kit's env var
+// or bind mount silently vanished the moment the DB became authoritative.
 func TestMigrateWorkspaceYAMLToDB_MaterializesKitEnvAndBindings(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	env := newMigrationTestEnv(t)
@@ -493,9 +561,6 @@ func TestMigrateWorkspaceYAMLToDB_MaterializesKitEnvAndBindings(t *testing.T) {
 	}
 	if _, ok := findBindMountBySource(teamX.AdditionalBindings, filepath.Join(env.kitsDir, "toolkit")); !ok {
 		t.Errorf("team-x.AdditionalBindings = %+v, want an entry for the kit root dir", teamX.AdditionalBindings)
-	}
-	if len(teamX.Kits) != 0 {
-		t.Errorf("team-x.Kits = %v, want empty (materialized then cleared)", teamX.Kits)
 	}
 }
 
@@ -560,8 +625,8 @@ func TestPreflightWorkspaceMigration_UsesSingleKitYAMLSnapshot(t *testing.T) {
 		t.Errorf("aggregate must reflect the snapshot taken before the race, got %v", aggregated["gh"].Allow)
 	}
 
-	meta := &WorkspaceMeta{Kits: []string{"kit-a"}}
-	if err := materializeKitRuntimeIntoWorkspace(snap, meta.Kits, meta); err != nil {
+	meta := &WorkspaceMeta{}
+	if err := materializeKitRuntimeIntoWorkspace(snap, []string{"kit-a"}, meta); err != nil {
 		t.Fatalf("materializeKitRuntimeIntoWorkspace: %v", err)
 	}
 	if !equalStringSlice(meta.HostCommands, []string{"gh"}) {
@@ -614,12 +679,12 @@ func TestMigrateWorkspaceYAMLToDB_ProjectReferencingDefaultIsFine(t *testing.T) 
 // --- BLOCKER (codex review, 2nd pass): KitRoots materialization ---
 
 // TestMigrateWorkspaceYAMLToDB_MaterializesKitRootsAsAdditionalBindings pins
-// the 2nd-pass BLOCKER: MergeKitMetaIntoBehavior (spec_loader.go) normally
-// bind-mounts every kit's own directory read-only into the sandbox
-// (behavior.KitRoots), so shell hooks can read scripts/assets living next to
-// kit.yaml. Once a workspace's Kits list is folded into DB-bound fields and
-// cleared (meta.Kits = nil, see preflightWorkspaceMigration), that
-// mechanism can never fire again for a DB-backed workspace — so the kit
+// the 2nd-pass BLOCKER: the (now-retired) kit mechanism used to bind-mount
+// every kit's own directory read-only into the sandbox (behavior.KitRoots),
+// so shell hooks could read scripts/assets living next to kit.yaml. The
+// workspaces table has no column for a per-workspace kit reference list at
+// all (and Phase 2.5 PR7 removed WorkspaceMeta.Kits from the type outright),
+// so that mechanism can never fire again for a DB-backed workspace — the kit
 // root directory itself must be materialized as a (read-only)
 // AdditionalBindings entry instead, the same way BLOCKER 1 already
 // materializes a kit's Env and its own explicit additional_bindings.
@@ -718,12 +783,11 @@ func TestMaterializeKitRuntime_WorkspaceBindingsWinRO(t *testing.T) {
 	}
 
 	meta := &WorkspaceMeta{
-		Kits: []string{"kit-a"},
 		AdditionalBindings: []BindMount{
 			{Source: "/opt/tool", Mode: ""}, // workspace-authored: explicit ro
 		},
 	}
-	if err := materializeKitRuntimeIntoWorkspace(snap, meta.Kits, meta); err != nil {
+	if err := materializeKitRuntimeIntoWorkspace(snap, []string{"kit-a"}, meta); err != nil {
 		t.Fatalf("materializeKitRuntimeIntoWorkspace: %v", err)
 	}
 
@@ -751,10 +815,9 @@ func TestMaterializeKitRuntime_WorkspaceEnvWinsOnConflict(t *testing.T) {
 	}
 
 	meta := &WorkspaceMeta{
-		Kits: []string{"kit-a"},
-		Env:  map[string]string{"SHARED": "from-workspace"},
+		Env: map[string]string{"SHARED": "from-workspace"},
 	}
-	if err := materializeKitRuntimeIntoWorkspace(snap, meta.Kits, meta); err != nil {
+	if err := materializeKitRuntimeIntoWorkspace(snap, []string{"kit-a"}, meta); err != nil {
 		t.Fatalf("materializeKitRuntimeIntoWorkspace: %v", err)
 	}
 	if meta.Env["SHARED"] != "from-workspace" {
@@ -789,12 +852,11 @@ func TestMaterializeKitRoot_SurvivesUnionWithOtherBindingWithSameSource(t *testi
 	// Workspace-authored binding that happens to share the kit's own
 	// directory as Source, but for an unrelated purpose/target.
 	meta := &WorkspaceMeta{
-		Kits: []string{"kit-a"},
 		AdditionalBindings: []BindMount{
 			{Source: kitDir, Target: "/opt/unrelated-target", Mode: "rw"},
 		},
 	}
-	if err := materializeKitRuntimeIntoWorkspace(snap, meta.Kits, meta); err != nil {
+	if err := materializeKitRuntimeIntoWorkspace(snap, []string{"kit-a"}, meta); err != nil {
 		t.Fatalf("materializeKitRuntimeIntoWorkspace: %v", err)
 	}
 
@@ -833,8 +895,8 @@ func TestMaterializeKitRoot_UsesImplicitTargetForReadOnly(t *testing.T) {
 		t.Fatalf("snapshotAllKitYAMLs: %v", err)
 	}
 
-	meta := &WorkspaceMeta{Kits: []string{"kit-a"}}
-	if err := materializeKitRuntimeIntoWorkspace(snap, meta.Kits, meta); err != nil {
+	meta := &WorkspaceMeta{}
+	if err := materializeKitRuntimeIntoWorkspace(snap, []string{"kit-a"}, meta); err != nil {
 		t.Fatalf("materializeKitRuntimeIntoWorkspace: %v", err)
 	}
 
@@ -974,5 +1036,221 @@ func TestMigrateWorkspaceYAMLToDB_PreservesExistingHostCommandsConfig(t *testing
 	}
 	if _, ok := got["gh"]; ok {
 		t.Errorf("migration must not merge/aggregate into an existing host_commands.yaml, got a 'gh' entry too: %v", got)
+	}
+}
+
+// TestReadWorkspaceYAMLSnapshot_SingleReadAvoidsTOCTOU pins MAJOR 5 (codex
+// review round 1, docs/plans/workspace-db-consolidation.md): meta and
+// kitRefs must both be decoded from a single byte snapshot of the workspace
+// yaml file, not from two independent reads of the same path (the old
+// yamlStore.Load + legacyWorkspaceYAMLKits pair) that an atomic rename could
+// race between.
+//
+// workspaceYAMLReadFile is swapped out for the duration of this test to
+// simulate exactly that race: right after the (only expected) read returns
+// versionA's bytes, the swapped-in function overwrites the file on disk with
+// versionB — so a second read, which the old two-read implementation would
+// have performed to recover the kits: list, would observe a different file
+// than the first read did (a "meta from versionA + kits from versionB"
+// hybrid that never existed on disk at any single instant). Asserting
+// callCount == 1 and that both the decoded meta and kitRefs come from
+// versionA proves readWorkspaceYAMLSnapshot never performs that second,
+// racy read.
+func TestReadWorkspaceYAMLSnapshot_SingleReadAvoidsTOCTOU(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "team-a.yaml")
+	versionA := []byte("kits:\n  - kit-a\nenv:\n  MARK: A\n")
+	versionB := []byte("kits:\n  - kit-b\nenv:\n  MARK: B\n")
+	if err := os.WriteFile(path, versionA, 0o644); err != nil {
+		t.Fatalf("write versionA: %v", err)
+	}
+
+	callCount := 0
+	orig := workspaceYAMLReadFile
+	t.Cleanup(func() { workspaceYAMLReadFile = orig })
+	workspaceYAMLReadFile = func(p string) ([]byte, error) {
+		callCount++
+		data, err := os.ReadFile(p)
+		if err != nil {
+			return nil, err
+		}
+		if writeErr := os.WriteFile(p, versionB, 0o644); writeErr != nil {
+			t.Fatalf("swap to versionB: %v", writeErr)
+		}
+		return data, nil
+	}
+
+	meta, kitRefs, err := readWorkspaceYAMLSnapshot(dir, "team-a")
+	if err != nil {
+		t.Fatalf("readWorkspaceYAMLSnapshot: %v", err)
+	}
+	if callCount != 1 {
+		t.Fatalf("workspaceYAMLReadFile called %d times, want exactly 1 (a second read risks a TOCTOU hybrid of versionA/versionB)", callCount)
+	}
+	if len(kitRefs) != 1 || kitRefs[0] != "kit-a" {
+		t.Errorf("kitRefs = %v, want [kit-a] (from the single versionA read, not the swapped-in versionB)", kitRefs)
+	}
+	if meta.Env["MARK"] != "A" {
+		t.Errorf("meta.Env[MARK] = %q, want %q (from the single versionA read, not the swapped-in versionB)", meta.Env["MARK"], "A")
+	}
+}
+
+// --- MAJOR 1 (codex review round 2): PR6 legacy hash reconstruction must
+// --- actually include each workspace's legacy Kits reference list ---
+
+// TestComputeWorkspaceMigrationInputHashPR6Shape_KitsIncluded_MatchesGolden
+// pins MAJOR 1 (codex review round 2, docs/plans/workspace-db-consolidation.md
+// Phase 2.5 PR7): computeWorkspaceMigrationInputHashPR6Shape must reproduce
+// the *exact* byte shape (and therefore sha256 hash) a genuine PR6 binary
+// computed for the same logical inputs. PR6's WorkspaceMeta had a
+// `Kits []string` field (removed outright by PR7, decision 12); PR6's own
+// computeWorkspaceMigrationInputHash relied on that field being part of each
+// Workspaces entry's JSON encoding. Before this fix,
+// computeWorkspaceMigrationInputHashPR6Shape reused the CURRENT (Kits-less)
+// WorkspaceMeta to approximate the PR6 shape — which can never carry a Kits
+// value at all, since the field does not exist on that type any more — so a
+// workspace referencing a kit hashed differently from what a real PR6
+// binary computed for the identical on-disk inputs, defeating the entire
+// point of the crash-recovery upgrade check (MAJOR 4, round 1) specifically
+// for the workspaces it matters most for.
+//
+// The two golden hash literals below were computed independently: by
+// checking out the actual PR6 commit (fb1f222, "feat: Phase 2.5 PR6 (kit
+// 機構退役)") into a throwaway git worktree and calling ITS OWN (unmodified)
+// computeWorkspaceMigrationInputHash — a 4-argument function, since
+// WorkspaceKitRefs did not exist yet, with Workspaces keyed by PR6's own
+// Kits-having WorkspaceMeta — against the fixture data reproduced exactly
+// below. Neither literal is derived from any code in this repository's
+// current tree, so this test cannot pass by tautology/self-reference: it
+// only passes if pr6WorkspaceMeta's field layout truly matches PR6's
+// WorkspaceMeta field-for-field, tag-for-tag, order-for-order.
+func TestComputeWorkspaceMigrationInputHashPR6Shape_KitsIncluded_MatchesGolden(t *testing.T) {
+	// "with-kit" exercises the actual regression (a workspace whose legacy
+	// `kits:` list must be reflected in the hash); "no-kit" pins the other
+	// half the task calls for — a workspace with no kit reference at all
+	// must still round-trip through pr6WorkspaceMeta unchanged.
+	workspaces := map[string]*WorkspaceMeta{
+		"with-kit": {
+			Env:            map[string]string{"FOO": "bar"},
+			HostCommands:   []string{"gh"},
+			AllowedDomains: []string{"example.com"},
+		},
+		"no-kit": {
+			Env: map[string]string{"BAZ": "qux"},
+		},
+	}
+	hostCommands := map[string]HostCommandSpec{
+		"gh": {Allow: []string{"pr", "issue"}},
+	}
+	projectRefs := []*WorkspaceSummary{
+		{ID: "with-kit", ProjectCount: 2},
+		{ID: "no-kit", ProjectCount: 1},
+	}
+	kitRuntime := map[string]kitRuntimeRaw{
+		"docker-proxy-test": {
+			HostCommands: HostCommands{
+				"docker-proxy-test.sh": HostCommandSpec{Allow: []string{"run"}},
+			},
+			Env: map[string]string{"DOCKER_PROXY_TEST_ROOT": "${E2E_WORKSPACE_DIR}"},
+			AdditionalBindings: []BindMount{
+				{Source: "/host/docker-proxy-test"},
+			},
+		},
+	}
+	workspaceKitRefs := map[string][]string{
+		"with-kit": {"docker-proxy-test"},
+	}
+
+	const wantHashWithKits = "d3b637ed5cda1f902a60fff81e578ffa8084cfd798e1389fc88ebd7d35685ccb"
+	got, err := computeWorkspaceMigrationInputHashPR6Shape(workspaces, hostCommands, projectRefs, kitRuntime, workspaceKitRefs)
+	if err != nil {
+		t.Fatalf("computeWorkspaceMigrationInputHashPR6Shape: %v", err)
+	}
+	if got != wantHashWithKits {
+		t.Errorf("hash = %q, want golden PR6 hash %q (pr6WorkspaceMeta is not reproducing PR6's byte shape for a workspace with kits)", got, wantHashWithKits)
+	}
+
+	// Same fixture, but "with-kit"'s legacy kits: list is empty (the "kit
+	// 無し workspace" half) — an independently-computed golden value again,
+	// from the same PR6 worktree/commit with the workspace's Kits field left
+	// unset entirely.
+	const wantHashKitsStripped = "14164174fde4844121d14d6e4c1c10306c878c34daa9c4c9d24249e7804a03de"
+	gotStripped, err := computeWorkspaceMigrationInputHashPR6Shape(workspaces, hostCommands, projectRefs, kitRuntime, map[string][]string{})
+	if err != nil {
+		t.Fatalf("computeWorkspaceMigrationInputHashPR6Shape (kits stripped): %v", err)
+	}
+	if gotStripped != wantHashKitsStripped {
+		t.Errorf("hash (kits stripped) = %q, want golden PR6 hash %q", gotStripped, wantHashKitsStripped)
+	}
+	if got == gotStripped {
+		t.Fatal("hash must differ when a workspace's Kits ref list differs — pr6WorkspaceMeta.Kits is not affecting the hash at all")
+	}
+}
+
+// TestMigrateWorkspaceYAMLToDB_UpgradeFromPR6StagingHash_WithKits_RollsForward
+// is the integration counterpart of the golden test above: a real
+// MigrateWorkspaceYAMLToDB crash-recovery roll-forward, end to end, for a
+// workspace that references a kit — exercising the actual wiring
+// (preflightWorkspaceMigration -> rawKitRefs -> pr6-shape hash computation)
+// rather than hand-constructed Go values, and confirming the kit's
+// host_commands are still correctly resolved after the roll-forward.
+// Complements, rather than replaces, the golden test's byte-accuracy pin —
+// see TestMigrateWorkspaceYAMLToDB_UpgradeFromPR6StagingHash_RollsForward
+// above for the equivalent no-kits case.
+func TestMigrateWorkspaceYAMLToDB_UpgradeFromPR6StagingHash_WithKits_RollsForward(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	env := newMigrationTestEnv(t)
+
+	writeMigrationKitYAML(t, env.kitsDir, "gh-kit", "host_commands:\n  gh:\n    allow: [pr, issue]\n")
+	writeMigrationWorkspaceYAML(t, env.workspaceDir, "team-a", "kits:\n  - gh-kit\nenv:\n  FOO: bar\n")
+
+	pre, err := preflightWorkspaceMigration(env.workspaceDir, env.kitsDir, env.projectRepo)
+	if err != nil {
+		t.Fatalf("preflightWorkspaceMigration: %v", err)
+	}
+	if pre.legacyInputHashPR6 == pre.inputHash {
+		t.Fatalf("legacyInputHashPR6 (%q) unexpectedly equals the PR7 inputHash — the two hash shapes should differ", pre.legacyInputHashPR6)
+	}
+
+	// Seed the staging row with the legacy (pre-PR7) hash shape, simulating
+	// a PR6 binary's interrupted attempt for a workspace that references a
+	// kit.
+	tx, err := env.conn.Conn.Begin()
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	if err := upsertMigrationRow(tx, workspaceDBConsolidationVersion, "staging", pre.legacyInputHashPR6); err != nil {
+		t.Fatalf("upsertMigrationRow(staging, legacy hash): %v", err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+
+	if slugs := workspaceSlugs(t, env.conn); len(slugs) != 0 {
+		t.Fatalf("test setup: expected zero workspace rows before roll-forward, got %v", slugs)
+	}
+
+	if err := MigrateWorkspaceYAMLToDB(env.conn.Conn, env.workspaceDir, env.kitsDir, env.projectRepo); err != nil {
+		t.Fatalf("MigrateWorkspaceYAMLToDB (upgrade roll-forward, with kits): %v", err)
+	}
+
+	state, inputHash, found := schemaMigrationRow(t, env.conn, workspaceDBConsolidationVersion)
+	if !found || state != "committed" {
+		t.Fatalf("state after upgrade roll-forward = %q (found=%v), want committed", state, found)
+	}
+	if inputHash != pre.inputHash {
+		t.Errorf("input_hash after upgrade roll-forward = %q, want %q (current PR7 shape)", inputHash, pre.inputHash)
+	}
+
+	repo := NewWorkspaceRepository(env.conn.Conn)
+	teamA, err := repo.Load("team-a")
+	if err != nil {
+		t.Fatalf("Load(team-a) after upgrade roll-forward: %v", err)
+	}
+	if !equalStringSlice(teamA.HostCommands, []string{"gh"}) {
+		t.Errorf("team-a.HostCommands after upgrade roll-forward = %v, want [gh] (kit still resolved)", teamA.HostCommands)
+	}
+	if teamA.Env["FOO"] != "bar" {
+		t.Errorf("team-a.Env[FOO] after upgrade roll-forward = %q, want bar", teamA.Env["FOO"])
 	}
 }

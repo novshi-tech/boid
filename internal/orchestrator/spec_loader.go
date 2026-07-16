@@ -12,10 +12,6 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-type KitResolver interface {
-	Resolve(ref string) (string, error)
-}
-
 const projectLocalFilename = "project.local.yaml"
 
 // removedTopLevelKeyGuidance maps a top-level project.yaml key rejected by
@@ -439,10 +435,14 @@ func resolveProjectHostCommandPaths(projectDir string, cmds HostCommands) error 
 //
 // Note: kits are no longer supported in project.yaml (removed in the new
 // schema); the kit mechanism itself was retired in Phase 2.5 PR6
-// (docs/plans/workspace-db-consolidation.md) — resolver is accepted for
-// call-site compatibility but is never used. project.local.yaml is
-// deprecated; use workspace.yaml instead.
-func ReadProjectMetaWithKits(dir string, resolver KitResolver) (*ProjectMeta, error) {
+// (docs/plans/workspace-db-consolidation.md). This function used to accept a
+// KitResolver parameter for call-site compatibility even though it was never
+// used; PR7 removed that type and parameter outright (decision 12). The
+// "WithKits" name is now a historical artifact — it's kept as-is since it's
+// a widely-used, purely-internal function name, not worth a rename-only
+// churn across every call site. project.local.yaml is deprecated; use
+// workspace.yaml instead.
+func ReadProjectMetaWithKits(dir string) (*ProjectMeta, error) {
 	meta, err := ReadProjectMeta(dir)
 	if err != nil {
 		return nil, err

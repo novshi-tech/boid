@@ -25,8 +25,8 @@ boid project migrate ~/src/myproject --workspace dev --apply --on-collision skip
 ### What `boid project migrate` converts
 
 1. Detects the fields being removed from `project.yaml` (`kits` / `env` / `host_commands` / `additional_bindings` / `secret_namespace` / `capabilities`, and behavior-level `task_behaviors.<name>.kits`).
-2. Existing `kits:` refs (e.g. `github.com/.../foo`) are **not copied** — only the last path segment (`foo`) is normalised into a bare name and appended to the workspace's `kits: []string`. This assumes the kit directory the name resolves to already exists somewhere; migrate only carries the name forward.
-3. If `host_commands` and/or `additional_bindings` is non-empty, their contents are bundled into a **newly generated legacy kit**, written to `~/.local/share/boid/kits/legacy-<slug>/kit.yaml`, and that kit's name is appended to the workspace's `kits:` (this is the *only* case where a kit is actually generated). The legacy kit's `host_commands` definitions are also merged into the daemon-wide registry `~/.config/boid/host_commands.yaml`, and a reachable daemon is told to reload it.
+2. **(Changed in Phase 2.5 PR7)** Existing `kits:` refs (e.g. `github.com/.../foo`) are only name-validated (`ValidKitName`) and shown as an informational note in migrate's dry-run/apply output. `WorkspaceMeta.Kits` itself was removed, so nothing is carried into the workspace any more — if such a kit used to supply host_commands/env/additional_bindings, add them to workspace.yaml by hand after migrating.
+3. If `host_commands` and/or `additional_bindings` is non-empty, their contents are bundled into a **newly generated legacy kit**, written to `~/.local/share/boid/kits/legacy-<slug>/kit.yaml`. **(Changed in Phase 2.5 PR7)** That kit's host_commands names and additional_bindings are now folded **directly** into the workspace's own `host_commands:` / `additional_bindings:` fields, rather than via a kit reference (this data is `project.yaml`'s own fields, already fully known — no directory lookup is needed to resolve it). The legacy kit's `host_commands` definitions are also merged into the daemon-wide registry `~/.config/boid/host_commands.yaml` (so `workspace.host_commands`'s name references resolve), and a reachable daemon is told to reload it.
 4. `env` is merged directly into the workspace's `env` (on a key collision, the new — i.e. `project.yaml`-sourced — value wins).
 5. `capabilities.docker` is merged directly into the workspace's `capabilities.docker` (overwritten if `project.yaml` set it).
 6. If `secret_namespace` was set, secrets are copied from the old namespace into the new namespace (= the workspace's own slug). **This does not create a `secret_namespace` field on the workspace** — a workspace was designed from the start to use its slug as the secret namespace; migration only copies the secret values.
@@ -37,7 +37,7 @@ boid project migrate ~/src/myproject --workspace dev --apply --on-collision skip
 `--apply` does not only write the converted result to the local shadow yaml (`~/.config/boid/workspaces/<slug>.yaml`, a reviewable artifact the daemon never re-reads) — it also **attempts to apply it to the running daemon's database** (`pushMigratedWorkspaceToDaemon`):
 
 - If the workspace slug has no row in the daemon yet: it is created with `POST /api/workspaces`.
-- If the slug already exists: its current content is fetched with `GET /api/workspaces/<slug>`, merged with the fields this migration generated, and written back with `PUT /api/workspaces/<slug>` (`If-Match: <revision>`) (`mergeLegacyFieldsIntoWorkspace`). **The merge precedence favors the migration side** (the values derived from `project.yaml`): `kits` are unioned (existing entries are never dropped), `env` entries from the migration overwrite the workspace's existing value on a matching key, and `capabilities.docker` is overwritten when `project.yaml` set it. Every other existing field (e.g. `host_commands` / `additional_bindings` the workspace already had) is carried over untouched.
+- If the slug already exists: its current content is fetched with `GET /api/workspaces/<slug>`, merged with the fields this migration generated, and written back with `PUT /api/workspaces/<slug>` (`If-Match: <revision>`) (`mergeLegacyFieldsIntoWorkspace`). **The merge precedence favors the migration side** (the values derived from `project.yaml`): `env` entries from the migration overwrite the workspace's existing value on a matching key, and `capabilities.docker` is overwritten when `project.yaml` set it. When this migration generated a legacy kit, its `host_commands` (reference names) are unioned in (existing entries are never dropped), and its `additional_bindings` overwrite the workspace's existing entry on a matching Source. Every other existing field is carried over untouched.
 - A `412 Precondition Failed` (revision mismatch — concurrent edit) re-fetches, re-merges, and retries, up to 3 times.
 - If the daemon is unreachable, or the retries are exhausted without resolving, the change only lands in the shadow yaml. The command's output explains how to apply it by hand (`boid workspace import <file> --slug <slug>` or `boid workspace edit <slug> --from-file <file>`) — follow that guidance, since **`project.yaml` itself has already been rewritten regardless of whether the workspace push succeeded** (unless this was a dry run).
 
@@ -49,8 +49,8 @@ boid project migrate ~/src/myproject --workspace dev --apply --on-collision skip
 | Old field | New location |
 |---|---|
 | `env` | Merged directly into the workspace's `env` |
-| `host_commands` | Split across the workspace's `host_commands:` (reference names) and the daemon-wide registry `~/.config/boid/host_commands.yaml` (actual definitions) — or, when non-empty together with `additional_bindings`, wired through a generated legacy kit into the workspace's `kits:` |
-| `additional_bindings` | Same as above (via the legacy kit, or hand-authored directly under a workspace's own `additional_bindings` going forward) |
+| `host_commands` | Appended directly to the workspace's `host_commands:` (reference names) + merged into the daemon-wide registry `~/.config/boid/host_commands.yaml` (actual definitions), via a generated legacy kit when non-empty (Phase 2.5 PR7) |
+| `additional_bindings` | Appended directly to the workspace's `additional_bindings:` (Phase 2.5 PR7 — no kit-directory lookup needed) |
 | `secret_namespace` | Not a same-named field on the workspace — **the workspace's own slug becomes the new secret namespace**. Migration only copies secret values from the old namespace into the new one (= the workspace slug) |
 
 ## Workspace DB migration (Phase 2.5, automatic — no action needed)
@@ -71,6 +71,18 @@ After this migration, the `workspaces` table is the sole authority; `~/.config/b
 The `boid project migrate` conversion logic described above (generating a kit, wiring it into `workspace.yaml`) is unaffected by PR6 — what changed is that there is no longer a CLI to **inspect or remove** the generated `kit.yaml` afterward. Edit or delete `~/.local/share/boid/kits/<name>/kit.yaml` by hand instead.
 
 To set up a workspace's contents from scratch, use `boid workspace create` / `edit` / `import` (yaml, passed directly) instead of the retired `boid workspace configure`. See [Onboarding](../guide/onboarding.md) for details.
+
+## Final retirement of the kit mechanism (Phase 2.5 PR7)
+
+The `WorkspaceMeta.Kits` field (workspace.yaml's `kits:`) was removed from the code outright in Phase 2.5 PR7 (2026-07). Consequences:
+
+- `POST` / `PUT` / `import /api/workspaces` now reject a request body containing a `kits:` key with 400 (`unknown field kits`).
+- `boid project migrate` still name-validates and displays a legacy project.yaml's `kits:` refs informationally, but no longer resolves them into the workspace at all (see "What `boid project migrate` converts" above). The legacy kit it generates from `host_commands`/`additional_bindings` is unaffected — its content is still folded in, just directly rather than via a kit reference.
+- The one remaining caller that still honors a legacy `kits:` list is `boid workspace assign`'s auto-create convenience path (for a hand-authored or e2e-fixture workspace shadow yaml) — it resolves the reference client-side against the installed kits directory before submitting an already-materialized (kits-free) body.
+- **(Correction)** The shadow yaml files kept for rollback (`~/.config/boid/workspaces/*.yaml`) and the `~/.local/share/boid/kits/` directory are *not* fully unread once the DB is authoritative — two dependencies remain, so the earlier "safe to delete any time, no effect on the daemon" guidance above is retracted:
+  - Shadow yaml: `boid workspace assign`'s auto-create path (the bullet just above) reads `~/.config/boid/workspaces/<slug>.yaml` whenever the target slug has no DB row yet. If you still plan to `assign` a not-yet-assigned slug going forward, do not delete that slug's shadow yaml.
+  - `~/.local/share/boid/kits/`: the daemon startup preflight (`buildProjectStore` in `internal/server/wire.go`) rebuilds the aggregated `~/.config/boid/host_commands.yaml` from the kit.yaml files under this directory as a self-healing fallback whenever that config is missing for any reason (`boid host-commands reload` itself does *not* do this rebuild — it only re-reads the existing file). If you're confident `host_commands.yaml` will never go missing, the impact is small, but it isn't guaranteed.
+  - Only delete these once you've confirmed both conditions above: you will not use the auto-create path (`workspace assign` against an unassigned slug) again, and you don't anticipate `host_commands.yaml` ever being lost.
 
 ## On the new onboarding flow
 

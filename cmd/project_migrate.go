@@ -371,6 +371,16 @@ func computeMigratePlan(plan *migratePlan, boidDB *db.DB, keyFilePath string) er
 	// migration outright rather than silently producing an unloadable kit
 	// slug in workspace.yaml — past versions did the latter and left
 	// invalid kit dirs that later tripped boid-kit-init cleanup.
+	//
+	// Phase 2.5 PR7 (docs/plans/workspace-db-consolidation.md, decision 12):
+	// these external kit refs are validated and recorded on the plan (for
+	// printMigratePlan's informational display) but are no longer resolved
+	// or folded into the workspace at all — the kit mechanism itself was
+	// retired in PR6, and any external kit ref here (as opposed to this
+	// migration's own auto-generated legacy kit just below, whose fields are
+	// fully known and folded directly) has no automatic resolution path any
+	// more. If such a kit is still needed, add its host_commands/env/
+	// additional_bindings to workspace.yaml by hand after migrating.
 	kitRefStrs, err := collectKitNames(meta)
 	if err != nil {
 		return fmt.Errorf("collect kit names: %w", err)
@@ -378,8 +388,11 @@ func computeMigratePlan(plan *migratePlan, boidDB *db.DB, keyFilePath string) er
 	plan.kitRefStrs = kitRefStrs
 
 	// Legacy kit (host_commands + additional_bindings). Computed before the
-	// merge below so mergeLegacyFieldsIntoWorkspace can fold its name into
-	// workspace.Kits in the same pass.
+	// merge below so mergeLegacyFieldsIntoWorkspace can fold its
+	// host_commands names + additional_bindings directly into the workspace
+	// in the same pass (no kit-directory round trip needed for this: the
+	// data is this project's own project.yaml fields, already fully known
+	// here).
 	needsLegacyKit := len(meta.HostCommands) > 0 || len(meta.AdditionalBindings) > 0
 	legacyKitName := ""
 	if needsLegacyKit {
@@ -404,7 +417,7 @@ func computeMigratePlan(plan *migratePlan, boidDB *db.DB, keyFilePath string) er
 		legacyKitName = kitName
 	}
 
-	plan.workspaceMeta = mergeLegacyFieldsIntoWorkspace(existingWS, kitRefStrs, legacyKitName, meta)
+	plan.workspaceMeta = mergeLegacyFieldsIntoWorkspace(existingWS, legacyKitName, meta)
 
 	// Build list of keys to remove from project.yaml.
 	plan.removeKeys = computeRemoveKeys(meta)
@@ -460,43 +473,42 @@ func computeMigratePlan(plan *migratePlan, boidDB *db.DB, keyFilePath string) er
 }
 
 // mergeLegacyFieldsIntoWorkspace merges migrated legacy project.yaml fields
-// (normalised kit refs, env, capabilities, and — if one was generated — the
-// legacy kit's own name) into base, returning a new *WorkspaceMeta. base
-// itself is not mutated: base.Env, when non-nil, is copied into a fresh map
-// before any write, and base.Kits is only ever appended to (never trimmed).
+// (env, capabilities, and — if this migration generated one — the legacy
+// kit's own host_commands names + additional_bindings) into base, returning
+// a new *WorkspaceMeta. base itself is not mutated: base.Env/HostCommands/
+// AdditionalBindings, when non-nil, are copied into fresh containers before
+// any write.
 //
-// This is called from two places: computeMigratePlan, against the (inert)
+// This is called from three places: computeMigratePlan, against the (inert)
 // shadow-yaml base, to build plan.workspaceMeta (the dry-run preview and the
-// shadow-file artifact applyMigratePlan writes to disk); and
-// pushMigratedWorkspaceToDaemon (MAJOR 2, codex review, docs/plans/
-// workspace-db-consolidation.md), against a freshly GET-fetched *live* base
-// when the workspace slug already has a DB row — so an existing workspace's
-// real content is merged into instead of being silently dropped by a
-// create-only POST that used to just 409 and warn.
+// shadow-file artifact applyMigratePlan writes to disk); and both
+// mergeMigratedWorkspaceIntoDaemon (MAJOR 2, codex review, docs/plans/
+// workspace-db-consolidation.md) and applyMigratedWorkspaceOffline, each
+// against a freshly-fetched *live* base when the workspace slug already has
+// a DB row — so an existing workspace's real content is merged into instead
+// of being silently dropped by a create that used to just warn.
 //
-// Precedence on a key collision matches the contract
-// TestProjectMigrate_ExistingWorkspaceYAML_Merge already pins for the
-// shadow-yaml case: kits are unioned (never removed), env entries from meta
-// overwrite base's on a matching key ("merge で新値が優先"), and
-// capabilities.docker is overwritten when meta sets it. Every other
-// WorkspaceMeta field — including HostCommands/AdditionalBindings that may
-// already live directly on base (e.g. from a previously-materialized kit,
-// or hand-authored) — is carried over from base untouched.
-func mergeLegacyFieldsIntoWorkspace(base *orchestrator.WorkspaceMeta, kitRefStrs []string, legacyKitName string, meta *orchestrator.LegacyProjectMeta) *orchestrator.WorkspaceMeta {
+// Precedence on a key collision: env entries from meta overwrite base's on a
+// matching key ("merge で新値が優先"), capabilities.docker is overwritten
+// when meta sets it, host_commands names are unioned (never removed), and
+// additional_bindings are merged by Source with meta's own entry winning on
+// a conflict — the same "new value wins" precedence the Env merge already
+// uses. Every other WorkspaceMeta field is carried over from base untouched.
+//
+// Phase 2.5 PR7 (docs/plans/workspace-db-consolidation.md, decision 12):
+// this used to also fold every kit ref (external refs collected from the
+// legacy project.yaml's kits:, plus legacyKitName) into workspace.Kits,
+// materialized later via orchestrator.MaterializeWorkspaceKitsForPersist at
+// push/write time. WorkspaceMeta has no Kits field any more, and this
+// migration's own auto-generated legacy kit's host_commands/
+// additional_bindings are already fully known here — they ARE
+// meta.HostCommands/meta.AdditionalBindings, this project's own
+// project.yaml fields being relocated — so they are folded directly below,
+// with no kit-directory round trip needed at all. External kit refs
+// (computeMigratePlan's kitRefStrs) are no longer resolved here at all —
+// see that collection's own doc comment for why.
+func mergeLegacyFieldsIntoWorkspace(base *orchestrator.WorkspaceMeta, legacyKitName string, meta *orchestrator.LegacyProjectMeta) *orchestrator.WorkspaceMeta {
 	merged := *base
-	existingKitSet := stringSet(base.Kits)
-	addKit := func(name string) {
-		if !existingKitSet[name] {
-			merged.Kits = append(merged.Kits, name)
-			existingKitSet[name] = true
-		}
-	}
-	for _, name := range kitRefStrs {
-		addKit(name)
-	}
-	if legacyKitName != "" {
-		addKit(legacyKitName)
-	}
 
 	// Env: merge, new values take precedence (match spec: "merge で新値が優先").
 	if len(meta.Env) > 0 {
@@ -515,7 +527,70 @@ func mergeLegacyFieldsIntoWorkspace(base *orchestrator.WorkspaceMeta, kitRefStrs
 		merged.Capabilities.Docker = meta.Capabilities.Docker
 	}
 
+	// This migration's own auto-generated legacy kit (see needsLegacyKit in
+	// computeMigratePlan): its host_commands (folded in as reference
+	// names — the daemon's aggregated host_commands.yaml gets the full
+	// definitions separately via ensureLegacyKitHostCommandsKnownToDaemon)
+	// and additional_bindings come straight from meta, so no kit.yaml round
+	// trip is needed to resolve them.
+	if legacyKitName != "" {
+		if len(meta.HostCommands) > 0 {
+			names := make([]string, 0, len(meta.HostCommands))
+			for name := range meta.HostCommands {
+				names = append(names, name)
+			}
+			sort.Strings(names)
+			merged.HostCommands = unionStringSlices(base.HostCommands, names)
+		}
+		if len(meta.AdditionalBindings) > 0 {
+			merged.AdditionalBindings = mergeBindMountsBySourceNewWins(base.AdditionalBindings, meta.AdditionalBindings)
+		}
+	}
+
 	return &merged
+}
+
+// unionStringSlices returns the sorted, deduplicated union of a and b.
+func unionStringSlices(a, b []string) []string {
+	seen := make(map[string]bool, len(a)+len(b))
+	var out []string
+	for _, s := range a {
+		if seen[s] {
+			continue
+		}
+		seen[s] = true
+		out = append(out, s)
+	}
+	for _, s := range b {
+		if seen[s] {
+			continue
+		}
+		seen[s] = true
+		out = append(out, s)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// mergeBindMountsBySourceNewWins merges base and overlay by Source, with
+// overlay's entry winning on a Source collision — the same "new value wins"
+// precedence mergeLegacyFieldsIntoWorkspace's Env merge already uses.
+func mergeBindMountsBySourceNewWins(base, overlay []orchestrator.BindMount) []orchestrator.BindMount {
+	result := make([]orchestrator.BindMount, len(base))
+	copy(result, base)
+	indexBySource := make(map[string]int, len(result))
+	for i, b := range result {
+		indexBySource[b.Source] = i
+	}
+	for _, b := range overlay {
+		if idx, ok := indexBySource[b.Source]; ok {
+			result[idx] = b
+			continue
+		}
+		indexBySource[b.Source] = len(result)
+		result = append(result, b)
+	}
+	return result
 }
 
 // loadKeyFileIfExists returns nil (no error) when the key file does not exist.
@@ -632,6 +707,21 @@ func printMigratePlan(out io.Writer, plan *migratePlan, apply bool) {
 	fmt.Fprintf(out, "workspace slug: %s\n", plan.workspaceSlug)
 	fmt.Fprintln(out, string(wsData))
 
+	// External kit refs (docs/plans/workspace-db-consolidation.md Phase 2.5
+	// PR7, decision 12): these came from the legacy project.yaml's top-level
+	// or behavior-level `kits:` lists but are no longer resolved into the
+	// workspace automatically — the kit mechanism was retired in PR6. Shown
+	// here purely so the operator knows to add any host_commands/env/
+	// additional_bindings such a kit used to supply by hand, if still
+	// needed.
+	if len(plan.kitRefStrs) > 0 {
+		fmt.Fprintln(out, "--- kit refs found (no longer auto-resolved; add manually if still needed) ---")
+		for _, name := range plan.kitRefStrs {
+			fmt.Fprintf(out, "  - %s\n", name)
+		}
+		fmt.Fprintln(out)
+	}
+
 	// Legacy kit.
 	if plan.needsLegacyKit {
 		fmt.Fprintln(out, "--- legacy kit ---")
@@ -691,15 +781,20 @@ func applyMigratePlan(plan *migratePlan, boidDB *db.DB, keyFilePath, onCollision
 	wsStore := orchestrator.NewWorkspaceStore("")
 
 	// 1. Write legacy kit.yaml *before* touching the daemon at all (step 2
-	// below). MAJOR 1 (codex review, docs/plans/workspace-db-consolidation.md):
-	// plan.workspaceMeta.Kits already includes this migration's
-	// freshly-generated legacy kit name (mergeLegacyFieldsIntoWorkspace), and
-	// CreateWorkspace/UpdateWorkspace materialize a Kits-bearing body via
-	// orchestrator.MaterializeWorkspaceKitsForPersist(s.KitsDir, meta), which
-	// reads each referenced kit's kit.yaml straight off disk
-	// (snapshotAllKitYAMLs) — so the daemon POST/PUT in
-	// pushMigratedWorkspaceToDaemon below 400s ("kit ... not found") unless
-	// the kit.yaml file exists on disk first.
+	// below). plan.workspaceMeta.HostCommands/AdditionalBindings already
+	// carry this migration's legacy-kit-derived content directly
+	// (mergeLegacyFieldsIntoWorkspace folds meta's own fields in with no
+	// kit-directory dependency, Phase 2.5 PR7) — what this kit.yaml file is
+	// still needed for is ensureLegacyKitHostCommandsKnownToDaemon below,
+	// which registers its host_commands *definitions* into the daemon's
+	// aggregated ~/.config/boid/host_commands.yaml config so that
+	// workspace.HostCommands' name references (e.g. "gh") actually resolve
+	// to something at dispatch/hydration time. The daemon POST/PUT in
+	// pushMigratedWorkspaceToDaemon below 400s on an unresolvable
+	// host_commands reference unless that config is updated (and, if
+	// online, reloaded) first — which is exactly what
+	// ensureLegacyKitHostCommandsKnownToDaemon does, reading this file back
+	// off disk.
 	if plan.needsLegacyKit {
 		if err := os.MkdirAll(plan.legacyKitDir, 0o755); err != nil {
 			return fmt.Errorf("mkdir legacy kit dir: %w", err)
@@ -913,28 +1008,20 @@ func pushMigratedWorkspaceToDaemon(plan *migratePlan, boidDB *db.DB, shadowPath 
 // with the actual merge that was attempted against the DB — MAJOR 3, codex
 // review — so a failure here still leaves the user a shadow file that is
 // safe to apply in full via `boid workspace edit --from-file`, not just the
-// migration's own delta. The shadow file itself is kept un-materialized
-// (Kits still a plain slug list), matching what the online path's PUT/POST
-// body and its own shadow file both look like — kit materialization only
-// ever applies to what actually gets persisted to the DB, both online (done
-// server-side, inside CreateWorkspace/UpdateWorkspace) and here (done via
-// materializeWorkspaceMetaForOfflineWrite, immediately before the
-// repo.Create/UpdateIfRevisionMatches call, on an independent copy).
+// migration's own delta.
 //
-// Known gap: the online path's validateHostCommandRefs also rejects a
-// meta.HostCommands reference the daemon's live snapshot doesn't recognise;
-// there is no equivalent live snapshot to check against here. This
-// migration's own legacy kit host_commands are already guaranteed present in
-// host_commands.yaml on disk by the time this runs (ensureLegacyKitHostCommandsKnownToDaemon,
-// called earlier in pushMigratedWorkspaceToDaemon, aborts the whole
-// migration on a conflict before reaching this function at all) — the
-// residual gap is a project.yaml `kits:` reference to some other,
-// pre-existing kit dir whose host_commands were never registered in
-// host_commands.yaml, a pre-existing and narrower risk than the "auto-migrate
-// silently touches nothing at all" gap this function fixes.
+// Phase 2.5 PR7 (docs/plans/workspace-db-consolidation.md, decision 12): this
+// used to also run a kit-materialization step (materializeWorkspaceMetaForOfflineWrite,
+// removed) on an independent copy immediately before the repo.Create/
+// UpdateIfRevisionMatches call below, mirroring what the online path did
+// server-side inside CreateWorkspace/UpdateWorkspace. Neither side does that
+// any more: WorkspaceMeta has no Kits field, and plan.workspaceMeta/merged
+// already carry this migration's legacy-kit-derived host_commands/
+// additional_bindings directly (mergeLegacyFieldsIntoWorkspace folds them in
+// from meta's own fields, no kit-directory lookup needed) — so both branches
+// below persist plan.workspaceMeta/merged as-is.
 func applyMigratedWorkspaceOffline(plan *migratePlan, boidDB *db.DB, shadowPath string, out io.Writer) {
 	repo := orchestrator.NewWorkspaceRepository(boidDB.Conn)
-	kitsDir := defaultKitsDir()
 	legacyKitName := ""
 	if plan.needsLegacyKit {
 		legacyKitName = plan.legacyKitMeta.Meta.Name
@@ -948,14 +1035,7 @@ func applyMigratedWorkspaceOffline(plan *migratePlan, boidDB *db.DB, shadowPath 
 			// value createMigratedWorkspaceInDaemon POSTs verbatim when the
 			// live daemon reports no existing row, so reuse it here too
 			// rather than re-deriving a fresh merge against an empty base.
-			toCreate, materializeErr := materializeWorkspaceMetaForOfflineWrite(kitsDir, plan.workspaceMeta)
-			if materializeErr != nil {
-				fmt.Fprintln(out)
-				fmt.Fprintf(out, "warning: could not resolve workspace %q's kits directly (%v).\n", plan.workspaceSlug, materializeErr)
-				fmt.Fprintf(out, "  The migrated content is available at:\n    %s\n", shadowPath)
-				return
-			}
-			if createErr := repo.Create(plan.workspaceSlug, toCreate); createErr != nil {
+			if createErr := repo.Create(plan.workspaceSlug, plan.workspaceMeta); createErr != nil {
 				if errors.Is(createErr, os.ErrExist) {
 					continue // concurrent creator raced us; retry as a load+merge
 				}
@@ -974,18 +1054,10 @@ func applyMigratedWorkspaceOffline(plan *migratePlan, boidDB *db.DB, shadowPath 
 			return
 		}
 
-		merged := mergeLegacyFieldsIntoWorkspace(base, plan.kitRefStrs, legacyKitName, plan.meta)
+		merged := mergeLegacyFieldsIntoWorkspace(base, legacyKitName, plan.meta)
 		updateWorkspaceShadowFile(plan, merged, out)
 
-		toUpdate, materializeErr := materializeWorkspaceMetaForOfflineWrite(kitsDir, merged)
-		if materializeErr != nil {
-			fmt.Fprintln(out)
-			fmt.Fprintf(out, "warning: could not resolve workspace %q's kits directly (%v).\n", plan.workspaceSlug, materializeErr)
-			fmt.Fprintf(out, "  The migrated content (merged with what was already there for %q) is available at:\n    %s\n", plan.workspaceSlug, shadowPath)
-			return
-		}
-
-		_, matched, updErr := repo.UpdateIfRevisionMatches(plan.workspaceSlug, revision, toUpdate)
+		_, matched, updErr := repo.UpdateIfRevisionMatches(plan.workspaceSlug, revision, merged)
 		if updErr != nil {
 			fmt.Fprintln(out)
 			fmt.Fprintf(out, "warning: could not update workspace %q directly in the database (%v).\n", plan.workspaceSlug, updErr)
@@ -1003,33 +1075,6 @@ func applyMigratedWorkspaceOffline(plan *migratePlan, boidDB *db.DB, shadowPath 
 	fmt.Fprintln(out)
 	fmt.Fprintf(out, "warning: workspace %q kept changing concurrently in the database; gave up after %d attempts.\n", plan.workspaceSlug, pushMigratedWorkspaceRetryLimit)
 	fmt.Fprintf(out, "  The migrated content is available at:\n    %s\n", shadowPath)
-}
-
-// materializeWorkspaceMetaForOfflineWrite returns a copy of meta with any
-// Kits references resolved into host_commands/env/additional_bindings
-// (orchestrator.MaterializeWorkspaceKitsForPersist) — the same expansion
-// CreateWorkspace/UpdateWorkspace perform server-side on the wire payload
-// before persisting (internal/api/project_service.go). This offline path
-// writes directly to the DB via WorkspaceRepository, bypassing that API
-// layer entirely, so it must replicate the same expansion itself: skipping
-// it would persist a Kits-bearing WorkspaceMeta whose kit reference is never
-// resolved — and, per MaterializeWorkspaceKitsForPersist's own doc comment,
-// never resolved again afterward either, since the `workspaces` table has no
-// Kits column at all.
-//
-// meta itself is never mutated: the kitsDir-driven expansion runs against an
-// independent shallow copy. That shallow copy is safe (rather than requiring
-// a deep copy) because every field MaterializeWorkspaceKitsForPersist
-// touches — Env, HostCommands, AdditionalBindings, Kits — is reassigned to a
-// brand new container (mergeStringMaps / unionStringsSorted / mergeBindMounts
-// each return a fresh map/slice) rather than mutated in place, so meta's own
-// underlying maps/slices are never touched through the copy.
-func materializeWorkspaceMetaForOfflineWrite(kitsDir string, meta *orchestrator.WorkspaceMeta) (*orchestrator.WorkspaceMeta, error) {
-	cp := *meta
-	if err := orchestrator.MaterializeWorkspaceKitsForPersist(kitsDir, &cp); err != nil {
-		return nil, err
-	}
-	return &cp, nil
 }
 
 // updateWorkspaceShadowFile overwrites the on-disk shadow yaml for
@@ -1133,7 +1178,7 @@ func mergeMigratedWorkspaceIntoDaemon(c *client.Client, plan *migratePlan, first
 		if base == nil {
 			base = &orchestrator.WorkspaceMeta{}
 		}
-		merged := mergeLegacyFieldsIntoWorkspace(base, plan.kitRefStrs, legacyKitName, plan.meta)
+		merged := mergeLegacyFieldsIntoWorkspace(base, legacyKitName, plan.meta)
 
 		// MAJOR 3 (codex review, docs/plans/workspace-db-consolidation.md):
 		// refresh the shadow file with this attempt's full merge *before*

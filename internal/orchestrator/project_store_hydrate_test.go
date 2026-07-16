@@ -41,7 +41,7 @@ func TestGetWithWorkspace_NoWorkspace(t *testing.T) {
 	dir := t.TempDir()
 	setupProjectDir(t, dir, "proj-nows", "No Workspace Project")
 
-	s := orchestrator.NewProjectStore(nil)
+	s := orchestrator.NewProjectStore()
 	loadProjectIntoStore(t, s, []*orchestrator.Project{
 		{ID: "proj-nows", WorkDir: dir, WorkspaceID: ""},
 	})
@@ -64,7 +64,7 @@ func TestGetWithWorkspace_NoWorkspace(t *testing.T) {
 func TestGetWithWorkspace_NotLoaded(t *testing.T) {
 	t.Parallel()
 
-	s := orchestrator.NewProjectStore(nil)
+	s := orchestrator.NewProjectStore()
 	_, err := s.GetWithWorkspace(context.Background(), "nonexistent")
 	if err == nil {
 		t.Fatal("expected error for unloaded project, got nil")
@@ -88,7 +88,7 @@ env:
   WS_VAR: from-workspace
 `)
 
-	s := orchestrator.NewProjectStore(nil)
+	s := orchestrator.NewProjectStore()
 	s.SetWorkspaceStore(orchestrator.NewWorkspaceStore(wsDir))
 	loadProjectIntoStore(t, s, []*orchestrator.Project{
 		{ID: "proj-ws", WorkDir: projectDir, WorkspaceID: "myworkspace"},
@@ -125,7 +125,7 @@ func TestGetWithWorkspace_Degraded(t *testing.T) {
 
 	wsDir := t.TempDir() // no workspace.yaml written here
 
-	s := orchestrator.NewProjectStore(nil)
+	s := orchestrator.NewProjectStore()
 	s.SetWorkspaceStore(orchestrator.NewWorkspaceStore(wsDir))
 	loadProjectIntoStore(t, s, []*orchestrator.Project{
 		{ID: "proj-deg", WorkDir: projectDir, WorkspaceID: "missing-ws"},
@@ -172,7 +172,7 @@ env:
   WS_KEY_B: value-b
 `)
 
-	s := orchestrator.NewProjectStore(nil)
+	s := orchestrator.NewProjectStore()
 	s.SetWorkspaceStore(orchestrator.NewWorkspaceStore(wsDir))
 	loadProjectIntoStore(t, s, []*orchestrator.Project{
 		{ID: "proj-env-prio", WorkDir: projectDir, WorkspaceID: "envws"},
@@ -200,7 +200,7 @@ func TestGetWithWorkspace_NoWorkspaceStore(t *testing.T) {
 	projectDir := t.TempDir()
 	setupProjectDir(t, projectDir, "proj-nows2", "No WS Store Project")
 
-	s := orchestrator.NewProjectStore(nil)
+	s := orchestrator.NewProjectStore()
 	// Intentionally do NOT call SetWorkspaceStore.
 	loadProjectIntoStore(t, s, []*orchestrator.Project{
 		{ID: "proj-nows2", WorkDir: projectDir, WorkspaceID: "some-workspace"},
@@ -232,7 +232,7 @@ capabilities:
   docker: {}
 `)
 
-	s := orchestrator.NewProjectStore(nil)
+	s := orchestrator.NewProjectStore()
 	s.SetWorkspaceStore(orchestrator.NewWorkspaceStore(wsDir))
 	loadProjectIntoStore(t, s, []*orchestrator.Project{
 		{ID: "proj-copy", WorkDir: projectDir, WorkspaceID: "copyws"},
@@ -280,7 +280,7 @@ func TestGetWithWorkspace_WorkspaceHostCommandConflict(t *testing.T) {
 	wsDir := t.TempDir()
 	// workspace slug with uppercase is invalid per ValidWorkspaceSlug.
 
-	s := orchestrator.NewProjectStore(nil)
+	s := orchestrator.NewProjectStore()
 	s.SetWorkspaceStore(orchestrator.NewWorkspaceStore(wsDir))
 	loadProjectIntoStore(t, s, []*orchestrator.Project{
 		{ID: "proj-slugerr", WorkDir: projectDir, WorkspaceID: "InvalidSlug"},
@@ -335,7 +335,7 @@ func TestGetWithWorkspace_HostCommandsResolved(t *testing.T) {
 	wsDir := t.TempDir()
 	setupWorkspaceDir(t, wsDir, "hcws", "host_commands:\n  - gh\n")
 
-	s := orchestrator.NewProjectStore(nil)
+	s := orchestrator.NewProjectStore()
 	s.SetWorkspaceStore(orchestrator.NewWorkspaceStore(wsDir))
 	s.SetHostCommands(map[string]orchestrator.HostCommandSpec{
 		"gh": {Allow: []string{"pr", "issue"}},
@@ -384,7 +384,7 @@ func TestGetWithWorkspace_HostCommandsUnresolvedNameSkipped(t *testing.T) {
 	wsDir := t.TempDir()
 	setupWorkspaceDir(t, wsDir, "hcmissws", "host_commands:\n  - unknown-command\n")
 
-	s := orchestrator.NewProjectStore(nil)
+	s := orchestrator.NewProjectStore()
 	s.SetWorkspaceStore(orchestrator.NewWorkspaceStore(wsDir))
 	s.SetHostCommands(map[string]orchestrator.HostCommandSpec{
 		"gh": {Allow: []string{"pr"}},
@@ -415,7 +415,7 @@ func TestGetWithWorkspace_HostCommandsBuiltinConflict(t *testing.T) {
 	wsDir := t.TempDir()
 	setupWorkspaceDir(t, wsDir, "hcconflictws", "host_commands:\n  - git\n")
 
-	s := orchestrator.NewProjectStore(nil)
+	s := orchestrator.NewProjectStore()
 	s.SetWorkspaceStore(orchestrator.NewWorkspaceStore(wsDir))
 	s.SetHostCommands(map[string]orchestrator.HostCommandSpec{
 		"git": {Allow: []string{"push"}},
@@ -470,7 +470,7 @@ func TestGetWithWorkspace_HostCommandsRejectRuleValidation(t *testing.T) {
 			wsDir := t.TempDir()
 			setupWorkspaceDir(t, wsDir, "rejvalws-"+tc.name, "host_commands:\n  - gh\n")
 
-			s := orchestrator.NewProjectStore(nil)
+			s := orchestrator.NewProjectStore()
 			s.SetWorkspaceStore(orchestrator.NewWorkspaceStore(wsDir))
 			s.SetHostCommands(map[string]orchestrator.HostCommandSpec{"gh": tc.spec})
 			loadProjectIntoStore(t, s, []*orchestrator.Project{
@@ -501,7 +501,7 @@ func TestGetWithWorkspace_HostCommandsNoAggregateConfigured(t *testing.T) {
 	wsDir := t.TempDir()
 	setupWorkspaceDir(t, wsDir, "hcnoaggws", "host_commands:\n  - gh\n")
 
-	s := orchestrator.NewProjectStore(nil)
+	s := orchestrator.NewProjectStore()
 	s.SetWorkspaceStore(orchestrator.NewWorkspaceStore(wsDir))
 	// Intentionally do NOT call SetHostCommands.
 	loadProjectIntoStore(t, s, []*orchestrator.Project{
@@ -534,7 +534,7 @@ func TestGetWithWorkspace_WarnsWhenAggregatedIsEmptyButRefsExist(t *testing.T) {
 	wsDir := t.TempDir()
 	setupWorkspaceDir(t, wsDir, "hcwarnws", "host_commands:\n  - gh\n")
 
-	s := orchestrator.NewProjectStore(nil)
+	s := orchestrator.NewProjectStore()
 	s.SetWorkspaceStore(orchestrator.NewWorkspaceStore(wsDir))
 	// Explicitly wire an empty (non-nil) aggregate, the "no kits installed"
 	// steady state — distinct from never calling SetHostCommands at all
@@ -584,7 +584,7 @@ func TestGetWithWorkspace_MergesWorkspaceAdditionalBindings(t *testing.T) {
     mode: ro
 `)
 
-	s := orchestrator.NewProjectStore(nil)
+	s := orchestrator.NewProjectStore()
 	s.SetWorkspaceStore(orchestrator.NewWorkspaceStore(wsDir))
 	loadProjectIntoStore(t, s, []*orchestrator.Project{
 		{ID: "proj-ws-bind", WorkDir: projectDir, WorkspaceID: "wsbind"},
@@ -636,7 +636,7 @@ func TestGetWithWorkspace_ProjectBindingsWinOnConflict(t *testing.T) {
     mode: ro
 `)
 
-	s := orchestrator.NewProjectStore(nil)
+	s := orchestrator.NewProjectStore()
 	s.SetWorkspaceStore(orchestrator.NewWorkspaceStore(wsDir))
 	s.Set("proj-bind-conflict", &orchestrator.ProjectMeta{
 		ID:   "proj-bind-conflict",
@@ -686,7 +686,7 @@ func TestGetWithWorkspace_ExpandsWorkspaceEnvVariables(t *testing.T) {
 	wsDir := t.TempDir()
 	setupWorkspaceDir(t, wsDir, "envexpandws", "env:\n  WS_VAR: ${WS_EXPAND_PROBE}\n")
 
-	s := orchestrator.NewProjectStore(nil)
+	s := orchestrator.NewProjectStore()
 	s.SetWorkspaceStore(orchestrator.NewWorkspaceStore(wsDir))
 	loadProjectIntoStore(t, s, []*orchestrator.Project{
 		{ID: "proj-ws-env-expand", WorkDir: projectDir, WorkspaceID: "envexpandws"},
@@ -720,7 +720,7 @@ func TestGetWithWorkspace_ExpandsWorkspaceAdditionalBindings(t *testing.T) {
     mode: ro
 `)
 
-	s := orchestrator.NewProjectStore(nil)
+	s := orchestrator.NewProjectStore()
 	s.SetWorkspaceStore(orchestrator.NewWorkspaceStore(wsDir))
 	loadProjectIntoStore(t, s, []*orchestrator.Project{
 		{ID: "proj-ws-bind-expand", WorkDir: projectDir, WorkspaceID: "bindexpandws"},
@@ -764,7 +764,7 @@ func TestLoadAll_RecordsWorkspaceID(t *testing.T) {
   WS_TAG: tagged
 `)
 
-	s := orchestrator.NewProjectStore(nil)
+	s := orchestrator.NewProjectStore()
 	s.SetWorkspaceStore(orchestrator.NewWorkspaceStore(wsDir))
 
 	errs := s.LoadAll([]*orchestrator.Project{

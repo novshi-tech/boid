@@ -146,19 +146,14 @@ gateway:
 
 ---
 
-## default_harness — デフォルト harness (現在未使用)
+## default_harness (撤去済み)
 
-```yaml
-default_harness: claude   # claude / codex / opencode のいずれか
-```
-
-| キー | 型 | デフォルト | 説明 |
-|---|---|---|---|
-| `default_harness` | string | — | (未使用) かつて `boid kit init` / `boid workspace configure` が起動する harness を選ぶために使っていたキー |
-
-> **注意:** この 2 コマンドは Phase 2.5 PR6 (2026-07) で撤去されました。`config.DefaultHarness()` / `SetDefaultHarness()` (`internal/config/default_harness.go`) はコード上は残っていますが、呼び出し元 (`cmd/kit.go`) ごと削除されたため、現時点でこのキーを読む command はありません — 事実上の dead configuration です (PR7 以降での整理候補)。`boid project init --agent <name>` の既定値は別の定数 (`initwizard.DefaultAgent`、既定 `claude-code`) で、この設定とは独立しています。
-
-詳細は [オンボーディング](../guide/onboarding.md) を参照してください。
+`default_harness` キーおよびそれを解決していた `config.DefaultHarness()` / `SetDefaultHarness()`
+(`internal/config/default_harness.go`) は Phase 2.5 PR7 (2026-07) で撤去されました。
+このキーを読んでいた唯一の呼び出し元 (`boid kit init` / `boid workspace configure`) は
+Phase 2.5 PR6 で既に撤去済みで dead configuration になっていたため、PR7 で config 側も
+削除しました。`boid project init --agent <name>` の既定値は別の定数
+(`initwizard.DefaultAgent`、既定 `claude-code`) で、この設定とは無関係でした。
 
 ---
 
