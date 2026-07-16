@@ -28,6 +28,13 @@ func defaultFetchClient() *http.Client {
 		Timeout: fetchTimeout,
 		Transport: &http.Transport{
 			DialContext: ssrfSafeDialContext,
+			// Go の http.Transport は DialContext などをカスタムすると
+			// ForceAttemptHTTP2 を明示しない限り HTTP/2 を保守的に無効化する。
+			// SSRF ガードのために DialContext を設定しているため、 h2 を
+			// 明示的に opt-in しないと HTTP/2 優先オリジン (raw.githubusercontent.com など)
+			// に対して status 200 だが body 0B を受信する現象が起きる。
+			// h2 非対応オリジンには従来通り HTTP/1.1 で繋ぐので副作用なし。
+			ForceAttemptHTTP2: true,
 		},
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			if len(via) >= fetchMaxRedirects {
@@ -159,6 +166,17 @@ func executeFetch(req *FetchRequest) *ExecResponse {
 	body, err := io.ReadAll(limited)
 	if err != nil {
 		return &ExecResponse{ExitCode: 1, Stderr: fmt.Sprintf("fetch: read body: %v", err)}
+	}
+
+	// Defense-in-depth: サーバが Content-Length > 0 を宣言したのに実 body が
+	// 0 bytes だった場合は transport/protocol 側の異常を疑う (例: HTTP/2
+	// フォールバック不良で status 200 のヘッダだけ届いて本文が届かない case)。
+	// 真の空 resource (Content-Length: 0 や未宣言) は成功として扱う。
+	if resp.ContentLength > 0 && len(body) == 0 {
+		return &ExecResponse{
+			ExitCode: 1,
+			Stderr:   fmt.Sprintf("fetch: empty body but Content-Length=%d (HTTP %s, proto=%s)", resp.ContentLength, resp.Status, resp.Proto),
+		}
 	}
 
 	truncated := int64(len(body)) > fetchMaxBodySize
