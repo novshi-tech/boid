@@ -194,29 +194,18 @@ type hostCommandSpecStrict struct {
 }
 
 // toHostCommandSpec converts the strict decode-only shape to the public
-// HostCommandSpec type used everywhere else in the package.
+// HostCommandSpec type used everywhere else in the package. The two structs
+// share the same field layout (see hostCommandSpecStrict's doc comment for
+// why they are kept in sync), so a plain Go type conversion is sufficient —
+// yaml/json struct tags are not part of Go's convertibility check.
 func (s hostCommandSpecStrict) toHostCommandSpec() HostCommandSpec {
-	return HostCommandSpec{
-		Allow:  s.Allow,
-		Deny:   s.Deny,
-		Stdin:  s.Stdin,
-		Path:   s.Path,
-		Env:    s.Env,
-		Reject: s.Reject,
-	}
+	return HostCommandSpec(s)
 }
 
 // newHostCommandSpecStrict converts a HostCommandSpec to the strict
 // encode/decode shape, symmetric with toHostCommandSpec.
 func newHostCommandSpecStrict(spec HostCommandSpec) hostCommandSpecStrict {
-	return hostCommandSpecStrict{
-		Allow:  spec.Allow,
-		Deny:   spec.Deny,
-		Stdin:  spec.Stdin,
-		Path:   spec.Path,
-		Env:    spec.Env,
-		Reject: spec.Reject,
-	}
+	return hostCommandSpecStrict(spec)
 }
 
 // hostCommandsFileStrict is the on-disk shape of the aggregated
