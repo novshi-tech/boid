@@ -25,7 +25,6 @@ type Task struct {
 	Behavior         string          `json:"behavior"`
 	Traits           []string        `json:"traits,omitempty"`
 	Readonly         bool            `json:"readonly,omitempty"`
-	Worktree         bool            `json:"worktree,omitempty"`
 	BranchPrefix     string          `json:"branch_prefix,omitempty"`
 	BaseBranch       string          `json:"base_branch,omitempty"`
 	Payload          json.RawMessage `json:"payload"`

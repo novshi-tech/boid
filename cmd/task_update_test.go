@@ -282,7 +282,6 @@ func TestRunTaskUpdate_PatchFileDropsDeprecatedTaskRowOverrides(t *testing.T) {
 	}, &task); err != nil {
 		t.Fatalf("create task: %v", err)
 	}
-	beforeWorktree := task.Worktree
 	beforeBase := task.BaseBranch
 
 	patchPath := writePatch(t, `worktree: false
@@ -307,9 +306,6 @@ readonly: true
 	var updated orchestrator.Task
 	if err := ts.Client.Do("GET", "/api/tasks/"+task.ID, nil, &updated); err != nil {
 		t.Fatalf("get updated task: %v", err)
-	}
-	if updated.Worktree != beforeWorktree {
-		t.Errorf("Worktree changed: before=%v after=%v (deprecated key must be dropped)", beforeWorktree, updated.Worktree)
 	}
 	if updated.BaseBranch != beforeBase {
 		t.Errorf("BaseBranch changed: before=%q after=%q (deprecated key must be dropped)", beforeBase, updated.BaseBranch)

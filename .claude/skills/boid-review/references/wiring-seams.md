@@ -258,13 +258,15 @@ sequence, and whether the mount side stays in lockstep with the declaration side
   is a defensive dead-end that returns an error (per-task fork-branch resolution — `resolveCloneRef`
   — was deleted in Phase 1). `BaseBranchForkPoint`'s `resolveCloneForkStart` (case 3: `BaseBranch`
   missing from both origin and locally) is untouched and still live.
-- **Invariant**: (1) End A's `CheckoutOnly` is unconditionally `true` for every task as of Phase 1 —
-  `Task.Worktree` is no longer read by `BuildCloneDeclaration` at all (it's still persisted/resolved
-  elsewhere — `behavior_resolve.go`, `task_create.go`'s `ClassifyBaseBranch`-driven computation, the
-  `worktree` DB column — but that value no longer reaches this seam). If a future change makes
-  `BuildCloneDeclaration` branch on anything again, re-check whether `Task.Worktree` should regain a
-  live consumer or whether it should be deprecated outright — leaving it computed-but-unread is a
-  latent trap. (2) End B/C's `spec.Visibility.Clone != nil` gate must be checked identically
+- **Invariant**: (1) End A's `CheckoutOnly` is unconditionally `true` for every task as of Phase 1,
+  and as of Phase 2 (branch-policy-simplification, 2026-07-16) the `Task.Worktree` /
+  `ProjectMeta.Worktree` / `BehaviorResolution.Worktree` fields no longer exist at all. The
+  `tasks.worktree` DB column is left in place (NOT NULL DEFAULT FALSE, migration `0007`) for BC —
+  SQL INSERT/UPDATE/SELECT no longer reference it, so it writes the column default and is invisible
+  to callers. If a future change wants to reintroduce a per-task "worktree" concept, don't
+  reintroduce silent-write-no-read: pick one contract (drop the DB column via migration, or wire the
+  field back through the resolver) rather than the previous half-wired state. (2) End B/C's
+  `spec.Visibility.Clone != nil` gate must be checked identically
   everywhere it appears (`resolveWorkDir`, the mount switch, `cloneMounts`, `buildCloneSpec`) — a
   mismatch between any two of these is exactly the double-mount / no-mount class of bug. (3) End D
   never gets a real git binary path threaded to it anymore post-cutover (`CloneSpec.RealGitBin` is

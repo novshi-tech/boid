@@ -415,14 +415,11 @@ func renderProjectBehaviors(p *projectspec.Project) {
 			fmt.Printf("  traits: %s\n", strings.Join(b.Traits, ", "))
 		}
 	}
-	// Project-level worktree / base_branch (Phase 3-1: behavior-level
-	// readonly / worktree / branch_prefix / base_branch are gone; the only
-	// place where these values still appear in project.yaml is at the
-	// project top level).
-	if p.Meta.Worktree {
-		fmt.Printf("\nworktree: true\n")
-	}
+	// Project-level base_branch (Phase 3-1: behavior-level readonly / worktree /
+	// branch_prefix / base_branch are gone; branch-policy-simplification Phase 2
+	// additionally retired the project-top 'worktree' field, so only
+	// base_branch remains to display).
 	if p.Meta.BaseBranch != "" {
-		fmt.Printf("base_branch: %s\n", p.Meta.BaseBranch)
+		fmt.Printf("\nbase_branch: %s\n", p.Meta.BaseBranch)
 	}
 }

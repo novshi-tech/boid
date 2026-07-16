@@ -46,8 +46,13 @@ type TaskFilter struct {
 }
 
 // taskSelectCols は tasks テーブルの基本カラム一覧（テーブル別名 t を使用）。
+//
+// tasks.worktree DB 列は branch-policy-simplification Phase 2 で Task 構造体
+// から外れたが、既存 DB との互換のため列自体は残す (NOT NULL DEFAULT FALSE、
+// migration 0007)。INSERT / UPDATE / SELECT からは列参照を落とし、書き込みは
+// 列 default に任せる。
 const taskSelectCols = `t.id, t.project_id, t.remote_id, t.title, t.description,` +
-	` t.status, t.behavior, t.traits, t.readonly, t.worktree,` +
+	` t.status, t.behavior, t.traits, t.readonly,` +
 	` t.branch_prefix, t.base_branch, t.payload, t.instructions, t.auto_start,` +
 	` t.ref, t.parent_id, t.created_at, t.updated_at`
 
@@ -103,9 +108,9 @@ func CreateTask(dbtx db.DBTX, t *Task) error {
 	}
 
 	_, err = dbtx.Exec(
-		`INSERT INTO tasks (id, project_id, remote_id, title, description, status, behavior, traits, readonly, worktree, branch_prefix, base_branch, payload, instructions, auto_start, ref, parent_id, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		t.ID, t.ProjectID, t.RemoteID, t.Title, t.Description, t.Status, t.Behavior, traitsJSON, t.Readonly, t.Worktree, t.BranchPrefix, t.BaseBranch, string(t.Payload), instructionsJSON, t.AutoStart, t.Ref, t.ParentID, t.CreatedAt, t.UpdatedAt,
+		`INSERT INTO tasks (id, project_id, remote_id, title, description, status, behavior, traits, readonly, branch_prefix, base_branch, payload, instructions, auto_start, ref, parent_id, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		t.ID, t.ProjectID, t.RemoteID, t.Title, t.Description, t.Status, t.Behavior, traitsJSON, t.Readonly, t.BranchPrefix, t.BaseBranch, string(t.Payload), instructionsJSON, t.AutoStart, t.Ref, t.ParentID, t.CreatedAt, t.UpdatedAt,
 	)
 	if err != nil {
 		// Concurrent create: if another goroutine just inserted the same (ref, parent_id),
@@ -226,8 +231,8 @@ func UpdateTask(dbtx db.DBTX, t *Task) error {
 		return fmt.Errorf("marshal instructions: %w", err)
 	}
 	_, err = dbtx.Exec(
-		`UPDATE tasks SET title = ?, description = ?, status = ?, traits = ?, readonly = ?, worktree = ?, branch_prefix = ?, base_branch = ?, payload = ?, instructions = ?, parent_id = ?, updated_at = ? WHERE id = ?`,
-		t.Title, t.Description, t.Status, traitsJSON, t.Readonly, t.Worktree, t.BranchPrefix, t.BaseBranch, string(t.Payload), instructionsJSON, t.ParentID, t.UpdatedAt, t.ID,
+		`UPDATE tasks SET title = ?, description = ?, status = ?, traits = ?, readonly = ?, branch_prefix = ?, base_branch = ?, payload = ?, instructions = ?, parent_id = ?, updated_at = ? WHERE id = ?`,
+		t.Title, t.Description, t.Status, traitsJSON, t.Readonly, t.BranchPrefix, t.BaseBranch, string(t.Payload), instructionsJSON, t.ParentID, t.UpdatedAt, t.ID,
 	)
 	if err != nil {
 		return err
@@ -522,7 +527,7 @@ func scanTask(s taskScanner) (*Task, error) {
 	var traitsJSON string
 	if err := s.Scan(
 		&t.ID, &t.ProjectID, &t.RemoteID, &t.Title, &t.Description,
-		&t.Status, &t.Behavior, &traitsJSON, &t.Readonly, &t.Worktree,
+		&t.Status, &t.Behavior, &traitsJSON, &t.Readonly,
 		&t.BranchPrefix, &t.BaseBranch, &payload, &instructionsJSON, &t.AutoStart,
 		&t.Ref, &t.ParentID, &t.CreatedAt, &t.UpdatedAt,
 		&t.TotalChildCount, &t.DoneChildCount, &t.AbortedChildCount, &t.OpenChildCount,

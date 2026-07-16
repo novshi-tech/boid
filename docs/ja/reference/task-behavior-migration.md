@@ -2,6 +2,8 @@
 
 > Track A2 (2026-06-17) で導入された変更の移行手順です。
 
+> **Phase 2 note (v0.0.12)**: 本ドキュメント中の yaml 例に含まれる `worktree: true` は branch-policy-simplification Phase 2 で撤去済みです。 既存 `worktree:` 行は BC のため silent ignore されます。 詳細は [Concepts / worktree](../guide/concepts.md#worktree) を参照。
+
 ## 概要
 
 従来は `task_behaviors` のキー名として `supervisor` と `executor` の 2 つのみが

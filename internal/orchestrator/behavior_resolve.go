@@ -9,11 +9,15 @@ import (
 
 // BehaviorResolution holds the resolved behavior fields after processing either
 // a named behavior or an inline behavior_spec.
+//
+// The Worktree flag was removed in the branch-policy-simplification Phase 2
+// (docs/plans/branch-policy-simplification.md). Post-cutover every project-visible
+// job runs in a fresh sandbox clone, so per-task worktree isolation is no longer
+// a concept the resolver needs to carry.
 type BehaviorResolution struct {
 	BehaviorName string
 	Traits       []string
 	Readonly     bool
-	Worktree     bool
 	BranchPrefix string
 	BaseBranch   string
 	Payload      json.RawMessage
@@ -123,7 +127,6 @@ func ResolveBehavior(meta *ProjectMeta, req BehaviorResolveRequest) (*BehaviorRe
 		res.BehaviorName = spec.Name
 		res.Traits = spec.Traits
 		if meta != nil {
-			res.Worktree = meta.Worktree
 			res.BaseBranch = meta.BaseBranch
 		}
 		// Inline specs have no TaskBehavior.Readonly field; pass nil → uses default.
@@ -153,7 +156,6 @@ func ResolveBehavior(meta *ProjectMeta, req BehaviorResolveRequest) (*BehaviorRe
 			res.BehaviorName = canonical
 		}
 		res.Traits = behavior.Traits
-		res.Worktree = meta.Worktree
 		res.BaseBranch = meta.BaseBranch
 		mergedInstructions, err := MergeDefaultInstructions(behavior.DefaultInstruction, req.Instructions)
 		if err != nil {
@@ -184,16 +186,14 @@ func ResolveBehavior(meta *ProjectMeta, req BehaviorResolveRequest) (*BehaviorRe
 //     A deprecation warning is emitted at project load time (see
 //     emitCanonicalBehaviorDeprecation in spec_loader.go); nothing is logged here.
 //
-// meta may be nil; its only effect is setting res.Worktree.
-func applyCanonicalBehaviorOverrides(res *BehaviorResolution, meta *ProjectMeta, behaviorExplicitReadonly *bool) {
+// The meta parameter is retained for signature stability but no longer read
+// (worktree resolution was removed in branch-policy-simplification Phase 2).
+func applyCanonicalBehaviorOverrides(res *BehaviorResolution, _ *ProjectMeta, behaviorExplicitReadonly *bool) {
 	res.Readonly = true // fail-safe default
 	if behaviorExplicitReadonly != nil {
 		res.Readonly = *behaviorExplicitReadonly
 	} else if res.BehaviorName == "executor" {
 		// Compat: canonical "executor" without explicit readonly → keep false.
 		res.Readonly = false
-	}
-	if meta != nil {
-		res.Worktree = meta.Worktree
 	}
 }

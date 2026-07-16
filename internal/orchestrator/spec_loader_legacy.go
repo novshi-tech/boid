@@ -17,7 +17,6 @@ type LegacyProjectMeta struct {
 	Name                string                         `yaml:"name"`
 	Kits                []KitRef                       `yaml:"kits,omitempty"`
 	TaskBehaviors       map[string]LegacyTaskBehavior  `yaml:"task_behaviors,omitempty"`
-	Worktree            bool                           `yaml:"worktree,omitempty"`
 	BaseBranch          string                         `yaml:"base_branch,omitempty"`
 	ForkPoint           string                         `yaml:"fork_point,omitempty"`
 	HostCommands        HostCommands                   `yaml:"host_commands,omitempty"`

@@ -230,16 +230,17 @@ func TestReadProjectMeta_TopLevelKitsRejected(t *testing.T) {
 	}
 }
 
-// TestReadProjectMeta_TopLevelWorktreeBaseBranch verifies that the new
-// project-level "worktree" and "base_branch" fields are accepted by the
-// YAML loader and exposed on ProjectMeta. This is Phase 1-1 of the
-// task_behavior simplification effort: at this stage the fields are
-// accepted at the YAML layer but not yet wired into task resolution
-// (that happens in Phase 2). The behavior-level fields
-// (task_behaviors.<name>.worktree / base_branch) remain in place until
-// Phase 3.
+// TestReadProjectMeta_TopLevelWorktreeBaseBranch verifies the current handling
+// of the project-level "worktree" and "base_branch" fields.
+//   - "base_branch" is accepted and exposed on ProjectMeta as before.
+//   - "worktree" is silently ignored: branch-policy-simplification Phase 2
+//     retired the field, but existing project.yaml files that still carry it
+//     must not fail to load (silent-ignore contract, see
+//     docs/plans/branch-policy-simplification.md Phase 2).
+//   - behavior-level worktree (task_behaviors.<name>.worktree) remains
+//     rejected with a descriptive error via removedBehaviorFieldGuidance.
 func TestReadProjectMeta_TopLevelWorktreeBaseBranch(t *testing.T) {
-	t.Run("accepts new top-level fields", func(t *testing.T) {
+	t.Run("accepts new top-level base_branch and silently ignores worktree", func(t *testing.T) {
 		dir := t.TempDir()
 		boidDir := filepath.Join(dir, ".boid")
 		if err := os.MkdirAll(boidDir, 0o755); err != nil {
@@ -261,9 +262,6 @@ task_behaviors:
 		meta, err := projectspec.ReadProjectMeta(dir)
 		if err != nil {
 			t.Fatalf("read meta: %v", err)
-		}
-		if !meta.Worktree {
-			t.Errorf("expected project-level Worktree=true, got false")
 		}
 		if meta.BaseBranch != "develop" {
 			t.Errorf("expected project-level BaseBranch=develop, got %q", meta.BaseBranch)
@@ -290,9 +288,6 @@ task_behaviors:
 		meta, err := projectspec.ReadProjectMeta(dir)
 		if err != nil {
 			t.Fatalf("read meta: %v", err)
-		}
-		if meta.Worktree {
-			t.Errorf("expected project-level Worktree default false, got true")
 		}
 		if meta.BaseBranch != "" {
 			t.Errorf("expected project-level BaseBranch default empty, got %q", meta.BaseBranch)
@@ -2062,19 +2057,12 @@ func TestReadProjectMeta_BoidSelfProjectYAML_LoadsInCanonicalForm(t *testing.T) 
 			"to the project-top equivalent or remove it. readonly is allowed again as of Track A2.", err)
 	}
 
-	// Project-top worktree must be true. Post
-	// docs/plans/branch-policy-simplification.md Phase 1 this field no longer
-	// affects checkout policy on its own — every task's in-sandbox clone
-	// checks out base_branch directly, and per-task branch creation lives
-	// in the executor's default_instruction (`git checkout -b
-	// boid/${BOID_TASK_ID:0:8}` before /dev-pr-flow). The assertion is kept
-	// so an accidental removal from this repo's own project.yaml is loud,
-	// not because the field currently drives dispatcher behaviour.
-	// base_branch is intentionally omitted so the daemon defaults to the
-	// current HEAD branch.
-	if !meta.Worktree {
-		t.Errorf("expected project-top worktree=true, got false; the field is inert post-Phase 1 but its removal from this file is still an intentional-only change")
-	}
+	// branch-policy-simplification Phase 2 retired the project-top
+	// worktree field entirely; per-task branch creation lives in the
+	// executor's default_instruction (`git checkout -b
+	// boid/${BOID_TASK_ID:0:8}` before /dev-pr-flow). base_branch is
+	// intentionally omitted so the daemon defaults to the current HEAD
+	// branch.
 
 	// Canonical behaviors must be present.
 	for _, name := range []string{"supervisor", "executor"} {

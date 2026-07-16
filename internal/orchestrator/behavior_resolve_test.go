@@ -64,7 +64,7 @@ func TestResolveBehavior_AliasMapping_Dev(t *testing.T) {
 }
 
 func TestResolveBehavior_InlineBehaviorSpec(t *testing.T) {
-	meta := &orchestrator.ProjectMeta{Worktree: true, BaseBranch: "main"}
+	meta := &orchestrator.ProjectMeta{BaseBranch: "main"}
 	res, err := orchestrator.ResolveBehavior(meta, orchestrator.BehaviorResolveRequest{
 		BehaviorSpec: &orchestrator.BehaviorSpec{Name: "custom"},
 	})
@@ -109,7 +109,6 @@ func TestResolveBehavior_UnknownBehavior(t *testing.T) {
 
 func TestResolveBehavior_CanonicalOverrides_Supervisor_Readonly(t *testing.T) {
 	meta := &orchestrator.ProjectMeta{
-		Worktree: true,
 		TaskBehaviors: map[string]orchestrator.TaskBehavior{
 			"supervisor": {},
 		},
@@ -125,7 +124,6 @@ func TestResolveBehavior_CanonicalOverrides_Supervisor_Readonly(t *testing.T) {
 
 func TestResolveBehavior_CanonicalOverrides_Executor_NotReadonly(t *testing.T) {
 	meta := &orchestrator.ProjectMeta{
-		Worktree: true,
 		TaskBehaviors: map[string]orchestrator.TaskBehavior{
 			"executor": {},
 		},
@@ -136,9 +134,6 @@ func TestResolveBehavior_CanonicalOverrides_Executor_NotReadonly(t *testing.T) {
 	}
 	if res.Readonly {
 		t.Error("executor: Readonly = true, want false")
-	}
-	if !res.Worktree {
-		t.Error("executor: Worktree = false, want true (from project-top)")
 	}
 }
 

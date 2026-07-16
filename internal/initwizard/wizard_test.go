@@ -91,10 +91,11 @@ func TestExpandScaffoldTemplate_AgentEmpty(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 // TestWizardRun_Basic verifies the wizard generates a portable project.yaml
-// containing only id / name / worktree / default_task_behavior /
-// task_behaviors. Per the kit / workspace / project reorg, project.yaml must
-// NOT contain kits, env, host_commands, additional_bindings,
-// secret_namespace, or capabilities.
+// containing only id / name / default_task_behavior / task_behaviors. Per the
+// kit / workspace / project reorg, project.yaml must NOT contain kits, env,
+// host_commands, additional_bindings, secret_namespace, or capabilities. The
+// former `worktree` key was retired in branch-policy-simplification Phase 2
+// (v0.0.12) and must no longer be emitted.
 func TestWizardRun_Basic(t *testing.T) {
 	projectDir := t.TempDir()
 
@@ -116,10 +117,13 @@ func TestWizardRun_Basic(t *testing.T) {
 		t.Fatalf("read project.yaml: %v", err)
 	}
 
+	if bytes.Contains(data, []byte("worktree:")) {
+		t.Errorf("project.yaml must not emit `worktree:` key post branch-policy-simplification Phase 2; got:\n%s", data)
+	}
+
 	var proj struct {
 		ID                  string         `yaml:"id"`
 		Name                string         `yaml:"name"`
-		Worktree            bool           `yaml:"worktree"`
 		DefaultTaskBehavior string         `yaml:"default_task_behavior"`
 		TaskBehaviors       map[string]any `yaml:"task_behaviors"`
 	}
@@ -132,9 +136,6 @@ func TestWizardRun_Basic(t *testing.T) {
 	}
 	if proj.ID == "" {
 		t.Error("ID must not be empty")
-	}
-	if !proj.Worktree {
-		t.Error("worktree must be true")
 	}
 	if proj.DefaultTaskBehavior != "supervisor" {
 		t.Errorf("default_task_behavior = %q, want %q (silences daemon deprecation warning)", proj.DefaultTaskBehavior, "supervisor")
@@ -206,8 +207,9 @@ func TestWizardRun_DefaultProjectName(t *testing.T) {
 }
 
 // TestWizardRun_EmbeddedBehaviors verifies that the wizard always generates
-// supervisor and executor behaviors from the built-in template, and sets
-// worktree: true.
+// supervisor and executor behaviors from the built-in template. The former
+// `worktree: true` emission was retired in branch-policy-simplification
+// Phase 2 (v0.0.12); the test guards against its return.
 func TestWizardRun_EmbeddedBehaviors(t *testing.T) {
 	projectDir := t.TempDir()
 
@@ -228,9 +230,12 @@ func TestWizardRun_EmbeddedBehaviors(t *testing.T) {
 		t.Fatalf("read project.yaml: %v", err)
 	}
 
+	if bytes.Contains(data, []byte("worktree:")) {
+		t.Errorf("project.yaml must not emit `worktree:` key post branch-policy-simplification Phase 2; got:\n%s", data)
+	}
+
 	var proj struct {
 		Name          string         `yaml:"name"`
-		Worktree      bool           `yaml:"worktree"`
 		TaskBehaviors map[string]any `yaml:"task_behaviors"`
 	}
 	if err := yaml.Unmarshal(data, &proj); err != nil {
@@ -239,9 +244,6 @@ func TestWizardRun_EmbeddedBehaviors(t *testing.T) {
 
 	if proj.Name != "embed-project" {
 		t.Errorf("Name = %q, want %q", proj.Name, "embed-project")
-	}
-	if !proj.Worktree {
-		t.Error("worktree must be true")
 	}
 	for _, key := range []string{"supervisor", "executor"} {
 		if _, ok := proj.TaskBehaviors[key]; !ok {
