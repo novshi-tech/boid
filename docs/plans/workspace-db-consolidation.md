@@ -240,9 +240,17 @@ daemon 起動時に自動 migration を実行:
 ### 実行手順 (atomicity 確保)
 
 `schema_migrations` テーブル (現行 `internal/db/migrate/`) に本 migration の
-状態を `staging` / `committed` の二段で持ち、crash recovery を可能にする:
+状態を `staging` / `committed` の二段で持ち、crash recovery を可能にする。
 
-1. `schema_migrations` に `workspace_db_consolidation=committed` があれば skip
+**PR3 前段の schema 拡張** (通常の migration ファイル経路で入れる、workspaces テーブルは PR1 で先置き済み):
+
+- `schema_migrations` に `state TEXT NOT NULL DEFAULT 'committed'` カラム追加
+  (既存行はデフォルトで committed 扱い、後方互換)
+- `schema_migrations` に `input_hash TEXT NOT NULL DEFAULT ''` カラム追加
+
+本 migration (`workspace_db_consolidation`) の実行手順:
+
+1. `schema_migrations` に `workspace_db_consolidation` が `state=committed` で存在すれば skip
 2. `BEGIN IMMEDIATE` で write lock 取得
 3. **Preflight (副作用なし)**:
    - 全 workspace yaml を parse、error があれば abort
@@ -250,24 +258,24 @@ daemon 起動時に自動 migration を実行:
    - kit の `HostCommands` 実定義を集約 map に build。**同名で異定義なら abort**
      (同名で同定義は dedupe、決定 9 参照)
    - project → workspace 参照が全て解決可能か確認、切れた参照は abort
-4. `schema_migrations` に `workspace_db_consolidation=staging`, `input_hash=<sha256>`
-   を write (staging の残骸を検出可能に)
+4. `schema_migrations` に `workspace_db_consolidation` を `state=staging`, `input_hash=<sha256>`
+   で upsert (staging の残骸を検出可能に)
 5. **DB 更新** (同一 transaction 内):
-   - `workspaces` テーブル create (schema 節参照)
    - 各 workspace を DB に write (Kits 展開込み)
    - `default` workspace の存在を保証 (無ければ空 workspace 作成)
    - `project_workspaces.workspace_id` の値が新 `workspaces.slug` に全て解決可能か再確認
 6. **集約 config 出力**:
    - `~/.config/boid/host_commands.yaml.tmp` に書き込み → `fsync` → `rename` で
      atomic 化 (temp+rename パターン)
-7. `schema_migrations` に `workspace_db_consolidation=committed` を write、
+7. `schema_migrations` の `workspace_db_consolidation` を `state=committed` に UPDATE、
    transaction commit
 8. 旧 workspace yaml / kits dir は削除しない (rollback 用に残す)
 
 ### crash recovery
 
 再起動時:
-- `staging` があって `committed` が無い → `input_hash` を再計算して照合、
+- `workspace_db_consolidation` 行が `state=staging` で残っていれば
+  → `input_hash` を再計算して DB 上の値と照合、
   一致なら roll-forward で再実行 (idempotent)、不一致なら abort して手動介入要
 - config file の crash 時破損は temp+rename により回避 (中間状態が残らない)
 
@@ -280,8 +288,8 @@ preflight で abort → daemon 起動失敗。手で kit yaml を整理しても
 ### e2e 前提
 
 - migration on: 既存 workspace が全て正しく DB に載る
-- migration on with kit conflict: 名前衝突で fail、`schema_migrations` は
-  `staging` を残さない
+- migration on with kit conflict: 名前衝突で fail、`schema_migrations` の
+  `workspace_db_consolidation` は `state=staging` を残さない
 - migration on with corrupt yaml: parse error で fail、DB 変更ゼロ
 - migration on empty environment: 初回インストール想定、`default` workspace のみ生成
 - `XDG_CONFIG_HOME` を明示指定した shell から起動: 入力 dir が正しく解決される
@@ -294,7 +302,7 @@ preflight で abort → daemon 起動失敗。手で kit yaml を整理しても
 
 | # | 内容 | 依存 |
 |---|---|---|
-| PR1 | **schema 追加のみ** (workspaces テーブル + `schema_migrations` 拡張)、既存 code は yaml file の権威のまま。read/write は yaml、DB は空。deployable | — |
+| PR1 | **schema 追加のみ** (workspaces テーブル)、既存 code は yaml file の権威のまま。read/write は yaml、DB は空。deployable。`schema_migrations` 拡張 (state / input_hash) は PR3 で本格 migration atomicity と同時に入れる | — |
 | PR2 | **host_commands 集約 preflight + config 生成** (kit yaml → `~/.config/boid/host_commands.yaml`)。集約 config を daemon が読む経路を追加、既存 kit yaml 経路も温存 (parity 検証段階) | PR1 |
 | PR3 | **migration 本体** (daemon 起動時に workspace yaml + kit expand → workspace DB、`default` 保証、atomicity 手順)。migration 完了後は DB を workspace の権威に切り替え、yaml file は shadow (export 用) 降格。`WorkspaceStore` は DB backed に差し替え。`WorkspaceMeta.HostCommands []string` / `ContainerImage` 追加、`AdditionalBindings` は保持 | PR1-2 |
 | PR4 | **workspace API 追加** (list/show/create/put/remove + `/api/host_commands` list/reload) + CLI 側 `list/show/remove/create/edit` を API 経由に差し替え。`default` 削除禁止 + 削除時 re-assign transaction 実装 | PR3 |
