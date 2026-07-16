@@ -179,6 +179,21 @@ func BuildSandboxSpec(spec *orchestrator.JobSpec, rt SandboxRuntimeInfo) (sandbo
 	}
 	env["HOME"] = homeDir
 	env["TERM"] = "xterm-256color"
+	// Defense-in-depth: sandbox 内の git が credential prompt を出して TUI が
+	// hang するのを防ぐ (docs/plans/gitgateway-credential-fail-fast.md PR-C)。
+	// 主対策は git-gateway 側の fail-fast (PR-B) だが、以下 2 経路の 401 でも
+	// 同様に hang しないよう保険を張る:
+	//   - gateway 外の upstream 直リンク origin (未移行の workspace の残骸)
+	//   - upstream 側で PAT が失効した場合の 401 + WWW-Authenticate: Basic
+	// GIT_TERMINAL_PROMPT=0 で prompt 抑止、GIT_ASKPASS=/bin/false で askpass
+	// helper 経路もふさぐ。SSH_ASKPASS (別変数) には触らないので、ssh 経路の
+	// git は無影響。spec.Env で明示的に上書きされていれば尊重する。
+	if _, ok := env["GIT_TERMINAL_PROMPT"]; !ok {
+		env["GIT_TERMINAL_PROMPT"] = "0"
+	}
+	if _, ok := env["GIT_ASKPASS"]; !ok {
+		env["GIT_ASKPASS"] = "/bin/false"
+	}
 	// Resolve adapter bindings once. When HarnessType identifies a known
 	// adapter (claude/codex/opencode) its Bindings() take the place of the
 	// kit-declared additional_bindings — that's the kit-free dispatch path
