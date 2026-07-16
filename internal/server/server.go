@@ -52,6 +52,17 @@ type Server struct {
 	gcLoop     *orchestrator.GCLoop // nil if GC is disabled
 	workflow   *api.TaskWorkflowService
 
+	// hostCommands is the aggregated host_commands config assembled by
+	// buildProjectStore's preflight (docs/plans/workspace-db-consolidation.md
+	// PR2): every installed kit.yaml's host_commands, deduped by identical
+	// definition, name-collision-checked, and mirrored to
+	// orchestrator.DefaultHostCommandsPath() on disk. Nothing dispatches
+	// through this yet — the existing per-kit resolver path (KitResolver in
+	// buildProjectStore) remains the live dispatch route during the PR2/PR3
+	// parity-verification window; this field exists so the aggregated config
+	// has a daemon-side read path to compare against before PR3 cuts over.
+	hostCommands map[string]orchestrator.HostCommandSpec
+
 	// gitgateway 4-point set (docs/plans/git-gateway-cutover.md PR4): the
 	// authenticating reverse proxy sandboxes will eventually clone through
 	// (PR5) and cutover env-var-advertise (PR6). Inert in this PR — nothing
@@ -97,7 +108,7 @@ func New(cfg Config) (*Server, error) {
 	conn := d.Conn
 
 	projectRepo := orchestrator.NewProjectRepository(conn)
-	store, err := buildProjectStore(cfg, projectRepo)
+	store, hostCommands, err := buildProjectStore(cfg, projectRepo)
 	if err != nil {
 		conn.Close()
 		return nil, err
@@ -132,6 +143,7 @@ func New(cfg Config) (*Server, error) {
 		httpServer: &http.Server{
 			Handler: nil,
 		},
+		hostCommands: hostCommands,
 	}
 	runtime, err := buildRuntime(srv, cfg, store, newCommandBroker(broker), secretStore)
 	if err != nil {
@@ -156,6 +168,18 @@ func (s *Server) DB() *sql.DB {
 // Store returns the project store.
 func (s *Server) Store() *orchestrator.ProjectStore {
 	return s.store
+}
+
+// HostCommands returns a deep-copy snapshot of the aggregated host_commands
+// config assembled at startup from every installed kit.yaml
+// (docs/plans/workspace-db-consolidation.md PR2). It is read-only reference
+// data during PR2/PR3's parity-verification window — nothing dispatches
+// through it yet. A snapshot (rather than the live internal map) is returned
+// so a caller mutating the result can never corrupt daemon state, and so a
+// future reload API (PR4) can safely swap s.hostCommands without racing
+// against an in-flight caller.
+func (s *Server) HostCommands() map[string]orchestrator.HostCommandSpec {
+	return orchestrator.CloneHostCommandsMap(s.hostCommands)
 }
 
 // Router returns the chi router for registering additional routes.
