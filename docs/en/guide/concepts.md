@@ -15,22 +15,25 @@ Tasks are created with `boid task create` and observed with `boid task list`, `b
 
 ## Project
 
-A directory that contains a `.boid/project.yaml` file. The project file declares:
+A directory that contains a `.boid/project.yaml` file — a portable, git-checked-in definition of "work patterns," with no machine-local runtime configuration in it at all (that is the **workspace**'s job, below). The project file declares:
 
 - An `id` (the unique identifier `boid` uses for the project) and a `name` (display name).
-- The list of **kits** the project uses (`kits:`).
-- One or more **task_behaviors** — a map of behavior names to `default_instruction` templates. Names are free-form (free naming). Each behavior can set `readonly`; the default when omitted is `true` (fail-safe).
+- One or more **task_behaviors** — a map of behavior names to `hooks` / `default_instruction` templates. Names are free-form (free naming). Each behavior can set `readonly`; the default when omitted is `true` (fail-safe).
 
-You register a project with `boid project add <path>`. Any number of projects can coexist; each task belongs to exactly one of them.
+You register a project with `boid project add <path>` / `boid project init <path>`. Any number of projects can coexist; each task belongs to exactly one of them. Registering a project assigns it to the `default` workspace automatically.
+
+> **History**: A project used to carry `kits:` / `host_commands` / `env` / `additional_bindings` / `secret_namespace` / `capabilities` directly (top-level `project.yaml`, or `.boid/project.local.yaml`). Phase 2.5 (workspace DB consolidation) made `project.yaml` reject all of these; every machine-local runtime setting now lives on a workspace instead. An old-schema `project.yaml` can be converted with `boid project migrate <dir>` — see the [Migration guide](migration.md).
 
 ## Workspace
 
-A label for grouping projects. You might bucket projects as "personal", "work", and "OSS" so the Web UI can filter the views by group. Workspaces are not declared in `project.yaml`; they are assigned with `boid workspace assign <project> <workspace-id>` (and removed with `boid workspace clear`). A project can belong to at most one workspace.
+A project's **runtime environment**. Not just a classification label — it holds `host_commands` (reference names) / `env` / `capabilities` / `allowed_domains` / `additional_bindings`, and these directly shape the sandbox. It is machine-scoped, stored in the `workspaces` table (Phase 2.5), and assigned to projects. A project can belong to at most one workspace. The `default` workspace is always created automatically at daemon startup, so nothing needs to be configured if you don't need to customize it.
 
 - `boid workspace list` lists the configured workspaces.
-- `boid workspace show <id>` lists the projects in a workspace along with their recent tasks.
+- `boid workspace show <slug>` shows that workspace's settings (`host_commands`/`env`/`capabilities`, etc.), its assigned projects, and their recent tasks.
+- `boid workspace create <slug>` / `edit <slug>` / `import <yaml>` create or change its contents.
+- `boid workspace assign <project> <slug>` assigns a project (`boid workspace clear <project>` resets it to `default`). `boid project init/add --workspace <slug>` is get-or-create (an unknown slug is auto-created as an empty workspace before assignment).
 
-Workspaces are purely classification metadata — they do not affect sandbox configuration or hook execution.
+`host_commands` is a two-tier structure: a workspace only carries a `[]string` of reference **names** — the actual definitions (`path`/`allow`/`deny`/`env`) live in the daemon-wide `~/.config/boid/host_commands.yaml`. See [Onboarding](onboarding.md) for details.
 
 ## Behavior
 
@@ -44,7 +47,7 @@ A `task_behaviors` entry, naming one kind of task the project supports. When you
 
 `boid` runs a single state machine regardless of behavior. Different task shapes come from which hooks a behavior wires in, and from how failures are recovered: either by `reopen`ing the task with a new instruction, or by spawning a fresh task. The harness does not encode a verification loop — failure detection and the recovery plan live in the agent's instruction text.
 
-For the full migration procedure and a `readonly` default table, see the [task_behaviors migration guide](../../ja/reference/task-behavior-migration.md) (Japanese).
+For the full migration procedure and a `readonly` default table, see the [task_behaviors migration guide](../reference/task-behavior-migration.md).
 
 ## Payload and traits
 
@@ -66,15 +69,13 @@ Hooks communicate with `boid` over a fixed protocol: the task payload arrives on
 
 ## Kit
 
-A **kit** is the distribution unit that bundles whatever a project needs to run work inside the sandbox. A single kit may package any of:
+A **kit** is a distribution unit for bundling part of the sandbox's runtime environment. **Hooks and task behaviors are not a kit's job** — hooks are always authoritative in `project.yaml`'s `task_behaviors.<name>.hooks` (a kit has never provided hooks). What a kit can actually package is limited to:
 
-- **hooks** — the scripts described above that run during `executing`.
-- **commands** — named commands invokable through `boid exec` from inside the sandbox.
 - **host_commands** — the allow-list of commands the sandbox may forward to the host.
 - **additional_bindings** — extra paths to mount into the sandbox.
 - **env** — environment variables set inside the sandbox.
 
-On disk a kit is a directory holding a `kit.yaml` alongside the relevant scripts. Once installed, a kit can be referenced from any project's `kits:` field. Official packages live in the [boid-kits](https://github.com/novshi-tech/boid-kits) repository; see the [kit authoring overview](../kit-authoring/overview.md) for the on-disk layout and the full field reference.
+On disk a kit is a directory holding a `kit.yaml` alongside the relevant files. Kits are loaded by reference from a **workspace's** `kits:` (a legacy field slated for removal in Phase 2.5 PR7) — `project.yaml` no longer has a `kits:` path at all. Official packages live in the [boid-kits](https://github.com/novshi-tech/boid-kits) repository; see the [kit authoring overview](../kit-authoring/overview.md) for the on-disk layout and the full field reference. For the history behind retiring the kit mechanism's tooling, see [Onboarding / On the retirement of the kit mechanism](onboarding.md#on-the-retirement-of-the-kit-mechanism).
 
 ## Job
 
@@ -99,10 +100,10 @@ boid agent claude   -p <project> --resume <session-id> # reattach to an existing
 | Start | `boid task create` | `boid agent <harness>` |
 | Tracking | status / payload / instructions | none |
 | State machine | `pending → executing → done` | none (running only) |
-| Config | behavior (hooks / kits / readonly …) | project-level traits only |
+| Config | behavior (hooks / readonly …) | workspace settings only |
 | Use case | autonomous long-running work | interactive or exploratory work |
 
-A session inherits the project's `env`, `host_commands`, `additional_bindings`, and `secret_namespace` traits. It does not use any behavior definition.
+A session inherits the `env`, `host_commands`, `additional_bindings`, and `capabilities` of the project's assigned **workspace**. Secrets are resolved under the workspace's own slug as the namespace. It does not use any behavior definition.
 
 To stop a session, exit the agent or run `boid agent stop <job-id>`. Closing the browser does not kill the session process — you can reattach from the Web UI.
 
@@ -111,12 +112,12 @@ To stop a session, exit the agent or run `boid agent stop <job-id>`. Closing the
 The isolated environment that hooks execute inside. Internally it is built from a Linux mount namespace plus a chroot, and applies these constraints:
 
 - For project-visible jobs, reads and writes are confined to the sandbox-internal copy of the project cloned through the git gateway (see [Worktree](#worktree)).
-- Outbound network connections are limited to a built-in allowlist (`defaultAllowedDomains` in `cmd/start.go`) merged with any extra entries in `sandbox.allowed_domains` from `~/.config/boid/config.yaml`. There is no per-kit domain declaration — the allowlist is global.
+- Outbound network connections are limited to a global floor — a built-in allowlist (`defaultAllowedDomains` in `cmd/start.go`) merged with any extra entries in `sandbox.allowed_domains` from `~/.config/boid/config.yaml` — additively merged with the project's assigned **workspace**'s own `allowed_domains`. A workspace can only add to this floor, never shrink it.
 - Other parts of the host filesystem (your home directory, SSH keys, other projects) are not visible.
 
 This means that even a runaway agent cannot leave the task's working area.
 
-Some commands legitimately need to reach outside the sandbox (for example `git push`, `gh pr merge`, `boid task update`). They are allowed only if the kit explicitly declares them as **host commands**, in which case they run on the host instead of inside the sandbox.
+Some commands legitimately need to reach outside the sandbox (for example `git push`, `gh pr merge`, `boid task update`). They are allowed only if the project's assigned workspace explicitly declares them as **host commands** (a list of reference names resolved against the daemon-wide registry `~/.config/boid/host_commands.yaml`, or against a legacy kit the workspace loads), in which case they run on the host instead of inside the sandbox.
 
 ## Worktree
 

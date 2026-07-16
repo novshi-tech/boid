@@ -103,22 +103,21 @@ func (s *ProjectStore) Get(id string) (*ProjectMeta, bool) {
 }
 
 // GetWithWorkspace returns a ProjectMeta hydrated with workspace-level
-// capabilities, kits, env, and SecretNamespace injection.
+// capabilities, host_commands, additional_bindings, env, and SecretNamespace
+// injection.
 //
 // Hydration rules:
 //   - If the project has no linked workspace, returns the cached meta unchanged.
 //   - If linked: always injects meta.SecretNamespace = workspaceID.
-//   - On workspace.yaml load success: merges Capabilities, kits, and Env.
+//   - On workspace.yaml load success: merges Capabilities, host_commands,
+//     additional_bindings, and Env.
 //   - On os.ErrNotExist (degraded window): logs a warning, returns meta with
 //     only SecretNamespace injected (no error).
 //   - On other errors: returns nil and the error.
 //
-// Workspace kit merging rules:
-//   - All workspace kits always merge into the top-level meta.HostCommands /
-//     AdditionalBindings / Env so session jobs (which bypass behaviors) see
-//     the resolved tools.
-//   - For per-behavior merging (env/host_commands/bindings/KitRoots), every
-//     behavior receives every workspace kit. Kits do not provide hooks.
+// The kit mechanism (ws.Kits resolved via a KitResolver and merged in here)
+// was retired in docs/plans/workspace-db-consolidation.md Phase 2.5 PR6; see
+// the NOTE in the body below for what used to live here.
 //
 // The returned *ProjectMeta is a fresh copy when hydration occurs; callers
 // must not mutate the value returned when workspaceID is empty (it is the
@@ -175,61 +174,17 @@ func (s *ProjectStore) GetWithWorkspace(_ context.Context, projectID string) (*P
 		out.Capabilities = ws.Capabilities
 	}
 
-	// Workspace kits are resolved and merged into top-level runtime fields
-	// (HostCommands, AdditionalBindings, Env) and into each TaskBehavior's
-	// Env / HostCommands / AdditionalBindings / KitRoots. They act at
-	// lower priority than project.yaml entries — project wins on conflict.
-	if len(ws.Kits) > 0 {
-		var wsKitMetas []*KitMeta
-		var wsAgents []string
-		for _, ref := range ws.Kits {
-			kRef := KitRef{Ref: ref}
-			kitDir, err := resolveKitRef(kRef.Ref, "", s.resolver)
-			if err != nil {
-				slog.Warn("workspace kit unresolved; ignoring",
-					"workspace_id", workspaceID, "ref", ref, "error", err.Error())
-				continue
-			}
-			km, err := ReadKitMeta(kitDir)
-			if err != nil {
-				return nil, fmt.Errorf("project %q: workspace kit %q: %w", projectID, ref, err)
-			}
-			wsKitMetas = append(wsKitMetas, km)
-			wsAgents = append(wsAgents, ResolveKitAgent(kRef))
-		}
-
-		if len(wsKitMetas) > 0 {
-			rt, err := MergeKitRuntime(wsKitMetas, wsAgents)
-			if err != nil {
-				return nil, fmt.Errorf("project %q: workspace kit merge: %w", projectID, err)
-			}
-			// project.yaml top-level overrides workspace kits.
-			out.HostCommands = mergeHostCommands(rt.HostCommands, out.HostCommands)
-			out.AdditionalBindings = mergeBindMounts(rt.AdditionalBindings, out.AdditionalBindings)
-			out.Env = mergeStringMaps(rt.Env, out.Env)
-			if err := validateBuiltinHostConflict("workspace kits", out.HostCommands); err != nil {
-				return nil, fmt.Errorf("project %q: %w", projectID, err)
-			}
-			if err := validateRejectRules(out.HostCommands); err != nil {
-				return nil, fmt.Errorf("project %q: workspace kits: %w", projectID, err)
-			}
-
-			// Merge workspace kits into each TaskBehavior so kit-provided
-			// env / bindings / host_commands / KitRoots surface at dispatch
-			// time. Every behavior receives every workspace kit.
-			if out.TaskBehaviors == nil {
-				out.TaskBehaviors = make(map[string]TaskBehavior)
-			}
-			out.TaskBehaviors = stripAliasMirrors(out.TaskBehaviors)
-			for name, behavior := range out.TaskBehaviors {
-				if err := MergeKitMetaIntoBehavior(&behavior, wsKitMetas, wsAgents); err != nil {
-					return nil, fmt.Errorf("project %q: behavior %q: workspace kit merge: %w", projectID, name, err)
-				}
-				out.TaskBehaviors[name] = behavior
-			}
-			out.TaskBehaviors = addAliasMirrors(out.TaskBehaviors)
-		}
-	}
+	// NOTE (docs/plans/workspace-db-consolidation.md Phase 2.5 PR6): this used
+	// to be where ws.Kits was resolved (resolveKitRef/ReadKitMeta) and merged
+	// into out.HostCommands/AdditionalBindings/Env and every TaskBehavior via
+	// MergeKitRuntime/MergeKitMetaIntoBehavior. That whole kit-aggregation
+	// path was already dead on the committed/DB-backed path before PR6 (see
+	// workspace_migration.go's materializeKitRuntimeIntoWorkspace doc
+	// comment: the workspaces table has no Kits column, so a DB-backed
+	// WorkspaceMeta always comes back with Kits == nil) — PR6 removed the
+	// code itself as part of retiring the kit mechanism. ws.Kits is kept as a
+	// vestigial field (dead, never populated by DB-backed rows) until PR7
+	// deletes it outright.
 
 	// workspace.AdditionalBindings (BLOCKER 2, docs/plans/
 	// workspace-db-consolidation.md codex review): a workspace-level vestige

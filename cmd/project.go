@@ -63,9 +63,12 @@ var projectInitSubCmd = &cobra.Command{
 	Long: `Initialize a new boid project in the current directory (or [dir]).
 
 Prompts for a project name, then writes .boid/project.yaml with the canonical
-supervisor / executor task_behaviors (worktree=true, agent=claude-code by
-default) and registers the project with the running boid daemon. Kit
-selection has moved to ` + "`boid workspace configure`" + `.
+supervisor / executor task_behaviors (agent=claude-code by default) and
+registers the project with the running boid daemon. project.yaml only holds
+id / name / task_behaviors / default_task_behavior — runtime environment
+config (` + "`host_commands`" + ` / ` + "`env`" + ` / ` + "`additional_bindings`" + ` / ` + "`allowed_domains`" + `)
+lives separately in a workspace; set it up with
+` + "`boid workspace create/edit/import`" + ` (see the --workspace flag below).
 
 Optionally assigns the project to a workspace (get-or-create: creates a DB
 row for the slug even if no workspace.yaml exists yet).

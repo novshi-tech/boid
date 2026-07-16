@@ -47,19 +47,13 @@ type appRuntime struct {
 }
 
 func buildProjectStore(cfg Config, conn *sql.DB, projectRepo *orchestrator.ProjectRepository) (*orchestrator.ProjectStore, map[string]orchestrator.HostCommandSpec, error) {
-	// resolver は KitResolver 型 (interface) を使い、 cfg.KitsDir 未設定時は
-	// untyped nil interface を渡す。 *KitRegistry 型のローカル変数を経由すると
-	// Go の typed-nil 罠で interface 値が non-nil (内部 type=*KitRegistry,
-	// value=nil) となり、 spec_loader の `resolver == nil` check をすり抜けて
-	// resolveKitRef → KitRegistry.Resolve で nil pointer dereference する。
-	// testutil の Server fixture は KitsDir を渡さないので、 internal/api /
-	// internal/server / cmd の rerun・hook・detail 系 test が main で軒並み
-	// panic していた真因。
-	var resolver orchestrator.KitResolver
-	if cfg.KitsDir != "" {
-		resolver = orchestrator.NewRegistry(cfg.KitsDir)
-	}
-	store := orchestrator.NewProjectStore(resolver)
+	// NewProjectStore(nil): the kit mechanism (orchestrator.KitRegistry / the
+	// KitResolver-driven ws.Kits merge path) was retired in
+	// docs/plans/workspace-db-consolidation.md Phase 2.5 PR6. KitResolver
+	// stays as a type (and ProjectStore still carries a resolver field) for
+	// call-site compatibility until PR7 removes WorkspaceMeta.Kits outright —
+	// nil is now the only value ever passed in.
+	store := orchestrator.NewProjectStore(nil)
 
 	// Workspace DB cutover (docs/plans/workspace-db-consolidation.md PR3):
 	// migrate any yaml-authority workspaces (DefaultWorkspaceDir()/*.yaml)
@@ -120,7 +114,28 @@ func buildProjectStore(cfg Config, conn *sql.DB, projectRepo *orchestrator.Proje
 				msg.WriteString(e.Error())
 				msg.WriteString("\n")
 			}
-			msg.WriteString("Run `boid workspace configure <slug>` to fix the affected workspace.\n")
+			// PR3 cutover 後、 workspace の権威は SQLite DB
+			// (~/.local/share/boid/boid.db の workspaces テーブル)。
+			// shadow yaml (~/.config/boid/workspaces/<slug>.yaml) を
+			// 編集しても既に committed 済みの MigrateWorkspaceYAMLToDB
+			// は再取込しないため、 shadow 編集単独では修復にならない。
+			// daemon が起動拒否している (現状態) では workspace
+			// edit/import CLI も使えないので、 現行の実質的な修復手段は
+			// 以下いずれか:
+			//   (a) SQLite CLI で workspaces テーブルの当該 slug 行を
+			//       直接修正 or 削除 (削除後は daemon 再起動時に
+			//       WorkspaceRepository.EnsureDefault が default を
+			//       再生成するので、 default で足りる場合は削除で足りる)
+			//   (b) schema_migrations テーブルから version=
+			//       'workspace_db_consolidation' 行を削除 (state=staging
+			//       にすると input_hash 再計算で不一致 abort、 完全削除
+			//       すれば re-migrate される) + shadow yaml を修正、
+			//       daemon 再起動で yaml から DB に再取込
+			// PR7+ で offline 修復 CLI (`boid workspace repair` 相当) を
+			// 検討する予定 (現状はまだ実装無し、 上記手動手順のみ)。
+			msg.WriteString("Workspace metadata failed to decode from the DB (workspaces table). Recovery options:\n")
+			msg.WriteString("  (a) delete the row directly via `sqlite3 ~/.local/share/boid/boid.db \"DELETE FROM workspaces WHERE slug='<slug>';\"` and restart the daemon (the default workspace is auto-recreated on boot)\n")
+			msg.WriteString("  (b) fix the shadow yaml (~/.config/boid/workspaces/<slug>.yaml) AND clear the migration marker via `sqlite3 ~/.local/share/boid/boid.db \"DELETE FROM schema_migrations WHERE version='workspace_db_consolidation';\"`, then restart the daemon so the migration re-runs from yaml\n")
 			return nil, nil, fmt.Errorf("%s", msg.String())
 		}
 	}

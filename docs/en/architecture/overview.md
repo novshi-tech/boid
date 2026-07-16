@@ -128,7 +128,7 @@ The domain layer.
 - **State machine** (`machine.go`) — rules for `pending → executing → awaiting / done`, auto-transitions, abort conditions.
 - **Coordinator** (`coordinator.go`) — runs one dispatch + advance step.
 - **Evaluator** (`evaluator.go`) — picks which hooks fire.
-- **ProjectStore** (`project_store.go`) — in-memory cache of projects with kit metadata resolved.
+- **ProjectStore** (`project_store.go`) — in-memory cache of project metadata. `GetWithWorkspace` projects each project's assigned workspace's `host_commands` / `env` / `capabilities` / `additional_bindings` onto it. The per-request kit resolution/merge path was removed in Phase 2.5 PR6 (see the "kit" section below).
 - **lifecycle / payload merge / blocked / readonly** — computed traits and helpers used in transition rules.
 
 Because it does not depend on dispatcher or sandbox, the state machine is fully unit-testable.
@@ -139,7 +139,7 @@ The bridge layer for job execution.
 
 - **broker** — wraps `sandbox.Broker` and exposes `RunJob` for running one hook.
 - **sandbox_builder** — turns `orchestrator.ProjectMeta` into a primitive sandbox plan.
-- **policy_translate** — maps a kit's `host_commands` declaration to sandbox-side `CommandDef`s.
+- **policy_translate** — maps a project's `host_commands` declaration (already merged from project.yaml and its workspace) to sandbox-side `CommandDef`s.
 - **runner / runtime** — runs jobs and collects results. Project-visible jobs clone the project into the sandbox through the git gateway (no host-side git worktree is created).
 - **secret_store** — encrypts and serves stored secret values.
 
@@ -156,11 +156,15 @@ The Linux sandbox itself.
 
 Does not see orchestrator types (the layering rule). Inputs come in as primitives prepared by dispatcher.
 
-### kit (folded into orchestrator)
+### workspace (DB-consolidated; the kit mechanism has been retired)
 
-A kit is a reusable unit that supplies tools (`host_commands` / `env` / `additional_bindings`). The former standalone `internal/kit` package (repo clone, `detect.sh` execution, etc.) has been removed; `kit.yaml` reading and resolution now live inside `internal/orchestrator`.
+A workspace groups a project's runtime environment (`host_commands` / `env` / `capabilities` / `allowed_domains` / `additional_bindings`) at the machine level, backed by the `workspaces` table (Phase 2.5, `docs/plans/workspace-db-consolidation.md`). The `default` workspace is always created automatically at daemon startup, and a project is assigned to it automatically when registered.
 
-Entry: [`internal/orchestrator/kit_registry.go`](https://github.com/novshi-tech/boid/blob/main/internal/orchestrator/kit_registry.go) (flat resolution from `~/.local/share/boid/kits/<name>/`) and [`internal/orchestrator/kit_name.go`](https://github.com/novshi-tech/boid/blob/main/internal/orchestrator/kit_name.go) (name validation).
+The former kit mechanism — `internal/orchestrator/kit_registry.go`'s dynamic per-project resolution of tool-supply units, `boid kit init`'s host scan + catalog generation, and `boid workspace configure`'s LLM-driven workspace configuration — was removed in Phase 2.5 PR6 (2026-07). The per-request kit resolve-and-merge path (the `MergeKitRuntime` call inside `ProjectStore.GetWithWorkspace`) was deleted along with it.
+
+The `kit.yaml` file format itself hasn't gone away: a `kits: [...]` reference is still expanded once, at workspace-create time or when running `boid project migrate`, folding into `host_commands` / `env` / `additional_bindings` (`workspace_migration.go`) — the sole remaining kit-expansion path.
+
+Entry: [`internal/orchestrator/workspace_repository.go`](https://github.com/novshi-tech/boid/blob/main/internal/orchestrator/workspace_repository.go) (DB CRUD), [`internal/orchestrator/workspace_meta.go`](https://github.com/novshi-tech/boid/blob/main/internal/orchestrator/workspace_meta.go) (the `WorkspaceMeta` schema), [`internal/orchestrator/workspace_migration.go`](https://github.com/novshi-tech/boid/blob/main/internal/orchestrator/workspace_migration.go) (yaml → DB migration + legacy kit expansion).
 
 ### internal/db
 
@@ -175,7 +179,7 @@ What happens when a user runs `boid action send --task <id> --type start`:
 3. **State machine:** `orchestrator.StateMachine.ApplyAction` evaluates the `start` rule and returns `pending → executing`.
 4. **Persistence:** the new status and lifecycle are written to SQLite.
 5. **Dispatch loop:** `runDispatchLoop` kicks in and calls `Coordinator.DispatchAndAdvance`.
-6. **Hook selection:** `Evaluator` picks the hooks bound to this behavior in the kit metadata. Hooks fire while the task is in `executing` (or `awaiting`, depending on the hook's trigger).
+6. **Hook selection:** `Evaluator` picks the hooks bound to this behavior in the project's `task_behaviors` metadata (hooks come from project.yaml only — neither workspaces nor kits supply hooks). Hooks fire while the task is in `executing` (or `awaiting`, depending on the hook's trigger).
 7. **Execution:** dispatcher assembles the sandbox plan and calls `sandbox.Broker.RunJob` to launch the hook script.
 8. **Payload merge:** the hook's stdout is parsed as JSON and the `payload_patch` is merged into the payload.
 9. **Auto-transition:** the state machine re-evaluates; any matching auto-transition fires another round.

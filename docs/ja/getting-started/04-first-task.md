@@ -84,5 +84,4 @@ Web UI からも各ジョブのログを開けます。
 boid task delete <task-id>
 boid project remove boid-demo
 rm -rf ~/boid-demo
-boid kit remove github.com/novshi-tech/boid-kits
 ```

@@ -127,7 +127,7 @@ The top level must be a `payload_patch` key. Its body is deep-merged into the cu
 }
 ```
 
-In practice the only trait a hook writes is `artifact`. What it is allowed to write is governed by the hook's `traits.produces` declaration in [`kit.yaml`](../kit-authoring/overview.md). For trait semantics, see [Concepts / Payload and traits](../guide/concepts.md#payload-and-traits).
+In practice the only trait a hook writes is `artifact`. What it is allowed to write is governed by the hook's `traits.produces` declaration in [`project.yaml`](project-yaml.md), under `task_behaviors.<name>.hooks[]` (a kit never provides hooks, so `kit.yaml` has no such declaration). For trait semantics, see [Concepts / Payload and traits](../guide/concepts.md#payload-and-traits).
 
 ### stderr (logs)
 

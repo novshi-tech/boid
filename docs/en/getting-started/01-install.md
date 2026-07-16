@@ -20,7 +20,7 @@ Verify the binary is reachable:
 boid --help
 ```
 
-You should see a list of subcommands (`start`, `task`, `job`, `project`, `web`, `kit`, `secret`, `gc`, `stop`, ...).
+You should see a list of subcommands (`start`, `task`, `job`, `project`, `workspace`, `web`, `secret`, `gc`, `stop`, ...).
 
 ## Start the server (daemon)
 

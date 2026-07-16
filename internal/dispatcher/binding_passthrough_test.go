@@ -11,23 +11,30 @@ import (
 )
 
 // TestBindingPassthrough_HydrateToSandboxSpec is the end-to-end half of Tier 1
-// #1 (docs/plans/quality-gates.md). It threads a workspace-kit binding through
-// the full two-tier path that the 2026-06-29 regression broke:
+// #1 (docs/plans/quality-gates.md). It threads a workspace-level binding
+// through the full two-tier path that the 2026-06-29 regression broke:
 //
-//	project.yaml + workspace kit fixture
+//	project.yaml + workspace.yaml additional_bindings
 //	  → ProjectStore.GetWithWorkspace           (upstream hydrate)
 //	  → meta.AdditionalBindings assert
 //	  → BuildSessionJobSpec                      (the real meta→JobSpec seam)
 //	  → BuildSandboxSpec                         (downstream)
-//	  → sandbox mounts contain BOTH the kit bind AND the harness bind
+//	  → sandbox mounts contain BOTH the workspace bind AND the harness bind
 //
 // Either tier regressing — an upstream drop in GetWithWorkspace, or a
-// downstream exclusive replace of kit bindings by harness bindings — makes this
-// fail. The two tiers also have their own focused unit tests
-// (TestGetWithWorkspace_AdditionalBindingsMerge upstream;
+// downstream exclusive replace of workspace bindings by harness bindings —
+// makes this fail. The two tiers also have their own focused unit tests
+// (TestGetWithWorkspace_MergesWorkspaceAdditionalBindings upstream;
 // TestBuildSandboxSpec_ProfileDefault_HarnessKeepsAdditionalBindings
 // downstream); this test guards the seam between them, which no single-package
 // test can see.
+//
+// This test originally threaded the binding through a workspace *kit*
+// fixture (ws.Kits → kit.yaml's additional_bindings) — that mechanism was
+// retired in docs/plans/workspace-db-consolidation.md Phase 2.5 PR6 (kit
+// mechanism retirement). The vehicle is now workspace.yaml's own
+// additional_bindings field directly (decision 4: kept alive through Phase
+// 4 for the userns backend), which drives the exact same two-tier path.
 func TestBindingPassthrough_HydrateToSandboxSpec(t *testing.T) {
 	homeDir := hostHomeDir()
 	if homeDir == "" {
@@ -37,15 +44,12 @@ func TestBindingPassthrough_HydrateToSandboxSpec(t *testing.T) {
 	projectDir := t.TempDir()
 	writeThruProjectYAML(t, projectDir, "proj-thru")
 
-	const kitBind = "/opt/volta"
-	kitsDir := t.TempDir()
-	writeThruKitYAML(t, kitsDir, "volta", kitBind)
-
+	const wsBind = "/opt/volta"
 	wsDir := t.TempDir()
-	writeThruWorkspaceYAML(t, wsDir, "thruws", "volta")
+	writeThruWorkspaceYAML(t, wsDir, "thruws", wsBind)
 
-	// --- upstream: hydrate project meta with workspace kits ---
-	store := orchestrator.NewProjectStore(orchestrator.NewRegistry(kitsDir))
+	// --- upstream: hydrate project meta with workspace additional_bindings ---
+	store := orchestrator.NewProjectStore(nil)
 	store.SetWorkspaceStore(orchestrator.NewWorkspaceStore(wsDir))
 	if errs := store.LoadAll([]*orchestrator.Project{
 		{ID: "proj-thru", WorkDir: projectDir, WorkspaceID: "thruws"},
@@ -56,8 +60,8 @@ func TestBindingPassthrough_HydrateToSandboxSpec(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetWithWorkspace: %v", err)
 	}
-	if !hasBindingSource(meta.AdditionalBindings, kitBind) {
-		t.Fatalf("upstream: kit binding %s missing from hydrated meta.AdditionalBindings: %+v", kitBind, meta.AdditionalBindings)
+	if !hasBindingSource(meta.AdditionalBindings, wsBind) {
+		t.Fatalf("upstream: workspace binding %s missing from hydrated meta.AdditionalBindings: %+v", wsBind, meta.AdditionalBindings)
 	}
 
 	// --- the seam: drive the real session dispatch conversion. BuildSessionJobSpec
@@ -87,8 +91,8 @@ func TestBindingPassthrough_HydrateToSandboxSpec(t *testing.T) {
 		t.Fatalf("BuildSandboxSpec: %v", err)
 	}
 
-	if !hasBindTarget(result.Mounts, kitBind) {
-		t.Errorf("kit binding dropped downstream: expected bind at %s, got mounts=%+v", kitBind, result.Mounts)
+	if !hasBindTarget(result.Mounts, wsBind) {
+		t.Errorf("workspace binding dropped downstream: expected bind at %s, got mounts=%+v", wsBind, result.Mounts)
 	}
 	// The harness bindings must survive alongside the kit binding (added on top,
 	// not replaced). claude.Adapter.Bindings declares a ~/.claude rw bind.
@@ -128,24 +132,16 @@ func writeThruProjectYAML(t *testing.T, dir, id string) {
 	}
 }
 
-func writeThruKitYAML(t *testing.T, baseDir, slug, bindSource string) {
-	t.Helper()
-	kitDir := filepath.Join(baseDir, slug)
-	if err := os.MkdirAll(kitDir, 0o755); err != nil {
-		t.Fatalf("mkdir kit dir: %v", err)
-	}
-	y := "additional_bindings:\n  - source: " + bindSource + "\n    target: " + bindSource + "\n    mode: rw\n"
-	if err := os.WriteFile(filepath.Join(kitDir, "kit.yaml"), []byte(y), 0o644); err != nil {
-		t.Fatalf("write kit.yaml: %v", err)
-	}
-}
-
-func writeThruWorkspaceYAML(t *testing.T, dir, slug, kitRef string) {
+// writeThruWorkspaceYAML writes a workspace.yaml at dir/<slug>.yaml carrying
+// a single additional_bindings entry for bindSource (source == target,
+// mode: rw) — the surviving vestige of the retired kit mechanism (decision
+// 4, docs/plans/workspace-db-consolidation.md).
+func writeThruWorkspaceYAML(t *testing.T, dir, slug, bindSource string) {
 	t.Helper()
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatalf("mkdir ws dir: %v", err)
 	}
-	y := "kits:\n  - " + kitRef + "\n"
+	y := "additional_bindings:\n  - source: " + bindSource + "\n    target: " + bindSource + "\n    mode: rw\n"
 	if err := os.WriteFile(filepath.Join(dir, slug+".yaml"), []byte(y), 0o644); err != nil {
 		t.Fatalf("write workspace yaml: %v", err)
 	}

@@ -17,41 +17,50 @@ The boid native proxy solves both problems:
 
 ## Migration steps
 
-### 1. Update `project.yaml`
+> **Note:** `capabilities` and `host_commands` are no longer `project.yaml` fields. The current schema rejects both of them at load time — machine-local runtime configuration lives on a **workspace** instead (`boid workspace create/edit/import`). If your `project.yaml` still carries these fields under the old schema, convert it to a workspace first with `boid project migrate <dir> --apply` (see the [Migration guide](migration.md)).
 
-Remove the docker kit from the `kits` list and add `capabilities.docker`.
+### 1. Update the workspace
 
-**Before:**
+Remove the docker kit reference from the workspace's `kits:` (a legacy field) and add `capabilities.docker` directly to the workspace. First, check its current contents:
+
+```bash
+boid workspace export <slug> > ws.yaml
+```
+
+**Before (`ws.yaml`, still referencing the docker kit in `kits:`):**
 
 ```yaml
 kits:
-  - github.com/novshi-tech/boid-kits/claude-code
-  - github.com/novshi-tech/boid-kits/docker   # ← remove
+  - docker   # ← legacy kit reference. Remove it.
 
-task_behaviors:
-  executor:
-    ...
+env:
+  ...
 ```
 
 **After:**
 
 ```yaml
-kits:
-  - github.com/novshi-tech/boid-kits/claude-code
-
 capabilities:
   docker: {}   # ← add
 
-task_behaviors:
-  executor:
-    ...
+env:
+  ...
 ```
 
-Run `boid project reload` after saving the file.
+Apply it:
+
+```bash
+boid workspace edit <slug> --from-file ws.yaml
+```
+
+| Old (`project.yaml`, removed) | New (workspace) |
+|---|---|
+| `kits: [..., docker]` (docker kit referenced at the project top level) | Remove the docker kit name from the workspace's `kits:`, set `capabilities: { docker: {} }` directly |
+| `capabilities.docker: {}` (top-level `project.yaml`) | `capabilities.docker: {}` (workspace) — same shape, just a different location |
 
 ### 2. Check `host_commands`
 
-When `capabilities.docker` is enabled, registering `docker` in `host_commands` without subcommand restrictions causes an error at job launch:
+When `capabilities.docker` is enabled on a workspace, registering `docker` in `host_commands` without subcommand restrictions causes an error at job launch:
 
 ```
 host_commands.docker: unrestricted docker access bypasses the docker proxy
@@ -59,16 +68,27 @@ host_commands.docker: unrestricted docker access bypasses the docker proxy
 to specific subcommands (e.g. allow: [build])
 ```
 
-If `docker` is registered in `host_commands`, choose one of:
+`host_commands` is a two-tier structure — a workspace only carries a list of reference **names**; the actual definitions (`allow`/`deny`/`path`, etc.) live in the daemon-wide registry `~/.config/boid/host_commands.yaml`. If the workspace's `host_commands` list includes `docker` and the registry's definition for it has no subcommand restriction, choose one of:
 
-- **Remove it (recommended)**: the proxy socket routes docker CLI, SDKs, and TestContainers automatically — no `host_commands` entry is needed.
-- **Restrict to specific subcommands**: if host-side execution is genuinely required (e.g. for image builds), restrict to the needed subcommand:
+- **Remove it (recommended)**: the proxy socket routes docker CLI, SDKs, and TestContainers automatically — no `host_commands` entry is needed. Remove `docker` from the workspace's `host_commands` list.
+- **Restrict to specific subcommands**: if host-side execution is genuinely required (e.g. for image builds), restrict the registry's definition:
 
 ```yaml
+# ~/.config/boid/host_commands.yaml
 host_commands:
   docker:
     allow: [build]   # host-side docker build only
 ```
+
+```bash
+boid host-commands reload
+```
+
+| Old (`project.yaml`, removed) | New |
+|---|---|
+| `host_commands.docker: { allow: [...] }` (top-level `project.yaml`) | Workspace's `host_commands: [docker]` (reference name) + the actual definition `docker: { allow: [...] }` in `~/.config/boid/host_commands.yaml` |
+
+See [Onboarding / Defining host_commands](onboarding.md#defining-host_commands-the-daemon-wide-registry) for details.
 
 ### 3. Remove cetusguard
 

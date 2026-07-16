@@ -21,9 +21,13 @@ boid <command> --help       # per-command help
 
 ### Auto-start
 
-If the daemon is not running when you invoke any other command, `boid` starts it automatically. The exceptions (commands that skip auto-start) are: `start`, `stop`, `gc`, `check`, `init`, `fetch`, `web set-url`, and `web set-addr`. You rarely need to call `boid start` by hand.
+If the daemon is not running when you invoke any other command, `boid` starts it automatically. The exceptions (commands that skip auto-start) are: `start`, `stop`, `gc`, `check`, `init`, `fetch`, `web set-url`, `web set-addr`, and `project migrate`. You rarely need to call `boid start` by hand.
 
 Set `BOID_NO_AUTOSTART=1` to disable auto-start globally.
+
+### Command scope classification (remote / local / neutral)
+
+Every command is internally classified as `remote` (works purely through the daemon's HTTP API, including a future remote daemon), `local` (depends on daemon lifecycle, or on the filesystem of the host the CLI process itself runs on), or `neutral` (needs no daemon connection at all) — the `boid.scope` cobra annotation, required on every leaf command (an unclassified command fails the build). This classification does not yet gate anything at runtime; it was introduced in Phase 2.5 as groundwork for Phase 3 (CLI remote connection). See `docs/plans/cli-remote-connection.md` for details.
 
 ## Server lifecycle
 
@@ -33,7 +37,7 @@ Set `BOID_NO_AUTOSTART=1` to disable auto-start globally.
 | `boid stop` | Stop the daemon. Killing by PID can leave a stale socket; prefer this. |
 | `boid gc [--older-than DURATION] [--dry-run]` | Garbage collect old completed/aborted tasks (the daemon also runs this on its own at startup). `--dry-run` prints what would be deleted without removing anything. |
 | `boid check` | Check host prerequisites and hook dependencies. |
-| `boid init [DIR]` | **(Deprecated)** Prints a deprecation guide. Use `boid kit init` / `boid project init\|add` / `boid workspace configure` instead. See [Onboarding](../guide/onboarding.md). |
+| `boid init [DIR]` | **(Deprecated)** Prints a deprecation guide. Use `boid project init\|add` (plus, optionally, `boid workspace create/edit/import`) instead. See [Onboarding](../guide/onboarding.md). |
 
 See [Getting started / Install](../getting-started/01-install.md) for context.
 
@@ -185,16 +189,11 @@ Inspect hook execution records.
 
 `boid job done` is normally invoked by the sandbox EXIT trap; you would not type it by hand.
 
-## Kit
+## Kit (removed as a command)
 
-Install and update [extension packages](../kit-authoring/overview.md).
+`boid kit init` / `boid kit list` / `boid kit remove`, and `boid workspace configure`, were removed in Phase 2.5 PR6 (2026-07). `env` and `additional_bindings` are now set directly on a workspace via the [Workspace](#workspace) CLI. `host_commands` is different: a workspace only holds a `[]string` list of *reference names* (`host_commands: [gh, aws]`); the actual command definitions (`path` / `allow` / `deny` / `env`) live in the daemon-wide `~/.config/boid/host_commands.yaml`, managed separately — see [Host Commands](#host-commands) below (or [Onboarding / Defining host_commands](../guide/onboarding.md#defining-host_commands-the-daemon-wide-registry)) for how to populate it now that `kit init` no longer does it automatically.
 
-| Command | Role |
-|---|---|
-| `boid kit install [--ssh] [repo]` | `git clone` a repository into `~/.local/share/boid/kits/`. With no argument, install all repos referenced by the current project. `--ssh` forces SSH transport. |
-| `boid kit list` | List installed repositories. |
-| `boid kit update <repo>` | `git pull` an installed repository. |
-| `boid kit remove <repo>` | Remove an installed repository. |
+The `kit.yaml` file format itself hasn't gone away — a `kits: [...]` reference in `workspace.yaml`, or the legacy kit `boid project migrate` generates, is still expanded once, at workspace-create or migrate time (hand-writing a `kit.yaml` and pointing a workspace at it still works). For the file format see [Kit authoring overview](../kit-authoring/overview.md); for the retirement's background see [Onboarding / On the retirement of the kit mechanism](../guide/onboarding.md#on-the-retirement-of-the-kit-mechanism).
 
 ## Web
 
@@ -222,14 +221,28 @@ Encrypted storage for tokens and similar values. The encryption key is `~/.local
 
 ## Workspace
 
-Group several projects together.
+Groups a project's runtime environment (`host_commands` / `env` / `capabilities` / `allowed_domains` / `additional_bindings`) at the machine level. Backed by the `workspaces` table (Phase 2.5); the `default` workspace is always created automatically at daemon startup. Registering a project assigns it to `default` automatically, and `boid project init/add --workspace <slug>` is get-or-create (an unknown slug gets an empty workspace created for it before assignment).
 
 | Command | Role |
 |---|---|
 | `boid workspace list` | List workspaces. |
-| `boid workspace show <id>` | Show projects and recent tasks in a workspace. |
-| `boid workspace assign <project-ref> <workspace-id>` | Assign a project to a workspace. |
-| `boid workspace clear <project-ref>` | Remove a project's workspace assignment. |
+| `boid workspace show <slug>` | Show a workspace's definition (host_commands/env/capabilities) and its assigned projects. |
+| `boid workspace create <slug> [--from-file <yaml>]` | Create a new workspace (omit `--from-file` for a blank one). |
+| `boid workspace edit <slug> --from-file <yaml>` | Replace an existing workspace wholesale (automatic If-Match; `--force` for last-write-wins). |
+| `boid workspace import <file> [--mode create-only\|replace] [--slug SLUG]` | Import a workspace definition from yaml. `--mode` defaults to `create-only` (409 on an existing slug). |
+| `boid workspace export <slug> [--output FILE]` | Export a workspace's definition as yaml (stdout by default). |
+| `boid workspace assign <project-ref> <workspace-id>` | Assign a project to a workspace (404s on an unknown slug, unless a local `workspace.yaml` for it exists — auto-created from that). |
+| `boid workspace clear <project-ref>` | Reset a project's workspace assignment to `default`. |
+| `boid workspace remove <slug>` | Remove a workspace (assigned projects are re-assigned to `default`; `default` itself cannot be removed). |
+
+## Host Commands
+
+Inspect and reload the daemon's aggregated `~/.config/boid/host_commands.yaml` (the preflight-aggregated `host_commands` across all workspaces, Phase 2.5 PR4).
+
+| Command | Role |
+|---|---|
+| `boid host-commands list` | List the host_commands names known to the daemon. |
+| `boid host-commands reload` | Tell the daemon to re-read `host_commands.yaml` after a hand edit. |
 
 ## Sandbox operations
 

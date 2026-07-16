@@ -69,7 +69,12 @@ gc:
 
 ## "permission denied" or "unknown command" inside a hook
 
-Hooks run inside a sandbox, so any command the kit has not declared in `host_commands` is rejected. Add the missing command to the kit's `host_commands` list (this is how `git push`, `gh`, and similar tools are exposed to hooks).
+Hooks run inside a sandbox, so any command name not present in the project's assigned **workspace**'s `host_commands` is rejected. `host_commands` is a two-tier structure: the workspace only carries a list of reference **names** — the actual definitions (`path`/`allow`/`deny`/`env`) live in the daemon-wide registry `~/.config/boid/host_commands.yaml`. If a command is missing, you may need either or both of:
+
+- `boid workspace edit <slug> --from-file <yaml>` to add the name to the workspace's `host_commands` list
+- If the name isn't in the daemon-wide registry yet, add it to `~/.config/boid/host_commands.yaml` and run `boid host-commands reload` (see [Onboarding / Defining host_commands](onboarding.md#defining-host_commands-the-daemon-wide-registry))
+
+(This is how `git push`, `gh`, and similar tools are exposed to hooks.)
 
 ## Web UI: the device keeps getting logged out
 

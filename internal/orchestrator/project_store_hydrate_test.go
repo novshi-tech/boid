@@ -295,19 +295,6 @@ func TestGetWithWorkspace_WorkspaceHostCommandConflict(t *testing.T) {
 	}
 }
 
-// setupKitDir writes a kit fixture at baseDir/<slug>/kit.yaml. baseDir is used
-// as the KitRegistry root so refs resolve by slug.
-func setupKitDir(t *testing.T, baseDir, slug, content string) {
-	t.Helper()
-	kitDir := filepath.Join(baseDir, slug)
-	if err := os.MkdirAll(kitDir, 0o755); err != nil {
-		t.Fatalf("mkdir kit dir: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(kitDir, "kit.yaml"), []byte(content), 0o644); err != nil {
-		t.Fatalf("write kit.yaml: %v", err)
-	}
-}
-
 // setupProjectWithBehavior writes a project.yaml carrying one task behavior so
 // the per-behavior workspace-kit merge path in GetWithWorkspace is exercised
 // (setupProjectDir writes a behavior-less project).
@@ -332,189 +319,13 @@ func findBindingBySource(mounts []orchestrator.BindMount, src string) (orchestra
 	return orchestrator.BindMount{}, false
 }
 
-// TestGetWithWorkspace_AdditionalBindingsMerge is the upstream half of Tier 1
-// #1 (docs/plans/quality-gates.md). It guards the 2026-06-29 regression where
-// workspace-kit additional_bindings were silently dropped during hydration.
-// The hydrated meta must expose the kit binding both at the top level (session
-// jobs read meta.AdditionalBindings directly) AND inside each task behavior
-// (task hooks read behavior.AdditionalBindings via the planner). Neither was
-// asserted before this test — project_store_hydrate_test only covered Env.
-func TestGetWithWorkspace_AdditionalBindingsMerge(t *testing.T) {
-	t.Parallel()
-
-	projectDir := t.TempDir()
-	setupProjectWithBehavior(t, projectDir, "proj-bind", "build")
-
-	kitsDir := t.TempDir()
-	setupKitDir(t, kitsDir, "volta", `additional_bindings:
-  - source: /opt/volta
-    target: /opt/volta
-    mode: rw
-`)
-
-	wsDir := t.TempDir()
-	setupWorkspaceDir(t, wsDir, "bindws", `kits:
-  - volta
-`)
-
-	s := orchestrator.NewProjectStore(orchestrator.NewRegistry(kitsDir))
-	s.SetWorkspaceStore(orchestrator.NewWorkspaceStore(wsDir))
-	loadProjectIntoStore(t, s, []*orchestrator.Project{
-		{ID: "proj-bind", WorkDir: projectDir, WorkspaceID: "bindws"},
-	})
-
-	meta, err := s.GetWithWorkspace(context.Background(), "proj-bind")
-	if err != nil {
-		t.Fatalf("GetWithWorkspace: %v", err)
-	}
-
-	// Top-level: session jobs bypass behaviors and read this field.
-	if _, ok := findBindingBySource(meta.AdditionalBindings, "/opt/volta"); !ok {
-		t.Fatalf("workspace kit binding missing from meta.AdditionalBindings: %+v", meta.AdditionalBindings)
-	}
-
-	// Per-behavior: task hooks read behavior.AdditionalBindings via planner.go.
-	build, ok := meta.TaskBehaviors["build"]
-	if !ok {
-		t.Fatalf("behavior build missing from hydrated meta: %+v", meta.TaskBehaviors)
-	}
-	if _, ok := findBindingBySource(build.AdditionalBindings, "/opt/volta"); !ok {
-		t.Fatalf("workspace kit binding missing from behavior build.AdditionalBindings: %+v", build.AdditionalBindings)
-	}
-
-	// The cached meta must not be mutated by hydration (bindings only appear on
-	// the returned copy).
-	cached, ok := s.Get("proj-bind")
-	if !ok {
-		t.Fatal("expected cached meta to exist")
-	}
-	if _, ok := findBindingBySource(cached.AdditionalBindings, "/opt/volta"); ok {
-		t.Fatalf("cached meta must not gain workspace kit binding: %+v", cached.AdditionalBindings)
-	}
-}
-
-// TestGetWithWorkspace_RejectRulesHydrated verifies that host_commands reject
-// rules declared in a workspace kit survive hydration into both the top-level
-// meta.HostCommands (session jobs) and each behavior's HostCommands (task
-// hooks) — the same dual surface guarded for additional_bindings above.
-func TestGetWithWorkspace_RejectRulesHydrated(t *testing.T) {
-	t.Parallel()
-
-	projectDir := t.TempDir()
-	setupProjectWithBehavior(t, projectDir, "proj-reject", "build")
-
-	kitsDir := t.TempDir()
-	setupKitDir(t, kitsDir, "ghkit", `host_commands:
-  gh:
-    allow: [pr, issue]
-    reject:
-      - match: "*--body-file*"
-        reason: "sandbox paths are not visible on the host"
-`)
-
-	wsDir := t.TempDir()
-	setupWorkspaceDir(t, wsDir, "rejectws", `kits:
-  - ghkit
-`)
-
-	s := orchestrator.NewProjectStore(orchestrator.NewRegistry(kitsDir))
-	s.SetWorkspaceStore(orchestrator.NewWorkspaceStore(wsDir))
-	loadProjectIntoStore(t, s, []*orchestrator.Project{
-		{ID: "proj-reject", WorkDir: projectDir, WorkspaceID: "rejectws"},
-	})
-
-	meta, err := s.GetWithWorkspace(context.Background(), "proj-reject")
-	if err != nil {
-		t.Fatalf("GetWithWorkspace: %v", err)
-	}
-
-	want := orchestrator.RejectRule{Match: "*--body-file*", Reason: "sandbox paths are not visible on the host"}
-	gh := meta.HostCommands["gh"]
-	if len(gh.Reject) != 1 || gh.Reject[0] != want {
-		t.Fatalf("top-level reject rules not hydrated: %+v", gh.Reject)
-	}
-
-	build, ok := meta.TaskBehaviors["build"]
-	if !ok {
-		t.Fatalf("behavior build missing from hydrated meta: %+v", meta.TaskBehaviors)
-	}
-	bgh := build.HostCommands["gh"]
-	if len(bgh.Reject) != 1 || bgh.Reject[0] != want {
-		t.Fatalf("behavior reject rules not hydrated: %+v", bgh.Reject)
-	}
-}
-
-// TestGetWithWorkspace_RejectRuleValidation verifies that reject rules with an
-// empty match or empty reason are rejected at hydration time with an error
-// naming the offending command and rule index.
-func TestGetWithWorkspace_RejectRuleValidation(t *testing.T) {
-	t.Parallel()
-
-	cases := []struct {
-		name    string
-		kitYAML string
-		wantErr string
-	}{
-		{
-			name: "empty match",
-			kitYAML: `host_commands:
-  gh:
-    reject:
-      - reason: "no match given"
-`,
-			wantErr: "host_commands.gh.reject[0]: match is required",
-		},
-		{
-			name: "empty reason",
-			kitYAML: `host_commands:
-  gh:
-    reject:
-      - match: "*--body-file*"
-`,
-			wantErr: "host_commands.gh.reject[0]: reason is required",
-		},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-
-			projectDir := t.TempDir()
-			setupProjectDir(t, projectDir, "proj-rejval", "Reject Validation Project")
-
-			kitsDir := t.TempDir()
-			setupKitDir(t, kitsDir, "badkit", tc.kitYAML)
-
-			wsDir := t.TempDir()
-			setupWorkspaceDir(t, wsDir, "rejvalws", `kits:
-  - badkit
-`)
-
-			s := orchestrator.NewProjectStore(orchestrator.NewRegistry(kitsDir))
-			s.SetWorkspaceStore(orchestrator.NewWorkspaceStore(wsDir))
-			loadProjectIntoStore(t, s, []*orchestrator.Project{
-				{ID: "proj-rejval", WorkDir: projectDir, WorkspaceID: "rejvalws"},
-			})
-
-			_, err := s.GetWithWorkspace(context.Background(), "proj-rejval")
-			if err == nil {
-				t.Fatalf("expected reject rule validation error, got nil")
-			}
-			if !strings.Contains(err.Error(), tc.wantErr) {
-				t.Fatalf("expected error containing %q, got: %v", tc.wantErr, err)
-			}
-		})
-	}
-}
-
 // --- docs/plans/workspace-db-consolidation.md PR3 Step G: workspace.HostCommands resolution ---
 
 // TestGetWithWorkspace_HostCommandsResolved verifies that a workspace's
 // HostCommands []string (reference names) are resolved against the
 // daemon's aggregated host_commands map (SetHostCommands) and merged into
 // both the top-level meta.HostCommands (session jobs) and every
-// TaskBehavior's HostCommands (task hooks), mirroring the dual-surface
-// contract already pinned for workspace kits above
-// (TestGetWithWorkspace_RejectRulesHydrated).
+// TaskBehavior's HostCommands (task hooks).
 func TestGetWithWorkspace_HostCommandsResolved(t *testing.T) {
 	t.Parallel()
 
@@ -619,6 +430,61 @@ func TestGetWithWorkspace_HostCommandsBuiltinConflict(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "git") {
 		t.Errorf("expected error to mention the conflicting name 'git': %v", err)
+	}
+}
+
+// TestGetWithWorkspace_HostCommandsRejectRuleValidation verifies that reject
+// rules with an empty match or empty reason are rejected at hydration time
+// with an error naming the offending command and rule index. This exercises
+// the same validateRejectRules call as the retired kit-based
+// TestGetWithWorkspace_RejectRuleValidation (removed in
+// docs/plans/workspace-db-consolidation.md Phase 2.5 PR6, kit mechanism
+// retirement) but through the surviving workspace.HostCommands
+// (aggregated-config reference) path instead of a workspace kit.
+func TestGetWithWorkspace_HostCommandsRejectRuleValidation(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name    string
+		spec    orchestrator.HostCommandSpec
+		wantErr string
+	}{
+		{
+			name:    "empty-match",
+			spec:    orchestrator.HostCommandSpec{Reject: []orchestrator.RejectRule{{Reason: "no match given"}}},
+			wantErr: "host_commands.gh.reject[0]: match is required",
+		},
+		{
+			name:    "empty-reason",
+			spec:    orchestrator.HostCommandSpec{Reject: []orchestrator.RejectRule{{Match: "*--body-file*"}}},
+			wantErr: "host_commands.gh.reject[0]: reason is required",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			projectDir := t.TempDir()
+			setupProjectDir(t, projectDir, "proj-rejval-"+tc.name, "Reject Validation Project")
+
+			wsDir := t.TempDir()
+			setupWorkspaceDir(t, wsDir, "rejvalws-"+tc.name, "host_commands:\n  - gh\n")
+
+			s := orchestrator.NewProjectStore(nil)
+			s.SetWorkspaceStore(orchestrator.NewWorkspaceStore(wsDir))
+			s.SetHostCommands(map[string]orchestrator.HostCommandSpec{"gh": tc.spec})
+			loadProjectIntoStore(t, s, []*orchestrator.Project{
+				{ID: "proj-rejval-" + tc.name, WorkDir: projectDir, WorkspaceID: "rejvalws-" + tc.name},
+			})
+
+			_, err := s.GetWithWorkspace(context.Background(), "proj-rejval-"+tc.name)
+			if err == nil {
+				t.Fatalf("expected reject rule validation error, got nil")
+			}
+			if !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("expected error containing %q, got: %v", tc.wantErr, err)
+			}
+		})
 	}
 }
 
