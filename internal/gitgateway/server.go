@@ -74,20 +74,31 @@ func NewServer(registry *Registry, credentials *CredentialProvider, notifier Ups
 			pr.Out.URL.RawQuery = pr.In.URL.RawQuery
 			pr.Out.Host = info.host
 			if s.credentials != nil {
-				// ServeHTTP's Resolve pre-check (fail-fast PR-B) already
-				// validated this host+namespace just before proxy dispatch,
-				// so Inject here is expected to succeed. A failure at this
-				// point would only happen on a race between the pre-check
-				// and Rewrite (currently no code path unregisters a secret
-				// mid-request, so this is effectively unreachable). Log for
-				// observability, don't fire the notifier again (ServeHTTP
-				// already did that on any failure path), and let the
-				// request forward unauthenticated as a last-resort
-				// degradation — ModifyResponse's 401 handler will still
-				// surface upstream auth failures if it comes to that.
+				// Two Inject-failure shapes reach this callback:
+				//
+				//   - Unknown host (not in config.Gateway.HostConfigs()):
+				//     ServeHTTP's pre-check is gated on KnowsHost, so an
+				//     unknown host bypasses fail-fast and lands here with
+				//     Inject returning "no forge configured for host". This
+				//     is the pre-PR-B fail-open + notify path preserved
+				//     verbatim — test upstreams (httptest.Server dynamic
+				//     ports) and stray unregistered-forge requests both
+				//     take this shape.
+				//
+				//   - Known host + secret race: any Inject failure for a
+				//     known host is a race between pre-check and Rewrite
+				//     (currently no code path unregisters a secret
+				//     mid-request, so effectively unreachable). Same
+				//     fail-open behavior applies; notifier double-fire is
+				//     not a concern because the pre-check already fired
+				//     the primary signal in the non-race case.
+				//
+				// Either way: log for observability, notify (unchanged from
+				// pre-PR-B), and forward unauthenticated. Upstream 401 will
+				// still trip ModifyResponse's NotifyUpstreamAuthFailure.
 				if err := s.credentials.Inject(pr.Out, info.host, info.namespace); err != nil {
-					slog.Warn("gitgateway: credential injection failed at Rewrite after pre-check success; forwarding without auth (likely race)",
-						"host", info.host, "err", err)
+					slog.Warn("gitgateway: credential injection failed; forwarding without auth", "host", info.host, "err", err)
+					s.notifier.NotifyCredentialError(info.host, info.repo, err)
 				}
 			}
 		},
@@ -183,23 +194,32 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// reach the upstream on your behalf" — which is exactly what a
 	// misconfigured secret means from the client's point of view.
 	//
+	// The pre-check is gated on KnowsHost: pre-PR-B, an unknown host also
+	// took the fail-open + notify path (Rewrite's Inject would return
+	// "no forge configured for host" and forward unauthenticated). Test
+	// upstreams (httptest.Server dynamic ports) never appear in
+	// config.Gateway.HostConfigs() and rely on that pre-existing shape —
+	// gating on KnowsHost preserves it while still fail-fast'ing the
+	// intended case (known host + resolver miss, the actual hang trigger
+	// captured in [[gitgateway-credential-fail-hangs-sandbox]]).
+	//
 	// This reverses the pre-cutover fail-open + NotifyCredentialError
 	// behavior (`docs/plans/git-gateway-cutover.md` PR3/PR4: 「gateway 自体は
-	// 落とさない」). That principle held while the gateway was still inert
-	// (PR3/PR4) and the only visible consequence of forwarding-without-auth
-	// was a 401 in the log; once PR5+ made real sandbox clients depend on
-	// this path, that same forwarding started producing the TUI hang above
-	// — a much worse failure mode than the honest 502 we now return
-	// (memo: [[gitgateway-credential-fail-hangs-sandbox]]).
+	// 落とさない」) ONLY for the known-host-with-secret-miss case. That
+	// principle held while the gateway was still inert (PR3/PR4) and the
+	// only visible consequence of forwarding-without-auth was a 401 in the
+	// log; once PR5+ made real sandbox clients depend on this path, that
+	// same forwarding started producing the TUI hang above — a much worse
+	// failure mode than the honest 502 we now return.
 	//
 	// The notifier fires exactly once (here), so callers such as
 	// internal/server/gitgateway_notify.go still see the same
 	// per-request signal they did before; only the proxy path has changed.
-	// Rewrite's Inject call below is left in place — it will succeed on the
-	// second resolve for any request that made it past this pre-check, so
-	// the cost of the extra lookup is one SecretStore.Get per request when
-	// credentials are healthy (cheap: an in-process DB read).
-	if s.credentials != nil {
+	// Rewrite's Inject call below is left in place — it will succeed on
+	// the second resolve for any request that made it past this pre-check,
+	// so the cost of the extra lookup is one SecretStore.Get per request
+	// when credentials are healthy (cheap: an in-process DB read).
+	if s.credentials != nil && s.credentials.KnowsHost(rt.host) {
 		if _, _, err := s.credentials.Resolve(rt.host, namespace); err != nil {
 			slog.Warn("gitgateway: credential resolution failed; refusing to forward (fail-fast)",
 				"host", rt.host, "namespace", namespace, "err", err)

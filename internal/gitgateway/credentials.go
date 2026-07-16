@@ -106,6 +106,35 @@ func (c *CredentialProvider) Configured() bool {
 	return c != nil && c.resolver != nil
 }
 
+// KnowsHost reports whether c has a HostForgeConfig entry for host — i.e.
+// whether host is in the gateway's allowlist of forges the daemon is
+// configured to authenticate. Callers (Server.ServeHTTP's fail-fast pre-check)
+// use this to distinguish two very different negative Resolve outcomes:
+//
+//   - Host not in c.hosts → gateway has no opinion on this host. This is
+//     the shape e2e / test upstreams take (httptest.Server dynamic ports
+//     never appear in config.Gateway.HostConfigs()), and it is also the
+//     shape a stray gateway request for a genuinely unregistered forge
+//     would take. The pre-existing behavior for both was to let the
+//     request forward unauthenticated (Rewrite's Inject would log +
+//     forward), and PR-B preserves that: pre-check skips, no 502, no
+//     regression.
+//
+//   - Host present in c.hosts but the resolver errors for it → the
+//     hang-triggering config bug this PR targets ([[gitgateway-credential-
+//     fail-hangs-sandbox]]). Pre-check runs, fails, returns 502 without
+//     forwarding.
+//
+// A nil *CredentialProvider knows no hosts, matching the fail-closed
+// behavior of Inject/Resolve above.
+func (c *CredentialProvider) KnowsHost(host string) bool {
+	if c == nil {
+		return false
+	}
+	_, ok := c.hosts[host]
+	return ok
+}
+
 // SchemeFor returns the upstream request scheme for host: the configured
 // override if present, otherwise "https".
 func (c *CredentialProvider) SchemeFor(host string) string {
