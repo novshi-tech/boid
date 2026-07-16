@@ -132,6 +132,49 @@ func TestBuildSandboxSpec_TTYFollowsInteractiveOnly(t *testing.T) {
 	}
 }
 
+// sandbox 内の git は default で credential prompt を出す。 git-gateway 経由の
+// clone/fetch で upstream が 401 を返すと sandbox 内 TUI が
+// `Username for 'http://10.0.2.2:...':` で hang して Ctrl-C するまで解けない。
+// 主対策は gateway 側 fail-fast (docs/plans/gitgateway-credential-fail-fast.md
+// PR-B) だが、gateway 外の直リンク origin や upstream 側 PAT 失効経路の 401
+// でも hang しないよう defense-in-depth として env に GIT_TERMINAL_PROMPT=0 +
+// GIT_ASKPASS=/bin/false を default 注入する (PR-C)。
+func TestBuildSandboxSpec_InjectsGitPromptSuppressionByDefault(t *testing.T) {
+	spec := &orchestrator.JobSpec{}
+	result, err := BuildSandboxSpec(spec, SandboxRuntimeInfo{})
+	if err != nil {
+		t.Fatalf("BuildSandboxSpec: %v", err)
+	}
+	if got := result.Env["GIT_TERMINAL_PROMPT"]; got != "0" {
+		t.Errorf("GIT_TERMINAL_PROMPT = %q, want 0 (defense-in-depth against sandbox git prompt hang)", got)
+	}
+	if got := result.Env["GIT_ASKPASS"]; got != "/bin/false" {
+		t.Errorf("GIT_ASKPASS = %q, want /bin/false (block askpass helper path)", got)
+	}
+}
+
+// spec.Env で明示的に GIT_TERMINAL_PROMPT / GIT_ASKPASS を指定した場合は
+// default 注入で上書きしない。 これは例えば hook job で独自の askpass helper を
+// 使いたいユースケース (現状は無いが将来のため) を潰さないためのガード。
+func TestBuildSandboxSpec_RespectsExplicitGitPromptOverride(t *testing.T) {
+	spec := &orchestrator.JobSpec{
+		Env: map[string]string{
+			"GIT_TERMINAL_PROMPT": "1",
+			"GIT_ASKPASS":         "/usr/local/bin/my-askpass",
+		},
+	}
+	result, err := BuildSandboxSpec(spec, SandboxRuntimeInfo{})
+	if err != nil {
+		t.Fatalf("BuildSandboxSpec: %v", err)
+	}
+	if got := result.Env["GIT_TERMINAL_PROMPT"]; got != "1" {
+		t.Errorf("GIT_TERMINAL_PROMPT overridden by default: got %q, want 1 (spec.Env should win)", got)
+	}
+	if got := result.Env["GIT_ASKPASS"]; got != "/usr/local/bin/my-askpass" {
+		t.Errorf("GIT_ASKPASS overridden by default: got %q, want /usr/local/bin/my-askpass", got)
+	}
+}
+
 // BOID_HOST_IP はサンドボックス NS からホスト localhost に向かう pasta gateway
 // (10.0.2.2) を指す。proxy の有無に関わらず常に注入して、サンドボックス内プロセ
 // スが http_proxy のパース等に頼らず直接 IP を引けるようにする。
