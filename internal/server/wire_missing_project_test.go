@@ -60,7 +60,7 @@ func TestBuildProjectStore_AutoPrunesMissingProjectDir(t *testing.T) {
 	}
 
 	cfg := Config{DBPath: ":memory:"}
-	store, err := buildProjectStore(cfg, repo)
+	store, _, err := buildProjectStore(cfg, repo)
 	if err != nil {
 		t.Fatalf("buildProjectStore should boot after auto-prune, got error: %v", err)
 	}

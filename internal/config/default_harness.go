@@ -117,12 +117,16 @@ func setDefaultHarnessAt(path, harness string) error {
 	if err != nil {
 		return fmt.Errorf("marshal config: %w", err)
 	}
-	return writeFileAtomic(path, out, 0o600)
+	return WriteFileAtomic(path, out, 0o600)
 }
 
-// writeFileAtomic writes data to path via a sibling temp file + rename.
-// The temp file is removed on any error path before return.
-func writeFileAtomic(path string, data []byte, perm os.FileMode) (retErr error) {
+// WriteFileAtomic writes data to path via a sibling temp file + rename, so
+// concurrent readers (or a crash mid-write) never observe a partially
+// written file. The temp file is created in the same directory as path (so
+// the final os.Rename is same-filesystem and atomic), synced to disk before
+// close, and removed on any error path before return — an existing file at
+// path is left untouched unless the write fully succeeds.
+func WriteFileAtomic(path string, data []byte, perm os.FileMode) (retErr error) {
 	dir := filepath.Dir(path)
 	tmp, err := os.CreateTemp(dir, ".config.yaml.*")
 	if err != nil {

@@ -46,7 +46,7 @@ type appRuntime struct {
 	connRegistry   *auth.ConnectionRegistry
 }
 
-func buildProjectStore(cfg Config, projectRepo *orchestrator.ProjectRepository) (*orchestrator.ProjectStore, error) {
+func buildProjectStore(cfg Config, projectRepo *orchestrator.ProjectRepository) (*orchestrator.ProjectStore, map[string]orchestrator.HostCommandSpec, error) {
 	// resolver は KitResolver 型 (interface) を使い、 cfg.KitsDir 未設定時は
 	// untyped nil interface を渡す。 *KitRegistry 型のローカル変数を経由すると
 	// Go の typed-nil 罠で interface 値が non-nil (内部 type=*KitRegistry,
@@ -80,7 +80,7 @@ func buildProjectStore(cfg Config, projectRepo *orchestrator.ProjectRepository) 
 	// workspace directory yet — that is the degraded window and is fine.
 	// Any other error (parse failure, permission error) is a startup blocker.
 	if slugs, err := wsStore.List(); err != nil {
-		return nil, fmt.Errorf("daemon startup refused: list workspaces: %w", err)
+		return nil, nil, fmt.Errorf("daemon startup refused: list workspaces: %w", err)
 	} else {
 		var wsErrs []error
 		for _, slug := range slugs {
@@ -97,8 +97,33 @@ func buildProjectStore(cfg Config, projectRepo *orchestrator.ProjectRepository) 
 				msg.WriteString("\n")
 			}
 			msg.WriteString("Run `boid workspace configure <slug>` to fix the affected workspace.\n")
-			return nil, fmt.Errorf("%s", msg.String())
+			return nil, nil, fmt.Errorf("%s", msg.String())
 		}
+	}
+
+	// host_commands aggregation preflight (docs/plans/workspace-db-consolidation.md
+	// PR2): scan every installed kit.yaml under cfg.KitsDir and aggregate their
+	// host_commands into a single config. This is a *preflight*, run alongside
+	// — not instead of — the existing per-kit dispatch path (KitResolver above):
+	// PR2 only stands up the aggregated config and its read path so the two
+	// can be compared for parity; the cutover to using this map for dispatch
+	// is PR3. A name collision between two kits with differing definitions
+	// aborts daemon startup (decision 9 in the plan doc), same as the
+	// workspace-validation block above.
+	aggregatedHostCommands, err := orchestrator.LoadHostCommandsFromKits(cfg.KitsDir)
+	if err != nil {
+		return nil, nil, fmt.Errorf("daemon startup refused: %w", err)
+	}
+	hostCommandsPath, err := orchestrator.DefaultHostCommandsPath()
+	if err != nil {
+		return nil, nil, fmt.Errorf("daemon startup refused: resolve host_commands.yaml path: %w", err)
+	}
+	if err := orchestrator.WriteHostCommandsConfig(hostCommandsPath, aggregatedHostCommands); err != nil {
+		return nil, nil, fmt.Errorf("daemon startup refused: write host_commands.yaml: %w", err)
+	}
+	hostCommands, err := orchestrator.LoadHostCommandsConfig(hostCommandsPath)
+	if err != nil {
+		return nil, nil, fmt.Errorf("daemon startup refused: load host_commands.yaml: %w", err)
 	}
 
 	// Migrate any legacy unlinked projects (no project_workspaces row) into
@@ -116,7 +141,7 @@ func buildProjectStore(cfg Config, projectRepo *orchestrator.ProjectRepository) 
 
 	projects, err := projectRepo.ListProjects()
 	if err != nil {
-		return nil, fmt.Errorf("list projects: %w", err)
+		return nil, nil, fmt.Errorf("list projects: %w", err)
 	}
 	errs := store.LoadAll(projects)
 	// project.yaml が無くなった project は「dir が物理削除された stale 登録」
@@ -146,12 +171,12 @@ func buildProjectStore(cfg Config, projectRepo *orchestrator.ProjectRepository) 
 		remaining = append(remaining, e)
 	}
 	if len(remaining) > 0 {
-		return nil, buildProjectLoadStartupError(remaining)
+		return nil, nil, buildProjectLoadStartupError(remaining)
 	}
 
 	backfillUpstreamURLs(projectRepo, projects)
 
-	return store, nil
+	return store, hostCommands, nil
 }
 
 // backfillUpstreamURLs captures upstream_url for any project registered
