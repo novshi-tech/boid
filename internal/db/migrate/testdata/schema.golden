@@ -96,3 +96,17 @@ CREATE TABLE web_pairing_codes (
   consumed_at TIMESTAMP
 );
 
+-- table: workspaces
+CREATE TABLE workspaces (
+  slug                TEXT PRIMARY KEY,
+  container_image     TEXT,                              -- nullable, Phase 6 まで無視
+  host_commands       TEXT NOT NULL DEFAULT '[]',        -- JSON: []string of names
+  env                 TEXT NOT NULL DEFAULT '{}',        -- JSON: map[string]string
+  allowed_domains     TEXT NOT NULL DEFAULT '[]',        -- JSON: []string
+  extra_repos         TEXT NOT NULL DEFAULT '[]',        -- JSON: []string
+  capabilities        TEXT NOT NULL DEFAULT '{}',        -- JSON: Capabilities struct
+  additional_bindings TEXT NOT NULL DEFAULT '[]',        -- JSON: []BindMount, Phase 4 で退役
+  created_at          DATETIME NOT NULL DEFAULT (datetime('now')),
+  updated_at          DATETIME NOT NULL DEFAULT (datetime('now'))
+);
+
