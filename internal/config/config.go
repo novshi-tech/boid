@@ -20,12 +20,6 @@ type Config struct {
 	Sandbox SandboxConfig `yaml:"sandbox"`
 	TaskAsk TaskAskConfig `yaml:"task_ask"`
 	Gateway GatewayConfig `yaml:"gateway"`
-
-	// DefaultHarness is the harness identifier (claude, codex, opencode, ...)
-	// used by sub-commands that need to launch an interactive agent without
-	// a project-level harness context (e.g. `boid kit init`). Empty means
-	// "ask the user on first use" — see DefaultHarness() for the resolver.
-	DefaultHarness string `yaml:"default_harness"`
 }
 
 // TaskAskConfig holds settings for the blocking `boid task ask` Q&A RPC.
@@ -277,7 +271,6 @@ func (c *Config) UnmarshalYAML(value *yaml.Node) error {
 			// Deprecated: use Forges.
 			Hosts []gitgateway.HostForgeConfig `yaml:"hosts"`
 		} `yaml:"gateway"`
-		DefaultHarness string `yaml:"default_harness"`
 	}
 	if err := value.Decode(&raw); err != nil {
 		return err
@@ -396,8 +389,6 @@ func (c *Config) UnmarshalYAML(value *yaml.Node) error {
 		}
 	}
 	c.Gateway = GatewayConfig{Forges: forges}
-
-	c.DefaultHarness = raw.DefaultHarness
 
 	return nil
 }

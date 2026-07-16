@@ -47,13 +47,12 @@ type appRuntime struct {
 }
 
 func buildProjectStore(cfg Config, conn *sql.DB, projectRepo *orchestrator.ProjectRepository) (*orchestrator.ProjectStore, map[string]orchestrator.HostCommandSpec, error) {
-	// NewProjectStore(nil): the kit mechanism (orchestrator.KitRegistry / the
-	// KitResolver-driven ws.Kits merge path) was retired in
-	// docs/plans/workspace-db-consolidation.md Phase 2.5 PR6. KitResolver
-	// stays as a type (and ProjectStore still carries a resolver field) for
-	// call-site compatibility until PR7 removes WorkspaceMeta.Kits outright —
-	// nil is now the only value ever passed in.
-	store := orchestrator.NewProjectStore(nil)
+	// The kit mechanism (orchestrator.KitRegistry / the KitResolver-driven
+	// ws.Kits merge path) was retired in docs/plans/workspace-db-consolidation.md
+	// Phase 2.5 PR6. KitResolver itself (and ProjectStore's resolver field
+	// and NewProjectStore parameter) was removed outright in PR7 alongside
+	// WorkspaceMeta.Kits.
+	store := orchestrator.NewProjectStore()
 
 	// Workspace DB cutover (docs/plans/workspace-db-consolidation.md PR3):
 	// migrate any yaml-authority workspaces (DefaultWorkspaceDir()/*.yaml)
@@ -551,10 +550,6 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 		// update/remove operate on the exact same workspaces-table rows that
 		// GetWithWorkspace hydration reads at dispatch time.
 		Workspaces: store.WorkspaceStore(),
-		// KitsDir lets CreateWorkspace/UpdateWorkspace materialize a legacy
-		// Kits reference before persisting — see
-		// orchestrator.MaterializeWorkspaceKitsForPersist's doc comment.
-		KitsDir: cfg.KitsDir,
 		// HostCommands lets CreateWorkspace/UpdateWorkspace validate every
 		// meta.HostCommands reference against the daemon's live aggregated
 		// snapshot (docs/plans/workspace-db-consolidation.md MAJOR 2, codex
@@ -910,6 +905,14 @@ func mountRoutes(srv *Server, runtime *appRuntime) error {
 	// (HostCommands()/ReloadHostCommands() already match that shape).
 	hostCommandsHandler := &api.HostCommandsHandler{Service: srv}
 	r.Mount("/api/host_commands", hostCommandsHandler.Routes())
+
+	// Daemon config read surface (MAJOR 1, codex review round 1,
+	// docs/plans/workspace-db-consolidation.md Phase 2.5 PR7): srv itself
+	// satisfies api.ConfigService directly (KitsDir() already matches that
+	// shape). Currently just GET /api/config/kits-dir; add further read-only
+	// config fields here as they need a client-visible surface.
+	configHandler := &api.ConfigHandler{Service: srv}
+	r.Mount("/api/config", configHandler.Routes())
 
 	taskHandler := &api.TaskHandler{Service: runtime.taskSvc, Hooks: runtime.workflow, Notifier: runtime.taskSvc, Answerer: runtime.taskSvc}
 	r.Mount("/api/tasks", taskHandler.Routes())

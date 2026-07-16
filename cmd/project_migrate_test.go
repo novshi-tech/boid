@@ -280,13 +280,18 @@ func TestProjectMigrate_Apply_WritesWorkspaceYAML(t *testing.T) {
 		t.Fatalf("load workspace: %v", err)
 	}
 
-	// Kit refs normalised to last segment name.
-	kitSet := stringSetFromSlice(wsMeta.Kits)
-	if !kitSet["go"] {
-		t.Errorf("workspace kits missing 'go': %v", wsMeta.Kits)
+	// Phase 2.5 PR7 (docs/plans/workspace-db-consolidation.md, decision 12):
+	// the legacy top-level/behavior-level `kits:` refs ("go"/"node") are no
+	// longer resolved or folded into the workspace at all — the kit
+	// mechanism was retired in PR6. This migration's own auto-generated
+	// legacy kit (from the project.yaml's own host_commands/
+	// additional_bindings) IS still folded directly, with no kit-directory
+	// round trip needed.
+	if len(wsMeta.HostCommands) != 1 || wsMeta.HostCommands[0] != "gh" {
+		t.Errorf("workspace host_commands missing 'gh' (from legacy kit): %v", wsMeta.HostCommands)
 	}
-	if !kitSet["node"] {
-		t.Errorf("workspace kits missing 'node': %v", wsMeta.Kits)
+	if len(wsMeta.AdditionalBindings) != 1 || wsMeta.AdditionalBindings[0].Source != "/var/data" {
+		t.Errorf("workspace additional_bindings missing /var/data (from legacy kit): %+v", wsMeta.AdditionalBindings)
 	}
 
 	if wsMeta.Env["GOPATH"] != "/home/user/go" {
@@ -800,7 +805,14 @@ secret_namespace: oldns
 }
 
 // TestProjectMigrate_ExistingWorkspaceYAML_Merge verifies existing workspace.yaml
-// is merged: kits are appended without duplicates, env is merged.
+// is merged: env is merged, with the migration's own values taking
+// precedence on a key collision.
+//
+// Phase 2.5 PR7 (docs/plans/workspace-db-consolidation.md, decision 12)
+// dropped this test's original "kits are appended without duplicates"
+// coverage along with WorkspaceMeta.Kits itself: the legacy project.yaml's
+// `kits:` ref ("mykit") is no longer resolved or folded into the workspace
+// at all (see computeMigratePlan's kitRefStrs doc comment).
 func TestProjectMigrate_ExistingWorkspaceYAML_Merge(t *testing.T) {
 	projectYAML := `id: proj-merge
 name: Merge Project
@@ -819,8 +831,7 @@ env:
 	os.MkdirAll(wsPath, 0o755)
 	preStore := orchestrator.NewWorkspaceStore(wsPath)
 	preMeta := &orchestrator.WorkspaceMeta{
-		Kits: []string{"existing-kit", "mykit"}, // mykit should not be duplicated
-		Env:  map[string]string{"EXISTING": "yes"},
+		Env: map[string]string{"EXISTING": "yes"},
 	}
 	if err := preStore.Save("merge-ws", preMeta); err != nil {
 		t.Fatalf("pre-save workspace: %v", err)
@@ -843,25 +854,6 @@ env:
 		t.Fatalf("load workspace after merge: %v", err)
 	}
 
-	kitSet := stringSetFromSlice(meta.Kits)
-	if !kitSet["existing-kit"] {
-		t.Errorf("merged workspace lost 'existing-kit': %v", meta.Kits)
-	}
-	if !kitSet["mykit"] {
-		t.Errorf("merged workspace lost 'mykit': %v", meta.Kits)
-	}
-
-	// mykit must not be duplicated.
-	count := 0
-	for _, k := range meta.Kits {
-		if k == "mykit" {
-			count++
-		}
-	}
-	if count != 1 {
-		t.Errorf("mykit appears %d times (want 1): %v", count, meta.Kits)
-	}
-
 	if meta.Env["EXISTING"] != "yes" {
 		t.Errorf("env EXISTING lost: %v", meta.Env)
 	}
@@ -871,7 +863,9 @@ env:
 }
 
 // TestProjectMigrate_BehaviorKitsAggregated verifies that behavior-level kits
-// are moved to workspace kits and cleared from project.yaml.
+// are still collected (name-validated, informational only — Phase 2.5 PR7,
+// decision 12: no longer resolved into the workspace, see
+// computeMigratePlan's kitRefStrs doc comment) and cleared from project.yaml.
 func TestProjectMigrate_BehaviorKitsAggregated(t *testing.T) {
 	projectYAML := `id: proj-bkits
 name: Behavior Kits Project
@@ -904,19 +898,14 @@ task_behaviors:
 		t.Fatalf("apply: unexpected error: %v", err)
 	}
 
+	// Sanity: the workspace was still created (env/capabilities-less in this
+	// fixture, but the row must exist). meta itself carries none of the
+	// behavior-level kit refs any more — they are validated and tracked on
+	// the plan for informational display only (Phase 2.5 PR7, decision 12).
 	wsPath := filepath.Join(cfgDir, "boid", "workspaces")
 	wsStore := orchestrator.NewWorkspaceStore(wsPath)
-	meta, err := wsStore.Load("bk-ws")
-	if err != nil {
+	if _, err := wsStore.Load("bk-ws"); err != nil {
 		t.Fatalf("load workspace: %v", err)
-	}
-
-	kitSet := stringSetFromSlice(meta.Kits)
-	if !kitSet["node"] {
-		t.Errorf("workspace kits missing 'node': %v", meta.Kits)
-	}
-	if !kitSet["localkit"] {
-		t.Errorf("workspace kits missing 'localkit': %v", meta.Kits)
 	}
 
 	// project.yaml must not have behavior-level kits.
@@ -1194,11 +1183,12 @@ env:
 // TestProjectMigrate_WithHostCommandsAndBindings is MAJOR 1's regression
 // test (codex review, docs/plans/workspace-db-consolidation.md): a legacy
 // project.yaml with host_commands + additional_bindings generates a legacy
-// kit whose name is folded into workspace.Kits. Before the fix, the daemon
-// push (POST /api/workspaces) ran *before* the legacy kit.yaml was written
-// to disk and before the daemon's aggregated host_commands.yaml/live cache
-// knew about the kit's host_commands names, so
-// CreateWorkspace/UpdateWorkspace's post-materialization
+// kit whose host_commands names + additional_bindings are folded directly
+// into the workspace (mergeLegacyFieldsIntoWorkspace, Phase 2.5 PR7). Before
+// the original MAJOR 1 fix, the daemon push (POST /api/workspaces) ran
+// *before* the legacy kit.yaml was written to disk and before the daemon's
+// aggregated host_commands.yaml/live cache knew about the kit's
+// host_commands names, so CreateWorkspace/UpdateWorkspace's
 // validateHostCommandRefs check 400'd on "unknown host_commands
 // reference(s)" — project.yaml still got rewritten (silently "succeeding")
 // but the DB never actually gained the migrated workspace content. This

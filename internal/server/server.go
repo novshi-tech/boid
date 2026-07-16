@@ -171,6 +171,37 @@ func (s *Server) Store() *orchestrator.ProjectStore {
 	return s.store
 }
 
+// KitsDir returns this daemon's effective base directory for installed kits
+// (MAJOR 1, codex review round 1, docs/plans/workspace-db-consolidation.md
+// Phase 2.5 PR7): s.cfg is set once in New() and never mutated afterward, so
+// no locking is needed, unlike the mutable s.hostCommands snapshot below.
+// Backs GET /api/config/kits-dir (api.ConfigService) so a CLI client-side
+// helper can resolve a legacy workspace.yaml's `kits:` references against
+// the running daemon's actual kits directory, including one overridden by
+// `boid start --kits-dir <custom>`.
+func (s *Server) KitsDir() string {
+	// Normalize to an absolute path before returning it over the wire
+	// (codex PR7 review, round 3): `--kits-dir some/relative/path` gets
+	// stored verbatim in s.cfg.KitsDir, so a CLI running in a different
+	// cwd from the daemon would resolve that relative path against its
+	// own cwd — pointing at an entirely different (possibly nonexistent)
+	// kits directory and silently materializing kits from the wrong
+	// place. filepath.Abs is stable (uses the daemon's cwd at the moment
+	// of the call, but s.cfg.KitsDir is set once at startup and this
+	// process's cwd never changes), so the result is deterministic per
+	// daemon boot. If Abs fails for any reason (should never in practice,
+	// since the value is a filesystem path we already use elsewhere), we
+	// fall back to the raw value — better than dropping the endpoint
+	// entirely and forcing the CLI into a hard error.
+	if s.cfg.KitsDir == "" {
+		return ""
+	}
+	if abs, err := filepath.Abs(s.cfg.KitsDir); err == nil {
+		return abs
+	}
+	return s.cfg.KitsDir
+}
+
 // HostCommands returns a deep-copy snapshot of the aggregated host_commands
 // config assembled at startup from every installed kit.yaml
 // (docs/plans/workspace-db-consolidation.md PR2). It is read-only reference

@@ -11,7 +11,7 @@ import (
 )
 
 func TestProjectStore_SetGet(t *testing.T) {
-	s := orchestrator.NewProjectStore(nil)
+	s := orchestrator.NewProjectStore()
 
 	meta := &projectspec.ProjectMeta{
 		ID:   "proj-1",
@@ -32,7 +32,7 @@ func TestProjectStore_SetGet(t *testing.T) {
 }
 
 func TestProjectStore_Get_NotFound(t *testing.T) {
-	s := orchestrator.NewProjectStore(nil)
+	s := orchestrator.NewProjectStore()
 
 	_, ok := s.Get("nonexistent")
 	if ok {
@@ -41,7 +41,7 @@ func TestProjectStore_Get_NotFound(t *testing.T) {
 }
 
 func TestProjectStore_Remove(t *testing.T) {
-	s := orchestrator.NewProjectStore(nil)
+	s := orchestrator.NewProjectStore()
 
 	s.Set("proj-1", &projectspec.ProjectMeta{ID: "proj-1", Name: "Test"})
 	s.Remove("proj-1")
@@ -72,7 +72,7 @@ task_behaviors:
 	}
 	_ = hooksDir
 
-	s := orchestrator.NewProjectStore(nil)
+	s := orchestrator.NewProjectStore()
 	meta, err := s.Load(dir)
 	if err != nil {
 		t.Fatalf("load: %v", err)
@@ -106,7 +106,7 @@ func TestProjectStore_Load_ProjectLocalIgnored(t *testing.T) {
 		t.Fatalf("write project.local.yaml: %v", err)
 	}
 
-	s := orchestrator.NewProjectStore(nil)
+	s := orchestrator.NewProjectStore()
 	meta, err := s.Load(dir)
 	if err != nil {
 		t.Fatalf("load with project.local.yaml present: %v", err)
@@ -120,7 +120,7 @@ func TestProjectStore_Load_ProjectLocalIgnored(t *testing.T) {
 func TestProjectStore_Load_InvalidYAML(t *testing.T) {
 	dir := t.TempDir()
 
-	s := orchestrator.NewProjectStore(nil)
+	s := orchestrator.NewProjectStore()
 	_, err := s.Load(dir)
 	if err == nil {
 		t.Fatal("expected error for missing project.yaml")
@@ -142,7 +142,7 @@ func TestProjectStore_LoadAll(t *testing.T) {
 		{ID: "proj-c", WorkDir: dir3},
 	}
 
-	s := orchestrator.NewProjectStore(nil)
+	s := orchestrator.NewProjectStore()
 	errs := s.LoadAll(projects)
 
 	if len(errs) != 1 {
@@ -175,7 +175,7 @@ func TestProjectStore_LoadAll_MissingDirReturnsTypedError(t *testing.T) {
 	// directory was wiped (e.g. test artifact under /tmp).
 	dir2 := t.TempDir()
 
-	s := orchestrator.NewProjectStore(nil)
+	s := orchestrator.NewProjectStore()
 	errs := s.LoadAll([]*projectspec.Project{
 		{ID: "proj-a", WorkDir: dir1},
 		{ID: "proj-b", WorkDir: dir2},
@@ -208,7 +208,7 @@ func TestProjectStore_LoadAll_InvalidatesStaleMetaOnReloadFailure(t *testing.T) 
 	dir := t.TempDir()
 	setupProjectDir(t, dir, "proj-a", "Project A")
 
-	s := orchestrator.NewProjectStore(nil)
+	s := orchestrator.NewProjectStore()
 	if _, err := s.Load(dir); err != nil {
 		t.Fatalf("initial load: %v", err)
 	}

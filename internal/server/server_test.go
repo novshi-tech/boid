@@ -125,3 +125,86 @@ func TestServer_StartAndStop(t *testing.T) {
 		t.Error("expected error connecting to stopped broker")
 	}
 }
+
+// TestServer_KitsDir_ReturnsAbsolutePath pins codex PR7 review round 3's
+// MAJOR: --kits-dir accepts a relative path and stores it verbatim in
+// cfg.KitsDir. Before this fix, the endpoint returned that raw value, so a
+// CLI running in a different cwd from the daemon would resolve the
+// relative path against ITS OWN cwd and pull kits from an entirely
+// different directory (possibly nonexistent), silently materializing the
+// wrong runtime into the workspace. Server.KitsDir() must normalize to an
+// absolute path so cwd differences cannot skew resolution.
+func TestServer_KitsDir_ReturnsAbsolutePath(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	tmp := t.TempDir()
+	sockPath := filepath.Join(tmp, "boid.sock")
+
+	// Relative path — exactly what "boid start --kits-dir some/dir" would
+	// store verbatim in cfg.KitsDir.
+	relKits := "some/relative/kits"
+
+	srv, err := server.New(server.Config{
+		DBPath:     ":memory:",
+		SocketPath: sockPath,
+		HTTPAddr:   "127.0.0.1:0",
+		KitsDir:    relKits,
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(func() { _ = srv.Stop() })
+
+	got := srv.KitsDir()
+	if !filepath.IsAbs(got) {
+		t.Errorf("KitsDir() = %q, want an absolute path (relative --kits-dir must be normalized)", got)
+	}
+}
+
+// TestServer_KitsDir_PreservesAbsolutePath is the regression counterpart:
+// an already-absolute --kits-dir must be returned unchanged (not
+// double-joined onto another cwd).
+func TestServer_KitsDir_PreservesAbsolutePath(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	tmp := t.TempDir()
+	sockPath := filepath.Join(tmp, "boid.sock")
+	absKits := filepath.Join(tmp, "absolute", "kits")
+
+	srv, err := server.New(server.Config{
+		DBPath:     ":memory:",
+		SocketPath: sockPath,
+		HTTPAddr:   "127.0.0.1:0",
+		KitsDir:    absKits,
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(func() { _ = srv.Stop() })
+
+	if got := srv.KitsDir(); got != absKits {
+		t.Errorf("KitsDir() = %q, want %q (absolute path must not be re-joined)", got, absKits)
+	}
+}
+
+// TestServer_KitsDir_EmptyStaysEmpty pins that empty (unconfigured) KitsDir
+// renders as empty, not filepath.Abs("") which would resolve to the daemon
+// cwd — the empty state must stay observably empty for the CLI's fallback
+// / hard-error branching to still work.
+func TestServer_KitsDir_EmptyStaysEmpty(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	tmp := t.TempDir()
+	sockPath := filepath.Join(tmp, "boid.sock")
+
+	srv, err := server.New(server.Config{
+		DBPath:     ":memory:",
+		SocketPath: sockPath,
+		HTTPAddr:   "127.0.0.1:0",
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(func() { _ = srv.Stop() })
+
+	if got := srv.KitsDir(); got != "" {
+		t.Errorf("KitsDir() = %q, want empty (empty must not be turned into daemon cwd)", got)
+	}
+} 

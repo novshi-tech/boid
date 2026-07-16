@@ -21,11 +21,13 @@ The boid native proxy solves both problems:
 
 ### 1. Update the workspace
 
-Remove the docker kit reference from the workspace's `kits:` (a legacy field) and add `capabilities.docker` directly to the workspace. First, check its current contents:
+Remove the docker kit reference from the workspace's `kits:` and add `capabilities.docker` directly to the workspace. First, check its current contents:
 
 ```bash
 boid workspace export <slug> > ws.yaml
 ```
+
+> **Note (Phase 2.5 PR7):** `WorkspaceMeta.Kits` was removed from the code outright, so `boid workspace export`'s output can no longer contain `kits:` (a DB-backed workspace never had a `kits` column to begin with), and `boid workspace edit --from-file` rejects a body containing one. The "Before" example below illustrates hand-editing an old (not-yet-migrated) workspace shadow yaml — the actual steps in this guide only ever submit the "After" content (no `kits:`), so this guide's own workflow is unaffected by PR7.
 
 **Before (`ws.yaml`, still referencing the docker kit in `kits:`):**
 

@@ -25,8 +25,9 @@ type ProjectAppService struct {
 		SetWorkspaceID(projectID, workspaceID string)
 	}
 	// Hydrator is optional. When set, callers that need fully-resolved meta
-	// (workspace-level capabilities / kits / env merged in + SecretNamespace
-	// injected) go through GetWithWorkspace instead of the bare Meta.Get path.
+	// (workspace-level capabilities / host_commands / env merged in +
+	// SecretNamespace injected) go through GetWithWorkspace instead of the
+	// bare Meta.Get path.
 	// Wired in internal/server/wire.go alongside the workspace store.
 	Hydrator orchestrator.MetaHydrator
 	// CaptureUpstreamURL reads a project work_dir's git origin remote and
@@ -41,23 +42,16 @@ type ProjectAppService struct {
 	// the workspace create/show/update/remove endpoints; callers that never
 	// exercise those (most existing tests) can leave it nil.
 	Workspaces WorkspaceStore
-	// KitsDir is the base directory for installed kits (cfg.KitsDir), used
-	// by CreateWorkspace/UpdateWorkspace to materialize a legacy Kits
-	// reference before persisting (orchestrator.MaterializeWorkspaceKitsForPersist)
-	// — see that function's doc comment for why this step cannot be
-	// skipped. Empty is fine when the incoming meta never carries Kits
-	// (the common case for anything authored fresh, post-cutover).
-	KitsDir string
 	// HostCommands, when set, returns the daemon's live aggregated
 	// host_commands snapshot (name -> spec). CreateWorkspace/UpdateWorkspace
-	// validate every meta.HostCommands reference against this snapshot
-	// *after* kit expansion, rejecting an unknown name with 400
-	// (docs/plans/workspace-db-consolidation.md MAJOR 2, codex review: an
-	// unresolvable reference was previously persisted silently and only
-	// warned-about + skipped at dispatch time). Wired in
-	// internal/server/wire.go to Server.HostCommands. nil skips the
-	// validation entirely — tests that do not exercise it can leave this
-	// unset, same convention as CaptureUpstreamURL/Hydrator above.
+	// validate every meta.HostCommands reference against this snapshot,
+	// rejecting an unknown name with 400 (docs/plans/
+	// workspace-db-consolidation.md MAJOR 2, codex review: an unresolvable
+	// reference was previously persisted silently and only warned-about +
+	// skipped at dispatch time). Wired in internal/server/wire.go to
+	// Server.HostCommands. nil skips the validation entirely — tests that do
+	// not exercise it can leave this unset, same convention as
+	// CaptureUpstreamURL/Hydrator above.
 	HostCommands func() map[string]orchestrator.HostCommandSpec
 	// mu serializes every workspace-mutating entry point — CreateWorkspace,
 	// UpdateWorkspace, RemoveWorkspace, and SetProjectWorkspace — against
@@ -335,21 +329,22 @@ func (s *ProjectAppService) CreateWorkspace(slug string, meta *orchestrator.Work
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	// A body carrying a legacy Kits list (e.g. relayed verbatim by `boid
-	// workspace assign`'s auto-create from an old workspace.yaml) must be
-	// expanded before it reaches the DB — see
-	// MaterializeWorkspaceKitsForPersist's doc comment for why silently
-	// skipping this would drop the kit's env/host_commands/bindings for
-	// good. No-op when meta.Kits is empty (the common case).
-	if err := orchestrator.MaterializeWorkspaceKitsForPersist(s.KitsDir, meta); err != nil {
-		return nil, &StatusError{Code: http.StatusBadRequest, Message: fmt.Sprintf("resolve workspace kits: %v", err)}
-	}
 	// MAJOR 2 (codex review): validate every meta.HostCommands reference
-	// against the daemon's live aggregated snapshot *after* kit expansion,
-	// so a kit-derived name (just added to meta.HostCommands by
-	// MaterializeWorkspaceKitsForPersist above) is covered too. See the
-	// HostCommands field's doc comment for why an unknown name must be
-	// rejected here rather than silently persisted.
+	// against the daemon's live aggregated snapshot. See the HostCommands
+	// field's doc comment for why an unknown name must be rejected here
+	// rather than silently persisted.
+	//
+	// Phase 2.5 PR7 (docs/plans/workspace-db-consolidation.md, decision 12):
+	// this used to also call orchestrator.MaterializeWorkspaceKitsForPersist
+	// here to expand a legacy Kits list the wire body might still carry.
+	// WorkspaceMeta.Kits no longer exists and workspaceMetaStrict no longer
+	// accepts a `kits:` key at all, so no wire body can carry one any
+	// more — a caller that still sends `kits:` now gets a 400 straight out
+	// of the strict decoder, before this method ever runs. The one
+	// remaining legacy-kits caller (cmd/workspace.go's
+	// ensureWorkspaceExistsForAssign, `boid workspace assign`'s auto-create
+	// convenience path) resolves it client-side before submitting an
+	// already-materialized body.
 	if err := s.validateHostCommandRefs(meta.HostCommands); err != nil {
 		return nil, err
 	}
@@ -439,13 +434,10 @@ func (s *ProjectAppService) UpdateWorkspace(slug string, meta *orchestrator.Work
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	// Same rationale as CreateWorkspace: a Kits-bearing body must be
-	// expanded before it reaches the DB, or the reference is silently lost.
-	if err := orchestrator.MaterializeWorkspaceKitsForPersist(s.KitsDir, meta); err != nil {
-		return nil, &StatusError{Code: http.StatusBadRequest, Message: fmt.Sprintf("resolve workspace kits: %v", err)}
-	}
-	// MAJOR 2 (codex review): same post-expansion validation as
-	// CreateWorkspace — see that call site's comment.
+	// MAJOR 2 (codex review): same validation as CreateWorkspace — see that
+	// call site's comment (and its Phase 2.5 PR7 update: no legacy Kits
+	// expansion happens here any more, since the wire body can no longer
+	// carry a `kits:` key at all).
 	if err := s.validateHostCommandRefs(meta.HostCommands); err != nil {
 		return nil, err
 	}
@@ -709,12 +701,8 @@ func (s *ProjectAppService) ImportWorkspace(slug string, meta *orchestrator.Work
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	// Same expand-then-validate ordering as CreateWorkspace/UpdateWorkspace
-	// — see MaterializeWorkspaceKitsForPersist's and validateHostCommandRefs'
-	// call sites there for why this order matters.
-	if err := orchestrator.MaterializeWorkspaceKitsForPersist(s.KitsDir, meta); err != nil {
-		return nil, &StatusError{Code: http.StatusBadRequest, Message: fmt.Sprintf("resolve workspace kits: %v", err)}
-	}
+	// Same validation as CreateWorkspace/UpdateWorkspace — see
+	// validateHostCommandRefs' call sites there.
 	if err := s.validateHostCommandRefs(meta.HostCommands); err != nil {
 		return nil, err
 	}

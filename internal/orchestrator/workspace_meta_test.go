@@ -11,7 +11,6 @@ func TestWorkspaceMeta_YAMLRoundTrip(t *testing.T) {
 	t.Parallel()
 
 	original := WorkspaceMeta{
-		Kits: []string{"go-tools", "node-lts"},
 		Env: map[string]string{
 			"GOPATH": "/home/user/go",
 			"DEBUG":  "1",
@@ -26,16 +25,6 @@ func TestWorkspaceMeta_YAMLRoundTrip(t *testing.T) {
 	var decoded WorkspaceMeta
 	if err := yaml.Unmarshal(data, &decoded); err != nil {
 		t.Fatalf("Unmarshal: %v", err)
-	}
-
-	// Check Kits
-	if len(decoded.Kits) != len(original.Kits) {
-		t.Errorf("Kits length: got %d, want %d", len(decoded.Kits), len(original.Kits))
-	}
-	for i, k := range original.Kits {
-		if i < len(decoded.Kits) && decoded.Kits[i] != k {
-			t.Errorf("Kits[%d]: got %q, want %q", i, decoded.Kits[i], k)
-		}
 	}
 
 	// Check Env

@@ -14,7 +14,6 @@ type ProjectStore struct {
 	mu             sync.RWMutex
 	metas          map[string]*ProjectMeta
 	workspaceIDs   map[string]string // projectID → workspaceID (empty if unlinked)
-	resolver       KitResolver
 	workspaceStore *WorkspaceStore
 	// hostCommands is the daemon's aggregated host_commands config
 	// (docs/plans/workspace-db-consolidation.md host_commands 実定義の集約先):
@@ -25,13 +24,11 @@ type ProjectStore struct {
 	hostCommands map[string]HostCommandSpec
 }
 
-// NewProjectStore creates a new store. If resolver is non-nil, kit references
-// in project.yaml files will be resolved and merged at load time.
-func NewProjectStore(resolver KitResolver) *ProjectStore {
+// NewProjectStore creates a new store.
+func NewProjectStore() *ProjectStore {
 	return &ProjectStore{
 		metas:        make(map[string]*ProjectMeta),
 		workspaceIDs: make(map[string]string),
-		resolver:     resolver,
 	}
 }
 
@@ -84,7 +81,7 @@ func (s *ProjectStore) hostCommandSpec(name string) (HostCommandSpec, bool) {
 
 // Load reads project.yaml from the work_dir and stores the meta in memory.
 func (s *ProjectStore) Load(workDir string) (*ProjectMeta, error) {
-	meta, err := ReadProjectMetaWithKits(workDir, s.resolver)
+	meta, err := ReadProjectMetaWithKits(workDir)
 	if err != nil {
 		return nil, err
 	}

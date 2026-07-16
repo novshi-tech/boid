@@ -69,14 +69,29 @@ func MigrateWorkspaceYAMLToDB(conn *sql.DB, workspaceDir, kitsDir string, projec
 	}
 
 	if current != nil && current.state == "staging" {
-		if current.inputHash != pre.inputHash {
+		// MAJOR 4 (codex review round 1, docs/plans/workspace-db-consolidation.md
+		// Phase 2.5 PR7): a state=staging row recorded by a PR6 binary was
+		// hashed with the pre-PR7 shape (no WorkspaceKitRefs field — see
+		// computeWorkspaceMigrationInputHash's doc comment). Comparing only
+		// against the current (PR7) shape would make every such row a
+		// guaranteed mismatch even when the on-disk workspace/kit inputs
+		// never changed between the PR6 binary's interrupted attempt and
+		// this restart on the PR7 binary — turning a routine binary upgrade
+		// into a mandatory "manual intervention" abort. pre.legacyInputHashPR6
+		// recomputes the same preflight inputs using that older shape, so an
+		// upgrade-in-place with genuinely unchanged inputs still rolls
+		// forward; only an actual on-disk change (which changes both hashes)
+		// still aborts.
+		if current.inputHash != pre.inputHash && current.inputHash != pre.legacyInputHashPR6 {
 			return fmt.Errorf(
 				"workspace_db_consolidation: found state=staging (input_hash=%q) from an interrupted prior attempt, but the current workspace/kit inputs hash to %q — refusing to roll forward automatically since the on-disk inputs changed since the interruption; restore the prior workspace yaml/kit state (or manually resolve the schema_migrations row) and restart (docs/plans/workspace-db-consolidation.md crash recovery)",
 				current.inputHash, pre.inputHash,
 			)
 		}
-		// Recorded input_hash matches what we'd compute right now: safe to
-		// roll forward by re-running the (idempotent) write phase below.
+		// Recorded input_hash matches what we'd compute right now (either
+		// the current PR7 shape, or the legacy PR6 shape from an
+		// in-progress binary upgrade): safe to roll forward by re-running
+		// the (idempotent) write phase below.
 	}
 
 	// Phase 1: record the staging attempt in its own committed transaction,
@@ -159,6 +174,13 @@ type workspaceMigrationPreflight struct {
 	sortedSlugs  []string
 	hostCommands map[string]HostCommandSpec
 	inputHash    string
+	// legacyInputHashPR6 (MAJOR 4, codex review round 1) is the same
+	// preflight inputs hashed with the pre-Phase-2.5-PR7 shape (no
+	// WorkspaceKitRefs field) — see
+	// computeWorkspaceMigrationInputHashPR6Shape's doc comment for why
+	// MigrateWorkspaceYAMLToDB's crash-recovery check also compares against
+	// this.
+	legacyInputHashPR6 string
 }
 
 // preflightWorkspaceMigration parses every workspace yaml under
@@ -176,13 +198,37 @@ func preflightWorkspaceMigration(workspaceDir, kitsDir string, projectRepo *Proj
 		return nil, fmt.Errorf("list workspace yaml: %w", err)
 	}
 
+	// readWorkspaceYAMLSnapshot (below) needs the resolved directory, not the
+	// possibly-empty parameter: NewWorkspaceStore("") resolves internally to
+	// DefaultWorkspaceDir() on its own private field, which this function
+	// has no access to — resolving it again here the same way keeps
+	// readWorkspaceYAMLSnapshot reading the same files yamlStore.List() just
+	// enumerated, instead of a bogus path relative to the daemon's cwd.
+	resolvedWorkspaceDir := workspaceDir
+	if resolvedWorkspaceDir == "" {
+		if d, dirErr := DefaultWorkspaceDir(); dirErr == nil {
+			resolvedWorkspaceDir = d
+		}
+	}
+
 	rawWorkspaces := make(map[string]*WorkspaceMeta, len(slugs))
+	rawKitRefs := make(map[string][]string, len(slugs))
 	for _, slug := range slugs {
-		meta, err := yamlStore.Load(slug)
+		// MAJOR 5 (codex review round 1, docs/plans/workspace-db-consolidation.md):
+		// readWorkspaceYAMLSnapshot reads slug.yaml exactly once and derives
+		// both meta and kitRefs from that single byte snapshot — see its doc
+		// comment for the TOCTOU this replaces (yamlStore.Load and
+		// legacyWorkspaceYAMLKits used to read the same path independently,
+		// so an atomic rename racing between the two reads could hand this
+		// migration a "meta from the old file version + kits from the new
+		// file version" hybrid that never existed on disk at any single
+		// instant).
+		meta, kitRefs, err := readWorkspaceYAMLSnapshot(resolvedWorkspaceDir, slug)
 		if err != nil {
-			return nil, fmt.Errorf("parse workspace yaml %q: %w", slug, err)
+			return nil, fmt.Errorf("read workspace yaml %q: %w", slug, err)
 		}
 		rawWorkspaces[slug] = meta
+		rawKitRefs[slug] = kitRefs
 	}
 
 	// MAJOR 1 (codex review): read every installed kit's kit.yaml exactly
@@ -226,36 +272,39 @@ func preflightWorkspaceMigration(workspaceDir, kitsDir string, projectRepo *Proj
 	// MAJOR 2 (codex review, 2nd pass): pass snap.byKit (every installed
 	// kit's raw host_commands/env/additional_bindings) into the hash input
 	// too — see computeWorkspaceMigrationInputHash's doc comment for why.
-	inputHash, err := computeWorkspaceMigrationInputHash(rawWorkspaces, hostCommands, referenced, snap.byKit)
+	inputHash, err := computeWorkspaceMigrationInputHash(rawWorkspaces, hostCommands, referenced, snap.byKit, rawKitRefs)
 	if err != nil {
 		return nil, fmt.Errorf("compute input hash: %w", err)
 	}
 
+	// MAJOR 4 (codex review round 1): also hash the very same raw inputs
+	// using the pre-Phase-2.5-PR7 shape (no WorkspaceKitRefs field), purely
+	// so MigrateWorkspaceYAMLToDB's crash-recovery check can roll forward a
+	// state=staging row recorded by a PR6 binary whose on-disk inputs have
+	// not actually changed since — see
+	// computeWorkspaceMigrationInputHashPR6Shape's doc comment. rawKitRefs
+	// (MAJOR 1, codex review round 2) is passed through so each workspace's
+	// legacy `kits:` list is restored onto pr6WorkspaceMeta.Kits — without
+	// it, this legacy hash could never reflect a workspace's kit references
+	// at all, since rawWorkspaces' current WorkspaceMeta no longer has a
+	// field to carry them.
+	legacyInputHashPR6, err := computeWorkspaceMigrationInputHashPR6Shape(rawWorkspaces, hostCommands, referenced, snap.byKit, rawKitRefs)
+	if err != nil {
+		return nil, fmt.Errorf("compute legacy (pre-PR7) input hash: %w", err)
+	}
+
 	// Build the DB-bound workspace metas: same data as rawWorkspaces, but
 	// with HostCommands/Env/AdditionalBindings filled in from each
-	// workspace's Kits (plan note: 「workspace.HostCommands は [kits[].
-	// host_commands の名前を全部 flatten して重複除去した結果] を fill」,
-	// extended by BLOCKER 1 below to Env and AdditionalBindings). Cloned
-	// rather than mutated in place so the hash computed above reflects only
-	// the raw, unexpanded yaml/kit inputs.
+	// workspace's legacy kit refs (rawKitRefs, read separately above since
+	// WorkspaceMeta no longer has a Kits field to carry them — Phase 2.5
+	// PR7). Cloned rather than mutated in place so the hash computed above
+	// reflects only the raw, unexpanded yaml/kit inputs.
 	dbWorkspaces := make(map[string]*WorkspaceMeta, len(rawWorkspaces))
 	for slug, raw := range rawWorkspaces {
 		meta := cloneWorkspaceMetaForMigration(raw)
-		if err := materializeKitRuntimeIntoWorkspace(snap, meta.Kits, meta); err != nil {
+		if err := materializeKitRuntimeIntoWorkspace(snap, rawKitRefs[slug], meta); err != nil {
 			return nil, fmt.Errorf("workspace %q: materialize kit runtime: %w", slug, err)
 		}
-		// BLOCKER 1 (codex review): the workspaces table has no column for
-		// Kits (WorkspaceRepository.Load/Save never reads/writes it), so
-		// once this migration commits, a DB-backed WorkspaceMeta always
-		// comes back with Kits == nil. materializeKitRuntimeIntoWorkspace
-		// just folded every named kit's host_commands/env/
-		// additional_bindings into meta's own fields, so clearing Kits here
-		// mirrors what a DB round-trip will do anyway — and, as a direct
-		// consequence, GetWithWorkspace's separate ws.Kits merge block
-		// (which re-resolves and re-reads kit.yaml at every hydration) is
-		// now dead code on the committed/DB-backed path: it only still
-		// fires for the legacy yaml-mode WorkspaceStore (repo == nil).
-		meta.Kits = nil
 		dbWorkspaces[slug] = meta
 	}
 
@@ -266,35 +315,32 @@ func preflightWorkspaceMigration(workspaceDir, kitsDir string, projectRepo *Proj
 	sort.Strings(sortedSlugs)
 
 	return &workspaceMigrationPreflight{
-		workspaces:   dbWorkspaces,
-		sortedSlugs:  sortedSlugs,
-		hostCommands: hostCommands,
-		inputHash:    inputHash,
+		workspaces:         dbWorkspaces,
+		sortedSlugs:        sortedSlugs,
+		hostCommands:       hostCommands,
+		inputHash:          inputHash,
+		legacyInputHashPR6: legacyInputHashPR6,
 	}, nil
 }
 
-// cloneWorkspaceMetaForMigration returns a shallow copy of meta.
-// HostCommands, Env, and AdditionalBindings are the only fields ever
-// reassigned (never appended to in place) on the clone by
-// preflightWorkspaceMigration's caller and by materializeKitRuntimeIntoWorkspace
-// (each merge helper they call — unionStringsSorted / mergeStringMaps /
-// unionBindMountSlices — returns a brand-new slice/map rather than mutating
-// its input), so a shallow copy — which leaves every field's slice/map
-// initially sharing the original's backing array — is safe: nothing is ever
-// mutated in place through the clone.
+// cloneWorkspaceMetaForMigration returns a shallow copy of meta. Nothing
+// this migration does mutates a slice/map field in place (every merge
+// helper — unionStringsSorted / mergeStringMaps / unionBindMountSlices —
+// returns a brand-new slice/map rather than mutating its input), so a
+// shallow copy — which leaves every field's slice/map initially sharing the
+// original's backing array — is safe: nothing is ever mutated in place
+// through the clone.
 func cloneWorkspaceMetaForMigration(meta *WorkspaceMeta) *WorkspaceMeta {
 	clone := *meta
 	return &clone
 }
 
 // kitRuntimeRaw holds the raw (unexpanded) host_commands / env /
-// additional_bindings sections read directly from a single kit.yaml file,
-// bypassing ReadKitMeta's validation/interpolation pipeline — same
-// reasoning as readKitHostCommandsRaw's doc comment (host_commands_config.go),
-// extended to the two other runtime sections BLOCKER 1 needs to materialize
-// into a workspace. Used only by snapshotAllKitYAMLs; the per-request
-// ws.Kits merge path in GetWithWorkspace still uses the fully validated
-// ReadKitMeta.
+// additional_bindings sections read directly from a single kit.yaml file —
+// same reasoning as readKitHostCommandsRaw's doc comment
+// (host_commands_config.go), extended to the two other runtime sections
+// BLOCKER 1 needs to materialize into a workspace. Used only by
+// snapshotAllKitYAMLs.
 type kitRuntimeRaw struct {
 	HostCommands       HostCommands      `yaml:"host_commands"`
 	Env                map[string]string `yaml:"env"`
@@ -319,6 +365,54 @@ func readKitRuntimeRaw(kitDir string) (kitRuntimeRaw, error) {
 		return kitRuntimeRaw{}, fmt.Errorf("parse kit.yaml: %w", err)
 	}
 	return raw, nil
+}
+
+// workspaceYAMLReadFile reads a workspace yaml file's raw bytes. Indirected
+// through a package-level variable rather than calling os.ReadFile directly
+// solely so tests can pin readWorkspaceYAMLSnapshot's core TOCTOU-avoidance
+// invariant below — that it reads the file exactly once — by counting calls
+// and/or swapping the underlying file's content out from under a would-be
+// second read.
+var workspaceYAMLReadFile = os.ReadFile
+
+// readWorkspaceYAMLSnapshot reads workspaceDir/slug.yaml's raw bytes exactly
+// once and decodes both its WorkspaceMeta fields and its legacy top-level
+// `kits:` reference list from that single byte snapshot.
+//
+// MAJOR 5 (codex review round 1, docs/plans/workspace-db-consolidation.md):
+// this replaces what used to be two independent reads of the same path —
+// yamlStore.Load(slug) (a full os.ReadFile + yaml.Unmarshal into
+// *WorkspaceMeta) followed by the now-removed legacyWorkspaceYAMLKits(dir,
+// slug) (a second, separate os.ReadFile + yaml.Unmarshal of the very same
+// file, needed only because WorkspaceMeta no longer has a Kits field for the
+// first read to populate — Phase 2.5 PR7, decision 12). An atomic rename
+// landing between those two reads could hand preflightWorkspaceMigration a
+// "meta from the old file version + kits from the new file version" (or vice
+// versa) hybrid that never existed on disk at any single instant, which this
+// one-time, at-most-once-committed migration would then permanently bake
+// into the workspaces table (PR3 already flagged this exact class of TOCTOU
+// bug once before, for a different pair of reads). Reading the byte snapshot
+// once and decoding both shapes from it makes that hybrid state impossible.
+//
+// An absent `kits:` key decodes to a nil slice — the fast path, and the
+// common case for anything authored post-cutover.
+func readWorkspaceYAMLSnapshot(workspaceDir, slug string) (meta *WorkspaceMeta, kitRefs []string, err error) {
+	path := filepath.Join(workspaceDir, slug+".yaml")
+	raw, err := workspaceYAMLReadFile(path)
+	if err != nil {
+		return nil, nil, fmt.Errorf("read %s: %w", path, err)
+	}
+	meta = &WorkspaceMeta{}
+	if err := yaml.Unmarshal(raw, meta); err != nil {
+		return nil, nil, fmt.Errorf("parse %s: %w", path, err)
+	}
+	var kitsDoc struct {
+		Kits []string `yaml:"kits"`
+	}
+	if err := yaml.Unmarshal(raw, &kitsDoc); err != nil {
+		return nil, nil, fmt.Errorf("parse %s: %w", path, err)
+	}
+	return meta, kitsDoc.Kits, nil
 }
 
 // kitYAMLSnapshot is an immutable, once-only read of every installed kit's
@@ -437,11 +531,12 @@ func aggregateHostCommandsFromSnapshot(snap *kitYAMLSnapshot) (map[string]HostCo
 // or bind mount would regress after cutover.
 //
 // Precedence: kit-provided values are defaults, meta's own
-// (workspace-authored) values win on conflict — the same "kit loses to
-// workspace" precedence GetWithWorkspace already applies for the
-// yaml-mode/ws.Kits path at every hydration; this just applies it once here,
-// at migration time, since the materialized result is what dispatch reads
-// from this point on.
+// (workspace-authored) values win on conflict — kit-provided values losing
+// to workspace-authored ones is a convention this whole mechanism has
+// followed since it existed (the retired GetWithWorkspace merge path
+// applied the same precedence pre-PR6); this just applies it once here, at
+// migration/materialization time, since the materialized result is what
+// dispatch reads from this point on.
 //
 // A kit name with no corresponding entry in snap now aborts the migration
 // (MAJOR 2, codex review 3rd pass) rather than warn-and-skip: see this
@@ -512,8 +607,7 @@ func materializeKitRuntimeIntoWorkspace(snap *kitYAMLSnapshot, kits []string, me
 		// KitRoots mechanism (MergeKitMetaIntoBehavior in spec_loader.go /
 		// sandbox_builder.go's spec.Visibility.KitRoots) that shell hooks
 		// rely on to read kit-dir scripts/assets. The workspaces table has
-		// no column for Kits at all (see the `meta.Kits = nil` comment in
-		// preflightWorkspaceMigration), so once cutover commits, KitRoots
+		// no column for Kits at all, so once cutover commits, KitRoots
 		// itself is never regenerated again for this workspace — this bind
 		// mount, folded into meta.AdditionalBindings, is what carries the
 		// "expose this kit's directory" guarantee across the DB boundary
@@ -596,43 +690,48 @@ func materializeKitRuntimeIntoWorkspace(snap *kitYAMLSnapshot, kits []string, me
 	return nil
 }
 
-// MaterializeWorkspaceKitsForPersist resolves meta.Kits (if any) against the
-// kits installed under kitsDir, merges their host_commands (folded in as
+// MaterializeWorkspaceKitsForPersist resolves kitRefs (a legacy `kits:`
+// reference list, sourced by the caller — see below) against the kits
+// installed under kitsDir, merging their host_commands (folded in as
 // reference names)/env/additional_bindings into meta in place — the exact
-// same expansion MigrateWorkspaceYAMLToDB performs once at cutover — and
-// then clears meta.Kits.
+// same expansion MigrateWorkspaceYAMLToDB performs once at cutover.
 //
-// Call this before persisting any *WorkspaceMeta that might still carry a
-// legacy Kits list through WorkspaceRepository.Create/Save (docs/plans/
-// workspace-db-consolidation.md PR4: POST/PUT /api/workspaces, and by
-// extension `boid workspace create`/`edit` and `assign`'s legacy-yaml
-// auto-create). The workspaces table has no kits column at all (decision
-// 「kits カラム無し」), so a Kits value left unmaterialized would silently
-// vanish on save regardless — and once gone, it can never be re-resolved:
-// GetWithWorkspace's own per-hydration ws.Kits merge block only ever sees
-// whatever ended up (persisted) in the DB row, which would be empty. This
-// was discovered as a real e2e regression (docker-proxy-* scenarios failing
-// with "$DOCKER_PROXY_TEST_ROOT/docker-proxy-test.sh: not found", exit 127)
-// when `boid workspace assign`'s auto-create path (introduced in PR4)
-// funneled a legacy `kits: [docker-proxy-test]` yaml straight into
-// WorkspaceRepository.Create without this expansion step.
+// Phase 2.5 PR7 (docs/plans/workspace-db-consolidation.md, decision 12)
+// removed WorkspaceMeta.Kits outright: this function used to read
+// meta.Kits and clear it after resolving. There is no longer a Kits field
+// to read, so kitRefs is now an explicit parameter the caller must source
+// itself. The only remaining caller is cmd/workspace.go's
+// ensureWorkspaceExistsForAssign (`boid workspace assign`'s auto-create
+// convenience path), which extracts a legacy `kits:` key straight out of
+// the raw on-disk shadow yaml before this call — the wire-level
+// POST/PUT/import bodies no longer accept a kits: key at all (workspaceMetaStrict
+// has no such field any more), so no server-side caller needs this any
+// longer. cmd/project_migrate.go no longer calls this either: its own
+// auto-generated legacy kit's host_commands/additional_bindings are folded
+// directly into the workspace meta from the legacy project.yaml's own
+// fields (mergeLegacyFieldsIntoWorkspace), with no kit-directory round trip
+// needed at all — only a *pre-existing, externally referenced* kit (like
+// ensureWorkspaceExistsForAssign's case) needs this function's disk lookup.
 //
-// meta.Kits == nil/empty is a fast path: the overwhelming majority of
-// calls (any workspace that has never referenced a kit) never touch the
-// filesystem at all.
-func MaterializeWorkspaceKitsForPersist(kitsDir string, meta *WorkspaceMeta) error {
-	if meta == nil || len(meta.Kits) == 0 {
+// This was discovered as a real e2e regression (docker-proxy-* scenarios
+// failing with "$DOCKER_PROXY_TEST_ROOT/docker-proxy-test.sh: not found",
+// exit 127) when `boid workspace assign`'s auto-create path (introduced in
+// PR4) funneled a legacy `kits: [docker-proxy-test]` yaml straight into
+// WorkspaceRepository.Create without this expansion step — the workspaces
+// table has no kits column at all (decision 「kits カラム無し」), so an
+// unmaterialized kit reference would silently vanish on save.
+//
+// len(kitRefs) == 0 is a fast path: the overwhelming majority of calls (any
+// workspace that never referenced a kit) never touch the filesystem at all.
+func MaterializeWorkspaceKitsForPersist(kitsDir string, kitRefs []string, meta *WorkspaceMeta) error {
+	if meta == nil || len(kitRefs) == 0 {
 		return nil
 	}
 	snap, err := snapshotAllKitYAMLs(kitsDir)
 	if err != nil {
 		return fmt.Errorf("snapshot kit yaml: %w", err)
 	}
-	if err := materializeKitRuntimeIntoWorkspace(snap, meta.Kits, meta); err != nil {
-		return err
-	}
-	meta.Kits = nil
-	return nil
+	return materializeKitRuntimeIntoWorkspace(snap, kitRefs, meta)
 }
 
 // unionStringsSorted returns the sorted, deduplicated union of a and b.
@@ -685,28 +784,164 @@ type workspaceMigrationHashInput struct {
 	// silently rolling forward with the changed values instead of aborting
 	// per the documented crash-recovery contract.
 	KitRuntime map[string]kitRuntimeRaw `json:"kit_runtime"`
+	// WorkspaceKitRefs (Phase 2.5 PR7, docs/plans/workspace-db-consolidation.md
+	// decision 12) is each workspace's legacy `kits:` reference list, read
+	// directly off the raw yaml file (readWorkspaceYAMLSnapshot) since
+	// WorkspaceMeta no longer has a Kits field for Workspaces above to
+	// carry. Without this, editing only a workspace yaml's `kits:` list
+	// (adding/removing/reordering a reference, with no other field
+	// changing) between a staged and a resumed migration attempt would go
+	// completely undetected by the hash — the same class of bug KitRuntime
+	// above fixes for a referenced kit's own content.
+	WorkspaceKitRefs map[string][]string `json:"workspace_kit_refs"`
 }
 
 // computeWorkspaceMigrationInputHash hashes the raw (pre-union) workspace
 // metas, the aggregated kit host_commands, the project->workspace reference
-// list, and every installed kit's raw runtime snapshot (env/
-// additional_bindings included, MAJOR 2) — everything
-// preflightWorkspaceMigration consulted — into a single sha256 hex digest,
-// used by MigrateWorkspaceYAMLToDB's crash recovery to detect whether the
-// on-disk/DB inputs changed since an interrupted attempt.
+// list, every installed kit's raw runtime snapshot (env/additional_bindings
+// included, MAJOR 2), and each workspace's legacy kit ref list (Phase 2.5
+// PR7) — everything preflightWorkspaceMigration consulted — into a single
+// sha256 hex digest, used by MigrateWorkspaceYAMLToDB's crash recovery to
+// detect whether the on-disk/DB inputs changed since an interrupted
+// attempt.
 func computeWorkspaceMigrationInputHash(
 	workspaces map[string]*WorkspaceMeta,
 	hostCommands map[string]HostCommandSpec,
 	projectRefs []*WorkspaceSummary,
 	kitRuntime map[string]kitRuntimeRaw,
+	workspaceKitRefs map[string][]string,
 ) (string, error) {
-	sortedRefs := append([]*WorkspaceSummary(nil), projectRefs...)
-	sort.Slice(sortedRefs, func(i, j int) bool { return sortedRefs[i].ID < sortedRefs[j].ID })
-
 	b, err := json.Marshal(workspaceMigrationHashInput{
 		Workspaces:           workspaces,
 		HostCommands:         hostCommands,
-		ProjectWorkspaceRefs: sortedRefs,
+		ProjectWorkspaceRefs: sortedWorkspaceRefsForHash(projectRefs),
+		KitRuntime:           kitRuntime,
+		WorkspaceKitRefs:     workspaceKitRefs,
+	})
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:]), nil
+}
+
+// sortedWorkspaceRefsForHash returns a copy of projectRefs sorted by ID, so
+// the hash computed from it is deterministic regardless of the caller's
+// (DB query) iteration order. Shared by
+// computeWorkspaceMigrationInputHash and its PR6-shape counterpart below.
+func sortedWorkspaceRefsForHash(projectRefs []*WorkspaceSummary) []*WorkspaceSummary {
+	sorted := append([]*WorkspaceSummary(nil), projectRefs...)
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i].ID < sorted[j].ID })
+	return sorted
+}
+
+// pr6WorkspaceMeta mirrors WorkspaceMeta (workspace_meta.go) field-for-field,
+// tag-for-tag, order-for-order, exactly as it existed in Phase 2.5 PR6 (git
+// commit fb1f222, "feat: Phase 2.5 PR6 (kit 機構退役)") — before PR7 (decision
+// 12) removed the Kits field from WorkspaceMeta outright. Used ONLY by
+// computeWorkspaceMigrationInputHashPR6Shape for legacy hash reconstruction
+// (MAJOR 4, codex review round 1). Go's encoding/json marshals struct fields
+// in declaration order (unlike map keys, which it sorts), so this field
+// order is not cosmetic — it is exactly what makes json.Marshal of this type
+// byte-identical to what a PR6 binary produced for the same logical data.
+//
+// IMPORTANT: do NOT modify this struct once PR7 lands — including to mirror
+// a future field WorkspaceMeta gains, or to "clean up" the Kits field back
+// into WorkspaceMeta's own now-different position. Its byte shape must stay
+// stable forever to keep the crash-recovery upgrade path
+// (computeWorkspaceMigrationInputHashPR6Shape / MigrateWorkspaceYAMLToDB)
+// deterministic for any state=staging row a PR6 binary may have left on disk.
+type pr6WorkspaceMeta struct {
+	Kits               []string          `yaml:"kits,omitempty" json:"kits,omitempty"`
+	Env                map[string]string `yaml:"env,omitempty" json:"env,omitempty"`
+	Capabilities       Capabilities      `yaml:"capabilities,omitempty" json:"capabilities,omitempty"`
+	AllowedDomains     []string          `yaml:"allowed_domains,omitempty" json:"allowed_domains,omitempty"`
+	ExtraRepos         []string          `yaml:"extra_repos,omitempty" json:"extra_repos,omitempty"`
+	HostCommands       []string          `yaml:"host_commands,omitempty" json:"host_commands,omitempty"`
+	ContainerImage     string            `yaml:"container_image,omitempty" json:"container_image,omitempty"`
+	AdditionalBindings []BindMount       `yaml:"additional_bindings,omitempty" json:"additional_bindings,omitempty"`
+}
+
+// workspaceMigrationHashInputPR6 mirrors workspaceMigrationHashInput exactly
+// as it existed before Phase 2.5 PR7 added the WorkspaceKitRefs field
+// (decision 12) — used only by computeWorkspaceMigrationInputHashPR6Shape,
+// itself used only for MigrateWorkspaceYAMLToDB's crash-recovery upgrade
+// check (MAJOR 4, codex review round 1). IMPORTANT: do NOT add
+// WorkspaceKitRefs (or any other field workspaceMigrationHashInput gains in
+// the future) here — the whole point of this type is to keep reproducing
+// the exact byte shape a PR6 binary would have hashed, forever.
+//
+// Workspaces is keyed to pr6WorkspaceMeta rather than the current (PR7)
+// WorkspaceMeta (MAJOR 1, codex review round 2): PR6's WorkspaceMeta carried
+// a Kits field directly, so PR6's own computeWorkspaceMigrationInputHash
+// hashed each workspace's kit references as part of its Workspaces entry.
+// Reusing the current, Kits-less WorkspaceMeta here can never reproduce
+// that — it has no field to carry the value at all — so every workspace
+// that referenced a kit would silently hash differently from what a real
+// PR6 binary computed for the identical on-disk inputs, defeating MAJOR 4's
+// crash-recovery upgrade check specifically for the workspaces it matters
+// most for (the ones with kit-supplied host_commands/env/bindings to lose).
+type workspaceMigrationHashInputPR6 struct {
+	Workspaces           map[string]*pr6WorkspaceMeta `json:"workspaces"`
+	HostCommands         map[string]HostCommandSpec   `json:"host_commands"`
+	ProjectWorkspaceRefs []*WorkspaceSummary          `json:"project_workspace_refs"`
+	KitRuntime           map[string]kitRuntimeRaw     `json:"kit_runtime"`
+}
+
+// computeWorkspaceMigrationInputHashPR6Shape recomputes
+// preflightWorkspaceMigration's input hash using the pre-Phase-2.5-PR7 shape
+// (no WorkspaceKitRefs field, and each workspace rehydrated with its Kits
+// field restored from workspaceKitRefs) from the very same raw inputs
+// computeWorkspaceMigrationInputHash was given (MAJOR 4, codex review round
+// 1; MAJOR 1, codex review round 2, docs/plans/workspace-db-consolidation.md).
+//
+// Why this exists: PR7 added a 5th field (WorkspaceKitRefs) to
+// workspaceMigrationHashInput to close a real hash-blind-spot (a workspace
+// yaml's `kits:` list changing undetected — see that field's own doc
+// comment). But MigrateWorkspaceYAMLToDB's crash recovery persists
+// input_hash across a daemon binary upgrade: a PR6 binary that recorded
+// state=staging (interrupted mid-migration) computed its input_hash with
+// the *old* 4-field shape, where each workspace's own WorkspaceMeta.Kits
+// field carried its kit references directly. Restarting on a PR7 binary
+// recomputes the hash with the new 5-field shape unconditionally — which,
+// for every possible on-disk input, differs from whatever a PR6 binary
+// would have recorded, even when nothing on disk actually changed between
+// the interrupted attempt and this restart. Without this fallback, every
+// such upgrade would hit the crash-recovery "inputs changed, refusing to
+// roll forward automatically" abort and demand manual intervention, even
+// though the abort's entire premise (the inputs actually changed) is false.
+// Comparing the recorded hash against *both* shapes lets a genuine
+// upgrade-in-place roll forward while still aborting on an actual on-disk
+// change (which changes both shapes' hashes alike) — but only if this
+// shape's Workspaces entries actually carry Kits (MAJOR 1's fix); workspaceKitRefs
+// (readWorkspaceYAMLSnapshot's per-slug legacy `kits:` list, the same map
+// computeWorkspaceMigrationInputHash's own WorkspaceKitRefs field is built
+// from) is what restores that value here, since workspaces itself (the
+// current, PR7-shaped WorkspaceMeta) no longer carries it.
+func computeWorkspaceMigrationInputHashPR6Shape(
+	workspaces map[string]*WorkspaceMeta,
+	hostCommands map[string]HostCommandSpec,
+	projectRefs []*WorkspaceSummary,
+	kitRuntime map[string]kitRuntimeRaw,
+	workspaceKitRefs map[string][]string,
+) (string, error) {
+	pr6Workspaces := make(map[string]*pr6WorkspaceMeta, len(workspaces))
+	for slug, meta := range workspaces {
+		pr6Workspaces[slug] = &pr6WorkspaceMeta{
+			Kits:               workspaceKitRefs[slug],
+			Env:                meta.Env,
+			Capabilities:       meta.Capabilities,
+			AllowedDomains:     meta.AllowedDomains,
+			ExtraRepos:         meta.ExtraRepos,
+			HostCommands:       meta.HostCommands,
+			ContainerImage:     meta.ContainerImage,
+			AdditionalBindings: meta.AdditionalBindings,
+		}
+	}
+	b, err := json.Marshal(workspaceMigrationHashInputPR6{
+		Workspaces:           pr6Workspaces,
+		HostCommands:         hostCommands,
+		ProjectWorkspaceRefs: sortedWorkspaceRefsForHash(projectRefs),
 		KitRuntime:           kitRuntime,
 	})
 	if err != nil {

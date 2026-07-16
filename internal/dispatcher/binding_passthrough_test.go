@@ -49,7 +49,7 @@ func TestBindingPassthrough_HydrateToSandboxSpec(t *testing.T) {
 	writeThruWorkspaceYAML(t, wsDir, "thruws", wsBind)
 
 	// --- upstream: hydrate project meta with workspace additional_bindings ---
-	store := orchestrator.NewProjectStore(nil)
+	store := orchestrator.NewProjectStore()
 	store.SetWorkspaceStore(orchestrator.NewWorkspaceStore(wsDir))
 	if errs := store.LoadAll([]*orchestrator.Project{
 		{ID: "proj-thru", WorkDir: projectDir, WorkspaceID: "thruws"},

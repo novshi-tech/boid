@@ -239,9 +239,6 @@ func runWorkspaceShow(cmd *cobra.Command, args []string) error {
 		}
 
 		if meta := view.Meta; meta != nil {
-			if len(meta.Kits) > 0 {
-				fmt.Fprintf(out, "kits (legacy): %s\n", formatStringSlice(meta.Kits))
-			}
 			fmt.Fprintf(out, "host_commands: %s\n", formatStringSlice(meta.HostCommands))
 			if len(meta.Env) > 0 {
 				envKeys := make([]string, 0, len(meta.Env))
@@ -472,6 +469,61 @@ func runWorkspaceAssign(cmd *cobra.Command, args []string) error {
 	})
 }
 
+// resolveDaemonKitsDir returns the daemon's effective KitsDir via
+// GET /api/config/kits-dir (MAJOR 1, codex review round 1, docs/plans/
+// workspace-db-consolidation.md Phase 2.5 PR7).
+//
+// MAJOR 2 (codex review round 2): every failure mode — a 404 (the daemon
+// does not expose this endpoint at all, e.g. a pre-PR7 binary, or a PR7+
+// daemon this CLI simply failed to reach it on), a 5xx, a transport
+// failure, a response body that does not decode as the expected shape, or a
+// body that decodes cleanly but reports an empty kits_dir — now returns a
+// hard error instead of silently falling back to this CLI process's own
+// defaultKitsDir() computation. The original fallback conflated "the daemon
+// told me it has none" with "I could not find out what the daemon has" —
+// every case above is really the latter, and silently substituting this
+// CLI's own default in any of them risks resolving (and then permanently
+// persisting, via MaterializeWorkspaceKitsForPersist) a workspace's kit
+// references against the wrong directory whenever a same-named kit happens
+// to exist under both locations — the exact class of bug MAJOR 1 above
+// introduced this endpoint to prevent in the first place. A daemon started
+// with `boid start --kits-dir <custom>` still resolves correctly (the
+// common, successful 200 case); only when this CLI genuinely cannot learn
+// the real answer does it now refuse to guess.
+func resolveDaemonKitsDir(c *client.Client) (string, error) {
+	statusCode, body, err := c.GetRaw("/api/config/kits-dir")
+	if err != nil {
+		return "", fmt.Errorf("fetch daemon kits-dir: %w", err)
+	}
+	if statusCode == http.StatusNotFound {
+		return "", fmt.Errorf("fetch daemon kits-dir: daemon does not expose GET /api/config/kits-dir (HTTP 404) — upgrade the daemon (`boid start`) to a version that supports Phase 2.5 PR7 before assigning a workspace whose local yaml references a kit")
+	}
+	if statusCode != http.StatusOK {
+		return "", fmt.Errorf("fetch daemon kits-dir: HTTP %d: %s", statusCode, strings.TrimSpace(string(body)))
+	}
+	var resp struct {
+		KitsDir string `json:"kits_dir"`
+	}
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return "", fmt.Errorf("fetch daemon kits-dir: decode response: %w", err)
+	}
+	if resp.KitsDir == "" {
+		return "", fmt.Errorf("fetch daemon kits-dir: daemon reported an empty kits_dir")
+	}
+	return resp.KitsDir, nil
+}
+
+// localWorkspaceYAMLReadFile reads a local workspace yaml file's raw bytes.
+// Indirected through a package-level variable rather than calling
+// os.ReadFile directly solely so tests can pin
+// ensureWorkspaceExistsForAssign's TOCTOU-avoidance invariant (MAJOR 3, codex
+// review round 2, docs/plans/workspace-db-consolidation.md Phase 2.5 PR7) —
+// that it reads workspaceDir/slug.yaml exactly once — by counting calls.
+// Mirrors workspace_migration.go's readWorkspaceYAMLSnapshot /
+// workspaceYAMLReadFile var (its MAJOR 5 fix, same repository, server side)
+// for the identical reason.
+var localWorkspaceYAMLReadFile = os.ReadFile
+
 // ensureWorkspaceExistsForAssign implements `boid workspace assign`'s
 // auto-create pre-check (docs/plans/workspace-db-consolidation.md PR4 Step
 // H): if slug already has a workspaces row, this is a no-op. Otherwise, if
@@ -492,13 +544,41 @@ func runWorkspaceAssign(cmd *cobra.Command, args []string) error {
 // confusing 404 from the *subsequent* assign call instead of the actual
 // cause. Only os.ErrNotExist now falls through to that silent path; anything
 // else is returned so the CLI reports the real error.
+//
+// MAJOR 3 (codex review round 2): workspaceDir/slug.yaml is now read exactly
+// ONCE, mirroring readWorkspaceYAMLSnapshot's (workspace_migration.go) MAJOR
+// 5 fix on the server side. Before this fix, this function called
+// orchestrator.NewWorkspaceStore("").Load(slug) — its own independent
+// os.ReadFile + loose yaml.Unmarshal — and then, further down, a SECOND,
+// completely independent os.ReadFile of the very same path to extract a
+// legacy `kits:` list and strictly validate the remainder. That second
+// read's failure was silently swallowed by an `if raw, readErr := ...;
+// readErr == nil { ... }` guard: on any failure there (or even a failure to
+// resolve the workspace directory at all) meta stayed the first, loose-
+// parsed, kits-oblivious read, and this function fell straight through to
+// marshaling and POSTing THAT — silently skipping kit resolution instead of
+// surfacing the second read's error, exactly the "hard-error masking" bug
+// class MINOR 3-b above already fixed once for the *first* read. Worse, an
+// atomic rename landing between the two reads could hand this function a
+// "meta from the old file version + kits from the new file version" hybrid
+// that never existed on disk at any single instant — the same TOCTOU class
+// PR7's own server-side migration code flagged and fixed once before (MAJOR
+// 5, readWorkspaceYAMLSnapshot). Reading the raw bytes once and deriving
+// both kitRefs (extractLegacyWorkspaceKitRefs) and meta
+// (DecodeWorkspaceMetaStrict, which conveniently already both validates AND
+// decodes — no separate loose parse is needed at all) from that single
+// snapshot makes both failure modes impossible.
 func ensureWorkspaceExistsForAssign(c *client.Client, slug string, out io.Writer) error {
 	if err := c.Do("GET", "/api/workspaces/"+slug, nil, &api.WorkspaceDetail{}); err == nil {
 		return nil // already has a DB row.
 	}
 
-	store := orchestrator.NewWorkspaceStore("")
-	meta, err := store.Load(slug)
+	wsDir, err := orchestrator.DefaultWorkspaceDir()
+	if err != nil {
+		return fmt.Errorf("resolve workspace dir for auto-create: %w", err)
+	}
+
+	raw, err := localWorkspaceYAMLReadFile(filepath.Join(wsDir, slug+".yaml"))
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil // no local yaml either — let the assign call's own error surface.
@@ -506,21 +586,55 @@ func ensureWorkspaceExistsForAssign(c *client.Client, slug string, out io.Writer
 		return fmt.Errorf("read local workspace.yaml %q for auto-create: %w", slug, err)
 	}
 
+	// Phase 2.5 PR7 (docs/plans/workspace-db-consolidation.md, decision 12):
+	// WorkspaceMeta no longer has a Kits field, and the server's strict
+	// decoder no longer accepts a `kits:` key at all — extractLegacyWorkspaceKitRefs
+	// pulls the kits: list (if any) out of THIS SAME raw snapshot, and
+	// DecodeWorkspaceMetaStrict below decodes the kits-stripped remainder
+	// from it too, so meta and kitRefs can never diverge from what was
+	// actually on disk at the moment of the one read above.
+	kitRefs, rest, err := extractLegacyWorkspaceKitRefs(raw)
+	if err != nil {
+		return fmt.Errorf("parse local workspace.yaml %q for auto-create: %w", slug, err)
+	}
+
 	// MINOR 1 (codex review round 3, docs/plans/workspace-db-consolidation.md):
-	// validate the raw local yaml with the same strict (multi-document-
-	// rejecting) decoder the server uses, before re-marshaling `meta` below.
-	// store.Load's plain yaml.Unmarshal above already silently drops a second
-	// "---"-delimited document — the server's own strict reject
-	// (DecodeWorkspaceMetaStrict, wired into POST /api/workspaces) would then
-	// never get a chance to see it, since only the already-truncated struct
-	// ever gets re-marshaled and POSTed by postWorkspaceCreateBestEffort
-	// below. A read failure here is not itself an error: store.Load already
-	// succeeded reading the same file moments ago, so this is best-effort.
-	if wsDir, dirErr := orchestrator.DefaultWorkspaceDir(); dirErr == nil {
-		if raw, readErr := os.ReadFile(filepath.Join(wsDir, slug+".yaml")); readErr == nil {
-			if _, strictErr := orchestrator.DecodeWorkspaceMetaStrict(raw); strictErr != nil {
-				return fmt.Errorf("validate local workspace.yaml %q for auto-create: %w", slug, strictErr)
-			}
+	// DecodeWorkspaceMetaStrict both validates (typo'd/unknown fields,
+	// multi-document bodies) AND decodes rest into the WorkspaceMeta used
+	// below — replacing the old separate "loose parse via store.Load, then
+	// re-validate the same content strictly just for its error" two-step.
+	meta, err := orchestrator.DecodeWorkspaceMetaStrict(rest)
+	if err != nil {
+		return fmt.Errorf("validate local workspace.yaml %q for auto-create: %w", slug, err)
+	}
+
+	// MAJOR 2 (codex review round 1, docs/plans/workspace-db-consolidation.md):
+	// an unresolvable kit ref now aborts the auto-create instead of
+	// being swallowed as a "note:" and silently creating the
+	// workspace without the kit's host_commands/env/bindings. The
+	// prior best-effort convention (matching
+	// postWorkspaceCreateBestEffort's own tolerance for the *create
+	// call itself* racing/failing) was too permissive here: unlike a
+	// concurrent-create 409 — where a workspace already exists with
+	// presumably-correct content — a kit resolution failure means
+	// the workspace this function is about to POST would silently
+	// omit content the on-disk `kits:` reference explicitly asked
+	// for, and the DB row created from it can never be
+	// re-materialized afterward (MaterializeWorkspaceKitsForPersist
+	// is a client-side, create-time-only expansion; nothing re-runs
+	// it once the row exists). This is also the fix for a real
+	// regression from PR6: PR6's daemon-side CreateWorkspace 400'd
+	// on an unresolved kit reference, so `boid workspace assign`
+	// itself exited non-zero; PR7's client-side materialize step had
+	// silently downgraded that into a warning, letting `assign`
+	// report success for a workspace it just built incompletely.
+	if len(kitRefs) > 0 {
+		kitsDir, err := resolveDaemonKitsDir(c)
+		if err != nil {
+			return fmt.Errorf("resolve workspace %q's kits for auto-create: %w", slug, err)
+		}
+		if err := orchestrator.MaterializeWorkspaceKitsForPersist(kitsDir, kitRefs, meta); err != nil {
+			return fmt.Errorf("resolve workspace %q's kits for auto-create: %w", slug, err)
 		}
 	}
 
@@ -530,6 +644,85 @@ func ensureWorkspaceExistsForAssign(c *client.Client, slug string, out io.Writer
 	}
 	postWorkspaceCreateBestEffort(c, slug, data, out, "from local workspace.yaml")
 	return nil
+}
+
+// extractLegacyWorkspaceKitRefs pulls a legacy top-level `kits:` list out of
+// raw local workspace yaml, returning the kit ref names alongside a copy of
+// raw with the kits: key removed. WorkspaceMeta (and its strict wire
+// counterpart, workspaceMetaStrict) no longer has a Kits field at all (Phase
+// 2.5 PR7, docs/plans/workspace-db-consolidation.md decision 12) —
+// orchestrator.DecodeWorkspaceMetaStrict now rejects a `kits:` key outright
+// ("unknown field kits") — so ensureWorkspaceExistsForAssign, the one
+// remaining caller that still needs to honor it (`boid workspace assign`'s
+// auto-create convenience path against a hand-authored or e2e-fixture shadow
+// yaml), extracts it here before running that strict validation against the
+// remainder.
+//
+// An absent kits key returns (nil, raw, nil) unchanged — the fast path, and
+// the common case for anything authored post-cutover.
+//
+// MAJOR 3 (codex review round 1, docs/plans/workspace-db-consolidation.md):
+// a second "---"-delimited document in raw is rejected up front, before any
+// unmarshal-to-map-then-remarshal happens below. The previous implementation
+// called a plain yaml.Unmarshal(raw, &doc) straight into a map[string]any —
+// which, like every single-document yaml.Unmarshal call, silently reads only
+// the first document and discards the rest — and then, whenever a `kits:`
+// key was present, remarshaled that already-truncated map as `rest`. Because
+// `rest` was a *fresh* marshal of the truncated first-document map (not raw
+// itself), the caller's later orchestrator.DecodeWorkspaceMetaStrict(rest)
+// call could no longer see the dropped second document at all, defeating
+// PR4/PR5's multi-document reject exactly in the one case (`kits:` present)
+// this function exists to handle. Deciding trailing-document-ness from raw
+// directly, before doc/rest ever exist, closes that hole.
+func extractLegacyWorkspaceKitRefs(raw []byte) (kitRefs []string, rest []byte, err error) {
+	dec := yaml.NewDecoder(bytes.NewReader(raw))
+	var doc map[string]any
+	if err := dec.Decode(&doc); err != nil {
+		if errors.Is(err, io.EOF) {
+			return nil, raw, nil // empty document — no kits key, nothing to strip.
+		}
+		return nil, raw, err
+	}
+	if err := orchestrator.RejectTrailingYAMLDocument(dec); err != nil {
+		return nil, raw, err
+	}
+	kitsVal, ok := doc["kits"]
+	if !ok {
+		return nil, raw, nil
+	}
+	// `kits:` (bare, value omitted) and `kits: null` both parse to nil under
+	// yaml.v3 map decoding — previously accepted by the loose per-workspace
+	// yaml path pre-PR7 as "no kit refs, but the key is present"; treat them
+	// the same as the key being absent here (codex PR7 review, round 3:
+	// hardening extractLegacyWorkspaceKitRefs must not regress against the
+	// null/empty case that existing shadow yaml files or hand-typed configs
+	// still legitimately carry). Splitting the assertion also strips the
+	// now-redundant `kits: null` line from the outgoing body via delete(doc).
+	if kitsVal == nil {
+		delete(doc, "kits")
+		rest, err = yaml.Marshal(doc)
+		if err != nil {
+			return nil, raw, err
+		}
+		return nil, rest, nil
+	}
+	items, ok := kitsVal.([]any)
+	if !ok {
+		return nil, raw, fmt.Errorf("kits: expected a list of strings, got %T", kitsVal)
+	}
+	for _, item := range items {
+		name, ok := item.(string)
+		if !ok {
+			return nil, raw, fmt.Errorf("kits: expected a list of strings, got element of type %T", item)
+		}
+		kitRefs = append(kitRefs, name)
+	}
+	delete(doc, "kits")
+	rest, err = yaml.Marshal(doc)
+	if err != nil {
+		return nil, raw, err
+	}
+	return kitRefs, rest, nil
 }
 
 // postWorkspaceCreateBestEffort POSTs slug (with metaYAML, which may be

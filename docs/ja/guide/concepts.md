@@ -75,7 +75,7 @@ hook と `boid` 本体は、 stdin にタスクの payload、 stdout に payload
 - **additional_bindings** — サンドボックスにマウントしたい追加パス
 - **env** — サンドボックス内に設定する環境変数
 
-ディスク上は `kit.yaml` と関連ファイルを並べたディレクトリです。 kit は **workspace** の `kits:` (レガシーフィールド、 Phase 2.5 PR7 で撤去予定) から参照して読み込みます — `project.yaml` に `kits:` を書く経路は撤去済みです。 公式パッケージは [boid-kits](https://github.com/novshi-tech/boid-kits) リポジトリにあり、 ファイル構造や各フィールドの詳細は [Kit 作者向け 概要](../kit-authoring/overview.md) を参照してください。 kit 機構自体の退役の経緯は [オンボーディング / kit 機構の退役について](onboarding.md#kit-機構の退役について) を参照してください。
+ディスク上は `kit.yaml` と関連ファイルを並べたディレクトリです。 **Phase 2.5 PR7 (2026-07) で `WorkspaceMeta.Kits` フィールド (workspace の `kits:`) はコードから完全撤去されました** — `project.yaml` に `kits:` を書く経路も既に撤去済みです。 kit ディレクトリ自体 (`~/.local/share/boid/kits/<name>/kit.yaml`) は残っていますが、 参照して読み込む経路は `boid project migrate` が生成する legacy kit (host_commands 定義を daemon 側の集約レジストリに登録する用途のみ) と `boid workspace assign` の auto-create 補助経路に限られます。 公式パッケージは [boid-kits](https://github.com/novshi-tech/boid-kits) リポジトリにあり、 ファイル構造や各フィールドの詳細は [Kit 作者向け 概要](../kit-authoring/overview.md) を参照してください。 kit 機構自体の退役の経緯は [オンボーディング / kit 機構の退役について](onboarding.md#kit-機構の退役について) と [移行ガイド / kit 機構の最終撤去](migration.md#kit-機構の最終撤去-phase-25-pr7) を参照してください。
 
 ## ジョブ (job)
 

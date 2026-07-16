@@ -21,11 +21,13 @@ boid ネイティブプロキシはこれらの問題を解消します:
 
 ### 1. workspace の更新
 
-docker kit への参照を workspace の `kits:` (レガシーフィールド) から外し、 `capabilities.docker` を workspace に直接追加します。 まず現在の中身を確認します:
+docker kit への参照を workspace の `kits:` から外し、 `capabilities.docker` を workspace に直接追加します。 まず現在の中身を確認します:
 
 ```bash
 boid workspace export <slug> > ws.yaml
 ```
+
+> **注意 (Phase 2.5 PR7):** `WorkspaceMeta.Kits` フィールドはコードから完全撤去されているため、 `boid workspace export` の出力に `kits:` が含まれることはもう無く (DB backed workspace はそもそも `kits` カラムを持ったことがありません)、 `boid workspace edit --from-file` に `kits:` を含む body を渡すと reject されます。 以下の「変更前」は旧い (未移行の) workspace shadow yaml を手元で編集する場合の例示です — 実際の手順は「変更後」の内容 (`kits:` を含まない) を `--from-file` に渡すだけなので、 この移行ガイド自体の操作手順は PR7 の影響を受けません。
 
 **変更前 (`ws.yaml`、 docker kit がまだ `kits:` に入っている状態):**
 

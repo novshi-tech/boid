@@ -2,7 +2,7 @@
 
 `kit.yaml` というファイル形式についての最小限のガイドです。
 
-> **退役のお知らせ (Phase 2.5 PR6、2026-07)**: kit という**機構**そのものが退役しました。`boid kit init` / `list` / `remove` と `boid workspace configure` は撤去済みで、 kit を発見・インストール・管理する CLI はもう残っていません。 このページが説明しているのは `kit.yaml` という**ファイル形式だけ**であり、 これは workspace の (legacy な) `kits: [...]` リストが参照している場合に限り、 `boid workspace create/edit/import` または `boid project migrate` の実行時に一度だけ `host_commands` / `env` / `additional_bindings` へ展開 ("materialize") されます。 その `kits:` リスト自体も Phase 2.5 PR7 で撤去予定の legacy field です (`docs/plans/workspace-db-consolidation.md` 参照)。 **新規に設定したい場合は kit を書かず、 `boid workspace create`/`edit`/`import` で `host_commands` / `env` / `additional_bindings` を workspace に直接書いてください** ([オンボーディング](../guide/onboarding.md) 参照)。 このページ (および `kit.yaml` を手で書くこと自体) が意味を持つのは、 既存の kit 参照 workspace を保守する場合か、 他人が書いた kit を読む場合だけです。
+> **退役のお知らせ (Phase 2.5 PR6/PR7、2026-07)**: kit という**機構**そのものが退役しました。`boid kit init` / `list` / `remove` と `boid workspace configure` は撤去済みで、 kit を発見・インストール・管理する CLI はもう残っていません。 さらに PR7 で `WorkspaceMeta.Kits` フィールド自体もコードから完全撤去され、 `boid workspace create`/`edit`/`import` (`POST`/`PUT`/`import /api/workspaces`) に `kits:` を含む body を渡すと 400 で reject されるようになりました。 このページが説明しているのは `kit.yaml` という**ファイル形式だけ**であり、 現時点でこれが読まれる経路は次の 2 つのみです: (1) `boid workspace assign` の auto-create 補助 (手書き/e2e フィクスチャの workspace shadow yaml が legacy な `kits: [...]` を持つ場合に限り、 クライアント側で解決してから workspace を作成する)、 (2) daemon 起動時の一度きりの DB 移行 (`MigrateWorkspaceYAMLToDB`、 cutover 前の旧 workspace yaml が対象)。 **新規に設定したい場合は kit を書かず、 `boid workspace create`/`edit`/`import` で `host_commands` / `env` / `additional_bindings` を workspace に直接書いてください** ([オンボーディング](../guide/onboarding.md) 参照)。 このページ (および `kit.yaml` を手で書くこと自体) が意味を持つのは、 上記 2 経路のいずれかで既存の kit 参照 workspace を保守する場合か、 他人が書いた kit を読む場合だけです。
 >
 > **kit は hooks も task behavior も提供しません。** これは PR6 以前から既にそうでした — hooks は常に `project.yaml` の関心事 (`task_behaviors.<name>.hooks`) であり、 kit が提供するものだったことは一度もありません。 `hooks:` / `commands:` / `detect:` / `requires:` / `provides_agent:` を含む古い kit.yaml を見ている場合は、 下の [もう読まれないフィールド](#もう読まれないフィールド-kit-init-退役以前) を参照してください — 現行のローダーはこれらを全て無視します。
 
@@ -69,7 +69,7 @@ UIs で kit を識別するためのラベル。 `category` は `language` / `vc
 
 ## 配布
 
-`boid kit install` というコマンドは存在しません (そもそも一度も存在したことがありません — kit 関連で存在したことがあるコマンドは `boid kit init` / `list` / `remove` のみで、 これらも撤去済みです)。 `kit.yaml` を含む kit ディレクトリを `~/.local/share/boid/kits/<name>/` に手で置いてください (そこへ `git clone` する、 あるいはコピーする)。 その上で workspace の legacy な `kits: [...]` リストから `<name>` を参照します。 展開は `boid workspace create/edit/import` または `boid project migrate` 実行時に一度だけ行われます — dispatch のたびにライブで読まれるわけではありません。
+`boid kit install` というコマンドは存在しません (そもそも一度も存在したことがありません — kit 関連で存在したことがあるコマンドは `boid kit init` / `list` / `remove` のみで、 これらも撤去済みです)。 `kit.yaml` を含む kit ディレクトリを `~/.local/share/boid/kits/<name>/` に手で置いてください (そこへ `git clone` する、 あるいはコピーする)。 その上で、 手書き/e2e フィクスチャの workspace shadow yaml に legacy な `kits: [...]` として `<name>` を書いておけば、 `boid workspace assign` の auto-create 実行時に一度だけクライアント側で解決されます (dispatch のたびにライブで読まれるわけではありません)。 `boid workspace create/edit/import` に直接 `kits:` を渡す経路は Phase 2.5 PR7 で撤去済みです。
 
 それでも kit リポジトリを保守する場合の慣例:
 

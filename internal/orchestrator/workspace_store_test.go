@@ -38,8 +38,8 @@ func TestWorkspaceStore_SaveLoad_RoundTrip(t *testing.T) {
 	store, _ := newTestStore(t)
 
 	meta := &WorkspaceMeta{
-		Kits: []string{"go-tools"},
-		Env:  map[string]string{"FOO": "bar"},
+		HostCommands: []string{"gh"},
+		Env:          map[string]string{"FOO": "bar"},
 	}
 	if err := store.Save("my-ws", meta); err != nil {
 		t.Fatalf("Save: %v", err)
@@ -49,8 +49,8 @@ func TestWorkspaceStore_SaveLoad_RoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if len(got.Kits) != 1 || got.Kits[0] != "go-tools" {
-		t.Errorf("Kits: got %v, want [go-tools]", got.Kits)
+	if len(got.HostCommands) != 1 || got.HostCommands[0] != "gh" {
+		t.Errorf("HostCommands: got %v, want [gh]", got.HostCommands)
 	}
 	if got.Env["FOO"] != "bar" {
 		t.Errorf("Env[FOO]: got %q, want %q", got.Env["FOO"], "bar")
@@ -87,7 +87,7 @@ func TestWorkspaceStore_Remove_ThenLoadReturnsNotExist(t *testing.T) {
 	t.Parallel()
 	store, _ := newTestStore(t)
 
-	if err := store.Save("gone", &WorkspaceMeta{Kits: []string{"a"}}); err != nil {
+	if err := store.Save("gone", &WorkspaceMeta{HostCommands: []string{"a"}}); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
 	if err := store.Remove("gone"); err != nil {
@@ -135,10 +135,10 @@ func TestWorkspaceStore_SaveOverwrite(t *testing.T) {
 	t.Parallel()
 	store, _ := newTestStore(t)
 
-	if err := store.Save("ws", &WorkspaceMeta{Kits: []string{"old"}}); err != nil {
+	if err := store.Save("ws", &WorkspaceMeta{HostCommands: []string{"old"}}); err != nil {
 		t.Fatalf("first Save: %v", err)
 	}
-	if err := store.Save("ws", &WorkspaceMeta{Kits: []string{"new"}}); err != nil {
+	if err := store.Save("ws", &WorkspaceMeta{HostCommands: []string{"new"}}); err != nil {
 		t.Fatalf("second Save: %v", err)
 	}
 
@@ -146,8 +146,8 @@ func TestWorkspaceStore_SaveOverwrite(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if len(got.Kits) != 1 || got.Kits[0] != "new" {
-		t.Errorf("Kits after overwrite: got %v, want [new]", got.Kits)
+	if len(got.HostCommands) != 1 || got.HostCommands[0] != "new" {
+		t.Errorf("HostCommands after overwrite: got %v, want [new]", got.HostCommands)
 	}
 }
 
@@ -208,13 +208,13 @@ func TestWorkspaceStore_EnsureDefault_CreatesEmptyWhenMissing(t *testing.T) {
 		t.Fatalf("default.yaml not created: %v", err)
 	}
 
-	// Load must succeed and return an empty meta (no Kits / Env / Capabilities).
+	// Load must succeed and return an empty meta (no HostCommands / Env / Capabilities).
 	meta, err := store.Load(DefaultWorkspaceSlug)
 	if err != nil {
 		t.Fatalf("Load(default): %v", err)
 	}
-	if len(meta.Kits) != 0 {
-		t.Errorf("Kits: got %v, want empty", meta.Kits)
+	if len(meta.HostCommands) != 0 {
+		t.Errorf("HostCommands: got %v, want empty", meta.HostCommands)
 	}
 	if len(meta.Env) != 0 {
 		t.Errorf("Env: got %v, want empty", meta.Env)
@@ -229,8 +229,8 @@ func TestWorkspaceStore_EnsureDefault_PreservesExisting(t *testing.T) {
 	store, _ := newTestStore(t)
 
 	original := &WorkspaceMeta{
-		Kits: []string{"user-edited"},
-		Env:  map[string]string{"USER_SET": "yes"},
+		HostCommands: []string{"user-edited"},
+		Env:          map[string]string{"USER_SET": "yes"},
 	}
 	if err := store.Save(DefaultWorkspaceSlug, original); err != nil {
 		t.Fatalf("Save: %v", err)
@@ -244,8 +244,8 @@ func TestWorkspaceStore_EnsureDefault_PreservesExisting(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load(default): %v", err)
 	}
-	if len(meta.Kits) != 1 || meta.Kits[0] != "user-edited" {
-		t.Errorf("user edits clobbered: Kits = %v", meta.Kits)
+	if len(meta.HostCommands) != 1 || meta.HostCommands[0] != "user-edited" {
+		t.Errorf("user edits clobbered: HostCommands = %v", meta.HostCommands)
 	}
 	if meta.Env["USER_SET"] != "yes" {
 		t.Errorf("user edits clobbered: Env[USER_SET] = %q", meta.Env["USER_SET"])
@@ -279,7 +279,7 @@ func TestWorkspaceStore_SaveAtomic_TmpFileInSameDir(t *testing.T) {
 	// .tmp files) and that its content is valid.
 	store, dir := newTestStore(t)
 
-	meta := &WorkspaceMeta{Kits: []string{"check-atomic"}}
+	meta := &WorkspaceMeta{HostCommands: []string{"check-atomic"}}
 	if err := store.Save("atomic-ws", meta); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
@@ -487,15 +487,15 @@ func TestWorkspaceStore_YAMLMode_Create_InsertsAndConflicts(t *testing.T) {
 	t.Parallel()
 	store, _ := newTestStore(t)
 
-	if err := store.Create("new-ws", &WorkspaceMeta{Kits: []string{"a"}}); err != nil {
+	if err := store.Create("new-ws", &WorkspaceMeta{HostCommands: []string{"a"}}); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 	got, err := store.Load("new-ws")
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if len(got.Kits) != 1 || got.Kits[0] != "a" {
-		t.Errorf("Kits: got %v, want [a]", got.Kits)
+	if len(got.HostCommands) != 1 || got.HostCommands[0] != "a" {
+		t.Errorf("HostCommands: got %v, want [a]", got.HostCommands)
 	}
 
 	err = store.Create("new-ws", &WorkspaceMeta{})
