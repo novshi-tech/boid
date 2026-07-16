@@ -380,6 +380,36 @@ func (c *Client) GetRaw(path string) (statusCode int, body []byte, err error) {
 	return resp.StatusCode, data, nil
 }
 
+// PutRawWithIfMatch performs a PUT request with a custom Content-Type and
+// (optional) If-Match header, returning the raw response status code and
+// body regardless of status — unlike Do/DoWithContentType, which collapse
+// every 4xx/5xx into a generic error. Used by `boid workspace edit`
+// (docs/plans/workspace-db-consolidation.md PR4 Step E/H) so the CLI can
+// distinguish 412 (stale revision) from 428 (missing If-Match) from 200
+// (success) instead of losing that distinction to a single error string.
+func (c *Client) PutRawWithIfMatch(path, contentType string, body []byte, ifMatch string) (statusCode int, respBody []byte, err error) {
+	req, err := http.NewRequest(http.MethodPut, "http://boid"+path, bytes.NewReader(body))
+	if err != nil {
+		return 0, nil, fmt.Errorf("create request: %w", err)
+	}
+	req.Header.Set("Content-Type", contentType)
+	if ifMatch != "" {
+		req.Header.Set("If-Match", ifMatch)
+	}
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return 0, nil, fmt.Errorf("request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return resp.StatusCode, nil, fmt.Errorf("read body: %w", err)
+	}
+	return resp.StatusCode, data, nil
+}
+
 func (c *Client) ResizeJob(jobID string, rows, cols int) error {
 	return c.Do("POST", "/api/jobs/"+jobID+"/resize", map[string]int{
 		"rows": rows,

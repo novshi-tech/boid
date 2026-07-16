@@ -66,7 +66,8 @@ func init() {
 The session inherits the project's host_commands / additional_bindings /
 env / secret_namespace traits and runs through internal/adapters/%s. The
 command attaches to the resulting job's PTY unless --no-attach is set.`, h, h),
-			Args: cobra.NoArgs,
+			Args:        cobra.NoArgs,
+			Annotations: map[string]string{scopeAnnotationKey: scopeRemote},
 			RunE: func(_ *cobra.Command, _ []string) error {
 				return runAgentSession(h, flags)
 			},

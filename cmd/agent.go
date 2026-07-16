@@ -20,8 +20,9 @@ run-agent.py SIGTERMs only the claude process. bash and the EXIT trap stay
 alive, so the trap's "boid job done --output-file payload_patch.json" remains
 the canonical CompleteJob caller — preserving the session id (and any
 artifact the agent wrote to payload_patch.json) through the broker token.`,
-	Args: cobra.ExactArgs(1),
-	RunE: runAgentStop,
+	Args:        cobra.ExactArgs(1),
+	Annotations: map[string]string{scopeAnnotationKey: scopeRemote},
+	RunE:        runAgentStop,
 }
 
 func init() {

@@ -47,6 +47,18 @@ func (s *stubProjectServiceForExec) ResolveProjectRef(string) ([]*orchestrator.P
 	}
 	return []*orchestrator.Project{s.project}, nil
 }
+func (s *stubProjectServiceForExec) CreateWorkspace(string, *orchestrator.WorkspaceMeta) (*WorkspaceDetail, error) {
+	panic("not implemented")
+}
+func (s *stubProjectServiceForExec) GetWorkspace(string) (*WorkspaceDetail, error) {
+	panic("not implemented")
+}
+func (s *stubProjectServiceForExec) UpdateWorkspace(string, *orchestrator.WorkspaceMeta, string, bool) (*WorkspaceDetail, error) {
+	panic("not implemented")
+}
+func (s *stubProjectServiceForExec) RemoveWorkspace(string) error {
+	panic("not implemented")
+}
 
 // stubExecDispatcher records the request it was called with and returns a
 // configured result/error.

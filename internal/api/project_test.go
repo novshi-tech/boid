@@ -180,6 +180,13 @@ func TestProjectAPI_ListByWorkspace(t *testing.T) {
 	}
 }
 
+// TestProjectAPI_ListWorkspaces pins GET /api/workspaces' PR4 rewrite
+// (docs/plans/workspace-db-consolidation.md Step B): ListWorkspaces is now
+// workspaces-table-based, so the daemon's always-present "default" workspace
+// (auto-created at startup, docs/plans/workspace-db-consolidation.md
+// decision 8) is included in the result even though no project stays
+// assigned to it here — every project in this test is explicitly moved to
+// ws-1/ws-2 after creation.
 func TestProjectAPI_ListWorkspaces(t *testing.T) {
 	ts := testutil.NewTestServer(t)
 	createProject(t, ts, "proj-1", "Project 1")
@@ -203,14 +210,21 @@ func TestProjectAPI_ListWorkspaces(t *testing.T) {
 	if err := ts.Client.Do("GET", "/api/workspaces", nil, &workspaces); err != nil {
 		t.Fatalf("list workspaces: %v", err)
 	}
-	if len(workspaces) != 2 {
-		t.Fatalf("expected 2 workspaces, got %d", len(workspaces))
+	if len(workspaces) != 3 {
+		t.Fatalf("expected 3 workspaces (default + ws-1 + ws-2), got %d: %+v", len(workspaces), workspaces)
 	}
-	if workspaces[0].ID != "ws-1" || workspaces[0].ProjectCount != 2 {
-		t.Fatalf("unexpected workspace 0: %+v", workspaces[0])
+	byID := make(map[string]*orchestrator.WorkspaceSummary, len(workspaces))
+	for _, ws := range workspaces {
+		byID[ws.ID] = ws
 	}
-	if workspaces[1].ID != "ws-2" || workspaces[1].ProjectCount != 1 {
-		t.Fatalf("unexpected workspace 1: %+v", workspaces[1])
+	if ws := byID[orchestrator.DefaultWorkspaceSlug]; ws == nil || ws.ProjectCount != 0 {
+		t.Errorf("unexpected default workspace: %+v", ws)
+	}
+	if ws := byID["ws-1"]; ws == nil || ws.ProjectCount != 2 {
+		t.Errorf("unexpected ws-1: %+v", ws)
+	}
+	if ws := byID["ws-2"]; ws == nil || ws.ProjectCount != 1 {
+		t.Errorf("unexpected ws-2: %+v", ws)
 	}
 }
 

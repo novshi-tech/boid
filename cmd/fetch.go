@@ -8,10 +8,13 @@ import (
 )
 
 var fetchCmd = &cobra.Command{
-	Use:                   "fetch <url>",
-	Short:                 "Fetch a URL and print its content as markdown",
-	Args:                  cobra.ExactArgs(1),
-	Annotations:           map[string]string{annotationSkipAutostart: "skip"},
+	Use:   "fetch <url>",
+	Short: "Fetch a URL and print its content as markdown",
+	Args:  cobra.ExactArgs(1),
+	Annotations: map[string]string{
+		annotationSkipAutostart: "skip",
+		scopeAnnotationKey:      scopeLocal,
+	},
 	DisableFlagsInUseLine: true,
 	RunE:                  runFetch,
 }

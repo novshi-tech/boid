@@ -121,6 +121,14 @@ var taskAnswerCmd = &cobra.Command{
 }
 
 func init() {
+	for _, c := range []*cobra.Command{
+		taskListCmd, taskCreateCmd, taskShowCmd, taskWatchCmd, taskDeleteCmd,
+		taskUpdateCmd, taskImportCmd, taskDuplicateCmd, taskReopenCmd,
+		taskRerunCmd, taskNotifyCmd, taskAnswerCmd,
+	} {
+		c.Annotations = map[string]string{scopeAnnotationKey: scopeRemote}
+	}
+
 	taskListCmd.Flags().String("status", "", "Filter by status")
 	taskListCmd.Flags().String("workspace", "", "Filter by workspace ID")
 	taskListCmd.Flags().String("behavior", "", "Filter by behavior name")

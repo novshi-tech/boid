@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"os"
 	"time"
 
 	"github.com/novshi-tech/boid/internal/db"
@@ -135,6 +136,53 @@ func WorkspaceExists(dbtx db.DBTX, slug string) (bool, error) {
 	return true, nil
 }
 
+// AssignWorkspaceIfExists atomically checks that workspaceID has a
+// corresponding workspaces row and, if so, assigns projectID to it — all in
+// a single transaction (docs/plans/workspace-db-consolidation.md MAJOR 3,
+// codex review). This replaces the previous WorkspaceExists+
+// SetProjectWorkspace two-step, which ran as two separate statements: a
+// DELETE landing between them could remove the workspaces row after the
+// existence check passed but before the assign committed, leaving a
+// dangling project_workspaces reference the same MAJOR-5 fix this
+// supersedes was meant to prevent. dbtx must be a *sql.DB (a fresh
+// transaction is opened internally) — passing an existing *sql.Tx would
+// attempt a nested BEGIN, which SQLite does not support the way this
+// function needs.
+//
+// workspaceID == "" clears the assignment (bypassing the existence check —
+// there is no slug to check), and DefaultWorkspaceSlug is exempt from the
+// check (WorkspaceRepository.EnsureDefault guarantees it always exists),
+// mirroring SetProjectWorkspace's own exemptions.
+func AssignWorkspaceIfExists(conn *sql.DB, projectID, workspaceID string) error {
+	if workspaceID == "" || workspaceID == DefaultWorkspaceSlug {
+		return SetProjectWorkspace(conn, projectID, workspaceID)
+	}
+	if err := ValidWorkspaceSlug(workspaceID); err != nil {
+		return fmt.Errorf("assign workspace if exists: %w", err)
+	}
+
+	tx, err := conn.Begin()
+	if err != nil {
+		return fmt.Errorf("assign workspace if exists: begin tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }() // no-op once committed
+
+	exists, err := WorkspaceExists(tx, workspaceID)
+	if err != nil {
+		return fmt.Errorf("assign workspace if exists: %w", err)
+	}
+	if !exists {
+		return fmt.Errorf("workspace %q: %w", workspaceID, os.ErrNotExist)
+	}
+	if err := SetProjectWorkspace(tx, projectID, workspaceID); err != nil {
+		return fmt.Errorf("assign workspace if exists: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("assign workspace if exists: commit: %w", err)
+	}
+	return nil
+}
+
 // AssignDefaultWorkspaceToUnlinked inserts a project_workspaces row pointing
 // at workspaceID for every project that does not yet have one. Used at daemon
 // startup to migrate legacy unlinked projects to the default workspace. The
@@ -165,13 +213,58 @@ func AssignDefaultWorkspaceToUnlinked(dbtx db.DBTX, workspaceID string) (int, er
 	return int(n), nil
 }
 
-// ListWorkspaces returns all configured workspaces with project counts.
-func ListWorkspaces(dbtx db.DBTX) ([]*WorkspaceSummary, error) {
+// ListProjectWorkspaceReferences returns the distinct workspace_id values
+// referenced by any project_workspaces row, with the count of projects
+// referencing each — the pre-PR4 query ListWorkspaces used to run. Unlike
+// ListWorkspaces (workspaces-table-based as of Step B, docs/plans/
+// workspace-db-consolidation.md), this reflects project_workspaces
+// membership directly and surfaces a reference to a slug that has no
+// corresponding workspaces row at all. That distinction matters exactly
+// once: workspace_migration.go's preflight runs *before* the
+// workspace_db_consolidation migration has written anything to the
+// workspaces table, and needs to detect a project referencing a slug with
+// no legacy yaml file backing it (a broken reference) — which the
+// workspaces-table-based ListWorkspaces would silently miss, since a
+// nonexistent workspaces row simply never appears in a LEFT JOIN FROM
+// workspaces. No other caller should need this function once the migration
+// is long past (dispatch and the API both go through ListWorkspaces).
+func ListProjectWorkspaceReferences(dbtx db.DBTX) ([]*WorkspaceSummary, error) {
 	rows, err := dbtx.Query(
 		`SELECT workspace_id, COUNT(*)
 		 FROM project_workspaces
 		 GROUP BY workspace_id
 		 ORDER BY workspace_id`,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list project workspace references: %w", err)
+	}
+	defer rows.Close()
+
+	var workspaces []*WorkspaceSummary
+	for rows.Next() {
+		var workspace WorkspaceSummary
+		if err := rows.Scan(&workspace.ID, &workspace.ProjectCount); err != nil {
+			return nil, fmt.Errorf("scan workspace reference: %w", err)
+		}
+		workspaces = append(workspaces, &workspace)
+	}
+	return workspaces, rows.Err()
+}
+
+// ListWorkspaces returns every workspace known to the workspaces table, each
+// annotated with its assigned project count and a Revision token
+// (docs/plans/workspace-db-consolidation.md Step B). The query is
+// workspaces-table-based with project_workspaces LEFT JOINed in, so a
+// workspace with zero assigned projects still appears (ProjectCount=0) —
+// unlike the pre-PR4 query, which GROUP-BY'd project_workspaces directly and
+// could only ever surface a slug that at least one project referenced.
+func ListWorkspaces(dbtx db.DBTX) ([]*WorkspaceSummary, error) {
+	rows, err := dbtx.Query(
+		`SELECT w.slug, w.updated_at, COUNT(pw.project_id)
+		 FROM workspaces w
+		 LEFT JOIN project_workspaces pw ON pw.workspace_id = w.slug
+		 GROUP BY w.slug
+		 ORDER BY w.slug`,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("list workspaces: %w", err)
@@ -181,12 +274,41 @@ func ListWorkspaces(dbtx db.DBTX) ([]*WorkspaceSummary, error) {
 	var workspaces []*WorkspaceSummary
 	for rows.Next() {
 		var workspace WorkspaceSummary
-		if err := rows.Scan(&workspace.ID, &workspace.ProjectCount); err != nil {
+		var updatedAt time.Time
+		if err := rows.Scan(&workspace.ID, &updatedAt, &workspace.ProjectCount); err != nil {
 			return nil, fmt.Errorf("scan workspace: %w", err)
 		}
+		workspace.Revision = updatedAt.UTC().Format(time.RFC3339Nano)
 		workspaces = append(workspaces, &workspace)
 	}
 	return workspaces, rows.Err()
+}
+
+// GetWorkspaceSummary returns a single workspace's summary (project count +
+// revision), or an error wrapping os.ErrNotExist when slug has no
+// corresponding workspaces row. Used by the workspace API handlers
+// (docs/plans/workspace-db-consolidation.md PR4) to build the
+// create/show/update response and to read the current revision for the PUT
+// If-Match check.
+func GetWorkspaceSummary(dbtx db.DBTX, slug string) (*WorkspaceSummary, error) {
+	row := dbtx.QueryRow(
+		`SELECT w.slug, w.updated_at, COUNT(pw.project_id)
+		 FROM workspaces w
+		 LEFT JOIN project_workspaces pw ON pw.workspace_id = w.slug
+		 WHERE w.slug = ?
+		 GROUP BY w.slug`,
+		slug,
+	)
+	var summary WorkspaceSummary
+	var updatedAt time.Time
+	if err := row.Scan(&summary.ID, &updatedAt, &summary.ProjectCount); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, fmt.Errorf("workspace %q: %w", slug, os.ErrNotExist)
+		}
+		return nil, fmt.Errorf("get workspace summary %q: %w", slug, err)
+	}
+	summary.Revision = updatedAt.UTC().Format(time.RFC3339Nano)
+	return &summary, nil
 }
 
 // DeleteProject removes a project by ID.

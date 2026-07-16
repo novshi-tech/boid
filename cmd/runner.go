@@ -24,7 +24,13 @@ func newRunnerCmd(use, short string, run func(specPath, statePath string) (int, 
 		Hidden:        true,
 		SilenceUsage:  true,
 		SilenceErrors: true,
-		Annotations:   map[string]string{annotationSkipAutostart: "skip"},
+		Annotations: map[string]string{
+			annotationSkipAutostart: "skip",
+			// scopeLocal: these are the sandbox launch chain itself
+			// (re-exec'd by the daemon), not a client calling the daemon's
+			// API.
+			scopeAnnotationKey: scopeLocal,
+		},
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			specPath, _ := cmd.Flags().GetString("spec")
 			statePath, _ := cmd.Flags().GetString("state")

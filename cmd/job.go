@@ -17,37 +17,42 @@ var jobCmd = &cobra.Command{
 }
 
 var jobDoneCmd = &cobra.Command{
-	Use:   "done <job-id>",
-	Short: "Mark a job as complete",
-	Args:  cobra.ExactArgs(1),
-	RunE:  runJobDone,
+	Use:         "done <job-id>",
+	Short:       "Mark a job as complete",
+	Args:        cobra.ExactArgs(1),
+	Annotations: map[string]string{scopeAnnotationKey: scopeRemote},
+	RunE:        runJobDone,
 }
 
 var jobListCmd = &cobra.Command{
-	Use:   "list --task <task-id>",
-	Short: "List jobs for a task",
-	RunE:  runJobList,
+	Use:         "list --task <task-id>",
+	Short:       "List jobs for a task",
+	Annotations: map[string]string{scopeAnnotationKey: scopeRemote},
+	RunE:        runJobList,
 }
 
 var jobShowCmd = &cobra.Command{
-	Use:   "show <job-id>",
-	Short: "Show job details",
-	Args:  cobra.ExactArgs(1),
-	RunE:  runJobShow,
+	Use:         "show <job-id>",
+	Short:       "Show job details",
+	Args:        cobra.ExactArgs(1),
+	Annotations: map[string]string{scopeAnnotationKey: scopeRemote},
+	RunE:        runJobShow,
 }
 
 var jobWatchCmd = &cobra.Command{
-	Use:   "watch <job-id>",
-	Short: "Watch a job until it finishes",
-	Args:  cobra.ExactArgs(1),
-	RunE:  runJobWatch,
+	Use:         "watch <job-id>",
+	Short:       "Watch a job until it finishes",
+	Args:        cobra.ExactArgs(1),
+	Annotations: map[string]string{scopeAnnotationKey: scopeRemote},
+	RunE:        runJobWatch,
 }
 
 var jobLogCmd = &cobra.Command{
-	Use:   "log <job-id>",
-	Short: "Show transcript log for a job",
-	Args:  cobra.ExactArgs(1),
-	RunE:  runJobLog,
+	Use:         "log <job-id>",
+	Short:       "Show transcript log for a job",
+	Args:        cobra.ExactArgs(1),
+	Annotations: map[string]string{scopeAnnotationKey: scopeRemote},
+	RunE:        runJobLog,
 }
 
 func init() {

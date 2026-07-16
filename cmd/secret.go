@@ -17,30 +17,34 @@ var secretCmd = &cobra.Command{
 }
 
 var secretSetCmd = &cobra.Command{
-	Use:   "set <key>",
-	Short: "Set a secret (reads value from stdin or prompts)",
-	Args:  cobra.ExactArgs(1),
-	RunE:  runSecretSet,
+	Use:         "set <key>",
+	Short:       "Set a secret (reads value from stdin or prompts)",
+	Args:        cobra.ExactArgs(1),
+	Annotations: map[string]string{scopeAnnotationKey: scopeRemote},
+	RunE:        runSecretSet,
 }
 
 var secretGetCmd = &cobra.Command{
-	Use:   "get <key>",
-	Short: "Get a secret value",
-	Args:  cobra.ExactArgs(1),
-	RunE:  runSecretGet,
+	Use:         "get <key>",
+	Short:       "Get a secret value",
+	Args:        cobra.ExactArgs(1),
+	Annotations: map[string]string{scopeAnnotationKey: scopeRemote},
+	RunE:        runSecretGet,
 }
 
 var secretListCmd = &cobra.Command{
-	Use:   "list",
-	Short: "List secret keys",
-	RunE:  runSecretList,
+	Use:         "list",
+	Short:       "List secret keys",
+	Annotations: map[string]string{scopeAnnotationKey: scopeRemote},
+	RunE:        runSecretList,
 }
 
 var secretDeleteCmd = &cobra.Command{
-	Use:   "delete <key>",
-	Short: "Delete a secret",
-	Args:  cobra.ExactArgs(1),
-	RunE:  runSecretDelete,
+	Use:         "delete <key>",
+	Short:       "Delete a secret",
+	Args:        cobra.ExactArgs(1),
+	Annotations: map[string]string{scopeAnnotationKey: scopeRemote},
+	RunE:        runSecretDelete,
 }
 
 func init() {

@@ -2348,6 +2348,26 @@ type stubProjectRepository struct {
 	// slug to "does not exist", matching the fail-closed behavior tests
 	// should expect unless they explicitly opt a slug in.
 	existingWorkspaces map[string]bool
+	// workspaceSummaries backs GetWorkspaceSummary (docs/plans/
+	// workspace-db-consolidation.md PR4): a slug with no entry here reports
+	// os.ErrNotExist, matching the real GetWorkspaceSummary contract.
+	workspaceSummaries map[string]*orchestrator.WorkspaceSummary
+	// getWorkspaceSummaryCalls counts GetWorkspaceSummary invocations (MAJOR 1).
+	getWorkspaceSummaryCalls int
+	// assignWorkspaceIfExistsCalls records every AssignWorkspaceIfExists call
+	// (MAJOR 3, codex review: assign+cache race serialization).
+	assignWorkspaceIfExistsCalls []string
+	// assignWorkspaceIfExistsErr, when non-nil, is returned by every
+	// AssignWorkspaceIfExists call instead of performing the stub's default
+	// existence-check-then-assign behavior.
+	assignWorkspaceIfExistsErr error
+	// setProjectWorkspaceHook, if set, is called synchronously at the start
+	// of SetProjectWorkspace (MAJOR 1, codex review round 3, docs/plans/
+	// workspace-db-consolidation.md). Used by TestCreateProject_BlockedByAssign
+	// to pause CreateProject's default-workspace-assign step mid-flight
+	// (while ProjectAppService.mu is held) so a concurrent SetProjectWorkspace
+	// call can be started and observed blocking on that same mutex.
+	setProjectWorkspaceHook func(projectID, workspaceID string)
 }
 
 func (s *stubProjectRepository) CreateProject(project *orchestrator.Project) error { return nil }
@@ -2363,6 +2383,9 @@ func (s *stubProjectRepository) ListProjects() ([]*orchestrator.Project, error) 
 	return s.projects, s.listErr
 }
 func (s *stubProjectRepository) SetProjectWorkspace(projectID, workspaceID string) error {
+	if s.setProjectWorkspaceHook != nil {
+		s.setProjectWorkspaceHook(projectID, workspaceID)
+	}
 	return nil
 }
 func (s *stubProjectRepository) ListWorkspaces() ([]*orchestrator.WorkspaceSummary, error) {
@@ -2372,6 +2395,40 @@ func (s *stubProjectRepository) DeleteProject(id string) error { return nil }
 
 func (s *stubProjectRepository) WorkspaceExists(slug string) (bool, error) {
 	return s.existingWorkspaces[slug], nil
+}
+
+// AssignWorkspaceIfExists stubs the atomic exists-check+assign MAJOR 3
+// introduces (docs/plans/workspace-db-consolidation.md, codex review):
+// unlike the pre-fix WorkspaceExists+SetProjectWorkspace two-step, this is a
+// single call so a test can simulate "slug was deleted between the
+// (now-removed) existence check and the assign" by having
+// existingWorkspaces report false for slug — the real implementation
+// performs both steps inside one DB transaction so that race is impossible
+// there too.
+func (s *stubProjectRepository) AssignWorkspaceIfExists(projectID, workspaceID string) error {
+	s.assignWorkspaceIfExistsCalls = append(s.assignWorkspaceIfExistsCalls, projectID+"->"+workspaceID)
+	if s.assignWorkspaceIfExistsErr != nil {
+		return s.assignWorkspaceIfExistsErr
+	}
+	if workspaceID != "" && workspaceID != orchestrator.DefaultWorkspaceSlug && !s.existingWorkspaces[workspaceID] {
+		return fmt.Errorf("workspace %q: %w", workspaceID, os.ErrNotExist)
+	}
+	return s.SetProjectWorkspace(projectID, workspaceID)
+}
+
+func (s *stubProjectRepository) GetWorkspaceSummary(slug string) (*orchestrator.WorkspaceSummary, error) {
+	// getWorkspaceSummaryCalls counts invocations so tests can assert this
+	// separate-query path is NOT used where a single atomic
+	// LoadWithRevision/UpdateIfRevisionMatches round trip should suffice
+	// (docs/plans/workspace-db-consolidation.md MAJOR 1, codex review: GET
+	// previously read meta and revision via two separate queries that could
+	// straddle a concurrent write).
+	s.getWorkspaceSummaryCalls++
+	ws, ok := s.workspaceSummaries[slug]
+	if !ok {
+		return nil, fmt.Errorf("workspace %q: %w", slug, os.ErrNotExist)
+	}
+	return ws, nil
 }
 
 func (s *stubProjectRepository) SetProjectUpstreamURL(projectID, upstreamURL string) error {
@@ -2387,6 +2444,13 @@ func (s *stubProjectRepository) SetProjectUpstreamURL(projectID, upstreamURL str
 
 type stubProjectMetaStore struct {
 	metas map[string]*orchestrator.ProjectMeta
+	// loadAllHook, if set, is called synchronously at the start of LoadAll
+	// (MAJOR 1, codex review round 3, docs/plans/workspace-db-consolidation.md).
+	// Used by TestReloadProjects_BlockedByAssign/TestReloadProjects_BlockedByRemove
+	// to pause ReloadProjects mid-flight (while ProjectAppService.mu is held)
+	// so a concurrent SetProjectWorkspace/RemoveWorkspace call can be started
+	// and observed blocking on that same mutex.
+	loadAllHook func()
 }
 
 func (s *stubProjectMetaStore) Load(workDir string) (*orchestrator.ProjectMeta, error) {
@@ -2400,7 +2464,12 @@ func (s *stubProjectMetaStore) Get(id string) (*orchestrator.ProjectMeta, bool) 
 	return m, ok
 }
 func (s *stubProjectMetaStore) Remove(id string)                          {}
-func (s *stubProjectMetaStore) LoadAll(_ []*orchestrator.Project) []error { return nil }
+func (s *stubProjectMetaStore) LoadAll(_ []*orchestrator.Project) []error {
+	if s.loadAllHook != nil {
+		s.loadAllHook()
+	}
+	return nil
+}
 func (s *stubProjectMetaStore) SetWorkspaceID(_, _ string)                {}
 
 // TestProjectAppService_ResolveProjectRef tests all resolution priority cases.

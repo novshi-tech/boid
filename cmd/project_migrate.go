@@ -37,9 +37,14 @@ writing anything. Pass --apply to actually perform the migration.
 Secret migration copies secrets from the old namespace (secret_namespace field)
 to the workspace namespace. Use --on-collision to control behaviour when a
 key already exists in the new namespace (default: refuse and list collisions).`,
-	Args:        cobra.ExactArgs(1),
-	Annotations: map[string]string{annotationSkipAutostart: "skip"},
-	RunE:        runProjectMigrate,
+	Args: cobra.ExactArgs(1),
+	Annotations: map[string]string{
+		annotationSkipAutostart: "skip",
+		// scopeLocal: this command is explicitly "daemon-free" (see the
+		// doc comment above) — all I/O is direct file/DB access.
+		scopeAnnotationKey: scopeLocal,
+	},
+	RunE: runProjectMigrate,
 }
 
 var (

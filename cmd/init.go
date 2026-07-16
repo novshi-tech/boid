@@ -26,6 +26,9 @@ var initCmd = &cobra.Command{
 }
 
 func init() {
-	initCmd.Annotations = map[string]string{annotationSkipAutostart: "skip"}
+	initCmd.Annotations = map[string]string{
+		annotationSkipAutostart: "skip",
+		scopeAnnotationKey:      scopeLocal,
+	}
 	rootCmd.AddCommand(initCmd)
 }

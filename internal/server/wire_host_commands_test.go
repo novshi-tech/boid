@@ -264,6 +264,50 @@ func TestBuildProjectStore_PreservesExistingHostCommandsConfig(t *testing.T) {
 	}
 }
 
+// TestServer_ReloadHostCommands_PicksUpHandEdit pins Step G
+// (docs/plans/workspace-db-consolidation.md PR4, `boid host-commands
+// reload` / POST /api/host_commands/reload): re-reading
+// ~/.config/boid/host_commands.yaml after a hand edit must be visible both
+// through Server.HostCommands() (the raw snapshot) and through dispatch-time
+// hydration (GetWithWorkspace, fed by the store's expanded copy) — without
+// requiring a daemon restart.
+func TestServer_ReloadHostCommands_PicksUpHandEdit(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+
+	kitsDir := t.TempDir()
+	writeTestKitYAML(t, kitsDir, "gh-kit", "host_commands:\n  gh:\n    allow: [pr]\n")
+
+	srv, err := New(Config{DBPath: ":memory:", SocketPath: filepath.Join(t.TempDir(), "boid.sock"), KitsDir: kitsDir})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	before := srv.HostCommands()
+	if _, ok := before["aws"]; ok {
+		t.Fatalf("expected no 'aws' command before reload, got %v", before)
+	}
+
+	hostCommandsPath, err := orchestrator.DefaultHostCommandsPath()
+	if err != nil {
+		t.Fatalf("DefaultHostCommandsPath: %v", err)
+	}
+	if err := orchestrator.WriteHostCommandsConfig(hostCommandsPath, map[string]orchestrator.HostCommandSpec{
+		"gh":  {Allow: []string{"pr"}},
+		"aws": {Allow: []string{"s3"}},
+	}); err != nil {
+		t.Fatalf("hand-edit WriteHostCommandsConfig: %v", err)
+	}
+
+	if err := srv.ReloadHostCommands(); err != nil {
+		t.Fatalf("ReloadHostCommands: %v", err)
+	}
+
+	after := srv.HostCommands()
+	if _, ok := after["aws"]; !ok {
+		t.Errorf("expected 'aws' command after reload, got %v", after)
+	}
+}
+
 // TestBuildProjectStore_RegeneratesHostCommandsConfigIfMissing pins the
 // other half of MAJOR 3: if host_commands.yaml is genuinely missing (e.g.
 // deleted by hand) on a restart where the migration is already committed

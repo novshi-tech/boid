@@ -85,33 +85,21 @@ func DefaultWorkspaceDir() (string, error) {
 // Load reads and parses the WorkspaceMeta for the given slug.
 // Returns an error wrapping os.ErrNotExist when the file does not exist.
 //
-// In DB mode (repo != nil) a not-found row falls back to the yaml file at
-// <dir>/<slug>.yaml (docs/plans/workspace-db-consolidation.md 「rollback
-// 用に旧 workspace yaml は残す」): PR3's cutover only migrates yaml files
-// present at daemon-startup time — anything a user (or an e2e scenario)
-// drops into the workspaces dir *after* startup never made it into the DB
-// migration, and the daemon has no post-cutover create path yet (that is
-// PR4). Rather than let those workspaces silently run in degraded mode
-// ("workspace.yaml not found" warnings + capabilities/kits/env not
-// injected + hooks failing with `command not found` because kit env is
-// missing), we transparently fall back to reading the yaml file when the
-// DB row is absent. PR4 wires the proper POST /api/workspaces path and
-// migrates every yaml on write; at that point this fallback becomes
-// unnecessary and will be removed alongside the CLI cutover.
+// In DB mode (repo != nil) this delegates straight to repo.Load and never
+// falls back to the yaml file at <dir>/<slug>.yaml. PR3's cutover had a
+// transitional yaml fallback here (a not-found DB row fell back to reading
+// the legacy yaml file) because the daemon had no post-cutover create path
+// yet — a workspace yaml dropped into the workspaces dir *after* daemon
+// startup (missed by MigrateWorkspaceYAMLToDB's one-time migration) would
+// otherwise silently degrade (capabilities/kits/env not injected). PR4
+// removes that fallback now that POST /api/workspaces (and
+// cmd/workspace.go's `boid workspace assign` auto-create) gives every
+// caller a real way to introduce a DB row outside the migration path — the
+// yaml files under DefaultWorkspaceDir() are now purely a rollback/export
+// shadow (decision 16), never read by DB-mode Load again.
 func (s *WorkspaceStore) Load(slug string) (*WorkspaceMeta, error) {
 	if s.repo != nil {
-		meta, err := s.repo.Load(slug)
-		if err == nil {
-			return meta, nil
-		}
-		if !errors.Is(err, os.ErrNotExist) {
-			return nil, err
-		}
-		// DB row missing — fall through to the yaml path below. Callers
-		// that only care about the DB view (workspace_migration.go's own
-		// preflight) construct a store with dir set to the yaml dir
-		// they already want to read, so the fallback there is
-		// intentional too.
+		return s.repo.Load(slug)
 	}
 	if err := ValidWorkspaceSlug(slug); err != nil {
 		return nil, err
@@ -164,6 +152,61 @@ func (s *WorkspaceStore) Save(slug string, meta *WorkspaceMeta) error {
 		return fmt.Errorf("workspace %q: rename: %w", slug, err)
 	}
 	return nil
+}
+
+// LoadWithRevision reads meta and its revision from a single atomic
+// snapshot in DB mode (docs/plans/workspace-db-consolidation.md MAJOR 1,
+// codex review) — see WorkspaceRepository.LoadWithRevision's doc comment
+// for why this matters. Yaml mode (repo == nil) has no revision concept, so
+// it falls back to plain Load with an empty revision string.
+func (s *WorkspaceStore) LoadWithRevision(slug string) (*WorkspaceMeta, string, error) {
+	if s.repo != nil {
+		return s.repo.LoadWithRevision(slug)
+	}
+	meta, err := s.Load(slug)
+	if err != nil {
+		return nil, "", err
+	}
+	return meta, "", nil
+}
+
+// UpdateIfRevisionMatches performs the CAS update described on
+// WorkspaceRepository.UpdateIfRevisionMatches in DB mode. Yaml mode (repo ==
+// nil) has no revision concept to enforce — it always reports matched=true
+// and performs an unconditional Save, i.e. the same non-CAS overwrite
+// semantics this mode's plain Save has always had.
+func (s *WorkspaceStore) UpdateIfRevisionMatches(slug string, expectedRevision string, meta *WorkspaceMeta) (newRevision string, matched bool, err error) {
+	if s.repo != nil {
+		return s.repo.UpdateIfRevisionMatches(slug, expectedRevision, meta)
+	}
+	if err := s.Save(slug, meta); err != nil {
+		return "", false, err
+	}
+	return "", true, nil
+}
+
+// Create writes a brand-new workspace at slug, insert-only: a slug that
+// already exists (as a DB row in DB mode, or a yaml file in yaml mode) is
+// rejected with an error wrapping os.ErrExist rather than silently
+// overwritten (docs/plans/workspace-db-consolidation.md Step A — the API's
+// POST /api/workspaces create endpoint relies on this to return HTTP 409).
+func (s *WorkspaceStore) Create(slug string, meta *WorkspaceMeta) error {
+	if s.repo != nil {
+		return s.repo.Create(slug, meta)
+	}
+	if err := ValidWorkspaceSlug(slug); err != nil {
+		return err
+	}
+	if s.dir == "" {
+		return fmt.Errorf("workspace store: dir not configured")
+	}
+	path := filepath.Join(s.dir, slug+".yaml")
+	if _, err := os.Stat(path); err == nil {
+		return fmt.Errorf("workspace %q: %w", slug, os.ErrExist)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("workspace %q: stat: %w", slug, err)
+	}
+	return s.Save(slug, meta)
 }
 
 // Remove deletes the YAML file for the given slug.
