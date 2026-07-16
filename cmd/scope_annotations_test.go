@@ -127,6 +127,8 @@ var expectedScopeAnnotations = map[string]string{
 	"boid workspace configure":  scopeRemote,
 	"boid workspace create":     scopeRemote,
 	"boid workspace edit":       scopeRemote,
+	"boid workspace export":     scopeRemote,
+	"boid workspace import":     scopeRemote,
 	"boid workspace list":       scopeRemote,
 	"boid workspace remove":     scopeRemote,
 	"boid workspace show":       scopeRemote,

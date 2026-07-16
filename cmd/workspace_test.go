@@ -1197,3 +1197,433 @@ func TestRunWorkspaceAssign_AutoCreate_RejectsMultipleDocuments(t *testing.T) {
 		t.Errorf("expected a multi-document rejection error, got: %v", err)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Export / Import (docs/plans/workspace-db-consolidation.md PR5)
+// ---------------------------------------------------------------------------
+
+// resetWorkspaceExportImportFlags clears the package-level flag state
+// workspaceExportCmd/workspaceImportCmd bind to, mirroring
+// resetWorkspaceCreateEditFlags above for the same reason (shared
+// package-level *cobra.Command singletons).
+//
+// Setting a flag's value via .Set(...) also flips its .Changed=true, which
+// leaks across tests: runWorkspaceImport's --force/--mode conflict check
+// (codex PR5 review, minor: silent --force → replace override) reads
+// .Changed to know whether the caller explicitly typed --mode. Clearing
+// .Changed=false after the .Set(...) restores a pristine "as if never
+// typed" state, so a later test that leaves --mode at its default and
+// only sets --force gets the alias behaviour, not the conflict.
+func resetWorkspaceExportImportFlags(t *testing.T) {
+	t.Helper()
+	if err := workspaceExportCmd.Flags().Set("output", ""); err != nil {
+		t.Fatalf("reset export --output: %v", err)
+	}
+	if err := workspaceImportCmd.Flags().Set("mode", "create-only"); err != nil {
+		t.Fatalf("reset import --mode: %v", err)
+	}
+	workspaceImportCmd.Flags().Lookup("mode").Changed = false
+	if err := workspaceImportCmd.Flags().Set("force", "false"); err != nil {
+		t.Fatalf("reset import --force: %v", err)
+	}
+	workspaceImportCmd.Flags().Lookup("force").Changed = false
+	if err := workspaceImportCmd.Flags().Set("slug", ""); err != nil {
+		t.Fatalf("reset import --slug: %v", err)
+	}
+	workspaceImportCmd.Flags().Lookup("slug").Changed = false
+	workspaceExportCmd.Flags().Lookup("output").Changed = false
+}
+
+// TestRunWorkspaceExport_StdoutRoundTrip pins PR5 Step D/A: exporting a
+// workspace to stdout must produce a yaml body that carries the top-level
+// "slug:" key (matching CreateWorkspace/import input shape) so it can be
+// piped straight back into `boid workspace import` without any translation
+// step (codex PR5 review, MAJOR: round-trip 非対称は避ける).
+func TestRunWorkspaceExport_StdoutRoundTrip(t *testing.T) {
+	ts := testutil.NewTestServer(t)
+	t.Setenv("BOID_SOCKET", ts.Server.SocketPath())
+	seedHostCommandsForTest(t, ts, "gh")
+	resetWorkspaceCreateEditFlags(t)
+	resetWorkspaceExportImportFlags(t)
+
+	if err := runWorkspaceCreate(workspaceCreateCmd, []string{"team-a"}); err != nil {
+		t.Fatalf("seed create: %v", err)
+	}
+	editFile := filepath.Join(t.TempDir(), "edit.yaml")
+	if err := os.WriteFile(editFile, []byte("host_commands:\n  - gh\n"), 0o644); err != nil {
+		t.Fatalf("write edit file: %v", err)
+	}
+	if err := workspaceEditCmd.Flags().Set("from-file", editFile); err != nil {
+		t.Fatalf("set --from-file: %v", err)
+	}
+	if err := runWorkspaceEdit(workspaceEditCmd, []string{"team-a"}); err != nil {
+		t.Fatalf("seed edit: %v", err)
+	}
+	resetWorkspaceCreateEditFlags(t)
+
+	var out bytes.Buffer
+	cmd := workspaceExportCmd
+	cmd.SetOut(&out)
+	if err := runWorkspaceExport(cmd, []string{"team-a"}); err != nil {
+		t.Fatalf("runWorkspaceExport: %v", err)
+	}
+
+	exported := out.Bytes()
+	// The exported body carries the top-level slug key — the round-trip
+	// symmetry that lets `boid workspace export team-a | boid workspace
+	// import` work as-is.
+	if !strings.Contains(string(exported), "slug: team-a") {
+		t.Errorf("exported body must contain 'slug: team-a' at top level: %s", exported)
+	}
+
+	// The exported body IS a valid import body: DecodeWorkspaceCreateStrict
+	// (the same decoder POST /api/workspaces/import uses) reconstructs slug
+	// and meta directly.
+	slug, meta, err := orchestrator.DecodeWorkspaceCreateStrict(exported)
+	if err != nil {
+		t.Fatalf("DecodeWorkspaceCreateStrict round-trip: %v", err)
+	}
+	if slug != "team-a" {
+		t.Errorf("slug = %q, want team-a (from export body)", slug)
+	}
+	if !equalStrSliceForWorkspaceTest(meta.HostCommands, []string{"gh"}) {
+		t.Errorf("HostCommands = %v, want [gh] (lost across export/import round trip)", meta.HostCommands)
+	}
+}
+
+// TestRunWorkspaceExport_OutputFile pins the --output flag: the exported
+// yaml must be written to the given file path, not stdout, and stdout must
+// stay empty.
+func TestRunWorkspaceExport_OutputFile(t *testing.T) {
+	ts := testutil.NewTestServer(t)
+	t.Setenv("BOID_SOCKET", ts.Server.SocketPath())
+	seedHostCommandsForTest(t, ts, "gh")
+	resetWorkspaceCreateEditFlags(t)
+	resetWorkspaceExportImportFlags(t)
+
+	createBody, err := buildWorkspaceCreateBody("team-a", []byte("host_commands:\n  - gh\n"))
+	if err != nil {
+		t.Fatalf("buildWorkspaceCreateBody: %v", err)
+	}
+	if err := ts.Client.DoWithContentType("POST", "/api/workspaces", "application/yaml", createBody, &api.WorkspaceDetail{}); err != nil {
+		t.Fatalf("seed create: %v", err)
+	}
+
+	outFile := filepath.Join(t.TempDir(), "exported.yaml")
+	if err := workspaceExportCmd.Flags().Set("output", outFile); err != nil {
+		t.Fatalf("set --output: %v", err)
+	}
+	defer resetWorkspaceExportImportFlags(t)
+
+	var out bytes.Buffer
+	cmd := workspaceExportCmd
+	cmd.SetOut(&out)
+	if err := runWorkspaceExport(cmd, []string{"team-a"}); err != nil {
+		t.Fatalf("runWorkspaceExport: %v", err)
+	}
+
+	if out.Len() == 0 {
+		t.Error("expected a confirmation message on stdout")
+	}
+	fileData, err := os.ReadFile(outFile)
+	if err != nil {
+		t.Fatalf("read --output file: %v", err)
+	}
+	if !strings.Contains(string(fileData), "gh") {
+		t.Errorf("--output file content = %q, want it to mention gh", fileData)
+	}
+	// The --output file must carry the top-level slug key (round-trip
+	// symmetry — codex PR5 review, MAJOR).
+	if !strings.Contains(string(fileData), "slug: team-a") {
+		t.Errorf("--output file must contain 'slug: team-a' at top level: %s", fileData)
+	}
+}
+
+// TestRunWorkspaceExport_404OnMissing pins that exporting an unknown slug
+// surfaces an error rather than writing an empty file/stdout silently.
+func TestRunWorkspaceExport_404OnMissing(t *testing.T) {
+	ts := testutil.NewTestServer(t)
+	t.Setenv("BOID_SOCKET", ts.Server.SocketPath())
+
+	var out bytes.Buffer
+	cmd := workspaceExportCmd
+	cmd.SetOut(&out)
+	err := runWorkspaceExport(cmd, []string{"ghost"})
+	if err == nil {
+		t.Fatal("expected an error exporting an unknown workspace, got nil")
+	}
+}
+
+// TestRunWorkspaceImport_CreateOnlyMode pins the safe default: importing a
+// brand-new slug succeeds, and importing the same slug again (still
+// create-only, the default) 409s rather than silently overwriting.
+func TestRunWorkspaceImport_CreateOnlyMode(t *testing.T) {
+	ts := testutil.NewTestServer(t)
+	t.Setenv("BOID_SOCKET", ts.Server.SocketPath())
+	seedHostCommandsForTest(t, ts, "gh")
+	resetWorkspaceExportImportFlags(t)
+	defer resetWorkspaceExportImportFlags(t)
+
+	importFile := filepath.Join(t.TempDir(), "team-c.yaml")
+	if err := os.WriteFile(importFile, []byte("host_commands:\n  - gh\n"), 0o644); err != nil {
+		t.Fatalf("write import file: %v", err)
+	}
+	if err := workspaceImportCmd.Flags().Set("slug", "team-c"); err != nil {
+		t.Fatalf("set --slug: %v", err)
+	}
+
+	var out bytes.Buffer
+	cmd := workspaceImportCmd
+	cmd.SetOut(&out)
+	if err := runWorkspaceImport(cmd, []string{importFile}); err != nil {
+		t.Fatalf("runWorkspaceImport (first, should create): %v", err)
+	}
+
+	var detail api.WorkspaceDetail
+	if err := ts.Client.Do("GET", "/api/workspaces/team-c", nil, &detail); err != nil {
+		t.Fatalf("verify import: %v", err)
+	}
+	if !equalStrSliceForWorkspaceTest(detail.Meta.HostCommands, []string{"gh"}) {
+		t.Errorf("HostCommands = %v, want [gh]", detail.Meta.HostCommands)
+	}
+
+	// Second import of the same slug, still create-only (the default), must
+	// fail rather than silently overwrite.
+	var out2 bytes.Buffer
+	cmd2 := workspaceImportCmd
+	cmd2.SetOut(&out2)
+	err := runWorkspaceImport(cmd2, []string{importFile})
+	if err == nil {
+		t.Fatal("expected an error re-importing an existing slug with mode=create-only, got nil")
+	}
+	if !strings.Contains(err.Error(), "409") && !strings.Contains(strings.ToLower(err.Error()), "already exists") {
+		t.Errorf("expected a conflict error, got: %v", err)
+	}
+}
+
+// TestRunWorkspaceImport_ReplaceMode pins --mode replace's upsert semantics:
+// re-importing an existing slug must succeed and overwrite wholesale.
+func TestRunWorkspaceImport_ReplaceMode(t *testing.T) {
+	ts := testutil.NewTestServer(t)
+	t.Setenv("BOID_SOCKET", ts.Server.SocketPath())
+	seedHostCommandsForTest(t, ts, "gh", "aws")
+	resetWorkspaceExportImportFlags(t)
+	defer resetWorkspaceExportImportFlags(t)
+
+	createBody, err := buildWorkspaceCreateBody("team-d", []byte("host_commands:\n  - gh\n"))
+	if err != nil {
+		t.Fatalf("buildWorkspaceCreateBody: %v", err)
+	}
+	if err := ts.Client.DoWithContentType("POST", "/api/workspaces", "application/yaml", createBody, &api.WorkspaceDetail{}); err != nil {
+		t.Fatalf("seed create: %v", err)
+	}
+
+	importFile := filepath.Join(t.TempDir(), "team-d.yaml")
+	if err := os.WriteFile(importFile, []byte("host_commands:\n  - aws\n"), 0o644); err != nil {
+		t.Fatalf("write import file: %v", err)
+	}
+	if err := workspaceImportCmd.Flags().Set("mode", "replace"); err != nil {
+		t.Fatalf("set --mode replace: %v", err)
+	}
+	if err := workspaceImportCmd.Flags().Set("slug", "team-d"); err != nil {
+		t.Fatalf("set --slug: %v", err)
+	}
+
+	var out bytes.Buffer
+	cmd := workspaceImportCmd
+	cmd.SetOut(&out)
+	if err := runWorkspaceImport(cmd, []string{importFile}); err != nil {
+		t.Fatalf("runWorkspaceImport --mode replace: %v", err)
+	}
+
+	var detail api.WorkspaceDetail
+	if err := ts.Client.Do("GET", "/api/workspaces/team-d", nil, &detail); err != nil {
+		t.Fatalf("verify import: %v", err)
+	}
+	if !equalStrSliceForWorkspaceTest(detail.Meta.HostCommands, []string{"aws"}) {
+		t.Errorf("HostCommands = %v, want [aws] (replace must overwrite wholesale)", detail.Meta.HostCommands)
+	}
+}
+
+// TestRunWorkspaceImport_ForceFlagIsReplaceAlias pins --force as a shorthand
+// for --mode replace.
+func TestRunWorkspaceImport_ForceFlagIsReplaceAlias(t *testing.T) {
+	ts := testutil.NewTestServer(t)
+	t.Setenv("BOID_SOCKET", ts.Server.SocketPath())
+	seedHostCommandsForTest(t, ts, "gh")
+	resetWorkspaceExportImportFlags(t)
+	defer resetWorkspaceExportImportFlags(t)
+
+	createBody, err := buildWorkspaceCreateBody("team-e", nil)
+	if err != nil {
+		t.Fatalf("buildWorkspaceCreateBody: %v", err)
+	}
+	if err := ts.Client.DoWithContentType("POST", "/api/workspaces", "application/yaml", createBody, &api.WorkspaceDetail{}); err != nil {
+		t.Fatalf("seed create: %v", err)
+	}
+
+	importFile := filepath.Join(t.TempDir(), "team-e.yaml")
+	if err := os.WriteFile(importFile, []byte("host_commands:\n  - gh\n"), 0o644); err != nil {
+		t.Fatalf("write import file: %v", err)
+	}
+	if err := workspaceImportCmd.Flags().Set("force", "true"); err != nil {
+		t.Fatalf("set --force: %v", err)
+	}
+	if err := workspaceImportCmd.Flags().Set("slug", "team-e"); err != nil {
+		t.Fatalf("set --slug: %v", err)
+	}
+
+	var out bytes.Buffer
+	cmd := workspaceImportCmd
+	cmd.SetOut(&out)
+	if err := runWorkspaceImport(cmd, []string{importFile}); err != nil {
+		t.Fatalf("runWorkspaceImport --force: %v", err)
+	}
+
+	var detail api.WorkspaceDetail
+	if err := ts.Client.Do("GET", "/api/workspaces/team-e", nil, &detail); err != nil {
+		t.Fatalf("verify import: %v", err)
+	}
+	if !equalStrSliceForWorkspaceTest(detail.Meta.HostCommands, []string{"gh"}) {
+		t.Errorf("HostCommands = %v, want [gh] (--force did not act as --mode replace)", detail.Meta.HostCommands)
+	}
+}
+
+// TestRunWorkspaceImport_AutoDetectsSlugFromBasename pins the CLI-side
+// resolution of the export/import yaml shape asymmetry (docs/plans/
+// workspace-db-consolidation.md PR5 brief: export bodies carry no "slug"
+// key): when --slug is omitted, the target slug is derived from the
+// import file's basename (extension stripped).
+func TestRunWorkspaceImport_AutoDetectsSlugFromBasename(t *testing.T) {
+	ts := testutil.NewTestServer(t)
+	t.Setenv("BOID_SOCKET", ts.Server.SocketPath())
+	seedHostCommandsForTest(t, ts, "gh")
+	resetWorkspaceExportImportFlags(t)
+	defer resetWorkspaceExportImportFlags(t)
+
+	importFile := filepath.Join(t.TempDir(), "team-f.yaml")
+	if err := os.WriteFile(importFile, []byte("host_commands:\n  - gh\n"), 0o644); err != nil {
+		t.Fatalf("write import file: %v", err)
+	}
+
+	var out bytes.Buffer
+	cmd := workspaceImportCmd
+	cmd.SetOut(&out)
+	if err := runWorkspaceImport(cmd, []string{importFile}); err != nil {
+		t.Fatalf("runWorkspaceImport (auto-detect slug): %v", err)
+	}
+
+	var detail api.WorkspaceDetail
+	if err := ts.Client.Do("GET", "/api/workspaces/team-f", nil, &detail); err != nil {
+		t.Fatalf("verify auto-detected slug team-f: %v", err)
+	}
+}
+
+// TestRunWorkspaceImport_RejectsMultipleDocuments mirrors
+// TestRunWorkspaceCreate_RejectsMultipleDocuments/
+// TestRunWorkspaceEdit_RejectsMultipleDocuments for the import path: a
+// multi-document import file must be rejected client-side before any daemon
+// call is attempted.
+func TestRunWorkspaceImport_RejectsMultipleDocuments(t *testing.T) {
+	resetWorkspaceExportImportFlags(t)
+	defer resetWorkspaceExportImportFlags(t)
+	dir := t.TempDir()
+	file := filepath.Join(dir, "multi.yaml")
+	if err := os.WriteFile(file, []byte(multiDocWorkspaceYAML), 0o644); err != nil {
+		t.Fatalf("write multi-doc yaml: %v", err)
+	}
+	if err := workspaceImportCmd.Flags().Set("slug", "team-a"); err != nil {
+		t.Fatalf("set --slug: %v", err)
+	}
+	t.Setenv("BOID_SOCKET", filepath.Join(dir, "no-daemon-here.sock"))
+
+	cmd := workspaceImportCmd
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	err := runWorkspaceImport(cmd, []string{file})
+	if err == nil {
+		t.Fatal("expected an error rejecting the multi-document import file")
+	}
+	if !strings.Contains(err.Error(), "multiple YAML documents") {
+		t.Errorf("expected a multi-document rejection error, got: %v", err)
+	}
+}
+
+// TestRunWorkspaceImport_RejectsInvalidMode pins client-side --mode
+// validation: an unrecognized --mode value must fail before any daemon call.
+func TestRunWorkspaceImport_RejectsInvalidMode(t *testing.T) {
+	resetWorkspaceExportImportFlags(t)
+	defer resetWorkspaceExportImportFlags(t)
+	dir := t.TempDir()
+	file := filepath.Join(dir, "team-a.yaml")
+	if err := os.WriteFile(file, []byte("host_commands: [gh]\n"), 0o644); err != nil {
+		t.Fatalf("write yaml: %v", err)
+	}
+	if err := workspaceImportCmd.Flags().Set("mode", "bogus"); err != nil {
+		t.Fatalf("set --mode: %v", err)
+	}
+	t.Setenv("BOID_SOCKET", filepath.Join(dir, "no-daemon-here.sock"))
+
+	cmd := workspaceImportCmd
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	err := runWorkspaceImport(cmd, []string{file})
+	if err == nil {
+		t.Fatal("expected an error for an invalid --mode value")
+	}
+	if !strings.Contains(err.Error(), "mode") {
+		t.Errorf("expected the error to mention --mode, got: %v", err)
+	}
+}
+
+// TestRunWorkspaceImport_ForceAndCreateOnlyConflict pins the codex PR5
+// review's minor finding: `--force` is a shorthand for `--mode replace`,
+// but if the caller *also* passes `--mode create-only` explicitly, the two
+// directives disagree. Silently letting --force upgrade an explicit safety
+// declaration into replace is dangerous — surface the conflict as an
+// error instead. --force with default --mode (unset) still translates to
+// replace; --force with an explicit `--mode replace` is redundant-but-OK
+// (same effect, no conflict).
+func TestRunWorkspaceImport_ForceAndCreateOnlyConflict(t *testing.T) {
+	resetWorkspaceExportImportFlags(t)
+	defer resetWorkspaceExportImportFlags(t)
+	dir := t.TempDir()
+	file := filepath.Join(dir, "team-a.yaml")
+	if err := os.WriteFile(file, []byte("host_commands: [gh]\n"), 0o644); err != nil {
+		t.Fatalf("write yaml: %v", err)
+	}
+	if err := workspaceImportCmd.Flags().Set("mode", "create-only"); err != nil {
+		t.Fatalf("set --mode: %v", err)
+	}
+	if err := workspaceImportCmd.Flags().Set("force", "true"); err != nil {
+		t.Fatalf("set --force: %v", err)
+	}
+	t.Setenv("BOID_SOCKET", filepath.Join(dir, "no-daemon-here.sock"))
+
+	cmd := workspaceImportCmd
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	err := runWorkspaceImport(cmd, []string{file})
+	if err == nil {
+		t.Fatal("expected an error for --force conflicting with --mode create-only")
+	}
+	if !strings.Contains(err.Error(), "--force") || !strings.Contains(err.Error(), "create-only") {
+		t.Errorf("expected the error to mention both --force and create-only, got: %v", err)
+	}
+}
+
+// equalStrSliceForWorkspaceTest avoids colliding with equalStrSlice /
+// equalStringSliceForTest, which live in different packages/files but the
+// same identifier space concerns do not apply across packages — kept
+// distinct here only to avoid confusion reading this file in isolation.
+func equalStrSliceForWorkspaceTest(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
