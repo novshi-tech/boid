@@ -103,6 +103,7 @@ func TestProjectAPI_List(t *testing.T) {
 func TestProjectAPI_SetWorkspaceAndGet(t *testing.T) {
 	ts := testutil.NewTestServer(t)
 	createProject(t, ts, "test-project", "Test Project")
+	testutil.SeedWorkspace(t, ts, "ws-1")
 
 	var updated orchestrator.Project
 	if err := ts.Client.Do("PUT", "/api/projects/test-project/workspace", map[string]string{"workspace_id": "ws-1"}, &updated); err != nil {
@@ -152,6 +153,7 @@ func TestProjectAPI_ListByWorkspace(t *testing.T) {
 	ts := testutil.NewTestServer(t)
 	createProject(t, ts, "proj-1", "Project 1")
 	createProject(t, ts, "proj-2", "Project 2")
+	testutil.SeedWorkspace(t, ts, "ws-1")
 
 	var updated orchestrator.Project
 	if err := ts.Client.Do("PUT", "/api/projects/proj-1/workspace", map[string]string{"workspace_id": "ws-1"}, &updated); err != nil {
@@ -183,6 +185,8 @@ func TestProjectAPI_ListWorkspaces(t *testing.T) {
 	createProject(t, ts, "proj-1", "Project 1")
 	createProject(t, ts, "proj-2", "Project 2")
 	createProject(t, ts, "proj-3", "Project 3")
+	testutil.SeedWorkspace(t, ts, "ws-1")
+	testutil.SeedWorkspace(t, ts, "ws-2")
 
 	var updated orchestrator.Project
 	for projectID, workspaceID := range map[string]string{

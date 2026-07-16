@@ -281,6 +281,33 @@ func LoadHostCommandsConfig(path string) (map[string]HostCommandSpec, error) {
 	return out, nil
 }
 
+// writeHostCommandsConfigIfMissing writes spec to path via
+// WriteHostCommandsConfig only when no file exists there yet. This mirrors
+// the "only regenerate when missing" semantics internal/server/wire.go's
+// buildProjectStore already applies for its own PR2 preflight (see the
+// MAJOR 3 comment there) — MAJOR 3's 2nd-pass codex review finding was that
+// MigrateWorkspaceYAMLToDB (workspace_migration.go) did not apply the same
+// guard: it called WriteHostCommandsConfig unconditionally, so its first
+// (committed, one-time) run silently clobbered whatever was already on disk
+// — a PR2-generated aggregate or a hand edit (the plan doc's documented way
+// to add/adjust a host_command without a kit) — with its own freshly
+// aggregated spec.
+//
+// Returns wrote=true when a write actually happened (the file was missing),
+// false when an existing file was found and left untouched. A stat error
+// other than "not exist" is returned as-is.
+func writeHostCommandsConfigIfMissing(path string, spec map[string]HostCommandSpec) (wrote bool, err error) {
+	if _, statErr := os.Stat(path); statErr == nil {
+		return false, nil
+	} else if !os.IsNotExist(statErr) {
+		return false, fmt.Errorf("host_commands config: stat %q: %w", path, statErr)
+	}
+	if err := WriteHostCommandsConfig(path, spec); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
 // CloneHostCommandsMap returns a deep copy of m: a new top-level map, plus
 // independent copies of every HostCommandSpec's slice/map fields. Callers
 // such as Server.HostCommands() use this to hand out a snapshot rather than
@@ -296,6 +323,37 @@ func CloneHostCommandsMap(m map[string]HostCommandSpec) map[string]HostCommandSp
 		out[name] = cloneHostCommandSpec(spec)
 	}
 	return out
+}
+
+// ExpandHostCommandsForDispatch returns a clone of raw with each entry's
+// Path and Env values expanded via interpolateHostCommands against the
+// daemon process's own environment (MAJOR 2 codex review finding). The
+// aggregated host_commands.yaml config on disk — and the map this function
+// receives when called with the value LoadHostCommandsConfig just parsed —
+// stores raw/unexpanded definitions by design (see readKitHostCommandsRaw's
+// doc comment: expanding at aggregation time would bake resolved values,
+// possibly secret-shaped, into that file, and would let two kits using
+// differently-named placeholders that happen to resolve to the same value
+// silently evade collision detection). But a raw `path: ${HOME}/bin/gh` is
+// useless to exec.LookPath at dispatch time — something has to expand it
+// before ProjectStore ever hands a HostCommandSpec to the sandbox.
+//
+// Call this once at daemon startup on the freshly loaded raw config and wire
+// the *expanded* result into ProjectStore.SetHostCommands (the dispatch-time
+// read path), while Server.HostCommands() keeps handing out the raw
+// CloneHostCommandsMap snapshot unchanged (the PR2 contract: the on-disk
+// file and the API-visible snapshot both stay raw/inspectable).
+//
+// raw is never mutated: the returned map (and every HostCommandSpec.Env
+// value map inside it) is an independent deep copy (CloneHostCommandsMap)
+// before interpolateHostCommands runs in place on that copy.
+func ExpandHostCommandsForDispatch(raw map[string]HostCommandSpec) map[string]HostCommandSpec {
+	cloned := CloneHostCommandsMap(raw)
+	if cloned == nil {
+		return cloned
+	}
+	interpolateHostCommands(HostCommands(cloned))
+	return cloned
 }
 
 // cloneHostCommandSpec deep-copies a single HostCommandSpec's slice/map

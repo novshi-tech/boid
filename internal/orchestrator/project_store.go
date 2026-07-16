@@ -16,6 +16,13 @@ type ProjectStore struct {
 	workspaceIDs   map[string]string // projectID → workspaceID (empty if unlinked)
 	resolver       KitResolver
 	workspaceStore *WorkspaceStore
+	// hostCommands is the daemon's aggregated host_commands config
+	// (docs/plans/workspace-db-consolidation.md host_commands 実定義の集約先):
+	// the full HostCommandSpec definitions keyed by name, which
+	// WorkspaceMeta.HostCommands (a []string of reference names only) is
+	// resolved against at GetWithWorkspace hydration time. Wired via
+	// SetHostCommands — see internal/server/wire.go's buildProjectStore.
+	hostCommands map[string]HostCommandSpec
 }
 
 // NewProjectStore creates a new store. If resolver is non-nil, kit references
@@ -44,6 +51,14 @@ func (s *ProjectStore) SetWorkspaceStore(ws *WorkspaceStore) {
 // before assigning — see internal/server/wire.go (resolveDispatcherWorkspaceLookup).
 func (s *ProjectStore) WorkspaceStore() *WorkspaceStore {
 	return s.workspaceStore
+}
+
+// SetHostCommands configures the daemon's aggregated host_commands map
+// used to resolve WorkspaceMeta.HostCommands reference names in
+// GetWithWorkspace. Call this before dispatch when workspace host_commands
+// hydration is desired — symmetric with SetWorkspaceStore.
+func (s *ProjectStore) SetHostCommands(hostCommands map[string]HostCommandSpec) {
+	s.hostCommands = hostCommands
 }
 
 // Load reads project.yaml from the work_dir and stores the meta in memory.
@@ -124,6 +139,16 @@ func (s *ProjectStore) GetWithWorkspace(_ context.Context, projectID string) (*P
 		return nil, fmt.Errorf("project %q: load workspace %q: %w", projectID, workspaceID, err)
 	}
 
+	// MAJOR 1 (codex review, 3rd pass): expand ${VAR} placeholders in
+	// ws.Env / ws.AdditionalBindings before anything below reads them. The
+	// DB/yaml-stored ws value stays raw (see expandWorkspaceRuntimeForDispatch's
+	// doc comment) — ws is reassigned to a clone here so every block below
+	// (the AdditionalBindings merge, the Env merge) transparently sees
+	// expanded values without needing its own expansion step. Mirrors
+	// ExpandHostCommandsForDispatch's clone+expand treatment of
+	// workspace.HostCommands' resolved definitions.
+	ws = expandWorkspaceRuntimeForDispatch(ws)
+
 	// Capabilities: workspace overrides project (e.g. enables docker proxy).
 	if ws.Capabilities.Docker != nil {
 		out.Capabilities = ws.Capabilities
@@ -179,6 +204,89 @@ func (s *ProjectStore) GetWithWorkspace(_ context.Context, projectID string) (*P
 				if err := MergeKitMetaIntoBehavior(&behavior, wsKitMetas, wsAgents); err != nil {
 					return nil, fmt.Errorf("project %q: behavior %q: workspace kit merge: %w", projectID, name, err)
 				}
+				out.TaskBehaviors[name] = behavior
+			}
+			out.TaskBehaviors = addAliasMirrors(out.TaskBehaviors)
+		}
+	}
+
+	// workspace.AdditionalBindings (BLOCKER 2, docs/plans/
+	// workspace-db-consolidation.md codex review): a workspace-level vestige
+	// of the kit mechanism (decision 4), merged the same way workspace-kit
+	// AdditionalBindings are merged above — into both the top-level
+	// meta.AdditionalBindings (session jobs bypass behaviors and read this
+	// directly) and every TaskBehavior.AdditionalBindings (task hooks read
+	// behavior.AdditionalBindings via the planner). Same precedence as the
+	// kit block: project.yaml wins on a Source conflict
+	// (mergeBindMounts(base, overlay) with overlay=out.AdditionalBindings,
+	// i.e. whatever project.yaml/kit merging already placed there wins).
+	// Before this block existed, neither a directly-authored
+	// ws.AdditionalBindings nor BLOCKER 1's kit-materialized form ever
+	// reached dispatch — the field was parsed and persisted but silently
+	// inert.
+	if len(ws.AdditionalBindings) > 0 {
+		out.AdditionalBindings = mergeBindMounts(ws.AdditionalBindings, out.AdditionalBindings)
+
+		if out.TaskBehaviors == nil {
+			out.TaskBehaviors = make(map[string]TaskBehavior)
+		}
+		out.TaskBehaviors = stripAliasMirrors(out.TaskBehaviors)
+		for name, behavior := range out.TaskBehaviors {
+			behavior.AdditionalBindings = mergeBindMounts(ws.AdditionalBindings, behavior.AdditionalBindings)
+			out.TaskBehaviors[name] = behavior
+		}
+		out.TaskBehaviors = addAliasMirrors(out.TaskBehaviors)
+	}
+
+	// workspace.HostCommands (docs/plans/workspace-db-consolidation.md PR3
+	// cutover) is a []string of reference names into the daemon's
+	// aggregated host_commands config (s.hostCommands, wired via
+	// SetHostCommands) — unlike ws.Kits above, no path/allow/env/reject
+	// definitions travel with the workspace itself. Each resolved name is
+	// merged the same way workspace kits are merged above: into the
+	// top-level meta.HostCommands (session jobs bypass behaviors and read
+	// this directly) and into every TaskBehavior.HostCommands (task hooks
+	// read behavior.HostCommands via the planner). Precedence matches the
+	// kit block: project.yaml wins on a name conflict. In practice the two
+	// paths should never actually conflict on a *different* definition for
+	// the same name — the aggregated config is exactly the union of every
+	// installed kit's host_commands (see LoadHostCommandsFromKits), so a
+	// name resolved here carries the identical HostCommandSpec a workspace
+	// kit reference would have produced.
+	// MINOR (codex review): the condition used to also require
+	// len(s.hostCommands) > 0, which meant that when the daemon's
+	// aggregated host_commands map was empty (no kits installed / not yet
+	// wired), a workspace.HostCommands reference silently produced neither
+	// the "unresolved" warning below nor any error — the whole block was
+	// skipped outright. Checking only ws.HostCommands here means every
+	// referenced name always gets resolved-or-warned, including the
+	// aggregated-empty case.
+	if len(ws.HostCommands) > 0 {
+		resolved := make(HostCommands, len(ws.HostCommands))
+		for _, name := range ws.HostCommands {
+			spec, ok := s.hostCommands[name]
+			if !ok {
+				slog.Warn("workspace host_commands reference unresolved; skipping",
+					"project_id", projectID, "workspace_id", workspaceID, "name", name)
+				continue
+			}
+			resolved[name] = spec
+		}
+		if len(resolved) > 0 {
+			out.HostCommands = mergeHostCommands(resolved, out.HostCommands)
+			if err := validateBuiltinHostConflict("workspace host_commands", out.HostCommands); err != nil {
+				return nil, fmt.Errorf("project %q: %w", projectID, err)
+			}
+			if err := validateRejectRules(out.HostCommands); err != nil {
+				return nil, fmt.Errorf("project %q: workspace host_commands: %w", projectID, err)
+			}
+
+			if out.TaskBehaviors == nil {
+				out.TaskBehaviors = make(map[string]TaskBehavior)
+			}
+			out.TaskBehaviors = stripAliasMirrors(out.TaskBehaviors)
+			for name, behavior := range out.TaskBehaviors {
+				behavior.HostCommands = mergeHostCommands(resolved, behavior.HostCommands)
 				out.TaskBehaviors[name] = behavior
 			}
 			out.TaskBehaviors = addAliasMirrors(out.TaskBehaviors)

@@ -24,6 +24,11 @@ func newTestClient(sockPath string) *http.Client {
 }
 
 func TestWebUI_EnabledByDefault(t *testing.T) {
+	// Isolate from the real $XDG_CONFIG_HOME (see testutil.NewTestServer's
+	// doc comment) — this test constructs *server.Server directly rather
+	// than via testutil.
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+
 	tmpDir := t.TempDir()
 	sockPath := filepath.Join(tmpDir, "boid.sock")
 

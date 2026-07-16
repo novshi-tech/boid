@@ -2342,6 +2342,12 @@ type stubProjectRepository struct {
 	// can assert the "already up to date, skip the write" idempotency path
 	// (docs/plans/git-gateway-cutover.md PR2 reload recapture).
 	setUpstreamURLCalls int
+	// existingWorkspaces backs WorkspaceExists (MAJOR 5, docs/plans/
+	// workspace-db-consolidation.md): a slug is reported as existing only
+	// when this map has a true entry for it. nil/zero-value defaults every
+	// slug to "does not exist", matching the fail-closed behavior tests
+	// should expect unless they explicitly opt a slug in.
+	existingWorkspaces map[string]bool
 }
 
 func (s *stubProjectRepository) CreateProject(project *orchestrator.Project) error { return nil }
@@ -2363,6 +2369,10 @@ func (s *stubProjectRepository) ListWorkspaces() ([]*orchestrator.WorkspaceSumma
 	return nil, nil
 }
 func (s *stubProjectRepository) DeleteProject(id string) error { return nil }
+
+func (s *stubProjectRepository) WorkspaceExists(slug string) (bool, error) {
+	return s.existingWorkspaces[slug], nil
+}
 
 func (s *stubProjectRepository) SetProjectUpstreamURL(projectID, upstreamURL string) error {
 	s.setUpstreamURLCalls++

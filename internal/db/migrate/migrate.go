@@ -246,6 +246,17 @@ func Apply(conn *sql.DB) error {
 				return tableExists(tx, "workspaces")
 			},
 		},
+		{
+			// docs/plans/workspace-db-consolidation.md PR3 前段: schema_migrations
+			// に state / input_hash を追加し、workspace_db_consolidation
+			// migration (internal/orchestrator/workspace_migration.go) の
+			// staging → committed 二段階 state と crash recovery を可能にする。
+			version: "0031_add_schema_migrations_state",
+			path:    "migrations/0031_add_schema_migrations_state.sql",
+			skip: func(tx *sql.Tx) (bool, error) {
+				return columnExists(tx, "schema_migrations", "state")
+			},
+		},
 	}
 
 	if err := ensureSchemaMigrationsTable(conn); err != nil {
@@ -346,8 +357,48 @@ func applyMigration(conn *sql.DB, m migration) error {
 	return nil
 }
 
+// recordMigration records version as applied with the default terminal
+// state ("committed") and an empty input_hash — the shape every ordinary
+// file-based migration in the slice above uses. See recordMigrationState for
+// the staging/committed two-phase form workspace_db_consolidation needs.
 func recordMigration(tx *sql.Tx, version string) error {
-	if _, err := tx.Exec(`INSERT INTO schema_migrations (version) VALUES (?)`, version); err != nil {
+	return recordMigrationState(tx, version, "committed", "")
+}
+
+// recordMigrationState upserts version's row in schema_migrations with the
+// given state and input_hash: INSERT if the version has no row yet, or
+// UPDATE state/input_hash/applied_at in place if it does. This is the
+// primitive workspace_db_consolidation's staging → committed transition
+// (docs/plans/workspace-db-consolidation.md マイグレーション節) is built on —
+// calling it twice for the same version never creates a duplicate row.
+//
+// Bootstrapping note: this function is also used (via recordMigration) by
+// every migration from 0001 through 0030, and on a completely fresh
+// database all of those run — in order — before migration 0031 has added
+// the state/input_hash columns to schema_migrations. columnExists is
+// checked on every call so those early calls fall back to the legacy
+// version-only INSERT against the pre-0031 schema, while 0031's own
+// recordMigration call (and everything after it) sees the columns already
+// added by its own ALTER TABLE (executed earlier in the same transaction)
+// and takes the UPSERT path.
+func recordMigrationState(tx *sql.Tx, version, state, inputHash string) error {
+	hasState, err := columnExists(tx, "schema_migrations", "state")
+	if err != nil {
+		return fmt.Errorf("record migration %s: check state column: %w", version, err)
+	}
+	if !hasState {
+		if _, err := tx.Exec(`INSERT INTO schema_migrations (version) VALUES (?)`, version); err != nil {
+			return fmt.Errorf("record migration %s: %w", version, err)
+		}
+		return nil
+	}
+	if _, err := tx.Exec(`
+		INSERT INTO schema_migrations (version, state, input_hash) VALUES (?, ?, ?)
+		ON CONFLICT(version) DO UPDATE SET
+			state      = excluded.state,
+			input_hash = excluded.input_hash,
+			applied_at = datetime('now')
+	`, version, state, inputHash); err != nil {
 		return fmt.Errorf("record migration %s: %w", version, err)
 	}
 	return nil

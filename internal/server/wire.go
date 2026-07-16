@@ -46,7 +46,7 @@ type appRuntime struct {
 	connRegistry   *auth.ConnectionRegistry
 }
 
-func buildProjectStore(cfg Config, projectRepo *orchestrator.ProjectRepository) (*orchestrator.ProjectStore, map[string]orchestrator.HostCommandSpec, error) {
+func buildProjectStore(cfg Config, conn *sql.DB, projectRepo *orchestrator.ProjectRepository) (*orchestrator.ProjectStore, map[string]orchestrator.HostCommandSpec, error) {
 	// resolver は KitResolver 型 (interface) を使い、 cfg.KitsDir 未設定時は
 	// untyped nil interface を渡す。 *KitRegistry 型のローカル変数を経由すると
 	// Go の typed-nil 罠で interface 値が non-nil (内部 type=*KitRegistry,
@@ -61,24 +61,48 @@ func buildProjectStore(cfg Config, projectRepo *orchestrator.ProjectRepository) 
 	}
 	store := orchestrator.NewProjectStore(resolver)
 
-	// Wire workspace store so GetWithWorkspace can hydrate workspace.yaml data
-	// (capabilities, kits, env) at dispatch time.
+	// Workspace DB cutover (docs/plans/workspace-db-consolidation.md PR3):
+	// migrate any yaml-authority workspaces (DefaultWorkspaceDir()/*.yaml)
+	// and kit host_commands (cfg.KitsDir) into the `workspaces` table before
+	// anything below reads workspace data. Idempotent — a no-op once
+	// already committed — and includes its own crash-recovery check, so
+	// this is safe to call on every daemon startup. A migration failure
+	// (corrupt yaml, a kit host_command name collision, a project
+	// referencing an unresolvable workspace, or an unreconcilable crash
+	// recovery mismatch) aborts daemon startup, same as the workspace
+	// validation block below.
+	if err := orchestrator.MigrateWorkspaceYAMLToDB(conn, "", cfg.KitsDir, projectRepo); err != nil {
+		return nil, nil, fmt.Errorf("daemon startup refused: %w", err)
+	}
+
+	// Wire workspace store so GetWithWorkspace can hydrate workspace data
+	// (capabilities, host_commands, env) at dispatch time. SetRepository
+	// switches wsStore into DB mode (see WorkspaceStore's doc comment):
+	// every Load/Save/Remove/List/EnsureDefault call below and at dispatch
+	// time now routes through the workspaces table the migration above just
+	// populated, instead of re-reading the yaml files (which remain on disk
+	// only as a rollback/export shadow — decision 16).
 	wsStore := orchestrator.NewWorkspaceStore("")
+	wsStore.SetRepository(orchestrator.NewWorkspaceRepository(conn))
 	store.SetWorkspaceStore(wsStore)
 
-	// Ensure the implicit default workspace exists on disk before the
-	// validation pass below scans the directory. The file is created empty;
-	// users can later edit it via `boid workspace configure default`. We
-	// log but do not block daemon startup on EnsureDefault failure since
-	// the next Load attempt will surface the problem with a sharper error.
+	// Ensure the implicit default workspace exists before the validation
+	// pass below runs. MigrateWorkspaceYAMLToDB above already guarantees
+	// this (it always ensures the default workspace row), so this call is a
+	// belt-and-suspenders idempotent no-op in the normal case; it stays
+	// here as defense-in-depth and because WorkspaceRepository.EnsureDefault
+	// is safe to call unconditionally. We log but do not block daemon
+	// startup on failure since the next Load attempt will surface the
+	// problem with a sharper error.
 	if err := wsStore.EnsureDefault(); err != nil {
 		slog.Warn("EnsureDefault failed (default workspace may be missing)",
 			"error", err)
 	}
 
-	// Validate all workspace.yaml files at startup. ErrNotExist means no
-	// workspace directory yet — that is the degraded window and is fine.
-	// Any other error (parse failure, permission error) is a startup blocker.
+	// Validate every workspace row at startup (DB-backed since
+	// SetRepository above). ErrNotExist from List means no rows yet — that
+	// is the degraded window and is fine. Any other error (decode failure)
+	// is a startup blocker.
 	if slugs, err := wsStore.List(); err != nil {
 		return nil, nil, fmt.Errorf("daemon startup refused: list workspaces: %w", err)
 	} else {
@@ -102,29 +126,68 @@ func buildProjectStore(cfg Config, projectRepo *orchestrator.ProjectRepository) 
 	}
 
 	// host_commands aggregation preflight (docs/plans/workspace-db-consolidation.md
-	// PR2): scan every installed kit.yaml under cfg.KitsDir and aggregate their
-	// host_commands into a single config. This is a *preflight*, run alongside
-	// — not instead of — the existing per-kit dispatch path (KitResolver above):
-	// PR2 only stands up the aggregated config and its read path so the two
-	// can be compared for parity; the cutover to using this map for dispatch
-	// is PR3. A name collision between two kits with differing definitions
-	// aborts daemon startup (decision 9 in the plan doc), same as the
-	// workspace-validation block above.
-	aggregatedHostCommands, err := orchestrator.LoadHostCommandsFromKits(cfg.KitsDir)
-	if err != nil {
-		return nil, nil, fmt.Errorf("daemon startup refused: %w", err)
-	}
+	// PR2). hostCommandsPath is the aggregated config's on-disk location;
+	// once written it is meant to be the authority (hand-editable — see the
+	// plan doc), so MAJOR 3 (codex review) makes what follows conditional
+	// on whether it already exists.
 	hostCommandsPath, err := orchestrator.DefaultHostCommandsPath()
 	if err != nil {
 		return nil, nil, fmt.Errorf("daemon startup refused: resolve host_commands.yaml path: %w", err)
 	}
-	if err := orchestrator.WriteHostCommandsConfig(hostCommandsPath, aggregatedHostCommands); err != nil {
-		return nil, nil, fmt.Errorf("daemon startup refused: write host_commands.yaml: %w", err)
+
+	// MAJOR 3 (codex review): only aggregate-from-kits-and-rewrite when the
+	// file does not exist yet. Before this fix, buildProjectStore
+	// unconditionally re-aggregated every installed kit.yaml and rewrote
+	// hostCommandsPath on *every* daemon startup — including every restart
+	// long after MigrateWorkspaceYAMLToDB had already committed and written
+	// it once. Since state=committed makes that migration a permanent no-op
+	// (it never rewrites the file again), this unconditional rewrite was
+	// the only thing still clobbering it: any hand edit to
+	// ~/.config/boid/host_commands.yaml (the plan doc's documented way to
+	// add/adjust a host_command without a kit) was silently reverted on the
+	// very next `boid start`. The conditional below only regenerates when
+	// the file is genuinely missing (fresh install racing ahead of the
+	// migration in some test harness path, or a user manually deleting it)
+	// — a self-healing fallback, not the steady-state path. A name
+	// collision between two kits with differing definitions still aborts
+	// daemon startup (decision 9 in the plan doc) whenever this fallback
+	// does run.
+	var hostCommands map[string]orchestrator.HostCommandSpec
+	if _, statErr := os.Stat(hostCommandsPath); statErr == nil {
+		hostCommands, err = orchestrator.LoadHostCommandsConfig(hostCommandsPath)
+		if err != nil {
+			return nil, nil, fmt.Errorf("daemon startup refused: load host_commands.yaml: %w", err)
+		}
+	} else if os.IsNotExist(statErr) {
+		aggregatedHostCommands, err := orchestrator.LoadHostCommandsFromKits(cfg.KitsDir)
+		if err != nil {
+			return nil, nil, fmt.Errorf("daemon startup refused: %w", err)
+		}
+		if err := orchestrator.WriteHostCommandsConfig(hostCommandsPath, aggregatedHostCommands); err != nil {
+			return nil, nil, fmt.Errorf("daemon startup refused: write host_commands.yaml: %w", err)
+		}
+		hostCommands, err = orchestrator.LoadHostCommandsConfig(hostCommandsPath)
+		if err != nil {
+			return nil, nil, fmt.Errorf("daemon startup refused: load host_commands.yaml: %w", err)
+		}
+	} else {
+		return nil, nil, fmt.Errorf("daemon startup refused: stat host_commands.yaml: %w", statErr)
 	}
-	hostCommands, err := orchestrator.LoadHostCommandsConfig(hostCommandsPath)
-	if err != nil {
-		return nil, nil, fmt.Errorf("daemon startup refused: load host_commands.yaml: %w", err)
-	}
+
+	// Cutover (PR3): wire the aggregated host_commands map into the project
+	// store so GetWithWorkspace can resolve workspace.HostCommands
+	// (reference names) into full HostCommandSpec definitions at dispatch
+	// time — see project_store.go's workspace host_commands merge block.
+	// Symmetric with SetWorkspaceStore above.
+	//
+	// MAJOR 2 (codex review): hostCommands (loaded above, or returned to
+	// this function's caller below) stays raw/unexpanded — that is the PR2
+	// contract Server.HostCommands() exposes. But dispatch needs ${VAR}
+	// placeholders (e.g. a kit's `path: ${HOME}/bin/gh`) resolved against
+	// the daemon's own environment, or exec.LookPath fails on the literal
+	// string. Wire an expanded *clone* into the dispatch-time store instead
+	// of the raw map itself.
+	store.SetHostCommands(orchestrator.ExpandHostCommandsForDispatch(hostCommands))
 
 	// Migrate any legacy unlinked projects (no project_workspaces row) into
 	// the default workspace so every project lives under exactly one
