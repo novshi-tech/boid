@@ -278,9 +278,9 @@ func rejectRemovedProjectFields(dir string, raw map[string]any) *ProjectMigratio
 // project.yaml and kit.yaml report the same migration guidance for the same
 // field — and lets the tests assert against a single source of truth.
 var removedBehaviorFieldGuidance = map[string]string{
-	"worktree":        "worktree is determined by the project-top 'worktree' field combined with the behavior name (supervisor/executor)",
+	"worktree":        "worktree is no longer configurable; every project-visible job runs in a fresh sandbox clone (branch-policy-simplification Phase 2)",
 	"base_branch":     "base_branch is resolved from the project-top 'base_branch' field (with ${TASK_REMOTE_ID} / ${current_branch} expansion)",
-	"branch_prefix":   "branch_prefix is no longer configurable; worktree branches are always created under 'boid/'",
+	"branch_prefix":   "branch_prefix is no longer configurable; the per-task branch concept was retired (branch-policy-simplification Phase 1)",
 	"default_payload": "default_payload is no longer supported; provide payload data at task creation time instead",
 }
 

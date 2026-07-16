@@ -9,15 +9,18 @@ import (
 	"github.com/novshi-tech/boid/internal/orchestrator"
 )
 
-// classifyAndApplyBaseBranchCase performs the Phase 2-2 supervisor 3-case
-// classification and adjusts task.Worktree based on the result. It is also
-// where the "parent-less executor pointed at a non-existent base" error is
-// surfaced.
+// validateParentlessExecutorBase surfaces the "parent-less executor pointed
+// at a non-existent base" error at task creation time. The supervisor-side
+// case-1/2/3 → worktree routing that used to live here was removed in
+// branch-policy-simplification Phase 2: every project-visible job now runs in
+// a fresh sandbox clone, so no per-task worktree decision is needed. The
+// executor guard is preserved because it catches a user-visible config bug
+// (a top-level executor whose base_branch does not exist on origin) at
+// creation time rather than deep inside the sandbox clone.
 //
-// Returns the updated worktree flag (the task field) and a *StatusError on
-// validation failure. The function is conservative: when classification
-// itself fails (e.g. detached HEAD, project lookup unwired) it surfaces the
-// error so callers cannot silently fall through to a broken supervisor run.
+// The function is conservative: when classification itself fails (e.g.
+// detached HEAD, project lookup unwired) the error is surfaced so callers
+// cannot silently fall through to a broken sandbox run.
 //
 // Rationale for living on the service (rather than orchestrator pkg): the
 // decision combines task-row metadata (behaviorName, parent), project meta
@@ -25,59 +28,40 @@ import (
 // would require importing the ProjectWorkDirLookup interface back, which is
 // the wrong direction for the layer boundary (orchestrator → api is forbidden
 // per feedback_layer_boundary_enforcement). Service is the right join point.
-func (s *TaskAppService) classifyAndApplyBaseBranchCase(req CreateTaskRequest, behaviorName, baseBranch string, worktree bool) (bool, error) {
-	if behaviorName != "supervisor" && behaviorName != "executor" {
-		// Non-canonical behaviors keep the existing semantics (P3-1 will
-		// remove the divergence entirely).
-		return worktree, nil
+func (s *TaskAppService) validateParentlessExecutorBase(req CreateTaskRequest, behaviorName, baseBranch string) error {
+	if behaviorName != "executor" {
+		// Only parent-less executor with a case-3 base is a creation-time
+		// error; every other combination is either fine or handled downstream.
+		return nil
+	}
+	if req.ParentID != "" {
+		// Child executor inherits its parent's base_branch responsibility.
+		return nil
 	}
 	if s.Projects == nil {
 		// No project workdir lookup available (e.g. test wiring without a
-		// Projects stub). Without it we cannot classify; leave the worktree
-		// decision untouched and skip the check. CreateTask paths that need
-		// the classification wire the Projects field — silent skipping here
-		// matches the legacy behavior of the base_branch expander.
-		return worktree, nil
+		// Projects stub). Without it we cannot classify; skip the check.
+		return nil
 	}
 	proj, projErr := s.Projects.GetProject(req.ProjectID)
 	if projErr != nil {
-		return worktree, &StatusError{Code: http.StatusBadRequest, Message: fmt.Sprintf("project lookup failed: %v", projErr)}
+		return &StatusError{Code: http.StatusBadRequest, Message: fmt.Sprintf("project lookup failed: %v", projErr)}
 	}
 	if proj == nil || proj.WorkDir == "" {
-		return worktree, nil
+		return nil
 	}
 
 	state, err := orchestrator.ClassifyBaseBranch(proj.WorkDir, baseBranch)
 	if err != nil {
-		return worktree, &StatusError{Code: http.StatusBadRequest, Message: fmt.Sprintf("classify base_branch %q: %v", baseBranch, err)}
+		return &StatusError{Code: http.StatusBadRequest, Message: fmt.Sprintf("classify base_branch %q: %v", baseBranch, err)}
 	}
-
-	switch behaviorName {
-	case "supervisor":
-		// Supervisor case routing:
-		//   case 1 → worktree=false (run in project dir)
-		//   case 2 → worktree=true  (check out the existing base in a worktree)
-		//   case 3 → worktree=true  (worktree manager will create the base)
-		switch state {
-		case orchestrator.Case1HeadMatches:
-			worktree = false
-		case orchestrator.Case2ExistsButNotCheckedOut, orchestrator.Case3NotFound:
-			worktree = true
-		}
-	case "executor":
-		// Executor never runs in the project dir, so case 1 / case 2 are both
-		// fine. Case 3 with no parent is an error: a child executor inherits
-		// its parent's base_branch (so its presence is the parent's
-		// responsibility), but a parent-less executor has nobody to create
-		// the missing base.
-		if state == orchestrator.Case3NotFound && req.ParentID == "" {
-			return worktree, &StatusError{
-				Code: http.StatusBadRequest,
-				Message: fmt.Sprintf("executor base_branch %q does not exist locally or on origin, and the task has no parent supervisor to create it", baseBranch),
-			}
+	if state == orchestrator.Case3NotFound {
+		return &StatusError{
+			Code:    http.StatusBadRequest,
+			Message: fmt.Sprintf("executor base_branch %q does not exist locally or on origin, and the task has no parent supervisor to create it", baseBranch),
 		}
 	}
-	return worktree, nil
+	return nil
 }
 
 func (s *TaskAppService) CreateTask(req CreateTaskRequest) (*orchestrator.Task, error) {
@@ -100,7 +84,6 @@ func (s *TaskAppService) CreateTask(req CreateTaskRequest) (*orchestrator.Task, 
 
 	traits := res.Traits
 	readonly := res.Readonly
-	worktree := res.Worktree
 	branchPrefix := res.BranchPrefix
 	baseBranch := res.BaseBranch
 	payload := res.Payload
@@ -190,10 +173,10 @@ func (s *TaskAppService) CreateTask(req CreateTaskRequest) (*orchestrator.Task, 
 		}
 	}
 
-	// Phase 2-2: supervisor 3-case execution location decision + executor base
-	// existence check.
-	worktree, err = s.classifyAndApplyBaseBranchCase(req, res.BehaviorName, baseBranch, worktree)
-	if err != nil {
+	// Creation-time guard: reject a parent-less executor whose base_branch
+	// does not exist on origin. Post-Phase-2 there is no supervisor 3-case
+	// worktree routing left to do here.
+	if err := s.validateParentlessExecutorBase(req, res.BehaviorName, baseBranch); err != nil {
 		return nil, err
 	}
 
@@ -221,7 +204,6 @@ func (s *TaskAppService) CreateTask(req CreateTaskRequest) (*orchestrator.Task, 
 		Behavior:     res.BehaviorName,
 		Traits:       traits,
 		Readonly:     readonly,
-		Worktree:     worktree,
 		BranchPrefix: branchPrefix,
 		BaseBranch:   baseBranch,
 		RemoteID:     req.RemoteID,

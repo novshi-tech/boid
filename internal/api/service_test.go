@@ -985,13 +985,13 @@ func TestTaskAppServiceImportTasks_EmptyInput(t *testing.T) {
 }
 
 // TestCreateTask_BehaviorFieldsExpandedToTask verifies that the behavior's
-// Traits and the project-top worktree/base_branch flow onto the created Task.
-// Phase 3-1 removed the behavior-level readonly/worktree/branch_prefix/
-// base_branch/default_payload fields; the same task-row fields are now
-// populated entirely from {project-top, canonical behavior name}.
+// Traits and the project-top base_branch flow onto the created Task. Phase
+// 3-1 removed the behavior-level readonly/worktree/branch_prefix/base_branch/
+// default_payload fields, and branch-policy-simplification Phase 2 removed
+// the worktree field entirely; the remaining task-row fields are populated
+// from {project-top, canonical behavior name}.
 func TestCreateTask_BehaviorFieldsExpandedToTask(t *testing.T) {
 	meta := &orchestrator.ProjectMeta{
-		Worktree:   true,
 		BaseBranch: "main",
 		TaskBehaviors: map[string]orchestrator.TaskBehavior{
 			"executor": {
@@ -1015,9 +1015,6 @@ func TestCreateTask_BehaviorFieldsExpandedToTask(t *testing.T) {
 	if !reflect.DeepEqual(task.Traits, []string{"artifact", "verification"}) {
 		t.Errorf("Traits = %v, want %v", task.Traits, []string{"artifact", "verification"})
 	}
-	if task.Worktree != true {
-		t.Errorf("Worktree = %v, want true", task.Worktree)
-	}
 	if task.BaseBranch != "main" {
 		t.Errorf("BaseBranch = %q, want %q", task.BaseBranch, "main")
 	}
@@ -1031,7 +1028,6 @@ func TestCreateTask_BehaviorFieldsExpandedToTask(t *testing.T) {
 // request still tweaks.
 func TestCreateTask_NoTaskRowOverridesAvailable(t *testing.T) {
 	meta := &orchestrator.ProjectMeta{
-		Worktree:   true,
 		BaseBranch: "main",
 		TaskBehaviors: map[string]orchestrator.TaskBehavior{
 			"executor": {
@@ -1056,13 +1052,10 @@ func TestCreateTask_NoTaskRowOverridesAvailable(t *testing.T) {
 	if !reflect.DeepEqual(task.Traits, []string{"artifact"}) {
 		t.Errorf("Traits = %v, want %v", task.Traits, []string{"artifact"})
 	}
-	// Readonly / Worktree / BaseBranch come from the canonical behavior name
-	// + project-top fields; the request has no knobs to override them.
+	// Readonly / BaseBranch come from the canonical behavior name + project-top
+	// fields; the request has no knobs to override them.
 	if task.Readonly != false {
 		t.Errorf("Readonly = %v, want false (executor is canonically writable)", task.Readonly)
-	}
-	if task.Worktree != true {
-		t.Errorf("Worktree = %v, want true (project-top worktree)", task.Worktree)
 	}
 	if task.BaseBranch != "main" {
 		t.Errorf("BaseBranch = %q, want %q (project-top base_branch)", task.BaseBranch, "main")
@@ -1071,7 +1064,6 @@ func TestCreateTask_NoTaskRowOverridesAvailable(t *testing.T) {
 
 func TestCreateTask_NoOverrideUsesTemplateValue(t *testing.T) {
 	meta := &orchestrator.ProjectMeta{
-		Worktree: true,
 		TaskBehaviors: map[string]orchestrator.TaskBehavior{
 			"executor": {
 				Traits: []string{"artifact"},
@@ -1095,9 +1087,6 @@ func TestCreateTask_NoOverrideUsesTemplateValue(t *testing.T) {
 	if !reflect.DeepEqual(task.Traits, []string{"artifact"}) {
 		t.Errorf("Traits = %v, want template value %v", task.Traits, []string{"artifact"})
 	}
-	if task.Worktree != true {
-		t.Errorf("Worktree = %v, want project-top value true", task.Worktree)
-	}
 }
 
 // ---- behavior_spec tests ----
@@ -1108,10 +1097,10 @@ func TestTaskAppServiceCreateTask_BehaviorSpec_Success(t *testing.T) {
 		Meta:  stubMetaStore{meta: nil},
 	}
 
-	// Phase 3-1: BehaviorSpec.Worktree was removed. Worktree is now governed
-	// by the project-top setting; install a stub Meta carrying Worktree:true
-	// so the inline behavior_spec path picks it up.
-	svc.Meta = stubMetaStore{meta: &orchestrator.ProjectMeta{Worktree: true}}
+	// Phase 3-1: BehaviorSpec.Worktree was removed; branch-policy-simplification
+	// Phase 2 retired the project-top worktree field too. This test now only
+	// pins the inline behavior_spec path against Behavior and Traits.
+	svc.Meta = stubMetaStore{meta: &orchestrator.ProjectMeta{}}
 
 	task, err := svc.CreateTask(CreateTaskRequest{
 		ProjectID: "proj-1",
@@ -1129,9 +1118,6 @@ func TestTaskAppServiceCreateTask_BehaviorSpec_Success(t *testing.T) {
 	}
 	if !reflect.DeepEqual(task.Traits, []string{"artifact"}) {
 		t.Errorf("Traits = %v, want [artifact]", task.Traits)
-	}
-	if !task.Worktree {
-		t.Errorf("Worktree = false, want true (project-top worktree)")
 	}
 }
 
@@ -1453,88 +1439,13 @@ func TestCreateTask_NonCanonicalBehavior_ReadonlyDefaultTrue(t *testing.T) {
 	}
 }
 
-// TestCreateTask_ProjectLevelWorktreeTrue_AppliedToCanonicalBehavior verifies
-// that the project-level worktree flag is the only source of truth for the
-// canonical executor behavior in P3-1.
-func TestCreateTask_ProjectLevelWorktreeTrue_AppliedToCanonicalBehavior(t *testing.T) {
-	meta := &orchestrator.ProjectMeta{
-		Worktree: true,
-		TaskBehaviors: map[string]orchestrator.TaskBehavior{
-			"executor": {},
-		},
-	}
-	svc := &TaskAppService{
-		Tasks: &stubTaskStore{},
-		Meta:  stubMetaStore{meta: meta},
-	}
-
-	task, err := svc.CreateTask(CreateTaskRequest{
-		ProjectID: "proj-1",
-		Title:     "executor with project worktree",
-		Behavior:  "executor",
-	})
-	if err != nil {
-		t.Fatalf("CreateTask() error = %v", err)
-	}
-	if !task.Worktree {
-		t.Errorf("Worktree = false, want true (project-level worktree:true)")
-	}
-}
-
-// TestCreateTask_ProjectLevelWorktreeUnset_ExecutorTaskIsFalse verifies that
-// when the project-level worktree flag is unset, executor tasks end up with
-// worktree=false. (P3-1 removed the fallback to a behavior-level value.)
-func TestCreateTask_ProjectLevelWorktreeUnset_ExecutorTaskIsFalse(t *testing.T) {
-	meta := &orchestrator.ProjectMeta{
-		// Worktree intentionally omitted (false / unset).
-		TaskBehaviors: map[string]orchestrator.TaskBehavior{
-			"executor": {},
-		},
-	}
-	svc := &TaskAppService{
-		Tasks: &stubTaskStore{},
-		Meta:  stubMetaStore{meta: meta},
-	}
-
-	task, err := svc.CreateTask(CreateTaskRequest{
-		ProjectID: "proj-1",
-		Title:     "executor without project worktree",
-		Behavior:  "executor",
-	})
-	if err != nil {
-		t.Fatalf("CreateTask() error = %v", err)
-	}
-	if task.Worktree {
-		t.Errorf("Worktree = true, want false (project-level worktree unset)")
-	}
-}
-
-// TestCreateTask_NonCanonicalBehavior_UsesProjectWorktree verifies that
-// non-canonical behaviors take the project-level worktree value verbatim.
-func TestCreateTask_NonCanonicalBehavior_UsesProjectWorktree(t *testing.T) {
-	meta := &orchestrator.ProjectMeta{
-		Worktree: true,
-		TaskBehaviors: map[string]orchestrator.TaskBehavior{
-			"impl": {},
-		},
-	}
-	svc := &TaskAppService{
-		Tasks: &stubTaskStore{},
-		Meta:  stubMetaStore{meta: meta},
-	}
-
-	task, err := svc.CreateTask(CreateTaskRequest{
-		ProjectID: "proj-1",
-		Title:     "impl with project worktree",
-		Behavior:  "impl",
-	})
-	if err != nil {
-		t.Fatalf("CreateTask() error = %v", err)
-	}
-	if !task.Worktree {
-		t.Errorf("Worktree = false, want true (non-canonical: project-top worktree applies)")
-	}
-}
+// The Phase 3-1 project-level worktree propagation tests
+// (TestCreateTask_ProjectLevelWorktreeTrue_AppliedToCanonicalBehavior,
+// TestCreateTask_ProjectLevelWorktreeUnset_ExecutorTaskIsFalse,
+// TestCreateTask_NonCanonicalBehavior_UsesProjectWorktree) were removed by
+// branch-policy-simplification Phase 2 — the ProjectMeta.Worktree /
+// Task.Worktree fields no longer exist, so the behaviour they pinned is
+// gone. Every project-visible job now runs in a fresh sandbox clone.
 
 // ---- end Phase 3-1 ----
 
@@ -1580,70 +1491,13 @@ func initServiceTestRepo(t *testing.T, branch string, extraBranches ...string) s
 	return dir
 }
 
-// TestCreateTask_SupervisorCase1_WorktreeFalse covers the supervisor "project
-// dir HEAD already matches base_branch" path: Worktree must come out false so
-// the dispatcher runs the supervisor in the project dir itself.
-func TestCreateTask_SupervisorCase1_WorktreeFalse(t *testing.T) {
-	dir := initServiceTestRepo(t, "main")
-	meta := &orchestrator.ProjectMeta{
-		Worktree:   true, // project-level says "yes worktree" — case 1 must still win
-		BaseBranch: "main",
-		TaskBehaviors: map[string]orchestrator.TaskBehavior{
-			"supervisor": {},
-		},
-	}
-	svc := &TaskAppService{
-		Tasks:    &stubTaskStore{},
-		Meta:     stubMetaStore{meta: meta},
-		Projects: &stubProjectLookup{project: &orchestrator.Project{ID: "proj-1", WorkDir: dir}},
-	}
-	task, err := svc.CreateTask(CreateTaskRequest{
-		ProjectID: "proj-1",
-		Title:     "case1 supervisor",
-		Behavior:  "supervisor",
-	})
-	if err != nil {
-		t.Fatalf("CreateTask: %v", err)
-	}
-	if task.Worktree {
-		t.Errorf("Worktree = true, want false (case 1 supervisor runs in project dir)")
-	}
-}
-
-// TestCreateTask_SupervisorCase2_WorktreeTrue covers the supervisor case where
-// the base branch exists but project HEAD is elsewhere: must allocate a
-// worktree.
-func TestCreateTask_SupervisorCase2_WorktreeTrue(t *testing.T) {
-	dir := initServiceTestRepo(t, "feature", "main")
-	meta := &orchestrator.ProjectMeta{
-		Worktree:   false, // project-level off → case 2 promotes worktree anyway
-		BaseBranch: "main",
-		TaskBehaviors: map[string]orchestrator.TaskBehavior{
-			"supervisor": {},
-		},
-	}
-	svc := &TaskAppService{
-		Tasks:    &stubTaskStore{},
-		Meta:     stubMetaStore{meta: meta},
-		Projects: &stubProjectLookup{project: &orchestrator.Project{ID: "proj-1", WorkDir: dir}},
-	}
-	task, err := svc.CreateTask(CreateTaskRequest{
-		ProjectID: "proj-1",
-		Title:     "case2 supervisor",
-		Behavior:  "supervisor",
-	})
-	if err != nil {
-		t.Fatalf("CreateTask: %v", err)
-	}
-	if !task.Worktree {
-		t.Errorf("Worktree = false, want true (case 2 supervisor needs a worktree)")
-	}
-}
-
-// TestCreateTask_SupervisorCase3_WorktreeTrue covers the supervisor case 3:
-// base branch does not exist locally or on origin. Task creation must succeed
-// (the dispatcher will create the branch) and Worktree must be true.
-func TestCreateTask_SupervisorCase3_WorktreeTrue(t *testing.T) {
+// TestCreateTask_SupervisorCase3_BaseBranchPersisted verifies that supervisor
+// case 3 (base branch missing from both origin and locally) still succeeds at
+// creation time and persists BaseBranch. Post branch-policy-simplification
+// Phase 2 there is no supervisor 3-case → worktree routing left to assert;
+// the earlier Case1_WorktreeFalse / Case2_WorktreeTrue / Case3_WorktreeTrue
+// tests were removed alongside the routing logic.
+func TestCreateTask_SupervisorCase3_BaseBranchPersisted(t *testing.T) {
 	dir := initServiceTestRepo(t, "main")
 	meta := &orchestrator.ProjectMeta{
 		BaseBranch: "release-2026", // does not exist anywhere
@@ -1663,9 +1517,6 @@ func TestCreateTask_SupervisorCase3_WorktreeTrue(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("CreateTask: %v", err)
-	}
-	if !task.Worktree {
-		t.Errorf("Worktree = false, want true (case 3 supervisor needs a worktree backed by a fresh base branch)")
 	}
 	if task.BaseBranch != "release-2026" {
 		t.Errorf("BaseBranch = %q, want %q", task.BaseBranch, "release-2026")
@@ -1755,7 +1606,6 @@ func TestCreateTask_EmptyBaseBranch_ExpandsCurrentBranch(t *testing.T) {
 	dir := initServiceTestRepo(t, "feature/BGO-170")
 	meta := &orchestrator.ProjectMeta{
 		// BaseBranch intentionally empty → P1 must expand to current branch.
-		Worktree: true,
 		TaskBehaviors: map[string]orchestrator.TaskBehavior{
 			"supervisor": {},
 		},
@@ -1775,10 +1625,6 @@ func TestCreateTask_EmptyBaseBranch_ExpandsCurrentBranch(t *testing.T) {
 	}
 	if task.BaseBranch != "feature/BGO-170" {
 		t.Errorf("BaseBranch = %q, want %q (expanded from current HEAD)", task.BaseBranch, "feature/BGO-170")
-	}
-	// Case 1: HEAD matches baseBranch → supervisor should run in project dir.
-	if task.Worktree {
-		t.Errorf("Worktree = true, want false (case 1: HEAD == baseBranch)")
 	}
 }
 
@@ -2392,7 +2238,6 @@ func TestRerunTask_PreservesTaskMetadata(t *testing.T) {
 		Status:      orchestrator.TaskStatusDone,
 		Ref:         "my-ref",
 		AutoStart:   true,
-		Worktree:    true,
 	}
 	store := &stubTaskStore{task: task}
 	svc := &TaskAppService{Tasks: store}
@@ -2420,32 +2265,29 @@ func TestRerunTask_PreservesTaskMetadata(t *testing.T) {
 
 // TestGetTaskDetail_JobsIncludeWorkspacePath verifies that GetTaskDetail enriches
 // returned jobs with WorkspacePath derived from RuntimesDir + RuntimeID.
-// Both worktree=false and worktree=true tasks are covered; the derivation is
-// identical in both cases because WorkspacePath comes from the runtime directory.
+// The task's former Task.Worktree flag was retired in
+// branch-policy-simplification Phase 2; WorkspacePath now derives purely from
+// the runtime directory, independent of any per-task flag.
 func TestGetTaskDetail_JobsIncludeWorkspacePath(t *testing.T) {
 	const runtimesDir = "/data/runtimes"
 
 	tests := []struct {
 		name      string
-		worktree  bool
 		runtimeID string
 		wantPath  string
 	}{
 		{
-			name:      "non-worktree task with runtime",
-			worktree:  false,
+			name:      "task with runtime",
 			runtimeID: "abc-123",
 			wantPath:  "/data/runtimes/abc-123",
 		},
 		{
-			name:      "worktree task with runtime",
-			worktree:  true,
+			name:      "task with different runtime",
 			runtimeID: "def-456",
 			wantPath:  "/data/runtimes/def-456",
 		},
 		{
 			name:      "job without runtime ID returns empty path",
-			worktree:  false,
 			runtimeID: "",
 			wantPath:  "",
 		},
@@ -2459,7 +2301,6 @@ func TestGetTaskDetail_JobsIncludeWorkspacePath(t *testing.T) {
 				Title:     "workspace path test",
 				Status:    orchestrator.TaskStatusExecuting,
 				Behavior:  "dev",
-				Worktree:  tc.worktree,
 			}
 			job := &Job{
 				ID:        "job-wp",

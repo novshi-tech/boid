@@ -1,9 +1,14 @@
 # branch policy simplification (per-task branch 廃止・clone 時代への整合)
 
-ステータス: 計画草稿 (2026-07-15、実装未着手)
+ステータス: Phase 1 + Phase 2 実装済 (2026-07-16)
 作成日: 2026-07-15
 親ドキュメント: [git-gateway-cutover.md](git-gateway-cutover.md) — cutover 後に判明した設計漏れの根治として位置付け
 関連: [container-based-boid.md](container-based-boid.md), [dynamic-base-branch-overhaul.md](dynamic-base-branch-overhaul.md)
+
+## 実装進捗
+
+- **Phase 1** (2026-07-15、PR #756 landed、v0.0.11 として release): `ComputeHeadBranch` / `ComputeForkPoint` / `resolveCloneRef` / `Visibility.ForkPoint` / `CloneDeclaration.ForkPoint` / `CloneSpec.ForkPoint` / `BOID_PARENT_BRANCH` env を撤去し、`BuildCloneDeclaration(task, baseBranchForkPoint)` に 2 引数化。 常に `{Branch: BaseBranch, BaseBranch, CheckoutOnly: true, BaseBranchForkPoint}` を返す最小 policy に一本化。 `BaseBranchForkPoint` (case-3 = BaseBranch が origin 未存在時の start 点解決) は残置。
+- **Phase 2** (2026-07-16): `Task.Worktree` / `ProjectMeta.Worktree` / `BehaviorResolution.Worktree` の vestigial field を撤去。 Phase 1 で `BuildCloneDeclaration` の live consumer が消えたため。 `tasks.worktree` DB column は BC のため未使用のまま残置 (SQL INSERT/UPDATE/SELECT から列参照を落とし、書き込みは column default に任せる)。 `project.yaml` の top-level `worktree:` は silent ignore で load 継続。 `task_behaviors.<name>.worktree` は継続 reject (エラーメッセージのみ更新)。 `cmd/project.go` の Meta.Worktree 表示、`.boid/project.yaml` の `worktree: true` 記述、関連テストも撤去。 API/service 層の `classifyAndApplyBaseBranchCase` は `validateParentlessExecutorBase` に rename + shrink (executor case-3 without-parent エラーは live で残す)。
 
 ---
 

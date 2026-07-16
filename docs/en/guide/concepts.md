@@ -18,7 +18,6 @@ Tasks are created with `boid task create` and observed with `boid task list`, `b
 A directory that contains a `.boid/project.yaml` file. The project file declares:
 
 - An `id` (the unique identifier `boid` uses for the project) and a `name` (display name).
-- An optional project-top `worktree: true` flag — a legacy field kept for schema compatibility; it no longer affects checkout behaviour (see [Worktree](#worktree) below).
 - The list of **kits** the project uses (`kits:`).
 - One or more **task_behaviors** — a map of behavior names to `default_instruction` templates. Names are free-form (free naming). Each behavior can set `readonly`; the default when omitted is `true` (fail-safe).
 
@@ -121,9 +120,9 @@ Some commands legitimately need to reach outside the sandbox (for example `git p
 
 ## Worktree
 
-`worktree` is a project-top boolean field in `project.yaml`. It used to allocate a dedicated, isolated branch (`boid/<id8>`) to child tasks.
+> **History**: `worktree: true` was a project-top boolean field in `project.yaml` that used to allocate a dedicated, isolated branch (`boid/<id8>`) to child tasks. [The git gateway cutover (2026-07)](../../plans/git-gateway-cutover.md) already dropped host-side `git worktree` usage; [branch-policy-simplification Phase 1 (v0.0.11)](../../plans/branch-policy-simplification.md) retired the per-task branch and fork-point concepts; **Phase 2 (v0.0.12)** removed the `worktree` field itself.
 
-> **Implementation note (git gateway cutover, 2026-07; branch-policy-simplification Phase 1, v0.0.11)**: the name is `worktree` for historical reasons, but the implementation no longer uses `git worktree` (the git feature that checks out multiple branches of a repository into separate directories at once), and — as of Phase 1 — the field no longer affects checkout behaviour at all. Every project-visible job freshly clones the project into the sandbox through the git gateway and checks out `task.BaseBranch` directly, regardless of task kind or the `worktree` value. No per-job worktree directory is created on the host, and nothing is written to the host repo's `.git`; results become visible to other sessions only after a commit is pushed. See [`project.yaml` reference / git gateway](../reference/project-yaml.md#git-gateway--in-sandbox-clone) for the full contract.
+Current behaviour: every project-visible job freshly clones the project into the sandbox through the git gateway and checks out `task.BaseBranch` directly, regardless of task kind. No per-job worktree directory is created on the host, and nothing is written to the host repo's `.git`; results become visible to other sessions only after a commit is pushed. Existing `worktree:` lines in `project.yaml` are silently ignored for BC. See [`project.yaml` reference / git gateway](../reference/project-yaml.md#git-gateway--in-sandbox-clone) for the full contract.
 
 The per-task `boid/<id8>` branch and fork-point concepts existed to let a child continue from a parent's in-progress work on a shared `.git` — a worktree-era mechanism. Once every job got its own independent fresh clone (each job's clone is now the isolation unit), that mechanism became both impossible (a fresh clone only ever sees origin's already-pushed refs) and unnecessary (two clones can check out the same branch name without conflict), so it was retired. See docs/plans/branch-policy-simplification.md for the full rationale.
 

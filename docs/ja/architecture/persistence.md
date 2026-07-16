@@ -44,7 +44,8 @@
 | `instructions` | TEXT (JSON) | Instruction の配列 (最後の要素が active、 reopen で append される) |
 | `auto_start` | BOOLEAN | 作成時に自動 start するか |
 | `traits` | TEXT (JSON 配列) | このタスクの behavior が宣言する trait |
-| `readonly` / `worktree` | BOOLEAN | サンドボックスのモード (`readonly` はワークディレクトリの read-only マウントを制御する。`worktree` はレガシーフィールドで、 branch-policy-simplification Phase 1 (v0.0.11) 以降 checkout 挙動には影響しない — 全タスクが sandbox 内 clone 上で `base_branch` を直接 checkout する。[git gateway](../reference/project-yaml.md#git-gateway--sandbox-内-clone) 参照。ホスト側の git worktree は作られない) |
+| `readonly` | BOOLEAN | サンドボックスのモード (ワークディレクトリの read-only マウントを制御する) |
+| `worktree` | BOOLEAN | **未使用列**。 branch-policy-simplification Phase 2 (v0.0.12) で Task 構造体から撤去された vestigial 列。 migration 追加のリスクを避けるため列自体は NOT NULL DEFAULT FALSE のまま残置し、 INSERT/UPDATE/SELECT からは列参照を落として書き込みは default に任せる。 全タスクが sandbox 内 clone 上で `base_branch` を直接 checkout する ([git gateway](../reference/project-yaml.md#git-gateway--sandbox-内-clone) 参照)。 ホスト側の git worktree も作られない |
 | `branch_prefix` / `base_branch` | TEXT | branch 設定 |
 | `ref` / `parent_id` | TEXT | 親タスク参照 (任意) |
 | `created_at` / `updated_at` | DATETIME | 作成 / 更新時刻 |

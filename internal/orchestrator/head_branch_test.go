@@ -32,32 +32,14 @@ func TestBuildCloneDeclaration_RootTask_ChecksOutBaseBranch(t *testing.T) {
 // TestBuildCloneDeclaration_ChildTask_ChecksOutBaseBranch pins the core
 // branch-policy-simplification change: a child task no longer gets an
 // isolated "boid/<id8>" branch forked from the parent's HEAD. It checks out
-// its own BaseBranch directly, exactly like a root task, regardless of
-// Worktree — the per-task branch and fork-point concepts are retired.
+// its own BaseBranch directly, exactly like a root task — the per-task branch,
+// fork-point, and Task.Worktree concepts are all retired (Phase 1 removed the
+// per-task branch/fork point; Phase 2 removed Task.Worktree entirely).
 func TestBuildCloneDeclaration_ChildTask_ChecksOutBaseBranch(t *testing.T) {
 	task := &orchestrator.Task{
 		ID:         "childtask-0000-0000-0000-000000000000",
 		BaseBranch: "feature/BGO-170",
 		ParentID:   "parent-task-id",
-		Worktree:   true,
-	}
-	got := orchestrator.BuildCloneDeclaration(task, "")
-	want := &orchestrator.CloneDeclaration{
-		Branch:       "feature/BGO-170",
-		BaseBranch:   "feature/BGO-170",
-		CheckoutOnly: true,
-	}
-	if *got != *want {
-		t.Errorf("got %+v, want %+v", got, want)
-	}
-}
-
-func TestBuildCloneDeclaration_ChildTask_WorktreeFalse_ChecksOutBaseBranch(t *testing.T) {
-	task := &orchestrator.Task{
-		ID:         "childtask-0000-0000-0000-000000000000",
-		BaseBranch: "feature/BGO-170",
-		ParentID:   "parent-task-id",
-		Worktree:   false,
 	}
 	got := orchestrator.BuildCloneDeclaration(task, "")
 	want := &orchestrator.CloneDeclaration{

@@ -72,7 +72,6 @@ You should see something close to:
 ```yaml
 id: <uuid>
 name: boid-demo
-worktree: true
 task_behaviors:
   dev:
     default_instruction:
@@ -81,7 +80,6 @@ task_behaviors:
         Implement what the task describes, commit on the current branch, and exit.
 ```
 
-- **`worktree: true`** — executor tasks run on a dedicated isolated branch on the in-sandbox clone.
 - **`task_behaviors`** — defines how tasks run (see [Concepts / behavior](../guide/concepts.md#behavior)).
 
 Inspect the registration:

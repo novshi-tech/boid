@@ -79,7 +79,7 @@ The fields below used to live under `task_behaviors.<name>.*`. They have been mo
 | Field | Status / Location |
 |---|---|
 | `readonly` | Re-enabled at the behavior level in Track A2. Defaults to `true` (fail-safe); set `readonly: false` for writable behaviors. |
-| `worktree` | Project-top `worktree:`. No longer affects checkout behaviour as of branch-policy-simplification Phase 1 — see the top-level fields table above. |
+| `worktree` | Removed. The behavior-level form was retired earlier; the project-top form was retired in branch-policy-simplification Phase 2. Existing `worktree:` lines are silently ignored for BC. Every project-visible job runs in a fresh sandbox clone. |
 | `base_branch` | Project-top `base_branch:`. |
 | `branch_prefix` | Not configurable. Child-task branches are always created under `boid/`. |
 | `default_payload` | Removed. Provide payload at task creation time instead. |
@@ -360,11 +360,10 @@ An excerpt from `.boid/project.yaml` in the `boid` repository itself, showing th
 id: boid
 name: boid
 
-# worktree is a legacy field (no-op since branch-policy-simplification Phase
-# 1): every task, root or child, checks out base_branch directly on its
-# in-sandbox clone regardless of this value — no host-side git worktree is
-# created.
-worktree: true
+# The project-top `worktree:` field was retired in branch-policy-simplification
+# Phase 2 (v0.0.12). Every task, root or child, checks out base_branch directly
+# on its in-sandbox clone — no host-side git worktree is created. Existing
+# `worktree:` lines are silently ignored for BC.
 
 kits:
   - github.com/novshi-tech/boid-kits/claude-code

@@ -772,7 +772,6 @@ func TestCreateTask_WithBehaviorFields(t *testing.T) {
 		Behavior:     "dev",
 		Traits:       []string{"git", "sandbox"},
 		Readonly:     true,
-		Worktree:     true,
 		BranchPrefix: "feat/",
 		BaseBranch:   "main",
 	}
@@ -789,9 +788,6 @@ func TestCreateTask_WithBehaviorFields(t *testing.T) {
 	}
 	if !got.Readonly {
 		t.Fatal("Readonly = false, want true")
-	}
-	if !got.Worktree {
-		t.Fatal("Worktree = false, want true")
 	}
 	if got.BranchPrefix != "feat/" {
 		t.Fatalf("BranchPrefix = %q, want %q", got.BranchPrefix, "feat/")
@@ -823,9 +819,6 @@ func TestCreateTask_TraitsNilRoundtrip(t *testing.T) {
 	if got.Readonly {
 		t.Fatal("Readonly = true, want false")
 	}
-	if got.Worktree {
-		t.Fatal("Worktree = true, want false")
-	}
 }
 
 func TestUpdateTask_BehaviorFields(t *testing.T) {
@@ -844,7 +837,6 @@ func TestUpdateTask_BehaviorFields(t *testing.T) {
 	task.Description = "Updated description"
 	task.Traits = []string{"docker"}
 	task.Readonly = true
-	task.Worktree = true
 	task.BranchPrefix = "fix/"
 	task.BaseBranch = "develop"
 	task.Status = orchestrator.TaskStatusExecuting
@@ -867,9 +859,6 @@ func TestUpdateTask_BehaviorFields(t *testing.T) {
 	}
 	if !got.Readonly {
 		t.Fatal("Readonly = false, want true")
-	}
-	if !got.Worktree {
-		t.Fatal("Worktree = false, want true")
 	}
 	if got.BranchPrefix != "fix/" {
 		t.Fatalf("BranchPrefix = %q, want %q", got.BranchPrefix, "fix/")

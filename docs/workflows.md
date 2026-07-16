@@ -4,6 +4,8 @@ Three reference workflows for `boid` projects, with copy-pasteable `.boid/projec
 
 > Japanese readers: the supervisor / executor terminology is canonical. `plan` / `dev` are accepted as back-compat aliases with a deprecation warning during the migration period.
 
+> **⚠️ Post branch-policy-simplification Phase 2 (v0.0.12) — refresh pending.** The `worktree:` project-top field has been retired. Existing `worktree:` lines in the yaml examples below are silently ignored by the loader; every project-visible job now runs in a fresh sandbox clone and checks out `base_branch` directly. The three workflow shapes below still make sense as *policy* patterns (local merge vs one-PR-per-executor vs one-PR-per-supervisor) but the "worktree=true vs false" framing no longer distinguishes them at the schema layer — that distinction now lives entirely in the executor's `default_instruction` (whether it opens a PR or exits cleanly for the supervisor to merge). A full doc refresh is tracked separately from Phase 2. See [Concepts / Worktree](en/guide/concepts.md#worktree) for the current model.
+
 ## Core idea: pick exactly one workflow per project
 
 `boid` ships two canonical behaviors:

@@ -25,9 +25,11 @@ type ScaffoldTemplateData struct {
 }
 
 // Wizard runs the project initialization flow. After the kit/workspace/project
-// reorg, project.yaml is portable: it holds only id / name / worktree /
-// task_behaviors / default_task_behavior. Kit selection has moved to
-// `boid workspace configure`, so the wizard no longer prompts for kits.
+// reorg, project.yaml is portable: it holds only id / name / task_behaviors /
+// default_task_behavior. Kit selection has moved to `boid workspace configure`,
+// so the wizard no longer prompts for kits. The historical `worktree` field
+// was retired in branch-policy-simplification Phase 2 (v0.0.12) and is no
+// longer emitted.
 //
 // Agent is the harness agent name baked into each behavior's
 // default_instruction.agent. Empty falls back to "claude-code" (the only
@@ -62,7 +64,6 @@ const DefaultTaskBehavior = "supervisor"
 type projectFileOut struct {
 	ID                  string         `yaml:"id"`
 	Name                string         `yaml:"name"`
-	Worktree            bool           `yaml:"worktree"`
 	DefaultTaskBehavior string         `yaml:"default_task_behavior,omitempty"`
 	TaskBehaviors       map[string]any `yaml:"task_behaviors,omitempty"`
 }
@@ -89,7 +90,7 @@ func ExpandScaffoldTemplate(data ScaffoldTemplateData) (map[string]any, error) {
 
 // Run writes a static project.yaml template into projectDir/.boid/. The only
 // interactive prompt is the project name; everything else (executor /
-// supervisor behaviors, worktree=true) comes from the embedded template.
+// supervisor behaviors) comes from the embedded template.
 func (w *Wizard) Run(projectDir string) error {
 	scanner := bufio.NewScanner(w.In)
 
@@ -124,7 +125,6 @@ func (w *Wizard) Run(projectDir string) error {
 	proj := projectFileOut{
 		ID:                  projectID,
 		Name:                name,
-		Worktree:            true,
 		DefaultTaskBehavior: DefaultTaskBehavior,
 		TaskBehaviors:       taskBehaviors,
 	}

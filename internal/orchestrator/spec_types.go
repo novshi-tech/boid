@@ -442,12 +442,6 @@ type ProjectMeta struct {
 	ID            string                  `yaml:"id" json:"id"`
 	Name          string                  `yaml:"name" json:"name"`
 	TaskBehaviors map[string]TaskBehavior `yaml:"task_behaviors" json:"task_behaviors"`
-	// Worktree controls whether tasks in this project run in a per-task git
-	// worktree by default. For the canonical "executor" behavior the value
-	// is used as-is; for "supervisor" the worktree decision is governed by
-	// the base_branch state classification (see ClassifyBaseBranch). For
-	// non-canonical behaviors, this is the worktree flag verbatim.
-	Worktree bool `yaml:"worktree,omitempty" json:"worktree,omitempty"`
 	// BaseBranch is the default git base branch for worktrees created by
 	// tasks in this project. It is resolved at task creation time (with
 	// ${TASK_REMOTE_ID} / ${current_branch} expansion) and persisted on

@@ -2,6 +2,8 @@
 
 > Changes introduced in Track A2 (2026-06-17).
 
+> **Phase 2 note (v0.0.12)**: The `worktree: true` shown in the yaml examples below has been retired in branch-policy-simplification Phase 2. Existing `worktree:` lines are silently ignored for BC. See [Concepts / Worktree](../guide/concepts.md#worktree) for the current model.
+
 ## Overview
 
 Previously, only two map keys — `supervisor` and `executor` — were recognised as

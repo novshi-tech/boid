@@ -18,7 +18,6 @@
 `.boid/project.yaml` を持つディレクトリのこと。 `project.yaml` には次を書きます。
 
 - `id` (この `boid` 内でプロジェクトを一意に識別する文字列) と `name` (表示名)
-- 任意の project トップ `worktree: true` フラグ — レガシーフィールド。 スキーマ互換のため残っているが checkout 挙動には影響しない (詳細は後述 [worktree](#worktree))
 - このプロジェクトで使う **kit** のリスト (`kits:`)
 - 1 つ以上の **task_behaviors** — behavior 名をキーにして `default_instruction` 雛形を束ねたもの。 名前は自由 (free naming)。 `readonly` は behavior ごとに設定でき、 省略時は `true` (fail-safe)
 
@@ -121,9 +120,9 @@ hook を実行する隔離環境です。 実装としては Linux の mount nam
 
 ## worktree
 
-`worktree` は `project.yaml` の project トップ boolean フィールドです。 以前は `true` で child タスクに専用の isolated branch (`boid/<id8>`) を割り当てていました。
+> **歴史的経緯**: 以前は `project.yaml` の project トップ boolean フィールド `worktree: true` で child タスクに専用の isolated branch (`boid/<id8>`) を割り当てていました。 [git gateway cutover (2026-07)](../../plans/git-gateway-cutover.md) で名前上の `git worktree` は既に不要になっており、 [branch-policy-simplification Phase 1 (v0.0.11)](../../plans/branch-policy-simplification.md) で per-task branch と fork point 概念を廃止、 続く **Phase 2 (v0.0.12)** で `worktree` フィールド自体を撤去しました。
 
-> **実装メモ (git gateway cutover, 2026-07 完了 / branch-policy-simplification Phase 1, v0.0.11)**: 名前は歴史的に `worktree` のままですが、 実装はもう `git worktree` (同じリポジトリの複数ブランチを別ディレクトリに同時チェックアウトする git の機能) を使っていません。 さらに Phase 1 以降、 このフィールドは checkout 挙動に一切影響しません。 project が可視なジョブは毎回 sandbox 内に project を新規 clone し、 タスク種別や `worktree` の値に関わらず `task.BaseBranch` を直接 checkout します。 host 側にはジョブ専用の worktree ディレクトリは一切作られず、 host repo の `.git` にも書き込みません — 成果は commit → push して初めて他セッションに共有されます。 詳細は [`project.yaml` リファレンス / git gateway](../reference/project-yaml.md#git-gateway--sandbox-内-clone) を参照してください。
+現行の挙動: project が可視なジョブは毎回 sandbox 内に project を新規 clone し、 タスク種別に関わらず `task.BaseBranch` を直接 checkout します。 host 側にはジョブ専用の worktree ディレクトリは一切作られず、 host repo の `.git` にも書き込みません — 成果は commit → push して初めて他セッションに共有されます。 既存 `project.yaml` の `worktree:` 行は BC のため silent ignore されます。
 
 per-task `boid/<id8>` branch と fork point の概念は、 同一 `.git` を共有する worktree 時代に「child が親の未完了の作業を引き継ぐ」ために存在していました。 各 job が独立した fresh clone を持つようになったことで (clone 自体が isolation 単位)、 この仕組みは不可能 (fresh clone は origin の pushed ref しか見えないため未 push の親の変更は見えない) かつ不要 (別々の clone なら同じ branch 名を checkout しても衝突しない) になり、 廃止されました。 詳細な経緯は docs/plans/branch-policy-simplification.md を参照してください。
 
