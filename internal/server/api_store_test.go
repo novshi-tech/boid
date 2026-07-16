@@ -75,6 +75,11 @@ func (r stubProjectRepo) ListProjects() ([]*orchestrator.Project, error) {
 
 func (r stubProjectRepo) SetProjectWorkspace(projectID, workspaceID string) error { return nil }
 
+// AssignWorkspaceIfExists mirrors SetProjectWorkspace above: these fixtures
+// never exercise MAJOR 3's atomic assign+existence-check path, so a
+// permissive no-op stub keeps them unaffected.
+func (r stubProjectRepo) AssignWorkspaceIfExists(projectID, workspaceID string) error { return nil }
+
 // WorkspaceExists always reports true: these fixtures exercise broker
 // registration / project resolution, never ProjectAppService.SetProjectWorkspace's
 // MAJOR 5 existence check, so a permissive stub keeps them unaffected.
@@ -82,6 +87,13 @@ func (r stubProjectRepo) WorkspaceExists(slug string) (bool, error) { return tru
 
 func (r stubProjectRepo) ListWorkspaces() ([]*orchestrator.WorkspaceSummary, error) {
 	return nil, nil
+}
+
+// GetWorkspaceSummary always reports not-found: these fixtures exercise
+// broker registration / project resolution, never the PR4 workspace CRUD
+// handlers.
+func (r stubProjectRepo) GetWorkspaceSummary(slug string) (*orchestrator.WorkspaceSummary, error) {
+	return nil, fmt.Errorf("workspace %q: %w", slug, os.ErrNotExist)
 }
 
 func (r stubProjectRepo) DeleteProject(id string) error { return nil }

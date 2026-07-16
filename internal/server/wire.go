@@ -530,6 +530,23 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 		// `project add` rejects projects with no git origin remote, and
 		// `project reload` re-captures on every call.
 		CaptureUpstreamURL: dispatcher.CaptureUpstreamURL,
+		// Workspace CRUD (docs/plans/workspace-db-consolidation.md PR4):
+		// store.WorkspaceStore() is the same DB-backed *orchestrator.WorkspaceStore
+		// buildProjectStore wired via SetRepository above, so create/show/
+		// update/remove operate on the exact same workspaces-table rows that
+		// GetWithWorkspace hydration reads at dispatch time.
+		Workspaces: store.WorkspaceStore(),
+		// KitsDir lets CreateWorkspace/UpdateWorkspace materialize a legacy
+		// Kits reference before persisting — see
+		// orchestrator.MaterializeWorkspaceKitsForPersist's doc comment.
+		KitsDir: cfg.KitsDir,
+		// HostCommands lets CreateWorkspace/UpdateWorkspace validate every
+		// meta.HostCommands reference against the daemon's live aggregated
+		// snapshot (docs/plans/workspace-db-consolidation.md MAJOR 2, codex
+		// review). srv.HostCommands already returns exactly this shape (see
+		// its own doc comment) — the same method HostCommandsHandler uses
+		// for GET /api/host_commands below.
+		HostCommands: srv.HostCommands,
 	}
 	boidCfg, err := config.Load()
 	if err != nil {
@@ -872,6 +889,12 @@ func mountRoutes(srv *Server, runtime *appRuntime) error {
 
 	workspaceHandler := &api.WorkspaceHandler{Service: runtime.projectSvc}
 	r.Mount("/api/workspaces", workspaceHandler.Routes())
+
+	// host_commands read/reload (docs/plans/workspace-db-consolidation.md
+	// PR4 Step G). srv itself satisfies api.HostCommandsService directly
+	// (HostCommands()/ReloadHostCommands() already match that shape).
+	hostCommandsHandler := &api.HostCommandsHandler{Service: srv}
+	r.Mount("/api/host_commands", hostCommandsHandler.Routes())
 
 	taskHandler := &api.TaskHandler{Service: runtime.taskSvc, Hooks: runtime.workflow, Notifier: runtime.taskSvc, Answerer: runtime.taskSvc}
 	r.Mount("/api/tasks", taskHandler.Routes())

@@ -2,7 +2,10 @@ package orchestrator
 
 import (
 	"errors"
+	"fmt"
 	"os"
+	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/novshi-tech/boid/internal/db"
@@ -278,6 +281,86 @@ func TestWorkspaceRepository_Remove_ReassignsProjectsToDefault(t *testing.T) {
 	}
 }
 
+// --- Create (PR4, docs/plans/workspace-db-consolidation.md Step A) ---
+
+func TestWorkspaceRepository_Create_InsertsNewRow(t *testing.T) {
+	t.Parallel()
+	repo := newTestWorkspaceRepo(t)
+
+	meta := &WorkspaceMeta{HostCommands: []string{"gh"}, Env: map[string]string{"FOO": "bar"}}
+	if err := repo.Create("new-ws", meta); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	got, err := repo.Load("new-ws")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !equalStringSlice(got.HostCommands, []string{"gh"}) {
+		t.Errorf("HostCommands: got %v, want [gh]", got.HostCommands)
+	}
+	if got.Env["FOO"] != "bar" {
+		t.Errorf("Env[FOO]: got %q, want %q", got.Env["FOO"], "bar")
+	}
+}
+
+// TestWorkspaceRepository_Create_ConflictReturnsErrExist pins the 409
+// contract (docs/plans/workspace-db-consolidation.md Step A/C): Create must
+// be insert-only and reject an already-existing slug by wrapping
+// os.ErrExist, so the API handler (POST /api/workspaces) can map it to HTTP
+// 409 without string-matching the error message.
+func TestWorkspaceRepository_Create_ConflictReturnsErrExist(t *testing.T) {
+	t.Parallel()
+	repo := newTestWorkspaceRepo(t)
+
+	if err := repo.Create("dup", &WorkspaceMeta{HostCommands: []string{"first"}}); err != nil {
+		t.Fatalf("first Create: %v", err)
+	}
+	err := repo.Create("dup", &WorkspaceMeta{HostCommands: []string{"second"}})
+	if err == nil {
+		t.Fatal("second Create: expected error, got nil")
+	}
+	if !errors.Is(err, os.ErrExist) {
+		t.Errorf("second Create: error = %v, want os.ErrExist wrapped", err)
+	}
+
+	// The original row must be untouched by the failed conflicting Create.
+	got, loadErr := repo.Load("dup")
+	if loadErr != nil {
+		t.Fatalf("Load after conflict: %v", loadErr)
+	}
+	if !equalStringSlice(got.HostCommands, []string{"first"}) {
+		t.Errorf("HostCommands after conflicting Create: got %v, want [first] (must not be clobbered)", got.HostCommands)
+	}
+}
+
+func TestWorkspaceRepository_Create_InvalidSlug(t *testing.T) {
+	t.Parallel()
+	repo := newTestWorkspaceRepo(t)
+
+	if err := repo.Create("Bad Slug", &WorkspaceMeta{}); err == nil {
+		t.Error("Create with invalid slug: expected error, got nil")
+	}
+}
+
+// TestWorkspaceRepository_Create_ConflictWithDefault verifies that Create
+// against the always-present default workspace slug reports the same
+// os.ErrExist conflict as any other pre-existing slug (rather than, say,
+// silently upserting over it — that would defeat the point of a strict
+// insert-only Create).
+func TestWorkspaceRepository_Create_ConflictWithDefault(t *testing.T) {
+	t.Parallel()
+	repo := newTestWorkspaceRepo(t)
+
+	if err := repo.EnsureDefault(); err != nil {
+		t.Fatalf("EnsureDefault: %v", err)
+	}
+	err := repo.Create(DefaultWorkspaceSlug, &WorkspaceMeta{})
+	if !errors.Is(err, os.ErrExist) {
+		t.Errorf("Create(default): error = %v, want os.ErrExist wrapped", err)
+	}
+}
+
 func TestWorkspaceRepository_Load_InvalidSlug(t *testing.T) {
 	t.Parallel()
 	repo := newTestWorkspaceRepo(t)
@@ -293,5 +376,171 @@ func TestWorkspaceRepository_Save_InvalidSlug(t *testing.T) {
 
 	if err := repo.Save("Bad Slug", &WorkspaceMeta{}); err == nil {
 		t.Error("Save with invalid slug: expected error, got nil")
+	}
+}
+
+// --- LoadWithRevision / UpdateIfRevisionMatches (MAJOR 1, codex review PR4:
+// CAS化 — docs/plans/workspace-db-consolidation.md) ---
+
+// TestWorkspaceRepository_LoadWithRevision_ReturnsMetaAndRevisionFromSameRow
+// pins the atomic-snapshot contract: meta and revision must come from a
+// single SELECT (one row), not two separate queries that could straddle a
+// concurrent write.
+func TestWorkspaceRepository_LoadWithRevision_ReturnsMetaAndRevisionFromSameRow(t *testing.T) {
+	t.Parallel()
+	repo := newTestWorkspaceRepo(t)
+
+	if err := repo.Save("team-a", &WorkspaceMeta{HostCommands: []string{"gh"}}); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	meta, revision, err := repo.LoadWithRevision("team-a")
+	if err != nil {
+		t.Fatalf("LoadWithRevision: %v", err)
+	}
+	if !equalStringSlice(meta.HostCommands, []string{"gh"}) {
+		t.Errorf("HostCommands = %v, want [gh]", meta.HostCommands)
+	}
+	if revision == "" {
+		t.Error("expected non-empty revision")
+	}
+
+	// The revision must match what GetWorkspaceSummary (the pre-existing,
+	// separate-query path) reports for the same row.
+	summary, err := GetWorkspaceSummary(repo.conn, "team-a")
+	if err != nil {
+		t.Fatalf("GetWorkspaceSummary: %v", err)
+	}
+	if revision != summary.Revision {
+		t.Errorf("LoadWithRevision revision = %q, GetWorkspaceSummary revision = %q, want equal", revision, summary.Revision)
+	}
+}
+
+func TestWorkspaceRepository_LoadWithRevision_NotExist(t *testing.T) {
+	t.Parallel()
+	repo := newTestWorkspaceRepo(t)
+
+	_, _, err := repo.LoadWithRevision("nonexistent")
+	if !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("expected os.ErrNotExist wrapped, got: %v", err)
+	}
+}
+
+// TestWorkspaceRepository_UpdateIfRevisionMatches_Success pins the core CAS
+// contract: an UPDATE with the correct expectedRevision succeeds in one SQL
+// statement, bumps the revision, and persists the new meta.
+func TestWorkspaceRepository_UpdateIfRevisionMatches_Success(t *testing.T) {
+	t.Parallel()
+	repo := newTestWorkspaceRepo(t)
+
+	if err := repo.Save("team-a", &WorkspaceMeta{HostCommands: []string{"old"}}); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	_, revision, err := repo.LoadWithRevision("team-a")
+	if err != nil {
+		t.Fatalf("LoadWithRevision: %v", err)
+	}
+
+	newRevision, matched, err := repo.UpdateIfRevisionMatches("team-a", revision, &WorkspaceMeta{HostCommands: []string{"new"}})
+	if err != nil {
+		t.Fatalf("UpdateIfRevisionMatches: %v", err)
+	}
+	if !matched {
+		t.Fatal("expected matched=true for a correct revision")
+	}
+	if newRevision == "" || newRevision == revision {
+		t.Errorf("newRevision = %q, want a fresh non-empty value distinct from %q", newRevision, revision)
+	}
+
+	got, err := repo.Load("team-a")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !equalStringSlice(got.HostCommands, []string{"new"}) {
+		t.Errorf("HostCommands after update = %v, want [new]", got.HostCommands)
+	}
+}
+
+// TestWorkspaceRepository_UpdateIfRevisionMatches_StaleRevisionNoOp pins the
+// rejection path: a stale expectedRevision must not modify the row at all
+// (matched=false, no partial write).
+func TestWorkspaceRepository_UpdateIfRevisionMatches_StaleRevisionNoOp(t *testing.T) {
+	t.Parallel()
+	repo := newTestWorkspaceRepo(t)
+
+	if err := repo.Save("team-a", &WorkspaceMeta{HostCommands: []string{"old"}}); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	_, matched, err := repo.UpdateIfRevisionMatches("team-a", "2000-01-01T00:00:00Z", &WorkspaceMeta{HostCommands: []string{"new"}})
+	if err != nil {
+		t.Fatalf("UpdateIfRevisionMatches: %v", err)
+	}
+	if matched {
+		t.Fatal("expected matched=false for a stale revision")
+	}
+
+	got, err := repo.Load("team-a")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !equalStringSlice(got.HostCommands, []string{"old"}) {
+		t.Errorf("HostCommands after rejected update = %v, want unchanged [old]", got.HostCommands)
+	}
+}
+
+// TestWorkspaceRepository_UpdateIfRevisionMatches_NonexistentSlug pins that a
+// slug with no row at all also reports matched=false (not a hard error) —
+// the caller (ProjectAppService.UpdateWorkspace) distinguishes "gone" from
+// "stale" by a subsequent existence check, not by an error type here.
+func TestWorkspaceRepository_UpdateIfRevisionMatches_NonexistentSlug(t *testing.T) {
+	t.Parallel()
+	repo := newTestWorkspaceRepo(t)
+
+	_, matched, err := repo.UpdateIfRevisionMatches("ghost", "2026-01-01T00:00:00Z", &WorkspaceMeta{})
+	if err != nil {
+		t.Fatalf("UpdateIfRevisionMatches: %v", err)
+	}
+	if matched {
+		t.Fatal("expected matched=false for a nonexistent slug")
+	}
+}
+
+// TestWorkspaceRepository_UpdateIfRevisionMatches_ConcurrentPUTsOnlyOneWins
+// is the true-concurrency regression guard for MAJOR 1: two goroutines racing
+// a CAS update against the same starting revision must not both succeed —
+// exactly one call reports matched=true.
+func TestWorkspaceRepository_UpdateIfRevisionMatches_ConcurrentPUTsOnlyOneWins(t *testing.T) {
+	repo := newTestWorkspaceRepo(t)
+
+	if err := repo.Save("team-a", &WorkspaceMeta{HostCommands: []string{"old"}}); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	_, revision, err := repo.LoadWithRevision("team-a")
+	if err != nil {
+		t.Fatalf("LoadWithRevision: %v", err)
+	}
+
+	const n = 8
+	var wg sync.WaitGroup
+	matchedCount := int32(0)
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			_, matched, err := repo.UpdateIfRevisionMatches("team-a", revision, &WorkspaceMeta{HostCommands: []string{fmt.Sprintf("writer-%d", i)}})
+			if err != nil {
+				t.Errorf("UpdateIfRevisionMatches: %v", err)
+				return
+			}
+			if matched {
+				atomic.AddInt32(&matchedCount, 1)
+			}
+		}(i)
+	}
+	wg.Wait()
+
+	if matchedCount != 1 {
+		t.Errorf("matchedCount = %d, want exactly 1 (only one of %d concurrent CAS updates should win)", matchedCount, n)
 	}
 }

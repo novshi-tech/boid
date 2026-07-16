@@ -19,7 +19,25 @@ var checkCmd = &cobra.Command{
 }
 
 func init() {
-	checkCmd.Annotations = map[string]string{annotationSkipAutostart: "skip"}
+	checkCmd.Annotations = map[string]string{
+		annotationSkipAutostart: "skip",
+		// scopeLocal (codex review round 2, docs/plans/cli-remote-connection.md
+		// classification table groups check with start/stop under "daemon
+		// 生殺与奪"): check was scopeNeutral until this fix, on the reasoning
+		// that it works standalone and only opportunistically queries the
+		// daemon. That reasoning covers whether a daemon is *required*, but
+		// under Phase 3's remote-profile model "local" is about a different
+		// axis — whether the command's result is only meaningful on the same
+		// host the daemon (and therefore the sandbox) actually runs on.
+		// check's exec.LookPath/unshare probes inspect binaries and kernel
+		// features on the machine running the CLI process itself; against a
+		// future https:// (remote daemon) profile those would report on the
+		// wrong host entirely, since sandboxes execute wherever the daemon
+		// is, not wherever the CLI happens to run. See cmd/scope_annotations_test.go's
+		// expectedScopeAnnotations table for the full cross-check against
+		// the plan doc.
+		scopeAnnotationKey: scopeLocal,
+	}
 	rootCmd.AddCommand(checkCmd)
 }
 

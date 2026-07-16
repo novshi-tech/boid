@@ -57,8 +57,29 @@ func (s *ProjectStore) WorkspaceStore() *WorkspaceStore {
 // used to resolve WorkspaceMeta.HostCommands reference names in
 // GetWithWorkspace. Call this before dispatch when workspace host_commands
 // hydration is desired — symmetric with SetWorkspaceStore.
+//
+// Guarded by s.mu (docs/plans/workspace-db-consolidation.md PR4 Step G,
+// `boid host-commands reload` / POST /api/host_commands/reload): before that
+// endpoint existed, this was only ever called once at startup, strictly
+// before request-serving began, so an unsynchronized field write/read was
+// harmless in practice. A live reload can now race an in-flight
+// GetWithWorkspace call reading the same field, so both sides go through
+// s.mu — see hostCommandSpec below for the read side.
 func (s *ProjectStore) SetHostCommands(hostCommands map[string]HostCommandSpec) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.hostCommands = hostCommands
+}
+
+// hostCommandSpec looks up name in the aggregated host_commands map under
+// s.mu (see SetHostCommands' doc comment for why this needs to be
+// synchronized now that the map can be swapped live via
+// POST /api/host_commands/reload).
+func (s *ProjectStore) hostCommandSpec(name string) (HostCommandSpec, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	spec, ok := s.hostCommands[name]
+	return spec, ok
 }
 
 // Load reads project.yaml from the work_dir and stores the meta in memory.
@@ -264,7 +285,7 @@ func (s *ProjectStore) GetWithWorkspace(_ context.Context, projectID string) (*P
 	if len(ws.HostCommands) > 0 {
 		resolved := make(HostCommands, len(ws.HostCommands))
 		for _, name := range ws.HostCommands {
-			spec, ok := s.hostCommands[name]
+			spec, ok := s.hostCommandSpec(name)
 			if !ok {
 				slog.Warn("workspace host_commands reference unresolved; skipping",
 					"project_id", projectID, "workspace_id", workspaceID, "name", name)

@@ -2,6 +2,7 @@ package orchestrator
 
 import (
 	"database/sql"
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -89,8 +90,36 @@ func (r *ProjectRepository) SetProjectWorkspace(projectID, workspaceID string) e
 	return SetProjectWorkspace(r.db, projectID, workspaceID)
 }
 
+// AssignWorkspaceIfExists atomically checks-then-assigns (MAJOR 3, codex
+// review). See the package-level function's doc comment. r.db must be a
+// *sql.DB — every production wiring path constructs ProjectRepository with
+// srv.db (the daemon's single *sql.DB handle), so this type assertion only
+// fails for a hand-rolled ProjectRepository over a *sql.Tx, which no caller
+// does today.
+func (r *ProjectRepository) AssignWorkspaceIfExists(projectID, workspaceID string) error {
+	conn, ok := r.db.(*sql.DB)
+	if !ok {
+		return fmt.Errorf("AssignWorkspaceIfExists: repository is not backed by a *sql.DB (got %T)", r.db)
+	}
+	return AssignWorkspaceIfExists(conn, projectID, workspaceID)
+}
+
 func (r *ProjectRepository) ListWorkspaces() ([]*WorkspaceSummary, error) {
 	return ListWorkspaces(r.db)
+}
+
+// ListProjectWorkspaceReferences returns project_workspaces membership
+// directly (see the package-level function's doc comment for why this
+// differs from ListWorkspaces and who still needs it).
+func (r *ProjectRepository) ListProjectWorkspaceReferences() ([]*WorkspaceSummary, error) {
+	return ListProjectWorkspaceReferences(r.db)
+}
+
+// GetWorkspaceSummary returns a single workspace's summary (project count +
+// revision). See the package-level function's doc comment for the
+// os.ErrNotExist contract.
+func (r *ProjectRepository) GetWorkspaceSummary(slug string) (*WorkspaceSummary, error) {
+	return GetWorkspaceSummary(r.db, slug)
 }
 
 // WorkspaceExists reports whether slug refers to an existing workspaces

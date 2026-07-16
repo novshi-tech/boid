@@ -70,6 +70,76 @@ type ProjectService interface {
 	// Priority: id exact match > name exact match > name substring match (case-insensitive).
 	// Returns 1 project on unambiguous match, multiple on ambiguous match, StatusError{404} on no match.
 	ResolveProjectRef(ref string) ([]*orchestrator.Project, error)
+
+	// CreateWorkspace inserts a brand-new workspace (docs/plans/
+	// workspace-db-consolidation.md PR4, POST /api/workspaces). Returns a
+	// *StatusError{409} when slug already has a row, {400} for an invalid
+	// slug.
+	CreateWorkspace(slug string, meta *orchestrator.WorkspaceMeta) (*WorkspaceDetail, error)
+	// GetWorkspace returns slug's meta, revision, and assigned project ids
+	// (GET /api/workspaces/{slug}). *StatusError{404} when slug is unknown.
+	GetWorkspace(slug string) (*WorkspaceDetail, error)
+	// UpdateWorkspace replaces slug's meta wholesale (PUT
+	// /api/workspaces/{slug}), enforcing optimistic concurrency via ifMatch
+	// against the workspace's current revision unless force is true.
+	// *StatusError{428} missing ifMatch, {412} stale ifMatch, {404} unknown
+	// slug.
+	UpdateWorkspace(slug string, meta *orchestrator.WorkspaceMeta, ifMatch string, force bool) (*WorkspaceDetail, error)
+	// RemoveWorkspace deletes slug (DELETE /api/workspaces/{slug}).
+	// *StatusError{400} for the reserved default slug, {404} unknown slug.
+	RemoveWorkspace(slug string) error
+}
+
+// WorkspaceDetail is the response shape for the workspace create/show/update
+// endpoints: the parsed meta plus enough bookkeeping (revision, assigned
+// project ids) for a caller to display or re-PUT it with the correct
+// If-Match header. docs/plans/workspace-db-consolidation.md Step C/D/E.
+type WorkspaceDetail struct {
+	Slug     string                      `json:"slug"`
+	Meta     *orchestrator.WorkspaceMeta `json:"meta"`
+	Revision string                      `json:"revision,omitempty"`
+	// ProjectCount mirrors len(AssignedProjects); kept as its own field so
+	// callers that only need the count (e.g. a future list-style summary
+	// view) don't need to len() the slice themselves.
+	ProjectCount     int      `json:"project_count"`
+	AssignedProjects []string `json:"assigned_projects"`
+}
+
+// WorkspaceStore provides direct CRUD over a single workspace's
+// WorkspaceMeta, independent of the project-assignment bookkeeping that
+// lives on ProjectRepository below (docs/plans/workspace-db-consolidation.md
+// PR4). Implemented by *orchestrator.WorkspaceStore (via
+// ProjectStore.WorkspaceStore()), wired in internal/server/wire.go.
+type WorkspaceStore interface {
+	Load(slug string) (*orchestrator.WorkspaceMeta, error)
+	Save(slug string, meta *orchestrator.WorkspaceMeta) error
+	// Create is insert-only: an error wrapping os.ErrExist when slug already
+	// has a row (see orchestrator.WorkspaceRepository.Create).
+	Create(slug string, meta *orchestrator.WorkspaceMeta) error
+	Remove(slug string) error
+	// LoadWithRevision returns meta and its revision from a single atomic
+	// snapshot (docs/plans/workspace-db-consolidation.md MAJOR 1, codex
+	// review), used by GET /api/workspaces/{slug} so meta and revision can
+	// never straddle a concurrent write. See
+	// orchestrator.WorkspaceRepository.LoadWithRevision's doc comment.
+	LoadWithRevision(slug string) (*orchestrator.WorkspaceMeta, string, error)
+	// UpdateIfRevisionMatches performs a compare-and-swap update: meta is
+	// written only if slug's current revision equals expectedRevision,
+	// atomically with the check. matched=false covers both "no such slug"
+	// and "revision mismatch" — see
+	// orchestrator.WorkspaceRepository.UpdateIfRevisionMatches's doc comment.
+	UpdateIfRevisionMatches(slug string, expectedRevision string, meta *orchestrator.WorkspaceMeta) (newRevision string, matched bool, err error)
+}
+
+// HostCommandsProvider exposes the daemon's live aggregated host_commands
+// snapshot (name -> spec) for reference-name validation on workspace
+// create/update (docs/plans/workspace-db-consolidation.md MAJOR 2, codex
+// review: an unresolvable meta.HostCommands reference must be rejected with
+// 400 at write time rather than silently persisted and later warned-about +
+// skipped at dispatch). Implemented by *server.Server, which already
+// exposes this exact method for HostCommandsService above.
+type HostCommandsProvider interface {
+	HostCommands() map[string]orchestrator.HostCommandSpec
 }
 
 type TaskService interface {
@@ -167,6 +237,20 @@ type ProjectRepository interface {
 	// reject assignment to a nonexistent slug (docs/plans/
 	// workspace-db-consolidation.md MAJOR 5 codex review fix).
 	WorkspaceExists(workspaceID string) (bool, error)
+	// AssignWorkspaceIfExists atomically checks-then-assigns in a single DB
+	// transaction (docs/plans/workspace-db-consolidation.md MAJOR 3, codex
+	// review), replacing the WorkspaceExists+SetProjectWorkspace two-step
+	// ProjectAppService.SetProjectWorkspace used before: a DELETE landing
+	// between those two separate calls could leave a dangling
+	// project_workspaces reference. Returns an error wrapping os.ErrNotExist
+	// when workspaceID has no corresponding row (DefaultWorkspaceSlug and ""
+	// are exempt from the check — see the implementation's doc comment).
+	AssignWorkspaceIfExists(projectID, workspaceID string) error
+	// GetWorkspaceSummary returns a single workspace's project count and
+	// revision, or an error wrapping os.ErrNotExist. Used by the workspace
+	// CRUD handlers (docs/plans/workspace-db-consolidation.md PR4) to build
+	// responses and to read the current revision for the PUT If-Match check.
+	GetWorkspaceSummary(slug string) (*orchestrator.WorkspaceSummary, error)
 }
 
 // ProjectWorkDirLookup provides read access to a project's working directory.

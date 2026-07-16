@@ -16,17 +16,19 @@ import (
 // --- command declarations ---
 
 var taskArtifactsCmd = &cobra.Command{
-	Use:   "artifacts <id>",
-	Short: "Show artifact payload for a task",
-	Args:  cobra.ExactArgs(1),
-	RunE:  runTaskArtifacts,
+	Use:         "artifacts <id>",
+	Short:       "Show artifact payload for a task",
+	Args:        cobra.ExactArgs(1),
+	Annotations: map[string]string{scopeAnnotationKey: scopeRemote},
+	RunE:        runTaskArtifacts,
 }
 
 var taskTreeCmd = &cobra.Command{
-	Use:   "tree [<id>]",
-	Short: "Show task hierarchy as a tree",
-	Args:  cobra.MaximumNArgs(1),
-	RunE:  runTaskTree,
+	Use:         "tree [<id>]",
+	Short:       "Show task hierarchy as a tree",
+	Args:        cobra.MaximumNArgs(1),
+	Annotations: map[string]string{scopeAnnotationKey: scopeRemote},
+	RunE:        runTaskTree,
 }
 
 func init() {

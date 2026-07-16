@@ -16,9 +16,10 @@ var actionCmd = &cobra.Command{
 }
 
 var actionSendCmd = &cobra.Command{
-	Use:   "send",
-	Short: "Send an action to a task",
-	RunE:  runActionSend,
+	Use:         "send",
+	Short:       "Send an action to a task",
+	Annotations: map[string]string{scopeAnnotationKey: scopeRemote},
+	RunE:        runActionSend,
 }
 
 func init() {

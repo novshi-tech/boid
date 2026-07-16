@@ -498,6 +498,14 @@ type Project struct {
 type WorkspaceSummary struct {
 	ID           string `json:"id"`
 	ProjectCount int    `json:"project_count"`
+	// Revision is an opaque ETag-like token derived from the workspaces row's
+	// updated_at column (RFC3339), used by the PUT /api/workspaces/{slug}
+	// If-Match optimistic-concurrency check (docs/plans/
+	// workspace-db-consolidation.md decision 17). Empty when the summary was
+	// built from a project_workspaces reference with no corresponding
+	// workspaces row (should not happen once PR4's ListWorkspaces query is
+	// workspaces-table-based, but callers should not assume non-empty).
+	Revision string `json:"revision,omitempty"`
 }
 
 // KitMeta holds the parsed content of a kit.yaml file.

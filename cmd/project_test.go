@@ -1,11 +1,14 @@
 package cmd
 
 import (
+	"bytes"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/novshi-tech/boid/internal/api"
 	projectspec "github.com/novshi-tech/boid/internal/orchestrator"
+	"github.com/novshi-tech/boid/testutil"
 )
 
 func TestRenderProjectDetail_BasicFields(t *testing.T) {
@@ -215,5 +218,84 @@ func TestProjectInitSubCmd_HasWorkspaceFlag(t *testing.T) {
 	}
 	if f.DefValue != "" {
 		t.Errorf("expected empty default for --workspace, got %q", f.DefValue)
+	}
+}
+
+// withProjectAddWorkspaceFlag sets the package-level --workspace flag value
+// `runProjectAdd` reads (projectAddWorkspace) for the duration of the
+// calling test, restoring it to "" afterward so this global does not leak
+// across other tests in the same binary.
+func withProjectAddWorkspaceFlag(t *testing.T, slug string) {
+	t.Helper()
+	projectAddWorkspace = slug
+	t.Cleanup(func() { projectAddWorkspace = "" })
+}
+
+// TestProjectAdd_WithUnknownWorkspace_CreatesAndAssigns pins MAJOR 4 (codex
+// review, docs/plans/workspace-db-consolidation.md): `project add
+// --workspace <unknown-slug>` must get-or-create an empty workspace DB row
+// for the slug (not just call the assign PUT and let it 404) — this is the
+// contract runProjectAdd's own docstring already promised ("get-or-create:
+// DB row is created even for unknown slug") but never actually implemented
+// before this fix.
+func TestProjectAdd_WithUnknownWorkspace_CreatesAndAssigns(t *testing.T) {
+	ts := testutil.NewTestServer(t)
+	t.Setenv("BOID_SOCKET", ts.Server.SocketPath())
+	withProjectAddWorkspaceFlag(t, "brand-new-ws")
+
+	dir := writeImportTestProject(t, "project-add-unknown-ws", "Project Add Unknown WS")
+
+	var out bytes.Buffer
+	cmd := projectAddCmd
+	cmd.SetOut(&out)
+	if err := runProjectAdd(cmd, []string{dir}); err != nil {
+		t.Fatalf("runProjectAdd: %v", err)
+	}
+
+	var detail api.WorkspaceDetail
+	if err := ts.Client.Do("GET", "/api/workspaces/brand-new-ws", nil, &detail); err != nil {
+		t.Fatalf("expected workspace %q to have been get-or-created: %v", "brand-new-ws", err)
+	}
+
+	var projects []projectspec.Project
+	if err := ts.Client.Do("GET", "/api/projects", nil, &projects); err != nil {
+		t.Fatalf("list projects: %v", err)
+	}
+	if len(projects) != 1 {
+		t.Fatalf("expected exactly one registered project, got %d", len(projects))
+	}
+	if projects[0].WorkspaceID != "brand-new-ws" {
+		t.Errorf("WorkspaceID = %q, want brand-new-ws", projects[0].WorkspaceID)
+	}
+}
+
+// TestProjectAdd_WithExistingWorkspace_JustAssigns is the regression guard
+// alongside the get-or-create test above: assigning to a slug that already
+// has a DB row must not error (no spurious "already exists" 409 surfacing
+// from the get-or-create step) and must still assign normally.
+func TestProjectAdd_WithExistingWorkspace_JustAssigns(t *testing.T) {
+	ts := testutil.NewTestServer(t)
+	t.Setenv("BOID_SOCKET", ts.Server.SocketPath())
+	testutil.SeedWorkspace(t, ts, "existing-ws")
+	withProjectAddWorkspaceFlag(t, "existing-ws")
+
+	dir := writeImportTestProject(t, "project-add-existing-ws", "Project Add Existing WS")
+
+	var out bytes.Buffer
+	cmd := projectAddCmd
+	cmd.SetOut(&out)
+	if err := runProjectAdd(cmd, []string{dir}); err != nil {
+		t.Fatalf("runProjectAdd: %v", err)
+	}
+
+	var projects []projectspec.Project
+	if err := ts.Client.Do("GET", "/api/projects", nil, &projects); err != nil {
+		t.Fatalf("list projects: %v", err)
+	}
+	if len(projects) != 1 {
+		t.Fatalf("expected exactly one registered project, got %d", len(projects))
+	}
+	if projects[0].WorkspaceID != "existing-ws" {
+		t.Errorf("WorkspaceID = %q, want existing-ws", projects[0].WorkspaceID)
 	}
 }

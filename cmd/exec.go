@@ -57,6 +57,7 @@ var execCmd = &cobra.Command{
 	SilenceUsage:  true,
 	SilenceErrors: true,
 	Args:          cobra.MinimumNArgs(1),
+	Annotations:   map[string]string{scopeAnnotationKey: scopeRemote},
 	RunE:          runExec,
 }
 

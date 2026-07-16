@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -34,11 +35,26 @@ func mustCanonicalBehavior(alias string) string {
 	return canonical
 }
 
+// projectAddCmd is scopeLocal (codex review round 2, docs/plans/
+// cli-remote-connection.md classification table: "境界越えで壊れる | project
+// add / init / reload | work_dir のパス文字列を daemon 側 FS で解決"). This
+// command's own work does go through the daemon's HTTP API today (POST
+// /api/projects), which is why it used to be scopeRemote — but <dir> is a
+// path on the machine the CLI process runs on, and the daemon resolves it
+// against its *own* local filesystem (reads .boid/project.yaml, captures
+// the git origin remote, etc.). That only ever coincides with the CLI's
+// filesystem because there is no remote-daemon transport yet; against a
+// future https:// profile (Phase 3), the same dir string would resolve
+// against the wrong host's filesystem entirely. Phase 6
+// (docs/plans/container-based-boid.md) is expected to move project
+// registration to a remote-git-URL model, at which point this reclassifies
+// to scopeRemote.
 var projectAddCmd = &cobra.Command{
-	Use:   "add <dir>",
-	Short: "Register a project from .boid/project.yaml",
-	Args:  cobra.ExactArgs(1),
-	RunE:  runProjectAdd,
+	Use:         "add <dir>",
+	Short:       "Register a project from .boid/project.yaml",
+	Args:        cobra.ExactArgs(1),
+	Annotations: map[string]string{scopeAnnotationKey: scopeLocal},
+	RunE:        runProjectAdd,
 }
 
 var projectInitSubCmd = &cobra.Command{
@@ -60,14 +76,19 @@ Example:
   boid project init . --workspace main           # also assign to workspace "main"
   boid project init . --agent codex              # bake a non-default agent
 `,
-	Args: cobra.MaximumNArgs(1),
-	RunE: runProjectInit,
+	// scopeLocal — same "境界越えで壊れる" rationale as projectAddCmd above:
+	// [dir] is a local filesystem path the daemon resolves against its own
+	// host.
+	Args:        cobra.MaximumNArgs(1),
+	Annotations: map[string]string{scopeAnnotationKey: scopeLocal},
+	RunE:        runProjectInit,
 }
 
 var projectListCmd = &cobra.Command{
-	Use:   "list",
-	Short: "List registered projects",
-	RunE:  runProjectList,
+	Use:         "list",
+	Short:       "List registered projects",
+	Annotations: map[string]string{scopeAnnotationKey: scopeRemote},
+	RunE:        runProjectList,
 }
 
 var projectRemoveCmd = &cobra.Command{
@@ -75,13 +96,20 @@ var projectRemoveCmd = &cobra.Command{
 	Short:             "Remove a project (id or name, partial match supported)",
 	Args:              cobra.ExactArgs(1),
 	ValidArgsFunction: completeProjectRefs,
+	Annotations:       map[string]string{scopeAnnotationKey: scopeRemote},
 	RunE:              runProjectRemove,
 }
 
+// projectReloadCmd is scopeLocal, grouped with add/init in the plan doc's
+// "境界越えで壊れる" row even though reload itself takes no path argument —
+// runProjectReload re-reads every registered project's .boid/project.yaml
+// from its stored WorkDir and re-captures each one's git origin remote, both
+// of which only resolve correctly against the daemon's own host filesystem.
 var projectReloadCmd = &cobra.Command{
-	Use:   "reload",
-	Short: "Reload project.yaml for all registered projects",
-	RunE:  runProjectReload,
+	Use:         "reload",
+	Short:       "Reload project.yaml for all registered projects",
+	Annotations: map[string]string{scopeAnnotationKey: scopeLocal},
+	RunE:        runProjectReload,
 }
 
 var projectShowCmd = &cobra.Command{
@@ -89,6 +117,7 @@ var projectShowCmd = &cobra.Command{
 	Short:             "Show project details (id or name, partial match supported)",
 	Args:              cobra.ExactArgs(1),
 	ValidArgsFunction: completeProjectRefs,
+	Annotations:       map[string]string{scopeAnnotationKey: scopeRemote},
 	RunE:              runProjectShow,
 }
 
@@ -97,6 +126,7 @@ var projectBehaviorsCmd = &cobra.Command{
 	Short:             "List task behaviors defined in the project (id or name, partial match supported)",
 	Args:              cobra.ExactArgs(1),
 	ValidArgsFunction: completeProjectRefs,
+	Annotations:       map[string]string{scopeAnnotationKey: scopeRemote},
 	RunE:              runProjectBehaviors,
 }
 
@@ -124,7 +154,7 @@ func runProjectAdd(cmd *cobra.Command, args []string) error {
 
 	// Optionally assign workspace (get-or-create: DB row is created even for unknown slug).
 	if projectAddWorkspace != "" {
-		if err := assignProjectWorkspace(c, p.ID, projectAddWorkspace); err != nil {
+		if err := assignProjectWorkspace(c, p.ID, projectAddWorkspace, cmd.OutOrStdout()); err != nil {
 			return err
 		}
 		p.WorkspaceID = projectAddWorkspace
@@ -188,7 +218,7 @@ func runProjectInit(cmd *cobra.Command, args []string) error {
 
 	// Optionally assign workspace (get-or-create).
 	if projectInitWorkspace != "" {
-		if err := assignProjectWorkspace(c, p.ID, projectInitWorkspace); err != nil {
+		if err := assignProjectWorkspace(c, p.ID, projectInitWorkspace, cmd.OutOrStdout()); err != nil {
 			return err
 		}
 		p.WorkspaceID = projectInitWorkspace
@@ -202,16 +232,25 @@ func runProjectInit(cmd *cobra.Command, args []string) error {
 }
 
 // assignProjectWorkspace sends PUT /api/projects/<id>/workspace to link the
-// project to a workspace. get-or-create semantics: the server creates a DB row
-// for the slug even when no workspace.yaml exists.
+// project to a workspace. get-or-create semantics: an empty workspace is
+// created for workspaceSlug first if it has no DB row yet
+// (ensureWorkspaceExistsGetOrCreate, MAJOR 4 codex review,
+// docs/plans/workspace-db-consolidation.md) — before that fix, this
+// function only ever called the assign PUT, so an unknown slug 404'd there
+// even though `project add`/`project init` had already registered the
+// project (a partial-success state: project registered, workspace
+// assignment failed).
 //
 // CLI entry-point validation per plan (3-layer defense): a non-empty slug
 // must satisfy ValidWorkspaceSlug. Empty string means "clear" and is allowed
 // to bypass validation (handled at the domain layer).
-func assignProjectWorkspace(c *client.Client, projectID, workspaceSlug string) error {
+func assignProjectWorkspace(c *client.Client, projectID, workspaceSlug string, out io.Writer) error {
 	if workspaceSlug != "" {
 		if err := projectspec.ValidWorkspaceSlug(workspaceSlug); err != nil {
 			return fmt.Errorf("invalid --workspace value: %w", err)
+		}
+		if err := ensureWorkspaceExistsGetOrCreate(c, workspaceSlug, out); err != nil {
+			return fmt.Errorf("get-or-create workspace %q: %w", workspaceSlug, err)
 		}
 	}
 	var result projectspec.Project

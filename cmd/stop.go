@@ -14,7 +14,14 @@ var stopCmd = &cobra.Command{
 }
 
 func init() {
-	stopCmd.Annotations = map[string]string{annotationSkipAutostart: "skip"}
+	stopCmd.Annotations = map[string]string{
+		annotationSkipAutostart: "skip",
+		// scopeLocal (per plan doc guidance): stop is daemon lifecycle
+		// management, classified alongside start/status even though its
+		// RunE happens to call the API to ask the daemon to shut itself
+		// down.
+		scopeAnnotationKey: scopeLocal,
+	}
 	rootCmd.AddCommand(stopCmd)
 }
 

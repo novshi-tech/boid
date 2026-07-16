@@ -52,7 +52,10 @@ var (
 )
 
 func init() {
-	startCmd.Annotations = map[string]string{annotationSkipAutostart: "skip"}
+	startCmd.Annotations = map[string]string{
+		annotationSkipAutostart: "skip",
+		scopeAnnotationKey:      scopeLocal,
+	}
 	startCmd.Flags().StringVar(&startDBPath, "db-path", "", "Path to the SQLite database")
 	startCmd.Flags().StringVar(&startSocketPath, "socket-path", "", "Path to the UNIX socket")
 	startCmd.Flags().StringVar(&startKitsDir, "kits-dir", "", "Base directory for installed kits")

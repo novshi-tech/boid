@@ -2,6 +2,8 @@ package orchestrator_test
 
 import (
 	"encoding/json"
+	"errors"
+	"os"
 	"strings"
 	"testing"
 
@@ -158,8 +160,122 @@ func TestSetProjectWorkspace_RejectsInvalidSlug(t *testing.T) {
 	}
 }
 
+// --- AssignWorkspaceIfExists (MAJOR 3, codex review: assign+cache race
+// serialization, docs/plans/workspace-db-consolidation.md) ---
+
+// TestAssignWorkspaceIfExists_Success verifies the happy path: an existing
+// workspace slug is assigned normally, exactly like SetProjectWorkspace.
+func TestAssignWorkspaceIfExists_Success(t *testing.T) {
+	d := testutil.NewTestDB(t)
+	if err := orchestrator.CreateProject(d.Conn, &orchestrator.Project{ID: "proj-1", WorkDir: "/tmp/a"}); err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	repo := orchestrator.NewWorkspaceRepository(d.Conn)
+	if err := repo.Save("team-a", &orchestrator.WorkspaceMeta{}); err != nil {
+		t.Fatalf("save workspace: %v", err)
+	}
+
+	if err := orchestrator.AssignWorkspaceIfExists(d.Conn, "proj-1", "team-a"); err != nil {
+		t.Fatalf("AssignWorkspaceIfExists: %v", err)
+	}
+
+	project, err := orchestrator.GetProject(d.Conn, "proj-1")
+	if err != nil {
+		t.Fatalf("get project: %v", err)
+	}
+	if project.WorkspaceID != "team-a" {
+		t.Errorf("workspace_id = %q, want team-a", project.WorkspaceID)
+	}
+}
+
+// TestAssignWorkspaceIfExists_RejectsNonexistentSlug pins the atomic
+// exists-check+assign contract: assigning to a slug with no workspaces row
+// must fail with os.ErrNotExist wrapped and must NOT create a dangling
+// project_workspaces reference — this is the single-transaction replacement
+// for the old (separately racy) WorkspaceExists+SetProjectWorkspace pair.
+func TestAssignWorkspaceIfExists_RejectsNonexistentSlug(t *testing.T) {
+	d := testutil.NewTestDB(t)
+	if err := orchestrator.CreateProject(d.Conn, &orchestrator.Project{ID: "proj-1", WorkDir: "/tmp/a"}); err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+
+	err := orchestrator.AssignWorkspaceIfExists(d.Conn, "proj-1", "ghost")
+	if !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("error = %v, want os.ErrNotExist wrapped", err)
+	}
+
+	project, err := orchestrator.GetProject(d.Conn, "proj-1")
+	if err != nil {
+		t.Fatalf("get project: %v", err)
+	}
+	if project.WorkspaceID != "" {
+		t.Errorf("dangling reference leaked: workspace_id = %q, want empty", project.WorkspaceID)
+	}
+}
+
+// TestAssignWorkspaceIfExists_AcceptsDefaultSlugUnconditionally mirrors
+// SetProjectWorkspace's exemption for DefaultWorkspaceSlug (it always
+// exists — WorkspaceRepository.EnsureDefault guarantees this), so
+// AssignWorkspaceIfExists must not require a row lookup for it either.
+func TestAssignWorkspaceIfExists_AcceptsDefaultSlugUnconditionally(t *testing.T) {
+	d := testutil.NewTestDB(t)
+	if err := orchestrator.CreateProject(d.Conn, &orchestrator.Project{ID: "proj-1", WorkDir: "/tmp/a"}); err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+
+	if err := orchestrator.AssignWorkspaceIfExists(d.Conn, "proj-1", orchestrator.DefaultWorkspaceSlug); err != nil {
+		t.Fatalf("AssignWorkspaceIfExists(default): %v", err)
+	}
+	project, err := orchestrator.GetProject(d.Conn, "proj-1")
+	if err != nil {
+		t.Fatalf("get project: %v", err)
+	}
+	if project.WorkspaceID != orchestrator.DefaultWorkspaceSlug {
+		t.Errorf("workspace_id = %q, want %q", project.WorkspaceID, orchestrator.DefaultWorkspaceSlug)
+	}
+}
+
+// TestAssignWorkspaceIfExists_EmptyClears mirrors SetProjectWorkspace's
+// clear-without-existence-check behavior for workspaceID == "".
+func TestAssignWorkspaceIfExists_EmptyClears(t *testing.T) {
+	d := testutil.NewTestDB(t)
+	if err := orchestrator.CreateProject(d.Conn, &orchestrator.Project{ID: "proj-1", WorkDir: "/tmp/a"}); err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	repo := orchestrator.NewWorkspaceRepository(d.Conn)
+	if err := repo.Save("team-a", &orchestrator.WorkspaceMeta{}); err != nil {
+		t.Fatalf("save workspace: %v", err)
+	}
+	if err := orchestrator.AssignWorkspaceIfExists(d.Conn, "proj-1", "team-a"); err != nil {
+		t.Fatalf("assign: %v", err)
+	}
+
+	if err := orchestrator.AssignWorkspaceIfExists(d.Conn, "proj-1", ""); err != nil {
+		t.Fatalf("clear: %v", err)
+	}
+	project, err := orchestrator.GetProject(d.Conn, "proj-1")
+	if err != nil {
+		t.Fatalf("get project: %v", err)
+	}
+	if project.WorkspaceID != "" {
+		t.Errorf("workspace_id = %q, want empty after clear", project.WorkspaceID)
+	}
+}
+
+// TestListWorkspaces pins ListWorkspaces' PR4 rewrite
+// (docs/plans/workspace-db-consolidation.md Step B): the query is now
+// workspaces-table-based (LEFT JOIN project_workspaces), so a workspace with
+// zero assigned projects still appears in the result — unlike the pre-PR4
+// project_workspaces-GROUP-BY query, which could only ever see slugs that at
+// least one project referenced.
 func TestListWorkspaces(t *testing.T) {
 	d := testutil.NewTestDB(t)
+	repo := orchestrator.NewWorkspaceRepository(d.Conn)
+	for _, slug := range []string{"ws-1", "ws-2", "ws-empty"} {
+		if err := repo.Save(slug, &orchestrator.WorkspaceMeta{}); err != nil {
+			t.Fatalf("save workspace %s: %v", slug, err)
+		}
+	}
 	for _, project := range []*orchestrator.Project{
 		{ID: "proj-1", WorkDir: "/tmp/a"},
 		{ID: "proj-2", WorkDir: "/tmp/b"},
@@ -183,19 +299,73 @@ func TestListWorkspaces(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list workspaces: %v", err)
 	}
-	if len(workspaces) != 2 {
-		t.Fatalf("expected 2 workspaces, got %d", len(workspaces))
+	if len(workspaces) != 3 {
+		t.Fatalf("expected 3 workspaces (including the empty one), got %d: %+v", len(workspaces), workspaces)
 	}
 	if workspaces[0].ID != "ws-1" || workspaces[0].ProjectCount != 2 {
 		t.Fatalf("unexpected workspace 0: %+v", workspaces[0])
 	}
+	if workspaces[0].Revision == "" {
+		t.Error("expected non-empty Revision for ws-1")
+	}
 	if workspaces[1].ID != "ws-2" || workspaces[1].ProjectCount != 1 {
 		t.Fatalf("unexpected workspace 1: %+v", workspaces[1])
+	}
+	if workspaces[2].ID != "ws-empty" || workspaces[2].ProjectCount != 0 {
+		t.Fatalf("unexpected workspace 2 (expected empty workspace to be listed): %+v", workspaces[2])
+	}
+}
+
+// TestDeleteProject verifies that deleting a project clears its
+// project_workspaces membership row. Since PR4's ListWorkspaces rewrite is
+// workspaces-table-based (Step B), the workspace itself (ws-1, a real row)
+// keeps appearing in ListWorkspaces after the last assigned project is
+// deleted — only its ProjectCount drops to zero. This is the intended
+// "empty workspaces are listed too" behavior, not a regression.
+// TestGetWorkspaceSummary pins the single-slug summary lookup used by the
+// workspace API handlers (docs/plans/workspace-db-consolidation.md Step
+// C/D/E — building the response for create/show/update).
+func TestGetWorkspaceSummary(t *testing.T) {
+	d := testutil.NewTestDB(t)
+	repo := orchestrator.NewWorkspaceRepository(d.Conn)
+	if err := repo.Save("ws-1", &orchestrator.WorkspaceMeta{}); err != nil {
+		t.Fatalf("save workspace: %v", err)
+	}
+	if err := orchestrator.CreateProject(d.Conn, &orchestrator.Project{ID: "proj-1", WorkDir: "/tmp/a"}); err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	if err := orchestrator.SetProjectWorkspace(d.Conn, "proj-1", "ws-1"); err != nil {
+		t.Fatalf("set workspace: %v", err)
+	}
+
+	summary, err := orchestrator.GetWorkspaceSummary(d.Conn, "ws-1")
+	if err != nil {
+		t.Fatalf("GetWorkspaceSummary: %v", err)
+	}
+	if summary.ID != "ws-1" || summary.ProjectCount != 1 {
+		t.Errorf("unexpected summary: %+v", summary)
+	}
+	if summary.Revision == "" {
+		t.Error("expected non-empty Revision")
+	}
+}
+
+// TestGetWorkspaceSummary_NotFound verifies the os.ErrNotExist contract for a
+// slug with no workspaces row.
+func TestGetWorkspaceSummary_NotFound(t *testing.T) {
+	d := testutil.NewTestDB(t)
+	_, err := orchestrator.GetWorkspaceSummary(d.Conn, "nonexistent")
+	if !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("error = %v, want os.ErrNotExist wrapped", err)
 	}
 }
 
 func TestDeleteProject(t *testing.T) {
 	d := testutil.NewTestDB(t)
+	repo := orchestrator.NewWorkspaceRepository(d.Conn)
+	if err := repo.Save("ws-1", &orchestrator.WorkspaceMeta{}); err != nil {
+		t.Fatalf("save workspace: %v", err)
+	}
 	if err := orchestrator.CreateProject(d.Conn, &orchestrator.Project{ID: "proj-1", WorkDir: "/tmp"}); err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -216,8 +386,8 @@ func TestDeleteProject(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list workspaces: %v", err)
 	}
-	if len(workspaces) != 0 {
-		t.Fatalf("expected workspace membership to be deleted, got %+v", workspaces)
+	if len(workspaces) != 1 || workspaces[0].ID != "ws-1" || workspaces[0].ProjectCount != 0 {
+		t.Fatalf("expected ws-1 to still be listed with ProjectCount=0, got %+v", workspaces)
 	}
 }
 

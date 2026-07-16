@@ -179,7 +179,40 @@ func (s *Server) Store() *orchestrator.ProjectStore {
 // future reload API (PR4) can safely swap s.hostCommands without racing
 // against an in-flight caller.
 func (s *Server) HostCommands() map[string]orchestrator.HostCommandSpec {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	return orchestrator.CloneHostCommandsMap(s.hostCommands)
+}
+
+// ReloadHostCommands re-reads the aggregated host_commands.yaml config from
+// disk and swaps in both the raw snapshot (what HostCommands() hands out)
+// and the dispatch-facing expanded copy wired into the ProjectStore
+// (docs/plans/workspace-db-consolidation.md PR4 Step G). This is the
+// daemon-side half of the plan doc's documented hand-edit path
+// ("host_commands 実定義の集約先": 手で ~/.config/boid/host_commands.yaml を編集
+// → boid host-commands reload で daemon に読み直させる) — there is no
+// create/edit API for individual host_command entries, only this reload.
+//
+// A parse error (a typo introduced by the hand edit) is returned as-is and
+// leaves the daemon's live config untouched — s.hostCommands and the
+// store's copy are only swapped after LoadHostCommandsConfig succeeds, so a
+// bad reload never degrades an already-running daemon.
+func (s *Server) ReloadHostCommands() error {
+	path, err := orchestrator.DefaultHostCommandsPath()
+	if err != nil {
+		return fmt.Errorf("reload host_commands: resolve path: %w", err)
+	}
+	raw, err := orchestrator.LoadHostCommandsConfig(path)
+	if err != nil {
+		return fmt.Errorf("reload host_commands: %w", err)
+	}
+
+	s.mu.Lock()
+	s.hostCommands = raw
+	s.mu.Unlock()
+
+	s.store.SetHostCommands(orchestrator.ExpandHostCommandsForDispatch(raw))
+	return nil
 }
 
 // Router returns the chi router for registering additional routes.

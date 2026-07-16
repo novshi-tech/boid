@@ -207,7 +207,7 @@ func preflightWorkspaceMigration(workspaceDir, kitsDir string, projectRepo *Proj
 	// Project -> workspace reference check: every referenced workspace_id
 	// must either resolve to a parsed workspace yaml or be
 	// DefaultWorkspaceSlug (which the write phase always ensures exists).
-	referenced, err := projectRepo.ListWorkspaces()
+	referenced, err := projectRepo.ListProjectWorkspaceReferences()
 	if err != nil {
 		return nil, fmt.Errorf("list project workspace references: %w", err)
 	}
@@ -593,6 +593,45 @@ func materializeKitRuntimeIntoWorkspace(snap *kitYAMLSnapshot, kits []string, me
 		meta.AdditionalBindings = append(meta.AdditionalBindings, kitRootBindings...)
 	}
 
+	return nil
+}
+
+// MaterializeWorkspaceKitsForPersist resolves meta.Kits (if any) against the
+// kits installed under kitsDir, merges their host_commands (folded in as
+// reference names)/env/additional_bindings into meta in place — the exact
+// same expansion MigrateWorkspaceYAMLToDB performs once at cutover — and
+// then clears meta.Kits.
+//
+// Call this before persisting any *WorkspaceMeta that might still carry a
+// legacy Kits list through WorkspaceRepository.Create/Save (docs/plans/
+// workspace-db-consolidation.md PR4: POST/PUT /api/workspaces, and by
+// extension `boid workspace create`/`edit` and `assign`'s legacy-yaml
+// auto-create). The workspaces table has no kits column at all (decision
+// 「kits カラム無し」), so a Kits value left unmaterialized would silently
+// vanish on save regardless — and once gone, it can never be re-resolved:
+// GetWithWorkspace's own per-hydration ws.Kits merge block only ever sees
+// whatever ended up (persisted) in the DB row, which would be empty. This
+// was discovered as a real e2e regression (docker-proxy-* scenarios failing
+// with "$DOCKER_PROXY_TEST_ROOT/docker-proxy-test.sh: not found", exit 127)
+// when `boid workspace assign`'s auto-create path (introduced in PR4)
+// funneled a legacy `kits: [docker-proxy-test]` yaml straight into
+// WorkspaceRepository.Create without this expansion step.
+//
+// meta.Kits == nil/empty is a fast path: the overwhelming majority of
+// calls (any workspace that has never referenced a kit) never touch the
+// filesystem at all.
+func MaterializeWorkspaceKitsForPersist(kitsDir string, meta *WorkspaceMeta) error {
+	if meta == nil || len(meta.Kits) == 0 {
+		return nil
+	}
+	snap, err := snapshotAllKitYAMLs(kitsDir)
+	if err != nil {
+		return fmt.Errorf("snapshot kit yaml: %w", err)
+	}
+	if err := materializeKitRuntimeIntoWorkspace(snap, meta.Kits, meta); err != nil {
+		return err
+	}
+	meta.Kits = nil
 	return nil
 }
 

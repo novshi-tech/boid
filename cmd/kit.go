@@ -38,6 +38,7 @@ var kitInitCmd = &cobra.Command{
 	Args:  cobra.NoArgs,
 	Annotations: map[string]string{
 		annotationSkipAutostart: "skip",
+		scopeAnnotationKey:      scopeLocal,
 	},
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return runKitInit(cmd.InOrStdin(), cmd.OutOrStdout())
@@ -323,8 +324,9 @@ func promptDefaultHarness(in io.Reader, out io.Writer) (string, error) {
 }
 
 var kitListCmd = &cobra.Command{
-	Use:   "list",
-	Short: "List installed kits",
+	Use:         "list",
+	Short:       "List installed kits",
+	Annotations: map[string]string{scopeAnnotationKey: scopeLocal},
 	RunE: func(cmd *cobra.Command, args []string) error {
 		reg := orchestrator.NewRegistry(defaultKitsDir())
 		names, err := reg.List()
@@ -343,9 +345,10 @@ var kitListCmd = &cobra.Command{
 }
 
 var kitRemoveCmd = &cobra.Command{
-	Use:   "remove <name>",
-	Short: "Remove an installed kit",
-	Args:  cobra.ExactArgs(1),
+	Use:         "remove <name>",
+	Short:       "Remove an installed kit",
+	Args:        cobra.ExactArgs(1),
+	Annotations: map[string]string{scopeAnnotationKey: scopeLocal},
 	RunE: func(cmd *cobra.Command, args []string) error {
 		name := args[0]
 

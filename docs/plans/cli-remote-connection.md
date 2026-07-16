@@ -281,6 +281,27 @@ var startCmd = &cobra.Command{
 `project add/init/reload` は本 phase では `local` に分類 (リモート時明示エラー)。
 Phase 6 で project = リモート git URL 前提化される時点で `remote` へ移行。
 
+**2026-07-17 追記 (workspace-db-consolidation PR4 codex レビュー2巡目)**:
+`cmd/scope_annotations_test.go` の `expectedScopeAnnotations` を全 leaf command
+の exact-match 表に強化した際、`project add/init/reload` の実装側 annotation が
+本表と食い違っている (当時は `remote` のままだった) ことが判明したため、
+PR4 (Phase 2.5) の時点で前倒しでこの表の分類に合わせて `local` に変更した。
+本来は PR5 (`PersistentPreRunE` の拒否 UX 込み) でまとめて対応する想定だった
+ものの、annotation 自体の食い違いは早期に閉じておく方が安全と判断。PR5 で
+やるべき残作業は「リモート profile 時に明示エラーを出す」動作の実装のみ
+(`PersistentPreRunE` 側は未着手)。
+
+同じレビューで `gc` と `check` も本表と食い違っていた
+(実装は `gc`=`remote`、`check`=`neutral`)。`gc` は実際には daemon の HTTP API
+(`POST /api/gc`) を経由するだけの実装で、リモート daemon 相手でも機構的には
+問題なく動作する — が、本表の「daemon lifecycle 系はまとめて local」という
+分類方針に合わせて `local` に統一した。`check` は exec.LookPath/unshare
+プローブが「CLI プロセスを実行しているホスト」を調べる性質上、リモート
+daemon 時には無意味な情報になる (daemon 側ホストではなく CLI 側ホストを
+見てしまう) ため、本表の分類 (`local`) の方が実は技術的にも妥当と判断し
+`local` に変更。詳細な理由は `cmd/gc.go` / `cmd/check.go` の annotation
+コメントを参照。
+
 ### Phase 2.5 で解消済 (もう論点でない)
 
 - workspace 系: 全 API 化 → `remote`

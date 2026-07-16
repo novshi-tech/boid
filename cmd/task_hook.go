@@ -32,6 +32,8 @@ var taskHookListCmd = &cobra.Command{
 }
 
 func init() {
+	taskHookReplayCmd.Annotations = map[string]string{scopeAnnotationKey: scopeRemote}
+	taskHookListCmd.Annotations = map[string]string{scopeAnnotationKey: scopeRemote}
 	taskHookReplayCmd.Flags().String("status", "", "Override task status for replay (e.g. executing)")
 	taskHookCmd.AddCommand(taskHookReplayCmd, taskHookListCmd)
 	taskHookListCmd.Flags().String("status", "", "Status to query hooks for (default: task's current status)")

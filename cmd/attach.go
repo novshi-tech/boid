@@ -17,10 +17,11 @@ import (
 )
 
 var attachCmd = &cobra.Command{
-	Use:   "attach <job-id>",
-	Short: "Attach to a job runtime",
-	Args:  cobra.ExactArgs(1),
-	RunE:  runAttach,
+	Use:         "attach <job-id>",
+	Short:       "Attach to a job runtime",
+	Args:        cobra.ExactArgs(1),
+	Annotations: map[string]string{scopeAnnotationKey: scopeRemote},
+	RunE:        runAttach,
 }
 
 func init() {

@@ -362,6 +362,58 @@ func TestWorkspaceStore_DBMode_Remove_ThenLoadReturnsNotExist(t *testing.T) {
 	}
 }
 
+// TestWorkspaceStore_DBMode_LoadWithRevision_DelegatesToRepo pins that
+// WorkspaceStore's LoadWithRevision/UpdateIfRevisionMatches wrappers
+// (docs/plans/workspace-db-consolidation.md MAJOR 1) route through the
+// repository in DB mode, exactly like every other method on this struct.
+func TestWorkspaceStore_DBMode_LoadWithRevision_DelegatesToRepo(t *testing.T) {
+	t.Parallel()
+	store := newTestDBBackedStore(t)
+
+	if err := store.Save("team-a", &WorkspaceMeta{HostCommands: []string{"gh"}}); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	meta, revision, err := store.LoadWithRevision("team-a")
+	if err != nil {
+		t.Fatalf("LoadWithRevision: %v", err)
+	}
+	if !equalStringSlice(meta.HostCommands, []string{"gh"}) {
+		t.Errorf("HostCommands = %v, want [gh]", meta.HostCommands)
+	}
+	if revision == "" {
+		t.Error("expected non-empty revision")
+	}
+
+	newRevision, matched, err := store.UpdateIfRevisionMatches("team-a", revision, &WorkspaceMeta{HostCommands: []string{"aws"}})
+	if err != nil {
+		t.Fatalf("UpdateIfRevisionMatches: %v", err)
+	}
+	if !matched {
+		t.Fatal("expected matched=true for the correct revision")
+	}
+	if newRevision == revision {
+		t.Errorf("newRevision = %q, want distinct from original %q", newRevision, revision)
+	}
+
+	got, err := store.Load("team-a")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !equalStringSlice(got.HostCommands, []string{"aws"}) {
+		t.Errorf("HostCommands after update = %v, want [aws]", got.HostCommands)
+	}
+
+	// A stale revision must be rejected.
+	_, matched, err = store.UpdateIfRevisionMatches("team-a", revision, &WorkspaceMeta{HostCommands: []string{"stale-writer"}})
+	if err != nil {
+		t.Fatalf("UpdateIfRevisionMatches (stale): %v", err)
+	}
+	if matched {
+		t.Error("expected matched=false for a stale revision")
+	}
+}
+
 func TestWorkspaceStore_DBMode_Remove_RejectsDefault(t *testing.T) {
 	t.Parallel()
 	store := newTestDBBackedStore(t)
@@ -400,6 +452,111 @@ func TestWorkspaceStore_DBMode_EnsureDefault_Idempotent(t *testing.T) {
 	}
 }
 
+// TestWorkspaceStore_DBMode_Create_InsertsAndConflicts pins WorkspaceStore's
+// Create pass-through (docs/plans/workspace-db-consolidation.md Step A):
+// in DB mode it must delegate straight to the repository's insert-only
+// Create, including the os.ErrExist conflict contract.
+func TestWorkspaceStore_DBMode_Create_InsertsAndConflicts(t *testing.T) {
+	t.Parallel()
+	store := newTestDBBackedStore(t)
+
+	meta := &WorkspaceMeta{HostCommands: []string{"gh"}}
+	if err := store.Create("new-ws", meta); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	got, err := store.Load("new-ws")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !equalStringSlice(got.HostCommands, []string{"gh"}) {
+		t.Errorf("HostCommands: got %v, want [gh]", got.HostCommands)
+	}
+
+	err = store.Create("new-ws", &WorkspaceMeta{})
+	if !errors.Is(err, os.ErrExist) {
+		t.Errorf("Create (conflict): error = %v, want os.ErrExist wrapped", err)
+	}
+}
+
+// TestWorkspaceStore_YAMLMode_Create_InsertsAndConflicts verifies the
+// yaml-mode (repo == nil) counterpart: Create still enforces insert-only
+// semantics against the yaml directory, even though production wiring
+// always sets a repository (this mode only matters for tests / any
+// caller that constructs a bare WorkspaceStore).
+func TestWorkspaceStore_YAMLMode_Create_InsertsAndConflicts(t *testing.T) {
+	t.Parallel()
+	store, _ := newTestStore(t)
+
+	if err := store.Create("new-ws", &WorkspaceMeta{Kits: []string{"a"}}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	got, err := store.Load("new-ws")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(got.Kits) != 1 || got.Kits[0] != "a" {
+		t.Errorf("Kits: got %v, want [a]", got.Kits)
+	}
+
+	err = store.Create("new-ws", &WorkspaceMeta{})
+	if !errors.Is(err, os.ErrExist) {
+		t.Errorf("Create (conflict): error = %v, want os.ErrExist wrapped", err)
+	}
+}
+
+// TestWorkspaceStore_YAMLMode_LoadWithRevision_EmptyRevision pins the
+// yaml-mode (repo == nil) fallback for LoadWithRevision/
+// UpdateIfRevisionMatches (docs/plans/workspace-db-consolidation.md MAJOR
+// 1): yaml mode has no revision concept (production wiring always uses DB
+// mode for the workspace CRUD endpoints that care about revisions), so
+// LoadWithRevision reports an empty revision string, and
+// UpdateIfRevisionMatches always reports matched=true (an unconditional
+// Save, matching this mode's pre-existing non-CAS Save semantics) rather
+// than erroring or synthesizing a fake revision concept.
+func TestWorkspaceStore_YAMLMode_LoadWithRevision_EmptyRevision(t *testing.T) {
+	t.Parallel()
+	store, _ := newTestStore(t)
+
+	if err := store.Save("team-a", &WorkspaceMeta{HostCommands: []string{"gh"}}); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	meta, revision, err := store.LoadWithRevision("team-a")
+	if err != nil {
+		t.Fatalf("LoadWithRevision: %v", err)
+	}
+	if !equalStringSlice(meta.HostCommands, []string{"gh"}) {
+		t.Errorf("HostCommands = %v, want [gh]", meta.HostCommands)
+	}
+	if revision != "" {
+		t.Errorf("revision = %q, want empty in yaml mode", revision)
+	}
+
+	_, matched, err := store.UpdateIfRevisionMatches("team-a", "anything", &WorkspaceMeta{HostCommands: []string{"aws"}})
+	if err != nil {
+		t.Fatalf("UpdateIfRevisionMatches: %v", err)
+	}
+	if !matched {
+		t.Error("expected matched=true in yaml mode (unconditional Save)")
+	}
+	got, err := store.Load("team-a")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !equalStringSlice(got.HostCommands, []string{"aws"}) {
+		t.Errorf("HostCommands after update = %v, want [aws]", got.HostCommands)
+	}
+}
+
+// TestWorkspaceStore_DBMode_SetRepository_SwitchesFromYAMLMode pins PR4's
+// removal of PR3's transitional yaml fallback (docs/plans/
+// workspace-db-consolidation.md Step J): once repo is wired, Load must
+// route through the DB exclusively and never fall back to reading
+// <dir>/<slug>.yaml, even for a slug that only ever existed as a yaml file
+// (the DB-mode window's degraded-fallback case PR3 introduced). PR4 gives
+// every caller a real way to introduce a DB row (POST /api/workspaces / the
+// CLI's assign auto-create) instead, so a yaml-only slug surfacing
+// os.ErrNotExist here is the intended contract, not a regression.
 func TestWorkspaceStore_DBMode_SetRepository_SwitchesFromYAMLMode(t *testing.T) {
 	t.Parallel()
 
@@ -414,14 +571,7 @@ func TestWorkspaceStore_DBMode_SetRepository_SwitchesFromYAMLMode(t *testing.T) 
 
 	// Start in yaml mode (matches NewWorkspaceStore("") in existing callers),
 	// write a workspace to the yaml dir, then switch to DB mode via
-	// SetRepository. After the switch, Save routes to the DB and Load reads
-	// from the DB first — but PR3's e2e-driven yaml fallback (see
-	// WorkspaceStore.Load's doc comment) means a yaml-only workspace that
-	// was never migrated into the DB is still visible through Load,
-	// transparently backed by <dir>/<slug>.yaml. This keeps existing
-	// "drop a yaml file, then `boid workspace assign`" flows working
-	// after cutover without introducing a POST /api/workspaces path (PR4);
-	// the fallback goes away in PR4 alongside the CLI cutover.
+	// SetRepository.
 	dir := t.TempDir()
 	store := NewWorkspaceStore(dir)
 	if err := store.Save("yaml-only", &WorkspaceMeta{HostCommands: []string{"yaml"}}); err != nil {
@@ -430,13 +580,10 @@ func TestWorkspaceStore_DBMode_SetRepository_SwitchesFromYAMLMode(t *testing.T) 
 
 	store.SetRepository(NewWorkspaceRepository(d.Conn))
 
-	// yaml-only is visible via the fallback (DB miss → yaml read).
-	yamlOnly, err := store.Load("yaml-only")
-	if err != nil {
-		t.Fatalf("Load(yaml-only) after SetRepository: %v (expected yaml fallback to succeed)", err)
-	}
-	if !equalStringSlice(yamlOnly.HostCommands, []string{"yaml"}) {
-		t.Errorf("Load(yaml-only) via fallback: HostCommands = %v, want [yaml]", yamlOnly.HostCommands)
+	// yaml-only was never migrated into the DB, and DB mode no longer falls
+	// back to the yaml file — must surface os.ErrNotExist.
+	if _, err := store.Load("yaml-only"); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("Load(yaml-only) after SetRepository: error = %v, want os.ErrNotExist (fallback removed)", err)
 	}
 
 	if err := store.Save("db-only", &WorkspaceMeta{HostCommands: []string{"db"}}); err != nil {
@@ -450,8 +597,8 @@ func TestWorkspaceStore_DBMode_SetRepository_SwitchesFromYAMLMode(t *testing.T) 
 		t.Errorf("HostCommands: got %v, want [db]", got.HostCommands)
 	}
 
-	// The yaml file must still exist on disk untouched (shadow copy, PR3
-	// does not delete it).
+	// The yaml file must still exist on disk untouched (shadow copy for
+	// rollback/export, decision 16 — PR4 does not delete it either).
 	if _, err := os.Stat(filepath.Join(dir, "yaml-only.yaml")); err != nil {
 		t.Errorf("expected yaml-only.yaml to still exist on disk: %v", err)
 	}

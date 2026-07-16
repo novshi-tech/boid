@@ -22,44 +22,59 @@ var webCmd = &cobra.Command{
 }
 
 var webPairCmd = &cobra.Command{
-	Use:   "pair",
-	Short: "Issue a pairing code for a new web device",
-	RunE:  runWebPair,
+	Use:         "pair",
+	Short:       "Issue a pairing code for a new web device",
+	Annotations: map[string]string{scopeAnnotationKey: scopeRemote},
+	RunE:        runWebPair,
 }
 
 var webDevicesCmd = &cobra.Command{
-	Use:   "devices",
-	Short: "List paired web devices",
-	RunE:  runWebDevices,
+	Use:         "devices",
+	Short:       "List paired web devices",
+	Annotations: map[string]string{scopeAnnotationKey: scopeRemote},
+	RunE:        runWebDevices,
 }
 
 var webRevokeCmd = &cobra.Command{
-	Use:   "revoke <id>",
-	Short: "Revoke a specific web device",
-	Args:  cobra.ExactArgs(1),
-	RunE:  runWebRevoke,
+	Use:         "revoke <id>",
+	Short:       "Revoke a specific web device",
+	Args:        cobra.ExactArgs(1),
+	Annotations: map[string]string{scopeAnnotationKey: scopeRemote},
+	RunE:        runWebRevoke,
 }
 
 var webRevokeAllCmd = &cobra.Command{
-	Use:   "revoke-all",
-	Short: "Revoke all web devices",
-	RunE:  runWebRevokeAll,
+	Use:         "revoke-all",
+	Short:       "Revoke all web devices",
+	Annotations: map[string]string{scopeAnnotationKey: scopeRemote},
+	RunE:        runWebRevokeAll,
 }
 
+// webSetURLCmd / webSetAddrCmd are scopeLocal (docs/plans/
+// workspace-db-consolidation.md decision 6): both edit config.yaml and
+// require a daemon restart to take effect, so even once Phase 3 lets the
+// CLI target a remote daemon, these two could never complete against one —
+// restarting a remote daemon isn't something the CLI can drive either way.
 var webSetURLCmd = &cobra.Command{
-	Use:         "set-url <URL>",
-	Short:       "Set the public URL in config.yaml",
-	Args:        cobra.ExactArgs(1),
-	Annotations: map[string]string{annotationSkipAutostart: "skip"},
-	RunE:        runWebSetURL,
+	Use:   "set-url <URL>",
+	Short: "Set the public URL in config.yaml",
+	Args:  cobra.ExactArgs(1),
+	Annotations: map[string]string{
+		annotationSkipAutostart: "skip",
+		scopeAnnotationKey:      scopeLocal,
+	},
+	RunE: runWebSetURL,
 }
 
 var webSetAddrCmd = &cobra.Command{
-	Use:         "set-addr <addr>",
-	Short:       "Set the HTTP listen address in config.yaml",
-	Args:        cobra.ExactArgs(1),
-	Annotations: map[string]string{annotationSkipAutostart: "skip"},
-	RunE:        runWebSetAddr,
+	Use:   "set-addr <addr>",
+	Short: "Set the HTTP listen address in config.yaml",
+	Args:  cobra.ExactArgs(1),
+	Annotations: map[string]string{
+		annotationSkipAutostart: "skip",
+		scopeAnnotationKey:      scopeLocal,
+	},
+	RunE: runWebSetAddr,
 }
 
 var webPairLabel string
