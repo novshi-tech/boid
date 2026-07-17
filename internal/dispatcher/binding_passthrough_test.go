@@ -94,12 +94,12 @@ func TestBindingPassthrough_HydrateToSandboxSpec(t *testing.T) {
 	if !hasBindTarget(result.Mounts, wsBind) {
 		t.Errorf("workspace binding dropped downstream: expected bind at %s, got mounts=%+v", wsBind, result.Mounts)
 	}
-	// The harness bindings must survive alongside the kit binding (added on top,
-	// not replaced). claude.Adapter.Bindings declares a ~/.claude rw bind.
-	claudeDir := filepath.Join(homeDir, ".claude")
-	if !hasBindTarget(result.Mounts, claudeDir) {
-		t.Errorf("harness binding dropped: expected claude bind at %s, got mounts=%+v", claudeDir, result.Mounts)
-	}
+	// Phase 4 PR3 (docs/plans/home-workspace-volume.md) retired
+	// claude.Adapter.Bindings (it now returns nil), so there is no longer a
+	// harness-declared ~/.claude bind to assert alongside the workspace
+	// binding here — this test's remaining job is the downstream half of the
+	// seam (workspace AdditionalBindings survive BuildSandboxSpec) pinned
+	// above.
 }
 
 func hasBindingSource(bindings []orchestrator.BindMount, src string) bool {

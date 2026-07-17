@@ -201,6 +201,36 @@ func TestBuildSandboxSpec_BoidHostIPAlwaysInjected(t *testing.T) {
 	}
 }
 
+// TestBuildSandboxSpec_WorkspaceSlugEnv pins the Phase 4 PR3 wiring (docs/plans/
+// home-workspace-volume.md): the fail-fast "CLI not found" error each
+// adapter's Run() returns (claude/codex/opencode run.go) needs to name the
+// workspace whose init.sh the user must edit, and it reads that name from
+// BOID_WORKSPACE_SLUG in RunContext.Env — which is just spec.Env, so it has
+// to be set here in BuildSandboxSpec from SandboxRuntimeInfo.WorkspaceSlug.
+func TestBuildSandboxSpec_WorkspaceSlugEnv(t *testing.T) {
+	t.Run("set when rt.WorkspaceSlug is non-empty", func(t *testing.T) {
+		spec := &orchestrator.JobSpec{}
+		rt := SandboxRuntimeInfo{WorkspaceSlug: "myws"}
+		result, err := BuildSandboxSpec(spec, rt)
+		if err != nil {
+			t.Fatalf("BuildSandboxSpec: %v", err)
+		}
+		if got := result.Env["BOID_WORKSPACE_SLUG"]; got != "myws" {
+			t.Errorf("BOID_WORKSPACE_SLUG = %q, want %q", got, "myws")
+		}
+	})
+	t.Run("absent when rt.WorkspaceSlug is empty", func(t *testing.T) {
+		spec := &orchestrator.JobSpec{}
+		result, err := BuildSandboxSpec(spec, SandboxRuntimeInfo{})
+		if err != nil {
+			t.Fatalf("BuildSandboxSpec: %v", err)
+		}
+		if _, ok := result.Env["BOID_WORKSPACE_SLUG"]; ok {
+			t.Errorf("BOID_WORKSPACE_SLUG should be absent for test wiring that never resolved a workspace, got %q", result.Env["BOID_WORKSPACE_SLUG"])
+		}
+	})
+}
+
 // behavior は canonical 名 (executor/supervisor) で BOID_INVOKED_BEHAVIOR に渡す。
 // 現在の agent runner は behavior に依らず /boid-task を起動するが、 deprecated 別名
 // (dev/plan) は canonical 化してから渡す慣習を残しているのでテストも維持する。 旧
@@ -1096,12 +1126,12 @@ func TestBuildPATH_BoidDirAddedWhenNonStandard(t *testing.T) {
 		{
 			name:       "go/bin location",
 			boidBinary: "/home/user/go/bin/boid",
-			wantPrefix: "/home/user/go/bin:",
+			wantPrefix: hostHomeDir() + "/.local/bin:/home/user/go/bin:",
 		},
 		{
 			name:       "tmp e2e location",
 			boidBinary: "/tmp/boid-e2e-test-ABCDEF/bin/boid",
-			wantPrefix: "/tmp/boid-e2e-test-ABCDEF/bin:",
+			wantPrefix: hostHomeDir() + "/.local/bin:/tmp/boid-e2e-test-ABCDEF/bin:",
 		},
 	}
 	for _, tc := range cases {
@@ -1122,10 +1152,34 @@ func TestBuildPATH_BoidDirNotDuplicatedForStandardPaths(t *testing.T) {
 		"/bin/boid",
 	} {
 		path := buildPATH(nil, nil, boidBinary)
-		want := "/usr/local/bin:/usr/bin:/bin"
+		want := hostHomeDir() + "/.local/bin:/usr/local/bin:/usr/bin:/bin"
 		if path != want {
 			t.Errorf("buildPATH(%q) = %q, want %q", boidBinary, path, want)
 		}
+	}
+}
+
+// TestBuildPATH_WorkspaceHomeLocalBinAlwaysLeads pins the Phase 4 PR3 PATH
+// change (docs/plans/home-workspace-volume.md): with adapter-declared
+// bindings retired, a harness CLI installed by the workspace's init.sh under
+// $HOME/.local/bin must resolve by name without any binding or host-command
+// wiring. It is unconditionally the first PATH entry — ahead of the boid
+// binary dir and every other source — regardless of whether bindings/
+// hostCommands/boidBinary are supplied at all.
+func TestBuildPATH_WorkspaceHomeLocalBinAlwaysLeads(t *testing.T) {
+	want := hostHomeDir() + "/.local/bin"
+
+	path := buildPATH(nil, nil, "")
+	if !strings.HasPrefix(path, want+":") {
+		t.Errorf("buildPATH(nil, nil, \"\") = %q, want prefix %q:", path, want)
+	}
+
+	hostCommands := map[string]orchestrator.CommandDef{
+		"/opt/custom/sbin/other": {Name: "other", Path: "/opt/custom/sbin/other"},
+	}
+	path = buildPATH(nil, hostCommands, "/home/user/go/bin/boid")
+	if !strings.HasPrefix(path, want+":") {
+		t.Errorf("buildPATH with hostCommands+boidBinary = %q, want prefix %q:", path, want)
 	}
 }
 
@@ -1157,20 +1211,23 @@ func TestBuildPATH_HostCommandStandardDirNotDuplicated(t *testing.T) {
 		"/bin/cat":          {Name: "cat", Path: "/bin/cat"},
 	}
 	path := buildPATH(nil, hostCommands, "/usr/local/bin/boid")
-	want := "/usr/local/bin:/usr/bin:/bin"
+	want := hostHomeDir() + "/.local/bin:/usr/local/bin:/usr/bin:/bin"
 	if path != want {
 		t.Errorf("buildPATH = %q, want %q", path, want)
 	}
 }
 
 // 同一ディレクトリに複数の host command があってもディレクトリは一度だけ追加。
+// The fake host-command dir deliberately avoids "<hostHomeDir>/.local/bin"
+// (a real value, not a literal) so this assertion stays deterministic
+// regardless of the machine running the test.
 func TestBuildPATH_HostCommandDirDeduplicated(t *testing.T) {
 	hostCommands := map[string]orchestrator.CommandDef{
-		"/home/user/.local/bin/a": {Name: "a", Path: "/home/user/.local/bin/a"},
-		"/home/user/.local/bin/b": {Name: "b", Path: "/home/user/.local/bin/b"},
+		"/srv/hostcmd/bin/a": {Name: "a", Path: "/srv/hostcmd/bin/a"},
+		"/srv/hostcmd/bin/b": {Name: "b", Path: "/srv/hostcmd/bin/b"},
 	}
 	path := buildPATH(nil, hostCommands, "/usr/local/bin/boid")
-	want := "/home/user/.local/bin:/usr/local/bin:/usr/bin:/bin"
+	want := hostHomeDir() + "/.local/bin:/srv/hostcmd/bin:/usr/local/bin:/usr/bin:/bin"
 	if path != want {
 		t.Errorf("buildPATH = %q, want %q", path, want)
 	}
@@ -2129,6 +2186,13 @@ func TestBuildSandboxSpec_ProfileDefault_ZeroValue(t *testing.T) {
 // For ProfileInit jobs the additional bindings carry the writable / extra-ro
 // paths that the init skill *must* see, so they need to be appended alongside
 // the harness bindings rather than replaced by them.
+//
+// Phase 4 PR3 (docs/plans/home-workspace-volume.md) retired claude.Adapter's
+// own bindings (it now returns nil), so this test no longer has a harness
+// binding to assert alongside AdditionalBindings — it only pins that
+// AdditionalBindings themselves still land regardless of HarnessType being
+// set to a known adapter (the original PR #594-era regression this test
+// guards).
 func TestBuildSandboxSpec_ProfileInit_HarnessKeepsAdditionalBindings(t *testing.T) {
 	homeDir := hostHomeDir()
 	if homeDir == "" {
@@ -2158,21 +2222,6 @@ func TestBuildSandboxSpec_ProfileInit_HarnessKeepsAdditionalBindings(t *testing.
 	if !foundKitsRW {
 		t.Errorf("ProfileInit + harness=claude must keep AdditionalBindings: expected rw bind at %s, got mounts=%+v", kitsDir, result.Mounts)
 	}
-	// Sanity: harness bindings must still be present too (we add on top, not
-	// replace). Look for the ~/.claude rw bind that claude.Adapter.Bindings
-	// declares — its Target is empty so additionalBindingMounts() falls back
-	// to Source.
-	claudeDir := homeDir + "/.claude"
-	foundClaude := false
-	for _, m := range result.Mounts {
-		if m.Target == claudeDir && m.Type == sandbox.MountBind {
-			foundClaude = true
-			break
-		}
-	}
-	if !foundClaude {
-		t.Errorf("ProfileInit + harness=claude must also keep claude adapter bindings: expected bind at %s, got mounts=%+v", claudeDir, result.Mounts)
-	}
 }
 
 // TestBuildSandboxSpec_ProfileDefault_HarnessKeepsAdditionalBindings ensures
@@ -2185,6 +2234,12 @@ func TestBuildSandboxSpec_ProfileInit_HarnessKeepsAdditionalBindings(t *testing.
 // boid-kits and supplied agent CLI plumbing — that assumption no longer
 // holds, so they must apply on top of harness bindings rather than be
 // replaced by them.
+//
+// Phase 4 PR3 (docs/plans/home-workspace-volume.md) retired claude.Adapter's
+// own bindings (it now returns nil), so this test no longer has a harness
+// binding to assert alongside AdditionalBindings — see
+// TestBuildSandboxSpec_ProfileInit_HarnessKeepsAdditionalBindings's doc
+// comment for the same note.
 func TestBuildSandboxSpec_ProfileDefault_HarnessKeepsAdditionalBindings(t *testing.T) {
 	homeDir := hostHomeDir()
 	if homeDir == "" {
@@ -2212,20 +2267,6 @@ func TestBuildSandboxSpec_ProfileDefault_HarnessKeepsAdditionalBindings(t *testi
 	}
 	if !foundKit {
 		t.Errorf("ProfileDefault + harness=claude must keep workspace kit AdditionalBindings: expected rw bind at %s, got mounts=%+v", kitBind, result.Mounts)
-	}
-	// Sanity: harness bindings must still be present — we add on top, not
-	// replace. Look for the ~/.claude rw bind that claude.Adapter.Bindings
-	// declares.
-	claudeDir := homeDir + "/.claude"
-	foundClaude := false
-	for _, m := range result.Mounts {
-		if m.Target == claudeDir && m.Type == sandbox.MountBind {
-			foundClaude = true
-			break
-		}
-	}
-	if !foundClaude {
-		t.Errorf("ProfileDefault + harness=claude must also keep claude adapter bindings: expected bind at %s, got mounts=%+v", claudeDir, result.Mounts)
 	}
 }
 

@@ -200,19 +200,16 @@ type HarnessAdapter interface {
 	// dispatcher fills it from os/user so the call is pure (testable without
 	// touching the environment).
 	//
-	// Returned BindMounts should typically set Optional=true so a missing
-	// source dir is silently skipped (the dispatcher converts Optional →
-	// shell-level if-guard). The recipe an adapter normally follows:
-	//
-	//  1. its private state dir (e.g. ~/.claude) — Mode "rw", Optional
-	//  2. the resolved CLI binary's parent dir found via exec.LookPath +
-	//     filepath.EvalSymlinks — Mode "" (ro), Optional
-	//  3. any runtime shim tree the CLI needs at exec time (e.g. ~/.volta for
-	//     volta-shimmed installs) — Mode "" (ro), Optional
-	//
-	// Adapters return nil when they have nothing to declare. claude.Adapter
-	// ships a non-trivial set (Phase 3-e absorbed it from the retired
-	// boid-kits claude-code kit); other adapters typically return nil for
-	// now.
+	// Phase 4 PR3 (docs/plans/home-workspace-volume.md) retired every
+	// non-trivial implementation of this method (claude / codex / opencode
+	// all return nil now): CLI state dirs, resolved-binary PATH entries, and
+	// embedded-skill binds are superseded by the workspace HOME volume —
+	// Runner.Dispatch bind-mounts a persistent per-workspace home directory
+	// at the sandbox's $HOME (internal/dispatcher/workspace_home.go) and
+	// copy-syncs embedded skills into it (skills.DeployAll), so that state
+	// simply already exists at the right paths without any adapter-declared
+	// bind. The method is kept on the interface for a future
+	// $HOME-independent bind a harness might need; returning nil (or an
+	// empty slice) is the expected steady state.
 	Bindings(homeDir string) []BindMount
 }
