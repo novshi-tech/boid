@@ -959,6 +959,41 @@ func mountRoutes(srv *Server, runtime *appRuntime) error {
 	r.Mount("/api/jobs", jobHandler.Routes())
 	mountJobRuntimeRoutes(r, runtime)
 
+	// WebSocket attach (docs/plans/cli-remote-connection.md Phase 3 PR3:
+	// "WebSocket attach 一本化"). Deliberately mounted at the top level of
+	// r — NOT inside the cookie-only WebAuthMiddleware Group below (unlike
+	// its pre-PR3 position) — for the same reason the Bearer device-auth
+	// routes above are: over TCP this path must be gated solely by the
+	// (Bearer-aware) TCPAPIAuthMiddleware wrapping the whole router
+	// (auth.NewTCPAPIAuthMiddleware, applied to srv.tcpHandler at the
+	// bottom of this function), not by the Group's cookie-only check. This
+	// is also what makes the CLI's new WS-based AttachJob work at all over
+	// the UNIX socket: the bare router (no auth middleware whatsoever, see
+	// the "UNIX socket は trusted transport" comment below) is what the CLI
+	// dials, so a route left inside the Group would 302-redirect-to-/login
+	// a bare `net.Dial("unix", ...)` WS handshake that carries no cookie.
+	//
+	// The WSAttachHandler.Bearer field (Phase 3 PR0) only ever provided the
+	// primitive; wiring the route to actually be Bearer-reachable over TCP
+	// was explicitly left to this PR — see WSAttachHandler's own doc
+	// comment, which predates this move.
+	//
+	// Cookie-based Web UI attach keeps working unchanged: WSAttachHandler.
+	// authenticateDevice falls back to auth.DeviceIDFromContext when no
+	// Authorization header is present, and TCPAPIAuthMiddleware still runs
+	// the cookie check (via SessionSigner) for any TCP request without a
+	// Bearer header, populating that same context key before the request
+	// reaches this handler. /api/tasks/{id}/events (SSE) stays inside the
+	// Group below unchanged — cookie-only is fine there, nothing needs it
+	// reachable from a bare UNIX-socket CLI client the way attach does.
+	r.Get("/api/jobs/{id}/attach/ws", (&api.WSAttachHandler{
+		Subscriber: runtime.runner,
+		Writer:     runtime.runner,
+		PublicURL:  gcCfg.Web.PublicURL,
+		Registry:   runtime.connRegistry,
+		Bearer:     auth.NewBearerVerifier(runtime.authStore),
+	}).ServeHTTP)
+
 	staticFS, err := fs.Sub(web.StaticFS, "static")
 	if err != nil {
 		return fmt.Errorf("sub static fs: %w", err)
@@ -1039,19 +1074,6 @@ func mountRoutes(srv *Server, runtime *appRuntime) error {
 			AttachmentsRoot:   dataHomeFor(srv.cfg),
 		}
 		r.Get("/api/tasks/{id}/events", webHandler.TaskEvents)
-		r.Get("/api/jobs/{id}/attach/ws", (&api.WSAttachHandler{
-			Subscriber: runtime.runner,
-			Writer:     runtime.runner,
-			PublicURL:  gcCfg.Web.PublicURL,
-			Registry:   runtime.connRegistry,
-			// Bearer support here is the server-side primitive only (Phase 3
-			// PR0); this route stays mounted inside the cookie-only Group
-			// above, so a Bearer-only caller with no session cookie still
-			// can't reach it over TCP end-to-end yet. Wiring that up is PR3's
-			// job (docs/plans/cli-remote-connection.md PR3: "Bearer 認証を WS
-			// handshake で通す", listed there rather than here).
-			Bearer: auth.NewBearerVerifier(runtime.authStore),
-		}).ServeHTTP)
 		r.Mount("/", webHandler.Routes())
 	})
 

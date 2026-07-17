@@ -1,9 +1,9 @@
 package client
 
 import (
-	"bufio"
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -17,6 +17,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/coder/websocket"
 	"github.com/novshi-tech/boid/internal/api"
 	"github.com/novshi-tech/boid/internal/orchestrator"
 )
@@ -28,10 +29,14 @@ import (
 type Client struct {
 	// socketPath is set only for a unix-scheme client (NewUnixClient / a
 	// "unix://" NewClient url) and is empty for an https-scheme client.
-	// AttachJob's raw-hijack transport (see its own doc comment — this
-	// mechanism is unix-only until Phase 3 PR3 unifies attach onto
-	// WebSocket) uses it directly instead of going through httpClient, and
-	// IsUnix reports whether it is set.
+	// Three callers actually inspect this: IsUnix() (the base
+	// discriminator — every branch that switches on transport goes
+	// through it), SocketPath() (root.PersistentPreRunE passes it to
+	// client.EnsureRunningAt so autostart probes the same socket the CLI
+	// is about to talk to), and ProbeAlive() (which uses it to skip the
+	// TCP-dial branch on unix clients). AttachJob no longer touches it —
+	// Phase 3 PR3's WebSocket unification routes attach through
+	// httpClient's DialContext just like every other request.
 	socketPath string
 	// baseURL is the origin every Do*/GetRaw*/PostRaw/PutRaw* request is
 	// built against: the fixed "http://boid" placeholder for a unix client
@@ -404,61 +409,89 @@ func (c *Client) ListJobs(filter api.JobListFilter) ([]api.JobWithContext, error
 	return jobs, nil
 }
 
+// wsAttachClientMsg / wsAttachServerMsg mirror the wire format
+// internal/api/ws_attach.go's wsClientMsg/wsServerMsg define (docs/plans/
+// cli-remote-connection.md Phase 3 PR3: "フレーム構成 (既存 ws_attach.go の
+// 仕様に準拠)"). Kept as an independent copy rather than an import — those
+// server-side types are unexported, and internal/client's own architecture
+// rule (TestClientDoesNotDependOnBehavior in architecture_test.go) treats
+// the JSON wire contract, not internal/api's Go types, as the sharing
+// boundary with the server. Keep both structs' field sets in sync by hand
+// if ws_attach.go's frame shape ever changes.
+//
+// input_close has no counterpart in wsServerMsg — it is a client→server-only
+// frame type (see attachSendInputClose) that ws_attach.go's read loop
+// switches on alongside "input"/"resize".
+type wsAttachClientMsg struct {
+	Type string `json:"type"`
+	Data string `json:"data,omitempty"` // base64-encoded, "input" only
+	Cols int    `json:"cols,omitempty"`
+	Rows int    `json:"rows,omitempty"`
+}
+
+type wsAttachServerMsg struct {
+	Type    string `json:"type"`
+	Data    string `json:"data,omitempty"`
+	Code    int    `json:"code,omitempty"`
+	Message string `json:"message,omitempty"`
+}
+
+// AttachJob opens a live interactive attach to jobID over WebSocket
+// (docs/plans/cli-remote-connection.md Phase 3 PR3: "WebSocket attach
+// 一本化") and blocks until the job's process exits (the server sends an
+// "exit" frame, or the socket closes normally) or the caller detaches
+// (stdin.Read returning ErrAttachDetached — see cmd/attach.go's
+// detachReader). Works identically for a unix-scheme Client (the WS
+// handshake dials over the same UNIX socket via c.httpClient's
+// DialContext) and an https-scheme one (the handshake request carries the
+// same Authorization: Bearer header every other request on c.httpClient
+// does, via bearerTransport) — reusing c.httpClient rather than building a
+// separate one is what gives WS attach Bearer auth for free, and is the
+// point of "一本化": one transport, one auth path, for both local and
+// remote profiles alike.
+//
+// This replaces the old raw net.Dial("unix", ...) + hand-written
+// `Upgrade: boid-attach` implementation, which only ever worked for a unix
+// socket Client — an https-scheme Client had no socketPath to dial at all,
+// so remote attach previously just returned a "not yet supported" error —
+// and duplicated a second attach transport alongside the Web UI's existing
+// WebSocket one for no reason beyond history (decision 5, docs/plans/
+// cli-remote-connection.md: two attach transports serving the same purpose
+// is a maintenance burden the plan explicitly rejects).
+//
+// stdin may be nil (no input forwarding) — used by
+// TestServerJobRuntimeAttachAndResize (internal/server/server_phase3_test.go),
+// which only cares about output replay.
 func (c *Client) AttachJob(jobID string, stdin io.Reader, stdout io.Writer) error {
 	if stdout == nil {
 		stdout = io.Discard
 	}
 
-	// The raw-hijack transport below only exists for a unix socket (it
-	// net.Dial("unix", ...)s a second connection and writes a raw HTTP
-	// Upgrade request by hand). An https-scheme Client has no socketPath at
-	// all — attaching over a remote profile needs the WebSocket-based
-	// attach Phase 3 PR3 is scoped to add (docs/plans/
-	// cli-remote-connection.md "WebSocket attach 一本化"), not this
-	// mechanism. Fail with a clear message instead of net.Dial("unix", "")'s
-	// confusing "no such file or directory".
-	if !c.IsUnix() {
-		return fmt.Errorf("attach is not yet supported over a remote (https) profile; this lands in a future PR (docs/plans/cli-remote-connection.md PR3)")
-	}
-
-	conn, err := net.Dial("unix", c.socketPath)
+	ctx := context.Background()
+	conn, resp, err := websocket.Dial(ctx, c.baseURL+"/api/jobs/"+jobID+"/attach/ws", &websocket.DialOptions{
+		HTTPClient: c.httpClient,
+		// Origin deliberately mirrors c.baseURL itself rather than one of
+		// the server's allowedOrigins() patterns (localhost/127.0.0.1/
+		// [::1]/public_url — those exist for a *browser*'s cross-origin WS
+		// connect; see ws_attach.go's allowedOrigins doc comment). A direct
+		// Go http.Client dial's Origin and Host are the same origin by
+		// construction, and websocket.Accept's authenticateOrigin already
+		// short-circuits to "allowed" whenever Origin's host equals the
+		// request Host — true here unconditionally — before it ever
+		// consults the pattern list. Sending it at all (rather than
+		// omitting the header entirely, which authenticateOrigin also
+		// allows) is just explicit-over-implicit: it documents at the wire
+		// level which origin this connection claims to be from.
+		HTTPHeader: http.Header{"Origin": []string{c.baseURL}},
+	})
 	if err != nil {
-		return fmt.Errorf("dial attach socket: %w", err)
+		return fmt.Errorf("dial attach websocket: %w", attachDialError(resp, err))
 	}
-	defer conn.Close()
-
-	req, err := http.NewRequest("POST", "http://boid/api/jobs/"+jobID+"/attach", nil)
-	if err != nil {
-		return fmt.Errorf("create attach request: %w", err)
-	}
-	req.Header.Set("Connection", "Upgrade")
-	req.Header.Set("Upgrade", "boid-attach")
-
-	if err := req.Write(conn); err != nil {
-		return fmt.Errorf("write attach request: %w", err)
-	}
-
-	reader := bufio.NewReader(conn)
-	resp, err := http.ReadResponse(reader, req)
-	if err != nil {
-		return fmt.Errorf("read attach response: %w", err)
-	}
-
-	if resp.StatusCode != http.StatusSwitchingProtocols {
-		defer resp.Body.Close()
-		var errResp map[string]string
-		if decodeErr := json.NewDecoder(resp.Body).Decode(&errResp); decodeErr == nil {
-			if msg, ok := errResp["error"]; ok {
-				return fmt.Errorf("%s", msg)
-			}
-		}
-		return fmt.Errorf("attach failed: HTTP %d", resp.StatusCode)
-	}
+	defer conn.CloseNow()
 
 	outputErrCh := make(chan error, 1)
 	go func() {
-		_, err := io.Copy(stdout, reader)
-		outputErrCh <- normalizeAttachIOError(err)
+		outputErrCh <- attachReadOutput(ctx, conn, stdout)
 	}()
 
 	if stdin == nil {
@@ -467,30 +500,180 @@ func (c *Client) AttachJob(jobID string, stdin io.Reader, stdout io.Writer) erro
 
 	inputErrCh := make(chan error, 1)
 	go func() {
-		_, err := io.Copy(conn, stdin)
-		if err == nil {
-			inputErrCh <- io.EOF
-			return
-		}
-		inputErrCh <- err
+		inputErrCh <- attachSendInput(ctx, conn, stdin)
 	}()
 
 	for {
 		select {
 		case err := <-outputErrCh:
-			return normalizeAttachIOError(err)
+			return err
 		case err := <-inputErrCh:
 			switch {
 			case errors.Is(err, ErrAttachDetached):
+				// Mirrors the pre-PR3 behavior: a detach abandons the whole
+				// connection immediately rather than politely signaling
+				// end-of-input — the user asked to leave, not to let the
+				// remote command finish reading from a pipe that isn't
+				// closing. CloseNow (not Close) is what makes it immediate:
+				// Close would block up to websocket.Conn's 5-second close
+				// handshake, which the old raw-hijack transport never did.
+				_ = conn.CloseNow()
 				return nil
 			case err == nil || errors.Is(err, io.EOF):
-				_ = closeConnWrite(conn)
+				// stdin closed cleanly (not a detach) — tell the server so
+				// a non-interactive StdinForward job sees a real EOF (see
+				// dispatcher.LocalRuntime.CloseInputRuntime's doc comment),
+				// mirroring the old raw-transport's closeConnWrite
+				// half-close. Then keep waiting on output/exit; never
+				// select on inputErrCh again (a nil channel blocks forever
+				// in select, which is exactly "don't send more input").
+				_ = attachSendInputClose(ctx, conn)
 				inputErrCh = nil
 			default:
-				return normalizeAttachIOError(err)
+				// Any other input-side failure is USUALLY a symptom of the
+				// server having closed the connection because the job's
+				// process exited (`yes | boid exec -- head -n1`: head
+				// exits, server sends exit and closes, our next stdin write
+				// races into a net.ErrClosed / websocket.CloseError from
+				// the just-closed conn). Wait for the output side to speak
+				// before deciding — an "exit" frame that arrived
+				// microseconds earlier is the real story, and returning
+				// the input-side write error would misreport a clean
+				// process exit as an attach failure. If the output side
+				// itself fails or is silent, its error (or nil for a
+				// clean close, which normalizeAttachWSError handles) is
+				// what we want to surface.
+				return <-outputErrCh
 			}
 		}
 	}
+}
+
+// attachDialError extracts a server-provided error message from a failed
+// WS handshake response, mirroring the old raw-Upgrade AttachJob's
+// {"error": "..."} decoding (WSAttachHandler.ServeHTTP's 401 response, and
+// any other pre-upgrade failure, writes that same JSON shape). Falls back
+// to err unchanged when there is no response body or it isn't the expected
+// shape — websocket.Dial's own error already describes the underlying
+// failure either way.
+func attachDialError(resp *http.Response, err error) error {
+	if resp == nil || resp.Body == nil {
+		return err
+	}
+	defer resp.Body.Close()
+	var errResp map[string]string
+	if decodeErr := json.NewDecoder(resp.Body).Decode(&errResp); decodeErr == nil {
+		if msg, ok := errResp["error"]; ok {
+			return errors.New(msg)
+		}
+	}
+	return err
+}
+
+// attachReadOutput reads server frames from conn until an "exit" frame, an
+// "error" frame, or the connection closes, decoding each "output" frame's
+// base64 payload straight to stdout. A clean WS close (StatusNormalClosure
+// / StatusGoingAway — every send-loop exit path in ws_attach.go's
+// ServeHTTP closes with one of these two codes) is treated the same as an
+// explicit "exit" frame: nil, not an error.
+func attachReadOutput(ctx context.Context, conn *websocket.Conn, stdout io.Writer) error {
+	for {
+		_, raw, err := conn.Read(ctx)
+		if err != nil {
+			return normalizeAttachWSError(err)
+		}
+		var msg wsAttachServerMsg
+		if err := json.Unmarshal(raw, &msg); err != nil {
+			continue // tolerate a malformed frame rather than aborting the attach
+		}
+		switch msg.Type {
+		case "output":
+			data, err := base64.StdEncoding.DecodeString(msg.Data)
+			if err != nil || len(data) == 0 {
+				continue
+			}
+			if _, err := stdout.Write(data); err != nil {
+				return err
+			}
+		case "exit":
+			// The exit frame's Code field is a spec-reserved slot
+			// (docs/plans/cli-remote-connection.md "フレーム構成":
+			// `exit: {code}`). Today the server always sends 0 there —
+			// exit codes are actually surfaced via a separate REST call
+			// (cmd/exec.go's fetchExecExitCode), NOT through this frame,
+			// so AttachJob has no need to return one. Wiring an actual
+			// exit code through this path (server-side capture + a
+			// method-signature bump on Client.AttachJob) is tracked as
+			// an unresolved point in the plan doc; deliberately not
+			// silently returning msg.Code today would mislead callers
+			// into using a value that is always 0.
+			return nil
+		case "error":
+			return errors.New(msg.Message)
+		}
+	}
+}
+
+// attachSendInput reads stdin and forwards each chunk as a base64-encoded
+// "input" frame, until stdin.Read returns a non-nil error — io.EOF on a
+// clean close, ErrAttachDetached on Ctrl-] (cmd/attach.go's detachReader),
+// or a genuine read error. All three are returned as-is for AttachJob's
+// select loop to interpret; this function itself never inspects err beyond
+// "is it nil".
+func attachSendInput(ctx context.Context, conn *websocket.Conn, stdin io.Reader) error {
+	buf := make([]byte, 4096)
+	for {
+		n, readErr := stdin.Read(buf)
+		if n > 0 {
+			msg := wsAttachClientMsg{Type: "input", Data: base64.StdEncoding.EncodeToString(buf[:n])}
+			b, marshalErr := json.Marshal(msg)
+			if marshalErr != nil {
+				return marshalErr
+			}
+			if writeErr := conn.Write(ctx, websocket.MessageText, b); writeErr != nil {
+				return writeErr
+			}
+		}
+		if readErr != nil {
+			return readErr
+		}
+	}
+}
+
+// attachSendInputClose sends the "input_close" frame (see
+// dispatcher.RuntimeInputWriter.CloseInput's doc comment for the server
+// side) telling the server this attach will send no further input.
+// Best-effort: called after stdin already hit EOF, with the output side of
+// the same connection still in use — a write failure here just means the
+// connection is already on its way down, which the caller (AttachJob)
+// observes directly via the output side instead.
+func attachSendInputClose(ctx context.Context, conn *websocket.Conn) error {
+	b, err := json.Marshal(wsAttachClientMsg{Type: "input_close"})
+	if err != nil {
+		return err
+	}
+	return conn.Write(ctx, websocket.MessageText, b)
+}
+
+// normalizeAttachWSError collapses every "the attach is over, and that's
+// fine" signal — a clean WS close, a context cancellation, or the
+// lower-level net.ErrClosed/io.EOF a Read can still surface depending on
+// exactly where the connection was torn down — into nil, mirroring the old
+// raw-transport normalizeAttachIOError's contract. Any other error
+// (protocol violation, network failure mid-stream, ...) passes through
+// unchanged.
+func normalizeAttachWSError(err error) error {
+	if err == nil {
+		return nil
+	}
+	switch websocket.CloseStatus(err) {
+	case websocket.StatusNormalClosure, websocket.StatusGoingAway:
+		return nil
+	}
+	if errors.Is(err, io.EOF) || errors.Is(err, net.ErrClosed) || errors.Is(err, context.Canceled) {
+		return nil
+	}
+	return err
 }
 
 // TaskListFilter holds filters for listing tasks.
@@ -724,21 +907,4 @@ func (c *Client) ResizeJob(jobID string, rows, cols int) error {
 		"rows": rows,
 		"cols": cols,
 	}, nil)
-}
-
-func normalizeAttachIOError(err error) error {
-	if err == nil || errors.Is(err, io.EOF) || errors.Is(err, net.ErrClosed) {
-		return nil
-	}
-	return err
-}
-
-func closeConnWrite(conn net.Conn) error {
-	type closeWriter interface {
-		CloseWrite() error
-	}
-	if cw, ok := conn.(closeWriter); ok {
-		return cw.CloseWrite()
-	}
-	return conn.Close()
 }

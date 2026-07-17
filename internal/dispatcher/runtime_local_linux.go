@@ -429,8 +429,25 @@ func (r *LocalRuntime) Signal(_ context.Context, runtimeID string, sig syscall.S
 	return nil
 }
 
-// WriteInputRuntime writes data to the PTY master of the given runtime.
-// Returns nil if the session is not running or has already exited.
+// WriteInputRuntime writes data to the given runtime's input: the PTY
+// master for an interactive session, or the StdinForward pipe for a
+// non-interactive one (session.writeStdin dispatches on s.interactive —
+// see its own doc comment). Returns nil if the session is not running or
+// has already exited.
+//
+// This used to call session.writeMaster directly, which silently discarded
+// every byte for a non-interactive session (writeMaster's own `if
+// !s.interactive { return nil }` guard) — harmless for hook jobs, which
+// never forward real input over this path, but a real bug for `boid exec`'s
+// non-interactive StdinForward sessions once Phase 3 PR3 (docs/plans/
+// cli-remote-connection.md「WebSocket attach 一本化」) made WriteInputRuntime
+// (via Runner.WriteInput, called from api.WSAttachHandler's "input" frame
+// handling) the ONLY input path CLI attach uses — the old raw-hijack
+// transport's dedicated Attach(ctx, RuntimeAttachRequest{Input: ...})
+// goroutine (which did call writeStdin, see TestLocalRuntimeStdinForward_
+// DeliversPipedInput) no longer has any caller after that PR removed the
+// hijack HTTP handler. See TestLocalRuntimeWriteInputRuntime_
+// NonInteractiveStdinForward for the regression this fixes.
 func (r *LocalRuntime) WriteInputRuntime(runtimeID string, data []byte) error {
 	session, err := r.session(runtimeID)
 	if err != nil {
@@ -442,9 +459,31 @@ func (r *LocalRuntime) WriteInputRuntime(runtimeID string, data []byte) error {
 	if !running {
 		return nil
 	}
-	if err := session.writeMaster(data); err != nil && !errors.Is(err, os.ErrClosed) {
+	if err := session.writeStdin(data); err != nil && !errors.Is(err, os.ErrClosed) {
 		return err
 	}
+	return nil
+}
+
+// CloseInputRuntime propagates end-of-input to the given runtime's child
+// process: a no-op for an interactive (PTY) session or a non-interactive
+// session started without RuntimeStartSpec.StdinForward (session.closeStdin
+// itself no-ops when stdinWriter is nil — see its doc comment), otherwise
+// it closes the StdinForward pipe's write end so a pipe-oriented command
+// (`cat`, `wc`, ...) sees a real EOF and can exit. This is
+// WriteInputRuntime's counterpart for the "the client's own stdin ended"
+// signal: over the old raw-hijack attach transport this was implicit
+// (Attach's input-forwarding goroutine called closeStdin in a defer once
+// its Input reader hit EOF); the WS transport (Phase 3 PR3) has no such
+// implicit signal — a WS connection has no half-close — so
+// api.WSAttachHandler's "input_close" frame type calls this explicitly via
+// Runner.CloseInput instead.
+func (r *LocalRuntime) CloseInputRuntime(runtimeID string) error {
+	session, err := r.session(runtimeID)
+	if err != nil {
+		return nil
+	}
+	session.closeStdin()
 	return nil
 }
 
