@@ -236,7 +236,7 @@ func BuildSandboxSpec(spec *orchestrator.JobSpec, rt SandboxRuntimeInfo) (sandbo
 	// adapter (claude/codex/opencode) its Bindings() take the place of the
 	// kit-declared additional_bindings — that's the kit-free dispatch path
 	// the Phase 3-c plan calls for. For unknown harnesses we fall back to
-	// kit-declared bindings + KitRoots below.
+	// kit-declared bindings below.
 	var harnessBindings []orchestrator.BindMount
 	if a := registry.For(sandbox.HarnessType(spec.HarnessType)); a != nil {
 		harnessBindings = adapterBindingsToOrchestrator(a.Bindings(homeDir))
@@ -342,11 +342,11 @@ func BuildSandboxSpec(spec *orchestrator.JobSpec, rt SandboxRuntimeInfo) (sandbo
 	// worktree/project mount layout above is completely unaffected.
 	mounts = append(mounts, cloneMounts(spec, rt)...)
 
-	// Additional bindings and kit roots:
+	// Additional bindings:
 	//   * The harness adapter (claude / codex / opencode) declares the
 	//     agent-CLI bindings it needs (~/.claude, ~/.local/bin, ...). Those
 	//     go in directly.
-	//   * On top, workspace kit-declared additional_bindings carry
+	//   * On top, project.yaml-declared additional_bindings carry
 	//     environment-specific tooling paths (~/.volta, ~/.nuget, /opt/google/
 	//     chrome, /usr/lib/dotnet, ...). The original Phase 3-c "kit-free
 	//     dispatch path" used to drop these on the assumption that kits only
@@ -354,19 +354,8 @@ func BuildSandboxSpec(spec *orchestrator.JobSpec, rt SandboxRuntimeInfo) (sandbo
 	//     2026-06-26 workspace+kit reorg made kits a per-user place to declare
 	//     host-side tool bindings, so they must apply on top of harness
 	//     bindings rather than be replaced by them.
-	//   * KitRoots is the legacy "expose the whole kit directory tree" case
-	//     used by shell-adapter jobs that have not migrated to adapter-driven
-	//     Bindings yet; preserve it whenever set so those jobs keep working.
 	mounts = append(mounts, additionalBindingMounts(harnessBindings)...)
 	mounts = append(mounts, additionalBindingMounts(expandedBindings)...)
-	for _, kitRoot := range spec.Visibility.KitRoots {
-		mounts = append(mounts, sandbox.Mount{
-			Source:   kitRoot,
-			Target:   kitRoot,
-			Type:     sandbox.MountBind,
-			ReadOnly: true,
-		})
-	}
 
 	// Per-task attachments dir — clipboard-pasted screenshots / text uploaded
 	// from the Web UI land in `<AttachmentsRoot>/tasks/<task_id>/attachments/`
@@ -1337,7 +1326,6 @@ type environmentFilesystem struct {
 	Writable           bool                      `yaml:"writable"`
 	Worktree           bool                      `yaml:"worktree"`
 	AdditionalBindings []environmentBindingEntry `yaml:"additional_bindings,omitempty"`
-	KitRoots           []string                  `yaml:"kit_roots,omitempty"`
 	// CloneDir is the sandbox-internal absolute path this job's own project
 	// actually cloned into (e.g. "/workspace/bm-next"), set only under
 	// clone-mode dispatch (workspace 親化リファクタリング, nose 2026-07-13
@@ -1435,7 +1423,6 @@ func buildEnvironmentYAML(in EnvironmentInput) string {
 			// Permanently false — see doc.Worktree above.
 			Worktree:           false,
 			AdditionalBindings: convertBindings(in.Visibility.AdditionalBindings),
-			KitRoots:           append([]string(nil), in.Visibility.KitRoots...),
 			CloneDir:           in.CloneDir,
 		},
 		HostCommands: convertHostCommands(in.HostCommands),

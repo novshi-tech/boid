@@ -392,16 +392,13 @@ type TaskBehavior struct {
 	DefaultInstruction *Instruction `yaml:"default_instruction,omitempty" json:"default_instruction,omitempty"`
 
 	// Hooks is parsed from project.yaml task_behaviors.<name>.hooks at load
-	// time. Env, HostCommands, AdditionalBindings, and KitRoots are
-	// runtime-overlay fields populated by ReadProjectMetaWithKits after merging
-	// kit data and project-level overlays. These are not serialized to YAML.
+	// time. Env, HostCommands, and AdditionalBindings are runtime-overlay
+	// fields populated by ReadProjectMetaWithKits after merging kit data and
+	// project-level overlays. These are not serialized to YAML.
 	Hooks              []Hook            `yaml:"hooks,omitempty" json:"-"`
 	Env                map[string]string `yaml:"-" json:"-"`
 	HostCommands       HostCommands      `yaml:"-" json:"-"`
 	AdditionalBindings []BindMount       `yaml:"-" json:"-"`
-	// KitRoots holds the deduplicated list of kit root directories to bind-mount
-	// in the sandbox at their original host paths. Populated by MergeKitMetaIntoBehavior.
-	KitRoots []string `yaml:"-" json:"-"`
 }
 
 // BehaviorSpec is an inline behavior specification that can be used instead of

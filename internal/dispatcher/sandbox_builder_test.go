@@ -266,96 +266,6 @@ func TestBuildSandboxSpec_InvokedBehaviorIsCanonical(t *testing.T) {
 	}
 }
 
-// KitRoots in Visibility are bound at their original host paths inside the sandbox.
-func TestBuildSandboxSpec_KitRootsAreBound(t *testing.T) {
-	const kitRoot = "/home/user/.local/share/boid/kits/git-auto-merge"
-	spec := &orchestrator.JobSpec{
-		Visibility: orchestrator.Visibility{
-			KitRoots: []string{kitRoot},
-		},
-	}
-	result, err := BuildSandboxSpec(spec, SandboxRuntimeInfo{})
-	if err != nil {
-		t.Fatalf("BuildSandboxSpec: %v", err)
-	}
-
-	var found *sandbox.Mount
-	for i := range result.Mounts {
-		if result.Mounts[i].Target == kitRoot {
-			found = &result.Mounts[i]
-			break
-		}
-	}
-	if found == nil {
-		t.Fatalf("kit root mount not found: target=%q not in mounts", kitRoot)
-	}
-	if found.Source != kitRoot {
-		t.Errorf("mount Source = %q, want %q", found.Source, kitRoot)
-	}
-	if !found.ReadOnly {
-		t.Error("kit root mount must be ReadOnly")
-	}
-	if found.Type != sandbox.MountBind {
-		t.Errorf("mount Type = %v, want MountBind", found.Type)
-	}
-}
-
-// Regression: shell adapter (Bindings()=nil なのに HarnessType="shell" は
-// 非空) でも KitRoots + AdditionalBindings が legacy 経路で mount される。
-// 真因は sandbox_builder.go の分岐が `spec.HarnessType != ""` 単独だった
-// こと ── shell adapter は HarnessType non-empty かつ Bindings=nil なので
-// kit binding が「adapter 側で nil 上書き」 されて消え、 hook script が
-// sandbox 内で見えなくなって exit 143 で死亡していた (PR #594 builtin-
-// task-create 退行)。 修正後は `len(harnessBindings) > 0` を条件に切替。
-func TestBuildSandboxSpec_ShellHarnessKeepsKitRoots(t *testing.T) {
-	const kitRoot = "/home/user/.local/share/boid/kits/builtin-task-create"
-	spec := &orchestrator.JobSpec{
-		HarnessType: "shell",
-		Visibility: orchestrator.Visibility{
-			KitRoots: []string{kitRoot},
-		},
-	}
-	result, err := BuildSandboxSpec(spec, SandboxRuntimeInfo{})
-	if err != nil {
-		t.Fatalf("BuildSandboxSpec: %v", err)
-	}
-
-	var found *sandbox.Mount
-	for i := range result.Mounts {
-		if result.Mounts[i].Target == kitRoot {
-			found = &result.Mounts[i]
-			break
-		}
-	}
-	if found == nil {
-		t.Fatalf("shell harness must still mount KitRoots: target=%q not in mounts", kitRoot)
-	}
-	if found.Source != kitRoot {
-		t.Errorf("mount Source = %q, want %q", found.Source, kitRoot)
-	}
-}
-
-// Kit root parent directory must NOT appear as a mount target (security boundary).
-func TestBuildSandboxSpec_KitRootParentNotBound(t *testing.T) {
-	const kitRoot = "/home/user/.local/share/boid/kits/git-auto-merge"
-	const kitParent = "/home/user/.local/share/boid/kits"
-	spec := &orchestrator.JobSpec{
-		Visibility: orchestrator.Visibility{
-			KitRoots: []string{kitRoot},
-		},
-	}
-	result, err := BuildSandboxSpec(spec, SandboxRuntimeInfo{})
-	if err != nil {
-		t.Fatalf("BuildSandboxSpec: %v", err)
-	}
-
-	for _, m := range result.Mounts {
-		if m.Target == kitParent {
-			t.Errorf("kit root parent directory must not be mounted: found mount with target=%q", kitParent)
-		}
-	}
-}
-
 // /usr/bin/git と /bin/git が boid バイナリ bind で上書きされることを検証する。
 // これにより絶対パスで実体 git を呼び出す迂回が防止される。
 // boid バイナリ自身はホスト実パスのまま bind mount される（/opt/boid/bin/boid は廃止）。
@@ -1738,13 +1648,11 @@ func TestBuildEnvironmentYAML_FilesystemReflectsVisibility(t *testing.T) {
 		{Source: "/host/cli/claude", Target: "/usr/local/bin/claude", Mode: "", IsFile: true},
 		{Source: "/host/data", Target: "/data", Mode: "rw"},
 	}
-	kits := []string{"/host/.local/share/boid/kits/claude-code"}
 	doc := parsedEnvDoc(t, EnvironmentInput{
 		Visibility: orchestrator.Visibility{
 			ProjectDir:         "/workspace/proj",
 			Writable:           true,
 			AdditionalBindings: bindings,
-			KitRoots:           kits,
 		},
 	})
 	fs, ok := doc["filesystem"].(map[string]any)
@@ -1756,10 +1664,6 @@ func TestBuildEnvironmentYAML_FilesystemReflectsVisibility(t *testing.T) {
 	}
 	if fs["writable"] != true {
 		t.Errorf("writable = %v, want true", fs["writable"])
-	}
-	roots, ok := fs["kit_roots"].([]any)
-	if !ok || len(roots) != 1 || roots[0] != kits[0] {
-		t.Errorf("kit_roots = %v, want [%s]", fs["kit_roots"], kits[0])
 	}
 	binds, ok := fs["additional_bindings"].([]any)
 	if !ok || len(binds) != 2 {

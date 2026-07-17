@@ -14,9 +14,9 @@ import (
 // `boid agent` CLI.
 //
 // session jobs inherit project-level traits only (env / host_commands /
-// additional_bindings / kit_roots / secret_namespace). behavior-level traits
-// are deliberately ignored — sessions are not driven by the task state
-// machine and have no behavior context to resolve.
+// additional_bindings / secret_namespace). behavior-level traits are
+// deliberately ignored — sessions are not driven by the task state machine
+// and have no behavior context to resolve.
 type SessionJobInput struct {
 	// ProjectID and ProjectWorkDir locate the host filesystem the sandbox
 	// will expose; ProjectWorkDir is the cwd seen by the agent.
@@ -26,7 +26,7 @@ type SessionJobInput struct {
 	// ProjectName is project.yaml's `meta.name` (see
 	// orchestrator.Visibility.ProjectName's doc comment). The caller fills
 	// this from the same workspace-hydrated ProjectMeta it already reads
-	// Env/HostCommands/AdditionalBindings/KitRoots from.
+	// Env/HostCommands/AdditionalBindings from.
 	ProjectName string
 
 	// HarnessType selects the agent adapter the runner-inner-child will
@@ -62,7 +62,6 @@ type SessionJobInput struct {
 	Env                map[string]string
 	HostCommands       map[string]orchestrator.HostCommandSpec
 	AdditionalBindings []orchestrator.BindMount
-	KitRoots           []string
 	SecretNamespace    string
 	DockerEnabled      bool
 
@@ -125,7 +124,6 @@ func BuildSessionJobSpec(input SessionJobInput) (*orchestrator.JobSpec, error) {
 			ProjectName:        input.ProjectName,
 			AdditionalBindings: input.AdditionalBindings,
 			Writable:           !input.Readonly,
-			KitRoots:           input.KitRoots,
 			DockerEnabled:      input.DockerEnabled,
 			Clone:              cloneDecl,
 		},

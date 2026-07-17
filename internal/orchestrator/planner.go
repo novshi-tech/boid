@@ -113,7 +113,6 @@ func (p *DispatchPlanner) PlanHook(event *HookFireEvent) (*JobSpec, CleanupFunc,
 			ProjectName:        meta.Name,
 			AdditionalBindings: behavior.AdditionalBindings,
 			Writable:           !IsReadonly(task),
-			KitRoots:           behavior.KitRoots,
 			DockerEnabled:      meta.Capabilities.Docker != nil,
 			// docs/plans/git-gateway-cutover.md PR6 cutover: dispatcher no
 			// longer resolves a host-repo worktree, it clones inside the

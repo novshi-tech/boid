@@ -695,7 +695,7 @@ func cloneProjectMeta(meta *ProjectMeta) *ProjectMeta {
 }
 
 // cloneTaskBehaviorMap deep-copies the task behavior map. Runtime-overlay fields
-// (Env, HostCommands, AdditionalBindings, KitRoots) are reset to nil so callers
+// (Env, HostCommands, AdditionalBindings) are reset to nil so callers
 // can reapply overlays from scratch. Hooks are preserved because they are now
 // defined in project.yaml (not kit-supplied) and must survive the clone.
 func cloneTaskBehaviorMap(src map[string]TaskBehavior) map[string]TaskBehavior {
@@ -713,7 +713,6 @@ func cloneTaskBehaviorMap(src map[string]TaskBehavior) map[string]TaskBehavior {
 		v.Env = nil
 		v.HostCommands = nil
 		v.AdditionalBindings = nil
-		v.KitRoots = nil
 		result[k] = v
 	}
 	return result

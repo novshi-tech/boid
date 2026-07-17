@@ -137,11 +137,6 @@ type Visibility struct {
 	// field has no effect.
 	Writable bool
 
-	// KitRoots lists the kit root directories to bind-mount at their original
-	// host paths inside the sandbox. This lets scripts source sibling helpers
-	// via relative paths (e.g. ${SCRIPT_DIR}/../scripts/lib.sh).
-	KitRoots []string
-
 	// DockerEnabled, when true, indicates capabilities.docker was declared in
 	// project.yaml. Dispatcher uses this to start a per-sandbox docker proxy.
 	DockerEnabled bool
