@@ -35,7 +35,7 @@ Every command is internally classified as `remote` (works purely through the dae
 |---|---|
 | `boid start [--db-path PATH] [--socket-path PATH] [--kits-dir DIR] [--key-file-path PATH]` | Start the daemon (it forks itself into a detached child and returns immediately). HTTP address is configured via `web.http_addr` in `config.yaml` or `boid web set-addr`. |
 | `boid stop` | Stop the daemon. Killing by PID can leave a stale socket; prefer this. |
-| `boid gc [--older-than DURATION] [--dry-run]` | Garbage collect old completed/aborted tasks (the daemon also runs this on its own at startup). `--dry-run` prints what would be deleted without removing anything. |
+| `boid gc [--older-than DURATION] [--dry-run]` | Garbage collect old completed/aborted tasks (the daemon also runs this on its own at startup). `--dry-run` prints what would be deleted without removing anything. Output also lists every workspace home's on-disk size (display only, never deletes — see the [workspace home guide](../guide/workspace-home.md#boid-gcs-workspace-home-listing)). |
 | `boid check` | Check host prerequisites and hook dependencies. |
 | `boid init [DIR]` | **(Deprecated)** Prints a deprecation guide. Use `boid project init\|add` (plus, optionally, `boid workspace create/edit/import`) instead. See [Onboarding](../guide/onboarding.md). |
 
@@ -221,7 +221,7 @@ Encrypted storage for tokens and similar values. The encryption key is `~/.local
 
 ## Workspace
 
-Groups a project's runtime environment (`host_commands` / `env` / `capabilities` / `allowed_domains` / `additional_bindings`) at the machine level. Backed by the `workspaces` table (Phase 2.5); the `default` workspace is always created automatically at daemon startup. Registering a project assigns it to `default` automatically, and `boid project init/add --workspace <slug>` is get-or-create (an unknown slug gets an empty workspace created for it before assignment).
+Groups a project's runtime environment (`host_commands` / `env` / `capabilities` / `allowed_domains`) at the machine level. Backed by the `workspaces` table (Phase 2.5); the `default` workspace is always created automatically at daemon startup. Registering a project assigns it to `default` automatically, and `boid project init/add --workspace <slug>` is get-or-create (an unknown slug gets an empty workspace created for it before assignment). Every workspace has a persistent `$HOME` (workspace home); install a toolchain into it via [`init.sh`](../guide/workspace-home.md), not `additional_bindings` (retired).
 
 | Command | Role |
 |---|---|
@@ -233,7 +233,7 @@ Groups a project's runtime environment (`host_commands` / `env` / `capabilities`
 | `boid workspace export <slug> [--output FILE]` | Export a workspace's definition as yaml (stdout by default). |
 | `boid workspace assign <project-ref> <workspace-id>` | Assign a project to a workspace (404s on an unknown slug, unless a local `workspace.yaml` for it exists — auto-created from that). |
 | `boid workspace clear <project-ref>` | Reset a project's workspace assignment to `default`. |
-| `boid workspace remove <slug>` | Remove a workspace (assigned projects are re-assigned to `default`; `default` itself cannot be removed). |
+| `boid workspace remove <slug> [--force\|--yes]` | Remove a workspace (assigned projects are re-assigned to `default`; `default` itself cannot be removed). Prompts for confirmation, showing the home directory's size (`--force`/`--yes` skips it) — see the [workspace home guide](../guide/workspace-home.md#removing-a-workspace). |
 
 ## Host Commands
 

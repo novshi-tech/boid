@@ -34,6 +34,7 @@
 
 - [概念](guide/concepts.md) — task / job / hook / kit / payload / trait など内部用語の解説
 - [状態機械](guide/state-machine.md) — `pending → executing → done` (+ `aborted`)
+- [workspace home セットアップ](guide/workspace-home.md) — 永続 `$HOME` の仕組み、 `init.sh` の書き方、 初回ログイン、 `workspace remove` / `boid gc` の見方
 - [Web UI](guide/web-ui.md) — デバイスのペアリング・失効、 Cloudflare Tunnel での公開
 - [通知](guide/notifications.md) — `notify.command` の設定、 ntfy / Pushover スクリプト例
 - [トラブルシューティング](guide/troubleshooting.md)

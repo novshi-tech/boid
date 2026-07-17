@@ -36,7 +36,7 @@ task_behaviors:
 | `default_task_behavior` | string | いいえ | `boid task create` で `--behavior` を省略したときに使う behavior の名前。未指定の場合は `task_behaviors` に `supervisor` があれば暗黙で使う (WARN あり)、なければエラー |
 | `kits` | — | **撤去** | ロード時に reject される (`project.yaml: top-level "kits" is no longer supported`)。 kit 機構自体は Phase 2.5 PR6 で退役済み、 *workspace* 側の `kits` フィールド (`WorkspaceMeta.Kits`) も Phase 2.5 PR7 でコードから完全撤去 (`docs/plans/workspace-db-consolidation.md` 参照)。 `host_commands` / `env` / `additional_bindings` を workspace に直接設定すること。 詳細は下記 [`KitRef`](#kitref) と [Kit 作者向け概要](../kit-authoring/overview.md) を参照 |
 | `host_commands` | — | **撤去** | ロード時に reject される。 workspace に設定する (`boid workspace create/edit/import`) — ただし *workspace* の `host_commands:` は参照 **名前** のリストであり、 下記 [HostCommands](#hostcommands) で説明するマップ形式ではない点に注意 (そのマップ形式は `kit.yaml` と daemon-wide の `~/.config/boid/host_commands.yaml` レジストリで使われ、 workspace の名前はそのレジストリを参照して解決される)。 [オンボーディング / host_commands を定義する](../guide/onboarding.md#host_commands-を定義する-daemon-側の集約レジストリ) を参照 |
-| `additional_bindings` | — | **撤去** | ロード時に reject される。 workspace に設定する。 形は変わらない ([BindMount](#bindmount) 参照) |
+| `additional_bindings` | — | **撤去** | `project.yaml` の top-level ではロード時に reject される。 **`workspace.yaml` 側の `additional_bindings` も `docs/plans/home-workspace-volume.md` Phase 4 PR4 で撤去済み** — key 自体はパースされる (エラーにはならない) が値は無視され、 サンドボックスに反映されない。 workspace 側でツールチェーンを永続化したい場合は [workspace home の `init.sh`](../guide/workspace-home.md) を使うこと。 詳細は [BindMount](#bindmount) 参照 |
 | `env` | — | **撤去** | ロード時に reject される。 workspace に設定する (同じ map 形式) |
 | `secret_namespace` | — | **撤去** | ロード時に reject される。 workspace に個別の secret-namespace フィールドはない — secret は workspace 自身の slug をネームスペースとして解決される |
 | `capabilities` | — | **撤去** | ロード時に reject される。 workspace に設定する (`capabilities.docker`、 形は同じ) — [capabilities](#capabilities) 参照 |
@@ -271,6 +271,14 @@ host_commands:
 
 ### BindMount
 
+> **注意 (`docs/plans/home-workspace-volume.md` Phase 4 PR4):** `workspace.yaml` の
+> `additional_bindings` は撤去済みで、現在これを有効にする経路はありません
+> (`project.yaml` の top-level は元からロード時に reject、`workspace.yaml` 側は
+> パースされても無視されるだけの死んだフィールドです)。以前この機構が主に使われていた
+> 「workspace にツールチェーンを永続的に持たせる」用途は、[workspace home の
+> `init.sh`](../guide/workspace-home.md) に置き換わりました。以下は当時の形の記録として
+> 残していますが、実際にサンドボックスへの bind としては機能しません。
+
 `additional_bindings` の各要素はサンドボックスにマウントしたい host 上のパスを表します。
 
 ```yaml
@@ -312,7 +320,9 @@ additional_bindings:
 
 ので、 同じ宣言で clone モードかどうかに依存せず動作します。
 
-> **注意:** `workspace.yaml` での `additional_bindings` エントリには `mode` を明示 (`ro` または `rw`) する必要があります。 空文字列は受け付けられません。
+> **注意:** 上記は `additional_bindings` がまだ機能していた頃の記述です。 前述の通り、
+> `workspace.yaml` 側の `additional_bindings` は Phase 4 PR4 で撤去されており、
+> 現在は `mode` を明示していても効果はありません。
 
 ### Instruction
 
