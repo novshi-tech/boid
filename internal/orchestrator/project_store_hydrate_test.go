@@ -310,15 +310,6 @@ func setupProjectWithBehavior(t *testing.T, dir, id, behavior string) {
 	}
 }
 
-func findBindingBySource(mounts []orchestrator.BindMount, src string) (orchestrator.BindMount, bool) {
-	for _, m := range mounts {
-		if m.Source == src {
-			return m, true
-		}
-	}
-	return orchestrator.BindMount{}, false
-}
-
 // --- docs/plans/workspace-db-consolidation.md PR3 Step G: workspace.HostCommands resolution ---
 
 // TestGetWithWorkspace_HostCommandsResolved verifies that a workspace's
@@ -561,106 +552,6 @@ func TestGetWithWorkspace_WarnsWhenAggregatedIsEmptyButRefsExist(t *testing.T) {
 	}
 }
 
-// TestGetWithWorkspace_MergesWorkspaceAdditionalBindings pins BLOCKER 2
-// (codex review): workspace.AdditionalBindings — whether directly authored
-// in workspace.yaml, or materialized from a workspace's Kits by BLOCKER 1's
-// migration fix — must reach both the top-level meta.AdditionalBindings
-// (session jobs bypass behaviors and read this directly) and every
-// TaskBehavior.AdditionalBindings (task hooks read behavior.AdditionalBindings
-// via the planner), mirroring the dual-surface contract already pinned for
-// workspace kits (TestGetWithWorkspace_AdditionalBindingsMerge). Before this
-// fix there was no merge path at all: GetWithWorkspace never even read
-// ws.AdditionalBindings.
-func TestGetWithWorkspace_MergesWorkspaceAdditionalBindings(t *testing.T) {
-	t.Parallel()
-
-	projectDir := t.TempDir()
-	setupProjectWithBehavior(t, projectDir, "proj-ws-bind", "build")
-
-	wsDir := t.TempDir()
-	setupWorkspaceDir(t, wsDir, "wsbind", `additional_bindings:
-  - source: /opt/tool
-    target: /opt/tool
-    mode: ro
-`)
-
-	s := orchestrator.NewProjectStore()
-	s.SetWorkspaceStore(orchestrator.NewWorkspaceStore(wsDir))
-	loadProjectIntoStore(t, s, []*orchestrator.Project{
-		{ID: "proj-ws-bind", WorkDir: projectDir, WorkspaceID: "wsbind"},
-	})
-
-	meta, err := s.GetWithWorkspace(context.Background(), "proj-ws-bind")
-	if err != nil {
-		t.Fatalf("GetWithWorkspace: %v", err)
-	}
-
-	if _, ok := findBindingBySource(meta.AdditionalBindings, "/opt/tool"); !ok {
-		t.Fatalf("workspace additional_binding missing from meta.AdditionalBindings: %+v", meta.AdditionalBindings)
-	}
-
-	build, ok := meta.TaskBehaviors["build"]
-	if !ok {
-		t.Fatalf("behavior build missing from hydrated meta: %+v", meta.TaskBehaviors)
-	}
-	if _, ok := findBindingBySource(build.AdditionalBindings, "/opt/tool"); !ok {
-		t.Fatalf("workspace additional_binding missing from behavior build.AdditionalBindings: %+v", build.AdditionalBindings)
-	}
-}
-
-// TestGetWithWorkspace_ProjectBindingsWinOnConflict verifies BLOCKER 2's
-// precedence rule: when the project's own top-level AdditionalBindings
-// declares the same Source as a workspace binding, the project's entry
-// wins — mirroring the "project.yaml wins" precedence GetWithWorkspace
-// already applies to workspace kits
-// (out.AdditionalBindings = mergeBindMounts(ws.AdditionalBindings, out.AdditionalBindings),
-// where out.AdditionalBindings — already seeded from the project's own
-// meta at clone time — is the second/overlay argument and therefore wins).
-// The project side is constructed directly via ProjectStore.Set (bypassing
-// project.yaml's own on-disk parsing, which — post cutover — no longer
-// accepts a top-level additional_bindings key at all: see
-// removedTopLevelKeys) so this test isolates GetWithWorkspace's merge
-// precedence from that unrelated schema-migration concern. (Per-behavior
-// AdditionalBindings cannot be exercised the same way: cloneProjectMeta
-// always resets every TaskBehavior's AdditionalBindings to nil before
-// GetWithWorkspace's merge blocks run — by design, since a real
-// project.yaml can no longer author that field directly either, only a
-// linked workspace/kit can populate it post-clone.)
-func TestGetWithWorkspace_ProjectBindingsWinOnConflict(t *testing.T) {
-	t.Parallel()
-
-	wsDir := t.TempDir()
-	setupWorkspaceDir(t, wsDir, "bindconflictws", `additional_bindings:
-  - source: /opt/tool
-    target: /opt/tool
-    mode: ro
-`)
-
-	s := orchestrator.NewProjectStore()
-	s.SetWorkspaceStore(orchestrator.NewWorkspaceStore(wsDir))
-	s.Set("proj-bind-conflict", &orchestrator.ProjectMeta{
-		ID:   "proj-bind-conflict",
-		Name: "Bind Conflict Project",
-		AdditionalBindings: []orchestrator.BindMount{
-			{Source: "/opt/tool", Target: "/opt/tool", Mode: "rw"},
-		},
-	})
-	s.SetWorkspaceID("proj-bind-conflict", "bindconflictws")
-
-	meta, err := s.GetWithWorkspace(context.Background(), "proj-bind-conflict")
-	if err != nil {
-		t.Fatalf("GetWithWorkspace: %v", err)
-	}
-
-	got, ok := findBindingBySource(meta.AdditionalBindings, "/opt/tool")
-	if !ok {
-		t.Fatalf("expected /opt/tool binding in meta.AdditionalBindings: %+v", meta.AdditionalBindings)
-	}
-	if got.Mode != "rw" {
-		t.Errorf("top-level binding mode = %q, want rw (project must win over workspace)", got.Mode)
-	}
-}
-
 // TestGetWithWorkspace_ExpandsWorkspaceEnvVariables pins MAJOR 1 (codex
 // review, 3rd pass): workspace.yaml's Env is stored raw in the DB/yaml (no
 // secret-shaped value is ever expanded before being persisted), but a
@@ -699,52 +590,6 @@ func TestGetWithWorkspace_ExpandsWorkspaceEnvVariables(t *testing.T) {
 
 	if meta.Env["WS_VAR"] != "expanded-value" {
 		t.Fatalf("meta.Env[WS_VAR] = %q, want expanded-value (workspace env must be $VAR-expanded at dispatch time)", meta.Env["WS_VAR"])
-	}
-}
-
-// TestGetWithWorkspace_ExpandsWorkspaceAdditionalBindings is
-// TestGetWithWorkspace_ExpandsWorkspaceEnvVariables's counterpart for
-// workspace.yaml's AdditionalBindings: a ${VAR} placeholder in Source/Target
-// must also be expanded by dispatch time, the same way project.yaml's own
-// AdditionalBindings are expanded by interpolateBindMounts at load time.
-func TestGetWithWorkspace_ExpandsWorkspaceAdditionalBindings(t *testing.T) {
-	t.Setenv("WS_EXPAND_DIR", "/opt/expanded-dir")
-
-	projectDir := t.TempDir()
-	setupProjectWithBehavior(t, projectDir, "proj-ws-bind-expand", "build")
-
-	wsDir := t.TempDir()
-	setupWorkspaceDir(t, wsDir, "bindexpandws", `additional_bindings:
-  - source: ${WS_EXPAND_DIR}/tool
-    target: ${WS_EXPAND_DIR}/tool
-    mode: ro
-`)
-
-	s := orchestrator.NewProjectStore()
-	s.SetWorkspaceStore(orchestrator.NewWorkspaceStore(wsDir))
-	loadProjectIntoStore(t, s, []*orchestrator.Project{
-		{ID: "proj-ws-bind-expand", WorkDir: projectDir, WorkspaceID: "bindexpandws"},
-	})
-
-	meta, err := s.GetWithWorkspace(context.Background(), "proj-ws-bind-expand")
-	if err != nil {
-		t.Fatalf("GetWithWorkspace: %v", err)
-	}
-
-	got, ok := findBindingBySource(meta.AdditionalBindings, "/opt/expanded-dir/tool")
-	if !ok {
-		t.Fatalf("expected expanded source /opt/expanded-dir/tool in meta.AdditionalBindings, got %+v (workspace additional_bindings must be $VAR-expanded at dispatch time)", meta.AdditionalBindings)
-	}
-	if got.Target != "/opt/expanded-dir/tool" {
-		t.Errorf("got.Target = %q, want expanded /opt/expanded-dir/tool", got.Target)
-	}
-
-	build, ok := meta.TaskBehaviors["build"]
-	if !ok {
-		t.Fatalf("behavior build missing from hydrated meta: %+v", meta.TaskBehaviors)
-	}
-	if _, ok := findBindingBySource(build.AdditionalBindings, "/opt/expanded-dir/tool"); !ok {
-		t.Fatalf("expected expanded source in behavior build.AdditionalBindings, got %+v", build.AdditionalBindings)
 	}
 }
 

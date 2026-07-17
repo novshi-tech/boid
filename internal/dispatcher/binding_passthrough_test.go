@@ -2,8 +2,6 @@ package dispatcher
 
 import (
 	"context"
-	"os"
-	"path/filepath"
 	"testing"
 
 	"github.com/novshi-tech/boid/internal/orchestrator"
@@ -11,30 +9,37 @@ import (
 )
 
 // TestBindingPassthrough_HydrateToSandboxSpec is the end-to-end half of Tier 1
-// #1 (docs/plans/quality-gates.md). It threads a workspace-level binding
+// #1 (docs/plans/quality-gates.md). It threads a project-level binding
 // through the full two-tier path that the 2026-06-29 regression broke:
 //
-//	project.yaml + workspace.yaml additional_bindings
-//	  → ProjectStore.GetWithWorkspace           (upstream hydrate)
+//	ProjectMeta.AdditionalBindings
+//	  → ProjectStore.GetWithWorkspace           (upstream hydrate, passthrough)
 //	  → meta.AdditionalBindings assert
 //	  → BuildSessionJobSpec                      (the real meta→JobSpec seam)
 //	  → BuildSandboxSpec                         (downstream)
-//	  → sandbox mounts contain BOTH the workspace bind AND the harness bind
+//	  → sandbox mounts contain BOTH the project bind AND the harness bind
 //
-// Either tier regressing — an upstream drop in GetWithWorkspace, or a
-// downstream exclusive replace of workspace bindings by harness bindings —
-// makes this fail. The two tiers also have their own focused unit tests
-// (TestGetWithWorkspace_MergesWorkspaceAdditionalBindings upstream;
-// TestBuildSandboxSpec_ProfileDefault_HarnessKeepsAdditionalBindings
-// downstream); this test guards the seam between them, which no single-package
-// test can see.
+// A downstream exclusive replace of project bindings by harness bindings
+// makes this fail. The downstream half also has its own focused unit test
+// (TestBuildSandboxSpec_ProfileDefault_HarnessKeepsAdditionalBindings); this
+// test guards the seam from meta hydration all the way to sandbox mounts,
+// which no single-package test can see.
 //
 // This test originally threaded the binding through a workspace *kit*
-// fixture (ws.Kits → kit.yaml's additional_bindings) — that mechanism was
-// retired in docs/plans/workspace-db-consolidation.md Phase 2.5 PR6 (kit
-// mechanism retirement). The vehicle is now workspace.yaml's own
-// additional_bindings field directly (decision 4: kept alive through Phase
-// 4 for the userns backend), which drives the exact same two-tier path.
+// fixture (ws.Kits → kit.yaml's additional_bindings; retired in docs/plans/
+// workspace-db-consolidation.md Phase 2.5 PR6), then through workspace.yaml's
+// own additional_bindings field directly (decision 4). docs/plans/
+// home-workspace-volume.md Phase 4 PR4 retired the workspace-level
+// AdditionalBindings mechanism outright — WorkspaceMeta has no field for it
+// any more, and GetWithWorkspace no longer merges anything from it — so the
+// vehicle is now a directly-constructed ProjectMeta.AdditionalBindings
+// (project.yaml's own on-disk parsing still rejects a top-level
+// additional_bindings key post-cutover; see spec_loader.go's
+// removedTopLevelKeys), the same way project_store_hydrate_test.go's
+// TestGetWithWorkspace_ProjectBindingsWinOnConflict isolates this from that
+// unrelated schema-migration concern. This still drives the identical
+// downstream half of the seam (BuildSessionJobSpec → BuildSandboxSpec) the
+// original regression broke.
 func TestBindingPassthrough_HydrateToSandboxSpec(t *testing.T) {
 	homeDir := hostHomeDir()
 	if homeDir == "" {
@@ -42,26 +47,28 @@ func TestBindingPassthrough_HydrateToSandboxSpec(t *testing.T) {
 	}
 
 	projectDir := t.TempDir()
-	writeThruProjectYAML(t, projectDir, "proj-thru")
 
-	const wsBind = "/opt/volta"
-	wsDir := t.TempDir()
-	writeThruWorkspaceYAML(t, wsDir, "thruws", wsBind)
+	const projectBind = "/opt/volta"
 
-	// --- upstream: hydrate project meta with workspace additional_bindings ---
+	// --- upstream: hydrate project meta with a project-level binding ---
 	store := orchestrator.NewProjectStore()
-	store.SetWorkspaceStore(orchestrator.NewWorkspaceStore(wsDir))
-	if errs := store.LoadAll([]*orchestrator.Project{
-		{ID: "proj-thru", WorkDir: projectDir, WorkspaceID: "thruws"},
-	}); len(errs) > 0 {
-		t.Fatalf("LoadAll: %v", errs)
-	}
+	store.Set("proj-thru", &orchestrator.ProjectMeta{
+		ID:   "proj-thru",
+		Name: "proj-thru",
+		AdditionalBindings: []orchestrator.BindMount{
+			{Source: projectBind, Target: projectBind, Mode: "rw"},
+		},
+	})
+	// GetWithWorkspace (not the bare Get) is the same hydration entry point
+	// production dispatch calls — with no linked workspace, it degrades to
+	// returning the cached meta unchanged, but exercising it here (rather
+	// than Get) keeps this test on the real call path.
 	meta, err := store.GetWithWorkspace(context.Background(), "proj-thru")
 	if err != nil {
 		t.Fatalf("GetWithWorkspace: %v", err)
 	}
-	if !hasBindingSource(meta.AdditionalBindings, wsBind) {
-		t.Fatalf("upstream: workspace binding %s missing from hydrated meta.AdditionalBindings: %+v", wsBind, meta.AdditionalBindings)
+	if !hasBindingSource(meta.AdditionalBindings, projectBind) {
+		t.Fatalf("upstream: project binding %s missing from hydrated meta.AdditionalBindings: %+v", projectBind, meta.AdditionalBindings)
 	}
 
 	// --- the seam: drive the real session dispatch conversion. BuildSessionJobSpec
@@ -91,14 +98,14 @@ func TestBindingPassthrough_HydrateToSandboxSpec(t *testing.T) {
 		t.Fatalf("BuildSandboxSpec: %v", err)
 	}
 
-	if !hasBindTarget(result.Mounts, wsBind) {
-		t.Errorf("workspace binding dropped downstream: expected bind at %s, got mounts=%+v", wsBind, result.Mounts)
+	if !hasBindTarget(result.Mounts, projectBind) {
+		t.Errorf("project binding dropped downstream: expected bind at %s, got mounts=%+v", projectBind, result.Mounts)
 	}
 	// Phase 4 PR3 (docs/plans/home-workspace-volume.md) retired
 	// claude.Adapter.Bindings (it now returns nil), so there is no longer a
-	// harness-declared ~/.claude bind to assert alongside the workspace
+	// harness-declared ~/.claude bind to assert alongside the project
 	// binding here — this test's remaining job is the downstream half of the
-	// seam (workspace AdditionalBindings survive BuildSandboxSpec) pinned
+	// seam (project AdditionalBindings survive BuildSandboxSpec) pinned
 	// above.
 }
 
@@ -118,31 +125,4 @@ func hasBindTarget(mounts []sandbox.Mount, target string) bool {
 		}
 	}
 	return false
-}
-
-func writeThruProjectYAML(t *testing.T, dir, id string) {
-	t.Helper()
-	boidDir := filepath.Join(dir, ".boid")
-	if err := os.MkdirAll(boidDir, 0o755); err != nil {
-		t.Fatalf("mkdir: %v", err)
-	}
-	y := "id: " + id + "\nname: " + id + "\n"
-	if err := os.WriteFile(filepath.Join(boidDir, "project.yaml"), []byte(y), 0o644); err != nil {
-		t.Fatalf("write project.yaml: %v", err)
-	}
-}
-
-// writeThruWorkspaceYAML writes a workspace.yaml at dir/<slug>.yaml carrying
-// a single additional_bindings entry for bindSource (source == target,
-// mode: rw) — the surviving vestige of the retired kit mechanism (decision
-// 4, docs/plans/workspace-db-consolidation.md).
-func writeThruWorkspaceYAML(t *testing.T, dir, slug, bindSource string) {
-	t.Helper()
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		t.Fatalf("mkdir ws dir: %v", err)
-	}
-	y := "additional_bindings:\n  - source: " + bindSource + "\n    target: " + bindSource + "\n    mode: rw\n"
-	if err := os.WriteFile(filepath.Join(dir, slug+".yaml"), []byte(y), 0o644); err != nil {
-		t.Fatalf("write workspace yaml: %v", err)
-	}
 }

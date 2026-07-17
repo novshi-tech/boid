@@ -156,13 +156,12 @@ func (s *ProjectStore) GetWithWorkspace(_ context.Context, projectID string) (*P
 		return nil, fmt.Errorf("project %q: load workspace %q: %w", projectID, workspaceID, err)
 	}
 
-	// MAJOR 1 (codex review, 3rd pass): expand ${VAR} placeholders in
-	// ws.Env / ws.AdditionalBindings before anything below reads them. The
-	// DB/yaml-stored ws value stays raw (see expandWorkspaceRuntimeForDispatch's
-	// doc comment) — ws is reassigned to a clone here so every block below
-	// (the AdditionalBindings merge, the Env merge) transparently sees
-	// expanded values without needing its own expansion step. Mirrors
-	// ExpandHostCommandsForDispatch's clone+expand treatment of
+	// MAJOR 1 (codex review, 3rd pass): expand ${VAR} placeholders in ws.Env
+	// before anything below reads it. The DB/yaml-stored ws value stays raw
+	// (see expandWorkspaceRuntimeForDispatch's doc comment) — ws is
+	// reassigned to a clone here so every block below (the Env merge)
+	// transparently sees expanded values without needing its own expansion
+	// step. Mirrors ExpandHostCommandsForDispatch's clone+expand treatment of
 	// workspace.HostCommands' resolved definitions.
 	ws = expandWorkspaceRuntimeForDispatch(ws)
 
@@ -183,33 +182,20 @@ func (s *ProjectStore) GetWithWorkspace(_ context.Context, projectID string) (*P
 	// vestigial field (dead, never populated by DB-backed rows) until PR7
 	// deletes it outright.
 
-	// workspace.AdditionalBindings (BLOCKER 2, docs/plans/
-	// workspace-db-consolidation.md codex review): a workspace-level vestige
-	// of the kit mechanism (decision 4), merged the same way workspace-kit
-	// AdditionalBindings are merged above — into both the top-level
-	// meta.AdditionalBindings (session jobs bypass behaviors and read this
-	// directly) and every TaskBehavior.AdditionalBindings (task hooks read
-	// behavior.AdditionalBindings via the planner). Same precedence as the
-	// kit block: project.yaml wins on a Source conflict
-	// (mergeBindMounts(base, overlay) with overlay=out.AdditionalBindings,
-	// i.e. whatever project.yaml/kit merging already placed there wins).
-	// Before this block existed, neither a directly-authored
-	// ws.AdditionalBindings nor BLOCKER 1's kit-materialized form ever
-	// reached dispatch — the field was parsed and persisted but silently
-	// inert.
-	if len(ws.AdditionalBindings) > 0 {
-		out.AdditionalBindings = mergeBindMounts(ws.AdditionalBindings, out.AdditionalBindings)
-
-		if out.TaskBehaviors == nil {
-			out.TaskBehaviors = make(map[string]TaskBehavior)
-		}
-		out.TaskBehaviors = stripAliasMirrors(out.TaskBehaviors)
-		for name, behavior := range out.TaskBehaviors {
-			behavior.AdditionalBindings = mergeBindMounts(ws.AdditionalBindings, behavior.AdditionalBindings)
-			out.TaskBehaviors[name] = behavior
-		}
-		out.TaskBehaviors = addAliasMirrors(out.TaskBehaviors)
-	}
+	// NOTE (docs/plans/home-workspace-volume.md Phase 4 PR4): this used to be
+	// where ws.AdditionalBindings (BLOCKER 2, docs/plans/
+	// workspace-db-consolidation.md codex review) was merged into both
+	// out.AdditionalBindings and every TaskBehavior.AdditionalBindings — a
+	// workspace-level vestige of the kit mechanism (decision 4). That field
+	// was retired outright in Phase 4 PR4: the $HOME workspace volume
+	// contract (Phase 4 PR1/PR2) removes the need for a workspace to declare
+	// extra host bind mounts at all, so there is nothing left for this block
+	// to read — WorkspaceMeta has no AdditionalBindings field any more (see
+	// its own doc comment). out.AdditionalBindings / every
+	// TaskBehavior.AdditionalBindings can still be populated today, but only
+	// via project.yaml's own AdditionalBindings (see spec_loader.go's
+	// ReadProjectMetaWithKits, which merges meta.AdditionalBindings into each
+	// behavior — this workspace-level merge was its only other feed).
 
 	// workspace.HostCommands (docs/plans/workspace-db-consolidation.md PR3
 	// cutover) is a []string of reference names into the daemon's
