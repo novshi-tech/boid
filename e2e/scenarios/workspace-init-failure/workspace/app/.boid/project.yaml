@@ -1,0 +1,17 @@
+id: e2e-init-fail
+name: E2E Init Fail
+# Minimal hook — never actually reached in this scenario, since the
+# workspace's init.sh (planted by scenario.sh) always exits 1, which fails
+# Runner.Dispatch() before any sandbox is built (docs/plans/
+# home-workspace-volume.md Phase 4 PR6, scenario D).
+task_behaviors:
+  ping:
+    hooks:
+      - id: ping
+        command: |
+          set -eu
+          mkdir -p "$HOME/.boid/output"
+          printf '{"payload_patch":{"artifact":{"pong":true}}}\n' > "$HOME/.boid/output/payload_patch.json"
+        traits:
+          produces: [artifact]
+    traits: []

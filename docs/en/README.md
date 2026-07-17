@@ -34,6 +34,7 @@ Concept-oriented how-to.
 
 - [Concepts](guide/concepts.md) — explains the internal vocabulary: task, job, hook, kit, payload, trait, and more
 - [State machine](guide/state-machine.md) — `pending → executing → done` (plus `aborted`)
+- [Workspace home setup](guide/workspace-home.md) — how the persistent `$HOME` works, writing `init.sh`, first login, and reading `workspace remove` / `boid gc` output
 - [Web UI](guide/web-ui.md) — pairing and revoking devices, exposing the UI through Cloudflare Tunnel
 - [Notifications](guide/notifications.md) — configuring `notify.command`, ntfy and Pushover script examples
 - [Troubleshooting](guide/troubleshooting.md)

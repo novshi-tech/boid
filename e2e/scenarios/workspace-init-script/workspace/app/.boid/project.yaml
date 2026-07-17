@@ -1,0 +1,18 @@
+id: e2e-init-once
+name: E2E Init Once
+# Minimal one-shot hook used purely to trigger a Runner.Dispatch() call
+# against the workspace (docs/plans/home-workspace-volume.md Phase 4 PR6,
+# scenario C) — the interesting behavior under test lives entirely in the
+# workspace's init.sh (planted by scenario.sh under
+# $XDG_CONFIG_HOME/boid/workspaces/<slug>/init.sh), not in this hook.
+task_behaviors:
+  ping:
+    hooks:
+      - id: ping
+        command: |
+          set -eu
+          mkdir -p "$HOME/.boid/output"
+          printf '{"payload_patch":{"artifact":{"pong":true}}}\n' > "$HOME/.boid/output/payload_patch.json"
+        traits:
+          produces: [artifact]
+    traits: []

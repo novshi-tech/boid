@@ -1,8 +1,9 @@
 # $HOME workspace volume 契約先行 実装計画
 
-ステータス: **計画 (planned、着手待ち)** — Phase 1-3 (+ Phase 2.5) 完了により依存前提が全部揃った状態
+ステータス: **完了 (2026-07-17)** — Phase 1-3 (+ Phase 2.5) 完了により依存前提が揃い、
+Phase 4 全 6 PR (#787-#791 + PR6) が landed
 作成日: 2026-07-09
-更新日: 2026-07-17 (refresh: Phase 2.5 完了差分メモ + 規模見積もり + 行番号は関数名アンカーへ切替)
+更新日: 2026-07-17 (Phase 4 全 PR 完了)
 親ドキュメント: [container-based-boid.md](container-based-boid.md) — 移行戦略ステップ 4
 
 ---
