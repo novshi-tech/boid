@@ -279,7 +279,16 @@ func TestRunWorkspaceCreateShowEditRemove_FullCycle(t *testing.T) {
 		t.Errorf("HostCommands after edit = %v, want [gh]", detail.Meta.HostCommands)
 	}
 
-	// remove.
+	// remove. --force: this test exercises the create/show/edit/remove CRUD
+	// cycle, not the confirmation prompt (which is now unconditional per
+	// codex PR #791 review Blocker fix — see resetWorkspaceRemoveFlags's own
+	// tests below for that behavior), and there is no stdin to answer it
+	// with here.
+	resetWorkspaceRemoveFlags(t)
+	defer resetWorkspaceRemoveFlags(t)
+	if err := workspaceRemoveCmd.Flags().Set("force", "true"); err != nil {
+		t.Fatalf("set --force: %v", err)
+	}
 	var removeOut bytes.Buffer
 	removeCmd := workspaceRemoveCmd
 	removeCmd.SetOut(&removeOut)
@@ -1373,7 +1382,15 @@ func TestRunWorkspaceRemove_ForceSkipsPrompt(t *testing.T) {
 	}
 }
 
-func TestRunWorkspaceRemove_NoHomeDir_SkipsPromptEntirely(t *testing.T) {
+// TestRunWorkspaceRemove_NoHomeDir_StillPrompts pins the codex PR #791
+// review Blocker fix (GET-DELETE race): unlike the pre-fix behavior where a
+// workspace whose home directory was never created (GET reports
+// Exists=false) skipped the confirmation prompt entirely, the prompt is now
+// unconditional whenever --force is not given, regardless of what GET
+// reported — a concurrent dispatch job could create the home directory in
+// the window between GET and DELETE, and skipping the prompt removed the
+// operator's only chance to notice.
+func TestRunWorkspaceRemove_NoHomeDir_StillPrompts(t *testing.T) {
 	ts := testutil.NewTestServer(t)
 	t.Setenv("BOID_SOCKET", ts.Server.SocketPath())
 	resetWorkspaceRemoveFlags(t)
@@ -1383,7 +1400,7 @@ func TestRunWorkspaceRemove_NoHomeDir_SkipsPromptEntirely(t *testing.T) {
 	promptCalls := 0
 	workspaceRemoveConfirmPrompt = func(io.Reader) (bool, error) {
 		promptCalls++
-		return false, nil
+		return true, nil
 	}
 
 	var out bytes.Buffer
@@ -1392,11 +1409,108 @@ func TestRunWorkspaceRemove_NoHomeDir_SkipsPromptEntirely(t *testing.T) {
 	if err := runWorkspaceRemove(cmd, []string{"team-f"}); err != nil {
 		t.Fatalf("runWorkspaceRemove: %v", err)
 	}
-	if promptCalls != 0 {
-		t.Errorf("prompt called %d times, want 0 (no home dir to confirm deleting)", promptCalls)
+	if promptCalls != 1 {
+		t.Errorf("prompt called %d times, want 1 (prompt is now unconditional, even with no home dir)", promptCalls)
+	}
+	if !strings.Contains(out.String(), "未作成") {
+		t.Errorf("expected the size line to note the home dir was never created, got: %s", out.String())
 	}
 	if err := ts.Client.Do("GET", "/api/workspaces/team-f", nil, &api.WorkspaceDetail{}); err == nil {
-		t.Error("expected team-f to be gone after remove")
+		t.Error("expected team-f to be gone after remove (prompt was approved)")
+	}
+}
+
+// TestRunWorkspaceRemove_NoHomeDir_PromptDeclined_AbortsWithoutRemoving is
+// the decline counterpart of the above: since the prompt is now
+// unconditional, declining it must abort the remove even when there was no
+// home directory to delete in the first place — a case the pre-fix code
+// could never even reach, since the prompt never appeared for it.
+func TestRunWorkspaceRemove_NoHomeDir_PromptDeclined_AbortsWithoutRemoving(t *testing.T) {
+	ts := testutil.NewTestServer(t)
+	t.Setenv("BOID_SOCKET", ts.Server.SocketPath())
+	resetWorkspaceRemoveFlags(t)
+	defer resetWorkspaceRemoveFlags(t)
+	testutil.SeedWorkspace(t, ts, "team-g")
+
+	workspaceRemoveConfirmPrompt = func(io.Reader) (bool, error) { return false, nil }
+
+	var out bytes.Buffer
+	cmd := workspaceRemoveCmd
+	cmd.SetOut(&out)
+	if err := runWorkspaceRemove(cmd, []string{"team-g"}); err != nil {
+		t.Fatalf("runWorkspaceRemove: %v", err)
+	}
+	if !strings.Contains(out.String(), "aborted") {
+		t.Errorf("expected an abort message, got: %s", out.String())
+	}
+	if err := ts.Client.Do("GET", "/api/workspaces/team-g", nil, &api.WorkspaceDetail{}); err != nil {
+		t.Errorf("expected team-g to still exist after a declined prompt: %v", err)
+	}
+}
+
+// TestFormatWorkspaceRemoveResult_FourPatterns pins the four independent
+// outcome combinations codex PR #791 review Should-fix #2 asked for once
+// HomeSizeError and HomeDeleteError became separate fields: plain success,
+// size lookup failed only (delete still went through, best-effort), delete
+// failed only, and both failed. Exercised as a pure unit test against
+// api.WorkspaceRemoveResponse values directly rather than a live daemon,
+// since a real permission-based failure would trip both fields together and
+// could not isolate each case (mirrors internal/api's
+// TestDeleteWorkspaceHome_SizeErrorDoesNotBlockDeletion for the same
+// reason).
+func TestFormatWorkspaceRemoveResult_FourPatterns(t *testing.T) {
+	cases := []struct {
+		name string
+		resp api.WorkspaceRemoveResponse
+		want []string // substrings that must all appear.
+		none bool     // true: expect an empty string (nothing to report).
+	}{
+		{
+			name: "success",
+			resp: api.WorkspaceRemoveResponse{HomePath: "/homes/team-a", HomeBytes: 1000, HomeDeleted: true},
+			want: []string{"home dir deleted", "/homes/team-a", "1.00 KB"},
+		},
+		{
+			name: "size error only, delete still succeeded",
+			resp: api.WorkspaceRemoveResponse{HomePath: "/homes/team-b", HomeDeleted: true, HomeSizeError: "walk: ENOENT"},
+			want: []string{"home dir deleted", "/homes/team-b", "size unknown", "walk: ENOENT"},
+		},
+		{
+			name: "size error only, delete never attempted/succeeded",
+			resp: api.WorkspaceRemoveResponse{HomePath: "/homes/team-c", HomeDeleted: false, HomeSizeError: "stat: EACCES"},
+			want: []string{"warning", "/homes/team-c", "size unknown", "stat: EACCES"},
+		},
+		{
+			name: "delete error only",
+			resp: api.WorkspaceRemoveResponse{HomePath: "/homes/team-d", HomeDeleted: false, HomeDeleteError: "remove: EACCES"},
+			want: []string{"warning", "/homes/team-d", "delete failed", "remove: EACCES"},
+		},
+		{
+			name: "both size and delete errors",
+			resp: api.WorkspaceRemoveResponse{HomePath: "/homes/team-e", HomeDeleted: false, HomeSizeError: "stat: EACCES", HomeDeleteError: "remove: EACCES"},
+			want: []string{"warning", "/homes/team-e", "size unknown", "delete failed", "stat: EACCES", "remove: EACCES"},
+		},
+		{
+			name: "nothing to report",
+			resp: api.WorkspaceRemoveResponse{},
+			none: true,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := formatWorkspaceRemoveResult(tc.resp)
+			if tc.none {
+				if got != "" {
+					t.Errorf("got %q, want empty (nothing to report)", got)
+				}
+				return
+			}
+			for _, want := range tc.want {
+				if !strings.Contains(got, want) {
+					t.Errorf("got %q, want it to contain %q", got, want)
+				}
+			}
+		})
 	}
 }
 

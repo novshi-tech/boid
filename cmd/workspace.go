@@ -839,14 +839,23 @@ func defaultWorkspaceRemoveConfirmPrompt(in io.Reader) (bool, error) {
 // as part of the same delete, so there is nothing left to clear by hand
 // first.
 //
-// docs/plans/home-workspace-volume.md Phase 4 PR5 adds a 2-step flow on top
-// of that: unless --force is given, the workspace's current home directory
-// size is fetched first (GET /api/workspaces/{slug}, the same `workspace
-// show` endpoint — no separate dry-run endpoint needed) and, only when a
-// home directory actually exists on disk, a y/N confirmation is required
-// before the DELETE call is made at all. A workspace whose home dir was
-// never created (never dispatched into) skips the prompt entirely — nothing
-// destructive is about to happen on disk either way.
+// docs/plans/home-workspace-volume.md Phase 4 PR5 adds a confirmation step
+// on top of that: unless --force is given, the workspace's current home
+// directory size is fetched first (GET /api/workspaces/{slug}, the same
+// `workspace show` endpoint — no separate dry-run endpoint needed) and a y/N
+// confirmation is required before the DELETE call is made at all.
+//
+// The prompt is unconditional — it no longer skips just because GET reported
+// Exists=false (codex PR #791 review, Blocker: a home dir that does not
+// exist *yet* at GET time can still exist by the time DELETE runs, if a
+// concurrent dispatch job creates it in between; skipping the prompt in that
+// window meant DELETE could silently destroy data that GET never got a
+// chance to show the operator). This is a minimal defense, not a full fix —
+// see docs/plans/home-workspace-volume.md's 落とし穴・注意 section for the
+// still-open daemon-side lifecycle-lock gap this does not close. The home
+// size line stays purely informational: "home 未作成" when nothing has been
+// dispatched into the workspace yet, rather than gating whether the prompt
+// itself appears.
 func runWorkspaceRemove(cmd *cobra.Command, args []string) error {
 	slug := args[0]
 	if err := orchestrator.ValidWorkspaceSlug(slug); err != nil {
@@ -869,17 +878,17 @@ func runWorkspaceRemove(cmd *cobra.Command, args []string) error {
 		if err := c.Do("GET", "/api/workspaces/"+slug, nil, &detail); err != nil {
 			return fmt.Errorf("fetch workspace before remove: %w", err)
 		}
-		if detail.Home != nil && detail.Home.Exists {
+		if detail.Home != nil {
 			fmt.Fprintln(out, formatWorkspaceHomeSize(detail.Home))
-			fmt.Fprintf(out, "workspace %q の home dir を削除しますか? [y/N]: ", slug)
-			proceed, err := workspaceRemoveConfirmPrompt(os.Stdin)
-			if err != nil {
-				return fmt.Errorf("confirm prompt: %w", err)
-			}
-			if !proceed {
-				fmt.Fprintf(out, "aborted: workspace %q was not removed\n", slug)
-				return nil
-			}
+		}
+		fmt.Fprintf(out, "workspace remove %q — 本当に削除しますか? [y/N]: ", slug)
+		proceed, err := workspaceRemoveConfirmPrompt(os.Stdin)
+		if err != nil {
+			return fmt.Errorf("confirm prompt: %w", err)
+		}
+		if !proceed {
+			fmt.Fprintf(out, "aborted: workspace %q was not removed\n", slug)
+			return nil
 		}
 	}
 
@@ -890,13 +899,39 @@ func runWorkspaceRemove(cmd *cobra.Command, args []string) error {
 
 	fmt.Fprintf(out, "workspace %q removed (any assigned projects were re-assigned to %q).\n",
 		slug, orchestrator.DefaultWorkspaceSlug)
-	switch {
-	case resp.HomeDeleted:
-		fmt.Fprintf(out, "home dir deleted: %s (%s)\n", resp.HomePath, humanize.FormatBytes(resp.HomeBytes))
-	case resp.HomeDeleteError != "":
-		fmt.Fprintf(out, "warning: home dir delete failed (%s): %s\n", resp.HomePath, resp.HomeDeleteError)
-	}
+	fmt.Fprint(out, formatWorkspaceRemoveResult(resp))
 	return nil
+}
+
+// formatWorkspaceRemoveResult renders `workspace remove`'s post-deletion
+// summary line(s) from the DELETE response (docs/plans/
+// home-workspace-volume.md Phase 4 PR5). Extended per codex PR #791 review
+// Should-fix #2: sizing and deletion are now two independent failure modes
+// on WorkspaceRemoveResponse (HomeSizeError vs. HomeDeleteError — see that
+// struct's doc comment), so this covers all four combinations rather than
+// conflating a sizing hiccup into what used to be a single
+// "home_delete_error" message: plain success, size lookup failed only,
+// deletion failed only, and both failed. Returns "" (no output at all) when
+// there is nothing to report — no RuntimesDir wired on the daemon, the
+// default workspace's protected home, or a home directory that never
+// existed in the first place.
+func formatWorkspaceRemoveResult(resp api.WorkspaceRemoveResponse) string {
+	switch {
+	case resp.HomeSizeError != "" && resp.HomeDeleteError != "":
+		return fmt.Sprintf("warning: home dir size unknown and delete failed (%s): size_error=%s delete_error=%s\n",
+			resp.HomePath, resp.HomeSizeError, resp.HomeDeleteError)
+	case resp.HomeDeleteError != "":
+		return fmt.Sprintf("warning: home dir delete failed (%s): %s\n", resp.HomePath, resp.HomeDeleteError)
+	case resp.HomeSizeError != "":
+		if resp.HomeDeleted {
+			return fmt.Sprintf("home dir deleted: %s (size unknown: %s)\n", resp.HomePath, resp.HomeSizeError)
+		}
+		return fmt.Sprintf("warning: home dir size unknown (%s): %s\n", resp.HomePath, resp.HomeSizeError)
+	case resp.HomeDeleted:
+		return fmt.Sprintf("home dir deleted: %s (%s)\n", resp.HomePath, humanize.FormatBytes(resp.HomeBytes))
+	default:
+		return ""
+	}
 }
 
 // runWorkspaceExport exports a workspace's definition as yaml via
