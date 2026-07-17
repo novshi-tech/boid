@@ -1,0 +1,29 @@
+id: e2e-home-persistence
+name: E2E Home Persistence
+# docs/plans/home-workspace-volume.md Phase 4 PR6: pins that $HOME is a
+# per-workspace host bind (not a fresh tmpfs per job) — a file written by
+# job 1's hook must still be readable by job 2's hook, as long as both jobs
+# dispatch against the same workspace.
+task_behaviors:
+  write-home:
+    hooks:
+      - id: write-home
+        command: |
+          set -eu
+          echo "job1-data" > "$HOME/.persistence-test"
+          mkdir -p "$HOME/.boid/output"
+          printf '{"payload_patch":{"artifact":{"wrote":"job1-data"}}}\n' > "$HOME/.boid/output/payload_patch.json"
+        traits:
+          produces: [artifact]
+    traits: []
+  read-home:
+    hooks:
+      - id: read-home
+        command: |
+          set -eu
+          CONTENT="$(cat "$HOME/.persistence-test" 2>/dev/null || echo MISSING)"
+          mkdir -p "$HOME/.boid/output"
+          printf '{"payload_patch":{"artifact":{"persisted":"%s"}}}\n' "$CONTENT" > "$HOME/.boid/output/payload_patch.json"
+        traits:
+          produces: [artifact]
+    traits: []
