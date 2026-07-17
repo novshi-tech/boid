@@ -1,8 +1,21 @@
 # CLI リモート接続 実装計画
 
-ステータス: 計画 (planned)
+ステータス: **完結 (landed)** (2026-07-17)
 作成日: 2026-07-16
-更新日: 2026-07-16 (codex レビュー反映、blocker 1 件 + major 4 件を吸収)
+更新日: 2026-07-17 (PR0-4 全 landed、 PR5 は PR4 で cover 完了)
+
+## 完了サマリ (2026-07-17)
+
+- **PR0 (#780) サーバ側 Bearer auth 新設**: `POST /api/auth/device` (public rate-limited) + `DELETE /api/auth/devices/{id}` (Bearer 認証) + WS/HTTP middleware Bearer 対応 + `web_devices` schema 拡張 (0032)
+- **PR1 (#781) profile 基盤 + transport swap + client 注入**: `internal/profiles` パッケージ + `client.NewClient(url, token)` scheme 分岐 + `--profile` flag + root PersistentPreRunE 注入 + 30+ 個の `NewUnixClient` を `FromContext` 経由に置換
+- **PR2 (#782) `boid login` / `logout` + token 保存**: pair code redeem + `~/.config/boid/tokens/<profile>.json` (0600 atomic) + config.yaml yaml.Node preserve write + `LockConfigMutation` 共有 flock + login/logout の同一 profile race 塞ぎ
+- **PR3 (#783) WebSocket attach 一本化**: 独自 `Upgrade: boid-attach` 撤去 + WS route の Bearer 完全結線 + `input_close` フレーム新設 + `WriteInputRuntime` bug fix (`writeMaster` → `writeStdin`)
+- **PR4 (#784) `PersistentPreRunE` 拒否 UX**: `isLocalScope` + two-phase resolution (`ResolveWithoutToken` → scope=local reject → `Resolve` で token load) + spec 決定 6 の口語調エラーメッセージ
+- **PR5** (`project add/init/reload` のリモート時明示エラー): **PR4 で cover 完了**、 独立 PR 不要。 該当 command は Phase 2.5 で `scope=local` 分類済み → PR4 の generic 拒否 UX が自動的に「ローカル専用コマンドだよ」で reject する
+
+## 繰り越し / 未解決論点
+
+「未解決論点」節を参照。 Phase 3 全体としては完結し、 リモート daemon への CLI 接続が動作する状態。 残タスクは future phase / 別 PR。
 親ドキュメント: [container-based-boid.md](container-based-boid.md) — 移行戦略 **Phase 3**
 前提 phase: [workspace-db-consolidation.md](workspace-db-consolidation.md) — Phase 2.5
 
@@ -384,6 +397,14 @@ scope annotation の層 (`PersistentPreRunE` 判定) より下にある。
 
 PR0 (サーバ側 Bearer 新設) が先行必須。PR1-4 で本 phase の実質実装、
 PR5 は境界越えの明示エラー (Phase 6 まで持ち越しの繋ぎ)。
+
+**2026-07-17 追記**: PR5 の実装は PR4 の generic 拒否 UX で完了。 対象
+command (`project add` / `init` / `reload`) は Phase 2.5 で既に scope=local
+に分類済み (`cmd/scope_annotations_test.go`) で、 PR4 の
+`PersistentPreRunE` が scope=local + non-unix profile を hard error にする
+のでこれらのコマンドがリモート profile で走ることは無い。 独立 PR 不要
+として close、 Phase 6 で project = リモート git URL 前提化される時点で
+scope を `remote` に移行する。
 
 ---
 
