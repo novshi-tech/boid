@@ -421,6 +421,27 @@ PR5 は境界越えの明示エラー (Phase 6 まで持ち越しの繋ぎ)。
   再解決が必要で、 cobra の internal 挙動への依存を増やすため PR1 では
   意図的に scope 外とした。 実運用への影響は「別 profile 選択時の
   candidate が想定と違う」のみで、 security implication は無い
+- **WS `exit` フレームの exit code 伝播** (2026-07-17 PR3 codex 1 巡目指摘、繰り越し):
+  spec の「フレーム構成」節では `exit: {code}` と exit code を含む形が
+  定義されているが、 現状の実装は server 側が常に 0 を送り、 client 側
+  (`Client.AttachJob`) も受け取った Code を捨てる。 実運用は `cmd/exec.go`
+  の `fetchExecExitCode` が `GET /api/jobs/{id}` を最大 20 回 poll して
+  `job.Status` が完了状態になったところで `job.ExitCode` を読み取る形で
+  正しい exit code を取得しており支障は無いが、 spec 準拠のためには
+  runtime subscriber の interface 拡張 (chunk channel と別に exit code を
+  伝える機構) + `Client.AttachJob` の signature 変更 (`error` → `(int,
+  error)`) が要る。 PR3 のスコープを超えるため別 PR で対応
+- **WS attach の `resize` frame と `/api/jobs/{id}/resize` REST 併存**
+  (2026-07-17 PR3 codex 2 巡目指摘、 意図的併存):
+  spec の「WS attach 一本化」の趣旨からは resize も WS `resize` frame に
+  統一するのが自然だが、 現状は REST endpoint (`POST /api/jobs/{id}/resize`)
+  も残しており、 CLI の SIGWINCH ハンドラ (`cmd/attach.go`) はそちらを使う。
+  理由は既存 test (`TestServerJobRuntimeAttachAndResize`) が REST 経路を
+  独立に pin しており、 撤去には test 修正が必要でスコープが広がるため。
+  WS の `resize` frame 型は Web UI (browser) が使う想定で残しており、
+  二経路併存で実害は無い (両者とも同じ `ResizeRuntime` を呼ぶ)。
+  完全一本化は resize REST の撤去 + `TestServerJobRuntimeAttachAndResize` の
+  WS frame 版への書き換えでできるので、 別 PR での cleanup として繰り越し
 - **rate limit key の trusted proxy 判定** (2026-07-17 PR0 codex 4 巡目指摘、繰り越し):
   現行 `internal/api/web.go` の `remoteIP` は `CF-Connecting-IP` → `X-Forwarded-For`
   → `RemoteAddr` の順で無条件に採用する。直接 TCP 接続する攻撃者は forwarded 系
