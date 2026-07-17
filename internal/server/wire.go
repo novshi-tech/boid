@@ -897,7 +897,14 @@ func mountRoutes(srv *Server, runtime *appRuntime) error {
 	}
 	r.Mount("/api/sessions", sessionHandler.Routes())
 
-	workspaceHandler := &api.WorkspaceHandler{Service: runtime.projectSvc}
+	workspaceHandler := &api.WorkspaceHandler{
+		Service: runtime.projectSvc,
+		// Home directory size reporting (Show) + deletion (Remove),
+		// docs/plans/home-workspace-volume.md Phase 4 PR5. Same
+		// runtimesDirFor(cfg) value the dispatcher itself resolves
+		// homes/ from (dispatcher.WorkspaceHomesDir).
+		RuntimesDir: runtimesDirFor(srv.cfg),
+	}
 	r.Mount("/api/workspaces", workspaceHandler.Routes())
 
 	// host_commands read/reload (docs/plans/workspace-db-consolidation.md
@@ -923,7 +930,15 @@ func mountRoutes(srv *Server, runtime *appRuntime) error {
 		WithRuntimeReaper(makeDockerRuntimeReaper()).
 		WithAttachmentsRoot(dataHomeFor(srv.cfg))
 	gcAppService := &api.GCAppService{Store: gcStore, DeviceStore: runtime.authStore}
-	gcHandler := &api.GCHandler{Service: gcAppService}
+	gcHandler := &api.GCHandler{
+		Service: gcAppService,
+		// workspace_homes size listing (docs/plans/home-workspace-volume.md
+		// Phase 4 PR5) — visibility only, GC never deletes home directories
+		// itself (that's `workspace remove`'s job). Workspaces flags orphan
+		// home dirs (no matching workspace row) in the listing.
+		RuntimesDir: runtimesDirFor(srv.cfg),
+		Workspaces:  runtime.projectSvc,
+	}
 	r.Mount("/api/gc", gcHandler.Routes())
 
 	// Wire up the periodic GC loop.

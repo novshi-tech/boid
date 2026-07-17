@@ -119,6 +119,13 @@ type WorkspaceDetail struct {
 	// view) don't need to len() the slice themselves.
 	ProjectCount     int      `json:"project_count"`
 	AssignedProjects []string `json:"assigned_projects"`
+	// Home reports the workspace home directory's on-disk size (docs/plans/
+	// home-workspace-volume.md Phase 4 PR5). Populated only by GET
+	// /api/workspaces/{slug} (WorkspaceHandler.Show) — Create/Update/Import
+	// leave it nil, since computing it means walking a directory tree and
+	// none of those callers need it. nil (omitted from the JSON body) when
+	// the handler was not wired with a RuntimesDir to resolve it from.
+	Home *WorkspaceHomeSize `json:"home,omitempty"`
 }
 
 // WorkspaceStore provides direct CRUD over a single workspace's

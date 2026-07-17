@@ -2,9 +2,13 @@ package cmd
 
 import (
 	"fmt"
+	"io"
+	"text/tabwriter"
 	"time"
 
+	"github.com/novshi-tech/boid/internal/api"
 	"github.com/novshi-tech/boid/internal/client"
+	"github.com/novshi-tech/boid/internal/humanize"
 	"github.com/spf13/cobra"
 )
 
@@ -55,17 +59,69 @@ func runGC(cmd *cobra.Command, args []string) error {
 		Actions    int64 `json:"actions"`
 		Runtimes   int64 `json:"runtimes"`
 		SandboxTmp int64 `json:"sandbox_tmp"`
+		// WorkspaceHomes lists every workspace home directory's on-disk size
+		// (docs/plans/home-workspace-volume.md Phase 4 PR5) — visibility
+		// only, GC never deletes a home directory itself (`workspace
+		// remove` does that). Comes back empty (with
+		// WorkspaceHomesListError set) when the workspace lister itself
+		// failed (codex PR #791 review, Should-fix #3).
+		WorkspaceHomes []api.WorkspaceHomeSize `json:"workspace_homes,omitempty"`
+		// WorkspaceHomesListError is non-empty when the daemon could not
+		// trust orphan detection for WorkspaceHomes (a transient DB error
+		// listing workspaces, typically) — see printWorkspaceHomes.
+		WorkspaceHomesListError string `json:"workspace_homes_list_error,omitempty"`
 	}
 	if err := c.Do("POST", "/api/gc", body, &result); err != nil {
 		return err
 	}
 
+	out := cmd.OutOrStdout()
 	if dryRun {
-		fmt.Printf("dry run: would delete %d tasks, %d jobs, %d actions, %d runtimes, %d sandbox tmp entries\n",
+		fmt.Fprintf(out, "dry run: would delete %d tasks, %d jobs, %d actions, %d runtimes, %d sandbox tmp entries\n",
 			result.Tasks, result.Jobs, result.Actions, result.Runtimes, result.SandboxTmp)
 	} else {
-		fmt.Printf("deleted: %d tasks, %d jobs, %d actions, %d runtimes, %d sandbox tmp entries\n",
+		fmt.Fprintf(out, "deleted: %d tasks, %d jobs, %d actions, %d runtimes, %d sandbox tmp entries\n",
 			result.Tasks, result.Jobs, result.Actions, result.Runtimes, result.SandboxTmp)
 	}
+
+	printWorkspaceHomes(out, result.WorkspaceHomes, result.WorkspaceHomesListError)
 	return nil
+}
+
+// printWorkspaceHomes renders `boid gc`'s workspace_homes listing
+// (docs/plans/home-workspace-volume.md Phase 4 PR5): one line per workspace
+// home directory found on disk, an "(orphan) " prefix for any with no
+// matching workspace row, and a total. A size computation failure renders
+// as "?" rather than a bogus 0 B, and is excluded from the total (an
+// unknown size must not silently understate it). No output at all when
+// homes is empty and listErr is also empty — either the daemon was too old
+// to report it, or no workspace has ever been dispatched into yet. When
+// listErr is non-empty (codex PR #791 review, Should-fix #3: a workspace
+// lister failure makes orphan detection untrustworthy, so the daemon omits
+// the listing outright rather than sending bogus per-entry orphan flags),
+// a single warning line reports it instead of a (necessarily empty) table.
+func printWorkspaceHomes(out io.Writer, homes []api.WorkspaceHomeSize, listErr string) {
+	if listErr != "" {
+		fmt.Fprintf(out, "workspace homes: listing unavailable (%s)\n", listErr)
+	}
+	if len(homes) == 0 {
+		return
+	}
+	fmt.Fprintln(out, "workspace homes:")
+	tw := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
+	var total int64
+	for _, h := range homes {
+		label := h.Slug + ":"
+		if h.Orphan {
+			label = "(orphan) " + label
+		}
+		size := "?"
+		if h.SizeError == "" {
+			size = humanize.FormatBytes(h.Bytes)
+			total += h.Bytes
+		}
+		fmt.Fprintf(tw, "  %s\t%s\n", label, size)
+	}
+	fmt.Fprintf(tw, "  %s\t%s\n", "total:", humanize.FormatBytes(total))
+	_ = tw.Flush()
 }
