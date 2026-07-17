@@ -15,6 +15,7 @@ current_allowed=(
   db
   dispatcher
   gitgateway
+  humanize
   initwizard
   logrotate
   notify
@@ -36,6 +37,7 @@ target_allowed=(
   db
   dispatcher
   gitgateway
+  humanize
   initwizard
   logrotate
   notify
