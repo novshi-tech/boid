@@ -385,7 +385,7 @@ func TestBuildSandboxSpec_BoidBinaryBindMountOnly(t *testing.T) {
 // これにより sandbox 内プロセスが .git/config 等を直接書き換えられない。
 func TestProjectVisibilityMounts_GitROBind_Writable(t *testing.T) {
 	const effectiveDir = "/home/user/project"
-	mounts := projectVisibilityMounts(effectiveDir, effectiveDir, "/home/user", true, nil)
+	mounts := projectVisibilityMounts(effectiveDir, effectiveDir, "/home/user", "", true, nil)
 
 	var gitMount *sandbox.Mount
 	for i := range mounts {
@@ -417,7 +417,7 @@ func TestProjectVisibilityMounts_GitROBind_Writable(t *testing.T) {
 // read-only project では .git の ro re-bind は追加しない（既に親が read-only）。
 func TestProjectVisibilityMounts_GitROBind_ReadOnly(t *testing.T) {
 	const effectiveDir = "/home/user/project"
-	mounts := projectVisibilityMounts(effectiveDir, effectiveDir, "/home/user", false, nil)
+	mounts := projectVisibilityMounts(effectiveDir, effectiveDir, "/home/user", "", false, nil)
 
 	for _, m := range mounts {
 		if m.Target == effectiveDir+"/.git" && m.ReadOnly && m.DetectType {
@@ -441,7 +441,7 @@ func TestProjectVisibilityMounts_BoidBind(t *testing.T) {
 	}
 
 	// writable タスク: .boid は origProjectDir から bind され書き込み可。
-	wMounts := projectVisibilityMounts(origProject, origProject, "/home/user", true, nil)
+	wMounts := projectVisibilityMounts(origProject, origProject, "/home/user", "", true, nil)
 	w := findBoid(wMounts)
 	if w == nil {
 		t.Fatal(".boid bind not found in writable project mounts")
@@ -460,7 +460,7 @@ func TestProjectVisibilityMounts_BoidBind(t *testing.T) {
 	}
 
 	// readonly タスク: .boid は依然 bind されるが ro。
-	roMounts := projectVisibilityMounts(origProject, origProject, "/home/user", false, nil)
+	roMounts := projectVisibilityMounts(origProject, origProject, "/home/user", "", false, nil)
 	ro := findBoid(roMounts)
 	if ro == nil {
 		t.Fatal(".boid bind not found in read-only project mounts")
@@ -2293,5 +2293,306 @@ func TestBuildSandboxSpec_HostCommandRulesEnv_AbsentWhenNoHostCommands(t *testin
 	}
 	if _, ok := result.Env[sandbox.HostCommandRulesEnv]; ok {
 		t.Errorf("expected %s to be absent, got %q", sandbox.HostCommandRulesEnv, result.Env[sandbox.HostCommandRulesEnv])
+	}
+}
+
+// --- Phase 4 PR2: workspace home bind + $HOME/.boid job tmpfs overlay
+// (docs/plans/home-workspace-volume.md) ---
+
+// mountTargetIndex returns the index of the first mount in mounts whose
+// Target matches target, or -1 if none match. Shared by the ordering
+// assertions below so they read as "X comes before/right after Y" instead of
+// each hand-rolling a scan loop.
+func mountTargetIndex(mounts []sandbox.Mount, target string) int {
+	for i, m := range mounts {
+		if m.Target == target {
+			return i
+		}
+	}
+	return -1
+}
+
+func TestHomeMounts_WorkspaceHomeDirSet_ReturnsBindPlusBoidTmpfs(t *testing.T) {
+	const homeDir = "/home/user"
+	const wsHome = "/data/boid/homes/default"
+	mounts := homeMounts(homeDir, wsHome)
+	if len(mounts) != 2 {
+		t.Fatalf("homeMounts returned %d mounts, want 2: %+v", len(mounts), mounts)
+	}
+	if mounts[0].Source != wsHome || mounts[0].Target != homeDir || mounts[0].Type != sandbox.MountBind {
+		t.Errorf("mounts[0] = %+v, want bind %s -> %s", mounts[0], wsHome, homeDir)
+	}
+	if mounts[0].ReadOnly {
+		t.Error("workspace home bind must be read-write")
+	}
+	if mounts[1].Target != homeDir+"/.boid" || mounts[1].Type != sandbox.MountTmpfs {
+		t.Errorf("mounts[1] = %+v, want tmpfs at %s/.boid", mounts[1], homeDir)
+	}
+}
+
+func TestHomeMounts_WorkspaceHomeDirEmpty_FallsBackToTmpfs(t *testing.T) {
+	const homeDir = "/home/user"
+	mounts := homeMounts(homeDir, "")
+	if len(mounts) != 1 {
+		t.Fatalf("homeMounts returned %d mounts, want 1 (fallback tmpfs): %+v", len(mounts), mounts)
+	}
+	if mounts[0].Target != homeDir || mounts[0].Type != sandbox.MountTmpfs || mounts[0].Source != "" {
+		t.Errorf("mounts[0] = %+v, want plain tmpfs at %s", mounts[0], homeDir)
+	}
+}
+
+// TestBuildSandboxSpec_CloneEnabled_WorkspaceHomeBind pins the Clone branch's
+// PR2 mount order: workspace home bind immediately followed by the
+// $HOME/.boid tmpfs overlay.
+func TestBuildSandboxSpec_CloneEnabled_WorkspaceHomeBind(t *testing.T) {
+	homeDir := hostHomeDir()
+	if homeDir == "" {
+		t.Skip("hostHomeDir() returned empty; cannot exercise mount layout")
+	}
+	spec := &orchestrator.JobSpec{
+		ProjectID: "proj-1",
+		Argv:      []string{"/bin/true"},
+		Visibility: orchestrator.Visibility{
+			ProjectDir: "/home/user/project",
+			Writable:   true,
+			Clone:      &orchestrator.CloneDeclaration{Branch: "main", BaseBranch: "main"},
+		},
+	}
+	const wsHome = "/data/boid/homes/default"
+	rt := SandboxRuntimeInfo{JobID: "job-1", CloneWorkspaceDir: "/data/boid/runtimes/job-1/workspace", WorkspaceHomeDir: wsHome}
+	out, err := BuildSandboxSpec(spec, rt)
+	if err != nil {
+		t.Fatalf("BuildSandboxSpec: %v", err)
+	}
+	bindIdx := mountTargetIndex(out.Mounts, homeDir)
+	tmpfsIdx := mountTargetIndex(out.Mounts, homeDir+"/.boid")
+	if bindIdx == -1 {
+		t.Fatalf("workspace home bind at %s not found: %+v", homeDir, out.Mounts)
+	}
+	if out.Mounts[bindIdx].Source != wsHome || out.Mounts[bindIdx].Type != sandbox.MountBind {
+		t.Errorf("home mount = %+v, want bind from %s", out.Mounts[bindIdx], wsHome)
+	}
+	if tmpfsIdx != bindIdx+1 {
+		t.Errorf(".boid tmpfs index = %d, want %d (immediately after home bind at %d); mounts=%+v", tmpfsIdx, bindIdx+1, bindIdx, out.Mounts)
+	}
+	if out.Mounts[tmpfsIdx].Type != sandbox.MountTmpfs {
+		t.Errorf(".boid mount = %+v, want tmpfs", out.Mounts[tmpfsIdx])
+	}
+}
+
+// TestBuildSandboxSpec_CloneEnabled_NoWorkspaceHome_FallsBackToTmpfs pins the
+// test-wiring graceful degrade: an empty WorkspaceHomeDir (e.g. Runner not
+// wired, or a minimal test SandboxRuntimeInfo{}) must still produce the
+// pre-PR2 single tmpfs at HOME, not a bind of an empty path.
+func TestBuildSandboxSpec_CloneEnabled_NoWorkspaceHome_FallsBackToTmpfs(t *testing.T) {
+	homeDir := hostHomeDir()
+	if homeDir == "" {
+		t.Skip("hostHomeDir() returned empty; cannot exercise mount layout")
+	}
+	spec := &orchestrator.JobSpec{
+		ProjectID: "proj-1",
+		Argv:      []string{"/bin/true"},
+		Visibility: orchestrator.Visibility{
+			ProjectDir: "/home/user/project",
+			Writable:   true,
+			Clone:      &orchestrator.CloneDeclaration{Branch: "main", BaseBranch: "main"},
+		},
+	}
+	rt := SandboxRuntimeInfo{JobID: "job-1", CloneWorkspaceDir: "/data/boid/runtimes/job-1/workspace"}
+	out, err := BuildSandboxSpec(spec, rt)
+	if err != nil {
+		t.Fatalf("BuildSandboxSpec: %v", err)
+	}
+	var found *sandbox.Mount
+	for i := range out.Mounts {
+		if out.Mounts[i].Target == homeDir {
+			found = &out.Mounts[i]
+			break
+		}
+	}
+	if found == nil {
+		t.Fatalf("no mount targeting HOME (%s) found: %+v", homeDir, out.Mounts)
+	}
+	if found.Type != sandbox.MountTmpfs || found.Source != "" {
+		t.Errorf("HOME mount = %+v, want plain tmpfs (no source) when WorkspaceHomeDir is empty", found)
+	}
+	for _, m := range out.Mounts {
+		if m.Target == homeDir+"/.boid" {
+			t.Errorf("unexpected /.boid mount when WorkspaceHomeDir is empty (fallback should be a single HOME tmpfs): %+v", m)
+		}
+	}
+}
+
+// TestProjectVisibilityMounts_WorkspaceHomeBind_Order pins the full mount
+// order projectVisibilityMounts produces once a workspace home is resolved:
+// [bind effectiveDir, bind homeDir<-workspaceHomeDir, tmpfs homeDir/.boid,
+// re-bind effectiveDir, peers..., .boid bind, .git ro re-bind].
+func TestProjectVisibilityMounts_WorkspaceHomeBind_Order(t *testing.T) {
+	const effectiveDir = "/home/user/project"
+	const homeDir = "/home/user"
+	const wsHome = "/data/boid/homes/default"
+	mounts := projectVisibilityMounts(effectiveDir, effectiveDir, homeDir, wsHome, true, map[string]string{"peer": "/home/user/peer"})
+
+	effIdx := mountTargetIndex(mounts, effectiveDir)
+	homeIdx := mountTargetIndex(mounts, homeDir)
+	boidTmpfsIdx := mountTargetIndex(mounts, homeDir+"/.boid")
+	// Second occurrence of effectiveDir (the re-mount) — search after the
+	// .boid tmpfs since the first occurrence (index 0) would otherwise match.
+	remountIdx := -1
+	for i := boidTmpfsIdx + 1; i < len(mounts); i++ {
+		if mounts[i].Target == effectiveDir {
+			remountIdx = i
+			break
+		}
+	}
+	peerIdx := mountTargetIndex(mounts, "/home/user/peer")
+	gitIdx := mountTargetIndex(mounts, effectiveDir+"/.git")
+
+	if effIdx != 0 {
+		t.Errorf("effectiveDir bind index = %d, want 0", effIdx)
+	}
+	if homeIdx != 1 {
+		t.Errorf("home bind index = %d, want 1", homeIdx)
+	}
+	if mounts[homeIdx].Source != wsHome || mounts[homeIdx].Type != sandbox.MountBind {
+		t.Errorf("home mount = %+v, want bind from %s", mounts[homeIdx], wsHome)
+	}
+	if boidTmpfsIdx != 2 {
+		t.Errorf(".boid tmpfs index = %d, want 2 (immediately after home bind)", boidTmpfsIdx)
+	}
+	if remountIdx != 3 {
+		t.Errorf("effectiveDir re-mount index = %d, want 3", remountIdx)
+	}
+	if peerIdx <= remountIdx {
+		t.Errorf("peer bind index = %d, want after re-mount (%d)", peerIdx, remountIdx)
+	}
+	if gitIdx <= peerIdx {
+		t.Errorf(".git re-bind index = %d, want after peer bind (%d)", gitIdx, peerIdx)
+	}
+}
+
+// TestProjectVisibilityMounts_NoWorkspaceHome_FallsBackToTmpfs is the
+// projectVisibility-branch counterpart of the Clone-branch fallback test.
+func TestProjectVisibilityMounts_NoWorkspaceHome_FallsBackToTmpfs(t *testing.T) {
+	const effectiveDir = "/home/user/project"
+	const homeDir = "/home/user"
+	mounts := projectVisibilityMounts(effectiveDir, effectiveDir, homeDir, "", true, nil)
+
+	var found *sandbox.Mount
+	for i := range mounts {
+		if mounts[i].Target == homeDir {
+			found = &mounts[i]
+			break
+		}
+	}
+	if found == nil || found.Type != sandbox.MountTmpfs || found.Source != "" {
+		t.Errorf("HOME mount = %+v, want plain tmpfs when workspaceHomeDir is empty", found)
+	}
+	for _, m := range mounts {
+		if m.Target == homeDir+"/.boid" {
+			t.Errorf("unexpected /.boid mount when workspaceHomeDir is empty: %+v", m)
+		}
+	}
+}
+
+// TestBuildSandboxSpec_DefaultProfile_WorkspaceHomeBind pins the "no project
+// visible" branch's PR2 mount order, mirroring the Clone-branch test above.
+func TestBuildSandboxSpec_DefaultProfile_WorkspaceHomeBind(t *testing.T) {
+	homeDir := hostHomeDir()
+	if homeDir == "" {
+		t.Skip("hostHomeDir() returned empty; cannot exercise mount layout")
+	}
+	spec := &orchestrator.JobSpec{} // ProfileDefault, no project
+	const wsHome = "/data/boid/homes/default"
+	result, err := BuildSandboxSpec(spec, SandboxRuntimeInfo{WorkspaceHomeDir: wsHome})
+	if err != nil {
+		t.Fatalf("BuildSandboxSpec: %v", err)
+	}
+	bindIdx := mountTargetIndex(result.Mounts, homeDir)
+	tmpfsIdx := mountTargetIndex(result.Mounts, homeDir+"/.boid")
+	if bindIdx == -1 {
+		t.Fatalf("workspace home bind at %s not found: %+v", homeDir, result.Mounts)
+	}
+	if result.Mounts[bindIdx].Source != wsHome || result.Mounts[bindIdx].Type != sandbox.MountBind {
+		t.Errorf("home mount = %+v, want bind from %s", result.Mounts[bindIdx], wsHome)
+	}
+	if tmpfsIdx != bindIdx+1 {
+		t.Errorf(".boid tmpfs index = %d, want %d (immediately after home bind)", tmpfsIdx, bindIdx+1)
+	}
+}
+
+// TestBuildSandboxSpec_ProfileInit_IgnoresWorkspaceHomeDir is the regression
+// pin for docs/plans/home-workspace-volume.md Phase 4 PR2's explicit
+// decision to leave ProfileInit untouched: even when rt.WorkspaceHomeDir is
+// set, ProfileInit must never bind it over HOME (that would shadow the host
+// tools ProfileInit's host-root rbind exists to expose), and must keep the
+// single $HOME/.boid tmpfs it already had.
+func TestBuildSandboxSpec_ProfileInit_IgnoresWorkspaceHomeDir(t *testing.T) {
+	homeDir := hostHomeDir()
+	if homeDir == "" {
+		t.Skip("hostHomeDir() returned empty; cannot exercise mount layout")
+	}
+	spec := &orchestrator.JobSpec{
+		SandboxProfile: int(sandbox.ProfileInit),
+	}
+	rt := SandboxRuntimeInfo{WorkspaceHomeDir: "/data/boid/homes/default"}
+	result, err := BuildSandboxSpec(spec, rt)
+	if err != nil {
+		t.Fatalf("BuildSandboxSpec: %v", err)
+	}
+	for _, m := range result.Mounts {
+		if m.Target == homeDir && m.Type == sandbox.MountBind {
+			t.Errorf("ProfileInit must not bind WorkspaceHomeDir over HOME: %+v", m)
+		}
+	}
+	boidTmpfsCount := 0
+	for _, m := range result.Mounts {
+		if m.Target == homeDir+"/.boid" {
+			boidTmpfsCount++
+			if m.Type != sandbox.MountTmpfs {
+				t.Errorf(".boid mount = %+v, want tmpfs", m)
+			}
+		}
+	}
+	if boidTmpfsCount != 1 {
+		t.Errorf("found %d mounts targeting %s/.boid, want exactly 1", boidTmpfsCount, homeDir)
+	}
+}
+
+// TestBuildSandboxSpec_AttachmentsBind_OnTopOfWorkspaceHomeBind verifies the
+// mount-chain concern flagged in docs/plans/home-workspace-volume.md PR2: the
+// attachments bind (target $HOME/.boid/attachments) must still land correctly
+// once $HOME/.boid is itself a job-scoped tmpfs stacked on a workspace home
+// bind, not the old plain-tmpfs-HOME layout. applyMount (runner_linux.go)
+// applies mounts in append order and mkdir's each target freshly, so a bind
+// nested under an already-mounted tmpfs works the same way the pre-existing
+// ProfileInit branch already relies on (tmpfs at $HOME/.boid, then the
+// attachments bind on top) — this pins that the non-ProfileInit branches now
+// get the same property.
+func TestBuildSandboxSpec_AttachmentsBind_OnTopOfWorkspaceHomeBind(t *testing.T) {
+	const taskID = "abc-123"
+	root := t.TempDir()
+	homeDir := hostHomeDir()
+	spec := &orchestrator.JobSpec{TaskID: taskID}
+	rt := SandboxRuntimeInfo{AttachmentsRoot: root, WorkspaceHomeDir: "/data/boid/homes/default"}
+
+	result, err := BuildSandboxSpec(spec, rt)
+	if err != nil {
+		t.Fatalf("BuildSandboxSpec: %v", err)
+	}
+
+	boidTmpfsIdx := mountTargetIndex(result.Mounts, homeDir+"/.boid")
+	attachIdx := mountTargetIndex(result.Mounts, homeDir+"/.boid/attachments")
+	if boidTmpfsIdx == -1 {
+		t.Fatalf(".boid tmpfs mount not found: %+v", result.Mounts)
+	}
+	if attachIdx == -1 {
+		t.Fatalf("attachments bind not found: %+v", result.Mounts)
+	}
+	if attachIdx <= boidTmpfsIdx {
+		t.Errorf("attachments bind index = %d, want after .boid tmpfs index %d", attachIdx, boidTmpfsIdx)
+	}
+	if result.Mounts[attachIdx].Source != root+"/tasks/"+taskID+"/attachments" {
+		t.Errorf("attachments source = %q, want %q", result.Mounts[attachIdx].Source, root+"/tasks/"+taskID+"/attachments")
 	}
 }

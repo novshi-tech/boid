@@ -131,12 +131,23 @@ type SandboxRuntimeInfo struct {
 	// workspace declares an init.sh, already initialized) by the time
 	// Dispatch reaches BuildSandboxSpec.
 	//
-	// PR1 is wiring-only and deliberately inert: BuildSandboxSpec does not
-	// read this field yet, so it has no effect on the sandbox's mount set
-	// or HOME env var (env["HOME"] still comes from hostHomeDir(), and the
-	// HOME tmpfs/bind branches below are unchanged). PR2 switches the HOME
-	// mount over to bind this directory read-write instead of the plain
-	// tmpfs, at which point this field starts being read.
+	// PR2 (docs/plans/home-workspace-volume.md) reads this field: the
+	// Clone / projectVisible / default HOME branches below (via homeMounts)
+	// bind it read-write at HOME's sandbox-internal path instead of a plain
+	// tmpfs, with $HOME/.boid layered as a job-scoped tmpfs on top so
+	// context/output writes stay isolated per job even though the rest of
+	// HOME now persists across jobs in the same workspace. env["HOME"]
+	// itself is unchanged — it still comes from hostHomeDir(), the *target*
+	// path inside the sandbox; only the *contents* now come from the
+	// workspace home instead of starting empty every job.
+	//
+	// When empty (test wiring that never resolved a workspace — most of
+	// sandbox_builder_test.go's minimal SandboxRuntimeInfo{} literals —
+	// or any other caller that has not threaded a workspace home through
+	// yet) the HOME branches gracefully degrade to the pre-PR2 behaviour: a
+	// single fresh tmpfs. The ProfileInit branch never reads this field at
+	// all — see its own doc comment for why bind-mounting HOME there would
+	// defeat its host-tool-discovery purpose.
 	WorkspaceHomeDir string
 }
 
@@ -267,17 +278,17 @@ func BuildSandboxSpec(spec *orchestrator.JobSpec, rt SandboxRuntimeInfo) (sandbo
 		// target at the neutral /workspace path; there is no host ProjectDir
 		// bind for this job at all, so binding projectDir here too would
 		// double-mount the same host path at two sandbox targets for no
-		// reason. HOME still gets a private tmpfs, exactly like the "no
-		// project visible" case below.
-		mounts = append(mounts, sandbox.Mount{
-			Target: homeDir,
-			Type:   sandbox.MountTmpfs,
-		})
+		// reason. HOME still gets the workspace home bind (+ .boid tmpfs
+		// overlay) or a private tmpfs fallback (docs/plans/home-workspace-
+		// volume.md Phase 4 PR2), exactly like the "no project visible"
+		// case below.
+		mounts = append(mounts, homeMounts(homeDir, rt.WorkspaceHomeDir)...)
 	case projectDir != "":
 		mounts = append(mounts, projectVisibilityMounts(
 			projectDir,
 			projectDir,
 			homeDir,
+			rt.WorkspaceHomeDir,
 			spec.Visibility.Writable,
 			rt.WorkspacePeers,
 		)...)
@@ -304,11 +315,10 @@ func BuildSandboxSpec(spec *orchestrator.JobSpec, rt SandboxRuntimeInfo) (sandbo
 			Type:   sandbox.MountTmpfs,
 		})
 	default:
-		// No project visible: HOME is a fresh tmpfs.
-		mounts = append(mounts, sandbox.Mount{
-			Target: homeDir,
-			Type:   sandbox.MountTmpfs,
-		})
+		// No project visible: HOME gets the workspace home bind (+ .boid
+		// tmpfs overlay) or a fresh tmpfs fallback, same as the Clone case
+		// above (docs/plans/home-workspace-volume.md Phase 4 PR2).
+		mounts = append(mounts, homeMounts(homeDir, rt.WorkspaceHomeDir)...)
 	}
 
 	// Sandbox-internal clone mounts (docs/plans/git-gateway-cutover.md PR5):
@@ -775,11 +785,45 @@ func buildCloneSpec(spec *orchestrator.JobSpec, rt SandboxRuntimeInfo) sandbox.C
 	}
 }
 
+// homeMounts returns the HOME mount(s) for a sandbox (docs/plans/home-
+// workspace-volume.md Phase 4 PR2). When workspaceHomeDir is non-empty, HOME
+// becomes a read-write bind of the workspace's persistent home directory,
+// with $HOME/.boid layered as a job-scoped tmpfs on top so context/output
+// writes stay isolated per job even though the rest of HOME now persists
+// across jobs in the same workspace. When workspaceHomeDir is empty (test
+// wiring that never resolved a workspace home, or any caller that has not
+// threaded SandboxRuntimeInfo.WorkspaceHomeDir through yet) this degrades
+// gracefully to the pre-PR2 behaviour: a single fresh tmpfs at homeDir.
+//
+// Shared by the Clone branch, the default (no-project) branch and
+// projectVisibilityMounts's HOME step below so all three switch over
+// identically.
+func homeMounts(homeDir, workspaceHomeDir string) []sandbox.Mount {
+	if workspaceHomeDir == "" {
+		return []sandbox.Mount{{
+			Target: homeDir,
+			Type:   sandbox.MountTmpfs,
+		}}
+	}
+	return []sandbox.Mount{
+		{
+			Source: workspaceHomeDir,
+			Target: homeDir,
+			Type:   sandbox.MountBind,
+		},
+		{
+			Target: homeDir + "/.boid",
+			Type:   sandbox.MountTmpfs,
+		},
+	}
+}
+
 // projectVisibilityMounts returns the canonical mount layout that lets the
-// sandbox see the project and workspace peers, under a tmpfs HOME that
+// sandbox see the project and workspace peers, under a HOME mount (workspace
+// home bind + .boid tmpfs overlay, or a tmpfs fallback — see homeMounts) that
 // shadows host files but re-mounts the project on top.
 func projectVisibilityMounts(
-	origProjectDir, effectiveDir, homeDir string,
+	origProjectDir, effectiveDir, homeDir, workspaceHomeDir string,
 	writable bool,
 	peers map[string]string,
 ) []sandbox.Mount {
@@ -793,13 +837,14 @@ func projectVisibilityMounts(
 		ReadOnly: !writable,
 	})
 
-	// 2) tmpfs HOME on top of user's home (isolates config files from host).
-	out = append(out, sandbox.Mount{
-		Target: homeDir,
-		Type:   sandbox.MountTmpfs,
-	})
+	// 2) HOME mount(s) on top of user's home (isolates config files from
+	// host): workspace home bind + .boid tmpfs overlay, or a fresh tmpfs
+	// fallback when no workspace home is resolved (docs/plans/home-
+	// workspace-volume.md Phase 4 PR2).
+	out = append(out, homeMounts(homeDir, workspaceHomeDir)...)
 
-	// 3) re-mount the effective dir so HOME tmpfs does not shadow it.
+	// 3) re-mount the effective dir so the HOME mount (tmpfs or workspace
+	// bind) does not shadow it.
 	out = append(out, sandbox.Mount{
 		Source:   effectiveDir,
 		Target:   effectiveDir,
@@ -1323,6 +1368,8 @@ type environmentDoc struct {
 // package constant rather than rebuilding it per call. Use a literal block
 // scalar in the YAML output so LLMs see it as one paragraph per bullet.
 const environmentNotes = `- git はサンドボックス内の実バイナリで動作します（host への broker dispatch はありません）。 project はジョブ開始時に git gateway 経由で新規 clone されたコピーで、 origin は gateway を指しています。 commit した変更は push するまで他セッション・他ホストに共有されません。 readonly な job では push が gateway 側で拒否されます (fetch はできます)。
+- $HOME はワークスペース単位で永続化された領域を bind mount しており、 同一ワークスペース内の複数ジョブ間で HOME 直下のファイル (例: adapter が書く config・キャッシュ等) が引き継がれます。 ただし Phase 4 移行途中の暫定例外として、 adapter bindings (claude/codex/opencode) はホスト側の ~/.claude / ~/.codex / ~/.opencode 等を workspace HOME 上に上書きで bind しており (Phase 4 PR3 で退役予定)、 これらのファイル群は暫定的にホスト側と共有です。 boid kit init / workspace configure ジョブ (ProfileInit) は例外的にホスト HOME を直接見ます (ホスト側のツール検出目的)。
+- ~/.boid/context と ~/.boid/output はジョブごとに独立した tmpfs で、 ジョブ終了と共に消えます。 ~/.boid/attachments はタスクごとに read-only で bind される attachment ディレクトリで、 タスク終了までライフサイクルが継続します。
 - boid fetch (URL 単発取得の boid builtin) は host へ broker dispatch され、 network.allowed_domains の許可ドメインに対してのみ動作します。 git fetch とは別経路で、 git の fetch/push はいずれも上の bullet の gateway 経由です。
 - host_commands (gh 等) は host 側でリポジトリの checkout ディレクトリではなく中立ディレクトリで実行されます。 cwd から repo を推定する動作 (gh の暗黙 -R 等) には依存できません。 repo 文脈が必要なコマンドは kit 側の env 設定 (例: gh の GH_REPO) で渡されます。
 - host_commands には stdin が渡りません。 stdin 経由でファイル内容や長文を渡す設計は使えません。
