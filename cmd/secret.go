@@ -83,7 +83,7 @@ func runSecretSet(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("empty value")
 	}
 
-	c := client.NewUnixClient(client.DefaultSocketPath())
+	c := client.FromContext(cmd.Context())
 	req := map[string]string{"namespace": namespace, "key": key, "value": value}
 	if err := c.Do("POST", "/api/secrets", req, nil); err != nil {
 		return err
@@ -94,7 +94,7 @@ func runSecretSet(cmd *cobra.Command, args []string) error {
 
 func runSecretGet(cmd *cobra.Command, args []string) error {
 	namespace, _ := cmd.Flags().GetString("namespace")
-	c := client.NewUnixClient(client.DefaultSocketPath())
+	c := client.FromContext(cmd.Context())
 	var resp struct {
 		Value string `json:"value"`
 	}
@@ -108,7 +108,7 @@ func runSecretGet(cmd *cobra.Command, args []string) error {
 
 func runSecretList(cmd *cobra.Command, args []string) error {
 	namespace, _ := cmd.Flags().GetString("namespace")
-	c := client.NewUnixClient(client.DefaultSocketPath())
+	c := client.FromContext(cmd.Context())
 	var keys []string
 	path := "/api/secrets?namespace=" + url.QueryEscape(namespace)
 	if err := c.Do("GET", path, nil, &keys); err != nil {
@@ -122,7 +122,7 @@ func runSecretList(cmd *cobra.Command, args []string) error {
 
 func runSecretDelete(cmd *cobra.Command, args []string) error {
 	namespace, _ := cmd.Flags().GetString("namespace")
-	c := client.NewUnixClient(client.DefaultSocketPath())
+	c := client.FromContext(cmd.Context())
 	path := "/api/secrets/" + url.PathEscape(args[0]) + "?namespace=" + url.QueryEscape(namespace)
 	if err := c.Do("DELETE", path, nil, nil); err != nil {
 		return err

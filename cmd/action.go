@@ -59,7 +59,7 @@ func runActionSend(cmd *cobra.Command, args []string) error {
 		req["payload"] = payload
 	}
 
-	c := client.NewUnixClient(client.DefaultSocketPath())
+	c := client.FromContext(cmd.Context())
 	var result map[string]any
 	if err := c.Do("POST", fmt.Sprintf("/api/tasks/%s/actions", taskID), req, &result); err != nil {
 		return fmt.Errorf("send action: %w", err)

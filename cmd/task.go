@@ -194,7 +194,7 @@ func runTaskUpdate(cmd *cobra.Command, args []string) error {
 		req.Instructions = data
 	}
 
-	c := client.NewUnixClient(client.DefaultSocketPath())
+	c := client.FromContext(cmd.Context())
 	task, err := c.UpdateTask(args[0], req)
 	if err != nil {
 		return fmt.Errorf("update task: %w", err)
@@ -236,7 +236,7 @@ func runTaskList(cmd *cobra.Command, args []string) error {
 	workspace, _ := cmd.Flags().GetString("workspace")
 	behavior, _ := cmd.Flags().GetString("behavior")
 
-	c := client.NewUnixClient(client.DefaultSocketPath())
+	c := client.FromContext(cmd.Context())
 
 	var params []string
 	if status != "" {
@@ -356,7 +356,7 @@ func runTaskCreate(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("YAML must include project_id and title")
 	}
 
-	c := client.NewUnixClient(client.DefaultSocketPath())
+	c := client.FromContext(cmd.Context())
 	var task orchestrator.Task
 	if err := c.Do("POST", "/api/tasks", req, &task); err != nil {
 		return fmt.Errorf("create task: %w", err)
@@ -370,7 +370,7 @@ func runTaskCreate(cmd *cobra.Command, args []string) error {
 
 func runTaskShow(cmd *cobra.Command, args []string) error {
 	field, _ := cmd.Flags().GetString("field")
-	c := client.NewUnixClient(client.DefaultSocketPath())
+	c := client.FromContext(cmd.Context())
 
 	if field != "" {
 		path := "/api/tasks/" + args[0] + "/field?path=" + url.QueryEscape(field)
@@ -405,7 +405,7 @@ func runTaskWatch(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("--interval must be positive")
 	}
 
-	c := client.NewUnixClient(client.DefaultSocketPath())
+	c := client.FromContext(cmd.Context())
 	taskID := args[0]
 	var lastFingerprint string
 
@@ -440,7 +440,7 @@ func runTaskWatch(cmd *cobra.Command, args []string) error {
 
 func runTaskDelete(cmd *cobra.Command, args []string) error {
 	force, _ := cmd.Flags().GetBool("force")
-	c := client.NewUnixClient(client.DefaultSocketPath())
+	c := client.FromContext(cmd.Context())
 
 	path := "/api/tasks/" + args[0]
 	if force {
@@ -476,7 +476,7 @@ func runTaskImport(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	c := client.NewUnixClient(client.DefaultSocketPath())
+	c := client.FromContext(cmd.Context())
 
 	projectID := projectRef
 	if projectRef != "" {
@@ -505,7 +505,7 @@ func runTaskImport(cmd *cobra.Command, args []string) error {
 }
 
 func runTaskReopen(cmd *cobra.Command, args []string) error {
-	c := client.NewUnixClient(client.DefaultSocketPath())
+	c := client.FromContext(cmd.Context())
 	message, _ := cmd.Flags().GetString("message")
 
 	req := api.ApplyActionRequest{Type: "reopen"}
@@ -533,7 +533,7 @@ func runTaskReopen(cmd *cobra.Command, args []string) error {
 
 func runTaskDuplicate(cmd *cobra.Command, args []string) error {
 	autoStart, _ := cmd.Flags().GetBool("auto-start")
-	c := client.NewUnixClient(client.DefaultSocketPath())
+	c := client.FromContext(cmd.Context())
 
 	req := map[string]any{
 		"auto_start": autoStart,
@@ -553,7 +553,7 @@ func runTaskDuplicate(cmd *cobra.Command, args []string) error {
 func runTaskRerun(cmd *cobra.Command, args []string) error {
 	autoStart, _ := cmd.Flags().GetBool("auto-start")
 	instructionsFile, _ := cmd.Flags().GetString("instructions-file")
-	c := client.NewUnixClient(client.DefaultSocketPath())
+	c := client.FromContext(cmd.Context())
 
 	req := api.RerunTaskRequest{AutoStart: autoStart}
 	if instructionsFile != "" {
@@ -596,7 +596,7 @@ func runTaskNotify(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("--message is required")
 	}
 
-	c := client.NewUnixClient(client.DefaultSocketPath())
+	c := client.FromContext(cmd.Context())
 	req := api.NotifyTaskRequest{
 		Message:    message,
 		Ask:        ask,
@@ -625,7 +625,7 @@ func runTaskAnswer(cmd *cobra.Command, args []string) error {
 	if answer == "" {
 		return fmt.Errorf("--answer is required")
 	}
-	c := client.NewUnixClient(client.DefaultSocketPath())
+	c := client.FromContext(cmd.Context())
 	req := api.AnswerTaskRequest{QuestionID: questionID, Answer: answer}
 	if err := c.Do("POST", "/api/tasks/"+taskID+"/answer", req, nil); err != nil {
 		return fmt.Errorf("answer task: %w", err)

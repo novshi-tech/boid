@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"time"
@@ -81,7 +82,7 @@ func runExec(cobraCmd *cobra.Command, args []string) error {
 		return fmt.Errorf("-p/--project is required")
 	}
 
-	c := client.NewUnixClient(client.DefaultSocketPath())
+	c := client.FromContext(cobraCmd.Context())
 
 	// GET /api/projects/{ref} resolves partial/name refs server-side (the
 	// same resolveRef every other project route uses) and returns the
@@ -123,11 +124,11 @@ func runExec(cobraCmd *cobra.Command, args []string) error {
 	// process already exited) — see attachLive's doc comment in attach.go for
 	// why the RuntimeID-set guarantee lets us skip attachToJob's
 	// GET-then-pager preamble entirely and go straight to the live attach.
-	if err := attachLive(result.JobID); err != nil {
+	if err := attachLive(cobraCmd.Context(), result.JobID); err != nil {
 		return fmt.Errorf("attach exec job: %w", err)
 	}
 
-	exitCode, err := fetchExecExitCode(result.JobID)
+	exitCode, err := fetchExecExitCode(cobraCmd.Context(), result.JobID)
 	if err != nil {
 		return fmt.Errorf("read exec result: %w", err)
 	}
@@ -171,8 +172,8 @@ const execExitCodeUnknown = 1
 // closing. That fallback path is not new to exec (every session job shares
 // it), but exec is the first caller that actually needs the exit code
 // synchronously, so this polls briefly rather than trusting a single read.
-func fetchExecExitCode(jobID string) (int, error) {
-	c := client.NewUnixClient(client.DefaultSocketPath())
+func fetchExecExitCode(ctx context.Context, jobID string) (int, error) {
+	c := client.FromContext(ctx)
 	return pollExecExitCode(jobID, func() (api.Job, error) {
 		var job api.Job
 		err := c.Do("GET", "/api/jobs/"+jobID, nil, &job)

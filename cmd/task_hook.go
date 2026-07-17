@@ -45,7 +45,7 @@ func runTaskHookReplay(cmd *cobra.Command, args []string) error {
 	hookID := args[1]
 	status, _ := cmd.Flags().GetString("status")
 
-	c := client.NewUnixClient(client.DefaultSocketPath())
+	c := client.FromContext(cmd.Context())
 
 	body := map[string]any{}
 	if status != "" {
@@ -73,7 +73,7 @@ func runTaskHookList(cmd *cobra.Command, args []string) error {
 	taskID := args[0]
 	status, _ := cmd.Flags().GetString("status")
 
-	c := client.NewUnixClient(client.DefaultSocketPath())
+	c := client.FromContext(cmd.Context())
 
 	path := fmt.Sprintf("/api/tasks/%s/hooks", url.PathEscape(taskID))
 	if status != "" {

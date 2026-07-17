@@ -18,13 +18,41 @@ const (
 	socketProbeTimeout = 200 * time.Millisecond
 )
 
-// EnsureRunning ensures the boid server is running, starting it automatically
-// if it is not. It uses a file lock to prevent concurrent start races.
+// EnsureRunning ensures the boid server is running at DefaultSocketPath(),
+// starting it automatically if it is not. Kept for backward compatibility
+// with pre-Phase-3 callers that never had a per-profile socket to name.
+func EnsureRunning(ctx context.Context) error {
+	return EnsureRunningAt(ctx, DefaultSocketPath())
+}
+
+// EnsureRunningAt ensures the boid server reachable at socketPath is running.
+// This is the Phase 3 profile-aware entry point (docs/plans/cli-remote-connection.md
+// PR1): root's PersistentPreRunE, once it resolves the invocation's
+// connection profile, passes the profile's socket path here so autostart
+// probes the SAME socket the CLI is about to talk to — not
+// DefaultSocketPath() unconditionally.
+//
+// Autostart machinery (spawnServer) only knows how to spin up a daemon on
+// the default socket path (it re-execs `boid start`, which reads its own
+// config for the socket path — there is no runtime override), so:
+//   - socketPath == DefaultSocketPath(): probe → autostart on miss (unchanged)
+//   - socketPath != DefaultSocketPath(): probe only; on miss, a clear error
+//     directing the operator to launch that daemon out-of-band, rather than
+//     silently spinning up a fresh default-socket daemon that would not be
+//     the one the CLI is about to connect to.
 //
 // If BOID_NO_AUTOSTART=1, auto-start is skipped and an error is returned when
 // the server is not reachable.
-func EnsureRunning(ctx context.Context) error {
-	return ensureRunning(ctx, DefaultSocketPath(), autostartLockPath(), spawnServer)
+func EnsureRunningAt(ctx context.Context, socketPath string) error {
+	if isSocketReady(socketPath) {
+		return nil
+	}
+	if socketPath != DefaultSocketPath() {
+		// A non-default profile socket must be started explicitly — autostart
+		// cannot know how to bring up an arbitrary bespoke socket path.
+		return fmt.Errorf("boid server is not running at %s; a non-default profile socket must be started explicitly (check that its daemon is up)", socketPath)
+	}
+	return ensureRunning(ctx, socketPath, autostartLockPath(), spawnServer)
 }
 
 // ensureRunning is the testable implementation with injectable dependencies.
