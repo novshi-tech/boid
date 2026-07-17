@@ -16,6 +16,45 @@ import (
 	"github.com/novshi-tech/boid/internal/adapters/sigutil"
 )
 
+// harnessCLI is the binary name Run execs. Used by the PATH fail-fast check
+// below.
+const harnessCLI = "claude"
+
+// lookPath resolves harnessCLI on the sandbox PATH; overridable for tests.
+var lookPath = exec.LookPath
+
+// missingCLIError builds the fail-fast error Run returns when harnessCLI is
+// not on the sandbox PATH.
+//
+// Phase 4 PR3 (docs/plans/home-workspace-volume.md) retired
+// claude.Adapter.Bindings' own CLI bind-mount (see bindings.go) in favor of
+// the workspace HOME volume: the claude binary now has to come from the
+// workspace's init.sh, so a PATH lookup miss almost always means that
+// init.sh is missing or hasn't installed the CLI yet — not a generic
+// "command not found" a user has no actionable next step for. slug names
+// the workspace whose init.sh needs the fix; it comes from
+// rc.Env["BOID_WORKSPACE_SLUG"] (set by BuildSandboxSpec from
+// SandboxRuntimeInfo.WorkspaceSlug, which Runner.Dispatch derives from the
+// resolved workspace home) and falls back to "default" for callers that
+// never wired it through (bare unit tests, or a caller that predates the
+// wiring). cause is the underlying lookup error, wrapped with %w so
+// errors.Is(err, exec.ErrNotFound) still holds for callers that want to
+// distinguish this from other Run failure modes.
+func missingCLIError(slug string, cause error) error {
+	if slug == "" {
+		slug = "default"
+	}
+	return fmt.Errorf(
+		"%s CLI not found in workspace $HOME.\n"+
+			"Phase 4 では workspace 単位の $HOME に harness CLI をインストールする必要があります。\n"+
+			"~/.config/boid/workspaces/%s/init.sh に %s のインストールコマンドを記述し、次回 dispatch 時に自動セットアップされます。\n"+
+			"例: init.sh の中で `curl -fsSL https://claude.ai/install.sh | bash` (実際のインストール方法はハーネスによる)。\n"+
+			"詳細: docs/plans/home-workspace-volume.md の init.sh 契約節を参照。\n"+
+			"(lookup error: %w)",
+		harnessCLI, slug, harnessCLI, cause,
+	)
+}
+
 // sessionType is the fixed tag for the agent's session entry in
 // payload.artifact.claude_code.sessions[]. One claude session per task;
 // kept as "execution" for backward compatibility with persisted entries.
@@ -213,6 +252,14 @@ func mapAt(m map[string]any, key string) map[string]any {
 // process. The agent recovers prior-turn context by reading
 // ~/.boid/context/{task,instructions,payload}.yaml on cold start.
 func (a *Adapter) Run(ctx context.Context, rc adapters.RunContext) (adapters.Result, error) {
+	// 0. Fail fast when claude is not on PATH, before touching any state
+	// (session id generation, payload_patch.json). See missingCLIError's
+	// doc comment for why this replaces the old adapter-bindings-based
+	// guarantee that claude was always present.
+	if _, err := lookPath(harnessCLI); err != nil {
+		return adapters.Result{}, missingCLIError(rc.Env["BOID_WORKSPACE_SLUG"], err)
+	}
+
 	payloadPath := rc.PayloadPath
 	if payloadPath == "" {
 		home, _ := os.UserHomeDir()
