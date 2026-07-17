@@ -21,6 +21,7 @@ import (
 	"github.com/novshi-tech/boid/internal/orchestrator"
 	"github.com/novshi-tech/boid/internal/sandbox"
 	"github.com/novshi-tech/boid/internal/sandbox/dockerproxy"
+	"github.com/novshi-tech/boid/internal/skills"
 )
 
 // ProjectLookup lets dispatcher resolve ProjectID → WorkspaceID and enumerate
@@ -233,6 +234,29 @@ func (r *Runner) Dispatch(ctx context.Context, spec *orchestrator.JobSpec, clean
 		return "", err
 	}
 
+	// Embedded skills sync (docs/plans/home-workspace-volume.md Phase 4
+	// PR3): re-syncs the embedded skill set into the just-resolved workspace
+	// home's ~/.claude/skills/ on every dispatch, so /boid-task /
+	// /boid-orchestrate / /boid-web resolve inside claude even though the
+	// claude/codex/opencode adapters no longer bind-mount them from
+	// ~/.local/share/boid/skills (see internal/adapters/*/bindings.go,
+	// retired this same PR). skills.DeployAll only rewrites files whose
+	// content differs from the embedded copy, so this is a cheap no-op on
+	// every dispatch after the first for a given boid build. A sync failure
+	// fails the dispatch outright, matching every other pre-BuildSandboxSpec
+	// error path in this function (including the init.sh failure just
+	// above) — a job started against a stale or missing skill set would
+	// otherwise silently misbehave instead of erroring loudly.
+	workspaceSkillsDir := filepath.Join(workspaceHomeDir, ".claude", "skills")
+	if err := skills.DeployAll(workspaceSkillsDir); err != nil {
+		err = fmt.Errorf("sync embedded skills to workspace home %q: %w", workspaceSkillsDir, err)
+		r.failJob(j, err)
+		if cleanup != nil {
+			cleanup()
+		}
+		return "", err
+	}
+
 	workspacePeers := r.resolveWorkspacePeers(workspaceID, spec.ProjectID)
 
 	var resolvedHostCommands map[string]orchestrator.CommandDef
@@ -407,6 +431,7 @@ func (r *Runner) Dispatch(ctx context.Context, spec *orchestrator.JobSpec, clean
 		GatewayCloneURL:        gatewayCloneURL,
 		CloneWorkspaceDir:      cloneWorkspaceDir,
 		WorkspaceHomeDir:       workspaceHomeDir,
+		WorkspaceSlug:          filepath.Base(workspaceHomeDir),
 	}
 	// Server socket is only exposed to jobs that have no broker policies
 	// attached — i.e. boid exec invocations that need to talk to the daemon

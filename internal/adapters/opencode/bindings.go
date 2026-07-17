@@ -1,123 +1,43 @@
 package opencode
 
 import (
-	"os"
-	"os/exec"
-	"path/filepath"
-
 	"github.com/novshi-tech/boid/internal/adapters"
-	"github.com/novshi-tech/boid/internal/skills"
 )
 
-// resolveCommand is overridable for tests; see internal/adapters/codex/bindings.go
-// for the rationale (PATH-resolve then chase symlinks).
-var resolveCommand = func(name string) (string, error) {
-	p, err := exec.LookPath(name)
-	if err != nil {
-		return "", err
-	}
-	return filepath.EvalSymlinks(p)
-}
-
-// readSkillsDir is overridable for tests.
-var readSkillsDir = os.ReadDir
-
 // Bindings declares the host bind-mounts opencode.Adapter.Run() needs inside
-// the sandbox. opencode keeps state in four trees:
+// the sandbox.
 //
-//   - ~/.opencode/                 — package install + bin/ (rw, node_modules)
-//   - ~/.config/opencode/          — opencode.jsonc config + node_modules (rw)
-//   - ~/.local/share/opencode/     — auth.json, sqlite, repos snapshot (rw)
-//   - ~/.local/state/opencode/     — model.json (selected model), kv.json (UI
-//     settings), frecency/prompt history (rw)
+// Phase 4 PR3 (docs/plans/home-workspace-volume.md) retires every entry this
+// method used to return: the rw ~/.opencode / ~/.config/opencode /
+// ~/.local/share/opencode / ~/.local/state/opencode state trees, the
+// resolved `opencode` binary's parent dir (PATH), the per-embedded-skill
+// ~/.local/share/boid/skills/<name> -> ~/.claude/skills/<name> binds, and
+// the individual ro binds for each non-embedded host skill under
+// ~/.claude/skills/* (bitbucket, jira, google-*, ms-graph, ...). All of that
+// state now lives directly in the sandbox's $HOME, which Runner.Dispatch
+// (internal/dispatcher/workspace_home.go) bind-mounts from a persistent
+// per-workspace home directory instead of a fresh tmpfs — so ~/.opencode,
+// ~/.config/opencode etc. simply already exist at those paths without any
+// adapter-declared bind. The opencode CLI binary itself is expected to be
+// installed into that same workspace home by the workspace's init.sh (see
+// the plan doc's init.sh 契約 section); a missing binary now fails fast with
+// an explicit message from Run() (run.go) instead of silently falling back
+// to a bind that no longer exists.
 //
-// The state tree matters for parity with the host: opencode persists the
-// most-recently-selected model in ~/.local/state/opencode/model.json and picks
-// its default from that "recent" list at startup. Without this bind the sandbox
-// opencode can't see it and falls back to a built-in default, so the model and
-// UI settings the user chose on the host silently don't apply inside boid.
+// Embedded skills are synced into the workspace home's ~/.claude/skills/ by
+// skills.DeployAll (internal/skills/deploy.go), called from Runner.Dispatch
+// right after the workspace home is resolved — copy-based distribution
+// replaces the bind-mount this method used to declare per skill. Non-embedded
+// host skills (bitbucket, jira, google-* etc.) no longer have an adapter-side
+// exposure path at all: a workspace that wants opencode to see them is now
+// the workspace author's responsibility, via the workspace's init.sh copying
+// them into the workspace home (e.g. `cp -r ~/.claude/skills/<name>
+// "$BOID_WORKSPACE_HOME/.claude/skills/"`) — see the plan doc's dogfood
+// checklist.
 //
-// The resolved binary parent dir is added on top so a plain `opencode` on
-// PATH (e.g. ~/.local/bin/opencode dropped by a packaged install) lands
-// inside the sandbox under the same path the host sees.
-//
-// Embedded skills are surfaced at ~/.claude/skills/<name> — opencode
-// auto-detects skills under ~/.claude/ (same convention claude itself uses),
-// so the bootstrap prompt can reference one canonical path across harnesses.
-// See codex/bindings.go for the full rationale.
-//
-// All entries are Optional so a missing source on the host is silently
-// skipped; the dispatcher converts Optional → shell-level if-guard.
+// The HarnessAdapter interface still requires this method; returning an
+// empty slice keeps the contract satisfied for any future $HOME-independent
+// bind a harness might need.
 func (a *Adapter) Bindings(homeDir string) []adapters.BindMount {
-	// Target is left empty: the dispatcher mounts these at the same path
-	// inside the sandbox (and explicitly skips bindings whose explicit
-	// Target matches Source, so the empty form is required, not optional).
-	out := []adapters.BindMount{
-		{
-			Source:   homeDir + "/.opencode",
-			Mode:     "rw",
-			Optional: true,
-		},
-		{
-			Source:   homeDir + "/.config/opencode",
-			Mode:     "rw",
-			Optional: true,
-		},
-		{
-			Source:   homeDir + "/.local/share/opencode",
-			Mode:     "rw",
-			Optional: true,
-		},
-		{
-			Source:   homeDir + "/.local/state/opencode",
-			Mode:     "rw",
-			Optional: true,
-		},
-	}
-	if real, err := resolveCommand("opencode"); err == nil {
-		out = append(out, adapters.BindMount{
-			Source:   filepath.Dir(real),
-			Optional: true,
-		})
-	}
-	// Embedded skills live at ~/.local/share/boid/skills/<name> on the host
-	// and are surfaced inside the sandbox at ~/.claude/skills/<name>.
-	// opencode auto-detects skills there, mirroring claude's convention; the
-	// task hook bootstrap prompt references the same canonical path across
-	// claude / codex / opencode.
-	skillsBase := homeDir + "/.local/share/boid/skills"
-	embedded := make(map[string]bool, len(skills.EmbeddedSkillNames()))
-	for _, name := range skills.EmbeddedSkillNames() {
-		embedded[name] = true
-		out = append(out, adapters.BindMount{
-			Source:   skillsBase + "/" + name,
-			Target:   homeDir + "/.claude/skills/" + name,
-			Optional: true,
-		})
-	}
-	// Host skills under ~/.claude/skills (bitbucket, jira, google-* etc.) are
-	// surfaced individually as optional ro binds, one entry per subdirectory,
-	// so opencode's skill auto-detection sees them too. This must NOT be a
-	// single bind of the whole ~/.claude/skills directory: the sandbox layers
-	// mounts onto a tmpfs root, and the embedded skill binds above land at
-	// ~/.claude/skills/<name> — mounting the parent dir ro either shadows
-	// those embedded binds (if mounted after) or makes their target
-	// MkdirAll fail with EROFS (if mounted before, since the parent is
-	// already read-only). Per-entry binds sidestep both failure modes by
-	// mounting siblings rather than nesting inside each other. Entries that
-	// collide with an embedded skill name are skipped — the embedded bind
-	// above is authoritative.
-	hostSkillsDir := homeDir + "/.claude/skills"
-	if entries, err := readSkillsDir(hostSkillsDir); err == nil {
-		for _, entry := range entries {
-			if !entry.IsDir() || embedded[entry.Name()] {
-				continue
-			}
-			out = append(out, adapters.BindMount{
-				Source:   hostSkillsDir + "/" + entry.Name(),
-				Optional: true,
-			})
-		}
-	}
-	return out
+	return nil
 }

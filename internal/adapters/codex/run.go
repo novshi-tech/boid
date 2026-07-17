@@ -12,6 +12,36 @@ import (
 	"github.com/novshi-tech/boid/internal/adapters/sigutil"
 )
 
+// harnessCLI is the binary name Run execs. Used by the PATH fail-fast check
+// below.
+const harnessCLI = "codex"
+
+// lookPath resolves harnessCLI on the sandbox PATH; overridable for tests.
+var lookPath = exec.LookPath
+
+// missingCLIError builds the fail-fast error Run returns when harnessCLI is
+// not on the sandbox PATH. See internal/adapters/claude/run.go's
+// missingCLIError for the full rationale (Phase 4 PR3 retired the adapter's
+// own CLI bind-mount — codex/bindings.go — in favor of the workspace HOME
+// volume, so a lookup miss now points at the workspace's init.sh instead of
+// a generic "command not found"). slug comes from
+// rc.Env["BOID_WORKSPACE_SLUG"] and falls back to "default"; cause is
+// wrapped with %w so errors.Is(err, exec.ErrNotFound) still holds.
+func missingCLIError(slug string, cause error) error {
+	if slug == "" {
+		slug = "default"
+	}
+	return fmt.Errorf(
+		"%s CLI not found in workspace $HOME.\n"+
+			"Phase 4 では workspace 単位の $HOME に harness CLI をインストールする必要があります。\n"+
+			"~/.config/boid/workspaces/%s/init.sh に %s のインストールコマンドを記述し、次回 dispatch 時に自動セットアップされます。\n"+
+			"例: init.sh の中で `curl -fsSL https://claude.ai/install.sh | bash` (実際のインストール方法はハーネスによる)。\n"+
+			"詳細: docs/plans/home-workspace-volume.md の init.sh 契約節を参照。\n"+
+			"(lookup error: %w)",
+		harnessCLI, slug, harnessCLI, cause,
+	)
+}
+
 // taskBootstrapPrompt is sent as the first user turn when codex is launched
 // for a task hook (rc.TaskID != ""). It tells the agent to read the canonical
 // task skill manual + boid task context yaml files, then run the task and
@@ -140,6 +170,13 @@ func buildArgs(interactive bool, model, prompt string) []string {
 // wired here — see docs/plans/multi-harness-production.md for the explicit
 // non-goals (interactive sessions are run-and-done, no resume yet).
 func (a *Adapter) Run(ctx context.Context, rc adapters.RunContext) (adapters.Result, error) {
+	// 0. Fail fast when codex is not on PATH. See missingCLIError's doc
+	// comment for why this replaces the old adapter-bindings-based
+	// guarantee that codex was always present.
+	if _, err := lookPath(harnessCLI); err != nil {
+		return adapters.Result{}, missingCLIError(rc.Env["BOID_WORKSPACE_SLUG"], err)
+	}
+
 	interactive := rc.TaskID == ""
 	prompt := selectPrompt(interactive, rc.UserAnswer)
 	args := buildArgs(interactive, rc.Model, prompt)

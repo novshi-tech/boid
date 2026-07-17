@@ -2,8 +2,12 @@ package opencode
 
 import (
 	"context"
+	"errors"
+	"os/exec"
 	"strings"
 	"testing"
+
+	"github.com/novshi-tech/boid/internal/adapters"
 )
 
 func TestBuildArgs_NonInteractive_Fresh(t *testing.T) {
@@ -151,6 +155,67 @@ func TestUsage_Stub(t *testing.T) {
 	if u.Model != "" || u.InputTokens != 0 || u.OutputTokens != 0 ||
 		u.CacheCreationTokens != 0 || u.CacheReadTokens != 0 || u.Extra != nil {
 		t.Errorf("Usage stub should be zero, got %+v", u)
+	}
+}
+
+// withMissingOpencodeCLI overrides lookPath for deterministic test runs: it
+// forces the fail-fast PATH lookup in Run() to miss, regardless of whether
+// the host actually has opencode installed.
+func withMissingOpencodeCLI(t *testing.T) {
+	t.Helper()
+	saved := lookPath
+	lookPath = func(string) (string, error) {
+		return "", exec.ErrNotFound
+	}
+	t.Cleanup(func() { lookPath = saved })
+}
+
+// TestRun_MissingCLI_ReturnsFailFastError mirrors
+// internal/adapters/claude/run_test.go's test of the same name: Phase 4 PR3
+// (docs/plans/home-workspace-volume.md) retired opencode.Adapter.Bindings'
+// own CLI bind-mount, so a PATH lookup miss must return an actionable error
+// naming the CLI and the workspace slug before ever attempting cmd.Start().
+func TestRun_MissingCLI_ReturnsFailFastError(t *testing.T) {
+	withMissingOpencodeCLI(t)
+	a := New()
+
+	_, err := a.Run(context.Background(), adapters.RunContext{
+		Env: map[string]string{"BOID_WORKSPACE_SLUG": "myws"},
+	})
+	if err == nil {
+		t.Fatal("expected an error when opencode is not on PATH")
+	}
+	for _, want := range []string{"opencode", "myws", "init.sh", "docs/plans/home-workspace-volume.md"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error = %q, want it to contain %q", err.Error(), want)
+		}
+	}
+}
+
+// TestRun_MissingCLI_DefaultsSlugWhenEnvAbsent covers RunContext.Env not
+// carrying BOID_WORKSPACE_SLUG at all.
+func TestRun_MissingCLI_DefaultsSlugWhenEnvAbsent(t *testing.T) {
+	withMissingOpencodeCLI(t)
+	a := New()
+
+	_, err := a.Run(context.Background(), adapters.RunContext{})
+	if err == nil {
+		t.Fatal("expected an error when opencode is not on PATH")
+	}
+	if !strings.Contains(err.Error(), "default") {
+		t.Errorf("error = %q, want it to name the default workspace slug", err.Error())
+	}
+}
+
+// TestMissingCLIError_WrapsLookupMiss ensures the underlying lookup error is
+// preserved via %w so errors.Is still works.
+func TestMissingCLIError_WrapsLookupMiss(t *testing.T) {
+	withMissingOpencodeCLI(t)
+	a := New()
+
+	_, err := a.Run(context.Background(), adapters.RunContext{})
+	if !errors.Is(err, exec.ErrNotFound) {
+		t.Errorf("error = %v, want errors.Is(err, exec.ErrNotFound) to hold", err)
 	}
 }
 

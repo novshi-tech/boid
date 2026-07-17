@@ -1,12 +1,17 @@
 package claude
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/novshi-tech/boid/internal/adapters"
 )
 
 func TestSelectPrompt_UserAnswerWins(t *testing.T) {
@@ -330,5 +335,75 @@ func TestPauseSystemPromptMentionsNotify(t *testing.T) {
 	// the prompt should fail this so the regression is loud.
 	if !strings.Contains(taskSystemPrompt, "boid task notify") {
 		t.Error("taskSystemPrompt no longer mentions `boid task notify`")
+	}
+}
+
+// withMissingClaudeCLI overrides lookPath for deterministic test runs: it
+// forces the fail-fast PATH lookup in Run() to miss, regardless of whether
+// the host actually has claude installed.
+func withMissingClaudeCLI(t *testing.T) {
+	t.Helper()
+	saved := lookPath
+	lookPath = func(string) (string, error) {
+		return "", exec.ErrNotFound
+	}
+	t.Cleanup(func() { lookPath = saved })
+}
+
+// TestRun_MissingCLI_ReturnsFailFastError pins the Phase 4 PR3 fail-fast
+// contract (docs/plans/home-workspace-volume.md): now that
+// claude.Adapter.Bindings no longer bind-mounts a claude CLI (see
+// bindings.go), a PATH lookup miss almost always means the workspace's
+// init.sh hasn't installed claude yet — not a generic "command not found".
+// Run() must return an actionable error naming both the CLI and the
+// workspace slug (read from rc.Env["BOID_WORKSPACE_SLUG"], set by
+// BuildSandboxSpec from SandboxRuntimeInfo.WorkspaceSlug) before ever
+// attempting cmd.Start().
+func TestRun_MissingCLI_ReturnsFailFastError(t *testing.T) {
+	withMissingClaudeCLI(t)
+	a := New()
+
+	_, err := a.Run(context.Background(), adapters.RunContext{
+		Env: map[string]string{"BOID_WORKSPACE_SLUG": "myws"},
+	})
+	if err == nil {
+		t.Fatal("expected an error when claude is not on PATH")
+	}
+	for _, want := range []string{"claude", "myws", "init.sh", "docs/plans/home-workspace-volume.md"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error = %q, want it to contain %q", err.Error(), want)
+		}
+	}
+}
+
+// TestRun_MissingCLI_DefaultsSlugWhenEnvAbsent covers RunContext.Env not
+// carrying BOID_WORKSPACE_SLUG at all (e.g. bare test wiring, or a caller
+// that predates BuildSandboxSpec's PR3 wiring) — the error must still name
+// a workspace ("default", the fallback slug every unassigned project
+// resolves to) rather than produce a blank or malformed message.
+func TestRun_MissingCLI_DefaultsSlugWhenEnvAbsent(t *testing.T) {
+	withMissingClaudeCLI(t)
+	a := New()
+
+	_, err := a.Run(context.Background(), adapters.RunContext{})
+	if err == nil {
+		t.Fatal("expected an error when claude is not on PATH")
+	}
+	if !strings.Contains(err.Error(), "default") {
+		t.Errorf("error = %q, want it to name the default workspace slug", err.Error())
+	}
+}
+
+// TestMissingCLIError_WrapsLookupMiss ensures the exec.LookPath failure
+// itself (e.g. exec.ErrNotFound) is preserved via %w so errors.Is still
+// works for callers that want to distinguish "CLI missing" from other Run()
+// failure modes.
+func TestMissingCLIError_WrapsLookupMiss(t *testing.T) {
+	withMissingClaudeCLI(t)
+	a := New()
+
+	_, err := a.Run(context.Background(), adapters.RunContext{})
+	if !errors.Is(err, exec.ErrNotFound) {
+		t.Errorf("error = %v, want errors.Is(err, exec.ErrNotFound) to hold", err)
 	}
 }

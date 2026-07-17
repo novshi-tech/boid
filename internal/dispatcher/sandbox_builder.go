@@ -149,6 +149,18 @@ type SandboxRuntimeInfo struct {
 	// all — see its own doc comment for why bind-mounting HOME there would
 	// defeat its host-tool-discovery purpose.
 	WorkspaceHomeDir string
+
+	// WorkspaceSlug is the normalized workspace slug WorkspaceHomeDir was
+	// resolved for (docs/plans/home-workspace-volume.md Phase 4 PR3) —
+	// filepath.Base(WorkspaceHomeDir), computed once by Runner.Dispatch.
+	// BuildSandboxSpec threads it into env["BOID_WORKSPACE_SLUG"] so the
+	// claude/codex/opencode adapters' fail-fast "harness CLI not found"
+	// error (run.go, triggered when PR3's retired adapter bindings leave no
+	// CLI on PATH) can name the exact workspace whose init.sh needs the
+	// install step. Empty for test wiring that never resolved a workspace
+	// (most of sandbox_builder_test.go's minimal SandboxRuntimeInfo{}
+	// literals) — the env var is simply omitted in that case.
+	WorkspaceSlug string
 }
 
 // BuildSandboxSpec turns a business-level JobSpec and dispatcher-side runtime
@@ -244,6 +256,7 @@ func BuildSandboxSpec(spec *orchestrator.JobSpec, rt SandboxRuntimeInfo) (sandbo
 		env[sandbox.HostCommandRulesEnv] = rules
 	}
 	env["BOID_HOST_IP"] = hostGatewayIP
+	setIfNonEmpty(env, "BOID_WORKSPACE_SLUG", rt.WorkspaceSlug)
 	if rt.ProxyPort > 0 {
 		applyProxyEnv(env, rt.ProxyPort)
 	}
@@ -1058,8 +1071,18 @@ func buildHostCommandRulesEnv(hostCommands map[string]orchestrator.CommandDef) s
 	return string(encoded)
 }
 
-// buildPATH prepends additional-binding bin directories, host command
-// directories and the boid binary directory to the canonical PATH.
+// buildPATH prepends the workspace home's ~/.local/bin, additional-binding
+// bin directories, host command directories and the boid binary directory to
+// the canonical PATH.
+//
+// The workspace home's ~/.local/bin comes first, ahead of everything else:
+// Phase 4 PR3 (docs/plans/home-workspace-volume.md) retired every adapter-
+// declared bind mount (claude/codex/opencode Bindings() all return nil now),
+// so the harness CLI a workspace's init.sh installs under $HOME/.local/bin
+// (the sandbox-internal $HOME — see hostHomeDir()) is the only place agent
+// binaries are expected to live going forward. Giving it top PATH priority
+// lets a workspace override a same-named tool it also happens to see via a
+// legacy additional_binding or host_command.
 //
 // The boid binary directory is included so scripts inside the sandbox can call
 // `boid` by name. Host command shims are bind-mounted at their resolved
@@ -1085,6 +1108,7 @@ func buildPATH(bindings []orchestrator.BindMount, hostCommands map[string]orches
 		seen[dir] = true
 		prefix = append(prefix, dir)
 	}
+	add(hostHomeDir() + "/.local/bin")
 	if boidBinary != "" {
 		add(filepath.Dir(boidBinary))
 	}
