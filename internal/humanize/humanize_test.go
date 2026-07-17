@@ -38,22 +38,22 @@ func TestFormatBytes(t *testing.T) {
 	}
 }
 
-// TestDirSize_EmptyDir pins the base case: an empty directory has size 0.
-func TestDirSize_EmptyDir(t *testing.T) {
+// TestApparentSize_EmptyDir pins the base case: an empty directory has size 0.
+func TestApparentSize_EmptyDir(t *testing.T) {
 	dir := t.TempDir()
-	got, err := DirSize(dir)
+	got, err := ApparentSize(dir)
 	if err != nil {
-		t.Fatalf("DirSize: %v", err)
+		t.Fatalf("ApparentSize: %v", err)
 	}
 	if got != 0 {
-		t.Errorf("DirSize(empty dir) = %d, want 0", got)
+		t.Errorf("ApparentSize(empty dir) = %d, want 0", got)
 	}
 }
 
-// TestDirSize_SumsNestedFiles pins the recursive-sum contract: files in
+// TestApparentSize_SumsNestedFiles pins the recursive-sum contract: files in
 // subdirectories are included, and directory entries themselves are not
 // counted toward the total (only regular file content).
-func TestDirSize_SumsNestedFiles(t *testing.T) {
+func TestApparentSize_SumsNestedFiles(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "a.txt"), 100)
 	sub := filepath.Join(dir, "sub")
@@ -63,32 +63,32 @@ func TestDirSize_SumsNestedFiles(t *testing.T) {
 	writeFile(t, filepath.Join(sub, "b.txt"), 250)
 	writeFile(t, filepath.Join(sub, "c.txt"), 7)
 
-	got, err := DirSize(dir)
+	got, err := ApparentSize(dir)
 	if err != nil {
-		t.Fatalf("DirSize: %v", err)
+		t.Fatalf("ApparentSize: %v", err)
 	}
 	if want := int64(100 + 250 + 7); got != want {
-		t.Errorf("DirSize = %d, want %d", got, want)
+		t.Errorf("ApparentSize = %d, want %d", got, want)
 	}
 }
 
-// TestDirSize_NonexistentPath_ReturnsError pins the error contract callers
+// TestApparentSize_NonexistentPath_ReturnsError pins the error contract callers
 // rely on to render "?" instead of a bogus size: a path that does not exist
 // on disk must return a non-nil error.
-func TestDirSize_NonexistentPath_ReturnsError(t *testing.T) {
+func TestApparentSize_NonexistentPath_ReturnsError(t *testing.T) {
 	dir := t.TempDir()
-	_, err := DirSize(filepath.Join(dir, "does-not-exist"))
+	_, err := ApparentSize(filepath.Join(dir, "does-not-exist"))
 	if err == nil {
 		t.Fatal("expected an error for a nonexistent path, got nil")
 	}
 }
 
-// TestDirSize_UnreadableSubdir_ReturnsError pins the "permission denied
+// TestApparentSize_UnreadableSubdir_ReturnsError pins the "permission denied
 // partway through the walk" case (docs/plans/home-workspace-volume.md PR5
 // test plan: "サイズ計算エラー (dir を読めない symlink 等) → '?'"). Skipped
 // when running as root, since root ignores directory permission bits and
 // the walk would succeed instead of erroring.
-func TestDirSize_UnreadableSubdir_ReturnsError(t *testing.T) {
+func TestApparentSize_UnreadableSubdir_ReturnsError(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skip("permission-bit test assumes POSIX permission semantics")
 	}
@@ -108,7 +108,7 @@ func TestDirSize_UnreadableSubdir_ReturnsError(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = os.Chmod(locked, 0o755) }) // let t.TempDir() clean up.
 
-	_, err := DirSize(dir)
+	_, err := ApparentSize(dir)
 	if err == nil {
 		t.Fatal("expected an error walking into a permission-denied subdirectory, got nil")
 	}

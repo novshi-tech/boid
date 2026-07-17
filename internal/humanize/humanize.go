@@ -1,8 +1,9 @@
 // Package humanize renders byte counts as human-readable strings and sums a
-// directory tree's on-disk size, for boid's workspace-home size reporting
-// (docs/plans/home-workspace-volume.md Phase 4 PR5: `boid workspace show`,
-// `boid gc`'s workspace_homes listing, and the confirmation prompt on `boid
-// workspace remove`).
+// directory tree's apparent (logical) size, for boid's workspace-home size
+// reporting (docs/plans/home-workspace-volume.md Phase 4 PR5: `boid
+// workspace show`, `boid gc`'s workspace_homes listing, and the confirmation
+// prompt on `boid workspace remove`). See ApparentSize's doc comment for why
+// "apparent" rather than a `du`-equivalent block-based size.
 package humanize
 
 import (
@@ -55,13 +56,28 @@ func formatUnit(n, unit int64, suffix string) string {
 	return fmt.Sprintf("%.2f %s", float64(n)/float64(unit), suffix)
 }
 
-// DirSize returns the total size, in bytes, of every regular file found by
-// recursively walking root (a `du`-equivalent sum) — directory entries
+// ApparentSize returns the total *apparent* (logical) size, in bytes, of
+// every regular file found by recursively walking root — directory entries
 // themselves do not contribute to the total, only file content sizes do.
 // Symlinks are not followed (filepath.Walk uses Lstat internally), so a
 // symlink's own directory-entry size is counted but nothing on the far side
 // of it is descended into — this avoids both symlink loops and a home
 // directory's size silently including content that lives outside it.
+//
+// This is a plain sum of FileInfo.Size() and is *not* a `du`-equivalent
+// block-based measurement: it deliberately matches `du --apparent-size`, not
+// plain `du` (codex PR #791 review, Should-fix #3). Two known, accepted
+// trade-offs follow from that choice: a sparse file's logical size is
+// counted even though it occupies far fewer disk blocks (e.g. a
+// seek-and-truncate-created multi-GB file with no actual data written), and
+// a hardlinked file is counted once per name found rather than once per
+// inode (relevant for package caches, which hardlink aggressively). A true
+// `du`-equivalent measurement would need Linux's syscall.Stat_t.Blocks (for
+// the block-based total) plus an Ino-keyed dedup set (for hardlinks) — an
+// OS-specific implementation deliberately left out of scope here; apparent
+// size is judged good enough for boid's "is this workspace home suspiciously
+// large" visibility use case, and the plain-Walk approach stays portable and
+// simple. Revisit only if apparent size proves misleading in practice.
 //
 // Any error encountered while walking — root itself missing, a permission
 // error partway through a subdirectory, or anything else Walk's callback
@@ -69,7 +85,7 @@ func formatUnit(n, unit int64, suffix string) string {
 // must treat a non-nil error as "size unknown" (docs/plans/
 // home-workspace-volume.md PR5: "エラー時はエラーにせず「?」表示にして
 // continue") rather than trusting the also-returned partial total.
-func DirSize(root string) (int64, error) {
+func ApparentSize(root string) (int64, error) {
 	var total int64
 	err := filepath.Walk(root, func(_ string, info os.FileInfo, err error) error {
 		if err != nil {
