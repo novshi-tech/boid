@@ -151,8 +151,12 @@ var expectedScopeAnnotations = map[string]string{
 	"boid web set-addr":       scopeLocal,
 	"boid web set-url":        scopeLocal,
 
-	// neutral — none shipped yet. Reserved for `login`/`logout`
-	// (docs/plans/cli-remote-connection.md, not yet implemented).
+	// neutral — requires no profile precondition at all (docs/plans/
+	// cli-remote-connection.md PR2): these are how a profile comes to
+	// exist (or stops existing) in the first place, so they must work even
+	// when profile resolution itself would otherwise fail.
+	"boid login":  scopeNeutral,
+	"boid logout": scopeNeutral,
 }
 
 // liveLeafCommands walks rootCmd and returns every leaf command's full path
