@@ -273,46 +273,10 @@ func TestWorkspaceMeta_ContainerImageRoundTrip(t *testing.T) {
 	}
 }
 
-// TestWorkspaceMeta_AdditionalBindingsRoundTrip covers the workspace-level
-// AdditionalBindings vestige field (decision 4: retained until Phase 4).
-func TestWorkspaceMeta_AdditionalBindingsRoundTrip(t *testing.T) {
-	t.Parallel()
-
-	original := WorkspaceMeta{
-		AdditionalBindings: []BindMount{
-			{Source: "/opt/volta", Target: "/opt/volta", Mode: "rw"},
-		},
-	}
-
-	yamlData, err := yaml.Marshal(&original)
-	if err != nil {
-		t.Fatalf("yaml.Marshal: %v", err)
-	}
-	var yamlDecoded WorkspaceMeta
-	if err := yaml.Unmarshal(yamlData, &yamlDecoded); err != nil {
-		t.Fatalf("yaml.Unmarshal: %v", err)
-	}
-	if len(yamlDecoded.AdditionalBindings) != 1 || yamlDecoded.AdditionalBindings[0] != original.AdditionalBindings[0] {
-		t.Errorf("yaml round-trip: AdditionalBindings = %+v, want %+v", yamlDecoded.AdditionalBindings, original.AdditionalBindings)
-	}
-
-	jsonData, err := json.Marshal(&original)
-	if err != nil {
-		t.Fatalf("json.Marshal: %v", err)
-	}
-	var jsonDecoded WorkspaceMeta
-	if err := json.Unmarshal(jsonData, &jsonDecoded); err != nil {
-		t.Fatalf("json.Unmarshal: %v", err)
-	}
-	if len(jsonDecoded.AdditionalBindings) != 1 || jsonDecoded.AdditionalBindings[0] != original.AdditionalBindings[0] {
-		t.Errorf("json round-trip: AdditionalBindings = %+v, want %+v", jsonDecoded.AdditionalBindings, original.AdditionalBindings)
-	}
-}
-
 // TestWorkspaceMeta_NewFieldsOmittedWhenEmpty extends
-// TestWorkspaceMeta_EmptyOmitsFields to the three PR3 fields: an empty
+// TestWorkspaceMeta_EmptyOmitsFields to the PR3 fields: an empty
 // WorkspaceMeta must still marshal to "{}" in YAML with none of
-// HostCommands/ContainerImage/AdditionalBindings appearing.
+// HostCommands/ContainerImage appearing.
 func TestWorkspaceMeta_NewFieldsOmittedWhenEmpty(t *testing.T) {
 	t.Parallel()
 
@@ -348,9 +312,6 @@ func TestGetWithWorkspace_DoesNotMutateWorkspaceMetaInPlace(t *testing.T) {
 
 	original := &WorkspaceMeta{
 		Env: map[string]string{"FOO": "${PROBE_VAR}"},
-		AdditionalBindings: []BindMount{
-			{Source: "${PROBE_VAR}/kit", Target: "${PROBE_VAR}/kit"},
-		},
 	}
 
 	expanded := expandWorkspaceRuntimeForDispatch(original)
@@ -360,16 +321,6 @@ func TestGetWithWorkspace_DoesNotMutateWorkspaceMetaInPlace(t *testing.T) {
 	}
 	if original.Env["FOO"] != "${PROBE_VAR}" {
 		t.Errorf("original.Env[FOO] mutated in place: got %q, want raw ${PROBE_VAR}", original.Env["FOO"])
-	}
-
-	if expanded.AdditionalBindings[0].Source != "expanded-value/kit" {
-		t.Fatalf("expanded.AdditionalBindings[0].Source = %q, want expanded-value/kit", expanded.AdditionalBindings[0].Source)
-	}
-	if original.AdditionalBindings[0].Source != "${PROBE_VAR}/kit" {
-		t.Errorf("original.AdditionalBindings[0].Source mutated in place: got %q, want raw ${PROBE_VAR}/kit", original.AdditionalBindings[0].Source)
-	}
-	if original.AdditionalBindings[0].Target != "${PROBE_VAR}/kit" {
-		t.Errorf("original.AdditionalBindings[0].Target mutated in place: got %q, want raw ${PROBE_VAR}/kit", original.AdditionalBindings[0].Target)
 	}
 }
 
