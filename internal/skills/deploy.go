@@ -77,8 +77,17 @@ func deploySkill(baseFd int, name string) error {
 }
 
 // deploySkillDir mirrors the embedded directory at embedPath into dirFd,
-// recursing into subdirectories.
+// recursing into subdirectories. It reclaims any stale atomic-write temp
+// file left in dirFd before writing anything new — the recovery half of the
+// crash-safety contract writeFileSafeAt implements (PR #789 review,
+// Should-fix #1): a daemon killed mid-write (SIGKILL, power loss) leaves a
+// temp file with no deferred cleanup ever running for it, so the *next*
+// deploy pass over the same directory has to sweep it up instead.
 func deploySkillDir(dirFd int, embedPath string) error {
+	if err := cleanupStaleTempFiles(dirFd); err != nil {
+		return fmt.Errorf("clean up stale temp files under %q: %w", embedPath, err)
+	}
+
 	entries, err := skillsFS.ReadDir(embedPath)
 	if err != nil {
 		return fmt.Errorf("read embedded dir %q: %w", embedPath, err)

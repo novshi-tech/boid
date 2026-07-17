@@ -312,6 +312,31 @@ func TestDeployAll_NormalRegressionAfterSafePathRewrite(t *testing.T) {
 	}
 }
 
+// TestDeployAll_CleansUpStaleTempFiles pins the crash-recovery half of the
+// Should-fix #1 review comment: a temp file left behind by a killed-mid-write
+// daemon (no defer runs on SIGKILL) must be swept up by the *next* DeployAll
+// call, not accumulate forever.
+func TestDeployAll_CleansUpStaleTempFiles(t *testing.T) {
+	baseDir := t.TempDir()
+
+	if err := skills.DeployAll(baseDir); err != nil {
+		t.Fatalf("DeployAll (seed): %v", err)
+	}
+
+	stale := filepath.Join(baseDir, "boid-web", ".SKILL.md.tmp-stale-12345")
+	if err := os.WriteFile(stale, []byte("leftover from a killed daemon"), 0o644); err != nil {
+		t.Fatalf("write stale temp file: %v", err)
+	}
+
+	if err := skills.DeployAll(baseDir); err != nil {
+		t.Fatalf("DeployAll (2nd, should reclaim stale temp): %v", err)
+	}
+
+	if _, err := os.Stat(stale); !os.IsNotExist(err) {
+		t.Errorf("stale temp file was not cleaned up (stat err=%v)", err)
+	}
+}
+
 // assertNoTempFiles walks dir and fails the test if any entry looks like a
 // leftover atomic-write temp file (a dotfile containing "tmp" in its name).
 func assertNoTempFiles(t *testing.T, dir string) {

@@ -134,12 +134,20 @@ func openFileNoSymlinkIfExists(dirFd int, name string) (*os.File, bool, error) {
 }
 
 // writeFileSafeAt atomically replaces name (a single path component,
-// directly under dirFd) with data: write to a sibling temp file, close it,
-// renameat it into place (fd-relative on both sides, so neither operand is
-// resolved by following any symlink an attacker may have placed at that
-// name — POSIX rename never follows the destination's final component even
-// without RESOLVE_NO_SYMLINKS, but the source is also fd-relative here for
-// consistency and to avoid ever building a path string).
+// directly under dirFd) with data: write to a sibling temp file, fsync it,
+// close it, renameat it into place (fd-relative on both sides, so neither
+// operand is resolved by following any symlink an attacker may have placed
+// at that name — POSIX rename never follows the destination's final
+// component even without RESOLVE_NO_SYMLINKS, but the source is also
+// fd-relative here for consistency and to avoid ever building a path
+// string), then fsync dirFd itself so the rename is durable across a crash
+// right after this call returns (mirrors
+// internal/dispatcher/workspace_home.go's writeWorkspaceHomeMarker's temp ->
+// sync -> close -> rename -> parent-dir-sync pattern; PR #789 review
+// Should-fix #1). Without the two Sync calls, a SIGKILL or power loss
+// between write and rename can leave dest holding a partially written file
+// or, on some filesystems/journaling modes, an unlinked rename that never
+// made it to disk.
 func writeFileSafeAt(dirFd int, name string, data []byte, perm os.FileMode) (retErr error) {
 	tmpName, tmp, err := createUniqueTempFile(dirFd, name, perm)
 	if err != nil {
@@ -156,6 +164,10 @@ func writeFileSafeAt(dirFd int, name string, data []byte, perm os.FileMode) (ret
 		_ = tmp.Close()
 		return fmt.Errorf("write temp file %q: %w", tmpName, err)
 	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("sync temp file %q: %w", tmpName, err)
+	}
 	if err := tmp.Close(); err != nil {
 		return fmt.Errorf("close temp file %q: %w", tmpName, err)
 	}
@@ -163,6 +175,10 @@ func writeFileSafeAt(dirFd int, name string, data []byte, perm os.FileMode) (ret
 		return fmt.Errorf("rename %q to %q: %w", tmpName, name, err)
 	}
 	cleanupTemp = false
+
+	// Best-effort: not fatal if the underlying filesystem doesn't support
+	// fsync on a directory fd.
+	_ = unix.Fsync(dirFd)
 	return nil
 }
 
@@ -191,4 +207,45 @@ func createUniqueTempFile(dirFd int, name string, perm os.FileMode) (string, *os
 		lastErr = err
 	}
 	return "", nil, fmt.Errorf("create temp file for %q: exhausted %d attempts: %w", name, maxAttempts, lastErr)
+}
+
+// isStaleTempName reports whether name looks like a leftover atomic-write
+// temp file (createUniqueTempFile's naming convention: a dotfile containing
+// ".tmp-"), matching the pattern assertNoTempFiles in deploy_test.go already
+// pins for "no leftovers after a normal run".
+func isStaleTempName(name string) bool {
+	return strings.HasPrefix(name, ".") && strings.Contains(name, tempFileNameInfix)
+}
+
+// cleanupStaleTempFiles removes any stale atomic-write temp file directly
+// under dirFd. This is the recovery half of the crash-safety contract
+// writeFileSafeAt's Sync calls only cover the other half of: a daemon
+// killed (SIGKILL, power loss) between createUniqueTempFile and the
+// renameat leaves a temp file behind forever otherwise, since a deferred
+// unlinkat never runs on that code path. Called once per directory at the
+// start of deploySkillDir, before any new writes, so every dispatch's
+// DeployAll call reclaims whatever a previous crashed run left behind — via
+// the same symlink-safe (unlinkat on a verified fd, not a path string)
+// mechanism as the rest of this file.
+func cleanupStaleTempFiles(dirFd int) error {
+	dupFd, err := unix.Dup(dirFd)
+	if err != nil {
+		return fmt.Errorf("dup dir fd: %w", err)
+	}
+	f := os.NewFile(uintptr(dupFd), "skill-dir")
+	defer f.Close()
+
+	names, err := f.Readdirnames(-1)
+	if err != nil {
+		return fmt.Errorf("readdir: %w", err)
+	}
+	for _, n := range names {
+		if !isStaleTempName(n) {
+			continue
+		}
+		if err := unix.Unlinkat(dirFd, n, 0); err != nil && !errors.Is(err, unix.ENOENT) {
+			return fmt.Errorf("unlink stale temp file %q: %w", n, err)
+		}
+	}
+	return nil
 }
