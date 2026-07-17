@@ -195,6 +195,25 @@ func (r *Runner) Dispatch(ctx context.Context, spec *orchestrator.JobSpec, clean
 	}
 
 	workspaceID, projectWorkDir, _ := r.resolveProjectRuntime(spec.ProjectID)
+
+	// Workspace home ensure + init (docs/plans/home-workspace-volume.md
+	// Phase 4 PR1): guarantees ~/.local/share/boid/homes/<slug> exists and,
+	// if the workspace declares an init.sh, has been run for its current
+	// content, before any sandbox is built for this dispatch. PR1 is
+	// wiring-only — the resolved dir is threaded into rtInfo below but
+	// BuildSandboxSpec does not read it yet — while init failure still fails
+	// the dispatch outright (the contract's 「init 失敗時は dispatch を明示
+	// エラーで fail」), matching every other pre-BuildSandboxSpec error path
+	// in this function.
+	workspaceHomeDir, err := r.resolveWorkspaceHome(workspaceID)
+	if err != nil {
+		r.failJob(j, err)
+		if cleanup != nil {
+			cleanup()
+		}
+		return "", err
+	}
+
 	workspacePeers := r.resolveWorkspacePeers(workspaceID, spec.ProjectID)
 
 	var resolvedHostCommands map[string]orchestrator.CommandDef
@@ -368,6 +387,7 @@ func (r *Runner) Dispatch(ctx context.Context, spec *orchestrator.JobSpec, clean
 		GatewayJobToken:        gatewayToken,
 		GatewayCloneURL:        gatewayCloneURL,
 		CloneWorkspaceDir:      cloneWorkspaceDir,
+		WorkspaceHomeDir:       workspaceHomeDir,
 	}
 	// Server socket is only exposed to jobs that have no broker policies
 	// attached — i.e. boid exec invocations that need to talk to the daemon

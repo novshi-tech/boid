@@ -123,6 +123,21 @@ type SandboxRuntimeInfo struct {
 	// the clone lands on the sandbox's own tmpfs root instead, a safe but
 	// non-default degrade (working tree + build artifacts in RAM).
 	CloneWorkspaceDir string
+
+	// WorkspaceHomeDir is the host-side per-workspace home directory
+	// resolved by Runner.resolveWorkspaceHome
+	// (docs/plans/home-workspace-volume.md Phase 4 PR1):
+	// ~/.local/share/boid/homes/<slug>, guaranteed to exist (and, if the
+	// workspace declares an init.sh, already initialized) by the time
+	// Dispatch reaches BuildSandboxSpec.
+	//
+	// PR1 is wiring-only and deliberately inert: BuildSandboxSpec does not
+	// read this field yet, so it has no effect on the sandbox's mount set
+	// or HOME env var (env["HOME"] still comes from hostHomeDir(), and the
+	// HOME tmpfs/bind branches below are unchanged). PR2 switches the HOME
+	// mount over to bind this directory read-write instead of the plain
+	// tmpfs, at which point this field starts being read.
+	WorkspaceHomeDir string
 }
 
 // BuildSandboxSpec turns a business-level JobSpec and dispatcher-side runtime
