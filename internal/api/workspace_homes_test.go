@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 
 	"github.com/novshi-tech/boid/internal/orchestrator"
@@ -118,9 +119,12 @@ func (s *stubWorkspaceSlugLister) ListWorkspaces() ([]*orchestrator.WorkspaceSum
 
 func TestListWorkspaceHomeSizes_NoHomesDirYet(t *testing.T) {
 	runtimesDir := newTestRuntimesDir(t)
-	got, err := ListWorkspaceHomeSizes(runtimesDir, nil)
+	got, listErr, err := ListWorkspaceHomeSizes(runtimesDir, nil)
 	if err != nil {
 		t.Fatalf("ListWorkspaceHomeSizes: %v", err)
+	}
+	if listErr != "" {
+		t.Errorf("listErr = %q, want empty", listErr)
 	}
 	if len(got) != 0 {
 		t.Errorf("len(got) = %d, want 0", len(got))
@@ -138,9 +142,12 @@ func TestListWorkspaceHomeSizes_ListsAllDirsAndFlagsOrphans(t *testing.T) {
 		{ID: "known-ws"},
 	}}
 
-	got, err := ListWorkspaceHomeSizes(runtimesDir, lister)
+	got, listErr, err := ListWorkspaceHomeSizes(runtimesDir, lister)
 	if err != nil {
 		t.Fatalf("ListWorkspaceHomeSizes: %v", err)
+	}
+	if listErr != "" {
+		t.Errorf("listErr = %q, want empty (lister succeeded)", listErr)
 	}
 	if len(got) != 3 {
 		t.Fatalf("len(got) = %d, want 3: %+v", len(got), got)
@@ -188,9 +195,12 @@ func TestListWorkspaceHomeSizes_IgnoresMarkerAndLockFiles(t *testing.T) {
 		t.Fatalf("write lock: %v", err)
 	}
 
-	got, err := ListWorkspaceHomeSizes(runtimesDir, nil)
+	got, listErr, err := ListWorkspaceHomeSizes(runtimesDir, nil)
 	if err != nil {
 		t.Fatalf("ListWorkspaceHomeSizes: %v", err)
+	}
+	if listErr != "" {
+		t.Errorf("listErr = %q, want empty", listErr)
 	}
 	if len(got) != 1 {
 		t.Fatalf("len(got) = %d, want 1 (marker/lock files must not be listed): %+v", len(got), got)
@@ -200,20 +210,30 @@ func TestListWorkspaceHomeSizes_IgnoresMarkerAndLockFiles(t *testing.T) {
 	}
 }
 
-func TestListWorkspaceHomeSizes_ListerErrorDegradesGracefully(t *testing.T) {
+// TestListWorkspaceHomeSizes_ListerError_OmitsListingWithListError pins
+// Should-fix #3 (codex PR #791 review): a lister failure used to leave the
+// full homes/ listing intact but with every entry mismarked Orphan=true
+// (indistinguishable from "every workspace really was deleted"). Selection A
+// instead omits the listing outright on a lister failure — homes comes back
+// empty, not populated-but-untrustworthy — and reports the reason via
+// listErr.
+func TestListWorkspaceHomeSizes_ListerError_OmitsListingWithListError(t *testing.T) {
 	runtimesDir := newTestRuntimesDir(t)
 	writeHomeFile(t, runtimesDir, "myws", "x", 10)
 
 	lister := &stubWorkspaceSlugLister{err: errors.New("db unavailable")}
-	got, err := ListWorkspaceHomeSizes(runtimesDir, lister)
+	got, listErr, err := ListWorkspaceHomeSizes(runtimesDir, lister)
 	if err != nil {
 		t.Fatalf("ListWorkspaceHomeSizes should not fail on a lister error: %v", err)
 	}
-	if len(got) != 1 {
-		t.Fatalf("len(got) = %d, want 1", len(got))
+	if len(got) != 0 {
+		t.Fatalf("len(got) = %d, want 0 (listing omitted when orphan status can't be trusted): %+v", len(got), got)
 	}
-	if !got[0].Orphan {
-		t.Error("Orphan = false, want true (degrades to 'unknown' on lister failure)")
+	if listErr == "" {
+		t.Error("listErr = empty, want the lister's error message")
+	}
+	if !strings.Contains(listErr, "db unavailable") {
+		t.Errorf("listErr = %q, want it to mention the lister's underlying error", listErr)
 	}
 }
 
@@ -259,6 +279,45 @@ func TestDeleteWorkspaceHome_ExistingHome_RemovesFromDisk(t *testing.T) {
 	}
 }
 
+// TestDeleteWorkspaceHome_SizeErrorDoesNotBlockDeletion pins Should-fix #2
+// (codex PR #791 review): a sizing failure (humanize.ApparentSize erroring
+// partway through the walk, e.g. because a concurrent dispatch job deleted
+// cache files mid-walk) must not skip the os.RemoveAll attempt entirely —
+// the pre-review behavior treated any SizeError as "could not even size it,
+// do not attempt a blind RemoveAll" and returned before ever calling
+// RemoveAll, which left an orphaned, still-undeleted directory on disk after
+// the workspace row itself was already gone. apparentSizeFn is stubbed
+// (rather than relying on a real permission trick) because a real
+// filesystem permission error that blocks sizing would, on this codebase's
+// implementation, also block RemoveAll for the identical reason — this test
+// needs a sizing failure that is independent of the deletion outcome to
+// actually exercise the "best-effort" contract.
+func TestDeleteWorkspaceHome_SizeErrorDoesNotBlockDeletion(t *testing.T) {
+	runtimesDir := newTestRuntimesDir(t)
+	writeHomeFile(t, runtimesDir, "myws", "a.txt", 10)
+	homePath, _ := resolveWorkspaceHomePath(runtimesDir, "myws")
+
+	orig := apparentSizeFn
+	apparentSizeFn = func(string) (int64, error) {
+		return 0, errors.New("simulated sizing failure (e.g. concurrent dispatch ENOENT mid-walk)")
+	}
+	t.Cleanup(func() { apparentSizeFn = orig })
+
+	info, deleted, err := deleteWorkspaceHome(runtimesDir, "myws")
+	if err != nil {
+		t.Fatalf("deleteWorkspaceHome: %v, want nil (a sizing failure must not surface as a deletion error)", err)
+	}
+	if !deleted {
+		t.Error("deleted = false, want true (a sizing failure must not block deletion)")
+	}
+	if info.SizeError == "" {
+		t.Error("info.SizeError = empty, want the injected sizing failure")
+	}
+	if _, statErr := os.Stat(homePath); !os.IsNotExist(statErr) {
+		t.Errorf("home dir still present after delete: stat err=%v", statErr)
+	}
+}
+
 func TestDeleteWorkspaceHome_NotYetCreated_NoOp(t *testing.T) {
 	runtimesDir := newTestRuntimesDir(t)
 
@@ -292,8 +351,10 @@ func TestDeleteWorkspaceHome_PermissionDenied_ReturnsErrorNotDeleted(t *testing.
 		t.Fatalf("mkdir home dir: %v", err)
 	}
 	// Deny read+execute on homes/ itself so even os.Stat(homePath) fails
-	// with a permission error (not ENOENT) — exercising deleteWorkspaceHome's
-	// "could not even size it, do not attempt a blind RemoveAll" branch.
+	// with a permission error (not ENOENT) — deleteWorkspaceHome still
+	// attempts os.RemoveAll(homePath) regardless (sizing is best-effort), but
+	// that attempt fails for the exact same underlying permission reason, so
+	// the end-to-end contract (error, not deleted) is unchanged.
 	if err := os.Chmod(homesDir, 0o000); err != nil {
 		t.Fatalf("chmod homes dir: %v", err)
 	}

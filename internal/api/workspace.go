@@ -265,7 +265,12 @@ func (h *WorkspaceHandler) Remove(w http.ResponseWriter, r *http.Request) {
 		info, deleted, delErr := deleteWorkspaceHome(h.RuntimesDir, slug)
 		resp.HomePath = info.Path
 		resp.HomeBytes = info.Bytes
+		resp.HomeSizeError = info.SizeError
 		resp.HomeDeleted = deleted
+		if info.SizeError != "" {
+			slog.Warn("workspace remove: home directory size lookup failed (deletion proceeds regardless, best-effort)",
+				"slug", slug, "path", info.Path, "error", info.SizeError)
+		}
 		if delErr != nil {
 			resp.HomeDeleteError = delErr.Error()
 			slog.Warn("workspace remove: home directory deletion failed",
