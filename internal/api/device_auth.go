@@ -70,6 +70,17 @@ func NormalizePublicURL(raw string) (string, error) {
 		// Catches "https://" alone, "https://:443", "https:///path", etc.
 		return "", fmt.Errorf("missing host")
 	}
+	// A bracketed authority (`[...]`) in the original URL is the RFC 3986
+	// form reserved for IPv6 literals. If the hostname pulled out of
+	// splitAuthority is NOT an IPv6 literal (i.e. contains no colon),
+	// the input was `[some-dns-name]` — a form Go 1.24's url.Parse
+	// silently accepts as a bare DNS host but Go 1.25 rejects at parse
+	// time. Reject it here so the CI (Go 1.24) and local (Go 1.25)
+	// behave the same, and the canonical origin never contains a
+	// bogusly-bracketed DNS name.
+	if strings.HasPrefix(u.Host, "[") && !strings.ContainsRune(hostname, ':') {
+		return "", fmt.Errorf("bracketed authority %q is not an IPv6 literal", u.Host)
+	}
 	// url.Parse only rejects a non-digit port; a numeric out-of-range
 	// port like "65536" or "0" passes through as a string, and
 	// splitAuthority propagates it verbatim. Reject those here so the
