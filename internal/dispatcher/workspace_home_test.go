@@ -67,6 +67,30 @@ func countLines(t *testing.T, path string) int {
 	return lines
 }
 
+// parseEnvDump parses the output of `env` (one KEY=VAL per line, as written
+// by the init scripts in this file via `env > $BOID_WORKSPACE_HOME/env-dump`)
+// into a key->value map, so callers can assert exact values instead of a
+// substring check. A substring check is a false-positive trap here
+// specifically: buildWorkspaceInitEnv sets both HOME and
+// BOID_WORKSPACE_HOME to the same homeDir, so strings.Contains(content,
+// "HOME="+homeDir) would still find a match inside the
+// "BOID_WORKSPACE_HOME=<homeDir>" line even if the HOME= line itself were
+// silently dropped from the env (codex review, PR #787).
+func parseEnvDump(content string) map[string]string {
+	env := make(map[string]string)
+	for _, line := range strings.Split(content, "\n") {
+		if line == "" {
+			continue
+		}
+		key, val, ok := strings.Cut(line, "=")
+		if !ok {
+			continue
+		}
+		env[key] = val
+	}
+	return env
+}
+
 // --- 1. script 無し workspace の素通し ---
 
 func TestResolveWorkspaceHome_NoScript_PassesThrough(t *testing.T) {
@@ -119,13 +143,20 @@ func TestResolveWorkspaceHome_FirstRun_ExecutesScriptWithExpectedEnv(t *testing.
 		t.Fatalf("read env-dump: %v", err)
 	}
 	content := string(dump)
-	for _, want := range []string{
-		"HOME=" + homeDir,
-		"BOID_WORKSPACE_SLUG=myws",
-		"BOID_WORKSPACE_HOME=" + homeDir,
-	} {
-		if !strings.Contains(content, want) {
-			t.Errorf("env-dump missing %q; got:\n%s", want, content)
+	gotEnv := parseEnvDump(content)
+	wantEnv := map[string]string{
+		"HOME":                homeDir,
+		"BOID_WORKSPACE_SLUG": "myws",
+		"BOID_WORKSPACE_HOME": homeDir,
+	}
+	for key, wantVal := range wantEnv {
+		gotVal, ok := gotEnv[key]
+		if !ok {
+			t.Errorf("env-dump missing %s=; got:\n%s", key, content)
+			continue
+		}
+		if gotVal != wantVal {
+			t.Errorf("env-dump %s = %q, want %q", key, gotVal, wantVal)
 		}
 	}
 
