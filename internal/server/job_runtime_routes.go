@@ -1,10 +1,7 @@
 package server
 
 import (
-	"context"
 	"encoding/json"
-	"errors"
-	"fmt"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
@@ -21,46 +18,26 @@ type runtimeAttachSupport interface {
 	SupportsAttach(runtimeID string) bool
 }
 
+// mountJobRuntimeRoutes mounts the remaining plain-HTTP job runtime routes.
+// The interactive attach stream itself moved to WebSocket
+// (api.WSAttachHandler, mounted separately in mountRoutes — docs/plans/
+// cli-remote-connection.md Phase 3 PR3 "WebSocket attach 一本化"); this file
+// used to also own a hand-rolled `POST /api/jobs/{id}/attach` hijack
+// handler that spoke a bespoke `Upgrade: boid-attach` protocol
+// (internal/client.Client.AttachJob's previous implementation was its only
+// caller). PR3 removed both ends outright — two attach transports serving
+// the exact same purpose was the maintenance burden decision 5 in the plan
+// doc calls out, and the WS route already had to exist for the Web UI.
+// /api/jobs/{id}/resize survives unchanged: it is a plain, non-hijacked
+// JSON POST unrelated to the attach transport, and stays the CLI's resize
+// path (internal/client.Client.ResizeJob, called from cmd/attach.go's
+// SIGWINCH handler) — see TestServerJobRuntimeAttachAndResize
+// (server_phase3_test.go) for its own regression coverage, independent of
+// AttachJob's transport.
 func mountJobRuntimeRoutes(r chi.Router, runtime *appRuntime) {
 	if runtime == nil || runtime.jobStore == nil || runtime.jobRuntime == nil {
 		return
 	}
-
-	r.Post("/api/jobs/{id}/attach", func(w http.ResponseWriter, req *http.Request) {
-		job, ok := resolveAttachableJob(w, req, runtime)
-		if !ok {
-			return
-		}
-
-		hijacker, ok := w.(http.Hijacker)
-		if !ok {
-			writeJSONError(w, http.StatusInternalServerError, "attach is not supported by this server")
-			return
-		}
-
-		conn, rw, err := hijacker.Hijack()
-		if err != nil {
-			writeJSONError(w, http.StatusInternalServerError, err.Error())
-			return
-		}
-		defer conn.Close()
-
-		if _, err := rw.WriteString("HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: boid-attach\r\n\r\n"); err != nil {
-			return
-		}
-		if err := rw.Flush(); err != nil {
-			return
-		}
-
-		if err := runtime.jobRuntime.Attach(context.Background(), job.RuntimeID, dispatcher.RuntimeAttachRequest{
-			Input:  conn,
-			Output: conn,
-			Error:  conn,
-		}); err != nil && !errors.Is(err, http.ErrAbortHandler) {
-			// The transport is already upgraded, so the only useful thing left is logging via stderr.
-			_, _ = fmt.Fprintf(conn, "\r\nattach ended: %v\r\n", err)
-		}
-	})
 
 	r.Post("/api/jobs/{id}/resize", func(w http.ResponseWriter, req *http.Request) {
 		job, ok := resolveAttachableJob(w, req, runtime)

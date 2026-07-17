@@ -476,6 +476,70 @@ func TestLocalRuntimeWriteInputParallelNoRace(t *testing.T) {
 	rt.Wait(context.Background(), handle.ID)
 }
 
+// TestLocalRuntimeWriteInputRuntime_NonInteractiveStdinForward pins the
+// Phase 3 PR3 fix (docs/plans/cli-remote-connection.md「WebSocket attach
+// 一本化」): WriteInputRuntime must forward bytes to a non-interactive
+// session's StdinForward pipe (not silently discard them the way the old
+// writeMaster-based implementation did — see WriteInputRuntime's doc
+// comment), and CloseInputRuntime must propagate EOF so a pipe-oriented
+// command like `cat` actually exits. This exercises the exact call path
+// api.WSAttachHandler now uses ("input"/"input_close" frames →
+// Runner.WriteInput/CloseInput → these two methods) — as opposed to
+// TestLocalRuntimeStdinForward_DeliversPipedInput below, which pins the
+// separate (and still-supported) Attach(RuntimeAttachRequest{Input: ...})
+// path.
+func TestLocalRuntimeWriteInputRuntime_NonInteractiveStdinForward(t *testing.T) {
+	rt := &dispatcher.LocalRuntime{RootDir: t.TempDir()}
+
+	handle, err := rt.Start(context.Background(), dispatcher.RuntimeStartSpec{
+		Command:      "cat",
+		Interactive:  false,
+		TTY:          false,
+		StdinForward: true,
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	var out bytes.Buffer
+	attachErrCh := make(chan error, 1)
+	go func() {
+		attachErrCh <- rt.Attach(ctx, handle.ID, dispatcher.RuntimeAttachRequest{
+			// No Input reader this time — input arrives exclusively via
+			// WriteInputRuntime below, exactly as api.WSAttachHandler's
+			// "input" frame case drives it in production.
+			Output: &out,
+		})
+	}()
+
+	if err := rt.WriteInputRuntime(handle.ID, []byte("via write input runtime\n")); err != nil {
+		t.Fatalf("WriteInputRuntime: %v", err)
+	}
+	if err := rt.CloseInputRuntime(handle.ID); err != nil {
+		t.Fatalf("CloseInputRuntime: %v", err)
+	}
+
+	if _, err := rt.Wait(context.Background(), handle.ID); err != nil {
+		t.Fatalf("Wait: %v", err)
+	}
+
+	select {
+	case err := <-attachErrCh:
+		if err != nil {
+			t.Fatalf("Attach: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for attach to finish")
+	}
+
+	if !strings.Contains(out.String(), "via write input runtime") {
+		t.Fatalf("attach output = %q, want cat to echo the WriteInputRuntime-forwarded stdin", out.String())
+	}
+}
+
 // TestLocalRuntimeStdinForward_DeliversPipedInput verifies that a
 // non-interactive session started with StdinForward: true actually reads
 // bytes fed through Attach's RuntimeAttachRequest.Input — the capability

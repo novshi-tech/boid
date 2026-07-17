@@ -42,6 +42,7 @@ type stubWriter struct {
 	mu          sync.Mutex
 	inputCalls  []inputCall
 	resizeCalls []resizeCall
+	closeCalls  []string
 }
 
 type inputCall struct {
@@ -65,6 +66,13 @@ func (s *stubWriter) ResizeRuntime(jobID string, size dispatcher.TerminalSize) e
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.resizeCalls = append(s.resizeCalls, resizeCall{jobID: jobID, size: size})
+	return nil
+}
+
+func (s *stubWriter) CloseInput(jobID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.closeCalls = append(s.closeCalls, jobID)
 	return nil
 }
 
@@ -254,6 +262,40 @@ func TestWSAttachHandler_ResizeFrameForwardedToWriter(t *testing.T) {
 	}
 	if writer.resizeCalls[0].size.Cols != 120 || writer.resizeCalls[0].size.Rows != 40 {
 		t.Errorf("resize = %+v, want {Cols:120,Rows:40}", writer.resizeCalls[0].size)
+	}
+}
+
+func TestWSAttachHandler_InputCloseFrameForwardedToWriter(t *testing.T) {
+	ch := make(chan []byte, 1)
+	sub := &stubSubscriber{ch: ch, ok: true}
+	writer := &stubWriter{}
+	h := &WSAttachHandler{Subscriber: sub, Writer: writer}
+	srv := newWSTestServer(h)
+	defer srv.Close()
+
+	conn := dialWS(t, srv, "job-input-close")
+	defer conn.CloseNow()
+
+	writeWSMsg(t, conn, wsClientMsg{Type: "input_close"})
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		writer.mu.Lock()
+		n := len(writer.closeCalls)
+		writer.mu.Unlock()
+		if n > 0 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	writer.mu.Lock()
+	defer writer.mu.Unlock()
+	if len(writer.closeCalls) == 0 {
+		t.Fatal("CloseInput not called")
+	}
+	if writer.closeCalls[0] != "job-input-close" {
+		t.Errorf("CloseInput jobID = %q, want %q", writer.closeCalls[0], "job-input-close")
 	}
 }
 

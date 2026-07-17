@@ -26,11 +26,12 @@ type WSAttachHandler struct {
 	// Bearer verifies an `Authorization: Bearer <token>` header carried on
 	// the WS handshake request (docs/plans/cli-remote-connection.md Phase 3
 	// PR0). When present, it is checked before auth.DeviceIDFromContext —
-	// see authenticateDevice's doc comment for the precedence rule and for
-	// why this is the server-side primitive only; wiring this handler to be
-	// reachable via Bearer over TCP (independent of the cookie-only
-	// WebAuthMiddleware Group it is currently mounted under in
-	// internal/server/wire.go) is PR3's job.
+	// see authenticateDevice's doc comment for the precedence rule. PR3
+	// moved this handler's mount point in internal/server/wire.go out of
+	// the cookie-only WebAuthMiddleware Group so a Bearer-only caller (the
+	// CLI's WS-based AttachJob, internal/client/client.go) can actually
+	// reach this route end-to-end over TCP; the field itself has existed
+	// since PR0.
 	Bearer *auth.BearerVerifier
 }
 
@@ -121,6 +122,17 @@ func (h *WSAttachHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				if h.Writer != nil {
 					h.Writer.ResizeRuntime(jobID, dispatcher.TerminalSize{Cols: msg.Cols, Rows: msg.Rows}) //nolint:errcheck
 				}
+			case "input_close":
+				// The client's own stdin hit EOF (or it never had one) —
+				// propagate that to the job's process so a pipe-oriented
+				// non-interactive command (`cat`, `wc`, ...) sees a real
+				// EOF and can exit (docs/plans/cli-remote-connection.md
+				// Phase 3 PR3; see LocalRuntime.CloseInputRuntime's doc
+				// comment). No-op for interactive PTY sessions and for
+				// non-interactive sessions with no StdinForward pipe.
+				if h.Writer != nil {
+					h.Writer.CloseInput(jobID) //nolint:errcheck
+				}
 			}
 		}
 	}()
@@ -133,6 +145,16 @@ func (h *WSAttachHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		case chunk, more := <-ch:
 			if !more {
+				// The exit frame's code is placeholder-0 today: the actual
+				// exit code is surfaced via a separate REST endpoint
+				// (cmd/exec.go's fetchExecExitCode → GET /api/jobs/{id}/exit-code),
+				// not through this WS frame, and there is no path from
+				// the runtime subscriber's chunk channel to the process
+				// exit code here. Rewiring exit-code propagation to run
+				// through this frame is the Phase 3 未解決論点 the plan
+				// doc tracks; the frame type stays reserved for the day
+				// we do that. See client.go's attachReadOutput's "exit"
+				// case for the mirror on the reader side.
 				h.sendExit(ctx, conn, 0)
 				conn.Close(websocket.StatusNormalClosure, "process exited")
 				return

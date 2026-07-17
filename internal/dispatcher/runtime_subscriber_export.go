@@ -16,6 +16,14 @@ type RuntimeSubscriber interface {
 type RuntimeInputWriter interface {
 	WriteInput(jobID string, data []byte) error
 	ResizeRuntime(jobID string, size TerminalSize) error
+	// CloseInput signals that no more input is coming for jobID — the WS
+	// attach transport's counterpart to the old raw-hijack transport's
+	// implicit half-close (docs/plans/cli-remote-connection.md Phase 3 PR3;
+	// see LocalRuntime.CloseInputRuntime's doc comment for the full
+	// rationale). A no-op for jobs whose runtime has no notion of "closing"
+	// input (interactive PTY sessions, or non-interactive sessions with no
+	// StdinForward pipe).
+	CloseInput(jobID string) error
 }
 
 // Subscribe implements RuntimeSubscriber for Runner. It resolves jobID to a
@@ -74,4 +82,20 @@ func (r *Runner) ResizeRuntime(jobID string, size TerminalSize) error {
 		return fmt.Errorf("runtime not found for job %s", jobID)
 	}
 	return r.Runtime.Resize(context.Background(), runtimeID, size)
+}
+
+// CloseInput implements RuntimeInputWriter for Runner. It resolves jobID to
+// a runtimeID via the jobs table, then delegates to LocalRuntime.CloseInputRuntime.
+func (r *Runner) CloseInput(jobID string) error {
+	var runtimeID string
+	if err := r.DB.QueryRow(`SELECT runtime_id FROM jobs WHERE id = ?`, jobID).Scan(&runtimeID); err != nil || runtimeID == "" {
+		return fmt.Errorf("runtime not found for job %s", jobID)
+	}
+	closer, ok := r.Runtime.(interface {
+		CloseInputRuntime(string) error
+	})
+	if !ok {
+		return ErrRuntimeUnsupported
+	}
+	return closer.CloseInputRuntime(runtimeID)
 }
