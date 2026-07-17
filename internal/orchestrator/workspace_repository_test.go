@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -51,9 +52,6 @@ func TestWorkspaceRepository_SaveLoad_RoundTrip(t *testing.T) {
 		AllowedDomains: []string{"example.com"},
 		ExtraRepos:     []string{"https://github.com/example/lib.git"},
 		Capabilities:   Capabilities{Docker: &DockerCapability{}},
-		AdditionalBindings: []BindMount{
-			{Source: "/opt/volta", Target: "/opt/volta", Mode: "rw"},
-		},
 		ContainerImage: "ghcr.io/example/image:latest",
 	}
 	if err := repo.Save("my-ws", meta); err != nil {
@@ -79,11 +77,58 @@ func TestWorkspaceRepository_SaveLoad_RoundTrip(t *testing.T) {
 	if got.Capabilities.Docker == nil {
 		t.Error("Capabilities.Docker: got nil, want non-nil")
 	}
-	if len(got.AdditionalBindings) != 1 || got.AdditionalBindings[0] != meta.AdditionalBindings[0] {
-		t.Errorf("AdditionalBindings: got %+v, want %+v", got.AdditionalBindings, meta.AdditionalBindings)
-	}
 	if got.ContainerImage != meta.ContainerImage {
 		t.Errorf("ContainerImage: got %q, want %q", got.ContainerImage, meta.ContainerImage)
+	}
+}
+
+// TestWorkspaceRepository_Load_DiscardsStoredAdditionalBindingsAndWarns pins
+// the Phase 4 PR4 (docs/plans/home-workspace-volume.md) regression contract
+// for the DB-backed path: a `workspaces.additional_bindings` column value
+// written by a binary that predates this PR (WorkspaceMeta still had the
+// field then) must not surface on the WorkspaceMeta Load returns (the type
+// has no field for it any more), must not error the Load, and must log a
+// warning so an operator understands why a previously-working workspace
+// bind mount silently stopped applying after the upgrade. The column is
+// written directly via raw SQL here (bypassing Save/marshalWorkspaceMetaColumns,
+// which — post-PR4 — can only ever write "[]") to simulate exactly that
+// pre-PR4-written-row scenario.
+func TestWorkspaceRepository_Load_DiscardsStoredAdditionalBindingsAndWarns(t *testing.T) {
+	repo := newTestWorkspaceRepo(t)
+
+	if err := repo.Create("legacy-ws", &WorkspaceMeta{Env: map[string]string{"FOO": "bar"}}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if _, err := repo.conn.Exec(
+		`UPDATE workspaces SET additional_bindings = ? WHERE slug = ?`,
+		`[{"source":"/opt/volta","target":"/opt/volta","mode":"rw"}]`, "legacy-ws",
+	); err != nil {
+		t.Fatalf("seed legacy additional_bindings column: %v", err)
+	}
+
+	buf := captureSlog(t)
+	got, err := repo.Load("legacy-ws")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got.Env["FOO"] != "bar" {
+		t.Errorf("Env[FOO] = %q, want bar (rest of the row must still load)", got.Env["FOO"])
+	}
+	if !strings.Contains(buf.String(), "additional_bindings") {
+		t.Errorf("expected a warning mentioning additional_bindings, got log: %s", buf.String())
+	}
+
+	// Saving the loaded meta back must zero out the stale column rather than
+	// round-tripping a value WorkspaceMeta can no longer carry.
+	if err := repo.Save("legacy-ws", got); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	var rawBindingsJSON string
+	if err := repo.conn.QueryRow(`SELECT additional_bindings FROM workspaces WHERE slug = ?`, "legacy-ws").Scan(&rawBindingsJSON); err != nil {
+		t.Fatalf("query additional_bindings column: %v", err)
+	}
+	if rawBindingsJSON != "[]" {
+		t.Errorf("additional_bindings column after Save = %q, want [] (Save must not resurrect a value WorkspaceMeta cannot carry)", rawBindingsJSON)
 	}
 }
 
@@ -113,9 +158,6 @@ func TestWorkspaceRepository_Save_EmptyMetaRoundTripsToEmptyJSONColumns(t *testi
 	}
 	if got.Capabilities.Docker != nil {
 		t.Errorf("Capabilities.Docker: got %v, want nil", got.Capabilities.Docker)
-	}
-	if len(got.AdditionalBindings) != 0 {
-		t.Errorf("AdditionalBindings: got %v, want empty", got.AdditionalBindings)
 	}
 	if got.ContainerImage != "" {
 		t.Errorf("ContainerImage: got %q, want empty", got.ContainerImage)

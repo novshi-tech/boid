@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"strings"
 	"time"
@@ -183,6 +184,17 @@ func formatRevision(t time.Time) string {
 // decodeWorkspaceMetaColumns decodes the JSON column values shared by Load
 // and LoadWithRevision into a *WorkspaceMeta, so the two share identical
 // decode logic rather than letting it drift out of sync.
+//
+// bindingsJSON (the `workspaces.additional_bindings` column) is decoded and
+// discarded rather than mapped onto the result: WorkspaceMeta.AdditionalBindings
+// was retired outright in docs/plans/home-workspace-volume.md Phase 4 PR4
+// (see that struct's own doc comment). The column itself is not dropped by
+// this PR's migration — a future major schema cleanup removes it — so a row
+// written before this binary can still carry a non-empty JSON array here;
+// decoding it (rather than ignoring the column) still validates it is
+// well-formed JSON and lets this function warn when it is non-trivial, so an
+// operator inspecting logs after an upgrade understands why a previously
+// working workspace-scoped bind mount stopped applying.
 func decodeWorkspaceMetaColumns(slug string, containerImage sql.NullString, hostCommandsJSON, envJSON, allowedDomainsJSON, extraReposJSON, capabilitiesJSON, bindingsJSON string) (*WorkspaceMeta, error) {
 	meta := &WorkspaceMeta{}
 	if containerImage.Valid {
@@ -203,8 +215,13 @@ func decodeWorkspaceMetaColumns(slug string, containerImage sql.NullString, host
 	if err := json.Unmarshal([]byte(capabilitiesJSON), &meta.Capabilities); err != nil {
 		return nil, fmt.Errorf("workspace %q: decode capabilities: %w", slug, err)
 	}
-	if err := json.Unmarshal([]byte(bindingsJSON), &meta.AdditionalBindings); err != nil {
+	var discardedBindings []BindMount
+	if err := json.Unmarshal([]byte(bindingsJSON), &discardedBindings); err != nil {
 		return nil, fmt.Errorf("workspace %q: decode additional_bindings: %w", slug, err)
+	}
+	if len(discardedBindings) > 0 {
+		slog.Warn("workspace: additional_bindings is no longer supported (retired in docs/plans/home-workspace-volume.md Phase 4 PR4); the stored value is ignored",
+			"slug", slug, "count", len(discardedBindings))
 	}
 	return meta, nil
 }
@@ -316,6 +333,14 @@ func nowForRevision() time.Time {
 // a given field is serialized. containerImage is returned as `any` so it can
 // be passed straight to Exec: nil (SQL NULL) when meta.ContainerImage is
 // empty, or the string itself otherwise.
+//
+// bindingsJSON (the `workspaces.additional_bindings` column) is always
+// written as the empty-array literal: WorkspaceMeta has no AdditionalBindings
+// field any more (Phase 4 PR4, docs/plans/home-workspace-volume.md — see that
+// struct's doc comment) to source a value from, so every Save/Create/Update
+// from this binary zeroes out whatever a previous binary may have stored
+// there. The column itself is kept for now (a future major schema cleanup
+// removes it outright); see decodeWorkspaceMetaColumns for the read side.
 func marshalWorkspaceMetaColumns(slug string, meta *WorkspaceMeta) (hostCommandsJSON, envJSON, allowedDomainsJSON, extraReposJSON, capabilitiesJSON, bindingsJSON string, containerImage any, err error) {
 	hostCommandsJSON, err = marshalJSONOrDefault(meta.HostCommands, len(meta.HostCommands) == 0, "[]")
 	if err != nil {
@@ -333,10 +358,7 @@ func marshalWorkspaceMetaColumns(slug string, meta *WorkspaceMeta) (hostCommands
 	if err != nil {
 		return "", "", "", "", "", "", nil, fmt.Errorf("workspace %q: encode extra_repos: %w", slug, err)
 	}
-	bindingsJSON, err = marshalJSONOrDefault(meta.AdditionalBindings, len(meta.AdditionalBindings) == 0, "[]")
-	if err != nil {
-		return "", "", "", "", "", "", nil, fmt.Errorf("workspace %q: encode additional_bindings: %w", slug, err)
-	}
+	bindingsJSON = "[]"
 	capabilitiesBytes, err := json.Marshal(meta.Capabilities)
 	if err != nil {
 		return "", "", "", "", "", "", nil, fmt.Errorf("workspace %q: encode capabilities: %w", slug, err)
