@@ -54,7 +54,7 @@ func (r *Runner) resolveWorkspaceHome(workspaceID string) (string, error) {
 		return "", err
 	}
 
-	homesDir, err := workspaceHomesDir()
+	homesDir, err := r.workspaceHomesDir()
 	if err != nil {
 		return "", fmt.Errorf("workspace home: %w", err)
 	}
@@ -159,7 +159,24 @@ func workspaceDataHomeRoot() (string, error) {
 // under which every workspace's home lives (docs/plans/home-workspace-volume.md
 // 「レイアウト」). Unlike runtimes/, this directory is never GC'd — workspace
 // homes are persistent (PR5 wires deletion to `workspace remove`).
-func workspaceHomesDir() (string, error) {
+//
+// Prefers deriving from r.RuntimesDir when set: RuntimesDir is wired by
+// server/wire.go as runtimesDirFor(cfg) — filepath.Dir(cfg.DBPath) (or
+// cfg.SocketPath's dir when DBPath is ":memory:") + "/runtimes" — the same
+// per-installation data root skills/ already lives under (see
+// server.New's skillsDir). Deriving homes/ from the same root means a
+// daemon instance running against a non-default DBPath (an isolated data
+// dir, e.g. every test in this codebase that spins up a real server) gets
+// its own isolated homes/ next to its own DB/runtimes, instead of every
+// such instance converging on one global ~/.local/share/boid/homes and
+// leaking into the real developer machine's home directory during `go
+// test`. Falls back to the $XDG_DATA_HOME / ~/.local/share/boid convention
+// only when RuntimesDir is unset (minimal test wiring that constructs a
+// bare &Runner{}, or a daemon build that never wired RuntimesDir).
+func (r *Runner) workspaceHomesDir() (string, error) {
+	if r.RuntimesDir != "" {
+		return filepath.Join(filepath.Dir(r.RuntimesDir), "homes"), nil
+	}
 	root, err := workspaceDataHomeRoot()
 	if err != nil {
 		return "", err
