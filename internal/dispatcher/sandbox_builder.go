@@ -1368,6 +1368,7 @@ type environmentDoc struct {
 // package constant rather than rebuilding it per call. Use a literal block
 // scalar in the YAML output so LLMs see it as one paragraph per bullet.
 const environmentNotes = `- git はサンドボックス内の実バイナリで動作します（host への broker dispatch はありません）。 project はジョブ開始時に git gateway 経由で新規 clone されたコピーで、 origin は gateway を指しています。 commit した変更は push するまで他セッション・他ホストに共有されません。 readonly な job では push が gateway 側で拒否されます (fetch はできます)。
+- $HOME はワークスペース単位で永続化されています（同一ワークスペースの複数ジョブ間で ~/.claude や ~/.cache 等のファイルが引き継がれます）。 一方 ~/.boid (context/output) だけはジョブごとに独立した tmpfs で、 ジョブ終了と共に消えます。
 - boid fetch (URL 単発取得の boid builtin) は host へ broker dispatch され、 network.allowed_domains の許可ドメインに対してのみ動作します。 git fetch とは別経路で、 git の fetch/push はいずれも上の bullet の gateway 経由です。
 - host_commands (gh 等) は host 側でリポジトリの checkout ディレクトリではなく中立ディレクトリで実行されます。 cwd から repo を推定する動作 (gh の暗黙 -R 等) には依存できません。 repo 文脈が必要なコマンドは kit 側の env 設定 (例: gh の GH_REPO) で渡されます。
 - host_commands には stdin が渡りません。 stdin 経由でファイル内容や長文を渡す設計は使えません。
