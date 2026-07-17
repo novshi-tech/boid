@@ -288,3 +288,138 @@ func TestPersistentPreRunE_HTTPSProfile_SkipsAutostartCheck(t *testing.T) {
 		t.Error("expected an https-scheme client to have been injected")
 	}
 }
+
+// --- scope=local rejection UX (docs/plans/cli-remote-connection.md
+// decision 6, PR4) ---
+
+// TestPersistentPreRunE_ScopeLocal_HTTPSProfile_HardError pins the core of
+// decision 6: a scope=local command (e.g. `start`) resolved against a
+// non-unix (https) profile must hard-fail rather than silently operate
+// against the wrong host. The error must name the command's full path, the
+// profile's URL, and the profile's name so the user can act on it.
+func TestPersistentPreRunE_ScopeLocal_HTTPSProfile_HardError(t *testing.T) {
+	writeRootTestConfigYAML(t, "profiles:\n  work:\n    url: https://work.example.com\n")
+	writeRootTestTokenFile(t, "work", `{"device_id":"d","token":"tk_x","url":"https://work.example.com"}`)
+	cmd := newProfileTestCmd(t, "work", map[string]string{scopeAnnotationKey: scopeLocal})
+	cmd.Use = "start" // CommandPath() reflects this in the error message
+
+	err := rootCmd.PersistentPreRunE(cmd, nil)
+	if err == nil {
+		t.Fatal("expected a hard error for a scope=local command against an https profile")
+	}
+	// Pin BOTH the runtime substitutions (command name / URL / profile
+	// name) AND the spec decision-6 phrase-book (口語調 "だよ" / "してね"
+	// wording, plus the --profile hint) — codex PR4 review round 1 minor
+	// 3 flagged that pinning "start" alone was too loose to catch a
+	// wording drift.
+	for _, want := range []string{
+		"start",
+		"https://work.example.com",
+		"work",
+		"ローカル専用コマンドだよ",
+		"--profile <local-profile>",
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error message should contain %q, got %q", want, err.Error())
+		}
+	}
+	if c := client.FromContextOrNil(cmd.Context()); c != nil {
+		t.Errorf("expected no client injected after a scope=local rejection; got %+v", c)
+	}
+}
+
+// TestPersistentPreRunE_ScopeLocal_HTTPSProfile_MissingToken_StillLocalReject
+// is the codex PR4 review round 1 MAJOR 1 regression: an https profile
+// whose token file is missing or corrupt would previously cause
+// Resolve() to fail on token load BEFORE the scope=local check ran, so
+// the caller saw "no device token for profile ... run 'boid login'
+// first" instead of the actual reason (the command is local-only and
+// this profile is not local). Two-phase resolution
+// (profiles.ResolveWithoutToken then Resolve) fixes it: the scope=local
+// message wins, and the caller does not waste time re-logging in on a
+// command that will never accept the token anyway.
+func TestPersistentPreRunE_ScopeLocal_HTTPSProfile_MissingToken_StillLocalReject(t *testing.T) {
+	writeRootTestConfigYAML(t, "profiles:\n  work:\n    url: https://work.example.com\n")
+	// Deliberately NO writeRootTestTokenFile — Resolve() would fail here.
+	cmd := newProfileTestCmd(t, "work", map[string]string{scopeAnnotationKey: scopeLocal})
+	cmd.Use = "start"
+
+	err := rootCmd.PersistentPreRunE(cmd, nil)
+	if err == nil {
+		t.Fatal("expected a hard error")
+	}
+	if !strings.Contains(err.Error(), "ローカル専用コマンドだよ") {
+		t.Errorf("error should be the scope=local rejection, got %q", err.Error())
+	}
+	if strings.Contains(err.Error(), "boid login") {
+		t.Errorf("scope=local reject must PRE-EMPT the missing-token message, got %q", err.Error())
+	}
+}
+
+// TestPersistentPreRunE_ScopeLocal_UnixProfile_Allowed pins the "before"
+// half of decision 6: a scope=local command against the default (unix
+// fallback) profile is unaffected — this is the overwhelmingly common case
+// pre-Phase-3 and must keep working exactly as before.
+func TestPersistentPreRunE_ScopeLocal_UnixProfile_Allowed(t *testing.T) {
+	writeRootTestConfigYAML(t, "")
+	t.Setenv("BOID_SOCKET", filepath.Join(t.TempDir(), "pinned-for-test.sock"))
+	cmd := newProfileTestCmd(t, "", map[string]string{
+		scopeAnnotationKey:      scopeLocal,
+		annotationSkipAutostart: "skip",
+	})
+
+	if err := rootCmd.PersistentPreRunE(cmd, nil); err != nil {
+		t.Fatalf("a scope=local command against a unix profile must not be rejected: %v", err)
+	}
+	c := client.FromContext(cmd.Context())
+	if c == nil {
+		t.Fatal("expected a client to have been injected")
+	}
+	if !c.IsUnix() {
+		t.Error("expected the default unix client to have been injected")
+	}
+}
+
+// TestPersistentPreRunE_ScopeRemote_HTTPSProfile_Allowed pins that
+// scope=remote commands are exactly the ones decision 6's rejection does
+// NOT apply to — an https profile is the whole point of Phase 3 for them.
+func TestPersistentPreRunE_ScopeRemote_HTTPSProfile_Allowed(t *testing.T) {
+	writeRootTestConfigYAML(t, "profiles:\n  work:\n    url: https://work.example.com\n")
+	writeRootTestTokenFile(t, "work", `{"device_id":"d","token":"tk_x","url":"https://work.example.com"}`)
+	cmd := newProfileTestCmd(t, "work", map[string]string{scopeAnnotationKey: scopeRemote})
+
+	if err := rootCmd.PersistentPreRunE(cmd, nil); err != nil {
+		t.Fatalf("a scope=remote command against an https profile must not be rejected: %v", err)
+	}
+	c := client.FromContext(cmd.Context())
+	if c == nil {
+		t.Fatal("expected a client to have been injected")
+	}
+	if c.IsUnix() {
+		t.Error("expected an https-scheme client to have been injected")
+	}
+}
+
+// TestPersistentPreRunE_ScopeNeutral_HTTPSProfile_Allowed is a regression
+// guard: scope=neutral's existing swallow behaviour (login/logout) must
+// remain untouched by the new scope=local rejection branch — a successful
+// resolution against an https profile is not an error at all, so it never
+// reaches either the neutral-swallow or the local-rejection code paths, but
+// this pins that adding the local check did not accidentally start
+// rejecting neutral commands too.
+func TestPersistentPreRunE_ScopeNeutral_HTTPSProfile_Allowed(t *testing.T) {
+	writeRootTestConfigYAML(t, "profiles:\n  work:\n    url: https://work.example.com\n")
+	writeRootTestTokenFile(t, "work", `{"device_id":"d","token":"tk_x","url":"https://work.example.com"}`)
+	cmd := newProfileTestCmd(t, "work", map[string]string{scopeAnnotationKey: scopeNeutral})
+
+	if err := rootCmd.PersistentPreRunE(cmd, nil); err != nil {
+		t.Fatalf("a scope=neutral command against an https profile must not be rejected: %v", err)
+	}
+	c := client.FromContext(cmd.Context())
+	if c == nil {
+		t.Fatal("expected a client to have been injected")
+	}
+	if c.IsUnix() {
+		t.Error("expected an https-scheme client to have been injected")
+	}
+}
