@@ -4,9 +4,9 @@ import (
 	"bytes"
 	"embed"
 	"fmt"
-	"io/fs"
-	"os"
-	"path/filepath"
+	"io"
+
+	"golang.org/x/sys/unix"
 )
 
 //go:embed data/boid-web data/boid-orchestrate data/boid-task
@@ -15,17 +15,32 @@ var skillsFS embed.FS
 // DeployAll extracts all embedded skill directories under baseDir.
 // Each skill is deployed to baseDir/<skill-name>/.
 // Files are only written when their content differs from the embedded version.
+//
+// baseDir is workspace HOME's `.claude/skills` (see
+// internal/dispatcher/runner.go), a directory rw bind mounted into every
+// sandbox dispatched against the workspace. Every write below it therefore
+// goes through the symlink-safe, fd-relative helpers in safe_deploy.go
+// rather than string-path-based os.MkdirAll/os.CreateTemp/os.Rename — see
+// that file's package doc comment for the threat model (PR #789 review,
+// 2026-07-17).
 func DeployAll(baseDir string) error {
 	entries, err := skillsFS.ReadDir("data")
 	if err != nil {
 		return fmt.Errorf("read skills dir: %w", err)
 	}
+
+	baseFd, err := openBaseDirSafe(baseDir)
+	if err != nil {
+		return fmt.Errorf("workspace HOME %q に symlink 混入を検出、または safe path 解決に失敗: %w", baseDir, err)
+	}
+	defer func() { _ = unix.Close(baseFd) }()
+
 	for _, e := range entries {
 		if !e.IsDir() {
 			continue
 		}
-		if err := deploySkill(e.Name(), filepath.Join(baseDir, e.Name())); err != nil {
-			return err
+		if err := deploySkill(baseFd, e.Name()); err != nil {
+			return fmt.Errorf("workspace HOME %q: %w", baseDir, err)
 		}
 	}
 	return nil
@@ -48,65 +63,81 @@ func EmbeddedSkillNames() []string {
 	return names
 }
 
-func deploySkill(name, targetDir string) error {
-	prefix := "data/" + name
-	return fs.WalkDir(skillsFS, prefix, func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		rel, err := filepath.Rel(prefix, path)
-		if err != nil {
-			return fmt.Errorf("rel path: %w", err)
-		}
-		dest := filepath.Join(targetDir, rel)
-		if d.IsDir() {
-			return os.MkdirAll(dest, 0o755)
-		}
-		embedded, err := skillsFS.ReadFile(path)
-		if err != nil {
-			return fmt.Errorf("read embedded %s: %w", path, err)
-		}
-		existing, err := os.ReadFile(dest)
-		if err == nil && bytes.Equal(existing, embedded) {
-			return nil
-		}
-		return writeFileAtomic(dest, embedded, 0o644)
-	})
+// deploySkill safely deploys the embedded skill directory "data/<name>"
+// into the directory named name directly under baseFd, creating that
+// directory if it doesn't exist yet and refusing if any path component
+// involved turns out to be a symlink (see safe_deploy.go).
+func deploySkill(baseFd int, name string) error {
+	skillFd, err := openOrCreateDirNoSymlink(baseFd, name)
+	if err != nil {
+		return fmt.Errorf("skill %q: %w", name, err)
+	}
+	defer func() { _ = unix.Close(skillFd) }()
+	return deploySkillDir(skillFd, "data/"+name)
 }
 
-// writeFileAtomic replaces dest's content with data via a sibling temp file
-// + rename, so a mid-write crash (or a concurrent reader) never observes a
-// partially written file at dest. The temp file is created in the same
-// directory as dest so the rename is guaranteed to stay on one filesystem
-// (a cross-device rename would fail).
-func writeFileAtomic(dest string, data []byte, perm os.FileMode) (retErr error) {
-	dir := filepath.Dir(dest)
-	tmp, err := os.CreateTemp(dir, "."+filepath.Base(dest)+".tmp-*")
+// deploySkillDir mirrors the embedded directory at embedPath into dirFd,
+// recursing into subdirectories.
+func deploySkillDir(dirFd int, embedPath string) error {
+	entries, err := skillsFS.ReadDir(embedPath)
 	if err != nil {
-		return fmt.Errorf("create temp file: %w", err)
+		return fmt.Errorf("read embedded dir %q: %w", embedPath, err)
 	}
-	tmpPath := tmp.Name()
-	cleanup := true
-	defer func() {
-		if cleanup {
-			_ = os.Remove(tmpPath)
+	for _, e := range entries {
+		childEmbedPath := embedPath + "/" + e.Name()
+		if e.IsDir() {
+			childFd, err := openOrCreateDirNoSymlink(dirFd, e.Name())
+			if err != nil {
+				return fmt.Errorf("dir %q: %w", e.Name(), err)
+			}
+			err = deploySkillDir(childFd, childEmbedPath)
+			_ = unix.Close(childFd)
+			if err != nil {
+				return err
+			}
+			continue
 		}
-	}()
 
-	if _, err := tmp.Write(data); err != nil {
-		_ = tmp.Close()
-		return fmt.Errorf("write temp file %q: %w", tmpPath, err)
+		embedded, err := skillsFS.ReadFile(childEmbedPath)
+		if err != nil {
+			return fmt.Errorf("read embedded %q: %w", childEmbedPath, err)
+		}
+		unchanged, err := fileMatches(dirFd, e.Name(), embedded)
+		if err != nil {
+			return fmt.Errorf("check existing %q: %w", e.Name(), err)
+		}
+		if unchanged {
+			continue
+		}
+		if err := writeFileSafeAt(dirFd, e.Name(), embedded, 0o644); err != nil {
+			return fmt.Errorf("write %q: %w", e.Name(), err)
+		}
 	}
-	if err := tmp.Chmod(perm); err != nil {
-		_ = tmp.Close()
-		return fmt.Errorf("chmod temp file %q: %w", tmpPath, err)
-	}
-	if err := tmp.Close(); err != nil {
-		return fmt.Errorf("close temp file %q: %w", tmpPath, err)
-	}
-	if err := os.Rename(tmpPath, dest); err != nil {
-		return fmt.Errorf("rename %q to %q: %w", tmpPath, dest, err)
-	}
-	cleanup = false
 	return nil
+}
+
+// fileMatches reports whether the file already at name directly under
+// dirFd exists and its content equals embedded, so deploySkillDir can skip
+// a rewrite — matching DeployAll's pre-existing "only written when content
+// differs" contract. A missing file is reported as (false, nil): the caller
+// falls through to a normal write. A name that turns out to be a symlink is
+// a hard error, same as everywhere else in this package — reading through
+// an attacker-placed symlink to decide whether to skip a write is
+// lower-severity than the write-side attack the Blocker was about, but
+// there's no reason to special-case this read differently from the rest of
+// the symlink-safe path.
+func fileMatches(dirFd int, name string, embedded []byte) (bool, error) {
+	f, exists, err := openFileNoSymlinkIfExists(dirFd, name)
+	if err != nil {
+		return false, err
+	}
+	if !exists {
+		return false, nil
+	}
+	defer f.Close()
+	existing, err := io.ReadAll(f)
+	if err != nil {
+		return false, fmt.Errorf("read %q: %w", name, err)
+	}
+	return bytes.Equal(existing, embedded), nil
 }
