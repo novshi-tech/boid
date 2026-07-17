@@ -30,6 +30,56 @@ func setupListener(t *testing.T, socketPath string) net.Listener {
 	return ln
 }
 
+// TestEnsureRunningAt_NonDefaultSocket_NoAutostart pins that autostart
+// (spawnServer, which re-execs `boid start` — a command that reads its
+// own config for the socket path — cannot bring up a daemon on an
+// arbitrary bespoke socket) is skipped for a non-default profile socket.
+// Instead the caller gets a clear error naming the missing socket path,
+// so a badly-configured profile can't silently spawn a fresh
+// default-socket daemon that the CLI is not about to connect to.
+func TestEnsureRunningAt_NonDefaultSocket_NoAutostart(t *testing.T) {
+	tmpDir := t.TempDir()
+	nondefault := filepath.Join(tmpDir, "custom", "boid.sock")
+
+	err := EnsureRunningAt(context.Background(), nondefault)
+	if err == nil {
+		t.Fatal("expected an error when a non-default profile socket has no daemon")
+	}
+	// The error must actually name the profile-selected socket path so
+	// the operator knows which daemon to start.
+	if !contains(err.Error(), nondefault) {
+		t.Errorf("error should name the missing socket path %q, got %q", nondefault, err.Error())
+	}
+}
+
+// TestEnsureRunningAt_DefaultSocket_LiveReturnsNil pins that hitting the
+// default socket when a daemon is actually listening still returns nil
+// without invoking spawnServer (regression coverage that
+// EnsureRunning → EnsureRunningAt(DefaultSocketPath()) short-circuits
+// as before). Uses a temp XDG_RUNTIME_DIR so DefaultSocketPath() lands
+// under the test-owned temp dir instead of the developer's real one.
+func TestEnsureRunningAt_DefaultSocket_LiveReturnsNil(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("XDG_RUNTIME_DIR", tmpDir)
+
+	socketPath := DefaultSocketPath()
+	ln := setupListener(t, socketPath)
+	defer ln.Close()
+
+	if err := EnsureRunningAt(context.Background(), socketPath); err != nil {
+		t.Fatalf("EnsureRunningAt on a live default socket: %v", err)
+	}
+}
+
+func contains(haystack, needle string) bool {
+	for i := 0; i+len(needle) <= len(haystack); i++ {
+		if haystack[i:i+len(needle)] == needle {
+			return true
+		}
+	}
+	return false
+}
+
 func TestEnsureRunning_AlreadyRunning(t *testing.T) {
 	tmpDir := t.TempDir()
 	socketPath := filepath.Join(tmpDir, "boid.sock")

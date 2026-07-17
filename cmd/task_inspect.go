@@ -43,7 +43,7 @@ func runTaskArtifacts(cmd *cobra.Command, args []string) error {
 	field, _ := cmd.Flags().GetString("field")
 	outputFile, _ := cmd.Flags().GetString("output-file")
 
-	c := client.NewUnixClient(client.DefaultSocketPath())
+	c := client.FromContext(cmd.Context())
 	var task orchestrator.Task
 	if err := c.Do("GET", "/api/tasks/"+args[0], nil, &task); err != nil {
 		return fmt.Errorf("get task: %w", err)
@@ -142,7 +142,7 @@ func artifactFieldGet(artifactRaw json.RawMessage, path string) (any, error) {
 // --- tree ---
 
 func runTaskTree(cmd *cobra.Command, args []string) error {
-	c := client.NewUnixClient(client.DefaultSocketPath())
+	c := client.FromContext(cmd.Context())
 
 	var tasks []orchestrator.Task
 	if err := c.Do("GET", "/api/tasks", nil, &tasks); err != nil {

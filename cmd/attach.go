@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -29,7 +30,7 @@ func init() {
 }
 
 func runAttach(cmd *cobra.Command, args []string) error {
-	return attachToJob(args[0])
+	return attachToJob(cmd.Context(), args[0])
 }
 
 // attachToJob is the shared attach core called by `boid attach` and by
@@ -37,8 +38,16 @@ func runAttach(cmd *cobra.Command, args []string) error {
 // have a job id back from POST /api/sessions. It mirrors the original
 // runAttach behaviour: a non-running job replays its saved output through
 // a pager, a running job opens a live PTY attach with WINCH forwarding.
-func attachToJob(jobID string) error {
-	c := client.NewUnixClient(client.DefaultSocketPath())
+//
+// ctx carries the profile-resolved client (root's PersistentPreRunE) down
+// from whichever cobra command originally called in — this and attachLive
+// take ctx rather than *cobra.Command because their own callers
+// (runAgentSession, runExec) already had to detach from a *cobra.Command at
+// their own call boundary (a bare job id is all that survives), so
+// threading the narrower context.Context through is both sufficient and
+// keeps this file's helpers usable outside a cobra RunE if ever needed.
+func attachToJob(ctx context.Context, jobID string) error {
+	c := client.FromContext(ctx)
 
 	var job api.Job
 	if err := c.Do("GET", "/api/jobs/"+jobID, nil, &job); err != nil {
@@ -54,7 +63,7 @@ func attachToJob(jobID string) error {
 		return errors.New("job is not attachable")
 	}
 
-	return attachLive(jobID)
+	return attachLive(ctx, jobID)
 }
 
 // attachLive opens a live attach to jobID (PTY or plain-pipe transport,
@@ -70,8 +79,8 @@ func attachToJob(jobID string) error {
 // created via POST .../exec, whose RuntimeID is guaranteed set by the time
 // the daemon responds (Runner.Dispatch's launchSandbox persists RuntimeID
 // before returning).
-func attachLive(jobID string) error {
-	c := client.NewUnixClient(client.DefaultSocketPath())
+func attachLive(ctx context.Context, jobID string) error {
+	c := client.FromContext(ctx)
 
 	stdin := io.Reader(os.Stdin)
 	restore, err := makeRawInput(os.Stdin)

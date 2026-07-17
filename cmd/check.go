@@ -73,7 +73,7 @@ func runCheck(cmd *cobra.Command, args []string) error {
 	}
 
 	// Check hook requires for registered projects
-	c := client.NewUnixClient(client.DefaultSocketPath())
+	c := client.FromContext(cmd.Context())
 	var projects []projectspec.Project
 	if err := c.Do("GET", "/api/projects", nil, &projects); err != nil {
 		fmt.Printf("\n(server not running, skipping project hook checks)\n")

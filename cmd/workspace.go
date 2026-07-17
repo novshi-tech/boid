@@ -161,7 +161,7 @@ func init() {
 // empty workspace (no assigned projects) is already included in the API
 // response (Step B's ListWorkspaces rewrite).
 func runWorkspaceList(cmd *cobra.Command, args []string) error {
-	c := client.NewUnixClient(client.DefaultSocketPath())
+	c := client.FromContext(cmd.Context())
 
 	var workspaces []*orchestrator.WorkspaceSummary
 	if err := c.Do("GET", "/api/workspaces", nil, &workspaces); err != nil {
@@ -209,7 +209,7 @@ func runWorkspaceShow(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	c := client.NewUnixClient(client.DefaultSocketPath())
+	c := client.FromContext(cmd.Context())
 
 	var detail api.WorkspaceDetail
 	if err := c.Do("GET", "/api/workspaces/"+slug, nil, &detail); err != nil {
@@ -306,7 +306,7 @@ func runWorkspaceCreate(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("build create request: %w", err)
 	}
 
-	c := client.NewUnixClient(client.DefaultSocketPath())
+	c := client.FromContext(cmd.Context())
 	var detail api.WorkspaceDetail
 	if err := c.DoWithContentType("POST", "/api/workspaces", "application/yaml", body, &detail); err != nil {
 		return fmt.Errorf("create workspace: %w", err)
@@ -382,7 +382,7 @@ func runWorkspaceEdit(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("validate --from-file: %w", err)
 	}
 
-	c := client.NewUnixClient(client.DefaultSocketPath())
+	c := client.FromContext(cmd.Context())
 
 	var ifMatch string
 	if !workspaceEditForce {
@@ -447,7 +447,7 @@ func runWorkspaceAssign(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	c := client.NewUnixClient(client.DefaultSocketPath())
+	c := client.FromContext(cmd.Context())
 
 	p, err := resolveProjectRef(c, os.Stdin, cmd.OutOrStdout(), args[0])
 	if err != nil {
@@ -772,7 +772,7 @@ func ensureWorkspaceExistsGetOrCreate(c *client.Client, slug string, out io.Writ
 }
 
 func runWorkspaceClear(cmd *cobra.Command, args []string) error {
-	c := client.NewUnixClient(client.DefaultSocketPath())
+	c := client.FromContext(cmd.Context())
 
 	p, err := resolveProjectRef(c, os.Stdin, cmd.OutOrStdout(), args[0])
 	if err != nil {
@@ -815,7 +815,7 @@ func runWorkspaceRemove(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("workspace %q is reserved and cannot be removed", slug)
 	}
 
-	c := client.NewUnixClient(client.DefaultSocketPath())
+	c := client.FromContext(cmd.Context())
 
 	if err := c.Do("DELETE", "/api/workspaces/"+slug, nil, nil); err != nil {
 		return fmt.Errorf("remove workspace: %w", err)
@@ -838,7 +838,7 @@ func runWorkspaceExport(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	c := client.NewUnixClient(client.DefaultSocketPath())
+	c := client.FromContext(cmd.Context())
 	statusCode, body, err := c.GetRawWithAccept("/api/workspaces/"+slug+"/export", "application/yaml")
 	if err != nil {
 		return fmt.Errorf("export workspace: %w", err)
@@ -933,7 +933,7 @@ func runWorkspaceImport(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("build import request: %w", err)
 	}
 
-	c := client.NewUnixClient(client.DefaultSocketPath())
+	c := client.FromContext(cmd.Context())
 	statusCode, respBody, err := c.PostRaw("/api/workspaces/import?mode="+mode, "application/yaml", body)
 	if err != nil {
 		return fmt.Errorf("import workspace: %w", err)

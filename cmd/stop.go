@@ -26,7 +26,7 @@ func init() {
 }
 
 func runStop(cmd *cobra.Command, args []string) error {
-	c := client.NewUnixClient(client.DefaultSocketPath())
+	c := client.FromContext(cmd.Context())
 	var result map[string]string
 	if err := c.Do("POST", "/api/shutdown", nil, &result); err != nil {
 		return fmt.Errorf("stop server: %w", err)

@@ -148,7 +148,7 @@ func runProjectAdd(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	c := client.NewUnixClient(client.DefaultSocketPath())
+	c := client.FromContext(cmd.Context())
 
 	var p projectspec.Project
 	if err := c.Do("POST", "/api/projects", map[string]string{"work_dir": dir}, &p); err != nil {
@@ -211,7 +211,7 @@ func runProjectInit(cmd *cobra.Command, args []string) error {
 	}
 
 	// Register with daemon.
-	c := client.NewUnixClient(client.DefaultSocketPath())
+	c := client.FromContext(cmd.Context())
 	var p projectspec.Project
 	if err := c.Do("POST", "/api/projects", map[string]string{"work_dir": projectDir}, &p); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: could not register project with boid server: %v\n", err)
@@ -264,7 +264,7 @@ func assignProjectWorkspace(c *client.Client, projectID, workspaceSlug string, o
 }
 
 func runProjectList(cmd *cobra.Command, args []string) error {
-	c := client.NewUnixClient(client.DefaultSocketPath())
+	c := client.FromContext(cmd.Context())
 
 	var projects []projectspec.Project
 	if err := c.Do("GET", "/api/projects", nil, &projects); err != nil {
@@ -288,7 +288,7 @@ func runProjectList(cmd *cobra.Command, args []string) error {
 }
 
 func runProjectRemove(cmd *cobra.Command, args []string) error {
-	c := client.NewUnixClient(client.DefaultSocketPath())
+	c := client.FromContext(cmd.Context())
 
 	p, err := resolveProjectRef(c, os.Stdin, cmd.OutOrStdout(), args[0])
 	if err != nil {
@@ -307,7 +307,7 @@ func runProjectRemove(cmd *cobra.Command, args []string) error {
 }
 
 func runProjectReload(cmd *cobra.Command, args []string) error {
-	c := client.NewUnixClient(client.DefaultSocketPath())
+	c := client.FromContext(cmd.Context())
 
 	var result map[string]any
 	if err := c.Do("POST", "/api/projects/reload", nil, &result); err != nil {
@@ -327,7 +327,7 @@ func runProjectReload(cmd *cobra.Command, args []string) error {
 }
 
 func runProjectShow(cmd *cobra.Command, args []string) error {
-	c := client.NewUnixClient(client.DefaultSocketPath())
+	c := client.FromContext(cmd.Context())
 
 	p, err := resolveProjectRef(c, os.Stdin, cmd.OutOrStdout(), args[0])
 	if err != nil {
@@ -341,7 +341,7 @@ func runProjectShow(cmd *cobra.Command, args []string) error {
 }
 
 func runProjectBehaviors(cmd *cobra.Command, args []string) error {
-	c := client.NewUnixClient(client.DefaultSocketPath())
+	c := client.FromContext(cmd.Context())
 
 	p, err := resolveProjectRef(c, os.Stdin, cmd.OutOrStdout(), args[0])
 	if err != nil {

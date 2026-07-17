@@ -86,7 +86,7 @@ func init() {
 }
 
 func runWebPair(cmd *cobra.Command, args []string) error {
-	c := client.NewUnixClient(client.DefaultSocketPath())
+	c := client.FromContext(cmd.Context())
 
 	req := webauth.PairRequest{Label: webPairLabel}
 	var resp webauth.PairResponse
@@ -120,7 +120,7 @@ func runWebPair(cmd *cobra.Command, args []string) error {
 }
 
 func runWebDevices(cmd *cobra.Command, args []string) error {
-	c := client.NewUnixClient(client.DefaultSocketPath())
+	c := client.FromContext(cmd.Context())
 
 	var devices []webauth.DeviceInfo
 	if err := c.Do("GET", "/api/web/devices", nil, &devices); err != nil {
@@ -150,7 +150,7 @@ func runWebDevices(cmd *cobra.Command, args []string) error {
 }
 
 func runWebRevoke(cmd *cobra.Command, args []string) error {
-	c := client.NewUnixClient(client.DefaultSocketPath())
+	c := client.FromContext(cmd.Context())
 	id, err := resolveDeviceID(c, args[0])
 	if err != nil {
 		return err
@@ -188,7 +188,7 @@ func resolveDeviceID(c *client.Client, idOrPrefix string) (string, error) {
 }
 
 func runWebRevokeAll(cmd *cobra.Command, args []string) error {
-	c := client.NewUnixClient(client.DefaultSocketPath())
+	c := client.FromContext(cmd.Context())
 	if err := c.Do("DELETE", "/api/web/devices", nil, nil); err != nil {
 		return fmt.Errorf("revoke all devices: %w", err)
 	}

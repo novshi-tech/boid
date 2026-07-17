@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -68,8 +69,8 @@ env / secret_namespace traits and runs through internal/adapters/%s. The
 command attaches to the resulting job's PTY unless --no-attach is set.`, h, h),
 			Args:        cobra.NoArgs,
 			Annotations: map[string]string{scopeAnnotationKey: scopeRemote},
-			RunE: func(_ *cobra.Command, _ []string) error {
-				return runAgentSession(h, flags)
+			RunE: func(cmd *cobra.Command, _ []string) error {
+				return runAgentSession(cmd.Context(), h, flags)
 			},
 		}
 		addAgentSessionFlags(c, flags)
@@ -77,11 +78,11 @@ command attaches to the resulting job's PTY unless --no-attach is set.`, h, h),
 	}
 }
 
-func runAgentSession(harness string, flags *agentSessionFlags) error {
+func runAgentSession(ctx context.Context, harness string, flags *agentSessionFlags) error {
 	if flags.projectRef == "" {
 		return errors.New("--project is required")
 	}
-	c := client.NewUnixClient(client.DefaultSocketPath())
+	c := client.FromContext(ctx)
 
 	// Resolve the project ref to its id so the URL path is canonical
 	// (matches how /api/projects/{id}/sessions is mounted).
@@ -112,5 +113,5 @@ func runAgentSession(harness string, flags *agentSessionFlags) error {
 		fmt.Fprintf(os.Stderr, "job_id=%s\n", result.JobID)
 		return nil
 	}
-	return attachToJob(result.JobID)
+	return attachToJob(ctx, result.JobID)
 }

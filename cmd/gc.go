@@ -47,7 +47,7 @@ func runGC(cmd *cobra.Command, args []string) error {
 		"dry_run":    dryRun,
 	}
 
-	c := client.NewUnixClient(client.DefaultSocketPath())
+	c := client.FromContext(cmd.Context())
 
 	var result struct {
 		Tasks      int64 `json:"tasks"`

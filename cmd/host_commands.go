@@ -40,7 +40,7 @@ func init() {
 }
 
 func runHostCommandsList(cmd *cobra.Command, args []string) error {
-	c := client.NewUnixClient(client.DefaultSocketPath())
+	c := client.FromContext(cmd.Context())
 
 	// MINOR 1 (codex review, docs/plans/workspace-db-consolidation.md):
 	// GET /api/host_commands now returns a sorted name list (the plan doc's
@@ -67,7 +67,7 @@ func runHostCommandsList(cmd *cobra.Command, args []string) error {
 }
 
 func runHostCommandsReload(cmd *cobra.Command, args []string) error {
-	c := client.NewUnixClient(client.DefaultSocketPath())
+	c := client.FromContext(cmd.Context())
 	if err := c.Do("POST", "/api/host_commands/reload", nil, nil); err != nil {
 		return fmt.Errorf("reload host_commands: %w", err)
 	}

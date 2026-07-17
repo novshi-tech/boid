@@ -70,7 +70,7 @@ func runJobList(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("--task is required")
 	}
 
-	c := client.NewUnixClient(client.DefaultSocketPath())
+	c := client.FromContext(cmd.Context())
 	var jobs []*api.Job
 	if err := c.Do("GET", "/api/jobs?task_id="+taskID, nil, &jobs); err != nil {
 		return fmt.Errorf("list jobs: %w", err)
@@ -87,7 +87,7 @@ func runJobList(cmd *cobra.Command, args []string) error {
 }
 
 func runJobShow(cmd *cobra.Command, args []string) error {
-	c := client.NewUnixClient(client.DefaultSocketPath())
+	c := client.FromContext(cmd.Context())
 	var job api.Job
 	if err := c.Do("GET", "/api/jobs/"+args[0], nil, &job); err != nil {
 		return fmt.Errorf("get job: %w", err)
@@ -104,7 +104,7 @@ func runJobWatch(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("--interval must be positive")
 	}
 
-	c := client.NewUnixClient(client.DefaultSocketPath())
+	c := client.FromContext(cmd.Context())
 	jobID := args[0]
 	var lastFingerprint string
 
@@ -135,7 +135,7 @@ func runJobWatch(cmd *cobra.Command, args []string) error {
 }
 
 func runJobLog(cmd *cobra.Command, args []string) error {
-	c := client.NewUnixClient(client.DefaultSocketPath())
+	c := client.FromContext(cmd.Context())
 	statusCode, body, err := c.GetRaw("/api/jobs/" + args[0] + "/log")
 	if err != nil {
 		return fmt.Errorf("get job log: %w", err)
@@ -168,7 +168,7 @@ func runJobDone(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	c := client.NewUnixClient(client.DefaultSocketPath())
+	c := client.FromContext(cmd.Context())
 	var result map[string]any
 	if err := c.Do("POST", fmt.Sprintf("/api/jobs/%s/done", jobID), req, &result); err != nil {
 		return fmt.Errorf("job done: %w", err)
