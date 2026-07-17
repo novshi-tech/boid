@@ -133,7 +133,7 @@ func TestPrintWorkspaceHomes_UnitFormatting(t *testing.T) {
 		{Slug: "default", Bytes: 1000},
 		{Slug: "orphan-ws", Bytes: 2000, Orphan: true},
 		{Slug: "broken-ws", SizeError: "permission denied"},
-	})
+	}, "")
 
 	// tabwriter pads columns with spaces (not literal tabs) once flushed, so
 	// assert against each line with its internal whitespace collapsed back
@@ -167,8 +167,25 @@ func normalizeWhitespaceLines(s string) string {
 
 func TestPrintWorkspaceHomes_EmptyList_NoOutput(t *testing.T) {
 	var out bytes.Buffer
-	printWorkspaceHomes(&out, nil)
+	printWorkspaceHomes(&out, nil, "")
 	if out.Len() != 0 {
 		t.Errorf("expected no output for an empty list, got: %s", out.String())
+	}
+}
+
+// TestPrintWorkspaceHomes_ListError_PrintsWarningNotEmptyTable pins
+// Should-fix #3 (codex PR #791 review): a non-empty listErr must render a
+// single warning line, distinct from silently printing nothing (which would
+// be indistinguishable from "no workspace has ever been dispatched into
+// yet") and distinct from the old "every entry mismarked orphan" behavior.
+func TestPrintWorkspaceHomes_ListError_PrintsWarningNotEmptyTable(t *testing.T) {
+	var out bytes.Buffer
+	printWorkspaceHomes(&out, nil, "db unavailable")
+	got := out.String()
+	if !strings.Contains(got, "db unavailable") {
+		t.Errorf("expected the list error message in output, got: %q", got)
+	}
+	if strings.Contains(got, "total:") {
+		t.Errorf("expected no total line when the listing itself was omitted, got: %q", got)
 	}
 }
