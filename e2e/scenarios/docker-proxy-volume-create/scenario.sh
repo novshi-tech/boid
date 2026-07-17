@@ -13,8 +13,6 @@ PROJECT_DIR="$E2E_WORKSPACE_DIR/app"
 WS_SLUG="docker-proxy-volume-create"
 mkdir -p "$XDG_CONFIG_HOME/boid/workspaces"
 cat > "$XDG_CONFIG_HOME/boid/workspaces/${WS_SLUG}.yaml" <<YAML
-kits:
-  - docker-proxy-test
 env:
   DOCKER_PROXY_TEST_CASE: volume-create
 capabilities:
