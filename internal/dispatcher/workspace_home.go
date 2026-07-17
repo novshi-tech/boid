@@ -94,6 +94,20 @@ func (r *Runner) resolveWorkspaceHome(workspaceID string) (string, error) {
 	}
 	defer release()
 
+	// Re-read + re-hash under the lock (TOCTOU fix, codex review PR #787):
+	// the fast-path read above happened before we serialized with any
+	// concurrent writer of scriptPath, so scriptBytes/scriptSHA could
+	// already be stale by the time we get here. Re-reading now, with the
+	// lock held, makes this the authoritative snapshot for both the
+	// double-checked marker compare directly below and the bytes actually
+	// executed further down — so the hash recorded in the marker can never
+	// diverge from the content that ran.
+	scriptBytes, scriptExists, err = readIfExists(scriptPath)
+	if err != nil {
+		return "", fmt.Errorf("workspace home %q: read init script %q: %w", slug, scriptPath, err)
+	}
+	scriptSHA = scriptSHA256Hex(scriptBytes, scriptExists)
+
 	// Double-checked: another dispatch may have finished init while we were
 	// waiting on the lock.
 	if marker, ok, err := readWorkspaceHomeMarker(markerPath); err != nil {
@@ -103,7 +117,7 @@ func (r *Runner) resolveWorkspaceHome(workspaceID string) (string, error) {
 	}
 
 	if scriptExists {
-		if err := runWorkspaceInitScript(scriptPath, slug, homeDir); err != nil {
+		if err := runWorkspaceInitScript(scriptBytes, homesDir, slug, homeDir); err != nil {
 			return "", fmt.Errorf("workspace home %q: init script failed: %w", slug, err)
 		}
 	}
@@ -327,13 +341,52 @@ func acquireWorkspaceHomeLock(lockPath string) (release func(), err error) {
 	}, nil
 }
 
-// runWorkspaceInitScript executes scriptPath on the host (trusted side,
+// runWorkspaceInitScript executes scriptBytes on the host (trusted side,
 // never inside the sandbox) with HOME redirected to homeDir and
 // BOID_WORKSPACE_SLUG / BOID_WORKSPACE_HOME set, per the plan doc's
 // contract. Combined stdout+stderr is logged on success and included (tail)
 // in the returned error on failure.
-func runWorkspaceInitScript(scriptPath, slug, homeDir string) error {
-	cmd := exec.Command("/bin/bash", scriptPath)
+//
+// scriptBytes — not a path — is what gets executed: it is written to a
+// private temp file inside homesDir (already lock-serialized and isolated
+// from any sandbox mount) and run from there, rather than re-opening the
+// configured init.sh path by name. Re-resolving that path at spawn time
+// would reopen the exact TOCTOU window resolveWorkspaceHome's caller just
+// closed by re-reading+re-hashing under the lock: a writer could otherwise
+// swap the on-disk init.sh between the hash computation and the actual
+// exec, so the marker would record a hash for content that never ran
+// (codex review, PR #787). Executing the very bytes that were just hashed
+// makes "hash recorded == content executed" true by construction.
+//
+// Trade-off: init.sh's shebang line is ignored (always run via /bin/bash,
+// matching prior behavior) and $0 inside the script resolves to the temp
+// path rather than the configured init.sh location — scripts must not
+// depend on their own path (documented contract in the plan doc).
+func runWorkspaceInitScript(scriptBytes []byte, homesDir, slug, homeDir string) error {
+	tmpFile, err := os.CreateTemp(homesDir, "."+slug+".init.sh.*.tmp")
+	if err != nil {
+		return fmt.Errorf("create temp init script: %w", err)
+	}
+	tmpPath := tmpFile.Name()
+	defer func() { _ = os.Remove(tmpPath) }()
+
+	if _, err := tmpFile.Write(scriptBytes); err != nil {
+		_ = tmpFile.Close()
+		return fmt.Errorf("write temp init script %q: %w", tmpPath, err)
+	}
+	if err := tmpFile.Chmod(0o700); err != nil {
+		_ = tmpFile.Close()
+		return fmt.Errorf("chmod temp init script %q: %w", tmpPath, err)
+	}
+	if err := tmpFile.Sync(); err != nil {
+		_ = tmpFile.Close()
+		return fmt.Errorf("sync temp init script %q: %w", tmpPath, err)
+	}
+	if err := tmpFile.Close(); err != nil {
+		return fmt.Errorf("close temp init script %q: %w", tmpPath, err)
+	}
+
+	cmd := exec.Command("/bin/bash", tmpPath)
 	cmd.Dir = homeDir
 	cmd.Env = buildWorkspaceInitEnv(slug, homeDir)
 
@@ -354,11 +407,11 @@ func runWorkspaceInitScript(scriptPath, slug, homeDir string) error {
 		if len(tail) > maxTail {
 			tail = tail[len(tail)-maxTail:]
 		}
-		return fmt.Errorf("%s exited %d: %w\n--- output tail ---\n%s", scriptPath, exitCode, runErr, tail)
+		return fmt.Errorf("init script (workspace %q) exited %d: %w\n--- output tail ---\n%s", slug, exitCode, runErr, tail)
 	}
 
 	slog.Info("workspace init script completed",
-		"workspace_slug", slug, "script", scriptPath, "output_bytes", len(output))
+		"workspace_slug", slug, "output_bytes", len(output))
 	return nil
 }
 
