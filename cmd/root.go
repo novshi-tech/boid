@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/novshi-tech/boid/internal/client"
 	"github.com/novshi-tech/boid/internal/profiles"
@@ -102,7 +103,17 @@ var rootCmd = &cobra.Command{
 		if isCompletionScriptGen(cmd) {
 			return nil
 		}
-		c, err := resolveClient(cmd)
+		// Two-phase resolution (docs/plans/cli-remote-connection.md
+		// decision 6, PR4 codex review round 1): resolve profile
+		// identity (name / URL / scheme) FIRST — deliberately without
+		// loading the Bearer token — so a scope=local rejection can fire
+		// even when the resolved https profile has a missing or
+		// corrupted token file. Loading the token first would surface a
+		// misleading "run 'boid login' first" error instead of "this
+		// command is local-only", and the caller would waste time
+		// re-logging in on a command that will never accept the token
+		// anyway.
+		rp, err := profiles.ResolveWithoutToken(cmd)
 		if err != nil {
 			// TAB-completion queries (`__complete` / `__completeNoDesc`)
 			// must degrade gracefully on a broken profile — a scary
@@ -116,19 +127,42 @@ var rootCmd = &cobra.Command{
 			// scope=neutral commands (docs/plans/cli-remote-connection.md
 			// PR2: login/logout) must not be blocked by a profile
 			// resolution failure — that is often exactly the situation
-			// they exist to fix. `boid login <url> --profile
-			// <brand-new-name>` names a profile that, by definition, does
-			// not exist in config.yaml yet (profiles.Resolve would
-			// otherwise hard-error with "profile ... is not defined"), and
-			// `boid logout <profile>` is the tool meant to clean up after
-			// a profile whose token file is already broken
-			// (profiles.Resolve hard-errors trying to load a corrupt
-			// token for the *default* profile the caller may be trying to
-			// log out of). Swallow the error exactly like a completion
-			// query does — no client gets injected into cmd's context,
-			// but login/logout never read one anyway; they build their
-			// own unauthenticated / profile-scoped clients directly
-			// (cmd/login.go).
+			// they exist to fix. See the old resolveClient/Resolve
+			// comment for the full rationale; the same argument applies
+			// to ResolveWithoutToken (a `boid login --profile
+			// <brand-new-name>` invocation names a profile that, by
+			// definition, is not in config.yaml yet).
+			if isNeutralScope(cmd) {
+				return nil
+			}
+			return err
+		}
+		// scope=local commands (docs/plans/cli-remote-connection.md decision
+		// 6, PR4) complete entirely without a remote daemon — they either
+		// never talk to one at all, or *are* daemon lifecycle machinery
+		// itself (start/stop/gc/...). Running one against a resolved
+		// https-scheme profile would silently operate on the wrong host (or
+		// simply make no sense, e.g. `boid start` for a daemon that already
+		// has to be running to have accepted the connection). Fail hard
+		// rather than fail-open, per decision 6.
+		if isLocalScope(cmd) && !rp.IsUnix() {
+			return fmt.Errorf(
+				"'%s' はローカル専用コマンドだよ。\n"+
+					"現在の接続先: %s (profile: %s)\n"+
+					"ローカル操作するときは --profile <local-profile> を指定してね。",
+				cmd.CommandPath(), rp.URL, rp.Name)
+		}
+		// Now that scope=local is out of the way, complete the resolution
+		// (this loads the Bearer token for an https profile and runs the
+		// origin-bind check; unix falls through with Token==""). Any
+		// error here belongs to the actual invocation, not to a
+		// scope=local violation that would have preempted it, so the
+		// same completion / neutral swallow branches apply.
+		c, err := resolveClient(cmd)
+		if err != nil {
+			if isCompletionQuery(cmd) {
+				return nil
+			}
 			if isNeutralScope(cmd) {
 				return nil
 			}
@@ -164,15 +198,34 @@ func isNeutralScope(cmd *cobra.Command) bool {
 	return cmd.Annotations[scopeAnnotationKey] == scopeNeutral
 }
 
+// isLocalScope reports whether cmd is annotated boid.scope=local
+// (docs/plans/cli-remote-connection.md decision 6, PR4: commands that
+// complete entirely without a remote daemon — daemon lifecycle machinery
+// like start/stop/gc, or commands that read local state directly). Mirrors
+// isNeutralScope above: only ever checked on the leaf command actually
+// being invoked, which is what PersistentPreRunE receives as cmd.
+func isLocalScope(cmd *cobra.Command) bool {
+	return cmd.Annotations[scopeAnnotationKey] == scopeLocal
+}
+
 // resolveClient resolves cmd's connection profile (profiles.Resolve) and
 // builds the *client.Client it names (client.NewClient). Split out from
-// PersistentPreRunE's closure so it stays independently testable.
+// PersistentPreRunE's closure so it stays independently testable. As of
+// PR4's two-phase resolution, PersistentPreRunE runs ResolveWithoutToken
+// FIRST (for the scope=local rejection to fire even with a
+// missing/corrupt token file) and only reaches for resolveClient once
+// scope is out of the way — so this function is the "load the token and
+// build the transport" second half.
 func resolveClient(cmd *cobra.Command) (*client.Client, error) {
 	rp, err := profiles.Resolve(cmd)
 	if err != nil {
 		return nil, err
 	}
-	return client.NewClient(rp.URL, rp.Token)
+	c, err := client.NewClient(rp.URL, rp.Token)
+	if err != nil {
+		return nil, err
+	}
+	return c, nil
 }
 
 func init() {

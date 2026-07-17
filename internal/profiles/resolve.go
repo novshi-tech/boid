@@ -45,15 +45,83 @@ type ResolvedProfile struct {
 	Source string
 }
 
+// IsUnix reports whether the resolved profile targets a UNIX socket (as
+// opposed to an https-scheme remote daemon). Handy for callers that need
+// this discrimination BEFORE a Token has been loaded — e.g. root's
+// PersistentPreRunE checking scope=local rejection (decision 6) against
+// a ResolveWithoutToken result, where a token-load failure on an
+// unrelated https profile would otherwise pre-empt the intended
+// "ローカル専用コマンドだよ" error.
+func (rp *ResolvedProfile) IsUnix() bool {
+	if rp == nil {
+		return false
+	}
+	u, err := url.Parse(rp.URL)
+	if err != nil {
+		return false
+	}
+	return u.Scheme == "unix"
+}
+
 // Resolve determines which daemon this CLI invocation should talk to,
 // applying the precedence chain from decision 1 (docs/plans/
 // cli-remote-connection.md): --profile flag > BOID_PROFILE env >
-// default_profile > 現行互換 (unix://DefaultSocketPath()).
+// default_profile > 現行互換 (unix://DefaultSocketPath()). For https-scheme
+// profiles it also loads and validates the Bearer device token
+// (decision 9 origin-bind check).
 //
 // cmd may be nil (unit tests exercising the env/default/fallback tiers
 // without a real cobra invocation); a nil cmd is simply treated as
 // "--profile was not passed".
+//
+// Callers that need the profile identity BEFORE running the token-load
+// step — root's PersistentPreRunE, in particular, so a scope=local
+// rejection (decision 6) fires *before* an unrelated
+// missing/corrupt-token error preempts it — should call
+// ResolveWithoutToken instead and only reach for the token when they've
+// decided the invocation is actually going to proceed.
 func Resolve(cmd *cobra.Command) (*ResolvedProfile, error) {
+	resolved, err := ResolveWithoutToken(cmd)
+	if err != nil {
+		return nil, err
+	}
+	if resolved.IsUnix() {
+		// decision 4: a unix-scheme profile never needs a token.
+		return resolved, nil
+	}
+	tok, err := LoadToken(resolved.Name)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, fmt.Errorf("no device token for profile %q; run 'boid login <url>' first", resolved.Name)
+		}
+		return nil, err
+	}
+	// decision 9: the token is strongly bound to the canonical origin it was
+	// issued against. A mismatch — config.yaml's profile URL was edited, or
+	// the daemon's canonical URL changed since login — is a hard error, not
+	// a warning: silently sending a token for origin A to whatever origin B
+	// config.yaml now names would be exactly the kind of cross-origin token
+	// reuse decision 9 exists to rule out.
+	if tok.URL != resolved.URL {
+		return nil, fmt.Errorf("profile %q URL mismatch: config=%s, token=%s (re-login required)", resolved.Name, resolved.URL, tok.URL)
+	}
+	resolved.Token = tok.Token
+	return resolved, nil
+}
+
+// ResolveWithoutToken performs the profile-selection half of Resolve (config
+// load, precedence chain, slug validation, URL scheme validation) but
+// deliberately stops SHORT of loading the Bearer device token. The
+// returned ResolvedProfile has Token == "" even for an https-scheme
+// profile that would normally need one.
+//
+// This exists so root.PersistentPreRunE can enforce decision 6
+// (scope=local + non-unix profile → hard error) *before* a
+// scope-independent failure — a missing/corrupt token file on the
+// resolved https profile — has a chance to preempt it with a "run 'boid
+// login' first" error that would mislead the caller into thinking token
+// state is the actual problem.
+func ResolveWithoutToken(cmd *cobra.Command) (*ResolvedProfile, error) {
 	cfgPath, err := ConfigPath()
 	if err != nil {
 		return nil, err
@@ -87,45 +155,22 @@ func Resolve(cmd *cobra.Command) (*ResolvedProfile, error) {
 		return nil, fmt.Errorf("profile %q is not defined in %s", name, cfgPath)
 	}
 
-	resolved := &ResolvedProfile{Name: name, URL: prof.URL, Source: source}
-
 	u, err := url.Parse(prof.URL)
 	if err != nil {
 		return nil, fmt.Errorf("profile %q: invalid url %q: %w", name, prof.URL, err)
 	}
-	// Reject unsupported schemes BEFORE reaching LoadToken: otherwise an
-	// `http://...` or `ftp://...` profile with no token file would surface
-	// the confusing "run 'boid login <url>' first" message instead of the
-	// real cause (scheme unsupported at all — decision 4). Same for any
-	// other unknown scheme.
+	// Reject unsupported schemes now — running the scope=local check on
+	// an ftp:// / http:// profile would still return the wrong diagnostic
+	// (a scope-based rejection for a shape that fundamentally cannot be
+	// a boid daemon URL at all — decision 4).
 	switch u.Scheme {
-	case "unix":
-		// decision 4: a unix-scheme profile never needs a token.
-		return resolved, nil
-	case "https":
-		// fall through to token loading below.
+	case "unix", "https":
+		// supported
 	default:
 		return nil, fmt.Errorf("profile %q: unsupported url scheme %q (want \"unix\" or \"https\")", name, u.Scheme)
 	}
 
-	tok, err := LoadToken(name)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, fmt.Errorf("no device token for profile %q; run 'boid login <url>' first", name)
-		}
-		return nil, err
-	}
-	// decision 9: the token is strongly bound to the canonical origin it was
-	// issued against. A mismatch — config.yaml's profile URL was edited, or
-	// the daemon's canonical URL changed since login — is a hard error, not
-	// a warning: silently sending a token for origin A to whatever origin B
-	// config.yaml now names would be exactly the kind of cross-origin token
-	// reuse decision 9 exists to rule out.
-	if tok.URL != prof.URL {
-		return nil, fmt.Errorf("profile %q URL mismatch: config=%s, token=%s (re-login required)", name, prof.URL, tok.URL)
-	}
-	resolved.Token = tok.Token
-	return resolved, nil
+	return &ResolvedProfile{Name: name, URL: prof.URL, Source: source}, nil
 }
 
 // selectProfileName applies the --profile / BOID_PROFILE / default_profile
