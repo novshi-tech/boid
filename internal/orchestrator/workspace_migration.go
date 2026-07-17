@@ -82,16 +82,31 @@ func MigrateWorkspaceYAMLToDB(conn *sql.DB, workspaceDir, kitsDir string, projec
 		// upgrade-in-place with genuinely unchanged inputs still rolls
 		// forward; only an actual on-disk change (which changes both hashes)
 		// still aborts.
-		if current.inputHash != pre.inputHash && current.inputHash != pre.legacyInputHashPR6 {
+		//
+		// pre.legacyInputHashPR7WithBindings (Codex Blocker, PR4 review,
+		// docs/plans/home-workspace-volume.md) closes a third gap the above
+		// two-way check missed: a binary built at the tip of PR3 already has
+		// the WorkspaceKitRefs field (Phase 2.5 PR7 landed well before PR3)
+		// but WorkspaceMeta still carries AdditionalBindings — this PR (PR4)
+		// is what removes that field. Such a binary's staging row matches
+		// neither pre.inputHash (current, PR4, bindings-less shape) nor
+		// pre.legacyInputHashPR6 (no WorkspaceKitRefs at all): it needs a
+		// third shape that has *both* WorkspaceKitRefs *and*
+		// AdditionalBindings. See
+		// computeWorkspaceMigrationInputHashPR7WithBindingsShape's doc
+		// comment for the full reasoning.
+		if current.inputHash != pre.inputHash &&
+			current.inputHash != pre.legacyInputHashPR6 &&
+			current.inputHash != pre.legacyInputHashPR7WithBindings {
 			return fmt.Errorf(
 				"workspace_db_consolidation: found state=staging (input_hash=%q) from an interrupted prior attempt, but the current workspace/kit inputs hash to %q — refusing to roll forward automatically since the on-disk inputs changed since the interruption; restore the prior workspace yaml/kit state (or manually resolve the schema_migrations row) and restart (docs/plans/workspace-db-consolidation.md crash recovery)",
 				current.inputHash, pre.inputHash,
 			)
 		}
-		// Recorded input_hash matches what we'd compute right now (either
-		// the current PR7 shape, or the legacy PR6 shape from an
-		// in-progress binary upgrade): safe to roll forward by re-running
-		// the (idempotent) write phase below.
+		// Recorded input_hash matches what we'd compute right now (the
+		// current PR4 shape, the legacy PR6 shape, or the legacy
+		// PR7-with-bindings shape from an in-progress binary upgrade): safe
+		// to roll forward by re-running the (idempotent) write phase below.
 	}
 
 	// Phase 1: record the staging attempt in its own committed transaction,
@@ -181,6 +196,15 @@ type workspaceMigrationPreflight struct {
 	// MigrateWorkspaceYAMLToDB's crash-recovery check also compares against
 	// this.
 	legacyInputHashPR6 string
+	// legacyInputHashPR7WithBindings (Codex Blocker, PR4 review,
+	// docs/plans/home-workspace-volume.md) is the same preflight inputs
+	// hashed with the shape a binary at the tip of PR3 would have used: the
+	// Phase 2.5 PR7 WorkspaceKitRefs field is present, but
+	// WorkspaceMeta.AdditionalBindings (removed outright by this PR, PR4)
+	// still is — see computeWorkspaceMigrationInputHashPR7WithBindingsShape's
+	// doc comment for why MigrateWorkspaceYAMLToDB's crash-recovery check
+	// also compares against this.
+	legacyInputHashPR7WithBindings string
 }
 
 // preflightWorkspaceMigration parses every workspace yaml under
@@ -309,6 +333,23 @@ func preflightWorkspaceMigration(workspaceDir, kitsDir string, projectRepo *Proj
 		return nil, fmt.Errorf("compute legacy (pre-PR7) input hash: %w", err)
 	}
 
+	// Codex Blocker (PR4 review, docs/plans/home-workspace-volume.md): also
+	// hash the very same raw inputs using the shape a binary at the tip of
+	// PR3 would have used — Phase 2.5 PR7's WorkspaceKitRefs field already
+	// present, but WorkspaceMeta.AdditionalBindings (removed outright by
+	// this PR) still is — purely so MigrateWorkspaceYAMLToDB's
+	// crash-recovery check can roll forward a state=staging row recorded by
+	// such a binary whose on-disk inputs have not actually changed since —
+	// see computeWorkspaceMigrationInputHashPR7WithBindingsShape's doc
+	// comment. rawKitRefs and rawAdditionalBindings are passed through for
+	// the same structural reason as the PR6-shape call above: neither
+	// current WorkspaceMeta field exists any more for rawWorkspaces to
+	// carry them.
+	legacyInputHashPR7WithBindings, err := computeWorkspaceMigrationInputHashPR7WithBindingsShape(rawWorkspaces, hostCommands, referenced, snap.byKit, rawKitRefs, rawAdditionalBindings)
+	if err != nil {
+		return nil, fmt.Errorf("compute legacy (PR7-with-bindings) input hash: %w", err)
+	}
+
 	// Build the DB-bound workspace metas: same data as rawWorkspaces, but
 	// with HostCommands/Env filled in from each workspace's legacy kit refs
 	// (rawKitRefs, read separately above since WorkspaceMeta no longer has a
@@ -331,11 +372,12 @@ func preflightWorkspaceMigration(workspaceDir, kitsDir string, projectRepo *Proj
 	sort.Strings(sortedSlugs)
 
 	return &workspaceMigrationPreflight{
-		workspaces:         dbWorkspaces,
-		sortedSlugs:        sortedSlugs,
-		hostCommands:       hostCommands,
-		inputHash:          inputHash,
-		legacyInputHashPR6: legacyInputHashPR6,
+		workspaces:                     dbWorkspaces,
+		sortedSlugs:                    sortedSlugs,
+		hostCommands:                   hostCommands,
+		inputHash:                      inputHash,
+		legacyInputHashPR6:             legacyInputHashPR6,
+		legacyInputHashPR7WithBindings: legacyInputHashPR7WithBindings,
 	}, nil
 }
 
@@ -916,6 +958,124 @@ func computeWorkspaceMigrationInputHashPR6Shape(
 		HostCommands:         hostCommands,
 		ProjectWorkspaceRefs: sortedWorkspaceRefsForHash(projectRefs),
 		KitRuntime:           kitRuntime,
+	})
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:]), nil
+}
+
+// pr7WorkspaceMetaWithBindings mirrors WorkspaceMeta (workspace_meta.go)
+// field-for-field, tag-for-tag, order-for-order, exactly as it existed at
+// the tip of Phase 4 PR3 (git commit aa74dd9, "Merge pull request #789 from
+// novshi-tech/feat/home-workspace-volume-pr3") — i.e. after Phase 2.5 PR7
+// removed the Kits field (decision 12; pr6WorkspaceMeta above still has it)
+// but before this PR (PR4, docs/plans/home-workspace-volume.md) removed the
+// AdditionalBindings field outright. Used ONLY by
+// computeWorkspaceMigrationInputHashPR7WithBindingsShape for legacy hash
+// reconstruction (Codex Blocker, PR4 review). Go's encoding/json marshals
+// struct fields in declaration order (unlike map keys, which it sorts), so
+// this field order is not cosmetic — it is exactly what makes json.Marshal
+// of this type byte-identical to what a PR3-tip binary produced for the same
+// logical data.
+//
+// IMPORTANT: do NOT modify this struct once PR4 lands — same discipline as
+// pr6WorkspaceMeta above: its byte shape must stay stable forever to keep
+// the crash-recovery upgrade path
+// (computeWorkspaceMigrationInputHashPR7WithBindingsShape /
+// MigrateWorkspaceYAMLToDB) deterministic for any state=staging row a
+// PR3-tip binary may have left on disk.
+type pr7WorkspaceMetaWithBindings struct {
+	Env                map[string]string `yaml:"env,omitempty" json:"env,omitempty"`
+	Capabilities       Capabilities      `yaml:"capabilities,omitempty" json:"capabilities,omitempty"`
+	AllowedDomains     []string          `yaml:"allowed_domains,omitempty" json:"allowed_domains,omitempty"`
+	ExtraRepos         []string          `yaml:"extra_repos,omitempty" json:"extra_repos,omitempty"`
+	HostCommands       []string          `yaml:"host_commands,omitempty" json:"host_commands,omitempty"`
+	ContainerImage     string            `yaml:"container_image,omitempty" json:"container_image,omitempty"`
+	AdditionalBindings []BindMount       `yaml:"additional_bindings,omitempty" json:"additional_bindings,omitempty"`
+}
+
+// workspaceMigrationHashInputPR7WithBindings mirrors workspaceMigrationHashInput
+// exactly as it existed at the tip of PR3 — the WorkspaceKitRefs field
+// (Phase 2.5 PR7) is present (unlike workspaceMigrationHashInputPR6 above,
+// which predates it), but Workspaces is keyed to pr7WorkspaceMetaWithBindings
+// instead of the current (post-PR4) WorkspaceMeta, since that type still
+// carried AdditionalBindings at that point. Used only by
+// computeWorkspaceMigrationInputHashPR7WithBindingsShape, itself used only
+// for MigrateWorkspaceYAMLToDB's crash-recovery upgrade check (Codex
+// Blocker, PR4 review). IMPORTANT: do NOT add any field
+// workspaceMigrationHashInput gains after PR4 here — the whole point of this
+// type is to keep reproducing the exact byte shape a PR3-tip binary would
+// have hashed, forever.
+type workspaceMigrationHashInputPR7WithBindings struct {
+	Workspaces           map[string]*pr7WorkspaceMetaWithBindings `json:"workspaces"`
+	HostCommands         map[string]HostCommandSpec               `json:"host_commands"`
+	ProjectWorkspaceRefs []*WorkspaceSummary                      `json:"project_workspace_refs"`
+	KitRuntime           map[string]kitRuntimeRaw                 `json:"kit_runtime"`
+	WorkspaceKitRefs     map[string][]string                      `json:"workspace_kit_refs"`
+}
+
+// computeWorkspaceMigrationInputHashPR7WithBindingsShape recomputes
+// preflightWorkspaceMigration's input hash using the shape a binary at the
+// tip of PR3 would have used (WorkspaceKitRefs present, and each workspace
+// rehydrated with its AdditionalBindings field restored from
+// workspaceAdditionalBindings) from the very same raw inputs
+// computeWorkspaceMigrationInputHash was given (Codex Blocker, PR4 review,
+// docs/plans/home-workspace-volume.md).
+//
+// Why this exists: this PR (PR4) removes WorkspaceMeta.AdditionalBindings
+// outright (decision: workspace-scoped AdditionalBindings is retired, not
+// relocated — see that field's former doc comment). But
+// MigrateWorkspaceYAMLToDB's crash recovery persists input_hash across a
+// daemon binary upgrade, and the two-way check added for MAJOR 4 (round 1)
+// only covers an upgrade *from a PR6 binary* (no WorkspaceKitRefs field at
+// all) — it does not cover a binary built anywhere between Phase 2.5 PR7 and
+// this PR (inclusive of PR3's own tip), which already has WorkspaceKitRefs
+// but still has WorkspaceMeta.AdditionalBindings. Such a binary's
+// state=staging row, for any workspace whose yaml carries a non-empty
+// additional_bindings: list, would hash differently under both pre.inputHash
+// (current, PR4, bindings-less shape) and pre.legacyInputHashPR6 (no
+// WorkspaceKitRefs at all) — turning a routine binary upgrade with
+// genuinely unchanged on-disk inputs into a mandatory "manual intervention"
+// abort. Comparing the recorded hash against this third shape too lets that
+// upgrade-in-place roll forward while still aborting on an actual on-disk
+// change (which changes every shape's hash alike) — but only if this
+// shape's Workspaces entries actually carry AdditionalBindings;
+// workspaceAdditionalBindings (readWorkspaceYAMLSnapshot's per-slug raw
+// `additional_bindings:` list, the same map computeWorkspaceMigrationInputHashPR6Shape's
+// own workspaceAdditionalBindings parameter is sourced from) is what
+// restores that value here, since workspaces itself (the current,
+// AdditionalBindings-less WorkspaceMeta) no longer carries it.
+// workspaceKitRefs plays the same role for WorkspaceKitRefs that it plays in
+// computeWorkspaceMigrationInputHash itself — this shape's WorkspaceKitRefs
+// field is populated identically, not from any per-workspace struct field.
+func computeWorkspaceMigrationInputHashPR7WithBindingsShape(
+	workspaces map[string]*WorkspaceMeta,
+	hostCommands map[string]HostCommandSpec,
+	projectRefs []*WorkspaceSummary,
+	kitRuntime map[string]kitRuntimeRaw,
+	workspaceKitRefs map[string][]string,
+	workspaceAdditionalBindings map[string][]BindMount,
+) (string, error) {
+	pr7Workspaces := make(map[string]*pr7WorkspaceMetaWithBindings, len(workspaces))
+	for slug, meta := range workspaces {
+		pr7Workspaces[slug] = &pr7WorkspaceMetaWithBindings{
+			Env:                meta.Env,
+			Capabilities:       meta.Capabilities,
+			AllowedDomains:     meta.AllowedDomains,
+			ExtraRepos:         meta.ExtraRepos,
+			HostCommands:       meta.HostCommands,
+			ContainerImage:     meta.ContainerImage,
+			AdditionalBindings: workspaceAdditionalBindings[slug],
+		}
+	}
+	b, err := json.Marshal(workspaceMigrationHashInputPR7WithBindings{
+		Workspaces:           pr7Workspaces,
+		HostCommands:         hostCommands,
+		ProjectWorkspaceRefs: sortedWorkspaceRefsForHash(projectRefs),
+		KitRuntime:           kitRuntime,
+		WorkspaceKitRefs:     workspaceKitRefs,
 	})
 	if err != nil {
 		return "", err

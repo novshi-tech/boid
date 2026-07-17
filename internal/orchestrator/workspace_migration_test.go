@@ -1016,3 +1016,165 @@ func TestMigrateWorkspaceYAMLToDB_UpgradeFromPR6StagingHash_WithKits_RollsForwar
 		t.Errorf("team-a.Env[FOO] after upgrade roll-forward = %q, want bar", teamA.Env["FOO"])
 	}
 }
+
+// --- Codex Blocker (PR4 review, docs/plans/home-workspace-volume.md): a
+// --- third crash-recovery hash shape for a binary at the tip of PR3 (has
+// --- WorkspaceKitRefs, still has WorkspaceMeta.AdditionalBindings) ---
+
+// TestComputeWorkspaceMigrationInputHashPR7WithBindingsShape_MatchesGolden
+// pins the Codex Blocker fix on PR4: computeWorkspaceMigrationInputHashPR7WithBindingsShape
+// must reproduce the *exact* byte shape (and therefore sha256 hash) a
+// genuine PR3-tip binary computed for the same logical inputs. At that
+// commit (aa74dd9, "Merge pull request #789 from
+// novshi-tech/feat/home-workspace-volume-pr3"), WorkspaceMeta already had no
+// Kits field (Phase 2.5 PR7 removed it) but still had an
+// `AdditionalBindings []BindMount` field (removed outright by this PR, PR4)
+// — and computeWorkspaceMigrationInputHash's own hash-input shape (5 fields,
+// including WorkspaceKitRefs) is byte-identical between that commit and this
+// one (verified: `git diff aa74dd9..HEAD` touches nothing in that
+// function's body). So the golden values below were computed by checking
+// out that exact commit into a throwaway git worktree and calling ITS OWN
+// (unmodified) computeWorkspaceMigrationInputHash directly — a 5-argument
+// call, with Workspaces keyed to PR3-tip's own AdditionalBindings-having
+// WorkspaceMeta — against the fixture data reproduced exactly below (the
+// same with-kit/no-kit shape as the PR6 golden test above, plus a non-empty
+// AdditionalBindings on "with-kit" so the golden value actually exercises
+// the field this fix restores). Neither literal is derived from any code in
+// this PR's tree, so this test cannot pass by tautology/self-reference: it
+// only passes if pr7WorkspaceMetaWithBindings's field layout truly matches
+// PR3-tip's WorkspaceMeta field-for-field, tag-for-tag, order-for-order.
+func TestComputeWorkspaceMigrationInputHashPR7WithBindingsShape_MatchesGolden(t *testing.T) {
+	workspaces := map[string]*WorkspaceMeta{
+		"with-kit": {
+			Env:            map[string]string{"FOO": "bar"},
+			HostCommands:   []string{"gh"},
+			AllowedDomains: []string{"example.com"},
+		},
+		"no-kit": {
+			Env: map[string]string{"BAZ": "qux"},
+		},
+	}
+	hostCommands := map[string]HostCommandSpec{
+		"gh": {Allow: []string{"pr", "issue"}},
+	}
+	projectRefs := []*WorkspaceSummary{
+		{ID: "with-kit", ProjectCount: 2},
+		{ID: "no-kit", ProjectCount: 1},
+	}
+	kitRuntime := map[string]kitRuntimeRaw{
+		"docker-proxy-test": {
+			HostCommands: HostCommands{
+				"docker-proxy-test.sh": HostCommandSpec{Allow: []string{"run"}},
+			},
+			Env: map[string]string{"DOCKER_PROXY_TEST_ROOT": "${E2E_WORKSPACE_DIR}"},
+			AdditionalBindings: []BindMount{
+				{Source: "/host/docker-proxy-test"},
+			},
+		},
+	}
+	workspaceKitRefs := map[string][]string{
+		"with-kit": {"docker-proxy-test"},
+	}
+
+	// "with-kit" carries a non-empty AdditionalBindings — the actual
+	// regression this fix closes: a workspace yaml's additional_bindings:
+	// list must be reflected in this third hash shape.
+	workspaceAdditionalBindings := map[string][]BindMount{
+		"with-kit": {{Source: "/host/extra", Mode: "rw"}},
+	}
+	const wantHashWithBindings = "248107ee1b2ea0d443bfd917638be9a388e9de97279175bb02a5c0ad540db54a"
+	got, err := computeWorkspaceMigrationInputHashPR7WithBindingsShape(workspaces, hostCommands, projectRefs, kitRuntime, workspaceKitRefs, workspaceAdditionalBindings)
+	if err != nil {
+		t.Fatalf("computeWorkspaceMigrationInputHashPR7WithBindingsShape: %v", err)
+	}
+	if got != wantHashWithBindings {
+		t.Errorf("hash = %q, want golden PR7-with-bindings hash %q (pr7WorkspaceMetaWithBindings is not reproducing PR3-tip's byte shape for a workspace with bindings)", got, wantHashWithBindings)
+	}
+
+	// Same fixture, but "with-kit"'s AdditionalBindings is stripped (nil) —
+	// a workspace with kit refs but no bindings must still round-trip
+	// through the frozen shape unchanged.
+	const wantHashBindingsStripped = "cc982bad92bd8d3a465f684a0a4b59ce0af37a78ac89d3ffec1158f61a76b045"
+	gotStripped, err := computeWorkspaceMigrationInputHashPR7WithBindingsShape(workspaces, hostCommands, projectRefs, kitRuntime, workspaceKitRefs, map[string][]BindMount{})
+	if err != nil {
+		t.Fatalf("computeWorkspaceMigrationInputHashPR7WithBindingsShape (bindings stripped): %v", err)
+	}
+	if gotStripped != wantHashBindingsStripped {
+		t.Errorf("hash (bindings stripped) = %q, want golden PR7-with-bindings hash %q", gotStripped, wantHashBindingsStripped)
+	}
+	if got == gotStripped {
+		t.Fatal("hash must differ when a workspace's AdditionalBindings differs — pr7WorkspaceMetaWithBindings.AdditionalBindings is not affecting the hash at all")
+	}
+}
+
+// TestMigrateWorkspaceYAMLToDB_UpgradeFromPR7WithBindingsStagingHash_RollsForward
+// is the integration counterpart of the golden test above: a real
+// MigrateWorkspaceYAMLToDB crash-recovery roll-forward, end to end, for a
+// workspace whose yaml carries a non-empty additional_bindings: list —
+// exercising the actual wiring (preflightWorkspaceMigration -> rawAdditionalBindings
+// -> PR7-with-bindings-shape hash computation) rather than hand-constructed
+// Go values, and confirming that (as PR4 intends) the binding itself is
+// discarded — never materialized onto the DB-bound WorkspaceMeta — while the
+// roll-forward still succeeds instead of aborting as "inputs changed".
+func TestMigrateWorkspaceYAMLToDB_UpgradeFromPR7WithBindingsStagingHash_RollsForward(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	env := newMigrationTestEnv(t)
+
+	writeMigrationWorkspaceYAML(t, env.workspaceDir, "team-a",
+		"env:\n  FOO: bar\nadditional_bindings:\n  - source: /host/extra\n    mode: rw\n")
+
+	pre, err := preflightWorkspaceMigration(env.workspaceDir, env.kitsDir, env.projectRepo)
+	if err != nil {
+		t.Fatalf("preflightWorkspaceMigration: %v", err)
+	}
+	if pre.legacyInputHashPR7WithBindings == pre.inputHash {
+		t.Fatalf("legacyInputHashPR7WithBindings (%q) unexpectedly equals the current inputHash — the two hash shapes should differ", pre.legacyInputHashPR7WithBindings)
+	}
+	if pre.legacyInputHashPR7WithBindings == pre.legacyInputHashPR6 {
+		t.Fatalf("legacyInputHashPR7WithBindings (%q) unexpectedly equals legacyInputHashPR6 — the two legacy shapes should differ (one has WorkspaceKitRefs, the other doesn't)", pre.legacyInputHashPR7WithBindings)
+	}
+
+	// Seed the staging row with the PR7-with-bindings hash shape, simulating
+	// a binary at the tip of PR3's interrupted attempt for a workspace whose
+	// yaml carries a non-empty additional_bindings: list.
+	tx, err := env.conn.Conn.Begin()
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	if err := upsertMigrationRow(tx, workspaceDBConsolidationVersion, "staging", pre.legacyInputHashPR7WithBindings); err != nil {
+		t.Fatalf("upsertMigrationRow(staging, PR7-with-bindings hash): %v", err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+
+	if slugs := workspaceSlugs(t, env.conn); len(slugs) != 0 {
+		t.Fatalf("test setup: expected zero workspace rows before roll-forward, got %v", slugs)
+	}
+
+	if err := MigrateWorkspaceYAMLToDB(env.conn.Conn, env.workspaceDir, env.kitsDir, env.projectRepo); err != nil {
+		t.Fatalf("MigrateWorkspaceYAMLToDB (upgrade roll-forward, PR7-with-bindings): %v", err)
+	}
+
+	state, inputHash, found := schemaMigrationRow(t, env.conn, workspaceDBConsolidationVersion)
+	if !found || state != "committed" {
+		t.Fatalf("state after upgrade roll-forward = %q (found=%v), want committed", state, found)
+	}
+	if inputHash != pre.inputHash {
+		t.Errorf("input_hash after upgrade roll-forward = %q, want %q (current shape)", inputHash, pre.inputHash)
+	}
+
+	repo := NewWorkspaceRepository(env.conn.Conn)
+	teamA, err := repo.Load("team-a")
+	if err != nil {
+		t.Fatalf("Load(team-a) after upgrade roll-forward: %v", err)
+	}
+	if teamA.Env["FOO"] != "bar" {
+		t.Errorf("team-a.Env[FOO] after upgrade roll-forward = %q, want bar", teamA.Env["FOO"])
+	}
+	if len(teamA.AllowedDomains) != 0 || len(teamA.ExtraRepos) != 0 {
+		// Sanity: no unrelated field leaked a value in from the discarded
+		// additional_bindings: parse.
+		t.Errorf("team-a unexpected non-empty fields after roll-forward: %+v", teamA)
+	}
+}
