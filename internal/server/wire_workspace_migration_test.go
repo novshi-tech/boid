@@ -158,73 +158,13 @@ func TestBuildProjectStore_SecondStartupSkipsMigrationAndDispatchStillWorks(t *t
 	}
 }
 
-// hasBindingSource reports whether mounts contains an entry whose Source
-// equals source.
-func hasBindingSource(mounts []orchestrator.BindMount, source string) bool {
-	for _, m := range mounts {
-		if m.Source == source {
-			return true
-		}
-	}
-	return false
-}
-
-// TestBuildProjectStore_MigratedKitRootBindingReachesDispatch pins the
-// end-to-end path for the 2nd-pass codex-review BLOCKER (KitRoots
-// materialization, see workspace_migration_test.go's
-// TestMigrateWorkspaceYAMLToDB_MaterializesKitRootsAsAdditionalBindings for
-// the unit-level coverage of the migration step itself): after
-// MigrateWorkspaceYAMLToDB folds a workspace kit's root directory into the
-// DB-bound WorkspaceMeta's AdditionalBindings, GetWithWorkspace's existing
-// ws.AdditionalBindings merge block (BLOCKER 2 — already covered for the
-// directly-authored case by project_store_hydrate_test.go's
-// TestGetWithWorkspace_MergesWorkspaceAdditionalBindings) must carry that
-// materialized binding all the way to dispatch: both the top-level
-// meta.AdditionalBindings (session jobs bypass behaviors and read this
-// directly) and every TaskBehavior.AdditionalBindings (task hooks read it
-// via the planner) — the same guarantee the pre-cutover ws.Kits/KitRoots
-// path provided for shell hooks reading kit-dir scripts/assets.
-func TestBuildProjectStore_MigratedKitRootBindingReachesDispatch(t *testing.T) {
-	xdgConfigHome := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", xdgConfigHome)
-
-	kitsDir := t.TempDir()
-	writeTestKitYAML(t, kitsDir, "shellkit", "host_commands:\n  mytool:\n    path: /usr/bin/true\n")
-	writeTestWorkspaceYAML(t, xdgConfigHome, "team-root", "kits:\n  - shellkit\n")
-
-	projectDir := t.TempDir()
-	setupProjectYAML(t, projectDir, "proj-kitroot", "build")
-
-	d := openTestDB(t)
-	repo := orchestrator.NewProjectRepository(d.Conn)
-	if err := orchestrator.CreateProject(d.Conn, &orchestrator.Project{ID: "proj-kitroot", WorkDir: projectDir}); err != nil {
-		t.Fatalf("CreateProject: %v", err)
-	}
-	if err := orchestrator.SetProjectWorkspace(d.Conn, "proj-kitroot", "team-root"); err != nil {
-		t.Fatalf("SetProjectWorkspace: %v", err)
-	}
-
-	cfg := Config{DBPath: ":memory:", KitsDir: kitsDir}
-	store, _, err := buildProjectStore(cfg, d.Conn, repo)
-	if err != nil {
-		t.Fatalf("buildProjectStore: %v", err)
-	}
-
-	meta, err := store.GetWithWorkspace(context.Background(), "proj-kitroot")
-	if err != nil {
-		t.Fatalf("GetWithWorkspace: %v", err)
-	}
-
-	wantKitDir := filepath.Join(kitsDir, "shellkit")
-	if !hasBindingSource(meta.AdditionalBindings, wantKitDir) {
-		t.Fatalf("expected kit root %q in meta.AdditionalBindings, got %+v", wantKitDir, meta.AdditionalBindings)
-	}
-
-	build, ok := meta.TaskBehaviors["build"]
-	if !ok {
-		t.Fatalf("behavior build missing from hydrated meta: %+v", meta.TaskBehaviors)
-	}
-	if !hasBindingSource(build.AdditionalBindings, wantKitDir) {
-		t.Fatalf("expected kit root %q in behavior build.AdditionalBindings, got %+v", wantKitDir, build.AdditionalBindings)
-	}
-}
+// TestBuildProjectStore_MigratedKitRootBindingReachesDispatch (2nd-pass
+// codex-review BLOCKER: a workspace kit's root directory materialized as an
+// AdditionalBindings entry, reaching dispatch via GetWithWorkspace's
+// workspace-level merge, BLOCKER 2) was removed in docs/plans/
+// home-workspace-volume.md Phase 4 PR4: both halves of that path —
+// materializeKitRuntimeIntoWorkspace's kit-root-as-binding materialization
+// and GetWithWorkspace's ws.AdditionalBindings merge — were retired outright
+// along with the WorkspaceMeta.AdditionalBindings field they fed. See
+// workspace_migration.go's materializeKitRuntimeIntoWorkspace and
+// project_store.go's GetWithWorkspace doc comments.

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 
 	"gopkg.in/yaml.v3"
 )
@@ -18,95 +19,21 @@ import (
 // same class of bug PR2's hostCommandSpecStrict (host_commands_config.go)
 // exists to prevent for the aggregated host_commands.yaml config.
 //
-// bindMountStrict exists for the same reason hostCommandSpecStrict exists:
-// BindMount has its own custom UnmarshalYAML (to accept the short-form
-// scalar convenience, e.g. `additional_bindings: [/opt/tool]`), and per
-// gopkg.in/yaml.v3, a Node.Decode call inside a custom UnmarshalYAML always
-// starts a fresh decode with default (non-strict) settings — regardless of
-// the KnownFields(true) Decoder that produced the node. Decoding
-// additional_bindings through the public BindMount type would therefore
-// silently drop a nested typo (e.g. "modee: rw"). bindMountStrict has the
-// identical field layout plus its own UnmarshalYAML (MINOR 3-a, codex
-// review: the public additional_bindings contract allows the same short-form
-// scalar BindMount does, which a plain struct-tag decode cannot accept) —
-// see that method's doc comment for how it keeps the strict guarantee
-// despite needing a custom UnmarshalYAML of its own.
-
-// bindMountStrict mirrors BindMount (spec_types.go) field-for-field.
-// IMPORTANT: keep this in sync with BindMount — a field added there must be
-// mirrored here (both in the struct and in bindMountStrictKnownFields
-// below), or the strict decode will silently ignore it (defeating the point
-// of this type).
-type bindMountStrict struct {
-	Source   string `yaml:"source"`
-	Target   string `yaml:"target,omitempty"`
-	Mode     string `yaml:"mode"`
-	IsFile   bool   `yaml:"is_file,omitempty"`
-	Optional bool   `yaml:"optional,omitempty"`
-}
-
-// bindMountStrictKnownFields lists every yaml key bindMountStrict's mapping
-// form accepts, used by UnmarshalYAML below to manually enforce strictness
-// (see that method's doc comment for why KnownFields(true) alone cannot do
-// this here).
-var bindMountStrictKnownFields = map[string]bool{
-	"source": true, "target": true, "mode": true, "is_file": true, "optional": true,
-}
-
-// UnmarshalYAML accepts the same two equivalent forms BindMount.UnmarshalYAML
-// does (MINOR 3-a, codex review, docs/plans/workspace-db-consolidation.md):
-//
-//	additional_bindings:
-//	  - /host/path              # short form: equivalent to {source: "/host/path"}
-//	  - source: /host/path      # struct form
-//	    mode: rw
-//
-// Before this method existed, bindMountStrict deliberately had *no* custom
-// UnmarshalYAML at all — see this file's package doc comment: yaml.v3's
-// Node.Decode inside a custom UnmarshalYAML always runs with default
-// (non-strict) settings regardless of the Decoder that produced the node,
-// so naively delegating to a type-aliased Decode here (the way
-// BindMount.UnmarshalYAML does) would silently drop a typo'd nested field
-// even under KnownFields(true) — defeating the entire point of this strict
-// type. This method keeps the strict guarantee by checking the mapping
-// form's keys against bindMountStrictKnownFields by hand *before* decoding,
-// rather than delegating that check to the (non-strict-in-this-context)
-// decoder.
-func (b *bindMountStrict) UnmarshalYAML(node *yaml.Node) error {
-	if node.Kind == yaml.ScalarNode {
-		b.Source = node.Value
-		return nil
-	}
-	if node.Kind != yaml.MappingNode {
-		return fmt.Errorf("additional_bindings: expected a string or a mapping, got %v", node.Kind)
-	}
-	for i := 0; i+1 < len(node.Content); i += 2 {
-		key := node.Content[i].Value
-		if !bindMountStrictKnownFields[key] {
-			return fmt.Errorf("additional_bindings: unknown field %q at line %d", key, node.Content[i].Line)
-		}
-	}
-	type bindMountStrictAlias bindMountStrict
-	var aux bindMountStrictAlias
-	if err := node.Decode(&aux); err != nil {
-		return err
-	}
-	*b = bindMountStrict(aux)
-	return nil
-}
-
-// toBindMount converts the strict decode-only shape to the public BindMount
-// type. The two structs share the same field layout (name, type, and order),
-// so a plain Go type conversion is valid — struct tags are not part of Go's
-// convertibility check.
-func (b bindMountStrict) toBindMount() BindMount {
-	return BindMount(b)
-}
+// additional_bindings is the one deliberate exception to "unknown field is
+// rejected" (docs/plans/home-workspace-volume.md Phase 4 PR4): the
+// workspace-scoped AdditionalBindings mechanism was retired outright (see
+// WorkspaceMeta's own doc comment), but unlike `kits:` — which Phase 2.5 PR7
+// judged fully dead and now rejects outright — additional_bindings had real
+// production usage, so a hard "unknown field" break on every existing
+// workspace yaml/PUT body that still carries it would be a needlessly
+// disruptive way to retire it. workspaceMetaStrict below keeps
+// additional_bindings as a known key (decoded into a raw yaml.Node sink,
+// not validated or converted to a []BindMount any more) so such a body still
+// decodes without error; toWorkspaceMeta logs a warning and discards the
+// value instead of mapping it onto WorkspaceMeta, which has no field for it.
 
 // workspaceMetaStrict mirrors WorkspaceMeta (workspace_meta.go) field-for-
-// field, replacing AdditionalBindings' element type with bindMountStrict so
-// the nested strict-decode guarantee holds (see this file's package doc
-// comment). IMPORTANT: keep in sync with WorkspaceMeta.
+// field. IMPORTANT: keep in sync with WorkspaceMeta.
 //
 // A `kits:` key in a POST/PUT/import body is deliberately NOT a known field
 // here any more (Phase 2.5 PR7, decision 12: no fallback on the wire): a
@@ -118,36 +45,73 @@ func (b bindMountStrict) toBindMount() BindMount {
 // yaml, and submit an already-materialized (kits-free) body — see that
 // function's doc comment.
 type workspaceMetaStrict struct {
-	Env                map[string]string `yaml:"env,omitempty"`
-	Capabilities       Capabilities      `yaml:"capabilities,omitempty"`
-	AllowedDomains     []string          `yaml:"allowed_domains,omitempty"`
-	ExtraRepos         []string          `yaml:"extra_repos,omitempty"`
-	HostCommands       []string          `yaml:"host_commands,omitempty"`
-	ContainerImage     string            `yaml:"container_image,omitempty"`
-	AdditionalBindings []bindMountStrict `yaml:"additional_bindings,omitempty"`
+	Env            map[string]string `yaml:"env,omitempty"`
+	Capabilities   Capabilities      `yaml:"capabilities,omitempty"`
+	AllowedDomains []string          `yaml:"allowed_domains,omitempty"`
+	ExtraRepos     []string          `yaml:"extra_repos,omitempty"`
+	HostCommands   []string          `yaml:"host_commands,omitempty"`
+	ContainerImage string            `yaml:"container_image,omitempty"`
+
+	// AdditionalBindings is a retired-but-tolerated sink (see this file's
+	// package doc comment): a yaml.Node accepts any shape (mapping, scalar
+	// short form, or even a malformed one) at the `additional_bindings` key
+	// without validating its contents — there is nothing left downstream
+	// that would care about a nested typo, since the value is discarded
+	// either way. A zero-value yaml.Node (Kind == 0) means the key was
+	// absent from the decoded document; any other Kind means it was present
+	// (including an explicit empty list or null), which is what
+	// toWorkspaceMeta below checks to decide whether to warn.
+	AdditionalBindings yaml.Node `yaml:"additional_bindings"`
 }
 
 // toWorkspaceMeta converts the strict decode-only shape to the public
-// WorkspaceMeta type, converting each AdditionalBindings entry individually
-// (a slice-of-different-named-struct conversion cannot be done with a single
-// Go type conversion the way the scalar/nested-struct cases above can).
+// WorkspaceMeta type. additional_bindings is intentionally NOT carried over
+// — WorkspaceMeta has no field for it any more (Phase 4 PR4) — but a present
+// key is logged so an operator submitting a stale workspace yaml/PUT body
+// finds out its additional_bindings content is being silently discarded
+// rather than applied.
 func (s workspaceMetaStrict) toWorkspaceMeta() *WorkspaceMeta {
-	var bindings []BindMount
-	if len(s.AdditionalBindings) > 0 {
-		bindings = make([]BindMount, len(s.AdditionalBindings))
-		for i, b := range s.AdditionalBindings {
-			bindings[i] = b.toBindMount()
-		}
+	if s.AdditionalBindings.Kind != 0 {
+		slog.Warn("workspace meta: additional_bindings is no longer supported (retired in docs/plans/home-workspace-volume.md Phase 4 PR4); the field is parsed but ignored")
 	}
 	return &WorkspaceMeta{
-		Env:                s.Env,
-		Capabilities:       s.Capabilities,
-		AllowedDomains:     s.AllowedDomains,
-		ExtraRepos:         s.ExtraRepos,
-		HostCommands:       s.HostCommands,
-		ContainerImage:     s.ContainerImage,
-		AdditionalBindings: bindings,
+		Env:            s.Env,
+		Capabilities:   s.Capabilities,
+		AllowedDomains: s.AllowedDomains,
+		ExtraRepos:     s.ExtraRepos,
+		HostCommands:   s.HostCommands,
+		ContainerImage: s.ContainerImage,
 	}
+}
+
+// additionalBindingsKeyPresent (Codex Should-fix, PR4 review,
+// docs/plans/home-workspace-volume.md) reports whether raw's top-level
+// additional_bindings: key is present in the parsed document, using the same
+// tolerate-anything yaml.Node sink technique workspaceMetaStrict.AdditionalBindings
+// above uses for the wire (POST/PUT) path: any shape — a well-formed list, a
+// malformed nested structure, an explicit null, or an empty list — decodes
+// without error, so a caller whose additional_bindings section would fail a
+// strict []BindMount decode still gets a presence answer instead of an
+// unrelated parse error (there is nothing left downstream to validate the
+// value against; it is discarded either way).
+//
+// Shared by readWorkspaceYAMLSnapshot (workspace_migration.go) and
+// WorkspaceStore.Load's yaml-mode path (workspace_store.go): both discard
+// the value (WorkspaceMeta has no field for it any more) but, unlike the
+// wire path above, previously did so with no warning at all — the plan
+// (docs/plans/home-workspace-volume.md) requires "parse continues + ignore +
+// warn" for every legacy read path, not only the wire one.
+//
+// A zero-value yaml.Node (Kind == 0) means the key was absent — the same
+// convention workspaceMetaStrict.AdditionalBindings documents above.
+func additionalBindingsKeyPresent(raw []byte) (bool, error) {
+	var sink struct {
+		AdditionalBindings yaml.Node `yaml:"additional_bindings"`
+	}
+	if err := yaml.Unmarshal(raw, &sink); err != nil {
+		return false, err
+	}
+	return sink.AdditionalBindings.Kind != 0, nil
 }
 
 // RejectTrailingYAMLDocument guards against MINOR 2 (codex review round 2,

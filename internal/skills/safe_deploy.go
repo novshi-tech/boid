@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -227,6 +228,23 @@ func isStaleTempName(name string) bool {
 // DeployAll call reclaims whatever a previous crashed run left behind — via
 // the same symlink-safe (unlinkat on a verified fd, not a path string)
 // mechanism as the rest of this file.
+//
+// PR4 E2E investigation (docs/plans/home-workspace-volume.md): a name
+// matching isStaleTempName is not necessarily abandoned — two DeployAll
+// calls can legitimately run concurrently against the SAME baseDir (e.g. a
+// workspace's HOME directory is shared across every job dispatched against
+// it, and internal/dispatcher/runner.go calls DeployAll once per dispatch
+// with no cross-dispatch locking). Before this fix, cleanupStaleTempFiles
+// unlinked *every* name matching the pattern unconditionally — including
+// one a still-running, concurrently-executing DeployAll call had just
+// created and was about to renameat into place — producing exactly the
+// "rename ... no such file or directory" failure this fix closes: the
+// victim call's own createUniqueTempFile succeeded, but its later
+// renameat found the file gone, unlinked out from under it by another
+// call's cleanup pass. tempFileOwnerAlive distinguishes a genuinely
+// abandoned temp file (its creating PID, encoded in the name by
+// createUniqueTempFile, no longer exists) from one whose owner is still
+// alive and presumably still writing it — only the former is reaped here.
 func cleanupStaleTempFiles(dirFd int) error {
 	dupFd, err := unix.Dup(dirFd)
 	if err != nil {
@@ -243,9 +261,57 @@ func cleanupStaleTempFiles(dirFd int) error {
 		if !isStaleTempName(n) {
 			continue
 		}
+		if tempFileOwnerAlive(n) {
+			continue
+		}
 		if err := unix.Unlinkat(dirFd, n, 0); err != nil && !errors.Is(err, unix.ENOENT) {
 			return fmt.Errorf("unlink stale temp file %q: %w", n, err)
 		}
 	}
 	return nil
+}
+
+// tempFileOwnerAlive reports whether name — a temp file name matching
+// isStaleTempName — was created by a process that is still running,
+// based on the PID createUniqueTempFile encodes as the first "-"-separated
+// component after tempFileNameInfix (".<name>.tmp-<pid>-<nanotime>-<attempt>").
+// A name whose PID component cannot be parsed as a positive integer (e.g.
+// TestDeployAll_CleansUpStaleTempFiles' synthetic
+// ".SKILL.md.tmp-stale-12345" fixture, predating this function) is treated
+// as having no identifiable owner and therefore reapable — this keeps the
+// original "clean up anything that merely looks stale" contract as the
+// fallback for names this parse can't make sense of, and only withholds
+// reaping when a live owner is positively identified.
+func tempFileOwnerAlive(name string) bool {
+	idx := strings.Index(name, tempFileNameInfix)
+	if idx < 0 {
+		return false
+	}
+	rest := name[idx+len(tempFileNameInfix):]
+	parts := strings.SplitN(rest, "-", 3)
+	if len(parts) != 3 {
+		return false
+	}
+	pid, err := strconv.Atoi(parts[0])
+	if err != nil || pid <= 0 {
+		return false
+	}
+	return processAlive(pid)
+}
+
+// processAlive reports whether pid identifies a currently-running process,
+// via the standard "kill -0" liveness idiom: sending signal 0 performs
+// every permission/existence check a real signal delivery would without
+// actually delivering one. ESRCH ("no such process") is the only outcome
+// treated as dead; EPERM (the process exists but this daemon lacks
+// permission to signal it — cannot happen for a temp file this same uid
+// created, but handled for defense in depth) and any other error are
+// treated as "cannot prove it's dead", i.e. alive — reaping is the
+// destructive direction here, so an inconclusive check must not reap.
+func processAlive(pid int) bool {
+	err := unix.Kill(pid, 0)
+	if err == nil {
+		return true
+	}
+	return !errors.Is(err, unix.ESRCH)
 }

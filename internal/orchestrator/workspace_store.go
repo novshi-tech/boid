@@ -3,6 +3,7 @@ package orchestrator
 import (
 	"errors"
 	"fmt"
+	"log/slog"
 	"math/rand"
 	"os"
 	"path/filepath"
@@ -118,6 +119,21 @@ func (s *WorkspaceStore) Load(slug string) (*WorkspaceMeta, error) {
 	var meta WorkspaceMeta
 	if err := yaml.Unmarshal(data, &meta); err != nil {
 		return nil, fmt.Errorf("workspace %q (%s): parse: %w", slug, path, err)
+	}
+	// Codex Should-fix (PR4 review, docs/plans/home-workspace-volume.md):
+	// WorkspaceMeta has no AdditionalBindings field any more (Phase 4 PR4),
+	// so the yaml.Unmarshal above silently drops an additional_bindings:
+	// key with no diagnostic at all — unlike the wire (POST/PUT) path,
+	// which already warns via workspaceMetaStrict.toWorkspaceMeta. The plan
+	// requires "parse continues + ignore + warn" for every legacy read
+	// path, so this yaml-mode load path needs the same warning. Errors from
+	// additionalBindingsKeyPresent are swallowed deliberately: data already
+	// decoded successfully into WorkspaceMeta above, so a failure here would
+	// only ever be a best-effort diagnostic miss, never a reason to fail
+	// this Load.
+	if present, _ := additionalBindingsKeyPresent(data); present {
+		slog.Warn("workspace: additional_bindings is no longer supported (retired in docs/plans/home-workspace-volume.md Phase 4 PR4); ignoring",
+			"workspace", slug, "path", path)
 	}
 	return &meta, nil
 }

@@ -1,8 +1,10 @@
 package skills_test
 
 import (
+	"fmt"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -334,6 +336,75 @@ func TestDeployAll_CleansUpStaleTempFiles(t *testing.T) {
 
 	if _, err := os.Stat(stale); !os.IsNotExist(err) {
 		t.Errorf("stale temp file was not cleaned up (stat err=%v)", err)
+	}
+}
+
+// TestDeployAll_PreservesTempFileOwnedByLiveProcess pins the PR4 E2E
+// investigation fix (docs/plans/home-workspace-volume.md): a temp file whose
+// name encodes a PID that is still running must NOT be reaped by a
+// concurrent DeployAll call against the same baseDir — reaping it would
+// race the true owner's own imminent renameat call out from under it,
+// producing a "rename ... no such file or directory" failure
+// (internal/dispatcher/runner.go dispatches DeployAll once per job, with no
+// cross-dispatch locking on a shared workspace HOME directory, so two
+// concurrent dispatches against the same workspace do call DeployAll on the
+// same baseDir). The test process's own PID (os.Getpid()) is guaranteed
+// alive for the duration of the test, standing in for "another concurrently
+// running DeployAll call".
+func TestDeployAll_PreservesTempFileOwnedByLiveProcess(t *testing.T) {
+	baseDir := t.TempDir()
+
+	if err := skills.DeployAll(baseDir); err != nil {
+		t.Fatalf("DeployAll (seed): %v", err)
+	}
+
+	// Matches createUniqueTempFile's naming convention exactly: ".<name>.tmp-<pid>-<nanotime>-<attempt>".
+	live := filepath.Join(baseDir, "boid-web", fmt.Sprintf(".SKILL.md.tmp-%d-123456789-0", os.Getpid()))
+	if err := os.WriteFile(live, []byte("owned by a still-running process"), 0o644); err != nil {
+		t.Fatalf("write live-owned temp file: %v", err)
+	}
+
+	if err := skills.DeployAll(baseDir); err != nil {
+		t.Fatalf("DeployAll (2nd, must not reap a live owner's temp file): %v", err)
+	}
+
+	if _, err := os.Stat(live); err != nil {
+		t.Errorf("temp file owned by a live process (pid %d) was reaped: stat err=%v", os.Getpid(), err)
+	}
+}
+
+// TestDeployAll_ReapsTempFileOwnedByDeadProcess complements the live-owner
+// test above with a real (not synthetic) dead PID: a short-lived child
+// process is spawned and waited on to completion, guaranteeing its PID no
+// longer identifies a running process, then a temp file encoding that PID
+// is planted and must still be reaped — the crash-recovery contract
+// (TestDeployAll_CleansUpStaleTempFiles above) must keep working once a
+// genuinely dead, numeric PID is involved, not just the pre-existing
+// non-numeric "stale-12345" fixture.
+func TestDeployAll_ReapsTempFileOwnedByDeadProcess(t *testing.T) {
+	baseDir := t.TempDir()
+
+	if err := skills.DeployAll(baseDir); err != nil {
+		t.Fatalf("DeployAll (seed): %v", err)
+	}
+
+	cmd := exec.Command("true")
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("run short-lived child process: %v", err)
+	}
+	deadPID := cmd.Process.Pid
+
+	dead := filepath.Join(baseDir, "boid-web", fmt.Sprintf(".SKILL.md.tmp-%d-123456789-0", deadPID))
+	if err := os.WriteFile(dead, []byte("owned by a now-dead process"), 0o644); err != nil {
+		t.Fatalf("write dead-owned temp file: %v", err)
+	}
+
+	if err := skills.DeployAll(baseDir); err != nil {
+		t.Fatalf("DeployAll (2nd, should reclaim dead owner's temp file): %v", err)
+	}
+
+	if _, err := os.Stat(dead); !os.IsNotExist(err) {
+		t.Errorf("temp file owned by a dead process (pid %d) was not reaped: stat err=%v", deadPID, err)
 	}
 }
 

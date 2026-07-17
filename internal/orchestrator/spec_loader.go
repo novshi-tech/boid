@@ -566,32 +566,6 @@ func ReadProjectLocalMeta(dir string) (*ProjectLocalMeta, error) {
 	return &meta, nil
 }
 
-func unionBindMountSlices(base, extra []BindMount) []BindMount {
-	indexBySource := make(map[string]int)
-	var result []BindMount
-	for _, binding := range base {
-		if idx, ok := indexBySource[binding.Source]; ok {
-			if binding.Mode == "rw" {
-				result[idx].Mode = "rw"
-			}
-		} else {
-			indexBySource[binding.Source] = len(result)
-			result = append(result, binding)
-		}
-	}
-	for _, binding := range extra {
-		if idx, ok := indexBySource[binding.Source]; ok {
-			if binding.Mode == "rw" {
-				result[idx].Mode = "rw"
-			}
-		} else {
-			indexBySource[binding.Source] = len(result)
-			result = append(result, binding)
-		}
-	}
-	return result
-}
-
 func mergeBindMounts(base, overlay []BindMount) []BindMount {
 	if len(overlay) == 0 {
 		return cloneBindMounts(base)
@@ -721,7 +695,7 @@ func cloneProjectMeta(meta *ProjectMeta) *ProjectMeta {
 }
 
 // cloneTaskBehaviorMap deep-copies the task behavior map. Runtime-overlay fields
-// (Env, HostCommands, AdditionalBindings, KitRoots) are reset to nil so callers
+// (Env, HostCommands, AdditionalBindings) are reset to nil so callers
 // can reapply overlays from scratch. Hooks are preserved because they are now
 // defined in project.yaml (not kit-supplied) and must survive the clone.
 func cloneTaskBehaviorMap(src map[string]TaskBehavior) map[string]TaskBehavior {
@@ -739,7 +713,6 @@ func cloneTaskBehaviorMap(src map[string]TaskBehavior) map[string]TaskBehavior {
 		v.Env = nil
 		v.HostCommands = nil
 		v.AdditionalBindings = nil
-		v.KitRoots = nil
 		result[k] = v
 	}
 	return result

@@ -91,33 +91,6 @@ func TestDispatchPlannerInjectsDefaultBuiltinsForHook(t *testing.T) {
 	}
 }
 
-// PlanHook surfaces KitRoots from the behavior in Visibility.KitRoots and
-// returns a nil cleanup func: Command hooks require no staging directory.
-func TestPlanHook_SetsKitRootsFromBehavior(t *testing.T) {
-	projectDir := t.TempDir()
-	kitRoot := t.TempDir()
-
-	planner := newPlannerForTest(&Project{ID: "proj-1", WorkDir: projectDir}, TaskBehavior{
-		KitRoots: []string{kitRoot},
-	}, &Task{ID: "task-1", ProjectID: "proj-1", Behavior: "dev", Status: TaskStatusExecuting})
-
-	req, cleanup, err := planner.PlanHook(&HookFireEvent{
-		EventID:   "event-1",
-		TaskID:    "task-1",
-		ProjectID: "proj-1",
-		Hook:      Hook{ID: "run-agent", Command: "true"},
-	})
-	if err != nil {
-		t.Fatalf("PlanHook: %v", err)
-	}
-	if cleanup != nil {
-		t.Error("PlanHook should return nil cleanup (no staging dir)")
-	}
-	if len(req.Visibility.KitRoots) != 1 || req.Visibility.KitRoots[0] != kitRoot {
-		t.Errorf("KitRoots = %v, want [%s]", req.Visibility.KitRoots, kitRoot)
-	}
-}
-
 // TestPlanHook_SetsVisibilityProjectNameFromMeta is the workspace 親化リファ
 // クタリング (nose 2026-07-13 decision) regression guard for the self-project
 // half of the sandbox-internal /workspace/<name> clone dir: PlanHook must
@@ -163,8 +136,7 @@ func TestPlanHook_SetsVisibilityProjectNameFromMeta(t *testing.T) {
 // session path's binding passthrough (dispatcher.TestBindingPassthrough_*):
 // a workspace-kit binding merged into the behavior would silently vanish from
 // every task hook if the planner dropped it here, which is the exact shape of
-// the 2026-06-29 regression on the hook side. KitRoots is covered above; this
-// pins the sibling field.
+// the 2026-06-29 regression on the hook side.
 func TestPlanHook_CarriesAdditionalBindings(t *testing.T) {
 	projectDir := t.TempDir()
 

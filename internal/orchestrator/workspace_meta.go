@@ -77,12 +77,23 @@ type WorkspaceMeta struct {
 	// the schema migration for it does not need to be revisited later.
 	ContainerImage string `yaml:"container_image,omitempty" json:"container_image,omitempty"`
 
-	// AdditionalBindings is a workspace-scoped vestige of the kit mechanism
-	// (decision 4): additional bind mounts merged into every sandbox
-	// launched under this workspace, the same way kit-provided
-	// AdditionalBindings are merged today. Retained until Phase 4 replaces
-	// it with the $HOME workspace volume contract.
-	AdditionalBindings []BindMount `yaml:"additional_bindings,omitempty" json:"additional_bindings,omitempty"`
+	// AdditionalBindings (workspace-scoped kit-mechanism vestige, decision 4)
+	// was retired outright in docs/plans/home-workspace-volume.md Phase 4
+	// PR4: the $HOME workspace volume contract (Phase 4 PR1/PR2) replaces
+	// the need for a workspace to declare extra host bind mounts — workspace
+	// tooling now lives inside the workspace home dir itself, set up by the
+	// workspace's init script. There is deliberately no field here any more
+	// (unlike WorkspaceMeta.Kits, removed in Phase 2.5 PR7 the same way): an
+	// existing `additional_bindings:` key in a hand-authored workspace yaml,
+	// a POST/PUT body, or the `workspaces.additional_bindings` DB column
+	// still parses without error (the key is simply unknown to this struct,
+	// silently ignored by yaml.Unmarshal — see workspace_meta_strict.go's
+	// tolerate-and-warn handling for the strict-decode wire path, and
+	// workspace_repository.go's decodeWorkspaceMetaColumns for the DB read
+	// path), but its value is discarded rather than materialized into a
+	// sandbox mount. The `workspaces` table keeps the column for now (next
+	// major schema cleanup removes it outright) but every write from this
+	// binary now persists it as an empty JSON array.
 }
 
 // ResolveAllowedDomains returns the effective proxy egress allowlist for a
@@ -101,9 +112,9 @@ type WorkspaceMeta struct {
 // expected here (see [[project-workspace-allowed-domains]]); when added it
 // will slot in between the floor and the workspace overrides with the same
 // additive semantics.
-// expandWorkspaceRuntimeForDispatch returns a clone of meta with Env and
-// AdditionalBindings host-environment-expanded (${VAR}) for dispatch,
-// leaving meta itself completely untouched.
+// expandWorkspaceRuntimeForDispatch returns a clone of meta with Env
+// host-environment-expanded (${VAR}) for dispatch, leaving meta itself
+// completely untouched.
 //
 // DB/yaml-stored WorkspaceMeta values are intentionally raw/unexpanded —
 // expanding at rest would bake resolved, possibly secret-shaped values into
@@ -116,27 +127,25 @@ type WorkspaceMeta struct {
 // This mirrors ExpandHostCommandsForDispatch (host_commands_config.go),
 // which performs the identical clone-then-expand step for
 // workspace.HostCommands' resolved definitions. Before this function
-// existed, workspace/kit-materialized Env and AdditionalBindings never got
-// the equivalent treatment: a placeholder such as ${E2E_WORKSPACE_DIR} or
-// ${XDG_DATA_HOME} was carried into the DB unexpanded by
-// materializeKitRuntimeIntoWorkspace and never expanded again, a silent
-// regression versus the pre-cutover yaml-mode path.
+// existed, workspace/kit-materialized Env never got the equivalent
+// treatment: a placeholder such as ${E2E_WORKSPACE_DIR} or ${XDG_DATA_HOME}
+// was carried into the DB unexpanded and never expanded again, a silent
+// regression versus the pre-cutover yaml-mode path. (AdditionalBindings used
+// to get the identical clone-then-expand treatment here too, until Phase 4
+// PR4, docs/plans/home-workspace-volume.md, retired the field outright.)
 //
-// meta is never mutated: the returned value's Env map and AdditionalBindings
-// slice are independent copies before interpolateEnvMap /
-// interpolateBindMounts run in place on those copies. This matters even
-// though WorkspaceStore.Load (both the yaml and DB-repository backends)
-// currently always allocates a fresh *WorkspaceMeta per call — the
-// no-mutation contract should not rely on that happening to be true.
+// meta is never mutated: the returned value's Env map is an independent copy
+// before interpolateEnvMap runs in place on it. This matters even though
+// WorkspaceStore.Load (both the yaml and DB-repository backends) currently
+// always allocates a fresh *WorkspaceMeta per call — the no-mutation
+// contract should not rely on that happening to be true.
 func expandWorkspaceRuntimeForDispatch(meta *WorkspaceMeta) *WorkspaceMeta {
 	if meta == nil {
 		return nil
 	}
 	clone := *meta
 	clone.Env = mergeStringMaps(nil, meta.Env)
-	clone.AdditionalBindings = cloneBindMounts(meta.AdditionalBindings)
 	interpolateEnvMap(clone.Env)
-	interpolateBindMounts(clone.AdditionalBindings)
 	return &clone
 }
 

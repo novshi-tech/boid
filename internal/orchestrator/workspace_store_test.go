@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"testing"
 
 	"github.com/novshi-tech/boid/internal/db"
@@ -178,6 +179,50 @@ func TestWorkspaceStore_LoadParseError(t *testing.T) {
 	_, err := store.Load("broken")
 	if err == nil {
 		t.Fatal("Load with bad YAML: expected error, got nil")
+	}
+}
+
+// TestWorkspaceStore_Load_AdditionalBindingsWarnsAndDiscards pins the Codex
+// Should-fix (PR4 review, docs/plans/home-workspace-volume.md): a legacy
+// workspace yaml on disk (yaml mode, repo == nil) that still carries a
+// top-level additional_bindings: key must keep loading without error (yaml.
+// Unmarshal into WorkspaceMeta already silently drops unknown fields — that
+// part of the contract predates this fix) but must now also log a warning,
+// matching the wire (POST/PUT) path's existing
+// workspaceMetaStrict.toWorkspaceMeta warning. Before this fix, this yaml-
+// mode Load path had no warning at all — see additionalBindingsKeyPresent's
+// doc comment.
+func TestWorkspaceStore_Load_AdditionalBindingsWarnsAndDiscards(t *testing.T) {
+	store, dir := newTestStore(t)
+
+	yamlWithBindings := []byte("env:\n  FOO: bar\nadditional_bindings:\n  - source: /opt/volta\n    mode: rw\n")
+	if err := os.WriteFile(filepath.Join(dir, "legacy.yaml"), yamlWithBindings, 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	buf := captureSlog(t)
+	meta, err := store.Load("legacy")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if meta.Env["FOO"] != "bar" {
+		t.Errorf("Env[FOO] = %q, want bar (rest of the document must still decode)", meta.Env["FOO"])
+	}
+	if !strings.Contains(buf.String(), "additional_bindings") {
+		t.Errorf("expected a warning mentioning additional_bindings, got log: %s", buf.String())
+	}
+
+	// A workspace yaml with no additional_bindings: key must not warn — the
+	// common, post-Phase-4 case.
+	if err := os.WriteFile(filepath.Join(dir, "clean.yaml"), []byte("env:\n  BAZ: qux\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	buf2 := captureSlog(t)
+	if _, err := store.Load("clean"); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if strings.Contains(buf2.String(), "additional_bindings") {
+		t.Errorf("expected no additional_bindings warning when the key is absent, got log: %s", buf2.String())
 	}
 }
 

@@ -63,7 +63,6 @@ func sampleSessionInput() SessionJobInput {
 		AdditionalBindings: []orchestrator.BindMount{
 			{Source: "/opt/volta", Target: "/opt/volta", Mode: "rw"},
 		},
-		KitRoots:        []string{"/host/kits/volta"},
 		SecretNamespace: "ns-1",
 		DockerEnabled:   true,
 	}
@@ -71,8 +70,8 @@ func sampleSessionInput() SessionJobInput {
 
 // TestBuildSessionJobSpec_FieldContracts pins the `boid agent` builder's core
 // output: HarnessType passthrough, the Session kind, an always-on PTY, and the
-// verbatim carry-through of the project-trait overlay (bindings / kit roots /
-// secret namespace / docker) into Visibility. A drop in any of these silently
+// verbatim carry-through of the project-trait overlay (bindings / secret
+// namespace / docker) into Visibility. A drop in any of these silently
 // changes what the agent session sees inside the sandbox.
 func TestBuildSessionJobSpec_FieldContracts(t *testing.T) {
 	stubSessionBaseBranch(t, "main")
@@ -104,9 +103,6 @@ func TestBuildSessionJobSpec_FieldContracts(t *testing.T) {
 	}
 	if !reflect.DeepEqual(spec.Visibility.AdditionalBindings, in.AdditionalBindings) {
 		t.Errorf("Visibility.AdditionalBindings = %+v, want %+v (must carry the project/kit binding overlay)", spec.Visibility.AdditionalBindings, in.AdditionalBindings)
-	}
-	if !reflect.DeepEqual(spec.Visibility.KitRoots, in.KitRoots) {
-		t.Errorf("Visibility.KitRoots = %+v, want %+v", spec.Visibility.KitRoots, in.KitRoots)
 	}
 	if spec.SecretNamespace != in.SecretNamespace {
 		t.Errorf("SecretNamespace = %q, want %q", spec.SecretNamespace, in.SecretNamespace)
@@ -209,9 +205,6 @@ func TestBuildExecJobSpec_KeepsBindings(t *testing.T) {
 
 	if !reflect.DeepEqual(spec.Visibility.AdditionalBindings, in.AdditionalBindings) {
 		t.Errorf("Visibility.AdditionalBindings = %+v, want %+v (exec must keep the binding overlay)", spec.Visibility.AdditionalBindings, in.AdditionalBindings)
-	}
-	if !reflect.DeepEqual(spec.Visibility.KitRoots, in.KitRoots) {
-		t.Errorf("Visibility.KitRoots = %+v, want %+v", spec.Visibility.KitRoots, in.KitRoots)
 	}
 	if !spec.Interactive {
 		t.Error("Interactive = false, want true (passed interactive=true must win)")

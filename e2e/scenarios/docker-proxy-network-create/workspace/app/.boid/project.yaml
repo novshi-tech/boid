@@ -5,5 +5,5 @@ task_behaviors:
     hooks:
       - id: run-docker-test
         command: |
-          bash "$DOCKER_PROXY_TEST_ROOT/docker-proxy-test.sh"
+          bash ".boid/hooks/run-docker-test.sh"
     name: smoke
