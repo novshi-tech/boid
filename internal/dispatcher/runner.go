@@ -194,7 +194,26 @@ func (r *Runner) Dispatch(ctx context.Context, spec *orchestrator.JobSpec, clean
 		r.JobEvents.JobCreated(j.TaskID, j.ID)
 	}
 
-	workspaceID, projectWorkDir, _ := r.resolveProjectRuntime(spec.ProjectID)
+	// err here means Projects.GetProject itself failed (a torn registry / DB
+	// read failure), not merely "no matching project row" — resolveProjectRuntime
+	// returns (nil error, empty workspaceID/projectWorkDir) for the latter,
+	// which is existing, deliberately-unchanged behavior (see its doc
+	// comment). Silently discarding a real GetProject error here would let
+	// workspaceID come back "" even though the resolution attempt failed;
+	// normalizeWorkspaceSlug then maps "" to the default workspace slug, so
+	// resolveWorkspaceHome below would run the *wrong* workspace's init.sh
+	// (and, once PR2 wires WorkspaceHomeDir into a mount, mount the wrong
+	// workspace's home) instead of failing the dispatch outright (codex
+	// review, PR #787).
+	workspaceID, projectWorkDir, err := r.resolveProjectRuntime(spec.ProjectID)
+	if err != nil {
+		err = fmt.Errorf("resolve project runtime: look up project %q: %w", spec.ProjectID, err)
+		r.failJob(j, err)
+		if cleanup != nil {
+			cleanup()
+		}
+		return "", err
+	}
 
 	// Workspace home ensure + init (docs/plans/home-workspace-volume.md
 	// Phase 4 PR1): guarantees ~/.local/share/boid/homes/<slug> exists and,
@@ -430,6 +449,15 @@ func (r *Runner) Dispatch(ctx context.Context, spec *orchestrator.JobSpec, clean
 	return r.launchSandbox(ctx, j, sbSpec, cleanup, desiredRuntimeID)
 }
 
+// resolveProjectRuntime resolves projectID to its (WorkspaceID, WorkDir).
+// A non-nil error means the GetProject call itself failed (e.g. a torn
+// registry / DB read failure) and callers must treat that as fatal to the
+// dispatch rather than silently continuing with an empty workspaceID
+// (codex review, PR #787). A nil error with both return strings empty
+// covers two deliberately-conflated "no workspace" cases that callers do
+// NOT treat as fatal: r.Projects unset / projectID empty, and a
+// non-nil-error GetProject that simply found no matching project row
+// (proj == nil) — existing behavior, kept as-is here.
 func (r *Runner) resolveProjectRuntime(projectID string) (string, string, error) {
 	if r.Projects == nil || projectID == "" {
 		return "", "", nil

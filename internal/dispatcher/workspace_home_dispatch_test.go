@@ -2,8 +2,10 @@ package dispatcher
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/novshi-tech/boid/internal/orchestrator"
@@ -119,5 +121,68 @@ func TestDispatch_WorkspaceHomeInitSucceeds_ThreadsCorrectSlugThroughDispatch(t 
 	if _, err := os.Stat(sentinel); err != nil {
 		t.Errorf("init.sh sentinel not found at %s (Dispatch did not run resolveWorkspaceHome for the project's workspace slug %q): %v",
 			sentinel, "myws", err)
+	}
+}
+
+// TestDispatch_ProjectLookupError_FailsLoudBeforeWorkspaceHomeInit is the
+// Dispatch-level guard for the resolveProjectRuntime error-handling fix
+// (codex review PR #787): when Projects.GetProject fails outright (a torn
+// registry / DB read failure, simulated here with erroringProjectLookup —
+// shared with gitgateway_wire_test.go's clone-mode guards, same package),
+// Dispatch must fail the job and call cleanup via the same
+// failJob+cleanup+return "" pattern as every other pre-BuildSandboxSpec
+// error path, instead of silently treating the failed lookup as "no
+// workspace" (empty workspaceID) and going on to run the *default*
+// workspace's init.sh for a project that might belong to a different one.
+func TestDispatch_ProjectLookupError_FailsLoudBeforeWorkspaceHomeInit(t *testing.T) {
+	setupWorkspaceHomeTestDirs(t)
+	d := newGatewayTestDB(t)
+	if err := orchestrator.CreateProject(d.Conn, &orchestrator.Project{ID: "proj-1", WorkDir: "/tmp"}); err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+
+	r := &Runner{
+		DB:       d.Conn,
+		Projects: erroringProjectLookup{err: fmt.Errorf("db read failed")},
+	}
+
+	spec := &orchestrator.JobSpec{
+		ProjectID: "proj-1",
+		Argv:      []string{"echo", "hi"},
+		Kind:      orchestrator.JobKindHook,
+	}
+
+	var cleanupCalled bool
+	jobID, err := r.Dispatch(context.Background(), spec, func() { cleanupCalled = true })
+	if err == nil {
+		t.Fatal("expected Dispatch to fail when Projects.GetProject errors")
+	}
+	if !strings.Contains(err.Error(), "proj-1") {
+		t.Errorf("error = %q, want to name the project id proj-1", err.Error())
+	}
+	if jobID != "" {
+		t.Errorf("jobID = %q, want empty on failure", jobID)
+	}
+	if !cleanupCalled {
+		t.Error("cleanup callback was not called on resolveProjectRuntime error")
+	}
+
+	jobs, listErr := ListJobsFiltered(d.Conn, JobFilter{Status: string(JobStatusFailed)})
+	if listErr != nil {
+		t.Fatalf("list failed jobs: %v", listErr)
+	}
+	if len(jobs) != 1 {
+		t.Fatalf("want 1 failed job, got %d", len(jobs))
+	}
+	if jobs[0].Output == "" {
+		t.Error("failed job Output should contain the resolveProjectRuntime error message")
+	}
+
+	// No workspace home directory should have been created for the default
+	// slug (or any slug) — the dispatch must fail before resolveWorkspaceHome
+	// ever runs.
+	homesDir := filepath.Join(os.Getenv("XDG_DATA_HOME"), "boid", "homes")
+	if entries, statErr := os.ReadDir(homesDir); statErr == nil && len(entries) != 0 {
+		t.Errorf("homesDir %s should be empty (resolveWorkspaceHome must not run after a resolveProjectRuntime error), got %v", homesDir, entries)
 	}
 }
