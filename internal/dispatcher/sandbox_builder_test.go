@@ -385,7 +385,7 @@ func TestBuildSandboxSpec_BoidBinaryBindMountOnly(t *testing.T) {
 // これにより sandbox 内プロセスが .git/config 等を直接書き換えられない。
 func TestProjectVisibilityMounts_GitROBind_Writable(t *testing.T) {
 	const effectiveDir = "/home/user/project"
-	mounts := projectVisibilityMounts(effectiveDir, effectiveDir, "/home/user", true, nil)
+	mounts := projectVisibilityMounts(effectiveDir, effectiveDir, "/home/user", "", true, nil)
 
 	var gitMount *sandbox.Mount
 	for i := range mounts {
@@ -417,7 +417,7 @@ func TestProjectVisibilityMounts_GitROBind_Writable(t *testing.T) {
 // read-only project では .git の ro re-bind は追加しない（既に親が read-only）。
 func TestProjectVisibilityMounts_GitROBind_ReadOnly(t *testing.T) {
 	const effectiveDir = "/home/user/project"
-	mounts := projectVisibilityMounts(effectiveDir, effectiveDir, "/home/user", false, nil)
+	mounts := projectVisibilityMounts(effectiveDir, effectiveDir, "/home/user", "", false, nil)
 
 	for _, m := range mounts {
 		if m.Target == effectiveDir+"/.git" && m.ReadOnly && m.DetectType {
@@ -441,7 +441,7 @@ func TestProjectVisibilityMounts_BoidBind(t *testing.T) {
 	}
 
 	// writable タスク: .boid は origProjectDir から bind され書き込み可。
-	wMounts := projectVisibilityMounts(origProject, origProject, "/home/user", true, nil)
+	wMounts := projectVisibilityMounts(origProject, origProject, "/home/user", "", true, nil)
 	w := findBoid(wMounts)
 	if w == nil {
 		t.Fatal(".boid bind not found in writable project mounts")
@@ -460,7 +460,7 @@ func TestProjectVisibilityMounts_BoidBind(t *testing.T) {
 	}
 
 	// readonly タスク: .boid は依然 bind されるが ro。
-	roMounts := projectVisibilityMounts(origProject, origProject, "/home/user", false, nil)
+	roMounts := projectVisibilityMounts(origProject, origProject, "/home/user", "", false, nil)
 	ro := findBoid(roMounts)
 	if ro == nil {
 		t.Fatal(".boid bind not found in read-only project mounts")
