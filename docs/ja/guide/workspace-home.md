@@ -44,8 +44,19 @@ claude CLI のインストールなど、workspace home 側に一度だけセッ
   改竄できない)
 - **同時実行の直列化**: 同じ workspace への複数 job が同時に初回 dispatch されても、
   `init.sh` の実行は 1 回だけ (flock で直列化)。待つ側は完了を待ってから続行する
-- **実行環境**: ホスト側 (trusted) で `/bin/bash <script>` として実行される。
-  shebang 行は無視される。 以下の環境変数が渡る:
+- **実行環境**: ホスト側 (trusted) で `/bin/bash` により実行される。
+  shebang 行は無視される。 **boid は `init.sh` を直接 exec せず、hash した bytes を
+  `~/.local/share/boid/homes/` 配下の一時ファイルにコピーしてから実行する** (symlink 経由の
+  TOCTOU 対策と、実行内容とマーカー hash の同一性を保証するため)。
+  そのため以下の制約がある:
+  - `$0` は元の `init.sh` パスではなく一時ファイル path になる。 `dirname "$0"` から
+    `~/.config/boid/workspaces/<slug>/` 配下の補助ファイルを参照する記述は動かない
+  - script 自身の配置場所 (`~/.config/boid/workspaces/<slug>/`) に依存する `source ./foo` や
+    `$PWD` 依存のような書き方は避ける
+  - 補助ファイルが必要ならすべて `init.sh` に inline するか、workspace home にすでにある
+    ものを参照する
+  - cwd は `$BOID_WORKSPACE_HOME` (workspace home ディレクトリ) に設定される
+  以下の環境変数が渡る:
   - `HOME` — workspace home ディレクトリ (以降のインストールはここに着地させる)
   - `BOID_WORKSPACE_SLUG` — workspace の slug
   - `BOID_WORKSPACE_HOME` — `HOME` と同じ値
@@ -154,11 +165,18 @@ workspace homes:
 
 - **これは表示のみ**: `boid gc` は workspace home を**自動削除しません**
   (`runtimes/` とは違う扱い — workspace home は永続データという設計)
-- **`(orphan)` フラグ**: home ディレクトリだけが残っていて対応する workspace
-  (DB row / `workspace.yaml`) がもう存在しない状態を示す。典型的には
-  `workspace remove` 以外の経路 (手動削除など) で workspace 定義だけが消えた場合
-- orphan を実際に片付けたい場合は手動で `boid workspace remove <slug>` を実行するか、
-  (workspace 定義が既に無い場合は) `~/.local/share/boid/homes/<slug>/` を直接削除してください
+- **`(orphan)` フラグ**: home ディレクトリだけが残っていて対応する **DB workspace row が
+  存在しない**状態を示す (`workspace.yaml` の有無ではなく DB 側で判定)。典型的には
+  過去の boid で作成した workspace が既に DB から削除されたが home ディレクトリだけ
+  残ったケース
+- orphan を実際に片付けたい場合は**手動で直接削除する**:
+  ```bash
+  rm -rf ~/.local/share/boid/homes/<slug>/
+  rm -f ~/.local/share/boid/homes/<slug>.init.json
+  rm -f ~/.local/share/boid/homes/<slug>.lock
+  ```
+  `boid workspace remove <slug>` は対応する DB row がないため 404 で失敗する
+  (orphan の定義上、既に DB row は無いので)。 直接 rm するのが唯一の cleanup 経路
 - サイズ計算に失敗した場合は `?` と表示され、合計サイズの計算にも含まれない
   (エラーとして扱わず、gc 全体は継続する)
 

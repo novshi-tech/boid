@@ -50,8 +50,19 @@ unchanged.
 - **Concurrent dispatch is serialized**: if multiple jobs dispatch into the same
   never-initialized workspace at once, `init.sh` still runs exactly once (an flock
   serializes it); the other callers wait for it to finish before continuing
-- **Execution environment**: runs on the host (trusted) as `/bin/bash <script>` — the
-  shebang line is ignored. The following environment variables are set:
+- **Execution environment**: runs on the host (trusted) with `/bin/bash` — the
+  shebang line is ignored. **boid does NOT exec `init.sh` from its configured path**:
+  the hashed bytes are copied to a private temporary file under
+  `~/.local/share/boid/homes/` first and bash is invoked on that copy (this closes a
+  symlink-based TOCTOU and guarantees that the hash recorded in the marker matches the
+  bytes that actually ran). As a result:
+  - `$0` is the temp file path, not the original `init.sh` path. A `dirname "$0"` cannot
+    be used to reach sibling files under `~/.config/boid/workspaces/<slug>/`
+  - Do not depend on the script's own location (`source ./foo`, `$PWD`-relative reads,
+    etc.). Inline whatever the script needs, or read from files already present in the
+    workspace home
+  - `cwd` is set to `$BOID_WORKSPACE_HOME` (the workspace home directory)
+  The following environment variables are set:
   - `HOME` — the workspace home directory (subsequent installs should land here)
   - `BOID_WORKSPACE_SLUG` — the workspace's slug
   - `BOID_WORKSPACE_HOME` — same value as `HOME`
@@ -163,13 +174,18 @@ workspace homes:
 
 - **Display only**: `boid gc` never auto-deletes a workspace home (unlike `runtimes/`,
   workspace homes are designed to be persistent data)
-- **The `(orphan)` flag**: means only the home directory remains — the corresponding
-  workspace (DB row / `workspace.yaml`) no longer exists. Typically the result of the
-  workspace definition being removed some other way than `workspace remove` (e.g. deleted
-  by hand)
-- To actually clean up an orphan, run `boid workspace remove <slug>` by hand, or (if the
-  workspace definition is already gone) delete
-  `~/.local/share/boid/homes/<slug>/` directly
+- **The `(orphan)` flag**: means only the home directory remains — **no matching DB
+  workspace row exists** (`workspace.yaml`'s presence is not part of orphan detection).
+  Typically the result of an old workspace whose DB row was removed but whose home
+  directory was not cleaned up
+- To actually clean up an orphan, **delete the files directly by hand**:
+  ```bash
+  rm -rf ~/.local/share/boid/homes/<slug>/
+  rm -f ~/.local/share/boid/homes/<slug>.init.json
+  rm -f ~/.local/share/boid/homes/<slug>.lock
+  ```
+  `boid workspace remove <slug>` cannot be used here — by orphan's definition the DB
+  row is already gone, so the command would 404. Manual `rm` is the only cleanup path
 - A size that fails to compute is shown as `?` and excluded from the total (this is not
   treated as an error — `gc` still completes)
 

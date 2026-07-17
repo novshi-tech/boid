@@ -57,7 +57,7 @@ Manage projects ([`project.yaml` reference](project-yaml.md)).
 ### `project local` — Deprecated
 
 `boid project local ...` commands have been removed.
-The `host_commands` / `additional_bindings` / `env` / `secret_namespace` overrides that `project.local.yaml` used to provide are now part of `workspace.yaml` (machine-local).
+The `host_commands` / `env` / `secret_namespace` overrides that `project.local.yaml` used to provide are now part of the workspace (DB-backed, machine-local). `additional_bindings` was retired in Phase 4 PR4 — persist a toolchain via the [workspace home `init.sh`](../guide/workspace-home.md) instead.
 Run `boid project migrate <dir>` to convert automatically. See the [Migration guide](../guide/migration.md).
 
 ## Task
@@ -191,9 +191,9 @@ Inspect hook execution records.
 
 ## Kit (removed as a command)
 
-`boid kit init` / `boid kit list` / `boid kit remove`, and `boid workspace configure`, were removed in Phase 2.5 PR6 (2026-07). `env` and `additional_bindings` are now set directly on a workspace via the [Workspace](#workspace) CLI. `host_commands` is different: a workspace only holds a `[]string` list of *reference names* (`host_commands: [gh, aws]`); the actual command definitions (`path` / `allow` / `deny` / `env`) live in the daemon-wide `~/.config/boid/host_commands.yaml`, managed separately — see [Host Commands](#host-commands) below (or [Onboarding / Defining host_commands](../guide/onboarding.md#defining-host_commands-the-daemon-wide-registry)) for how to populate it now that `kit init` no longer does it automatically.
+`boid kit init` / `boid kit list` / `boid kit remove`, and `boid workspace configure`, were removed in Phase 2.5 PR6 (2026-07). `env` is now set directly on a workspace via the [Workspace](#workspace) CLI (`additional_bindings` was retired in Phase 4 PR4 — use the [workspace home `init.sh`](../guide/workspace-home.md) instead). `host_commands` is different: a workspace only holds a `[]string` list of *reference names* (`host_commands: [gh, aws]`); the actual command definitions (`path` / `allow` / `deny` / `env`) live in the daemon-wide `~/.config/boid/host_commands.yaml`, managed separately — see [Host Commands](#host-commands) below (or [Onboarding / Defining host_commands](../guide/onboarding.md#defining-host_commands-the-daemon-wide-registry)) for how to populate it now that `kit init` no longer does it automatically.
 
-The `kit.yaml` file format itself hasn't gone away (hand-writing one and pointing a workspace at it still works). Phase 2.5 PR7 removed the `WorkspaceMeta.Kits` field from the code outright, so passing `kits:` directly to `boid workspace create/edit/import` is now rejected. What's left is `boid workspace assign`'s auto-create convenience path (resolving a legacy shadow yaml's `kits:` client-side, once) and the legacy kit `boid project migrate` generates (its `host_commands`/`additional_bindings` are folded directly into the workspace, no kit-directory round trip). For the file format see [Kit authoring overview](../kit-authoring/overview.md); for the retirement's background see [Onboarding / On the retirement of the kit mechanism](../guide/onboarding.md#on-the-retirement-of-the-kit-mechanism).
+The `kit.yaml` file format itself hasn't gone away (hand-writing one and pointing a workspace at it still works). Phase 2.5 PR7 removed the `WorkspaceMeta.Kits` field from the code outright, so passing `kits:` directly to `boid workspace create/edit/import` is now rejected. What's left is `boid workspace assign`'s auto-create convenience path (resolving a legacy shadow yaml's `kits:` client-side, once) and the legacy kit `boid project migrate` generates (its `host_commands` is folded directly into the workspace, no kit-directory round trip; any legacy `additional_bindings` is ignored per Phase 4 PR4's retirement). For the file format see [Kit authoring overview](../kit-authoring/overview.md); for the retirement's background see [Onboarding / On the retirement of the kit mechanism](../guide/onboarding.md#on-the-retirement-of-the-kit-mechanism).
 
 ## Web
 
@@ -248,7 +248,7 @@ Inspect and reload the daemon's aggregated `~/.config/boid/host_commands.yaml` (
 
 | Command | Role |
 |---|---|
-| `boid exec -p <project-ref> [--name NAME] [--readonly] -- <argv...>` | Run an arbitrary argv inside the project sandbox. Inherits the project's `host_commands` / `env` / `additional_bindings`. Everything after `--` is the in-sandbox argv (the legacy named-command form was retired in Phase 3-d). `--name` sets a display name; `--readonly` mounts the workspace read-only. |
+| `boid exec -p <project-ref> [--name NAME] [--readonly] -- <argv...>` | Run an arbitrary argv inside the project sandbox. Inherits the project's `host_commands` / `env` (`additional_bindings` was retired in Phase 4 PR4; toolchain lives in the workspace home). Everything after `--` is the in-sandbox argv (the legacy named-command form was retired in Phase 3-d). `--name` sets a display name; `--readonly` mounts the workspace read-only. |
 | `boid attach <job-id>` | Attach to a running job's runtime (for interactive jobs). |
 | `boid fetch <url>` | Fetch and print the content of a URL from the host (usable inside a sandbox where direct HTTP access may be restricted). |
 

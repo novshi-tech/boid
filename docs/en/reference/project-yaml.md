@@ -11,7 +11,7 @@ This page is the schema reference. For the meaning of the underlying terms, see 
 - Registration: `boid project add <project-root>` reads the file into `boid`'s database.
 - Reload: after editing, run `boid project reload`.
 
-> **Note:** `project.yaml` no longer configures the runtime environment (kits / `host_commands` / `env` / `additional_bindings` / `secret_namespace` / `capabilities`). That machine-local configuration lives on a **workspace** instead (`boid workspace create/edit/import`) — see the [Top-level fields](#top-level-fields) table below for what moved where, and [Onboarding](../guide/onboarding.md) for the current setup flow.
+> **Note:** `project.yaml` no longer configures the runtime environment (kits / `host_commands` / `env` / `secret_namespace` / `capabilities`). That machine-local configuration lives on a **workspace** instead (`boid workspace create/edit/import`) — see the [Top-level fields](#top-level-fields) table below for what moved where, and [Onboarding](../guide/onboarding.md) for the current setup flow. `additional_bindings` has been retired on both project.yaml and workspace; toolchain persistence moved to the [workspace home `init.sh`](../guide/workspace-home.md) in Phase 4 PR4.
 
 ## Minimal example
 
@@ -34,7 +34,7 @@ task_behaviors:
 | `fork_point` | string | (falls back to `origin/HEAD`) | Fork origin for case 3 (when `base_branch` does not yet exist locally or on `origin`). Any ref resolvable by `git rev-parse --verify` (branch / tag / SHA / `origin/main`). Falls back to `refs/remotes/origin/HEAD`; errors if neither is resolvable. |
 | `task_behaviors` | map (string → TaskBehavior) | yes | The kinds of tasks this project can produce. |
 | `default_task_behavior` | string | no | The behavior to use when `boid task create` omits `--behavior`. When unset, the daemon falls back to `supervisor` if that behavior exists (with a deprecation warning); if neither is configured, `boid task create` returns an error. |
-| `kits` | — | **removed** | Rejected at load time (`project.yaml: top-level "kits" is no longer supported`). The kit mechanism itself was retired in Phase 2.5 PR6, and a *workspace's* own `kits:` field (`WorkspaceMeta.Kits`) was removed outright in Phase 2.5 PR7 (`docs/plans/workspace-db-consolidation.md`) — set `host_commands` / `env` / `additional_bindings` directly on a workspace instead. See [`KitRef`](#kitref) below and the [kit authoring overview](../kit-authoring/overview.md). |
+| `kits` | — | **removed** | Rejected at load time (`project.yaml: top-level "kits" is no longer supported`). The kit mechanism itself was retired in Phase 2.5 PR6, and a *workspace's* own `kits:` field (`WorkspaceMeta.Kits`) was removed outright in Phase 2.5 PR7 (`docs/plans/workspace-db-consolidation.md`) — set `host_commands` / `env` directly on a workspace instead (`additional_bindings` was retired in Phase 4 PR4 — use the [workspace home `init.sh`](../guide/workspace-home.md)). See [`KitRef`](#kitref) below and the [kit authoring overview](../kit-authoring/overview.md). |
 | `host_commands` | — | **removed** | Rejected at load time. Set on a workspace instead (`boid workspace create/edit/import`) — but note a *workspace's* `host_commands:` is a list of reference **names**, not the map-of-specs shape documented under [HostCommands](#hostcommands) below (that map shape is still used by `kit.yaml` and by the daemon-wide `~/.config/boid/host_commands.yaml` registry a workspace's names resolve against). See [Onboarding / Defining host_commands](../guide/onboarding.md#defining-host_commands-the-daemon-wide-registry). |
 | `additional_bindings` | — | **removed** | Rejected at load time for `project.yaml`'s own top level. **`workspace.yaml`'s `additional_bindings` was also retired**, in `docs/plans/home-workspace-volume.md` Phase 4 PR4 — the key still parses (no error) but its value is discarded and never reaches the sandbox. To persist a toolchain in a workspace, use [the workspace home `init.sh`](../guide/workspace-home.md) instead. See [BindMount](#bindmount) below for the historical shape. |
 | `env` | — | **removed** | Rejected at load time. Set on a workspace instead (same map shape). |
@@ -370,7 +370,7 @@ For migration from the docker kit (cetusguard-based) to the native proxy, see th
 > **Deprecated**: `project.local.yaml` has been removed. Its settings move to `workspace.yaml`.
 > Run `boid project migrate <dir>` to convert automatically. See the [Migration guide](../guide/migration.md).
 
-The `host_commands` / `additional_bindings` / `env` / `secret_namespace` fields that `project.local.yaml` used to provide are now set in `workspace.yaml` (machine-local, `gitignore`d).
+The `host_commands` / `env` / `secret_namespace` fields that `project.local.yaml` used to provide are now set on the workspace (DB-backed, machine-local). `additional_bindings` was retired in Phase 4 PR4 — persist a toolchain via the [workspace home `init.sh`](../guide/workspace-home.md) instead.
 
 ## Example: a real project
 
