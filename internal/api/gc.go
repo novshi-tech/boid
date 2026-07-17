@@ -80,8 +80,16 @@ type gcResponse struct {
 	// WorkspaceHomes lists every workspace home directory's on-disk size
 	// (docs/plans/home-workspace-volume.md Phase 4 PR5) — visibility only,
 	// never auto-pruned by GC. Omitted entirely when GCHandler.RuntimesDir
-	// was not wired.
+	// was not wired. Also comes back empty (with WorkspaceHomesListError set)
+	// when the workspace lister itself failed — see
+	// ListWorkspaceHomeSizes's doc comment (codex PR #791 review,
+	// Should-fix #3).
 	WorkspaceHomes []WorkspaceHomeSize `json:"workspace_homes,omitempty"`
+	// WorkspaceHomesListError is non-empty when WorkspaceSlugLister.List
+	// failed while building WorkspaceHomes: orphan detection could not be
+	// trusted, so WorkspaceHomes is reported empty instead of every entry
+	// silently mismarked Orphan=true, and this field carries the reason.
+	WorkspaceHomesListError string `json:"workspace_homes_list_error,omitempty"`
 }
 
 func (h *GCHandler) Run(w http.ResponseWriter, r *http.Request) {
@@ -117,11 +125,12 @@ func (h *GCHandler) Run(w http.ResponseWriter, r *http.Request) {
 		DryRun:     req.DryRun,
 	}
 	if h.RuntimesDir != "" {
-		homes, err := ListWorkspaceHomeSizes(h.RuntimesDir, h.Workspaces)
+		homes, listErr, err := ListWorkspaceHomeSizes(h.RuntimesDir, h.Workspaces)
 		if err != nil {
 			slog.Warn("gc: list workspace homes failed", "error", err)
 		} else {
 			resp.WorkspaceHomes = homes
+			resp.WorkspaceHomesListError = listErr
 		}
 	}
 	writeJSON(w, http.StatusOK, resp)

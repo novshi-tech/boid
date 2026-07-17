@@ -218,6 +218,48 @@ func TestGCHandler_Run_WithRuntimesDir_ListsWorkspaceHomesWithOrphanFlag(t *test
 	if !byslug["orphan-ws"].Orphan {
 		t.Error("orphan-ws: Orphan = false, want true")
 	}
+	if resp.WorkspaceHomesListError != "" {
+		t.Errorf("WorkspaceHomesListError = %q, want empty (lister succeeded)", resp.WorkspaceHomesListError)
+	}
+}
+
+// TestGCHandler_Run_WithRuntimesDir_ListerError_ReportsListErrorAndEmptyHomes
+// pins Should-fix #3 (codex PR #791 review) at the /api/gc response level: a
+// lister failure must not come back as every home mismarked Orphan=true —
+// WorkspaceHomes is reported empty and WorkspaceHomesListError carries the
+// reason (selection A, see ListWorkspaceHomeSizes's doc comment).
+func TestGCHandler_Run_WithRuntimesDir_ListerError_ReportsListErrorAndEmptyHomes(t *testing.T) {
+	runtimesDir := filepath.Join(t.TempDir(), "runtimes")
+	path, err := resolveWorkspaceHomePath(runtimesDir, "known-ws")
+	if err != nil {
+		t.Fatalf("resolveWorkspaceHomePath: %v", err)
+	}
+	if err := os.MkdirAll(path, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	svc := &GCAppService{Store: &stubGCStore{result: &orchestrator.GCResult{}}}
+	h := &GCHandler{
+		Service:     svc,
+		RuntimesDir: runtimesDir,
+		Workspaces:  &stubWorkspaceSlugLister{err: fmt.Errorf("db unavailable")},
+	}
+	w := httptest.NewRecorder()
+	h.Routes().ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/", bytes.NewBufferString(`{}`)))
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d: %s", w.Code, w.Body.String())
+	}
+	var resp gcResponse
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(resp.WorkspaceHomes) != 0 {
+		t.Errorf("len(WorkspaceHomes) = %d, want 0 (omitted on lister failure): %+v", len(resp.WorkspaceHomes), resp.WorkspaceHomes)
+	}
+	if resp.WorkspaceHomesListError == "" {
+		t.Error("WorkspaceHomesListError = empty, want the lister's error message")
+	}
 }
 
 func TestGCAppService_DeviceCleanup(t *testing.T) {
