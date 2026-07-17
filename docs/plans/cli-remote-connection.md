@@ -410,6 +410,15 @@ PR5 は境界越えの明示エラー (Phase 6 まで持ち越しの繋ぎ)。
 - **リモート attach 時の SIGINT / SIGQUIT の意味論**: raw mode で Ctrl+C はサーバ側
   PTY にそのまま入力バイトとして渡す (SSH と同じ)。CLI プロセス自体の signal handling
   との干渉確認
+- **rate limit key の trusted proxy 判定** (2026-07-17 PR0 codex 4 巡目指摘、繰り越し):
+  現行 `internal/api/web.go` の `remoteIP` は `CF-Connecting-IP` → `X-Forwarded-For`
+  → `RemoteAddr` の順で無条件に採用する。直接 TCP 接続する攻撃者は forwarded 系
+  header を毎回変えて rate limit を迂回可能で、この bug は `/login` / `/auth`
+  / `POST /api/auth/device` の 3 経路で共通。PR0 では新 endpoint が同じ helper に
+  乗るため症状が広がるが、対策は config schema 追加 (`security.trusted_proxies`
+  CIDR 列) + `remoteIP` 差し替えを要し、PR0 のスコープを超える。Cloudflare Tunnel
+  経由運用では実害は限定的 (Cloudflare が正しい `CF-Connecting-IP` を注入)。
+  Phase 3 の別 PR or post-cutover で対応する
 
 ---
 

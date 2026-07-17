@@ -22,6 +22,16 @@ type WSAttachHandler struct {
 	Writer     dispatcher.RuntimeInputWriter
 	PublicURL  string
 	Registry   *auth.ConnectionRegistry
+
+	// Bearer verifies an `Authorization: Bearer <token>` header carried on
+	// the WS handshake request (docs/plans/cli-remote-connection.md Phase 3
+	// PR0). When present, it is checked before auth.DeviceIDFromContext —
+	// see authenticateDevice's doc comment for the precedence rule and for
+	// why this is the server-side primitive only; wiring this handler to be
+	// reachable via Bearer over TCP (independent of the cookie-only
+	// WebAuthMiddleware Group it is currently mounted under in
+	// internal/server/wire.go) is PR3's job.
+	Bearer *auth.BearerVerifier
 }
 
 type wsClientMsg struct {
@@ -40,6 +50,12 @@ type wsServerMsg struct {
 
 func (h *WSAttachHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	jobID := chi.URLParam(r, "id")
+
+	deviceID, deviceOK, authErr := h.authenticateDevice(r)
+	if authErr != nil {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
 
 	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{
 		OriginPatterns: h.allowedOrigins(),
@@ -74,12 +90,10 @@ func (h *WSAttachHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var revokeCh <-chan struct{}
-	if h.Registry != nil {
-		if deviceID, ok := auth.DeviceIDFromContext(r.Context()); ok {
-			var release func()
-			revokeCh, release = h.Registry.Register(deviceID)
-			defer release()
-		}
+	if h.Registry != nil && deviceOK {
+		var release func()
+		revokeCh, release = h.Registry.Register(deviceID)
+		defer release()
 	}
 
 	readErrCh := make(chan error, 1)
@@ -134,6 +148,31 @@ func (h *WSAttachHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+}
+
+// authenticateDevice resolves the caller's device ID for the WS handshake
+// request r, before any websocket.Accept happens (so a rejection is a plain
+// HTTP 401, not a WS close frame). An Authorization: Bearer header, when
+// present, is verified via h.Bearer and takes priority — the same
+// precedence auth.NewTCPAPIAuthMiddleware uses (Phase 3 PR0: Bearer is a
+// hard commitment, no falling back to the context-derived ID on failure).
+// Without a Bearer header this falls back to
+// auth.DeviceIDFromContext(r.Context()) — the device ID set by whatever
+// cookie-based middleware sits in front of this handler in the router,
+// unchanged from before PR0.
+func (h *WSAttachHandler) authenticateDevice(r *http.Request) (deviceID string, ok bool, err error) {
+	if _, present, _ := auth.ExtractBearerToken(r); present {
+		if h.Bearer == nil {
+			return "", false, auth.ErrInvalidSession
+		}
+		id, verifyErr := h.Bearer.Verify(r)
+		if verifyErr != nil {
+			return "", false, verifyErr
+		}
+		return id, true, nil
+	}
+	id, present := auth.DeviceIDFromContext(r.Context())
+	return id, present, nil
 }
 
 func (h *WSAttachHandler) allowedOrigins() []string {

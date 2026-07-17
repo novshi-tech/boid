@@ -16,6 +16,8 @@ import (
 	"github.com/coder/websocket"
 	"github.com/go-chi/chi/v5"
 	"github.com/novshi-tech/boid/internal/api/auth"
+	"github.com/novshi-tech/boid/internal/db"
+	"github.com/novshi-tech/boid/internal/db/migrate"
 	"github.com/novshi-tech/boid/internal/dispatcher"
 )
 
@@ -305,6 +307,124 @@ func TestWSAttachHandler_RevokeClosesWS(t *testing.T) {
 	defer cancel()
 	_, _, err := conn.Read(ctx)
 	if err == nil {
+		t.Fatal("expected connection to be closed after RevokeDevice, but Read succeeded")
+	}
+}
+
+// newTestAuthStoreForWS mirrors newTestAuthStore (web_management_test.go,
+// same package) — a fresh migrated in-memory auth store — kept local to
+// this file so the ws_attach tests below don't take on a cross-file
+// dependency for a one-line helper.
+func newTestAuthStoreForWS(t *testing.T) *auth.Store {
+	t.Helper()
+	d, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	t.Cleanup(func() { d.Close() })
+	if err := migrate.Apply(d.Conn); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	return auth.NewStore(d.Conn)
+}
+
+func TestWSAttachHandler_BearerAuth_RegistersWithConnectionRegistry(t *testing.T) {
+	store := newTestAuthStoreForWS(t)
+	token, err := auth.GenerateDeviceToken()
+	if err != nil {
+		t.Fatalf("GenerateDeviceToken: %v", err)
+	}
+	if err := store.InsertDeviceToken(context.Background(), "dev-ws-bearer", "cli", auth.HashToken(token)); err != nil {
+		t.Fatalf("InsertDeviceToken: %v", err)
+	}
+
+	ch := make(chan []byte)
+	sub := &stubSubscriber{ch: ch, ok: true}
+	reg := auth.NewConnectionRegistry()
+	h := &WSAttachHandler{Subscriber: sub, Registry: reg, Bearer: auth.NewBearerVerifier(store)}
+	srv := newWSTestServer(h)
+	defer srv.Close()
+
+	ctx := context.Background()
+	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http") + "/api/jobs/job-bearer/attach/ws"
+	conn, _, err := websocket.Dial(ctx, wsURL, &websocket.DialOptions{
+		HTTPHeader: http.Header{
+			"Origin":        []string{srv.URL},
+			"Authorization": []string{"Bearer " + token},
+		},
+	})
+	if err != nil {
+		t.Fatalf("ws dial with bearer token: %v", err)
+	}
+	defer conn.CloseNow()
+
+	// Give the handler time to register with the registry, then revoke and
+	// confirm the connection is torn down — this is only possible if the
+	// handshake's Bearer token was actually resolved to "dev-ws-bearer" and
+	// registered.
+	time.Sleep(50 * time.Millisecond)
+	reg.RevokeDevice("dev-ws-bearer")
+
+	readCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if _, _, err := conn.Read(readCtx); err == nil {
+		t.Fatal("expected connection to be closed after RevokeDevice, but Read succeeded")
+	}
+}
+
+func TestWSAttachHandler_InvalidBearer_HandshakeRejected(t *testing.T) {
+	store := newTestAuthStoreForWS(t)
+	sub := &stubSubscriber{ok: false}
+	h := &WSAttachHandler{Subscriber: sub, Bearer: auth.NewBearerVerifier(store)}
+	srv := newWSTestServer(h)
+	defer srv.Close()
+
+	ctx := context.Background()
+	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http") + "/api/jobs/job-1/attach/ws"
+	_, resp, err := websocket.Dial(ctx, wsURL, &websocket.DialOptions{
+		HTTPHeader: http.Header{
+			"Origin":        []string{srv.URL},
+			"Authorization": []string{"Bearer boid_pat_does-not-exist"},
+		},
+	})
+	if err == nil {
+		t.Fatal("expected dial to fail for invalid bearer token")
+	}
+	if resp != nil && resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("status = %d, want %d", resp.StatusCode, http.StatusUnauthorized)
+	}
+}
+
+func TestWSAttachHandler_NoBearerHeader_FallsBackToContextDeviceID(t *testing.T) {
+	// Unchanged pre-PR0 behavior: with no Authorization header at all, the
+	// handler must still honor whatever deviceID cookie-based middleware
+	// upstream placed in the request context (see
+	// TestWSAttachHandler_RevokeClosesWS for the pre-existing coverage of
+	// this exact path — this test only additionally proves a Bearer field
+	// on the handler doesn't change that when the header is absent).
+	ch := make(chan []byte)
+	sub := &stubSubscriber{ch: ch, ok: true}
+	reg := auth.NewConnectionRegistry()
+	store := newTestAuthStoreForWS(t)
+
+	r := chi.NewRouter()
+	r.Get("/api/jobs/{id}/attach/ws", func(w http.ResponseWriter, req *http.Request) {
+		ctx := auth.WithDeviceID(req.Context(), "ws-context-device")
+		h := &WSAttachHandler{Subscriber: sub, Registry: reg, Bearer: auth.NewBearerVerifier(store)}
+		h.ServeHTTP(w, req.WithContext(ctx))
+	})
+	srv := httptest.NewServer(r)
+	defer srv.Close()
+
+	conn := dialWS(t, srv, "job-revoke-2")
+	defer conn.CloseNow()
+
+	time.Sleep(50 * time.Millisecond)
+	reg.RevokeDevice("ws-context-device")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if _, _, err := conn.Read(ctx); err == nil {
 		t.Fatal("expected connection to be closed after RevokeDevice, but Read succeeded")
 	}
 }
