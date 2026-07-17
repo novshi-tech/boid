@@ -84,6 +84,36 @@ func (s workspaceMetaStrict) toWorkspaceMeta() *WorkspaceMeta {
 	}
 }
 
+// additionalBindingsKeyPresent (Codex Should-fix, PR4 review,
+// docs/plans/home-workspace-volume.md) reports whether raw's top-level
+// additional_bindings: key is present in the parsed document, using the same
+// tolerate-anything yaml.Node sink technique workspaceMetaStrict.AdditionalBindings
+// above uses for the wire (POST/PUT) path: any shape — a well-formed list, a
+// malformed nested structure, an explicit null, or an empty list — decodes
+// without error, so a caller whose additional_bindings section would fail a
+// strict []BindMount decode still gets a presence answer instead of an
+// unrelated parse error (there is nothing left downstream to validate the
+// value against; it is discarded either way).
+//
+// Shared by readWorkspaceYAMLSnapshot (workspace_migration.go) and
+// WorkspaceStore.Load's yaml-mode path (workspace_store.go): both discard
+// the value (WorkspaceMeta has no field for it any more) but, unlike the
+// wire path above, previously did so with no warning at all — the plan
+// (docs/plans/home-workspace-volume.md) requires "parse continues + ignore +
+// warn" for every legacy read path, not only the wire one.
+//
+// A zero-value yaml.Node (Kind == 0) means the key was absent — the same
+// convention workspaceMetaStrict.AdditionalBindings documents above.
+func additionalBindingsKeyPresent(raw []byte) (bool, error) {
+	var sink struct {
+		AdditionalBindings yaml.Node `yaml:"additional_bindings"`
+	}
+	if err := yaml.Unmarshal(raw, &sink); err != nil {
+		return false, err
+	}
+	return sink.AdditionalBindings.Kind != 0, nil
+}
+
 // RejectTrailingYAMLDocument guards against MINOR 2 (codex review round 2,
 // docs/plans/workspace-db-consolidation.md): yaml.Decoder.Decode only ever
 // consumes a single "---"-delimited document per call and silently ignores

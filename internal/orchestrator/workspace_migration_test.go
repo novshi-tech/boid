@@ -851,6 +851,50 @@ func TestReadWorkspaceYAMLSnapshot_SingleReadAvoidsTOCTOU(t *testing.T) {
 	}
 }
 
+// TestReadWorkspaceYAMLSnapshot_AdditionalBindingsWarnsAndDiscards pins the
+// Codex Should-fix (PR4 review, docs/plans/home-workspace-volume.md): a
+// legacy workspace yaml with a non-empty additional_bindings: list must
+// still be readable by the migration preflight (the returned value is
+// consumed only by the legacy hash-shape reconstruction, never materialized
+// onto a DB-bound WorkspaceMeta — see readWorkspaceYAMLSnapshot's own doc
+// comment) but must now also warn, matching the wire (POST/PUT) path's
+// existing workspaceMetaStrict.toWorkspaceMeta warning and this package's
+// own WorkspaceStore.Load warning (workspace_store_test.go). Before this
+// fix, this migration-time read path had no warning at all.
+func TestReadWorkspaceYAMLSnapshot_AdditionalBindingsWarnsAndDiscards(t *testing.T) {
+	dir := t.TempDir()
+	writeMigrationWorkspaceYAML(t, dir, "team-a",
+		"env:\n  FOO: bar\nadditional_bindings:\n  - source: /opt/volta\n    mode: rw\n")
+
+	buf := captureSlog(t)
+	meta, _, additionalBindings, err := readWorkspaceYAMLSnapshot(dir, "team-a")
+	if err != nil {
+		t.Fatalf("readWorkspaceYAMLSnapshot: %v", err)
+	}
+	if meta.Env["FOO"] != "bar" {
+		t.Errorf("meta.Env[FOO] = %q, want bar", meta.Env["FOO"])
+	}
+	if len(additionalBindings) != 1 || additionalBindings[0].Source != "/opt/volta" {
+		t.Errorf("additionalBindings = %v, want [{Source: /opt/volta}] (still returned for legacy hash reconstruction)", additionalBindings)
+	}
+	if !strings.Contains(buf.String(), "additional_bindings") {
+		t.Errorf("expected a warning mentioning additional_bindings, got log: %s", buf.String())
+	}
+
+	// A workspace yaml with no additional_bindings: key must not warn — the
+	// common, post-Phase-4 case.
+	writeMigrationWorkspaceYAML(t, dir, "team-b", "env:\n  BAZ: qux\n")
+	buf2 := captureSlog(t)
+	if _, _, additionalBindingsB, err := readWorkspaceYAMLSnapshot(dir, "team-b"); err != nil {
+		t.Fatalf("readWorkspaceYAMLSnapshot: %v", err)
+	} else if len(additionalBindingsB) != 0 {
+		t.Errorf("additionalBindingsB = %v, want empty", additionalBindingsB)
+	}
+	if strings.Contains(buf2.String(), "additional_bindings") {
+		t.Errorf("expected no additional_bindings warning when the key is absent, got log: %s", buf2.String())
+	}
+}
+
 // --- MAJOR 1 (codex review round 2): PR6 legacy hash reconstruction must
 // --- actually include each workspace's legacy Kits reference list ---
 

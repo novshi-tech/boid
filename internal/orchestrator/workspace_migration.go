@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -486,6 +487,22 @@ func readWorkspaceYAMLSnapshot(workspaceDir, slug string) (meta *WorkspaceMeta, 
 	}
 	if err := yaml.Unmarshal(raw, &bindingsDoc); err != nil {
 		return nil, nil, nil, fmt.Errorf("parse %s: %w", path, err)
+	}
+	// Codex Should-fix (PR4 review, docs/plans/home-workspace-volume.md):
+	// the returned additionalBindings value is consumed ONLY by
+	// computeWorkspaceMigrationInputHashPR6Shape/PR7WithBindingsShape (see
+	// this function's own doc comment) — it is never materialized onto a
+	// DB-bound WorkspaceMeta, so a workspace yaml with a non-empty
+	// additional_bindings: list is silently discarded from the operator's
+	// perspective unless something says so. additionalBindingsKeyPresent is
+	// used here (rather than a plain len(bindingsDoc.AdditionalBindings) > 0
+	// check) purely for consistency with the other yaml-mode call site
+	// (workspace_store.go's Load) that shares this helper — both report the
+	// same "key present" condition workspaceMetaStrict.toWorkspaceMeta
+	// already warns on for the wire path.
+	if present, presentErr := additionalBindingsKeyPresent(raw); presentErr == nil && present {
+		slog.Warn("workspace: additional_bindings is no longer supported (retired in docs/plans/home-workspace-volume.md Phase 4 PR4); ignoring",
+			"workspace", slug, "path", path)
 	}
 	return meta, kitsDoc.Kits, bindingsDoc.AdditionalBindings, nil
 }
