@@ -11,6 +11,7 @@ import (
 
 	webauth "github.com/novshi-tech/boid/internal/api/auth"
 	"github.com/novshi-tech/boid/internal/client"
+	"github.com/novshi-tech/boid/internal/profiles"
 	"github.com/novshi-tech/boid/internal/qrterm"
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
@@ -205,6 +206,16 @@ func runWebSetURL(cmd *cobra.Command, args []string) error {
 	}
 	configPath := filepath.Join(configDir, "boid", "config.yaml")
 
+	// Serialize the read-modify-write under the shared config.yaml flock
+	// (profiles.LockConfigMutation) so a concurrent `boid login`
+	// (profiles.MutateConfig) or another `boid web set-...` cannot lose
+	// this write's changes. codex PR2 review round 2.
+	release, err := profiles.LockConfigMutation(configPath)
+	if err != nil {
+		return err
+	}
+	defer release()
+
 	var root map[string]any
 	data, err := os.ReadFile(configPath)
 	if err != nil && !os.IsNotExist(err) {
@@ -249,6 +260,14 @@ func runWebSetAddr(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("get config dir: %w", err)
 	}
 	configPath := filepath.Join(configDir, "boid", "config.yaml")
+
+	// See runWebSetURL: serialize under the shared config lock so no other
+	// writer's changes are lost by our read-modify-write.
+	release, err := profiles.LockConfigMutation(configPath)
+	if err != nil {
+		return err
+	}
+	defer release()
 
 	var root map[string]any
 	data, err := os.ReadFile(configPath)

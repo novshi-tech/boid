@@ -42,9 +42,8 @@ const (
 	// itself (start/stop) rather than a client of it.
 	scopeLocal = "local"
 	// scopeNeutral marks a command that requires no profile resolution at
-	// all (docs/plans/cli-remote-connection.md: `login`/`logout`, not yet
-	// implemented as of this writing — no shipped command currently uses
-	// this value). `check` used to be cited here as the example (it works
+	// all (docs/plans/cli-remote-connection.md PR2: `login`/`logout` — see
+	// cmd/login.go). `check` used to be cited here as the example (it works
 	// standalone but also opportunistically talks to the daemon when one
 	// happens to be reachable), but codex review round 2
 	// (docs/plans/workspace-db-consolidation.md MAJOR 3) reclassified it to
@@ -114,6 +113,25 @@ var rootCmd = &cobra.Command{
 			if isCompletionQuery(cmd) {
 				return nil
 			}
+			// scope=neutral commands (docs/plans/cli-remote-connection.md
+			// PR2: login/logout) must not be blocked by a profile
+			// resolution failure — that is often exactly the situation
+			// they exist to fix. `boid login <url> --profile
+			// <brand-new-name>` names a profile that, by definition, does
+			// not exist in config.yaml yet (profiles.Resolve would
+			// otherwise hard-error with "profile ... is not defined"), and
+			// `boid logout <profile>` is the tool meant to clean up after
+			// a profile whose token file is already broken
+			// (profiles.Resolve hard-errors trying to load a corrupt
+			// token for the *default* profile the caller may be trying to
+			// log out of). Swallow the error exactly like a completion
+			// query does — no client gets injected into cmd's context,
+			// but login/logout never read one anyway; they build their
+			// own unauthenticated / profile-scoped clients directly
+			// (cmd/login.go).
+			if isNeutralScope(cmd) {
+				return nil
+			}
 			return err
 		}
 		cmd.SetContext(client.WithClient(cmd.Context(), c))
@@ -133,6 +151,17 @@ var rootCmd = &cobra.Command{
 		}
 		return client.EnsureRunningAt(context.Background(), c.SocketPath())
 	},
+}
+
+// isNeutralScope reports whether cmd is annotated boid.scope=neutral
+// (docs/plans/cli-remote-connection.md PR2: login/logout). Unlike
+// isCompletionQuery/isCompletionScriptGen (completion.go), this does not
+// walk the parent chain — the scope annotation is only ever set on the
+// leaf command actually being invoked (cmd/scope_annotations_test.go
+// enforces this for every leaf in the tree), and PersistentPreRunE always
+// receives that leaf command directly as cmd.
+func isNeutralScope(cmd *cobra.Command) bool {
+	return cmd.Annotations[scopeAnnotationKey] == scopeNeutral
 }
 
 // resolveClient resolves cmd's connection profile (profiles.Resolve) and

@@ -213,6 +213,41 @@ func TestPersistentPreRunE_UnknownProfile_ReturnsError(t *testing.T) {
 	}
 }
 
+// TestPersistentPreRunE_NeutralScope_SwallowsUnknownProfileError pins
+// docs/plans/cli-remote-connection.md PR2: a scope=neutral command (login/
+// logout) must not be blocked by the exact same "profile ... is not
+// defined" failure TestPersistentPreRunE_UnknownProfile_ReturnsError above
+// pins as a hard error for an ordinary (non-neutral) command — this is the
+// realistic `boid login <url> --profile <brand-new-name>` shape, where the
+// named profile is by definition absent from config.yaml (it doesn't exist
+// until login finishes writing it).
+func TestPersistentPreRunE_NeutralScope_SwallowsUnknownProfileError(t *testing.T) {
+	writeRootTestConfigYAML(t, "profiles: {}\n")
+	cmd := newProfileTestCmd(t, "ghost", map[string]string{scopeAnnotationKey: scopeNeutral})
+
+	if err := rootCmd.PersistentPreRunE(cmd, nil); err != nil {
+		t.Fatalf("a neutral-scope command must not fail on an undefined --profile value: %v", err)
+	}
+	if c := client.FromContextOrNil(cmd.Context()); c != nil {
+		t.Errorf("expected no client injected for a neutral-scope command after a swallowed resolution error; got %+v", c)
+	}
+}
+
+// TestPersistentPreRunE_NeutralScope_BrokenDefaultProfileToken_Swallowed
+// pins the `boid logout <profile>` self-locking scenario: default_profile
+// points at the very profile whose token is corrupt, so an ordinary
+// command would hard-fail in profiles.Resolve before ever reaching
+// runLogout's own cleanup logic. Neutral scope must swallow this too.
+func TestPersistentPreRunE_NeutralScope_BrokenDefaultProfileToken_Swallowed(t *testing.T) {
+	writeRootTestConfigYAML(t, "default_profile: work\nprofiles:\n  work:\n    url: https://work.example.com\n")
+	writeRootTestTokenFile(t, "work", `{"device_id":"d","token":"","url":"https://work.example.com"}`) // empty token -> LoadToken hard error
+	cmd := newProfileTestCmd(t, "", map[string]string{scopeAnnotationKey: scopeNeutral})
+
+	if err := rootCmd.PersistentPreRunE(cmd, nil); err != nil {
+		t.Fatalf("a neutral-scope command must not fail when default_profile's token is broken: %v", err)
+	}
+}
+
 // TestPersistentPreRunE_UnixProfile_RunsAutostartCheck pins the "before"
 // half of decision 6 (docs/plans/cli-remote-connection.md: daemon autostart
 // only applies to a unix-scheme profile): with BOID_NO_AUTOSTART=1 and no
