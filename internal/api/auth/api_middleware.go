@@ -16,20 +16,60 @@ import (
 // listener's handler.
 //
 // Over TCP, every /api/* path except the public ones (see apiAuthRequired)
-// requires a valid session cookie. The loopback-bootstrap exemption
-// (no cookie + genuine loopback + zero registered devices) is preserved so the
-// Web UI is usable before the first device is paired. Requests that arrived via
-// a reverse proxy / tunnel (IsLoopback==false because of proxy headers) get no
-// bootstrap and must authenticate.
+// requires either a valid Bearer device token or a valid session cookie
+// (docs/plans/cli-remote-connection.md Phase 3 PR0). An
+// `Authorization: Bearer <token>` header, when present, is a hard commitment
+// to that path: success or failure is decided on the Bearer token alone,
+// with no fallback to the cookie check below even if a valid session cookie
+// is also attached to the same request. This keeps the two paths'
+// pass/fail semantics independent and makes the priority unambiguous
+// (Bearer over cookie) rather than needing to reconcile which one "wins"
+// when both are present. When no Bearer header is present at all, the logic
+// below is byte-for-byte the pre-PR0 cookie/bootstrap behavior — see 決定事項
+// 「既存 cookie 経路は 100% 温存」.
+//
+// The loopback-bootstrap exemption (no cookie + genuine loopback + zero
+// registered devices) is preserved so the Web UI is usable before the first
+// device is paired. Requests that arrived via a reverse proxy / tunnel
+// (IsLoopback==false because of proxy headers) get no bootstrap and must
+// authenticate.
 //
 // Failures return 401 JSON (not a 302 redirect to /login) because callers here
 // are API clients. Non-/api paths (HTML pages, /login, /auth, /static) fall
 // through to the router, which applies its own WebAuthMiddleware.
 func NewTCPAPIAuthMiddleware(signer *SessionSigner, store *Store) func(http.Handler) http.Handler {
+	var bearer *BearerVerifier
+	if store != nil {
+		bearer = NewBearerVerifier(store)
+	}
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if !apiAuthRequired(r.URL.Path) {
 				next.ServeHTTP(w, r)
+				return
+			}
+
+			if _, present, _ := ExtractBearerToken(r); present {
+				// Once an Authorization: Bearer header is present in ANY
+				// form (case-insensitive scheme, malformed, empty, etc.),
+				// this request has committed to the Bearer path. Do NOT
+				// fall through to cookie auth below — a client that meant
+				// to authenticate as Bearer device A must never be
+				// silently authenticated as cookie device B just because
+				// its Bearer header happens to be malformed. See
+				// docs/plans/cli-remote-connection.md PR0 codex review.
+				if bearer == nil {
+					writeAPIUnauthorized(w)
+					return
+				}
+				deviceID, err := bearer.Verify(r)
+				if err != nil {
+					writeAPIUnauthorized(w)
+					return
+				}
+				ctx := WithDeviceID(r.Context(), deviceID)
+				ctx = WithAuthMethod(ctx, AuthMethodBearer)
+				next.ServeHTTP(w, r.WithContext(ctx))
 				return
 			}
 
@@ -58,7 +98,9 @@ func NewTCPAPIAuthMiddleware(signer *SessionSigner, store *Store) func(http.Hand
 				return
 			}
 
-			next.ServeHTTP(w, r.WithContext(WithDeviceID(r.Context(), deviceID)))
+			ctx := WithDeviceID(r.Context(), deviceID)
+			ctx = WithAuthMethod(ctx, AuthMethodCookie)
+			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}
 }
@@ -67,6 +109,14 @@ func NewTCPAPIAuthMiddleware(signer *SessionSigner, store *Store) func(http.Hand
 // must be authenticated over the TCP transport.
 //
 //   - /api/health is intentionally public (liveness probe / tunnel health).
+//   - /api/auth/device is intentionally public (docs/plans/cli-remote-connection.md
+//     Phase 3 PR0): it is the Bearer-token-issuing endpoint itself — a caller
+//     with no token yet redeems a one-time pairing code there to get one. It
+//     carries its own rate limiting (DeviceAuthHandler.PostDevice) since it
+//     is reachable unauthenticated. Only chi's POST route exists at this
+//     exact path, so exempting the path exempts only that method in
+//     practice — matching every other exemption in this function, which is
+//     path-based, not method-based.
 //   - Non-/api paths (HTML, /login, /auth, /static) are not gated here; the
 //     router's own WebAuthMiddleware handles them.
 func apiAuthRequired(path string) bool {
@@ -74,7 +124,7 @@ func apiAuthRequired(path string) bool {
 		return false
 	}
 	switch path {
-	case "/api/health":
+	case "/api/health", "/api/auth/device":
 		return false
 	}
 	return true

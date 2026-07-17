@@ -388,6 +388,171 @@ func TestMigration0031_AddsSchemaMigrationsStateAndInputHash(t *testing.T) {
 	}
 }
 
+// TestMigration0032_AddsWebDevicesTokenColumns covers Phase 3 PR0 of
+// docs/plans/cli-remote-connection.md: web_devices must gain nullable
+// token_hash/token_created_at columns, cookie_hash must become nullable (so
+// a Bearer-only device row can omit it), and a Bearer-only device insert
+// (cookie_hash left NULL) must succeed.
+func TestMigration0032_AddsWebDevicesTokenColumns(t *testing.T) {
+	d, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer d.Close()
+
+	if err := Apply(d.Conn); err != nil {
+		t.Fatalf("apply migrations: %v", err)
+	}
+
+	assertVersionRecorded(t, d.Conn, "0032_add_web_devices_token")
+
+	hasTokenHash, err := columnExists(d.Conn, "web_devices", "token_hash")
+	if err != nil {
+		t.Fatalf("check web_devices.token_hash: %v", err)
+	}
+	if !hasTokenHash {
+		t.Fatal("expected web_devices.token_hash to exist")
+	}
+	hasTokenCreatedAt, err := columnExists(d.Conn, "web_devices", "token_created_at")
+	if err != nil {
+		t.Fatalf("check web_devices.token_created_at: %v", err)
+	}
+	if !hasTokenCreatedAt {
+		t.Fatal("expected web_devices.token_created_at to exist")
+	}
+	cookieHashNullable, err := columnIsNullable(d.Conn, "web_devices", "cookie_hash")
+	if err != nil {
+		t.Fatalf("check web_devices.cookie_hash nullability: %v", err)
+	}
+	if !cookieHashNullable {
+		t.Fatal("expected web_devices.cookie_hash to be nullable")
+	}
+
+	// A Bearer-only device row (no cookie_hash) must be insertable now that
+	// the NOT NULL constraint is gone.
+	if _, err := d.Conn.Exec(
+		`INSERT INTO web_devices (id, label, token_hash, token_created_at, created_at, last_seen_at) VALUES (?, ?, ?, ?, ?, ?)`,
+		"dev-bearer-only", "cli", []byte("tokenhash"), "2026-07-17T00:00:00Z", "2026-07-17T00:00:00Z", "2026-07-17T00:00:00Z",
+	); err != nil {
+		t.Fatalf("insert bearer-only device (no cookie_hash): %v", err)
+	}
+
+	var cookieHash sql.NullString
+	if err := d.Conn.QueryRow(`SELECT cookie_hash FROM web_devices WHERE id = ?`, "dev-bearer-only").Scan(&cookieHash); err != nil {
+		t.Fatalf("query bearer-only device: %v", err)
+	}
+	if cookieHash.Valid {
+		t.Errorf("cookie_hash = %q, want NULL", cookieHash.String)
+	}
+}
+
+// TestMigration0032_LegacyDatabasePreservesExistingCookieDevice verifies a
+// pre-existing cookie-authenticated device row survives the table
+// recreation (0021_jobs_nullable_task_id.sql's pattern) with cookie_hash
+// intact and token_hash/token_created_at left NULL.
+func TestMigration0032_LegacyDatabasePreservesExistingCookieDevice(t *testing.T) {
+	d, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer d.Close()
+
+	// Full pre-0001 base schema (mirrors TestApplyLegacyDatabaseAddsHandlerID)
+	// plus a web_devices table in its pre-0032 shape (cookie_hash NOT NULL,
+	// no token columns — i.e. exactly what a real installation upgrading
+	// straight from before this migration has on disk) with one seeded
+	// cookie-authenticated device row.
+	if _, err := d.Conn.Exec(`
+		CREATE TABLE projects (
+			id TEXT PRIMARY KEY,
+			work_dir TEXT NOT NULL,
+			created_at DATETIME NOT NULL DEFAULT (datetime('now')),
+			updated_at DATETIME NOT NULL DEFAULT (datetime('now'))
+		);
+		CREATE TABLE tasks (
+			id TEXT PRIMARY KEY,
+			project_id TEXT NOT NULL REFERENCES projects(id),
+			title TEXT NOT NULL,
+			description TEXT NOT NULL DEFAULT '',
+			status TEXT NOT NULL DEFAULT 'pending',
+			behavior TEXT NOT NULL,
+			payload TEXT NOT NULL DEFAULT '{}',
+			created_at DATETIME NOT NULL DEFAULT (datetime('now')),
+			updated_at DATETIME NOT NULL DEFAULT (datetime('now'))
+		);
+		CREATE TABLE actions (
+			id TEXT PRIMARY KEY,
+			task_id TEXT NOT NULL REFERENCES tasks(id),
+			type TEXT NOT NULL,
+			payload TEXT NOT NULL DEFAULT '{}',
+			created_at DATETIME NOT NULL DEFAULT (datetime('now'))
+		);
+		CREATE TABLE secrets (
+			id TEXT PRIMARY KEY,
+			key TEXT NOT NULL UNIQUE,
+			value_encrypted BLOB NOT NULL,
+			created_at DATETIME NOT NULL DEFAULT (datetime('now')),
+			updated_at DATETIME NOT NULL DEFAULT (datetime('now'))
+		);
+		CREATE TABLE jobs (
+			id TEXT PRIMARY KEY,
+			task_id TEXT NOT NULL REFERENCES tasks(id),
+			project_id TEXT NOT NULL REFERENCES projects(id),
+			status TEXT NOT NULL DEFAULT 'running',
+			exit_code INTEGER,
+			output TEXT NOT NULL DEFAULT '',
+			created_at DATETIME NOT NULL DEFAULT (datetime('now')),
+			updated_at DATETIME NOT NULL DEFAULT (datetime('now'))
+		);
+		CREATE TABLE worktrees (
+			id TEXT PRIMARY KEY,
+			task_id TEXT NOT NULL UNIQUE REFERENCES tasks(id),
+			project_id TEXT NOT NULL REFERENCES projects(id),
+			path TEXT NOT NULL,
+			branch TEXT NOT NULL,
+			base_branch TEXT NOT NULL,
+			created_at DATETIME NOT NULL DEFAULT (datetime('now')),
+			cleaned_at DATETIME
+		);
+		CREATE TABLE web_devices (
+			id           TEXT PRIMARY KEY,
+			label        TEXT,
+			cookie_hash  BLOB NOT NULL,
+			created_at   TIMESTAMP NOT NULL,
+			last_seen_at TIMESTAMP NOT NULL,
+			revoked_at   TIMESTAMP
+		);
+		INSERT INTO web_devices (id, label, cookie_hash, created_at, last_seen_at)
+		VALUES ('dev-legacy', 'old-laptop', X'cafe', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z');
+	`); err != nil {
+		t.Fatalf("seed legacy schema: %v", err)
+	}
+
+	if err := Apply(d.Conn); err != nil {
+		t.Fatalf("apply migrations: %v", err)
+	}
+
+	assertVersionRecorded(t, d.Conn, "0032_add_web_devices_token")
+
+	var label string
+	var cookieHash []byte
+	var tokenHash sql.NullString
+	if err := d.Conn.QueryRow(
+		`SELECT label, cookie_hash, token_hash FROM web_devices WHERE id = ?`, "dev-legacy",
+	).Scan(&label, &cookieHash, &tokenHash); err != nil {
+		t.Fatalf("query legacy device: %v", err)
+	}
+	if label != "old-laptop" {
+		t.Errorf("label = %q, want %q", label, "old-laptop")
+	}
+	if string(cookieHash) != "\xca\xfe" {
+		t.Errorf("cookie_hash = %x, want cafe", cookieHash)
+	}
+	if tokenHash.Valid {
+		t.Errorf("token_hash = %q, want NULL", tokenHash.String)
+	}
+}
+
 // TestRecordMigrationState_UpsertTransitionsState pins the UPSERT behavior
 // recordMigrationState needs for workspace_db_consolidation's staging →
 // committed state transition (docs/plans/workspace-db-consolidation.md

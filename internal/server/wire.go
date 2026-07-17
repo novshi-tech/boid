@@ -291,7 +291,7 @@ type startupError struct {
 	causes    []error
 }
 
-func (e *startupError) Error() string  { return e.aggregate }
+func (e *startupError) Error() string   { return e.aggregate }
 func (e *startupError) Unwrap() []error { return e.causes }
 
 // buildProjectLoadStartupError renders the legacy multi-line error message
@@ -976,11 +976,19 @@ func mountRoutes(srv *Server, runtime *appRuntime) error {
 	}
 	r.Mount("/api/web", webMgmt.Routes())
 
+	// Shared rate limiter for every publicly-reachable pairing-code-redeem
+	// entry point (docs/plans/cli-remote-connection.md Phase 3 PR0 決定事項:
+	// device auth's rate limiting "既存 ratelimit.go を再利用、pair redeem と
+	// 同じ枠に乗せて良い" — a bad actor guessing codes against /login, /auth,
+	// and /api/auth/device all draws down the same per-IP bucket instead of
+	// getting three independent five-attempt budgets).
+	authRateLimiter := auth.NewRateLimiter(nil)
+
 	// Login/auth routes (exempted by WebAuthMiddleware and CSRFMiddleware).
 	loginHandler := &api.LoginHandler{
 		Pairing: auth.NewPairingManager(runtime.authStore),
 		Store:   runtime.authStore,
-		Limiter: auth.NewRateLimiter(nil),
+		Limiter: authRateLimiter,
 	}
 	if runtime.sessionSigner != nil {
 		loginHandler.Signer = runtime.sessionSigner
@@ -988,6 +996,37 @@ func mountRoutes(srv *Server, runtime *appRuntime) error {
 	r.Get("/login", loginHandler.GetLogin)
 	r.Post("/login", loginHandler.PostLogin)
 	r.Get("/auth", loginHandler.GetAuth)
+
+	// Bearer device-auth routes (docs/plans/cli-remote-connection.md Phase 3
+	// PR0): POST /api/auth/device is public (see apiAuthRequired's exemption
+	// — rate-limited here instead), DELETE /api/auth/devices/{id} requires
+	// Bearer auth like any other /api/* route. Deliberately mounted at the
+	// same level as the other r.Mount("/api/...") calls above — NOT inside
+	// the WebAuthMiddleware Group below — so that over TCP it is gated
+	// solely by the (now Bearer-aware) TCPAPIAuthMiddleware wrapping the
+	// whole router, not by that Group's cookie-only check.
+	//
+	// PublicURL is validated + normalized here at startup rather than in
+	// PostDevice on every request — a misconfigured public_url is an
+	// operator mistake (wrong scheme, path suffix, trailing slash, plain
+	// http://) and should surface as one log line at boot, not as a
+	// silent misbind of every future device token. An unusable value is
+	// downgraded to the empty string so the handler falls back to the
+	// request Host header (still HTTPS-forced by canonicalURL).
+	deviceAuthPublicURL, publicURLErr := api.NormalizePublicURL(gcCfg.Web.PublicURL)
+	if publicURLErr != nil {
+		slog.Warn("web.public_url is invalid; canonical_url in device auth will fall back to request Host header",
+			"value", gcCfg.Web.PublicURL, "error", publicURLErr)
+		deviceAuthPublicURL = ""
+	}
+	deviceAuthHandler := &api.DeviceAuthHandler{
+		Pairing:   auth.NewPairingManager(runtime.authStore),
+		Store:     runtime.authStore,
+		Limiter:   authRateLimiter,
+		Registry:  runtime.connRegistry,
+		PublicURL: deviceAuthPublicURL,
+	}
+	r.Mount("/api/auth", deviceAuthHandler.Routes())
 
 	// Web UI routes protected by session auth.
 	r.Group(func(r chi.Router) {
@@ -1005,6 +1044,13 @@ func mountRoutes(srv *Server, runtime *appRuntime) error {
 			Writer:     runtime.runner,
 			PublicURL:  gcCfg.Web.PublicURL,
 			Registry:   runtime.connRegistry,
+			// Bearer support here is the server-side primitive only (Phase 3
+			// PR0); this route stays mounted inside the cookie-only Group
+			// above, so a Bearer-only caller with no session cookie still
+			// can't reach it over TCP end-to-end yet. Wiring that up is PR3's
+			// job (docs/plans/cli-remote-connection.md PR3: "Bearer 認証を WS
+			// handshake で通す", listed there rather than here).
+			Bearer: auth.NewBearerVerifier(runtime.authStore),
 		}).ServeHTTP)
 		r.Mount("/", webHandler.Routes())
 	})

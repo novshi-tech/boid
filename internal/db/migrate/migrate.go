@@ -257,6 +257,21 @@ func Apply(conn *sql.DB) error {
 				return columnExists(tx, "schema_migrations", "state")
 			},
 		},
+		{
+			// docs/plans/cli-remote-connection.md Phase 3 PR0: Bearer device
+			// token 発行 (POST /api/auth/device) のため web_devices を拡張
+			// (cookie_hash nullable 化 + token_hash/token_created_at 列追加、
+			// テーブル再作成 — 0021_jobs_nullable_task_id.sql に倣う)。
+			version: "0032_add_web_devices_token",
+			path:    "migrations/0032_add_web_devices_token.sql",
+			skip: func(tx *sql.Tx) (bool, error) {
+				nullable, err := columnIsNullable(tx, "web_devices", "cookie_hash")
+				if err != nil || !nullable {
+					return false, err
+				}
+				return columnExists(tx, "web_devices", "token_hash")
+			},
+		},
 	}
 
 	if err := ensureSchemaMigrationsTable(conn); err != nil {

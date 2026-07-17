@@ -92,6 +92,47 @@ func (s *Store) InsertDevice(ctx context.Context, id, label string, cookieHash [
 	return nil
 }
 
+// InsertDeviceToken creates a new device row authenticated via Bearer token
+// instead of a session cookie (cookie_hash is left NULL — schema made this
+// nullable in migration 0032). Used by POST /api/auth/device, the CLI
+// pairing-code-redeem endpoint (docs/plans/cli-remote-connection.md Phase 3
+// PR0). Mirrors InsertDevice's shape exactly except for which hash column it
+// populates; a device row created here has no cookie_hash and one created by
+// InsertDevice has no token_hash — the two auth paths never overlap on the
+// same row (decision: extend the existing table rather than add a second
+// one, so a future PR could still attach both to one row if ever needed).
+func (s *Store) InsertDeviceToken(ctx context.Context, id, label string, tokenHash []byte) error {
+	now := time.Now().UTC()
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO web_devices (id, label, token_hash, token_created_at, created_at, last_seen_at) VALUES (?, ?, ?, ?, ?, ?)`,
+		id, label, tokenHash, now, now, now,
+	)
+	if err != nil {
+		return fmt.Errorf("insert device token: %w", err)
+	}
+	return nil
+}
+
+// GetDeviceByTokenHash returns the device whose Bearer token hashes to
+// tokenHash, or nil if not found or revoked. Symmetric with GetDevice's
+// cookie-path lookup (same revoked_at IS NULL filter).
+func (s *Store) GetDeviceByTokenHash(ctx context.Context, tokenHash []byte) (*Device, error) {
+	var d Device
+	var label sql.NullString
+	err := s.db.QueryRowContext(ctx,
+		`SELECT id, label, cookie_hash, created_at, last_seen_at FROM web_devices WHERE token_hash = ? AND revoked_at IS NULL`,
+		tokenHash,
+	).Scan(&d.ID, &label, &d.CookieHash, &d.CreatedAt, &d.LastSeenAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get device by token hash: %w", err)
+	}
+	d.Label = label.String
+	return &d, nil
+}
+
 // GetDevice returns the device with the given id, or nil if not found or revoked.
 func (s *Store) GetDevice(ctx context.Context, id string) (*Device, error) {
 	var d Device

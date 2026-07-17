@@ -297,6 +297,98 @@ func TestDeleteRevokedDevices(t *testing.T) {
 	}
 }
 
+func TestInsertDeviceToken_GetDeviceByTokenHash(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	tokenHash := []byte("bearertokenhash")
+	if err := s.InsertDeviceToken(ctx, "dev-bearer", "cli-laptop", tokenHash); err != nil {
+		t.Fatalf("InsertDeviceToken: %v", err)
+	}
+
+	d, err := s.GetDeviceByTokenHash(ctx, tokenHash)
+	if err != nil {
+		t.Fatalf("GetDeviceByTokenHash: %v", err)
+	}
+	if d == nil {
+		t.Fatal("GetDeviceByTokenHash: got nil, want device")
+	}
+	if d.ID != "dev-bearer" {
+		t.Errorf("ID = %q, want %q", d.ID, "dev-bearer")
+	}
+	if d.Label != "cli-laptop" {
+		t.Errorf("Label = %q, want %q", d.Label, "cli-laptop")
+	}
+	// Bearer-only devices have no cookie.
+	if d.CookieHash != nil {
+		t.Errorf("CookieHash = %q, want nil", d.CookieHash)
+	}
+}
+
+func TestGetDeviceByTokenHash_NotFound(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	d, err := s.GetDeviceByTokenHash(ctx, []byte("no-such-hash"))
+	if err != nil {
+		t.Fatalf("GetDeviceByTokenHash: %v", err)
+	}
+	if d != nil {
+		t.Errorf("GetDeviceByTokenHash: got %+v, want nil", d)
+	}
+}
+
+func TestGetDeviceByTokenHash_RevokedReturnsNil(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	tokenHash := []byte("revoked-token-hash")
+	if err := s.InsertDeviceToken(ctx, "dev-bearer-r", "", tokenHash); err != nil {
+		t.Fatalf("InsertDeviceToken: %v", err)
+	}
+	if err := s.RevokeDevice(ctx, "dev-bearer-r"); err != nil {
+		t.Fatalf("RevokeDevice: %v", err)
+	}
+
+	d, err := s.GetDeviceByTokenHash(ctx, tokenHash)
+	if err != nil {
+		t.Fatalf("GetDeviceByTokenHash: %v", err)
+	}
+	if d != nil {
+		t.Errorf("GetDeviceByTokenHash after revoke: got %+v, want nil", d)
+	}
+}
+
+func TestInsertDeviceToken_DistinctFromCookieDevice(t *testing.T) {
+	// A Bearer device and a cookie device can coexist in the store; looking
+	// one up by its own hash must not return the other.
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	if err := s.InsertDevice(ctx, "dev-cookie", "browser", []byte("cookiehash")); err != nil {
+		t.Fatalf("InsertDevice: %v", err)
+	}
+	if err := s.InsertDeviceToken(ctx, "dev-bearer2", "cli", []byte("bearerhash2")); err != nil {
+		t.Fatalf("InsertDeviceToken: %v", err)
+	}
+
+	d, err := s.GetDeviceByTokenHash(ctx, []byte("cookiehash"))
+	if err != nil {
+		t.Fatalf("GetDeviceByTokenHash: %v", err)
+	}
+	if d != nil {
+		t.Errorf("GetDeviceByTokenHash(cookiehash) = %+v, want nil (cookie device has no token_hash)", d)
+	}
+
+	got, err := s.GetDeviceByTokenHash(ctx, []byte("bearerhash2"))
+	if err != nil {
+		t.Fatalf("GetDeviceByTokenHash: %v", err)
+	}
+	if got == nil || got.ID != "dev-bearer2" {
+		t.Errorf("GetDeviceByTokenHash(bearerhash2) = %+v, want dev-bearer2", got)
+	}
+}
+
 func TestHasAnyDevice(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()

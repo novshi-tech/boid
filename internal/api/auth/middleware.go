@@ -9,7 +9,21 @@ import (
 
 type contextKey string
 
-const deviceIDCtxKey contextKey = "deviceID"
+const (
+	deviceIDCtxKey   contextKey = "deviceID"
+	authMethodCtxKey contextKey = "authMethod"
+)
+
+// AuthMethod is the auth path a request came through, recorded in the
+// context by NewTCPAPIAuthMiddleware and NewWebAuthMiddleware so handlers
+// can enforce method-specific policy (e.g. DeviceAuthHandler.DeleteDevice
+// only permits self-revoke for AuthMethodBearer callers).
+type AuthMethod string
+
+const (
+	AuthMethodBearer AuthMethod = "bearer"
+	AuthMethodCookie AuthMethod = "cookie"
+)
 
 // WithDeviceID returns ctx with deviceID embedded. Used by NewWebAuthMiddleware
 // and in tests to inject a device identity without running the full middleware.
@@ -22,6 +36,23 @@ func WithDeviceID(ctx context.Context, deviceID string) context.Context {
 func DeviceIDFromContext(ctx context.Context) (string, bool) {
 	id, ok := ctx.Value(deviceIDCtxKey).(string)
 	return id, ok && id != ""
+}
+
+// WithAuthMethod returns ctx tagged with the auth method used to authenticate
+// this request. Called by NewTCPAPIAuthMiddleware (bearer or cookie branch)
+// and NewWebAuthMiddleware (cookie branch); handlers read it via
+// AuthMethodFromContext.
+func WithAuthMethod(ctx context.Context, method AuthMethod) context.Context {
+	return context.WithValue(ctx, authMethodCtxKey, method)
+}
+
+// AuthMethodFromContext returns the AuthMethod tag stored in ctx by one of
+// the auth middlewares. Returns ("", false) for unauthenticated requests or
+// for authenticated requests that ran through a middleware that predates
+// the tag (bootstrap loopback path — no device identity either).
+func AuthMethodFromContext(ctx context.Context) (AuthMethod, bool) {
+	m, ok := ctx.Value(authMethodCtxKey).(AuthMethod)
+	return m, ok && m != ""
 }
 
 // NewWebAuthMiddleware returns middleware that enforces session cookie auth for
@@ -72,6 +103,7 @@ func NewWebAuthMiddleware(signer *SessionSigner, store *Store) func(http.Handler
 			}
 
 			ctx := WithDeviceID(r.Context(), deviceID)
+			ctx = WithAuthMethod(ctx, AuthMethodCookie)
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}
