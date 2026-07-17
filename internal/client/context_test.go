@@ -6,7 +6,7 @@ import (
 )
 
 func TestFromContext_NilContext_FallsBackToUnixDefault(t *testing.T) {
-	c := FromContext(nil)
+	c := FromContext(nil) //nolint:staticcheck // exercising the documented nil-context fallback
 	if c == nil {
 		t.Fatal("FromContext(nil) returned nil")
 	}

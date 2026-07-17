@@ -19,6 +19,7 @@ current_allowed=(
   logrotate
   notify
   orchestrator
+  profiles
   qrterm
   sandbox
   server
@@ -39,6 +40,7 @@ target_allowed=(
   logrotate
   notify
   orchestrator
+  profiles
   qrterm
   sandbox
   server
