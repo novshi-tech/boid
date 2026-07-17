@@ -158,13 +158,16 @@ type secretCollision struct {
 // legacyKitYAML is the shape we write for the generated legacy kit.
 //
 // Per the migration transformation table in docs/plans/kit-workspace-project-reorg.md,
-// only host_commands + additional_bindings move into the legacy kit; env is
-// migrated to workspace.yaml. We therefore intentionally do not carry an Env
-// field on this struct.
+// only host_commands moved into the legacy kit (env is migrated to
+// workspace.yaml, so this struct intentionally carries no Env field).
+// additional_bindings used to move here too; docs/plans/home-workspace-volume.md
+// Phase 4 PR4 retired the field it would have fed (workspace.yaml's own
+// AdditionalBindings, and WorkspaceMeta itself no longer has one — see that
+// struct's doc comment), so there is nothing left for this struct to carry
+// it into either.
 type legacyKitYAML struct {
-	Meta               legacyKitMeta            `yaml:"meta"`
-	HostCommands       orchestrator.HostCommands `yaml:"host_commands,omitempty"`
-	AdditionalBindings []orchestrator.BindMount  `yaml:"additional_bindings,omitempty"`
+	Meta         legacyKitMeta             `yaml:"meta"`
+	HostCommands orchestrator.HostCommands `yaml:"host_commands,omitempty"`
 }
 
 type legacyKitMeta struct {
@@ -379,21 +382,22 @@ func computeMigratePlan(plan *migratePlan, boidDB *db.DB, keyFilePath string) er
 	// retired in PR6, and any external kit ref here (as opposed to this
 	// migration's own auto-generated legacy kit just below, whose fields are
 	// fully known and folded directly) has no automatic resolution path any
-	// more. If such a kit is still needed, add its host_commands/env/
-	// additional_bindings to workspace.yaml by hand after migrating.
+	// more. If such a kit is still needed, add its host_commands/env to
+	// workspace.yaml by hand after migrating.
 	kitRefStrs, err := collectKitNames(meta)
 	if err != nil {
 		return fmt.Errorf("collect kit names: %w", err)
 	}
 	plan.kitRefStrs = kitRefStrs
 
-	// Legacy kit (host_commands + additional_bindings). Computed before the
-	// merge below so mergeLegacyFieldsIntoWorkspace can fold its
-	// host_commands names + additional_bindings directly into the workspace
-	// in the same pass (no kit-directory round trip needed for this: the
-	// data is this project's own project.yaml fields, already fully known
-	// here).
-	needsLegacyKit := len(meta.HostCommands) > 0 || len(meta.AdditionalBindings) > 0
+	// Legacy kit (host_commands only — additional_bindings no longer moves
+	// here, docs/plans/home-workspace-volume.md Phase 4 PR4; see
+	// legacyKitYAML's doc comment). Computed before the merge below so
+	// mergeLegacyFieldsIntoWorkspace can fold its host_commands names
+	// directly into the workspace in the same pass (no kit-directory round
+	// trip needed for this: the data is this project's own project.yaml
+	// field, already fully known here).
+	needsLegacyKit := len(meta.HostCommands) > 0
 	legacyKitName := ""
 	if needsLegacyKit {
 		kitsBaseDir := defaultKitsDir()
@@ -407,8 +411,7 @@ func computeMigratePlan(plan *migratePlan, boidDB *db.DB, keyFilePath string) er
 				Category:        "legacy",
 				SourceProjectID: meta.ID,
 			},
-			HostCommands:       meta.HostCommands,
-			AdditionalBindings: meta.AdditionalBindings,
+			HostCommands: meta.HostCommands,
 		}
 
 		plan.needsLegacyKit = true
@@ -474,10 +477,9 @@ func computeMigratePlan(plan *migratePlan, boidDB *db.DB, keyFilePath string) er
 
 // mergeLegacyFieldsIntoWorkspace merges migrated legacy project.yaml fields
 // (env, capabilities, and — if this migration generated one — the legacy
-// kit's own host_commands names + additional_bindings) into base, returning
-// a new *WorkspaceMeta. base itself is not mutated: base.Env/HostCommands/
-// AdditionalBindings, when non-nil, are copied into fresh containers before
-// any write.
+// kit's own host_commands names) into base, returning a new *WorkspaceMeta.
+// base itself is not mutated: base.Env/HostCommands, when non-nil, are
+// copied into fresh containers before any write.
 //
 // This is called from three places: computeMigratePlan, against the (inert)
 // shadow-yaml base, to build plan.workspaceMeta (the dry-run preview and the
@@ -490,20 +492,24 @@ func computeMigratePlan(plan *migratePlan, boidDB *db.DB, keyFilePath string) er
 //
 // Precedence on a key collision: env entries from meta overwrite base's on a
 // matching key ("merge で新値が優先"), capabilities.docker is overwritten
-// when meta sets it, host_commands names are unioned (never removed), and
-// additional_bindings are merged by Source with meta's own entry winning on
-// a conflict — the same "new value wins" precedence the Env merge already
-// uses. Every other WorkspaceMeta field is carried over from base untouched.
+// when meta sets it, and host_commands names are unioned (never removed).
+// Every other WorkspaceMeta field is carried over from base untouched.
+// (additional_bindings used to merge here too, by Source with meta's own
+// entry winning on conflict, the same "new value wins" precedence the Env
+// merge still uses — retired outright in docs/plans/home-workspace-volume.md
+// Phase 4 PR4: WorkspaceMeta has no AdditionalBindings field to merge into
+// any more, see that struct's doc comment, and LegacyProjectMeta has no
+// value to merge from either, see its own HadAdditionalBindingsKey doc
+// comment.)
 //
 // Phase 2.5 PR7 (docs/plans/workspace-db-consolidation.md, decision 12):
 // this used to also fold every kit ref (external refs collected from the
 // legacy project.yaml's kits:, plus legacyKitName) into workspace.Kits,
 // materialized later via orchestrator.MaterializeWorkspaceKitsForPersist at
 // push/write time. WorkspaceMeta has no Kits field any more, and this
-// migration's own auto-generated legacy kit's host_commands/
-// additional_bindings are already fully known here — they ARE
-// meta.HostCommands/meta.AdditionalBindings, this project's own
-// project.yaml fields being relocated — so they are folded directly below,
+// migration's own auto-generated legacy kit's host_commands are already
+// fully known here — they ARE meta.HostCommands, this project's own
+// project.yaml field being relocated — so they are folded directly below,
 // with no kit-directory round trip needed at all. External kit refs
 // (computeMigratePlan's kitRefStrs) are no longer resolved here at all —
 // see that collection's own doc comment for why.
@@ -531,20 +537,15 @@ func mergeLegacyFieldsIntoWorkspace(base *orchestrator.WorkspaceMeta, legacyKitN
 	// computeMigratePlan): its host_commands (folded in as reference
 	// names — the daemon's aggregated host_commands.yaml gets the full
 	// definitions separately via ensureLegacyKitHostCommandsKnownToDaemon)
-	// and additional_bindings come straight from meta, so no kit.yaml round
-	// trip is needed to resolve them.
-	if legacyKitName != "" {
-		if len(meta.HostCommands) > 0 {
-			names := make([]string, 0, len(meta.HostCommands))
-			for name := range meta.HostCommands {
-				names = append(names, name)
-			}
-			sort.Strings(names)
-			merged.HostCommands = unionStringSlices(base.HostCommands, names)
+	// come straight from meta, so no kit.yaml round trip is needed to
+	// resolve them.
+	if legacyKitName != "" && len(meta.HostCommands) > 0 {
+		names := make([]string, 0, len(meta.HostCommands))
+		for name := range meta.HostCommands {
+			names = append(names, name)
 		}
-		if len(meta.AdditionalBindings) > 0 {
-			merged.AdditionalBindings = mergeBindMountsBySourceNewWins(base.AdditionalBindings, meta.AdditionalBindings)
-		}
+		sort.Strings(names)
+		merged.HostCommands = unionStringSlices(base.HostCommands, names)
 	}
 
 	return &merged
@@ -570,27 +571,6 @@ func unionStringSlices(a, b []string) []string {
 	}
 	sort.Strings(out)
 	return out
-}
-
-// mergeBindMountsBySourceNewWins merges base and overlay by Source, with
-// overlay's entry winning on a Source collision — the same "new value wins"
-// precedence mergeLegacyFieldsIntoWorkspace's Env merge already uses.
-func mergeBindMountsBySourceNewWins(base, overlay []orchestrator.BindMount) []orchestrator.BindMount {
-	result := make([]orchestrator.BindMount, len(base))
-	copy(result, base)
-	indexBySource := make(map[string]int, len(result))
-	for i, b := range result {
-		indexBySource[b.Source] = i
-	}
-	for _, b := range overlay {
-		if idx, ok := indexBySource[b.Source]; ok {
-			result[idx] = b
-			continue
-		}
-		indexBySource[b.Source] = len(result)
-		result = append(result, b)
-	}
-	return result
 }
 
 // loadKeyFileIfExists returns nil (no error) when the key file does not exist.
@@ -671,7 +651,14 @@ func computeRemoveKeys(meta *orchestrator.LegacyProjectMeta) []string {
 	if len(meta.HostCommands) > 0 {
 		keys = append(keys, "host_commands")
 	}
-	if len(meta.AdditionalBindings) > 0 {
+	// additional_bindings is checked via HadAdditionalBindingsKey, not a
+	// value-length gate: docs/plans/home-workspace-volume.md Phase 4 PR4
+	// retired the field itself (LegacyProjectMeta no longer parses a value
+	// for it — see that field's doc comment), but a legacy project.yaml that
+	// still declares the key must still have it stripped here, since
+	// ReadProjectMeta's removedTopLevelKeys rejects the key outright and
+	// rewriteProjectYAML strips exactly (and only) the keys in this list.
+	if meta.HadAdditionalBindingsKey {
 		keys = append(keys, "additional_bindings")
 	}
 	if meta.SecretNamespace != "" {
@@ -781,13 +768,13 @@ func applyMigratePlan(plan *migratePlan, boidDB *db.DB, keyFilePath, onCollision
 	wsStore := orchestrator.NewWorkspaceStore("")
 
 	// 1. Write legacy kit.yaml *before* touching the daemon at all (step 2
-	// below). plan.workspaceMeta.HostCommands/AdditionalBindings already
-	// carry this migration's legacy-kit-derived content directly
-	// (mergeLegacyFieldsIntoWorkspace folds meta's own fields in with no
-	// kit-directory dependency, Phase 2.5 PR7) — what this kit.yaml file is
-	// still needed for is ensureLegacyKitHostCommandsKnownToDaemon below,
-	// which registers its host_commands *definitions* into the daemon's
-	// aggregated ~/.config/boid/host_commands.yaml config so that
+	// below). plan.workspaceMeta.HostCommands already carries this
+	// migration's legacy-kit-derived content directly (mergeLegacyFieldsIntoWorkspace
+	// folds meta's own fields in with no kit-directory dependency, Phase 2.5
+	// PR7) — what this kit.yaml file is still needed for is
+	// ensureLegacyKitHostCommandsKnownToDaemon below, which registers its
+	// host_commands *definitions* into the daemon's aggregated
+	// ~/.config/boid/host_commands.yaml config so that
 	// workspace.HostCommands' name references (e.g. "gh") actually resolve
 	// to something at dispatch/hydration time. The daemon POST/PUT in
 	// pushMigratedWorkspaceToDaemon below 400s on an unresolvable

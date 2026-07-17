@@ -284,14 +284,14 @@ func TestProjectMigrate_Apply_WritesWorkspaceYAML(t *testing.T) {
 	// the legacy top-level/behavior-level `kits:` refs ("go"/"node") are no
 	// longer resolved or folded into the workspace at all — the kit
 	// mechanism was retired in PR6. This migration's own auto-generated
-	// legacy kit (from the project.yaml's own host_commands/
-	// additional_bindings) IS still folded directly, with no kit-directory
-	// round trip needed.
+	// legacy kit (from the project.yaml's own host_commands) IS still folded
+	// directly, with no kit-directory round trip needed. (The fixture's
+	// legacy additional_bindings key is no longer folded into anything —
+	// docs/plans/home-workspace-volume.md Phase 4 PR4 — see
+	// TestProjectMigrate_Apply_RemovesProjectKeys for the coverage that it is
+	// still correctly stripped from project.yaml despite that.)
 	if len(wsMeta.HostCommands) != 1 || wsMeta.HostCommands[0] != "gh" {
 		t.Errorf("workspace host_commands missing 'gh' (from legacy kit): %v", wsMeta.HostCommands)
-	}
-	if len(wsMeta.AdditionalBindings) != 1 || wsMeta.AdditionalBindings[0].Source != "/var/data" {
-		t.Errorf("workspace additional_bindings missing /var/data (from legacy kit): %+v", wsMeta.AdditionalBindings)
 	}
 
 	if wsMeta.Env["GOPATH"] != "/home/user/go" {
@@ -338,8 +338,8 @@ func TestProjectMigrate_Apply_RemovesProjectKeys(t *testing.T) {
 	}
 }
 
-// TestProjectMigrate_Apply_LegacyKit verifies that a legacy kit.yaml is created
-// for projects with host_commands or additional_bindings.
+// TestProjectMigrate_Apply_LegacyKit verifies that a legacy kit.yaml is
+// created for projects with host_commands.
 func TestProjectMigrate_Apply_LegacyKit(t *testing.T) {
 	dir := setupMigrateProject(t, testLegacyProjectYAML)
 	dbFile := setupMigrateDBFile(t)
@@ -374,8 +374,12 @@ func TestProjectMigrate_Apply_LegacyKit(t *testing.T) {
 	if !strings.Contains(kitContent, "gh") {
 		t.Errorf("kit.yaml missing host_commands 'gh':\n%s", kitContent)
 	}
-	if !strings.Contains(kitContent, "/var/data") {
-		t.Errorf("kit.yaml missing additional_bindings source:\n%s", kitContent)
+	// additional_bindings no longer moves into the legacy kit at all
+	// (docs/plans/home-workspace-volume.md Phase 4 PR4) — the fixture
+	// (testLegacyProjectYAML) still declares one, which pins that its
+	// presence does not leak into the generated kit.yaml.
+	if strings.Contains(kitContent, "additional_bindings") {
+		t.Errorf("legacy kit.yaml must not contain additional_bindings any more (Phase 4 PR4 retired the field it fed):\n%s", kitContent)
 	}
 
 	// Env must NOT appear in the legacy kit; per the plan's transformation
@@ -386,7 +390,7 @@ func TestProjectMigrate_Apply_LegacyKit(t *testing.T) {
 }
 
 // TestProjectMigrate_NoLegacyKit verifies no legacy kit is created when
-// host_commands and additional_bindings are absent.
+// host_commands is absent (the only remaining trigger — see needsLegacyKit).
 func TestProjectMigrate_NoLegacyKit(t *testing.T) {
 	minimalYAML := `id: proj-minimal
 name: Minimal Project
@@ -1182,20 +1186,22 @@ env:
 
 // TestProjectMigrate_WithHostCommandsAndBindings is MAJOR 1's regression
 // test (codex review, docs/plans/workspace-db-consolidation.md): a legacy
-// project.yaml with host_commands + additional_bindings generates a legacy
-// kit whose host_commands names + additional_bindings are folded directly
-// into the workspace (mergeLegacyFieldsIntoWorkspace, Phase 2.5 PR7). Before
-// the original MAJOR 1 fix, the daemon push (POST /api/workspaces) ran
-// *before* the legacy kit.yaml was written to disk and before the daemon's
-// aggregated host_commands.yaml/live cache knew about the kit's
-// host_commands names, so CreateWorkspace/UpdateWorkspace's
+// project.yaml with host_commands generates a legacy kit whose host_commands
+// names are folded directly into the workspace (mergeLegacyFieldsIntoWorkspace,
+// Phase 2.5 PR7). Before the original MAJOR 1 fix, the daemon push (POST
+// /api/workspaces) ran *before* the legacy kit.yaml was written to disk and
+// before the daemon's aggregated host_commands.yaml/live cache knew about
+// the kit's host_commands names, so CreateWorkspace/UpdateWorkspace's
 // validateHostCommandRefs check 400'd on "unknown host_commands
 // reference(s)" — project.yaml still got rewritten (silently "succeeding")
 // but the DB never actually gained the migrated workspace content. This
 // exercises the whole path end-to-end against a real daemon: kit.yaml must
 // land on disk, host_commands.yaml must be synced + reloaded, and *then*
-// the workspace create must succeed with host_commands/additional_bindings
-// already resolved.
+// the workspace create must succeed with host_commands already resolved.
+// (The test name and its additional_bindings fixture predate docs/plans/
+// home-workspace-volume.md Phase 4 PR4, which retired that field outright —
+// the fixture still declares one, to pin that its presence no longer breaks
+// this path or ends up anywhere in the resulting workspace.)
 func TestProjectMigrate_WithHostCommandsAndBindings(t *testing.T) {
 	projectYAML := `id: proj-hostcmd
 name: Host Cmd Project
@@ -1276,16 +1282,6 @@ additional_bindings:
 	if !hcSet["gh"] {
 		t.Errorf("workspace host_commands missing 'gh' (kit materialization/host_commands sync did not run before the daemon push): %v", detail.Meta.HostCommands)
 	}
-
-	foundBinding := false
-	for _, b := range detail.Meta.AdditionalBindings {
-		if b.Source == "/var/data" {
-			foundBinding = true
-		}
-	}
-	if !foundBinding {
-		t.Errorf("workspace additional_bindings missing /var/data: %v", detail.Meta.AdditionalBindings)
-	}
 }
 
 // ---------------------------------------------------------------------------
@@ -1307,9 +1303,11 @@ additional_bindings:
 
 // TestProjectMigrate_AutoMigrate_OfflineDaemonMode verifies that --apply,
 // with no daemon reachable, writes the migrated workspace fields (env,
-// host_commands, additional_bindings) directly into the `workspaces` DB row
-// for a brand-new slug, instead of only reaching the (daemon-unread) shadow
-// yaml file.
+// host_commands) directly into the `workspaces` DB row for a brand-new slug,
+// instead of only reaching the (daemon-unread) shadow yaml file. (The
+// fixture still declares a legacy additional_bindings key — retired
+// outright in docs/plans/home-workspace-volume.md Phase 4 PR4 — to pin that
+// its presence does not break this path or land anywhere in the result.)
 func TestProjectMigrate_AutoMigrate_OfflineDaemonMode(t *testing.T) {
 	projectYAML := `id: proj-automigrate-offline
 name: Auto Migrate Offline
@@ -1351,15 +1349,6 @@ additional_bindings:
 	}
 	if meta.Env["FOO"] != "bar" {
 		t.Errorf("workspace env = %+v, want FOO=bar", meta.Env)
-	}
-	foundBinding := false
-	for _, b := range meta.AdditionalBindings {
-		if b.Source == "/var/data" {
-			foundBinding = true
-		}
-	}
-	if !foundBinding {
-		t.Errorf("workspace additional_bindings missing /var/data: %v", meta.AdditionalBindings)
 	}
 	hcSet := stringSetFromSlice(meta.HostCommands)
 	if !hcSet["gh"] {

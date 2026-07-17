@@ -1,9 +1,25 @@
 package orchestrator
 
 import (
+	"bytes"
+	"log/slog"
 	"strings"
 	"testing"
 )
+
+// captureSlog redirects the default slog logger to an in-memory buffer for
+// the duration of the test. Mirrors orchestrator_test's own captureSlog
+// (spec_loader_test.go) — duplicated here rather than shared because that
+// helper lives in the external orchestrator_test package and is not
+// reachable from this (internal, package orchestrator) test file.
+func captureSlog(t *testing.T) *bytes.Buffer {
+	t.Helper()
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+	return &buf
+}
 
 // TestDecodeWorkspaceMetaStrict_RoundTrip verifies that every WorkspaceMeta
 // field decodes correctly through the strict path.
@@ -21,10 +37,6 @@ host_commands:
   - gh
   - aws
 container_image: ghcr.io/example/image:latest
-additional_bindings:
-  - source: /opt/volta
-    target: /opt/volta
-    mode: rw
 `)
 	meta, err := DecodeWorkspaceMetaStrict(data)
 	if err != nil {
@@ -48,12 +60,65 @@ additional_bindings:
 	if meta.ContainerImage != "ghcr.io/example/image:latest" {
 		t.Errorf("ContainerImage = %q", meta.ContainerImage)
 	}
-	if len(meta.AdditionalBindings) != 1 {
-		t.Fatalf("AdditionalBindings: got %v", meta.AdditionalBindings)
+}
+
+// TestDecodeWorkspaceMetaStrict_AdditionalBindingsToleratedAndIgnored pins
+// the Phase 4 PR4 (docs/plans/home-workspace-volume.md) regression contract:
+// an existing workspace yaml/PUT body that still declares a well-formed
+// additional_bindings key must keep decoding without error (no "unknown
+// field" rejection, unlike `kits:` — see workspaceMetaStrict's doc comment
+// for why the two retired fields are handled differently), a warning must be
+// logged so an operator notices the value is silently discarded, and the
+// resulting WorkspaceMeta must carry none of it (the type has no field to
+// carry it in any more).
+func TestDecodeWorkspaceMetaStrict_AdditionalBindingsToleratedAndIgnored(t *testing.T) {
+	buf := captureSlog(t)
+	data := []byte(`
+env:
+  FOO: bar
+additional_bindings:
+  - source: /opt/volta
+    target: /opt/volta
+    mode: rw
+`)
+	meta, err := DecodeWorkspaceMetaStrict(data)
+	if err != nil {
+		t.Fatalf("DecodeWorkspaceMetaStrict: %v", err)
 	}
-	want := BindMount{Source: "/opt/volta", Target: "/opt/volta", Mode: "rw"}
-	if meta.AdditionalBindings[0] != want {
-		t.Errorf("AdditionalBindings[0] = %+v, want %+v", meta.AdditionalBindings[0], want)
+	if meta.Env["FOO"] != "bar" {
+		t.Errorf("Env[FOO] = %q, want bar (rest of the document must still decode)", meta.Env["FOO"])
+	}
+	if !strings.Contains(buf.String(), "additional_bindings") {
+		t.Errorf("expected a warning mentioning additional_bindings, got log: %s", buf.String())
+	}
+}
+
+// TestDecodeWorkspaceMetaStrict_MalformedAdditionalBindingsToleratedNoWarning
+// pins the other half of the tolerate-and-ignore contract: since the value
+// is discarded either way, even a shape BindMount could never have accepted
+// (a nested typo, or a completely different type) must not error — there is
+// nothing left downstream that would validate its structure. An absent key
+// must not warn (the common, post-Phase-4 case).
+func TestDecodeWorkspaceMetaStrict_MalformedAdditionalBindingsToleratedNoWarning(t *testing.T) {
+	buf := captureSlog(t)
+	data := []byte(`
+additional_bindings:
+  - source: /opt/volta
+    modee: rw
+`)
+	if _, err := DecodeWorkspaceMetaStrict(data); err != nil {
+		t.Fatalf("DecodeWorkspaceMetaStrict: %v (a malformed additional_bindings shape must not error — the value is discarded either way)", err)
+	}
+	if !strings.Contains(buf.String(), "additional_bindings") {
+		t.Errorf("expected a warning mentioning additional_bindings, got log: %s", buf.String())
+	}
+
+	buf2 := captureSlog(t)
+	if _, err := DecodeWorkspaceMetaStrict([]byte("env:\n  FOO: bar\n")); err != nil {
+		t.Fatalf("DecodeWorkspaceMetaStrict: %v", err)
+	}
+	if strings.Contains(buf2.String(), "additional_bindings") {
+		t.Errorf("expected no additional_bindings warning when the key is absent, got log: %s", buf2.String())
 	}
 }
 
@@ -80,84 +145,6 @@ func TestDecodeWorkspaceMetaStrict_RejectsUnknownTopLevelField(t *testing.T) {
 	_, err := DecodeWorkspaceMetaStrict([]byte("hostcommands: [gh]\n")) // typo: missing underscore
 	if err == nil {
 		t.Fatal("expected error for unknown top-level field, got nil")
-	}
-}
-
-// TestDecodeWorkspaceMetaStrict_RejectsUnknownNestedBindMountField pins the
-// "nested strict trap" (memory: strict yaml decode の nested trap — the same
-// class of bug PR2's hostCommandSpecStrict exists to prevent): BindMount has
-// its own custom UnmarshalYAML (for the short-form scalar convenience), and
-// naively decoding through the public BindMount type would let a typo'd
-// nested field silently vanish even under a KnownFields(true) top-level
-// Decoder — because BindMount.UnmarshalYAML calls node.Decode(&aux)
-// internally, always with default (non-strict) settings, regardless of the
-// Decoder that produced the node.
-func TestDecodeWorkspaceMetaStrict_RejectsUnknownNestedBindMountField(t *testing.T) {
-	data := []byte(`
-additional_bindings:
-  - source: /opt/volta
-    modee: rw
-`) // typo: "modee" instead of "mode"
-	_, err := DecodeWorkspaceMetaStrict(data)
-	if err == nil {
-		t.Fatal("expected error for unknown nested additional_bindings field, got nil")
-	}
-	if !strings.Contains(err.Error(), "modee") {
-		t.Errorf("expected error to mention the typo'd field, got: %v", err)
-	}
-}
-
-// TestDecodeWorkspaceMetaStrict_AcceptsScalarBindMountShortForm pins MINOR
-// 3-a (codex review): the public yaml-authoring contract for
-// additional_bindings allows a scalar short form (`additional_bindings:
-// [/path]`, equivalent to `{source: /path}` — see BindMount.UnmarshalYAML's
-// doc comment). Before this fix, bindMountStrict had no custom
-// UnmarshalYAML at all (deliberately, to keep the nested-strict guarantee
-// the test above pins) and so only accepted the full mapping form,
-// rejecting the scalar short form workspace yaml documents are otherwise
-// allowed to use.
-func TestDecodeWorkspaceMetaStrict_AcceptsScalarBindMountShortForm(t *testing.T) {
-	data := []byte(`
-additional_bindings:
-  - /opt/volta
-`)
-	meta, err := DecodeWorkspaceMetaStrict(data)
-	if err != nil {
-		t.Fatalf("DecodeWorkspaceMetaStrict: %v", err)
-	}
-	if len(meta.AdditionalBindings) != 1 {
-		t.Fatalf("AdditionalBindings: got %v", meta.AdditionalBindings)
-	}
-	want := BindMount{Source: "/opt/volta"}
-	if meta.AdditionalBindings[0] != want {
-		t.Errorf("AdditionalBindings[0] = %+v, want %+v", meta.AdditionalBindings[0], want)
-	}
-}
-
-// TestDecodeWorkspaceMetaStrict_AcceptsMixedScalarAndMappingBindMounts
-// verifies the scalar short form and the full mapping form can coexist in
-// the same additional_bindings list.
-func TestDecodeWorkspaceMetaStrict_AcceptsMixedScalarAndMappingBindMounts(t *testing.T) {
-	data := []byte(`
-additional_bindings:
-  - /opt/volta
-  - source: /opt/tool
-    target: /opt/tool
-    mode: rw
-`)
-	meta, err := DecodeWorkspaceMetaStrict(data)
-	if err != nil {
-		t.Fatalf("DecodeWorkspaceMetaStrict: %v", err)
-	}
-	if len(meta.AdditionalBindings) != 2 {
-		t.Fatalf("AdditionalBindings: got %v", meta.AdditionalBindings)
-	}
-	if meta.AdditionalBindings[0] != (BindMount{Source: "/opt/volta"}) {
-		t.Errorf("AdditionalBindings[0] = %+v", meta.AdditionalBindings[0])
-	}
-	want1 := BindMount{Source: "/opt/tool", Target: "/opt/tool", Mode: "rw"}
-	if meta.AdditionalBindings[1] != want1 {
-		t.Errorf("AdditionalBindings[1] = %+v, want %+v", meta.AdditionalBindings[1], want1)
 	}
 }
 
