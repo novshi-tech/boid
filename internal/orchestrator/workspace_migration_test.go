@@ -70,19 +70,6 @@ func schemaMigrationRow(t *testing.T, conn *db.DB, version string) (state, input
 	return state, inputHash, true
 }
 
-// findBindMountBySource returns the first BindMount in mounts whose Source
-// matches source, mirroring project_store_hydrate_test.go's
-// findBindingBySource (that helper lives in the external orchestrator_test
-// package and is not reachable from here).
-func findBindMountBySource(mounts []BindMount, source string) (BindMount, bool) {
-	for _, m := range mounts {
-		if m.Source == source {
-			return m, true
-		}
-	}
-	return BindMount{}, false
-}
-
 func workspaceSlugs(t *testing.T, conn *db.DB) []string {
 	t.Helper()
 	rows, err := conn.Conn.Query(`SELECT slug FROM workspaces ORDER BY slug`)
