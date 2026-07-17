@@ -410,6 +410,17 @@ PR5 は境界越えの明示エラー (Phase 6 まで持ち越しの繋ぎ)。
 - **リモート attach 時の SIGINT / SIGQUIT の意味論**: raw mode で Ctrl+C はサーバ側
   PTY にそのまま入力バイトとして渡す (SSH と同じ)。CLI プロセス自体の signal handling
   との干渉確認
+- **`__complete` 時の `--profile` 反映** (2026-07-17 PR1 codex 3 巡目指摘、繰り越し):
+  Cobra の hidden `__complete` command は root PersistentPreRunE が走った
+  時点で自分自身の `--profile` flag をまだ parse していないため、
+  `boid --profile work task <TAB>` のような明示的 profile 指定が完了時に
+  反映されない (default profile or unix fallback で解決される)。 現状は
+  known limitation として degrade を silent にする実装で bad UX を避けて
+  いる (broken profile でも shell が壊れない)。 完全解決には
+  `__complete` args の manual re-parse または completion callback 内での
+  再解決が必要で、 cobra の internal 挙動への依存を増やすため PR1 では
+  意図的に scope 外とした。 実運用への影響は「別 profile 選択時の
+  candidate が想定と違う」のみで、 security implication は無い
 - **rate limit key の trusted proxy 判定** (2026-07-17 PR0 codex 4 巡目指摘、繰り越し):
   現行 `internal/api/web.go` の `remoteIP` は `CF-Connecting-IP` → `X-Forwarded-For`
   → `RemoteAddr` の順で無条件に採用する。直接 TCP 接続する攻撃者は forwarded 系
