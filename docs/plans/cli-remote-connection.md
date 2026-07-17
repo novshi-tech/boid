@@ -309,6 +309,39 @@ daemon 時には無意味な情報になる (daemon 側ホストではなく CLI
 - kit list/remove/init: 廃止
 - attach / agent 系の独自 Upgrade: WS 一本化で解決 (本 phase)
 
+### shim 経路 (sandbox 発) との関係
+
+本 phase の scope annotation は **CLI 経路 (host 発、cobra ツリー)** のみを対象とする。
+サンドボックス内のエージェント / shim が叩く boid コマンドは別経路であり、
+分類対象に含めない。
+
+boid バイナリは `main.go` 段階で env を見て 2 つの経路に分岐する:
+
+| 経路 | 分岐条件 | パーサ | 通信先 |
+|---|---|---|---|
+| **CLI 経路 (host 発)** | 通常起動 | `cmd/*.go` の cobra ツリー | daemon HTTP API |
+| **shim 経路 (sandbox 発)** | `BOID_BUILTIN_SHIM=1` | `internal/sandbox/boid_shim.go` の独自パーサ | broker RPC (`BOID_BROKER_SOCKET`) |
+
+shim 経路は cobra を完全にバイパスするため、scope annotation の付与先自体が
+存在しない。ルーティングは env による経路分岐 (transport 層) で行われ、
+scope annotation の層 (`PersistentPreRunE` 判定) より下にある。
+
+**Phase 5 で追加される boid コマンドの扱い** (`boid task context` /
+`boid workspace env` 等):
+
+- 原則として **shim 経路にのみ追加**する (`parseBoidRequest` に case を足す)。
+  cobra 側に出さない限り scope annotation は不要
+- 既にホスト cobra 側と shim 側で `boid task` の subcommand セットは分離
+  (cobra 側 = `create/list/show/update`、shim 側 = `ask/notify/answer/reopen` 等)。
+  同名 top-level noun を共有しつつ subcommand で用途を分けるパターンは維持する
+
+**dual-facing (両経路に置くケース) の判断基準**: ホスト側からの debug / 観察
+用途が実運用で必要になった場合のみ、cobra 側にも同名 command を追加する。
+その場合の cobra 側は `remote` scope (daemon HTTP API 経由) とし、shim 側とは
+別実装として維持する (実装共有はしない)。**維持コストが 2 倍になる自覚を
+持って追加する** — 安易に両方置くと、両宇宙で subcommand セットが drift して
+混乱の元になる。
+
 ---
 
 ## PR 分割案
