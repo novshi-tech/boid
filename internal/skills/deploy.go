@@ -70,6 +70,43 @@ func deploySkill(name, targetDir string) error {
 		if err == nil && bytes.Equal(existing, embedded) {
 			return nil
 		}
-		return os.WriteFile(dest, embedded, 0o644)
+		return writeFileAtomic(dest, embedded, 0o644)
 	})
+}
+
+// writeFileAtomic replaces dest's content with data via a sibling temp file
+// + rename, so a mid-write crash (or a concurrent reader) never observes a
+// partially written file at dest. The temp file is created in the same
+// directory as dest so the rename is guaranteed to stay on one filesystem
+// (a cross-device rename would fail).
+func writeFileAtomic(dest string, data []byte, perm os.FileMode) (retErr error) {
+	dir := filepath.Dir(dest)
+	tmp, err := os.CreateTemp(dir, "."+filepath.Base(dest)+".tmp-*")
+	if err != nil {
+		return fmt.Errorf("create temp file: %w", err)
+	}
+	tmpPath := tmp.Name()
+	cleanup := true
+	defer func() {
+		if cleanup {
+			_ = os.Remove(tmpPath)
+		}
+	}()
+
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("write temp file %q: %w", tmpPath, err)
+	}
+	if err := tmp.Chmod(perm); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("chmod temp file %q: %w", tmpPath, err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("close temp file %q: %w", tmpPath, err)
+	}
+	if err := os.Rename(tmpPath, dest); err != nil {
+		return fmt.Errorf("rename %q to %q: %w", tmpPath, dest, err)
+	}
+	cleanup = false
+	return nil
 }
