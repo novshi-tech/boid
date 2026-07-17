@@ -3,6 +3,7 @@ package api
 import (
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"strings"
 
@@ -12,6 +13,13 @@ import (
 
 type WorkspaceHandler struct {
 	Service ProjectService
+	// RuntimesDir, when non-empty, is server/wire.go's runtimesDirFor(cfg) —
+	// used to resolve each workspace's home directory (docs/plans/
+	// home-workspace-volume.md Phase 4 PR5) for Show's size reporting and
+	// Remove's home-directory deletion. Left empty, both features degrade
+	// gracefully: Show omits WorkspaceDetail.Home, Remove reports
+	// home_deleted=false with no attempt made.
+	RuntimesDir string
 }
 
 func (h *WorkspaceHandler) Routes() chi.Router {
@@ -133,6 +141,10 @@ func (h *WorkspaceHandler) Show(w http.ResponseWriter, r *http.Request) {
 		writeServiceError(w, err)
 		return
 	}
+	if h.RuntimesDir != "" {
+		home := computeWorkspaceHomeSize(h.RuntimesDir, slug)
+		detail.Home = &home
+	}
 	setWorkspaceETag(w, detail)
 	writeJSON(w, http.StatusOK, detail)
 }
@@ -229,11 +241,36 @@ func (h *WorkspaceHandler) Import(w http.ResponseWriter, r *http.Request) {
 // default slug and re-assignment of any still-assigned project are enforced
 // at the service/repository layer (ProjectAppService.RemoveWorkspace →
 // orchestrator.WorkspaceRepository.Remove's transaction).
+//
+// docs/plans/home-workspace-volume.md Phase 4 PR5 adds home directory
+// deletion on top of the pre-existing row removal: the workspace row is
+// always removed first (via h.Service.RemoveWorkspace), and only then does
+// this attempt to delete slug's home directory on disk — trusted-side
+// deletion, since a sandboxed job or a remote CLI client has no way to
+// remove a path on the daemon's own filesystem itself. A home-deletion
+// failure (e.g. permission denied) is reported in the response but does not
+// turn this into an error response: the row is already gone, and the plan
+// doc explicitly allows this "part-completed" outcome (see
+// WorkspaceRemoveResponse's doc comment) rather than trying to make the two
+// deletions atomic.
 func (h *WorkspaceHandler) Remove(w http.ResponseWriter, r *http.Request) {
 	slug := chi.URLParam(r, "slug")
 	if err := h.Service.RemoveWorkspace(slug); err != nil {
 		writeServiceError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "removed"})
+
+	resp := WorkspaceRemoveResponse{Status: "removed"}
+	if h.RuntimesDir != "" {
+		info, deleted, delErr := deleteWorkspaceHome(h.RuntimesDir, slug)
+		resp.HomePath = info.Path
+		resp.HomeBytes = info.Bytes
+		resp.HomeDeleted = deleted
+		if delErr != nil {
+			resp.HomeDeleteError = delErr.Error()
+			slog.Warn("workspace remove: home directory deletion failed",
+				"slug", slug, "path", info.Path, "error", delErr)
+		}
+	}
+	writeJSON(w, http.StatusOK, resp)
 }

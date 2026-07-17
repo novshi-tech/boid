@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -138,6 +140,84 @@ type stubDeviceGCStore struct {
 
 func (s *stubDeviceGCStore) DeleteRevokedDevices(_ context.Context, _ bool) (int64, error) {
 	return s.n, s.err
+}
+
+// --- workspace_homes listing (docs/plans/home-workspace-volume.md Phase 4 PR5) ---
+
+func TestGCHandler_Run_NoRuntimesDir_OmitsWorkspaceHomes(t *testing.T) {
+	svc := &GCAppService{Store: &stubGCStore{result: &orchestrator.GCResult{Tasks: 1}}}
+	h := &GCHandler{Service: svc} // RuntimesDir left empty.
+	w := httptest.NewRecorder()
+	h.Routes().ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/", bytes.NewBufferString(`{}`)))
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d: %s", w.Code, w.Body.String())
+	}
+	var resp gcResponse
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.WorkspaceHomes != nil {
+		t.Errorf("WorkspaceHomes = %+v, want nil (no RuntimesDir wired)", resp.WorkspaceHomes)
+	}
+}
+
+func TestGCHandler_Run_WithRuntimesDir_ListsWorkspaceHomesWithOrphanFlag(t *testing.T) {
+	runtimesDir := filepath.Join(t.TempDir(), "runtimes")
+	for _, tc := range []struct {
+		slug string
+		size int
+	}{
+		{"default", 100},
+		{"known-ws", 200},
+		{"orphan-ws", 50},
+	} {
+		path, err := resolveWorkspaceHomePath(runtimesDir, tc.slug)
+		if err != nil {
+			t.Fatalf("resolveWorkspaceHomePath: %v", err)
+		}
+		if err := os.MkdirAll(path, 0o755); err != nil {
+			t.Fatalf("mkdir: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(path, "x"), make([]byte, tc.size), 0o644); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+	}
+
+	svc := &GCAppService{Store: &stubGCStore{result: &orchestrator.GCResult{}}}
+	h := &GCHandler{
+		Service:     svc,
+		RuntimesDir: runtimesDir,
+		Workspaces: &stubWorkspaceSlugLister{summaries: []*orchestrator.WorkspaceSummary{
+			{ID: "default"}, {ID: "known-ws"},
+		}},
+	}
+	w := httptest.NewRecorder()
+	h.Routes().ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/", bytes.NewBufferString(`{}`)))
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d: %s", w.Code, w.Body.String())
+	}
+	var resp gcResponse
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(resp.WorkspaceHomes) != 3 {
+		t.Fatalf("len(WorkspaceHomes) = %d, want 3: %+v", len(resp.WorkspaceHomes), resp.WorkspaceHomes)
+	}
+	byslug := map[string]WorkspaceHomeSize{}
+	for _, e := range resp.WorkspaceHomes {
+		byslug[e.Slug] = e
+	}
+	if byslug["default"].Orphan {
+		t.Error("default: Orphan = true, want false")
+	}
+	if byslug["known-ws"].Bytes != 200 {
+		t.Errorf("known-ws: Bytes = %d, want 200", byslug["known-ws"].Bytes)
+	}
+	if !byslug["orphan-ws"].Orphan {
+		t.Error("orphan-ws: Orphan = false, want true")
+	}
 }
 
 func TestGCAppService_DeviceCleanup(t *testing.T) {

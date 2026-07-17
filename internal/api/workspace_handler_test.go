@@ -6,6 +6,9 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -279,6 +282,213 @@ func TestWorkspaceHandler_Remove_DefaultRejected400(t *testing.T) {
 	w := doWorkspaceRequest(h.Routes(), http.MethodDelete, "/default", "", nil, nil)
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400: %s", w.Code, w.Body.String())
+	}
+}
+
+// --- Home directory size / deletion (docs/plans/home-workspace-volume.md
+// Phase 4 PR5) ---
+
+func TestWorkspaceHandler_Show_NoRuntimesDir_OmitsHome(t *testing.T) {
+	svc := &fakeWorkspaceService{
+		getFn: func(slug string) (*WorkspaceDetail, error) {
+			return &WorkspaceDetail{Slug: slug, Meta: &orchestrator.WorkspaceMeta{}}, nil
+		},
+	}
+	h := &WorkspaceHandler{Service: svc} // RuntimesDir left empty.
+	w := doWorkspaceRequest(h.Routes(), http.MethodGet, "/team-a", "", nil, nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d: %s", w.Code, w.Body.String())
+	}
+	var detail WorkspaceDetail
+	if err := json.Unmarshal(w.Body.Bytes(), &detail); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if detail.Home != nil {
+		t.Errorf("Home = %+v, want nil (no RuntimesDir wired)", detail.Home)
+	}
+}
+
+func TestWorkspaceHandler_Show_WithRuntimesDir_PopulatesHome(t *testing.T) {
+	runtimesDir := filepath.Join(t.TempDir(), "runtimes")
+	homePath, err := resolveWorkspaceHomePath(runtimesDir, "team-a")
+	if err != nil {
+		t.Fatalf("resolveWorkspaceHomePath: %v", err)
+	}
+	if err := os.MkdirAll(homePath, 0o755); err != nil {
+		t.Fatalf("mkdir home dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(homePath, "a.txt"), make([]byte, 42), 0o644); err != nil {
+		t.Fatalf("write home file: %v", err)
+	}
+
+	svc := &fakeWorkspaceService{
+		getFn: func(slug string) (*WorkspaceDetail, error) {
+			return &WorkspaceDetail{Slug: slug, Meta: &orchestrator.WorkspaceMeta{}}, nil
+		},
+	}
+	h := &WorkspaceHandler{Service: svc, RuntimesDir: runtimesDir}
+	w := doWorkspaceRequest(h.Routes(), http.MethodGet, "/team-a", "", nil, nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d: %s", w.Code, w.Body.String())
+	}
+	var detail WorkspaceDetail
+	if err := json.Unmarshal(w.Body.Bytes(), &detail); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if detail.Home == nil {
+		t.Fatal("Home = nil, want a populated entry")
+	}
+	if !detail.Home.Exists {
+		t.Error("Home.Exists = false, want true")
+	}
+	if detail.Home.Bytes != 42 {
+		t.Errorf("Home.Bytes = %d, want 42", detail.Home.Bytes)
+	}
+	if detail.Home.Path != homePath {
+		t.Errorf("Home.Path = %q, want %q", detail.Home.Path, homePath)
+	}
+}
+
+func TestWorkspaceHandler_Show_WithRuntimesDir_NotYetCreated(t *testing.T) {
+	runtimesDir := filepath.Join(t.TempDir(), "runtimes")
+	svc := &fakeWorkspaceService{
+		getFn: func(slug string) (*WorkspaceDetail, error) {
+			return &WorkspaceDetail{Slug: slug, Meta: &orchestrator.WorkspaceMeta{}}, nil
+		},
+	}
+	h := &WorkspaceHandler{Service: svc, RuntimesDir: runtimesDir}
+	w := doWorkspaceRequest(h.Routes(), http.MethodGet, "/team-a", "", nil, nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d: %s", w.Code, w.Body.String())
+	}
+	var detail WorkspaceDetail
+	if err := json.Unmarshal(w.Body.Bytes(), &detail); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if detail.Home == nil {
+		t.Fatal("Home = nil, want a populated (but Exists=false) entry")
+	}
+	if detail.Home.Exists {
+		t.Error("Home.Exists = true, want false (never dispatched)")
+	}
+}
+
+func TestWorkspaceHandler_Remove_WithRuntimesDir_DeletesHomeDirAndReportsIt(t *testing.T) {
+	runtimesDir := filepath.Join(t.TempDir(), "runtimes")
+	homePath, err := resolveWorkspaceHomePath(runtimesDir, "team-a")
+	if err != nil {
+		t.Fatalf("resolveWorkspaceHomePath: %v", err)
+	}
+	if err := os.MkdirAll(homePath, 0o755); err != nil {
+		t.Fatalf("mkdir home dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(homePath, "a.txt"), make([]byte, 7), 0o644); err != nil {
+		t.Fatalf("write home file: %v", err)
+	}
+
+	svc := &fakeWorkspaceService{removeFn: func(string) error { return nil }}
+	h := &WorkspaceHandler{Service: svc, RuntimesDir: runtimesDir}
+	w := doWorkspaceRequest(h.Routes(), http.MethodDelete, "/team-a", "", nil, nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp WorkspaceRemoveResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if !resp.HomeDeleted {
+		t.Error("HomeDeleted = false, want true")
+	}
+	if resp.HomeBytes != 7 {
+		t.Errorf("HomeBytes = %d, want 7", resp.HomeBytes)
+	}
+	if resp.HomePath != homePath {
+		t.Errorf("HomePath = %q, want %q", resp.HomePath, homePath)
+	}
+	if _, statErr := os.Stat(homePath); !os.IsNotExist(statErr) {
+		t.Errorf("home dir still present on disk after remove: stat err=%v", statErr)
+	}
+}
+
+// TestWorkspaceHandler_Remove_DefaultWorkspace_NeverDeletesHomeDir is defense
+// in depth (docs/plans/home-workspace-volume.md PR5: "万一 remove が通っても
+// home dir は削除しない多重防御"): even if a bug in the service layer let a
+// remove of the reserved default workspace's row through, the handler must
+// still refuse to touch its home directory on disk.
+func TestWorkspaceHandler_Remove_DefaultWorkspace_NeverDeletesHomeDir(t *testing.T) {
+	runtimesDir := filepath.Join(t.TempDir(), "runtimes")
+	homePath, err := resolveWorkspaceHomePath(runtimesDir, orchestrator.DefaultWorkspaceSlug)
+	if err != nil {
+		t.Fatalf("resolveWorkspaceHomePath: %v", err)
+	}
+	if err := os.MkdirAll(homePath, 0o755); err != nil {
+		t.Fatalf("mkdir home dir: %v", err)
+	}
+
+	svc := &fakeWorkspaceService{removeFn: func(string) error { return nil }}
+	h := &WorkspaceHandler{Service: svc, RuntimesDir: runtimesDir}
+	w := doWorkspaceRequest(h.Routes(), http.MethodDelete, "/"+orchestrator.DefaultWorkspaceSlug, "", nil, nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp WorkspaceRemoveResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if resp.HomeDeleted {
+		t.Error("HomeDeleted = true, want false")
+	}
+	if _, statErr := os.Stat(homePath); statErr != nil {
+		t.Errorf("default workspace home dir was removed from disk: stat err=%v", statErr)
+	}
+}
+
+// TestWorkspaceHandler_Remove_HomeDeleteFailure_StillReturns200 pins the
+// "part-completed" contract: the workspace row is already gone by the time
+// home-directory deletion is attempted, so a deletion failure must not turn
+// the whole request into an error response — it is surfaced in the body
+// instead (docs/plans/home-workspace-volume.md PR5: "削除失敗... workspace
+// 設定 (DB) の削除は先に完了させる (part-completed 状態を許容...)").
+func TestWorkspaceHandler_Remove_HomeDeleteFailure_StillReturns200(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("permission-bit test assumes POSIX permission semantics")
+	}
+	if os.Geteuid() == 0 {
+		t.Skip("running as root: directory permission bits are not enforced")
+	}
+
+	runtimesDir := filepath.Join(t.TempDir(), "runtimes")
+	homePath, err := resolveWorkspaceHomePath(runtimesDir, "team-a")
+	if err != nil {
+		t.Fatalf("resolveWorkspaceHomePath: %v", err)
+	}
+	homesDir := filepath.Dir(homePath)
+	if err := os.MkdirAll(homePath, 0o755); err != nil {
+		t.Fatalf("mkdir home dir: %v", err)
+	}
+	if err := os.Chmod(homesDir, 0o000); err != nil {
+		t.Fatalf("chmod homes dir: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(homesDir, 0o755) })
+
+	svc := &fakeWorkspaceService{removeFn: func(string) error { return nil }}
+	h := &WorkspaceHandler{Service: svc, RuntimesDir: runtimesDir}
+	w := doWorkspaceRequest(h.Routes(), http.MethodDelete, "/team-a", "", nil, nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 even on a home-delete failure: %s", w.Code, w.Body.String())
+	}
+
+	var resp WorkspaceRemoveResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if resp.HomeDeleted {
+		t.Error("HomeDeleted = true, want false")
+	}
+	if resp.HomeDeleteError == "" {
+		t.Error("HomeDeleteError = empty, want a non-empty error")
 	}
 }
 
