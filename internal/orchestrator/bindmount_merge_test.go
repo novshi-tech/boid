@@ -2,12 +2,14 @@ package orchestrator
 
 import "testing"
 
-// These unit tests pin the merge semantics of the two bind-mount combinators
-// that back workspace-kit → project binding hydration. The 2026-06-29 binding
-// regression (workspace kit additional_bindings silently dropped) motivated
-// Tier 1 #1 of docs/plans/quality-gates.md: mergeBindMounts feeds
-// GetWithWorkspace's top-level meta.AdditionalBindings merge (project wins),
-// while unionBindMountSlices backs the per-behavior/kit merge (mode promotion).
+// These unit tests pin the merge semantics of mergeBindMounts, which backs
+// project.yaml's AdditionalBindings → per-behavior overlay (ReadProjectMetaWithKits).
+// The 2026-06-29 binding regression (workspace kit additional_bindings
+// silently dropped) motivated Tier 1 #1 of docs/plans/quality-gates.md.
+// (unionBindMountSlices, the sibling combinator this file used to also pin,
+// backed the workspace-level kit-materialized AdditionalBindings merge —
+// retired outright in docs/plans/home-workspace-volume.md Phase 4 PR4 along
+// with the WorkspaceMeta field it fed.)
 
 func bindBySource(mounts []BindMount, src string) (BindMount, bool) {
 	for _, m := range mounts {
@@ -67,21 +69,5 @@ func TestMergeBindMounts_EmptyOverlayClonesBase(t *testing.T) {
 	got[0].Mode = "rw"
 	if base[0].Mode != "ro" {
 		t.Fatalf("mergeBindMounts must clone base, but base was mutated: %+v", base)
-	}
-}
-
-func TestUnionBindMountSlices_PromotesModeToRW(t *testing.T) {
-	t.Parallel()
-
-	// A ro binding in base and the same source rw in extra must promote to rw.
-	base := []BindMount{{Source: "/kit/a", Mode: "ro"}}
-	extra := []BindMount{{Source: "/kit/a", Mode: "rw"}}
-
-	got := unionBindMountSlices(base, extra)
-	if len(got) != 1 {
-		t.Fatalf("expected 1 unioned binding, got %d: %+v", len(got), got)
-	}
-	if got[0].Mode != "rw" {
-		t.Fatalf("union must promote ro→rw on conflict: got %q", got[0].Mode)
 	}
 }

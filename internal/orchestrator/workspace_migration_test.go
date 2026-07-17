@@ -516,15 +516,19 @@ func TestMigrateWorkspaceYAMLToDB_BrokenProjectReferenceAborts(t *testing.T) {
 	}
 }
 
-// TestMigrateWorkspaceYAMLToDB_MaterializesKitEnvAndBindings pins BLOCKER 1
-// (codex review): a workspace's legacy `kits:` list contributes more than
-// just host_commands *names* — a kit's Env and AdditionalBindings must also
-// be materialized into the DB-bound WorkspaceMeta, since the workspaces
-// table has no column for Kits at all (WorkspaceRepository never persists
-// it, and Phase 2.5 PR7 removed the field from the type outright). Before
-// this fix, only host_command names survived the cutover; a kit's env var
-// or bind mount silently vanished the moment the DB became authoritative.
-func TestMigrateWorkspaceYAMLToDB_MaterializesKitEnvAndBindings(t *testing.T) {
+// TestMigrateWorkspaceYAMLToDB_MaterializesKitEnv pins BLOCKER 1 (codex
+// review): a workspace's legacy `kits:` list contributes more than just
+// host_commands *names* — a kit's Env must also be materialized into the
+// DB-bound WorkspaceMeta, since the workspaces table has no column for Kits
+// at all (WorkspaceRepository never persists it, and Phase 2.5 PR7 removed
+// the field from the type outright). Before this fix, only host_command
+// names survived the cutover; a kit's env var silently vanished the moment
+// the DB became authoritative. (A kit's additional_bindings used to
+// materialize here too — retired outright in docs/plans/home-workspace-volume.md
+// Phase 4 PR4, along with the WorkspaceMeta.AdditionalBindings field it fed;
+// the kit.yaml fixture below still declares one, to pin that its presence no
+// longer causes an error or gets materialized anywhere.)
+func TestMigrateWorkspaceYAMLToDB_MaterializesKitEnv(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	env := newMigrationTestEnv(t)
 
@@ -548,19 +552,6 @@ func TestMigrateWorkspaceYAMLToDB_MaterializesKitEnvAndBindings(t *testing.T) {
 	}
 	if teamX.Env["KIT_VAR"] != "from-kit" {
 		t.Errorf("team-x.Env[KIT_VAR] = %q, want from-kit", teamX.Env["KIT_VAR"])
-	}
-	// Two entries expected: the kit's own explicit additional_bindings entry
-	// (/opt/kit-tool) plus the kit root directory itself (BLOCKER 1 2nd-pass
-	// fix — see TestMigrateWorkspaceYAMLToDB_MaterializesKitRootsAsAdditionalBindings
-	// below for the dedicated coverage of the latter).
-	if len(teamX.AdditionalBindings) != 2 {
-		t.Fatalf("team-x.AdditionalBindings = %+v, want 2 entries (/opt/kit-tool + kit root)", teamX.AdditionalBindings)
-	}
-	if _, ok := findBindMountBySource(teamX.AdditionalBindings, "/opt/kit-tool"); !ok {
-		t.Errorf("team-x.AdditionalBindings = %+v, want an entry for /opt/kit-tool", teamX.AdditionalBindings)
-	}
-	if _, ok := findBindMountBySource(teamX.AdditionalBindings, filepath.Join(env.kitsDir, "toolkit")); !ok {
-		t.Errorf("team-x.AdditionalBindings = %+v, want an entry for the kit root dir", teamX.AdditionalBindings)
 	}
 }
 
@@ -676,129 +667,11 @@ func TestMigrateWorkspaceYAMLToDB_ProjectReferencingDefaultIsFine(t *testing.T) 
 	}
 }
 
-// --- BLOCKER (codex review, 2nd pass): KitRoots materialization ---
-
-// TestMigrateWorkspaceYAMLToDB_MaterializesKitRootsAsAdditionalBindings pins
-// the 2nd-pass BLOCKER: the (now-retired) kit mechanism used to bind-mount
-// every kit's own directory read-only into the sandbox (behavior.KitRoots),
-// so shell hooks could read scripts/assets living next to kit.yaml. The
-// workspaces table has no column for a per-workspace kit reference list at
-// all (and Phase 2.5 PR7 removed WorkspaceMeta.Kits from the type outright),
-// so that mechanism can never fire again for a DB-backed workspace — the kit
-// root directory itself must be materialized as a (read-only)
-// AdditionalBindings entry instead, the same way BLOCKER 1 already
-// materializes a kit's Env and its own explicit additional_bindings.
-//
-// Updated for MAJOR 3 (codex review, 3rd pass): the kit root binding is now
-// materialized with an explicit Target (equal to Source) and Mode="rw"
-// rather than an implicit-empty-Target read-only mount — see
-// materializeKitRuntimeIntoWorkspace's doc comment on kitRootBindings for
-// why (the earlier read-only, empty-Target form could be silently dropped
-// when Source-keyed union/merge collided with an unrelated same-Source
-// binding; explicit Target + rw is what lets it bypass
-// additionalBindingMounts' self-mount skip guard once it is appended as its
-// own dedicated entry).
-func TestMigrateWorkspaceYAMLToDB_MaterializesKitRootsAsAdditionalBindings(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-	env := newMigrationTestEnv(t)
-
-	writeMigrationKitYAML(t, env.kitsDir, "shellkit", "host_commands:\n  mytool:\n    path: /usr/bin/true\n")
-	writeMigrationWorkspaceYAML(t, env.workspaceDir, "team-root", "kits:\n  - shellkit\n")
-
-	if err := MigrateWorkspaceYAMLToDB(env.conn.Conn, env.workspaceDir, env.kitsDir, env.projectRepo); err != nil {
-		t.Fatalf("MigrateWorkspaceYAMLToDB: %v", err)
-	}
-
-	repo := NewWorkspaceRepository(env.conn.Conn)
-	teamRoot, err := repo.Load("team-root")
-	if err != nil {
-		t.Fatalf("Load(team-root): %v", err)
-	}
-
-	wantKitDir := filepath.Join(env.kitsDir, "shellkit")
-	binding, ok := findBindMountBySource(teamRoot.AdditionalBindings, wantKitDir)
-	if !ok {
-		t.Fatalf("expected kit root %q to be materialized as an AdditionalBindings entry, got %+v", wantKitDir, teamRoot.AdditionalBindings)
-	}
-	// Target must stay empty: dispatcher/sandbox_builder.go's self-mount
-	// skip guard is `explicitTarget && Source==Target && Mode != "rw"`,
-	// and `explicitTarget = bm.Target != ""`. Leaving Target empty makes
-	// explicitTarget false, so the guard is skipped entirely and Mode
-	// stays read-only (the KitRoots contract: kit scripts/assets are
-	// never writable from inside the sandbox). Dedupe safety is
-	// preserved because kitRootBindings is appended unconditionally,
-	// bypassing every Source-keyed merge path (codex 4th pass).
-	if binding.Target != "" {
-		t.Errorf("kit root binding Target = %q, want empty (implicit Source==Target, keeps read-only via skipped self-mount guard)", binding.Target)
-	}
-	if binding.Mode != "" {
-		t.Errorf("kit root binding Mode = %q, want empty (default read-only; KitRoots must not be writable from inside the sandbox)", binding.Mode)
-	}
-}
-
-// TestMigrateWorkspaceYAMLToDB_MultipleKitsAllRootsMaterialized extends the
-// above to a workspace with two kits: both kit root directories must be
-// materialized, not just the first/last one processed.
-func TestMigrateWorkspaceYAMLToDB_MultipleKitsAllRootsMaterialized(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-	env := newMigrationTestEnv(t)
-
-	writeMigrationKitYAML(t, env.kitsDir, "kit-one", "host_commands:\n  tool-one:\n    path: /usr/bin/true\n")
-	writeMigrationKitYAML(t, env.kitsDir, "kit-two", "host_commands:\n  tool-two:\n    path: /usr/bin/true\n")
-	writeMigrationWorkspaceYAML(t, env.workspaceDir, "team-multi", "kits:\n  - kit-one\n  - kit-two\n")
-
-	if err := MigrateWorkspaceYAMLToDB(env.conn.Conn, env.workspaceDir, env.kitsDir, env.projectRepo); err != nil {
-		t.Fatalf("MigrateWorkspaceYAMLToDB: %v", err)
-	}
-
-	repo := NewWorkspaceRepository(env.conn.Conn)
-	teamMulti, err := repo.Load("team-multi")
-	if err != nil {
-		t.Fatalf("Load(team-multi): %v", err)
-	}
-
-	for _, kitName := range []string{"kit-one", "kit-two"} {
-		wantDir := filepath.Join(env.kitsDir, kitName)
-		if _, ok := findBindMountBySource(teamMulti.AdditionalBindings, wantDir); !ok {
-			t.Errorf("expected kit root %q to be materialized, got %+v", wantDir, teamMulti.AdditionalBindings)
-		}
-	}
-}
-
 // --- MAJOR 1 (codex review, 2nd pass): bind mount merge precedence ---
-
-// TestMaterializeKitRuntime_WorkspaceBindingsWinRO pins the MAJOR 1 fix: when
-// a workspace explicitly declares an additional_bindings entry as read-only
-// for the same Source a kit also binds (e.g. rw, for its own tooling), the
-// workspace-authored ro must win — not get silently promoted to rw by
-// unionBindMountSlices' mode-promotion behavior, which inverts the intended
-// "workspace-authored beats kit-supplied default" precedence.
-func TestMaterializeKitRuntime_WorkspaceBindingsWinRO(t *testing.T) {
-	kitsDir := t.TempDir()
-	writeMigrationKitYAML(t, kitsDir, "kit-a", "additional_bindings:\n  - source: /opt/tool\n    mode: rw\n")
-
-	snap, err := snapshotAllKitYAMLs(kitsDir)
-	if err != nil {
-		t.Fatalf("snapshotAllKitYAMLs: %v", err)
-	}
-
-	meta := &WorkspaceMeta{
-		AdditionalBindings: []BindMount{
-			{Source: "/opt/tool", Mode: ""}, // workspace-authored: explicit ro
-		},
-	}
-	if err := materializeKitRuntimeIntoWorkspace(snap, []string{"kit-a"}, meta); err != nil {
-		t.Fatalf("materializeKitRuntimeIntoWorkspace: %v", err)
-	}
-
-	got, ok := findBindMountBySource(meta.AdditionalBindings, "/opt/tool")
-	if !ok {
-		t.Fatalf("expected /opt/tool binding, got %+v", meta.AdditionalBindings)
-	}
-	if got.Mode == "rw" {
-		t.Errorf("workspace-authored ro binding must win over kit's rw for the same source, got mode=%q", got.Mode)
-	}
-}
+// (TestMaterializeKitRuntime_WorkspaceBindingsWinRO, the additional_bindings
+// half of this precedence, was removed in docs/plans/home-workspace-volume.md
+// Phase 4 PR4 along with the mechanism it pinned — see
+// materializeKitRuntimeIntoWorkspace's doc comment.)
 
 // TestMaterializeKitRuntime_WorkspaceEnvWinsOnConflict is a regression guard
 // (念のため) alongside the binding precedence test above, pinned directly at
@@ -823,110 +696,6 @@ func TestMaterializeKitRuntime_WorkspaceEnvWinsOnConflict(t *testing.T) {
 	if meta.Env["SHARED"] != "from-workspace" {
 		t.Errorf("meta.Env[SHARED] = %q, want from-workspace (workspace must win over kit)", meta.Env["SHARED"])
 	}
-}
-
-// --- MAJOR 3 (codex review, 3rd pass): kit root binding must survive
-// --- Source-keyed union/merge with an unrelated same-Source binding ---
-
-// TestMaterializeKitRoot_SurvivesUnionWithOtherBindingWithSameSource pins the
-// MAJOR 3 fix: mergeBindMounts/unionBindMountSlices key solely on Source and,
-// on a match, either swallow the new entry outright (unionBindMountSlices)
-// or wholesale-replace it (mergeBindMounts) — either way silently dropping
-// the kit-root "expose this kit's directory to shell hooks" mount if any
-// other binding (here: the workspace's own additional_bindings, declared for
-// an unrelated purpose) happens to share the same Source. The old,
-// independent KitRoots mechanism (behavior.KitRoots) never had this failure
-// mode since it was never folded into AdditionalBindings at all; this test
-// pins that the kit-root binding must keep surviving as its own entry now
-// that it has been folded into the same field.
-func TestMaterializeKitRoot_SurvivesUnionWithOtherBindingWithSameSource(t *testing.T) {
-	kitsDir := t.TempDir()
-	writeMigrationKitYAML(t, kitsDir, "kit-a", "host_commands:\n  tool:\n    path: /usr/bin/true\n")
-	kitDir := filepath.Join(kitsDir, "kit-a")
-
-	snap, err := snapshotAllKitYAMLs(kitsDir)
-	if err != nil {
-		t.Fatalf("snapshotAllKitYAMLs: %v", err)
-	}
-
-	// Workspace-authored binding that happens to share the kit's own
-	// directory as Source, but for an unrelated purpose/target.
-	meta := &WorkspaceMeta{
-		AdditionalBindings: []BindMount{
-			{Source: kitDir, Target: "/opt/unrelated-target", Mode: "rw"},
-		},
-	}
-	if err := materializeKitRuntimeIntoWorkspace(snap, []string{"kit-a"}, meta); err != nil {
-		t.Fatalf("materializeKitRuntimeIntoWorkspace: %v", err)
-	}
-
-	// The workspace-authored, unrelated-purpose binding must still be
-	// present...
-	if _, ok := findBindMountBySourceAndTarget(meta.AdditionalBindings, kitDir, "/opt/unrelated-target"); !ok {
-		t.Errorf("workspace-authored binding (source=%s target=/opt/unrelated-target) missing after materialize, got %+v", kitDir, meta.AdditionalBindings)
-	}
-	// ...and the kit-root self-mount must ALSO still be present as its own
-	// entry (Source==kitDir, Target=="" → implicit Source at dispatch,
-	// read-only by default — codex 4th pass), not silently dropped by the
-	// Source-keyed union/merge. Dedupe safety comes from appending
-	// kitRootBindings unconditionally rather than from an explicit Target.
-	if _, ok := findBindMountBySourceAndTarget(meta.AdditionalBindings, kitDir, ""); !ok {
-		t.Fatalf("kit root binding (source=%s target=<empty>) missing after union with an unrelated same-Source binding, got %+v", kitDir, meta.AdditionalBindings)
-	}
-}
-
-// TestMaterializeKitRoot_UsesImplicitTargetForReadOnly pins the other half
-// of the MAJOR 3 fix's chosen approach after the codex 4th-pass correction:
-// the kit-root binding must materialize with an implicit empty Target (not
-// an explicit Source-equal Target) and empty Mode (default read-only), so
-// dispatcher/sandbox_builder.go's self-mount skip guard
-// (`explicitTarget && Source==Target && Mode != "rw"`) does not fire —
-// leaving the mount in place *and* keeping the KitRoots contract that kit
-// scripts/assets are not writable from inside the sandbox. Dedupe safety
-// is provided by kitRootBindings being appended unconditionally (bypassing
-// every Source-keyed merge path), not by an explicit Target.
-func TestMaterializeKitRoot_UsesImplicitTargetForReadOnly(t *testing.T) {
-	kitsDir := t.TempDir()
-	writeMigrationKitYAML(t, kitsDir, "kit-a", "host_commands:\n  tool:\n    path: /usr/bin/true\n")
-	kitDir := filepath.Join(kitsDir, "kit-a")
-
-	snap, err := snapshotAllKitYAMLs(kitsDir)
-	if err != nil {
-		t.Fatalf("snapshotAllKitYAMLs: %v", err)
-	}
-
-	meta := &WorkspaceMeta{}
-	if err := materializeKitRuntimeIntoWorkspace(snap, []string{"kit-a"}, meta); err != nil {
-		t.Fatalf("materializeKitRuntimeIntoWorkspace: %v", err)
-	}
-
-	got, ok := findBindMountBySource(meta.AdditionalBindings, kitDir)
-	if !ok {
-		t.Fatalf("expected kit root binding for %q, got %+v", kitDir, meta.AdditionalBindings)
-	}
-	// Target empty + Mode empty: implicit Source==Target via
-	// additionalBindingMounts' default, read-only by contract. See the
-	// analogous assertion in TestMigrateWorkspaceYAMLToDB_MaterializesKitRootsAsAdditionalBindings
-	// for the full rationale (codex 4th pass).
-	if got.Target != "" {
-		t.Errorf("kit root binding Target = %q, want empty (implicit Source==Target)", got.Target)
-	}
-	if got.Mode != "" {
-		t.Errorf("kit root binding Mode = %q, want empty (default read-only)", got.Mode)
-	}
-}
-
-// findBindMountBySourceAndTarget is findBindMountBySource extended to also
-// match on Target, needed when a test deliberately has two entries sharing
-// the same Source (as TestMaterializeKitRoot_SurvivesUnionWithOtherBindingWithSameSource
-// does) and must distinguish between them.
-func findBindMountBySourceAndTarget(mounts []BindMount, source, target string) (BindMount, bool) {
-	for _, m := range mounts {
-		if m.Source == source && m.Target == target {
-			return m, true
-		}
-	}
-	return BindMount{}, false
 }
 
 // --- MAJOR 2 (codex review, 2nd pass): input_hash must cover kit runtime ---
@@ -1080,7 +849,7 @@ func TestReadWorkspaceYAMLSnapshot_SingleReadAvoidsTOCTOU(t *testing.T) {
 		return data, nil
 	}
 
-	meta, kitRefs, err := readWorkspaceYAMLSnapshot(dir, "team-a")
+	meta, kitRefs, _, err := readWorkspaceYAMLSnapshot(dir, "team-a")
 	if err != nil {
 		t.Fatalf("readWorkspaceYAMLSnapshot: %v", err)
 	}
@@ -1161,8 +930,14 @@ func TestComputeWorkspaceMigrationInputHashPR6Shape_KitsIncluded_MatchesGolden(t
 		"with-kit": {"docker-proxy-test"},
 	}
 
+	// workspaceAdditionalBindings (Phase 4 PR4, docs/plans/home-workspace-volume.md)
+	// is left nil in both calls below: none of this fixture's workspaces set
+	// WorkspaceMeta.AdditionalBindings before that field was retired either
+	// (see the workspaces map literal above), so pr6WorkspaceMeta.AdditionalBindings
+	// was already nil for both golden hashes — passing nil here reproduces
+	// the identical byte shape, keeping both golden literals valid.
 	const wantHashWithKits = "d3b637ed5cda1f902a60fff81e578ffa8084cfd798e1389fc88ebd7d35685ccb"
-	got, err := computeWorkspaceMigrationInputHashPR6Shape(workspaces, hostCommands, projectRefs, kitRuntime, workspaceKitRefs)
+	got, err := computeWorkspaceMigrationInputHashPR6Shape(workspaces, hostCommands, projectRefs, kitRuntime, workspaceKitRefs, nil)
 	if err != nil {
 		t.Fatalf("computeWorkspaceMigrationInputHashPR6Shape: %v", err)
 	}
@@ -1175,7 +950,7 @@ func TestComputeWorkspaceMigrationInputHashPR6Shape_KitsIncluded_MatchesGolden(t
 	// from the same PR6 worktree/commit with the workspace's Kits field left
 	// unset entirely.
 	const wantHashKitsStripped = "14164174fde4844121d14d6e4c1c10306c878c34daa9c4c9d24249e7804a03de"
-	gotStripped, err := computeWorkspaceMigrationInputHashPR6Shape(workspaces, hostCommands, projectRefs, kitRuntime, map[string][]string{})
+	gotStripped, err := computeWorkspaceMigrationInputHashPR6Shape(workspaces, hostCommands, projectRefs, kitRuntime, map[string][]string{}, nil)
 	if err != nil {
 		t.Fatalf("computeWorkspaceMigrationInputHashPR6Shape (kits stripped): %v", err)
 	}

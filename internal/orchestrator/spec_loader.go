@@ -566,32 +566,6 @@ func ReadProjectLocalMeta(dir string) (*ProjectLocalMeta, error) {
 	return &meta, nil
 }
 
-func unionBindMountSlices(base, extra []BindMount) []BindMount {
-	indexBySource := make(map[string]int)
-	var result []BindMount
-	for _, binding := range base {
-		if idx, ok := indexBySource[binding.Source]; ok {
-			if binding.Mode == "rw" {
-				result[idx].Mode = "rw"
-			}
-		} else {
-			indexBySource[binding.Source] = len(result)
-			result = append(result, binding)
-		}
-	}
-	for _, binding := range extra {
-		if idx, ok := indexBySource[binding.Source]; ok {
-			if binding.Mode == "rw" {
-				result[idx].Mode = "rw"
-			}
-		} else {
-			indexBySource[binding.Source] = len(result)
-			result = append(result, binding)
-		}
-	}
-	return result
-}
-
 func mergeBindMounts(base, overlay []BindMount) []BindMount {
 	if len(overlay) == 0 {
 		return cloneBindMounts(base)
