@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/json"
 	"errors"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/novshi-tech/boid/internal/api"
 	"github.com/novshi-tech/boid/internal/client"
+	"github.com/novshi-tech/boid/internal/humanize"
 	"github.com/novshi-tech/boid/internal/orchestrator"
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
@@ -83,7 +85,7 @@ var workspaceClearCmd = &cobra.Command{
 
 var workspaceRemoveCmd = &cobra.Command{
 	Use:   "remove <slug>",
-	Short: "Remove a workspace (DELETE /api/workspaces/{slug}; assigned projects are re-assigned to default)",
+	Short: "Remove a workspace and its home directory (DELETE /api/workspaces/{slug}; prompts for confirmation if the home dir exists; --force/--yes skips the prompt)",
 	Args:  cobra.ExactArgs(1),
 	RunE:  runWorkspaceRemove,
 }
@@ -139,6 +141,8 @@ func init() {
 	workspaceImportCmd.Flags().StringVar(&workspaceImportMode, "mode", "create-only", "import mode: create-only (default, 409 on an existing slug) or replace (upsert)")
 	workspaceImportCmd.Flags().BoolVar(&workspaceImportForce, "force", false, "shorthand for --mode replace")
 	workspaceImportCmd.Flags().StringVar(&workspaceImportSlug, "slug", "", "target workspace slug (default: the import file's basename, extension stripped — the export body itself carries no slug)")
+	workspaceRemoveCmd.Flags().BoolVar(&workspaceRemoveForce, "force", false, "skip the home directory deletion confirmation prompt")
+	workspaceRemoveCmd.Flags().BoolVar(&workspaceRemoveForce, "yes", false, "alias for --force")
 
 	workspaceCmd.AddCommand(
 		workspaceListCmd,
@@ -191,7 +195,11 @@ type workspaceShowView struct {
 	Slug     string                      `json:"slug"`
 	Meta     *orchestrator.WorkspaceMeta `json:"meta,omitempty"`
 	Revision string                      `json:"revision,omitempty"`
-	Projects []*orchestrator.Project     `json:"projects"`
+	// Home reports the workspace home directory's on-disk size
+	// (docs/plans/home-workspace-volume.md Phase 4 PR5), mirrored straight
+	// from the GET /api/workspaces/{slug} response.
+	Home     *api.WorkspaceHomeSize  `json:"home,omitempty"`
+	Projects []*orchestrator.Project `json:"projects"`
 }
 
 // runWorkspaceShow shows a workspace's definition (GET /api/workspaces/{slug})
@@ -228,6 +236,7 @@ func runWorkspaceShow(cmd *cobra.Command, args []string) error {
 		Slug:     slug,
 		Meta:     detail.Meta,
 		Revision: detail.Revision,
+		Home:     detail.Home,
 		Projects: projects,
 	}
 
@@ -255,6 +264,10 @@ func runWorkspaceShow(cmd *cobra.Command, args []string) error {
 				fmt.Fprintf(out, "capabilities: docker=enabled\n")
 			}
 			fmt.Fprintln(out)
+		}
+
+		if view.Home != nil {
+			fmt.Fprintln(out, formatWorkspaceHomeSize(view.Home))
 		}
 
 		if len(projects) == 0 {
@@ -794,6 +807,30 @@ func runWorkspaceClear(cmd *cobra.Command, args []string) error {
 	})
 }
 
+// workspaceRemoveForce is the --force (alias --yes) flag value for
+// `workspace remove`: skips the home-directory deletion confirmation prompt
+// (docs/plans/home-workspace-volume.md Phase 4 PR5).
+var workspaceRemoveForce bool
+
+// workspaceRemoveConfirmPrompt reads the y/N answer to `workspace remove`'s
+// home-directory deletion confirmation. A package-level var (rather than a
+// direct call) so tests can stub it without a real TTY — mirrors
+// cmd/start_automigrate.go's autoMigratePrompter injection for the same
+// reason.
+var workspaceRemoveConfirmPrompt = defaultWorkspaceRemoveConfirmPrompt
+
+// defaultWorkspaceRemoveConfirmPrompt reads a y/N answer from in. Anything
+// other than "y"/"yes" (case-insensitive) is treated as decline, mirroring
+// cmd/start_automigrate.go's defaultMigratePrompter convention.
+func defaultWorkspaceRemoveConfirmPrompt(in io.Reader) (bool, error) {
+	sc := bufio.NewScanner(in)
+	if !sc.Scan() {
+		return false, nil
+	}
+	ans := strings.ToLower(strings.TrimSpace(sc.Text()))
+	return ans == "y" || ans == "yes", nil
+}
+
 // runWorkspaceRemove deletes a workspace via DELETE /api/workspaces/{slug}
 // (docs/plans/workspace-db-consolidation.md PR4 Step H). Unlike the pre-PR4
 // CLI, this no longer blocks on (or even checks for) assigned projects
@@ -801,6 +838,15 @@ func runWorkspaceClear(cmd *cobra.Command, args []string) error {
 // Step F) already re-assigns any assigned project to the default workspace
 // as part of the same delete, so there is nothing left to clear by hand
 // first.
+//
+// docs/plans/home-workspace-volume.md Phase 4 PR5 adds a 2-step flow on top
+// of that: unless --force is given, the workspace's current home directory
+// size is fetched first (GET /api/workspaces/{slug}, the same `workspace
+// show` endpoint — no separate dry-run endpoint needed) and, only when a
+// home directory actually exists on disk, a y/N confirmation is required
+// before the DELETE call is made at all. A workspace whose home dir was
+// never created (never dispatched into) skips the prompt entirely — nothing
+// destructive is about to happen on disk either way.
 func runWorkspaceRemove(cmd *cobra.Command, args []string) error {
 	slug := args[0]
 	if err := orchestrator.ValidWorkspaceSlug(slug); err != nil {
@@ -816,13 +862,40 @@ func runWorkspaceRemove(cmd *cobra.Command, args []string) error {
 	}
 
 	c := client.FromContext(cmd.Context())
+	out := cmd.OutOrStdout()
 
-	if err := c.Do("DELETE", "/api/workspaces/"+slug, nil, nil); err != nil {
+	if !workspaceRemoveForce {
+		var detail api.WorkspaceDetail
+		if err := c.Do("GET", "/api/workspaces/"+slug, nil, &detail); err != nil {
+			return fmt.Errorf("fetch workspace before remove: %w", err)
+		}
+		if detail.Home != nil && detail.Home.Exists {
+			fmt.Fprintln(out, formatWorkspaceHomeSize(detail.Home))
+			fmt.Fprintf(out, "workspace %q の home dir を削除しますか? [y/N]: ", slug)
+			proceed, err := workspaceRemoveConfirmPrompt(os.Stdin)
+			if err != nil {
+				return fmt.Errorf("confirm prompt: %w", err)
+			}
+			if !proceed {
+				fmt.Fprintf(out, "aborted: workspace %q was not removed\n", slug)
+				return nil
+			}
+		}
+	}
+
+	var resp api.WorkspaceRemoveResponse
+	if err := c.Do("DELETE", "/api/workspaces/"+slug, nil, &resp); err != nil {
 		return fmt.Errorf("remove workspace: %w", err)
 	}
 
-	fmt.Fprintf(cmd.OutOrStdout(), "workspace %q removed (any assigned projects were re-assigned to %q).\n",
+	fmt.Fprintf(out, "workspace %q removed (any assigned projects were re-assigned to %q).\n",
 		slug, orchestrator.DefaultWorkspaceSlug)
+	switch {
+	case resp.HomeDeleted:
+		fmt.Fprintf(out, "home dir deleted: %s (%s)\n", resp.HomePath, humanize.FormatBytes(resp.HomeBytes))
+	case resp.HomeDeleteError != "":
+		fmt.Fprintf(out, "warning: home dir delete failed (%s): %s\n", resp.HomePath, resp.HomeDeleteError)
+	}
 	return nil
 }
 
@@ -959,4 +1032,22 @@ func formatStringSlice(ss []string) string {
 		return "(none)"
 	}
 	return strings.Join(ss, ", ")
+}
+
+// formatWorkspaceHomeSize renders a *api.WorkspaceHomeSize as a single
+// human-readable line for `boid workspace show` (docs/plans/
+// home-workspace-volume.md Phase 4 PR5's three display cases): a normal
+// size + path, "0 B (未作成: <path>)" for a workspace never dispatched
+// into, or "?" when the daemon could not compute the size (e.g. permission
+// denied) — matching the "never fail the whole command over a size lookup"
+// contract the plan doc sets for this feature.
+func formatWorkspaceHomeSize(h *api.WorkspaceHomeSize) string {
+	switch {
+	case h.SizeError != "":
+		return fmt.Sprintf("home size: ? (%s)", h.Path)
+	case !h.Exists:
+		return fmt.Sprintf("home size: 0 B (未作成: %s)", h.Path)
+	default:
+		return fmt.Sprintf("home size: %s (%s)", humanize.FormatBytes(h.Bytes), h.Path)
+	}
 }
