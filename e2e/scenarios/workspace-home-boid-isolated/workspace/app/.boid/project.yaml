@@ -1,0 +1,40 @@
+id: e2e-home-boid-isolated
+name: E2E Home Boid Isolated
+# docs/plans/home-workspace-volume.md Phase 4 PR6: pins that $HOME/.boid
+# stays a job-scoped tmpfs even though the rest of $HOME is now a
+# persistent, workspace-scoped host bind (see homeMounts in
+# internal/dispatcher/sandbox_builder.go — a fresh tmpfs is layered over
+# $HOME/.boid on every single dispatch, regardless of whether the workspace
+# home bind underneath it persists). Job 1 writes a marker under
+# $HOME/.boid; job 2 (a separate task/job dispatched afterward, same
+# workspace) must NOT see it — proving $HOME/.boid never carries state
+# across jobs, which is exactly what keeps the context/output file protocol
+# (docs/plans/home-workspace-volume.md 決定事項 #2) collision-free between
+# jobs sharing one workspace home.
+task_behaviors:
+  write-boid:
+    hooks:
+      - id: write-boid
+        command: |
+          set -eu
+          echo "job1" > "$HOME/.boid/test"
+          mkdir -p "$HOME/.boid/output"
+          printf '{"payload_patch":{"artifact":{"wrote":"job1"}}}\n' > "$HOME/.boid/output/payload_patch.json"
+        traits:
+          produces: [artifact]
+    traits: []
+  read-boid:
+    hooks:
+      - id: read-boid
+        command: |
+          set -eu
+          if [ -f "$HOME/.boid/test" ]; then
+            CONTENT="$(cat "$HOME/.boid/test")"
+          else
+            CONTENT="EMPTY"
+          fi
+          mkdir -p "$HOME/.boid/output"
+          printf '{"payload_patch":{"artifact":{"read":"%s"}}}\n' "$CONTENT" > "$HOME/.boid/output/payload_patch.json"
+        traits:
+          produces: [artifact]
+    traits: []
