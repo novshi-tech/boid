@@ -91,6 +91,61 @@ func parseEnvDump(content string) map[string]string {
 	return env
 }
 
+// --- 0. WorkspaceHomesDir (exported free function, Phase 4 PR5) ---
+
+// TestWorkspaceHomesDir_DerivesFromRuntimesDir pins the primary path: given
+// a non-empty runtimesDir (server/wire.go's runtimesDirFor(cfg)), the homes
+// dir is its sibling "homes" directory, not a subdirectory of it.
+func TestWorkspaceHomesDir_DerivesFromRuntimesDir(t *testing.T) {
+	setupWorkspaceHomeTestDirs(t)
+	runtimesDir := filepath.Join(t.TempDir(), "data", "runtimes")
+
+	got, err := WorkspaceHomesDir(runtimesDir)
+	if err != nil {
+		t.Fatalf("WorkspaceHomesDir: %v", err)
+	}
+	want := filepath.Join(filepath.Dir(runtimesDir), "homes")
+	if got != want {
+		t.Errorf("WorkspaceHomesDir(%q) = %q, want %q", runtimesDir, got, want)
+	}
+}
+
+// TestWorkspaceHomesDir_FallsBackToXDGDataHome pins the secondary path: an
+// empty runtimesDir (e.g. minimal test wiring, or a daemon build that never
+// set RuntimesDir) falls back to $XDG_DATA_HOME/boid/homes.
+func TestWorkspaceHomesDir_FallsBackToXDGDataHome(t *testing.T) {
+	dataDir, _ := setupWorkspaceHomeTestDirs(t)
+
+	got, err := WorkspaceHomesDir("")
+	if err != nil {
+		t.Fatalf("WorkspaceHomesDir: %v", err)
+	}
+	want := filepath.Join(dataDir, "boid", "homes")
+	if got != want {
+		t.Errorf("WorkspaceHomesDir(\"\") = %q, want %q", got, want)
+	}
+}
+
+// TestRunnerWorkspaceHomesDir_MatchesFreeFunction pins that the *Runner
+// method is now a pure delegation to the exported free function — no
+// behavior drift from the PR5 export refactor.
+func TestRunnerWorkspaceHomesDir_MatchesFreeFunction(t *testing.T) {
+	setupWorkspaceHomeTestDirs(t)
+	r := &Runner{RuntimesDir: filepath.Join(t.TempDir(), "data", "runtimes")}
+
+	got, err := r.workspaceHomesDir()
+	if err != nil {
+		t.Fatalf("r.workspaceHomesDir: %v", err)
+	}
+	want, err := WorkspaceHomesDir(r.RuntimesDir)
+	if err != nil {
+		t.Fatalf("WorkspaceHomesDir: %v", err)
+	}
+	if got != want {
+		t.Errorf("r.workspaceHomesDir() = %q, want %q (WorkspaceHomesDir(r.RuntimesDir))", got, want)
+	}
+}
+
 // --- 1. script 無し workspace の素通し ---
 
 func TestResolveWorkspaceHome_NoScript_PassesThrough(t *testing.T) {

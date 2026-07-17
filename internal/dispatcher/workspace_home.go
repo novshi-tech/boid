@@ -169,12 +169,12 @@ func workspaceDataHomeRoot() (string, error) {
 	return filepath.Join(home, ".local", "share", "boid"), nil
 }
 
-// workspaceHomesDir returns ~/.local/share/boid/homes, the parent directory
+// WorkspaceHomesDir returns ~/.local/share/boid/homes, the parent directory
 // under which every workspace's home lives (docs/plans/home-workspace-volume.md
 // 「レイアウト」). Unlike runtimes/, this directory is never GC'd — workspace
 // homes are persistent (PR5 wires deletion to `workspace remove`).
 //
-// Prefers deriving from r.RuntimesDir when set: RuntimesDir is wired by
+// Prefers deriving from runtimesDir when non-empty: RuntimesDir is wired by
 // server/wire.go as runtimesDirFor(cfg) — filepath.Dir(cfg.DBPath) (or
 // cfg.SocketPath's dir when DBPath is ":memory:") + "/runtimes" — the same
 // per-installation data root skills/ already lives under (see
@@ -185,17 +185,30 @@ func workspaceDataHomeRoot() (string, error) {
 // such instance converging on one global ~/.local/share/boid/homes and
 // leaking into the real developer machine's home directory during `go
 // test`. Falls back to the $XDG_DATA_HOME / ~/.local/share/boid convention
-// only when RuntimesDir is unset (minimal test wiring that constructs a
+// only when runtimesDir is empty (minimal test wiring that constructs a
 // bare &Runner{}, or a daemon build that never wired RuntimesDir).
-func (r *Runner) workspaceHomesDir() (string, error) {
-	if r.RuntimesDir != "" {
-		return filepath.Join(filepath.Dir(r.RuntimesDir), "homes"), nil
+//
+// Exported (Phase 4 PR5, docs/plans/home-workspace-volume.md) as a pure
+// free function — independent of any *Runner state — so internal/api's
+// handlers (GET /api/workspaces/{slug} size reporting, POST /api/gc's
+// workspace_homes listing, DELETE /api/workspaces/{slug}'s home dir
+// deletion) can resolve the exact same homes/ directory the dispatcher
+// itself uses, from the same runtimesDirFor(cfg) value server/wire.go
+// already threads through those handlers, without needing a live *Runner.
+func WorkspaceHomesDir(runtimesDir string) (string, error) {
+	if runtimesDir != "" {
+		return filepath.Join(filepath.Dir(runtimesDir), "homes"), nil
 	}
 	root, err := workspaceDataHomeRoot()
 	if err != nil {
 		return "", err
 	}
 	return filepath.Join(root, "homes"), nil
+}
+
+// workspaceHomesDir is a thin *Runner-bound wrapper around WorkspaceHomesDir.
+func (r *Runner) workspaceHomesDir() (string, error) {
+	return WorkspaceHomesDir(r.RuntimesDir)
 }
 
 // workspaceHomeMarkerPath returns homesDir/<slug>.init.json.
