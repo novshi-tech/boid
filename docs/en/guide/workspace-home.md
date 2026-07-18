@@ -98,6 +98,12 @@ fi
 Installing more toolchains (go, node via volta, codex, opencode, ...) just means repeating
 the same pattern — "already installed? skip" — once per tool.
 
+**Reference implementation**: [`docs/examples/workspace-home-init.sh`](../../examples/workspace-home-init.sh)
+installs go / volta / node (lts) / claude / codex / opencode end-to-end
+(`GO_VERSION` etc. overridable via env vars, RETURN trap for temp cleanup,
+`command -v`-based idempotency checks). Copy it into
+`~/.config/boid/workspaces/<slug>/init.sh` as a starting template and customize.
+
 #### Copying non-embedded skills
 
 boid's built-in skills (`/boid-task` etc.) are synced into the workspace home
