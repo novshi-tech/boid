@@ -32,6 +32,48 @@ require() {
     fi
 }
 
+# sandbox-safe な symlink を張るヘルパー。
+#
+# 背景 (docs/plans/home-workspace-volume.md):
+#   host 側で workspace HOME (`~/.local/share/boid/homes/<slug>/`) に install
+#   したツールは、 sandbox 内では `/home/<user>` に bind mount 経由で
+#   見えるだけで、host の実 path は sandbox からは見えない。
+#   絶対 path で symlink を張ると sandbox 内で dangling する。
+#   `$HOME` 配下の絶対 path なら link ディレクトリからの相対に置き換える。
+#
+# $1: target (絶対 path でも相対 path でも可)
+# $2: link path
+link_sandbox_safe() {
+    local target="$1" link="$2"
+    local link_dir
+    link_dir=$(dirname "$link")
+    local rel="$target"
+    case "$target" in
+        "$HOME"/*)
+            # `$HOME/foo/bar` を `link_dir` からの相対に置き換える。
+            # `realpath --relative-to` は coreutils 8.23+ で使える。
+            rel=$(realpath --relative-to="$link_dir" "$target")
+            ;;
+    esac
+    ln -sfn "$rel" "$link"
+}
+
+# claude installer など、 制御外の installer が絶対 symlink を作った場合の
+# 事後 relative 化。 対象 link が `$HOME/foo/bar` の絶対 symlink なら
+# `link_dir` からの相対に張り替える。
+relativize_symlink() {
+    local link="$1"
+    [ -L "$link" ] || return 0
+    local target
+    target=$(readlink "$link")
+    case "$target" in
+        "$HOME"/*)
+            link_sandbox_safe "$target" "$link"
+            log "rewrote $link -> $(readlink "$link") (was $target)"
+            ;;
+    esac
+}
+
 # ---- Go ---------------------------------------------------------------------
 # 公式 tarball を $HOME/.local/share/go に展開し、$HOME/.local/bin にシンボリック
 # リンクを張る (host の layout と同じ)。
@@ -73,8 +115,8 @@ install_go() {
 _link_go_bins() {
     local goroot="$1"
     mkdir -p "$HOME/.local/bin"
-    ln -sf "$goroot/bin/go" "$HOME/.local/bin/go"
-    ln -sf "$goroot/bin/gofmt" "$HOME/.local/bin/gofmt"
+    link_sandbox_safe "$goroot/bin/go" "$HOME/.local/bin/go"
+    link_sandbox_safe "$goroot/bin/gofmt" "$HOME/.local/bin/gofmt"
 }
 
 # ---- Volta ------------------------------------------------------------------
@@ -90,10 +132,15 @@ install_volta() {
 }
 
 # ---- Node via Volta (codex / opencode の実行基盤) ---------------------------
+# 注意: volta の shim (`$VOLTA_HOME/bin/node`) は volta install 直後から
+# symlink として存在するが、 default node が設定されるまで実行時に
+# 「Node is not available」で失敗する。 単純な存在チェックや
+# `volta which node` では判定できないので、 実際に `node --version` を
+# 走らせて exit 0 で判定する。
 install_node() {
     export VOLTA_HOME="$HOME/.volta"
-    if "$VOLTA_HOME/bin/volta" which node >/dev/null 2>&1; then
-        log "node $($VOLTA_HOME/bin/node --version 2>/dev/null || echo unknown) already installed via volta"
+    if [ -x "$VOLTA_HOME/bin/node" ] && "$VOLTA_HOME/bin/node" --version >/dev/null 2>&1; then
+        log "node $("$VOLTA_HOME/bin/node" --version 2>/dev/null || echo unknown) already installed via volta"
         return 0
     fi
     log "installing node ${NODE_VERSION} via volta"
@@ -101,15 +148,22 @@ install_node() {
 }
 
 # ---- Claude Code ------------------------------------------------------------
-# Anthropic 公式インストーラ。~/.local/share/claude/versions/<X> に展開し、
-# ~/.local/bin/claude シンボリックリンクを作る (host の layout と同じ)。
+# Anthropic 公式インストーラ。~/.local/share/claude/versions/<X> に実バイナリ、
+# ~/.local/bin/claude をシンボリックリンクとして張る。 installer は絶対 path
+# で symlink を張るので、 sandbox 内で dangling しないように事後で relative
+# 化する (link_sandbox_safe / relativize_symlink の doc 参照)。
 install_claude() {
-    if [ -x "$HOME/.local/bin/claude" ]; then
-        log "claude already installed ($($HOME/.local/bin/claude --version 2>/dev/null || echo unknown))"
+    local claude_bin="$HOME/.local/bin/claude"
+    # 既存の symlink が dangling してる可能性があるので、 存在チェックだけでなく
+    # 実行が通るかで判定する (`-x` は dangling symlink でも true になるケースがある)。
+    if [ -e "$claude_bin" ] && "$claude_bin" --version >/dev/null 2>&1; then
+        log "claude already installed ($($claude_bin --version 2>/dev/null || echo unknown))"
+        relativize_symlink "$claude_bin"
         return 0
     fi
     log "installing claude code"
     curl -fsSL https://claude.ai/install.sh | bash
+    relativize_symlink "$claude_bin"
 }
 
 # ---- Codex (OpenAI) ---------------------------------------------------------
@@ -126,13 +180,23 @@ install_codex() {
 
 # ---- OpenCode ---------------------------------------------------------------
 # 公式インストーラ。~/.opencode/bin/opencode か ~/.local/bin/opencode に着地する。
+# claude 同様、 installer が絶対 symlink を張る可能性があるので事後で relative 化。
 install_opencode() {
-    if [ -x "$HOME/.opencode/bin/opencode" ] || [ -x "$HOME/.local/bin/opencode" ]; then
+    local opencode_bin_direct="$HOME/.opencode/bin/opencode"
+    local opencode_bin_link="$HOME/.local/bin/opencode"
+    if [ -e "$opencode_bin_direct" ] && "$opencode_bin_direct" --version >/dev/null 2>&1; then
         log "opencode already installed"
+        relativize_symlink "$opencode_bin_link"
+        return 0
+    fi
+    if [ -e "$opencode_bin_link" ] && "$opencode_bin_link" --version >/dev/null 2>&1; then
+        log "opencode already installed"
+        relativize_symlink "$opencode_bin_link"
         return 0
     fi
     log "installing opencode"
     curl -fsSL https://opencode.ai/install | bash
+    relativize_symlink "$opencode_bin_link"
 }
 
 # ---- main -------------------------------------------------------------------
