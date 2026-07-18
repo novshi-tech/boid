@@ -91,6 +91,12 @@ fi
 go / volta 経由の node / codex / opencode のインストールなど、より多くのツールチェーンを
 入れたい場合も同じパターン (「既にあればスキップ」を各ツールごとに書く) を繰り返すだけです。
 
+**リファレンス実装**: [`docs/examples/workspace-home-init.sh`](../../examples/workspace-home-init.sh)
+に go / volta / node (lts) / claude / codex / opencode を全部セットアップする実装例が
+あります (`GO_VERSION` 等を env で override 可能、RETURN trap で temp dir を掃除、
+`command -v` による冪等性チェック付き)。 workspace の init.sh の雛形として
+`~/.config/boid/workspaces/<slug>/init.sh` にコピーしてカスタマイズしてください。
+
 #### 非 embedded skill のコピーについて
 
 boid 組み込みの skill (`/boid-task` 等) は dispatch のたびに daemon が
