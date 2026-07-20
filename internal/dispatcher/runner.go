@@ -344,19 +344,35 @@ func (r *Runner) Dispatch(ctx context.Context, spec *orchestrator.JobSpec, clean
 	gatewayURL, gatewayToken := r.registerGatewayToken(j.ID, spec, workspaceID)
 
 	// Phase 5b PR1 (docs/plans/phase5-shim-and-task-context.md): track this
-	// job's reduced environment view + trait-filtered payload so the `boid
-	// task env` / `boid task payload` broker RPCs can serve back exactly
-	// what contextFiles/buildEnvironmentYAML materialize into the sandbox
-	// below. Uses spec.HostCommands (short-name keyed), the exact same
-	// input buildEnvironmentYAML's host_commands section uses — NOT
-	// resolvedHostCommands (absolute-host-path keyed, shim/broker plumbing
-	// only, see SandboxRuntimeInfo.ResolvedHostCommands's doc comment).
-	// `boid task current` / `boid task instructions` do NOT need this: they
-	// re-derive live from the task row (orchestrator.SnapshotTask /
-	// CurrentInstructions), which needs no job-scoped tracking.
+	// job's routed instruction + reduced environment view + trait-filtered
+	// payload so the `boid task instructions` / `boid task env` / `boid
+	// task payload` broker RPCs can serve back exactly what
+	// contextFiles/buildEnvironmentYAML materialize into the sandbox below.
+	//
+	//   - Instructions comes straight from spec.Instruction (this job's own
+	//     JobSpec field, resolved once by DispatchPlanner.PlanHook's
+	//     selectInstruction) — NOT re-derived from the task row. Two
+	//     agent-kind hooks for different agents can be dispatched from the
+	//     same task in the same evaluation round (orchestrator.Evaluator
+	//     matches any agent appearing anywhere in the instruction history,
+	//     not just the most recent entry); only the hook whose agent matches
+	//     the *last* history entry gets a non-nil Instruction. Deriving
+	//     "current instructions" from the task row here would silently hand
+	//     one job's agent's instruction to the other job's RPC caller — see
+	//     JobContextSnapshot's own doc comment and wiring-seams.md #13.
+	//   - Env uses spec.HostCommands (short-name keyed), the exact same
+	//     input buildEnvironmentYAML's host_commands section uses — NOT
+	//     resolvedHostCommands (absolute-host-path keyed, shim/broker
+	//     plumbing only, see SandboxRuntimeInfo.ResolvedHostCommands's doc
+	//     comment).
+	//
+	// `boid task current` does NOT need this: it re-derives live from the
+	// task row (orchestrator.SnapshotTask), which carries no job-scoped
+	// routing ambiguity the way instructions does.
 	r.trackJobContext(j.ID, JobContextSnapshot{
-		Env:     BuildWorkspaceEnvView(allowedDomains, spec.HostCommands),
-		Payload: spec.PrimaryInput,
+		Instructions: routedInstructionSlice(spec.Instruction),
+		Env:          BuildWorkspaceEnvView(allowedDomains, spec.HostCommands),
+		Payload:      spec.PrimaryInput,
 	})
 
 	// gatewayCloneURL is only worth resolving (an extra Projects lookup)

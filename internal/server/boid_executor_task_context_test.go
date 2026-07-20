@@ -104,23 +104,23 @@ func TestBoidBuiltinExecutor_TaskCurrent_NotFound(t *testing.T) {
 
 // --- task_instructions ---
 
+// TaskInstructions is job-scoped (JobContextSnapshot.Instructions), NOT
+// task-row-derived (codex review on PR #797 — see wiring-seams.md #13):
+// these tests drive it through jobContexts, matching TaskEnv/TaskPayload's
+// pattern below, not api.TaskAppService.
+
 func TestBoidBuiltinExecutor_TaskInstructions_HappyPath(t *testing.T) {
-	store := &capturingTaskStore{created: []*orchestrator.Task{
-		{
-			ID:        "task-1",
-			ProjectID: "proj-1",
-			Status:    orchestrator.TaskStatusExecuting,
-			Instructions: orchestrator.Instructions{
-				{Agent: "claude-code", Name: "dev", Message: "do it"},
-			},
-		},
+	provider := &stubJobContextProvider{contexts: map[string]dispatcher.JobContextSnapshot{
+		"job-1": {Instructions: []orchestrator.RoutedInstruction{
+			{Agent: "claude-code", Name: "dev", Message: "do it"},
+		}},
 	}}
-	exec := &boidBuiltinExecutor{tasks: &api.TaskAppService{Tasks: store}}
-	ctx := sandbox.TokenContext{TaskID: "task-1", ProjectID: "proj-1"}
+	exec := &boidBuiltinExecutor{jobContexts: provider}
+	ctx := sandbox.TokenContext{JobID: "job-1", ProjectID: "proj-1"}
 
 	resp := exec.ExecuteBoidBuiltin(context.Background(), ctx, &sandbox.BoidRequest{
-		Op:     sandbox.BoidOpTaskInstructions,
-		TaskID: "task-1",
+		Op:    sandbox.BoidOpTaskInstructions,
+		JobID: "job-1",
 	})
 	if resp.ExitCode != 0 {
 		t.Fatalf("exit code = %d, stderr: %s", resp.ExitCode, resp.Stderr)
@@ -134,16 +134,21 @@ func TestBoidBuiltinExecutor_TaskInstructions_HappyPath(t *testing.T) {
 	}
 }
 
+// The direct regression guard for the codex-review finding: a job whose own
+// JobSpec.Instruction was nil at dispatch time (e.g. an agent-kind hook
+// whose agent doesn't match the task's active/last instruction — see
+// JobContextSnapshot's doc comment) must get an empty array back, not
+// whatever the task row's active instruction happens to be.
 func TestBoidBuiltinExecutor_TaskInstructions_NoneReturnsEmptyArray(t *testing.T) {
-	store := &capturingTaskStore{created: []*orchestrator.Task{
-		{ID: "task-1", ProjectID: "proj-1", Status: orchestrator.TaskStatusPending},
+	provider := &stubJobContextProvider{contexts: map[string]dispatcher.JobContextSnapshot{
+		"job-1": {Instructions: []orchestrator.RoutedInstruction{}},
 	}}
-	exec := &boidBuiltinExecutor{tasks: &api.TaskAppService{Tasks: store}}
-	ctx := sandbox.TokenContext{TaskID: "task-1", ProjectID: "proj-1"}
+	exec := &boidBuiltinExecutor{jobContexts: provider}
+	ctx := sandbox.TokenContext{JobID: "job-1", ProjectID: "proj-1"}
 
 	resp := exec.ExecuteBoidBuiltin(context.Background(), ctx, &sandbox.BoidRequest{
-		Op:     sandbox.BoidOpTaskInstructions,
-		TaskID: "task-1",
+		Op:    sandbox.BoidOpTaskInstructions,
+		JobID: "job-1",
 	})
 	if resp.ExitCode != 0 {
 		t.Fatalf("exit code = %d, stderr: %s", resp.ExitCode, resp.Stderr)
@@ -154,22 +159,17 @@ func TestBoidBuiltinExecutor_TaskInstructions_NoneReturnsEmptyArray(t *testing.T
 }
 
 func TestBoidBuiltinExecutor_TaskInstructions_WithField(t *testing.T) {
-	store := &capturingTaskStore{created: []*orchestrator.Task{
-		{
-			ID:        "task-1",
-			ProjectID: "proj-1",
-			Status:    orchestrator.TaskStatusExecuting,
-			Instructions: orchestrator.Instructions{
-				{Agent: "claude-code", Name: "dev", Message: "do it"},
-			},
-		},
+	provider := &stubJobContextProvider{contexts: map[string]dispatcher.JobContextSnapshot{
+		"job-1": {Instructions: []orchestrator.RoutedInstruction{
+			{Agent: "claude-code", Name: "dev", Message: "do it"},
+		}},
 	}}
-	exec := &boidBuiltinExecutor{tasks: &api.TaskAppService{Tasks: store}}
-	ctx := sandbox.TokenContext{TaskID: "task-1", ProjectID: "proj-1"}
+	exec := &boidBuiltinExecutor{jobContexts: provider}
+	ctx := sandbox.TokenContext{JobID: "job-1", ProjectID: "proj-1"}
 
 	resp := exec.ExecuteBoidBuiltin(context.Background(), ctx, &sandbox.BoidRequest{
 		Op:        sandbox.BoidOpTaskInstructions,
-		TaskID:    "task-1",
+		JobID:     "job-1",
 		TaskField: "0.message",
 	})
 	// Numeric array indices are not object keys (ResolveJSONField's rule
@@ -181,15 +181,29 @@ func TestBoidBuiltinExecutor_TaskInstructions_WithField(t *testing.T) {
 }
 
 func TestBoidBuiltinExecutor_TaskInstructions_Unavailable(t *testing.T) {
-	exec := &boidBuiltinExecutor{tasks: nil}
-	ctx := sandbox.TokenContext{TaskID: "task-1", ProjectID: "proj-1"}
+	exec := &boidBuiltinExecutor{jobContexts: nil}
+	ctx := sandbox.TokenContext{JobID: "job-1", ProjectID: "proj-1"}
 
 	resp := exec.ExecuteBoidBuiltin(context.Background(), ctx, &sandbox.BoidRequest{
-		Op:     sandbox.BoidOpTaskInstructions,
-		TaskID: "task-1",
+		Op:    sandbox.BoidOpTaskInstructions,
+		JobID: "job-1",
 	})
 	if resp.ExitCode != 1 || !strings.Contains(resp.Stderr, "unavailable") {
 		t.Fatalf("expected unavailable error, got exit=%d stderr=%q", resp.ExitCode, resp.Stderr)
+	}
+}
+
+func TestBoidBuiltinExecutor_TaskInstructions_NoContextForJob(t *testing.T) {
+	provider := &stubJobContextProvider{contexts: map[string]dispatcher.JobContextSnapshot{}}
+	exec := &boidBuiltinExecutor{jobContexts: provider}
+	ctx := sandbox.TokenContext{JobID: "job-unknown", ProjectID: "proj-1"}
+
+	resp := exec.ExecuteBoidBuiltin(context.Background(), ctx, &sandbox.BoidRequest{
+		Op:    sandbox.BoidOpTaskInstructions,
+		JobID: "job-unknown",
+	})
+	if resp.ExitCode != 1 {
+		t.Fatalf("expected error when no context is tracked for the job, got exit=%d", resp.ExitCode)
 	}
 }
 

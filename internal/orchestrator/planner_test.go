@@ -537,6 +537,57 @@ func TestPlanHook_Instruction_MatchingAgent(t *testing.T) {
 	}
 }
 
+// TestPlanHook_Instruction_NonMatchingAgent_ReturnsNil is the root-cause
+// regression guard for the codex-review finding on Phase 5b PR1 (PR #797,
+// see docs/plans/phase5-shim-and-task-context.md and wiring-seams.md #13):
+// when the instruction history addresses two different agents
+// (Evaluator.Evaluate can fire an agent-kind hook for ANY agent appearing
+// anywhere in the history, not just the active/last entry — see
+// extractInstructionAgents in evaluator.go), a hook whose own Agent does
+// NOT match the *active* (last) instruction entry must get Instruction=nil,
+// even though the evaluator matched and fired it. This is the file-drop
+// side of the invariant dispatcher.JobContextSnapshot.Instructions must
+// mirror exactly: contextFiles only writes instructions.yaml when
+// Instruction != nil, so this nil is what makes the claude-code hook here
+// see no instructions.yaml at all — and now also what the `boid task
+// instructions` RPC must answer with an empty array for, never the
+// codex instruction that happens to be the history's active entry.
+func TestPlanHook_Instruction_NonMatchingAgent_ReturnsNil(t *testing.T) {
+	projectDir := t.TempDir()
+	task := &Task{
+		ID:        "task-1",
+		ProjectID: "proj-1",
+		Behavior:  "dev",
+		Status:    TaskStatusExecuting,
+		Instructions: Instructions{
+			{Agent: "claude-code", Message: "do X"},
+			{Agent: "codex", Message: "do Y"}, // active/last entry
+		},
+	}
+	planner := newPlannerForTest(&Project{ID: "proj-1", WorkDir: projectDir}, TaskBehavior{}, task)
+
+	req, hookCleanup, err := planner.PlanHook(&HookFireEvent{
+		EventID:   "event-1",
+		TaskID:    "task-1",
+		ProjectID: "proj-1",
+		Hook: Hook{
+			ID:    "hook-claude",
+			Kind:  HandlerKindAgent,
+			Agent: "claude-code", // fired by Evaluator (claude-code is IN the history), but not the active entry
+		},
+	})
+	if err != nil {
+		t.Fatalf("PlanHook: %v", err)
+	}
+	if hookCleanup != nil {
+		defer hookCleanup()
+	}
+
+	if req.Instruction != nil {
+		t.Errorf("Instruction = %+v, want nil (claude-code hook does not match the active codex instruction)", req.Instruction)
+	}
+}
+
 // TaskSnapshot carries the same business metadata as the old buildTaskYAML
 // output.
 func TestPlanHook_TaskSnapshot(t *testing.T) {
@@ -614,7 +665,6 @@ func TestPlanHook_PrimaryInput_FilteredByConsumes(t *testing.T) {
 		t.Errorf("PrimaryInput should not carry verification: %s", req.PrimaryInput)
 	}
 }
-
 
 // Hook jobs must receive task.BaseBranch via BOID_BASE_BRANCH so kits
 // like git-auto-merge can identify the merge target without inspecting the
@@ -913,4 +963,3 @@ func newPlannerWithCapabilities(proj *Project, behavior TaskBehavior, task *Task
 		Adapter:  stubHarnessAdapter{},
 	}
 }
-

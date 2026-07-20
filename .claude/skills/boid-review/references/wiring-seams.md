@@ -400,52 +400,89 @@ serve the same data the pre-existing dispatch-time context files
 (`$HOME/.boid/context/{task,instructions,environment,payload}.{yaml,json}`) already write into
 every sandbox — the two paths run in parallel from PR1 through PR5, so any drift is a silent
 inconsistency between "what the agent reads at boot" and "what the agent reads if it calls the
-new CLI later in the same job".
+new CLI later in the same job". The scoping key differs by RPC and getting it wrong is the
+actual failure mode this seam has already produced once (see **Past break**):
+`boid task current` is TaskID-scoped (safe — re-derives live from the task row, no per-job
+ambiguity); `boid task instructions` / `env` / `payload` are all **JobID-scoped**, because their
+source data is job-scoped, not task-scoped.
 
-- **End A (file)**: `contextFiles` / `buildEnvironmentYAML` in `internal/dispatcher/sandbox_builder.go`,
-  fed by `SandboxRuntimeInfo.AllowedDomains` (= the `allowedDomains` local in `Runner.Dispatch`)
-  and `EnvironmentInput.HostCommands` (= `spec.HostCommands`, the **short-name-keyed** map —
-  not `SandboxRuntimeInfo.ResolvedHostCommands`, which is absolute-host-path-keyed shim/broker
-  plumbing only; see that field's doc comment). `host_commands` entries are rendered via the
-  shared `convertHostCommands` helper.
+- **End A (file)**: `contextFiles` / `buildEnvironmentYAML` in `internal/dispatcher/sandbox_builder.go`.
+  `instructions.yaml` is written **iff** `JobSpec.Instruction != nil` (this job's own routed
+  instruction — `orchestrator.DispatchPlanner.PlanHook`'s `selectInstruction`, filtered by *this
+  hook's* declared agent). `environment.yaml`'s `host_commands` is fed by
+  `EnvironmentInput.HostCommands` (= `spec.HostCommands`, the **short-name-keyed** map — not
+  `SandboxRuntimeInfo.ResolvedHostCommands`, which is absolute-host-path-keyed shim/broker plumbing
+  only) via the shared `convertHostCommands` helper; `network.allowed_domains` comes from
+  `SandboxRuntimeInfo.AllowedDomains` (= the `allowedDomains` local in `Runner.Dispatch`).
+  `payload.json`/`.yaml` is `JobSpec.PrimaryInput` (already trait-filtered by
+  `orchestrator.FilterPayloadByTraits` at plan time, per the firing hook's declared
+  `Traits.Consumes`).
 - **End B (RPC)**: `Runner.trackJobContext` (`internal/dispatcher/job_context.go`), called at the
   same point in `Runner.Dispatch` right after `resolveWorkspaceProxy`, builds a
-  `JobContextSnapshot{Env: BuildWorkspaceEnvView(allowedDomains, spec.HostCommands), Payload:
-  spec.PrimaryInput}` — the **same** `allowedDomains`/`spec.HostCommands` values End A uses, and
-  the same `convertHostCommands` call via `BuildWorkspaceEnvView`. `boid task current` /
-  `instructions` instead re-derive live from the task row
-  (`orchestrator.SnapshotTask`/`CurrentInstructions`) since that data has no job-scoped filtering
-  dependency — see `internal/api/task_context.go`'s package doc comment for why the split exists.
-- **End C (serve)**: `boidBuiltinExecutor.ExecuteBoidBuiltin`'s `BoidOpTaskEnv`/`BoidOpTaskPayload`
-  cases (`internal/server/boid_executor.go`) read back via the `jobContextProvider` interface,
-  which `*dispatcher.Runner` satisfies structurally — wired in `internal/server/wire.go`'s
-  `newBoidBuiltinExecutor(..., runner)` call using the **same** `runner` variable `Dispatch` runs
-  on, not a separate instance.
-- **Invariant**: End A and End B must derive from the identical `allowedDomains` /
-  `spec.HostCommands` values and the identical `convertHostCommands` conversion — a future
-  refactor that computes one of them differently (e.g. switching End B to
-  `resolvedHostCommands`, or recomputing `allowedDomains` a second time) silently breaks parity
-  even though both sides still "work" independently. `JobContextSnapshot` must not outlive its
-  job: `Runner.UnregisterJob` must clear it (mirrors the broker token's own lifecycle).
-- **Past break**: none yet (introduced by this seam's own PR) — caught in review before merge:
-  the first implementation used `resolvedHostCommands` (absolute-path-keyed) for End B, which
-  `TestDispatch_TracksJobContext_EnvAndPayload` caught immediately (host command `Name` came back
-  as `/usr/bin/gh` instead of `gh`).
+  `JobContextSnapshot{Instructions: routedInstructionSlice(spec.Instruction), Env:
+  BuildWorkspaceEnvView(allowedDomains, spec.HostCommands), Payload: spec.PrimaryInput}` — every
+  field sourced from the **same** JobSpec values End A uses for *this exact job*, never re-derived
+  from the task row. `boid task current` instead re-derives live from the task row
+  (`orchestrator.SnapshotTask`) since that data has no job-scoped filtering dependency — see
+  `internal/api/task_context.go`'s package doc comment for why only `current` gets that treatment.
+- **End C (serve)**: `boidBuiltinExecutor.ExecuteBoidBuiltin`'s `BoidOpTaskInstructions` /
+  `BoidOpTaskEnv` / `BoidOpTaskPayload` cases (`internal/server/boid_executor.go`) read back via
+  the `jobContextProvider` interface, which `*dispatcher.Runner` satisfies structurally — wired in
+  `internal/server/wire.go`'s `newBoidBuiltinExecutor(..., runner)` call using the **same**
+  `runner` variable `Dispatch` runs on, not a separate instance. `internal/sandbox/broker.go`
+  authorizes these three ops by strict `JobID` equality against the token's own context (never
+  `TaskID`) — `BoidOpTaskCurrent` alone is authorized by `TaskID`.
+- **Invariant**: End A and End B must derive from the identical per-job JobSpec values
+  (`spec.Instruction`, `spec.HostCommands`, `spec.PrimaryInput`, `allowedDomains`) — a future
+  refactor that re-derives any of them from the task row instead of the job's own JobSpec silently
+  breaks parity even though both sides still "work" independently, because a task can have
+  **multiple concurrent/sequential jobs whose routed instructions differ** (see Past break).
+  `JobContextSnapshot` must not outlive its job: `Runner.UnregisterJob` must clear it (mirrors the
+  broker token's own lifecycle).
+- **Past break**: caught in review before merge, twice, on the same PR (#797):
+  1. The first `Env` implementation used `resolvedHostCommands` (absolute-path-keyed) instead of
+     `spec.HostCommands`, which `TestDispatch_TracksJobContext_EnvAndPayload` caught immediately
+     (host command `Name` came back as `/usr/bin/gh` instead of `gh`).
+  2. The first `boid task instructions` implementation derived from the task row
+     (`orchestrator.CurrentInstructions`, filtering by the *active/last* instruction history entry)
+     instead of the job's own `JobSpec.Instruction`. codex review caught this: `orchestrator.Evaluator`
+     fires an agent-kind hook for **every** agent appearing anywhere in the instruction history
+     (`extractInstructionAgents`), not just the active entry, so a task with history
+     `[claude-code, codex]` dispatches both a claude-code hook and a codex hook in the same round —
+     but `selectInstruction`/`FilterInstructions` only route the *last* entry, so only one of the two
+     jobs gets a non-nil `Instruction` (and only one gets an `instructions.yaml` file). The task-row
+     derivation had no way to tell the two jobs apart and would hand the wrong job the other agent's
+     instruction the moment the 5b-6 cutover retired the file (which never had this bug, since it's
+     keyed by the job's own `JobSpec.Instruction` from the start). Fixed by moving `Instructions` into
+     `JobContextSnapshot` (JobID-scoped, same pattern as `Env`/`Payload`) before merge — see
+     `orchestrator.CurrentInstructions`'s doc comment for what it's safe (and unsafe) to use for now.
 - **Guard**: End A unchanged = the pre-existing `TestBuildEnvironmentYAML_*` suite in
   `sandbox_builder_test.go` (still green after the `WorkspaceEnvHostCommand` rename, proving the
-  YAML tags/output didn't move). End B = `TestDispatch_TracksJobContext_EnvAndPayload` /
-  `_NilPrimaryInput`, `TestUnregisterJob_RemovesJobContext` (`internal/dispatcher/runner_job_context_test.go`).
-  End C = the `TestBoidBuiltinExecutor_Task{Env,Payload,Current,Instructions}_*` suite
-  (`internal/server/boid_executor_task_context_test.go`), plus
-  `TestBoidBuiltinExecutor_TaskEnvAndPayload_RealRunnerWiring`
-  (`internal/server/boid_executor_task_context_wiring_test.go`) which crosses End B→C with a real
-  `*dispatcher.Runner.Dispatch` (fake sandbox/runtime backends, no real process launch) instead of
-  a stub `jobContextProvider` — the specific gap a stub-only test suite leaves open. Broker-level
-  authorization (id-equality against the token's own `TaskID`/`JobID`) is covered separately by
-  `internal/sandbox/broker_task_context_test.go`.
-- **When you touch it**: if you touch `contextFiles`/`buildEnvironmentYAML`, `Runner.Dispatch`'s
-  `trackJobContext` call, or `jobContextProvider`/`newBoidBuiltinExecutor`'s wiring in `wire.go`,
-  verify End A and End B still read from the same source values, and that the real-Runner wiring
-  test still exercises the exact `runner` instance `wire.go` threads through. The 5b-6 cutover PR
+  YAML tags/output didn't move) plus `TestPlanHook_Instruction_MatchingAgent` /
+  `_NonMatchingAgent_ReturnsNil` (`internal/orchestrator/planner_test.go` — the latter is the
+  root-cause case: a hook whose agent doesn't match the active history entry gets `Instruction ==
+  nil` even though the evaluator fired it). End B =
+  `TestDispatch_TracksJobContext_Instructions_MatchesJobSpec` /
+  `_NilJobSpecInstructionYieldsEmpty`, `_EnvAndPayload`, `_NilPrimaryInput`,
+  `TestUnregisterJob_RemovesJobContext` (`internal/dispatcher/runner_job_context_test.go`). End C =
+  the `TestBoidBuiltinExecutor_Task{Instructions,Env,Payload,Current}_*` suite
+  (`internal/server/boid_executor_task_context_test.go`), plus two real-`*dispatcher.Runner` wiring
+  tests in `internal/server/boid_executor_task_context_wiring_test.go`:
+  `TestBoidBuiltinExecutor_TaskEnvAndPayload_RealRunnerWiring` (env/payload, single job, plus the
+  post-`UnregisterJob` failure case) and
+  `TestBoidBuiltinExecutor_TaskInstructions_RealRunnerWiring_NoCrossJobLeak` (dispatches **two**
+  real jobs sharing a simulated instruction history and asserts each job's `boid task instructions`
+  call returns only its own data — the specific shape of the second Past break, closed at the
+  layer a stub-only `jobContextProvider` test suite cannot reach). Broker-level authorization
+  (id-equality against the token's own `TaskID`/`JobID`, `TaskInstructions` on `JobID` specifically)
+  is covered separately by `internal/sandbox/broker_task_context_test.go`.
+- **When you touch it**: if you touch `contextFiles`/`buildEnvironmentYAML`, `selectInstruction`/
+  `Evaluator.Evaluate`, `Runner.Dispatch`'s `trackJobContext` call, or
+  `jobContextProvider`/`newBoidBuiltinExecutor`'s wiring in `wire.go`, verify End A and End B still
+  read from the same **per-job** JobSpec values (never the task row, for anything but
+  `BoidOpTaskCurrent`) and that the real-Runner wiring tests still exercise the exact `runner`
+  instance `wire.go` threads through. Any change that makes a task-context RPC read from the task
+  row should immediately raise the question this seam exists to ask: "can two jobs from this same
+  task disagree about this value?" — if yes, it must be JobID-scoped. The 5b-6 cutover PR
   (`docs/plans/phase5-shim-and-task-context.md`), which retires End A's file materialization, is
   the point where this seam collapses to just End B/C — update this entry then.

@@ -497,21 +497,29 @@ func (e *boidBuiltinExecutor) ExecuteBoidBuiltin(goCtx context.Context, ctx sand
 		return marshalTaskContextResponse(snap)
 
 	case sandbox.BoidOpTaskInstructions:
-		if e.tasks == nil {
+		// Job-scoped, NOT task-row-derived: api.TaskAppService.GetInstructions
+		// (task-row-derived, kept for other potential task-level callers —
+		// see its own doc comment) must not back this RPC. Two agent-kind
+		// hooks for different agents can be dispatched from the same task in
+		// one evaluation round; only jobContexts (populated from this job's
+		// own JobSpec.Instruction at Dispatch time) tells them apart. Fixed
+		// during codex review on PR #797 before merge — see
+		// wiring-seams.md #13.
+		if e.jobContexts == nil {
 			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid task instructions unavailable"}
 		}
+		snap, ok := e.jobContexts.JobContext(req.JobID)
+		if !ok {
+			return &sandbox.ExecResponse{ExitCode: 1, Stderr: fmt.Sprintf("boid task instructions: no context tracked for job %q", req.JobID)}
+		}
 		if req.TaskField != "" {
-			value, err := e.tasks.GetInstructionsField(req.TaskID, req.TaskField)
+			value, err := resolveTaskContextField(snap.Instructions, req.TaskField)
 			if err != nil {
 				return &sandbox.ExecResponse{ExitCode: 1, Stderr: err.Error()}
 			}
 			return &sandbox.ExecResponse{Stdout: value}
 		}
-		list, err := e.tasks.GetInstructions(req.TaskID)
-		if err != nil {
-			return &sandbox.ExecResponse{ExitCode: 1, Stderr: err.Error()}
-		}
-		return marshalTaskContextResponse(list)
+		return marshalTaskContextResponse(snap.Instructions)
 
 	case sandbox.BoidOpTaskEnv:
 		if e.jobContexts == nil {

@@ -58,8 +58,11 @@ func TestBroker_BoidTaskCurrent_PolicyReject(t *testing.T) {
 	assertBoidOpRejectedByPolicy(t, &sandbox.BoidRequest{Op: sandbox.BoidOpTaskCurrent, TaskID: "t1"})
 }
 
+// BoidOpTaskInstructions is JobID-scoped (not TaskID-scoped — see
+// broker_task_context_test.go and wiring-seams.md #13), so the request here
+// carries JobID rather than TaskID.
 func TestBroker_BoidTaskInstructions_PolicyReject(t *testing.T) {
-	assertBoidOpRejectedByPolicy(t, &sandbox.BoidRequest{Op: sandbox.BoidOpTaskInstructions, TaskID: "t1"})
+	assertBoidOpRejectedByPolicy(t, &sandbox.BoidRequest{Op: sandbox.BoidOpTaskInstructions, JobID: "j1"})
 }
 
 func TestBroker_BoidTaskEnv_PolicyReject(t *testing.T) {

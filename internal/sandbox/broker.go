@@ -464,7 +464,17 @@ func (b *Broker) handleBoidBuiltin(ctx context.Context, req *ExecRequest, entry 
 	// BOID_TASK_ID/BOID_JOB_ID env, never a CLI flag — so the extra equality
 	// check closes an otherwise-pointless cross-task/cross-job read at zero
 	// cost to legitimate use.
-	case BoidOpTaskCurrent, BoidOpTaskInstructions:
+	//
+	// TaskCurrent is TaskID-scoped (it re-derives live from the task row,
+	// which carries no job-scoped ambiguity). TaskInstructions, TaskEnv, and
+	// TaskPayload are all JobID-scoped: TaskInstructions in particular MUST
+	// key off the caller's own job, not its task — two agent-kind hooks for
+	// different agents can be dispatched from the same task in one
+	// evaluation round (see JobContextSnapshot's doc comment), so a
+	// TaskID-only guard would let a claude job read a codex job's
+	// instructions (and vice versa) as long as they shared a task. This was
+	// caught in codex review on PR #797 before merge — see wiring-seams.md #13.
+	case BoidOpTaskCurrent:
 		if boidReq.TaskID == "" {
 			boidReq.TaskID = entry.Context.TaskID
 		}
@@ -474,7 +484,7 @@ func (b *Broker) handleBoidBuiltin(ctx context.Context, req *ExecRequest, entry 
 		if boidReq.TaskID != entry.Context.TaskID {
 			return &ExecResponse{ExitCode: 1, Stderr: fmt.Sprintf("boid task %s is restricted to the current task", taskContextOpVerb(boidReq.Op))}
 		}
-	case BoidOpTaskEnv, BoidOpTaskPayload:
+	case BoidOpTaskInstructions, BoidOpTaskEnv, BoidOpTaskPayload:
 		if boidReq.JobID == "" {
 			boidReq.JobID = entry.Context.JobID
 		}

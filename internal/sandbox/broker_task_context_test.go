@@ -76,20 +76,45 @@ func TestBroker_BoidBuiltinTaskCurrent_DefaultsAndRestrictsTaskID(t *testing.T) 
 	}
 }
 
-func TestBroker_BoidBuiltinTaskInstructions_SameGuard(t *testing.T) {
+// BoidOpTaskInstructions is JobID-scoped, not TaskID-scoped (codex review on
+// PR #797: two agent-kind hooks for different agents can be dispatched from
+// the same task in one evaluation round, so a TaskID-only guard would let a
+// claude job read a codex job's instructions as long as they shared a task
+// — see wiring-seams.md #13). A mismatched TaskID alone must NOT be
+// rejected (there is no TaskID-equality check for this op at all); only a
+// mismatched JobID is.
+func TestBroker_BoidBuiltinTaskInstructions_DefaultsAndRestrictsJobID(t *testing.T) {
 	exec := &fakeBoidExecutor{}
 	broker := &sandbox.Broker{BoidExecutor: exec}
 	projectDir := t.TempDir()
 	token := registerTaskContextToken(broker, projectDir)
 
+	// Empty JobID defaults from the token context and reaches the executor.
 	resp := broker.Handle(&sandbox.ExecRequest{
 		Command: "boid",
 		Cwd:     projectDir,
 		Token:   token,
-		Boid:    &sandbox.BoidRequest{Op: sandbox.BoidOpTaskInstructions, TaskID: "other-task"},
+		Boid:    &sandbox.BoidRequest{Op: sandbox.BoidOpTaskInstructions},
 	})
-	if resp.ExitCode != 1 || !strings.Contains(resp.Stderr, "restricted to the current task") {
-		t.Fatalf("expected task id rejection, got exit=%d stderr=%q", resp.ExitCode, resp.Stderr)
+	if resp.ExitCode != 0 {
+		t.Fatalf("exit code = %d, stderr: %s", resp.ExitCode, resp.Stderr)
+	}
+	if len(exec.calls) != 1 || exec.calls[0].JobID != "job-keep" {
+		t.Fatalf("expected executor call with job-keep, got %+v", exec.calls)
+	}
+
+	// A mismatched explicit JobID is rejected before reaching the executor.
+	resp = broker.Handle(&sandbox.ExecRequest{
+		Command: "boid",
+		Cwd:     projectDir,
+		Token:   token,
+		Boid:    &sandbox.BoidRequest{Op: sandbox.BoidOpTaskInstructions, JobID: "other-job"},
+	})
+	if resp.ExitCode != 1 || !strings.Contains(resp.Stderr, "restricted to the current job") {
+		t.Fatalf("expected job id rejection, got exit=%d stderr=%q", resp.ExitCode, resp.Stderr)
+	}
+	if len(exec.calls) != 1 {
+		t.Fatalf("executor should not receive the cross-job request, calls=%d", len(exec.calls))
 	}
 }
 
