@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 )
 
@@ -268,6 +269,60 @@ func TestListAttachments_SkipsEscapingSymlink(t *testing.T) {
 	}
 }
 
+// codex review on PR #798 (Phase 5b PR2): Nit — List and Read had different
+// entry-type admission criteria. ReadAttachment now rejects every symlink
+// outright (the Major/TOCTOU fix makes this categorical on Linux via
+// openat2 RESOLVE_NO_SYMLINKS), so List must not advertise one either, even
+// when its target is safely inside the directory — the previous
+// "escaping-only" check would have let this one through, producing an entry
+// `list` shows but `get` can never actually return.
+func TestListAttachments_ExcludesSymlinkEvenWhenTargetIsWithinDir(t *testing.T) {
+	dataHome := t.TempDir()
+	dir, err := EnsureAttachmentsDir(dataHome, "task-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "real.png"), []byte("real"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(dir, "real.png"), filepath.Join(dir, "alias.png")); err != nil {
+		t.Fatal(err)
+	}
+
+	names, err := ListAttachments(dataHome, "task-1")
+	if err != nil {
+		t.Fatalf("ListAttachments: %v", err)
+	}
+	if len(names) != 1 || names[0] != "real.png" {
+		t.Errorf("names = %v, want only [real.png] (in-dir symlink excluded too, matching ReadAttachment)", names)
+	}
+}
+
+// FIFO/socket/device entries are excluded from list too — ReadAttachment
+// only ever serves regular files (info.Mode().IsRegular()), so list's
+// admission criteria must match exactly.
+func TestListAttachments_ExcludesNonRegularEntries(t *testing.T) {
+	dataHome := t.TempDir()
+	dir, err := EnsureAttachmentsDir(dataHome, "task-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "real.png"), []byte("real"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := syscall.Mkfifo(filepath.Join(dir, "pipe"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	names, err := ListAttachments(dataHome, "task-1")
+	if err != nil {
+		t.Fatalf("ListAttachments: %v", err)
+	}
+	if len(names) != 1 || names[0] != "real.png" {
+		t.Errorf("names = %v, want only [real.png] (FIFO excluded)", names)
+	}
+}
+
 func TestReadAttachment_HappyPath(t *testing.T) {
 	dataHome := t.TempDir()
 	if _, err := SaveMultipartAttachments(dataHome, "task-1", []*multipart.FileHeader{
@@ -360,6 +415,163 @@ func TestReadAttachment_SymlinkEscapeRejected(t *testing.T) {
 
 	if _, err := ReadAttachment(dataHome, "task-1", "escape.png"); err == nil {
 		t.Error("ReadAttachment via an escaping symlink succeeded, want a rejection")
+	}
+}
+
+// --- codex review on PR #798 (Phase 5b PR2): Major — TOCTOU between the
+// symlink-containment check and the later read ---
+//
+// The original implementation checked containment via filepath.EvalSymlinks
+// and then re-opened the same path with os.ReadFile — a writer with access
+// to the attachments directory could swap the target between those two
+// steps (or grow the file past the size cap between os.Stat and
+// os.ReadFile). The fix opens the file exactly once (via a TOCTOU-safe
+// dirfd-relative openat2 on Linux — see attachment_read_linux.go) and reuses
+// that same descriptor for both the stat and the capped read, so no
+// subsequent directory-entry swap can affect what gets read. A direct
+// consequence: even a symlink whose target sits *inside* the attachments
+// directory (which the old permissive "target stays within dir" check would
+// have allowed) is now rejected outright at open time — no legitimate
+// attachment is ever a symlink, and forbidding all of them removes the
+// swap-window entirely rather than trying to validate it away.
+func TestReadAttachment_RejectsSymlinkEvenWhenTargetIsWithinDir(t *testing.T) {
+	dataHome := t.TempDir()
+	dir, err := EnsureAttachmentsDir(dataHome, "task-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "real.png"), []byte("real data"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(dir, "real.png"), filepath.Join(dir, "alias.png")); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := ReadAttachment(dataHome, "task-1", "alias.png"); err == nil {
+		t.Error("ReadAttachment via an in-dir symlink succeeded, want a rejection (no attachment is ever legitimately a symlink)")
+	}
+}
+
+// --- codex review on PR #798 (Phase 5b PR2): Blocker — cross-task
+// attachment leak via a traversal-shaped TaskID ---
+//
+// CreateTaskRequest.ID is caller-supplied and saved as the literal DB
+// primary key without validation (internal/api/task_create.go). The broker
+// (internal/sandbox/broker.go) authorizes attachments ops by comparing the
+// *raw* TaskID string against the token's own context — it never resolves a
+// filesystem path, so a task whose ID is literally
+// "alias/../<victim-id>" passes that check trivially (both sides carry the
+// identical literal string). The vulnerability was that
+// AttachmentsRootForTask's plain filepath.Join then silently collapsed that
+// same string down to the *victim's* real directory
+// ("<root>/tasks/<victim-id>/attachments"), because filepath.Join
+// normalizes ".." segments. isCanonicalPathComponent closes this by
+// rejecting any TaskID that isn't a single literal path segment before it
+// ever reaches filepath.Join.
+
+func TestAttachmentsRootForTask_RejectsNonCanonicalTaskID(t *testing.T) {
+	dataHome := t.TempDir()
+	cases := []string{
+		"alias/../550e8400-e29b-41d4-a716-446655440000",
+		"../other-task",
+		"../../etc",
+		"..",
+		".",
+		"foo/bar",
+		"/abs/task",
+		"tasks/../../etc",
+	}
+	for _, id := range cases {
+		t.Run(id, func(t *testing.T) {
+			if got := AttachmentsRootForTask(dataHome, id); got != "" {
+				t.Errorf("AttachmentsRootForTask(%q) = %q, want \"\" (rejected)", id, got)
+			}
+		})
+	}
+}
+
+// AttachmentsRootForTask must still resolve ordinary, non-traversal task
+// IDs exactly as before (UUIDs, slugs, etc.) — the new guard must not
+// become overly strict and break the common case.
+func TestAttachmentsRootForTask_AllowsOrdinaryTaskID(t *testing.T) {
+	dataHome := "/data"
+	for _, id := range []string{
+		"550e8400-e29b-41d4-a716-446655440000",
+		"task-1",
+		"my_task.v2",
+	} {
+		want := filepath.Join(dataHome, "tasks", id, "attachments")
+		if got := AttachmentsRootForTask(dataHome, id); got != want {
+			t.Errorf("AttachmentsRootForTask(%q) = %q, want %q", id, got, want)
+		}
+	}
+}
+
+// The exact end-to-end attack scenario codex review demonstrated: a task
+// whose literal ID is an alias-plus-traversal string that resolves (via a
+// naive filepath.Join) to a *different*, real task's attachments directory
+// must not be able to list or read that victim task's attachments, even
+// though a raw string-equality check (the broker's actual authorization
+// rule) against that same literal alias string would pass.
+func TestListAndReadAttachment_RejectsAliasTaskIDCrossTaskLeak(t *testing.T) {
+	dataHome := t.TempDir()
+	victimID := "550e8400-e29b-41d4-a716-446655440000"
+	if _, err := SaveMultipartAttachments(dataHome, victimID, []*multipart.FileHeader{
+		makeFileHeader(t, "secret.png", "image/png", []byte("victim secret")),
+	}); err != nil {
+		t.Fatalf("seed victim attachments: %v", err)
+	}
+
+	aliasID := "alias/../" + victimID
+
+	names, listErr := ListAttachments(dataHome, aliasID)
+	for _, n := range names {
+		if n == "secret.png" {
+			t.Fatalf("ListAttachments(%q) leaked victim attachment %q", aliasID, n)
+		}
+	}
+	if listErr == nil && len(names) != 0 {
+		t.Errorf("ListAttachments(%q) = %v, want an error or an empty result", aliasID, names)
+	}
+
+	if data, err := ReadAttachment(dataHome, aliasID, "secret.png"); err == nil {
+		t.Fatalf("ReadAttachment(%q, secret.png) leaked victim data: %q", aliasID, data)
+	}
+}
+
+// --- codex review on PR #798: Minor 1 — write/read basename contract gap ---
+//
+// SanitizeAttachmentName (the upload-time validator) already accepts names
+// containing an embedded ".." substring (e.g. "report..final.png" — dots
+// are in its allowlist regex, and filepath.Clean/Base never treat ".." as
+// special unless it is a whole path *segment*, which requires a separator
+// on at least one side; a bare, separator-free basename can never traverse
+// regardless of how many dots it contains). The original
+// validateAttachmentLookupName over-corrected by rejecting any name merely
+// *containing* "..", which made such a legitimately-stored attachment
+// permanently unreachable via `get` even though `list` still showed it.
+// isCanonicalPathComponent only rejects a name that literally *is* "." or
+// ".." (or contains a separator) — the actual traversal-relevant cases —
+// closing that gap.
+func TestReadAttachment_AllowsEmbeddedDotDotInBasename(t *testing.T) {
+	dataHome := t.TempDir()
+	if _, err := SaveMultipartAttachments(dataHome, "task-1", []*multipart.FileHeader{
+		makeFileHeader(t, "report..final.png", "image/png", []byte("report data")),
+	}); err != nil {
+		t.Fatalf("seed attachment: %v", err)
+	}
+
+	names, err := ListAttachments(dataHome, "task-1")
+	if err != nil || len(names) != 1 || names[0] != "report..final.png" {
+		t.Fatalf("ListAttachments = %v, err=%v, want [report..final.png]", names, err)
+	}
+
+	data, err := ReadAttachment(dataHome, "task-1", "report..final.png")
+	if err != nil {
+		t.Fatalf("ReadAttachment(report..final.png): %v, want success (list already shows it)", err)
+	}
+	if string(data) != "report data" {
+		t.Errorf("data = %q, want %q", data, "report data")
 	}
 }
 

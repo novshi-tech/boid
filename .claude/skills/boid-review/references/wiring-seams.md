@@ -496,53 +496,93 @@ pre-existing dispatch-time RO bind (`~/.boid/attachments`) exposes inside the sa
 paths run in parallel from PR2 through PR6, so any drift is a silent inconsistency between "what
 the agent sees under `~/.boid/attachments`" and "what `boid task attachments get` returns for the
 same name". Unlike seam #13 (task-context RPCs, which have per-job scoping subtlety), this seam's
-risk is narrower — attachments are TaskID-scoped only, no per-job ambiguity — but the *derivation
-path* has three independent call sites that must agree on one thing: which directory is "this
-task's attachments".
+risk is narrower in one dimension (attachments are TaskID-scoped only, no per-job ambiguity) but
+wider in another: **three independent path-construction call sites** must agree on the same
+directory, and (as of codex review on PR #798) only two of them share a validated helper — the
+third does not, which is a known, currently-unclosed gap (see Past break and When you touch it).
 
-- **End A (bind)**: `internal/dispatcher/sandbox_builder.go`'s per-task attachments mount (~L367),
-  `attachSrc := filepath.Join(rt.AttachmentsRoot, "tasks", spec.TaskID, "attachments")`, RO-bound to
-  `~/.boid/attachments` inside the sandbox. `rt.AttachmentsRoot` is threaded from
-  `dispatcher.RunnerConfig.AttachmentsRoot`, set in `wire.go` to `dataHomeFor(cfg)`.
-  `EnsureAttachmentsDir`/`SaveMultipartAttachments` (`internal/api/attachments.go`, called from
-  `web.go`'s upload handlers) write into the same directory via `AttachmentsRootForTask`.
-- **End B (RPC)**: `api.ListAttachments` / `api.ReadAttachment` (`internal/api/attachments.go`),
-  called from `boidBuiltinExecutor`'s `BoidOpTaskAttachmentsList`/`Get` cases
-  (`internal/server/boid_executor.go`). Both resolve the same directory via the same
-  `AttachmentsRootForTask(dataHome, taskID)` helper End A's write path uses — the executor's
-  `attachmentsRoot` field is threaded in `wire.go`'s `newBoidBuiltinExecutor(..., dataHomeFor(cfg))`
-  call, the identical `dataHomeFor(cfg)` expression End A's `AttachmentsRoot:` field uses. There is
-  no separate "RPC data source" to drift from the bind's — both are the same `os.ReadDir`/
-  `os.ReadFile` over the same path, just reached from two different call sites.
-- **End C (authorization)**: `internal/sandbox/broker.go`'s `BoidOpTaskAttachmentsList`/`Get` case
-  authorizes by strict `TaskID` equality against the token's own context (same pattern as
-  `BoidOpTaskCurrent` — attachments have no job-scoped ambiguity, since a task's attachments don't
-  vary per dispatched job the way `JobSpec.Instruction` does).
-- **Invariant**: End A and End B must resolve through the identical `dataHomeFor(cfg)` value passed
-  to `dispatcher.RunnerConfig.AttachmentsRoot`, `api.WebHandler.AttachmentsRoot`, and
-  `newBoidBuiltinExecutor`'s `attachmentsRoot` parameter — a future refactor that computes any of
-  these three independently (e.g. a different data-home resolution for one call site) would make
-  `boid task attachments get <name>` return 404 for a file the bind still shows, or vice versa.
-  `ReadAttachment` must independently re-validate path traversal and symlink escape (`filepath.Base`
-  + `..`-substring reject + `filepath.EvalSymlinks` containment check) rather than trusting that
-  `SanitizeAttachmentName`'s upload-time coercion already ruled it out — the RPC is a *new* attacker
-  surface (a caller-controlled lookup key) that the RO bind never had (the bind just exposes
-  whatever is on disk; there is no "look up by attacker-supplied name" step to get wrong).
-- **Past break**: none yet — this seam is new as of PR2. Watch for it at the 5b-6 cutover, which
-  retires End A's bind entirely; if that PR also touches `dataHomeFor` or `AttachmentsRootForTask`,
-  re-verify End B still resolves the same directory the bind used to.
-- **Guard**: End A/B parity is enforced structurally (both call `AttachmentsRootForTask` with the
-  same `dataHome`/`taskID`, not by a dedicated equality test) — see
-  `internal/api/attachments_test.go`'s `TestListAttachments_*`/`TestReadAttachment_*` for the
-  filesystem-level behavior (including `TestReadAttachment_PathTraversalRejected` and
-  `_SymlinkEscapeRejected`) and `internal/server/boid_executor_task_attachments_test.go` for the
-  executor-level wiring (a real temp `attachmentsRoot`, not a stub — there is no interface to bridge
-  here, unlike seam #13's `jobContextProvider`). Broker-level authorization is covered by
+- **End A (bind, unvalidated)**: `internal/dispatcher/sandbox_builder.go`'s per-task attachments
+  mount builds its source path with a bare `attachSrc := filepath.Join(rt.AttachmentsRoot, "tasks",
+  spec.TaskID, "attachments")` — NOT a call to `api.AttachmentsRootForTask`. It cannot be: internal/api
+  already imports internal/dispatcher (`job_log_sse.go`/`workspace_homes.go`/`ws_attach.go`), so the
+  reverse import (dispatcher → api) would be a cycle. `rt.AttachmentsRoot` is threaded from
+  `dispatcher.RunnerConfig.AttachmentsRoot`, set in `wire.go` to `dataHomeFor(cfg)` — the same value
+  End B/End C use, but the *taskID* half of the join is never validated here.
+- **End B (write path, validated)**: `EnsureAttachmentsDir`/`SaveMultipartAttachments`
+  (`internal/api/attachments.go`, called from `web.go`'s upload handlers) resolve the directory via
+  `AttachmentsRootForTask(dataHome, taskID)`, which rejects a non-canonical `taskID`
+  (`isCanonicalPathComponent` — the Blocker fix from codex review on PR #798, see Past break).
+- **End C (RPC read path, validated)**: `api.ListAttachments` / `api.ReadAttachment`
+  (`internal/api/attachments.go`), called from `boidBuiltinExecutor`'s
+  `BoidOpTaskAttachmentsList`/`Get` cases (`internal/server/boid_executor.go`), resolve through the
+  same `AttachmentsRootForTask` as End B. The executor's `attachmentsRoot` field is threaded in
+  `wire.go`'s `newBoidBuiltinExecutor(..., dataHomeFor(cfg))` call — the identical `dataHomeFor(cfg)`
+  expression End A's `AttachmentsRoot:` field and End B's callers use.
+- **End D (authorization)**: `internal/sandbox/broker.go`'s `BoidOpTaskAttachmentsList`/`Get` case
+  authorizes by strict `TaskID` *string equality* against the token's own context (same pattern as
+  `BoidOpTaskCurrent`) — it never resolves a filesystem path, so it cannot itself catch a
+  traversal-shaped `TaskID`; that is End B/C's job.
+- **Invariant**: all three path-construction call sites (End A/B/C) must resolve to the identical
+  directory for a given `(dataHome, taskID)` pair, AND every one of them must reject the same set of
+  non-canonical `taskID` values (empty, containing a path separator, or the literal `.`/`..`) before
+  ever constructing a path — a `taskID` that passes End D's raw string-equality check must never be
+  allowed to resolve, via `filepath.Join`'s automatic `..`-collapsing, to a *different* task's
+  directory (see Past break for the concrete exploit this produces when the guard is missing).
+- **Past break**: codex review on PR #798 (Phase 5b PR2), before merge — **Blocker**: `CreateTaskRequest.ID`
+  is caller-supplied and saved as the literal DB primary key without validation
+  (`internal/api/task_create.go`). A task literally IDed `"alias/../<victim-id>"` passed End D's
+  string-equality check trivially (both sides carry the identical literal alias), while
+  `AttachmentsRootForTask`'s bare `filepath.Join` silently collapsed it down to the *victim's* real
+  attachments directory — a cross-task leak via `boid task attachments list`/`get`. Fixed by adding
+  `isCanonicalPathComponent` to `AttachmentsRootForTask` (closes End B and End C uniformly, since both
+  route through it) before merge. **This same review also surfaced that End A (the bind) has no
+  equivalent guard** — it was flagged as a Minor finding (doc accuracy) rather than fixed in PR2,
+  because closing it requires either touching `sandbox_builder.go` (out of PR2's stated scope, and a
+  higher-blast-radius file — every job dispatch goes through it) or introducing a shared low-level
+  helper both packages can import (blocked by the dispatcher→api cycle noted in End A). **This is a
+  live, tracked gap as of PR2's merge**: a task with a traversal-shaped literal ID can still have the
+  *wrong* directory RO-bound into its own sandbox at `~/.boid/attachments`, by the identical mechanism
+  the Blocker fix closed for the RPC path. Also from the same review — **Major (TOCTOU)**: the original
+  `ReadAttachment` validated symlink containment and the size cap via `filepath.EvalSymlinks`/`os.Stat`
+  and then reopened the same path with `os.ReadFile`, leaving a swap window; fixed with a
+  dirfd-relative `openat2(RESOLVE_BENEATH|RESOLVE_NO_SYMLINKS)` open-once-reuse-the-fd pattern on Linux
+  (`attachment_read_linux.go`), falling back to a still-improved (single-`Open`, fd-reused)
+  best-effort path on pre-5.6 kernels or non-Linux builds. **Minor**: `validateAttachmentLookupName`
+  originally rejected any name merely *containing* `".."` as a substring, which was stricter than
+  necessary (a separator-free basename can never traverse regardless of embedded dots) and created a
+  write/read contract mismatch against `SanitizeAttachmentName`'s more permissive upload-time
+  allowlist; loosened to share `isCanonicalPathComponent`'s "must not equal `.`/`..`, must not contain
+  a separator" rule instead. **Nit**: `ListAttachments` originally admitted a symlink whose target
+  stayed inside the directory, which the TOCTOU fix's categorical "no symlinks, ever" policy in
+  `ReadAttachment` made inconsistent (list would show a name get could never return); `ListAttachments`
+  now requires `info.Mode().IsRegular()` too, matching `ReadAttachment` exactly.
+- **Guard**: End B/End C parity is enforced structurally (both call `AttachmentsRootForTask` with the
+  same `dataHome`/`taskID`) — see `internal/api/attachments_test.go`'s `TestListAttachments_*`/
+  `TestReadAttachment_*` for the filesystem-level behavior (path traversal, symlink escape — both the
+  escaping and in-dir-but-still-rejected cases — the alias-`TaskID` cross-task-leak scenario, and the
+  size cap) and `internal/server/boid_executor_task_attachments_test.go` for the executor-level wiring
+  (a real temp `attachmentsRoot`, not a stub — there is no interface to bridge here, unlike seam #13's
+  `jobContextProvider`). End A is **not** covered by that guard (see Past break); its only current
+  guard is `internal/dispatcher/attachments_bind_parity_test.go`'s
+  `TestAttachmentsBindSource_MatchesAPIHelper` (an external `dispatcher_test`-package test, since an
+  internal one importing `internal/api` would itself be the cycle End A's doc note above describes),
+  which pins that End A's bind construction and `api.AttachmentsRootForTask` compute the *same path*
+  for ordinary inputs — it deliberately does **not** exercise `isCanonicalPathComponent`, since End A
+  has no equivalent check to exercise. Broker-level authorization is covered by
   `internal/sandbox/broker_task_attachments_test.go`. The op ↔ escape-guard manifest
   (`internal/sandbox/broker_op_escape_test.go`) and the policy drift tests
   (`internal/orchestrator/policy_test.go`'s `wantOps`, `internal/dispatcher/policy_translate_test.go`'s
   `TestOpConstantsMirror`) all include the two new ops.
-- **When you touch it**: if you touch `AttachmentsRootForTask`, `dataHomeFor`, the
-  `sandbox_builder.go` attachments mount, or `newBoidBuiltinExecutor`'s wiring in `wire.go`, verify
-  all three call sites (bind, RPC, upload handler) still resolve to the same directory for a given
-  `(dataHome, taskID)` pair.
+- **When you touch it**: if you touch `AttachmentsRootForTask`, `isCanonicalPathComponent`,
+  `dataHomeFor`, the `sandbox_builder.go` attachments mount, or `newBoidBuiltinExecutor`'s wiring in
+  `wire.go`, verify all three path-construction call sites (End A/B/C) still resolve to the same
+  directory for a given `(dataHome, taskID)` pair, and re-run
+  `TestAttachmentsBindSource_MatchesAPIHelper`. **Before this seam collapses at the 5b-6 cutover**
+  (which retires End A's bind entirely, per the PR-6 note in the "PR 分割案 > 5b" section of
+  docs/plans/phase5-shim-and-task-context.md), someone should decide how to close End A's tracked gap
+  — either give `sandbox_builder.go` its own `isCanonicalPathComponent`-equivalent check (small,
+  duplicated, no cycle) or extract a shared low-level path-building package both `internal/api` and
+  `internal/dispatcher` can import without reversing the existing api→dispatcher dependency direction.
+  Until then, a task created with a traversal-shaped literal ID is a real, live risk against the bind
+  (though not against the RPC path, which the Blocker fix closes) — this is not merely a
+  documentation-accuracy nit.

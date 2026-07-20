@@ -187,6 +187,81 @@ func TestRunBoidShim_TaskAttachmentsGet_OutputFlagWritesFile(t *testing.T) {
 	}
 }
 
+// codex review on PR #798 (Phase 5b PR2): Minor 1 — write/read basename
+// contract gap. SanitizeAttachmentName (upload time) has no objection to a
+// leading "-" (e.g. "-shot.png" matches the ^[A-Za-z0-9._-]+$ allowlist and
+// isn't a dotfile), so such a name can be saved and shows up in `list` —
+// but the get parser previously treated ANY leading-dash positional
+// argument as an unrecognized flag, making the attachment permanently
+// unreachable via the CLI even though it exists. A literal "--"
+// end-of-flags marker (the standard POSIX convention, same as `git`/`grep`)
+// closes the gap: everything after it is a positional argument, never a
+// flag.
+func TestRunBoidShim_TaskAttachmentsGet_DashDashAllowsLeadingDashName(t *testing.T) {
+	sockPath, reqCh := newFakeBrokerRecording(t, &sandbox.ExecResponse{
+		Stdout: base64.StdEncoding.EncodeToString([]byte("PNGDATA")),
+	})
+	t.Setenv("BOID_BROKER_SOCKET", sockPath)
+	t.Setenv("BOID_BROKER_TOKEN", "tok")
+	t.Setenv("BOID_TASK_ID", "t1")
+
+	resp, err := sandbox.RunBoidShim([]string{"task", "attachments", "get", "--", "-shot.png"})
+	if err != nil {
+		t.Fatalf("RunBoidShim: %v", err)
+	}
+	if resp.ExitCode != 0 {
+		t.Fatalf("exit code = %d, stderr: %s", resp.ExitCode, resp.Stderr)
+	}
+	if resp.Stdout != "PNGDATA" {
+		t.Errorf("stdout = %q, want PNGDATA", resp.Stdout)
+	}
+
+	req := <-reqCh
+	if req.Boid.AttachmentName != "-shot.png" {
+		t.Errorf("attachment name = %q, want -shot.png", req.Boid.AttachmentName)
+	}
+}
+
+// --output must still work when it appears before the "--" marker (the
+// common case: flags first, then the positional name).
+func TestRunBoidShim_TaskAttachmentsGet_DashDashWithOutputFlagBefore(t *testing.T) {
+	sockPath, _ := newFakeBrokerRecording(t, &sandbox.ExecResponse{
+		Stdout: base64.StdEncoding.EncodeToString([]byte("PNGDATA")),
+	})
+	t.Setenv("BOID_BROKER_SOCKET", sockPath)
+	t.Setenv("BOID_BROKER_TOKEN", "tok")
+	t.Setenv("BOID_TASK_ID", "t1")
+
+	outPath := filepath.Join(t.TempDir(), "out.png")
+	resp, err := sandbox.RunBoidShim([]string{"task", "attachments", "get", "--output", outPath, "--", "-shot.png"})
+	if err != nil {
+		t.Fatalf("RunBoidShim: %v", err)
+	}
+	if resp.ExitCode != 0 {
+		t.Fatalf("exit code = %d, stderr: %s", resp.ExitCode, resp.Stderr)
+	}
+	data, err := os.ReadFile(outPath)
+	if err != nil {
+		t.Fatalf("read output file: %v", err)
+	}
+	if string(data) != "PNGDATA" {
+		t.Errorf("file content = %q, want PNGDATA", data)
+	}
+}
+
+// Without "--", a leading-dash positional is still rejected as an
+// unsupported flag — "--" is opt-in, not a silent behavior change for the
+// common (no leading dash) case.
+func TestRunBoidShim_TaskAttachmentsGet_LeadingDashWithoutDashDashRejected(t *testing.T) {
+	t.Setenv("BOID_BROKER_SOCKET", "/tmp/does-not-matter")
+	t.Setenv("BOID_TASK_ID", "t1")
+
+	_, err := sandbox.RunBoidShim([]string{"task", "attachments", "get", "-shot.png"})
+	if err == nil || !strings.Contains(err.Error(), "unsupported flag") {
+		t.Fatalf("expected unsupported flag error without --, got: %v", err)
+	}
+}
+
 func TestRunBoidShim_TaskAttachmentsGet_MissingNameRejected(t *testing.T) {
 	t.Setenv("BOID_BROKER_SOCKET", "/tmp/does-not-matter")
 	t.Setenv("BOID_TASK_ID", "t1")

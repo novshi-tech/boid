@@ -136,18 +136,31 @@ func runTaskAttachmentsGet(args []string, brokerSocket string) (*ExecResponse, e
 	return &ExecResponse{Stdout: string(decoded)}, nil
 }
 
+// parseAttachmentsGetArgs parses `boid task attachments get [--output
+// <path>] [--] <name>`. A literal "--" (the standard POSIX end-of-flags
+// marker, same convention as git/grep) forces every argument after it to
+// be treated as positional, never a flag — codex review on PR #798 (Minor
+// 1) flagged that without this, an attachment legitimately named with a
+// leading dash (e.g. "-shot.png", which SanitizeAttachmentName's upload-time
+// validator has no objection to) was permanently unreachable via this CLI,
+// even though it was present and listed by `boid task attachments list`.
 func parseAttachmentsGetArgs(args []string) (name, outputPath string, err error) {
+	positionalOnly := false
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
+		if !positionalOnly && arg == "--" {
+			positionalOnly = true
+			continue
+		}
 		switch {
-		case arg == "--output" || strings.HasPrefix(arg, "--output="):
+		case !positionalOnly && (arg == "--output" || strings.HasPrefix(arg, "--output=")):
 			value, next, ferr := takeStringFlagValue(args, i, "--output")
 			if ferr != nil {
 				return "", "", ferr
 			}
 			i = next
 			outputPath = value
-		case strings.HasPrefix(arg, "-"):
+		case !positionalOnly && strings.HasPrefix(arg, "-"):
 			return "", "", fmt.Errorf("boid shim: unsupported flag %q for boid task attachments get", arg)
 		default:
 			if name != "" {

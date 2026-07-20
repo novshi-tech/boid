@@ -181,6 +181,44 @@ func TestBoidBuiltinExecutor_TaskAttachmentsGet_PathTraversalRejected(t *testing
 	}
 }
 
+// Full-stack regression for codex review's Blocker finding on PR #798: a
+// TaskID shaped like "alias/../<victim-id>" would pass the broker's raw
+// string-equality authorization check trivially (both the token context and
+// the request carry the identical literal alias — see
+// internal/sandbox/broker.go's BoidOpTaskAttachmentsList/Get case), so this
+// test drives the executor with exactly that "already authorized" shape and
+// asserts it still cannot read or list the victim task's attachments. The
+// internal/api-level tests (TestListAndReadAttachment_RejectsAliasTaskIDCrossTaskLeak)
+// exercise the same guard closer to the source; this one proves the
+// executor layer (the actual RPC entry point) doesn't reintroduce the leak
+// by, say, resolving TaskID some other way before calling into api.*.
+func TestBoidBuiltinExecutor_TaskAttachments_RejectsAliasTaskIDCrossTaskLeak(t *testing.T) {
+	root := t.TempDir()
+	victimID := "550e8400-e29b-41d4-a716-446655440000"
+	seedAttachment(t, root, victimID, "secret.png", []byte("victim secret"))
+
+	aliasID := "alias/../" + victimID
+	exec := &boidBuiltinExecutor{attachmentsRoot: root}
+	ctx := sandbox.TokenContext{TaskID: aliasID} // matches the broker's post-authorization context
+
+	listResp := exec.ExecuteBoidBuiltin(context.Background(), ctx, &sandbox.BoidRequest{
+		Op:     sandbox.BoidOpTaskAttachmentsList,
+		TaskID: aliasID,
+	})
+	if listResp.ExitCode == 0 && strings.Contains(listResp.Stdout, "secret.png") {
+		t.Fatalf("list leaked victim attachment via alias TaskID: %q", listResp.Stdout)
+	}
+
+	getResp := exec.ExecuteBoidBuiltin(context.Background(), ctx, &sandbox.BoidRequest{
+		Op:             sandbox.BoidOpTaskAttachmentsGet,
+		TaskID:         aliasID,
+		AttachmentName: "secret.png",
+	})
+	if getResp.ExitCode == 0 {
+		t.Fatalf("get leaked victim attachment via alias TaskID: stdout=%q", getResp.Stdout)
+	}
+}
+
 func TestBoidBuiltinExecutor_TaskAttachmentsGet_Unavailable(t *testing.T) {
 	exec := &boidBuiltinExecutor{attachmentsRoot: ""}
 	resp := exec.ExecuteBoidBuiltin(context.Background(), sandbox.TokenContext{TaskID: "task-1"}, &sandbox.BoidRequest{
