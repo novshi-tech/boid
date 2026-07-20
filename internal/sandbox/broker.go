@@ -623,17 +623,25 @@ func isWithinRoot(path, root string) bool {
 //
 // The second pass is a compatibility fallback, kept intentionally rather
 // than dropped now that 5a-2 has landed: it scans registered defs for a Path
-// match, covering (a) any caller that still sends the absolute bind-mount
-// path (shimBinaryPath / os.Executable()) — a safety net for rollback and
-// for the pre-5a-2 protocol shape — and (b) provides defense-in-depth should
-// BOID_HOST_COMMAND_NAMES resolution in the shim ever regress. It
-// deliberately does not fall back to filepath.Base(command) — a
-// host_commands.<name>.path alias (e.g. run-e2e -> e2e/run.sh) means the
-// bind-mount path's basename does not always equal the declared short name,
-// so only an exact Path match is trustworthy. This fallback is scoped to be
-// dropped at the 5a-3 shim relocation cutover, once every shim's bind-mount
-// basename equals its declared name by construction (fixed-directory
-// symlinks) and the absolute-path shape no longer has a live caller.
+// match, covering any caller that still sends the absolute bind-mount path
+// (shimBinaryPath / os.Executable()) — a safety net for rollback to the
+// pre-5a-2 protocol shape. It deliberately does not fall back to
+// filepath.Base(command) — a host_commands.<name>.path alias (e.g. run-e2e
+// -> e2e/run.sh) means the bind-mount path's basename does not always equal
+// the declared short name, so only an exact Path match is trustworthy.
+//
+// This is not defense-in-depth for a BOID_HOST_COMMAND_NAMES resolution
+// regression in the shim: if sandbox.ResolveShimCommandName ever regressed
+// to always returning CommandFromArgv0(argv0) (the basename), an aliased
+// command would send its file's basename (e.g. "echo-target") as
+// ExecRequest.Command — which matches neither a registered short-name key
+// nor any CommandDef's Path (the full absolute path), so this fallback would
+// not catch it either; that specific regression is guarded instead by
+// e2e/scenarios/host-command-smoke's alias-echo case. This fallback is
+// scoped to be dropped at the 5a-3 shim relocation cutover, once every
+// shim's bind-mount basename equals its declared name by construction
+// (fixed-directory symlinks) and the absolute-path shape no longer has a
+// live caller.
 func lookupCommand(commands map[string]CommandDef, command string) (CommandDef, bool) {
 	if def, ok := commands[command]; ok {
 		return def, true
