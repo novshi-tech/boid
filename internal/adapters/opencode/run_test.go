@@ -146,6 +146,34 @@ func TestBuildArgs_Hook_AppendsBootstrap(t *testing.T) {
 	}
 }
 
+// TestTaskBootstrapPrompt_NoRetiredContextFilePath is the static test Phase
+// 5b PR3 (docs/plans/phase5-shim-and-task-context.md) requires: the bootstrap
+// prompt must never again tell the agent to read files under
+// ~/.boid/context/ — that instruction was replaced with the `boid task ...`
+// broker RPCs. File distribution to that path still exists on disk (5b-6
+// retires it separately), but this prompt must not point the agent at it.
+func TestTaskBootstrapPrompt_NoRetiredContextFilePath(t *testing.T) {
+	if strings.Contains(taskBootstrapPrompt, "~/.boid/context/") {
+		t.Errorf("taskBootstrapPrompt still references the retired ~/.boid/context/ file path:\n%s", taskBootstrapPrompt)
+	}
+}
+
+// TestTaskBootstrapPrompt_ReferencesTaskContextCLI pins the four Phase 5b
+// PR1 `boid task ...` subcommands the prompt must send the agent to instead
+// of the retired file path.
+func TestTaskBootstrapPrompt_ReferencesTaskContextCLI(t *testing.T) {
+	for _, want := range []string{
+		"boid task current",
+		"boid task instructions",
+		"boid task env",
+		"boid task payload",
+	} {
+		if !strings.Contains(taskBootstrapPrompt, want) {
+			t.Errorf("taskBootstrapPrompt missing %q:\n%s", want, taskBootstrapPrompt)
+		}
+	}
+}
+
 func TestUsage_Stub(t *testing.T) {
 	a := New()
 	u, err := a.Usage(context.Background(), "job-1")

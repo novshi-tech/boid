@@ -44,8 +44,12 @@ func missingCLIError(slug string, cause error) error {
 
 // taskBootstrapPrompt is sent as the first user turn when codex is launched
 // for a task hook (rc.TaskID != ""). It tells the agent to read the canonical
-// task skill manual + boid task context yaml files, then run the task and
-// emit boid task notify --done/--fail before exiting.
+// task skill manual, then pull the task context via the `boid task ...`
+// broker RPCs (Phase 5b PR3, docs/plans/phase5-shim-and-task-context.md —
+// this replaced the earlier "read ~/.boid/context/*.yaml" instruction; that
+// file distribution still exists on disk for now but is no longer what this
+// prompt points the agent at), then run the task and emit boid task notify
+// --done/--fail before exiting.
 //
 // codex has no slash command / skill loader mechanism, so the claude pattern
 // of passing "/boid-task" as positional does not apply. Instead we point the
@@ -60,15 +64,16 @@ const taskBootstrapPrompt = `You are a boid task agent running inside a sandboxe
 Step 1: Read the skill manual at ~/.claude/skills/boid-task/SKILL.md with your
 read-file tool. That file is the single source of truth for how this task
 should be handled — it tells you whether you are in supervisor or executor
-mode based on environment.yaml ` + "`readonly`" + `, and how to use boid task notify /
-boid task ask.
+mode, and how to use boid task notify / boid task ask.
 
-Step 2: Read the task context files under ~/.boid/context/ as instructed by
-the skill manual:
-  - task.yaml         (id, title, behavior, status)
-  - instructions.yaml (the LAST element is the active instruction)
-  - environment.yaml  (readonly, network, host_commands)
-  - payload.yaml      (existing artifacts, prior child results)
+Step 2: Fetch the task context via the boid CLI (broker RPC):
+  boid task current       -> id, title, behavior, status, description
+  boid task instructions  -> routed instruction(s) for this job (the LAST
+                             element is the active instruction)
+  boid task env           -> network.allowed_domains, host_commands
+  boid task payload       -> existing artifacts, prior child results
+Each command prints YAML by default; add --format json for JSON, or
+--field <dotted.path> for a single value (e.g. ` + "`boid task current --field title`" + `).
 
 Step 3: Perform the task. Use $BOID_TASK_ID whenever you call boid task
 notify or boid task ask.

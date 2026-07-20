@@ -29,6 +29,7 @@ has the same shape:
 12. [KitMeta.KitRoot ↔ sandbox_builder KitRoots mount](#12-kitmetakitroot--sandbox_builder-kitroots-mount)
 13. [task-context RPC ↔ dispatch-time context files](#13-task-context-rpc--dispatch-time-context-files)
 14. [shim command-name resolution (BOID_HOST_COMMAND_NAMES ↔ broker Commands key)](#14-shim-command-name-resolution)
+15. [adapter-issued task-context RPC (claude readSessionsFromRPC ↔ sandbox env)](#15-adapter-issued-task-context-rpc)
 
 ---
 
@@ -545,3 +546,58 @@ must inject.
   (symlinks named after the declared command), at which point `BOID_HOST_COMMAND_NAMES`
   becomes a pure defense-in-depth fallback rather than the primary resolution path — update
   this entry then.
+
+## 15. adapter-issued task-context RPC
+
+Whether an *adapter's own Go code* (not the agent subprocess it forks) can actually reach the
+Phase 5b task-context RPCs (seam #13) when it shells out to `boid` directly. Phase 5b PR3
+(docs/plans/phase5-shim-and-task-context.md) added the first such caller: the claude adapter's
+`readSessionsFromRPC` execs `boid task payload --field artifact.claude_code.sessions` from
+inside `runner-inner-child` *before* the claude subprocess exists, so it cannot rely on
+anything the agent's own `cmd.Env` overlay would otherwise guarantee — it has to build an
+equivalent env (and rely on an equivalent PATH) itself, from the same `RunContext.Env` map.
+
+- **End A (populate)**: `internal/dispatcher/sandbox_builder.go` sets `env["PATH"]` (via
+  `buildPATH`, must include the shim-bin dir), `env["BOID_BUILTIN_SHIM"] = "1"`,
+  `env["BOID_BROKER_SOCKET"]` / `env["BOID_BROKER_TOKEN"]`, and (via `setIfNonEmpty`)
+  `env["BOID_TASK_ID"]` / `env["BOID_JOB_ID"]`. This whole map becomes `spec.Env`, which
+  `internal/sandbox/runner/runner_linux.go`'s `runAgent` copies verbatim into
+  `adapters.RunContext.Env` — and, separately, `RunInnerChild` does `os.Setenv("PATH",
+  spec.Env["PATH"])` on the runner-inner-child process itself (the process the adapter's Go
+  code — not just the forked agent — runs inside).
+- **End B (consume)**: `claude.buildTaskPayloadSessionsCmd` (`internal/adapters/claude/run.go`)
+  calls `exec.CommandContext(ctx, "boid", "task", "payload", "--field",
+  "artifact.claude_code.sessions")` — `os/exec` resolves the bare name `"boid"` via
+  `LookPath` against the **current process's** `PATH` env var at call time (not `cmd.Env`),
+  so this depends on End A's `os.Setenv("PATH", …)` having already run. `cmd.Env` is then
+  built by overlaying `rc.Env` on top of `os.Environ()` — the same map End A populated —
+  which supplies `BOID_BUILTIN_SHIM` (routes the exec'd `boid` into `RunBoidShim` instead of
+  the cobra CLI tree, see `main.go`'s `shouldRunBoidBuiltinShim`) and the four `BOID_TASK_ID` /
+  `BOID_JOB_ID` / `BOID_BROKER_SOCKET` / `BOID_BROKER_TOKEN` vars the shim itself reads via
+  `os.Getenv` (`runTaskContextShim`, seam #13's End B).
+- **Invariant**: every env var `RunBoidShim`'s task-context path reads via `os.Getenv` must
+  already be a key in `RunContext.Env` by the time an adapter's own Go code (not the forked
+  agent) execs `boid`. Because `readSessionsFromRPC` swallows every failure as `nil` (mirrors
+  the old file-based "missing payload.json → fresh start" contract — see its own doc comment),
+  a broken link anywhere in this chain (PATH missing the shim dir, `BOID_BUILTIN_SHIM` unset,
+  any of the four ids/socket/token vars dropped from `spec.Env`) does **not** fail loudly: the
+  claude adapter just silently forgets the prior jsonl session id and starts a fresh one,
+  exactly as if this were a brand-new task.
+- **Guard**: End A is exercised transitively by every existing `sandbox_builder_test.go` test
+  that asserts `env["BOID_BROKER_SOCKET"]` etc. End B (pure, no process spawn) =
+  `TestBuildTaskPayloadSessionsCmd_Args` / `_EnvOverlaysRunContextEnv`
+  (`internal/adapters/claude/run_test.go`). The full chain (`os/exec` PATH resolution +
+  `BOID_BUILTIN_SHIM` routing + a real fake-broker unix socket, not an injected fetch func) is
+  `TestReadSessionsFromRPC_EndToEnd` (`internal/adapters/claude/run_rpc_wiring_test.go`), which
+  re-execs the compiled test binary itself as the "boid" program on `PATH` (the
+  `os/exec_test.go` `TestHelperProcess` idiom) so it never needs a separately built binary.
+- **When you touch it**: if you touch `sandbox_builder.go`'s env population (particularly
+  `BOID_BUILTIN_SHIM` / `BOID_BROKER_SOCKET` / `BOID_BROKER_TOKEN` / `BOID_TASK_ID` /
+  `BOID_JOB_ID` / the shim-bin entry in `buildPATH`), or add a second adapter-issued `boid
+  task ...` call (e.g. a future codex/opencode Go-level RPC call, not just their bootstrap
+  prompt text), re-run `TestReadSessionsFromRPC_EndToEnd`-shaped coverage rather than trusting
+  the adapter-unit layer alone — the unit tests stub `fetchTaskPayloadSessions`/inject env
+  directly and cannot catch a PATH or env-population regression upstream in the dispatcher.
+  5a-3 (fixed shim directory) changes *where* the shim-bin dir lives on PATH but not this
+  seam's shape; 5b-6 (file-distribution cutover) does not touch this seam either, since it
+  never depended on the file side.

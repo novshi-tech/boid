@@ -179,46 +179,133 @@ func TestBuildClaudeArgs_EmptySystemPromptOmitsFlag(t *testing.T) {
 	}
 }
 
-func TestReadSessionsFromPayload_MissingFileReturnsNil(t *testing.T) {
-	got := readSessionsFromPayload(filepath.Join(t.TempDir(), "does-not-exist.json"))
-	if got != nil {
-		t.Errorf("got %+v, want nil", got)
+// ---------- parseSessionsJSON (pure) ----------
+
+func TestParseSessionsJSON_EmptyReturnsNil(t *testing.T) {
+	if got := parseSessionsJSON(nil); got != nil {
+		t.Errorf("got %+v, want nil for nil input", got)
+	}
+	if got := parseSessionsJSON([]byte("   \n")); got != nil {
+		t.Errorf("got %+v, want nil for whitespace-only input", got)
 	}
 }
 
-func TestReadSessionsFromPayload_MalformedJSONReturnsNil(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "payload.json")
-	if err := os.WriteFile(path, []byte("{not json"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	got := readSessionsFromPayload(path)
+func TestParseSessionsJSON_MalformedReturnsNil(t *testing.T) {
+	got := parseSessionsJSON([]byte("{not json"))
 	if got != nil {
 		t.Errorf("got %+v, want nil for malformed JSON", got)
 	}
 }
 
-func TestReadSessionsFromPayload_ExtractsSessions(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "payload.json")
-	body := `{
-		"artifact": {
-			"claude_code": {
-				"sessions": [
-					{"type": "execution", "name": "", "id": "abc"},
-					{"type": "execution", "name": "verifier", "id": "def"}
-				]
-			}
-		}
-	}`
-	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	got := readSessionsFromPayload(path)
+func TestParseSessionsJSON_ExtractsSessions(t *testing.T) {
+	body := `[
+		{"type": "execution", "name": "", "id": "abc"},
+		{"type": "execution", "name": "verifier", "id": "def"}
+	]`
+	got := parseSessionsJSON([]byte(body))
 	want := []session{
 		{Type: "execution", Name: "", ID: "abc"},
 		{Type: "execution", Name: "verifier", ID: "def"},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("got %+v, want %+v", got, want)
+	}
+}
+
+// ---------- buildTaskPayloadSessionsCmd (pure, no process spawn) ----------
+
+// TestBuildTaskPayloadSessionsCmd_Args pins the exact subcommand + flags the
+// claude adapter sends the boid shim — a typo here (e.g. a stray "s" on
+// "payload", or the wrong --field path) would silently make every claude job
+// forget its own jsonl session id across restarts, since readSessionsFromRPC
+// swallows all errors as "fresh start".
+func TestBuildTaskPayloadSessionsCmd_Args(t *testing.T) {
+	cmd := buildTaskPayloadSessionsCmd(context.Background(), nil)
+	want := []string{"boid", "task", "payload", "--field", "artifact.claude_code.sessions"}
+	if !reflect.DeepEqual(cmd.Args, want) {
+		t.Errorf("cmd.Args = %v, want %v", cmd.Args, want)
+	}
+}
+
+// TestBuildTaskPayloadSessionsCmd_EnvOverlaysRunContextEnv confirms the shim
+// gets the RunContext.Env entries it needs to reach the broker
+// (BOID_TASK_ID / BOID_JOB_ID / BOID_BROKER_SOCKET / BOID_BROKER_TOKEN /
+// BOID_BUILTIN_SHIM=1) — the same map Run() hands the agent child's own
+// cmd.Env — layered on top of (not replacing) the current process env.
+func TestBuildTaskPayloadSessionsCmd_EnvOverlaysRunContextEnv(t *testing.T) {
+	t.Setenv("SOME_PARENT_VAR", "keep-me")
+	env := map[string]string{
+		"BOID_TASK_ID":       "t1",
+		"BOID_JOB_ID":        "job-1",
+		"BOID_BROKER_SOCKET": "/run/boid/broker.sock",
+		"BOID_BROKER_TOKEN":  "tok",
+		"BOID_BUILTIN_SHIM":  "1",
+	}
+	cmd := buildTaskPayloadSessionsCmd(context.Background(), env)
+
+	got := map[string]bool{}
+	for _, kv := range cmd.Env {
+		got[kv] = true
+	}
+	for k, v := range env {
+		if !got[k+"="+v] {
+			t.Errorf("cmd.Env missing %s=%s; env=%v", k, v, cmd.Env)
+		}
+	}
+	if !got["SOME_PARENT_VAR=keep-me"] {
+		t.Error("cmd.Env should still carry the current process's own env (SOME_PARENT_VAR)")
+	}
+}
+
+// ---------- readSessionsFromRPC (fetchTaskPayloadSessions injected) ----------
+
+// withFakeTaskPayloadSessions overrides fetchTaskPayloadSessions so
+// readSessionsFromRPC never spawns a real subprocess.
+func withFakeTaskPayloadSessions(t *testing.T, fn func(ctx context.Context, env map[string]string) ([]byte, error)) {
+	t.Helper()
+	saved := fetchTaskPayloadSessions
+	fetchTaskPayloadSessions = fn
+	t.Cleanup(func() { fetchTaskPayloadSessions = saved })
+}
+
+func TestReadSessionsFromRPC_FetchErrorReturnsNil(t *testing.T) {
+	withFakeTaskPayloadSessions(t, func(context.Context, map[string]string) ([]byte, error) {
+		return nil, errors.New("boid: not found on PATH")
+	})
+	got := readSessionsFromRPC(context.Background(), nil)
+	if got != nil {
+		t.Errorf("got %+v, want nil on fetch error", got)
+	}
+}
+
+func TestReadSessionsFromRPC_EmptyFieldReturnsNil(t *testing.T) {
+	// api.ResolveJSONField returns "" (empty stdout) when the field path is
+	// absent — e.g. a brand-new task with no artifact.claude_code.sessions
+	// entry yet. Must behave like the old "no payload.json yet" case: nil,
+	// not an error.
+	withFakeTaskPayloadSessions(t, func(context.Context, map[string]string) ([]byte, error) {
+		return []byte(""), nil
+	})
+	got := readSessionsFromRPC(context.Background(), nil)
+	if got != nil {
+		t.Errorf("got %+v, want nil for empty field", got)
+	}
+}
+
+func TestReadSessionsFromRPC_Success(t *testing.T) {
+	var gotEnv map[string]string
+	withFakeTaskPayloadSessions(t, func(_ context.Context, env map[string]string) ([]byte, error) {
+		gotEnv = env
+		return []byte(`[{"type":"execution","name":"","id":"abc"}]`), nil
+	})
+	env := map[string]string{"BOID_TASK_ID": "t1"}
+	got := readSessionsFromRPC(context.Background(), env)
+	want := []session{{Type: "execution", Name: "", ID: "abc"}}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("got %+v, want %+v", got, want)
+	}
+	if !reflect.DeepEqual(gotEnv, env) {
+		t.Errorf("fetchTaskPayloadSessions received env %+v, want %+v", gotEnv, env)
 	}
 }
 
