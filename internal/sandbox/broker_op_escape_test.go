@@ -73,6 +73,19 @@ func TestBroker_BoidTaskPayload_PolicyReject(t *testing.T) {
 	assertBoidOpRejectedByPolicy(t, &sandbox.BoidRequest{Op: sandbox.BoidOpTaskPayload, JobID: "j1"})
 }
 
+// Phase 5b PR2 attachments ops (docs/plans/phase5-shim-and-task-context.md).
+// Their id-equality guard (see taskAttachmentsOpVerb) is covered separately
+// by broker_task_attachments_test.go; these two close the policy-gate
+// manifest.
+
+func TestBroker_BoidTaskAttachmentsList_PolicyReject(t *testing.T) {
+	assertBoidOpRejectedByPolicy(t, &sandbox.BoidRequest{Op: sandbox.BoidOpTaskAttachmentsList, TaskID: "t1"})
+}
+
+func TestBroker_BoidTaskAttachmentsGet_PolicyReject(t *testing.T) {
+	assertBoidOpRejectedByPolicy(t, &sandbox.BoidRequest{Op: sandbox.BoidOpTaskAttachmentsGet, TaskID: "t1", AttachmentName: "shot.png"})
+}
+
 // assertBoidOpRejectedByPolicy registers a boid policy that allows only an
 // unrelated op (job_done), then asserts the given request is rejected by the
 // policy gate — before any op-specific dispatch — and never reaches the
@@ -144,6 +157,10 @@ var opEscapeCoverage = map[string]opCoverage{
 	"BoidOpTaskInstructions": {escapeTest: "TestBroker_BoidTaskInstructions_PolicyReject"},
 	"BoidOpTaskEnv":          {escapeTest: "TestBroker_BoidTaskEnv_PolicyReject"},
 	"BoidOpTaskPayload":      {escapeTest: "TestBroker_BoidTaskPayload_PolicyReject"},
+
+	// Phase 5b PR2 attachments ops (docs/plans/phase5-shim-and-task-context.md).
+	"BoidOpTaskAttachmentsList": {escapeTest: "TestBroker_BoidTaskAttachmentsList_PolicyReject"},
+	"BoidOpTaskAttachmentsGet":  {escapeTest: "TestBroker_BoidTaskAttachmentsGet_PolicyReject"},
 }
 
 // TestOpEscapeCoverage_ManifestComplete asserts opEscapeCoverage covers exactly

@@ -288,7 +288,7 @@ func withFakeTaskPayloadSessions(t *testing.T, fn func(ctx context.Context, env 
 // error, not collapse to nil the way "no sessions" does. Swallowing it would
 // make Run()'s caller synthesize a fresh single-entry session list from a
 // transient failure and persist that over the task's real history — see
-// readSessionsFromRPC's doc comment and wiring-seams.md #15.
+// readSessionsFromRPC's doc comment and wiring-seams.md #16.
 func TestReadSessionsFromRPC_FetchErrorPropagates(t *testing.T) {
 	withFakeTaskPayloadSessions(t, func(context.Context, map[string]string) ([]byte, error) {
 		return nil, errors.New("boid: not found on PATH")

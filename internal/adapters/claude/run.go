@@ -242,7 +242,7 @@ func buildTaskPayloadSessionsCmd(ctx context.Context, env map[string]string) *ex
 // the caller would then persist that truncated list as this task's payload
 // patch — silently discarding every previously recorded jsonl session id
 // (the exact class of loss flagged in codex review on PR #800; see
-// wiring-seams.md #15 and memory phase3b-session-jsonl-not-persisted for the
+// wiring-seams.md #16 and memory phase3b-session-jsonl-not-persisted for the
 // prior incident this rhymes with).
 //
 // Only "the field genuinely does not exist yet" (empty stdout, exit 0) is

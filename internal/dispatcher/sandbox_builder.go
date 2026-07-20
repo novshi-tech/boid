@@ -377,7 +377,18 @@ func BuildSandboxSpec(spec *orchestrator.JobSpec, rt SandboxRuntimeInfo) (sandbo
 	// adapter (claude / codex / opencode / shell) sees the same path. A dir
 	// Guard makes the bind optional: tasks created before this feature, or
 	// tasks where no attachment has ever been added, simply skip the mount.
-	if rt.AttachmentsRoot != "" && spec.TaskID != "" {
+	//
+	// isCanonicalTaskIDComponent gates spec.TaskID before it ever reaches
+	// filepath.Join (codex review on PR #798, Blocker fix — see the
+	// function's doc comment in attachments_path.go and wiring-seams.md
+	// #15): a task whose literal DB ID is a traversal-shaped string such as
+	// "alias/../<victim-id>" would otherwise have filepath.Join silently
+	// collapse it down to a *different* task's real attachments directory,
+	// mounting the wrong task's attachments into this sandbox. A
+	// non-canonical TaskID gets no attachments bind at all — the same
+	// fail-closed "just skip the mount" behavior the empty
+	// AttachmentsRoot/TaskID cases below already use.
+	if rt.AttachmentsRoot != "" && spec.TaskID != "" && isCanonicalTaskIDComponent(spec.TaskID) {
 		attachSrc := filepath.Join(rt.AttachmentsRoot, "tasks", spec.TaskID, "attachments")
 		mounts = append(mounts, sandbox.Mount{
 			Source:     attachSrc,

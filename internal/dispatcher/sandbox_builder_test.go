@@ -1859,6 +1859,56 @@ func TestBuildSandboxSpec_AttachmentsBindAbsentWithoutRootOrTask(t *testing.T) {
 	}
 }
 
+// TestBuildSandboxSpec_AttachmentsBind_RejectsTraversalTaskID is the bind-side
+// half of codex review's Blocker finding on PR #798 (Phase 5b PR2 attachments
+// RPCs): CreateTaskRequest.ID is caller-supplied and saved as the literal DB
+// primary key without validation, so a task can be dispatched with a literal
+// ID like "alias/../<victim-id>". The attachments RO bind built the mount
+// source with a bare filepath.Join (no equivalent to
+// api.AttachmentsRootForTask's isCanonicalPathComponent guard), which
+// silently collapsed such a TaskID down to the *victim* task's real
+// attachments directory — the same class of cross-task leak fixed for the
+// RPC read/write paths, but reachable here at dispatch time via the sandbox
+// mount instead of a runtime RPC call. Fixed in the same PR (see
+// wiring-seams.md #15): isCanonicalTaskIDComponent now gates the mount the
+// same way, so a non-canonical TaskID gets no attachments bind at all
+// (fail-closed, the same "just skip the mount" behavior the existing empty
+// AttachmentsRoot/TaskID cases already use) rather than the wrong one.
+func TestBuildSandboxSpec_AttachmentsBind_RejectsTraversalTaskID(t *testing.T) {
+	root := t.TempDir()
+	victimID := "550e8400-e29b-41d4-a716-446655440000"
+	victimAttachSrc := root + "/tasks/" + victimID + "/attachments"
+	wantTarget := hostHomeDir() + "/.boid/attachments"
+
+	cases := []string{
+		"alias/../" + victimID,
+		"../other-task",
+		"..",
+		".",
+		"foo/bar",
+		"/abs/task",
+	}
+	for _, taskID := range cases {
+		t.Run(taskID, func(t *testing.T) {
+			spec := &orchestrator.JobSpec{TaskID: taskID}
+			rt := SandboxRuntimeInfo{AttachmentsRoot: root}
+
+			result, err := BuildSandboxSpec(spec, rt)
+			if err != nil {
+				t.Fatalf("BuildSandboxSpec: %v", err)
+			}
+			for _, m := range result.Mounts {
+				if m.Source == victimAttachSrc {
+					t.Fatalf("attachments bind escaped to the victim's directory: %+v", m)
+				}
+				if m.Target == wantTarget {
+					t.Errorf("expected no attachments bind at all for non-canonical TaskID %q, got %+v", taskID, m)
+				}
+			}
+		})
+	}
+}
+
 func TestBuildEnvironmentYAML_HostCommandsSortedDeterministic(t *testing.T) {
 	in := EnvironmentInput{
 		HostCommands: map[string]orchestrator.CommandDef{
