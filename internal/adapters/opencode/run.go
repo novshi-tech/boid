@@ -57,15 +57,16 @@ const taskBootstrapPrompt = `You are a boid task agent running inside a sandboxe
 Step 1: Read the skill manual at ~/.claude/skills/boid-task/SKILL.md with your
 read-file tool. That file is the single source of truth for how this task
 should be handled — it tells you whether you are in supervisor or executor
-mode based on environment.yaml ` + "`readonly`" + `, and how to use boid task notify /
-boid task ask.
+mode, and how to use boid task notify / boid task ask.
 
-Step 2: Read the task context files under ~/.boid/context/ as instructed by
-the skill manual:
-  - task.yaml         (id, title, behavior, status)
-  - instructions.yaml (the LAST element is the active instruction)
-  - environment.yaml  (readonly, network, host_commands)
-  - payload.yaml      (existing artifacts, prior child results)
+Step 2: Fetch the task context via the boid CLI (broker RPC):
+  boid task current       -> id, title, behavior, status, description
+  boid task instructions  -> routed instruction(s) for this job (the LAST
+                             element is the active instruction)
+  boid task env           -> network.allowed_domains, host_commands
+  boid task payload       -> existing artifacts, prior child results
+Each command prints YAML by default; add --format json for JSON, or
+--field <dotted.path> for a single value (e.g. ` + "`boid task current --field title`" + `).
 
 Step 3: Perform the task. Use $BOID_TASK_ID whenever you call boid task
 notify or boid task ask.

@@ -104,12 +104,19 @@ type RunContext struct {
 
 	// Workspace is the child process's cwd.
 	Workspace string
-	// PayloadPath points at the payload.json the adapter reads to recover
-	// prior session entries. Defaults to ~/.boid/context/payload.json when
-	// empty (resolved by the adapter, not the caller).
-	PayloadPath string
 	// OutputDir is where payload_patch.json is written. Defaults to
 	// ~/.boid/output when empty.
+	//
+	// Phase 5 sub-track 5b PR3 (docs/plans/phase5-shim-and-task-context.md)
+	// retired the sibling PayloadPath field: the claude adapter used to read
+	// prior session entries from a payload.json this field pointed at, but
+	// now pulls them via the `boid task payload` broker RPC instead (see
+	// claude/run.go's readSessionsFromRPC). PayloadPath had no other reader
+	// and no production caller ever set it (BuildSandboxSpec /
+	// runner_linux.go's runAgent never populated it — see git history if you
+	// need the old zero-value fallback logic), so it was dead weight rather
+	// than a live contract worth preserving until the 5b-6 file-distribution
+	// cutover.
 	OutputDir string
 
 	// Stdin / Stdout / Stderr are passed verbatim to the child. The caller

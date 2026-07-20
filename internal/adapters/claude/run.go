@@ -1,6 +1,7 @@
 package claude
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -76,11 +77,25 @@ const taskSystemPrompt = "セッションを終える前に必ず `boid task not
 // sessions (JobKindSession, no BOID_TASK_ID). These have no task to notify
 // and no behavior-driven instructions; the agent's only system-level cue is
 // where to find the sandbox constraints.
+//
+// Points at `boid task env` (the Phase 5b PR1 broker RPC, docs/plans/
+// phase5-shim-and-task-context.md) rather than reading
+// ~/.boid/context/environment.yaml directly — fixed proactively during
+// codex review on PR #800 (Minor 2): that file reference would have become
+// stale/misleading the moment 5b-6 retires the file distribution, since
+// nothing else in this PR would have caught it (the static
+// "no ~/.boid/context/ reference" tests added for codex/opencode's
+// taskBootstrapPrompt don't cover this claude-only, session-only prompt).
+// `boid task env`'s reduced schema (WorkspaceEnvView, internal/dispatcher/
+// workspace_env_view.go) only ever returns allowed_domains + host_commands —
+// the sandbox/filesystem/notes sections legacy environment.yaml used to
+// describe are gone from that RPC by design, so the prompt only promises
+// what the command actually returns.
 const sessionSystemPrompt = "あなたは boid のサンドボックス内で起動されました。" +
-	" サンドボックスの制約 (network / filesystem の制限、 利用可能な builtin と" +
-	" host_commands、 git/gh などの quirk) は `~/.boid/context/environment.yaml`" +
-	" を読んで確認してください (sandbox / network / filesystem / host_commands /" +
-	" notes 節)。 これは固定の参照ファイルで、 ユーザに尋ねる必要はありません。"
+	" サンドボックスの制約 (ネットワーク egress の許可ドメイン、 利用可能な" +
+	" host_commands とその allow/deny/reject ルール) は `boid task env`" +
+	" を実行して確認してください。 これは固定の参照コマンドで、 ユーザに" +
+	" 尋ねる必要はありません。"
 
 // taskBootstrapSkill is the single unified skill that drives any task agent
 // regardless of behavior name. With task_behaviors free naming (Track A2 #574)
@@ -103,7 +118,8 @@ type session struct {
 // isSession=true (JobKindSession, no BOID_TASK_ID) skips the task-skill
 // bootstrap entirely: user-initiated sessions have no task to dispatch and
 // /boid-task is meaningless without a task.yaml to read. The system prompt
-// still points the agent at environment.yaml.
+// still points the agent at `boid task env` for the sandbox constraints it
+// can't observe on its own (see sessionSystemPrompt).
 //
 // Note: Every dispatch is a fresh claude process (no --resume) since the
 // reopen / Q&A session-id-resume path was removed. Persisted prior-turn
@@ -170,25 +186,94 @@ func buildClaudeArgs(sessionID, model, prompt, systemPrompt string) []string {
 	return args
 }
 
-// readSessionsFromPayload returns sessions from payload.json at path, or nil
-// on any error. Missing / malformed files yield nil rather than an error so
-// callers can treat absent payloads as a fresh start.
-func readSessionsFromPayload(path string) []session {
-	data, err := os.ReadFile(path)
+// sessionsFieldPath is the dotted path into `boid task payload`'s JSON
+// output that readSessionsFromRPC queries via --field. Mirrors the historical
+// payload.json shape (artifact.claude_code.sessions[]) exactly — Phase 5b
+// PR3 (docs/plans/phase5-shim-and-task-context.md) changed the transport
+// (direct file read -> broker RPC over the sandbox PATH shim), not the
+// schema, so a persisted session entry from before this PR round-trips the
+// same way after it.
+const sessionsFieldPath = "artifact.claude_code.sessions"
+
+// fetchTaskPayloadSessions execs `boid task payload --field
+// artifact.claude_code.sessions` and returns its raw stdout. Overridable for
+// tests (mirrors the lookPath var pattern above) so adapter unit tests never
+// spawn a real subprocess; production wiring is buildTaskPayloadSessionsCmd's
+// default *exec.Cmd, unmodified.
+var fetchTaskPayloadSessions = func(ctx context.Context, env map[string]string) ([]byte, error) {
+	return buildTaskPayloadSessionsCmd(ctx, env).Output()
+}
+
+// buildTaskPayloadSessionsCmd builds (without running) the *exec.Cmd for
+// `boid task payload --field artifact.claude_code.sessions`. Split out from
+// fetchTaskPayloadSessions so adapter unit tests can assert on Args/Env
+// without spawning a process — os/exec resolves a bare command name (no path
+// separators) via the *current* process's PATH at exec.CommandContext call
+// time (not from cmd.Env), so this relies on the sandbox's PATH already
+// pointing at the boid shim, exactly like the harnessCLI lookPath check
+// above.
+//
+// env is overlaid on the current process's environment, the same pattern
+// Run() uses for the agent child's own cmd.Env below: the shim needs
+// BOID_TASK_ID / BOID_JOB_ID / BOID_BROKER_SOCKET / BOID_BROKER_TOKEN /
+// BOID_BUILTIN_SHIM=1, all of which are already present in rc.Env (the same
+// map Run() hands to the agent child).
+func buildTaskPayloadSessionsCmd(ctx context.Context, env map[string]string) *exec.Cmd {
+	cmd := exec.CommandContext(ctx, "boid", "task", "payload", "--field", sessionsFieldPath)
+	envSlice := make([]string, 0, len(os.Environ())+len(env))
+	envSlice = append(envSlice, os.Environ()...)
+	for k, v := range env {
+		envSlice = append(envSlice, k+"="+v)
+	}
+	cmd.Env = envSlice
+	return cmd
+}
+
+// readSessionsFromRPC returns sessions from `boid task payload --field
+// artifact.claude_code.sessions`. It deliberately does NOT collapse "RPC
+// failed" into "no sessions" the way the old file-based readSessionsFromPayload
+// collapsed "file missing" into nil: that file read was 100% local (no
+// broker round trip), so its only realistic failure was "never written yet"
+// — a fresh task, correctly treated as no prior sessions. The RPC has a
+// genuinely different failure surface (broker unreachable, daemon mid-
+// restart, token expiry race, malformed shim output, …) that has nothing to
+// do with whether sessions exist. Collapsing that into nil would make
+// updateSessions synthesize a single-entry list from a transient hiccup, and
+// the caller would then persist that truncated list as this task's payload
+// patch — silently discarding every previously recorded jsonl session id
+// (the exact class of loss flagged in codex review on PR #800; see
+// wiring-seams.md #16 and memory phase3b-session-jsonl-not-persisted for the
+// prior incident this rhymes with).
+//
+// Only "the field genuinely does not exist yet" (empty stdout, exit 0) is
+// nil-with-no-error. Every other failure — exec error, non-zero exit,
+// malformed JSON — returns a non-nil error so Run() aborts before writing
+// any payload patch: failing the run outright is preferable to silently
+// truncating the session history.
+func readSessionsFromRPC(ctx context.Context, env map[string]string) ([]session, error) {
+	out, err := fetchTaskPayloadSessions(ctx, env)
 	if err != nil {
-		return nil
+		return nil, fmt.Errorf("boid task payload --field %s: %w", sessionsFieldPath, err)
 	}
-	var p struct {
-		Artifact struct {
-			ClaudeCode struct {
-				Sessions []session `json:"sessions"`
-			} `json:"claude_code"`
-		} `json:"artifact"`
+	return parseSessionsJSON(out)
+}
+
+// parseSessionsJSON parses the raw `--field artifact.claude_code.sessions`
+// stdout into []session. Empty input (api.ResolveJSONField returns "" when
+// the field is absent) is (nil, nil) — a legitimate "no sessions recorded
+// yet" case, not an error. Malformed JSON returns a non-nil error rather
+// than silently degrading to nil — see readSessionsFromRPC's doc comment for
+// why swallowing this would risk truncating a task's session history.
+func parseSessionsJSON(data []byte) ([]session, error) {
+	trimmed := bytes.TrimSpace(data)
+	if len(trimmed) == 0 {
+		return nil, nil
 	}
-	if err := json.Unmarshal(data, &p); err != nil {
-		return nil
+	var sessions []session
+	if err := json.Unmarshal(trimmed, &sessions); err != nil {
+		return nil, fmt.Errorf("boid task payload --field %s: parse JSON: %w", sessionsFieldPath, err)
 	}
-	return p.Artifact.ClaudeCode.Sessions
+	return sessions, nil
 }
 
 // writePayloadPatch writes the session-id update into
@@ -249,8 +334,15 @@ func mapAt(m map[string]any, key string) map[string]any {
 //   - IS_SANDBOX=1 env injection (Claude CLI 2.1.181+ uid 0 bypass)
 //
 // Session-id resume was removed: reopen and Q&A both start a fresh claude
-// process. The agent recovers prior-turn context by reading
-// ~/.boid/context/{task,instructions,payload}.yaml on cold start.
+// process. The agent (via the /boid-task skill) still recovers general
+// task/instructions/environment context by reading ~/.boid/context/*.yaml on
+// cold start — that file distribution is unchanged by this PR (Phase 5b PR3,
+// docs/plans/phase5-shim-and-task-context.md, retires only the transport for
+// the one payload field Run() itself needs: the prior
+// artifact.claude_code.sessions[] entries it merges the fresh session id
+// into. Those now come from the `boid task payload` broker RPC (see
+// readSessionsFromRPC below) instead of a direct read of payload.json; the
+// skill-driven file reads are cut over separately in 5b-6.
 func (a *Adapter) Run(ctx context.Context, rc adapters.RunContext) (adapters.Result, error) {
 	// 0. Fail fast when claude is not on PATH, before touching any state
 	// (session id generation, payload_patch.json). See missingCLIError's
@@ -260,11 +352,6 @@ func (a *Adapter) Run(ctx context.Context, rc adapters.RunContext) (adapters.Res
 		return adapters.Result{}, missingCLIError(rc.Env["BOID_WORKSPACE_SLUG"], err)
 	}
 
-	payloadPath := rc.PayloadPath
-	if payloadPath == "" {
-		home, _ := os.UserHomeDir()
-		payloadPath = filepath.Join(home, ".boid", "context", "payload.json")
-	}
 	outputDir := rc.OutputDir
 	if outputDir == "" {
 		home, _ := os.UserHomeDir()
@@ -274,9 +361,20 @@ func (a *Adapter) Run(ctx context.Context, rc adapters.RunContext) (adapters.Res
 	// 1. Generate a fresh session id. Persist it BEFORE starting claude so
 	// that an abnormal termination (SIGKILL, OOM) still leaves a record of
 	// which jsonl transcript file the agent wrote to (visible in the Web UI
-	// task detail under artifact.claude_code.sessions[]).
+	// task detail under artifact.claude_code.sessions[]). Prior sessions come
+	// from the broker (`boid task payload --field
+	// artifact.claude_code.sessions`, Phase 5b PR3) rather than a direct read
+	// of payload.json — see readSessionsFromRPC's doc comment. A fetch/parse
+	// error aborts here, before claude ever starts and before any payload
+	// patch is written: readSessionsFromRPC only returns an error when it
+	// cannot tell whether prior sessions exist, and proceeding anyway would
+	// risk writePayloadPatch persisting a truncated session list over the
+	// task's real history (codex review on PR #800).
 	sessionID := uuid.NewString()
-	sessions := readSessionsFromPayload(payloadPath)
+	sessions, err := readSessionsFromRPC(ctx, rc.Env)
+	if err != nil {
+		return adapters.Result{}, fmt.Errorf("read prior claude sessions: %w", err)
+	}
 	updated := updateSessions(sessions, sessionType, rc.InvokedName, sessionID)
 	if err := writePayloadPatch(outputDir, updated); err != nil {
 		return adapters.Result{}, err
