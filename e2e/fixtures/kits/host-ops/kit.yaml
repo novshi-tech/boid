@@ -13,3 +13,11 @@ host_commands:
     path: ${E2E_BIN_DIR}/fake-hook-cmd
     allow:
       - "*"
+  # alias-echo declares a path whose basename ("echo-target") differs from
+  # the declared short name ("alias-echo") — same shape as this repo's own
+  # host_commands.run-e2e (path: e2e/run.sh). Exercises the 5a-2 short-name
+  # shim wiring for the alias case (docs/plans/phase5-shim-and-task-context.md).
+  alias-echo:
+    path: ${E2E_BIN_DIR}/echo-target
+    allow:
+      - "*"

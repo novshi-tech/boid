@@ -16,9 +16,11 @@ type CommandBroker interface {
 	// commands (ResolveHostCommands' byName return value —
 	// docs/plans/phase5-shim-and-task-context.md, "5a: shim
 	// 固定ディレクトリ化" PR1), not the absolute-path-keyed view used for shim
-	// bind-mount targets. The sandbox-side broker accepts the absolute path
-	// too, as a compatibility fallback for the shim's current
-	// ExecRequest.Command until 5a-2 switches it to send the short name.
+	// bind-mount targets. As of 5a-2, this is also what the shim sends as
+	// ExecRequest.Command (sandbox.ResolveShimCommandName). The sandbox-side
+	// broker still accepts the absolute bind-mount path too, as a
+	// compatibility fallback kept intentionally until the 5a-3 shim
+	// relocation cutover (see internal/sandbox/broker.go's lookupCommand).
 	RegisterCommands(commands map[string]orchestrator.CommandDef, builtinPolicies map[string]sandbox.BuiltinPolicy, ctx sandbox.TokenContext, resolve SecretResolver) string
 	UnregisterCommandToken(token string)
 	SocketPath() string

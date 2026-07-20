@@ -265,6 +265,9 @@ func BuildSandboxSpec(spec *orchestrator.JobSpec, rt SandboxRuntimeInfo) (sandbo
 	if rules := buildHostCommandRulesEnv(rt.ResolvedHostCommandsByName); rules != "" {
 		env[sandbox.HostCommandRulesEnv] = rules
 	}
+	if names := buildHostCommandNamesEnv(rt.ResolvedHostCommands); names != "" {
+		env[sandbox.HostCommandNamesEnv] = names
+	}
 	env["BOID_HOST_IP"] = hostGatewayIP
 	setIfNonEmpty(env, "BOID_WORKSPACE_SLUG", rt.WorkspaceSlug)
 	if rt.ProxyPort > 0 {
@@ -1064,6 +1067,37 @@ func buildHostCommandRulesEnv(hostCommands map[string]orchestrator.CommandDef) s
 		return ""
 	}
 	encoded, err := json.Marshal(rules)
+	if err != nil {
+		return ""
+	}
+	return string(encoded)
+}
+
+// buildHostCommandNamesEnv builds the compact JSON payload for
+// sandbox.HostCommandNamesEnv from the dispatcher's resolved,
+// absolute-path-keyed host command defs (ResolveHostCommands' byPath view —
+// the exact same map hostCommandMounts binds the shim at). It maps each
+// shim bind-mount target to its declared short name, so a shim invocation
+// (identified inside the sandbox only by its own bind-mount path via
+// os.Executable()) can resolve its canonical broker-facing name even when
+// host_commands.<name>.path aliases it to a file whose basename differs from
+// name (e.g. run-e2e -> e2e/run.sh — see
+// docs/plans/phase5-shim-and-task-context.md 5a-2, the codex review Minor
+// finding on 5a-1: the shim's argv0 basename alone cannot recover "run-e2e"
+// from a file named "run.sh"). Deriving this from the same byPath map
+// hostCommandMounts already consumes (rather than a second, independently
+// built map) keeps the mount target ↔ declared name association a single
+// source of truth. Empty when there are no host commands, so the caller can
+// skip setting the env var entirely.
+func buildHostCommandNamesEnv(hostCommands map[string]orchestrator.CommandDef) string {
+	if len(hostCommands) == 0 {
+		return ""
+	}
+	names := make(map[string]string, len(hostCommands))
+	for path, def := range hostCommands {
+		names[path] = def.Name
+	}
+	encoded, err := json.Marshal(names)
 	if err != nil {
 		return ""
 	}

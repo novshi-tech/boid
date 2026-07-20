@@ -52,17 +52,25 @@ func shimMain() {
 		os.Exit(1)
 	}
 
+	// Resolve this invocation's declared short (host_commands.<name>) name
+	// once and reuse it for both the local fast-path check below and the
+	// broker request itself, so the two never disagree (5a-2:
+	// docs/plans/phase5-shim-and-task-context.md — ResolveShimCommandName
+	// prefers BOID_HOST_COMMAND_NAMES over the argv0 basename so a
+	// host_commands.<name>.path alias whose file basename differs from name
+	// still resolves to the declared name).
+	command := sandbox.ResolveShimCommandName(os.Args[0])
+
 	// Shim-side fast path: reject obviously-doomed invocations locally so we
 	// don't pay for a broker round trip. The broker remains the authority and
 	// enforces the same rules again; this only saves a hop and produces the
 	// identical "host_commands.<name>: rejected: <reason>" message.
-	command := sandbox.CommandFromArgv0(os.Args[0])
 	if msg, rejected := sandbox.EarlyRejectFromEnv(command, os.Args[1:]); rejected {
 		fmt.Fprintln(os.Stderr, msg)
 		os.Exit(1)
 	}
 
-	resp, err := sandbox.ShimExec(brokerSocket, os.Args[0], os.Args[1:])
+	resp, err := sandbox.ShimExec(brokerSocket, command, os.Args[1:])
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "boid shim: %v\n", err)
 		os.Exit(1)
