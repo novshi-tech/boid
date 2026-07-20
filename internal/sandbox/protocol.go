@@ -86,6 +86,15 @@ const (
 	BoidOpTaskInstructions BoidOp = "task_instructions"
 	BoidOpTaskEnv          BoidOp = "task_env"
 	BoidOpTaskPayload      BoidOp = "task_payload"
+
+	// Phase 5b PR2 attachments RPCs (docs/plans/phase5-shim-and-task-context.md):
+	// pull-based replacement for the dispatch-time attachments bind
+	// (`~/.boid/attachments`, sandbox_builder.go's per-task RO mount of
+	// `<AttachmentsRoot>/tasks/<task_id>/attachments`). The bind still runs
+	// in parallel — the 5b-6 cutover PR retires it once every reader has
+	// migrated to these ops.
+	BoidOpTaskAttachmentsList BoidOp = "task_attachments_list"
+	BoidOpTaskAttachmentsGet  BoidOp = "task_attachments_get"
 )
 
 type BoidRequest struct {
@@ -146,6 +155,12 @@ type BoidRequest struct {
 	// action send fields
 	ActionType string `json:"action_type,omitempty"`
 	Payload    []byte `json:"payload,omitempty"`
+
+	// task attachments get fields. AttachmentName addresses one attachment
+	// by its exact basename — see api.ReadAttachment for the traversal
+	// guard (no path separators, no ".."). Unused by
+	// BoidOpTaskAttachmentsList.
+	AttachmentName string `json:"attachment_name,omitempty"`
 }
 
 type TokenContext struct {

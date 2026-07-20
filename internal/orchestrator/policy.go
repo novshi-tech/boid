@@ -105,6 +105,8 @@ func boidPolicy(_ Role, pctx PolicyContext) BuiltinPolicy {
 			OpBoidTaskInstructions,
 			OpBoidTaskEnv,
 			OpBoidTaskPayload,
+			OpBoidTaskAttachmentsList,
+			OpBoidTaskAttachmentsGet,
 		),
 		AllowedCwdRoots: cwds,
 	}
