@@ -27,6 +27,7 @@ has the same shape:
 10. [exec stdin-forward opt-in](#10-exec-stdin-forward-opt-in)
 11. [gitgateway SecretResolver namespace threading](#11-gitgateway-secretresolver-namespace-threading)
 12. [KitMeta.KitRoot ↔ sandbox_builder KitRoots mount](#12-kitmetakitroot--sandbox_builder-kitroots-mount)
+13. [task-context RPC ↔ dispatch-time context files](#13-task-context-rpc--dispatch-time-context-files)
 
 ---
 
@@ -391,3 +392,60 @@ adapter-driven `Bindings()`).
   assignment in `PlanHook`, or the kit-root mount loop in `BuildSandboxSpec`, verify a kit root
   set at End A still lands as a mount at End C — dropping any hop silently removes kit content
   from sandboxes that have no adapter-driven `Bindings()` to fall back on.
+
+## 13. task-context RPC ↔ dispatch-time context files
+
+Whether the new Phase 5b task-context broker RPCs (docs/plans/phase5-shim-and-task-context.md)
+serve the same data the pre-existing dispatch-time context files
+(`$HOME/.boid/context/{task,instructions,environment,payload}.{yaml,json}`) already write into
+every sandbox — the two paths run in parallel from PR1 through PR5, so any drift is a silent
+inconsistency between "what the agent reads at boot" and "what the agent reads if it calls the
+new CLI later in the same job".
+
+- **End A (file)**: `contextFiles` / `buildEnvironmentYAML` in `internal/dispatcher/sandbox_builder.go`,
+  fed by `SandboxRuntimeInfo.AllowedDomains` (= the `allowedDomains` local in `Runner.Dispatch`)
+  and `EnvironmentInput.HostCommands` (= `spec.HostCommands`, the **short-name-keyed** map —
+  not `SandboxRuntimeInfo.ResolvedHostCommands`, which is absolute-host-path-keyed shim/broker
+  plumbing only; see that field's doc comment). `host_commands` entries are rendered via the
+  shared `convertHostCommands` helper.
+- **End B (RPC)**: `Runner.trackJobContext` (`internal/dispatcher/job_context.go`), called at the
+  same point in `Runner.Dispatch` right after `resolveWorkspaceProxy`, builds a
+  `JobContextSnapshot{Env: BuildWorkspaceEnvView(allowedDomains, spec.HostCommands), Payload:
+  spec.PrimaryInput}` — the **same** `allowedDomains`/`spec.HostCommands` values End A uses, and
+  the same `convertHostCommands` call via `BuildWorkspaceEnvView`. `boid task current` /
+  `instructions` instead re-derive live from the task row
+  (`orchestrator.SnapshotTask`/`CurrentInstructions`) since that data has no job-scoped filtering
+  dependency — see `internal/api/task_context.go`'s package doc comment for why the split exists.
+- **End C (serve)**: `boidBuiltinExecutor.ExecuteBoidBuiltin`'s `BoidOpTaskEnv`/`BoidOpTaskPayload`
+  cases (`internal/server/boid_executor.go`) read back via the `jobContextProvider` interface,
+  which `*dispatcher.Runner` satisfies structurally — wired in `internal/server/wire.go`'s
+  `newBoidBuiltinExecutor(..., runner)` call using the **same** `runner` variable `Dispatch` runs
+  on, not a separate instance.
+- **Invariant**: End A and End B must derive from the identical `allowedDomains` /
+  `spec.HostCommands` values and the identical `convertHostCommands` conversion — a future
+  refactor that computes one of them differently (e.g. switching End B to
+  `resolvedHostCommands`, or recomputing `allowedDomains` a second time) silently breaks parity
+  even though both sides still "work" independently. `JobContextSnapshot` must not outlive its
+  job: `Runner.UnregisterJob` must clear it (mirrors the broker token's own lifecycle).
+- **Past break**: none yet (introduced by this seam's own PR) — caught in review before merge:
+  the first implementation used `resolvedHostCommands` (absolute-path-keyed) for End B, which
+  `TestDispatch_TracksJobContext_EnvAndPayload` caught immediately (host command `Name` came back
+  as `/usr/bin/gh` instead of `gh`).
+- **Guard**: End A unchanged = the pre-existing `TestBuildEnvironmentYAML_*` suite in
+  `sandbox_builder_test.go` (still green after the `WorkspaceEnvHostCommand` rename, proving the
+  YAML tags/output didn't move). End B = `TestDispatch_TracksJobContext_EnvAndPayload` /
+  `_NilPrimaryInput`, `TestUnregisterJob_RemovesJobContext` (`internal/dispatcher/runner_job_context_test.go`).
+  End C = the `TestBoidBuiltinExecutor_Task{Env,Payload,Current,Instructions}_*` suite
+  (`internal/server/boid_executor_task_context_test.go`), plus
+  `TestBoidBuiltinExecutor_TaskEnvAndPayload_RealRunnerWiring`
+  (`internal/server/boid_executor_task_context_wiring_test.go`) which crosses End B→C with a real
+  `*dispatcher.Runner.Dispatch` (fake sandbox/runtime backends, no real process launch) instead of
+  a stub `jobContextProvider` — the specific gap a stub-only test suite leaves open. Broker-level
+  authorization (id-equality against the token's own `TaskID`/`JobID`) is covered separately by
+  `internal/sandbox/broker_task_context_test.go`.
+- **When you touch it**: if you touch `contextFiles`/`buildEnvironmentYAML`, `Runner.Dispatch`'s
+  `trackJobContext` call, or `jobContextProvider`/`newBoidBuiltinExecutor`'s wiring in `wire.go`,
+  verify End A and End B still read from the same source values, and that the real-Runner wiring
+  test still exercises the exact `runner` instance `wire.go` threads through. The 5b-6 cutover PR
+  (`docs/plans/phase5-shim-and-task-context.md`), which retires End A's file materialization, is
+  the point where this seam collapses to just End B/C — update this entry then.

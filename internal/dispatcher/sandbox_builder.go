@@ -1340,20 +1340,6 @@ type environmentSession struct {
 	DisplayName string `yaml:"display_name,omitempty"`
 }
 
-type environmentHostCommand struct {
-	Name   string                  `yaml:"name"`
-	Allow  []string                `yaml:"allow,omitempty"`
-	Deny   []string                `yaml:"deny,omitempty"`
-	Reject []environmentRejectRule `yaml:"reject,omitempty"`
-}
-
-// environmentRejectRule mirrors orchestrator.RejectRule so agents can read,
-// per host command, which arg shapes are rejected and what to do instead.
-type environmentRejectRule struct {
-	Match  string `yaml:"match"`
-	Reason string `yaml:"reason"`
-}
-
 type environmentDoc struct {
 	// Top-level fields kept for backward compatibility with skills that match
 	// `readonly: true` / `tools:` / `network.restricted` by literal field name.
@@ -1367,11 +1353,15 @@ type environmentDoc struct {
 	// Enriched sections introduced for session-mode agent bootstrap (the
 	// `boid agent claude` path). Task-mode agents read these too; the data
 	// is purely additive.
-	Sandbox      environmentSandbox       `yaml:"sandbox"`
-	Filesystem   environmentFilesystem    `yaml:"filesystem"`
-	HostCommands []environmentHostCommand `yaml:"host_commands,omitempty"`
-	Session      *environmentSession      `yaml:"session,omitempty"`
-	Notes        string                   `yaml:"notes,omitempty"`
+	Sandbox    environmentSandbox    `yaml:"sandbox"`
+	Filesystem environmentFilesystem `yaml:"filesystem"`
+	// HostCommands reuses the WorkspaceEnvHostCommand shape the `boid task
+	// env` RPC also returns (workspace_env_view.go) so the legacy YAML file
+	// and the RPC response are built from a single convertHostCommands call
+	// and cannot drift apart.
+	HostCommands []WorkspaceEnvHostCommand `yaml:"host_commands,omitempty"`
+	Session      *environmentSession       `yaml:"session,omitempty"`
+	Notes        string                    `yaml:"notes,omitempty"`
 }
 
 // environmentNotes is the prose block agents read to learn the sandbox's
@@ -1498,8 +1488,9 @@ func convertBindings(bindings []orchestrator.BindMount) []environmentBindingEntr
 }
 
 // convertHostCommands flattens the map form into a sorted slice so the YAML
-// output is deterministic.
-func convertHostCommands(commands map[string]orchestrator.CommandDef) []environmentHostCommand {
+// output (and the `boid task env` RPC response, which shares this
+// conversion via BuildWorkspaceEnvView) is deterministic.
+func convertHostCommands(commands map[string]orchestrator.CommandDef) []WorkspaceEnvHostCommand {
 	if len(commands) == 0 {
 		return nil
 	}
@@ -1508,7 +1499,7 @@ func convertHostCommands(commands map[string]orchestrator.CommandDef) []environm
 		names = append(names, name)
 	}
 	sort.Strings(names)
-	out := make([]environmentHostCommand, 0, len(names))
+	out := make([]WorkspaceEnvHostCommand, 0, len(names))
 	for _, name := range names {
 		def := commands[name]
 		allow := append([]string(nil), def.AllowedSubcommands...)
@@ -1516,11 +1507,11 @@ func convertHostCommands(commands map[string]orchestrator.CommandDef) []environm
 		sort.Strings(allow)
 		deny := append([]string(nil), def.DeniedPatterns...)
 		sort.Strings(deny)
-		var reject []environmentRejectRule
+		var reject []WorkspaceEnvRejectRule
 		for _, r := range def.RejectRules {
-			reject = append(reject, environmentRejectRule{Match: r.Match, Reason: r.Reason})
+			reject = append(reject, WorkspaceEnvRejectRule{Match: r.Match, Reason: r.Reason})
 		}
-		out = append(out, environmentHostCommand{
+		out = append(out, WorkspaceEnvHostCommand{
 			Name:   name,
 			Allow:  allow,
 			Deny:   deny,

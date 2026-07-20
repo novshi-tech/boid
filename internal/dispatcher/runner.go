@@ -130,6 +130,8 @@ type Runner struct {
 	dockerStates  map[string]*dockerProxyState // keyed by runtimeID
 	gatewayMu     sync.Mutex
 	gatewayTokens map[string]string // jobID -> git gateway job token
+	jobContextMu  sync.Mutex
+	jobContexts   map[string]JobContextSnapshot // jobID -> Phase 5b PR1 task-context RPC data
 }
 
 // Dispatch launches a sandbox for the given JobSpec. The optional cleanup
@@ -340,6 +342,22 @@ func (r *Runner) Dispatch(ctx context.Context, spec *orchestrator.JobSpec, clean
 	// when any step fails.
 	allowedDomains, proxyPort := r.resolveWorkspaceProxy(workspaceID)
 	gatewayURL, gatewayToken := r.registerGatewayToken(j.ID, spec, workspaceID)
+
+	// Phase 5b PR1 (docs/plans/phase5-shim-and-task-context.md): track this
+	// job's reduced environment view + trait-filtered payload so the `boid
+	// task env` / `boid task payload` broker RPCs can serve back exactly
+	// what contextFiles/buildEnvironmentYAML materialize into the sandbox
+	// below. Uses spec.HostCommands (short-name keyed), the exact same
+	// input buildEnvironmentYAML's host_commands section uses — NOT
+	// resolvedHostCommands (absolute-host-path keyed, shim/broker plumbing
+	// only, see SandboxRuntimeInfo.ResolvedHostCommands's doc comment).
+	// `boid task current` / `boid task instructions` do NOT need this: they
+	// re-derive live from the task row (orchestrator.SnapshotTask /
+	// CurrentInstructions), which needs no job-scoped tracking.
+	r.trackJobContext(j.ID, JobContextSnapshot{
+		Env:     BuildWorkspaceEnvView(allowedDomains, spec.HostCommands),
+		Payload: spec.PrimaryInput,
+	})
 
 	// gatewayCloneURL is only worth resolving (an extra Projects lookup)
 	// when the opt-in sandbox-clone path is actually declared. As of the PR6
@@ -1082,6 +1100,8 @@ func (r *Runner) UnregisterJob(jobID string) {
 		r.GitGateway.Unregister(gwToken)
 		slog.Info("unregistered git gateway token", "job_id", jobID)
 	}
+
+	r.untrackJobContext(jobID)
 }
 
 func (r *Runner) isJobCompleted(jobID string) bool {

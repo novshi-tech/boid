@@ -106,7 +106,7 @@ func (p *DispatchPlanner) PlanHook(event *HookFireEvent) (*JobSpec, CleanupFunc,
 		HarnessType:  harnessType,
 		Argv:         argv,
 		Instruction:  instruction,
-		Task:         snapshotTask(task),
+		Task:         SnapshotTask(task),
 		PrimaryInput: payload,
 		Visibility: Visibility{
 			ProjectDir:         proj.WorkDir,
@@ -263,7 +263,14 @@ func selectInstruction(task *Task, agent string) *RoutedInstruction {
 	return &selected
 }
 
-func snapshotTask(task *Task) *TaskSnapshot {
+// SnapshotTask projects a Task down to the business-metadata subset
+// historically materialized at $HOME/.boid/context/task.yaml (see
+// TaskSnapshot's doc comment). Exported so internal/api's Phase 5b PR1
+// `boid task current` RPC (docs/plans/phase5-shim-and-task-context.md)
+// reuses the exact same projection instead of re-deriving it — the file
+// drop (via this function) and the RPC must never drift apart while both
+// exist side by side.
+func SnapshotTask(task *Task) *TaskSnapshot {
 	if task == nil {
 		return nil
 	}

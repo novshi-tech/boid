@@ -121,3 +121,25 @@ func FilterInstructions(instructions Instructions, agent string) []RoutedInstruc
 		Model:   active.Model,
 	}}
 }
+
+// CurrentInstructions returns the task's currently routed instruction as a
+// []RoutedInstruction, the same content historically materialized at
+// $HOME/.boid/context/instructions.yaml (see selectInstruction in
+// planner.go) and now also exposed via the Phase 5b PR1 `boid task
+// instructions` broker RPC (docs/plans/phase5-shim-and-task-context.md).
+//
+// Unlike selectInstruction, which filters by the firing hook's declared
+// agent, this derives the agent to filter by from the instructions history
+// itself (the active entry's own Agent field) — by construction the two are
+// equivalent for every agent-kind hook that actually receives a non-nil
+// Instruction at dispatch time (a mismatched hook.Agent yields a nil
+// Instruction there too, via the same FilterInstructions early return), so
+// this needs no job-scoped hook context to reproduce the same result live
+// from the task row alone.
+func CurrentInstructions(task *Task) []RoutedInstruction {
+	if task == nil || task.Status != TaskStatusExecuting || len(task.Instructions) == 0 {
+		return nil
+	}
+	active := task.Instructions[len(task.Instructions)-1]
+	return FilterInstructions(task.Instructions, active.Agent)
+}

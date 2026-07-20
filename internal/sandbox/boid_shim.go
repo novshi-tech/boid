@@ -15,7 +15,8 @@ import (
 const boidShimUsage = `Usage: boid <command> [subcommand] [flags]
 
 Commands:
-  task    Manage tasks (create, show, update, list, notify, answer, ask, delete, import, reopen)
+  task    Manage tasks (create, show, update, list, notify, answer, ask, delete, import, reopen,
+          current, instructions, env, payload)
   job     Manage jobs (done, list, show, log)
   action  Send actions (send)
   agent   Manage agent (stop)
@@ -45,6 +46,19 @@ func RunBoidShim(args []string) (*ExecResponse, error) {
 	// boid fetch <url> is dispatched via FetchRequest, not BoidRequest.
 	if len(args) > 0 && args[0] == "fetch" {
 		return runFetchShim(args[1:], brokerSocket)
+	}
+
+	// Phase 5b PR1 task-context ops (docs/plans/phase5-shim-and-task-context.md):
+	// `boid task current` / `instructions` / `env` / `payload` get their own
+	// request/response path instead of flowing through parseBoidRequest /
+	// the generic send below — they read BOID_TASK_ID / BOID_JOB_ID from the
+	// environment instead of a positional id, and support a client-side
+	// --format (json|yaml) for their full-object output that the broker
+	// itself has no opinion on (it always replies JSON).
+	if len(args) >= 2 && args[0] == "task" {
+		if op, ok := taskContextOps[args[1]]; ok {
+			return runTaskContextShim(op, args, brokerSocket)
+		}
 	}
 
 	req, err := parseBoidRequest(args)
