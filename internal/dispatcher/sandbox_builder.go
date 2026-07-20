@@ -42,10 +42,20 @@ type SandboxRuntimeInfo struct {
 	Foreground bool
 
 	// ResolvedHostCommands is the absolute-path-keyed view of spec.HostCommands
-	// produced by ResolveHostCommands. The same map is registered with the
-	// broker so the shim's os.Executable() lookup hits a known key. Empty when
-	// the job declares no host commands.
+	// produced by ResolveHostCommands. Consumed by hostCommandMounts (shim
+	// bind-mount targets) and buildPATH — both still key off the bind-mount
+	// path during the 5a staging period. Empty when the job declares no host
+	// commands.
 	ResolvedHostCommands map[string]orchestrator.CommandDef
+
+	// ResolvedHostCommandsByName is the short-name-keyed view of the same
+	// resolved data (docs/plans/phase5-shim-and-task-context.md, "5a: shim
+	// 固定ディレクトリ化" PR1). This is the "policy 用" view: it is what gets
+	// registered with the broker (CommandBroker.RegisterCommands) and fed to
+	// buildHostCommandRulesEnv, since a short name survives shim relocation
+	// (5a-3) while the bind-mount path does not. Empty when the job declares
+	// no host commands.
+	ResolvedHostCommandsByName map[string]orchestrator.CommandDef
 
 	// ProxySocketPath, when non-empty, is the host-side Unix socket path of the
 	// per-sandbox docker proxy. sandbox_builder bind-mounts it into the sandbox
@@ -252,7 +262,7 @@ func BuildSandboxSpec(spec *orchestrator.JobSpec, rt SandboxRuntimeInfo) (sandbo
 		pathBindings = harnessBindings
 	}
 	env["PATH"] = buildPATH(pathBindings, rt.ResolvedHostCommands, rt.BoidBinary)
-	if rules := buildHostCommandRulesEnv(rt.ResolvedHostCommands); rules != "" {
+	if rules := buildHostCommandRulesEnv(rt.ResolvedHostCommandsByName); rules != "" {
 		env[sandbox.HostCommandRulesEnv] = rules
 	}
 	env["BOID_HOST_IP"] = hostGatewayIP
@@ -1029,11 +1039,11 @@ func hostCommandMounts(boidBinary string, resolved map[string]orchestrator.Comma
 }
 
 // buildHostCommandRulesEnv builds the compact JSON payload for
-// sandbox.HostCommandRulesEnv from the dispatcher's resolved (abs-path-keyed)
-// host command defs, keyed instead by command name (the basename the shim
-// sees via CommandFromArgv0). Only commands that declare at least one reject
-// rule are included; when none do, an empty string is returned so the caller
-// skips setting the env var entirely. json.Marshal of a map produces
+// sandbox.HostCommandRulesEnv from the dispatcher's resolved, short-name-keyed
+// host command defs (ResolveHostCommands' byName view — the command name the
+// shim sees via CommandFromArgv0). Only commands that declare at least one
+// reject rule are included; when none do, an empty string is returned so the
+// caller skips setting the env var entirely. json.Marshal of a map produces
 // lexicographically sorted keys, so output is deterministic.
 func buildHostCommandRulesEnv(hostCommands map[string]orchestrator.CommandDef) string {
 	if len(hostCommands) == 0 {

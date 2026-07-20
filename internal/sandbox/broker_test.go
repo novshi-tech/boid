@@ -331,6 +331,113 @@ func TestBroker_HostCommandWithAliasedPath(t *testing.T) {
 	}
 }
 
+// TestBroker_ShortNameKeyedCommand_DirectMatch covers the 5a-1 canonical
+// lookup path (docs/plans/phase5-shim-and-task-context.md, "5a: shim 固定
+// ディレクトリ化" PR1): once the broker's Commands map is registered under
+// the short (declared) command name — as dispatcher.ResolveHostCommands'
+// byName view now produces — a request whose Command is already that short
+// name hits directly, with no fallback needed. This is also the shape 5a-2
+// will send once the shim switches ExecRequest.Command to the short name.
+func TestBroker_ShortNameKeyedCommand_DirectMatch(t *testing.T) {
+	broker := &sandbox.Broker{}
+	token := broker.Register(map[string]sandbox.CommandDef{
+		"echo": {Name: "echo", Path: "/bin/echo", AllowedPatterns: []string{"*"}},
+	}, nil, testCtx)
+
+	resp := broker.Handle(&sandbox.ExecRequest{
+		Command: "echo",
+		Args:    []string{"hello"},
+		Token:   token,
+	})
+	if resp.ExitCode != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr: %s", resp.ExitCode, resp.Stderr)
+	}
+	if resp.Stdout != "hello\n" {
+		t.Errorf("stdout = %q, want %q", resp.Stdout, "hello\n")
+	}
+}
+
+// TestBroker_ShortNameKeyedCommand_AbsolutePathFallback is the staging-period
+// compatibility path this PR adds: the broker's Commands map is now
+// registered under short-name keys, but the shim still sends the absolute
+// bind-mount path as ExecRequest.Command until 5a-2 lands. A request whose
+// Command is the absolute path (not a key in the map) must still resolve, by
+// scanning registered CommandDefs for a Path match.
+func TestBroker_ShortNameKeyedCommand_AbsolutePathFallback(t *testing.T) {
+	broker := &sandbox.Broker{}
+	token := broker.Register(map[string]sandbox.CommandDef{
+		"echo": {Name: "echo", Path: "/bin/echo", AllowedPatterns: []string{"*"}},
+	}, nil, testCtx)
+
+	resp := broker.Handle(&sandbox.ExecRequest{
+		Command: "/bin/echo",
+		Args:    []string{"hello"},
+		Token:   token,
+	})
+	if resp.ExitCode != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr: %s", resp.ExitCode, resp.Stderr)
+	}
+	if resp.Stdout != "hello\n" {
+		t.Errorf("stdout = %q, want %q", resp.Stdout, "hello\n")
+	}
+}
+
+// TestBroker_ShortNameKeyedCommand_AliasedPathFallbackIgnoresBasename is the
+// aliased-name regression this fallback must not reintroduce: a
+// host_commands.<name>.path override (e.g. run-e2e -> e2e/run.sh) means the
+// bind-mount path's basename ("run.sh") never equals the declared short name
+// ("run-e2e"). The fallback must match by the registered CommandDef's Path
+// field, not by filepath.Base(req.Command), or this case would 404.
+func TestBroker_ShortNameKeyedCommand_AliasedPathFallbackIgnoresBasename(t *testing.T) {
+	dir := t.TempDir()
+	scriptPath := filepath.Join(dir, "e2e", "run.sh")
+	if err := os.MkdirAll(filepath.Dir(scriptPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(scriptPath, []byte("#!/bin/sh\necho aliased\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	broker := &sandbox.Broker{}
+	token := broker.Register(map[string]sandbox.CommandDef{
+		"run-e2e": {Name: "run-e2e", Path: scriptPath, AllowedPatterns: []string{"*"}},
+	}, nil, testCtx)
+
+	resp := broker.Handle(&sandbox.ExecRequest{
+		Command: scriptPath,
+		Token:   token,
+	})
+	if resp.ExitCode != 0 {
+		t.Fatalf("exit=%d stderr=%q", resp.ExitCode, resp.Stderr)
+	}
+	if !strings.Contains(resp.Stdout, "aliased") {
+		t.Errorf("stdout = %q, want contain 'aliased'", resp.Stdout)
+	}
+}
+
+// TestBroker_ShortNameKeyedCommand_UnknownPathStillRejected guards against
+// the fallback over-matching: a path that isn't any registered CommandDef's
+// Path (and isn't a key either) must still be rejected, exactly as an
+// unknown command name is.
+func TestBroker_ShortNameKeyedCommand_UnknownPathStillRejected(t *testing.T) {
+	broker := &sandbox.Broker{}
+	token := broker.Register(map[string]sandbox.CommandDef{
+		"echo": {Name: "echo", Path: "/bin/echo", AllowedPatterns: []string{"*"}},
+	}, nil, testCtx)
+
+	resp := broker.Handle(&sandbox.ExecRequest{
+		Command: "/usr/bin/rm",
+		Args:    []string{"-rf", "/"},
+		Token:   token,
+	})
+	if resp.ExitCode != 1 {
+		t.Errorf("exit code = %d, want 1", resp.ExitCode)
+	}
+	if resp.Stderr == "" {
+		t.Error("expected non-empty stderr for unmatched path")
+	}
+}
+
 // TestBroker_EmptyPathFallsBackToName covers the broker's defensive fallback
 // when CommandDef.Path is left blank. In production dispatcher.ResolveHostCommands
 // always fills Path with an absolute path, so this only exercises the broker's

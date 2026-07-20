@@ -163,14 +163,29 @@ func warnUnknownBoidVars(name string, env map[string]string) {
 }
 
 // ResolveHostCommands turns the orchestrator-side host command map (keyed by
-// the user-declared name) into a map keyed by the absolute path that the
-// boid shim will be bind-mounted at inside the sandbox. The absolute path is
-// also written back into each entry's Path so the broker spawns the right
-// binary on the host without a second lookup.
+// the user-declared name) into two views over the same resolved command data
+// (docs/plans/phase5-shim-and-task-context.md, "5a: shim 固定ディレクトリ化"
+// PR1):
 //
-// The same map is used both as the broker's policy table and as the source
-// of shim mount targets; sharing a single resolved view guarantees that the
-// `os.Executable()` value the shim sends will match a key the broker holds.
+//   - byPath is keyed by the absolute path that the boid shim will be
+//     bind-mounted at inside the sandbox. The absolute path is also written
+//     back into each entry's Path. Consumed by the shim mount builder
+//     (hostCommandMounts) and the sandbox PATH builder (buildPATH) — both
+//     still key off the bind-mount target during the 5a staging period
+//     (shim placement itself only moves to a fixed directory in 5a-3).
+//   - byName is keyed by the short (user-declared) command name — the
+//     "policy 用" view. Consumed by the broker's policy table
+//     (CommandBroker.RegisterCommands) and BOID_HOST_COMMAND_RULES
+//     (buildHostCommandRulesEnv): both need a lookup key that survives shim
+//     relocation, unlike the absolute host path. Until 5a-2 switches the
+//     shim to send the short name as ExecRequest.Command, the broker accepts
+//     the absolute path too as a compatibility fallback (see
+//     internal/sandbox/broker.go's lookupCommand).
+//
+// Every entry appears in both maps under its own key with identical field
+// values (byName[def.Name] == byPath[absPath]), so the "shim's lookup key
+// hits a broker-known key" invariant holds regardless of which key a caller
+// is still using.
 //
 // The names "boid", "git", and "fetch" are excluded, each for a different
 // reason: "boid" has a dedicated bind mount + builtin policy elsewhere;
@@ -179,6 +194,7 @@ func warnUnknownBoidVars(name string, env map[string]string) {
 // via the base rbind of /usr, but the name is reserved here so a user
 // `host_commands.git:` entry doesn't try to overlay a shim onto that path
 // and break the sandbox-side git that the git gateway clone flow depends on.
+// Neither map ever contains an entry for these three names.
 //
 // `projectDir` is used to resolve relative paths declared in
 // host_commands.<name>.path, and as the working directory for the origin URL
@@ -195,7 +211,7 @@ func ResolveHostCommands(
 	projectDir string,
 	lookPath func(string) (string, error),
 	getOriginURL func(string) (string, error),
-) (map[string]orchestrator.CommandDef, error) {
+) (byPath map[string]orchestrator.CommandDef, byName map[string]orchestrator.CommandDef, err error) {
 	out := make(map[string]orchestrator.CommandDef)
 
 	for _, name := range builtins {
@@ -205,9 +221,9 @@ func ResolveHostCommands(
 		if _, ok := hostCommands[name]; ok {
 			continue
 		}
-		absPath, err := lookPath(name)
-		if err != nil {
-			return nil, fmt.Errorf("host command %q not found on host: %w", name, err)
+		absPath, lookErr := lookPath(name)
+		if lookErr != nil {
+			return nil, nil, fmt.Errorf("host command %q not found on host: %w", name, lookErr)
 		}
 		if _, dup := out[absPath]; dup {
 			continue
@@ -225,14 +241,14 @@ func ResolveHostCommands(
 			if !filepath.IsAbs(p) {
 				p = filepath.Join(projectDir, p)
 			}
-			if _, err := os.Stat(p); err != nil {
-				return nil, fmt.Errorf("host_commands.%s.path %q does not exist on host", name, def.Path)
+			if _, statErr := os.Stat(p); statErr != nil {
+				return nil, nil, fmt.Errorf("host_commands.%s.path %q does not exist on host", name, def.Path)
 			}
 			absPath = p
 		} else {
-			p, err := lookPath(name)
-			if err != nil {
-				return nil, fmt.Errorf("host command %q not found on host: %w", name, err)
+			p, lookErr := lookPath(name)
+			if lookErr != nil {
+				return nil, nil, fmt.Errorf("host command %q not found on host: %w", name, lookErr)
 			}
 			absPath = p
 		}
@@ -246,5 +262,10 @@ func ResolveHostCommands(
 		out[absPath] = cd
 	}
 
-	return out, nil
+	byName = make(map[string]orchestrator.CommandDef, len(out))
+	for _, def := range out {
+		byName[def.Name] = def
+	}
+
+	return out, byName, nil
 }

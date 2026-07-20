@@ -801,7 +801,7 @@ func TestHostCommandMounts_BoidAndGitExcluded(t *testing.T) {
 		"gh":  {},
 		"git": {},
 	}
-	resolved, err := ResolveHostCommands([]string{"boid", "git"}, hostCmds, "", fakeLookPath, fakeGetOriginURL)
+	resolved, _, err := ResolveHostCommands([]string{"boid", "git"}, hostCmds, "", fakeLookPath, fakeGetOriginURL)
 	if err != nil {
 		t.Fatalf("ResolveHostCommands: %v", err)
 	}
@@ -828,7 +828,7 @@ func TestHostCommandMounts_NotFound(t *testing.T) {
 		return "", fmt.Errorf("not found")
 	}
 	hostCmds := map[string]orchestrator.CommandDef{"missing-cmd": {}}
-	_, err := ResolveHostCommands(nil, hostCmds, "", fakeLookPath, fakeGetOriginURL)
+	_, _, err := ResolveHostCommands(nil, hostCmds, "", fakeLookPath, fakeGetOriginURL)
 	if err == nil {
 		t.Error("expected error for missing host command, got nil")
 	}
@@ -840,7 +840,7 @@ func TestHostCommandMounts_BindsAtHostPath(t *testing.T) {
 		return "/usr/local/bin/" + name, nil
 	}
 	hostCmds := map[string]orchestrator.CommandDef{"gh": {}}
-	resolved, err := ResolveHostCommands(nil, hostCmds, "", fakeLookPath, fakeGetOriginURL)
+	resolved, _, err := ResolveHostCommands(nil, hostCmds, "", fakeLookPath, fakeGetOriginURL)
 	if err != nil {
 		t.Fatalf("ResolveHostCommands: %v", err)
 	}
@@ -869,7 +869,7 @@ func TestHostCommandMounts_Dedup(t *testing.T) {
 		return "/usr/bin/" + name, nil
 	}
 	hostCmds := map[string]orchestrator.CommandDef{"gh": {}}
-	resolved, err := ResolveHostCommands([]string{"gh"}, hostCmds, "", fakeLookPath, fakeGetOriginURL)
+	resolved, _, err := ResolveHostCommands([]string{"gh"}, hostCmds, "", fakeLookPath, fakeGetOriginURL)
 	if err != nil {
 		t.Fatalf("ResolveHostCommands: %v", err)
 	}
@@ -895,7 +895,7 @@ func TestHostCommandMounts_PathSpecified_SkipsLookPath(t *testing.T) {
 	hostCmds := map[string]orchestrator.CommandDef{
 		"run-e2e": {Path: scriptPath},
 	}
-	resolved, err := ResolveHostCommands(nil, hostCmds, "", fakeLookPath, fakeGetOriginURL)
+	resolved, _, err := ResolveHostCommands(nil, hostCmds, "", fakeLookPath, fakeGetOriginURL)
 	if err != nil {
 		t.Fatalf("ResolveHostCommands: %v", err)
 	}
@@ -936,7 +936,7 @@ func TestHostCommandMounts_RelativePathResolvedFromProjectDir(t *testing.T) {
 	hostCmds := map[string]orchestrator.CommandDef{
 		"run-e2e": {Path: "e2e/run.sh"},
 	}
-	resolved, err := ResolveHostCommands(nil, hostCmds, projectDir, func(string) (string, error) {
+	resolved, _, err := ResolveHostCommands(nil, hostCmds, projectDir, func(string) (string, error) {
 		return "", fmt.Errorf("lookPath should not be called")
 	}, fakeGetOriginURL)
 	if err != nil {
@@ -957,7 +957,7 @@ func TestHostCommandMounts_PathEmpty_UsesLookPath(t *testing.T) {
 		return "/usr/bin/" + name, nil
 	}
 	hostCmds := map[string]orchestrator.CommandDef{"gh": {}}
-	resolved, err := ResolveHostCommands(nil, hostCmds, "", fakeLookPath, fakeGetOriginURL)
+	resolved, _, err := ResolveHostCommands(nil, hostCmds, "", fakeLookPath, fakeGetOriginURL)
 	if err != nil {
 		t.Fatalf("ResolveHostCommands: %v", err)
 	}
@@ -980,7 +980,7 @@ func TestHostCommandMounts_PathDoesNotExist_Error(t *testing.T) {
 	hostCmds := map[string]orchestrator.CommandDef{
 		"run-e2e": {Path: missingPath},
 	}
-	_, err := ResolveHostCommands(nil, hostCmds, "", fakeLookPath, fakeGetOriginURL)
+	_, _, err := ResolveHostCommands(nil, hostCmds, "", fakeLookPath, fakeGetOriginURL)
 	if err == nil {
 		t.Fatal("expected error for non-existent path, got nil")
 	}
@@ -1003,7 +1003,7 @@ func TestHostCommandMounts_MixedBuiltinAndPathCommand(t *testing.T) {
 	hostCmds := map[string]orchestrator.CommandDef{
 		"run-e2e": {Path: scriptPath},
 	}
-	resolved, err := ResolveHostCommands([]string{"jq"}, hostCmds, "", fakeLookPath, fakeGetOriginURL)
+	resolved, _, err := ResolveHostCommands([]string{"jq"}, hostCmds, "", fakeLookPath, fakeGetOriginURL)
 	if err != nil {
 		t.Fatalf("ResolveHostCommands: %v", err)
 	}
@@ -1926,7 +1926,6 @@ func TestBuildEnvironmentYAML_HostCommandsRejectSurfaced(t *testing.T) {
 	}
 }
 
-
 // TestBuildSandboxSpec_ProfileInit_IsThreaded verifies that
 // JobSpec.SandboxProfile == sandbox.ProfileInit is correctly threaded through
 // BuildSandboxSpec into sandbox.Spec.Profile.
@@ -2176,19 +2175,24 @@ func TestBuildSandboxSpec_ProfileDefault_HarnessKeepsAdditionalBindings(t *testi
 
 // TestBuildSandboxSpec_HostCommandRulesEnv_SetWhenRejectRulesPresent verifies
 // that BOID_HOST_COMMAND_RULES is set to a JSON map keyed by command Name
-// (not the abs path key of ResolvedHostCommands) whenever at least one
-// resolved host command declares reject rules.
+// (rt.ResolvedHostCommandsByName, not the abs-path-keyed
+// rt.ResolvedHostCommands) whenever at least one resolved host command
+// declares reject rules.
 func TestBuildSandboxSpec_HostCommandRulesEnv_SetWhenRejectRulesPresent(t *testing.T) {
 	spec := &orchestrator.JobSpec{}
 	rt := SandboxRuntimeInfo{
-		ResolvedHostCommands: map[string]orchestrator.CommandDef{
-			"/usr/bin/gh": {
+		// buildHostCommandRulesEnv now reads the short-name-keyed view
+		// (docs/plans/phase5-shim-and-task-context.md 5a PR1) — production
+		// code populates both maps from a single ResolveHostCommands call, so
+		// this test mirrors that by hand.
+		ResolvedHostCommandsByName: map[string]orchestrator.CommandDef{
+			"gh": {
 				Name: "gh",
 				RejectRules: []orchestrator.RejectRule{
 					{Match: "*--body-file*", Reason: "sandbox paths are not visible on the host"},
 				},
 			},
-			"/usr/bin/git": {
+			"git": {
 				Name: "git",
 			},
 		},
@@ -2214,9 +2218,9 @@ func TestBuildSandboxSpec_HostCommandRulesEnv_SetWhenRejectRulesPresent(t *testi
 func TestBuildSandboxSpec_HostCommandRulesEnv_AbsentWhenNoRejectRules(t *testing.T) {
 	spec := &orchestrator.JobSpec{}
 	rt := SandboxRuntimeInfo{
-		ResolvedHostCommands: map[string]orchestrator.CommandDef{
-			"/usr/bin/git": {Name: "git"},
-			"/usr/bin/gh":  {Name: "gh"},
+		ResolvedHostCommandsByName: map[string]orchestrator.CommandDef{
+			"git": {Name: "git"},
+			"gh":  {Name: "gh"},
 		},
 	}
 	result, err := BuildSandboxSpec(spec, rt)

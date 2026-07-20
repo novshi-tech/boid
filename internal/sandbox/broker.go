@@ -259,7 +259,7 @@ func (b *Broker) handle(ctx context.Context, req *ExecRequest) *ExecResponse {
 	// /usr, so a "git"-named command reaching the broker at all would only
 	// happen via an explicit host_commands entry — same handling as any
 	// other command name.
-	def, ok := entry.Commands[req.Command]
+	def, ok := lookupCommand(entry.Commands, req.Command)
 	if !ok {
 		return &ExecResponse{ExitCode: 1, Stderr: fmt.Sprintf("command not allowed: %s", filepath.Base(req.Command))}
 	}
@@ -556,6 +556,34 @@ func isWithinRoot(path, root string) bool {
 		return true
 	}
 	return strings.HasPrefix(path, root+string(os.PathSeparator))
+}
+
+// lookupCommand resolves an ExecRequest.Command against a token's registered
+// CommandDefs. Direct key lookup is the canonical path: as of
+// docs/plans/phase5-shim-and-task-context.md ("5a: shim 固定ディレクトリ化"
+// PR1), dispatcher.ResolveHostCommands registers the broker under short
+// (declared) command name keys, and that is what a 5a-2 shim will send as
+// ExecRequest.Command.
+//
+// Until 5a-2 lands, the shim still sends the absolute bind-mount path
+// (shimBinaryPath / os.Executable()), which is no longer a key in the
+// registered map. The second pass is a compatibility fallback for exactly
+// that staging period: it scans registered defs for a Path match. It
+// deliberately does not fall back to filepath.Base(command) — a
+// host_commands.<name>.path alias (e.g. run-e2e -> e2e/run.sh) means the
+// bind-mount path's basename does not always equal the declared short name,
+// so only an exact Path match is trustworthy. Drop this fallback once 5a-2
+// lands and every caller sends the short name directly.
+func lookupCommand(commands map[string]CommandDef, command string) (CommandDef, bool) {
+	if def, ok := commands[command]; ok {
+		return def, true
+	}
+	for _, def := range commands {
+		if def.Path != "" && def.Path == command {
+			return def, true
+		}
+	}
+	return CommandDef{}, false
 }
 
 func (b *Broker) execCommand(req *ExecRequest, def CommandDef, entry *tokenEntry) *ExecResponse {

@@ -259,10 +259,10 @@ func (r *Runner) Dispatch(ctx context.Context, spec *orchestrator.JobSpec, clean
 
 	workspacePeers := r.resolveWorkspacePeers(workspaceID, spec.ProjectID)
 
-	var resolvedHostCommands map[string]orchestrator.CommandDef
+	var resolvedHostCommands, resolvedHostCommandsByName map[string]orchestrator.CommandDef
 	if len(spec.HostCommands) > 0 || len(spec.BuiltinPolicies) > 0 {
 		var err error
-		resolvedHostCommands, err = ResolveHostCommands(
+		resolvedHostCommands, resolvedHostCommandsByName, err = ResolveHostCommands(
 			sortedKeys(spec.BuiltinPolicies),
 			spec.HostCommands,
 			projectWorkDir,
@@ -312,8 +312,13 @@ func (r *Runner) Dispatch(ctx context.Context, spec *orchestrator.JobSpec, clean
 				return r.SecretStore.Get(ns, key)
 			}
 		}
+		// Registered under short-name keys (the "policy 用" view — see
+		// ResolveHostCommands), not the absolute bind-mount path: the broker's
+		// policy table is meant to survive the shim relocating (5a-3), and the
+		// broker's exec lookup falls back to a path-keyed scan for the current
+		// shim, which still sends the absolute path until 5a-2.
 		brokerToken = r.Broker.RegisterCommands(
-			resolvedHostCommands,
+			resolvedHostCommandsByName,
 			PoliciesToSandbox(spec.BuiltinPolicies),
 			tokenCtx,
 			resolve,
@@ -415,23 +420,24 @@ func (r *Runner) Dispatch(ctx context.Context, spec *orchestrator.JobSpec, clean
 	}
 
 	rtInfo := SandboxRuntimeInfo{
-		JobID:                  j.ID,
-		BoidBinary:             r.BoidBinary,
-		ServerSocket:           r.ServerSocket,
-		ProxyPort:              proxyPort,
-		BrokerSocket:           brokerSocket,
-		BrokerToken:            brokerToken,
-		WorkspacePeers:         workspacePeers,
-		WorkspacePeerAdvertise: peerAdvertise,
-		ResolvedHostCommands:   resolvedHostCommands,
-		AllowedDomains:         allowedDomains,
-		AttachmentsRoot:        r.AttachmentsRoot,
-		GatewayURL:             gatewayURL,
-		GatewayJobToken:        gatewayToken,
-		GatewayCloneURL:        gatewayCloneURL,
-		CloneWorkspaceDir:      cloneWorkspaceDir,
-		WorkspaceHomeDir:       workspaceHomeDir,
-		WorkspaceSlug:          filepath.Base(workspaceHomeDir),
+		JobID:                      j.ID,
+		BoidBinary:                 r.BoidBinary,
+		ServerSocket:               r.ServerSocket,
+		ProxyPort:                  proxyPort,
+		BrokerSocket:               brokerSocket,
+		BrokerToken:                brokerToken,
+		WorkspacePeers:             workspacePeers,
+		WorkspacePeerAdvertise:     peerAdvertise,
+		ResolvedHostCommands:       resolvedHostCommands,
+		ResolvedHostCommandsByName: resolvedHostCommandsByName,
+		AllowedDomains:             allowedDomains,
+		AttachmentsRoot:            r.AttachmentsRoot,
+		GatewayURL:                 gatewayURL,
+		GatewayJobToken:            gatewayToken,
+		GatewayCloneURL:            gatewayCloneURL,
+		CloneWorkspaceDir:          cloneWorkspaceDir,
+		WorkspaceHomeDir:           workspaceHomeDir,
+		WorkspaceSlug:              filepath.Base(workspaceHomeDir),
 	}
 	// Server socket is only exposed to jobs that have no broker policies
 	// attached — i.e. boid exec invocations that need to talk to the daemon

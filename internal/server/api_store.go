@@ -141,7 +141,7 @@ func (r brokerRegistry) RegisterBrokerCommands(commands map[string]orchestrator.
 		ProjectDir:        project.WorkDir,
 	}
 	defs := orchestrator.HostCommands(commands).ToCommandDefs()
-	resolved, err := dispatcher.ResolveHostCommands(
+	resolved, resolvedByName, err := dispatcher.ResolveHostCommands(
 		sortedBuiltinKeys(builtinPolicies),
 		defs,
 		project.WorkDir,
@@ -178,7 +178,10 @@ func (r brokerRegistry) RegisterBrokerCommands(commands map[string]orchestrator.
 			return r.secretStore.Get(ns, key)
 		}
 	}
-	token := r.broker.RegisterCommands(resolved, builtinPolicies, ctx, resolve)
+	// Registered under short-name keys, matching the dispatcher path (see
+	// internal/dispatcher/runner.go) — the broker's policy table is short-name
+	// keyed as of docs/plans/phase5-shim-and-task-context.md 5a PR1.
+	token := r.broker.RegisterCommands(resolvedByName, builtinPolicies, ctx, resolve)
 	return &api.BrokerRegisterResponse{
 		Token:                token,
 		Socket:               r.broker.SocketPath(),
