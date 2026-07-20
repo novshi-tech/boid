@@ -181,19 +181,31 @@ func TestBuildClaudeArgs_EmptySystemPromptOmitsFlag(t *testing.T) {
 
 // ---------- parseSessionsJSON (pure) ----------
 
-func TestParseSessionsJSON_EmptyReturnsNil(t *testing.T) {
-	if got := parseSessionsJSON(nil); got != nil {
-		t.Errorf("got %+v, want nil for nil input", got)
+// TestParseSessionsJSON_EmptyReturnsNilNoError pins the one non-error "no
+// sessions" case: a genuinely absent field (empty stdout, exit 0) is normal
+// for a brand-new task and must not be conflated with a parse failure.
+func TestParseSessionsJSON_EmptyReturnsNilNoError(t *testing.T) {
+	got, err := parseSessionsJSON(nil)
+	if err != nil || got != nil {
+		t.Errorf("got (%+v, %v), want (nil, nil) for nil input", got, err)
 	}
-	if got := parseSessionsJSON([]byte("   \n")); got != nil {
-		t.Errorf("got %+v, want nil for whitespace-only input", got)
+	got, err = parseSessionsJSON([]byte("   \n"))
+	if err != nil || got != nil {
+		t.Errorf("got (%+v, %v), want (nil, nil) for whitespace-only input", got, err)
 	}
 }
 
-func TestParseSessionsJSON_MalformedReturnsNil(t *testing.T) {
-	got := parseSessionsJSON([]byte("{not json"))
+// TestParseSessionsJSON_MalformedReturnsError pins the codex-review fix
+// (PR #800): malformed JSON must surface as an error, not silently degrade
+// to nil — see readSessionsFromRPC's doc comment for why swallowing it would
+// risk the caller truncating a task's real session history.
+func TestParseSessionsJSON_MalformedReturnsError(t *testing.T) {
+	got, err := parseSessionsJSON([]byte("{not json"))
+	if err == nil {
+		t.Fatal("expected an error for malformed JSON")
+	}
 	if got != nil {
-		t.Errorf("got %+v, want nil for malformed JSON", got)
+		t.Errorf("got %+v, want nil sessions alongside the error", got)
 	}
 }
 
@@ -202,7 +214,10 @@ func TestParseSessionsJSON_ExtractsSessions(t *testing.T) {
 		{"type": "execution", "name": "", "id": "abc"},
 		{"type": "execution", "name": "verifier", "id": "def"}
 	]`
-	got := parseSessionsJSON([]byte(body))
+	got, err := parseSessionsJSON([]byte(body))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	want := []session{
 		{Type: "execution", Name: "", ID: "abc"},
 		{Type: "execution", Name: "verifier", ID: "def"},
@@ -268,27 +283,55 @@ func withFakeTaskPayloadSessions(t *testing.T, fn func(ctx context.Context, env 
 	t.Cleanup(func() { fetchTaskPayloadSessions = saved })
 }
 
-func TestReadSessionsFromRPC_FetchErrorReturnsNil(t *testing.T) {
+// TestReadSessionsFromRPC_FetchErrorPropagates pins the codex-review fix
+// (PR #800, Major finding): a broker/exec failure must propagate as an
+// error, not collapse to nil the way "no sessions" does. Swallowing it would
+// make Run()'s caller synthesize a fresh single-entry session list from a
+// transient failure and persist that over the task's real history — see
+// readSessionsFromRPC's doc comment and wiring-seams.md #15.
+func TestReadSessionsFromRPC_FetchErrorPropagates(t *testing.T) {
 	withFakeTaskPayloadSessions(t, func(context.Context, map[string]string) ([]byte, error) {
 		return nil, errors.New("boid: not found on PATH")
 	})
-	got := readSessionsFromRPC(context.Background(), nil)
+	got, err := readSessionsFromRPC(context.Background(), nil)
+	if err == nil {
+		t.Fatal("expected an error when the RPC fetch fails")
+	}
 	if got != nil {
-		t.Errorf("got %+v, want nil on fetch error", got)
+		t.Errorf("got %+v, want nil sessions alongside the error", got)
 	}
 }
 
-func TestReadSessionsFromRPC_EmptyFieldReturnsNil(t *testing.T) {
+func TestReadSessionsFromRPC_EmptyFieldReturnsNilNoError(t *testing.T) {
 	// api.ResolveJSONField returns "" (empty stdout) when the field path is
 	// absent — e.g. a brand-new task with no artifact.claude_code.sessions
 	// entry yet. Must behave like the old "no payload.json yet" case: nil,
-	// not an error.
+	// no error.
 	withFakeTaskPayloadSessions(t, func(context.Context, map[string]string) ([]byte, error) {
 		return []byte(""), nil
 	})
-	got := readSessionsFromRPC(context.Background(), nil)
+	got, err := readSessionsFromRPC(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	if got != nil {
 		t.Errorf("got %+v, want nil for empty field", got)
+	}
+}
+
+// TestReadSessionsFromRPC_MalformedJSONPropagatesError covers the exec-
+// succeeded-but-garbage-stdout case (a shim/broker bug, not a "no sessions"
+// signal) — must also error rather than silently return nil.
+func TestReadSessionsFromRPC_MalformedJSONPropagatesError(t *testing.T) {
+	withFakeTaskPayloadSessions(t, func(context.Context, map[string]string) ([]byte, error) {
+		return []byte("not json"), nil
+	})
+	got, err := readSessionsFromRPC(context.Background(), nil)
+	if err == nil {
+		t.Fatal("expected an error for malformed JSON")
+	}
+	if got != nil {
+		t.Errorf("got %+v, want nil sessions alongside the error", got)
 	}
 }
 
@@ -299,7 +342,10 @@ func TestReadSessionsFromRPC_Success(t *testing.T) {
 		return []byte(`[{"type":"execution","name":"","id":"abc"}]`), nil
 	})
 	env := map[string]string{"BOID_TASK_ID": "t1"}
-	got := readSessionsFromRPC(context.Background(), env)
+	got, err := readSessionsFromRPC(context.Background(), env)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	want := []session{{Type: "execution", Name: "", ID: "abc"}}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("got %+v, want %+v", got, want)
@@ -417,11 +463,66 @@ func readWrappedSessions(t *testing.T, path string) []session {
 	return p.PayloadPatch.Artifact.ClaudeCode.Sessions
 }
 
+// withStubbedClaudeCLI overrides lookPath to succeed without requiring an
+// actual claude binary on the test host's PATH — used by tests that need
+// Run() to get past the step-0 fail-fast gate without ever reaching
+// cmd.Start() (e.g. because a fake fetchTaskPayloadSessions error aborts
+// Run() first).
+func withStubbedClaudeCLI(t *testing.T) {
+	t.Helper()
+	saved := lookPath
+	lookPath = func(string) (string, error) { return "/usr/bin/claude", nil }
+	t.Cleanup(func() { lookPath = saved })
+}
+
+// TestRun_SessionsFetchError_AbortsBeforeStartingClaude is the Run()-level
+// regression test for the codex-review Major finding on PR #800: when
+// readSessionsFromRPC cannot determine the prior session list, Run() must
+// fail outright — before ever forking claude and before writePayloadPatch
+// touches disk — rather than silently proceeding with a truncated (or
+// entirely fresh) session list that would then get persisted as this task's
+// payload patch.
+func TestRun_SessionsFetchError_AbortsBeforeStartingClaude(t *testing.T) {
+	withStubbedClaudeCLI(t)
+	withFakeTaskPayloadSessions(t, func(context.Context, map[string]string) ([]byte, error) {
+		return nil, errors.New("broker unreachable")
+	})
+
+	dir := t.TempDir()
+	a := New()
+	_, err := a.Run(context.Background(), adapters.RunContext{OutputDir: dir})
+	if err == nil {
+		t.Fatal("expected Run to fail when the prior-sessions RPC fails")
+	}
+
+	if _, statErr := os.Stat(filepath.Join(dir, "payload_patch.json")); !os.IsNotExist(statErr) {
+		t.Errorf("payload_patch.json must not be written when the session fetch fails (would truncate session history); stat err = %v", statErr)
+	}
+}
+
 func TestPauseSystemPromptMentionsNotify(t *testing.T) {
 	// Smoke test: a future maintainer that drops the notify guidance from
 	// the prompt should fail this so the regression is loud.
 	if !strings.Contains(taskSystemPrompt, "boid task notify") {
 		t.Error("taskSystemPrompt no longer mentions `boid task notify`")
+	}
+}
+
+// TestSessionSystemPrompt_NoRetiredContextFilePath is the claude-side sibling
+// of codex/opencode's TestTaskBootstrapPrompt_NoRetiredContextFilePath —
+// added proactively during codex review on PR #800 (Minor 2), since
+// sessionSystemPrompt is claude-only and session-only, so nothing else in
+// this PR's static tests would have caught it referencing the retired
+// ~/.boid/context/ file path.
+func TestSessionSystemPrompt_NoRetiredContextFilePath(t *testing.T) {
+	if strings.Contains(sessionSystemPrompt, "~/.boid/context/") {
+		t.Errorf("sessionSystemPrompt still references the retired ~/.boid/context/ file path:\n%s", sessionSystemPrompt)
+	}
+}
+
+func TestSessionSystemPrompt_ReferencesTaskEnvCLI(t *testing.T) {
+	if !strings.Contains(sessionSystemPrompt, "boid task env") {
+		t.Errorf("sessionSystemPrompt missing `boid task env`:\n%s", sessionSystemPrompt)
 	}
 }
 

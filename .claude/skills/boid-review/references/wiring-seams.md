@@ -577,27 +577,45 @@ equivalent env (and rely on an equivalent PATH) itself, from the same `RunContex
   `os.Getenv` (`runTaskContextShim`, seam #13's End B).
 - **Invariant**: every env var `RunBoidShim`'s task-context path reads via `os.Getenv` must
   already be a key in `RunContext.Env` by the time an adapter's own Go code (not the forked
-  agent) execs `boid`. Because `readSessionsFromRPC` swallows every failure as `nil` (mirrors
-  the old file-based "missing payload.json → fresh start" contract — see its own doc comment),
-  a broken link anywhere in this chain (PATH missing the shim dir, `BOID_BUILTIN_SHIM` unset,
-  any of the four ids/socket/token vars dropped from `spec.Env`) does **not** fail loudly: the
-  claude adapter just silently forgets the prior jsonl session id and starts a fresh one,
-  exactly as if this were a brand-new task.
+  agent) execs `boid`. `readSessionsFromRPC` does **not** swallow a broken link as "no
+  sessions" — codex review on PR #800 (Major) caught the first version doing exactly that
+  (mirroring the old file-based "missing payload.json → fresh start" contract, which was safe
+  only because that read was 100% local and had no comparable failure mode): a transient
+  broker hiccup would make `updateSessions` synthesize a fresh single-entry session list, and
+  `writePayloadPatch` would then persist that truncated list over the task's real history,
+  silently discarding every prior jsonl session id (see memory
+  `phase3b-session-jsonl-not-persisted` for the earlier incident this rhymes with). The fixed
+  contract: PATH missing the shim dir, `BOID_BUILTIN_SHIM` unset, or any of the four
+  ids/socket/token vars dropped from `spec.Env` all surface as a non-nil error from
+  `readSessionsFromRPC`, which `Run()` propagates immediately — aborting before claude ever
+  starts and before `writePayloadPatch` touches disk. Only a genuinely empty `--field` result
+  (exit 0, empty stdout — the field really doesn't exist yet) is `(nil, nil)`.
 - **Guard**: End A is exercised transitively by every existing `sandbox_builder_test.go` test
   that asserts `env["BOID_BROKER_SOCKET"]` etc. End B (pure, no process spawn) =
   `TestBuildTaskPayloadSessionsCmd_Args` / `_EnvOverlaysRunContextEnv`
-  (`internal/adapters/claude/run_test.go`). The full chain (`os/exec` PATH resolution +
-  `BOID_BUILTIN_SHIM` routing + a real fake-broker unix socket, not an injected fetch func) is
-  `TestReadSessionsFromRPC_EndToEnd` (`internal/adapters/claude/run_rpc_wiring_test.go`), which
-  re-execs the compiled test binary itself as the "boid" program on `PATH` (the
-  `os/exec_test.go` `TestHelperProcess` idiom) so it never needs a separately built binary.
+  (`internal/adapters/claude/run_test.go`); the error-propagation contract itself is
+  `TestReadSessionsFromRPC_FetchErrorPropagates` / `_MalformedJSONPropagatesError` /
+  `_EmptyFieldReturnsNilNoError` plus the `Run()`-level
+  `TestRun_SessionsFetchError_AbortsBeforeStartingClaude` (asserts `payload_patch.json` is
+  never written). The full chain (`os/exec` PATH resolution + `BOID_BUILTIN_SHIM` routing + a
+  real fake-broker unix socket enforcing the token, not an injected fetch func) is
+  `TestReadSessionsFromRPC_EndToEnd` plus its two negative siblings
+  `_MissingBuiltinShimFails` / `_WrongTokenFails` (`internal/adapters/claude/run_rpc_wiring_test.go`),
+  which re-exec the compiled test binary itself as the "boid" program on `PATH` (the
+  `os/exec_test.go` `TestHelperProcess` idiom) so they never need a separately built binary.
+  The first cut of this file's `TestMain` helper called `RunBoidShim` unconditionally and the
+  fake broker never checked `req.Token` — codex review's Minor 1 on PR #800 caught both,
+  which is exactly the failure mode `_MissingBuiltinShimFails` / `_WrongTokenFails` now pin.
 - **When you touch it**: if you touch `sandbox_builder.go`'s env population (particularly
   `BOID_BUILTIN_SHIM` / `BOID_BROKER_SOCKET` / `BOID_BROKER_TOKEN` / `BOID_TASK_ID` /
   `BOID_JOB_ID` / the shim-bin entry in `buildPATH`), or add a second adapter-issued `boid
   task ...` call (e.g. a future codex/opencode Go-level RPC call, not just their bootstrap
   prompt text), re-run `TestReadSessionsFromRPC_EndToEnd`-shaped coverage rather than trusting
   the adapter-unit layer alone — the unit tests stub `fetchTaskPayloadSessions`/inject env
-  directly and cannot catch a PATH or env-population regression upstream in the dispatcher.
-  5a-3 (fixed shim directory) changes *where* the shim-bin dir lives on PATH but not this
-  seam's shape; 5b-6 (file-distribution cutover) does not touch this seam either, since it
-  never depended on the file side.
+  directly and cannot catch a PATH or env-population regression upstream in the dispatcher. If
+  you add a new adapter-issued RPC call, give it the same fetch-error-vs-empty-result
+  distinction `readSessionsFromRPC` has — collapsing "the call failed" into "there was nothing
+  there" is the specific bug class this seam exists to prevent. 5a-3 (fixed shim directory)
+  changes *where* the shim-bin dir lives on PATH but not this seam's shape; 5b-6
+  (file-distribution cutover) does not touch this seam either, since it never depended on the
+  file side.
