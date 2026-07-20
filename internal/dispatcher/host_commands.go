@@ -170,16 +170,23 @@ func warnUnknownBoidVars(name string, env map[string]string) {
 //   - byPath is keyed by the absolute path that the boid shim will be
 //     bind-mounted at inside the sandbox. The absolute path is also written
 //     back into each entry's Path. Consumed by the shim mount builder
-//     (hostCommandMounts) and the sandbox PATH builder (buildPATH) — both
+//     (hostCommandMounts), the sandbox PATH builder (buildPATH), and
+//     BOID_HOST_COMMAND_NAMES (buildHostCommandNamesEnv, 5a-2) — all three
 //     still key off the bind-mount target during the 5a staging period
 //     (shim placement itself only moves to a fixed directory in 5a-3).
+//     buildHostCommandNamesEnv maps each bind-mount path back to its
+//     declared short name so a shim invocation can recover the broker's
+//     lookup key even when host_commands.<name>.path aliases it to a file
+//     whose basename differs from name (e.g. run-e2e -> e2e/run.sh).
 //   - byName is keyed by the short (user-declared) command name — the
 //     "policy 用" view. Consumed by the broker's policy table
 //     (CommandBroker.RegisterCommands) and BOID_HOST_COMMAND_RULES
 //     (buildHostCommandRulesEnv): both need a lookup key that survives shim
-//     relocation, unlike the absolute host path. Until 5a-2 switches the
-//     shim to send the short name as ExecRequest.Command, the broker accepts
-//     the absolute path too as a compatibility fallback (see
+//     relocation, unlike the absolute host path. As of 5a-2, this is also
+//     what the shim sends as ExecRequest.Command
+//     (sandbox.ResolveShimCommandName) — the broker still accepts the
+//     absolute path too, as a compatibility fallback kept intentionally
+//     until the 5a-3 shim relocation cutover (see
 //     internal/sandbox/broker.go's lookupCommand).
 //
 // Every entry appears in both maps under its own key with identical field

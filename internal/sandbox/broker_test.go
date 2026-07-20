@@ -415,6 +415,46 @@ func TestBroker_ShortNameKeyedCommand_AliasedPathFallbackIgnoresBasename(t *test
 	}
 }
 
+// TestBroker_ShortNameKeyedCommand_AliasDirectMatch is the 5a-2 wiring this
+// PR adds (docs/plans/phase5-shim-and-task-context.md): once the shim
+// resolves an aliased host_commands.<name>.path invocation to its declared
+// short name (sandbox.ResolveShimCommandName, via BOID_HOST_COMMAND_NAMES)
+// and sends that as ExecRequest.Command, the request hits the broker's
+// Commands map by direct key — no Path-scan fallback needed at all. This is
+// the end state TestBroker_ShortNameKeyedCommand_AliasedPathFallbackIgnoresBasename
+// exists to bridge away from: that test proves the fallback still covers a
+// not-yet-migrated caller; this one proves the migrated (short-name-sending)
+// caller needs no fallback in the first place.
+func TestBroker_ShortNameKeyedCommand_AliasDirectMatch(t *testing.T) {
+	dir := t.TempDir()
+	scriptPath := filepath.Join(dir, "e2e", "run.sh")
+	if err := os.MkdirAll(filepath.Dir(scriptPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(scriptPath, []byte("#!/bin/sh\necho aliased\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	broker := &sandbox.Broker{}
+	token := broker.Register(map[string]sandbox.CommandDef{
+		"run-e2e": {Name: "run-e2e", Path: scriptPath, AllowedPatterns: []string{"*"}},
+	}, nil, testCtx)
+
+	// The declared short name, not the script's basename ("run.sh") nor its
+	// absolute path — exactly what a 5a-2 shim sends after
+	// ResolveShimCommandName resolves the BOID_HOST_COMMAND_NAMES alias.
+	resp := broker.Handle(&sandbox.ExecRequest{
+		Command: "run-e2e",
+		Token:   token,
+	})
+	if resp.ExitCode != 0 {
+		t.Fatalf("exit=%d stderr=%q", resp.ExitCode, resp.Stderr)
+	}
+	if !strings.Contains(resp.Stdout, "aliased") {
+		t.Errorf("stdout = %q, want contain 'aliased'", resp.Stdout)
+	}
+}
+
 // TestBroker_ShortNameKeyedCommand_UnknownPathStillRejected guards against
 // the fallback over-matching: a path that isn't any registered CommandDef's
 // Path (and isn't a key either) must still be rejected, exactly as an
