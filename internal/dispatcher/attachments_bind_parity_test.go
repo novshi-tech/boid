@@ -13,7 +13,7 @@ import (
 	"github.com/novshi-tech/boid/internal/api"
 )
 
-// TestAttachmentsBindSource_MatchesAPIHelper guards wiring-seams.md #14
+// TestAttachmentsBindSource_MatchesAPIHelper guards wiring-seams.md #15
 // (attachments RPC vs dispatch-time attachments bind): the per-task
 // attachments RO bind's source path (sandbox_builder.go, the
 // `attachSrc := filepath.Join(rt.AttachmentsRoot, "tasks", spec.TaskID,
@@ -25,18 +25,20 @@ import (
 // call the shared helper. This test (an external (dispatcher_test) test
 // package, so it can safely import both internal/dispatcher and
 // internal/api without a cycle) pins that the two still compute the same
-// result for representative inputs, so a future change to either side that
-// breaks parity fails loudly here instead of silently diverging during the
-// parallel-bind-and-RPC window (PR2 through the 5b-6 cutover, which retires
-// the bind entirely).
+// result for representative, already-canonical inputs, so a future change
+// to either side that breaks parity fails loudly here instead of silently
+// diverging during the parallel-bind-and-RPC window (PR2 through the 5b-6
+// cutover, which retires the bind entirely).
 //
-// This test does NOT exercise api.AttachmentsRootForTask's
-// isCanonicalPathComponent guard (codex review on PR #798, Phase 5b PR2's
-// Blocker fix): the bind construction below still uses a bare
-// filepath.Join with no equivalent validation, so a task whose literal ID
-// contains a traversal segment is NOT yet protected against resolving to a
-// different task's attachments directory when mounted into the sandbox —
-// see wiring-seams.md #14 for this known, tracked gap.
+// This test does NOT exercise either side's canonical-path-component
+// rejection guard: the bind construction (sandbox_builder.go) validates
+// spec.TaskID via isCanonicalTaskIDComponent (attachments_path.go, a
+// deliberate duplicate — see its doc comment for why) before ever calling
+// filepath.Join, and api.AttachmentsRootForTask does the equivalent via
+// isCanonicalPathComponent; both were added in the same PR (#798, Blocker
+// fix) but are two separately-maintained function bodies, so keeping their
+// rejection rules identical is a manual-review obligation this parity test
+// cannot enforce — see wiring-seams.md #15 for the full picture.
 func TestAttachmentsBindSource_MatchesAPIHelper(t *testing.T) {
 	cases := []struct{ root, taskID string }{
 		{"/data", "task-1"},

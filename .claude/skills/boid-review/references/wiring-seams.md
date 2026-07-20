@@ -28,7 +28,8 @@ has the same shape:
 11. [gitgateway SecretResolver namespace threading](#11-gitgateway-secretresolver-namespace-threading)
 12. [KitMeta.KitRoot ↔ sandbox_builder KitRoots mount](#12-kitmetakitroot--sandbox_builder-kitroots-mount)
 13. [task-context RPC ↔ dispatch-time context files](#13-task-context-rpc--dispatch-time-context-files)
-14. [attachments RPC ↔ dispatch-time attachments bind](#14-attachments-rpc--dispatch-time-attachments-bind)
+14. [shim command-name resolution (BOID_HOST_COMMAND_NAMES ↔ broker Commands key)](#14-shim-command-name-resolution)
+15. [attachments RPC ↔ dispatch-time attachments bind](#15-attachments-rpc--dispatch-time-attachments-bind)
 
 ---
 
@@ -488,7 +489,65 @@ source data is job-scoped, not task-scoped.
   (`docs/plans/phase5-shim-and-task-context.md`), which retires End A's file materialization, is
   the point where this seam collapses to just End B/C — update this entry then.
 
-## 14. attachments RPC ↔ dispatch-time attachments bind
+## 14. shim command-name resolution
+
+Whether a shim invocation inside the sandbox identifies itself to the broker under the same
+key the broker's `Commands` map is registered with. As of 5a-2
+(`docs/plans/phase5-shim-and-task-context.md`) the shim sends the **declared short name**
+(`host_commands.<name>`), not the absolute bind-mount path — but the shim only ever sees its
+own bind-mount path (`os.Executable()`) and argv0, so for an aliased command
+(`host_commands.<name>.path` pointing at a file whose basename differs from `name`, e.g.
+`run-e2e` → `e2e/run.sh`) recovering the declared name requires a side-channel the dispatcher
+must inject.
+
+- **End A (dispatcher, inject)**: `buildHostCommandNamesEnv` in
+  `internal/dispatcher/sandbox_builder.go`, fed by `rt.ResolvedHostCommands` (the **byPath**
+  view of `dispatcher.ResolveHostCommands` — the exact same map `hostCommandMounts` binds the
+  shim at). Sets `env[sandbox.HostCommandNamesEnv]` to a JSON `{bind-mount path: declared
+  name}` map. Skipped entirely (env unset) when there are no host commands.
+- **End B (shim, resolve)**: `sandbox.ResolveShimCommandName` (`internal/sandbox/shim.go`),
+  called once per invocation from `main.go`'s `shimMain`. Looks up
+  `shimBinaryPath(argv0)` (its own bind-mount path) in the `BOID_HOST_COMMAND_NAMES` map;
+  falls back to `CommandFromArgv0(argv0)` (the file's basename) when the env var is
+  unset/malformed/has no entry — which is correct whenever no alias is declared. The **same**
+  resolved name feeds both `EarlyRejectFromEnv` (the shim-side fast-path reject check) and
+  `ShimExec`'s `ExecRequest.Command` — they must never resolve to different names for the same
+  invocation.
+- **End C (broker, authorize)**: `entry.Commands` in `internal/sandbox/broker.go`, registered
+  under the **byName** view (`dispatcher.CommandBroker.RegisterCommands`'s short-name-keyed
+  input — see seam #7's sibling wiring). `lookupCommand` still carries a Path-match fallback
+  for pre-5a-2 callers (kept intentionally per the 5a plan until the 5a-3 cutover; do not
+  remove it as part of a 5a-2-shaped change).
+- **Invariant**: for every `host_commands` entry, `buildHostCommandNamesEnv`'s map value at
+  key `absPath` must equal the same `def.Name` the broker's `Commands` map is keyed by at End
+  C — both ultimately derive from the single `ResolveHostCommands` call's `out` map
+  (`byName[def.Name] == byPath[absPath]`, see `ResolveHostCommands`'s own doc comment), so a
+  future refactor that lets End A and End C diverge onto two different resolved-command maps
+  would silently break every aliased `host_commands` entry while leaving non-aliased ones
+  (where basename already equals the declared name) looking fine.
+- **Guard**: End A = `TestBuildSandboxSpec_HostCommandNamesEnv_MapsAliasedPathToDeclaredName`
+  / `_AbsentWhenNoHostCommands` (`internal/dispatcher/sandbox_builder_test.go`). End B =
+  `TestResolveShimCommandName_*` (`internal/sandbox/shim_command_name_test.go`) — in particular
+  `_AliasedPathResolvesToDeclaredName`, which pins the exact bug this seam exists to prevent.
+  End C (pre-existing) = `TestBroker_ShortNameKeyedCommand_*` in
+  `internal/sandbox/broker_test.go`, plus `TestBroker_ShortNameKeyedCommand_AliasDirectMatch`
+  added alongside this seam to pin the post-5a-2 direct-match case specifically (no Path-scan
+  fallback needed once the shim sends the resolved short name). Full end-to-end (real sandbox,
+  real shim binary, aliased `host_commands` entry) is covered by
+  `e2e/scenarios/host-command-smoke`'s `alias-echo` command
+  (`e2e/fixtures/kits/host-ops/kit.yaml`, invoked in the sandbox as `echo-target` — the file's
+  actual basename, never the declared name).
+- **When you touch it**: if you touch `hostCommandMounts`, `buildHostCommandNamesEnv`,
+  `ResolveShimCommandName`, `ResolveHostCommands`'s byPath/byName split, or `lookupCommand`,
+  verify a request through an **aliased** `host_commands.<name>.path` entry still resolves —
+  the non-aliased case (basename == declared name) passes even when the alias-specific wiring
+  is broken, so it is not a sufficient test on its own. 5a-3 (fixed-directory shim placement)
+  is expected to make every shim's bind-mount basename equal its declared name by construction
+  (symlinks named after the declared command), at which point `BOID_HOST_COMMAND_NAMES`
+  becomes a pure defense-in-depth fallback rather than the primary resolution path — update
+  this entry then.
+
+## 15. attachments RPC ↔ dispatch-time attachments bind
 
 Whether the Phase 5b PR2 attachments RPCs (`boid task attachments list` / `get <name>`,
 docs/plans/phase5-shim-and-task-context.md) read from the identical on-disk directory the

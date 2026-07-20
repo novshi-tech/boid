@@ -623,7 +623,7 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 		// api.WebHandler.AttachmentsRoot (below) — the Phase 5b PR2
 		// attachments RPCs (`boid task attachments list|get`) must read from
 		// the identical directory those two use, or the RPC reply would drift
-		// from the parallel file-bind path (wiring-seams.md #14).
+		// from the parallel file-bind path (wiring-seams.md #15).
 		srv.broker.BoidExecutor = newBoidBuiltinExecutor(workflow, taskSvc, jobStore, transcriptLogReader{rootDir: runtimesDirFor(cfg)}, runner, dataHomeFor(cfg))
 		srv.broker.ProjectResolver = projectResolverFor(projectSvc)
 	}

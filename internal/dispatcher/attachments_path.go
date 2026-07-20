@@ -26,7 +26,7 @@ import (
 // ~/.boid/attachments. The RPC read/write paths were fixed the same way in
 // api.AttachmentsRootForTask, in the same PR; this closes the bind, the
 // third of the three independent path-construction call sites documented
-// in wiring-seams.md #14.
+// in wiring-seams.md #15.
 //
 // Keep this in lock-step with api.isCanonicalPathComponent — there is no
 // automated cross-package drift guard for the *rejection rule* itself (only

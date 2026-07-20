@@ -50,3 +50,14 @@ grep -F 'args=--user restart boid' "$E2E_STATE_DIR/fake-systemctl.log" >/dev/nul
 
 [[ -f "$E2E_STATE_DIR/fake-hook-cmd.log" ]] || e2e_fail "missing fake-hook-cmd log (hook did not invoke broker-mediated hostcmd)"
 grep -F 'args=--hook-ran' "$E2E_STATE_DIR/fake-hook-cmd.log" >/dev/null || e2e_fail "fake-hook-cmd was not invoked with --hook-ran from the hook"
+
+# host_commands.alias-echo.path = echo-target: the declared short name
+# ("alias-echo") differs from the sandbox-visible file's basename
+# ("echo-target"), same shape as this repo's own host_commands.run-e2e ->
+# e2e/run.sh. This is the 5a-2 regression guard (docs/plans/
+# phase5-shim-and-task-context.md, codex review Minor finding on 5a-1): if
+# the shim ever resolves its broker-facing command name from argv0's
+# basename alone instead of BOID_HOST_COMMAND_NAMES, this dispatch fails
+# with "command not allowed: echo-target" and the hook (set -eu) aborts.
+[[ -f "$E2E_STATE_DIR/fake-alias-echo.log" ]] || e2e_fail "missing fake-alias-echo log (aliased host command did not resolve to its declared short name)"
+grep -F 'args=--alias-ran' "$E2E_STATE_DIR/fake-alias-echo.log" >/dev/null || e2e_fail "echo-target (host_commands.alias-echo) was not invoked with --alias-ran from the hook"

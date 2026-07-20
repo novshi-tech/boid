@@ -112,9 +112,11 @@ func EnsureAttachmentsDir(dataHome, taskID string) (string, error) {
 // sandbox_builder.go's RO bind, however, builds its source path
 // independently (a bare filepath.Join, not this helper — internal/api
 // cannot be imported from internal/dispatcher without an import cycle) and
-// is NOT protected by isCanonicalPathComponent below; see wiring-seams.md
-// #14 for the full three-way picture and the tracked gap this leaves on the
-// bind side.
+// is validated by a *separate*, deliberately duplicated
+// isCanonicalTaskIDComponent (internal/dispatcher/attachments_path.go), not
+// isCanonicalPathComponent below directly; see wiring-seams.md #15 for the
+// full three-way picture and the residual drift risk this duplication
+// leaves (two guard functions that must be kept in lock-step by hand).
 
 // ListAttachments returns the basenames of the regular files directly under
 // the task's attachments directory, sorted. Subdirectories are never

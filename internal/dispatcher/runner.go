@@ -316,9 +316,13 @@ func (r *Runner) Dispatch(ctx context.Context, spec *orchestrator.JobSpec, clean
 		}
 		// Registered under short-name keys (the "policy 用" view — see
 		// ResolveHostCommands), not the absolute bind-mount path: the broker's
-		// policy table is meant to survive the shim relocating (5a-3), and the
-		// broker's exec lookup falls back to a path-keyed scan for the current
-		// shim, which still sends the absolute path until 5a-2.
+		// policy table is meant to survive the shim relocating (5a-3). As of
+		// 5a-2 the shim also sends this same short name as
+		// ExecRequest.Command (sandbox.ResolveShimCommandName), so the
+		// broker's exec lookup hits this map directly; its path-keyed
+		// fallback scan remains only as a rollback safety net for the
+		// pre-5a-2 (absolute-path-sending) shim protocol shape, not as the
+		// path a live shim takes today.
 		brokerToken = r.Broker.RegisterCommands(
 			resolvedHostCommandsByName,
 			PoliciesToSandbox(spec.BuiltinPolicies),

@@ -1870,7 +1870,7 @@ func TestBuildSandboxSpec_AttachmentsBindAbsentWithoutRootOrTask(t *testing.T) {
 // attachments directory — the same class of cross-task leak fixed for the
 // RPC read/write paths, but reachable here at dispatch time via the sandbox
 // mount instead of a runtime RPC call. Fixed in the same PR (see
-// wiring-seams.md #14): isCanonicalTaskIDComponent now gates the mount the
+// wiring-seams.md #15): isCanonicalTaskIDComponent now gates the mount the
 // same way, so a non-canonical TaskID gets no attachments bind at all
 // (fail-closed, the same "just skip the mount" behavior the existing empty
 // AttachmentsRoot/TaskID cases already use) rather than the wrong one.
@@ -2292,6 +2292,51 @@ func TestBuildSandboxSpec_HostCommandRulesEnv_AbsentWhenNoHostCommands(t *testin
 	}
 	if _, ok := result.Env[sandbox.HostCommandRulesEnv]; ok {
 		t.Errorf("expected %s to be absent, got %q", sandbox.HostCommandRulesEnv, result.Env[sandbox.HostCommandRulesEnv])
+	}
+}
+
+// TestBuildSandboxSpec_HostCommandNamesEnv_MapsAliasedPathToDeclaredName is
+// the codex review Minor fix 5a-2 closes
+// (docs/plans/phase5-shim-and-task-context.md): BOID_HOST_COMMAND_NAMES must
+// map the absolute bind-mount path (the same key hostCommandMounts binds the
+// shim at — rt.ResolvedHostCommands, the byPath view) to the declared short
+// name, even when host_commands.<name>.path aliases the shim to a file whose
+// basename differs from name (run-e2e -> e2e/run.sh: the sandbox-visible
+// file is "run.sh", not "run-e2e").
+func TestBuildSandboxSpec_HostCommandNamesEnv_MapsAliasedPathToDeclaredName(t *testing.T) {
+	spec := &orchestrator.JobSpec{}
+	rt := SandboxRuntimeInfo{
+		ResolvedHostCommands: map[string]orchestrator.CommandDef{
+			"/home/user/proj/e2e/run.sh": {Name: "run-e2e", Path: "/home/user/proj/e2e/run.sh"},
+			"/usr/bin/gh":                {Name: "gh", Path: "/usr/bin/gh"},
+		},
+	}
+	result, err := BuildSandboxSpec(spec, rt)
+	if err != nil {
+		t.Fatalf("BuildSandboxSpec: %v", err)
+	}
+
+	got := result.Env[sandbox.HostCommandNamesEnv]
+	if got == "" {
+		t.Fatalf("expected %s to be set, got empty", sandbox.HostCommandNamesEnv)
+	}
+	want := `{"/home/user/proj/e2e/run.sh":"run-e2e","/usr/bin/gh":"gh"}`
+	if got != want {
+		t.Errorf("%s = %q, want %q", sandbox.HostCommandNamesEnv, got, want)
+	}
+}
+
+// TestBuildSandboxSpec_HostCommandNamesEnv_AbsentWhenNoHostCommands verifies
+// the env var is not set when the job declares no host commands at all —
+// mirrors TestBuildSandboxSpec_HostCommandRulesEnv_AbsentWhenNoHostCommands.
+func TestBuildSandboxSpec_HostCommandNamesEnv_AbsentWhenNoHostCommands(t *testing.T) {
+	spec := &orchestrator.JobSpec{}
+	result, err := BuildSandboxSpec(spec, SandboxRuntimeInfo{})
+	if err != nil {
+		t.Fatalf("BuildSandboxSpec: %v", err)
+	}
+	if _, ok := result.Env[sandbox.HostCommandNamesEnv]; ok {
+		t.Errorf("expected %s to be absent, got %q", sandbox.HostCommandNamesEnv, result.Env[sandbox.HostCommandNamesEnv])
 	}
 }
 

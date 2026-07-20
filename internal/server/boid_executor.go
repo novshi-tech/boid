@@ -39,7 +39,7 @@ type boidBuiltinExecutor struct {
 	// (docs/plans/phase5-shim-and-task-context.md). It is the same value
 	// wire.go threads into dispatcher.RunnerConfig.AttachmentsRoot (the
 	// parallel RO bind) and api.WebHandler.AttachmentsRoot (the upload
-	// path) — see wiring-seams.md #14 — so the RPC reply can never drift
+	// path) — see wiring-seams.md #15 — so the RPC reply can never drift
 	// from what those other two readers/writers see. Empty disables the
 	// two ops with an "unavailable" error rather than panicking.
 	attachmentsRoot string
