@@ -16,7 +16,7 @@ const boidShimUsage = `Usage: boid <command> [subcommand] [flags]
 
 Commands:
   task    Manage tasks (create, show, update, list, notify, answer, ask, delete, import, reopen,
-          current, instructions, env, payload)
+          current, instructions, env, payload, attachments list, attachments get)
   job     Manage jobs (done, list, show, log)
   action  Send actions (send)
   agent   Manage agent (stop)
@@ -58,6 +58,14 @@ func RunBoidShim(args []string) (*ExecResponse, error) {
 	if len(args) >= 2 && args[0] == "task" {
 		if op, ok := taskContextOps[args[1]]; ok {
 			return runTaskContextShim(op, args, brokerSocket)
+		}
+		// Phase 5b PR2 attachments subcommands
+		// (docs/plans/phase5-shim-and-task-context.md): `boid task
+		// attachments list` / `get <name>` get their own request/response
+		// path too — a positional attachment name and binary (base64) reply
+		// don't fit taskContextOps' shape.
+		if args[1] == "attachments" {
+			return runTaskAttachmentsShim(args[2:], brokerSocket)
 		}
 	}
 

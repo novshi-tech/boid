@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -32,18 +33,29 @@ type boidBuiltinExecutor struct {
 	jobs        api.JobStore
 	logReader   api.JobLogReader
 	jobContexts jobContextProvider
+	// attachmentsRoot is the data-home directory under which per-task
+	// attachments live (`<attachmentsRoot>/tasks/<task_id>/attachments`),
+	// backing the Phase 5b PR2 attachments RPCs
+	// (docs/plans/phase5-shim-and-task-context.md). It is the same value
+	// wire.go threads into dispatcher.RunnerConfig.AttachmentsRoot (the
+	// parallel RO bind) and api.WebHandler.AttachmentsRoot (the upload
+	// path) — see wiring-seams.md #14 — so the RPC reply can never drift
+	// from what those other two readers/writers see. Empty disables the
+	// two ops with an "unavailable" error rather than panicking.
+	attachmentsRoot string
 }
 
-func newBoidBuiltinExecutor(workflow api.WorkflowService, tasks *api.TaskAppService, jobs api.JobStore, logReader api.JobLogReader, jobContexts jobContextProvider) sandbox.BoidExecutor {
+func newBoidBuiltinExecutor(workflow api.WorkflowService, tasks *api.TaskAppService, jobs api.JobStore, logReader api.JobLogReader, jobContexts jobContextProvider, attachmentsRoot string) sandbox.BoidExecutor {
 	if workflow == nil && tasks == nil {
 		return nil
 	}
 	return &boidBuiltinExecutor{
-		workflow:    workflow,
-		tasks:       tasks,
-		jobs:        jobs,
-		logReader:   logReader,
-		jobContexts: jobContexts,
+		workflow:        workflow,
+		tasks:           tasks,
+		jobs:            jobs,
+		logReader:       logReader,
+		jobContexts:     jobContexts,
+		attachmentsRoot: attachmentsRoot,
 	}
 }
 
@@ -558,6 +570,39 @@ func (e *boidBuiltinExecutor) ExecuteBoidBuiltin(goCtx context.Context, ctx sand
 			return &sandbox.ExecResponse{Stdout: value}
 		}
 		return &sandbox.ExecResponse{Stdout: string(payload)}
+
+	// --- Phase 5b PR2 attachments RPCs (docs/plans/phase5-shim-and-task-context.md) ---
+	// Both read straight from disk via api.ListAttachments/api.ReadAttachment
+	// (the same AttachmentsRootForTask directory the parallel RO bind in
+	// sandbox_builder.go exposes) — no DB or JobContextSnapshot involved,
+	// since attachments are keyed by TaskID alone (see broker.go's guard).
+
+	case sandbox.BoidOpTaskAttachmentsList:
+		if e.attachmentsRoot == "" {
+			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid task attachments list unavailable"}
+		}
+		names, err := api.ListAttachments(e.attachmentsRoot, req.TaskID)
+		if err != nil {
+			return &sandbox.ExecResponse{ExitCode: 1, Stderr: err.Error()}
+		}
+		return marshalTaskContextResponse(names)
+
+	case sandbox.BoidOpTaskAttachmentsGet:
+		if e.attachmentsRoot == "" {
+			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid task attachments get unavailable"}
+		}
+		data, err := api.ReadAttachment(e.attachmentsRoot, req.TaskID, req.AttachmentName)
+		if err != nil {
+			return &sandbox.ExecResponse{ExitCode: 1, Stderr: err.Error()}
+		}
+		// Binary transport: base64-encode into Stdout (ExecResponse only
+		// carries strings over the JSON broker wire — no separate byte-array
+		// field, and no chunked-streaming protocol for this op; the existing
+		// 10 MB/file write-time cap (AttachmentMaxFileBytes, re-checked
+		// independently by ReadAttachment) keeps a single JSON round trip
+		// well-bounded). The shim decodes this before writing to --output or
+		// the real process stdout.
+		return &sandbox.ExecResponse{Stdout: base64.StdEncoding.EncodeToString(data)}
 
 	default:
 		return &sandbox.ExecResponse{ExitCode: 1, Stderr: fmt.Sprintf("unsupported boid op %q", req.Op)}

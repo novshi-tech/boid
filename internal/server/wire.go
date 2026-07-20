@@ -618,7 +618,13 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 		// runner (*dispatcher.Runner) satisfies jobContextProvider structurally
 		// (its JobContext method backs the Phase 5b PR1 `boid task env` /
 		// `boid task payload` RPCs — docs/plans/phase5-shim-and-task-context.md).
-		srv.broker.BoidExecutor = newBoidBuiltinExecutor(workflow, taskSvc, jobStore, transcriptLogReader{rootDir: runtimesDirFor(cfg)}, runner)
+		// dataHomeFor(cfg) is the same value passed to
+		// dispatcher.RunnerConfig.AttachmentsRoot (above) and
+		// api.WebHandler.AttachmentsRoot (below) — the Phase 5b PR2
+		// attachments RPCs (`boid task attachments list|get`) must read from
+		// the identical directory those two use, or the RPC reply would drift
+		// from the parallel file-bind path (wiring-seams.md #14).
+		srv.broker.BoidExecutor = newBoidBuiltinExecutor(workflow, taskSvc, jobStore, transcriptLogReader{rootDir: runtimesDirFor(cfg)}, runner, dataHomeFor(cfg))
 		srv.broker.ProjectResolver = projectResolverFor(projectSvc)
 	}
 	globalJobSvc := &globalJobStore{

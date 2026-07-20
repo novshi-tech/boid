@@ -29,5 +29,9 @@ const (
 	OpBoidTaskEnv          = "task_env"
 	OpBoidTaskPayload      = "task_payload"
 
+	// Phase 5b PR2 attachments RPCs (docs/plans/phase5-shim-and-task-context.md).
+	OpBoidTaskAttachmentsList = "task_attachments_list"
+	OpBoidTaskAttachmentsGet  = "task_attachments_get"
+
 	OpFetchGet = "get"
 )

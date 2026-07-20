@@ -494,6 +494,24 @@ func (b *Broker) handleBoidBuiltin(ctx context.Context, req *ExecRequest, entry 
 		if boidReq.JobID != entry.Context.JobID {
 			return &ExecResponse{ExitCode: 1, Stderr: fmt.Sprintf("boid task %s is restricted to the current job", taskContextOpVerb(boidReq.Op))}
 		}
+	// Phase 5b PR2 attachments ops (docs/plans/phase5-shim-and-task-context.md):
+	// task-scoped like BoidOpTaskCurrent — attachments belong to the task
+	// (not a specific job), so any job dispatched from the task may read
+	// them. Same id-equality pattern: default an empty TaskID from the
+	// token's own context, then reject a caller-supplied one that mismatches.
+	case BoidOpTaskAttachmentsList, BoidOpTaskAttachmentsGet:
+		if boidReq.TaskID == "" {
+			boidReq.TaskID = entry.Context.TaskID
+		}
+		if boidReq.TaskID == "" {
+			return &ExecResponse{ExitCode: 1, Stderr: fmt.Sprintf("boid task attachments %s requires a task id", taskAttachmentsOpVerb(boidReq.Op))}
+		}
+		if boidReq.TaskID != entry.Context.TaskID {
+			return &ExecResponse{ExitCode: 1, Stderr: fmt.Sprintf("boid task attachments %s is restricted to the current task", taskAttachmentsOpVerb(boidReq.Op))}
+		}
+		if boidReq.Op == BoidOpTaskAttachmentsGet && boidReq.AttachmentName == "" {
+			return &ExecResponse{ExitCode: 1, Stderr: "boid task attachments get requires an attachment name"}
+		}
 	}
 
 	if b.BoidExecutor == nil {
@@ -514,6 +532,20 @@ func taskContextOpVerb(op BoidOp) string {
 		return "env"
 	case BoidOpTaskPayload:
 		return "payload"
+	default:
+		return string(op)
+	}
+}
+
+// taskAttachmentsOpVerb renders a Phase 5b PR2 attachments BoidOp as the
+// trailing word of its `boid task attachments <verb>` CLI form, for error
+// messages.
+func taskAttachmentsOpVerb(op BoidOp) string {
+	switch op {
+	case BoidOpTaskAttachmentsList:
+		return "list"
+	case BoidOpTaskAttachmentsGet:
+		return "get"
 	default:
 		return string(op)
 	}
