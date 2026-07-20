@@ -50,6 +50,29 @@ func TestBroker_BoidTaskAsk_PolicyReject(t *testing.T) {
 	assertBoidOpRejectedByPolicy(t, &sandbox.BoidRequest{Op: sandbox.BoidOpTaskAsk, Question: "Q?"})
 }
 
+// Phase 5b PR1 task-context ops (docs/plans/phase5-shim-and-task-context.md).
+// Their id-equality guard (see taskContextOpVerb) is covered separately by
+// broker_task_context_test.go; these four close the policy-gate manifest.
+
+func TestBroker_BoidTaskCurrent_PolicyReject(t *testing.T) {
+	assertBoidOpRejectedByPolicy(t, &sandbox.BoidRequest{Op: sandbox.BoidOpTaskCurrent, TaskID: "t1"})
+}
+
+// BoidOpTaskInstructions is JobID-scoped (not TaskID-scoped — see
+// broker_task_context_test.go and wiring-seams.md #13), so the request here
+// carries JobID rather than TaskID.
+func TestBroker_BoidTaskInstructions_PolicyReject(t *testing.T) {
+	assertBoidOpRejectedByPolicy(t, &sandbox.BoidRequest{Op: sandbox.BoidOpTaskInstructions, JobID: "j1"})
+}
+
+func TestBroker_BoidTaskEnv_PolicyReject(t *testing.T) {
+	assertBoidOpRejectedByPolicy(t, &sandbox.BoidRequest{Op: sandbox.BoidOpTaskEnv, JobID: "j1"})
+}
+
+func TestBroker_BoidTaskPayload_PolicyReject(t *testing.T) {
+	assertBoidOpRejectedByPolicy(t, &sandbox.BoidRequest{Op: sandbox.BoidOpTaskPayload, JobID: "j1"})
+}
+
 // assertBoidOpRejectedByPolicy registers a boid policy that allows only an
 // unrelated op (job_done), then asserts the given request is rejected by the
 // policy gate — before any op-specific dispatch — and never reaches the
@@ -115,6 +138,12 @@ var opEscapeCoverage = map[string]opCoverage{
 	"BoidOpTaskAnswer": {escapeTest: "TestBroker_BoidTaskAnswer_PolicyReject"},
 	"BoidOpTaskAsk":    {escapeTest: "TestBroker_BoidTaskAsk_PolicyReject"},
 	"BoidOpTaskDelete": {escapeTest: "TestBroker_BoidTaskDelete_PolicyReject"},
+
+	// Phase 5b PR1 task-context ops (docs/plans/phase5-shim-and-task-context.md).
+	"BoidOpTaskCurrent":      {escapeTest: "TestBroker_BoidTaskCurrent_PolicyReject"},
+	"BoidOpTaskInstructions": {escapeTest: "TestBroker_BoidTaskInstructions_PolicyReject"},
+	"BoidOpTaskEnv":          {escapeTest: "TestBroker_BoidTaskEnv_PolicyReject"},
+	"BoidOpTaskPayload":      {escapeTest: "TestBroker_BoidTaskPayload_PolicyReject"},
 }
 
 // TestOpEscapeCoverage_ManifestComplete asserts opEscapeCoverage covers exactly

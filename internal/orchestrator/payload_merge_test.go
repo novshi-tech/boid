@@ -233,3 +233,45 @@ func TestMergeDefaultInstructions_MultipleOverride_CompleteReplacement(t *testin
 		t.Errorf("second message: want second, got %q", got[1].Message)
 	}
 }
+
+// --- CurrentInstructions (Phase 5b PR1: boid task instructions) ---
+
+func TestCurrentInstructions_ExecutingWithActiveInstruction(t *testing.T) {
+	task := &orchestrator.Task{
+		Status: orchestrator.TaskStatusExecuting,
+		Instructions: orchestrator.Instructions{
+			{Agent: "claude-code", Name: "planner", Message: "old"},
+			{Agent: "claude-code", Name: "dev", Message: "do the thing", Model: "claude-sonnet-4-6"},
+		},
+	}
+	got := orchestrator.CurrentInstructions(task)
+	if len(got) != 1 {
+		t.Fatalf("want 1 routed instruction, got %d: %+v", len(got), got)
+	}
+	if got[0].Agent != "claude-code" || got[0].Message != "do the thing" || got[0].Model != "claude-sonnet-4-6" {
+		t.Errorf("unexpected routed instruction: %+v", got[0])
+	}
+}
+
+func TestCurrentInstructions_NotExecuting_ReturnsNil(t *testing.T) {
+	task := &orchestrator.Task{
+		Status:       orchestrator.TaskStatusPending,
+		Instructions: orchestrator.Instructions{{Agent: "claude-code", Message: "m"}},
+	}
+	if got := orchestrator.CurrentInstructions(task); got != nil {
+		t.Errorf("want nil for non-executing task, got %+v", got)
+	}
+}
+
+func TestCurrentInstructions_NoInstructions_ReturnsNil(t *testing.T) {
+	task := &orchestrator.Task{Status: orchestrator.TaskStatusExecuting}
+	if got := orchestrator.CurrentInstructions(task); got != nil {
+		t.Errorf("want nil when task has no instructions, got %+v", got)
+	}
+}
+
+func TestCurrentInstructions_NilTask_ReturnsNil(t *testing.T) {
+	if got := orchestrator.CurrentInstructions(nil); got != nil {
+		t.Errorf("want nil for nil task, got %+v", got)
+	}
+}

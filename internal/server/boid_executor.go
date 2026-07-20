@@ -10,26 +10,40 @@ import (
 	"time"
 
 	"github.com/novshi-tech/boid/internal/api"
+	"github.com/novshi-tech/boid/internal/dispatcher"
 	"github.com/novshi-tech/boid/internal/orchestrator"
 	"github.com/novshi-tech/boid/internal/sandbox"
 )
 
-type boidBuiltinExecutor struct {
-	workflow  api.WorkflowService
-	tasks     *api.TaskAppService
-	jobs      api.JobStore
-	logReader api.JobLogReader
+// jobContextProvider resolves the Phase 5b PR1 task-context RPC data
+// (docs/plans/phase5-shim-and-task-context.md) that has no standalone DB
+// representation — the reduced environment view + trait-filtered payload —
+// tracked per job by dispatcher.Runner at Dispatch() time. Kept as a narrow
+// interface (rather than depending on *dispatcher.Runner's full surface) so
+// boid_executor's dependency on dispatcher stays this one method;
+// *dispatcher.Runner satisfies it structurally.
+type jobContextProvider interface {
+	JobContext(jobID string) (dispatcher.JobContextSnapshot, bool)
 }
 
-func newBoidBuiltinExecutor(workflow api.WorkflowService, tasks *api.TaskAppService, jobs api.JobStore, logReader api.JobLogReader) sandbox.BoidExecutor {
+type boidBuiltinExecutor struct {
+	workflow    api.WorkflowService
+	tasks       *api.TaskAppService
+	jobs        api.JobStore
+	logReader   api.JobLogReader
+	jobContexts jobContextProvider
+}
+
+func newBoidBuiltinExecutor(workflow api.WorkflowService, tasks *api.TaskAppService, jobs api.JobStore, logReader api.JobLogReader, jobContexts jobContextProvider) sandbox.BoidExecutor {
 	if workflow == nil && tasks == nil {
 		return nil
 	}
 	return &boidBuiltinExecutor{
-		workflow:  workflow,
-		tasks:     tasks,
-		jobs:      jobs,
-		logReader: logReader,
+		workflow:    workflow,
+		tasks:       tasks,
+		jobs:        jobs,
+		logReader:   logReader,
+		jobContexts: jobContexts,
 	}
 }
 
@@ -458,7 +472,119 @@ func (e *boidBuiltinExecutor) ExecuteBoidBuiltin(goCtx context.Context, ctx sand
 		return &sandbox.ExecResponse{
 			Stdout: fmt.Sprintf("task deleted: %s\n", req.TaskID),
 		}
+
+	// --- Phase 5b PR1 task-context RPCs (docs/plans/phase5-shim-and-task-context.md) ---
+	// `boid task current` / `instructions` are live re-derivations from the
+	// task row (api.TaskAppService); `env` / `payload` are backed by the
+	// per-job JobContextSnapshot dispatcher.Runner tracks at Dispatch() time
+	// (see jobContextProvider's doc comment for why the split exists).
+
+	case sandbox.BoidOpTaskCurrent:
+		if e.tasks == nil {
+			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid task current unavailable"}
+		}
+		if req.TaskField != "" {
+			value, err := e.tasks.GetTaskCurrentField(req.TaskID, req.TaskField)
+			if err != nil {
+				return &sandbox.ExecResponse{ExitCode: 1, Stderr: err.Error()}
+			}
+			return &sandbox.ExecResponse{Stdout: value}
+		}
+		snap, err := e.tasks.GetTaskCurrent(req.TaskID)
+		if err != nil {
+			return &sandbox.ExecResponse{ExitCode: 1, Stderr: err.Error()}
+		}
+		return marshalTaskContextResponse(snap)
+
+	case sandbox.BoidOpTaskInstructions:
+		// Job-scoped, NOT task-row-derived: api.TaskAppService.GetInstructions
+		// (task-row-derived, kept for other potential task-level callers —
+		// see its own doc comment) must not back this RPC. Two agent-kind
+		// hooks for different agents can be dispatched from the same task in
+		// one evaluation round; only jobContexts (populated from this job's
+		// own JobSpec.Instruction at Dispatch time) tells them apart. Fixed
+		// during codex review on PR #797 before merge — see
+		// wiring-seams.md #13.
+		if e.jobContexts == nil {
+			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid task instructions unavailable"}
+		}
+		snap, ok := e.jobContexts.JobContext(req.JobID)
+		if !ok {
+			return &sandbox.ExecResponse{ExitCode: 1, Stderr: fmt.Sprintf("boid task instructions: no context tracked for job %q", req.JobID)}
+		}
+		if req.TaskField != "" {
+			value, err := resolveTaskContextField(snap.Instructions, req.TaskField)
+			if err != nil {
+				return &sandbox.ExecResponse{ExitCode: 1, Stderr: err.Error()}
+			}
+			return &sandbox.ExecResponse{Stdout: value}
+		}
+		return marshalTaskContextResponse(snap.Instructions)
+
+	case sandbox.BoidOpTaskEnv:
+		if e.jobContexts == nil {
+			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid task env unavailable"}
+		}
+		snap, ok := e.jobContexts.JobContext(req.JobID)
+		if !ok {
+			return &sandbox.ExecResponse{ExitCode: 1, Stderr: fmt.Sprintf("boid task env: no context tracked for job %q", req.JobID)}
+		}
+		if req.TaskField != "" {
+			value, err := resolveTaskContextField(snap.Env, req.TaskField)
+			if err != nil {
+				return &sandbox.ExecResponse{ExitCode: 1, Stderr: err.Error()}
+			}
+			return &sandbox.ExecResponse{Stdout: value}
+		}
+		return marshalTaskContextResponse(snap.Env)
+
+	case sandbox.BoidOpTaskPayload:
+		if e.jobContexts == nil {
+			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid task payload unavailable"}
+		}
+		snap, ok := e.jobContexts.JobContext(req.JobID)
+		if !ok {
+			return &sandbox.ExecResponse{ExitCode: 1, Stderr: fmt.Sprintf("boid task payload: no context tracked for job %q", req.JobID)}
+		}
+		payload := snap.Payload
+		if len(payload) == 0 {
+			payload = json.RawMessage("{}")
+		}
+		if req.TaskField != "" {
+			value, err := api.ResolveJSONField(payload, req.TaskField)
+			if err != nil {
+				return &sandbox.ExecResponse{ExitCode: 1, Stderr: err.Error()}
+			}
+			return &sandbox.ExecResponse{Stdout: value}
+		}
+		return &sandbox.ExecResponse{Stdout: string(payload)}
+
 	default:
 		return &sandbox.ExecResponse{ExitCode: 1, Stderr: fmt.Sprintf("unsupported boid op %q", req.Op)}
 	}
+}
+
+// marshalTaskContextResponse renders v (a task-current snapshot, routed
+// instructions list, or reduced environment view) as the full-object form
+// of a Phase 5b PR1 task-context RPC response: canonical JSON in Stdout. The
+// CLI (internal/sandbox's shim) is responsible for any client-side
+// `--format yaml` re-rendering — the broker always speaks JSON on the wire.
+func marshalTaskContextResponse(v any) *sandbox.ExecResponse {
+	raw, err := json.Marshal(v)
+	if err != nil {
+		return &sandbox.ExecResponse{ExitCode: 1, Stderr: fmt.Sprintf("marshal response: %s", err)}
+	}
+	return &sandbox.ExecResponse{Stdout: string(raw)}
+}
+
+// resolveTaskContextField JSON-marshals v and resolves path against it via
+// api.ResolveJSONField, giving `boid task env --field` the same --field
+// contract (missing path → "", scalar → unquoted/stringified, object/array
+// → compact JSON) as `boid task current` / `instructions` / `payload`.
+func resolveTaskContextField(v any, path string) (string, error) {
+	raw, err := json.Marshal(v)
+	if err != nil {
+		return "", fmt.Errorf("marshal response: %w", err)
+	}
+	return api.ResolveJSONField(raw, path)
 }

@@ -75,6 +75,17 @@ const (
 	BoidOpTaskAnswer BoidOp = "task_answer"
 	BoidOpTaskAsk    BoidOp = "task_ask"
 	BoidOpTaskDelete BoidOp = "task_delete"
+
+	// Phase 5b PR1 task-context RPCs (docs/plans/phase5-shim-and-task-context.md):
+	// pull-based replacements for the dispatch-time context files
+	// ($HOME/.boid/context/{task,instructions,environment,payload}.{yaml,json}).
+	// File-based materialization still runs in parallel (sandbox_builder.go
+	// contextFiles) — the 5b-6 cutover PR retires it once every reader has
+	// migrated to these CLIs.
+	BoidOpTaskCurrent      BoidOp = "task_current"
+	BoidOpTaskInstructions BoidOp = "task_instructions"
+	BoidOpTaskEnv          BoidOp = "task_env"
+	BoidOpTaskPayload      BoidOp = "task_payload"
 )
 
 type BoidRequest struct {

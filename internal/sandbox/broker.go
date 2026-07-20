@@ -456,12 +456,67 @@ func (b *Broker) handleBoidBuiltin(ctx context.Context, req *ExecRequest, entry 
 				return &ExecResponse{ExitCode: 1, Stderr: fmt.Sprintf("boid task import: line %d: project %q is outside the current workspace", i+1, projectID)}
 			}
 		}
+	// Phase 5b PR1 task-context ops (docs/plans/phase5-shim-and-task-context.md):
+	// unlike BoidOpTaskGet (which only defaults an empty TaskID and never
+	// rejects a mismatched explicit one), these reject a caller-supplied id
+	// that doesn't match the token's own context. The shim never lets an
+	// agent target another job's context — id always comes from
+	// BOID_TASK_ID/BOID_JOB_ID env, never a CLI flag — so the extra equality
+	// check closes an otherwise-pointless cross-task/cross-job read at zero
+	// cost to legitimate use.
+	//
+	// TaskCurrent is TaskID-scoped (it re-derives live from the task row,
+	// which carries no job-scoped ambiguity). TaskInstructions, TaskEnv, and
+	// TaskPayload are all JobID-scoped: TaskInstructions in particular MUST
+	// key off the caller's own job, not its task — two agent-kind hooks for
+	// different agents can be dispatched from the same task in one
+	// evaluation round (see JobContextSnapshot's doc comment), so a
+	// TaskID-only guard would let a claude job read a codex job's
+	// instructions (and vice versa) as long as they shared a task. This was
+	// caught in codex review on PR #797 before merge — see wiring-seams.md #13.
+	case BoidOpTaskCurrent:
+		if boidReq.TaskID == "" {
+			boidReq.TaskID = entry.Context.TaskID
+		}
+		if boidReq.TaskID == "" {
+			return &ExecResponse{ExitCode: 1, Stderr: fmt.Sprintf("boid task %s requires a task id", taskContextOpVerb(boidReq.Op))}
+		}
+		if boidReq.TaskID != entry.Context.TaskID {
+			return &ExecResponse{ExitCode: 1, Stderr: fmt.Sprintf("boid task %s is restricted to the current task", taskContextOpVerb(boidReq.Op))}
+		}
+	case BoidOpTaskInstructions, BoidOpTaskEnv, BoidOpTaskPayload:
+		if boidReq.JobID == "" {
+			boidReq.JobID = entry.Context.JobID
+		}
+		if boidReq.JobID == "" {
+			return &ExecResponse{ExitCode: 1, Stderr: fmt.Sprintf("boid task %s requires a job id", taskContextOpVerb(boidReq.Op))}
+		}
+		if boidReq.JobID != entry.Context.JobID {
+			return &ExecResponse{ExitCode: 1, Stderr: fmt.Sprintf("boid task %s is restricted to the current job", taskContextOpVerb(boidReq.Op))}
+		}
 	}
 
 	if b.BoidExecutor == nil {
 		return &ExecResponse{ExitCode: 1, Stderr: "boid builtin unavailable"}
 	}
 	return b.BoidExecutor.ExecuteBoidBuiltin(ctx, entry.Context, &boidReq)
+}
+
+// taskContextOpVerb renders a Phase 5b PR1 task-context BoidOp as the
+// trailing word of its `boid task <verb>` CLI form, for error messages.
+func taskContextOpVerb(op BoidOp) string {
+	switch op {
+	case BoidOpTaskCurrent:
+		return "current"
+	case BoidOpTaskInstructions:
+		return "instructions"
+	case BoidOpTaskEnv:
+		return "env"
+	case BoidOpTaskPayload:
+		return "payload"
+	default:
+		return string(op)
+	}
 }
 
 // rewriteImportTaskProjectID replaces the "project_id" field of a task import

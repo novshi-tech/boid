@@ -72,6 +72,35 @@ func ResolveTaskField(task *orchestrator.Task, actions orchestrator.LifecycleSto
 		}
 	}
 
+	return traverseSegments(top, segments, path)
+}
+
+// ResolveJSONField resolves a dotted path against arbitrary already-marshaled
+// JSON data, using the same segment-traversal / value-formatting rules as
+// ResolveTaskField (missing path → "", scalar → unquoted/stringified,
+// object/array → compact JSON, traversing into a scalar → error). Unlike
+// ResolveTaskField it does no task-specific implicit `payload.` prefixing or
+// `lifecycle` injection — every other Phase 5b PR1 task-context RPC (`boid
+// task current` / `instructions` / `env` / `payload`,
+// docs/plans/phase5-shim-and-task-context.md) shares this generic core so
+// `--field` behaves identically everywhere task_get already established the
+// contract.
+func ResolveJSONField(raw json.RawMessage, path string) (string, error) {
+	if path == "" {
+		return "", fmt.Errorf("field path is empty")
+	}
+	var top any
+	if err := json.Unmarshal(raw, &top); err != nil {
+		return "", fmt.Errorf("unmarshal value: %w", err)
+	}
+	return traverseSegments(top, strings.Split(path, "."), path)
+}
+
+// traverseSegments walks top following segments (JSON object keys), applying
+// the shared field-resolution rules used by both ResolveTaskField and
+// ResolveJSONField. path is the original (un-split) dotted path, used only
+// for error messages.
+func traverseSegments(top any, segments []string, path string) (string, error) {
 	var cur any = top
 	for i, seg := range segments {
 		switch v := cur.(type) {

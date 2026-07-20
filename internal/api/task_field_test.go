@@ -170,3 +170,75 @@ func TestResolveTaskField_TraverseScalar(t *testing.T) {
 		t.Errorf("expected error when traversing into scalar")
 	}
 }
+
+// --- ResolveJSONField (Phase 5b PR1 task-context RPCs share this generic core) ---
+
+func TestResolveJSONField_TopLevel(t *testing.T) {
+	raw := json.RawMessage(`{"id":"t1","title":"hello","behavior":"dev"}`)
+	got, err := ResolveJSONField(raw, "title")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != "hello" {
+		t.Errorf("got %q, want %q", got, "hello")
+	}
+}
+
+func TestResolveJSONField_Nested(t *testing.T) {
+	raw := json.RawMessage(`{"allowed_domains":["a.com"],"host_commands":[{"name":"gh","allow":["pr"]}]}`)
+	got, err := ResolveJSONField(raw, "host_commands.0.name")
+	// Array indices are not object keys — traversing "0" into an array falls
+	// through the map[string]any case's default branch, matching
+	// ResolveTaskField's existing "cannot traverse into non-object" behavior
+	// for arrays (arrays are consumed whole, not indexed).
+	if err == nil {
+		t.Fatalf("expected error traversing into an array by numeric segment, got %q", got)
+	}
+}
+
+func TestResolveJSONField_WholeArrayValue(t *testing.T) {
+	raw := json.RawMessage(`{"allowed_domains":["a.com","b.com"]}`)
+	got, err := ResolveJSONField(raw, "allowed_domains")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != `["a.com","b.com"]` {
+		t.Errorf("got %q, want compact JSON array", got)
+	}
+}
+
+func TestResolveJSONField_MissingPathReturnsEmpty(t *testing.T) {
+	raw := json.RawMessage(`{}`)
+	got, err := ResolveJSONField(raw, "not.there")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != "" {
+		t.Errorf("got %q, want empty", got)
+	}
+}
+
+func TestResolveJSONField_EmptyPath(t *testing.T) {
+	if _, err := ResolveJSONField(json.RawMessage(`{}`), ""); err == nil {
+		t.Error("expected error for empty path")
+	}
+}
+
+func TestResolveJSONField_InvalidJSON(t *testing.T) {
+	if _, err := ResolveJSONField(json.RawMessage(`not json`), "x"); err == nil {
+		t.Error("expected error for invalid JSON input")
+	}
+}
+
+func TestResolveJSONField_NoTaskSpecificPayloadPrefixing(t *testing.T) {
+	// Unlike ResolveTaskField, a top-level segment that doesn't exist must
+	// NOT be silently re-tried under an implicit "payload." prefix.
+	raw := json.RawMessage(`{"payload":{"awaiting":{"question":"why?"}}}`)
+	got, err := ResolveJSONField(raw, "awaiting.question")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != "" {
+		t.Errorf("got %q, want empty (no implicit payload prefix)", got)
+	}
+}

@@ -187,14 +187,17 @@ type CloneDeclaration struct {
 }
 
 // TaskSnapshot is the business metadata that materializes at
-// $HOME/.boid/context/task.yaml. Fields mirror the subset historically
-// produced by planner's buildTaskYAML helper.
+// $HOME/.boid/context/task.yaml, and (Phase 5b PR1,
+// docs/plans/phase5-shim-and-task-context.md) is also what `boid task
+// current` returns over the broker RPC. JSON tags are lowercase to match
+// task.yaml's existing key casing (marshalTaskYAML in sandbox_builder.go)
+// and the snake_case convention every other boid RPC response uses.
 type TaskSnapshot struct {
-	ID          string
-	Title       string
-	Status      string
-	Behavior    string
-	Description string
+	ID          string `json:"id"`
+	Title       string `json:"title"`
+	Status      string `json:"status"`
+	Behavior    string `json:"behavior"`
+	Description string `json:"description,omitempty"`
 }
 
 // CleanupFunc releases transient resources created while planning a JobSpec

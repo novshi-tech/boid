@@ -615,7 +615,10 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 		AskDisconnectGrace: boidCfg.TaskAsk.DisconnectGrace,
 	}
 	if srv.broker != nil {
-		srv.broker.BoidExecutor = newBoidBuiltinExecutor(workflow, taskSvc, jobStore, transcriptLogReader{rootDir: runtimesDirFor(cfg)})
+		// runner (*dispatcher.Runner) satisfies jobContextProvider structurally
+		// (its JobContext method backs the Phase 5b PR1 `boid task env` /
+		// `boid task payload` RPCs — docs/plans/phase5-shim-and-task-context.md).
+		srv.broker.BoidExecutor = newBoidBuiltinExecutor(workflow, taskSvc, jobStore, transcriptLogReader{rootDir: runtimesDirFor(cfg)}, runner)
 		srv.broker.ProjectResolver = projectResolverFor(projectSvc)
 	}
 	globalJobSvc := &globalJobStore{
