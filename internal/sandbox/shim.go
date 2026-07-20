@@ -18,9 +18,14 @@ func CommandFromArgv0(argv0 string) string {
 
 // shimBinaryPath returns the absolute path of the shim binary as it appears
 // inside the sandbox. For host commands this equals the bind-mount target
-// (e.g. /usr/bin/gh, /home/user/proj/e2e/run.sh), which is the canonical key
-// the broker uses to identify the requested host command. The fallback to
-// argv0 covers exotic environments where /proc/self/exe is unavailable.
+// (e.g. /usr/bin/gh, /home/user/proj/e2e/run.sh). The broker's policy table
+// is keyed by short (declared) command name as of
+// docs/plans/phase5-shim-and-task-context.md ("5a: shim 固定ディレクトリ化"
+// PR1), but still accepts this absolute path as a compatibility fallback
+// (see broker.go's lookupCommand) — 5a-2 is what switches ShimExec to send
+// the short name (CommandFromArgv0) instead, at which point this function's
+// result stops being meaningful to the broker. The fallback to argv0 covers
+// exotic environments where /proc/self/exe is unavailable.
 func shimBinaryPath(argv0 string) string {
 	if exe, err := os.Executable(); err == nil && exe != "" {
 		return exe

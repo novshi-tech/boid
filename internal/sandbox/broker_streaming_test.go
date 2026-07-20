@@ -314,6 +314,61 @@ func TestBroker_StreamingCommandNotAllowed(t *testing.T) {
 	}
 }
 
+// TestBroker_StreamingShortNameKeyedCommand covers the real production path
+// for host commands (docs/plans/phase5-shim-and-task-context.md, "5a: shim
+// 固定ディレクトリ化" PR1): sandbox.ShimExec always sets Streaming=true, so
+// handleStreamingExec — not the non-streaming Handle path — is what actually
+// resolves ExecRequest.Command for a live shim call. This pins down that the
+// short-name canonical key resolves here too.
+func TestBroker_StreamingShortNameKeyedCommand(t *testing.T) {
+	sockPath, token := startStreamingBroker(t,
+		map[string]sandbox.CommandDef{
+			"echo": {Name: "echo", Path: "/bin/echo", AllowedPatterns: []string{"*"}},
+		},
+		sandbox.TokenContext{JobID: "j-sn", TaskID: "t-sn", ProjectID: "p-sn", Role: "hook"},
+	)
+
+	stdout, _, code := dialStreaming(t, sockPath, sandbox.ExecRequest{
+		Command: "echo",
+		Args:    []string{"hello"},
+		Token:   token,
+	})
+
+	if code != 0 {
+		t.Errorf("exit code = %d, want 0", code)
+	}
+	if !strings.Contains(stdout, "hello") {
+		t.Errorf("stdout %q does not contain 'hello'", stdout)
+	}
+}
+
+// TestBroker_StreamingAbsolutePathFallback is the streaming-path counterpart
+// of the same staging-period compatibility fallback: entry.Commands is now
+// short-name keyed, but the shim (before 5a-2) still sends the absolute
+// bind-mount path as ExecRequest.Command. handleStreamingExec must resolve
+// it via the same Path-match fallback lookupCommand implements.
+func TestBroker_StreamingAbsolutePathFallback(t *testing.T) {
+	sockPath, token := startStreamingBroker(t,
+		map[string]sandbox.CommandDef{
+			"echo": {Name: "echo", Path: "/bin/echo", AllowedPatterns: []string{"*"}},
+		},
+		sandbox.TokenContext{JobID: "j-fb", TaskID: "t-fb", ProjectID: "p-fb", Role: "hook"},
+	)
+
+	stdout, _, code := dialStreaming(t, sockPath, sandbox.ExecRequest{
+		Command: "/bin/echo",
+		Args:    []string{"hello"},
+		Token:   token,
+	})
+
+	if code != 0 {
+		t.Errorf("exit code = %d, want 0", code)
+	}
+	if !strings.Contains(stdout, "hello") {
+		t.Errorf("stdout %q does not contain 'hello'", stdout)
+	}
+}
+
 // TestBroker_StreamingBackwardCompatibility verifies that non-streaming
 // requests (Streaming=false) still work with the old single-response protocol.
 func TestBroker_StreamingBackwardCompatibility(t *testing.T) {

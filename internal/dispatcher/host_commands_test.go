@@ -2,6 +2,7 @@ package dispatcher
 
 import (
 	"fmt"
+	"reflect"
 	"testing"
 
 	"github.com/novshi-tech/boid/internal/orchestrator"
@@ -23,7 +24,7 @@ func TestResolveHostCommands_RejectRulesPassthrough(t *testing.T) {
 	lookPath := func(name string) (string, error) { return "/usr/bin/" + name, nil }
 	getOriginURL := func(string) (string, error) { return "", fmt.Errorf("not used in this test") }
 
-	out, err := ResolveHostCommands(nil, in, "/proj", lookPath, getOriginURL)
+	out, _, err := ResolveHostCommands(nil, in, "/proj", lookPath, getOriginURL)
 	if err != nil {
 		t.Fatalf("ResolveHostCommands: %v", err)
 	}
@@ -54,7 +55,7 @@ func TestResolveHostCommands_RepoSlugExpansionHTTPS(t *testing.T) {
 		return "https://github.com/owner/repo.git", nil
 	}
 
-	out, err := ResolveHostCommands(nil, in, "/proj", alwaysLookPath, getOriginURL)
+	out, _, err := ResolveHostCommands(nil, in, "/proj", alwaysLookPath, getOriginURL)
 	if err != nil {
 		t.Fatalf("ResolveHostCommands: %v", err)
 	}
@@ -81,7 +82,7 @@ func TestResolveHostCommands_RepoSlugExpansionSSH(t *testing.T) {
 			}
 			getOriginURL := func(string) (string, error) { return tc.url, nil }
 
-			out, err := ResolveHostCommands(nil, in, "/proj", alwaysLookPath, getOriginURL)
+			out, _, err := ResolveHostCommands(nil, in, "/proj", alwaysLookPath, getOriginURL)
 			if err != nil {
 				t.Fatalf("ResolveHostCommands: %v", err)
 			}
@@ -106,7 +107,7 @@ func TestResolveHostCommands_NoPlaceholderNeverInvokesGetOriginURL(t *testing.T)
 		return "", fmt.Errorf("should not be called")
 	}
 
-	out, err := ResolveHostCommands(nil, in, "/proj", alwaysLookPath, getOriginURL)
+	out, _, err := ResolveHostCommands(nil, in, "/proj", alwaysLookPath, getOriginURL)
 	if err != nil {
 		t.Fatalf("ResolveHostCommands: %v", err)
 	}
@@ -129,7 +130,7 @@ func TestResolveHostCommands_MissingOriginExpandsToEmptyStringNoError(t *testing
 		return "", fmt.Errorf("no such remote 'origin'")
 	}
 
-	out, err := ResolveHostCommands(nil, in, "/proj", alwaysLookPath, getOriginURL)
+	out, _, err := ResolveHostCommands(nil, in, "/proj", alwaysLookPath, getOriginURL)
 	if err != nil {
 		t.Fatalf("ResolveHostCommands: %v", err)
 	}
@@ -151,7 +152,7 @@ func TestResolveHostCommands_UnknownBoidVarLeftUntouched(t *testing.T) {
 		return "", fmt.Errorf("should not be called for an unrelated placeholder")
 	}
 
-	out, err := ResolveHostCommands(nil, in, "/proj", alwaysLookPath, getOriginURL)
+	out, _, err := ResolveHostCommands(nil, in, "/proj", alwaysLookPath, getOriginURL)
 	if err != nil {
 		t.Fatalf("ResolveHostCommands: %v", err)
 	}
@@ -175,13 +176,86 @@ func TestResolveHostCommands_CallerEnvMapNotMutated(t *testing.T) {
 		return "https://github.com/owner/repo.git", nil
 	}
 
-	_, err := ResolveHostCommands(nil, in, "/proj", alwaysLookPath, getOriginURL)
+	_, _, err := ResolveHostCommands(nil, in, "/proj", alwaysLookPath, getOriginURL)
 	if err != nil {
 		t.Fatalf("ResolveHostCommands: %v", err)
 	}
 	if got, want := callerEnv["GH_REPO"], "${boid:repo_slug}"; got != want {
 		t.Errorf("caller's Env map was mutated: GH_REPO = %q, want unchanged %q", got, want)
 	}
+}
+
+// TestResolveHostCommands_ByNameKeyedByDeclaredName covers the new (5a-1)
+// byName return value: every resolved entry must also be reachable by its
+// short, user-declared name — the "policy 用" key that
+// docs/plans/phase5-shim-and-task-context.md decision 2 wants broker
+// registration and BOID_HOST_COMMAND_RULES to use instead of the absolute
+// bind-mount path.
+func TestResolveHostCommands_ByNameKeyedByDeclaredName(t *testing.T) {
+	in := map[string]orchestrator.CommandDef{
+		"gh": {AllowedSubcommands: []string{"pr"}},
+	}
+	byPath, byName, err := ResolveHostCommands([]string{"jq"}, in, "/proj", alwaysLookPath, fakeGetOriginURLForHostCommandsTest)
+	if err != nil {
+		t.Fatalf("ResolveHostCommands: %v", err)
+	}
+
+	ghByName, ok := byName["gh"]
+	if !ok {
+		t.Fatalf("byName missing %q entry: %+v", "gh", byName)
+	}
+	if !reflect.DeepEqual(ghByName, byPath["/usr/bin/gh"]) {
+		t.Errorf("byName[%q] = %+v, want identical to byPath[%q] = %+v", "gh", ghByName, "/usr/bin/gh", byPath["/usr/bin/gh"])
+	}
+
+	jqByName, ok := byName["jq"]
+	if !ok {
+		t.Fatalf("byName missing builtin entry %q: %+v", "jq", byName)
+	}
+	if !reflect.DeepEqual(jqByName, byPath["/usr/bin/jq"]) {
+		t.Errorf("byName[%q] = %+v, want identical to byPath[%q] = %+v", "jq", jqByName, "/usr/bin/jq", byPath["/usr/bin/jq"])
+	}
+
+	if len(byName) != len(byPath) {
+		t.Errorf("byName has %d entries, byPath has %d; both views must cover the same resolved set", len(byName), len(byPath))
+	}
+}
+
+// TestResolveHostCommands_ReservedNamesExcludedFromByName is the short-name
+// counterpart of the reserved-name guard validateBuiltinHostConflict already
+// enforces at config-load time (internal/orchestrator/spec_loader.go): even
+// if a "boid"/"git"/"fetch" entry somehow reaches ResolveHostCommands (e.g. a
+// future caller that skips validateBuiltinHostConflict), neither returned
+// view may expose it — a short-name-keyed policy table entry for one of
+// these names would be just as dangerous as a byPath one, since it is what
+// the broker now checks first.
+func TestResolveHostCommands_ReservedNamesExcludedFromByName(t *testing.T) {
+	in := map[string]orchestrator.CommandDef{
+		"boid":  {},
+		"git":   {},
+		"fetch": {},
+		"gh":    {},
+	}
+	byPath, byName, err := ResolveHostCommands([]string{"boid", "git", "fetch"}, in, "/proj", alwaysLookPath, fakeGetOriginURLForHostCommandsTest)
+	if err != nil {
+		t.Fatalf("ResolveHostCommands: %v", err)
+	}
+
+	for _, reserved := range []string{"boid", "git", "fetch"} {
+		if _, ok := byName[reserved]; ok {
+			t.Errorf("byName must not contain reserved name %q, got %+v", reserved, byName[reserved])
+		}
+	}
+	if _, ok := byName["gh"]; !ok {
+		t.Error("byName must still contain the non-reserved gh entry")
+	}
+	if len(byPath) != len(byName) {
+		t.Errorf("byPath has %d entries, byName has %d; reserved-name exclusion must match in both views", len(byPath), len(byName))
+	}
+}
+
+func fakeGetOriginURLForHostCommandsTest(string) (string, error) {
+	return "", fmt.Errorf("getOriginURL should not be called")
 }
 
 // TestRepoSlugFromOriginURL_NonGithubHostKeptAsIs covers the "non-github
