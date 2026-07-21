@@ -118,8 +118,8 @@ templ TaskNew(projects []*orchestrator.Project, errorMsg string, form url.Values
 				</div>
 				<div class="form-group">
 					<label for="description" class="form-label">Description</label>
-					<textarea id="description" name="description" class="form-input" rows="6" data-paste-attach data-paste-attach-prefix="~/.boid/attachments/">{ form.Get("description") }</textarea>
-					<div class="form-hint">Paste images or text files from the clipboard (Ctrl+V). They are mounted inside the sandbox at <code>~/.boid/attachments/</code>.</div>
+					<textarea id="description" name="description" class="form-input" rows="6" data-paste-attach>{ form.Get("description") }</textarea>
+					<div class="form-hint">Paste images or text files from the clipboard (Ctrl+V). The agent fetches them with <code>boid task attachments get &lt;name&gt;</code>.</div>
 					<ul class="paste-attach-list" data-paste-attach-list></ul>
 				</div>
 				<div class="form-group">

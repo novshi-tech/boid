@@ -109,14 +109,14 @@ func EnsureAttachmentsDir(dataHome, taskID string) (string, error) {
 // (internal/server/boid_executor.go). Both resolve through
 // AttachmentsRootForTask — the same helper SaveMultipartAttachments writes
 // through — so the RPC read path and the write path can never drift apart.
-// sandbox_builder.go's RO bind, however, builds its source path
-// independently (a bare filepath.Join, not this helper — internal/api
-// cannot be imported from internal/dispatcher without an import cycle) and
-// is validated by a *separate*, deliberately duplicated
-// isCanonicalTaskIDComponent (internal/dispatcher/attachments_path.go), not
-// isCanonicalPathComponent below directly; see wiring-seams.md #15 for the
-// full three-way picture and the residual drift risk this duplication
-// leaves (two guard functions that must be kept in lock-step by hand).
+// Through Phase 5b PR5, sandbox_builder.go additionally bind-mounted a
+// per-task attachments RO bind whose source path was built independently (a
+// bare filepath.Join, not this helper — internal/api could not be imported
+// from internal/dispatcher without an import cycle) and validated by a
+// *separate*, deliberately duplicated isCanonicalTaskIDComponent
+// (internal/dispatcher/attachments_path.go); the Phase 5b PR6 cutover deleted
+// that bind and attachments_path.go outright, so this RPC pair is now the
+// sole in-sandbox read path — see wiring-seams.md #15 for the history.
 
 // ListAttachments returns the basenames of the regular files directly under
 // the task's attachments directory, sorted. Subdirectories are never

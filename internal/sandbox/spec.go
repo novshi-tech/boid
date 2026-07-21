@@ -40,6 +40,17 @@ type Spec struct {
 	// Files are materialized inside the sandbox (after pivot_root) before the
 	// entry command runs.
 	Files []FileWrite
+	// RemoveFiles are best-effort-unlinked inside the sandbox (after
+	// pivot_root, before Files are written) — the mirror-image of Files.
+	// Phase 5b PR6 cutover (docs/plans/phase5-shim-and-task-context.md):
+	// with the $HOME/.boid job-scoped tmpfs overlay retired, $HOME/.boid may
+	// now be the persistent workspace home bind, so a stale
+	// $HOME/.boid/output/payload_patch.json a *previous* job wrote could
+	// otherwise survive into this job's resolveJobOutput read. A missing
+	// path is not an error; any other removal failure is logged but does not
+	// fail the job (defensive cleanup, not a correctness requirement this
+	// job's own success depends on).
+	RemoveFiles []string
 	// Symlinks are created inside the sandbox.
 	Symlinks []Symlink
 

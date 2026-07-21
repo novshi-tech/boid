@@ -1,0 +1,56 @@
+id: e2e-home-boid-persists
+name: E2E Home Boid Persists
+# docs/plans/phase5-shim-and-task-context.md 「PR 分割案 > 5b」6 (Phase 5b
+# PR6 cutover, decision 7): the $HOME/.boid job-scoped tmpfs overlay Phase 4
+# PR6 introduced (docs/plans/home-workspace-volume.md, formerly pinned by
+# this scenario under the name workspace-home-boid-isolated) is retired now
+# that contextFiles/the attachments RO bind no longer write under
+# $HOME/.boid/{context,attachments}. $HOME/.boid now persists across jobs in
+# the same workspace exactly like the rest of $HOME (job 1 writes a marker
+# under $HOME/.boid; job 2 must see it) — the opposite of the pre-cutover
+# contract this scenario used to pin.
+#
+# The one exception is $HOME/.boid/output/payload_patch.json specifically:
+# BuildSandboxSpec now removes any leftover copy at the start of every job
+# (sandbox.Spec.RemoveFiles, a defensive stopgap ahead of the job_done
+# payload-patch RPC in PR7) so a job that produces no patch of its own never
+# silently inherits a previous job's stale one. Job 2's hook checks for that
+# file's presence *before* writing its own, proving the cleanup ran ahead of
+# the hook script.
+task_behaviors:
+  write-boid:
+    hooks:
+      - id: write-boid
+        command: |
+          set -eu
+          mkdir -p "$HOME/.boid"
+          echo "job1" > "$HOME/.boid/marker"
+          mkdir -p "$HOME/.boid/output"
+          printf '{"payload_patch":{"artifact":{"source":"write-boid","wrote":"job1"}}}\n' > "$HOME/.boid/output/payload_patch.json"
+        traits:
+          produces: [artifact]
+    traits: []
+  read-boid:
+    hooks:
+      - id: read-boid
+        command: |
+          set -eu
+          # Must check before this hook itself touches output/payload_patch.json —
+          # proves the dispatch-time defensive cleanup ran ahead of us.
+          if [ -f "$HOME/.boid/output/payload_patch.json" ]; then
+            STALE_PATCH="PRESENT"
+          else
+            STALE_PATCH="ABSENT"
+          fi
+
+          if [ -f "$HOME/.boid/marker" ]; then
+            MARKER="$(cat "$HOME/.boid/marker")"
+          else
+            MARKER="EMPTY"
+          fi
+
+          mkdir -p "$HOME/.boid/output"
+          printf '{"payload_patch":{"artifact":{"source":"read-boid","marker":"%s","stale_patch":"%s"}}}\n' "$MARKER" "$STALE_PATCH" > "$HOME/.boid/output/payload_patch.json"
+        traits:
+          produces: [artifact]
+    traits: []

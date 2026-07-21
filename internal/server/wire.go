@@ -472,23 +472,22 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 	srv.gatewayRegistry = gitgateway.NewRegistry()
 
 	runner := dispatcher.Wire(dispatcher.WireConfig{
-		DB:              srv.db,
-		Runtime:         jobRuntime,
-		Broker:          broker,
-		Sandbox:         dispatcher.NewSandboxPreparer(),
-		SecretStore:     secretStore,
-		Projects:        projectCatalog,
-		Hydrator:        store, // workspace-aware hydration for peer meta.name (buildPeerAdvertise)
-		Workspaces:      wsLookup,
-		ProxyAllocator:  srv.proxyManager,
-		BoidBinary:      boidBin,
-		ServerSocket:    cfg.SocketPath,
-		ProxyPort:       &srv.proxyPort,
-		AllowedDomains:  cfg.AllowedDomains,
-		RuntimesDir:     runtimesDirFor(cfg),
-		AttachmentsRoot: dataHomeFor(cfg),
-		GitGateway:      srv.gatewayRegistry,
-		GatewayURL:      &srv.gatewayURL,
+		DB:             srv.db,
+		Runtime:        jobRuntime,
+		Broker:         broker,
+		Sandbox:        dispatcher.NewSandboxPreparer(),
+		SecretStore:    secretStore,
+		Projects:       projectCatalog,
+		Hydrator:       store, // workspace-aware hydration for peer meta.name (buildPeerAdvertise)
+		Workspaces:     wsLookup,
+		ProxyAllocator: srv.proxyManager,
+		BoidBinary:     boidBin,
+		ServerSocket:   cfg.SocketPath,
+		ProxyPort:      &srv.proxyPort,
+		AllowedDomains: cfg.AllowedDomains,
+		RuntimesDir:    runtimesDirFor(cfg),
+		GitGateway:     srv.gatewayRegistry,
+		GatewayURL:     &srv.gatewayURL,
 	})
 
 	lifecycle := jobLifecycleAdapter{runner: runner}
@@ -619,11 +618,9 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 		// (its JobContext method backs the Phase 5b PR1 `boid task env` /
 		// `boid task payload` RPCs — docs/plans/phase5-shim-and-task-context.md).
 		// dataHomeFor(cfg) is the same value passed to
-		// dispatcher.RunnerConfig.AttachmentsRoot (above) and
-		// api.WebHandler.AttachmentsRoot (below) — the Phase 5b PR2
-		// attachments RPCs (`boid task attachments list|get`) must read from
-		// the identical directory those two use, or the RPC reply would drift
-		// from the parallel file-bind path (wiring-seams.md #15).
+		// api.WebHandler.AttachmentsRoot (below) — the Phase 5b PR2 attachments
+		// RPCs (`boid task attachments list|get`) must read from the identical
+		// directory the upload path writes to (wiring-seams.md #15).
 		srv.broker.BoidExecutor = newBoidBuiltinExecutor(workflow, taskSvc, jobStore, transcriptLogReader{rootDir: runtimesDirFor(cfg)}, runner, dataHomeFor(cfg))
 		srv.broker.ProjectResolver = projectResolverFor(projectSvc)
 	}

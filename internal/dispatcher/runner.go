@@ -99,10 +99,9 @@ type Runner struct {
 	// AllowedDomains is the daemon-wide proxy egress allowlist (the floor
 	// from config.yaml sandbox.allowed_domains + boid defaults). Workspace
 	// overrides are added on top via orchestrator.ResolveAllowedDomains.
-	AllowedDomains  []string
-	RuntimesDir     string
-	AttachmentsRoot string
-	JobEvents       JobEventSink // optional; nil disables job lifecycle broadcasts
+	AllowedDomains []string
+	RuntimesDir    string
+	JobEvents      JobEventSink // optional; nil disables job lifecycle broadcasts
 
 	// GitGateway is the git gateway's job-token registry
 	// (docs/plans/git-gateway-cutover.md PR4: gateway lifecycle + dispatch
@@ -469,7 +468,6 @@ func (r *Runner) Dispatch(ctx context.Context, spec *orchestrator.JobSpec, clean
 		ResolvedHostCommands:       resolvedHostCommands,
 		ResolvedHostCommandsByName: resolvedHostCommandsByName,
 		AllowedDomains:             allowedDomains,
-		AttachmentsRoot:            r.AttachmentsRoot,
 		GatewayURL:                 gatewayURL,
 		GatewayJobToken:            gatewayToken,
 		GatewayCloneURL:            gatewayCloneURL,

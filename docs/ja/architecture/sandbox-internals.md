@@ -41,7 +41,6 @@
 | runner-inner-child  (新規 user+mount ns 内、 uid 0)         |
 |   $ROOT に bind mount で sandbox fs を組み立て              |
 |   pivot_root で $ROOT を新しいルートに                      |
-|   コンテキストファイルを $HOME/.boid/context/ に書き出し    |
 |   adapter.Run() でエージェントを exec                       |
 +-------------------------------------------------------------+
 ```
@@ -79,7 +78,6 @@ pasta の user+net namespace の内側で動きます。 この時点では**内
 
 - **bind mount** — kit の `additional_bindings`、 sandbox 内 clone の runtime dir (project が可視な場合)、 `/usr` や `/lib` 等のシステムディレクトリを `$ROOT` 配下に bind / rbind マウント。 これがサンドボックス内から見えるファイルセットを決めます
 - **`pivot_root`** — `$ROOT` を新しいルートに切り替える。 旧ルートは `/.old_root` にピボットしてから umount + rmdir する
-- **コンテキストファイル書き出し** — `$HOME/.boid/context/{task,instructions,environment,payload}.{yaml,json}` に spec の内容を書き出す (pivot_root 後)
 - **シンボリックリンク** — `boid` shim を `/opt/boid/bin/<command>` 等にリンク
 - **`adapter.Run()`** — HarnessAdapter 経由でエージェント (claude / codex / opencode / shell) を exec し、停止シグナル (SIGUSR1 → 子に SIGTERM) の中継・終了コード正規化・broker job-done 送信を行う
 
@@ -88,7 +86,7 @@ sandbox 内のプロセスからは:
 - ホームディレクトリ・SSH 鍵・他プロジェクトは存在自体が見えない (`$ROOT` 配下に bind しなければパスが解決しない)
 - 自分は uid 0 (内側) で動いているが、 user namespace の外には出られずホストの root へのエスカレーションパスはない
 
-タスクコンテキストは `$HOME/.boid/context/` のファイル経由で参照します。 hook のプロトコル詳細は [Hook スクリプトプロトコル](../reference/hook-contract.md)。
+タスクコンテキストは `boid task current` / `instructions` / `env` / `payload` — shim 経由で呼べる broker RPC — で取得します。 dispatch 時に一括生成する方式ではなく、必要になった時点で pull します。 hook のプロトコル詳細は [Hook スクリプトプロトコル](../reference/hook-contract.md)。
 
 ## ネットワーク制御
 
@@ -305,8 +303,14 @@ role 分岐はなく、全 role で同じ op セットが許可されます。
 | `task_notify` | `boid task notify <id>` | 通知または Q&A (`--ask`) を送信する |
 | `task_answer` | `boid task answer` | awaiting → executing に遷移させる |
 | `task_delete` | `boid task delete <id>` | task を削除する |
+| `task_current` | `boid task current` | この task の id/title/description/status/behavior/readonly を取得する |
+| `task_instructions` | `boid task instructions` | この job 自身の routed instruction を取得する |
+| `task_env` | `boid task env` | `allowed_domains` + `host_commands` (サンドボックス内から観測できない情報) を取得する |
+| `task_payload` | `boid task payload` | trait フィルタ済みの現在の payload を取得する |
+| `task_attachments_list` | `boid task attachments list` | この task の添付ファイル名一覧を取得する |
+| `task_attachments_get` | `boid task attachments get <name>` | 添付ファイル 1 件の中身を取得する |
 
-> **注記:** `task.reopen` だけが歴史的事情で `.` 区切りになっています。 他の op は `_` 区切りです。
+> **注記:** `task.reopen` だけが歴史的事情で `.` 区切りになっています。 他の op は `_` 区切りです。 `task_current` / `task_attachments_list` / `task_attachments_get` は TaskID スコープ、 `task_instructions` / `task_env` / `task_payload` は JobID スコープです ([Hook スクリプトプロトコル](../reference/hook-contract.md) 参照)。
 
 ### fetch builtin
 

@@ -186,21 +186,16 @@ type CloneDeclaration struct {
 	BaseBranchForkPoint string
 }
 
-// TaskSnapshot is the business metadata that materializes at
-// $HOME/.boid/context/task.yaml, and (Phase 5b PR1,
-// docs/plans/phase5-shim-and-task-context.md) is also what `boid task
-// current` returns over the broker RPC. JSON tags are lowercase to match
-// task.yaml's existing key casing (marshalTaskYAML in sandbox_builder.go)
-// and the snake_case convention every other boid RPC response uses.
+// TaskSnapshot is the business metadata `boid task current` returns over the
+// broker RPC (Phase 5b PR1, docs/plans/phase5-shim-and-task-context.md).
+// Through the Phase 5b PR6 cutover it also materialized at the now-deleted
+// $HOME/.boid/context/task.yaml; JSON tags stayed lowercase to match that
+// file's key casing (marshalTaskYAML, also deleted) and the snake_case
+// convention every other boid RPC response uses.
 //
 // Readonly (Phase 5b PR4, docs/plans/phase5-shim-and-task-context.md「PR 分割案
-// > 5b」4) is additive-only: marshalTaskYAML (internal/dispatcher/
-// sandbox_builder.go) builds task.yaml's content from an explicit field
-// whitelist rather than reflecting over TaskSnapshot, so this field reaches
-// `boid task current` (the new mode-determination source the boid-task skill
-// reads) without changing task.yaml's on-disk shape — the file writer and the
-// RPC are allowed to diverge in this one direction on purpose, since the file
-// path is retired wholesale at the 5b-6 cutover rather than grown further.
+// > 5b」4) is the mode-determination source the boid-task skill reads via
+// `boid task current --field readonly`.
 type TaskSnapshot struct {
 	ID          string `json:"id"`
 	Title       string `json:"title"`

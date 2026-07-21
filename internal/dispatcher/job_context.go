@@ -20,9 +20,9 @@ import (
 //     same task even though only one of them matches the history's last
 //     entry. selectInstruction/FilterInstructions only route the *last*
 //     entry, so the other hook's job gets Instruction=nil — and
-//     $HOME/.boid/context/instructions.yaml is correspondingly never
-//     written for that job (contextFiles skips it when inst==nil). Deriving
-//     "current instructions" from the task row instead of the job's own
+//     `boid task instructions` correspondingly returns an empty list for
+//     that job (routedInstructionSlice below returns [] when inst==nil).
+//     Deriving "current instructions" from the task row instead of the job's own
 //     JobSpec.Instruction would hand a claude job the codex instruction (or
 //     vice versa) — a real regression codex review caught before merge; see
 //     wiring-seams.md #13. orchestrator.CurrentInstructions still exists for
@@ -69,14 +69,12 @@ func (r *Runner) untrackJobContext(jobID string) {
 	delete(r.jobContexts, jobID)
 }
 
-// routedInstructionSlice mirrors contextFiles' instructions.yaml
-// materialization rule (sandbox_builder.go): a nil JobSpec.Instruction
-// (non-agent hook, or an agent-kind hook whose agent doesn't match the
-// task's active instruction) produces no data — an empty, non-nil slice
-// here, matching the RPC convention of "no data" being an empty JSON array
-// rather than the file-based "no file at all". A non-nil Instruction
-// produces the same single-element slice contextFiles' marshalInstructionsYAML
-// wraps it in.
+// routedInstructionSlice normalizes JobSpec.Instruction for
+// JobContextSnapshot.Instructions: a nil JobSpec.Instruction (non-agent
+// hook, or an agent-kind hook whose agent doesn't match the task's active
+// instruction) produces no data — an empty, non-nil slice, matching the RPC
+// convention of "no data" being an empty JSON array. A non-nil Instruction
+// produces a single-element slice wrapping it.
 func routedInstructionSlice(inst *orchestrator.RoutedInstruction) []orchestrator.RoutedInstruction {
 	if inst == nil {
 		return []orchestrator.RoutedInstruction{}

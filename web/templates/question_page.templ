@@ -54,9 +54,8 @@ templ QuestionPage(task *orchestrator.Task, turn QuestionTurn) {
 							placeholder="Enter your answer…"
 							autofocus
 							data-paste-attach
-							data-paste-attach-prefix="~/.boid/attachments/"
 						></textarea>
-						<div class="form-hint">Paste images or text from the clipboard. They are available inside the sandbox at <code>~/.boid/attachments/</code>.</div>
+						<div class="form-hint">Paste images or text from the clipboard. The agent fetches them with <code>boid task attachments get &lt;name&gt;</code>.</div>
 						<ul class="paste-attach-list" data-paste-attach-list></ul>
 					</form>
 					<div class="qa-actions">

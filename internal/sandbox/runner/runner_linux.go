@@ -232,8 +232,24 @@ func RunInnerChild(specPath, statePath string) (exitCode int, retErr error) {
 	}
 	st.OK("inner-child", "pivot-root")
 
-	// Context files live under the now-mounted tmpfs HOME, so they must be
-	// written after pivot_root (otherwise the HOME tmpfs would shadow them).
+	// spec.RemoveFiles: best-effort cleanup of stale leftovers from a
+	// previous job sharing this HOME (docs/plans/phase5-shim-and-task-
+	// context.md 「PR 分割案 > 5b」6 — see sandbox.Spec.RemoveFiles' doc
+	// comment). Runs before spec.Files are written, and — like them — after
+	// pivot_root, since the target lives under the now-mounted HOME. A
+	// missing file is not an error; any other removal failure is logged via
+	// State but does not fail the job, since this is defensive cleanup, not
+	// something this job's own correctness depends on.
+	for _, path := range spec.RemoveFiles {
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			st.Fail("inner-child", "remove-stale-file "+path, err)
+		}
+	}
+
+	// spec.Files (e.g. the DNS stub-resolv.conf, the $HOME/.boid/output
+	// sentinel) live under the now-mounted HOME/root, so they must be
+	// written after pivot_root (otherwise an earlier mount would shadow
+	// them).
 	for _, f := range spec.Files {
 		if err := writeFileAt(f.Path, f.Content); err != nil {
 			st.Fail("inner-child", "write-file "+f.Path, err)

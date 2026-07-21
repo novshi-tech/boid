@@ -41,7 +41,6 @@ When the daemon starts a hook, the dispatcher writes a JSON spec file to disk an
 | runner-inner-child  (new user+mount ns, uid 0)              |
 |   bind-mount sandbox fs into $ROOT                          |
 |   pivot_root into $ROOT                                     |
-|   write context files to $HOME/.boid/context/              |
 |   adapter.Run() → exec the agent                            |
 +-------------------------------------------------------------+
 ```
@@ -79,7 +78,6 @@ Main steps:
 
 - **bind mounts** — the kit's `additional_bindings`, the in-sandbox clone's runtime directory (when the project is visible), and system directories (`/usr`, `/lib`, etc.) are bind-mounted (or rbind-mounted) into `$ROOT`. This determines the file set visible inside the sandbox.
 - **`pivot_root`** — switches the root to `$ROOT`; the old root is pivoted to `/.old_root` then unmounted and removed.
-- **context files** — after `pivot_root`, writes `$HOME/.boid/context/{task,instructions,environment,payload}.{yaml,json}` from the spec.
 - **symlinks** — the `boid` shim is symlinked at `/opt/boid/bin/<command>` etc.
 - **`adapter.Run()`** — invokes the HarnessAdapter (claude / codex / opencode / shell) to exec the agent, relay the stop signal (SIGUSR1 → SIGTERM to the agent), normalise the exit code, and post the broker job-done via `brokerclient`. (`shell` is the fall-through adapter used by `boid exec` and non-agent hook scripts; the `boid agent shell` session variant was retired after the git gateway cutover.)
 
@@ -88,7 +86,7 @@ From inside the sandbox:
 - The home directory, SSH keys, and other projects do not exist (paths don't resolve unless bind-mounted into `$ROOT`).
 - The process runs as uid 0 inside the user namespace but cannot escape it — there is no escalation path to the host root.
 
-Task context is available through the context files at `$HOME/.boid/context/`. The handler-side protocol is documented in [Hook script protocol](../reference/hook-contract.md).
+Task context is available by calling `boid task current` / `instructions` / `env` / `payload` — broker RPCs reachable over the shim, pulled on demand rather than materialized at dispatch time. The handler-side protocol is documented in [Hook script protocol](../reference/hook-contract.md).
 
 ## Network control
 
@@ -301,8 +299,14 @@ All roles (hook) share the same allowed op set — there is no role branching.
 | `task_notify` | `boid task notify <id>` | Send a notification or Q&A (`--ask`) |
 | `task_answer` | `boid task answer` | Transition awaiting → executing |
 | `task_delete` | `boid task delete <id>` | Delete a task |
+| `task_current` | `boid task current` | Read this task's id/title/description/status/behavior/readonly |
+| `task_instructions` | `boid task instructions` | Read this job's own routed instruction |
+| `task_env` | `boid task env` | Read `allowed_domains` + `host_commands` (the properties this sandbox cannot observe on its own) |
+| `task_payload` | `boid task payload` | Read the trait-filtered current payload |
+| `task_attachments_list` | `boid task attachments list` | List this task's attachment filenames |
+| `task_attachments_get` | `boid task attachments get <name>` | Fetch one attachment's bytes |
 
-> **Note:** `task.reopen` uses a `.` separator for historical reasons; all other ops use `_`.
+> **Note:** `task.reopen` uses a `.` separator for historical reasons; all other ops use `_`. `task_current`/`task_attachments_list`/`task_attachments_get` are TaskID-scoped; `task_instructions`/`task_env`/`task_payload` are JobID-scoped (see [Hook script protocol](../reference/hook-contract.md)).
 
 ### fetch builtin
 

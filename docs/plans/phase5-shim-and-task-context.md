@@ -258,6 +258,25 @@ env 経路 (併存): `BOID_TASK_ID` / `BOID_JOB_ID` / `BOID_MODEL` / `BOID_INVOK
    `task.yaml` / `instructions.yaml` / `environment.yaml` / `payload.json/yaml` の
    FileWrite 全廃、 attachments bind 削除、 `~/.boid` の job scope tmpfs overlay
    (Phase 4 の暫定) 撤去。 この PR がステップ 5 の目玉 cutover
+   **(landed)**: `contextFiles`/`buildEnvironmentYAML`/`marshalTaskYAML`/
+   `marshalInstructionsYAML`/`EnvironmentInput`/`attachments_path.go` を削除。
+   `homeMounts` の `$HOME/.boid` tmpfs overlay は workspace-home-bind 分岐から
+   撤去 (ProfileInit 分岐の tmpfs は別目的につき維持)。 副作用対策として
+   `payload_patch.json` の job 開始時 defensive cleanup
+   (`sandbox.Spec.RemoveFiles`) を追加 (論点の対策 (a))。
+   `SandboxRuntimeInfo.WorkspacePeerAdvertise` / `Runner.buildPeerAdvertise` は
+   「PR 跨ぎで inert」パターンを継続 (削除しない) — 判断は下記未解決論点を参照。
+   `e2e/scenarios/git-gateway-peer-fetch` は引き続き `skip` (理由は同ファイル参照)。
+   `e2e/scenarios/workspace-home-boid-isolated` (Phase 4 PR6 が pin していた
+   「`$HOME/.boid` は job ごとに隔離される」契約) は tmpfs overlay 撤去で契約が
+   逆転したため `workspace-home-boid-persists` に改名・全面書き換え —
+   「`$HOME/.boid` は $HOME 同様 workspace 内で永続する」+
+   「`payload_patch.json` のみ defensive cleanup で job 開始時に消える」の
+   2 点を新たに pin。 Web UI の attachments 参照 (paste-attach JS + templ 2 枚)
+   も `~/.boid/attachments/<name>` パス表記から `[attachment: <name>]` +
+   `boid task attachments get <name>` 表記に書き換え (bind 撤去に伴う実害の
+   事前防止)。
+   `git-gateway-reopen-reclone` は `boid task payload --field` 経由に書き換え済み
 7. **`job_done` の payload_patch 直渡し版 RPC + CLI** (`boid task update
    --payload-patch @-`)。 現行 file 経路 (`~/.boid/output/payload_patch.json` +
    `StdoutCaptureFile`) は runner-inner-child 側で fallback として残す
@@ -287,7 +306,13 @@ env 経路 (併存): `BOID_TASK_ID` / `BOID_JOB_ID` / `BOID_MODEL` / `BOID_INVOK
 - **workspace_projects (peer advertise) の CLI 帰属**: `boid task env` の
   1 セクションとして持つか、 `boid workspace peers` として独立させるか。
   peer clone は dispatch 時に runner が済ませるので、 agent 側からの
-  「peer 一覧の発見」が主用途 → 独立 CLI 寄り
+  「peer 一覧の発見」が主用途 → 独立 CLI 寄り。
+  **5b-6 での判断 (2026-07-21)**: `boid task env` へのバンドルは見送り (独立 CLI
+  路線を維持)。 `SandboxRuntimeInfo.WorkspacePeerAdvertise` /
+  `Runner.buildPeerAdvertise` (`gitgateway_wire.go`) は削除せず「PR 跨ぎで
+  inert」のまま継続保持 (5b-6 では新しい consumer を配線しない、 という
+  deliberate な選択)。 `boid workspace peers` 実装時にこのデータをそのまま
+  再利用する想定
 - **`BOID_INSTRUCTIONS` env の廃止判定**: instructions.yaml file を消しても、
   BOID_INSTRUCTIONS env が残ると agent 側の入手経路が 2 系統になる。
   RPC 一本化のため env 側も同時に廃止するのが正だが、 一部スキル / hook が

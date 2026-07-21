@@ -37,11 +37,10 @@ type boidBuiltinExecutor struct {
 	// attachments live (`<attachmentsRoot>/tasks/<task_id>/attachments`),
 	// backing the Phase 5b PR2 attachments RPCs
 	// (docs/plans/phase5-shim-and-task-context.md). It is the same value
-	// wire.go threads into dispatcher.RunnerConfig.AttachmentsRoot (the
-	// parallel RO bind) and api.WebHandler.AttachmentsRoot (the upload
-	// path) — see wiring-seams.md #15 — so the RPC reply can never drift
-	// from what those other two readers/writers see. Empty disables the
-	// two ops with an "unavailable" error rather than panicking.
+	// wire.go threads into api.WebHandler.AttachmentsRoot (the upload path)
+	// — see wiring-seams.md #15 — so the RPC reply can never drift from what
+	// the upload path writes. Empty disables the two ops with an
+	// "unavailable" error rather than panicking.
 	attachmentsRoot string
 }
 
@@ -573,9 +572,11 @@ func (e *boidBuiltinExecutor) ExecuteBoidBuiltin(goCtx context.Context, ctx sand
 
 	// --- Phase 5b PR2 attachments RPCs (docs/plans/phase5-shim-and-task-context.md) ---
 	// Both read straight from disk via api.ListAttachments/api.ReadAttachment
-	// (the same AttachmentsRootForTask directory the parallel RO bind in
-	// sandbox_builder.go exposes) — no DB or JobContextSnapshot involved,
-	// since attachments are keyed by TaskID alone (see broker.go's guard).
+	// (AttachmentsRootForTask, the same helper the upload path writes
+	// through) — no DB or JobContextSnapshot involved, since attachments are
+	// keyed by TaskID alone (see broker.go's guard). The Phase 5b PR6 cutover
+	// retired the parallel dispatch-time RO bind these two ops used to run
+	// alongside — this RPC pair is now the sole read path.
 
 	case sandbox.BoidOpTaskAttachmentsList:
 		if e.attachmentsRoot == "" {

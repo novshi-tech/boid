@@ -14,7 +14,6 @@ import (
 	"github.com/novshi-tech/boid/internal/adapters/registry"
 	"github.com/novshi-tech/boid/internal/orchestrator"
 	"github.com/novshi-tech/boid/internal/sandbox"
-	"gopkg.in/yaml.v3"
 )
 
 // SandboxRuntimeInfo carries the dispatcher-internal facts that are required
@@ -67,18 +66,9 @@ type SandboxRuntimeInfo struct {
 
 	// AllowedDomains is the proxy egress allowlist. It is purely informational
 	// inside the sandbox (the proxy itself enforces it on the host), surfaced
-	// to the agent via environment.yaml so it knows which hosts are reachable
-	// without burning a turn on a 403.
+	// to the agent via the `boid task env` broker RPC (Phase 5b PR1) so it
+	// knows which hosts are reachable without burning a turn on a 403.
 	AllowedDomains []string
-
-	// AttachmentsRoot is the data-home directory under which per-task
-	// attachments live (`<AttachmentsRoot>/tasks/<task_id>/attachments`). When
-	// non-empty and the JobSpec has a TaskID, BuildSandboxSpec appends a
-	// read-only bind to `<homeDir>/.boid/attachments` so the agent can read
-	// user-attached files via its standard Read tool. The bind source is
-	// allowed to be missing — the sandbox setup script handles that via the
-	// Guard expression so attachments are optional per task.
-	AttachmentsRoot string
 
 	// GatewayURL is the git gateway's sandbox-facing base URL
 	// (http://10.0.2.2:<port>), set by Runner from the daemon's own
@@ -150,12 +140,15 @@ type SandboxRuntimeInfo struct {
 	// PR2 (docs/plans/home-workspace-volume.md) reads this field: the
 	// Clone / projectVisible / default HOME branches below (via homeMounts)
 	// bind it read-write at HOME's sandbox-internal path instead of a plain
-	// tmpfs, with $HOME/.boid layered as a job-scoped tmpfs on top so
-	// context/output writes stay isolated per job even though the rest of
-	// HOME now persists across jobs in the same workspace. env["HOME"]
-	// itself is unchanged — it still comes from hostHomeDir(), the *target*
-	// path inside the sandbox; only the *contents* now come from the
-	// workspace home instead of starting empty every job.
+	// tmpfs, so the rest of HOME persists across jobs in the same workspace.
+	// env["HOME"] itself is unchanged — it still comes from hostHomeDir(),
+	// the *target* path inside the sandbox; only the *contents* now come
+	// from the workspace home instead of starting empty every job. (Through
+	// Phase 5b PR6 of docs/plans/phase5-shim-and-task-context.md, a
+	// $HOME/.boid job-scoped tmpfs additionally rode on top to isolate
+	// dispatch-time context/output file writes; that overlay is retired now
+	// that contextFiles and the attachments bind are gone — see homeMounts'
+	// doc comment.)
 	//
 	// When empty (test wiring that never resolved a workspace — most of
 	// sandbox_builder_test.go's minimal SandboxRuntimeInfo{} literals —
@@ -287,6 +280,7 @@ func BuildSandboxSpec(spec *orchestrator.JobSpec, rt SandboxRuntimeInfo) (sandbo
 
 	var mounts []sandbox.Mount
 	var files []sandbox.FileWrite
+	var removeFiles []string
 
 	// Broker socket + token.
 	if rt.BrokerSocket != "" {
@@ -312,10 +306,9 @@ func BuildSandboxSpec(spec *orchestrator.JobSpec, rt SandboxRuntimeInfo) (sandbo
 		// target at the neutral /workspace path; there is no host ProjectDir
 		// bind for this job at all, so binding projectDir here too would
 		// double-mount the same host path at two sandbox targets for no
-		// reason. HOME still gets the workspace home bind (+ .boid tmpfs
-		// overlay) or a private tmpfs fallback (docs/plans/home-workspace-
-		// volume.md Phase 4 PR2), exactly like the "no project visible"
-		// case below.
+		// reason. HOME still gets the workspace home bind or a private
+		// tmpfs fallback (docs/plans/home-workspace-volume.md Phase 4 PR2),
+		// exactly like the "no project visible" case below.
 		mounts = append(mounts, homeMounts(homeDir, rt.WorkspaceHomeDir)...)
 	case projectDir != "":
 		mounts = append(mounts, projectVisibilityMounts(
@@ -334,8 +327,8 @@ func BuildSandboxSpec(spec *orchestrator.JobSpec, rt SandboxRuntimeInfo) (sandbo
 		// Layering a full HOME tmpfs on top would shadow exactly those paths and
 		// make `which volta` / `ls ~/.volta/bin` return nothing — defeating the
 		// whole point of ProfileInit. Layer a tmpfs over `<HOME>/.boid` only so
-		// context-file writes ($HOME/.boid/{context,output}/*) still land on
-		// writable storage without hiding the rest of HOME.
+		// output writes ($HOME/.boid/output/*, e.g. payload_patch.json) still
+		// land on writable storage without hiding the rest of HOME.
 		//
 		// The tmpfs target must exist on the host (mounts cannot create their
 		// own mountpoint), so make sure `<HOME>/.boid` is present before the
@@ -349,9 +342,9 @@ func BuildSandboxSpec(spec *orchestrator.JobSpec, rt SandboxRuntimeInfo) (sandbo
 			Type:   sandbox.MountTmpfs,
 		})
 	default:
-		// No project visible: HOME gets the workspace home bind (+ .boid
-		// tmpfs overlay) or a fresh tmpfs fallback, same as the Clone case
-		// above (docs/plans/home-workspace-volume.md Phase 4 PR2).
+		// No project visible: HOME gets the workspace home bind or a fresh
+		// tmpfs fallback, same as the Clone case above (docs/plans/home-
+		// workspace-volume.md Phase 4 PR2).
 		mounts = append(mounts, homeMounts(homeDir, rt.WorkspaceHomeDir)...)
 	}
 
@@ -377,36 +370,6 @@ func BuildSandboxSpec(spec *orchestrator.JobSpec, rt SandboxRuntimeInfo) (sandbo
 	//     bindings rather than be replaced by them.
 	mounts = append(mounts, additionalBindingMounts(harnessBindings)...)
 	mounts = append(mounts, additionalBindingMounts(expandedBindings)...)
-
-	// Per-task attachments dir — clipboard-pasted screenshots / text uploaded
-	// from the Web UI land in `<AttachmentsRoot>/tasks/<task_id>/attachments/`
-	// and are exposed read-only inside the sandbox at `~/.boid/attachments`.
-	// The bind is appended after the harness/kit branch above so every
-	// adapter (claude / codex / opencode / shell) sees the same path. A dir
-	// Guard makes the bind optional: tasks created before this feature, or
-	// tasks where no attachment has ever been added, simply skip the mount.
-	//
-	// isCanonicalTaskIDComponent gates spec.TaskID before it ever reaches
-	// filepath.Join (codex review on PR #798, Blocker fix — see the
-	// function's doc comment in attachments_path.go and wiring-seams.md
-	// #15): a task whose literal DB ID is a traversal-shaped string such as
-	// "alias/../<victim-id>" would otherwise have filepath.Join silently
-	// collapse it down to a *different* task's real attachments directory,
-	// mounting the wrong task's attachments into this sandbox. A
-	// non-canonical TaskID gets no attachments bind at all — the same
-	// fail-closed "just skip the mount" behavior the empty
-	// AttachmentsRoot/TaskID cases below already use.
-	if rt.AttachmentsRoot != "" && spec.TaskID != "" && isCanonicalTaskIDComponent(spec.TaskID) {
-		attachSrc := filepath.Join(rt.AttachmentsRoot, "tasks", spec.TaskID, "attachments")
-		mounts = append(mounts, sandbox.Mount{
-			Source:     attachSrc,
-			Target:     homeDir + "/.boid/attachments",
-			Type:       sandbox.MountBind,
-			ReadOnly:   true,
-			DetectType: true,
-			Guard:      dirGuardExpr(attachSrc),
-		})
-	}
 
 	// Server socket (exec jobs that need to talk to boid daemon).
 	//
@@ -444,37 +407,37 @@ func BuildSandboxSpec(spec *orchestrator.JobSpec, rt SandboxRuntimeInfo) (sandbo
 
 	argv := append([]string(nil), spec.Argv...)
 
-	// Context files: task.yaml / instructions.yaml / environment.yaml / payload.json.
-	// environment.yaml's content is the reduced WorkspaceEnvView (decision 4,
-	// docs/plans/phase5-shim-and-task-context.md) — allowed_domains and
-	// host_commands only, the same two primitives `boid task env` returns
-	// (End B/C of wiring-seams.md #13).
-	files = append(files, contextFiles(
-		homeDir,
-		spec.Task,
-		spec.Instruction,
-		spec.PrimaryInput,
-		EnvironmentInput{
-			AllowedDomains: rt.AllowedDomains,
-			HostCommands:   spec.HostCommands,
-		},
-	)...)
-
 	// Output dir sentinel — guarantees $HOME/.boid/output/ exists before the
 	// user script runs, so scripts writing payload_patch.json never hit ENOENT.
 	files = append(files, sandbox.FileWrite{
 		Path: homeDir + "/.boid/output/.placeholder",
 	})
 
+	// payload_patch.json defensive cleanup (docs/plans/phase5-shim-and-task-
+	// context.md 「PR 分割案 > 5b」6, 「対策 (a)」): the Phase 5b PR6 cutover
+	// retires the $HOME/.boid job-scoped tmpfs overlay (decision 7) that used
+	// to guarantee a fresh, empty $HOME/.boid/output/ every job. With
+	// WorkspaceHomeDir set, $HOME (and therefore $HOME/.boid/output) is now
+	// the persistent workspace home bind, so a payload_patch.json a *previous*
+	// job wrote (and this job's own agent never overwrites, e.g. it exits
+	// without producing a patch) would otherwise silently survive into
+	// resolveJobOutput's read for an unrelated later job. Removing any
+	// leftover file before spec.Files are written (runner-inner-child,
+	// RunInnerChild) restores the "absent unless this job wrote it" contract
+	// the tmpfs overlay used to provide for free — this is a stopgap ahead of
+	// the `job_done` payload-patch RPC (decision 6, PR7) that will make the
+	// file path a pure fallback instead of the primary channel.
+	removeFiles = append(removeFiles, homeDir+"/.boid/output/payload_patch.json")
+
 	// stdin / stdout routing.
 	//
 	// Interactive jobs must inherit the PTY on stdin/stdout — piping PrimaryInput
 	// via `printf | argv` or redirecting stdout to a capture file would break
 	// isatty() detection in TUIs and force them into
-	// non-interactive mode. Interactive hook agents read PrimaryInput from the
-	// context file ($HOME/.boid/context/payload.json) rather than stdin, and the
-	// runner's broker job-done reads the result from PayloadPatchPath, falling
-	// back to this stdout-capture file when no payload patch was written.
+	// non-interactive mode. Interactive hook agents read PrimaryInput via the
+	// `boid task payload` broker RPC rather than stdin, and the runner's
+	// broker job-done reads the result from PayloadPatchPath, falling back to
+	// this stdout-capture file when no payload patch was written.
 	var stdinBytes []byte
 	if !spec.Interactive && len(spec.PrimaryInput) > 0 {
 		stdinBytes = append(stdinBytes, spec.PrimaryInput...)
@@ -539,6 +502,7 @@ func BuildSandboxSpec(spec *orchestrator.JobSpec, rt SandboxRuntimeInfo) (sandbo
 		ID:                rt.JobID,
 		Mounts:            mounts,
 		Files:             files,
+		RemoveFiles:       removeFiles,
 		ProxyPort:         rt.ProxyPort,
 		Argv:              argv,
 		WorkDir:           workDir,
@@ -814,13 +778,24 @@ func buildCloneSpec(spec *orchestrator.JobSpec, rt SandboxRuntimeInfo) sandbox.C
 
 // homeMounts returns the HOME mount(s) for a sandbox (docs/plans/home-
 // workspace-volume.md Phase 4 PR2). When workspaceHomeDir is non-empty, HOME
-// becomes a read-write bind of the workspace's persistent home directory,
-// with $HOME/.boid layered as a job-scoped tmpfs on top so context/output
-// writes stay isolated per job even though the rest of HOME now persists
-// across jobs in the same workspace. When workspaceHomeDir is empty (test
-// wiring that never resolved a workspace home, or any caller that has not
-// threaded SandboxRuntimeInfo.WorkspaceHomeDir through yet) this degrades
-// gracefully to the pre-PR2 behaviour: a single fresh tmpfs at homeDir.
+// becomes a read-write bind of the workspace's persistent home directory —
+// every job in the same workspace shares it, contents and all. When
+// workspaceHomeDir is empty (test wiring that never resolved a workspace
+// home, or any caller that has not threaded
+// SandboxRuntimeInfo.WorkspaceHomeDir through yet) this degrades gracefully
+// to the pre-PR2 behaviour: a single fresh tmpfs at homeDir.
+//
+// Through PR6 of docs/plans/phase5-shim-and-task-context.md, the
+// workspace-home-bind branch additionally layered $HOME/.boid as a
+// job-scoped tmpfs on top, so dispatch-time context/output file writes
+// stayed isolated per job even though the rest of HOME persisted (decision
+// 7's "衝突対策"). That overlay is retired here: contextFiles and the
+// attachments RO bind — its only writers/readers under $HOME/.boid/{context,
+// attachments} — are gone, and the sole remaining writer,
+// $HOME/.boid/output/payload_patch.json, gets its own defensive
+// per-dispatch cleanup instead (see BuildSandboxSpec's removeFiles / the
+// runner's spec.RemoveFiles handling) — a lighter mechanism than a whole
+// extra tmpfs mount for one file.
 //
 // Shared by the Clone branch, the default (no-project) branch and
 // projectVisibilityMounts's HOME step below so all three switch over
@@ -838,17 +813,13 @@ func homeMounts(homeDir, workspaceHomeDir string) []sandbox.Mount {
 			Target: homeDir,
 			Type:   sandbox.MountBind,
 		},
-		{
-			Target: homeDir + "/.boid",
-			Type:   sandbox.MountTmpfs,
-		},
 	}
 }
 
 // projectVisibilityMounts returns the canonical mount layout that lets the
 // sandbox see the project and workspace peers, under a HOME mount (workspace
-// home bind + .boid tmpfs overlay, or a tmpfs fallback — see homeMounts) that
-// shadows host files but re-mounts the project on top.
+// home bind, or a tmpfs fallback — see homeMounts) that shadows host files
+// but re-mounts the project on top.
 func projectVisibilityMounts(
 	origProjectDir, effectiveDir, homeDir, workspaceHomeDir string,
 	writable bool,
@@ -865,9 +836,9 @@ func projectVisibilityMounts(
 	})
 
 	// 2) HOME mount(s) on top of user's home (isolates config files from
-	// host): workspace home bind + .boid tmpfs overlay, or a fresh tmpfs
-	// fallback when no workspace home is resolved (docs/plans/home-
-	// workspace-volume.md Phase 4 PR2).
+	// host): workspace home bind, or a fresh tmpfs fallback when no
+	// workspace home is resolved (docs/plans/home-workspace-volume.md
+	// Phase 4 PR2).
 	out = append(out, homeMounts(homeDir, workspaceHomeDir)...)
 
 	// 3) re-mount the effective dir so the HOME mount (tmpfs or workspace
@@ -1208,74 +1179,6 @@ func applyDockerProxyEnv(env map[string]string) {
 	env["TESTCONTAINERS_RYUK_DISABLED"] = "true"
 }
 
-// contextFiles materializes business data under $HOME/.boid/context/:
-//   - task.yaml          (from JobSpec.Task)
-//   - instructions.yaml  (from JobSpec.Instruction)
-//   - environment.yaml   (the reduced WorkspaceEnvView — allowed_domains +
-//     host_commands only, see EnvironmentInput's doc comment)
-//   - payload.json/yaml  (whenever PrimaryInput is present — agents read these
-//     files to see verification findings / artifact / tasks regardless of
-//     interactive mode. non-interactive hooks also receive PrimaryInput via
-//     stdin so wrapper scripts (e.g. run-agent.py) can use it for session
-//     resolution, but the agent process itself reads context files.)
-func contextFiles(
-	homeDir string,
-	task *orchestrator.TaskSnapshot,
-	inst *orchestrator.RoutedInstruction,
-	primaryInput json.RawMessage,
-	envInput EnvironmentInput,
-) []sandbox.FileWrite {
-	var out []sandbox.FileWrite
-	contextDir := homeDir + "/.boid/context"
-
-	if task != nil {
-		out = append(out, sandbox.FileWrite{
-			Path:    contextDir + "/task.yaml",
-			Content: marshalTaskYAML(task),
-		})
-	}
-	if inst != nil {
-		out = append(out, sandbox.FileWrite{
-			Path:    contextDir + "/instructions.yaml",
-			Content: marshalInstructionsYAML([]orchestrator.RoutedInstruction{*inst}),
-		})
-	}
-	out = append(out, sandbox.FileWrite{
-		Path:    contextDir + "/environment.yaml",
-		Content: buildEnvironmentYAML(envInput),
-	})
-	if len(primaryInput) > 0 {
-		out = append(out, sandbox.FileWrite{
-			Path:    contextDir + "/payload.json",
-			Content: string(primaryInput),
-		})
-		out = append(out, sandbox.FileWrite{
-			Path:    contextDir + "/payload.yaml",
-			Content: jsonToYAML(string(primaryInput)),
-		})
-	}
-	return out
-}
-
-func marshalTaskYAML(t *orchestrator.TaskSnapshot) string {
-	m := map[string]string{
-		"id":       t.ID,
-		"title":    t.Title,
-		"status":   t.Status,
-		"behavior": t.Behavior,
-	}
-	if t.Description != "" {
-		m["description"] = t.Description
-	}
-	out, _ := yaml.Marshal(m)
-	return string(out)
-}
-
-func marshalInstructionsYAML(list []orchestrator.RoutedInstruction) string {
-	out, _ := yaml.Marshal(list)
-	return string(out)
-}
-
 // PeerAdvertise is the {name, clone URL, reference path} view of a workspace
 // peer project (docs/plans/git-gateway-cutover.md PR6 cutover 「5. peer
 // advertise の変更」). Built by Runner.buildPeerAdvertise from the peer's
@@ -1314,43 +1217,13 @@ type PeerAdvertise struct {
 	CloneDir string
 }
 
-// EnvironmentInput is the input bundle for buildEnvironmentYAML: the two
-// primitives that survive the environment.yaml 縮退
-// (docs/plans/phase5-shim-and-task-context.md 決定事項 4) — the proxy egress
-// allowlist and the host-command policy, the only properties an in-sandbox
-// agent cannot observe on its own. Everything the pre-縮退 environment.yaml
-// additionally carried (readonly/worktree/tools/sandbox.*/filesystem.*/
-// session.*/notes/workspace_projects) is either directly observable inside
-// the container or available via a dedicated `boid task ...` RPC instead, so
-// buildEnvironmentYAML no longer needs the rest of JobSpec/SandboxRuntimeInfo.
-type EnvironmentInput struct {
-	AllowedDomains []string
-	HostCommands   map[string]orchestrator.CommandDef
-}
-
-// buildEnvironmentYAML derives the environment.yaml content from the exact
-// same WorkspaceEnvView struct the `boid task env` broker RPC returns
-// (BuildWorkspaceEnvView, workspace_env_view.go): the file materialized into
-// every sandbox and the RPC response describe identical *data*, built from
-// one function call, so they cannot drift apart on content (wiring-seams.md
-// #13) — though not necessarily on exact bytes, since the RPC's CLI-side
-// re-render goes through an extra JSON round trip that normalizes field
-// order (see TestBuildEnvironmentYAML_SemanticallyMatchesTaskEnvCLIPath's
-// doc comment in sandbox_builder_test.go for why that's a deliberately
-// semantic, not byte-identical, guarantee). This is the environment.yaml
-// 縮退 (docs/plans/phase5-shim-and-task-context.md 決定事項 4, Phase 5b PR5):
-// everything the pre-縮退 doc additionally carried
-// (readonly/worktree/tools/sandbox.*/filesystem.*/session.*/notes/
-// workspace_projects) is gone — either directly observable inside the
-// container or available via a dedicated `boid task ...` RPC instead.
-func buildEnvironmentYAML(in EnvironmentInput) string {
-	out, _ := yaml.Marshal(BuildWorkspaceEnvView(in.AllowedDomains, in.HostCommands))
-	return string(out)
-}
-
-// convertHostCommands flattens the map form into a sorted slice so the YAML
-// output (and the `boid task env` RPC response, which shares this
-// conversion via BuildWorkspaceEnvView) is deterministic.
+// convertHostCommands flattens the map form into a sorted slice so the
+// `boid task env` RPC response (BuildWorkspaceEnvView, workspace_env_view.go
+// — the sole remaining caller as of the Phase 5b PR6 cutover, which retired
+// this function's other caller, the dispatch-time environment.yaml
+// materialization) is deterministic. Kept in this file rather than moved to
+// workspace_env_view.go to minimize the cutover's diff — it has no
+// remaining dependency on anything else in sandbox_builder.go.
 func convertHostCommands(commands map[string]orchestrator.CommandDef) []WorkspaceEnvHostCommand {
 	if len(commands) == 0 {
 		return nil
@@ -1380,18 +1253,6 @@ func convertHostCommands(commands map[string]orchestrator.CommandDef) []Workspac
 		})
 	}
 	return out
-}
-
-func jsonToYAML(s string) string {
-	var v any
-	if err := json.Unmarshal([]byte(s), &v); err != nil {
-		return s
-	}
-	out, err := yaml.Marshal(v)
-	if err != nil {
-		return s
-	}
-	return string(out)
 }
 
 func cloneStringMap(m map[string]string) map[string]string {

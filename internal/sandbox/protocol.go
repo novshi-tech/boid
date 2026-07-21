@@ -79,9 +79,10 @@ const (
 	// Phase 5b PR1 task-context RPCs (docs/plans/phase5-shim-and-task-context.md):
 	// pull-based replacements for the dispatch-time context files
 	// ($HOME/.boid/context/{task,instructions,environment,payload}.{yaml,json}).
-	// File-based materialization still runs in parallel (sandbox_builder.go
-	// contextFiles) — the 5b-6 cutover PR retires it once every reader has
-	// migrated to these CLIs.
+	// The 5b-6 cutover PR retired that file-based materialization entirely
+	// (sandbox_builder.go's contextFiles/buildEnvironmentYAML) — these four
+	// ops are now the sole source of task/instructions/environment/payload
+	// data for an in-sandbox caller.
 	BoidOpTaskCurrent      BoidOp = "task_current"
 	BoidOpTaskInstructions BoidOp = "task_instructions"
 	BoidOpTaskEnv          BoidOp = "task_env"

@@ -10,23 +10,25 @@
 
 すべての hook ジョブは `Interactive: true` で起動されます。つまり stdin は PTY であり、**起動時に stdin へデータは書き込まれません**。stdin から TaskJSON を読もうとすると永遠にブロックします。
 
-タスクのメタデータは、hook 起動前に `$HOME/.boid/context/` へ書き込まれた**コンテキストファイル**経由で提供されます:
+タスクのメタデータは broker RPC 経由で取得します。サンドボックス内 PATH から `boid` サブコマンドとして直接呼べます — dispatch 時に一度だけ生成されるファイルを読むのではなく、必要になった時点で都度 pull する方式です:
 
-| ファイル | フォーマット | 内容 |
-|---|---|---|
-| `task.yaml` | YAML | コアタスクフィールド (下表参照) |
-| `instructions.yaml` | YAML | routing 済み instruction (`kind: agent` hook 向け) |
-| `payload.json` | JSON | 現在の payload 全体 |
+| コマンド | 返す内容 |
+|---|---|
+| `boid task current` | id/title/description/status/behavior/**readonly** (呼ぶ度に task row から live に再導出) |
+| `boid task instructions` | この job 自身の routed instruction — 0 個か 1 個、task の全履歴ではない |
+| `boid task payload` | trait フィルタ済みの現在の payload |
+| `boid task env` | サンドボックス内から観測できない情報: `allowed_domains`、 `host_commands` |
 
-追加の環境メタデータ (ネットワークの許可ドメイン、 host_commands の allow/deny/reject ルール) はコンテキストファイルではなく `boid task env` コマンド (broker RPC、 サンドボックス内 PATH から実行可能) 経由で取得します。 hook スクリプトから直接呼べます:
+既定は YAML、 `--format json` で JSON に切り替え、 `--field <dotted.path>` で単一のスカラー値を取り出せます:
 
 ```bash
-boid task env                       # YAML (既定)
-boid task env --format json         # JSON
+boid task current                        # YAML (既定)
+boid task current --format json          # JSON
+boid task current --field title
 boid task env --field allowed_domains
 ```
 
-**`task.yaml` のフィールド** (存在するフィールドはこれだけです。意図的に最小化されています):
+**`boid task current` のフィールド** (存在するフィールドはこれだけです。意図的に最小化されています):
 
 | キー | 型 | 役割 |
 |---|---|---|
@@ -34,16 +36,17 @@ boid task env --field allowed_domains
 | `title` | string | タスクのタイトル |
 | `status` | string | 現在の status (`pending` / `executing` / `awaiting` / `done` / `aborted`) |
 | `behavior` | string | behavior 名 (`supervisor` / `executor`) |
+| `readonly` | bool | このタスクのサンドボックスが push できるか (git gateway が強制する — ローカル clone はどちらにせよ存在する) |
 | `description` | string | 任意の本文 |
 
-スクリプト起動直後にコンテキストファイルを読んでおきます:
+スクリプト起動直後にタスクメタデータを読んでおきます:
 
 ```bash
-TASK_ID=$(yq -r .id "$HOME/.boid/context/task.yaml")
-PAYLOAD=$(cat "$HOME/.boid/context/payload.json")
+TASK_ID=$(boid task current --field id)
+PAYLOAD=$(boid task payload --format json)
 ```
 
-> **非インタラクティブジョブのみ**: `kind: exec` (非インタラクティブ) の hook は、コンテキストファイルに加えて trait フィルタ済み payload を stdin でも受け取ります。インタラクティブな agent hook は stdin データを受け取りません。
+> **非インタラクティブジョブのみ**: `kind: exec` (非インタラクティブ) の hook は、上記の RPC 経路に加えて trait フィルタ済み payload を stdin でも受け取ります。インタラクティブな agent hook は stdin データを受け取りません。
 
 完全なタスク構造は [`internal/orchestrator/spec_types.go`](https://github.com/novshi-tech/boid/blob/main/internal/orchestrator/spec_types.go) の `Task` 型を参照してください。
 
@@ -151,7 +154,7 @@ hook が stderr に書いた内容はジョブのログとして保存され、 
 
 ## agent 用の追加コンテキスト
 
-`kind: agent` で宣言した hook は、 instruction routing の対象になります。 routing 済みの instruction は `$HOME/.boid/context/instructions.yaml` と環境変数 `BOID_INSTRUCTIONS` 経由で参照できます。 たとえば claude-code kit の hook は `instructions.main` をコンテキストファイルから読んで agent への message として組み立てます。
+`kind: agent` で宣言した hook は、 instruction routing の対象になります。 routing 済みの instruction は `boid task instructions` と環境変数 `BOID_INSTRUCTIONS` 経由で参照できます。 たとえば claude-code kit の hook は `instructions.main` をこの RPC の出力から読んで agent への message として組み立てます。
 
 `Instruction` のフィールドは [`project.yaml` リファレンス / Instruction](project-yaml.md#instruction) を参照。
 
@@ -161,8 +164,8 @@ hook が stderr に書いた内容はジョブのログとして保存され、 
 #!/usr/bin/env bash
 set -euo pipefail
 
-# コンテキストファイルからタスクメタデータを読む (stdin は PTY のため読まないこと)
-TASK_ID=$(yq -r .id "$HOME/.boid/context/task.yaml")
+# broker RPC 経由でタスクメタデータを読む (stdin は PTY のため読まないこと)
+TASK_ID=$(boid task current --field id)
 echo "[my-hook] processing task $TASK_ID" >&2
 
 # 何かする (ここでは固定値を artifact に書くだけ)
