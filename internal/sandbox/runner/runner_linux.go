@@ -191,8 +191,10 @@ func RunInner(specPath, statePath string) (int, error) {
 
 // RunInnerChild is the `boid runner-inner-child` entry point (L3). It runs in
 // the cloned user+mount namespace, lays out the sandbox root via bind mounts,
-// pivot_root's into it, writes the context files, runs the agent, and posts the
-// broker job-done. Mirrors the former inner.sh.
+// pivot_root's into it, writes spec.Files (DNS stub, the $HOME/.boid/output
+// sentinel — task-context data is pulled on demand over the broker RPCs
+// since the Phase 5b PR6 cutover, not written to disk here any more), runs
+// the agent, and posts the broker job-done. Mirrors the former inner.sh.
 func RunInnerChild(specPath, statePath string) (exitCode int, retErr error) {
 	spec, err := readSpec(specPath)
 	if err != nil {
@@ -232,15 +234,19 @@ func RunInnerChild(specPath, statePath string) (exitCode int, retErr error) {
 	}
 	st.OK("inner-child", "pivot-root")
 
-	// Context files live under the now-mounted tmpfs HOME, so they must be
-	// written after pivot_root (otherwise the HOME tmpfs would shadow them).
+	// spec.Files (e.g. the DNS stub-resolv.conf, the $HOME/.boid/output
+	// sentinel) live under the now-mounted HOME/root, so they must be
+	// written after pivot_root (otherwise an earlier mount would shadow
+	// them). $HOME/.boid is a fresh, job-scoped tmpfs (see
+	// dispatcher.homeMounts' doc comment), so there is never a stale
+	// payload_patch.json from a previous job to worry about here.
 	for _, f := range spec.Files {
 		if err := writeFileAt(f.Path, f.Content); err != nil {
 			st.Fail("inner-child", "write-file "+f.Path, err)
 			return 1, err
 		}
 	}
-	st.OK("inner-child", "write-context-files")
+	st.OK("inner-child", "write-files")
 
 	for _, s := range spec.Symlinks {
 		_ = os.Remove(s.LinkPath)

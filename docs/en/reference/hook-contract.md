@@ -10,23 +10,25 @@ The [Kit authoring overview](../kit-authoring/overview.md) summarises the protoc
 
 All hook jobs run with `Interactive: true`, which means stdin is a PTY — **no data is written to stdin** at launch. Do not attempt to read TaskJSON from stdin; doing so will block indefinitely.
 
-Task metadata is provided via **context files** written to `$HOME/.boid/context/` before the hook starts:
+Task metadata is available via broker RPCs, reachable on the sandbox's PATH as `boid` subcommands — call them directly from your hook script, on demand, rather than reading a file materialized once at dispatch time:
 
-| File | Format | Contents |
-|---|---|---|
-| `task.yaml` | YAML | Core task fields (see table below). |
-| `instructions.yaml` | YAML | Routing instructions (for `kind: agent` hooks). |
-| `payload.json` | JSON | The current full payload. |
+| Command | Returns |
+|---|---|
+| `boid task current` | id/title/description/status/behavior/**readonly** (re-derives live from the task row on every call). |
+| `boid task instructions` | This job's own routed instruction — zero or one element, never the task's full history. |
+| `boid task payload` | The current, trait-filtered payload. |
+| `boid task env` | Sandbox constraints not observable from inside the container: `allowed_domains`, `host_commands`. |
 
-Additional environment metadata (the network egress allowlist, and each host command's allow/deny/reject rules) is not a context file — fetch it via the `boid task env` command (a broker RPC, reachable on the sandbox's PATH) instead. Call it directly from your hook script:
+Each defaults to YAML; `--format json` switches to JSON, and `--field <dotted.path>` extracts a single scalar value:
 
 ```bash
-boid task env                       # YAML (default)
-boid task env --format json         # JSON
+boid task current                        # YAML (default)
+boid task current --format json          # JSON
+boid task current --field title
 boid task env --field allowed_domains
 ```
 
-**`task.yaml` fields** (the only fields present; the document is intentionally minimal):
+**`boid task current` fields** (the only fields present; the document is intentionally minimal):
 
 | Key | Type | Role |
 |---|---|---|
@@ -34,16 +36,17 @@ boid task env --field allowed_domains
 | `title` | string | Task title. |
 | `status` | string | Current state (`pending` / `executing` / `awaiting` / `done` / `aborted`). |
 | `behavior` | string | Behavior name (`supervisor` or `executor`). |
+| `readonly` | bool | Whether this task's sandbox can push (the git gateway enforces it — the local clone always exists either way). |
 | `description` | string | Free-form body. |
 
-Read the context files at script startup before doing any other work:
+Read task metadata at script startup before doing any other work:
 
 ```bash
-TASK_ID=$(yq -r .id "$HOME/.boid/context/task.yaml")
-PAYLOAD=$(cat "$HOME/.boid/context/payload.json")
+TASK_ID=$(boid task current --field id)
+PAYLOAD=$(boid task payload --format json)
 ```
 
-> **Non-interactive jobs only**: hooks that set `kind: exec` (non-interactive) receive a trait-filtered payload on stdin in addition to the context files. Interactive agent hooks do not receive stdin data.
+> **Non-interactive jobs only**: hooks that set `kind: exec` (non-interactive) receive a trait-filtered payload on stdin in addition to the RPC path above. Interactive agent hooks do not receive stdin data.
 
 The complete task shape lives in the `Task` type at [`internal/orchestrator/spec_types.go`](https://github.com/novshi-tech/boid/blob/main/internal/orchestrator/spec_types.go).
 
@@ -60,7 +63,6 @@ The hook runs with the following environment variables set:
 | `BOID_INVOKED_ROLE` | The role name that triggered this hook invocation. |
 | `BOID_INVOKED_NAME` | The hook name within the role. |
 | `BOID_INVOKED_BEHAVIOR` | The behavior name (`supervisor` or `executor`). |
-| `BOID_INSTRUCTIONS` | Serialized instructions passed to this hook (for `kind: agent` hooks). |
 | `BOID_INTERACTIVE` | `1` if the job is interactive (PTY), `0` otherwise. |
 | `BOID_BUILTIN_SHIM` | Path to the built-in shim binary injected into the sandbox. |
 | `BOID_HOST_IP` | IP address of the host, reachable from inside the sandbox. |
@@ -87,7 +89,9 @@ Commands like `git`, `gh`, and language toolchains therefore do not need explici
 
 ### File system access
 
-Hooks run inside the sandbox. They can read and write only inside the in-sandbox clone (or nowhere writable at all for `readonly: true` behaviors — the local clone itself still exists but pushes are refused at the git gateway). Paths declared in the kit's `additional_bindings` are mounted in addition. The host's home directory, SSH keys, and other projects are not visible.
+Hooks run inside the sandbox. They can read and write inside the in-sandbox clone (or nowhere writable at all for `readonly: true` behaviors — the local clone itself still exists but pushes are refused at the git gateway) and `$HOME`. Paths declared in the kit's `additional_bindings` are mounted in addition. The host's home directory, SSH keys, and other projects are not visible.
+
+`$HOME` is a **workspace-scoped volume that persists across jobs in the same workspace** — not a fresh directory per job. Files a hook writes under `$HOME` (config, credentials, caches, dotfiles) are visible to later jobs dispatched against the same workspace; they are not thrown away with this job's sandbox. The one exception is `$HOME/.boid`, which stays a fresh, job-scoped tmpfs (wiped every job) so `$HOME/.boid/output/payload_patch.json` never leaks between jobs. Persisting on disk under `$HOME` is not the same as being part of a task's deliverable — only what lands in the project clone's git history (committed **and** pushed) counts as output.
 
 ## Outputs
 
@@ -151,7 +155,7 @@ Even on a non-zero exit, if `payload_patch.json` was written it is still merged.
 
 ## Extra context for agent hooks
 
-A hook declared with `kind: agent` participates in instruction routing. The routed instructions are available via `$HOME/.boid/context/instructions.yaml` and the `BOID_INSTRUCTIONS` environment variable. The claude-code kit's hook, for example, reads `instructions.main` from the context file and feeds it to the agent as the message.
+A hook declared with `kind: agent` participates in instruction routing. The routed instruction is available via `boid task instructions` — the sole source (no environment-variable mirror). The claude-code kit's hook, for example, reads `instructions.main` from that RPC output and feeds it to the agent as the message.
 
 The fields of `Instruction` are listed in [`project.yaml` reference / Instruction](project-yaml.md#instruction).
 
@@ -161,8 +165,8 @@ The fields of `Instruction` are listed in [`project.yaml` reference / Instructio
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Read task metadata from context files (stdin is a PTY — do not read from it)
-TASK_ID=$(yq -r .id "$HOME/.boid/context/task.yaml")
+# Read task metadata via the broker RPC (stdin is a PTY — do not read from it)
+TASK_ID=$(boid task current --field id)
 echo "[my-hook] processing task $TASK_ID" >&2
 
 # Do something — here, write a fixed value to artifact

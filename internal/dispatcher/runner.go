@@ -99,10 +99,9 @@ type Runner struct {
 	// AllowedDomains is the daemon-wide proxy egress allowlist (the floor
 	// from config.yaml sandbox.allowed_domains + boid defaults). Workspace
 	// overrides are added on top via orchestrator.ResolveAllowedDomains.
-	AllowedDomains  []string
-	RuntimesDir     string
-	AttachmentsRoot string
-	JobEvents       JobEventSink // optional; nil disables job lifecycle broadcasts
+	AllowedDomains []string
+	RuntimesDir    string
+	JobEvents      JobEventSink // optional; nil disables job lifecycle broadcasts
 
 	// GitGateway is the git gateway's job-token registry
 	// (docs/plans/git-gateway-cutover.md PR4: gateway lifecycle + dispatch
@@ -355,8 +354,11 @@ func (r *Runner) Dispatch(ctx context.Context, spec *orchestrator.JobSpec, clean
 	// Phase 5b PR1 (docs/plans/phase5-shim-and-task-context.md): track this
 	// job's routed instruction + reduced environment view + trait-filtered
 	// payload so the `boid task instructions` / `boid task env` / `boid
-	// task payload` broker RPCs can serve back exactly what
-	// contextFiles/buildEnvironmentYAML materialize into the sandbox below.
+	// task payload` broker RPCs can serve back this exact job's data — the
+	// sole source for it since the Phase 5b PR6 cutover retired the
+	// parallel dispatch-time context-file materialization
+	// (contextFiles/buildEnvironmentYAML in sandbox_builder.go) this used to
+	// also feed.
 	//
 	//   - Instructions comes straight from spec.Instruction (this job's own
 	//     JobSpec field, resolved once by DispatchPlanner.PlanHook's
@@ -369,8 +371,7 @@ func (r *Runner) Dispatch(ctx context.Context, spec *orchestrator.JobSpec, clean
 	//     "current instructions" from the task row here would silently hand
 	//     one job's agent's instruction to the other job's RPC caller — see
 	//     JobContextSnapshot's own doc comment and wiring-seams.md #13.
-	//   - Env uses spec.HostCommands (short-name keyed), the exact same
-	//     input buildEnvironmentYAML's host_commands section uses — NOT
+	//   - Env uses spec.HostCommands (short-name keyed) — NOT
 	//     resolvedHostCommands (absolute-host-path keyed, shim/broker
 	//     plumbing only, see SandboxRuntimeInfo.ResolvedHostCommands's doc
 	//     comment).
@@ -469,7 +470,6 @@ func (r *Runner) Dispatch(ctx context.Context, spec *orchestrator.JobSpec, clean
 		ResolvedHostCommands:       resolvedHostCommands,
 		ResolvedHostCommandsByName: resolvedHostCommandsByName,
 		AllowedDomains:             allowedDomains,
-		AttachmentsRoot:            r.AttachmentsRoot,
 		GatewayURL:                 gatewayURL,
 		GatewayJobToken:            gatewayToken,
 		GatewayCloneURL:            gatewayCloneURL,

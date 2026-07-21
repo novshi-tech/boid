@@ -61,6 +61,11 @@ Each command prints YAML by default; add `--format json` for JSON, or
 
 Full schema for these four commands: [references/data-model.md](references/data-model.md).
 
+If the task's title/description or an answer contains a `[attachment: <name>]`
+marker (pasted via the Web UI), fetch it with `boid task attachments list` /
+`boid task attachments get <name>` — there is no sandbox filesystem path for
+attachments; they are pull-only over the broker.
+
 ### Mode determination (priority order)
 
 ```

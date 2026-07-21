@@ -171,10 +171,12 @@ func TestValidateAttachmentHeaders_TotalCap(t *testing.T) {
 // ListAttachments / ReadAttachment are the filesystem-level functions the
 // broker RPC (BoidOpTaskAttachmentsList/Get, internal/server/boid_executor.go)
 // calls. They read from the exact same AttachmentsRootForTask directory the
-// write path (SaveMultipartAttachments) populates and the dispatch-time RO
-// bind (sandbox_builder.go) exposes, so drift between "what the bind shows"
-// and "what the RPC returns" is structurally impossible — both derive from
-// the same dataHome/taskID pair.
+// write path (SaveMultipartAttachments) populates, so drift between "what
+// was uploaded" and "what the RPC returns" is structurally impossible —
+// both derive from the same dataHome/taskID pair. (Through the Phase 5b PR5
+// cutover there was also a dispatch-time RO bind in sandbox_builder.go
+// reading the same directory; PR6 retired it, leaving this RPC pair as the
+// sole in-sandbox read path.)
 
 func TestListAttachments_HappyPath(t *testing.T) {
 	dataHome := t.TempDir()

@@ -118,13 +118,16 @@ type session struct {
 //
 // isSession=true (JobKindSession, no BOID_TASK_ID) skips the task-skill
 // bootstrap entirely: user-initiated sessions have no task to dispatch and
-// /boid-task is meaningless without a task.yaml to read. The system prompt
-// still points the agent at `boid task env` for the sandbox constraints it
-// can't observe on its own (see sessionSystemPrompt).
+// /boid-task is meaningless with no task to fetch via `boid task current`.
+// The system prompt still points the agent at `boid task env` for the
+// sandbox constraints it can't observe on its own (see sessionSystemPrompt).
 //
 // Note: Every dispatch is a fresh claude process (no --resume) since the
 // reopen / Q&A session-id-resume path was removed. Persisted prior-turn
-// context is read by the agent through ~/.boid/context/*.yaml on cold start.
+// context is pulled by the agent via `boid task current` / `instructions` /
+// `payload` on cold start (broker RPCs, Phase 5b — the dispatch-time
+// $HOME/.boid/context/*.yaml file distribution these replaced was retired
+// by the Phase 5b PR6 cutover).
 func selectPrompt(isSession bool, userAnswer string) string {
 	if userAnswer != "" {
 		return userAnswer
@@ -162,8 +165,9 @@ func updateSessions(sessions []session, invokedType, invokedName, id string) []s
 //
 // Every invocation starts a fresh claude session: --session-id is set to a
 // boid-generated uuid so the jsonl transcript path is predictable, but
-// --resume is never used. Persisted prior-turn context is delivered to the
-// agent through ~/.boid/context/*.yaml on cold start.
+// --resume is never used. Persisted prior-turn context is pulled by the
+// agent via the `boid task current` / `instructions` / `payload` broker
+// RPCs on cold start (Phase 5b) rather than delivered as a file.
 //
 // Empty systemPrompt skips --append-system-prompt entirely. Empty prompt
 // skips the trailing positional (passing "" makes claude treat it as a
@@ -335,15 +339,15 @@ func mapAt(m map[string]any, key string) map[string]any {
 //   - IS_SANDBOX=1 env injection (Claude CLI 2.1.181+ uid 0 bypass)
 //
 // Session-id resume was removed: reopen and Q&A both start a fresh claude
-// process. The agent (via the /boid-task skill) still recovers general
-// task/instructions/environment context by reading ~/.boid/context/*.yaml on
-// cold start — that file distribution is unchanged by this PR (Phase 5b PR3,
-// docs/plans/phase5-shim-and-task-context.md, retires only the transport for
-// the one payload field Run() itself needs: the prior
+// process. The agent (via the /boid-task skill) recovers general
+// task/instructions/environment context via the `boid task current` /
+// `instructions` / `env` broker RPCs on cold start (Phase 5b — the
+// dispatch-time $HOME/.boid/context/*.yaml file distribution these replaced
+// was retired by the Phase 5b PR6 cutover; PR3, which predates PR6, only
+// cut over the one payload field Run() itself needs directly: the prior
 // artifact.claude_code.sessions[] entries it merges the fresh session id
-// into. Those now come from the `boid task payload` broker RPC (see
-// readSessionsFromRPC below) instead of a direct read of payload.json; the
-// skill-driven file reads are cut over separately in 5b-6.
+// into, which come from the `boid task payload` broker RPC — see
+// readSessionsFromRPC below).
 func (a *Adapter) Run(ctx context.Context, rc adapters.RunContext) (adapters.Result, error) {
 	// 0. Fail fast when claude is not on PATH, before touching any state
 	// (session id generation, payload_patch.json). See missingCLIError's

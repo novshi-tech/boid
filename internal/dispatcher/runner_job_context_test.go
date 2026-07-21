@@ -11,11 +11,9 @@ import (
 
 // Phase 5b PR1 (docs/plans/phase5-shim-and-task-context.md): Runner tracks a
 // JobContextSnapshot per dispatched job so the `boid task env` / `boid task
-// payload` broker RPCs can serve the exact same env/payload data
-// contextFiles/buildEnvironmentYAML already write to the sandbox's
-// $HOME/.boid/context files — without re-deriving job-scoped facts
-// (allowed_domains + resolved host commands, the trait-filtered payload)
-// that only exist at dispatch time.
+// payload` broker RPCs can serve this exact job's env/payload data — without
+// re-deriving job-scoped facts (allowed_domains + resolved host commands,
+// the trait-filtered payload) that only exist at dispatch time.
 
 func TestDispatch_TracksJobContext_EnvAndPayload(t *testing.T) {
 	r, _ := newDispatchRunner(t)

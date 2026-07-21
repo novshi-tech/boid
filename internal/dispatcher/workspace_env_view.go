@@ -42,12 +42,12 @@ type WorkspaceEnvRejectRule struct {
 	Reason string `json:"reason" yaml:"reason"`
 }
 
-// BuildWorkspaceEnvView derives the reduced env view from the same
-// primitives buildEnvironmentYAML's Network.AllowedDomains / HostCommands
-// sections come from (allowedDomains straight from EnvironmentInput,
-// hostCommands via the shared convertHostCommands helper) so the legacy
-// environment.yaml file and the `boid task env` RPC response can never
-// disagree about what a host command allows/denies/rejects.
+// BuildWorkspaceEnvView derives the reduced env view from the dispatcher's
+// resolved allowedDomains and hostCommands, via the shared convertHostCommands
+// helper — the sole source of the `boid task env` RPC response as of the
+// Phase 5b PR6 cutover (docs/plans/phase5-shim-and-task-context.md), which
+// retired the parallel dispatch-time environment.yaml file this function used
+// to also feed.
 func BuildWorkspaceEnvView(allowedDomains []string, hostCommands map[string]orchestrator.CommandDef) WorkspaceEnvView {
 	return WorkspaceEnvView{
 		AllowedDomains: append([]string(nil), allowedDomains...),

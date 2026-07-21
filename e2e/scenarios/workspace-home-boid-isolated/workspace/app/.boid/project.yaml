@@ -11,6 +11,19 @@ name: E2E Home Boid Isolated
 # across jobs, which is exactly what keeps the context/output file protocol
 # (docs/plans/home-workspace-volume.md 決定事項 #2) collision-free between
 # jobs sharing one workspace home.
+#
+# This overlay was briefly retired in an early cut of the Phase 5b PR6
+# cutover (docs/plans/phase5-shim-and-task-context.md) once contextFiles/
+# the attachments bind — its only writers/readers under
+# $HOME/.boid/{context,attachments} — were gone. codex review on that PR
+# (Blocker + Major, before merge) found the remaining writer,
+# $HOME/.boid/output/payload_patch.json, exploitable once it landed on the
+# persistent, shared workspace home: concurrent jobs in the same workspace
+# could delete/merge each other's patches (this scenario, being sequential,
+# never exercised that race), and a prior job's symlink planted at an
+# ancestor path could redirect dispatch-time file operations outside the
+# intended directory. The overlay was restored — this scenario (and its
+# assertion) is unchanged from before that detour.
 task_behaviors:
   write-boid:
     hooks:

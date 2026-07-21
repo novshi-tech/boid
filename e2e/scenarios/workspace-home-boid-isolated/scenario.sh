@@ -14,6 +14,20 @@ set -euo pipefail
 # is a strictly stronger guarantee than "concurrent jobs don't race" would
 # be (a job-scoped tmpfs that only avoided collisions by lucky scheduling
 # would still fail this test).
+#
+# See docs/plans/phase5-shim-and-task-context.md 「PR 分割案 > 5b」6 for why
+# this overlay (and therefore this scenario) survived the Phase 5b PR6
+# cutover intact — an early cut of that PR retired it, and codex review
+# (Blocker + Major, before merge) found the resulting shared, persistent
+# $HOME/.boid/output/payload_patch.json path exploitable across concurrent
+# jobs and via ancestor-symlink redirection; both classes of attack are
+# structurally impossible once $HOME/.boid is back to being its own private,
+# job-scoped tmpfs mount (a fresh mount in a fresh mount namespace per job
+# has no shared backing path for another job's sandbox to ever observe or
+# redirect, regardless of scheduling — see
+# TestHomeMounts_WorkspaceHomeDirSet_ReturnsBindPlusBoidTmpfs and
+# internal/dispatcher/sandbox_builder.go's homeMounts doc comment for the
+# unit-level pin of that property).
 
 PROJECT_DIR="$E2E_WORKSPACE_DIR/app"
 WS_SLUG="pr6-boid-isolated"

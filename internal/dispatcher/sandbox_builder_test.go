@@ -1,7 +1,6 @@
 package dispatcher
 
 import (
-	"encoding/json"
 	"fmt"
 	"os"
 	"reflect"
@@ -10,7 +9,6 @@ import (
 
 	"github.com/novshi-tech/boid/internal/orchestrator"
 	"github.com/novshi-tech/boid/internal/sandbox"
-	"gopkg.in/yaml.v3"
 )
 
 // fakeGetOriginURL is a shared ResolveHostCommands getOriginURL stub for
@@ -1337,74 +1335,6 @@ func TestBuildSandboxSpec_WorktreeBindingExpansion(t *testing.T) {
 	}
 }
 
-// contextFiles must materialize payload.yaml / payload.json for every hook
-// that carries PrimaryInput.
-func TestContextFiles_PayloadWrittenForNonInteractiveHook(t *testing.T) {
-	inst := &orchestrator.RoutedInstruction{
-		Role:    "rework",
-		Agent:   "claude-code",
-		Message: "verification findings に記載された問題を修正せよ。",
-	}
-	primary := []byte(`{"verification":{"findings":[{"status":"open","message":"failure"}]}}`)
-
-	files := contextFiles(
-		"/home/agent",
-		nil,
-		inst,
-		primary,
-		EnvironmentInput{},
-	)
-
-	var gotJSON, gotYAML bool
-	for _, f := range files {
-		switch f.Path {
-		case "/home/agent/.boid/context/payload.json":
-			gotJSON = true
-			if f.Content != string(primary) {
-				t.Errorf("payload.json content = %q, want %q", f.Content, string(primary))
-			}
-		case "/home/agent/.boid/context/payload.yaml":
-			gotYAML = true
-			if f.Content == "" {
-				t.Error("payload.yaml content is empty")
-			}
-		}
-	}
-	if !gotJSON {
-		t.Error("payload.json must be written for non-interactive hooks when PrimaryInput is present")
-	}
-	if !gotYAML {
-		t.Error("payload.yaml must be written for non-interactive hooks when PrimaryInput is present")
-	}
-}
-
-func TestContextFiles_PayloadWrittenForInteractiveHook(t *testing.T) {
-	inst := &orchestrator.RoutedInstruction{
-		Role:  "main",
-		Agent: "claude-code",
-	}
-	primary := []byte(`{"artifact":null}`)
-
-	files := contextFiles(
-		"/home/agent",
-		nil,
-		inst,
-		primary,
-		EnvironmentInput{},
-	)
-
-	var gotJSON bool
-	for _, f := range files {
-		if f.Path == "/home/agent/.boid/context/payload.json" {
-			gotJSON = true
-			break
-		}
-	}
-	if !gotJSON {
-		t.Error("payload.json must be written for interactive hooks when PrimaryInput is present")
-	}
-}
-
 // The go-native runner replaces the former EXIT-trap `boid job done` script:
 // BuildSandboxSpec now carries Foreground (whether to post job-done) and the
 // PayloadPatchPath the runner reads the result from.
@@ -1433,28 +1363,6 @@ func TestBuildSandboxSpec_ForegroundExecSkipsJobDone(t *testing.T) {
 	}
 	if !result.Foreground {
 		t.Error("foreground exec job must have Foreground=true (no broker job done)")
-	}
-}
-
-func TestContextFiles_NoPayloadFilesWhenPrimaryInputEmpty(t *testing.T) {
-	inst := &orchestrator.RoutedInstruction{
-		Role:  "main",
-		Agent: "claude-code",
-	}
-
-	files := contextFiles(
-		"/home/agent",
-		nil,
-		inst,
-		nil,
-		EnvironmentInput{},
-	)
-
-	for _, f := range files {
-		if f.Path == "/home/agent/.boid/context/payload.json" ||
-			f.Path == "/home/agent/.boid/context/payload.yaml" {
-			t.Errorf("unexpected payload file written with empty PrimaryInput: %s", f.Path)
-		}
 	}
 }
 
@@ -1535,376 +1443,42 @@ func TestBuildSandboxSpec_DockerProxy_DisabledWhenNoSocketPath(t *testing.T) {
 	}
 }
 
-// parsedEnvDoc parses the YAML environment.yaml emitted by buildEnvironmentYAML
-// into a generic map for assertion in the tests below. Keeping it a map rather
-// than the typed WorkspaceEnvView keeps the tests robust to additive layout
-// changes — they only assert on what they care about.
-func parsedEnvDoc(t *testing.T, in EnvironmentInput) map[string]any {
-	t.Helper()
-	raw := buildEnvironmentYAML(in)
-	var doc map[string]any
-	if err := yaml.Unmarshal([]byte(raw), &doc); err != nil {
-		t.Fatalf("unmarshal env yaml: %v\n----\n%s", err, raw)
+// TestBuildSandboxSpec_NoDispatchTimeContextFiles is the Phase 5b PR6 cutover
+// TDD guard (docs/plans/phase5-shim-and-task-context.md 「PR 分割案 > 5b」6):
+// contextFiles/buildEnvironmentYAML (task.yaml/instructions.yaml/
+// environment.yaml/payload.{json,yaml} under $HOME/.boid/context/) and the
+// per-task attachments RO bind ($HOME/.boid/attachments) are retired
+// entirely — task/instructions/environment/payload are pull-only via the
+// Phase 5b PR1/PR2 broker RPCs (`boid task current/instructions/env/payload`,
+// `boid task attachments list/get`) from this PR forward. A fully-populated
+// JobSpec/SandboxRuntimeInfo (task, instruction, primary input all set —
+// everything that used to trigger every one of contextFiles' FileWrite
+// branches) must produce a sandbox.Spec with zero Files/Mounts touching
+// either retired path.
+func TestBuildSandboxSpec_NoDispatchTimeContextFiles(t *testing.T) {
+	spec := &orchestrator.JobSpec{
+		TaskID:       "task-1",
+		PrimaryInput: []byte(`{"artifact":{"ok":true}}`),
+		Task:         &orchestrator.TaskSnapshot{ID: "task-1", Title: "t", Status: "executing", Behavior: "executor"},
+		Instruction:  &orchestrator.RoutedInstruction{Agent: "claude-code", Message: "go"},
 	}
-	return doc
-}
-
-// TestBuildEnvironmentYAML_ReducedSchema pins the environment.yaml 縮退
-// (docs/plans/phase5-shim-and-task-context.md 決定事項 4, Phase 5b PR5):
-// buildEnvironmentYAML's output must contain only the two properties an
-// in-sandbox agent cannot observe on its own (allowed_domains,
-// host_commands). Every section the legacy environment.yaml additionally
-// carried (readonly/worktree/tools/sandbox.*/filesystem.*/session.*/notes/
-// workspace_projects, plus the `network:` wrapper allowed_domains used to
-// live under) must be gone entirely — grep-based on the raw YAML text rather
-// than typed-struct field checks, so a future accidental reintroduction of
-// any retired key fails loudly regardless of where in the doc it reappears.
-func TestBuildEnvironmentYAML_ReducedSchema(t *testing.T) {
-	raw := buildEnvironmentYAML(EnvironmentInput{
+	rt := SandboxRuntimeInfo{
 		AllowedDomains: []string{"github.com"},
-		HostCommands: map[string]orchestrator.CommandDef{
-			"gh": {Name: "gh", AllowedSubcommands: []string{"pr"}},
-		},
-	})
-
-	for _, want := range []string{"allowed_domains:", "host_commands:"} {
-		if !strings.Contains(raw, want) {
-			t.Errorf("environment.yaml missing %q:\n%s", want, raw)
-		}
 	}
-
-	for _, retired := range []string{
-		"sandbox:", "filesystem:", "session:", "notes:", "tools:",
-		"workspace_projects:", "readonly:", "worktree:",
-		"network.restricted:", "network.egress:", "network.proxy_url:",
-		"network.webfetch:", "network:",
-	} {
-		if strings.Contains(raw, retired) {
-			t.Errorf("environment.yaml still contains retired section %q:\n%s", retired, raw)
-		}
-	}
-}
-
-// TestBuildEnvironmentYAML_ReducedSchema_EmptyInput guards the degenerate
-// all-zero-value EnvironmentInput case: the pre-縮退 schema unconditionally
-// emitted sandbox:/filesystem:/network:/tools: sections regardless of input,
-// so an all-empty EnvironmentInput is the sharpest regression trap for "a
-// retired section crept back in as an always-present default".
-func TestBuildEnvironmentYAML_ReducedSchema_EmptyInput(t *testing.T) {
-	raw := buildEnvironmentYAML(EnvironmentInput{})
-	for _, retired := range []string{
-		"sandbox:", "filesystem:", "session:", "network:", "notes:",
-		"readonly:", "worktree:", "tools:", "workspace_projects:",
-	} {
-		if strings.Contains(raw, retired) {
-			t.Errorf("environment.yaml (empty input) still contains retired section %q:\n%s", retired, raw)
-		}
-	}
-}
-
-// TestBuildEnvironmentYAML_AllowedDomainsTopLevel pins allowed_domains' new
-// top-level position (it lived under `network.allowed_domains` before the
-// 縮退; the `network:` wrapper is gone entirely now that nothing else lives
-// under it) — matching WorkspaceEnvView's YAML tag and
-// references/data-model.md's documented `boid task env` schema.
-func TestBuildEnvironmentYAML_AllowedDomainsTopLevel(t *testing.T) {
-	doc := parsedEnvDoc(t, EnvironmentInput{AllowedDomains: []string{"pypi.org", "github.com"}})
-	allowed, ok := doc["allowed_domains"].([]any)
-	if !ok || len(allowed) != 2 {
-		t.Fatalf("allowed_domains = %v, want 2 entries", doc["allowed_domains"])
-	}
-	if allowed[0] != "pypi.org" || allowed[1] != "github.com" {
-		t.Errorf("allowed_domains order = %v, want [pypi.org, github.com]", allowed)
-	}
-	if _, has := doc["network"]; has {
-		t.Errorf("network wrapper should be gone (allowed_domains is top-level now), got network=%v", doc["network"])
-	}
-}
-
-// jsonThenYAML reproduces the actual `boid task env` CLI-side transform
-// (internal/sandbox/boid_shim_task_context.go's jsonToYAMLForShim, fed by
-// internal/server/boid_executor.go's marshalTaskContextResponse): the broker
-// JSON-encodes a WorkspaceEnvView for wire transport, and the CLI decodes
-// that JSON into a generic map[string]any before re-rendering it as YAML.
-// Reimplemented here (rather than imported) because boid_shim_task_context.go
-// lives in internal/sandbox, which internal/dispatcher may import but not the
-// reverse — and jsonToYAMLForShim is unexported besides.
-func jsonThenYAML(t *testing.T, v any) []byte {
-	t.Helper()
-	wireJSON, err := json.Marshal(v)
-	if err != nil {
-		t.Fatalf("json.Marshal: %v", err)
-	}
-	var generic any
-	if err := json.Unmarshal(wireJSON, &generic); err != nil {
-		t.Fatalf("json.Unmarshal: %v", err)
-	}
-	out, err := yaml.Marshal(generic)
-	if err != nil {
-		t.Fatalf("yaml.Marshal: %v", err)
-	}
-	return out
-}
-
-// TestBuildEnvironmentYAML_SemanticallyMatchesTaskEnvCLIPath is the drift
-// guard wiring-seams.md #13 exists for: buildEnvironmentYAML (the
-// environment.yaml file End A materializes into every sandbox) and what the
-// real `boid task env` CLI prints (End B/C) must describe the exact same
-// data for the exact same input, or the two paths could silently disagree
-// about a job's sandbox constraints during the 5b-5→5b-6 parallel-path
-// window.
-//
-// This is a **semantic**, not byte-identical, comparison — codex review
-// caught that an earlier version of this test compared buildEnvironmentYAML's
-// output against a bare yaml.Marshal(BuildWorkspaceEnvView(...)), which is
-// not actually what `boid task env` prints. The real CLI path re-renders the
-// broker's JSON reply by decoding into a generic map (jsonThenYAML above,
-// mirroring jsonToYAMLForShim) — yaml.v3 sorts a map's keys alphabetically
-// but preserves a struct's declared field order, so e.g. `host_commands[]`
-// entries come out as `{name, allow, deny, reject}` (WorkspaceEnvHostCommand's
-// field order) from buildEnvironmentYAML but `{allow, deny, name, reject}`
-// (alphabetical) from the CLI path — different bytes, same data. Parsing
-// both back into map[string]any and comparing with reflect.DeepEqual asserts
-// the property that actually matters: no field is added, dropped, renamed,
-// or reshaped in translation.
-func TestBuildEnvironmentYAML_SemanticallyMatchesTaskEnvCLIPath(t *testing.T) {
-	allowedDomains := []string{"github.com", "api.anthropic.com"}
-	hostCommands := map[string]orchestrator.CommandDef{
-		"gh": {
-			Name:               "gh",
-			AllowedSubcommands: []string{"pr", "issue"},
-			DeniedPatterns:     []string{"auth"},
-			RejectRules: []orchestrator.RejectRule{
-				{Match: "*--body-file*", Reason: `use --body "$(cat <file>)"`},
-			},
-		},
-		"aws": {Name: "aws"},
-	}
-
-	fileYAML := buildEnvironmentYAML(EnvironmentInput{
-		AllowedDomains: allowedDomains,
-		HostCommands:   hostCommands,
-	})
-	cliYAML := jsonThenYAML(t, BuildWorkspaceEnvView(allowedDomains, hostCommands))
-
-	var fileDoc, cliDoc map[string]any
-	if err := yaml.Unmarshal([]byte(fileYAML), &fileDoc); err != nil {
-		t.Fatalf("unmarshal file YAML: %v\n%s", err, fileYAML)
-	}
-	if err := yaml.Unmarshal(cliYAML, &cliDoc); err != nil {
-		t.Fatalf("unmarshal CLI YAML: %v\n%s", err, cliYAML)
-	}
-	if !reflect.DeepEqual(fileDoc, cliDoc) {
-		t.Errorf("environment.yaml and the `boid task env` CLI output diverged semantically:\n--- file (parsed) ---\n%#v\n--- cli (parsed) ---\n%#v", fileDoc, cliDoc)
-	}
-}
-
-// TestBuildEnvironmentYAML_SemanticallyMatchesTaskEnvCLIPath_EmptyInputs is
-// the same drift guard for the degenerate empty-input case (no allowed
-// domains, no host commands) — the reduced schema omits both keys entirely
-// then (`omitempty` on both WorkspaceEnvView fields), worth pinning
-// separately since an omitempty bug affecting only one side would not show
-// up in the populated-input case above.
-func TestBuildEnvironmentYAML_SemanticallyMatchesTaskEnvCLIPath_EmptyInputs(t *testing.T) {
-	fileYAML := buildEnvironmentYAML(EnvironmentInput{})
-	cliYAML := jsonThenYAML(t, BuildWorkspaceEnvView(nil, nil))
-
-	var fileDoc, cliDoc map[string]any
-	if err := yaml.Unmarshal([]byte(fileYAML), &fileDoc); err != nil {
-		t.Fatalf("unmarshal file YAML: %v\n%s", err, fileYAML)
-	}
-	if err := yaml.Unmarshal(cliYAML, &cliDoc); err != nil {
-		t.Fatalf("unmarshal CLI YAML: %v\n%s", err, cliYAML)
-	}
-	if !reflect.DeepEqual(fileDoc, cliDoc) {
-		t.Errorf("environment.yaml and the `boid task env` CLI output diverged semantically for empty inputs:\n--- file (parsed) ---\n%#v\n--- cli (parsed) ---\n%#v", fileDoc, cliDoc)
-	}
-}
-
-// 添付ファイル機能で、 AttachmentsRoot と spec.TaskID の両方が揃ったら
-// `<root>/tasks/<id>/attachments` を read-only で bind する。 dir 不在時は
-// 起動 script が Guard で skip するため、 attachments 0 件のタスクでも mount
-// 行は出るが副作用は無い。 シェル / harness どちらの dispatch 経路でも同じ
-// 結果になるのが要件。
-func TestBuildSandboxSpec_AttachmentsBind(t *testing.T) {
-	const taskID = "abc-123"
-	root := t.TempDir()
-	spec := &orchestrator.JobSpec{TaskID: taskID}
-	rt := SandboxRuntimeInfo{AttachmentsRoot: root}
-
 	result, err := BuildSandboxSpec(spec, rt)
 	if err != nil {
 		t.Fatalf("BuildSandboxSpec: %v", err)
 	}
 
-	var found *sandbox.Mount
-	wantTarget := hostHomeDir() + "/.boid/attachments"
-	wantSource := root + "/tasks/" + taskID + "/attachments"
-	for i := range result.Mounts {
-		if result.Mounts[i].Target == wantTarget {
-			found = &result.Mounts[i]
-			break
+	for _, f := range result.Files {
+		if strings.Contains(f.Path, "/.boid/context/") {
+			t.Errorf("unexpected dispatch-time context file %q — file materialization must be fully retired", f.Path)
 		}
 	}
-	if found == nil {
-		t.Fatalf("attachments bind target %q not present in mounts", wantTarget)
-	}
-	if found.Source != wantSource {
-		t.Errorf("attachments bind Source = %q, want %q", found.Source, wantSource)
-	}
-	if !found.ReadOnly {
-		t.Errorf("attachments bind must be ReadOnly")
-	}
-	if found.Guard == "" {
-		t.Errorf("attachments bind must have a Guard so missing dir is skipped")
-	}
-	if !strings.Contains(found.Guard, "-d") {
-		t.Errorf("attachments Guard = %q, want a -d dir test", found.Guard)
-	}
-}
-
-// AttachmentsRoot 未設定 / TaskID 空のときは bind が出ない (regression guard:
-// 既存テストの mount セットに余計な entry を足さない)。
-func TestBuildSandboxSpec_AttachmentsBindAbsentWithoutRootOrTask(t *testing.T) {
-	cases := []struct {
-		name string
-		spec *orchestrator.JobSpec
-		rt   SandboxRuntimeInfo
-	}{
-		{"no root", &orchestrator.JobSpec{TaskID: "t1"}, SandboxRuntimeInfo{}},
-		{"no task", &orchestrator.JobSpec{}, SandboxRuntimeInfo{AttachmentsRoot: "/tmp/dummy"}},
-		{"neither", &orchestrator.JobSpec{}, SandboxRuntimeInfo{}},
-	}
-	wantTarget := hostHomeDir() + "/.boid/attachments"
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			result, err := BuildSandboxSpec(tc.spec, tc.rt)
-			if err != nil {
-				t.Fatalf("BuildSandboxSpec: %v", err)
-			}
-			for _, m := range result.Mounts {
-				if m.Target == wantTarget {
-					t.Errorf("unexpected attachments bind mount: %+v", m)
-				}
-			}
-		})
-	}
-}
-
-// TestBuildSandboxSpec_AttachmentsBind_RejectsTraversalTaskID is the bind-side
-// half of codex review's Blocker finding on PR #798 (Phase 5b PR2 attachments
-// RPCs): CreateTaskRequest.ID is caller-supplied and saved as the literal DB
-// primary key without validation, so a task can be dispatched with a literal
-// ID like "alias/../<victim-id>". The attachments RO bind built the mount
-// source with a bare filepath.Join (no equivalent to
-// api.AttachmentsRootForTask's isCanonicalPathComponent guard), which
-// silently collapsed such a TaskID down to the *victim* task's real
-// attachments directory — the same class of cross-task leak fixed for the
-// RPC read/write paths, but reachable here at dispatch time via the sandbox
-// mount instead of a runtime RPC call. Fixed in the same PR (see
-// wiring-seams.md #15): isCanonicalTaskIDComponent now gates the mount the
-// same way, so a non-canonical TaskID gets no attachments bind at all
-// (fail-closed, the same "just skip the mount" behavior the existing empty
-// AttachmentsRoot/TaskID cases already use) rather than the wrong one.
-func TestBuildSandboxSpec_AttachmentsBind_RejectsTraversalTaskID(t *testing.T) {
-	root := t.TempDir()
-	victimID := "550e8400-e29b-41d4-a716-446655440000"
-	victimAttachSrc := root + "/tasks/" + victimID + "/attachments"
-	wantTarget := hostHomeDir() + "/.boid/attachments"
-
-	cases := []string{
-		"alias/../" + victimID,
-		"../other-task",
-		"..",
-		".",
-		"foo/bar",
-		"/abs/task",
-	}
-	for _, taskID := range cases {
-		t.Run(taskID, func(t *testing.T) {
-			spec := &orchestrator.JobSpec{TaskID: taskID}
-			rt := SandboxRuntimeInfo{AttachmentsRoot: root}
-
-			result, err := BuildSandboxSpec(spec, rt)
-			if err != nil {
-				t.Fatalf("BuildSandboxSpec: %v", err)
-			}
-			for _, m := range result.Mounts {
-				if m.Source == victimAttachSrc {
-					t.Fatalf("attachments bind escaped to the victim's directory: %+v", m)
-				}
-				if m.Target == wantTarget {
-					t.Errorf("expected no attachments bind at all for non-canonical TaskID %q, got %+v", taskID, m)
-				}
-			}
-		})
-	}
-}
-
-func TestBuildEnvironmentYAML_HostCommandsSortedDeterministic(t *testing.T) {
-	in := EnvironmentInput{
-		HostCommands: map[string]orchestrator.CommandDef{
-			"gh":  {Name: "gh", AllowedSubcommands: []string{"pr", "issue"}},
-			"aws": {Name: "aws"},
-		},
-	}
-	doc := parsedEnvDoc(t, in)
-	hc, ok := doc["host_commands"].([]any)
-	if !ok || len(hc) != 2 {
-		t.Fatalf("host_commands = %v, want 2 entries", doc["host_commands"])
-	}
-	first := hc[0].(map[string]any)
-	second := hc[1].(map[string]any)
-	if first["name"] != "aws" || second["name"] != "gh" {
-		t.Errorf("host_commands order = [%v, %v], want [aws, gh]", first["name"], second["name"])
-	}
-}
-
-// TestBuildEnvironmentYAML_HostCommandsRejectSurfaced verifies that reject
-// rules configured on a host command (match glob + reason) are surfaced in
-// environment.yaml so the agent can read, per command, which arg shapes are
-// rejected and what to do instead — without a --body-file trial-and-error
-// round trip.
-func TestBuildEnvironmentYAML_HostCommandsRejectSurfaced(t *testing.T) {
-	in := EnvironmentInput{
-		HostCommands: map[string]orchestrator.CommandDef{
-			"gh": {
-				Name:               "gh",
-				AllowedSubcommands: []string{"pr", "issue"},
-				RejectRules: []orchestrator.RejectRule{
-					{Match: "*--body-file*", Reason: `sandbox paths are not visible on the host; use --body "$(cat <file>)"`},
-				},
-			},
-			"aws": {Name: "aws"},
-		},
-	}
-	doc := parsedEnvDoc(t, in)
-	hc, ok := doc["host_commands"].([]any)
-	if !ok || len(hc) != 2 {
-		t.Fatalf("host_commands = %v, want 2 entries", doc["host_commands"])
-	}
-	// aws sorts first and has no reject rules configured.
-	aws := hc[0].(map[string]any)
-	if aws["name"] != "aws" {
-		t.Fatalf("hc[0].name = %v, want aws", aws["name"])
-	}
-	if _, present := aws["reject"]; present {
-		t.Errorf("aws host_command should omit reject when none configured, got %v", aws["reject"])
-	}
-	gh := hc[1].(map[string]any)
-	if gh["name"] != "gh" {
-		t.Fatalf("hc[1].name = %v, want gh", gh["name"])
-	}
-	reject, ok := gh["reject"].([]any)
-	if !ok || len(reject) != 1 {
-		t.Fatalf("gh.reject = %v, want 1 entry", gh["reject"])
-	}
-	rule := reject[0].(map[string]any)
-	if rule["match"] != "*--body-file*" {
-		t.Errorf("reject[0].match = %v, want *--body-file*", rule["match"])
-	}
-	if rule["reason"] == "" || rule["reason"] == nil {
-		t.Errorf("reject[0].reason should be non-empty, got %v", rule["reason"])
+	for _, m := range result.Mounts {
+		if strings.Contains(m.Target, "/.boid/attachments") {
+			t.Errorf("unexpected attachments bind mount %+v — the RO bind must be fully retired (use `boid task attachments list/get` instead)", m)
+		}
 	}
 }
 
@@ -2288,6 +1862,19 @@ func mountTargetIndex(mounts []sandbox.Mount, target string) int {
 	return -1
 }
 
+// TestHomeMounts_WorkspaceHomeDirSet_ReturnsBindOnly pins the Phase 5b PR6
+// cutover (docs/plans/phase5-shim-and-task-context.md 決定事項 7) originally
+// dropped the $HOME/.boid job-scoped tmpfs overlay Phase 4 PR2 layered on
+// top of the workspace home bind, on the reasoning that contextFiles/the
+// attachments bind (its only writers/readers) were both retired. codex
+// review on that PR (Blocker + Major, before merge) found the remaining
+// writer — $HOME/.boid/output/payload_patch.json — exploitable once it
+// landed on the persistent, shared workspace home: concurrent jobs in the
+// same workspace could delete/merge each other's patches, and a prior job's
+// symlink planted at an ancestor path could redirect dispatch-time file ops
+// outside the intended directory. The overlay is restored here — see
+// homeMounts' doc comment for the full history — until the job_done
+// payload-patch RPC (5b PR7) removes the file-based fallback entirely.
 func TestHomeMounts_WorkspaceHomeDirSet_ReturnsBindPlusBoidTmpfs(t *testing.T) {
 	const homeDir = "/home/user"
 	const wsHome = "/data/boid/homes/default"
@@ -2306,6 +1893,52 @@ func TestHomeMounts_WorkspaceHomeDirSet_ReturnsBindPlusBoidTmpfs(t *testing.T) {
 	}
 }
 
+// TestHomeMounts_ConcurrentJobsGetIndependentBoidTmpfs is the regression
+// guard for the codex review Blocker on the Phase 5b PR6 cutover PR: two
+// jobs dispatched against the same workspace (same homeDir/workspaceHomeDir
+// — the scenario a shared, persistent $HOME/.boid/output/payload_patch.json
+// path would create) must each get their OWN $HOME/.boid tmpfs mount
+// (Type=MountTmpfs, no Source), never a bind to a shared host path. This is
+// what makes cross-job interference (one job's cleanup deleting another's
+// still-live patch, or one job's patch getting merged into a different
+// job's task) structurally impossible rather than merely untested — a
+// tmpfs.Mount carries no host-side identity two independent mount
+// namespaces could ever collide on, regardless of how job A and job B are
+// scheduled relative to each other. (A real concurrent-dispatch e2e
+// scenario is impractical to pin reliably in this harness — see
+// e2e/scenarios/workspace-home-boid-isolated/scenario.sh's own comment —
+// so this property is pinned at the unit level instead, where it can be
+// asserted deterministically.)
+func TestHomeMounts_ConcurrentJobsGetIndependentBoidTmpfs(t *testing.T) {
+	const homeDir = "/home/user"
+	const wsHome = "/data/boid/homes/default"
+
+	jobA := homeMounts(homeDir, wsHome)
+	jobB := homeMounts(homeDir, wsHome)
+
+	for _, tc := range []struct {
+		name   string
+		mounts []sandbox.Mount
+	}{
+		{"job A", jobA},
+		{"job B", jobB},
+	} {
+		if len(tc.mounts) != 2 {
+			t.Fatalf("%s: homeMounts returned %d mounts, want 2: %+v", tc.name, len(tc.mounts), tc.mounts)
+		}
+		boid := tc.mounts[1]
+		if boid.Target != homeDir+"/.boid" {
+			t.Fatalf("%s: mounts[1].Target = %q, want %q", tc.name, boid.Target, homeDir+"/.boid")
+		}
+		if boid.Type != sandbox.MountTmpfs {
+			t.Errorf("%s: $HOME/.boid mount type = %v, want MountTmpfs (a bind here would give two jobs a shared, host-persistent path)", tc.name, boid.Type)
+		}
+		if boid.Source != "" {
+			t.Errorf("%s: $HOME/.boid mount Source = %q, want empty (tmpfs mounts carry no backing path another job's mount namespace could ever observe)", tc.name, boid.Source)
+		}
+	}
+}
+
 func TestHomeMounts_WorkspaceHomeDirEmpty_FallsBackToTmpfs(t *testing.T) {
 	const homeDir = "/home/user"
 	mounts := homeMounts(homeDir, "")
@@ -2318,8 +1951,8 @@ func TestHomeMounts_WorkspaceHomeDirEmpty_FallsBackToTmpfs(t *testing.T) {
 }
 
 // TestBuildSandboxSpec_CloneEnabled_WorkspaceHomeBind pins the Clone branch's
-// PR2 mount order: workspace home bind immediately followed by the
-// $HOME/.boid tmpfs overlay.
+// mount order: workspace home bind immediately followed by the $HOME/.boid
+// tmpfs overlay (restored post-codex-review — see homeMounts' doc comment).
 func TestBuildSandboxSpec_CloneEnabled_WorkspaceHomeBind(t *testing.T) {
 	homeDir := hostHomeDir()
 	if homeDir == "" {
@@ -2472,7 +2105,7 @@ func TestProjectVisibilityMounts_NoWorkspaceHome_FallsBackToTmpfs(t *testing.T) 
 }
 
 // TestBuildSandboxSpec_DefaultProfile_WorkspaceHomeBind pins the "no project
-// visible" branch's PR2 mount order, mirroring the Clone-branch test above.
+// visible" branch's mount order, mirroring the Clone-branch test above.
 func TestBuildSandboxSpec_DefaultProfile_WorkspaceHomeBind(t *testing.T) {
 	homeDir := hostHomeDir()
 	if homeDir == "" {
@@ -2532,43 +2165,5 @@ func TestBuildSandboxSpec_ProfileInit_IgnoresWorkspaceHomeDir(t *testing.T) {
 	}
 	if boidTmpfsCount != 1 {
 		t.Errorf("found %d mounts targeting %s/.boid, want exactly 1", boidTmpfsCount, homeDir)
-	}
-}
-
-// TestBuildSandboxSpec_AttachmentsBind_OnTopOfWorkspaceHomeBind verifies the
-// mount-chain concern flagged in docs/plans/home-workspace-volume.md PR2: the
-// attachments bind (target $HOME/.boid/attachments) must still land correctly
-// once $HOME/.boid is itself a job-scoped tmpfs stacked on a workspace home
-// bind, not the old plain-tmpfs-HOME layout. applyMount (runner_linux.go)
-// applies mounts in append order and mkdir's each target freshly, so a bind
-// nested under an already-mounted tmpfs works the same way the pre-existing
-// ProfileInit branch already relies on (tmpfs at $HOME/.boid, then the
-// attachments bind on top) — this pins that the non-ProfileInit branches now
-// get the same property.
-func TestBuildSandboxSpec_AttachmentsBind_OnTopOfWorkspaceHomeBind(t *testing.T) {
-	const taskID = "abc-123"
-	root := t.TempDir()
-	homeDir := hostHomeDir()
-	spec := &orchestrator.JobSpec{TaskID: taskID}
-	rt := SandboxRuntimeInfo{AttachmentsRoot: root, WorkspaceHomeDir: "/data/boid/homes/default"}
-
-	result, err := BuildSandboxSpec(spec, rt)
-	if err != nil {
-		t.Fatalf("BuildSandboxSpec: %v", err)
-	}
-
-	boidTmpfsIdx := mountTargetIndex(result.Mounts, homeDir+"/.boid")
-	attachIdx := mountTargetIndex(result.Mounts, homeDir+"/.boid/attachments")
-	if boidTmpfsIdx == -1 {
-		t.Fatalf(".boid tmpfs mount not found: %+v", result.Mounts)
-	}
-	if attachIdx == -1 {
-		t.Fatalf("attachments bind not found: %+v", result.Mounts)
-	}
-	if attachIdx <= boidTmpfsIdx {
-		t.Errorf("attachments bind index = %d, want after .boid tmpfs index %d", attachIdx, boidTmpfsIdx)
-	}
-	if result.Mounts[attachIdx].Source != root+"/tasks/"+taskID+"/attachments" {
-		t.Errorf("attachments source = %q, want %q", result.Mounts[attachIdx].Source, root+"/tasks/"+taskID+"/attachments")
 	}
 }

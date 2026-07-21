@@ -127,14 +127,14 @@ func QuestionPage(task *orchestrator.Task, turn QuestionTurn) templ.Component {
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 7, "\"> <textarea name=\"answer\" class=\"form-input qa-textarea\" rows=\"6\" placeholder=\"Enter your answer…\" autofocus data-paste-attach data-paste-attach-prefix=\"~/.boid/attachments/\"></textarea><div class=\"form-hint\">Paste images or text from the clipboard. They are available inside the sandbox at <code>~/.boid/attachments/</code>.</div><ul class=\"paste-attach-list\" data-paste-attach-list></ul></form><div class=\"qa-actions\"><button type=\"submit\" form=\"qa-form\" class=\"btn btn-primary\">Submit answer</button><form method=\"post\" action=\"")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 7, "\"> <textarea name=\"answer\" class=\"form-input qa-textarea\" rows=\"6\" placeholder=\"Enter your answer…\" autofocus data-paste-attach></textarea><div class=\"form-hint\">Paste images or text from the clipboard. The agent fetches them with <code>boid task attachments get &lt;name&gt;</code>.</div><ul class=\"paste-attach-list\" data-paste-attach-list></ul></form><div class=\"qa-actions\"><button type=\"submit\" form=\"qa-form\" class=\"btn btn-primary\">Submit answer</button><form method=\"post\" action=\"")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
 				var templ_7745c5c3_Var7 templ.SafeURL
 				templ_7745c5c3_Var7, templ_7745c5c3_Err = templ.JoinURLErrs(templ.SafeURL("/tasks/" + task.ID + "/action"))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/question_page.templ`, Line: 64, Col: 81}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/question_page.templ`, Line: 63, Col: 81}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var7))
 				if templ_7745c5c3_Err != nil {

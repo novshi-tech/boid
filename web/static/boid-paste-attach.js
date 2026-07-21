@@ -4,10 +4,12 @@
 // task ask answer form. When a user pastes an image (or one of the allowed
 // text formats) into a textarea marked with `data-paste-attach`, the file is
 // stashed in a hidden FileList that rides on the form's existing
-// multipart/form-data submit, and a reference path is inserted at the
-// caret position. The agent sees that path inside its sandbox at
-// `~/.boid/attachments/<filename>` (the dispatcher binds the per-task
-// attachments dir there).
+// multipart/form-data submit, and a `[attachment: <filename>]` reference is
+// inserted at the caret position. The agent fetches the bytes with
+// `boid task attachments get <filename>` (Phase 5b PR2 task-context RPC,
+// docs/plans/phase5-shim-and-task-context.md) — there is no dispatch-time
+// filesystem bind any more (retired by the Phase 5b PR6 cutover), so the
+// reference is a name to fetch, not a sandbox path to read directly.
 //
 // Keep the limits / extensions in sync with internal/api/attachments.go.
 (function () {
@@ -90,8 +92,7 @@
             if (added.length === 0) return;
             e.preventDefault();
             hidden.files = dt.files;
-            var prefix = textarea.getAttribute("data-paste-attach-prefix") || "~/.boid/attachments/";
-            insertAtCaret(textarea, added.map(function (n) { return prefix + n; }).join("\n"));
+            insertAtCaret(textarea, added.map(function (n) { return "[attachment: " + n + "]"; }).join("\n"));
             added.forEach(function (n, idx) {
                 renderListEntry(listEl, dt, n, hidden);
             });

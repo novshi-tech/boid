@@ -27,9 +27,9 @@ has the same shape:
 10. [exec stdin-forward opt-in](#10-exec-stdin-forward-opt-in)
 11. [gitgateway SecretResolver namespace threading](#11-gitgateway-secretresolver-namespace-threading)
 12. [KitMeta.KitRoot ↔ sandbox_builder KitRoots mount](#12-kitmetakitroot--sandbox_builder-kitroots-mount)
-13. [task-context RPC ↔ dispatch-time context files](#13-task-context-rpc--dispatch-time-context-files)
+13. [task-context RPC (build ↔ serve)](#13-task-context-rpc-build--serve)
 14. [shim command-name resolution (BOID_HOST_COMMAND_NAMES ↔ broker Commands key)](#14-shim-command-name-resolution)
-15. [attachments RPC ↔ dispatch-time attachments bind](#15-attachments-rpc--dispatch-time-attachments-bind)
+15. [attachments RPC write ↔ read path](#15-attachments-rpc-write--read-path)
 16. [adapter-issued task-context RPC (claude readSessionsFromRPC ↔ sandbox env)](#16-adapter-issued-task-context-rpc)
 
 ---
@@ -188,9 +188,11 @@ by sandbox), so every new policy field must be threaded through each hop by hand
 - **When you touch it**: adding or removing a host_commands policy field means updating
   every hop above plus the passthrough tests; enforcement added to only one of the two
   exec paths (streaming vs non-streaming) is the classic one-ended break here. The
-  agent-facing surface (`buildEnvironmentYAML` in `internal/dispatcher/sandbox_builder.go`)
-  intentionally shows a **subset** (no path/env) — don't "fix" that asymmetry, but do keep
-  reject rules visible to the agent.
+  agent-facing surface (`BuildWorkspaceEnvView` in `internal/dispatcher/workspace_env_view.go`,
+  served by the `boid task env` RPC — the dispatch-time `environment.yaml` file this used to
+  also feed was retired by the Phase 5b PR6 cutover, see seam #13) intentionally shows a
+  **subset** (no path/env) — don't "fix" that asymmetry, but do keep reject rules visible to
+  the agent.
 
 ## 8. gitgateway RepoKey normalization
 
@@ -396,52 +398,58 @@ adapter-driven `Bindings()`).
   set at End A still lands as a mount at End C — dropping any hop silently removes kit content
   from sandboxes that have no adapter-driven `Bindings()` to fall back on.
 
-## 13. task-context RPC ↔ dispatch-time context files
+## 13. task-context RPC (build ↔ serve)
 
-Whether the new Phase 5b task-context broker RPCs (docs/plans/phase5-shim-and-task-context.md)
-serve the same data the pre-existing dispatch-time context files
-(`$HOME/.boid/context/{task,instructions,environment,payload}.{yaml,json}`) already write into
-every sandbox — the two paths run in parallel from PR1 through PR5, so any drift is a silent
-inconsistency between "what the agent reads at boot" and "what the agent reads if it calls the
-new CLI later in the same job". The scoping key differs by RPC and getting it wrong is the
-actual failure mode this seam has already produced once (see **Past break**):
-`boid task current` is TaskID-scoped (safe — re-derives live from the task row, no per-job
-ambiguity); `boid task instructions` / `env` / `payload` are all **JobID-scoped**, because their
-source data is job-scoped, not task-scoped.
+**Retired half (history)**: through Phase 5b PR5, this seam also covered a second, parallel
+path — dispatch-time context files (`$HOME/.boid/context/{task,instructions,environment,
+payload}.{yaml,json}`, written by `contextFiles`/`buildEnvironmentYAML` in
+`internal/dispatcher/sandbox_builder.go`) that had to keep serving the *same* data as the RPCs
+below. Phase 5b PR6 (the "file 配布経路そのものを撤去する目玉 cutover",
+docs/plans/phase5-shim-and-task-context.md) deleted `contextFiles`/`buildEnvironmentYAML`/
+`marshalTaskYAML`/`marshalInstructionsYAML`/`EnvironmentInput` outright — there is no more file
+side to drift out of sync with, and the two-Ends-plus-file-materialization shape this entry used
+to have (End A = file, End B = RPC build, End C = serve) collapsed to the two Ends below. If
+you're reading old context (a PR description, a code comment) that says "End A (file)" or
+"End C (serve)" for this seam, that's the pre-PR6 shape — this entry now uses End A = build, End
+B = serve.
 
-- **End A (file)**: `contextFiles` / `buildEnvironmentYAML` in `internal/dispatcher/sandbox_builder.go`.
-  `instructions.yaml` is written **iff** `JobSpec.Instruction != nil` (this job's own routed
-  instruction — `orchestrator.DispatchPlanner.PlanHook`'s `selectInstruction`, filtered by *this
-  hook's* declared agent). `environment.yaml`'s `host_commands` is fed by
-  `EnvironmentInput.HostCommands` (= `spec.HostCommands`, the **short-name-keyed** map — not
-  `SandboxRuntimeInfo.ResolvedHostCommands`, which is absolute-host-path-keyed shim/broker plumbing
-  only) via the shared `convertHostCommands` helper; `network.allowed_domains` comes from
-  `SandboxRuntimeInfo.AllowedDomains` (= the `allowedDomains` local in `Runner.Dispatch`).
-  `payload.json`/`.yaml` is `JobSpec.PrimaryInput` (already trait-filtered by
-  `orchestrator.FilterPayloadByTraits` at plan time, per the firing hook's declared
-  `Traits.Consumes`).
-- **End B (RPC)**: `Runner.trackJobContext` (`internal/dispatcher/job_context.go`), called at the
-  same point in `Runner.Dispatch` right after `resolveWorkspaceProxy`, builds a
+Whether `Runner.trackJobContext`'s snapshot and what `boid task instructions`/`env`/`payload`
+actually return stay internally consistent — i.e. whether the RPC's own build and serve sides
+agree, now that there is no separate file to check them against. The scoping key differs by RPC
+and getting it wrong is the actual failure mode this seam has already produced (see **Past
+break**): `boid task current` is TaskID-scoped (safe — re-derives live from the task row, no
+per-job ambiguity); `boid task instructions` / `env` / `payload` are all **JobID-scoped**, because
+their source data is job-scoped, not task-scoped.
+
+- **End A (build)**: `Runner.trackJobContext` (`internal/dispatcher/job_context.go`), called in
+  `Runner.Dispatch` right after `resolveWorkspaceProxy`, builds a
   `JobContextSnapshot{Instructions: routedInstructionSlice(spec.Instruction), Env:
   BuildWorkspaceEnvView(allowedDomains, spec.HostCommands), Payload: spec.PrimaryInput}` — every
-  field sourced from the **same** JobSpec values End A uses for *this exact job*, never re-derived
-  from the task row. `boid task current` instead re-derives live from the task row
-  (`orchestrator.SnapshotTask`) since that data has no job-scoped filtering dependency — see
-  `internal/api/task_context.go`'s package doc comment for why only `current` gets that treatment.
-- **End C (serve)**: `boidBuiltinExecutor.ExecuteBoidBuiltin`'s `BoidOpTaskInstructions` /
+  field sourced straight from *this exact job's* JobSpec values, never re-derived from the task
+  row. `Instructions` is populated **iff** `JobSpec.Instruction != nil` (this job's own routed
+  instruction — `orchestrator.DispatchPlanner.PlanHook`'s `selectInstruction`, filtered by *this
+  hook's* declared agent); `Env.HostCommands` is fed by `spec.HostCommands` (the
+  **short-name-keyed** map — not `SandboxRuntimeInfo.ResolvedHostCommands`, which is
+  absolute-host-path-keyed shim/broker plumbing only) via the shared `convertHostCommands` helper;
+  `Env.AllowedDomains` comes from the `allowedDomains` local in `Runner.Dispatch`; `Payload` is
+  `JobSpec.PrimaryInput` (already trait-filtered by `orchestrator.FilterPayloadByTraits` at plan
+  time, per the firing hook's declared `Traits.Consumes`). `boid task current` instead re-derives
+  live from the task row (`orchestrator.SnapshotTask`) since that data has no job-scoped filtering
+  dependency — see `internal/api/task_context.go`'s package doc comment for why only `current`
+  gets that treatment.
+- **End B (serve)**: `boidBuiltinExecutor.ExecuteBoidBuiltin`'s `BoidOpTaskInstructions` /
   `BoidOpTaskEnv` / `BoidOpTaskPayload` cases (`internal/server/boid_executor.go`) read back via
   the `jobContextProvider` interface, which `*dispatcher.Runner` satisfies structurally — wired in
   `internal/server/wire.go`'s `newBoidBuiltinExecutor(..., runner)` call using the **same**
   `runner` variable `Dispatch` runs on, not a separate instance. `internal/sandbox/broker.go`
   authorizes these three ops by strict `JobID` equality against the token's own context (never
   `TaskID`) — `BoidOpTaskCurrent` alone is authorized by `TaskID`.
-- **Invariant**: End A and End B must derive from the identical per-job JobSpec values
-  (`spec.Instruction`, `spec.HostCommands`, `spec.PrimaryInput`, `allowedDomains`) — a future
-  refactor that re-derives any of them from the task row instead of the job's own JobSpec silently
-  breaks parity even though both sides still "work" independently, because a task can have
-  **multiple concurrent/sequential jobs whose routed instructions differ** (see Past break).
-  `JobContextSnapshot` must not outlive its job: `Runner.UnregisterJob` must clear it (mirrors the
-  broker token's own lifecycle).
+- **Invariant**: End A must derive from the job's own JobSpec values (`spec.Instruction`,
+  `spec.HostCommands`, `spec.PrimaryInput`, `allowedDomains`), never the task row — a future
+  refactor that re-derives any of them from the task row breaks correctness even though the code
+  still "works" and compiles, because a task can have **multiple concurrent/sequential jobs whose
+  routed instructions differ** (see Past break). `JobContextSnapshot` must not outlive its job:
+  `Runner.UnregisterJob` must clear it (mirrors the broker token's own lifecycle).
 - **Past break**: caught in review before merge, twice, on the same PR (#797):
   1. The first `Env` implementation used `resolvedHostCommands` (absolute-path-keyed) instead of
      `spec.HostCommands`, which `TestDispatch_TracksJobContext_EnvAndPayload` caught immediately
@@ -453,22 +461,18 @@ source data is job-scoped, not task-scoped.
      (`extractInstructionAgents`), not just the active entry, so a task with history
      `[claude-code, codex]` dispatches both a claude-code hook and a codex hook in the same round —
      but `selectInstruction`/`FilterInstructions` only route the *last* entry, so only one of the two
-     jobs gets a non-nil `Instruction` (and only one gets an `instructions.yaml` file). The task-row
-     derivation had no way to tell the two jobs apart and would hand the wrong job the other agent's
-     instruction the moment the 5b-6 cutover retired the file (which never had this bug, since it's
-     keyed by the job's own `JobSpec.Instruction` from the start). Fixed by moving `Instructions` into
-     `JobContextSnapshot` (JobID-scoped, same pattern as `Env`/`Payload`) before merge — see
-     `orchestrator.CurrentInstructions`'s doc comment for what it's safe (and unsafe) to use for now.
-- **Guard**: End A unchanged = the pre-existing `TestBuildEnvironmentYAML_*` suite in
-  `sandbox_builder_test.go` (still green after the `WorkspaceEnvHostCommand` rename, proving the
-  YAML tags/output didn't move) plus `TestPlanHook_Instruction_MatchingAgent` /
-  `_NonMatchingAgent_ReturnsNil` (`internal/orchestrator/planner_test.go` — the latter is the
-  root-cause case: a hook whose agent doesn't match the active history entry gets `Instruction ==
-  nil` even though the evaluator fired it). End B =
-  `TestDispatch_TracksJobContext_Instructions_MatchesJobSpec` /
+     jobs gets a non-nil `Instruction`. The task-row derivation had no way to tell the two jobs
+     apart and would hand the wrong job the other agent's instruction. Fixed by moving
+     `Instructions` into `JobContextSnapshot` (JobID-scoped, same pattern as `Env`/`Payload`) before
+     merge — see `orchestrator.CurrentInstructions`'s doc comment for what it's safe (and unsafe)
+     to use for now.
+- **Guard**: End A = `TestDispatch_TracksJobContext_Instructions_MatchesJobSpec` /
   `_NilJobSpecInstructionYieldsEmpty`, `_EnvAndPayload`, `_NilPrimaryInput`,
-  `TestUnregisterJob_RemovesJobContext` (`internal/dispatcher/runner_job_context_test.go`). End C =
-  the `TestBoidBuiltinExecutor_Task{Instructions,Env,Payload,Current}_*` suite
+  `TestUnregisterJob_RemovesJobContext` (`internal/dispatcher/runner_job_context_test.go`), plus
+  `TestPlanHook_Instruction_MatchingAgent` / `_NonMatchingAgent_ReturnsNil`
+  (`internal/orchestrator/planner_test.go` — the latter is the root-cause case: a hook whose agent
+  doesn't match the active history entry gets `Instruction == nil` even though the evaluator fired
+  it). End B = the `TestBoidBuiltinExecutor_Task{Instructions,Env,Payload,Current}_*` suite
   (`internal/server/boid_executor_task_context_test.go`), plus two real-`*dispatcher.Runner` wiring
   tests in `internal/server/boid_executor_task_context_wiring_test.go`:
   `TestBoidBuiltinExecutor_TaskEnvAndPayload_RealRunnerWiring` (env/payload, single job, plus the
@@ -479,68 +483,43 @@ source data is job-scoped, not task-scoped.
   layer a stub-only `jobContextProvider` test suite cannot reach). Broker-level authorization
   (id-equality against the token's own `TaskID`/`JobID`, `TaskInstructions` on `JobID` specifically)
   is covered separately by `internal/sandbox/broker_task_context_test.go`.
-- **When you touch it**: if you touch `contextFiles`/`buildEnvironmentYAML`, `selectInstruction`/
-  `Evaluator.Evaluate`, `Runner.Dispatch`'s `trackJobContext` call, or
-  `jobContextProvider`/`newBoidBuiltinExecutor`'s wiring in `wire.go`, verify End A and End B still
-  read from the same **per-job** JobSpec values (never the task row, for anything but
-  `BoidOpTaskCurrent`) and that the real-Runner wiring tests still exercise the exact `runner`
-  instance `wire.go` threads through. Any change that makes a task-context RPC read from the task
-  row should immediately raise the question this seam exists to ask: "can two jobs from this same
-  task disagree about this value?" — if yes, it must be JobID-scoped. The 5b-6 cutover PR
-  (`docs/plans/phase5-shim-and-task-context.md`), which retires End A's file materialization, is
-  the point where this seam collapses to just End B/C — update this entry then.
-- **Update (Phase 5b PR4)**: `TaskSnapshot` gained a `Readonly` field
+- **When you touch it**: if you touch `selectInstruction`/`Evaluator.Evaluate`,
+  `Runner.Dispatch`'s `trackJobContext` call, or `jobContextProvider`/`newBoidBuiltinExecutor`'s
+  wiring in `wire.go`, verify End A still reads from the **per-job** JobSpec values (never the task
+  row, for anything but `BoidOpTaskCurrent`) and that the real-Runner wiring tests still exercise
+  the exact `runner` instance `wire.go` threads through. Any change that makes a task-context RPC
+  read from the task row should immediately raise the question this seam exists to ask: "can two
+  jobs from this same task disagree about this value?" — if yes, it must be JobID-scoped.
+- **Update (Phase 5b PR4, history)**: `TaskSnapshot` gained a `Readonly` field
   (`internal/orchestrator/jobspec.go`) so `boid task current` — and, through it, the boid-task
-  skill's Step 0 mode determination — can read `readonly` without falling back to the file-based
-  `environment.yaml` this PR retires as a skill-facing source. This is a **deliberate, one-way**
-  schema divergence between End A and End B for `BoidOpTaskCurrent` specifically:
-  `marshalTaskYAML` (`sandbox_builder.go`) builds `task.yaml`'s content from an explicit field
-  whitelist rather than reflecting over `TaskSnapshot`, so the new field reaches the RPC without
-  changing the file's on-disk shape. This does not weaken the seam's invariant above (which is
-  scoped to the **job-scoped** trio `Instructions`/`Env`/`Payload`, never `BoidOpTaskCurrent`) —
-  but a future editor extending `TaskSnapshot` further should keep in mind that `marshalTaskYAML`
-  will silently drop any new field unless also added there, which is fine (intentional, since the
-  file path is being retired wholesale rather than grown) but easy to mistake for a bug if you
-  don't already know this.
-- **Update (Phase 5b PR5)**: `buildEnvironmentYAML`'s `environment.yaml` End A was reduced to the
-  exact same `WorkspaceEnvView` `BuildWorkspaceEnvView` builds for `BoidOpTaskEnv` (End B) —
-  `buildEnvironmentYAML` now literally is `yaml.Marshal(BuildWorkspaceEnvView(in.AllowedDomains,
-  in.HostCommands))` (`internal/dispatcher/sandbox_builder.go`), not a separately-maintained
-  `environmentDoc` struct that merely reused `convertHostCommands` for one field the way it did
-  from PR1 through PR4. This retires this seam's `environment.yaml` half down to the two fields the
-  container model can't make an in-sandbox agent observe on its own
-  (`allowed_domains`/`host_commands`); every other field the pre-PR5 doc carried
-  (`readonly`/`worktree`/`tools`/`sandbox.*`/`filesystem.*`/`session.*`/`notes`/
-  `workspace_projects`) is gone from End A entirely — see `EnvironmentInput`'s doc comment for the
-  full list and why each one is either directly observable inside the container or served by a
-  different `boid task ...` RPC instead. Two consequences for reviewers:
-  - `buildEnvironmentYAML` and the `WorkspaceEnvView` struct End B/C serve now come from the exact
-    same `BuildWorkspaceEnvView(allowedDomains, hostCommands)` call, so *data* drift between them
-    (a field added/dropped/renamed on one side only) is structurally impossible from this PR
-    forward — a regression would require literally changing `buildEnvironmentYAML` to stop calling
-    `BuildWorkspaceEnvView`, not just letting the two implementations quietly diverge. This is **not**
-    a byte-identical claim, though: the real `boid task env` CLI path
-    (`internal/sandbox/boid_shim_task_context.go`'s `jsonToYAMLForShim`) decodes the broker's JSON
-    reply into a generic `map[string]any` before re-rendering as YAML, and yaml.v3 sorts a map's
-    keys alphabetically while preserving a struct's declared field order — so
-    `buildEnvironmentYAML`'s direct struct marshal and the CLI's JSON-round-tripped output can (and
-    do, for `host_commands[]`) come out as different bytes for identical data. A first version of
-    this PR's drift-guard test claimed byte-identity by comparing against a bare
-    `yaml.Marshal(BuildWorkspaceEnvView(...))` — which is not what the CLI actually prints — and
-    codex review caught it before merge; the fixed guard
-    (`TestBuildEnvironmentYAML_SemanticallyMatchesTaskEnvCLIPath(_EmptyInputs)`,
-    `sandbox_builder_test.go`) reproduces the CLI's actual JSON→map→YAML transform and asserts
-    semantic (parsed-document) equality instead. Keep this distinction in mind if you touch either
-    side: "same struct" guarantees data parity, not wire-format parity.
-  - `workspace_projects` (peer advertise) lost its only consumer: `SandboxRuntimeInfo.
-    WorkspacePeerAdvertise` and `Runner.buildPeerAdvertise` (`gitgateway_wire.go`) are kept but
-    currently unread by `BuildSandboxSpec` — the same "carried but inert across a PR boundary"
-    pattern `GatewayURL`/`GatewayJobToken` already used earlier in this same struct — pending a
-    future `boid workspace peers`-style RPC (tracked as an open item in the plan doc, not part of
-    this PR). `e2e/scenarios/git-gateway-peer-fetch` depended on grepping `workspace_projects` out
-    of the file and has no replacement yet, so it carries a `skip` marker (own file has the full
-    reason) rather than being rewritten or deleted; do not remove the marker without wiring an
-    actual replacement first.
+  skill's Step 0 mode determination — can read `readonly` without falling back to the (then still
+  file-based, now fully retired) `environment.yaml`.
+- **Update (Phase 5b PR5, history)**: `buildEnvironmentYAML`'s `environment.yaml` was reduced to
+  the exact same `WorkspaceEnvView` `BuildWorkspaceEnvView` builds for `BoidOpTaskEnv` — the two
+  could no longer drift on *data*, only on wire-format (the file was a direct struct marshal; the
+  RPC's CLI-side re-render round-trips through JSON first, so field order differed). Moot since
+  PR6 deleted the file side outright.
+- **Update (Phase 5b PR6)**: the file side (`contextFiles`/`buildEnvironmentYAML`/
+  `marshalTaskYAML`/`marshalInstructionsYAML`/`EnvironmentInput`) is deleted. The `$HOME/.boid`
+  job-scoped tmpfs overlay that isolated its writes is **not** deleted, despite an early cut of
+  this PR trying to: codex review (Blocker + Major, before merge) found that with the overlay gone,
+  the one remaining writer under `$HOME/.boid` — `$HOME/.boid/output/payload_patch.json`, the
+  `job_done` file fallback (decision 6, still primary until 5b PR7's RPC lands) — became a fixed,
+  shared path on the persistent workspace home, letting concurrent jobs in the same workspace
+  delete/merge each other's patches, and letting a prior job's ancestor symlink redirect a later
+  job's dispatch-time file operations outside the intended directory. Restoring the tmpfs (rather
+  than hardening the operations that ran on top of it) closes both classes of attack structurally —
+  see `docs/plans/phase5-shim-and-task-context.md`「PR 分割案 > 5b」6's landed note and
+  `internal/dispatcher/sandbox_builder.go`'s `homeMounts` doc comment for the full history. The
+  overlay is now expected to survive until 5b PR7 removes the file-based `job_done` fallback
+  entirely. `SandboxRuntimeInfo.WorkspacePeerAdvertise`
+  and `Runner.buildPeerAdvertise` (`gitgateway_wire.go`) — the data the file's now-gone
+  `workspace_projects` section used to carry — are kept as-is, still computed, still unconsumed by
+  `BuildSandboxSpec`: PR6 made a deliberate call to continue the "carried but inert across a PR
+  boundary" pattern rather than invent a new consumer, pending a future `boid workspace
+  peers`-style RPC (tracked as an open item in the plan doc). `e2e/scenarios/git-gateway-peer-fetch`
+  still carries its `skip` marker for the same reason (own file has the full, updated reason); do
+  not remove it without wiring an actual replacement first.
 
 ## 14. shim command-name resolution
 
@@ -600,29 +579,23 @@ must inject.
   becomes a pure defense-in-depth fallback rather than the primary resolution path — update
   this entry then.
 
-## 15. attachments RPC ↔ dispatch-time attachments bind
+## 15. attachments RPC write ↔ read path
+
+**Retired half (history)**: through Phase 5b PR5, this seam also covered a third path — a
+dispatch-time RO bind (`~/.boid/attachments`, gated by `isCanonicalTaskIDComponent` in the
+now-deleted `internal/dispatcher/attachments_path.go`) that had to resolve to the identical
+directory the RPC read/write paths below use. Phase 5b PR6 (the "file 配布経路そのものを撤去する
+目玉 cutover", docs/plans/phase5-shim-and-task-context.md) deleted that bind and
+`attachments_path.go` outright, per the PR-6 note this entry used to carry — `boid task
+attachments list`/`get` are now the sole in-sandbox read path. The old three-Ends-plus-bind shape
+(End A = bind, End B = write path, End C = RPC read path, End D = authorization) collapsed to the
+two Ends below (kept as B/C/D's original letters, minus the retired A, to avoid relettering
+churn against old PR history that cites them).
 
 Whether the Phase 5b PR2 attachments RPCs (`boid task attachments list` / `get <name>`,
-docs/plans/phase5-shim-and-task-context.md) read from the identical on-disk directory the
-pre-existing dispatch-time RO bind (`~/.boid/attachments`) exposes inside the sandbox — the two
-paths run in parallel from PR2 through PR6, so any drift is a silent inconsistency between "what
-the agent sees under `~/.boid/attachments`" and "what `boid task attachments get` returns for the
-same name". Unlike seam #13 (task-context RPCs, which have per-job scoping subtlety), this seam's
-risk is narrower in one dimension (attachments are TaskID-scoped only, no per-job ambiguity) but
-wider in another: **three independent path-construction call sites** must agree on the same
-directory — as of PR #798, all three now individually validate `taskID`, but two of them do it via
-genuinely *different* (duplicated, not shared) code, which is its own drift risk (see Guard).
+docs/plans/phase5-shim-and-task-context.md) read from the identical on-disk directory the upload
+path writes to.
 
-- **End A (bind)**: `internal/dispatcher/sandbox_builder.go`'s per-task attachments mount gates
-  `spec.TaskID` through `isCanonicalTaskIDComponent` (`internal/dispatcher/attachments_path.go`)
-  before building `attachSrc := filepath.Join(rt.AttachmentsRoot, "tasks", spec.TaskID,
-  "attachments")` — a non-canonical `taskID` skips the mount entirely (fail-closed, the same
-  "just omit it" behavior the pre-existing empty-`AttachmentsRoot`/empty-`taskID` cases already
-  used). This is a **duplicate, not a call** to `api.isCanonicalPathComponent`: internal/api already
-  imports internal/dispatcher (`job_log_sse.go`/`workspace_homes.go`/`ws_attach.go`), so the reverse
-  import (dispatcher → api) would be a cycle — `attachments_path.go`'s doc comment explains this and
-  points back here. `rt.AttachmentsRoot` is threaded from `dispatcher.RunnerConfig.AttachmentsRoot`,
-  set in `wire.go` to `dataHomeFor(cfg)` — the same value End B/End C use.
 - **End B (write path)**: `EnsureAttachmentsDir`/`SaveMultipartAttachments`
   (`internal/api/attachments.go`, called from `web.go`'s upload handlers) resolve the directory via
   `AttachmentsRootForTask(dataHome, taskID)`, which rejects a non-canonical `taskID` via
@@ -632,82 +605,57 @@ genuinely *different* (duplicated, not shared) code, which is its own drift risk
   `BoidOpTaskAttachmentsList`/`Get` cases (`internal/server/boid_executor.go`), resolve through the
   same `AttachmentsRootForTask` as End B. The executor's `attachmentsRoot` field is threaded in
   `wire.go`'s `newBoidBuiltinExecutor(..., dataHomeFor(cfg))` call — the identical `dataHomeFor(cfg)`
-  expression End A's `AttachmentsRoot:` field and End B's callers use.
+  expression End B's callers use.
 - **End D (authorization)**: `internal/sandbox/broker.go`'s `BoidOpTaskAttachmentsList`/`Get` case
   authorizes by strict `TaskID` *string equality* against the token's own context (same pattern as
   `BoidOpTaskCurrent`) — it never resolves a filesystem path, so it cannot itself catch a
-  traversal-shaped `TaskID`; that is End A/B/C's job.
-- **Invariant**: all three path-construction call sites (End A/B/C) must resolve to the identical
-  directory for a given `(dataHome, taskID)` pair, AND every one of them must reject the same set of
-  non-canonical `taskID` values (empty, containing a path separator, or the literal `.`/`..`) before
-  ever constructing a path — a `taskID` that passes End D's raw string-equality check must never be
-  allowed to resolve, via `filepath.Join`'s automatic `..`-collapsing, to a *different* task's
-  directory (see Past break for the concrete exploit this produces when a guard is missing). Because
-  End A's guard (`isCanonicalTaskIDComponent`) and End B/C's guard (`isCanonicalPathComponent`) are
-  two separately-maintained function bodies with the identical contract, a change to either's
-  rejection rule that isn't mirrored in the other silently reopens exactly this seam for whichever
-  side falls behind.
+  traversal-shaped `TaskID`; that is End B/C's job.
+- **Invariant**: End B and End C must resolve to the identical directory for a given
+  `(dataHome, taskID)` pair — trivially true today since both route through the same
+  `AttachmentsRootForTask` helper, so this can only break by one side stopping to call it — AND
+  reject the same set of non-canonical `taskID` values (empty, containing a path separator, or the
+  literal `.`/`..`) before ever constructing a path — a `taskID` that passes End D's raw
+  string-equality check must never be allowed to resolve, via `filepath.Join`'s automatic
+  `..`-collapsing, to a *different* task's directory (see Past break for the concrete exploit this
+  produces when the guard is missing).
 - **Past break**: codex review on PR #798 (Phase 5b PR2), before merge — **Blocker**:
   `CreateTaskRequest.ID` is caller-supplied and saved as the literal DB primary key without
   validation (`internal/api/task_create.go`). A task literally IDed `"alias/../<victim-id>"` passed
   End D's string-equality check trivially (both sides carry the identical literal alias), while a
-  bare `filepath.Join` (both End B/C's `AttachmentsRootForTask` *and*, independently, End A's bind
-  construction) silently collapsed it down to the *victim's* real attachments directory — a
-  cross-task leak reachable both via `boid task attachments list`/`get` (End B/C) and via the RO bind
-  mounted into the attacker's own sandbox at dispatch time (End A). **Fixed in the same PR** for all
-  three: `isCanonicalPathComponent` added to `AttachmentsRootForTask` (closes End B/C uniformly,
-  since both route through it), and the duplicated `isCanonicalTaskIDComponent` added to gate End A's
-  mount (a second, distinct commit on the same PR, after the bind-side half of this Blocker was
-  initially scoped out and then flagged for a return decision — see the "When you touch it" section's
-  history note). Also from the same review — **Major (TOCTOU)**: the original `ReadAttachment`
-  validated symlink containment and the size cap via `filepath.EvalSymlinks`/`os.Stat` and then
-  reopened the same path with `os.ReadFile`, leaving a swap window; fixed with a dirfd-relative
-  `openat2(RESOLVE_BENEATH|RESOLVE_NO_SYMLINKS)` open-once-reuse-the-fd pattern on Linux
-  (`attachment_read_linux.go`), falling back to a still-improved (single-`Open`, fd-reused)
-  best-effort path on pre-5.6 kernels or non-Linux builds. **Minor**: `validateAttachmentLookupName`
-  originally rejected any name merely *containing* `".."` as a substring, which was stricter than
-  necessary (a separator-free basename can never traverse regardless of embedded dots) and created a
-  write/read contract mismatch against `SanitizeAttachmentName`'s more permissive upload-time
-  allowlist; loosened to share `isCanonicalPathComponent`'s "must not equal `.`/`..`, must not contain
-  a separator" rule instead. **Nit**: `ListAttachments` originally admitted a symlink whose target
-  stayed inside the directory, which the TOCTOU fix's categorical "no symlinks, ever" policy in
-  `ReadAttachment` made inconsistent (list would show a name get could never return); `ListAttachments`
-  now requires `info.Mode().IsRegular()` too, matching `ReadAttachment` exactly.
+  bare `filepath.Join` (`AttachmentsRootForTask`, shared by End B/C, plus — at the time —
+  independently in the now-deleted dispatch-time bind) silently collapsed it down to the *victim's*
+  real attachments directory. **Fixed in the same PR**: `isCanonicalPathComponent` added to
+  `AttachmentsRootForTask` closes End B/C uniformly, since both route through it. (The bind-side
+  half of this same Blocker, fixed in the same PR via the now-deleted `isCanonicalTaskIDComponent`,
+  is moot since PR6 deleted the bind outright.) Also from the same review — **Major (TOCTOU)**: the
+  original `ReadAttachment` validated symlink containment and the size cap via
+  `filepath.EvalSymlinks`/`os.Stat` and then reopened the same path with `os.ReadFile`, leaving a
+  swap window; fixed with a dirfd-relative `openat2(RESOLVE_BENEATH|RESOLVE_NO_SYMLINKS)`
+  open-once-reuse-the-fd pattern on Linux (`attachment_read_linux.go`), falling back to a
+  still-improved (single-`Open`, fd-reused) best-effort path on pre-5.6 kernels or non-Linux builds.
+  **Minor**: `validateAttachmentLookupName` originally rejected any name merely *containing* `".."`
+  as a substring, which was stricter than necessary (a separator-free basename can never traverse
+  regardless of embedded dots) and created a write/read contract mismatch against
+  `SanitizeAttachmentName`'s more permissive upload-time allowlist; loosened to share
+  `isCanonicalPathComponent`'s "must not equal `.`/`..`, must not contain a separator" rule instead.
+  **Nit**: `ListAttachments` originally admitted a symlink whose target stayed inside the directory,
+  which the TOCTOU fix's categorical "no symlinks, ever" policy in `ReadAttachment` made
+  inconsistent (list would show a name get could never return); `ListAttachments` now requires
+  `info.Mode().IsRegular()` too, matching `ReadAttachment` exactly.
 - **Guard**: End B/End C parity is enforced structurally (both call `AttachmentsRootForTask` with the
   same `dataHome`/`taskID`) — see `internal/api/attachments_test.go`'s `TestListAttachments_*`/
   `TestReadAttachment_*` for the filesystem-level behavior (path traversal, symlink escape — both the
   escaping and in-dir-but-still-rejected cases — the alias-`TaskID` cross-task-leak scenario, and the
   size cap) and `internal/server/boid_executor_task_attachments_test.go` for the executor-level wiring
-  (a real temp `attachmentsRoot`, not a stub — there is no interface to bridge here, unlike seam #13's
-  `jobContextProvider`). End A's rejection behavior is covered by
-  `internal/dispatcher/sandbox_builder_test.go`'s
-  `TestBuildSandboxSpec_AttachmentsBind_RejectsTraversalTaskID` (the alias/traversal-`TaskID` cases,
-  asserting no mount at all is produced and specifically that no mount ever resolves to the victim
-  directory). Separately, `internal/dispatcher/attachments_bind_parity_test.go`'s
-  `TestAttachmentsBindSource_MatchesAPIHelper` (an external `dispatcher_test`-package test, since an
-  internal one importing `internal/api` would itself be the cycle End A's doc note above describes)
-  pins that End A's bind construction and `api.AttachmentsRootForTask` compute the *same path* for
-  ordinary, already-canonical inputs — it does not (and cannot, without the cycle) directly assert
-  End A and End B/C's two separate guard functions stay in lock-step; that is a manual-review
-  obligation (see When you touch it). Broker-level authorization is covered by
+  (a real temp `attachmentsRoot`, not a stub). Broker-level authorization is covered by
   `internal/sandbox/broker_task_attachments_test.go`. The op ↔ escape-guard manifest
   (`internal/sandbox/broker_op_escape_test.go`) and the policy drift tests
   (`internal/orchestrator/policy_test.go`'s `wantOps`, `internal/dispatcher/policy_translate_test.go`'s
   `TestOpConstantsMirror`) all include the two new ops.
 - **When you touch it**: if you touch `AttachmentsRootForTask`, `isCanonicalPathComponent`,
-  `isCanonicalTaskIDComponent`, `dataHomeFor`, the `sandbox_builder.go` attachments mount, or
-  `newBoidBuiltinExecutor`'s wiring in `wire.go`, verify all three path-construction call sites (End
-  A/B/C) still resolve to the same directory for a given `(dataHome, taskID)` pair, that End A and
-  End B/C's guard functions still reject the identical set of inputs, and re-run
-  `TestAttachmentsBindSource_MatchesAPIHelper` plus
-  `TestBuildSandboxSpec_AttachmentsBind_RejectsTraversalTaskID`. History note: the PR #798 codex
-  review initially scoped the bind-side (End A) fix out as a Minor "doc accuracy" finding, on the
-  reasoning that the original PR brief said not to touch `sandbox_builder.go` in this PR (that
-  instruction was about avoiding *semantic* changes ahead of the 5b-6 cutover, not about exempting
-  security fixes — flagged, and the scope was explicitly widened to include it before merge). At the
-  5b-6 cutover (which retires End A's bind entirely, per the PR-6 note in the "PR 分割案 > 5b" section
-  of docs/plans/phase5-shim-and-task-context.md), this seam collapses to just End B/C/D, and this
-  entry should be reduced accordingly.
+  `dataHomeFor`, or `newBoidBuiltinExecutor`'s wiring in `wire.go`, verify End B/C still resolve to
+  the same directory for a given `(dataHome, taskID)` pair and still reject the identical set of
+  inputs.
 
 ## 16. adapter-issued task-context RPC
 

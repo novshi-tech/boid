@@ -264,19 +264,14 @@ func selectInstruction(task *Task, agent string) *RoutedInstruction {
 }
 
 // SnapshotTask projects a Task down to the business-metadata subset
-// historically materialized at $HOME/.boid/context/task.yaml (see
-// TaskSnapshot's doc comment). Exported so internal/api's Phase 5b PR1
+// TaskSnapshot carries (see its doc comment) — through the Phase 5b PR6
+// cutover, also historically materialized at the now-deleted
+// $HOME/.boid/context/task.yaml. Exported so internal/api's Phase 5b PR1
 // `boid task current` RPC (docs/plans/phase5-shim-and-task-context.md)
-// reuses the exact same projection instead of re-deriving it — the file
-// drop (via this function) and the RPC must never drift apart while both
-// exist side by side.
+// reuses the exact same projection instead of re-deriving it.
 //
 // Readonly is populated from task.Readonly directly, the same field
 // IsReadonly reads — there is no second source of truth to drift against.
-// (Prior to the environment.yaml 縮退, docs/plans/phase5-shim-and-task-
-// context.md 決定事項 4, Phase 5b PR5, buildEnvironmentYAML's environment.yaml
-// also derived a `readonly` value, re-computed from Visibility rather than
-// read from this same field; that section is retired now.)
 func SnapshotTask(task *Task) *TaskSnapshot {
 	if task == nil {
 		return nil

@@ -49,11 +49,6 @@ type WireConfig struct {
 	// runtime directory here to host the per-sandbox docker proxy socket and
 	// resource ledger.
 	RuntimesDir string
-	// AttachmentsRoot is the data-home directory under which per-task
-	// attachments live (`<root>/tasks/<id>/attachments`). When non-empty the
-	// runner threads it through SandboxRuntimeInfo so BuildSandboxSpec can
-	// add the read-only bind to `~/.boid/attachments` for every harness.
-	AttachmentsRoot string
 	// GitGateway is the git gateway's job-token registry
 	// (docs/plans/git-gateway-cutover.md PR4). nil disables gateway token
 	// registration entirely.
@@ -67,22 +62,21 @@ type WireConfig struct {
 
 func Wire(cfg WireConfig) *Runner {
 	return &Runner{
-		DB:              cfg.DB,
-		Runtime:         cfg.Runtime,
-		Broker:          cfg.Broker,
-		Sandbox:         cfg.Sandbox,
-		SecretStore:     cfg.SecretStore,
-		Projects:        cfg.Projects,
-		Hydrator:        cfg.Hydrator,
-		Workspaces:      cfg.Workspaces,
-		ProxyAllocator:  cfg.ProxyAllocator,
-		BoidBinary:      cfg.BoidBinary,
-		ServerSocket:    cfg.ServerSocket,
-		ProxyPort:       cfg.ProxyPort,
-		AllowedDomains:  cfg.AllowedDomains,
-		RuntimesDir:     cfg.RuntimesDir,
-		AttachmentsRoot: cfg.AttachmentsRoot,
-		GitGateway:      cfg.GitGateway,
-		GatewayURL:      cfg.GatewayURL,
+		DB:             cfg.DB,
+		Runtime:        cfg.Runtime,
+		Broker:         cfg.Broker,
+		Sandbox:        cfg.Sandbox,
+		SecretStore:    cfg.SecretStore,
+		Projects:       cfg.Projects,
+		Hydrator:       cfg.Hydrator,
+		Workspaces:     cfg.Workspaces,
+		ProxyAllocator: cfg.ProxyAllocator,
+		BoidBinary:     cfg.BoidBinary,
+		ServerSocket:   cfg.ServerSocket,
+		ProxyPort:      cfg.ProxyPort,
+		AllowedDomains: cfg.AllowedDomains,
+		RuntimesDir:    cfg.RuntimesDir,
+		GitGateway:     cfg.GitGateway,
+		GatewayURL:     cfg.GatewayURL,
 	}
 }

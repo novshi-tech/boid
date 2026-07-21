@@ -654,10 +654,10 @@ func (h *WebHandler) PostAnswer(w http.ResponseWriter, r *http.Request) {
 
 	// Validate + persist attachments before submitting the answer so the
 	// running agent observes a consistent view: any file referenced in the
-	// answer text (via the `~/.boid/attachments/<name>` path inserted by the
+	// answer text (via the `[attachment: <name>]` marker inserted by the
 	// paste-attach JS) must already be on disk by the time AnswerTask wakes
-	// up the task. The sandbox bind is live, so files become visible
-	// immediately.
+	// up the task, so a `boid task attachments get <name>` call issued right
+	// after the wake-up finds it immediately.
 	uploads := taskFormAttachments(r)
 	if len(uploads) > 0 {
 		if h.AttachmentsRoot == "" {

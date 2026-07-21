@@ -7,6 +7,16 @@ discovers the peer's gateway clone URL by grepping
 (see scenario.sh) — that field no longer exists, so the scenario would fail
 immediately at the grep step.
 
+Phase 5b PR6 (the "file 配布経路そのものを撤去する目玉 cutover") went further and
+retired `$HOME/.boid/context/environment.yaml` — and the rest of the
+$HOME/.boid/context/* file family — entirely, so the scenario's hook would now
+fail even earlier, at the `[[ -f "$ENV_YAML" ]]` existence check. This does not
+change the reason this scenario is skipped (SandboxRuntimeInfo.
+WorkspacePeerAdvertise / Runner.buildPeerAdvertise are kept, still computed,
+still inert — PR6 made a deliberate call not to wire them anywhere new, per
+the same open item below) — it just confirms the file-side workaround this
+skip note originally described is no longer available even in principle.
+
 There is currently no CLI/RPC replacement for peer-clone-URL discovery inside
 the sandbox (no `GatewayURL`/`GatewayJobToken` env var is threaded through
 either — see SandboxRuntimeInfo's own doc comments in sandbox_builder.go).

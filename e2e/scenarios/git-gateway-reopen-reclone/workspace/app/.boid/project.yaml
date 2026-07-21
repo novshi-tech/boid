@@ -33,14 +33,17 @@ task_behaviors:
           #     - HEAD が attempt 1 で push した commit と一致するはず
           # を hook 側で全部 pin する。
           #
-          # attempt 判定は payload.json (~/.boid/context/payload.json) を見る。
-          # reopen action は instruction 上書き無しで送るため、task.payload は
-          # attempt 1 の artifact を merge した状態で attempt 2 に持ち込まれる
-          # (internal/api/workflow_action.go の MergePayload 経路)。
+          # attempt 判定は `boid task payload --field artifact.attempt`
+          # (Phase 5b task-context RPC, docs/plans/phase5-shim-and-task-
+          # context.md — 5b-6 cutover で $HOME/.boid/context/payload.json の
+          # file 配布は撤去済み) を見る。reopen action は instruction 上書き
+          # 無しで送るため、task.payload は attempt 1 の artifact を merge
+          # した状態で attempt 2 に持ち込まれる (internal/api/workflow_action.go
+          # の MergePayload 経路)。
 
-          PAYLOAD_JSON="$HOME/.boid/context/payload.json"
           attempt=1
-          if [[ -f "$PAYLOAD_JSON" ]] && grep -q '"attempt":1' "$PAYLOAD_JSON"; then
+          attempt_field="$(boid task payload --field artifact.attempt 2>/dev/null || true)"
+          if [[ "$attempt_field" == "1" ]]; then
             attempt=2
           fi
 
@@ -67,8 +70,8 @@ task_behaviors:
 
           # attempt 2 (reopen 後): 前回 attempt 1 の pushed_commit を artifact から
           # 復元してから、fresh clone の状態を全項目 assertion する。
-          prev_pushed_commit="$(grep -oE '"pushed_commit":"[0-9a-f]+"' "$PAYLOAD_JSON" | head -1 | sed 's/.*:"\([0-9a-f]*\)".*/\1/')"
-          [[ -n "$prev_pushed_commit" ]] || { printf 'FAIL: attempt 2 could not recover attempt 1 pushed_commit from payload.json\n' >&2; cat "$PAYLOAD_JSON" >&2; exit 1; }
+          prev_pushed_commit="$(boid task payload --field artifact.pushed_commit 2>/dev/null || true)"
+          [[ -n "$prev_pushed_commit" ]] || { printf 'FAIL: attempt 2 could not recover attempt 1 pushed_commit from `boid task payload`\n' >&2; boid task payload >&2 || true; exit 1; }
 
           pushed_file_present=false
           local_only_absent=false

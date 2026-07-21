@@ -260,20 +260,20 @@ func TaskNew(projects []*orchestrator.Project, errorMsg string, form url.Values)
 					return templ_7745c5c3_Err
 				}
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 17, "</select></div><div class=\"form-group\"><label for=\"description\" class=\"form-label\">Description</label> <textarea id=\"description\" name=\"description\" class=\"form-input\" rows=\"6\" data-paste-attach data-paste-attach-prefix=\"~/.boid/attachments/\">")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 17, "</select></div><div class=\"form-group\"><label for=\"description\" class=\"form-label\">Description</label> <textarea id=\"description\" name=\"description\" class=\"form-input\" rows=\"6\" data-paste-attach>")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 			var templ_7745c5c3_Var10 string
 			templ_7745c5c3_Var10, templ_7745c5c3_Err = templ.JoinStringErrs(form.Get("description"))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/task_form.templ`, Line: 121, Col: 170}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/task_form.templ`, Line: 121, Col: 122}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var10))
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 18, "</textarea><div class=\"form-hint\">Paste images or text files from the clipboard (Ctrl+V). They are mounted inside the sandbox at <code>~/.boid/attachments/</code>.</div><ul class=\"paste-attach-list\" data-paste-attach-list></ul></div><div class=\"form-group\"><label for=\"model\" class=\"form-label\">Model</label> <input type=\"text\" id=\"model\" name=\"model\" class=\"form-input\" autocomplete=\"off\" placeholder=\"opus / sonnet / haiku\" value=\"")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 18, "</textarea><div class=\"form-hint\">Paste images or text files from the clipboard (Ctrl+V). The agent fetches them with <code>boid task attachments get &lt;name&gt;</code>.</div><ul class=\"paste-attach-list\" data-paste-attach-list></ul></div><div class=\"form-group\"><label for=\"model\" class=\"form-label\">Model</label> <input type=\"text\" id=\"model\" name=\"model\" class=\"form-input\" autocomplete=\"off\" placeholder=\"opus / sonnet / haiku\" value=\"")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
