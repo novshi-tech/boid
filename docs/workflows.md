@@ -327,5 +327,5 @@ You can mix workflows across projects — one project per workflow shape — but
 
 - [`project.yaml` reference](en/reference/project-yaml.md) — the canonical schema this document builds on.
 - [Concepts](en/guide/concepts.md) — vocabulary (task / behavior / kit / worktree / ...).
-- [`/boid-task` SKILL](../internal/skills/data/boid-task/SKILL.md) — the unified task agent: supervisor mode (readonly orchestrator) and executor mode (writable implementer), selected from `environment.yaml` `readonly`.
+- [`/boid-task` SKILL](../internal/skills/data/boid-task/SKILL.md) — the unified task agent: supervisor mode (readonly orchestrator) and executor mode (writable implementer), selected from `boid task current`'s `readonly` field.
 - [branch-policy-simplification plan](plans/branch-policy-simplification.md) — the v0.0.11 + v0.0.12 refactor that retired the `worktree:` field and per-task branch mechanism this doc used to rely on.

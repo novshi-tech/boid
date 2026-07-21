@@ -22,8 +22,8 @@ func TestSelectPrompt_UserAnswerWins(t *testing.T) {
 }
 
 // Fresh task-mode start bootstraps via the unified /boid-task skill. Mode
-// determination happens inside the skill from environment.yaml `readonly`,
-// so the prompt does not branch on behavior name.
+// determination happens inside the skill from `boid task current`'s
+// `readonly` field, so the prompt does not branch on behavior name.
 func TestSelectPrompt_TaskModeReturnsTaskSkill(t *testing.T) {
 	got := selectPrompt(false, "")
 	if got != "/boid-task" {

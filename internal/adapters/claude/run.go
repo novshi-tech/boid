@@ -100,8 +100,9 @@ const sessionSystemPrompt = "あなたは boid のサンドボックス内で起
 // taskBootstrapSkill is the single unified skill that drives any task agent
 // regardless of behavior name. With task_behaviors free naming (Track A2 #574)
 // the daemon no longer guarantees canonical names, so we route every task to
-// /boid-task which determines supervisor vs executor mode from environment.yaml
-// `readonly`.
+// /boid-task which determines supervisor vs executor mode from
+// `boid task current`'s `readonly` field (Phase 5b PR4; the file-based
+// environment.yaml `readonly` this used to read was retired by 5b-4/5b-5).
 const taskBootstrapSkill = "/boid-task"
 
 // session mirrors one entry in payload.artifact.claude_code.sessions[].

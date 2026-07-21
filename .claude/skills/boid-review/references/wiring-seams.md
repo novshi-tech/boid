@@ -502,6 +502,45 @@ source data is job-scoped, not task-scoped.
   will silently drop any new field unless also added there, which is fine (intentional, since the
   file path is being retired wholesale rather than grown) but easy to mistake for a bug if you
   don't already know this.
+- **Update (Phase 5b PR5)**: `buildEnvironmentYAML`'s `environment.yaml` End A was reduced to the
+  exact same `WorkspaceEnvView` `BuildWorkspaceEnvView` builds for `BoidOpTaskEnv` (End B) —
+  `buildEnvironmentYAML` now literally is `yaml.Marshal(BuildWorkspaceEnvView(in.AllowedDomains,
+  in.HostCommands))` (`internal/dispatcher/sandbox_builder.go`), not a separately-maintained
+  `environmentDoc` struct that merely reused `convertHostCommands` for one field the way it did
+  from PR1 through PR4. This retires this seam's `environment.yaml` half down to the two fields the
+  container model can't make an in-sandbox agent observe on its own
+  (`allowed_domains`/`host_commands`); every other field the pre-PR5 doc carried
+  (`readonly`/`worktree`/`tools`/`sandbox.*`/`filesystem.*`/`session.*`/`notes`/
+  `workspace_projects`) is gone from End A entirely — see `EnvironmentInput`'s doc comment for the
+  full list and why each one is either directly observable inside the container or served by a
+  different `boid task ...` RPC instead. Two consequences for reviewers:
+  - `buildEnvironmentYAML` and the `WorkspaceEnvView` struct End B/C serve now come from the exact
+    same `BuildWorkspaceEnvView(allowedDomains, hostCommands)` call, so *data* drift between them
+    (a field added/dropped/renamed on one side only) is structurally impossible from this PR
+    forward — a regression would require literally changing `buildEnvironmentYAML` to stop calling
+    `BuildWorkspaceEnvView`, not just letting the two implementations quietly diverge. This is **not**
+    a byte-identical claim, though: the real `boid task env` CLI path
+    (`internal/sandbox/boid_shim_task_context.go`'s `jsonToYAMLForShim`) decodes the broker's JSON
+    reply into a generic `map[string]any` before re-rendering as YAML, and yaml.v3 sorts a map's
+    keys alphabetically while preserving a struct's declared field order — so
+    `buildEnvironmentYAML`'s direct struct marshal and the CLI's JSON-round-tripped output can (and
+    do, for `host_commands[]`) come out as different bytes for identical data. A first version of
+    this PR's drift-guard test claimed byte-identity by comparing against a bare
+    `yaml.Marshal(BuildWorkspaceEnvView(...))` — which is not what the CLI actually prints — and
+    codex review caught it before merge; the fixed guard
+    (`TestBuildEnvironmentYAML_SemanticallyMatchesTaskEnvCLIPath(_EmptyInputs)`,
+    `sandbox_builder_test.go`) reproduces the CLI's actual JSON→map→YAML transform and asserts
+    semantic (parsed-document) equality instead. Keep this distinction in mind if you touch either
+    side: "same struct" guarantees data parity, not wire-format parity.
+  - `workspace_projects` (peer advertise) lost its only consumer: `SandboxRuntimeInfo.
+    WorkspacePeerAdvertise` and `Runner.buildPeerAdvertise` (`gitgateway_wire.go`) are kept but
+    currently unread by `BuildSandboxSpec` — the same "carried but inert across a PR boundary"
+    pattern `GatewayURL`/`GatewayJobToken` already used earlier in this same struct — pending a
+    future `boid workspace peers`-style RPC (tracked as an open item in the plan doc, not part of
+    this PR). `e2e/scenarios/git-gateway-peer-fetch` depended on grepping `workspace_projects` out
+    of the file and has no replacement yet, so it carries a `skip` marker (own file has the full
+    reason) rather than being rewritten or deleted; do not remove the marker without wiring an
+    actual replacement first.
 
 ## 14. shim command-name resolution
 

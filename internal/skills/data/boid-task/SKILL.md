@@ -90,6 +90,23 @@ user reply" branch to write.
 
 ## Common Infrastructure (both modes)
 
+### Filesystem lifecycle
+
+Your project clone (sandbox cwd) is destroyed when the job ends — only what
+you **commit and push** survives; anything left uncommitted or unpushed there
+is gone (see *Always commit AND push before exiting* under Executor rules).
+
+`$HOME` is different: it is a **workspace-scoped mount that persists across
+jobs in the same workspace** (the one exception is `$HOME/.boid`, which is a
+fresh per-job tmpfs, wiped every job). Files you write under `$HOME` —
+config, credentials, caches, dotfiles — are visible to later jobs in the same
+workspace; they are not thrown away with this job's sandbox. Do not assume
+"outside my project clone" means "gone when I exit" — it depends on whether
+the path is under `$HOME` or not. This also means *persists on disk* and
+*counts as your deliverable* are different things: a file surviving under
+`$HOME` into the next job is not a substitute for a pushed commit — the owner
+only sees what you report and what actually landed in git history.
+
 ### Lifecycle contract
 
 Before exiting you **must** emit exactly one of:
@@ -606,11 +623,20 @@ and reopens you.
 
 ### Executor rules
 
-- Only edit files inside your project clone (your sandbox cwd). Anything
-  outside is lost when the job's sandbox is torn down.
+- Only edit files inside your project clone (your sandbox cwd) — that is
+  the working tree the owner's report and review are about. Files placed
+  elsewhere (notably under `$HOME`) may well persist into later jobs in the
+  same workspace rather than disappear (see *Filesystem lifecycle* above),
+  but persisting on disk is not the same as being part of your deliverable:
+  only what you commit and push in the project clone counts.
 - Follow the network / host-command constraints reported by `boid task env`
   (`allowed_domains`, `host_commands`) — egress outside the allowed domains
   and host commands outside the declared allow/deny/reject rules will fail.
+- A `host_commands` entry (e.g. `gh`) runs on the host in a neutral
+  directory, not your project's checkout — it cannot infer a repo from cwd
+  (no implicit `-R`), and it receives no stdin, so passing file contents or
+  long text through stdin does not work. Pass values as literal arguments
+  instead (e.g. `--body "$(cat <file>)"` rather than `--body-file`).
 - **Always commit AND push before exiting.** This job's clone is thrown away
   when it ends — commits that were never pushed to origin are gone, and are
   never visible to any other session or to the host, even if the job itself

@@ -111,14 +111,20 @@ type SandboxRuntimeInfo struct {
 	GatewayCloneURL string
 
 	// WorkspacePeerAdvertise is the {name, clone URL, reference path} view of
-	// WorkspacePeers exposed to the agent via environment.yaml's
-	// `workspace_projects` (docs/plans/git-gateway-cutover.md PR6 cutover
-	// 「5. peer advertise の変更」 — replaces the pre-cutover host path
-	// enumeration). Built by Runner.buildPeerAdvertise, keyed by peer project
-	// ID; nil when the gateway isn't wired or no peer has a resolvable
-	// upstream_url. Distribution stays file-based (environment.yaml) for now
-	// — RPC-based advertise is a later container-migration step (「タスクコン
-	// テキストの伝搬」), out of scope here.
+	// WorkspacePeers, built by Runner.buildPeerAdvertise and keyed by peer
+	// project ID (docs/plans/git-gateway-cutover.md PR6 cutover 「5. peer
+	// advertise の変更」 — replaces the pre-cutover host path enumeration);
+	// nil when the gateway isn't wired or no peer has a resolvable
+	// upstream_url.
+	//
+	// Currently unused by BuildSandboxSpec: environment.yaml's
+	// `workspace_projects` section (its sole consumer) was removed by the
+	// environment.yaml 縮退 (docs/plans/phase5-shim-and-task-context.md 決定
+	// 事項 4, Phase 5b PR5) — peer advertise has no CLI replacement yet,
+	// tracked as a later 5b item / separate phase. Kept here — the same
+	// "carried but inert across a PR boundary" pattern as GatewayURL /
+	// GatewayJobToken above — as the ready-made input for that future
+	// `boid workspace peers`-style RPC.
 	WorkspacePeerAdvertise map[string]PeerAdvertise
 
 	// CloneWorkspaceDir is the host-side runtime dir path
@@ -203,9 +209,11 @@ func BuildSandboxSpec(spec *orchestrator.JobSpec, rt SandboxRuntimeInfo) (sandbo
 		// BOID_INVOKED_BEHAVIOR carries the resolved (canonical) behavior name
 		// for the runner / hook scripts. Skill selection no longer branches on
 		// this — every task agent bootstraps via /boid-task and determines
-		// supervisor/executor mode from environment.yaml `readonly`. The env
-		// var is still exported for legacy run-agent.py and any consumer that
-		// wants to log / branch on behavior name.
+		// supervisor/executor mode from `boid task current`'s `readonly` field
+		// (Phase 5b PR4; the file-based environment.yaml `readonly` this used
+		// to read was retired by 5b-4/5b-5). The env var is still exported for
+		// legacy run-agent.py and any consumer that wants to log / branch on
+		// behavior name.
 		// (Previously this exported BOID_INVOKED_TYPE = inst.Type, but that
 		// carried the instruction phase — always "execution" — which the runner
 		// mistook for a behavior name.)
@@ -437,30 +445,19 @@ func BuildSandboxSpec(spec *orchestrator.JobSpec, rt SandboxRuntimeInfo) (sandbo
 	argv := append([]string(nil), spec.Argv...)
 
 	// Context files: task.yaml / instructions.yaml / environment.yaml / payload.json.
-	var selfCloneDir string
-	if spec.Visibility.Clone != nil {
-		selfCloneDir = sandboxCloneDir(cloneDirNameForVisibility(spec.Visibility))
-	}
-	envInput := EnvironmentInput{
-		Visibility:             spec.Visibility,
-		WorkspacePeers:         rt.WorkspacePeers,
-		WorkspacePeerAdvertise: rt.WorkspacePeerAdvertise,
-		BuiltinPolicies:        spec.BuiltinPolicies,
-		HostCommands:           spec.HostCommands,
-		ProxyPort:              rt.ProxyPort,
-		HostGatewayIP:          hostGatewayIP,
-		AllowedDomains:         rt.AllowedDomains,
-		Kind:                   spec.Kind,
-		HarnessType:            spec.HarnessType,
-		DisplayName:            spec.DisplayName,
-		CloneDir:               selfCloneDir,
-	}
+	// environment.yaml's content is the reduced WorkspaceEnvView (decision 4,
+	// docs/plans/phase5-shim-and-task-context.md) — allowed_domains and
+	// host_commands only, the same two primitives `boid task env` returns
+	// (End B/C of wiring-seams.md #13).
 	files = append(files, contextFiles(
 		homeDir,
 		spec.Task,
 		spec.Instruction,
 		spec.PrimaryInput,
-		envInput,
+		EnvironmentInput{
+			AllowedDomains: rt.AllowedDomains,
+			HostCommands:   spec.HostCommands,
+		},
 	)...)
 
 	// Output dir sentinel — guarantees $HOME/.boid/output/ exists before the
@@ -598,8 +595,12 @@ const (
 	// dynamically cloning a workspace peer had no obvious place to put it
 	// other than $HOME or /tmp (both tmpfs, RAM-backed) — /workspace/<peer>
 	// is the natural spot once /workspace is a parent dir. See
-	// PeerAdvertise.CloneDir / environmentFilesystem.CloneDir for how peers
-	// and the self project each learn their own suggested directory name.
+	// PeerAdvertise.CloneDir for how a peer learns its own suggested
+	// directory name. The self project has no equivalent advertised field
+	// any more (environment.yaml's filesystem.clone_dir was removed by the
+	// environment.yaml 縮退, Phase 5b PR5) — the sandbox actually `cd`s the
+	// agent there, so `pwd` is the only source of truth for its own project's
+	// directory now.
 	sandboxCloneTargetDir = "/workspace"
 
 	// sandboxCloneReferenceDir is where the host project's `.git` is RO
@@ -1210,7 +1211,8 @@ func applyDockerProxyEnv(env map[string]string) {
 // contextFiles materializes business data under $HOME/.boid/context/:
 //   - task.yaml          (from JobSpec.Task)
 //   - instructions.yaml  (from JobSpec.Instruction)
-//   - environment.yaml   (derived from Visibility + permissions)
+//   - environment.yaml   (the reduced WorkspaceEnvView — allowed_domains +
+//     host_commands only, see EnvironmentInput's doc comment)
 //   - payload.json/yaml  (whenever PrimaryInput is present — agents read these
 //     files to see verification findings / artifact / tasks regardless of
 //     interactive mode. non-interactive hooks also receive PrimaryInput via
@@ -1275,13 +1277,19 @@ func marshalInstructionsYAML(list []orchestrator.RoutedInstruction) string {
 }
 
 // PeerAdvertise is the {name, clone URL, reference path} view of a workspace
-// peer project exposed via environment.yaml (docs/plans/git-gateway-cutover.md
-// PR6 cutover 「5. peer advertise の変更」). Built by Runner.buildPeerAdvertise
-// from the peer's captured upstream_url + this job's gateway token; it
-// intentionally carries no host filesystem path — clone-mode jobs have no
-// host path visible for a peer project any more, only the sandbox-internal
-// RO reference dir (ReferencePath) and the gateway clone URL an agent would
-// `git clone` from if it wants to see the peer's working tree.
+// peer project (docs/plans/git-gateway-cutover.md PR6 cutover 「5. peer
+// advertise の変更」). Built by Runner.buildPeerAdvertise from the peer's
+// captured upstream_url + this job's gateway token; it intentionally carries
+// no host filesystem path — clone-mode jobs have no host path visible for a
+// peer project any more, only the sandbox-internal RO reference dir
+// (ReferencePath) and the gateway clone URL an agent would `git clone` from
+// if it wants to see the peer's working tree.
+//
+// Currently unexposed to the agent: this used to be advertised via
+// environment.yaml's `workspace_projects` section, removed by the
+// environment.yaml 縮退 (docs/plans/phase5-shim-and-task-context.md 決定事項
+// 4, Phase 5b PR5) — see SandboxRuntimeInfo.WorkspacePeerAdvertise's doc
+// comment for the current (inert, pending a future RPC) status.
 type PeerAdvertise struct {
 	// Name is the peer's repo name (the last segment of its upstream_url's
 	// host/owner/repo form), used purely for display/discoverability.
@@ -1306,240 +1314,38 @@ type PeerAdvertise struct {
 	CloneDir string
 }
 
-type workspaceProjectEntry struct {
-	Name          string `yaml:"name"`
-	CloneURL      string `yaml:"clone_url,omitempty"`
-	ReferencePath string `yaml:"reference_path,omitempty"`
-	CloneDir      string `yaml:"clone_dir,omitempty"`
-}
-
-// EnvironmentInput is the single input bundle for buildEnvironmentYAML. It is
-// derived from JobSpec + dispatcher runtime facts before contextFiles is
-// called. Centralising the inputs in one struct keeps the call sites in
-// BuildSandboxSpec / tests stable as the YAML layout grows new fields.
+// EnvironmentInput is the input bundle for buildEnvironmentYAML: the two
+// primitives that survive the environment.yaml 縮退
+// (docs/plans/phase5-shim-and-task-context.md 決定事項 4) — the proxy egress
+// allowlist and the host-command policy, the only properties an in-sandbox
+// agent cannot observe on its own. Everything the pre-縮退 environment.yaml
+// additionally carried (readonly/worktree/tools/sandbox.*/filesystem.*/
+// session.*/notes/workspace_projects) is either directly observable inside
+// the container or available via a dedicated `boid task ...` RPC instead, so
+// buildEnvironmentYAML no longer needs the rest of JobSpec/SandboxRuntimeInfo.
 type EnvironmentInput struct {
-	Visibility     orchestrator.Visibility
-	WorkspacePeers map[string]string
-	// WorkspacePeerAdvertise, when non-nil, drives the workspace_projects
-	// listing (docs/plans/git-gateway-cutover.md PR6 cutover). See
-	// SandboxRuntimeInfo.WorkspacePeerAdvertise's doc comment.
-	WorkspacePeerAdvertise map[string]PeerAdvertise
-	BuiltinPolicies        map[string]orchestrator.BuiltinPolicy
-	HostCommands           map[string]orchestrator.CommandDef
-
-	// Network plumbing. ProxyPort=0 means no proxy (and therefore no egress
-	// restriction wired by dispatcher). HostGatewayIP is the address agents
-	// see for the host; combined with ProxyPort it becomes proxy_url.
-	ProxyPort      int
-	HostGatewayIP  string
 	AllowedDomains []string
-
-	// Job category — Kind=Session gates the `session:` block; everything
-	// else inherits the same layout but without per-session metadata.
-	Kind        orchestrator.JobKind
-	HarnessType string
-	DisplayName string
-
-	// CloneDir is this job's own project's absolute sandbox-internal clone
-	// directory, e.g. "/workspace/bm-next" (workspace 親化リファクタリング,
-	// nose 2026-07-13 decision). Empty unless Visibility.Clone is set — the
-	// `filesystem.project_dir` field already carries the *host* path for
-	// descriptive purposes, but under clone-mode dispatch the host path is
-	// not actually visible inside the sandbox at all, so agents need this
-	// separate field to know where their own project's working tree
-	// actually lives.
-	CloneDir string
+	HostCommands   map[string]orchestrator.CommandDef
 }
 
-// environmentBindingEntry mirrors a BindMount in a yaml-friendly shape.
-// Mode reflects what the sandbox actually applies: empty → "ro" (default),
-// "rw" → "rw". IsFile is exposed so agents can tell a file mount from a
-// directory mount without re-running stat.
-type environmentBindingEntry struct {
-	Source string `yaml:"source"`
-	Target string `yaml:"target,omitempty"`
-	Mode   string `yaml:"mode"`
-	IsFile bool   `yaml:"is_file,omitempty"`
-}
-
-type environmentSandbox struct {
-	Kind        string `yaml:"kind"`
-	PIDIsolated bool   `yaml:"pid_isolated"`
-	UIDInside   int    `yaml:"uid_inside"`
-}
-
-type environmentNetwork struct {
-	Restricted     bool     `yaml:"restricted"`
-	Egress         string   `yaml:"egress,omitempty"`
-	ProxyURL       string   `yaml:"proxy_url,omitempty"`
-	WebFetch       string   `yaml:"webfetch,omitempty"`
-	AllowedDomains []string `yaml:"allowed_domains,omitempty"`
-}
-
-type environmentFilesystem struct {
-	ProjectDir         string                    `yaml:"project_dir,omitempty"`
-	Writable           bool                      `yaml:"writable"`
-	Worktree           bool                      `yaml:"worktree"`
-	AdditionalBindings []environmentBindingEntry `yaml:"additional_bindings,omitempty"`
-	// CloneDir is the sandbox-internal absolute path this job's own project
-	// actually cloned into (e.g. "/workspace/bm-next"), set only under
-	// clone-mode dispatch (workspace 親化リファクタリング, nose 2026-07-13
-	// decision). ProjectDir above stays the *host* path (still useful for
-	// readonly/gating semantics); this field is the sandbox-internal
-	// counterpart an agent can actually `cd` into or reference.
-	CloneDir string `yaml:"clone_dir,omitempty"`
-}
-
-type environmentSession struct {
-	Harness     string `yaml:"harness,omitempty"`
-	DisplayName string `yaml:"display_name,omitempty"`
-}
-
-type environmentDoc struct {
-	// Top-level fields kept for backward compatibility with skills that match
-	// `readonly: true` / `tools:` / `network.restricted` by literal field name.
-	// Removing them would break /boid-task dispatch logic.
-	Readonly          bool                    `yaml:"readonly"`
-	Worktree          bool                    `yaml:"worktree"`
-	Network           environmentNetwork      `yaml:"network"`
-	Tools             []string                `yaml:"tools,omitempty"`
-	WorkspaceProjects []workspaceProjectEntry `yaml:"workspace_projects,omitempty"`
-
-	// Enriched sections introduced for session-mode agent bootstrap (the
-	// `boid agent claude` path). Task-mode agents read these too; the data
-	// is purely additive.
-	Sandbox    environmentSandbox    `yaml:"sandbox"`
-	Filesystem environmentFilesystem `yaml:"filesystem"`
-	// HostCommands reuses the WorkspaceEnvHostCommand shape the `boid task
-	// env` RPC also returns (workspace_env_view.go) so the legacy YAML file
-	// and the RPC response are built from a single convertHostCommands call
-	// and cannot drift apart.
-	HostCommands []WorkspaceEnvHostCommand `yaml:"host_commands,omitempty"`
-	Session      *environmentSession       `yaml:"session,omitempty"`
-	Notes        string                    `yaml:"notes,omitempty"`
-}
-
-// environmentNotes is the prose block agents read to learn the sandbox's
-// non-obvious quirks. It is stable across jobs (the quirks are a property of
-// the sandbox implementation, not of any single job) so we keep it as a
-// package constant rather than rebuilding it per call. Use a literal block
-// scalar in the YAML output so LLMs see it as one paragraph per bullet.
-const environmentNotes = `- git はサンドボックス内の実バイナリで動作します（host への broker dispatch はありません）。 project はジョブ開始時に git gateway 経由で新規 clone されたコピーで、 origin は gateway を指しています。 commit した変更は push するまで他セッション・他ホストに共有されません。 readonly な job では push が gateway 側で拒否されます (fetch はできます)。
-- $HOME はワークスペース単位で永続化された領域を bind mount しており、 同一ワークスペース内の複数ジョブ間で HOME 直下のファイル (例: adapter が書く config・キャッシュ等) が引き継がれます。 ただし Phase 4 移行途中の暫定例外として、 adapter bindings (claude/codex/opencode) はホスト側の ~/.claude / ~/.codex / ~/.opencode 等を workspace HOME 上に上書きで bind しており (Phase 4 PR3 で退役予定)、 これらのファイル群は暫定的にホスト側と共有です。 boid kit init / workspace configure ジョブ (ProfileInit) は例外的にホスト HOME を直接見ます (ホスト側のツール検出目的)。
-- ~/.boid/context と ~/.boid/output はジョブごとに独立した tmpfs で、 ジョブ終了と共に消えます。 ~/.boid/attachments はタスクごとに read-only で bind される attachment ディレクトリで、 タスク終了までライフサイクルが継続します。
-- boid fetch (URL 単発取得の boid builtin) は host へ broker dispatch され、 network.allowed_domains の許可ドメインに対してのみ動作します。 git fetch とは別経路で、 git の fetch/push はいずれも上の bullet の gateway 経由です。
-- host_commands (gh 等) は host 側でリポジトリの checkout ディレクトリではなく中立ディレクトリで実行されます。 cwd から repo を推定する動作 (gh の暗黙 -R 等) には依存できません。 repo 文脈が必要なコマンドは kit 側の env 設定 (例: gh の GH_REPO) で渡されます。
-- host_commands には stdin が渡りません。 stdin 経由でファイル内容や長文を渡す設計は使えません。
-- host 側 gh CLI 経由のコマンドは --body-file のサンドボックスパスが見えません。 --body "$(cat <file>)" のように内容を展開して渡してください。
-- host_commands の reject ルールに一致した呼び出しは "host_commands.<name>: rejected: <reason>" 形式のメッセージで拒否されます。 各コマンドの reject (下記 host_commands セクション) に記載の reason を読み、 代替手段に従ってください。
-- Claude の WebFetch ツールはサンドボックス内では無効化されています。 Web ページを読む場合は /boid-web スキル経由で。
-- additional_bindings の mode が "ro" のパスへの書き込みは EROFS / EACCES で失敗します。 project_dir.writable=false の場合も同様です。
-`
-
-// buildEnvironmentYAML derives the environment.yaml content purely from the
-// primitives orchestrator already exposed: Visibility + BuiltinPolicies +
-// proxy state. orchestrator does not need to know the exact YAML layout.
+// buildEnvironmentYAML derives the environment.yaml content from the exact
+// same WorkspaceEnvView struct the `boid task env` broker RPC returns
+// (BuildWorkspaceEnvView, workspace_env_view.go): the file materialized into
+// every sandbox and the RPC response describe identical *data*, built from
+// one function call, so they cannot drift apart on content (wiring-seams.md
+// #13) — though not necessarily on exact bytes, since the RPC's CLI-side
+// re-render goes through an extra JSON round trip that normalizes field
+// order (see TestBuildEnvironmentYAML_SemanticallyMatchesTaskEnvCLIPath's
+// doc comment in sandbox_builder_test.go for why that's a deliberately
+// semantic, not byte-identical, guarantee). This is the environment.yaml
+// 縮退 (docs/plans/phase5-shim-and-task-context.md 決定事項 4, Phase 5b PR5):
+// everything the pre-縮退 doc additionally carried
+// (readonly/worktree/tools/sandbox.*/filesystem.*/session.*/notes/
+// workspace_projects) is gone — either directly observable inside the
+// container or available via a dedicated `boid task ...` RPC instead.
 func buildEnvironmentYAML(in EnvironmentInput) string {
-	proxyEnabled := in.ProxyPort > 0
-	readonly := in.Visibility.ProjectDir != "" && !in.Visibility.Writable
-
-	doc := environmentDoc{
-		Readonly: readonly,
-		// Worktree is permanently false as of docs/plans/git-gateway-cutover.md
-		// PR8: host git worktree allocation is retired (every project-visible
-		// job clones fresh inside the sandbox instead, PR6 cutover). The field
-		// itself stays in the YAML schema — see environmentDoc's doc comment —
-		// for skill/agent backward compatibility.
-		Worktree: false,
-		Tools:    builtinTools(in.BuiltinPolicies),
-
-		Sandbox: environmentSandbox{
-			Kind:        "rootless-userns",
-			PIDIsolated: true,
-			UIDInside:   0,
-		},
-		Network: environmentNetwork{
-			Restricted:     proxyEnabled,
-			AllowedDomains: append([]string(nil), in.AllowedDomains...),
-		},
-		Filesystem: environmentFilesystem{
-			ProjectDir: in.Visibility.ProjectDir,
-			Writable:   in.Visibility.Writable,
-			// Permanently false — see doc.Worktree above.
-			Worktree:           false,
-			AdditionalBindings: convertBindings(in.Visibility.AdditionalBindings),
-			CloneDir:           in.CloneDir,
-		},
-		HostCommands: convertHostCommands(in.HostCommands),
-		Notes:        environmentNotes,
-	}
-
-	if proxyEnabled {
-		doc.Network.Egress = "proxy-only"
-		doc.Network.WebFetch = "disabled"
-		if in.HostGatewayIP != "" {
-			doc.Network.ProxyURL = fmt.Sprintf("http://%s:%d", in.HostGatewayIP, in.ProxyPort)
-		}
-	}
-
-	// environment.yaml advertises peers only when the job actually sees its
-	// own project filesystem. Gate jobs (ProjectDir=="") get neither peer
-	// mounts nor peer listings, even though broker-side auth still covers
-	// them via AllowedProjectIDs.
-	//
-	// docs/plans/git-gateway-cutover.md PR6 cutover 「5. peer advertise の
-	// 変更」: the listing is {name, clone_url, reference_path}
-	// (WorkspacePeerAdvertise), never a host filesystem path — clone-mode
-	// jobs have no host path for a peer project to enumerate in the first
-	// place. A peer with no advertise entry (gateway unwired, or the peer's
-	// own upstream_url missing/unparseable) is simply omitted rather than
-	// falling back to the retired host-path form.
-	if in.Visibility.ProjectDir != "" {
-		peerIDs := make([]string, 0, len(in.WorkspacePeerAdvertise))
-		for id := range in.WorkspacePeerAdvertise {
-			peerIDs = append(peerIDs, id)
-		}
-		sort.Strings(peerIDs)
-		for _, id := range peerIDs {
-			// PeerAdvertise and workspaceProjectEntry share the same field
-			// shape (name/clone URL/reference path) by design — a direct
-			// type conversion, not a struct literal copy.
-			doc.WorkspaceProjects = append(doc.WorkspaceProjects, workspaceProjectEntry(in.WorkspacePeerAdvertise[id]))
-		}
-	}
-
-	if in.Kind == orchestrator.JobKindSession {
-		doc.Session = &environmentSession{
-			Harness:     in.HarnessType,
-			DisplayName: in.DisplayName,
-		}
-	}
-
-	out, _ := yaml.Marshal(doc)
+	out, _ := yaml.Marshal(BuildWorkspaceEnvView(in.AllowedDomains, in.HostCommands))
 	return string(out)
-}
-
-// convertBindings turns orchestrator.BindMount records into the yaml-friendly
-// shape exposed in environment.yaml. The default mode in orchestrator is "ro"
-// (empty string), so we normalise to the literal "ro" for readability.
-func convertBindings(bindings []orchestrator.BindMount) []environmentBindingEntry {
-	if len(bindings) == 0 {
-		return nil
-	}
-	out := make([]environmentBindingEntry, 0, len(bindings))
-	for _, b := range bindings {
-		mode := b.Mode
-		if mode == "" {
-			mode = "ro"
-		}
-		out = append(out, environmentBindingEntry{
-			Source: b.Source,
-			Target: b.Target,
-			Mode:   mode,
-			IsFile: b.IsFile,
-		})
-	}
-	return out
 }
 
 // convertHostCommands flattens the map form into a sorted slice so the YAML
@@ -1574,22 +1380,6 @@ func convertHostCommands(commands map[string]orchestrator.CommandDef) []Workspac
 		})
 	}
 	return out
-}
-
-func builtinTools(policies map[string]orchestrator.BuiltinPolicy) []string {
-	tools := []string{"git"}
-	keys := make([]string, 0, len(policies))
-	for k := range policies {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	for _, k := range keys {
-		if k == "boid" || k == "git" || k == "fetch" {
-			continue
-		}
-		tools = append(tools, k)
-	}
-	return tools
 }
 
 func jsonToYAML(s string) string {

@@ -154,11 +154,15 @@ func (r *Runner) buildGatewayCloneURL(spec *orchestrator.JobSpec, gatewayURL, ga
 }
 
 // buildPeerAdvertise resolves the {name, clone URL, reference path, clone
-// dir} view of workspacePeers exposed via environment.yaml
-// `workspace_projects` (docs/plans/git-gateway-cutover.md PR6 cutover 「5.
-// peer advertise の変更」 — replaces the pre-cutover host path enumeration;
-// CloneDir added by the workspace 親化リファクタリング, nose 2026-07-13
-// decision). Returns nil when the gateway isn't wired (gatewayURL/
+// dir} view of workspacePeers (docs/plans/git-gateway-cutover.md PR6 cutover
+// 「5. peer advertise の変更」 — replaces the pre-cutover host path
+// enumeration; CloneDir added by the workspace 親化リファクタリング, nose
+// 2026-07-13 decision). Feeds SandboxRuntimeInfo.WorkspacePeerAdvertise,
+// currently unread by BuildSandboxSpec — the environment.yaml
+// `workspace_projects` section this used to feed was removed by the
+// environment.yaml 縮退 (docs/plans/phase5-shim-and-task-context.md 決定事項
+// 4, Phase 5b PR5); see that field's own doc comment. Returns nil when the
+// gateway isn't wired (gatewayURL/
 // gatewayToken empty) or Projects is unset; an individual peer with no
 // resolvable upstream_url is skipped (with a warning) rather than aborting
 // the whole map — same fail-soft posture as buildGatewayRepos.
