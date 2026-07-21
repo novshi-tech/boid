@@ -252,7 +252,7 @@ func RunInnerChild(specPath, statePath string) (exitCode int, retErr error) {
 	// (docs/plans/phase5-shim-and-task-context.md, "5a: shim 固定ディレクト
 	// リ化" PR3): dispatcher emits `<sandboxShimBinDir>/<name> -> boid` for
 	// every host command. MkdirAll(parent) is load-bearing here — the parent
-	// dir (e.g. /opt/boid/bin) does not exist yet on the fresh tmpfs root
+	// dir (e.g. /run/boid/bin) does not exist yet on the fresh tmpfs root
 	// pivot_root just placed us on, and the earlier boid binary bind at
 	// <sandboxShimBinDir>/boid already created it via applyMount's own
 	// MkdirAll(filepath.Dir(target)) — but a symlink-only invocation (a

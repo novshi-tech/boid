@@ -17,7 +17,7 @@ import (
 // cutover (docs/plans/phase5-shim-and-task-context.md, "5a: shim 固定ディレク
 // トリ化" PR3) every shim's bind-mount basename == its declared short name by
 // construction (sandbox_builder's sandboxShimBinDir + hostCommandSymlinks
-// materialize `/opt/boid/bin/<name>` symlinks pointing at the boid multi-call
+// materialize `/run/boid/bin/<name>` symlinks pointing at the boid multi-call
 // binary), so the basename is always a trustworthy source of truth. The
 // pre-5a-3 BOID_HOST_COMMAND_NAMES env-map / ResolveShimCommandName escape
 // hatch for aliased host_commands.<name>.path entries was retired in the same

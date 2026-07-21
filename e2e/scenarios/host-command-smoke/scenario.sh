@@ -55,7 +55,7 @@ grep -F 'args=--hook-ran' "$E2E_STATE_DIR/fake-hook-cmd.log" >/dev/null || e2e_f
 # ("alias-echo") differs from the source file's basename ("echo-target"),
 # same shape as this repo's own host_commands.run-e2e -> e2e/run.sh. Post
 # 5a-3 cutover (docs/plans/phase5-shim-and-task-context.md, PR3), the
-# dispatcher materializes a /opt/boid/bin/alias-echo symlink pointing at
+# dispatcher materializes a /run/boid/bin/alias-echo symlink pointing at
 # the boid multi-call binary, so the shim's argv0 basename is already the
 # declared name — no BOID_HOST_COMMAND_NAMES side channel needed. This
 # scenario stays as the direct-observation regression guard: if the

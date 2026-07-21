@@ -46,7 +46,7 @@ boid 固有で特に重要なのが **パッケージ層境界** です。orches
 ./e2e/run.sh project-smoke
 ```
 
-サンドボックス内 (boid 経由) で開発中の場合、 `host_commands.run-e2e` の path match で host 側の broker に自動 dispatch されるため、サンドボックス内 Claude Code からも `./e2e/run.sh` でそのまま実行可能です (実体は host で動きます)。
+サンドボックス内 (boid 経由) で開発中の場合、 `host_commands.run-e2e` は Phase 5 5a-3 cutover 後は `/run/boid/bin/run-e2e` symlink 経由で PATH 解決され host 側 broker に dispatch されます。 サンドボックス内 Claude Code からは declared short name (`run-e2e [scenario]`) で呼び出してください (実体は host で動きます)。 `./e2e/run.sh` を直接叩くと sandbox 内の実スクリプトが起動されて user namespace 制約で失敗します。
 
 新しい機能を入れたら、回帰テストとして E2E シナリオを足してください。シナリオの作り方は (整備中の) e2e ガイドを参照。
 

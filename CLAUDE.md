@@ -11,8 +11,8 @@ go test -race ./...     # レースコンディション検出
 go vet ./...            # 静的解析
 ```
 
-E2E テスト（`e2e/scenarios/` 配下）は `./e2e/run.sh [scenario]` で実行する。
-サンドボックス内から呼んだ場合は `host_commands.run-e2e` の path match で host 側 broker に自動 dispatch されるため、 サンドボックス内 claude code からも普通に実行可能（実体は host で動く）。
+E2E テスト（`e2e/scenarios/` 配下）はホスト側では `./e2e/run.sh [scenario]` で実行する。
+サンドボックス内 (Claude Code 等) からは `run-e2e [scenario]` (declared short name) を PATH 経由で呼ぶ — Phase 5 5a-3 cutover 後は `/run/boid/bin/run-e2e` symlink 経由で host 側 broker に dispatch される (実体は host で動く)。 サンドボックス内で `./e2e/run.sh` を直接叩くと、 それは sandbox 内のスクリプトを実行する形になり、 sandbox 内から user namespace を作れないため失敗する。
 
 ## プロジェクト構成
 

@@ -72,7 +72,7 @@ func TestSandboxPreparer_PopulatesCleanupFields(t *testing.T) {
 		Env:     map[string]string{"HOME": "/host/home"},
 		Argv:    []string{"/bin/true"},
 		Mounts: []sandbox.Mount{
-			{Source: "/usr/local/bin/boid", Target: "/opt/boid/bin/boid", Type: sandbox.MountBind, IsFile: true, ReadOnly: true},
+			{Source: "/usr/local/bin/boid", Target: "/run/boid/bin/boid", Type: sandbox.MountBind, IsFile: true, ReadOnly: true},
 		},
 		CleanupPaths: []string{stagingDir},
 	}

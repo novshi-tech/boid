@@ -50,7 +50,7 @@ type SandboxRuntimeInfo struct {
 	//   - buildHostCommandRulesEnv turns the same map into
 	//     BOID_HOST_COMMAND_RULES;
 	//   - hostCommandSymlinks (5a-3) materializes one
-	//     `/opt/boid/bin/<name> -> boid` symlink per entry — so every
+	//     `/run/boid/bin/<name> -> boid` symlink per entry — so every
 	//     host_command becomes a shim on PATH under its declared short name,
 	//     even when host_commands.<name>.path aliases the source file to a
 	//     different basename.
@@ -1032,12 +1032,23 @@ func expandWorktreeBindings(bindings []orchestrator.BindMount, worktree, project
 //   - buildPATH prepends sandboxShimBinDir so `<name>` resolves without a
 //     full path.
 //
-// The directory choice is invariant across the userns backend (the current
-// one; the runner mkdir's it on the sandbox tmpfs root) and the future
-// container backend (the image will bake it in), so switching backends does
-// not require any change to the wiring here or to the harness / skill
-// contracts that assume shims resolve by short name via PATH.
-const sandboxShimBinDir = "/opt/boid/bin"
+// Why `/run/boid/...` and not `/opt/boid/...` (the shape the plan doc had
+// been sketching): `/opt` is in the base rbind list (see BuildPlan) so a
+// spec mount at `/opt/boid/bin/boid` lands *inside* the host `/opt` bind
+// mount. On the typical Linux host where `/opt` is root:root 755, applyMount's
+// MkdirAll fails EACCES and every sandbox dispatch aborts; on the rare host
+// where `/opt` happens to be user-writable, the same MkdirAll and the
+// runner's symlink loop instead modify the host filesystem. `/run` is not
+// in the base rbind list, so its subtree is on the sandbox's fresh tmpfs
+// root — writable, isolated, and consistent with the existing
+// `/run/boid/broker.sock` / `/run/boid/server.sock` / `/run/boid/docker-
+// proxy.sock` convention. The container backend will bake this same path
+// into the image, so no harness/skill contract needs to change when we
+// switch backends. (The plan doc still lists `/opt/boid/bin` — Phase 5
+// plan §決定 open item — as the sketched candidate; this PR settles it to
+// `/run/boid/bin` based on the concrete sandbox mount constraints
+// documented in the codex review of the 5a-3 first draft.)
+const sandboxShimBinDir = "/run/boid/bin"
 
 // hostCommandSymlinks materializes one `<sandboxShimBinDir>/<name> -> boid`
 // symlink per declared host command name (docs/plans/phase5-shim-and-task-
@@ -1054,6 +1065,15 @@ const sandboxShimBinDir = "/opt/boid/bin"
 // BOID_HOST_COMMAND_NAMES env-map lookup / broker Path-scan fallback that
 // this cutover retires.
 //
+// Names are validated as safe single-segment basenames before being
+// concatenated into LinkPath: a host_commands map key of "../etc/passwd"
+// (project.yaml is user-authored — the trust boundary is loose) would
+// otherwise let a rogue project's dispatch place a symlink outside
+// sandboxShimBinDir, potentially on the persistent workspace home volume,
+// which would then be dereferenced/replaced by later dispatches. Invalid
+// names are dropped with a warn log (defense-in-depth: they should already
+// have been rejected upstream by the project spec loader; this is the last
+// place the invariant can be enforced before the symlink hits the runner).
 // sortedKeys keeps the output order deterministic for tests.
 func hostCommandSymlinks(byName map[string]orchestrator.CommandDef) []sandbox.Symlink {
 	if len(byName) == 0 {
@@ -1061,12 +1081,36 @@ func hostCommandSymlinks(byName map[string]orchestrator.CommandDef) []sandbox.Sy
 	}
 	out := make([]sandbox.Symlink, 0, len(byName))
 	for _, name := range sortedKeys(byName) {
+		if !isSafeShimName(name) {
+			slog.Warn("host command shim: dropped invalid name (not a single-segment basename); would have escaped sandboxShimBinDir",
+				"name", name, "shim_bin_dir", sandboxShimBinDir)
+			continue
+		}
 		out = append(out, sandbox.Symlink{
 			LinkPath:   sandboxShimBinDir + "/" + name,
 			LinkTarget: "boid",
 		})
 	}
 	return out
+}
+
+// isSafeShimName reports whether name is a usable single-segment basename
+// for a symlink under sandboxShimBinDir. Rejects empty / "." / ".." / any
+// name containing a path separator or NUL, and any name that would resolve
+// to a path outside `sandboxShimBinDir` under Clean. Mirrors
+// isSafeCloneDirName above — same trust boundary, same defense-in-depth
+// posture.
+func isSafeShimName(name string) bool {
+	if name == "" || name == "." || name == ".." {
+		return false
+	}
+	if strings.ContainsAny(name, "/\x00") {
+		return false
+	}
+	if strings.HasPrefix(name, "..") {
+		return false
+	}
+	return true
 }
 
 // buildHostCommandRulesEnv builds the compact JSON payload for

@@ -13,7 +13,7 @@ task_behaviors:
           # source file's basename is "echo-target" on the host, but the
           # declared short name is "alias-echo". Post 5a-3 cutover
           # (docs/plans/phase5-shim-and-task-context.md PR3) the shim is
-          # materialized as /opt/boid/bin/alias-echo (declared name), so
+          # materialized as /run/boid/bin/alias-echo (declared name), so
           # invoking it by the declared name is the only supported call
           # shape — the pre-5a-3 shape that let you call the source basename
           # (`echo-target`) worked incidentally because the bind mount was

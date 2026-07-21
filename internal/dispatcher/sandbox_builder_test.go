@@ -270,7 +270,7 @@ func TestBuildSandboxSpec_InvokedBehaviorIsCanonical(t *testing.T) {
 // (docs/plans/phase5-shim-and-task-context.md, "5a: shim 固定ディレクトリ化"
 // PR3). It pins two facts at once:
 //   - the boid binary is bind-mounted at the fixed sandbox path
-//     `/opt/boid/bin/boid` (sandboxShimBinDir + "/boid"), never at its host
+//     `/run/boid/bin/boid` (sandboxShimBinDir + "/boid"), never at its host
 //     path any more — the pre-5a-3 host-path identity bind was retired in
 //     the same change;
 //   - the retired git-shim overlay (/usr/bin/git, /bin/git bound to the
@@ -795,7 +795,7 @@ func TestCloneDirNameForVisibility_FallsBackToProjectDirBasename(t *testing.T) {
 // TestHostCommandMounts_BoidAndGitExcluded assertion: `boid`, `git`,
 // `fetch` are reserved names — ResolveHostCommands omits them entirely, so
 // hostCommandSymlinks (fed from the same byName view) never materializes
-// a `/opt/boid/bin/boid` symlink that would collide with the dedicated
+// a `/run/boid/bin/boid` symlink that would collide with the dedicated
 // boid binary bind mount at that exact path.
 func TestHostCommandSymlinks_BoidAndGitExcluded(t *testing.T) {
 	fakeLookPath := func(name string) (string, error) {
@@ -840,7 +840,7 @@ func TestHostCommandSymlinks_NotFound(t *testing.T) {
 
 // TestHostCommandSymlinks_LinkPathIsShimBinDirSlashName pins the 5a-3
 // invariant: every declared short name gets exactly one symlink at
-// `/opt/boid/bin/<name>` pointing at `boid` (relative). It replaces the
+// `/run/boid/bin/<name>` pointing at `boid` (relative). It replaces the
 // pre-5a-3 "bind at host absolute path" scheme with a bind-mount basename
 // that always equals the declared short name — no BOID_HOST_COMMAND_NAMES
 // map lookup needed for a shim to identify itself to the broker.
@@ -890,8 +890,8 @@ func TestHostCommandSymlinks_Dedup(t *testing.T) {
 // bind-mounted at a file named "run.sh" could still identify itself as
 // "run-e2e" to the broker. With the fixed-directory symlink scheme the
 // bind-mount basename is always the declared name — proven here by pinning
-// that an aliased entry lands at `/opt/boid/bin/run-e2e` (not
-// `/opt/boid/bin/run.sh` or the source's absolute path).
+// that an aliased entry lands at `/run/boid/bin/run-e2e` (not
+// `/run/boid/bin/run.sh` or the source's absolute path).
 func TestHostCommandSymlinks_AliasedPathUsesDeclaredName(t *testing.T) {
 	dir := t.TempDir()
 	scriptPath := dir + "/run-e2e.sh"
@@ -968,8 +968,68 @@ func TestHostCommandSymlinks_PathDoesNotExist_Error(t *testing.T) {
 	}
 }
 
+// TestHostCommandSymlinks_UnsafeNameDropped is the direct-observation
+// guard for the shim-name validation added to hostCommandSymlinks (codex
+// review P1 finding on the 5a-3 first draft): a host_commands map key that
+// contains a path separator, NUL, "..", or resolves to empty/"." must NOT
+// be concatenated into a LinkPath — the runner's symlink loop would
+// otherwise create a symlink outside sandboxShimBinDir (e.g. on the
+// persistent workspace home volume, which a later job could dereference or
+// replace). project.yaml's map keys are user-authored so the trust boundary
+// is loose; this is the last-line defense-in-depth guard before the
+// symlink hits the runner. The valid sibling entry in the same map must
+// still surface (safe names are unaffected).
+func TestHostCommandSymlinks_UnsafeNameDropped(t *testing.T) {
+	byName := map[string]orchestrator.CommandDef{
+		"safe-cmd":              {Name: "safe-cmd", Path: "/usr/bin/safe-cmd"},
+		"":                      {Name: "", Path: "/usr/bin/empty"},
+		".":                     {Name: ".", Path: "/usr/bin/dot"},
+		"..":                    {Name: "..", Path: "/usr/bin/dotdot"},
+		"../etc/passwd":         {Name: "../etc/passwd", Path: "/etc/passwd"},
+		"sub/dir":               {Name: "sub/dir", Path: "/usr/bin/x"},
+		"has\x00null":           {Name: "has\x00null", Path: "/usr/bin/y"},
+		"..hidden-but-starts":   {Name: "..hidden-but-starts", Path: "/usr/bin/z"},
+	}
+	links := hostCommandSymlinks(byName)
+	if len(links) != 1 {
+		t.Fatalf("expected exactly 1 symlink (only safe-cmd valid), got %d: %+v", len(links), links)
+	}
+	if links[0].LinkPath != sandboxShimBinDir+"/safe-cmd" {
+		t.Errorf("LinkPath = %q, want %q", links[0].LinkPath, sandboxShimBinDir+"/safe-cmd")
+	}
+}
+
+// TestIsSafeShimName_Cases table-drives the boundary conditions
+// hostCommandSymlinks relies on. If this function ever changes its
+// acceptance rules, this test must move in lockstep — a broadening (e.g.
+// starting to accept "..foo") reopens the class of escape the P1 review
+// closed.
+func TestIsSafeShimName_Cases(t *testing.T) {
+	cases := []struct {
+		name string
+		want bool
+	}{
+		{"", false},
+		{".", false},
+		{"..", false},
+		{"..hidden", false}, // starts with ".."
+		{"sub/dir", false},
+		{"has\x00null", false},
+		{"safe-cmd", true},
+		{"gh", true},
+		{"run-e2e", true},
+		{"docker.compose", true},
+		{".hidden", true}, // starts with "." but not ".."
+	}
+	for _, tc := range cases {
+		if got := isSafeShimName(tc.name); got != tc.want {
+			t.Errorf("isSafeShimName(%q) = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
 // builtin と host command の複合ケース: host command 側のみ Path 指定。
-// 両方とも /opt/boid/bin/<name> に symlink される。
+// 両方とも /run/boid/bin/<name> に symlink される。
 func TestHostCommandSymlinks_MixedBuiltinAndPathCommand(t *testing.T) {
 	dir := t.TempDir()
 	scriptPath := dir + "/run-e2e.sh"
@@ -1792,7 +1852,7 @@ func TestBuildSandboxSpec_HostCommandSymlinks_UnderShimBinDir(t *testing.T) {
 // TestBuildSandboxSpec_ShimBinDirBoidMount pins the fixed-directory bind of
 // the boid multi-call binary itself. The Target is invariant across every
 // dispatch — the docs/plans/container-based-boid.md future backend swap
-// (image bakes /opt/boid/bin/) inherits the same contract without changes
+// (image bakes /run/boid/bin/) inherits the same contract without changes
 // to any harness/skill code that assumes shims resolve by short name.
 func TestBuildSandboxSpec_ShimBinDirBoidMount(t *testing.T) {
 	const boidBin = "/usr/local/bin/boid"
@@ -1825,7 +1885,7 @@ func TestBuildSandboxSpec_ShimBinDirBoidMount(t *testing.T) {
 
 // TestBuildSandboxSpec_ShimBinDirBoidMountSkippedForProfileInit pins the
 // carve-out for ProfileInit (docs/plans/phase5-shim-and-task-context.md 5a
-// PR3): ProfileInit rbinds host / read-only, so a bind at /opt/boid/bin/boid
+// PR3): ProfileInit rbinds host / read-only, so a bind at /run/boid/bin/boid
 // would either fail (target dir un-creatable) or duplicate a boid binary
 // already visible via the host rbind. ProfileInit also declares no host
 // commands, so no symlink is expected either.

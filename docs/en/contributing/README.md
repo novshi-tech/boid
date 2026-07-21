@@ -46,7 +46,7 @@ Run a specific one:
 ./e2e/run.sh project-smoke
 ```
 
-If you are developing inside a `boid` sandbox, the `host_commands.run-e2e` path match auto-dispatches the script to the host broker, so `./e2e/run.sh` works the same way from inside Claude Code (it actually runs on the host).
+If you are developing inside a `boid` sandbox, invoke `run-e2e [scenario]` (the declared short name) from within Claude Code — Phase 5 5a-3 cutover materializes `host_commands.run-e2e` as a `/run/boid/bin/run-e2e` symlink on PATH pointing at the boid shim, which dispatches the invocation to the host broker (the script actually runs on the host). Do NOT call `./e2e/run.sh` directly from inside the sandbox — that runs the checkout's script inline, which fails because a user namespace cannot spawn a nested user namespace.
 
 When you add a feature, also add an E2E scenario as the regression guard. The scenario format is documented in the planned e2e guide.
 

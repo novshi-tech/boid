@@ -438,8 +438,10 @@ their source data is job-scoped, not task-scoped.
   row. `Instructions` is populated **iff** `JobSpec.Instruction != nil` (this job's own routed
   instruction — `orchestrator.DispatchPlanner.PlanHook`'s `selectInstruction`, filtered by *this
   hook's* declared agent); `Env.HostCommands` is fed by `spec.HostCommands` (the
-  **short-name-keyed** map — not `SandboxRuntimeInfo.ResolvedHostCommands`, which is
-  absolute-host-path-keyed shim/broker plumbing only) via the shared `convertHostCommands` helper;
+  short-name-keyed map — as of Phase 5 5a-3 the byName view is the sole
+  resolved-host-command shape any code path keys off; the pre-5a-3 byPath sibling
+  `SandboxRuntimeInfo.ResolvedHostCommands` is retired, see seam #14's landed note) via the shared
+  `convertHostCommands` helper;
   `Env.AllowedDomains` comes from the `allowedDomains` local in `Runner.Dispatch`; `Payload` is
   `JobSpec.PrimaryInput` (already trait-filtered by `orchestrator.FilterPayloadByTraits` at plan
   time, per the firing hook's declared `Traits.Consumes`). `boid task current` instead re-derives

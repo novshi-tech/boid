@@ -15,7 +15,7 @@ func TestCommandFromArgv0(t *testing.T) {
 		{"/usr/local/bin/boid", "boid"},
 		{"./relative/path/to/cmd", "cmd"},
 		{"simple", "simple"},
-		{"/opt/boid/bin/gh", "gh"},
+		{"/run/boid/bin/gh", "gh"},
 	}
 
 	for _, tt := range tests {
