@@ -271,11 +271,12 @@ func selectInstruction(task *Task, agent string) *RoutedInstruction {
 // drop (via this function) and the RPC must never drift apart while both
 // exist side by side.
 //
-// Readonly is populated from task.Readonly directly (the same field
-// IsReadonly reads), not re-derived from Visibility like
-// buildEnvironmentYAML's environment.yaml `readonly` — both trace back to
-// the identical task-row value, so there is no second source of truth to
-// drift against.
+// Readonly is populated from task.Readonly directly, the same field
+// IsReadonly reads — there is no second source of truth to drift against.
+// (Prior to the environment.yaml 縮退, docs/plans/phase5-shim-and-task-
+// context.md 決定事項 4, Phase 5b PR5, buildEnvironmentYAML's environment.yaml
+// also derived a `readonly` value, re-computed from Visibility rather than
+// read from this same field; that section is retired now.)
 func SnapshotTask(task *Task) *TaskSnapshot {
 	if task == nil {
 		return nil

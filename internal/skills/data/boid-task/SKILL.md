@@ -611,6 +611,11 @@ and reopens you.
 - Follow the network / host-command constraints reported by `boid task env`
   (`allowed_domains`, `host_commands`) — egress outside the allowed domains
   and host commands outside the declared allow/deny/reject rules will fail.
+- A `host_commands` entry (e.g. `gh`) runs on the host in a neutral
+  directory, not your project's checkout — it cannot infer a repo from cwd
+  (no implicit `-R`), and it receives no stdin, so passing file contents or
+  long text through stdin does not work. Pass values as literal arguments
+  instead (e.g. `--body "$(cat <file>)"` rather than `--body-file`).
 - **Always commit AND push before exiting.** This job's clone is thrown away
   when it ends — commits that were never pushed to origin are gone, and are
   never visible to any other session or to the host, even if the job itself

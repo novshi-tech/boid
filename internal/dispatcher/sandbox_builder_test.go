@@ -1536,7 +1536,7 @@ func TestBuildSandboxSpec_DockerProxy_DisabledWhenNoSocketPath(t *testing.T) {
 
 // parsedEnvDoc parses the YAML environment.yaml emitted by buildEnvironmentYAML
 // into a generic map for assertion in the tests below. Keeping it a map rather
-// than the typed environmentDoc keeps the tests robust to additive layout
+// than the typed WorkspaceEnvView keeps the tests robust to additive layout
 // changes — they only assert on what they care about.
 func parsedEnvDoc(t *testing.T, in EnvironmentInput) map[string]any {
 	t.Helper()
@@ -1548,244 +1548,135 @@ func parsedEnvDoc(t *testing.T, in EnvironmentInput) map[string]any {
 	return doc
 }
 
-// Skills downstream match on the literal top-level `readonly:` field. Renaming
-// or nesting it would silently break /boid-task's supervisor/executor mode
-// determination (which keys off `readonly`).
-func TestBuildEnvironmentYAML_BackcompatTopLevelFields(t *testing.T) {
-	doc := parsedEnvDoc(t, EnvironmentInput{
-		Visibility: orchestrator.Visibility{
-			ProjectDir: "/workspace/proj",
-			Writable:   false,
+// TestBuildEnvironmentYAML_ReducedSchema pins the environment.yaml 縮退
+// (docs/plans/phase5-shim-and-task-context.md 決定事項 4, Phase 5b PR5):
+// buildEnvironmentYAML's output must contain only the two properties an
+// in-sandbox agent cannot observe on its own (allowed_domains,
+// host_commands). Every section the legacy environment.yaml additionally
+// carried (readonly/worktree/tools/sandbox.*/filesystem.*/session.*/notes/
+// workspace_projects, plus the `network:` wrapper allowed_domains used to
+// live under) must be gone entirely — grep-based on the raw YAML text rather
+// than typed-struct field checks, so a future accidental reintroduction of
+// any retired key fails loudly regardless of where in the doc it reappears.
+func TestBuildEnvironmentYAML_ReducedSchema(t *testing.T) {
+	raw := buildEnvironmentYAML(EnvironmentInput{
+		AllowedDomains: []string{"github.com"},
+		HostCommands: map[string]orchestrator.CommandDef{
+			"gh": {Name: "gh", AllowedSubcommands: []string{"pr"}},
 		},
-		ProxyPort: 9001,
 	})
 
-	if doc["readonly"] != true {
-		t.Errorf("top-level readonly = %v, want true (skills match on this key)", doc["readonly"])
+	for _, want := range []string{"allowed_domains:", "host_commands:"} {
+		if !strings.Contains(raw, want) {
+			t.Errorf("environment.yaml missing %q:\n%s", want, raw)
+		}
 	}
-	// worktree is permanently false as of git gateway cutover PR8 (host
-	// worktree allocation retired) — the field stays in the schema for
-	// skill/agent backward compatibility, see buildEnvironmentYAML.
-	if doc["worktree"] != false {
-		t.Errorf("top-level worktree = %v, want false (permanently retired)", doc["worktree"])
-	}
-	network, ok := doc["network"].(map[string]any)
-	if !ok {
-		t.Fatalf("network section is missing or wrong type: %T", doc["network"])
-	}
-	if network["restricted"] != true {
-		t.Errorf("network.restricted = %v, want true", network["restricted"])
-	}
-	if _, has := doc["tools"]; !has {
-		t.Error("top-level tools list must remain present for skill compatibility")
+
+	for _, retired := range []string{
+		"sandbox:", "filesystem:", "session:", "notes:", "tools:",
+		"workspace_projects:", "readonly:", "worktree:",
+		"network.restricted:", "network.egress:", "network.proxy_url:",
+		"network.webfetch:", "network:",
+	} {
+		if strings.Contains(raw, retired) {
+			t.Errorf("environment.yaml still contains retired section %q:\n%s", retired, raw)
+		}
 	}
 }
 
-func TestBuildEnvironmentYAML_SandboxSectionPresent(t *testing.T) {
-	doc := parsedEnvDoc(t, EnvironmentInput{})
-	sb, ok := doc["sandbox"].(map[string]any)
-	if !ok {
-		t.Fatalf("sandbox section missing: %v", doc["sandbox"])
-	}
-	if sb["kind"] != "rootless-userns" {
-		t.Errorf("sandbox.kind = %v, want rootless-userns", sb["kind"])
-	}
-	if sb["pid_isolated"] != true {
-		t.Errorf("sandbox.pid_isolated = %v, want true", sb["pid_isolated"])
-	}
-	if sb["uid_inside"] != 0 {
-		t.Errorf("sandbox.uid_inside = %v, want 0", sb["uid_inside"])
+// TestBuildEnvironmentYAML_ReducedSchema_EmptyInput guards the degenerate
+// all-zero-value EnvironmentInput case: the pre-縮退 schema unconditionally
+// emitted sandbox:/filesystem:/network:/tools: sections regardless of input,
+// so an all-empty EnvironmentInput is the sharpest regression trap for "a
+// retired section crept back in as an always-present default".
+func TestBuildEnvironmentYAML_ReducedSchema_EmptyInput(t *testing.T) {
+	raw := buildEnvironmentYAML(EnvironmentInput{})
+	for _, retired := range []string{
+		"sandbox:", "filesystem:", "session:", "network:", "notes:",
+		"readonly:", "worktree:", "tools:", "workspace_projects:",
+	} {
+		if strings.Contains(raw, retired) {
+			t.Errorf("environment.yaml (empty input) still contains retired section %q:\n%s", retired, raw)
+		}
 	}
 }
 
-func TestBuildEnvironmentYAML_NetworkProxyURLAndAllowedDomains(t *testing.T) {
-	doc := parsedEnvDoc(t, EnvironmentInput{
-		ProxyPort:      8118,
-		HostGatewayIP:  "10.0.2.2",
-		AllowedDomains: []string{"pypi.org", "github.com"},
-	})
-	network, ok := doc["network"].(map[string]any)
-	if !ok {
-		t.Fatalf("network section missing")
-	}
-	if network["proxy_url"] != "http://10.0.2.2:8118" {
-		t.Errorf("proxy_url = %v, want http://10.0.2.2:8118", network["proxy_url"])
-	}
-	if network["egress"] != "proxy-only" {
-		t.Errorf("egress = %v, want proxy-only", network["egress"])
-	}
-	if network["webfetch"] != "disabled" {
-		t.Errorf("webfetch = %v, want disabled", network["webfetch"])
-	}
-	allowed, ok := network["allowed_domains"].([]any)
+// TestBuildEnvironmentYAML_AllowedDomainsTopLevel pins allowed_domains' new
+// top-level position (it lived under `network.allowed_domains` before the
+// 縮退; the `network:` wrapper is gone entirely now that nothing else lives
+// under it) — matching WorkspaceEnvView's YAML tag and
+// references/data-model.md's documented `boid task env` schema.
+func TestBuildEnvironmentYAML_AllowedDomainsTopLevel(t *testing.T) {
+	doc := parsedEnvDoc(t, EnvironmentInput{AllowedDomains: []string{"pypi.org", "github.com"}})
+	allowed, ok := doc["allowed_domains"].([]any)
 	if !ok || len(allowed) != 2 {
-		t.Fatalf("allowed_domains = %v, want 2 entries", network["allowed_domains"])
+		t.Fatalf("allowed_domains = %v, want 2 entries", doc["allowed_domains"])
 	}
 	if allowed[0] != "pypi.org" || allowed[1] != "github.com" {
 		t.Errorf("allowed_domains order = %v, want [pypi.org, github.com]", allowed)
 	}
-}
-
-// When the proxy is off (e.g. unit-test wiring without a real proxy port) the
-// proxy_url / egress / webfetch fields must be absent so agents don't believe
-// there's a proxy enforcing rules that isn't there.
-func TestBuildEnvironmentYAML_ProxyOffOmitsProxyFields(t *testing.T) {
-	doc := parsedEnvDoc(t, EnvironmentInput{ProxyPort: 0})
-	network := doc["network"].(map[string]any)
-	if v, ok := network["proxy_url"]; ok {
-		t.Errorf("proxy_url should be absent when ProxyPort=0, got %v", v)
-	}
-	if v, ok := network["egress"]; ok {
-		t.Errorf("egress should be absent when ProxyPort=0, got %v", v)
-	}
-	if network["restricted"] != false {
-		t.Errorf("network.restricted = %v, want false", network["restricted"])
+	if _, has := doc["network"]; has {
+		t.Errorf("network wrapper should be gone (allowed_domains is top-level now), got network=%v", doc["network"])
 	}
 }
 
-func TestBuildEnvironmentYAML_FilesystemReflectsVisibility(t *testing.T) {
-	bindings := []orchestrator.BindMount{
-		{Source: "/host/cli/claude", Target: "/usr/local/bin/claude", Mode: "", IsFile: true},
-		{Source: "/host/data", Target: "/data", Mode: "rw"},
-	}
-	doc := parsedEnvDoc(t, EnvironmentInput{
-		Visibility: orchestrator.Visibility{
-			ProjectDir:         "/workspace/proj",
-			Writable:           true,
-			AdditionalBindings: bindings,
-		},
-	})
-	fs, ok := doc["filesystem"].(map[string]any)
-	if !ok {
-		t.Fatalf("filesystem section missing")
-	}
-	if fs["project_dir"] != "/workspace/proj" {
-		t.Errorf("project_dir = %v", fs["project_dir"])
-	}
-	if fs["writable"] != true {
-		t.Errorf("writable = %v, want true", fs["writable"])
-	}
-	binds, ok := fs["additional_bindings"].([]any)
-	if !ok || len(binds) != 2 {
-		t.Fatalf("additional_bindings = %v, want 2 entries", fs["additional_bindings"])
-	}
-	first := binds[0].(map[string]any)
-	if first["source"] != "/host/cli/claude" || first["mode"] != "ro" || first["is_file"] != true {
-		t.Errorf("first binding = %v, want source=/host/cli/claude mode=ro is_file=true", first)
-	}
-	second := binds[1].(map[string]any)
-	if second["mode"] != "rw" {
-		t.Errorf("second binding mode = %v, want rw", second["mode"])
-	}
-	if _, has := fs["clone_dir"]; has {
-		t.Errorf("clone_dir = %v, want omitted when EnvironmentInput.CloneDir is empty (non-clone-mode dispatch)", fs["clone_dir"])
-	}
-}
-
-// TestBuildEnvironmentYAML_FilesystemCloneDirSetUnderCloneMode is the
-// workspace 親化リファクタリング (nose 2026-07-13 decision) regression guard
-// for the self-project half of the /workspace/<name> advertise: under
-// clone-mode dispatch, filesystem.clone_dir must carry the sandbox-internal
-// path (never the host ProjectDir, which project_dir already exposes for
-// unrelated readonly/gating purposes and is not actually mounted under
-// clone-mode).
-func TestBuildEnvironmentYAML_FilesystemCloneDirSetUnderCloneMode(t *testing.T) {
-	doc := parsedEnvDoc(t, EnvironmentInput{
-		Visibility: orchestrator.Visibility{ProjectDir: "/home/user/bm-next", ProjectName: "bm-next"},
-		CloneDir:   "/workspace/bm-next",
-	})
-	fs, ok := doc["filesystem"].(map[string]any)
-	if !ok {
-		t.Fatalf("filesystem section missing")
-	}
-	if fs["clone_dir"] != "/workspace/bm-next" {
-		t.Errorf("clone_dir = %v, want /workspace/bm-next", fs["clone_dir"])
-	}
-	if fs["project_dir"] != "/home/user/bm-next" {
-		t.Errorf("project_dir = %v, want the host path unchanged", fs["project_dir"])
-	}
-}
-
-// TestBuildEnvironmentYAML_WorkspaceProjectsUsesPeerAdvertise is the PR6
-// cutover regression guard for docs/plans/git-gateway-cutover.md 「5. peer
-// advertise の変更」: `workspace_projects` entries must carry
-// {name, clone_url, reference_path} — never a host filesystem path — and a
-// peer with no advertise entry (e.g. gateway unwired) must be omitted rather
-// than falling back to the retired host-path form.
-func TestBuildEnvironmentYAML_WorkspaceProjectsUsesPeerAdvertise(t *testing.T) {
-	doc := parsedEnvDoc(t, EnvironmentInput{
-		Visibility: orchestrator.Visibility{ProjectDir: "/workspace/proj"},
-		WorkspacePeers: map[string]string{
-			"peer-1": "/host/peer-1", // host path present but must not leak into the doc
-			"peer-2": "/host/peer-2", // no advertise entry below -> must be omitted
-		},
-		WorkspacePeerAdvertise: map[string]PeerAdvertise{
-			"peer-1": {
-				Name:          "peer-repo",
-				CloneURL:      "http://10.0.2.2:9/j/tok/github.com/o/peer-repo.git",
-				ReferencePath: "/mnt/refs/peers/peer-1.git",
-				CloneDir:      "/workspace/bm-next-lp",
+// TestBuildEnvironmentYAML_MatchesWorkspaceEnvViewRPCMarshal is the drift
+// guard wiring-seams.md #13 exists for: buildEnvironmentYAML (the
+// environment.yaml file End A materializes into every sandbox) and
+// BuildWorkspaceEnvView (what the `boid task env` RPC — End B/C — marshals
+// and returns, workspace_env_view.go) must describe the exact same data for
+// the exact same input, or the two paths could silently disagree about a
+// job's sandbox constraints during the 5b-5→5b-6 parallel-path window.
+// Comparing against yaml.Marshal(BuildWorkspaceEnvView(...)) directly
+// (bypassing the RPC's own JSON-then-YAML re-render, an orthogonal
+// wire-transport detail End B/C already cover — see
+// boid_shim_task_context.go's jsonToYAMLForShim) isolates exactly the claim
+// this PR makes: buildEnvironmentYAML now literally IS
+// `yaml.Marshal(BuildWorkspaceEnvView(...))`, so the two representations
+// cannot drift again by construction, not merely by coincidence.
+func TestBuildEnvironmentYAML_MatchesWorkspaceEnvViewRPCMarshal(t *testing.T) {
+	allowedDomains := []string{"github.com", "api.anthropic.com"}
+	hostCommands := map[string]orchestrator.CommandDef{
+		"gh": {
+			Name:               "gh",
+			AllowedSubcommands: []string{"pr", "issue"},
+			DeniedPatterns:     []string{"auth"},
+			RejectRules: []orchestrator.RejectRule{
+				{Match: "*--body-file*", Reason: `use --body "$(cat <file>)"`},
 			},
 		},
+		"aws": {Name: "aws"},
+	}
+
+	fileBytes := buildEnvironmentYAML(EnvironmentInput{
+		AllowedDomains: allowedDomains,
+		HostCommands:   hostCommands,
 	})
-	raw, _ := yaml.Marshal(doc)
-	if strings.Contains(string(raw), "/host/peer-1") || strings.Contains(string(raw), "/host/peer-2") {
-		t.Fatalf("environment.yaml must not leak a host peer path:\n%s", raw)
+
+	rpcBytes, err := yaml.Marshal(BuildWorkspaceEnvView(allowedDomains, hostCommands))
+	if err != nil {
+		t.Fatalf("yaml.Marshal(BuildWorkspaceEnvView(...)): %v", err)
 	}
-	projects, ok := doc["workspace_projects"].([]any)
-	if !ok || len(projects) != 1 {
-		t.Fatalf("workspace_projects = %v, want exactly 1 entry (peer-2 has no advertise data)", doc["workspace_projects"])
-	}
-	entry := projects[0].(map[string]any)
-	if entry["name"] != "peer-repo" {
-		t.Errorf("name = %v, want peer-repo", entry["name"])
-	}
-	if entry["clone_url"] != "http://10.0.2.2:9/j/tok/github.com/o/peer-repo.git" {
-		t.Errorf("clone_url = %v", entry["clone_url"])
-	}
-	if entry["reference_path"] != "/mnt/refs/peers/peer-1.git" {
-		t.Errorf("reference_path = %v", entry["reference_path"])
-	}
-	// clone_dir is the workspace 親化リファクタリング (nose 2026-07-13
-	// decision) addition: the suggested sandbox-internal directory an agent
-	// should clone this peer into, e.g. under /workspace alongside the self
-	// project, rather than $HOME or /tmp (both tmpfs, RAM-backed).
-	if entry["clone_dir"] != "/workspace/bm-next-lp" {
-		t.Errorf("clone_dir = %v, want /workspace/bm-next-lp", entry["clone_dir"])
-	}
-	if _, hasPath := entry["path"]; hasPath {
-		t.Errorf("workspace_projects entry must not have a legacy 'path' field: %v", entry)
+
+	if fileBytes != string(rpcBytes) {
+		t.Errorf("buildEnvironmentYAML and yaml.Marshal(BuildWorkspaceEnvView(...)) diverged:\n--- file ---\n%s\n--- rpc ---\n%s", fileBytes, string(rpcBytes))
 	}
 }
 
-func TestBuildEnvironmentYAML_SessionSectionOnlyForSessions(t *testing.T) {
-	// JobKindHook (task) -> no session section.
-	docTask := parsedEnvDoc(t, EnvironmentInput{
-		Kind:        orchestrator.JobKindHook,
-		HarnessType: "claude",
-		DisplayName: "executor",
-	})
-	if _, has := docTask["session"]; has {
-		t.Errorf("session section should be absent for JobKindHook, got %v", docTask["session"])
+// TestBuildEnvironmentYAML_MatchesWorkspaceEnvViewRPCMarshal_EmptyInputs is
+// the same drift guard for the degenerate empty-input case (no allowed
+// domains, no host commands) — the reduced schema omits both keys entirely
+// then (`omitempty` on both WorkspaceEnvView fields), which is worth pinning
+// separately since an omitempty bug affecting only one side would not show
+// up in the populated-input case above.
+func TestBuildEnvironmentYAML_MatchesWorkspaceEnvViewRPCMarshal_EmptyInputs(t *testing.T) {
+	fileBytes := buildEnvironmentYAML(EnvironmentInput{})
+	rpcBytes, err := yaml.Marshal(BuildWorkspaceEnvView(nil, nil))
+	if err != nil {
+		t.Fatalf("yaml.Marshal(BuildWorkspaceEnvView(nil, nil)): %v", err)
 	}
-
-	// JobKindSession -> session section reflects harness + display name. The
-	// `id` subfield was removed alongside session-id resume: sessions now
-	// always start fresh, so there is no persistent id to surface here.
-	docSession := parsedEnvDoc(t, EnvironmentInput{
-		Kind:        orchestrator.JobKindSession,
-		HarnessType: "claude",
-		DisplayName: "Claude session",
-	})
-	sess, ok := docSession["session"].(map[string]any)
-	if !ok {
-		t.Fatalf("session section missing for JobKindSession: %v", docSession["session"])
-	}
-	if sess["harness"] != "claude" || sess["display_name"] != "Claude session" {
-		t.Errorf("session = %v, want harness=claude display_name=Claude session", sess)
-	}
-	if _, has := sess["id"]; has {
-		t.Errorf("session must not expose an `id` subfield anymore, got %v", sess["id"])
+	if fileBytes != string(rpcBytes) {
+		t.Errorf("buildEnvironmentYAML and yaml.Marshal(BuildWorkspaceEnvView(nil, nil)) diverged:\n--- file ---\n%s\n--- rpc ---\n%s", fileBytes, string(rpcBytes))
 	}
 }
 

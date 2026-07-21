@@ -1,0 +1,19 @@
+Phase 5b PR5 (docs/plans/phase5-shim-and-task-context.md 決定事項 4) removed
+environment.yaml's `workspace_projects` section as part of the environment.yaml
+縮退 (buildEnvironmentYAML now emits only allowed_domains + host_commands, the
+same reduced WorkspaceEnvView `boid task env` returns). This scenario's hook
+discovers the peer's gateway clone URL by grepping
+`$HOME/.boid/context/environment.yaml`'s `workspace_projects[].clone_url` line
+(see scenario.sh) — that field no longer exists, so the scenario would fail
+immediately at the grep step.
+
+There is currently no CLI/RPC replacement for peer-clone-URL discovery inside
+the sandbox (no `GatewayURL`/`GatewayJobToken` env var is threaded through
+either — see SandboxRuntimeInfo's own doc comments in sandbox_builder.go).
+This is a known, tracked open item in the Phase 5b plan doc (a `boid workspace
+peers`-style RPC is deferred to a later 5b item / separate phase, per the plan
+doc's PR breakdown item 8 and its "workspace_projects (peer advertise) の CLI
+帰属" open question) — not a regression to silently work around here.
+
+Re-enable (drop this file) once that replacement lands and the scenario is
+rewritten to use it instead of grepping environment.yaml.
