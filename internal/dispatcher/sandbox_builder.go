@@ -40,20 +40,25 @@ type SandboxRuntimeInfo struct {
 	// `boid job done` trap posts completion back to the daemon.
 	Foreground bool
 
-	// ResolvedHostCommands is the absolute-path-keyed view of spec.HostCommands
-	// produced by ResolveHostCommands. Consumed by hostCommandMounts (shim
-	// bind-mount targets) and buildPATH — both still key off the bind-mount
-	// path during the 5a staging period. Empty when the job declares no host
-	// commands.
-	ResolvedHostCommands map[string]orchestrator.CommandDef
-
-	// ResolvedHostCommandsByName is the short-name-keyed view of the same
-	// resolved data (docs/plans/phase5-shim-and-task-context.md, "5a: shim
-	// 固定ディレクトリ化" PR1). This is the "policy 用" view: it is what gets
-	// registered with the broker (CommandBroker.RegisterCommands) and fed to
-	// buildHostCommandRulesEnv, since a short name survives shim relocation
-	// (5a-3) while the bind-mount path does not. Empty when the job declares
-	// no host commands.
+	// ResolvedHostCommandsByName is the short-name-keyed view of the resolved
+	// host command defs produced by ResolveHostCommands
+	// (docs/plans/phase5-shim-and-task-context.md, "5a: shim 固定ディレクトリ化"
+	// PR1). It is the single source of truth for host command wiring:
+	//
+	//   - the broker's policy table (CommandBroker.RegisterCommands) keys off
+	//     it directly;
+	//   - buildHostCommandRulesEnv turns the same map into
+	//     BOID_HOST_COMMAND_RULES;
+	//   - hostCommandSymlinks (5a-3) materializes one
+	//     `/run/boid/bin/<name> -> boid` symlink per entry — so every
+	//     host_command becomes a shim on PATH under its declared short name,
+	//     even when host_commands.<name>.path aliases the source file to a
+	//     different basename.
+	//
+	// The pre-5a-3 absolute-path-keyed sibling (ResolvedHostCommands / byPath)
+	// was dropped: it existed only to key the retired hostCommandMounts /
+	// buildHostCommandNamesEnv / per-command PATH parent, all replaced by the
+	// fixed-directory scheme. Empty when the job declares no host commands.
 	ResolvedHostCommandsByName map[string]orchestrator.CommandDef
 
 	// ProxySocketPath, when non-empty, is the host-side Unix socket path of the
@@ -256,12 +261,9 @@ func BuildSandboxSpec(spec *orchestrator.JobSpec, rt SandboxRuntimeInfo) (sandbo
 	if len(harnessBindings) > 0 {
 		pathBindings = harnessBindings
 	}
-	env["PATH"] = buildPATH(pathBindings, rt.ResolvedHostCommands, rt.BoidBinary)
+	env["PATH"] = buildPATH(pathBindings)
 	if rules := buildHostCommandRulesEnv(rt.ResolvedHostCommandsByName); rules != "" {
 		env[sandbox.HostCommandRulesEnv] = rules
-	}
-	if names := buildHostCommandNamesEnv(rt.ResolvedHostCommands); names != "" {
-		env[sandbox.HostCommandNamesEnv] = names
 	}
 	env["BOID_HOST_IP"] = hostGatewayIP
 	setIfNonEmpty(env, "BOID_WORKSPACE_SLUG", rt.WorkspaceSlug)
@@ -442,7 +444,8 @@ func BuildSandboxSpec(spec *orchestrator.JobSpec, rt SandboxRuntimeInfo) (sandbo
 		stdoutCapture = "/tmp/boid-output"
 	}
 
-	// boid binary bind + host command mounts.
+	// boid binary bind + host command shims (docs/plans/phase5-shim-and-task-
+	// context.md, "5a: shim 固定ディレクトリ化" PR3 cutover).
 	//
 	// The git-shim PATH overlay (/usr/bin/git, /bin/git bound to the boid
 	// binary) was retired in docs/plans/git-gateway-cutover.md PR6 cutover:
@@ -452,19 +455,27 @@ func BuildSandboxSpec(spec *orchestrator.JobSpec, rt SandboxRuntimeInfo) (sandbo
 	// invocation to escape through and no reason to route git through the
 	// broker any more. The broker-side git builtin and its "git"
 	// BuiltinPolicy registration were subsequently deleted in PR8.
-	if rt.BoidBinary != "" {
-		// boid バイナリをホスト実パスのまま bind mount する。
+	//
+	// 5a-3 replaces the pre-existing "bind boid at each host command's
+	// absolute host path" scheme (hostCommandMounts, retired) with a fixed
+	// directory (sandboxShimBinDir) that holds the boid multi-call binary
+	// once and a symlink per host command name pointing at it. Every shim's
+	// bind-mount basename now equals its declared short name by construction,
+	// so the retired BOID_HOST_COMMAND_NAMES env-map lookup and the broker's
+	// Path-scan fallback both become dead weight; both were dropped in the
+	// same change. ProfileInit is excluded — its host `/` rbind already
+	// exposes the boid binary at its real path and it declares no host
+	// commands, so no shim is needed.
+	var symlinks []sandbox.Symlink
+	if rt.BoidBinary != "" && spec.SandboxProfile != int(sandbox.ProfileInit) {
 		mounts = append(mounts, sandbox.Mount{
 			Source:   rt.BoidBinary,
-			Target:   rt.BoidBinary,
+			Target:   sandboxShimBinDir + "/boid",
 			Type:     sandbox.MountBind,
 			IsFile:   true,
 			ReadOnly: true,
 		})
-		// 各 host command の解決済み絶対パスに boid バイナリを bind mount し
-		// shim 化する。解決は dispatcher 入り口 (runner / API / cmd exec) で
-		// 行い rt.ResolvedHostCommands に積む。ここでは target を作るだけ。
-		mounts = append(mounts, hostCommandMounts(rt.BoidBinary, rt.ResolvedHostCommands)...)
+		symlinks = hostCommandSymlinks(rt.ResolvedHostCommandsByName)
 	}
 
 	tty := spec.Interactive
@@ -485,6 +496,7 @@ func BuildSandboxSpec(spec *orchestrator.JobSpec, rt SandboxRuntimeInfo) (sandbo
 		ID:                rt.JobID,
 		Mounts:            mounts,
 		Files:             files,
+		Symlinks:          symlinks,
 		ProxyPort:         rt.ProxyPort,
 		Argv:              argv,
 		WorkDir:           workDir,
@@ -1008,25 +1020,97 @@ func expandWorktreeBindings(bindings []orchestrator.BindMount, worktree, project
 	return out
 }
 
-// hostCommandMounts overlays the boid shim binary at every resolved host
-// command path. The map is already keyed by absolute mount target — see
-// ResolveHostCommands — so this function only constructs sandbox.Mount entries
-// in stable order for deterministic test output.
-func hostCommandMounts(boidBinary string, resolved map[string]orchestrator.CommandDef) []sandbox.Mount {
-	if len(resolved) == 0 {
+// sandboxShimBinDir is the fixed sandbox-internal directory where the boid
+// multi-call binary and one per-host-command symlink pointing at it are
+// materialized (docs/plans/phase5-shim-and-task-context.md 「目標状態 5a
+// 完了時」/「PR 分割案 5a」PR3). Consumed together:
+//
+//   - BuildSandboxSpec bind-mounts the host boid binary at
+//     `<sandboxShimBinDir>/boid`;
+//   - hostCommandSymlinks materializes `<sandboxShimBinDir>/<name> -> boid`
+//     for every declared host_commands entry;
+//   - buildPATH prepends sandboxShimBinDir so `<name>` resolves without a
+//     full path.
+//
+// Why `/run/boid/...` and not `/opt/boid/...` (the shape the plan doc had
+// been sketching): `/opt` is in the base rbind list (see BuildPlan) so a
+// spec mount at `/opt/boid/bin/boid` lands *inside* the host `/opt` bind
+// mount. On the typical Linux host where `/opt` is root:root 755, applyMount's
+// MkdirAll fails EACCES and every sandbox dispatch aborts; on the rare host
+// where `/opt` happens to be user-writable, the same MkdirAll and the
+// runner's symlink loop instead modify the host filesystem. `/run` is not
+// in the base rbind list, so its subtree is on the sandbox's fresh tmpfs
+// root — writable, isolated, and consistent with the existing
+// `/run/boid/broker.sock` / `/run/boid/server.sock` / `/run/boid/docker-
+// proxy.sock` convention. The container backend will bake this same path
+// into the image, so no harness/skill contract needs to change when we
+// switch backends. (The plan doc still lists `/opt/boid/bin` — Phase 5
+// plan §決定 open item — as the sketched candidate; this PR settles it to
+// `/run/boid/bin` based on the concrete sandbox mount constraints
+// documented in the codex review of the 5a-3 first draft.)
+const sandboxShimBinDir = "/run/boid/bin"
+
+// hostCommandSymlinks materializes one `<sandboxShimBinDir>/<name> -> boid`
+// symlink per declared host command name (docs/plans/phase5-shim-and-task-
+// context.md 5a PR3 cutover). LinkTarget is the relative "boid" — the symlink
+// is created inside the same directory as the boid binary bind mount, so a
+// relative target survives any future move of sandboxShimBinDir without a
+// second edit.
+//
+// Sourced from the short-name-keyed byName view so a host_commands.<name>.path
+// alias (e.g. `run-e2e: path: e2e/run.sh`) resolves as the declared name
+// "run-e2e" here, not the source file's basename "run.sh" — the pre-5a-3
+// hostCommandMounts scheme keyed off the absolute host path, which made the
+// bind-mount basename disagree with the declared name and forced the
+// BOID_HOST_COMMAND_NAMES env-map lookup / broker Path-scan fallback that
+// this cutover retires.
+//
+// Names are validated as safe single-segment basenames before being
+// concatenated into LinkPath: a host_commands map key of "../etc/passwd"
+// (project.yaml is user-authored — the trust boundary is loose) would
+// otherwise let a rogue project's dispatch place a symlink outside
+// sandboxShimBinDir, potentially on the persistent workspace home volume,
+// which would then be dereferenced/replaced by later dispatches. Invalid
+// names are dropped with a warn log (defense-in-depth: they should already
+// have been rejected upstream by the project spec loader; this is the last
+// place the invariant can be enforced before the symlink hits the runner).
+// sortedKeys keeps the output order deterministic for tests.
+func hostCommandSymlinks(byName map[string]orchestrator.CommandDef) []sandbox.Symlink {
+	if len(byName) == 0 {
 		return nil
 	}
-	out := make([]sandbox.Mount, 0, len(resolved))
-	for _, target := range sortedKeys(resolved) {
-		out = append(out, sandbox.Mount{
-			Source:   boidBinary,
-			Target:   target,
-			Type:     sandbox.MountBind,
-			IsFile:   true,
-			ReadOnly: true,
+	out := make([]sandbox.Symlink, 0, len(byName))
+	for _, name := range sortedKeys(byName) {
+		if !isSafeShimName(name) {
+			slog.Warn("host command shim: dropped invalid name (not a single-segment basename); would have escaped sandboxShimBinDir",
+				"name", name, "shim_bin_dir", sandboxShimBinDir)
+			continue
+		}
+		out = append(out, sandbox.Symlink{
+			LinkPath:   sandboxShimBinDir + "/" + name,
+			LinkTarget: "boid",
 		})
 	}
 	return out
+}
+
+// isSafeShimName reports whether name is a usable single-segment basename
+// for a symlink under sandboxShimBinDir. Rejects empty / "." / ".." / any
+// name containing a path separator or NUL, and any name that would resolve
+// to a path outside `sandboxShimBinDir` under Clean. Mirrors
+// isSafeCloneDirName above — same trust boundary, same defense-in-depth
+// posture.
+func isSafeShimName(name string) bool {
+	if name == "" || name == "." || name == ".." {
+		return false
+	}
+	if strings.ContainsAny(name, "/\x00") {
+		return false
+	}
+	if strings.HasPrefix(name, "..") {
+		return false
+	}
+	return true
 }
 
 // buildHostCommandRulesEnv builds the compact JSON payload for
@@ -1061,40 +1145,8 @@ func buildHostCommandRulesEnv(hostCommands map[string]orchestrator.CommandDef) s
 	return string(encoded)
 }
 
-// buildHostCommandNamesEnv builds the compact JSON payload for
-// sandbox.HostCommandNamesEnv from the dispatcher's resolved,
-// absolute-path-keyed host command defs (ResolveHostCommands' byPath view —
-// the exact same map hostCommandMounts binds the shim at). It maps each
-// shim bind-mount target to its declared short name, so a shim invocation
-// (identified inside the sandbox only by its own bind-mount path via
-// os.Executable()) can resolve its canonical broker-facing name even when
-// host_commands.<name>.path aliases it to a file whose basename differs from
-// name (e.g. run-e2e -> e2e/run.sh — see
-// docs/plans/phase5-shim-and-task-context.md 5a-2, the codex review Minor
-// finding on 5a-1: the shim's argv0 basename alone cannot recover "run-e2e"
-// from a file named "run.sh"). Deriving this from the same byPath map
-// hostCommandMounts already consumes (rather than a second, independently
-// built map) keeps the mount target ↔ declared name association a single
-// source of truth. Empty when there are no host commands, so the caller can
-// skip setting the env var entirely.
-func buildHostCommandNamesEnv(hostCommands map[string]orchestrator.CommandDef) string {
-	if len(hostCommands) == 0 {
-		return ""
-	}
-	names := make(map[string]string, len(hostCommands))
-	for path, def := range hostCommands {
-		names[path] = def.Name
-	}
-	encoded, err := json.Marshal(names)
-	if err != nil {
-		return ""
-	}
-	return string(encoded)
-}
-
-// buildPATH prepends the workspace home's ~/.local/bin, additional-binding
-// bin directories, host command directories and the boid binary directory to
-// the canonical PATH.
+// buildPATH prepends the workspace home's ~/.local/bin, sandboxShimBinDir
+// and any additional-binding bin directories to the canonical PATH.
 //
 // The workspace home's ~/.local/bin comes first, ahead of everything else:
 // Phase 4 PR3 (docs/plans/home-workspace-volume.md) retired every adapter-
@@ -1105,16 +1157,17 @@ func buildHostCommandNamesEnv(hostCommands map[string]orchestrator.CommandDef) s
 // lets a workspace override a same-named tool it also happens to see via a
 // legacy additional_binding or host_command.
 //
-// The boid binary directory is included so scripts inside the sandbox can call
-// `boid` by name. Host command shims are bind-mounted at their resolved
-// absolute host paths (see hostCommandMounts); those paths never appear on PATH
-// on their own, so a command living outside a standard directory (e.g. a tool
-// in ~/.local/bin added via the user's shell rc) would not resolve by name
-// inside the sandbox. Prepending each shim's parent directory fixes that.
+// sandboxShimBinDir is second so any shim (`boid`, `gh`, `docker`, ... —
+// see hostCommandSymlinks) resolves by short name without a full path. It
+// replaces the pre-5a-3 "prepend each host command's parent host directory"
+// scheme: shims are no longer bind-mounted at their host paths, so those
+// per-command PATH entries have nothing to expose. The scheme collapses to
+// a single entry that survives shim relocation and is identical across the
+// userns and container backends.
 //
-// Directories already covered by the base PATH (/usr/local/bin, /usr/bin, /bin)
-// are skipped, and each directory is added at most once.
-func buildPATH(bindings []orchestrator.BindMount, hostCommands map[string]orchestrator.CommandDef, boidBinary string) string {
+// Directories already covered by the base PATH (/usr/local/bin, /usr/bin,
+// /bin) are skipped, and each directory is added at most once.
+func buildPATH(bindings []orchestrator.BindMount) string {
 	var prefix []string
 	seen := map[string]bool{}
 	add := func(dir string) {
@@ -1130,21 +1183,13 @@ func buildPATH(bindings []orchestrator.BindMount, hostCommands map[string]orches
 		prefix = append(prefix, dir)
 	}
 	add(hostHomeDir() + "/.local/bin")
-	if boidBinary != "" {
-		add(filepath.Dir(boidBinary))
-	}
+	add(sandboxShimBinDir)
 	for _, bm := range bindings {
 		if strings.HasSuffix(bm.Source, "/bin") {
 			add(bm.Source)
 		} else {
 			add(bm.Source + "/bin")
 		}
-	}
-	// The map is keyed by absolute mount target — the same key hostCommandMounts
-	// bind-mounts the shim at — so the parent directory is exactly where the
-	// shim becomes visible. sortedKeys keeps the order deterministic for tests.
-	for _, target := range sortedKeys(hostCommands) {
-		add(filepath.Dir(target))
 	}
 	base := "/usr/local/bin:/usr/bin:/bin"
 	if len(prefix) > 0 {

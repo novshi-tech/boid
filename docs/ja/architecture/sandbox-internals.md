@@ -78,7 +78,7 @@ pasta の user+net namespace の内側で動きます。 この時点では**内
 
 - **bind mount** — kit の `additional_bindings`、 sandbox 内 clone の runtime dir (project が可視な場合)、 `/usr` や `/lib` 等のシステムディレクトリを `$ROOT` 配下に bind / rbind マウント。 これがサンドボックス内から見えるファイルセットを決めます
 - **`pivot_root`** — `$ROOT` を新しいルートに切り替える。 旧ルートは `/.old_root` にピボットしてから umount + rmdir する
-- **シンボリックリンク** — `boid` shim を `/opt/boid/bin/<command>` 等にリンク
+- **シンボリックリンク** — `boid` shim を `/run/boid/bin/<command>` 等にリンク
 - **`adapter.Run()`** — HarnessAdapter 経由でエージェント (claude / codex / opencode / shell) を exec し、停止シグナル (SIGUSR1 → 子に SIGTERM) の中継・終了コード正規化・broker job-done 送信を行う
 
 sandbox 内のプロセスからは:

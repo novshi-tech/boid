@@ -77,7 +77,7 @@ func RunBoidShim(args []string) (*ExecResponse, error) {
 
 	cwd, _ := os.Getwd()
 	execReq := ExecRequest{
-		Command: shimBinaryPath(os.Args[0]),
+		Command: os.Args[0],
 		Args:    append([]string(nil), args...),
 		Cwd:     cwd,
 		Token:   os.Getenv("BOID_BROKER_TOKEN"),
@@ -100,7 +100,7 @@ func runFetchShim(args []string, brokerSocket string) (*ExecResponse, error) {
 
 	cwd, _ := os.Getwd()
 	execReq := ExecRequest{
-		Command: shimBinaryPath(os.Args[0]),
+		Command: os.Args[0],
 		Args:    append([]string{"fetch"}, url),
 		Cwd:     cwd,
 		Token:   os.Getenv("BOID_BROKER_TOKEN"),

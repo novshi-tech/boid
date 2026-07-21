@@ -2,15 +2,15 @@
 set -euo pipefail
 
 # Deliberately named differently from the host_commands.<name> declared in
-# e2e/fixtures/kits/host-ops/kit.yaml ("alias-echo"): this is the 5a-2
-# regression fixture (docs/plans/phase5-shim-and-task-context.md, codex
-# review Minor finding on 5a-1) — a host_commands.<name>.path alias means the
-# file the sandbox actually sees (and the agent actually invokes) has a
-# basename that differs from the declared short name, mirroring
-# host_commands.run-e2e -> e2e/run.sh in this repo's own workspace config.
-# If the shim ever regresses to resolving its broker-facing command name from
-# argv0's basename alone, this script's invocation would report itself as
-# "echo-target" instead of "alias-echo" and the broker would reject it.
+# e2e/fixtures/kits/host-ops/kit.yaml ("alias-echo"): this is the 5a-3
+# regression fixture (docs/plans/phase5-shim-and-task-context.md 5a PR3
+# cutover). Post cutover, the dispatcher materializes a symlink at
+# /opt/boid/bin/alias-echo (declared name) pointing at the boid multi-call
+# binary, and the agent invokes it as `alias-echo` (see the hook in the
+# scenario's project.yaml). This host-side file name intentionally still
+# differs to prove the alias mapping — if the dispatcher ever regressed to
+# creating the symlink under the source basename (`echo-target`) instead,
+# the hook's `alias-echo` invocation would fail command-not-found.
 log_file="${E2E_STATE_DIR:?}/fake-alias-echo.log"
 {
   printf 'cmd=echo-target\n'

@@ -78,7 +78,7 @@ Main steps:
 
 - **bind mounts** — the kit's `additional_bindings`, the in-sandbox clone's runtime directory (when the project is visible), and system directories (`/usr`, `/lib`, etc.) are bind-mounted (or rbind-mounted) into `$ROOT`. This determines the file set visible inside the sandbox.
 - **`pivot_root`** — switches the root to `$ROOT`; the old root is pivoted to `/.old_root` then unmounted and removed.
-- **symlinks** — the `boid` shim is symlinked at `/opt/boid/bin/<command>` etc.
+- **symlinks** — the `boid` shim is symlinked at `/run/boid/bin/<command>` etc.
 - **`adapter.Run()`** — invokes the HarnessAdapter (claude / codex / opencode / shell) to exec the agent, relay the stop signal (SIGUSR1 → SIGTERM to the agent), normalise the exit code, and post the broker job-done via `brokerclient`. (`shell` is the fall-through adapter used by `boid exec` and non-agent hook scripts; the `boid agent shell` session variant was retired after the git gateway cutover.)
 
 From inside the sandbox:

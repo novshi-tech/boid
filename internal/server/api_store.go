@@ -141,7 +141,12 @@ func (r brokerRegistry) RegisterBrokerCommands(commands map[string]orchestrator.
 		ProjectDir:        project.WorkDir,
 	}
 	defs := orchestrator.HostCommands(commands).ToCommandDefs()
-	resolved, resolvedByName, err := dispatcher.ResolveHostCommands(
+	// The byPath return value used to feed api.BrokerRegisterResponse.
+	// ResolvedHostCommands so `boid exec` could reuse it for shim bind-mount
+	// targets. 5a-3 retired that consumer (see api/broker.go's field doc),
+	// so we discard it here rather than plumbing dead data through the
+	// response.
+	_, resolvedByName, err := dispatcher.ResolveHostCommands(
 		sortedBuiltinKeys(builtinPolicies),
 		defs,
 		project.WorkDir,
@@ -183,9 +188,10 @@ func (r brokerRegistry) RegisterBrokerCommands(commands map[string]orchestrator.
 	// keyed as of docs/plans/phase5-shim-and-task-context.md 5a PR1.
 	token := r.broker.RegisterCommands(resolvedByName, builtinPolicies, ctx, resolve)
 	return &api.BrokerRegisterResponse{
-		Token:                token,
-		Socket:               r.broker.SocketPath(),
-		ResolvedHostCommands: resolved,
+		Token:  token,
+		Socket: r.broker.SocketPath(),
+		// ResolvedHostCommands is omitted — see the field's doc comment in
+		// api/broker.go for why it is dead weight post 5a-3.
 	}, nil
 }
 

@@ -295,41 +295,10 @@ func TestBroker_Unregister(t *testing.T) {
 	}
 }
 
-// TestBroker_HostCommandWithAliasedPath は host_commands.<name>.path で別名
-// (例: run-e2e: path: e2e/run.sh) を使うケースの回帰テスト。dispatcher の
-// ResolveHostCommands が絶対パスを Commands map のキーにし、shim も同じ絶対
-// パスを Command に詰めるので、key と request の絶対パスが一致して lookup
-// が成功する。argv0 の basename (run.sh) は使われない。
-func TestBroker_HostCommandWithAliasedPath(t *testing.T) {
-	dir := t.TempDir()
-	scriptPath := filepath.Join(dir, "e2e", "run.sh")
-	if err := os.MkdirAll(filepath.Dir(scriptPath), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(scriptPath, []byte("#!/bin/sh\necho aliased\n"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-
-	broker := &sandbox.Broker{}
-	token := broker.Register(map[string]sandbox.CommandDef{
-		scriptPath: {
-			Name:            "run-e2e",
-			Path:            scriptPath,
-			AllowedPatterns: []string{"*"},
-		},
-	}, nil, testCtx)
-
-	resp := broker.Handle(&sandbox.ExecRequest{
-		Command: scriptPath,
-		Token:   token,
-	})
-	if resp.ExitCode != 0 {
-		t.Fatalf("exit=%d stderr=%q", resp.ExitCode, resp.Stderr)
-	}
-	if !strings.Contains(resp.Stdout, "aliased") {
-		t.Errorf("stdout = %q, want contain 'aliased'", resp.Stdout)
-	}
-}
+// (Pre-5a-3 TestBroker_HostCommandWithAliasedPath removed: it exercised the
+// pre-5a-1 absolute-path-keyed Commands map which the 5a-1 / 5a-2 / 5a-3
+// cutovers have collectively retired. The current aliased-command coverage
+// lives in TestBroker_ShortNameKeyedCommand_AliasDirectMatch below.)
 
 // TestBroker_ShortNameKeyedCommand_DirectMatch covers the 5a-1 canonical
 // lookup path (docs/plans/phase5-shim-and-task-context.md, "5a: shim 固定
@@ -357,13 +326,15 @@ func TestBroker_ShortNameKeyedCommand_DirectMatch(t *testing.T) {
 	}
 }
 
-// TestBroker_ShortNameKeyedCommand_AbsolutePathFallback is the staging-period
-// compatibility path this PR adds: the broker's Commands map is now
-// registered under short-name keys, but the shim still sends the absolute
-// bind-mount path as ExecRequest.Command until 5a-2 lands. A request whose
-// Command is the absolute path (not a key in the map) must still resolve, by
-// scanning registered CommandDefs for a Path match.
-func TestBroker_ShortNameKeyedCommand_AbsolutePathFallback(t *testing.T) {
+// TestBroker_ShortNameKeyedCommand_AbsolutePathRejected pins the 5a-3
+// cutover (docs/plans/phase5-shim-and-task-context.md 5a PR3): the pre-5a-3
+// compatibility fallback that scanned registered CommandDefs for a Path
+// match — a rollback safety net for the pre-5a-2 protocol shape — is
+// retired now that every shim's bind-mount basename equals its declared
+// short name by construction (sandboxShimBinDir + hostCommandSymlinks).
+// An absolute-path Command from a hypothetical stale caller must be
+// rejected exactly as any unknown command name would.
+func TestBroker_ShortNameKeyedCommand_AbsolutePathRejected(t *testing.T) {
 	broker := &sandbox.Broker{}
 	token := broker.Register(map[string]sandbox.CommandDef{
 		"echo": {Name: "echo", Path: "/bin/echo", AllowedPatterns: []string{"*"}},
@@ -374,57 +345,21 @@ func TestBroker_ShortNameKeyedCommand_AbsolutePathFallback(t *testing.T) {
 		Args:    []string{"hello"},
 		Token:   token,
 	})
-	if resp.ExitCode != 0 {
-		t.Fatalf("exit code = %d, want 0; stderr: %s", resp.ExitCode, resp.Stderr)
+	if resp.ExitCode != 1 {
+		t.Fatalf("exit code = %d, want 1 (Path-scan fallback retired in 5a-3)", resp.ExitCode)
 	}
-	if resp.Stdout != "hello\n" {
-		t.Errorf("stdout = %q, want %q", resp.Stdout, "hello\n")
-	}
-}
-
-// TestBroker_ShortNameKeyedCommand_AliasedPathFallbackIgnoresBasename is the
-// aliased-name regression this fallback must not reintroduce: a
-// host_commands.<name>.path override (e.g. run-e2e -> e2e/run.sh) means the
-// bind-mount path's basename ("run.sh") never equals the declared short name
-// ("run-e2e"). The fallback must match by the registered CommandDef's Path
-// field, not by filepath.Base(req.Command), or this case would 404.
-func TestBroker_ShortNameKeyedCommand_AliasedPathFallbackIgnoresBasename(t *testing.T) {
-	dir := t.TempDir()
-	scriptPath := filepath.Join(dir, "e2e", "run.sh")
-	if err := os.MkdirAll(filepath.Dir(scriptPath), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(scriptPath, []byte("#!/bin/sh\necho aliased\n"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-
-	broker := &sandbox.Broker{}
-	token := broker.Register(map[string]sandbox.CommandDef{
-		"run-e2e": {Name: "run-e2e", Path: scriptPath, AllowedPatterns: []string{"*"}},
-	}, nil, testCtx)
-
-	resp := broker.Handle(&sandbox.ExecRequest{
-		Command: scriptPath,
-		Token:   token,
-	})
-	if resp.ExitCode != 0 {
-		t.Fatalf("exit=%d stderr=%q", resp.ExitCode, resp.Stderr)
-	}
-	if !strings.Contains(resp.Stdout, "aliased") {
-		t.Errorf("stdout = %q, want contain 'aliased'", resp.Stdout)
+	if !strings.Contains(resp.Stderr, "not allowed") {
+		t.Errorf("stderr = %q, want to contain 'not allowed'", resp.Stderr)
 	}
 }
 
 // TestBroker_ShortNameKeyedCommand_AliasDirectMatch is the 5a-2 wiring this
-// PR adds (docs/plans/phase5-shim-and-task-context.md): once the shim
-// resolves an aliased host_commands.<name>.path invocation to its declared
-// short name (sandbox.ResolveShimCommandName, via BOID_HOST_COMMAND_NAMES)
-// and sends that as ExecRequest.Command, the request hits the broker's
-// Commands map by direct key — no Path-scan fallback needed at all. This is
-// the end state TestBroker_ShortNameKeyedCommand_AliasedPathFallbackIgnoresBasename
-// exists to bridge away from: that test proves the fallback still covers a
-// not-yet-migrated caller; this one proves the migrated (short-name-sending)
-// caller needs no fallback in the first place.
+// PR proves is now the ONLY resolution path
+// (docs/plans/phase5-shim-and-task-context.md 5a PR3): the shim sends the
+// declared short name (5a-3 makes this structural — the shim's bind-mount
+// basename is always the declared name after this cutover), the broker
+// hits the Commands map by direct key. No Path-scan fallback anywhere in
+// the resolution chain.
 func TestBroker_ShortNameKeyedCommand_AliasDirectMatch(t *testing.T) {
 	dir := t.TempDir()
 	scriptPath := filepath.Join(dir, "e2e", "run.sh")
@@ -441,8 +376,8 @@ func TestBroker_ShortNameKeyedCommand_AliasDirectMatch(t *testing.T) {
 	}, nil, testCtx)
 
 	// The declared short name, not the script's basename ("run.sh") nor its
-	// absolute path — exactly what a 5a-2 shim sends after
-	// ResolveShimCommandName resolves the BOID_HOST_COMMAND_NAMES alias.
+	// absolute path — exactly what a 5a-3 shim sends via CommandFromArgv0
+	// (its bind-mount basename == the declared name under sandboxShimBinDir).
 	resp := broker.Handle(&sandbox.ExecRequest{
 		Command: "run-e2e",
 		Token:   token,

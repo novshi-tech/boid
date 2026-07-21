@@ -36,10 +36,10 @@ func (b *Broker) handleStreamingExec(conn net.Conn, req *ExecRequest) {
 		return
 	}
 
-	// lookupCommand covers both the canonical short-name key and the
-	// staging-period absolute-path fallback (see its doc comment in
-	// broker.go); this is the path ShimExec actually takes (Streaming=true),
-	// so the fallback matters here, not just in the non-streaming Handle().
+	// lookupCommand is a direct short-name key lookup post 5a-3
+	// (docs/plans/phase5-shim-and-task-context.md; see its doc comment in
+	// broker.go). This is the path ShimExec actually takes (Streaming=true),
+	// so the same direct-lookup contract holds here.
 	def, ok := lookupCommand(entry.Commands, req.Command)
 	if !ok {
 		sendStreamError(conn, fmt.Sprintf("command not allowed: %s", filepath.Base(req.Command)), 1)
