@@ -209,9 +209,11 @@ func BuildSandboxSpec(spec *orchestrator.JobSpec, rt SandboxRuntimeInfo) (sandbo
 		// BOID_INVOKED_BEHAVIOR carries the resolved (canonical) behavior name
 		// for the runner / hook scripts. Skill selection no longer branches on
 		// this — every task agent bootstraps via /boid-task and determines
-		// supervisor/executor mode from environment.yaml `readonly`. The env
-		// var is still exported for legacy run-agent.py and any consumer that
-		// wants to log / branch on behavior name.
+		// supervisor/executor mode from `boid task current`'s `readonly` field
+		// (Phase 5b PR4; the file-based environment.yaml `readonly` this used
+		// to read was retired by 5b-4/5b-5). The env var is still exported for
+		// legacy run-agent.py and any consumer that wants to log / branch on
+		// behavior name.
 		// (Previously this exported BOID_INVOKED_TYPE = inst.Type, but that
 		// carried the instruction phase — always "execution" — which the runner
 		// mistook for a behavior name.)
@@ -593,8 +595,12 @@ const (
 	// dynamically cloning a workspace peer had no obvious place to put it
 	// other than $HOME or /tmp (both tmpfs, RAM-backed) — /workspace/<peer>
 	// is the natural spot once /workspace is a parent dir. See
-	// PeerAdvertise.CloneDir / environmentFilesystem.CloneDir for how peers
-	// and the self project each learn their own suggested directory name.
+	// PeerAdvertise.CloneDir for how a peer learns its own suggested
+	// directory name. The self project has no equivalent advertised field
+	// any more (environment.yaml's filesystem.clone_dir was removed by the
+	// environment.yaml 縮退, Phase 5b PR5) — the sandbox actually `cd`s the
+	// agent there, so `pwd` is the only source of truth for its own project's
+	// directory now.
 	sandboxCloneTargetDir = "/workspace"
 
 	// sandboxCloneReferenceDir is where the host project's `.git` is RO
@@ -1205,7 +1211,8 @@ func applyDockerProxyEnv(env map[string]string) {
 // contextFiles materializes business data under $HOME/.boid/context/:
 //   - task.yaml          (from JobSpec.Task)
 //   - instructions.yaml  (from JobSpec.Instruction)
-//   - environment.yaml   (derived from Visibility + permissions)
+//   - environment.yaml   (the reduced WorkspaceEnvView — allowed_domains +
+//     host_commands only, see EnvironmentInput's doc comment)
 //   - payload.json/yaml  (whenever PrimaryInput is present — agents read these
 //     files to see verification findings / artifact / tasks regardless of
 //     interactive mode. non-interactive hooks also receive PrimaryInput via
@@ -1270,13 +1277,19 @@ func marshalInstructionsYAML(list []orchestrator.RoutedInstruction) string {
 }
 
 // PeerAdvertise is the {name, clone URL, reference path} view of a workspace
-// peer project exposed via environment.yaml (docs/plans/git-gateway-cutover.md
-// PR6 cutover 「5. peer advertise の変更」). Built by Runner.buildPeerAdvertise
-// from the peer's captured upstream_url + this job's gateway token; it
-// intentionally carries no host filesystem path — clone-mode jobs have no
-// host path visible for a peer project any more, only the sandbox-internal
-// RO reference dir (ReferencePath) and the gateway clone URL an agent would
-// `git clone` from if it wants to see the peer's working tree.
+// peer project (docs/plans/git-gateway-cutover.md PR6 cutover 「5. peer
+// advertise の変更」). Built by Runner.buildPeerAdvertise from the peer's
+// captured upstream_url + this job's gateway token; it intentionally carries
+// no host filesystem path — clone-mode jobs have no host path visible for a
+// peer project any more, only the sandbox-internal RO reference dir
+// (ReferencePath) and the gateway clone URL an agent would `git clone` from
+// if it wants to see the peer's working tree.
+//
+// Currently unexposed to the agent: this used to be advertised via
+// environment.yaml's `workspace_projects` section, removed by the
+// environment.yaml 縮退 (docs/plans/phase5-shim-and-task-context.md 決定事項
+// 4, Phase 5b PR5) — see SandboxRuntimeInfo.WorkspacePeerAdvertise's doc
+// comment for the current (inert, pending a future RPC) status.
 type PeerAdvertise struct {
 	// Name is the peer's repo name (the last segment of its upstream_url's
 	// host/owner/repo form), used purely for display/discoverability.
@@ -1316,10 +1329,15 @@ type EnvironmentInput struct {
 }
 
 // buildEnvironmentYAML derives the environment.yaml content from the exact
-// same WorkspaceEnvView the `boid task env` broker RPC returns
+// same WorkspaceEnvView struct the `boid task env` broker RPC returns
 // (BuildWorkspaceEnvView, workspace_env_view.go): the file materialized into
-// every sandbox and the RPC response are built from one struct marshal, so
-// they cannot drift apart (wiring-seams.md #13). This is the environment.yaml
+// every sandbox and the RPC response describe identical *data*, built from
+// one function call, so they cannot drift apart on content (wiring-seams.md
+// #13) — though not necessarily on exact bytes, since the RPC's CLI-side
+// re-render goes through an extra JSON round trip that normalizes field
+// order (see TestBuildEnvironmentYAML_SemanticallyMatchesTaskEnvCLIPath's
+// doc comment in sandbox_builder_test.go for why that's a deliberately
+// semantic, not byte-identical, guarantee). This is the environment.yaml
 // 縮退 (docs/plans/phase5-shim-and-task-context.md 決定事項 4, Phase 5b PR5):
 // everything the pre-縮退 doc additionally carried
 // (readonly/worktree/tools/sandbox.*/filesystem.*/session.*/notes/

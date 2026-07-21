@@ -514,11 +514,24 @@ source data is job-scoped, not task-scoped.
   `workspace_projects`) is gone from End A entirely — see `EnvironmentInput`'s doc comment for the
   full list and why each one is either directly observable inside the container or served by a
   different `boid task ...` RPC instead. Two consequences for reviewers:
-  - Because both ends now derive from one function call, file/RPC drift for `Env` specifically is
-    structurally impossible from this PR forward (`TestBuildEnvironmentYAML_
-    MatchesWorkspaceEnvViewRPCMarshal(_EmptyInputs)`, `sandbox_builder_test.go`, assert byte-identical
-    output) — a regression here would require literally changing `buildEnvironmentYAML` to stop
-    calling `BuildWorkspaceEnvView`, not just letting the two implementations quietly diverge.
+  - `buildEnvironmentYAML` and the `WorkspaceEnvView` struct End B/C serve now come from the exact
+    same `BuildWorkspaceEnvView(allowedDomains, hostCommands)` call, so *data* drift between them
+    (a field added/dropped/renamed on one side only) is structurally impossible from this PR
+    forward — a regression would require literally changing `buildEnvironmentYAML` to stop calling
+    `BuildWorkspaceEnvView`, not just letting the two implementations quietly diverge. This is **not**
+    a byte-identical claim, though: the real `boid task env` CLI path
+    (`internal/sandbox/boid_shim_task_context.go`'s `jsonToYAMLForShim`) decodes the broker's JSON
+    reply into a generic `map[string]any` before re-rendering as YAML, and yaml.v3 sorts a map's
+    keys alphabetically while preserving a struct's declared field order — so
+    `buildEnvironmentYAML`'s direct struct marshal and the CLI's JSON-round-tripped output can (and
+    do, for `host_commands[]`) come out as different bytes for identical data. A first version of
+    this PR's drift-guard test claimed byte-identity by comparing against a bare
+    `yaml.Marshal(BuildWorkspaceEnvView(...))` — which is not what the CLI actually prints — and
+    codex review caught it before merge; the fixed guard
+    (`TestBuildEnvironmentYAML_SemanticallyMatchesTaskEnvCLIPath(_EmptyInputs)`,
+    `sandbox_builder_test.go`) reproduces the CLI's actual JSON→map→YAML transform and asserts
+    semantic (parsed-document) equality instead. Keep this distinction in mind if you touch either
+    side: "same struct" guarantees data parity, not wire-format parity.
   - `workspace_projects` (peer advertise) lost its only consumer: `SandboxRuntimeInfo.
     WorkspacePeerAdvertise` and `Runner.buildPeerAdvertise` (`gitgateway_wire.go`) are kept but
     currently unread by `BuildSandboxSpec` — the same "carried but inert across a PR boundary"

@@ -1,6 +1,7 @@
 package dispatcher
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"reflect"
@@ -1620,21 +1621,53 @@ func TestBuildEnvironmentYAML_AllowedDomainsTopLevel(t *testing.T) {
 	}
 }
 
-// TestBuildEnvironmentYAML_MatchesWorkspaceEnvViewRPCMarshal is the drift
+// jsonThenYAML reproduces the actual `boid task env` CLI-side transform
+// (internal/sandbox/boid_shim_task_context.go's jsonToYAMLForShim, fed by
+// internal/server/boid_executor.go's marshalTaskContextResponse): the broker
+// JSON-encodes a WorkspaceEnvView for wire transport, and the CLI decodes
+// that JSON into a generic map[string]any before re-rendering it as YAML.
+// Reimplemented here (rather than imported) because boid_shim_task_context.go
+// lives in internal/sandbox, which internal/dispatcher may import but not the
+// reverse — and jsonToYAMLForShim is unexported besides.
+func jsonThenYAML(t *testing.T, v any) []byte {
+	t.Helper()
+	wireJSON, err := json.Marshal(v)
+	if err != nil {
+		t.Fatalf("json.Marshal: %v", err)
+	}
+	var generic any
+	if err := json.Unmarshal(wireJSON, &generic); err != nil {
+		t.Fatalf("json.Unmarshal: %v", err)
+	}
+	out, err := yaml.Marshal(generic)
+	if err != nil {
+		t.Fatalf("yaml.Marshal: %v", err)
+	}
+	return out
+}
+
+// TestBuildEnvironmentYAML_SemanticallyMatchesTaskEnvCLIPath is the drift
 // guard wiring-seams.md #13 exists for: buildEnvironmentYAML (the
-// environment.yaml file End A materializes into every sandbox) and
-// BuildWorkspaceEnvView (what the `boid task env` RPC — End B/C — marshals
-// and returns, workspace_env_view.go) must describe the exact same data for
-// the exact same input, or the two paths could silently disagree about a
-// job's sandbox constraints during the 5b-5→5b-6 parallel-path window.
-// Comparing against yaml.Marshal(BuildWorkspaceEnvView(...)) directly
-// (bypassing the RPC's own JSON-then-YAML re-render, an orthogonal
-// wire-transport detail End B/C already cover — see
-// boid_shim_task_context.go's jsonToYAMLForShim) isolates exactly the claim
-// this PR makes: buildEnvironmentYAML now literally IS
-// `yaml.Marshal(BuildWorkspaceEnvView(...))`, so the two representations
-// cannot drift again by construction, not merely by coincidence.
-func TestBuildEnvironmentYAML_MatchesWorkspaceEnvViewRPCMarshal(t *testing.T) {
+// environment.yaml file End A materializes into every sandbox) and what the
+// real `boid task env` CLI prints (End B/C) must describe the exact same
+// data for the exact same input, or the two paths could silently disagree
+// about a job's sandbox constraints during the 5b-5→5b-6 parallel-path
+// window.
+//
+// This is a **semantic**, not byte-identical, comparison — codex review
+// caught that an earlier version of this test compared buildEnvironmentYAML's
+// output against a bare yaml.Marshal(BuildWorkspaceEnvView(...)), which is
+// not actually what `boid task env` prints. The real CLI path re-renders the
+// broker's JSON reply by decoding into a generic map (jsonThenYAML above,
+// mirroring jsonToYAMLForShim) — yaml.v3 sorts a map's keys alphabetically
+// but preserves a struct's declared field order, so e.g. `host_commands[]`
+// entries come out as `{name, allow, deny, reject}` (WorkspaceEnvHostCommand's
+// field order) from buildEnvironmentYAML but `{allow, deny, name, reject}`
+// (alphabetical) from the CLI path — different bytes, same data. Parsing
+// both back into map[string]any and comparing with reflect.DeepEqual asserts
+// the property that actually matters: no field is added, dropped, renamed,
+// or reshaped in translation.
+func TestBuildEnvironmentYAML_SemanticallyMatchesTaskEnvCLIPath(t *testing.T) {
 	allowedDomains := []string{"github.com", "api.anthropic.com"}
 	hostCommands := map[string]orchestrator.CommandDef{
 		"gh": {
@@ -1648,35 +1681,43 @@ func TestBuildEnvironmentYAML_MatchesWorkspaceEnvViewRPCMarshal(t *testing.T) {
 		"aws": {Name: "aws"},
 	}
 
-	fileBytes := buildEnvironmentYAML(EnvironmentInput{
+	fileYAML := buildEnvironmentYAML(EnvironmentInput{
 		AllowedDomains: allowedDomains,
 		HostCommands:   hostCommands,
 	})
+	cliYAML := jsonThenYAML(t, BuildWorkspaceEnvView(allowedDomains, hostCommands))
 
-	rpcBytes, err := yaml.Marshal(BuildWorkspaceEnvView(allowedDomains, hostCommands))
-	if err != nil {
-		t.Fatalf("yaml.Marshal(BuildWorkspaceEnvView(...)): %v", err)
+	var fileDoc, cliDoc map[string]any
+	if err := yaml.Unmarshal([]byte(fileYAML), &fileDoc); err != nil {
+		t.Fatalf("unmarshal file YAML: %v\n%s", err, fileYAML)
 	}
-
-	if fileBytes != string(rpcBytes) {
-		t.Errorf("buildEnvironmentYAML and yaml.Marshal(BuildWorkspaceEnvView(...)) diverged:\n--- file ---\n%s\n--- rpc ---\n%s", fileBytes, string(rpcBytes))
+	if err := yaml.Unmarshal(cliYAML, &cliDoc); err != nil {
+		t.Fatalf("unmarshal CLI YAML: %v\n%s", err, cliYAML)
+	}
+	if !reflect.DeepEqual(fileDoc, cliDoc) {
+		t.Errorf("environment.yaml and the `boid task env` CLI output diverged semantically:\n--- file (parsed) ---\n%#v\n--- cli (parsed) ---\n%#v", fileDoc, cliDoc)
 	}
 }
 
-// TestBuildEnvironmentYAML_MatchesWorkspaceEnvViewRPCMarshal_EmptyInputs is
+// TestBuildEnvironmentYAML_SemanticallyMatchesTaskEnvCLIPath_EmptyInputs is
 // the same drift guard for the degenerate empty-input case (no allowed
 // domains, no host commands) — the reduced schema omits both keys entirely
-// then (`omitempty` on both WorkspaceEnvView fields), which is worth pinning
+// then (`omitempty` on both WorkspaceEnvView fields), worth pinning
 // separately since an omitempty bug affecting only one side would not show
 // up in the populated-input case above.
-func TestBuildEnvironmentYAML_MatchesWorkspaceEnvViewRPCMarshal_EmptyInputs(t *testing.T) {
-	fileBytes := buildEnvironmentYAML(EnvironmentInput{})
-	rpcBytes, err := yaml.Marshal(BuildWorkspaceEnvView(nil, nil))
-	if err != nil {
-		t.Fatalf("yaml.Marshal(BuildWorkspaceEnvView(nil, nil)): %v", err)
+func TestBuildEnvironmentYAML_SemanticallyMatchesTaskEnvCLIPath_EmptyInputs(t *testing.T) {
+	fileYAML := buildEnvironmentYAML(EnvironmentInput{})
+	cliYAML := jsonThenYAML(t, BuildWorkspaceEnvView(nil, nil))
+
+	var fileDoc, cliDoc map[string]any
+	if err := yaml.Unmarshal([]byte(fileYAML), &fileDoc); err != nil {
+		t.Fatalf("unmarshal file YAML: %v\n%s", err, fileYAML)
 	}
-	if fileBytes != string(rpcBytes) {
-		t.Errorf("buildEnvironmentYAML and yaml.Marshal(BuildWorkspaceEnvView(nil, nil)) diverged:\n--- file ---\n%s\n--- rpc ---\n%s", fileBytes, string(rpcBytes))
+	if err := yaml.Unmarshal(cliYAML, &cliDoc); err != nil {
+		t.Fatalf("unmarshal CLI YAML: %v\n%s", err, cliYAML)
+	}
+	if !reflect.DeepEqual(fileDoc, cliDoc) {
+		t.Errorf("environment.yaml and the `boid task env` CLI output diverged semantically for empty inputs:\n--- file (parsed) ---\n%#v\n--- cli (parsed) ---\n%#v", fileDoc, cliDoc)
 	}
 }
 
