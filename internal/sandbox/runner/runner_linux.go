@@ -248,9 +248,30 @@ func RunInnerChild(specPath, statePath string) (exitCode int, retErr error) {
 	}
 	st.OK("inner-child", "write-files")
 
+	// Symlinks are the Phase 5 5a-3 shim materialization path
+	// (docs/plans/phase5-shim-and-task-context.md, "5a: shim 固定ディレクト
+	// リ化" PR3): dispatcher emits `<sandboxShimBinDir>/<name> -> boid` for
+	// every host command. MkdirAll(parent) is load-bearing here — the parent
+	// dir (e.g. /opt/boid/bin) does not exist yet on the fresh tmpfs root
+	// pivot_root just placed us on, and the earlier boid binary bind at
+	// <sandboxShimBinDir>/boid already created it via applyMount's own
+	// MkdirAll(filepath.Dir(target)) — but a symlink-only invocation (a
+	// future spec with no boid mount, or a test that hits this path in
+	// isolation) needs the same guarantee. Errors are surfaced instead of
+	// silently swallowed: the pre-5a-3 `_ = os.Symlink(...)` shape hid
+	// missing-parent-dir ENOENT and any other setup failure, which for the
+	// shim symlinks would have degraded to command-not-found at runtime
+	// with no diagnostic pointing back to setup.
 	for _, s := range spec.Symlinks {
+		if err := os.MkdirAll(filepath.Dir(s.LinkPath), 0o755); err != nil {
+			st.Fail("inner-child", "mkdir symlink parent "+s.LinkPath, err)
+			return 1, err
+		}
 		_ = os.Remove(s.LinkPath)
-		_ = os.Symlink(s.LinkTarget, s.LinkPath)
+		if err := os.Symlink(s.LinkTarget, s.LinkPath); err != nil {
+			st.Fail("inner-child", "symlink "+s.LinkPath, err)
+			return 1, err
+		}
 	}
 
 	// Sandbox-internal clone + branch resolution (docs/plans/git-gateway-cutover.md

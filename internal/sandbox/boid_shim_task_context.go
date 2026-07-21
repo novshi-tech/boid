@@ -40,7 +40,10 @@ func runTaskContextShim(op BoidOp, fullArgs []string, brokerSocket string) (*Exe
 
 	cwd, _ := os.Getwd()
 	execReq := ExecRequest{
-		Command: shimBinaryPath(os.Args[0]),
+		// req.Boid != nil so the broker routes on the typed payload; Command
+		// is informational only (surfaces in diagnostic logs). Preserve
+		// os.Args[0] so the log entry names the actual invocation shape.
+		Command: os.Args[0],
 		Args:    append([]string(nil), fullArgs...),
 		Cwd:     cwd,
 		Token:   os.Getenv("BOID_BROKER_TOKEN"),

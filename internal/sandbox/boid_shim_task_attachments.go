@@ -48,7 +48,7 @@ func runTaskAttachmentsList(args []string, brokerSocket string) (*ExecResponse, 
 	}
 	cwd, _ := os.Getwd()
 	execReq := ExecRequest{
-		Command: shimBinaryPath(os.Args[0]),
+		Command: os.Args[0],
 		Args:    append([]string{"task", "attachments", "list"}, args...),
 		Cwd:     cwd,
 		Token:   os.Getenv("BOID_BROKER_TOKEN"),
@@ -106,7 +106,7 @@ func runTaskAttachmentsGet(args []string, brokerSocket string) (*ExecResponse, e
 	}
 	cwd, _ := os.Getwd()
 	execReq := ExecRequest{
-		Command: shimBinaryPath(os.Args[0]),
+		Command: os.Args[0],
 		Args:    append([]string{"task", "attachments", "get"}, args...),
 		Cwd:     cwd,
 		Token:   os.Getenv("BOID_BROKER_TOKEN"),

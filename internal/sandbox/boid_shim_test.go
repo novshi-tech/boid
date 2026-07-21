@@ -56,10 +56,12 @@ func TestRunBoidShim_JobDoneSendsTypedRequest(t *testing.T) {
 	}
 
 	req := <-reqCh
-	// shim sends os.Executable() (an absolute path); the broker dispatches by
-	// req.Boid != nil, so we only verify the request is well-formed.
+	// The broker dispatches by req.Boid != nil (typed payload), so req.Command
+	// is informational only. Post 5a-3 the shim sets it to os.Args[0] (the
+	// invocation shape, absolute in unit tests running the test binary) —
+	// we only verify the request is well-formed.
 	if !filepath.IsAbs(req.Command) {
-		t.Fatalf("command = %q, want absolute path (os.Executable result)", req.Command)
+		t.Fatalf("command = %q, want absolute path (os.Args[0] in the test binary)", req.Command)
 	}
 	if req.Boid == nil {
 		t.Fatal("expected typed boid request")

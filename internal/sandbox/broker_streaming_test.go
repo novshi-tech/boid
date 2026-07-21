@@ -342,12 +342,13 @@ func TestBroker_StreamingShortNameKeyedCommand(t *testing.T) {
 	}
 }
 
-// TestBroker_StreamingAbsolutePathFallback is the streaming-path counterpart
-// of the same staging-period compatibility fallback: entry.Commands is now
-// short-name keyed, but the shim (before 5a-2) still sends the absolute
-// bind-mount path as ExecRequest.Command. handleStreamingExec must resolve
-// it via the same Path-match fallback lookupCommand implements.
-func TestBroker_StreamingAbsolutePathFallback(t *testing.T) {
+// TestBroker_StreamingAbsolutePathRejected is the streaming-path counterpart
+// of TestBroker_ShortNameKeyedCommand_AbsolutePathRejected in broker_test.go:
+// the pre-5a-3 Path-scan fallback is retired
+// (docs/plans/phase5-shim-and-task-context.md 5a PR3), so an absolute-path
+// Command from a hypothetical stale caller must be rejected exactly as any
+// unknown command name would.
+func TestBroker_StreamingAbsolutePathRejected(t *testing.T) {
 	sockPath, token := startStreamingBroker(t,
 		map[string]sandbox.CommandDef{
 			"echo": {Name: "echo", Path: "/bin/echo", AllowedPatterns: []string{"*"}},
@@ -355,17 +356,17 @@ func TestBroker_StreamingAbsolutePathFallback(t *testing.T) {
 		sandbox.TokenContext{JobID: "j-fb", TaskID: "t-fb", ProjectID: "p-fb", Role: "hook"},
 	)
 
-	stdout, _, code := dialStreaming(t, sockPath, sandbox.ExecRequest{
+	_, stderr, code := dialStreaming(t, sockPath, sandbox.ExecRequest{
 		Command: "/bin/echo",
 		Args:    []string{"hello"},
 		Token:   token,
 	})
 
-	if code != 0 {
-		t.Errorf("exit code = %d, want 0", code)
+	if code != 1 {
+		t.Errorf("exit code = %d, want 1 (Path-scan fallback retired in 5a-3)", code)
 	}
-	if !strings.Contains(stdout, "hello") {
-		t.Errorf("stdout %q does not contain 'hello'", stdout)
+	if !strings.Contains(stderr, "not allowed") {
+		t.Errorf("stderr %q does not contain 'not allowed'", stderr)
 	}
 }
 

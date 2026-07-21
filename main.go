@@ -53,13 +53,12 @@ func shimMain() {
 	}
 
 	// Resolve this invocation's declared short (host_commands.<name>) name
-	// once and reuse it for both the local fast-path check below and the
-	// broker request itself, so the two never disagree (5a-2:
-	// docs/plans/phase5-shim-and-task-context.md — ResolveShimCommandName
-	// prefers BOID_HOST_COMMAND_NAMES over the argv0 basename so a
-	// host_commands.<name>.path alias whose file basename differs from name
-	// still resolves to the declared name).
-	command := sandbox.ResolveShimCommandName(os.Args[0])
+	// from argv[0]'s basename. Post 5a-3 (docs/plans/phase5-shim-and-task-
+	// context.md, "5a: shim 固定ディレクトリ化" PR3), every shim's bind-mount
+	// basename == its declared short name by construction, so the basename is
+	// authoritative — the pre-5a-3 BOID_HOST_COMMAND_NAMES env-map lookup
+	// that used to bridge the aliased-basename case is retired.
+	command := sandbox.CommandFromArgv0(os.Args[0])
 
 	// Shim-side fast path: reject obviously-doomed invocations locally so we
 	// don't pay for a broker round trip. The broker remains the authority and

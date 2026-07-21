@@ -265,18 +265,19 @@ func TestBuildSandboxSpec_InvokedBehaviorIsCanonical(t *testing.T) {
 	}
 }
 
-// /usr/bin/git と /bin/git が boid バイナリ bind で上書きされることを検証する。
-// これにより絶対パスで実体 git を呼び出す迂回が防止される。
-// boid バイナリ自身はホスト実パスのまま bind mount される（/opt/boid/bin/boid は廃止）。
-// TestBuildSandboxSpec_BoidBinaryBindMountOnly is the PR6 cutover rewrite of
-// the former "GitShimBindMounts" test: the git-shim PATH overlay
-// (/usr/bin/git, /bin/git bound to the boid binary) is retired — sandbox git
-// is now always the real binary visible via the base rbind of /usr/bin — so
-// this asserts the boid binary itself is still bind-mounted (for host
-// command shims) while /usr/bin/git and /bin/git are conspicuously absent
-// regardless of whether BoidBinary is set.
-func TestBuildSandboxSpec_BoidBinaryBindMountOnly(t *testing.T) {
+// TestBuildSandboxSpec_BoidBinaryBoundAtShimBinDir is the 5a-3 cutover
+// rewrite of the pre-5a-3 "BoidBinaryBindMountOnly" test
+// (docs/plans/phase5-shim-and-task-context.md, "5a: shim 固定ディレクトリ化"
+// PR3). It pins two facts at once:
+//   - the boid binary is bind-mounted at the fixed sandbox path
+//     `/opt/boid/bin/boid` (sandboxShimBinDir + "/boid"), never at its host
+//     path any more — the pre-5a-3 host-path identity bind was retired in
+//     the same change;
+//   - the retired git-shim overlay (/usr/bin/git, /bin/git bound to the
+//     boid binary — docs/plans/git-gateway-cutover.md PR6) is still absent.
+func TestBuildSandboxSpec_BoidBinaryBoundAtShimBinDir(t *testing.T) {
 	const boidBin = "/usr/local/bin/boid"
+	const wantTarget = sandboxShimBinDir + "/boid"
 	spec := &orchestrator.JobSpec{}
 	rt := SandboxRuntimeInfo{BoidBinary: boidBin}
 	result, err := BuildSandboxSpec(spec, rt)
@@ -288,18 +289,17 @@ func TestBuildSandboxSpec_BoidBinaryBindMountOnly(t *testing.T) {
 	for i := range result.Mounts {
 		m := &result.Mounts[i]
 		switch m.Target {
-		case boidBin:
+		case wantTarget:
 			boidMount = m
 		case "/usr/bin/git", "/bin/git":
 			t.Errorf("git-shim overlay mount must not exist post-cutover (docs/plans/git-gateway-cutover.md PR6): target=%q", m.Target)
-		case "/opt/boid/bin/boid":
-			t.Errorf("/opt/boid/bin/boid must not exist as mount target in new design")
+		case boidBin:
+			t.Errorf("pre-5a-3 host-path identity bind must not exist post-cutover: target=%q", m.Target)
 		}
 	}
 
-	// boid バイナリはホスト実パスのまま bind mount される。
 	if boidMount == nil {
-		t.Fatalf("boid binary mount not found at target %q", boidBin)
+		t.Fatalf("boid binary mount not found at target %q", wantTarget)
 	}
 	if boidMount.Source != boidBin {
 		t.Errorf("boid binary source = %q, want %q", boidMount.Source, boidBin)
@@ -790,9 +790,14 @@ func TestCloneDirNameForVisibility_FallsBackToProjectDirBasename(t *testing.T) {
 	}
 }
 
-// boid と git は ResolveHostCommands に含まれない（専用の bind mount が別途生成される）。
-// その他の host commands はホスト実パスに bind mount される。
-func TestHostCommandMounts_BoidAndGitExcluded(t *testing.T) {
+// TestHostCommandSymlinks_BoidAndGitExcluded pins the 5a-3 cutover
+// (docs/plans/phase5-shim-and-task-context.md 5a PR3) analog of the pre-5a-3
+// TestHostCommandMounts_BoidAndGitExcluded assertion: `boid`, `git`,
+// `fetch` are reserved names — ResolveHostCommands omits them entirely, so
+// hostCommandSymlinks (fed from the same byName view) never materializes
+// a `/opt/boid/bin/boid` symlink that would collide with the dedicated
+// boid binary bind mount at that exact path.
+func TestHostCommandSymlinks_BoidAndGitExcluded(t *testing.T) {
 	fakeLookPath := func(name string) (string, error) {
 		return "/usr/bin/" + name, nil
 	}
@@ -800,29 +805,29 @@ func TestHostCommandMounts_BoidAndGitExcluded(t *testing.T) {
 		"gh":  {},
 		"git": {},
 	}
-	resolved, _, err := ResolveHostCommands([]string{"boid", "git"}, hostCmds, "", fakeLookPath, fakeGetOriginURL)
+	_, byName, err := ResolveHostCommands([]string{"boid", "git"}, hostCmds, "", fakeLookPath, fakeGetOriginURL)
 	if err != nil {
 		t.Fatalf("ResolveHostCommands: %v", err)
 	}
-	mounts := hostCommandMounts("/usr/local/bin/boid", resolved)
-	for _, m := range mounts {
-		if m.Target == "/usr/bin/boid" || m.Target == "/usr/bin/git" {
-			t.Errorf("boid/git must not get host command mount, got target=%q", m.Target)
+	links := hostCommandSymlinks(byName)
+	for _, s := range links {
+		if s.LinkPath == sandboxShimBinDir+"/boid" || s.LinkPath == sandboxShimBinDir+"/git" {
+			t.Errorf("boid/git must not get a host command symlink, got link_path=%q", s.LinkPath)
 		}
 	}
 	var hasGh bool
-	for _, m := range mounts {
-		if m.Target == "/usr/bin/gh" {
+	for _, s := range links {
+		if s.LinkPath == sandboxShimBinDir+"/gh" {
 			hasGh = true
 		}
 	}
 	if !hasGh {
-		t.Error("gh must get a host command mount")
+		t.Error("gh must get a host command symlink")
 	}
 }
 
-// ホストに存在しないコマンドは fail-fast でエラーになる。
-func TestHostCommandMounts_NotFound(t *testing.T) {
+// ホストに存在しないコマンドは fail-fast でエラーになる（既存挙動）。
+func TestHostCommandSymlinks_NotFound(t *testing.T) {
 	fakeLookPath := func(name string) (string, error) {
 		return "", fmt.Errorf("not found")
 	}
@@ -833,97 +838,91 @@ func TestHostCommandMounts_NotFound(t *testing.T) {
 	}
 }
 
-// mount target はホスト実パス（/opt/boid/bin/<cmd> ではない）。
-func TestHostCommandMounts_BindsAtHostPath(t *testing.T) {
+// TestHostCommandSymlinks_LinkPathIsShimBinDirSlashName pins the 5a-3
+// invariant: every declared short name gets exactly one symlink at
+// `/opt/boid/bin/<name>` pointing at `boid` (relative). It replaces the
+// pre-5a-3 "bind at host absolute path" scheme with a bind-mount basename
+// that always equals the declared short name — no BOID_HOST_COMMAND_NAMES
+// map lookup needed for a shim to identify itself to the broker.
+func TestHostCommandSymlinks_LinkPathIsShimBinDirSlashName(t *testing.T) {
 	fakeLookPath := func(name string) (string, error) {
 		return "/usr/local/bin/" + name, nil
 	}
 	hostCmds := map[string]orchestrator.CommandDef{"gh": {}}
-	resolved, _, err := ResolveHostCommands(nil, hostCmds, "", fakeLookPath, fakeGetOriginURL)
+	_, byName, err := ResolveHostCommands(nil, hostCmds, "", fakeLookPath, fakeGetOriginURL)
 	if err != nil {
 		t.Fatalf("ResolveHostCommands: %v", err)
 	}
-	mounts := hostCommandMounts("/usr/local/bin/boid", resolved)
-	if len(mounts) != 1 {
-		t.Fatalf("expected 1 mount, got %d", len(mounts))
+	links := hostCommandSymlinks(byName)
+	if len(links) != 1 {
+		t.Fatalf("expected 1 symlink, got %d: %+v", len(links), links)
 	}
-	m := mounts[0]
-	if m.Target != "/usr/local/bin/gh" {
-		t.Errorf("mount target = %q, want /usr/local/bin/gh", m.Target)
+	s := links[0]
+	if s.LinkPath != sandboxShimBinDir+"/gh" {
+		t.Errorf("LinkPath = %q, want %q", s.LinkPath, sandboxShimBinDir+"/gh")
 	}
-	if m.Source != "/usr/local/bin/boid" {
-		t.Errorf("mount source = %q, want /usr/local/bin/boid", m.Source)
-	}
-	if !m.ReadOnly {
-		t.Error("host command mount must be ReadOnly")
-	}
-	if !m.IsFile {
-		t.Error("host command mount must have IsFile=true")
+	if s.LinkTarget != "boid" {
+		t.Errorf("LinkTarget = %q, want %q (relative)", s.LinkTarget, "boid")
 	}
 }
 
 // 同じコマンドが builtins と hostCommands の両方にある場合は重複しない。
-func TestHostCommandMounts_Dedup(t *testing.T) {
+func TestHostCommandSymlinks_Dedup(t *testing.T) {
 	fakeLookPath := func(name string) (string, error) {
 		return "/usr/bin/" + name, nil
 	}
 	hostCmds := map[string]orchestrator.CommandDef{"gh": {}}
-	resolved, _, err := ResolveHostCommands([]string{"gh"}, hostCmds, "", fakeLookPath, fakeGetOriginURL)
+	_, byName, err := ResolveHostCommands([]string{"gh"}, hostCmds, "", fakeLookPath, fakeGetOriginURL)
 	if err != nil {
 		t.Fatalf("ResolveHostCommands: %v", err)
 	}
-	mounts := hostCommandMounts("/usr/local/bin/boid", resolved)
-	if len(mounts) != 1 {
-		t.Errorf("expected 1 mount (dedup), got %d", len(mounts))
+	links := hostCommandSymlinks(byName)
+	if len(links) != 1 {
+		t.Errorf("expected 1 symlink (dedup), got %d", len(links))
 	}
 }
 
-// CommandDef.Path 指定あり → lookPath は呼ばれず def.Path が Target になる。
-// run-e2e のような別名キーが Path 指定されたファイル位置に bind mount されるケース。
-func TestHostCommandMounts_PathSpecified_SkipsLookPath(t *testing.T) {
+// TestHostCommandSymlinks_AliasedPathUsesDeclaredName is the 5a-3 wiring
+// that makes the whole cutover work end-to-end
+// (docs/plans/phase5-shim-and-task-context.md). host_commands.<name>.path
+// aliasing (e.g. `run-e2e: path: e2e/run.sh`) used to force
+// BOID_HOST_COMMAND_NAMES + ResolveShimCommandName gymnastics so a shim
+// bind-mounted at a file named "run.sh" could still identify itself as
+// "run-e2e" to the broker. With the fixed-directory symlink scheme the
+// bind-mount basename is always the declared name — proven here by pinning
+// that an aliased entry lands at `/opt/boid/bin/run-e2e` (not
+// `/opt/boid/bin/run.sh` or the source's absolute path).
+func TestHostCommandSymlinks_AliasedPathUsesDeclaredName(t *testing.T) {
 	dir := t.TempDir()
 	scriptPath := dir + "/run-e2e.sh"
 	if err := os.WriteFile(scriptPath, []byte("#!/bin/sh\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	lookPathCalled := false
 	fakeLookPath := func(name string) (string, error) {
-		lookPathCalled = true
 		return "/usr/bin/" + name, nil
 	}
 	hostCmds := map[string]orchestrator.CommandDef{
 		"run-e2e": {Path: scriptPath},
 	}
-	resolved, _, err := ResolveHostCommands(nil, hostCmds, "", fakeLookPath, fakeGetOriginURL)
+	_, byName, err := ResolveHostCommands(nil, hostCmds, "", fakeLookPath, fakeGetOriginURL)
 	if err != nil {
 		t.Fatalf("ResolveHostCommands: %v", err)
 	}
-	mounts := hostCommandMounts("/usr/local/bin/boid", resolved)
-	if lookPathCalled {
-		t.Error("lookPath must not be called when CommandDef.Path is set")
+	links := hostCommandSymlinks(byName)
+	if len(links) != 1 {
+		t.Fatalf("expected 1 symlink, got %d: %+v", len(links), links)
 	}
-	if len(mounts) != 1 {
-		t.Fatalf("expected 1 mount, got %d", len(mounts))
+	if links[0].LinkPath != sandboxShimBinDir+"/run-e2e" {
+		t.Errorf("LinkPath = %q, want %q (declared name, never the source basename %q)",
+			links[0].LinkPath, sandboxShimBinDir+"/run-e2e", "run.sh")
 	}
-	if mounts[0].Target != scriptPath {
-		t.Errorf("mount target = %q, want %q", mounts[0].Target, scriptPath)
-	}
-	// resolved map のキーも絶対パス、broker に渡る Path も同じ絶対パスである
-	// ことを確認 (shim の os.Executable() lookup と一致する不変条件)。
-	def, ok := resolved[scriptPath]
-	if !ok {
-		t.Fatalf("resolved map must be keyed by absolute path %q", scriptPath)
-	}
-	if def.Path != scriptPath {
-		t.Errorf("resolved def.Path = %q, want %q", def.Path, scriptPath)
-	}
-	if def.Name != "run-e2e" {
-		t.Errorf("resolved def.Name = %q, want run-e2e", def.Name)
+	if links[0].LinkTarget != "boid" {
+		t.Errorf("LinkTarget = %q, want %q", links[0].LinkTarget, "boid")
 	}
 }
 
 // host_commands.<name>.path の相対パスは projectDir 基準で解決される。
-func TestHostCommandMounts_RelativePathResolvedFromProjectDir(t *testing.T) {
+func TestHostCommandSymlinks_RelativePathResolvedFromProjectDir(t *testing.T) {
 	projectDir := t.TempDir()
 	if err := os.MkdirAll(projectDir+"/e2e", 0o755); err != nil {
 		t.Fatal(err)
@@ -935,42 +934,23 @@ func TestHostCommandMounts_RelativePathResolvedFromProjectDir(t *testing.T) {
 	hostCmds := map[string]orchestrator.CommandDef{
 		"run-e2e": {Path: "e2e/run.sh"},
 	}
-	resolved, _, err := ResolveHostCommands(nil, hostCmds, projectDir, func(string) (string, error) {
+	_, byName, err := ResolveHostCommands(nil, hostCmds, projectDir, func(string) (string, error) {
 		return "", fmt.Errorf("lookPath should not be called")
 	}, fakeGetOriginURL)
 	if err != nil {
 		t.Fatalf("ResolveHostCommands: %v", err)
 	}
-	def, ok := resolved[scriptPath]
+	def, ok := byName["run-e2e"]
 	if !ok {
-		t.Fatalf("resolved must contain absolute key %q, got %v", scriptPath, resolved)
+		t.Fatalf("byName must contain 'run-e2e', got %v", byName)
 	}
 	if def.Path != scriptPath {
 		t.Errorf("def.Path = %q, want %q", def.Path, scriptPath)
 	}
 }
 
-// CommandDef.Path 空 → lookPath 結果が Target になる（従来挙動の回帰防止）。
-func TestHostCommandMounts_PathEmpty_UsesLookPath(t *testing.T) {
-	fakeLookPath := func(name string) (string, error) {
-		return "/usr/bin/" + name, nil
-	}
-	hostCmds := map[string]orchestrator.CommandDef{"gh": {}}
-	resolved, _, err := ResolveHostCommands(nil, hostCmds, "", fakeLookPath, fakeGetOriginURL)
-	if err != nil {
-		t.Fatalf("ResolveHostCommands: %v", err)
-	}
-	mounts := hostCommandMounts("/usr/local/bin/boid", resolved)
-	if len(mounts) != 1 {
-		t.Fatalf("expected 1 mount, got %d", len(mounts))
-	}
-	if mounts[0].Target != "/usr/bin/gh" {
-		t.Errorf("mount target = %q, want /usr/bin/gh", mounts[0].Target)
-	}
-}
-
 // CommandDef.Path 指定だが対象ファイルが存在しない → "does not exist on host" エラー。
-func TestHostCommandMounts_PathDoesNotExist_Error(t *testing.T) {
+func TestHostCommandSymlinks_PathDoesNotExist_Error(t *testing.T) {
 	dir := t.TempDir()
 	missingPath := dir + "/nonexistent.sh"
 	fakeLookPath := func(name string) (string, error) {
@@ -989,8 +969,8 @@ func TestHostCommandMounts_PathDoesNotExist_Error(t *testing.T) {
 }
 
 // builtin と host command の複合ケース: host command 側のみ Path 指定。
-// builtin は lookPath、host command は def.Path を使い、順序が安定する。
-func TestHostCommandMounts_MixedBuiltinAndPathCommand(t *testing.T) {
+// 両方とも /opt/boid/bin/<name> に symlink される。
+func TestHostCommandSymlinks_MixedBuiltinAndPathCommand(t *testing.T) {
 	dir := t.TempDir()
 	scriptPath := dir + "/run-e2e.sh"
 	if err := os.WriteFile(scriptPath, []byte("#!/bin/sh\n"), 0o755); err != nil {
@@ -1002,69 +982,62 @@ func TestHostCommandMounts_MixedBuiltinAndPathCommand(t *testing.T) {
 	hostCmds := map[string]orchestrator.CommandDef{
 		"run-e2e": {Path: scriptPath},
 	}
-	resolved, _, err := ResolveHostCommands([]string{"jq"}, hostCmds, "", fakeLookPath, fakeGetOriginURL)
+	_, byName, err := ResolveHostCommands([]string{"jq"}, hostCmds, "", fakeLookPath, fakeGetOriginURL)
 	if err != nil {
 		t.Fatalf("ResolveHostCommands: %v", err)
 	}
-	mounts := hostCommandMounts("/usr/local/bin/boid", resolved)
-	if len(mounts) != 2 {
-		t.Fatalf("expected 2 mounts, got %d", len(mounts))
+	links := hostCommandSymlinks(byName)
+	if len(links) != 2 {
+		t.Fatalf("expected 2 symlinks, got %d", len(links))
 	}
-	targets := map[string]bool{}
-	for _, m := range mounts {
-		targets[m.Target] = true
+	paths := map[string]bool{}
+	for _, s := range links {
+		paths[s.LinkPath] = true
 	}
-	if !targets["/usr/bin/jq"] {
-		t.Error("builtin jq must be mounted at /usr/bin/jq")
+	if !paths[sandboxShimBinDir+"/jq"] {
+		t.Errorf("builtin jq must have a symlink at %s/jq", sandboxShimBinDir)
 	}
-	if !targets[scriptPath] {
-		t.Errorf("host command run-e2e must be mounted at %q", scriptPath)
-	}
-}
-
-// boid バイナリが標準外パスにある場合 (~/go/bin, /tmp/.../bin 等)、
-// そのディレクトリが PATH の先頭に追加されることを確認する。
-// サンドボックス内スクリプトが `boid job done` / `boid task create` を
-// フルパスなしで呼び出せることが目的。
-func TestBuildPATH_BoidDirAddedWhenNonStandard(t *testing.T) {
-	cases := []struct {
-		name       string
-		boidBinary string
-		wantPrefix string
-	}{
-		{
-			name:       "go/bin location",
-			boidBinary: "/home/user/go/bin/boid",
-			wantPrefix: hostHomeDir() + "/.local/bin:/home/user/go/bin:",
-		},
-		{
-			name:       "tmp e2e location",
-			boidBinary: "/tmp/boid-e2e-test-ABCDEF/bin/boid",
-			wantPrefix: hostHomeDir() + "/.local/bin:/tmp/boid-e2e-test-ABCDEF/bin:",
-		},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			path := buildPATH(nil, nil, tc.boidBinary)
-			if !strings.HasPrefix(path, tc.wantPrefix) {
-				t.Errorf("buildPATH = %q, want prefix %q", path, tc.wantPrefix)
-			}
-		})
+	if !paths[sandboxShimBinDir+"/run-e2e"] {
+		t.Errorf("host command run-e2e must have a symlink at %s/run-e2e", sandboxShimBinDir)
 	}
 }
 
-// boid が標準パス (/usr/local/bin 等) にある場合は重複しない。
-func TestBuildPATH_BoidDirNotDuplicatedForStandardPaths(t *testing.T) {
-	for _, boidBinary := range []string{
-		"/usr/local/bin/boid",
-		"/usr/bin/boid",
-		"/bin/boid",
-	} {
-		path := buildPATH(nil, nil, boidBinary)
-		want := hostHomeDir() + "/.local/bin:/usr/local/bin:/usr/bin:/bin"
-		if path != want {
-			t.Errorf("buildPATH(%q) = %q, want %q", boidBinary, path, want)
-		}
+// TestBuildPATH_ShimBinDirPrepended pins the 5a-3 PATH simplification
+// (docs/plans/phase5-shim-and-task-context.md, "5a: shim 固定ディレクトリ化"
+// PR3): the fixed sandboxShimBinDir replaces both the pre-5a-3
+// per-boid-binary-parent entry and the per-host-command parent entries
+// (retired hostCommandMounts). It always lands right after workspace home's
+// ~/.local/bin, regardless of whether additional bindings are supplied.
+func TestBuildPATH_ShimBinDirPrepended(t *testing.T) {
+	want := hostHomeDir() + "/.local/bin:" + sandboxShimBinDir + ":"
+
+	path := buildPATH(nil)
+	if !strings.HasPrefix(path, want) {
+		t.Errorf("buildPATH(nil) = %q, want prefix %q", path, want)
+	}
+
+	// Additional bindings inject after sandboxShimBinDir, not before it.
+	bindings := []orchestrator.BindMount{{Source: "/opt/custom/sbin"}}
+	path = buildPATH(bindings)
+	if !strings.HasPrefix(path, want) {
+		t.Errorf("buildPATH with bindings = %q, want prefix %q", path, want)
+	}
+}
+
+// TestBuildPATH_HostCommandParentDirsAbsent is the negative half of the
+// 5a-3 cutover: post-cutover, host command shims are all symlinks under
+// sandboxShimBinDir (single PATH entry) — no host command's absolute
+// host-side parent directory (e.g. /opt/custom/sbin) makes it onto PATH
+// via the shim wiring any more. Only additional_bindings can still add
+// their own bin/ directories to PATH, and only via their own explicit
+// declaration.
+func TestBuildPATH_HostCommandParentDirsAbsent(t *testing.T) {
+	// No bindings, no adjacent-bin dirs — PATH should be exactly the
+	// workspace home + sandboxShimBinDir + base PATH, nothing else.
+	path := buildPATH(nil)
+	want := hostHomeDir() + "/.local/bin:" + sandboxShimBinDir + ":/usr/local/bin:/usr/bin:/bin"
+	if path != want {
+		t.Errorf("buildPATH(nil) = %q, want %q", path, want)
 	}
 }
 
@@ -1072,73 +1045,40 @@ func TestBuildPATH_BoidDirNotDuplicatedForStandardPaths(t *testing.T) {
 // change (docs/plans/home-workspace-volume.md): with adapter-declared
 // bindings retired, a harness CLI installed by the workspace's init.sh under
 // $HOME/.local/bin must resolve by name without any binding or host-command
-// wiring. It is unconditionally the first PATH entry — ahead of the boid
-// binary dir and every other source — regardless of whether bindings/
-// hostCommands/boidBinary are supplied at all.
+// wiring. It is unconditionally the first PATH entry — ahead of
+// sandboxShimBinDir and every other source — regardless of whether
+// bindings are supplied.
 func TestBuildPATH_WorkspaceHomeLocalBinAlwaysLeads(t *testing.T) {
 	want := hostHomeDir() + "/.local/bin"
 
-	path := buildPATH(nil, nil, "")
+	path := buildPATH(nil)
 	if !strings.HasPrefix(path, want+":") {
-		t.Errorf("buildPATH(nil, nil, \"\") = %q, want prefix %q:", path, want)
+		t.Errorf("buildPATH(nil) = %q, want prefix %q:", path, want)
 	}
 
-	hostCommands := map[string]orchestrator.CommandDef{
-		"/opt/custom/sbin/other": {Name: "other", Path: "/opt/custom/sbin/other"},
-	}
-	path = buildPATH(nil, hostCommands, "/home/user/go/bin/boid")
+	path = buildPATH([]orchestrator.BindMount{{Source: "/opt/custom/sbin"}})
 	if !strings.HasPrefix(path, want+":") {
-		t.Errorf("buildPATH with hostCommands+boidBinary = %q, want prefix %q:", path, want)
+		t.Errorf("buildPATH with bindings = %q, want prefix %q:", path, want)
 	}
 }
 
-// host command の解決済み絶対パスのディレクトリが PATH に乗る。非標準ディレクトリ
-// (~/.local/bin 等) に置かれた host command が、サンドボックス内で名前解決できる
-// ようにするための配線。shim 自体は絶対パスに bind mount されるだけで PATH には
-// 現れないため、ここで親ディレクトリを PATH に足さないと command not found になる。
-func TestBuildPATH_HostCommandDirsAdded(t *testing.T) {
-	hostCommands := map[string]orchestrator.CommandDef{
-		"/home/user/.local/bin/mytool": {Name: "mytool", Path: "/home/user/.local/bin/mytool"},
-		"/opt/custom/sbin/other":       {Name: "other", Path: "/opt/custom/sbin/other"},
+// additional_bindings の .../bin ディレクトリは従来どおり PATH に追加される
+// (host_commands 経路が消えても additional_bindings 経路は残る)。 sandboxShimBinDir
+// は先頭に来る。 buildPATH は Source が /bin で終わっていればそのまま、
+// でなければ /bin を append する既存挙動を維持する。
+func TestBuildPATH_AdditionalBindingsBinDirsAdded(t *testing.T) {
+	bindings := []orchestrator.BindMount{
+		{Source: "/opt/custom/bin"},
+		{Source: "/opt/other"},
 	}
-	path := buildPATH(nil, hostCommands, "/usr/local/bin/boid")
-	for _, dir := range []string{"/home/user/.local/bin", "/opt/custom/sbin"} {
+	path := buildPATH(bindings)
+	for _, dir := range []string{"/opt/custom/bin", "/opt/other/bin"} {
 		if !strings.Contains(":"+path+":", ":"+dir+":") {
 			t.Errorf("buildPATH = %q, want dir %q on PATH", path, dir)
 		}
 	}
 	if !strings.HasSuffix(path, "/usr/local/bin:/usr/bin:/bin") {
 		t.Errorf("buildPATH = %q, want base PATH suffix", path)
-	}
-}
-
-// 標準ディレクトリにある host command は base PATH でカバーされるので重複追加しない。
-func TestBuildPATH_HostCommandStandardDirNotDuplicated(t *testing.T) {
-	hostCommands := map[string]orchestrator.CommandDef{
-		"/usr/bin/gh":       {Name: "gh", Path: "/usr/bin/gh"},
-		"/usr/local/bin/jq": {Name: "jq", Path: "/usr/local/bin/jq"},
-		"/bin/cat":          {Name: "cat", Path: "/bin/cat"},
-	}
-	path := buildPATH(nil, hostCommands, "/usr/local/bin/boid")
-	want := hostHomeDir() + "/.local/bin:/usr/local/bin:/usr/bin:/bin"
-	if path != want {
-		t.Errorf("buildPATH = %q, want %q", path, want)
-	}
-}
-
-// 同一ディレクトリに複数の host command があってもディレクトリは一度だけ追加。
-// The fake host-command dir deliberately avoids "<hostHomeDir>/.local/bin"
-// (a real value, not a literal) so this assertion stays deterministic
-// regardless of the machine running the test.
-func TestBuildPATH_HostCommandDirDeduplicated(t *testing.T) {
-	hostCommands := map[string]orchestrator.CommandDef{
-		"/srv/hostcmd/bin/a": {Name: "a", Path: "/srv/hostcmd/bin/a"},
-		"/srv/hostcmd/bin/b": {Name: "b", Path: "/srv/hostcmd/bin/b"},
-	}
-	path := buildPATH(nil, hostCommands, "/usr/local/bin/boid")
-	want := hostHomeDir() + "/.local/bin:/srv/hostcmd/bin:/usr/local/bin:/usr/bin:/bin"
-	if path != want {
-		t.Errorf("buildPATH = %q, want %q", path, want)
 	}
 }
 
@@ -1801,20 +1741,26 @@ func TestBuildSandboxSpec_HostCommandRulesEnv_AbsentWhenNoHostCommands(t *testin
 	}
 }
 
-// TestBuildSandboxSpec_HostCommandNamesEnv_MapsAliasedPathToDeclaredName is
-// the codex review Minor fix 5a-2 closes
-// (docs/plans/phase5-shim-and-task-context.md): BOID_HOST_COMMAND_NAMES must
-// map the absolute bind-mount path (the same key hostCommandMounts binds the
-// shim at — rt.ResolvedHostCommands, the byPath view) to the declared short
-// name, even when host_commands.<name>.path aliases the shim to a file whose
-// basename differs from name (run-e2e -> e2e/run.sh: the sandbox-visible
-// file is "run.sh", not "run-e2e").
-func TestBuildSandboxSpec_HostCommandNamesEnv_MapsAliasedPathToDeclaredName(t *testing.T) {
+// --- Phase 5 5a-3: shim fixed-directory placement
+// (docs/plans/phase5-shim-and-task-context.md) ---
+
+// TestBuildSandboxSpec_HostCommandSymlinks_UnderShimBinDir pins the 5a-3
+// end-to-end wiring: every declared host_commands entry — including an
+// aliased entry whose source basename differs from the declared name (the
+// alias-echo path documented in wiring-seams.md #14) — surfaces in the
+// resulting spec's Symlinks as `<shimBinDir>/<name>` pointing at `boid`
+// (relative). The absence of any legacy `BOID_HOST_COMMAND_NAMES` env
+// injection is also structurally guaranteed here: the assertion below
+// enumerates every Symlink emitted, and the ResolvedHostCommandsByName field
+// is the sole shim wiring path — there is no per-shim env key that could
+// silently drift out of sync with what the broker Commands map is keyed by.
+func TestBuildSandboxSpec_HostCommandSymlinks_UnderShimBinDir(t *testing.T) {
 	spec := &orchestrator.JobSpec{}
 	rt := SandboxRuntimeInfo{
-		ResolvedHostCommands: map[string]orchestrator.CommandDef{
-			"/home/user/proj/e2e/run.sh": {Name: "run-e2e", Path: "/home/user/proj/e2e/run.sh"},
-			"/usr/bin/gh":                {Name: "gh", Path: "/usr/bin/gh"},
+		BoidBinary: "/usr/local/bin/boid",
+		ResolvedHostCommandsByName: map[string]orchestrator.CommandDef{
+			"gh":      {Name: "gh", Path: "/usr/bin/gh"},
+			"run-e2e": {Name: "run-e2e", Path: "/home/user/proj/e2e/run.sh"},
 		},
 	}
 	result, err := BuildSandboxSpec(spec, rt)
@@ -1822,27 +1768,82 @@ func TestBuildSandboxSpec_HostCommandNamesEnv_MapsAliasedPathToDeclaredName(t *t
 		t.Fatalf("BuildSandboxSpec: %v", err)
 	}
 
-	got := result.Env[sandbox.HostCommandNamesEnv]
-	if got == "" {
-		t.Fatalf("expected %s to be set, got empty", sandbox.HostCommandNamesEnv)
+	want := map[string]string{
+		sandboxShimBinDir + "/gh":      "boid",
+		sandboxShimBinDir + "/run-e2e": "boid",
 	}
-	want := `{"/home/user/proj/e2e/run.sh":"run-e2e","/usr/bin/gh":"gh"}`
-	if got != want {
-		t.Errorf("%s = %q, want %q", sandbox.HostCommandNamesEnv, got, want)
+	got := map[string]string{}
+	for _, s := range result.Symlinks {
+		got[s.LinkPath] = s.LinkTarget
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("Symlinks = %#v, want %#v", got, want)
+	}
+	// 5a-3 negative: the pre-5a-3 BOID_HOST_COMMAND_NAMES env key that used
+	// to carry {absPath: declaredName} is retired — the shim now resolves
+	// via argv[0]'s basename (which equals the declared name by
+	// construction). Assert its absence directly so a future re-introduction
+	// is caught here rather than by an obscure runtime mismatch.
+	if _, ok := result.Env["BOID_HOST_COMMAND_NAMES"]; ok {
+		t.Errorf("BOID_HOST_COMMAND_NAMES must not be set post-5a-3 cutover")
 	}
 }
 
-// TestBuildSandboxSpec_HostCommandNamesEnv_AbsentWhenNoHostCommands verifies
-// the env var is not set when the job declares no host commands at all —
-// mirrors TestBuildSandboxSpec_HostCommandRulesEnv_AbsentWhenNoHostCommands.
-func TestBuildSandboxSpec_HostCommandNamesEnv_AbsentWhenNoHostCommands(t *testing.T) {
+// TestBuildSandboxSpec_ShimBinDirBoidMount pins the fixed-directory bind of
+// the boid multi-call binary itself. The Target is invariant across every
+// dispatch — the docs/plans/container-based-boid.md future backend swap
+// (image bakes /opt/boid/bin/) inherits the same contract without changes
+// to any harness/skill code that assumes shims resolve by short name.
+func TestBuildSandboxSpec_ShimBinDirBoidMount(t *testing.T) {
+	const boidBin = "/usr/local/bin/boid"
+	const wantTarget = sandboxShimBinDir + "/boid"
 	spec := &orchestrator.JobSpec{}
-	result, err := BuildSandboxSpec(spec, SandboxRuntimeInfo{})
+	result, err := BuildSandboxSpec(spec, SandboxRuntimeInfo{BoidBinary: boidBin})
 	if err != nil {
 		t.Fatalf("BuildSandboxSpec: %v", err)
 	}
-	if _, ok := result.Env[sandbox.HostCommandNamesEnv]; ok {
-		t.Errorf("expected %s to be absent, got %q", sandbox.HostCommandNamesEnv, result.Env[sandbox.HostCommandNamesEnv])
+	var found *sandbox.Mount
+	for i := range result.Mounts {
+		if result.Mounts[i].Target == wantTarget {
+			found = &result.Mounts[i]
+			break
+		}
+	}
+	if found == nil {
+		t.Fatalf("boid binary mount not found at %s; mounts=%+v", wantTarget, result.Mounts)
+	}
+	if found.Source != boidBin {
+		t.Errorf("Source = %q, want %q", found.Source, boidBin)
+	}
+	if !found.IsFile {
+		t.Error("IsFile = false, want true")
+	}
+	if !found.ReadOnly {
+		t.Error("ReadOnly = false, want true")
+	}
+}
+
+// TestBuildSandboxSpec_ShimBinDirBoidMountSkippedForProfileInit pins the
+// carve-out for ProfileInit (docs/plans/phase5-shim-and-task-context.md 5a
+// PR3): ProfileInit rbinds host / read-only, so a bind at /opt/boid/bin/boid
+// would either fail (target dir un-creatable) or duplicate a boid binary
+// already visible via the host rbind. ProfileInit also declares no host
+// commands, so no symlink is expected either.
+func TestBuildSandboxSpec_ShimBinDirBoidMountSkippedForProfileInit(t *testing.T) {
+	spec := &orchestrator.JobSpec{
+		SandboxProfile: int(sandbox.ProfileInit),
+	}
+	result, err := BuildSandboxSpec(spec, SandboxRuntimeInfo{BoidBinary: "/usr/local/bin/boid"})
+	if err != nil {
+		t.Fatalf("BuildSandboxSpec: %v", err)
+	}
+	for _, m := range result.Mounts {
+		if m.Target == sandboxShimBinDir+"/boid" {
+			t.Errorf("ProfileInit must not bind boid at %s (host / rbind ro), got %+v", sandboxShimBinDir+"/boid", m)
+		}
+	}
+	if len(result.Symlinks) != 0 {
+		t.Errorf("ProfileInit must not emit shim symlinks, got %+v", result.Symlinks)
 	}
 }
 

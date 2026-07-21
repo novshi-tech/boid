@@ -260,10 +260,10 @@ func (r *Runner) Dispatch(ctx context.Context, spec *orchestrator.JobSpec, clean
 
 	workspacePeers := r.resolveWorkspacePeers(workspaceID, spec.ProjectID)
 
-	var resolvedHostCommands, resolvedHostCommandsByName map[string]orchestrator.CommandDef
+	var resolvedHostCommandsByName map[string]orchestrator.CommandDef
 	if len(spec.HostCommands) > 0 || len(spec.BuiltinPolicies) > 0 {
 		var err error
-		resolvedHostCommands, resolvedHostCommandsByName, err = ResolveHostCommands(
+		_, resolvedHostCommandsByName, err = ResolveHostCommands(
 			sortedKeys(spec.BuiltinPolicies),
 			spec.HostCommands,
 			projectWorkDir,
@@ -284,7 +284,7 @@ func (r *Runner) Dispatch(ctx context.Context, spec *orchestrator.JobSpec, clean
 	// do not call back into boid host-commands, so broker registration and the
 	// broker socket mount are both skipped.
 	if r.Broker != nil && sandbox.Profile(spec.SandboxProfile) != sandbox.ProfileInit &&
-		(len(spec.BuiltinPolicies) > 0 || len(resolvedHostCommands) > 0) {
+		(len(spec.BuiltinPolicies) > 0 || len(resolvedHostCommandsByName) > 0) {
 		tokenCtx := sandbox.TokenContext{
 			JobID:             j.ID,
 			TaskID:            spec.TaskID,
@@ -314,14 +314,13 @@ func (r *Runner) Dispatch(ctx context.Context, spec *orchestrator.JobSpec, clean
 			}
 		}
 		// Registered under short-name keys (the "policy 用" view — see
-		// ResolveHostCommands), not the absolute bind-mount path: the broker's
-		// policy table is meant to survive the shim relocating (5a-3). As of
-		// 5a-2 the shim also sends this same short name as
-		// ExecRequest.Command (sandbox.ResolveShimCommandName), so the
-		// broker's exec lookup hits this map directly; its path-keyed
-		// fallback scan remains only as a rollback safety net for the
-		// pre-5a-2 (absolute-path-sending) shim protocol shape, not as the
-		// path a live shim takes today.
+		// ResolveHostCommands): as of 5a-3 (docs/plans/phase5-shim-and-task-
+		// context.md, "5a: shim 固定ディレクトリ化" PR3 cutover) the shim's
+		// bind-mount basename == its declared short name by construction
+		// (sandboxShimBinDir + hostCommandSymlinks), so the shim's ExecRequest.
+		// Command hits this map by direct key on every call. The broker's
+		// pre-5a-3 Path-scan fallback was dropped in the same change; there
+		// is no other lookup path.
 		brokerToken = r.Broker.RegisterCommands(
 			resolvedHostCommandsByName,
 			PoliciesToSandbox(spec.BuiltinPolicies),
@@ -371,10 +370,10 @@ func (r *Runner) Dispatch(ctx context.Context, spec *orchestrator.JobSpec, clean
 	//     "current instructions" from the task row here would silently hand
 	//     one job's agent's instruction to the other job's RPC caller — see
 	//     JobContextSnapshot's own doc comment and wiring-seams.md #13.
-	//   - Env uses spec.HostCommands (short-name keyed) — NOT
-	//     resolvedHostCommands (absolute-host-path keyed, shim/broker
-	//     plumbing only, see SandboxRuntimeInfo.ResolvedHostCommands's doc
-	//     comment).
+	//   - Env uses spec.HostCommands (short-name keyed as authored in
+	//     project.yaml) — the identical key space to
+	//     resolvedHostCommandsByName below, no absolute-path detour after
+	//     the 5a-3 cutover.
 	//
 	// `boid task current` does NOT need this: it re-derives live from the
 	// task row (orchestrator.SnapshotTask), which carries no job-scoped
@@ -468,7 +467,6 @@ func (r *Runner) Dispatch(ctx context.Context, spec *orchestrator.JobSpec, clean
 		BrokerToken:                brokerToken,
 		WorkspacePeers:             workspacePeers,
 		WorkspacePeerAdvertise:     peerAdvertise,
-		ResolvedHostCommands:       resolvedHostCommands,
 		ResolvedHostCommandsByName: resolvedHostCommandsByName,
 		AllowedDomains:             allowedDomains,
 		GatewayURL:                 gatewayURL,

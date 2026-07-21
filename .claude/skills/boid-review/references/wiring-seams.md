@@ -28,7 +28,7 @@ has the same shape:
 11. [gitgateway SecretResolver namespace threading](#11-gitgateway-secretresolver-namespace-threading)
 12. [KitMeta.KitRoot ↔ sandbox_builder KitRoots mount](#12-kitmetakitroot--sandbox_builder-kitroots-mount)
 13. [task-context RPC (build ↔ serve)](#13-task-context-rpc-build--serve)
-14. [shim command-name resolution (BOID_HOST_COMMAND_NAMES ↔ broker Commands key)](#14-shim-command-name-resolution)
+14. [shim command-name resolution (sandboxShimBinDir symlinks ↔ broker Commands key)](#14-shim-command-name-resolution)
 15. [attachments RPC write ↔ read path](#15-attachments-rpc-write--read-path)
 16. [adapter-issued task-context RPC (claude readSessionsFromRPC ↔ sandbox env)](#16-adapter-issued-task-context-rpc)
 17. [payload_patch direct-pass merge parity, persistence, and concurrency](#17-payload_patch-direct-pass-merge-parity-persistence-and-concurrency)
@@ -194,6 +194,14 @@ by sandbox), so every new policy field must be threaded through each hop by hand
   also feed was retired by the Phase 5b PR6 cutover, see seam #13) intentionally shows a
   **subset** (no path/env) — don't "fix" that asymmetry, but do keep reject rules visible to
   the agent.
+
+- **5a-3 landed note (2026-07-21, PR #TBD)**: `SandboxRuntimeInfo.ResolvedHostCommands`
+  (the byPath sibling of `ResolvedHostCommandsByName`) was deleted in the cutover: no
+  downstream consumer keys off the absolute host path any more — `hostCommandMounts` and
+  `buildHostCommandNamesEnv` went with it, and `buildPATH` collapsed to a single
+  `sandboxShimBinDir` entry. `ResolveHostCommands` still returns the byPath map as an
+  inert byproduct (dedup filter still uses it internally) but no production caller reads
+  it. See seam #14 for the shim/broker side of the same cutover.
 
 ## 8. gitgateway RepoKey normalization
 
@@ -527,60 +535,73 @@ their source data is job-scoped, not task-scoped.
 ## 14. shim command-name resolution
 
 Whether a shim invocation inside the sandbox identifies itself to the broker under the same
-key the broker's `Commands` map is registered with. As of 5a-2
-(`docs/plans/phase5-shim-and-task-context.md`) the shim sends the **declared short name**
-(`host_commands.<name>`), not the absolute bind-mount path — but the shim only ever sees its
-own bind-mount path (`os.Executable()`) and argv0, so for an aliased command
-(`host_commands.<name>.path` pointing at a file whose basename differs from `name`, e.g.
-`run-e2e` → `e2e/run.sh`) recovering the declared name requires a side-channel the dispatcher
-must inject.
+key the broker's `Commands` map is registered with. As of the **5a-3 cutover**
+(`docs/plans/phase5-shim-and-task-context.md`, "5a: shim 固定ディレクトリ化" PR3) this is
+purely a structural property: every shim is a symlink at
+`<dispatcher.sandboxShimBinDir>/<declared name>` pointing at the boid multi-call binary
+(also bind-mounted once at `<sandboxShimBinDir>/boid`), so the shim's argv0 basename ==
+declared short name == broker Commands map key by construction. The pre-5a-3
+BOID_HOST_COMMAND_NAMES env-map + `ResolveShimCommandName` bridge that used to bridge the
+aliased-file-basename case (e.g. `host_commands.run-e2e.path: e2e/run.sh`) and the broker's
+Path-scan fallback were both retired in the same change — the alias case now resolves at
+the dispatcher (symlink named after the declared name), not inside the shim.
 
-- **End A (dispatcher, inject)**: `buildHostCommandNamesEnv` in
-  `internal/dispatcher/sandbox_builder.go`, fed by `rt.ResolvedHostCommands` (the **byPath**
-  view of `dispatcher.ResolveHostCommands` — the exact same map `hostCommandMounts` binds the
-  shim at). Sets `env[sandbox.HostCommandNamesEnv]` to a JSON `{bind-mount path: declared
-  name}` map. Skipped entirely (env unset) when there are no host commands.
-- **End B (shim, resolve)**: `sandbox.ResolveShimCommandName` (`internal/sandbox/shim.go`),
-  called once per invocation from `main.go`'s `shimMain`. Looks up
-  `shimBinaryPath(argv0)` (its own bind-mount path) in the `BOID_HOST_COMMAND_NAMES` map;
-  falls back to `CommandFromArgv0(argv0)` (the file's basename) when the env var is
-  unset/malformed/has no entry — which is correct whenever no alias is declared. The **same**
+- **End A (dispatcher, materialize)**: `hostCommandSymlinks` in
+  `internal/dispatcher/sandbox_builder.go`, fed by `rt.ResolvedHostCommandsByName` (the
+  **byName** view of `dispatcher.ResolveHostCommands` — the same short-name-keyed map fed to
+  the broker at End C). Emits one `sandbox.Symlink{LinkPath:
+  sandboxShimBinDir+"/<name>", LinkTarget: "boid"}` per entry. The boid binary is
+  separately bind-mounted at `sandboxShimBinDir+"/boid"`; the runner-inner-child creates
+  the symlinks after pivot_root under that same directory. ProfileInit is exempt — the
+  host `/` rbind already exposes boid and no host commands are declared.
+- **End B (shim, resolve)**: `sandbox.CommandFromArgv0(os.Args[0])` (`internal/sandbox/shim.go`),
+  called once per invocation from `main.go`'s `shimMain`. Just `filepath.Base(argv0)` — no
+  env-map lookup, no side channel; the bind-mount basename is authoritative. The **same**
   resolved name feeds both `EarlyRejectFromEnv` (the shim-side fast-path reject check) and
-  `ShimExec`'s `ExecRequest.Command` — they must never resolve to different names for the same
-  invocation.
+  `ShimExec`'s `ExecRequest.Command`.
 - **End C (broker, authorize)**: `entry.Commands` in `internal/sandbox/broker.go`, registered
-  under the **byName** view (`dispatcher.CommandBroker.RegisterCommands`'s short-name-keyed
-  input — see seam #7's sibling wiring). `lookupCommand` still carries a Path-match fallback
-  for pre-5a-2 callers (kept intentionally per the 5a plan until the 5a-3 cutover; do not
-  remove it as part of a 5a-2-shaped change).
-- **Invariant**: for every `host_commands` entry, `buildHostCommandNamesEnv`'s map value at
-  key `absPath` must equal the same `def.Name` the broker's `Commands` map is keyed by at End
-  C — both ultimately derive from the single `ResolveHostCommands` call's `out` map
-  (`byName[def.Name] == byPath[absPath]`, see `ResolveHostCommands`'s own doc comment), so a
-  future refactor that lets End A and End C diverge onto two different resolved-command maps
-  would silently break every aliased `host_commands` entry while leaving non-aliased ones
-  (where basename already equals the declared name) looking fine.
-- **Guard**: End A = `TestBuildSandboxSpec_HostCommandNamesEnv_MapsAliasedPathToDeclaredName`
-  / `_AbsentWhenNoHostCommands` (`internal/dispatcher/sandbox_builder_test.go`). End B =
-  `TestResolveShimCommandName_*` (`internal/sandbox/shim_command_name_test.go`) — in particular
-  `_AliasedPathResolvesToDeclaredName`, which pins the exact bug this seam exists to prevent.
-  End C (pre-existing) = `TestBroker_ShortNameKeyedCommand_*` in
-  `internal/sandbox/broker_test.go`, plus `TestBroker_ShortNameKeyedCommand_AliasDirectMatch`
-  added alongside this seam to pin the post-5a-2 direct-match case specifically (no Path-scan
-  fallback needed once the shim sends the resolved short name). Full end-to-end (real sandbox,
-  real shim binary, aliased `host_commands` entry) is covered by
+  under the byName view (`dispatcher.CommandBroker.RegisterCommands`'s short-name-keyed
+  input — see seam #7's sibling wiring). `lookupCommand` is a direct short-name key lookup;
+  the pre-5a-3 Path-scan fallback (kept intentionally through 5a-2 as a rollback safety net)
+  was dropped alongside the 5a-3 cutover.
+- **Invariant**: for every `host_commands` entry, `hostCommandSymlinks`'s LinkPath basename
+  must equal the same `def.Name` the broker's Commands map is keyed by at End C — both derive
+  from the single `ResolveHostCommands` call's byName map, so a future refactor that lets End
+  A and End C diverge onto two different resolved-command maps would silently reject every
+  host command whose symlink name and broker key desynchronised. Non-aliased entries
+  (basename already equals declared name) hide such a break; the alias-echo case in the e2e
+  guard below is the direct-observation regression net.
+- **Guard**: End A = `TestBuildSandboxSpec_HostCommandSymlinks_UnderShimBinDir`,
+  `TestHostCommandSymlinks_AliasedPathUsesDeclaredName`,
+  `TestHostCommandSymlinks_LinkPathIsShimBinDirSlashName`, and
+  `TestBuildSandboxSpec_ShimBinDirBoidMount(SkippedForProfileInit)`
+  (`internal/dispatcher/sandbox_builder_test.go`). End B = `TestCommandFromArgv0`
+  (`internal/sandbox/shim_test.go`). End C = `TestBroker_ShortNameKeyedCommand_DirectMatch`,
+  `TestBroker_ShortNameKeyedCommand_AliasDirectMatch`,
+  `TestBroker_ShortNameKeyedCommand_AbsolutePathRejected`
+  (`internal/sandbox/broker_test.go`; the last one is the affirmative
+  cutover-negative-case — pre-5a-3 this returned success via Path scan) and
+  `TestBroker_StreamingAbsolutePathRejected` (`broker_streaming_test.go`). Full end-to-end
+  (real sandbox, real shim binary, aliased `host_commands` entry) remains covered by
   `e2e/scenarios/host-command-smoke`'s `alias-echo` command
-  (`e2e/fixtures/kits/host-ops/kit.yaml`, invoked in the sandbox as `echo-target` — the file's
-  actual basename, never the declared name).
-- **When you touch it**: if you touch `hostCommandMounts`, `buildHostCommandNamesEnv`,
-  `ResolveShimCommandName`, `ResolveHostCommands`'s byPath/byName split, or `lookupCommand`,
-  verify a request through an **aliased** `host_commands.<name>.path` entry still resolves —
-  the non-aliased case (basename == declared name) passes even when the alias-specific wiring
-  is broken, so it is not a sufficient test on its own. 5a-3 (fixed-directory shim placement)
-  is expected to make every shim's bind-mount basename equal its declared name by construction
-  (symlinks named after the declared command), at which point `BOID_HOST_COMMAND_NAMES`
-  becomes a pure defense-in-depth fallback rather than the primary resolution path — update
-  this entry then.
+  (`e2e/fixtures/kits/host-ops/kit.yaml`, invoked in the sandbox as its declared name
+  `alias-echo` — the file's actual basename is `echo-target`, never used).
+- **When you touch it**: if you touch `hostCommandSymlinks`, `sandboxShimBinDir`,
+  `CommandFromArgv0`, `ResolveHostCommands`'s byName view, `lookupCommand`, or the
+  runner-inner-child symlink materialization loop, verify a request through an **aliased**
+  `host_commands.<name>.path` entry still resolves — the non-aliased case (basename ==
+  declared name) passes even when the alias-specific wiring is broken, so it is not a
+  sufficient test on its own. The 5a-3 landed shape is *symlink name = declared name*, no
+  env side channel — if you find yourself re-introducing BOID_HOST_COMMAND_NAMES or a
+  broker Path-scan fallback, that's a signal the invariant above has been broken elsewhere;
+  fix the underlying divergence rather than restoring the bridge.
+
+- **5a-3 landed note (2026-07-21, PR #TBD)**: this seam collapsed to the shape above in the
+  cutover: BOID_HOST_COMMAND_NAMES + ResolveShimCommandName + shimBinaryPath +
+  buildHostCommandNamesEnv + `SandboxRuntimeInfo.ResolvedHostCommands` (byPath field) +
+  the broker `lookupCommand` Path-scan fallback all landed as deletions in one PR. The
+  aliased-basename attack class (Ends A/B divergence at the argv0 boundary) is now
+  structurally impossible: the shim's bind-mount name IS the declared name.
 
 ## 15. attachments RPC write ↔ read path
 

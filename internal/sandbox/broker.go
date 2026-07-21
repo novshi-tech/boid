@@ -673,44 +673,19 @@ func isWithinRoot(path, root string) bool {
 }
 
 // lookupCommand resolves an ExecRequest.Command against a token's registered
-// CommandDefs. Direct key lookup is the canonical path: as of
-// docs/plans/phase5-shim-and-task-context.md ("5a: shim 固定ディレクトリ化"
-// PR1), dispatcher.ResolveHostCommands registers the broker under short
-// (declared) command name keys, and as of 5a-2 the shim sends exactly that
-// as ExecRequest.Command (sandbox.ResolveShimCommandName) — so a live shim's
-// request now always hits this first branch.
-//
-// The second pass is a compatibility fallback, kept intentionally rather
-// than dropped now that 5a-2 has landed: it scans registered defs for a Path
-// match, covering any caller that still sends the absolute bind-mount path
-// (shimBinaryPath / os.Executable()) — a safety net for rollback to the
-// pre-5a-2 protocol shape. It deliberately does not fall back to
-// filepath.Base(command) — a host_commands.<name>.path alias (e.g. run-e2e
-// -> e2e/run.sh) means the bind-mount path's basename does not always equal
-// the declared short name, so only an exact Path match is trustworthy.
-//
-// This is not defense-in-depth for a BOID_HOST_COMMAND_NAMES resolution
-// regression in the shim: if sandbox.ResolveShimCommandName ever regressed
-// to always returning CommandFromArgv0(argv0) (the basename), an aliased
-// command would send its file's basename (e.g. "echo-target") as
-// ExecRequest.Command — which matches neither a registered short-name key
-// nor any CommandDef's Path (the full absolute path), so this fallback would
-// not catch it either; that specific regression is guarded instead by
-// e2e/scenarios/host-command-smoke's alias-echo case. This fallback is
-// scoped to be dropped at the 5a-3 shim relocation cutover, once every
-// shim's bind-mount basename equals its declared name by construction
-// (fixed-directory symlinks) and the absolute-path shape no longer has a
-// live caller.
+// CommandDefs by direct key. As of the 5a-3 cutover
+// (docs/plans/phase5-shim-and-task-context.md, "5a: shim 固定ディレクトリ化"
+// PR3), every shim's bind-mount basename == its declared short name by
+// construction (dispatcher.sandboxShimBinDir + hostCommandSymlinks), and the
+// shim always sends that basename as ExecRequest.Command
+// (sandbox.CommandFromArgv0). The pre-5a-3 Path-scan fallback that covered
+// the absolute-bind-mount-path shape (a rollback safety net for the
+// pre-5a-2 shim protocol) is retired here: it was structurally impossible
+// to hit once 5a-2 landed and became defense-in-depth against no live
+// caller after 5a-3.
 func lookupCommand(commands map[string]CommandDef, command string) (CommandDef, bool) {
-	if def, ok := commands[command]; ok {
-		return def, true
-	}
-	for _, def := range commands {
-		if def.Path != "" && def.Path == command {
-			return def, true
-		}
-	}
-	return CommandDef{}, false
+	def, ok := commands[command]
+	return def, ok
 }
 
 func (b *Broker) execCommand(req *ExecRequest, def CommandDef, entry *tokenEntry) *ExecResponse {

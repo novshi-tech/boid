@@ -167,32 +167,30 @@ func warnUnknownBoidVars(name string, env map[string]string) {
 // (docs/plans/phase5-shim-and-task-context.md, "5a: shim 固定ディレクトリ化"
 // PR1):
 //
-//   - byPath is keyed by the absolute path that the boid shim will be
-//     bind-mounted at inside the sandbox. The absolute path is also written
-//     back into each entry's Path. Consumed by the shim mount builder
-//     (hostCommandMounts), the sandbox PATH builder (buildPATH), and
-//     BOID_HOST_COMMAND_NAMES (buildHostCommandNamesEnv, 5a-2) — all three
-//     still key off the bind-mount target during the 5a staging period
-//     (shim placement itself only moves to a fixed directory in 5a-3).
-//     buildHostCommandNamesEnv maps each bind-mount path back to its
-//     declared short name so a shim invocation can recover the broker's
-//     lookup key even when host_commands.<name>.path aliases it to a file
-//     whose basename differs from name (e.g. run-e2e -> e2e/run.sh).
+//   - byPath is keyed by the absolute host path each host command was
+//     resolved to (also written back into each entry's Path). It used to
+//     drive the shim's per-host-path bind mount and PATH parent entries;
+//     as of the 5a-3 cutover (PR3) that scheme is retired — shims are now
+//     symlinks under a fixed sandbox-internal directory
+//     (dispatcher.sandboxShimBinDir), so no dispatcher / broker / shim code
+//     paths key off the absolute host path any more. It is returned here as
+//     an inert byproduct of the pass (the map is already built for the
+//     dedup filter) and can be dropped once no downstream consumer needs
+//     the "no two host commands collide on the same host binary" invariant
+//     it happens to encode. No production caller still reads it.
 //   - byName is keyed by the short (user-declared) command name — the
-//     "policy 用" view. Consumed by the broker's policy table
-//     (CommandBroker.RegisterCommands) and BOID_HOST_COMMAND_RULES
-//     (buildHostCommandRulesEnv): both need a lookup key that survives shim
-//     relocation, unlike the absolute host path. As of 5a-2, this is also
-//     what the shim sends as ExecRequest.Command
-//     (sandbox.ResolveShimCommandName) — the broker still accepts the
-//     absolute path too, as a compatibility fallback kept intentionally
-//     until the 5a-3 shim relocation cutover (see
-//     internal/sandbox/broker.go's lookupCommand).
+//     canonical view. Consumed by the broker's policy table
+//     (CommandBroker.RegisterCommands, BOID_HOST_COMMAND_RULES via
+//     buildHostCommandRulesEnv) and by the sandbox layout
+//     (hostCommandSymlinks, buildPATH). As of 5a-3 this is also the only
+//     shape the shim sends as ExecRequest.Command
+//     (sandbox.CommandFromArgv0 → the shim's bind-mount basename, which
+//     equals the declared short name by construction under
+//     sandboxShimBinDir); the broker's pre-5a-3 Path-scan fallback for the
+//     retired absolute-path shape was dropped in the same change.
 //
 // Every entry appears in both maps under its own key with identical field
-// values (byName[def.Name] == byPath[absPath]), so the "shim's lookup key
-// hits a broker-known key" invariant holds regardless of which key a caller
-// is still using.
+// values (byName[def.Name] == byPath[absPath]).
 //
 // The names "boid", "git", and "fetch" are excluded, each for a different
 // reason: "boid" has a dedicated bind mount + builtin policy elsewhere;
