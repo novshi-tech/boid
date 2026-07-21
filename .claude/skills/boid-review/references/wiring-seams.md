@@ -598,7 +598,7 @@ the dispatcher (symlink named after the declared name), not inside the shim.
   broker Path-scan fallback, that's a signal the invariant above has been broken elsewhere;
   fix the underlying divergence rather than restoring the bridge.
 
-- **5a-3 landed note (2026-07-21, PR #TBD)**: this seam collapsed to the shape above in the
+- **5a-3 landed note (2026-07-21, PR #806)**: this seam collapsed to the shape above in the
   cutover: BOID_HOST_COMMAND_NAMES + ResolveShimCommandName + shimBinaryPath +
   buildHostCommandNamesEnv + `SandboxRuntimeInfo.ResolvedHostCommands` (byPath field) +
   the broker `lookupCommand` Path-scan fallback all landed as deletions in one PR. The

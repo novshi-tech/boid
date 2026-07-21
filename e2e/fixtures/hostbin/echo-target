@@ -5,7 +5,7 @@ set -euo pipefail
 # e2e/fixtures/kits/host-ops/kit.yaml ("alias-echo"): this is the 5a-3
 # regression fixture (docs/plans/phase5-shim-and-task-context.md 5a PR3
 # cutover). Post cutover, the dispatcher materializes a symlink at
-# /opt/boid/bin/alias-echo (declared name) pointing at the boid multi-call
+# /run/boid/bin/alias-echo (declared name) pointing at the boid multi-call
 # binary, and the agent invokes it as `alias-echo` (see the hook in the
 # scenario's project.yaml). This host-side file name intentionally still
 # differs to prove the alias mapping — if the dispatcher ever regressed to

@@ -1,9 +1,8 @@
 # Phase 5 実装計画: shim 固定ディレクトリ化 + タスクコンテキスト RPC 化
 
-ステータス: 5b (タスクコンテキスト RPC 化) は全 8 PR landed で完結 (2026-07-21)。
-5a (shim 固定 dir 化) は PR1/PR2 landed、 PR3 (cutover) / PR4 (dogfood) 未着手 —
-cutover PR (5a-3) は 5b-6 (2026-07-21 landed) と 1 週間離すルールのため、
-5b-8 landed 後の数日を経てから着手予定。 詳細は「PR 分割案」節参照。
+ステータス: **Phase 5 全体完結 (12/12 PR landed、 2026-07-21)**。
+5a (shim 固定 dir 化) 4 PR + 5b (タスクコンテキスト RPC 化) 8 PR がすべて main に landed。
+詳細は「PR 分割案」節の各 PR landed 注記参照。
 作成日: 2026-07-20
 親ドキュメント: [container-based-boid.md](container-based-boid.md) — 移行戦略ステップ 5
 
@@ -19,7 +18,9 @@ container backend 追加) より先に、 現行 userns backend の上で
 サブトラックは 2 つで独立に着地可能:
 
 - **5a**: shim をオリジナルコマンドの絶対パスに bind 上書きする方式から、
-  固定ディレクトリ (`/opt/boid/bin` 等) + PATH 解決に移す。
+  固定ディレクトリ (5a-3 landed 時点で `/run/boid/bin` に確定 — 当初想定の
+  `/opt/boid/bin` は base rbind に含まれる制約で不可、 詳細は 5a-3 landed 注記) +
+  PATH 解決に移す。
   ステップ 2 (git gateway cutover) 完了で git shim が退役済みなため前提充足。
 - **5b**: task/instructions/environment/payload のファイル配布と attachments bind を
   boid コマンド (broker RPC) 経由に置換する。 environment.yaml の中身も
@@ -201,14 +202,17 @@ env 経路 (併存): `BOID_TASK_ID` / `BOID_JOB_ID` / `BOID_MODEL` / `BOID_INVOK
 
 ### 5a 完了時
 
-- サンドボックス内には `/opt/boid/bin/` (仮) に boid multi-call binary 1 個 +
+- サンドボックス内には `/run/boid/bin/` に boid multi-call binary 1 個 +
   各 shim 名の symlink 群が置かれる (`boid`, `gh`, `docker` 等)。 PATH は
-  `/opt/boid/bin` が先頭
-- 現状の「絶対パス bind 上書き」は消滅。 `hostCommandMounts` 全廃
+  `/run/boid/bin` が先頭。 実装は `internal/dispatcher/sandbox_builder.go`
+  の `sandboxShimBinDir` 定数と `hostCommandSymlinks` を参照
+- 現状の「絶対パス bind 上書き」は消滅。 `hostCommandMounts` 全廃 (5a-3 landed)
 - broker 側 policy 表と `BOID_HOST_COMMAND_RULES` の key は short name
   (`gh`, `docker` 等) に統一。 `ExecRequest.Command` も short name
-- コンテナ backend では `/opt/boid/bin` はイメージに焼き込み。
+  (5a-1/5a-2 landed)
+- コンテナ backend では `/run/boid/bin` はイメージに焼き込み予定。
   userns backend では tmpfs 上に symlink を dispatch 時に生成 + PATH prepend
+  (5a-3 landed)
 
 ### 5b 完了時
 
@@ -237,6 +241,15 @@ env 経路 (併存): `BOID_TASK_ID` / `BOID_JOB_ID` / `BOID_MODEL` / `BOID_INVOK
 
 ### 5a: shim 固定ディレクトリ化 (先行トラック)
 
+**全 4 PR landed で完結 (2026-07-21)**:
+
+| PR | 内容 | 状態 |
+|---|---|---|
+| 5a-1 | broker policy 表を short name key に切替 | landed (PR #796, 2026-07-16) |
+| 5a-2 | shim の `ExecRequest.Command` を short name に切替 | landed (PR #799, 2026-07-16) |
+| 5a-3 | shim 配置を `/run/boid/bin` 固定 dir + symlink に切替 (目玉 cutover) | landed (PR #806, 2026-07-21) |
+| 5a-4 | dogfood + e2e 静的チェック + Phase 5 完結宣言 (本 PR) | landed (PR #TBD, 2026-07-21) |
+
 1. **`ResolveHostCommands` の返り値を `{shortName → CommandDef}` に分離**
    (bind 用の絶対パス map と、 policy 用の short name map を返す)。 broker 登録側と
    `BOID_HOST_COMMAND_RULES` を short name key に順次差し替え。 shim mount は既存
@@ -248,12 +261,36 @@ env 経路 (併存): `BOID_TASK_ID` / `BOID_JOB_ID` / `BOID_MODEL` / `BOID_INVOK
    `sandbox.ShimExec` が `filepath.Base(os.Executable())` (もしくは argv[0]) を
    `ExecRequest.Command` に載せるように。 5a-1 で broker 側が short name を
    受け付ける状態を先に作っているので、 rollback 可能な小さい差分
-3. **shim 配置を `/opt/boid/bin` (仮) 固定 dir + symlink 群に切り替え**。
-   `hostCommandMounts` を廃止し、 `buildSymlinkDir` (新設) が dispatch 時に
-   `runtimes/<id>/shim-bin/` へ boid バイナリ + symlink を材料化して RO bind、
-   `buildPATH` は `/opt/boid/bin` (mount target) を先頭に prepend
-4. **dogfood + e2e 通し**。 現行の全 host_commands (`gh` 等) が短名経路で正常
-   dispatch される確認。 fake host command を使う e2e シナリオがあれば経路照合
+3. **shim 配置を固定 dir + symlink 群に切り替え**。
+   `hostCommandMounts` を廃止し、 `hostCommandSymlinks` (新設) が dispatch 時に
+   `sandboxShimBinDir` (`/run/boid/bin`) 下に boid バイナリ bind + 各 host command 短名の
+   symlink を材料化、 `buildPATH` は `sandboxShimBinDir` を先頭に prepend。
+   **(landed, PR #806)**: 当初 plan の `/opt/boid/bin` は `/opt` が base rbind に
+   含まれる制約で不可 (typical Linux host の root:root 755 で `MkdirAll` が EACCES;
+   逆に user-writable な `/opt` を持つ host では symlink が host FS に漏れる)。 codex
+   review Blocker 発掘を受けて `/run/boid/bin` に settle (base rbind 外の tmpfs、
+   既存 `/run/boid/*.sock` 群と convention 一致)。 併せて 5a-1/5a-2 で staging period
+   の互換フォールバックとして残していた `BOID_HOST_COMMAND_NAMES` env +
+   `ResolveShimCommandName` + `shimBinaryPath` + broker `lookupCommand` の
+   Path-scan フォールバックを全部 drop、 `SandboxRuntimeInfo.ResolvedHostCommands`
+   (byPath field) も削除。 `isSafeShimName` helper で不正な shim 名 (path
+   separator、 `..` 等) を defensive drop (project.yaml は user-authored のため)。
+   shim 名 basename == 宣言短名 が convention から construction に格上げされ、
+   aliased-basename attack class が structurally impossible に。
+   wiring-seams.md #14 に landed 注記追加、 5b-8 で確立した「新 seam 追加せず既存 seam
+   に note」パターンを踏襲。
+4. **dogfood + e2e 通し + Phase 5 完結宣言 (本 PR)**。 5b-8 と同じパターンで:
+   (a) `e2e/scenarios_shim_placement_test.go` を新設し、 e2e シナリオ内から退役済み
+   shim 経路 (`BOID_HOST_COMMAND_NAMES` / `hostCommandMounts` / `ResolveShimCommandName`
+   / `shimBinaryPath` / `/opt/boid/bin` の生 mention) への回帰参照を grep-based に pin。
+   (b) `.claude/skills/boid-review/references/wiring-seams.md` の 5a-3 landed 注記の
+   PR 番号 (#TBD → #806) 更新、 `e2e/fixtures/hostbin/echo-target` の内部コメント内
+   path (`/opt/boid/bin` → `/run/boid/bin`) 更新。 (c) 本ファイルの header と 5a 完了時
+   セクションを Phase 5 完結を反映する形に refresh。 (d) 実 boid daemon への dogfood
+   は 5b-8 で発見した通り nose の live daemon restart を要するため nose 判断に委ねる
+   (別途口頭で連絡済み)。 主要ハーネス経路の cold-start dispatch 契約は 5b-8 で追加した
+   `task-context-cold-start-smoke` シナリオが既に pin しており、 5a-3 shim 配置は同シナリオを
+   含む全 e2e で緑を維持している。
 
 ### 5b: タスクコンテキスト RPC 化 (独立トラック)
 
