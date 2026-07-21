@@ -12,12 +12,17 @@ description: >
 
 ## 起動コンテキストの検出
 
-最初に `~/.boid/context/task.yaml` の有無を確認する。
+最初に `$BOID_TASK_ID` の有無を確認する。**それだけでは確定させない** — task-less
+session (`boid exec` / project command セッション) は project/workspace 側の
+`env:` 設定を継承するため、そこに (意図せず) `BOID_TASK_ID` という名前の変数が
+紛れ込んでいると、実在しない・または無関係な過去タスクを指す値のまま非空判定を
+通過してしまう。`boid task current` が実際に成功する (= そのタスクが存在し、
+このセッションから見える) ことまで確認して初めてタスク管理モードと確定する。
 
 ```bash
-if [ -f ~/.boid/context/task.yaml ]; then
+if [ -n "$BOID_TASK_ID" ] && boid task current >/dev/null 2>&1; then
   # タスク管理モード（Web UI Commands ボタンから起動）
-  TASK_ID=$(grep '^id:' ~/.boid/context/task.yaml | awk '{print $2}')
+  TASK_ID="$BOID_TASK_ID"
   echo "タスク管理モードで起動: $TASK_ID"
 else
   # 外部オーケストレーションモード（boid exec / CLI から起動）
@@ -25,26 +30,26 @@ else
 fi
 ```
 
-| `~/.boid/context/task.yaml` | モード |
+| 条件 | モード |
 |---|---|
-| 存在する | **タスク管理モード** — 対象タスクを対話的に更新する |
-| 存在しない | **外部オーケストレーションモード** — supervisor タスクを作成・追跡する |
+| `$BOID_TASK_ID` が設定され、かつ `boid task current` が成功する | **タスク管理モード** — 対象タスクを対話的に更新する |
+| それ以外（`$BOID_TASK_ID` 未設定、または `boid task current` が失敗する） | **外部オーケストレーションモード** — supervisor タスクを作成・追跡する |
 
 ---
 
 ## タスク管理モード（Web UI Commands ボタンから起動）
 
-`~/.boid/context/task.yaml` が存在する場合はこのモードで動作する。
+`$BOID_TASK_ID` が設定され、かつ `boid task current` が成功する場合はこのモードで動作する。
 対象タスクをユーザーと対話で詳細化したり、awaiting 中の質問に回答するために使う。
 
 ### 起動時の流れ
 
-1. `task.yaml` からタスク ID を読む
+1. `$BOID_TASK_ID` を検証済みのタスク ID として使う（上の起動コンテキスト検出で `boid task current` の成功を確認済み）
 2. 現在のタスク状態を確認してユーザーに提示する
 3. ユーザーのゴールを聞いて実行する
 
 ```bash
-TASK_ID=$(grep '^id:' ~/.boid/context/task.yaml | awk '{print $2}')
+TASK_ID="$BOID_TASK_ID"
 
 # 現在状態の確認
 title=$(boid task show "$TASK_ID" --field title 2>/dev/null)
@@ -120,15 +125,15 @@ PTY が閉じることで exec job が完了する。
 
 ## 外部オーケストレーションモード（CLI / boid exec から起動）
 
-`~/.boid/context/task.yaml` が存在しない場合はこのモードで動作する。
+`$BOID_TASK_ID` が未設定、または `boid task current` が失敗する場合はこのモードで動作する。
 外部セッション（`BOID_TASK_ID` がない状態）から supervisor タスクを作成し、完了まで追跡する。
 
 > **このスキルは `/boid-task` と何が違うか**
 >
 > | スキル | 動作コンテキスト | 作るタスクの親 |
 > |---|---|---|
-> | `/boid-task` | タスク内部（`BOID_TASK_ID` あり、`~/.boid/context/*.yaml` あり） | 自分の子タスク |
-> | `/boid-orchestrate` | タスク外部（`BOID_TASK_ID` なし、context ファイルなし） | root タスク（親なし） |
+> | `/boid-task` | タスク内部（`BOID_TASK_ID` あり、`boid task current` 等で取得可） | 自分の子タスク |
+> | `/boid-orchestrate` | タスク外部（`BOID_TASK_ID` なし） | root タスク（親なし） |
 >
 > `boid exec` セッションや一般の project command セッションなど、タスクコンテキストが
 > ない場所から作業を委譲するときにこのスキルを使う。
@@ -303,4 +308,4 @@ echo "タスク作成: $TASK_ID"
 
 ## 関連スキル
 
-- [`/boid-task`](../boid-task/SKILL.md) — タスク内部で動く統合スキル。Supervisor Mode（子タスクの作成・監視）と Executor Mode（実装してコミット）を `environment.yaml` の `readonly` フラグで切り替える。
+- [`/boid-task`](../boid-task/SKILL.md) — タスク内部で動く統合スキル。Supervisor Mode（子タスクの作成・監視）と Executor Mode（実装してコミット）を `boid task current` の `readonly` フィールドで切り替える。

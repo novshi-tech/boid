@@ -489,6 +489,19 @@ source data is job-scoped, not task-scoped.
   task disagree about this value?" — if yes, it must be JobID-scoped. The 5b-6 cutover PR
   (`docs/plans/phase5-shim-and-task-context.md`), which retires End A's file materialization, is
   the point where this seam collapses to just End B/C — update this entry then.
+- **Update (Phase 5b PR4)**: `TaskSnapshot` gained a `Readonly` field
+  (`internal/orchestrator/jobspec.go`) so `boid task current` — and, through it, the boid-task
+  skill's Step 0 mode determination — can read `readonly` without falling back to the file-based
+  `environment.yaml` this PR retires as a skill-facing source. This is a **deliberate, one-way**
+  schema divergence between End A and End B for `BoidOpTaskCurrent` specifically:
+  `marshalTaskYAML` (`sandbox_builder.go`) builds `task.yaml`'s content from an explicit field
+  whitelist rather than reflecting over `TaskSnapshot`, so the new field reaches the RPC without
+  changing the file's on-disk shape. This does not weaken the seam's invariant above (which is
+  scoped to the **job-scoped** trio `Instructions`/`Env`/`Payload`, never `BoidOpTaskCurrent`) —
+  but a future editor extending `TaskSnapshot` further should keep in mind that `marshalTaskYAML`
+  will silently drop any new field unless also added there, which is fine (intentional, since the
+  file path is being retired wholesale rather than grown) but easy to mistake for a bug if you
+  don't already know this.
 
 ## 14. shim command-name resolution
 

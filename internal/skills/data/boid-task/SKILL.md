@@ -4,7 +4,7 @@ description: Unified task agent for the boid orchestrator. Reads task context,
   determines mode (supervisor/executor) from the readonly flag, and either
   orchestrates child tasks (supervisor mode) or implements the requested change
   (executor mode). Single context-driven agent for any task_behavior
-  (free naming, with mode keyed off environment.yaml `readonly`).
+  (free naming, with mode keyed off `boid task current`'s `readonly` field).
 ---
 
 # boid Task Agent
@@ -42,37 +42,42 @@ decision for your owner) — never for "I think my I/O is broken." Do not run
 
 ---
 
-## Step 0 — Read Context and Determine Mode
+## Step 0 — Fetch Context and Determine Mode
 
-Read these four files on **every invocation** (first start, reopen, every fresh
+Run these four commands on **every invocation** (first start, reopen, every fresh
 turn). The boid daemon no longer carries any harness session across dispatches:
-every invocation starts a fresh claude process with no chat history, so the
-files below are the single source of truth for prior-turn context.
+every invocation starts a fresh claude process with no chat history, so these
+commands are the single source of truth for prior-turn context.
 
-| File | Contents |
+| Command | Contents |
 |---|---|
-| `~/.boid/context/task.yaml` | Title, description, status, behavior, parent_id |
-| `~/.boid/context/instructions.yaml` | Instructions array; **the last element is active** |
-| `~/.boid/context/payload.yaml` | Existing artifacts (children, prior results) |
-| `~/.boid/context/environment.yaml` | Sandbox constraints (**readonly**, network, tools) |
+| `boid task current` | id, title, description, status, behavior, **readonly** |
+| `boid task instructions` | **This job's own** routed instruction — zero or one element, never the task's full history |
+| `boid task payload` | Existing artifacts (children, prior results) |
+| `boid task env` | Sandbox constraints not observable from inside the container: `allowed_domains`, `host_commands` |
 
-Full schema for these four files: [references/data-model.md](references/data-model.md).
+Each command prints YAML by default; add `--format json` for JSON, or
+`--field <dotted.path>` for a single value (e.g. `boid task current --field title`).
+
+Full schema for these four commands: [references/data-model.md](references/data-model.md).
 
 ### Mode determination (priority order)
 
 ```
-1. environment.yaml  readonly: true   → Supervisor mode (plan, create children, monitor)
-   environment.yaml  readonly: false  → Executor mode (implement, commit, report)
+1. boid task current --field readonly
+   readonly == "true"   → Supervisor mode (plan, create children, monitor)
+   readonly == "false"  → Executor mode (implement, commit, report)
 
-2. task.yaml  behavior: supervisor    → Supervisor mode  (互換期間中のみ参照)
-   task.yaml  behavior: executor     → Executor mode
+2. boid task current --field behavior
+   behavior == supervisor  → Supervisor mode  (互換期間中のみ参照)
+   behavior == executor    → Executor mode
 
 3. Active instruction keywords ("plan", "orchestrate", "supervisor") → hint only;
    readonly flag wins on conflict.
 ```
 
 The `readonly` flag is auto-set by the daemon from the behavior name during the
-compatibility period. Reading it from `environment.yaml` is always safe and will
+compatibility period. Reading it from `boid task current` is always safe and will
 remain the sole ground truth after Track A2 (free naming) ships.
 
 User-facing Q&A flows through `boid task ask` (a blocking RPC that returns the
@@ -180,17 +185,21 @@ Prefer `--fail`. Use `action send --type abort` only when nothing can be reporte
 
 ### Reopen semantics
 
-When this task is reopened, the new instruction is **appended** as the last element
-of `instructions.yaml`. Earlier elements are context only — act only on the tail.
-Reopen always spawns a fresh agent process (no harness session is carried over
-from the previous turn) — re-read every file in *Step 0* before deciding what
-to do, even if you "feel" like you already know the task.
+When this task is reopened, the new instruction becomes **this job's own** routed
+instruction — `boid task instructions` returns it as the sole element (it is
+job-scoped, not a growing history; see [references/data-model.md](references/data-model.md)).
+It does **not** show you what was asked in earlier turns. If you need that context,
+read `boid task current --field description` or check `boid task payload` for
+artifacts a prior turn recorded there. Reopen always spawns a fresh agent process
+(no harness session is carried over from the previous turn) — re-run every command
+in *Step 0* before deciding what to do, even if you "feel" like you already know
+the task.
 
 ---
 
 ## Supervisor Mode
 
-*Triggered when `environment.yaml` `readonly: true`.*
+*Triggered when `boid task current --field readonly` prints `true`.*
 
 A supervisor **orchestrates**: reads the request, decomposes it into child tasks,
 monitors them until terminal, integrates results, and exits. It never edits project
@@ -548,7 +557,7 @@ Enforce in your own control flow — the daemon does not:
 
 ## Executor Mode
 
-*Triggered when `environment.yaml` `readonly: false`.*
+*Triggered when `boid task current --field readonly` prints `false`.*
 
 An executor **implements**: edits files in its own fresh clone of the project,
 runs tests, commits, pushes, and exits. The parent supervisor handles
@@ -556,11 +565,13 @@ integration — the executor only commits, pushes, and reports.
 
 ### Workflow
 
-1. **Read** — title + description in `task.yaml`, the active instruction at the
-   tail of `instructions.yaml`. Confirm the project path and writability via
-   `environment.yaml` (`filesystem.project_dir`, `filesystem.writable`) — the
-   sandbox clones the project fresh for this job; the filesystem you see is
-   that clone's working tree, not the host repo.
+1. **Read** — title + description via `boid task current`, the active instruction
+   at the tail of `boid task instructions`. The project directory is wherever
+   your sandbox cwd already is (run `pwd`) — the sandbox clones the project
+   fresh for this job, so the filesystem you see is that clone's working tree,
+   not the host repo. Writability follows directly from Executor mode; there is
+   no separate flag to check (Executor mode always means writable — that's what
+   distinguishes it from Supervisor mode in the first place).
 2. **Implement** — make the code / test / doc changes. Stay inside the project
    clone.
 3. **Verify** — run the project's quick verification (tests + lint) before
@@ -595,17 +606,19 @@ and reopens you.
 
 ### Executor rules
 
-- Only edit files inside your project clone (path in `environment.yaml`).
-  Anything outside is lost when the job's sandbox is torn down.
-- Follow constraints in `environment.yaml` (`network.restricted`, `tools`).
+- Only edit files inside your project clone (your sandbox cwd). Anything
+  outside is lost when the job's sandbox is torn down.
+- Follow the network / host-command constraints reported by `boid task env`
+  (`allowed_domains`, `host_commands`) — egress outside the allowed domains
+  and host commands outside the declared allow/deny/reject rules will fail.
 - **Always commit AND push before exiting.** This job's clone is thrown away
   when it ends — commits that were never pushed to origin are gone, and are
   never visible to any other session or to the host, even if the job itself
   looked successful. "Uncommitted changes vanish" is no longer the whole
   story: unpushed *commits* vanish too.
 - Do not spawn child tasks. Decomposition belongs to the supervisor.
-- Do not write to `instructions` in the task payload — it is delivered as the
-  read-only file `instructions.yaml`.
+- Do not write to `instructions` in the task payload — it is delivered
+  read-only via `boid task instructions`.
 
 ---
 

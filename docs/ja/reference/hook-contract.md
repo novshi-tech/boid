@@ -16,8 +16,15 @@
 |---|---|---|
 | `task.yaml` | YAML | コアタスクフィールド (下表参照) |
 | `instructions.yaml` | YAML | routing 済み instruction (`kind: agent` hook 向け) |
-| `environment.yaml` | YAML | 追加の環境メタデータ |
 | `payload.json` | JSON | 現在の payload 全体 |
+
+追加の環境メタデータ (ネットワークの許可ドメイン、 host_commands の allow/deny/reject ルール) はコンテキストファイルではなく `boid task env` コマンド (broker RPC、 サンドボックス内 PATH から実行可能) 経由で取得します。 hook スクリプトから直接呼べます:
+
+```bash
+boid task env                       # YAML (既定)
+boid task env --format json         # JSON
+boid task env --field allowed_domains
+```
 
 **`task.yaml` のフィールド** (存在するフィールドはこれだけです。意図的に最小化されています):
 

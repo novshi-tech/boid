@@ -23,6 +23,7 @@ func TestGetTaskCurrent_HappyPath(t *testing.T) {
 				Status:      orchestrator.TaskStatusExecuting,
 				Behavior:    "dev",
 				Description: "world",
+				Readonly:    true,
 			},
 		},
 	}
@@ -32,8 +33,38 @@ func TestGetTaskCurrent_HappyPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if snap.ID != "t1" || snap.Title != "hello" || snap.Status != "executing" || snap.Behavior != "dev" || snap.Description != "world" {
+	if snap.ID != "t1" || snap.Title != "hello" || snap.Status != "executing" || snap.Behavior != "dev" || snap.Description != "world" || !snap.Readonly {
 		t.Errorf("unexpected snapshot: %+v", snap)
+	}
+}
+
+// TestGetTaskCurrentField_Readonly pins the Phase 5b PR4 addition (docs/plans/
+// phase5-shim-and-task-context.md「PR 分割案 > 5b」4): `boid task current
+// --field readonly` is the boid-task skill's new mode-determination source,
+// replacing the retired environment.yaml `readonly` file read.
+func TestGetTaskCurrentField_Readonly(t *testing.T) {
+	store := &fieldTaskStore{
+		tasks: map[string]*orchestrator.Task{
+			"t1": {ID: "t1", Behavior: "executor", Readonly: false},
+			"t2": {ID: "t2", Behavior: "supervisor", Readonly: true},
+		},
+	}
+	svc := &TaskAppService{Tasks: store}
+
+	got, err := svc.GetTaskCurrentField("t1", "readonly")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != "false" {
+		t.Errorf("t1 readonly = %q, want %q", got, "false")
+	}
+
+	got, err = svc.GetTaskCurrentField("t2", "readonly")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != "true" {
+		t.Errorf("t2 readonly = %q, want %q", got, "true")
 	}
 }
 
