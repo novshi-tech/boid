@@ -31,6 +31,7 @@ has the same shape:
 14. [shim command-name resolution (BOID_HOST_COMMAND_NAMES ↔ broker Commands key)](#14-shim-command-name-resolution)
 15. [attachments RPC write ↔ read path](#15-attachments-rpc-write--read-path)
 16. [adapter-issued task-context RPC (claude readSessionsFromRPC ↔ sandbox env)](#16-adapter-issued-task-context-rpc)
+17. [payload_patch direct-pass merge parity (RPC merge ↔ job_done/hook-completion merge)](#17-payload_patch-direct-pass-merge-parity)
 
 ---
 
@@ -729,3 +730,82 @@ equivalent env (and rely on an equivalent PATH) itself, from the same `RunContex
   changes *where* the shim-bin dir lives on PATH but not this seam's shape; 5b-6
   (file-distribution cutover) does not touch this seam either, since it never depended on the
   file side.
+
+## 17. payload_patch direct-pass merge parity
+
+Whether `boid task update --payload-patch @-` (Phase 5b PR7,
+docs/plans/phase5-shim-and-task-context.md decision 6/7) applies the SAME merge semantics an
+agent would get by going through the pre-existing file-based path instead
+(`$HOME/.boid/output/payload_patch.json` → `postJobDone` → `brokerclient.JobDone` →
+`BoidOpJobDone` → `WorkflowService.CompleteJob` → `Lifecycle.CompleteJob` → eventually
+`Coordinator.dispatchSequential`/`dispatchParallel`'s blocked `Waiter.WaitForJob` unblocks,
+`parseHandlerResult` extracts `payload_patch` from `job.Output`, and
+`orchestrator.MergePayloadPatch` merges it gated by `HandlerResult.allowedTraits(matchedHooks)`
+— the firing hook's own `Traits.Produces`). This is a distinct seam from #13: #13 is about the
+four *read* RPCs (`task current`/`instructions`/`env`/`payload`) staying internally consistent
+between their own build and serve sides; this one is about a *write* path that must reproduce an
+invariant a completely different subsystem (the hook-completion pipeline in
+`internal/orchestrator/coordinator.go`) already enforces, without going through that subsystem at
+all — the new RPC applies the merge **immediately and synchronously**, not by making the file
+path's deferred, job-completion-triggered mechanism observe an extra input.
+
+- **End A (existing reference behavior)**: `orchestrator.Coordinator`'s hook-completion pipeline.
+  `HandlerResult.allowedTraits(hooks)` (`internal/orchestrator/coordinator.go`) looks up the
+  *firing* hook by `HandlerResult.ID` (== `JobSpec.HandlerID` == the dispatched `Job.HandlerID` row
+  — see seam #13's End A note on `JobContextSnapshot` for the same HandlerID provenance) in the
+  hooks list that fired this dispatch round, and returns `nil` (unrestricted merge) if not found —
+  which is also what a **virtual/synthesized agent-kind hook**
+  (`orchestrator.synthesizeAgentHook`, fired whenever a behavior declares no explicit `kind: agent`
+  hook of its own — the common case, e.g. boid's own `.boid/project.yaml`) always produces, since
+  its `Traits` field is the zero value. `MergePayloadPatch(base, patch, handlerID, allowedTraits)`
+  then applies the patch trait-by-trait: a `nil` `allowedTraits` merges everything, a non-nil one
+  drops any trait key not present, and — independent of the allowlist — traits with
+  `MergeModeShared` (`verification`) are merged by keying a sub-entry on `handlerID` while
+  `MergeModeExclusive` traits (everything else, e.g. `artifact`) get a single level of sub-key
+  shallow merge against the existing value.
+- **End B (new RPC)**: `api.TaskAppService.UpdateTaskPayloadPatch(jobID, patch)`
+  (`internal/api/task_service.go`), invoked by `boidBuiltinExecutor`'s
+  `BoidOpTaskUpdatePayloadPatch` case (`internal/server/boid_executor.go`), reached via
+  `boid task update --payload-patch @-|@<file>|<inline>` (`internal/sandbox/boid_shim.go`'s
+  `parseBoidTaskUpdatePayloadPatch`, JobID-scoped — reads `BOID_JOB_ID`, not a positional task id,
+  since the allowedTraits derivation needs the CALLING job's own HandlerID). It resolves the job via
+  `JobStore.GetJob(jobID)` to get `job.HandlerID` and `job.TaskID`, looks up `job.HandlerID` inside
+  `orchestrator.LookupBehaviorWithAlias(meta, task.Behavior).Hooks` (falling back to `nil`
+  allowedTraits — exactly End A's own not-found behavior — when the project meta, the behavior, or
+  the hook itself can't be resolved), and calls the SAME `orchestrator.MergePayloadPatch` function
+  End A calls, synchronously, against the live task row.
+- **Invariant**: for a given `(project meta, task.Behavior, job.HandlerID)`, End B's derived
+  `allowedTraits` must equal what End A would derive for a job dispatched from that same firing
+  hook — both by construction call the identical `MergePayloadPatch`, so the only way to drift is
+  for End B's hook lookup to diverge from "the hook that was actually dispatched to produce this
+  job" (e.g. searching the wrong behavior, or re-deriving from something other than
+  `job.HandlerID`). A hook not found in `behavior.Hooks` (virtual/synthesized hooks are *never*
+  found there — they exist only in-memory at `Evaluator.Evaluate` time) must fall back to `nil`
+  allowedTraits, matching `HandlerResult.allowedTraits`'s own not-found return, not to an
+  empty-but-non-nil slice (which `MergePayloadPatch` treats as "reject everything" — the opposite
+  of the intended fallback).
+- **Guard**: End A's existing behavior is pinned by `internal/orchestrator/spec_payload_test.go`
+  (`MergePayloadPatch`/`ValidatePayloadPatch` directly) and `coordinator.go`'s own hook-dispatch
+  tests. End B's allowedTraits-derivation parity with End A is
+  `internal/api/task_payload_patch_test.go`'s `TestUpdateTaskPayloadPatch_MergesWhenTraitAllowed` /
+  `_DropsTraitNotInProduces` / `_HookNotFound_UnrestrictedMerge` (the virtual-hook-shaped case,
+  using the exact `"agent:claude-code"` ID form `synthesizeAgentHook` produces) /
+  `_NoProjectMeta_UnrestrictedMerge` / `_SharedTraitMergesByHandlerID` (proves the shared-trait
+  handlerID-keying path is actually exercised, not a hand-rolled shallow merge standing in for
+  `MergePayloadPatch`). Executor wiring (a real `api.TaskAppService`, not a stub merge function) is
+  `internal/server/boid_executor_task_update_payload_patch_test.go`. Broker authorization (JobID
+  strict equality, mirroring `BoidOpTaskInstructions`/`Env`/`Payload`) is
+  `internal/sandbox/broker_task_update_payload_patch_test.go`; the op ↔ escape-guard manifest
+  (`internal/sandbox/broker_op_escape_test.go`) and the policy drift tests
+  (`internal/orchestrator/policy_test.go`'s `wantOps`,
+  `internal/dispatcher/policy_translate_test.go`'s `TestOpConstantsMirror`) both include the new op.
+- **When you touch it**: if you touch `HandlerResult.allowedTraits`, `MergePayloadPatch`,
+  `orchestrator.synthesizeAgentHook`, or `TaskAppService.UpdateTaskPayloadPatch`'s hook-lookup loop,
+  verify both ends still agree on what "the traits this job's hook may produce" means for the same
+  three inputs (project meta, behavior, HandlerID) — a change that makes one side more or less
+  permissive than the other silently changes what an agent is allowed to write depending on which
+  of the two paths (RPC vs file fallback) happens to run. The file-based fallback itself (decision
+  6/7: kept alive until a later phase retires it, together with the `$HOME/.boid` job-scoped tmpfs
+  overlay that isolates it — see seam #13's PR6 update) is untouched by this PR and remains End A's
+  own responsibility; this seam is specifically about the new End B reproducing End A's *merge
+  semantics*, not about retiring End A.

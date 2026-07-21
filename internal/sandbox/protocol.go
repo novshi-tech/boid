@@ -96,6 +96,20 @@ const (
 	// in-sandbox read path for attachments.
 	BoidOpTaskAttachmentsList BoidOp = "task_attachments_list"
 	BoidOpTaskAttachmentsGet  BoidOp = "task_attachments_get"
+
+	// Phase 5b PR7 (docs/plans/phase5-shim-and-task-context.md): the
+	// job_done payload_patch direct-pass RPC. `boid task update
+	// --payload-patch @-` sends this instead of the agent writing
+	// $HOME/.boid/output/payload_patch.json for postJobDone/JobDone to pick
+	// up later — it applies immediately, with the SAME merge semantics
+	// (orchestrator.MergePayloadPatch, gated by the firing hook's own
+	// Traits.Produces) rather than BoidOpTaskUpdate's simpler top-level
+	// shallow merge. JobID-scoped like TaskInstructions/Env/Payload (not
+	// TaskID-scoped): the merge needs to resolve the CALLING job's own
+	// HandlerID to look up its allowed traits. The file-based fallback
+	// (decision 6/7, wiring-seams.md #13's PR6 update) is untouched by this
+	// op — it remains the sole path until Phase 6 retires it outright.
+	BoidOpTaskUpdatePayloadPatch BoidOp = "task_update_payload_patch"
 )
 
 type BoidRequest struct {
@@ -162,6 +176,14 @@ type BoidRequest struct {
 	// guard (no path separators, no ".."). Unused by
 	// BoidOpTaskAttachmentsList.
 	AttachmentName string `json:"attachment_name,omitempty"`
+
+	// PayloadPatch carries the raw patch body for BoidOpTaskUpdatePayloadPatch
+	// — the JSON that would otherwise go inside a file-based
+	// {"payload_patch": ...} envelope (docs/*/reference/hook-contract.md).
+	// Unlike UpdatePatch (a JSON-serialised api.UpdateTaskRequest consumed by
+	// a top-level shallow merge), this is merged via
+	// orchestrator.MergePayloadPatch — see api.TaskAppService.UpdateTaskPayloadPatch.
+	PayloadPatch json.RawMessage `json:"payload_patch,omitempty"`
 }
 
 type TokenContext struct {

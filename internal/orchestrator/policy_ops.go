@@ -33,5 +33,9 @@ const (
 	OpBoidTaskAttachmentsList = "task_attachments_list"
 	OpBoidTaskAttachmentsGet  = "task_attachments_get"
 
+	// Phase 5b PR7 job_done payload_patch direct-pass RPC
+	// (docs/plans/phase5-shim-and-task-context.md).
+	OpBoidTaskUpdatePayloadPatch = "task_update_payload_patch"
+
 	OpFetchGet = "get"
 )

@@ -605,6 +605,20 @@ func (e *boidBuiltinExecutor) ExecuteBoidBuiltin(goCtx context.Context, ctx sand
 		// the real process stdout.
 		return &sandbox.ExecResponse{Stdout: base64.StdEncoding.EncodeToString(data)}
 
+	// --- Phase 5b PR7 job_done payload_patch direct-pass RPC
+	// (docs/plans/phase5-shim-and-task-context.md) ---
+	case sandbox.BoidOpTaskUpdatePayloadPatch:
+		if e.tasks == nil {
+			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid task update --payload-patch unavailable"}
+		}
+		task, err := e.tasks.UpdateTaskPayloadPatch(req.JobID, req.PayloadPatch)
+		if err != nil {
+			return &sandbox.ExecResponse{ExitCode: 1, Stderr: err.Error()}
+		}
+		return &sandbox.ExecResponse{
+			Stdout: fmt.Sprintf("task updated: %s (%s)\n", task.ID, task.Status),
+		}
+
 	default:
 		return &sandbox.ExecResponse{ExitCode: 1, Stderr: fmt.Sprintf("unsupported boid op %q", req.Op)}
 	}

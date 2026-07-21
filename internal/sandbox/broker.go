@@ -512,6 +512,24 @@ func (b *Broker) handleBoidBuiltin(ctx context.Context, req *ExecRequest, entry 
 		if boidReq.Op == BoidOpTaskAttachmentsGet && boidReq.AttachmentName == "" {
 			return &ExecResponse{ExitCode: 1, Stderr: "boid task attachments get requires an attachment name"}
 		}
+	// Phase 5b PR7 (docs/plans/phase5-shim-and-task-context.md): JobID-scoped
+	// like BoidOpTaskInstructions/Env/Payload, for the same reason — the
+	// merge needs to resolve the calling job's own HandlerID (see
+	// api.TaskAppService.UpdateTaskPayloadPatch), which is meaningless
+	// without pinning to a specific job.
+	case BoidOpTaskUpdatePayloadPatch:
+		if boidReq.JobID == "" {
+			boidReq.JobID = entry.Context.JobID
+		}
+		if boidReq.JobID == "" {
+			return &ExecResponse{ExitCode: 1, Stderr: "boid task update --payload-patch requires a job id"}
+		}
+		if boidReq.JobID != entry.Context.JobID {
+			return &ExecResponse{ExitCode: 1, Stderr: "boid task update --payload-patch is restricted to the current job"}
+		}
+		if len(boidReq.PayloadPatch) == 0 {
+			return &ExecResponse{ExitCode: 1, Stderr: "boid task update --payload-patch requires a payload patch"}
+		}
 	}
 
 	if b.BoidExecutor == nil {

@@ -188,6 +188,67 @@ func (s *TaskAppService) UpdateTask(id string, req UpdateTaskRequest) (*orchestr
 	return task, nil
 }
 
+// UpdateTaskPayloadPatch applies patch to the task owning jobID using the
+// SAME merge semantics the file-based payload_patch.json → job_done →
+// Coordinator pipeline has always applied (orchestrator.MergePayloadPatch,
+// gated by the trait allowlist the firing hook itself declares via
+// Traits.Produces) — see orchestrator/coordinator.go's
+// HandlerResult.allowedTraits and wiring-seams.md #13/#17. This is
+// deliberately NOT UpdateTask's simpler top-level shallow merge (used by
+// --payload-file): UpdateTask has no notion of a "firing hook", so it can't
+// reproduce this gate.
+//
+// jobID (not taskID) is the identity this method resolves from, because the
+// allowedTraits gate is keyed off the CALLING job's own HandlerID — the
+// specific hook that was dispatched to produce this job, which may differ
+// from other jobs the same task has had or will have (mirrors why
+// BoidOpTaskInstructions/Env/Payload are JobID-scoped, not TaskID-scoped).
+//
+// When the job's HandlerID cannot be resolved to a declared Hook (e.g. a
+// virtual/synthesized agent hook — see orchestrator.synthesizeAgentHook,
+// whose Traits are always the zero value, or no project meta at all), the
+// merge falls back to unrestricted (nil allowedTraits) — identical to what
+// HandlerResult.allowedTraits itself returns for a hook it cannot find, so
+// this fallback introduces no divergence from the file-based path's
+// real-world behavior.
+func (s *TaskAppService) UpdateTaskPayloadPatch(jobID string, patch json.RawMessage) (*orchestrator.Task, error) {
+	if s.Jobs == nil {
+		return nil, &StatusError{Code: http.StatusInternalServerError, Message: "job store unavailable"}
+	}
+	job, err := s.Jobs.GetJob(jobID)
+	if err != nil {
+		return nil, &StatusError{Code: http.StatusNotFound, Message: err.Error()}
+	}
+	task, err := s.Tasks.GetTask(job.TaskID)
+	if err != nil {
+		return nil, &StatusError{Code: http.StatusNotFound, Message: err.Error()}
+	}
+
+	var allowedTraits []orchestrator.TraitType
+	if s.Meta != nil {
+		if meta, ok := s.Meta.Get(task.ProjectID); ok {
+			if behavior, _, ok := orchestrator.LookupBehaviorWithAlias(meta, task.Behavior); ok {
+				for _, h := range behavior.Hooks {
+					if h.ID == job.HandlerID {
+						allowedTraits = h.Traits.Produces
+						break
+					}
+				}
+			}
+		}
+	}
+
+	merged, err := orchestrator.MergePayloadPatch(task.Payload, patch, job.HandlerID, allowedTraits)
+	if err != nil {
+		return nil, &StatusError{Code: http.StatusBadRequest, Message: err.Error()}
+	}
+	task.Payload = merged
+	if err := s.Tasks.UpdateTask(task); err != nil {
+		return nil, &StatusError{Code: http.StatusInternalServerError, Message: err.Error()}
+	}
+	return task, nil
+}
+
 func (s *TaskAppService) DeleteTask(id string, force bool) error {
 	task, err := s.Tasks.GetTask(id)
 	if err != nil {
