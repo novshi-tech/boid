@@ -1,0 +1,43 @@
+id: task-context-cold-start-smoke
+name: Task Context Cold Start Smoke
+task_behaviors:
+  smoke:
+    hooks:
+      - id: cold-start-check
+        command: |
+          set -eu
+
+          # Phase 5b PR8 regression coverage: on the very first hook fired
+          # for a brand-new task (payload == {}), `boid task payload --field
+          # <not-yet-set-path>` must resolve to an empty value with exit
+          # code 0 (internal/api/task_field.go's ResolveTaskField doc
+          # comment: "Missing path: returns \"\" with no error"), not a
+          # non-zero exit. This exact call is what claude/codex/opencode
+          # adapters make at harness startup (readSessionsFromRPC /
+          # taskBootstrapPrompt querying `artifact.claude_code.sessions` or
+          # equivalent) to resume prior sessions — a cold-start task with no
+          # prior sessions must not fail the harness before it even starts.
+          # The one other e2e coverage of `boid task payload --field`
+          # (git-gateway-reopen-reclone) masks the exit code with
+          # `2>/dev/null || true`, so it can't distinguish "genuinely
+          # resolved empty" from "the RPC call failed" — this scenario
+          # asserts the exit code directly instead.
+          if ! payload_field="$(boid task payload --field artifact.claude_code.sessions)"; then
+            printf 'FAIL: boid task payload --field exited non-zero on first hook dispatch\n' >&2
+            exit 1
+          fi
+          if [ -n "$payload_field" ]; then
+            printf 'FAIL: expected empty output for an absent field, got: %s\n' "$payload_field" >&2
+            exit 1
+          fi
+
+          boid task current >/dev/null
+          boid task instructions >/dev/null
+          boid task env >/dev/null
+
+          mkdir -p "$HOME/.boid/output"
+          cat > "$HOME/.boid/output/payload_patch.json" <<'EOF'
+          {"payload_patch":{"artifact":{"result":"cold-start CLI smoke OK"}}}
+          EOF
+        traits:
+          produces: [artifact]

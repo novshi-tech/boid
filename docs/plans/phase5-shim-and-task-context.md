@@ -1,6 +1,9 @@
 # Phase 5 実装計画: shim 固定ディレクトリ化 + タスクコンテキスト RPC 化
 
-ステータス: 構想 (draft) — 着手判断前
+ステータス: 5b (タスクコンテキスト RPC 化) は全 8 PR landed で完結 (2026-07-21)。
+5a (shim 固定 dir 化) は PR1/PR2 landed、 PR3 (cutover) / PR4 (dogfood) 未着手 —
+cutover PR (5a-3) は 5b-6 (2026-07-21 landed) と 1 週間離すルールのため、
+5b-8 landed 後の数日を経てから着手予定。 詳細は「PR 分割案」節参照。
 作成日: 2026-07-20
 親ドキュメント: [container-based-boid.md](container-based-boid.md) — 移行戦略ステップ 5
 
@@ -254,6 +257,22 @@ env 経路 (併存): `BOID_TASK_ID` / `BOID_JOB_ID` / `BOID_MODEL` / `BOID_INVOK
 
 ### 5b: タスクコンテキスト RPC 化 (独立トラック)
 
+**全 8 PR landed で完結 (2026-07-21)**:
+
+| PR | 内容 | 状態 |
+|---|---|---|
+| 5b-1 | task-context RPC 4 種 + CLI (`boid task current`/`instructions`/`env`/`payload`) | landed (PR #797, 2026-07-20) |
+| 5b-2 | attachments RPC + CLI (`boid task attachments list`/`get`) | landed (PR #798, 2026-07-20) |
+| 5b-3 | adapter (claude/codex/opencode) bootstrap prompt を CLI 経路化 | landed (PR #800, 2026-07-20) |
+| 5b-4 | skill (`boid-task`/`boid-orchestrate`) を CLI 経路化 | landed (PR #801, 2026-07-21) |
+| 5b-5 | environment.yaml 縮退 (allowed_domains + host_commands のみ) | landed (PR #802, 2026-07-21) |
+| 5b-6 | file 配布経路 + attachments bind 撤去 (目玉 cutover) | landed (PR #803, 2026-07-21) |
+| 5b-7 | job_done payload_patch 直渡し RPC + CLI 一次化 | landed (PR #804, 2026-07-21) |
+| 5b-8 | e2e シナリオ静的チェック (retired file-path 回帰ガード) + dogfood + Phase 5b 完結宣言 (本 PR) | landed (PR #TBD, 2026-07-21) |
+
+各 PR の詳細は下記の番号付きリスト (1〜8) を参照。 8 の landed 注記に PR8 (本 PR) の
+成果をまとめる。
+
 1. **新 RPC 4 種 + CLI コマンド追加** (`boid task current` / `instructions` / `env` /
    `payload`)。 broker 側は既存 `TaskAppService` の拡張 (`GetTask` / `GetInstructions` /
    `GetPayload`) + dispatcher が持つ AllowedDomains + HostCommands を返す
@@ -338,6 +357,35 @@ env 経路 (併存): `BOID_TASK_ID` / `BOID_JOB_ID` / `BOID_MODEL` / `BOID_INVOK
 8. **e2e シナリオ書き換え + dogfood**。 `git-gateway-peer-fetch` の
    `grep clone_url environment.yaml` を `boid workspace peers` (仮) に置換。
    全 shopping scenario の走行と主要ハーネス (claude/codex/opencode) での dogfood
+   **(landed, PR #TBD)**: e2e/scenarios/ 配下の退役済 task-context file 経路
+   参照を grep-based に回帰ガードする `TestScenariosNoStaleTaskContextFilePaths`
+   (`e2e/scenarios_content_test.go`) を追加 — 走査の結果 `git-gateway-peer-fetch`
+   (skip 継続、 下記未解決論点「workspace_projects」参照) 以外に file 経路残存
+   なし (5b-1〜5b-7 で既に完全置換済みだったことを確認)。 `git-gateway-peer-fetch`
+   の `boid workspace peers` 置換自体は本 PR のスコープに含めない (minimum
+   change 優先の判断、 別 phase 送り)。
+
+   主要ハーネス dogfood は 2 系統で実施:
+   (1) claude/codex/opencode 各 adapter がハーネス起動時に呼ぶのと同じ
+   `boid task payload --field artifact.claude_code.sessions` 等の CLI を、
+   実 sandbox + 実 broker で cold-start (payload=={}) task に対して exit code
+   込みで pin する新規 e2e シナリオ `task-context-cold-start-smoke` を追加。
+   既存の唯一の利用例 (`git-gateway-reopen-reclone`) は `2>/dev/null || true`
+   で exit code を握り潰しており、 この経路の regression を検出できない
+   カバレッジの穴だったことが棚卸しで判明したため。
+   (2) 実 boid daemon (nose の自己ホスト運用インスタンス) への実 task dispatch
+   による dogfood を試みたところ、 khi-task-collector project の実タスク 2 件
+   (2026-07-21 12:00/16:00 JST) が `boid task payload --field
+   artifact.claude_code.sessions: exit status 1` で harness 起動直後に
+   即失敗しているのを発見。 調査の結果、 **Phase 5b のコード側の回帰ではなく
+   運用上の gap** と判明: 稼働中の daemon プロセス (`/proc/<pid>/exe` が
+   deleted 済み inode を指していた) が 2026-07-18 12:45 JST から一度も
+   再起動されておらず、 「デプロイ = PR マージの git hook 自動」が実際には
+   on-disk バイナリの再ビルドのみで稼働中プロセスの再起動を伴わないため、
+   Phase 5b の RPC 一式 (5b-1〜5b-7 全て) をそもそもロードしていなかったことが
+   原因。 nose に別途報告済み (daemon 再起動は nose 本人の判断で実施)。 この
+   ため live daemon への追加 dispatch は行わず、 fresh build を都度立てる
+   e2e (上記 (1)) を本 PR の dogfood 証跡として採用した。
 
 ### 順序と依存
 
@@ -365,7 +413,14 @@ env 経路 (併存): `BOID_TASK_ID` / `BOID_JOB_ID` / `BOID_MODEL` / `BOID_INVOK
   `Runner.buildPeerAdvertise` (`gitgateway_wire.go`) は削除せず「PR 跨ぎで
   inert」のまま継続保持 (5b-6 では新しい consumer を配線しない、 という
   deliberate な選択)。 `boid workspace peers` 実装時にこのデータをそのまま
-  再利用する想定
+  再利用する想定。
+  **5b-8 での判断 (2026-07-21)**: `git-gateway-peer-fetch` の skip 継続を
+  維持 (`boid workspace peers` 実装は本 PR のスコープに含めない)。 5b-6/5b-7
+  で状況は変わっておらず、 replacement RPC が無い以上シナリオを直せないのは
+  引き続き正しい判断。 **Phase 5b ではこの項目を実装せず、 別 phase (5a-3/5a-4
+  完了後、 または Phase 6 検討時) に送る** — skip ファイル自体は既に十分詳細な
+  理由を記録済みのため、 解除条件 (replacement RPC 実装 + シナリオ書き換え)
+  のみ本ファイルで再確認した
 - **`BOID_INSTRUCTIONS` env の廃止判定**: **解決済み (5b-6 codex review Minor 1
   対応、 2026-07-21)**。 リポジトリ全体 (production Go code / skill data /
   e2e fixture / kit) を棚卸しした結果アクティブな reader はゼロだったため
@@ -414,6 +469,21 @@ env 経路 (併存): `BOID_TASK_ID` / `BOID_JOB_ID` / `BOID_MODEL` / `BOID_INVOK
   prefix 自体を予約語として拒否するバリデーション。 5b-4 の codex review で
   指摘されたが sandbox_builder.go の変更を伴うため 5b-4 のスコープ外と判断し、
   別 PR に送る (5b-4 PR body に明記)
+- **自己ホスト daemon の「デプロイ」が実際には稼働中プロセスへ反映されない
+  (5b-8 dogfood で発見、 2026-07-21)**: Phase 5 自体の設計論点ではなく、
+  boid の自己ホスト運用 (nose の個人 daemon) 側の gap。 「デプロイ = PR
+  マージの git hook 自動」(`CLAUDE.md` 隣接の運用理解) は on-disk バイナリの
+  再ビルドのみを指し、 稼働中の daemon プロセスの再起動は伴わない —
+  プロセスは古い (今回は 2026-07-18 12:45 JST 起動の) バイナリを
+  `/proc/<pid>/exe` が deleted inode を指す状態のままメモリ上で実行し
+  続け、 それ以降にマージされた変更 (今回は 5b-1〜5b-7 全て) を一切
+  ロードしない。 これはコードの回帰ではなく気付きにくい運用上の gap —
+  マージ後に daemon 再起動を促す/自動化する仕組み (post-merge hook が
+  binary 再ビルドと合わせて graceful restart まで行う、 または in-flight
+  job を drain してから再起動する) が無いことに起因する。 Phase 5 の
+  スコープ外のため本 PR では手当てせず nose に個別報告するに留めるが、
+  将来 boid 自身の運用ドキュメント (もしくは deploy hook の実装) 側で
+  追跡すべき既知の risk として記録する
 
 ---
 
