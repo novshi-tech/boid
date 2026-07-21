@@ -512,6 +512,33 @@ func (b *Broker) handleBoidBuiltin(ctx context.Context, req *ExecRequest, entry 
 		if boidReq.Op == BoidOpTaskAttachmentsGet && boidReq.AttachmentName == "" {
 			return &ExecResponse{ExitCode: 1, Stderr: "boid task attachments get requires an attachment name"}
 		}
+	// Phase 5b PR7 (docs/plans/phase5-shim-and-task-context.md): JobID-scoped
+	// like BoidOpTaskInstructions/Env/Payload, for the same reason — the
+	// merge needs to resolve the calling job's own HandlerID (see
+	// api.TaskAppService.UpdateTaskPayloadPatch), which is meaningless
+	// without pinning to a specific job.
+	case BoidOpTaskUpdatePayloadPatch:
+		if boidReq.JobID == "" {
+			boidReq.JobID = entry.Context.JobID
+		}
+		if boidReq.JobID == "" {
+			return &ExecResponse{ExitCode: 1, Stderr: "boid task update --payload-patch requires a job id"}
+		}
+		if boidReq.JobID != entry.Context.JobID {
+			return &ExecResponse{ExitCode: 1, Stderr: "boid task update --payload-patch is restricted to the current job"}
+		}
+		if len(boidReq.PayloadPatch) == 0 {
+			return &ExecResponse{ExitCode: 1, Stderr: "boid task update --payload-patch requires a payload patch"}
+		}
+		// Defense in depth (Phase 5b PR7 codex review Major 3,
+		// wiring-seams.md #17): the shim already caps this before ever
+		// sending the request (boid_shim.go's readPayloadPatchSource), but
+		// the broker re-checks independently so a shim bypass or a future
+		// second caller (e.g. a different in-sandbox process crafting the
+		// JSON request by hand) can't skip the limit and OOM the daemon.
+		if len(boidReq.PayloadPatch) > PayloadPatchMaxBytes {
+			return &ExecResponse{ExitCode: 1, Stderr: fmt.Sprintf("boid task update --payload-patch exceeds %d bytes", PayloadPatchMaxBytes)}
+		}
 	}
 
 	if b.BoidExecutor == nil {

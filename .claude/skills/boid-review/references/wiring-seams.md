@@ -31,6 +31,7 @@ has the same shape:
 14. [shim command-name resolution (BOID_HOST_COMMAND_NAMES ↔ broker Commands key)](#14-shim-command-name-resolution)
 15. [attachments RPC write ↔ read path](#15-attachments-rpc-write--read-path)
 16. [adapter-issued task-context RPC (claude readSessionsFromRPC ↔ sandbox env)](#16-adapter-issued-task-context-rpc)
+17. [payload_patch direct-pass merge parity, persistence, and concurrency](#17-payload_patch-direct-pass-merge-parity-persistence-and-concurrency)
 
 ---
 
@@ -504,15 +505,17 @@ their source data is job-scoped, not task-scoped.
   job-scoped tmpfs overlay that isolated its writes is **not** deleted, despite an early cut of
   this PR trying to: codex review (Blocker + Major, before merge) found that with the overlay gone,
   the one remaining writer under `$HOME/.boid` — `$HOME/.boid/output/payload_patch.json`, the
-  `job_done` file fallback (decision 6, still primary until 5b PR7's RPC lands) — became a fixed,
-  shared path on the persistent workspace home, letting concurrent jobs in the same workspace
-  delete/merge each other's patches, and letting a prior job's ancestor symlink redirect a later
-  job's dispatch-time file operations outside the intended directory. Restoring the tmpfs (rather
-  than hardening the operations that ran on top of it) closes both classes of attack structurally —
-  see `docs/plans/phase5-shim-and-task-context.md`「PR 分割案 > 5b」6's landed note and
-  `internal/dispatcher/sandbox_builder.go`'s `homeMounts` doc comment for the full history. The
-  overlay is now expected to survive until 5b PR7 removes the file-based `job_done` fallback
-  entirely. `SandboxRuntimeInfo.WorkspacePeerAdvertise`
+  `job_done` file fallback (decision 6, primary at the time this PR landed — 5b PR7 later added
+  the RPC direct-pass path as the new primary, but deliberately kept this file fallback alive; see
+  seam #17) — became a fixed, shared path on the persistent workspace home, letting concurrent
+  jobs in the same workspace delete/merge each other's patches, and letting a prior job's ancestor
+  symlink redirect a later job's dispatch-time file operations outside the intended directory.
+  Restoring the tmpfs (rather than hardening the operations that ran on top of it) closes both
+  classes of attack structurally — see `docs/plans/phase5-shim-and-task-context.md`「PR 分割案 >
+  5b」6's landed note and `internal/dispatcher/sandbox_builder.go`'s `homeMounts` doc comment for
+  the full history. The overlay must survive until the file-based `job_done` fallback is retired
+  outright — 5b PR7 did NOT do this (its own scope keeps the fallback alive); that retirement is
+  deferred to a later phase (Phase 6 backend-swap era). `SandboxRuntimeInfo.WorkspacePeerAdvertise`
   and `Runner.buildPeerAdvertise` (`gitgateway_wire.go`) — the data the file's now-gone
   `workspace_projects` section used to carry — are kept as-is, still computed, still unconsumed by
   `BuildSandboxSpec`: PR6 made a deliberate call to continue the "carried but inert across a PR
@@ -729,3 +732,150 @@ equivalent env (and rely on an equivalent PATH) itself, from the same `RunContex
   changes *where* the shim-bin dir lives on PATH but not this seam's shape; 5b-6
   (file-distribution cutover) does not touch this seam either, since it never depended on the
   file side.
+
+## 17. payload_patch direct-pass merge parity, persistence, and concurrency
+
+Whether `boid task update --payload-patch @-` (Phase 5b PR7, docs/plans/phase5-shim-and-task-
+context.md decision 6/7) reproduces the file-based `payload_patch.json` → `job_done` → hook-
+completion pipeline's merge *semantics* (trait allowlist, merge mode) — AND whether the direct
+write it makes mid-job actually *survives* the rest of that same job's own completion-time persist
+step, and survives a second concurrent caller doing the same thing. The first cut of this RPC got
+the semantics right but shipped with three real bugs codex review caught before merge: a TOCTOU
+staleness bug in how the trait allowlist was derived, a non-transactional read-modify-write race
+between two concurrent callers, and — the most severe — a completely unrelated subsystem
+(`internal/orchestrator/coordinator.go`'s hook-completion pipeline) silently reverting the RPC's
+own successful write once the calling job's hook finished. All three are closed below. This is a
+distinct seam from #13: #13 is about the four *read* RPCs staying internally consistent between
+their own build and serve sides; this one is about a *write* path whose value must survive contact
+with a completion-time persist step it does not control.
+
+- **End A (dispatch-time trait capture — build)**: `orchestrator.DispatchPlanner.PlanHook`
+  (`internal/orchestrator/planner.go`) sets `JobSpec.HookTraitsProduces = event.Hook.Traits.Produces`
+  verbatim, at the moment the firing hook is resolved — the SAME value
+  `HandlerResult.allowedTraits(matchedHooks)` (`coordinator.go`) would apply to that same hook's
+  file-based payload_patch merge. `Runner.Dispatch`'s `trackJobContext` call
+  (`internal/dispatcher/runner.go`) threads it into
+  `JobContextSnapshot.PayloadPatchAllowedTraits` (`internal/dispatcher/job_context.go`), the exact
+  per-job/JobID-scoped structure seam #13 already established for `task env`/`instructions`/
+  `payload`. nil means unrestricted — true for both a virtual/synthesized agent-kind hook
+  (`orchestrator.synthesizeAgentHook`, fired whenever a behavior declares no explicit hook of its
+  own — the common case, e.g. boid's own `.boid/project.yaml` — whose `Traits` field is always the
+  zero value) and an explicitly declared hook with no `traits.produces` list; both are
+  indistinguishable from "unrestricted" on the file-based path too.
+- **End B (merge — serve)**: `boidBuiltinExecutor`'s `BoidOpTaskUpdatePayloadPatch` case
+  (`internal/server/boid_executor.go`) reads `snap.PayloadPatchAllowedTraits` from
+  `e.jobContexts.JobContext(req.JobID)` — erroring if no context is tracked for that job, the same
+  contract `TaskInstructions`/`Env`/`Payload` already have — and passes it straight through to
+  `api.TaskAppService.UpdateTaskPayloadPatch(jobID, patch, allowedTraits)`
+  (`internal/api/task_service.go`), which calls the SAME `orchestrator.MergePayloadPatch` function
+  the file-based pipeline calls, serialized per task id (see Concurrency below) against the live
+  task row. Reached via `boid task update --payload-patch @-|@<file>|<inline>`
+  (`internal/sandbox/boid_shim.go`'s `parseBoidTaskUpdatePayloadPatch`).
+- **Invariant (A↔B)**: End B's `allowedTraits` must be *exactly* the value End A captured for this
+  job at dispatch time — never re-derived from a live project-meta/behavior/hook lookup at merge
+  time. **Past break (Major 1, codex review before merge)**: an early cut of `UpdateTaskPayloadPatch`
+  did exactly that live re-lookup (current project meta → `LookupBehaviorWithAlias` → search
+  `behavior.Hooks` by `job.HandlerID`). Since project.yaml can be edited/reloaded between dispatch
+  and the RPC call, that lookup could apply a since-edited (narrower or wider) trait list, or fail
+  to find a renamed/removed hook and silently fall back to unrestricted even though the hook that
+  actually fired this job had a real restriction. Accepting the dispatch-time value as a parameter
+  (rather than re-deriving it) makes the whole staleness class structurally impossible instead of
+  requiring a "fail closed on lookup failure" special case.
+- **Concurrency (Blocker 2)**: `UpdateTaskPayloadPatch`'s `GetTask → MergePayloadPatch → UpdateTask`
+  is a read-modify-write over the full task row. **Past break**: with no serialization, two
+  concurrent calls for the SAME task (e.g. two hooks in the same readonly task's parallel dispatch
+  round, each patching a different trait) can both read the same pre-write snapshot, and the second
+  caller's full-row `UpdateTask` silently discards the first's write (and any other field — status,
+  awaiting — that changed in between). Fixed with `payloadPatchLockFor(taskID)`
+  (`internal/api/payload_patch_lock.go`): a fixed 64-shard mutex array keyed by a hash of the task
+  id, wrapping the whole critical section. Deliberately NOT a `map[string]*sync.Mutex` (would grow
+  forever over a long-running daemon's lifetime) and deliberately much narrower in duration than the
+  retired per-task branch lock (memory: khi-supervisor-branch-lock-headline-block) — this lock's
+  critical section is only the handful of DB calls inside one `UpdateTaskPayloadPatch` call, not a
+  task's entire executing lifetime. Scope: this closes concurrent `UpdateTaskPayloadPatch` calls
+  racing against EACH OTHER only — it does not serialize against every other task-row writer in the
+  codebase (`ApplyAction`, `NotifyTask`, the existing `--payload-file` `UpdateTask`); closing that
+  fully general problem needs optimistic-concurrency versioning on every task write path, out of
+  scope here.
+- **Persistence (Blocker 1, the most severe finding)**: a completely different subsystem —
+  `internal/api/workflow_action.go`'s `runDispatchLoop` and `internal/api/workflow_replay.go`'s
+  `ReplayHook` caller — persists the RESULT of the same dispatch cycle the RPC-writing job belongs
+  to, once that job's hook completes. **Past break**: both callsites merged (`runDispatchLoop`) or
+  wholesale-assigned (`ReplayHook`'s caller — even blunter, not even a merge) the coordinator's
+  `DispatchResult.FinalPayload`/`ReplayResult.FinalPayload` onto a freshly re-read task row.
+  `FinalPayload` is built from a snapshot of `task.Payload` taken BEFORE the hook ran, with only
+  THIS cycle's hook `PayloadPatch`es merged on top — so for a reopened task (non-empty payload at
+  round start) whose agent job wrote a NEW report via `--payload-patch` and then exited with no
+  file-based output of its own, `FinalPayload` is just the STALE pre-reopen snapshot, unchanged.
+  Applying it onto the freshly re-read row (which already has the RPC's successful write) silently
+  reverted the report back to its pre-reopen value — a **CLI call that returned success getting
+  invisibly undone** once the surrounding job finished. Fixed by adding
+  `DispatchResult.PayloadDelta`/`ReplayResult.PayloadDelta` (`internal/orchestrator/types.go`,
+  `coordinator.go`): the SAME hook-patch merge as `FinalPayload`, but folded starting from an empty
+  object instead of the stale snapshot — i.e. only what this cycle's hooks actually wrote. Both
+  persist callsites now merge/apply `PayloadDelta` onto the freshly re-read row instead of
+  `FinalPayload`; an empty delta (the common case for an agent reporting exclusively via the RPC) is
+  a safe no-op (`orchestrator.MergePayload`'s own empty-update short-circuit returns the fresh row's
+  payload unchanged), so a stale snapshot never gets a chance to overwrite anything. This is the
+  same *shape* of bug `StripAwaitingTrait` already defended against for the `awaiting` trait
+  specifically (see `runDispatchLoop`'s own comment history) — the delta fix generalizes that
+  defense to every trait rather than just `awaiting`, and `StripAwaitingTrait` is kept applied to
+  `PayloadDelta` too as an additional defensive layer, not removed.
+- **Guard**: End A capture — `TestPlanHook_CapturesHookTraitsProduces` /
+  `_HookTraitsProduces_NilForHookWithNoProduces` (`internal/orchestrator/planner_test.go`),
+  `TestDispatch_TracksJobContext_PayloadPatchAllowedTraits` /
+  `_NilJobSpecFieldYieldsNil` (`internal/dispatcher/runner_job_context_test.go`). Merge parity —
+  `internal/api/task_payload_patch_test.go`'s `TestUpdateTaskPayloadPatch_MergesWhenTraitAllowed` /
+  `_DropsTraitNotInProduces` / `_NilAllowedTraits_UnrestrictedMerge` / `_SharedTraitMergesByHandlerID`
+  (allowedTraits is now a caller-supplied parameter — these exercise the merge directly, no lookup
+  fixture needed). Executor wiring (real `JobContextSnapshot` sourcing, not a stub merge function) —
+  `internal/server/boid_executor_task_update_payload_patch_test.go`'s `_HappyPath` /
+  `_DropsTraitNotInDispatchTimeAllowlist` / `_JobContextNotTracked`. Concurrency —
+  `internal/api/task_payload_patch_test.go`'s
+  `TestUpdateTaskPayloadPatch_ConcurrentCallsDoNotLoseUpdates` (injected per-call latency inside a
+  race-detector-clean fake store widens the interleaving window enough to make the lost-update race
+  deterministically observable without the lock — confirmed to fail intermittently without
+  `payloadPatchLockFor` and pass 100% of the time with it). Persistence —
+  `internal/orchestrator/coordinator_payload_delta_test.go`'s
+  `TestCoordinator_DispatchAndAdvance_PayloadDelta_EmptyWhenHookProducesNoOutput` /
+  `_OnlyContainsThisCyclesWrites` (Coordinator-level delta contract), plus the end-to-end regression
+  at the persist layer: `internal/api/workflow_action_payload_delta_test.go`'s
+  `TestTaskWorkflowServiceRunDispatchLoop_PreservesMidHookRPCWrite_ReopenScenario` /
+  `_MergesNonEmptyPayloadDeltaOntoFreshRow`, and `internal/api/task_hook_replay_test.go`'s
+  `TestTaskWorkflowService_ReplayHook_PreservesMidHookRPCWrite` — all three confirmed to fail without
+  their respective fix (reverted locally and re-run) before landing. Broker authorization (JobID
+  strict equality, mirroring `BoidOpTaskInstructions`/`Env`/`Payload`) is
+  `internal/sandbox/broker_task_update_payload_patch_test.go`, which also covers the
+  `PayloadPatchMaxBytes` size-cap re-check (Major 3, below). The op ↔ escape-guard manifest
+  (`internal/sandbox/broker_op_escape_test.go`) and the policy drift tests
+  (`internal/orchestrator/policy_test.go`'s `wantOps`,
+  `internal/dispatcher/policy_translate_test.go`'s `TestOpConstantsMirror`) both include the new op.
+- **Adjacent fixes bundled into the same review round** (not this seam's own invariant, but worth
+  knowing if you land nearby): **Major 2** — the CLI's YAML→JSON conversion
+  (`boid_shim.go`'s `parseBoidTaskUpdatePayloadPatch`) originally didn't apply the same non-string-
+  key normalization `orchestrator.coordinator.go`'s `parseHandlerResult` already had (the historical
+  `on:` → `true:` PyYAML round-trip incident), so identical payload_patch content could behave
+  differently — or fail to marshal outright — depending on whether it traveled via the file fallback
+  or this CLI. Fixed by extracting the shared, dependency-free `internal/yamlutil.NormalizeKeys`
+  (both `orchestrator` and `sandbox` now call the SAME implementation — `sandbox` cannot import
+  `orchestrator`, hence the new leaf package). **Major 3** — `--payload-patch` content crosses the
+  broker RPC boundary into the daemon process (unlike a purely local file read), so an unbounded
+  `io.ReadAll` was a real OOM vector; fixed with `PayloadPatchMaxBytes` (10 MB, matching
+  `api.AttachmentMaxFileBytes`'s Phase 5b PR2 precedent) enforced at BOTH the shim
+  (`readPayloadPatchSource`, so an oversized input never reaches the wire) and the broker
+  (`internal/sandbox/broker.go`'s `BoidOpTaskUpdatePayloadPatch` case, defense in depth against a
+  shim bypass or a future less-careful caller).
+- **When you touch it**: if you touch `JobSpec.HookTraitsProduces`, `JobContextSnapshot.
+  PayloadPatchAllowedTraits`, `HandlerResult.allowedTraits`, `MergePayloadPatch`,
+  `orchestrator.synthesizeAgentHook`, or `TaskAppService.UpdateTaskPayloadPatch`, verify End A and
+  End B still agree on what "the traits this job's hook may produce" means — a live re-lookup
+  anywhere in this chain reintroduces the TOCTOU bug. If you touch `DispatchResult.PayloadDelta` /
+  `ReplayResult.PayloadDelta`, `Coordinator.DispatchAndAdvance`/`ReplayHook`'s hook-loop, or either
+  persist callsite (`runDispatchLoop`, `workflow_replay.go`), verify the delta — not `FinalPayload`
+  — is still what gets applied onto a freshly re-read row; reverting to `FinalPayload` silently
+  reintroduces Blocker 1 (a passing test suite alone won't catch it if the regression test itself
+  gets weakened — the fix is confirmed by literally reverting it locally and observing the specific
+  regression tests above fail, not just by reading the diff). The file-based fallback itself
+  (decision 6/7: kept alive until a later phase retires it, together with the `$HOME/.boid`
+  job-scoped tmpfs overlay that isolates it — see seam #13's PR6 update) is untouched by this PR and
+  remains fully separate infrastructure; this seam is about the new RPC path only.

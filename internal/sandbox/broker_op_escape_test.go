@@ -161,6 +161,12 @@ var opEscapeCoverage = map[string]opCoverage{
 	// Phase 5b PR2 attachments ops (docs/plans/phase5-shim-and-task-context.md).
 	"BoidOpTaskAttachmentsList": {escapeTest: "TestBroker_BoidTaskAttachmentsList_PolicyReject"},
 	"BoidOpTaskAttachmentsGet":  {escapeTest: "TestBroker_BoidTaskAttachmentsGet_PolicyReject"},
+
+	// Phase 5b PR7 job_done payload_patch direct-pass op
+	// (docs/plans/phase5-shim-and-task-context.md). Its id-equality guard is
+	// covered separately by broker_task_update_payload_patch_test.go; this
+	// closes the policy-gate manifest.
+	"BoidOpTaskUpdatePayloadPatch": {escapeTest: "TestBroker_BoidTaskUpdatePayloadPatch_PolicyReject"},
 }
 
 // TestOpEscapeCoverage_ManifestComplete asserts opEscapeCoverage covers exactly

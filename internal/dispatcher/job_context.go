@@ -33,14 +33,26 @@ import (
 //   - Payload: the trait-filtered payload (depends on the firing hook's
 //     declared Traits.Consumes — plan-time-only data that JobSpec does not
 //     carry forward).
+//   - PayloadPatchAllowedTraits: the firing hook's own `traits.produces`
+//     list, captured at dispatch time (JobSpec.HookTraitsProduces —
+//     event.Hook.Traits.Produces, verbatim). Phase 5b PR7's
+//     `boid task update --payload-patch` RPC
+//     (docs/plans/phase5-shim-and-task-context.md) uses this to gate its
+//     merge exactly like a completing hook's own file-based payload_patch
+//     would be gated (HandlerResult.allowedTraits in coordinator.go) —
+//     never by re-resolving the hook against current (possibly
+//     since-edited) project meta, which is a TOCTOU staleness bug (codex
+//     review, wiring-seams.md #17's Major 1). nil means unrestricted (see
+//     JobSpec.HookTraitsProduces's own doc comment for when that applies).
 //
 // Runner.Dispatch populates one per job; UnregisterJob discards it,
 // mirroring the broker token's own lifecycle so nothing outlives the job it
 // describes.
 type JobContextSnapshot struct {
-	Instructions []orchestrator.RoutedInstruction
-	Env          WorkspaceEnvView
-	Payload      json.RawMessage
+	Instructions              []orchestrator.RoutedInstruction
+	Env                       WorkspaceEnvView
+	Payload                   json.RawMessage
+	PayloadPatchAllowedTraits []orchestrator.TraitType
 }
 
 // trackJobContext records snap for jobID, overwriting any previous entry.

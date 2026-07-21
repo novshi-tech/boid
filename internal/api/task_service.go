@@ -188,6 +188,74 @@ func (s *TaskAppService) UpdateTask(id string, req UpdateTaskRequest) (*orchestr
 	return task, nil
 }
 
+// UpdateTaskPayloadPatch applies patch to the task owning jobID using the
+// SAME merge semantics the file-based payload_patch.json → job_done →
+// Coordinator pipeline has always applied (orchestrator.MergePayloadPatch,
+// gated by the trait allowlist the firing hook itself declares via
+// Traits.Produces) — see orchestrator/coordinator.go's
+// HandlerResult.allowedTraits and wiring-seams.md #13/#17. This is
+// deliberately NOT UpdateTask's simpler top-level shallow merge (used by
+// --payload-file): UpdateTask has no notion of a "firing hook", so it can't
+// reproduce this gate.
+//
+// jobID (not taskID) is the identity this method resolves from, because the
+// allowedTraits gate is keyed off the CALLING job's own HandlerID — the
+// specific hook that was dispatched to produce this job, which may differ
+// from other jobs the same task has had or will have (mirrors why
+// BoidOpTaskInstructions/Env/Payload are JobID-scoped, not TaskID-scoped).
+//
+// allowedTraits is supplied by the CALLER — it must be the value captured
+// AT DISPATCH TIME (dispatcher.JobContextSnapshot.PayloadPatchAllowedTraits,
+// itself sourced from orchestrator.JobSpec.HookTraitsProduces), never
+// re-derived here from a live project-meta lookup. An earlier version of
+// this method did its own live lookup (GetTask's ProjectID -> current meta
+// -> current behavior -> hook by HandlerID) and codex review caught the
+// TOCTOU staleness bug that creates: if project.yaml is edited/reloaded
+// between dispatch and this call, a live lookup can either apply the WRONG
+// (post-edit) trait list or silently fall back to unrestricted when the
+// hook can no longer be found by name — neither matches what was actually
+// authorized when the job was dispatched. Accepting the dispatch-time value
+// as a parameter makes that class of staleness structurally impossible
+// instead of requiring a "fail closed on lookup failure" special case (see
+// wiring-seams.md #17's Major 1 finding). nil means unrestricted — see
+// JobSpec.HookTraitsProduces's own doc comment for exactly when that's the
+// correct (not just the fallback) value.
+//
+// The GetTask -> MergePayloadPatch -> UpdateTask sequence below is
+// serialized per task id (payloadPatchLockFor) so two concurrent calls for
+// the same task — e.g. two hooks in the same readonly task's parallel
+// dispatch round, each patching a different trait — cannot race a
+// read-modify-write and silently lose one of their writes (Phase 5b PR7
+// codex review Blocker 2, wiring-seams.md #17).
+func (s *TaskAppService) UpdateTaskPayloadPatch(jobID string, patch json.RawMessage, allowedTraits []orchestrator.TraitType) (*orchestrator.Task, error) {
+	if s.Jobs == nil {
+		return nil, &StatusError{Code: http.StatusInternalServerError, Message: "job store unavailable"}
+	}
+	job, err := s.Jobs.GetJob(jobID)
+	if err != nil {
+		return nil, &StatusError{Code: http.StatusNotFound, Message: err.Error()}
+	}
+
+	lock := payloadPatchLockFor(job.TaskID)
+	lock.Lock()
+	defer lock.Unlock()
+
+	task, err := s.Tasks.GetTask(job.TaskID)
+	if err != nil {
+		return nil, &StatusError{Code: http.StatusNotFound, Message: err.Error()}
+	}
+
+	merged, err := orchestrator.MergePayloadPatch(task.Payload, patch, job.HandlerID, allowedTraits)
+	if err != nil {
+		return nil, &StatusError{Code: http.StatusBadRequest, Message: err.Error()}
+	}
+	task.Payload = merged
+	if err := s.Tasks.UpdateTask(task); err != nil {
+		return nil, &StatusError{Code: http.StatusInternalServerError, Message: err.Error()}
+	}
+	return task, nil
+}
+
 func (s *TaskAppService) DeleteTask(id string, force bool) error {
 	task, err := s.Tasks.GetTask(id)
 	if err != nil {

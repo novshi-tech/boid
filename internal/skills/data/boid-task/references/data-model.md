@@ -68,7 +68,7 @@ or check `boid task payload` for artifacts a prior turn recorded.
 
 ## boid task payload
 
-**Read-only.** Use it to read context such as artifacts accumulated by past hooks. This is not a path for agents to write to — use `boid task update --payload-file` (see the skill's *Writing the final report* section).
+**Read-only.** Use it to read context such as artifacts accumulated by past hooks. This is not a path for agents to write to — use `boid task update --payload-patch @-` (see the skill's *Writing the final report* section).
 
 Instructions are not a trait of the payload; they are delivered by the separate `boid task instructions` command.
 

@@ -789,9 +789,14 @@ func buildCloneSpec(spec *orchestrator.JobSpec, rt SandboxRuntimeInfo) sandbox.C
 // the shared, persistent path (and therefore the whole class of attack)
 // instead of trying to harden operations against it; RemoveFiles
 // (sandbox.Spec) went with it — see git history for the removed mechanism.
-// The overlay is scoped to stay until the job_done payload-patch RPC
-// (decision 6, PR7) removes the file-based fallback entirely, at which
-// point $HOME/.boid can be retired for real with nothing left to isolate.
+// Phase 5b PR7 (docs/plans/phase5-shim-and-task-context.md, decision 6/7)
+// added the job_done payload-patch RPC (`boid task update --payload-patch`)
+// as the primary reporting path, but deliberately did NOT remove the
+// file-based fallback (`$HOME/.boid/output/payload_patch.json`) — PR7's own
+// scope keeps it alive as a fallback until a later phase (Phase 6 backend
+// swap era) retires it outright. The overlay here stays until that
+// retirement actually lands, at which point $HOME/.boid can be retired for
+// real with nothing left to isolate.
 //
 // Shared by the Clone branch, the default (no-project) branch and
 // projectVisibilityMounts's HOME step below so all three switch over

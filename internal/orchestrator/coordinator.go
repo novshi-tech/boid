@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"sync"
 
+	"github.com/novshi-tech/boid/internal/yamlutil"
 	"gopkg.in/yaml.v3"
 )
 
@@ -46,6 +47,12 @@ func (d *Coordinator) DispatchAndAdvance(
 ) (*DispatchResult, error) {
 	readonly := IsReadonly(task)
 	payload := task.Payload
+	// delta accumulates ONLY what this cycle's own hooks actually wrote,
+	// starting from an empty object rather than the (potentially
+	// stale-by-completion-time) task.Payload snapshot — see
+	// DispatchResult.PayloadDelta's doc comment for why this must be kept
+	// separate from payload/finalPayload.
+	delta := json.RawMessage("{}")
 	var allResults []HandlerResult
 	var firedEvents []FiredEvent
 
@@ -75,12 +82,16 @@ func (d *Coordinator) DispatchAndAdvance(
 				return &DispatchResult{FiredEvents: firedEvents}, err
 			}
 			if len(hr.PayloadPatch) > 0 && string(hr.PayloadPatch) != "{}" {
-				merged, err := MergePayloadPatch(payload, hr.PayloadPatch, hr.ID, hr.allowedTraits(matchedHooks))
+				allowed := hr.allowedTraits(matchedHooks)
+				merged, err := MergePayloadPatch(payload, hr.PayloadPatch, hr.ID, allowed)
 				if err != nil {
 					slog.Warn("payload merge failed", "hook_id", hr.ID, "error", err)
 					continue
 				}
 				payload = merged
+				if deltaMerged, deltaErr := MergePayloadPatch(delta, hr.PayloadPatch, hr.ID, allowed); deltaErr == nil {
+					delta = deltaMerged
+				}
 			}
 		}
 	}
@@ -96,6 +107,7 @@ func (d *Coordinator) DispatchAndAdvance(
 		Results:       allResults,
 		FiredEvents:   firedEvents,
 		FinalPayload:  finalPayload,
+		PayloadDelta:  delta,
 		NewStatus:     newStatus,
 		ActionPayload: actionPayload,
 	}, nil
@@ -333,7 +345,12 @@ func parseHandlerResult(id string, role Role, c JobCompletion) HandlerResult {
 	// map[interface{}]interface{} で返すため、そのままでは json.Marshal が落ちる。
 	// 過去事例: agent が `on: verifying` と書いた YAML が PyYAML の round-trip で
 	// `true: verifying` に化け、Layer 2 がないと payload_patch がまるごと silent drop した。
-	patchVal = normalizeYAMLKeys(patchVal)
+	// yamlutil.NormalizeKeys is the SHARED implementation (Phase 5b PR7 codex
+	// review Major 2, wiring-seams.md #17): internal/sandbox's `boid task
+	// update --payload-patch` CLI applies the identical normalization so the
+	// same YAML content behaves identically regardless of which path (file
+	// vs RPC) carries it.
+	patchVal = yamlutil.NormalizeKeys(patchVal)
 	patchJSON, err := json.Marshal(patchVal)
 	if err != nil {
 		slog.Warn("failed to marshal payload_patch", "id", id, "error", err)
@@ -341,37 +358,6 @@ func parseHandlerResult(id string, role Role, c JobCompletion) HandlerResult {
 	}
 	hr.PayloadPatch = patchJSON
 	return hr
-}
-
-// normalizeYAMLKeys は yaml.v3 が非 string キーで decode した
-// map[interface{}]interface{} を再帰的に map[string]interface{} に正規化する。
-// 非 string キーは fmt.Sprint で stringify する (true→"true"、42→"42"、nil→"<nil>")。
-// 既に map[string]interface{} の枝も再帰で下る。
-func normalizeYAMLKeys(v interface{}) interface{} {
-	switch x := v.(type) {
-	case map[interface{}]interface{}:
-		m := make(map[string]interface{}, len(x))
-		for k, val := range x {
-			ks, ok := k.(string)
-			if !ok {
-				ks = fmt.Sprint(k)
-			}
-			m[ks] = normalizeYAMLKeys(val)
-		}
-		return m
-	case map[string]interface{}:
-		for k, val := range x {
-			x[k] = normalizeYAMLKeys(val)
-		}
-		return x
-	case []interface{}:
-		for i, val := range x {
-			x[i] = normalizeYAMLKeys(val)
-		}
-		return x
-	default:
-		return v
-	}
 }
 
 // hasHookResult reports whether any HandlerResult with RoleHook is present.
@@ -387,8 +373,16 @@ func hasHookResult(results []HandlerResult) bool {
 
 // ReplayResult is the result of a single-hook replay operation.
 type ReplayResult struct {
-	Result       HandlerResult
+	Result HandlerResult
+	// FinalPayload / PayloadDelta carry the same distinction
+	// DispatchResult's own fields do — see DispatchResult's doc comment.
+	// FinalPayload is a (potentially stale-by-the-time-the-hook-completes)
+	// full snapshot; PayloadDelta is only what this single replayed hook
+	// actually wrote, safe to apply onto a freshly re-read task row without
+	// reverting any out-of-band write the hook itself made mid-flight
+	// (Phase 5b PR7 codex review Blocker 1, wiring-seams.md #17).
 	FinalPayload json.RawMessage
+	PayloadDelta json.RawMessage
 	NewStatus    TaskStatus
 	FiredEvents  []FiredEvent
 }
@@ -437,6 +431,11 @@ func (d *Coordinator) ReplayHook(
 	hookResults, err := d.dispatchHooks(ctx, task, matched, readonly)
 
 	payload := task.Payload
+	// See DispatchResult.PayloadDelta's doc comment: this must be applied
+	// onto a freshly re-read task row, never FinalPayload's stale-by-
+	// completion-time snapshot (Phase 5b PR7 codex review Blocker 1,
+	// wiring-seams.md #17).
+	delta := json.RawMessage("{}")
 	var result HandlerResult
 	var firedEvents []FiredEvent
 
@@ -444,11 +443,15 @@ func (d *Coordinator) ReplayHook(
 		result = hr
 		firedEvents = append(firedEvents, buildFiredEvent(hr, "hook_replay", string(task.Status), matched))
 		if len(hr.PayloadPatch) > 0 && string(hr.PayloadPatch) != "{}" {
-			merged, mergeErr := MergePayloadPatch(payload, hr.PayloadPatch, hr.ID, hr.allowedTraits(matched))
+			allowed := hr.allowedTraits(matched)
+			merged, mergeErr := MergePayloadPatch(payload, hr.PayloadPatch, hr.ID, allowed)
 			if mergeErr != nil {
 				slog.Warn("hook replay payload merge failed", "hook_id", hr.ID, "error", mergeErr)
 			} else {
 				payload = merged
+				if deltaMerged, deltaErr := MergePayloadPatch(delta, hr.PayloadPatch, hr.ID, allowed); deltaErr == nil {
+					delta = deltaMerged
+				}
 			}
 		}
 	}
@@ -466,6 +469,7 @@ func (d *Coordinator) ReplayHook(
 	return &ReplayResult{
 		Result:       result,
 		FinalPayload: finalPayload,
+		PayloadDelta: delta,
 		NewStatus:    newStatus,
 		FiredEvents:  firedEvents,
 	}, nil

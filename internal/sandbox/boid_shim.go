@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/novshi-tech/boid/internal/yamlutil"
 	"gopkg.in/yaml.v3"
 )
 
@@ -344,6 +345,19 @@ func parseBoidTaskShow(args []string) (*BoidRequest, error) {
 }
 
 func parseBoidTaskUpdate(args []string) (*BoidRequest, error) {
+	// --payload-patch routes to a distinct op (BoidOpTaskUpdatePayloadPatch)
+	// with its own merge semantics (orchestrator.MergePayloadPatch, gated by
+	// the firing hook's own Traits.Produces — see
+	// api.TaskAppService.UpdateTaskPayloadPatch) and its own JobID-based
+	// scoping (mirrors task_instructions/env/payload, wiring-seams.md #13),
+	// so it is parsed by a dedicated function rather than folded into
+	// `merged` alongside the top-level-shallow-merge flags below.
+	for _, arg := range args {
+		if arg == "--payload-patch" || strings.HasPrefix(arg, "--payload-patch=") {
+			return parseBoidTaskUpdatePayloadPatch(args)
+		}
+	}
+
 	req := &BoidRequest{Op: BoidOpTaskUpdate}
 
 	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
@@ -424,6 +438,122 @@ func parseBoidTaskUpdate(args []string) (*BoidRequest, error) {
 	req.UpdatePatch = patchJSON
 
 	return req, nil
+}
+
+// parseBoidTaskUpdatePayloadPatch builds the BoidRequest for `boid task
+// update --payload-patch <value>` (docs/plans/phase5-shim-and-task-context.md
+// decision 6/PR7: the job_done payload_patch direct-pass RPC). Unlike every
+// other `task update` flag it is JobID-scoped (BOID_JOB_ID env, mirroring
+// the Phase 5b PR1 task-context subcommands) rather than a positional task
+// id — the merge needs to resolve the calling job's own HandlerID — so it
+// is parsed alone: a positional task id or any other `task update` flag
+// alongside it is rejected outright rather than silently ignored, since the
+// two request shapes (BoidOpTaskUpdate's top-level shallow merge vs this
+// op's trait-mode-aware merge) must not be conflated.
+//
+// value follows curl's `@` convention: a bare value is inline patch content,
+// `@<path>` reads a file, and `@-` reads stdin (the form the plan doc's
+// decision 6 documents, e.g. `boid task update --payload-patch @-`).
+func parseBoidTaskUpdatePayloadPatch(args []string) (*BoidRequest, error) {
+	var source string
+	var seen bool
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		switch {
+		case arg == "--payload-patch" || strings.HasPrefix(arg, "--payload-patch="):
+			value, next, err := takeStringFlagValue(args, i, "--payload-patch")
+			if err != nil {
+				return nil, err
+			}
+			i = next
+			source = value
+			seen = true
+		default:
+			return nil, fmt.Errorf("boid shim: --payload-patch cannot be combined with %q; call it alone (boid task update --payload-patch @-)", arg)
+		}
+	}
+	if !seen {
+		return nil, fmt.Errorf("boid shim: --payload-patch requires a value")
+	}
+
+	data, err := readPayloadPatchSource(source)
+	if err != nil {
+		return nil, err
+	}
+
+	if len(strings.TrimSpace(string(data))) == 0 {
+		return nil, fmt.Errorf("boid shim: --payload-patch requires non-empty content")
+	}
+
+	var v any
+	if err := yaml.Unmarshal(data, &v); err != nil {
+		return nil, fmt.Errorf("boid shim: parse payload patch: %w", err)
+	}
+	// yaml.v3 decodes a mapping with a non-string key (bool/int/null — see
+	// coordinator.go's parseHandlerResult doc comment for the historical
+	// `on:` -> `true:` PyYAML round-trip incident) as
+	// map[interface{}]interface{}, which json.Marshal below cannot handle.
+	// yamlutil.NormalizeKeys is the SAME shared normalization the file-based
+	// path applies (Phase 5b PR7 codex review Major 2, wiring-seams.md #17)
+	// — without it, identical payload_patch content would behave
+	// differently (or error outright) depending on whether it traveled via
+	// the file fallback or this CLI.
+	v = yamlutil.NormalizeKeys(v)
+	patchJSON, err := json.Marshal(v)
+	if err != nil {
+		return nil, fmt.Errorf("boid shim: encode payload patch: %w", err)
+	}
+
+	jobID := os.Getenv("BOID_JOB_ID")
+	if jobID == "" {
+		return nil, fmt.Errorf("boid shim: --payload-patch requires BOID_JOB_ID to be set (this command must run inside a dispatched job)")
+	}
+
+	return &BoidRequest{
+		Op:           BoidOpTaskUpdatePayloadPatch,
+		JobID:        jobID,
+		PayloadPatch: patchJSON,
+	}, nil
+}
+
+// readPayloadPatchSource resolves a --payload-patch value following curl's
+// `@` convention (bare value = inline content, `@<path>` = file, `@-` =
+// stdin), enforcing PayloadPatchMaxBytes on every branch. Unlike
+// readFlagContent (shared by --payload-file/--patch-file/etc, deliberately
+// left uncapped for consistency with those existing flags), this content
+// crosses the broker RPC boundary into the daemon process, so an unbounded
+// read is a real OOM vector for a shared, long-lived process — Phase 5b PR7
+// codex review Major 3, wiring-seams.md #17. The broker re-checks the same
+// cap independently (internal/sandbox/broker.go) as defense in depth.
+func readPayloadPatchSource(source string) ([]byte, error) {
+	if !strings.HasPrefix(source, "@") {
+		if len(source) > PayloadPatchMaxBytes {
+			return nil, fmt.Errorf("boid shim: --payload-patch inline value exceeds %d bytes", PayloadPatchMaxBytes)
+		}
+		return []byte(source), nil
+	}
+
+	path := strings.TrimPrefix(source, "@")
+	var reader io.Reader
+	if path == "-" {
+		reader = os.Stdin
+	} else {
+		f, err := os.Open(path)
+		if err != nil {
+			return nil, fmt.Errorf("boid shim: read payload patch: %w", err)
+		}
+		defer f.Close()
+		reader = f
+	}
+
+	data, err := io.ReadAll(io.LimitReader(reader, PayloadPatchMaxBytes+1))
+	if err != nil {
+		return nil, fmt.Errorf("boid shim: read payload patch: %w", err)
+	}
+	if len(data) > PayloadPatchMaxBytes {
+		return nil, fmt.Errorf("boid shim: --payload-patch content exceeds %d bytes", PayloadPatchMaxBytes)
+	}
+	return data, nil
 }
 
 func takeStringFlagValue(args []string, index int, name string) (string, int, error) {

@@ -114,11 +114,28 @@ Aborted tasks cannot be reopened.
 
 ```bash
 boid task update <task-id> --patch-file <file>             # task row fields
-boid task update <task-id> --payload-file <file>           # merge into task.payload
+boid task update <task-id> --payload-file <file>           # merge into task.payload (top-level shallow merge)
 boid task update <task-id> --instructions-file <file>      # role-wise instructions merge
+boid task update --payload-patch @-                        # job_done-equivalent trait-gated merge (see below)
 ```
 
 `-` reads from stdin. Use `--payload-file` to seed children with structured context; prefer `reopen` for adding plain-text instructions.
+
+`--payload-patch` is a distinct mode, not just another flag on the same
+request: it takes **no task id** (it always targets the calling job's own
+task) and cannot be combined with `--patch-file` / `--payload-file` /
+`--instructions-file` / `--title` / `--description` in the same invocation.
+Its value follows curl's `@` convention — a bare value is inline JSON/YAML,
+`@<path>` reads a file, `@-` reads stdin. Unlike `--payload-file`'s top-level
+shallow merge (which replaces an entire trait key wholesale and knows nothing
+about trait ownership), `--payload-patch` merges through
+`orchestrator.MergePayloadPatch` — the same trait-mode-aware logic (exclusive
+vs shared) a completing hook's own payload_patch goes through — gated by the
+allowlist the *current job's own hook* declares in its `traits.produces` (a
+hook with no declaration, including the common virtual/synthesized
+agent-kind hook, merges unrestricted). This is the primary way to write
+`artifact.report` and any other hook-owned trait; see the skill's *Writing
+the final report* section for the canonical shape.
 
 ## boid task ask
 

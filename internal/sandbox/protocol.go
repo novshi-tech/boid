@@ -96,7 +96,39 @@ const (
 	// in-sandbox read path for attachments.
 	BoidOpTaskAttachmentsList BoidOp = "task_attachments_list"
 	BoidOpTaskAttachmentsGet  BoidOp = "task_attachments_get"
+
+	// Phase 5b PR7 (docs/plans/phase5-shim-and-task-context.md): the
+	// job_done payload_patch direct-pass RPC. `boid task update
+	// --payload-patch @-` sends this instead of the agent writing
+	// $HOME/.boid/output/payload_patch.json for postJobDone/JobDone to pick
+	// up later — it applies immediately, with the SAME merge semantics
+	// (orchestrator.MergePayloadPatch, gated by the firing hook's own
+	// Traits.Produces) rather than BoidOpTaskUpdate's simpler top-level
+	// shallow merge. JobID-scoped like TaskInstructions/Env/Payload (not
+	// TaskID-scoped): the allowedTraits gate is sourced from the
+	// dispatcher.JobContextSnapshot captured for the CALLING job at dispatch
+	// time (never re-resolved live against project meta — a TOCTOU
+	// staleness bug codex review caught, see wiring-seams.md #17's Major 1),
+	// which only exists per-job. The file-based fallback (decision 6/7,
+	// wiring-seams.md #13's PR6 update) is untouched by this op and remains
+	// available as a secondary path — full retirement is deferred to Phase 6.
+	BoidOpTaskUpdatePayloadPatch BoidOp = "task_update_payload_patch"
 )
+
+// PayloadPatchMaxBytes caps the size of a single BoidOpTaskUpdatePayloadPatch
+// request's PayloadPatch content (whether read from a file, stdin, or an
+// inline CLI value). Unlike most of the shim's other file-reading flags
+// (--payload-file, --patch-file, ...), this content crosses the broker RPC
+// boundary into the daemon process — a shared, long-lived process — so an
+// unbounded read is a real OOM vector, not just a local-runner concern.
+// Enforced at two independent points (defense in depth, Phase 5b PR7 codex
+// review Major 3, wiring-seams.md #17): the shim's own read
+// (internal/sandbox/boid_shim.go's readPayloadPatchSource, so an oversized
+// input never even reaches the wire) and the broker's request handler
+// (internal/sandbox/broker.go), which re-checks independently so a shim
+// bypass or a future second caller can't skip the limit. Matches
+// api.AttachmentMaxFileBytes's existing 10 MB precedent (Phase 5b PR2).
+const PayloadPatchMaxBytes = 10 * 1024 * 1024
 
 type BoidRequest struct {
 	Op        BoidOp `json:"op"`
@@ -162,6 +194,14 @@ type BoidRequest struct {
 	// guard (no path separators, no ".."). Unused by
 	// BoidOpTaskAttachmentsList.
 	AttachmentName string `json:"attachment_name,omitempty"`
+
+	// PayloadPatch carries the raw patch body for BoidOpTaskUpdatePayloadPatch
+	// — the JSON that would otherwise go inside a file-based
+	// {"payload_patch": ...} envelope (docs/*/reference/hook-contract.md).
+	// Unlike UpdatePatch (a JSON-serialised api.UpdateTaskRequest consumed by
+	// a top-level shallow merge), this is merged via
+	// orchestrator.MergePayloadPatch — see api.TaskAppService.UpdateTaskPayloadPatch.
+	PayloadPatch json.RawMessage `json:"payload_patch,omitempty"`
 }
 
 type TokenContext struct {

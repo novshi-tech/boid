@@ -26,6 +26,7 @@ current_allowed=(
   server
   skills
   timeline
+  yamlutil
 )
 
 target_allowed=(
@@ -48,6 +49,7 @@ target_allowed=(
   server
   skills
   timeline
+  yamlutil
 )
 
 list_top_level_packages() {

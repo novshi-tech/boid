@@ -437,7 +437,7 @@ Two daemon-enforced rules:
 
    ```bash
    merged=$(git rev-parse HEAD)
-   boid task update "$BOID_TASK_ID" --payload-file - <<EOF
+   boid task update --payload-patch @- <<EOF
    artifact:
      report:
        release:
@@ -605,7 +605,7 @@ integration — the executor only commits, pushes, and reports.
 ### Writing the final report
 
 ```bash
-boid task update "$BOID_TASK_ID" --payload-file - <<EOF
+boid task update --payload-patch @- <<EOF
 artifact:
   report:
     summary: "<1-3 lines: what you did>"
@@ -625,6 +625,19 @@ EOF
 `summary` is required. The owner reads this as the **canonical Layer A source**.
 If it is empty or missing, the supervisor treats it as a missing-report anomaly
 and reopens you.
+
+`--payload-patch @-` (a value can also be `@<file>` or literal inline JSON/YAML
+instead of `@-` for stdin) is job-scoped — no task id argument, it always
+targets the task your current job belongs to — and merges through the same
+trait-gated logic as a completing hook's own result, so it is the primary way
+to report structured output. It supersedes `--payload-file` for this purpose:
+`--payload-file` still exists for ad-hoc top-level payload edits, but does not
+know about traits, so prefer `--payload-patch` whenever you are writing
+`artifact.report` or any other hook-owned trait. There is also a lower-level,
+file-based fallback (`$HOME/.boid/output/payload_patch.json`, read once at job
+exit) that some infrastructure still uses internally — you do not need it and
+should not write to it directly; `--payload-patch` applies immediately and
+does not depend on your process exiting cleanly.
 
 ### Executor rules
 
