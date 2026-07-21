@@ -4,7 +4,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/novshi-tech/boid/internal/orchestrator"
 )
@@ -13,49 +15,38 @@ import (
 // UpdateTaskPayloadPatch is the job_done payload_patch direct-pass RPC's
 // server-side merge. Unlike UpdateTask's top-level shallow merge (used by
 // --payload-file), this routes through orchestrator.MergePayloadPatch with
-// the allowedTraits gate derived from the CALLING job's own HandlerID — the
-// same merge semantics the file-based payload_patch.json → job_done →
-// Coordinator pipeline has always applied to a hook's own PayloadPatch (see
-// wiring-seams.md #13/#17 and orchestrator/coordinator.go's
-// HandlerResult.allowedTraits). A hook not found in behavior.Hooks (the
-// common case for a virtual/synthesized agent hook — see
-// orchestrator.synthesizeAgentHook, whose Traits are always the zero value)
-// falls back to an unrestricted merge, matching allowedTraits' own
-// not-found behavior exactly.
-
-func hookProducingArtifact(handlerID string) orchestrator.ProjectMeta {
-	return orchestrator.ProjectMeta{
-		TaskBehaviors: map[string]orchestrator.TaskBehavior{
-			"executor": {
-				Hooks: []orchestrator.Hook{
-					{
-						ID:   handlerID,
-						Kind: orchestrator.HandlerKindAgent,
-						Traits: orchestrator.HandlerTraits{
-							Produces: []orchestrator.TraitType{"artifact"},
-						},
-					},
-				},
-			},
-		},
-	}
-}
+// an allowedTraits gate — the same merge semantics the file-based
+// payload_patch.json → job_done → Coordinator pipeline has always applied
+// to a hook's own PayloadPatch (see wiring-seams.md #13/#17 and
+// orchestrator/coordinator.go's HandlerResult.allowedTraits).
+//
+// allowedTraits is a caller-supplied parameter (not looked up here) —
+// codex review on the first cut of this method (which re-derived it from a
+// live project-meta lookup keyed on the job's HandlerID) caught a TOCTOU
+// staleness bug: project.yaml can be edited/reloaded between dispatch and
+// this call, so a live lookup can silently apply the wrong trait list.
+// dispatcher.JobContextSnapshot.PayloadPatchAllowedTraits (captured from
+// orchestrator.JobSpec.HookTraitsProduces at dispatch time) is the actual
+// source of truth in production; these tests exercise the merge directly
+// with an explicit allowedTraits value, since the lookup itself no longer
+// happens in this package (see internal/orchestrator/planner_test.go for
+// dispatch-time capture coverage and
+// internal/server/boid_executor_task_update_payload_patch_test.go for the
+// executor wiring that threads JobContextSnapshot through).
 
 func TestUpdateTaskPayloadPatch_MergesWhenTraitAllowed(t *testing.T) {
 	task := &orchestrator.Task{
 		ID:        "task-1",
 		ProjectID: "proj-1",
-		Behavior:  "executor",
 		Payload:   json.RawMessage(`{}`),
 	}
 	job := &Job{ID: "job-1", TaskID: "task-1", ProjectID: "proj-1", HandlerID: "run-agent"}
-	meta := hookProducingArtifact("run-agent")
 
 	tasks := &stubTaskStore{task: task}
 	jobs := &stubJobStore{job: job}
-	svc := &TaskAppService{Tasks: tasks, Jobs: jobs, Meta: stubMetaStore{meta: &meta}}
+	svc := &TaskAppService{Tasks: tasks, Jobs: jobs}
 
-	got, err := svc.UpdateTaskPayloadPatch("job-1", json.RawMessage(`{"artifact":{"report":{"summary":"done"}}}`))
+	got, err := svc.UpdateTaskPayloadPatch("job-1", json.RawMessage(`{"artifact":{"report":{"summary":"done"}}}`), []orchestrator.TraitType{"artifact"})
 	if err != nil {
 		t.Fatalf("UpdateTaskPayloadPatch() error = %v", err)
 	}
@@ -78,34 +69,18 @@ func TestUpdateTaskPayloadPatch_DropsTraitNotInProduces(t *testing.T) {
 	task := &orchestrator.Task{
 		ID:        "task-1",
 		ProjectID: "proj-1",
-		Behavior:  "executor",
 		Payload:   json.RawMessage(`{}`),
 	}
 	job := &Job{ID: "job-1", TaskID: "task-1", ProjectID: "proj-1", HandlerID: "verify-only"}
-	meta := orchestrator.ProjectMeta{
-		TaskBehaviors: map[string]orchestrator.TaskBehavior{
-			"executor": {
-				Hooks: []orchestrator.Hook{
-					{
-						ID:   "verify-only",
-						Kind: orchestrator.HandlerKindAgent,
-						Traits: orchestrator.HandlerTraits{
-							Produces: []orchestrator.TraitType{"verification"},
-						},
-					},
-				},
-			},
-		},
-	}
 
 	tasks := &stubTaskStore{task: task}
 	jobs := &stubJobStore{job: job}
-	svc := &TaskAppService{Tasks: tasks, Jobs: jobs, Meta: stubMetaStore{meta: &meta}}
+	svc := &TaskAppService{Tasks: tasks, Jobs: jobs}
 
-	// "artifact" is not in this hook's Produces list, so it must be dropped
-	// (silently, mirroring MergePayloadPatch's existing behavior for the
-	// file-based job_done path) rather than merged.
-	got, err := svc.UpdateTaskPayloadPatch("job-1", json.RawMessage(`{"artifact":{"report":{"summary":"done"}}}`))
+	// "artifact" is not in the caller-supplied allowedTraits, so it must be
+	// dropped (silently, mirroring MergePayloadPatch's existing behavior for
+	// the file-based job_done path) rather than merged.
+	got, err := svc.UpdateTaskPayloadPatch("job-1", json.RawMessage(`{"artifact":{"report":{"summary":"done"}}}`), []orchestrator.TraitType{"verification"})
 	if err != nil {
 		t.Fatalf("UpdateTaskPayloadPatch() error = %v", err)
 	}
@@ -114,34 +89,26 @@ func TestUpdateTaskPayloadPatch_DropsTraitNotInProduces(t *testing.T) {
 		t.Fatalf("payload not JSON: %v", err)
 	}
 	if _, ok := payload["artifact"]; ok {
-		t.Fatalf("expected artifact key to be dropped (not in Produces), got %s", got.Payload)
+		t.Fatalf("expected artifact key to be dropped (not in allowedTraits), got %s", got.Payload)
 	}
 }
 
-func TestUpdateTaskPayloadPatch_HookNotFound_UnrestrictedMerge(t *testing.T) {
-	task := &orchestrator.Task{
-		ID:        "task-1",
-		ProjectID: "proj-1",
-		Behavior:  "executor",
-		Payload:   json.RawMessage(`{}`),
-	}
-	// HandlerID "agent:claude-code" mirrors orchestrator.synthesizeAgentHook's
-	// virtual hook ID form — it never appears in behavior.Hooks on disk
-	// because it's synthesized in-memory at Evaluate() time, not declared in
-	// project.yaml. This is the common case for a project with no explicit
-	// hooks: block (e.g. boid's own .boid/project.yaml).
+// TestUpdateTaskPayloadPatch_NilAllowedTraits_UnrestrictedMerge pins nil's
+// meaning: unrestricted. This is the value dispatcher.JobContextSnapshot
+// carries for a virtual/synthesized agent hook (orchestrator.
+// synthesizeAgentHook, whose Traits are always the zero value — the common
+// case for a behavior with no explicit `hooks:` block) as well as for an
+// explicitly declared hook with no traits.produces list of its own; both
+// are indistinguishable from "unrestricted" on the file-based path too.
+func TestUpdateTaskPayloadPatch_NilAllowedTraits_UnrestrictedMerge(t *testing.T) {
+	task := &orchestrator.Task{ID: "task-1", ProjectID: "proj-1", Payload: json.RawMessage(`{}`)}
 	job := &Job{ID: "job-1", TaskID: "task-1", ProjectID: "proj-1", HandlerID: "agent:claude-code"}
-	meta := orchestrator.ProjectMeta{
-		TaskBehaviors: map[string]orchestrator.TaskBehavior{
-			"executor": {}, // no hooks declared
-		},
-	}
 
 	tasks := &stubTaskStore{task: task}
 	jobs := &stubJobStore{job: job}
-	svc := &TaskAppService{Tasks: tasks, Jobs: jobs, Meta: stubMetaStore{meta: &meta}}
+	svc := &TaskAppService{Tasks: tasks, Jobs: jobs}
 
-	got, err := svc.UpdateTaskPayloadPatch("job-1", json.RawMessage(`{"artifact":{"report":{"summary":"done"}}}`))
+	got, err := svc.UpdateTaskPayloadPatch("job-1", json.RawMessage(`{"artifact":{"report":{"summary":"done"}}}`), nil)
 	if err != nil {
 		t.Fatalf("UpdateTaskPayloadPatch() error = %v", err)
 	}
@@ -150,37 +117,16 @@ func TestUpdateTaskPayloadPatch_HookNotFound_UnrestrictedMerge(t *testing.T) {
 		t.Fatalf("payload not JSON: %v", err)
 	}
 	if _, ok := payload["artifact"]; !ok {
-		t.Fatalf("expected unrestricted merge (hook not found -> nil allowedTraits), got %s", got.Payload)
-	}
-}
-
-func TestUpdateTaskPayloadPatch_NoProjectMeta_UnrestrictedMerge(t *testing.T) {
-	task := &orchestrator.Task{ID: "task-1", ProjectID: "proj-1", Behavior: "executor", Payload: json.RawMessage(`{}`)}
-	job := &Job{ID: "job-1", TaskID: "task-1", ProjectID: "proj-1", HandlerID: "run-agent"}
-
-	tasks := &stubTaskStore{task: task}
-	jobs := &stubJobStore{job: job}
-	svc := &TaskAppService{Tasks: tasks, Jobs: jobs, Meta: stubMetaStore{}} // meta.Get returns false
-
-	got, err := svc.UpdateTaskPayloadPatch("job-1", json.RawMessage(`{"artifact":{"report":{"summary":"done"}}}`))
-	if err != nil {
-		t.Fatalf("UpdateTaskPayloadPatch() error = %v", err)
-	}
-	var payload map[string]json.RawMessage
-	if err := json.Unmarshal(got.Payload, &payload); err != nil {
-		t.Fatalf("payload not JSON: %v", err)
-	}
-	if _, ok := payload["artifact"]; !ok {
-		t.Fatalf("expected unrestricted merge when project meta is unavailable, got %s", got.Payload)
+		t.Fatalf("expected unrestricted merge for nil allowedTraits, got %s", got.Payload)
 	}
 }
 
 func TestUpdateTaskPayloadPatch_JobNotFound(t *testing.T) {
 	tasks := &stubTaskStore{}
 	jobs := &stubJobStore{getErr: fmt.Errorf("job not found: job-missing")}
-	svc := &TaskAppService{Tasks: tasks, Jobs: jobs, Meta: stubMetaStore{}}
+	svc := &TaskAppService{Tasks: tasks, Jobs: jobs}
 
-	_, err := svc.UpdateTaskPayloadPatch("job-missing", json.RawMessage(`{}`))
+	_, err := svc.UpdateTaskPayloadPatch("job-missing", json.RawMessage(`{}`), nil)
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -194,9 +140,9 @@ func TestUpdateTaskPayloadPatch_TaskNotFound(t *testing.T) {
 	job := &Job{ID: "job-1", TaskID: "task-missing", ProjectID: "proj-1", HandlerID: "run-agent"}
 	tasks := &stubTaskStore{err: fmt.Errorf("task not found")}
 	jobs := &stubJobStore{job: job}
-	svc := &TaskAppService{Tasks: tasks, Jobs: jobs, Meta: stubMetaStore{}}
+	svc := &TaskAppService{Tasks: tasks, Jobs: jobs}
 
-	_, err := svc.UpdateTaskPayloadPatch("job-1", json.RawMessage(`{}`))
+	_, err := svc.UpdateTaskPayloadPatch("job-1", json.RawMessage(`{}`), nil)
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -207,15 +153,14 @@ func TestUpdateTaskPayloadPatch_TaskNotFound(t *testing.T) {
 }
 
 func TestUpdateTaskPayloadPatch_RejectsReservedKeys(t *testing.T) {
-	task := &orchestrator.Task{ID: "task-1", ProjectID: "proj-1", Behavior: "executor", Payload: json.RawMessage(`{}`)}
+	task := &orchestrator.Task{ID: "task-1", ProjectID: "proj-1", Payload: json.RawMessage(`{}`)}
 	job := &Job{ID: "job-1", TaskID: "task-1", ProjectID: "proj-1", HandlerID: "run-agent"}
-	meta := hookProducingArtifact("run-agent")
 
 	tasks := &stubTaskStore{task: task}
 	jobs := &stubJobStore{job: job}
-	svc := &TaskAppService{Tasks: tasks, Jobs: jobs, Meta: stubMetaStore{meta: &meta}}
+	svc := &TaskAppService{Tasks: tasks, Jobs: jobs}
 
-	_, err := svc.UpdateTaskPayloadPatch("job-1", json.RawMessage(`{"artifact":{"children":{"x":1}}}`))
+	_, err := svc.UpdateTaskPayloadPatch("job-1", json.RawMessage(`{"artifact":{"children":{"x":1}}}`), []orchestrator.TraitType{"artifact"})
 	if err == nil {
 		t.Fatal("expected error for reserved artifact.children key, got nil")
 	}
@@ -230,31 +175,15 @@ func TestUpdateTaskPayloadPatch_SharedTraitMergesByHandlerID(t *testing.T) {
 	task := &orchestrator.Task{
 		ID:        "task-1",
 		ProjectID: "proj-1",
-		Behavior:  "executor",
 		Payload:   json.RawMessage(`{"verification":{"security-review":{"passed":true}}}`),
 	}
 	job := &Job{ID: "job-1", TaskID: "task-1", ProjectID: "proj-1", HandlerID: "quality-review"}
-	meta := orchestrator.ProjectMeta{
-		TaskBehaviors: map[string]orchestrator.TaskBehavior{
-			"executor": {
-				Hooks: []orchestrator.Hook{
-					{
-						ID:   "quality-review",
-						Kind: orchestrator.HandlerKindAgent,
-						Traits: orchestrator.HandlerTraits{
-							Produces: []orchestrator.TraitType{"verification"},
-						},
-					},
-				},
-			},
-		},
-	}
 
 	tasks := &stubTaskStore{task: task}
 	jobs := &stubJobStore{job: job}
-	svc := &TaskAppService{Tasks: tasks, Jobs: jobs, Meta: stubMetaStore{meta: &meta}}
+	svc := &TaskAppService{Tasks: tasks, Jobs: jobs}
 
-	got, err := svc.UpdateTaskPayloadPatch("job-1", json.RawMessage(`{"verification":{"passed":true}}`))
+	got, err := svc.UpdateTaskPayloadPatch("job-1", json.RawMessage(`{"verification":{"passed":true}}`), []orchestrator.TraitType{"verification"})
 	if err != nil {
 		t.Fatalf("UpdateTaskPayloadPatch() error = %v", err)
 	}
@@ -271,3 +200,123 @@ func TestUpdateTaskPayloadPatch_SharedTraitMergesByHandlerID(t *testing.T) {
 		t.Fatalf("expected this job's HandlerID as the shared-trait key, got %s", got.Payload)
 	}
 }
+
+// --- Blocker 2 regression: concurrent UpdateTaskPayloadPatch calls must not
+// lose updates (Phase 5b PR7 codex review, wiring-seams.md #17) ---
+
+// barrierTaskStore is a TaskStore whose GetTask sleeps briefly while holding
+// no lock, widening the read-modify-write race window enough to make a
+// missing payloadPatchLockFor deterministically observable: two goroutines
+// that both call GetTask at nearly the same wall-clock time will both
+// return the SAME pre-write snapshot, so if UpdateTaskPayloadPatch does not
+// serialize its own critical section, their two UpdateTask calls race and
+// the second one's full-row write silently discards the first's change.
+// With the lock in place, the second goroutine's GetTask cannot even start
+// until the first's entire critical section (including its own sleep) has
+// finished, so the two calls simply run sequentially — slower, but with
+// both updates preserved. All access to the shared task pointer is behind
+// its own mutex purely so the test itself is race-detector-clean
+// regardless of whether the lock under test is doing its job.
+type barrierTaskStore struct {
+	mu   sync.Mutex
+	task *orchestrator.Task
+}
+
+func (s *barrierTaskStore) CreateTask(task *orchestrator.Task) error { return nil }
+
+func (s *barrierTaskStore) GetTask(id string) (*orchestrator.Task, error) {
+	time.Sleep(20 * time.Millisecond)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	cp := *s.task
+	return &cp, nil
+}
+
+func (s *barrierTaskStore) ListTasks(filter orchestrator.TaskFilter) ([]*orchestrator.Task, error) {
+	return nil, nil
+}
+
+func (s *barrierTaskStore) UpdateTask(task *orchestrator.Task) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.task = task
+	return nil
+}
+
+func (s *barrierTaskStore) DeleteTask(id string) error { return nil }
+func (s *barrierTaskStore) FindTaskByRemote(remoteID string) (*orchestrator.Task, error) {
+	return nil, nil
+}
+func (s *barrierTaskStore) FindTaskByRef(ref, parentID string) (*orchestrator.Task, error) {
+	return nil, nil
+}
+func (s *barrierTaskStore) ListChildren(parentID string) ([]*orchestrator.Task, error) {
+	return nil, nil
+}
+
+func TestUpdateTaskPayloadPatch_ConcurrentCallsDoNotLoseUpdates(t *testing.T) {
+	tasks := &barrierTaskStore{task: &orchestrator.Task{ID: "task-1", ProjectID: "proj-1", Payload: json.RawMessage(`{}`)}}
+	// Two concurrent "hooks" of the same readonly task's parallel dispatch
+	// round, each patching a different artifact sub-key. stubJobStore only
+	// tracks a single job, so route both goroutines through a small wrapper
+	// that looks up by id.
+	jobs := &multiJobStore{byID: map[string]*Job{
+		"job-a": {ID: "job-a", TaskID: "task-1", ProjectID: "proj-1", HandlerID: "hook-a"},
+		"job-b": {ID: "job-b", TaskID: "task-1", ProjectID: "proj-1", HandlerID: "hook-b"},
+	}}
+
+	svc := &TaskAppService{Tasks: tasks, Jobs: jobs}
+
+	var wg sync.WaitGroup
+	errs := make(chan error, 2)
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		_, err := svc.UpdateTaskPayloadPatch("job-a", json.RawMessage(`{"artifact":{"a":"1"}}`), nil)
+		errs <- err
+	}()
+	go func() {
+		defer wg.Done()
+		_, err := svc.UpdateTaskPayloadPatch("job-b", json.RawMessage(`{"artifact":{"b":"2"}}`), nil)
+		errs <- err
+	}()
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("UpdateTaskPayloadPatch() error = %v", err)
+		}
+	}
+
+	final, err := tasks.GetTask("task-1")
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+	var payload struct {
+		Artifact map[string]string `json:"artifact"`
+	}
+	if err := json.Unmarshal(final.Payload, &payload); err != nil {
+		t.Fatalf("payload not JSON: %v", err)
+	}
+	if payload.Artifact["a"] != "1" || payload.Artifact["b"] != "2" {
+		t.Fatalf("lost update: expected both a and b keys, got %+v (full payload: %s)", payload.Artifact, final.Payload)
+	}
+}
+
+// multiJobStore is a minimal JobStore keyed by id, used only by the
+// concurrency test above (stubJobStore holds a single job, which can't
+// represent two distinct concurrent jobs of the same task).
+type multiJobStore struct {
+	byID map[string]*Job
+}
+
+func (s *multiJobStore) GetJob(id string) (*Job, error) {
+	j, ok := s.byID[id]
+	if !ok {
+		return nil, fmt.Errorf("job not found: %s", id)
+	}
+	return j, nil
+}
+
+func (s *multiJobStore) ListJobsByTask(taskID string) ([]*Job, error) { return nil, nil }
+func (s *multiJobStore) UpdateJob(job *Job) error                     { return nil }

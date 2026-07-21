@@ -35,6 +35,28 @@ type JobSpec struct {
 	HandlerID   string
 	DisplayName string // human-readable label (hook name or command-session name); persisted to jobs.display_name
 
+	// HookTraitsProduces captures the firing hook's own `traits.produces`
+	// list (event.Hook.Traits.Produces) AT DISPATCH TIME — the exact value
+	// HandlerResult.allowedTraits (coordinator.go) would use to gate this
+	// same hook's file-based payload_patch merge. Phase 5b PR7's
+	// `boid task update --payload-patch` RPC (docs/plans/
+	// phase5-shim-and-task-context.md) threads this through
+	// dispatcher.JobContextSnapshot so it can gate its own merge against
+	// the SAME dispatch-time value, never a live re-lookup against the
+	// (possibly since-edited/reloaded) project meta — codex review caught a
+	// TOCTOU staleness bug in an early cut that re-resolved the hook by ID
+	// against current meta at merge time (wiring-seams.md #17's Major 1).
+	// nil means "this job's firing hook produces unrestricted" — true for
+	// both a virtual/synthesized agent-kind hook (orchestrator.
+	// synthesizeAgentHook, whose Traits are always the zero value — the
+	// common case for a behavior with no explicit `hooks:` block) and an
+	// explicitly declared hook with no traits.produces list of its own;
+	// both are indistinguishable from "unrestricted" on the file-based path
+	// too (MergePayloadPatch(patch, nil) never filters), so this preserves
+	// that behavior exactly rather than inventing a new distinction. Empty
+	// for non-hook jobs (boid exec).
+	HookTraitsProduces []TraitType
+
 	// Kind is a DB-label / TUI-display category. Sandbox construction details
 	// MUST NOT branch on this value.
 	Kind JobKind

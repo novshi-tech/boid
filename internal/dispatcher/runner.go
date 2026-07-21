@@ -380,9 +380,10 @@ func (r *Runner) Dispatch(ctx context.Context, spec *orchestrator.JobSpec, clean
 	// task row (orchestrator.SnapshotTask), which carries no job-scoped
 	// routing ambiguity the way instructions does.
 	r.trackJobContext(j.ID, JobContextSnapshot{
-		Instructions: routedInstructionSlice(spec.Instruction),
-		Env:          BuildWorkspaceEnvView(allowedDomains, spec.HostCommands),
-		Payload:      spec.PrimaryInput,
+		Instructions:              routedInstructionSlice(spec.Instruction),
+		Env:                       BuildWorkspaceEnvView(allowedDomains, spec.HostCommands),
+		Payload:                   spec.PrimaryInput,
+		PayloadPatchAllowedTraits: spec.HookTraitsProduces,
 	})
 
 	// gatewayCloneURL is only worth resolving (an extra Projects lookup)

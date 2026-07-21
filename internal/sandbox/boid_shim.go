@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/novshi-tech/boid/internal/yamlutil"
 	"gopkg.in/yaml.v3"
 )
 
@@ -475,15 +476,9 @@ func parseBoidTaskUpdatePayloadPatch(args []string) (*BoidRequest, error) {
 		return nil, fmt.Errorf("boid shim: --payload-patch requires a value")
 	}
 
-	var data []byte
-	if strings.HasPrefix(source, "@") {
-		content, err := readFlagContent(strings.TrimPrefix(source, "@"))
-		if err != nil {
-			return nil, fmt.Errorf("boid shim: read payload patch: %w", err)
-		}
-		data = content
-	} else {
-		data = []byte(source)
+	data, err := readPayloadPatchSource(source)
+	if err != nil {
+		return nil, err
 	}
 
 	if len(strings.TrimSpace(string(data))) == 0 {
@@ -494,6 +489,16 @@ func parseBoidTaskUpdatePayloadPatch(args []string) (*BoidRequest, error) {
 	if err := yaml.Unmarshal(data, &v); err != nil {
 		return nil, fmt.Errorf("boid shim: parse payload patch: %w", err)
 	}
+	// yaml.v3 decodes a mapping with a non-string key (bool/int/null — see
+	// coordinator.go's parseHandlerResult doc comment for the historical
+	// `on:` -> `true:` PyYAML round-trip incident) as
+	// map[interface{}]interface{}, which json.Marshal below cannot handle.
+	// yamlutil.NormalizeKeys is the SAME shared normalization the file-based
+	// path applies (Phase 5b PR7 codex review Major 2, wiring-seams.md #17)
+	// — without it, identical payload_patch content would behave
+	// differently (or error outright) depending on whether it traveled via
+	// the file fallback or this CLI.
+	v = yamlutil.NormalizeKeys(v)
 	patchJSON, err := json.Marshal(v)
 	if err != nil {
 		return nil, fmt.Errorf("boid shim: encode payload patch: %w", err)
@@ -509,6 +514,46 @@ func parseBoidTaskUpdatePayloadPatch(args []string) (*BoidRequest, error) {
 		JobID:        jobID,
 		PayloadPatch: patchJSON,
 	}, nil
+}
+
+// readPayloadPatchSource resolves a --payload-patch value following curl's
+// `@` convention (bare value = inline content, `@<path>` = file, `@-` =
+// stdin), enforcing PayloadPatchMaxBytes on every branch. Unlike
+// readFlagContent (shared by --payload-file/--patch-file/etc, deliberately
+// left uncapped for consistency with those existing flags), this content
+// crosses the broker RPC boundary into the daemon process, so an unbounded
+// read is a real OOM vector for a shared, long-lived process — Phase 5b PR7
+// codex review Major 3, wiring-seams.md #17. The broker re-checks the same
+// cap independently (internal/sandbox/broker.go) as defense in depth.
+func readPayloadPatchSource(source string) ([]byte, error) {
+	if !strings.HasPrefix(source, "@") {
+		if len(source) > PayloadPatchMaxBytes {
+			return nil, fmt.Errorf("boid shim: --payload-patch inline value exceeds %d bytes", PayloadPatchMaxBytes)
+		}
+		return []byte(source), nil
+	}
+
+	path := strings.TrimPrefix(source, "@")
+	var reader io.Reader
+	if path == "-" {
+		reader = os.Stdin
+	} else {
+		f, err := os.Open(path)
+		if err != nil {
+			return nil, fmt.Errorf("boid shim: read payload patch: %w", err)
+		}
+		defer f.Close()
+		reader = f
+	}
+
+	data, err := io.ReadAll(io.LimitReader(reader, PayloadPatchMaxBytes+1))
+	if err != nil {
+		return nil, fmt.Errorf("boid shim: read payload patch: %w", err)
+	}
+	if len(data) > PayloadPatchMaxBytes {
+		return nil, fmt.Errorf("boid shim: --payload-patch content exceeds %d bytes", PayloadPatchMaxBytes)
+	}
+	return data, nil
 }
 
 func takeStringFlagValue(args []string, index int, name string) (string, int, error) {

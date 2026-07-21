@@ -530,6 +530,15 @@ func (b *Broker) handleBoidBuiltin(ctx context.Context, req *ExecRequest, entry 
 		if len(boidReq.PayloadPatch) == 0 {
 			return &ExecResponse{ExitCode: 1, Stderr: "boid task update --payload-patch requires a payload patch"}
 		}
+		// Defense in depth (Phase 5b PR7 codex review Major 3,
+		// wiring-seams.md #17): the shim already caps this before ever
+		// sending the request (boid_shim.go's readPayloadPatchSource), but
+		// the broker re-checks independently so a shim bypass or a future
+		// second caller (e.g. a different in-sandbox process crafting the
+		// JSON request by hand) can't skip the limit and OOM the daemon.
+		if len(boidReq.PayloadPatch) > PayloadPatchMaxBytes {
+			return &ExecResponse{ExitCode: 1, Stderr: fmt.Sprintf("boid task update --payload-patch exceeds %d bytes", PayloadPatchMaxBytes)}
+		}
 	}
 
 	if b.BoidExecutor == nil {

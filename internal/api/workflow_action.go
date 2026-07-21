@@ -171,20 +171,31 @@ func (s *TaskWorkflowService) runDispatchLoop(ctx context.Context, task *orchest
 		s.persistFiredEvents(current.ID, current.Status, result.FiredEvents)
 
 		// The awaiting trait is owned exclusively by ApplyAction("ask"/"answer")
-		// and is persisted to the DB inline as those actions run. The coordinator's
-		// FinalPayload, however, derives from a snapshot of task.Payload taken
-		// BEFORE the hook executed, so any awaiting value it carries is necessarily
-		// stale: if the hook itself called `boid task notify --ask` mid-flight, the
-		// fresh awaiting trait is already in the DB and the snapshot's awaiting
-		// would clobber it on top-level merge. Strip awaiting from FinalPayload
-		// before the merge and apply pending_answer clearing to the DB-fresh row
-		// instead.
-		result.FinalPayload = orchestrator.StripAwaitingTrait(result.FinalPayload)
+		// and is persisted to the DB inline as those actions run. Strip it
+		// defensively from whatever we're about to merge in case a hook's own
+		// patch happens to touch it, so it can never race a concurrent
+		// ApplyAction("ask") — pending_answer clearing on the DB-fresh row
+		// (below) is the actual source of truth here.
+		//
+		// Persist ONLY the delta this cycle's hooks actually wrote
+		// (result.PayloadDelta), never result.FinalPayload — see
+		// DispatchResult.PayloadDelta's doc comment. FinalPayload is built
+		// from a snapshot of task.Payload taken BEFORE the hook executed, so
+		// applying it wholesale on top of a freshly re-read row would revert
+		// any out-of-band write the hook itself made mid-flight (e.g. via
+		// `boid task update --payload-patch`) back to its pre-dispatch
+		// value — the exact silent-revert-after-CLI-success bug codex review
+		// caught (Phase 5b PR7, wiring-seams.md #17's Blocker 1). An empty
+		// delta ("{}", the common case for an agent job reporting
+		// exclusively through the direct RPC paths) is a safe no-op:
+		// MergePayload's own empty-update short-circuit returns the fresh
+		// row's payload unchanged, so there is nothing left that could ever
+		// overwrite a concurrent write.
+		result.PayloadDelta = orchestrator.StripAwaitingTrait(result.PayloadDelta)
 
-		// Persist hook payload. Always refresh the task row so we
-		// can detect concurrent terminal transitions (abort/done) and pick up
-		// any awaiting trait written by an ApplyAction("ask") that fired during
-		// the hook.
+		// Always refresh the task row so we can detect concurrent terminal
+		// transitions (abort/done) and pick up any awaiting trait written by
+		// an ApplyAction("ask") that fired during the hook.
 		var persisted *orchestrator.Task
 		if err := s.Tx.WithinTx(func(tx TxStore) error {
 			latest, err := tx.GetTask(current.ID)
@@ -196,8 +207,8 @@ func (s *TaskWorkflowService) runDispatchLoop(ctx context.Context, task *orchest
 			// and question_id are preserved so the task can be resumed again
 			// if the kit emits another ask.
 			latest.Payload = orchestrator.ClearPendingAnswer(latest.Payload)
-			if len(result.FinalPayload) > 0 {
-				merged, mergeErr := orchestrator.MergePayload(latest.Payload, result.FinalPayload)
+			if len(result.PayloadDelta) > 0 {
+				merged, mergeErr := orchestrator.MergePayload(latest.Payload, result.PayloadDelta)
 				if mergeErr != nil {
 					return mergeErr
 				}

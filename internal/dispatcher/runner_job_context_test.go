@@ -52,6 +52,76 @@ func TestDispatch_TracksJobContext_EnvAndPayload(t *testing.T) {
 	}
 }
 
+// TestDispatch_TracksJobContext_PayloadPatchAllowedTraits pins Phase 5b
+// PR7's codex review Major 1 fix (wiring-seams.md #17):
+// JobContextSnapshot.PayloadPatchAllowedTraits must come straight from
+// spec.HookTraitsProduces (itself captured at PlanHook time from the firing
+// hook's own Traits.Produces) — not re-derived from anything live — so
+// `boid task update --payload-patch`'s allowedTraits gate can never observe
+// a project-meta edit that happened after this exact job was dispatched.
+func TestDispatch_TracksJobContext_PayloadPatchAllowedTraits(t *testing.T) {
+	r, _ := newDispatchRunner(t)
+	r.Sandbox = newFakeSandboxPrep(t)
+	r.Runtime = newStatefulRuntime()
+
+	spec := &orchestrator.JobSpec{
+		ProjectID:          "proj-1",
+		Argv:               []string{"echo", "hi"},
+		Kind:               orchestrator.JobKindHook,
+		HookTraitsProduces: []orchestrator.TraitType{"artifact", "verification"},
+	}
+
+	jobID, err := r.Dispatch(context.Background(), spec, nil)
+	if err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+
+	snap, ok := r.JobContext(jobID)
+	if !ok {
+		t.Fatalf("JobContext(%q) not found after successful Dispatch", jobID)
+	}
+	want := []orchestrator.TraitType{"artifact", "verification"}
+	if len(snap.PayloadPatchAllowedTraits) != len(want) {
+		t.Fatalf("PayloadPatchAllowedTraits = %v, want %v", snap.PayloadPatchAllowedTraits, want)
+	}
+	for i, tr := range want {
+		if snap.PayloadPatchAllowedTraits[i] != tr {
+			t.Errorf("PayloadPatchAllowedTraits[%d] = %q, want %q", i, snap.PayloadPatchAllowedTraits[i], tr)
+		}
+	}
+}
+
+// TestDispatch_TracksJobContext_PayloadPatchAllowedTraits_NilJobSpecFieldYieldsNil
+// pins nil passthrough: a JobSpec with no HookTraitsProduces (the
+// virtual/synthesized agent hook case, or any non-hook job) must leave the
+// snapshot's PayloadPatchAllowedTraits nil — not an empty-but-non-nil slice,
+// which MergePayloadPatch treats as "reject every trait" rather than
+// "unrestricted".
+func TestDispatch_TracksJobContext_PayloadPatchAllowedTraits_NilJobSpecFieldYieldsNil(t *testing.T) {
+	r, _ := newDispatchRunner(t)
+	r.Sandbox = newFakeSandboxPrep(t)
+	r.Runtime = newStatefulRuntime()
+
+	spec := &orchestrator.JobSpec{
+		ProjectID: "proj-1",
+		Argv:      []string{"echo", "hi"},
+		Kind:      orchestrator.JobKindHook,
+	}
+
+	jobID, err := r.Dispatch(context.Background(), spec, nil)
+	if err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+
+	snap, ok := r.JobContext(jobID)
+	if !ok {
+		t.Fatalf("JobContext(%q) not found after successful Dispatch", jobID)
+	}
+	if snap.PayloadPatchAllowedTraits != nil {
+		t.Errorf("PayloadPatchAllowedTraits = %v, want nil", snap.PayloadPatchAllowedTraits)
+	}
+}
+
 // TestDispatch_TracksJobContext_Instructions_MatchesJobSpec verifies
 // JobContextSnapshot.Instructions is populated straight from
 // spec.Instruction — the same value contextFiles would have written to

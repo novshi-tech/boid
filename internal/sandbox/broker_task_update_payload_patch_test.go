@@ -96,3 +96,42 @@ func TestBroker_BoidTaskUpdatePayloadPatch_RequiresPayloadPatch(t *testing.T) {
 func TestBroker_BoidTaskUpdatePayloadPatch_PolicyReject(t *testing.T) {
 	assertBoidOpRejectedByPolicy(t, &sandbox.BoidRequest{Op: sandbox.BoidOpTaskUpdatePayloadPatch, JobID: "j1", PayloadPatch: json.RawMessage(`{}`)})
 }
+
+// TestBroker_BoidTaskUpdatePayloadPatch_RejectsOversizedPatch pins the
+// broker-side half of the Phase 5b PR7 codex review Major 3 defense in
+// depth (wiring-seams.md #17): the shim already caps --payload-patch's
+// content before ever sending the request, but the broker re-checks
+// PayloadPatchMaxBytes independently so a shim bypass (or a future, less
+// careful caller building the request by hand) still can't push an
+// oversized patch through to the executor.
+func TestBroker_BoidTaskUpdatePayloadPatch_RejectsOversizedPatch(t *testing.T) {
+	exec := &fakeBoidExecutor{}
+	broker := &sandbox.Broker{BoidExecutor: exec}
+	projectDir := t.TempDir()
+	ctx := sandbox.TokenContext{
+		JobID:      "job-keep",
+		TaskID:     "task-keep",
+		ProjectID:  "proj-keep",
+		Role:       testRoleHook,
+		ProjectDir: projectDir,
+	}
+	token := broker.Register(map[string]sandbox.CommandDef{}, testTaskUpdatePayloadPatchPolicies(), ctx)
+
+	oversized := make(json.RawMessage, sandbox.PayloadPatchMaxBytes+1)
+	for i := range oversized {
+		oversized[i] = 'x'
+	}
+
+	resp := broker.Handle(&sandbox.ExecRequest{
+		Command: "boid",
+		Cwd:     projectDir,
+		Token:   token,
+		Boid:    &sandbox.BoidRequest{Op: sandbox.BoidOpTaskUpdatePayloadPatch, PayloadPatch: oversized},
+	})
+	if resp.ExitCode != 1 || !strings.Contains(resp.Stderr, "exceeds") {
+		t.Fatalf("expected oversized-patch rejection, got exit=%d stderr=%q", resp.ExitCode, resp.Stderr)
+	}
+	if len(exec.calls) != 0 {
+		t.Fatalf("executor should not receive the oversized request, calls=%d", len(exec.calls))
+	}
+}

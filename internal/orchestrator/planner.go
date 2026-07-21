@@ -98,16 +98,20 @@ func (p *DispatchPlanner) PlanHook(event *HookFireEvent) (*JobSpec, CleanupFunc,
 	}
 
 	spec := &JobSpec{
-		TaskID:       event.TaskID,
-		ProjectID:    event.ProjectID,
-		HandlerID:    event.Hook.ID,
-		DisplayName:  event.Hook.Name,
-		Kind:         JobKindHook,
-		HarnessType:  harnessType,
-		Argv:         argv,
-		Instruction:  instruction,
-		Task:         SnapshotTask(task),
-		PrimaryInput: payload,
+		TaskID:    event.TaskID,
+		ProjectID: event.ProjectID,
+		HandlerID: event.Hook.ID,
+		// Captured verbatim from the firing hook at dispatch time — see
+		// JobSpec.HookTraitsProduces's own doc comment for why this must
+		// never be re-derived later from a live meta lookup.
+		HookTraitsProduces: event.Hook.Traits.Produces,
+		DisplayName:        event.Hook.Name,
+		Kind:               JobKindHook,
+		HarnessType:        harnessType,
+		Argv:               argv,
+		Instruction:        instruction,
+		Task:               SnapshotTask(task),
+		PrimaryInput:       payload,
 		Visibility: Visibility{
 			ProjectDir:         proj.WorkDir,
 			ProjectName:        meta.Name,

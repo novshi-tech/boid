@@ -225,3 +225,97 @@ func TestRunBoidShim_TaskUpdatePayloadPatch_RejectsPositionalTaskID(t *testing.T
 		t.Fatal("expected error when --payload-patch is combined with a positional task id")
 	}
 }
+
+// TestRunBoidShim_TaskUpdatePayloadPatch_NormalizesNonStringYAMLKeys pins
+// Phase 5b PR7 codex review Major 2 (wiring-seams.md #17): yaml.v3 decodes a
+// mapping with a non-string key (bool/int/null — the historical `on:` →
+// `true:` PyYAML round-trip incident coordinator.go's parseHandlerResult
+// already guards against) as map[interface{}]interface{}, which
+// json.Marshal cannot handle on its own. The CLI path must apply the exact
+// same internal/yamlutil.NormalizeKeys the file-based path uses, or the
+// same payload_patch content behaves differently (or errors outright)
+// depending on which path carries it.
+func TestRunBoidShim_TaskUpdatePayloadPatch_NormalizesNonStringYAMLKeys(t *testing.T) {
+	dir := t.TempDir()
+	sockPath := filepath.Join(dir, "broker.sock")
+	ln, err := net.Listen("unix", sockPath)
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	t.Cleanup(func() {
+		ln.Close()
+		os.Remove(sockPath)
+	})
+
+	reqCh := make(chan sandbox.ExecRequest, 1)
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		var req sandbox.ExecRequest
+		if err := json.NewDecoder(conn).Decode(&req); err != nil {
+			return
+		}
+		reqCh <- req
+		_ = json.NewEncoder(conn).Encode(&sandbox.ExecResponse{ExitCode: 0})
+	}()
+
+	t.Setenv("BOID_BROKER_SOCKET", sockPath)
+	t.Setenv("BOID_BROKER_TOKEN", "token-patch")
+	t.Setenv("BOID_JOB_ID", "job-abc")
+
+	// "true:" is a bool key once yaml.v3 decodes it — without normalization
+	// this would either fail to marshal or (worse) silently drop the value
+	// depending on the yaml library's exact behavior.
+	resp, err := sandbox.RunBoidShim([]string{"task", "update", "--payload-patch", "artifact:\n  report:\n    true: verifying\n"})
+	if err != nil {
+		t.Fatalf("RunBoidShim: %v", err)
+	}
+	if resp.ExitCode != 0 {
+		t.Fatalf("exit code = %d, want 0", resp.ExitCode)
+	}
+	req := <-reqCh
+	if got, want := string(req.Boid.PayloadPatch), `{"artifact":{"report":{"true":"verifying"}}}`; got != want {
+		t.Fatalf("payload patch = %s, want %s", got, want)
+	}
+}
+
+// Phase 5b PR7 codex review Major 3 (wiring-seams.md #17): --payload-patch
+// content crosses the broker RPC boundary into the daemon process, unlike a
+// purely local file read — an unbounded io.ReadAll on stdin/file content
+// lets a mistakenly huge input (or a malicious/buggy sandboxed process) OOM
+// both the runner (multiple in-memory copies: raw bytes, YAML-decoded
+// value, re-marshaled JSON) and, if it reached the wire, the daemon itself.
+func TestRunBoidShim_TaskUpdatePayloadPatch_RejectsOversizedContent(t *testing.T) {
+	t.Setenv("BOID_BROKER_SOCKET", "/tmp/does-not-matter")
+	t.Setenv("BOID_JOB_ID", "job-abc")
+
+	dir := t.TempDir()
+	oversizedPath := filepath.Join(dir, "huge.json")
+	f, err := os.Create(oversizedPath)
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	// One byte over the cap is enough to prove the limit is enforced without
+	// actually writing gigabytes to disk for the test.
+	if _, err := f.Write([]byte(`{"artifact":{"report":{"summary":"`)); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	padding := make([]byte, sandbox.PayloadPatchMaxBytes)
+	for i := range padding {
+		padding[i] = 'x'
+	}
+	if _, err := f.Write(padding); err != nil {
+		t.Fatalf("write padding: %v", err)
+	}
+	if _, err := f.Write([]byte(`"}}}`)); err != nil {
+		t.Fatalf("write suffix: %v", err)
+	}
+	f.Close()
+
+	if _, err := sandbox.RunBoidShim([]string{"task", "update", "--payload-patch", "@" + oversizedPath}); err == nil {
+		t.Fatal("expected error for content exceeding PayloadPatchMaxBytes")
+	}
+}

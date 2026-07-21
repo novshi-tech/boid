@@ -762,6 +762,80 @@ func TestPlanHook_PropagatesHostCommands(t *testing.T) {
 	}
 }
 
+// TestPlanHook_CapturesHookTraitsProduces pins Phase 5b PR7's codex review
+// Major 1 fix (wiring-seams.md #17): JobSpec.HookTraitsProduces must be the
+// firing hook's own Traits.Produces, captured verbatim at dispatch time —
+// this is what lets `boid task update --payload-patch`'s allowedTraits gate
+// avoid re-resolving the hook against project meta (which can be
+// edited/reloaded between dispatch and the RPC call) at merge time.
+func TestPlanHook_CapturesHookTraitsProduces(t *testing.T) {
+	projectDir := t.TempDir()
+	behavior := TaskBehavior{}
+	planner := newPlannerForTest(&Project{ID: "proj-1", WorkDir: projectDir}, behavior,
+		&Task{ID: "task-1", ProjectID: "proj-1", Behavior: "dev", Status: TaskStatusExecuting})
+
+	req, cleanup, err := planner.PlanHook(&HookFireEvent{
+		EventID:   "event-1",
+		TaskID:    "task-1",
+		ProjectID: "proj-1",
+		Hook: Hook{
+			ID:      "hook-1",
+			Command: "true",
+			Traits: HandlerTraits{
+				Produces: []TraitType{"artifact", "verification"},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("PlanHook: %v", err)
+	}
+	if cleanup != nil {
+		defer cleanup()
+	}
+	want := []TraitType{"artifact", "verification"}
+	if len(req.HookTraitsProduces) != len(want) {
+		t.Fatalf("HookTraitsProduces = %v, want %v", req.HookTraitsProduces, want)
+	}
+	for i, tr := range want {
+		if req.HookTraitsProduces[i] != tr {
+			t.Errorf("HookTraitsProduces[%d] = %q, want %q", i, req.HookTraitsProduces[i], tr)
+		}
+	}
+}
+
+// TestPlanHook_HookTraitsProduces_NilForHookWithNoProduces pins the "no
+// produces list declared" case (both an explicitly declared hook with no
+// traits.produces, and — the common case — a virtual/synthesized agent hook
+// from orchestrator.synthesizeAgentHook, whose Traits are always the zero
+// value) staying nil, not an empty-but-non-nil slice: MergePayloadPatch
+// treats a non-nil empty slice as "reject every trait", the opposite of the
+// intended "unrestricted" fallback.
+func TestPlanHook_HookTraitsProduces_NilForHookWithNoProduces(t *testing.T) {
+	projectDir := t.TempDir()
+	behavior := TaskBehavior{}
+	planner := newPlannerForTest(&Project{ID: "proj-1", WorkDir: projectDir}, behavior,
+		&Task{ID: "task-1", ProjectID: "proj-1", Behavior: "dev", Status: TaskStatusExecuting})
+
+	req, cleanup, err := planner.PlanHook(&HookFireEvent{
+		EventID:   "event-1",
+		TaskID:    "task-1",
+		ProjectID: "proj-1",
+		Hook: Hook{
+			ID:      "hook-1",
+			Command: "true",
+		},
+	})
+	if err != nil {
+		t.Fatalf("PlanHook: %v", err)
+	}
+	if cleanup != nil {
+		defer cleanup()
+	}
+	if req.HookTraitsProduces != nil {
+		t.Errorf("HookTraitsProduces = %v, want nil", req.HookTraitsProduces)
+	}
+}
+
 // task.readonly (and verifying status) drives Visibility.Writable for hook jobs.
 // This is the canonical single-source-of-truth for the hook sandbox write permission.
 func TestPlanHook_WritableControlledByTaskReadonly(t *testing.T) {

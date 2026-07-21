@@ -46,13 +46,28 @@ func (s *TaskWorkflowService) ReplayHook(ctx context.Context, taskID string, req
 		return nil, &StatusError{Code: http.StatusBadRequest, Message: err.Error()}
 	}
 
-	// Persist payload and optional status advance.
+	// Persist payload and optional status advance. Merge replay.PayloadDelta
+	// (only what the replayed hook itself wrote) onto a freshly re-read task
+	// row — never wholesale-assign replay.FinalPayload, which is built from
+	// the task snapshot taken BEFORE the hook ran and would silently discard
+	// any out-of-band write the hook made mid-flight (e.g. via
+	// `boid task update --payload-patch`), exactly the bug
+	// DispatchResult.PayloadDelta's doc comment describes for
+	// runDispatchLoop (Phase 5b PR7 codex review Blocker 1, wiring-seams.md
+	// #17) — this callsite had the same class of bug in an even blunter
+	// form (assignment, not even a merge).
 	if err := s.Tx.WithinTx(func(tx TxStore) error {
 		latest, err := tx.GetTask(taskID)
 		if err != nil {
 			return err
 		}
-		latest.Payload = replay.FinalPayload
+		if len(replay.PayloadDelta) > 0 {
+			merged, mergeErr := orchestrator.MergePayload(latest.Payload, replay.PayloadDelta)
+			if mergeErr != nil {
+				return mergeErr
+			}
+			latest.Payload = merged
+		}
 		if replay.NewStatus != "" {
 			latest.Status = replay.NewStatus
 		}

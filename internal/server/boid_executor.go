@@ -611,7 +611,22 @@ func (e *boidBuiltinExecutor) ExecuteBoidBuiltin(goCtx context.Context, ctx sand
 		if e.tasks == nil {
 			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid task update --payload-patch unavailable"}
 		}
-		task, err := e.tasks.UpdateTaskPayloadPatch(req.JobID, req.PayloadPatch)
+		// allowedTraits comes from the JobContextSnapshot captured at
+		// dispatch time (JobSpec.HookTraitsProduces), never a live
+		// re-lookup against current project meta — codex review caught a
+		// TOCTOU staleness bug in an early cut that re-resolved the firing
+		// hook by ID at merge time, which could silently apply a
+		// post-dispatch-edit trait list (or fail open) if project.yaml
+		// changed between dispatch and this call. See wiring-seams.md #17's
+		// Major 1 finding and JobContextSnapshot's own doc comment.
+		if e.jobContexts == nil {
+			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid task update --payload-patch unavailable"}
+		}
+		snap, ok := e.jobContexts.JobContext(req.JobID)
+		if !ok {
+			return &sandbox.ExecResponse{ExitCode: 1, Stderr: fmt.Sprintf("boid task update --payload-patch: no context tracked for job %q", req.JobID)}
+		}
+		task, err := e.tasks.UpdateTaskPayloadPatch(req.JobID, req.PayloadPatch, snap.PayloadPatchAllowedTraits)
 		if err != nil {
 			return &sandbox.ExecResponse{ExitCode: 1, Stderr: err.Error()}
 		}

@@ -149,33 +149,12 @@ func TestParseHandlerResult_EmptyOutput(t *testing.T) {
 	}
 }
 
-func TestNormalizeYAMLKeys_Recursive(t *testing.T) {
-	in := map[string]interface{}{
-		"top": map[interface{}]interface{}{
-			true: "yes",
-			"nested": map[interface{}]interface{}{
-				42:   "answer",
-				"ok": true,
-			},
-		},
-		"list": []interface{}{
-			map[interface{}]interface{}{false: "no"},
-		},
-	}
-	out := normalizeYAMLKeys(in)
-	if _, err := json.Marshal(out); err != nil {
-		t.Fatalf("json.Marshal failed after normalize: %v", err)
-	}
-	top := out.(map[string]interface{})["top"].(map[string]interface{})
-	if top["true"] != "yes" {
-		t.Errorf("top.true = %v, want yes", top["true"])
-	}
-	nested := top["nested"].(map[string]interface{})
-	if nested["42"] != "answer" {
-		t.Errorf("top.nested.42 = %v, want answer", nested["42"])
-	}
-	listItem := out.(map[string]interface{})["list"].([]interface{})[0].(map[string]interface{})
-	if listItem["false"] != "no" {
-		t.Errorf("list[0].false = %v, want no", listItem["false"])
-	}
-}
+// The pure recursive-normalization logic itself (non-string key
+// stringification, nested map/slice traversal) is now covered directly by
+// internal/yamlutil's own tests (Phase 5b PR7 codex review Major 2 fix,
+// wiring-seams.md #17: normalizeYAMLKeys moved to the shared
+// internal/yamlutil.NormalizeKeys so internal/sandbox's `--payload-patch`
+// CLI can apply the identical normalization without orchestrator becoming a
+// dependency of sandbox). TestParseHandlerResult_BoolKeyCoerced /
+// _IntKeyCoerced / _NullKeyCoerced above pin the integration behavior
+// (parseHandlerResult actually applying it to a real payload_patch output).
