@@ -16,8 +16,15 @@ Task metadata is provided via **context files** written to `$HOME/.boid/context/
 |---|---|---|
 | `task.yaml` | YAML | Core task fields (see table below). |
 | `instructions.yaml` | YAML | Routing instructions (for `kind: agent` hooks). |
-| `environment.yaml` | YAML | Additional environment metadata. |
 | `payload.json` | JSON | The current full payload. |
+
+Additional environment metadata (the network egress allowlist, and each host command's allow/deny/reject rules) is not a context file — fetch it via the `boid task env` command (a broker RPC, reachable on the sandbox's PATH) instead. Call it directly from your hook script:
+
+```bash
+boid task env                       # YAML (default)
+boid task env --format json         # JSON
+boid task env --field allowed_domains
+```
 
 **`task.yaml` fields** (the only fields present; the document is intentionally minimal):
 
