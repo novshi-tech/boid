@@ -66,7 +66,7 @@ Triggered by condition rules evaluated after each dispatch step.
 
 ## Reopen Semantics
 
-`boid task reopen` transitions `done → executing` with the new `-m "<msg>"` **appended** to `instructions.yaml`; the last element becomes the active instruction. Earlier elements remain as context. The same task ID and branch are reused — no new branch is cut — but the job re-clones the project fresh from origin, so only work that was committed **and pushed** on the previous pass carries over.
+`boid task reopen` transitions `done → executing` with the new `-m "<msg>"` becoming the reopened job's own routed instruction — `boid task instructions` (job-scoped) returns it as the sole element, not appended alongside earlier instructions. The same task ID and branch are reused — no new branch is cut — but the job re-clones the project fresh from origin, so only work that was committed **and pushed** on the previous pass carries over.
 
 `reopen` is only valid from `done`. Aborted tasks cannot be reopened — either:
 

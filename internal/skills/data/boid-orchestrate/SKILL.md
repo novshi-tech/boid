@@ -12,10 +12,15 @@ description: >
 
 ## 起動コンテキストの検出
 
-最初に `$BOID_TASK_ID` の有無を確認する。
+最初に `$BOID_TASK_ID` の有無を確認する。**それだけでは確定させない** — task-less
+session (`boid exec` / project command セッション) は project/workspace 側の
+`env:` 設定を継承するため、そこに (意図せず) `BOID_TASK_ID` という名前の変数が
+紛れ込んでいると、実在しない・または無関係な過去タスクを指す値のまま非空判定を
+通過してしまう。`boid task current` が実際に成功する (= そのタスクが存在し、
+このセッションから見える) ことまで確認して初めてタスク管理モードと確定する。
 
 ```bash
-if [ -n "$BOID_TASK_ID" ]; then
+if [ -n "$BOID_TASK_ID" ] && boid task current >/dev/null 2>&1; then
   # タスク管理モード（Web UI Commands ボタンから起動）
   TASK_ID="$BOID_TASK_ID"
   echo "タスク管理モードで起動: $TASK_ID"
@@ -25,21 +30,21 @@ else
 fi
 ```
 
-| `$BOID_TASK_ID` | モード |
+| 条件 | モード |
 |---|---|
-| 設定されている | **タスク管理モード** — 対象タスクを対話的に更新する |
-| 未設定 | **外部オーケストレーションモード** — supervisor タスクを作成・追跡する |
+| `$BOID_TASK_ID` が設定され、かつ `boid task current` が成功する | **タスク管理モード** — 対象タスクを対話的に更新する |
+| それ以外（`$BOID_TASK_ID` 未設定、または `boid task current` が失敗する） | **外部オーケストレーションモード** — supervisor タスクを作成・追跡する |
 
 ---
 
 ## タスク管理モード（Web UI Commands ボタンから起動）
 
-`$BOID_TASK_ID` が設定されている場合はこのモードで動作する。
+`$BOID_TASK_ID` が設定され、かつ `boid task current` が成功する場合はこのモードで動作する。
 対象タスクをユーザーと対話で詳細化したり、awaiting 中の質問に回答するために使う。
 
 ### 起動時の流れ
 
-1. `$BOID_TASK_ID` からタスク ID を得る
+1. `$BOID_TASK_ID` を検証済みのタスク ID として使う（上の起動コンテキスト検出で `boid task current` の成功を確認済み）
 2. 現在のタスク状態を確認してユーザーに提示する
 3. ユーザーのゴールを聞いて実行する
 
@@ -120,7 +125,7 @@ PTY が閉じることで exec job が完了する。
 
 ## 外部オーケストレーションモード（CLI / boid exec から起動）
 
-`$BOID_TASK_ID` が未設定の場合はこのモードで動作する。
+`$BOID_TASK_ID` が未設定、または `boid task current` が失敗する場合はこのモードで動作する。
 外部セッション（`BOID_TASK_ID` がない状態）から supervisor タスクを作成し、完了まで追跡する。
 
 > **このスキルは `/boid-task` と何が違うか**

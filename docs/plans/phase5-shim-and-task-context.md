@@ -317,6 +317,24 @@ env 経路 (併存): `BOID_TASK_ID` / `BOID_JOB_ID` / `BOID_MODEL` / `BOID_INVOK
 - **broker RPC のスキーマ安定性契約**: `boid task current` / `payload` の JSON
   出力はスキル (SKILL.md) が field 名で参照する契約になる。 変更時の semver
   ポリシーを doc に明記
+- **task-less job での `BOID_TASK_ID` 未消去 (5b-4 codex review、 2026-07-21)**:
+  `BuildSandboxSpec` (`internal/dispatcher/sandbox_builder.go`) の
+  `setIfNonEmpty(env, "BOID_TASK_ID", spec.TaskID)` は `spec.TaskID` が
+  非空のときしか値を「設定」しない — `spec.TaskID == ""` (task-less session)
+  でも、 project/workspace の `env:` 設定 (`meta.Env`、
+  `internal/server/wire.go` の `sessionDispatcherAdapter.StartSession` 経由で
+  `spec.Env` にそのまま流れ込む) に同名キーが紛れていれば、 そのまま
+  sandbox env に残る。 boid-orchestrate skill (5b-4) は起動コンテキスト検出を
+  `~/.boid/context/task.yaml` の存在チェックから `$BOID_TASK_ID` の非空判定に
+  切り替えたため、 この経路の脆弱性がスキル側の誤判定として顕在化しうる
+  ようになった (5b-4 では `&& boid task current` の成功チェックを併用する
+  緩和策のみ導入、 実在する古いタスク ID が偶然紛れ込むケースまでは
+  塞げない)。 恒久対応は `spec.TaskID == ""` のとき `BuildSandboxSpec` が
+  `env` から予約済み `BOID_*` キー (少なくとも `BOID_TASK_ID`) を明示的に
+  削除する防御、 または project.yaml/workspace.yaml の `env:` で `BOID_*`
+  prefix 自体を予約語として拒否するバリデーション。 5b-4 の codex review で
+  指摘されたが sandbox_builder.go の変更を伴うため 5b-4 のスコープ外と判断し、
+  別 PR に送る (5b-4 PR body に明記)
 
 ---
 

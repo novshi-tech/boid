@@ -32,23 +32,26 @@ Canonical behavior names are `supervisor` (readonly orchestrator) and `executor`
 | description | Detailed task description |
 | status | Current state — one of `pending`, `executing`, `awaiting`, `done`, `aborted` |
 | behavior | Task execution model name |
-| readonly | Whether this task's project directory is writable. The primary mode-determination signal — see the skill's Step 0. |
+| readonly | Whether this task is **read-only**. `true` → this job's `git push` is rejected by the git gateway (fetch still works); the sandbox clone itself is still a completely normal read-write filesystem regardless — nothing on disk is actually locked down. `false` → a normal writable task. This is the primary mode-determination signal (see the skill's Step 0) and the **only** authoritative source for it — do not infer writability from `pwd` or file permissions inside the clone. |
 
 This re-derives live from the task row on every call (unlike a file frozen at dispatch time), so it reflects concurrent `boid task update` calls made by another session.
 
 ## boid task instructions
 
-Array of instructions addressed to you, scoped to **this job**. The last element is the current active instruction; new instructions are appended each time the task is reopened. Past instructions remain at the front of the array so you can trace what was requested before.
+Array scoped to **this job** — in practice **zero or one element**, never a
+growing history. It is the one entry from the task's instruction history that
+was routed to this specific job (matched by invoked agent at plan time,
+`internal/dispatcher/job_context.go`'s `routedInstructionSlice`), not the
+task's full instruction history. On reopen, the new instruction becomes the
+new job's sole element here — it does not get appended alongside earlier
+ones, and earlier instructions are simply not present in this command's
+output for the new job.
 
 ```yaml
 - role: executor
   type: execution
   agent: claude-code
-  message: "Implement using TDD. Write tests first."
-- role: executor
-  type: execution
-  agent: claude-code
-  message: "Fix the lint errors and re-push."   # appended on reopen
+  message: "Fix the lint errors and re-push."
 ```
 
 | Field | Description |
@@ -58,7 +61,10 @@ Array of instructions addressed to you, scoped to **this job**. The last element
 | agent | Target agent name |
 | message | Specific instruction content |
 
-Read the last element as the primary instruction, and refer to earlier elements as context when needed.
+Treat the single element as the active instruction. If you need context from
+before this job started (e.g. what a prior turn was originally asked to do),
+this command cannot give it to you — read `boid task current --field description`
+or check `boid task payload` for artifacts a prior turn recorded.
 
 ## boid task payload
 
@@ -99,13 +105,20 @@ host_commands:
 | host_commands[].reject | `{match, reason}` rules: a call matching `match` is rejected with `reason` explaining what to do instead. |
 
 **Not included** (post-cutover container model, `docs/plans/container-based-boid.md`
-「タスクコンテキストの伝搬」): the project directory path and its writability —
-the filesystem is "見たまんま" (what you see is what you get): the sandbox clones
-the project fresh into your cwd for every job, so `pwd` and normal file
-permission checks tell you everything you need there. The active-run harness
-name and the list of generally-available commands are likewise not part of
-this schema — they are either fixed per adapter (not per-job data worth a
-round trip) or discoverable by simply trying the command. Workspace peer
-projects (other projects in the same workspace, advertised for cross-project
-fetch/clone) are also not part of this command's schema yet — that is a known
-open item in the Phase 5b plan, not something this command currently exposes.
+「タスクコンテキストの伝搬」): the project directory *path* — the filesystem
+layout is "見たまんま" (what you see is what you get) for that: the sandbox
+clones the project fresh into your cwd for every job, so `pwd` tells you
+where you are. **Writability is different: do not infer it from `pwd` or file
+permissions.** The clone is always a completely normal read-write filesystem
+at the OS level, whether the task is `readonly: true` or `false` — the actual
+constraint is enforced at `git push` time by the git gateway, not by the
+local filesystem (fetch always works; push is rejected for read-only tasks).
+`boid task current --field readonly` is the only authoritative source for
+whether this job may push — see that command's `readonly` field above. The
+active-run harness name and the list of generally-available commands are
+likewise not part of this schema — they are either fixed per adapter (not
+per-job data worth a round trip) or discoverable by simply trying the
+command. Workspace peer projects (other projects in the same workspace,
+advertised for cross-project fetch/clone) are also not part of this
+command's schema yet — that is a known open item in the Phase 5b plan, not
+something this command currently exposes.

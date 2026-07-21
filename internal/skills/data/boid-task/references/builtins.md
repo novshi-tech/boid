@@ -96,14 +96,17 @@ Three modes:
 boid task reopen <task-id> [-m "<new instruction>"]
 ```
 
-Transitions `done → executing` with the new instruction appended to `instructions.yaml`. Used by the supervisor to ask a `done` child to take another pass (rebase, fix CI, address review feedback). The same task ID and branch are reused — no new branch is cut — but the job re-clones the project fresh, so only work that was **committed and pushed** on the previous pass is there when the reopened agent starts.
+Transitions `done → executing` with the new instruction becoming the reopened job's own routed instruction (surfaced via `boid task instructions`, not appended to a growing history — see [data-model.md](data-model.md#boid-task-instructions)). Used by the supervisor to ask a `done` child to take another pass (rebase, fix CI, address review feedback). The same task ID and branch are reused — no new branch is cut — but the job re-clones the project fresh, so only work that was **committed and pushed** on the previous pass is there when the reopened agent starts.
 
 Reopen always spawns a **fresh agent process** — the harness session from the
 previous turn is not carried over (no `claude --resume` / `codex exec resume` /
-`opencode run -s ... --continue`). The reopened agent re-reads
-`~/.boid/context/{task,instructions,payload}.yaml` on cold start, so the new
-instruction landing in `instructions.yaml` plus any prior artifact in
-`payload.yaml` is the full context surface.
+`opencode run -s ... --continue`). The reopened agent re-fetches context via
+`boid task current` / `boid task instructions` / `boid task payload` on cold
+start. `boid task instructions` is scoped to **this job only** — it returns
+the new instruction as its sole element, never the task's earlier
+instructions — so context from before the reopen, if needed, has to come from
+`boid task current --field description` or artifacts already recorded in
+`boid task payload`.
 
 Aborted tasks cannot be reopened.
 

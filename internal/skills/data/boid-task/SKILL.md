@@ -52,7 +52,7 @@ commands are the single source of truth for prior-turn context.
 | Command | Contents |
 |---|---|
 | `boid task current` | id, title, description, status, behavior, **readonly** |
-| `boid task instructions` | Instructions array for **this job**; the last element is active |
+| `boid task instructions` | **This job's own** routed instruction — zero or one element, never the task's full history |
 | `boid task payload` | Existing artifacts (children, prior results) |
 | `boid task env` | Sandbox constraints not observable from inside the container: `allowed_domains`, `host_commands` |
 
@@ -185,11 +185,15 @@ Prefer `--fail`. Use `action send --type abort` only when nothing can be reporte
 
 ### Reopen semantics
 
-When this task is reopened, the new instruction is **appended** as the last element
-of the array `boid task instructions` returns. Earlier elements are context only —
-act only on the tail. Reopen always spawns a fresh agent process (no harness session
-is carried over from the previous turn) — re-run every command in *Step 0* before
-deciding what to do, even if you "feel" like you already know the task.
+When this task is reopened, the new instruction becomes **this job's own** routed
+instruction — `boid task instructions` returns it as the sole element (it is
+job-scoped, not a growing history; see [references/data-model.md](references/data-model.md)).
+It does **not** show you what was asked in earlier turns. If you need that context,
+read `boid task current --field description` or check `boid task payload` for
+artifacts a prior turn recorded there. Reopen always spawns a fresh agent process
+(no harness session is carried over from the previous turn) — re-run every command
+in *Step 0* before deciding what to do, even if you "feel" like you already know
+the task.
 
 ---
 

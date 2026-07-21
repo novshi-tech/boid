@@ -1,6 +1,7 @@
 package skills_test
 
 import (
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -11,24 +12,33 @@ import (
 )
 
 // Phase 5b PR4 (docs/plans/phase5-shim-and-task-context.md「PR 分割案 > 5b」4):
-// the boid-task / boid-orchestrate skills and boid-task's data-model
-// reference doc used to instruct the agent to read the dispatch-time context
-// files under `~/.boid/context/`. This PR switches all three to the Phase 5b
+// the boid-task / boid-orchestrate skills and boid-task's reference docs used
+// to instruct the agent to read the dispatch-time context files under
+// `~/.boid/context/`. This PR switches all of them to the Phase 5b
 // task-context broker RPCs (`boid task current` / `instructions` / `env` /
-// `payload`) instead — the two guard tests below pin that the switch is
-// complete (no leftover file-path reference) and that the new CLI surface is
-// actually documented, so a future edit that silently reintroduces a file
-// reference (or drops the CLI reference) fails CI instead of drifting
-// unnoticed until the 5b-6 cutover retires the file path for good.
+// `payload`) instead — the guard tests below pin that the switch is complete
+// (no leftover file-path reference anywhere in the deployed skill tree, not
+// just the files this PR happened to touch first) and that the new CLI
+// surface is actually documented, so a future edit that silently
+// reintroduces a file reference (or drops the CLI reference) fails CI
+// instead of drifting unnoticed until the 5b-6 cutover retires the file path
+// for good.
+//
+// codex review on this PR (before merge) caught that the first version only
+// grepped references/data-model.md, missing the same stale
+// `~/.boid/context/{task,instructions,payload}.yaml` guidance still present
+// in references/builtins.md and references/state-machine.md — both reachable
+// from SKILL.md but outside its own file. Fixed by walking the entire
+// deployed skill directory instead of naming files one at a time.
 
 // legacyContextFileMarkers are the two on-disk path spellings the skill
 // prose used before this PR (`~/.boid/context/...` in most places,
 // `$HOME/.boid/context/...` where the shell examples need a real
-// expansion). Both must be entirely gone from the three files below —
-// the file-materialization mechanism itself (sandbox_builder.go's
-// contextFiles/buildEnvironmentYAML) is untouched and still runs in
-// parallel until the 5b-6 cutover, but nothing in these three files should
-// tell the agent to read it anymore.
+// expansion). Both must be entirely gone from the deployed boid-task and
+// boid-orchestrate skill trees — the file-materialization mechanism itself
+// (sandbox_builder.go's contextFiles/buildEnvironmentYAML) is untouched and
+// still runs in parallel until the 5b-6 cutover, but nothing under these two
+// skills should tell the agent to read it anymore.
 var legacyContextFileMarkers = []string{
 	"~/.boid/context/",
 	"$HOME/.boid/context/",
@@ -44,24 +54,78 @@ var taskContextCLICommands = []string{
 	"boid task payload",
 }
 
-func deployedSkillFile(t *testing.T, skillName, relPath string) string {
+// deployedSkillTree deploys every embedded skill to a temp dir and returns
+// {relative path -> content} for every regular file under baseDir/skillName,
+// relative path always slash-separated and rooted at skillName itself (e.g.
+// "boid-task/references/builtins.md") so assertion failure messages are
+// unambiguous about which file is at fault.
+func deployedSkillTree(t *testing.T, skillName string) map[string]string {
 	t.Helper()
 	baseDir := t.TempDir()
 	if err := skills.DeployAll(baseDir); err != nil {
 		t.Fatalf("DeployAll: %v", err)
 	}
-	content, err := os.ReadFile(filepath.Join(baseDir, skillName, relPath))
+	root := filepath.Join(baseDir, skillName)
+	out := make(map[string]string)
+	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			return nil
+		}
+		content, rerr := os.ReadFile(path)
+		if rerr != nil {
+			return rerr
+		}
+		rel, rerr := filepath.Rel(baseDir, path)
+		if rerr != nil {
+			return rerr
+		}
+		out[filepath.ToSlash(rel)] = string(content)
+		return nil
+	})
 	if err != nil {
-		t.Fatalf("read %s/%s: %v", skillName, relPath, err)
+		t.Fatalf("walk %s: %v", root, err)
 	}
-	return string(content)
+	if len(out) == 0 {
+		t.Fatalf("no files found under deployed %s", skillName)
+	}
+	return out
 }
 
-func TestBoidTaskSkill_NoLegacyContextFileReferences(t *testing.T) {
-	content := deployedSkillFile(t, "boid-task", "SKILL.md")
-	for _, marker := range legacyContextFileMarkers {
-		if strings.Contains(content, marker) {
-			t.Errorf("boid-task/SKILL.md still references %q — should read task context via `boid task ...` RPCs instead", marker)
+func deployedSkillFile(t *testing.T, skillName, relPath string) string {
+	t.Helper()
+	tree := deployedSkillTree(t, skillName)
+	key := skillName + "/" + relPath
+	content, ok := tree[key]
+	if !ok {
+		t.Fatalf("deployed %s not found (have: %v)", key, tree)
+	}
+	return content
+}
+
+// TestBoidTaskSkillTree_NoLegacyContextFileReferences walks every file under
+// the deployed boid-task skill (SKILL.md + all of references/*.md) — not
+// just the files this PR edited first — so a stale file-path reference
+// anywhere in the tree fails CI instead of silently surviving because the
+// test only checked a hand-picked subset.
+func TestBoidTaskSkillTree_NoLegacyContextFileReferences(t *testing.T) {
+	for relPath, content := range deployedSkillTree(t, "boid-task") {
+		for _, marker := range legacyContextFileMarkers {
+			if strings.Contains(content, marker) {
+				t.Errorf("%s still references %q — should read task context via `boid task ...` RPCs instead", relPath, marker)
+			}
+		}
+	}
+}
+
+func TestBoidOrchestrateSkillTree_NoLegacyContextFileReferences(t *testing.T) {
+	for relPath, content := range deployedSkillTree(t, "boid-orchestrate") {
+		for _, marker := range legacyContextFileMarkers {
+			if strings.Contains(content, marker) {
+				t.Errorf("%s still references %q", relPath, marker)
+			}
 		}
 	}
 }
@@ -102,11 +166,26 @@ func TestBoidTaskSkill_ExecutorRules_NoFilesystemFieldReferences(t *testing.T) {
 	}
 }
 
-func TestDataModelDoc_NoLegacyContextFileReferences(t *testing.T) {
-	content := deployedSkillFile(t, "boid-task", "references/data-model.md")
-	for _, marker := range legacyContextFileMarkers {
-		if strings.Contains(content, marker) {
-			t.Errorf("boid-task/references/data-model.md still references %q", marker)
+// TestBoidTaskSkillTree_InstructionsIsJobScoped pins the codex-caught Major
+// finding: `boid task instructions` returns at most ONE element — the
+// firing job's own routed instruction (internal/dispatcher/job_context.go's
+// routedInstructionSlice) — never the task's full instruction history. The
+// pre-fix SKILL.md and references/*.md described it as a growing array where
+// reopen "appends" and earlier elements "remain as context", which does not
+// match the RPC and would send an agent looking for prior-turn context that
+// was never there. Every deployed file must avoid that specific claim.
+func TestBoidTaskSkillTree_InstructionsIsJobScoped(t *testing.T) {
+	wrongPhrases := []string{
+		"appended to `instructions.yaml`",
+		"appended as the last element",
+		"Earlier elements remain as context",
+		"Earlier elements are context only",
+	}
+	for relPath, content := range deployedSkillTree(t, "boid-task") {
+		for _, phrase := range wrongPhrases {
+			if strings.Contains(content, phrase) {
+				t.Errorf("%s still describes `boid task instructions` as a growing/history array (%q) — it is job-scoped and returns at most one element", relPath, phrase)
+			}
 		}
 	}
 }
@@ -140,12 +219,21 @@ func TestDataModelDoc_EnvironmentSectionIsReduced(t *testing.T) {
 	}
 }
 
-func TestBoidOrchestrateSkill_NoLegacyContextFileReferences(t *testing.T) {
-	content := deployedSkillFile(t, "boid-orchestrate", "SKILL.md")
-	for _, marker := range legacyContextFileMarkers {
-		if strings.Contains(content, marker) {
-			t.Errorf("boid-orchestrate/SKILL.md still references %q", marker)
-		}
+// TestDataModelDoc_ReadonlySemanticsAreCorrect pins the codex-caught Minor
+// finding: `readonly` does not mean "the local filesystem is read-only" —
+// the sandbox clone is *always* a normal read-write filesystem
+// (sandbox_builder.go's /workspace bind comment: "under the clone model
+// readonly is enforced by the gateway (transport-RO), not the local
+// filesystem"). The doc must describe the actual mechanism (git push
+// rejected by the gateway) and must not claim a permission check reveals
+// writability.
+func TestDataModelDoc_ReadonlySemanticsAreCorrect(t *testing.T) {
+	content := deployedSkillFile(t, "boid-task", "references/data-model.md")
+	if !strings.Contains(content, "git push") {
+		t.Errorf("boid-task/references/data-model.md's readonly description should explain the actual mechanism (git push rejected by the gateway)")
+	}
+	if strings.Contains(content, "file permission checks tell you") {
+		t.Errorf("boid-task/references/data-model.md should not claim file permission checks reveal writability — the clone is always read-write; only `boid task current --field readonly` is authoritative")
 	}
 }
 
@@ -156,6 +244,32 @@ func TestBoidOrchestrateSkill_ReferencesTaskCurrentCLI(t *testing.T) {
 	}
 	if strings.Contains(content, "environment.yaml") {
 		t.Errorf("boid-orchestrate/SKILL.md should no longer mention environment.yaml")
+	}
+}
+
+// TestBoidOrchestrateSkill_ModeDetectionVerifiesTaskExists pins the
+// codex-caught Major finding: a bare `[ -n "$BOID_TASK_ID" ]` check is not a
+// reliable task-less-session signal. Task-less sessions
+// (sessionDispatcherAdapter.StartSession, internal/server/wire.go) pass
+// project/workspace-configured `meta.Env` straight through as `spec.Env`,
+// and BuildSandboxSpec's `setIfNonEmpty(env, "BOID_TASK_ID", spec.TaskID)`
+// only ever *sets* the key when spec.TaskID is non-empty — it never clears a
+// pre-existing "BOID_TASK_ID" that arrived via spec.Env when spec.TaskID ==
+// "". A project/workspace `env:` block that happens to declare its own
+// BOID_TASK_ID (e.g. a copy-pasted example) would leak into every task-less
+// job for that project, misrouting boid-orchestrate into task management
+// mode against a stale task. The mode-detection code must also confirm the
+// task actually resolves (`boid task current`), not just that the env var is
+// non-empty.
+func TestBoidOrchestrateSkill_ModeDetectionVerifiesTaskExists(t *testing.T) {
+	content := deployedSkillFile(t, "boid-orchestrate", "SKILL.md")
+	if !strings.Contains(content, `boid task current`) {
+		t.Fatalf("boid-orchestrate/SKILL.md missing `boid task current` reference at all")
+	}
+	// The mode-detection conditional must combine the env check with an
+	// actual RPC success check, not rely on BOID_TASK_ID alone.
+	if !strings.Contains(content, `-n "$BOID_TASK_ID"`) || !strings.Contains(content, "boid task current >") {
+		t.Errorf("boid-orchestrate/SKILL.md's mode detection should check both `-n \"$BOID_TASK_ID\"` and that `boid task current` actually succeeds, not the env var alone")
 	}
 }
 
