@@ -63,7 +63,6 @@ The hook runs with the following environment variables set:
 | `BOID_INVOKED_ROLE` | The role name that triggered this hook invocation. |
 | `BOID_INVOKED_NAME` | The hook name within the role. |
 | `BOID_INVOKED_BEHAVIOR` | The behavior name (`supervisor` or `executor`). |
-| `BOID_INSTRUCTIONS` | Serialized instructions passed to this hook (for `kind: agent` hooks). |
 | `BOID_INTERACTIVE` | `1` if the job is interactive (PTY), `0` otherwise. |
 | `BOID_BUILTIN_SHIM` | Path to the built-in shim binary injected into the sandbox. |
 | `BOID_HOST_IP` | IP address of the host, reachable from inside the sandbox. |
@@ -90,7 +89,9 @@ Commands like `git`, `gh`, and language toolchains therefore do not need explici
 
 ### File system access
 
-Hooks run inside the sandbox. They can read and write only inside the in-sandbox clone (or nowhere writable at all for `readonly: true` behaviors — the local clone itself still exists but pushes are refused at the git gateway). Paths declared in the kit's `additional_bindings` are mounted in addition. The host's home directory, SSH keys, and other projects are not visible.
+Hooks run inside the sandbox. They can read and write inside the in-sandbox clone (or nowhere writable at all for `readonly: true` behaviors — the local clone itself still exists but pushes are refused at the git gateway) and `$HOME`. Paths declared in the kit's `additional_bindings` are mounted in addition. The host's home directory, SSH keys, and other projects are not visible.
+
+`$HOME` is a **workspace-scoped volume that persists across jobs in the same workspace** — not a fresh directory per job. Files a hook writes under `$HOME` (config, credentials, caches, dotfiles) are visible to later jobs dispatched against the same workspace; they are not thrown away with this job's sandbox. The one exception is `$HOME/.boid`, which stays a fresh, job-scoped tmpfs (wiped every job) so `$HOME/.boid/output/payload_patch.json` never leaks between jobs. Persisting on disk under `$HOME` is not the same as being part of a task's deliverable — only what lands in the project clone's git history (committed **and** pushed) counts as output.
 
 ## Outputs
 
@@ -154,7 +155,7 @@ Even on a non-zero exit, if `payload_patch.json` was written it is still merged.
 
 ## Extra context for agent hooks
 
-A hook declared with `kind: agent` participates in instruction routing. The routed instruction is available via `boid task instructions` and the `BOID_INSTRUCTIONS` environment variable. The claude-code kit's hook, for example, reads `instructions.main` from that RPC output and feeds it to the agent as the message.
+A hook declared with `kind: agent` participates in instruction routing. The routed instruction is available via `boid task instructions` — the sole source (no environment-variable mirror). The claude-code kit's hook, for example, reads `instructions.main` from that RPC output and feeds it to the agent as the message.
 
 The fields of `Instruction` are listed in [`project.yaml` reference / Instruction](project-yaml.md#instruction).
 

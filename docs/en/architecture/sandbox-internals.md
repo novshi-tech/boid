@@ -2,7 +2,7 @@
 
 How `boid`'s sandbox is built, and what actually happens when one hook runs. This is the file-and-syscall-level zoom of the sandbox section in the [Architecture overview](overview.md).
 
-The intended readers are contributors who touch `internal/sandbox/`, anyone debugging a sandbox-shaped bug, or anyone who wants to know exactly *why* their home directory is invisible from inside.
+The intended readers are contributors who touch `internal/sandbox/`, anyone debugging a sandbox-shaped bug, or anyone who wants to know exactly *why* their **host** home directory is invisible from inside (the sandbox's own `$HOME` is a different, workspace-scoped thing — see the "From inside the sandbox" section below).
 
 ## What the sandbox enforces
 
@@ -83,8 +83,10 @@ Main steps:
 
 From inside the sandbox:
 
-- The home directory, SSH keys, and other projects do not exist (paths don't resolve unless bind-mounted into `$ROOT`).
+- The *host's* home directory, SSH keys, and other projects do not exist (paths don't resolve unless bind-mounted into `$ROOT`). The sandbox's own `$HOME` is a different thing entirely — see below.
 - The process runs as uid 0 inside the user namespace but cannot escape it — there is no escalation path to the host root.
+
+`$HOME` inside the sandbox is not host-shared and not a fresh tmpfs either: it is a **workspace-scoped volume bind-mounted read-write, that persists across every job dispatched against the same workspace** (docs/plans/home-workspace-volume.md Phase 4). A file a hook writes under `$HOME` is visible to a later, unrelated job in the same workspace. The one exception is `$HOME/.boid`, which stays a fresh, job-scoped tmpfs on every dispatch (mounted over the persistent `$HOME` bind) so `$HOME/.boid/output/payload_patch.json` never leaks between jobs sharing a workspace.
 
 Task context is available by calling `boid task current` / `instructions` / `env` / `payload` — broker RPCs reachable over the shim, pulled on demand rather than materialized at dispatch time. The handler-side protocol is documented in [Hook script protocol](../reference/hook-contract.md).
 

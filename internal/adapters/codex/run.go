@@ -46,10 +46,10 @@ func missingCLIError(slug string, cause error) error {
 // for a task hook (rc.TaskID != ""). It tells the agent to read the canonical
 // task skill manual, then pull the task context via the `boid task ...`
 // broker RPCs (Phase 5b PR3, docs/plans/phase5-shim-and-task-context.md —
-// this replaced the earlier "read ~/.boid/context/*.yaml" instruction; that
-// file distribution still exists on disk for now but is no longer what this
-// prompt points the agent at), then run the task and emit boid task notify
-// --done/--fail before exiting.
+// this replaced the earlier "read ~/.boid/context/*.yaml" instruction; the
+// Phase 5b PR6 cutover subsequently retired that file distribution
+// entirely, so the RPC path is now the sole source), then run the task and
+// emit boid task notify --done/--fail before exiting.
 //
 // codex has no slash command / skill loader mechanism, so the claude pattern
 // of passing "/boid-task" as positional does not apply. Instead we point the

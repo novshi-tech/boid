@@ -500,8 +500,19 @@ their source data is job-scoped, not task-scoped.
   RPC's CLI-side re-render round-trips through JSON first, so field order differed). Moot since
   PR6 deleted the file side outright.
 - **Update (Phase 5b PR6)**: the file side (`contextFiles`/`buildEnvironmentYAML`/
-  `marshalTaskYAML`/`marshalInstructionsYAML`/`EnvironmentInput`, plus the `$HOME/.boid` job-scoped
-  tmpfs overlay that isolated its writes) is deleted. `SandboxRuntimeInfo.WorkspacePeerAdvertise`
+  `marshalTaskYAML`/`marshalInstructionsYAML`/`EnvironmentInput`) is deleted. The `$HOME/.boid`
+  job-scoped tmpfs overlay that isolated its writes is **not** deleted, despite an early cut of
+  this PR trying to: codex review (Blocker + Major, before merge) found that with the overlay gone,
+  the one remaining writer under `$HOME/.boid` — `$HOME/.boid/output/payload_patch.json`, the
+  `job_done` file fallback (decision 6, still primary until 5b PR7's RPC lands) — became a fixed,
+  shared path on the persistent workspace home, letting concurrent jobs in the same workspace
+  delete/merge each other's patches, and letting a prior job's ancestor symlink redirect a later
+  job's dispatch-time file operations outside the intended directory. Restoring the tmpfs (rather
+  than hardening the operations that ran on top of it) closes both classes of attack structurally —
+  see `docs/plans/phase5-shim-and-task-context.md`「PR 分割案 > 5b」6's landed note and
+  `internal/dispatcher/sandbox_builder.go`'s `homeMounts` doc comment for the full history. The
+  overlay is now expected to survive until 5b PR7 removes the file-based `job_done` fallback
+  entirely. `SandboxRuntimeInfo.WorkspacePeerAdvertise`
   and `Runner.buildPeerAdvertise` (`gitgateway_wire.go`) — the data the file's now-gone
   `workspace_projects` section used to carry — are kept as-is, still computed, still unconsumed by
   `BuildSandboxSpec`: PR6 made a deliberate call to continue the "carried but inert across a PR

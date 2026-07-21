@@ -2,7 +2,7 @@
 
 `boid` のサンドボックスがどう組まれているか、 hook を 1 つ動かすときに何が起きているかを記したページです。 [アーキテクチャ概要](overview.md) の sandbox 節を、ファイルとシステムコールの粒度で掘り下げています。
 
-主な読者は `internal/sandbox/` に手を入れる contributor、サンドボックス絡みの不具合を追っている人、あるいは「なぜホームディレクトリが見えないのか」 を最後まで知りたい人です。
+主な読者は `internal/sandbox/` に手を入れる contributor、サンドボックス絡みの不具合を追っている人、あるいは「なぜ**ホスト側**のホームディレクトリが見えないのか」 を最後まで知りたい人です (サンドボックス自身の `$HOME` は別物で workspace スコープです — 後述の「sandbox 内のプロセスからは」を参照)。
 
 ## ねらい
 
@@ -83,8 +83,10 @@ pasta の user+net namespace の内側で動きます。 この時点では**内
 
 sandbox 内のプロセスからは:
 
-- ホームディレクトリ・SSH 鍵・他プロジェクトは存在自体が見えない (`$ROOT` 配下に bind しなければパスが解決しない)
+- **host 側**のホームディレクトリ・SSH 鍵・他プロジェクトは存在自体が見えない (`$ROOT` 配下に bind しなければパスが解決しない)。 サンドボックス自身の `$HOME` は別物 — 下記参照
 - 自分は uid 0 (内側) で動いているが、 user namespace の外には出られずホストの root へのエスカレーションパスはない
+
+サンドボックス内の `$HOME` は host 共有でも毎回まっさらな tmpfs でもなく、 **同一 workspace に dispatch される job 間で永続する、 read-write bind された workspace スコープの volume** です (docs/plans/home-workspace-volume.md Phase 4)。 hook が `$HOME` 配下に書いたファイルは、 同じ workspace の後続の別 job からも見えます。 唯一の例外が `$HOME/.boid` で、 dispatch 毎に (永続する `$HOME` bind の上に) まっさらな job-scoped tmpfs が重ねられるため、 `$HOME/.boid/output/payload_patch.json` が workspace を共有する job 間で漏れることはありません。
 
 タスクコンテキストは `boid task current` / `instructions` / `env` / `payload` — shim 経由で呼べる broker RPC — で取得します。 dispatch 時に一括生成する方式ではなく、必要になった時点で pull します。 hook のプロトコル詳細は [Hook スクリプトプロトコル](../reference/hook-contract.md)。
 

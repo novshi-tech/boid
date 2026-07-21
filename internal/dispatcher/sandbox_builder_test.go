@@ -1863,25 +1863,79 @@ func mountTargetIndex(mounts []sandbox.Mount, target string) int {
 }
 
 // TestHomeMounts_WorkspaceHomeDirSet_ReturnsBindOnly pins the Phase 5b PR6
-// cutover (docs/plans/phase5-shim-and-task-context.md 決定事項 7): the
-// $HOME/.boid job-scoped tmpfs overlay Phase 4 PR2 layered on top of the
-// workspace home bind existed only to keep dispatch-time context/output file
-// writes isolated per job. With contextFiles/the attachments bind retired,
-// homeMounts degrades to a single read-write bind of the workspace home —
-// $HOME/.boid/output (the sole remaining writer, payload_patch.json) now
-// lives directly on the persistent workspace home like the rest of HOME.
-func TestHomeMounts_WorkspaceHomeDirSet_ReturnsBindOnly(t *testing.T) {
+// cutover (docs/plans/phase5-shim-and-task-context.md 決定事項 7) originally
+// dropped the $HOME/.boid job-scoped tmpfs overlay Phase 4 PR2 layered on
+// top of the workspace home bind, on the reasoning that contextFiles/the
+// attachments bind (its only writers/readers) were both retired. codex
+// review on that PR (Blocker + Major, before merge) found the remaining
+// writer — $HOME/.boid/output/payload_patch.json — exploitable once it
+// landed on the persistent, shared workspace home: concurrent jobs in the
+// same workspace could delete/merge each other's patches, and a prior job's
+// symlink planted at an ancestor path could redirect dispatch-time file ops
+// outside the intended directory. The overlay is restored here — see
+// homeMounts' doc comment for the full history — until the job_done
+// payload-patch RPC (5b PR7) removes the file-based fallback entirely.
+func TestHomeMounts_WorkspaceHomeDirSet_ReturnsBindPlusBoidTmpfs(t *testing.T) {
 	const homeDir = "/home/user"
 	const wsHome = "/data/boid/homes/default"
 	mounts := homeMounts(homeDir, wsHome)
-	if len(mounts) != 1 {
-		t.Fatalf("homeMounts returned %d mounts, want 1 (bind only, no .boid tmpfs overlay): %+v", len(mounts), mounts)
+	if len(mounts) != 2 {
+		t.Fatalf("homeMounts returned %d mounts, want 2: %+v", len(mounts), mounts)
 	}
 	if mounts[0].Source != wsHome || mounts[0].Target != homeDir || mounts[0].Type != sandbox.MountBind {
 		t.Errorf("mounts[0] = %+v, want bind %s -> %s", mounts[0], wsHome, homeDir)
 	}
 	if mounts[0].ReadOnly {
 		t.Error("workspace home bind must be read-write")
+	}
+	if mounts[1].Target != homeDir+"/.boid" || mounts[1].Type != sandbox.MountTmpfs {
+		t.Errorf("mounts[1] = %+v, want tmpfs at %s/.boid", mounts[1], homeDir)
+	}
+}
+
+// TestHomeMounts_ConcurrentJobsGetIndependentBoidTmpfs is the regression
+// guard for the codex review Blocker on the Phase 5b PR6 cutover PR: two
+// jobs dispatched against the same workspace (same homeDir/workspaceHomeDir
+// — the scenario a shared, persistent $HOME/.boid/output/payload_patch.json
+// path would create) must each get their OWN $HOME/.boid tmpfs mount
+// (Type=MountTmpfs, no Source), never a bind to a shared host path. This is
+// what makes cross-job interference (one job's cleanup deleting another's
+// still-live patch, or one job's patch getting merged into a different
+// job's task) structurally impossible rather than merely untested — a
+// tmpfs.Mount carries no host-side identity two independent mount
+// namespaces could ever collide on, regardless of how job A and job B are
+// scheduled relative to each other. (A real concurrent-dispatch e2e
+// scenario is impractical to pin reliably in this harness — see
+// e2e/scenarios/workspace-home-boid-isolated/scenario.sh's own comment —
+// so this property is pinned at the unit level instead, where it can be
+// asserted deterministically.)
+func TestHomeMounts_ConcurrentJobsGetIndependentBoidTmpfs(t *testing.T) {
+	const homeDir = "/home/user"
+	const wsHome = "/data/boid/homes/default"
+
+	jobA := homeMounts(homeDir, wsHome)
+	jobB := homeMounts(homeDir, wsHome)
+
+	for _, tc := range []struct {
+		name   string
+		mounts []sandbox.Mount
+	}{
+		{"job A", jobA},
+		{"job B", jobB},
+	} {
+		if len(tc.mounts) != 2 {
+			t.Fatalf("%s: homeMounts returned %d mounts, want 2: %+v", tc.name, len(tc.mounts), tc.mounts)
+		}
+		boid := tc.mounts[1]
+		if boid.Target != homeDir+"/.boid" {
+			t.Fatalf("%s: mounts[1].Target = %q, want %q", tc.name, boid.Target, homeDir+"/.boid")
+		}
+		if boid.Type != sandbox.MountTmpfs {
+			t.Errorf("%s: $HOME/.boid mount type = %v, want MountTmpfs (a bind here would give two jobs a shared, host-persistent path)", tc.name, boid.Type)
+		}
+		if boid.Source != "" {
+			t.Errorf("%s: $HOME/.boid mount Source = %q, want empty (tmpfs mounts carry no backing path another job's mount namespace could ever observe)", tc.name, boid.Source)
+		}
 	}
 }
 
@@ -1897,8 +1951,8 @@ func TestHomeMounts_WorkspaceHomeDirEmpty_FallsBackToTmpfs(t *testing.T) {
 }
 
 // TestBuildSandboxSpec_CloneEnabled_WorkspaceHomeBind pins the Clone branch's
-// post-cutover mount: a single workspace home bind, no $HOME/.boid tmpfs
-// overlay riding on top of it any more.
+// mount order: workspace home bind immediately followed by the $HOME/.boid
+// tmpfs overlay (restored post-codex-review — see homeMounts' doc comment).
 func TestBuildSandboxSpec_CloneEnabled_WorkspaceHomeBind(t *testing.T) {
 	homeDir := hostHomeDir()
 	if homeDir == "" {
@@ -1920,14 +1974,18 @@ func TestBuildSandboxSpec_CloneEnabled_WorkspaceHomeBind(t *testing.T) {
 		t.Fatalf("BuildSandboxSpec: %v", err)
 	}
 	bindIdx := mountTargetIndex(out.Mounts, homeDir)
+	tmpfsIdx := mountTargetIndex(out.Mounts, homeDir+"/.boid")
 	if bindIdx == -1 {
 		t.Fatalf("workspace home bind at %s not found: %+v", homeDir, out.Mounts)
 	}
 	if out.Mounts[bindIdx].Source != wsHome || out.Mounts[bindIdx].Type != sandbox.MountBind {
 		t.Errorf("home mount = %+v, want bind from %s", out.Mounts[bindIdx], wsHome)
 	}
-	if idx := mountTargetIndex(out.Mounts, homeDir+"/.boid"); idx != -1 {
-		t.Errorf("unexpected $HOME/.boid tmpfs overlay at index %d (retired by the Phase 5b PR6 cutover): %+v", idx, out.Mounts[idx])
+	if tmpfsIdx != bindIdx+1 {
+		t.Errorf(".boid tmpfs index = %d, want %d (immediately after home bind at %d); mounts=%+v", tmpfsIdx, bindIdx+1, bindIdx, out.Mounts)
+	}
+	if out.Mounts[tmpfsIdx].Type != sandbox.MountTmpfs {
+		t.Errorf(".boid mount = %+v, want tmpfs", out.Mounts[tmpfsIdx])
 	}
 }
 
@@ -1974,11 +2032,10 @@ func TestBuildSandboxSpec_CloneEnabled_NoWorkspaceHome_FallsBackToTmpfs(t *testi
 	}
 }
 
-// TestProjectVisibilityMounts_WorkspaceHomeBind_Order pins the mount order
-// projectVisibilityMounts produces once a workspace home is resolved (post
-// Phase 5b PR6 cutover, no more $HOME/.boid tmpfs overlay in the chain):
-// [bind effectiveDir, bind homeDir<-workspaceHomeDir, re-bind effectiveDir,
-// peers..., .boid bind, .git ro re-bind].
+// TestProjectVisibilityMounts_WorkspaceHomeBind_Order pins the full mount
+// order projectVisibilityMounts produces once a workspace home is resolved:
+// [bind effectiveDir, bind homeDir<-workspaceHomeDir, tmpfs homeDir/.boid,
+// re-bind effectiveDir, peers..., .boid bind, .git ro re-bind].
 func TestProjectVisibilityMounts_WorkspaceHomeBind_Order(t *testing.T) {
 	const effectiveDir = "/home/user/project"
 	const homeDir = "/home/user"
@@ -1987,10 +2044,11 @@ func TestProjectVisibilityMounts_WorkspaceHomeBind_Order(t *testing.T) {
 
 	effIdx := mountTargetIndex(mounts, effectiveDir)
 	homeIdx := mountTargetIndex(mounts, homeDir)
+	boidTmpfsIdx := mountTargetIndex(mounts, homeDir+"/.boid")
 	// Second occurrence of effectiveDir (the re-mount) — search after the
-	// home bind since the first occurrence (index 0) would otherwise match.
+	// .boid tmpfs since the first occurrence (index 0) would otherwise match.
 	remountIdx := -1
-	for i := homeIdx + 1; i < len(mounts); i++ {
+	for i := boidTmpfsIdx + 1; i < len(mounts); i++ {
 		if mounts[i].Target == effectiveDir {
 			remountIdx = i
 			break
@@ -2008,11 +2066,11 @@ func TestProjectVisibilityMounts_WorkspaceHomeBind_Order(t *testing.T) {
 	if mounts[homeIdx].Source != wsHome || mounts[homeIdx].Type != sandbox.MountBind {
 		t.Errorf("home mount = %+v, want bind from %s", mounts[homeIdx], wsHome)
 	}
-	if idx := mountTargetIndex(mounts, homeDir+"/.boid"); idx != -1 {
-		t.Errorf("unexpected $HOME/.boid tmpfs overlay at index %d (retired by the Phase 5b PR6 cutover): %+v", idx, mounts[idx])
+	if boidTmpfsIdx != 2 {
+		t.Errorf(".boid tmpfs index = %d, want 2 (immediately after home bind)", boidTmpfsIdx)
 	}
-	if remountIdx != 2 {
-		t.Errorf("effectiveDir re-mount index = %d, want 2 (immediately after home bind)", remountIdx)
+	if remountIdx != 3 {
+		t.Errorf("effectiveDir re-mount index = %d, want 3", remountIdx)
 	}
 	if peerIdx <= remountIdx {
 		t.Errorf("peer bind index = %d, want after re-mount (%d)", peerIdx, remountIdx)
@@ -2047,7 +2105,7 @@ func TestProjectVisibilityMounts_NoWorkspaceHome_FallsBackToTmpfs(t *testing.T) 
 }
 
 // TestBuildSandboxSpec_DefaultProfile_WorkspaceHomeBind pins the "no project
-// visible" branch's post-cutover mount, mirroring the Clone-branch test above.
+// visible" branch's mount order, mirroring the Clone-branch test above.
 func TestBuildSandboxSpec_DefaultProfile_WorkspaceHomeBind(t *testing.T) {
 	homeDir := hostHomeDir()
 	if homeDir == "" {
@@ -2060,14 +2118,15 @@ func TestBuildSandboxSpec_DefaultProfile_WorkspaceHomeBind(t *testing.T) {
 		t.Fatalf("BuildSandboxSpec: %v", err)
 	}
 	bindIdx := mountTargetIndex(result.Mounts, homeDir)
+	tmpfsIdx := mountTargetIndex(result.Mounts, homeDir+"/.boid")
 	if bindIdx == -1 {
 		t.Fatalf("workspace home bind at %s not found: %+v", homeDir, result.Mounts)
 	}
 	if result.Mounts[bindIdx].Source != wsHome || result.Mounts[bindIdx].Type != sandbox.MountBind {
 		t.Errorf("home mount = %+v, want bind from %s", result.Mounts[bindIdx], wsHome)
 	}
-	if idx := mountTargetIndex(result.Mounts, homeDir+"/.boid"); idx != -1 {
-		t.Errorf("unexpected $HOME/.boid tmpfs overlay at index %d (retired by the Phase 5b PR6 cutover): %+v", idx, result.Mounts[idx])
+	if tmpfsIdx != bindIdx+1 {
+		t.Errorf(".boid tmpfs index = %d, want %d (immediately after home bind)", tmpfsIdx, bindIdx+1)
 	}
 }
 
@@ -2076,12 +2135,7 @@ func TestBuildSandboxSpec_DefaultProfile_WorkspaceHomeBind(t *testing.T) {
 // decision to leave ProfileInit untouched: even when rt.WorkspaceHomeDir is
 // set, ProfileInit must never bind it over HOME (that would shadow the host
 // tools ProfileInit's host-root rbind exists to expose), and must keep the
-// single $HOME/.boid tmpfs it already had — this tmpfs is unrelated to (and
-// survives) the Phase 5b PR6 cutover of the workspace-home-bind branches'
-// $HOME/.boid overlay: ProfileInit's host root rbind is read-only, so
-// $HOME/.boid still needs a writable tmpfs of its own regardless of context
-// files being gone (the output dir sentinel / payload_patch.json still write
-// there).
+// single $HOME/.boid tmpfs it already had.
 func TestBuildSandboxSpec_ProfileInit_IgnoresWorkspaceHomeDir(t *testing.T) {
 	homeDir := hostHomeDir()
 	if homeDir == "" {

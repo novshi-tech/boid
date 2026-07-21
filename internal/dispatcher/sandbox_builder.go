@@ -140,15 +140,14 @@ type SandboxRuntimeInfo struct {
 	// PR2 (docs/plans/home-workspace-volume.md) reads this field: the
 	// Clone / projectVisible / default HOME branches below (via homeMounts)
 	// bind it read-write at HOME's sandbox-internal path instead of a plain
-	// tmpfs, so the rest of HOME persists across jobs in the same workspace.
+	// tmpfs, with $HOME/.boid layered as a job-scoped tmpfs on top so
+	// $HOME/.boid/output/payload_patch.json stays isolated per job even
+	// though the rest of HOME now persists across jobs in the same
+	// workspace (see homeMounts' doc comment for why that overlay survived
+	// the Phase 5b PR6 cutover — codex review found removing it exploitable).
 	// env["HOME"] itself is unchanged — it still comes from hostHomeDir(),
 	// the *target* path inside the sandbox; only the *contents* now come
-	// from the workspace home instead of starting empty every job. (Through
-	// Phase 5b PR6 of docs/plans/phase5-shim-and-task-context.md, a
-	// $HOME/.boid job-scoped tmpfs additionally rode on top to isolate
-	// dispatch-time context/output file writes; that overlay is retired now
-	// that contextFiles and the attachments bind are gone — see homeMounts'
-	// doc comment.)
+	// from the workspace home instead of starting empty every job.
 	//
 	// When empty (test wiring that never resolved a workspace — most of
 	// sandbox_builder_test.go's minimal SandboxRuntimeInfo{} literals —
@@ -214,11 +213,6 @@ func BuildSandboxSpec(spec *orchestrator.JobSpec, rt SandboxRuntimeInfo) (sandbo
 			canonical, _ := orchestrator.CanonicalBehaviorName(spec.Task.Behavior)
 			env["BOID_INVOKED_BEHAVIOR"] = canonical
 		}
-		// Legacy env var consumed by hook scripts that predate the
-		// $HOME/.boid/context/instructions.yaml context-file delivery.
-		if encoded, err := json.Marshal([]orchestrator.RoutedInstruction{*inst}); err == nil {
-			env["BOID_INSTRUCTIONS"] = string(encoded)
-		}
 	}
 	if spec.Interactive {
 		env["BOID_INTERACTIVE"] = "1"
@@ -280,7 +274,6 @@ func BuildSandboxSpec(spec *orchestrator.JobSpec, rt SandboxRuntimeInfo) (sandbo
 
 	var mounts []sandbox.Mount
 	var files []sandbox.FileWrite
-	var removeFiles []string
 
 	// Broker socket + token.
 	if rt.BrokerSocket != "" {
@@ -306,9 +299,10 @@ func BuildSandboxSpec(spec *orchestrator.JobSpec, rt SandboxRuntimeInfo) (sandbo
 		// target at the neutral /workspace path; there is no host ProjectDir
 		// bind for this job at all, so binding projectDir here too would
 		// double-mount the same host path at two sandbox targets for no
-		// reason. HOME still gets the workspace home bind or a private
-		// tmpfs fallback (docs/plans/home-workspace-volume.md Phase 4 PR2),
-		// exactly like the "no project visible" case below.
+		// reason. HOME still gets the workspace home bind (+ .boid tmpfs
+		// overlay) or a private tmpfs fallback (docs/plans/home-workspace-
+		// volume.md Phase 4 PR2), exactly like the "no project visible"
+		// case below.
 		mounts = append(mounts, homeMounts(homeDir, rt.WorkspaceHomeDir)...)
 	case projectDir != "":
 		mounts = append(mounts, projectVisibilityMounts(
@@ -342,9 +336,9 @@ func BuildSandboxSpec(spec *orchestrator.JobSpec, rt SandboxRuntimeInfo) (sandbo
 			Type:   sandbox.MountTmpfs,
 		})
 	default:
-		// No project visible: HOME gets the workspace home bind or a fresh
-		// tmpfs fallback, same as the Clone case above (docs/plans/home-
-		// workspace-volume.md Phase 4 PR2).
+		// No project visible: HOME gets the workspace home bind (+ .boid
+		// tmpfs overlay) or a fresh tmpfs fallback, same as the Clone case
+		// above (docs/plans/home-workspace-volume.md Phase 4 PR2).
 		mounts = append(mounts, homeMounts(homeDir, rt.WorkspaceHomeDir)...)
 	}
 
@@ -409,25 +403,14 @@ func BuildSandboxSpec(spec *orchestrator.JobSpec, rt SandboxRuntimeInfo) (sandbo
 
 	// Output dir sentinel — guarantees $HOME/.boid/output/ exists before the
 	// user script runs, so scripts writing payload_patch.json never hit ENOENT.
+	// $HOME/.boid is a fresh, job-scoped tmpfs (homeMounts), so this — and
+	// whatever payload_patch.json the job's own script goes on to write — is
+	// guaranteed empty/absent at the start of every job; no cross-job
+	// cleanup is needed here (see homeMounts' doc comment for why that
+	// isolation is still load-bearing post-cutover).
 	files = append(files, sandbox.FileWrite{
 		Path: homeDir + "/.boid/output/.placeholder",
 	})
-
-	// payload_patch.json defensive cleanup (docs/plans/phase5-shim-and-task-
-	// context.md 「PR 分割案 > 5b」6, 「対策 (a)」): the Phase 5b PR6 cutover
-	// retires the $HOME/.boid job-scoped tmpfs overlay (decision 7) that used
-	// to guarantee a fresh, empty $HOME/.boid/output/ every job. With
-	// WorkspaceHomeDir set, $HOME (and therefore $HOME/.boid/output) is now
-	// the persistent workspace home bind, so a payload_patch.json a *previous*
-	// job wrote (and this job's own agent never overwrites, e.g. it exits
-	// without producing a patch) would otherwise silently survive into
-	// resolveJobOutput's read for an unrelated later job. Removing any
-	// leftover file before spec.Files are written (runner-inner-child,
-	// RunInnerChild) restores the "absent unless this job wrote it" contract
-	// the tmpfs overlay used to provide for free — this is a stopgap ahead of
-	// the `job_done` payload-patch RPC (decision 6, PR7) that will make the
-	// file path a pure fallback instead of the primary channel.
-	removeFiles = append(removeFiles, homeDir+"/.boid/output/payload_patch.json")
 
 	// stdin / stdout routing.
 	//
@@ -502,7 +485,6 @@ func BuildSandboxSpec(spec *orchestrator.JobSpec, rt SandboxRuntimeInfo) (sandbo
 		ID:                rt.JobID,
 		Mounts:            mounts,
 		Files:             files,
-		RemoveFiles:       removeFiles,
 		ProxyPort:         rt.ProxyPort,
 		Argv:              argv,
 		WorkDir:           workDir,
@@ -778,24 +760,38 @@ func buildCloneSpec(spec *orchestrator.JobSpec, rt SandboxRuntimeInfo) sandbox.C
 
 // homeMounts returns the HOME mount(s) for a sandbox (docs/plans/home-
 // workspace-volume.md Phase 4 PR2). When workspaceHomeDir is non-empty, HOME
-// becomes a read-write bind of the workspace's persistent home directory —
-// every job in the same workspace shares it, contents and all. When
+// becomes a read-write bind of the workspace's persistent home directory,
+// with $HOME/.boid layered as a job-scoped tmpfs on top so
+// $HOME/.boid/output/payload_patch.json stays isolated per job even though
+// the rest of HOME now persists across jobs in the same workspace. When
 // workspaceHomeDir is empty (test wiring that never resolved a workspace
 // home, or any caller that has not threaded
 // SandboxRuntimeInfo.WorkspaceHomeDir through yet) this degrades gracefully
 // to the pre-PR2 behaviour: a single fresh tmpfs at homeDir.
 //
-// Through PR6 of docs/plans/phase5-shim-and-task-context.md, the
-// workspace-home-bind branch additionally layered $HOME/.boid as a
-// job-scoped tmpfs on top, so dispatch-time context/output file writes
-// stayed isolated per job even though the rest of HOME persisted (decision
-// 7's "衝突対策"). That overlay is retired here: contextFiles and the
-// attachments RO bind — its only writers/readers under $HOME/.boid/{context,
-// attachments} — are gone, and the sole remaining writer,
-// $HOME/.boid/output/payload_patch.json, gets its own defensive
-// per-dispatch cleanup instead (see BuildSandboxSpec's removeFiles / the
-// runner's spec.RemoveFiles handling) — a lighter mechanism than a whole
-// extra tmpfs mount for one file.
+// Phase 5b PR6 (docs/plans/phase5-shim-and-task-context.md, decision 7)
+// originally retired this $HOME/.boid overlay outright, on the reasoning
+// that contextFiles/the attachments RO bind — its only writers/readers
+// under $HOME/.boid/{context,attachments} — were both gone, leaving only
+// payload_patch.json to worry about, which PR6 tried to protect with a
+// narrower per-dispatch RemoveFiles cleanup instead of a whole extra tmpfs
+// mount. codex review on PR6 (Blocker, before merge) found that cleanup
+// insufficient and worse, exploitable: two jobs sharing a workspace can run
+// concurrently (not just sequentially, which is all the PR6 e2e coverage
+// exercised), so a fixed, persistent path lets one job's cleanup delete
+// another's still-live patch, or one job's patch get merged into a
+// completely different task — and, separately, a job's own RemoveFiles
+// unlink / sentinel FileWrite operate through whatever ancestor components
+// happen to be at $HOME/.boid on the persistent volume, which a prior job
+// (malicious or merely buggy) could have replaced with a symlink, letting
+// dispatch-time setup write/delete outside the intended output directory
+// before the agent ever starts. Restoring the tmpfs overlay here removes
+// the shared, persistent path (and therefore the whole class of attack)
+// instead of trying to harden operations against it; RemoveFiles
+// (sandbox.Spec) went with it — see git history for the removed mechanism.
+// The overlay is scoped to stay until the job_done payload-patch RPC
+// (decision 6, PR7) removes the file-based fallback entirely, at which
+// point $HOME/.boid can be retired for real with nothing left to isolate.
 //
 // Shared by the Clone branch, the default (no-project) branch and
 // projectVisibilityMounts's HOME step below so all three switch over
@@ -813,13 +809,17 @@ func homeMounts(homeDir, workspaceHomeDir string) []sandbox.Mount {
 			Target: homeDir,
 			Type:   sandbox.MountBind,
 		},
+		{
+			Target: homeDir + "/.boid",
+			Type:   sandbox.MountTmpfs,
+		},
 	}
 }
 
 // projectVisibilityMounts returns the canonical mount layout that lets the
 // sandbox see the project and workspace peers, under a HOME mount (workspace
-// home bind, or a tmpfs fallback — see homeMounts) that shadows host files
-// but re-mounts the project on top.
+// home bind + .boid tmpfs overlay, or a tmpfs fallback — see homeMounts)
+// that shadows host files but re-mounts the project on top.
 func projectVisibilityMounts(
 	origProjectDir, effectiveDir, homeDir, workspaceHomeDir string,
 	writable bool,
@@ -836,9 +836,9 @@ func projectVisibilityMounts(
 	})
 
 	// 2) HOME mount(s) on top of user's home (isolates config files from
-	// host): workspace home bind, or a fresh tmpfs fallback when no
-	// workspace home is resolved (docs/plans/home-workspace-volume.md
-	// Phase 4 PR2).
+	// host): workspace home bind + .boid tmpfs overlay, or a fresh tmpfs
+	// fallback when no workspace home is resolved (docs/plans/home-
+	// workspace-volume.md Phase 4 PR2).
 	out = append(out, homeMounts(homeDir, workspaceHomeDir)...)
 
 	// 3) re-mount the effective dir so the HOME mount (tmpfs or workspace

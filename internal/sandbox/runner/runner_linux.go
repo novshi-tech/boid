@@ -191,8 +191,10 @@ func RunInner(specPath, statePath string) (int, error) {
 
 // RunInnerChild is the `boid runner-inner-child` entry point (L3). It runs in
 // the cloned user+mount namespace, lays out the sandbox root via bind mounts,
-// pivot_root's into it, writes the context files, runs the agent, and posts the
-// broker job-done. Mirrors the former inner.sh.
+// pivot_root's into it, writes spec.Files (DNS stub, the $HOME/.boid/output
+// sentinel — task-context data is pulled on demand over the broker RPCs
+// since the Phase 5b PR6 cutover, not written to disk here any more), runs
+// the agent, and posts the broker job-done. Mirrors the former inner.sh.
 func RunInnerChild(specPath, statePath string) (exitCode int, retErr error) {
 	spec, err := readSpec(specPath)
 	if err != nil {
@@ -232,31 +234,19 @@ func RunInnerChild(specPath, statePath string) (exitCode int, retErr error) {
 	}
 	st.OK("inner-child", "pivot-root")
 
-	// spec.RemoveFiles: best-effort cleanup of stale leftovers from a
-	// previous job sharing this HOME (docs/plans/phase5-shim-and-task-
-	// context.md 「PR 分割案 > 5b」6 — see sandbox.Spec.RemoveFiles' doc
-	// comment). Runs before spec.Files are written, and — like them — after
-	// pivot_root, since the target lives under the now-mounted HOME. A
-	// missing file is not an error; any other removal failure is logged via
-	// State but does not fail the job, since this is defensive cleanup, not
-	// something this job's own correctness depends on.
-	for _, path := range spec.RemoveFiles {
-		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
-			st.Fail("inner-child", "remove-stale-file "+path, err)
-		}
-	}
-
 	// spec.Files (e.g. the DNS stub-resolv.conf, the $HOME/.boid/output
 	// sentinel) live under the now-mounted HOME/root, so they must be
 	// written after pivot_root (otherwise an earlier mount would shadow
-	// them).
+	// them). $HOME/.boid is a fresh, job-scoped tmpfs (see
+	// dispatcher.homeMounts' doc comment), so there is never a stale
+	// payload_patch.json from a previous job to worry about here.
 	for _, f := range spec.Files {
 		if err := writeFileAt(f.Path, f.Content); err != nil {
 			st.Fail("inner-child", "write-file "+f.Path, err)
 			return 1, err
 		}
 	}
-	st.OK("inner-child", "write-context-files")
+	st.OK("inner-child", "write-files")
 
 	for _, s := range spec.Symlinks {
 		_ = os.Remove(s.LinkPath)

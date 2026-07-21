@@ -90,10 +90,10 @@ const (
 
 	// Phase 5b PR2 attachments RPCs (docs/plans/phase5-shim-and-task-context.md):
 	// pull-based replacement for the dispatch-time attachments bind
-	// (`~/.boid/attachments`, sandbox_builder.go's per-task RO mount of
-	// `<AttachmentsRoot>/tasks/<task_id>/attachments`). The bind still runs
-	// in parallel — the 5b-6 cutover PR retires it once every reader has
-	// migrated to these ops.
+	// (`~/.boid/attachments`, sandbox_builder.go's former per-task RO mount
+	// of `<AttachmentsRoot>/tasks/<task_id>/attachments`). The 5b-6 cutover
+	// PR retired that bind entirely — these two ops are now the sole
+	// in-sandbox read path for attachments.
 	BoidOpTaskAttachmentsList BoidOp = "task_attachments_list"
 	BoidOpTaskAttachmentsGet  BoidOp = "task_attachments_get"
 )
