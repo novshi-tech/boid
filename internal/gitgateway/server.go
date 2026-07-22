@@ -2,7 +2,10 @@ package gitgateway
 
 import (
 	"context"
+	"crypto/tls"
+	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httputil"
 	"strings"
@@ -238,4 +241,28 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	ctx := context.WithValue(r.Context(), routeInfoKey{}, routeInfo{host: rt.host, repo: repo, namespace: namespace})
 	s.proxy.ServeHTTP(w, r.WithContext(ctx))
+}
+
+// ListenTLS binds a TCP+mTLS listener at addr and serves s on it in a
+// background goroutine, returning immediately once the listener is bound.
+// This is the git gateway's TCP(mTLS) counterpart to the plaintext
+// loopback listener internal/server.Server already binds for the userns
+// backend (docs/plans/phase6-container-backend.md §PR4/§決定5) — purely
+// additive, so that existing loopback+10.0.2.2 path is unaffected by
+// calling this. tlsConfig is expected to require and verify a client
+// certificate (see internal/mtls.CA.ServerTLSConfig).
+//
+// The caller owns the returned listener's lifecycle: closing it stops the
+// background http.Serve goroutine (which returns http.ErrServerClosed,
+// swallowed here exactly like internal/server.Server already does for its
+// other listeners).
+func (s *Server) ListenTLS(addr string, tlsConfig *tls.Config) (net.Listener, error) {
+	ln, err := tls.Listen("tcp", addr, tlsConfig)
+	if err != nil {
+		return nil, fmt.Errorf("gitgateway: listen tls: %w", err)
+	}
+	go func() {
+		_ = http.Serve(ln, s) // returns http.ErrServerClosed when ln is closed; caller owns lifecycle
+	}()
+	return ln, nil
 }

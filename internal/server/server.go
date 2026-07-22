@@ -17,6 +17,7 @@ import (
 	"github.com/novshi-tech/boid/internal/db/migrate"
 	"github.com/novshi-tech/boid/internal/dispatcher"
 	"github.com/novshi-tech/boid/internal/gitgateway"
+	"github.com/novshi-tech/boid/internal/mtls"
 	"github.com/novshi-tech/boid/internal/orchestrator"
 	"github.com/novshi-tech/boid/internal/sandbox"
 	"github.com/novshi-tech/boid/internal/skills"
@@ -30,6 +31,17 @@ type Config struct {
 	KeyFilePath    string   // path to secret encryption key file
 	AllowedDomains []string // proxy allowed domains
 	JobRuntime     dispatcher.JobRuntime
+	// TLSDir, when non-empty, is the directory holding (or to generate)
+	// the per-daemon internal CA (ca.crt/ca.key) used to secure the
+	// broker/git-gateway TCP(mTLS) listeners added in
+	// docs/plans/phase6-container-backend.md §PR4/§決定5. Empty (the
+	// zero value, and every pre-PR4 caller/test) skips binding those
+	// listeners entirely — only the pre-existing UNIX socket / plaintext
+	// loopback listeners are bound, i.e. today's behavior is unchanged.
+	// cmd/start.go sets a real default (~/.local/share/boid/tls) so a
+	// live daemon actually binds them; nothing dispatches through them
+	// yet (the container backend that will is PR5).
+	TLSDir string
 }
 
 type Server struct {
@@ -78,6 +90,16 @@ type Server struct {
 	gatewayRegistry   *gitgateway.Registry
 	gatewayHTTPServer *http.Server
 	gatewayLn         net.Listener
+	// gatewayHandler is the same *gitgateway.Server wrapped by
+	// gatewayHTTPServer.Handler, kept as its own field (rather than a
+	// type assertion at Start time) so Start can additionally bind the
+	// TCP(mTLS) listener via gatewayHandler.ListenTLS
+	// (docs/plans/phase6-container-backend.md §PR4). nil until wire.go
+	// constructs it (mirrors gatewayHTTPServer's construction timing).
+	gatewayHandler *gitgateway.Server
+	// gatewayTLSLn is the git gateway's TCP(mTLS) listener, bound in
+	// Start only when cfg.TLSDir is set. nil otherwise.
+	gatewayTLSLn net.Listener
 	// gatewayURL is the sandbox-facing base URL (http://10.0.2.2:<port>),
 	// populated by Start() once the listener is bound. Empty before Start
 	// completes. Runner holds a pointer to this string (WireConfig.GatewayURL)
@@ -258,12 +280,40 @@ func (s *Server) Start(ctx context.Context) error {
 		go s.gcLoop.Run(ctx)
 	}
 
+	// Per-daemon internal CA (docs/plans/phase6-container-backend.md
+	// §PR4/§決定5): generated once here (or reused from disk — see
+	// mtls.LoadOrCreate) and used below to hand the broker and git
+	// gateway a TLS server config for their additive TCP(mTLS)
+	// listeners. cfg.TLSDir is empty for every pre-PR4 caller/test, so
+	// daemonCA stays nil and Start's behavior is byte-for-byte unchanged
+	// from before this PR — the two `if daemonCA != nil` blocks below are
+	// the only places this affects anything.
+	var daemonCA *mtls.CA
+	if s.cfg.TLSDir != "" {
+		ca, err := mtls.LoadOrCreate(s.cfg.TLSDir)
+		if err != nil {
+			return fmt.Errorf("load or create tls ca: %w", err)
+		}
+		daemonCA = ca
+	}
+
 	// Start broker
 	if s.broker != nil {
+		if daemonCA != nil {
+			tlsCfg, err := daemonCA.ServerTLSConfig("127.0.0.1", "localhost")
+			if err != nil {
+				return fmt.Errorf("broker tls config: %w", err)
+			}
+			s.broker.TLSAddr = "127.0.0.1:0"
+			s.broker.TLSConfig = tlsCfg
+		}
 		if err := s.broker.Start(ctx); err != nil {
 			return fmt.Errorf("start broker: %w", err)
 		}
 		slog.Info("broker started", "socket", s.broker.SocketPath)
+		if addr := s.broker.TLSListenAddr(); addr != "" {
+			slog.Info("broker tls listener started", "addr", addr)
+		}
 	}
 
 	// Start proxy manager and the default-workspace listener. The default
@@ -298,9 +348,33 @@ func (s *Server) Start(ctx context.Context) error {
 		}
 		s.gatewayLn = gwLn
 		port := gwLn.Addr().(*net.TCPAddr).Port
-		s.gatewayURL = fmt.Sprintf("http://10.0.2.2:%d", port)
+		// SandboxURL's BackendUserns branch reproduces the pre-PR4
+		// fmt.Sprintf("http://10.0.2.2:%d", port) literally
+		// (docs/plans/phase6-container-backend.md §PR4: "既存 (10.0.2.2)
+		// を無条件で切り替える禁止") — this daemon always runs the userns
+		// backend today (container backend selection is PR5+), so the
+		// call site is hardcoded to BackendUserns rather than reading a
+		// config toggle that doesn't exist yet.
+		s.gatewayURL = gitgateway.SandboxURL(gitgateway.SandboxURLOptions{Backend: gitgateway.BackendUserns, Port: port})
 		go func() { _ = s.gatewayHTTPServer.Serve(gwLn) }() // returns ErrServerClosed on Stop
 		slog.Info("git gateway started", "addr", gwLn.Addr().String(), "sandbox_url", s.gatewayURL)
+
+		// git gateway TCP(mTLS) listener: additive alongside the
+		// plaintext loopback listener above (§PR4/§決定5). Nothing
+		// dispatches through it yet — the container backend that will,
+		// using SandboxURL's BackendContainer branch, is PR5.
+		if daemonCA != nil && s.gatewayHandler != nil {
+			tlsCfg, err := daemonCA.ServerTLSConfig("127.0.0.1", "localhost")
+			if err != nil {
+				return fmt.Errorf("git gateway tls config: %w", err)
+			}
+			gwTLSLn, err := s.gatewayHandler.ListenTLS("127.0.0.1:0", tlsCfg)
+			if err != nil {
+				return fmt.Errorf("listen git gateway tls: %w", err)
+			}
+			s.gatewayTLSLn = gwTLSLn
+			slog.Info("git gateway tls listener started", "addr", gwTLSLn.Addr().String())
+		}
 	}
 
 	// Remove stale socket
@@ -354,6 +428,11 @@ func (s *Server) Stop() error {
 			errs = append(errs, err)
 		}
 	}
+	if s.gatewayTLSLn != nil {
+		if err := s.gatewayTLSLn.Close(); err != nil {
+			errs = append(errs, err)
+		}
+	}
 	// Cancel dispatch-loop context and wait for all goroutines to finish
 	// before closing the database; otherwise in-flight loops hit "db closed".
 	if s.workflow != nil {
@@ -402,6 +481,26 @@ func (s *Server) SocketPath() string {
 func (s *Server) BrokerSocket() string {
 	if s.broker != nil {
 		return s.broker.SocketPath
+	}
+	return ""
+}
+
+// BrokerTLSAddr returns the broker's TCP(mTLS) listener address
+// (docs/plans/phase6-container-backend.md §PR4), or "" when cfg.TLSDir was
+// unset (no TLS listener bound) or before Start has bound it.
+func (s *Server) BrokerTLSAddr() string {
+	if s.broker != nil {
+		return s.broker.TLSListenAddr()
+	}
+	return ""
+}
+
+// GatewayTLSAddr returns the git gateway's TCP(mTLS) listener address
+// (docs/plans/phase6-container-backend.md §PR4), or "" when cfg.TLSDir was
+// unset (no TLS listener bound) or before Start has bound it.
+func (s *Server) GatewayTLSAddr() string {
+	if s.gatewayTLSLn != nil {
+		return s.gatewayTLSLn.Addr().String()
 	}
 	return ""
 }

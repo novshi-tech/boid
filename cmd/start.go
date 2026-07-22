@@ -120,6 +120,21 @@ func defaultKeyFilePath() string {
 	return filepath.Join(dataDir, "boid", "secret.key")
 }
 
+// defaultTLSDir returns the directory holding (or to generate) the
+// per-daemon internal CA used to secure the broker/git-gateway TCP(mTLS)
+// listeners (docs/plans/phase6-container-backend.md §PR4/§決定5) — same
+// XDG data-dir convention as the other default*Path helpers above, and the
+// same "web_secret"-style file-in-data-dir layout the plan doc calls for
+// (~/.local/share/boid/tls/ca.crt + ca.key).
+func defaultTLSDir() string {
+	dataDir := os.Getenv("XDG_DATA_HOME")
+	if dataDir == "" {
+		home, _ := os.UserHomeDir()
+		dataDir = filepath.Join(home, ".local", "share")
+	}
+	return filepath.Join(dataDir, "boid", "tls")
+}
+
 type startConfigOptions struct {
 	DBPath      string
 	SocketPath  string
@@ -148,6 +163,7 @@ func buildStartConfig(opts startConfigOptions) (server.Config, error) {
 	if cfg.KeyFilePath == "" {
 		cfg.KeyFilePath = defaultKeyFilePath()
 	}
+	cfg.TLSDir = defaultTLSDir()
 
 	appCfg, err := config.Load()
 	if err != nil {

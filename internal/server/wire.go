@@ -600,6 +600,10 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 	gwCreds := gitgateway.NewCredentialProvider(boidCfg.Gateway.HostConfigs(), gwResolver)
 	gwHandler := gitgateway.NewServer(srv.gatewayRegistry, gwCreds, gatewayNotifier{notify: notifySvc})
 	srv.gatewayHTTPServer = &http.Server{Handler: gwHandler}
+	// Kept alongside gatewayHTTPServer so Start can additionally bind the
+	// TCP(mTLS) listener via gatewayHandler.ListenTLS
+	// (docs/plans/phase6-container-backend.md §PR4).
+	srv.gatewayHandler = gwHandler
 
 	taskSvc := &api.TaskAppService{
 		Tasks:              taskRepo,
