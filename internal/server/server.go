@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/novshi-tech/boid/internal/api"
@@ -22,6 +23,13 @@ import (
 	"github.com/novshi-tech/boid/internal/sandbox"
 	"github.com/novshi-tech/boid/internal/skills"
 )
+
+// gatewayTLSShutdownTimeout bounds how long Stop waits for the git
+// gateway's TLS listener to drain in-flight requests before giving up
+// (codex review [Minor 4] on docs/plans/phase6-container-backend.md
+// §PR4). Matches the daemon's other best-effort shutdown waits in shape —
+// short enough that a stuck request can't hang `boid stop` indefinitely.
+const gatewayTLSShutdownTimeout = 5 * time.Second
 
 type Config struct {
 	DBPath         string
@@ -429,9 +437,18 @@ func (s *Server) Stop() error {
 		}
 	}
 	if s.gatewayTLSLn != nil {
-		if err := s.gatewayTLSLn.Close(); err != nil {
+		// gatewayHandler.CloseTLS (rather than s.gatewayTLSLn.Close()) also
+		// closes idle keep-alive connections already accepted on the TLS
+		// listener — a bare listener Close only stops new connections
+		// from being accepted (codex review [Minor 4] on
+		// docs/plans/phase6-container-backend.md §PR4). gatewayHandler is
+		// always non-nil here: gatewayTLSLn is only ever set inside the
+		// `s.gatewayHandler != nil` guard in Start.
+		ctx, cancel := context.WithTimeout(context.Background(), gatewayTLSShutdownTimeout)
+		if err := s.gatewayHandler.CloseTLS(ctx); err != nil {
 			errs = append(errs, err)
 		}
+		cancel()
 	}
 	// Cancel dispatch-loop context and wait for all goroutines to finish
 	// before closing the database; otherwise in-flight loops hit "db closed".
