@@ -1,6 +1,8 @@
 package runner
 
 import (
+	"bufio"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -90,6 +92,218 @@ func TestEnvSlice_SortedKeyValue(t *testing.T) {
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("envSlice = %v, want %v", got, want)
 	}
+}
+
+// --- Backend-shared post-namespace-setup steps ---------------------------
+// (docs/plans/phase6-container-backend.md §PR2: applySpecFiles /
+// applySpecSymlinks / applyPathEnv / resolveJobOutput are shared between the
+// userns runner (runner_linux.go's RunInnerChild) and the Phase 6 container
+// entrypoint (runner_container_linux.go's RunContainer) — exercised here
+// off the syscall path, the same way evalGuard/shellUnquote/envSlice above
+// are.)
+
+func TestApplySpecFiles_WritesFilesAndRecordsOK(t *testing.T) {
+	dir := t.TempDir()
+	statePath := filepath.Join(dir, "state.json")
+	st := OpenState(statePath)
+	defer st.Close()
+
+	files := []sandbox.FileWrite{
+		{Path: filepath.Join(dir, "a.txt"), Content: "hello"},
+		{Path: filepath.Join(dir, "nested", "b.txt"), Content: "world"},
+	}
+	if err := applySpecFiles("test-stage", files, st); err != nil {
+		t.Fatalf("applySpecFiles: %v", err)
+	}
+	for _, f := range files {
+		got, err := os.ReadFile(f.Path)
+		if err != nil {
+			t.Fatalf("read %s: %v", f.Path, err)
+		}
+		if string(got) != f.Content {
+			t.Errorf("%s content = %q, want %q", f.Path, got, f.Content)
+		}
+	}
+
+	lines := readStateLines(t, statePath)
+	if len(lines) != 1 || lines[0].Phase != "write-files" || lines[0].Status != "ok" {
+		t.Errorf("expected a single write-files/ok state line, got %+v", lines)
+	}
+}
+
+func TestApplySpecFiles_ErrorPropagatesAndRecordsFail(t *testing.T) {
+	dir := t.TempDir()
+	statePath := filepath.Join(dir, "state.json")
+	st := OpenState(statePath)
+	defer st.Close()
+
+	// A blocking regular file where a FileWrite needs its parent to be a
+	// directory forces writeFileAt's MkdirAll to fail.
+	blocker := filepath.Join(dir, "blocker")
+	if err := os.WriteFile(blocker, []byte("x"), 0o644); err != nil {
+		t.Fatalf("write blocker: %v", err)
+	}
+	badPath := filepath.Join(blocker, "child.txt")
+
+	err := applySpecFiles("test-stage", []sandbox.FileWrite{{Path: badPath, Content: "x"}}, st)
+	if err == nil {
+		t.Fatal("expected an error when the parent directory cannot be created")
+	}
+
+	lines := readStateLines(t, statePath)
+	if len(lines) != 1 || lines[0].Status != "error" || lines[0].Phase != "write-file "+badPath {
+		t.Errorf("expected a single write-file/error state line for %s, got %+v", badPath, lines)
+	}
+}
+
+func TestApplySpecSymlinks_CreatesParentAndOverwritesExisting(t *testing.T) {
+	dir := t.TempDir()
+	statePath := filepath.Join(dir, "state.json")
+	st := OpenState(statePath)
+	defer st.Close()
+
+	linkPath := filepath.Join(dir, "bin", "gh")
+	// Pre-existing stale symlink at the same path must be overwritten, not
+	// left in place or errored on (matches RunInnerChild's pre-extraction
+	// `_ = os.Remove(s.LinkPath)` behaviour).
+	if err := os.MkdirAll(filepath.Dir(linkPath), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.Symlink("stale-target", linkPath); err != nil {
+		t.Fatalf("pre-create stale symlink: %v", err)
+	}
+
+	err := applySpecSymlinks("test-stage", []sandbox.Symlink{{LinkPath: linkPath, LinkTarget: "boid"}}, st)
+	if err != nil {
+		t.Fatalf("applySpecSymlinks: %v", err)
+	}
+	got, err := os.Readlink(linkPath)
+	if err != nil {
+		t.Fatalf("readlink: %v", err)
+	}
+	if got != "boid" {
+		t.Errorf("symlink target = %q, want %q", got, "boid")
+	}
+}
+
+func TestApplySpecSymlinks_MkdirFailureRecordsFail(t *testing.T) {
+	dir := t.TempDir()
+	statePath := filepath.Join(dir, "state.json")
+	st := OpenState(statePath)
+	defer st.Close()
+
+	blocker := filepath.Join(dir, "blocker")
+	if err := os.WriteFile(blocker, []byte("x"), 0o644); err != nil {
+		t.Fatalf("write blocker: %v", err)
+	}
+	linkPath := filepath.Join(blocker, "gh")
+
+	err := applySpecSymlinks("test-stage", []sandbox.Symlink{{LinkPath: linkPath, LinkTarget: "boid"}}, st)
+	if err == nil {
+		t.Fatal("expected an error when the symlink's parent directory cannot be created")
+	}
+	lines := readStateLines(t, statePath)
+	if len(lines) != 1 || lines[0].Status != "error" || lines[0].Phase != "mkdir symlink parent "+linkPath {
+		t.Errorf("expected a single mkdir-symlink-parent/error state line, got %+v", lines)
+	}
+}
+
+func TestApplyPathEnv_SetsWhenPresentLeavesUnsetOtherwise(t *testing.T) {
+	old, hadOld := os.LookupEnv("PATH")
+	defer func() {
+		if hadOld {
+			_ = os.Setenv("PATH", old)
+		} else {
+			_ = os.Unsetenv("PATH")
+		}
+	}()
+
+	if err := os.Setenv("PATH", "/before"); err != nil {
+		t.Fatalf("setenv: %v", err)
+	}
+	applyPathEnv(sandbox.Spec{Env: map[string]string{}})
+	if got := os.Getenv("PATH"); got != "/before" {
+		t.Errorf("applyPathEnv with no PATH override changed PATH to %q", got)
+	}
+
+	applyPathEnv(sandbox.Spec{Env: map[string]string{"PATH": "/run/boid/bin:/usr/bin"}})
+	if got := os.Getenv("PATH"); got != "/run/boid/bin:/usr/bin" {
+		t.Errorf("PATH = %q, want the spec override", got)
+	}
+}
+
+func TestResolveJobOutput_Precedence(t *testing.T) {
+	dir := t.TempDir()
+
+	// Neither file present → nil.
+	spec := sandbox.Spec{}
+	if got := resolveJobOutput(spec); got != nil {
+		t.Errorf("expected nil output with no patch/capture files, got %q", got)
+	}
+
+	// Only StdoutCaptureFile present → its content.
+	stdoutPath := filepath.Join(dir, "stdout.txt")
+	if err := os.WriteFile(stdoutPath, []byte("stdout-output"), 0o644); err != nil {
+		t.Fatalf("write stdout capture: %v", err)
+	}
+	spec.StdoutCaptureFile = stdoutPath
+	if got := string(resolveJobOutput(spec)); got != "stdout-output" {
+		t.Errorf("resolveJobOutput = %q, want stdout capture content", got)
+	}
+
+	// Both present → payload patch wins.
+	patchPath := filepath.Join(dir, "patch.json")
+	if err := os.WriteFile(patchPath, []byte(`{"a":1}`), 0o644); err != nil {
+		t.Fatalf("write payload patch: %v", err)
+	}
+	spec.PayloadPatchPath = patchPath
+	if got := string(resolveJobOutput(spec)); got != `{"a":1}` {
+		t.Errorf("resolveJobOutput = %q, want payload patch content (higher precedence)", got)
+	}
+}
+
+func TestPostJobDone_NoSocketIsNoop(t *testing.T) {
+	dir := t.TempDir()
+	statePath := filepath.Join(dir, "state.json")
+	st := OpenState(statePath)
+	defer st.Close()
+
+	// No BOID_BROKER_SOCKET in spec.Env: postJobDone must return without
+	// attempting a broker call or recording any state phase.
+	postJobDone("test-stage", sandbox.Spec{Env: map[string]string{}}, 0, st)
+
+	lines := readStateLines(t, statePath)
+	if len(lines) != 0 {
+		t.Errorf("expected no state lines when no broker socket is configured, got %+v", lines)
+	}
+}
+
+// readStateLines parses every NDJSON line phase/status/detail written to
+// path, skipping any leading spec-dump line (Spec != nil).
+func readStateLines(t *testing.T, path string) []stateLine {
+	t.Helper()
+	f, err := os.Open(path)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		t.Fatalf("open state file: %v", err)
+	}
+	defer f.Close()
+
+	var lines []stateLine
+	sc := bufio.NewScanner(f)
+	for sc.Scan() {
+		var l stateLine
+		if err := json.Unmarshal(sc.Bytes(), &l); err != nil {
+			t.Fatalf("each line must be valid JSON: %v (line=%q)", err, sc.Text())
+		}
+		if l.Spec != nil {
+			continue
+		}
+		lines = append(lines, l)
+	}
+	return lines
 }
 
 func TestReadSpec_RoundTrip(t *testing.T) {

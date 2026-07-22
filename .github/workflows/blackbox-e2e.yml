@@ -116,6 +116,43 @@ jobs:
         with:
           version: v2.1.6
 
+  container-image:
+    name: Container image build
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Build shared base image (docker)
+        # docs/plans/phase6-container-backend.md §PR2: keeps the Phase 6
+        # shared base image (build/container/Dockerfile) + its
+        # `boid runner-container` entrypoint buildable ahead of the PR5
+        # containerBackend/PR7 cutover that will actually launch job
+        # containers from it. ubuntu-24.04 runners have docker preinstalled
+        # (the host used for day-to-day dev here only has podman — see the
+        # Dockerfile's own header comment for why it's engine-agnostic
+        # enough for both).
+        #
+        # Tag by commit SHA, not `latest`: decision 2's version-skew
+        # guarantee ("boid update = image rebuild = daemon and job runner on
+        # the same version") depends on the image tag identifying an exact
+        # boid binary build, once PR5/PR6 start actually resolving an image
+        # tag to launch containers from.
+        run: docker build -t "boid-runner:${GITHUB_SHA}" -f build/container/Dockerfile .
+
+      - name: Smoke-test the entrypoint
+        # Confirms the default ENTRYPOINT is `boid runner-container` (not
+        # some ad-hoc shim) and that it fails fast with a clear message
+        # when required flags are missing — the same contract every other
+        # runner-* subcommand has (cmd/runner.go's newRunnerCmd). Does not
+        # exercise a real --spec run (no sandbox spec / broker to point it
+        # at in CI) — that lands with the containerBackend e2e in PR9.
+        run: |
+          set -euo pipefail
+          out="$(docker run --rm "boid-runner:${GITHUB_SHA}" 2>&1 || true)"
+          echo "$out"
+          echo "$out" | grep -q -- 'runner-container: --spec is required'
+
   e2e:
     name: Black-box E2E
     runs-on: ubuntu-24.04

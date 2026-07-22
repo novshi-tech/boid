@@ -1,0 +1,13 @@
+# build/container/Dockerfile build context trim. Keep this conservative:
+# only exclude directories the boid binary's `go build .` (and its go:embed
+# directives under web/, internal/skills, internal/db/migrate,
+# internal/initwizard) never touch. See build/container/Dockerfile's header
+# comment for what the image build actually needs.
+.git/
+.github/
+.claude/
+.codex/
+docs/
+e2e/
+*.md
+LICENSE
