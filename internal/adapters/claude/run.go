@@ -223,8 +223,24 @@ var fetchTaskPayloadSessions = func(ctx context.Context, env map[string]string) 
 // BOID_TASK_ID / BOID_JOB_ID / BOID_BROKER_SOCKET / BOID_BROKER_TOKEN /
 // BOID_BUILTIN_SHIM=1, all of which are already present in rc.Env (the same
 // map Run() hands to the agent child).
+//
+// cmd.Dir is pinned to "/tmp" rather than left unset. This call runs from
+// inside internal/sandbox/runner.RunInnerChild (the process that becomes
+// Run()'s caller): its own cwd is "/" the whole time — pivotInto's
+// os.Chdir("/") right after pivot_root is never followed by a chdir into the
+// project workdir before Run() executes. An unset cmd.Dir would inherit that
+// "/" cwd, and the broker's validateBoidBuiltinCwd (internal/sandbox/broker.go)
+// rejects any "boid" builtin call whose cwd falls outside the sandbox project
+// dir / workspace $HOME / "/tmp" (boidPolicy's AllowedCwdRoots,
+// internal/orchestrator/policy.go) with "boid builtin is restricted to the
+// current project or worktree" — the exact failure a live `boid agent claude`
+// hit in production (2026-07-22), silent until the withExitErrorStderr fix
+// above stopped discarding this stderr. "/tmp" is the only entry
+// AllowedCwdRoots contains unconditionally (no project/workspace dependency),
+// so it is the one value guaranteed to pass regardless of caller context.
 func buildTaskPayloadSessionsCmd(ctx context.Context, env map[string]string) *exec.Cmd {
 	cmd := exec.CommandContext(ctx, "boid", "task", "payload", "--field", sessionsFieldPath)
+	cmd.Dir = "/tmp"
 	envSlice := make([]string, 0, len(os.Environ())+len(env))
 	envSlice = append(envSlice, os.Environ()...)
 	for k, v := range env {

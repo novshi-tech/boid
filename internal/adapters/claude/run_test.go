@@ -242,6 +242,31 @@ func TestBuildTaskPayloadSessionsCmd_Args(t *testing.T) {
 	}
 }
 
+// TestBuildTaskPayloadSessionsCmd_DirIsAllowedByBoidPolicy pins the real
+// production incident: this call runs from inside runner-inner-child itself
+// (internal/sandbox/runner.RunInnerChild), whose own cwd is "/" the whole
+// time — pivotInto's os.Chdir("/") after pivot_root is never followed by a
+// chdir into the project workdir before Run() executes. Leaving cmd.Dir unset
+// here means the nested "boid task payload" subprocess inherits that "/"
+// cwd, and the broker's validateBoidBuiltinCwd (internal/sandbox/broker.go)
+// rejects it with "boid builtin is restricted to the current project or
+// worktree" — since "/" is not the sandbox project dir, workspace $HOME, or
+// "/tmp" (the only entries boidPolicy's AllowedCwdRoots ever contains, see
+// internal/orchestrator/policy.go's boidPolicy). Every other caller of this
+// exact command (a `boid exec` shell-adapter dispatch, or this package's own
+// TestReadSessionsFromRPC_EndToEnd fake-broker test) inherits a cwd of
+// rc.Workspace instead, which is why unit/e2e coverage never caught this:
+// none of them replicate runner-inner-child's own bare "/" cwd. cmd.Dir must
+// be pinned to a value boidPolicy's AllowedCwdRoots always contains
+// regardless of project/workspace context — "/tmp" is the only unconditional
+// entry, so that's the target this test locks in.
+func TestBuildTaskPayloadSessionsCmd_DirIsAllowedByBoidPolicy(t *testing.T) {
+	cmd := buildTaskPayloadSessionsCmd(context.Background(), nil)
+	if cmd.Dir != "/tmp" {
+		t.Errorf("cmd.Dir = %q, want \"/tmp\" (the only cwd boidPolicy's AllowedCwdRoots always contains)", cmd.Dir)
+	}
+}
+
 // TestBuildTaskPayloadSessionsCmd_EnvOverlaysRunContextEnv confirms the shim
 // gets the RunContext.Env entries it needs to reach the broker
 // (BOID_TASK_ID / BOID_JOB_ID / BOID_BROKER_SOCKET / BOID_BROKER_TOKEN /
