@@ -187,6 +187,27 @@ func TestRealize(t *testing.T) {
 			},
 		},
 		{
+			// Regression: TmpfsMount must carry Guard through the translation
+			// (parity with VolumeMount.Guard). userns evaluates Guard before
+			// materializing a mount regardless of type — a tmpfs mount whose
+			// Guard is non-empty is suppressed by userns when the guard
+			// expression is false; dropping Guard here would let a container
+			// backend materialize a tmpfs entry userns would have skipped.
+			name: "tmpfs mount preserves Guard so a container backend can honor it (parity with VolumeMount.Guard)",
+			spec: sandbox.Spec{
+				Mounts: []sandbox.Mount{
+					{Target: "/mnt/cache", Type: sandbox.MountTmpfs, Guard: "-e /flag"},
+					{Target: "/mnt/optional", Type: sandbox.MountTmpfs, ReadOnly: true, Guard: "! -e /suppress"},
+				},
+			},
+			want: Realization{
+				Tmpfs: []TmpfsMount{
+					{Target: "/mnt/cache", Guard: "-e /flag"},
+					{Target: "/mnt/optional", ReadOnly: true, Guard: "! -e /suppress"},
+				},
+			},
+		},
+		{
 			name: "env (broker socket + token + gateway-style egress fixture), workdir, argv, TTY pass through unchanged",
 			spec: sandbox.Spec{
 				ID:      "job-env",

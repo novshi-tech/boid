@@ -150,9 +150,17 @@ type VolumeMount struct {
 // --tmpfs / Mounts entry with Type: "tmpfs"). sandbox.Mount never sets
 // Source for a tmpfs entry (see sandbox.Mount's doc comment: "host path
 // (empty for tmpfs)"), so there is no MountSource to classify here.
+//
+// Guard is carried through from sandbox.Mount unchanged (same fixed
+// contract as VolumeMount.Guard — see below): userns evaluates it before
+// every mount, tmpfs or bind alike, so a tmpfs entry whose Guard is
+// non-empty is skipped when the guard expression is false. Losing Guard
+// here would let the container backend materialize a tmpfs mount that
+// userns would have suppressed, silently diverging behavior.
 type TmpfsMount struct {
 	Target   string
 	ReadOnly bool
+	Guard    string
 }
 
 // Realization is the container-backend-neutral intermediate representation
@@ -232,6 +240,7 @@ func Realize(spec sandbox.Spec) (Realization, error) {
 			r.Tmpfs = append(r.Tmpfs, TmpfsMount{
 				Target:   m.Target,
 				ReadOnly: m.ReadOnly,
+				Guard:    m.Guard,
 			})
 			continue
 		}
