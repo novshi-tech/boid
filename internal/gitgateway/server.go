@@ -2,7 +2,10 @@ package gitgateway
 
 import (
 	"context"
+	"crypto/tls"
+	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httputil"
 	"strings"
@@ -29,6 +32,14 @@ type Server struct {
 	credentials *CredentialProvider
 	notifier    UpstreamAuthFailureNotifier
 	proxy       *httputil.ReverseProxy
+
+	// tlsHTTPServer is the *http.Server bound by ListenTLS, kept so
+	// CloseTLS can gracefully shut it down — including closing keep-alive
+	// connections that are idle but otherwise outlive a bare
+	// net.Listener.Close() (codex review [Minor 4] on
+	// docs/plans/phase6-container-backend.md §PR4). nil until ListenTLS
+	// is called.
+	tlsHTTPServer *http.Server
 }
 
 // routeInfoKey is the context key used to hand the authorized route's
@@ -238,4 +249,47 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	ctx := context.WithValue(r.Context(), routeInfoKey{}, routeInfo{host: rt.host, repo: repo, namespace: namespace})
 	s.proxy.ServeHTTP(w, r.WithContext(ctx))
+}
+
+// ListenTLS binds a TCP+mTLS listener at addr and serves s on it in a
+// background goroutine, returning immediately once the listener is bound.
+// This is the git gateway's TCP(mTLS) counterpart to the plaintext
+// loopback listener internal/server.Server already binds for the userns
+// backend (docs/plans/phase6-container-backend.md §PR4/§決定5) — purely
+// additive, so that existing loopback+10.0.2.2 path is unaffected by
+// calling this. tlsConfig is expected to require and verify a client
+// certificate (see internal/mtls.CA.ServerTLSConfig).
+//
+// The caller owns the returned listener's lifecycle: closing it (directly,
+// or by calling CloseTLS) stops the background http.Serve goroutine (which
+// returns http.ErrServerClosed, swallowed here exactly like
+// internal/server.Server already does for its other listeners). Closing
+// the bare net.Listener alone only stops new connections from being
+// accepted — it does not tear down already-accepted keep-alive
+// connections, since those are owned by the *http.Server driving Serve,
+// not the listener. Callers that need existing connections closed too
+// (e.g. on daemon shutdown) should call CloseTLS instead of ln.Close().
+func (s *Server) ListenTLS(addr string, tlsConfig *tls.Config) (net.Listener, error) {
+	ln, err := tls.Listen("tcp", addr, tlsConfig)
+	if err != nil {
+		return nil, fmt.Errorf("gitgateway: listen tls: %w", err)
+	}
+	srv := &http.Server{Handler: s}
+	s.tlsHTTPServer = srv
+	go func() {
+		_ = srv.Serve(ln) // returns http.ErrServerClosed when ln (or srv) is closed; caller owns lifecycle
+	}()
+	return ln, nil
+}
+
+// CloseTLS gracefully shuts down the http.Server bound by ListenTLS: it
+// stops accepting new connections (like ln.Close() alone would) and also
+// closes idle keep-alive connections, waiting up to ctx's deadline for
+// in-flight requests to finish before returning. A no-op (nil error) if
+// ListenTLS was never called.
+func (s *Server) CloseTLS(ctx context.Context) error {
+	if s.tlsHTTPServer == nil {
+		return nil
+	}
+	return s.tlsHTTPServer.Shutdown(ctx)
 }

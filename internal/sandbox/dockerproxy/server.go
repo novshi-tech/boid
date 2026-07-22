@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -47,6 +48,25 @@ func NewWithLedger(upstreamSocket string, l *Ledger) *Server {
 // Serve begins accepting connections on ln. It blocks until Close is called.
 func (s *Server) Serve(ln net.Listener) error {
 	return s.srv.Serve(ln)
+}
+
+// ServeTLS wraps ln in tlsConfig (expected to require and verify a client
+// certificate — see internal/mtls.CA.ServerTLSConfig) and serves on it,
+// blocking until Close is called. This is the TCP(mTLS) counterpart to the
+// per-sandbox UNIX socket Serve already uses
+// (docs/plans/phase6-container-backend.md §PR4/§決定5: "dockerproxy... 現行
+// の per-sandbox UNIX socket bind は温存... 追加: TCP(mTLS) listener").
+// Policy allowlist logic (CheckRequest / serveHTTP above) is untouched —
+// only the transport differs.
+//
+// No production caller wires this into a real per-job or per-daemon
+// listener in PR4: the userns backend keeps using Serve with its
+// per-sandbox UNIX socket (internal/dispatcher.Runner.startDockerProxy)
+// unchanged, and choosing when/how the container backend binds this TCP
+// listener (per-daemon vs. per-job, and the per-job client cert /
+// jobID→DockerEnabled scoping from §決定5) is PR5/PR6 scope.
+func (s *Server) ServeTLS(ln net.Listener, tlsConfig *tls.Config) error {
+	return s.Serve(tls.NewListener(ln, tlsConfig))
 }
 
 // Close shuts down the server.

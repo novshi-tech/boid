@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/tls"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -35,6 +36,29 @@ type Broker struct {
 	// nil when Start has not been called (e.g. tests that drive Handle directly),
 	// in which case baseContext falls back to context.Background().
 	lifecycleCtx context.Context
+
+	// TLSAddr, when non-empty, additionally binds a TCP+mTLS listener at
+	// this address (docs/plans/phase6-container-backend.md §PR4/§決定5:
+	// "gateway / broker / dockerproxy はサービス名 (DNS) + TCP (mTLS) で到達す
+	// る"). This is purely additive — the UNIX socket above (SocketPath)
+	// is bound exactly as before regardless of TLSAddr, so the userns
+	// backend's sandbox-side broker RPC client (which still dials
+	// SocketPath) is unaffected. TLSConfig must be non-nil whenever
+	// TLSAddr is set (see internal/mtls.CA.ServerTLSConfig for how to
+	// build one with mutual-TLS auth wired up); a caller that leaves
+	// TLSAddr empty (the zero value, matched by every existing caller and
+	// test today) gets the pre-PR4 UNIX-only behavior unchanged.
+	//
+	// internal/server.Server sets these (when its Config.TLSDir is
+	// configured) so a real daemon actually binds this listener
+	// alongside the UNIX socket. No client dials it yet in PR4 — the
+	// container backend that will is PR5 — so today it is a live but
+	// unconsumed listener, exercised directly by
+	// TestBrokerTCPListener_MutualTLSHandshake.
+	TLSAddr   string
+	TLSConfig *tls.Config
+
+	tlsListener net.Listener
 }
 
 // baseContext returns the parent context for a request: the broker's lifecycle
@@ -134,19 +158,30 @@ func (b *Broker) Start(ctx context.Context) error {
 		return fmt.Errorf("listen: %w", err)
 	}
 	b.listener = ln
-	// Stored before the accept goroutine starts, so per-connection handlers
+	// Stored before the accept goroutines start, so per-connection handlers
 	// (which only run after Accept) observe it without a data race.
 	b.lifecycleCtx = ctx
 
-	go func() {
-		for {
-			conn, err := ln.Accept()
-			if err != nil {
-				return
-			}
-			go b.handleConn(conn)
+	go b.acceptLoop(ln)
+
+	// TCP(mTLS) listener: additive alongside the UNIX socket above (see
+	// the TLSAddr field doc comment). Both transports share the exact
+	// same handleConn/handle dispatch chain — only the transport differs,
+	// the ExecRequest/ExecResponse protocol does not (§決定5: "UNIX
+	// socket を mTLS gRPC/HTTP に差し替えるだけで...意味論は無傷").
+	if b.TLSAddr != "" {
+		if b.TLSConfig == nil {
+			ln.Close()
+			return fmt.Errorf("broker: TLSAddr set without TLSConfig")
 		}
-	}()
+		tln, err := tls.Listen("tcp", b.TLSAddr, b.TLSConfig)
+		if err != nil {
+			ln.Close()
+			return fmt.Errorf("listen tls: %w", err)
+		}
+		b.tlsListener = tln
+		go b.acceptLoop(tln)
+	}
 
 	go func() {
 		<-ctx.Done()
@@ -156,9 +191,35 @@ func (b *Broker) Start(ctx context.Context) error {
 	return nil
 }
 
+// acceptLoop accepts connections on ln until it is closed, dispatching
+// each to handleConn on its own goroutine. Shared by both the UNIX socket
+// and (when configured) the TCP+mTLS listener started from Start.
+func (b *Broker) acceptLoop(ln net.Listener) {
+	for {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		go b.handleConn(conn)
+	}
+}
+
+// TLSListenAddr returns the bound address of the TCP+mTLS listener
+// (e.g. "127.0.0.1:54321"), or "" if TLSAddr was empty or Start has not
+// bound it yet.
+func (b *Broker) TLSListenAddr() string {
+	if b.tlsListener != nil {
+		return b.tlsListener.Addr().String()
+	}
+	return ""
+}
+
 func (b *Broker) Stop() {
 	if b.listener != nil {
 		b.listener.Close()
+	}
+	if b.tlsListener != nil {
+		b.tlsListener.Close()
 	}
 	os.Remove(b.SocketPath)
 }

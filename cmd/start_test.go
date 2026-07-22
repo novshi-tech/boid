@@ -46,6 +46,9 @@ func TestBuildStartConfig_UsesDefaults(t *testing.T) {
 	if cfg.KeyFilePath != filepath.Join(wantDataDir, "secret.key") {
 		t.Fatalf("KeyFilePath = %q, want %q", cfg.KeyFilePath, filepath.Join(wantDataDir, "secret.key"))
 	}
+	if cfg.TLSDir != filepath.Join(wantDataDir, "tls") {
+		t.Fatalf("TLSDir = %q, want %q", cfg.TLSDir, filepath.Join(wantDataDir, "tls"))
+	}
 	if len(cfg.AllowedDomains) == 0 {
 		t.Fatal("AllowedDomains should not be empty")
 	}
