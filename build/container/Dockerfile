@@ -75,7 +75,7 @@ ARG BOID_UID
 ARG BOID_GID
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates \
+    && apt-get install -y --no-install-recommends ca-certificates git \
     && rm -rf /var/lib/apt/lists/*
 
 # The job/daemon uid, matching the host daemon uid (決定 4 — typically

@@ -210,12 +210,12 @@ func applyPathEnv(spec sandbox.Spec) {
 // handle their respective agent jobs.
 func runAgent(spec sandbox.Spec) int {
 	if spec.HarnessType == "" {
-		fmt.Fprintln(os.Stderr, "[boid] runner: spec.HarnessType is empty; planner / dispatcher must resolve a harness before dispatch")
+		fmt.Fprintln(os.Stderr, "[boid] runner-inner-child: spec.HarnessType is empty; planner / dispatcher must resolve a harness before dispatch")
 		return 127
 	}
 	adapter := registry.For(spec.HarnessType)
 	if adapter == nil {
-		fmt.Fprintf(os.Stderr, "[boid] runner: unknown harness %q\n", spec.HarnessType)
+		fmt.Fprintf(os.Stderr, "[boid] runner-inner-child: unknown harness %q\n", spec.HarnessType)
 		return 127
 	}
 
