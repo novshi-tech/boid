@@ -73,6 +73,21 @@ func LoadOrCreate(dir string) (*CA, error) {
 	certPEM, certErr := os.ReadFile(certPath)
 	keyPEM, keyErr := os.ReadFile(keyPath)
 	if certErr == nil && keyErr == nil {
+		// The key is written 0600 at create time (below); reusing an
+		// existing key that has since gained broader permissions (e.g.
+		// restored from an archive as 0644) would silently trust
+		// whatever protection the file happens to have today instead of
+		// the guarantee this package promises. Reject rather than
+		// silently chmod — a caller that wants the key readable more
+		// broadly should say so explicitly, not have LoadOrCreate paper
+		// over it.
+		info, err := os.Stat(keyPath)
+		if err != nil {
+			return nil, fmt.Errorf("mtls: stat ca key: %w", err)
+		}
+		if info.Mode().Perm()&0o177 != 0 {
+			return nil, fmt.Errorf("mtls: ca key %s has unsafe permissions %#o (must be 0600 — same as create-time)", keyPath, info.Mode().Perm())
+		}
 		return parseCA(certPEM, keyPEM)
 	}
 	if certErr != nil && !os.IsNotExist(certErr) {

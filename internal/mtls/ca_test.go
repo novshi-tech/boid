@@ -75,6 +75,28 @@ func TestLoadOrCreate_ReusesExisting(t *testing.T) {
 	}
 }
 
+// TestLoadOrCreate_RejectsUnsafeKeyPermissions pins the fix for codex
+// review finding [Major 3] on PR4: an existing ca.key that has gained
+// permissions broader than the 0600 LoadOrCreate itself writes at
+// create-time (e.g. restored from an archive as 0644) must be rejected,
+// not silently reused as-is.
+func TestLoadOrCreate_RejectsUnsafeKeyPermissions(t *testing.T) {
+	dir := t.TempDir()
+
+	if _, err := mtls.LoadOrCreate(dir); err != nil {
+		t.Fatalf("first LoadOrCreate: %v", err)
+	}
+
+	keyPath := filepath.Join(dir, mtls.KeyFileName)
+	if err := os.Chmod(keyPath, 0o644); err != nil {
+		t.Fatalf("chmod ca key: %v", err)
+	}
+
+	if _, err := mtls.LoadOrCreate(dir); err == nil {
+		t.Fatal("LoadOrCreate succeeded against a 0644 ca.key; want an unsafe-permissions error")
+	}
+}
+
 // TestServerTLSConfig_RoundTrip is the generic (backend-agnostic) handshake
 // pin: a client presenting a CA-issued cert completes a real TCP+TLS
 // handshake against a listener built from ServerTLSConfig, and app data
