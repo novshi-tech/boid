@@ -252,3 +252,83 @@ func TestReadSessionsFromRPC_EndToEnd_WrongTokenFails(t *testing.T) {
 		t.Errorf("got %+v, want nil sessions alongside the error", got)
 	}
 }
+
+// fakeSessionsBoidExecutor implements sandbox.BoidExecutor, replying to a
+// task_payload op with a fixed sessions JSON — standing in for the real
+// server-side BoidOpTaskPayload handler (internal/server/boid_executor.go)
+// without needing a real daemon/task/DB. Used only by
+// TestReadSessionsFromRPC_EndToEnd_RealBroker_CwdPassesValidation below,
+// where the point is exercising the REAL sandbox.Broker request-routing (in
+// particular validateBoidBuiltinCwd), not what the executor itself returns.
+type fakeSessionsBoidExecutor struct {
+	sessionsJSON []byte
+}
+
+func (f *fakeSessionsBoidExecutor) ExecuteBoidBuiltin(_ context.Context, _ sandbox.TokenContext, req *sandbox.BoidRequest) *sandbox.ExecResponse {
+	if req == nil || req.Op != sandbox.BoidOpTaskPayload {
+		return &sandbox.ExecResponse{ExitCode: 1, Stderr: fmt.Sprintf("fakeSessionsBoidExecutor: unexpected request %+v", req)}
+	}
+	return &sandbox.ExecResponse{Stdout: string(f.sessionsJSON)}
+}
+
+// TestReadSessionsFromRPC_EndToEnd_RealBroker_CwdPassesValidation is what
+// TestReadSessionsFromRPC_EndToEnd above is not: it runs the real
+// sandbox.Broker (broker.Register + broker.Start, the same type
+// internal/dispatcher.Runner wires into production) instead of
+// startFakeBroker's hand-rolled unix-socket responder. That fake never
+// called validateBoidBuiltinCwd at all, which is exactly why every existing
+// test here stayed green while a live `boid agent claude -p <project>` broke
+// in production (2026-07-22) with "boid builtin is restricted to the current
+// project or worktree": buildTaskPayloadSessionsCmd left cmd.Dir unset, so
+// the nested "boid task payload" subprocess inherited runner-inner-child's
+// own "/" cwd (pivotInto's os.Chdir("/") after pivot_root, never followed by
+// a chdir into the project workdir) — a cwd validateBoidBuiltinCwd correctly
+// rejects. This test's registered "boid" policy mirrors
+// internal/orchestrator/policy.go's real boidPolicy shape (AllowedCwdRoots =
+// ["/tmp", projectDir]) and asserts readSessionsFromRPC succeeds — i.e. that
+// buildTaskPayloadSessionsCmd's cmd.Dir passes the real check. Reverting the
+// cmd.Dir fix reproduces the production failure here.
+func TestReadSessionsFromRPC_EndToEnd_RealBroker_CwdPassesValidation(t *testing.T) {
+	wantSessions := []session{{Type: "execution", Name: "", ID: "abc-123"}}
+	sessionsJSON, err := json.Marshal(wantSessions)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	sockPath := filepath.Join(t.TempDir(), "broker.sock")
+	broker := &sandbox.Broker{
+		SocketPath:   sockPath,
+		BoidExecutor: &fakeSessionsBoidExecutor{sessionsJSON: sessionsJSON},
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := broker.Start(ctx); err != nil {
+		t.Fatalf("broker.Start: %v", err)
+	}
+	defer broker.Stop()
+
+	projectDir := t.TempDir()
+	token := broker.Register(nil, map[string]sandbox.BuiltinPolicy{
+		"boid": {
+			AllowedOps:      map[string]struct{}{string(sandbox.BoidOpTaskPayload): {}},
+			AllowedCwdRoots: []string{"/tmp", projectDir},
+		},
+	}, sandbox.TokenContext{JobID: "job-1", TaskID: "t1", ProjectID: "p1", ProjectDir: projectDir})
+
+	installBoidShimHelper(t)
+	env := map[string]string{
+		"BOID_BUILTIN_SHIM":  "1",
+		"BOID_TASK_ID":       "t1",
+		"BOID_JOB_ID":        "job-1",
+		"BOID_BROKER_SOCKET": sockPath,
+		"BOID_BROKER_TOKEN":  token,
+	}
+
+	got, err := readSessionsFromRPC(context.Background(), env)
+	if err != nil {
+		t.Fatalf("unexpected error — buildTaskPayloadSessionsCmd's cmd.Dir must satisfy the real broker's validateBoidBuiltinCwd: %v", err)
+	}
+	if !reflect.DeepEqual(got, wantSessions) {
+		t.Fatalf("got %+v, want %+v", got, wantSessions)
+	}
+}
