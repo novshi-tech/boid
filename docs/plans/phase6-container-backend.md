@@ -314,14 +314,16 @@ group) に届ける。中間段は SIG_IGN を維持し、adapter が受けて C
   egress が全停止する**ため、`internal` (job 側) + 外向き network の **dual-home** にする (codex Blocker 3)。
   ProxyManager のポリシー (workspace→allowed_domains) と live-swap は流用し、proxy を compose スタック内の
   サービスとして配置 (「broker 側再配置」を本 phase で実施)。**共有 network に workspace ごとの listener を
-  出すと job が別 workspace の緩い proxy endpoint を直接選べる**ため、network 分離の粒度 (workspace ごとの
-  private network、または呼出元 identity × workspace policy の強制紐付け) を **cutover 前の security
-  invariant** として決める (下記「ネットワーク分離の粒度」を任意論点から格上げ)。
+  出すと job が別 workspace の緩い proxy endpoint を直接選べる**ため、**internal network は workspace 単位で
+  分離する** (確定、nose 決定 2026-07-22)。job は自 workspace の internal network にのみ属し、別 workspace の
+  proxy endpoint へは L3 で到達不能にする (呼出元 identity × workspace policy の突合には頼らない)。これを
+  **cutover 前の security invariant** とする。dual-home の compose 表現は未解決論点の security 群実装残余。
 - **dockerproxy** も broker 側 (compose スタック) に配置。job の `DOCKER_HOST` は proxy サービスを指す。
   ただし現行の **per-job UNIX socket + per-server ledger による scope を共有 TCP service に置き換えると、
   docker capability を持たない job も service を直接呼べてしまう** (codex Blocker 4)。共通 client cert の
   mTLS は transport 認証にしかならないため、**per-job の短命 identity/token を発行し、server 側で
-  `jobID → DockerEnabled → 専用 ledger` に紐付け**る。無 capability job は接続時点で拒否し、resource ID
+  `jobID → DockerEnabled → 専用 ledger` に紐付け**る (token は既存 broker/gitgateway の per-job capability
+  token パターンを流用、配送様式は実装残余)。無 capability job は接続時点で拒否し、resource ID
   scope と cleanup ledger を job ごとに永続化する (資格情報は共有 image に焼かない)。
 - broker protocol は「sandbox 発接続」の向きのままなので、UNIX socket を mTLS gRPC/HTTP に差し替える
   だけで shim / task ask RPC / notify の意味論は無傷 (親ドキュメント broker transport swap)。
@@ -559,3 +561,8 @@ DB 移行 / k8s / live 再吸着 はここに挙げない)。
   - rollback reaper: label (`boid.job_id`/`install_id`) ∪ ledger 二重ソースの daemon 非依存 CLI
     (`boid reap`)、reap を `MarkStale*`↔reopen 間に移設 (決定 6・安全網)。
   - 未解決論点は「security 群 5 論点の実装残余」1 項に圧縮 (方針確定・formalize は着手時)。
+
+- 2026-07-22: **security 群確定 (#813) の決定 5 反映漏れを修正**。network 分離の粒度が決定 5 本文で
+  未決の書き方のまま残っていたのを「workspace 単位 internal network」の確定記述に更新し、#813 で削除済みの
+  未解決論点「ネットワーク分離の粒度」への dangling 参照を除去。dockerproxy token の broker/gitgateway
+  パターン流用も本文に明記 (いずれも #813 の変更履歴・commit message には記録済みだった決定内容)。
