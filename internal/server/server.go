@@ -31,6 +31,23 @@ import (
 // short enough that a stuck request can't hang `boid stop` indefinitely.
 const gatewayTLSShutdownTimeout = 5 * time.Second
 
+// composeBrokerServiceName and composeGatewayServiceName are the compose
+// network DNS names the broker's and git gateway's TCP(mTLS) listener
+// certs advertise as SANs, alongside the loopback names every PR4 caller
+// actually dials (codex review [Major 2] on
+// docs/plans/phase6-container-backend.md §PR4). No PR4 caller resolves
+// these names yet — the container backend that will is PR5+ — but the
+// SAN has to be on the cert from the moment the CA issues it (once per
+// daemon lifetime), not retrofitted once a real caller shows up.
+// composeGatewayServiceName intentionally matches
+// gitgateway.SandboxURLOptions.ServiceName's own BackendContainer default
+// ("boid-gateway", see internal/gitgateway/sandbox_url.go) rather than
+// inventing a second name for the same service.
+const (
+	composeBrokerServiceName  = "boid-broker"
+	composeGatewayServiceName = "boid-gateway"
+)
+
 type Config struct {
 	DBPath         string
 	SocketPath     string
@@ -308,7 +325,17 @@ func (s *Server) Start(ctx context.Context) error {
 	// Start broker
 	if s.broker != nil {
 		if daemonCA != nil {
-			tlsCfg, err := daemonCA.ServerTLSConfig("127.0.0.1", "localhost")
+			// composeBrokerServiceName is included as a SAN alongside the
+			// loopback names below (codex review [Major 2] on PR4): the
+			// container backend (PR5+) dials the broker by its compose
+			// service DNS name, not 127.0.0.1/localhost, so hostname
+			// verification would otherwise fail once that caller exists.
+			// PR4 itself only ever dials this listener via 127.0.0.1
+			// (see TestServer's own tests) — the extra SAN is inert until
+			// PR5 but must be present on the cert from day one since the
+			// CA/cert are generated once per daemon lifetime, not
+			// per-caller.
+			tlsCfg, err := daemonCA.ServerTLSConfig("127.0.0.1", "localhost", composeBrokerServiceName)
 			if err != nil {
 				return fmt.Errorf("broker tls config: %w", err)
 			}
@@ -371,8 +398,15 @@ func (s *Server) Start(ctx context.Context) error {
 		// plaintext loopback listener above (§PR4/§決定5). Nothing
 		// dispatches through it yet — the container backend that will,
 		// using SandboxURL's BackendContainer branch, is PR5.
+		//
+		// composeGatewayServiceName is included as a SAN for the same
+		// reason as the broker's above (codex review [Major 2] on PR4):
+		// it matches SandboxURL's own BackendContainer default
+		// ("boid-gateway", see sandbox_url.go) so a PR5 caller that
+		// leaves SandboxURLOptions.ServiceName unset gets a URL whose
+		// hostname this cert already covers.
 		if daemonCA != nil && s.gatewayHandler != nil {
-			tlsCfg, err := daemonCA.ServerTLSConfig("127.0.0.1", "localhost")
+			tlsCfg, err := daemonCA.ServerTLSConfig("127.0.0.1", "localhost", composeGatewayServiceName)
 			if err != nil {
 				return fmt.Errorf("git gateway tls config: %w", err)
 			}
