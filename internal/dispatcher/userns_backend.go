@@ -190,3 +190,28 @@ func (s *usernsSession) Stop(ctx context.Context) error {
 func (s *usernsSession) Signal(ctx context.Context, sig syscall.Signal) error {
 	return s.runtime.Signal(ctx, s.id, sig)
 }
+
+// localArtifacts hands back the on-disk PrepareSandbox output (scaffolding
+// dirs, spec/state files) this session's Launch call produced, so Runner's
+// post-launch cleanup goroutines can remove them without knowing this is a
+// usernsSession — see sessionLocalArtifacts's doc comment for the
+// capability-probe contract this participates in. nil for Adopt()-returned
+// sessions (see usernsSession's own doc comment: Adopt has no
+// PreparedSandbox to hand back).
+func (s *usernsSession) localArtifacts() *PreparedSandbox { return s.prepared }
+
+// sessionLocalArtifacts capability-probes session for localArtifacts() —
+// the same optional-capability, type-assert-with-ok pattern usernsSession
+// itself already uses to probe JobRuntime for SubscribeRuntime/
+// WriteInputRuntime/CloseInputRuntime (see Subscribe/WriteInput/CloseInput
+// above). Runner's launchSandbox / cleanupSandboxAfterWait use this instead
+// of asserting session to a concrete *usernsSession, so a future container
+// backend's session (PR5, docs/plans/phase6-container-backend.md) — which
+// has no local scaffolding/spec/state files to clean up — simply doesn't
+// implement it and this returns nil rather than a hard failure.
+func sessionLocalArtifacts(session backend.SandboxSession) *PreparedSandbox {
+	if la, ok := session.(interface{ localArtifacts() *PreparedSandbox }); ok {
+		return la.localArtifacts()
+	}
+	return nil
+}

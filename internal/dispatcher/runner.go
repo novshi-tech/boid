@@ -907,18 +907,19 @@ func (r *Runner) launchSandbox(ctx context.Context, job *Job, spec sandbox.Spec,
 		return "", err
 	}
 
-	// PR1 wires only usernsBackend, so this assertion always succeeds
-	// today; a future backend returning a different concrete session type
-	// would be a wiring bug to surface loudly, not a runtime condition to
-	// silently degrade from.
-	us, ok := session.(*usernsSession)
-	if !ok {
-		if cleanup != nil {
-			cleanup()
-		}
-		return "", fmt.Errorf("launchSandbox: unexpected session type %T", session)
-	}
-	handleID := us.id
+	// session is handled purely through the backend.SandboxSession
+	// interface from here on — no concrete-type assertion — so a future
+	// container backend (PR5, docs/plans/phase6-container-backend.md) that
+	// returns a different SandboxSession implementation needs no change
+	// here. Interactive/TTY are read back from the already-known spec.TTY
+	// (identical to what LaunchOptions.Interactive/TTY carried into Launch)
+	// rather than from the session, since the userns backend's contract is
+	// to echo them back unchanged (LocalRuntime.Start does exactly that) —
+	// see sessionLocalArtifacts for the one piece of userns-specific state
+	// (PrepareSandbox's on-disk artifacts) that genuinely has no
+	// backend-agnostic equivalent yet, handled via a capability probe
+	// instead.
+	handleID := session.ID()
 
 	// When DesiredID was set, the proxy was pre-registered under desiredRuntimeID.
 	// After Start, handleID may differ only if the runtime didn't honour DesiredID
@@ -928,12 +929,12 @@ func (r *Runner) launchSandbox(ctx context.Context, job *Job, spec sandbox.Spec,
 	}
 
 	job.RuntimeID = handleID
-	job.Interactive = us.interactive
-	job.TTY = us.tty
+	job.Interactive = spec.TTY
+	job.TTY = spec.TTY
 	if err := UpdateJob(r.DB, job); err != nil {
 		_ = session.Stop(context.Background())
 		r.stopDockerProxy(handleID)
-		cleanupSandboxArtifacts(us.prepared)
+		cleanupSandboxArtifacts(sessionLocalArtifacts(session))
 		if cleanup != nil {
 			cleanup()
 		}
@@ -941,22 +942,27 @@ func (r *Runner) launchSandbox(ctx context.Context, job *Job, spec sandbox.Spec,
 	}
 
 	r.trackTaskRuntime(job.TaskID, handleID)
-	go r.watchRuntime(job.ID, handleID)
-	go r.cleanupSandboxAfterWait(handleID, us.prepared, cleanup)
+	go r.watchRuntime(job.ID, session)
+	go r.cleanupSandboxAfterWait(session, cleanup)
 	slog.Info("job started", "job_id", job.ID, "runtime_id", handleID)
 	return job.ID, nil
 }
 
-func (r *Runner) cleanupSandboxAfterWait(runtimeID string, prepared *PreparedSandbox, extra orchestrator.CleanupFunc) {
+func (r *Runner) cleanupSandboxAfterWait(session backend.SandboxSession, extra orchestrator.CleanupFunc) {
 	defer func() {
 		if extra != nil {
 			extra()
 		}
 	}()
-	if r.Runtime == nil || runtimeID == "" || prepared == nil {
+	if session == nil {
 		return
 	}
-	result, err := r.Runtime.Wait(context.Background(), runtimeID)
+	runtimeID := session.ID()
+	prepared := sessionLocalArtifacts(session)
+	if runtimeID == "" || prepared == nil {
+		return
+	}
+	result, err := session.Wait(context.Background())
 	if err != nil {
 		if errors.Is(err, ErrRuntimeUnsupported) {
 			// Reap docker resources even on unsupported-wait paths (best effort).
@@ -1199,11 +1205,15 @@ func (r *Runner) takeTaskRuntimes(taskID string) []string {
 	return out
 }
 
-func (r *Runner) watchRuntime(jobID, runtimeID string) {
-	if r.Runtime == nil || runtimeID == "" {
+func (r *Runner) watchRuntime(jobID string, session backend.SandboxSession) {
+	if session == nil {
 		return
 	}
-	result, err := r.Runtime.Wait(context.Background(), runtimeID)
+	runtimeID := session.ID()
+	if runtimeID == "" {
+		return
+	}
+	result, err := session.Wait(context.Background())
 	if err != nil {
 		if errors.Is(err, ErrRuntimeUnsupported) {
 			return
