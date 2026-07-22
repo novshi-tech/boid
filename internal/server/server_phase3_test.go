@@ -52,8 +52,13 @@ func TestServerJobRuntimeAttachAndResize(t *testing.T) {
 		t.Fatalf("create task: %v", err)
 	}
 
+	// The 0.1s sleep before `stty size` gives the ResizeJob HTTP round trip
+	// below room to land before the size is read back, so the transcript
+	// captures the *actual* post-resize PTY window size — not just that
+	// ResizeJob returned 200 OK (codex review Minor on PR #816: assert the
+	// resize seam changed a real PTY, not merely that the call succeeded).
 	handle, err := localRuntime.Start(context.Background(), dispatcher.RuntimeStartSpec{
-		Command:     "printf 'attach ready'; sleep 0.05; printf ' done'",
+		Command:     "printf 'attach ready'; sleep 0.1; stty size; printf 'done'",
 		Interactive: true,
 		TTY:         true,
 	})
@@ -88,6 +93,15 @@ func TestServerJobRuntimeAttachAndResize(t *testing.T) {
 	got := out.String()
 	if !strings.Contains(got, "attach ready") || !strings.Contains(got, "done") {
 		t.Fatalf("attach output = %q, want transcript", got)
+	}
+	// `stty size` prints "<rows> <cols>" read straight off the real PTY via
+	// TIOCGWINSZ — this is the real-PTY-size verification the resize
+	// regression test was missing (codex review Minor on PR #816): it
+	// proves ResizeRuntimeID -> SandboxBackend.Adopt -> SandboxSession.Resize
+	// actually changed the window size the sandboxed process observes, not
+	// just that the HTTP call returned success.
+	if !strings.Contains(got, "50 120") {
+		t.Fatalf("attach output = %q, want it to contain the post-resize `stty size` output \"50 120\"", got)
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
