@@ -302,6 +302,35 @@ func TestReadSessionsFromRPC_FetchErrorPropagates(t *testing.T) {
 	}
 }
 
+// TestReadSessionsFromRPC_ExitErrorIncludesStderr pins a real production
+// incident (boid agent claude -p <project> failing with nothing but "exit
+// status 1" — no way to tell why from the daemon's stored transcript or the
+// user-visible error). fetchTaskPayloadSessions's default implementation
+// runs `boid task payload --field ...` via cmd.Output(), which DOES capture
+// the subprocess's stderr into ExitError.Stderr — but the old wrap
+// (`fmt.Errorf("...: %w", err)`) only used err.Error(), which for
+// *exec.ExitError is just the bare "exit status N" from os.ProcessState,
+// discarding the actual diagnostic. The wrap must surface Stderr too.
+func TestReadSessionsFromRPC_ExitErrorIncludesStderr(t *testing.T) {
+	cmd := exec.Command("sh", "-c", "echo 'boid task payload: no context tracked for job \"abc\"' >&2; exit 1")
+	_, cmdErr := cmd.Output()
+	exitErr, ok := cmdErr.(*exec.ExitError)
+	if !ok {
+		t.Fatalf("test setup: expected *exec.ExitError, got %T: %v", cmdErr, cmdErr)
+	}
+
+	withFakeTaskPayloadSessions(t, func(context.Context, map[string]string) ([]byte, error) {
+		return nil, exitErr
+	})
+	_, err := readSessionsFromRPC(context.Background(), nil)
+	if err == nil {
+		t.Fatal("expected an error when the RPC fetch fails")
+	}
+	if !strings.Contains(err.Error(), "no context tracked for job") {
+		t.Errorf("error %q does not include the subprocess stderr; a real failure would be undiagnosable from this alone", err.Error())
+	}
+}
+
 func TestReadSessionsFromRPC_EmptyFieldReturnsNilNoError(t *testing.T) {
 	// api.ResolveJSONField returns "" (empty stdout) when the field path is
 	// absent — e.g. a brand-new task with no artifact.claude_code.sessions

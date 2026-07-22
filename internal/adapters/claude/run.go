@@ -258,9 +258,26 @@ func buildTaskPayloadSessionsCmd(ctx context.Context, env map[string]string) *ex
 func readSessionsFromRPC(ctx context.Context, env map[string]string) ([]session, error) {
 	out, err := fetchTaskPayloadSessions(ctx, env)
 	if err != nil {
-		return nil, fmt.Errorf("boid task payload --field %s: %w", sessionsFieldPath, err)
+		return nil, fmt.Errorf("boid task payload --field %s: %w", sessionsFieldPath, withExitErrorStderr(err))
 	}
 	return parseSessionsJSON(out)
+}
+
+// withExitErrorStderr re-wraps err to include the subprocess's captured
+// stderr when err is an *exec.ExitError. cmd.Output() (fetchTaskPayloadSessions's
+// default implementation) populates ExitError.Stderr, but *exec.ExitError's
+// own Error() method (via os.ProcessState.String()) only ever renders "exit
+// status N" — the caller's %w wrap around a bare err therefore silently
+// discards the one piece of information that explains WHY the RPC failed
+// (broker rejection message, "no context tracked for job", etc). Every other
+// error type (context cancellation, exec.LookPath failure, …) passes through
+// unchanged since only ExitError carries a separate Stderr field.
+func withExitErrorStderr(err error) error {
+	ee, ok := err.(*exec.ExitError)
+	if !ok || len(bytes.TrimSpace(ee.Stderr)) == 0 {
+		return err
+	}
+	return fmt.Errorf("%w: %s", err, bytes.TrimSpace(ee.Stderr))
 }
 
 // parseSessionsJSON parses the raw `--field artifact.claude_code.sessions`
