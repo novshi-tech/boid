@@ -52,8 +52,13 @@ func TestServerJobRuntimeAttachAndResize(t *testing.T) {
 		t.Fatalf("create task: %v", err)
 	}
 
+	// The 0.1s sleep before `stty size` gives the ResizeJob HTTP round trip
+	// below room to land before the size is read back, so the transcript
+	// captures the *actual* post-resize PTY window size — not just that
+	// ResizeJob returned 200 OK (codex review Minor on PR #816: assert the
+	// resize seam changed a real PTY, not merely that the call succeeded).
 	handle, err := localRuntime.Start(context.Background(), dispatcher.RuntimeStartSpec{
-		Command:     "printf 'attach ready'; sleep 0.05; printf ' done'",
+		Command:     "printf 'attach ready'; sleep 0.1; stty size; printf 'done'",
 		Interactive: true,
 		TTY:         true,
 	})
@@ -89,6 +94,15 @@ func TestServerJobRuntimeAttachAndResize(t *testing.T) {
 	if !strings.Contains(got, "attach ready") || !strings.Contains(got, "done") {
 		t.Fatalf("attach output = %q, want transcript", got)
 	}
+	// `stty size` prints "<rows> <cols>" read straight off the real PTY via
+	// TIOCGWINSZ — this is the real-PTY-size verification the resize
+	// regression test was missing (codex review Minor on PR #816): it
+	// proves ResizeRuntimeID -> SandboxBackend.Adopt -> SandboxSession.Resize
+	// actually changed the window size the sandboxed process observes, not
+	// just that the HTTP call returned success.
+	if !strings.Contains(got, "50 120") {
+		t.Fatalf("attach output = %q, want it to contain the post-resize `stty size` output \"50 120\"", got)
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
@@ -98,5 +112,71 @@ func TestServerJobRuntimeAttachAndResize(t *testing.T) {
 	}
 	if result.ExitCode != 0 {
 		t.Fatalf("exit code = %d, want 0", result.ExitCode)
+	}
+}
+
+// TestServerJobRuntimeResizeUnknownRuntimeConflict pins the codex review
+// Blocker 2 fix on PR #816: the HTTP resize handler must reject a job whose
+// RuntimeID the configured SandboxBackend cannot Adopt (here: a RuntimeID
+// LocalRuntime never Start()ed, so its own SupportsAttach reports false)
+// with 409, exactly like the pre-Phase-6 type-assertion-based check did —
+// see resolveAttachableJob / Runner.CanAttach.
+func TestServerJobRuntimeResizeUnknownRuntimeConflict(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+
+	tmpDir := t.TempDir()
+	sockPath := filepath.Join(tmpDir, "boid.sock")
+	localRuntime := &dispatcher.LocalRuntime{RootDir: filepath.Join(tmpDir, "runtimes")}
+
+	srv, err := New(Config{
+		DBPath:     ":memory:",
+		SocketPath: sockPath,
+		HTTPAddr:   "127.0.0.1:0",
+		JobRuntime: localRuntime,
+	})
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+	if err := srv.Start(context.Background()); err != nil {
+		t.Fatalf("start server: %v", err)
+	}
+	defer srv.Stop()
+
+	if err := orchestrator.CreateProject(srv.DB(), &orchestrator.Project{
+		ID:      "proj-1",
+		WorkDir: tmpDir,
+	}); err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	if err := orchestrator.CreateTask(srv.DB(), &orchestrator.Task{
+		ID:        "task-1",
+		ProjectID: "proj-1",
+		Title:     "resize-conflict",
+		Behavior:  "dev",
+	}); err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+
+	// RuntimeID that was never handed out by localRuntime.Start — its
+	// SupportsAttach (and therefore usernsBackend.Adopt) reports false for it.
+	job := &dispatcher.Job{
+		ID:        "job-unknown-runtime",
+		TaskID:    "task-1",
+		ProjectID: "proj-1",
+		HandlerID: "hook-a",
+		Role:      "hook",
+		RuntimeID: "runtime-that-does-not-exist",
+	}
+	if err := dispatcher.CreateJob(srv.DB(), job); err != nil {
+		t.Fatalf("create job: %v", err)
+	}
+
+	c := client.NewUnixClient(sockPath)
+	err = c.ResizeJob(job.ID, 50, 120)
+	if err == nil {
+		t.Fatal("ResizeJob against an unadoptable runtime id should fail")
+	}
+	if !strings.Contains(err.Error(), "does not support attach") {
+		t.Errorf("ResizeJob error = %q, want it to mention attach support (409 conflict path)", err.Error())
 	}
 }

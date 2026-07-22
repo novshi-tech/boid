@@ -5,14 +5,19 @@ import (
 	"errors"
 	"io"
 	"syscall"
+
+	"github.com/novshi-tech/boid/internal/sandbox/backend"
 )
 
 var ErrRuntimeUnsupported = errors.New("job runtime operation is not supported")
 
-type TerminalSize struct {
-	Rows int
-	Cols int
-}
+// TerminalSize is an alias for backend.TerminalSize. The canonical
+// definition lives in internal/sandbox/backend (docs/plans/
+// phase6-container-backend.md §PR1) so SandboxSession.Resize and
+// JobRuntime.Resize below share one type without an import cycle — backend
+// has no dependency on dispatcher. Every existing call site keeps
+// compiling and behaving unchanged.
+type TerminalSize = backend.TerminalSize
 
 type RuntimeStartSpec struct {
 	JobID       string
@@ -54,13 +59,12 @@ type RuntimeAttachRequest struct {
 	Error  io.Writer
 }
 
-type RuntimeExit struct {
-	ExitCode int
-	// TranscriptPath は子プロセスの stdout/stderr 全量を保存しているファイルへの
-	// パス。 silent な exit_code!=0 (transcript が 0 byte) ケースを diag log で
-	// 一発判別できるようにするために提供する。 サポートしない runtime は空文字。
-	TranscriptPath string
-}
+// RuntimeExit is an alias for backend.RuntimeExit (same rationale as
+// TerminalSize above). ExitCode is the process exit code; TranscriptPath
+// is the path to a file holding the child process's stdout/stderr full
+// capture, so a silent exit_code!=0 (transcript が 0 byte) ケースを diag
+// log で一発判別できる。サポートしない runtime は空文字。
+type RuntimeExit = backend.RuntimeExit
 
 type JobRuntime interface {
 	Start(ctx context.Context, spec RuntimeStartSpec) (*RuntimeHandle, error)

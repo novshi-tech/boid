@@ -67,11 +67,22 @@ func makePreparedFixture(t *testing.T) *PreparedSandbox {
 	}
 }
 
+// sessionFor builds a usernsSession wrapping runtime/runtimeID/prepared —
+// the same shape Runner.launchSandbox receives back from
+// SandboxBackend.Launch — so these tests can drive
+// Runner.cleanupSandboxAfterWait / Runner.watchRuntime through the
+// backend.SandboxSession interface exactly as production code does, rather
+// than through dispatcher-internal (runtimeID, *PreparedSandbox) plumbing
+// that no longer exists post-Phase-6-PR1.
+func sessionFor(runtime JobRuntime, runtimeID string, prepared *PreparedSandbox) *usernsSession {
+	return &usernsSession{runtime: runtime, id: runtimeID, prepared: prepared}
+}
+
 func TestCleanupSandboxAfterWait_RemovesArtifactsOnSuccess(t *testing.T) {
 	prep := makePreparedFixture(t)
 	r := &Runner{Runtime: &waitableRuntime{exit: RuntimeExit{ExitCode: 0}}}
 
-	r.cleanupSandboxAfterWait("rt-success", prep, nil)
+	r.cleanupSandboxAfterWait(sessionFor(r.Runtime, "rt-success", prep), nil)
 
 	for _, p := range []string{prep.RootDir, prep.StagingDir, prep.SpecPath, prep.StatePath} {
 		if _, err := os.Stat(p); !errors.Is(err, os.ErrNotExist) {
@@ -87,7 +98,7 @@ func TestCleanupSandboxAfterWait_RetainsStateOnFailure(t *testing.T) {
 	prep := makePreparedFixture(t)
 	r := &Runner{Runtime: &waitableRuntime{exit: RuntimeExit{ExitCode: 1}}}
 
-	r.cleanupSandboxAfterWait("rt-failed", prep, nil)
+	r.cleanupSandboxAfterWait(sessionFor(r.Runtime, "rt-failed", prep), nil)
 
 	// Scaffolding + spec (secrets) must be removed even on failure.
 	for _, p := range []string{prep.RootDir, prep.StagingDir, prep.SpecPath} {
@@ -140,7 +151,7 @@ func TestCleanupSandboxAfterWait_RunsExtraCleanupAlways(t *testing.T) {
 			called := false
 			r := &Runner{Runtime: &waitableRuntime{exit: tc.exit}}
 
-			r.cleanupSandboxAfterWait("rt-x", prep, func() { called = true })
+			r.cleanupSandboxAfterWait(sessionFor(r.Runtime, "rt-x", prep), func() { called = true })
 
 			if !called {
 				t.Errorf("extra cleanup must run regardless of exit code (case=%s)", tc.name)
@@ -218,7 +229,7 @@ func TestCleanupSandboxAfterWait_ReapsDockerOnSuccess(t *testing.T) {
 		dockerStates: map[string]*dockerProxyState{"rt-docker-ok": ds},
 	}
 
-	r.cleanupSandboxAfterWait("rt-docker-ok", prep, nil)
+	r.cleanupSandboxAfterWait(sessionFor(r.Runtime, "rt-docker-ok", prep), nil)
 
 	// The proxy should have been removed from the map.
 	r.dockerMu.Lock()
@@ -242,7 +253,7 @@ func TestCleanupSandboxAfterWait_ReapsDockerOnFailure(t *testing.T) {
 		dockerStates: map[string]*dockerProxyState{"rt-docker-fail": ds},
 	}
 
-	r.cleanupSandboxAfterWait("rt-docker-fail", prep, nil)
+	r.cleanupSandboxAfterWait(sessionFor(r.Runtime, "rt-docker-fail", prep), nil)
 
 	r.dockerMu.Lock()
 	_, stillPresent := r.dockerStates["rt-docker-fail"]

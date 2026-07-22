@@ -20,6 +20,7 @@ import (
 	"github.com/novshi-tech/boid/internal/gitgateway"
 	"github.com/novshi-tech/boid/internal/orchestrator"
 	"github.com/novshi-tech/boid/internal/sandbox"
+	"github.com/novshi-tech/boid/internal/sandbox/backend"
 	"github.com/novshi-tech/boid/internal/sandbox/dockerproxy"
 	"github.com/novshi-tech/boid/internal/skills"
 )
@@ -73,6 +74,14 @@ type Runner struct {
 	Sandbox     SandboxPreparer
 	SecretStore *SecretStore
 	Projects    ProjectLookup
+	// Backend, when non-nil, overrides sandboxBackend()'s default
+	// construction of a userns backend from Sandbox/Runtime/BoidBinary — a
+	// test/DI seam so callers (and tests) can exercise the
+	// launch/attach/resize/signal call sites against a fake
+	// backend.SandboxBackend without needing a real SandboxPreparer/
+	// JobRuntime pair. nil (the production default) preserves the PR1
+	// behavior of always constructing the userns backend.
+	Backend backend.SandboxBackend
 	// Hydrator optionally resolves a project's workspace-hydrated
 	// ProjectMeta (project.yaml `meta.name` plus workspace merge) by project
 	// ID. It is used only for workspace-peer name resolution in
@@ -845,7 +854,22 @@ func (r *Runner) CompleteJob(jobID string, result JobCompletionResult) {
 	}
 }
 
-// launchSandbox writes sandbox scripts and launches via the configured runtime.
+// sandboxBackend returns the SandboxBackend Runner launches through. PR1
+// (docs/plans/phase6-container-backend.md) wires only the userns backend,
+// built fresh from Sandbox/Runtime/BoidBinary on every call — it owns no
+// state, so there is nothing to cache. A config-driven choice between
+// userns/container backends (sandbox.backend: userns|container) lands in
+// PR5+; until then this is the sole selection point. r.Backend, when set,
+// overrides this (test/DI seam — see its doc comment).
+func (r *Runner) sandboxBackend() backend.SandboxBackend {
+	if r.Backend != nil {
+		return r.Backend
+	}
+	return newUsernsBackend(r.Sandbox, r.Runtime, r.BoidBinary)
+}
+
+// launchSandbox launches a sandbox for job via the configured
+// SandboxBackend and persists the resulting runtime metadata.
 func (r *Runner) launchSandbox(ctx context.Context, job *Job, spec sandbox.Spec, cleanup orchestrator.CleanupFunc, desiredRuntimeID string) (string, error) {
 	if job == nil {
 		return "", fmt.Errorf("job is required")
@@ -863,27 +887,13 @@ func (r *Runner) launchSandbox(ctx context.Context, job *Job, spec sandbox.Spec,
 		return "", fmt.Errorf("job runtime is required")
 	}
 
-	prepared, err := r.Sandbox.PrepareSandbox(spec)
-	if err != nil {
-		if cleanup != nil {
-			cleanup()
-		}
-		return "", fmt.Errorf("prepare sandbox: %w", err)
-	}
-	if prepared == nil || prepared.SpecPath == "" {
-		if cleanup != nil {
-			cleanup()
-		}
-		return "", fmt.Errorf("prepare sandbox: missing spec path")
-	}
+	session, err := r.sandboxBackend().Launch(ctx, spec, backend.LaunchOptions{
+		JobID:     job.ID,
+		TaskID:    job.TaskID,
+		ProjectID: job.ProjectID,
+		HandlerID: job.HandlerID,
+		Role:      job.Role,
 
-	handle, err := r.Runtime.Start(ctx, RuntimeStartSpec{
-		JobID:       job.ID,
-		TaskID:      job.TaskID,
-		ProjectID:   job.ProjectID,
-		HandlerID:   job.HandlerID,
-		Role:        job.Role,
-		Command:     r.runnerCommand(prepared),
 		Interactive: spec.TTY,
 		TTY:         spec.TTY,
 		DesiredID:   desiredRuntimeID,
@@ -895,68 +905,76 @@ func (r *Runner) launchSandbox(ctx context.Context, job *Job, spec sandbox.Spec,
 		StdinForward: job.Role == string(orchestrator.JobKindExec),
 	})
 	if err != nil {
-		if desiredRuntimeID != "" {
+		// Only a JobRuntime.Start-phase failure tears down the
+		// desiredRuntimeID docker proxy pre-allocated before Start ran — a
+		// PrepareSandbox-phase failure never did (pre-Phase-6 behavior,
+		// preserved via usernsStartError; see its doc comment).
+		var startErr *usernsStartError
+		if desiredRuntimeID != "" && errors.As(err, &startErr) {
 			r.stopDockerProxy(desiredRuntimeID)
 		}
-		cleanupSandboxArtifacts(prepared)
 		if cleanup != nil {
 			cleanup()
 		}
-		return "", fmt.Errorf("start runtime: %w", err)
+		return "", err
 	}
+
+	// session is handled purely through the backend.SandboxSession
+	// interface from here on — no concrete-type assertion — so a future
+	// container backend (PR5, docs/plans/phase6-container-backend.md) that
+	// returns a different SandboxSession implementation needs no change
+	// here. Interactive/TTY are read back from the already-known spec.TTY
+	// (identical to what LaunchOptions.Interactive/TTY carried into Launch)
+	// rather than from the session, since the userns backend's contract is
+	// to echo them back unchanged (LocalRuntime.Start does exactly that) —
+	// see sessionLocalArtifacts for the one piece of userns-specific state
+	// (PrepareSandbox's on-disk artifacts) that genuinely has no
+	// backend-agnostic equivalent yet, handled via a capability probe
+	// instead.
+	handleID := session.ID()
 
 	// When DesiredID was set, the proxy was pre-registered under desiredRuntimeID.
-	// After Start, handle.ID may differ only if the runtime didn't honour DesiredID
+	// After Start, handleID may differ only if the runtime didn't honour DesiredID
 	// (e.g. a test stub). In that case, re-key the dockerState entry.
-	if desiredRuntimeID != "" && handle.ID != desiredRuntimeID {
-		r.rekeyDockerState(desiredRuntimeID, handle.ID)
+	if desiredRuntimeID != "" && handleID != desiredRuntimeID {
+		r.rekeyDockerState(desiredRuntimeID, handleID)
 	}
 
-	job.RuntimeID = handle.ID
-	job.Interactive = handle.Interactive
-	job.TTY = handle.TTY
+	job.RuntimeID = handleID
+	job.Interactive = spec.TTY
+	job.TTY = spec.TTY
 	if err := UpdateJob(r.DB, job); err != nil {
-		_ = r.Runtime.Stop(context.Background(), handle.ID)
-		r.stopDockerProxy(handle.ID)
-		cleanupSandboxArtifacts(prepared)
+		_ = session.Stop(context.Background())
+		r.stopDockerProxy(handleID)
+		cleanupSandboxArtifacts(sessionLocalArtifacts(session))
 		if cleanup != nil {
 			cleanup()
 		}
 		return "", fmt.Errorf("persist job runtime metadata: %w", err)
 	}
 
-	r.trackTaskRuntime(job.TaskID, handle.ID)
-	go r.watchRuntime(job.ID, handle.ID)
-	go r.cleanupSandboxAfterWait(handle.ID, prepared, cleanup)
-	slog.Info("job started", "job_id", job.ID, "runtime_id", handle.ID)
+	r.trackTaskRuntime(job.TaskID, handleID)
+	go r.watchRuntime(job.ID, session)
+	go r.cleanupSandboxAfterWait(session, cleanup)
+	slog.Info("job started", "job_id", job.ID, "runtime_id", handleID)
 	return job.ID, nil
 }
 
-// runnerCommand builds the shell command the runtime executes (via `bash -lc`)
-// to launch the go-native sandbox runner: `boid runner-outer --spec … --state …`.
-// This replaces the former `bash <outer.sh>` invocation.
-func (r *Runner) runnerCommand(prepared *PreparedSandbox) string {
-	boidBin := r.BoidBinary
-	if boidBin == "" {
-		boidBin = "boid"
-	}
-	return fmt.Sprintf("%s runner-outer --spec %s --state %s",
-		shellQuoteDir(boidBin),
-		shellQuoteDir(prepared.SpecPath),
-		shellQuoteDir(prepared.StatePath),
-	)
-}
-
-func (r *Runner) cleanupSandboxAfterWait(runtimeID string, prepared *PreparedSandbox, extra orchestrator.CleanupFunc) {
+func (r *Runner) cleanupSandboxAfterWait(session backend.SandboxSession, extra orchestrator.CleanupFunc) {
 	defer func() {
 		if extra != nil {
 			extra()
 		}
 	}()
-	if r.Runtime == nil || runtimeID == "" || prepared == nil {
+	if session == nil {
 		return
 	}
-	result, err := r.Runtime.Wait(context.Background(), runtimeID)
+	runtimeID := session.ID()
+	prepared := sessionLocalArtifacts(session)
+	if runtimeID == "" || prepared == nil {
+		return
+	}
+	result, err := session.Wait(context.Background())
 	if err != nil {
 		if errors.Is(err, ErrRuntimeUnsupported) {
 			// Reap docker resources even on unsupported-wait paths (best effort).
@@ -1060,13 +1078,68 @@ func (r *Runner) StopJobRuntime(runtimeID string) {
 // runner subcommands keep the signal SIG_IGN (inherited across execve), so they
 // survive while run-agent.py acts on it and runner-inner-child still posts
 // `boid job done` through the broker. Best-effort: errors at debug level only.
+//
+// Routes through SandboxBackend.Adopt → SandboxSession.Signal
+// (docs/plans/phase6-container-backend.md §PR1: this is the `boid agent
+// stop` seam the plan calls out by name) rather than reaching into
+// r.Runtime directly, so a future container backend's signal-forwarding
+// entrypoint (§決定 3) is reachable from the same call site.
 func (r *Runner) SignalJobRuntime(runtimeID string, sig syscall.Signal) {
 	if r.Runtime == nil || runtimeID == "" {
 		return
 	}
-	if err := r.Runtime.Signal(context.Background(), runtimeID, sig); err != nil {
+	session, ok := r.sandboxBackend().Adopt(context.Background(), runtimeID)
+	if !ok {
+		return
+	}
+	if err := session.Signal(context.Background(), sig); err != nil {
 		slog.Debug("signal job runtime", "runtime_id", runtimeID, "signal", sig, "error", err)
 	}
+}
+
+// CanAttach reports whether runtimeID can currently be adopted by the
+// configured SandboxBackend — i.e. whether an attach/resize/signal ingress
+// against it should be allowed. This is the single source of truth for
+// "is this runtime attachable" now that a live session may be held by any
+// SandboxBackend implementation, not just JobRuntime's own in-memory
+// session map: internal/server/job_runtime_routes.go's resolveAttachableJob
+// used to answer this by type-asserting runtime.jobRuntime onto a
+// runtimeAttachSupport (SupportsAttach) interface directly, bypassing the
+// SandboxBackend/SandboxSession seam entirely — for the userns backend that
+// happened to still give the right answer (since the JobRuntime it wraps is
+// the same one), but a future container backend's session may not be
+// backed by a JobRuntime session map at all, so that check would (wrongly)
+// always fail for it. Routing through Adopt fixes both: userns behavior is
+// unchanged (usernsBackend.Adopt itself now probes JobRuntime's
+// SupportsAttach capability, see its doc comment), and any future backend
+// answers with its own notion of session liveness (codex review Blocker 2
+// on PR #816).
+func (r *Runner) CanAttach(ctx context.Context, runtimeID string) bool {
+	if runtimeID == "" {
+		return false
+	}
+	_, ok := r.sandboxBackend().Adopt(ctx, runtimeID)
+	return ok
+}
+
+// ResizeRuntimeID resizes a sandbox session's terminal via the configured
+// SandboxBackend, given a runtimeID directly. This is the collapse point
+// for the HTTP resize ingress (POST /api/jobs/{id}/resize,
+// internal/server/job_runtime_routes.go — the caller there has already
+// resolved job.RuntimeID and doesn't go through the jobID-keyed
+// RuntimeInputWriter path the WS transport uses; see ResizeRuntime for
+// that one). docs/plans/phase6-container-backend.md §PR1 lists this as one
+// of the two resize ingress routes that must route through
+// SandboxSession.Resize.
+func (r *Runner) ResizeRuntimeID(ctx context.Context, runtimeID string, size TerminalSize) error {
+	if runtimeID == "" {
+		return fmt.Errorf("runtime id is required")
+	}
+	session, ok := r.sandboxBackend().Adopt(ctx, runtimeID)
+	if !ok {
+		return ErrRuntimeUnsupported
+	}
+	return session.Resize(size)
 }
 
 // CleanupTaskWindow stops all tracked runtimes associated with a task.
@@ -1169,11 +1242,15 @@ func (r *Runner) takeTaskRuntimes(taskID string) []string {
 	return out
 }
 
-func (r *Runner) watchRuntime(jobID, runtimeID string) {
-	if r.Runtime == nil || runtimeID == "" {
+func (r *Runner) watchRuntime(jobID string, session backend.SandboxSession) {
+	if session == nil {
 		return
 	}
-	result, err := r.Runtime.Wait(context.Background(), runtimeID)
+	runtimeID := session.ID()
+	if runtimeID == "" {
+		return
+	}
+	result, err := session.Wait(context.Background())
 	if err != nil {
 		if errors.Is(err, ErrRuntimeUnsupported) {
 			return
