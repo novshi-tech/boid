@@ -18,6 +18,7 @@ current_allowed=(
   humanize
   initwizard
   logrotate
+  mtls
   notify
   orchestrator
   profiles
@@ -41,6 +42,7 @@ target_allowed=(
   humanize
   initwizard
   logrotate
+  mtls
   notify
   orchestrator
   profiles
