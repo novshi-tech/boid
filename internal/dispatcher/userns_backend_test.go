@@ -313,6 +313,34 @@ func TestUsernsBackend_Adopt(t *testing.T) {
 	}
 }
 
+// ubFakeAttachAwareRuntime additionally implements SupportsAttach (mirroring
+// LocalRuntime's own session-map-backed capability), so tests can drive
+// usernsBackend.Adopt's capability-probe branch (codex review Blocker 2 on
+// PR #816: Adopt must defer to it exactly like the pre-Phase-6
+// resolveAttachableJob type assertion did, rather than blindly reporting
+// ok=true for any non-empty runtimeID).
+type ubFakeAttachAwareRuntime struct {
+	ubFakeRuntime
+	attachable map[string]bool
+}
+
+func (r *ubFakeAttachAwareRuntime) SupportsAttach(runtimeID string) bool {
+	return r.attachable[runtimeID]
+}
+
+func TestUsernsBackend_Adopt_DefersToSupportsAttachCapability(t *testing.T) {
+	rt := &ubFakeAttachAwareRuntime{attachable: map[string]bool{"runtime-live": true}}
+	b := newUsernsBackend(nil, rt, "boid")
+
+	if _, ok := b.Adopt(context.Background(), "runtime-live"); !ok {
+		t.Error("Adopt should succeed for a runtimeID SupportsAttach reports true for")
+	}
+	if _, ok := b.Adopt(context.Background(), "runtime-gone"); ok {
+		t.Error("Adopt should report ok=false for a runtimeID SupportsAttach reports false for, " +
+			"instead of handing back a session that only fails on first use")
+	}
+}
+
 func TestUsernsBackend_ReapOrphans_StubReturnsZeroReport(t *testing.T) {
 	b := newUsernsBackend(nil, &ubFakeRuntime{}, "boid")
 	report, err := b.ReapOrphans(context.Background())

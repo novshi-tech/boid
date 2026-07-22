@@ -95,8 +95,27 @@ func (b *usernsBackend) Launch(ctx context.Context, spec sandbox.Spec, opts back
 // runtimeID pair is all SubscribeRuntime/WriteInputRuntime/CloseInputRuntime/
 // Resize/Wait/Stop/Signal need, matching the pre-Phase-6 code that resolved
 // these directly from r.Runtime.
+//
+// If b.runtime optionally implements SupportsAttach(runtimeID) (LocalRuntime
+// does — it reports whether runtimeID is a live entry in its own in-memory
+// session map), Adopt defers to it and reports ok=false for a runtimeID the
+// runtime doesn't currently know about, rather than handing back a session
+// that will only fail later on first use. This is the same
+// optional-capability probe pattern used throughout this file — it moves
+// the attach-support check that used to live in
+// internal/server/job_runtime_routes.go's resolveAttachableJob (a direct
+// type assertion onto the JobRuntime the server layer holds, bypassing the
+// SandboxBackend seam entirely — codex review Blocker 2 on PR #816) behind
+// Adopt, so every ingress (HTTP resize, WS attach's underlying resolution,
+// SignalJobRuntime) gets the same "is this runtime attachable" answer from
+// one place, and a future container backend can implement its own notion of
+// "is this session live" without JobRuntime's session-map-specific
+// capability existing at all.
 func (b *usernsBackend) Adopt(_ context.Context, runtimeID string) (backend.SandboxSession, bool) {
 	if runtimeID == "" || b.runtime == nil {
+		return nil, false
+	}
+	if support, ok := b.runtime.(interface{ SupportsAttach(string) bool }); ok && !support.SupportsAttach(runtimeID) {
 		return nil, false
 	}
 	return &usernsSession{runtime: b.runtime, id: runtimeID}, true

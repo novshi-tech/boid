@@ -14,10 +14,6 @@ type resizeJobRuntimeRequest struct {
 	Cols int `json:"cols"`
 }
 
-type runtimeAttachSupport interface {
-	SupportsAttach(runtimeID string) bool
-}
-
 // mountJobRuntimeRoutes mounts the remaining plain-HTTP job runtime routes.
 // The interactive attach stream itself moved to WebSocket
 // (api.WSAttachHandler, mounted separately in mountRoutes — docs/plans/
@@ -78,7 +74,15 @@ func resolveAttachableJob(w http.ResponseWriter, req *http.Request, runtime *app
 		writeJSONError(w, http.StatusConflict, "job is not attachable")
 		return nil, false
 	}
-	if support, ok := runtime.jobRuntime.(runtimeAttachSupport); ok && !support.SupportsAttach(job.RuntimeID) {
+	// Routes through Runner (→ SandboxBackend.Adopt) rather than
+	// type-asserting runtime.jobRuntime onto a JobRuntime-specific
+	// SupportsAttach capability — the pre-Phase-6 check bypassed the
+	// SandboxBackend/SandboxSession seam entirely and would give the wrong
+	// answer for a runtime whose live session isn't tracked in
+	// JobRuntime's own map (a future container backend, PR5). See
+	// Runner.CanAttach's doc comment (docs/plans/phase6-container-backend.md
+	// §PR1, codex review Blocker 2 on PR #816).
+	if !runtime.runner.CanAttach(req.Context(), job.RuntimeID) {
 		writeJSONError(w, http.StatusConflict, "job runtime does not support attach")
 		return nil, false
 	}

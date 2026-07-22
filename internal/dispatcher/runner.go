@@ -1085,6 +1085,31 @@ func (r *Runner) SignalJobRuntime(runtimeID string, sig syscall.Signal) {
 	}
 }
 
+// CanAttach reports whether runtimeID can currently be adopted by the
+// configured SandboxBackend — i.e. whether an attach/resize/signal ingress
+// against it should be allowed. This is the single source of truth for
+// "is this runtime attachable" now that a live session may be held by any
+// SandboxBackend implementation, not just JobRuntime's own in-memory
+// session map: internal/server/job_runtime_routes.go's resolveAttachableJob
+// used to answer this by type-asserting runtime.jobRuntime onto a
+// runtimeAttachSupport (SupportsAttach) interface directly, bypassing the
+// SandboxBackend/SandboxSession seam entirely — for the userns backend that
+// happened to still give the right answer (since the JobRuntime it wraps is
+// the same one), but a future container backend's session may not be
+// backed by a JobRuntime session map at all, so that check would (wrongly)
+// always fail for it. Routing through Adopt fixes both: userns behavior is
+// unchanged (usernsBackend.Adopt itself now probes JobRuntime's
+// SupportsAttach capability, see its doc comment), and any future backend
+// answers with its own notion of session liveness (codex review Blocker 2
+// on PR #816).
+func (r *Runner) CanAttach(ctx context.Context, runtimeID string) bool {
+	if runtimeID == "" {
+		return false
+	}
+	_, ok := r.sandboxBackend().Adopt(ctx, runtimeID)
+	return ok
+}
+
 // ResizeRuntimeID resizes a sandbox session's terminal via the configured
 // SandboxBackend, given a runtimeID directly. This is the collapse point
 // for the HTTP resize ingress (POST /api/jobs/{id}/resize,
