@@ -26,21 +26,30 @@ type RuntimeInputWriter interface {
 	CloseInput(jobID string) error
 }
 
-// Subscribe implements RuntimeSubscriber for Runner. It resolves jobID to a
-// runtimeID via the jobs table, then delegates to LocalRuntime if the runtime
-// supports live streaming.
-func (r *Runner) Subscribe(jobID string) (snapshot []byte, ch <-chan []byte, cancel func(), ok bool) {
-	var runtimeID string
+// runtimeIDForJob resolves jobID to its persisted runtime_id via the jobs
+// table. found is false when the job has no row or no runtime_id yet.
+func (r *Runner) runtimeIDForJob(jobID string) (runtimeID string, found bool) {
 	if err := r.DB.QueryRow(`SELECT runtime_id FROM jobs WHERE id = ?`, jobID).Scan(&runtimeID); err != nil || runtimeID == "" {
+		return "", false
+	}
+	return runtimeID, true
+}
+
+// Subscribe implements RuntimeSubscriber for Runner. It resolves jobID to a
+// runtimeID via the jobs table, then adopts a SandboxSession for it
+// (docs/plans/phase6-container-backend.md §PR1 — this is the "stream 1 本"
+// seam shared by WS attach and the Web UI's SSE follow endpoint, both of
+// which call through this same method).
+func (r *Runner) Subscribe(jobID string) (snapshot []byte, ch <-chan []byte, cancel func(), ok bool) {
+	runtimeID, found := r.runtimeIDForJob(jobID)
+	if !found {
 		return nil, nil, func() {}, false
 	}
-	sub, capable := r.Runtime.(interface {
-		SubscribeRuntime(string) ([]byte, <-chan []byte, func(), bool)
-	})
-	if !capable {
+	session, adopted := r.sandboxBackend().Adopt(context.Background(), runtimeID)
+	if !adopted {
 		return nil, nil, func() {}, false
 	}
-	return sub.SubscribeRuntime(runtimeID)
+	return session.Subscribe()
 }
 
 // SubscribeRuntime subscribes to live output of the session identified by runtimeID.
@@ -59,43 +68,48 @@ func (r *LocalRuntime) SubscribeRuntime(runtimeID string) ([]byte, <-chan []byte
 }
 
 // WriteInput implements RuntimeInputWriter for Runner. It resolves jobID to
-// a runtimeID via the jobs table, then delegates to LocalRuntime.WriteInputRuntime.
+// a runtimeID via the jobs table, then adopts a SandboxSession and writes
+// through it.
 func (r *Runner) WriteInput(jobID string, data []byte) error {
-	var runtimeID string
-	if err := r.DB.QueryRow(`SELECT runtime_id FROM jobs WHERE id = ?`, jobID).Scan(&runtimeID); err != nil || runtimeID == "" {
+	runtimeID, found := r.runtimeIDForJob(jobID)
+	if !found {
 		return fmt.Errorf("runtime not found for job %s", jobID)
 	}
-	writer, ok := r.Runtime.(interface {
-		WriteInputRuntime(string, []byte) error
-	})
-	if !ok {
+	session, adopted := r.sandboxBackend().Adopt(context.Background(), runtimeID)
+	if !adopted {
 		return ErrRuntimeUnsupported
 	}
-	return writer.WriteInputRuntime(runtimeID, data)
+	return session.WriteInput(data)
 }
 
-// ResizeRuntime implements RuntimeInputWriter for Runner. It resolves jobID to
-// a runtimeID via the jobs table, then delegates to JobRuntime.Resize.
+// ResizeRuntime implements RuntimeInputWriter for Runner — the WS attach
+// transport's "resize" frame ingress (docs/plans/phase6-container-backend.md
+// §PR1's other resize seam is the HTTP route, see Runner.ResizeRuntimeID).
+// It resolves jobID to a runtimeID via the jobs table, then adopts a
+// SandboxSession and resizes through it.
 func (r *Runner) ResizeRuntime(jobID string, size TerminalSize) error {
-	var runtimeID string
-	if err := r.DB.QueryRow(`SELECT runtime_id FROM jobs WHERE id = ?`, jobID).Scan(&runtimeID); err != nil || runtimeID == "" {
+	runtimeID, found := r.runtimeIDForJob(jobID)
+	if !found {
 		return fmt.Errorf("runtime not found for job %s", jobID)
 	}
-	return r.Runtime.Resize(context.Background(), runtimeID, size)
+	session, adopted := r.sandboxBackend().Adopt(context.Background(), runtimeID)
+	if !adopted {
+		return ErrRuntimeUnsupported
+	}
+	return session.Resize(size)
 }
 
 // CloseInput implements RuntimeInputWriter for Runner. It resolves jobID to
-// a runtimeID via the jobs table, then delegates to LocalRuntime.CloseInputRuntime.
+// a runtimeID via the jobs table, then adopts a SandboxSession and closes
+// its input through it.
 func (r *Runner) CloseInput(jobID string) error {
-	var runtimeID string
-	if err := r.DB.QueryRow(`SELECT runtime_id FROM jobs WHERE id = ?`, jobID).Scan(&runtimeID); err != nil || runtimeID == "" {
+	runtimeID, found := r.runtimeIDForJob(jobID)
+	if !found {
 		return fmt.Errorf("runtime not found for job %s", jobID)
 	}
-	closer, ok := r.Runtime.(interface {
-		CloseInputRuntime(string) error
-	})
-	if !ok {
+	session, adopted := r.sandboxBackend().Adopt(context.Background(), runtimeID)
+	if !adopted {
 		return ErrRuntimeUnsupported
 	}
-	return closer.CloseInputRuntime(runtimeID)
+	return session.CloseInput()
 }

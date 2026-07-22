@@ -35,7 +35,7 @@ type runtimeAttachSupport interface {
 // (server_phase3_test.go) for its own regression coverage, independent of
 // AttachJob's transport.
 func mountJobRuntimeRoutes(r chi.Router, runtime *appRuntime) {
-	if runtime == nil || runtime.jobStore == nil || runtime.jobRuntime == nil {
+	if runtime == nil || runtime.jobStore == nil || runtime.jobRuntime == nil || runtime.runner == nil {
 		return
 	}
 
@@ -51,7 +51,12 @@ func mountJobRuntimeRoutes(r chi.Router, runtime *appRuntime) {
 			return
 		}
 
-		if err := runtime.jobRuntime.Resize(req.Context(), job.RuntimeID, dispatcher.TerminalSize{
+		// Routes through Runner (→ SandboxBackend.Adopt → SandboxSession.Resize)
+		// rather than calling runtime.jobRuntime.Resize directly — this is one
+		// of the two resize ingress routes docs/plans/phase6-container-backend.md
+		// §PR1 requires to go through the backend/session seam (the other is
+		// the WS "resize" frame, internal/api/ws_attach.go).
+		if err := runtime.runner.ResizeRuntimeID(req.Context(), job.RuntimeID, dispatcher.TerminalSize{
 			Rows: body.Rows,
 			Cols: body.Cols,
 		}); err != nil {
