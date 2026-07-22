@@ -390,6 +390,21 @@ func (s *Server) Start(ctx context.Context) error {
 		// backend today (container backend selection is PR5+), so the
 		// call site is hardcoded to BackendUserns rather than reading a
 		// config toggle that doesn't exist yet.
+		//
+		// PR5 completion point (codex review [Major 1] on PR4): a
+		// container-backend caller does NOT flip this call site to
+		// BackendContainer — userns jobs still need the http://10.0.2.2
+		// URL byte-for-byte, so this hardcoded branch stays exactly as it
+		// is. Instead, PR5 adds a *separate* SandboxURL call, gated on
+		// the job's backend, that passes Backend: BackendContainer along
+		// with the TLS listener's port (s.gatewayTLSLn's port, not
+		// gwLn's — the container backend only ever reaches this service
+		// over the compose network + TLS, never plaintext loopback) and
+		// ServiceName: composeGatewayServiceName (or a real compose
+		// service-discovery value, once one exists). Until that second
+		// call site exists, s.gatewayURL below is the only URL any caller
+		// sees — this whole listen block is the userns-only skeleton PR4
+		// promised, not the finished dual-backend wiring.
 		s.gatewayURL = gitgateway.SandboxURL(gitgateway.SandboxURLOptions{Backend: gitgateway.BackendUserns, Port: port})
 		go func() { _ = s.gatewayHTTPServer.Serve(gwLn) }() // returns ErrServerClosed on Stop
 		slog.Info("git gateway started", "addr", gwLn.Addr().String(), "sandbox_url", s.gatewayURL)
