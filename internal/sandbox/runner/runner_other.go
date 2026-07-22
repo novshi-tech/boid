@@ -12,3 +12,4 @@ var errUnsupported = errors.New("sandbox runner is only supported on Linux")
 func RunOuter(specPath, statePath string) (int, error)      { return 1, errUnsupported }
 func RunInner(specPath, statePath string) (int, error)      { return 1, errUnsupported }
 func RunInnerChild(specPath, statePath string) (int, error) { return 1, errUnsupported }
+func RunContainer(specPath, statePath string) (int, error)  { return 1, errUnsupported }

@@ -3,7 +3,6 @@
 package runner
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -12,10 +11,7 @@ import (
 	"strings"
 	"syscall"
 
-	"github.com/novshi-tech/boid/internal/adapters"
-	"github.com/novshi-tech/boid/internal/adapters/registry"
 	"github.com/novshi-tech/boid/internal/sandbox"
-	"github.com/novshi-tech/boid/internal/sandbox/brokerclient"
 	"golang.org/x/sys/unix"
 )
 
@@ -215,7 +211,7 @@ func RunInnerChild(specPath, statePath string) (exitCode int, retErr error) {
 		if !reachedAgent || spec.Foreground {
 			return
 		}
-		postJobDone(spec, exitCode, st)
+		postJobDone("inner-child", spec, exitCode, st)
 	}()
 
 	root := spec.RootDir
@@ -240,38 +236,18 @@ func RunInnerChild(specPath, statePath string) (exitCode int, retErr error) {
 	// them). $HOME/.boid is a fresh, job-scoped tmpfs (see
 	// dispatcher.homeMounts' doc comment), so there is never a stale
 	// payload_patch.json from a previous job to worry about here.
-	for _, f := range spec.Files {
-		if err := writeFileAt(f.Path, f.Content); err != nil {
-			st.Fail("inner-child", "write-file "+f.Path, err)
-			return 1, err
-		}
+	// applySpecFiles/applySpecSymlinks/performClone/runAgent/postJobDone
+	// below are shared with the Phase 6 container entrypoint
+	// (runner_container_linux.go) — see runner.go's doc comment on the
+	// shared-steps block for the split rationale.
+	if err := applySpecFiles("inner-child", spec.Files, st); err != nil {
+		return 1, err
 	}
-	st.OK("inner-child", "write-files")
 
-	// Symlinks are the Phase 5 5a-3 shim materialization path
-	// (docs/plans/phase5-shim-and-task-context.md, "5a: shim 固定ディレクト
-	// リ化" PR3): dispatcher emits `<sandboxShimBinDir>/<name> -> boid` for
-	// every host command. MkdirAll(parent) is load-bearing here — the parent
-	// dir (e.g. /run/boid/bin) does not exist yet on the fresh tmpfs root
-	// pivot_root just placed us on, and the earlier boid binary bind at
-	// <sandboxShimBinDir>/boid already created it via applyMount's own
-	// MkdirAll(filepath.Dir(target)) — but a symlink-only invocation (a
-	// future spec with no boid mount, or a test that hits this path in
-	// isolation) needs the same guarantee. Errors are surfaced instead of
-	// silently swallowed: the pre-5a-3 `_ = os.Symlink(...)` shape hid
-	// missing-parent-dir ENOENT and any other setup failure, which for the
-	// shim symlinks would have degraded to command-not-found at runtime
-	// with no diagnostic pointing back to setup.
-	for _, s := range spec.Symlinks {
-		if err := os.MkdirAll(filepath.Dir(s.LinkPath), 0o755); err != nil {
-			st.Fail("inner-child", "mkdir symlink parent "+s.LinkPath, err)
-			return 1, err
-		}
-		_ = os.Remove(s.LinkPath)
-		if err := os.Symlink(s.LinkTarget, s.LinkPath); err != nil {
-			st.Fail("inner-child", "symlink "+s.LinkPath, err)
-			return 1, err
-		}
+	// Symlinks are the Phase 5 5a-3 shim materialization path — see
+	// applySpecSymlinks' doc comment (runner.go) for the full story.
+	if err := applySpecSymlinks("inner-child", spec.Symlinks, st); err != nil {
+		return 1, err
 	}
 
 	// Sandbox-internal clone + branch resolution (docs/plans/git-gateway-cutover.md
@@ -286,9 +262,7 @@ func RunInnerChild(specPath, statePath string) (exitCode int, retErr error) {
 	}
 
 	// Resolve the agent argv against the sandbox PATH.
-	if p := spec.Env["PATH"]; p != "" {
-		_ = os.Setenv("PATH", p)
-	}
+	applyPathEnv(spec)
 
 	reachedAgent = true
 	st.OK("inner-child", "run-agent")
@@ -454,106 +428,6 @@ func pivotInto(root string, hasHostRootRBind bool) error {
 		return fmt.Errorf("remove .oldroot: %w", err)
 	}
 	return nil
-}
-
-// runAgent dispatches every sandbox job (hook / session / exec) through the
-// HarnessAdapter pipeline. Phase 3-d retired the legacy runExecArgv branch:
-// spec.HarnessType is invariant non-empty here, so the adapter registry
-// always returns a concrete implementation. The shell adapter handles
-// non-agent hooks and `boid exec`; the claude / codex / opencode adapters
-// handle their respective agent jobs.
-func runAgent(spec sandbox.Spec) int {
-	if spec.HarnessType == "" {
-		fmt.Fprintln(os.Stderr, "[boid] runner-inner-child: spec.HarnessType is empty; planner / dispatcher must resolve a harness before dispatch")
-		return 127
-	}
-	adapter := registry.For(spec.HarnessType)
-	if adapter == nil {
-		fmt.Fprintf(os.Stderr, "[boid] runner-inner-child: unknown harness %q\n", spec.HarnessType)
-		return 127
-	}
-
-	// Shell adapter consumes Argv / StdinBytes / StdoutCaptureFile from the
-	// RunContext directly (it has no CLI conventions to build argv from).
-	// Agent adapters ignore those fields and build their own argv per
-	// harness convention.
-	rc := adapters.RunContext{
-		JobID:             spec.ID,
-		TaskID:            spec.Env["BOID_TASK_ID"],
-		UserAnswer:        spec.UserAnswer,
-		InvokedBehavior:   spec.Env["BOID_INVOKED_BEHAVIOR"],
-		InvokedName:       spec.Env["BOID_INVOKED_NAME"],
-		Model:             spec.Env["BOID_MODEL"],
-		Workspace:         spec.WorkDir,
-		Env:               spec.Env,
-		Argv:              spec.Argv,
-		StdinBytes:        spec.StdinBytes,
-		StdoutCaptureFile: spec.StdoutCaptureFile,
-		Stdin:             os.Stdin,
-		Stdout:            os.Stdout,
-		Stderr:            os.Stderr,
-	}
-
-	res, err := adapter.Run(context.Background(), rc)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "[boid] harness %q run: %v\n", spec.HarnessType, err)
-		return 1
-	}
-	return res.ExitCode
-}
-
-// postJobDone resolves the job output (payload patch → stdout capture → empty)
-// and posts `boid job done` to the broker, reproducing the former EXIT trap.
-func postJobDone(spec sandbox.Spec, exitCode int, st *State) {
-	socket := spec.Env["BOID_BROKER_SOCKET"]
-	token := spec.Env["BOID_BROKER_TOKEN"]
-	if socket == "" {
-		// No broker attached (should not happen for non-foreground jobs); the
-		// daemon's net will record completion.
-		return
-	}
-
-	output := resolveJobOutput(spec)
-	if err := brokerclient.JobDone(socket, token, spec.ID, spec.WorkDir, exitCode, output); err != nil {
-		st.Fail("inner-child", "job-done", err)
-		// Non-fatal: the daemon's "exited without boid job done" net catches it.
-		return
-	}
-	st.OK("inner-child", "job-done")
-}
-
-// resolveJobOutput reproduces buildExitScript's fallback chain: payload patch
-// file if present, else the stdout capture file if present, else empty.
-func resolveJobOutput(spec sandbox.Spec) []byte {
-	if spec.PayloadPatchPath != "" {
-		if data, err := os.ReadFile(spec.PayloadPatchPath); err == nil {
-			return data
-		}
-	}
-	if spec.StdoutCaptureFile != "" {
-		if data, err := os.ReadFile(spec.StdoutCaptureFile); err == nil {
-			return data
-		}
-	}
-	return nil
-}
-
-func touchIfMissing(path string) error {
-	if _, err := os.Lstat(path); err == nil {
-		return nil
-	}
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY, 0o644)
-	if err != nil {
-		return err
-	}
-	return f.Close()
-}
-
-func writeFileAt(path, content string) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
-	}
-	return os.WriteFile(path, []byte(content), 0o644)
 }
 
 // commandExitCode extracts the exit code from an exec.Cmd error, mirroring the
