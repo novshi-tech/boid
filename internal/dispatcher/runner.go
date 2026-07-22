@@ -74,6 +74,14 @@ type Runner struct {
 	Sandbox     SandboxPreparer
 	SecretStore *SecretStore
 	Projects    ProjectLookup
+	// Backend, when non-nil, overrides sandboxBackend()'s default
+	// construction of a userns backend from Sandbox/Runtime/BoidBinary — a
+	// test/DI seam so callers (and tests) can exercise the
+	// launch/attach/resize/signal call sites against a fake
+	// backend.SandboxBackend without needing a real SandboxPreparer/
+	// JobRuntime pair. nil (the production default) preserves the PR1
+	// behavior of always constructing the userns backend.
+	Backend backend.SandboxBackend
 	// Hydrator optionally resolves a project's workspace-hydrated
 	// ProjectMeta (project.yaml `meta.name` plus workspace merge) by project
 	// ID. It is used only for workspace-peer name resolution in
@@ -851,8 +859,12 @@ func (r *Runner) CompleteJob(jobID string, result JobCompletionResult) {
 // built fresh from Sandbox/Runtime/BoidBinary on every call — it owns no
 // state, so there is nothing to cache. A config-driven choice between
 // userns/container backends (sandbox.backend: userns|container) lands in
-// PR5+; until then this is the sole selection point.
+// PR5+; until then this is the sole selection point. r.Backend, when set,
+// overrides this (test/DI seam — see its doc comment).
 func (r *Runner) sandboxBackend() backend.SandboxBackend {
+	if r.Backend != nil {
+		return r.Backend
+	}
 	return newUsernsBackend(r.Sandbox, r.Runtime, r.BoidBinary)
 }
 
