@@ -52,6 +52,17 @@ type LaunchOptions struct {
 	HandlerID string
 	Role      string
 
+	// Workspace is the job's workspace slug, when known. containerBackend
+	// stamps it onto every container as the boid.workspace label
+	// unconditionally (empty is a valid, explicit value — "workspace
+	// unknown" — rather than the label being omitted entirely). Callers
+	// should pass this explicitly rather than relying on a backend
+	// inferring it from spec.Env: an env-var lookup is an implicit,
+	// fragile routing path for something a label's reap/observability
+	// consumers need to be able to trust is always present (PR5 review
+	// Minor finding).
+	Workspace string
+
 	// Interactive and TTY mirror dispatcher.RuntimeStartSpec's fields of
 	// the same name — see its doc comments for the PTY-vs-pipe distinction
 	// they drive.

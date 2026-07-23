@@ -174,6 +174,20 @@ type SandboxRuntimeInfo struct {
 	// (most of sandbox_builder_test.go's minimal SandboxRuntimeInfo{}
 	// literals) — the env var is simply omitted in that case.
 	WorkspaceSlug string
+
+	// ContainerImage is the workspace's Phase 6 container image override
+	// (`orchestrator.WorkspaceMeta.ContainerImage`, docs/plans/
+	// phase6-container-backend.md §決定 2/11), resolved by
+	// Runner.resolveContainerImage the same way resolveWorkspaceProxy
+	// resolves AllowedDomains — an independent WorkspaceLookup.Load call
+	// rather than a field threaded through orchestrator.JobSpec, following
+	// that field's existing precedent for workspace-level (not
+	// project/task-level) dispatch data. Copied verbatim into
+	// sandbox.Spec.ContainerImage below; BuildSandboxSpec does not
+	// interpret it — only a container backend does. Empty for every
+	// workspace that doesn't set container_image (the common case) and for
+	// test wiring that never resolved a workspace.
+	ContainerImage string
 }
 
 // BuildSandboxSpec turns a business-level JobSpec and dispatcher-side runtime
@@ -514,6 +528,7 @@ func BuildSandboxSpec(spec *orchestrator.JobSpec, rt SandboxRuntimeInfo) (sandbo
 		UserAnswer:       userAnswer,
 		Profile:          sandbox.Profile(spec.SandboxProfile),
 		Clone:            buildCloneSpec(spec, rt),
+		ContainerImage:   rt.ContainerImage,
 	}
 	return out, nil
 }
