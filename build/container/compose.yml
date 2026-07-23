@@ -180,24 +180,20 @@ services:
     # process a container entrypoint needs, and exactly what forwards
     # docker's SIGTERM (via tini) into srv.Stop() cleanly.
     #
-    # Known limitations accepted for this PR6 skeleton, both stemming from
-    # runDaemonChild reusing the host-daemon code path verbatim:
-    #   - it redirects stdin/stdout/stderr to boid.log
-    #     (daemon.RedirectToLogRotating), so `docker logs` on this service
-    #     shows nothing.
-    #   - daemon.LogFilePath() resolves under $XDG_STATE_HOME (falling back
-    #     to $HOME/.local/state/boid/boid.log) — a path this compose file
-    #     does NOT bind-mount (only .local/share and .config are, per the
-    #     Persistence section above). The log therefore lands in the
-    #     container's own ephemeral writable layer: inspectable via `docker
-    #     exec ... tail -f /home/boid/.local/state/boid/boid.log` while the
-    #     container is alive, but gone on container recreation — unlike
-    #     everything under BOID_DATA_DIR.
-    # A real `docker logs`-visible foreground mode (log to stdout, skip the
-    # log-file rotation machinery entirely, when running under a supervisor
-    # that already captures stdout) — and/or bind-mounting the state dir
-    # too — is a nice-to-have for a later PR, not required to exercise the
-    # build+deploy mechanism this PR's own scope covers.
+    # Known limitation accepted (both this PR6 skeleton's own and PR9's
+    # follow-up), stemming from runDaemonChild reusing the host-daemon code
+    # path verbatim: it redirects stdin/stdout/stderr to boid.log
+    # (daemon.RedirectToLogRotating) as literally its first action, so
+    # `docker logs`/`docker compose logs` on this service shows NOTHING —
+    # not even a startup panic, since the redirect happens before almost
+    # anything else could print. PR9's own e2e-container job debugging hit
+    # this directly (see XDG_STATE_HOME below, added specifically so that
+    # dead end has a working alternative). A real `docker logs`-visible
+    # foreground mode (log to stdout, skip the log-file rotation machinery
+    # entirely, when running under a supervisor that already captures
+    # stdout) remains a nice-to-have for a later PR — bind-mounting the
+    # state dir (below) is the pragmatic fix that unblocks debugging without
+    # touching daemon.go's startup sequence at all.
     environment:
       BOID_DAEMON_CHILD: "1"
       # XDG_DATA_HOME / XDG_CONFIG_HOME (Major 10, PR6 codex review): make
@@ -215,6 +211,19 @@ services:
       # consistent.
       XDG_DATA_HOME: "${XDG_DATA_HOME}"
       XDG_CONFIG_HOME: "${XDG_CONFIG_HOME}"
+      # XDG_STATE_HOME (PR9): makes daemon.LogFilePath() (internal/daemon/
+      # daemon.go — $XDG_STATE_HOME/boid/boid.log, falling back to
+      # $HOME/.local/state/boid/boid.log) resolve under the ALREADY
+      # bind-mounted BOID_RUNTIME_DIR instead of the container's own
+      # ephemeral writable layer (this service's own header comment above
+      # explains why `docker logs` can never show this daemon's own log —
+      # the redirect to this file happens before anything else could print
+      # to the container's stdout/stderr). No new volume entry needed: this
+      # reuses the BOID_RUNTIME_DIR bind mount below. boid.log then lands
+      # at `${BOID_RUNTIME_DIR}/boid/boid.log` on the host, readable even
+      # after the container is torn down — the debugging path PR9's own
+      # e2e-container job uses on a failure.
+      XDG_STATE_HOME: "${BOID_RUNTIME_DIR}"
       # XDG_RUNTIME_DIR (PR9 fix — this variable was missing from the PR6
       # skeleton entirely, a real gap the e2e-container job's first real-
       # docker run surfaced): this is the OTHER half of the "server socket

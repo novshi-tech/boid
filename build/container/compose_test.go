@@ -232,3 +232,27 @@ func TestComposeDaemonHasHostGatewayExtraHost(t *testing.T) {
 	}
 	t.Errorf("daemon extra_hosts = %v, want %q present", daemon.ExtraHosts, want)
 }
+
+// TestComposeDaemonHasXDGStateHomeEnv pins the PR9 debugging fix: without
+// XDG_STATE_HOME, daemon.LogFilePath() (internal/daemon/daemon.go) resolves
+// boid.log into this container's own ephemeral writable layer, and since
+// runDaemonChild redirects stdin/stdout/stderr to that file as literally
+// its first action, `docker logs` can never show anything for this
+// service — not even a startup crash. Pointing XDG_STATE_HOME at the
+// already-bind-mounted BOID_RUNTIME_DIR makes boid.log land at a
+// host-visible path instead, readable even after the container exits.
+func TestComposeDaemonHasXDGStateHomeEnv(t *testing.T) {
+	doc := loadComposeDoc(t)
+
+	daemon, ok := doc.Services["daemon"]
+	if !ok {
+		t.Fatal(`compose.yml has no "daemon" service`)
+	}
+	got, ok := daemon.Environment["XDG_STATE_HOME"]
+	if !ok {
+		t.Fatalf("daemon environment = %v, want %q present", daemon.Environment, "XDG_STATE_HOME")
+	}
+	if got != "${BOID_RUNTIME_DIR}" {
+		t.Errorf(`daemon environment["XDG_STATE_HOME"] = %q, want "${BOID_RUNTIME_DIR}" (must be a directory already bind-mounted, so no new volume entry is needed)`, got)
+	}
+}

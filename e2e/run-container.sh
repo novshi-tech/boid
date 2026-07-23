@@ -69,10 +69,42 @@ UPSTREAM_PID=""
 INSTALL_ID=""
 
 dump_diagnostics() {
+  # docker compose logs (and plain `docker logs`) show NOTHING for the
+  # daemon service by design (compose.yml's own header comment on the
+  # daemon service: runDaemonChild redirects stdin/stdout/stderr to
+  # boid.log as its first action, before anything else could print) — kept
+  # here anyway as a zero-cost first check in case a failure happens
+  # BEFORE that redirect (image/entrypoint problems, a crash in flag
+  # parsing, ...), but boid.log itself (XDG_STATE_HOME, PR9) is the
+  # primary source below.
   printf '[e2e-container] ===== docker compose logs (daemon) =====\n' >&2
   (cd "$REPO_ROOT" && docker compose -f build/container/compose.yml logs --no-color daemon 2>&1 | tail -n 300) >&2 || true
-  printf '[e2e-container] ===== docker ps -a (this install) =====\n' >&2
-  docker ps -a --filter "label=boid.install_id=${INSTALL_ID}" >&2 2>&1 || true
+
+  # The daemon container itself carries no boid.install_id label (only
+  # containerBackend-created job/sibling resources do — see
+  # container_backend.go's labelInstallID) — filtering by that label here
+  # would always show zero rows for the daemon's own container/state.
+  printf '[e2e-container] ===== docker compose ps -a (this stack) =====\n' >&2
+  (cd "$REPO_ROOT" && docker compose -f build/container/compose.yml ps -a 2>&1) >&2 || true
+  printf '[e2e-container] ===== docker inspect (daemon container State) =====\n' >&2
+  (cd "$REPO_ROOT" && docker inspect "$(docker compose -f build/container/compose.yml ps -aq daemon 2>/dev/null)" --format '{{json .State}}' 2>&1) >&2 || true
+
+  # boid.log itself (PR9's XDG_STATE_HOME fix, compose.yml): lands at
+  # $XDG_RUNTIME_DIR/boid/boid.log on the HOST (daemon.LogFilePath() =
+  # $XDG_STATE_HOME/boid/boid.log, and XDG_STATE_HOME is set to
+  # BOID_RUNTIME_DIR — the same bind-mounted dir XDG_RUNTIME_DIR points
+  # at), so it is readable directly off disk without a live `docker exec`
+  # and survives the container's own teardown below.
+  local daemon_log="$XDG_RUNTIME_DIR/boid/boid.log"
+  if [[ -f "$daemon_log" ]]; then
+    printf '[e2e-container] ===== %s (tail) =====\n' "$daemon_log" >&2
+    tail -n 300 "$daemon_log" >&2 || true
+  else
+    printf '[e2e-container] ===== %s does not exist =====\n' "$daemon_log" >&2
+  fi
+
+  printf '[e2e-container] ===== docker ps -a (this install, job/sibling containers) =====\n' >&2
+  docker ps -a --filter "label=boid.install_id=${INSTALL_ID}" 2>&1 >&2 || true
   if [[ -f "$ROOT/task_a.json" ]]; then
     printf '[e2e-container] ===== task A (last observed) =====\n' >&2
     cat "$ROOT/task_a.json" >&2 || true
