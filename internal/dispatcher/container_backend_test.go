@@ -467,6 +467,85 @@ func TestContainerSession_WaitLoop_DrainsAttachBeforeClosingConn(t *testing.T) {
 	}
 }
 
+// TestContainerSession_WaitLoop_RunsDiagnosticsCollectorBeforeRemove pins
+// Major 4 from the PR5 review (§決定 7's "診断回収 → job fallback 処理 →
+// resource remove" ordering contract): once a container exits,
+// ContainerBackendOptions.DiagnosticsCollector — when configured — must run
+// to completion strictly before ContainerRemove is called. It also pins
+// that the normal-exit remove path no longer forces removal unconditionally
+// (Force is reserved for the error-retry path).
+func TestContainerSession_WaitLoop_RunsDiagnosticsCollectorBeforeRemove(t *testing.T) {
+	var mu sync.Mutex
+	var order []string
+
+	waitCh := make(chan container.WaitResponse, 1)
+	waitCh <- container.WaitResponse{StatusCode: 0}
+
+	api := &fakeDockerAPI{
+		ContainerWaitFunc: func(ctx context.Context, containerID string, options client.ContainerWaitOptions) client.ContainerWaitResult {
+			return client.ContainerWaitResult{Result: waitCh, Error: make(chan error, 1)}
+		},
+		ContainerRemoveFunc: func(ctx context.Context, containerID string, options client.ContainerRemoveOptions) (client.ContainerRemoveResult, error) {
+			mu.Lock()
+			order = append(order, "remove")
+			mu.Unlock()
+			if options.Force {
+				t.Errorf("ContainerRemove Force = true on the normal exit path, want false (Major 4: force is reserved for the error-retry path)")
+			}
+			return client.ContainerRemoveResult{}, nil
+		},
+	}
+
+	collectorDone := make(chan struct{})
+	opts := ContainerBackendOptions{
+		DiagnosticsCollector: func(ctx context.Context, containerID string, exit backend.RuntimeExit) {
+			mu.Lock()
+			order = append(order, "collect")
+			mu.Unlock()
+			// Simulate collector work taking a moment, so a pre-fix
+			// (immediate-remove) implementation would race ahead of it.
+			time.Sleep(30 * time.Millisecond)
+			close(collectorDone)
+		},
+	}
+	be := NewContainerBackend(api, opts)
+	sess := mustLaunch(t, be, sandbox.Spec{ID: "job-diag", Argv: []string{"true"}}, backend.LaunchOptions{JobID: "job-diag"})
+
+	if _, err := sess.Wait(context.Background()); err != nil {
+		t.Fatalf("Wait: %v", err)
+	}
+
+	select {
+	case <-collectorDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("diagnostics collector was not invoked")
+	}
+
+	// ContainerRemove runs asynchronously to Wait's return; poll briefly
+	// for it to show up rather than asserting immediately.
+	deadline := time.After(2 * time.Second)
+	for {
+		mu.Lock()
+		n := len(order)
+		mu.Unlock()
+		if n >= 2 {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatal("timed out waiting for ContainerRemove to be called after the diagnostics collector ran")
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+
+	mu.Lock()
+	got := append([]string(nil), order...)
+	mu.Unlock()
+	if len(got) != 2 || got[0] != "collect" || got[1] != "remove" {
+		t.Fatalf("call order = %v, want [collect remove] (§決定 7: diagnostics before resource teardown)", got)
+	}
+}
+
 func TestContainerBackend_ImageSelection_UsesSpecContainerImageOrDefault(t *testing.T) {
 	t.Run("no override uses the configured default image", func(t *testing.T) {
 		api := &fakeDockerAPI{

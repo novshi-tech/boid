@@ -51,6 +51,12 @@ type containerBackend struct {
 	pullPolicy   ImagePullPolicy
 	uid, gid     int
 	installID    string
+	// diagnosticsCollector, when non-nil, is invoked once a container has
+	// exited — after Wait's fan-out has resolved and the attach stream has
+	// fully drained (Major 3) — but strictly before the container is
+	// removed. See ContainerBackendOptions.DiagnosticsCollector's doc
+	// comment.
+	diagnosticsCollector func(ctx context.Context, containerID string, exit backend.RuntimeExit)
 
 	mu       sync.Mutex
 	sessions map[string]*containerSession
@@ -106,6 +112,20 @@ type ContainerBackendOptions struct {
 	// a global (not install_id-scoped) label filter until then, per the
 	// plan doc's PR5 TODO note.
 	InstallID string
+	// DiagnosticsCollector, when set, is called exactly once per exited
+	// container — after containerSession.waitLoop finalizes exit state and
+	// unblocks every Wait() caller, but strictly before the container (and
+	// its volumes) are removed. This is the hook §決定 7's "診断回収 →
+	// job fallback 処理 → resource remove" ordering contract requires: the
+	// pre-fix waitLoop called close(s.done) and then immediately removed
+	// the container in the same goroutine, racing ahead of any diagnostic
+	// work a woken Wait() caller might still need to do against the live
+	// container (e.g. a `docker inspect` for OOM/exit-reason before it's
+	// gone — 決定 8's silent-exit classification, PR7's job). PR5 leaves
+	// this nil (no consumer yet — see NewContainerBackend's doc comment on
+	// production wiring); ContainerRemove is unconditionally sequenced
+	// after it returns so a future collector can never lose its window.
+	DiagnosticsCollector func(ctx context.Context, containerID string, exit backend.RuntimeExit)
 }
 
 const (
@@ -181,11 +201,12 @@ const (
 // seam is explicitly out of PR5's scope (PR7 cutover).
 func NewContainerBackend(api dockerAPI, opts ContainerBackendOptions) backend.SandboxBackend {
 	b := &containerBackend{
-		api:          api,
-		defaultImage: opts.DefaultImage,
-		pullPolicy:   opts.PullPolicy,
-		installID:    opts.InstallID,
-		sessions:     make(map[string]*containerSession),
+		api:                  api,
+		defaultImage:         opts.DefaultImage,
+		pullPolicy:           opts.PullPolicy,
+		installID:            opts.InstallID,
+		diagnosticsCollector: opts.DiagnosticsCollector,
+		sessions:             make(map[string]*containerSession),
 	}
 	if b.defaultImage == "" {
 		b.defaultImage = defaultContainerImage
@@ -987,10 +1008,19 @@ func (s *containerSession) Wait(ctx context.Context) (backend.RuntimeExit, error
 // detecting exit follows §決定 7/8's "diagnostics before resource teardown"
 // contract: drain the read loop (readDone) so the transcript buffer is
 // final, THEN finalize exit state and close done (unblocking Wait
-// callers), THEN — strictly after — remove the container and the
-// secret-carrying host spec file. Because container removal happens last
-// and only after Wait has already returned to every caller, no caller can
+// callers), THEN run the diagnostics collector (if any — see
+// ContainerBackendOptions.DiagnosticsCollector's doc comment) to
+// completion, THEN — strictly after all of that — remove the container and
+// the secret-carrying host spec file. Because container removal happens
+// last, both after Wait has already returned to every caller and after the
+// diagnostics collector has finished, no caller — nor the collector — can
 // observe a removed container through this session's own state.
+//
+// Removal itself tries without Force first: the container already exited
+// (ContainerWait resolved), so a plain remove should succeed; Force is
+// reserved for the retry after an error, rather than being applied
+// unconditionally on every removal (a "silent force" masks whatever made
+// the plain remove fail).
 func (s *containerSession) waitLoop() {
 	waitRes := s.api.ContainerWait(context.Background(), s.id, client.ContainerWaitOptions{
 		Condition: container.WaitConditionNotRunning,
@@ -1027,12 +1057,20 @@ func (s *containerSession) waitLoop() {
 	s.running = false
 	s.exit = backend.RuntimeExit{ExitCode: exitCode}
 	s.closeSubscribersLocked()
+	exit := s.exit
 	s.mu.Unlock()
 	close(s.done)
 
+	if collector := s.backend.diagnosticsCollector; collector != nil {
+		collector(context.Background(), s.id, exit)
+	}
+
 	s.backend.forgetSession(s.id)
-	if _, err := s.api.ContainerRemove(context.Background(), s.id, client.ContainerRemoveOptions{Force: true, RemoveVolumes: true}); err != nil {
-		slog.Warn("container backend: remove exited container failed", "container_id", s.id, "error", err)
+	if _, err := s.api.ContainerRemove(context.Background(), s.id, client.ContainerRemoveOptions{RemoveVolumes: true}); err != nil {
+		slog.Warn("container backend: remove exited container failed; retrying with Force", "container_id", s.id, "error", err)
+		if _, ferr := s.api.ContainerRemove(context.Background(), s.id, client.ContainerRemoveOptions{Force: true, RemoveVolumes: true}); ferr != nil {
+			slog.Warn("container backend: force remove exited container failed", "container_id", s.id, "error", ferr)
+		}
 	}
 	if s.specPath != "" {
 		_ = os.Remove(s.specPath)
