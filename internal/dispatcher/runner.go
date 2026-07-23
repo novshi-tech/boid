@@ -484,6 +484,7 @@ func (r *Runner) Dispatch(ctx context.Context, spec *orchestrator.JobSpec, clean
 		CloneWorkspaceDir:          cloneWorkspaceDir,
 		WorkspaceHomeDir:           workspaceHomeDir,
 		WorkspaceSlug:              filepath.Base(workspaceHomeDir),
+		ContainerImage:             r.resolveContainerImage(workspaceID),
 	}
 	// Server socket is only exposed to jobs that have no broker policies
 	// attached — i.e. boid exec invocations that need to talk to the daemon
@@ -623,6 +624,35 @@ func (r *Runner) resolveWorkspaceProxy(workspaceID string) ([]string, int) {
 		return r.AllowedDomains, r.proxyPort()
 	}
 	return resolved, port
+}
+
+// resolveContainerImage returns the workspace's Phase 6 container image
+// override (WorkspaceMeta.ContainerImage), or "" when unset, unwired
+// (r.Workspaces == nil / workspaceID == ""), or on a load failure — the same
+// best-effort, dispatch-must-never-block-on-this posture as
+// resolveWorkspaceProxy's own independent r.Workspaces.Load call, which this
+// mirrors rather than reuses (each concern loads its own WorkspaceMeta view,
+// consistent with the existing AllowedDomains precedent). "" here always
+// means "use the container backend's configured default image" downstream —
+// this function has no notion of what that default is, and, as of PR5, no
+// caller wires containerBackend into dispatch at all (docs/plans/
+// phase6-container-backend.md §PR5: config 非公開, cutover is PR7).
+func (r *Runner) resolveContainerImage(workspaceID string) string {
+	if r.Workspaces == nil || workspaceID == "" {
+		return ""
+	}
+	wsMeta, err := r.Workspaces.Load(workspaceID)
+	if err != nil {
+		if !errors.Is(err, os.ErrNotExist) {
+			slog.Warn("workspace load for container image failed; using backend default",
+				"workspace_id", workspaceID, "error", err)
+		}
+		return ""
+	}
+	if wsMeta == nil {
+		return ""
+	}
+	return wsMeta.ContainerImage
 }
 
 // startDockerProxy creates a per-sandbox docker proxy socket and starts the

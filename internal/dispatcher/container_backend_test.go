@@ -1,0 +1,478 @@
+package dispatcher
+
+import (
+	"context"
+	"strings"
+	"sync"
+	"syscall"
+	"testing"
+	"time"
+
+	"github.com/moby/moby/api/types/container"
+	"github.com/moby/moby/api/types/mount"
+	"github.com/moby/moby/client"
+
+	"github.com/novshi-tech/boid/internal/sandbox"
+	"github.com/novshi-tech/boid/internal/sandbox/backend"
+)
+
+// This file pins the containerBackend/containerSession contract (docs/plans/
+// phase6-container-backend.md §PR5) against the fake dockerAPI in
+// container_backend_fake_test.go. containerBackend is not wired into
+// production dispatch as of PR5 — see NewContainerBackend's doc comment —
+// so every test here drives it directly rather than through Runner.
+
+func mustLaunch(t *testing.T, be backend.SandboxBackend, spec sandbox.Spec, opts backend.LaunchOptions) backend.SandboxSession {
+	t.Helper()
+	sess, err := be.Launch(context.Background(), spec, opts)
+	if err != nil {
+		t.Fatalf("Launch: %v", err)
+	}
+	return sess
+}
+
+func TestContainerBackend_Launch_CreatesContainerWithHostConfigInit(t *testing.T) {
+	api := &fakeDockerAPI{}
+	be := NewContainerBackend(api, ContainerBackendOptions{})
+
+	sess := mustLaunch(t, be, sandbox.Spec{ID: "job-1", Argv: []string{"true"}}, backend.LaunchOptions{JobID: "job-1"})
+	if sess.ID() == "" {
+		t.Fatal("Launch returned a session with an empty ID")
+	}
+
+	if len(api.createCalls) != 1 {
+		t.Fatalf("ContainerCreate calls = %d, want 1", len(api.createCalls))
+	}
+	hostCfg := api.createCalls[0].HostConfig
+	if hostCfg == nil || hostCfg.Init == nil || !*hostCfg.Init {
+		t.Fatalf("HostConfig.Init = %+v, want a non-nil pointer to true (§決定 3: docker-init as PID 1)", hostCfg)
+	}
+
+	if len(api.startIDs) != 1 || api.startIDs[0] != sess.ID() {
+		t.Fatalf("ContainerStart calls = %v, want exactly [%s]", api.startIDs, sess.ID())
+	}
+}
+
+func TestContainerBackend_Launch_MountSourceKindMapping(t *testing.T) {
+	api := &fakeDockerAPI{}
+	be := NewContainerBackend(api, ContainerBackendOptions{})
+
+	spec := sandbox.Spec{
+		ID:   "job-mounts",
+		Argv: []string{"true"},
+		Mounts: []sandbox.Mount{
+			{
+				// HostPath: an absolute host Source not targeting /workspace.
+				Source: "/home/boid-user/.local/share/boid/homes/default",
+				Target: "/home/boid",
+				Type:   sandbox.MountBind,
+			},
+			{
+				// ContainerLocal: targets the sandbox-internal clone dir
+				// (isWorkspaceLocalTarget), regardless of Source (§決定 4).
+				Source: "/host/runtime/dir/workspace",
+				Target: "/workspace/myproject",
+				Type:   sandbox.MountBind,
+			},
+			{
+				// NamedVolume: a non-absolute, non-empty Source.
+				Source: "boid-named-volume",
+				Target: "/mnt/named",
+				Type:   sandbox.MountBind,
+			},
+		},
+	}
+	mustLaunch(t, be, spec, backend.LaunchOptions{JobID: "job-mounts"})
+
+	if len(api.createCalls) != 1 {
+		t.Fatalf("ContainerCreate calls = %d, want 1", len(api.createCalls))
+	}
+	mounts := api.createCalls[0].HostConfig.Mounts
+
+	find := func(target string) (mount.Mount, bool) {
+		for _, m := range mounts {
+			if m.Target == target {
+				return m, true
+			}
+		}
+		return mount.Mount{}, false
+	}
+
+	homeMount, ok := find("/home/boid")
+	if !ok {
+		t.Fatal("no docker Mount entry for /home/boid (expected HostPath bind)")
+	}
+	if homeMount.Type != mount.TypeBind || homeMount.Source != "/home/boid-user/.local/share/boid/homes/default" {
+		t.Errorf("/home/boid mount = %+v, want Type=bind Source=/home/boid-user/.local/share/boid/homes/default", homeMount)
+	}
+
+	if _, ok := find("/workspace/myproject"); ok {
+		t.Error("/workspace/myproject got a docker Mount entry, want none (MountSourceContainerLocal has no host-side counterpart, §決定 4)")
+	}
+
+	volMount, ok := find("/mnt/named")
+	if !ok {
+		t.Fatal("no docker Mount entry for /mnt/named (expected NamedVolume mount)")
+	}
+	if volMount.Type != mount.TypeVolume || volMount.Source != "boid-named-volume" {
+		t.Errorf("/mnt/named mount = %+v, want Type=volume Source=boid-named-volume", volMount)
+	}
+
+	// The spec/state files are always bind-mounted at the fixed
+	// sandbox-internal paths, in addition to the spec.Mounts translation
+	// above.
+	if _, ok := find(containerSpecPath); !ok {
+		t.Errorf("no docker Mount entry for %s (spec file bind)", containerSpecPath)
+	}
+	if _, ok := find(containerStatePath); !ok {
+		t.Errorf("no docker Mount entry for %s (state file bind)", containerStatePath)
+	}
+}
+
+func TestContainerBackend_Launch_UserFlagAndPasswdEntry(t *testing.T) {
+	api := &fakeDockerAPI{}
+	be := NewContainerBackend(api, ContainerBackendOptions{UID: 1000, GID: 1000})
+
+	mustLaunch(t, be, sandbox.Spec{ID: "job-uid", Argv: []string{"true"}}, backend.LaunchOptions{JobID: "job-uid"})
+
+	if len(api.createCalls) != 1 {
+		t.Fatalf("ContainerCreate calls = %d, want 1", len(api.createCalls))
+	}
+	// §決定 4: job containers run --user <uid>:<gid> (non-root), matching
+	// the /etc/passwd entry build/container/Dockerfile bakes for that same
+	// uid/gid at image-build time (verified by the image build, not this
+	// unit test — this test pins the --user flag format only).
+	if got, want := api.createCalls[0].Config.User, "1000:1000"; got != want {
+		t.Errorf("Config.User = %q, want %q", got, want)
+	}
+}
+
+func TestContainerBackend_Adopt_ReconstructsSessionFromRunningContainer(t *testing.T) {
+	const runtimeID = "already-running-container"
+	tty := false
+
+	api := &fakeDockerAPI{
+		ContainerInspectFunc: func(ctx context.Context, containerID string, options client.ContainerInspectOptions) (client.ContainerInspectResult, error) {
+			return client.ContainerInspectResult{
+				Container: container.InspectResponse{
+					State:  &container.State{Running: true},
+					Config: &container.Config{Tty: tty},
+				},
+			}, nil
+		},
+	}
+	be := NewContainerBackend(api, ContainerBackendOptions{})
+
+	sess, ok := be.Adopt(context.Background(), runtimeID)
+	if !ok {
+		t.Fatal("Adopt returned ok=false for a running container")
+	}
+	if sess.ID() != runtimeID {
+		t.Errorf("Adopt session ID = %q, want %q", sess.ID(), runtimeID)
+	}
+	if len(api.inspectIDs) != 1 || api.inspectIDs[0] != runtimeID {
+		t.Errorf("ContainerInspect calls = %v, want exactly [%s]", api.inspectIDs, runtimeID)
+	}
+	if len(api.attachIDs) != 1 || api.attachIDs[0] != runtimeID {
+		t.Errorf("ContainerAttach calls = %v, want exactly [%s]", api.attachIDs, runtimeID)
+	}
+	if !api.attachCalls[0].Logs {
+		t.Error("Adopt's ContainerAttach did not request Logs:true (post-restart output replay)")
+	}
+
+	// A second Adopt for the same runtimeID must reuse the cached session
+	// (see containerBackend.Adopt's doc comment) rather than attach again.
+	sess2, ok := be.Adopt(context.Background(), runtimeID)
+	if !ok || sess2 != sess {
+		t.Errorf("second Adopt(%q) = (%v, %v), want the same cached session", runtimeID, sess2, ok)
+	}
+	if len(api.attachIDs) != 1 {
+		t.Errorf("ContainerAttach calls after second Adopt = %d, want still 1 (session cache hit)", len(api.attachIDs))
+	}
+}
+
+func TestContainerBackend_Adopt_NotRunningReportsNotOK(t *testing.T) {
+	api := &fakeDockerAPI{
+		ContainerInspectFunc: func(ctx context.Context, containerID string, options client.ContainerInspectOptions) (client.ContainerInspectResult, error) {
+			return client.ContainerInspectResult{Container: container.InspectResponse{State: &container.State{Running: false}}}, nil
+		},
+	}
+	be := NewContainerBackend(api, ContainerBackendOptions{})
+
+	if _, ok := be.Adopt(context.Background(), "exited-container"); ok {
+		t.Error("Adopt returned ok=true for a non-running container")
+	}
+}
+
+func TestContainerBackend_ReapOrphans_LabelBasedDestroy(t *testing.T) {
+	api := &fakeDockerAPI{
+		ContainerListFunc: func(ctx context.Context, options client.ContainerListOptions) (client.ContainerListResult, error) {
+			return client.ContainerListResult{Items: []container.Summary{
+				{ID: "orphan-1", Labels: map[string]string{labelJobID: "job-a"}},
+				{ID: "orphan-2", Labels: map[string]string{labelJobID: "job-b"}},
+			}}, nil
+		},
+		ContainerRemoveFunc: func(ctx context.Context, containerID string, options client.ContainerRemoveOptions) (client.ContainerRemoveResult, error) {
+			if containerID == "orphan-2" {
+				return client.ContainerRemoveResult{}, context.DeadlineExceeded
+			}
+			return client.ContainerRemoveResult{}, nil
+		},
+	}
+	be := NewContainerBackend(api, ContainerBackendOptions{})
+
+	report, err := be.ReapOrphans(context.Background())
+	if err != nil {
+		t.Fatalf("ReapOrphans: %v", err)
+	}
+	if len(report.ReapedJobIDs) != 1 || report.ReapedJobIDs[0] != "job-a" {
+		t.Errorf("ReapedJobIDs = %v, want [job-a]", report.ReapedJobIDs)
+	}
+	if len(report.FailedJobIDs) != 1 || report.FailedJobIDs[0] != "job-b" {
+		t.Errorf("FailedJobIDs = %v, want [job-b]", report.FailedJobIDs)
+	}
+
+	if len(api.listFilters) != 1 {
+		t.Fatalf("ContainerList calls = %d, want 1", len(api.listFilters))
+	}
+	if _, ok := api.listFilters[0]["label"][labelJobID]; !ok {
+		t.Errorf("ContainerList filter = %+v, want a %q label filter (§決定 6 global filter)", api.listFilters[0], labelJobID)
+	}
+	if api.volumeListCalls == 0 {
+		t.Error("VolumeList was not called (ReapOrphans should sweep volumes too)")
+	}
+	if api.networkListCalls == 0 {
+		t.Error("NetworkList was not called (ReapOrphans should sweep networks too)")
+	}
+}
+
+func TestContainerSession_Signal_ForwardsSIGUSR1ToPID1(t *testing.T) {
+	api := &fakeDockerAPI{}
+	be := NewContainerBackend(api, ContainerBackendOptions{})
+	sess := mustLaunch(t, be, sandbox.Spec{ID: "job-signal", Argv: []string{"true"}}, backend.LaunchOptions{JobID: "job-signal"})
+
+	if err := sess.Signal(context.Background(), syscall.SIGUSR1); err != nil {
+		t.Fatalf("Signal: %v", err)
+	}
+
+	if len(api.killIDs) != 1 || api.killIDs[0] != sess.ID() {
+		t.Fatalf("ContainerKill calls = %v, want exactly [%s]", api.killIDs, sess.ID())
+	}
+	// docker kill --signal=SIGUSR1 targets the container's PID 1
+	// (docker-init, §決定 3), which forwards to the entrypoint process —
+	// this is that "docker kill --signal=..." call, not a raw process-group
+	// kill the way the userns backend's LocalRuntime.Signal is.
+	if got := api.killCalls[0].Signal; got != "SIGUSR1" {
+		t.Errorf("ContainerKill signal = %q, want SIGUSR1", got)
+	}
+}
+
+func TestContainerSession_Subscribe_MultipleSubscribersReceiveSameStream(t *testing.T) {
+	var conn *fakeAttachConn
+	var connMu sync.Mutex
+
+	api := &fakeDockerAPI{
+		ContainerAttachFunc: func(ctx context.Context, containerID string, options client.ContainerAttachOptions) (client.ContainerAttachResult, error) {
+			connMu.Lock()
+			conn = newFakeAttachConn()
+			c := conn
+			connMu.Unlock()
+			return client.ContainerAttachResult{HijackedResponse: client.NewHijackedResponse(c, "")}, nil
+		},
+		// Block forever: this test only exercises Subscribe/fan-out, not
+		// exit handling. Without this override the default ContainerWait
+		// resolves immediately, and waitLoop's post-exit closeConn (see its
+		// doc comment) races with — and can win against — this test's own
+		// feedFrame call below.
+		ContainerWaitFunc: func(ctx context.Context, containerID string, options client.ContainerWaitOptions) client.ContainerWaitResult {
+			return client.ContainerWaitResult{Result: make(chan container.WaitResponse), Error: make(chan error)}
+		},
+	}
+	be := NewContainerBackend(api, ContainerBackendOptions{})
+	sess := mustLaunch(t, be, sandbox.Spec{ID: "job-sub", Argv: []string{"true"}, TTY: false}, backend.LaunchOptions{JobID: "job-sub"})
+
+	_, ch1, cancel1, ok1 := sess.Subscribe()
+	_, ch2, cancel2, ok2 := sess.Subscribe()
+	if !ok1 || !ok2 {
+		t.Fatalf("Subscribe ok = (%v, %v), want (true, true)", ok1, ok2)
+	}
+	defer cancel1()
+	defer cancel2()
+
+	connMu.Lock()
+	c := conn
+	connMu.Unlock()
+	c.feedFrame(1, []byte("hello from container"))
+
+	want := "hello from container"
+	got1 := readChunkTimeout(t, ch1)
+	got2 := readChunkTimeout(t, ch2)
+	if string(got1) != want {
+		t.Errorf("subscriber 1 got %q, want %q", got1, want)
+	}
+	if string(got2) != want {
+		t.Errorf("subscriber 2 got %q, want %q", got2, want)
+	}
+
+	// A late Subscribe (after the fact) must see the same bytes in its
+	// snapshot.
+	snapshot, _, cancel3, _ := sess.Subscribe()
+	cancel3()
+	if !strings.Contains(string(snapshot), want) {
+		t.Errorf("late-subscribe snapshot = %q, want it to contain %q", snapshot, want)
+	}
+}
+
+func readChunkTimeout(t *testing.T, ch <-chan []byte) []byte {
+	t.Helper()
+	select {
+	case chunk := <-ch:
+		return chunk
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for a transcript chunk")
+		return nil
+	}
+}
+
+func TestContainerSession_Wait_SingleOwnerFanOut(t *testing.T) {
+	waitCh := make(chan container.WaitResponse, 1)
+	waitCh <- container.WaitResponse{StatusCode: 7}
+
+	api := &fakeDockerAPI{
+		ContainerWaitFunc: func(ctx context.Context, containerID string, options client.ContainerWaitOptions) client.ContainerWaitResult {
+			// A small delay makes the two concurrent Wait() callers below
+			// genuinely both be blocked on <-s.done when the single
+			// underlying ContainerWait resolves, rather than trivially
+			// racing one call already being done before the second starts.
+			time.Sleep(20 * time.Millisecond)
+			return client.ContainerWaitResult{Result: waitCh, Error: make(chan error, 1)}
+		},
+	}
+	be := NewContainerBackend(api, ContainerBackendOptions{})
+	sess := mustLaunch(t, be, sandbox.Spec{ID: "job-wait", Argv: []string{"true"}}, backend.LaunchOptions{JobID: "job-wait"})
+
+	var wg sync.WaitGroup
+	results := make([]backend.RuntimeExit, 2)
+	errs := make([]error, 2)
+	for i := range 2 {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			results[i], errs[i] = sess.Wait(context.Background())
+		}(i)
+	}
+	wg.Wait()
+
+	for i, err := range errs {
+		if err != nil {
+			t.Errorf("Wait() call %d returned error: %v", i, err)
+		}
+		if results[i].ExitCode != 7 {
+			t.Errorf("Wait() call %d ExitCode = %d, want 7", i, results[i].ExitCode)
+		}
+	}
+	if got := api.waitCallCount(); got != 1 {
+		t.Errorf("ContainerWait was called %d times, want exactly 1 (§決定 7 single-owner fan-out)", got)
+	}
+}
+
+func TestContainerBackend_ImageSelection_UsesSpecContainerImageOrDefault(t *testing.T) {
+	t.Run("no override uses the configured default image", func(t *testing.T) {
+		api := &fakeDockerAPI{
+			ImageInspectFunc: func(ctx context.Context, imageRef string, opts ...client.ImageInspectOption) (client.ImageInspectResult, error) {
+				return imageInspectResultWithLabel(""), nil
+			},
+		}
+		be := NewContainerBackend(api, ContainerBackendOptions{DefaultImage: "boid-runner:v9"})
+		mustLaunch(t, be, sandbox.Spec{ID: "job-default-image", Argv: []string{"true"}}, backend.LaunchOptions{JobID: "job-default-image"})
+
+		if len(api.createCalls) != 1 {
+			t.Fatalf("ContainerCreate calls = %d, want 1", len(api.createCalls))
+		}
+		if got, want := api.createCalls[0].Config.Image, "boid-runner:v9"; got != want {
+			t.Errorf("Config.Image = %q, want %q", got, want)
+		}
+	})
+
+	t.Run("override with a valid label is used", func(t *testing.T) {
+		api := &fakeDockerAPI{
+			ImageInspectFunc: func(ctx context.Context, imageRef string, opts ...client.ImageInspectOption) (client.ImageInspectResult, error) {
+				return imageInspectResultWithLabel(boidRunnerProtocolVersion), nil
+			},
+		}
+		be := NewContainerBackend(api, ContainerBackendOptions{DefaultImage: "boid-runner:v9"})
+		mustLaunch(t, be, sandbox.Spec{ID: "job-override-image", Argv: []string{"true"}, ContainerImage: "ghcr.io/acme/boid-runner-custom:v1"},
+			backend.LaunchOptions{JobID: "job-override-image"})
+
+		if len(api.createCalls) != 1 {
+			t.Fatalf("ContainerCreate calls = %d, want 1", len(api.createCalls))
+		}
+		if got, want := api.createCalls[0].Config.Image, "ghcr.io/acme/boid-runner-custom:v1"; got != want {
+			t.Errorf("Config.Image = %q, want %q", got, want)
+		}
+	})
+}
+
+// TestRunner_Backend_DrivesContainerBackendThroughSignalSeam is the
+// container-backend sibling of runner_backend_wiring_test.go's
+// TestRunner_SignalJobRuntime_RoutesThroughBackendAdoptToSessionSignal (PR1):
+// that test proves the Runner.Backend DI seam works for *some*
+// backend.SandboxBackend; this one plugs a real containerBackend into it and
+// confirms `boid agent stop`'s SIGUSR1 delivery
+// (NotifyTask → Runner.SignalJobRuntime) reaches an actual docker kill call
+// — the "内部フラグ/テスト専用で containerBackend の動作確認" TODO item, driven
+// through Runner rather than the backend directly.
+func TestRunner_Backend_DrivesContainerBackendThroughSignalSeam(t *testing.T) {
+	api := &fakeDockerAPI{
+		ContainerInspectFunc: func(ctx context.Context, containerID string, options client.ContainerInspectOptions) (client.ContainerInspectResult, error) {
+			return client.ContainerInspectResult{
+				Container: container.InspectResponse{State: &container.State{Running: true}, Config: &container.Config{}},
+			}, nil
+		},
+	}
+	r := &Runner{Runtime: &ubFakeRuntime{}, Backend: NewContainerBackend(api, ContainerBackendOptions{})}
+
+	r.SignalJobRuntime("running-container-id", syscall.SIGUSR1)
+
+	if len(api.killIDs) != 1 || api.killIDs[0] != "running-container-id" {
+		t.Fatalf("ContainerKill calls = %v, want exactly [running-container-id]", api.killIDs)
+	}
+	if got := api.killCalls[0].Signal; got != "SIGUSR1" {
+		t.Errorf("ContainerKill signal = %q, want SIGUSR1", got)
+	}
+}
+
+func TestContainerBackend_ImageOverride_RequiresBoidBaseDerivedLabel(t *testing.T) {
+	tests := []struct {
+		name       string
+		labelValue string // "" omits the label entirely
+	}{
+		{name: "missing label", labelValue: ""},
+		{name: "wrong label value", labelValue: "v0-not-a-real-version"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			api := &fakeDockerAPI{
+				ImageInspectFunc: func(ctx context.Context, imageRef string, opts ...client.ImageInspectOption) (client.ImageInspectResult, error) {
+					return imageInspectResultWithLabel(tt.labelValue), nil
+				},
+			}
+			be := NewContainerBackend(api, ContainerBackendOptions{})
+
+			_, err := be.Launch(context.Background(), sandbox.Spec{
+				ID:             "job-bad-override",
+				Argv:           []string{"true"},
+				ContainerImage: "untrusted/random-image:latest",
+			}, backend.LaunchOptions{JobID: "job-bad-override"})
+			if err == nil {
+				t.Fatal("Launch succeeded with a non-boid-base-derived override image, want an error")
+			}
+			if !strings.Contains(err.Error(), boidRunnerProtocolLabel) {
+				t.Errorf("Launch error = %q, want it to mention %q", err.Error(), boidRunnerProtocolLabel)
+			}
+			if len(api.createCalls) != 0 {
+				t.Errorf("ContainerCreate was called %d times, want 0 (rejected before create)", len(api.createCalls))
+			}
+		})
+	}
+}

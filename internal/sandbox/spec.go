@@ -103,4 +103,17 @@ type Spec struct {
 	// harness (docs/plans/git-gateway-cutover.md PR5). Zero value
 	// (Clone.Enabled == false) is a no-op — see CloneSpec's doc comment.
 	Clone CloneSpec
+
+	// ContainerImage is the container backend's image-selection input
+	// (docs/plans/phase6-container-backend.md §PR5, §決定 2/11): the
+	// workspace-level `orchestrator.WorkspaceMeta.ContainerImage` override,
+	// threaded through unchanged from SandboxRuntimeInfo.ContainerImage by
+	// BuildSandboxSpec. Empty means "use the backend's configured default
+	// image" (the shared boid base image, §決定 2). The userns backend
+	// never reads this field — it has no notion of images. When non-empty,
+	// containerBackend.Launch treats it as a workspace override that must
+	// pass the "derived from the boid base image" check (§決定 11) before
+	// use: `docker inspect` the image and require the
+	// `boid.runner_protocol` label to match, rejecting Launch otherwise.
+	ContainerImage string
 }
