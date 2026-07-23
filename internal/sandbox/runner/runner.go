@@ -255,16 +255,24 @@ func runAgent(spec sandbox.Spec) int {
 // container entrypoint's RunContainer). stage names the runner-state.json
 // stage the job-done phase entry is filed under.
 func postJobDone(stage string, spec sandbox.Spec, exitCode int, st *State) {
-	socket := spec.Env["BOID_BROKER_SOCKET"]
 	token := spec.Env["BOID_BROKER_TOKEN"]
-	if socket == "" {
-		// No broker attached (should not happen for non-foreground jobs); the
-		// daemon's net will record completion.
+	// broker TCP wire completion (docs/plans/phase6-cutover-followups.md
+	// §⓪): JobDone now picks UNIX vs TLS from spec.Env itself (mirroring
+	// SendJSONFromEnv's own os.Getenv-driven selection for the shim — see
+	// brokerclient.JobDone's own doc comment for why spec.Env, not
+	// os.Environ(), is the right source here), so this no longer
+	// pre-extracts BOID_BROKER_SOCKET specifically. Neither
+	// BOID_BROKER_SOCKET nor BOID_BROKER_TLS_ADDR being set (should not
+	// happen for a non-foreground job — see internal/dispatcher/runner.go's
+	// own broker-registration gate) is still a no-op return here, not a
+	// hard failure: the daemon's own "exited without boid job done" net
+	// catches that case regardless.
+	if spec.Env["BOID_BROKER_SOCKET"] == "" && spec.Env["BOID_BROKER_TLS_ADDR"] == "" {
 		return
 	}
 
 	output := resolveJobOutput(spec)
-	if err := brokerclient.JobDone(socket, token, spec.ID, spec.WorkDir, exitCode, output); err != nil {
+	if err := brokerclient.JobDone(spec.Env, token, spec.ID, spec.WorkDir, exitCode, output); err != nil {
 		st.Fail(stage, "job-done", err)
 		// Non-fatal: the daemon's "exited without boid job done" net catches it.
 		return

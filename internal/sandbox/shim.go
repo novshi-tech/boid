@@ -3,7 +3,6 @@ package sandbox
 import (
 	"encoding/json"
 	"fmt"
-	"net"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -37,7 +36,7 @@ func CommandFromArgv0(argv0 string) string {
 // Commands map is keyed by (dispatcher.ResolveHostCommands' byName view). The
 // pre-5a-3 absolute-bind-mount-path Command shape and the broker's
 // corresponding Path-scan fallback were both retired in the same change.
-func ShimExec(brokerSocket, command string, args []string) (*ExecResponse, error) {
+func ShimExec(command string, args []string) (*ExecResponse, error) {
 	cwd, _ := os.Getwd()
 	token := os.Getenv("BOID_BROKER_TOKEN")
 
@@ -48,17 +47,27 @@ func ShimExec(brokerSocket, command string, args []string) (*ExecResponse, error
 		Token:     token,
 		Streaming: true,
 	}
-	return sendStreamingExecRequest(brokerSocket, req)
+	return sendStreamingExecRequest(req)
 }
 
 // sendStreamingExecRequest connects to the broker, sends req, and reads the
 // resulting StreamChunks. stdout/stderr chunks are forwarded to os.Stdout /
 // os.Stderr in real-time. When the shim receives SIGINT/SIGTERM/SIGHUP it
 // sends a kill chunk so the broker can terminate the host process group.
-func sendStreamingExecRequest(brokerSocket string, req ExecRequest) (*ExecResponse, error) {
-	conn, err := net.Dial("unix", brokerSocket)
+//
+// No longer takes an explicit brokerSocket parameter (docs/plans/
+// phase6-cutover-followups.md §⓪): brokerclient.DialFromEnv picks UNIX vs
+// TCP+mTLS from this process's own environment, the same decision
+// sendExecRequest's SendJSONFromEnv makes for the one-shot JSON path — a
+// container-backend job's host-command exec (git/gh/docker/... via a
+// /run/boid/bin/<name> shim symlink) needs this exactly as much as `boid
+// task update` does; leaving this streaming path UNIX-only would have left
+// every host command broken under the container backend even after the
+// rest of this gap was closed.
+func sendStreamingExecRequest(req ExecRequest) (*ExecResponse, error) {
+	conn, err := brokerclient.DialFromEnv()
 	if err != nil {
-		return nil, fmt.Errorf("connect to broker: %w", err)
+		return nil, err
 	}
 	defer conn.Close()
 
@@ -105,12 +114,22 @@ func sendStreamingExecRequest(brokerSocket string, req ExecRequest) (*ExecRespon
 	return &ExecResponse{ExitCode: exitCode}, nil
 }
 
-// sendExecRequest is a thin wrapper over brokerclient.SendJSON, which holds the
-// shared dial/encode/decode transport (also used by the go-native sandbox
-// runner's broker job-done path).
-func sendExecRequest(brokerSocket string, req ExecRequest) (*ExecResponse, error) {
+// sendExecRequest is a thin wrapper over brokerclient.SendJSONFromEnv, which
+// holds the shared transport-selection + dial/encode/decode logic (also
+// used by the go-native sandbox runner's broker job-done path via
+// brokerclient.JobDone). No longer takes an explicit brokerSocket
+// parameter (docs/plans/phase6-cutover-followups.md §⓪): the shim is
+// always a real subprocess, so its own os.Environ() already carries
+// whichever of BOID_BROKER_SOCKET / BOID_BROKER_TLS_* the sandbox_builder/
+// container_backend wiring set, and SendJSONFromEnv is the single place
+// that decision is made — every caller here (RunBoidShim and its
+// sub-dispatchers) used to thread a brokerSocket string through several
+// layers purely to hand it to this one call site; dropping the parameter
+// removes that plumbing entirely rather than leaving it to duplicate
+// SendJSONFromEnv's own env lookup.
+func sendExecRequest(req ExecRequest) (*ExecResponse, error) {
 	var resp ExecResponse
-	if err := brokerclient.SendJSON(brokerSocket, &req, &resp); err != nil {
+	if err := brokerclient.SendJSONFromEnv(&req, &resp); err != nil {
 		return nil, err
 	}
 	return &resp, nil

@@ -229,20 +229,23 @@ jobs:
     # local-host equivalent today.
     runs-on: ubuntu-24.04
     timeout-minutes: 20
-    # continue-on-error: this job is intentionally advisory (not blocking)
-    # until the broker TCP wire and per-job broker client cert delivery
-    # skeletons from PR4/PR6 are actually completed. Gateway TLS was fixed
-    # in PR9 (commit 577f9a8, ServerOnlyTLSConfig + gateway CA propagation),
-    # but broker still binds 127.0.0.1 and its ServerTLSConfig unconditionally
-    # requires a client cert that no PR ever built or wired for job containers.
-    # docs/plans/phase6-cutover-followups.md §「broker TCP wire completion」
-    # tracks this as a followup that must land BEFORE anyone opts into
-    # `sandbox.backend: container` in production. Until then this job
-    # exercises the parts of the container backend that DO work end to end
-    # (real docker image build, compose up, daemon healthy, task dispatch,
-    # container start, git clone via gateway) and surfaces regressions in
-    # those, without gating merges of unrelated changes.
-    continue-on-error: true
+    # continue-on-error: false (promoted from advisory — docs/plans/
+    # phase6-cutover-followups.md §⓪ "broker TCP wire completion" is now
+    # landed). This job used to be advisory-only because the broker's own
+    # TCP(mTLS) listener bound loopback-only and had no per-job client cert
+    # delivery, so a container-backend job could never make broker RPC
+    # calls (`boid task update`, `boid job done`, host-command exec) from
+    # its sibling job container at all — gateway TLS was fixed earlier
+    # (commit 577f9a8, ServerOnlyTLSConfig + gateway CA propagation), but
+    # the broker gap remained until this followup: the broker's listener
+    # now binds gatewayBindHost(usingContainerBackend) ("0.0.0.0" under
+    # sandbox.backend: container) and keeps mutual TLS via a per-job
+    # short-lived client cert (internal/dispatcher/container_backend.go's
+    # materializeBrokerClientCert), delivered via five BOID_BROKER_TLS_*
+    # env vars. e2e/run-container.sh's own workspace-C task
+    # (verify-broker-tls.sh) now pins this round trip end to end, so this
+    # job gates merges like every other CI job from here on.
+    continue-on-error: false
     steps:
       - name: Check out repository
         uses: actions/checkout@v4

@@ -62,6 +62,15 @@ type containerBackend struct {
 	// whole feature: Launch neither issues a cert nor adds any DOCKER_* env.
 	dockerTLSCA     *mtls.CA
 	dockerProxyAddr string
+	// brokerTLSCA / brokerTLSAddr implement §⓪'s per-job broker client
+	// cert delivery — see ContainerBackendOptions.BrokerTLSCA's doc
+	// comment. brokerTLSCA nil (every pre-this-feature caller) disables
+	// the whole feature: Launch neither issues a cert nor adds any
+	// BOID_BROKER_TLS_* env. brokerTLSAddr is a pointer (not a resolved
+	// string), dereferenced fresh in Launch — see
+	// ContainerBackendOptions.BrokerTLSAddr's doc comment for why.
+	brokerTLSCA   *mtls.CA
+	brokerTLSAddr *string
 	// runtimeDir, when non-empty, is the host-visible directory
 	// materializeDockerClientCert writes per-job TLS material under —
 	// see ContainerBackendOptions.RuntimeDir's doc comment for why this
@@ -214,6 +223,56 @@ type ContainerBackendOptions struct {
 	// connecting the daemon, matching every unit test's expectations
 	// unchanged.
 	SelfContainerID string
+
+	// BrokerTLSCA, when non-nil, is the mTLS CA (internal/mtls.CA) Launch
+	// uses to issue a short-lived per-job client certificate for the
+	// broker's TCP(mTLS) listener (docs/plans/phase6-cutover-followups.md
+	// §⓪ "broker TCP wire completion") — the broker-side analogue of
+	// DockerTLSCA above. Unlike DockerTLSCA (gated on
+	// LaunchOptions.DockerEnabled — only a docker-capable job needs the
+	// dockerproxy identity), Launch materializes a broker cert
+	// unconditionally whenever this is non-nil: every non-foreground job
+	// posts `boid job done` through the broker at minimum (the former
+	// EXIT-trap replacement, internal/sandbox/runner.postJobDone), and most
+	// hooks also call task-context/payload-patch RPCs, so "does this job
+	// need broker RPC" is not a meaningful per-job gate the way
+	// DockerEnabled is. nil (every pre-this-feature caller) disables the
+	// whole feature: no cert is issued, no BOID_BROKER_TLS_* env is added,
+	// no bind mount is created — byte-for-byte the same Launch behavior as
+	// before this field existed. The design decision behind keeping mTLS
+	// here (rather than downgrading to mtls.CA.ServerOnlyTLSConfig the way
+	// the git gateway TLS fix — commit 577f9a8 — did) is documented on
+	// mtls.CA.ServerOnlyTLSConfig's own doc comment and
+	// docs/plans/phase6-cutover-followups.md §⓪: the broker is an
+	// arbitrary-RPC endpoint (task update, job done, host-command exec),
+	// not a single-purpose per-job-token-authorized clone endpoint like the
+	// gateway, so per-connection client identity binding is worth keeping.
+	BrokerTLSCA *mtls.CA
+	// BrokerTLSAddr is a pointer to the compose-network `host:port`
+	// (composeBrokerServiceName + the broker's actual bound TLS port, e.g.
+	// "boid-broker:54321") job containers' BOID_BROKER_TLS_ADDR env should
+	// point at. This is a POINTER, not a plain string like
+	// DockerProxyAddr — unlike dockerproxy's fixed compose DNS name +
+	// well-known port, the broker's TLS listener binds an OS-assigned
+	// ephemeral port (internal/server/server.go's `s.broker.TLSAddr =
+	// gatewayBindHost(...) + ":0"`) that is only known once Server.Start
+	// has bound it, strictly AFTER sandboxBackendForConfig (internal/
+	// server/wire.go) has already constructed this containerBackend inside
+	// buildRuntime. internal/server.Server resolves this exact same
+	// "value not known until Start runs" problem for GatewayURL via a
+	// late-binding pointer (Runner.GatewayURL *string, dereferenced fresh
+	// on every Dispatch) — this field mirrors that pattern one level
+	// deeper: Server owns the string (brokerTLSSandboxAddr), hands
+	// sandboxBackendForConfig a pointer to it at construction time, and
+	// Start writes the real "boid-broker:<port>" value into it once
+	// s.broker.Start has bound the listener. Launch dereferences this
+	// pointer fresh on every call (not once at construction), so a job
+	// launched even a long time after this backend was constructed still
+	// observes the real address. nil (every non-server-wired test/caller,
+	// and any deployment with BrokerTLSCA also nil) is treated the same as
+	// a nil-pointing-at-empty-string — Launch adds no DOCKER_HOST-style env
+	// pointing nowhere.
+	BrokerTLSAddr *string
 }
 
 const (
@@ -277,6 +336,45 @@ const (
 	// validity is PR6's "revocation by expiry" mitigation in the meantime.
 	perJobDockerCertValidity = time.Hour
 
+	// containerBrokerTLSDir is the fixed container-internal path a per-job
+	// broker client cert (docs/plans/phase6-cutover-followups.md §⓪) is
+	// bind-mounted at — the broker-side analogue of containerDockerTLSDir.
+	// Deliberately under /run/boid/bin (not /run/boid itself), same
+	// rationale as containerGitGatewayCAPath's own doc comment
+	// (sandbox_builder.go): only /run/boid/bin is chowned to the job uid
+	// in build/container/Dockerfile, so a non-root job container can only
+	// ever successfully write/have-mounted-into new paths under that one
+	// directory. This is a bind mount (not a spec.Files write the job
+	// itself has to create), so the ownership constraint is actually about
+	// the MOUNT TARGET's parent directory needing to already exist and be
+	// enterable by the job uid, not about who creates the leaf — reusing
+	// /run/boid/bin keeps every per-container TLS/CA artifact under one
+	// directory instead of splitting the convention.
+	containerBrokerTLSDir = "/run/boid/bin/broker-tls"
+
+	brokerCertFileName = "cert.pem"
+	brokerKeyFileName  = "key.pem"
+	brokerCAFileName   = "ca.pem"
+
+	// perJobBrokerCertValidity bounds how long a per-job broker client cert
+	// (materializeBrokerClientCert) stays valid. Deliberately NOT reusing
+	// perJobDockerCertValidity (1h) despite the identical
+	// IssueShortLivedClientCert mechanics: dockerproxy calls are typically
+	// bursty and tool-invocation-scoped, but broker RPC (task update,
+	// job-done, host-command exec) can legitimately happen at any point
+	// across a job's ENTIRE lifetime — including the final `boid job done`
+	// call every non-foreground job makes right as it exits, which must
+	// still succeed even for a job that has been running for hours (a long
+	// research/build task, a multi-hour agent loop). A 1h-scoped cert would
+	// make the daemon itself kill a job's own completion report out from
+	// under it purely from clock skew, which is a strictly worse failure
+	// mode than the dockerproxy exposure window this validity is meant to
+	// bound in the first place. 24h keeps the same "revocation by expiry"
+	// mitigation spirit (still 30x shorter than mtls.CA's default 30-day
+	// leaf validity) while comfortably covering "a job that runs long is
+	// the exception, not something we want to fail on".
+	perJobBrokerCertValidity = 24 * time.Hour
+
 	// Resource labels (§決定 6/9): boid.job_id + boid.workspace are always
 	// set; boid.install_id is set whenever ContainerBackendOptions.InstallID
 	// is non-empty (PR6 territory — see its doc comment). ReapOrphans (§決定
@@ -318,6 +416,18 @@ const (
 	// server.go's composeGatewayServiceName and build/container/compose.yml's
 	// own "boid-gateway" alias.
 	composeGatewayServiceName = "boid-gateway"
+
+	// composeBrokerServiceName duplicates internal/server's own unexported
+	// composeBrokerServiceName constant, same reasoning as
+	// composeGatewayServiceName above (import cycle avoidance) — used only
+	// for BOID_BROKER_TLS_SERVER_NAME (withBrokerTLSEnv), the hostname a
+	// job container's TLS client hands as its ServerName so certificate
+	// hostname verification matches the SAN Server.Start's
+	// daemonCA.ServerTLSConfig(..., composeBrokerServiceName) issued the
+	// broker's listener cert with. Must stay in sync with internal/server/
+	// server.go's composeBrokerServiceName and build/container/compose.yml's
+	// own "boid-broker" alias.
+	composeBrokerServiceName = "boid-broker"
 )
 
 // NewContainerBackend constructs a containerBackend over api (typically a
@@ -342,6 +452,8 @@ func NewContainerBackend(api dockerAPI, opts ContainerBackendOptions) backend.Sa
 		diagnosticsCollector: opts.DiagnosticsCollector,
 		dockerTLSCA:          opts.DockerTLSCA,
 		dockerProxyAddr:      opts.DockerProxyAddr,
+		brokerTLSCA:          opts.BrokerTLSCA,
+		brokerTLSAddr:        opts.BrokerTLSAddr,
 		runtimeDir:           opts.RuntimeDir,
 		selfContainerID:      opts.SelfContainerID,
 		sessions:             make(map[string]*containerSession),
@@ -412,6 +524,28 @@ func ContainerBackendUIDGID(be backend.SandboxBackend) (uid, gid int, ok bool) {
 		return 0, 0, false
 	}
 	return cb.uid, cb.gid, true
+}
+
+// ContainerBackendBrokerTLS returns whether be is a *containerBackend
+// configured with a non-nil BrokerTLSCA, and the broker TLS address it
+// would currently dereference (dereferencing the late-bound
+// ContainerBackendOptions.BrokerTLSAddr pointer fresh, "" if the pointer
+// itself is nil or points at an empty string). Same external-package
+// introspection rationale as ContainerBackendUIDGID/
+// ContainerBackendHasDiagnosticsCollector — for
+// internal/server/wire_backend_test.go's own pin that sandboxBackendForConfig
+// actually wires the daemon's CA + late-binding address pointer into the
+// containerBackend it constructs (docs/plans/phase6-cutover-followups.md
+// §⓪).
+func ContainerBackendBrokerTLS(be backend.SandboxBackend) (addr string, hasCA bool, ok bool) {
+	cb, isContainer := be.(*containerBackend)
+	if !isContainer {
+		return "", false, false
+	}
+	if cb.brokerTLSAddr != nil {
+		addr = *cb.brokerTLSAddr
+	}
+	return addr, cb.brokerTLSCA != nil, true
 }
 
 // formatIntPtr renders a *int for logging: "<unset>" for nil, the decimal
@@ -596,11 +730,14 @@ func (b *containerBackend) Launch(ctx context.Context, spec sandbox.Spec, opts b
 	if err != nil {
 		return nil, fmt.Errorf("write container sandbox spec: %w", err)
 	}
-	// dockerTLSDir is set below (only when opts.DockerEnabled && b.dockerTLSCA
-	// != nil) but declared here so cleanupFiles's closure sees whichever
-	// value it ends up with, even on an early return before it is set (the
+	// dockerTLSDir / brokerTLSDir are set below (dockerTLSDir only when
+	// opts.DockerEnabled && b.dockerTLSCA != nil; brokerTLSDir whenever
+	// b.brokerTLSCA != nil — see their own materialize call sites) but
+	// declared here so cleanupFiles's closure sees whichever value each
+	// ends up with, even on an early return before either is set (the
 	// zero value "" makes the RemoveAll a no-op).
 	var dockerTLSDir string
+	var brokerTLSDir string
 	cleanupFiles := func() {
 		if b.runtimeDir != "" {
 			// Blocker 1 (PR7 codex review): specPath/statePath live under
@@ -616,6 +753,9 @@ func (b *containerBackend) Launch(ctx context.Context, spec sandbox.Spec, opts b
 		}
 		if dockerTLSDir != "" {
 			_ = os.RemoveAll(dockerTLSDir)
+		}
+		if brokerTLSDir != "" {
+			_ = os.RemoveAll(brokerTLSDir)
 		}
 	}
 
@@ -700,6 +840,29 @@ func (b *containerBackend) Launch(ctx context.Context, spec sandbox.Spec, opts b
 		dockerTLSDir = dir
 		mounts = append(mounts, mount.Mount{Type: mount.TypeBind, Source: dir, Target: containerDockerTLSDir, ReadOnly: true})
 		env = withDockerTLSEnv(env, b.dockerProxyAddr)
+	}
+
+	// Per-job broker client cert delivery (docs/plans/
+	// phase6-cutover-followups.md §⓪): unconditional whenever this backend
+	// was configured with a CA to issue from
+	// (ContainerBackendOptions.BrokerTLSCA — nil for every caller before
+	// this feature). Unlike the dockerproxy block above, there is no
+	// per-job opts flag gating this: see BrokerTLSCA's own doc comment for
+	// why "does this job need broker RPC" is not a meaningful per-job gate
+	// the way DockerEnabled is.
+	if b.brokerTLSCA != nil {
+		dir, berr := b.materializeBrokerClientCert(opts.JobID)
+		if berr != nil {
+			cleanupFiles()
+			return nil, berr
+		}
+		brokerTLSDir = dir
+		mounts = append(mounts, mount.Mount{Type: mount.TypeBind, Source: dir, Target: containerBrokerTLSDir, ReadOnly: true})
+		var addr string
+		if b.brokerTLSAddr != nil {
+			addr = *b.brokerTLSAddr
+		}
+		env = withBrokerTLSEnv(env, addr)
 	}
 
 	initTrue := true
@@ -794,7 +957,7 @@ func (b *containerBackend) Launch(ctx context.Context, spec sandbox.Spec, opts b
 		return nil, fmt.Errorf("container create: %w", err)
 	}
 
-	sess := newContainerSession(b, createRes.ID, realized.TTY, specPath, dockerTLSDir)
+	sess := newContainerSession(b, createRes.ID, realized.TTY, specPath, dockerTLSDir, brokerTLSDir)
 	// Disk transcript spool (§決定8, PR7): only for freshly-Launch'd
 	// sessions — see openTranscriptSpool's doc comment for why Adopt
 	// (doAdopt, below) deliberately does not also open one.
@@ -940,7 +1103,7 @@ func (b *containerBackend) doAdopt(ctx context.Context, runtimeID string) *conta
 	}
 
 	tty := insp.Container.Config != nil && insp.Container.Config.Tty
-	sess := newContainerSession(b, runtimeID, tty, "", "")
+	sess := newContainerSession(b, runtimeID, tty, "", "", "")
 	if err := sess.attach(ctx, true); err != nil {
 		slog.Warn("container backend: adopt attach failed; session will support signal/stop/wait only",
 			"container_id", runtimeID, "error", err)
@@ -1454,6 +1617,74 @@ func (b *containerBackend) dockerTLSCertDir(jobID string) (string, error) {
 	return dir, nil
 }
 
+// materializeBrokerClientCert issues a fresh per-job broker client
+// certificate from b.brokerTLSCA and writes the cert/key/ca PEM trio to a
+// host directory, in the same cert.pem/key.pem/ca.pem layout
+// materializeDockerClientCert uses (docs/plans/phase6-cutover-followups.md
+// §⓪). The caller bind-mounts the returned directory read-only into the
+// container at containerBrokerTLSDir; containerSession.waitLoop removes it
+// once the container exits (mirroring dockerTLSDir's own always-cleaned-up
+// retention contract — see containerSession.brokerTLSDir's doc comment).
+//
+// "job-broker-"+jobID (not just jobID, matching materializeDockerClientCert's
+// own "job-"+jobID convention) gives this leaf a certificate CN visibly
+// distinct from a docker-proxy cert issued for the very same job, in case
+// both ever need to be told apart in a log or a future per-request identity
+// check (neither this backend nor the broker inspects CN today — see
+// mtls.CA's own package doc comment on the state of per-job client identity
+// binding — but the two leaves being trivially distinguishable costs
+// nothing and avoids ambiguity later).
+func (b *containerBackend) materializeBrokerClientCert(jobID string) (dir string, err error) {
+	leaf, err := b.brokerTLSCA.IssueShortLivedClientCert("job-broker-"+jobID, perJobBrokerCertValidity)
+	if err != nil {
+		return "", fmt.Errorf("issue broker client cert: %w", err)
+	}
+	certPEM, keyPEM, err := mtls.EncodeCertPEM(leaf)
+	if err != nil {
+		return "", fmt.Errorf("encode broker client cert: %w", err)
+	}
+
+	dir, err = b.brokerTLSCertDir(jobID)
+	if err != nil {
+		return "", err
+	}
+
+	files := map[string][]byte{
+		brokerCertFileName: certPEM,
+		brokerKeyFileName:  keyPEM,
+		brokerCAFileName:   b.brokerTLSCA.CertPEM(),
+	}
+	for name, data := range files {
+		// 0600: same rationale as materializeDockerClientCert's identical
+		// write — the private key lives in this same directory.
+		if werr := os.WriteFile(filepath.Join(dir, name), data, 0o600); werr != nil {
+			_ = os.RemoveAll(dir)
+			return "", fmt.Errorf("write %s: %w", name, werr)
+		}
+	}
+	return dir, nil
+}
+
+// brokerTLSCertDir returns (creating it if necessary) the directory
+// materializeBrokerClientCert writes jobID's cert.pem/key.pem/ca.pem trio
+// into — the broker-side analogue of dockerTLSCertDir, same b.runtimeDir
+// set/unset split and same DooD host-visibility rationale (see its own doc
+// comment).
+func (b *containerBackend) brokerTLSCertDir(jobID string) (string, error) {
+	if b.runtimeDir == "" {
+		dir, err := os.MkdirTemp("", "boid-"+jobID+"-broker-tls-")
+		if err != nil {
+			return "", fmt.Errorf("create broker tls cert dir: %w", err)
+		}
+		return dir, nil
+	}
+	dir := filepath.Join(b.runtimeDir, "broker-tls", jobID)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", fmt.Errorf("create broker tls cert dir: %w", err)
+	}
+	return dir, nil
+}
+
 // openTranscriptSpool creates (truncating any stale leftover) and opens
 // <runtimeDir>/<containerID>/transcript.log for a freshly-Launch'd session
 // (§決定8, PR7) — the same path/filename ReadTranscript/StatTranscript
@@ -1529,6 +1760,42 @@ func withDockerTLSEnv(env map[string]string, proxyAddr string) map[string]string
 	return out
 }
 
+// withBrokerTLSEnv returns a copy of env with the five BOID_BROKER_TLS_*
+// variables internal/sandbox/brokerclient.SendJSONFromEnv reads to select
+// and authenticate a TCP+mTLS broker connection added — the broker-side
+// analogue of withDockerTLSEnv, docs/plans/phase6-cutover-followups.md §⓪.
+//
+// Deliberately does NOT touch BOID_BROKER_SOCKET: that key (when present at
+// all) comes from a completely separate mechanism — sandbox_builder.go's
+// generic BrokerSocket bind-mount, applied identically for both backends —
+// and SendJSONFromEnv already prefers BOID_BROKER_TLS_ADDR over
+// BOID_BROKER_SOCKET whenever both are set (see its own doc comment), so
+// there is nothing to gain and a real risk in this function reaching into a
+// key it does not own: a future container-backend-only fix to that other
+// mount's correctness must not have to remember this function also writes
+// the same key.
+//
+// addr may be empty (b.brokerTLSAddr's pointer was nil, or pointed at an
+// empty string — Server.Start has not yet bound the broker's TLS listener,
+// a construction-ordering case that should not happen in production wiring
+// but is not this function's job to validate) — BOID_BROKER_TLS_ADDR is set
+// to the empty string in that case rather than omitted, so a job that hits
+// this is loud (SendJSONFromEnv's own dial attempt fails immediately with a
+// clear "empty address" error) instead of silently falling back to a
+// stale/wrong transport.
+func withBrokerTLSEnv(env map[string]string, addr string) map[string]string {
+	out := make(map[string]string, len(env)+5)
+	for k, v := range env {
+		out[k] = v
+	}
+	out["BOID_BROKER_TLS_ADDR"] = addr
+	out["BOID_BROKER_TLS_CERT_PATH"] = containerBrokerTLSDir + "/" + brokerCertFileName
+	out["BOID_BROKER_TLS_KEY_PATH"] = containerBrokerTLSDir + "/" + brokerKeyFileName
+	out["BOID_BROKER_TLS_CA_PATH"] = containerBrokerTLSDir + "/" + brokerCAFileName
+	out["BOID_BROKER_TLS_SERVER_NAME"] = composeBrokerServiceName
+	return out
+}
+
 // containerSession implements backend.SandboxSession over a single docker
 // container: one docker-attach connection feeding an in-memory transcript
 // buffer + multi-subscriber fan-out (§決定 8/9's "1 attach 所有者 + memory
@@ -1574,6 +1841,13 @@ type containerSession struct {
 	// ContainerBackendOptions.DockerTLSCA was configured — the overwhelming
 	// majority of sessions today.
 	dockerTLSDir string
+	// brokerTLSDir is the per-job cert directory materializeBrokerClientCert
+	// wrote (docs/plans/phase6-cutover-followups.md §⓪), removed alongside
+	// specPath/dockerTLSDir once the container exits. Empty whenever no
+	// ContainerBackendOptions.BrokerTLSCA was configured — every session
+	// before this feature, and any deployment (including every unit test)
+	// that never wires one in.
+	brokerTLSDir string
 
 	// transcriptFile / transcriptPath implement §決定8's "daemon 側が
 	// attach stream を runtime storage へ逐次 spool" full-persistence
@@ -1616,7 +1890,7 @@ type containerSession struct {
 
 var _ backend.SandboxSession = (*containerSession)(nil)
 
-func newContainerSession(b *containerBackend, id string, tty bool, specPath, dockerTLSDir string) *containerSession {
+func newContainerSession(b *containerBackend, id string, tty bool, specPath, dockerTLSDir, brokerTLSDir string) *containerSession {
 	sess := &containerSession{
 		backend:      b,
 		id:           id,
@@ -1624,6 +1898,7 @@ func newContainerSession(b *containerBackend, id string, tty bool, specPath, doc
 		tty:          tty,
 		specPath:     specPath,
 		dockerTLSDir: dockerTLSDir,
+		brokerTLSDir: brokerTLSDir,
 		subscribers:  make(map[int]chan []byte),
 		running:      true,
 		done:         make(chan struct{}),
@@ -1977,6 +2252,9 @@ func (s *containerSession) waitLoop() {
 	}
 	if s.dockerTLSDir != "" {
 		_ = os.RemoveAll(s.dockerTLSDir)
+	}
+	if s.brokerTLSDir != "" {
+		_ = os.RemoveAll(s.brokerTLSDir)
 	}
 }
 

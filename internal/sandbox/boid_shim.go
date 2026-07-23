@@ -39,14 +39,20 @@ func RunBoidShim(args []string) (*ExecResponse, error) {
 		return &ExecResponse{ExitCode: 0, Stdout: boidShimUsage}, nil
 	}
 
-	brokerSocket := os.Getenv("BOID_BROKER_SOCKET")
-	if brokerSocket == "" {
-		return nil, fmt.Errorf("boid shim: BOID_BROKER_SOCKET not set")
+	// broker TCP wire completion (docs/plans/phase6-cutover-followups.md
+	// §⓪): a container-backend job never gets BOID_BROKER_SOCKET at all —
+	// only BOID_BROKER_TLS_ADDR (see main.go's shimMain identical gate for
+	// the host-command entry point). Reject only when BOTH are empty;
+	// every send call below now goes through sendExecRequest ->
+	// brokerclient.SendJSONFromEnv, which is the actual transport-selection
+	// decision point.
+	if os.Getenv("BOID_BROKER_SOCKET") == "" && os.Getenv("BOID_BROKER_TLS_ADDR") == "" {
+		return nil, fmt.Errorf("boid shim: neither BOID_BROKER_SOCKET nor BOID_BROKER_TLS_ADDR is set")
 	}
 
 	// boid fetch <url> is dispatched via FetchRequest, not BoidRequest.
 	if len(args) > 0 && args[0] == "fetch" {
-		return runFetchShim(args[1:], brokerSocket)
+		return runFetchShim(args[1:])
 	}
 
 	// Phase 5b PR1 task-context ops (docs/plans/phase5-shim-and-task-context.md):
@@ -58,7 +64,7 @@ func RunBoidShim(args []string) (*ExecResponse, error) {
 	// itself has no opinion on (it always replies JSON).
 	if len(args) >= 2 && args[0] == "task" {
 		if op, ok := taskContextOps[args[1]]; ok {
-			return runTaskContextShim(op, args, brokerSocket)
+			return runTaskContextShim(op, args)
 		}
 		// Phase 5b PR2 attachments subcommands
 		// (docs/plans/phase5-shim-and-task-context.md): `boid task
@@ -66,7 +72,7 @@ func RunBoidShim(args []string) (*ExecResponse, error) {
 		// path too — a positional attachment name and binary (base64) reply
 		// don't fit taskContextOps' shape.
 		if args[1] == "attachments" {
-			return runTaskAttachmentsShim(args[2:], brokerSocket)
+			return runTaskAttachmentsShim(args[2:])
 		}
 	}
 
@@ -83,10 +89,10 @@ func RunBoidShim(args []string) (*ExecResponse, error) {
 		Token:   os.Getenv("BOID_BROKER_TOKEN"),
 		Boid:    req,
 	}
-	return sendExecRequest(brokerSocket, execReq)
+	return sendExecRequest(execReq)
 }
 
-func runFetchShim(args []string, brokerSocket string) (*ExecResponse, error) {
+func runFetchShim(args []string) (*ExecResponse, error) {
 	if len(args) == 0 || args[0] == "" {
 		return nil, fmt.Errorf("boid fetch: URL is required")
 	}
@@ -106,7 +112,7 @@ func runFetchShim(args []string, brokerSocket string) (*ExecResponse, error) {
 		Token:   os.Getenv("BOID_BROKER_TOKEN"),
 		Fetch:   &FetchRequest{URL: url},
 	}
-	return sendExecRequest(brokerSocket, execReq)
+	return sendExecRequest(execReq)
 }
 
 func parseBoidRequest(args []string) (*BoidRequest, error) {

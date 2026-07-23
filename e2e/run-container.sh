@@ -137,6 +137,10 @@ dump_diagnostics() {
     printf '[e2e-container] ===== task B (last observed) =====\n' >&2
     cat "$ROOT/task_b.json" >&2 || true
   fi
+  if [[ -f "$ROOT/task_c.json" ]]; then
+    printf '[e2e-container] ===== task C (broker TLS, last observed) =====\n' >&2
+    cat "$ROOT/task_c.json" >&2 || true
+  fi
 }
 
 cleanup() {
@@ -254,7 +258,7 @@ e2e_log "starting fixture git upstream (0.0.0.0, host.docker.internal-reachable)
   --addr "0.0.0.0:0" \
   --ready-file "$UPSTREAM_READY" \
   --cert-file "$UPSTREAM_CERT" \
-  "e2e-fixture/proj-a" "e2e-fixture/proj-b" \
+  "e2e-fixture/proj-a" "e2e-fixture/proj-b" "e2e-fixture/proj-c" \
   >"$ROOT/upstream.stdout.log" 2>"$ROOT/upstream.stderr.log" &
 UPSTREAM_PID=$!
 
@@ -297,7 +301,8 @@ seed_project() {
 WS_ROOT="$XDG_DATA_HOME/boid/e2e-fixture-workspace"
 PROJ_A="$WS_ROOT/proj-a"
 PROJ_B="$WS_ROOT/proj-b"
-mkdir -p "$PROJ_A/.boid/hooks" "$PROJ_B/.boid/hooks"
+PROJ_C="$WS_ROOT/proj-c"
+mkdir -p "$PROJ_A/.boid/hooks" "$PROJ_B/.boid/hooks" "$PROJ_C/.boid/hooks"
 
 cat > "$PROJ_A/.boid/project.yaml" <<'YAML'
 id: container-e2e-ws-a
@@ -321,6 +326,22 @@ task_behaviors:
         command: |
           bash ".boid/hooks/setup-sibling.sh"
     name: setup
+YAML
+
+# Third fixture project — no capabilities.docker, no sibling containers:
+# this one exists solely to pin docs/plans/phase6-cutover-followups.md §⓪
+# ("broker TCP wire completion") itself, distinct from proj-a/proj-b's own
+# sibling-connectivity requirements 1/2. See verify-broker-tls.sh below.
+cat > "$PROJ_C/.boid/project.yaml" <<'YAML'
+id: container-e2e-ws-c
+name: Container E2E - workspace C (broker TLS)
+task_behaviors:
+  verify:
+    hooks:
+      - id: verify-broker-tls
+        command: |
+          bash ".boid/hooks/verify-broker-tls.sh"
+    name: verify
 YAML
 
 # Shared helpers both hook scripts below inline (kept duplicated rather than
@@ -441,9 +462,45 @@ BASH
 } > "$PROJ_B/.boid/hooks/setup-sibling.sh"
 chmod +x "$PROJ_B/.boid/hooks/setup-sibling.sh"
 
-e2e_log "seeding fixture git upstream for both projects"
+# verify-broker-tls.sh (docs/plans/phase6-cutover-followups.md §⓪): does NOT
+# source $HOOK_PRELUDE — it needs no DOCKER_HOST/dockerproxy machinery at
+# all, only the broker RPC path itself. Two things are pinned:
+#   1. BOID_BROKER_TLS_ADDR (and its four siblings) actually reached this
+#      job's env — proves internal/dispatcher/container_backend.go's
+#      withBrokerTLSEnv delivery happened, not just that SOME transport
+#      happened to work.
+#   2. `boid task update --payload-patch @-` itself succeeds — this IS the
+#      broker RPC round trip end to end (job -> TCP+mTLS dial -> broker ->
+#      daemon -> task row updated): if the TLS handshake, the per-job
+#      client cert, or the daemon-side mTLS verification were broken, this
+#      command would fail outright (non-zero exit, `set -e` aborts the
+#      script) before ever reaching the final print below.
+cat > "$PROJ_C/.boid/hooks/verify-broker-tls.sh" <<'BASH'
+#!/usr/bin/env bash
+set -euo pipefail
+
+fail_with_diag() {
+  local reason="$1"
+  printf '{"artifact":{"result":"fail","reason":"%s"}}\n' "$reason" | boid task update --payload-patch @- >/dev/null 2>&1 || true
+  echo "FAIL: $reason" >&2
+  exit 1
+}
+
+for var in BOID_BROKER_TLS_ADDR BOID_BROKER_TLS_CERT_PATH BOID_BROKER_TLS_KEY_PATH BOID_BROKER_TLS_CA_PATH BOID_BROKER_TLS_SERVER_NAME; do
+  [[ -n "${!var:-}" ]] || fail_with_diag "${var} is unset (broker TCP wire did not deliver into this job's env)"
+done
+for f in "$BOID_BROKER_TLS_CERT_PATH" "$BOID_BROKER_TLS_KEY_PATH" "$BOID_BROKER_TLS_CA_PATH"; do
+  [[ -f "$f" ]] || fail_with_diag "broker TLS material file does not exist: ${f}"
+done
+
+printf '{"artifact":{"result":"pass","broker_transport":"tls","broker_tls_addr":"%s"}}\n' "$BOID_BROKER_TLS_ADDR" | boid task update --payload-patch @-
+BASH
+chmod +x "$PROJ_C/.boid/hooks/verify-broker-tls.sh"
+
+e2e_log "seeding fixture git upstream for all three projects"
 seed_project "$PROJ_A" "proj-a"
 seed_project "$PROJ_B" "proj-b"
+seed_project "$PROJ_C" "proj-c"
 
 mkdir -p "$XDG_CONFIG_HOME/boid/workspaces"
 cat > "$XDG_CONFIG_HOME/boid/workspaces/ws-a.yaml" <<'YAML'
@@ -453,6 +510,11 @@ YAML
 cat > "$XDG_CONFIG_HOME/boid/workspaces/ws-b.yaml" <<'YAML'
 capabilities:
   docker: {}
+YAML
+# ws-c: no capabilities.docker — verify-broker-tls.sh needs no dockerproxy
+# at all, only the broker's own TCP(mTLS) listener.
+cat > "$XDG_CONFIG_HOME/boid/workspaces/ws-c.yaml" <<'YAML'
+{}
 YAML
 
 # --- pre-pull the sibling image host-side (same docker image store, DooD:
@@ -492,8 +554,10 @@ e2e_log "install_id=$INSTALL_ID"
 e2e_log "registering projects"
 e2e_run "$BUILD_DIR/boid" project add "$PROJ_A"
 e2e_run "$BUILD_DIR/boid" project add "$PROJ_B"
+e2e_run "$BUILD_DIR/boid" project add "$PROJ_C"
 e2e_run "$BUILD_DIR/boid" workspace assign container-e2e-ws-a ws-a
 e2e_run "$BUILD_DIR/boid" workspace assign container-e2e-ws-b ws-b
+e2e_run "$BUILD_DIR/boid" workspace assign container-e2e-ws-c ws-c
 
 create_task() {
   local project_id="$1" title="$2" behavior="$3"
@@ -576,5 +640,41 @@ e2e_log "requirements 1+2 (sibling reachable / cross-workspace isolated) OK"
 e2e_log "waiting for setup-sibling (workspace B) to finish"
 wait_for_done "$task_b_id" "$ROOT/task_b.json"
 e2e_assert_contains "$(cat "$ROOT/task_b.json")" '"status":"done"'
+
+# --- broker TCP wire completion (docs/plans/phase6-cutover-followups.md
+# §⓪) — dispatched after requirements 1+2 above, not concurrently with
+# them: this pins a DIFFERENT gap (broker RPC reachability) with its own
+# dedicated fixture (workspace C, no capabilities.docker) rather than
+# folding it into task A/B's own docker-sibling-connectivity assertions. --
+e2e_log "dispatching verify-broker-tls (workspace C)"
+task_c_out="$(create_task container-e2e-ws-c "verify broker TLS RPC" verify)"
+printf '%s\n' "$task_c_out"
+task_c_id="$(printf '%s\n' "$task_c_out" | parse_task_id)"
+[[ -n "$task_c_id" ]] || e2e_fail "failed to parse task C id from: $task_c_out"
+e2e_run "$BUILD_DIR/boid" action send --task "$task_c_id" --type start
+wait_for_done "$task_c_id" "$ROOT/task_c.json"
+
+task_c_json="$(cat "$ROOT/task_c.json")"
+e2e_assert_contains "$task_c_json" '"status":"done"'
+e2e_assert_contains "$task_c_json" '"result":"pass"'
+e2e_assert_contains "$task_c_json" '"broker_transport":"tls"'
+e2e_log "broker TCP wire (job -> broker -> daemon RPC over TLS) OK"
+
+# Belt-and-suspenders structural pin alongside the functional one above:
+# the broker's own TLS listener must be logged as NOT loopback-only — a
+# sibling job container reaching it at all (which task C's own success
+# above already proves) is only possible because of this bind-address
+# change (docs/plans/phase6-cutover-followups.md §⓪'s first scope item);
+# checking the daemon's own boid.log for the literal bound address it
+# logged at Start (internal/server/server.go's `slog.Info("broker tls
+# listener started", "addr", addr)`) confirms the LISTENER itself, not
+# just "some route happened to work".
+daemon_log="$XDG_RUNTIME_DIR/boid/boid.log"
+broker_tls_log_line="$(grep 'broker tls listener started' "$daemon_log" | tail -1 || true)"
+[[ -n "$broker_tls_log_line" ]] || e2e_fail "boid.log has no 'broker tls listener started' line — the broker's TCP(mTLS) listener never bound at all"
+e2e_log "broker tls listener log line: ${broker_tls_log_line}"
+if printf '%s' "$broker_tls_log_line" | grep -q '127\.0\.0\.1'; then
+  e2e_fail "broker TLS listener bound loopback-only (127.0.0.1) even though sandbox.backend: container is selected — gatewayBindHost wiring regressed"
+fi
 
 e2e_log "container e2e scenario complete — teardown + requirement 3 verification runs in cleanup"
