@@ -22,6 +22,32 @@ type Server struct {
 	transport *http.Transport
 	srv       *http.Server
 	ledger    *Ledger
+	// workspaceNetwork, when set, is the docker network name every POST
+	// /containers/create request this Server allows gets forced onto — see
+	// SetWorkspaceNetwork's doc comment.
+	workspaceNetwork string
+}
+
+// SetWorkspaceNetwork configures the "sibling の workspace network 強制注入"
+// behavior (docs/plans/phase6-container-backend.md §PR6, §決定5): once set,
+// every POST /containers/create request this Server forwards has its
+// top-level NetworkingConfig REPLACED with `{EndpointsConfig: {network:
+// {}}}` before it reaches the upstream Docker daemon — discarding whatever
+// network configuration the sandboxed client asked for, not merging with
+// it. This is dockerproxy's half of §決定5's sibling connectivity contract:
+// "job → sibling の到達は container IP + container port の直アクセス" only
+// works, and stays scoped to the job's own workspace, if every sibling a
+// job creates always lands on that job's workspace network regardless of
+// what the client (a docker CLI, TestContainers, ...) running inside the
+// sandbox requested.
+//
+// Empty (the zero value, and every pre-PR6 caller — production wiring of a
+// real per-job workspace network name is PR6-residual/PR7 territory, see
+// the plan doc's PR6 §8 note) preserves the prior behavior exactly: no
+// body rewrite at all, matching every existing e2e/unit test's "current
+// e2e is policy-only, no data-plane rewrite" baseline.
+func (s *Server) SetWorkspaceNetwork(network string) {
+	s.workspaceNetwork = network
 }
 
 // New creates a Server that forwards to the given upstream Unix socket path.
@@ -123,6 +149,16 @@ func (s *Server) serveHTTP(w http.ResponseWriter, r *http.Request) {
 
 	slog.Debug("docker proxy: ALLOW", "method", method, "path", r.URL.Path)
 
+	// §決定5's forced network injection (see SetWorkspaceNetwork's doc
+	// comment): runs AFTER the policy check above (a request that was
+	// going to be denied stays denied — no reason to rewrite a body this
+	// proxy is about to reject anyway) and BEFORE forwarding, so the
+	// upstream Docker daemon never sees the client's original network
+	// choice for a container this job creates.
+	if s.workspaceNetwork != "" && method == "POST" && bare == "/containers/create" {
+		bodyBytes = injectWorkspaceNetwork(bodyBytes, s.workspaceNetwork)
+	}
+
 	if isHijackEndpoint(method, bare) {
 		s.serveHijack(w, r, bodyBytes)
 		return
@@ -201,6 +237,47 @@ func (s *Server) serveForward(w http.ResponseWriter, r *http.Request, bodyBytes 
 	}
 	w.WriteHeader(resp.StatusCode)
 	io.Copy(w, resp.Body) //nolint:errcheck
+}
+
+// injectWorkspaceNetwork rewrites a POST /containers/create request body so
+// the created container's NetworkingConfig is forced onto network — see
+// Server.SetWorkspaceNetwork's doc comment for the contract this
+// implements. Every top-level field other than "NetworkingConfig" is
+// carried through byte-for-byte (round-tripped via map[string]json.RawMessage
+// rather than a hand-modeled struct, so this never has to track the Docker
+// create body's full schema just to leave most of it alone) — only that one
+// key is replaced (or added, if the client didn't send one at all).
+//
+// A malformed or non-object body is returned unchanged: checkContainersCreate
+// (policy.go) already rejects invalid JSON before CheckRequest can return
+// Allow, so serveHTTP should never actually reach this function with
+// unparseable JSON — this fallback exists purely so a rewrite bug can never
+// turn an already-validated request into a proxy panic or a dropped
+// request.
+func injectWorkspaceNetwork(body []byte, network string) []byte {
+	raw := body
+	if len(raw) == 0 {
+		raw = []byte("{}")
+	}
+
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &m); err != nil {
+		return body
+	}
+
+	netCfg, err := json.Marshal(struct {
+		EndpointsConfig map[string]struct{} `json:"EndpointsConfig"`
+	}{EndpointsConfig: map[string]struct{}{network: {}}})
+	if err != nil {
+		return body
+	}
+	m["NetworkingConfig"] = netCfg
+
+	out, err := json.Marshal(m)
+	if err != nil {
+		return body
+	}
+	return out
 }
 
 // extractCreationID parses the upstream creation response body and returns the

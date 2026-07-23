@@ -154,21 +154,29 @@ type containerCreateBody struct {
 }
 
 type hostConfig struct {
-	Binds           []string       `json:"Binds"`
-	Mounts          []mountSpec    `json:"Mounts"`
-	Privileged      bool           `json:"Privileged"`
-	NetworkMode     string         `json:"NetworkMode"`
-	PidMode         string         `json:"PidMode"`
-	IpcMode         string         `json:"IpcMode"`
-	UsernsMode      string         `json:"UsernsMode"`
-	CgroupnsMode    string         `json:"CgroupnsMode"`
-	SecurityOpt     []string       `json:"SecurityOpt"`
-	CapAdd          []string       `json:"CapAdd"`
-	Devices         []interface{}  `json:"Devices"`
-	DeviceCgroupRules []string     `json:"DeviceCgroupRules"`
-	Runtime         string         `json:"Runtime"`
-	Sysctls         map[string]string `json:"Sysctls"`
-	CgroupParent    string         `json:"CgroupParent"`
+	Binds             []string          `json:"Binds"`
+	Mounts            []mountSpec       `json:"Mounts"`
+	Privileged        bool              `json:"Privileged"`
+	NetworkMode       string            `json:"NetworkMode"`
+	PidMode           string            `json:"PidMode"`
+	IpcMode           string            `json:"IpcMode"`
+	UsernsMode        string            `json:"UsernsMode"`
+	CgroupnsMode      string            `json:"CgroupnsMode"`
+	SecurityOpt       []string          `json:"SecurityOpt"`
+	CapAdd            []string          `json:"CapAdd"`
+	Devices           []interface{}     `json:"Devices"`
+	DeviceCgroupRules []string          `json:"DeviceCgroupRules"`
+	Runtime           string            `json:"Runtime"`
+	Sysctls           map[string]string `json:"Sysctls"`
+	CgroupParent      string            `json:"CgroupParent"`
+	// PortBindings: publishing a sibling container's port to the host would
+	// let it be reached directly by host IP, bypassing the workspace
+	// internal network entirely (docs/plans/phase6-container-backend.md
+	// §PR6, §決定5: "host への port publish は非サポート (internal network から
+	// host published port へは届かない)"). Denied unconditionally below —
+	// there is no legitimate sibling use case this proxy needs to support
+	// publishing for.
+	PortBindings map[string]interface{} `json:"PortBindings"`
 }
 
 type mountSpec struct {
@@ -256,6 +264,10 @@ func checkContainersCreate(body []byte) Verdict {
 		if isDangerousMode(v) {
 			return deny("HostConfig.NetworkMode: " + v + " is not permitted")
 		}
+	}
+
+	if len(hc.PortBindings) > 0 {
+		return deny("HostConfig.PortBindings: publishing ports to the host is not permitted")
 	}
 
 	if v := hc.PidMode; v != "" {

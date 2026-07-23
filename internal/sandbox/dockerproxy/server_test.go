@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net"
@@ -84,6 +85,26 @@ func newProxy(t *testing.T, upstreamSock string) (sockPath string) {
 		t.Fatal("proxy listen:", err)
 	}
 	srv := New(upstreamSock)
+	go srv.Serve(ln) //nolint:errcheck
+	t.Cleanup(func() {
+		srv.Close()
+		ln.Close()
+	})
+	return sock
+}
+
+// newProxyWithWorkspaceNetwork is newProxy plus Server.SetWorkspaceNetwork
+// (§決定5's forced sibling network injection).
+func newProxyWithWorkspaceNetwork(t *testing.T, upstreamSock, network string) (sockPath string) {
+	t.Helper()
+	dir := t.TempDir()
+	sock := filepath.Join(dir, "proxy.sock")
+	ln, err := net.Listen("unix", sock)
+	if err != nil {
+		t.Fatal("proxy listen:", err)
+	}
+	srv := New(upstreamSock)
+	srv.SetWorkspaceNetwork(network)
 	go srv.Serve(ln) //nolint:errcheck
 	t.Cleanup(func() {
 		srv.Close()
@@ -244,6 +265,99 @@ func TestProxy_transfer_safeContainersCreate_reaches_upstream(t *testing.T) {
 
 	if resp.StatusCode != http.StatusCreated {
 		t.Errorf("expected 201, got %d", resp.StatusCode)
+	}
+}
+
+// TestProxy_workspaceNetwork_forcesInjection pins §決定5's "sibling の
+// workspace network 強制注入" (docs/plans/phase6-container-backend.md §PR6):
+// when a workspace network is configured, the upstream Docker daemon must
+// see the job's workspace network — NOT whatever network the sandboxed
+// client itself requested — in NetworkingConfig.EndpointsConfig, while
+// every other field of the client's original body survives unchanged.
+func TestProxy_workspaceNetwork_forcesInjection(t *testing.T) {
+	upstream := newFakeUpstream(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusCreated)
+		fmt.Fprintf(w, `{"Id":"abc123"}`)
+	})
+	proxySock := newProxyWithWorkspaceNetwork(t, upstream.sockPath, "boid-ws-myworkspace")
+
+	body := mustJSON(map[string]interface{}{
+		"Image": "alpine:latest",
+		"NetworkingConfig": map[string]interface{}{
+			"EndpointsConfig": map[string]interface{}{
+				"attacker-chosen-network": map[string]interface{}{},
+			},
+		},
+	})
+	resp := doProxyRequest(t, proxySock, "POST", "/containers/create", body)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("expected 201, got %d", resp.StatusCode)
+	}
+
+	var received capturedRequest
+	select {
+	case received = <-upstream.requests:
+	case <-time.After(time.Second):
+		t.Fatal("upstream did not receive request")
+	}
+
+	var got struct {
+		Image            string `json:"Image"`
+		NetworkingConfig struct {
+			EndpointsConfig map[string]json.RawMessage `json:"EndpointsConfig"`
+		} `json:"NetworkingConfig"`
+	}
+	if err := json.Unmarshal(received.Body, &got); err != nil {
+		t.Fatalf("unmarshal upstream body: %v (body: %s)", err, received.Body)
+	}
+	if got.Image != "alpine:latest" {
+		t.Errorf("Image = %q, want alpine:latest (non-network fields must survive)", got.Image)
+	}
+	if _, ok := got.NetworkingConfig.EndpointsConfig["boid-ws-myworkspace"]; !ok {
+		t.Errorf("EndpointsConfig = %v, want the workspace network present", got.NetworkingConfig.EndpointsConfig)
+	}
+	if _, ok := got.NetworkingConfig.EndpointsConfig["attacker-chosen-network"]; ok {
+		t.Errorf("EndpointsConfig = %v, client-requested network must be discarded, not merged", got.NetworkingConfig.EndpointsConfig)
+	}
+	if len(got.NetworkingConfig.EndpointsConfig) != 1 {
+		t.Errorf("EndpointsConfig = %v, want exactly one (forced) network", got.NetworkingConfig.EndpointsConfig)
+	}
+}
+
+// TestProxy_workspaceNetwork_unsetLeavesBodyUnchanged verifies the
+// pre-existing behavior (no Server.SetWorkspaceNetwork call — every
+// existing e2e/unit test's baseline) is untouched: the client's body
+// reaches upstream byte-for-byte, matching
+// TestProxy_rawBodyForwarding_bytesUnchanged's own guarantee extended to a
+// body that itself carries a NetworkingConfig.
+func TestProxy_workspaceNetwork_unsetLeavesBodyUnchanged(t *testing.T) {
+	var receivedBody []byte
+	upstream := newFakeUpstream(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusCreated)
+		fmt.Fprintf(w, `{"Id":"abc123"}`)
+	})
+	proxySock := newProxy(t, upstream.sockPath) // no SetWorkspaceNetwork call
+
+	body := mustJSON(map[string]interface{}{
+		"Image": "alpine:latest",
+		"NetworkingConfig": map[string]interface{}{
+			"EndpointsConfig": map[string]interface{}{
+				"whatever-the-client-asked-for": map[string]interface{}{},
+			},
+		},
+	})
+	resp := doProxyRequest(t, proxySock, "POST", "/containers/create", body)
+	defer resp.Body.Close()
+
+	select {
+	case req := <-upstream.requests:
+		receivedBody = req.Body
+	case <-time.After(time.Second):
+		t.Fatal("upstream did not receive request")
+	}
+	if !bytes.Equal(receivedBody, body) {
+		t.Errorf("upstream body = %s, want unchanged %s (workspace network unset)", receivedBody, body)
 	}
 }
 

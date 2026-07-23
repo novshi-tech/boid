@@ -198,6 +198,30 @@ func TestNetworkModeNone_allow(t *testing.T) {
 	assertAllow(t, "POST", "/containers/create", body)
 }
 
+// TestPortBindings_deny pins §決定5's "host への port publish は非サポート"
+// (docs/plans/phase6-container-backend.md §PR6): publishing a sibling
+// container's port to the host would let it be reached directly by host
+// IP, bypassing the workspace internal network entirely — the "直 IP 拒否"
+// requirement.
+func TestPortBindings_deny(t *testing.T) {
+	body := createBody(map[string]interface{}{
+		"PortBindings": map[string]interface{}{
+			"80/tcp": []map[string]string{{"HostPort": "8080"}},
+		},
+	})
+	assertDenyContains(t, "POST", "/containers/create", body, "PortBindings")
+}
+
+func TestPortBindings_empty_allow(t *testing.T) {
+	body := createBody(map[string]interface{}{"PortBindings": map[string]interface{}{}})
+	assertAllow(t, "POST", "/containers/create", body)
+}
+
+func TestPortBindings_absent_allow(t *testing.T) {
+	body := createBody(map[string]interface{}{})
+	assertAllow(t, "POST", "/containers/create", body)
+}
+
 // --- PidMode ---
 
 func TestPidModeHost_deny(t *testing.T) {
