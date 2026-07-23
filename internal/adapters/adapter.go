@@ -74,9 +74,13 @@ type Usage struct {
 //     (Python start_new_session=True equivalent).
 //  4. Exit code normalisation (stop signal terminations are reported as 0
 //     via Result.StoppedByDaemon).
-//  5. Persisting a freshly-generated session id to payload_patch.json so the
-//     jsonl transcript path is recorded in the task's artifact even when the
-//     child terminates abnormally (SIGKILL, OOM).
+//  5. Applying a freshly-generated session id via the payload-patch broker
+//     RPC (`boid task update --payload-patch @-`) so the jsonl transcript
+//     path is recorded in the task's artifact even when the child terminates
+//     abnormally (SIGKILL, OOM). Phase 6 PR8 (docs/plans/
+//     phase6-container-backend.md §決定 9) retired the prior
+//     $HOME/.boid/output/payload_patch.json file write this used to do —
+//     see internal/adapters/claude/run.go's sendTaskUpdatePayloadPatch.
 type RunContext struct {
 	// JobID is the broker job_done key and transcript correlation id.
 	JobID string
@@ -104,20 +108,6 @@ type RunContext struct {
 
 	// Workspace is the child process's cwd.
 	Workspace string
-	// OutputDir is where payload_patch.json is written. Defaults to
-	// ~/.boid/output when empty.
-	//
-	// Phase 5 sub-track 5b PR3 (docs/plans/phase5-shim-and-task-context.md)
-	// retired the sibling PayloadPath field: the claude adapter used to read
-	// prior session entries from a payload.json this field pointed at, but
-	// now pulls them via the `boid task payload` broker RPC instead (see
-	// claude/run.go's readSessionsFromRPC). PayloadPath had no other reader
-	// and no production caller ever set it (BuildSandboxSpec /
-	// runner_linux.go's runAgent never populated it — see git history if you
-	// need the old zero-value fallback logic), so it was dead weight rather
-	// than a live contract worth preserving until the 5b-6 file-distribution
-	// cutover.
-	OutputDir string
 
 	// Stdin / Stdout / Stderr are passed verbatim to the child. The caller
 	// is responsible for PTY allocation; the adapter only forwards fds.
@@ -161,10 +151,6 @@ type Result struct {
 	// (a daemon-initiated SIGTERM is mapped to 0 via StoppedByDaemon).
 	ExitCode int
 
-	// PayloadPatch holds the contents of payload_patch.json after the agent
-	// exits. May be nil if the file was never written.
-	PayloadPatch json.RawMessage
-
 	// Usage carries token / cost metrics for the run when available. May be
 	// the zero value when the harness does not expose post-run metrics or
 	// the read path is not wired yet.
@@ -188,8 +174,10 @@ type Result struct {
 // agent.
 type HarnessAdapter interface {
 	// Run forks the agent process, manages its signal lifecycle, and returns
-	// the captured payload patch and usage. See RunContext / Result for the
-	// I/O contract.
+	// its exit status. Any payload patch the harness itself needs to apply
+	// (e.g. claude's session id bookkeeping) is sent directly via the broker's
+	// payload-patch RPC during Run() rather than returned here — see
+	// RunContext / Result for the full I/O contract.
 	Run(ctx context.Context, rc RunContext) (Result, error)
 
 	// Usage returns token consumption metrics for the job identified by jobID.

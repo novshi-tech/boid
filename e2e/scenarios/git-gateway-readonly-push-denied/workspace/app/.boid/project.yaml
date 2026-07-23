@@ -71,8 +71,7 @@ task_behaviors:
             exit 1
           fi
 
-          mkdir -p "$HOME/.boid/output"
-          cat > "$HOME/.boid/output/payload_patch.json" <<EOF
-          {"payload_patch":{"artifact":{"source":"readonly-push","local_commit":"${local_commit}","push_denied":true,"fetch_ok":true}}}
+          boid task update --payload-patch @- <<EOF
+          {"artifact":{"source":"readonly-push","local_commit":"${local_commit}","push_denied":true,"fetch_ok":true}}
           EOF
           BOID_HOOK_SCRIPT

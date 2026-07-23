@@ -27,8 +27,7 @@ task_behaviors:
 
           # Record the received answer in the artifact so the scenario can assert the
           # blocking RPC delivered it end-to-end (the job log also captures the got= line).
-          mkdir -p "$HOME/.boid/output"
-          printf '{"payload_patch":{"artifact":{"received_answer":"%s"}}}\n' "$answer" \
-            > "$HOME/.boid/output/payload_patch.json"
+          printf '{"artifact":{"received_answer":"%s"}}\n' "$answer" \
+            | boid task update --payload-patch @-
         traits:
           produces: [artifact]

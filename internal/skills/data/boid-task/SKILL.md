@@ -134,8 +134,9 @@ auto-fires a stop hook (removed in lifecycle-accountability Phase 2.a). Silent
 exit leaves the task stuck in `executing` with no signal to the owner.
 
 > Do **not** call `boid job done` or `boid agent stop` directly. `boid job done`
-> unregisters the broker token before the EXIT trap runs (drops `payload_patch.json`);
-> `boid agent stop` is a legacy escape hatch superseded by `notify`.
+> unregisters the broker token immediately, so any `--payload-patch` call you
+> make after it will be rejected as an invalid token; `boid agent stop` is a
+> legacy escape hatch superseded by `notify`.
 
 ### Asking your owner (mid-flight Q&A)
 
@@ -633,11 +634,11 @@ trait-gated logic as a completing hook's own result, so it is the primary way
 to report structured output. It supersedes `--payload-file` for this purpose:
 `--payload-file` still exists for ad-hoc top-level payload edits, but does not
 know about traits, so prefer `--payload-patch` whenever you are writing
-`artifact.report` or any other hook-owned trait. There is also a lower-level,
-file-based fallback (`$HOME/.boid/output/payload_patch.json`, read once at job
-exit) that some infrastructure still uses internally — you do not need it and
-should not write to it directly; `--payload-patch` applies immediately and
-does not depend on your process exiting cleanly.
+`artifact.report` or any other hook-owned trait. `--payload-patch` applies
+immediately and does not depend on your process exiting cleanly — it is the
+sole payload-patch delivery path (the former file-based fallback,
+`$HOME/.boid/output/payload_patch.json`, was retired; writing there does
+nothing).
 
 ### Executor rules
 

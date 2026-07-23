@@ -86,7 +86,7 @@ sandbox 内のプロセスからは:
 - **host 側**のホームディレクトリ・SSH 鍵・他プロジェクトは存在自体が見えない (`$ROOT` 配下に bind しなければパスが解決しない)。 サンドボックス自身の `$HOME` は別物 — 下記参照
 - 自分は uid 0 (内側) で動いているが、 user namespace の外には出られずホストの root へのエスカレーションパスはない
 
-サンドボックス内の `$HOME` は host 共有でも毎回まっさらな tmpfs でもなく、 **同一 workspace に dispatch される job 間で永続する、 read-write bind された workspace スコープの volume** です (docs/plans/home-workspace-volume.md Phase 4)。 hook が `$HOME` 配下に書いたファイルは、 同じ workspace の後続の別 job からも見えます。 唯一の例外が `$HOME/.boid` で、 dispatch 毎に (永続する `$HOME` bind の上に) まっさらな job-scoped tmpfs が重ねられるため、 `$HOME/.boid/output/payload_patch.json` が workspace を共有する job 間で漏れることはありません。
+サンドボックス内の `$HOME` は host 共有でも毎回まっさらな tmpfs でもなく、 **同一 workspace に dispatch される job 間で永続する、 read-write bind された workspace スコープの volume** です (docs/plans/home-workspace-volume.md Phase 4)。 hook が `$HOME` 配下に書いたファイルは、 同じ workspace の後続の別 job からも見えます。 `$HOME/.boid` も同様に永続します — Phase 6 PR8 以前は dispatch 毎に job-scoped tmpfs を重ねて `$HOME/.boid/output/payload_patch.json` を job 間で隔離していましたが、 payload patch の唯一経路が broker RPC (`boid task update --payload-patch`) になったことでこのファイル経由の出力自体が撤廃され、 隔離用の tmpfs も不要になりました (詳細は [Hook スクリプトプロトコル / 出力](../reference/hook-contract.md#出力))。
 
 タスクコンテキストは `boid task current` / `instructions` / `env` / `payload` — shim 経由で呼べる broker RPC — で取得します。 dispatch 時に一括生成する方式ではなく、必要になった時点で pull します。 hook のプロトコル詳細は [Hook スクリプトプロトコル](../reference/hook-contract.md)。
 

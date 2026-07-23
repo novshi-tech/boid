@@ -181,7 +181,7 @@ What happens when a user runs `boid action send --task <id> --type start`:
 5. **Dispatch loop:** `runDispatchLoop` kicks in and calls `Coordinator.DispatchAndAdvance`.
 6. **Hook selection:** `Evaluator` picks the hooks bound to this behavior in the project's `task_behaviors` metadata (hooks come from project.yaml only — neither workspaces nor kits supply hooks). Hooks fire while the task is in `executing` (or `awaiting`, depending on the hook's trigger).
 7. **Execution:** dispatcher assembles the sandbox plan and calls `sandbox.Broker.RunJob` to launch the hook script.
-8. **Payload merge:** the hook's stdout is parsed as JSON and the `payload_patch` is merged into the payload.
+8. **Payload merge:** the hook reports a payload patch, preferably by calling `boid task update --payload-patch` (applied immediately via the broker RPC) or, as a fallback, by printing `{"payload_patch": ...}` JSON to stdout (parsed once the job completes) — see [Hook script protocol / Outputs](../reference/hook-contract.md#outputs).
 9. **Auto-transition:** the state machine re-evaluates; any matching auto-transition fires another round.
 10. **Response:** the final task state is returned as JSON; the CLI prints it.
 

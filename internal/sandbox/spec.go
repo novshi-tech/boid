@@ -67,12 +67,16 @@ type Spec struct {
 	// Foreground indicates a user-facing job (boid exec): stdout/stderr are
 	// inherited and no broker job-done callback fires on exit. Hook jobs leave
 	// this false so the runner posts `boid job done` through the broker.
+	// Broker socket path and token are carried in Env (BOID_BROKER_SOCKET /
+	// BOID_BROKER_TOKEN).
+	//
+	// Phase 6 PR8 (docs/plans/phase6-container-backend.md §決定 9) retired the
+	// sibling PayloadPatchPath field: agents / hook scripts now apply their
+	// payload patch immediately via the broker's `boid task update
+	// --payload-patch` RPC instead of writing a well-known
+	// $HOME/.boid/output/payload_patch.json the runner used to read back as
+	// the job-done output — see runner.resolveJobOutput's doc comment.
 	Foreground bool
-	// PayloadPatchPath is the sandbox-internal path the agent writes its result
-	// patch to (HOME/.boid/output/payload_patch.json). The runner reads it as the
-	// job-done output. Broker socket path and token are carried in Env
-	// (BOID_BROKER_SOCKET / BOID_BROKER_TOKEN).
-	PayloadPatchPath string
 
 	// --- Bookkeeping ---
 	// RootDir, if non-empty, is the host directory used as the sandbox ROOT (a

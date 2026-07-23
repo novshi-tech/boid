@@ -152,10 +152,10 @@ set -euo pipefail
 # Blocking (optional)
 while [[ ! -f ".boid/release-my-hook" ]]; do sleep 0.05; done
 
-# Write payload_patch to $HOME/.boid/output/
-mkdir -p "$HOME/.boid/output"
-cat > "$HOME/.boid/output/payload_patch.json" <<'EOF'
-{"payload_patch":{"artifact":{"result":"done"}}}
+# Apply the payload patch immediately via the broker RPC (preferred —
+# $HOME/.boid/output/payload_patch.json is retired, no longer read).
+boid task update --payload-patch @- <<'EOF'
+{"artifact":{"result":"done"}}
 EOF
 ```
 

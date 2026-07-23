@@ -81,10 +81,11 @@ func (e *boidBuiltinExecutor) ExecuteBoidBuiltin(goCtx context.Context, ctx sand
 		// agent stop: ask the daemon to deliver SIGUSR1 to the runtime pgrp.
 		// claude.Adapter.Run()'s signal.Notify handler translates that into a
 		// SIGTERM toward the claude child while the surrounding runner-inner-
-		// child keeps running and posts `boid job done --output-file
-		// payload_patch.json` through the broker — that callback is the sole
-		// CompleteJob path, so the broker token must stay valid until then.
-		// Mirrors NotifyTask's StopAgent path; do NOT call CompleteJob here.
+		// child keeps running and posts `boid job done` through the broker
+		// directly (internal/sandbox/runner.postJobDone) — that callback is
+		// the sole CompleteJob path, so the broker token must stay valid
+		// until then. Mirrors NotifyTask's StopAgent path; do NOT call
+		// CompleteJob here.
 		if e.workflow == nil {
 			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid agent stop unavailable"}
 		}

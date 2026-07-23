@@ -102,8 +102,7 @@ task_behaviors:
             exit 1
           fi
 
-          mkdir -p "$HOME/.boid/output"
-          cat > "$HOME/.boid/output/payload_patch.json" <<EOF
-          {"payload_patch":{"artifact":{"source":"forbidden-repo","fetch_denied":true,"push_denied":true,"control_fetch_ok":true}}}
+          boid task update --payload-patch @- <<EOF
+          {"artifact":{"source":"forbidden-repo","fetch_denied":true,"push_denied":true,"control_fetch_ok":true}}
           EOF
           BOID_HOOK_SCRIPT

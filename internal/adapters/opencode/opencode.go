@@ -2,8 +2,8 @@
 //
 // Phase 3-c prototype: the goal is to validate that adapters.HarnessAdapter
 // composes for a non-claude harness. Run() forks `opencode run` with signal
-// forwarding and exit normalisation; session persistence, payload_patch.json
-// writes and boid task notify integration are deliberately left out (see
+// forwarding and exit normalisation; session persistence, payload-patch
+// application and boid task notify integration are deliberately left out (see
 // docs/plans/agent-aware-boid.md Phase 3-c).
 package opencode
 

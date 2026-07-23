@@ -167,10 +167,11 @@ func (s *TaskAppService) NotifyTask(ctx context.Context, taskID, message, ask, q
 	// directly WITHOUT calling ApplyAction. The state transition fires later
 	// via the condition-based auto rule (`lifecycle.executed && lifecycle.done`
 	// → done; ditto for fail), which only kicks in after the runtime has
-	// cleanly exited and bash's EXIT trap has called `boid job done`. This
-	// preserves the agent's payload_patch (session id) and avoids the race
-	// where ApplyAction(done)'s spawned dispatch loop SIGTERM'd the still-
-	// running runtime, leaving the job marked failed.
+	// cleanly exited and the go-native runner has called `boid job done`
+	// through the broker (internal/sandbox/runner.postJobDone — not a shell
+	// EXIT trap). This avoids the race where ApplyAction(done)'s spawned
+	// dispatch loop SIGTERM'd the still-running runtime, leaving the job
+	// marked failed.
 	if s.Workflow == nil {
 		return &StatusError{Code: http.StatusInternalServerError, Message: "workflow service not configured"}
 	}
@@ -235,14 +236,18 @@ func (s *TaskAppService) NotifyTask(ctx context.Context, taskID, message, ask, q
 	// SIGUSR1 to the runtime pgrp; claude.Adapter.Run()'s signal.Notify handler
 	// translates that into a SIGTERM toward the claude child and returns with
 	// Result.StoppedByDaemon=true so the surrounding runner-inner-child still
-	// posts `boid job done --output-file payload_patch.json` through the broker.
+	// posts `boid job done` through the broker (a direct Go call,
+	// internal/sandbox/runner.postJobDone).
 	//
 	// Crucially, we do NOT call CompleteJob preemptively here. CompleteJob's
 	// finalize releases the broker token, which would reject the runner's
 	// follow-up `boid job done` as "invalid token" — silently dropping the
-	// agent's session id and breaking the next hook's resume. By letting the
+	// job's output and breaking the next hook's resume. By letting the
 	// runner-inner-child be the sole CompleteJob caller (through the broker),
-	// the standard completion path runs with the agent's payload_patch intact.
+	// the standard completion path runs to completion normally. (The agent's
+	// own session-id payload patch is unaffected either way — it is applied
+	// immediately via `--payload-patch` before the agent even starts, not at
+	// job-done time.)
 	if s.Jobs != nil {
 		jobs, err := s.Jobs.ListJobsByTask(taskID)
 		if err == nil {

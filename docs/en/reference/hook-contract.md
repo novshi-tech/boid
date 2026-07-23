@@ -2,7 +2,7 @@
 
 The complete I/O contract between `boid` and hook scripts.
 
-The [Kit authoring overview](../kit-authoring/overview.md) summarises the protocol; this page is the canonical reference for inputs (stdin, environment, working directory), outputs (`payload_patch.json`, stdout, stderr), exit codes, and the data structures involved.
+The [Kit authoring overview](../kit-authoring/overview.md) summarises the protocol; this page is the canonical reference for inputs (stdin, environment, working directory), outputs (`boid task update --payload-patch`, stdout, stderr), exit codes, and the data structures involved.
 
 ## Inputs
 
@@ -91,42 +91,49 @@ Commands like `git`, `gh`, and language toolchains therefore do not need explici
 
 Hooks run inside the sandbox. They can read and write inside the in-sandbox clone (or nowhere writable at all for `readonly: true` behaviors — the local clone itself still exists but pushes are refused at the git gateway) and `$HOME`. Paths declared in the kit's `additional_bindings` are mounted in addition. The host's home directory, SSH keys, and other projects are not visible.
 
-`$HOME` is a **workspace-scoped volume that persists across jobs in the same workspace** — not a fresh directory per job. Files a hook writes under `$HOME` (config, credentials, caches, dotfiles) are visible to later jobs dispatched against the same workspace; they are not thrown away with this job's sandbox. The one exception is `$HOME/.boid`, which stays a fresh, job-scoped tmpfs (wiped every job) so `$HOME/.boid/output/payload_patch.json` never leaks between jobs. Persisting on disk under `$HOME` is not the same as being part of a task's deliverable — only what lands in the project clone's git history (committed **and** pushed) counts as output.
+`$HOME` is a **workspace-scoped volume that persists across jobs in the same workspace** — not a fresh directory per job. Files a hook writes under `$HOME` (config, credentials, caches, dotfiles) are visible to later jobs dispatched against the same workspace; they are not thrown away with this job's sandbox. `$HOME/.boid` is no longer an exception — it persists across jobs like the rest of `$HOME` (before Phase 6 PR8 it was a fresh, job-scoped tmpfs to keep the shared `$HOME/.boid/output/payload_patch.json` path from leaking between jobs; that file-based path was retired instead, so there is nothing left there to isolate — see "Outputs" below). Persisting on disk under `$HOME` is not the same as being part of a task's deliverable — only what lands in the project clone's git history (committed **and** pushed) counts as output.
 
 ## Outputs
 
 To update the payload, a hook returns a **payload patch**. Two output paths are supported, with a defined priority.
 
-### Path 1: `$HOME/.boid/output/payload_patch.json` (preferred)
-
-Write the JSON document to `$HOME/.boid/output/payload_patch.json`. When the hook exits, the runtime reads this file and forwards it to `boid`.
-
-If the file exists, stdout is ignored.
+### Path 1: `boid task update --payload-patch` (preferred)
 
 ```bash
-mkdir -p "$HOME/.boid/output"
-cat > "$HOME/.boid/output/payload_patch.json" <<'JSON'
+boid task update --payload-patch @- <<'JSON'
 {
-  "payload_patch": {
-    "artifact": { "result": "ok" }
-  }
+  "artifact": { "result": "ok" }
 }
 JSON
 ```
 
+`@-` follows curl's convention: it reads from stdin (`@<path>` reads a file, and a bare value is inline). This applies immediately via the broker RPC — merged into the task's payload right away, without waiting for the hook process to exit cleanly. Unlike Path 2 below, the body is the patch's contents directly — no `payload_patch` wrapper key.
+
+Before Phase 6 PR8, the preferred path was writing to `$HOME/.boid/output/payload_patch.json`. That well-known path lived on the workspace-shared `$HOME`, so isolating it between concurrent jobs required an extra job-scoped tmpfs mount — a liability the RPC path does not have. Writing to `$HOME/.boid/output/` is no longer read by `boid` at all.
+
 ### Path 2: stdout (fallback)
 
-Only when `payload_patch.json` is absent does stdout become the payload-patch source. It can span multiple lines, but it must be a single valid JSON document.
+stdout becomes the payload-patch source. It can span multiple lines, but it must be a single valid JSON document. Unlike Path 1, the top level must be wrapped in a `payload_patch` key.
 
 ```bash
 echo '{"payload_patch":{"artifact":{"result":"ok"}}}'
 ```
 
-For new hooks, prefer the file path. Agent-style hooks (such as `claude-code`) print incidental output on stdout, so using the file path avoids accidental misparses.
+For new hooks, prefer Path 1 (`boid task update --payload-patch`). Agent-style hooks (such as `claude-code`) print incidental output on stdout, so using the RPC path avoids accidental misparses. Path 2 is only evaluated once, at job completion; Path 1 applies the moment it's called.
 
 ### payload patch shape
 
-The top level must be a `payload_patch` key. Its body is deep-merged into the current payload.
+Path 1 (`--payload-patch`) takes the patch's contents directly:
+
+```json
+{
+  "artifact": {
+    "<key>": "<value>"
+  }
+}
+```
+
+Path 2 (stdout) must wrap the same content under a top-level `payload_patch` key, which is merged into the current payload:
 
 ```json
 {
@@ -138,7 +145,7 @@ The top level must be a `payload_patch` key. Its body is deep-merged into the cu
 }
 ```
 
-In practice the only trait a hook writes is `artifact`. What it is allowed to write is governed by the hook's `traits.produces` declaration in [`project.yaml`](project-yaml.md), under `task_behaviors.<name>.hooks[]` (a kit never provides hooks, so `kit.yaml` has no such declaration). For trait semantics, see [Concepts / Payload and traits](../guide/concepts.md#payload-and-traits).
+Both paths flow through the same merge logic (`orchestrator.MergePayloadPatch`). In practice the only trait a hook writes is `artifact`. What it is allowed to write is governed by the hook's `traits.produces` declaration in [`project.yaml`](project-yaml.md), under `task_behaviors.<name>.hooks[]` (a kit never provides hooks, so `kit.yaml` has no such declaration). For trait semantics, see [Concepts / Payload and traits](../guide/concepts.md#payload-and-traits).
 
 ### stderr (logs)
 
@@ -151,7 +158,7 @@ Whatever the hook writes to stderr is stored as job log output and surfaced by `
 | `0` | Success. The payload patch (if any) is merged. |
 | Non-zero | The job is marked `failed`. The task is **not** automatically aborted — the state machine's auto-transitions decide what happens next. |
 
-Even on a non-zero exit, if `payload_patch.json` was written it is still merged.
+Even on a non-zero exit, if Path 1 (`--payload-patch`) was called it is already merged; if Path 2 (stdout) produced output it is still merged.
 
 ## Extra context for agent hooks
 
@@ -170,12 +177,9 @@ TASK_ID=$(boid task current --field id)
 echo "[my-hook] processing task $TASK_ID" >&2
 
 # Do something — here, write a fixed value to artifact
-mkdir -p "$HOME/.boid/output"
-cat > "$HOME/.boid/output/payload_patch.json" <<'JSON'
+boid task update --payload-patch @- <<'JSON'
 {
-  "payload_patch": {
-    "artifact": { "hello": "world" }
-  }
+  "artifact": { "hello": "world" }
 }
 JSON
 ```

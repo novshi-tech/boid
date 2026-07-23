@@ -42,7 +42,7 @@ Concept-oriented how-to.
 ### Reference
 
 - [`project.yaml` reference](reference/project-yaml.md) — every field of the project definition file
-- [Hook script protocol](reference/hook-contract.md) — the hook I/O contract (stdin, env vars, `payload_patch.json`, exit codes, ...)
+- [Hook script protocol](reference/hook-contract.md) — the hook I/O contract (stdin, env vars, `--payload-patch`, exit codes, ...)
 - [Payload trait reference](reference/traits.md) — the shape of `artifact` / `lifecycle`, what the state machine reads, and the merge modes
 - [CLI reference](reference/cli.md) — index of every subcommand grouped by role (per-flag detail lives in `boid <subcommand> --help`)
 - [HTTP API reference](reference/http-api.md) — the `/api/*` endpoints the daemon exposes over the UNIX socket and HTTP listener, plus SSE and error format
