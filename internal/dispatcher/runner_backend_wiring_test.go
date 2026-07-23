@@ -58,6 +58,15 @@ func (s *wireFakeSession) Signal(_ context.Context, sig syscall.Signal) error {
 type wireFakeBackend struct {
 	adoptable  map[string]*wireFakeSession
 	adoptCalls []string
+
+	// reapReport/reapErr/reapCalls back TestRunner_ReapOrphans_DelegatesToBackend
+	// — Runner.ReapOrphans (docs/plans/phase6-container-backend.md §PR7) is
+	// a thin delegation to SandboxBackend.ReapOrphans, so this fake needs a
+	// configurable return value rather than the fixed zero-value the other
+	// tests in this file are content with.
+	reapReport backend.ReapReport
+	reapErr    error
+	reapCalls  int
 }
 
 var _ backend.SandboxBackend = (*wireFakeBackend)(nil)
@@ -74,7 +83,8 @@ func (b *wireFakeBackend) Adopt(_ context.Context, runtimeID string) (backend.Sa
 	return sess, true
 }
 func (b *wireFakeBackend) ReapOrphans(context.Context) (backend.ReapReport, error) {
-	return backend.ReapReport{}, nil
+	b.reapCalls++
+	return b.reapReport, b.reapErr
 }
 
 // TestRunner_SignalJobRuntime_RoutesThroughBackendAdoptToSessionSignal pins
@@ -132,5 +142,53 @@ func TestRunner_ResizeRuntimeID_RoutesThroughBackendAdoptToSessionResize(t *test
 
 	if len(sess.resizeCalls) != 1 || sess.resizeCalls[0] != size {
 		t.Fatalf("session.Resize calls = %v, want exactly one %+v", sess.resizeCalls, size)
+	}
+}
+
+// TestRunner_ReapOrphans_DelegatesToBackend pins Runner.ReapOrphans
+// (docs/plans/phase6-container-backend.md §PR7) as a pure delegation to
+// r.sandboxBackend().ReapOrphans — internal/server/wire.go's startup
+// sequence relies on getting the exact ReapReport/error the configured
+// backend produced, unmodified, so it can compute which daemon_shutdown
+// tasks to skip auto-reopening.
+func TestRunner_ReapOrphans_DelegatesToBackend(t *testing.T) {
+	want := backend.ReapReport{
+		ReapedJobIDs: []string{"job-ok"},
+		FailedJobIDs: []string{"job-bad"},
+	}
+	be := &wireFakeBackend{reapReport: want}
+	r := &Runner{Runtime: &ubFakeRuntime{}, Backend: be}
+
+	got, err := r.ReapOrphans(context.Background())
+	if err != nil {
+		t.Fatalf("ReapOrphans: %v", err)
+	}
+	if be.reapCalls != 1 {
+		t.Fatalf("backend ReapOrphans calls = %d, want 1", be.reapCalls)
+	}
+	if len(got.ReapedJobIDs) != 1 || got.ReapedJobIDs[0] != "job-ok" {
+		t.Errorf("ReapedJobIDs = %v, want [job-ok]", got.ReapedJobIDs)
+	}
+	if len(got.FailedJobIDs) != 1 || got.FailedJobIDs[0] != "job-bad" {
+		t.Errorf("FailedJobIDs = %v, want [job-bad]", got.FailedJobIDs)
+	}
+}
+
+// TestRunner_ReapOrphans_UsesUsernsStubByDefault pins that a Runner with no
+// Backend override (the production default, absent config sandbox.backend:
+// container) still gets a nil error and a zero ReapReport back — the
+// userns backend's ReapOrphans no-op stub — rather than a nil-pointer
+// panic. internal/server/wire.go calls this unconditionally on every
+// daemon startup, so it must never blow up when the userns backend (every
+// pre-PR7 deployment) is in play.
+func TestRunner_ReapOrphans_UsesUsernsStubByDefault(t *testing.T) {
+	r := &Runner{Runtime: &ubFakeRuntime{}}
+
+	got, err := r.ReapOrphans(context.Background())
+	if err != nil {
+		t.Fatalf("ReapOrphans: %v", err)
+	}
+	if len(got.ReapedJobIDs) != 0 || len(got.FailedJobIDs) != 0 || got.GlobalError != nil {
+		t.Errorf("ReapReport = %+v, want the zero value (userns backend stub)", got)
 	}
 }

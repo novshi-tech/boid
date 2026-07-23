@@ -1127,6 +1127,27 @@ func (r *Runner) SignalJobRuntime(runtimeID string, sig syscall.Signal) {
 	}
 }
 
+// ReapOrphans reconciles sandbox resources a previous daemon instance left
+// behind, via the configured SandboxBackend (docs/plans/
+// phase6-container-backend.md §PR7 / §決定 6). It is a thin delegation —
+// r.sandboxBackend().ReapOrphans(ctx) — so callers (internal/server/wire.go's
+// startup sequence) never need to know which backend is live: the userns
+// backend's ReapOrphans is a permanent no-op stub, so calling this on every
+// daemon startup is always safe and only does real work when the container
+// backend is selected (config sandbox.backend: container).
+//
+// Callers MUST run this — and act on ReapReport.FailedJobIDs, e.g. by
+// skipping auto-reopen for the corresponding tasks — strictly BEFORE
+// resuming any daemon_shutdown-aborted task, per §決定 6: a docker
+// container does not die when the daemon process restarts the way a
+// userns child process (killed by MarkStaleJobsFailed's implicit process
+// death) does, so auto-reopening before reap could dispatch a fresh agent
+// against a task whose previous job container is still alive — two agents
+// mutating the same $HOME/task RPC concurrently.
+func (r *Runner) ReapOrphans(ctx context.Context) (backend.ReapReport, error) {
+	return r.sandboxBackend().ReapOrphans(ctx)
+}
+
 // CanAttach reports whether runtimeID can currently be adopted by the
 // configured SandboxBackend — i.e. whether an attach/resize/signal ingress
 // against it should be allowed. This is the single source of truth for

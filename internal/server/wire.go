@@ -455,6 +455,53 @@ func cleanOrphanRuntimes(runtimesDir string, conn *sql.DB) {
 	}
 }
 
+// reapOrphansBeforeReopen calls runner.ReapOrphans (docs/plans/
+// phase6-container-backend.md §PR7 / §決定 6) and translates its
+// job-scoped ReapReport into the set of TASK IDs the caller's subsequent
+// daemon_shutdown auto-reopen sweep must skip.
+//
+// ReapOrphans reasons about jobs (a backend's resource label is
+// boid.job_id, not task_id — a task can have had several jobs across its
+// lifetime), while FindDaemonShutdownAbortedTasks/auto-reopen reasons
+// about tasks — this resolves FailedJobIDs back to their owning task via
+// dispatcher.GetJob so the two layers can talk to each other. A job whose
+// row can no longer be found (or that was never linked to a task, e.g. a
+// taskless `boid exec`) is skipped rather than erroring: there is no task
+// to protect from a double-reopen race in that case.
+//
+// A non-nil GlobalError (e.g. the docker API was entirely unreachable —
+// the userns backend, which never returns one, is unaffected) is logged
+// but does not, by itself, add anything to the skip set beyond whatever
+// FailedJobIDs already carries: ReapOrphans's own contract is to report
+// per-job failures in FailedJobIDs, so a caller here has no additional
+// task-level information to act on. Real container-backend hardening of
+// the "total listing failure" case is PR9 territory (container e2e +
+// rollback rehearsal, the plan doc's own cutover gate).
+func reapOrphansBeforeReopen(ctx context.Context, runner *dispatcher.Runner, conn *sql.DB) map[string]bool {
+	report, err := runner.ReapOrphans(ctx)
+	if err != nil {
+		slog.Warn("startup reap failed", "error", err)
+	}
+	if report.GlobalError != nil {
+		slog.Warn("startup reap: backend reported a global error", "error", report.GlobalError)
+	}
+	if len(report.ReapedJobIDs) > 0 {
+		slog.Info("startup reap: reconciled orphaned sandbox resources", "reaped_job_count", len(report.ReapedJobIDs))
+	}
+
+	skip := make(map[string]bool, len(report.FailedJobIDs))
+	for _, jobID := range report.FailedJobIDs {
+		job, jerr := dispatcher.GetJob(conn, jobID)
+		if jerr != nil || job == nil || job.TaskID == "" {
+			slog.Warn("startup reap: could not resolve a failed job to its task; unable to skip auto-reopen for it",
+				"job_id", jobID, "error", jerr)
+			continue
+		}
+		skip[job.TaskID] = true
+	}
+	return skip
+}
+
 func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, broker dispatcher.CommandBroker, secretStore *dispatcher.SecretStore) (*appRuntime, error) {
 	// Clean up runtime dirs that have no corresponding job rows (must run before
 	// MarkStaleJobsFailed so we only remove truly orphaned dirs).
@@ -583,6 +630,20 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 	}
 	workflow.InitDispatch(context.Background())
 
+	// Startup reap (docs/plans/phase6-container-backend.md §PR7 / §決定6):
+	// reconcile orphaned sandbox resources — real work only for the
+	// container backend; the userns backend's ReapOrphans is a permanent
+	// no-op stub — BEFORE auto-reopening any daemon_shutdown-aborted task
+	// below. A docker container does not die when this daemon process
+	// restarts the way a userns child process does (MarkStaleJobsFailed
+	// above only updates the DB row; it does not kill anything), so
+	// auto-reopening before reap could dispatch a fresh agent against a
+	// task whose previous job container is still alive — two agents
+	// mutating the same $HOME/task RPC concurrently. reapOrphansBeforeReopen
+	// returns the set of task IDs to skip reopening (every task with at
+	// least one job ReapOrphans failed to reconcile).
+	reapSkipTasks := reapOrphansBeforeReopen(context.Background(), runner, srv.db)
+
 	// Auto-reopen tasks that were interrupted by the previous daemon shutdown.
 	// These tasks were aborted with code=daemon_shutdown either by
 	// abortOnDispatchError (hook in flight when SIGTERM fired) or by
@@ -593,6 +654,11 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 		slog.Warn("failed to query daemon_shutdown aborted tasks", "error", err)
 	} else {
 		for _, id := range shutdownIDs {
+			if reapSkipTasks[id] {
+				slog.Warn("skip auto-reopen: startup reap failed to reconcile a sandbox resource for this task (docs/plans/phase6-container-backend.md §決定6); leaving it aborted to avoid a double-execution race",
+					"task_id", id)
+				continue
+			}
 			if _, err := workflow.ApplyAction(context.Background(), id, api.ApplyActionRequest{Type: "reopen"}); err != nil {
 				slog.Warn("auto-reopen on startup failed", "task_id", id, "error", err)
 				continue
