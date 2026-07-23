@@ -178,6 +178,16 @@ const (
 	labelWorkspace = "boid.workspace"
 	labelInstallID = "boid.install_id"
 
+	// LabelJobID / LabelWorkspace / LabelInstallID are exported aliases of
+	// the label constants above, so PR6's daemon-independent `boid reap`
+	// CLI (internal/reap, cmd/reap.go — docs/plans/phase6-container-backend.md
+	// §決定6) and this package's own label emission read the exact same
+	// string literal rather than risking drift between two independently
+	// hand-typed copies of "boid.install_id".
+	LabelJobID     = labelJobID
+	LabelWorkspace = labelWorkspace
+	LabelInstallID = labelInstallID
+
 	// boidRunnerProtocolLabel / boidRunnerProtocolVersion gate workspace
 	// image overrides (§決定 11): an override image must carry this label
 	// with this exact value, proving it derives from the shared boid base

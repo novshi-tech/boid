@@ -135,6 +135,23 @@ func defaultTLSDir() string {
 	return filepath.Join(dataDir, "boid", "tls")
 }
 
+// defaultInstallIDDir returns the directory holding (or to generate) this
+// installation's plain-UUID install_id file (internal/install.LoadOrCreate
+// — docs/plans/phase6-container-backend.md §PR6/§決定6). Same XDG data-dir
+// convention as the other default*Path/Dir helpers above, and the same
+// "web_secret"-style file-directly-in-data-dir layout §決定6 calls for
+// (~/.local/share/boid/install_id, alongside boid.db and web_secret — NOT
+// nested under its own subdirectory the way tls/ is, since it is a single
+// file, not a CA's cert+key pair).
+func defaultInstallIDDir() string {
+	dataDir := os.Getenv("XDG_DATA_HOME")
+	if dataDir == "" {
+		home, _ := os.UserHomeDir()
+		dataDir = filepath.Join(home, ".local", "share")
+	}
+	return filepath.Join(dataDir, "boid")
+}
+
 type startConfigOptions struct {
 	DBPath      string
 	SocketPath  string
@@ -164,6 +181,7 @@ func buildStartConfig(opts startConfigOptions) (server.Config, error) {
 		cfg.KeyFilePath = defaultKeyFilePath()
 	}
 	cfg.TLSDir = defaultTLSDir()
+	cfg.InstallIDDir = defaultInstallIDDir()
 
 	appCfg, err := config.Load()
 	if err != nil {
