@@ -694,6 +694,7 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 		RuntimesDir:    runtimesDirFor(cfg),
 		GitGateway:     srv.gatewayRegistry,
 		GatewayURL:     &srv.gatewayURL,
+		GatewayCAPEM:   &srv.gatewayCAPEM,
 	})
 
 	// sandbox backend selection (docs/plans/phase6-container-backend.md

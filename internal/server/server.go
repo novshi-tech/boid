@@ -763,3 +763,13 @@ func (s *Server) TCPAddr() string {
 func (s *Server) GatewayURL() string {
 	return s.gatewayURL
 }
+
+// GatewayCAPEM returns the daemon's internal CA's own PEM-encoded
+// certificate (see the gatewayCAPEM field's own doc comment), or nil
+// before Start has loaded/created it (cfg.TLSDir unset, or Start hasn't
+// run). Exposed for internal/dispatcher.WireConfig.GatewayCAPEM
+// (via internal/server/wire.go) and for tests — see
+// server_container_backend_gateway_test.go.
+func (s *Server) GatewayCAPEM() []byte {
+	return s.gatewayCAPEM
+}

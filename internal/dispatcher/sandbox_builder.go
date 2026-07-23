@@ -119,6 +119,25 @@ type SandboxRuntimeInfo struct {
 	// (PR6); the runner clone sequence that would consume it is PR5.
 	GatewayURL string
 
+	// GatewayCAPEM is the daemon's internal CA's own certificate
+	// (mtls.CA.CertPEM), PEM-encoded, set by Runner from Server's
+	// gatewayCAPEM (PR9 e2e-container fix). Non-secret — the CA's public
+	// half, not a key — so it needs no per-job scoping or rotation, unlike
+	// a client certificate would.
+	//
+	// Only meaningful for the container backend: the userns backend's
+	// gateway URL is plain HTTP (http://10.0.2.2:<port>, the pasta/slirp
+	// loopback projection — see GatewayURL's own doc comment), so there is
+	// no TLS handshake to trust in the first place. BuildSandboxSpec only
+	// writes this into the sandbox (as a file, with GIT_SSL_CAINFO pointed
+	// at it) when UsingContainerBackend is true AND spec.Visibility.Clone
+	// is set — see its own call site. Without it, every sandbox-internal
+	// clone against the container backend's TLS-secured gateway
+	// (https://boid-gateway:<port>) fails outright: "server certificate
+	// verification failed. CAfile: none CRLfile: none" (the real-docker
+	// e2e-container CI job's exact failure, PR9).
+	GatewayCAPEM []byte
+
 	// GatewayJobToken is this job's git gateway token, registered against
 	// the gateway's Registry at dispatch time (self project fetch/fetch+push,
 	// workspace peers and workspace extra_repos fetch-only) and unregistered
@@ -405,6 +424,23 @@ func BuildSandboxSpec(spec *orchestrator.JobSpec, rt SandboxRuntimeInfo) (sandbo
 	// worktree/project mount layout above is completely unaffected.
 	mounts = append(mounts, cloneMounts(spec, rt)...)
 
+	// Git gateway TLS trust (PR9 e2e-container fix): only the container
+	// backend's gateway URL is TLS-secured (see
+	// SandboxRuntimeInfo.GatewayCAPEM's own doc comment) — the userns
+	// backend's plain-HTTP gateway needs nothing here, and neither does a
+	// job with no clone declared at all (it never talks to the gateway).
+	// Written as a plain sandbox file (not a mount): the CA cert is
+	// non-secret, daemon-lifetime-static content, exactly like other
+	// spec.Files entries, not a per-job artifact that needs its own
+	// mount/cleanup lifecycle.
+	if spec.Visibility.Clone != nil && rt.UsingContainerBackend && len(rt.GatewayCAPEM) > 0 {
+		files = append(files, sandbox.FileWrite{
+			Path:    containerGitGatewayCAPath,
+			Content: string(rt.GatewayCAPEM),
+		})
+		env["GIT_SSL_CAINFO"] = containerGitGatewayCAPath
+	}
+
 	// Additional bindings:
 	//   * The harness adapter (claude / codex / opencode) declares the
 	//     agent-CLI bindings it needs (~/.claude, ~/.local/bin, ...). Those
@@ -626,6 +662,15 @@ const (
 	// (docs/plans/container-based-boid.md 「workspace peer プロジェクト」) —
 	// this only makes the mounts constructible, per PR5's scope.
 	sandboxClonePeerReferenceDirFmt = "/mnt/refs/peers/%s.git"
+
+	// containerGitGatewayCAPath (PR9 e2e-container fix) is the fixed
+	// sandbox-internal path SandboxRuntimeInfo.GatewayCAPEM is written to
+	// (as a plain spec.Files entry, container backend + clone-visibility
+	// jobs only) and what GIT_SSL_CAINFO is pointed at, so the
+	// sandbox-internal `git clone` against the container backend's
+	// TLS-secured gateway (https://boid-gateway:<port>) can verify the
+	// gateway's server certificate.
+	containerGitGatewayCAPath = "/run/boid/gitgateway-ca.crt"
 )
 
 // sandboxCloneDir returns the absolute sandbox-internal directory a project

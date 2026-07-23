@@ -708,6 +708,89 @@ func TestBuildSandboxSpec_CloneEnabled_SkipsProjectVisibilityMounts(t *testing.T
 	}
 }
 
+// TestBuildSandboxSpec_ContainerBackendClone_WritesGatewayCAAndSetsEnv pins
+// the PR9 e2e-container CI fix: a clone-visibility job dispatched against
+// the container backend must get the git gateway's CA cert written into
+// the sandbox (at containerGitGatewayCAPath) and GIT_SSL_CAINFO pointed at
+// it — without this, the sandbox-internal `git clone` against the TLS-
+// secured gateway (https://boid-gateway:<port>) cannot verify the
+// gateway's server certificate ("server certificate verification failed.
+// CAfile: none CRLfile: none", the real-docker e2e-container CI job's
+// exact failure once the earlier client-cert-requirement bug was fixed).
+func TestBuildSandboxSpec_ContainerBackendClone_WritesGatewayCAAndSetsEnv(t *testing.T) {
+	spec := &orchestrator.JobSpec{
+		ProjectID: "proj-1",
+		Argv:      []string{"/bin/true"},
+		Visibility: orchestrator.Visibility{
+			ProjectDir: "/home/user/project",
+			Writable:   true,
+			Clone:      &orchestrator.CloneDeclaration{Branch: "main", BaseBranch: "main", CheckoutOnly: true},
+		},
+	}
+	rt := SandboxRuntimeInfo{
+		JobID:                 "job-1",
+		CloneWorkspaceDir:     "/data/boid/runtimes/job-1/workspace",
+		UsingContainerBackend: true,
+		GatewayCAPEM:          []byte("-----BEGIN CERTIFICATE-----\nfake\n-----END CERTIFICATE-----\n"),
+	}
+	out, err := BuildSandboxSpec(spec, rt)
+	if err != nil {
+		t.Fatalf("BuildSandboxSpec: %v", err)
+	}
+
+	var found bool
+	for _, f := range out.Files {
+		if f.Path == containerGitGatewayCAPath {
+			found = true
+			if f.Content != string(rt.GatewayCAPEM) {
+				t.Errorf("gateway CA file content = %q, want %q", f.Content, string(rt.GatewayCAPEM))
+			}
+		}
+	}
+	if !found {
+		t.Errorf("no spec.Files entry at %q, want the gateway CA cert written there", containerGitGatewayCAPath)
+	}
+	if got, want := out.Env["GIT_SSL_CAINFO"], containerGitGatewayCAPath; got != want {
+		t.Errorf("Env[GIT_SSL_CAINFO] = %q, want %q", got, want)
+	}
+}
+
+// TestBuildSandboxSpec_UsernsBackendClone_OmitsGatewayCA is the companion
+// non-regression pin: the userns backend's gateway URL is plain HTTP (no
+// TLS at all — see SandboxRuntimeInfo.GatewayCAPEM's own doc comment), so
+// BuildSandboxSpec must not write the CA file or set GIT_SSL_CAINFO even
+// when GatewayCAPEM happens to be non-empty (e.g. a daemon with TLSDir
+// configured but sandbox.backend left at its userns default).
+func TestBuildSandboxSpec_UsernsBackendClone_OmitsGatewayCA(t *testing.T) {
+	spec := &orchestrator.JobSpec{
+		ProjectID: "proj-1",
+		Argv:      []string{"/bin/true"},
+		Visibility: orchestrator.Visibility{
+			ProjectDir: "/home/user/project",
+			Writable:   true,
+			Clone:      &orchestrator.CloneDeclaration{Branch: "main", BaseBranch: "main", CheckoutOnly: true},
+		},
+	}
+	rt := SandboxRuntimeInfo{
+		JobID:                 "job-1",
+		CloneWorkspaceDir:     "/data/boid/runtimes/job-1/workspace",
+		UsingContainerBackend: false,
+		GatewayCAPEM:          []byte("-----BEGIN CERTIFICATE-----\nfake\n-----END CERTIFICATE-----\n"),
+	}
+	out, err := BuildSandboxSpec(spec, rt)
+	if err != nil {
+		t.Fatalf("BuildSandboxSpec: %v", err)
+	}
+	for _, f := range out.Files {
+		if f.Path == containerGitGatewayCAPath {
+			t.Errorf("unexpected gateway CA file present for the userns backend: %+v", f)
+		}
+	}
+	if _, ok := out.Env["GIT_SSL_CAINFO"]; ok {
+		t.Errorf("Env[GIT_SSL_CAINFO] = %q, want unset for the userns backend", out.Env["GIT_SSL_CAINFO"])
+	}
+}
+
 // --- workspace 親化リファクタリング helpers (nose 2026-07-13 decision) ---
 
 func TestProjectDirName_PrefersExplicitName(t *testing.T) {
