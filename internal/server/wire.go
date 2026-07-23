@@ -608,18 +608,33 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 	// own cutover gate (container e2e green + rollback rehearsal) is an
 	// operational precondition on actually setting it in a real deploy,
 	// not something enforced here.
+	//
+	// [Major 11, PR7 codex review]: config.Load()'s error here is fail-hard
+	// (daemon startup refused), NOT logged-and-defaulted-to-userns. An
+	// operator who set `sandbox.backend: container` in config.yaml has
+	// opted into a real production dispatch path; if config.yaml itself
+	// becomes unreadable at reload time (a torn write from a concurrent
+	// `boid` CLI edit, a permissions change, disk corruption — anything
+	// short of ENOENT, which config.Load's own loadFromPath already treats
+	// as "use defaults" and returns a nil error for) the daemon must not
+	// silently start with the userns backend instead: that is an unnoticed,
+	// unannounced downgrade of the sandbox isolation the operator explicitly
+	// configured, discovered only much later (if ever) by noticing jobs
+	// aren't landing in containers. Refusing to start surfaces the problem
+	// immediately, the same way every other daemon startup precondition in
+	// this file does (buildProjectStore's own "daemon startup refused"
+	// errors above).
 	backendCfg, err := config.Load()
 	if err != nil {
-		slog.Warn("failed to load boid config for sandbox backend selection; defaulting to userns", "error", err)
-	} else {
-		sandboxBackend, berr := sandboxBackendForConfig(backendCfg, srv.installID, runtimesDirFor(cfg))
-		if berr != nil {
-			return nil, fmt.Errorf("daemon startup refused: %w", berr)
-		}
-		if sandboxBackend != nil {
-			runner.Backend = sandboxBackend
-			slog.Info("sandbox backend: container (docker) — cutover config (docs/plans/phase6-container-backend.md §PR7)")
-		}
+		return nil, fmt.Errorf("daemon startup refused: load boid config for sandbox backend selection: %w", err)
+	}
+	sandboxBackend, berr := sandboxBackendForConfig(backendCfg, srv.installID, runtimesDirFor(cfg))
+	if berr != nil {
+		return nil, fmt.Errorf("daemon startup refused: %w", berr)
+	}
+	if sandboxBackend != nil {
+		runner.Backend = sandboxBackend
+		slog.Info("sandbox backend: container (docker) — cutover config (docs/plans/phase6-container-backend.md §PR7)")
 	}
 
 	lifecycle := jobLifecycleAdapter{runner: runner}
