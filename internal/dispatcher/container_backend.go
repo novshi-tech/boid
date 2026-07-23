@@ -23,6 +23,7 @@ import (
 	"golang.org/x/sys/unix"
 
 	"github.com/novshi-tech/boid/internal/mtls"
+	"github.com/novshi-tech/boid/internal/reap"
 	"github.com/novshi-tech/boid/internal/sandbox"
 	"github.com/novshi-tech/boid/internal/sandbox/backend"
 	"github.com/novshi-tech/boid/internal/sandbox/realization"
@@ -741,6 +742,30 @@ func (b *containerBackend) ReapOrphans(ctx context.Context) (backend.ReapReport,
 
 	b.reapOrphanVolumes(ctx, filters)
 	b.reapOrphanNetworks(ctx, filters)
+
+	// [Major 6, PR7 codex review]: dockerproxy's sibling child resources
+	// (created by the *client* inside a job's sandbox — docker CLI,
+	// TestContainers, ... — never by this backend directly, when the job
+	// declared capabilities.docker) carry NO boid label at all, so the
+	// label-based sweep above can never find them: they are only
+	// discoverable via the per-job docker-resources.jsonl ledger under
+	// runtimeDir (§決定8). internal/reap.Run — the same daemon-independent
+	// logic `boid reap` uses (§決定6's "label ∪ ledger union") — is run here
+	// as an additional best-effort pass so startup reap catches these too,
+	// not just the primary job containers the loop above already handled
+	// (those are already gone by the time this call lists again via its own
+	// label query, so this is not double-destroying anything — merely one
+	// extra API round trip). b.api's method set is a strict superset of
+	// reap.Run's own narrow dockerAPI interface, so no adapter is needed.
+	// Errors are logged, not folded into ReapReport: a ledger-cleanup
+	// failure here is a docker-resource leak, not a reason to block a
+	// task's auto-reopen (ReapReport's own job-level contract — see its doc
+	// comment; only the primary-container loop above feeds FailedJobIDs).
+	if b.runtimeDir != "" {
+		if _, rerr := reap.Run(ctx, b.api, b.installID, b.runtimeDir); rerr != nil {
+			slog.Warn("container backend: reap.Run ledger-union pass failed", "error", rerr)
+		}
+	}
 
 	return report, nil
 }

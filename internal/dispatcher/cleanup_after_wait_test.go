@@ -263,6 +263,40 @@ func TestCleanupSandboxAfterWait_ReapsDockerOnFailure(t *testing.T) {
 	}
 }
 
+// TestCleanupSandboxAfterWait_ReapsDockerForSessionWithNoLocalArtifacts pins
+// [Major 6, PR7 codex review]: a session with no PreparedSandbox (nil
+// sessionLocalArtifacts — the shape every containerSession has, since it
+// carries no userns scaffolding/spec/state files at all) must still get its
+// docker proxy reaped and closed. Before this fix, cleanupSandboxAfterWait
+// bailed out entirely (before ever calling session.Wait) whenever
+// sessionLocalArtifacts returned nil, so a docker-enabled container-backend
+// job's sibling resources were never reaped and its per-sandbox dockerproxy
+// server was never closed — this test drives the exact same "prepared==nil"
+// shape via sessionFor(..., nil) without needing a real containerSession /
+// fake dockerAPI, since sessionLocalArtifacts' nil-vs-non-nil behavior is
+// determined solely by the PreparedSandbox pointer, not by which concrete
+// SandboxSession type carries it.
+func TestCleanupSandboxAfterWait_ReapsDockerForSessionWithNoLocalArtifacts(t *testing.T) {
+	dir := t.TempDir()
+	_, ds := startFakeDockerProxy(t, dir)
+
+	r := &Runner{
+		Runtime:      &waitableRuntime{exit: RuntimeExit{ExitCode: 0}},
+		dockerStates: map[string]*dockerProxyState{"rt-no-local-artifacts": ds},
+	}
+
+	// sessionFor(..., nil) mirrors sessionLocalArtifacts(containerSession)'s
+	// nil return — see the type's own doc comment.
+	r.cleanupSandboxAfterWait(sessionFor(r.Runtime, "rt-no-local-artifacts", nil), nil)
+
+	r.dockerMu.Lock()
+	_, stillPresent := r.dockerStates["rt-no-local-artifacts"]
+	r.dockerMu.Unlock()
+	if stillPresent {
+		t.Error("dockerState should be removed from map even for a session with no local (userns) artifacts — reapAndCloseDockerProxy must still run")
+	}
+}
+
 // TestStartDockerProxy_SocketPermissions verifies that the proxy socket file
 // is created with 0600 permissions (owner-only access).
 func TestStartDockerProxy_SocketPermissions(t *testing.T) {

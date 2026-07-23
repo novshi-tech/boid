@@ -990,6 +990,26 @@ func (r *Runner) launchSandbox(ctx context.Context, job *Job, spec sandbox.Spec,
 	return job.ID, nil
 }
 
+// [Major 6, PR7 codex review]: this used to bail out entirely (before ever
+// calling session.Wait) whenever sessionLocalArtifacts(session) returned nil
+// — true for EVERY container-backend session, since a containerSession has
+// no PreparedSandbox (userns-only scaffolding/spec/state files — see
+// sessionLocalArtifacts' own doc comment). That meant r.reapAndCloseDockerProxy
+// never ran for a container-backend job: a docker-enabled job's sibling
+// resources (created by the *client* inside the sandbox — docker CLI,
+// TestContainers, ... — via the per-job dockerproxy) never got reaped, and
+// the per-sandbox dockerproxy server itself never got closed, for every
+// single container-backend job.
+//
+// The guard now only bails on an empty runtimeID (nothing to reap/close
+// against at all). prepared==nil (every containerSession, and any
+// Adopt-reconstructed usernsSession) still runs session.Wait +
+// reapAndCloseDockerProxy — the backend-agnostic parts — and simply skips
+// the userns-only scaffolding/spec/state file cleanup below, which has no
+// meaning for a backend with no local PreparedSandbox artifacts to begin
+// with (a containerSession's own equivalent — specPath/dockerTLSDir removal
+// — is handled inside containerSession.waitLoop itself, since only the
+// session, not this caller, knows those paths).
 func (r *Runner) cleanupSandboxAfterWait(session backend.SandboxSession, extra orchestrator.CleanupFunc) {
 	defer func() {
 		if extra != nil {
@@ -1000,16 +1020,18 @@ func (r *Runner) cleanupSandboxAfterWait(session backend.SandboxSession, extra o
 		return
 	}
 	runtimeID := session.ID()
-	prepared := sessionLocalArtifacts(session)
-	if runtimeID == "" || prepared == nil {
+	if runtimeID == "" {
 		return
 	}
+	prepared := sessionLocalArtifacts(session)
 	result, err := session.Wait(context.Background())
 	if err != nil {
 		if errors.Is(err, ErrRuntimeUnsupported) {
 			// Reap docker resources even on unsupported-wait paths (best effort).
 			r.reapAndCloseDockerProxy(runtimeID)
-			cleanupSandboxArtifacts(prepared)
+			if prepared != nil {
+				cleanupSandboxArtifacts(prepared)
+			}
 			return
 		}
 		slog.Warn("skip sandbox cleanup: runtime wait failed", "runtime_id", runtimeID, "error", err)
@@ -1018,7 +1040,19 @@ func (r *Runner) cleanupSandboxAfterWait(session backend.SandboxSession, extra o
 
 	// Docker Reap + proxy Close: run unconditionally (success or failure) and
 	// before the runtime dir is removed so the ledger is still readable.
+	// Backend-agnostic — this is what makes a docker-enabled container
+	// -backend job's sibling resources get reaped and its per-sandbox
+	// dockerproxy server closed, same as a userns job (Major 6 fix).
 	r.reapAndCloseDockerProxy(runtimeID)
+
+	if prepared == nil {
+		// No userns-local scaffolding/spec/state files to clean up (every
+		// containerSession, and any Adopt-reconstructed usernsSession) —
+		// containerSession.waitLoop already owns and has already removed
+		// its own equivalent artifacts (specPath/dockerTLSDir) by the time
+		// Wait returned above.
+		return
+	}
 
 	// Scaffolding (RootDir, StagingDir) は runner-outer が常に削除するので、
 	// ここでは保険として idempotent に rm するだけ。 exit_code に関わらず実行。
