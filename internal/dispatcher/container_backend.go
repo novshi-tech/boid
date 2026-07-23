@@ -726,30 +726,32 @@ func (b *containerBackend) ensureWorkspaceNetwork(ctx context.Context, workspace
 //     signal reaches the entrypoint process, so nothing new is embedded
 //     here for that.
 func (b *containerBackend) Launch(ctx context.Context, spec sandbox.Spec, opts backend.LaunchOptions) (backend.SandboxSession, error) {
-	specPath, statePath, err := writeContainerSpec(spec, b.runtimeDir)
-	if err != nil {
-		return nil, fmt.Errorf("write container sandbox spec: %w", err)
-	}
-	// dockerTLSDir / brokerTLSDir are set below (dockerTLSDir only when
-	// opts.DockerEnabled && b.dockerTLSCA != nil; brokerTLSDir whenever
-	// b.brokerTLSCA != nil — see their own materialize call sites) but
-	// declared here so cleanupFiles's closure sees whichever value each
-	// ends up with, even on an early return before either is set (the
-	// zero value "" makes the RemoveAll a no-op).
+	// dockerTLSDir / brokerTLSDir / specPath / statePath are all set below
+	// but declared here so cleanupFiles's closure sees whichever value
+	// each ends up with, even on an early return before any of them is
+	// set (the zero value "" makes every guard below a no-op — specPath's
+	// own emptiness gates the spec-file cleanup entirely, not just which
+	// branch it takes, because materializeDockerClientCert/
+	// materializeBrokerClientCert can now fail BEFORE writeContainerSpec
+	// has even run — see the reordering this whole function underwent,
+	// below).
 	var dockerTLSDir string
 	var brokerTLSDir string
+	var specPath, statePath string
 	cleanupFiles := func() {
-		if b.runtimeDir != "" {
-			// Blocker 1 (PR7 codex review): specPath/statePath live under
-			// <runtimeDir>/spec/<jobID>/ when RuntimeDir is configured (see
-			// writeContainerSpec's doc comment) — remove the whole per-job
-			// directory rather than the two files individually, so no empty
-			// directory accumulates under runtimeDir/spec across the
-			// lifetime of a long-running daemon.
-			_ = os.RemoveAll(filepath.Dir(specPath))
-		} else {
-			_ = os.Remove(specPath)
-			_ = os.Remove(statePath)
+		if specPath != "" {
+			if b.runtimeDir != "" {
+				// Blocker 1 (PR7 codex review): specPath/statePath live under
+				// <runtimeDir>/spec/<jobID>/ when RuntimeDir is configured (see
+				// writeContainerSpec's doc comment) — remove the whole per-job
+				// directory rather than the two files individually, so no empty
+				// directory accumulates under runtimeDir/spec across the
+				// lifetime of a long-running daemon.
+				_ = os.RemoveAll(filepath.Dir(specPath))
+			} else {
+				_ = os.Remove(specPath)
+				_ = os.Remove(statePath)
+			}
 		}
 		if dockerTLSDir != "" {
 			_ = os.RemoveAll(dockerTLSDir)
@@ -757,6 +759,77 @@ func (b *containerBackend) Launch(ctx context.Context, spec sandbox.Spec, opts b
 		if brokerTLSDir != "" {
 			_ = os.RemoveAll(brokerTLSDir)
 		}
+	}
+
+	// Per-job dockerproxy / broker client cert delivery (§決定5 /
+	// docs/plans/phase6-cutover-followups.md §⓪): materialized and merged
+	// into spec.Env HERE — before writeContainerSpec below serializes
+	// spec.json, and before realization.Realize copies spec.Env into
+	// Realization.Env — rather than as a later `docker create`-only
+	// Config.Env addition (an earlier version of this function did
+	// exactly that, via the local `env` variable derived from
+	// realized.Env). That ordering bug went unnoticed until the broker
+	// TCP wire followup's own e2e-container CI run exercised it for the
+	// first time against a real container: internal/adapters/shell.
+	// Adapter.Run — the harness EVERY plain `command:` hook uses — builds
+	// the hook's entire child-process environment from RunContext.Env ==
+	// spec.Env, read back out of spec.json INSIDE the container by `boid
+	// runner-container` (internal/sandbox/runner/runner_container_linux.go's
+	// RunContainer -> readSpec), NOT from the container's own
+	// os.Environ() docker create's Config.Env populates — see
+	// envSlice's own doc comment (internal/adapters/shell/run.go): "no
+	// inheritance from os.Environ()" is a deliberate userns-backend
+	// contract (spec.Env is the sandboxed, already-sanitized source of
+	// truth there) that turns out to be load-bearing for the container
+	// backend too, just for a different reason (no os.Environ() to leak
+	// from in the first place — the gap is the OPPOSITE one: a var this
+	// backend added only to Config.Env, after spec.json was already
+	// written, silently never reached the child at all). The claude/
+	// codex/opencode agent adapters DO also inherit os.Environ() (see
+	// internal/adapters/claude/run.go's own parentEnv overlay), which is
+	// why this went unnoticed for agent-harness jobs — only shell-adapter
+	// hooks ever observed the gap, and dockerproxy's own TLS-cert
+	// mechanism (the DockerTLSCA branch below) has never actually been
+	// wired into production dispatch by any caller yet (see
+	// ContainerBackendOptions.DockerTLSCA's own doc comment), so nothing
+	// had ever exercised ITS identical gap in a real deployment either
+	// until this fix.
+	if opts.DockerEnabled && b.dockerTLSCA != nil {
+		dir, derr := b.materializeDockerClientCert(opts.JobID)
+		if derr != nil {
+			cleanupFiles()
+			return nil, derr
+		}
+		dockerTLSDir = dir
+		spec.Env = withDockerTLSEnv(spec.Env, b.dockerProxyAddr)
+	}
+	// Per-job broker client cert delivery (docs/plans/
+	// phase6-cutover-followups.md §⓪): unconditional whenever this backend
+	// was configured with a CA to issue from
+	// (ContainerBackendOptions.BrokerTLSCA — nil for every caller before
+	// this feature). Unlike the dockerproxy block above, there is no
+	// per-job opts flag gating this: see BrokerTLSCA's own doc comment for
+	// why "does this job need broker RPC" is not a meaningful per-job gate
+	// the way DockerEnabled is.
+	if b.brokerTLSCA != nil {
+		dir, berr := b.materializeBrokerClientCert(opts.JobID)
+		if berr != nil {
+			cleanupFiles()
+			return nil, berr
+		}
+		brokerTLSDir = dir
+		var addr string
+		if b.brokerTLSAddr != nil {
+			addr = *b.brokerTLSAddr
+		}
+		spec.Env = withBrokerTLSEnv(spec.Env, addr)
+	}
+
+	var err error
+	specPath, statePath, err = writeContainerSpec(spec, b.runtimeDir)
+	if err != nil {
+		cleanupFiles()
+		return nil, fmt.Errorf("write container sandbox spec: %w", err)
 	}
 
 	realized, err := realization.Realize(spec)
@@ -822,48 +895,20 @@ func (b *containerBackend) Launch(ctx context.Context, spec sandbox.Spec, opts b
 		mount.Mount{Type: mount.TypeBind, Source: specPath, Target: containerSpecPath, ReadOnly: true},
 		mount.Mount{Type: mount.TypeBind, Source: statePath, Target: containerStatePath},
 	)
+	// dockerTLSDir / brokerTLSDir bind mounts: the corresponding env vars
+	// (DOCKER_*/BOID_BROKER_TLS_*) are already baked into realized.Env —
+	// they were merged into spec.Env before realization.Realize ran, above
+	// — so only the mount itself (the bind target the child process's
+	// DOCKER_CERT_PATH/BOID_BROKER_TLS_CERT_PATH env values point at)
+	// remains to be added here.
+	if dockerTLSDir != "" {
+		mounts = append(mounts, mount.Mount{Type: mount.TypeBind, Source: dockerTLSDir, Target: containerDockerTLSDir, ReadOnly: true})
+	}
+	if brokerTLSDir != "" {
+		mounts = append(mounts, mount.Mount{Type: mount.TypeBind, Source: brokerTLSDir, Target: containerBrokerTLSDir, ReadOnly: true})
+	}
 
-	// Per-job dockerproxy client cert delivery (§決定5): only when the job
-	// declared docker capabilities AND this backend was configured with a
-	// CA to issue from (ContainerBackendOptions.DockerTLSCA — nil for
-	// every caller before this feature, and still nil in production as of
-	// PR6, see its doc comment). env starts as realized.Env unmodified in
-	// the disabled case (the overwhelmingly common path today) — no copy,
-	// no behavior change.
 	env := realized.Env
-	if opts.DockerEnabled && b.dockerTLSCA != nil {
-		dir, derr := b.materializeDockerClientCert(opts.JobID)
-		if derr != nil {
-			cleanupFiles()
-			return nil, derr
-		}
-		dockerTLSDir = dir
-		mounts = append(mounts, mount.Mount{Type: mount.TypeBind, Source: dir, Target: containerDockerTLSDir, ReadOnly: true})
-		env = withDockerTLSEnv(env, b.dockerProxyAddr)
-	}
-
-	// Per-job broker client cert delivery (docs/plans/
-	// phase6-cutover-followups.md §⓪): unconditional whenever this backend
-	// was configured with a CA to issue from
-	// (ContainerBackendOptions.BrokerTLSCA — nil for every caller before
-	// this feature). Unlike the dockerproxy block above, there is no
-	// per-job opts flag gating this: see BrokerTLSCA's own doc comment for
-	// why "does this job need broker RPC" is not a meaningful per-job gate
-	// the way DockerEnabled is.
-	if b.brokerTLSCA != nil {
-		dir, berr := b.materializeBrokerClientCert(opts.JobID)
-		if berr != nil {
-			cleanupFiles()
-			return nil, berr
-		}
-		brokerTLSDir = dir
-		mounts = append(mounts, mount.Mount{Type: mount.TypeBind, Source: dir, Target: containerBrokerTLSDir, ReadOnly: true})
-		var addr string
-		if b.brokerTLSAddr != nil {
-			addr = *b.brokerTLSAddr
-		}
-		env = withBrokerTLSEnv(env, addr)
-	}
 
 	initTrue := true
 	pidsLimit := defaultPidsLimit
@@ -1747,8 +1792,15 @@ func (b *containerBackend) openTranscriptSpool(containerID string) (f *os.File, 
 // values for these three specific keys (daemon-controlled, not
 // spec-controlled) rather than only filling gaps — a job cannot opt out of
 // or redirect its own docker mTLS identity via its own Env. Every other
-// key in env is carried through unchanged; env itself is never mutated
-// (Launch's realized.Env may be reused elsewhere).
+// key in env is carried through unchanged; env itself is never mutated.
+//
+// Called on spec.Env directly (Launch reassigns spec.Env = withDockerTLSEnv(
+// spec.Env, ...) BEFORE writeContainerSpec/realization.Realize run), not on
+// realized.Env after the fact — see Launch's own doc comment on why that
+// ordering is load-bearing: internal/adapters/shell.Adapter.Run builds the
+// hook child process's entire environment from spec.Env (read back out of
+// spec.json inside the container), not from the container's own
+// os.Environ() a later Config.Env-only addition would have landed in.
 func withDockerTLSEnv(env map[string]string, proxyAddr string) map[string]string {
 	out := make(map[string]string, len(env)+3)
 	for k, v := range env {
@@ -1783,6 +1835,13 @@ func withDockerTLSEnv(env map[string]string, proxyAddr string) map[string]string
 // this is loud (SendJSONFromEnv's own dial attempt fails immediately with a
 // clear "empty address" error) instead of silently falling back to a
 // stale/wrong transport.
+//
+// Called on spec.Env directly, same ordering rationale as withDockerTLSEnv's
+// own doc comment (Launch reassigns spec.Env = withBrokerTLSEnv(spec.Env,
+// ...) before writeContainerSpec/realization.Realize run) — this is what
+// makes BOID_BROKER_TLS_ADDR actually visible to a shell-adapter hook's
+// `boid task update --payload-patch`/`boid job done` calls, not just to the
+// container's own os.Environ().
 func withBrokerTLSEnv(env map[string]string, addr string) map[string]string {
 	out := make(map[string]string, len(env)+5)
 	for k, v := range env {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/json"
 	"encoding/pem"
 	"os"
 	"path/filepath"
@@ -185,6 +186,86 @@ func TestContainerBackend_Launch_BrokerTLS_IssuesAndMountsPerJobCert(t *testing.
 	}
 	if leafCert.NotAfter.Sub(issuedAt) >= 30*24*time.Hour {
 		t.Errorf("leaf cert NotAfter = %v is not meaningfully short-lived (>= mtls.CA's own 30-day default leaf validity)", leafCert.NotAfter)
+	}
+}
+
+// TestContainerBackend_Launch_BrokerTLS_ReachesSerializedSpecEnv pins the
+// exact regression this feature's own real-docker e2e-container CI run
+// found (docs/plans/phase6-cutover-followups.md §⓪): BOID_BROKER_TLS_ADDR
+// (and its four siblings) must be present in spec.Env AS SERIALIZED TO
+// spec.json (the file bind-mounted at containerSpecPath) — not just in
+// docker create's own Config.Env, which
+// TestContainerBackend_Launch_BrokerTLS_IssuesAndMountsPerJobCert already
+// pins above. internal/adapters/shell.Adapter.Run — the harness EVERY
+// plain `command:` hook uses — builds its child process's ENTIRE
+// environment from RunContext.Env == spec.Env, read back out of spec.json
+// INSIDE the container by `boid runner-container`
+// (runner_container_linux.go's RunContainer -> readSpec), never from the
+// container's own os.Environ() a Config.Env-only addition would have
+// landed in (see envSlice's own doc comment, internal/adapters/shell/
+// run.go: "no inheritance from os.Environ()"). An earlier version of this
+// feature added the env vars only via the local `env` variable Launch used
+// for cfg.Env — passing the OTHER test above but leaving a real
+// container's shell-adapter hook with no BOID_BROKER_TLS_* vars at all.
+// This test exists specifically so that regression cannot silently return.
+func TestContainerBackend_Launch_BrokerTLS_ReachesSerializedSpecEnv(t *testing.T) {
+	ca, err := mtls.LoadOrCreate(t.TempDir())
+	if err != nil {
+		t.Fatalf("mtls.LoadOrCreate: %v", err)
+	}
+	addr := "boid-broker:54321"
+
+	waitBlock := make(chan struct{})
+	api := &fakeDockerAPI{
+		ContainerWaitFunc: func(ctx context.Context, containerID string, options client.ContainerWaitOptions) client.ContainerWaitResult {
+			<-waitBlock
+			resCh := make(chan container.WaitResponse, 1)
+			resCh <- container.WaitResponse{StatusCode: 0}
+			return client.ContainerWaitResult{Result: resCh, Error: make(chan error, 1)}
+		},
+	}
+	be := NewContainerBackend(api, ContainerBackendOptions{BrokerTLSCA: ca, BrokerTLSAddr: &addr})
+
+	mustLaunch(t, be, sandbox.Spec{ID: "job-spec-env", Argv: []string{"true"}},
+		backend.LaunchOptions{JobID: "job-spec-env"})
+	defer close(waitBlock)
+
+	if len(api.createCalls) != 1 {
+		t.Fatalf("ContainerCreate calls = %d, want 1", len(api.createCalls))
+	}
+	var specPath string
+	for _, m := range api.createCalls[0].HostConfig.Mounts {
+		if m.Target == containerSpecPath {
+			specPath = m.Source
+		}
+	}
+	if specPath == "" {
+		t.Fatalf("no bind mount targeting %q found in %+v", containerSpecPath, api.createCalls[0].HostConfig.Mounts)
+	}
+
+	data, err := os.ReadFile(specPath)
+	if err != nil {
+		t.Fatalf("read spec.json: %v", err)
+	}
+	var written sandbox.Spec
+	if err := json.Unmarshal(data, &written); err != nil {
+		t.Fatalf("unmarshal spec.json: %v", err)
+	}
+
+	if written.Env["BOID_BROKER_TLS_ADDR"] != "boid-broker:54321" {
+		t.Errorf("serialized spec.json Env[BOID_BROKER_TLS_ADDR] = %q, want %q — this is what internal/adapters/shell.Adapter.Run actually reads for a hook's child process env, not docker create's Config.Env", written.Env["BOID_BROKER_TLS_ADDR"], "boid-broker:54321")
+	}
+	if written.Env["BOID_BROKER_TLS_CERT_PATH"] != containerBrokerTLSDir+"/"+brokerCertFileName {
+		t.Errorf("serialized spec.json Env[BOID_BROKER_TLS_CERT_PATH] = %q, want %q", written.Env["BOID_BROKER_TLS_CERT_PATH"], containerBrokerTLSDir+"/"+brokerCertFileName)
+	}
+	if written.Env["BOID_BROKER_TLS_KEY_PATH"] != containerBrokerTLSDir+"/"+brokerKeyFileName {
+		t.Errorf("serialized spec.json Env[BOID_BROKER_TLS_KEY_PATH] = %q, want %q", written.Env["BOID_BROKER_TLS_KEY_PATH"], containerBrokerTLSDir+"/"+brokerKeyFileName)
+	}
+	if written.Env["BOID_BROKER_TLS_CA_PATH"] != containerBrokerTLSDir+"/"+brokerCAFileName {
+		t.Errorf("serialized spec.json Env[BOID_BROKER_TLS_CA_PATH] = %q, want %q", written.Env["BOID_BROKER_TLS_CA_PATH"], containerBrokerTLSDir+"/"+brokerCAFileName)
+	}
+	if written.Env["BOID_BROKER_TLS_SERVER_NAME"] != composeBrokerServiceName {
+		t.Errorf("serialized spec.json Env[BOID_BROKER_TLS_SERVER_NAME] = %q, want %q", written.Env["BOID_BROKER_TLS_SERVER_NAME"], composeBrokerServiceName)
 	}
 }
 
