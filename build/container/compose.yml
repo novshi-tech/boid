@@ -116,15 +116,24 @@ services:
     # process a container entrypoint needs, and exactly what forwards
     # docker's SIGTERM (via tini) into srv.Stop() cleanly.
     #
-    # Known limitation accepted for this PR6 skeleton: runDaemonChild also
-    # redirects stdin/stdout/stderr to boid.log (daemon.RedirectToLogRotating)
-    # — a host-daemon-appropriate default that means `docker logs` on this
-    # service shows nothing. The log is still on disk and inspectable
-    # (BOID_DATA_DIR/boid.log, or `docker exec ... tail -f`) via the
-    # LogFilePath() convention; a real `docker logs`-visible foreground mode
-    # (log to stdout instead of a file when running under a supervisor that
-    # already captures it) is a nice-to-have for a later PR, not required to
-    # exercise the build+deploy mechanism this PR's own scope covers.
+    # Known limitations accepted for this PR6 skeleton, both stemming from
+    # runDaemonChild reusing the host-daemon code path verbatim:
+    #   - it redirects stdin/stdout/stderr to boid.log
+    #     (daemon.RedirectToLogRotating), so `docker logs` on this service
+    #     shows nothing.
+    #   - daemon.LogFilePath() resolves under $XDG_STATE_HOME (falling back
+    #     to $HOME/.local/state/boid/boid.log) — a path this compose file
+    #     does NOT bind-mount (only .local/share and .config are, per the
+    #     Persistence section above). The log therefore lands in the
+    #     container's own ephemeral writable layer: inspectable via `docker
+    #     exec ... tail -f /home/boid/.local/state/boid/boid.log` while the
+    #     container is alive, but gone on container recreation — unlike
+    #     everything under BOID_DATA_DIR.
+    # A real `docker logs`-visible foreground mode (log to stdout, skip the
+    # log-file rotation machinery entirely, when running under a supervisor
+    # that already captures stdout) — and/or bind-mounting the state dir
+    # too — is a nice-to-have for a later PR, not required to exercise the
+    # build+deploy mechanism this PR's own scope covers.
     environment:
       BOID_DAEMON_CHILD: "1"
     # HostConfig.Init (docker-init/tini as PID 1, owning zombie reap — §決定3)
