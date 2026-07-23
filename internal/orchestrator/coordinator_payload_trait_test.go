@@ -41,6 +41,51 @@ func TestCoordinator_DispatchAndAdvance_ExclusiveTraitCollision(t *testing.T) {
 	}
 }
 
+// TestCoordinator_DispatchAndAdvance_SessionsShapedArtifactStillCollides
+// pins the scope of PR #821's fix: mergeArtifactPatch's new append/union
+// semantics for artifact.claude_code.sessions apply ONLY inside
+// MergePayloadPatch itself (exercised by api.TaskAppService.
+// UpdateTaskPayloadPatch, the RPC path claude.Adapter.Run drives). The
+// coordinator's own checkExclusiveCollision guard — which two hooks
+// completing through the job_done/HandlerResult.PayloadPatch pipeline still
+// go through — operates on the top-level trait key BEFORE MergePayloadPatch
+// ever runs, so it must keep rejecting two hooks that both write `artifact`
+// in the same dispatch cycle regardless of the payload happening to be
+// sessions-shaped underneath. If this test ever goes green (no error), the
+// sessions-append fix leaked into the collision guard itself and silently
+// widened what the coordinator considers a legal concurrent write.
+func TestCoordinator_DispatchAndAdvance_SessionsShapedArtifactStillCollides(t *testing.T) {
+	mock := newMockExecutorWaiter()
+	mock.setHookCompletion("hook-a", `{"payload_patch":{"artifact":{"claude_code":{"sessions":[{"type":"execution","name":"hook-a","id":"sess-a"}]}}}}`, 0)
+	mock.setHookCompletion("hook-b", `{"payload_patch":{"artifact":{"claude_code":{"sessions":[{"type":"execution","name":"hook-b","id":"sess-b"}]}}}}`, 0)
+
+	eval := &orchestrator.Evaluator{}
+	coord := &orchestrator.Coordinator{
+		Evaluator:    eval,
+		HookExecutor: mock,
+		Waiter:       mock,
+		MaxDepth:     5,
+	}
+
+	task := &orchestrator.Task{
+		ID:        "01234567-abcd-efgh-ijkl-mnopqrstuvwx",
+		ProjectID: "proj-1",
+		Status:    orchestrator.TaskStatusExecuting,
+		Behavior:  "dev",
+		Payload:   json.RawMessage(`{}`),
+	}
+	meta := metaWithBehavior([]projectspec.Hook{
+		{ID: "hook-a"},
+		{ID: "hook-b"},
+	})
+	sm := simpleStateMachine()
+
+	_, err := coord.DispatchAndAdvance(context.Background(), task, meta, sm)
+	if err == nil {
+		t.Fatal("expected exclusive trait collision even though the underlying payload is sessions-shaped — the coordinator's job_done pipeline never reaches MergePayloadPatch's sessions-append merge")
+	}
+}
+
 func TestCoordinator_DispatchAndAdvance_SharedTraitNoCollision(t *testing.T) {
 	mock := newMockExecutorWaiter()
 	mock.setHookCompletion("hook-a", `{"payload_patch":{"verification":{"findings":[{"message":"ok","status":"resolved"}]}}}`, 0)
@@ -142,4 +187,3 @@ func TestCoordinator_DispatchAndAdvance_DropsUnknownTraitAndMergesArtifact(t *te
 		t.Errorf("artifact value mismatch: %s", got)
 	}
 }
-

@@ -153,6 +153,114 @@ func TestMergePayloadPatch_ExclusiveDeepMergesObjectSubkeys(t *testing.T) {
 	}
 }
 
+// TestMergePayloadPatch_ArtifactClaudeCodeSessions_ConcurrentHooksBothSurvive
+// reproduces PR #821 codex review Blocker 1 end to end through the exact
+// sequence api.TaskAppService.UpdateTaskPayloadPatch drives (GetTask ->
+// MergePayloadPatch -> UpdateTask, serialized per task by
+// payloadPatchLockFor): two claude hooks dispatched in parallel within the
+// same readonly task round each read the (still-empty) prior sessions list
+// before either one has applied its own patch, so hook B's patch body never
+// mentions hook A's session id. Before the fix, applying hook B's patch
+// second replaced `artifact.claude_code` wholesale (mergeObjectsShallow
+// operates one level up, at the `artifact` sub-key), silently discarding
+// hook A's session id even though hook A's write had already landed. After
+// the fix, mergeArtifactPatch recurses into claude_code.sessions and unions
+// by (type, name) instead, so both survive.
+func TestMergePayloadPatch_ArtifactClaudeCodeSessions_ConcurrentHooksBothSurvive(t *testing.T) {
+	allowed := []projectspec.TraitType{projectspec.TraitArtifact}
+
+	// Hook A's RPC lands first: base is still `{}` at the time A read prior
+	// sessions, so A's patch is a single-entry list containing only its own
+	// session id.
+	patchA := json.RawMessage(`{"artifact":{"claude_code":{"sessions":[{"type":"execution","name":"hook-a","id":"sess-a"}]}}}`)
+	afterA, err := projectspec.MergePayloadPatch(json.RawMessage(`{}`), patchA, "hook-a", allowed)
+	if err != nil {
+		t.Fatalf("MergePayloadPatch (hook-a): %v", err)
+	}
+
+	// Hook B's RPC lands second, but B computed its own patch from a read
+	// that happened BEFORE A's write landed — so B's patch also only
+	// mentions its own session id, not A's. This is the stale-read shape the
+	// real concurrent-hook race produces.
+	patchB := json.RawMessage(`{"artifact":{"claude_code":{"sessions":[{"type":"execution","name":"hook-b","id":"sess-b"}]}}}`)
+	afterB, err := projectspec.MergePayloadPatch(afterA, patchB, "hook-b", allowed)
+	if err != nil {
+		t.Fatalf("MergePayloadPatch (hook-b): %v", err)
+	}
+
+	var payload map[string]json.RawMessage
+	if err := json.Unmarshal(afterB, &payload); err != nil {
+		t.Fatalf("unmarshal result: %v", err)
+	}
+	var artifact struct {
+		ClaudeCode struct {
+			Sessions []struct {
+				Type string `json:"type"`
+				Name string `json:"name"`
+				ID   string `json:"id"`
+			} `json:"sessions"`
+		} `json:"claude_code"`
+	}
+	if err := json.Unmarshal(payload["artifact"], &artifact); err != nil {
+		t.Fatalf("unmarshal artifact: %v", err)
+	}
+
+	byName := map[string]string{}
+	for _, s := range artifact.ClaudeCode.Sessions {
+		byName[s.Name] = s.ID
+	}
+	if byName["hook-a"] != "sess-a" {
+		t.Errorf("hook-a's session id was lost; got sessions=%+v", artifact.ClaudeCode.Sessions)
+	}
+	if byName["hook-b"] != "sess-b" {
+		t.Errorf("hook-b's session id was lost; got sessions=%+v", artifact.ClaudeCode.Sessions)
+	}
+	if len(artifact.ClaudeCode.Sessions) != 2 {
+		t.Errorf("expected exactly 2 session entries, got %d: %+v", len(artifact.ClaudeCode.Sessions), artifact.ClaudeCode.Sessions)
+	}
+}
+
+// TestMergePayloadPatch_ArtifactClaudeCodeSessions_SameKeyLastWriteWins
+// covers the genuine-collision case mergeClaudeSessions cannot union away:
+// two writes to the SAME (type, name) slot (e.g. a hook re-running under the
+// same InvokedName). Since there is no way to merge two different ids for
+// one logical session slot, the later-applied patch deterministically wins
+// — mirroring ordinary exclusive-trait overwrite semantics — rather than
+// silently duplicating the entry or corrupting the array.
+func TestMergePayloadPatch_ArtifactClaudeCodeSessions_SameKeyLastWriteWins(t *testing.T) {
+	allowed := []projectspec.TraitType{projectspec.TraitArtifact}
+
+	base := json.RawMessage(`{"artifact":{"claude_code":{"sessions":[{"type":"execution","name":"hook-a","id":"sess-old"}]}}}`)
+	patch := json.RawMessage(`{"artifact":{"claude_code":{"sessions":[{"type":"execution","name":"hook-a","id":"sess-new"}]}}}`)
+	result, err := projectspec.MergePayloadPatch(base, patch, "hook-a", allowed)
+	if err != nil {
+		t.Fatalf("MergePayloadPatch: %v", err)
+	}
+
+	var payload map[string]json.RawMessage
+	if err := json.Unmarshal(result, &payload); err != nil {
+		t.Fatalf("unmarshal result: %v", err)
+	}
+	var artifact struct {
+		ClaudeCode struct {
+			Sessions []struct {
+				Type string `json:"type"`
+				Name string `json:"name"`
+				ID   string `json:"id"`
+			} `json:"sessions"`
+		} `json:"claude_code"`
+	}
+	if err := json.Unmarshal(payload["artifact"], &artifact); err != nil {
+		t.Fatalf("unmarshal artifact: %v", err)
+	}
+	if len(artifact.ClaudeCode.Sessions) != 1 {
+		t.Fatalf("same-key write must not duplicate the entry, got %+v", artifact.ClaudeCode.Sessions)
+	}
+	if artifact.ClaudeCode.Sessions[0].ID != "sess-new" {
+		t.Errorf("later patch must win on a matching (type, name) key; got id=%q", artifact.ClaudeCode.Sessions[0].ID)
+	}
+}
+
 // TestMergePayloadPatch_ExclusiveOverwritesWhenNotBothObjects keeps the
 // historical "exclusive = overwrite" behavior whenever either side is not
 // an object (scalar or array). The deep-merge path is opt-in based purely
