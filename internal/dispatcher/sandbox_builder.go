@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -316,7 +317,7 @@ func BuildSandboxSpec(spec *orchestrator.JobSpec, rt SandboxRuntimeInfo) (sandbo
 	env["BOID_HOST_IP"] = hostGatewayIP
 	setIfNonEmpty(env, "BOID_WORKSPACE_SLUG", rt.WorkspaceSlug)
 	if rt.ProxyPort > 0 {
-		applyProxyEnv(env, rt.ProxyHost, rt.ProxyPort)
+		applyProxyEnv(env, rt.ProxyHost, rt.ProxyPort, gatewayHostFromURL(rt.GatewayURL))
 	}
 	if rt.ProxySocketPath != "" {
 		applyDockerProxyEnv(env)
@@ -1282,7 +1283,13 @@ const dockerProxySandboxSocket = "/run/boid/docker-proxy.sock"
 // caller) falls back to hostGatewayIP unchanged — see
 // SandboxRuntimeInfo.ProxyHost's own doc comment for who sets a non-empty
 // value and when.
-func applyProxyEnv(env map[string]string, host string, port int) {
+//
+// extraNoProxyHosts (PR9 e2e-container fix) are additional bare hostnames
+// (no scheme, no port) appended to no_proxy/NO_PROXY alongside host itself
+// — see gatewayHostFromURL's own doc comment for why the git gateway's own
+// host must always be one of them. Empty entries are skipped so a caller
+// can pass a possibly-empty gatewayHostFromURL result unconditionally.
+func applyProxyEnv(env map[string]string, host string, port int, extraNoProxyHosts ...string) {
 	if host == "" {
 		host = hostGatewayIP
 	}
@@ -1291,8 +1298,54 @@ func applyProxyEnv(env map[string]string, host string, port int) {
 	env["https_proxy"] = proxyURL
 	env["HTTP_PROXY"] = proxyURL
 	env["HTTPS_PROXY"] = proxyURL
-	env["no_proxy"] = host + ",10.0.2.3,localhost,127.0.0.1"
-	env["NO_PROXY"] = host + ",10.0.2.3,localhost,127.0.0.1"
+	noProxy := host + ",10.0.2.3,localhost,127.0.0.1"
+	for _, extra := range extraNoProxyHosts {
+		if extra != "" && extra != host {
+			noProxy += "," + extra
+		}
+	}
+	env["no_proxy"] = noProxy
+	env["NO_PROXY"] = noProxy
+}
+
+// gatewayHostFromURL extracts the bare hostname (no scheme, no port) from a
+// git gateway base URL (rt.GatewayURL — e.g. "https://boid-gateway:39901"
+// for the container backend, gitgateway.SandboxURL's BackendContainer
+// form; "http://10.0.2.2:<port>" for userns) for applyProxyEnv's
+// extraNoProxyHosts (PR9 e2e-container fix).
+//
+// The git gateway must always be reached directly, never through the
+// egress proxy — it is boid-internal infrastructure (the sandbox-internal
+// clone sequence's own upstream, docs/plans/git-gateway-cutover.md), not a
+// destination any workspace's allowed_domains list would ever name, so the
+// egress proxy's own CONNECT/domain-allowlist check (internal/sandbox/
+// proxy.go's isDomainAllowed) correctly rejects it with 403 if traffic to
+// it ever reaches that proxy at all.
+//
+// For the userns backend this was already accidentally covered: the
+// gateway and the proxy's own hostGatewayIP fallback happen to be the same
+// address ("10.0.2.2", both are pasta/slirp loopback projections), so
+// no_proxy's existing `host` entry excluded the gateway too, by
+// coincidence rather than by design. The container backend has no such
+// coincidence — the gateway ("boid-gateway") and the egress proxy
+// ("boid-egress", composeEgressServiceName) are two distinct compose
+// service DNS names — so a clone-visibility job's `git clone` against the
+// gateway was silently routed through HTTPS_PROXY like any other outbound
+// request and rejected: "CONNECT tunnel failed, response 403" (found via
+// the real-docker e2e-container CI job, docs/plans/
+// phase6-container-backend.md §PR9). Calling this for every backend rather
+// than gating it behind IsContainerBackend keeps the fix general — a
+// redundant, harmless no_proxy entry for userns, a load-bearing one for
+// the container backend.
+func gatewayHostFromURL(rawURL string) string {
+	if rawURL == "" {
+		return ""
+	}
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return ""
+	}
+	return u.Hostname()
 }
 
 // applyDockerProxyEnv injects DOCKER_HOST, CONTAINER_HOST,
