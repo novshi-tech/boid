@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sync"
 	"time"
@@ -194,6 +195,17 @@ func New(cfg Config) (*Server, error) {
 	if err != nil {
 		conn.Close()
 		return nil, err
+	}
+
+	// host_commands provisioning check (docs/plans/phase6-container-backend.md
+	// §PR6/§決定4): resolve every configured host command against this
+	// daemon's own host now, at boot, instead of only discovering a gap the
+	// first time an affected project dispatches. Advisory only (skeleton
+	// level) — a missing command is warned about, not fatal; see
+	// ValidateHostCommandsInstalled's doc comment for why.
+	for _, name := range orchestrator.ValidateHostCommandsInstalled(hostCommands, exec.LookPath) {
+		slog.Warn("host command not found on daemon host; broker exec will fail for jobs using it (provision it in build/container/Dockerfile once the compose deploy is in use)",
+			"command", name)
 	}
 
 	brokerSocket := filepath.Join(filepath.Dir(cfg.SocketPath), "boid-broker.sock")
