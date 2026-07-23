@@ -480,6 +480,49 @@ func TestRunner_Backend_DrivesContainerBackendThroughSignalSeam(t *testing.T) {
 	}
 }
 
+// TestContainerBackend_ImagePullAlways_RevalidatesAfterPull pins Major 2
+// from the PR5 review: with ImagePullAlways, resolveImage's pre-pull
+// ImageInspect (used for the presence check) must not be reused to
+// validate the override-image label after pulling — the pull can replace
+// the image (a moved tag), so a fresh post-pull ImageInspect is required.
+// This simulates exactly that: the image is present pre-pull *with* the
+// required label, but the pull silently swaps it for one *without* the
+// label — Launch must still reject the override.
+func TestContainerBackend_ImagePullAlways_RevalidatesAfterPull(t *testing.T) {
+	var inspectCalls int
+	api := &fakeDockerAPI{
+		ImageInspectFunc: func(ctx context.Context, imageRef string, opts ...client.ImageInspectOption) (client.ImageInspectResult, error) {
+			inspectCalls++
+			if inspectCalls == 1 {
+				return imageInspectResultWithLabel(boidRunnerProtocolVersion), nil
+			}
+			return imageInspectResultWithLabel(""), nil
+		},
+	}
+	be := NewContainerBackend(api, ContainerBackendOptions{PullPolicy: ImagePullAlways})
+
+	_, err := be.Launch(context.Background(), sandbox.Spec{
+		ID:             "job-pull-revalidate",
+		Argv:           []string{"true"},
+		ContainerImage: "ghcr.io/acme/boid-runner-custom:v1",
+	}, backend.LaunchOptions{JobID: "job-pull-revalidate"})
+	if err == nil {
+		t.Fatal("Launch succeeded despite the post-pull image losing the boid_runner_protocol label, want an error")
+	}
+	if !strings.Contains(err.Error(), boidRunnerProtocolLabel) {
+		t.Errorf("Launch error = %q, want it to mention %q", err.Error(), boidRunnerProtocolLabel)
+	}
+	if inspectCalls != 2 {
+		t.Errorf("ImageInspect calls = %d, want exactly 2 (pre-pull presence check + post-pull revalidation)", inspectCalls)
+	}
+	if len(api.pullRefs) != 1 {
+		t.Errorf("ImagePull calls = %d, want exactly 1", len(api.pullRefs))
+	}
+	if len(api.createCalls) != 0 {
+		t.Errorf("ContainerCreate was called %d times, want 0 (rejected before create)", len(api.createCalls))
+	}
+}
+
 func TestContainerBackend_ImageOverride_RequiresBoidBaseDerivedLabel(t *testing.T) {
 	tests := []struct {
 		name       string

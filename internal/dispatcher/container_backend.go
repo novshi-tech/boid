@@ -504,6 +504,16 @@ func (b *containerBackend) resolveImage(ctx context.Context, override string) (s
 		if pullErr := b.pullImage(ctx, image); pullErr != nil {
 			return "", pullErr
 		}
+		// Re-inspect after pulling: a pull can replace the local image
+		// (e.g. a moved tag), so the ImageInspect result from the
+		// presence check above would otherwise validate stale metadata —
+		// in particular the boidRunnerProtocolLabel check below, which
+		// must see what was actually just pulled, not what was locally
+		// present before the pull (PR5 review Major 2).
+		insp, err = b.api.ImageInspect(ctx, image)
+		if err != nil {
+			return "", fmt.Errorf("inspect container image %q after pull: %w", image, err)
+		}
 	}
 
 	if override != "" {
