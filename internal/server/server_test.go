@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net"
 	"net/http"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -206,5 +207,43 @@ func TestServer_KitsDir_EmptyStaysEmpty(t *testing.T) {
 
 	if got := srv.KitsDir(); got != "" {
 		t.Errorf("KitsDir() = %q, want empty (empty must not be turned into daemon cwd)", got)
+	}
+}
+
+// TestServer_New_InstallIDLoadFailure_Advisory pins Major 5 (PR6 codex
+// review): install_id is a container-backend concept (§決定6's
+// boid.install_id docker resource label / `boid reap`'s label filter) that
+// the userns backend never touches, so a failure loading/creating it must
+// not block New() at all — a userns daemon whose InstallIDDir happens to
+// be unwritable/unreadable (e.g. left root-owned by a prior run under a
+// different uid) must still be able to start. New() logs a warning and
+// continues with an empty InstallID() instead of the pre-fix behavior
+// (close the DB and return the error, refusing to start).
+func TestServer_New_InstallIDLoadFailure_Advisory(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+
+	// A regular FILE (not a directory) at the InstallIDDir path makes
+	// install.LoadOrCreate's internal os.ReadFile(dir/install_id) fail
+	// with ENOTDIR — a portable, deterministic way to force the load
+	// error without relying on root/permission tricks that would not work
+	// the same way in every CI environment.
+	notADir := filepath.Join(t.TempDir(), "not-a-dir")
+	if err := os.WriteFile(notADir, []byte("x"), 0o644); err != nil {
+		t.Fatalf("seed file: %v", err)
+	}
+
+	srv, err := server.New(server.Config{
+		DBPath:       ":memory:",
+		SocketPath:   filepath.Join(t.TempDir(), "boid.sock"),
+		HTTPAddr:     "127.0.0.1:0",
+		InstallIDDir: notADir,
+	})
+	if err != nil {
+		t.Fatalf("New() should not fail on an install_id load error, got: %v", err)
+	}
+	t.Cleanup(func() { _ = srv.Stop() })
+
+	if id := srv.InstallID(); id != "" {
+		t.Errorf("InstallID() = %q, want empty (advisory failure must not fabricate an id)", id)
 	}
 } 

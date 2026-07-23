@@ -178,14 +178,29 @@ func New(cfg Config) (*Server, error) {
 	// daemon-identity artifacts New() already establishes (skills,
 	// migrations). Empty cfg.InstallIDDir (every pre-PR6 caller/test) skips
 	// this — installID stays "".
+	//
+	// Advisory, not blocking (Major 5, PR6 codex review): install_id is a
+	// container-backend concept — its only consumers are containerBackend's
+	// boid.install_id resource label (§決定6) and `boid reap`'s label
+	// filter, neither of which the userns backend touches at all. Failing
+	// New() outright over a LoadOrCreate error (e.g. cfg.InstallIDDir
+	// root-owned from a prior run under a different uid) would refuse to
+	// start a userns daemon over a value it never uses — so a failure here
+	// is logged and installID stays "" instead. containerBackend's own
+	// ReapOrphans doc comment already documents its pre-install_id "global
+	// (not install_id-scoped) label filter" fallback for exactly this
+	// empty-installID case, so nothing downstream needs to special-case
+	// this: it is the same path New() has always taken when
+	// cfg.InstallIDDir itself was empty.
 	var installID string
 	if cfg.InstallIDDir != "" {
 		id, err := install.LoadOrCreate(cfg.InstallIDDir)
 		if err != nil {
-			d.Close()
-			return nil, fmt.Errorf("load or create install id: %w", err)
+			slog.Warn("install id load/create failed; continuing with an empty install id (container-backend resource labeling/reap scoping degrades to the pre-install_id global filter — the userns backend is unaffected)",
+				"dir", cfg.InstallIDDir, "err", err)
+		} else {
+			installID = id
 		}
-		installID = id
 	}
 
 	conn := d.Conn
