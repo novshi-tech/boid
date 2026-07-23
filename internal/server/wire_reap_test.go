@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/novshi-tech/boid/internal/dispatcher"
@@ -73,7 +74,10 @@ func TestReapOrphansBeforeReopen_SkipsTasksWithFailedJobs(t *testing.T) {
 	}}
 	runner := &dispatcher.Runner{Backend: be}
 
-	skip := reapOrphansBeforeReopen(context.Background(), runner, d.Conn)
+	skip, blockAll := reapOrphansBeforeReopen(context.Background(), runner, d.Conn)
+	if blockAll {
+		t.Fatalf("blockAll = true, want false (no GlobalError set)")
+	}
 
 	if !skip[taskA.ID] {
 		t.Errorf("skip[%s] = false, want true (job %s is in FailedJobIDs)", taskA.ID, jobA.ID)
@@ -92,9 +96,12 @@ func TestReapOrphansBeforeReopen_NoFailuresReturnsEmptySkipSet(t *testing.T) {
 	be := &fakeReapBackend{}
 	runner := &dispatcher.Runner{Backend: be}
 
-	skip := reapOrphansBeforeReopen(context.Background(), runner, d.Conn)
+	skip, blockAll := reapOrphansBeforeReopen(context.Background(), runner, d.Conn)
 	if len(skip) != 0 {
 		t.Errorf("skip = %v, want empty", skip)
+	}
+	if blockAll {
+		t.Error("blockAll = true, want false (zero-value ReapReport, no GlobalError)")
 	}
 }
 
@@ -108,8 +115,52 @@ func TestReapOrphansBeforeReopen_UnresolvableJobIDIsSkippedNotFatal(t *testing.T
 	be := &fakeReapBackend{report: backend.ReapReport{FailedJobIDs: []string{"job-does-not-exist"}}}
 	runner := &dispatcher.Runner{Backend: be}
 
-	skip := reapOrphansBeforeReopen(context.Background(), runner, d.Conn)
+	skip, blockAll := reapOrphansBeforeReopen(context.Background(), runner, d.Conn)
 	if len(skip) != 0 {
 		t.Errorf("skip = %v, want empty (unresolvable job id contributes nothing)", skip)
+	}
+	if blockAll {
+		t.Error("blockAll = true, want false (no GlobalError set)")
+	}
+}
+
+// TestReapOrphansBeforeReopen_GlobalErrorBlocksAllReopen pins [Blocker 4,
+// PR7 codex review]: a non-nil ReapReport.GlobalError (e.g. the docker API
+// was entirely unreachable at daemon boot) must set blockAllReopen=true —
+// the caller must then withhold auto-reopen for EVERY daemon_shutdown
+// -aborted task this boot, not just whatever FailedJobIDs happens to
+// enumerate (a total listing failure never got far enough to enumerate
+// anything at all, so silently falling back to "skip nothing" would
+// auto-reopen every one of them against a possibly-still-alive job
+// container — the exact double-execution race §決定6 exists to prevent).
+func TestReapOrphansBeforeReopen_GlobalErrorBlocksAllReopen(t *testing.T) {
+	d := openTestDB(t)
+	globalErr := errors.New("docker unavailable")
+	be := &fakeReapBackend{report: backend.ReapReport{GlobalError: globalErr}}
+	runner := &dispatcher.Runner{Backend: be}
+
+	skip, blockAll := reapOrphansBeforeReopen(context.Background(), runner, d.Conn)
+	if !blockAll {
+		t.Fatal("blockAll = false, want true (ReapReport.GlobalError set)")
+	}
+	if len(skip) != 0 {
+		t.Errorf("skip = %v, want empty (GlobalError carries no per-job FailedJobIDs)", skip)
+	}
+}
+
+// TestReapOrphansBeforeReopen_ReturnedErrorBlocksAllReopen is the sibling of
+// the GlobalError test above for ReapOrphans' own (report, err) return —
+// the container backend's real implementation sets both together
+// (ReapOrphans' own doc comment), but this pins the return-error path
+// independently in case a future backend ever returns one without the
+// other.
+func TestReapOrphansBeforeReopen_ReturnedErrorBlocksAllReopen(t *testing.T) {
+	d := openTestDB(t)
+	be := &fakeReapBackend{err: errors.New("list orphan containers: connection refused")}
+	runner := &dispatcher.Runner{Backend: be}
+
+	_, blockAll := reapOrphansBeforeReopen(context.Background(), runner, d.Conn)
+	if !blockAll {
+		t.Fatal("blockAll = false, want true (ReapOrphans returned a non-nil error)")
 	}
 }

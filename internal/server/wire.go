@@ -457,8 +457,11 @@ func cleanOrphanRuntimes(runtimesDir string, conn *sql.DB) {
 
 // reapOrphansBeforeReopen calls runner.ReapOrphans (docs/plans/
 // phase6-container-backend.md §PR7 / §決定 6) and translates its
-// job-scoped ReapReport into the set of TASK IDs the caller's subsequent
-// daemon_shutdown auto-reopen sweep must skip.
+// job-scoped ReapReport into (a) the set of TASK IDs the caller's
+// subsequent daemon_shutdown auto-reopen sweep must skip, and (b) whether
+// startup reap failed so completely that EVERY daemon_shutdown-aborted task
+// must be held back this boot (see blockAllReopen below — [Blocker 4, PR7
+// codex review]).
 //
 // ReapOrphans reasons about jobs (a backend's resource label is
 // boid.job_id, not task_id — a task can have had several jobs across its
@@ -469,27 +472,44 @@ func cleanOrphanRuntimes(runtimesDir string, conn *sql.DB) {
 // taskless `boid exec`) is skipped rather than erroring: there is no task
 // to protect from a double-reopen race in that case.
 //
-// A non-nil GlobalError (e.g. the docker API was entirely unreachable —
-// the userns backend, which never returns one, is unaffected) is logged
-// but does not, by itself, add anything to the skip set beyond whatever
-// FailedJobIDs already carries: ReapOrphans's own contract is to report
-// per-job failures in FailedJobIDs, so a caller here has no additional
-// task-level information to act on. Real container-backend hardening of
-// the "total listing failure" case is PR9 territory (container e2e +
-// rollback rehearsal, the plan doc's own cutover gate).
-func reapOrphansBeforeReopen(ctx context.Context, runner *dispatcher.Runner, conn *sql.DB) map[string]bool {
+// [Blocker 4, PR7 codex review]: a non-nil return error or a non-nil
+// ReapReport.GlobalError (e.g. the docker API was entirely unreachable —
+// the userns backend, which never returns either, is unaffected) sets
+// blockAllReopen=true. Before this fix, a global reap failure was only
+// logged; the skip set stayed exactly whatever FailedJobIDs already
+// contributed (§決定6's job-level granularity has no visibility into jobs a
+// total listing failure never got to enumerate at all) — meaning a global
+// error, however severe (docker itself down, or transiently unavailable
+// right at daemon boot), silently degraded to "skip nothing" and every
+// daemon_shutdown-aborted task auto-reopened anyway. §決定6's own rule is
+// "reap は auto-reopen より前に完了させ、reap 失敗 task は reopen しない" — a
+// GlobalError means reap did NOT complete for ANY job (the listing call
+// itself never returned), so the caller has no way to know which tasks are
+// actually safe: the only rule-consistent behavior is to treat every
+// pending daemon_shutdown-aborted task as unreconciled and hold all of them
+// back, not silently reopen every one of them as if reap had never run at
+// all. This does not abort daemon startup outright (a global reap failure
+// is scoped to sandbox-resource reconciliation, not e.g. the HTTP API or
+// userns-backed dispatch) — it only withholds the auto-reopen sweep for
+// this boot; a subsequent successful `boid start` (once docker recovers) or
+// a manual `boid task action reopen` unblocks the affected tasks.
+func reapOrphansBeforeReopen(ctx context.Context, runner *dispatcher.Runner, conn *sql.DB) (skip map[string]bool, blockAllReopen bool) {
 	report, err := runner.ReapOrphans(ctx)
 	if err != nil {
-		slog.Warn("startup reap failed", "error", err)
+		slog.Error("startup reap failed; blocking ALL daemon_shutdown auto-reopen this boot to avoid a double-execution race (docs/plans/phase6-container-backend.md §決定6)",
+			"error", err)
+		blockAllReopen = true
 	}
 	if report.GlobalError != nil {
-		slog.Warn("startup reap: backend reported a global error", "error", report.GlobalError)
+		slog.Error("startup reap: backend reported a global error; blocking ALL daemon_shutdown auto-reopen this boot to avoid a double-execution race (docs/plans/phase6-container-backend.md §決定6)",
+			"error", report.GlobalError)
+		blockAllReopen = true
 	}
 	if len(report.ReapedJobIDs) > 0 {
 		slog.Info("startup reap: reconciled orphaned sandbox resources", "reaped_job_count", len(report.ReapedJobIDs))
 	}
 
-	skip := make(map[string]bool, len(report.FailedJobIDs))
+	skip = make(map[string]bool, len(report.FailedJobIDs))
 	for _, jobID := range report.FailedJobIDs {
 		job, jerr := dispatcher.GetJob(conn, jobID)
 		if jerr != nil || job == nil || job.TaskID == "" {
@@ -499,7 +519,7 @@ func reapOrphansBeforeReopen(ctx context.Context, runner *dispatcher.Runner, con
 		}
 		skip[job.TaskID] = true
 	}
-	return skip
+	return skip, blockAllReopen
 }
 
 func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, broker dispatcher.CommandBroker, secretStore *dispatcher.SecretStore) (*appRuntime, error) {
@@ -641,8 +661,13 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 	// task whose previous job container is still alive — two agents
 	// mutating the same $HOME/task RPC concurrently. reapOrphansBeforeReopen
 	// returns the set of task IDs to skip reopening (every task with at
-	// least one job ReapOrphans failed to reconcile).
-	reapSkipTasks := reapOrphansBeforeReopen(context.Background(), runner, srv.db)
+	// least one job ReapOrphans failed to reconcile). blockAllReopen
+	// (Blocker 4, PR7 codex review) is set when reap failed so globally
+	// (docker unreachable, listing itself errored) that no per-job
+	// FailedJobIDs information exists at all — every daemon_shutdown-aborted
+	// task is then treated as unreconciled, not just the ones ReapOrphans
+	// happened to enumerate.
+	reapSkipTasks, reapBlockAllReopen := reapOrphansBeforeReopen(context.Background(), runner, srv.db)
 
 	// Auto-reopen tasks that were interrupted by the previous daemon shutdown.
 	// These tasks were aborted with code=daemon_shutdown either by
@@ -653,8 +678,17 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 	if shutdownIDs, err := dispatcher.FindDaemonShutdownAbortedTasks(srv.db); err != nil {
 		slog.Warn("failed to query daemon_shutdown aborted tasks", "error", err)
 	} else {
+		if reapBlockAllReopen && len(shutdownIDs) > 0 {
+			slog.Error("startup reap failed globally; withholding auto-reopen for every daemon_shutdown-aborted task this boot (docs/plans/phase6-container-backend.md §決定6) — reopen manually once sandbox resources are confirmed reconciled",
+				"task_count", len(shutdownIDs))
+		}
 		for _, id := range shutdownIDs {
-			if reapSkipTasks[id] {
+			switch {
+			case reapBlockAllReopen:
+				slog.Warn("skip auto-reopen: startup reap failed globally (docs/plans/phase6-container-backend.md §決定6); leaving it aborted to avoid a double-execution race",
+					"task_id", id)
+				continue
+			case reapSkipTasks[id]:
 				slog.Warn("skip auto-reopen: startup reap failed to reconcile a sandbox resource for this task (docs/plans/phase6-container-backend.md §決定6); leaving it aborted to avoid a double-execution race",
 					"task_id", id)
 				continue
