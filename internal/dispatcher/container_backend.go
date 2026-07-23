@@ -59,6 +59,12 @@ type containerBackend struct {
 	// whole feature: Launch neither issues a cert nor adds any DOCKER_* env.
 	dockerTLSCA     *mtls.CA
 	dockerProxyAddr string
+	// runtimeDir, when non-empty, is the host-visible directory
+	// materializeDockerClientCert writes per-job TLS material under —
+	// see ContainerBackendOptions.RuntimeDir's doc comment for why this
+	// (not os.MkdirTemp's container-private default) is required for a
+	// real compose deploy.
+	runtimeDir string
 	// diagnosticsCollector, when non-nil, is invoked once a container has
 	// exited — after Wait's fan-out has resolved and the attach stream has
 	// fully drained (Major 3) — but strictly before the container is
@@ -159,6 +165,26 @@ type ContainerBackendOptions struct {
 	// compose service DNS name) job containers' DOCKER_HOST env should
 	// point at. Ignored when DockerTLSCA is nil.
 	DockerProxyAddr string
+	// RuntimeDir, when non-empty, is the host-visible directory (typically
+	// $BOID_RUNTIME_DIR, bind-mounted source == target into this daemon's
+	// own container — build/container/compose.yml's "Persistence" header
+	// comment) materializeDockerClientCert writes each job's per-job TLS
+	// material (cert.pem/key.pem/ca.pem) under, as
+	// <RuntimeDir>/tls/<jobID>/, instead of a fresh os.MkdirTemp("", ...)
+	// directory (Major 11, PR6 codex review). This matters because Launch
+	// is a DooD (docker-out-of-docker) backend: the container it creates
+	// is a SIBLING via the HOST's own docker daemon, not nested inside
+	// this daemon's own container, so a mount Source it hands that
+	// daemon has to be a path the host filesystem actually has.
+	// os.MkdirTemp's default (this daemon container's own, typically
+	// unmounted, private /tmp) is not one — the sibling docker daemon
+	// would either mount the wrong host directory or fail outright. Empty
+	// (every pre-this-field caller/test) falls back to the prior
+	// os.MkdirTemp("", ...) behavior unchanged — correct for any caller
+	// NOT running under a compose deploy with BOID_RUNTIME_DIR bind
+	// mounted (e.g. every existing unit test, which shares a real host
+	// /tmp with its own test process either way).
+	RuntimeDir string
 }
 
 const (
@@ -276,6 +302,7 @@ func NewContainerBackend(api dockerAPI, opts ContainerBackendOptions) backend.Sa
 		diagnosticsCollector: opts.DiagnosticsCollector,
 		dockerTLSCA:          opts.DockerTLSCA,
 		dockerProxyAddr:      opts.DockerProxyAddr,
+		runtimeDir:           opts.RuntimeDir,
 		sessions:             make(map[string]*containerSession),
 	}
 	if b.defaultImage == "" {
@@ -936,9 +963,9 @@ func (b *containerBackend) materializeDockerClientCert(jobID string) (dir string
 		return "", fmt.Errorf("encode docker client cert: %w", err)
 	}
 
-	dir, err = os.MkdirTemp("", "boid-"+jobID+"-docker-tls-")
+	dir, err = b.dockerTLSCertDir(jobID)
 	if err != nil {
-		return "", fmt.Errorf("create docker tls cert dir: %w", err)
+		return "", err
 	}
 
 	files := map[string][]byte{
@@ -954,6 +981,32 @@ func (b *containerBackend) materializeDockerClientCert(jobID string) (dir string
 			_ = os.RemoveAll(dir)
 			return "", fmt.Errorf("write %s: %w", name, werr)
 		}
+	}
+	return dir, nil
+}
+
+// dockerTLSCertDir returns (creating it if necessary) the directory
+// materializeDockerClientCert writes jobID's cert.pem/key.pem/ca.pem trio
+// into (Major 11, PR6 codex review — see ContainerBackendOptions.
+// RuntimeDir's doc comment for the DooD host-visibility rationale):
+//   - b.runtimeDir set (the compose/container-backend deploy):
+//     <runtimeDir>/tls/<jobID> — a fixed, host-path-stable location
+//     under the already bind-mounted (source == target) BOID_RUNTIME_DIR
+//     a sibling docker daemon can actually mount FROM.
+//   - b.runtimeDir empty (every pre-this-field test/caller): a fresh
+//     os.MkdirTemp("", ...) directory, unchanged from this backend's
+//     original behavior.
+func (b *containerBackend) dockerTLSCertDir(jobID string) (string, error) {
+	if b.runtimeDir == "" {
+		dir, err := os.MkdirTemp("", "boid-"+jobID+"-docker-tls-")
+		if err != nil {
+			return "", fmt.Errorf("create docker tls cert dir: %w", err)
+		}
+		return dir, nil
+	}
+	dir := filepath.Join(b.runtimeDir, "tls", jobID)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", fmt.Errorf("create docker tls cert dir: %w", err)
 	}
 	return dir, nil
 }
