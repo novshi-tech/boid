@@ -395,7 +395,7 @@ type dockerAPI interface {
 //     signal reaches the entrypoint process, so nothing new is embedded
 //     here for that.
 func (b *containerBackend) Launch(ctx context.Context, spec sandbox.Spec, opts backend.LaunchOptions) (backend.SandboxSession, error) {
-	specPath, statePath, err := writeContainerSpec(spec)
+	specPath, statePath, err := writeContainerSpec(spec, b.runtimeDir)
 	if err != nil {
 		return nil, fmt.Errorf("write container sandbox spec: %w", err)
 	}
@@ -405,8 +405,18 @@ func (b *containerBackend) Launch(ctx context.Context, spec sandbox.Spec, opts b
 	// zero value "" makes the RemoveAll a no-op).
 	var dockerTLSDir string
 	cleanupFiles := func() {
-		_ = os.Remove(specPath)
-		_ = os.Remove(statePath)
+		if b.runtimeDir != "" {
+			// Blocker 1 (PR7 codex review): specPath/statePath live under
+			// <runtimeDir>/spec/<jobID>/ when RuntimeDir is configured (see
+			// writeContainerSpec's doc comment) — remove the whole per-job
+			// directory rather than the two files individually, so no empty
+			// directory accumulates under runtimeDir/spec across the
+			// lifetime of a long-running daemon.
+			_ = os.RemoveAll(filepath.Dir(specPath))
+		} else {
+			_ = os.Remove(specPath)
+			_ = os.Remove(statePath)
+		}
 		if dockerTLSDir != "" {
 			_ = os.RemoveAll(dockerTLSDir)
 		}
@@ -780,25 +790,56 @@ func (b *containerBackend) pullImage(ctx context.Context, ref string) error {
 	return nil
 }
 
-// writeContainerSpec writes spec's JSON and an empty runner-state.json to
-// host paths using the exact same `/tmp/boid-<ID>-runner-{spec,state}.json`
-// naming convention dispatcher.sandboxPreparerImpl.PrepareSandbox uses for
-// the userns backend (see its own doc comment). Deliberately does NOT call
-// that preparer: it also allocates spec.RootDir (a tmpfs mount point for
-// userns pivot_root) which a container backend has no use for — the
-// container's own image rootfs is the sandbox root. Reusing the naming
-// convention rather than inventing a new one means the existing
-// `/tmp/boid-*` 30-day GC sweep (CLAUDE.md「ディスク使用量の管理」) covers
-// container-backend leftovers with no new GC code.
+// writeContainerSpec writes spec's JSON and an empty runner-state.json to a
+// host path Launch bind-mounts into the sibling job container.
+//
+// [Blocker 1, PR7 codex review]: when runtimeDir is empty (every pre-PR7
+// caller/test, and any deploy that hasn't wired ContainerBackendOptions.
+// RuntimeDir), this reproduces the original behavior verbatim — the exact
+// same `/tmp/boid-<ID>-runner-{spec,state}.json` naming convention
+// dispatcher.sandboxPreparerImpl.PrepareSandbox uses for the userns backend
+// (see its own doc comment), so the existing `/tmp/boid-*` 30-day GC sweep
+// (CLAUDE.md「ディスク使用量の管理」) still covers it. But a REAL compose
+// deploy runs this daemon inside its own container: Launch is a DooD
+// (docker-out-of-docker) backend, so a mount Source it hands the HOST's own
+// docker daemon has to be a path the HOST filesystem actually has — the
+// daemon container's private /tmp is not (ContainerCreate would either bind
+// the wrong host directory or fail outright, exactly like
+// dockerTLSCertDir's identical DooD rationale, see its own doc comment).
+//
+// When runtimeDir is set, the spec/state pair instead lands under
+// <runtimeDir>/spec/<spec.ID>/runner-{spec,state}.json — runtimeDir is
+// b.runtimeDir, which ContainerBackendOptions.RuntimeDir's own doc comment
+// establishes is bind-mounted source == target into this daemon's own
+// container (build/container/compose.yml's BOID_RUNTIME_DIR), so any
+// absolute path this process computes under it is, by construction, already
+// a real path the sibling docker daemon can mount from. Cleanup (Launch's
+// cleanupFiles, containerSession.waitLoop) removes the whole per-job
+// <runtimeDir>/spec/<spec.ID>/ directory rather than the two files
+// individually.
+//
+// Deliberately does NOT call sandboxPreparerImpl.PrepareSandbox: it also
+// allocates spec.RootDir (a tmpfs mount point for userns pivot_root) which a
+// container backend has no use for — the container's own image rootfs is
+// the sandbox root.
 //
 // statePath is created empty (not just planned) up front because it is
 // bind-mounted into the container as a single file: docker's bind-mount
 // setup does not create a missing host **file** path the way it can create
 // a missing directory, so the target must already exist before
 // ContainerCreate runs.
-func writeContainerSpec(spec sandbox.Spec) (specPath, statePath string, err error) {
-	specPath = fmt.Sprintf("/tmp/boid-%s-runner-spec.json", spec.ID)
-	statePath = fmt.Sprintf("/tmp/boid-%s-runner-state.json", spec.ID)
+func writeContainerSpec(spec sandbox.Spec, runtimeDir string) (specPath, statePath string, err error) {
+	if runtimeDir == "" {
+		specPath = fmt.Sprintf("/tmp/boid-%s-runner-spec.json", spec.ID)
+		statePath = fmt.Sprintf("/tmp/boid-%s-runner-state.json", spec.ID)
+	} else {
+		dir := filepath.Join(runtimeDir, "spec", spec.ID)
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			return "", "", fmt.Errorf("create sandbox spec dir: %w", err)
+		}
+		specPath = filepath.Join(dir, "runner-spec.json")
+		statePath = filepath.Join(dir, "runner-state.json")
+	}
 
 	data, err := json.Marshal(spec)
 	if err != nil {
@@ -1125,6 +1166,15 @@ type containerSession struct {
 	// sessions, which never wrote one (mirrors usernsSession.prepared being
 	// nil for Adopt — see sessionLocalArtifacts's doc comment).
 	specPath string
+	// specDir, when non-empty, is the per-job directory writeContainerSpec
+	// created specPath/statePath under (<runtimeDir>/spec/<spec.ID> —
+	// Blocker 1, PR7 codex review) and is removed wholesale (os.RemoveAll)
+	// instead of specPath alone, so no empty directory accumulates under
+	// runtimeDir/spec over the daemon's lifetime. Empty when
+	// ContainerBackendOptions.RuntimeDir was unset (the pre-PR7 flat
+	// /tmp/boid-<ID>-runner-*.json layout, where only the file itself is
+	// ever removed) or for Adopt-reconstructed sessions.
+	specDir string
 	// dockerTLSDir is the per-job cert directory materializeDockerClientCert
 	// wrote (§決定5), removed alongside specPath once the container exits.
 	// Empty whenever LaunchOptions.DockerEnabled was false or no
@@ -1174,7 +1224,7 @@ type containerSession struct {
 var _ backend.SandboxSession = (*containerSession)(nil)
 
 func newContainerSession(b *containerBackend, id string, tty bool, specPath, dockerTLSDir string) *containerSession {
-	return &containerSession{
+	sess := &containerSession{
 		backend:      b,
 		id:           id,
 		api:          b.api,
@@ -1186,6 +1236,10 @@ func newContainerSession(b *containerBackend, id string, tty bool, specPath, doc
 		done:         make(chan struct{}),
 		readDone:     make(chan struct{}),
 	}
+	if specPath != "" && b.runtimeDir != "" {
+		sess.specDir = filepath.Dir(specPath)
+	}
+	return sess
 }
 
 func (s *containerSession) ID() string { return s.id }
@@ -1501,7 +1555,13 @@ func (s *containerSession) waitLoop() {
 			slog.Warn("container backend: force remove exited container failed", "container_id", s.id, "error", ferr)
 		}
 	}
-	if s.specPath != "" {
+	if s.specDir != "" {
+		// Blocker 1 (PR7 codex review): a runtimeDir-scoped spec lives in its
+		// own per-job directory (<runtimeDir>/spec/<spec.ID>/) — remove it
+		// wholesale rather than just specPath, matching Launch's cleanupFiles
+		// on the error path.
+		_ = os.RemoveAll(s.specDir)
+	} else if s.specPath != "" {
 		_ = os.Remove(s.specPath)
 	}
 	if s.dockerTLSDir != "" {
