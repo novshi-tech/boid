@@ -35,7 +35,7 @@ type appRuntime struct {
 	taskRepo       *orchestrator.TaskRepository
 	jobStore       api.JobStore
 	globalJobStore api.GlobalJobStore
-	jobRuntime     dispatcher.JobRuntime
+	jobRuntime     dispatcher.JobRuntime //nolint:staticcheck // SA1019: JobRuntime's Deprecated marker (Phase 6 PR9 skeleton) flags its own type, not a call to remove now — still the production userns transport; actual retirement is a follow-up PR (docs/plans/phase6-cutover-followups.md).
 	runner         *dispatcher.Runner
 	meta           api.MetaStore
 	projectSvc     *api.ProjectAppService
@@ -477,7 +477,12 @@ func webSecretPathFor(cfg Config) string {
 	return ""
 }
 
-func newJobRuntime(cfg Config) (dispatcher.JobRuntime, error) {
+// SA1019 (staticcheck) on the JobRuntime/LocalRuntime references below is
+// expected and suppressed inline: their Deprecated marker (Phase 6 PR9
+// skeleton, docs/plans/phase6-cutover-followups.md) flags the still-current
+// production userns construction path, not a stale call to migrate away
+// from now — actual retirement is a follow-up PR.
+func newJobRuntime(cfg Config) (dispatcher.JobRuntime, error) { //nolint:staticcheck
 	if cfg.JobRuntime != nil {
 		return cfg.JobRuntime, nil
 	}
@@ -486,7 +491,7 @@ func newJobRuntime(cfg Config) (dispatcher.JobRuntime, error) {
 	if err := os.MkdirAll(rootDir, 0o755); err != nil {
 		return nil, fmt.Errorf("mkdir runtime root: %w", err)
 	}
-	return &dispatcher.LocalRuntime{RootDir: rootDir}, nil
+	return &dispatcher.LocalRuntime{RootDir: rootDir}, nil //nolint:staticcheck
 }
 
 // cleanOrphanRuntimes removes runtime directories that have no corresponding

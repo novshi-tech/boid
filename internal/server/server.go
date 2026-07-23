@@ -83,7 +83,7 @@ type Config struct {
 	KitsDir        string   // base dir for installed kit repos
 	KeyFilePath    string   // path to secret encryption key file
 	AllowedDomains []string // proxy allowed domains
-	JobRuntime     dispatcher.JobRuntime
+	JobRuntime     dispatcher.JobRuntime //nolint:staticcheck // SA1019: JobRuntime's Deprecated marker (Phase 6 PR9 skeleton) flags its own type, not a call to remove now — usernsBackend (this field's only production use) is still the default backend; actual retirement is a follow-up PR (docs/plans/phase6-cutover-followups.md).
 	// TLSDir, when non-empty, is the directory holding (or to generate)
 	// the per-daemon internal CA (ca.crt/ca.key) used to secure the
 	// broker/git-gateway TCP(mTLS) listeners added in

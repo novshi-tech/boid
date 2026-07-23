@@ -21,7 +21,7 @@ func TestServerJobRuntimeAttachAndResize(t *testing.T) {
 
 	tmpDir := t.TempDir()
 	sockPath := filepath.Join(tmpDir, "boid.sock")
-	localRuntime := &dispatcher.LocalRuntime{RootDir: filepath.Join(tmpDir, "runtimes")}
+	localRuntime := &dispatcher.LocalRuntime{RootDir: filepath.Join(tmpDir, "runtimes")} //nolint:staticcheck // SA1019: LocalRuntime's Deprecated marker (Phase 6 PR9 skeleton) — still the production userns transport this test exercises; actual retirement is a follow-up PR (docs/plans/phase6-cutover-followups.md).
 
 	srv, err := New(Config{
 		DBPath:     ":memory:",
@@ -126,7 +126,7 @@ func TestServerJobRuntimeResizeUnknownRuntimeConflict(t *testing.T) {
 
 	tmpDir := t.TempDir()
 	sockPath := filepath.Join(tmpDir, "boid.sock")
-	localRuntime := &dispatcher.LocalRuntime{RootDir: filepath.Join(tmpDir, "runtimes")}
+	localRuntime := &dispatcher.LocalRuntime{RootDir: filepath.Join(tmpDir, "runtimes")} //nolint:staticcheck // SA1019: LocalRuntime's Deprecated marker (Phase 6 PR9 skeleton) — still the production userns transport this test exercises; actual retirement is a follow-up PR (docs/plans/phase6-cutover-followups.md).
 
 	srv, err := New(Config{
 		DBPath:     ":memory:",

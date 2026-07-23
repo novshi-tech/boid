@@ -147,6 +147,27 @@ export XDG_CONFIG_HOME="$ROOT/config"
 export XDG_RUNTIME_DIR="$ROOT/run"
 mkdir -p "$XDG_DATA_HOME/boid" "$XDG_CONFIG_HOME/boid" "$XDG_RUNTIME_DIR"
 
+# scripts/deploy-container.sh derives BOID_DATA_DIR/BOID_CONFIG_DIR/
+# BOID_RUNTIME_DIR/BOID_UID/BOID_GID/DOCKER_GID from the XDG_* vars above and
+# exports them for its OWN process — those exports do NOT propagate back to
+# this script (it's invoked as a separate `bash` child below), so every
+# later `docker compose` call this script makes directly (down/logs in the
+# cleanup trap) needs the identical values computed independently here too,
+# or compose's variable interpolation silently falls back to blank strings
+# (harmless for `down`'s container matching, which goes by compose project
+# name, but produces confusing "variable is not set" warnings and would
+# matter for anything that DOES need the resolved bind-mount paths).
+export BOID_DATA_DIR="$XDG_DATA_HOME/boid"
+export BOID_CONFIG_DIR="$XDG_CONFIG_HOME/boid"
+export BOID_RUNTIME_DIR="$XDG_RUNTIME_DIR"
+export BOID_UID
+BOID_UID="$(id -u)"
+export BOID_GID
+BOID_GID="$(id -g)"
+export DOCKER_GID
+DOCKER_GID="$(getent group docker 2>/dev/null | cut -d: -f3)"
+: "${DOCKER_GID:=999}"
+
 cat > "$XDG_CONFIG_HOME/boid/config.yaml" <<'YAML'
 sandbox:
   backend: container

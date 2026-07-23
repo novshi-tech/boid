@@ -170,13 +170,20 @@ func New(opts Options) (*Upstream, error) {
 }
 
 // generateSelfSignedCert creates an in-memory self-signed TLS certificate
-// valid for "127.0.0.1", "::1", and "localhost" (the only hosts the fixture
-// upstream server ever binds to — see New's addr default), so it can serve
-// real HTTPS. Returns the tls.Certificate ready to plug into a
-// tls.Config, and the PEM-encoded certificate (never the private key) so
-// e2e/lib/common.sh can hand it to the daemon via SSL_CERT_FILE without any
-// gateway/production code changes — see New's doc comment for why that
-// matters.
+// valid for "127.0.0.1", "::1", "localhost" (the hosts the fixture upstream
+// server binds to for every e2e/run.sh scenario — see New's addr default),
+// and "host.docker.internal" (docs/plans/phase6-container-backend.md §PR9's
+// e2e-container job: run-container.sh binds this server on 0.0.0.0 instead
+// and reaches it from both the runner's own host process AND the compose
+// daemon's container via that name — see run-container.sh's own header
+// comment for the host<->container reachability trick). The extra SAN is
+// additive and inert for every other caller: it only matters to a client
+// that actually dials "host.docker.internal", which no e2e/run.sh scenario
+// does. Returns the tls.Certificate ready to plug into a tls.Config, and
+// the PEM-encoded certificate (never the private key) so e2e/lib/common.sh
+// (and run-container.sh) can hand it to the daemon via SSL_CERT_FILE
+// without any gateway/production code changes — see New's doc comment for
+// why that matters.
 func generateSelfSignedCert() (tls.Certificate, []byte, error) {
 	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
@@ -196,7 +203,7 @@ func generateSelfSignedCert() (tls.Certificate, []byte, error) {
 		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
 		IsCA:                  true,
 		BasicConstraintsValid: true,
-		DNSNames:              []string{"localhost"},
+		DNSNames:              []string{"localhost", "host.docker.internal"},
 		IPAddresses:           []net.IP{net.ParseIP("127.0.0.1"), net.ParseIP("::1")},
 	}
 
