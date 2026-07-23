@@ -65,7 +65,22 @@ echo "deploy-container: using engine=$ENGINE"
 : "${BOID_RUNTIME_DIR:=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}}"
 : "${BOID_UID:=$(id -u)}"
 : "${BOID_GID:=$(id -g)}"
-export BOID_DATA_DIR BOID_CONFIG_DIR BOID_RUNTIME_DIR BOID_UID BOID_GID
+# DOCKER_GID (Major 9, PR6 codex review): the host's `docker` group GID,
+# so compose.yml's group_add can grant the non-root daemon process
+# permission to open /var/run/docker.sock (DooD). `getent group docker`
+# is the portable way to look this up (works whether the group entry
+# comes from /etc/group or an NSS backend); if the host has no `docker`
+# group at all (e.g. a podman-only host with no docker-shaped group,
+# CLAUDE.md's noted dev-host state), fall back to compose.yml's own
+# `${DOCKER_GID:-999}" default rather than failing here — group_add with
+# a GID that doesn't exist on this host is harmless (docker/podman does
+# not validate it against /etc/group), and 999 is podman-compose 1.0.6's
+# own requirement (an unset var used in a list context fails
+# interpolation on some versions) as well as a common `docker.io`
+# package default.
+: "${DOCKER_GID:=$(getent group docker 2>/dev/null | cut -d: -f3)}"
+: "${DOCKER_GID:=999}"
+export BOID_DATA_DIR BOID_CONFIG_DIR BOID_RUNTIME_DIR BOID_UID BOID_GID DOCKER_GID
 
 IMAGE_TAG="boid:$(git -C "$ROOT_DIR" rev-parse HEAD)"
 

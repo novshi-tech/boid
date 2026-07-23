@@ -12,6 +12,7 @@ package container
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"gopkg.in/yaml.v3"
@@ -25,6 +26,8 @@ type composeDoc struct {
 		Networks map[string]struct {
 			Aliases []string `yaml:"aliases"`
 		} `yaml:"networks"`
+		GroupAdd []string `yaml:"group_add"`
+		Volumes  []string `yaml:"volumes"`
 	} `yaml:"services"`
 }
 
@@ -68,4 +71,27 @@ func TestComposeDaemonHasDockerProxyAlias(t *testing.T) {
 		}
 	}
 	t.Errorf(`daemon service's boid_internal network aliases = %v, want "boid-dockerproxy" present`, net.Aliases)
+}
+
+// TestComposeDaemonHasDockerGroupAdd pins Major 9 (PR6 codex review): the
+// non-root daemon process (user: 1000:1000 by default) needs supplementary
+// membership in the host's docker group to open /var/run/docker.sock
+// (DooD) — without group_add, every docker API call from inside the
+// container fails with a permission error.
+func TestComposeDaemonHasDockerGroupAdd(t *testing.T) {
+	doc := loadComposeDoc(t)
+
+	daemon, ok := doc.Services["daemon"]
+	if !ok {
+		t.Fatal(`compose.yml has no "daemon" service`)
+	}
+	if len(daemon.GroupAdd) == 0 {
+		t.Fatal(`daemon service has no group_add entries, want a DOCKER_GID entry so the non-root daemon can open /var/run/docker.sock`)
+	}
+	for _, g := range daemon.GroupAdd {
+		if strings.Contains(g, "DOCKER_GID") {
+			return
+		}
+	}
+	t.Errorf(`daemon service group_add = %v, want an entry referencing ${DOCKER_GID:-...}`, daemon.GroupAdd)
 }

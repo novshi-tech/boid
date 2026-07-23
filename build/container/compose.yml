@@ -166,6 +166,26 @@ services:
     # (build/container/Dockerfile) or the daemon lands on an unknown uid
     # with no matching image passwd entry.
     user: "${BOID_UID:-1000}:${BOID_GID:-1000}"
+    # group_add: the non-root daemon process (user: above) needs
+    # supplementary membership in whatever group owns
+    # /var/run/docker.sock on THIS host (typically `docker`, mode 0660 —
+    # DooD's sibling-container docker.sock bind below) to actually be able
+    # to open it (Major 9, PR6 codex review: without this, every docker
+    # API call from inside the container fails with a permission error the
+    # moment it isn't root). DOCKER_GID is the host's `docker` group GID,
+    # NOT baked into the image (it varies by host distro/install) —
+    # scripts/deploy-container.sh resolves it via `getent group docker`
+    # and exports it; build/container/.env.example documents the same
+    # variable for a manual `docker compose`/`podman-compose` invocation.
+    # The :-999 fallback is podman-compose 1.0.6's own requirement (an
+    # unset var used in a list context fails interpolation on some
+    # versions) and happens to match the GID `docker.io`'s Debian/Ubuntu
+    # package conventionally allocates when nothing else claims it first —
+    # a reasonable default, not a guaranteed-correct one; hosts where it's
+    # wrong should rely on deploy-container.sh's getent resolution instead
+    # of this literal.
+    group_add:
+      - "${DOCKER_GID:-999}"
     volumes:
       # DooD: sibling job containers, not nested (§決定4). The generic
       # `/var/run/docker.sock` host path resolves correctly under both
