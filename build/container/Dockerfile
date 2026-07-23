@@ -73,6 +73,14 @@ RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -o /out/boid .
 FROM docker.io/library/debian:bookworm-slim
 ARG BOID_UID
 ARG BOID_GID
+# gh CLI version pin (Minor 14, PR6 codex review): `apt-get install gh`
+# with no version pin picks up whatever GitHub's apt repo currently
+# publishes as `stable`, so two builds of this same Dockerfile on
+# different days can silently produce different gh versions — bump this
+# deliberately (`apt-cache madison gh` against
+# https://cli.github.com/packages, after adding its repo, lists the exact
+# version string apt expects) rather than floating on latest.
+ARG GH_VERSION=2.96.0
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates git curl gpg \
@@ -86,7 +94,9 @@ RUN apt-get update \
 # installed here, not just declared in some project's host_commands.yaml.
 #
 #   - gh (GitHub CLI): installed from GitHub's own apt repo below (Debian's
-#     default repos do not carry it).
+#     default repos do not carry it), pinned to GH_VERSION (Minor 14, PR6
+#     codex review) so the image is reproducible across builds instead of
+#     picking up whatever `stable` happens to publish that day.
 #   - project-local scripts (a host_commands entry with an explicit
 #     project-relative `path:`) are NOT baked in here — §決定4 is explicit
 #     that these "come from the project side", not the image. §決定4 also
@@ -105,7 +115,7 @@ RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg -o 
     && chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg \
     && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" > /etc/apt/sources.list.d/github-cli.list \
     && apt-get update \
-    && apt-get install -y --no-install-recommends gh \
+    && apt-get install -y --no-install-recommends "gh=${GH_VERSION}" \
     && rm -rf /var/lib/apt/lists/*
 
 RUN mkdir -p /opt/boid-host-tools
