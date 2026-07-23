@@ -28,6 +28,7 @@ type wireFakeSession struct {
 
 	signalCalls []syscall.Signal
 	resizeCalls []backend.TerminalSize
+	stopCalls   int
 }
 
 var _ backend.SandboxSession = (*wireFakeSession)(nil)
@@ -45,7 +46,10 @@ func (s *wireFakeSession) Resize(size backend.TerminalSize) error {
 func (s *wireFakeSession) Wait(context.Context) (backend.RuntimeExit, error) {
 	return backend.RuntimeExit{}, ErrRuntimeUnsupported
 }
-func (s *wireFakeSession) Stop(context.Context) error { return nil }
+func (s *wireFakeSession) Stop(context.Context) error {
+	s.stopCalls++
+	return nil
+}
 func (s *wireFakeSession) Signal(_ context.Context, sig syscall.Signal) error {
 	s.signalCalls = append(s.signalCalls, sig)
 	return nil
@@ -190,5 +194,71 @@ func TestRunner_ReapOrphans_UsesUsernsStubByDefault(t *testing.T) {
 	}
 	if len(got.ReapedJobIDs) != 0 || len(got.FailedJobIDs) != 0 || got.GlobalError != nil {
 		t.Errorf("ReapReport = %+v, want the zero value (userns backend stub)", got)
+	}
+}
+
+// TestRunner_StopJobRuntime_RoutesThroughBackendAdoptToSessionStop pins
+// [Blocker 3, PR7 codex review]: `boid task stop`/task abort's
+// StopJobRuntime call must reach a session's Stop method via
+// SandboxBackend.Adopt — not r.Runtime.Stop directly, which cannot stop a
+// docker container when sandbox.backend: container is selected.
+func TestRunner_StopJobRuntime_RoutesThroughBackendAdoptToSessionStop(t *testing.T) {
+	sess := &wireFakeSession{id: "runtime-xyz"}
+	be := &wireFakeBackend{adoptable: map[string]*wireFakeSession{"runtime-xyz": sess}}
+	r := &Runner{Runtime: &ubFakeRuntime{}, Backend: be}
+
+	r.StopJobRuntime("runtime-xyz")
+
+	if len(be.adoptCalls) != 1 || be.adoptCalls[0] != "runtime-xyz" {
+		t.Fatalf("Adopt calls = %v, want exactly one call with runtimeID=runtime-xyz", be.adoptCalls)
+	}
+	if sess.stopCalls != 1 {
+		t.Fatalf("session.Stop calls = %d, want 1", sess.stopCalls)
+	}
+}
+
+// TestRunner_StopJobRuntime_UnadoptableRuntimeIDNeverReachesSession pins the
+// companion negative case: an unknown/stale runtimeID must not panic and
+// must never reach Stop on anything.
+func TestRunner_StopJobRuntime_UnadoptableRuntimeIDNeverReachesSession(t *testing.T) {
+	sess := &wireFakeSession{id: "runtime-xyz"}
+	be := &wireFakeBackend{adoptable: map[string]*wireFakeSession{"runtime-xyz": sess}}
+	r := &Runner{Runtime: &ubFakeRuntime{}, Backend: be}
+
+	r.StopJobRuntime("runtime-does-not-exist")
+
+	if sess.stopCalls != 0 {
+		t.Fatalf("session.Stop calls = %d, want 0 (Adopt reported ok=false)", sess.stopCalls)
+	}
+}
+
+// TestRunner_CleanupTaskWindow_RoutesThroughBackendAdoptToSessionStop pins
+// the task-abort sibling of the StopJobRuntime fix above: every runtime ID
+// tracked for a task (trackTaskRuntime) must be stopped via the same
+// Adopt→Stop seam, so `boid task stop`/abort on a container-backend task
+// actually terminates the container instead of silently no-op'ing.
+func TestRunner_CleanupTaskWindow_RoutesThroughBackendAdoptToSessionStop(t *testing.T) {
+	sess1 := &wireFakeSession{id: "runtime-1"}
+	sess2 := &wireFakeSession{id: "runtime-2"}
+	be := &wireFakeBackend{adoptable: map[string]*wireFakeSession{
+		"runtime-1": sess1,
+		"runtime-2": sess2,
+	}}
+	r := &Runner{Runtime: &ubFakeRuntime{}, Backend: be}
+	r.trackTaskRuntime("task-1", "runtime-1")
+	r.trackTaskRuntime("task-1", "runtime-2")
+
+	r.CleanupTaskWindow("task-1")
+
+	if sess1.stopCalls != 1 {
+		t.Errorf("runtime-1 session.Stop calls = %d, want 1", sess1.stopCalls)
+	}
+	if sess2.stopCalls != 1 {
+		t.Errorf("runtime-2 session.Stop calls = %d, want 1", sess2.stopCalls)
+	}
+	// takeTaskRuntimes drains the tracked set — a second call must find
+	// nothing left to stop.
+	if remaining := r.takeTaskRuntimes("task-1"); len(remaining) != 0 {
+		t.Errorf("takeTaskRuntimes after CleanupTaskWindow = %v, want empty (already drained)", remaining)
 	}
 }

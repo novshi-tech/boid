@@ -1093,11 +1093,30 @@ func cleanupSandboxState(prepared *PreparedSandbox) {
 
 // StopJobRuntime stops the runtime identified by runtimeID.
 // It is a best-effort operation: errors are logged at debug level only.
+//
+// [Blocker 3, PR7 codex review]: routes through SandboxBackend.Adopt →
+// SandboxSession.Stop (the same seam SignalJobRuntime/ResizeRuntimeID/
+// CanAttach already use, docs/plans/phase6-container-backend.md §PR1)
+// instead of calling r.Runtime.Stop directly. r.Runtime (LocalRuntime) can
+// only ever stop a userns process — with sandbox.backend: container
+// selected, a task abort/`boid task stop` used to call StopJobRuntime and
+// have it silently do nothing useful against a docker container (LocalRuntime
+// has no notion of runtimeID being a container ID), leaving the old agent's
+// container running and free to keep mutating the task's $HOME/workspace
+// after the daemon believed the task was stopped. Adopt(runtimeID) resolves
+// to the correct backend's session regardless of which one is configured —
+// for userns that is still, transitively, r.Runtime.Stop (usernsSession.Stop
+// delegates to it), so this is behavior-preserving for every pre-PR7
+// deployment.
 func (r *Runner) StopJobRuntime(runtimeID string) {
-	if r.Runtime == nil || runtimeID == "" {
+	if runtimeID == "" {
 		return
 	}
-	if err := r.Runtime.Stop(context.Background(), runtimeID); err != nil {
+	session, ok := r.sandboxBackend().Adopt(context.Background(), runtimeID)
+	if !ok {
+		return
+	}
+	if err := session.Stop(context.Background()); err != nil {
 		slog.Debug("stop job runtime", "runtime_id", runtimeID, "error", err)
 	}
 }
@@ -1194,15 +1213,17 @@ func (r *Runner) ResizeRuntimeID(ctx context.Context, runtimeID string, size Ter
 }
 
 // CleanupTaskWindow stops all tracked runtimes associated with a task.
+//
+// [Blocker 3, PR7 codex review]: routes through StopJobRuntime (itself
+// SandboxBackend.Adopt → SandboxSession.Stop, see its doc comment) instead
+// of calling r.Runtime.Stop directly — the same fix, for the same reason:
+// with sandbox.backend: container selected, r.Runtime.Stop cannot stop a
+// docker container, so aborting a task used to leave its job container
+// running behind the daemon's back.
 func (r *Runner) CleanupTaskWindow(taskID string) {
-	if r.Runtime == nil {
-		return
-	}
 	runtimeIDs := r.takeTaskRuntimes(taskID)
 	for _, runtimeID := range runtimeIDs {
-		if err := r.Runtime.Stop(context.Background(), runtimeID); err != nil {
-			slog.Debug("cleanup task runtime", "task_id", taskID, "runtime_id", runtimeID, "error", err)
-		}
+		r.StopJobRuntime(runtimeID)
 	}
 }
 
