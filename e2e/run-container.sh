@@ -636,13 +636,23 @@ e2e_log "broker TCP wire (job -> broker -> daemon RPC over TLS) OK"
 # sibling job container reaching it at all (which task C's own success
 # above already proves) is only possible because of this bind-address
 # change (docs/plans/phase6-cutover-followups.md §⓪'s first scope item);
-# checking the daemon's own boid.log for the literal bound address it
-# logged at Start (internal/server/server.go's `slog.Info("broker tls
-# listener started", "addr", addr)`) confirms the LISTENER itself, not
-# just "some route happened to work".
-daemon_log="$XDG_RUNTIME_DIR/boid/boid.log"
-broker_tls_log_line="$(grep 'broker tls listener started' "$daemon_log" | tail -1 || true)"
-[[ -n "$broker_tls_log_line" ]] || e2e_fail "boid.log has no 'broker tls listener started' line — the broker's TCP(mTLS) listener never bound at all"
+# checking the daemon's own log for the literal bound address it logged at
+# Start (internal/server/server.go's `slog.Info("broker tls listener
+# started", "addr", addr)`) confirms the LISTENER itself, not just "some
+# route happened to work".
+#
+# `docker compose logs` (NOT a boid.log FILE under $XDG_RUNTIME_DIR/boid/)
+# is the actual source here: this compose deploy sets BOID_LOG_STDOUT=1
+# (compose.yml), so the daemon writes its slog output to its own
+# stdout/stderr — captured by `docker compose logs` — and never creates a
+# boid.log file on disk at all under this configuration (confirmed
+# empirically: dump_diagnostics' own "$daemon_log does not exist" branch
+# fired on every run while this same information was visible in "docker
+# compose logs (daemon)" the whole time — an earlier version of this check
+# read the file path instead and failed every run with a false negative,
+# even once the broker RPC itself was already succeeding).
+broker_tls_log_line="$(cd "$REPO_ROOT" && docker compose -f build/container/compose.yml logs --no-color daemon 2>&1 | grep 'broker tls listener started' | tail -1 || true)"
+[[ -n "$broker_tls_log_line" ]] || e2e_fail "daemon log has no 'broker tls listener started' line — the broker's TCP(mTLS) listener never bound at all"
 e2e_log "broker tls listener log line: ${broker_tls_log_line}"
 if printf '%s' "$broker_tls_log_line" | grep -q '127\.0\.0\.1'; then
   e2e_fail "broker TLS listener bound loopback-only (127.0.0.1) even though sandbox.backend: container is selected — gatewayBindHost wiring regressed"
