@@ -229,19 +229,39 @@ jobs:
     # local-host equivalent today.
     runs-on: ubuntu-24.04
     timeout-minutes: 20
-    # continue-on-error: this job is intentionally advisory (not blocking)
-    # until the broker TCP wire and per-job broker client cert delivery
-    # skeletons from PR4/PR6 are actually completed. Gateway TLS was fixed
-    # in PR9 (commit 577f9a8, ServerOnlyTLSConfig + gateway CA propagation),
-    # but broker still binds 127.0.0.1 and its ServerTLSConfig unconditionally
-    # requires a client cert that no PR ever built or wired for job containers.
-    # docs/plans/phase6-cutover-followups.md §「broker TCP wire completion」
-    # tracks this as a followup that must land BEFORE anyone opts into
-    # `sandbox.backend: container` in production. Until then this job
-    # exercises the parts of the container backend that DO work end to end
-    # (real docker image build, compose up, daemon healthy, task dispatch,
-    # container start, git clone via gateway) and surfaces regressions in
-    # those, without gating merges of unrelated changes.
+    # continue-on-error: STAYS true — NOT promoted, despite docs/plans/
+    # phase6-cutover-followups.md §⓪ ("broker TCP wire completion") now
+    # being landed. §⓪'s own gap (broker's TCP mTLS listener bound
+    # loopback-only, no per-job client cert delivery) is fixed: the
+    # listener now binds gatewayBindHost(usingContainerBackend) ("0.0.0.0"
+    # under sandbox.backend: container) and keeps mutual TLS via a per-job
+    # short-lived client cert (internal/dispatcher/container_backend.go's
+    # materializeBrokerClientCert), delivered via five BOID_BROKER_TLS_*
+    # env vars — e2e/run-container.sh's own workspace-C task
+    # (verify-broker-tls.sh, dispatched FIRST, before task A/B, so it is
+    # never masked by the unrelated failure below) pins this round trip
+    # end to end and passes.
+    #
+    # BUT flipping this job to blocking surfaced a SEPARATE, PRE-EXISTING,
+    # already-on-main bug unrelated to broker RPC: task A's own
+    # requirement 2 ("job -> a DIFFERENT workspace's sibling is
+    # UNREACHABLE") gets an HTTP 403 instead of the expected connection
+    # failure (confirmed reproducing identically on main @ f00f1ce, i.e.
+    # before this broker-TCP-wire PR ever touched this file — see PR
+    # #825's own CI run for the reproduction). Root cause (not yet fixed):
+    # the daemon container hosts the egress proxy in-process AND
+    # self-connects to EVERY active workspace's own isolated docker
+    # network for gateway/egress reachability (§決定5) — so a bare-hostname
+    # (no dot) HTTP request like "http://sib-b:8080/" gets forwarded
+    # through HTTP_PROXY (not excluded by no_proxy) to that in-process
+    # proxy, which CAN resolve "sib-b" via the daemon's OWN cross-workspace
+    # network membership, and only fails the request because "sib-b" isn't
+    # in workspace A's allowed_domains (403), not because the route
+    # doesn't exist. This is worth a dedicated followup (a new §, not §⓪,
+    # in docs/plans/phase6-cutover-followups.md) rather than either
+    # silently loosening this test's assertion (403 is a DIFFERENT
+    # isolation mechanism than "no route exists" — worth an explicit
+    # decision, not a quiet fix) or blocking on it here.
     continue-on-error: true
     steps:
       - name: Check out repository

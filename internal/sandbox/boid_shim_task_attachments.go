@@ -18,15 +18,15 @@ import (
 // than folding into taskContextOps.
 //
 // subArgs is everything after "task attachments" (RunBoidShim's args[2:]).
-func runTaskAttachmentsShim(subArgs []string, brokerSocket string) (*ExecResponse, error) {
+func runTaskAttachmentsShim(subArgs []string) (*ExecResponse, error) {
 	if len(subArgs) == 0 {
 		return nil, fmt.Errorf("boid shim: missing boid task attachments subcommand")
 	}
 	switch subArgs[0] {
 	case "list":
-		return runTaskAttachmentsList(subArgs[1:], brokerSocket)
+		return runTaskAttachmentsList(subArgs[1:])
 	case "get":
-		return runTaskAttachmentsGet(subArgs[1:], brokerSocket)
+		return runTaskAttachmentsGet(subArgs[1:])
 	default:
 		return nil, fmt.Errorf("boid shim: unsupported boid task attachments subcommand %q", subArgs[0])
 	}
@@ -36,7 +36,7 @@ func runTaskAttachmentsShim(subArgs []string, brokerSocket string) (*ExecRespons
 // request, then — for a successful reply — re-renders the broker's
 // canonical-JSON array as YAML when requested (defaulting to yaml, mirroring
 // runTaskContextShim's --format convention).
-func runTaskAttachmentsList(args []string, brokerSocket string) (*ExecResponse, error) {
+func runTaskAttachmentsList(args []string) (*ExecResponse, error) {
 	format, err := parseAttachmentsListFlags(args)
 	if err != nil {
 		return nil, err
@@ -54,7 +54,7 @@ func runTaskAttachmentsList(args []string, brokerSocket string) (*ExecResponse, 
 		Token:   os.Getenv("BOID_BROKER_TOKEN"),
 		Boid:    req,
 	}
-	resp, err := sendExecRequest(brokerSocket, execReq)
+	resp, err := sendExecRequest(execReq)
 	if err != nil || resp == nil {
 		return resp, err
 	}
@@ -93,7 +93,7 @@ func parseAttachmentsListFlags(args []string) (format string, err error) {
 // as ExecResponse.Stdout for main.go's os.Stdout.WriteString to emit
 // unmodified (a Go string is just a byte slice, so binary content survives
 // even though the field is typed string).
-func runTaskAttachmentsGet(args []string, brokerSocket string) (*ExecResponse, error) {
+func runTaskAttachmentsGet(args []string) (*ExecResponse, error) {
 	name, outputPath, err := parseAttachmentsGetArgs(args)
 	if err != nil {
 		return nil, err
@@ -112,7 +112,7 @@ func runTaskAttachmentsGet(args []string, brokerSocket string) (*ExecResponse, e
 		Token:   os.Getenv("BOID_BROKER_TOKEN"),
 		Boid:    req,
 	}
-	resp, err := sendExecRequest(brokerSocket, execReq)
+	resp, err := sendExecRequest(execReq)
 	if err != nil || resp == nil {
 		return resp, err
 	}

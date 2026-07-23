@@ -1,0 +1,9 @@
+id: broker-tcp-container-rpc
+name: Broker TCP container RPC
+task_behaviors:
+  dev:
+    hooks:
+      - id: broker-rpc-roundtrip
+        command: |
+          bash ".boid/hooks/broker-rpc-roundtrip.sh"
+    name: dev

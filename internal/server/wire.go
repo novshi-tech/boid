@@ -22,6 +22,7 @@ import (
 	"github.com/novshi-tech/boid/internal/config"
 	"github.com/novshi-tech/boid/internal/dispatcher"
 	"github.com/novshi-tech/boid/internal/gitgateway"
+	"github.com/novshi-tech/boid/internal/mtls"
 	"github.com/novshi-tech/boid/internal/notify"
 	"github.com/novshi-tech/boid/internal/orchestrator"
 	"github.com/novshi-tech/boid/internal/sandbox"
@@ -368,7 +369,26 @@ func buildProjectLoadStartupError(errs []error) error {
 // signal). NewDefaultDiagnosticsCollector runs only on an abnormal exit
 // (ExitCode != 0) and degrades gracefully on its own inspect/logs failures
 // — see its own doc comment for the full contract.
-func sandboxBackendForConfig(cfg *config.Config, installID, runtimeDir string) (backend.SandboxBackend, error) {
+// brokerTLSCA/brokerTLSAddr thread the broker's mTLS trust material into the
+// containerBackend this function may construct (docs/plans/
+// phase6-cutover-followups.md §⓪ "broker TCP wire completion"):
+// brokerTLSCA is the daemon's already-loaded internal CA (srv.daemonCA,
+// hoisted to New() specifically so it exists before buildRuntime calls this
+// function — see Server.daemonCA's own doc comment for why that hoist was
+// needed), passed by value since the CA itself never changes for the life
+// of the process. brokerTLSAddr is a pointer (srv's own
+// &srv.brokerTLSSandboxAddr field) rather than a resolved string: the
+// broker's TLS listener binds an OS-assigned ephemeral port only known once
+// Start has run — strictly after this function returns — so the pointer is
+// handed to ContainerBackendOptions.BrokerTLSAddr and dereferenced fresh by
+// containerBackend.Launch on every call, the same late-binding-via-pointer
+// pattern WireConfig.GatewayURL already uses one layer up. Both are nil for
+// every caller that does not thread them (every test below except the ones
+// added for this feature) — ContainerBackendOptions.BrokerTLSCA nil is the
+// existing "feature disabled" contract (see its own doc comment), so this
+// is a pure additive parameter, not a behavior change for anyone who leaves
+// it nil.
+func sandboxBackendForConfig(cfg *config.Config, installID, runtimeDir string, brokerTLSCA *mtls.CA, brokerTLSAddr *string) (backend.SandboxBackend, error) {
 	if cfg == nil || cfg.Sandbox.Backend != config.SandboxBackendContainer {
 		return nil, nil
 	}
@@ -419,6 +439,8 @@ func sandboxBackendForConfig(cfg *config.Config, installID, runtimeDir string) (
 		// best-effort, logged, non-fatal), not a new failure mode this
 		// wiring introduces.
 		SelfContainerID: os.Getenv("HOSTNAME"),
+		BrokerTLSCA:     brokerTLSCA,
+		BrokerTLSAddr:   brokerTLSAddr,
 	}), nil
 }
 
@@ -728,7 +750,7 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 	if err != nil {
 		return nil, fmt.Errorf("daemon startup refused: load boid config for sandbox backend selection: %w", err)
 	}
-	sandboxBackend, berr := sandboxBackendForConfig(backendCfg, srv.installID, runtimesDirFor(cfg))
+	sandboxBackend, berr := sandboxBackendForConfig(backendCfg, srv.installID, runtimesDirFor(cfg), srv.daemonCA, &srv.brokerTLSSandboxAddr)
 	if berr != nil {
 		return nil, fmt.Errorf("daemon startup refused: %w", berr)
 	}

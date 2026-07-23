@@ -6,6 +6,7 @@ import (
 
 	"github.com/novshi-tech/boid/internal/config"
 	"github.com/novshi-tech/boid/internal/dispatcher"
+	"github.com/novshi-tech/boid/internal/mtls"
 )
 
 // This file pins sandboxBackendForConfig — the config-driven backend
@@ -20,7 +21,7 @@ import (
 // keeps constructing its own usernsBackend, exactly as every pre-PR7
 // deployment already does.
 func TestSandboxBackendForConfig_Userns_ReturnsNil(t *testing.T) {
-	be, err := sandboxBackendForConfig(config.DefaultConfig(), "install-1", t.TempDir())
+	be, err := sandboxBackendForConfig(config.DefaultConfig(), "install-1", t.TempDir(), nil, nil)
 	if err != nil {
 		t.Fatalf("sandboxBackendForConfig: %v", err)
 	}
@@ -33,7 +34,7 @@ func TestSandboxBackendForConfig_Userns_ReturnsNil(t *testing.T) {
 // guard: a nil *config.Config (e.g. a caller that skipped config.Load's
 // error path) must not panic and must resolve to the safe userns default.
 func TestSandboxBackendForConfig_NilConfig_ReturnsNil(t *testing.T) {
-	be, err := sandboxBackendForConfig(nil, "install-1", t.TempDir())
+	be, err := sandboxBackendForConfig(nil, "install-1", t.TempDir(), nil, nil)
 	if err != nil {
 		t.Fatalf("sandboxBackendForConfig: %v", err)
 	}
@@ -57,7 +58,7 @@ func TestSandboxBackendForConfig_Container_ReturnsContainerBackend(t *testing.T)
 	cfg := config.DefaultConfig()
 	cfg.Sandbox.Backend = config.SandboxBackendContainer
 
-	be, err := sandboxBackendForConfig(cfg, "install-1", t.TempDir())
+	be, err := sandboxBackendForConfig(cfg, "install-1", t.TempDir(), nil, nil)
 	if err != nil {
 		t.Fatalf("sandboxBackendForConfig: %v", err)
 	}
@@ -80,7 +81,7 @@ func TestSandboxBackendForConfig_Container_WiresDiagnosticsCollector(t *testing.
 	cfg := config.DefaultConfig()
 	cfg.Sandbox.Backend = config.SandboxBackendContainer
 
-	be, err := sandboxBackendForConfig(cfg, "install-1", t.TempDir())
+	be, err := sandboxBackendForConfig(cfg, "install-1", t.TempDir(), nil, nil)
 	if err != nil {
 		t.Fatalf("sandboxBackendForConfig: %v", err)
 	}
@@ -103,7 +104,7 @@ func TestSandboxBackendForConfig_Container_WiresDaemonUIDGID(t *testing.T) {
 	cfg := config.DefaultConfig()
 	cfg.Sandbox.Backend = config.SandboxBackendContainer
 
-	be, err := sandboxBackendForConfig(cfg, "install-1", t.TempDir())
+	be, err := sandboxBackendForConfig(cfg, "install-1", t.TempDir(), nil, nil)
 	if err != nil {
 		t.Fatalf("sandboxBackendForConfig: %v", err)
 	}
@@ -117,5 +118,77 @@ func TestSandboxBackendForConfig_Container_WiresDaemonUIDGID(t *testing.T) {
 	}
 	if gotUID != wantUID || gotGID != wantGID {
 		t.Errorf("containerBackend uid:gid = %d:%d, want the daemon's own os.Getuid()/os.Getgid() = %d:%d", gotUID, gotGID, wantUID, wantGID)
+	}
+}
+
+// TestSandboxBackendForConfig_Container_WiresBrokerTLS pins the broker TCP
+// wire followup's own plumbing (docs/plans/phase6-cutover-followups.md
+// §⓪): sandboxBackendForConfig must pass a non-nil brokerTLSCA/
+// brokerTLSAddr straight through into ContainerBackendOptions.BrokerTLSCA/
+// BrokerTLSAddr, the same "override wins, nothing silently dropped"
+// contract the other options fields above already have. The addr pointer
+// is dereferenced fresh by dispatcher.ContainerBackendBrokerTLS (the same
+// late-binding indirection containerBackend.Launch itself uses) — this
+// test writes into the pointed-at string AFTER calling
+// sandboxBackendForConfig, mirroring how Server.Start actually populates
+// srv.brokerTLSSandboxAddr only after buildRuntime (and so this call) has
+// already run, to confirm the wiring really is late-bound and not resolved
+// once at construction time.
+func TestSandboxBackendForConfig_Container_WiresBrokerTLS(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Sandbox.Backend = config.SandboxBackendContainer
+
+	ca, err := mtls.LoadOrCreate(t.TempDir())
+	if err != nil {
+		t.Fatalf("mtls.LoadOrCreate: %v", err)
+	}
+	var addr string
+
+	be, err := sandboxBackendForConfig(cfg, "install-1", t.TempDir(), ca, &addr)
+	if err != nil {
+		t.Fatalf("sandboxBackendForConfig: %v", err)
+	}
+
+	gotAddr, hasCA, ok := dispatcher.ContainerBackendBrokerTLS(be)
+	if !ok {
+		t.Fatal("ContainerBackendBrokerTLS: be is not a containerBackend")
+	}
+	if !hasCA {
+		t.Error("containerBackend has no BrokerTLSCA wired, want the one sandboxBackendForConfig was given")
+	}
+	if gotAddr != "" {
+		t.Errorf("BrokerTLSAddr before the late-bound pointer is written = %q, want empty", gotAddr)
+	}
+
+	// Simulate Server.Start populating srv.brokerTLSSandboxAddr once the
+	// broker's TLS listener is actually bound, strictly after this
+	// function (and so the containerBackend construction above) already
+	// ran.
+	addr = "boid-broker:54321"
+	gotAddr, _, _ = dispatcher.ContainerBackendBrokerTLS(be)
+	if gotAddr != "boid-broker:54321" {
+		t.Errorf("BrokerTLSAddr after the late-bound pointer is written = %q, want %q (dereferenced fresh, not resolved at construction time)", gotAddr, "boid-broker:54321")
+	}
+}
+
+// TestSandboxBackendForConfig_Userns_BrokerTLSIgnored pins the companion
+// non-regression: a userns (default) config must return (nil, nil)
+// regardless of brokerTLSCA/brokerTLSAddr being non-nil — the same
+// "container backend selection gates everything in this function" contract
+// TestSandboxBackendForConfig_Userns_ReturnsNil already pins for the other
+// options fields.
+func TestSandboxBackendForConfig_Userns_BrokerTLSIgnored(t *testing.T) {
+	ca, err := mtls.LoadOrCreate(t.TempDir())
+	if err != nil {
+		t.Fatalf("mtls.LoadOrCreate: %v", err)
+	}
+	addr := "boid-broker:1234"
+
+	be, err := sandboxBackendForConfig(config.DefaultConfig(), "install-1", t.TempDir(), ca, &addr)
+	if err != nil {
+		t.Fatalf("sandboxBackendForConfig: %v", err)
+	}
+	if be != nil {
+		t.Fatalf("backend = %v, want nil for the default userns config even with brokerTLSCA/brokerTLSAddr set", be)
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/json"
 	"encoding/pem"
 	"os"
 	"path/filepath"
@@ -184,6 +185,76 @@ func TestContainerBackend_Launch_DockerTLS_IssuesAndMountsPerJobCert(t *testing.
 	}
 	if leafCert.NotAfter.Sub(issuedAt) >= 24*time.Hour {
 		t.Errorf("leaf cert NotAfter = %v is not meaningfully short-lived (>=24h from issuance)", leafCert.NotAfter)
+	}
+}
+
+// TestContainerBackend_Launch_DockerTLS_ReachesSerializedSpecEnv is the
+// dockerproxy-side counterpart to TestContainerBackend_Launch_
+// BrokerTLS_ReachesSerializedSpecEnv (internal/dispatcher/
+// container_backend_broker_tls_test.go, docs/plans/
+// phase6-cutover-followups.md §⓪): DOCKER_HOST/DOCKER_CERT_PATH/
+// DOCKER_TLS_VERIFY must be present in spec.Env AS SERIALIZED TO spec.json
+// (the file bind-mounted at containerSpecPath and read back by `boid
+// runner-container`), not just in docker create's own Config.Env —
+// internal/adapters/shell.Adapter.Run (every plain `command:` hook) builds
+// its child process's ENTIRE environment from that file, never from the
+// container's own os.Environ(). This mechanism was never actually wired
+// into production dispatch (ContainerBackendOptions.DockerTLSCA's own doc
+// comment) before the broker TCP wire followup fixed the shared Launch
+// ordering bug both this field and BrokerTLSCA depend on — this test pins
+// that the fix covers dockerproxy's identical env-delivery shape too, not
+// just the broker's.
+func TestContainerBackend_Launch_DockerTLS_ReachesSerializedSpecEnv(t *testing.T) {
+	ca, err := mtls.LoadOrCreate(t.TempDir())
+	if err != nil {
+		t.Fatalf("mtls.LoadOrCreate: %v", err)
+	}
+
+	waitBlock := make(chan struct{})
+	api := &fakeDockerAPI{
+		ContainerWaitFunc: func(ctx context.Context, containerID string, options client.ContainerWaitOptions) client.ContainerWaitResult {
+			<-waitBlock
+			resCh := make(chan container.WaitResponse, 1)
+			resCh <- container.WaitResponse{StatusCode: 0}
+			return client.ContainerWaitResult{Result: resCh, Error: make(chan error, 1)}
+		},
+	}
+	be := NewContainerBackend(api, ContainerBackendOptions{DockerTLSCA: ca, DockerProxyAddr: "boid-dockerproxy:2376"})
+
+	mustLaunch(t, be, sandbox.Spec{ID: "job-docker-spec-env", Argv: []string{"true"}},
+		backend.LaunchOptions{JobID: "job-docker-spec-env", DockerEnabled: true})
+	defer close(waitBlock)
+
+	if len(api.createCalls) != 1 {
+		t.Fatalf("ContainerCreate calls = %d, want 1", len(api.createCalls))
+	}
+	var specPath string
+	for _, m := range api.createCalls[0].HostConfig.Mounts {
+		if m.Target == containerSpecPath {
+			specPath = m.Source
+		}
+	}
+	if specPath == "" {
+		t.Fatalf("no bind mount targeting %q found in %+v", containerSpecPath, api.createCalls[0].HostConfig.Mounts)
+	}
+
+	data, err := os.ReadFile(specPath)
+	if err != nil {
+		t.Fatalf("read spec.json: %v", err)
+	}
+	var written sandbox.Spec
+	if err := json.Unmarshal(data, &written); err != nil {
+		t.Fatalf("unmarshal spec.json: %v", err)
+	}
+
+	if written.Env["DOCKER_HOST"] != "tcp://boid-dockerproxy:2376" {
+		t.Errorf("serialized spec.json Env[DOCKER_HOST] = %q, want %q", written.Env["DOCKER_HOST"], "tcp://boid-dockerproxy:2376")
+	}
+	if written.Env["DOCKER_CERT_PATH"] != containerDockerTLSDir {
+		t.Errorf("serialized spec.json Env[DOCKER_CERT_PATH] = %q, want %q", written.Env["DOCKER_CERT_PATH"], containerDockerTLSDir)
+	}
+	if written.Env["DOCKER_TLS_VERIFY"] != "1" {
+		t.Errorf("serialized spec.json Env[DOCKER_TLS_VERIFY] = %q, want \"1\"", written.Env["DOCKER_TLS_VERIFY"])
 	}
 }
 

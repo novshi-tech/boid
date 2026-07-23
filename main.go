@@ -91,9 +91,16 @@ func shouldRunBoidBuiltinShim(command string, argv []string) bool {
 }
 
 func shimMain() {
-	brokerSocket := os.Getenv("BOID_BROKER_SOCKET")
-	if brokerSocket == "" {
-		fmt.Fprintf(os.Stderr, "boid shim: BOID_BROKER_SOCKET not set\n")
+	// broker TCP wire completion (docs/plans/phase6-cutover-followups.md
+	// §⓪): a container-backend job never gets BOID_BROKER_SOCKET at all
+	// (there is no host-visible UNIX socket path a sibling container could
+	// reach it at reliably — see internal/dispatcher/container_backend.go's
+	// withBrokerTLSEnv doc comment) — only BOID_BROKER_TLS_ADDR. Reject
+	// only when BOTH are empty, mirroring sandbox.RunBoidShim's identical
+	// gate; brokerclient.DialFromEnv (called via ShimExec below) is the
+	// actual transport-selection decision point either way.
+	if os.Getenv("BOID_BROKER_SOCKET") == "" && os.Getenv("BOID_BROKER_TLS_ADDR") == "" {
+		fmt.Fprintf(os.Stderr, "boid shim: neither BOID_BROKER_SOCKET nor BOID_BROKER_TLS_ADDR is set\n")
 		os.Exit(1)
 	}
 
@@ -114,7 +121,7 @@ func shimMain() {
 		os.Exit(1)
 	}
 
-	resp, err := sandbox.ShimExec(brokerSocket, command, os.Args[1:])
+	resp, err := sandbox.ShimExec(command, os.Args[1:])
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "boid shim: %v\n", err)
 		os.Exit(1)

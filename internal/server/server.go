@@ -187,6 +187,50 @@ type Server struct {
 	// once Start has run.
 	gatewayCAPEM []byte
 
+	// daemonCA is the per-daemon internal CA (docs/plans/
+	// phase6-container-backend.md §PR4/§決定5), loaded (or generated) once
+	// in New() when cfg.TLSDir is set. Empty (nil) otherwise — every call
+	// site that consumes it already treats a nil CA as "TLS not
+	// configured, skip the additive TCP(mTLS) listener" (Start's own
+	// `if daemonCA != nil` guards), so this is the exact same contract the
+	// pre-broker-TCP-wire local `var daemonCA *mtls.CA` inside Start used
+	// to have.
+	//
+	// Loaded here (in New(), before buildRuntime runs) rather than lazily
+	// inside Start the way every pre-this-PR version did, because
+	// buildRuntime's sandboxBackendForConfig call (internal/server/
+	// wire.go) constructs the container backend's ContainerBackendOptions
+	// — which now needs this exact CA to issue per-job broker client
+	// certs, docs/plans/phase6-cutover-followups.md §⓪ — strictly BEFORE
+	// Start ever runs. Start() below reads this field instead of loading
+	// its own second (content-identical, since mtls.LoadOrCreate is
+	// idempotent) copy.
+	daemonCA *mtls.CA
+
+	// brokerTLSSandboxAddr is the compose-network `host:port`
+	// (composeBrokerServiceName + the broker's actual bound TLS port, e.g.
+	// "boid-broker:54321") a container-backend job's BOID_BROKER_TLS_ADDR
+	// env should point at, populated by Start() once s.broker.Start has
+	// bound the TLS listener. Empty before Start completes, and empty for
+	// the entire life of the process whenever cfg.TLSDir is unset (no TLS
+	// listener at all). sandboxBackendForConfig (called from buildRuntime,
+	// itself called from New() — strictly before Start ever runs) is
+	// handed a POINTER to this field (dispatcher.ContainerBackendOptions.
+	// BrokerTLSAddr), the same late-binding-via-pointer pattern gatewayURL
+	// uses one layer up in this same file, so containerBackend.Launch
+	// (which only ever runs once real job dispatch begins, long after
+	// Start has completed) dereferences the real value instead of the
+	// empty string this field starts at.
+	//
+	// Deliberately a SEPARATE field from the existing BrokerTLSAddr()
+	// accessor's own return value (s.broker.TLSListenAddr(), e.g.
+	// "0.0.0.0:54321" — the RAW listen address, used by tests that dial
+	// the listener directly): a job container cannot dial "0.0.0.0" at
+	// all (that is a bind wildcard, not a routable peer address) — it must
+	// dial the compose service DNS name instead, which is what this field
+	// holds.
+	brokerTLSSandboxAddr string
+
 	// installID is this installation's plain-UUID identity (§決定6), loaded
 	// (or generated) once in New() when cfg.InstallIDDir is set. Empty
 	// otherwise — see InstallIDDir's doc comment.
@@ -308,6 +352,28 @@ func New(cfg Config) (*Server, error) {
 		hostCommands: hostCommands,
 		installID:    installID,
 	}
+
+	// Per-daemon internal CA (docs/plans/phase6-container-backend.md
+	// §PR4/§決定5): hoisted here — before buildRuntime runs — rather than
+	// lazily loaded inside Start the way every pre-broker-TCP-wire version
+	// did. See Server.daemonCA's own doc comment for why: buildRuntime's
+	// sandboxBackendForConfig call needs this CA to configure the
+	// container backend's per-job broker client cert issuance
+	// (docs/plans/phase6-cutover-followups.md §⓪), and that call happens
+	// strictly before Start ever runs. cfg.TLSDir empty (every pre-PR4
+	// caller/test) leaves srv.daemonCA/gatewayCAPEM at their zero values,
+	// so this hoist changes nothing for any deployment that doesn't
+	// configure TLS.
+	if cfg.TLSDir != "" {
+		ca, err := mtls.LoadOrCreate(cfg.TLSDir)
+		if err != nil {
+			conn.Close()
+			return nil, fmt.Errorf("load or create tls ca: %w", err)
+		}
+		srv.daemonCA = ca
+		srv.gatewayCAPEM = ca.CertPEM()
+	}
+
 	runtime, err := buildRuntime(srv, cfg, store, newCommandBroker(broker), secretStore)
 	if err != nil {
 		conn.Close()
@@ -443,22 +509,15 @@ func (s *Server) Start(ctx context.Context) error {
 	}
 
 	// Per-daemon internal CA (docs/plans/phase6-container-backend.md
-	// §PR4/§決定5): generated once here (or reused from disk — see
-	// mtls.LoadOrCreate) and used below to hand the broker and git
-	// gateway a TLS server config for their additive TCP(mTLS)
-	// listeners. cfg.TLSDir is empty for every pre-PR4 caller/test, so
-	// daemonCA stays nil and Start's behavior is byte-for-byte unchanged
-	// from before this PR — the two `if daemonCA != nil` blocks below are
-	// the only places this affects anything.
-	var daemonCA *mtls.CA
-	if s.cfg.TLSDir != "" {
-		ca, err := mtls.LoadOrCreate(s.cfg.TLSDir)
-		if err != nil {
-			return fmt.Errorf("load or create tls ca: %w", err)
-		}
-		daemonCA = ca
-		s.gatewayCAPEM = ca.CertPEM()
-	}
+	// §PR4/§決定5): loaded (or generated) in New(), not here — see
+	// Server.daemonCA's own doc comment for why the load had to move
+	// earlier (the broker TCP wire followup's sandboxBackendForConfig
+	// needs it before Start ever runs). s.daemonCA is nil whenever
+	// cfg.TLSDir is empty (every pre-PR4 caller/test), so Start's behavior
+	// below is byte-for-byte unchanged from before this hoist — the two
+	// `if daemonCA != nil` blocks are the only places this affects
+	// anything.
+	daemonCA := s.daemonCA
 
 	// Start broker
 	if s.broker != nil {
@@ -477,7 +536,25 @@ func (s *Server) Start(ctx context.Context) error {
 			if err != nil {
 				return fmt.Errorf("broker tls config: %w", err)
 			}
-			s.broker.TLSAddr = "127.0.0.1:0"
+			// broker TCP wire completion (docs/plans/
+			// phase6-cutover-followups.md §⓪): bind host now follows
+			// gatewayBindHost(s.usingContainerBackend), the exact same
+			// helper the git gateway's own TLS listener already uses just
+			// below — "0.0.0.0" (composeBindHost) when the container
+			// backend is selected (a sibling job container cannot reach a
+			// listener bound to THIS container's own loopback interface),
+			// "127.0.0.1" (byte-for-byte the pre-fix hardcoded literal)
+			// otherwise. Unlike the git gateway, the broker KEEPS mTLS
+			// (ServerTLSConfig above, not ServerOnlyTLSConfig) — see
+			// mtls.CA.ServerOnlyTLSConfig's own doc comment and
+			// ContainerBackendOptions.BrokerTLSCA's for the design
+			// decision (broker is an arbitrary-RPC endpoint, not a
+			// single-purpose per-job-token-authorized clone endpoint like
+			// the gateway, so per-connection client identity binding is
+			// worth keeping) — the per-job client cert
+			// containerBackend.materializeBrokerClientCert issues is what
+			// makes that requirement satisfiable by a real job container.
+			s.broker.TLSAddr = gatewayBindHost(s.usingContainerBackend) + ":0"
 			s.broker.TLSConfig = tlsCfg
 		}
 		if err := s.broker.Start(ctx); err != nil {
@@ -486,6 +563,25 @@ func (s *Server) Start(ctx context.Context) error {
 		slog.Info("broker started", "socket", s.broker.SocketPath)
 		if addr := s.broker.TLSListenAddr(); addr != "" {
 			slog.Info("broker tls listener started", "addr", addr)
+			// brokerTLSSandboxAddr (broker TCP wire completion): the
+			// compose-service-DNS address a job container's
+			// BOID_BROKER_TLS_ADDR env should dial — "0.0.0.0:<port>" (the
+			// raw bind address above) is not itself dialable by a peer, so
+			// this re-composes the SAME port with composeBrokerServiceName
+			// as the host, mirroring gatewayURLFor's own tlsPort
+			// extraction just below. sandboxBackendForConfig already holds
+			// a pointer to this exact field (srv.brokerTLSSandboxAddr,
+			// wired in buildRuntime before Start ever ran) — see
+			// Server.brokerTLSSandboxAddr's own doc comment — so writing it
+			// here is sufficient to make containerBackend.Launch observe
+			// the real value on every subsequent job dispatch, with no
+			// further plumbing needed at this call site.
+			if _, port, splitErr := net.SplitHostPort(addr); splitErr == nil {
+				s.brokerTLSSandboxAddr = composeBrokerServiceName + ":" + port
+			} else {
+				slog.Warn("broker tls listener addr did not parse as host:port; BOID_BROKER_TLS_ADDR propagation into container-backend jobs will be empty",
+					"addr", addr, "error", splitErr)
+			}
 		}
 	}
 

@@ -25,7 +25,7 @@ var taskContextOps = map[string]BoidOp{
 //
 // fullArgs is RunBoidShim's original args slice (["task", "<subcommand>",
 // ...flags]); trailing flags start at fullArgs[2:].
-func runTaskContextShim(op BoidOp, fullArgs []string, brokerSocket string) (*ExecResponse, error) {
+func runTaskContextShim(op BoidOp, fullArgs []string) (*ExecResponse, error) {
 	field, format, err := parseTaskContextFlags(fullArgs[2:])
 	if err != nil {
 		return nil, err
@@ -50,7 +50,7 @@ func runTaskContextShim(op BoidOp, fullArgs []string, brokerSocket string) (*Exe
 		Boid:    req,
 	}
 
-	resp, err := sendExecRequest(brokerSocket, execReq)
+	resp, err := sendExecRequest(execReq)
 	if err != nil || resp == nil {
 		return resp, err
 	}

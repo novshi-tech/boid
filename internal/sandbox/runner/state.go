@@ -27,6 +27,23 @@ var envAllowlist = map[string]struct{}{
 	"BOID_RUNTIME_ID":    {},
 	"BOID_BROKER_SOCKET": {},
 	"CLAUDE_CONFIG_DIR":  {},
+	// BOID_BROKER_TLS_* (docs/plans/phase6-cutover-followups.md §⓪): the
+	// container-backend counterpart to BOID_BROKER_SOCKET above. ADDR/
+	// SERVER_NAME are plain compose-network addressing info, and
+	// CERT_PATH/KEY_PATH/CA_PATH are filesystem PATHS, not the key
+	// material itself (which lives in the files those paths point at, on
+	// the read-only bind-mounted broker-tls dir — see
+	// internal/dispatcher/container_backend.go's materializeBrokerClientCert)
+	// — none of the five is a secret value in its own right, so allowlisting
+	// them keeps runner-state.json's diagnostic dump useful for debugging a
+	// container-backend job's broker connectivity without redacting
+	// non-sensitive addressing info to "<redacted>" the way an actual
+	// token (BOID_BROKER_TOKEN, deliberately NOT allowlisted) must be.
+	"BOID_BROKER_TLS_ADDR":        {},
+	"BOID_BROKER_TLS_CERT_PATH":   {},
+	"BOID_BROKER_TLS_KEY_PATH":    {},
+	"BOID_BROKER_TLS_CA_PATH":     {},
+	"BOID_BROKER_TLS_SERVER_NAME": {},
 }
 
 // redactEnv returns a copy of env where only allow-listed keys keep their
