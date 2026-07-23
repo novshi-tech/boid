@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/novshi-tech/boid/internal/mtls"
 )
@@ -299,6 +300,62 @@ func TestEncodeCertPEM_RoundTrips(t *testing.T) {
 		KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
 	}); err != nil {
 		t.Fatalf("leaf cert does not verify against CA.CertPEM(): %v", err)
+	}
+}
+
+// TestIssueShortLivedClientCert_ValidityWindow pins Blocker 4 (PR6 codex
+// review): a per-job dockerproxy client cert must carry a validity window
+// bounded by the caller-supplied duration, not the 30-day leafValidity
+// IssueClientCert/IssueServerCert use — a job could copy its cert to a
+// sibling before exiting, and a long-lived cert would stay usable against
+// the dockerproxy TCP listener long after the job (and its own
+// materialization directory) are gone.
+func TestIssueShortLivedClientCert_ValidityWindow(t *testing.T) {
+	ca, err := mtls.LoadOrCreate(t.TempDir())
+	if err != nil {
+		t.Fatalf("LoadOrCreate: %v", err)
+	}
+
+	before := time.Now()
+	leaf, err := ca.IssueShortLivedClientCert("job-abc123", time.Hour)
+	if err != nil {
+		t.Fatalf("IssueShortLivedClientCert: %v", err)
+	}
+	after := time.Now()
+
+	block, _ := pem.Decode(func() []byte {
+		certPEM, _, err := mtls.EncodeCertPEM(leaf)
+		if err != nil {
+			t.Fatalf("EncodeCertPEM: %v", err)
+		}
+		return certPEM
+	}())
+	if block == nil {
+		t.Fatal("failed to PEM-decode the issued leaf cert")
+	}
+	parsed, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		t.Fatalf("parse leaf cert DER: %v", err)
+	}
+
+	// NotAfter must be within ~1h of issuance — the whole point of this
+	// API. A generous 5-minute buffer absorbs test execution time without
+	// weakening the "short-lived, not 30-day" assertion.
+	maxNotAfter := after.Add(time.Hour + 5*time.Minute)
+	if parsed.NotAfter.After(maxNotAfter) {
+		t.Errorf("NotAfter = %v, want within ~1h of issuance (<=%v)", parsed.NotAfter, maxNotAfter)
+	}
+	minNotAfter := before.Add(time.Hour - 5*time.Minute)
+	if parsed.NotAfter.Before(minNotAfter) {
+		t.Errorf("NotAfter = %v, want at least ~1h after issuance (>=%v)", parsed.NotAfter, minNotAfter)
+	}
+
+	// Sanity: meaningfully shorter than the default 30-day leaf validity
+	// IssueClientCert uses, so this test would fail if a future edit
+	// accidentally routed IssueShortLivedClientCert through the same
+	// leafValidity constant again.
+	if parsed.NotAfter.Sub(before) >= 24*time.Hour {
+		t.Errorf("NotAfter = %v is not meaningfully short-lived (>=24h from issuance)", parsed.NotAfter)
 	}
 }
 

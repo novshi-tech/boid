@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/client"
@@ -100,6 +101,7 @@ func TestContainerBackend_Launch_DockerTLS_IssuesAndMountsPerJobCert(t *testing.
 	}
 	be := NewContainerBackend(api, ContainerBackendOptions{DockerTLSCA: ca, DockerProxyAddr: "boid-dockerproxy:2376"})
 
+	issuedAt := time.Now()
 	mustLaunch(t, be, sandbox.Spec{ID: "job-docker", Argv: []string{"true"}},
 		backend.LaunchOptions{JobID: "job-docker", DockerEnabled: true})
 	// Unblock waitLoop's cleanup now that the assertions below are done —
@@ -171,5 +173,16 @@ func TestContainerBackend_Launch_DockerTLS_IssuesAndMountsPerJobCert(t *testing.
 	}
 	if _, err := leafCert.Verify(x509.VerifyOptions{Roots: pool, KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}}); err != nil {
 		t.Fatalf("leaf cert does not verify against ca.pem: %v", err)
+	}
+
+	// Blocker 4 (PR6 codex review): the per-job cert must be short-lived
+	// (perJobDockerCertValidity, 1h), not mtls.CA's default 30-day leaf
+	// validity — a copy of it on a sibling must not remain usable long
+	// after this job's own materialization directory is gone.
+	if maxNotAfter := issuedAt.Add(perJobDockerCertValidity + 5*time.Minute); leafCert.NotAfter.After(maxNotAfter) {
+		t.Errorf("leaf cert NotAfter = %v, want within ~%s of issuance (<=%v)", leafCert.NotAfter, perJobDockerCertValidity, maxNotAfter)
+	}
+	if leafCert.NotAfter.Sub(issuedAt) >= 24*time.Hour {
+		t.Errorf("leaf cert NotAfter = %v is not meaningfully short-lived (>=24h from issuance)", leafCert.NotAfter)
 	}
 }

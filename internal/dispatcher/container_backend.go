@@ -209,6 +209,19 @@ const (
 	dockerKeyFileName  = "key.pem"
 	dockerCAFileName   = "ca.pem"
 
+	// perJobDockerCertValidity bounds how long a per-job dockerproxy client
+	// cert (materializeDockerClientCert) stays valid (Blocker 4, PR6 codex
+	// review) — deliberately far short of mtls.CA's default 30-day leaf
+	// validity: this cert is bind-mounted read-only into a job container
+	// whose own lifetime is normally minutes, and a copy the job's own
+	// process makes onto a sibling before exiting must not remain usable
+	// long after the job's materialization directory (dockerTLSDir, always
+	// removed on exit — see containerSession's own doc comment) is gone.
+	// Full job-identity binding (cert CN/SAN → job_id, verified by
+	// dockerproxy itself) is PR7 scope per the plan doc; this short leaf
+	// validity is PR6's "revocation by expiry" mitigation in the meantime.
+	perJobDockerCertValidity = time.Hour
+
 	// Resource labels (§決定 6/9): boid.job_id + boid.workspace are always
 	// set; boid.install_id is set whenever ContainerBackendOptions.InstallID
 	// is non-empty (PR6 territory — see its doc comment). ReapOrphans (§決定
@@ -914,7 +927,7 @@ func containerName(jobID string) string {
 // once the container exits (mirroring specPath's own always-cleaned-up
 // retention contract — see containerSession.dockerTLSDir's doc comment).
 func (b *containerBackend) materializeDockerClientCert(jobID string) (dir string, err error) {
-	leaf, err := b.dockerTLSCA.IssueClientCert("job-" + jobID)
+	leaf, err := b.dockerTLSCA.IssueShortLivedClientCert("job-"+jobID, perJobDockerCertValidity)
 	if err != nil {
 		return "", fmt.Errorf("issue docker client cert: %w", err)
 	}
