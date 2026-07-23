@@ -140,6 +140,27 @@ if [[ ${#COMPOSE_CMD[@]} -eq 0 ]]; then
 	exit 0
 fi
 
+# --- pre-provision the bind-mount host dirs ---------------------------------
+# BOID_DATA_DIR/BOID_CONFIG_DIR/BOID_RUNTIME_DIR must exist and be owned by
+# BOID_UID:BOID_GID BEFORE `compose up` (Major 13, PR6 codex review):
+# compose/docker/podman auto-create a missing bind-mount host path, but as
+# root (or whichever uid runs the engine daemon) — the non-root daemon
+# process (user: ${BOID_UID}:${BOID_GID} in compose.yml) would then be
+# unable to write to its own data/config dirs (or even see a live socket
+# under BOID_RUNTIME_DIR) on a genuinely first-ever run against a fresh
+# layout. chown is best-effort (a warning, not fatal): it fails harmlessly
+# when this script is not running as the target uid/gid and lacks
+# permission to chown to it (e.g. BOID_UID overridden to something other
+# than the invoking user) — in that case the directories most likely
+# already have the right ownership (they were created by/for that uid
+# outside this script) and this is a no-op.
+echo "deploy-container: ensuring bind-mount host dirs exist and are owned by ${BOID_UID}:${BOID_GID}"
+for dir in "$BOID_DATA_DIR" "$BOID_CONFIG_DIR" "$BOID_RUNTIME_DIR"; do
+	mkdir -p "$dir"
+	chown "$BOID_UID:$BOID_GID" "$dir" 2>/dev/null || \
+		echo "warning: could not chown $dir to ${BOID_UID}:${BOID_GID} (continuing — it may already be owned correctly)" >&2
+done
+
 echo "deploy-container: stopping any existing compose stack (explicit down before up — see this script's own header comment on why no restart: policy exists in compose.yml)"
 "${COMPOSE_CMD[@]}" down || true
 
