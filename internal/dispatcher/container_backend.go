@@ -518,7 +518,20 @@ func (b *containerBackend) Launch(ctx context.Context, spec sandbox.Spec, opts b
 	// Disk transcript spool (§決定8, PR7): only for freshly-Launch'd
 	// sessions — see openTranscriptSpool's doc comment for why Adopt
 	// (doAdopt, below) deliberately does not also open one.
-	sess.transcriptFile, sess.transcriptPath = b.openTranscriptSpool(createRes.ID)
+	//
+	// [Major 8, PR7 codex review]: a genuine open/create failure (as
+	// opposed to "b.runtimeDir unset, spooling not configured" — see
+	// openTranscriptSpool's own doc comment) fails Launch hard, torn down
+	// exactly like a ContainerCreate/attach/start failure below, rather than
+	// silently starting a job whose output cannot survive its own container
+	// removal.
+	spoolFile, spoolPath, spoolErr := b.openTranscriptSpool(createRes.ID)
+	if spoolErr != nil {
+		_, _ = b.api.ContainerRemove(context.Background(), createRes.ID, client.ContainerRemoveOptions{Force: true})
+		cleanupFiles()
+		return nil, fmt.Errorf("open transcript spool: %w", spoolErr)
+	}
+	sess.transcriptFile, sess.transcriptPath = spoolFile, spoolPath
 	if err := sess.attach(ctx, false); err != nil {
 		_, _ = b.api.ContainerRemove(context.Background(), createRes.ID, client.ContainerRemoveOptions{Force: true})
 		cleanupFiles()
@@ -1129,12 +1142,23 @@ func (b *containerBackend) dockerTLSCertDir(jobID string) (string, error) {
 // (transcript.go) already read for the userns backend, and the same
 // directory dockerTLSCertDir's <runtimeDir>/tls/<jobID> is host-visible
 // under (see its own doc comment for the DooD host-visibility rationale;
-// b.runtimeDir is the identical field). Returns (nil, "") — spooling
-// disabled, in-memory-only transcript, unchanged from PR5's behavior —
-// when b.runtimeDir is empty (every pre-PR7 test/caller) or when directory
-// creation / file open fails; a spool failure is logged but must never
-// fail Launch itself, since the in-memory buffer + live Subscribe/fan-out
-// contract is unaffected either way.
+// b.runtimeDir is the identical field).
+//
+// [Major 8, PR7 codex review]: returns (nil, "", nil) — spooling
+// intentionally disabled, in-memory-only transcript, unchanged from PR5's
+// behavior — ONLY when b.runtimeDir is empty (every pre-PR7 test/caller);
+// that is a configuration choice, not a failure. A non-nil error return
+// (directory creation or file open genuinely failed — e.g. the runtimes
+// filesystem is full or unwritable) is now a real error Launch's caller
+// must fail hard on: §決定8's contract is that `boid job log` sees the FULL
+// transcript once a container backend deploy is live (this is what
+// distinguishes it from the tail-only silent-exit diagnostics), so silently
+// degrading to an in-memory-only buffer (invisible the moment the container
+// is removed) when the operator's own deploy configured a persistent spool
+// directory would violate that contract without ever telling anyone.
+// Launch treats this the same as any other Launch-phase failure: the
+// container is torn down and Dispatch reports the error, rather than
+// starting a job whose output will not survive its own container removal.
 //
 // Deliberately NOT called from doAdopt (Adopt's cache-miss path): Adopt's
 // `Logs: true` attach replays the container's ENTIRE output history
@@ -1149,24 +1173,20 @@ func (b *containerBackend) dockerTLSCertDir(jobID string) (string, error) {
 // works normally). Full restart-continuity for the disk spool is left as
 // a documented gap for PR9 (docs/plans/phase6-container-backend.md's own
 // "実装残余" territory) rather than risking log corruption to close it now.
-func (b *containerBackend) openTranscriptSpool(containerID string) (f *os.File, path string) {
+func (b *containerBackend) openTranscriptSpool(containerID string) (f *os.File, path string, err error) {
 	if b.runtimeDir == "" {
-		return nil, ""
+		return nil, "", nil
 	}
 	dir := filepath.Join(b.runtimeDir, containerID)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
-		slog.Warn("container backend: create runtime dir for transcript spool failed; boid job log will not survive container removal for this job",
-			"container_id", containerID, "dir", dir, "error", err)
-		return nil, ""
+		return nil, "", fmt.Errorf("create runtime dir for transcript spool: %w", err)
 	}
 	spoolPath := filepath.Join(dir, localRuntimeTranscriptFile)
 	spoolFile, err := os.OpenFile(spoolPath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o644)
 	if err != nil {
-		slog.Warn("container backend: open transcript spool failed; boid job log will not survive container removal for this job",
-			"container_id", containerID, "path", spoolPath, "error", err)
-		return nil, ""
+		return nil, "", fmt.Errorf("open transcript spool: %w", err)
 	}
-	return spoolFile, spoolPath
+	return spoolFile, spoolPath, nil
 }
 
 // withDockerTLSEnv returns a copy of env with the three DOCKER_* variables
