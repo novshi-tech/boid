@@ -24,6 +24,33 @@ func IsChild() bool {
 	return os.Getenv(daemonEnvKey) == "1"
 }
 
+// logStdoutEnvKey opts the daemon child out of RedirectToLogRotating (PR9,
+// docs/plans/phase6-container-backend.md §PR6's compose.yml own "Known
+// limitations" note: "A real docker logs-visible foreground mode... is a
+// nice-to-have for a later PR"). Set by build/container/compose.yml's
+// daemon service, where a supervisor (dockerd's own log driver) already
+// captures stdout/stderr — RedirectToLogRotating's self-pipe dup2 dance
+// exists specifically for the bare host-daemon double-fork case (detaching
+// from a real controlling terminal with no other log capture mechanism),
+// which does not apply here and, empirically, does not survive PID1 being
+// docker-init/tini rather than a login shell (docs/plans/
+// phase6-cutover-followups.md's own debugging trail for this exact
+// symptom: the redirected pipe's read end observed a SIGPIPE-killing write
+// with zero visible output — never fully root-caused to a single syscall,
+// but reproducing independent of it via this opt-out is both the pragmatic
+// fix and, on its own merits, better practice for a containerized
+// deployment: log to stdout, let the platform own log capture/rotation).
+const logStdoutEnvKey = "BOID_LOG_STDOUT"
+
+// ShouldLogToStdout reports whether the daemon child should skip
+// RedirectToLogRotating and let its stdout/stderr flow to whatever already
+// captures them (a container runtime's own log driver) instead of a
+// self-managed rotating log file. False (every pre-PR9 caller) preserves
+// exactly today's RedirectToLogRotating behavior.
+func ShouldLogToStdout() bool {
+	return os.Getenv(logStdoutEnvKey) == "1"
+}
+
 // LogFilePath returns the path for the daemon log file.
 // Uses $XDG_STATE_HOME/boid/boid.log, falling back to ~/.local/state/boid/boid.log.
 func LogFilePath() string {

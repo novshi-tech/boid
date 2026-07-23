@@ -451,7 +451,8 @@ func formatNonMigrationFailure(s *daemon.StartupStatus, logPath string) error {
 }
 
 // runDaemonChild is executed by the daemon child process (BOID_DAEMON_CHILD=1).
-// It redirects stdin/stdout/stderr to the log file, detaches from the session,
+// It redirects stdin/stdout/stderr to the log file (unless
+// daemon.ShouldLogToStdout() opts out — PR9), detaches from the session,
 // and runs the server until a termination signal arrives.
 //
 // On any startup failure the child writes a structured StartupStatus to
@@ -460,10 +461,18 @@ func formatNonMigrationFailure(s *daemon.StartupStatus, logPath string) error {
 // successful startup the child closes fd 3 instead, signalling EOF to the
 // parent. After srv.Start() returns, fd 3 is no longer touched.
 func runDaemonChild(cfg server.Config) error {
-	logPath := daemon.LogFilePath()
-	if err := daemon.RedirectToLogRotating(logPath); err != nil {
-		daemon.WriteStartupStatusOnFD3(err)
-		return fmt.Errorf("redirect to log: %w", err)
+	// BOID_LOG_STDOUT (PR9, daemon.ShouldLogToStdout's own doc comment):
+	// skip the log-file redirect entirely when a supervisor already
+	// captures stdout/stderr (build/container/compose.yml's daemon
+	// service) — every other caller (bare `boid start`, no supervisor
+	// already capturing output) keeps today's redirect-to-rotating-file
+	// behavior unchanged.
+	if !daemon.ShouldLogToStdout() {
+		logPath := daemon.LogFilePath()
+		if err := daemon.RedirectToLogRotating(logPath); err != nil {
+			daemon.WriteStartupStatusOnFD3(err)
+			return fmt.Errorf("redirect to log: %w", err)
+		}
 	}
 
 	if _, err := syscall.Setsid(); err != nil {

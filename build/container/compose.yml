@@ -180,22 +180,32 @@ services:
     # process a container entrypoint needs, and exactly what forwards
     # docker's SIGTERM (via tini) into srv.Stop() cleanly.
     #
-    # Known limitation accepted (both this PR6 skeleton's own and PR9's
-    # follow-up), stemming from runDaemonChild reusing the host-daemon code
-    # path verbatim: it redirects stdin/stdout/stderr to boid.log
+    # PR6 originally left runDaemonChild's host-daemon code path verbatim:
+    # it redirects stdin/stdout/stderr to boid.log
     # (daemon.RedirectToLogRotating) as literally its first action, so
-    # `docker logs`/`docker compose logs` on this service shows NOTHING —
-    # not even a startup panic, since the redirect happens before almost
-    # anything else could print. PR9's own e2e-container job debugging hit
-    # this directly (see XDG_STATE_HOME below, added specifically so that
-    # dead end has a working alternative). A real `docker logs`-visible
-    # foreground mode (log to stdout, skip the log-file rotation machinery
-    # entirely, when running under a supervisor that already captures
-    # stdout) remains a nice-to-have for a later PR — bind-mounting the
-    # state dir (below) is the pragmatic fix that unblocks debugging without
-    # touching daemon.go's startup sequence at all.
+    # `docker logs`/`docker compose logs` on this service showed NOTHING —
+    # not even a startup panic. PR9's own e2e-container job debugging hit
+    # this directly AND, empirically, found the redirect's self-pipe dup2
+    # dance does not survive this container's PID1 (docker-init/tini)
+    # setup at all: the daemon reproducibly died (SIGPIPE, exit 141) within
+    # ~150ms of starting, before boid.log was ever created — never fully
+    # root-caused to a single syscall (docs/plans/
+    # phase6-cutover-followups.md has the debugging trail), but BOID_LOG_STDOUT
+    # below (daemon.ShouldLogToStdout's own doc comment) sidesteps the whole
+    # class of bug: skip the self-pipe/log-file redirect entirely and let
+    # stdout/stderr flow to dockerd's own log driver, which was already
+    # capturing them regardless — both the pragmatic fix and, on its own
+    # merits, better practice for a containerized deployment (log to
+    # stdout, let the platform own log capture/rotation). XDG_STATE_HOME
+    # below is kept anyway (harmless when BOID_LOG_STDOUT is set — nothing
+    # reads it) as a fallback for any future caller that unsets
+    # BOID_LOG_STDOUT.
     environment:
       BOID_DAEMON_CHILD: "1"
+      # BOID_LOG_STDOUT (PR9): see this service's own comment above and
+      # daemon.ShouldLogToStdout's doc comment (internal/daemon/daemon.go)
+      # for the full rationale.
+      BOID_LOG_STDOUT: "1"
       # XDG_DATA_HOME / XDG_CONFIG_HOME (Major 10, PR6 codex review): make
       # cmd/start.go's default*Dir/*Path helpers (data side, via
       # os.UserHomeDir()-or-XDG_DATA_HOME) and internal/config.Load

@@ -256,3 +256,26 @@ func TestComposeDaemonHasXDGStateHomeEnv(t *testing.T) {
 		t.Errorf(`daemon environment["XDG_STATE_HOME"] = %q, want "${BOID_RUNTIME_DIR}" (must be a directory already bind-mounted, so no new volume entry is needed)`, got)
 	}
 }
+
+// TestComposeDaemonHasLogStdoutEnv pins the PR9 fix for the actual
+// container startup crash the e2e-container job's debugging trail found
+// (docs/plans/phase6-cutover-followups.md): daemon.RedirectToLogRotating's
+// self-pipe dup2 dance does not survive this container's PID1
+// (docker-init/tini) setup — the daemon reproducibly died (SIGPIPE, exit
+// 141) within ~150ms of starting. BOID_LOG_STDOUT (daemon.
+// ShouldLogToStdout's own doc comment) skips that redirect entirely.
+func TestComposeDaemonHasLogStdoutEnv(t *testing.T) {
+	doc := loadComposeDoc(t)
+
+	daemon, ok := doc.Services["daemon"]
+	if !ok {
+		t.Fatal(`compose.yml has no "daemon" service`)
+	}
+	got, ok := daemon.Environment["BOID_LOG_STDOUT"]
+	if !ok {
+		t.Fatalf("daemon environment = %v, want %q present", daemon.Environment, "BOID_LOG_STDOUT")
+	}
+	if got != "1" {
+		t.Errorf(`daemon environment["BOID_LOG_STDOUT"] = %q, want "1"`, got)
+	}
+}

@@ -92,6 +92,20 @@ func TestIsChild_True(t *testing.T) {
 	}
 }
 
+func TestShouldLogToStdout_False(t *testing.T) {
+	t.Setenv(logStdoutEnvKey, "")
+	if ShouldLogToStdout() {
+		t.Fatal("ShouldLogToStdout() = true, want false when env var is empty (every pre-PR9 caller)")
+	}
+}
+
+func TestShouldLogToStdout_True(t *testing.T) {
+	t.Setenv(logStdoutEnvKey, "1")
+	if !ShouldLogToStdout() {
+		t.Fatal("ShouldLogToStdout() = false, want true when env var is 1")
+	}
+}
+
 // --- RedirectToLog ---
 
 // --- Spawn ---
