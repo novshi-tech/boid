@@ -5,6 +5,7 @@ import (
 	"context"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -240,6 +241,69 @@ func TestContainerBackend_Adopt_NotRunningReportsNotOK(t *testing.T) {
 
 	if _, ok := be.Adopt(context.Background(), "exited-container"); ok {
 		t.Error("Adopt returned ok=true for a non-running container")
+	}
+}
+
+// TestContainerBackend_Adopt_ConcurrentCacheMissSharesOneAttach pins Major
+// 5 from the PR5 review: two concurrent Adopt calls for the same
+// (not-yet-cached) runtimeID must not each start their own
+// inspect/attach — that would create two independent ContainerWait owners
+// for the same container, breaking §決定 7's single-owner contract. Only
+// one attach may happen; both callers must observe the same session.
+func TestContainerBackend_Adopt_ConcurrentCacheMissSharesOneAttach(t *testing.T) {
+	const runtimeID = "concurrent-adopt-container"
+	inspectStarted := make(chan struct{})
+	releaseInspect := make(chan struct{})
+	var attachCount int32
+
+	api := &fakeDockerAPI{
+		ContainerInspectFunc: func(ctx context.Context, containerID string, options client.ContainerInspectOptions) (client.ContainerInspectResult, error) {
+			close(inspectStarted)
+			<-releaseInspect
+			return client.ContainerInspectResult{
+				Container: container.InspectResponse{
+					State:  &container.State{Running: true},
+					Config: &container.Config{},
+				},
+			}, nil
+		},
+		ContainerAttachFunc: func(ctx context.Context, containerID string, options client.ContainerAttachOptions) (client.ContainerAttachResult, error) {
+			atomic.AddInt32(&attachCount, 1)
+			return client.ContainerAttachResult{HijackedResponse: client.NewHijackedResponse(newFakeAttachConn(), "")}, nil
+		},
+	}
+	be := NewContainerBackend(api, ContainerBackendOptions{})
+
+	var wg sync.WaitGroup
+	sessions := make([]backend.SandboxSession, 2)
+	oks := make([]bool, 2)
+	for i := range 2 {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			sessions[i], oks[i] = be.Adopt(context.Background(), runtimeID)
+		}(i)
+	}
+
+	<-inspectStarted
+	// Give the second Adopt call time to reach and block on the in-flight
+	// reservation, rather than trivially winning a race where it would
+	// start its own inspect before the first even gets here.
+	time.Sleep(20 * time.Millisecond)
+	close(releaseInspect)
+	wg.Wait()
+
+	if !oks[0] || !oks[1] {
+		t.Fatalf("Adopt ok = (%v, %v), want (true, true)", oks[0], oks[1])
+	}
+	if sessions[0] != sessions[1] {
+		t.Errorf("concurrent Adopt calls returned different sessions, want the same shared session")
+	}
+	if got := atomic.LoadInt32(&attachCount); got != 1 {
+		t.Errorf("ContainerAttach was called %d times, want exactly 1 (Major 5: single adoption owner)", got)
+	}
+	if got := len(api.inspectIDs); got != 1 {
+		t.Errorf("ContainerInspect was called %d times, want exactly 1", got)
 	}
 }
 

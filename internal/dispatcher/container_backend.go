@@ -60,6 +60,11 @@ type containerBackend struct {
 
 	mu       sync.Mutex
 	sessions map[string]*containerSession
+	// adopting tracks in-flight Adopt cache-miss resolutions, keyed by
+	// runtimeID, so concurrent Adopt calls for the same runtimeID share one
+	// inspect/attach instead of each starting their own (see Adopt's doc
+	// comment, PR5 review Major 5).
+	adopting map[string]*adoptAttempt
 }
 
 var _ backend.SandboxBackend = (*containerBackend)(nil)
@@ -397,6 +402,17 @@ func (b *containerBackend) Launch(ctx context.Context, spec sandbox.Spec, opts b
 // output as the fan-out's initial buffer — the closest containerBackend
 // gets to a separate `docker logs` call, decision 8's third primitive) and
 // its own single-owner Wait loop is started, exactly as Launch does.
+//
+// Concurrent cache misses for the SAME runtimeID (WS attach and the Web UI
+// SSE follow endpoint racing right after a daemon restart, before either
+// has populated the cache) are serialized through the adopting map below:
+// the first caller to observe a miss reserves an in-flight adoptAttempt
+// under the lock and does the inspect/attach/start work alone; every other
+// concurrent caller for that same runtimeID finds the reservation, releases
+// the lock, and blocks on the attempt's done channel instead of starting
+// its own independent inspect/attach — otherwise two attach calls would
+// each start their own ContainerWait owner, breaking §決定 7's
+// single-owner contract (PR5 review Major 5).
 func (b *containerBackend) Adopt(ctx context.Context, runtimeID string) (backend.SandboxSession, bool) {
 	if runtimeID == "" {
 		return nil, false
@@ -407,11 +423,59 @@ func (b *containerBackend) Adopt(ctx context.Context, runtimeID string) (backend
 		b.mu.Unlock()
 		return sess, true
 	}
+	if attempt, inFlight := b.adopting[runtimeID]; inFlight {
+		b.mu.Unlock()
+		<-attempt.done
+		if attempt.session == nil {
+			return nil, false
+		}
+		return attempt.session, true
+	}
+	attempt := &adoptAttempt{done: make(chan struct{})}
+	if b.adopting == nil {
+		b.adopting = make(map[string]*adoptAttempt)
+	}
+	b.adopting[runtimeID] = attempt
 	b.mu.Unlock()
 
+	sess := b.doAdopt(ctx, runtimeID)
+
+	b.mu.Lock()
+	delete(b.adopting, runtimeID)
+	if sess != nil {
+		if b.sessions == nil {
+			b.sessions = make(map[string]*containerSession)
+		}
+		b.sessions[runtimeID] = sess
+	}
+	b.mu.Unlock()
+
+	attempt.session = sess
+	close(attempt.done)
+
+	if sess == nil {
+		return nil, false
+	}
+	return sess, true
+}
+
+// adoptAttempt tracks a single in-flight Adopt cache-miss resolution so
+// concurrent callers for the same runtimeID share its outcome instead of
+// each starting their own inspect/attach (see Adopt's doc comment). session
+// is only safe to read after done is closed.
+type adoptAttempt struct {
+	done    chan struct{}
+	session *containerSession
+}
+
+// doAdopt performs the actual `docker inspect` + attach + start sequence
+// for a runtimeID Adopt found neither cached nor already in flight. Returns
+// nil when the container cannot be adopted (inspect failed, or the
+// container exists but isn't running).
+func (b *containerBackend) doAdopt(ctx context.Context, runtimeID string) *containerSession {
 	insp, err := b.api.ContainerInspect(ctx, runtimeID, client.ContainerInspectOptions{})
 	if err != nil || insp.Container.State == nil || !insp.Container.State.Running {
-		return nil, false
+		return nil
 	}
 
 	tty := insp.Container.Config != nil && insp.Container.Config.Tty
@@ -421,9 +485,7 @@ func (b *containerBackend) Adopt(ctx context.Context, runtimeID string) (backend
 			"container_id", runtimeID, "error", err)
 	}
 	sess.start()
-
-	b.registerSession(sess)
-	return sess, true
+	return sess
 }
 
 // ReapOrphans reconciles job containers a daemon restart lost track of.
