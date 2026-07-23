@@ -186,6 +186,14 @@ func (ca *CA) CertPool() *x509.CertPool {
 	return pool
 }
 
+// CertPEM returns this CA's own certificate, PEM-encoded — the "ca.pem"
+// file docker's DOCKER_CERT_PATH convention expects alongside a leaf
+// cert/key pair (docs/plans/phase6-container-backend.md §PR6, §決定5's
+// per-job client cert delivery — see EncodeCertPEM for the leaf half).
+func (ca *CA) CertPEM() []byte {
+	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: ca.cert.Raw})
+}
+
 // issueLeaf signs a fresh leaf certificate for subject cn. hosts populates
 // DNS/IP SANs (server certs only; empty for client certs).
 func (ca *CA) issueLeaf(cn string, hosts []string, eku []x509.ExtKeyUsage) (tls.Certificate, error) {
@@ -275,4 +283,30 @@ func (ca *CA) ClientTLSConfig(serverName string, cert tls.Certificate) *tls.Conf
 		ServerName:   serverName,
 		MinVersion:   tls.VersionTLS12,
 	}
+}
+
+// EncodeCertPEM PEM-encodes a leaf certificate issued by IssueServerCert /
+// IssueClientCert into the (certPEM, keyPEM) pair most file-based TLS
+// consumers expect — docker's DOCKER_CERT_PATH convention (cert.pem +
+// key.pem + ca.pem, see CA.CertPEM for the third file) among them,
+// docs/plans/phase6-container-backend.md §PR6/§決定5's per-job client cert
+// delivery. tls.Certificate itself is Go-internal (raw DER bytes plus a
+// crypto.PrivateKey interface value) rather than a file format, so this is
+// the one conversion step every such consumer needs.
+func EncodeCertPEM(cert tls.Certificate) (certPEM, keyPEM []byte, err error) {
+	if len(cert.Certificate) == 0 {
+		return nil, nil, fmt.Errorf("mtls: certificate has no DER bytes")
+	}
+	certPEM = pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: cert.Certificate[0]})
+
+	key, ok := cert.PrivateKey.(*ecdsa.PrivateKey)
+	if !ok {
+		return nil, nil, fmt.Errorf("mtls: unsupported private key type %T (every key this package issues is *ecdsa.PrivateKey)", cert.PrivateKey)
+	}
+	keyDER, err := x509.MarshalECPrivateKey(key)
+	if err != nil {
+		return nil, nil, fmt.Errorf("mtls: marshal private key: %w", err)
+	}
+	keyPEM = pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER})
+	return certPEM, keyPEM, nil
 }

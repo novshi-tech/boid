@@ -3,6 +3,7 @@ package mtls_test
 import (
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/pem"
 	"io"
 	"os"
 	"path/filepath"
@@ -241,5 +242,68 @@ func TestServerTLSConfig_RejectsConnectionWithoutClientCert(t *testing.T) {
 	}
 	if clientErr == nil {
 		t.Fatal("client I/O succeeded despite presenting no client certificate; want the server's rejection to surface")
+	}
+}
+
+// TestEncodeCertPEM_RoundTrips pins docs/plans/phase6-container-backend.md
+// §PR6/§決定5's per-job client cert delivery: a leaf cert/key issued by
+// IssueClientCert must PEM-encode into a pair that (a) parses back with the
+// stdlib's own tls.X509KeyPair (the exact function docker's client library
+// uses to load DOCKER_CERT_PATH's cert.pem+key.pem) and (b) is verifiable
+// against the issuing CA's own CertPEM.
+func TestEncodeCertPEM_RoundTrips(t *testing.T) {
+	ca, err := mtls.LoadOrCreate(t.TempDir())
+	if err != nil {
+		t.Fatalf("LoadOrCreate: %v", err)
+	}
+
+	leaf, err := ca.IssueClientCert("job-abc123")
+	if err != nil {
+		t.Fatalf("IssueClientCert: %v", err)
+	}
+
+	certPEM, keyPEM, err := mtls.EncodeCertPEM(leaf)
+	if err != nil {
+		t.Fatalf("EncodeCertPEM: %v", err)
+	}
+	if len(certPEM) == 0 || len(keyPEM) == 0 {
+		t.Fatal("EncodeCertPEM returned empty cert or key PEM")
+	}
+
+	// tls.X509KeyPair is what a real docker client (or any net/tls-based
+	// consumer of DOCKER_CERT_PATH) uses to load cert.pem+key.pem.
+	if _, err := tls.X509KeyPair(certPEM, keyPEM); err != nil {
+		t.Fatalf("tls.X509KeyPair(certPEM, keyPEM): %v", err)
+	}
+
+	// The leaf must verify against the CA's own PEM (the "ca.pem" file
+	// docker's convention also expects).
+	caPEM := ca.CertPEM()
+	if len(caPEM) == 0 {
+		t.Fatal("CA.CertPEM() returned empty PEM")
+	}
+	pool := x509.NewCertPool()
+	if !pool.AppendCertsFromPEM(caPEM) {
+		t.Fatal("failed to parse CA.CertPEM() output back into a cert pool")
+	}
+	block, _ := pem.Decode(certPEM)
+	if block == nil {
+		t.Fatal("failed to PEM-decode EncodeCertPEM's cert output")
+	}
+	leafCert, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		t.Fatalf("parse leaf cert DER: %v", err)
+	}
+	if _, err := leafCert.Verify(x509.VerifyOptions{
+		Roots:     pool,
+		KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+	}); err != nil {
+		t.Fatalf("leaf cert does not verify against CA.CertPEM(): %v", err)
+	}
+}
+
+func TestEncodeCertPEM_RejectsEmptyCertificate(t *testing.T) {
+	if _, _, err := mtls.EncodeCertPEM(tls.Certificate{}); err == nil {
+		t.Fatal("expected an error for a tls.Certificate with no DER bytes, got nil")
 	}
 }
