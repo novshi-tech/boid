@@ -492,6 +492,7 @@ func (r *Runner) Dispatch(ctx context.Context, spec *orchestrator.JobSpec, clean
 		ServerSocket:               r.ServerSocket,
 		ProxyPort:                  proxyPort,
 		ProxyHost:                  proxyHost,
+		UsingContainerBackend:      IsContainerBackend(r.Backend),
 		BrokerSocket:               brokerSocket,
 		BrokerToken:                brokerToken,
 		WorkspacePeers:             workspacePeers,

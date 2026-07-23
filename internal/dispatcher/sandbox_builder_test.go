@@ -1906,6 +1906,46 @@ func TestBuildSandboxSpec_ShimBinDirBoidMountSkippedForProfileInit(t *testing.T)
 	}
 }
 
+// TestBuildSandboxSpec_ShimBinDirBoidMountSkippedForContainerBackend pins
+// the PR9 regression fix (docs/plans/phase6-cutover-followups.md's
+// debugging trail): the container backend's shared image already bakes
+// boid at sandboxShimBinDir ("/run/boid/bin/boid" — build/container/
+// Dockerfile), so BuildSandboxSpec must NOT also emit a bind mount for it
+// when SandboxRuntimeInfo.UsingContainerBackend is true — doing so tries
+// to bind-mount rt.BoidBinary (the DAEMON's own in-image path, e.g.
+// "/usr/local/bin/boid") as a docker-out-of-docker sibling mount SOURCE,
+// which the host's real docker daemon rejects outright ("bind source path
+// does not exist") since that path only exists inside the daemon's own
+// container. Host-command shim symlinks must still be emitted for the
+// container backend too (決定2: only baked at image-build time is the
+// boid binary itself and the /run/boid/bin directory, not individual
+// <name> shims — those the entrypoint generates fresh from spec.Symlinks
+// on every container start, identically to the userns backend).
+func TestBuildSandboxSpec_ShimBinDirBoidMountSkippedForContainerBackend(t *testing.T) {
+	spec := &orchestrator.JobSpec{
+		HostCommands: map[string]orchestrator.CommandDef{
+			"gh": {Path: "/usr/bin/gh"},
+		},
+	}
+	result, err := BuildSandboxSpec(spec, SandboxRuntimeInfo{
+		BoidBinary:                 "/usr/local/bin/boid",
+		UsingContainerBackend:      true,
+		ResolvedHostCommandsByName: map[string]orchestrator.CommandDef{"gh": {Path: "/usr/bin/gh"}},
+	})
+	if err != nil {
+		t.Fatalf("BuildSandboxSpec: %v", err)
+	}
+	for _, m := range result.Mounts {
+		if m.Target == sandboxShimBinDir+"/boid" {
+			t.Errorf("container backend must not bind rt.BoidBinary at %s (already baked into the shared image), got %+v",
+				sandboxShimBinDir+"/boid", m)
+		}
+	}
+	if len(result.Symlinks) == 0 {
+		t.Error("container backend must still emit host-command shim symlinks (only the boid binary bind is userns-only), got none")
+	}
+}
+
 // --- Phase 4 PR2: workspace home bind + $HOME/.boid job tmpfs overlay
 // (docs/plans/home-workspace-volume.md) ---
 

@@ -37,6 +37,27 @@ type SandboxRuntimeInfo struct {
 	// reachable compose-network address instead.
 	ProxyHost string
 
+	// UsingContainerBackend (PR9, §決定2) is Runner.Dispatch's
+	// IsContainerBackend(r.Backend) — the same signal ProxyHost's own doc
+	// comment describes for the identical "computed once at the Dispatch
+	// call site, threaded through because BuildSandboxSpec has no other
+	// way to know the configured backend" reason. BuildSandboxSpec uses it
+	// to skip binding rt.BoidBinary into the sandbox (see its own call
+	// site below): the container backend's shared image already bakes
+	// boid at the fixed shim path (build/container/Dockerfile), so
+	// binding it AGAIN would try to bind-mount rt.BoidBinary
+	// (os.Executable() — resolves to the DAEMON's own in-image path,
+	// e.g. "/usr/local/bin/boid") as a docker-out-of-docker sibling
+	// mount SOURCE, which the host's real docker daemon then rejects
+	// outright ("bind source path does not exist") since that path only
+	// exists inside the daemon's own container, never on the real host
+	// filesystem a DooD sibling's bind sources are resolved against.
+	// False (every pre-PR9 caller) preserves today's userns-only
+	// behavior unchanged — the userns backend genuinely needs this bind
+	// (its job process shares the host mount namespace before
+	// pivot_root, so rt.BoidBinary is a real, bindable host path there).
+	UsingContainerBackend bool
+
 	BrokerSocket string
 	BrokerToken  string
 
@@ -489,13 +510,23 @@ func BuildSandboxSpec(spec *orchestrator.JobSpec, rt SandboxRuntimeInfo) (sandbo
 	// commands, so no shim is needed.
 	var symlinks []sandbox.Symlink
 	if rt.BoidBinary != "" && spec.SandboxProfile != int(sandbox.ProfileInit) {
-		mounts = append(mounts, sandbox.Mount{
-			Source:   rt.BoidBinary,
-			Target:   sandboxShimBinDir + "/boid",
-			Type:     sandbox.MountBind,
-			IsFile:   true,
-			ReadOnly: true,
-		})
+		// UsingContainerBackend (PR9, §決定2 — see its own doc comment):
+		// the container backend's shared image already bakes boid at this
+		// exact shim path (build/container/Dockerfile), so binding
+		// rt.BoidBinary again would try to bind-mount the DAEMON's own
+		// in-image path as a DooD sibling mount source, which the host's
+		// real docker daemon rejects outright. Individual host-command
+		// shim symlinks are NOT baked (決定2) and must still be generated
+		// for both backends — only this bind mount is userns-only.
+		if !rt.UsingContainerBackend {
+			mounts = append(mounts, sandbox.Mount{
+				Source:   rt.BoidBinary,
+				Target:   sandboxShimBinDir + "/boid",
+				Type:     sandbox.MountBind,
+				IsFile:   true,
+				ReadOnly: true,
+			})
+		}
 		symlinks = hostCommandSymlinks(rt.ResolvedHostCommandsByName)
 	}
 
