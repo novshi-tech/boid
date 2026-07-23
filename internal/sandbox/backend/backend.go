@@ -80,6 +80,22 @@ type LaunchOptions struct {
 	// session (see dispatcher.RuntimeStartSpec.StdinForward's doc
 	// comment).
 	StdinForward bool
+
+	// DockerEnabled mirrors orchestrator.Visibility.DockerEnabled /
+	// dispatcher.JobSpec's field of the same name (docs/plans/
+	// phase6-container-backend.md §PR6, §決定5): true when the job declared
+	// capabilities.docker. containerBackend uses this to decide whether to
+	// issue a per-job dockerproxy client cert and deliver it via
+	// DOCKER_HOST/DOCKER_CERT_PATH/DOCKER_TLS_VERIFY env (see
+	// ContainerBackendOptions.DockerTLSCA's doc comment) — the userns
+	// backend's equivalent decision (Runner.launchSandbox,
+	// spec.Visibility.DockerEnabled) already exists and is unaffected by
+	// this field. Like Workspace above, production wiring of this field
+	// into Runner.launchSandbox's LaunchOptions construction is left for
+	// the config-cutover PR (PR7) that actually selects containerBackend —
+	// containerBackend's own handling of it is exercised directly against
+	// this struct in tests today.
+	DockerEnabled bool
 }
 
 // ReapReport is the per-task result of a ReapOrphans pass: which jobs were

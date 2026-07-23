@@ -44,11 +44,12 @@ var startCmd = &cobra.Command{
 }
 
 var (
-	startDBPath       string
-	startSocketPath   string
-	startKitsDir      string
-	startKeyFilePath  string
-	startAutoMigrate  bool
+	startDBPath      string
+	startSocketPath  string
+	startKitsDir     string
+	startKeyFilePath string
+	startAutoMigrate bool
+	startForeground  bool
 )
 
 func init() {
@@ -62,6 +63,8 @@ func init() {
 	startCmd.Flags().StringVar(&startKeyFilePath, "key-file-path", "", "Path to the secret encryption key file")
 	startCmd.Flags().BoolVar(&startAutoMigrate, "auto-migrate", false,
 		"When project.yaml schema migration is needed, run `boid project migrate <dir> --apply` for each affected project automatically and respawn the daemon (skips the confirmation prompt on TTY too)")
+	startCmd.Flags().BoolVar(&startForeground, "foreground", false,
+		"Run the daemon directly in this process, skipping the double-fork self-respawn — for a process supervisor (systemd Type=simple, a container entrypoint, ...) that already owns respawn/liveness. Equivalent to (and takes precedence over) setting BOID_DAEMON_CHILD=1, which remains supported for existing supervisor configs (build/container/compose.yml) that set the env var instead of passing this flag")
 	rootCmd.AddCommand(startCmd)
 }
 
@@ -135,6 +138,23 @@ func defaultTLSDir() string {
 	return filepath.Join(dataDir, "boid", "tls")
 }
 
+// defaultInstallIDDir returns the directory holding (or to generate) this
+// installation's plain-UUID install_id file (internal/install.LoadOrCreate
+// — docs/plans/phase6-container-backend.md §PR6/§決定6). Same XDG data-dir
+// convention as the other default*Path/Dir helpers above, and the same
+// "web_secret"-style file-directly-in-data-dir layout §決定6 calls for
+// (~/.local/share/boid/install_id, alongside boid.db and web_secret — NOT
+// nested under its own subdirectory the way tls/ is, since it is a single
+// file, not a CA's cert+key pair).
+func defaultInstallIDDir() string {
+	dataDir := os.Getenv("XDG_DATA_HOME")
+	if dataDir == "" {
+		home, _ := os.UserHomeDir()
+		dataDir = filepath.Join(home, ".local", "share")
+	}
+	return filepath.Join(dataDir, "boid")
+}
+
 type startConfigOptions struct {
 	DBPath      string
 	SocketPath  string
@@ -164,6 +184,7 @@ func buildStartConfig(opts startConfigOptions) (server.Config, error) {
 		cfg.KeyFilePath = defaultKeyFilePath()
 	}
 	cfg.TLSDir = defaultTLSDir()
+	cfg.InstallIDDir = defaultInstallIDDir()
 
 	appCfg, err := config.Load()
 	if err != nil {
@@ -189,10 +210,30 @@ func runStart(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	if daemon.IsChild() {
+	if shouldRunForeground(startForeground) {
 		return runDaemonChild(cfg)
 	}
 	return runDaemonParent(cfg)
+}
+
+// shouldRunForeground reports whether runStart should skip the
+// parent/child double-fork and run the daemon directly in the current
+// process (Major 6, PR6 codex review): the pre-fix code only ever checked
+// daemon.IsChild() (BOID_DAEMON_CHILD=1), which build/container/compose.yml
+// sets but a bare userns process supervisor (systemd Type=simple, runit,
+// ...) generally has no reason to know about or set — so a userns startup
+// under a supervisor still double-forked, the supervisor's tracked process
+// exited once the parent confirmed the detached child's socket was up, and
+// the supervisor treated that exit as a crash and restart-looped.
+//
+// --foreground (the foregroundFlag arg, wired from startForeground) is the
+// primary, discoverable seam for this: any supervisor config, not just
+// compose's, can pass it. daemon.IsChild() (BOID_DAEMON_CHILD=1) remains
+// supported so compose.yml's existing env-var-based config keeps working
+// unchanged — both routes converge on the exact same runDaemonChild call,
+// so there is exactly one foreground code path for any caller to reach.
+func shouldRunForeground(foregroundFlag bool) bool {
+	return foregroundFlag || daemon.IsChild()
 }
 
 // runDaemonParent spawns the daemon child and waits on three concurrent

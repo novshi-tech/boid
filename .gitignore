@@ -25,3 +25,6 @@ coverage.out
 
 # Playwright CLI session data
 /.playwright-cli/
+
+# Phase 6 compose stack local env (host-specific paths; see .env.example)
+/build/container/.env

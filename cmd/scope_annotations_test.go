@@ -143,6 +143,7 @@ var expectedScopeAnnotations = map[string]string{
 	"boid project init":       scopeLocal,
 	"boid project migrate":    scopeLocal,
 	"boid project reload":     scopeLocal,
+	"boid reap":               scopeLocal,
 	"boid runner-container":   scopeLocal,
 	"boid runner-inner":       scopeLocal,
 	"boid runner-inner-child": scopeLocal,

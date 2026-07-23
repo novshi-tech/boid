@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net"
@@ -92,6 +93,26 @@ func newProxy(t *testing.T, upstreamSock string) (sockPath string) {
 	return sock
 }
 
+// newProxyWithWorkspaceNetwork is newProxy plus Server.SetWorkspaceNetwork
+// (§決定5's forced sibling network injection).
+func newProxyWithWorkspaceNetwork(t *testing.T, upstreamSock, network string) (sockPath string) {
+	t.Helper()
+	dir := t.TempDir()
+	sock := filepath.Join(dir, "proxy.sock")
+	ln, err := net.Listen("unix", sock)
+	if err != nil {
+		t.Fatal("proxy listen:", err)
+	}
+	srv := New(upstreamSock)
+	srv.SetWorkspaceNetwork(network)
+	go srv.Serve(ln) //nolint:errcheck
+	t.Cleanup(func() {
+		srv.Close()
+		ln.Close()
+	})
+	return sock
+}
+
 // httpClientForSocket returns an http.Client that dials the given Unix socket.
 func httpClientForSocket(sockPath string) *http.Client {
 	return &http.Client{
@@ -141,6 +162,116 @@ func TestProxy_deny_dangerousCreate_noUpstreamHit(t *testing.T) {
 	resp := doProxyRequest(t, proxySock, "POST", "/containers/create", body)
 	resp.Body.Close()
 
+	if resp.StatusCode != http.StatusForbidden {
+		t.Errorf("expected 403, got %d", resp.StatusCode)
+	}
+	if upstreamHits != 0 {
+		t.Errorf("upstream received %d requests; expected 0", upstreamHits)
+	}
+}
+
+// TestProxy_publishAllPorts_userns_allow pins Blocker 2 (PR6 codex review)
+// at the Server level, the PublishAllPorts counterpart of
+// TestProxy_portBindings_userns_allow just below: a proxy started the way
+// the pre-PR6 userns backend starts one (New + Serve, no
+// SetWorkspaceNetwork call) must forward PublishAllPorts unchanged too —
+// see TestProxy_publishAllPorts_containerBackend_deny further down for the
+// container-backend-gated deny case Blocker 1 introduced.
+func TestProxy_publishAllPorts_userns_allow(t *testing.T) {
+	upstream := newFakeUpstream(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusCreated)
+		fmt.Fprintf(w, `{"Id":"abc123"}`)
+	})
+	proxySock := newProxy(t, upstream.sockPath) // no SetWorkspaceNetwork call
+
+	body := mustJSON(map[string]interface{}{
+		"HostConfig": map[string]interface{}{"PublishAllPorts": true},
+	})
+	resp := doProxyRequest(t, proxySock, "POST", "/containers/create", body)
+	respBody, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("expected 201 (userns backend must still allow PublishAllPorts), got %d: %s", resp.StatusCode, respBody)
+	}
+}
+
+// TestProxy_portBindings_userns_allow pins Blocker 2 (PR6 codex review) at
+// the Server level: a proxy started the way the pre-PR6 userns backend
+// starts one (New + Serve, no SetWorkspaceNetwork call —
+// internal/dispatcher.Runner.startDockerProxy) must still forward a
+// PortBindings-carrying /containers/create to the upstream daemon —
+// exactly its long-standing behavior, unaffected by the container-backend-
+// only gate this PR adds.
+func TestProxy_portBindings_userns_allow(t *testing.T) {
+	upstream := newFakeUpstream(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusCreated)
+		fmt.Fprintf(w, `{"Id":"abc123"}`)
+	})
+	proxySock := newProxy(t, upstream.sockPath) // no SetWorkspaceNetwork call
+
+	body := mustJSON(map[string]interface{}{
+		"HostConfig": map[string]interface{}{
+			"PortBindings": map[string]interface{}{
+				"80/tcp": []map[string]string{{"HostPort": "8080"}},
+			},
+		},
+	})
+	resp := doProxyRequest(t, proxySock, "POST", "/containers/create", body)
+	respBody, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("expected 201 (userns backend must still allow PortBindings), got %d: %s", resp.StatusCode, respBody)
+	}
+}
+
+// TestProxy_portBindings_containerBackend_deny pins the other half of
+// Blocker 2: once Server.SetWorkspaceNetwork has configured a real
+// workspace network (the container backend's own Server), PortBindings
+// must be denied — never reaching upstream.
+func TestProxy_portBindings_containerBackend_deny(t *testing.T) {
+	var upstreamHits int
+	upstream := newFakeUpstream(t, func(w http.ResponseWriter, r *http.Request) {
+		upstreamHits++
+		w.WriteHeader(http.StatusCreated)
+	})
+	proxySock := newProxyWithWorkspaceNetwork(t, upstream.sockPath, "boid-ws-myworkspace")
+
+	body := mustJSON(map[string]interface{}{
+		"HostConfig": map[string]interface{}{
+			"PortBindings": map[string]interface{}{
+				"80/tcp": []map[string]string{{"HostPort": "8080"}},
+			},
+		},
+	})
+	resp := doProxyRequest(t, proxySock, "POST", "/containers/create", body)
+	io.Copy(io.Discard, resp.Body) //nolint:errcheck
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Errorf("expected 403, got %d", resp.StatusCode)
+	}
+	if upstreamHits != 0 {
+		t.Errorf("upstream received %d requests; expected 0", upstreamHits)
+	}
+}
+
+// TestProxy_publishAllPorts_containerBackend_deny pins Blocker 2 for
+// PublishAllPorts: must be denied under the container-backend gate too
+// (Blocker 1 already pinned the unconditional-era denial at the policy
+// level; this confirms it survives gating).
+func TestProxy_publishAllPorts_containerBackend_deny(t *testing.T) {
+	var upstreamHits int
+	upstream := newFakeUpstream(t, func(w http.ResponseWriter, r *http.Request) {
+		upstreamHits++
+		w.WriteHeader(http.StatusCreated)
+	})
+	proxySock := newProxyWithWorkspaceNetwork(t, upstream.sockPath, "boid-ws-myworkspace")
+
+	body := mustJSON(map[string]interface{}{
+		"HostConfig": map[string]interface{}{"PublishAllPorts": true},
+	})
+	resp := doProxyRequest(t, proxySock, "POST", "/containers/create", body)
+	io.Copy(io.Discard, resp.Body) //nolint:errcheck
+	resp.Body.Close()
 	if resp.StatusCode != http.StatusForbidden {
 		t.Errorf("expected 403, got %d", resp.StatusCode)
 	}
@@ -244,6 +375,99 @@ func TestProxy_transfer_safeContainersCreate_reaches_upstream(t *testing.T) {
 
 	if resp.StatusCode != http.StatusCreated {
 		t.Errorf("expected 201, got %d", resp.StatusCode)
+	}
+}
+
+// TestProxy_workspaceNetwork_forcesInjection pins §決定5's "sibling の
+// workspace network 強制注入" (docs/plans/phase6-container-backend.md §PR6):
+// when a workspace network is configured, the upstream Docker daemon must
+// see the job's workspace network — NOT whatever network the sandboxed
+// client itself requested — in NetworkingConfig.EndpointsConfig, while
+// every other field of the client's original body survives unchanged.
+func TestProxy_workspaceNetwork_forcesInjection(t *testing.T) {
+	upstream := newFakeUpstream(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusCreated)
+		fmt.Fprintf(w, `{"Id":"abc123"}`)
+	})
+	proxySock := newProxyWithWorkspaceNetwork(t, upstream.sockPath, "boid-ws-myworkspace")
+
+	body := mustJSON(map[string]interface{}{
+		"Image": "alpine:latest",
+		"NetworkingConfig": map[string]interface{}{
+			"EndpointsConfig": map[string]interface{}{
+				"attacker-chosen-network": map[string]interface{}{},
+			},
+		},
+	})
+	resp := doProxyRequest(t, proxySock, "POST", "/containers/create", body)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("expected 201, got %d", resp.StatusCode)
+	}
+
+	var received capturedRequest
+	select {
+	case received = <-upstream.requests:
+	case <-time.After(time.Second):
+		t.Fatal("upstream did not receive request")
+	}
+
+	var got struct {
+		Image            string `json:"Image"`
+		NetworkingConfig struct {
+			EndpointsConfig map[string]json.RawMessage `json:"EndpointsConfig"`
+		} `json:"NetworkingConfig"`
+	}
+	if err := json.Unmarshal(received.Body, &got); err != nil {
+		t.Fatalf("unmarshal upstream body: %v (body: %s)", err, received.Body)
+	}
+	if got.Image != "alpine:latest" {
+		t.Errorf("Image = %q, want alpine:latest (non-network fields must survive)", got.Image)
+	}
+	if _, ok := got.NetworkingConfig.EndpointsConfig["boid-ws-myworkspace"]; !ok {
+		t.Errorf("EndpointsConfig = %v, want the workspace network present", got.NetworkingConfig.EndpointsConfig)
+	}
+	if _, ok := got.NetworkingConfig.EndpointsConfig["attacker-chosen-network"]; ok {
+		t.Errorf("EndpointsConfig = %v, client-requested network must be discarded, not merged", got.NetworkingConfig.EndpointsConfig)
+	}
+	if len(got.NetworkingConfig.EndpointsConfig) != 1 {
+		t.Errorf("EndpointsConfig = %v, want exactly one (forced) network", got.NetworkingConfig.EndpointsConfig)
+	}
+}
+
+// TestProxy_workspaceNetwork_unsetLeavesBodyUnchanged verifies the
+// pre-existing behavior (no Server.SetWorkspaceNetwork call — every
+// existing e2e/unit test's baseline) is untouched: the client's body
+// reaches upstream byte-for-byte, matching
+// TestProxy_rawBodyForwarding_bytesUnchanged's own guarantee extended to a
+// body that itself carries a NetworkingConfig.
+func TestProxy_workspaceNetwork_unsetLeavesBodyUnchanged(t *testing.T) {
+	var receivedBody []byte
+	upstream := newFakeUpstream(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusCreated)
+		fmt.Fprintf(w, `{"Id":"abc123"}`)
+	})
+	proxySock := newProxy(t, upstream.sockPath) // no SetWorkspaceNetwork call
+
+	body := mustJSON(map[string]interface{}{
+		"Image": "alpine:latest",
+		"NetworkingConfig": map[string]interface{}{
+			"EndpointsConfig": map[string]interface{}{
+				"whatever-the-client-asked-for": map[string]interface{}{},
+			},
+		},
+	})
+	resp := doProxyRequest(t, proxySock, "POST", "/containers/create", body)
+	defer resp.Body.Close()
+
+	select {
+	case req := <-upstream.requests:
+		receivedBody = req.Body
+	case <-time.After(time.Second):
+		t.Fatal("upstream did not receive request")
+	}
+	if !bytes.Equal(receivedBody, body) {
+		t.Errorf("upstream body = %s, want unchanged %s (workspace network unset)", receivedBody, body)
 	}
 }
 

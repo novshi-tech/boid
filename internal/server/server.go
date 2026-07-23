@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sync"
 	"time"
@@ -18,6 +19,7 @@ import (
 	"github.com/novshi-tech/boid/internal/db/migrate"
 	"github.com/novshi-tech/boid/internal/dispatcher"
 	"github.com/novshi-tech/boid/internal/gitgateway"
+	"github.com/novshi-tech/boid/internal/install"
 	"github.com/novshi-tech/boid/internal/mtls"
 	"github.com/novshi-tech/boid/internal/orchestrator"
 	"github.com/novshi-tech/boid/internal/sandbox"
@@ -67,6 +69,19 @@ type Config struct {
 	// live daemon actually binds them; nothing dispatches through them
 	// yet (the container backend that will is PR5).
 	TLSDir string
+	// InstallIDDir, when non-empty, is the directory holding (or to
+	// generate) this installation's plain-UUID install_id file
+	// (internal/install.LoadOrCreate — docs/plans/
+	// phase6-container-backend.md §PR6/§決定6: "daemon が作る全
+	// container/network/volume に boid.install_id... label を付与"). Empty
+	// (the zero value, and every pre-PR6 test) skips this entirely — New
+	// leaves Server.installID at "" and nothing changes. cmd/start.go sets
+	// a real default (~/.local/share/boid, the same dir web_secret and
+	// boid.db live in) so a live daemon actually has one; nothing consumes
+	// it in production dispatch yet (containerBackend construction is
+	// still test/DI-only — see NewContainerBackend's doc comment — the
+	// same "config 非公開" scope PR5 shipped under).
+	InstallIDDir string
 }
 
 type Server struct {
@@ -132,6 +147,11 @@ type Server struct {
 	// same late-binding-via-pointer trick as proxyPort.
 	gatewayURL string
 
+	// installID is this installation's plain-UUID identity (§決定6), loaded
+	// (or generated) once in New() when cfg.InstallIDDir is set. Empty
+	// otherwise — see InstallIDDir's doc comment.
+	installID string
+
 	mu sync.Mutex
 }
 
@@ -153,6 +173,36 @@ func New(cfg Config) (*Server, error) {
 		}
 	}
 
+	// Install identity (docs/plans/phase6-container-backend.md §PR6/§決定6):
+	// loaded (or generated once) here, alongside the other on-disk
+	// daemon-identity artifacts New() already establishes (skills,
+	// migrations). Empty cfg.InstallIDDir (every pre-PR6 caller/test) skips
+	// this — installID stays "".
+	//
+	// Advisory, not blocking (Major 5, PR6 codex review): install_id is a
+	// container-backend concept — its only consumers are containerBackend's
+	// boid.install_id resource label (§決定6) and `boid reap`'s label
+	// filter, neither of which the userns backend touches at all. Failing
+	// New() outright over a LoadOrCreate error (e.g. cfg.InstallIDDir
+	// root-owned from a prior run under a different uid) would refuse to
+	// start a userns daemon over a value it never uses — so a failure here
+	// is logged and installID stays "" instead. containerBackend's own
+	// ReapOrphans doc comment already documents its pre-install_id "global
+	// (not install_id-scoped) label filter" fallback for exactly this
+	// empty-installID case, so nothing downstream needs to special-case
+	// this: it is the same path New() has always taken when
+	// cfg.InstallIDDir itself was empty.
+	var installID string
+	if cfg.InstallIDDir != "" {
+		id, err := install.LoadOrCreate(cfg.InstallIDDir)
+		if err != nil {
+			slog.Warn("install id load/create failed; continuing with an empty install id (container-backend resource labeling/reap scoping degrades to the pre-install_id global filter — the userns backend is unaffected)",
+				"dir", cfg.InstallIDDir, "err", err)
+		} else {
+			installID = id
+		}
+	}
+
 	conn := d.Conn
 
 	projectRepo := orchestrator.NewProjectRepository(conn)
@@ -160,6 +210,17 @@ func New(cfg Config) (*Server, error) {
 	if err != nil {
 		conn.Close()
 		return nil, err
+	}
+
+	// host_commands provisioning check (docs/plans/phase6-container-backend.md
+	// §PR6/§決定4): resolve every configured host command against this
+	// daemon's own host now, at boot, instead of only discovering a gap the
+	// first time an affected project dispatches. Advisory only (skeleton
+	// level) — a missing command is warned about, not fatal; see
+	// ValidateHostCommandsInstalled's doc comment for why.
+	for _, name := range orchestrator.ValidateHostCommandsInstalled(hostCommands, exec.LookPath) {
+		slog.Warn("host command not found on daemon host; broker exec will fail for jobs using it (provision it in build/container/Dockerfile once the compose deploy is in use)",
+			"command", name)
 	}
 
 	brokerSocket := filepath.Join(filepath.Dir(cfg.SocketPath), "boid-broker.sock")
@@ -192,6 +253,7 @@ func New(cfg Config) (*Server, error) {
 			Handler: nil,
 		},
 		hostCommands: hostCommands,
+		installID:    installID,
 	}
 	runtime, err := buildRuntime(srv, cfg, store, newCommandBroker(broker), secretStore)
 	if err != nil {
@@ -216,6 +278,16 @@ func (s *Server) DB() *sql.DB {
 // Store returns the project store.
 func (s *Server) Store() *orchestrator.ProjectStore {
 	return s.store
+}
+
+// InstallID returns this installation's plain-UUID identity (§決定6), or
+// "" when cfg.InstallIDDir was empty (New never generated one). Nothing in
+// production dispatch consumes this yet as of PR6 (containerBackend
+// construction is still test/DI-only) — it exists so `boid reap` and a
+// future PR7 containerBackend wiring have a single, already-tested source
+// for the value rather than each re-implementing the load.
+func (s *Server) InstallID() string {
+	return s.installID
 }
 
 // KitsDir returns this daemon's effective base directory for installed kits
@@ -300,6 +372,10 @@ func (s *Server) Router() chi.Router {
 }
 
 func (s *Server) Start(ctx context.Context) error {
+	if s.installID != "" {
+		slog.Info("install id", "id", s.installID)
+	}
+
 	// Start GC loop goroutine if configured.
 	if s.gcLoop != nil {
 		go s.gcLoop.Run(ctx)

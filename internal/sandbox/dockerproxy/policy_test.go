@@ -21,9 +21,17 @@ func createBody(hc map[string]interface{}) []byte {
 	return mustJSON(map[string]interface{}{"HostConfig": hc})
 }
 
+// Every helper below defaults denyHostPortPublish to true (the
+// container-backend gate active — see CheckRequest's doc comment): none of
+// the bodies these generic helpers exercise carry PortBindings/
+// PublishAllPorts, so the gate value is a don't-care for them. The
+// PortBindings/PublishAllPorts-specific tests further down call
+// CheckRequest directly with both gate values to pin the actual gating
+// behavior (Blocker 2, PR6 codex review).
+
 func assertAllow(t *testing.T, method, path string, body []byte) {
 	t.Helper()
-	v := CheckRequest(method, path, body)
+	v := CheckRequest(method, path, body, true)
 	if !v.Allow {
 		t.Errorf("expected ALLOW for %s %s, got DENY: %s", method, path, v.Reason)
 	}
@@ -31,7 +39,7 @@ func assertAllow(t *testing.T, method, path string, body []byte) {
 
 func assertDeny(t *testing.T, method, path string, body []byte) {
 	t.Helper()
-	v := CheckRequest(method, path, body)
+	v := CheckRequest(method, path, body, true)
 	if v.Allow {
 		t.Errorf("expected DENY for %s %s, got ALLOW", method, path)
 	}
@@ -39,7 +47,7 @@ func assertDeny(t *testing.T, method, path string, body []byte) {
 
 func assertDenyContains(t *testing.T, method, path string, body []byte, substr string) {
 	t.Helper()
-	v := CheckRequest(method, path, body)
+	v := CheckRequest(method, path, body, true)
 	if v.Allow {
 		t.Errorf("expected DENY for %s %s, got ALLOW", method, path)
 		return
@@ -196,6 +204,81 @@ func TestNetworkModeBridge_allow(t *testing.T) {
 func TestNetworkModeNone_allow(t *testing.T) {
 	body := createBody(map[string]interface{}{"NetworkMode": "none"})
 	assertAllow(t, "POST", "/containers/create", body)
+}
+
+// TestPortBindings_deny pins §決定5's "host への port publish は非サポート"
+// (docs/plans/phase6-container-backend.md §PR6): publishing a sibling
+// container's port to the host would let it be reached directly by host
+// IP, bypassing the workspace internal network entirely — the "直 IP 拒否"
+// requirement.
+func TestPortBindings_deny(t *testing.T) {
+	body := createBody(map[string]interface{}{
+		"PortBindings": map[string]interface{}{
+			"80/tcp": []map[string]string{{"HostPort": "8080"}},
+		},
+	})
+	assertDenyContains(t, "POST", "/containers/create", body, "PortBindings")
+}
+
+func TestPortBindings_empty_allow(t *testing.T) {
+	body := createBody(map[string]interface{}{"PortBindings": map[string]interface{}{}})
+	assertAllow(t, "POST", "/containers/create", body)
+}
+
+func TestPortBindings_absent_allow(t *testing.T) {
+	body := createBody(map[string]interface{}{})
+	assertAllow(t, "POST", "/containers/create", body)
+}
+
+// TestPublishAllPorts_deny pins Blocker 1 (PR6 codex review): docker CLI's
+// `-P` flag (auto-publish every EXPOSEd port to a random host port) is the
+// same host-escape shape PortBindings already denied above, but the
+// pre-fix hostConfig struct did not list PublishAllPorts at all — an
+// unknown field encoding/json silently ignores — so
+// {"HostConfig":{"PublishAllPorts":true}} sailed straight through the
+// policy check.
+func TestPublishAllPorts_deny(t *testing.T) {
+	body := createBody(map[string]interface{}{"PublishAllPorts": true})
+	assertDenyContains(t, "POST", "/containers/create", body, "PublishAllPorts")
+}
+
+func TestPublishAllPorts_false_allow(t *testing.T) {
+	body := createBody(map[string]interface{}{"PublishAllPorts": false})
+	assertAllow(t, "POST", "/containers/create", body)
+}
+
+func TestPublishAllPorts_absent_allow(t *testing.T) {
+	body := createBody(map[string]interface{}{})
+	assertAllow(t, "POST", "/containers/create", body)
+}
+
+// TestPortBindings_gate_userns_allow pins Blocker 2 (PR6 codex review):
+// with denyHostPortPublish=false (the userns backend's Server —
+// Server.SetWorkspaceNetwork never called — see CheckRequest's doc
+// comment), PortBindings must be ALLOWED exactly as it always was pre-PR6.
+// An existing userns hook that creates a TestContainers sibling with an
+// explicit host port mapping must not start 403ing just because the
+// container-backend-only policy tightened.
+func TestPortBindings_gate_userns_allow(t *testing.T) {
+	body := createBody(map[string]interface{}{
+		"PortBindings": map[string]interface{}{
+			"80/tcp": []map[string]string{{"HostPort": "8080"}},
+		},
+	})
+	v := CheckRequest("POST", "/containers/create", body, false)
+	if !v.Allow {
+		t.Errorf("expected ALLOW (denyHostPortPublish=false), got DENY: %s", v.Reason)
+	}
+}
+
+// TestPublishAllPorts_gate_userns_allow mirrors
+// TestPortBindings_gate_userns_allow for PublishAllPorts.
+func TestPublishAllPorts_gate_userns_allow(t *testing.T) {
+	body := createBody(map[string]interface{}{"PublishAllPorts": true})
+	v := CheckRequest("POST", "/containers/create", body, false)
+	if !v.Allow {
+		t.Errorf("expected ALLOW (denyHostPortPublish=false), got DENY: %s", v.Reason)
+	}
 }
 
 // --- PidMode ---
@@ -400,7 +483,7 @@ func TestMaxBodyBytes_exceeded_deny(t *testing.T) {
 func TestParserDifferential_duplicateKey_deny(t *testing.T) {
 	// Craft raw JSON with duplicate Privileged keys: first false, last true.
 	raw := []byte(`{"HostConfig":{"Privileged":false,"Privileged":true}}`)
-	v := CheckRequest("POST", "/containers/create", raw)
+	v := CheckRequest("POST", "/containers/create", raw, true)
 	if v.Allow {
 		t.Error("expected DENY for duplicate key attack (last Privileged=true should win)")
 	}

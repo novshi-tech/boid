@@ -3,10 +3,12 @@ package mtls_test
 import (
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/pem"
 	"io"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/novshi-tech/boid/internal/mtls"
 )
@@ -241,5 +243,124 @@ func TestServerTLSConfig_RejectsConnectionWithoutClientCert(t *testing.T) {
 	}
 	if clientErr == nil {
 		t.Fatal("client I/O succeeded despite presenting no client certificate; want the server's rejection to surface")
+	}
+}
+
+// TestEncodeCertPEM_RoundTrips pins docs/plans/phase6-container-backend.md
+// §PR6/§決定5's per-job client cert delivery: a leaf cert/key issued by
+// IssueClientCert must PEM-encode into a pair that (a) parses back with the
+// stdlib's own tls.X509KeyPair (the exact function docker's client library
+// uses to load DOCKER_CERT_PATH's cert.pem+key.pem) and (b) is verifiable
+// against the issuing CA's own CertPEM.
+func TestEncodeCertPEM_RoundTrips(t *testing.T) {
+	ca, err := mtls.LoadOrCreate(t.TempDir())
+	if err != nil {
+		t.Fatalf("LoadOrCreate: %v", err)
+	}
+
+	leaf, err := ca.IssueClientCert("job-abc123")
+	if err != nil {
+		t.Fatalf("IssueClientCert: %v", err)
+	}
+
+	certPEM, keyPEM, err := mtls.EncodeCertPEM(leaf)
+	if err != nil {
+		t.Fatalf("EncodeCertPEM: %v", err)
+	}
+	if len(certPEM) == 0 || len(keyPEM) == 0 {
+		t.Fatal("EncodeCertPEM returned empty cert or key PEM")
+	}
+
+	// tls.X509KeyPair is what a real docker client (or any net/tls-based
+	// consumer of DOCKER_CERT_PATH) uses to load cert.pem+key.pem.
+	if _, err := tls.X509KeyPair(certPEM, keyPEM); err != nil {
+		t.Fatalf("tls.X509KeyPair(certPEM, keyPEM): %v", err)
+	}
+
+	// The leaf must verify against the CA's own PEM (the "ca.pem" file
+	// docker's convention also expects).
+	caPEM := ca.CertPEM()
+	if len(caPEM) == 0 {
+		t.Fatal("CA.CertPEM() returned empty PEM")
+	}
+	pool := x509.NewCertPool()
+	if !pool.AppendCertsFromPEM(caPEM) {
+		t.Fatal("failed to parse CA.CertPEM() output back into a cert pool")
+	}
+	block, _ := pem.Decode(certPEM)
+	if block == nil {
+		t.Fatal("failed to PEM-decode EncodeCertPEM's cert output")
+	}
+	leafCert, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		t.Fatalf("parse leaf cert DER: %v", err)
+	}
+	if _, err := leafCert.Verify(x509.VerifyOptions{
+		Roots:     pool,
+		KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+	}); err != nil {
+		t.Fatalf("leaf cert does not verify against CA.CertPEM(): %v", err)
+	}
+}
+
+// TestIssueShortLivedClientCert_ValidityWindow pins Blocker 4 (PR6 codex
+// review): a per-job dockerproxy client cert must carry a validity window
+// bounded by the caller-supplied duration, not the 30-day leafValidity
+// IssueClientCert/IssueServerCert use — a job could copy its cert to a
+// sibling before exiting, and a long-lived cert would stay usable against
+// the dockerproxy TCP listener long after the job (and its own
+// materialization directory) are gone.
+func TestIssueShortLivedClientCert_ValidityWindow(t *testing.T) {
+	ca, err := mtls.LoadOrCreate(t.TempDir())
+	if err != nil {
+		t.Fatalf("LoadOrCreate: %v", err)
+	}
+
+	before := time.Now()
+	leaf, err := ca.IssueShortLivedClientCert("job-abc123", time.Hour)
+	if err != nil {
+		t.Fatalf("IssueShortLivedClientCert: %v", err)
+	}
+	after := time.Now()
+
+	block, _ := pem.Decode(func() []byte {
+		certPEM, _, err := mtls.EncodeCertPEM(leaf)
+		if err != nil {
+			t.Fatalf("EncodeCertPEM: %v", err)
+		}
+		return certPEM
+	}())
+	if block == nil {
+		t.Fatal("failed to PEM-decode the issued leaf cert")
+	}
+	parsed, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		t.Fatalf("parse leaf cert DER: %v", err)
+	}
+
+	// NotAfter must be within ~1h of issuance — the whole point of this
+	// API. A generous 5-minute buffer absorbs test execution time without
+	// weakening the "short-lived, not 30-day" assertion.
+	maxNotAfter := after.Add(time.Hour + 5*time.Minute)
+	if parsed.NotAfter.After(maxNotAfter) {
+		t.Errorf("NotAfter = %v, want within ~1h of issuance (<=%v)", parsed.NotAfter, maxNotAfter)
+	}
+	minNotAfter := before.Add(time.Hour - 5*time.Minute)
+	if parsed.NotAfter.Before(minNotAfter) {
+		t.Errorf("NotAfter = %v, want at least ~1h after issuance (>=%v)", parsed.NotAfter, minNotAfter)
+	}
+
+	// Sanity: meaningfully shorter than the default 30-day leaf validity
+	// IssueClientCert uses, so this test would fail if a future edit
+	// accidentally routed IssueShortLivedClientCert through the same
+	// leafValidity constant again.
+	if parsed.NotAfter.Sub(before) >= 24*time.Hour {
+		t.Errorf("NotAfter = %v is not meaningfully short-lived (>=24h from issuance)", parsed.NotAfter)
+	}
+}
+
+func TestEncodeCertPEM_RejectsEmptyCertificate(t *testing.T) {
+	if _, _, err := mtls.EncodeCertPEM(tls.Certificate{}); err == nil {
+		t.Fatal("expected an error for a tls.Certificate with no DER bytes, got nil")
 	}
 }
