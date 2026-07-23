@@ -49,15 +49,45 @@
 # `${VAR:-$OTHER}` is unambiguous) instead of this YAML sidesteps that gap
 # entirely and works under both tools. See build/container/.env.example for
 # the exact values these three variables need.
-#   - BOID_DATA_DIR -> the container boid user's own
-#     `$HOME/.local/share/boid`: the SQLite DB, runtimes/, workspace homes/,
-#     kits/, the per-daemon mTLS CA (tls/), install_id, and web_secret. One
-#     bind covers all of it because every one of those already resolves
-#     under this single root — see cmd/start.go's default*Dir/*Path helpers.
-#   - BOID_CONFIG_DIR -> config.yaml, workspaces/*.yaml, host_commands.yaml.
-#   - BOID_RUNTIME_DIR -> the host's own socket runtime dir, bound at the
-#     exact SAME path inside the container (source == target, both sides
-#     reference the same variable below — not remapped) — this is the
+#
+# All three are bound source == target (Major 10, PR6 codex review — a fix
+# to what BOID_DATA_DIR/BOID_CONFIG_DIR did before this PR, matching what
+# BOID_RUNTIME_DIR already did): a DooD sibling container is created via
+# the HOST's own docker daemon (the bind-mounted /var/run/docker.sock
+# below), not a nested one, so a mount Source this daemon process hands to
+# a sibling container it creates (per-job TLS material —
+# internal/dispatcher/container_backend.go's dockerTLSDir bind, PR6-
+# residual work — and, longer term, PR7's real workspace-volume/spec-file
+# mounts) has to be a path the HOST filesystem actually has. Remapping
+# BOID_DATA_DIR to some other in-container path (as this file did
+# pre-Major-10) breaks that the moment such a mount is constructed from an
+# absolute path this daemon computes internally — every one of those paths
+# would be container-internal, not host-visible, and the sibling docker
+# daemon would either mount the wrong host directory or fail outright.
+# Source == target sidesteps the whole class of bug: whatever absolute
+# path boid's own code computes under BOID_DATA_DIR/BOID_CONFIG_DIR/
+# BOID_RUNTIME_DIR is, by construction, already a real path on the host.
+#   - BOID_DATA_DIR -> the SQLite DB, runtimes/, workspace homes/, kits/,
+#     the per-daemon mTLS CA (tls/), install_id, and web_secret. One bind
+#     covers all of it because every one of those already resolves under
+#     this single root — see cmd/start.go's default*Dir/*Path helpers.
+#     Those helpers all resolve relative to $XDG_DATA_HOME (falling back
+#     to $HOME/.local/share) — with the bind mount no longer remapped onto
+#     the image's baked-in `/home/boid` (Major 10), the `environment:`
+#     block below sets XDG_DATA_HOME explicitly to the exact directory
+#     BOID_DATA_DIR was computed under, so those helpers resolve to
+#     BOID_DATA_DIR itself regardless of what $HOME happens to be inside
+#     the container — the "container 内で ${BOID_DATA_DIR} を絶対 path で
+#     扱う" alternative the review offered, applied via the one env var
+#     every default*Dir/*Path helper already keys off, rather than trying
+#     to make the container's $HOME itself match the host's (which would
+#     silently break the moment an operator's host XDG_DATA_HOME diverges
+#     from $HOME/.local/share).
+#   - BOID_CONFIG_DIR -> config.yaml, workspaces/*.yaml, host_commands.yaml
+#     (internal/config.Load, via Go's os.UserConfigDir — same
+#     XDG_CONFIG_HOME-or-$HOME/.config convention, same environment:
+#     override below).
+#   - BOID_RUNTIME_DIR -> the host's own socket runtime dir — this is the
 #     "server socket の host 同一 path bind (相互排他)" requirement (§決定4):
 #     `boid start`'s existing `IsSocketAlive` guard
 #     (internal/daemon/daemon.go) dials a UNIX socket by path, so as long as
@@ -154,6 +184,21 @@ services:
     # build+deploy mechanism this PR's own scope covers.
     environment:
       BOID_DAEMON_CHILD: "1"
+      # XDG_DATA_HOME / XDG_CONFIG_HOME (Major 10, PR6 codex review): make
+      # cmd/start.go's default*Dir/*Path helpers (data side, via
+      # os.UserHomeDir()-or-XDG_DATA_HOME) and internal/config.Load
+      # (config side, via Go's os.UserConfigDir()) resolve to
+      # BOID_DATA_DIR/BOID_CONFIG_DIR THEMSELVES — the exact directories
+      # the volumes: entries below now bind source == target — regardless
+      # of the image's baked-in $HOME (/home/boid). Set to the PARENT of
+      # BOID_DATA_DIR/BOID_CONFIG_DIR (both end in a literal `/boid`
+      # segment the default*Dir/*Path helpers and os.UserConfigDir()
+      # append themselves), computed by scripts/deploy-container.sh
+      # alongside BOID_DATA_DIR/BOID_CONFIG_DIR so both stay in sync by
+      # construction rather than needing independent values kept manually
+      # consistent.
+      XDG_DATA_HOME: "${XDG_DATA_HOME}"
+      XDG_CONFIG_HOME: "${XDG_CONFIG_HOME}"
     # HostConfig.Init (docker-init/tini as PID 1, owning zombie reap — §決定3)
     # — compose's `init:` maps directly onto it.
     init: true
@@ -191,8 +236,12 @@ services:
       # `/var/run/docker.sock` host path resolves correctly under both
       # docker and podman-as-docker-compat hosts.
       - /var/run/docker.sock:/var/run/docker.sock
-      - ${BOID_DATA_DIR}:/home/boid/.local/share/boid
-      - ${BOID_CONFIG_DIR}:/home/boid/.config/boid
+      # source == target for all three (Major 10, PR6 codex review — see
+      # this file's own "Persistence" header comment for why a DooD sibling
+      # container's mount Source must be a real host path, not a
+      # container-internal remap).
+      - ${BOID_DATA_DIR}:${BOID_DATA_DIR}
+      - ${BOID_CONFIG_DIR}:${BOID_CONFIG_DIR}
       - ${BOID_RUNTIME_DIR}:${BOID_RUNTIME_DIR}
     networks:
       # boid-dockerproxy: the DNS name a container-backend job's

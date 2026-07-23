@@ -56,12 +56,25 @@ else
 fi
 echo "deploy-container: using engine=$ENGINE"
 
-# --- compute the three required compose env vars ----------------------------
+# --- compute the required compose env vars -----------------------------
 # Mirrors cmd/start.go's default*Dir/*Path XDG-or-fallback convention exactly
 # (see build/container/.env.example's own comments on why this is computed
 # in bash rather than left to compose's own interpolation).
-: "${BOID_DATA_DIR:=${XDG_DATA_HOME:-$HOME/.local/share}/boid}"
-: "${BOID_CONFIG_DIR:=${XDG_CONFIG_HOME:-$HOME/.config}/boid}"
+#
+# XDG_DATA_HOME/XDG_CONFIG_HOME are resolved FIRST, and BOID_DATA_DIR/
+# BOID_CONFIG_DIR are always derived from them — not independently
+# overridable (Major 10, PR6 codex review): compose.yml's `environment:`
+# block passes these same XDG_DATA_HOME/XDG_CONFIG_HOME values into the
+# container so cmd/start.go's own default*Dir/*Path helpers (and Go's
+# os.UserConfigDir()) resolve to exactly where the bind mount's source
+# (== target, also Major 10) actually is. Overriding BOID_DATA_DIR alone,
+# independently of XDG_DATA_HOME, would desync the bind-mount source from
+# what the daemon resolves internally — set XDG_DATA_HOME/XDG_CONFIG_HOME
+# instead for a non-default layout.
+: "${XDG_DATA_HOME:=$HOME/.local/share}"
+: "${XDG_CONFIG_HOME:=$HOME/.config}"
+BOID_DATA_DIR="$XDG_DATA_HOME/boid"
+BOID_CONFIG_DIR="$XDG_CONFIG_HOME/boid"
 : "${BOID_RUNTIME_DIR:=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}}"
 : "${BOID_UID:=$(id -u)}"
 : "${BOID_GID:=$(id -g)}"
@@ -80,7 +93,7 @@ echo "deploy-container: using engine=$ENGINE"
 # package default.
 : "${DOCKER_GID:=$(getent group docker 2>/dev/null | cut -d: -f3)}"
 : "${DOCKER_GID:=999}"
-export BOID_DATA_DIR BOID_CONFIG_DIR BOID_RUNTIME_DIR BOID_UID BOID_GID DOCKER_GID
+export BOID_DATA_DIR BOID_CONFIG_DIR BOID_RUNTIME_DIR BOID_UID BOID_GID DOCKER_GID XDG_DATA_HOME XDG_CONFIG_HOME
 
 IMAGE_TAG="boid:$(git -C "$ROOT_DIR" rev-parse HEAD)"
 

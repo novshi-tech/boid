@@ -26,8 +26,9 @@ type composeDoc struct {
 		Networks map[string]struct {
 			Aliases []string `yaml:"aliases"`
 		} `yaml:"networks"`
-		GroupAdd []string `yaml:"group_add"`
-		Volumes  []string `yaml:"volumes"`
+		GroupAdd    []string          `yaml:"group_add"`
+		Volumes     []string          `yaml:"volumes"`
+		Environment map[string]string `yaml:"environment"`
 	} `yaml:"services"`
 }
 
@@ -94,4 +95,54 @@ func TestComposeDaemonHasDockerGroupAdd(t *testing.T) {
 		}
 	}
 	t.Errorf(`daemon service group_add = %v, want an entry referencing ${DOCKER_GID:-...}`, daemon.GroupAdd)
+}
+
+// TestComposeDaemonDataAndConfigVolumesSourceEqualsTarget pins Major 10
+// (PR6 codex review): BOID_DATA_DIR/BOID_CONFIG_DIR must bind mount
+// source == target, not remap onto some container-internal path — see
+// compose.yml's own "Persistence" header comment for why (a DooD sibling
+// container's mount Source must be a path the HOST filesystem actually
+// has; a daemon-internal remap silently breaks the moment this daemon
+// constructs a mount from an absolute path it computed itself).
+func TestComposeDaemonDataAndConfigVolumesSourceEqualsTarget(t *testing.T) {
+	doc := loadComposeDoc(t)
+
+	daemon, ok := doc.Services["daemon"]
+	if !ok {
+		t.Fatal(`compose.yml has no "daemon" service`)
+	}
+
+	for _, want := range []string{"${BOID_DATA_DIR}", "${BOID_CONFIG_DIR}"} {
+		wantEntry := want + ":" + want
+		found := false
+		for _, v := range daemon.Volumes {
+			if v == wantEntry {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("daemon volumes = %v, want %q present (source == target)", daemon.Volumes, wantEntry)
+		}
+	}
+}
+
+// TestComposeDaemonHasXDGEnv pins the other half of Major 10: cmd/
+// start.go's default*Dir/*Path helpers and Go's os.UserConfigDir() must
+// resolve to the exact bind-mounted BOID_DATA_DIR/BOID_CONFIG_DIR
+// (source == target above) rather than the image's own baked-in $HOME —
+// achieved by passing XDG_DATA_HOME/XDG_CONFIG_HOME into the container
+// explicitly.
+func TestComposeDaemonHasXDGEnv(t *testing.T) {
+	doc := loadComposeDoc(t)
+
+	daemon, ok := doc.Services["daemon"]
+	if !ok {
+		t.Fatal(`compose.yml has no "daemon" service`)
+	}
+	for _, key := range []string{"XDG_DATA_HOME", "XDG_CONFIG_HOME"} {
+		if _, ok := daemon.Environment[key]; !ok {
+			t.Errorf("daemon environment = %v, want %q present", daemon.Environment, key)
+		}
+	}
 }
