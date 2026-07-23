@@ -9,6 +9,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -21,6 +22,7 @@ import (
 	"github.com/moby/moby/client"
 	"golang.org/x/sys/unix"
 
+	"github.com/novshi-tech/boid/internal/mtls"
 	"github.com/novshi-tech/boid/internal/sandbox"
 	"github.com/novshi-tech/boid/internal/sandbox/backend"
 	"github.com/novshi-tech/boid/internal/sandbox/realization"
@@ -51,6 +53,12 @@ type containerBackend struct {
 	pullPolicy   ImagePullPolicy
 	uid, gid     int
 	installID    string
+	// dockerTLSCA / dockerProxyAddr implement §決定5's per-job dockerproxy
+	// client cert delivery — see ContainerBackendOptions.DockerTLSCA's doc
+	// comment. dockerTLSCA nil (every pre-this-feature caller) disables the
+	// whole feature: Launch neither issues a cert nor adds any DOCKER_* env.
+	dockerTLSCA     *mtls.CA
+	dockerProxyAddr string
 	// diagnosticsCollector, when non-nil, is invoked once a container has
 	// exited — after Wait's fan-out has resolved and the attach stream has
 	// fully drained (Major 3) — but strictly before the container is
@@ -131,6 +139,26 @@ type ContainerBackendOptions struct {
 	// production wiring); ContainerRemove is unconditionally sequenced
 	// after it returns so a future collector can never lose its window.
 	DiagnosticsCollector func(ctx context.Context, containerID string, exit backend.RuntimeExit)
+
+	// DockerTLSCA, when non-nil, is the mTLS CA (internal/mtls.CA) Launch
+	// uses to issue a short-lived per-job client certificate for any spec
+	// launched with LaunchOptions.DockerEnabled — §決定5's "per-job 短命
+	// client cert (mTLS) を... env で配送" (the plan's chosen delivery style;
+	// a URL-path-embedded token was ruled out because DOCKER_HOST cannot
+	// carry a path). nil (every pre-PR6 caller) disables this entirely: no
+	// cert is issued, no DOCKER_* env is added, no bind mount is created —
+	// byte-for-byte the same Launch behavior as before this field existed.
+	// Real production wiring of a daemon-owned CA into this field, and of a
+	// compose-reachable dockerproxy TCP listener behind DockerProxyAddr, is
+	// PR6-residual/PR7 territory (see build/container/compose.yml's own
+	// "NOT yet true of this file" note) — this option exists so the
+	// materialize-cert / mount / env-delivery mechanics are real and
+	// unit-tested ahead of that wiring landing.
+	DockerTLSCA *mtls.CA
+	// DockerProxyAddr is the compose-network `host:port` (typically a
+	// compose service DNS name) job containers' DOCKER_HOST env should
+	// point at. Ignored when DockerTLSCA is nil.
+	DockerProxyAddr string
 }
 
 const (
@@ -168,6 +196,18 @@ const (
 	// JSON itself, read back by RunContainer, exactly like the userns path).
 	containerSpecPath  = "/run/boid/spec.json"
 	containerStatePath = "/run/boid/state.json"
+
+	// containerDockerTLSDir is the fixed container-internal path a per-job
+	// dockerproxy client cert (§決定5) is bind-mounted at, and the value the
+	// job's DOCKER_CERT_PATH env is set to. docker CLI's own
+	// DOCKER_CERT_PATH convention expects exactly cert.pem/key.pem/ca.pem
+	// under this directory (dockerCertFileName / dockerKeyFileName /
+	// dockerCAFileName below).
+	containerDockerTLSDir = "/run/boid/docker-tls"
+
+	dockerCertFileName = "cert.pem"
+	dockerKeyFileName  = "key.pem"
+	dockerCAFileName   = "ca.pem"
 
 	// Resource labels (§決定 6/9): boid.job_id + boid.workspace are always
 	// set; boid.install_id is set whenever ContainerBackendOptions.InstallID
@@ -221,6 +261,8 @@ func NewContainerBackend(api dockerAPI, opts ContainerBackendOptions) backend.Sa
 		pullPolicy:           opts.PullPolicy,
 		installID:            opts.InstallID,
 		diagnosticsCollector: opts.DiagnosticsCollector,
+		dockerTLSCA:          opts.DockerTLSCA,
+		dockerProxyAddr:      opts.DockerProxyAddr,
 		sessions:             make(map[string]*containerSession),
 	}
 	if b.defaultImage == "" {
@@ -305,9 +347,17 @@ func (b *containerBackend) Launch(ctx context.Context, spec sandbox.Spec, opts b
 	if err != nil {
 		return nil, fmt.Errorf("write container sandbox spec: %w", err)
 	}
+	// dockerTLSDir is set below (only when opts.DockerEnabled && b.dockerTLSCA
+	// != nil) but declared here so cleanupFiles's closure sees whichever
+	// value it ends up with, even on an early return before it is set (the
+	// zero value "" makes the RemoveAll a no-op).
+	var dockerTLSDir string
 	cleanupFiles := func() {
 		_ = os.Remove(specPath)
 		_ = os.Remove(statePath)
+		if dockerTLSDir != "" {
+			_ = os.RemoveAll(dockerTLSDir)
+		}
 	}
 
 	realized, err := realization.Realize(spec)
@@ -344,6 +394,25 @@ func (b *containerBackend) Launch(ctx context.Context, spec sandbox.Spec, opts b
 		mount.Mount{Type: mount.TypeBind, Source: statePath, Target: containerStatePath},
 	)
 
+	// Per-job dockerproxy client cert delivery (§決定5): only when the job
+	// declared docker capabilities AND this backend was configured with a
+	// CA to issue from (ContainerBackendOptions.DockerTLSCA — nil for
+	// every caller before this feature, and still nil in production as of
+	// PR6, see its doc comment). env starts as realized.Env unmodified in
+	// the disabled case (the overwhelmingly common path today) — no copy,
+	// no behavior change.
+	env := realized.Env
+	if opts.DockerEnabled && b.dockerTLSCA != nil {
+		dir, derr := b.materializeDockerClientCert(opts.JobID)
+		if derr != nil {
+			cleanupFiles()
+			return nil, derr
+		}
+		dockerTLSDir = dir
+		mounts = append(mounts, mount.Mount{Type: mount.TypeBind, Source: dir, Target: containerDockerTLSDir, ReadOnly: true})
+		env = withDockerTLSEnv(env, b.dockerProxyAddr)
+	}
+
 	initTrue := true
 	pidsLimit := defaultPidsLimit
 	hostCfg := &container.HostConfig{
@@ -362,7 +431,7 @@ func (b *containerBackend) Launch(ctx context.Context, spec sandbox.Spec, opts b
 		// runner-outer/-inner/-inner-child chain reads it back from disk
 		// rather than from its own argv.
 		Cmd:          []string{"--spec", containerSpecPath, "--state", containerStatePath},
-		Env:          envSlice(realized.Env),
+		Env:          envSlice(env),
 		WorkingDir:   realized.Workdir,
 		Tty:          realized.TTY,
 		OpenStdin:    true,
@@ -383,7 +452,7 @@ func (b *containerBackend) Launch(ctx context.Context, spec sandbox.Spec, opts b
 		return nil, fmt.Errorf("container create: %w", err)
 	}
 
-	sess := newContainerSession(b, createRes.ID, realized.TTY, specPath)
+	sess := newContainerSession(b, createRes.ID, realized.TTY, specPath, dockerTLSDir)
 	if err := sess.attach(ctx, false); err != nil {
 		_, _ = b.api.ContainerRemove(context.Background(), createRes.ID, client.ContainerRemoveOptions{Force: true})
 		cleanupFiles()
@@ -498,7 +567,7 @@ func (b *containerBackend) doAdopt(ctx context.Context, runtimeID string) *conta
 	}
 
 	tty := insp.Container.Config != nil && insp.Container.Config.Tty
-	sess := newContainerSession(b, runtimeID, tty, "")
+	sess := newContainerSession(b, runtimeID, tty, "", "")
 	if err := sess.attach(ctx, true); err != nil {
 		slog.Warn("container backend: adopt attach failed; session will support signal/stop/wait only",
 			"container_id", runtimeID, "error", err)
@@ -836,6 +905,68 @@ func containerName(jobID string) string {
 	return "boid-job-" + jobID
 }
 
+// materializeDockerClientCert issues a fresh per-job dockerproxy client
+// certificate from b.dockerTLSCA and writes the cert/key/ca PEM trio to a
+// host temp directory, in the exact file-name layout docker's own
+// DOCKER_CERT_PATH convention expects (cert.pem/key.pem/ca.pem — §決定5).
+// The caller bind-mounts the returned directory read-only into the
+// container at containerDockerTLSDir; containerSession.waitLoop removes it
+// once the container exits (mirroring specPath's own always-cleaned-up
+// retention contract — see containerSession.dockerTLSDir's doc comment).
+func (b *containerBackend) materializeDockerClientCert(jobID string) (dir string, err error) {
+	leaf, err := b.dockerTLSCA.IssueClientCert("job-" + jobID)
+	if err != nil {
+		return "", fmt.Errorf("issue docker client cert: %w", err)
+	}
+	certPEM, keyPEM, err := mtls.EncodeCertPEM(leaf)
+	if err != nil {
+		return "", fmt.Errorf("encode docker client cert: %w", err)
+	}
+
+	dir, err = os.MkdirTemp("", "boid-"+jobID+"-docker-tls-")
+	if err != nil {
+		return "", fmt.Errorf("create docker tls cert dir: %w", err)
+	}
+
+	files := map[string][]byte{
+		dockerCertFileName: certPEM,
+		dockerKeyFileName:  keyPEM,
+		dockerCAFileName:   b.dockerTLSCA.CertPEM(),
+	}
+	for name, data := range files {
+		// 0600: the private key lives in this same directory (docker's
+		// convention keeps all three files together) — no reason for any
+		// of the three to be broader than the key needs.
+		if werr := os.WriteFile(filepath.Join(dir, name), data, 0o600); werr != nil {
+			_ = os.RemoveAll(dir)
+			return "", fmt.Errorf("write %s: %w", name, werr)
+		}
+	}
+	return dir, nil
+}
+
+// withDockerTLSEnv returns a copy of env with the three DOCKER_* variables
+// a docker client (CLI, SDK, TestContainers, ...) reads to select and
+// authenticate an mTLS-secured DOCKER_HOST added — DOCKER_HOST pointing at
+// the compose-network dockerproxy address, DOCKER_CERT_PATH at the
+// bind-mounted per-job cert directory (containerDockerTLSDir),
+// DOCKER_TLS_VERIFY enabling mTLS. Always overrides any pre-existing
+// values for these three specific keys (daemon-controlled, not
+// spec-controlled) rather than only filling gaps — a job cannot opt out of
+// or redirect its own docker mTLS identity via its own Env. Every other
+// key in env is carried through unchanged; env itself is never mutated
+// (Launch's realized.Env may be reused elsewhere).
+func withDockerTLSEnv(env map[string]string, proxyAddr string) map[string]string {
+	out := make(map[string]string, len(env)+3)
+	for k, v := range env {
+		out[k] = v
+	}
+	out["DOCKER_HOST"] = "tcp://" + proxyAddr
+	out["DOCKER_CERT_PATH"] = containerDockerTLSDir
+	out["DOCKER_TLS_VERIFY"] = "1"
+	return out
+}
+
 // containerSession implements backend.SandboxSession over a single docker
 // container: one docker-attach connection feeding an in-memory transcript
 // buffer + multi-subscriber fan-out (§決定 8/9's "1 attach 所有者 + memory
@@ -866,6 +997,12 @@ type containerSession struct {
 	// sessions, which never wrote one (mirrors usernsSession.prepared being
 	// nil for Adopt — see sessionLocalArtifacts's doc comment).
 	specPath string
+	// dockerTLSDir is the per-job cert directory materializeDockerClientCert
+	// wrote (§決定5), removed alongside specPath once the container exits.
+	// Empty whenever LaunchOptions.DockerEnabled was false or no
+	// ContainerBackendOptions.DockerTLSCA was configured — the overwhelming
+	// majority of sessions today.
+	dockerTLSDir string
 
 	connMu         sync.Mutex
 	hijack         *client.HijackedResponse
@@ -884,17 +1021,18 @@ type containerSession struct {
 
 var _ backend.SandboxSession = (*containerSession)(nil)
 
-func newContainerSession(b *containerBackend, id string, tty bool, specPath string) *containerSession {
+func newContainerSession(b *containerBackend, id string, tty bool, specPath, dockerTLSDir string) *containerSession {
 	return &containerSession{
-		backend:     b,
-		id:          id,
-		api:         b.api,
-		tty:         tty,
-		specPath:    specPath,
-		subscribers: make(map[int]chan []byte),
-		running:     true,
-		done:        make(chan struct{}),
-		readDone:    make(chan struct{}),
+		backend:      b,
+		id:           id,
+		api:          b.api,
+		tty:          tty,
+		specPath:     specPath,
+		dockerTLSDir: dockerTLSDir,
+		subscribers:  make(map[int]chan []byte),
+		running:      true,
+		done:         make(chan struct{}),
+		readDone:     make(chan struct{}),
 	}
 }
 
@@ -1190,6 +1328,9 @@ func (s *containerSession) waitLoop() {
 	}
 	if s.specPath != "" {
 		_ = os.Remove(s.specPath)
+	}
+	if s.dockerTLSDir != "" {
+		_ = os.RemoveAll(s.dockerTLSDir)
 	}
 }
 
