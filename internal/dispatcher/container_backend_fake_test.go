@@ -308,17 +308,6 @@ func (c *fakeAttachConn) CloseWrite() error {
 	return nil
 }
 
-func (c *fakeAttachConn) closeWriteCount() int { return int(atomic.LoadInt32(&c.closeWrites)) }
-
-func (c *fakeAttachConn) recordedWrites() [][]byte {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return append([][]byte(nil), c.writes...)
-}
-
-// feed writes raw bytes into the connection's read side (TTY-mode stream).
-func (c *fakeAttachConn) feed(p []byte) { _, _ = c.outW.Write(p) }
-
 // feedFrame writes one docker multiplexed-stream frame (non-TTY mode):
 // 8-byte header (stream type + big-endian uint32 length) followed by the
 // payload — the same shape demuxDockerFrame parses.
