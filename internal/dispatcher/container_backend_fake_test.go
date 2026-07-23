@@ -50,18 +50,18 @@ type fakeDockerAPI struct {
 
 	nextID int
 
-	createCalls      []client.ContainerCreateOptions
-	startIDs         []string
-	attachCalls      []client.ContainerAttachOptions
-	attachIDs        []string
-	waitIDs          []string
-	killCalls        []client.ContainerKillOptions
-	killIDs          []string
-	stopIDs          []string
-	resizeCalls      []client.ContainerResizeOptions
-	removeIDs        []string
-	pullRefs         []string
-	listFilters      []client.Filters
+	createCalls       []client.ContainerCreateOptions
+	startIDs          []string
+	attachCalls       []client.ContainerAttachOptions
+	attachIDs         []string
+	waitIDs           []string
+	killCalls         []client.ContainerKillOptions
+	killIDs           []string
+	stopIDs           []string
+	resizeCalls       []client.ContainerResizeOptions
+	removeIDs         []string
+	pullRefs          []string
+	listFilters       []client.Filters
 	inspectIDs        []string
 	imageInspectRefs  []string
 	volumeCreateCalls []client.VolumeCreateOptions
