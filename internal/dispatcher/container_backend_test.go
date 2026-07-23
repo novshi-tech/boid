@@ -133,6 +133,63 @@ func TestContainerBackend_Launch_MountSourceKindMapping(t *testing.T) {
 	}
 }
 
+// TestContainerBackend_Launch_WorkingDirNeverTargetsUncreatedCloneSubdir
+// pins the PR9 e2e-container CI fix: docker's own `--workdir` (Config.
+// WorkingDir) must never be set to the per-project clone TARGET
+// subdirectory itself ("/workspace/<name>") — only the always-present,
+// always-correctly-owned parent ("/workspace", sandboxCloneTargetDir) is
+// baked into the image at build time (build/container/Dockerfile). A
+// not-yet-existing WorkingDir is auto-created by docker as root before the
+// entrypoint process's --user takes effect (the same gotcha the Dockerfile
+// itself documents for its own build-time WORKDIR instruction), which left
+// the per-project leaf owned by root and unwritable by the job uid — the
+// real-docker e2e-container CI job's "git clone ... /.git: Permission
+// denied" failure.
+func TestContainerBackend_Launch_WorkingDirNeverTargetsUncreatedCloneSubdir(t *testing.T) {
+	tests := []struct {
+		name    string
+		workDir string
+		want    string
+	}{
+		{
+			name:    "clone target subdir rewritten to workspace parent",
+			workDir: "/workspace/myproject",
+			want:    "/workspace",
+		},
+		{
+			name:    "bare workspace root left unchanged",
+			workDir: "/workspace",
+			want:    "/workspace",
+		},
+		{
+			name:    "non-workspace workdir (e.g. home dir) left unchanged",
+			workDir: "/home/boid",
+			want:    "/home/boid",
+		},
+		{
+			name:    "empty workdir left unchanged",
+			workDir: "",
+			want:    "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			api := &fakeDockerAPI{}
+			be := NewContainerBackend(api, ContainerBackendOptions{})
+
+			mustLaunch(t, be, sandbox.Spec{ID: "job-workdir", Argv: []string{"true"}, WorkDir: tt.workDir}, backend.LaunchOptions{JobID: "job-workdir"})
+
+			if len(api.createCalls) != 1 {
+				t.Fatalf("ContainerCreate calls = %d, want 1", len(api.createCalls))
+			}
+			if got := api.createCalls[0].Config.WorkingDir; got != tt.want {
+				t.Errorf("Config.WorkingDir = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestContainerBackend_Launch_UserFlagAndPasswdEntry(t *testing.T) {
 	api := &fakeDockerAPI{}
 	be := NewContainerBackend(api, ContainerBackendOptions{UID: intPtr(1000), GID: intPtr(1000)})

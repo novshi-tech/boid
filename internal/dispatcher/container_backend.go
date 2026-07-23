@@ -711,6 +711,57 @@ func (b *containerBackend) Launch(ctx context.Context, spec sandbox.Spec, opts b
 	}
 	hostCfg.Resources.PidsLimit = &pidsLimit
 
+	// dockerCreateWorkingDir (PR9 e2e-container fix): realized.Workdir is
+	// spec.WorkDir carried through unchanged — for a clone-visibility job
+	// this is the per-project clone TARGET subdirectory itself
+	// (sandbox_builder.go's resolveWorkDir/sandboxCloneDir, e.g.
+	// "/workspace/myproject"), which is a MountSourceContainerLocal target
+	// (realization.go's classifySource): §決定 4 deliberately leaves it
+	// unmounted so the clone step creates it fresh inside the container.
+	// Only the PARENT ("/workspace", sandboxCloneTargetDir) is baked into
+	// the image and chowned to the job uid at build time
+	// (build/container/Dockerfile) — the per-project leaf does not exist
+	// yet when this ContainerCreate call is made.
+	//
+	// Passing that not-yet-existing leaf straight through as docker's own
+	// `--workdir` hits the exact "missing WORKDIR is created as root,
+	// bypassing --user" gotcha this repo's own Dockerfile already
+	// documents for its build-time WORKDIR instruction (see that file's
+	// comment directly above its `RUN mkdir -p /workspace && chown ...`
+	// line) — except here at container-CREATE time: dockerd/runc
+	// auto-mkdir's the missing directory as root before the entrypoint
+	// process (running as b.uid:b.gid) ever execs, leaving it owned by
+	// root with no write access for the job uid. `boid runner-container`'s
+	// own clone step (clone.go's performCloneSteps) then fails creating
+	// `.git` inside that already-existing, wrongly-owned directory with
+	// "permission denied" — reproducibly, on every clone-visibility job,
+	// on any host whose docker actually implements this auto-create
+	// behavior (confirmed via the e2e-container CI job on ubuntu-24.04's
+	// real docker engine; podman instead refuses to start the container at
+	// all with "workdir ... does not exist", a different failure mode that
+	// masked this on the podman-only dev host — see CLAUDE.md's own note
+	// on host docker availability).
+	//
+	// Rewriting to the always-present, always-correctly-owned parent here
+	// is safe: nothing in the container backend's own runtime depends on
+	// the container's OS-level starting cwd matching the clone target.
+	// RunContainer (runner_container_linux.go) never calls os.Getwd() —
+	// every step that needs the real working directory threads
+	// realized.Workdir/spec.WorkDir through explicitly as an absolute path
+	// instead (clone.go's cs.TargetDir, runner.go's runAgent ->
+	// adapters.RunContext.Workspace -> every harness adapter's own
+	// `cmd.Dir = rc.Workspace`). So starting the container's own cwd at
+	// sandboxCloneTargetDir instead of the not-yet-existing per-project
+	// leaf changes nothing boid's own logic observes, and the leaf
+	// directory ends up created fresh by the clone step itself — running
+	// as the correct (already-matching) job uid — exactly as
+	// realization.MountSourceContainerLocal's own doc comment intends
+	// ("either it is created fresh inside the container").
+	dockerCreateWorkingDir := realized.Workdir
+	if dockerCreateWorkingDir == sandboxCloneTargetDir || strings.HasPrefix(dockerCreateWorkingDir, sandboxCloneTargetDir+"/") {
+		dockerCreateWorkingDir = sandboxCloneTargetDir
+	}
+
 	cfg := &container.Config{
 		Image: image,
 		// The entrypoint (build/container/Dockerfile's ENTRYPOINT) is
@@ -722,7 +773,7 @@ func (b *containerBackend) Launch(ctx context.Context, spec sandbox.Spec, opts b
 		// rather than from its own argv.
 		Cmd:          []string{"--spec", containerSpecPath, "--state", containerStatePath},
 		Env:          envSlice(env),
-		WorkingDir:   realized.Workdir,
+		WorkingDir:   dockerCreateWorkingDir,
 		Tty:          realized.TTY,
 		OpenStdin:    true,
 		AttachStdin:  true,
