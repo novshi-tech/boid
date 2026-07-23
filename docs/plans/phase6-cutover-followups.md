@@ -89,9 +89,11 @@ client identity binding を維持 — gateway の server-only 降格とは異な
   で配送 (`internal/dispatcher/container_backend.go`)。
 - sandbox 側 broker client (`internal/sandbox/brokerclient`) に `SendJSONTLS`/`SendJSONFromEnv`/
   `DialFromEnv` を追加、 UNIX/TLS を env から自動選択 (shim の streaming host-command exec 経路も含む)。
-- `e2e/run-container.sh` に workspace C (`verify-broker-tls.sh`) を追加し `boid task update
-  --payload-patch` の job → broker → daemon RPC 往復と broker listener の非 loopback bind を pin。
-  `e2e-container` job の `continue-on-error` は `false` に昇格。
+- `e2e/run-container.sh` に workspace C (`verify-broker-tls.sh`、task A/B より先に dispatch) を追加し
+  `boid task update --payload-patch` の job → broker → daemon RPC 往復と broker listener の非 loopback
+  bind を pin。 CI (#825) で実際に green を確認済み。 `e2e-container` job の `continue-on-error` は
+  **`true` のまま据え置き** — 昇格させようとしたところ §⓪ とは別の pre-existing バグ (下記 ⓪-b) が
+  CI で顕在化したため。
 
 CA lifecycle 上の副産物: 従来 `Server.Start` 内で都度 load していた daemon CA を `Server.New`
 (buildRuntime 呼び出し前) に前倒しし `Server.daemonCA` として保持 — container backend の
@@ -123,6 +125,32 @@ client cert を発行する、 の 2 択は着手時に判断。
 **前提条件**: これが埋まるまで `sandbox.backend: container` の実 opt-in を production で有効化してはならない
 (container job が broker RPC できない → payload_patch 経路が壊れる)。 `docs/plans/phase6-container-backend.md`
 §PR7 の「cutover gate」 (container e2e green + rollback rehearsal) も、 実質的にはこの gap 完了までは満たされない。
+
+## ⓪-b cross-workspace 分離の egress proxy relay 漏れ (新規発見、未修正)
+
+`feat/phase6-broker-tcp-wire` PR (#825) で `e2e-container` job を `continue-on-error: false` へ昇格
+しようとした際に CI で発覚。 §⓪ (broker TCP wire) とは無関係の別バグ — `main` HEAD (f00f1ce) の時点で
+既に再現する (この PR が壊したものではない)。 `continue-on-error` は暫定的に `true` のまま据え置き。
+
+**症状**: `e2e/run-container.sh` の requirement 2 (「job → 別 workspace の sibling は到達不可」) が
+期待する接続失敗 (`probe_http` の `000`) ではなく `HTTP 403` を返す。
+
+**根本原因 (推定)**: daemon container は egress proxy を in-process でホストしつつ、 gateway/egress 到達性
+のため dispatch のたびに「その job の workspace」の isolated docker network へ self-connect する
+(§決定5)。 複数 workspace の job が並行 dispatch されると、 daemon container は複数 workspace の
+network に同時に参加した状態になる。 job 内で bare hostname (ドット無し) の `http://` request
+(`http://sib-b:8080/`) を投げると `HTTP_PROXY` (no_proxy に含まれないため) 経由で daemon 内蔵の
+egress proxy に転送され、 その proxy は自分が同時参加している「別 workspace」の network 越しに
+`sib-b` を実際に名前解決できてしまう。 到達自体は成立しているが、 `sib-b` が workspace A の
+`allowed_domains` に無いため application 層の allowlist chek で 403 拒否される — 「到達不可」ではな
+く「到達はするが許可されない」で偶然テストの意図に近い結果になっているだけで、 ネットワーク層の分離
+保証としては疑わしい (allowed_domains の設定次第では越境到達し得る)。
+
+**対応方針は未決定**: (a) テストの assertion を「000 または 403 を許容」に緩める (isolation の意味を
+「到達不可」から「到達しても中身は見えない」に再定義する判断が要る)、 (b) egress proxy 側で
+bare hostname (ドット無し) を最初から proxy 対象外にする (no_proxy を動的に拡張する、 または
+「ドット無しホスト名は直接接続にフォールバックする」規約を導入)、 (c) daemon の workspace self-connect
+を「必要な job の期間だけ」に絞り常時マルチ workspace 接続状態を作らない、 のいずれか。 着手時に選ぶ。
 
 ## ① dogfood 期間の並走
 

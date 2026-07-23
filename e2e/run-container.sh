@@ -609,6 +609,45 @@ wait_for_done() {
   done
 }
 
+# --- broker TCP wire completion (docs/plans/phase6-cutover-followups.md
+# §⓪) — dispatched FIRST, before task A/B's own docker-sibling dance:
+# this pins a DIFFERENT, INDEPENDENT gap (broker RPC reachability, workspace
+# C, no capabilities.docker at all) that has no dependency on the sibling
+# containers task A/B set up below, so it must not be blocked by (or block
+# on) that separate machinery — see this block's own placement history in
+# git log if task A/B's own requirement 2 ever regresses again: running
+# this check first keeps it validated independently either way.
+e2e_log "dispatching verify-broker-tls (workspace C)"
+task_c_out="$(create_task container-e2e-ws-c "verify broker TLS RPC" verify)"
+printf '%s\n' "$task_c_out"
+task_c_id="$(printf '%s\n' "$task_c_out" | parse_task_id)"
+[[ -n "$task_c_id" ]] || e2e_fail "failed to parse task C id from: $task_c_out"
+e2e_run "$BUILD_DIR/boid" action send --task "$task_c_id" --type start
+wait_for_done "$task_c_id" "$ROOT/task_c.json"
+
+task_c_json="$(cat "$ROOT/task_c.json")"
+e2e_assert_contains "$task_c_json" '"status":"done"'
+e2e_assert_contains "$task_c_json" '"result":"pass"'
+e2e_assert_contains "$task_c_json" '"broker_transport":"tls"'
+e2e_log "broker TCP wire (job -> broker -> daemon RPC over TLS) OK"
+
+# Belt-and-suspenders structural pin alongside the functional one above:
+# the broker's own TLS listener must be logged as NOT loopback-only — a
+# sibling job container reaching it at all (which task C's own success
+# above already proves) is only possible because of this bind-address
+# change (docs/plans/phase6-cutover-followups.md §⓪'s first scope item);
+# checking the daemon's own boid.log for the literal bound address it
+# logged at Start (internal/server/server.go's `slog.Info("broker tls
+# listener started", "addr", addr)`) confirms the LISTENER itself, not
+# just "some route happened to work".
+daemon_log="$XDG_RUNTIME_DIR/boid/boid.log"
+broker_tls_log_line="$(grep 'broker tls listener started' "$daemon_log" | tail -1 || true)"
+[[ -n "$broker_tls_log_line" ]] || e2e_fail "boid.log has no 'broker tls listener started' line — the broker's TCP(mTLS) listener never bound at all"
+e2e_log "broker tls listener log line: ${broker_tls_log_line}"
+if printf '%s' "$broker_tls_log_line" | grep -q '127\.0\.0\.1'; then
+  e2e_fail "broker TLS listener bound loopback-only (127.0.0.1) even though sandbox.backend: container is selected — gatewayBindHost wiring regressed"
+fi
+
 e2e_log "dispatching setup-sibling (workspace B) in the background"
 task_b_out="$(create_task container-e2e-ws-b "setup sibling B" setup)"
 printf '%s\n' "$task_b_out"
@@ -640,41 +679,5 @@ e2e_log "requirements 1+2 (sibling reachable / cross-workspace isolated) OK"
 e2e_log "waiting for setup-sibling (workspace B) to finish"
 wait_for_done "$task_b_id" "$ROOT/task_b.json"
 e2e_assert_contains "$(cat "$ROOT/task_b.json")" '"status":"done"'
-
-# --- broker TCP wire completion (docs/plans/phase6-cutover-followups.md
-# §⓪) — dispatched after requirements 1+2 above, not concurrently with
-# them: this pins a DIFFERENT gap (broker RPC reachability) with its own
-# dedicated fixture (workspace C, no capabilities.docker) rather than
-# folding it into task A/B's own docker-sibling-connectivity assertions. --
-e2e_log "dispatching verify-broker-tls (workspace C)"
-task_c_out="$(create_task container-e2e-ws-c "verify broker TLS RPC" verify)"
-printf '%s\n' "$task_c_out"
-task_c_id="$(printf '%s\n' "$task_c_out" | parse_task_id)"
-[[ -n "$task_c_id" ]] || e2e_fail "failed to parse task C id from: $task_c_out"
-e2e_run "$BUILD_DIR/boid" action send --task "$task_c_id" --type start
-wait_for_done "$task_c_id" "$ROOT/task_c.json"
-
-task_c_json="$(cat "$ROOT/task_c.json")"
-e2e_assert_contains "$task_c_json" '"status":"done"'
-e2e_assert_contains "$task_c_json" '"result":"pass"'
-e2e_assert_contains "$task_c_json" '"broker_transport":"tls"'
-e2e_log "broker TCP wire (job -> broker -> daemon RPC over TLS) OK"
-
-# Belt-and-suspenders structural pin alongside the functional one above:
-# the broker's own TLS listener must be logged as NOT loopback-only — a
-# sibling job container reaching it at all (which task C's own success
-# above already proves) is only possible because of this bind-address
-# change (docs/plans/phase6-cutover-followups.md §⓪'s first scope item);
-# checking the daemon's own boid.log for the literal bound address it
-# logged at Start (internal/server/server.go's `slog.Info("broker tls
-# listener started", "addr", addr)`) confirms the LISTENER itself, not
-# just "some route happened to work".
-daemon_log="$XDG_RUNTIME_DIR/boid/boid.log"
-broker_tls_log_line="$(grep 'broker tls listener started' "$daemon_log" | tail -1 || true)"
-[[ -n "$broker_tls_log_line" ]] || e2e_fail "boid.log has no 'broker tls listener started' line — the broker's TCP(mTLS) listener never bound at all"
-e2e_log "broker tls listener log line: ${broker_tls_log_line}"
-if printf '%s' "$broker_tls_log_line" | grep -q '127\.0\.0\.1'; then
-  e2e_fail "broker TLS listener bound loopback-only (127.0.0.1) even though sandbox.backend: container is selected — gatewayBindHost wiring regressed"
-fi
 
 e2e_log "container e2e scenario complete — teardown + requirement 3 verification runs in cleanup"
