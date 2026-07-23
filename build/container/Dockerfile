@@ -75,8 +75,40 @@ ARG BOID_UID
 ARG BOID_GID
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates git \
+    && apt-get install -y --no-install-recommends ca-certificates git curl gpg \
     && rm -rf /var/lib/apt/lists/*
+
+# broker host-command provisioning (docs/plans/phase6-container-backend.md
+# §PR6, §決定4): once the daemon runs in this image (compose deploy, DooD
+# model), the "host" that host_commands resolve against IS this image — a
+# host command the broker execs directly (host_commands.go /
+# ResolveHostCommands, no shim/sandbox involved) has to actually be
+# installed here, not just declared in some project's host_commands.yaml.
+#
+#   - gh (GitHub CLI): installed from GitHub's own apt repo below (Debian's
+#     default repos do not carry it).
+#   - project-local scripts (a host_commands entry with an explicit
+#     project-relative `path:`) are NOT baked in here — §決定4 is explicit
+#     that these "come from the project side", not the image. §決定4 also
+#     forbids baking credentials into the image (secret_store's env
+#     injection / volume-mounted credential files continue to be the only
+#     paths for those, unchanged from the userns backend).
+#   - any other host-provisioned tool (e.g. a hypothetical company-internal
+#     CLI with no public package) is expected to arrive via a host bind
+#     mount over /opt/boid-host-tools rather than an apt/curl install baked
+#     into this shared image — the directory below is the mount point
+#     skeleton only; nothing populates it at build time. The compose
+#     daemon service (build/container/compose.yml) is where a real
+#     deployment would bind-mount such a tool's actual host directory onto
+#     this path and add it to PATH via host_commands.<name>.path.
+RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg -o /usr/share/keyrings/githubcli-archive-keyring.gpg \
+    && chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg \
+    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" > /etc/apt/sources.list.d/github-cli.list \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends gh \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN mkdir -p /opt/boid-host-tools
 
 # The job/daemon uid, matching the host daemon uid (決定 4 — typically
 # 1000:1000). Baking the passwd/group entry at image-build time means every
