@@ -29,6 +29,7 @@ type composeDoc struct {
 		GroupAdd    []string          `yaml:"group_add"`
 		Volumes     []string          `yaml:"volumes"`
 		Environment map[string]string `yaml:"environment"`
+		ExtraHosts  []string          `yaml:"extra_hosts"`
 	} `yaml:"services"`
 }
 
@@ -180,5 +181,101 @@ func TestComposeDaemonHasXDGEnv(t *testing.T) {
 		if _, ok := daemon.Environment[key]; !ok {
 			t.Errorf("daemon environment = %v, want %q present", daemon.Environment, key)
 		}
+	}
+}
+
+// TestComposeDaemonHasXDGRuntimeDirEnv pins the PR9 fix for a real gap the
+// e2e-container job's first real-docker run surfaced: XDG_RUNTIME_DIR was
+// entirely missing from the PR6 skeleton's environment: block, so the
+// daemon's own internal/client.DefaultSocketPath() fallback (`cmd/
+// start.go`'s default when no --socket-path flag is given — exactly what
+// `command: ["start"]` uses) never resolved to the bind-mounted, host-
+// visible BOID_RUNTIME_DIR this compose file otherwise carefully sets up —
+// breaking both the "server socket の host 同一 path bind (相互排他)"
+// contract (§決定4) BOID_RUNTIME_DIR's own header comment describes and
+// every host-side CLI/E2E caller expecting to reach this daemon's socket.
+func TestComposeDaemonHasXDGRuntimeDirEnv(t *testing.T) {
+	doc := loadComposeDoc(t)
+
+	daemon, ok := doc.Services["daemon"]
+	if !ok {
+		t.Fatal(`compose.yml has no "daemon" service`)
+	}
+	got, ok := daemon.Environment["XDG_RUNTIME_DIR"]
+	if !ok {
+		t.Fatalf("daemon environment = %v, want %q present", daemon.Environment, "XDG_RUNTIME_DIR")
+	}
+	if got != "${BOID_RUNTIME_DIR}" {
+		t.Errorf(`daemon environment["XDG_RUNTIME_DIR"] = %q, want "${BOID_RUNTIME_DIR}" (must match the socket bind mount source)`, got)
+	}
+}
+
+// TestComposeDaemonHasHostGatewayExtraHost pins the PR9 addition
+// e2e/run-container.sh's fixture git upstream reachability depends on: the
+// daemon service must resolve "host.docker.internal" to the docker
+// bridge-gateway address (Docker's "host-gateway" extra_hosts special
+// value), the other half of the host<->container reachability trick this
+// e2e job's own /etc/hosts line completes — see compose.yml's own
+// extra_hosts comment for the full rationale.
+func TestComposeDaemonHasHostGatewayExtraHost(t *testing.T) {
+	doc := loadComposeDoc(t)
+
+	daemon, ok := doc.Services["daemon"]
+	if !ok {
+		t.Fatal(`compose.yml has no "daemon" service`)
+	}
+	want := "host.docker.internal:host-gateway"
+	for _, h := range daemon.ExtraHosts {
+		if h == want {
+			return
+		}
+	}
+	t.Errorf("daemon extra_hosts = %v, want %q present", daemon.ExtraHosts, want)
+}
+
+// TestComposeDaemonHasXDGStateHomeEnv pins the PR9 debugging fix: without
+// XDG_STATE_HOME, daemon.LogFilePath() (internal/daemon/daemon.go) resolves
+// boid.log into this container's own ephemeral writable layer, and since
+// runDaemonChild redirects stdin/stdout/stderr to that file as literally
+// its first action, `docker logs` can never show anything for this
+// service — not even a startup crash. Pointing XDG_STATE_HOME at the
+// already-bind-mounted BOID_RUNTIME_DIR makes boid.log land at a
+// host-visible path instead, readable even after the container exits.
+func TestComposeDaemonHasXDGStateHomeEnv(t *testing.T) {
+	doc := loadComposeDoc(t)
+
+	daemon, ok := doc.Services["daemon"]
+	if !ok {
+		t.Fatal(`compose.yml has no "daemon" service`)
+	}
+	got, ok := daemon.Environment["XDG_STATE_HOME"]
+	if !ok {
+		t.Fatalf("daemon environment = %v, want %q present", daemon.Environment, "XDG_STATE_HOME")
+	}
+	if got != "${BOID_RUNTIME_DIR}" {
+		t.Errorf(`daemon environment["XDG_STATE_HOME"] = %q, want "${BOID_RUNTIME_DIR}" (must be a directory already bind-mounted, so no new volume entry is needed)`, got)
+	}
+}
+
+// TestComposeDaemonHasLogStdoutEnv pins the PR9 fix for the actual
+// container startup crash the e2e-container job's debugging trail found
+// (docs/plans/phase6-cutover-followups.md): daemon.RedirectToLogRotating's
+// self-pipe dup2 dance does not survive this container's PID1
+// (docker-init/tini) setup — the daemon reproducibly died (SIGPIPE, exit
+// 141) within ~150ms of starting. BOID_LOG_STDOUT (daemon.
+// ShouldLogToStdout's own doc comment) skips that redirect entirely.
+func TestComposeDaemonHasLogStdoutEnv(t *testing.T) {
+	doc := loadComposeDoc(t)
+
+	daemon, ok := doc.Services["daemon"]
+	if !ok {
+		t.Fatal(`compose.yml has no "daemon" service`)
+	}
+	got, ok := daemon.Environment["BOID_LOG_STDOUT"]
+	if !ok {
+		t.Fatalf("daemon environment = %v, want %q present", daemon.Environment, "BOID_LOG_STDOUT")
+	}
+	if got != "1" {
+		t.Errorf(`daemon environment["BOID_LOG_STDOUT"] = %q, want "1"`, got)
 	}
 }

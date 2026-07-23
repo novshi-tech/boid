@@ -708,6 +708,89 @@ func TestBuildSandboxSpec_CloneEnabled_SkipsProjectVisibilityMounts(t *testing.T
 	}
 }
 
+// TestBuildSandboxSpec_ContainerBackendClone_WritesGatewayCAAndSetsEnv pins
+// the PR9 e2e-container CI fix: a clone-visibility job dispatched against
+// the container backend must get the git gateway's CA cert written into
+// the sandbox (at containerGitGatewayCAPath) and GIT_SSL_CAINFO pointed at
+// it — without this, the sandbox-internal `git clone` against the TLS-
+// secured gateway (https://boid-gateway:<port>) cannot verify the
+// gateway's server certificate ("server certificate verification failed.
+// CAfile: none CRLfile: none", the real-docker e2e-container CI job's
+// exact failure once the earlier client-cert-requirement bug was fixed).
+func TestBuildSandboxSpec_ContainerBackendClone_WritesGatewayCAAndSetsEnv(t *testing.T) {
+	spec := &orchestrator.JobSpec{
+		ProjectID: "proj-1",
+		Argv:      []string{"/bin/true"},
+		Visibility: orchestrator.Visibility{
+			ProjectDir: "/home/user/project",
+			Writable:   true,
+			Clone:      &orchestrator.CloneDeclaration{Branch: "main", BaseBranch: "main", CheckoutOnly: true},
+		},
+	}
+	rt := SandboxRuntimeInfo{
+		JobID:                 "job-1",
+		CloneWorkspaceDir:     "/data/boid/runtimes/job-1/workspace",
+		UsingContainerBackend: true,
+		GatewayCAPEM:          []byte("-----BEGIN CERTIFICATE-----\nfake\n-----END CERTIFICATE-----\n"),
+	}
+	out, err := BuildSandboxSpec(spec, rt)
+	if err != nil {
+		t.Fatalf("BuildSandboxSpec: %v", err)
+	}
+
+	var found bool
+	for _, f := range out.Files {
+		if f.Path == containerGitGatewayCAPath {
+			found = true
+			if f.Content != string(rt.GatewayCAPEM) {
+				t.Errorf("gateway CA file content = %q, want %q", f.Content, string(rt.GatewayCAPEM))
+			}
+		}
+	}
+	if !found {
+		t.Errorf("no spec.Files entry at %q, want the gateway CA cert written there", containerGitGatewayCAPath)
+	}
+	if got, want := out.Env["GIT_SSL_CAINFO"], containerGitGatewayCAPath; got != want {
+		t.Errorf("Env[GIT_SSL_CAINFO] = %q, want %q", got, want)
+	}
+}
+
+// TestBuildSandboxSpec_UsernsBackendClone_OmitsGatewayCA is the companion
+// non-regression pin: the userns backend's gateway URL is plain HTTP (no
+// TLS at all — see SandboxRuntimeInfo.GatewayCAPEM's own doc comment), so
+// BuildSandboxSpec must not write the CA file or set GIT_SSL_CAINFO even
+// when GatewayCAPEM happens to be non-empty (e.g. a daemon with TLSDir
+// configured but sandbox.backend left at its userns default).
+func TestBuildSandboxSpec_UsernsBackendClone_OmitsGatewayCA(t *testing.T) {
+	spec := &orchestrator.JobSpec{
+		ProjectID: "proj-1",
+		Argv:      []string{"/bin/true"},
+		Visibility: orchestrator.Visibility{
+			ProjectDir: "/home/user/project",
+			Writable:   true,
+			Clone:      &orchestrator.CloneDeclaration{Branch: "main", BaseBranch: "main", CheckoutOnly: true},
+		},
+	}
+	rt := SandboxRuntimeInfo{
+		JobID:                 "job-1",
+		CloneWorkspaceDir:     "/data/boid/runtimes/job-1/workspace",
+		UsingContainerBackend: false,
+		GatewayCAPEM:          []byte("-----BEGIN CERTIFICATE-----\nfake\n-----END CERTIFICATE-----\n"),
+	}
+	out, err := BuildSandboxSpec(spec, rt)
+	if err != nil {
+		t.Fatalf("BuildSandboxSpec: %v", err)
+	}
+	for _, f := range out.Files {
+		if f.Path == containerGitGatewayCAPath {
+			t.Errorf("unexpected gateway CA file present for the userns backend: %+v", f)
+		}
+	}
+	if _, ok := out.Env["GIT_SSL_CAINFO"]; ok {
+		t.Errorf("Env[GIT_SSL_CAINFO] = %q, want unset for the userns backend", out.Env["GIT_SSL_CAINFO"])
+	}
+}
+
 // --- workspace 親化リファクタリング helpers (nose 2026-07-13 decision) ---
 
 func TestProjectDirName_PrefersExplicitName(t *testing.T) {
@@ -1903,6 +1986,46 @@ func TestBuildSandboxSpec_ShimBinDirBoidMountSkippedForProfileInit(t *testing.T)
 	}
 	if len(result.Symlinks) != 0 {
 		t.Errorf("ProfileInit must not emit shim symlinks, got %+v", result.Symlinks)
+	}
+}
+
+// TestBuildSandboxSpec_ShimBinDirBoidMountSkippedForContainerBackend pins
+// the PR9 regression fix (docs/plans/phase6-cutover-followups.md's
+// debugging trail): the container backend's shared image already bakes
+// boid at sandboxShimBinDir ("/run/boid/bin/boid" — build/container/
+// Dockerfile), so BuildSandboxSpec must NOT also emit a bind mount for it
+// when SandboxRuntimeInfo.UsingContainerBackend is true — doing so tries
+// to bind-mount rt.BoidBinary (the DAEMON's own in-image path, e.g.
+// "/usr/local/bin/boid") as a docker-out-of-docker sibling mount SOURCE,
+// which the host's real docker daemon rejects outright ("bind source path
+// does not exist") since that path only exists inside the daemon's own
+// container. Host-command shim symlinks must still be emitted for the
+// container backend too (決定2: only baked at image-build time is the
+// boid binary itself and the /run/boid/bin directory, not individual
+// <name> shims — those the entrypoint generates fresh from spec.Symlinks
+// on every container start, identically to the userns backend).
+func TestBuildSandboxSpec_ShimBinDirBoidMountSkippedForContainerBackend(t *testing.T) {
+	spec := &orchestrator.JobSpec{
+		HostCommands: map[string]orchestrator.CommandDef{
+			"gh": {Path: "/usr/bin/gh"},
+		},
+	}
+	result, err := BuildSandboxSpec(spec, SandboxRuntimeInfo{
+		BoidBinary:                 "/usr/local/bin/boid",
+		UsingContainerBackend:      true,
+		ResolvedHostCommandsByName: map[string]orchestrator.CommandDef{"gh": {Path: "/usr/bin/gh"}},
+	})
+	if err != nil {
+		t.Fatalf("BuildSandboxSpec: %v", err)
+	}
+	for _, m := range result.Mounts {
+		if m.Target == sandboxShimBinDir+"/boid" {
+			t.Errorf("container backend must not bind rt.BoidBinary at %s (already baked into the shared image), got %+v",
+				sandboxShimBinDir+"/boid", m)
+		}
+	}
+	if len(result.Symlinks) == 0 {
+		t.Error("container backend must still emit host-command shim symlinks (only the boid binary bind is userns-only), got none")
 	}
 }
 

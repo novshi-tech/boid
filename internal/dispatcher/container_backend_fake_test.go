@@ -46,30 +46,36 @@ type fakeDockerAPI struct {
 	ImagePullFunc        func(ctx context.Context, ref string, options client.ImagePullOptions) (client.ImagePullResponse, error)
 	NetworkListFunc      func(ctx context.Context, options client.NetworkListOptions) (client.NetworkListResult, error)
 	NetworkRemoveFunc    func(ctx context.Context, networkID string, options client.NetworkRemoveOptions) (client.NetworkRemoveResult, error)
+	NetworkCreateFunc    func(ctx context.Context, name string, options client.NetworkCreateOptions) (client.NetworkCreateResult, error)
+	NetworkConnectFunc   func(ctx context.Context, networkID string, options client.NetworkConnectOptions) (client.NetworkConnectResult, error)
 	VolumeCreateFunc     func(ctx context.Context, options client.VolumeCreateOptions) (client.VolumeCreateResult, error)
 	VolumeListFunc       func(ctx context.Context, options client.VolumeListOptions) (client.VolumeListResult, error)
 	VolumeRemoveFunc     func(ctx context.Context, volumeID string, options client.VolumeRemoveOptions) (client.VolumeRemoveResult, error)
 
 	nextID int
 
-	createCalls       []client.ContainerCreateOptions
-	startIDs          []string
-	attachCalls       []client.ContainerAttachOptions
-	attachIDs         []string
-	waitIDs           []string
-	killCalls         []client.ContainerKillOptions
-	killIDs           []string
-	stopIDs           []string
-	resizeCalls       []client.ContainerResizeOptions
-	removeIDs         []string
-	pullRefs          []string
-	listFilters       []client.Filters
-	logsIDs           []string
-	inspectIDs        []string
-	imageInspectRefs  []string
-	volumeCreateCalls []client.VolumeCreateOptions
-	volumeListCalls   int
-	networkListCalls  int
+	createCalls         []client.ContainerCreateOptions
+	startIDs            []string
+	attachCalls         []client.ContainerAttachOptions
+	attachIDs           []string
+	waitIDs             []string
+	killCalls           []client.ContainerKillOptions
+	killIDs             []string
+	stopIDs             []string
+	resizeCalls         []client.ContainerResizeOptions
+	removeIDs           []string
+	pullRefs            []string
+	listFilters         []client.Filters
+	logsIDs             []string
+	inspectIDs          []string
+	imageInspectRefs    []string
+	volumeCreateCalls   []client.VolumeCreateOptions
+	volumeListCalls     int
+	networkListCalls    int
+	networkCreateCalls  []client.NetworkCreateOptions
+	networkCreateNames  []string
+	networkConnectCalls []client.NetworkConnectOptions
+	networkConnectIDs   []string
 }
 
 var _ dockerAPI = (*fakeDockerAPI)(nil)
@@ -232,6 +238,28 @@ func (f *fakeDockerAPI) NetworkRemove(ctx context.Context, networkID string, opt
 		return f.NetworkRemoveFunc(ctx, networkID, options)
 	}
 	return client.NetworkRemoveResult{}, nil
+}
+
+func (f *fakeDockerAPI) NetworkCreate(ctx context.Context, name string, options client.NetworkCreateOptions) (client.NetworkCreateResult, error) {
+	f.mu.Lock()
+	f.networkCreateCalls = append(f.networkCreateCalls, options)
+	f.networkCreateNames = append(f.networkCreateNames, name)
+	f.mu.Unlock()
+	if f.NetworkCreateFunc != nil {
+		return f.NetworkCreateFunc(ctx, name, options)
+	}
+	return client.NetworkCreateResult{ID: "fake-network-" + name}, nil
+}
+
+func (f *fakeDockerAPI) NetworkConnect(ctx context.Context, networkID string, options client.NetworkConnectOptions) (client.NetworkConnectResult, error) {
+	f.mu.Lock()
+	f.networkConnectCalls = append(f.networkConnectCalls, options)
+	f.networkConnectIDs = append(f.networkConnectIDs, networkID)
+	f.mu.Unlock()
+	if f.NetworkConnectFunc != nil {
+		return f.NetworkConnectFunc(ctx, networkID, options)
+	}
+	return client.NetworkConnectResult{}, nil
 }
 
 func (f *fakeDockerAPI) VolumeCreate(ctx context.Context, options client.VolumeCreateOptions) (client.VolumeCreateResult, error) {

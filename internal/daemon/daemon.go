@@ -24,6 +24,46 @@ func IsChild() bool {
 	return os.Getenv(daemonEnvKey) == "1"
 }
 
+// logStdoutEnvKey opts the daemon child out of two pieces of host-daemon
+// double-fork machinery that only make sense when `boid start` is
+// detaching itself from a real controlling terminal with no other
+// supervisor involved — neither applies inside a container (PR9, docs/
+// plans/phase6-container-backend.md §PR6's compose.yml own "Known
+// limitations" note: "A real docker logs-visible foreground mode... is a
+// nice-to-have for a later PR"):
+//
+//   - RedirectToLogRotating's self-pipe dup2(stdout/stderr) dance: a
+//     container runtime's own log driver (dockerd, under compose) already
+//     captures stdout/stderr — no separate log-file redirect is needed,
+//     and empirically this dance does not survive this container's PID1
+//     (docker-init/tini) setup cleanly (see below).
+//   - syscall.Setsid(): fails outright with EPERM when the calling
+//     process is ALREADY its own process group leader — which a
+//     container's entrypoint process (tini's direct child) commonly is.
+//     This is docs/plans/phase6-cutover-followups.md's actual root cause
+//     for the e2e-container job's startup crash: the pre-BOID_LOG_STDOUT
+//     symptom (SIGPIPE, exit 141, zero visible docker-logs output) turned
+//     out to be this same "setsid: operation not permitted" error being
+//     written into the now-redirected — and shortly abandoned — log
+//     pipe, not a bug in the redirect mechanism itself. Detaching from a
+//     controlling terminal is meaningless in a container regardless (there
+//     is none to detach from), so skipping the call entirely is correct,
+//     not just a workaround.
+//
+// Set by build/container/compose.yml's daemon service. False (every
+// pre-PR9 caller) preserves exactly today's RedirectToLogRotating +
+// Setsid behavior.
+const logStdoutEnvKey = "BOID_LOG_STDOUT"
+
+// ShouldLogToStdout reports whether the daemon child should skip
+// RedirectToLogRotating (let stdout/stderr flow to whatever already
+// captures them) and syscall.Setsid (meaningless, and EPERM-failing, when
+// already a process group leader) — see logStdoutEnvKey's doc comment for
+// the full rationale for bundling both behind one flag.
+func ShouldLogToStdout() bool {
+	return os.Getenv(logStdoutEnvKey) == "1"
+}
+
 // LogFilePath returns the path for the daemon log file.
 // Uses $XDG_STATE_HOME/boid/boid.log, falling back to ~/.local/state/boid/boid.log.
 func LogFilePath() string {

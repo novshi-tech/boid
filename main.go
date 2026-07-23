@@ -10,7 +10,7 @@ import (
 
 func main() {
 	command := sandbox.CommandFromArgv0(os.Args[0])
-	if shouldRunBoidBuiltinShim(command) {
+	if shouldRunBoidBuiltinShim(command, os.Args) {
 		resp, err := sandbox.RunBoidShim(os.Args[1:])
 		if err != nil {
 			fmt.Fprintln(os.Stderr, err)
@@ -41,7 +41,52 @@ func main() {
 	}
 }
 
-func shouldRunBoidBuiltinShim(command string) bool {
+// isReservedRunnerSubcommand reports whether argv[1] (when present) names
+// one of the internal "boid runner-*" entrypoints (cmd/runner.go,
+// cmd/runner_container.go) — always the real cmd.Execute() dispatch,
+// never the builtin shim, regardless of BOID_BUILTIN_SHIM (PR9 fix, see
+// shouldRunBoidBuiltinShim's own doc comment for why this distinction is
+// required specifically for the container backend).
+func isReservedRunnerSubcommand(argv []string) bool {
+	if len(argv) < 2 {
+		return false
+	}
+	switch argv[1] {
+	case "runner-outer", "runner-inner", "runner-inner-child", "runner-container":
+		return true
+	}
+	return false
+}
+
+// shouldRunBoidBuiltinShim reports whether this invocation of the "boid"
+// binary (argv0's basename already resolved to "boid" — command) should
+// route through the builtin shim (sandbox.RunBoidShim) instead of the
+// normal cmd.Execute() CLI dispatch. BOID_BUILTIN_SHIM=1
+// (sandbox_builder.go's spec.Env, set whenever spec.BuiltinPolicies
+// carries a "boid" entry) is meant to redirect NESTED "boid <subcommand>"
+// calls a hook script or agent makes FROM WITHIN an already-running
+// sandbox (e.g. "boid task update --payload-patch") through the
+// broker-backed shim, not to redirect the sandbox's own entrypoint
+// process.
+//
+// For the userns backend this distinction was implicit: spec.Env (and so
+// BOID_BUILTIN_SHIM) is only ever applied to the FINAL exec'd hook/agent
+// process (runner_inner_child.go), never to the runner-outer/-inner/
+// -inner-child chain that runs before it, so those internal entrypoints
+// never observed the env var at all. The container backend has no such
+// staging: `docker create`'s Config.Env applies spec.Env to the
+// CONTAINER'S OWN PID1 from the start — i.e. to `boid runner-container`
+// itself — so without this reserved-subcommand carve-out, a
+// capabilities.docker-declaring job's own container entrypoint would be
+// misrouted into "unsupported boid subcommand \"runner-container\""
+// instead of ever running (found via docs/plans/
+// phase6-cutover-followups.md's e2e-container job debugging trail — the
+// container backend genuinely never dispatched a real capabilities.docker
+// job successfully before this fix).
+func shouldRunBoidBuiltinShim(command string, argv []string) bool {
+	if isReservedRunnerSubcommand(argv) {
+		return false
+	}
 	return command == "boid" && os.Getenv("BOID_BUILTIN_SHIM") != ""
 }
 

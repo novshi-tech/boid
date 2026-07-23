@@ -35,7 +35,7 @@ type appRuntime struct {
 	taskRepo       *orchestrator.TaskRepository
 	jobStore       api.JobStore
 	globalJobStore api.GlobalJobStore
-	jobRuntime     dispatcher.JobRuntime
+	jobRuntime     dispatcher.JobRuntime //nolint:staticcheck // SA1019: JobRuntime's Deprecated marker (Phase 6 PR9 skeleton) flags its own type, not a call to remove now — still the production userns transport; actual retirement is a follow-up PR (docs/plans/phase6-cutover-followups.md).
 	runner         *dispatcher.Runner
 	meta           api.MetaStore
 	projectSvc     *api.ProjectAppService
@@ -376,10 +376,49 @@ func sandboxBackendForConfig(cfg *config.Config, installID, runtimeDir string) (
 	if err != nil {
 		return nil, fmt.Errorf("sandbox.backend: container: connect to docker: %w", err)
 	}
+	// UID/GID (PR9, §決定4 — "job container は `--user <daemon uid>:<gid>`
+	// で非 root 起動"): os.Getuid()/os.Getgid() are the DAEMON's own actual
+	// runtime uid/gid — under compose these are whatever `user:
+	// ${BOID_UID}:${BOID_GID}` set them to (build/container/compose.yml),
+	// not necessarily ContainerBackendOptions' own 1000:1000 default.
+	// Before this fix, sandboxBackendForConfig never populated UID/GID at
+	// all, so every job container silently ran as 1000:1000 regardless of
+	// the daemon's actual uid — harmless only when an operator's host uid
+	// happens to also be 1000. Real impact found via docs/plans/
+	// phase6-cutover-followups.md's e2e-container job debugging trail: the
+	// workspace home directory (host-created by the daemon process, mode
+	// 0700, owned by the daemon's real uid) became unreadable ("permission
+	// denied") to a job container running under a DIFFERENT uid whenever
+	// the two diverged (e.g. GH Actions runners default to uid 1001, not
+	// 1000). Using the daemon's own os.Getuid()/os.Getgid() here — rather
+	// than yet another config knob — keeps this correct by construction:
+	// whatever uid the daemon container actually runs as is exactly the
+	// uid its own bind-mounted files (workspace homes included) are owned
+	// by, and now exactly the uid job containers run as too.
+	uid, gid := os.Getuid(), os.Getgid()
 	return dispatcher.NewContainerBackend(dockerClient, dispatcher.ContainerBackendOptions{
 		InstallID:            installID,
 		RuntimeDir:           runtimeDir,
+		UID:                  &uid,
+		GID:                  &gid,
 		DiagnosticsCollector: dispatcher.NewDefaultDiagnosticsCollector(dockerClient, runtimeDir),
+		// SelfContainerID (PR9, §決定5): $HOSTNAME is docker's own default
+		// container hostname (the short container ID) unless a service
+		// overrides it — build/container/compose.yml's `daemon` service
+		// does not, so inside a real compose deploy this resolves to the
+		// daemon's own container ID, letting
+		// containerBackend.ensureWorkspaceNetwork connect this same
+		// container to each per-workspace network it creates (see
+		// ContainerBackendOptions.SelfContainerID's own doc comment for
+		// why that is required, not optional, once workspace network
+		// isolation is enabled). Outside a container (bare `boid start`
+		// with sandbox.backend: container manually forced, or any non-
+		// compose test/DI usage) $HOSTNAME is just the host's own
+		// hostname — NetworkConnect against that bogus value fails
+		// harmlessly (ensureWorkspaceNetwork's self-connect step is
+		// best-effort, logged, non-fatal), not a new failure mode this
+		// wiring introduces.
+		SelfContainerID: os.Getenv("HOSTNAME"),
 	}), nil
 }
 
@@ -460,7 +499,12 @@ func webSecretPathFor(cfg Config) string {
 	return ""
 }
 
-func newJobRuntime(cfg Config) (dispatcher.JobRuntime, error) {
+// SA1019 (staticcheck) on the JobRuntime/LocalRuntime references below is
+// expected and suppressed inline: their Deprecated marker (Phase 6 PR9
+// skeleton, docs/plans/phase6-cutover-followups.md) flags the still-current
+// production userns construction path, not a stale call to migrate away
+// from now — actual retirement is a follow-up PR.
+func newJobRuntime(cfg Config) (dispatcher.JobRuntime, error) { //nolint:staticcheck
 	if cfg.JobRuntime != nil {
 		return cfg.JobRuntime, nil
 	}
@@ -469,7 +513,7 @@ func newJobRuntime(cfg Config) (dispatcher.JobRuntime, error) {
 	if err := os.MkdirAll(rootDir, 0o755); err != nil {
 		return nil, fmt.Errorf("mkdir runtime root: %w", err)
 	}
-	return &dispatcher.LocalRuntime{RootDir: rootDir}, nil
+	return &dispatcher.LocalRuntime{RootDir: rootDir}, nil //nolint:staticcheck
 }
 
 // cleanOrphanRuntimes removes runtime directories that have no corresponding
@@ -650,6 +694,7 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 		RuntimesDir:    runtimesDirFor(cfg),
 		GitGateway:     srv.gatewayRegistry,
 		GatewayURL:     &srv.gatewayURL,
+		GatewayCAPEM:   &srv.gatewayCAPEM,
 	})
 
 	// sandbox backend selection (docs/plans/phase6-container-backend.md
@@ -689,6 +734,13 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 	}
 	if sandboxBackend != nil {
 		runner.Backend = sandboxBackend
+		// InstallID (PR9, §決定5): threaded onto Runner too, alongside
+		// Backend — startDockerProxy's per-job SetWorkspaceNetwork call
+		// needs it to compute the exact same containerWorkspaceNetworkName
+		// value ContainerBackendOptions.InstallID (set two lines above, via
+		// sandboxBackendForConfig) gave the container backend itself. See
+		// Runner.InstallID's own doc comment.
+		runner.InstallID = srv.installID
 		slog.Info("sandbox backend: container (docker) — cutover config (docs/plans/phase6-container-backend.md §PR7)")
 	}
 

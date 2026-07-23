@@ -22,6 +22,15 @@ import (
 // Runner.sandboxBackend() constructs a fresh one on every call rather than
 // caching it, since SandboxPreparer/JobRuntime/BoidBinary never change
 // after Runner is wired.
+//
+// Deprecated: retiring in a follow-up PR after container-backend dogfood
+// stability (docs/plans/phase6-cutover-followups.md §「userns backend 撤去」).
+// This is a documentation-only marker as of Phase 6 PR9 — usernsBackend
+// remains the production default (config's unset/"userns" sandbox.backend)
+// and every existing behavior, test, and e2e scenario exercising it is
+// unchanged. Do not remove or bypass this backend, and do not let this
+// comment read as a license to skip fixing bugs here — see the followups
+// doc's own timeline for when actual retirement work starts.
 type usernsBackend struct {
 	preparer   SandboxPreparer
 	runtime    JobRuntime

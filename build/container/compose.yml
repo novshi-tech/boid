@@ -175,31 +175,39 @@ services:
     # process) exits" — the still-running detached grandchild does not save
     # it, tini tears the container down within seconds of a "successful"
     # start. Setting this env var makes `boid start` skip straight to
-    # cmd/start.go's runDaemonChild: Setsid + serve in the foreground +
-    # block on SIGINT/SIGTERM — exactly the long-running, signal-handling
-    # process a container entrypoint needs, and exactly what forwards
-    # docker's SIGTERM (via tini) into srv.Stop() cleanly.
+    # cmd/start.go's runDaemonChild: serve in the foreground + block on
+    # SIGINT/SIGTERM — exactly the long-running, signal-handling process a
+    # container entrypoint needs, and exactly what forwards docker's
+    # SIGTERM (via tini) into srv.Stop() cleanly. (Setsid is part of this
+    # same function but skipped under BOID_LOG_STDOUT below — see that
+    # env var's own comment for why it must be.)
     #
-    # Known limitations accepted for this PR6 skeleton, both stemming from
-    # runDaemonChild reusing the host-daemon code path verbatim:
-    #   - it redirects stdin/stdout/stderr to boid.log
-    #     (daemon.RedirectToLogRotating), so `docker logs` on this service
-    #     shows nothing.
-    #   - daemon.LogFilePath() resolves under $XDG_STATE_HOME (falling back
-    #     to $HOME/.local/state/boid/boid.log) — a path this compose file
-    #     does NOT bind-mount (only .local/share and .config are, per the
-    #     Persistence section above). The log therefore lands in the
-    #     container's own ephemeral writable layer: inspectable via `docker
-    #     exec ... tail -f /home/boid/.local/state/boid/boid.log` while the
-    #     container is alive, but gone on container recreation — unlike
-    #     everything under BOID_DATA_DIR.
-    # A real `docker logs`-visible foreground mode (log to stdout, skip the
-    # log-file rotation machinery entirely, when running under a supervisor
-    # that already captures stdout) — and/or bind-mounting the state dir
-    # too — is a nice-to-have for a later PR, not required to exercise the
-    # build+deploy mechanism this PR's own scope covers.
+    # PR6 originally left runDaemonChild's host-daemon code path verbatim:
+    # redirect stdin/stdout/stderr to boid.log, THEN Setsid. PR9's own
+    # e2e-container job debugging found the real bug this caused: Setsid
+    # fails with EPERM when the caller is already a process group leader —
+    # true of this container's entrypoint process (tini's direct child) —
+    # and that "setsid: operation not permitted" error, printed right after
+    # the log-file redirect had already repointed stdout/stderr at a
+    # self-pipe, produced a SIGPIPE-killed process (exit 141) with ZERO
+    # visible `docker logs` output (see docs/plans/
+    # phase6-cutover-followups.md for the full debugging trail — it took a
+    # separate BOID_RUNTIME_DIR-writability pre-flight AND making boid.log
+    # host-visible via XDG_STATE_HOME to even surface that one line).
+    # BOID_LOG_STDOUT below (daemon.ShouldLogToStdout's own doc comment)
+    # fixes this at the root: skip Setsid entirely (meaningless in a
+    # container regardless — there is no controlling terminal to detach
+    # from) AND skip the log-file redirect (let stdout/stderr flow to
+    # dockerd's own log driver, which was already capturing them) — both
+    # the actual fix and, on the logging half, better practice for a
+    # containerized deployment anyway. XDG_STATE_HOME below is kept as a
+    # harmless fallback for any future caller that unsets BOID_LOG_STDOUT.
     environment:
       BOID_DAEMON_CHILD: "1"
+      # BOID_LOG_STDOUT (PR9): see this service's own comment above and
+      # daemon.ShouldLogToStdout's doc comment (internal/daemon/daemon.go)
+      # for the full rationale.
+      BOID_LOG_STDOUT: "1"
       # XDG_DATA_HOME / XDG_CONFIG_HOME (Major 10, PR6 codex review): make
       # cmd/start.go's default*Dir/*Path helpers (data side, via
       # os.UserHomeDir()-or-XDG_DATA_HOME) and internal/config.Load
@@ -215,6 +223,53 @@ services:
       # consistent.
       XDG_DATA_HOME: "${XDG_DATA_HOME}"
       XDG_CONFIG_HOME: "${XDG_CONFIG_HOME}"
+      # XDG_STATE_HOME (PR9): makes daemon.LogFilePath() (internal/daemon/
+      # daemon.go — $XDG_STATE_HOME/boid/boid.log, falling back to
+      # $HOME/.local/state/boid/boid.log) resolve under the ALREADY
+      # bind-mounted BOID_RUNTIME_DIR instead of the container's own
+      # ephemeral writable layer (this service's own header comment above
+      # explains why `docker logs` can never show this daemon's own log —
+      # the redirect to this file happens before anything else could print
+      # to the container's stdout/stderr). No new volume entry needed: this
+      # reuses the BOID_RUNTIME_DIR bind mount below. boid.log then lands
+      # at `${BOID_RUNTIME_DIR}/boid/boid.log` on the host, readable even
+      # after the container is torn down — the debugging path PR9's own
+      # e2e-container job uses on a failure.
+      XDG_STATE_HOME: "${BOID_RUNTIME_DIR}"
+      # XDG_RUNTIME_DIR (PR9 fix — this variable was missing from the PR6
+      # skeleton entirely, a real gap the e2e-container job's first real-
+      # docker run surfaced): this is the OTHER half of the "server socket
+      # の host 同一 path bind (相互排他)" contract the BOID_RUNTIME_DIR
+      # comment above already describes — `internal/client.
+      # DefaultSocketPath()` (which `cmd/start.go` falls back to whenever
+      # no `--socket-path` flag is given, exactly what `command: ["start"]`
+      # below does) resolves the daemon's own listen socket to
+      # `$XDG_RUNTIME_DIR/boid.sock`, in that priority, BEFORE falling back
+      # to `/run/user/<uid>` or a bare `/tmp/boid-<uid>.sock` — neither of
+      # which is the BOID_RUNTIME_DIR bind mount below unless it happens to
+      # already equal one of them. Without this line the daemon's socket
+      # landed inside the container's own ephemeral filesystem instead of
+      # the bind-mounted, host-visible BOID_RUNTIME_DIR, breaking both the
+      # host-daemon mutual-exclusion guard this whole variable exists for
+      # AND every host-side CLI/E2E caller (docs/plans/
+      # phase6-container-backend.md §PR9's e2e-container job) that expects
+      # to reach this daemon's socket by setting its own XDG_RUNTIME_DIR to
+      # the same BOID_RUNTIME_DIR value.
+      XDG_RUNTIME_DIR: "${BOID_RUNTIME_DIR}"
+      # SSL_CERT_FILE (PR9): empty by default (every non-CI deploy — the
+      # bare `${VAR:-}` passthrough is a no-op unless the launching shell
+      # actually exports it), inert exactly like every other optional
+      # passthrough in this file. e2e/run-container.sh (§PR9's
+      # e2e-container job) sets it to a self-signed CA cert path under
+      # BOID_RUNTIME_DIR (already bind-mounted above, so no extra volume
+      # entry is needed) so the daemon's own outbound git-gateway fetch —
+      # Go's net/http, which honors SSL_CERT_FILE via
+      # crypto/x509.SystemCertPool on Linux — trusts the e2e fixture
+      # upstream's self-signed TLS cert (e2e/lib/common.sh's
+      # e2e_setup_fixture_upstream, shared with the userns e2e suite). A
+      # real production deploy has no reason to ever set this: its git
+      # remotes carry real, publicly-trusted certificates.
+      SSL_CERT_FILE: "${SSL_CERT_FILE:-}"
     # HostConfig.Init (docker-init/tini as PID 1, owning zombie reap — §決定3)
     # — compose's `init:` maps directly onto it.
     init: true
@@ -247,6 +302,22 @@ services:
     # of this literal.
     group_add:
       - "${DOCKER_GID:-999}"
+    # extra_hosts (PR9): "host-gateway" is a docker-compose-recognized
+    # special value (Docker Engine 20.10+, Linux included since that
+    # release — not a Mac/Windows-only feature) that resolves to whatever
+    # address routes back to the HOST from inside this container (the
+    # bridge network's own gateway IP). Nothing in production code ever
+    # resolves "host.docker.internal" — this exists solely so
+    # e2e/run-container.sh's fixture git upstream (bound on the CI
+    # runner's own host, 0.0.0.0, outside any docker network) is reachable
+    # from this daemon's own outbound git-gateway fetch the same way the
+    # e2e runner script itself reaches it (both resolve the identical
+    # "host.docker.internal" name — the runner via a matching /etc/hosts
+    # line the script adds, this container via this entry). Inert for
+    # every other deployment: nothing else in the codebase looks this name
+    # up.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       # DooD: sibling job containers, not nested (§決定4). The generic
       # `/var/run/docker.sock` host path resolves correctly under both

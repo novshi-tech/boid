@@ -236,6 +236,25 @@ func shouldRunForeground(foregroundFlag bool) bool {
 	return foregroundFlag || daemon.IsChild()
 }
 
+// printBareStartDeprecationNotice is a documentation-only nudge (Phase 6
+// PR9 deprecation skeleton, docs/plans/phase6-cutover-followups.md §「host
+// daemon 起動経路撤去」) printed after a successful bare `boid start`
+// double-fork (runDaemonParent's own success branch — never on the
+// --foreground/BOID_DAEMON_CHILD path a supervisor like build/container/
+// compose.yml's `daemon` service uses, which has already opted into the
+// newer deployment shape). It changes nothing about startup itself: no
+// behavior, exit code, or return value is affected — this is purely
+// informational, matching the plan doc's explicit "実撤去は禁止...
+// deprecation warning は追加可" scope for PR9. The bare host-daemon +
+// userns deployment model remains fully supported until the followups
+// doc's own retirement PRs actually land.
+func printBareStartDeprecationNotice() {
+	fmt.Println("note: this bare `boid start` uses the host daemon + userns deployment model.")
+	fmt.Println("      the container backend (`sandbox.backend: container` + `scripts/deploy-container.sh`,")
+	fmt.Println("      docs/plans/phase6-container-backend.md) is now the recommended deployment path;")
+	fmt.Println("      see docs/plans/phase6-cutover-followups.md for the retirement timeline.")
+}
+
 // runDaemonParent spawns the daemon child and waits on three concurrent
 // signals via a select loop:
 //
@@ -267,6 +286,7 @@ func runDaemonParent(cfg server.Config) error {
 		if result.success {
 			fmt.Printf("boid server started (pid: %d, socket: %s, http: %s)\n",
 				result.pid, cfg.SocketPath, cfg.HTTPAddr)
+			printBareStartDeprecationNotice()
 			return nil
 		}
 		// userErr non-nil = no structured status; report and exit.
@@ -430,10 +450,11 @@ func formatNonMigrationFailure(s *daemon.StartupStatus, logPath string) error {
 	}
 }
 
-
 // runDaemonChild is executed by the daemon child process (BOID_DAEMON_CHILD=1).
-// It redirects stdin/stdout/stderr to the log file, detaches from the session,
-// and runs the server until a termination signal arrives.
+// It redirects stdin/stdout/stderr to the log file and detaches from the
+// session via Setsid (unless daemon.ShouldLogToStdout() opts both out —
+// PR9, container-mode caller), then runs the server until a termination
+// signal arrives.
 //
 // On any startup failure the child writes a structured StartupStatus to
 // fd 3 (the side-channel pipe set up by daemon.Spawn) before returning,
@@ -441,15 +462,29 @@ func formatNonMigrationFailure(s *daemon.StartupStatus, logPath string) error {
 // successful startup the child closes fd 3 instead, signalling EOF to the
 // parent. After srv.Start() returns, fd 3 is no longer touched.
 func runDaemonChild(cfg server.Config) error {
-	logPath := daemon.LogFilePath()
-	if err := daemon.RedirectToLogRotating(logPath); err != nil {
-		daemon.WriteStartupStatusOnFD3(err)
-		return fmt.Errorf("redirect to log: %w", err)
-	}
+	// BOID_LOG_STDOUT (PR9, daemon.ShouldLogToStdout's own doc comment):
+	// skip both the log-file redirect and Setsid entirely when a
+	// supervisor already owns stdout capture and process/session
+	// lifecycle (build/container/compose.yml's daemon service) — every
+	// other caller (bare `boid start`, no supervisor already doing this)
+	// keeps today's redirect-to-rotating-file + Setsid behavior unchanged.
+	// Setsid specifically is not just skippable but actively WRONG to
+	// call here: it fails with EPERM when the caller is already a process
+	// group leader — true of a container's entrypoint process (tini's
+	// direct child) — which is docs/plans/phase6-cutover-followups.md's
+	// actual root cause for the e2e-container job's original startup
+	// crash (see logStdoutEnvKey's doc comment for the full story).
+	if !daemon.ShouldLogToStdout() {
+		logPath := daemon.LogFilePath()
+		if err := daemon.RedirectToLogRotating(logPath); err != nil {
+			daemon.WriteStartupStatusOnFD3(err)
+			return fmt.Errorf("redirect to log: %w", err)
+		}
 
-	if _, err := syscall.Setsid(); err != nil {
-		daemon.WriteStartupStatusOnFD3(err)
-		return fmt.Errorf("setsid: %w", err)
+		if _, err := syscall.Setsid(); err != nil {
+			daemon.WriteStartupStatusOnFD3(err)
+			return fmt.Errorf("setsid: %w", err)
+		}
 	}
 
 	srv, err := server.New(cfg)

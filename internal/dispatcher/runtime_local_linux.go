@@ -29,6 +29,11 @@ const localRuntimeTranscriptFile = "transcript.log"
 // aligned with the xterm scrollback in web/static/boid-terminal.js.
 const maxSnapshotScrollback = 2000
 
+// Deprecated: retiring in a follow-up PR after container-backend dogfood
+// stability, alongside usernsBackend (docs/plans/phase6-cutover-followups.md
+// §「userns backend 撤去」) — LocalRuntime is usernsBackend's internal
+// JobRuntime transport, kept in production use unchanged as of Phase 6
+// PR9's documentation-only marker.
 type LocalRuntime struct {
 	RootDir string
 

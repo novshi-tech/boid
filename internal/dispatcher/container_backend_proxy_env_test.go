@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/novshi-tech/boid/internal/gitgateway"
 	"github.com/novshi-tech/boid/internal/orchestrator"
 )
 
@@ -108,5 +109,73 @@ func TestDispatch_ContainerBackend_PropagatesWorkspaceProxyEnv(t *testing.T) {
 	}
 	if gotHTTPSProxy != wantProxy {
 		t.Errorf("container Env HTTPS_PROXY = %q, want %q", gotHTTPSProxy, wantProxy)
+	}
+}
+
+// TestDispatch_ContainerBackend_NoProxyExcludesGitGatewayHost pins the PR9
+// e2e-container CI fix (docs/plans/phase6-container-backend.md §PR9): the
+// container backend's git gateway ("boid-gateway", a distinct compose
+// service DNS name from the egress proxy's own "boid-egress") must always
+// be excluded from HTTPS_PROXY routing via no_proxy/NO_PROXY. Before this
+// fix, applyProxyEnv's no_proxy only ever excluded the proxy's OWN host —
+// correct for the userns backend, where the gateway and the proxy's
+// hostGatewayIP fallback happen to share the same address ("10.0.2.2") by
+// coincidence, but wrong for the container backend, where they are two
+// distinct hostnames. A clone-visibility job's `git clone` against the
+// gateway was silently routed through HTTPS_PROXY like any other outbound
+// request and rejected by the egress proxy's own domain allowlist with a
+// hard 403 ("CONNECT tunnel failed, response 403" — the real-docker
+// e2e-container CI job's exact failure).
+func TestDispatch_ContainerBackend_NoProxyExcludesGitGatewayHost(t *testing.T) {
+	d := newGatewayTestDB(t)
+	if err := orchestrator.CreateProject(d.Conn, &orchestrator.Project{ID: "proj-1", WorkDir: "/tmp"}); err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+
+	api := &fakeDockerAPI{}
+	be := NewContainerBackend(api, ContainerBackendOptions{})
+
+	alloc := &fakeProxyAllocator{ports: map[string]int{"ws-a": 9321}}
+	gwURL := "https://boid-gateway:39901"
+	r := &Runner{
+		DB:         d.Conn,
+		Backend:    be,
+		Sandbox:    &gwFakeSandboxPrep{dir: t.TempDir()},
+		Runtime:    &gwFakeRuntime{},
+		BoidBinary: "/boid",
+		Projects: fakeProjectLookup{projects: []*orchestrator.Project{
+			{ID: "proj-1", WorkspaceID: "ws-a", WorkDir: "/tmp"},
+		}},
+		Workspaces: fakeWorkspaceLookup{metas: map[string]*orchestrator.WorkspaceMeta{
+			"ws-a": {AllowedDomains: []string{"registry.example.com"}},
+		}},
+		ProxyAllocator: alloc,
+		GitGateway:     gitgateway.NewRegistry(),
+		GatewayURL:     &gwURL,
+	}
+
+	spec := &orchestrator.JobSpec{
+		ProjectID: "proj-1",
+		Argv:      []string{"echo", "hi"},
+		Kind:      orchestrator.JobKindHook,
+	}
+
+	if _, err := r.Dispatch(context.Background(), spec, nil); err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+
+	if len(api.createCalls) != 1 {
+		t.Fatalf("ContainerCreate calls = %d, want 1", len(api.createCalls))
+	}
+	env := api.createCalls[0].Config.Env
+	var gotNoProxy string
+	for _, kv := range env {
+		if strings.HasPrefix(kv, "NO_PROXY=") {
+			gotNoProxy = strings.TrimPrefix(kv, "NO_PROXY=")
+		}
+	}
+	if !strings.Contains(gotNoProxy, "boid-gateway") {
+		t.Errorf("container Env NO_PROXY = %q, want it to include the git gateway host %q (else the sandbox-internal clone gets routed through HTTPS_PROXY and rejected by the egress proxy's domain allowlist)",
+			gotNoProxy, "boid-gateway")
 	}
 }

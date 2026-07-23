@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -36,6 +37,27 @@ type SandboxRuntimeInfo struct {
 	// 10.0.2.2 projection at all, so a container-backend job needs a
 	// reachable compose-network address instead.
 	ProxyHost string
+
+	// UsingContainerBackend (PR9, §決定2) is Runner.Dispatch's
+	// IsContainerBackend(r.Backend) — the same signal ProxyHost's own doc
+	// comment describes for the identical "computed once at the Dispatch
+	// call site, threaded through because BuildSandboxSpec has no other
+	// way to know the configured backend" reason. BuildSandboxSpec uses it
+	// to skip binding rt.BoidBinary into the sandbox (see its own call
+	// site below): the container backend's shared image already bakes
+	// boid at the fixed shim path (build/container/Dockerfile), so
+	// binding it AGAIN would try to bind-mount rt.BoidBinary
+	// (os.Executable() — resolves to the DAEMON's own in-image path,
+	// e.g. "/usr/local/bin/boid") as a docker-out-of-docker sibling
+	// mount SOURCE, which the host's real docker daemon then rejects
+	// outright ("bind source path does not exist") since that path only
+	// exists inside the daemon's own container, never on the real host
+	// filesystem a DooD sibling's bind sources are resolved against.
+	// False (every pre-PR9 caller) preserves today's userns-only
+	// behavior unchanged — the userns backend genuinely needs this bind
+	// (its job process shares the host mount namespace before
+	// pivot_root, so rt.BoidBinary is a real, bindable host path there).
+	UsingContainerBackend bool
 
 	BrokerSocket string
 	BrokerToken  string
@@ -96,6 +118,25 @@ type SandboxRuntimeInfo struct {
 	// (e.g. GIT_HTTP_GATEWAY_URL) is explicitly deferred to the cutover PR
 	// (PR6); the runner clone sequence that would consume it is PR5.
 	GatewayURL string
+
+	// GatewayCAPEM is the daemon's internal CA's own certificate
+	// (mtls.CA.CertPEM), PEM-encoded, set by Runner from Server's
+	// gatewayCAPEM (PR9 e2e-container fix). Non-secret — the CA's public
+	// half, not a key — so it needs no per-job scoping or rotation, unlike
+	// a client certificate would.
+	//
+	// Only meaningful for the container backend: the userns backend's
+	// gateway URL is plain HTTP (http://10.0.2.2:<port>, the pasta/slirp
+	// loopback projection — see GatewayURL's own doc comment), so there is
+	// no TLS handshake to trust in the first place. BuildSandboxSpec only
+	// writes this into the sandbox (as a file, with GIT_SSL_CAINFO pointed
+	// at it) when UsingContainerBackend is true AND spec.Visibility.Clone
+	// is set — see its own call site. Without it, every sandbox-internal
+	// clone against the container backend's TLS-secured gateway
+	// (https://boid-gateway:<port>) fails outright: "server certificate
+	// verification failed. CAfile: none CRLfile: none" (the real-docker
+	// e2e-container CI job's exact failure, PR9).
+	GatewayCAPEM []byte
 
 	// GatewayJobToken is this job's git gateway token, registered against
 	// the gateway's Registry at dispatch time (self project fetch/fetch+push,
@@ -295,7 +336,7 @@ func BuildSandboxSpec(spec *orchestrator.JobSpec, rt SandboxRuntimeInfo) (sandbo
 	env["BOID_HOST_IP"] = hostGatewayIP
 	setIfNonEmpty(env, "BOID_WORKSPACE_SLUG", rt.WorkspaceSlug)
 	if rt.ProxyPort > 0 {
-		applyProxyEnv(env, rt.ProxyHost, rt.ProxyPort)
+		applyProxyEnv(env, rt.ProxyHost, rt.ProxyPort, gatewayHostFromURL(rt.GatewayURL))
 	}
 	if rt.ProxySocketPath != "" {
 		applyDockerProxyEnv(env)
@@ -382,6 +423,23 @@ func BuildSandboxSpec(spec *orchestrator.JobSpec, rt SandboxRuntimeInfo) (sandbo
 	// opt-in: nil unless spec.Visibility.Clone is set, so the existing
 	// worktree/project mount layout above is completely unaffected.
 	mounts = append(mounts, cloneMounts(spec, rt)...)
+
+	// Git gateway TLS trust (PR9 e2e-container fix): only the container
+	// backend's gateway URL is TLS-secured (see
+	// SandboxRuntimeInfo.GatewayCAPEM's own doc comment) — the userns
+	// backend's plain-HTTP gateway needs nothing here, and neither does a
+	// job with no clone declared at all (it never talks to the gateway).
+	// Written as a plain sandbox file (not a mount): the CA cert is
+	// non-secret, daemon-lifetime-static content, exactly like other
+	// spec.Files entries, not a per-job artifact that needs its own
+	// mount/cleanup lifecycle.
+	if spec.Visibility.Clone != nil && rt.UsingContainerBackend && len(rt.GatewayCAPEM) > 0 {
+		files = append(files, sandbox.FileWrite{
+			Path:    containerGitGatewayCAPath,
+			Content: string(rt.GatewayCAPEM),
+		})
+		env["GIT_SSL_CAINFO"] = containerGitGatewayCAPath
+	}
 
 	// Additional bindings:
 	//   * The harness adapter (claude / codex / opencode) declares the
@@ -489,13 +547,23 @@ func BuildSandboxSpec(spec *orchestrator.JobSpec, rt SandboxRuntimeInfo) (sandbo
 	// commands, so no shim is needed.
 	var symlinks []sandbox.Symlink
 	if rt.BoidBinary != "" && spec.SandboxProfile != int(sandbox.ProfileInit) {
-		mounts = append(mounts, sandbox.Mount{
-			Source:   rt.BoidBinary,
-			Target:   sandboxShimBinDir + "/boid",
-			Type:     sandbox.MountBind,
-			IsFile:   true,
-			ReadOnly: true,
-		})
+		// UsingContainerBackend (PR9, §決定2 — see its own doc comment):
+		// the container backend's shared image already bakes boid at this
+		// exact shim path (build/container/Dockerfile), so binding
+		// rt.BoidBinary again would try to bind-mount the DAEMON's own
+		// in-image path as a DooD sibling mount source, which the host's
+		// real docker daemon rejects outright. Individual host-command
+		// shim symlinks are NOT baked (決定2) and must still be generated
+		// for both backends — only this bind mount is userns-only.
+		if !rt.UsingContainerBackend {
+			mounts = append(mounts, sandbox.Mount{
+				Source:   rt.BoidBinary,
+				Target:   sandboxShimBinDir + "/boid",
+				Type:     sandbox.MountBind,
+				IsFile:   true,
+				ReadOnly: true,
+			})
+		}
 		symlinks = hostCommandSymlinks(rt.ResolvedHostCommandsByName)
 	}
 
@@ -594,6 +662,35 @@ const (
 	// (docs/plans/container-based-boid.md 「workspace peer プロジェクト」) —
 	// this only makes the mounts constructible, per PR5's scope.
 	sandboxClonePeerReferenceDirFmt = "/mnt/refs/peers/%s.git"
+
+	// containerGitGatewayCAPath (PR9 e2e-container fix) is the fixed
+	// sandbox-internal path SandboxRuntimeInfo.GatewayCAPEM is written to
+	// (as a plain spec.Files entry, container backend + clone-visibility
+	// jobs only) and what GIT_SSL_CAINFO is pointed at, so the
+	// sandbox-internal `git clone` against the container backend's
+	// TLS-secured gateway (https://boid-gateway:<port>) can verify the
+	// gateway's server certificate.
+	//
+	// Deliberately under /run/boid/bin, not /run/boid itself: the shared
+	// image (build/container/Dockerfile) only `chown -R
+	// ${BOID_UID}:${BOID_GID}` on /run/boid/bin — /run/boid, its parent,
+	// stays root-owned (mode 0755 from the preceding `mkdir -p
+	// /run/boid/bin`, which creates both in one step but the chown only
+	// covers the child). writeFileAt's own os.MkdirAll(filepath.Dir(path))
+	// is a no-op whenever the target directory already exists (regardless
+	// of its ownership), so a path directly under /run/boid — the first
+	// version of this fix used exactly that — creates the file's *parent*
+	// successfully (already present) but then fails the actual
+	// os.WriteFile with EACCES: the non-root job container (--user
+	// b.uid:b.gid) cannot create a new directory entry in a root-owned,
+	// group/other-non-writable directory. /run/boid/bin has no such
+	// problem — it is the one directory under /run/boid this image
+	// deliberately chowns to the job uid specifically so the non-root
+	// entrypoint can write into it (see the Dockerfile's own comment on
+	// that RUN step) — reusing it here for a second kind of per-container
+	// artifact (a CA cert alongside the host-command shim symlinks) is a
+	// directory-choice convenience, not a semantic host-command binding.
+	containerGitGatewayCAPath = "/run/boid/bin/gitgateway-ca.crt"
 )
 
 // sandboxCloneDir returns the absolute sandbox-internal directory a project
@@ -1251,7 +1348,13 @@ const dockerProxySandboxSocket = "/run/boid/docker-proxy.sock"
 // caller) falls back to hostGatewayIP unchanged — see
 // SandboxRuntimeInfo.ProxyHost's own doc comment for who sets a non-empty
 // value and when.
-func applyProxyEnv(env map[string]string, host string, port int) {
+//
+// extraNoProxyHosts (PR9 e2e-container fix) are additional bare hostnames
+// (no scheme, no port) appended to no_proxy/NO_PROXY alongside host itself
+// — see gatewayHostFromURL's own doc comment for why the git gateway's own
+// host must always be one of them. Empty entries are skipped so a caller
+// can pass a possibly-empty gatewayHostFromURL result unconditionally.
+func applyProxyEnv(env map[string]string, host string, port int, extraNoProxyHosts ...string) {
 	if host == "" {
 		host = hostGatewayIP
 	}
@@ -1260,8 +1363,54 @@ func applyProxyEnv(env map[string]string, host string, port int) {
 	env["https_proxy"] = proxyURL
 	env["HTTP_PROXY"] = proxyURL
 	env["HTTPS_PROXY"] = proxyURL
-	env["no_proxy"] = host + ",10.0.2.3,localhost,127.0.0.1"
-	env["NO_PROXY"] = host + ",10.0.2.3,localhost,127.0.0.1"
+	noProxy := host + ",10.0.2.3,localhost,127.0.0.1"
+	for _, extra := range extraNoProxyHosts {
+		if extra != "" && extra != host {
+			noProxy += "," + extra
+		}
+	}
+	env["no_proxy"] = noProxy
+	env["NO_PROXY"] = noProxy
+}
+
+// gatewayHostFromURL extracts the bare hostname (no scheme, no port) from a
+// git gateway base URL (rt.GatewayURL — e.g. "https://boid-gateway:39901"
+// for the container backend, gitgateway.SandboxURL's BackendContainer
+// form; "http://10.0.2.2:<port>" for userns) for applyProxyEnv's
+// extraNoProxyHosts (PR9 e2e-container fix).
+//
+// The git gateway must always be reached directly, never through the
+// egress proxy — it is boid-internal infrastructure (the sandbox-internal
+// clone sequence's own upstream, docs/plans/git-gateway-cutover.md), not a
+// destination any workspace's allowed_domains list would ever name, so the
+// egress proxy's own CONNECT/domain-allowlist check (internal/sandbox/
+// proxy.go's isDomainAllowed) correctly rejects it with 403 if traffic to
+// it ever reaches that proxy at all.
+//
+// For the userns backend this was already accidentally covered: the
+// gateway and the proxy's own hostGatewayIP fallback happen to be the same
+// address ("10.0.2.2", both are pasta/slirp loopback projections), so
+// no_proxy's existing `host` entry excluded the gateway too, by
+// coincidence rather than by design. The container backend has no such
+// coincidence — the gateway ("boid-gateway") and the egress proxy
+// ("boid-egress", composeEgressServiceName) are two distinct compose
+// service DNS names — so a clone-visibility job's `git clone` against the
+// gateway was silently routed through HTTPS_PROXY like any other outbound
+// request and rejected: "CONNECT tunnel failed, response 403" (found via
+// the real-docker e2e-container CI job, docs/plans/
+// phase6-container-backend.md §PR9). Calling this for every backend rather
+// than gating it behind IsContainerBackend keeps the fix general — a
+// redundant, harmless no_proxy entry for userns, a load-bearing one for
+// the container backend.
+func gatewayHostFromURL(rawURL string) string {
+	if rawURL == "" {
+		return ""
+	}
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return ""
+	}
+	return u.Hostname()
 }
 
 // applyDockerProxyEnv injects DOCKER_HOST, CONTAINER_HOST,

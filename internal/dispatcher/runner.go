@@ -82,6 +82,15 @@ type Runner struct {
 	// JobRuntime pair. nil (the production default) preserves the PR1
 	// behavior of always constructing the userns backend.
 	Backend backend.SandboxBackend
+	// InstallID mirrors ContainerBackendOptions.InstallID (§決定6): threaded
+	// through separately here (not read back off Backend) so
+	// startDockerProxy's per-job SetWorkspaceNetwork call (PR9, §決定5) can
+	// compute the exact same containerWorkspaceNetworkName the container
+	// backend's own Launch computed for this job's workspace, without a
+	// type assertion back into *containerBackend. Empty (every pre-PR9
+	// caller) is valid — containerWorkspaceNetworkName treats it as
+	// "noinst", matching NewContainerBackend's own unset-InstallID default.
+	InstallID string
 	// Hydrator optionally resolves a project's workspace-hydrated
 	// ProjectMeta (project.yaml `meta.name` plus workspace merge) by project
 	// ID. It is used only for workspace-peer name resolution in
@@ -126,6 +135,13 @@ type Runner struct {
 	// gateway (like the default proxy listener) is only known once Start
 	// has run. nil disables gateway URL propagation into SandboxRuntimeInfo.
 	GatewayURL *string
+	// GatewayCAPEM points at the daemon's internal CA's own PEM-encoded
+	// certificate (mtls.CA.CertPEM), filled in by Server.Start alongside
+	// GatewayURL. A container-backend clone-mode job needs this to trust
+	// the git gateway's TLS server certificate (see
+	// SandboxRuntimeInfo.GatewayCAPEM's own doc comment for why a client
+	// certificate is not also needed). nil disables CA propagation.
+	GatewayCAPEM *[]byte
 
 	tokenMu       sync.Mutex
 	jobTokens     map[string]string
@@ -358,6 +374,14 @@ func (r *Runner) Dispatch(ctx context.Context, spec *orchestrator.JobSpec, clean
 	// when any step fails.
 	allowedDomains, proxyPort := r.resolveWorkspaceProxy(workspaceID)
 	gatewayURL, gatewayToken := r.registerGatewayToken(j.ID, spec, workspaceID)
+	// gatewayCAPEM: see SandboxRuntimeInfo.GatewayCAPEM's own doc comment.
+	// r.GatewayCAPEM nil (every pre-PR9-fix caller/test, or a daemon with
+	// no TLS CA configured) leaves this nil, matching gatewayURL's own
+	// "unwired" degrade.
+	var gatewayCAPEM []byte
+	if r.GatewayCAPEM != nil {
+		gatewayCAPEM = *r.GatewayCAPEM
+	}
 
 	// Phase 5b PR1 (docs/plans/phase5-shim-and-task-context.md): track this
 	// job's routed instruction + reduced environment view + trait-filtered
@@ -483,6 +507,7 @@ func (r *Runner) Dispatch(ctx context.Context, spec *orchestrator.JobSpec, clean
 		ServerSocket:               r.ServerSocket,
 		ProxyPort:                  proxyPort,
 		ProxyHost:                  proxyHost,
+		UsingContainerBackend:      IsContainerBackend(r.Backend),
 		BrokerSocket:               brokerSocket,
 		BrokerToken:                brokerToken,
 		WorkspacePeers:             workspacePeers,
@@ -490,6 +515,7 @@ func (r *Runner) Dispatch(ctx context.Context, spec *orchestrator.JobSpec, clean
 		ResolvedHostCommandsByName: resolvedHostCommandsByName,
 		AllowedDomains:             allowedDomains,
 		GatewayURL:                 gatewayURL,
+		GatewayCAPEM:               gatewayCAPEM,
 		GatewayJobToken:            gatewayToken,
 		GatewayCloneURL:            gatewayCloneURL,
 		CloneWorkspaceDir:          cloneWorkspaceDir,
@@ -521,6 +547,24 @@ func (r *Runner) Dispatch(ctx context.Context, spec *orchestrator.JobSpec, clean
 			rtInfo.ProxySocketPath = ds.socketPath
 			desiredRuntimeID = runtimeID
 			r.trackDockerState(runtimeID, ds)
+
+			// Workspace network forced injection (PR9, §決定5): only for the
+			// container backend — the userns backend has no per-workspace
+			// docker network infrastructure at all (containerBackend.Launch
+			// is the only thing that ever creates one, via
+			// ensureWorkspaceNetwork), so calling SetWorkspaceNetwork
+			// unconditionally would force every sibling a userns-backend
+			// docker-enabled job creates onto a network nothing ever
+			// created, breaking every existing docker-proxy-* e2e scenario
+			// (those run against the userns backend + a fake docker). The
+			// network NAME must match containerBackend.Launch's own
+			// ensureWorkspaceNetwork call for this same (installID,
+			// workspace) pair exactly — see containerWorkspaceNetworkName's
+			// own doc comment for why this is a pure function both call
+			// sites compute independently rather than shared state.
+			if IsContainerBackend(r.Backend) && workspaceID != "" {
+				ds.proxy.SetWorkspaceNetwork(containerWorkspaceNetworkName(r.InstallID, workspaceID))
+			}
 		}
 	}
 
@@ -535,7 +579,7 @@ func (r *Runner) Dispatch(ctx context.Context, spec *orchestrator.JobSpec, clean
 		}
 		return "", err
 	}
-	return r.launchSandbox(ctx, j, sbSpec, cleanup, desiredRuntimeID)
+	return r.launchSandbox(ctx, j, sbSpec, cleanup, desiredRuntimeID, workspaceID, spec.Visibility.DockerEnabled)
 }
 
 // resolveProjectRuntime resolves projectID to its (WorkspaceID, WorkDir).
@@ -911,7 +955,18 @@ func (r *Runner) sandboxBackend() backend.SandboxBackend {
 
 // launchSandbox launches a sandbox for job via the configured
 // SandboxBackend and persists the resulting runtime metadata.
-func (r *Runner) launchSandbox(ctx context.Context, job *Job, spec sandbox.Spec, cleanup orchestrator.CleanupFunc, desiredRuntimeID string) (string, error) {
+//
+// workspace and dockerEnabled (PR9, §決定5) are threaded through explicitly
+// from Dispatch's own already-resolved workspaceID / spec.Visibility.
+// DockerEnabled (the *orchestrator.JobSpec, not the sandbox.Spec parameter
+// below, which carries neither) — see backend.LaunchOptions.Workspace/
+// DockerEnabled's own doc comments for why containerBackend needs both and
+// why this was previously a wiring gap (both fields were left at their
+// zero value on every real Dispatch call, silently disabling per-job
+// docker-capability delivery and workspace network isolation for the
+// container backend specifically — the userns backend never read either
+// field, so nothing exercised the gap before PR9).
+func (r *Runner) launchSandbox(ctx context.Context, job *Job, spec sandbox.Spec, cleanup orchestrator.CleanupFunc, desiredRuntimeID string, workspace string, dockerEnabled bool) (string, error) {
 	if job == nil {
 		return "", fmt.Errorf("job is required")
 	}
@@ -934,6 +989,9 @@ func (r *Runner) launchSandbox(ctx context.Context, job *Job, spec sandbox.Spec,
 		ProjectID: job.ProjectID,
 		HandlerID: job.HandlerID,
 		Role:      job.Role,
+
+		Workspace:     workspace,
+		DockerEnabled: dockerEnabled,
 
 		Interactive: spec.TTY,
 		TTY:         spec.TTY,

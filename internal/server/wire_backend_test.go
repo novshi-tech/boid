@@ -1,6 +1,7 @@
 package server
 
 import (
+	"os"
 	"testing"
 
 	"github.com/novshi-tech/boid/internal/config"
@@ -85,5 +86,36 @@ func TestSandboxBackendForConfig_Container_WiresDiagnosticsCollector(t *testing.
 	}
 	if !dispatcher.ContainerBackendHasDiagnosticsCollector(be) {
 		t.Error("containerBackend was constructed without a DiagnosticsCollector, want NewDefaultDiagnosticsCollector wired")
+	}
+}
+
+// TestSandboxBackendForConfig_Container_WiresDaemonUIDGID pins the PR9 fix
+// (docs/plans/phase6-cutover-followups.md's e2e-container job debugging
+// trail): sandboxBackendForConfig must pass the DAEMON's own actual
+// os.Getuid()/os.Getgid() through to ContainerBackendOptions.UID/GID —
+// before this fix neither was ever set, so every job container silently
+// ran as ContainerBackendOptions' own 1000:1000 default regardless of
+// what uid the daemon itself (and so its bind-mounted, daemon-uid-owned
+// workspace home directories) actually ran as. This test's own process
+// uid is a proxy for "the daemon's own uid" (os.Getuid() is deterministic
+// per-process, exactly what sandboxBackendForConfig itself calls).
+func TestSandboxBackendForConfig_Container_WiresDaemonUIDGID(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Sandbox.Backend = config.SandboxBackendContainer
+
+	be, err := sandboxBackendForConfig(cfg, "install-1", t.TempDir())
+	if err != nil {
+		t.Fatalf("sandboxBackendForConfig: %v", err)
+	}
+	gotUID, gotGID, ok := dispatcher.ContainerBackendUIDGID(be)
+	if !ok {
+		t.Fatal("ContainerBackendUIDGID: be is not a containerBackend")
+	}
+	wantUID, wantGID := os.Getuid(), os.Getgid()
+	if wantUID == 0 || wantGID == 0 {
+		t.Skip("test process is running as root; ContainerBackendOptions.UID/GID's own root-rejection would mask this test's assertion")
+	}
+	if gotUID != wantUID || gotGID != wantGID {
+		t.Errorf("containerBackend uid:gid = %d:%d, want the daemon's own os.Getuid()/os.Getgid() = %d:%d", gotUID, gotGID, wantUID, wantGID)
 	}
 }
