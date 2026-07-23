@@ -104,7 +104,31 @@ dump_diagnostics() {
   fi
 
   printf '[e2e-container] ===== docker ps -a (this install, job/sibling containers) =====\n' >&2
-  docker ps -a --filter "label=boid.install_id=${INSTALL_ID}" 2>&1 >&2 || true
+  docker ps -a --filter "label=boid.install_id=${INSTALL_ID}" >&2 2>&1 || true
+
+  # Every job's own runner-state.json diagnostic + transcript.log (the
+  # actual hook stdout/stderr the container-backend attach stream spooled
+  # to disk, §決定8) live under BOID_DATA_DIR/runtimes/<runtime_id>/ —
+  # already host-visible (same bind mount project.yaml registration
+  # depends on, see WS_ROOT's own comment above). Dumping these on a
+  # dispatch failure is what actually explains a "hook exited 1" or
+  # "failed to parse handler output" error, as opposed to just knowing
+  # THAT it failed.
+  local runtimes_dir="$XDG_DATA_HOME/boid/runtimes"
+  if [[ -d "$runtimes_dir" ]]; then
+    local f
+    for f in "$runtimes_dir"/*/transcript.log; do
+      [[ -f "$f" ]] || continue
+      printf '[e2e-container] ===== %s =====\n' "$f" >&2
+      cat "$f" >&2 || true
+    done
+    for f in "$runtimes_dir"/*/runner-state.json; do
+      [[ -f "$f" ]] || continue
+      printf '[e2e-container] ===== %s =====\n' "$f" >&2
+      cat "$f" >&2 || true
+    done
+  fi
+
   if [[ -f "$ROOT/task_a.json" ]]; then
     printf '[e2e-container] ===== task A (last observed) =====\n' >&2
     cat "$ROOT/task_a.json" >&2 || true
