@@ -26,6 +26,7 @@ import (
 	"path/filepath"
 	"sort"
 
+	"github.com/containerd/errdefs"
 	"github.com/moby/moby/client"
 
 	"github.com/novshi-tech/boid/internal/sandbox/dockerproxy"
@@ -83,37 +84,110 @@ func (r Report) Empty() bool {
 // contract this exists for has no room for "reap partially worked, try
 // again never").
 //
+// A resource docker already reports as gone (404/NotFound, checked via
+// errdefs.IsNotFound — Major 8, PR6 codex review) is treated as
+// successfully destroyed, not an error: the pre-fix code reported it as a
+// failure on every single reap run after the first, forever, once a
+// resource this run's own union found (typically via the ledger — see
+// unionResources) had already been removed some other way. Every
+// successfully destroyed id whose ledger entry can be traced (via
+// unionResources' returned ledgerSource map) is drained from that ledger
+// file afterward, so a subsequent reap run does not even attempt it again.
+//
 // runtimesDir may be empty (ledger union skipped; the label query still
 // runs) — see ledgerEntries.
 func Run(ctx context.Context, api dockerAPI, installID, runtimesDir string) (Report, error) {
-	containers, networks, volumes, err := unionResources(ctx, api, installID, runtimesDir)
+	containers, networks, volumes, ledgerSource, err := unionResources(ctx, api, installID, runtimesDir)
 	if err != nil {
 		return Report{}, err
 	}
 
 	var report Report
+	destroyed := map[string]bool{} // "<type>:<id>" for every id this run confirms gone
+
 	for _, id := range containers {
-		if err := stopAndRemoveContainer(ctx, api, id); err != nil {
+		if err := stopAndRemoveContainer(ctx, api, id); err != nil && !errdefs.IsNotFound(err) {
 			report.Errors = append(report.Errors, fmt.Sprintf("container %s: %v", id, err))
 			continue
 		}
 		report.DestroyedContainers = append(report.DestroyedContainers, id)
+		destroyed["container:"+id] = true
 	}
 	for _, id := range networks {
-		if _, err := api.NetworkRemove(ctx, id, client.NetworkRemoveOptions{}); err != nil {
+		if _, err := api.NetworkRemove(ctx, id, client.NetworkRemoveOptions{}); err != nil && !errdefs.IsNotFound(err) {
 			report.Errors = append(report.Errors, fmt.Sprintf("network %s: %v", id, err))
 			continue
 		}
 		report.DestroyedNetworks = append(report.DestroyedNetworks, id)
+		destroyed["network:"+id] = true
 	}
 	for _, id := range volumes {
-		if _, err := api.VolumeRemove(ctx, id, client.VolumeRemoveOptions{Force: true}); err != nil {
+		if _, err := api.VolumeRemove(ctx, id, client.VolumeRemoveOptions{Force: true}); err != nil && !errdefs.IsNotFound(err) {
 			report.Errors = append(report.Errors, fmt.Sprintf("volume %s: %v", id, err))
 			continue
 		}
 		report.DestroyedVolumes = append(report.DestroyedVolumes, id)
+		destroyed["volume:"+id] = true
 	}
+
+	if err := drainLedgers(destroyed, ledgerSource); err != nil {
+		report.Errors = append(report.Errors, fmt.Sprintf("drain ledger: %v", err))
+	}
+
 	return report, nil
+}
+
+// drainLedgers rewrites every ledger file that contributed at least one
+// destroyed entry, removing just those entries (any entry that failed to
+// destroy — not in destroyed — is left in place for a future reap run).
+// destroyed and ledgerSource are both keyed "<type>:<id>" — see Run and
+// unionResources.
+func drainLedgers(destroyed map[string]bool, ledgerSource map[string]string) error {
+	if len(destroyed) == 0 {
+		return nil
+	}
+	byPath := map[string]map[string]bool{}
+	for key := range destroyed {
+		path, ok := ledgerSource[key]
+		if !ok {
+			continue // this id came from the label query, not a ledger file
+		}
+		if byPath[path] == nil {
+			byPath[path] = map[string]bool{}
+		}
+		byPath[path][key] = true
+	}
+
+	var errs []string
+	for path, drop := range byPath {
+		if err := drainLedgerFile(path, drop); err != nil {
+			errs = append(errs, fmt.Sprintf("%s: %v", path, err))
+		}
+	}
+	if len(errs) > 0 {
+		return fmt.Errorf("%v", errs)
+	}
+	return nil
+}
+
+// drainLedgerFile rewrites the ledger at path to contain only the entries
+// whose "<type>:<id>" key is not in drop.
+func drainLedgerFile(path string, drop map[string]bool) error {
+	entries, err := dockerproxy.NewLedger(path).ReadAll()
+	if err != nil {
+		return fmt.Errorf("read ledger: %w", err)
+	}
+
+	remaining := make([]dockerproxy.ResourceEntry, 0, len(entries))
+	for _, e := range entries {
+		if !drop[e.Type+":"+e.ID] {
+			remaining = append(remaining, e)
+		}
+	}
+	if len(remaining) == len(entries) {
+		return nil // nothing in this file was drained
+	}
+	return dockerproxy.RewriteLedger(path, remaining)
 }
 
 // stopAndRemoveContainer mirrors dockerproxy.Reap's per-container sequence:
@@ -128,7 +202,13 @@ func stopAndRemoveContainer(ctx context.Context, api dockerAPI, id string) error
 // unionResources computes the deduped, sorted container/network/volume ID
 // sets Run destroys: docker's own label-filtered list responses union'd
 // with every resource ID recorded in an on-disk per-job ledger.
-func unionResources(ctx context.Context, api dockerAPI, installID, runtimesDir string) (containers, networks, volumes []string, err error) {
+//
+// ledgerSource maps "<type>:<id>" -> the ledger file path that entry came
+// from, for every id the ledger union contributed (an id docker's own
+// label query alone found has no entry here) — Run's drain step
+// (drainLedgers) uses it to know which file to rewrite once an id is
+// confirmed destroyed.
+func unionResources(ctx context.Context, api dockerAPI, installID, runtimesDir string) (containers, networks, volumes []string, ledgerSource map[string]string, err error) {
 	filters := client.Filters{}.Add("label", LabelInstallID+"="+installID)
 
 	cSet := map[string]struct{}{}
@@ -137,7 +217,7 @@ func unionResources(ctx context.Context, api dockerAPI, installID, runtimesDir s
 
 	cList, err := api.ContainerList(ctx, client.ContainerListOptions{All: true, Filters: filters})
 	if err != nil {
-		return nil, nil, nil, fmt.Errorf("reap: list containers: %w", err)
+		return nil, nil, nil, nil, fmt.Errorf("reap: list containers: %w", err)
 	}
 	for _, c := range cList.Items {
 		cSet[c.ID] = struct{}{}
@@ -145,7 +225,7 @@ func unionResources(ctx context.Context, api dockerAPI, installID, runtimesDir s
 
 	nList, err := api.NetworkList(ctx, client.NetworkListOptions{Filters: filters})
 	if err != nil {
-		return nil, nil, nil, fmt.Errorf("reap: list networks: %w", err)
+		return nil, nil, nil, nil, fmt.Errorf("reap: list networks: %w", err)
 	}
 	for _, n := range nList.Items {
 		nSet[n.ID] = struct{}{}
@@ -153,24 +233,30 @@ func unionResources(ctx context.Context, api dockerAPI, installID, runtimesDir s
 
 	vList, err := api.VolumeList(ctx, client.VolumeListOptions{Filters: filters})
 	if err != nil {
-		return nil, nil, nil, fmt.Errorf("reap: list volumes: %w", err)
+		return nil, nil, nil, nil, fmt.Errorf("reap: list volumes: %w", err)
 	}
 	for _, v := range vList.Items {
 		vSet[v.Name] = struct{}{}
 	}
 
-	for _, entry := range ledgerEntries(runtimesDir) {
-		switch entry.Type {
-		case "container":
-			cSet[entry.ID] = struct{}{}
-		case "network":
-			nSet[entry.ID] = struct{}{}
-		case "volume":
-			vSet[entry.ID] = struct{}{}
+	ledgerSource = map[string]string{}
+	for path, entries := range ledgerEntriesByPath(runtimesDir) {
+		for _, entry := range entries {
+			switch entry.Type {
+			case "container":
+				cSet[entry.ID] = struct{}{}
+			case "network":
+				nSet[entry.ID] = struct{}{}
+			case "volume":
+				vSet[entry.ID] = struct{}{}
+			default:
+				continue // e.g. "exec" — not a resource Run destroys directly
+			}
+			ledgerSource[entry.Type+":"+entry.ID] = path
 		}
 	}
 
-	return sortedKeys(cSet), sortedKeys(nSet), sortedKeys(vSet), nil
+	return sortedKeys(cSet), sortedKeys(nSet), sortedKeys(vSet), ledgerSource, nil
 }
 
 func sortedKeys(m map[string]struct{}) []string {
@@ -182,14 +268,16 @@ func sortedKeys(m map[string]struct{}) []string {
 	return out
 }
 
-// ledgerEntries reads every docker-resources.jsonl ledger directly under
-// runtimesDir/*/ (dockerproxy.Ledger's fixed file name — see
+// ledgerEntriesByPath reads every docker-resources.jsonl ledger directly
+// under runtimesDir/*/ (dockerproxy.Ledger's fixed file name — see
 // internal/dispatcher/runner.go's ledgerPath / internal/server/wire.go's
-// matching cleanup-pass construction) and returns their concatenation.
-// Returns nil when runtimesDir is empty. A missing or unreadable individual
-// ledger is skipped, not fatal — a runtimes dir that GC has already
-// partially cleaned must not block reaping everything else found.
-func ledgerEntries(runtimesDir string) []dockerproxy.ResourceEntry {
+// matching cleanup-pass construction), keyed by the ledger file's own
+// path so a caller can rewrite the right file later (unionResources'
+// ledgerSource / drainLedgers). Returns nil when runtimesDir is empty. A
+// missing or unreadable individual ledger is skipped, not fatal — a
+// runtimes dir that GC has already partially cleaned must not block
+// reaping everything else found.
+func ledgerEntriesByPath(runtimesDir string) map[string][]dockerproxy.ResourceEntry {
 	if runtimesDir == "" {
 		return nil
 	}
@@ -197,13 +285,13 @@ func ledgerEntries(runtimesDir string) []dockerproxy.ResourceEntry {
 	if err != nil {
 		return nil
 	}
-	var out []dockerproxy.ResourceEntry
+	out := map[string][]dockerproxy.ResourceEntry{}
 	for _, path := range matches {
 		entries, err := dockerproxy.NewLedger(path).ReadAll()
-		if err != nil {
+		if err != nil || len(entries) == 0 {
 			continue
 		}
-		out = append(out, entries...)
+		out[path] = entries
 	}
 	return out
 }

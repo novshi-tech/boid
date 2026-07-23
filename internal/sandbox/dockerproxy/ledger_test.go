@@ -104,6 +104,72 @@ func TestLedger_MissingFile(t *testing.T) {
 	}
 }
 
+// TestRewriteLedger_ReplacesContent pins Major 8 (PR6 codex review):
+// internal/reap's drain step needs to rewrite a ledger file to contain
+// only the entries that still need reaping. RewriteLedger must fully
+// replace the file's content (not append/merge), and a fresh Ledger
+// reading the path afterward must see exactly the new content.
+func TestRewriteLedger_ReplacesContent(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "ledger.jsonl")
+	l := NewLedger(path)
+	_ = l.Append(ResourceEntry{Type: "container", ID: "c1"})
+	_ = l.Append(ResourceEntry{Type: "container", ID: "c2"})
+	_ = l.Append(ResourceEntry{Type: "volume", ID: "v1"})
+
+	if err := RewriteLedger(path, []ResourceEntry{{Type: "container", ID: "c2"}}); err != nil {
+		t.Fatalf("RewriteLedger: %v", err)
+	}
+
+	entries, err := NewLedger(path).ReadAll()
+	if err != nil {
+		t.Fatalf("ReadAll after rewrite: %v", err)
+	}
+	if len(entries) != 1 || entries[0].Type != "container" || entries[0].ID != "c2" {
+		t.Fatalf("entries after rewrite = %+v, want exactly [{container c2}]", entries)
+	}
+}
+
+// TestRewriteLedger_EmptyEntries_MissingFileSemantics pins RewriteLedger's
+// "empty entries" contract: the file still exists but ReadAll treats it
+// exactly like a missing ledger (no entries) — matching ensureLoaded's
+// existing "missing file -> nil, not an error" behavior.
+func TestRewriteLedger_EmptyEntries_MissingFileSemantics(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "ledger.jsonl")
+	_ = NewLedger(path).Append(ResourceEntry{Type: "container", ID: "c1"})
+
+	if err := RewriteLedger(path, nil); err != nil {
+		t.Fatalf("RewriteLedger: %v", err)
+	}
+
+	entries, err := NewLedger(path).ReadAll()
+	if err != nil {
+		t.Fatalf("ReadAll after rewrite: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Errorf("entries after rewrite = %+v, want none", entries)
+	}
+}
+
+// TestRewriteLedger_CreatesFileWhenMissing covers RewriteLedger on a path
+// that never existed — internal/reap only calls it when it already read
+// the ledger successfully, but the function's own contract should not
+// silently no-op on a fresh path either.
+func TestRewriteLedger_CreatesFileWhenMissing(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "ledger.jsonl")
+
+	if err := RewriteLedger(path, []ResourceEntry{{Type: "network", ID: "n1"}}); err != nil {
+		t.Fatalf("RewriteLedger: %v", err)
+	}
+
+	entries, err := NewLedger(path).ReadAll()
+	if err != nil {
+		t.Fatalf("ReadAll: %v", err)
+	}
+	if len(entries) != 1 || entries[0].Type != "network" || entries[0].ID != "n1" {
+		t.Fatalf("entries = %+v, want exactly [{network n1}]", entries)
+	}
+}
+
 // splitNonEmpty splits s by sep, dropping empty tokens.
 func splitNonEmpty(s string, sep byte) []string {
 	var out []string

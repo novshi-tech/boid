@@ -29,6 +29,8 @@ type fakeDockerAPI struct {
 	removedNetworks    []string
 	removedVolumes     []string
 	containerRemoveErr map[string]error
+	networkRemoveErr   map[string]error
+	volumeRemoveErr    map[string]error
 }
 
 var _ dockerAPI = (*fakeDockerAPI)(nil)
@@ -58,6 +60,9 @@ func (f *fakeDockerAPI) NetworkList(ctx context.Context, options client.NetworkL
 
 func (f *fakeDockerAPI) NetworkRemove(ctx context.Context, networkID string, options client.NetworkRemoveOptions) (client.NetworkRemoveResult, error) {
 	f.removedNetworks = append(f.removedNetworks, networkID)
+	if err, ok := f.networkRemoveErr[networkID]; ok {
+		return client.NetworkRemoveResult{}, err
+	}
 	return client.NetworkRemoveResult{}, nil
 }
 
@@ -68,6 +73,9 @@ func (f *fakeDockerAPI) VolumeList(ctx context.Context, options client.VolumeLis
 
 func (f *fakeDockerAPI) VolumeRemove(ctx context.Context, volumeID string, options client.VolumeRemoveOptions) (client.VolumeRemoveResult, error) {
 	f.removedVolumes = append(f.removedVolumes, volumeID)
+	if err, ok := f.volumeRemoveErr[volumeID]; ok {
+		return client.VolumeRemoveResult{}, err
+	}
 	return client.VolumeRemoveResult{}, nil
 }
 
@@ -238,5 +246,119 @@ func TestRun_ContinuesAfterIndividualFailure(t *testing.T) {
 	}
 	if len(report.DestroyedNetworks) != 1 || report.DestroyedNetworks[0] != "n1" {
 		t.Errorf("DestroyedNetworks = %v, want [n1] (must proceed past the container failure)", report.DestroyedNetworks)
+	}
+}
+
+// notFoundErr is a minimal error implementing the containerd/errdefs
+// "NotFound" marker interface (a bare NotFound() method) — the same shape
+// github.com/moby/moby/client wraps a real 404 response into. Used to
+// simulate "docker already reports this resource as gone" without a real
+// docker daemon.
+type notFoundErr struct{}
+
+func (notFoundErr) Error() string { return "not found" }
+func (notFoundErr) NotFound()     {}
+
+// TestRun_NotFoundDuringDestroy_TreatedAsSuccess_AndDrainsLedger pins
+// Major 8 (PR6 codex review): a resource this run's own union found (via
+// the ledger, the only source that can carry an id docker's live label
+// query no longer reports) but that docker's remove call reports 404/
+// NotFound for must be treated as destroyed, not an error — and its
+// ledger entry must be drained so a second Run over the same
+// install/runtimesDir does not even attempt it again (the pre-fix
+// behavior: report an error for the same already-gone id on every single
+// run, forever).
+func TestRun_NotFoundDuringDestroy_TreatedAsSuccess_AndDrainsLedger(t *testing.T) {
+	runtimesDir := t.TempDir()
+	jobDir := filepath.Join(runtimesDir, "job-1")
+	if err := os.MkdirAll(jobDir, 0o755); err != nil {
+		t.Fatalf("mkdir job dir: %v", err)
+	}
+	ledgerPath := filepath.Join(jobDir, "docker-resources.jsonl")
+	ledger := dockerproxy.NewLedger(ledgerPath)
+	if err := ledger.Append(dockerproxy.ResourceEntry{Type: "container", ID: "sibling-c1"}); err != nil {
+		t.Fatalf("append container entry: %v", err)
+	}
+	if err := ledger.Append(dockerproxy.ResourceEntry{Type: "volume", ID: "sibling-v1"}); err != nil {
+		t.Fatalf("append volume entry: %v", err)
+	}
+
+	api := &fakeDockerAPI{
+		containerRemoveErr: map[string]error{"sibling-c1": notFoundErr{}},
+		volumeRemoveErr:    map[string]error{"sibling-v1": notFoundErr{}},
+	}
+
+	report, err := Run(context.Background(), api, "install-a", runtimesDir)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(report.Errors) != 0 {
+		t.Errorf("report.Errors = %v, want none (404/NotFound must be treated as success)", report.Errors)
+	}
+	if len(report.DestroyedContainers) != 1 || report.DestroyedContainers[0] != "sibling-c1" {
+		t.Errorf("report.DestroyedContainers = %v, want [sibling-c1]", report.DestroyedContainers)
+	}
+	if len(report.DestroyedVolumes) != 1 || report.DestroyedVolumes[0] != "sibling-v1" {
+		t.Errorf("report.DestroyedVolumes = %v, want [sibling-v1]", report.DestroyedVolumes)
+	}
+
+	remaining, err := dockerproxy.NewLedger(ledgerPath).ReadAll()
+	if err != nil {
+		t.Fatalf("read ledger after drain: %v", err)
+	}
+	if len(remaining) != 0 {
+		t.Errorf("ledger after drain = %v, want empty (both destroyed entries removed)", remaining)
+	}
+
+	// Second run over the same (now-drained) ledger and the same
+	// (still-empty) label query: nothing left to find, so nothing to
+	// destroy, and definitely no repeated error for sibling-c1/sibling-v1.
+	api2 := &fakeDockerAPI{}
+	report2, err := Run(context.Background(), api2, "install-a", runtimesDir)
+	if err != nil {
+		t.Fatalf("second Run: %v", err)
+	}
+	if !report2.Empty() {
+		t.Errorf("second Run report = %+v, want empty (ledger already drained)", report2)
+	}
+}
+
+// TestRun_DrainLeavesUndestroyedEntriesInPlace covers the flip side of the
+// drain step: an entry whose remove call fails with a real (non-NotFound)
+// error must stay in the ledger for a future reap run, not be dropped
+// alongside its successfully destroyed sibling.
+func TestRun_DrainLeavesUndestroyedEntriesInPlace(t *testing.T) {
+	runtimesDir := t.TempDir()
+	jobDir := filepath.Join(runtimesDir, "job-1")
+	if err := os.MkdirAll(jobDir, 0o755); err != nil {
+		t.Fatalf("mkdir job dir: %v", err)
+	}
+	ledgerPath := filepath.Join(jobDir, "docker-resources.jsonl")
+	ledger := dockerproxy.NewLedger(ledgerPath)
+	if err := ledger.Append(dockerproxy.ResourceEntry{Type: "container", ID: "ok-c1"}); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	if err := ledger.Append(dockerproxy.ResourceEntry{Type: "container", ID: "stuck-c2"}); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+
+	api := &fakeDockerAPI{
+		containerRemoveErr: map[string]error{"stuck-c2": context.DeadlineExceeded},
+	}
+
+	report, err := Run(context.Background(), api, "install-a", runtimesDir)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(report.Errors) != 1 {
+		t.Fatalf("report.Errors = %v, want exactly one entry (stuck-c2)", report.Errors)
+	}
+
+	remaining, err := dockerproxy.NewLedger(ledgerPath).ReadAll()
+	if err != nil {
+		t.Fatalf("read ledger after drain: %v", err)
+	}
+	if len(remaining) != 1 || remaining[0].ID != "stuck-c2" {
+		t.Errorf("ledger after drain = %v, want exactly [stuck-c2] (only the destroyed entry is dropped)", remaining)
 	}
 }
