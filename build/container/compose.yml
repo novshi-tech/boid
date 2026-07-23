@@ -80,13 +80,24 @@
 #     over with a decorative `ports:`/`expose:` section.
 #   - the per-workspace internal networks themselves (dynamic, daemon-owned
 #     — see `boid_internal`'s own comment above).
-#   - dockerproxy's compose-reachable TCP listener. Per-job client cert
-#     ENV delivery (DOCKER_HOST/DOCKER_CERT_PATH/DOCKER_TLS_VERIFY) is
-#     implemented and unit-tested this PR
-#     (internal/dispatcher/container_backend.go's
+#   - dockerproxy's compose-reachable TCP listener itself. The `daemon`
+#     service below carries a `boid-dockerproxy` alias on `boid_internal`
+#     (PR6 codex review, Blocker 3) so the DNS name a container-backend
+#     job's `DOCKER_HOST=tcp://boid-dockerproxy:2376` env
+#     (internal/dispatcher/container_backend.go's withDockerTLSEnv) already
+#     resolves to THIS container the moment such a job exists — but per
+#     this section's first bullet, nothing actually listens on a reachable
+#     address/port behind that name yet (still 127.0.0.1:0 loopback,
+#     exactly like broker/gateway). Per-job client cert ENV delivery
+#     (DOCKER_HOST/DOCKER_CERT_PATH/DOCKER_TLS_VERIFY) is implemented and
+#     unit-tested this PR (internal/dispatcher/container_backend.go's
 #     ContainerBackendOptions.DockerTLS* fields) but nothing in this compose
-#     stack constructs a real dockerproxy TCP listener or issues real
-#     per-job certs against it yet.
+#     stack constructs a real, reachable dockerproxy TCP listener or issues
+#     real per-job certs against it yet — that, plus an actual e2e dial
+#     over `boid_internal`, is docs/plans/phase6-container-backend.md
+#     §PR9's e2e-container job. Adding the alias now means the fixed-port/
+#     non-loopback listener work that closes this gap is a compose-neutral
+#     Go-side change, not another compose edit.
 #
 # Validated with `podman-compose config` (host has no docker engine, only
 # podman — CLAUDE.md) during PR6 development; CI is the source of truth
@@ -157,7 +168,14 @@ services:
       - ${BOID_CONFIG_DIR}:/home/boid/.config/boid
       - ${BOID_RUNTIME_DIR}:${BOID_RUNTIME_DIR}
     networks:
-      boid_internal: {}
+      # boid-dockerproxy: the DNS name a container-backend job's
+      # DOCKER_HOST env (internal/dispatcher/container_backend.go's
+      # withDockerTLSEnv) is set to — see this file's own "NOT yet true of
+      # this file" note above for what this alias does and does not fix
+      # yet (PR6 codex review, Blocker 3).
+      boid_internal:
+        aliases:
+          - boid-dockerproxy
       default: {}
     # No restart policy: an unattended restart after a crash would launch a
     # second daemon over the still-running sibling job containers before
