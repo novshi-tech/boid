@@ -102,6 +102,31 @@ services:
     # と job runner が同じ versioned base イメージから起動").
     entrypoint: ["/usr/local/bin/boid"]
     command: ["start"]
+    # BOID_DAEMON_CHILD=1 is load-bearing, not optional (internal/daemon/
+    # daemon.go): plain `boid start` self-re-execs a child, waits for its
+    # socket, and EXITS THE PARENT once confirmed healthy — the standard
+    # double-fork daemonize pattern for a host process, but fatal for a
+    # container's entrypoint. Even with `init: true` (tini as PID 1) below,
+    # tini's whole contract is "exit when MY direct child (this entrypoint
+    # process) exits" — the still-running detached grandchild does not save
+    # it, tini tears the container down within seconds of a "successful"
+    # start. Setting this env var makes `boid start` skip straight to
+    # cmd/start.go's runDaemonChild: Setsid + serve in the foreground +
+    # block on SIGINT/SIGTERM — exactly the long-running, signal-handling
+    # process a container entrypoint needs, and exactly what forwards
+    # docker's SIGTERM (via tini) into srv.Stop() cleanly.
+    #
+    # Known limitation accepted for this PR6 skeleton: runDaemonChild also
+    # redirects stdin/stdout/stderr to boid.log (daemon.RedirectToLogRotating)
+    # — a host-daemon-appropriate default that means `docker logs` on this
+    # service shows nothing. The log is still on disk and inspectable
+    # (BOID_DATA_DIR/boid.log, or `docker exec ... tail -f`) via the
+    # LogFilePath() convention; a real `docker logs`-visible foreground mode
+    # (log to stdout instead of a file when running under a supervisor that
+    # already captures it) is a nice-to-have for a later PR, not required to
+    # exercise the build+deploy mechanism this PR's own scope covers.
+    environment:
+      BOID_DAEMON_CHILD: "1"
     # HostConfig.Init (docker-init/tini as PID 1, owning zombie reap — §決定3)
     # — compose's `init:` maps directly onto it.
     init: true
