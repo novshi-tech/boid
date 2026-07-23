@@ -1,0 +1,150 @@
+# build/container/compose.yml
+#
+# Phase 6 PR6 skeleton (docs/plans/phase6-container-backend.md §PR6). Static
+# scaffold only — see the plan doc's own "PR6 時点では config 非公開" note:
+# this stack must NOT be run as a production deploy yet. startup reap / Wait
+# single-ownership / a persistent transcript spool all land in PR7; without
+# them a bare `compose up` after a crash double-executes in-flight jobs and
+# can lose log data on container removal (codex Major 11, quoted verbatim in
+# the plan doc's §PR6 section). `scripts/deploy-container.sh` (this same PR)
+# is deliberately a build-only skeleton for the same reason.
+#
+# Topology (§決定4/5):
+#   - `daemon`: the boid daemon itself, containerized (docker-out-of-docker —
+#     mounts the HOST's own /var/run/docker.sock so it can launch job
+#     containers as sibling containers, not nested inside itself). It also
+#     hosts the egress proxy (internal/sandbox/proxy_manager.go) in-process
+#     — no separate proxy service exists here. §決定5 leaves the door open
+#     to a standalone proxy container "in the future"; PR6 itself resolves
+#     it the other way ("現状の boid の proxy 実装を継続するのが最小 diff") since
+#     ProxyManager is a boid-specific Go implementation with no off-the-shelf
+#     container image to run it from. Consequently this ONE container must
+#     be dual-homed: `boid_internal` (job-reachable — broker / git gateway /
+#     dockerproxy / the egress proxy all live in this one process) and the
+#     default bridge network (its own outbound internet access — both for
+#     the egress proxy's upstream fetches and for the `docker pull`s it
+#     issues when creating job containers).
+#   - `boid_internal`: the static network skeleton. Every job container's
+#     actual network is a per-workspace internal network the daemon creates
+#     dynamically at dispatch time (`docker network create --internal
+#     --label boid.workspace=<slug> ...`) and `docker network connect`s this
+#     daemon container to — compose cannot declare a network that does not
+#     exist yet, so only the daemon's own static membership is here (§決定5:
+#     "compose は静的骨格... のみを宣言し、workspace internal network は daemon が
+#     runtime に... 動的に接続する"). Declared `internal: true` (no default
+#     route to the outside) so a job container placed on a workspace network
+#     has no path to the internet except back through this daemon's proxy.
+#
+# Persistence (§決定4 — host BIND mounts, deliberately not named volumes, so
+# a rollback to the host daemon + userns "旧デプロイ" shares the exact same
+# on-disk state the compose daemon was writing to). Three env vars carry the
+# actual host paths — BOID_DATA_DIR / BOID_CONFIG_DIR / BOID_RUNTIME_DIR —
+# required (no in-file default): a cross-machine-portable default would need
+# `${XDG_DATA_HOME:-${HOME}/.local/share}`-style NESTED interpolation, which
+# is compose-spec legal (and works under real `docker compose`) but is not
+# supported by podman-compose 1.0.6's interpolation (confirmed empirically
+# during PR6 development — it mis-tokenizes the nested `${HOME}` and fails
+# with a bogus "volume ... not defined in top level" error). Pushing the
+# XDG resolution into scripts/deploy-container.sh (plain bash, where nested
+# `${VAR:-$OTHER}` is unambiguous) instead of this YAML sidesteps that gap
+# entirely and works under both tools. See build/container/.env.example for
+# the exact values these three variables need.
+#   - BOID_DATA_DIR -> the container boid user's own
+#     `$HOME/.local/share/boid`: the SQLite DB, runtimes/, workspace homes/,
+#     kits/, the per-daemon mTLS CA (tls/), install_id, and web_secret. One
+#     bind covers all of it because every one of those already resolves
+#     under this single root — see cmd/start.go's default*Dir/*Path helpers.
+#   - BOID_CONFIG_DIR -> config.yaml, workspaces/*.yaml, host_commands.yaml.
+#   - BOID_RUNTIME_DIR -> the host's own socket runtime dir, bound at the
+#     exact SAME path inside the container (source == target, both sides
+#     reference the same variable below — not remapped) — this is the
+#     "server socket の host 同一 path bind (相互排他)" requirement (§決定4):
+#     `boid start`'s existing `IsSocketAlive` guard
+#     (internal/daemon/daemon.go) dials a UNIX socket by path, so as long as
+#     both the host "旧デプロイ" binary and this compose daemon resolve
+#     `client.DefaultSocketPath()` to the identical path (true whenever
+#     $XDG_RUNTIME_DIR — or its /run/user/<uid> fallback — and the daemon's
+#     uid match on both sides, which `user:` below pins), whichever one
+#     starts second sees the first one's live socket file and refuses to
+#     start. No server.go/daemon.go code changes were needed for this —
+#     IsSocketAlive already did the right thing once both sides can see the
+#     same path, which is purely a mount/identity concern this compose file
+#     is responsible for.
+#
+# NOT yet true of this file (explicitly out of PR6 scope):
+#   - broker / git gateway / dockerproxy's TCP(mTLS) listeners
+#     (internal/server/server.go) still bind 127.0.0.1:0 (ephemeral
+#     loopback) as landed in PR4. Reachability from job siblings on
+#     `boid_internal` requires a fixed port and a non-loopback bind address
+#     — a residual wiring item this compose file does not attempt to paper
+#     over with a decorative `ports:`/`expose:` section.
+#   - the per-workspace internal networks themselves (dynamic, daemon-owned
+#     — see `boid_internal`'s own comment above).
+#   - dockerproxy's compose-reachable TCP listener. Per-job client cert
+#     ENV delivery (DOCKER_HOST/DOCKER_CERT_PATH/DOCKER_TLS_VERIFY) is
+#     implemented and unit-tested this PR
+#     (internal/dispatcher/container_backend.go's
+#     ContainerBackendOptions.DockerTLS* fields) but nothing in this compose
+#     stack constructs a real dockerproxy TCP listener or issues real
+#     per-job certs against it yet.
+#
+# Validated with `podman-compose config` (host has no docker engine, only
+# podman — CLAUDE.md) during PR6 development; CI is the source of truth
+# going forward (docs/plans/phase6-container-backend.md §PR9's
+# e2e-container job actually runs this stack).
+
+services:
+  daemon:
+    image: boid-runner:latest
+    # build/container/Dockerfile's own ENTRYPOINT runs `boid
+    # runner-container` (the job/entrypoint command) — overridden here to
+    # run the daemon instead, from the exact same shared image (§決定2: "daemon
+    # と job runner が同じ versioned base イメージから起動").
+    entrypoint: ["/usr/local/bin/boid"]
+    command: ["start"]
+    # HostConfig.Init (docker-init/tini as PID 1, owning zombie reap — §決定3)
+    # — compose's `init:` maps directly onto it.
+    init: true
+    # Matches the host daemon uid so bind-mounted host paths (below) keep
+    # their existing ownership, and so job containers this daemon creates
+    # (also `--user <uid>:<gid>`, internal/dispatcher/container_backend.go)
+    # land on the same uid convention throughout (§決定4). Override via
+    # BOID_UID/BOID_GID if the operator's actual host uid is not 1000 — must
+    # match the BOID_UID/BOID_GID build args the image was built with
+    # (build/container/Dockerfile) or the daemon lands on an unknown uid
+    # with no matching image passwd entry.
+    user: "${BOID_UID:-1000}:${BOID_GID:-1000}"
+    volumes:
+      # DooD: sibling job containers, not nested (§決定4). The generic
+      # `/var/run/docker.sock` host path resolves correctly under both
+      # docker and podman-as-docker-compat hosts.
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ${BOID_DATA_DIR}:/home/boid/.local/share/boid
+      - ${BOID_CONFIG_DIR}:/home/boid/.config/boid
+      - ${BOID_RUNTIME_DIR}:${BOID_RUNTIME_DIR}
+    networks:
+      boid_internal: {}
+      default: {}
+    # No restart policy: an unattended restart after a crash would launch a
+    # second daemon over the still-running sibling job containers before
+    # PR7's startup reap exists to reconcile them (see this file's own
+    # header comment, codex Major 11). scripts/deploy-container.sh
+    # (this PR) does an explicit `down` before every `up` instead of relying
+    # on any restart machinery.
+    restart: "no"
+
+networks:
+  # Declared `internal: true` — no default route out. Every per-workspace
+  # job network the daemon creates at dispatch time (not declared here —
+  # see the header comment) is `internal: true` too, so the ONLY path any
+  # job container has to the outside world is back through the `daemon`
+  # service's own egress proxy, itself connected to `default` below for its
+  # actual internet access.
+  boid_internal:
+    internal: true
+  # Plain default bridge — the daemon container's own outbound path (egress
+  # proxy upstream fetches, `docker pull` for job images, apt/gh package
+  # installs at build time notwithstanding — that's the image build, not
+  # this runtime network).
+  default:
+    driver: bridge

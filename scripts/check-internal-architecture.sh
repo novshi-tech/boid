@@ -17,12 +17,14 @@ current_allowed=(
   gitgateway
   humanize
   initwizard
+  install
   logrotate
   mtls
   notify
   orchestrator
   profiles
   qrterm
+  reap
   sandbox
   server
   skills
@@ -41,12 +43,14 @@ target_allowed=(
   gitgateway
   humanize
   initwizard
+  install
   logrotate
   mtls
   notify
   orchestrator
   profiles
   qrterm
+  reap
   sandbox
   server
   skills
