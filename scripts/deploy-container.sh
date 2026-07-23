@@ -75,7 +75,36 @@ echo "deploy-container: using engine=$ENGINE"
 : "${XDG_CONFIG_HOME:=$HOME/.config}"
 BOID_DATA_DIR="$XDG_DATA_HOME/boid"
 BOID_CONFIG_DIR="$XDG_CONFIG_HOME/boid"
-: "${BOID_RUNTIME_DIR:=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}}"
+# BOID_RUNTIME_DIR mirrors internal/client.DefaultSocketPath()'s exact
+# fallback chain, not just its XDG_RUNTIME_DIR-or-/run/user/<uid> shape
+# (Major 12, PR6 codex review): DefaultSocketPath only uses
+# /run/user/<uid> when os.Stat confirms that directory actually exists on
+# THIS host — it is not systemd-logind-managed on every host (a headless
+# server with no active login session, some minimal container base
+# images, ...) — falling back to a bare /tmp/boid-<uid>.sock file
+# otherwise. The pre-fix line here used /run/user/<uid> unconditionally,
+# silently diverging from what a bare `boid start` on the SAME host
+# resolves to whenever that directory doesn't exist — breaking §決定4's
+# "server socket の host 同一 path bind (相互排他)" contract in exactly the
+# case it matters most (this stack's whole reason to run resolving a
+# DIFFERENT socket path than the host daemon it's meant to coexist with
+# / roll back to, so both start "successfully" as two live daemons at
+# once). DefaultSocketPath's own BOID_SOCKET override (an arbitrary full
+# path, not a directory) has no bind-mountable-directory equivalent here
+# and is intentionally not replicated — an operator using it must set
+# BOID_RUNTIME_DIR (or BOID_SOCKET's own containing directory) manually.
+if [[ -z "${BOID_RUNTIME_DIR:-}" ]]; then
+	if [[ -n "${XDG_RUNTIME_DIR:-}" ]]; then
+		BOID_RUNTIME_DIR="$XDG_RUNTIME_DIR"
+	elif [[ -d "/run/user/$(id -u)" ]]; then
+		BOID_RUNTIME_DIR="/run/user/$(id -u)"
+	else
+		# Mirrors DefaultSocketPath()'s /tmp/boid-<uid>.sock fallback: the
+		# containing directory is plain /tmp, not a boid-owned
+		# subdirectory of it.
+		BOID_RUNTIME_DIR="/tmp"
+	fi
+fi
 : "${BOID_UID:=$(id -u)}"
 : "${BOID_GID:=$(id -g)}"
 # DOCKER_GID (Major 9, PR6 codex review): the host's `docker` group GID,
