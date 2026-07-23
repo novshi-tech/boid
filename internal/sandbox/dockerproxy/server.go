@@ -140,7 +140,13 @@ func (s *Server) serveHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	verdict := CheckRequest(method, r.URL.Path, bodyBytes)
+	// denyHostPortPublish = "is this the container backend's Server"
+	// (Blocker 2, PR6 codex review) — reuses the same field
+	// SetWorkspaceNetwork already treats as "container backend configured a
+	// real workspace network" (see its own doc comment on why empty is
+	// equivalent to "never called"), rather than adding a second bool this
+	// Server would have to keep in sync with it.
+	verdict := CheckRequest(method, r.URL.Path, bodyBytes, s.workspaceNetwork != "")
 	if !verdict.Allow {
 		slog.Warn("docker proxy: DENY", "method", method, "path", r.URL.Path, "reason", verdict.Reason)
 		http.Error(w, "forbidden: "+verdict.Reason, http.StatusForbidden)

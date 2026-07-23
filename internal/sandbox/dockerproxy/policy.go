@@ -39,7 +39,21 @@ func stripVersion(path string) string {
 // CheckRequest is the main policy entry point.
 // method is the HTTP method, path is the raw request path (may include API version prefix),
 // body is the request body bytes (may be nil for GET/HEAD).
-func CheckRequest(method, path string, body []byte) Verdict {
+//
+// denyHostPortPublish gates the HostConfig.PortBindings / PublishAllPorts
+// checks in checkContainersCreate (Blocker 2, PR6 codex review). It must
+// be true only for the container backend's Server — once
+// Server.SetWorkspaceNetwork has configured a real per-job workspace
+// network (see its own doc comment) — and false for every other caller,
+// most importantly the pre-PR6 userns backend's Server
+// (internal/dispatcher.Runner.startDockerProxy, which never calls
+// SetWorkspaceNetwork). §決定5's "host への port publish は非サポート" is a
+// container-backend-only guarantee: the userns backend has always allowed
+// a sandboxed docker client (a TestContainers sibling, `docker run -p`,
+// `docker run -P`, ...) to publish a port to the host, and denying it
+// unconditionally (the pre-fix behavior) would silently turn every one of
+// those existing userns hooks into a 403.
+func CheckRequest(method, path string, body []byte, denyHostPortPublish bool) Verdict {
 	bare := stripVersion(path)
 	method = strings.ToUpper(method)
 
@@ -58,7 +72,7 @@ func CheckRequest(method, path string, body []byte) Verdict {
 	if method == "POST" {
 		switch {
 		case bare == "/containers/create":
-			return checkContainersCreate(body)
+			return checkContainersCreate(body, denyHostPortPublish)
 		case matchesPattern(bare, "/containers/*/exec"):
 			return checkExecCreate(body)
 		case matchesPattern(bare, "/containers/*/start"):
@@ -176,11 +190,9 @@ type hostConfig struct {
 	// 非サポート (internal network から host published port へは届かない)").
 	// PublishAllPorts (docker CLI's `-P` — auto-publish every EXPOSEd port
 	// to a random host port) is the exact same host-escape shape as an
-	// explicit PortBindings entry and was previously not checked at all
-	// (Blocker 1, PR6 codex review: `hostConfig` rejected PortBindings but
-	// silently ignored PublishAllPorts as an unknown field). Denied
-	// unconditionally below, same as PortBindings — there is no legitimate
-	// sibling use case this proxy needs to support publishing for.
+	// explicit PortBindings entry. Both are gated together on
+	// denyHostPortPublish (Blocker 2, PR6 codex review) — see
+	// CheckRequest's doc comment for why this is not an unconditional deny.
 	PortBindings    map[string]interface{} `json:"PortBindings"`
 	PublishAllPorts bool                    `json:"PublishAllPorts"`
 }
@@ -224,7 +236,7 @@ func readBody(body []byte) ([]byte, bool) {
 	return b, true
 }
 
-func checkContainersCreate(body []byte) Verdict {
+func checkContainersCreate(body []byte, denyHostPortPublish bool) Verdict {
 	b, ok := readBody(body)
 	if !ok {
 		return deny("body exceeds maximum size limit")
@@ -272,12 +284,13 @@ func checkContainersCreate(body []byte) Verdict {
 		}
 	}
 
-	if len(hc.PortBindings) > 0 {
-		return deny("HostConfig.PortBindings: publishing ports to the host is not permitted")
-	}
-
-	if hc.PublishAllPorts {
-		return deny("HostConfig.PublishAllPorts: publishing ports to the host is not permitted")
+	if denyHostPortPublish {
+		if len(hc.PortBindings) > 0 {
+			return deny("HostConfig.PortBindings: publishing ports to the host is not permitted")
+		}
+		if hc.PublishAllPorts {
+			return deny("HostConfig.PublishAllPorts: publishing ports to the host is not permitted")
+		}
 	}
 
 	if v := hc.PidMode; v != "" {
