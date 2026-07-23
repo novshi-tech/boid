@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sync"
 	"testing"
 )
 
@@ -82,5 +83,45 @@ func TestLoadOrCreate_RegeneratesOnEmptyFile(t *testing.T) {
 	}
 	if !uuidv4Pattern.MatchString(id) {
 		t.Errorf("id = %q, want a freshly generated UUIDv4 (empty file must regenerate)", id)
+	}
+}
+
+// TestLoadOrCreate_ConcurrentStartup_SameID pins Major 7 (PR6 codex
+// review): two LoadOrCreate calls racing on the same fresh dir (e.g. two
+// daemon instances starting at once against the same data dir) must agree
+// on exactly one id — the pre-fix read-then-generate-then-os.WriteFile
+// sequence had no such guarantee (each goroutine could independently read
+// "missing", generate its own UUID, and overwrite the other's write).
+// Run with -race to actually exercise the concurrency, not just the
+// single-threaded control flow.
+func TestLoadOrCreate_ConcurrentStartup_SameID(t *testing.T) {
+	dir := t.TempDir()
+	const n = 20
+
+	ids := make([]string, n)
+	errs := make([]error, n)
+	var wg sync.WaitGroup
+	wg.Add(n)
+	for i := 0; i < n; i++ {
+		go func(i int) {
+			defer wg.Done()
+			ids[i], errs[i] = LoadOrCreate(dir)
+		}(i)
+	}
+	wg.Wait()
+
+	for i, err := range errs {
+		if err != nil {
+			t.Fatalf("goroutine %d: LoadOrCreate: %v", i, err)
+		}
+	}
+	want := ids[0]
+	if !uuidv4Pattern.MatchString(want) {
+		t.Fatalf("goroutine 0: id = %q, want a canonical UUIDv4", want)
+	}
+	for i, id := range ids {
+		if id != want {
+			t.Errorf("goroutine %d: id = %q, want %q (every concurrent caller must agree on one id)", i, id, want)
+		}
 	}
 }
