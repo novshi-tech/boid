@@ -86,12 +86,19 @@ type ContainerBackendOptions struct {
 	PullPolicy ImagePullPolicy
 	// UID/GID select the `--user <uid>:<gid>` job containers run as (§決定
 	// 4 — non-root, matching the image's baked /etc/passwd entry, PR2's
-	// Dockerfile). Both zero falls back to 1000:1000 (the PR2 image's
-	// default BOID_UID/BOID_GID build args) — an explicit UID=0 with a
-	// non-zero GID is left as-is; only the "both unset" case is treated as
-	// "use the default", since a real UID 0 override is never a use case
-	// this backend supports (決定 4 requires non-root).
-	UID, GID int
+	// Dockerfile). nil means "unset". A custom pair is only honored when
+	// BOTH are provided (non-nil) AND both resolve to non-zero — anything
+	// else (both unset, only one set, or either resolving to 0) falls back
+	// to 1000:1000 (the PR2 image's default BOID_UID/BOID_GID build args)
+	// rather than silently running the job as root. This is nullable
+	// (*int, not int) specifically so "unset" and "explicitly 0" are
+	// distinguishable: an int-typed field couldn't tell `UID: 0` (meant as
+	// "use the default") apart from a caller who actually passed 0, which
+	// let a partial override like `UID: 0, GID: 1000` slip through as a
+	// root container (fixed — see the PR5 review's Major 1). A real UID 0
+	// override is never a use case this backend supports (決定 4 requires
+	// non-root).
+	UID, GID *int
 	// InstallID is the value stamped on every container's boid.install_id
 	// label (§決定 6). Empty is valid — install_id generation lands in PR6
 	// (~/.local/share/boid/install_id LoadOrCreate); PR5's ReapOrphans uses
@@ -166,18 +173,37 @@ func NewContainerBackend(api dockerAPI, opts ContainerBackendOptions) backend.Sa
 		api:          api,
 		defaultImage: opts.DefaultImage,
 		pullPolicy:   opts.PullPolicy,
-		uid:          opts.UID,
-		gid:          opts.GID,
 		installID:    opts.InstallID,
 		sessions:     make(map[string]*containerSession),
 	}
 	if b.defaultImage == "" {
 		b.defaultImage = defaultContainerImage
 	}
-	if b.uid == 0 && b.gid == 0 {
-		b.uid, b.gid = defaultContainerUID, defaultContainerGID
+	b.uid, b.gid = defaultContainerUID, defaultContainerGID
+	switch {
+	case opts.UID != nil && opts.GID != nil && *opts.UID != 0 && *opts.GID != 0:
+		b.uid, b.gid = *opts.UID, *opts.GID
+	case opts.UID != nil || opts.GID != nil:
+		// A partial override (only one of the two set) or a pair that
+		// resolves to root (either side == 0) is rejected in favor of the
+		// non-root default — see ContainerBackendOptions.UID's doc comment
+		// and the PR5 review's Major 1.
+		slog.Warn("container backend: rejecting partial or root-resolving uid/gid override; using default (§決定 4 requires non-root)",
+			"uid", formatIntPtr(opts.UID), "gid", formatIntPtr(opts.GID),
+			"default_uid", defaultContainerUID, "default_gid", defaultContainerGID)
 	}
 	return b
+}
+
+// formatIntPtr renders a *int for logging: "<unset>" for nil, the decimal
+// value otherwise. Used by NewContainerBackend's uid/gid rejection warning
+// so the log line shows the caller's actual (possibly nil) input rather
+// than a raw pointer address.
+func formatIntPtr(p *int) string {
+	if p == nil {
+		return "<unset>"
+	}
+	return strconv.Itoa(*p)
 }
 
 // dockerAPI is the narrow, containerBackend-owned subset of the docker

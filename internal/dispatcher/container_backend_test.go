@@ -131,7 +131,7 @@ func TestContainerBackend_Launch_MountSourceKindMapping(t *testing.T) {
 
 func TestContainerBackend_Launch_UserFlagAndPasswdEntry(t *testing.T) {
 	api := &fakeDockerAPI{}
-	be := NewContainerBackend(api, ContainerBackendOptions{UID: 1000, GID: 1000})
+	be := NewContainerBackend(api, ContainerBackendOptions{UID: intPtr(1000), GID: intPtr(1000)})
 
 	mustLaunch(t, be, sandbox.Spec{ID: "job-uid", Argv: []string{"true"}}, backend.LaunchOptions{JobID: "job-uid"})
 
@@ -146,6 +146,44 @@ func TestContainerBackend_Launch_UserFlagAndPasswdEntry(t *testing.T) {
 		t.Errorf("Config.User = %q, want %q", got, want)
 	}
 }
+
+// TestContainerBackend_Launch_RejectsPartialOrRootUIDGID pins Major 1 from
+// the PR5 review: a partial uid/gid override (only one of the two set) or
+// one that resolves to root (either side == 0, e.g. `UID: 0, GID: 1000`)
+// must not reach `--user`; both must fall back to the non-root default
+// (§決定 4). Only a fully-specified, fully-non-zero pair is honored as-is.
+func TestContainerBackend_Launch_RejectsPartialOrRootUIDGID(t *testing.T) {
+	tests := []struct {
+		name     string
+		uid, gid *int
+		wantUser string
+	}{
+		{name: "both unset falls back to default", uid: nil, gid: nil, wantUser: "1000:1000"},
+		{name: "uid=0 with nonzero gid falls back to default", uid: intPtr(0), gid: intPtr(1000), wantUser: "1000:1000"},
+		{name: "gid=0 with nonzero uid falls back to default", uid: intPtr(1000), gid: intPtr(0), wantUser: "1000:1000"},
+		{name: "uid=0 gid=0 falls back to default", uid: intPtr(0), gid: intPtr(0), wantUser: "1000:1000"},
+		{name: "only uid set falls back to default", uid: intPtr(2000), gid: nil, wantUser: "1000:1000"},
+		{name: "only gid set falls back to default", uid: nil, gid: intPtr(2000), wantUser: "1000:1000"},
+		{name: "fully specified nonzero pair is honored", uid: intPtr(2000), gid: intPtr(2001), wantUser: "2000:2001"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			api := &fakeDockerAPI{}
+			be := NewContainerBackend(api, ContainerBackendOptions{UID: tt.uid, GID: tt.gid})
+			mustLaunch(t, be, sandbox.Spec{ID: "job-uidgid", Argv: []string{"true"}}, backend.LaunchOptions{JobID: "job-uidgid"})
+			if len(api.createCalls) != 1 {
+				t.Fatalf("ContainerCreate calls = %d, want 1", len(api.createCalls))
+			}
+			if got := api.createCalls[0].Config.User; got != tt.wantUser {
+				t.Errorf("Config.User = %q, want %q", got, tt.wantUser)
+			}
+		})
+	}
+}
+
+// intPtr returns a pointer to v, for constructing ContainerBackendOptions.UID/GID
+// (nullable *int fields — see their doc comment) in test literals.
+func intPtr(v int) *int { return &v }
 
 func TestContainerBackend_Adopt_ReconstructsSessionFromRunningContainer(t *testing.T) {
 	const runtimeID = "already-running-container"
