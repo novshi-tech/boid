@@ -4,6 +4,8 @@ import (
 	"database/sql"
 	"embed"
 	"fmt"
+	"regexp"
+	"strconv"
 )
 
 //go:embed migrations/*.sql
@@ -283,6 +285,21 @@ func Apply(conn *sql.DB) error {
 		return err
 	}
 
+	// Schema ceiling check (docs/plans/phase6-container-backend.md §PR6,
+	// §決定4): refuse to start against a database a NEWER binary has
+	// already migrated past this binary's own newest known migration.
+	// Before this check, an older binary opening a newer DB silently
+	// ignored any recorded version it didn't recognize and proceeded to
+	// run against a schema shape it was never tested against — exactly
+	// the failure mode §決定4 calls out ("旧バイナリは自分の知らない記録
+	// 済み version を黙って無視して新しい DB を開く"). Checked BEFORE the
+	// apply loop below so an old binary refuses immediately rather than
+	// only after (harmlessly) re-confirming every migration it does know
+	// about is already applied.
+	if err := checkSchemaCeiling(migrations, applied); err != nil {
+		return err
+	}
+
 	for _, m := range migrations {
 		if _, ok := applied[m.version]; ok {
 			continue
@@ -298,6 +315,63 @@ type migration struct {
 	version string
 	path    string
 	skip    func(*sql.Tx) (bool, error)
+}
+
+// versionNumberPattern matches the leading zero-padded numeric prefix of a
+// versioned schema migration's version string (e.g.
+// "0032_add_web_devices_token" -> "0032"). Not every row this package's own
+// recordMigrationState writes to schema_migrations has this shape —
+// internal/orchestrator/workspace_migration.go directly records a
+// non-file, workflow-state marker under the literal version string
+// "workspace_db_consolidation" — so parseMigrationVersion below treats a
+// non-match as "not a numbered schema migration" rather than an error.
+var versionNumberPattern = regexp.MustCompile(`^(\d{4})_`)
+
+// parseMigrationVersion extracts the leading 4-digit numeric prefix from a
+// schema_migrations version string. ok is false for a version with no such
+// prefix (e.g. "workspace_db_consolidation") — those rows are invisible to
+// checkSchemaCeiling by design (see versionNumberPattern's doc comment).
+func parseMigrationVersion(version string) (n int, ok bool) {
+	m := versionNumberPattern.FindStringSubmatch(version)
+	if m == nil {
+		return 0, false
+	}
+	v, err := strconv.Atoi(m[1])
+	if err != nil {
+		return 0, false
+	}
+	return v, true
+}
+
+// checkSchemaCeiling implements the §決定4 startup-refusal check: if
+// applied (schema_migrations, as already recorded on disk before this
+// Apply() call touches anything) contains any numbered migration version
+// newer than the newest version this binary's own migrations slice knows
+// about, the database was migrated by a newer binary — refuse to start
+// rather than silently ignoring the gap (see Apply's call site comment for
+// why this runs before the apply loop).
+func checkSchemaCeiling(migrations []migration, applied map[string]struct{}) error {
+	var maxKnown int
+	for _, m := range migrations {
+		if v, ok := parseMigrationVersion(m.version); ok && v > maxKnown {
+			maxKnown = v
+		}
+	}
+	for version := range applied {
+		v, ok := parseMigrationVersion(version)
+		if !ok {
+			continue
+		}
+		if v > maxKnown {
+			return fmt.Errorf(
+				"database schema is newer than this boid binary knows how to handle "+
+					"(found applied migration %q, this binary's newest known migration is %04d_*); "+
+					"refusing to start — upgrade the boid binary before opening this database "+
+					"(docs/plans/phase6-container-backend.md §PR6/§決定4 schema ceiling check)",
+				version, maxKnown)
+		}
+	}
+	return nil
 }
 
 func ensureSchemaMigrationsTable(conn *sql.DB) error {

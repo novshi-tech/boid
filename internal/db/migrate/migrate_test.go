@@ -2,6 +2,7 @@ package migrate
 
 import (
 	"database/sql"
+	"strings"
 	"testing"
 
 	"github.com/novshi-tech/boid/internal/db"
@@ -619,6 +620,71 @@ func TestRecordMigrationState_UpsertTransitionsState(t *testing.T) {
 	}
 	if state != "committed" || inputHash != "hash1" {
 		t.Fatalf("after committed: state=%q input_hash=%q, want committed/hash1", state, inputHash)
+	}
+}
+
+// TestApply_RefusesUnknownFutureMigrationVersion covers the §決定4 schema
+// ceiling check (docs/plans/phase6-container-backend.md §PR6): a database
+// already migrated by a newer binary (a schema_migrations row this
+// binary's own migrations slice has never heard of, with a numeric prefix
+// past its newest known version) must make Apply refuse to start rather
+// than silently proceed as if nothing were different.
+func TestApply_RefusesUnknownFutureMigrationVersion(t *testing.T) {
+	d, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer d.Close()
+
+	if err := Apply(d.Conn); err != nil {
+		t.Fatalf("initial apply: %v", err)
+	}
+
+	// Simulate a future binary having already migrated this database past
+	// what the current binary (this test process) knows about.
+	if _, err := d.Conn.Exec(
+		`INSERT INTO schema_migrations (version, state, input_hash) VALUES (?, 'committed', '')`,
+		"9999_some_future_migration",
+	); err != nil {
+		t.Fatalf("seed future migration row: %v", err)
+	}
+
+	err = Apply(d.Conn)
+	if err == nil {
+		t.Fatal("expected Apply to refuse to start against a database with an unknown future migration version, got nil error")
+	}
+	if !strings.Contains(err.Error(), "9999_some_future_migration") {
+		t.Errorf("error = %q, want it to name the offending version", err.Error())
+	}
+}
+
+// TestApply_IgnoresNonNumberedSchemaMigrationsRows verifies the ceiling
+// check does not misfire on schema_migrations rows that were never a
+// numbered migrations/*.sql file to begin with — in particular
+// "workspace_db_consolidation" (internal/orchestrator/workspace_migration.go
+// records this directly via recordMigrationState, not through this
+// package's migrations slice). A non-numeric-prefixed version string must
+// never trip the "future migration" refusal.
+func TestApply_IgnoresNonNumberedSchemaMigrationsRows(t *testing.T) {
+	d, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer d.Close()
+
+	if err := Apply(d.Conn); err != nil {
+		t.Fatalf("initial apply: %v", err)
+	}
+
+	if _, err := d.Conn.Exec(
+		`INSERT INTO schema_migrations (version, state, input_hash) VALUES (?, 'committed', '')`,
+		"workspace_db_consolidation",
+	); err != nil {
+		t.Fatalf("seed workspace_db_consolidation row: %v", err)
+	}
+
+	if err := Apply(d.Conn); err != nil {
+		t.Fatalf("Apply should not refuse on a non-numbered schema_migrations row: %v", err)
 	}
 }
 
