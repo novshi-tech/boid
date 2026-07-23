@@ -227,6 +227,45 @@ func TestContainerBackend_Launch_CreatesNamedVolumesWithReapLabels(t *testing.T)
 	}
 }
 
+// TestContainerBackend_Launch_LabelsWorkspaceUnconditionally pins the PR5
+// review's Minor finding: boid.workspace must be set from
+// opts.Workspace unconditionally — present (even as an empty string) when
+// Workspace is unset, not omitted from Labels entirely.
+func TestContainerBackend_Launch_LabelsWorkspaceUnconditionally(t *testing.T) {
+	t.Run("workspace set", func(t *testing.T) {
+		api := &fakeDockerAPI{}
+		be := NewContainerBackend(api, ContainerBackendOptions{})
+		mustLaunch(t, be, sandbox.Spec{ID: "job-ws-set", Argv: []string{"true"}},
+			backend.LaunchOptions{JobID: "job-ws-set", Workspace: "myworkspace"})
+
+		if len(api.createCalls) != 1 {
+			t.Fatalf("ContainerCreate calls = %d, want 1", len(api.createCalls))
+		}
+		if got, want := api.createCalls[0].Config.Labels[labelWorkspace], "myworkspace"; got != want {
+			t.Errorf("Labels[%q] = %q, want %q", labelWorkspace, got, want)
+		}
+	})
+
+	t.Run("workspace empty still gets an explicit empty-string label", func(t *testing.T) {
+		api := &fakeDockerAPI{}
+		be := NewContainerBackend(api, ContainerBackendOptions{})
+		mustLaunch(t, be, sandbox.Spec{ID: "job-ws-empty", Argv: []string{"true"}},
+			backend.LaunchOptions{JobID: "job-ws-empty"})
+
+		if len(api.createCalls) != 1 {
+			t.Fatalf("ContainerCreate calls = %d, want 1", len(api.createCalls))
+		}
+		labels := api.createCalls[0].Config.Labels
+		got, ok := labels[labelWorkspace]
+		if !ok {
+			t.Fatal("Labels missing boid.workspace key entirely, want it present (even if empty)")
+		}
+		if got != "" {
+			t.Errorf("Labels[%q] = %q, want empty string", labelWorkspace, got)
+		}
+	})
+}
+
 func TestContainerBackend_Adopt_ReconstructsSessionFromRunningContainer(t *testing.T) {
 	const runtimeID = "already-running-container"
 	tty := false

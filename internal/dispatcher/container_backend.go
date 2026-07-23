@@ -312,12 +312,16 @@ func (b *containerBackend) Launch(ctx context.Context, spec sandbox.Spec, opts b
 		return nil, err
 	}
 
-	labels := map[string]string{labelJobID: opts.JobID}
+	// labelWorkspace is always set from opts.Workspace, even when empty
+	// ("workspace unknown" — an explicit, visible value rather than the
+	// label being silently omitted; see LaunchOptions.Workspace's doc
+	// comment, PR5 review Minor finding).
+	labels := map[string]string{
+		labelJobID:     opts.JobID,
+		labelWorkspace: opts.Workspace,
+	}
 	if b.installID != "" {
 		labels[labelInstallID] = b.installID
-	}
-	if ws := realized.Env["BOID_WORKSPACE_SLUG"]; ws != "" {
-		labels[labelWorkspace] = ws
 	}
 
 	mounts, namedVolumes := containerMounts(realized)
