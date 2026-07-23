@@ -76,7 +76,10 @@ func runReap(cmd *cobra.Command, args []string) error {
 
 	runtimesDir := filepath.Join(dataDir, "runtimes")
 
-	dockerClient, err := client.New(client.FromEnv, client.WithAPIVersionNegotiation())
+	// API-version negotiation is enabled by default in this SDK version
+	// (client.WithAPIVersionNegotiation is a deprecated no-op) — client.FromEnv
+	// alone is enough to pick up DOCKER_HOST/DOCKER_API_VERSION/etc.
+	dockerClient, err := client.New(client.FromEnv)
 	if err != nil {
 		return fmt.Errorf("connect to docker: %w", err)
 	}
