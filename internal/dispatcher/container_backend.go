@@ -533,6 +533,15 @@ func (b *containerBackend) Launch(ctx context.Context, spec sandbox.Spec, opts b
 	}
 	sess.transcriptFile, sess.transcriptPath = spoolFile, spoolPath
 	if err := sess.attach(ctx, false); err != nil {
+		// [Major 10, PR7 codex review]: close the spool file on this error
+		// path too — without it, every Launch that reaches here (attach
+		// failing after the spool was already opened) leaked one fd. The
+		// normal exit path's own close (waitLoop) never runs because
+		// waitLoop is only started by sess.start(), below, which this
+		// return never reaches.
+		if sess.transcriptFile != nil {
+			_ = sess.transcriptFile.Close()
+		}
 		_, _ = b.api.ContainerRemove(context.Background(), createRes.ID, client.ContainerRemoveOptions{Force: true})
 		cleanupFiles()
 		return nil, fmt.Errorf("container attach: %w", err)
@@ -540,6 +549,11 @@ func (b *containerBackend) Launch(ctx context.Context, spec sandbox.Spec, opts b
 
 	if _, err := b.api.ContainerStart(ctx, createRes.ID, client.ContainerStartOptions{}); err != nil {
 		sess.closeConn()
+		// [Major 10, PR7 codex review]: same fd-leak fix as the attach error
+		// path above.
+		if sess.transcriptFile != nil {
+			_ = sess.transcriptFile.Close()
+		}
 		_, _ = b.api.ContainerRemove(context.Background(), createRes.ID, client.ContainerRemoveOptions{Force: true})
 		cleanupFiles()
 		return nil, fmt.Errorf("container start: %w", err)
