@@ -212,15 +212,16 @@ type ContainerBackendOptions struct {
 	// with a non-empty LaunchOptions.Workspace is confined to an `Internal:
 	// true` per-workspace network with no route out — the ONLY way it can
 	// still reach the git gateway (mandatory: every project-visible
-	// dispatch clones, see runner.go's Visibility.Clone comment) or the
-	// egress proxy (both hosted in-process in this same daemon container,
+	// dispatch clones, see runner.go's Visibility.Clone comment), the
+	// egress proxy, or the broker (docs/plans/phase6-cutover-followups.md
+	// §⓪ — all three hosted in-process in this same daemon container,
 	// §決定4/5) is if the daemon container ALSO joins that network, under
-	// the same "boid-gateway"/"boid-egress" DNS aliases a job resolves on
-	// the static `boid_internal` compose network. Empty (every pre-PR9
-	// caller, and any non-compose test/DI usage) skips the self-connect
-	// step entirely — ensureWorkspaceNetwork still creates the isolated
-	// network and attaches the job container to it, just without also
-	// connecting the daemon, matching every unit test's expectations
+	// the same "boid-gateway"/"boid-egress"/"boid-broker" DNS aliases a job
+	// resolves on the static `boid_internal` compose network. Empty (every
+	// pre-PR9 caller, and any non-compose test/DI usage) skips the
+	// self-connect step entirely — ensureWorkspaceNetwork still creates the
+	// isolated network and attaches the job container to it, just without
+	// also connecting the daemon, matching every unit test's expectations
 	// unchanged.
 	SelfContainerID string
 
@@ -663,8 +664,8 @@ func sanitizeDockerNamePart(s string) string {
 // ensureWorkspaceNetwork idempotently creates (or confirms) the isolated
 // `Internal: true` docker network for workspace, and — when
 // b.selfContainerID is configured — connects this daemon's own container to
-// it under the gateway/egress DNS aliases a job on that network needs (see
-// ContainerBackendOptions.SelfContainerID's doc comment). Returns the
+// it under the gateway/egress/broker DNS aliases a job on that network needs
+// (see ContainerBackendOptions.SelfContainerID's doc comment). Returns the
 // network name Launch attaches the job container's own NetworkingConfig to.
 //
 // Fails closed on a genuine NetworkCreate error (anything other than an
@@ -702,11 +703,32 @@ func (b *containerBackend) ensureWorkspaceNetwork(ctx context.Context, workspace
 		_, cerr := b.api.NetworkConnect(ctx, netName, client.NetworkConnectOptions{
 			Container: b.selfContainerID,
 			EndpointConfig: &network.EndpointSettings{
-				Aliases: []string{composeGatewayServiceName, composeEgressServiceName},
+				// composeBrokerServiceName (docs/plans/
+				// phase6-cutover-followups.md §⓪ "broker TCP wire
+				// completion"): added alongside gateway/egress here for
+				// the exact same reason those two are — a job container
+				// confined to this `Internal: true` workspace network has
+				// NO route to the daemon at all unless the daemon ALSO
+				// joins this specific network connection under the same
+				// alias its BOID_BROKER_TLS_ADDR env (containerBackend.
+				// Launch's withBrokerTLSEnv) tells it to dial by name.
+				// Missing here (as it was before this fix — this endpoint
+				// alias set predates the broker TCP wire followup, PR9's
+				// own gateway/egress-only self-connect) meant "boid-broker"
+				// resolved fine on the static boid_internal network the
+				// daemon is always a member of, but NOT on any
+				// PER-WORKSPACE network a real job container actually runs
+				// on — found via the real-docker e2e-container CI job:
+				// "dial tcp: lookup boid-broker on 127.0.0.11:53: server
+				// misbehaving" (docker's embedded per-network DNS resolver
+				// has no record for a name that was never aliased on
+				// THIS network connection, regardless of the daemon
+				// having that alias elsewhere).
+				Aliases: []string{composeGatewayServiceName, composeEgressServiceName, composeBrokerServiceName},
 			},
 		})
 		if cerr != nil {
-			slog.Warn("container backend: connect daemon to workspace network failed; jobs on this network may be unable to reach the git gateway/egress proxy",
+			slog.Warn("container backend: connect daemon to workspace network failed; jobs on this network may be unable to reach the git gateway/egress proxy/broker",
 				"network", netName, "self_container_id", b.selfContainerID, "error", cerr)
 		}
 	}

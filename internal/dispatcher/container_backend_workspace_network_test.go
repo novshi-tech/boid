@@ -171,20 +171,30 @@ func TestContainerBackend_Launch_WorkspaceNetworkCreateFails_FailsLaunchClosed(t
 	}
 }
 
-// TestContainerBackend_Launch_SelfContainerID_ConnectsDaemonWithGatewayEgressAliases
+// TestContainerBackend_Launch_SelfContainerID_ConnectsDaemonWithGatewayEgressBrokerAliases
 // pins the other half of the wiring a workspace-isolated network needs to
 // be usable at all: with the job container (and its dockerproxy-created
 // siblings) confined to an `Internal: true` network that has no route out,
 // the ONLY way it can still reach the git gateway (mandatory — every
 // project-visible dispatch clones, see runner.go's own Visibility.Clone
-// comment) or the egress proxy is if the DAEMON's own container also joins
-// that same network, under the same DNS aliases job containers already
-// resolve on the static `boid_internal` compose network
+// comment), the egress proxy, or the broker (docs/plans/
+// phase6-cutover-followups.md §⓪) is if the DAEMON's own container also
+// joins that same network, under the same DNS aliases job containers
+// already resolve on the static `boid_internal` compose network
 // (build/container/compose.yml). ContainerBackendOptions.SelfContainerID
 // (typically $HOSTNAME inside the daemon's own container — see
 // sandboxBackendForConfig's wiring) is what tells containerBackend which
 // container to connect.
-func TestContainerBackend_Launch_SelfContainerID_ConnectsDaemonWithGatewayEgressAliases(t *testing.T) {
+//
+// "boid-broker" was MISSING from this endpoint's alias list until the
+// broker TCP wire followup fixed it — found via the real-docker
+// e2e-container CI job: a job container could resolve "boid-broker" fine
+// on the static boid_internal network (the daemon's own always-on
+// membership, aliased in build/container/compose.yml), but NOT on its own
+// per-workspace network, because THIS self-connect endpoint's own alias
+// list (independent per docker network connection) never included it —
+// "dial tcp: lookup boid-broker on 127.0.0.11:53: server misbehaving".
+func TestContainerBackend_Launch_SelfContainerID_ConnectsDaemonWithGatewayEgressBrokerAliases(t *testing.T) {
 	api := &fakeDockerAPI{}
 	be := NewContainerBackend(api, ContainerBackendOptions{SelfContainerID: "daemon-container-id"})
 
@@ -200,9 +210,9 @@ func TestContainerBackend_Launch_SelfContainerID_ConnectsDaemonWithGatewayEgress
 	if connOpts.Container != "daemon-container-id" {
 		t.Errorf("NetworkConnect Container = %q, want %q (ContainerBackendOptions.SelfContainerID)", connOpts.Container, "daemon-container-id")
 	}
-	wantAliases := map[string]bool{"boid-gateway": false, "boid-egress": false}
+	wantAliases := map[string]bool{"boid-gateway": false, "boid-egress": false, "boid-broker": false}
 	if connOpts.EndpointConfig == nil {
-		t.Fatal("NetworkConnect EndpointConfig is nil, want gateway/egress aliases")
+		t.Fatal("NetworkConnect EndpointConfig is nil, want gateway/egress/broker aliases")
 	}
 	for _, a := range connOpts.EndpointConfig.Aliases {
 		if _, ok := wantAliases[a]; ok {
