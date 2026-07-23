@@ -427,6 +427,21 @@ YAML
 e2e_log "pre-pulling busybox:stable"
 e2e_run docker pull busybox:stable
 
+# --- diagnostic pre-flight: same uid + same bind mount the daemon service
+# uses, but a plain `docker run` with no stdio-redirect games — isolates
+# whether BOID_RUNTIME_DIR is actually writable by BOID_UID:BOID_GID
+# inside a container BEFORE trying the full compose daemon (whose own
+# stdout/stderr get redirected to boid.log as literally its first startup
+# action, per compose.yml's own header comment, so a permission failure
+# there produces zero visible docker-logs output — exactly the debugging
+# dead end this pre-flight exists to avoid hitting blind).
+e2e_log "pre-flight: verifying BOID_RUNTIME_DIR is writable as BOID_UID:BOID_GID inside a container"
+docker run --rm \
+  --user "${BOID_UID}:${BOID_GID}" \
+  -v "${BOID_RUNTIME_DIR}:${BOID_RUNTIME_DIR}" \
+  busybox:stable \
+  sh -c "id; ls -ld '${BOID_RUNTIME_DIR}'; mkdir -p '${BOID_RUNTIME_DIR}/boid' && echo MKDIR_OK && touch '${BOID_RUNTIME_DIR}/boid/preflight.log' && echo TOUCH_OK && rm -f '${BOID_RUNTIME_DIR}/boid/preflight.log'"
+
 # --- build image + bring up the compose stack -------------------------------
 e2e_log "building image and starting compose stack (scripts/deploy-container.sh)"
 e2e_run bash "$REPO_ROOT/scripts/deploy-container.sh"
