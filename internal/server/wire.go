@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/moby/moby/client"
 	"github.com/novshi-tech/boid/internal/adapters/claude"
 	"github.com/novshi-tech/boid/internal/api"
 	"github.com/novshi-tech/boid/internal/api/auth"
@@ -24,6 +25,7 @@ import (
 	"github.com/novshi-tech/boid/internal/notify"
 	"github.com/novshi-tech/boid/internal/orchestrator"
 	"github.com/novshi-tech/boid/internal/sandbox"
+	"github.com/novshi-tech/boid/internal/sandbox/backend"
 	"github.com/novshi-tech/boid/internal/sandbox/dockerproxy"
 	"github.com/novshi-tech/boid/web"
 )
@@ -331,6 +333,44 @@ func buildProjectLoadStartupError(errs []error) error {
 	return &startupError{aggregate: msg.String(), causes: causes}
 }
 
+// sandboxBackendForConfig selects the SandboxBackend Runner.Backend should
+// be overridden to based on cfg.Sandbox.Backend (docs/plans/
+// phase6-container-backend.md §PR7 cutover, §決定11). Returns (nil, nil)
+// for the default "userns" (or an unset cfg — every pre-PR7 caller):
+// leaving Runner.Backend nil is what makes Runner.sandboxBackend() keep
+// constructing its own usernsBackend, so this is a true no-op for every
+// deployment that hasn't opted in.
+//
+// "container" wires a real docker client (github.com/moby/moby/client —
+// client.New(client.FromEnv) does not dial the docker daemon eagerly; it
+// only resolves DOCKER_HOST/DOCKER_* env and builds the HTTP client
+// config, so this never fails just because docker is unreachable at
+// daemon-boot time — the same lazy-connect behavior cmd/reap.go's
+// runReap already relies on) into a fresh containerBackend, carrying this
+// installation's install_id (§決定6 resource labeling) and the
+// host-visible runtimes directory (so `boid job log`'s transcript spool —
+// §PR7's transcript persistence — and the per-job dockerproxy TLS
+// materialize dir land under the same bind-mounted path a sibling docker
+// daemon can actually reach, matching ContainerBackendOptions.RuntimeDir's
+// own doc comment).
+//
+// installID and runtimeDir are threaded as plain values (not read from cfg
+// itself) so this stays independently unit-testable without a live
+// Server/DB — see wire_backend_test.go.
+func sandboxBackendForConfig(cfg *config.Config, installID, runtimeDir string) (backend.SandboxBackend, error) {
+	if cfg == nil || cfg.Sandbox.Backend != config.SandboxBackendContainer {
+		return nil, nil
+	}
+	dockerClient, err := client.New(client.FromEnv)
+	if err != nil {
+		return nil, fmt.Errorf("sandbox.backend: container: connect to docker: %w", err)
+	}
+	return dispatcher.NewContainerBackend(dockerClient, dispatcher.ContainerBackendOptions{
+		InstallID:  installID,
+		RuntimeDir: runtimeDir,
+	}), nil
+}
+
 // runtimesDirFor returns the runtimes root directory for the given config.
 func runtimesDirFor(cfg Config) string {
 	if cfg.DBPath != "" && cfg.DBPath != ":memory:" {
@@ -489,6 +529,31 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 		GitGateway:     srv.gatewayRegistry,
 		GatewayURL:     &srv.gatewayURL,
 	})
+
+	// sandbox backend selection (docs/plans/phase6-container-backend.md
+	// §PR7 cutover, §決定11): config-driven, global (not per-workspace).
+	// sandboxBackendForConfig returns nil for the default/unset "userns"
+	// case, leaving runner.Backend nil — Runner.sandboxBackend() then
+	// keeps constructing the pre-Phase-6 usernsBackend on every call
+	// exactly as before this PR, so every existing deployment (no
+	// sandbox.backend key in config.yaml) is byte-for-byte unaffected.
+	// "container" is the opt-in cutover this PR exposes; the plan doc's
+	// own cutover gate (container e2e green + rollback rehearsal) is an
+	// operational precondition on actually setting it in a real deploy,
+	// not something enforced here.
+	backendCfg, err := config.Load()
+	if err != nil {
+		slog.Warn("failed to load boid config for sandbox backend selection; defaulting to userns", "error", err)
+	} else {
+		sandboxBackend, berr := sandboxBackendForConfig(backendCfg, srv.installID, runtimesDirFor(cfg))
+		if berr != nil {
+			return nil, fmt.Errorf("daemon startup refused: %w", berr)
+		}
+		if sandboxBackend != nil {
+			runner.Backend = sandboxBackend
+			slog.Info("sandbox backend: container (docker) — cutover config (docs/plans/phase6-container-backend.md §PR7)")
+		}
+	}
 
 	lifecycle := jobLifecycleAdapter{runner: runner}
 	claudeAdapter := claude.New()

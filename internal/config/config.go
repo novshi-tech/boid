@@ -35,7 +35,37 @@ type TaskAskConfig struct {
 // SandboxConfig holds sandbox-related settings.
 type SandboxConfig struct {
 	AllowedDomains []string `yaml:"allowed_domains"`
+	// Backend selects the SandboxBackend implementation daemon startup
+	// wires the dispatcher's Runner to (docs/plans/
+	// phase6-container-backend.md §PR7 cutover, §決定11): "userns" (the
+	// default — safe, pre-Phase-6 behavior, zero code change for any
+	// existing deployment with no sandbox.backend key at all) or
+	// "container" (opt-in — every job dispatches into a docker sibling
+	// container instead of a userns sandbox process). Selection is
+	// GLOBAL, not per-workspace (§決定11 — workspace.ContainerImage only
+	// selects WHICH image, never userns-vs-container).
+	//
+	// This flips a real production dispatch path; the plan doc's own
+	// cutover gate ("config 公開 (cutover) の gate: container e2e green +
+	// rollback rehearsal (deploy-level reaper 込み) の完了を前提にする")
+	// is an operational precondition on setting this to "container" in a
+	// real deploy, not something this package enforces — Load only
+	// validates the string is one of the two recognized values.
+	Backend SandboxBackendKind `yaml:"backend"`
 }
+
+// SandboxBackendKind names a SandboxConfig.Backend value.
+type SandboxBackendKind string
+
+const (
+	// SandboxBackendUserns is the default: the pre-Phase-6 userns sandbox
+	// (clone(NEWUSER)+pivot_root, in-process on the daemon host).
+	SandboxBackendUserns SandboxBackendKind = "userns"
+	// SandboxBackendContainer opts into Phase 6's container backend
+	// (docker-out-of-docker sibling containers) — see
+	// docs/plans/phase6-container-backend.md.
+	SandboxBackendContainer SandboxBackendKind = "container"
+)
 
 // ForgeConfig configures the git gateway's credential injection for a
 // single forge id (the map key in GatewayConfig.Forges). Only the forge
@@ -194,6 +224,9 @@ func DefaultConfig() *Config {
 		TaskAsk: TaskAskConfig{
 			DisconnectGrace: 30 * time.Minute,
 		},
+		Sandbox: SandboxConfig{
+			Backend: SandboxBackendUserns,
+		},
 		Gateway: GatewayConfig{
 			// Built in so `boid secret set github-pat <PAT>` (or
 			// bitbucket-token) lights up the gateway with zero
@@ -256,6 +289,7 @@ func (c *Config) UnmarshalYAML(value *yaml.Node) error {
 		} `yaml:"notify"`
 		Sandbox struct {
 			AllowedDomains []string `yaml:"allowed_domains"`
+			Backend        string   `yaml:"backend"`
 		} `yaml:"sandbox"`
 		TaskAsk struct {
 			DisconnectGrace string `yaml:"disconnect_grace"`
@@ -303,6 +337,25 @@ func (c *Config) UnmarshalYAML(value *yaml.Node) error {
 	c.Notify.Command = raw.Notify.Command
 
 	c.Sandbox.AllowedDomains = raw.Sandbox.AllowedDomains
+
+	// sandbox.backend (docs/plans/phase6-container-backend.md §PR7
+	// cutover): unset/"" defaults to userns (safe, byte-for-byte the
+	// pre-Phase-6 behavior for every config.yaml written before this
+	// field existed). Any value other than the two recognized kinds is a
+	// hard error at load time — a typo here should never silently fall
+	// back to userns (masking that the operator's intended backend
+	// selection didn't take effect) nor silently fall forward to
+	// container (a security-relevant flip that must never happen by
+	// accident).
+	switch SandboxBackendKind(raw.Sandbox.Backend) {
+	case "", SandboxBackendUserns:
+		c.Sandbox.Backend = SandboxBackendUserns
+	case SandboxBackendContainer:
+		c.Sandbox.Backend = SandboxBackendContainer
+	default:
+		return fmt.Errorf("sandbox.backend: unrecognized value %q (want %q or %q)",
+			raw.Sandbox.Backend, SandboxBackendUserns, SandboxBackendContainer)
+	}
 
 	if raw.TaskAsk.DisconnectGrace != "" {
 		d, err := time.ParseDuration(raw.TaskAsk.DisconnectGrace)

@@ -597,4 +597,64 @@ func TestDefaultConfig(t *testing.T) {
 	if cfg.GC.OlderThan != 720*time.Hour {
 		t.Errorf("default GC.OlderThan: got %v, want 720h", cfg.GC.OlderThan)
 	}
+	if cfg.Sandbox.Backend != SandboxBackendUserns {
+		t.Errorf("default Sandbox.Backend: got %q, want %q (safe default — docs/plans/phase6-container-backend.md §PR7)", cfg.Sandbox.Backend, SandboxBackendUserns)
+	}
+}
+
+// TestLoadFromPath_SandboxBackend_UnsetDefaultsToUserns pins that a
+// config.yaml written before sandbox.backend existed (or one that simply
+// omits the key) keeps resolving to the userns backend — the byte-for-byte
+// "every existing deployment is unaffected" guarantee docs/plans/
+// phase6-container-backend.md §PR7 requires of this cutover.
+func TestLoadFromPath_SandboxBackend_UnsetDefaultsToUserns(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(path, []byte("gc:\n  enabled: true\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := loadFromPath(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Sandbox.Backend != SandboxBackendUserns {
+		t.Errorf("Sandbox.Backend = %q, want %q", cfg.Sandbox.Backend, SandboxBackendUserns)
+	}
+}
+
+// TestLoadFromPath_SandboxBackend_Container pins the opt-in path: an
+// explicit `sandbox.backend: container` in config.yaml round-trips to
+// SandboxBackendContainer.
+func TestLoadFromPath_SandboxBackend_Container(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	content := "sandbox:\n  backend: container\n"
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := loadFromPath(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Sandbox.Backend != SandboxBackendContainer {
+		t.Errorf("Sandbox.Backend = %q, want %q", cfg.Sandbox.Backend, SandboxBackendContainer)
+	}
+}
+
+// TestLoadFromPath_SandboxBackend_UnrecognizedRejected pins that a typo
+// (e.g. "docker" instead of "container") is a hard load error, not a silent
+// fallback in either direction — see SandboxConfig.Backend's doc comment.
+func TestLoadFromPath_SandboxBackend_UnrecognizedRejected(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	content := "sandbox:\n  backend: docker\n"
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := loadFromPath(path); err == nil {
+		t.Fatal("expected an error for an unrecognized sandbox.backend value, got nil")
+	}
 }

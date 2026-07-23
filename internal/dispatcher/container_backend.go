@@ -285,14 +285,14 @@ const (
 // why the parameter is this narrower interface rather than that concrete
 // type — or a fake for tests).
 //
-// Nothing in production dispatch calls this as of PR5 (docs/plans/
-// phase6-container-backend.md §PR5: "内部フラグ/テスト専用で... 確認する
-// (config 未公開)"). The seam this backend is exercised through is
-// Runner.Backend (internal/dispatcher/runner.go's DI override, landed PR1)
-// — a test (or, later, a hidden CLI flag / PR7's config-gated production
-// wiring) constructs a containerBackend via this function and assigns it to
-// Runner.Backend directly. sandbox.Backend config parsing/gating into that
-// seam is explicitly out of PR5's scope (PR7 cutover).
+// As of PR7 (docs/plans/phase6-container-backend.md §PR7 cutover),
+// internal/server/wire.go's sandboxBackendForConfig calls this in
+// production when config.yaml sets `sandbox.backend: container`, and
+// assigns the result to Runner.Backend — the same DI seam
+// (internal/dispatcher/runner.go, landed PR1) tests have exercised this
+// backend through since PR5. Every pre-PR7 caller (and every test that
+// doesn't opt in via that config key) is unaffected: Runner.Backend stays
+// nil and Runner.sandboxBackend() keeps constructing the usernsBackend.
 func NewContainerBackend(api dockerAPI, opts ContainerBackendOptions) backend.SandboxBackend {
 	b := &containerBackend{
 		api:                  api,
@@ -322,6 +322,18 @@ func NewContainerBackend(api dockerAPI, opts ContainerBackendOptions) backend.Sa
 			"default_uid", defaultContainerUID, "default_gid", defaultContainerGID)
 	}
 	return b
+}
+
+// IsContainerBackend reports whether be is a containerBackend constructed
+// by NewContainerBackend. Exists solely as an external-package
+// introspection helper for docs/plans/phase6-container-backend.md §PR7's
+// config-driven backend-selection wiring (internal/server/wire.go's
+// sandboxBackendForConfig) — that package cannot type-assert against the
+// unexported *containerBackend type directly, and this is cheaper for a
+// test to depend on than reflect-based %T string matching.
+func IsContainerBackend(be backend.SandboxBackend) bool {
+	_, ok := be.(*containerBackend)
+	return ok
 }
 
 // formatIntPtr renders a *int for logging: "<unset>" for nil, the decimal
