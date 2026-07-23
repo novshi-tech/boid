@@ -382,9 +382,10 @@ var sendTaskUpdatePayloadPatch = func(ctx context.Context, env map[string]string
 
 // Run is the agent-process entry point. See RunContext / Result in package
 // adapters for the I/O contract. Run owns:
-//   - generating a fresh session id and applying it via the payload-patch RPC
-//     up front so the jsonl transcript path is recorded in the task artifact
-//     even when the child terminates abnormally (SIGKILL, OOM)
+//   - generating a fresh session id and, for task-bound (non-session) runs,
+//     applying it via the payload-patch RPC up front so the jsonl transcript
+//     path is recorded in the task artifact even when the child terminates
+//     abnormally (SIGKILL, OOM)
 //   - prompt selection (UserAnswer → bootstrap, otherwise /boid-task or "")
 //   - claude argv construction (always --session-id, never --resume)
 //   - signal.Notify(SIGUSR1 / SIGWINCH) and forwarding to the child
@@ -410,11 +411,18 @@ func (a *Adapter) Run(ctx context.Context, rc adapters.RunContext) (adapters.Res
 		return adapters.Result{}, missingCLIError(rc.Env["BOID_WORKSPACE_SLUG"], err)
 	}
 
-	// 1. Generate a fresh session id. Apply it BEFORE starting claude so
-	// that an abnormal termination (SIGKILL, OOM) still leaves a record of
-	// which jsonl transcript file the agent wrote to (visible in the Web UI
-	// task detail under artifact.claude_code.sessions[]). Prior sessions come
-	// from the broker (`boid task payload --field
+	// isSession is the JobKindSession discriminator (BuildSessionJobSpec,
+	// internal/dispatcher/session_job.go, sets rc.TaskID = ""). Computed up
+	// front — step 1 below needs it to decide whether the session-tracking
+	// payload-patch RPC applies at all.
+	isSession := rc.TaskID == ""
+
+	// 1. Generate a fresh session id. For task-bound runs (isSession=false),
+	// apply it via the payload-patch RPC BEFORE starting claude so that an
+	// abnormal termination of the claude child (SIGKILL, OOM) still leaves a
+	// record of which jsonl transcript file the agent wrote to (visible in
+	// the Web UI task detail under artifact.claude_code.sessions[]). Prior
+	// sessions come from the broker (`boid task payload --field
 	// artifact.claude_code.sessions`, Phase 5b PR3) rather than a direct read
 	// of payload.json — see readSessionsFromRPC's doc comment. A fetch/parse
 	// error aborts here, before claude ever starts and before any payload
@@ -425,26 +433,46 @@ func (a *Adapter) Run(ctx context.Context, rc adapters.RunContext) (adapters.Res
 	// `boid task update --payload-patch @-` (Phase 6 PR8, docs/plans/
 	// phase6-container-backend.md §決定 9) rather than written to
 	// $HOME/.boid/output/payload_patch.json for a later file-based pickup —
-	// see sendTaskUpdatePayloadPatch's doc comment.
+	// see sendTaskUpdatePayloadPatch's doc comment. The merge this RPC drives
+	// (orchestrator.MergePayloadPatch) gives artifact.claude_code.sessions
+	// append/union semantics precisely so that two of these RPCs racing
+	// (readonly task, two claude hooks dispatched in parallel) never lose
+	// either session id even though each one independently read a
+	// (possibly stale) prior-sessions snapshot — see mergeClaudeSessions'
+	// doc comment (PR #821 codex review Blocker 1).
+	//
+	// isSession=true skips this block entirely: a taskless interactive
+	// session (`boid agent claude -p <project>` / JobKindSession) has no
+	// task row to attach a payload patch to. `boid task payload` (the read)
+	// happens to succeed even for a taskless job — it resolves off the
+	// JobContextSnapshot keyed by JobID, not TaskID — but `boid task update
+	// --payload-patch` (the write) resolves job -> TaskID -> GetTask(TaskID)
+	// server-side (api.TaskAppService.UpdateTaskPayloadPatch), and
+	// GetTask("") unconditionally errors. Before this fix that RPC failure
+	// propagated straight out of Run() before cmd.Start() was ever reached,
+	// so a taskless session never actually launched claude (PR #821 codex
+	// review Major finding).
 	sessionID := uuid.NewString()
-	sessions, err := readSessionsFromRPC(ctx, rc.Env)
-	if err != nil {
-		return adapters.Result{}, fmt.Errorf("read prior claude sessions: %w", err)
-	}
-	updated := updateSessions(sessions, sessionType, rc.InvokedName, sessionID)
-	patchBody, err := sessionsPayloadPatchBody(updated)
-	if err != nil {
-		return adapters.Result{}, err
-	}
-	if err := sendTaskUpdatePayloadPatch(ctx, rc.Env, patchBody); err != nil {
-		return adapters.Result{}, fmt.Errorf("apply claude session payload patch: %w", err)
+	if !isSession {
+		sessions, err := readSessionsFromRPC(ctx, rc.Env)
+		if err != nil {
+			return adapters.Result{}, fmt.Errorf("read prior claude sessions: %w", err)
+		}
+		updated := updateSessions(sessions, sessionType, rc.InvokedName, sessionID)
+		patchBody, err := sessionsPayloadPatchBody(updated)
+		if err != nil {
+			return adapters.Result{}, err
+		}
+		if err := sendTaskUpdatePayloadPatch(ctx, rc.Env, patchBody); err != nil {
+			return adapters.Result{}, fmt.Errorf("apply claude session payload patch: %w", err)
+		}
 	}
 
 	// 2. Build claude argv.
-	// isSession is the JobKindSession discriminator. Sessions are user-
-	// initiated and have no task lifecycle, so they receive neither the
-	// behaviour-skill bootstrap nor the "notify before exit" system prompt.
-	isSession := rc.TaskID == ""
+	// isSession (computed in step 1 above) drives prompt selection too:
+	// sessions are user-initiated and have no task lifecycle, so they
+	// receive neither the behaviour-skill bootstrap nor the "notify before
+	// exit" system prompt.
 	prompt := selectPrompt(isSession, rc.UserAnswer)
 	systemPrompt := taskSystemPrompt
 	if isSession {
@@ -517,7 +545,8 @@ func (a *Adapter) Run(ctx context.Context, rc adapters.RunContext) (adapters.Res
 		return adapters.Result{}, werr
 	}
 
-	// The session-id payload patch was already applied immediately via
+	// The session-id payload patch (skipped entirely for a taskless session,
+	// isSession=true) was already applied immediately via
 	// sendTaskUpdatePayloadPatch above (step 1) — there is no file-based
 	// result left to read back here (Phase 6 PR8 retired
 	// $HOME/.boid/output/payload_patch.json entirely).

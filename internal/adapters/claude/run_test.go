@@ -535,6 +535,11 @@ func withStubbedClaudeCLI(t *testing.T) {
 // sendTaskUpdatePayloadPatch applies anything — rather than silently
 // proceeding with a truncated (or entirely fresh) session list that would
 // then get persisted as this task's payload patch.
+//
+// TaskID is set explicitly (non-taskless) here: readSessionsFromRPC /
+// sendTaskUpdatePayloadPatch are only reached at all when isSession is
+// false — see TestRun_TasklessSession_SkipsPayloadPatchRPC for the isSession
+// branch this test is not exercising.
 func TestRun_SessionsFetchError_AbortsBeforeStartingClaude(t *testing.T) {
 	withStubbedClaudeCLI(t)
 	withFakeTaskPayloadSessions(t, func(context.Context, map[string]string) ([]byte, error) {
@@ -547,7 +552,7 @@ func TestRun_SessionsFetchError_AbortsBeforeStartingClaude(t *testing.T) {
 	})
 
 	a := New()
-	_, err := a.Run(context.Background(), adapters.RunContext{})
+	_, err := a.Run(context.Background(), adapters.RunContext{TaskID: "t1"})
 	if err == nil {
 		t.Fatal("expected Run to fail when the prior-sessions RPC fails")
 	}
@@ -559,7 +564,8 @@ func TestRun_SessionsFetchError_AbortsBeforeStartingClaude(t *testing.T) {
 // TestRun_SendPayloadPatchError_AbortsBeforeStartingClaude pins the mirror
 // case: a broker failure while applying the session-id payload patch must
 // also abort Run() before claude ever starts, not silently proceed with an
-// un-recorded session id.
+// un-recorded session id. TaskID is set explicitly — see the comment on
+// TestRun_SessionsFetchError_AbortsBeforeStartingClaude above.
 func TestRun_SendPayloadPatchError_AbortsBeforeStartingClaude(t *testing.T) {
 	withStubbedClaudeCLI(t)
 	withFakeTaskPayloadSessions(t, func(context.Context, map[string]string) ([]byte, error) {
@@ -570,7 +576,7 @@ func TestRun_SendPayloadPatchError_AbortsBeforeStartingClaude(t *testing.T) {
 	})
 
 	a := New()
-	_, err := a.Run(context.Background(), adapters.RunContext{})
+	_, err := a.Run(context.Background(), adapters.RunContext{TaskID: "t1"})
 	if err == nil {
 		t.Fatal("expected Run to fail when applying the payload patch fails")
 	}
@@ -597,7 +603,7 @@ func TestRun_SendPayloadPatchReceivesSessionUpdate(t *testing.T) {
 
 	env := map[string]string{"BOID_TASK_ID": "t1", "BOID_JOB_ID": "job-1"}
 	a := New()
-	_, err := a.Run(context.Background(), adapters.RunContext{Env: env})
+	_, err := a.Run(context.Background(), adapters.RunContext{TaskID: "t1", Env: env})
 	if err == nil {
 		t.Fatal("expected an error (the fake sender always fails)")
 	}
@@ -616,6 +622,63 @@ func TestRun_SendPayloadPatchReceivesSessionUpdate(t *testing.T) {
 	}
 	if len(got.Artifact.ClaudeCode.Sessions) != 1 || got.Artifact.ClaudeCode.Sessions[0].ID == "" {
 		t.Errorf("expected exactly one fresh session entry, got %+v", got.Artifact.ClaudeCode.Sessions)
+	}
+}
+
+// TestRun_TasklessSession_SkipsPayloadPatchRPC is the Run()-level regression
+// test for the codex-review Major finding on PR #821: a taskless interactive
+// session (RunContext.TaskID == "", the JobKindSession discriminator set by
+// BuildSessionJobSpec, internal/dispatcher/session_job.go) has no task row
+// for `boid task update --payload-patch` to attach to — server-side,
+// api.TaskAppService.UpdateTaskPayloadPatch resolves job.TaskID -> GetTask,
+// and GetTask("") unconditionally errors. Before this fix, Run() called that
+// RPC unconditionally and the failure propagated out of Run() before
+// cmd.Start() was ever reached, so a taskless session never actually
+// launched claude. This test pins the caller-level fix (isSession skips the
+// whole read+send block) without needing a real daemon/task lookup: both
+// fakes are wired to fail loudly if called at all, and the assertions
+// confirm Run() proceeds past them to the actual claude exec attempt.
+func TestRun_TasklessSession_SkipsPayloadPatchRPC(t *testing.T) {
+	withStubbedClaudeCLI(t)
+	// Deterministically fail the real exec.Cmd.Start() lookup regardless of
+	// whether the *host* running this test happens to have a real claude
+	// binary on its own PATH (withStubbedClaudeCLI only overrides the
+	// step-0 lookPath var, not cmd.Start()'s own PATH-based resolution of
+	// argv[0]="claude"). Without this, a dev machine with claude installed
+	// would actually fork a real interactive claude process here.
+	t.Setenv("PATH", t.TempDir())
+	readCalled := false
+	withFakeTaskPayloadSessions(t, func(context.Context, map[string]string) ([]byte, error) {
+		readCalled = true
+		return nil, errors.New("must not be called for a taskless session")
+	})
+	sendCalled := false
+	withFakeSendTaskUpdatePayloadPatch(t, func(context.Context, map[string]string, []byte) error {
+		sendCalled = true
+		return errors.New("must not be called for a taskless session")
+	})
+
+	a := New()
+	_, err := a.Run(context.Background(), adapters.RunContext{TaskID: ""})
+	if readCalled {
+		t.Error("readSessionsFromRPC must not be called for a taskless (JobKindSession) run")
+	}
+	if sendCalled {
+		t.Error("sendTaskUpdatePayloadPatch must not be called for a taskless (JobKindSession) run")
+	}
+	// Run() still proceeds to actually attempt to start claude — and fails
+	// here only because no real claude binary is on the test host's PATH
+	// (withStubbedClaudeCLI only overrides the step-0 lookPath check, not the
+	// real exec.Cmd.Start() lookup; see the package comment on that helper
+	// and TestRun_SendPayloadPatchReceivesSessionUpdate's note that "Run()
+	// has no way to fake-exec claude in this unit test"). The important
+	// assertion is that the failure is NOT the payload-patch RPC path this
+	// test is pinning the absence of.
+	if err == nil {
+		t.Fatal("expected an error (no real claude binary on the test host's PATH)")
+	}
+	if strings.Contains(err.Error(), "claude session payload patch") || strings.Contains(err.Error(), "prior claude sessions") {
+		t.Errorf("unexpected payload-patch-RPC error for a taskless session: %v", err)
 	}
 }
 
