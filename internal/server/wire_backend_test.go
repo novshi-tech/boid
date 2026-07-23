@@ -67,3 +67,23 @@ func TestSandboxBackendForConfig_Container_ReturnsContainerBackend(t *testing.T)
 		t.Errorf("backend = %T, want a *dispatcher.containerBackend", be)
 	}
 }
+
+// TestSandboxBackendForConfig_Container_WiresDiagnosticsCollector pins
+// [Major 7, PR7 codex review]: sandboxBackendForConfig must wire a real
+// DiagnosticsCollector (dispatcher.NewDefaultDiagnosticsCollector) into the
+// containerBackend it constructs — before this fix, production wiring left
+// it nil (NewContainerBackend's own doc comment: "PR5 leaves this nil (no
+// consumer yet)"), so an OOM-killed or setup-failure job container was
+// removed with no diagnostic capture at all.
+func TestSandboxBackendForConfig_Container_WiresDiagnosticsCollector(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Sandbox.Backend = config.SandboxBackendContainer
+
+	be, err := sandboxBackendForConfig(cfg, "install-1", t.TempDir())
+	if err != nil {
+		t.Fatalf("sandboxBackendForConfig: %v", err)
+	}
+	if !dispatcher.ContainerBackendHasDiagnosticsCollector(be) {
+		t.Error("containerBackend was constructed without a DiagnosticsCollector, want NewDefaultDiagnosticsCollector wired")
+	}
+}

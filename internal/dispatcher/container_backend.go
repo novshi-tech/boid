@@ -337,6 +337,24 @@ func IsContainerBackend(be backend.SandboxBackend) bool {
 	return ok
 }
 
+// ContainerBackendHasDiagnosticsCollector reports whether be is a
+// containerBackend constructed with a non-nil
+// ContainerBackendOptions.DiagnosticsCollector. Exists solely as an
+// external-package introspection helper — the same rationale as
+// IsContainerBackend's own doc comment — for [Major 7, PR7 codex review]'s
+// production wiring test (internal/server/wire_backend_test.go): that
+// package can observe that sandboxBackendForConfig actually wired
+// NewDefaultDiagnosticsCollector in without being able to name (or
+// type-assert into) the unexported *containerBackend/diagnosticsCollector
+// fields directly.
+func ContainerBackendHasDiagnosticsCollector(be backend.SandboxBackend) bool {
+	cb, ok := be.(*containerBackend)
+	if !ok {
+		return false
+	}
+	return cb.diagnosticsCollector != nil
+}
+
 // formatIntPtr renders a *int for logging: "<unset>" for nil, the decimal
 // value otherwise. Used by NewContainerBackend's uid/gid rejection warning
 // so the log line shows the caller's actual (possibly nil) input rather
@@ -372,6 +390,14 @@ type dockerAPI interface {
 	ContainerResize(ctx context.Context, containerID string, options client.ContainerResizeOptions) (client.ContainerResizeResult, error)
 	ContainerRemove(ctx context.Context, containerID string, options client.ContainerRemoveOptions) (client.ContainerRemoveResult, error)
 	ContainerList(ctx context.Context, options client.ContainerListOptions) (client.ContainerListResult, error)
+	// ContainerLogs [Major 7, PR7 codex review]: consumed by
+	// NewDefaultDiagnosticsCollector (container_backend_diagnostics.go) to
+	// capture a container's own docker-side log buffer as part of
+	// silent-exit diagnosis (§決定8's third primitive) — the attach-stream
+	// transcript spool can still be truncated/empty for an OOM-killed or
+	// setup-failure container, but dockerd's own log buffer independently
+	// retains output up to the moment of a SIGKILL.
+	ContainerLogs(ctx context.Context, containerID string, options client.ContainerLogsOptions) (client.ContainerLogsResult, error)
 
 	ImageInspect(ctx context.Context, image string, opts ...client.ImageInspectOption) (client.ImageInspectResult, error)
 	ImagePull(ctx context.Context, ref string, options client.ImagePullOptions) (client.ImagePullResponse, error)

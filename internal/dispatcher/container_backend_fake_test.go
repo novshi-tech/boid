@@ -7,6 +7,7 @@ import (
 	"io"
 	"iter"
 	"net"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -40,6 +41,7 @@ type fakeDockerAPI struct {
 	ContainerResizeFunc  func(ctx context.Context, containerID string, options client.ContainerResizeOptions) (client.ContainerResizeResult, error)
 	ContainerRemoveFunc  func(ctx context.Context, containerID string, options client.ContainerRemoveOptions) (client.ContainerRemoveResult, error)
 	ContainerListFunc    func(ctx context.Context, options client.ContainerListOptions) (client.ContainerListResult, error)
+	ContainerLogsFunc    func(ctx context.Context, containerID string, options client.ContainerLogsOptions) (client.ContainerLogsResult, error)
 	ImageInspectFunc     func(ctx context.Context, imageRef string, opts ...client.ImageInspectOption) (client.ImageInspectResult, error)
 	ImagePullFunc        func(ctx context.Context, ref string, options client.ImagePullOptions) (client.ImagePullResponse, error)
 	NetworkListFunc      func(ctx context.Context, options client.NetworkListOptions) (client.NetworkListResult, error)
@@ -62,6 +64,7 @@ type fakeDockerAPI struct {
 	removeIDs         []string
 	pullRefs          []string
 	listFilters       []client.Filters
+	logsIDs           []string
 	inspectIDs        []string
 	imageInspectRefs  []string
 	volumeCreateCalls []client.VolumeCreateOptions
@@ -178,6 +181,16 @@ func (f *fakeDockerAPI) ContainerList(ctx context.Context, options client.Contai
 		return f.ContainerListFunc(ctx, options)
 	}
 	return client.ContainerListResult{}, nil
+}
+
+func (f *fakeDockerAPI) ContainerLogs(ctx context.Context, containerID string, options client.ContainerLogsOptions) (client.ContainerLogsResult, error) {
+	f.mu.Lock()
+	f.logsIDs = append(f.logsIDs, containerID)
+	f.mu.Unlock()
+	if f.ContainerLogsFunc != nil {
+		return f.ContainerLogsFunc(ctx, containerID, options)
+	}
+	return io.NopCloser(strings.NewReader("")), nil
 }
 
 func (f *fakeDockerAPI) ImageInspect(ctx context.Context, imageRef string, opts ...client.ImageInspectOption) (client.ImageInspectResult, error) {

@@ -357,6 +357,17 @@ func buildProjectLoadStartupError(errs []error) error {
 // installID and runtimeDir are threaded as plain values (not read from cfg
 // itself) so this stays independently unit-testable without a live
 // Server/DB — see wire_backend_test.go.
+//
+// [Major 7, PR7 codex review]: DiagnosticsCollector is now wired to
+// dispatcher.NewDefaultDiagnosticsCollector(dockerClient, runtimeDir) —
+// before this fix it was left nil in every production path (see
+// NewContainerBackend's own doc comment: "PR5 leaves this nil (no consumer
+// yet)"), so an OOM-killed or setup-failure job container was removed with
+// no diagnostic capture beyond whatever the attach-stream transcript spool
+// happened to catch (exit code 137 and an empty log were often the only
+// signal). NewDefaultDiagnosticsCollector runs only on an abnormal exit
+// (ExitCode != 0) and degrades gracefully on its own inspect/logs failures
+// — see its own doc comment for the full contract.
 func sandboxBackendForConfig(cfg *config.Config, installID, runtimeDir string) (backend.SandboxBackend, error) {
 	if cfg == nil || cfg.Sandbox.Backend != config.SandboxBackendContainer {
 		return nil, nil
@@ -366,8 +377,9 @@ func sandboxBackendForConfig(cfg *config.Config, installID, runtimeDir string) (
 		return nil, fmt.Errorf("sandbox.backend: container: connect to docker: %w", err)
 	}
 	return dispatcher.NewContainerBackend(dockerClient, dispatcher.ContainerBackendOptions{
-		InstallID:  installID,
-		RuntimeDir: runtimeDir,
+		InstallID:            installID,
+		RuntimeDir:           runtimeDir,
+		DiagnosticsCollector: dispatcher.NewDefaultDiagnosticsCollector(dockerClient, runtimeDir),
 	}), nil
 }
 
