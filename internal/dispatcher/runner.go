@@ -467,11 +467,22 @@ func (r *Runner) Dispatch(ctx context.Context, spec *orchestrator.JobSpec, clean
 		}
 	}
 
+	// [Blocker 2, PR7 codex review]: proxyHost stays "" (applyProxyEnv's own
+	// hostGatewayIP fallback) for the userns backend — byte-for-byte
+	// unchanged. The container backend has no 10.0.2.2 projection at all,
+	// so a docker-enabled job needs the compose egress service DNS name
+	// instead; see SandboxRuntimeInfo.ProxyHost's own doc comment.
+	var proxyHost string
+	if IsContainerBackend(r.Backend) {
+		proxyHost = composeEgressServiceName
+	}
+
 	rtInfo := SandboxRuntimeInfo{
 		JobID:                      j.ID,
 		BoidBinary:                 r.BoidBinary,
 		ServerSocket:               r.ServerSocket,
 		ProxyPort:                  proxyPort,
+		ProxyHost:                  proxyHost,
 		BrokerSocket:               brokerSocket,
 		BrokerToken:                brokerToken,
 		WorkspacePeers:             workspacePeers,

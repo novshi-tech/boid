@@ -26,6 +26,22 @@ import (
 // HTTPS_PROXY basic-auth) was chosen for client compatibility — many tools
 // in the wild parse the proxy URL loosely or ignore the userinfo entirely.
 type ProxyManager struct {
+	// BindHost, when non-empty, overrides the loopback-only default
+	// ("127.0.0.1") every listener GetOrCreate starts binds to ([Blocker 2,
+	// PR7 codex review] — docs/plans/phase6-container-backend.md §決定5).
+	// A container-backend deploy runs the daemon inside its own container;
+	// a sibling job container reaches the egress proxy over the shared
+	// compose network by this daemon container's own IP, which a
+	// loopback-bound listener is unreachable from — see internal/server's
+	// composeBindHost doc comment for the full rationale. Set once, before
+	// Start (internal/server's New(), based on the config-selected sandbox
+	// backend — §決定11's global-not-per-job selection), and never changed
+	// again: every listener this manager ever creates (the default
+	// workspace one included) shares the same bind host for the life of
+	// the process. Empty (every pre-PR7 caller/test) preserves the
+	// original "127.0.0.1" behavior exactly.
+	BindHost string
+
 	mu      sync.Mutex
 	ctx     context.Context
 	proxies map[string]*managedProxy
@@ -72,6 +88,7 @@ func (m *ProxyManager) GetOrCreate(workspaceID string, allowed []string) (int, e
 		return mp.port, nil
 	}
 	proxy := NewProxy(allowed)
+	proxy.BindHost = m.BindHost
 	port, err := proxy.Start(m.ctx)
 	if err != nil {
 		return 0, fmt.Errorf("proxy manager: start workspace %q: %w", workspaceID, err)

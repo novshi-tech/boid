@@ -124,6 +124,92 @@ func TestProxyManager_EmptyWorkspaceID(t *testing.T) {
 	}
 }
 
+// findNonLoopbackIPv4 returns a non-loopback IPv4 address configured on
+// this host, or "" if none is found (some minimal/isolated CI sandboxes may
+// have only loopback — callers should skip in that case rather than fail).
+func findNonLoopbackIPv4(t *testing.T) string {
+	t.Helper()
+	addrs, err := net.InterfaceAddrs()
+	if err != nil {
+		t.Fatalf("InterfaceAddrs: %v", err)
+	}
+	for _, a := range addrs {
+		ipNet, ok := a.(*net.IPNet)
+		if !ok || ipNet.IP.IsLoopback() {
+			continue
+		}
+		if v4 := ipNet.IP.To4(); v4 != nil {
+			return v4.String()
+		}
+	}
+	return ""
+}
+
+// TestProxyManager_BindHost_ReachableFromNonLoopback pins [Blocker 2, PR7
+// codex review]: with BindHost set to "0.0.0.0" (composeBindHost — what
+// internal/server.New wires in when the container backend is selected),
+// the listener GetOrCreate starts must be reachable from a non-loopback
+// address, not just 127.0.0.1 — a sibling job container on the shared
+// compose network dials this daemon by its own container IP, which a
+// loopback-only bind (the pre-PR7, and still-default, behavior — see the
+// companion default-behavior test below) is unreachable from entirely.
+func TestProxyManager_BindHost_ReachableFromNonLoopback(t *testing.T) {
+	host := findNonLoopbackIPv4(t)
+	if host == "" {
+		t.Skip("no non-loopback IPv4 address available on this host")
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	m := sandbox.NewProxyManager()
+	m.BindHost = "0.0.0.0"
+	m.Start(ctx)
+	defer m.StopAll()
+
+	port, err := m.GetOrCreate("ws-bindhost", []string{"example.com"})
+	if err != nil {
+		t.Fatalf("GetOrCreate: %v", err)
+	}
+
+	conn, err := net.DialTimeout("tcp", fmt.Sprintf("%s:%d", host, port), 2*time.Second)
+	if err != nil {
+		t.Fatalf("dial via non-loopback address %s: %v (want the 0.0.0.0-bound listener to accept it)", host, err)
+	}
+	conn.Close()
+}
+
+// TestProxyManager_DefaultBindHost_LoopbackOnly pins the companion
+// non-regression: BindHost left at its zero value (every pre-Blocker-2
+// caller, and every userns-backend deployment after it) must still bind
+// loopback-only — a listener reachable from a non-loopback address by
+// default would be a new, unintended network exposure for every existing
+// deployment.
+func TestProxyManager_DefaultBindHost_LoopbackOnly(t *testing.T) {
+	host := findNonLoopbackIPv4(t)
+	if host == "" {
+		t.Skip("no non-loopback IPv4 address available on this host")
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	m := sandbox.NewProxyManager()
+	m.Start(ctx)
+	defer m.StopAll()
+
+	port, err := m.GetOrCreate("ws-default-bindhost", []string{"example.com"})
+	if err != nil {
+		t.Fatalf("GetOrCreate: %v", err)
+	}
+
+	conn, err := net.DialTimeout("tcp", fmt.Sprintf("%s:%d", host, port), 2*time.Second)
+	if err == nil {
+		conn.Close()
+		t.Fatalf("dial via non-loopback address %s unexpectedly succeeded, want connection refused (default BindHost must stay loopback-only)", host)
+	}
+}
+
 func TestProxyManager_StopAll(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

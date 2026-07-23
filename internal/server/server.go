@@ -45,9 +45,35 @@ const gatewayTLSShutdownTimeout = 5 * time.Second
 // gitgateway.SandboxURLOptions.ServiceName's own BackendContainer default
 // ("boid-gateway", see internal/gitgateway/sandbox_url.go) rather than
 // inventing a second name for the same service.
+//
+// The egress proxy's own compose-network DNS name ("boid-egress" — [Blocker
+// 2, PR7 codex review]) is declared as dispatcher.composeEgressServiceName,
+// not duplicated here: internal/server already imports internal/dispatcher
+// (the reverse would cycle), and dispatcher.SandboxRuntimeInfo.ProxyHost is
+// the only place that literal is actually consumed — see its own doc
+// comment. It must still match this file's composeBindHost value and
+// build/container/compose.yml's own "boid-egress" alias.
+//
+// composeBindHost is the listen address the git gateway's TCP(mTLS)
+// listener and the default-workspace egress proxy listener bind to when
+// the container backend is selected, instead of the loopback-only
+// "127.0.0.1" every pre-PR7 (and every non-container-backend) deployment
+// uses. A sibling job container reaches this daemon over the shared
+// compose network by its own container IP, not 127.0.0.1 — a
+// loopback-bound listener is unreachable from outside this daemon's own
+// container entirely, so a job could dial the DNS-resolved address and
+// still get connection-refused. "0.0.0.0" (all interfaces) is simplest and
+// matches how every other example containerized Go service exposes a port
+// to its own docker network; the daemon container's own network
+// boundary (boid_internal being `internal: true`, §決定5) is what actually
+// scopes reachability, not the bind address itself. The plaintext
+// (non-TLS) git gateway HTTP listener is deliberately NOT included here —
+// it stays loopback-only regardless of backend (never expose plaintext off
+// -box); only the already-mTLS-protected TCP listeners move.
 const (
 	composeBrokerServiceName  = "boid-broker"
 	composeGatewayServiceName = "boid-gateway"
+	composeBindHost           = "0.0.0.0"
 )
 
 type Config struct {
@@ -151,6 +177,19 @@ type Server struct {
 	// (or generated) once in New() when cfg.InstallIDDir is set. Empty
 	// otherwise — see InstallIDDir's doc comment.
 	installID string
+
+	// usingContainerBackend records whether buildRuntime selected the
+	// container backend for this daemon's dispatcher.Runner ([Blocker 2,
+	// PR7 codex review] — docs/plans/phase6-container-backend.md §決定11:
+	// backend selection is GLOBAL for the whole daemon, not per-job, so
+	// this is computed once in New() and never changes for the life of the
+	// process. Start() reads it to decide which addressing scheme
+	// (loopback 10.0.2.2 projection vs. compose service DNS + TLS) the
+	// git gateway's sandbox-facing URL and listener bind address use, and
+	// which host the egress proxy env advertises to job containers — see
+	// gatewayURLFor/gatewayBindHost and ProxyManager.BindHost's own doc
+	// comments.
+	usingContainerBackend bool
 
 	mu sync.Mutex
 }
@@ -259,6 +298,14 @@ func New(cfg Config) (*Server, error) {
 	if err != nil {
 		conn.Close()
 		return nil, err
+	}
+	// [Blocker 2, PR7 codex review]: computed once here, right after
+	// buildRuntime has resolved runner.Backend from config (§決定11's
+	// global-not-per-job selection) — see usingContainerBackend's own doc
+	// comment for what Start()/the egress proxy do with it.
+	srv.usingContainerBackend = dispatcher.IsContainerBackend(runtime.runner.Backend)
+	if srv.usingContainerBackend && srv.proxyManager != nil {
+		srv.proxyManager.BindHost = composeBindHost
 	}
 	if err := mountRoutes(srv, runtime); err != nil {
 		conn.Close()
@@ -445,13 +492,11 @@ func (s *Server) Start(ctx context.Context) error {
 	// git gateway: bind its listener before the UNIX/TCP listeners below so
 	// srv.gatewayURL (and, via the WireConfig.GatewayURL pointer,
 	// SandboxRuntimeInfo.GatewayURL) is populated by the time the first job
-	// dispatches. Bound on 127.0.0.1 like the egress proxy
-	// (internal/sandbox/proxy.go) — sandboxes reach the host loopback via
-	// the slirp-provided 10.0.2.2 alias, so the URL exposed to dispatch uses
-	// that address instead of 127.0.0.1. Nothing inside the sandbox talks to
-	// this yet (PR4 is inert — see docs/plans/git-gateway-cutover.md PR4);
-	// the runner clone sequence (PR5) and env var advertise (PR6) are future
-	// work.
+	// dispatches. The plaintext (non-TLS) listener stays loopback-only
+	// (127.0.0.1) regardless of backend — never expose plaintext off-box —
+	// and userns sandboxes reach it via the slirp-provided 10.0.2.2 alias,
+	// so the URL exposed to dispatch uses that address instead of
+	// 127.0.0.1 for that backend.
 	if s.gatewayHTTPServer != nil {
 		gwLn, err := net.Listen("tcp", "127.0.0.1:0")
 		if err != nil {
@@ -459,54 +504,80 @@ func (s *Server) Start(ctx context.Context) error {
 		}
 		s.gatewayLn = gwLn
 		port := gwLn.Addr().(*net.TCPAddr).Port
-		// SandboxURL's BackendUserns branch reproduces the pre-PR4
-		// fmt.Sprintf("http://10.0.2.2:%d", port) literally
-		// (docs/plans/phase6-container-backend.md §PR4: "既存 (10.0.2.2)
-		// を無条件で切り替える禁止") — this daemon always runs the userns
-		// backend today (container backend selection is PR5+), so the
-		// call site is hardcoded to BackendUserns rather than reading a
-		// config toggle that doesn't exist yet.
-		//
-		// PR5 completion point (codex review [Major 1] on PR4): a
-		// container-backend caller does NOT flip this call site to
-		// BackendContainer — userns jobs still need the http://10.0.2.2
-		// URL byte-for-byte, so this hardcoded branch stays exactly as it
-		// is. Instead, PR5 adds a *separate* SandboxURL call, gated on
-		// the job's backend, that passes Backend: BackendContainer along
-		// with the TLS listener's port (s.gatewayTLSLn's port, not
-		// gwLn's — the container backend only ever reaches this service
-		// over the compose network + TLS, never plaintext loopback) and
-		// ServiceName: composeGatewayServiceName (or a real compose
-		// service-discovery value, once one exists). Until that second
-		// call site exists, s.gatewayURL below is the only URL any caller
-		// sees — this whole listen block is the userns-only skeleton PR4
-		// promised, not the finished dual-backend wiring.
-		s.gatewayURL = gitgateway.SandboxURL(gitgateway.SandboxURLOptions{Backend: gitgateway.BackendUserns, Port: port})
+		// [Blocker 2, PR7 codex review]: gatewayURLFor's BackendUserns
+		// branch reproduces the pre-PR7 fmt.Sprintf("http://10.0.2.2:%d",
+		// port) literally (docs/plans/phase6-container-backend.md §PR4:
+		// "既存 (10.0.2.2) を無条件で切り替える禁止") for every deployment that
+		// has not opted into sandbox.backend: container — see its own doc
+		// comment. When s.usingContainerBackend is true, this initial value
+		// is OVERWRITTEN below once the TLS listener is bound (a container
+		// -backend job never reaches this plaintext loopback listener at
+		// all — only the compose service DNS name over mTLS).
+		s.gatewayURL = gatewayURLFor(false, port, 0)
 		go func() { _ = s.gatewayHTTPServer.Serve(gwLn) }() // returns ErrServerClosed on Stop
 		slog.Info("git gateway started", "addr", gwLn.Addr().String(), "sandbox_url", s.gatewayURL)
 
 		// git gateway TCP(mTLS) listener: additive alongside the
-		// plaintext loopback listener above (§PR4/§決定5). Nothing
-		// dispatches through it yet — the container backend that will,
-		// using SandboxURL's BackendContainer branch, is PR5.
+		// plaintext loopback listener above (§PR4/§決定5).
 		//
 		// composeGatewayServiceName is included as a SAN for the same
 		// reason as the broker's above (codex review [Major 2] on PR4):
 		// it matches SandboxURL's own BackendContainer default
-		// ("boid-gateway", see sandbox_url.go) so a PR5 caller that
-		// leaves SandboxURLOptions.ServiceName unset gets a URL whose
-		// hostname this cert already covers.
+		// ("boid-gateway", see sandbox_url.go) so a container-backend
+		// caller that leaves SandboxURLOptions.ServiceName unset gets a URL
+		// whose hostname this cert already covers.
+		//
+		// [Blocker 2, PR7 codex review]: the listener bind address is now
+		// gatewayBindHost(s.usingContainerBackend) — "0.0.0.0" instead of
+		// loopback-only "127.0.0.1" when the container backend is
+		// selected, since a sibling job container on the shared compose
+		// network cannot reach a listener bound to THIS container's own
+		// loopback interface. See composeBindHost's own doc comment for
+		// why this is safe (the compose network boundary, not the bind
+		// address, is what scopes reachability). userns deployments are
+		// byte-for-byte unaffected: gatewayBindHost(false) returns
+		// "127.0.0.1", identical to the pre-fix hardcoded literal.
 		if daemonCA != nil && s.gatewayHandler != nil {
+			bindHost := gatewayBindHost(s.usingContainerBackend)
 			tlsCfg, err := daemonCA.ServerTLSConfig("127.0.0.1", "localhost", composeGatewayServiceName)
 			if err != nil {
 				return fmt.Errorf("git gateway tls config: %w", err)
 			}
-			gwTLSLn, err := s.gatewayHandler.ListenTLS("127.0.0.1:0", tlsCfg)
+			gwTLSLn, err := s.gatewayHandler.ListenTLS(bindHost+":0", tlsCfg)
 			if err != nil {
 				return fmt.Errorf("listen git gateway tls: %w", err)
 			}
 			s.gatewayTLSLn = gwTLSLn
 			slog.Info("git gateway tls listener started", "addr", gwTLSLn.Addr().String())
+
+			// [Blocker 2, PR7 codex review]: once the container backend is
+			// selected AND the TLS listener is actually up, gatewayURL is
+			// replaced with the compose-service-DNS + mTLS URL — the ONLY
+			// address a sibling job container can reach this daemon at
+			// (BackendUserns' http://10.0.2.2 loopback projection does not
+			// exist between sibling docker containers, per this PR's own
+			// Blocker 2 evidence: `10.0.2.2` is a pasta/slirp userns
+			// artifact with no docker equivalent). Falls through to the
+			// plaintext BackendUserns URL set above when
+			// usingContainerBackend is false (every pre-PR7 deployment) —
+			// gatewayURLFor's own default branch.
+			if s.usingContainerBackend {
+				tlsPort := gwTLSLn.Addr().(*net.TCPAddr).Port
+				s.gatewayURL = gatewayURLFor(true, port, tlsPort)
+				slog.Info("git gateway sandbox url (container backend)", "sandbox_url", s.gatewayURL)
+			}
+		} else if s.usingContainerBackend {
+			// The container backend REQUIRES the mTLS listener (it never
+			// reaches the plaintext loopback listener at all — see above);
+			// without cfg.TLSDir configured (daemonCA nil) or gatewayHandler
+			// unset, gatewayURL is left at the useless plaintext-loopback
+			// value computed above, which no job container could ever
+			// dial. Surfaced loudly so an operator running
+			// sandbox.backend: container without cfg.TLSDir set (cmd/
+			// start.go's default IS to set it, but any custom wiring that
+			// doesn't would land here) finds out from the log rather than
+			// from every job's git clone timing out.
+			slog.Error("sandbox.backend: container is selected but no TLS CA is configured (cfg.TLSDir unset) or the git gateway handler is missing; job containers will not be able to reach the git gateway at all (docs/plans/phase6-container-backend.md §決定5)")
 		}
 	}
 

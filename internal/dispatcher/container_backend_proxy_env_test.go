@@ -25,12 +25,17 @@ import (
 // TestDispatch_ContainerBackend_PropagatesWorkspaceProxyEnv pins that end
 // to end: a workspace with a non-floor allowed_domains override still
 // drives ProxyAllocator.GetOrCreate with that exact domain, and the port it
-// returns lands as HTTP_PROXY/HTTPS_PROXY in the docker container's Env.
-// applyProxyEnv's proxy URL host (hostGatewayIP, "10.0.2.2") is unchanged
-// by this PR — reachability of that address from a real docker sibling
-// container (vs. today's userns/pasta sandbox) is a known, separately
-// tracked gap (docs/plans/phase6-container-backend.md's 現状棚卸し /
-// §決定5), not something this wiring-preservation test claims to close.
+// returns lands as HTTP_PROXY/HTTPS_PROXY in the docker container's Env —
+// now addressed via the compose egress service DNS name
+// (composeEgressServiceName, "boid-egress"), not the userns-only
+// hostGatewayIP ("10.0.2.2") literal a docker sibling container has no
+// projection for at all ([Blocker 2, PR7 codex review] — this test's own
+// previous version explicitly flagged that mismatch as a "known,
+// separately tracked gap"; it is closed as of this fix, via
+// Runner.Dispatch's IsContainerBackend(r.Backend) branch feeding
+// SandboxRuntimeInfo.ProxyHost). Real network reachability of that DNS
+// name from a live compose deploy is still PR9's e2e-container job — this
+// test pins the wiring, not a live dial.
 func TestDispatch_ContainerBackend_PropagatesWorkspaceProxyEnv(t *testing.T) {
 	d := newGatewayTestDB(t)
 	// The jobs table FK-references projects(id) — r.Projects itself is an
@@ -88,7 +93,7 @@ func TestDispatch_ContainerBackend_PropagatesWorkspaceProxyEnv(t *testing.T) {
 		t.Fatalf("ContainerCreate calls = %d, want 1", len(api.createCalls))
 	}
 	env := api.createCalls[0].Config.Env
-	const wantProxy = "http://10.0.2.2:9321"
+	const wantProxy = "http://boid-egress:9321"
 	var gotHTTPProxy, gotHTTPSProxy string
 	for _, kv := range env {
 		if strings.HasPrefix(kv, "HTTP_PROXY=") {
@@ -99,7 +104,7 @@ func TestDispatch_ContainerBackend_PropagatesWorkspaceProxyEnv(t *testing.T) {
 		}
 	}
 	if gotHTTPProxy != wantProxy {
-		t.Errorf("container Env HTTP_PROXY = %q, want %q (allocated port 9321 reaching the container unchanged)", gotHTTPProxy, wantProxy)
+		t.Errorf("container Env HTTP_PROXY = %q, want %q (allocated port 9321, addressed via the compose egress service DNS name)", gotHTTPProxy, wantProxy)
 	}
 	if gotHTTPSProxy != wantProxy {
 		t.Errorf("container Env HTTPS_PROXY = %q, want %q", gotHTTPSProxy, wantProxy)

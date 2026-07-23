@@ -101,13 +101,29 @@
 #     same path, which is purely a mount/identity concern this compose file
 #     is responsible for.
 #
-# NOT yet true of this file (explicitly out of PR6 scope):
-#   - broker / git gateway / dockerproxy's TCP(mTLS) listeners
-#     (internal/server/server.go) still bind 127.0.0.1:0 (ephemeral
-#     loopback) as landed in PR4. Reachability from job siblings on
-#     `boid_internal` requires a fixed port and a non-loopback bind address
-#     — a residual wiring item this compose file does not attempt to paper
-#     over with a decorative `ports:`/`expose:` section.
+# NOT yet true of this file (explicitly out of PR6 scope; [Blocker 2, PR7
+# codex review] closed the git-gateway and egress-proxy halves of this —
+# see the two sub-bullets below for what's still outstanding):
+#   - broker's and dockerproxy's TCP(mTLS) listeners (internal/server/
+#     server.go) still bind 127.0.0.1:0 (ephemeral loopback), unreachable
+#     from a job sibling on `boid_internal` — a residual wiring item this
+#     compose file does not attempt to paper over with a decorative
+#     `ports:`/`expose:` section. Neither is needed for a container-backend
+#     job to function today: broker communication is a bind-mounted UNIX
+#     socket (internal/dispatcher/sandbox_builder.go), not a TCP dial by
+#     name, and dockerproxy's per-job client-cert ENV delivery (DOCKER_HOST/
+#     DOCKER_CERT_PATH/DOCKER_TLS_VERIFY,
+#     ContainerBackendOptions.DockerTLS* fields) is implemented and
+#     unit-tested but not yet wired into production dispatch — see the next
+#     bullet.
+#   - the git gateway's and the default-workspace egress proxy's TCP(mTLS)/
+#     TCP listeners DO now bind on 0.0.0.0 (composeBindHost) whenever
+#     sandbox.backend: container is selected (Server.Start's
+#     gatewayBindHost / ProxyManager.BindHost, [Blocker 2, PR7 codex
+#     review]) — a container-backend job's git clone and HTTP(S) egress
+#     both resolve their target by the `boid-gateway`/`boid-egress`
+#     aliases below and reach a real, listening socket, not just a
+#     DNS name with nothing behind it.
 #   - the per-workspace internal networks themselves (dynamic, daemon-owned
 #     — see `boid_internal`'s own comment above).
 #   - dockerproxy's compose-reachable TCP listener itself. The `daemon`
@@ -118,9 +134,9 @@
 #     resolves to THIS container the moment such a job exists — but per
 #     this section's first bullet, nothing actually listens on a reachable
 #     address/port behind that name yet (still 127.0.0.1:0 loopback,
-#     exactly like broker/gateway). Per-job client cert ENV delivery
+#     unlike gateway/egress above). Per-job client cert ENV delivery
 #     (DOCKER_HOST/DOCKER_CERT_PATH/DOCKER_TLS_VERIFY) is implemented and
-#     unit-tested this PR (internal/dispatcher/container_backend.go's
+#     unit-tested (internal/dispatcher/container_backend.go's
 #     ContainerBackendOptions.DockerTLS* fields) but nothing in this compose
 #     stack constructs a real, reachable dockerproxy TCP listener or issues
 #     real per-job certs against it yet — that, plus an actual e2e dial
@@ -248,10 +264,33 @@ services:
       # DOCKER_HOST env (internal/dispatcher/container_backend.go's
       # withDockerTLSEnv) is set to — see this file's own "NOT yet true of
       # this file" note above for what this alias does and does not fix
-      # yet (PR6 codex review, Blocker 3).
+      # yet (PR6 codex review, Blocker 3; dockerproxy's actual reachable
+      # TCP listener is still §PR9 territory).
+      #
+      # boid-gateway / boid-broker / boid-egress [Blocker 2, PR7 codex
+      # review]: the compose service DNS names internal/server/server.go's
+      # gatewayURLFor/composeEgressServiceName (git gateway sandbox URL,
+      # egress proxy HTTP_PROXY host) and composeBrokerServiceName resolve
+      # to. Unlike boid-dockerproxy above, these ARE now backed by a
+      # reachable listener as of PR7: Server.Start binds the git gateway's
+      # TCP(mTLS) listener on composeBindHost ("0.0.0.0") whenever
+      # sandbox.backend: container is selected (gatewayBindHost), instead
+      # of the loopback-only "127.0.0.1" every other deployment uses — no
+      # further compose-side `ports:`/`expose:` section is needed for
+      # inter-container reachability on the same docker network (only
+      # host-external exposure needs those). boid-broker/boid-egress are
+      # declared here for the same DNS-resolves-to-this-container
+      # completeness even though nothing dials them by name today (broker
+      # reaches job containers via a bind-mounted UNIX socket, not TCP —
+      # see internal/dispatcher/sandbox_builder.go's BrokerSocket handling
+      # — and the egress proxy's own listener bind-host routing is PR7's
+      # ProxyManager.BindHost, already wired the same way as the gateway).
       boid_internal:
         aliases:
           - boid-dockerproxy
+          - boid-gateway
+          - boid-broker
+          - boid-egress
       default: {}
     # No restart policy: an unattended restart after a crash would launch a
     # second daemon over the still-running sibling job containers before

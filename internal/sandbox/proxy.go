@@ -22,6 +22,13 @@ type Proxy struct {
 	allowedDomains []string
 	allowedMu      sync.RWMutex
 
+	// BindHost, when non-empty, overrides Start's default loopback-only
+	// bind ("127.0.0.1") — see ProxyManager.BindHost's own doc comment for
+	// the container-backend rationale ([Blocker 2, PR7 codex review]). Must
+	// be set before Start is called; changing it afterward has no effect on
+	// an already-bound listener.
+	BindHost string
+
 	listener net.Listener
 	server   *http.Server
 	mu       sync.Mutex
@@ -56,7 +63,11 @@ func (p *Proxy) snapshotAllowed() []string {
 }
 
 func (p *Proxy) Start(ctx context.Context) (int, error) {
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	host := p.BindHost
+	if host == "" {
+		host = "127.0.0.1"
+	}
+	ln, err := net.Listen("tcp", host+":0")
 	if err != nil {
 		return 0, fmt.Errorf("listen: %w", err)
 	}

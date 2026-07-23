@@ -383,6 +383,49 @@ func sandboxBackendForConfig(cfg *config.Config, installID, runtimeDir string) (
 	}), nil
 }
 
+// gatewayBindHost [Blocker 2, PR7 codex review] returns the listen address
+// the git gateway's TCP(mTLS) listener binds to: "0.0.0.0" (composeBindHost)
+// when the container backend is selected, "127.0.0.1" (the pre-PR7
+// literal, byte-for-byte unchanged) otherwise. A pure function — no Server
+// state — so it is independently unit-testable without a live listener;
+// see wire_backend_test.go.
+func gatewayBindHost(usingContainerBackend bool) string {
+	if usingContainerBackend {
+		return composeBindHost
+	}
+	return "127.0.0.1"
+}
+
+// gatewayURLFor [Blocker 2, PR7 codex review] computes the git gateway's
+// sandbox-facing base URL for the currently-selected backend:
+//
+//   - usingContainerBackend == false (every pre-PR7 deployment, and every
+//     userns-backend deployment after PR7): gitgateway.BackendUserns's
+//     http://10.0.2.2:<plainPort> — byte-for-byte the pre-PR7 literal
+//     (docs/plans/phase6-container-backend.md §PR4: "既存 (10.0.2.2) を
+//     無条件で切り替える禁止").
+//   - usingContainerBackend == true: gitgateway.BackendContainer's
+//     https://boid-gateway:<tlsPort> — a sibling job container has no
+//     10.0.2.2 loopback projection at all (that address is a pasta/slirp
+//     userns artifact — this PR's own Blocker 2 evidence), so it MUST use
+//     the compose service DNS name over the mTLS listener instead.
+//
+// tlsPort is only consulted in the container-backend branch; plainPort only
+// in the userns branch — Start's own call sites pass 0 for whichever one
+// isn't relevant to a given call, matching SandboxURL's own "Port is
+// backend-specific" contract. A pure function — no Server/listener state —
+// so it is independently unit-testable; see wire_backend_test.go.
+func gatewayURLFor(usingContainerBackend bool, plainPort, tlsPort int) string {
+	if usingContainerBackend {
+		return gitgateway.SandboxURL(gitgateway.SandboxURLOptions{
+			Backend:     gitgateway.BackendContainer,
+			Port:        tlsPort,
+			ServiceName: composeGatewayServiceName,
+		})
+	}
+	return gitgateway.SandboxURL(gitgateway.SandboxURLOptions{Backend: gitgateway.BackendUserns, Port: plainPort})
+}
+
 // runtimesDirFor returns the runtimes root directory for the given config.
 func runtimesDirFor(cfg Config) string {
 	if cfg.DBPath != "" && cfg.DBPath != ":memory:" {
