@@ -170,6 +170,33 @@ func TestProxy_deny_dangerousCreate_noUpstreamHit(t *testing.T) {
 	}
 }
 
+// TestProxy_deny_publishAllPorts_noUpstreamHit pins Blocker 1 (PR6 codex
+// review) at the Server level: PublishAllPorts must be rejected the same
+// way TestProxy_deny_dangerousCreate_noUpstreamHit already pins for
+// Privileged — never reaching upstream.
+func TestProxy_deny_publishAllPorts_noUpstreamHit(t *testing.T) {
+	var upstreamHits int
+	upstream := newFakeUpstream(t, func(w http.ResponseWriter, r *http.Request) {
+		upstreamHits++
+		w.WriteHeader(http.StatusCreated)
+	})
+
+	proxySock := newProxy(t, upstream.sockPath)
+
+	body := mustJSON(map[string]interface{}{
+		"HostConfig": map[string]interface{}{"PublishAllPorts": true},
+	})
+	resp := doProxyRequest(t, proxySock, "POST", "/containers/create", body)
+	resp.Body.Close()
+
+	if resp.StatusCode != http.StatusForbidden {
+		t.Errorf("expected 403, got %d", resp.StatusCode)
+	}
+	if upstreamHits != 0 {
+		t.Errorf("upstream received %d requests; expected 0", upstreamHits)
+	}
+}
+
 func TestProxy_deny_imageBuild_403(t *testing.T) {
 	upstream := newFakeUpstream(t, func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(200)

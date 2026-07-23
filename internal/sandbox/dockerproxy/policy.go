@@ -169,14 +169,20 @@ type hostConfig struct {
 	Runtime           string            `json:"Runtime"`
 	Sysctls           map[string]string `json:"Sysctls"`
 	CgroupParent      string            `json:"CgroupParent"`
-	// PortBindings: publishing a sibling container's port to the host would
-	// let it be reached directly by host IP, bypassing the workspace
-	// internal network entirely (docs/plans/phase6-container-backend.md
-	// §PR6, §決定5: "host への port publish は非サポート (internal network から
-	// host published port へは届かない)"). Denied unconditionally below —
-	// there is no legitimate sibling use case this proxy needs to support
-	// publishing for.
-	PortBindings map[string]interface{} `json:"PortBindings"`
+	// PortBindings / PublishAllPorts: publishing a sibling container's port
+	// to the host would let it be reached directly by host IP, bypassing
+	// the workspace internal network entirely (docs/plans/
+	// phase6-container-backend.md §PR6, §決定5: "host への port publish は
+	// 非サポート (internal network から host published port へは届かない)").
+	// PublishAllPorts (docker CLI's `-P` — auto-publish every EXPOSEd port
+	// to a random host port) is the exact same host-escape shape as an
+	// explicit PortBindings entry and was previously not checked at all
+	// (Blocker 1, PR6 codex review: `hostConfig` rejected PortBindings but
+	// silently ignored PublishAllPorts as an unknown field). Denied
+	// unconditionally below, same as PortBindings — there is no legitimate
+	// sibling use case this proxy needs to support publishing for.
+	PortBindings    map[string]interface{} `json:"PortBindings"`
+	PublishAllPorts bool                    `json:"PublishAllPorts"`
 }
 
 type mountSpec struct {
@@ -268,6 +274,10 @@ func checkContainersCreate(body []byte) Verdict {
 
 	if len(hc.PortBindings) > 0 {
 		return deny("HostConfig.PortBindings: publishing ports to the host is not permitted")
+	}
+
+	if hc.PublishAllPorts {
+		return deny("HostConfig.PublishAllPorts: publishing ports to the host is not permitted")
 	}
 
 	if v := hc.PidMode; v != "" {

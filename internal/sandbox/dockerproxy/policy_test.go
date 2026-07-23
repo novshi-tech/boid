@@ -222,6 +222,28 @@ func TestPortBindings_absent_allow(t *testing.T) {
 	assertAllow(t, "POST", "/containers/create", body)
 }
 
+// TestPublishAllPorts_deny pins Blocker 1 (PR6 codex review): docker CLI's
+// `-P` flag (auto-publish every EXPOSEd port to a random host port) is the
+// same host-escape shape PortBindings already denied above, but the
+// pre-fix hostConfig struct did not list PublishAllPorts at all — an
+// unknown field encoding/json silently ignores — so
+// {"HostConfig":{"PublishAllPorts":true}} sailed straight through the
+// policy check.
+func TestPublishAllPorts_deny(t *testing.T) {
+	body := createBody(map[string]interface{}{"PublishAllPorts": true})
+	assertDenyContains(t, "POST", "/containers/create", body, "PublishAllPorts")
+}
+
+func TestPublishAllPorts_false_allow(t *testing.T) {
+	body := createBody(map[string]interface{}{"PublishAllPorts": false})
+	assertAllow(t, "POST", "/containers/create", body)
+}
+
+func TestPublishAllPorts_absent_allow(t *testing.T) {
+	body := createBody(map[string]interface{}{})
+	assertAllow(t, "POST", "/containers/create", body)
+}
+
 // --- PidMode ---
 
 func TestPidModeHost_deny(t *testing.T) {
