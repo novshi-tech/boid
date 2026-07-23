@@ -477,6 +477,66 @@ func TestContainerBackend_ReapOrphans_LabelBasedDestroy(t *testing.T) {
 	}
 }
 
+// TestContainerBackend_ReapOrphans_ScopesByInstallID pins [Blocker 5, PR7
+// codex review]: when ContainerBackendOptions.InstallID is set, ReapOrphans
+// must only destroy resources whose boid.install_id label matches — a
+// second installation's live containers sharing the same docker engine
+// (distinct install_id, no boid.install_id label at all, or a stale/foreign
+// label value) must be left completely alone.
+func TestContainerBackend_ReapOrphans_ScopesByInstallID(t *testing.T) {
+	api := &fakeDockerAPI{
+		ContainerListFunc: func(ctx context.Context, options client.ContainerListOptions) (client.ContainerListResult, error) {
+			return client.ContainerListResult{Items: []container.Summary{
+				{ID: "mine-1", Labels: map[string]string{labelJobID: "job-mine", labelInstallID: "install-A"}},
+				{ID: "theirs-1", Labels: map[string]string{labelJobID: "job-theirs", labelInstallID: "install-B"}},
+				{ID: "unlabeled-install-1", Labels: map[string]string{labelJobID: "job-unlabeled"}},
+			}}, nil
+		},
+	}
+	be := NewContainerBackend(api, ContainerBackendOptions{InstallID: "install-A"})
+
+	report, err := be.ReapOrphans(context.Background())
+	if err != nil {
+		t.Fatalf("ReapOrphans: %v", err)
+	}
+
+	if len(api.removeIDs) != 1 || api.removeIDs[0] != "mine-1" {
+		t.Fatalf("ContainerRemove calls = %v, want exactly [mine-1] (other installations' containers must never be touched)", api.removeIDs)
+	}
+	if len(report.ReapedJobIDs) != 1 || report.ReapedJobIDs[0] != "job-mine" {
+		t.Errorf("ReapedJobIDs = %v, want [job-mine]", report.ReapedJobIDs)
+	}
+	for _, jobID := range report.ReapedJobIDs {
+		if jobID == "job-theirs" || jobID == "job-unlabeled" {
+			t.Errorf("ReapedJobIDs = %v must not include a foreign-installation job", report.ReapedJobIDs)
+		}
+	}
+}
+
+// TestContainerBackend_ReapOrphans_EmptyInstallID_FallsBackToGlobalFilter
+// pins the pre-PR6 / test-wiring degrade: an empty InstallID (the
+// zero-value ContainerBackendOptions every pre-Blocker-5 caller/test uses)
+// must reap every boid.job_id-labeled container regardless of its
+// boid.install_id label, unchanged from before this fix.
+func TestContainerBackend_ReapOrphans_EmptyInstallID_FallsBackToGlobalFilter(t *testing.T) {
+	api := &fakeDockerAPI{
+		ContainerListFunc: func(ctx context.Context, options client.ContainerListOptions) (client.ContainerListResult, error) {
+			return client.ContainerListResult{Items: []container.Summary{
+				{ID: "orphan-1", Labels: map[string]string{labelJobID: "job-a", labelInstallID: "install-A"}},
+				{ID: "orphan-2", Labels: map[string]string{labelJobID: "job-b"}},
+			}}, nil
+		},
+	}
+	be := NewContainerBackend(api, ContainerBackendOptions{})
+
+	if _, err := be.ReapOrphans(context.Background()); err != nil {
+		t.Fatalf("ReapOrphans: %v", err)
+	}
+	if len(api.removeIDs) != 2 {
+		t.Fatalf("ContainerRemove calls = %v, want both orphan-1 and orphan-2 removed (no install_id configured)", api.removeIDs)
+	}
+}
+
 func TestContainerSession_Signal_ForwardsSIGUSR1ToPID1(t *testing.T) {
 	api := &fakeDockerAPI{}
 	be := NewContainerBackend(api, ContainerBackendOptions{})

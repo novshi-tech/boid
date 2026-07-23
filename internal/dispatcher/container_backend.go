@@ -644,14 +644,46 @@ func (b *containerBackend) doAdopt(ctx context.Context, runtimeID string) *conta
 
 // ReapOrphans reconciles job containers a daemon restart lost track of.
 // §決定 6: label enumeration → destroy, using the mere presence of
-// boid.job_id as the filter ("global filter") rather than an
-// install_id-scoped one — install_id generation is PR6's job (see
-// ContainerBackendOptions.InstallID's doc comment); until it lands every
-// container this backend ever created is a fair reap target. Volumes and
-// networks are reaped best-effort by the same label — nothing in PR5
-// creates job-labeled volumes/networks yet (workspace HOME stays a host
-// bind through Phase 6, §決定 4; workspace networks are PR6), so these two
-// loops are forward-compat scaffolding, not exercised by real traffic yet.
+// boid.job_id as the docker-side LIST filter ("global filter" — a container
+// with no boid.job_id label was never created by this backend at all, no
+// matter which installation).
+//
+// [Blocker 5, PR7 codex review]: within that list, every candidate is now
+// ALSO checked against boid.install_id in application code (not folded into
+// the docker filter query itself — see the note on that choice below)
+// whenever b.installID is non-empty (PR6's install_id generation has landed
+// by PR7 — see ContainerBackendOptions.InstallID's doc comment). WITHOUT
+// this, two boid installations sharing one docker engine (distinct install
+// IDs — e.g. two users, or a dev + prod compose stack on the same host)
+// would each force-remove the OTHER's live, in-flight job containers on
+// restart: the pre-fix filter matched on the mere presence of boid.job_id,
+// which every container either installation ever creates carries
+// regardless of whose daemon made it.
+//
+// The install_id check runs in Go rather than as a second `label` filter
+// value on the same docker ContainerListOptions.Filters query deliberately:
+// client.Filters' own doc comment states "a filter TERM is satisfied if ANY
+// ONE of the values in its set is a match" (OR within a term) — the mere
+// presence check (labelJobID, no "=value") and an exact-match check
+// (labelInstallID+"="+installID) are two VALUES under the same "label" term,
+// so relying on the dockerd server to AND them instead of OR them would be
+// betting an accidental-deletion-of-another-installation's-live-containers
+// bug on an undocumented server-side special case this package has no way
+// to verify without a live multi-install docker engine to test against.
+// Filtering candidates by label in Go after a broader docker-side list is
+// unambiguous and directly unit-testable with the fake dockerAPI.
+//
+// b.installID empty (a fresh daemon before PR6's install_id LoadOrCreate has
+// ever run, or test/DI wiring that never sets
+// ContainerBackendOptions.InstallID) skips the install_id check entirely —
+// every boid.job_id-labeled container is a fair reap target, exactly as
+// before this fix; this is the same degrade NewContainerBackend's own
+// InstallID doc comment already documents for the empty-installID case
+// elsewhere (resource labeling degrades the same way). Volumes and networks
+// are reaped by the identical logic — nothing in PR5/PR6 creates
+// job-labeled volumes/networks yet (workspace HOME stays a host bind through
+// Phase 6, §決定 4; workspace networks are PR6), so these two loops are
+// forward-compat scaffolding, not exercised by real traffic yet.
 func (b *containerBackend) ReapOrphans(ctx context.Context) (backend.ReapReport, error) {
 	filters := client.Filters{}.Add("label", labelJobID)
 
@@ -663,6 +695,9 @@ func (b *containerBackend) ReapOrphans(ctx context.Context) (backend.ReapReport,
 
 	report := backend.ReapReport{}
 	for _, c := range listRes.Items {
+		if !b.reapOwnsLabels(c.Labels) {
+			continue
+		}
 		jobID := c.Labels[labelJobID]
 		b.forgetSession(c.ID)
 		if _, err := b.api.ContainerRemove(ctx, c.ID, client.ContainerRemoveOptions{Force: true, RemoveVolumes: true}); err != nil {
@@ -683,6 +718,20 @@ func (b *containerBackend) ReapOrphans(ctx context.Context) (backend.ReapReport,
 	return report, nil
 }
 
+// reapOwnsLabels reports whether a docker resource's labels belong to this
+// backend's installation and are therefore safe for ReapOrphans to destroy
+// (Blocker 5, PR7 codex review — see ReapOrphans' own doc comment for why
+// this check runs in application code rather than as a docker-side filter
+// value). b.installID empty means "no install_id scoping configured yet"
+// (pre-PR6 wiring / tests) — every boid.job_id-labeled resource is owned,
+// matching the original global-filter behavior.
+func (b *containerBackend) reapOwnsLabels(labels map[string]string) bool {
+	if b.installID == "" {
+		return true
+	}
+	return labels[labelInstallID] == b.installID
+}
+
 func (b *containerBackend) reapOrphanVolumes(ctx context.Context, filters client.Filters) {
 	listRes, err := b.api.VolumeList(ctx, client.VolumeListOptions{Filters: filters})
 	if err != nil {
@@ -690,6 +739,9 @@ func (b *containerBackend) reapOrphanVolumes(ctx context.Context, filters client
 		return
 	}
 	for _, v := range listRes.Items {
+		if !b.reapOwnsLabels(v.Labels) {
+			continue
+		}
 		if _, err := b.api.VolumeRemove(ctx, v.Name, client.VolumeRemoveOptions{Force: true}); err != nil {
 			slog.Warn("container backend: reap orphan volume failed", "volume", v.Name, "error", err)
 		}
@@ -703,6 +755,9 @@ func (b *containerBackend) reapOrphanNetworks(ctx context.Context, filters clien
 		return
 	}
 	for _, n := range listRes.Items {
+		if !b.reapOwnsLabels(n.Labels) {
+			continue
+		}
 		if _, err := b.api.NetworkRemove(ctx, n.ID, client.NetworkRemoveOptions{}); err != nil {
 			slog.Warn("container backend: reap orphan network failed", "network", n.ID, "error", err)
 		}
