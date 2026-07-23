@@ -17,6 +17,5 @@ task_behaviors:
               exit 1
           fi
 
-          mkdir -p "$HOME/.boid/output"
-          printf '%s\n' '{"payload_patch":{"artifact":{"peer_write_rejected":true}}}' \
-              > "$HOME/.boid/output/payload_patch.json"
+          printf '%s\n' '{"artifact":{"peer_write_rejected":true}}' \
+              | boid task update --payload-patch @-

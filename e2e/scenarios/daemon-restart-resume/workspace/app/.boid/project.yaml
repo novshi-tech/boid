@@ -23,5 +23,4 @@ task_behaviors:
             sleep 0.05
           done
 
-          mkdir -p "$HOME/.boid/output"
-          printf '{"payload_patch":{"artifact":{"resumed":true}}}\n' > "$HOME/.boid/output/payload_patch.json"
+          printf '{"artifact":{"resumed":true}}\n' | boid task update --payload-patch @-

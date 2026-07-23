@@ -179,11 +179,13 @@ func parseBoidRequest(args []string) (*BoidRequest, error) {
 
 // parseBoidAgentStop builds the BoidRequest for `boid agent stop <job-id>`.
 // The agent (claude) invokes this to ask the daemon to terminate its own
-// claude process while leaving bash and the EXIT trap alive — so the
-// trap's `boid job done --output-file payload_patch.json` can complete the
-// job through the broker normally with the session id intact. The job
-// id is the current job (BOID_JOB_ID); broker rejects calls targeting any
-// other job.
+// claude process while leaving the surrounding go-native runner alive — the
+// runner then posts `boid job done` through the broker directly (a Go call,
+// internal/sandbox/runner.postJobDone — not a shell EXIT trap) once the
+// child exits, completing the job normally with the session id intact (the
+// session-id payload patch was already applied via `--payload-patch` before
+// the agent started). The job id is the current job (BOID_JOB_ID); broker
+// rejects calls targeting any other job.
 func parseBoidAgentStop(args []string) (*BoidRequest, error) {
 	if len(args) == 0 {
 		return nil, fmt.Errorf("boid shim: agent stop requires a job id")

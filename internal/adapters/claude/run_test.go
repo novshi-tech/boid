@@ -1,12 +1,12 @@
 package claude
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
-	"os"
+	"io"
 	"os/exec"
-	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -409,112 +409,111 @@ func TestReadSessionsFromRPC_Success(t *testing.T) {
 	}
 }
 
-func TestWritePayloadPatch_FreshFile(t *testing.T) {
-	dir := t.TempDir()
-	sessions := []session{
-		{Type: "execution", Name: "", ID: "abc"},
-	}
-	if err := writePayloadPatch(dir, sessions); err != nil {
-		t.Fatalf("writePayloadPatch: %v", err)
-	}
+// ---------- sessionsPayloadPatchBody (pure) ----------
 
-	got := readWrappedSessions(t, filepath.Join(dir, "payload_patch.json"))
-	if !reflect.DeepEqual(got, sessions) {
-		t.Errorf("round-trip mismatch: got %+v, want %+v", got, sessions)
-	}
-}
-
-func TestWritePayloadPatch_PreservesExistingKeys(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "payload_patch.json")
-
-	// Simulate an agent already having written boid task notify output.
-	prior := map[string]any{
-		"payload_patch": map[string]any{
-			"task_notify": map[string]any{
-				"message": "halfway done",
-				"ask":     "should I continue?",
-			},
-			"artifact": map[string]any{
-				"other_subsystem": map[string]any{"foo": "bar"},
-			},
-		},
-	}
-	data, _ := json.Marshal(prior)
-	if err := os.WriteFile(path, data, 0o644); err != nil {
-		t.Fatal(err)
-	}
-
+// TestSessionsPayloadPatchBody_Shape pins the exact RPC body shape: no outer
+// "payload_patch" envelope (unlike the retired file convention) — boid_shim.go's
+// parseBoidTaskUpdatePayloadPatch reads --payload-patch's value as the patch
+// body directly (see docs/plans/phase5-shim-and-task-context.md decision 6/7).
+func TestSessionsPayloadPatchBody_Shape(t *testing.T) {
 	sessions := []session{{Type: "execution", Name: "", ID: "abc"}}
-	if err := writePayloadPatch(dir, sessions); err != nil {
-		t.Fatalf("writePayloadPatch: %v", err)
-	}
-
-	raw, err := os.ReadFile(path)
+	body, err := sessionsPayloadPatchBody(sessions)
 	if err != nil {
-		t.Fatal(err)
-	}
-	var loaded map[string]any
-	if err := json.Unmarshal(raw, &loaded); err != nil {
-		t.Fatal(err)
-	}
-	patch, _ := loaded["payload_patch"].(map[string]any)
-	if patch == nil {
-		t.Fatalf("missing payload_patch in %s", raw)
+		t.Fatalf("sessionsPayloadPatchBody: %v", err)
 	}
 
-	notify, _ := patch["task_notify"].(map[string]any)
-	if notify == nil || notify["message"] != "halfway done" {
-		t.Errorf("task_notify lost: %v", patch)
+	var got struct {
+		Artifact struct {
+			ClaudeCode struct {
+				Sessions []session `json:"sessions"`
+			} `json:"claude_code"`
+		} `json:"artifact"`
+		PayloadPatch json.RawMessage `json:"payload_patch"`
 	}
-
-	artifact, _ := patch["artifact"].(map[string]any)
-	otherSubsystem, _ := artifact["other_subsystem"].(map[string]any)
-	if otherSubsystem == nil || otherSubsystem["foo"] != "bar" {
-		t.Errorf("other_subsystem lost under artifact: %v", artifact)
+	if err := json.Unmarshal(body, &got); err != nil {
+		t.Fatalf("unmarshal body: %v (body=%s)", err, body)
 	}
-
-	// And the sessions update landed.
-	if got := readWrappedSessions(t, path); !reflect.DeepEqual(got, sessions) {
-		t.Errorf("sessions not applied: got %+v, want %+v", got, sessions)
+	if got.PayloadPatch != nil {
+		t.Errorf("body must NOT be wrapped in a payload_patch envelope, got %s", body)
+	}
+	if !reflect.DeepEqual(got.Artifact.ClaudeCode.Sessions, sessions) {
+		t.Errorf("got sessions %+v, want %+v (body=%s)", got.Artifact.ClaudeCode.Sessions, sessions, body)
 	}
 }
 
-func TestWritePayloadPatch_OverwritesExistingSessions(t *testing.T) {
-	dir := t.TempDir()
-	if err := writePayloadPatch(dir, []session{{Type: "execution", Name: "", ID: "old"}}); err != nil {
-		t.Fatal(err)
-	}
-	fresh := []session{{Type: "execution", Name: "", ID: "new"}}
-	if err := writePayloadPatch(dir, fresh); err != nil {
-		t.Fatal(err)
-	}
-	got := readWrappedSessions(t, filepath.Join(dir, "payload_patch.json"))
-	if !reflect.DeepEqual(got, fresh) {
-		t.Errorf("got %+v, want %+v", got, fresh)
+// ---------- buildTaskUpdatePayloadPatchCmd (pure, no process spawn) ----------
+
+// TestBuildTaskUpdatePayloadPatchCmd_Args pins the exact CLI form the claude
+// adapter uses to apply its own payload patch: `boid task update
+// --payload-patch @-`, matching the plan doc's decision 6/7 example verbatim.
+func TestBuildTaskUpdatePayloadPatchCmd_Args(t *testing.T) {
+	cmd := buildTaskUpdatePayloadPatchCmd(context.Background(), nil, []byte("{}"))
+	want := []string{"boid", "task", "update", "--payload-patch", "@-"}
+	if !reflect.DeepEqual(cmd.Args, want) {
+		t.Errorf("cmd.Args = %v, want %v", cmd.Args, want)
 	}
 }
 
-// readWrappedSessions reads sessions from a payload_patch.json file.
-func readWrappedSessions(t *testing.T, path string) []session {
+// TestBuildTaskUpdatePayloadPatchCmd_DirIsAllowedByBoidPolicy mirrors
+// TestBuildTaskPayloadSessionsCmd_DirIsAllowedByBoidPolicy — same
+// runner-inner-child bare "/" cwd concern applies to every boid-shim
+// subprocess this package spawns, not just the sessions-read one.
+func TestBuildTaskUpdatePayloadPatchCmd_DirIsAllowedByBoidPolicy(t *testing.T) {
+	cmd := buildTaskUpdatePayloadPatchCmd(context.Background(), nil, []byte("{}"))
+	if cmd.Dir != "/tmp" {
+		t.Errorf("cmd.Dir = %q, want \"/tmp\"", cmd.Dir)
+	}
+}
+
+// TestBuildTaskUpdatePayloadPatchCmd_StdinCarriesBody confirms body is wired
+// as the subprocess's stdin (the `@-` convention reads from stdin).
+func TestBuildTaskUpdatePayloadPatchCmd_StdinCarriesBody(t *testing.T) {
+	body := []byte(`{"artifact":{"claude_code":{"sessions":[]}}}`)
+	cmd := buildTaskUpdatePayloadPatchCmd(context.Background(), nil, body)
+	got, err := io.ReadAll(cmd.Stdin)
+	if err != nil {
+		t.Fatalf("read cmd.Stdin: %v", err)
+	}
+	if !bytes.Equal(got, body) {
+		t.Errorf("cmd.Stdin = %s, want %s", got, body)
+	}
+}
+
+// TestBuildTaskUpdatePayloadPatchCmd_EnvOverlaysRunContextEnv mirrors
+// TestBuildTaskPayloadSessionsCmd_EnvOverlaysRunContextEnv.
+func TestBuildTaskUpdatePayloadPatchCmd_EnvOverlaysRunContextEnv(t *testing.T) {
+	t.Setenv("SOME_PARENT_VAR", "keep-me")
+	env := map[string]string{
+		"BOID_JOB_ID":        "job-1",
+		"BOID_BROKER_SOCKET": "/run/boid/broker.sock",
+		"BOID_BROKER_TOKEN":  "tok",
+		"BOID_BUILTIN_SHIM":  "1",
+	}
+	cmd := buildTaskUpdatePayloadPatchCmd(context.Background(), env, []byte("{}"))
+
+	got := map[string]bool{}
+	for _, kv := range cmd.Env {
+		got[kv] = true
+	}
+	for k, v := range env {
+		if !got[k+"="+v] {
+			t.Errorf("cmd.Env missing %s=%s; env=%v", k, v, cmd.Env)
+		}
+	}
+	if !got["SOME_PARENT_VAR=keep-me"] {
+		t.Error("cmd.Env should still carry the current process's own env (SOME_PARENT_VAR)")
+	}
+}
+
+// ---------- sendTaskUpdatePayloadPatch (injected for Run()-level tests) ----------
+
+// withFakeSendTaskUpdatePayloadPatch overrides sendTaskUpdatePayloadPatch so
+// Run() never spawns a real subprocess.
+func withFakeSendTaskUpdatePayloadPatch(t *testing.T, fn func(ctx context.Context, env map[string]string, body []byte) error) {
 	t.Helper()
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var p struct {
-		PayloadPatch struct {
-			Artifact struct {
-				ClaudeCode struct {
-					Sessions []session `json:"sessions"`
-				} `json:"claude_code"`
-			} `json:"artifact"`
-		} `json:"payload_patch"`
-	}
-	if err := json.Unmarshal(data, &p); err != nil {
-		t.Fatal(err)
-	}
-	return p.PayloadPatch.Artifact.ClaudeCode.Sessions
+	saved := sendTaskUpdatePayloadPatch
+	sendTaskUpdatePayloadPatch = fn
+	t.Cleanup(func() { sendTaskUpdatePayloadPatch = saved })
 }
 
 // withStubbedClaudeCLI overrides lookPath to succeed without requiring an
@@ -532,25 +531,154 @@ func withStubbedClaudeCLI(t *testing.T) {
 // TestRun_SessionsFetchError_AbortsBeforeStartingClaude is the Run()-level
 // regression test for the codex-review Major finding on PR #800: when
 // readSessionsFromRPC cannot determine the prior session list, Run() must
-// fail outright — before ever forking claude and before writePayloadPatch
-// touches disk — rather than silently proceeding with a truncated (or
-// entirely fresh) session list that would then get persisted as this task's
-// payload patch.
+// fail outright — before ever forking claude and before
+// sendTaskUpdatePayloadPatch applies anything — rather than silently
+// proceeding with a truncated (or entirely fresh) session list that would
+// then get persisted as this task's payload patch.
+//
+// TaskID is set explicitly (non-taskless) here: readSessionsFromRPC /
+// sendTaskUpdatePayloadPatch are only reached at all when isSession is
+// false — see TestRun_TasklessSession_SkipsPayloadPatchRPC for the isSession
+// branch this test is not exercising.
 func TestRun_SessionsFetchError_AbortsBeforeStartingClaude(t *testing.T) {
 	withStubbedClaudeCLI(t)
 	withFakeTaskPayloadSessions(t, func(context.Context, map[string]string) ([]byte, error) {
 		return nil, errors.New("broker unreachable")
 	})
+	sendCalled := false
+	withFakeSendTaskUpdatePayloadPatch(t, func(context.Context, map[string]string, []byte) error {
+		sendCalled = true
+		return nil
+	})
 
-	dir := t.TempDir()
 	a := New()
-	_, err := a.Run(context.Background(), adapters.RunContext{OutputDir: dir})
+	_, err := a.Run(context.Background(), adapters.RunContext{TaskID: "t1"})
 	if err == nil {
 		t.Fatal("expected Run to fail when the prior-sessions RPC fails")
 	}
+	if sendCalled {
+		t.Error("sendTaskUpdatePayloadPatch must not be called when the session fetch fails (would truncate session history)")
+	}
+}
 
-	if _, statErr := os.Stat(filepath.Join(dir, "payload_patch.json")); !os.IsNotExist(statErr) {
-		t.Errorf("payload_patch.json must not be written when the session fetch fails (would truncate session history); stat err = %v", statErr)
+// TestRun_SendPayloadPatchError_AbortsBeforeStartingClaude pins the mirror
+// case: a broker failure while applying the session-id payload patch must
+// also abort Run() before claude ever starts, not silently proceed with an
+// un-recorded session id. TaskID is set explicitly — see the comment on
+// TestRun_SessionsFetchError_AbortsBeforeStartingClaude above.
+func TestRun_SendPayloadPatchError_AbortsBeforeStartingClaude(t *testing.T) {
+	withStubbedClaudeCLI(t)
+	withFakeTaskPayloadSessions(t, func(context.Context, map[string]string) ([]byte, error) {
+		return nil, nil
+	})
+	withFakeSendTaskUpdatePayloadPatch(t, func(context.Context, map[string]string, []byte) error {
+		return errors.New("broker unreachable")
+	})
+
+	a := New()
+	_, err := a.Run(context.Background(), adapters.RunContext{TaskID: "t1"})
+	if err == nil {
+		t.Fatal("expected Run to fail when applying the payload patch fails")
+	}
+}
+
+// TestRun_SendPayloadPatchReceivesSessionUpdate confirms Run() feeds
+// sendTaskUpdatePayloadPatch the same env map the agent child itself gets,
+// and a body containing the freshly generated session id — mirrors
+// TestReadSessionsFromRPC_Success's env-plumbing assertion for the sibling
+// read path.
+func TestRun_SendPayloadPatchReceivesSessionUpdate(t *testing.T) {
+	withStubbedClaudeCLI(t)
+	withFakeTaskPayloadSessions(t, func(context.Context, map[string]string) ([]byte, error) {
+		return nil, nil
+	})
+
+	var gotEnv map[string]string
+	var gotBody []byte
+	withFakeSendTaskUpdatePayloadPatch(t, func(_ context.Context, env map[string]string, body []byte) error {
+		gotEnv = env
+		gotBody = body
+		return errors.New("stop before forking claude") // Run() has no way to fake-exec claude in this unit test.
+	})
+
+	env := map[string]string{"BOID_TASK_ID": "t1", "BOID_JOB_ID": "job-1"}
+	a := New()
+	_, err := a.Run(context.Background(), adapters.RunContext{TaskID: "t1", Env: env})
+	if err == nil {
+		t.Fatal("expected an error (the fake sender always fails)")
+	}
+	if !reflect.DeepEqual(gotEnv, env) {
+		t.Errorf("sendTaskUpdatePayloadPatch received env %+v, want %+v", gotEnv, env)
+	}
+	var got struct {
+		Artifact struct {
+			ClaudeCode struct {
+				Sessions []session `json:"sessions"`
+			} `json:"claude_code"`
+		} `json:"artifact"`
+	}
+	if err := json.Unmarshal(gotBody, &got); err != nil {
+		t.Fatalf("unmarshal body: %v (body=%s)", err, gotBody)
+	}
+	if len(got.Artifact.ClaudeCode.Sessions) != 1 || got.Artifact.ClaudeCode.Sessions[0].ID == "" {
+		t.Errorf("expected exactly one fresh session entry, got %+v", got.Artifact.ClaudeCode.Sessions)
+	}
+}
+
+// TestRun_TasklessSession_SkipsPayloadPatchRPC is the Run()-level regression
+// test for the codex-review Major finding on PR #821: a taskless interactive
+// session (RunContext.TaskID == "", the JobKindSession discriminator set by
+// BuildSessionJobSpec, internal/dispatcher/session_job.go) has no task row
+// for `boid task update --payload-patch` to attach to — server-side,
+// api.TaskAppService.UpdateTaskPayloadPatch resolves job.TaskID -> GetTask,
+// and GetTask("") unconditionally errors. Before this fix, Run() called that
+// RPC unconditionally and the failure propagated out of Run() before
+// cmd.Start() was ever reached, so a taskless session never actually
+// launched claude. This test pins the caller-level fix (isSession skips the
+// whole read+send block) without needing a real daemon/task lookup: both
+// fakes are wired to fail loudly if called at all, and the assertions
+// confirm Run() proceeds past them to the actual claude exec attempt.
+func TestRun_TasklessSession_SkipsPayloadPatchRPC(t *testing.T) {
+	withStubbedClaudeCLI(t)
+	// Deterministically fail the real exec.Cmd.Start() lookup regardless of
+	// whether the *host* running this test happens to have a real claude
+	// binary on its own PATH (withStubbedClaudeCLI only overrides the
+	// step-0 lookPath var, not cmd.Start()'s own PATH-based resolution of
+	// argv[0]="claude"). Without this, a dev machine with claude installed
+	// would actually fork a real interactive claude process here.
+	t.Setenv("PATH", t.TempDir())
+	readCalled := false
+	withFakeTaskPayloadSessions(t, func(context.Context, map[string]string) ([]byte, error) {
+		readCalled = true
+		return nil, errors.New("must not be called for a taskless session")
+	})
+	sendCalled := false
+	withFakeSendTaskUpdatePayloadPatch(t, func(context.Context, map[string]string, []byte) error {
+		sendCalled = true
+		return errors.New("must not be called for a taskless session")
+	})
+
+	a := New()
+	_, err := a.Run(context.Background(), adapters.RunContext{TaskID: ""})
+	if readCalled {
+		t.Error("readSessionsFromRPC must not be called for a taskless (JobKindSession) run")
+	}
+	if sendCalled {
+		t.Error("sendTaskUpdatePayloadPatch must not be called for a taskless (JobKindSession) run")
+	}
+	// Run() still proceeds to actually attempt to start claude — and fails
+	// here only because no real claude binary is on the test host's PATH
+	// (withStubbedClaudeCLI only overrides the step-0 lookPath check, not the
+	// real exec.Cmd.Start() lookup; see the package comment on that helper
+	// and TestRun_SendPayloadPatchReceivesSessionUpdate's note that "Run()
+	// has no way to fake-exec claude in this unit test"). The important
+	// assertion is that the failure is NOT the payload-patch RPC path this
+	// test is pinning the absence of.
+	if err == nil {
+		t.Fatal("expected an error (no real claude binary on the test host's PATH)")
+	}
+	if strings.Contains(err.Error(), "claude session payload patch") || strings.Contains(err.Error(), "prior claude sessions") {
+		t.Errorf("unexpected payload-patch-RPC error for a taskless session: %v", err)
 	}
 }
 

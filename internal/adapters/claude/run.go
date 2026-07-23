@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"strings"
 	"syscall"
 
@@ -314,57 +313,79 @@ func parseSessionsJSON(data []byte) ([]session, error) {
 	return sessions, nil
 }
 
-// writePayloadPatch writes the session-id update into
-// <outputDir>/payload_patch.json, preserving any other keys the agent already
-// wrote (boid task notify, custom artifact entries, …). The session list
-// replaces whatever was previously stored under
-// payload_patch.artifact.claude_code.sessions.
-func writePayloadPatch(outputDir string, sessions []session) error {
-	if err := os.MkdirAll(outputDir, 0o755); err != nil {
-		return fmt.Errorf("mkdir output dir: %w", err)
+// sessionsPayloadPatchBody builds the raw patch body for `boid task update
+// --payload-patch @-`: {"artifact":{"claude_code":{"sessions": sessions}}}.
+// Unlike the retired file-based writePayloadPatch, this does NOT need to
+// read-modify-write any prior state to preserve sibling keys (task_notify,
+// artifact.report, …) — the broker's own merge (orchestrator.
+// MergePayloadPatch, gated by the firing hook's own Traits.Produces) already
+// shallow-merges "artifact" sub-keys against whatever is already persisted on
+// the task, so a patch that only mentions artifact.claude_code.sessions
+// leaves every other artifact.* subtree untouched. See docs/plans/
+// phase6-container-backend.md §決定 9.
+func sessionsPayloadPatchBody(sessions []session) ([]byte, error) {
+	body := map[string]any{
+		"artifact": map[string]any{
+			"claude_code": map[string]any{
+				"sessions": sessions,
+			},
+		},
 	}
-	path := filepath.Join(outputDir, "payload_patch.json")
-
-	existing := map[string]any{}
-	if data, err := os.ReadFile(path); err == nil {
-		var loaded map[string]any
-		if err := json.Unmarshal(data, &loaded); err == nil && loaded != nil {
-			existing = loaded
-		}
-	}
-
-	patch := mapAt(existing, "payload_patch")
-	artifact := mapAt(patch, "artifact")
-	claudeCode := mapAt(artifact, "claude_code")
-	claudeCode["sessions"] = sessions
-
-	out, err := json.MarshalIndent(existing, "", "  ")
+	out, err := json.Marshal(body)
 	if err != nil {
-		return fmt.Errorf("marshal payload_patch: %w", err)
+		return nil, fmt.Errorf("marshal payload patch: %w", err)
 	}
-	if err := os.WriteFile(path, out, 0o644); err != nil {
-		return fmt.Errorf("write payload_patch.json: %w", err)
+	return out, nil
+}
+
+// buildTaskUpdatePayloadPatchCmd builds (without running) the *exec.Cmd for
+// `boid task update --payload-patch @-`, piping body on stdin. Mirrors
+// buildTaskPayloadSessionsCmd's env-overlay / cwd wiring exactly — see that
+// function's doc comment for why cmd.Dir is pinned to "/tmp" (the only entry
+// boidPolicy's AllowedCwdRoots always contains regardless of project/
+// workspace context).
+func buildTaskUpdatePayloadPatchCmd(ctx context.Context, env map[string]string, body []byte) *exec.Cmd {
+	cmd := exec.CommandContext(ctx, "boid", "task", "update", "--payload-patch", "@-")
+	cmd.Dir = "/tmp"
+	cmd.Stdin = bytes.NewReader(body)
+	envSlice := make([]string, 0, len(os.Environ())+len(env))
+	envSlice = append(envSlice, os.Environ()...)
+	for k, v := range env {
+		envSlice = append(envSlice, k+"="+v)
+	}
+	cmd.Env = envSlice
+	return cmd
+}
+
+// sendTaskUpdatePayloadPatch runs `boid task update --payload-patch @-` with
+// body piped on stdin, applying it immediately via the broker's
+// BoidOpTaskUpdatePayloadPatch RPC (docs/plans/phase5-shim-and-task-
+// context.md decision 6/PR7). Overridable for tests, mirroring the
+// fetchTaskPayloadSessions var above so adapter unit tests never spawn a real
+// subprocess.
+//
+// Phase 6 PR8 (docs/plans/phase6-container-backend.md §決定 9) replaces the
+// former $HOME/.boid/output/payload_patch.json file write with this RPC: the
+// file lived on the workspace $HOME volume (Phase 4), which is shared across
+// concurrent jobs in the same workspace, so a well-known file path there was
+// never actually job-isolated without the `~/.boid` tmpfs overlay dispatcher
+// had to layer on top defensively. Routing through the broker instead makes
+// the RPC (JobID-scoped, applied under a per-task lock) the sole delivery
+// path — no shared file, no overlay needed.
+var sendTaskUpdatePayloadPatch = func(ctx context.Context, env map[string]string, body []byte) error {
+	cmd := buildTaskUpdatePayloadPatchCmd(ctx, env, body)
+	if _, err := cmd.Output(); err != nil {
+		return fmt.Errorf("boid task update --payload-patch: %w", withExitErrorStderr(err))
 	}
 	return nil
 }
 
-// mapAt returns the nested map at key, creating and inserting an empty one
-// when the key is missing or the existing value is not a map. The returned
-// map is wired into m so callers can mutate it directly.
-func mapAt(m map[string]any, key string) map[string]any {
-	if v, ok := m[key].(map[string]any); ok {
-		return v
-	}
-	child := map[string]any{}
-	m[key] = child
-	return child
-}
-
 // Run is the agent-process entry point. See RunContext / Result in package
 // adapters for the I/O contract. Run owns:
-//   - generating a fresh session id and persisting it to payload_patch.json
-//     up front so the jsonl transcript path is recorded in the task artifact
-//     even when the child terminates abnormally (SIGKILL, OOM)
+//   - generating a fresh session id and, for task-bound (non-session) runs,
+//     applying it via the payload-patch RPC up front so the jsonl transcript
+//     path is recorded in the task artifact even when the child terminates
+//     abnormally (SIGKILL, OOM)
 //   - prompt selection (UserAnswer → bootstrap, otherwise /boid-task or "")
 //   - claude argv construction (always --session-id, never --resume)
 //   - signal.Notify(SIGUSR1 / SIGWINCH) and forwarding to the child
@@ -383,46 +404,75 @@ func mapAt(m map[string]any, key string) map[string]any {
 // readSessionsFromRPC below).
 func (a *Adapter) Run(ctx context.Context, rc adapters.RunContext) (adapters.Result, error) {
 	// 0. Fail fast when claude is not on PATH, before touching any state
-	// (session id generation, payload_patch.json). See missingCLIError's
+	// (session id generation, payload-patch RPC). See missingCLIError's
 	// doc comment for why this replaces the old adapter-bindings-based
 	// guarantee that claude was always present.
 	if _, err := lookPath(harnessCLI); err != nil {
 		return adapters.Result{}, missingCLIError(rc.Env["BOID_WORKSPACE_SLUG"], err)
 	}
 
-	outputDir := rc.OutputDir
-	if outputDir == "" {
-		home, _ := os.UserHomeDir()
-		outputDir = filepath.Join(home, ".boid", "output")
-	}
+	// isSession is the JobKindSession discriminator (BuildSessionJobSpec,
+	// internal/dispatcher/session_job.go, sets rc.TaskID = ""). Computed up
+	// front — step 1 below needs it to decide whether the session-tracking
+	// payload-patch RPC applies at all.
+	isSession := rc.TaskID == ""
 
-	// 1. Generate a fresh session id. Persist it BEFORE starting claude so
-	// that an abnormal termination (SIGKILL, OOM) still leaves a record of
-	// which jsonl transcript file the agent wrote to (visible in the Web UI
-	// task detail under artifact.claude_code.sessions[]). Prior sessions come
-	// from the broker (`boid task payload --field
+	// 1. Generate a fresh session id. For task-bound runs (isSession=false),
+	// apply it via the payload-patch RPC BEFORE starting claude so that an
+	// abnormal termination of the claude child (SIGKILL, OOM) still leaves a
+	// record of which jsonl transcript file the agent wrote to (visible in
+	// the Web UI task detail under artifact.claude_code.sessions[]). Prior
+	// sessions come from the broker (`boid task payload --field
 	// artifact.claude_code.sessions`, Phase 5b PR3) rather than a direct read
 	// of payload.json — see readSessionsFromRPC's doc comment. A fetch/parse
 	// error aborts here, before claude ever starts and before any payload
-	// patch is written: readSessionsFromRPC only returns an error when it
+	// patch is applied: readSessionsFromRPC only returns an error when it
 	// cannot tell whether prior sessions exist, and proceeding anyway would
-	// risk writePayloadPatch persisting a truncated session list over the
-	// task's real history (codex review on PR #800).
+	// risk applying a truncated session list over the task's real history
+	// (codex review on PR #800). The patch itself is applied immediately via
+	// `boid task update --payload-patch @-` (Phase 6 PR8, docs/plans/
+	// phase6-container-backend.md §決定 9) rather than written to
+	// $HOME/.boid/output/payload_patch.json for a later file-based pickup —
+	// see sendTaskUpdatePayloadPatch's doc comment. The merge this RPC drives
+	// (orchestrator.MergePayloadPatch) gives artifact.claude_code.sessions
+	// append/union semantics precisely so that two of these RPCs racing
+	// (readonly task, two claude hooks dispatched in parallel) never lose
+	// either session id even though each one independently read a
+	// (possibly stale) prior-sessions snapshot — see mergeClaudeSessions'
+	// doc comment (PR #821 codex review Blocker 1).
+	//
+	// isSession=true skips this block entirely: a taskless interactive
+	// session (`boid agent claude -p <project>` / JobKindSession) has no
+	// task row to attach a payload patch to. `boid task payload` (the read)
+	// happens to succeed even for a taskless job — it resolves off the
+	// JobContextSnapshot keyed by JobID, not TaskID — but `boid task update
+	// --payload-patch` (the write) resolves job -> TaskID -> GetTask(TaskID)
+	// server-side (api.TaskAppService.UpdateTaskPayloadPatch), and
+	// GetTask("") unconditionally errors. Before this fix that RPC failure
+	// propagated straight out of Run() before cmd.Start() was ever reached,
+	// so a taskless session never actually launched claude (PR #821 codex
+	// review Major finding).
 	sessionID := uuid.NewString()
-	sessions, err := readSessionsFromRPC(ctx, rc.Env)
-	if err != nil {
-		return adapters.Result{}, fmt.Errorf("read prior claude sessions: %w", err)
-	}
-	updated := updateSessions(sessions, sessionType, rc.InvokedName, sessionID)
-	if err := writePayloadPatch(outputDir, updated); err != nil {
-		return adapters.Result{}, err
+	if !isSession {
+		sessions, err := readSessionsFromRPC(ctx, rc.Env)
+		if err != nil {
+			return adapters.Result{}, fmt.Errorf("read prior claude sessions: %w", err)
+		}
+		updated := updateSessions(sessions, sessionType, rc.InvokedName, sessionID)
+		patchBody, err := sessionsPayloadPatchBody(updated)
+		if err != nil {
+			return adapters.Result{}, err
+		}
+		if err := sendTaskUpdatePayloadPatch(ctx, rc.Env, patchBody); err != nil {
+			return adapters.Result{}, fmt.Errorf("apply claude session payload patch: %w", err)
+		}
 	}
 
 	// 2. Build claude argv.
-	// isSession is the JobKindSession discriminator. Sessions are user-
-	// initiated and have no task lifecycle, so they receive neither the
-	// behaviour-skill bootstrap nor the "notify before exit" system prompt.
-	isSession := rc.TaskID == ""
+	// isSession (computed in step 1 above) drives prompt selection too:
+	// sessions are user-initiated and have no task lifecycle, so they
+	// receive neither the behaviour-skill bootstrap nor the "notify before
+	// exit" system prompt.
 	prompt := selectPrompt(isSession, rc.UserAnswer)
 	systemPrompt := taskSystemPrompt
 	if isSession {
@@ -495,17 +545,13 @@ func (a *Adapter) Run(ctx context.Context, rc adapters.RunContext) (adapters.Res
 		return adapters.Result{}, werr
 	}
 
-	// Read the final payload_patch.json best-effort. Missing file →
-	// nil PayloadPatch (the dispatcher treats nil as "no patch").
-	payloadPatchPath := filepath.Join(outputDir, "payload_patch.json")
-	var patch json.RawMessage
-	if data, err := os.ReadFile(payloadPatchPath); err == nil {
-		patch = data
-	}
-
+	// The session-id payload patch (skipped entirely for a taskless session,
+	// isSession=true) was already applied immediately via
+	// sendTaskUpdatePayloadPatch above (step 1) — there is no file-based
+	// result left to read back here (Phase 6 PR8 retired
+	// $HOME/.boid/output/payload_patch.json entirely).
 	return adapters.Result{
 		ExitCode:        exitCode,
-		PayloadPatch:    patch,
 		StoppedByDaemon: stoppedByDaemon,
 	}, nil
 }

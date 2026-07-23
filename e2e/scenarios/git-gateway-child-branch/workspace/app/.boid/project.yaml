@@ -59,9 +59,8 @@ task_behaviors:
           auto_start: true
           EOF
 
-          mkdir -p "$HOME/.boid/output"
-          cat > "$HOME/.boid/output/payload_patch.json" <<EOF
-          {"payload_patch":{"artifact":{"source":"spawn-child","parent_pushed_commit":"${parent_pushed_commit}"}}}
+          boid task update --payload-patch @- <<EOF
+          {"artifact":{"source":"spawn-child","parent_pushed_commit":"${parent_pushed_commit}"}}
           EOF
           BOID_HOOK_SCRIPT
   child:
@@ -130,8 +129,7 @@ task_behaviors:
             exit 1
           fi
 
-          mkdir -p "$HOME/.boid/output"
-          cat > "$HOME/.boid/output/payload_patch.json" <<EOF
-          {"payload_patch":{"artifact":{"source":"verify-child-branch","current_branch":"${current_branch}","branch_matches_base_branch":true,"parent_marker_present":true,"parent_commit_in_log":true}}}
+          boid task update --payload-patch @- <<EOF
+          {"artifact":{"source":"verify-child-branch","current_branch":"${current_branch}","branch_matches_base_branch":true,"parent_marker_present":true,"parent_commit_in_log":true}}
           EOF
           BOID_HOOK_SCRIPT

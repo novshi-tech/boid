@@ -15,8 +15,11 @@
 //
 // shell adapter is intentionally minimal:
 //   - no session resolution (session-id resume is gone repo-wide)
-//   - no payload_patch.json writes (the hook script is responsible if it
-//     wants one — broker job-done still flows through PayloadPatchPath)
+//   - no payload-patch writes of its own (the hook script is responsible if
+//     it wants one — preferably via `boid task update --payload-patch`,
+//     applied immediately through the broker RPC; the stdout-capture
+//     fallback, spec.StdoutCaptureFile, still exists for scripts that print
+//     `{"payload_patch": ...}` to stdout instead)
 //   - no token accounting (Usage() returns zero — shell jobs are not
 //     billable in Phase 4)
 //   - no Bindings() (Phase 3-c claude / codex / opencode each declared their

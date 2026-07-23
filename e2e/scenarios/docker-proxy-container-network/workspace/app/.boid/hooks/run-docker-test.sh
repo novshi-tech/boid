@@ -1,15 +1,18 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-mkdir -p "$HOME/.boid/output"
-
 # Write a diagnostic payload on failure so the aborted task has debug info.
+# Applied immediately via the broker's payload-patch RPC (`boid task update
+# --payload-patch @-`, docs/plans/phase5-shim-and-task-context.md decision
+# 6/7) — Phase 6 PR8 retired the $HOME/.boid/output/payload_patch.json file
+# convention this used to write to (docs/plans/phase6-container-backend.md
+# §決定 9).
 fail_with_diag() {
   local reason="$1"
   local diag
   diag="DOCKER_HOST=${DOCKER_HOST:-UNSET} DOCKER_PROXY_TEST_CASE=${DOCKER_PROXY_TEST_CASE:-UNSET}"
-  printf '{"payload_patch":{"artifact":{"result":"fail","reason":"%s","diag":"%s"}}}\n' \
-    "$reason" "$diag" > "$HOME/.boid/output/payload_patch.json"
+  printf '{"artifact":{"result":"fail","reason":"%s","diag":"%s"}}\n' \
+    "$reason" "$diag" | boid task update --payload-patch @-
   echo "FAIL: $reason ($diag)" >&2
   exit 1
 }
@@ -124,7 +127,7 @@ case "${DOCKER_PROXY_TEST_CASE:-}" in
     code=$(proxy_req POST /containers/create '{}')
     assert_http 201 "$code" "reap-on-failure: container create"
     # Intentional failure: exit 1 → task aborted, but reap still fires.
-    printf '{"payload_patch":{"artifact":{"result":"intentional-fail"}}}\n' > "$HOME/.boid/output/payload_patch.json"
+    printf '{"artifact":{"result":"intentional-fail"}}\n' | boid task update --payload-patch @-
     exit 1
     ;;
 
@@ -154,6 +157,4 @@ case "${DOCKER_PROXY_TEST_CASE:-}" in
     ;;
 esac
 
-cat > "$HOME/.boid/output/payload_patch.json" <<'EOF'
-{"payload_patch":{"artifact":{"result":"pass"}}}
-EOF
+printf '{"artifact":{"result":"pass"}}\n' | boid task update --payload-patch @-

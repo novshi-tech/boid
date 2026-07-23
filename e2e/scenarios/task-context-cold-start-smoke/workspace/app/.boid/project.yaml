@@ -35,9 +35,8 @@ task_behaviors:
           boid task instructions >/dev/null
           boid task env >/dev/null
 
-          mkdir -p "$HOME/.boid/output"
-          cat > "$HOME/.boid/output/payload_patch.json" <<'EOF'
-          {"payload_patch":{"artifact":{"result":"cold-start CLI smoke OK"}}}
+          boid task update --payload-patch @- <<'EOF'
+          {"artifact":{"result":"cold-start CLI smoke OK"}}
           EOF
         traits:
           produces: [artifact]

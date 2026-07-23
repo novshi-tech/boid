@@ -81,8 +81,7 @@ task_behaviors:
 
           marker_head="$(git -C "$PEER_CLONE_DIR" rev-parse origin/main)"
 
-          mkdir -p "$HOME/.boid/output"
-          cat > "$HOME/.boid/output/payload_patch.json" <<EOF
-          {"payload_patch":{"artifact":{"source":"peer-fetch","peer_clone_url_seen":true,"peer_marker_present":true,"peer_push_denied":true,"peer_origin_main":"${marker_head}"}}}
+          boid task update --payload-patch @- <<EOF
+          {"artifact":{"source":"peer-fetch","peer_clone_url_seen":true,"peer_marker_present":true,"peer_push_denied":true,"peer_origin_main":"${marker_head}"}}
           EOF
           BOID_HOOK_SCRIPT

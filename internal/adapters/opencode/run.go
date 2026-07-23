@@ -147,7 +147,7 @@ func buildArgs(interactive bool, workspace, model, prompt string) []string {
 // stops, PWD strip on the child env, and cmd.Dir as the source of truth
 // for the workdir.
 //
-// Session persistence and payload_patch.json writes are deliberately NOT
+// Session persistence and payload-patch application are deliberately NOT
 // wired here — see docs/plans/multi-harness-production.md for the explicit
 // non-goals (interactive sessions are run-and-done, no resume yet).
 func (a *Adapter) Run(ctx context.Context, rc adapters.RunContext) (adapters.Result, error) {

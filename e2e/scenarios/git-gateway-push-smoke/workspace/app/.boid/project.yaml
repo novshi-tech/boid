@@ -41,8 +41,7 @@ task_behaviors:
           pushed_commit="$(git rev-parse HEAD)"
           pushed_branch="$(git rev-parse --abbrev-ref HEAD)"
 
-          mkdir -p "$HOME/.boid/output"
-          cat > "$HOME/.boid/output/payload_patch.json" <<EOF
-          {"payload_patch":{"artifact":{"source":"gateway-push","pushed_commit":"${pushed_commit}","pushed_branch":"${pushed_branch}"}}}
+          boid task update --payload-patch @- <<EOF
+          {"artifact":{"source":"gateway-push","pushed_commit":"${pushed_commit}","pushed_branch":"${pushed_branch}"}}
           EOF
           BOID_HOOK_SCRIPT

@@ -103,6 +103,155 @@ func mergeObjectsShallow(base, patch json.RawMessage) (json.RawMessage, bool) {
 	return merged, true
 }
 
+// mergeClaudeSessions unions two JSON arrays of `{"type","name","id"}`
+// session entries (mirrors claude.session in
+// internal/adapters/claude/run.go — kept structurally duck-typed here rather
+// than importing that package, since orchestrator must stay adapter-agnostic).
+// Entries are matched by (type, name); a patch entry wins over a base entry
+// with the same key (last write for that specific session slot), but any
+// base entry the patch doesn't mention is preserved. Order: base entries
+// first (in place), then patch-only entries appended.
+//
+// ok=false (nil, false) when either side fails to parse as such an array —
+// signals the caller to fall back to whole-value overwrite rather than
+// silently dropping data it can't safely interpret.
+//
+// This exists to close PR #821 codex review Blocker 1: two claude hooks
+// dispatched in parallel within the same readonly task round each apply
+// their own session id via the `boid task update --payload-patch` RPC
+// (claude.Adapter.Run, internal/adapters/claude/run.go). Each computes its
+// own patch from an independent (possibly stale, pre-sibling-write) read of
+// prior sessions, so a naive whole-value replace of
+// `artifact.claude_code.sessions` — which is what the generic 1-level
+// mergeObjectsShallow does for every other artifact sub-key — silently
+// drops whichever session id the OTHER concurrent RPC call already
+// persisted. Two DIFFERENT hook instances always have distinct (type, name)
+// keys (name is the behaviour-instance name), so this union never actually
+// collides in practice; a same-key write is deterministically resolved by
+// letting the later-applied patch win, same as any other exclusive-trait
+// overwrite.
+func mergeClaudeSessions(existing, patch json.RawMessage) (json.RawMessage, bool) {
+	if len(existing) == 0 || len(patch) == 0 {
+		return nil, false
+	}
+
+	type sessionKey struct{ Type, Name string }
+	keyOf := func(raw json.RawMessage) (sessionKey, bool) {
+		var k struct {
+			Type string `json:"type"`
+			Name string `json:"name"`
+		}
+		if err := json.Unmarshal(raw, &k); err != nil {
+			return sessionKey{}, false
+		}
+		return sessionKey{Type: k.Type, Name: k.Name}, true
+	}
+	parseItems := func(raw json.RawMessage) ([]json.RawMessage, bool) {
+		var items []json.RawMessage
+		if err := json.Unmarshal(raw, &items); err != nil {
+			return nil, false
+		}
+		return items, true
+	}
+
+	existingItems, ok := parseItems(existing)
+	if !ok {
+		return nil, false
+	}
+	patchItems, ok := parseItems(patch)
+	if !ok {
+		return nil, false
+	}
+
+	order := make([]sessionKey, 0, len(existingItems)+len(patchItems))
+	byKey := make(map[sessionKey]json.RawMessage, len(existingItems)+len(patchItems))
+	for _, item := range existingItems {
+		k, ok := keyOf(item)
+		if !ok {
+			return nil, false
+		}
+		if _, seen := byKey[k]; !seen {
+			order = append(order, k)
+		}
+		byKey[k] = item
+	}
+	for _, item := range patchItems {
+		k, ok := keyOf(item)
+		if !ok {
+			return nil, false
+		}
+		if _, seen := byKey[k]; !seen {
+			order = append(order, k)
+		}
+		byKey[k] = item // patch wins on a matching key
+	}
+
+	merged := make([]json.RawMessage, 0, len(order))
+	for _, k := range order {
+		merged = append(merged, byKey[k])
+	}
+	out, err := json.Marshal(merged)
+	if err != nil {
+		return nil, false
+	}
+	return out, true
+}
+
+// mergeClaudeCodeArtifact merges an incoming `artifact.claude_code` object
+// into the existing one, giving the nested `sessions` array
+// mergeClaudeSessions' union semantics instead of mergeObjectsShallow's
+// whole-key replace. Every other sub-key of claude_code (there are none
+// today, but this keeps the contract obvious for future additions) keeps
+// ordinary shallow-replace semantics. ok=false when either side isn't a
+// JSON object, signalling the caller to fall back further.
+func mergeClaudeCodeArtifact(existing, patch json.RawMessage) (json.RawMessage, bool) {
+	if len(existing) == 0 || len(patch) == 0 {
+		return nil, false
+	}
+	var existingObj, patchObj map[string]json.RawMessage
+	if err := json.Unmarshal(existing, &existingObj); err != nil || existingObj == nil {
+		return nil, false
+	}
+	if err := json.Unmarshal(patch, &patchObj); err != nil || patchObj == nil {
+		return nil, false
+	}
+	if mergedSessions, ok := mergeClaudeSessions(existingObj["sessions"], patchObj["sessions"]); ok {
+		patchObj["sessions"] = mergedSessions
+	}
+	maps.Copy(existingObj, patchObj)
+	merged, err := json.Marshal(existingObj)
+	if err != nil {
+		return nil, false
+	}
+	return merged, true
+}
+
+// mergeArtifactPatch merges an incoming `artifact` patch object into the
+// existing `artifact` object with mergeObjectsShallow's ordinary 1-level
+// shallow-replace semantics for every sub-key EXCEPT `claude_code`, which
+// recurses one level further via mergeClaudeCodeArtifact so its `sessions`
+// array gets append/union semantics rather than being replaced wholesale.
+// ok=false when either side isn't a JSON object (mirrors mergeObjectsShallow's
+// contract so the caller's existing non-object fallback still applies).
+func mergeArtifactPatch(existing, patch json.RawMessage) (json.RawMessage, bool) {
+	var existingObj, patchObj map[string]json.RawMessage
+	if err := json.Unmarshal(existing, &existingObj); err != nil || existingObj == nil {
+		return nil, false
+	}
+	if err := json.Unmarshal(patch, &patchObj); err != nil || patchObj == nil {
+		return nil, false
+	}
+	if mergedCC, ok := mergeClaudeCodeArtifact(existingObj["claude_code"], patchObj["claude_code"]); ok {
+		patchObj["claude_code"] = mergedCC
+	}
+	maps.Copy(existingObj, patchObj)
+	merged, err := json.Marshal(existingObj)
+	if err != nil {
+		return nil, false
+	}
+	return merged, true
+}
+
 func MergePayloadPatch(base, patch json.RawMessage, handlerID string, allowedTraits []TraitType) (json.RawMessage, error) {
 	if len(patch) == 0 || string(patch) == "{}" || string(patch) == "null" {
 		if len(base) == 0 {
@@ -161,6 +310,19 @@ func MergePayloadPatch(base, patch json.RawMessage, handlerID string, allowedTra
 			// merge する。 別フェーズや別 handler が同じ trait の異なる sub-key を
 			// 書く合法ケースを守るため。 一方が scalar/array なら whole-value 上書き。
 			if existing, ok := baseMap[key]; ok && len(existing) > 0 {
+				// trait == "artifact" gets an extra level of care:
+				// mergeArtifactPatch recurses into claude_code.sessions for
+				// append/union semantics (PR #821 codex review Blocker 1 —
+				// concurrent claude hooks silently losing a session id under
+				// plain shallow replace). Every other exclusive trait, and
+				// every other artifact sub-key, keeps the historical 1-level
+				// mergeObjectsShallow behavior.
+				if trait == TraitArtifact {
+					if merged, ok := mergeArtifactPatch(existing, value); ok {
+						baseMap[key] = merged
+						continue
+					}
+				}
 				if merged, ok := mergeObjectsShallow(existing, value); ok {
 					baseMap[key] = merged
 					continue

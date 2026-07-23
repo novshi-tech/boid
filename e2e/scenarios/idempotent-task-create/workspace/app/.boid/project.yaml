@@ -32,9 +32,8 @@ task_behaviors:
           )
           id2=$(printf '%s\n' "$out2" | awk '{print $3}')
 
-          mkdir -p "$HOME/.boid/output"
-          cat > "$HOME/.boid/output/payload_patch.json" <<EOF
-          {"payload_patch":{"artifact":{"first_id":"$id1","second_id":"$id2"}}}
+          boid task update --payload-patch @- <<EOF
+          {"artifact":{"first_id":"$id1","second_id":"$id2"}}
           EOF
         traits:
           produces: [artifact]

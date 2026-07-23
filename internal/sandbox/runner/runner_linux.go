@@ -187,10 +187,10 @@ func RunInner(specPath, statePath string) (int, error) {
 
 // RunInnerChild is the `boid runner-inner-child` entry point (L3). It runs in
 // the cloned user+mount namespace, lays out the sandbox root via bind mounts,
-// pivot_root's into it, writes spec.Files (DNS stub, the $HOME/.boid/output
-// sentinel — task-context data is pulled on demand over the broker RPCs
-// since the Phase 5b PR6 cutover, not written to disk here any more), runs
-// the agent, and posts the broker job-done. Mirrors the former inner.sh.
+// pivot_root's into it, writes spec.Files (e.g. the DNS stub-resolv.conf —
+// task-context data is pulled on demand over the broker RPCs since the
+// Phase 5b PR6 cutover, not written to disk here any more), runs the agent,
+// and posts the broker job-done. Mirrors the former inner.sh.
 func RunInnerChild(specPath, statePath string) (exitCode int, retErr error) {
 	spec, err := readSpec(specPath)
 	if err != nil {
@@ -230,12 +230,13 @@ func RunInnerChild(specPath, statePath string) (exitCode int, retErr error) {
 	}
 	st.OK("inner-child", "pivot-root")
 
-	// spec.Files (e.g. the DNS stub-resolv.conf, the $HOME/.boid/output
-	// sentinel) live under the now-mounted HOME/root, so they must be
-	// written after pivot_root (otherwise an earlier mount would shadow
-	// them). $HOME/.boid is a fresh, job-scoped tmpfs (see
-	// dispatcher.homeMounts' doc comment), so there is never a stale
-	// payload_patch.json from a previous job to worry about here.
+	// spec.Files (e.g. the DNS stub-resolv.conf) live under the now-mounted
+	// HOME/root, so they must be written after pivot_root (otherwise an
+	// earlier mount would shadow them). Phase 6 PR8 retired the
+	// $HOME/.boid/output sentinel this comment used to also mention — the
+	// well-known payload-patch file path it guaranteed a parent dir for is
+	// gone, and $HOME/.boid is no longer its own job-scoped tmpfs (see
+	// dispatcher.homeMounts' doc comment).
 	// applySpecFiles/applySpecSymlinks/performClone/runAgent/postJobDone
 	// below are shared with the Phase 6 container entrypoint
 	// (runner_container_linux.go) — see runner.go's doc comment on the

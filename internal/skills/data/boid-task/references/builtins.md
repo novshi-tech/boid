@@ -199,9 +199,9 @@ boid agent stop <job-id>
 
 Canonical "I'm done, please end my session" call for interactive agents (supervisor / executor / plan). Use this for the autonomous exit path: `boid agent stop "$BOID_JOB_ID"`.
 
-The daemon delivers SIGUSR1 to the runtime's process group. `run-agent.py` catches it and SIGTERMs only the `claude` process; bash and the EXIT trap survive (`trap '' USR1` is inherited as SIG_IGN). The trap then fires `boid job done --output-file payload_patch.json` against a still-valid broker token, completing the job through the normal path with the agent's session id (and any artifact written to `payload_patch.json`) intact.
+The daemon delivers SIGUSR1 to the runtime's process group. The harness adapter (`internal/adapters/<harness>/run.go`'s `Run()`) catches it and SIGTERMs only the agent's own child process; the surrounding go-native runner (runner-inner-child / the Phase 6 container entrypoint) keeps running and, once the child exits, posts `boid job done` through the broker itself (`internal/sandbox/runner.postJobDone`, a direct Go call — not a shell EXIT trap) against a still-valid broker token, completing the job through the normal path with the agent's session id intact. (Any structured artifact you wrote via `--payload-patch` was already applied immediately when you called it — see `boid task update` above — so it survives this regardless of exit timing.)
 
-> Why not call `boid job done` directly? `CompleteJob` unregisters the broker token immediately, so the bash EXIT trap's follow-up `boid job done --output-file ...` would be silently rejected as `invalid token` — dropping any payload patch the agent wrote. Always go through `agent stop`.
+> Why not call `boid job done` directly? `CompleteJob` unregisters the broker token immediately, so any `--payload-patch` call you make afterward would be rejected as `invalid token`. Always go through `agent stop`.
 
 ## boid job done
 
@@ -209,7 +209,7 @@ The daemon delivers SIGUSR1 to the runtime's process group. `run-agent.py` catch
 boid job done <job-id> --exit-code <n> [--output-file <path>]
 ```
 
-Low-level CompleteJob call. The bash EXIT trap fires this automatically with `--output-file payload_patch.json` after `boid agent stop` (or after `notify --ask`). Agents normally do not invoke `boid job done` themselves — use `boid agent stop` instead.
+Low-level CompleteJob call. The go-native runner calls the equivalent broker RPC directly (not via this CLI form) once the agent process exits. Agents normally do not invoke `boid job done` themselves — use `boid agent stop` instead. `--output-file <path>` (when used manually) sends the named file's content as the job's output, parsed the same way a hook's stdout fallback is (see [Hook script protocol / Outputs](../../../../docs/en/reference/hook-contract.md#outputs)) — it is unrelated to `boid task update --payload-patch`, which is the path this skill's *Writing the final report* section actually recommends.
 
 ## boid job list
 

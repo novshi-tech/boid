@@ -232,16 +232,21 @@ func TestApplyPathEnv_SetsWhenPresentLeavesUnsetOtherwise(t *testing.T) {
 	}
 }
 
-func TestResolveJobOutput_Precedence(t *testing.T) {
+// TestResolveJobOutput_StdoutCapture pins the sole remaining fallback after
+// Phase 6 PR8 (docs/plans/phase6-container-backend.md §決定 9) retired the
+// payload-patch-file branch (spec.PayloadPatchPath): only the stdout capture
+// file is consulted now, with a nil result when neither it nor the spec
+// field is set.
+func TestResolveJobOutput_StdoutCapture(t *testing.T) {
 	dir := t.TempDir()
 
-	// Neither file present → nil.
+	// No StdoutCaptureFile → nil.
 	spec := sandbox.Spec{}
 	if got := resolveJobOutput(spec); got != nil {
-		t.Errorf("expected nil output with no patch/capture files, got %q", got)
+		t.Errorf("expected nil output with no stdout capture file, got %q", got)
 	}
 
-	// Only StdoutCaptureFile present → its content.
+	// StdoutCaptureFile present → its content.
 	stdoutPath := filepath.Join(dir, "stdout.txt")
 	if err := os.WriteFile(stdoutPath, []byte("stdout-output"), 0o644); err != nil {
 		t.Fatalf("write stdout capture: %v", err)
@@ -249,16 +254,6 @@ func TestResolveJobOutput_Precedence(t *testing.T) {
 	spec.StdoutCaptureFile = stdoutPath
 	if got := string(resolveJobOutput(spec)); got != "stdout-output" {
 		t.Errorf("resolveJobOutput = %q, want stdout capture content", got)
-	}
-
-	// Both present → payload patch wins.
-	patchPath := filepath.Join(dir, "patch.json")
-	if err := os.WriteFile(patchPath, []byte(`{"a":1}`), 0o644); err != nil {
-		t.Fatalf("write payload patch: %v", err)
-	}
-	spec.PayloadPatchPath = patchPath
-	if got := string(resolveJobOutput(spec)); got != `{"a":1}` {
-		t.Errorf("resolveJobOutput = %q, want payload patch content (higher precedence)", got)
 	}
 }
 

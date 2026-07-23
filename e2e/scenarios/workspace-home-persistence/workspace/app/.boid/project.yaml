@@ -11,8 +11,7 @@ task_behaviors:
         command: |
           set -eu
           echo "job1-data" > "$HOME/.persistence-test"
-          mkdir -p "$HOME/.boid/output"
-          printf '{"payload_patch":{"artifact":{"wrote":"job1-data"}}}\n' > "$HOME/.boid/output/payload_patch.json"
+          printf '{"artifact":{"wrote":"job1-data"}}\n' | boid task update --payload-patch @-
         traits:
           produces: [artifact]
     traits: []
@@ -22,8 +21,7 @@ task_behaviors:
         command: |
           set -eu
           CONTENT="$(cat "$HOME/.persistence-test" 2>/dev/null || echo MISSING)"
-          mkdir -p "$HOME/.boid/output"
-          printf '{"payload_patch":{"artifact":{"persisted":"%s"}}}\n' "$CONTENT" > "$HOME/.boid/output/payload_patch.json"
+          printf '{"artifact":{"persisted":"%s"}}\n' "$CONTENT" | boid task update --payload-patch @-
         traits:
           produces: [artifact]
     traits: []

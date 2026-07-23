@@ -45,9 +45,8 @@ task_behaviors:
           EOF
 
           # Emit artifact so the parent (one-shot) auto-advances to done.
-          mkdir -p "$HOME/.boid/output"
-          cat > "$HOME/.boid/output/payload_patch.json" <<'PATCH'
-          {"payload_patch":{"artifact":{"summary":"spawned subtasks"}}}
+          boid task update --payload-patch @- <<'PATCH'
+          {"artifact":{"summary":"spawned subtasks"}}
           PATCH
         traits:
           produces: [artifact]
@@ -68,8 +67,7 @@ task_behaviors:
           ref: hook-spawned
           TASKSPEC
 
-          mkdir -p "$HOME/.boid/output"
-          cat > "$HOME/.boid/output/payload_patch.json" <<'PATCH'
-          {"payload_patch":{"artifact":{}}}
+          boid task update --payload-patch @- <<'PATCH'
+          {"artifact":{}}
           PATCH
     traits: []

@@ -8,7 +8,7 @@ import (
 // JobCompletion represents the result of a completed job.
 type JobCompletion struct {
 	JobID    string
-	Output   string // stdout capture or payload_patch.json content
+	Output   string // stdout capture (the hook's own `{"payload_patch": ...}` fallback, if any)
 	ExitCode int
 }
 

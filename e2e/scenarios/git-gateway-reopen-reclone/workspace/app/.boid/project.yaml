@@ -61,9 +61,8 @@ task_behaviors:
             # local-only (never committed) — must NOT survive reopen re-clone
             printf 'local-only content on attempt 1 (must be wiped on reopen)\n' > local-only.txt
 
-            mkdir -p "$HOME/.boid/output"
-            cat > "$HOME/.boid/output/payload_patch.json" <<EOF
-          {"payload_patch":{"artifact":{"source":"reopen-reclone","attempt":1,"pushed_commit":"${pushed_commit}"}}}
+            boid task update --payload-patch @- <<EOF
+          {"artifact":{"source":"reopen-reclone","attempt":1,"pushed_commit":"${pushed_commit}"}}
           EOF
             exit 0
           fi
@@ -98,8 +97,7 @@ task_behaviors:
             exit 1
           fi
 
-          mkdir -p "$HOME/.boid/output"
-          cat > "$HOME/.boid/output/payload_patch.json" <<EOF
-          {"payload_patch":{"artifact":{"source":"reopen-reclone","attempt":2,"pushed_file_present":true,"local_only_absent":true,"head_matches":true,"prev_pushed_commit":"${prev_pushed_commit}"}}}
+          boid task update --payload-patch @- <<EOF
+          {"artifact":{"source":"reopen-reclone","attempt":2,"pushed_file_present":true,"local_only_absent":true,"head_matches":true,"prev_pushed_commit":"${prev_pushed_commit}"}}
           EOF
           BOID_HOOK_SCRIPT

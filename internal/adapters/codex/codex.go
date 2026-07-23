@@ -3,7 +3,7 @@
 // Phase 3-c prototype: the goal is to validate that adapters.HarnessAdapter
 // composes for a non-claude harness, not to reach feature parity with the
 // claude adapter. Run() forks `codex exec` with signal forwarding and exit
-// normalisation; session persistence, payload_patch.json writes and
+// normalisation; session persistence, payload-patch application and
 // boid task notify integration are deliberately left out (see
 // docs/plans/agent-aware-boid.md Phase 3-c).
 package codex

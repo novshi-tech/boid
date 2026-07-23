@@ -16,10 +16,12 @@ var agentStopCmd = &cobra.Command{
 	Use:   "stop <job-id>",
 	Short: "Signal the agent of a running job to stop (SIGUSR1 → claude SIGTERM)",
 	Long: `Asks the daemon to deliver SIGUSR1 to the runtime's process group so
-run-agent.py SIGTERMs only the claude process. bash and the EXIT trap stay
-alive, so the trap's "boid job done --output-file payload_patch.json" remains
-the canonical CompleteJob caller — preserving the session id (and any
-artifact the agent wrote to payload_patch.json) through the broker token.`,
+the harness adapter SIGTERMs only the claude process. The go-native runner
+keeps running and posts "boid job done" through the broker directly once the
+child exits — the canonical CompleteJob caller — preserving the session id
+through the broker token (any artifact the agent reported via
+"boid task update --payload-patch" was already applied immediately, before
+this point).`,
 	Args:        cobra.ExactArgs(1),
 	Annotations: map[string]string{scopeAnnotationKey: scopeRemote},
 	RunE:        runAgentStop,

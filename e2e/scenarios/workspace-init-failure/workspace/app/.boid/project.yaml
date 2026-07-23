@@ -10,8 +10,7 @@ task_behaviors:
       - id: ping
         command: |
           set -eu
-          mkdir -p "$HOME/.boid/output"
-          printf '{"payload_patch":{"artifact":{"pong":true}}}\n' > "$HOME/.boid/output/payload_patch.json"
+          printf '{"artifact":{"pong":true}}\n' | boid task update --payload-patch @-
         traits:
           produces: [artifact]
     traits: []

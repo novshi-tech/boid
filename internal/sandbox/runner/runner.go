@@ -272,14 +272,25 @@ func postJobDone(stage string, spec sandbox.Spec, exitCode int, st *State) {
 	st.OK(stage, "job-done")
 }
 
-// resolveJobOutput reproduces buildExitScript's fallback chain: payload patch
-// file if present, else the stdout capture file if present, else empty.
+// resolveJobOutput returns the stdout capture file's content (if any) as the
+// job-done output, else empty.
+//
+// Phase 6 PR8 (docs/plans/phase6-container-backend.md §決定 9) retired the
+// former payload-patch-file branch (spec.PayloadPatchPath,
+// $HOME/.boid/output/payload_patch.json): that file lived on the workspace
+// $HOME volume (Phase 4), which is shared across concurrent jobs in the same
+// workspace, so it was never actually job-isolated without the `~/.boid`
+// tmpfs overlay dispatcher had to layer on top defensively (see
+// sandbox_builder.go's former homeMounts doc comment). Agents / hook scripts
+// now apply their payload patch immediately via the broker's `boid task
+// update --payload-patch` RPC instead — see internal/adapters/claude/run.go's
+// sendTaskUpdatePayloadPatch for the agent-side migration.
+//
+// The stdout-capture fallback stays: a shell hook can still report its
+// payload_patch by printing `{"payload_patch": ...}` to stdout instead of
+// (or as well as) calling the RPC — that path never depended on the shared
+// $HOME/.boid file and is untouched by this retirement.
 func resolveJobOutput(spec sandbox.Spec) []byte {
-	if spec.PayloadPatchPath != "" {
-		if data, err := os.ReadFile(spec.PayloadPatchPath); err == nil {
-			return data
-		}
-	}
 	if spec.StdoutCaptureFile != "" {
 		if data, err := os.ReadFile(spec.StdoutCaptureFile); err == nil {
 			return data
