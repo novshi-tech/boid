@@ -229,40 +229,42 @@ jobs:
     # local-host equivalent today.
     runs-on: ubuntu-24.04
     timeout-minutes: 20
-    # continue-on-error: STAYS true — NOT promoted, despite docs/plans/
-    # phase6-cutover-followups.md §⓪ ("broker TCP wire completion") now
-    # being landed. §⓪'s own gap (broker's TCP mTLS listener bound
-    # loopback-only, no per-job client cert delivery) is fixed: the
-    # listener now binds gatewayBindHost(usingContainerBackend) ("0.0.0.0"
-    # under sandbox.backend: container) and keeps mutual TLS via a per-job
-    # short-lived client cert (internal/dispatcher/container_backend.go's
-    # materializeBrokerClientCert), delivered via five BOID_BROKER_TLS_*
-    # env vars — e2e/run-container.sh's own workspace-C task
-    # (verify-broker-tls.sh, dispatched FIRST, before task A/B, so it is
-    # never masked by the unrelated failure below) pins this round trip
-    # end to end and passes.
+    # continue-on-error: FALSE (promoted from `true` in this same PR —
+    # docs/plans/phase6-cutover-followups.md §⓪-b resolution). Both PR9-era
+    # gaps that had kept this job advisory are now closed on this same
+    # commit:
     #
-    # BUT flipping this job to blocking surfaced a SEPARATE, PRE-EXISTING,
-    # already-on-main bug unrelated to broker RPC: task A's own
-    # requirement 2 ("job -> a DIFFERENT workspace's sibling is
-    # UNREACHABLE") gets an HTTP 403 instead of the expected connection
-    # failure (confirmed reproducing identically on main @ f00f1ce, i.e.
-    # before this broker-TCP-wire PR ever touched this file — see PR
-    # #825's own CI run for the reproduction). Root cause (not yet fixed):
-    # the daemon container hosts the egress proxy in-process AND
-    # self-connects to EVERY active workspace's own isolated docker
-    # network for gateway/egress reachability (§決定5) — so a bare-hostname
-    # (no dot) HTTP request like "http://sib-b:8080/" gets forwarded
-    # through HTTP_PROXY (not excluded by no_proxy) to that in-process
-    # proxy, which CAN resolve "sib-b" via the daemon's OWN cross-workspace
-    # network membership, and only fails the request because "sib-b" isn't
-    # in workspace A's allowed_domains (403), not because the route
-    # doesn't exist. This is worth a dedicated followup (a new §, not §⓪,
-    # in docs/plans/phase6-cutover-followups.md) rather than either
-    # silently loosening this test's assertion (403 is a DIFFERENT
-    # isolation mechanism than "no route exists" — worth an explicit
-    # decision, not a quiet fix) or blocking on it here.
-    continue-on-error: true
+    #   * §⓪ (broker TCP wire completion, PR #825): the broker's TCP mTLS
+    #     listener binds gatewayBindHost(usingContainerBackend) ("0.0.0.0"
+    #     under sandbox.backend: container), a per-job short-lived client
+    #     cert (materializeBrokerClientCert) is delivered via five
+    #     BOID_BROKER_TLS_* env vars, and workspace-C's verify-broker-tls
+    #     task (dispatched FIRST in e2e/run-container.sh) pins the
+    #     job -> broker -> daemon RPC round trip end to end.
+    #
+    #   * §⓪-b (cross-workspace egress proxy relay refusal, this PR): the
+    #     egress proxy (internal/sandbox/proxy.go) now refuses to relay
+    #     any single-label (dotless) hostname target that is not one of
+    #     the small boid-infrastructure whitelist (localhost, boid-broker,
+    #     boid-gateway, boid-egress) with 502 Bad Gateway, BEFORE the
+    #     allowlist check runs. Before this fix, the daemon container's
+    #     simultaneous membership in every active workspace's isolated
+    #     docker network (containerBackend.ensureWorkspaceNetwork, §決定5,
+    #     required so a job can dial the daemon-hosted broker/gateway/
+    #     egress services from its confined network at all) let its own
+    #     DNS view resolve a workspace B sibling's bare hostname from a
+    #     workspace A job's CONNECT — the request only failed with 403
+    #     because "sib-b" wasn't in workspace A's allowed_domains, which
+    #     an operator adding `allowed_domains: ["sib-b"]` could
+    #     inadvertently re-open. The dotless refusal enforces the
+    #     network-layer isolation contract §決定5 declares regardless of
+    #     any workspace's allowed_domains configuration.
+    #
+    # e2e/run-container.sh's task A requirement 2 accordingly accepts both
+    # "000" (direct-network failure — e.g. NO_PROXY covered the target)
+    # AND "502" (the new dotless-refused path); anything else, notably
+    # "403" (pre-fix behavior), is still a hard failure.
+    continue-on-error: false
     steps:
       - name: Check out repository
         uses: actions/checkout@v4

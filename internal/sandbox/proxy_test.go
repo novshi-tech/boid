@@ -105,6 +105,137 @@ func TestProxy_BlockedDomain(t *testing.T) {
 	}
 }
 
+// TestProxy_DotlessTarget_RefusedWith502 pins the §⓪-b fix
+// (docs/plans/phase6-cutover-followups.md): a CONNECT for a single-label
+// hostname that is not one of the boid-infrastructure aliases must be
+// refused with 502 Bad Gateway BEFORE the allowlist check runs, so a
+// misconfigured allowed_domains (e.g. one that names another workspace's
+// sibling by bare hostname) cannot let a workspace A job reach a workspace
+// B sibling the shared-daemon-container's docker embedded DNS happens to
+// know how to resolve. Placed ahead of the isDomainAllowed call, so an
+// operator adding "sib-b" to allowed_domains does not accidentally
+// re-open the cross-workspace hole.
+func TestProxy_DotlessTarget_RefusedWith502(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Give the allowlist the bare-hostname target explicitly, so any regression
+	// (e.g. the dotless check accidentally being moved AFTER the allowlist
+	// check, or removed altogether) would let this CONNECT succeed and fail
+	// the assertion below — that is the exact regression this test guards.
+	proxy := sandbox.NewProxy([]string{"sib-b"})
+	port, err := proxy.Start(ctx)
+	if err != nil {
+		t.Fatalf("start proxy: %v", err)
+	}
+	defer proxy.Stop()
+
+	proxyAddr := fmt.Sprintf("127.0.0.1:%d", port)
+	resp, conn, err := sendCONNECT(proxyAddr, "sib-b:8080", 5*time.Second)
+	if err != nil {
+		t.Fatalf("sendCONNECT: %v", err)
+	}
+	defer conn.Close()
+
+	if resp.StatusCode != http.StatusBadGateway {
+		t.Errorf("dotless target status = %d, want %d (Bad Gateway) — allowlist must not take precedence over the §⓪-b dotless refusal",
+			resp.StatusCode, http.StatusBadGateway)
+	}
+}
+
+// TestProxy_DottedTarget_RunsAllowlist confirms the §⓪-b fix does not
+// affect the normal allowlist path for real dotted hostnames — the same
+// listener that refuses "sib-b" above with 502 must still refuse an
+// unlisted "example.com" with 403 (the isDomainAllowed default), not 502.
+// A regression that moved the dotless check to also match dotted names
+// would surface here.
+func TestProxy_DottedTarget_RunsAllowlist(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	proxy := sandbox.NewProxy([]string{"allowed.com"})
+	port, err := proxy.Start(ctx)
+	if err != nil {
+		t.Fatalf("start proxy: %v", err)
+	}
+	defer proxy.Stop()
+
+	proxyAddr := fmt.Sprintf("127.0.0.1:%d", port)
+	resp, conn, err := sendCONNECT(proxyAddr, "example.com:443", 5*time.Second)
+	if err != nil {
+		t.Fatalf("sendCONNECT: %v", err)
+	}
+	defer conn.Close()
+
+	if resp.StatusCode != http.StatusForbidden {
+		t.Errorf("dotted unlisted target status = %d, want %d (Forbidden from allowlist, not %d from dotless refusal)",
+			resp.StatusCode, http.StatusForbidden, http.StatusBadGateway)
+	}
+}
+
+// TestProxy_DotlessBoidInfraName_FallsThroughToAllowlist confirms the boid-
+// infrastructure allowlist inside isRefusedDotlessTarget (localhost,
+// boid-broker, boid-gateway, boid-egress) genuinely bypasses the dotless
+// refusal — those names never actually hit the proxy in practice (they are
+// carried in no_proxy at dispatch time) but the defense-in-depth exemption
+// must exist so a misconfigured no_proxy does not silently break broker
+// RPC or gitgateway clones.
+func TestProxy_DotlessBoidInfraName_FallsThroughToAllowlist(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	proxy := sandbox.NewProxy(nil) // empty allowlist — expect 403 (allowlist), not 502 (dotless)
+	port, err := proxy.Start(ctx)
+	if err != nil {
+		t.Fatalf("start proxy: %v", err)
+	}
+	defer proxy.Stop()
+
+	for _, target := range []string{"localhost:80", "boid-broker:9000", "boid-gateway:8080", "boid-egress:8080"} {
+		proxyAddr := fmt.Sprintf("127.0.0.1:%d", port)
+		resp, conn, err := sendCONNECT(proxyAddr, target, 5*time.Second)
+		if err != nil {
+			t.Fatalf("sendCONNECT(%q): %v", target, err)
+		}
+		conn.Close()
+		if resp.StatusCode == http.StatusBadGateway {
+			t.Errorf("boid infra target %q was refused with 502 — must fall through to the allowlist path (403 in this test's empty-allowlist setup)", target)
+		}
+	}
+}
+
+// TestProxy_HTTPForward_DotlessRefused pins the §⓪-b fix's HTTP-forward
+// path counterpart to TestProxy_DotlessTarget_RefusedWith502's CONNECT
+// path — both dispatch chains (handleConnect and handleHTTP) must refuse
+// dotless targets, not only the CONNECT one; a plaintext http:// GET
+// through HTTP_PROXY hits handleHTTP, not handleConnect.
+func TestProxy_HTTPForward_DotlessRefused(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	proxy := sandbox.NewProxy([]string{"sib-b"})
+	port, err := proxy.Start(ctx)
+	if err != nil {
+		t.Fatalf("start proxy: %v", err)
+	}
+	defer proxy.Stop()
+
+	proxyURL := fmt.Sprintf("http://127.0.0.1:%d", port)
+	client := &http.Client{Transport: &http.Transport{Proxy: func(*http.Request) (*url.URL, error) {
+		return url.Parse(proxyURL)
+	}}}
+
+	resp, err := client.Get("http://sib-b:8080/some/path")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusBadGateway {
+		t.Errorf("dotless HTTP forward status = %d, want %d", resp.StatusCode, http.StatusBadGateway)
+	}
+}
+
 func TestProxy_SuffixDomainMatch(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

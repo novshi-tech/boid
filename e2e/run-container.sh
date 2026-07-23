@@ -430,9 +430,30 @@ done
 # — "sib-b" (workspace B's sibling, set up by the concurrently-dispatched
 # setup-sibling task) must not resolve/connect from ws-a's own isolated
 # network at all.
+#
+# Two acceptable outcomes here (§⓪-b in docs/plans/phase6-cutover-followups.md):
+#   * "000" — the direct network layer refused the request outright (DNS
+#     NXDOMAIN or TCP unreachable). This is what a job would see if the
+#     request never touched HTTP_PROXY at all (e.g. NO_PROXY covers sib-b
+#     directly).
+#   * "502" — HTTP_PROXY forwarded the request, and the boid egress proxy
+#     (internal/sandbox/proxy.go's isRefusedDotlessTarget) refused to relay
+#     it BEFORE the allowlist check. This is the load-bearing case: the
+#     daemon container is self-connected to every currently-active
+#     workspace network at once (§決定5's daemon-hosted broker/gateway/
+#     egress-proxy reachability contract, containerBackend.
+#     ensureWorkspaceNetwork), so its own DNS view can resolve "sib-b" from
+#     workspace B's network even for a workspace A job — the dotless
+#     refusal is the network-layer isolation contract the allowlist alone
+#     does not provide (an operator with `allowed_domains: ["sib-b"]` on
+#     workspace A's config would otherwise let a workspace A job reach a
+#     workspace B sibling).
+# Anything else — notably "403" (the allowlist rejected AFTER a
+# resolution/dial succeeded, the pre-fix behavior §⓪-b was written up
+# from) — is a genuine failure of requirement 2.
 cross_ws_code="$(probe_http "http://sib-b:8080/" 4)"
-if [[ "$cross_ws_code" != "000" ]]; then
-  fail_with_diag "requirement 2 FAILED: sib-b (different workspace) WAS reachable (http ${cross_ws_code})"
+if [[ "$cross_ws_code" != "000" && "$cross_ws_code" != "502" ]]; then
+  fail_with_diag "requirement 2 FAILED: sib-b (different workspace) WAS reachable (http ${cross_ws_code}; expected 000 direct-fail or 502 dotless-refused)"
 fi
 
 printf '{"artifact":{"result":"pass"}}\n' | boid task update --payload-patch @- >/dev/null 2>&1
