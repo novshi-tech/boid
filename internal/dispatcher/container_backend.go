@@ -1619,7 +1619,25 @@ func (s *containerSession) waitLoop() {
 	// classification) always sees the complete file, and BEFORE
 	// ContainerRemove means the file is guaranteed durable before the
 	// container itself (and any `docker logs` fallback) is gone.
+	//
+	// [Major 9, PR7 codex review]: Sync() runs BEFORE Close(), not just
+	// Close() alone. Close() flushes the process's own userspace buffers to
+	// the kernel but makes no durability guarantee beyond that — a power
+	// loss between Close() and the data actually reaching disk could still
+	// lose the tail of a job's transcript right as its container is
+	// removed, at precisely the moment `boid job log`'s only remaining
+	// source of truth. A Sync failure is escalated to Error (louder than
+	// the general Warn used elsewhere in this file) since it is the
+	// durability guarantee §決定8's "full 永続" contract depends on; Close
+	// still runs (and ContainerRemove still proceeds) even when Sync fails
+	// — blocking container teardown indefinitely on a persistent disk error
+	// would leak the container itself and defeat the reap contract, a worse
+	// outcome than a possibly-incomplete transcript tail.
 	if s.transcriptFile != nil {
+		if err := s.transcriptFile.Sync(); err != nil {
+			slog.Error("container backend: sync transcript spool failed; the transcript tail may not survive a crash before it reaches disk",
+				"container_id", s.id, "path", s.transcriptPath, "error", err)
+		}
 		if err := s.transcriptFile.Close(); err != nil {
 			slog.Warn("container backend: close transcript spool failed", "container_id", s.id, "path", s.transcriptPath, "error", err)
 		}
