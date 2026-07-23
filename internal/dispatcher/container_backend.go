@@ -395,6 +395,25 @@ func ContainerBackendHasDiagnosticsCollector(be backend.SandboxBackend) bool {
 	return cb.diagnosticsCollector != nil
 }
 
+// ContainerBackendUIDGID returns the effective uid/gid a containerBackend
+// launches job containers under (after NewContainerBackend's own
+// unset/partial/root-resolving-pair rejection has already run — see
+// ContainerBackendOptions.UID's doc comment), and false if be is not a
+// *containerBackend. Same external-package introspection rationale as
+// ContainerBackendHasDiagnosticsCollector — for
+// internal/server/wire_backend_test.go's own pin that
+// sandboxBackendForConfig wires the daemon's actual os.Getuid()/os.Getgid()
+// through (PR9, §決定4 — see sandboxBackendForConfig's own doc comment for
+// why a mismatch here silently broke every job's access to its own
+// workspace home directory).
+func ContainerBackendUIDGID(be backend.SandboxBackend) (uid, gid int, ok bool) {
+	cb, isContainer := be.(*containerBackend)
+	if !isContainer {
+		return 0, 0, false
+	}
+	return cb.uid, cb.gid, true
+}
+
 // formatIntPtr renders a *int for logging: "<unset>" for nil, the decimal
 // value otherwise. Used by NewContainerBackend's uid/gid rejection warning
 // so the log line shows the caller's actual (possibly nil) input rather
