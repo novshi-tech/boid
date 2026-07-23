@@ -172,6 +172,20 @@ type Server struct {
 	// so SandboxRuntimeInfo.GatewayURL reflects it at dispatch time — the
 	// same late-binding-via-pointer trick as proxyPort.
 	gatewayURL string
+	// gatewayCAPEM is the daemon's internal CA's own certificate
+	// (mtls.CA.CertPEM), PEM-encoded, populated by Start() alongside
+	// daemonCA whenever cfg.TLSDir is set. Empty when TLS isn't configured
+	// (every pre-PR9-fix caller/test). This is the client-side half of
+	// the git gateway TLS listener's trust: a container-backend sandbox
+	// needs this CA's public cert to verify the gateway's server
+	// certificate (gatewayHandler.ListenTLS's tlsCfg, below) — non-secret,
+	// so no per-job materialization/rotation is needed, unlike a client
+	// certificate would be. Runner holds a pointer to this slice
+	// (WireConfig.GatewayCAPEM), the same late-binding-via-pointer pattern
+	// gatewayURL already uses, so SandboxRuntimeInfo.GatewayCAPEM reflects
+	// it at dispatch time even though it (like gatewayURL) is only known
+	// once Start has run.
+	gatewayCAPEM []byte
 
 	// installID is this installation's plain-UUID identity (§決定6), loaded
 	// (or generated) once in New() when cfg.InstallIDDir is set. Empty
@@ -443,6 +457,7 @@ func (s *Server) Start(ctx context.Context) error {
 			return fmt.Errorf("load or create tls ca: %w", err)
 		}
 		daemonCA = ca
+		s.gatewayCAPEM = ca.CertPEM()
 	}
 
 	// Start broker
@@ -539,7 +554,20 @@ func (s *Server) Start(ctx context.Context) error {
 		// "127.0.0.1", identical to the pre-fix hardcoded literal.
 		if daemonCA != nil && s.gatewayHandler != nil {
 			bindHost := gatewayBindHost(s.usingContainerBackend)
-			tlsCfg, err := daemonCA.ServerTLSConfig("127.0.0.1", "localhost", composeGatewayServiceName)
+			// ServerOnlyTLSConfig (PR9 e2e-container fix), not
+			// ServerTLSConfig: the git gateway's own per-job Registry
+			// token (URL-path-embedded, verified by gatewayHandler's
+			// ServeHTTP) already fully authorizes every request — a
+			// required client certificate would add no per-job
+			// authorization on top of that, and no PR ever wired
+			// per-job client cert issuance/delivery for this listener in
+			// the first place (see ServerOnlyTLSConfig's own doc
+			// comment). Requiring one anyway made the listener unusable
+			// by any real sandbox: PR9's real-docker e2e-container CI
+			// job's every sandbox-internal clone attempt failed the TLS
+			// handshake outright ("tls: client didn't provide a
+			// certificate").
+			tlsCfg, err := daemonCA.ServerOnlyTLSConfig("127.0.0.1", "localhost", composeGatewayServiceName)
 			if err != nil {
 				return fmt.Errorf("git gateway tls config: %w", err)
 			}

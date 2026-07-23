@@ -300,6 +300,41 @@ func (ca *CA) ServerTLSConfig(hosts ...string) (*tls.Config, error) {
 	}, nil
 }
 
+// ServerOnlyTLSConfig builds a tls.Config for a TCP listener that
+// authenticates only the SERVER side (a standard, non-mutual TLS server
+// config) — unlike ServerTLSConfig, it does not require or verify a client
+// certificate.
+//
+// This is for a listener whose per-connection authorization is already
+// fully handled at the application layer by an existing per-job bearer
+// token (docs/plans/phase6-container-backend.md §決定5: 「per-job の...
+// token は既存 broker/gitgateway の per-job capability token パターンを流用」
+// — the git gateway's own Registry-issued, URL-path-embedded per-job token
+// is exactly that). A client certificate would add no per-job authorization
+// this token doesn't already provide, and — unlike dockerproxy, whose own
+// §決定5 write-up explicitly designs a per-job short-lived client cert with
+// broker-style env delivery — no PR ever actually built or wired per-job
+// client cert issuance/delivery for the git gateway; this package's own doc
+// comment already flags that gap ("Per-JOB CLIENT certs ... are NOT
+// materialized or distributed to any real job by this package's production
+// callers"). Requiring one anyway (ServerTLSConfig's unconditional
+// tls.RequireAndVerifyClientCert) makes the listener unusable by any real
+// client — PR9's real-docker e2e-container CI job hit exactly this: every
+// sandbox-internal clone attempt failed the TLS handshake with "tls: client
+// didn't provide a certificate" server-side (and a matching client-side
+// "server certificate verification failed" once the client was separately
+// given something to trust the server with).
+func (ca *CA) ServerOnlyTLSConfig(hosts ...string) (*tls.Config, error) {
+	cert, err := ca.IssueServerCert(hosts...)
+	if err != nil {
+		return nil, err
+	}
+	return &tls.Config{
+		Certificates: []tls.Certificate{cert},
+		MinVersion:   tls.VersionTLS12,
+	}, nil
+}
+
 // ClientTLSConfig builds a tls.Config for connecting to a listener secured
 // by ServerTLSConfig: trusts this CA as the server's root and presents
 // cert (from IssueClientCert) as the client's identity. serverName must

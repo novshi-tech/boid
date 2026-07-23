@@ -135,6 +135,13 @@ type Runner struct {
 	// gateway (like the default proxy listener) is only known once Start
 	// has run. nil disables gateway URL propagation into SandboxRuntimeInfo.
 	GatewayURL *string
+	// GatewayCAPEM points at the daemon's internal CA's own PEM-encoded
+	// certificate (mtls.CA.CertPEM), filled in by Server.Start alongside
+	// GatewayURL. A container-backend clone-mode job needs this to trust
+	// the git gateway's TLS server certificate (see
+	// SandboxRuntimeInfo.GatewayCAPEM's own doc comment for why a client
+	// certificate is not also needed). nil disables CA propagation.
+	GatewayCAPEM *[]byte
 
 	tokenMu       sync.Mutex
 	jobTokens     map[string]string
@@ -367,6 +374,14 @@ func (r *Runner) Dispatch(ctx context.Context, spec *orchestrator.JobSpec, clean
 	// when any step fails.
 	allowedDomains, proxyPort := r.resolveWorkspaceProxy(workspaceID)
 	gatewayURL, gatewayToken := r.registerGatewayToken(j.ID, spec, workspaceID)
+	// gatewayCAPEM: see SandboxRuntimeInfo.GatewayCAPEM's own doc comment.
+	// r.GatewayCAPEM nil (every pre-PR9-fix caller/test, or a daemon with
+	// no TLS CA configured) leaves this nil, matching gatewayURL's own
+	// "unwired" degrade.
+	var gatewayCAPEM []byte
+	if r.GatewayCAPEM != nil {
+		gatewayCAPEM = *r.GatewayCAPEM
+	}
 
 	// Phase 5b PR1 (docs/plans/phase5-shim-and-task-context.md): track this
 	// job's routed instruction + reduced environment view + trait-filtered
@@ -500,6 +515,7 @@ func (r *Runner) Dispatch(ctx context.Context, spec *orchestrator.JobSpec, clean
 		ResolvedHostCommandsByName: resolvedHostCommandsByName,
 		AllowedDomains:             allowedDomains,
 		GatewayURL:                 gatewayURL,
+		GatewayCAPEM:               gatewayCAPEM,
 		GatewayJobToken:            gatewayToken,
 		GatewayCloneURL:            gatewayCloneURL,
 		CloneWorkspaceDir:          cloneWorkspaceDir,
