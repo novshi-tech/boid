@@ -274,6 +274,7 @@ type dockerAPI interface {
 	NetworkList(ctx context.Context, options client.NetworkListOptions) (client.NetworkListResult, error)
 	NetworkRemove(ctx context.Context, networkID string, options client.NetworkRemoveOptions) (client.NetworkRemoveResult, error)
 
+	VolumeCreate(ctx context.Context, options client.VolumeCreateOptions) (client.VolumeCreateResult, error)
 	VolumeList(ctx context.Context, options client.VolumeListOptions) (client.VolumeListResult, error)
 	VolumeRemove(ctx context.Context, volumeID string, options client.VolumeRemoveOptions) (client.VolumeRemoveResult, error)
 }
@@ -311,12 +312,6 @@ func (b *containerBackend) Launch(ctx context.Context, spec sandbox.Spec, opts b
 		return nil, err
 	}
 
-	mounts := containerMounts(realized)
-	mounts = append(mounts,
-		mount.Mount{Type: mount.TypeBind, Source: specPath, Target: containerSpecPath, ReadOnly: true},
-		mount.Mount{Type: mount.TypeBind, Source: statePath, Target: containerStatePath},
-	)
-
 	labels := map[string]string{labelJobID: opts.JobID}
 	if b.installID != "" {
 		labels[labelInstallID] = b.installID
@@ -324,6 +319,16 @@ func (b *containerBackend) Launch(ctx context.Context, spec sandbox.Spec, opts b
 	if ws := realized.Env["BOID_WORKSPACE_SLUG"]; ws != "" {
 		labels[labelWorkspace] = ws
 	}
+
+	mounts, namedVolumes := containerMounts(realized)
+	if err := b.ensureNamedVolumes(ctx, namedVolumes, labels); err != nil {
+		cleanupFiles()
+		return nil, err
+	}
+	mounts = append(mounts,
+		mount.Mount{Type: mount.TypeBind, Source: specPath, Target: containerSpecPath, ReadOnly: true},
+		mount.Mount{Type: mount.TypeBind, Source: statePath, Target: containerStatePath},
+	)
 
 	initTrue := true
 	pidsLimit := defaultPidsLimit
@@ -679,8 +684,12 @@ func writeContainerSpec(spec sandbox.Spec) (specPath, statePath string, err erro
 // see its own doc comment on why). MountSourceContainerLocal entries are
 // skipped entirely: they have no host-side counterpart to bind (§決定 4 —
 // `/workspace/<name>` lands in the container's own writable layer).
-func containerMounts(r realization.Realization) []mount.Mount {
-	var mounts []mount.Mount
+//
+// namedVolumes returns the distinct MountSourceNamedVolume source names
+// among the mounts that passed their Guard, so Launch can pre-create them
+// (with reap labels) before ContainerCreate implicitly references them —
+// see ensureNamedVolumes's doc comment (PR5 review Major 6).
+func containerMounts(r realization.Realization) (mounts []mount.Mount, namedVolumes []string) {
 	for _, v := range r.Volumes {
 		if v.Guard != "" && !evaluateMountGuard(v.Guard) {
 			continue
@@ -700,6 +709,7 @@ func containerMounts(r realization.Realization) []mount.Mount {
 				Target:   v.Target,
 				ReadOnly: v.ReadOnly,
 			})
+			namedVolumes = append(namedVolumes, v.Source.Value)
 		case realization.MountSourceContainerLocal:
 			// No host-side counterpart; nothing to add.
 		}
@@ -714,7 +724,37 @@ func containerMounts(r realization.Realization) []mount.Mount {
 			ReadOnly: t.ReadOnly,
 		})
 	}
-	return mounts
+	return mounts, namedVolumes
+}
+
+// ensureNamedVolumes explicitly creates every named volume Launch's mounts
+// reference, carrying the same job/install/workspace labels the container
+// itself gets. Docker auto-creates a missing named volume the first time a
+// container references it, but that auto-created volume gets NO labels —
+// and ReapOrphans's volume sweep (reapOrphanVolumes) only finds
+// labelJobID-labeled volumes, so an auto-created volume would silently
+// never be reaped (PR5 review Major 6).
+//
+// VolumeCreate is idempotent (Docker returns the existing volume, unchanged,
+// for an already-existing name — it does not error, and it does NOT apply
+// the request's labels to an existing volume, since the API has no
+// volume-label-update endpoint), so this is safe to call on every Launch.
+// An already-existing volume that predates this fix (no boid.job_id label)
+// is left as-is rather than deleted-and-recreated, which would be
+// destructive to whatever it holds; a warning is logged instead so the
+// reap gap is at least visible.
+func (b *containerBackend) ensureNamedVolumes(ctx context.Context, names []string, labels map[string]string) error {
+	for _, name := range names {
+		res, err := b.api.VolumeCreate(ctx, client.VolumeCreateOptions{Name: name, Labels: labels})
+		if err != nil {
+			return fmt.Errorf("create named volume %q: %w", name, err)
+		}
+		if res.Volume.Labels[labelJobID] == "" {
+			slog.Warn("container backend: named volume exists without a boid.job_id label; ReapOrphans's volume sweep will not find it",
+				"volume", name)
+		}
+	}
+	return nil
 }
 
 // evaluateMountGuard evaluates a sandbox.Mount.Guard expression on the host

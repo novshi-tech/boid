@@ -187,6 +187,46 @@ func TestContainerBackend_Launch_RejectsPartialOrRootUIDGID(t *testing.T) {
 // (nullable *int fields — see their doc comment) in test literals.
 func intPtr(v int) *int { return &v }
 
+// TestContainerBackend_Launch_CreatesNamedVolumesWithReapLabels pins Major
+// 6 from the PR5 review: a MountSourceNamedVolume mount must be explicitly
+// VolumeCreate'd (carrying boid.job_id / boid.install_id) before
+// ContainerCreate implicitly references it — otherwise Docker
+// auto-creates it unlabeled and ReapOrphans's volume sweep can never find
+// it.
+func TestContainerBackend_Launch_CreatesNamedVolumesWithReapLabels(t *testing.T) {
+	api := &fakeDockerAPI{}
+	be := NewContainerBackend(api, ContainerBackendOptions{InstallID: "install-xyz"})
+
+	spec := sandbox.Spec{
+		ID:   "job-named-vol",
+		Argv: []string{"true"},
+		Mounts: []sandbox.Mount{
+			{Source: "boid-home-workspace-foo", Target: "/mnt/named", Type: sandbox.MountBind},
+		},
+	}
+	mustLaunch(t, be, spec, backend.LaunchOptions{JobID: "job-named-vol"})
+
+	if len(api.volumeCreateCalls) != 1 {
+		t.Fatalf("VolumeCreate calls = %d, want 1", len(api.volumeCreateCalls))
+	}
+	call := api.volumeCreateCalls[0]
+	if call.Name != "boid-home-workspace-foo" {
+		t.Errorf("VolumeCreate Name = %q, want %q", call.Name, "boid-home-workspace-foo")
+	}
+	if got, want := call.Labels[labelJobID], "job-named-vol"; got != want {
+		t.Errorf("VolumeCreate Labels[%q] = %q, want %q", labelJobID, got, want)
+	}
+	if got, want := call.Labels[labelInstallID], "install-xyz"; got != want {
+		t.Errorf("VolumeCreate Labels[%q] = %q, want %q", labelInstallID, got, want)
+	}
+
+	// VolumeCreate must happen before ContainerCreate references the
+	// volume by name.
+	if len(api.createCalls) != 1 {
+		t.Fatalf("ContainerCreate calls = %d, want 1", len(api.createCalls))
+	}
+}
+
 func TestContainerBackend_Adopt_ReconstructsSessionFromRunningContainer(t *testing.T) {
 	const runtimeID = "already-running-container"
 	tty := false

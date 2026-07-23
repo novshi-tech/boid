@@ -15,6 +15,7 @@ import (
 	"github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/api/types/image"
 	"github.com/moby/moby/api/types/jsonstream"
+	"github.com/moby/moby/api/types/volume"
 	"github.com/moby/moby/client"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 )
@@ -43,6 +44,7 @@ type fakeDockerAPI struct {
 	ImagePullFunc        func(ctx context.Context, ref string, options client.ImagePullOptions) (client.ImagePullResponse, error)
 	NetworkListFunc      func(ctx context.Context, options client.NetworkListOptions) (client.NetworkListResult, error)
 	NetworkRemoveFunc    func(ctx context.Context, networkID string, options client.NetworkRemoveOptions) (client.NetworkRemoveResult, error)
+	VolumeCreateFunc     func(ctx context.Context, options client.VolumeCreateOptions) (client.VolumeCreateResult, error)
 	VolumeListFunc       func(ctx context.Context, options client.VolumeListOptions) (client.VolumeListResult, error)
 	VolumeRemoveFunc     func(ctx context.Context, volumeID string, options client.VolumeRemoveOptions) (client.VolumeRemoveResult, error)
 
@@ -60,10 +62,11 @@ type fakeDockerAPI struct {
 	removeIDs        []string
 	pullRefs         []string
 	listFilters      []client.Filters
-	inspectIDs       []string
-	imageInspectRefs []string
-	volumeListCalls  int
-	networkListCalls int
+	inspectIDs        []string
+	imageInspectRefs  []string
+	volumeCreateCalls []client.VolumeCreateOptions
+	volumeListCalls   int
+	networkListCalls  int
 }
 
 var _ dockerAPI = (*fakeDockerAPI)(nil)
@@ -216,6 +219,19 @@ func (f *fakeDockerAPI) NetworkRemove(ctx context.Context, networkID string, opt
 		return f.NetworkRemoveFunc(ctx, networkID, options)
 	}
 	return client.NetworkRemoveResult{}, nil
+}
+
+func (f *fakeDockerAPI) VolumeCreate(ctx context.Context, options client.VolumeCreateOptions) (client.VolumeCreateResult, error) {
+	f.mu.Lock()
+	f.volumeCreateCalls = append(f.volumeCreateCalls, options)
+	f.mu.Unlock()
+	if f.VolumeCreateFunc != nil {
+		return f.VolumeCreateFunc(ctx, options)
+	}
+	// Default: a fresh volume, carrying whatever labels the caller asked
+	// for — the "newly created" case. Tests exercising the "already exists
+	// without labels" case supply their own VolumeCreateFunc.
+	return client.VolumeCreateResult{Volume: volume.Volume{Name: options.Name, Labels: options.Labels}}, nil
 }
 
 func (f *fakeDockerAPI) VolumeList(ctx context.Context, options client.VolumeListOptions) (client.VolumeListResult, error) {
