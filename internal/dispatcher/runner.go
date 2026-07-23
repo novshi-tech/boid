@@ -467,11 +467,22 @@ func (r *Runner) Dispatch(ctx context.Context, spec *orchestrator.JobSpec, clean
 		}
 	}
 
+	// [Blocker 2, PR7 codex review]: proxyHost stays "" (applyProxyEnv's own
+	// hostGatewayIP fallback) for the userns backend — byte-for-byte
+	// unchanged. The container backend has no 10.0.2.2 projection at all,
+	// so a docker-enabled job needs the compose egress service DNS name
+	// instead; see SandboxRuntimeInfo.ProxyHost's own doc comment.
+	var proxyHost string
+	if IsContainerBackend(r.Backend) {
+		proxyHost = composeEgressServiceName
+	}
+
 	rtInfo := SandboxRuntimeInfo{
 		JobID:                      j.ID,
 		BoidBinary:                 r.BoidBinary,
 		ServerSocket:               r.ServerSocket,
 		ProxyPort:                  proxyPort,
+		ProxyHost:                  proxyHost,
 		BrokerSocket:               brokerSocket,
 		BrokerToken:                brokerToken,
 		WorkspacePeers:             workspacePeers,
@@ -990,6 +1001,26 @@ func (r *Runner) launchSandbox(ctx context.Context, job *Job, spec sandbox.Spec,
 	return job.ID, nil
 }
 
+// [Major 6, PR7 codex review]: this used to bail out entirely (before ever
+// calling session.Wait) whenever sessionLocalArtifacts(session) returned nil
+// — true for EVERY container-backend session, since a containerSession has
+// no PreparedSandbox (userns-only scaffolding/spec/state files — see
+// sessionLocalArtifacts' own doc comment). That meant r.reapAndCloseDockerProxy
+// never ran for a container-backend job: a docker-enabled job's sibling
+// resources (created by the *client* inside the sandbox — docker CLI,
+// TestContainers, ... — via the per-job dockerproxy) never got reaped, and
+// the per-sandbox dockerproxy server itself never got closed, for every
+// single container-backend job.
+//
+// The guard now only bails on an empty runtimeID (nothing to reap/close
+// against at all). prepared==nil (every containerSession, and any
+// Adopt-reconstructed usernsSession) still runs session.Wait +
+// reapAndCloseDockerProxy — the backend-agnostic parts — and simply skips
+// the userns-only scaffolding/spec/state file cleanup below, which has no
+// meaning for a backend with no local PreparedSandbox artifacts to begin
+// with (a containerSession's own equivalent — specPath/dockerTLSDir removal
+// — is handled inside containerSession.waitLoop itself, since only the
+// session, not this caller, knows those paths).
 func (r *Runner) cleanupSandboxAfterWait(session backend.SandboxSession, extra orchestrator.CleanupFunc) {
 	defer func() {
 		if extra != nil {
@@ -1000,16 +1031,18 @@ func (r *Runner) cleanupSandboxAfterWait(session backend.SandboxSession, extra o
 		return
 	}
 	runtimeID := session.ID()
-	prepared := sessionLocalArtifacts(session)
-	if runtimeID == "" || prepared == nil {
+	if runtimeID == "" {
 		return
 	}
+	prepared := sessionLocalArtifacts(session)
 	result, err := session.Wait(context.Background())
 	if err != nil {
 		if errors.Is(err, ErrRuntimeUnsupported) {
 			// Reap docker resources even on unsupported-wait paths (best effort).
 			r.reapAndCloseDockerProxy(runtimeID)
-			cleanupSandboxArtifacts(prepared)
+			if prepared != nil {
+				cleanupSandboxArtifacts(prepared)
+			}
 			return
 		}
 		slog.Warn("skip sandbox cleanup: runtime wait failed", "runtime_id", runtimeID, "error", err)
@@ -1018,7 +1051,19 @@ func (r *Runner) cleanupSandboxAfterWait(session backend.SandboxSession, extra o
 
 	// Docker Reap + proxy Close: run unconditionally (success or failure) and
 	// before the runtime dir is removed so the ledger is still readable.
+	// Backend-agnostic — this is what makes a docker-enabled container
+	// -backend job's sibling resources get reaped and its per-sandbox
+	// dockerproxy server closed, same as a userns job (Major 6 fix).
 	r.reapAndCloseDockerProxy(runtimeID)
+
+	if prepared == nil {
+		// No userns-local scaffolding/spec/state files to clean up (every
+		// containerSession, and any Adopt-reconstructed usernsSession) —
+		// containerSession.waitLoop already owns and has already removed
+		// its own equivalent artifacts (specPath/dockerTLSDir) by the time
+		// Wait returned above.
+		return
+	}
 
 	// Scaffolding (RootDir, StagingDir) は runner-outer が常に削除するので、
 	// ここでは保険として idempotent に rm するだけ。 exit_code に関わらず実行。
@@ -1093,11 +1138,30 @@ func cleanupSandboxState(prepared *PreparedSandbox) {
 
 // StopJobRuntime stops the runtime identified by runtimeID.
 // It is a best-effort operation: errors are logged at debug level only.
+//
+// [Blocker 3, PR7 codex review]: routes through SandboxBackend.Adopt →
+// SandboxSession.Stop (the same seam SignalJobRuntime/ResizeRuntimeID/
+// CanAttach already use, docs/plans/phase6-container-backend.md §PR1)
+// instead of calling r.Runtime.Stop directly. r.Runtime (LocalRuntime) can
+// only ever stop a userns process — with sandbox.backend: container
+// selected, a task abort/`boid task stop` used to call StopJobRuntime and
+// have it silently do nothing useful against a docker container (LocalRuntime
+// has no notion of runtimeID being a container ID), leaving the old agent's
+// container running and free to keep mutating the task's $HOME/workspace
+// after the daemon believed the task was stopped. Adopt(runtimeID) resolves
+// to the correct backend's session regardless of which one is configured —
+// for userns that is still, transitively, r.Runtime.Stop (usernsSession.Stop
+// delegates to it), so this is behavior-preserving for every pre-PR7
+// deployment.
 func (r *Runner) StopJobRuntime(runtimeID string) {
-	if r.Runtime == nil || runtimeID == "" {
+	if runtimeID == "" {
 		return
 	}
-	if err := r.Runtime.Stop(context.Background(), runtimeID); err != nil {
+	session, ok := r.sandboxBackend().Adopt(context.Background(), runtimeID)
+	if !ok {
+		return
+	}
+	if err := session.Stop(context.Background()); err != nil {
 		slog.Debug("stop job runtime", "runtime_id", runtimeID, "error", err)
 	}
 }
@@ -1125,6 +1189,27 @@ func (r *Runner) SignalJobRuntime(runtimeID string, sig syscall.Signal) {
 	if err := session.Signal(context.Background(), sig); err != nil {
 		slog.Debug("signal job runtime", "runtime_id", runtimeID, "signal", sig, "error", err)
 	}
+}
+
+// ReapOrphans reconciles sandbox resources a previous daemon instance left
+// behind, via the configured SandboxBackend (docs/plans/
+// phase6-container-backend.md §PR7 / §決定 6). It is a thin delegation —
+// r.sandboxBackend().ReapOrphans(ctx) — so callers (internal/server/wire.go's
+// startup sequence) never need to know which backend is live: the userns
+// backend's ReapOrphans is a permanent no-op stub, so calling this on every
+// daemon startup is always safe and only does real work when the container
+// backend is selected (config sandbox.backend: container).
+//
+// Callers MUST run this — and act on ReapReport.FailedJobIDs, e.g. by
+// skipping auto-reopen for the corresponding tasks — strictly BEFORE
+// resuming any daemon_shutdown-aborted task, per §決定 6: a docker
+// container does not die when the daemon process restarts the way a
+// userns child process (killed by MarkStaleJobsFailed's implicit process
+// death) does, so auto-reopening before reap could dispatch a fresh agent
+// against a task whose previous job container is still alive — two agents
+// mutating the same $HOME/task RPC concurrently.
+func (r *Runner) ReapOrphans(ctx context.Context) (backend.ReapReport, error) {
+	return r.sandboxBackend().ReapOrphans(ctx)
 }
 
 // CanAttach reports whether runtimeID can currently be adopted by the
@@ -1173,15 +1258,17 @@ func (r *Runner) ResizeRuntimeID(ctx context.Context, runtimeID string, size Ter
 }
 
 // CleanupTaskWindow stops all tracked runtimes associated with a task.
+//
+// [Blocker 3, PR7 codex review]: routes through StopJobRuntime (itself
+// SandboxBackend.Adopt → SandboxSession.Stop, see its doc comment) instead
+// of calling r.Runtime.Stop directly — the same fix, for the same reason:
+// with sandbox.backend: container selected, r.Runtime.Stop cannot stop a
+// docker container, so aborting a task used to leave its job container
+// running behind the daemon's back.
 func (r *Runner) CleanupTaskWindow(taskID string) {
-	if r.Runtime == nil {
-		return
-	}
 	runtimeIDs := r.takeTaskRuntimes(taskID)
 	for _, runtimeID := range runtimeIDs {
-		if err := r.Runtime.Stop(context.Background(), runtimeID); err != nil {
-			slog.Debug("cleanup task runtime", "task_id", taskID, "runtime_id", runtimeID, "error", err)
-		}
+		r.StopJobRuntime(runtimeID)
 	}
 }
 

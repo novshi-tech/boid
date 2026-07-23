@@ -74,6 +74,42 @@ func TestComposeDaemonHasDockerProxyAlias(t *testing.T) {
 	t.Errorf(`daemon service's boid_internal network aliases = %v, want "boid-dockerproxy" present`, net.Aliases)
 }
 
+// TestComposeDaemonHasGatewayBrokerEgressAliases pins [Blocker 2, PR7 codex
+// review]: the daemon service's boid_internal network membership must also
+// carry "boid-gateway", "boid-broker", and "boid-egress" aliases — the DNS
+// names internal/server/server.go's gatewayURLFor/composeBrokerServiceName
+// and dispatcher.composeEgressServiceName resolve a container-backend
+// job's git gateway clone URL and HTTP(S)_PROXY host to. Unlike
+// boid-dockerproxy (still a bare alias with nothing reachable behind it as
+// of PR7 — see compose.yml's own "NOT yet true of this file" note),
+// boid-gateway and boid-egress ARE backed by a real listener as of this
+// fix: Server.Start binds the git gateway TLS listener and the
+// ProxyManager's default listener on 0.0.0.0 whenever sandbox.backend:
+// container is selected.
+func TestComposeDaemonHasGatewayBrokerEgressAliases(t *testing.T) {
+	doc := loadComposeDoc(t)
+
+	daemon, ok := doc.Services["daemon"]
+	if !ok {
+		t.Fatal(`compose.yml has no "daemon" service`)
+	}
+	net, ok := daemon.Networks["boid_internal"]
+	if !ok {
+		t.Fatal(`daemon service is not a member of the "boid_internal" network`)
+	}
+	want := map[string]bool{"boid-gateway": false, "boid-broker": false, "boid-egress": false}
+	for _, a := range net.Aliases {
+		if _, ok := want[a]; ok {
+			want[a] = true
+		}
+	}
+	for alias, found := range want {
+		if !found {
+			t.Errorf("daemon service's boid_internal network aliases = %v, want %q present", net.Aliases, alias)
+		}
+	}
+}
+
 // TestComposeDaemonHasDockerGroupAdd pins Major 9 (PR6 codex review): the
 // non-root daemon process (user: 1000:1000 by default) needs supplementary
 // membership in the host's docker group to open /var/run/docker.sock

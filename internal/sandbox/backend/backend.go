@@ -125,9 +125,14 @@ type SandboxBackend interface {
 	// notion of that session).
 	Adopt(ctx context.Context, runtimeID string) (SandboxSession, bool)
 	// ReapOrphans reconciles sandbox resources left behind by a daemon
-	// restart. PR1 stubs this (returns a zero ReapReport, nil error); the
-	// real implementation lands in PR7, wired into the startup
-	// MarkStale*/auto-reopen sequence.
+	// restart. usernsBackend's ReapOrphans is a permanent no-op stub
+	// (returns a zero ReapReport, nil error — live re-attach isn't a
+	// userns concept); containerBackend's real (label-based) implementation
+	// landed in PR5/PR6. PR7 is what actually CALLS this on every daemon
+	// startup, between MarkStaleJobsFailed/task-abort and the
+	// daemon_shutdown auto-reopen sweep (internal/server/wire.go's
+	// reapOrphansBeforeReopen via dispatcher.Runner.ReapOrphans) — see
+	// docs/plans/phase6-container-backend.md §決定 6.
 	ReapOrphans(ctx context.Context) (ReapReport, error)
 }
 

@@ -25,6 +25,17 @@ type SandboxRuntimeInfo struct {
 	BoidBinary   string
 	ServerSocket string
 	ProxyPort    int
+	// ProxyHost [Blocker 2, PR7 codex review] is the host applyProxyEnv
+	// points HTTP_PROXY/HTTPS_PROXY at. Empty (every pre-Blocker-2 caller)
+	// falls back to hostGatewayIP ("10.0.2.2", the pasta/slirp userns
+	// gateway IP) — applyProxyEnv's own doc comment. Runner.Dispatch sets
+	// this to the compose egress service DNS name
+	// (dispatcher-internal composeEgressServiceName, "boid-egress") when
+	// the configured backend is the container backend
+	// (IsContainerBackend(r.Backend)): a docker sibling container has no
+	// 10.0.2.2 projection at all, so a container-backend job needs a
+	// reachable compose-network address instead.
+	ProxyHost string
 
 	BrokerSocket string
 	BrokerToken  string
@@ -284,7 +295,7 @@ func BuildSandboxSpec(spec *orchestrator.JobSpec, rt SandboxRuntimeInfo) (sandbo
 	env["BOID_HOST_IP"] = hostGatewayIP
 	setIfNonEmpty(env, "BOID_WORKSPACE_SLUG", rt.WorkspaceSlug)
 	if rt.ProxyPort > 0 {
-		applyProxyEnv(env, rt.ProxyPort)
+		applyProxyEnv(env, rt.ProxyHost, rt.ProxyPort)
 	}
 	if rt.ProxySocketPath != "" {
 		applyDockerProxyEnv(env)
@@ -1210,18 +1221,47 @@ func buildPATH(bindings []orchestrator.BindMount) string {
 // として機能する。sandbox 側 (pasta/nftables) と値を揃える。
 const hostGatewayIP = "10.0.2.2"
 
+// composeEgressServiceName [Blocker 2, PR7 codex review] is the compose
+// network DNS name a container-backend job's HTTP_PROXY/HTTPS_PROXY env
+// should point at instead of hostGatewayIP — see SandboxRuntimeInfo.
+// ProxyHost's own doc comment. Matches internal/server's identically-named
+// composeEgressServiceName constant (that package cannot import this one
+// without an import cycle — internal/server already imports
+// internal/dispatcher — so both sides simply agree on the same literal, the
+// same way composeGatewayServiceName/gitgateway.SandboxURLOptions.
+// ServiceName's own default already do).
+const composeEgressServiceName = "boid-egress"
+
 // dockerProxySandboxSocket is the fixed Unix socket path inside the sandbox
 // that the per-sandbox docker proxy is bind-mounted to.
 const dockerProxySandboxSocket = "/run/boid/docker-proxy.sock"
 
-func applyProxyEnv(env map[string]string, port int) {
-	proxyURL := fmt.Sprintf("http://%s:%d", hostGatewayIP, port)
+// applyProxyEnv sets the HTTP(S) proxy env vars a sandbox's outbound
+// traffic is routed through.
+//
+// [Blocker 2, PR7 codex review]: host is now a parameter rather than always
+// hostGatewayIP ("10.0.2.2", the pasta/slirp userns gateway IP). A docker
+// sibling container has no such address at all — 10.0.2.2 is a userns/pasta
+// artifact this backend's own sandbox network setup never creates (see
+// hostGatewayIP's own doc comment: "sandbox 側 (pasta/nftables) と値を揃える" —
+// there is no pasta involved for a container-backend job) — so a
+// container-backend job that received this literal would have HTTP_PROXY
+// pointing at an address nothing on its network ever answers, and every
+// egress request would simply time out. host empty (every pre-Blocker-2
+// caller) falls back to hostGatewayIP unchanged — see
+// SandboxRuntimeInfo.ProxyHost's own doc comment for who sets a non-empty
+// value and when.
+func applyProxyEnv(env map[string]string, host string, port int) {
+	if host == "" {
+		host = hostGatewayIP
+	}
+	proxyURL := fmt.Sprintf("http://%s:%d", host, port)
 	env["http_proxy"] = proxyURL
 	env["https_proxy"] = proxyURL
 	env["HTTP_PROXY"] = proxyURL
 	env["HTTPS_PROXY"] = proxyURL
-	env["no_proxy"] = hostGatewayIP + ",10.0.2.3,localhost,127.0.0.1"
-	env["NO_PROXY"] = hostGatewayIP + ",10.0.2.3,localhost,127.0.0.1"
+	env["no_proxy"] = host + ",10.0.2.3,localhost,127.0.0.1"
+	env["NO_PROXY"] = host + ",10.0.2.3,localhost,127.0.0.1"
 }
 
 // applyDockerProxyEnv injects DOCKER_HOST, CONTAINER_HOST,

@@ -78,14 +78,18 @@ sandbox:
   allowed_domains:
     - ".github.com"       # ドット始まりはサフィックスマッチ
     - "api.example.com"   # ドットなしは完全一致
+  backend: userns          # userns（デフォルト）| container
 ```
 
 | キー | 型 | デフォルト | 説明 |
 |---|---|---|---|
 | `allowed_domains` | []string | `[]` | デフォルトの許可リストに追加するドメイン |
+| `backend` | string | `userns` | サンドボックス実行 backend。`userns`（デフォルト、`clone(NEWUSER)`+pivot_root）または `container`（Phase 6、docker sibling コンテナ）|
 
 起動時に `defaultAllowedDomains`（Anthropic/OpenAI API・各言語パッケージレジストリ等）へ追記されます。
 プロキシ許可リストの詳細は [サンドボックス内部](../architecture/sandbox-internals.md) を参照してください。
+
+`backend: container` は Phase 6（`docs/plans/phase6-container-backend.md`）の cutover 設定で、全 workspace 共通（workspace 単位の切替はできない）。切り替える前に container e2e green + rollback rehearsal（deploy-level reaper 込み）を済ませておくこと（plan の cutover gate）。値は daemon 起動時に検証され、`userns` / `container` 以外はエラーで起動を拒否する（サイレントフォールバック無し）。
 
 ---
 

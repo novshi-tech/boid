@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/moby/moby/client"
 	"github.com/novshi-tech/boid/internal/adapters/claude"
 	"github.com/novshi-tech/boid/internal/api"
 	"github.com/novshi-tech/boid/internal/api/auth"
@@ -24,6 +25,7 @@ import (
 	"github.com/novshi-tech/boid/internal/notify"
 	"github.com/novshi-tech/boid/internal/orchestrator"
 	"github.com/novshi-tech/boid/internal/sandbox"
+	"github.com/novshi-tech/boid/internal/sandbox/backend"
 	"github.com/novshi-tech/boid/internal/sandbox/dockerproxy"
 	"github.com/novshi-tech/boid/web"
 )
@@ -331,6 +333,99 @@ func buildProjectLoadStartupError(errs []error) error {
 	return &startupError{aggregate: msg.String(), causes: causes}
 }
 
+// sandboxBackendForConfig selects the SandboxBackend Runner.Backend should
+// be overridden to based on cfg.Sandbox.Backend (docs/plans/
+// phase6-container-backend.md §PR7 cutover, §決定11). Returns (nil, nil)
+// for the default "userns" (or an unset cfg — every pre-PR7 caller):
+// leaving Runner.Backend nil is what makes Runner.sandboxBackend() keep
+// constructing its own usernsBackend, so this is a true no-op for every
+// deployment that hasn't opted in.
+//
+// "container" wires a real docker client (github.com/moby/moby/client —
+// client.New(client.FromEnv) does not dial the docker daemon eagerly; it
+// only resolves DOCKER_HOST/DOCKER_* env and builds the HTTP client
+// config, so this never fails just because docker is unreachable at
+// daemon-boot time — the same lazy-connect behavior cmd/reap.go's
+// runReap already relies on) into a fresh containerBackend, carrying this
+// installation's install_id (§決定6 resource labeling) and the
+// host-visible runtimes directory (so `boid job log`'s transcript spool —
+// §PR7's transcript persistence — and the per-job dockerproxy TLS
+// materialize dir land under the same bind-mounted path a sibling docker
+// daemon can actually reach, matching ContainerBackendOptions.RuntimeDir's
+// own doc comment).
+//
+// installID and runtimeDir are threaded as plain values (not read from cfg
+// itself) so this stays independently unit-testable without a live
+// Server/DB — see wire_backend_test.go.
+//
+// [Major 7, PR7 codex review]: DiagnosticsCollector is now wired to
+// dispatcher.NewDefaultDiagnosticsCollector(dockerClient, runtimeDir) —
+// before this fix it was left nil in every production path (see
+// NewContainerBackend's own doc comment: "PR5 leaves this nil (no consumer
+// yet)"), so an OOM-killed or setup-failure job container was removed with
+// no diagnostic capture beyond whatever the attach-stream transcript spool
+// happened to catch (exit code 137 and an empty log were often the only
+// signal). NewDefaultDiagnosticsCollector runs only on an abnormal exit
+// (ExitCode != 0) and degrades gracefully on its own inspect/logs failures
+// — see its own doc comment for the full contract.
+func sandboxBackendForConfig(cfg *config.Config, installID, runtimeDir string) (backend.SandboxBackend, error) {
+	if cfg == nil || cfg.Sandbox.Backend != config.SandboxBackendContainer {
+		return nil, nil
+	}
+	dockerClient, err := client.New(client.FromEnv)
+	if err != nil {
+		return nil, fmt.Errorf("sandbox.backend: container: connect to docker: %w", err)
+	}
+	return dispatcher.NewContainerBackend(dockerClient, dispatcher.ContainerBackendOptions{
+		InstallID:            installID,
+		RuntimeDir:           runtimeDir,
+		DiagnosticsCollector: dispatcher.NewDefaultDiagnosticsCollector(dockerClient, runtimeDir),
+	}), nil
+}
+
+// gatewayBindHost [Blocker 2, PR7 codex review] returns the listen address
+// the git gateway's TCP(mTLS) listener binds to: "0.0.0.0" (composeBindHost)
+// when the container backend is selected, "127.0.0.1" (the pre-PR7
+// literal, byte-for-byte unchanged) otherwise. A pure function — no Server
+// state — so it is independently unit-testable without a live listener;
+// see wire_backend_test.go.
+func gatewayBindHost(usingContainerBackend bool) string {
+	if usingContainerBackend {
+		return composeBindHost
+	}
+	return "127.0.0.1"
+}
+
+// gatewayURLFor [Blocker 2, PR7 codex review] computes the git gateway's
+// sandbox-facing base URL for the currently-selected backend:
+//
+//   - usingContainerBackend == false (every pre-PR7 deployment, and every
+//     userns-backend deployment after PR7): gitgateway.BackendUserns's
+//     http://10.0.2.2:<plainPort> — byte-for-byte the pre-PR7 literal
+//     (docs/plans/phase6-container-backend.md §PR4: "既存 (10.0.2.2) を
+//     無条件で切り替える禁止").
+//   - usingContainerBackend == true: gitgateway.BackendContainer's
+//     https://boid-gateway:<tlsPort> — a sibling job container has no
+//     10.0.2.2 loopback projection at all (that address is a pasta/slirp
+//     userns artifact — this PR's own Blocker 2 evidence), so it MUST use
+//     the compose service DNS name over the mTLS listener instead.
+//
+// tlsPort is only consulted in the container-backend branch; plainPort only
+// in the userns branch — Start's own call sites pass 0 for whichever one
+// isn't relevant to a given call, matching SandboxURL's own "Port is
+// backend-specific" contract. A pure function — no Server/listener state —
+// so it is independently unit-testable; see wire_backend_test.go.
+func gatewayURLFor(usingContainerBackend bool, plainPort, tlsPort int) string {
+	if usingContainerBackend {
+		return gitgateway.SandboxURL(gitgateway.SandboxURLOptions{
+			Backend:     gitgateway.BackendContainer,
+			Port:        tlsPort,
+			ServiceName: composeGatewayServiceName,
+		})
+	}
+	return gitgateway.SandboxURL(gitgateway.SandboxURLOptions{Backend: gitgateway.BackendUserns, Port: plainPort})
+}
+
 // runtimesDirFor returns the runtimes root directory for the given config.
 func runtimesDirFor(cfg Config) string {
 	if cfg.DBPath != "" && cfg.DBPath != ":memory:" {
@@ -415,6 +510,73 @@ func cleanOrphanRuntimes(runtimesDir string, conn *sql.DB) {
 	}
 }
 
+// reapOrphansBeforeReopen calls runner.ReapOrphans (docs/plans/
+// phase6-container-backend.md §PR7 / §決定 6) and translates its
+// job-scoped ReapReport into (a) the set of TASK IDs the caller's
+// subsequent daemon_shutdown auto-reopen sweep must skip, and (b) whether
+// startup reap failed so completely that EVERY daemon_shutdown-aborted task
+// must be held back this boot (see blockAllReopen below — [Blocker 4, PR7
+// codex review]).
+//
+// ReapOrphans reasons about jobs (a backend's resource label is
+// boid.job_id, not task_id — a task can have had several jobs across its
+// lifetime), while FindDaemonShutdownAbortedTasks/auto-reopen reasons
+// about tasks — this resolves FailedJobIDs back to their owning task via
+// dispatcher.GetJob so the two layers can talk to each other. A job whose
+// row can no longer be found (or that was never linked to a task, e.g. a
+// taskless `boid exec`) is skipped rather than erroring: there is no task
+// to protect from a double-reopen race in that case.
+//
+// [Blocker 4, PR7 codex review]: a non-nil return error or a non-nil
+// ReapReport.GlobalError (e.g. the docker API was entirely unreachable —
+// the userns backend, which never returns either, is unaffected) sets
+// blockAllReopen=true. Before this fix, a global reap failure was only
+// logged; the skip set stayed exactly whatever FailedJobIDs already
+// contributed (§決定6's job-level granularity has no visibility into jobs a
+// total listing failure never got to enumerate at all) — meaning a global
+// error, however severe (docker itself down, or transiently unavailable
+// right at daemon boot), silently degraded to "skip nothing" and every
+// daemon_shutdown-aborted task auto-reopened anyway. §決定6's own rule is
+// "reap は auto-reopen より前に完了させ、reap 失敗 task は reopen しない" — a
+// GlobalError means reap did NOT complete for ANY job (the listing call
+// itself never returned), so the caller has no way to know which tasks are
+// actually safe: the only rule-consistent behavior is to treat every
+// pending daemon_shutdown-aborted task as unreconciled and hold all of them
+// back, not silently reopen every one of them as if reap had never run at
+// all. This does not abort daemon startup outright (a global reap failure
+// is scoped to sandbox-resource reconciliation, not e.g. the HTTP API or
+// userns-backed dispatch) — it only withholds the auto-reopen sweep for
+// this boot; a subsequent successful `boid start` (once docker recovers) or
+// a manual `boid task action reopen` unblocks the affected tasks.
+func reapOrphansBeforeReopen(ctx context.Context, runner *dispatcher.Runner, conn *sql.DB) (skip map[string]bool, blockAllReopen bool) {
+	report, err := runner.ReapOrphans(ctx)
+	if err != nil {
+		slog.Error("startup reap failed; blocking ALL daemon_shutdown auto-reopen this boot to avoid a double-execution race (docs/plans/phase6-container-backend.md §決定6)",
+			"error", err)
+		blockAllReopen = true
+	}
+	if report.GlobalError != nil {
+		slog.Error("startup reap: backend reported a global error; blocking ALL daemon_shutdown auto-reopen this boot to avoid a double-execution race (docs/plans/phase6-container-backend.md §決定6)",
+			"error", report.GlobalError)
+		blockAllReopen = true
+	}
+	if len(report.ReapedJobIDs) > 0 {
+		slog.Info("startup reap: reconciled orphaned sandbox resources", "reaped_job_count", len(report.ReapedJobIDs))
+	}
+
+	skip = make(map[string]bool, len(report.FailedJobIDs))
+	for _, jobID := range report.FailedJobIDs {
+		job, jerr := dispatcher.GetJob(conn, jobID)
+		if jerr != nil || job == nil || job.TaskID == "" {
+			slog.Warn("startup reap: could not resolve a failed job to its task; unable to skip auto-reopen for it",
+				"job_id", jobID, "error", jerr)
+			continue
+		}
+		skip[job.TaskID] = true
+	}
+	return skip, blockAllReopen
+}
+
 func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, broker dispatcher.CommandBroker, secretStore *dispatcher.SecretStore) (*appRuntime, error) {
 	// Clean up runtime dirs that have no corresponding job rows (must run before
 	// MarkStaleJobsFailed so we only remove truly orphaned dirs).
@@ -490,6 +652,46 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 		GatewayURL:     &srv.gatewayURL,
 	})
 
+	// sandbox backend selection (docs/plans/phase6-container-backend.md
+	// §PR7 cutover, §決定11): config-driven, global (not per-workspace).
+	// sandboxBackendForConfig returns nil for the default/unset "userns"
+	// case, leaving runner.Backend nil — Runner.sandboxBackend() then
+	// keeps constructing the pre-Phase-6 usernsBackend on every call
+	// exactly as before this PR, so every existing deployment (no
+	// sandbox.backend key in config.yaml) is byte-for-byte unaffected.
+	// "container" is the opt-in cutover this PR exposes; the plan doc's
+	// own cutover gate (container e2e green + rollback rehearsal) is an
+	// operational precondition on actually setting it in a real deploy,
+	// not something enforced here.
+	//
+	// [Major 11, PR7 codex review]: config.Load()'s error here is fail-hard
+	// (daemon startup refused), NOT logged-and-defaulted-to-userns. An
+	// operator who set `sandbox.backend: container` in config.yaml has
+	// opted into a real production dispatch path; if config.yaml itself
+	// becomes unreadable at reload time (a torn write from a concurrent
+	// `boid` CLI edit, a permissions change, disk corruption — anything
+	// short of ENOENT, which config.Load's own loadFromPath already treats
+	// as "use defaults" and returns a nil error for) the daemon must not
+	// silently start with the userns backend instead: that is an unnoticed,
+	// unannounced downgrade of the sandbox isolation the operator explicitly
+	// configured, discovered only much later (if ever) by noticing jobs
+	// aren't landing in containers. Refusing to start surfaces the problem
+	// immediately, the same way every other daemon startup precondition in
+	// this file does (buildProjectStore's own "daemon startup refused"
+	// errors above).
+	backendCfg, err := config.Load()
+	if err != nil {
+		return nil, fmt.Errorf("daemon startup refused: load boid config for sandbox backend selection: %w", err)
+	}
+	sandboxBackend, berr := sandboxBackendForConfig(backendCfg, srv.installID, runtimesDirFor(cfg))
+	if berr != nil {
+		return nil, fmt.Errorf("daemon startup refused: %w", berr)
+	}
+	if sandboxBackend != nil {
+		runner.Backend = sandboxBackend
+		slog.Info("sandbox backend: container (docker) — cutover config (docs/plans/phase6-container-backend.md §PR7)")
+	}
+
 	lifecycle := jobLifecycleAdapter{runner: runner}
 	claudeAdapter := claude.New()
 	planner := orchestrator.WireDispatchPlanner(orchestrator.PlannerWireConfig{
@@ -518,6 +720,25 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 	}
 	workflow.InitDispatch(context.Background())
 
+	// Startup reap (docs/plans/phase6-container-backend.md §PR7 / §決定6):
+	// reconcile orphaned sandbox resources — real work only for the
+	// container backend; the userns backend's ReapOrphans is a permanent
+	// no-op stub — BEFORE auto-reopening any daemon_shutdown-aborted task
+	// below. A docker container does not die when this daemon process
+	// restarts the way a userns child process does (MarkStaleJobsFailed
+	// above only updates the DB row; it does not kill anything), so
+	// auto-reopening before reap could dispatch a fresh agent against a
+	// task whose previous job container is still alive — two agents
+	// mutating the same $HOME/task RPC concurrently. reapOrphansBeforeReopen
+	// returns the set of task IDs to skip reopening (every task with at
+	// least one job ReapOrphans failed to reconcile). blockAllReopen
+	// (Blocker 4, PR7 codex review) is set when reap failed so globally
+	// (docker unreachable, listing itself errored) that no per-job
+	// FailedJobIDs information exists at all — every daemon_shutdown-aborted
+	// task is then treated as unreconciled, not just the ones ReapOrphans
+	// happened to enumerate.
+	reapSkipTasks, reapBlockAllReopen := reapOrphansBeforeReopen(context.Background(), runner, srv.db)
+
 	// Auto-reopen tasks that were interrupted by the previous daemon shutdown.
 	// These tasks were aborted with code=daemon_shutdown either by
 	// abortOnDispatchError (hook in flight when SIGTERM fired) or by
@@ -527,7 +748,21 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 	if shutdownIDs, err := dispatcher.FindDaemonShutdownAbortedTasks(srv.db); err != nil {
 		slog.Warn("failed to query daemon_shutdown aborted tasks", "error", err)
 	} else {
+		if reapBlockAllReopen && len(shutdownIDs) > 0 {
+			slog.Error("startup reap failed globally; withholding auto-reopen for every daemon_shutdown-aborted task this boot (docs/plans/phase6-container-backend.md §決定6) — reopen manually once sandbox resources are confirmed reconciled",
+				"task_count", len(shutdownIDs))
+		}
 		for _, id := range shutdownIDs {
+			switch {
+			case reapBlockAllReopen:
+				slog.Warn("skip auto-reopen: startup reap failed globally (docs/plans/phase6-container-backend.md §決定6); leaving it aborted to avoid a double-execution race",
+					"task_id", id)
+				continue
+			case reapSkipTasks[id]:
+				slog.Warn("skip auto-reopen: startup reap failed to reconcile a sandbox resource for this task (docs/plans/phase6-container-backend.md §決定6); leaving it aborted to avoid a double-execution race",
+					"task_id", id)
+				continue
+			}
 			if _, err := workflow.ApplyAction(context.Background(), id, api.ApplyActionRequest{Type: "reopen"}); err != nil {
 				slog.Warn("auto-reopen on startup failed", "task_id", id, "error", err)
 				continue

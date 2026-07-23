@@ -23,6 +23,7 @@ import (
 	"golang.org/x/sys/unix"
 
 	"github.com/novshi-tech/boid/internal/mtls"
+	"github.com/novshi-tech/boid/internal/reap"
 	"github.com/novshi-tech/boid/internal/sandbox"
 	"github.com/novshi-tech/boid/internal/sandbox/backend"
 	"github.com/novshi-tech/boid/internal/sandbox/realization"
@@ -285,14 +286,14 @@ const (
 // why the parameter is this narrower interface rather than that concrete
 // type — or a fake for tests).
 //
-// Nothing in production dispatch calls this as of PR5 (docs/plans/
-// phase6-container-backend.md §PR5: "内部フラグ/テスト専用で... 確認する
-// (config 未公開)"). The seam this backend is exercised through is
-// Runner.Backend (internal/dispatcher/runner.go's DI override, landed PR1)
-// — a test (or, later, a hidden CLI flag / PR7's config-gated production
-// wiring) constructs a containerBackend via this function and assigns it to
-// Runner.Backend directly. sandbox.Backend config parsing/gating into that
-// seam is explicitly out of PR5's scope (PR7 cutover).
+// As of PR7 (docs/plans/phase6-container-backend.md §PR7 cutover),
+// internal/server/wire.go's sandboxBackendForConfig calls this in
+// production when config.yaml sets `sandbox.backend: container`, and
+// assigns the result to Runner.Backend — the same DI seam
+// (internal/dispatcher/runner.go, landed PR1) tests have exercised this
+// backend through since PR5. Every pre-PR7 caller (and every test that
+// doesn't opt in via that config key) is unaffected: Runner.Backend stays
+// nil and Runner.sandboxBackend() keeps constructing the usernsBackend.
 func NewContainerBackend(api dockerAPI, opts ContainerBackendOptions) backend.SandboxBackend {
 	b := &containerBackend{
 		api:                  api,
@@ -322,6 +323,36 @@ func NewContainerBackend(api dockerAPI, opts ContainerBackendOptions) backend.Sa
 			"default_uid", defaultContainerUID, "default_gid", defaultContainerGID)
 	}
 	return b
+}
+
+// IsContainerBackend reports whether be is a containerBackend constructed
+// by NewContainerBackend. Exists solely as an external-package
+// introspection helper for docs/plans/phase6-container-backend.md §PR7's
+// config-driven backend-selection wiring (internal/server/wire.go's
+// sandboxBackendForConfig) — that package cannot type-assert against the
+// unexported *containerBackend type directly, and this is cheaper for a
+// test to depend on than reflect-based %T string matching.
+func IsContainerBackend(be backend.SandboxBackend) bool {
+	_, ok := be.(*containerBackend)
+	return ok
+}
+
+// ContainerBackendHasDiagnosticsCollector reports whether be is a
+// containerBackend constructed with a non-nil
+// ContainerBackendOptions.DiagnosticsCollector. Exists solely as an
+// external-package introspection helper — the same rationale as
+// IsContainerBackend's own doc comment — for [Major 7, PR7 codex review]'s
+// production wiring test (internal/server/wire_backend_test.go): that
+// package can observe that sandboxBackendForConfig actually wired
+// NewDefaultDiagnosticsCollector in without being able to name (or
+// type-assert into) the unexported *containerBackend/diagnosticsCollector
+// fields directly.
+func ContainerBackendHasDiagnosticsCollector(be backend.SandboxBackend) bool {
+	cb, ok := be.(*containerBackend)
+	if !ok {
+		return false
+	}
+	return cb.diagnosticsCollector != nil
 }
 
 // formatIntPtr renders a *int for logging: "<unset>" for nil, the decimal
@@ -359,6 +390,14 @@ type dockerAPI interface {
 	ContainerResize(ctx context.Context, containerID string, options client.ContainerResizeOptions) (client.ContainerResizeResult, error)
 	ContainerRemove(ctx context.Context, containerID string, options client.ContainerRemoveOptions) (client.ContainerRemoveResult, error)
 	ContainerList(ctx context.Context, options client.ContainerListOptions) (client.ContainerListResult, error)
+	// ContainerLogs [Major 7, PR7 codex review]: consumed by
+	// NewDefaultDiagnosticsCollector (container_backend_diagnostics.go) to
+	// capture a container's own docker-side log buffer as part of
+	// silent-exit diagnosis (§決定8's third primitive) — the attach-stream
+	// transcript spool can still be truncated/empty for an OOM-killed or
+	// setup-failure container, but dockerd's own log buffer independently
+	// retains output up to the moment of a SIGKILL.
+	ContainerLogs(ctx context.Context, containerID string, options client.ContainerLogsOptions) (client.ContainerLogsResult, error)
 
 	ImageInspect(ctx context.Context, image string, opts ...client.ImageInspectOption) (client.ImageInspectResult, error)
 	ImagePull(ctx context.Context, ref string, options client.ImagePullOptions) (client.ImagePullResponse, error)
@@ -383,7 +422,7 @@ type dockerAPI interface {
 //     signal reaches the entrypoint process, so nothing new is embedded
 //     here for that.
 func (b *containerBackend) Launch(ctx context.Context, spec sandbox.Spec, opts backend.LaunchOptions) (backend.SandboxSession, error) {
-	specPath, statePath, err := writeContainerSpec(spec)
+	specPath, statePath, err := writeContainerSpec(spec, b.runtimeDir)
 	if err != nil {
 		return nil, fmt.Errorf("write container sandbox spec: %w", err)
 	}
@@ -393,8 +432,18 @@ func (b *containerBackend) Launch(ctx context.Context, spec sandbox.Spec, opts b
 	// zero value "" makes the RemoveAll a no-op).
 	var dockerTLSDir string
 	cleanupFiles := func() {
-		_ = os.Remove(specPath)
-		_ = os.Remove(statePath)
+		if b.runtimeDir != "" {
+			// Blocker 1 (PR7 codex review): specPath/statePath live under
+			// <runtimeDir>/spec/<jobID>/ when RuntimeDir is configured (see
+			// writeContainerSpec's doc comment) — remove the whole per-job
+			// directory rather than the two files individually, so no empty
+			// directory accumulates under runtimeDir/spec across the
+			// lifetime of a long-running daemon.
+			_ = os.RemoveAll(filepath.Dir(specPath))
+		} else {
+			_ = os.Remove(specPath)
+			_ = os.Remove(statePath)
+		}
 		if dockerTLSDir != "" {
 			_ = os.RemoveAll(dockerTLSDir)
 		}
@@ -493,7 +542,33 @@ func (b *containerBackend) Launch(ctx context.Context, spec sandbox.Spec, opts b
 	}
 
 	sess := newContainerSession(b, createRes.ID, realized.TTY, specPath, dockerTLSDir)
+	// Disk transcript spool (§決定8, PR7): only for freshly-Launch'd
+	// sessions — see openTranscriptSpool's doc comment for why Adopt
+	// (doAdopt, below) deliberately does not also open one.
+	//
+	// [Major 8, PR7 codex review]: a genuine open/create failure (as
+	// opposed to "b.runtimeDir unset, spooling not configured" — see
+	// openTranscriptSpool's own doc comment) fails Launch hard, torn down
+	// exactly like a ContainerCreate/attach/start failure below, rather than
+	// silently starting a job whose output cannot survive its own container
+	// removal.
+	spoolFile, spoolPath, spoolErr := b.openTranscriptSpool(createRes.ID)
+	if spoolErr != nil {
+		_, _ = b.api.ContainerRemove(context.Background(), createRes.ID, client.ContainerRemoveOptions{Force: true})
+		cleanupFiles()
+		return nil, fmt.Errorf("open transcript spool: %w", spoolErr)
+	}
+	sess.transcriptFile, sess.transcriptPath = spoolFile, spoolPath
 	if err := sess.attach(ctx, false); err != nil {
+		// [Major 10, PR7 codex review]: close the spool file on this error
+		// path too — without it, every Launch that reaches here (attach
+		// failing after the spool was already opened) leaked one fd. The
+		// normal exit path's own close (waitLoop) never runs because
+		// waitLoop is only started by sess.start(), below, which this
+		// return never reaches.
+		if sess.transcriptFile != nil {
+			_ = sess.transcriptFile.Close()
+		}
 		_, _ = b.api.ContainerRemove(context.Background(), createRes.ID, client.ContainerRemoveOptions{Force: true})
 		cleanupFiles()
 		return nil, fmt.Errorf("container attach: %w", err)
@@ -501,6 +576,11 @@ func (b *containerBackend) Launch(ctx context.Context, spec sandbox.Spec, opts b
 
 	if _, err := b.api.ContainerStart(ctx, createRes.ID, client.ContainerStartOptions{}); err != nil {
 		sess.closeConn()
+		// [Major 10, PR7 codex review]: same fd-leak fix as the attach error
+		// path above.
+		if sess.transcriptFile != nil {
+			_ = sess.transcriptFile.Close()
+		}
 		_, _ = b.api.ContainerRemove(context.Background(), createRes.ID, client.ContainerRemoveOptions{Force: true})
 		cleanupFiles()
 		return nil, fmt.Errorf("container start: %w", err)
@@ -618,14 +698,46 @@ func (b *containerBackend) doAdopt(ctx context.Context, runtimeID string) *conta
 
 // ReapOrphans reconciles job containers a daemon restart lost track of.
 // §決定 6: label enumeration → destroy, using the mere presence of
-// boid.job_id as the filter ("global filter") rather than an
-// install_id-scoped one — install_id generation is PR6's job (see
-// ContainerBackendOptions.InstallID's doc comment); until it lands every
-// container this backend ever created is a fair reap target. Volumes and
-// networks are reaped best-effort by the same label — nothing in PR5
-// creates job-labeled volumes/networks yet (workspace HOME stays a host
-// bind through Phase 6, §決定 4; workspace networks are PR6), so these two
-// loops are forward-compat scaffolding, not exercised by real traffic yet.
+// boid.job_id as the docker-side LIST filter ("global filter" — a container
+// with no boid.job_id label was never created by this backend at all, no
+// matter which installation).
+//
+// [Blocker 5, PR7 codex review]: within that list, every candidate is now
+// ALSO checked against boid.install_id in application code (not folded into
+// the docker filter query itself — see the note on that choice below)
+// whenever b.installID is non-empty (PR6's install_id generation has landed
+// by PR7 — see ContainerBackendOptions.InstallID's doc comment). WITHOUT
+// this, two boid installations sharing one docker engine (distinct install
+// IDs — e.g. two users, or a dev + prod compose stack on the same host)
+// would each force-remove the OTHER's live, in-flight job containers on
+// restart: the pre-fix filter matched on the mere presence of boid.job_id,
+// which every container either installation ever creates carries
+// regardless of whose daemon made it.
+//
+// The install_id check runs in Go rather than as a second `label` filter
+// value on the same docker ContainerListOptions.Filters query deliberately:
+// client.Filters' own doc comment states "a filter TERM is satisfied if ANY
+// ONE of the values in its set is a match" (OR within a term) — the mere
+// presence check (labelJobID, no "=value") and an exact-match check
+// (labelInstallID+"="+installID) are two VALUES under the same "label" term,
+// so relying on the dockerd server to AND them instead of OR them would be
+// betting an accidental-deletion-of-another-installation's-live-containers
+// bug on an undocumented server-side special case this package has no way
+// to verify without a live multi-install docker engine to test against.
+// Filtering candidates by label in Go after a broader docker-side list is
+// unambiguous and directly unit-testable with the fake dockerAPI.
+//
+// b.installID empty (a fresh daemon before PR6's install_id LoadOrCreate has
+// ever run, or test/DI wiring that never sets
+// ContainerBackendOptions.InstallID) skips the install_id check entirely —
+// every boid.job_id-labeled container is a fair reap target, exactly as
+// before this fix; this is the same degrade NewContainerBackend's own
+// InstallID doc comment already documents for the empty-installID case
+// elsewhere (resource labeling degrades the same way). Volumes and networks
+// are reaped by the identical logic — nothing in PR5/PR6 creates
+// job-labeled volumes/networks yet (workspace HOME stays a host bind through
+// Phase 6, §決定 4; workspace networks are PR6), so these two loops are
+// forward-compat scaffolding, not exercised by real traffic yet.
 func (b *containerBackend) ReapOrphans(ctx context.Context) (backend.ReapReport, error) {
 	filters := client.Filters{}.Add("label", labelJobID)
 
@@ -637,6 +749,9 @@ func (b *containerBackend) ReapOrphans(ctx context.Context) (backend.ReapReport,
 
 	report := backend.ReapReport{}
 	for _, c := range listRes.Items {
+		if !b.reapOwnsLabels(c.Labels) {
+			continue
+		}
 		jobID := c.Labels[labelJobID]
 		b.forgetSession(c.ID)
 		if _, err := b.api.ContainerRemove(ctx, c.ID, client.ContainerRemoveOptions{Force: true, RemoveVolumes: true}); err != nil {
@@ -654,7 +769,45 @@ func (b *containerBackend) ReapOrphans(ctx context.Context) (backend.ReapReport,
 	b.reapOrphanVolumes(ctx, filters)
 	b.reapOrphanNetworks(ctx, filters)
 
+	// [Major 6, PR7 codex review]: dockerproxy's sibling child resources
+	// (created by the *client* inside a job's sandbox — docker CLI,
+	// TestContainers, ... — never by this backend directly, when the job
+	// declared capabilities.docker) carry NO boid label at all, so the
+	// label-based sweep above can never find them: they are only
+	// discoverable via the per-job docker-resources.jsonl ledger under
+	// runtimeDir (§決定8). internal/reap.Run — the same daemon-independent
+	// logic `boid reap` uses (§決定6's "label ∪ ledger union") — is run here
+	// as an additional best-effort pass so startup reap catches these too,
+	// not just the primary job containers the loop above already handled
+	// (those are already gone by the time this call lists again via its own
+	// label query, so this is not double-destroying anything — merely one
+	// extra API round trip). b.api's method set is a strict superset of
+	// reap.Run's own narrow dockerAPI interface, so no adapter is needed.
+	// Errors are logged, not folded into ReapReport: a ledger-cleanup
+	// failure here is a docker-resource leak, not a reason to block a
+	// task's auto-reopen (ReapReport's own job-level contract — see its doc
+	// comment; only the primary-container loop above feeds FailedJobIDs).
+	if b.runtimeDir != "" {
+		if _, rerr := reap.Run(ctx, b.api, b.installID, b.runtimeDir); rerr != nil {
+			slog.Warn("container backend: reap.Run ledger-union pass failed", "error", rerr)
+		}
+	}
+
 	return report, nil
+}
+
+// reapOwnsLabels reports whether a docker resource's labels belong to this
+// backend's installation and are therefore safe for ReapOrphans to destroy
+// (Blocker 5, PR7 codex review — see ReapOrphans' own doc comment for why
+// this check runs in application code rather than as a docker-side filter
+// value). b.installID empty means "no install_id scoping configured yet"
+// (pre-PR6 wiring / tests) — every boid.job_id-labeled resource is owned,
+// matching the original global-filter behavior.
+func (b *containerBackend) reapOwnsLabels(labels map[string]string) bool {
+	if b.installID == "" {
+		return true
+	}
+	return labels[labelInstallID] == b.installID
 }
 
 func (b *containerBackend) reapOrphanVolumes(ctx context.Context, filters client.Filters) {
@@ -664,6 +817,9 @@ func (b *containerBackend) reapOrphanVolumes(ctx context.Context, filters client
 		return
 	}
 	for _, v := range listRes.Items {
+		if !b.reapOwnsLabels(v.Labels) {
+			continue
+		}
 		if _, err := b.api.VolumeRemove(ctx, v.Name, client.VolumeRemoveOptions{Force: true}); err != nil {
 			slog.Warn("container backend: reap orphan volume failed", "volume", v.Name, "error", err)
 		}
@@ -677,6 +833,9 @@ func (b *containerBackend) reapOrphanNetworks(ctx context.Context, filters clien
 		return
 	}
 	for _, n := range listRes.Items {
+		if !b.reapOwnsLabels(n.Labels) {
+			continue
+		}
 		if _, err := b.api.NetworkRemove(ctx, n.ID, client.NetworkRemoveOptions{}); err != nil {
 			slog.Warn("container backend: reap orphan network failed", "network", n.ID, "error", err)
 		}
@@ -764,25 +923,56 @@ func (b *containerBackend) pullImage(ctx context.Context, ref string) error {
 	return nil
 }
 
-// writeContainerSpec writes spec's JSON and an empty runner-state.json to
-// host paths using the exact same `/tmp/boid-<ID>-runner-{spec,state}.json`
-// naming convention dispatcher.sandboxPreparerImpl.PrepareSandbox uses for
-// the userns backend (see its own doc comment). Deliberately does NOT call
-// that preparer: it also allocates spec.RootDir (a tmpfs mount point for
-// userns pivot_root) which a container backend has no use for — the
-// container's own image rootfs is the sandbox root. Reusing the naming
-// convention rather than inventing a new one means the existing
-// `/tmp/boid-*` 30-day GC sweep (CLAUDE.md「ディスク使用量の管理」) covers
-// container-backend leftovers with no new GC code.
+// writeContainerSpec writes spec's JSON and an empty runner-state.json to a
+// host path Launch bind-mounts into the sibling job container.
+//
+// [Blocker 1, PR7 codex review]: when runtimeDir is empty (every pre-PR7
+// caller/test, and any deploy that hasn't wired ContainerBackendOptions.
+// RuntimeDir), this reproduces the original behavior verbatim — the exact
+// same `/tmp/boid-<ID>-runner-{spec,state}.json` naming convention
+// dispatcher.sandboxPreparerImpl.PrepareSandbox uses for the userns backend
+// (see its own doc comment), so the existing `/tmp/boid-*` 30-day GC sweep
+// (CLAUDE.md「ディスク使用量の管理」) still covers it. But a REAL compose
+// deploy runs this daemon inside its own container: Launch is a DooD
+// (docker-out-of-docker) backend, so a mount Source it hands the HOST's own
+// docker daemon has to be a path the HOST filesystem actually has — the
+// daemon container's private /tmp is not (ContainerCreate would either bind
+// the wrong host directory or fail outright, exactly like
+// dockerTLSCertDir's identical DooD rationale, see its own doc comment).
+//
+// When runtimeDir is set, the spec/state pair instead lands under
+// <runtimeDir>/spec/<spec.ID>/runner-{spec,state}.json — runtimeDir is
+// b.runtimeDir, which ContainerBackendOptions.RuntimeDir's own doc comment
+// establishes is bind-mounted source == target into this daemon's own
+// container (build/container/compose.yml's BOID_RUNTIME_DIR), so any
+// absolute path this process computes under it is, by construction, already
+// a real path the sibling docker daemon can mount from. Cleanup (Launch's
+// cleanupFiles, containerSession.waitLoop) removes the whole per-job
+// <runtimeDir>/spec/<spec.ID>/ directory rather than the two files
+// individually.
+//
+// Deliberately does NOT call sandboxPreparerImpl.PrepareSandbox: it also
+// allocates spec.RootDir (a tmpfs mount point for userns pivot_root) which a
+// container backend has no use for — the container's own image rootfs is
+// the sandbox root.
 //
 // statePath is created empty (not just planned) up front because it is
 // bind-mounted into the container as a single file: docker's bind-mount
 // setup does not create a missing host **file** path the way it can create
 // a missing directory, so the target must already exist before
 // ContainerCreate runs.
-func writeContainerSpec(spec sandbox.Spec) (specPath, statePath string, err error) {
-	specPath = fmt.Sprintf("/tmp/boid-%s-runner-spec.json", spec.ID)
-	statePath = fmt.Sprintf("/tmp/boid-%s-runner-state.json", spec.ID)
+func writeContainerSpec(spec sandbox.Spec, runtimeDir string) (specPath, statePath string, err error) {
+	if runtimeDir == "" {
+		specPath = fmt.Sprintf("/tmp/boid-%s-runner-spec.json", spec.ID)
+		statePath = fmt.Sprintf("/tmp/boid-%s-runner-state.json", spec.ID)
+	} else {
+		dir := filepath.Join(runtimeDir, "spec", spec.ID)
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			return "", "", fmt.Errorf("create sandbox spec dir: %w", err)
+		}
+		specPath = filepath.Join(dir, "runner-spec.json")
+		statePath = filepath.Join(dir, "runner-state.json")
+	}
 
 	data, err := json.Marshal(spec)
 	if err != nil {
@@ -1011,6 +1201,59 @@ func (b *containerBackend) dockerTLSCertDir(jobID string) (string, error) {
 	return dir, nil
 }
 
+// openTranscriptSpool creates (truncating any stale leftover) and opens
+// <runtimeDir>/<containerID>/transcript.log for a freshly-Launch'd session
+// (§決定8, PR7) — the same path/filename ReadTranscript/StatTranscript
+// (transcript.go) already read for the userns backend, and the same
+// directory dockerTLSCertDir's <runtimeDir>/tls/<jobID> is host-visible
+// under (see its own doc comment for the DooD host-visibility rationale;
+// b.runtimeDir is the identical field).
+//
+// [Major 8, PR7 codex review]: returns (nil, "", nil) — spooling
+// intentionally disabled, in-memory-only transcript, unchanged from PR5's
+// behavior — ONLY when b.runtimeDir is empty (every pre-PR7 test/caller);
+// that is a configuration choice, not a failure. A non-nil error return
+// (directory creation or file open genuinely failed — e.g. the runtimes
+// filesystem is full or unwritable) is now a real error Launch's caller
+// must fail hard on: §決定8's contract is that `boid job log` sees the FULL
+// transcript once a container backend deploy is live (this is what
+// distinguishes it from the tail-only silent-exit diagnostics), so silently
+// degrading to an in-memory-only buffer (invisible the moment the container
+// is removed) when the operator's own deploy configured a persistent spool
+// directory would violate that contract without ever telling anyone.
+// Launch treats this the same as any other Launch-phase failure: the
+// container is torn down and Dispatch reports the error, rather than
+// starting a job whose output will not survive its own container removal.
+//
+// Deliberately NOT called from doAdopt (Adopt's cache-miss path): Adopt's
+// `Logs: true` attach replays the container's ENTIRE output history
+// through appendTranscript again (the closest this backend gets to a
+// separate `docker logs` call — doAdopt's own doc comment), so opening a
+// fresh spool file there in append mode would duplicate everything before
+// the restart, and opening it with O_TRUNC would destroy it. A container
+// adopted after a daemon restart keeps whatever transcript.log content
+// this process wrote before it went away — readable via `boid job log`
+// exactly as it was — but gets no further disk-spool writes for the rest
+// of its lifetime (the in-memory buffer + live Subscribe/fan-out still
+// works normally). Full restart-continuity for the disk spool is left as
+// a documented gap for PR9 (docs/plans/phase6-container-backend.md's own
+// "実装残余" territory) rather than risking log corruption to close it now.
+func (b *containerBackend) openTranscriptSpool(containerID string) (f *os.File, path string, err error) {
+	if b.runtimeDir == "" {
+		return nil, "", nil
+	}
+	dir := filepath.Join(b.runtimeDir, containerID)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return nil, "", fmt.Errorf("create runtime dir for transcript spool: %w", err)
+	}
+	spoolPath := filepath.Join(dir, localRuntimeTranscriptFile)
+	spoolFile, err := os.OpenFile(spoolPath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o644)
+	if err != nil {
+		return nil, "", fmt.Errorf("open transcript spool: %w", err)
+	}
+	return spoolFile, spoolPath, nil
+}
+
 // withDockerTLSEnv returns a copy of env with the three DOCKER_* variables
 // a docker client (CLI, SDK, TestContainers, ...) reads to select and
 // authenticate an mTLS-secured DOCKER_HOST added — DOCKER_HOST pointing at
@@ -1063,12 +1306,45 @@ type containerSession struct {
 	// sessions, which never wrote one (mirrors usernsSession.prepared being
 	// nil for Adopt — see sessionLocalArtifacts's doc comment).
 	specPath string
+	// specDir, when non-empty, is the per-job directory writeContainerSpec
+	// created specPath/statePath under (<runtimeDir>/spec/<spec.ID> —
+	// Blocker 1, PR7 codex review) and is removed wholesale (os.RemoveAll)
+	// instead of specPath alone, so no empty directory accumulates under
+	// runtimeDir/spec over the daemon's lifetime. Empty when
+	// ContainerBackendOptions.RuntimeDir was unset (the pre-PR7 flat
+	// /tmp/boid-<ID>-runner-*.json layout, where only the file itself is
+	// ever removed) or for Adopt-reconstructed sessions.
+	specDir string
 	// dockerTLSDir is the per-job cert directory materializeDockerClientCert
 	// wrote (§決定5), removed alongside specPath once the container exits.
 	// Empty whenever LaunchOptions.DockerEnabled was false or no
 	// ContainerBackendOptions.DockerTLSCA was configured — the overwhelming
 	// majority of sessions today.
 	dockerTLSDir string
+
+	// transcriptFile / transcriptPath implement §決定8's "daemon 側が
+	// attach stream を runtime storage へ逐次 spool" full-persistence
+	// contract (PR7 — modeled directly on localRuntimeSession's own
+	// transcriptFile/transcriptPath in runtime_local_linux.go, per §決定8's
+	// own "現行 session 層の抽出・流用" instruction): every chunk
+	// appendTranscript records to the in-memory buffer is also written here,
+	// at <runtimeDir>/<containerID>/transcript.log — the exact path
+	// ReadTranscript/StatTranscript (transcript.go, backend-neutral) already
+	// read, and the exact filename (localRuntimeTranscriptFile) the userns
+	// backend's own transcript.log uses. This is what lets `boid job log`
+	// keep working after ContainerRemove: docker itself discards `docker
+	// logs` history once a container is removed, but this file survives on
+	// the host bind-mounted runtimes dir.
+	//
+	// Both are empty when ContainerBackendOptions.RuntimeDir was empty
+	// (every pre-PR7 test/caller — see dockerTLSCertDir's identical
+	// fallback) or when spool-file creation failed (advisory: a spool
+	// failure degrades `boid job log` for this one job, it must never fail
+	// Launch), and are ALWAYS empty for Adopt-reconstructed sessions — see
+	// openTranscriptSpool's own doc comment for why re-spooling on Adopt is
+	// deliberately not attempted yet.
+	transcriptFile *os.File
+	transcriptPath string
 
 	connMu         sync.Mutex
 	hijack         *client.HijackedResponse
@@ -1088,7 +1364,7 @@ type containerSession struct {
 var _ backend.SandboxSession = (*containerSession)(nil)
 
 func newContainerSession(b *containerBackend, id string, tty bool, specPath, dockerTLSDir string) *containerSession {
-	return &containerSession{
+	sess := &containerSession{
 		backend:      b,
 		id:           id,
 		api:          b.api,
@@ -1100,6 +1376,10 @@ func newContainerSession(b *containerBackend, id string, tty bool, specPath, doc
 		done:         make(chan struct{}),
 		readDone:     make(chan struct{}),
 	}
+	if specPath != "" && b.runtimeDir != "" {
+		sess.specDir = filepath.Dir(specPath)
+	}
+	return sess
 }
 
 func (s *containerSession) ID() string { return s.id }
@@ -1212,6 +1492,15 @@ func (s *containerSession) appendTranscript(chunk []byte) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.transcript = append(s.transcript, chunk...)
+	// Disk spool (§決定8, PR7): mirrors localRuntimeSession.appendTranscript's
+	// own `s.transcriptFile.Write(chunk)` — nil (spooling disabled or an
+	// Adopt-reconstructed session, see openTranscriptSpool's doc comment)
+	// is the overwhelming majority of PR5-vintage callers and a no-op here.
+	if s.transcriptFile != nil {
+		if _, err := s.transcriptFile.Write(chunk); err != nil {
+			slog.Warn("container backend: write transcript spool failed", "container_id", s.id, "error", err)
+		}
+	}
 	for id, ch := range s.subscribers {
 		copyChunk := append([]byte(nil), chunk...)
 		select {
@@ -1373,9 +1662,41 @@ func (s *containerSession) waitLoop() {
 		<-s.readDone
 	}
 
+	// Close (and flush) the disk transcript spool now: readLoop — the sole
+	// writer via appendTranscript — has already returned (readDone closed
+	// above), so no further writes can race this Close. Doing this BEFORE
+	// finalizing exit state / closing s.done means a diagnostics collector
+	// that reads transcript.log from disk (§決定8's silent-exit
+	// classification) always sees the complete file, and BEFORE
+	// ContainerRemove means the file is guaranteed durable before the
+	// container itself (and any `docker logs` fallback) is gone.
+	//
+	// [Major 9, PR7 codex review]: Sync() runs BEFORE Close(), not just
+	// Close() alone. Close() flushes the process's own userspace buffers to
+	// the kernel but makes no durability guarantee beyond that — a power
+	// loss between Close() and the data actually reaching disk could still
+	// lose the tail of a job's transcript right as its container is
+	// removed, at precisely the moment `boid job log`'s only remaining
+	// source of truth. A Sync failure is escalated to Error (louder than
+	// the general Warn used elsewhere in this file) since it is the
+	// durability guarantee §決定8's "full 永続" contract depends on; Close
+	// still runs (and ContainerRemove still proceeds) even when Sync fails
+	// — blocking container teardown indefinitely on a persistent disk error
+	// would leak the container itself and defeat the reap contract, a worse
+	// outcome than a possibly-incomplete transcript tail.
+	if s.transcriptFile != nil {
+		if err := s.transcriptFile.Sync(); err != nil {
+			slog.Error("container backend: sync transcript spool failed; the transcript tail may not survive a crash before it reaches disk",
+				"container_id", s.id, "path", s.transcriptPath, "error", err)
+		}
+		if err := s.transcriptFile.Close(); err != nil {
+			slog.Warn("container backend: close transcript spool failed", "container_id", s.id, "path", s.transcriptPath, "error", err)
+		}
+	}
+
 	s.mu.Lock()
 	s.running = false
-	s.exit = backend.RuntimeExit{ExitCode: exitCode}
+	s.exit = backend.RuntimeExit{ExitCode: exitCode, TranscriptPath: s.transcriptPath}
 	s.closeSubscribersLocked()
 	exit := s.exit
 	s.mu.Unlock()
@@ -1392,7 +1713,13 @@ func (s *containerSession) waitLoop() {
 			slog.Warn("container backend: force remove exited container failed", "container_id", s.id, "error", ferr)
 		}
 	}
-	if s.specPath != "" {
+	if s.specDir != "" {
+		// Blocker 1 (PR7 codex review): a runtimeDir-scoped spec lives in its
+		// own per-job directory (<runtimeDir>/spec/<spec.ID>/) — remove it
+		// wholesale rather than just specPath, matching Launch's cleanupFiles
+		// on the error path.
+		_ = os.RemoveAll(s.specDir)
+	} else if s.specPath != "" {
 		_ = os.Remove(s.specPath)
 	}
 	if s.dockerTLSDir != "" {

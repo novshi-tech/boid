@@ -7,6 +7,7 @@ import (
 	"io"
 	"iter"
 	"net"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -40,6 +41,7 @@ type fakeDockerAPI struct {
 	ContainerResizeFunc  func(ctx context.Context, containerID string, options client.ContainerResizeOptions) (client.ContainerResizeResult, error)
 	ContainerRemoveFunc  func(ctx context.Context, containerID string, options client.ContainerRemoveOptions) (client.ContainerRemoveResult, error)
 	ContainerListFunc    func(ctx context.Context, options client.ContainerListOptions) (client.ContainerListResult, error)
+	ContainerLogsFunc    func(ctx context.Context, containerID string, options client.ContainerLogsOptions) (client.ContainerLogsResult, error)
 	ImageInspectFunc     func(ctx context.Context, imageRef string, opts ...client.ImageInspectOption) (client.ImageInspectResult, error)
 	ImagePullFunc        func(ctx context.Context, ref string, options client.ImagePullOptions) (client.ImagePullResponse, error)
 	NetworkListFunc      func(ctx context.Context, options client.NetworkListOptions) (client.NetworkListResult, error)
@@ -62,6 +64,7 @@ type fakeDockerAPI struct {
 	removeIDs         []string
 	pullRefs          []string
 	listFilters       []client.Filters
+	logsIDs           []string
 	inspectIDs        []string
 	imageInspectRefs  []string
 	volumeCreateCalls []client.VolumeCreateOptions
@@ -180,6 +183,16 @@ func (f *fakeDockerAPI) ContainerList(ctx context.Context, options client.Contai
 	return client.ContainerListResult{}, nil
 }
 
+func (f *fakeDockerAPI) ContainerLogs(ctx context.Context, containerID string, options client.ContainerLogsOptions) (client.ContainerLogsResult, error) {
+	f.mu.Lock()
+	f.logsIDs = append(f.logsIDs, containerID)
+	f.mu.Unlock()
+	if f.ContainerLogsFunc != nil {
+		return f.ContainerLogsFunc(ctx, containerID, options)
+	}
+	return io.NopCloser(strings.NewReader("")), nil
+}
+
 func (f *fakeDockerAPI) ImageInspect(ctx context.Context, imageRef string, opts ...client.ImageInspectOption) (client.ImageInspectResult, error) {
 	f.mu.Lock()
 	f.imageInspectRefs = append(f.imageInspectRefs, imageRef)
@@ -258,6 +271,17 @@ func (f *fakeDockerAPI) waitCallCount() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return len(f.waitIDs)
+}
+
+// removeCallCount returns how many times ContainerRemove has been invoked
+// so far — used by TestContainerSession_TranscriptSpool_SurvivesContainerRemove
+// to poll (race-free) for waitLoop's asynchronous remove call without
+// reading f.removeIDs directly (which races against the append under
+// f.mu in ContainerRemove above).
+func (f *fakeDockerAPI) removeCallCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.removeIDs)
 }
 
 // fakePullResponse is a no-op client.ImagePullResponse: an already-drained,
