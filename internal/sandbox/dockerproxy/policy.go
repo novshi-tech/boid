@@ -17,8 +17,8 @@ type Verdict struct {
 	Reason string // populated when Allow==false
 }
 
-func allow() Verdict                  { return Verdict{Allow: true} }
-func deny(reason string) Verdict      { return Verdict{Allow: false, Reason: reason} }
+func allow() Verdict             { return Verdict{Allow: true} }
+func deny(reason string) Verdict { return Verdict{Allow: false, Reason: reason} }
 
 // apiVersionRe matches /v<major>.<minor> prefix.
 var apiVersionRe = regexp.MustCompile(`^/v\d+\.\d+(/.*)?$`)
@@ -107,7 +107,7 @@ func isAllowedMutating(method, bare string) bool {
 			"/containers/*/rename",
 			"/exec/*/start",
 			"/exec/*/resize",
-			"/images/create",    // pull
+			"/images/create", // pull
 			"/images/*/tag",
 			"/images/*/push",
 			"/networks/*/connect",
@@ -194,12 +194,12 @@ type hostConfig struct {
 	// denyHostPortPublish (Blocker 2, PR6 codex review) — see
 	// CheckRequest's doc comment for why this is not an unconditional deny.
 	PortBindings    map[string]interface{} `json:"PortBindings"`
-	PublishAllPorts bool                    `json:"PublishAllPorts"`
+	PublishAllPorts bool                   `json:"PublishAllPorts"`
 }
 
 type mountSpec struct {
-	Type          string        `json:"Type"`
-	VolumeOptions *volumeOpts   `json:"VolumeOptions"`
+	Type          string      `json:"Type"`
+	VolumeOptions *volumeOpts `json:"VolumeOptions"`
 }
 
 type volumeOpts struct {

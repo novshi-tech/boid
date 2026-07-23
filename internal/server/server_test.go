@@ -246,4 +246,4 @@ func TestServer_New_InstallIDLoadFailure_Advisory(t *testing.T) {
 	if id := srv.InstallID(); id != "" {
 		t.Errorf("InstallID() = %q, want empty (advisory failure must not fabricate an id)", id)
 	}
-} 
+}
