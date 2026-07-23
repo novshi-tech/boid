@@ -3,6 +3,8 @@ package dispatcher
 import (
 	"bytes"
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -320,6 +322,53 @@ func TestContainerBackend_Adopt_NotRunningReportsNotOK(t *testing.T) {
 
 	if _, ok := be.Adopt(context.Background(), "exited-container"); ok {
 		t.Error("Adopt returned ok=true for a non-running container")
+	}
+}
+
+// TestContainerBackend_Adopt_DoesNotOpenFreshTranscriptSpool pins
+// openTranscriptSpool's documented scope boundary (§決定8, PR7): even with
+// RuntimeDir configured, an Adopt-reconstructed session must NOT open a
+// fresh (truncating) spool file — doing so would either destroy
+// pre-restart transcript.log content (O_TRUNC) or duplicate it (O_APPEND,
+// since Adopt's own `Logs: true` attach replays the container's full
+// history through appendTranscript again). RuntimeExit.TranscriptPath
+// staying empty is the externally observable signal that no fresh spool
+// was opened.
+func TestContainerBackend_Adopt_DoesNotOpenFreshTranscriptSpool(t *testing.T) {
+	const runtimeID = "adopted-container-no-fresh-spool"
+	runtimeDir := t.TempDir()
+	waitCh := make(chan container.WaitResponse, 1)
+
+	api := &fakeDockerAPI{
+		ContainerInspectFunc: func(ctx context.Context, containerID string, options client.ContainerInspectOptions) (client.ContainerInspectResult, error) {
+			return client.ContainerInspectResult{
+				Container: container.InspectResponse{
+					State:  &container.State{Running: true},
+					Config: &container.Config{Tty: false},
+				},
+			}, nil
+		},
+		ContainerWaitFunc: func(ctx context.Context, containerID string, options client.ContainerWaitOptions) client.ContainerWaitResult {
+			return client.ContainerWaitResult{Result: waitCh, Error: make(chan error, 1)}
+		},
+	}
+	be := NewContainerBackend(api, ContainerBackendOptions{RuntimeDir: runtimeDir})
+
+	sess, ok := be.Adopt(context.Background(), runtimeID)
+	if !ok {
+		t.Fatal("Adopt returned ok=false")
+	}
+
+	waitCh <- container.WaitResponse{StatusCode: 0}
+	exit, err := sess.Wait(context.Background())
+	if err != nil {
+		t.Fatalf("Wait: %v", err)
+	}
+	if exit.TranscriptPath != "" {
+		t.Errorf("TranscriptPath = %q, want empty (Adopt-reconstructed sessions do not open a fresh spool)", exit.TranscriptPath)
+	}
+	if _, statErr := os.Stat(filepath.Join(runtimeDir, runtimeID)); !os.IsNotExist(statErr) {
+		t.Errorf("expected no runtime dir to be created for an adopted session, stat err = %v", statErr)
 	}
 }
 
@@ -686,6 +735,75 @@ func TestContainerSession_WaitLoop_RunsDiagnosticsCollectorBeforeRemove(t *testi
 	mu.Unlock()
 	if len(got) != 2 || got[0] != "collect" || got[1] != "remove" {
 		t.Fatalf("call order = %v, want [collect remove] (§決定 7: diagnostics before resource teardown)", got)
+	}
+}
+
+// TestContainerSession_TranscriptSpool_SurvivesContainerRemove pins §決定8's
+// PR7 transcript-persistence contract: `boid job log` (ReadTranscript/
+// StatTranscript, transcript.go) must be able to read a container-backend
+// job's full transcript even after the container itself — and, in a real
+// deploy, `docker logs` along with it — is gone. With
+// ContainerBackendOptions.RuntimeDir set, Launch must have spooled every
+// appendTranscript chunk to <runtimeDir>/<containerID>/transcript.log by
+// the time Wait returns (waitLoop closes the spool file before closing
+// s.done — see its own doc comment), so no polling/timing dance is needed
+// here: Wait returning is itself the synchronization point.
+func TestContainerSession_TranscriptSpool_SurvivesContainerRemove(t *testing.T) {
+	runtimeDir := t.TempDir()
+	conn := newFakeAttachConn()
+	waitCh := make(chan container.WaitResponse, 1)
+
+	api := &fakeDockerAPI{
+		ContainerAttachFunc: func(ctx context.Context, containerID string, options client.ContainerAttachOptions) (client.ContainerAttachResult, error) {
+			return client.ContainerAttachResult{HijackedResponse: client.NewHijackedResponse(conn, "")}, nil
+		},
+		ContainerWaitFunc: func(ctx context.Context, containerID string, options client.ContainerWaitOptions) client.ContainerWaitResult {
+			return client.ContainerWaitResult{Result: waitCh, Error: make(chan error, 1)}
+		},
+	}
+	be := NewContainerBackend(api, ContainerBackendOptions{RuntimeDir: runtimeDir})
+	sess := mustLaunch(t, be, sandbox.Spec{ID: "job-spool", Argv: []string{"true"}}, backend.LaunchOptions{JobID: "job-spool"})
+
+	want := "hello disk spool, surviving container remove"
+	conn.feedFrame(1, []byte(want))
+	waitCh <- container.WaitResponse{StatusCode: 0}
+	conn.Close() // EOF: readLoop finishes draining naturally.
+
+	exit, err := sess.Wait(context.Background())
+	if err != nil {
+		t.Fatalf("Wait: %v", err)
+	}
+	if exit.TranscriptPath == "" {
+		t.Error("RuntimeExit.TranscriptPath is empty, want the spool path (watchRuntime's silent-exit diagnostics rely on this)")
+	}
+
+	// waitLoop's own ContainerRemove call runs asynchronously to Wait's
+	// return, so — unlike the spool file, whose close is synchronized with
+	// s.done above — poll briefly for it, purely to demonstrate the
+	// transcript stays readable AFTER removal, not merely before it.
+	deadline := time.After(2 * time.Second)
+	for api.removeCallCount() == 0 {
+		select {
+		case <-deadline:
+			t.Fatal("timed out waiting for ContainerRemove to be called")
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+
+	data, err := ReadTranscript(runtimeDir, sess.ID())
+	if err != nil {
+		t.Fatalf("ReadTranscript after container remove: %v", err)
+	}
+	if !bytes.Contains(data, []byte(want)) {
+		t.Errorf("transcript = %q, want it to contain %q", data, want)
+	}
+
+	fi, err := StatTranscript(runtimeDir, sess.ID())
+	if err != nil {
+		t.Fatalf("StatTranscript after container remove: %v", err)
+	}
+	if fi.Size() == 0 {
+		t.Error("StatTranscript reports a 0-byte transcript, want it to reflect the spooled content")
 	}
 }
 

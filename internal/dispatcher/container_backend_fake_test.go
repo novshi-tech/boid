@@ -260,6 +260,17 @@ func (f *fakeDockerAPI) waitCallCount() int {
 	return len(f.waitIDs)
 }
 
+// removeCallCount returns how many times ContainerRemove has been invoked
+// so far — used by TestContainerSession_TranscriptSpool_SurvivesContainerRemove
+// to poll (race-free) for waitLoop's asynchronous remove call without
+// reading f.removeIDs directly (which races against the append under
+// f.mu in ContainerRemove above).
+func (f *fakeDockerAPI) removeCallCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.removeIDs)
+}
+
 // fakePullResponse is a no-op client.ImagePullResponse: an already-drained,
 // already-complete pull. Sufficient for every test here since none needs to
 // inspect pull progress.

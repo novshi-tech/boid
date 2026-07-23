@@ -505,6 +505,10 @@ func (b *containerBackend) Launch(ctx context.Context, spec sandbox.Spec, opts b
 	}
 
 	sess := newContainerSession(b, createRes.ID, realized.TTY, specPath, dockerTLSDir)
+	// Disk transcript spool (§決定8, PR7): only for freshly-Launch'd
+	// sessions — see openTranscriptSpool's doc comment for why Adopt
+	// (doAdopt, below) deliberately does not also open one.
+	sess.transcriptFile, sess.transcriptPath = b.openTranscriptSpool(createRes.ID)
 	if err := sess.attach(ctx, false); err != nil {
 		_, _ = b.api.ContainerRemove(context.Background(), createRes.ID, client.ContainerRemoveOptions{Force: true})
 		cleanupFiles()
@@ -1023,6 +1027,52 @@ func (b *containerBackend) dockerTLSCertDir(jobID string) (string, error) {
 	return dir, nil
 }
 
+// openTranscriptSpool creates (truncating any stale leftover) and opens
+// <runtimeDir>/<containerID>/transcript.log for a freshly-Launch'd session
+// (§決定8, PR7) — the same path/filename ReadTranscript/StatTranscript
+// (transcript.go) already read for the userns backend, and the same
+// directory dockerTLSCertDir's <runtimeDir>/tls/<jobID> is host-visible
+// under (see its own doc comment for the DooD host-visibility rationale;
+// b.runtimeDir is the identical field). Returns (nil, "") — spooling
+// disabled, in-memory-only transcript, unchanged from PR5's behavior —
+// when b.runtimeDir is empty (every pre-PR7 test/caller) or when directory
+// creation / file open fails; a spool failure is logged but must never
+// fail Launch itself, since the in-memory buffer + live Subscribe/fan-out
+// contract is unaffected either way.
+//
+// Deliberately NOT called from doAdopt (Adopt's cache-miss path): Adopt's
+// `Logs: true` attach replays the container's ENTIRE output history
+// through appendTranscript again (the closest this backend gets to a
+// separate `docker logs` call — doAdopt's own doc comment), so opening a
+// fresh spool file there in append mode would duplicate everything before
+// the restart, and opening it with O_TRUNC would destroy it. A container
+// adopted after a daemon restart keeps whatever transcript.log content
+// this process wrote before it went away — readable via `boid job log`
+// exactly as it was — but gets no further disk-spool writes for the rest
+// of its lifetime (the in-memory buffer + live Subscribe/fan-out still
+// works normally). Full restart-continuity for the disk spool is left as
+// a documented gap for PR9 (docs/plans/phase6-container-backend.md's own
+// "実装残余" territory) rather than risking log corruption to close it now.
+func (b *containerBackend) openTranscriptSpool(containerID string) (f *os.File, path string) {
+	if b.runtimeDir == "" {
+		return nil, ""
+	}
+	dir := filepath.Join(b.runtimeDir, containerID)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		slog.Warn("container backend: create runtime dir for transcript spool failed; boid job log will not survive container removal for this job",
+			"container_id", containerID, "dir", dir, "error", err)
+		return nil, ""
+	}
+	spoolPath := filepath.Join(dir, localRuntimeTranscriptFile)
+	spoolFile, err := os.OpenFile(spoolPath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o644)
+	if err != nil {
+		slog.Warn("container backend: open transcript spool failed; boid job log will not survive container removal for this job",
+			"container_id", containerID, "path", spoolPath, "error", err)
+		return nil, ""
+	}
+	return spoolFile, spoolPath
+}
+
 // withDockerTLSEnv returns a copy of env with the three DOCKER_* variables
 // a docker client (CLI, SDK, TestContainers, ...) reads to select and
 // authenticate an mTLS-secured DOCKER_HOST added — DOCKER_HOST pointing at
@@ -1081,6 +1131,30 @@ type containerSession struct {
 	// ContainerBackendOptions.DockerTLSCA was configured — the overwhelming
 	// majority of sessions today.
 	dockerTLSDir string
+
+	// transcriptFile / transcriptPath implement §決定8's "daemon 側が
+	// attach stream を runtime storage へ逐次 spool" full-persistence
+	// contract (PR7 — modeled directly on localRuntimeSession's own
+	// transcriptFile/transcriptPath in runtime_local_linux.go, per §決定8's
+	// own "現行 session 層の抽出・流用" instruction): every chunk
+	// appendTranscript records to the in-memory buffer is also written here,
+	// at <runtimeDir>/<containerID>/transcript.log — the exact path
+	// ReadTranscript/StatTranscript (transcript.go, backend-neutral) already
+	// read, and the exact filename (localRuntimeTranscriptFile) the userns
+	// backend's own transcript.log uses. This is what lets `boid job log`
+	// keep working after ContainerRemove: docker itself discards `docker
+	// logs` history once a container is removed, but this file survives on
+	// the host bind-mounted runtimes dir.
+	//
+	// Both are empty when ContainerBackendOptions.RuntimeDir was empty
+	// (every pre-PR7 test/caller — see dockerTLSCertDir's identical
+	// fallback) or when spool-file creation failed (advisory: a spool
+	// failure degrades `boid job log` for this one job, it must never fail
+	// Launch), and are ALWAYS empty for Adopt-reconstructed sessions — see
+	// openTranscriptSpool's own doc comment for why re-spooling on Adopt is
+	// deliberately not attempted yet.
+	transcriptFile *os.File
+	transcriptPath string
 
 	connMu         sync.Mutex
 	hijack         *client.HijackedResponse
@@ -1224,6 +1298,15 @@ func (s *containerSession) appendTranscript(chunk []byte) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.transcript = append(s.transcript, chunk...)
+	// Disk spool (§決定8, PR7): mirrors localRuntimeSession.appendTranscript's
+	// own `s.transcriptFile.Write(chunk)` — nil (spooling disabled or an
+	// Adopt-reconstructed session, see openTranscriptSpool's doc comment)
+	// is the overwhelming majority of PR5-vintage callers and a no-op here.
+	if s.transcriptFile != nil {
+		if _, err := s.transcriptFile.Write(chunk); err != nil {
+			slog.Warn("container backend: write transcript spool failed", "container_id", s.id, "error", err)
+		}
+	}
 	for id, ch := range s.subscribers {
 		copyChunk := append([]byte(nil), chunk...)
 		select {
@@ -1385,9 +1468,23 @@ func (s *containerSession) waitLoop() {
 		<-s.readDone
 	}
 
+	// Close (and flush) the disk transcript spool now: readLoop — the sole
+	// writer via appendTranscript — has already returned (readDone closed
+	// above), so no further writes can race this Close. Doing this BEFORE
+	// finalizing exit state / closing s.done means a diagnostics collector
+	// that reads transcript.log from disk (§決定8's silent-exit
+	// classification) always sees the complete file, and BEFORE
+	// ContainerRemove means the file is guaranteed durable before the
+	// container itself (and any `docker logs` fallback) is gone.
+	if s.transcriptFile != nil {
+		if err := s.transcriptFile.Close(); err != nil {
+			slog.Warn("container backend: close transcript spool failed", "container_id", s.id, "path", s.transcriptPath, "error", err)
+		}
+	}
+
 	s.mu.Lock()
 	s.running = false
-	s.exit = backend.RuntimeExit{ExitCode: exitCode}
+	s.exit = backend.RuntimeExit{ExitCode: exitCode, TranscriptPath: s.transcriptPath}
 	s.closeSubscribersLocked()
 	exit := s.exit
 	s.mu.Unlock()
