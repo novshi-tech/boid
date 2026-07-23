@@ -14,6 +14,7 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+	"time"
 
 	"github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/api/types/mount"
@@ -116,6 +117,16 @@ const (
 	// phase6-container-backend.md スコープ節 — full cgroup vocabulary is
 	// Phase 7, but a PidsLimit default is explicitly permitted now).
 	defaultPidsLimit int64 = 512
+
+	// attachDrainGracePeriod bounds how long containerSession.waitLoop
+	// waits for readLoop to drain the attach connection naturally (the
+	// daemon closes the stream once the container's own stdout/stderr
+	// pipes are fully flushed) before force-closing the connection itself.
+	// A container's output can still be arriving on the attach stream for
+	// a short window after ContainerWait resolves — closing immediately,
+	// as PR5 originally did, could truncate a final burst of output
+	// emitted right at exit (PR5 review Major 3).
+	attachDrainGracePeriod = 500 * time.Millisecond
 
 	// containerSpecPath / containerStatePath are the fixed sandbox-internal
 	// paths the sandbox JSON spec / runner-state.json diagnostic file are
@@ -993,15 +1004,24 @@ func (s *containerSession) waitLoop() {
 		exitCode = 1
 	}
 
-	// The container process has exited, so no more output is coming.
-	// Proactively close our side of the attach connection rather than
-	// trusting the daemon to close it promptly on its own — this bounds
-	// readLoop's blocking Read/ReadFull call and guarantees readDone closes
-	// even if the daemon is slow (or, for a session with no attach at all —
-	// Adopt's best-effort-attach-failed path — this is a no-op, readDone
-	// was already closed synchronously by attach's own error path).
-	s.closeConn()
-	<-s.readDone
+	// The container process has exited, but its attach stream can still
+	// deliver a final burst of already-produced output for a short window
+	// afterward. Prefer letting readLoop drain it naturally — it returns
+	// (closing readDone) once the daemon itself closes the stream — rather
+	// than closing our side immediately, which could truncate exactly that
+	// final burst. Only force-close via closeConn if draining hasn't
+	// finished within attachDrainGracePeriod: this bounds the wait and
+	// still guarantees readDone closes even if the daemon is slow (or, for
+	// a session with no attach at all — Adopt's best-effort-attach-failed
+	// path — readDone was already closed synchronously by attach's own
+	// error path, so this select returns immediately).
+	select {
+	case <-s.readDone:
+		s.closeConn()
+	case <-time.After(attachDrainGracePeriod):
+		s.closeConn()
+		<-s.readDone
+	}
 
 	s.mu.Lock()
 	s.running = false

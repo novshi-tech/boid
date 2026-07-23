@@ -1,6 +1,7 @@
 package dispatcher
 
 import (
+	"bytes"
 	"context"
 	"strings"
 	"sync"
@@ -411,6 +412,58 @@ func TestContainerSession_Wait_SingleOwnerFanOut(t *testing.T) {
 	}
 	if got := api.waitCallCount(); got != 1 {
 		t.Errorf("ContainerWait was called %d times, want exactly 1 (§決定 7 single-owner fan-out)", got)
+	}
+}
+
+// TestContainerSession_WaitLoop_DrainsAttachBeforeClosingConn pins Major 3
+// from the PR5 review: once ContainerWait resolves (the container process
+// exited), waitLoop must let readLoop drain any output still in flight on
+// the attach connection before closing it, rather than closing immediately.
+// This simulates a final burst of output arriving on the attach stream
+// after the exit code is already known but before the stream itself is
+// closed (EOF) — the pre-fix code closed the connection right after
+// ContainerWait resolved, which raced against (and could drop) exactly
+// this burst.
+func TestContainerSession_WaitLoop_DrainsAttachBeforeClosingConn(t *testing.T) {
+	conn := newFakeAttachConn()
+	waitCh := make(chan container.WaitResponse, 1)
+
+	api := &fakeDockerAPI{
+		ContainerAttachFunc: func(ctx context.Context, containerID string, options client.ContainerAttachOptions) (client.ContainerAttachResult, error) {
+			return client.ContainerAttachResult{HijackedResponse: client.NewHijackedResponse(conn, "")}, nil
+		},
+		ContainerWaitFunc: func(ctx context.Context, containerID string, options client.ContainerWaitOptions) client.ContainerWaitResult {
+			return client.ContainerWaitResult{Result: waitCh, Error: make(chan error, 1)}
+		},
+	}
+	be := NewContainerBackend(api, ContainerBackendOptions{})
+	sess := mustLaunch(t, be, sandbox.Spec{ID: "job-drain", Argv: []string{"true"}}, backend.LaunchOptions{JobID: "job-drain"})
+
+	// The container process exits (ContainerWait resolves)...
+	waitCh <- container.WaitResponse{StatusCode: 0}
+
+	// ...but its final output burst is still in flight on the attach
+	// connection. Give waitLoop a moment to observe the exit and enter its
+	// drain-wait before feeding it: under the pre-fix behavior (close
+	// immediately on exit) this frame would race against — and lose to —
+	// that close.
+	time.Sleep(50 * time.Millisecond)
+	finalBurst := []byte("final burst of output written right at exit")
+	conn.feedFrame(1, finalBurst)
+	conn.Close() // EOF: readLoop finishes draining naturally.
+
+	exit, err := sess.Wait(context.Background())
+	if err != nil {
+		t.Fatalf("Wait: %v", err)
+	}
+	if exit.ExitCode != 0 {
+		t.Errorf("ExitCode = %d, want 0", exit.ExitCode)
+	}
+
+	snapshot, _, cancel, _ := sess.Subscribe()
+	cancel()
+	if !bytes.Contains(snapshot, finalBurst) {
+		t.Errorf("transcript = %q, want it to contain the final burst %q (drained before close)", snapshot, finalBurst)
 	}
 }
 
