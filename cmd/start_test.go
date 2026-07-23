@@ -54,6 +54,39 @@ func TestBuildStartConfig_UsesDefaults(t *testing.T) {
 	}
 }
 
+// TestShouldRunForeground pins Major 6 (PR6 codex review): the double-fork
+// suppression decision must route through a single shared seam reachable
+// from either --foreground (the primary, discoverable path for any process
+// supervisor) or BOID_DAEMON_CHILD=1 (daemon.IsChild() — kept for
+// build/container/compose.yml's existing config), and either one alone
+// must be sufficient — a supervisor should never need to set both.
+func TestShouldRunForeground(t *testing.T) {
+	cases := []struct {
+		name string
+		flag bool
+		env  string
+		want bool
+	}{
+		{"neither set: double-fork (default host behavior)", false, "", false},
+		{"--foreground alone", true, "", true},
+		{"BOID_DAEMON_CHILD=1 alone", false, "1", true},
+		{"both set", true, "1", true},
+		{"BOID_DAEMON_CHILD set to something other than 1", false, "0", false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if c.env == "" {
+				t.Setenv("BOID_DAEMON_CHILD", "")
+			} else {
+				t.Setenv("BOID_DAEMON_CHILD", c.env)
+			}
+			if got := shouldRunForeground(c.flag); got != c.want {
+				t.Errorf("shouldRunForeground(%v) with BOID_DAEMON_CHILD=%q = %v, want %v", c.flag, c.env, got, c.want)
+			}
+		})
+	}
+}
+
 func TestBuildStartConfig_UsesOverrides(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 

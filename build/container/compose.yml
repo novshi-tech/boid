@@ -117,7 +117,14 @@ services:
     # daemon.go): plain `boid start` self-re-execs a child, waits for its
     # socket, and EXITS THE PARENT once confirmed healthy — the standard
     # double-fork daemonize pattern for a host process, but fatal for a
-    # container's entrypoint. Even with `init: true` (tini as PID 1) below,
+    # container's entrypoint. `command: ["start", "--foreground"]` (cmd/
+    # start.go's shouldRunForeground, PR6 codex review Major 6) reaches the
+    # exact same code path and is the more discoverable spelling for a new
+    # supervisor config — this env var form is kept here unchanged rather
+    # than migrated, since it already works and this file's own "do not
+    # deploy yet" skeleton status (this header's own note) means there is
+    # no live config to avoid breaking by leaving it as-is. Even with
+    # `init: true` (tini as PID 1) below,
     # tini's whole contract is "exit when MY direct child (this entrypoint
     # process) exits" — the still-running detached grandchild does not save
     # it, tini tears the container down within seconds of a "successful"
