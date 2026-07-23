@@ -175,31 +175,33 @@ services:
     # process) exits" — the still-running detached grandchild does not save
     # it, tini tears the container down within seconds of a "successful"
     # start. Setting this env var makes `boid start` skip straight to
-    # cmd/start.go's runDaemonChild: Setsid + serve in the foreground +
-    # block on SIGINT/SIGTERM — exactly the long-running, signal-handling
-    # process a container entrypoint needs, and exactly what forwards
-    # docker's SIGTERM (via tini) into srv.Stop() cleanly.
+    # cmd/start.go's runDaemonChild: serve in the foreground + block on
+    # SIGINT/SIGTERM — exactly the long-running, signal-handling process a
+    # container entrypoint needs, and exactly what forwards docker's
+    # SIGTERM (via tini) into srv.Stop() cleanly. (Setsid is part of this
+    # same function but skipped under BOID_LOG_STDOUT below — see that
+    # env var's own comment for why it must be.)
     #
     # PR6 originally left runDaemonChild's host-daemon code path verbatim:
-    # it redirects stdin/stdout/stderr to boid.log
-    # (daemon.RedirectToLogRotating) as literally its first action, so
-    # `docker logs`/`docker compose logs` on this service showed NOTHING —
-    # not even a startup panic. PR9's own e2e-container job debugging hit
-    # this directly AND, empirically, found the redirect's self-pipe dup2
-    # dance does not survive this container's PID1 (docker-init/tini)
-    # setup at all: the daemon reproducibly died (SIGPIPE, exit 141) within
-    # ~150ms of starting, before boid.log was ever created — never fully
-    # root-caused to a single syscall (docs/plans/
-    # phase6-cutover-followups.md has the debugging trail), but BOID_LOG_STDOUT
-    # below (daemon.ShouldLogToStdout's own doc comment) sidesteps the whole
-    # class of bug: skip the self-pipe/log-file redirect entirely and let
-    # stdout/stderr flow to dockerd's own log driver, which was already
-    # capturing them regardless — both the pragmatic fix and, on its own
-    # merits, better practice for a containerized deployment (log to
-    # stdout, let the platform own log capture/rotation). XDG_STATE_HOME
-    # below is kept anyway (harmless when BOID_LOG_STDOUT is set — nothing
-    # reads it) as a fallback for any future caller that unsets
-    # BOID_LOG_STDOUT.
+    # redirect stdin/stdout/stderr to boid.log, THEN Setsid. PR9's own
+    # e2e-container job debugging found the real bug this caused: Setsid
+    # fails with EPERM when the caller is already a process group leader —
+    # true of this container's entrypoint process (tini's direct child) —
+    # and that "setsid: operation not permitted" error, printed right after
+    # the log-file redirect had already repointed stdout/stderr at a
+    # self-pipe, produced a SIGPIPE-killed process (exit 141) with ZERO
+    # visible `docker logs` output (see docs/plans/
+    # phase6-cutover-followups.md for the full debugging trail — it took a
+    # separate BOID_RUNTIME_DIR-writability pre-flight AND making boid.log
+    # host-visible via XDG_STATE_HOME to even surface that one line).
+    # BOID_LOG_STDOUT below (daemon.ShouldLogToStdout's own doc comment)
+    # fixes this at the root: skip Setsid entirely (meaningless in a
+    # container regardless — there is no controlling terminal to detach
+    # from) AND skip the log-file redirect (let stdout/stderr flow to
+    # dockerd's own log driver, which was already capturing them) — both
+    # the actual fix and, on the logging half, better practice for a
+    # containerized deployment anyway. XDG_STATE_HOME below is kept as a
+    # harmless fallback for any future caller that unsets BOID_LOG_STDOUT.
     environment:
       BOID_DAEMON_CHILD: "1"
       # BOID_LOG_STDOUT (PR9): see this service's own comment above and

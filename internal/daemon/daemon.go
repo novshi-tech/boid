@@ -24,29 +24,42 @@ func IsChild() bool {
 	return os.Getenv(daemonEnvKey) == "1"
 }
 
-// logStdoutEnvKey opts the daemon child out of RedirectToLogRotating (PR9,
-// docs/plans/phase6-container-backend.md §PR6's compose.yml own "Known
+// logStdoutEnvKey opts the daemon child out of two pieces of host-daemon
+// double-fork machinery that only make sense when `boid start` is
+// detaching itself from a real controlling terminal with no other
+// supervisor involved — neither applies inside a container (PR9, docs/
+// plans/phase6-container-backend.md §PR6's compose.yml own "Known
 // limitations" note: "A real docker logs-visible foreground mode... is a
-// nice-to-have for a later PR"). Set by build/container/compose.yml's
-// daemon service, where a supervisor (dockerd's own log driver) already
-// captures stdout/stderr — RedirectToLogRotating's self-pipe dup2 dance
-// exists specifically for the bare host-daemon double-fork case (detaching
-// from a real controlling terminal with no other log capture mechanism),
-// which does not apply here and, empirically, does not survive PID1 being
-// docker-init/tini rather than a login shell (docs/plans/
-// phase6-cutover-followups.md's own debugging trail for this exact
-// symptom: the redirected pipe's read end observed a SIGPIPE-killing write
-// with zero visible output — never fully root-caused to a single syscall,
-// but reproducing independent of it via this opt-out is both the pragmatic
-// fix and, on its own merits, better practice for a containerized
-// deployment: log to stdout, let the platform own log capture/rotation).
+// nice-to-have for a later PR"):
+//
+//   - RedirectToLogRotating's self-pipe dup2(stdout/stderr) dance: a
+//     container runtime's own log driver (dockerd, under compose) already
+//     captures stdout/stderr — no separate log-file redirect is needed,
+//     and empirically this dance does not survive this container's PID1
+//     (docker-init/tini) setup cleanly (see below).
+//   - syscall.Setsid(): fails outright with EPERM when the calling
+//     process is ALREADY its own process group leader — which a
+//     container's entrypoint process (tini's direct child) commonly is.
+//     This is docs/plans/phase6-cutover-followups.md's actual root cause
+//     for the e2e-container job's startup crash: the pre-BOID_LOG_STDOUT
+//     symptom (SIGPIPE, exit 141, zero visible docker-logs output) turned
+//     out to be this same "setsid: operation not permitted" error being
+//     written into the now-redirected — and shortly abandoned — log
+//     pipe, not a bug in the redirect mechanism itself. Detaching from a
+//     controlling terminal is meaningless in a container regardless (there
+//     is none to detach from), so skipping the call entirely is correct,
+//     not just a workaround.
+//
+// Set by build/container/compose.yml's daemon service. False (every
+// pre-PR9 caller) preserves exactly today's RedirectToLogRotating +
+// Setsid behavior.
 const logStdoutEnvKey = "BOID_LOG_STDOUT"
 
 // ShouldLogToStdout reports whether the daemon child should skip
-// RedirectToLogRotating and let its stdout/stderr flow to whatever already
-// captures them (a container runtime's own log driver) instead of a
-// self-managed rotating log file. False (every pre-PR9 caller) preserves
-// exactly today's RedirectToLogRotating behavior.
+// RedirectToLogRotating (let stdout/stderr flow to whatever already
+// captures them) and syscall.Setsid (meaningless, and EPERM-failing, when
+// already a process group leader) — see logStdoutEnvKey's doc comment for
+// the full rationale for bundling both behind one flag.
 func ShouldLogToStdout() bool {
 	return os.Getenv(logStdoutEnvKey) == "1"
 }
