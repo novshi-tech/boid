@@ -66,6 +66,12 @@ type RuntimeAttachRequest struct {
 // log で一発判別できる。サポートしない runtime は空文字。
 type RuntimeExit = backend.RuntimeExit
 
+// Deprecated: retiring in a follow-up PR after container-backend dogfood
+// stability, alongside usernsBackend (docs/plans/phase6-cutover-followups.md
+// §「userns backend 撤去」) — JobRuntime is usernsBackend's internal process-
+// transport seam (its only production implementation is LocalRuntime), kept
+// in production use unchanged as of Phase 6 PR9's documentation-only
+// marker.
 type JobRuntime interface {
 	Start(ctx context.Context, spec RuntimeStartSpec) (*RuntimeHandle, error)
 	Attach(ctx context.Context, runtimeID string, req RuntimeAttachRequest) error

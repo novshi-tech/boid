@@ -29,6 +29,7 @@ type composeDoc struct {
 		GroupAdd    []string          `yaml:"group_add"`
 		Volumes     []string          `yaml:"volumes"`
 		Environment map[string]string `yaml:"environment"`
+		ExtraHosts  []string          `yaml:"extra_hosts"`
 	} `yaml:"services"`
 }
 
@@ -181,4 +182,53 @@ func TestComposeDaemonHasXDGEnv(t *testing.T) {
 			t.Errorf("daemon environment = %v, want %q present", daemon.Environment, key)
 		}
 	}
+}
+
+// TestComposeDaemonHasXDGRuntimeDirEnv pins the PR9 fix for a real gap the
+// e2e-container job's first real-docker run surfaced: XDG_RUNTIME_DIR was
+// entirely missing from the PR6 skeleton's environment: block, so the
+// daemon's own internal/client.DefaultSocketPath() fallback (`cmd/
+// start.go`'s default when no --socket-path flag is given — exactly what
+// `command: ["start"]` uses) never resolved to the bind-mounted, host-
+// visible BOID_RUNTIME_DIR this compose file otherwise carefully sets up —
+// breaking both the "server socket の host 同一 path bind (相互排他)"
+// contract (§決定4) BOID_RUNTIME_DIR's own header comment describes and
+// every host-side CLI/E2E caller expecting to reach this daemon's socket.
+func TestComposeDaemonHasXDGRuntimeDirEnv(t *testing.T) {
+	doc := loadComposeDoc(t)
+
+	daemon, ok := doc.Services["daemon"]
+	if !ok {
+		t.Fatal(`compose.yml has no "daemon" service`)
+	}
+	got, ok := daemon.Environment["XDG_RUNTIME_DIR"]
+	if !ok {
+		t.Fatalf("daemon environment = %v, want %q present", daemon.Environment, "XDG_RUNTIME_DIR")
+	}
+	if got != "${BOID_RUNTIME_DIR}" {
+		t.Errorf(`daemon environment["XDG_RUNTIME_DIR"] = %q, want "${BOID_RUNTIME_DIR}" (must match the socket bind mount source)`, got)
+	}
+}
+
+// TestComposeDaemonHasHostGatewayExtraHost pins the PR9 addition
+// e2e/run-container.sh's fixture git upstream reachability depends on: the
+// daemon service must resolve "host.docker.internal" to the docker
+// bridge-gateway address (Docker's "host-gateway" extra_hosts special
+// value), the other half of the host<->container reachability trick this
+// e2e job's own /etc/hosts line completes — see compose.yml's own
+// extra_hosts comment for the full rationale.
+func TestComposeDaemonHasHostGatewayExtraHost(t *testing.T) {
+	doc := loadComposeDoc(t)
+
+	daemon, ok := doc.Services["daemon"]
+	if !ok {
+		t.Fatal(`compose.yml has no "daemon" service`)
+	}
+	want := "host.docker.internal:host-gateway"
+	for _, h := range daemon.ExtraHosts {
+		if h == want {
+			return
+		}
+	}
+	t.Errorf("daemon extra_hosts = %v, want %q present", daemon.ExtraHosts, want)
 }

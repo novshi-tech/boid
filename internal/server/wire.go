@@ -380,6 +380,23 @@ func sandboxBackendForConfig(cfg *config.Config, installID, runtimeDir string) (
 		InstallID:            installID,
 		RuntimeDir:           runtimeDir,
 		DiagnosticsCollector: dispatcher.NewDefaultDiagnosticsCollector(dockerClient, runtimeDir),
+		// SelfContainerID (PR9, §決定5): $HOSTNAME is docker's own default
+		// container hostname (the short container ID) unless a service
+		// overrides it — build/container/compose.yml's `daemon` service
+		// does not, so inside a real compose deploy this resolves to the
+		// daemon's own container ID, letting
+		// containerBackend.ensureWorkspaceNetwork connect this same
+		// container to each per-workspace network it creates (see
+		// ContainerBackendOptions.SelfContainerID's own doc comment for
+		// why that is required, not optional, once workspace network
+		// isolation is enabled). Outside a container (bare `boid start`
+		// with sandbox.backend: container manually forced, or any non-
+		// compose test/DI usage) $HOSTNAME is just the host's own
+		// hostname — NetworkConnect against that bogus value fails
+		// harmlessly (ensureWorkspaceNetwork's self-connect step is
+		// best-effort, logged, non-fatal), not a new failure mode this
+		// wiring introduces.
+		SelfContainerID: os.Getenv("HOSTNAME"),
 	}), nil
 }
 
@@ -689,6 +706,13 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 	}
 	if sandboxBackend != nil {
 		runner.Backend = sandboxBackend
+		// InstallID (PR9, §決定5): threaded onto Runner too, alongside
+		// Backend — startDockerProxy's per-job SetWorkspaceNetwork call
+		// needs it to compute the exact same containerWorkspaceNetworkName
+		// value ContainerBackendOptions.InstallID (set two lines above, via
+		// sandboxBackendForConfig) gave the container backend itself. See
+		// Runner.InstallID's own doc comment.
+		runner.InstallID = srv.installID
 		slog.Info("sandbox backend: container (docker) — cutover config (docs/plans/phase6-container-backend.md §PR7)")
 	}
 

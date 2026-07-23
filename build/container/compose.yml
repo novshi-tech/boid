@@ -215,6 +215,40 @@ services:
       # consistent.
       XDG_DATA_HOME: "${XDG_DATA_HOME}"
       XDG_CONFIG_HOME: "${XDG_CONFIG_HOME}"
+      # XDG_RUNTIME_DIR (PR9 fix — this variable was missing from the PR6
+      # skeleton entirely, a real gap the e2e-container job's first real-
+      # docker run surfaced): this is the OTHER half of the "server socket
+      # の host 同一 path bind (相互排他)" contract the BOID_RUNTIME_DIR
+      # comment above already describes — `internal/client.
+      # DefaultSocketPath()` (which `cmd/start.go` falls back to whenever
+      # no `--socket-path` flag is given, exactly what `command: ["start"]`
+      # below does) resolves the daemon's own listen socket to
+      # `$XDG_RUNTIME_DIR/boid.sock`, in that priority, BEFORE falling back
+      # to `/run/user/<uid>` or a bare `/tmp/boid-<uid>.sock` — neither of
+      # which is the BOID_RUNTIME_DIR bind mount below unless it happens to
+      # already equal one of them. Without this line the daemon's socket
+      # landed inside the container's own ephemeral filesystem instead of
+      # the bind-mounted, host-visible BOID_RUNTIME_DIR, breaking both the
+      # host-daemon mutual-exclusion guard this whole variable exists for
+      # AND every host-side CLI/E2E caller (docs/plans/
+      # phase6-container-backend.md §PR9's e2e-container job) that expects
+      # to reach this daemon's socket by setting its own XDG_RUNTIME_DIR to
+      # the same BOID_RUNTIME_DIR value.
+      XDG_RUNTIME_DIR: "${BOID_RUNTIME_DIR}"
+      # SSL_CERT_FILE (PR9): empty by default (every non-CI deploy — the
+      # bare `${VAR:-}` passthrough is a no-op unless the launching shell
+      # actually exports it), inert exactly like every other optional
+      # passthrough in this file. e2e/run-container.sh (§PR9's
+      # e2e-container job) sets it to a self-signed CA cert path under
+      # BOID_RUNTIME_DIR (already bind-mounted above, so no extra volume
+      # entry is needed) so the daemon's own outbound git-gateway fetch —
+      # Go's net/http, which honors SSL_CERT_FILE via
+      # crypto/x509.SystemCertPool on Linux — trusts the e2e fixture
+      # upstream's self-signed TLS cert (e2e/lib/common.sh's
+      # e2e_setup_fixture_upstream, shared with the userns e2e suite). A
+      # real production deploy has no reason to ever set this: its git
+      # remotes carry real, publicly-trusted certificates.
+      SSL_CERT_FILE: "${SSL_CERT_FILE:-}"
     # HostConfig.Init (docker-init/tini as PID 1, owning zombie reap — §決定3)
     # — compose's `init:` maps directly onto it.
     init: true
@@ -247,6 +281,22 @@ services:
     # of this literal.
     group_add:
       - "${DOCKER_GID:-999}"
+    # extra_hosts (PR9): "host-gateway" is a docker-compose-recognized
+    # special value (Docker Engine 20.10+, Linux included since that
+    # release — not a Mac/Windows-only feature) that resolves to whatever
+    # address routes back to the HOST from inside this container (the
+    # bridge network's own gateway IP). Nothing in production code ever
+    # resolves "host.docker.internal" — this exists solely so
+    # e2e/run-container.sh's fixture git upstream (bound on the CI
+    # runner's own host, 0.0.0.0, outside any docker network) is reachable
+    # from this daemon's own outbound git-gateway fetch the same way the
+    # e2e runner script itself reaches it (both resolve the identical
+    # "host.docker.internal" name — the runner via a matching /etc/hosts
+    # line the script adds, this container via this entry). Inert for
+    # every other deployment: nothing else in the codebase looks this name
+    # up.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       # DooD: sibling job containers, not nested (§決定4). The generic
       # `/var/run/docker.sock` host path resolves correctly under both

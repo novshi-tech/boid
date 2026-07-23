@@ -236,6 +236,25 @@ func shouldRunForeground(foregroundFlag bool) bool {
 	return foregroundFlag || daemon.IsChild()
 }
 
+// printBareStartDeprecationNotice is a documentation-only nudge (Phase 6
+// PR9 deprecation skeleton, docs/plans/phase6-cutover-followups.md §「host
+// daemon 起動経路撤去」) printed after a successful bare `boid start`
+// double-fork (runDaemonParent's own success branch — never on the
+// --foreground/BOID_DAEMON_CHILD path a supervisor like build/container/
+// compose.yml's `daemon` service uses, which has already opted into the
+// newer deployment shape). It changes nothing about startup itself: no
+// behavior, exit code, or return value is affected — this is purely
+// informational, matching the plan doc's explicit "実撤去は禁止...
+// deprecation warning は追加可" scope for PR9. The bare host-daemon +
+// userns deployment model remains fully supported until the followups
+// doc's own retirement PRs actually land.
+func printBareStartDeprecationNotice() {
+	fmt.Println("note: this bare `boid start` uses the host daemon + userns deployment model.")
+	fmt.Println("      the container backend (`sandbox.backend: container` + `scripts/deploy-container.sh`,")
+	fmt.Println("      docs/plans/phase6-container-backend.md) is now the recommended deployment path;")
+	fmt.Println("      see docs/plans/phase6-cutover-followups.md for the retirement timeline.")
+}
+
 // runDaemonParent spawns the daemon child and waits on three concurrent
 // signals via a select loop:
 //
@@ -267,6 +286,7 @@ func runDaemonParent(cfg server.Config) error {
 		if result.success {
 			fmt.Printf("boid server started (pid: %d, socket: %s, http: %s)\n",
 				result.pid, cfg.SocketPath, cfg.HTTPAddr)
+			printBareStartDeprecationNotice()
 			return nil
 		}
 		// userErr non-nil = no structured status; report and exit.
@@ -429,7 +449,6 @@ func formatNonMigrationFailure(s *daemon.StartupStatus, logPath string) error {
 			s.Kind, logPath)
 	}
 }
-
 
 // runDaemonChild is executed by the daemon child process (BOID_DAEMON_CHILD=1).
 // It redirects stdin/stdout/stderr to the log file, detaches from the session,

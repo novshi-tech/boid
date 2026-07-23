@@ -17,8 +17,10 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/containerd/errdefs"
 	"github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/api/types/mount"
+	"github.com/moby/moby/api/types/network"
 	"github.com/moby/moby/client"
 	"golang.org/x/sys/unix"
 
@@ -72,6 +74,12 @@ type containerBackend struct {
 	// removed. See ContainerBackendOptions.DiagnosticsCollector's doc
 	// comment.
 	diagnosticsCollector func(ctx context.Context, containerID string, exit backend.RuntimeExit)
+
+	// selfContainerID implements §決定5's daemon-self-connect (PR9): see
+	// ContainerBackendOptions.SelfContainerID's doc comment. Empty (every
+	// pre-PR9 caller) disables ensureWorkspaceNetwork's NetworkConnect step
+	// entirely.
+	selfContainerID string
 
 	mu       sync.Mutex
 	sessions map[string]*containerSession
@@ -186,6 +194,26 @@ type ContainerBackendOptions struct {
 	// mounted (e.g. every existing unit test, which shares a real host
 	// /tmp with its own test process either way).
 	RuntimeDir string
+
+	// SelfContainerID, when non-empty, is this daemon's OWN docker container
+	// ID (or name) — typically `os.Getenv("HOSTNAME")`, which docker sets to
+	// a container's own short ID unless overridden, inside the compose
+	// daemon service itself (see sandboxBackendForConfig's wiring). PR9
+	// (docs/plans/phase6-container-backend.md §決定5, §PR9): a job launched
+	// with a non-empty LaunchOptions.Workspace is confined to an `Internal:
+	// true` per-workspace network with no route out — the ONLY way it can
+	// still reach the git gateway (mandatory: every project-visible
+	// dispatch clones, see runner.go's Visibility.Clone comment) or the
+	// egress proxy (both hosted in-process in this same daemon container,
+	// §決定4/5) is if the daemon container ALSO joins that network, under
+	// the same "boid-gateway"/"boid-egress" DNS aliases a job resolves on
+	// the static `boid_internal` compose network. Empty (every pre-PR9
+	// caller, and any non-compose test/DI usage) skips the self-connect
+	// step entirely — ensureWorkspaceNetwork still creates the isolated
+	// network and attaches the job container to it, just without also
+	// connecting the daemon, matching every unit test's expectations
+	// unchanged.
+	SelfContainerID string
 }
 
 const (
@@ -279,6 +307,17 @@ const (
 	// dispatch as of PR5.
 	boidRunnerProtocolLabel   = "boid.runner_protocol"
 	boidRunnerProtocolVersion = "v1"
+
+	// composeGatewayServiceName duplicates internal/server's own unexported
+	// composeGatewayServiceName constant (PR9, §決定5's daemon-self-connect —
+	// see ContainerBackendOptions.SelfContainerID's doc comment). Not
+	// imported: internal/server already imports internal/dispatcher, so the
+	// reverse would cycle — the same reasoning composeEgressServiceName's
+	// own doc comment (above/below in this package) already documents for
+	// the identical situation. Must stay in sync with internal/server/
+	// server.go's composeGatewayServiceName and build/container/compose.yml's
+	// own "boid-gateway" alias.
+	composeGatewayServiceName = "boid-gateway"
 )
 
 // NewContainerBackend constructs a containerBackend over api (typically a
@@ -304,6 +343,7 @@ func NewContainerBackend(api dockerAPI, opts ContainerBackendOptions) backend.Sa
 		dockerTLSCA:          opts.DockerTLSCA,
 		dockerProxyAddr:      opts.DockerProxyAddr,
 		runtimeDir:           opts.RuntimeDir,
+		selfContainerID:      opts.SelfContainerID,
 		sessions:             make(map[string]*containerSession),
 	}
 	if b.defaultImage == "" {
@@ -404,10 +444,121 @@ type dockerAPI interface {
 
 	NetworkList(ctx context.Context, options client.NetworkListOptions) (client.NetworkListResult, error)
 	NetworkRemove(ctx context.Context, networkID string, options client.NetworkRemoveOptions) (client.NetworkRemoveResult, error)
+	// NetworkCreate / NetworkConnect (PR9, §決定5): ensureWorkspaceNetwork's
+	// idempotent per-workspace `Internal: true` network + daemon-self-connect
+	// (see ContainerBackendOptions.SelfContainerID's doc comment).
+	NetworkCreate(ctx context.Context, name string, options client.NetworkCreateOptions) (client.NetworkCreateResult, error)
+	NetworkConnect(ctx context.Context, networkID string, options client.NetworkConnectOptions) (client.NetworkConnectResult, error)
 
 	VolumeCreate(ctx context.Context, options client.VolumeCreateOptions) (client.VolumeCreateResult, error)
 	VolumeList(ctx context.Context, options client.VolumeListOptions) (client.VolumeListResult, error)
 	VolumeRemove(ctx context.Context, volumeID string, options client.VolumeRemoveOptions) (client.VolumeRemoveResult, error)
+}
+
+// containerWorkspaceNetworkName returns the deterministic docker network
+// name a Workspace-scoped Launch (and the runner's own matching
+// SetWorkspaceNetwork call for that job's dockerproxy — see runner.go's
+// startDockerProxy caller) both compute independently for the SAME
+// (installID, workspace) pair (PR9, §決定5's "internal network は workspace
+// 単位で分離する"). It has to be a pure function of just those two values —
+// not cached state on either side — because the two call sites (Launch
+// here, and the docker-proxy setup in Dispatch) construct their own
+// pieces of a job's sandbox independently and must still land on the same
+// network without coordinating directly.
+//
+// installID scopes the name so two independent boid installations sharing
+// one docker engine (e.g. a stray leftover from another install during
+// local development) never collide on the same network name; "noinst"
+// substitutes when installID is empty (every pre-PR6 test/DI caller) —
+// still deterministic, just not install-scoped. Docker network names must
+// match `[a-zA-Z0-9][a-zA-Z0-9_.-]*`; the "boid-ws-" prefix already
+// satisfies the leading-character rule regardless of what workspace/
+// installID contain, and sanitizeDockerNamePart defensively maps any other
+// character to '-' so an unexpected workspace slug can never produce an
+// invalid docker name.
+func containerWorkspaceNetworkName(installID, workspace string) string {
+	instPart := "noinst"
+	if installID != "" {
+		instPart = sanitizeDockerNamePart(installID)
+		if len(instPart) > 8 {
+			instPart = instPart[:8]
+		}
+	}
+	return "boid-ws-" + instPart + "-" + sanitizeDockerNamePart(workspace)
+}
+
+// sanitizeDockerNamePart maps every rune outside docker's
+// `[a-zA-Z0-9_.-]` name-body charset to '-', and substitutes a
+// placeholder for an empty result — see containerWorkspaceNetworkName's
+// doc comment.
+func sanitizeDockerNamePart(s string) string {
+	var b strings.Builder
+	for _, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '_', r == '.', r == '-':
+			b.WriteRune(r)
+		default:
+			b.WriteRune('-')
+		}
+	}
+	if b.Len() == 0 {
+		return "x"
+	}
+	return b.String()
+}
+
+// ensureWorkspaceNetwork idempotently creates (or confirms) the isolated
+// `Internal: true` docker network for workspace, and — when
+// b.selfContainerID is configured — connects this daemon's own container to
+// it under the gateway/egress DNS aliases a job on that network needs (see
+// ContainerBackendOptions.SelfContainerID's doc comment). Returns the
+// network name Launch attaches the job container's own NetworkingConfig to.
+//
+// Fails closed on a genuine NetworkCreate error (anything other than an
+// "already exists" conflict — every concurrent/repeat Launch for the same
+// workspace hits this path, since there is no first-call/cache
+// distinction): §決定5 frames workspace network isolation as a security
+// invariant, so Launch must never silently fall back to launching the job
+// container unisolated on docker's default network just because ensuring
+// its own network failed. A NetworkConnect (self-attach) failure, by
+// contrast, only degrades to a logged warning — see its own inline comment
+// for why that half is not fail-closed.
+func (b *containerBackend) ensureWorkspaceNetwork(ctx context.Context, workspace string) (string, error) {
+	netName := containerWorkspaceNetworkName(b.installID, workspace)
+
+	labels := map[string]string{labelWorkspace: workspace}
+	if b.installID != "" {
+		labels[labelInstallID] = b.installID
+	}
+	_, err := b.api.NetworkCreate(ctx, netName, client.NetworkCreateOptions{
+		Driver:   "bridge",
+		Internal: true,
+		Labels:   labels,
+	})
+	if err != nil && !errdefs.IsConflict(err) {
+		return "", fmt.Errorf("ensure workspace network %q: %w", netName, err)
+	}
+
+	if b.selfContainerID != "" {
+		// Best-effort: a failure here only risks THIS daemon's own
+		// gateway/egress reachability for jobs on netName (e.g. the
+		// endpoint-already-exists steady state after the first Launch for
+		// this workspace already connected it) — not a job's isolation
+		// from other workspaces, which the NetworkCreate fail-closed check
+		// above already guarantees regardless of whether this succeeds.
+		_, cerr := b.api.NetworkConnect(ctx, netName, client.NetworkConnectOptions{
+			Container: b.selfContainerID,
+			EndpointConfig: &network.EndpointSettings{
+				Aliases: []string{composeGatewayServiceName, composeEgressServiceName},
+			},
+		})
+		if cerr != nil {
+			slog.Warn("container backend: connect daemon to workspace network failed; jobs on this network may be unable to reach the git gateway/egress proxy",
+				"network", netName, "self_container_id", b.selfContainerID, "error", cerr)
+		}
+	}
+
+	return netName, nil
 }
 
 // Launch translates spec into a `docker create` + `docker start` call and
@@ -473,6 +624,36 @@ func (b *containerBackend) Launch(ctx context.Context, spec sandbox.Spec, opts b
 		labels[labelInstallID] = b.installID
 	}
 
+	// Workspace network isolation (PR9, §決定5): a non-empty opts.Workspace
+	// ensures (idempotently) the per-workspace `Internal: true` docker
+	// network exists and computes networkingConfig so the job container
+	// created below attaches to it instead of docker's default bridge — see
+	// ensureWorkspaceNetwork's own doc comment for the fail-closed
+	// rationale. opts.Workspace == "" (every pre-PR9 caller) leaves
+	// networkingConfig nil, byte-for-byte the same ContainerCreate call as
+	// before this feature.
+	var networkingConfig *network.NetworkingConfig
+	var workspaceNetworkMode container.NetworkMode
+	if opts.Workspace != "" {
+		netName, nerr := b.ensureWorkspaceNetwork(ctx, opts.Workspace)
+		if nerr != nil {
+			cleanupFiles()
+			return nil, nerr
+		}
+		networkingConfig = &network.NetworkingConfig{
+			EndpointsConfig: map[string]*network.EndpointSettings{netName: {}},
+		}
+		// NetworkMode alongside NetworkingConfig (not one or the other):
+		// mirrors exactly what `docker run --network <name>` itself sends —
+		// belt-and-suspenders against the container instead landing on
+		// docker's implicit default bridge IN ADDITION to netName, which
+		// would silently defeat §決定5's isolation invariant (the job
+		// container would then be reachable from — and able to reach —
+		// every other unisolated container on that default bridge, network
+		// isolation notwithstanding).
+		workspaceNetworkMode = container.NetworkMode(netName)
+	}
+
 	mounts, namedVolumes := containerMounts(realized)
 	if err := b.ensureNamedVolumes(ctx, namedVolumes, labels); err != nil {
 		cleanupFiles()
@@ -505,8 +686,9 @@ func (b *containerBackend) Launch(ctx context.Context, spec sandbox.Spec, opts b
 	initTrue := true
 	pidsLimit := defaultPidsLimit
 	hostCfg := &container.HostConfig{
-		Init:   &initTrue,
-		Mounts: mounts,
+		Init:        &initTrue,
+		Mounts:      mounts,
+		NetworkMode: workspaceNetworkMode,
 	}
 	hostCfg.Resources.PidsLimit = &pidsLimit
 
@@ -532,9 +714,10 @@ func (b *containerBackend) Launch(ctx context.Context, spec sandbox.Spec, opts b
 	}
 
 	createRes, err := b.api.ContainerCreate(ctx, client.ContainerCreateOptions{
-		Config:     cfg,
-		HostConfig: hostCfg,
-		Name:       containerName(opts.JobID),
+		Config:           cfg,
+		HostConfig:       hostCfg,
+		NetworkingConfig: networkingConfig,
+		Name:             containerName(opts.JobID),
 	})
 	if err != nil {
 		cleanupFiles()

@@ -17,6 +17,12 @@ type PreparedSandbox struct {
 // SandboxPreparer prepares concrete launch artifacts from a sandbox.Spec.
 // The orchestrator-owned BuildSandboxSpec builds the spec; dispatcher only
 // serializes it and tracks artifacts.
+//
+// Deprecated: retiring in a follow-up PR after container-backend dogfood
+// stability, alongside usernsBackend (docs/plans/phase6-cutover-followups.md
+// §「userns backend 撤去」) — SandboxPreparer is usernsBackend's internal spec-
+// writing seam, kept in production use unchanged as of Phase 6 PR9's
+// documentation-only marker.
 type SandboxPreparer interface {
 	PrepareSandbox(spec sandbox.Spec) (*PreparedSandbox, error)
 }

@@ -208,3 +208,51 @@ jobs:
 
       - name: Run black-box E2E suite
         run: ./e2e/run.sh
+
+  e2e-container:
+    name: Container backend E2E (requires-docker)
+    # docs/plans/phase6-container-backend.md §PR9: real-docker verification
+    # of the container backend, additive alongside (never replacing) the
+    # `e2e` job above — the userns backend keeps its own full e2e coverage
+    # running in parallel until the post-cutover retirement plan
+    # (docs/plans/phase6-cutover-followups.md) actually removes it. Every
+    # existing docker-proxy-* scenario in the `e2e` job above runs against a
+    # FAKE docker HTTP server over the userns backend (policy-only, no real
+    # data plane) — this job is the one place a real docker engine actually
+    # exercises the container backend's sibling-container path end to end.
+    # "requires-docker" (not a marker FILE like e2e/run.sh's
+    # requires-sandbox — this is a whole separate job, not a scenario
+    # variant) simply means: needs a real docker engine + compose v2
+    # plugin, which ubuntu-24.04 runners carry by default (confirmed,
+    # §前提 note) — the day-to-day dev host used throughout this plan's own
+    # development does NOT (podman only), so this job's coverage has no
+    # local-host equivalent today.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Confirm docker + compose v2 are available
+        run: |
+          set -euxo pipefail
+          docker version
+          docker compose version
+
+      - name: Run container backend E2E (sibling connectivity + reap)
+        # e2e/run-container.sh's own header comment documents the full
+        # "sibling 疎通 3 要件" (§決定5) this exercises: job -> own-workspace
+        # sibling reachable, job -> a different workspace's sibling
+        # unreachable, and `docker compose down` + `boid reap` leaving zero
+        # docker resources behind. KEEP_TEMP=1 on a failed run (the script's
+        # own EXIT trap already handles this) so the preserved temp root
+        # (containing server logs, task JSON snapshots, docker compose
+        # logs) is at least visible in this step's own log even though the
+        # runner discards the temp dir itself.
+        run: ./e2e/run-container.sh
