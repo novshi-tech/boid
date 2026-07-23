@@ -259,7 +259,18 @@ seed_project() {
 }
 
 # --- fixture projects: two workspaces, each with capabilities.docker -------
-WS_ROOT="$ROOT/workspace"
+# WS_ROOT lives UNDER BOID_DATA_DIR (not just anywhere under $ROOT) — this
+# is not optional: `boid project add <dir>` sends work_dir to the DAEMON
+# over its API, and the daemon (running inside its OWN container) reads
+# <dir>/.boid/project.yaml from ITS OWN filesystem view — compose.yml only
+# bind-mounts BOID_DATA_DIR/BOID_CONFIG_DIR/BOID_RUNTIME_DIR (source ==
+# target), never the rest of this script's $ROOT tmpdir, so a project
+# directory anywhere else is invisible to the daemon and registration
+# fails with a bare "no such file or directory" (found the hard way — see
+# docs/plans/phase6-cutover-followups.md's debugging trail: this looks
+# identical to a host-side race/typo until you remember the daemon's own
+# filesystem view is the container's, not this script's).
+WS_ROOT="$XDG_DATA_HOME/boid/e2e-fixture-workspace"
 PROJ_A="$WS_ROOT/proj-a"
 PROJ_B="$WS_ROOT/proj-b"
 mkdir -p "$PROJ_A/.boid/hooks" "$PROJ_B/.boid/hooks"
