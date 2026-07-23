@@ -126,31 +126,58 @@ client cert を発行する、 の 2 択は着手時に判断。
 (container job が broker RPC できない → payload_patch 経路が壊れる)。 `docs/plans/phase6-container-backend.md`
 §PR7 の「cutover gate」 (container e2e green + rollback rehearsal) も、 実質的にはこの gap 完了までは満たされない。
 
-## ⓪-b cross-workspace 分離の egress proxy relay 漏れ (新規発見、未修正)
+## ⓪-b cross-workspace 分離の egress proxy relay 漏れ — **landed (2026-07-23)**
 
 `feat/phase6-broker-tcp-wire` PR (#825) で `e2e-container` job を `continue-on-error: false` へ昇格
 しようとした際に CI で発覚。 §⓪ (broker TCP wire) とは無関係の別バグ — `main` HEAD (f00f1ce) の時点で
-既に再現する (この PR が壊したものではない)。 `continue-on-error` は暫定的に `true` のまま据え置き。
+既に再現していた (PR #825 が壊したものではない)。
 
-**症状**: `e2e/run-container.sh` の requirement 2 (「job → 別 workspace の sibling は到達不可」) が
-期待する接続失敗 (`probe_http` の `000`) ではなく `HTTP 403` を返す。
+**症状 (fix 前)**: `e2e/run-container.sh` の requirement 2 (「job → 別 workspace の sibling は到達不可」) が
+期待する接続失敗 (`probe_http` の `000`) ではなく `HTTP 403` を返していた。
 
-**根本原因 (推定)**: daemon container は egress proxy を in-process でホストしつつ、 gateway/egress 到達性
+**根本原因**: daemon container は egress proxy を in-process でホストしつつ、 gateway/egress/broker 到達性
 のため dispatch のたびに「その job の workspace」の isolated docker network へ self-connect する
-(§決定5)。 複数 workspace の job が並行 dispatch されると、 daemon container は複数 workspace の
-network に同時に参加した状態になる。 job 内で bare hostname (ドット無し) の `http://` request
-(`http://sib-b:8080/`) を投げると `HTTP_PROXY` (no_proxy に含まれないため) 経由で daemon 内蔵の
-egress proxy に転送され、 その proxy は自分が同時参加している「別 workspace」の network 越しに
-`sib-b` を実際に名前解決できてしまう。 到達自体は成立しているが、 `sib-b` が workspace A の
-`allowed_domains` に無いため application 層の allowlist chek で 403 拒否される — 「到達不可」ではな
-く「到達はするが許可されない」で偶然テストの意図に近い結果になっているだけで、 ネットワーク層の分離
-保証としては疑わしい (allowed_domains の設定次第では越境到達し得る)。
+(§決定5、 `containerBackend.ensureWorkspaceNetwork`)。 複数 workspace の job が並行 dispatch されると、
+daemon container は複数 workspace の network に同時に参加した状態になる。 job 内で bare hostname
+(ドット無し) の `http://` request (`http://sib-b:8080/`) を投げると `HTTP_PROXY` (no_proxy に含まれない
+ため) 経由で daemon 内蔵の egress proxy に転送され、 その proxy は自分が同時参加している「別 workspace」の
+network 越しに `sib-b` を実際に名前解決できてしまう。 到達自体は成立するが、 `sib-b` が workspace A の
+`allowed_domains` に無いため application 層の allowlist check で 403 拒否される — 「到達不可」ではな
+く「到達はするが許可されない」で偶然テストの意図に近い結果になっているだけで、 allowed_domains の
+設定次第では越境到達し得た (例: `allowed_domains: ["sib-b"]` を workspace A に足すと workspace B の
+sibling へ実到達する)。
 
-**対応方針は未決定**: (a) テストの assertion を「000 または 403 を許容」に緩める (isolation の意味を
-「到達不可」から「到達しても中身は見えない」に再定義する判断が要る)、 (b) egress proxy 側で
-bare hostname (ドット無し) を最初から proxy 対象外にする (no_proxy を動的に拡張する、 または
-「ドット無しホスト名は直接接続にフォールバックする」規約を導入)、 (c) daemon の workspace self-connect
-を「必要な job の期間だけ」に絞り常時マルチ workspace 接続状態を作らない、 のいずれか。 着手時に選ぶ。
+**採用した対応**: (b.1) proxy-side の boid convention で解決。 native NO_PROXY にドット無し pattern が
+存在しない (Go stdlib / curl / git いずれも `*` は全 bypass、 dot-less 専用パターンは無い) ため
+env-side での抑止は不完全になる。 代わりに `internal/sandbox/proxy.go` の `isRefusedDotlessTarget` で、
+CONNECT / HTTP-forward のどちらの path でも allowlist check の**前段**で
+
+- host に `.` も `:` も含まない (単一 label DNS 名)、 かつ
+- boid infra name allowlist (`localhost` / `boid-broker` / `boid-gateway` / `boid-egress`) に含まれない
+
+ものを 502 Bad Gateway で refuse する。 boid infra name の defensive whitelist は「no_proxy が誤設定
+された場合の safety net」 として置いている (通常経路では applyProxyEnv 経由でこれらは no_proxy に列挙
+済みなので proxy に到達しない)。 これにより、 workspace A の job が bare hostname で workspace B の
+sibling を狙っても proxy 段で refuse され、 dial が起きない → daemon の multi-network 参加状態が
+起点にならない (application 層越境が network 層越境と等価に塞がれる) — §決定5 の invariant が
+allowed_domains の内容に依存しなくなる。
+
+**同時に landed した変更 (単一 PR)**:
+
+- `internal/sandbox/proxy.go` に `isRefusedDotlessTarget` 追加 + `handleConnect`/`handleHTTP` 両方で
+  allowlist check 前段に組み込み。
+- `internal/sandbox/proxy_test.go` に unit test 4 本追加 (dotless refuse で 502、 dotted は allowlist、
+  boid infra name は fall-through、 HTTP-forward path も同挙動)。
+- `e2e/run-container.sh` の requirement 2 assertion を `000` または `502` を許容に更新 (`403` は
+  pre-fix behavior として明示的な hard failure に保つ)。
+- `.github/workflows/blackbox-e2e.yml` の `e2e-container` job を `continue-on-error: false` に格上げ
+  — §⓪ / §⓪-b の両方が同一 PR で解消されるため、 §① dogfood の前提条件が満たされる。
+
+**残る限界**: 「ドット無し hostname のみ refuse」は heuristic であり、 job が別 workspace の sibling を
+「ドット付き名前」で参照する経路 (例: 別 workspace の sibling を FQDN 相当の形で allowed_domains
+に入れる) を新たに開いた場合は依然として越境可能。 これは docker embedded DNS が single-label 名前
+しか alias しない現状の挙動に依存する部分的解決策で、 (c) daemon self-connect scope 絞りが必要になる
+局面が dogfood 期間 (§①) で顕在化した場合は改めて着手する。
 
 ## ① dogfood 期間の並走
 
