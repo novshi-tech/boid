@@ -329,7 +329,7 @@ YAML
 read -r -d '' HOOK_PRELUDE <<'BASH' || true
 fail_with_diag() {
   local reason="$1"
-  printf '{"artifact":{"result":"fail","reason":"%s"}}\n' "$reason" | boid task update --payload-patch @- || true
+  printf '{"artifact":{"result":"fail","reason":"%s"}}\n' "$reason" | boid task update --payload-patch @- >/dev/null 2>&1 || true
   echo "FAIL: $reason" >&2
   exit 1
 }
@@ -414,7 +414,7 @@ if [[ "$cross_ws_code" != "000" ]]; then
   fail_with_diag "requirement 2 FAILED: sib-b (different workspace) WAS reachable (http ${cross_ws_code})"
 fi
 
-printf '{"artifact":{"result":"pass"}}\n' | boid task update --payload-patch @-
+printf '{"artifact":{"result":"pass"}}\n' | boid task update --payload-patch @- >/dev/null 2>&1
 BASH
 } > "$PROJ_A/.boid/hooks/verify-sibling.sh"
 chmod +x "$PROJ_A/.boid/hooks/verify-sibling.sh"
@@ -426,7 +426,7 @@ create_sibling sib-b >/dev/null
 
 # Signal readiness BEFORE sleeping, so the CI driver can dispatch the
 # verify-sibling task once sib-b actually exists and is listening.
-printf '{"artifact":{"sib_ready":true}}\n' | boid task update --payload-patch @-
+printf '{"artifact":{"sib_ready":true}}\n' | boid task update --payload-patch @- >/dev/null 2>&1
 
 # Stay alive long enough for the concurrently-dispatched verify-sibling task
 # to run its cross-workspace reachability check against sib-b —
@@ -436,7 +436,7 @@ printf '{"artifact":{"sib_ready":true}}\n' | boid task update --payload-patch @-
 # still be alive when that check runs.
 sleep 30
 
-printf '{"artifact":{"result":"pass"}}\n' | boid task update --payload-patch @-
+printf '{"artifact":{"result":"pass"}}\n' | boid task update --payload-patch @- >/dev/null 2>&1
 BASH
 } > "$PROJ_B/.boid/hooks/setup-sibling.sh"
 chmod +x "$PROJ_B/.boid/hooks/setup-sibling.sh"
