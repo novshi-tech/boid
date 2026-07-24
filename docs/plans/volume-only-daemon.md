@@ -559,8 +559,8 @@ volume-only では unix 消滅、 **HTTPS + Bearer + pinned CA cert** 一択。
 **現状**:
 - `server.go:718,733`: 公開 API listener は plain HTTP
 - `client.go:200-220`: HTTPS client は system trust store 固定
-- `ca.go:228` (`IssueServerCert`): TLS handshake で送る chain は leaf 1 枚のみ
-- `ca.go:325-336` (`ServerOnlyTLSConfig`): signature は `(hosts ...string) (*tls.Config, error)`、
+- `ca.go:239` (`IssueServerCert`): TLS handshake で送る chain は leaf 1 枚のみ
+- `ca.go:327-336` (`ServerOnlyTLSConfig`): signature は `(hosts ...string) (*tls.Config, error)`、
   内部で `IssueServerCert(hosts...)` して cert を issue
 
 **採用: CA cert 本体を OOB (export file) で運び、 client は RootCAs pin で verify**
@@ -637,7 +637,7 @@ func NewClient(profile *ResolvedProfile) (*Client, error) {
 round 4 draft は §5 (static `Certificates` の `ServerOnlyTLSConfig`) と §6 (`GetCertificate` の別
 `tls.Config`) を併記して最終 listener がどちらか不定だった。 **一本化**: 公開 API listener の
 `tls.Config` は **`LeafRenewer.GetCertificate` 経路のみ** とし、 既存 `ServerOnlyTLSConfig`
-(`ca.go:325-336`、 static Certificates) は broker / git-gateway 等の内部 listener 用途に現行のまま残す
+(`ca.go:327-336`、 static Certificates) は broker / git-gateway 等の内部 listener 用途に現行のまま残す
 (公開 listener では使わない)。
 
 **startup 順序の契約** (round 5 Blocker 4 対応):
@@ -669,7 +669,7 @@ go func() { _ = s.tcpServer.ServeTLS(tcpLn, "", "") }() // cert は GetCertifica
 
 #### 6. Leaf 更新契約 (`LeafRenewer` 本体)
 
-現行 `leafValidity = 30 * 24 * time.Hour` (`ca.go:50`)、 daemon restart まで更新されない →
+現行 `leafValidity = 30 * 24 * time.Hour` (`ca.go:55`)、 daemon restart まで更新されない →
 daemon 内で自動 renewal:
 
 ```go
@@ -790,7 +790,7 @@ boid login https://localhost:8443 --ca-cert /tmp/boid-ca.pem --profile local
 - `secret.key` (SecretStore の AES-256 master key、 `dispatcher/secret_keyfile.go:11` の `LoadOrCreateKey`)
 - `web_secret` (Web session cookie signing、 既存 load-or-create)
 - daemon internal CA (現行は flat `tls/{ca.crt,ca.key}` を cert/key **順次 WriteFile** する
-  `mtls/ca.go:65` の `LoadOrCreate`、 round 3 Major 5 で atomic 化が必要と判明)
+  `mtls/ca.go:69` の `LoadOrCreate`、 round 3 Major 5 で atomic 化が必要と判明)
 - `install_id` (既存 on-first-boot generate)
 
 追加改修は volume 内で動作、 **ただし** CA は下記の generation directory 契約に置換する。
