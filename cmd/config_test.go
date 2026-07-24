@@ -5,10 +5,12 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/novshi-tech/boid/internal/client"
 	"github.com/novshi-tech/boid/testutil"
+	"github.com/spf13/cobra"
 )
 
 // TestRunConfigGet_FullDump_FreshInstallIsEmpty pins `boid config get`'s
@@ -299,14 +301,19 @@ func TestRunConfigApply_ValidFile(t *testing.T) {
 	}
 }
 
-// TestRunConfigApply_InvalidFile_NoDaemonCall points BOID_SOCKET at a
-// nonexistent socket path, proving the client-side ValidateYAML pre-check
-// (cmd/config.go's runConfigApply, mirroring runWorkspaceEdit's MINOR 1
-// precedent) rejects a bad file before ever attempting to dial the daemon —
-// if it dialed first, this would fail with a connection error instead of
-// the validation error this test asserts on.
-func TestRunConfigApply_InvalidFile_NoDaemonCall(t *testing.T) {
-	t.Setenv("BOID_SOCKET", filepath.Join(t.TempDir(), "nonexistent.sock"))
+// TestRunConfigApply_InvalidFile_ValidationErrorReported pins the flip side
+// of MAJOR (codex review round 2, cmd/config.go's runConfigApply): fetching
+// the current revision now runs BEFORE local validation (not after, as it
+// did pre-fix — see runConfigApply's own doc comment for why), so this can
+// no longer point BOID_SOCKET at a nonexistent socket to prove the daemon
+// was never dialed (the pre-fix version of this test did exactly that — the
+// GET now always happens for the non-force path, even for a file that will
+// go on to fail validation). What must still hold, against a REAL running
+// daemon: an invalid file is rejected with the schema validation error
+// (never POSTed), and the daemon's config.yaml is left untouched.
+func TestRunConfigApply_InvalidFile_ValidationErrorReported(t *testing.T) {
+	ts := testutil.NewTestServer(t)
+	t.Setenv("BOID_SOCKET", ts.Server.SocketPath())
 
 	dir := t.TempDir()
 	f := filepath.Join(dir, "config.yaml")
@@ -325,6 +332,71 @@ func TestRunConfigApply_InvalidFile_NoDaemonCall(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "default_harness") {
 		t.Errorf("expected error to name default_harness, got: %v", err)
+	}
+
+	data, _, err := ts.Server.ConfigYAML()
+	if err != nil {
+		t.Fatalf("ConfigYAML: %v", err)
+	}
+	if len(data) != 0 {
+		t.Errorf("daemon config.yaml should be untouched by a rejected apply, got:\n%s", data)
+	}
+}
+
+// TestRunConfigApply_ConcurrentApplies_ExactlyOneSucceeds is the CLI-level
+// regression test for MAJOR (codex review round 2): two `boid config apply
+// -f` calls (different content, no --force) racing against the same
+// starting revision — at most one succeeds; the other is rejected with the
+// daemon's 412 Precondition Failed, surfaced as postConfigApply's
+// "config changed since..." error, never a silent overwrite of either
+// document.
+func TestRunConfigApply_ConcurrentApplies_ExactlyOneSucceeds(t *testing.T) {
+	ts := testutil.NewTestServer(t)
+	t.Setenv("BOID_SOCKET", ts.Server.SocketPath())
+	c := client.NewUnixClient(ts.Server.SocketPath())
+
+	_, rev, err := fetchConfigYAML(c)
+	if err != nil {
+		t.Fatalf("fetchConfigYAML: %v", err)
+	}
+
+	docs := [][]byte{
+		[]byte("web:\n  public_url: https://cli-race-a.example.com\n"),
+		[]byte("web:\n  public_url: https://cli-race-b.example.com\n"),
+	}
+
+	var wg sync.WaitGroup
+	errs := make([]error, len(docs))
+	wg.Add(len(docs))
+	for i, doc := range docs {
+		i, doc := i, doc
+		go func() {
+			defer wg.Done()
+			// A fresh *cobra.Command per goroutine (NOT the shared package-
+			// level configApplyCmd — postConfigApply only ever reads
+			// cmd.OutOrStdout(), but two goroutines concurrently SetOut-ing
+			// the SAME *cobra.Command races on its internal writer field).
+			cmd := &cobra.Command{}
+			cmd.SetOut(&bytes.Buffer{})
+			errs[i] = postConfigApply(cmd, c, doc, rev, false, "config.yaml")
+		}()
+	}
+	wg.Wait()
+
+	successes := 0
+	var conflictErr error
+	for _, err := range errs {
+		if err == nil {
+			successes++
+		} else {
+			conflictErr = err
+		}
+	}
+	if successes != 1 {
+		t.Fatalf("successes = %d, want exactly 1", successes)
+	}
+	if conflictErr == nil || !strings.Contains(conflictErr.Error(), "changed since") {
+		t.Errorf("expected the loser's error to report a conflict, got: %v", conflictErr)
 	}
 }
 

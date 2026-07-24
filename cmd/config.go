@@ -263,15 +263,36 @@ func runConfigUnset(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-// runConfigApply implements `boid config apply -f`: validates the file
-// locally, then POSTs it to the daemon. Unless --force is passed, a fresh
-// GET captures the current revision first and sends it back as If-Match
-// (BLOCKER 1, codex review round 1) — the same "fetch-then-round-trip"
-// protection `boid workspace edit` already established (cmd/workspace.go's
-// runWorkspaceEdit) — so an apply against a config.yaml that changed since
-// this file was prepared is rejected (412/428) instead of silently
-// clobbering whatever the other writer just applied. --force skips this
-// for a deliberate last-write-wins apply.
+// runConfigApply implements `boid config apply -f`: fetches the daemon's
+// current revision FIRST, then validates the file locally, then POSTs it
+// gated by that revision as If-Match unless --force is passed.
+//
+// MAJOR (codex review round 2): the pre-fix order was read → validate → GET
+// → POST — i.e. the GET ran AFTER local validation, not right before the
+// POST it protects. That left a real (if narrow) lost-update window: if a
+// concurrent `config set`/`apply` landed between the local validate call and
+// this GET, the GET would observe THAT write's already-bumped revision, and
+// the POST below — built from `data`, which predates the concurrent write —
+// would match that revision and be accepted, silently discarding it. Moving
+// the GET ahead of validate cannot eliminate the window entirely (`data` was
+// always read from a file prepared independently of any live snapshot — see
+// os.ReadFile above, which necessarily still runs first), but it shrinks the
+// window to [GET, validate, POST] instead of [read, validate, GET, POST],
+// and — this is the part that actually matters — ANY write that still lands
+// inside what remains of the window is caught: it is the daemon's own
+// If-Match check (internal/server/config_edit.go's ApplyConfigYAML), not
+// this ordering, that turns "the revision moved between my GET and my POST"
+// into a rejected 412 (postConfigApply's isConfigConflictStatus), never a
+// silent overwrite. See TestPostConfigApply_ConcurrentApplies_SharedIfMatch_ExactlyOneSucceeds
+// for the server-side guarantee this ordering now relies on end to end.
+//
+// A malformed/invalid file is still rejected client-side before any POST is
+// attempted (mirrors `boid workspace edit`'s MINOR 1 precedent,
+// cmd/workspace.go's runWorkspaceEdit) — it no longer skips the daemon
+// entirely the way it did pre-fix, since the GET above now always runs
+// first for the non-force path (see
+// TestRunConfigApply_InvalidFile_ValidationErrorReported), but the POST
+// itself is still never attempted for a file that can't validate.
 func runConfigApply(cmd *cobra.Command, args []string) error {
 	if configApplyFile == "" {
 		return fmt.Errorf("-f/--file is required")
@@ -279,13 +300,6 @@ func runConfigApply(cmd *cobra.Command, args []string) error {
 	data, err := os.ReadFile(configApplyFile)
 	if err != nil {
 		return fmt.Errorf("read %s: %w", configApplyFile, err)
-	}
-
-	// Client-side pre-check (mirrors `boid workspace edit`'s MINOR 1
-	// precedent, cmd/workspace.go's runWorkspaceEdit: fail fast on a bad
-	// file before making any daemon call at all).
-	if _, err := config.ValidateYAML(data); err != nil {
-		return fmt.Errorf("validate %s: %w", configApplyFile, err)
 	}
 
 	c := client.FromContext(cmd.Context())
@@ -297,6 +311,10 @@ func runConfigApply(cmd *cobra.Command, args []string) error {
 			return fmt.Errorf("fetch current revision: %w", err)
 		}
 		ifMatch = rev
+	}
+
+	if _, err := config.ValidateYAML(data); err != nil {
+		return fmt.Errorf("validate %s: %w", configApplyFile, err)
 	}
 
 	return postConfigApply(cmd, c, data, ifMatch, configApplyForce, configApplyFile)
