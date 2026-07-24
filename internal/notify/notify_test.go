@@ -118,3 +118,40 @@ func TestNotify_NoPublicURL(t *testing.T) {
 		t.Errorf("BOID_TASK_URL should be empty when PublicURL unset, got=%q", got)
 	}
 }
+
+func TestUpdate_SwapsLiveValues(t *testing.T) {
+	dir := t.TempDir()
+	out := filepath.Join(dir, "out.txt")
+	script := filepath.Join(dir, "script.sh")
+	scriptContent := "#!/bin/bash\nprintf '%s' \"$BOID_TASK_URL\" > \"$1\"\n"
+	if err := os.WriteFile(script, []byte(scriptContent), 0o755); err != nil {
+		t.Fatalf("write script: %v", err)
+	}
+
+	s := &Service{Command: []string{"/bin/true"}, PublicURL: "https://old.example.com"}
+	s.Update([]string{script, out}, "https://new.example.com")
+
+	if err := s.Notify(context.Background(), Event{TaskID: "t1"}); err != nil {
+		t.Fatalf("Notify: %v", err)
+	}
+	data, _ := os.ReadFile(out)
+	want := "https://new.example.com/tasks/t1"
+	if got := string(data); got != want {
+		t.Errorf("BOID_TASK_URL after Update = %q, want %q", got, want)
+	}
+}
+
+func TestUpdate_ConcurrentWithNotify_NoRace(t *testing.T) {
+	s := &Service{}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < 100; i++ {
+			s.Update([]string{"/bin/true"}, "https://example.com")
+		}
+	}()
+	for i := 0; i < 100; i++ {
+		_ = s.Notify(context.Background(), Event{TaskID: "t1"})
+	}
+	<-done
+}
