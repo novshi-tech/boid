@@ -239,14 +239,29 @@ func DefaultConfig() *Config {
 	}
 }
 
+// DefaultPath resolves the default XDG config.yaml path
+// (~/.config/boid/config.yaml) without reading it. Exported so callers that
+// need the *path* itself — not just its parsed content — have one place to
+// ask (internal/server's daemon-side config-editing wiring, docs/plans/
+// volume-only-daemon.md §論点 f: `boid config get/set/unset/apply/edit`
+// reads-modifies-writes this exact file) instead of re-deriving
+// os.UserConfigDir()+"boid/config.yaml" independently and risking drift
+// from what Load() itself actually reads.
+func DefaultPath() (string, error) {
+	configDir, err := os.UserConfigDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(configDir, "boid", "config.yaml"), nil
+}
+
 // Load reads the configuration from the default XDG path (~/.config/boid/config.yaml).
 // If the file does not exist, the default configuration is returned without error.
 func Load() (*Config, error) {
-	configDir, err := os.UserConfigDir()
+	path, err := DefaultPath()
 	if err != nil {
 		return DefaultConfig(), nil
 	}
-	path := filepath.Join(configDir, "boid", "config.yaml")
 	return loadFromPath(path)
 }
 
