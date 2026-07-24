@@ -167,6 +167,17 @@ func Set(tree Tree, path string, values []string) (ReloadClass, error) {
 // Fails with "key not found" when the path is unrecognized OR is
 // recognized but not currently present in tree — per §論点 f's unilateral
 // decision, unset never silently no-ops on a missing key.
+//
+// MINOR 1 (codex review round 2): a KindOpaque leaf (gateway.hosts, the only
+// one today) is documented as non-settable AND non-unsettable (schema.go's
+// KindOpaque doc comment, docs/ja/reference/config-yaml.md's "旧
+// gateway.hosts 記法" section) — Set already rejects it via coerceValues's
+// dedicated KindOpaque branch, but this generic path had no equivalent
+// check and happily deleted it, silently letting `boid config unset
+// gateway.hosts` "succeed" despite the documented read-only contract. The
+// check runs before the presence check below (deletePathRaw) so the
+// rejection reason is always "read-only", never "key not found", regardless
+// of whether the key happens to be present in tree.
 func Unset(tree Tree, path string) (ReloadClass, error) {
 	if id, isForge := IsForgeEntryPath(path); isForge {
 		_ = id
@@ -180,6 +191,9 @@ func Unset(tree Tree, path string) (ReloadClass, error) {
 	spec, ok := ResolveField(path)
 	if !ok {
 		return 0, unknownKeyError(path)
+	}
+	if spec.Kind == KindOpaque {
+		return 0, fmt.Errorf("%s is a deprecated, read-only legacy field and cannot be unset — migrate to gateway.forges.<id>.* instead (see docs/ja/reference/config-yaml.md)", spec.Path)
 	}
 	if !deletePathRaw(tree, path) {
 		return 0, fmt.Errorf("key not found: %s", path)

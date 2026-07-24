@@ -169,6 +169,46 @@ func TestUnset_WholeForgeEntry_NotFound(t *testing.T) {
 	}
 }
 
+// TestUnset_KindOpaque_Rejected pins MINOR 1 (codex review round 2):
+// gateway.hosts (the only KindOpaque leaf today) is documented as
+// non-settable AND non-unsettable — Set already rejected it via
+// coerceValues's dedicated KindOpaque branch (see
+// TestValidateYAML_GatewayHosts_NotSettableViaDottedPath in validate_test.go),
+// but the generic Unset path had no equivalent check and silently deleted
+// it, letting `boid config unset gateway.hosts` "succeed" despite the
+// documented read-only contract.
+func TestUnset_KindOpaque_Rejected(t *testing.T) {
+	tree := Tree{"gateway": Tree{"hosts": []any{
+		Tree{"host": "github.com", "forge": "github", "secret_key": "gh-pat"},
+	}}}
+	_, err := Unset(tree, "gateway.hosts")
+	if err == nil {
+		t.Fatal("expected Unset(gateway.hosts) to fail — it is read-only via the dotted-path CLI")
+	}
+	if strings.Contains(err.Error(), "key not found") {
+		t.Errorf("expected a read-only rejection, not a 'key not found' error: %v", err)
+	}
+	// The key must survive the rejected unset attempt.
+	if _, ok := GetPath(tree, "gateway.hosts"); !ok {
+		t.Error("gateway.hosts was removed despite Unset returning an error")
+	}
+}
+
+// TestUnset_KindOpaque_RejectedEvenWhenAbsent pins the same rejection when
+// the key is not even present in tree — the read-only check must fire
+// before the presence check, so the error is always "read-only", never
+// "key not found", for a KindOpaque leaf.
+func TestUnset_KindOpaque_RejectedEvenWhenAbsent(t *testing.T) {
+	tree := Tree{}
+	_, err := Unset(tree, "gateway.hosts")
+	if err == nil {
+		t.Fatal("expected Unset(gateway.hosts) to fail even when absent")
+	}
+	if strings.Contains(err.Error(), "key not found") {
+		t.Errorf("expected a read-only rejection, not a 'key not found' error: %v", err)
+	}
+}
+
 func TestGet_UnknownKey(t *testing.T) {
 	tree := Tree{}
 	_, err := Get(tree, "sandbox.alowed_domains")

@@ -219,6 +219,17 @@ func TestValidateYAML_GatewayHosts_NotSettableViaDottedPath(t *testing.T) {
 	}
 }
 
+// TestValidateYAML_GatewayHosts_NotUnsettableViaDottedPath is
+// TestValidateYAML_GatewayHosts_NotSettableViaDottedPath's unset half
+// (MINOR 1, codex review round 2) — see TestUnset_KindOpaque_Rejected in
+// dotted_test.go for the more detailed pinning.
+func TestValidateYAML_GatewayHosts_NotUnsettableViaDottedPath(t *testing.T) {
+	tree := Tree{}
+	if _, err := Unset(tree, "gateway.hosts"); err == nil {
+		t.Fatal("expected Unset(gateway.hosts) to fail — it is read-only via the dotted-path CLI")
+	}
+}
+
 func TestValidateYAML_MapShapeError(t *testing.T) {
 	data := []byte("sandbox: not-a-mapping\n")
 	_, err := ValidateYAML(data)
