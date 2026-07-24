@@ -737,6 +737,85 @@ func TestWorkspaceHandler_Apply_DryRunQueryParamPropagates(t *testing.T) {
 	}
 }
 
+// TestWorkspaceHandler_Apply_DryRunAcceptsAnyValidBoolean pins the PR-1d
+// codex round-2 Major fix: dry_run is parsed with strconv.ParseBool, not a
+// bare `== "true"` string compare, so "1"/"True"/"TRUE" etc. are all
+// recognized truthy values — not just the exact literal "true".
+func TestWorkspaceHandler_Apply_DryRunAcceptsAnyValidBoolean(t *testing.T) {
+	for _, raw := range []string{"1", "True", "TRUE", "t"} {
+		t.Run(raw, func(t *testing.T) {
+			var gotDryRun bool
+			svc := &fakeWorkspaceService{
+				applyFn: func(apply *orchestrator.WorkspaceEnvelopeApply, dryRun bool) (*orchestrator.WorkspaceApplyResult, error) {
+					gotDryRun = dryRun
+					return &orchestrator.WorkspaceApplyResult{Slug: apply.Envelope.Metadata.Name, Meta: &orchestrator.WorkspaceMeta{}}, nil
+				},
+			}
+			h := &WorkspaceHandler{Service: svc}
+			body := []byte("apiVersion: boid.dev/v1\nkind: Workspace\nmetadata:\n  name: team-a\n")
+			w := doWorkspaceRequest(h.Routes(), http.MethodPost, "/apply?dry_run="+raw, "application/yaml", body, nil)
+			if w.Code != http.StatusOK {
+				t.Fatalf("status = %d: %s", w.Code, w.Body.String())
+			}
+			if !gotDryRun {
+				t.Errorf("dryRun passed to service = false for ?dry_run=%s, want true", raw)
+			}
+		})
+	}
+}
+
+// TestWorkspaceHandler_Apply_DryRunInvalidBooleanIs400 pins the other half
+// of the same fix: an unparseable dry_run value must fail closed (400), not
+// silently fall through to a real commit the way the old `== "true"` check
+// did for anything other than the exact string "true".
+func TestWorkspaceHandler_Apply_DryRunInvalidBooleanIs400(t *testing.T) {
+	svc := &fakeWorkspaceService{
+		applyFn: func(apply *orchestrator.WorkspaceEnvelopeApply, dryRun bool) (*orchestrator.WorkspaceApplyResult, error) {
+			t.Fatal("service.ApplyWorkspace must not be called for an invalid dry_run value")
+			return nil, nil
+		},
+	}
+	h := &WorkspaceHandler{Service: svc}
+	body := []byte("apiVersion: boid.dev/v1\nkind: Workspace\nmetadata:\n  name: team-a\n")
+	w := doWorkspaceRequest(h.Routes(), http.MethodPost, "/apply?dry_run=maybe", "application/yaml", body, nil)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400: %s", w.Code, w.Body.String())
+	}
+}
+
+// TestWorkspaceHandler_Apply_AdditionalBindingsWarningInResponse pins the
+// PR-1d codex round-2 Minor fix: `boid workspace apply` already warns
+// client-side when a document carries a retired spec.additional_bindings
+// key, but a caller hitting POST /api/workspaces/apply directly (not
+// through the CLI) previously never saw any warning at all — the key was
+// silently parsed and discarded. The response body must now carry it too.
+func TestWorkspaceHandler_Apply_AdditionalBindingsWarningInResponse(t *testing.T) {
+	svc := &fakeWorkspaceService{
+		applyFn: func(apply *orchestrator.WorkspaceEnvelopeApply, dryRun bool) (*orchestrator.WorkspaceApplyResult, error) {
+			if !apply.AdditionalBindingsDropped {
+				t.Error("AdditionalBindingsDropped = false, want true")
+			}
+			return &orchestrator.WorkspaceApplyResult{Slug: apply.Envelope.Metadata.Name, Meta: &orchestrator.WorkspaceMeta{}}, nil
+		},
+	}
+	h := &WorkspaceHandler{Service: svc}
+	body := []byte("apiVersion: boid.dev/v1\nkind: Workspace\nmetadata:\n  name: team-a\nspec:\n  additional_bindings:\n    - source: /host\n      target: /container\n")
+	w := doWorkspaceRequest(h.Routes(), http.MethodPost, "/apply", "application/yaml", body, nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d: %s", w.Code, w.Body.String())
+	}
+	var result orchestrator.WorkspaceApplyResult
+	if err := json.Unmarshal(w.Body.Bytes(), &result); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(result.Warnings) == 0 {
+		t.Fatal("response Warnings is empty, want a warning about additional_bindings")
+	}
+	if !strings.Contains(result.Warnings[0], "additional_bindings") {
+		t.Errorf("Warnings[0] = %q, want it to mention additional_bindings", result.Warnings[0])
+	}
+}
+
 // TestWorkspaceHandler_Apply_RejectsMultipleDocuments pins that Apply
 // (unlike `boid workspace apply`'s own multi-document file support) accepts
 // exactly one Workspace document per HTTP request — per-workspace

@@ -5,6 +5,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/go-chi/chi/v5"
@@ -296,8 +297,24 @@ func (h *WorkspaceHandler) Remove(w http.ResponseWriter, r *http.Request) {
 // rather than sharing one across an entire multi-workspace file).
 // dry_run=true runs every read/write the real apply would (same
 // validation, same DB statements) but rolls back instead of committing.
+//
+// ?dry_run is parsed with strconv.ParseBool (PR-1d codex round-2 Major: the
+// previous `== "true"` check failed OPEN — "True", "1", or a typo silently
+// fell through to a real commit instead of the requested preview). An
+// unparseable value is now rejected with 400 rather than defaulting to
+// mutation, and which mode ran is always logged at INFO so a caller can
+// confirm from the server log which path a given request actually took.
 func (h *WorkspaceHandler) Apply(w http.ResponseWriter, r *http.Request) {
-	dryRun := r.URL.Query().Get("dry_run") == "true"
+	dryRun := false
+	if raw := r.URL.Query().Get("dry_run"); raw != "" {
+		parsed, err := strconv.ParseBool(raw)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, fmt.Sprintf("dry_run: invalid boolean %q", raw))
+			return
+		}
+		dryRun = parsed
+	}
+	slog.Info("workspace apply", "dry_run", dryRun)
 
 	data, ok := readWorkspaceYAMLBody(w, r)
 	if !ok {
@@ -313,10 +330,25 @@ func (h *WorkspaceHandler) Apply(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// PR-1d codex round-2 Minor: `boid workspace apply` (cmd/workspace_apply.go)
+	// already warns client-side when a document still carries a retired
+	// spec.additional_bindings key, but a caller hitting this endpoint
+	// directly (not through the CLI) never saw that warning at all — the
+	// key was silently parsed and discarded. Surface the same warning here
+	// so every caller of this endpoint gets it, not just the CLI's own
+	// pre-parse.
+	if docs[0].AdditionalBindingsDropped {
+		slog.Warn("workspace apply: spec.additional_bindings is no longer supported and was dropped",
+			"workspace", docs[0].Envelope.Metadata.Name)
+	}
+
 	result, err := h.Service.ApplyWorkspace(docs[0], dryRun)
 	if err != nil {
 		writeServiceError(w, err)
 		return
+	}
+	if docs[0].AdditionalBindingsDropped {
+		result.Warnings = append(result.Warnings, fmt.Sprintf("spec.additional_bindings is no longer supported (retired) — dropped for workspace %q", docs[0].Envelope.Metadata.Name))
 	}
 	writeJSON(w, http.StatusOK, result)
 }

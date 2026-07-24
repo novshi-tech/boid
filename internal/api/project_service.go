@@ -773,7 +773,15 @@ func (s *ProjectAppService) ApplyWorkspace(apply *orchestrator.WorkspaceEnvelope
 	var projectIDsByName map[string]string
 	var missing []string
 	if apply.FieldsPresent["projects"] {
-		projectIDsByName, missing = s.resolveWorkspaceApplyProjectNames(apply.Envelope.Spec.Projects)
+		var resolveErr error
+		projectIDsByName, missing, resolveErr = s.resolveWorkspaceApplyProjectNames(apply.Envelope.Spec.Projects)
+		if resolveErr != nil {
+			// PR-1d codex round-2 Blocker 2: refuse the WHOLE apply before
+			// any DB write when a name is ambiguous — this return happens
+			// before s.mu.Lock()/ApplyWorkspaceEnvelope below, so nothing
+			// has been touched yet (no side effects to unwind).
+			return nil, resolveErr
+		}
 	}
 
 	// Same critical-section discipline as Create/Update/Remove/Import — see
@@ -804,24 +812,57 @@ func (s *ProjectAppService) ApplyWorkspace(apply *orchestrator.WorkspaceEnvelope
 
 // resolveWorkspaceApplyProjectNames resolves each spec.projects[].name
 // entry to a registered project ID via the same name-matching
-// ResolveProjectRef uses (id > name-exact > name-substring, ambiguous or
-// no match both folded into "unresolved" — mirroring the pre-existing
-// GET /api/projects/{ref} behavior applyWorkspaceProjects used to rely on,
-// cmd/workspace_apply.go). A name that does not resolve to exactly one
-// project is reported in missing rather than failing the whole apply (the
-// plan doc's cross-PR coordination note: a not-yet-registered project must
-// never fail apply).
-func (s *ProjectAppService) resolveWorkspaceApplyProjectNames(projects []orchestrator.WorkspaceEnvelopeProject) (ids map[string]string, missing []string) {
+// ResolveProjectRef uses (id > name-exact > name-substring). A name that
+// resolves to NO project is reported in missing rather than failing the
+// whole apply (the plan doc's cross-PR coordination note: a not-yet-
+// registered project must never fail apply).
+//
+// A name that resolves to MORE THAN ONE project is a different case
+// entirely and is NOT folded into missing (PR-1d codex round-2 Blocker 2):
+// two registered projects sharing a project.yaml name (e.g. both "api")
+// previously made every lookup for that name ambiguous, which the old
+// `err != nil || len(matches) != 1` fold treated identically to "not
+// registered" — the target set ended up empty and BOTH projects were
+// destructively detached to the default workspace, even though both were
+// explicitly listed in the applied document. Instead, an ambiguous name
+// aborts resolveWorkspaceApplyProjectNames immediately with a StatusError
+// naming every colliding project ID, and the caller (ApplyWorkspace) must
+// refuse the entire apply before touching the DB rather than proceed with
+// a wrong/partial resolution.
+func (s *ProjectAppService) resolveWorkspaceApplyProjectNames(projects []orchestrator.WorkspaceEnvelopeProject) (ids map[string]string, missing []string, err error) {
 	ids = make(map[string]string, len(projects))
 	for _, ep := range projects {
-		matches, err := s.ResolveProjectRef(ep.Name)
-		if err != nil || len(matches) != 1 {
+		// Defense in depth (PR-1d codex round-2 Major): decodeWorkspaceEnvelopeSpec
+		// already rejects an empty spec.projects[].name at parse time, but
+		// ResolveProjectRef("") would otherwise match "everything" via its
+		// substring-match fallback (strings.Contains(x, "") is always
+		// true) — refuse it here too rather than relying solely on the
+		// decode-time guard holding for every caller forever.
+		if strings.TrimSpace(ep.Name) == "" {
 			missing = append(missing, ep.Name)
 			continue
 		}
+		matches, resolveErr := s.ResolveProjectRef(ep.Name)
+		if resolveErr != nil {
+			missing = append(missing, ep.Name)
+			continue
+		}
+		if len(matches) > 1 {
+			matchIDs := make([]string, len(matches))
+			for i, m := range matches {
+				matchIDs[i] = m.ID
+			}
+			return nil, nil, &StatusError{
+				Code: http.StatusConflict,
+				Message: fmt.Sprintf(
+					"project name %q is ambiguous: it matches %d registered projects (%s) — apply refused to avoid detaching the wrong one(s); give these projects distinct project.yaml name: values, or drop spec.projects from this document and manage the assignment via `boid project assign` directly",
+					ep.Name, len(matches), strings.Join(matchIDs, ", "),
+				),
+			}
+		}
 		ids[ep.Name] = matches[0].ID
 	}
-	return ids, missing
+	return ids, missing, nil
 }
 
 // ExportWorkspaceEnvelopes returns one or more boid.dev/v1 Workspace yaml
@@ -842,24 +883,46 @@ func (s *ProjectAppService) ExportWorkspaceEnvelopes(slugs []string) ([]byte, er
 		return nil, &StatusError{Code: http.StatusInternalServerError, Message: err.Error()}
 	}
 
+	// PR-1d codex round-2 Blocker 2 (export-side half): detect a
+	// project.yaml name shared by two or more registered projects BEFORE
+	// emitting a spec.projects[] entry a later `apply` could not
+	// unambiguously resolve back — see resolveWorkspaceApplyProjectNames's
+	// own ambiguity refusal, which this keeps in lockstep with by using the
+	// exact same ListProjects+Meta-hydration path (not the DB
+	// transaction's project rows — a name lives in the in-memory
+	// ProjectMeta cache, not a DB column).
+	duplicateNames, err := s.projectNameCollisions()
+	if err != nil {
+		return nil, err
+	}
+
 	docs := make([][]byte, 0, len(snapshots))
 	for _, snap := range snapshots {
 		envProjects := make([]orchestrator.WorkspaceEnvelopeProject, 0, len(snap.ProjectIDs))
 		for _, id := range snap.ProjectIDs {
-			p, err := s.Projects.GetProject(id)
-			if err != nil {
-				// A project row vanished between the atomic snapshot read
-				// and this lookup (e.g. a concurrent delete) — skip it
-				// rather than failing the whole export. It is no longer
-				// assigned to anything meaningful to export, and the
-				// snapshot's own consistency guarantee (Blocker 3) only
-				// covers workspace assignment, not a project's continued
-				// existence a moment later.
-				continue
+			// Blocker 3: p comes from the SAME transaction snap.ProjectIDs
+			// did (WorkspaceExportSnapshot.Projects's own doc comment) —
+			// the round-1 version instead re-queried each id with a
+			// separate, post-transaction GetProject call and silently
+			// `continue`d past any error, which could drop an assignment
+			// from an otherwise-"consistent" snapshot (e.g. a concurrent
+			// delete landing in that window). A missing entry here would
+			// mean that guarantee itself broke, so fail loudly rather than
+			// silently omit.
+			p, ok := snap.Projects[id]
+			if !ok || p == nil {
+				return nil, &StatusError{Code: http.StatusInternalServerError, Message: fmt.Sprintf("workspace %q: project %q is assigned but missing from the export snapshot (data inconsistency)", snap.Slug, id)}
 			}
 			hydrated := s.hydrateProject(p)
+			name := workspaceEnvelopeProjectExportName(hydrated)
+			if collidingIDs, dup := duplicateNames[name]; dup {
+				return nil, &StatusError{Code: http.StatusConflict, Message: fmt.Sprintf(
+					"workspace %q: project name %q is ambiguous across %d registered projects (%s) — export refused because a later `apply` could not unambiguously resolve it back; give these projects distinct project.yaml name: values",
+					snap.Slug, name, len(collidingIDs), strings.Join(collidingIDs, ", "),
+				)}
+			}
 			envProjects = append(envProjects, orchestrator.WorkspaceEnvelopeProject{
-				Name: workspaceEnvelopeProjectExportName(hydrated),
+				Name: name,
 				URL:  hydrated.UpstreamURL,
 			})
 		}
@@ -871,6 +934,34 @@ func (s *ProjectAppService) ExportWorkspaceEnvelopes(slugs []string) ([]byte, er
 		docs = append(docs, data)
 	}
 	return bytes.Join(docs, []byte("---\n")), nil
+}
+
+// projectNameCollisions returns, for every project.yaml name shared by two
+// or more registered projects, the colliding project IDs — read through the
+// exact same ProjectRepository.ListProjects + Meta hydration path
+// ResolveProjectRef and resolveWorkspaceApplyProjectNames use, so export's
+// notion of "is this name ambiguous" agrees with apply's (PR-1d codex
+// round-2 Blocker 2, export-side detection).
+func (s *ProjectAppService) projectNameCollisions() (map[string][]string, error) {
+	projects, err := s.Projects.ListProjects()
+	if err != nil {
+		return nil, &StatusError{Code: http.StatusInternalServerError, Message: err.Error()}
+	}
+	byName := map[string][]string{}
+	for _, p := range projects {
+		s.hydrateProject(p)
+		if p.Meta.Name == "" {
+			continue
+		}
+		byName[p.Meta.Name] = append(byName[p.Meta.Name], p.ID)
+	}
+	dup := map[string][]string{}
+	for name, ids := range byName {
+		if len(ids) > 1 {
+			dup[name] = ids
+		}
+	}
+	return dup, nil
 }
 
 // workspaceEnvelopeProjectExportName picks the spec.projects[].name value
