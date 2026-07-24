@@ -1,11 +1,17 @@
 package dispatcher
 
 import (
+	"bufio"
+	"context"
 	"fmt"
+	"net"
+	"net/http"
 	"os"
 	"testing"
+	"time"
 
 	"github.com/novshi-tech/boid/internal/orchestrator"
+	"github.com/novshi-tech/boid/internal/sandbox"
 )
 
 type fakeProjectLookup struct {
@@ -104,9 +110,9 @@ func (f fakeWorkspaceLookup) Load(slug string) (*orchestrator.WorkspaceMeta, err
 // port (or a forced error). Used to verify Dispatch wires the
 // resolveAllowedDomains result into ProxyManager.GetOrCreate verbatim.
 type fakeProxyAllocator struct {
-	calls   []fakeProxyAllocCall
-	ports   map[string]int    // workspaceID → port to return
-	errs    map[string]error  // workspaceID → error to return
+	calls []fakeProxyAllocCall
+	ports map[string]int   // workspaceID → port to return
+	errs  map[string]error // workspaceID → error to return
 }
 
 type fakeProxyAllocCall struct {
@@ -227,25 +233,153 @@ func TestResolveWorkspaceProxy_AllocatorUnwired_StaysOnFloor(t *testing.T) {
 	}
 }
 
-func TestResolveWorkspaceProxy_EmptyWorkspaceID_StaysOnFloor(t *testing.T) {
+// TestResolveWorkspaceProxy_EmptyWorkspaceID_NeverTouchesAllocator pins the
+// PR #830 round-4 simplification (nose directive): a no-workspace dispatch
+// must never call ProxyAllocator.GetOrCreate at all. The no-workspace
+// listener is now bound ONCE at daemon startup (internal/server's
+// Server.Start, keyed by NoWorkspaceProxyKey) and its port captured into
+// Runner.NoWorkspaceProxyPort — not re-resolved per dispatch, since
+// sandbox.allowed_domains is ReloadRestartRequired now (nothing to refresh
+// mid-process; see ReloadDynamic's own doc comment, internal/config/
+// schema.go). This structurally closes round-4 blocker 1 (a runtime
+// allocation-error fallback path that could return the widened default
+// listener): there is no runtime allocation call here left to fail.
+func TestResolveWorkspaceProxy_EmptyWorkspaceID_NeverTouchesAllocator(t *testing.T) {
 	floor := []string{"pypi.org"}
-	defaultPort := 8000
+	noWSPort := 9200
 	alloc := &fakeProxyAllocator{}
 	r := &Runner{
-		AllowedDomains: floor,
-		ProxyPort:      &defaultPort,
-		ProxyAllocator: alloc,
+		AllowedDomains:       floor,
+		ProxyAllocator:       alloc,
+		NoWorkspaceProxyPort: &noWSPort,
 	}
+
 	allowed, port := r.resolveWorkspaceProxy("")
-	if port != defaultPort {
-		t.Errorf("port = %d, want %d", port, defaultPort)
+	if port != noWSPort {
+		t.Errorf("port = %d, want the captured NoWorkspaceProxyPort %d", port, noWSPort)
 	}
 	if !equalSlice(allowed, floor) {
 		t.Errorf("allowed = %v, want %v", allowed, floor)
 	}
 	if len(alloc.calls) != 0 {
-		t.Errorf("alloc should not be called for empty workspaceID, got %v", alloc.calls)
+		t.Errorf("alloc.calls = %v, want none — resolveWorkspaceProxy(\"\") must never call the allocator", alloc.calls)
 	}
+}
+
+// TestResolveWorkspaceProxy_EmptyWorkspaceID_UnwiredNoWorkspacePort_NeverFallsBackToDefault
+// pins the flip side: an unwired NoWorkspaceProxyPort (test wiring, or a
+// daemon build that never called Server.Start) must return port 0, NEVER
+// r.ProxyPort's value. Falling back to the real default-slug workspace's
+// own (editable, live-widening) listener is exactly the isolation leak
+// NoWorkspaceProxyKey's distinctness exists to prevent (BLOCKER, codex
+// review round 3) — a port-0 dispatch failing loudly is safer than a silent
+// aliasing regression.
+func TestResolveWorkspaceProxy_EmptyWorkspaceID_UnwiredNoWorkspacePort_NeverFallsBackToDefault(t *testing.T) {
+	floor := []string{"pypi.org"}
+	defaultPort := 8000
+	r := &Runner{
+		AllowedDomains: floor,
+		ProxyPort:      &defaultPort,
+		// NoWorkspaceProxyPort deliberately left nil.
+	}
+	_, port := r.resolveWorkspaceProxy("")
+	if port != 0 {
+		t.Errorf("port = %d, want 0 (must never silently fall back to ProxyPort=%d, the default workspace's own listener)", port, defaultPort)
+	}
+}
+
+// TestResolveWorkspaceProxy_EmptyWorkspaceAndDefaultWorkspace_DistinctListeners
+// is the BLOCKER regression test (codex review round 3): it exercises the
+// REAL sandbox.ProxyManager (not the fake) because the bug is specifically
+// about a shared, mutable *sandbox.Proxy instance — a fake keyed by a plain
+// map cannot reproduce the aliasing the pre-fix code exhibited when both
+// call sites passed orchestrator.DefaultWorkspaceSlug.
+//
+// Scenario: a no-workspace job (`boid exec`) dispatches first, floor-only.
+// Then a REAL "default"-slug workspace — which does have its own
+// workspace.yaml AllowedDomains — dispatches with an extra domain. The two
+// must land on distinct listeners: the default-workspace dispatch must not
+// widen the no-workspace listener, and the no-workspace job must never gain
+// the default workspace's own domain.
+func TestResolveWorkspaceProxy_EmptyWorkspaceAndDefaultWorkspace_DistinctListeners(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	mgr := sandbox.NewProxyManager()
+	mgr.Start(ctx)
+	defer mgr.StopAll()
+
+	floor := []string{"pypi.org"}
+
+	// Mirrors what internal/server's Server.Start does once at daemon
+	// startup: bind the no-workspace listener under NoWorkspaceProxyKey and
+	// capture its port. resolveWorkspaceProxy("") below must never call the
+	// allocator itself (PR #830 round-4 simplification, nose directive).
+	noWSPort, err := mgr.GetOrCreate(NoWorkspaceProxyKey, floor)
+	if err != nil {
+		t.Fatalf("seed no-workspace listener: %v", err)
+	}
+
+	r := &Runner{
+		AllowedDomains:       floor,
+		ProxyAllocator:       mgr,
+		NoWorkspaceProxyPort: &noWSPort,
+		Workspaces: fakeWorkspaceLookup{metas: map[string]*orchestrator.WorkspaceMeta{
+			orchestrator.DefaultWorkspaceSlug: {AllowedDomains: []string{"evil.example.com"}},
+		}},
+	}
+
+	noWSAllowed, gotNoWSPort := r.resolveWorkspaceProxy("")
+	if !equalSlice(noWSAllowed, floor) {
+		t.Fatalf("no-workspace allowed = %v, want floor only %v", noWSAllowed, floor)
+	}
+	if gotNoWSPort != noWSPort {
+		t.Fatalf("no-workspace port = %d, want the captured startup port %d", gotNoWSPort, noWSPort)
+	}
+
+	defaultAllowed, defaultPort := r.resolveWorkspaceProxy(orchestrator.DefaultWorkspaceSlug)
+	wantDefault := []string{"pypi.org", "evil.example.com"}
+	if !equalSlice(defaultAllowed, wantDefault) {
+		t.Fatalf("default-workspace allowed = %v, want %v", defaultAllowed, wantDefault)
+	}
+
+	if gotNoWSPort == defaultPort {
+		t.Fatalf("no-workspace and default-workspace share port %d; want distinct listeners", gotNoWSPort)
+	}
+
+	// The no-workspace listener must remain floor-only after the
+	// default-workspace dispatch widened ITS OWN listener.
+	if got := quickConnectStatus(t, gotNoWSPort, "evil.example.com:443"); got != http.StatusForbidden {
+		t.Errorf("no-workspace listener allowed evil.example.com after an unrelated default-workspace dispatch widened its own listener: status = %d, want 403", got)
+	}
+
+	// And the reverse: the default workspace's own listener does grant what
+	// its own workspace.yaml resolved to.
+	if got := quickConnectStatus(t, defaultPort, "evil.example.com:443"); got != http.StatusBadGateway && got != http.StatusOK {
+		t.Errorf("default-workspace listener blocked its own allowed domain: status = %d, want 200 or 502", got)
+	}
+}
+
+// quickConnectStatus dials 127.0.0.1:port, sends a CONNECT for host, and
+// returns the response status code. Mirrors internal/sandbox's
+// (unexported-to-this-package) proxy_manager_test.go helper of the same
+// shape, duplicated here because that one lives in package sandbox_test.
+func quickConnectStatus(t *testing.T, port int, host string) int {
+	t.Helper()
+	conn, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", port), 2*time.Second)
+	if err != nil {
+		t.Fatalf("dial proxy: %v", err)
+	}
+	defer conn.Close()
+	conn.SetDeadline(time.Now().Add(5 * time.Second))
+	req := fmt.Sprintf("CONNECT %s HTTP/1.1\r\nHost: %s\r\n\r\n", host, host)
+	if _, err := conn.Write([]byte(req)); err != nil {
+		t.Fatalf("write CONNECT: %v", err)
+	}
+	resp, err := http.ReadResponse(bufio.NewReader(conn), nil)
+	if err != nil {
+		t.Fatalf("read response: %v", err)
+	}
+	return resp.StatusCode
 }
 
 func equalSlice(a, b []string) bool {

@@ -28,13 +28,24 @@ type WireConfig struct {
 	// jobs that talk to boid over HTTP from inside the sandbox).
 	ServerSocket string
 	// ProxyPort points at the default-workspace proxy port. Used as the
-	// fallback when ProxyAllocator is not wired (or fails). Sandboxes
-	// linked to a workspace get a per-workspace port via ProxyAllocator.
+	// fallback when ProxyAllocator is not wired (or fails) for a NAMED
+	// workspace's dispatch. Sandboxes linked to a workspace get a
+	// per-workspace port via ProxyAllocator.
 	ProxyPort *int
+	// NoWorkspaceProxyPort points at the dedicated no-workspace proxy port
+	// — see Runner.NoWorkspaceProxyPort's own doc comment. Deliberately
+	// separate from ProxyPort: resolveWorkspaceProxy's empty-workspaceID
+	// path must never be able to fall back to the real default workspace's
+	// own (editable) listener.
+	NoWorkspaceProxyPort *int
 	// AllowedDomains is the daemon-wide proxy egress allowlist floor
-	// (config.yaml sandbox.allowed_domains + boid built-in defaults).
-	// Workspaces add entries on top via workspace.yaml; they cannot remove
-	// floor entries (orchestrator.ResolveAllowedDomains enforces this).
+	// (config.yaml sandbox.allowed_domains + boid built-in defaults),
+	// captured once when Wire builds the Runner — see Runner.AllowedDomains's
+	// own doc comment for why this is a plain []string, not a getter
+	// (sandbox.allowed_domains is ReloadRestartRequired: PR #830 round-4
+	// simplification, nose directive). Workspaces add entries on top via
+	// workspace.yaml; they cannot remove floor entries
+	// (orchestrator.ResolveAllowedDomains enforces this).
 	AllowedDomains []string
 	// Workspaces is the WorkspaceLookup used at dispatch time to discover
 	// each workspace's AllowedDomains overrides. nil disables workspace
@@ -70,22 +81,23 @@ type WireConfig struct {
 
 func Wire(cfg WireConfig) *Runner {
 	return &Runner{
-		DB:             cfg.DB,
-		Runtime:        cfg.Runtime,
-		Broker:         cfg.Broker,
-		Sandbox:        cfg.Sandbox,
-		SecretStore:    cfg.SecretStore,
-		Projects:       cfg.Projects,
-		Hydrator:       cfg.Hydrator,
-		Workspaces:     cfg.Workspaces,
-		ProxyAllocator: cfg.ProxyAllocator,
-		BoidBinary:     cfg.BoidBinary,
-		ServerSocket:   cfg.ServerSocket,
-		ProxyPort:      cfg.ProxyPort,
-		AllowedDomains: cfg.AllowedDomains,
-		RuntimesDir:    cfg.RuntimesDir,
-		GitGateway:     cfg.GitGateway,
-		GatewayURL:     cfg.GatewayURL,
-		GatewayCAPEM:   cfg.GatewayCAPEM,
+		DB:                   cfg.DB,
+		Runtime:              cfg.Runtime,
+		Broker:               cfg.Broker,
+		Sandbox:              cfg.Sandbox,
+		SecretStore:          cfg.SecretStore,
+		Projects:             cfg.Projects,
+		Hydrator:             cfg.Hydrator,
+		Workspaces:           cfg.Workspaces,
+		ProxyAllocator:       cfg.ProxyAllocator,
+		BoidBinary:           cfg.BoidBinary,
+		ServerSocket:         cfg.ServerSocket,
+		ProxyPort:            cfg.ProxyPort,
+		NoWorkspaceProxyPort: cfg.NoWorkspaceProxyPort,
+		AllowedDomains:       cfg.AllowedDomains,
+		RuntimesDir:          cfg.RuntimesDir,
+		GitGateway:           cfg.GitGateway,
+		GatewayURL:           cfg.GatewayURL,
+		GatewayCAPEM:         cfg.GatewayCAPEM,
 	}
 }

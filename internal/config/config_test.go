@@ -22,6 +22,20 @@ func captureSlog(t *testing.T) *bytes.Buffer {
 	return &buf
 }
 
+func TestDefaultPath_MatchesLoad(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	path, err := DefaultPath()
+	if err != nil {
+		t.Fatalf("DefaultPath: %v", err)
+	}
+	if filepath.Base(path) != "config.yaml" {
+		t.Errorf("DefaultPath = %q, want a config.yaml path", path)
+	}
+	if filepath.Base(filepath.Dir(path)) != "boid" {
+		t.Errorf("DefaultPath = %q, want .../boid/config.yaml", path)
+	}
+}
+
 func TestLoadFromPath_FileNotExist_ReturnsDefaults(t *testing.T) {
 	cfg, err := loadFromPath(filepath.Join(t.TempDir(), "nonexistent.yaml"))
 	if err != nil {

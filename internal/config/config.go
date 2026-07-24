@@ -213,6 +213,46 @@ type WebConfig struct {
 	HTTPAddr  string `yaml:"http_addr"`
 }
 
+// DefaultAllowedDomains returns boid's built-in sandbox.allowed_domains
+// floor — the domains every daemon allows regardless of what config.yaml
+// says (common AI-agent/package-registry endpoints). Exported (moved here
+// from cmd/start.go, which now delegates to it) so internal/server's
+// config-hot-reload path (config_edit.go's applyDynamicConfigLocked) can
+// recompute "floor ∪ user list" on every sandbox.allowed_domains change
+// without internal/server needing to import cmd (which would cycle) or
+// duplicate this literal (BLOCKER 2 sibling fix, codex review round 1: the
+// pre-fix hot-reload replaced the whole effective list with the sparse
+// YAML-only entries, silently dropping every built-in domain the very next
+// time an operator touched sandbox.allowed_domains at all).
+//
+// A fresh copy is returned on every call — callers may freely mutate/append
+// to the result.
+func DefaultAllowedDomains() []string {
+	return []string{
+		// AI agents
+		".anthropic.com",
+		".claude.ai",
+		".claude.com",
+		"api.openai.com",
+		"auth.openai.com",
+		"chatgpt.com",
+		".models.dev", // opencode model metadata registry
+		// Go
+		"proxy.golang.org",
+		"sum.golang.org",
+		// Node
+		"registry.npmjs.org",
+		// .NET
+		"api.nuget.org",
+		// Python
+		"pypi.org",
+		"files.pythonhosted.org",
+		// Docker
+		".docker.io",
+		"auth.docker.io",
+	}
+}
+
 // DefaultConfig returns the default boid configuration.
 func DefaultConfig() *Config {
 	return &Config{
@@ -239,14 +279,29 @@ func DefaultConfig() *Config {
 	}
 }
 
+// DefaultPath resolves the default XDG config.yaml path
+// (~/.config/boid/config.yaml) without reading it. Exported so callers that
+// need the *path* itself — not just its parsed content — have one place to
+// ask (internal/server's daemon-side config-editing wiring, docs/plans/
+// volume-only-daemon.md §論点 f: `boid config get/set/unset/apply/edit`
+// reads-modifies-writes this exact file) instead of re-deriving
+// os.UserConfigDir()+"boid/config.yaml" independently and risking drift
+// from what Load() itself actually reads.
+func DefaultPath() (string, error) {
+	configDir, err := os.UserConfigDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(configDir, "boid", "config.yaml"), nil
+}
+
 // Load reads the configuration from the default XDG path (~/.config/boid/config.yaml).
 // If the file does not exist, the default configuration is returned without error.
 func Load() (*Config, error) {
-	configDir, err := os.UserConfigDir()
+	path, err := DefaultPath()
 	if err != nil {
 		return DefaultConfig(), nil
 	}
-	path := filepath.Join(configDir, "boid", "config.yaml")
 	return loadFromPath(path)
 }
 

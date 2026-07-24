@@ -845,6 +845,51 @@ func (c *Client) GetRawWithAccept(path, accept string) (statusCode int, body []b
 	return resp.StatusCode, data, nil
 }
 
+// GetRawWithAcceptAndRevision performs a GET request with a custom Accept
+// header, returning the raw response body/status alongside the response's
+// ETag header value VERBATIM, quotes included (Minor 2, codex review round
+// 1; fixed round 2 — see below) — used by `boid config get`/`apply -f`/
+// `edit` (cmd/config.go) to capture the daemon's current config.yaml
+// revision for a later POST's If-Match. config.yaml's GET response body is
+// raw YAML, not JSON, so unlike `boid workspace edit` (which reads
+// api.WorkspaceDetail.Revision straight out of a JSON body via Do), there is
+// no JSON field to carry the revision — the ETag response header is the
+// only place it exists on the wire.
+//
+// Pre-fix (round 1) this stripped the surrounding quotes here, so every
+// subsequent If-Match this value was round-tripped into
+// (PostRawWithIfMatch/PutRawWithIfMatch below, which just
+// req.Header.Set("If-Match", ifMatch) verbatim) sent a bare, unquoted token
+// — valid enough for this daemon's own unquoteETag-on-receipt tolerance
+// (internal/api/workspace.go), but not standard entity-tag syntax
+// (RFC 7232 §2.3: an entity-tag is always DQUOTE ... DQUOTE, optionally
+// W/-prefixed), which a strict intermediary on a remote deployment could
+// reject outright. Returning the header untouched and letting the server's
+// existing unquoteETag do the unwrapping keeps the wire format standard end
+// to end while changing nothing about how ifMatch is used client-side (it
+// stays an opaque string, never parsed here).
+func (c *Client) GetRawWithAcceptAndRevision(path, accept string) (statusCode int, body []byte, revision string, err error) {
+	req, err := http.NewRequest("GET", c.baseURL+path, nil)
+	if err != nil {
+		return 0, nil, "", fmt.Errorf("create request: %w", err)
+	}
+	if accept != "" {
+		req.Header.Set("Accept", accept)
+	}
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return 0, nil, "", fmt.Errorf("request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return resp.StatusCode, nil, "", fmt.Errorf("read body: %w", err)
+	}
+	return resp.StatusCode, data, resp.Header.Get("ETag"), nil
+}
+
 // PostRaw performs a POST request with a custom Content-Type and raw body,
 // returning the raw response status code and body regardless of status
 // (mirrors PutRawWithIfMatch's rationale) — used by `boid workspace import`
@@ -881,6 +926,36 @@ func (c *Client) PostRaw(path, contentType string, body []byte) (statusCode int,
 // (success) instead of losing that distinction to a single error string.
 func (c *Client) PutRawWithIfMatch(path, contentType string, body []byte, ifMatch string) (statusCode int, respBody []byte, err error) {
 	req, err := http.NewRequest(http.MethodPut, c.baseURL+path, bytes.NewReader(body))
+	if err != nil {
+		return 0, nil, fmt.Errorf("create request: %w", err)
+	}
+	req.Header.Set("Content-Type", contentType)
+	if ifMatch != "" {
+		req.Header.Set("If-Match", ifMatch)
+	}
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return 0, nil, fmt.Errorf("request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return resp.StatusCode, nil, fmt.Errorf("read body: %w", err)
+	}
+	return resp.StatusCode, data, nil
+}
+
+// PostRawWithIfMatch performs a POST request with a custom Content-Type and
+// (optional) If-Match header, returning the raw response status code and
+// body regardless of status — the POST counterpart of PutRawWithIfMatch,
+// used by `boid config apply -f`/`edit` (BLOCKER 1, codex review round 1)
+// so the CLI can distinguish 412 (stale revision) from 428 (missing
+// If-Match) from 200 (success) instead of losing that distinction to a
+// single error string.
+func (c *Client) PostRawWithIfMatch(path, contentType string, body []byte, ifMatch string) (statusCode int, respBody []byte, err error) {
+	req, err := http.NewRequest(http.MethodPost, c.baseURL+path, bytes.NewReader(body))
 	if err != nil {
 		return 0, nil, fmt.Errorf("create request: %w", err)
 	}

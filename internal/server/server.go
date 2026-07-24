@@ -15,12 +15,14 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/novshi-tech/boid/internal/api"
+	"github.com/novshi-tech/boid/internal/config"
 	"github.com/novshi-tech/boid/internal/db"
 	"github.com/novshi-tech/boid/internal/db/migrate"
 	"github.com/novshi-tech/boid/internal/dispatcher"
 	"github.com/novshi-tech/boid/internal/gitgateway"
 	"github.com/novshi-tech/boid/internal/install"
 	"github.com/novshi-tech/boid/internal/mtls"
+	"github.com/novshi-tech/boid/internal/notify"
 	"github.com/novshi-tech/boid/internal/orchestrator"
 	"github.com/novshi-tech/boid/internal/sandbox"
 	"github.com/novshi-tech/boid/internal/skills"
@@ -80,9 +82,9 @@ type Config struct {
 	DBPath         string
 	SocketPath     string
 	HTTPAddr       string
-	KitsDir        string   // base dir for installed kit repos
-	KeyFilePath    string   // path to secret encryption key file
-	AllowedDomains []string // proxy allowed domains
+	KitsDir        string                // base dir for installed kit repos
+	KeyFilePath    string                // path to secret encryption key file
+	AllowedDomains []string              // proxy allowed domains
 	JobRuntime     dispatcher.JobRuntime //nolint:staticcheck // SA1019: JobRuntime's Deprecated marker (Phase 6 PR9 skeleton) flags its own type, not a call to remove now — usernsBackend (this field's only production use) is still the default backend; actual retirement is a follow-up PR (docs/plans/phase6-cutover-followups.md).
 	// TLSDir, when non-empty, is the directory holding (or to generate)
 	// the per-daemon internal CA (ca.crt/ca.key) used to secure the
@@ -118,10 +120,17 @@ type Server struct {
 	secretStore  *dispatcher.SecretStore
 	proxyManager *sandbox.ProxyManager
 	proxyPort    int // port of the default-workspace listener (back-compat /api/proxy surface)
-	router       chi.Router
-	unixLn      net.Listener
-	tcpLn       net.Listener
-	httpServer  *http.Server
+	// noWorkspaceProxyPort is the port of the dedicated egress proxy
+	// listener bound at Start (keyed by dispatcher.NoWorkspaceProxyKey) for
+	// jobs with no workspace at all — see Runner.NoWorkspaceProxyPort's own
+	// doc comment. Same late-binding-via-pointer pattern as proxyPort;
+	// deliberately a separate field so it can never be confused with (or
+	// fall back to) proxyPort's own, editable-default-workspace value.
+	noWorkspaceProxyPort int
+	router               chi.Router
+	unixLn               net.Listener
+	tcpLn                net.Listener
+	httpServer           *http.Server
 	// tcpHandler wraps the router with transport-aware API auth and is served
 	// to the TCP listener only. The UNIX socket is served the bare router
 	// (trusted CLI/agent transport). Set by mountRoutes.
@@ -250,6 +259,38 @@ type Server struct {
 	usingContainerBackend bool
 
 	mu sync.Mutex
+
+	// configMu serializes read-modify-write config.yaml mutations
+	// (docs/plans/volume-only-daemon.md §論点 f, concurrency decision:
+	// "set and apply should be serialized... two concurrent sets must not
+	// interleave and produce a torn config"). Deliberately a separate lock
+	// from mu (hostCommands' own lock) — config-apply's validate+write+
+	// hot-apply critical section can run long enough (disk I/O) that
+	// sharing mu would add unrelated contention against hostCommands
+	// reads. See internal/server/config_edit.go for every method that
+	// takes it.
+	configMu sync.Mutex
+	// liveConfig is the daemon's current effective *config.Config,
+	// populated once by buildRuntime (wire.go) and swapped, under
+	// configMu, by ApplyConfigYAML on every successful apply. nil only
+	// before buildRuntime runs — every production and test path (New())
+	// populates it before mountRoutes ever exposes GET/POST /api/config.
+	liveConfig *config.Config
+	// configPath is the on-disk config.yaml path ApplyConfigYAML persists
+	// to — config.DefaultPath(), the exact path config.Load() itself
+	// reads, set once by buildRuntime. A daemon restart therefore always
+	// reads back exactly what the live daemon's last successful apply
+	// wrote.
+	configPath string
+	// notifySvc is the same *notify.Service instance wire.go wires into
+	// TaskAppService.Notify and the git gateway's notifier, stored here
+	// too so ApplyConfigYAML can hot-swap its Command/PublicURL live
+	// (notify.command/web.public_url are both "dynamic" reload-class
+	// keys per docs/plans/volume-only-daemon.md §論点 f). nil in any test
+	// that builds a *Server without going through buildRuntime's notifySvc
+	// wiring — ApplyConfigYAML treats that as "no live notify service to
+	// update", not an error.
+	notifySvc *notify.Service
 }
 
 func New(cfg Config) (*Server, error) {
@@ -598,6 +639,23 @@ func (s *Server) Start(ctx context.Context) error {
 		}
 		s.proxyPort = port
 		slog.Info("proxy started", "port", port, "workspace", orchestrator.DefaultWorkspaceSlug)
+
+		// Dedicated listener for jobs with no workspace at all (`boid exec` /
+		// ProfileInit against an unlinked project) — bound once here, under
+		// dispatcher.NoWorkspaceProxyKey, a key DISTINCT from
+		// orchestrator.DefaultWorkspaceSlug (BLOCKER, codex review round 3:
+		// see Runner.NoWorkspaceProxyPort's own doc comment for the aliasing
+		// bug this distinctness prevents). PR #830 round-4 simplification
+		// (nose directive): bound once, never refreshed per-dispatch —
+		// sandbox.allowed_domains is ReloadRestartRequired now, so a
+		// restart is exactly what's needed to pick up a changed floor here
+		// too, same as the default listener above.
+		noWSPort, err := s.proxyManager.GetOrCreate(dispatcher.NoWorkspaceProxyKey, s.cfg.AllowedDomains)
+		if err != nil {
+			return fmt.Errorf("start no-workspace proxy: %w", err)
+		}
+		s.noWorkspaceProxyPort = noWSPort
+		slog.Info("proxy started", "port", noWSPort, "workspace", "<no-workspace>")
 	}
 
 	// git gateway: bind its listener before the UNIX/TCP listeners below so

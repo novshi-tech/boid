@@ -501,6 +501,17 @@ config の key ごとに **dynamic reload 可能 vs restart-required** を分類
 ```
 を出す。 dynamic は silent に reload (info log は出す)。
 
+**撤回 (PR #830 round 4、 nose 判断)**: 上の dynamic 分類 (`sandbox.allowed_domains` /
+`notify.command` / `web.public_url`) は実装 PR (#830) の codex レビューで 4 round
+かけてもブロッカーが収束せず (round 1-3 で計 6 blocker、 round 4 でも新規 blocker 2 件)、
+最終的に `Server.Stop` と in-flight dispatch の間のデッドロックまで作り込んだため、
+このホットリロード機構 (`Runner.AllowedDomains` の `func() []string` 化、
+`Server.AllowedDomains()`、 no-workspace proxy listener の毎 dispatch 再取得) は全撤回。
+上記 3 key も含め **全 key を restart-required に統一**した (`internal/config/schema.go`
+の `ReloadDynamic` は enum として残すが、 今使う Schema エントリは無い)。 `default_harness`
+は元々 Phase 2.5 PR7 で config から撤去済みでこの表に載る対象ではない (schema.go 冒頭コメント
+参照)。 詳細は docs/ja/reference/config-yaml.md の `boid config` 節。
+
 ### 実装
 
 - daemon 内部で config の source of truth は「volume 内 config.yaml」

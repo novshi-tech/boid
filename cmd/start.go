@@ -68,30 +68,13 @@ func init() {
 	rootCmd.AddCommand(startCmd)
 }
 
+// defaultAllowedDomains delegates to config.DefaultAllowedDomains — the
+// literal itself moved there (BLOCKER 2 sibling fix, codex review round 1)
+// so internal/server's config-hot-reload path can recompute the same floor
+// without importing cmd. Kept here as a thin wrapper so buildStartConfig's
+// call site below (and cmd/start_test.go) need no further change.
 func defaultAllowedDomains() []string {
-	return []string{
-		// AI agents
-		".anthropic.com",
-		".claude.ai",
-		".claude.com",
-		"api.openai.com",
-		"auth.openai.com",
-		"chatgpt.com",
-		".models.dev", // opencode model metadata registry
-		// Go
-		"proxy.golang.org",
-		"sum.golang.org",
-		// Node
-		"registry.npmjs.org",
-		// .NET
-		"api.nuget.org",
-		// Python
-		"pypi.org",
-		"files.pythonhosted.org",
-		// Docker
-		".docker.io",
-		"auth.docker.io",
-	}
+	return config.DefaultAllowedDomains()
 }
 
 func defaultDBPath() string {

@@ -700,18 +700,28 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 	srv.gatewayRegistry = gitgateway.NewRegistry()
 
 	runner := dispatcher.Wire(dispatcher.WireConfig{
-		DB:             srv.db,
-		Runtime:        jobRuntime,
-		Broker:         broker,
-		Sandbox:        dispatcher.NewSandboxPreparer(),
-		SecretStore:    secretStore,
-		Projects:       projectCatalog,
-		Hydrator:       store, // workspace-aware hydration for peer meta.name (buildPeerAdvertise)
-		Workspaces:     wsLookup,
-		ProxyAllocator: srv.proxyManager,
-		BoidBinary:     boidBin,
-		ServerSocket:   cfg.SocketPath,
-		ProxyPort:      &srv.proxyPort,
+		DB:                   srv.db,
+		Runtime:              jobRuntime,
+		Broker:               broker,
+		Sandbox:              dispatcher.NewSandboxPreparer(),
+		SecretStore:          secretStore,
+		Projects:             projectCatalog,
+		Hydrator:             store, // workspace-aware hydration for peer meta.name (buildPeerAdvertise)
+		Workspaces:           wsLookup,
+		ProxyAllocator:       srv.proxyManager,
+		BoidBinary:           boidBin,
+		ServerSocket:         cfg.SocketPath,
+		ProxyPort:            &srv.proxyPort,
+		NoWorkspaceProxyPort: &srv.noWorkspaceProxyPort,
+		// AllowedDomains: captured once here, not a getter (PR #830 round-4
+		// simplification, nose directive — sandbox.allowed_domains is
+		// ReloadRestartRequired: see Runner.AllowedDomains's own doc
+		// comment, internal/dispatcher/runner.go, and ReloadDynamic's own
+		// doc comment, internal/config/schema.go). A later
+		// `boid config set sandbox.allowed_domains ...` persists to
+		// config.yaml immediately but only reaches this Runner on the next
+		// daemon restart, when buildRuntime runs again from the
+		// freshly-loaded config.
 		AllowedDomains: cfg.AllowedDomains,
 		RuntimesDir:    runtimesDirFor(cfg),
 		GitGateway:     srv.gatewayRegistry,
@@ -874,6 +884,50 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 	notifySvc := &notify.Service{
 		Command:   boidCfg.Notify.Command,
 		PublicURL: boidCfg.Web.PublicURL,
+	}
+
+	// Daemon-side config-editing surface (docs/plans/volume-only-daemon.md
+	// §論点 f: `boid config get/set/unset/apply/edit`). verifyRestartExtractorCoverage
+	// (BLOCKER, codex review round 3) runs FIRST, before srv.liveConfig or
+	// srv.configPath are set — i.e. before this surface can accept a single
+	// config mutation. Pre-fix, the equivalent exhaustiveness check lived
+	// only inside applyDynamicConfigLocked's own loop, which runs AFTER
+	// applyConfigYAMLLocked has already written the new document to disk
+	// and swapped s.liveConfig (see that function's own doc comment) — so
+	// an incomplete-coverage bug (a future ReloadRestartRequired schema leaf
+	// added without a matching restartFieldExtractors/
+	// restartFieldExtractorExemptions entry) would durably persist a config
+	// mutation and only THEN panic and fail the HTTP request that caused
+	// it, leaving config.yaml and the daemon's in-memory belief about it
+	// out of sync going into the next restart. Panicking here instead,
+	// before mountRoutes ever registers a route, converts "incomplete
+	// coverage" into "the daemon refuses to start" — no config mutation can
+	// ever reach applyConfigYAMLLocked while coverage is incomplete.
+	verifyRestartExtractorCoverage()
+
+	// srv.notifySvc is the SAME *notify.Service instance built above (and
+	// wired into TaskAppService.Notify / the git gateway's notifier below)
+	// — stored here so ApplyConfigYAML (internal/server/config_edit.go) can
+	// hot-swap its Command/PublicURL live when notify.command/web.public_url
+	// change. configPath resolution failing (os.UserConfigDir() erroring — the
+	// same condition config.Load() above already tolerated by falling
+	// back to DefaultConfig()) leaves srv.configPath empty; both
+	// ConfigYAML and ApplyConfigYAML (internal/server/config_edit.go)
+	// treat that as a hard error rather than guessing a path, so
+	// GET/POST /api/config (`boid config get/set/unset/apply/edit`) fail
+	// cleanly instead of reading/writing somewhere unexpected. Every other
+	// daemon feature is unaffected — os.UserConfigDir() failing at all is
+	// already an exotic (effectively Linux-only-with-no-$HOME) situation.
+	srv.liveConfig = boidCfg
+	srv.notifySvc = notifySvc
+	// No revision counter to seed here (BLOCKER, codex review round 2):
+	// GET /api/config's ETag is now derived from config.yaml's own bytes
+	// (internal/server/config_edit.go's computeRevision), computed fresh on
+	// every read — there is no in-process baseline to initialize.
+	if p, pathErr := config.DefaultPath(); pathErr == nil {
+		srv.configPath = p
+	} else {
+		slog.Warn("failed to resolve config.yaml path; POST /api/config (`boid config set/unset/apply/edit`) will be unavailable", "error", pathErr)
 	}
 
 	// git gateway HTTP handler (docs/plans/git-gateway-cutover.md PR4). Only
