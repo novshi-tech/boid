@@ -35,7 +35,7 @@ func TestBoidBuiltinExecutor_TaskEnvAndPayload_RealRunnerWiring(t *testing.T) {
 		DB:             d.Conn,
 		Sandbox:        &fakeSandboxPreparer{dir: t.TempDir()},
 		Runtime:        &fakeJobRuntime{},
-		AllowedDomains: []string{"github.com"},
+		AllowedDomains: func() []string { return []string{"github.com"} },
 	}
 
 	payload := json.RawMessage(`{"artifact":{"claude_code":{"sessions":["s1"]}}}`)

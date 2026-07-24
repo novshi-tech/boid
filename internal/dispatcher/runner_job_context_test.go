@@ -19,7 +19,7 @@ func TestDispatch_TracksJobContext_EnvAndPayload(t *testing.T) {
 	r, _ := newDispatchRunner(t)
 	r.Sandbox = newFakeSandboxPrep(t)
 	r.Runtime = newStatefulRuntime()
-	r.AllowedDomains = []string{"github.com", "example.com"}
+	r.AllowedDomains = func() []string { return []string{"github.com", "example.com"} }
 
 	payload := json.RawMessage(`{"artifact":{"report":"ok"}}`)
 	spec := &orchestrator.JobSpec{

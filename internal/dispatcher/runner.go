@@ -114,10 +114,29 @@ type Runner struct {
 	// error). Workspaces with no overrides reuse this port via the
 	// allocator's GetOrCreate("default", ...) entry.
 	ProxyPort *int
-	// AllowedDomains is the daemon-wide proxy egress allowlist (the floor
-	// from config.yaml sandbox.allowed_domains + boid defaults). Workspace
+	// AllowedDomains returns the daemon-wide proxy egress allowlist floor
+	// (built-in defaults ∪ config.yaml's sandbox.allowed_domains), read
+	// fresh on every dispatch via floorAllowedDomains(). Workspace
 	// overrides are added on top via orchestrator.ResolveAllowedDomains.
-	AllowedDomains []string
+	//
+	// A getter function, not a captured []string — the Runner is built
+	// once at daemon startup (internal/server/wire.go's buildRuntime), long
+	// before `boid config set sandbox.allowed_domains ...` can ever run
+	// again. A plain slice field would freeze at whatever value existed at
+	// construction time; a later ApplyConfigYAML hot-reload
+	// (internal/server/config_edit.go) swaps *its own* copy but this Runner
+	// would never see it, so the dispatch-time egress allowlist would
+	// silently drift from what `boid config get sandbox.allowed_domains`
+	// reports (BLOCKER 2, codex review round 1 — a security-boundary
+	// staleness bug: a domain the operator just removed stays reachable
+	// from every subsequent sandbox until a daemon restart, and a
+	// newly-added domain stays unreachable). wire.go wires this to
+	// (*server.Server).AllowedDomains — a method value that reads
+	// s.cfg.AllowedDomains fresh under s.mu on every call, the exact field
+	// applyDynamicConfigLocked swaps. nil is a valid, cheap-to-construct
+	// test default: floorAllowedDomains() treats it as "no floor" (the
+	// pre-fix zero-value slice's behavior, unchanged).
+	AllowedDomains func() []string
 	RuntimesDir    string
 	JobEvents      JobEventSink // optional; nil disables job lifecycle broadcasts
 
@@ -656,8 +675,9 @@ func (r *Runner) proxyPort() int {
 // default-workspace port (r.proxyPort()). Dispatch is never blocked on a
 // proxy-resolution problem.
 func (r *Runner) resolveWorkspaceProxy(workspaceID string) ([]string, int) {
+	floor := r.floorAllowedDomains()
 	if r.ProxyAllocator == nil || workspaceID == "" {
-		return r.AllowedDomains, r.proxyPort()
+		return floor, r.proxyPort()
 	}
 	var wsMeta *orchestrator.WorkspaceMeta
 	if r.Workspaces != nil {
@@ -671,14 +691,24 @@ func (r *Runner) resolveWorkspaceProxy(workspaceID string) ([]string, int) {
 			wsMeta = loaded
 		}
 	}
-	resolved := orchestrator.ResolveAllowedDomains(r.AllowedDomains, wsMeta)
+	resolved := orchestrator.ResolveAllowedDomains(floor, wsMeta)
 	port, err := r.ProxyAllocator.GetOrCreate(workspaceID, resolved)
 	if err != nil {
 		slog.Warn("workspace proxy listener allocation failed; falling back to default proxy",
 			"workspace_id", workspaceID, "error", err)
-		return r.AllowedDomains, r.proxyPort()
+		return floor, r.proxyPort()
 	}
 	return resolved, port
+}
+
+// floorAllowedDomains reads r.AllowedDomains fresh (see its own doc comment
+// for why a getter rather than a captured slice) — nil-safe for test wiring
+// that never sets the field.
+func (r *Runner) floorAllowedDomains() []string {
+	if r.AllowedDomains == nil {
+		return nil
+	}
+	return r.AllowedDomains()
 }
 
 // resolveContainerImage returns the workspace's Phase 6 container image

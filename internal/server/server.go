@@ -284,6 +284,25 @@ type Server struct {
 	// wiring — ApplyConfigYAML treats that as "no live notify service to
 	// update", not an error.
 	notifySvc *notify.Service
+	// configRevision is a monotonic, process-lifetime-scoped concurrency
+	// token for config.yaml (BLOCKER 1, codex review round 1: the
+	// ETag/If-Match convention `boid workspace edit` already established —
+	// internal/api/project_service.go's UpdateWorkspace,
+	// cmd/workspace.go's runWorkspaceEdit — extended to `boid config
+	// edit`/`apply -f`). Every successful ApplyConfigYAML/MutateConfig
+	// write bumps it under configMu (the same lock already serializing
+	// every config.yaml read-modify-write, so no separate lock is needed).
+	// GET /api/config exposes the current value as an ETag; POST
+	// /api/config's optional If-Match is checked against it before
+	// applying. Unlike workspace revisions (DB-row updated_at timestamps),
+	// config.yaml has no DB row of its own, so this is a plain in-process
+	// counter — it only needs to detect "did another write happen since my
+	// GET", not survive a daemon restart the way a DB-backed revision
+	// would (a restart already invalidates every other piece of ephemeral
+	// client-side CLI state). Starts at 1 once buildRuntime populates
+	// liveConfig; 0 is never a valid revision (only the pre-buildRuntime,
+	// defensive-only zero value of *Server).
+	configRevision uint64
 }
 
 func New(cfg Config) (*Server, error) {

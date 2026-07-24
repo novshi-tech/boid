@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"strings"
 
+	"github.com/novshi-tech/boid/internal/api"
 	"github.com/novshi-tech/boid/internal/client"
 	"github.com/novshi-tech/boid/internal/config"
 	"github.com/spf13/cobra"
@@ -18,7 +19,7 @@ import (
 // config.go implements `boid config get/set/unset/apply/edit`
 // (docs/plans/volume-only-daemon.md §論点 f, the CLI half — the Web UI's
 // /settings page is a separate PR). Every subcommand reaches the daemon's
-// config.yaml exclusively through GET/POST /api/config
+// config.yaml exclusively through the daemon's HTTP API
 // (internal/api/config.go) rather than editing a local file directly: once
 // the daemon runs in its own container with a named-volume config.yaml
 // (the whole point of this plan doc), this host cannot see that file at
@@ -28,27 +29,60 @@ import (
 // on THIS host directly and only ever worked because the CLI and daemon
 // happened to run on the same host with the same $XDG_CONFIG_HOME.
 //
-// `set`/`unset` both read-modify-write via a client-side round trip: GET
-// the current effective config, mutate a local copy with
-// internal/config's dotted-path Set/Unset (schema-validated locally, so an
-// unknown key or bad value is rejected before any daemon round trip), then
-// POST the whole document back. The daemon (internal/server/config_edit.go)
-// re-validates independently and is the sole authority on which changed
-// keys were actually reloaded live vs which need a restart — see
-// ConfigApplyResult.Warnings.
+// Two distinct daemon-side surfaces back this (BLOCKER 1, codex review
+// round 1 — the pre-fix client-side GET → mutate → POST round trip for
+// set/unset left a window where a second concurrent `set`'s POST could
+// silently discard a first `set`'s already-applied change, since configMu
+// only serialized the two POSTs, not the whole client-side transaction
+// around them):
+//
+//   - `set`/`unset` POST a single {op, key, value} operation to
+//     POST /api/config/mutate. The daemon performs the entire
+//     read-modify-write atomically under one lock — no client-visible
+//     intermediate state, so two concurrent calls on different keys can
+//     never interleave and lose one.
+//   - `apply -f`/`edit` still operate on the whole document (GET the
+//     current one, apply a local/edited replacement) — POST /api/config,
+//     gated by an ETag/If-Match revision check unless --force is passed
+//     (the same convention `boid workspace edit` already established, see
+//     runConfigApply/runConfigEdit's own doc comments). This protects a
+//     multi-line hand-edit from silently clobbering a change that landed
+//     mid-edit, which a plain "last write wins" POST could not.
+//
+// Scope note: this command edits config.yaml itself — including
+// gateway.forges.<forge>.secret_key, which is just a REFERENCE NAME into the
+// secret store. It does NOT edit the actual secret VALUE that name resolves
+// to at dispatch time (the token/PAT itself); that lives in the secret store
+// (`boid secret set <key> <value>`), separately from config.yaml.
+//
+// Limitation (MINOR 5, codex review round 1): a forge id containing a "."
+// (e.g. a custom `gateway.forges."github.corp"` entry) cannot be addressed
+// through the dotted-path get/set/unset commands below — the dotted-path
+// parser (internal/config/dotted.go) has no escaping syntax and always
+// splits on ".", so "gateway.forges.github.corp.host" is indistinguishable
+// from forge id "github", sub-key "corp", (extra segment) "host". Full-
+// document `boid config apply -f`/`edit` have no such ambiguity (the forge
+// id is a literal YAML map key) and are the supported way to manage a
+// dotted forge id. This is a deliberate, documented limitation, not a bug —
+// the dotted-path parser itself is intentionally left unchanged.
 var configCmd = &cobra.Command{
 	Use:   "config",
 	Short: "Inspect and edit the daemon's config.yaml",
 	Long: `boid config reads and writes the daemon's config.yaml through its
-HTTP API (GET/POST /api/config), not by editing a local file on this host —
-config.yaml lives with the daemon (a named volume once the volume-only
-cutover lands), which a local editor cannot reach directly.
+HTTP API, not by editing a local file on this host — config.yaml lives with
+the daemon (a named volume once the volume-only cutover lands), which a
+local editor cannot reach directly.
 
 Scope note: this command edits config.yaml itself — including
 gateway.forges.<forge>.secret_key, which is just a REFERENCE NAME into the
 secret store. It does NOT edit the actual secret VALUE that name resolves
 to at dispatch time (the token/PAT itself); that lives in the secret store
-(` + "`boid secret set <key> <value>`" + `), separately from config.yaml.`,
+(` + "`boid secret set <key> <value>`" + `), separately from config.yaml.
+
+Limitation: a forge id containing a "." (e.g. a custom "github.corp" entry)
+cannot be addressed via get/set/unset's dotted-path syntax — the dot is
+indistinguishable from a path separator. Use ` + "`boid config apply -f`" + `
+(or ` + "`edit`" + `) for those entries instead.`,
 }
 
 var configGetCmd = &cobra.Command{
@@ -73,6 +107,7 @@ var configUnsetCmd = &cobra.Command{
 }
 
 var configApplyFile string
+var configApplyForce bool
 
 var configApplyCmd = &cobra.Command{
 	Use:   "apply -f <file>",
@@ -95,65 +130,51 @@ func init() {
 		c.Annotations = map[string]string{scopeAnnotationKey: scopeRemote}
 	}
 	configApplyCmd.Flags().StringVarP(&configApplyFile, "file", "f", "", "yaml file to apply (required)")
+	// --force (BLOCKER 1, codex review round 1): mirrors `boid workspace
+	// edit --force`'s exact semantics (cmd/workspace.go) — skip the
+	// ETag/If-Match revision check entirely and apply unconditionally
+	// (last-write-wins), instead of the default fetch-revision-first
+	// protection runConfigApply otherwise performs.
+	configApplyCmd.Flags().BoolVar(&configApplyForce, "force", false,
+		"apply without checking the current revision (last-write-wins; skips the concurrency guard)")
 
 	configCmd.AddCommand(configGetCmd, configSetCmd, configUnsetCmd, configApplyCmd, configEditCmd)
 	rootCmd.AddCommand(configCmd)
 }
 
 // fetchConfigYAML performs GET /api/config, returning the daemon's current
-// effective config.yaml document verbatim.
-func fetchConfigYAML(c *client.Client) ([]byte, error) {
-	status, body, err := c.GetRawWithAccept("/api/config", "application/yaml")
+// effective config.yaml document verbatim alongside its revision (BLOCKER
+// 1, codex review round 1) — the value a subsequent apply/edit round-trips
+// into If-Match.
+func fetchConfigYAML(c *client.Client) (data []byte, revision string, err error) {
+	status, body, rev, err := c.GetRawWithAcceptAndRevision("/api/config", "application/yaml")
 	if err != nil {
-		return nil, fmt.Errorf("fetch config: %w", err)
+		return nil, "", fmt.Errorf("fetch config: %w", err)
 	}
 	if status != http.StatusOK {
-		return nil, fmt.Errorf("fetch config: %s", formatWorkspaceAPIError(status, body))
+		return nil, "", fmt.Errorf("fetch config: %s", formatWorkspaceAPIError(status, body))
 	}
-	return body, nil
+	return body, rev, nil
 }
 
-// parseConfigTree decodes a GET /api/config response body into the generic
-// Tree dotted-path operations act on, guaranteeing a non-nil map even for
-// a genuinely empty document (a fresh install with no config.yaml written
-// yet — GET /api/config returns the on-disk file verbatim, sparse, not a
-// defaults-expanded view; see internal/server/config_edit.go's
-// ConfigYAML doc comment for why).
-func parseConfigTree(data []byte) (config.Tree, error) {
-	var tree config.Tree
-	if err := yaml.Unmarshal(data, &tree); err != nil {
-		return nil, fmt.Errorf("parse config: %w", err)
-	}
-	if tree == nil {
-		tree = config.Tree{}
-	}
-	return tree, nil
+// isConfigConflictStatus reports whether statusCode is one of the two
+// ETag/If-Match failure codes ApplyConfigYAML can return (BLOCKER 1, codex
+// review round 1) — 428 Precondition Required (If-Match missing) or 412
+// Precondition Failed (If-Match stale) — the same pair PUT
+// /api/workspaces/{slug} already established.
+func isConfigConflictStatus(statusCode int) bool {
+	return statusCode == http.StatusPreconditionRequired || statusCode == http.StatusPreconditionFailed
 }
 
-// configApplyResponse mirrors api.ConfigApplyResult (internal/client's own
-// architecture rule forbids importing internal/api's behavior — see
-// internal/client/architecture_test.go — so this is a hand-kept copy of
-// just the wire shape, the same convention internal/client/client.go's
-// wsAttachClientMsg/wsAttachServerMsg already use for ws_attach.go's frames).
-type configApplyResponse struct {
-	Warnings []string `json:"warnings"`
-}
-
-// applyConfigAndReport POSTs data to /api/config and prints the result:
-// a confirmation line, followed by every daemon-provided warning verbatim
-// (docs/plans/volume-only-daemon.md §論点 f's exact restart-required /
-// sandbox.backend-retirement wording — the daemon is the sole source of
-// truth for which changed keys triggered which warning, see
-// internal/server/config_edit.go's applyDynamicConfigLocked).
-func applyConfigAndReport(cmd *cobra.Command, c *client.Client, data []byte) error {
-	status, body, err := c.PostRaw("/api/config", "application/yaml", data)
-	if err != nil {
-		return fmt.Errorf("apply config: %w", err)
-	}
-	if status != http.StatusOK {
-		return fmt.Errorf("apply config: %s", formatWorkspaceAPIError(status, body))
-	}
-	var result configApplyResponse
+// reportConfigApplyResult decodes a POST /api/config 200 response body and
+// prints the result: a confirmation line, followed by every
+// daemon-provided warning verbatim (docs/plans/volume-only-daemon.md
+// §論点 f's exact restart-required / sandbox.backend-retirement wording —
+// the daemon is the sole source of truth for which changed keys triggered
+// which warning, see internal/server/config_edit.go's
+// applyDynamicConfigLocked).
+func reportConfigApplyResult(cmd *cobra.Command, body []byte) error {
+	var result api.ConfigApplyResult
 	if err := json.Unmarshal(body, &result); err != nil {
 		return fmt.Errorf("decode response: %w", err)
 	}
@@ -167,7 +188,7 @@ func applyConfigAndReport(cmd *cobra.Command, c *client.Client, data []byte) err
 
 func runConfigGet(cmd *cobra.Command, args []string) error {
 	c := client.FromContext(cmd.Context())
-	data, err := fetchConfigYAML(c)
+	data, _, err := fetchConfigYAML(c)
 	if err != nil {
 		return err
 	}
@@ -176,7 +197,7 @@ func runConfigGet(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
-	tree, err := parseConfigTree(data)
+	tree, err := config.ParseTree(data)
 	if err != nil {
 		return err
 	}
@@ -192,51 +213,65 @@ func runConfigGet(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
+// runConfigSet implements `boid config set`: a single POST
+// /api/config/mutate call (BLOCKER 1, codex review round 1) — the daemon
+// performs the read-modify-write atomically, so this function no longer
+// GETs the current document at all (contrast runConfigApply/runConfigEdit,
+// which genuinely need the whole document and therefore keep the
+// GET-then-POST shape, now protected by If-Match).
 func runConfigSet(cmd *cobra.Command, args []string) error {
 	path := args[0]
 	values := args[1:]
 
 	c := client.FromContext(cmd.Context())
-	data, err := fetchConfigYAML(c)
-	if err != nil {
-		return err
+	var result api.ConfigMutateResult
+	if err := c.Do(http.MethodPost, "/api/config/mutate", api.ConfigMutateRequest{
+		Op:    api.ConfigMutateSet,
+		Key:   path,
+		Value: values,
+	}, &result); err != nil {
+		return fmt.Errorf("set %s: %w", path, err)
 	}
-	tree, err := parseConfigTree(data)
-	if err != nil {
-		return err
+
+	out := cmd.OutOrStdout()
+	fmt.Fprintln(out, "config applied")
+	for _, w := range result.Warnings {
+		fmt.Fprintln(out, w)
 	}
-	if _, err := config.Set(tree, path, values); err != nil {
-		return err
-	}
-	newData, err := yaml.Marshal(tree)
-	if err != nil {
-		return fmt.Errorf("marshal config: %w", err)
-	}
-	return applyConfigAndReport(cmd, c, newData)
+	return nil
 }
 
+// runConfigUnset implements `boid config unset` — see runConfigSet's doc
+// comment; the unset half of the same server-side mutate endpoint.
 func runConfigUnset(cmd *cobra.Command, args []string) error {
 	path := args[0]
 
 	c := client.FromContext(cmd.Context())
-	data, err := fetchConfigYAML(c)
-	if err != nil {
-		return err
+	var result api.ConfigMutateResult
+	if err := c.Do(http.MethodPost, "/api/config/mutate", api.ConfigMutateRequest{
+		Op:  api.ConfigMutateUnset,
+		Key: path,
+	}, &result); err != nil {
+		return fmt.Errorf("unset %s: %w", path, err)
 	}
-	tree, err := parseConfigTree(data)
-	if err != nil {
-		return err
+
+	out := cmd.OutOrStdout()
+	fmt.Fprintln(out, "config applied")
+	for _, w := range result.Warnings {
+		fmt.Fprintln(out, w)
 	}
-	if _, err := config.Unset(tree, path); err != nil {
-		return err
-	}
-	newData, err := yaml.Marshal(tree)
-	if err != nil {
-		return fmt.Errorf("marshal config: %w", err)
-	}
-	return applyConfigAndReport(cmd, c, newData)
+	return nil
 }
 
+// runConfigApply implements `boid config apply -f`: validates the file
+// locally, then POSTs it to the daemon. Unless --force is passed, a fresh
+// GET captures the current revision first and sends it back as If-Match
+// (BLOCKER 1, codex review round 1) — the same "fetch-then-round-trip"
+// protection `boid workspace edit` already established (cmd/workspace.go's
+// runWorkspaceEdit) — so an apply against a config.yaml that changed since
+// this file was prepared is rejected (412/428) instead of silently
+// clobbering whatever the other writer just applied. --force skips this
+// for a deliberate last-write-wins apply.
 func runConfigApply(cmd *cobra.Command, args []string) error {
 	if configApplyFile == "" {
 		return fmt.Errorf("-f/--file is required")
@@ -254,19 +289,65 @@ func runConfigApply(cmd *cobra.Command, args []string) error {
 	}
 
 	c := client.FromContext(cmd.Context())
-	return applyConfigAndReport(cmd, c, data)
+
+	var ifMatch string
+	if !configApplyForce {
+		_, rev, err := fetchConfigYAML(c)
+		if err != nil {
+			return fmt.Errorf("fetch current revision: %w", err)
+		}
+		ifMatch = rev
+	}
+
+	return postConfigApply(cmd, c, data, ifMatch, configApplyForce, configApplyFile)
 }
 
-// runConfigEdit implements `boid config edit`: fetch the current config,
-// open it in $EDITOR (falling back to "vi") on a temp copy, and — only if
-// the file actually changed — validate then apply. Per docs/plans/
+// postConfigApply POSTs data to /api/config with the given If-Match/force
+// and reports the result — the actual HTTP call + status-code branching
+// runConfigApply's --force/fresh-revision decision above hands off to.
+// Factored out (BLOCKER 1, codex review round 1) so the conflict-rejection
+// contract can be tested directly with a deliberately stale ifMatch,
+// without needing to win a race against runConfigApply's own internal
+// fetch-then-POST window. fileForMessage is configApplyFile's value at the
+// call site, threaded through explicitly (rather than read from the
+// package var) so this function has no hidden dependency on CLI global
+// state.
+func postConfigApply(cmd *cobra.Command, c *client.Client, data []byte, ifMatch string, force bool, fileForMessage string) error {
+	path := "/api/config"
+	if force {
+		path += "?force=true"
+	}
+	statusCode, body, err := c.PostRawWithIfMatch(path, "application/yaml", data, ifMatch)
+	if err != nil {
+		return fmt.Errorf("apply config: %w", err)
+	}
+	if isConfigConflictStatus(statusCode) {
+		return fmt.Errorf("config changed since %s was validated; re-run `boid config apply -f %s` (or pass --force to overwrite unconditionally): %s",
+			fileForMessage, fileForMessage, formatWorkspaceAPIError(statusCode, body))
+	}
+	if statusCode != http.StatusOK {
+		return fmt.Errorf("apply config: %s", formatWorkspaceAPIError(statusCode, body))
+	}
+	return reportConfigApplyResult(cmd, body)
+}
+
+// runConfigEdit implements `boid config edit`: fetch the current config
+// (capturing its revision), open it in $EDITOR (falling back to "vi") on a
+// temp copy, and — only if the file actually changed — validate then apply
+// with If-Match set to the revision captured at the start (BLOCKER 1,
+// codex review round 1: the CLI attaches the ETag automatically, the same
+// convention `boid workspace edit` already established, so the common case
+// — "edit what I just saw" — never needs the caller to juggle revisions by
+// hand). If the config changed on the daemon between this GET and the
+// POST, the conflict is reported and the temp file is kept so the operator
+// can re-run `boid config edit` and merge their changes — per docs/plans/
 // volume-only-daemon.md §論点 f's unilateral decision on edit-failure
-// behavior: a validation failure (locally OR at the daemon) keeps the temp
-// file and reports its path so the operator can fix it and rerun
-// `boid config apply -f <path>`, rather than silently discarding the edit.
+// behavior more broadly: a validation OR conflict failure (locally OR at
+// the daemon) keeps the temp file and reports its path, rather than
+// silently discarding the edit.
 func runConfigEdit(cmd *cobra.Command, args []string) error {
 	c := client.FromContext(cmd.Context())
-	data, err := fetchConfigYAML(c)
+	data, rev, err := fetchConfigYAML(c)
 	if err != nil {
 		return err
 	}
@@ -315,7 +396,17 @@ func runConfigEdit(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("validation failed (edited config kept at %s — fix it and rerun `boid config apply -f %s`): %w", tmpPath, tmpPath, err)
 	}
 
-	if err := applyConfigAndReport(cmd, c, edited); err != nil {
+	statusCode, body, err := c.PostRawWithIfMatch("/api/config", "application/yaml", edited, rev)
+	if err != nil {
+		return fmt.Errorf("apply config: %w (edited config kept at %s — fix it and rerun `boid config apply -f %s`)", err, tmpPath, tmpPath)
+	}
+	if isConfigConflictStatus(statusCode) {
+		return fmt.Errorf("config changed since edit started; re-run `boid config edit` and merge your changes (edited config kept at %s)", tmpPath)
+	}
+	if statusCode != http.StatusOK {
+		return fmt.Errorf("apply config: %s (edited config kept at %s — fix it and rerun `boid config apply -f %s`)", formatWorkspaceAPIError(statusCode, body), tmpPath, tmpPath)
+	}
+	if err := reportConfigApplyResult(cmd, body); err != nil {
 		return fmt.Errorf("%w (edited config kept at %s — fix it and rerun `boid config apply -f %s`)", err, tmpPath, tmpPath)
 	}
 	_ = os.Remove(tmpPath)

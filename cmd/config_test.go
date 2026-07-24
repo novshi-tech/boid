@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/novshi-tech/boid/internal/client"
 	"github.com/novshi-tech/boid/testutil"
 )
 
@@ -160,9 +161,41 @@ func TestRunConfigSet_Array_WholesaleReplace(t *testing.T) {
 		t.Errorf("expected .b.com and .c.com, got:\n%s", got)
 	}
 
-	if got := ts.Server.AllowedDomains(); len(got) != 2 {
-		t.Errorf("AllowedDomains() (hot-reload) = %v, want 2 entries", got)
+	// BLOCKER 2 (codex review round 1): the effective list is the built-in
+	// floor UNION the just-set user entries (.a.com must be gone, but the
+	// built-in floor is never dropped by a set) — not an exact 2-entry
+	// list, which was the pre-fix (buggy) contract this assertion used to
+	// pin.
+	if got := ts.Server.AllowedDomains(); !cmdTestContainsAll(got, ".b.com", ".c.com") {
+		t.Errorf("AllowedDomains() (hot-reload) = %v, want it to contain .b.com and .c.com", got)
+	} else if hasAny(got, ".a.com") {
+		t.Errorf("AllowedDomains() (hot-reload) = %v, .a.com should have been replaced away", got)
 	}
+}
+
+// cmdTestContainsAll reports whether every want is present in got.
+func cmdTestContainsAll(got []string, wants ...string) bool {
+	set := make(map[string]struct{}, len(got))
+	for _, g := range got {
+		set[g] = struct{}{}
+	}
+	for _, w := range wants {
+		if _, ok := set[w]; !ok {
+			return false
+		}
+	}
+	return true
+}
+
+func hasAny(got []string, wants ...string) bool {
+	for _, g := range got {
+		for _, w := range wants {
+			if g == w {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func TestRunConfigSet_UnknownKey_NoDaemonCall(t *testing.T) {
@@ -261,8 +294,8 @@ func TestRunConfigApply_ValidFile(t *testing.T) {
 	}
 
 	got := ts.Server.AllowedDomains()
-	if len(got) != 1 || got[0] != ".apply-test.com" {
-		t.Errorf("AllowedDomains() = %v, want [.apply-test.com]", got)
+	if !cmdTestContainsAll(got, ".apply-test.com") {
+		t.Errorf("AllowedDomains() = %v, want it to contain .apply-test.com", got)
 	}
 }
 
@@ -304,6 +337,70 @@ func TestRunConfigApply_MissingFileFlag(t *testing.T) {
 	}
 }
 
+// TestPostConfigApply_ConflictingRevision_RejectedWithHelpfulMessage pins
+// BLOCKER 1 (codex review round 1): posting a deliberately stale If-Match
+// (simulating "the config changed since this file was validated") is
+// rejected (412/428), not silently applied — and the error names --force /
+// re-running apply as the remediation, exactly runConfigApply's own
+// contract, tested directly against postConfigApply so the scenario is
+// deterministic (no need to win a race against runConfigApply's own
+// internal fetch-then-POST window to produce a genuinely stale revision).
+func TestPostConfigApply_ConflictingRevision_RejectedWithHelpfulMessage(t *testing.T) {
+	ts := testutil.NewTestServer(t)
+	t.Setenv("BOID_SOCKET", ts.Server.SocketPath())
+	c := client.NewUnixClient(ts.Server.SocketPath())
+
+	_, staleRev, err := fetchConfigYAML(c)
+	if err != nil {
+		t.Fatalf("fetchConfigYAML: %v", err)
+	}
+	// Someone else applies, advancing the daemon's revision past staleRev.
+	if _, err := ts.Server.ApplyConfigYAML([]byte("web:\n  public_url: https://other.example.com\n"), "", true); err != nil {
+		t.Fatalf("seed ApplyConfigYAML: %v", err)
+	}
+
+	var out bytes.Buffer
+	applyCmd := configApplyCmd
+	applyCmd.SetOut(&out)
+	err = postConfigApply(applyCmd, c, []byte("sandbox:\n  allowed_domains:\n    - .conflict-test.com\n"), staleRev, false, "config.yaml")
+	if err == nil {
+		t.Fatal("expected a conflict error for a stale revision")
+	}
+	if !strings.Contains(err.Error(), "boid config apply -f") || !strings.Contains(err.Error(), "--force") {
+		t.Errorf("expected the error to name apply -f / --force as remediation, got: %v", err)
+	}
+
+	// The conflicting apply must NOT have been persisted.
+	data, _, err := ts.Server.ConfigYAML()
+	if err != nil {
+		t.Fatalf("ConfigYAML: %v", err)
+	}
+	if strings.Contains(string(data), "conflict-test.com") {
+		t.Errorf("conflicting apply was persisted despite the revision mismatch:\n%s", data)
+	}
+}
+
+// TestPostConfigApply_Force_BypassesRevisionCheck pins --force's contract:
+// even a stale/empty If-Match is accepted when force is true.
+func TestPostConfigApply_Force_BypassesRevisionCheck(t *testing.T) {
+	ts := testutil.NewTestServer(t)
+	t.Setenv("BOID_SOCKET", ts.Server.SocketPath())
+	c := client.NewUnixClient(ts.Server.SocketPath())
+
+	var out bytes.Buffer
+	applyCmd := configApplyCmd
+	applyCmd.SetOut(&out)
+	if err := postConfigApply(applyCmd, c, []byte("sandbox:\n  allowed_domains:\n    - .force-test.com\n"), "", true, "config.yaml"); err != nil {
+		t.Fatalf("postConfigApply --force: %v", err)
+	}
+	if !strings.Contains(out.String(), "config applied") {
+		t.Errorf("expected confirmation, got: %s", out.String())
+	}
+	if got := ts.Server.AllowedDomains(); !cmdTestContainsAll(got, ".force-test.com") {
+		t.Errorf("AllowedDomains() = %v, want it to contain .force-test.com", got)
+	}
+}
+
 func TestRunConfigEdit_AppliesChange(t *testing.T) {
 	ts := testutil.NewTestServer(t)
 	t.Setenv("BOID_SOCKET", ts.Server.SocketPath())
@@ -330,8 +427,8 @@ func TestRunConfigEdit_AppliesChange(t *testing.T) {
 	}
 
 	got := ts.Server.AllowedDomains()
-	if len(got) != 1 || got[0] != ".edit-test.com" {
-		t.Errorf("AllowedDomains() = %v, want [.edit-test.com]", got)
+	if !cmdTestContainsAll(got, ".edit-test.com") {
+		t.Errorf("AllowedDomains() = %v, want it to contain .edit-test.com", got)
 	}
 }
 

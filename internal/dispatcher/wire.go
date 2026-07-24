@@ -31,11 +31,14 @@ type WireConfig struct {
 	// fallback when ProxyAllocator is not wired (or fails). Sandboxes
 	// linked to a workspace get a per-workspace port via ProxyAllocator.
 	ProxyPort *int
-	// AllowedDomains is the daemon-wide proxy egress allowlist floor
-	// (config.yaml sandbox.allowed_domains + boid built-in defaults).
-	// Workspaces add entries on top via workspace.yaml; they cannot remove
-	// floor entries (orchestrator.ResolveAllowedDomains enforces this).
-	AllowedDomains []string
+	// AllowedDomains is a getter for the daemon-wide proxy egress allowlist
+	// floor (config.yaml sandbox.allowed_domains + boid built-in
+	// defaults), read fresh on every dispatch — see Runner.AllowedDomains's
+	// own doc comment for why this is a func() []string and not a captured
+	// []string (BLOCKER 2, codex review round 1). Workspaces add entries on
+	// top via workspace.yaml; they cannot remove floor entries
+	// (orchestrator.ResolveAllowedDomains enforces this).
+	AllowedDomains func() []string
 	// Workspaces is the WorkspaceLookup used at dispatch time to discover
 	// each workspace's AllowedDomains overrides. nil disables workspace
 	// hydration and the runner stays on the floor only.

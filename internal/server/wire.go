@@ -711,8 +711,18 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 		ProxyAllocator: srv.proxyManager,
 		BoidBinary:     boidBin,
 		ServerSocket:   cfg.SocketPath,
-		ProxyPort:      &srv.proxyPort,
-		AllowedDomains: cfg.AllowedDomains,
+		ProxyPort: &srv.proxyPort,
+		// AllowedDomains: a method value, not cfg.AllowedDomains itself
+		// (BLOCKER 2, codex review round 1) — srv.AllowedDomains re-reads
+		// s.cfg.AllowedDomains fresh under s.mu on every dispatch, so a
+		// later ApplyConfigYAML hot-reload (config_edit.go's
+		// applyDynamicConfigLocked, which swaps that exact field) reaches
+		// this already-constructed Runner instead of it being frozen at
+		// today's cfg.AllowedDomains snapshot for the rest of the daemon's
+		// life. See Runner.AllowedDomains's own doc comment
+		// (internal/dispatcher/runner.go) for the full staleness scenario
+		// this closes.
+		AllowedDomains: srv.AllowedDomains,
 		RuntimesDir:    runtimesDirFor(cfg),
 		GitGateway:     srv.gatewayRegistry,
 		GatewayURL:     &srv.gatewayURL,
@@ -893,6 +903,10 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 	// already an exotic (effectively Linux-only-with-no-$HOME) situation.
 	srv.liveConfig = boidCfg
 	srv.notifySvc = notifySvc
+	// BLOCKER 1 (codex review round 1): revision 1 is the "nothing applied
+	// yet this process lifetime" baseline a fresh GET /api/config's ETag
+	// reports — see Server.configRevision's own doc comment.
+	srv.configRevision = 1
 	if p, pathErr := config.DefaultPath(); pathErr == nil {
 		srv.configPath = p
 	} else {
