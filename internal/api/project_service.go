@@ -9,7 +9,6 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
-	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -845,6 +844,15 @@ func (s *ProjectAppService) ApplyWorkspace(apply *orchestrator.WorkspaceEnvelope
 // currently-attached project that was, in fact, still listed in the
 // document — the failure was in resolving it, not in the document itself.
 func (s *ProjectAppService) resolveWorkspaceApplyProjectNames(projects []orchestrator.WorkspaceEnvelopeProject) (ids map[string]string, missing []string, err error) {
+	// PR-1d codex round-4 Blocker: refuse the whole apply up front when the
+	// registered-project name set is incomplete — see
+	// refuseIfAnyRegisteredProjectNameUnavailable's doc comment for why an
+	// unavailable name must never be allowed to fall through to
+	// resolveProjectByNameExact's ordinary "no match" path below.
+	if err := s.refuseIfAnyRegisteredProjectNameUnavailable(); err != nil {
+		return nil, nil, err
+	}
+
 	ids = make(map[string]string, len(projects))
 	for _, ep := range projects {
 		// Defense in depth (PR-1d codex round-2 Major): decodeWorkspaceEnvelopeSpec
@@ -880,6 +888,57 @@ func (s *ProjectAppService) resolveWorkspaceApplyProjectNames(projects []orchest
 		ids[ep.Name] = matches[0].ID
 	}
 	return ids, missing, nil
+}
+
+// refuseIfAnyRegisteredProjectNameUnavailable refuses to proceed when the
+// registered-project name set is incomplete: some project's project.yaml
+// could not be hydrated (removed from disk, unreadable, or malformed),
+// leaving ProjectStore.LoadAll's cached Meta.Name empty while that
+// project's DB row AND any existing workspace assignment are left
+// untouched (PR-1d codex round-4 Blocker).
+//
+// Without this check, resolveProjectByNameExact's exact-match loop simply
+// never matches this project — an empty Meta.Name can never equal a
+// document's non-empty spec.projects[].name — which
+// resolveWorkspaceApplyProjectNames then folds into "missing" the exact
+// same way it folds a genuinely-never-registered name. The caller then
+// proceeds to reconcile project assignments as if this project does not
+// exist at all, silently detaching it from wherever it is currently
+// attached even though the document may have explicitly listed it (under
+// its real, but currently unreadable, name). This is the apply-side half
+// of the same destructive scenario ExportWorkspaceEnvelopes'/
+// projectCollisions' own empty-name refusal closes on the export side:
+// "cannot verify this project's name right now" must never be translated
+// into "this project doesn't exist" on either side of the export/apply
+// round trip.
+//
+// Deliberately refuses the WHOLE apply rather than only when the
+// unavailable project happens to be named in this specific document: a
+// degraded project's real name is, by definition, unknown here, so there
+// is no way to tell whether the document's silence about it is intentional
+// (a genuinely unrelated project) or accidental (the document DOES mean
+// this project, under its real name, which just cannot be verified) — the
+// only safe response to "I cannot tell" is to refuse before touching the
+// DB, exactly as resolveWorkspaceApplyProjectNames' ambiguous-name and
+// non-404-error cases already do.
+func (s *ProjectAppService) refuseIfAnyRegisteredProjectNameUnavailable() error {
+	projects, err := s.Projects.ListProjects()
+	if err != nil {
+		return &StatusError{Code: http.StatusInternalServerError, Message: err.Error()}
+	}
+	for _, p := range projects {
+		s.hydrateProject(p)
+		if p.Meta.Name == "" {
+			return &StatusError{
+				Code: http.StatusConflict,
+				Message: fmt.Sprintf(
+					"project %q in the workspace's target has no authoritative name; cannot resolve safely — its project.yaml is unavailable, fix or unregister it before applying",
+					p.ID,
+				),
+			}
+		}
+	}
+	return nil
 }
 
 // resolveProjectByNameExact resolves name to every registered project whose
@@ -959,7 +1018,19 @@ func (s *ProjectAppService) ExportWorkspaceEnvelopes(slugs []string) ([]byte, er
 	// create/delete. Only the Meta.Name hydration itself still comes from
 	// the in-memory ProjectMeta cache (not the DB transaction) — a
 	// project.yaml name is not a DB column at all.
-	duplicateNames, nameCollidesWithOtherID := s.projectCollisions(allProjects)
+	//
+	// effectiveNames captures each project's Meta.Name ONCE, at this single
+	// hydration pass (PR-1d codex round-4 regression note): the emit loop
+	// below used to call s.hydrateProject a SECOND time per project (via the
+	// now-removed workspaceEnvelopeProjectExportName helper), which re-reads
+	// the live in-memory ProjectMeta cache — a concurrent metadata reload
+	// between this collision-detection pass and the emit loop could then
+	// make the two passes observe different Meta.Name values for the same
+	// project (the collision map built from one snapshot, the emitted name
+	// from another). Reusing effectiveNames in the loop closes that window:
+	// every name emitted is provably the exact same value collision
+	// detection already reasoned about.
+	duplicateNames, nameCollidesWithOtherID, effectiveNames := s.projectCollisions(allProjects)
 
 	docs := make([][]byte, 0, len(snapshots))
 	for _, snap := range snapshots {
@@ -978,8 +1049,23 @@ func (s *ProjectAppService) ExportWorkspaceEnvelopes(slugs []string) ([]byte, er
 			if !ok || p == nil {
 				return nil, &StatusError{Code: http.StatusInternalServerError, Message: fmt.Sprintf("workspace %q: project %q is assigned but missing from the export snapshot (data inconsistency)", snap.Slug, id)}
 			}
-			hydrated := s.hydrateProject(p)
-			name := workspaceEnvelopeProjectExportName(hydrated)
+			name := effectiveNames[id]
+			// PR-1d codex round-4 Blocker: refuse rather than fall back to
+			// the work_dir basename when this project's project.yaml could
+			// not be hydrated (ProjectStore.LoadAll failure leaves the
+			// project's DB row + workspace assignment in place but its
+			// cached Meta.Name empty). The old basename fallback made the
+			// export "succeed" with a name that could never round-trip back
+			// through apply's strict name resolution — reapplying it later
+			// would report this project as unresolvable and detach it (or,
+			// worse, attach a different project the basename happened to
+			// collide with).
+			if name == "" {
+				return nil, &StatusError{Code: http.StatusConflict, Message: fmt.Sprintf(
+					"project %q has no authoritative name (project.yaml unavailable); fix or unregister the project before exporting",
+					id,
+				)}
+			}
 			if collidingIDs, dup := duplicateNames[name]; dup {
 				return nil, &StatusError{Code: http.StatusConflict, Message: fmt.Sprintf(
 					"workspace %q: project name %q is ambiguous across %d registered projects (%s) — export refused because a later `apply` could not unambiguously resolve it back; give these projects distinct project.yaml name: values",
@@ -1000,7 +1086,7 @@ func (s *ProjectAppService) ExportWorkspaceEnvelopes(slugs []string) ([]byte, er
 			}
 			envProjects = append(envProjects, orchestrator.WorkspaceEnvelopeProject{
 				Name: name,
-				URL:  hydrated.UpstreamURL,
+				URL:  p.UpstreamURL,
 			})
 		}
 		envelope := orchestrator.NewWorkspaceEnvelopeFromMeta(snap.Slug, snap.Meta, envProjects)
@@ -1032,13 +1118,23 @@ func (s *ProjectAppService) ExportWorkspaceEnvelopes(slugs []string) ([]byte, er
 // equals that name (PR-1d codex round-3 Blocker — see
 // resolveProjectByNameExact's doc comment for the concrete destructive
 // apply-side scenario this closes on the export side).
-func (s *ProjectAppService) projectCollisions(allProjects map[string]*orchestrator.Project) (byName map[string][]string, nameCollidesWithOtherID map[string][]string) {
+//
+// effectiveNames maps every project ID in allProjects to its hydrated
+// Meta.Name (possibly "" when hydration failed to produce one) — captured
+// HERE, at this function's single hydration pass, so a caller can reuse the
+// exact same observed name later without a second, independently-timed
+// s.hydrateProject call (PR-1d codex round-4 regression note: re-hydrating
+// during emit could observe a different in-memory ProjectMeta cache state
+// than collision detection did, under a concurrent metadata reload).
+func (s *ProjectAppService) projectCollisions(allProjects map[string]*orchestrator.Project) (byName map[string][]string, nameCollidesWithOtherID map[string][]string, effectiveNames map[string]string) {
 	for _, p := range allProjects {
 		s.hydrateProject(p)
 	}
 
+	effectiveNames = make(map[string]string, len(allProjects))
 	byNameIDs := map[string][]string{}
 	for id, p := range allProjects {
+		effectiveNames[id] = p.Meta.Name
 		if p.Meta.Name == "" {
 			continue
 		}
@@ -1068,22 +1164,7 @@ func (s *ProjectAppService) projectCollisions(allProjects map[string]*orchestrat
 		}
 		nameCollidesWithOtherID[name] = []string{other.ID}
 	}
-	return byName, nameCollidesWithOtherID
-}
-
-// workspaceEnvelopeProjectExportName picks the spec.projects[].name value
-// for p (mirrors cmd/workspace_export.go's client-side projectExportName,
-// which the atomic GET /api/workspaces/export endpoint now supersedes as
-// the sole export path — see that function's own doc comment for why
-// Meta.Name over WorkDir basename is the right choice): p.Meta.Name (the
-// project.yaml `name:` field) when known, so an exported name round-trips
-// straight back through `apply`'s own name resolution unchanged. Falls back
-// to the work_dir basename only when Meta was never hydrated.
-func workspaceEnvelopeProjectExportName(p *orchestrator.Project) string {
-	if p.Meta.Name != "" {
-		return p.Meta.Name
-	}
-	return filepath.Base(p.WorkDir)
+	return byName, nameCollidesWithOtherID, effectiveNames
 }
 
 func (s *ProjectAppService) DeleteProject(id string) error {

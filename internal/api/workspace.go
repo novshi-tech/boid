@@ -5,6 +5,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 
@@ -314,14 +315,33 @@ func (h *WorkspaceHandler) Remove(w http.ResponseWriter, r *http.Request) {
 // the key was present in the query string at all, independent of its value,
 // so an explicitly-empty dry_run now reaches strconv.ParseBool("") — which
 // fails — and is rejected with 400, same as any other unparseable value.
+//
+// The query string is parsed explicitly with url.ParseQuery rather than the
+// convenience r.URL.Query() (PR-1d codex round-4 Minor): (1) Query() returns
+// only the FIRST value for a repeated key, so `?dry_run=false&dry_run=true`
+// silently used "false" and performed a real commit even though the
+// request also said "true" elsewhere — ambiguous/contradictory input, now
+// rejected with 400 rather than picking one arbitrarily; (2) Query() also
+// silently discards the underlying ParseQuery error (e.g. an unescaped ';'
+// separator, rejected by net/url since Go 1.17), which can make a key
+// disappear from the parsed result entirely rather than surface the
+// malformed request — a malformed query string is now itself a 400 instead
+// of silently degrading to "no dry_run param at all" (a real commit).
 func (h *WorkspaceHandler) Apply(w http.ResponseWriter, r *http.Request) {
 	dryRun := false
-	query := r.URL.Query()
-	if query.Has("dry_run") {
-		raw := query.Get("dry_run")
-		parsed, err := strconv.ParseBool(raw)
+	query, err := url.ParseQuery(r.URL.RawQuery)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid query string: %v", err))
+		return
+	}
+	if values, ok := query["dry_run"]; ok {
+		if len(values) > 1 {
+			writeError(w, http.StatusBadRequest, "dry_run: ambiguous parameter (given more than once)")
+			return
+		}
+		parsed, err := strconv.ParseBool(values[0])
 		if err != nil {
-			writeError(w, http.StatusBadRequest, fmt.Sprintf("dry_run: invalid boolean %q", raw))
+			writeError(w, http.StatusBadRequest, fmt.Sprintf("dry_run: invalid boolean %q", values[0]))
 			return
 		}
 		dryRun = parsed

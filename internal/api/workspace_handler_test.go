@@ -881,6 +881,52 @@ func TestWorkspaceHandler_Apply_DryRunExplicitFalseCommits(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// PR-1d codex round-4 Minor: repeated ?dry_run values and query parse errors
+// must not fail open to a real commit
+// ---------------------------------------------------------------------------
+
+// TestWorkspaceHandler_Apply_DryRunRepeatedValuesIs400 pins the round-4
+// Minor: query.Get("dry_run") only ever returns the FIRST value, so
+// `?dry_run=false&dry_run=true` silently used "false" and performed a real
+// commit even though the caller also (later) said "true" — an ambiguous,
+// contradictory request must be rejected instead of picking one arbitrarily.
+func TestWorkspaceHandler_Apply_DryRunRepeatedValuesIs400(t *testing.T) {
+	svc := &fakeWorkspaceService{
+		applyFn: func(apply *orchestrator.WorkspaceEnvelopeApply, dryRun bool) (*orchestrator.WorkspaceApplyResult, error) {
+			t.Fatal("service.ApplyWorkspace must not be called for ambiguous repeated dry_run values")
+			return nil, nil
+		},
+	}
+	h := &WorkspaceHandler{Service: svc}
+	body := []byte("apiVersion: boid.dev/v1\nkind: Workspace\nmetadata:\n  name: team-a\n")
+	w := doWorkspaceRequest(h.Routes(), http.MethodPost, "/apply?dry_run=false&dry_run=true", "application/yaml", body, nil)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400: %s", w.Code, w.Body.String())
+	}
+}
+
+// TestWorkspaceHandler_Apply_QueryParseErrorIs400 pins the round-4 Minor's
+// second half: r.URL.Query() silently discards query-parsing errors (e.g. an
+// unescaped semicolon separator, rejected by net/url since Go 1.17), which
+// can make a key disappear entirely rather than surface the malformed
+// request — `?dry_run=true;evil=1` must not silently degrade to "no dry_run
+// param at all" (a real commit) but be rejected outright.
+func TestWorkspaceHandler_Apply_QueryParseErrorIs400(t *testing.T) {
+	svc := &fakeWorkspaceService{
+		applyFn: func(apply *orchestrator.WorkspaceEnvelopeApply, dryRun bool) (*orchestrator.WorkspaceApplyResult, error) {
+			t.Fatal("service.ApplyWorkspace must not be called for a malformed query string")
+			return nil, nil
+		},
+	}
+	h := &WorkspaceHandler{Service: svc}
+	body := []byte("apiVersion: boid.dev/v1\nkind: Workspace\nmetadata:\n  name: team-a\n")
+	w := doWorkspaceRequest(h.Routes(), http.MethodPost, "/apply?dry_run=true;evil=1", "application/yaml", body, nil)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400: %s", w.Code, w.Body.String())
+	}
+}
+
 // TestWorkspaceHandler_Apply_AdditionalBindingsWarningInResponse pins the
 // PR-1d codex round-2 Minor fix: `boid workspace apply` already warns
 // client-side when a document carries a retired spec.additional_bindings

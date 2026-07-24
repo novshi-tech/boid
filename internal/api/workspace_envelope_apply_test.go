@@ -439,3 +439,205 @@ func TestApplyWorkspace_ProjectResolutionErrorAbortsApply(t *testing.T) {
 		t.Errorf("expected team-a to NOT exist after an aborted apply, got err=%v", loadErr)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// PR-1d codex round-4 Blocker: unavailable cached project metadata must
+// refuse export/apply rather than fall back to a basename / silently
+// translate into a 404 miss.
+//
+// Concrete failure chain codex round-4 flagged: (1) ProjectStore.LoadAll can
+// fail to hydrate a project (project.yaml unreadable), leaving cached
+// Meta.Name empty while the DB row + workspace assignment are untouched;
+// (2) projectCollisions used to skip empty-name projects from collision
+// detection; (3) export used to fall back to the work-directory basename
+// when Meta.Name was empty; (4) apply's resolveProjectByNameExact folds an
+// unfindable name into a 404 "missing" — reapplying the fallback-name
+// export would then detach the real project (or attach the wrong one, if
+// the fallback collided with another project's real name).
+// ---------------------------------------------------------------------------
+
+// TestExportWorkspaceEnvelopes_UnavailableProjectNameRefusesExport pins the
+// export-side refusal: a project assigned to an exported workspace whose
+// Meta.Name is empty (project.yaml could not be hydrated) must refuse the
+// WHOLE export with a clear error — never fall back to the work_dir
+// basename, and never emit partial output (docs for OTHER, healthy
+// workspaces must not be returned either).
+func TestExportWorkspaceEnvelopes_UnavailableProjectNameRefusesExport(t *testing.T) {
+	d := newTestWorkspacesConnDB(t)
+	repo := orchestrator.NewWorkspaceRepository(d.Conn)
+	if err := repo.Save("team-a", &orchestrator.WorkspaceMeta{}); err != nil {
+		t.Fatalf("Save(team-a): %v", err)
+	}
+	if err := repo.Save("team-b", &orchestrator.WorkspaceMeta{}); err != nil {
+		t.Fatalf("Save(team-b): %v", err)
+	}
+	if err := orchestrator.CreateProject(d.Conn, &orchestrator.Project{ID: "proj-broken", WorkDir: "/tmp/some-basename"}); err != nil {
+		t.Fatalf("CreateProject(proj-broken): %v", err)
+	}
+	if err := orchestrator.CreateProject(d.Conn, &orchestrator.Project{ID: "proj-healthy", WorkDir: "/tmp/proj-healthy"}); err != nil {
+		t.Fatalf("CreateProject(proj-healthy): %v", err)
+	}
+	if err := orchestrator.SetProjectWorkspace(d.Conn, "proj-broken", "team-a"); err != nil {
+		t.Fatalf("SetProjectWorkspace(proj-broken): %v", err)
+	}
+	if err := orchestrator.SetProjectWorkspace(d.Conn, "proj-healthy", "team-b"); err != nil {
+		t.Fatalf("SetProjectWorkspace(proj-healthy): %v", err)
+	}
+
+	svc := &ProjectAppService{
+		Projects: &stubProjectRepository{
+			projects: []*orchestrator.Project{{ID: "proj-broken"}, {ID: "proj-healthy"}},
+		},
+		Meta: &stubProjectMetaStore{
+			metas: map[string]*orchestrator.ProjectMeta{
+				// proj-broken intentionally has NO entry: simulates
+				// ProjectStore.LoadAll failing to hydrate its project.yaml,
+				// leaving Meta.Name empty.
+				"proj-healthy": {ID: "proj-healthy", Name: "healthy"},
+			},
+		},
+		WorkspacesConn: d.Conn,
+	}
+
+	data, err := svc.ExportWorkspaceEnvelopes(nil)
+	if err == nil {
+		t.Fatalf("expected a refusal error, got nil (data: %s)", data)
+	}
+	if data != nil {
+		t.Errorf("expected no partial output on refusal, got %q", data)
+	}
+	se, ok := err.(*StatusError)
+	if !ok {
+		t.Fatalf("expected *StatusError, got %T: %v", err, err)
+	}
+	if se.Code != http.StatusConflict {
+		t.Errorf("Code = %d, want %d", se.Code, http.StatusConflict)
+	}
+	if !strings.Contains(se.Message, "proj-broken") || !strings.Contains(se.Message, "no authoritative name") {
+		t.Errorf("Message = %q, want it to name the project and explain it has no authoritative name", se.Message)
+	}
+	// Must NOT have fallen back to the work_dir basename anywhere in the
+	// error (there is nothing to compare it against once refused, but the
+	// basename must not leak into a success path either — pinned by data
+	// being nil above).
+	if strings.Contains(se.Message, "some-basename") {
+		t.Errorf("Message = %q, must not reference the work_dir basename fallback", se.Message)
+	}
+}
+
+// TestApplyWorkspace_UnavailableProjectNameRefusesApply pins the apply-side
+// refusal: when ANY registered project's Meta.Name is unavailable
+// (project.yaml could not be hydrated), an apply that touches
+// spec.projects must refuse outright — never translate the unresolvable
+// name into resolveProjectByNameExact's ordinary 404 "not registered yet"
+// path, which would let a currently-attached-but-unhydratable project be
+// silently detached.
+func TestApplyWorkspace_UnavailableProjectNameRefusesApply(t *testing.T) {
+	d := newTestWorkspacesConnDB(t)
+	if err := orchestrator.CreateProject(d.Conn, &orchestrator.Project{ID: "proj-1", WorkDir: "/tmp/proj-1"}); err != nil {
+		t.Fatalf("CreateProject(proj-1): %v", err)
+	}
+	if err := orchestrator.CreateProject(d.Conn, &orchestrator.Project{ID: "proj-broken", WorkDir: "/tmp/proj-broken"}); err != nil {
+		t.Fatalf("CreateProject(proj-broken): %v", err)
+	}
+	// proj-broken is currently attached to team-a — exactly the project a
+	// naive "unfindable name == missing" fold would silently detach.
+	if err := orchestrator.SetProjectWorkspace(d.Conn, "proj-broken", "team-a"); err != nil {
+		t.Fatalf("SetProjectWorkspace(proj-broken): %v", err)
+	}
+
+	svc := &ProjectAppService{
+		Projects: &stubProjectRepository{
+			projects: []*orchestrator.Project{
+				{ID: "proj-1"},
+				{ID: "proj-broken"},
+			},
+		},
+		Meta: &stubProjectMetaStore{
+			metas: map[string]*orchestrator.ProjectMeta{
+				"proj-1": {ID: "proj-1", Name: "api"},
+				// proj-broken intentionally has NO entry: its project.yaml
+				// could not be hydrated, leaving Meta.Name empty.
+			},
+		},
+		WorkspacesConn: d.Conn,
+	}
+
+	apply := envelopeApplyDoc("team-a", map[string]bool{"projects": true}, orchestrator.WorkspaceEnvelopeSpec{
+		Projects: []orchestrator.WorkspaceEnvelopeProject{{Name: "api"}},
+	})
+
+	_, err := svc.ApplyWorkspace(apply, false)
+	if err == nil {
+		t.Fatal("expected a refusal error, got nil")
+	}
+	se, ok := err.(*StatusError)
+	if !ok {
+		t.Fatalf("expected *StatusError, got %T: %v", err, err)
+	}
+	if se.Code != http.StatusConflict {
+		t.Errorf("Code = %d, want %d", se.Code, http.StatusConflict)
+	}
+	if !strings.Contains(se.Message, "proj-broken") || !strings.Contains(se.Message, "no authoritative name") {
+		t.Errorf("Message = %q, want it to name the unresolvable project and explain it has no authoritative name", se.Message)
+	}
+
+	// No side effects: the apply must have been refused before any DB
+	// write, so team-a must not exist at all (and proj-broken must remain
+	// exactly where it was, though there's no DB row for team-a to check
+	// that against here since it was never created).
+	if _, loadErr := orchestrator.NewWorkspaceRepository(d.Conn).Load("team-a"); !errors.Is(loadErr, os.ErrNotExist) {
+		t.Errorf("expected team-a to NOT exist after a refused apply, got err=%v", loadErr)
+	}
+}
+
+// TestApplyWorkspace_UnavailableProjectNameRefusalHappensBeforeDBWrite is a
+// stricter no-side-effects guard than the test above: it seeds team-a with
+// existing metadata via a real (non-refused) apply first, then attempts a
+// second apply that should be refused due to an unavailable project name,
+// and asserts team-a's metadata is byte-for-byte unchanged (not just
+// "doesn't exist").
+func TestApplyWorkspace_UnavailableProjectNameRefusalHappensBeforeDBWrite(t *testing.T) {
+	d := newTestWorkspacesConnDB(t)
+	if err := orchestrator.CreateProject(d.Conn, &orchestrator.Project{ID: "proj-broken", WorkDir: "/tmp/proj-broken"}); err != nil {
+		t.Fatalf("CreateProject(proj-broken): %v", err)
+	}
+
+	svc := &ProjectAppService{
+		Projects: &stubProjectRepository{
+			projects: []*orchestrator.Project{{ID: "proj-broken"}},
+		},
+		Meta: &stubProjectMetaStore{
+			metas: map[string]*orchestrator.ProjectMeta{},
+		},
+		WorkspacesConn: d.Conn,
+	}
+
+	// Seed team-a via a projects-untouched apply (succeeds: FieldsPresent
+	// does not include "projects", so the unavailable-name check never
+	// runs for this call).
+	seed := envelopeApplyDoc("team-a", map[string]bool{}, orchestrator.WorkspaceEnvelopeSpec{})
+	if _, err := svc.ApplyWorkspace(seed, false); err != nil {
+		t.Fatalf("seed ApplyWorkspace: %v", err)
+	}
+
+	_, beforeRevision, err := orchestrator.NewWorkspaceRepository(d.Conn).LoadWithRevision("team-a")
+	if err != nil {
+		t.Fatalf("LoadWithRevision(team-a) after seed: %v", err)
+	}
+
+	apply := envelopeApplyDoc("team-a", map[string]bool{"projects": true}, orchestrator.WorkspaceEnvelopeSpec{
+		Projects: []orchestrator.WorkspaceEnvelopeProject{{Name: "anything"}},
+	})
+	if _, err := svc.ApplyWorkspace(apply, false); err == nil {
+		t.Fatal("expected a refusal error, got nil")
+	}
+
+	_, afterRevision, err := orchestrator.NewWorkspaceRepository(d.Conn).LoadWithRevision("team-a")
+	if err != nil {
+		t.Fatalf("LoadWithRevision(team-a) after refused apply: %v", err)
+	}
+	if beforeRevision != afterRevision {
+		t.Errorf("team-a Revision changed from %q to %q — refused apply must not write to the DB at all", beforeRevision, afterRevision)
+	}
+}
