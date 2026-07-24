@@ -1086,6 +1086,47 @@ func TestRunWorkspaceExport_404OnMissing(t *testing.T) {
 	}
 }
 
+// TestRunWorkspaceExport_DoesNotWarnOnHomeBoidPath pins Minor 1 (codex
+// round-1): /home/boid/* is the valid container path for the boid user's
+// own home (the plan doc's own documented example, "GOPATH: /home/boid/go")
+// — it must NOT trip the host-path advisory warning that other /home/*
+// paths do.
+func TestRunWorkspaceExport_DoesNotWarnOnHomeBoidPath(t *testing.T) {
+	ts := testutil.NewTestServer(t)
+	t.Setenv("BOID_SOCKET", ts.Server.SocketPath())
+	resetWorkspaceCreateEditFlags(t)
+	resetWorkspaceExportImportFlags(t)
+
+	if err := runWorkspaceCreate(workspaceCreateCmd, []string{"team-a"}); err != nil {
+		t.Fatalf("seed create: %v", err)
+	}
+	editFile := filepath.Join(t.TempDir(), "edit.yaml")
+	if err := os.WriteFile(editFile, []byte("env:\n  GOPATH: /home/boid/go\n  OTHER: /home/nosen/go\n"), 0o644); err != nil {
+		t.Fatalf("write edit file: %v", err)
+	}
+	if err := workspaceEditCmd.Flags().Set("from-file", editFile); err != nil {
+		t.Fatalf("set --from-file: %v", err)
+	}
+	if err := runWorkspaceEdit(workspaceEditCmd, []string{"team-a"}); err != nil {
+		t.Fatalf("seed edit: %v", err)
+	}
+	resetWorkspaceCreateEditFlags(t)
+
+	var out, errOut bytes.Buffer
+	cmd := workspaceExportCmd
+	cmd.SetOut(&out)
+	cmd.SetErr(&errOut)
+	if err := runWorkspaceExport(cmd, []string{"team-a"}); err != nil {
+		t.Fatalf("runWorkspaceExport: %v", err)
+	}
+	if strings.Contains(errOut.String(), "GOPATH=/home/boid/go") {
+		t.Errorf("stderr = %q, must NOT warn about /home/boid/* (the valid container home)", errOut.String())
+	}
+	if !strings.Contains(errOut.String(), "OTHER=/home/nosen/go") {
+		t.Errorf("stderr = %q, want it to still warn about an unrelated /home/* path", errOut.String())
+	}
+}
+
 // TestRunWorkspaceImport_CreateOnlyMode pins the safe default: importing a
 // brand-new slug succeeds, and importing the same slug again (still
 // create-only, the default) 409s rather than silently overwriting.

@@ -65,6 +65,12 @@ func (s *stubProjectServiceForExec) ExportWorkspace(string) ([]byte, string, err
 func (s *stubProjectServiceForExec) ImportWorkspace(string, *orchestrator.WorkspaceMeta, string) (*WorkspaceDetail, error) {
 	panic("not implemented")
 }
+func (s *stubProjectServiceForExec) ApplyWorkspace(*orchestrator.WorkspaceEnvelopeApply, bool) (*orchestrator.WorkspaceApplyResult, error) {
+	panic("not implemented")
+}
+func (s *stubProjectServiceForExec) ExportWorkspaceEnvelopes([]string) ([]byte, error) {
+	panic("not implemented")
+}
 
 // stubExecDispatcher records the request it was called with and returns a
 // configured result/error.

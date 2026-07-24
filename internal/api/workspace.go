@@ -27,6 +27,13 @@ func (h *WorkspaceHandler) Routes() chi.Router {
 	r.Get("/", h.List)
 	r.Post("/", h.Create)
 	r.Post("/import", h.Import)
+	// "/export" and "/apply" are static path segments at this same router
+	// level as "/{slug}" — chi's radix tree gives a static segment priority
+	// over a wildcard one at the same depth (the same precedent "/import"
+	// above already establishes for POST), so these never collide with a
+	// workspace literally named "export"/"apply".
+	r.Get("/export", h.ExportEnvelope)
+	r.Post("/apply", h.Apply)
 	r.Get("/{slug}", h.Show)
 	r.Get("/{slug}/export", h.Export)
 	r.Put("/{slug}", h.Update)
@@ -278,4 +285,71 @@ func (h *WorkspaceHandler) Remove(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// Apply handles POST /api/workspaces/apply?dry_run=<bool> (docs/plans/
+// volume-only-daemon.md PR-1d codex round-1 Blocker 2/Major 1): the body is
+// exactly one apiVersion:boid.dev/v1 kind:Workspace yaml document (a
+// multi-document body — more than one "---"-separated document — is
+// rejected; `boid workspace apply` sends one request per document, which is
+// exactly what gives each document its own all-or-nothing DB transaction
+// rather than sharing one across an entire multi-workspace file).
+// dry_run=true runs every read/write the real apply would (same
+// validation, same DB statements) but rolls back instead of committing.
+func (h *WorkspaceHandler) Apply(w http.ResponseWriter, r *http.Request) {
+	dryRun := r.URL.Query().Get("dry_run") == "true"
+
+	data, ok := readWorkspaceYAMLBody(w, r)
+	if !ok {
+		return
+	}
+	docs, err := orchestrator.DecodeWorkspaceEnvelopeDocuments(data)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if len(docs) != 1 {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("expected exactly one Workspace document per request, got %d", len(docs)))
+		return
+	}
+
+	result, err := h.Service.ApplyWorkspace(docs[0], dryRun)
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+// ExportEnvelope handles GET /api/workspaces/export?all=true or
+// ?name=<slug> (docs/plans/volume-only-daemon.md PR-1d codex round-1
+// Blocker 3): returns one or more apiVersion:boid.dev/v1 kind:Workspace
+// yaml documents built from a single atomic DB snapshot
+// (ProjectAppService.ExportWorkspaceEnvelopes / orchestrator.
+// SnapshotWorkspacesForExport), "---"-separated when more than one.
+func (h *WorkspaceHandler) ExportEnvelope(w http.ResponseWriter, r *http.Request) {
+	all := r.URL.Query().Get("all") == "true"
+	name := r.URL.Query().Get("name")
+	if all == (name != "") {
+		writeError(w, http.StatusBadRequest, "exactly one of ?all=true or ?name=<slug> is required")
+		return
+	}
+
+	var slugs []string
+	if !all {
+		if err := orchestrator.ValidWorkspaceSlug(name); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		slugs = []string{name}
+	}
+
+	data, err := h.Service.ExportWorkspaceEnvelopes(slugs)
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/yaml")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(data)
 }

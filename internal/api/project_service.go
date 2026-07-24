@@ -1,12 +1,15 @@
 package api
 
 import (
+	"bytes"
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -53,6 +56,19 @@ type ProjectAppService struct {
 	// not exercise it can leave this unset, same convention as
 	// CaptureUpstreamURL/Hydrator above.
 	HostCommands func() map[string]orchestrator.HostCommandSpec
+	// WorkspacesConn is the daemon's single *sql.DB handle (docs/plans/
+	// volume-only-daemon.md PR-1d codex round-1 Blocker 2/3). ApplyWorkspace
+	// and ExportWorkspaceEnvelopes need a raw connection — not the
+	// WorkspaceStore/ProjectRepository interfaces above — because both
+	// operations span workspace-meta AND project-assignment writes/reads
+	// that must run inside ONE transaction (orchestrator.
+	// ApplyWorkspaceEnvelope / orchestrator.SnapshotWorkspacesForExport),
+	// which those two separate, narrower interfaces have no way to express.
+	// Wired in internal/server/wire.go to srv.db, the same connection every
+	// other repository in this daemon is already built from. nil skips both
+	// endpoints with a 500 (same "not wired" convention as Workspaces
+	// above) — tests that do not exercise them can leave this unset.
+	WorkspacesConn *sql.DB
 	// mu serializes every workspace-mutating entry point — CreateWorkspace,
 	// UpdateWorkspace, RemoveWorkspace, and SetProjectWorkspace — against
 	// each other. It started out narrower (MAJOR 3, codex review round 1)
@@ -722,6 +738,154 @@ func (s *ProjectAppService) ImportWorkspace(slug string, meta *orchestrator.Work
 		return nil, &StatusError{Code: http.StatusInternalServerError, Message: err.Error()}
 	}
 	return s.buildWorkspaceDetail(slug, meta)
+}
+
+// ApplyWorkspace upserts apply's workspace metadata and (when
+// apply.FieldsPresent["projects"] is true) reconciles its project
+// assignments atomically, in a single DB transaction (docs/plans/
+// volume-only-daemon.md PR-1d codex round-1 Blocker 2, POST
+// /api/workspaces/apply).
+//
+// Two things happen here BEFORE the transaction opens, deliberately outside
+// orchestrator.ApplyWorkspaceEnvelope's own DB tx: validateHostCommandRefs
+// (needs the daemon's live in-memory host_commands snapshot, not a DB
+// table) and resolveWorkspaceApplyProjectNames (needs the in-memory
+// ProjectMeta cache to turn a project NAME into an ID — see that method's
+// doc comment). Neither runs conditionally on dryRun (MAJOR 1, codex
+// round-1): a dry run must hit the exact same validation a real apply
+// would, not silently skip it and report success on a document real apply
+// would go on to reject.
+func (s *ProjectAppService) ApplyWorkspace(apply *orchestrator.WorkspaceEnvelopeApply, dryRun bool) (*orchestrator.WorkspaceApplyResult, error) {
+	slug := apply.Envelope.Metadata.Name
+	if err := orchestrator.ValidWorkspaceSlug(slug); err != nil {
+		return nil, &StatusError{Code: http.StatusBadRequest, Message: err.Error()}
+	}
+	if s.WorkspacesConn == nil {
+		return nil, &StatusError{Code: http.StatusInternalServerError, Message: "workspace db connection not wired"}
+	}
+
+	if apply.FieldsPresent["host_commands"] {
+		if err := s.validateHostCommandRefs(apply.Envelope.Spec.HostCommands); err != nil {
+			return nil, err
+		}
+	}
+
+	var projectIDsByName map[string]string
+	var missing []string
+	if apply.FieldsPresent["projects"] {
+		projectIDsByName, missing = s.resolveWorkspaceApplyProjectNames(apply.Envelope.Spec.Projects)
+	}
+
+	// Same critical-section discipline as Create/Update/Remove/Import — see
+	// the mu field's doc comment: apply is just as much a workspace- (and
+	// now also project-assignment-) mutating entry point as those.
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	result, err := orchestrator.ApplyWorkspaceEnvelope(s.WorkspacesConn, apply, projectIDsByName, dryRun)
+	if err != nil {
+		return nil, &StatusError{Code: http.StatusInternalServerError, Message: err.Error()}
+	}
+	result.MissingProjects = missing
+
+	if !dryRun {
+		// Propagate the new assignments into the in-memory ProjectStore cache
+		// (same convention as SetProjectWorkspace/RemoveWorkspace above) so
+		// the next GetWithWorkspace call sees them without a daemon restart.
+		for _, id := range result.AttachedProjects {
+			s.Meta.SetWorkspaceID(id, slug)
+		}
+		for _, id := range result.DetachedProjects {
+			s.Meta.SetWorkspaceID(id, orchestrator.DefaultWorkspaceSlug)
+		}
+	}
+	return result, nil
+}
+
+// resolveWorkspaceApplyProjectNames resolves each spec.projects[].name
+// entry to a registered project ID via the same name-matching
+// ResolveProjectRef uses (id > name-exact > name-substring, ambiguous or
+// no match both folded into "unresolved" — mirroring the pre-existing
+// GET /api/projects/{ref} behavior applyWorkspaceProjects used to rely on,
+// cmd/workspace_apply.go). A name that does not resolve to exactly one
+// project is reported in missing rather than failing the whole apply (the
+// plan doc's cross-PR coordination note: a not-yet-registered project must
+// never fail apply).
+func (s *ProjectAppService) resolveWorkspaceApplyProjectNames(projects []orchestrator.WorkspaceEnvelopeProject) (ids map[string]string, missing []string) {
+	ids = make(map[string]string, len(projects))
+	for _, ep := range projects {
+		matches, err := s.ResolveProjectRef(ep.Name)
+		if err != nil || len(matches) != 1 {
+			missing = append(missing, ep.Name)
+			continue
+		}
+		ids[ep.Name] = matches[0].ID
+	}
+	return ids, missing
+}
+
+// ExportWorkspaceEnvelopes returns one or more boid.dev/v1 Workspace yaml
+// documents ("---"-separated when more than one), built from a single
+// atomic DB snapshot (docs/plans/volume-only-daemon.md PR-1d codex round-1
+// Blocker 3, GET /api/workspaces/export?all=true|?name=<slug>). slugs
+// nil/empty exports every workspace.
+func (s *ProjectAppService) ExportWorkspaceEnvelopes(slugs []string) ([]byte, error) {
+	if s.WorkspacesConn == nil {
+		return nil, &StatusError{Code: http.StatusInternalServerError, Message: "workspace db connection not wired"}
+	}
+
+	snapshots, err := orchestrator.SnapshotWorkspacesForExport(s.WorkspacesConn, slugs)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, &StatusError{Code: http.StatusNotFound, Message: err.Error()}
+		}
+		return nil, &StatusError{Code: http.StatusInternalServerError, Message: err.Error()}
+	}
+
+	docs := make([][]byte, 0, len(snapshots))
+	for _, snap := range snapshots {
+		envProjects := make([]orchestrator.WorkspaceEnvelopeProject, 0, len(snap.ProjectIDs))
+		for _, id := range snap.ProjectIDs {
+			p, err := s.Projects.GetProject(id)
+			if err != nil {
+				// A project row vanished between the atomic snapshot read
+				// and this lookup (e.g. a concurrent delete) — skip it
+				// rather than failing the whole export. It is no longer
+				// assigned to anything meaningful to export, and the
+				// snapshot's own consistency guarantee (Blocker 3) only
+				// covers workspace assignment, not a project's continued
+				// existence a moment later.
+				continue
+			}
+			hydrated := s.hydrateProject(p)
+			envProjects = append(envProjects, orchestrator.WorkspaceEnvelopeProject{
+				Name: workspaceEnvelopeProjectExportName(hydrated),
+				URL:  hydrated.UpstreamURL,
+			})
+		}
+		envelope := orchestrator.NewWorkspaceEnvelopeFromMeta(snap.Slug, snap.Meta, envProjects)
+		data, err := yaml.Marshal(envelope)
+		if err != nil {
+			return nil, &StatusError{Code: http.StatusInternalServerError, Message: fmt.Sprintf("marshal workspace %q: %v", snap.Slug, err)}
+		}
+		docs = append(docs, data)
+	}
+	return bytes.Join(docs, []byte("---\n")), nil
+}
+
+// workspaceEnvelopeProjectExportName picks the spec.projects[].name value
+// for p (mirrors cmd/workspace_export.go's client-side projectExportName,
+// which the atomic GET /api/workspaces/export endpoint now supersedes as
+// the sole export path — see that function's own doc comment for why
+// Meta.Name over WorkDir basename is the right choice): p.Meta.Name (the
+// project.yaml `name:` field) when known, so an exported name round-trips
+// straight back through `apply`'s own name resolution unchanged. Falls back
+// to the work_dir basename only when Meta was never hydrated.
+func workspaceEnvelopeProjectExportName(p *orchestrator.Project) string {
+	if p.Meta.Name != "" {
+		return p.Meta.Name
+	}
+	return filepath.Base(p.WorkDir)
 }
 
 func (s *ProjectAppService) DeleteProject(id string) error {

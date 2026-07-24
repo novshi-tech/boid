@@ -395,6 +395,136 @@ func TestRunWorkspaceApply_RequiresFileFlag(t *testing.T) {
 	}
 }
 
+// TestRunWorkspaceExportApply_EmptyFieldsRoundTripClearsAndDetaches pins
+// Blocker 1 end to end (codex round-1): exporting a genuinely empty
+// workspace must show its env/host_commands/projects fields explicitly
+// (not omitted), and applying that exported document — retargeted at an
+// existing, populated workspace — must clear that workspace's env and
+// detach every one of its assigned projects (moved to the default
+// workspace), not silently leave them untouched.
+func TestRunWorkspaceExportApply_EmptyFieldsRoundTripClearsAndDetaches(t *testing.T) {
+	ts := testutil.NewTestServer(t)
+	t.Setenv("BOID_SOCKET", ts.Server.SocketPath())
+	seedHostCommandsForTest(t, ts, "gh")
+	resetWorkspaceCreateEditFlags(t)
+	resetWorkspaceExportImportFlags(t)
+	resetWorkspaceApplyFlags(t)
+	defer resetWorkspaceApplyFlags(t)
+
+	// A brand-new, never-edited workspace: empty env, no host_commands, no
+	// assigned projects.
+	if err := runWorkspaceCreate(workspaceCreateCmd, []string{"empty-ws"}); err != nil {
+		t.Fatalf("create empty-ws: %v", err)
+	}
+
+	var exported bytes.Buffer
+	exportCmd := workspaceExportCmd
+	exportCmd.SetOut(&exported)
+	if err := runWorkspaceExport(exportCmd, []string{"empty-ws"}); err != nil {
+		t.Fatalf("export empty-ws: %v", err)
+	}
+	exportedYAML := exported.String()
+	for _, want := range []string{"env: {}", "host_commands: []", "allowed_domains: []", "projects: []"} {
+		if !strings.Contains(exportedYAML, want) {
+			t.Fatalf("exported empty-ws yaml = %q, want it to contain %q (explicit empty, not omitted)", exportedYAML, want)
+		}
+	}
+
+	// A populated workspace with existing env + two assigned projects.
+	if err := runWorkspaceCreate(workspaceCreateCmd, []string{"team-populated"}); err != nil {
+		t.Fatalf("create team-populated: %v", err)
+	}
+	editFile := writeApplyFile(t, "host_commands:\n  - gh\nenv:\n  FOO: bar\n")
+	if err := workspaceEditCmd.Flags().Set("from-file", editFile); err != nil {
+		t.Fatalf("set --from-file: %v", err)
+	}
+	if err := runWorkspaceEdit(workspaceEditCmd, []string{"team-populated"}); err != nil {
+		t.Fatalf("edit team-populated: %v", err)
+	}
+	resetWorkspaceCreateEditFlags(t)
+
+	var projectIDs []string
+	for _, name := range []string{"proj-1", "proj-2"} {
+		dir := writeImportTestProject(t, name, name)
+		var project orchestrator.Project
+		if err := ts.Client.Do("POST", "/api/projects", map[string]string{"work_dir": dir}, &project); err != nil {
+			t.Fatalf("create project %s: %v", name, err)
+		}
+		if err := ts.Client.Do("PUT", "/api/projects/"+project.ID+"/workspace", map[string]string{"workspace_id": "team-populated"}, &orchestrator.Project{}); err != nil {
+			t.Fatalf("assign project %s: %v", name, err)
+		}
+		projectIDs = append(projectIDs, project.ID)
+	}
+
+	// Retarget the exported empty-ws document at team-populated, then apply it.
+	retargeted := strings.Replace(exportedYAML, "name: empty-ws", "name: team-populated", 1)
+	applyFile := writeApplyFile(t, retargeted)
+	if err := workspaceApplyCmd.Flags().Set("file", applyFile); err != nil {
+		t.Fatalf("set -f: %v", err)
+	}
+	var out bytes.Buffer
+	applyCmd := workspaceApplyCmd
+	applyCmd.SetOut(&out)
+	if err := runWorkspaceApply(applyCmd, nil); err != nil {
+		t.Fatalf("runWorkspaceApply: %v", err)
+	}
+
+	var detail api.WorkspaceDetail
+	if err := ts.Client.Do("GET", "/api/workspaces/team-populated", nil, &detail); err != nil {
+		t.Fatalf("verify apply: %v", err)
+	}
+	if len(detail.Meta.Env) != 0 {
+		t.Errorf("Env = %v, want cleared", detail.Meta.Env)
+	}
+	for _, id := range projectIDs {
+		var p orchestrator.Project
+		if err := ts.Client.Do("GET", "/api/projects/"+id, nil, &p); err != nil {
+			t.Fatalf("get project %s: %v", id, err)
+		}
+		if p.WorkspaceID != orchestrator.DefaultWorkspaceSlug {
+			t.Errorf("project %s WorkspaceID = %q, want %q (detached)", id, p.WorkspaceID, orchestrator.DefaultWorkspaceSlug)
+		}
+	}
+}
+
+// TestRunWorkspaceApply_DryRunStillValidatesHostCommands pins Major 1
+// (codex round-1): --dry-run must hit the exact same daemon-side
+// host_commands validation a real apply would, not report success on a
+// document real apply would go on to reject.
+func TestRunWorkspaceApply_DryRunStillValidatesHostCommands(t *testing.T) {
+	ts := testutil.NewTestServer(t)
+	t.Setenv("BOID_SOCKET", ts.Server.SocketPath())
+	resetWorkspaceApplyFlags(t)
+	defer resetWorkspaceApplyFlags(t)
+
+	file := writeApplyFile(t, `
+apiVersion: boid.dev/v1
+kind: Workspace
+metadata:
+  name: team-dryrun
+spec:
+  host_commands: [totally-unknown-command]
+`)
+	if err := workspaceApplyCmd.Flags().Set("file", file); err != nil {
+		t.Fatalf("set -f: %v", err)
+	}
+	if err := workspaceApplyCmd.Flags().Set("dry-run", "true"); err != nil {
+		t.Fatalf("set --dry-run: %v", err)
+	}
+
+	err := runWorkspaceApply(workspaceApplyCmd, nil)
+	if err == nil {
+		t.Fatal("expected --dry-run to surface the unknown host_commands reference as an error")
+	}
+	if !strings.Contains(err.Error(), "totally-unknown-command") {
+		t.Errorf("error = %v, want it to mention the unknown host_commands reference", err)
+	}
+
+	if err := ts.Client.Do("GET", "/api/workspaces/team-dryrun", nil, &api.WorkspaceDetail{}); err == nil {
+		t.Fatal("expected team-dryrun to NOT exist (dry-run must never write)")
+	}
+}
+
 // TestWorkspaceRemove_DeleteAlias pins that `boid workspace delete` is
 // registered as an alias of `boid workspace remove` (docs/plans/
 // volume-only-daemon.md §論点g's CLI surface) rather than a separate

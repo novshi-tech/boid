@@ -10,12 +10,10 @@ import (
 	"reflect"
 	"sort"
 
-	"github.com/novshi-tech/boid/internal/api"
 	"github.com/novshi-tech/boid/internal/client"
 	"github.com/novshi-tech/boid/internal/orchestrator"
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
-	"gopkg.in/yaml.v3"
 )
 
 var (
@@ -36,12 +34,21 @@ var workspaceApplyCmd = &cobra.Command{
 named in the file that does not yet exist is created; one that already
 exists is updated field-by-field (a spec field absent from the document
 leaves the workspace's current value untouched; an explicit empty value —
-e.g. "env: {}" — clears it). Each spec.projects[] entry is attached to the
-workspace by name if a project with that name is already registered;
-otherwise a warning is printed and apply continues (see the plan doc's
-§論点g for why registration-by-URL is not yet wired — that lands in PR-2).
+e.g. "env: {}" — clears it). spec.projects[], when present, replaces the
+workspace's ENTIRE project assignment set: an already-registered project
+named in the list is attached, and any project currently assigned to the
+workspace but absent from the list is detached (moved to the default
+workspace). A projects[] entry that does not resolve to a registered
+project prints a warning and apply continues (see the plan doc's §論点g for
+why registration-by-URL is not yet wired — that lands in PR-2).
 
---dry-run prints what would change without writing anything.`,
+Each document is applied atomically (its metadata and project assignment
+changes commit or roll back together, in one daemon-side transaction) — but
+across documents in a multi-document file, apply stops at the first failing
+document, leaving any already-applied document committed.
+
+--dry-run runs the exact same daemon-side validation and prints what would
+change, without writing anything.`,
 	Args: cobra.NoArgs,
 	RunE: runWorkspaceApply,
 }
@@ -62,142 +69,111 @@ func runWorkspaceApply(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("read -f/--file: %w", err)
 	}
 
+	// Parse the whole file up front (fail fast: a malformed document N
+	// leaves document 1..N-1 untouched, matching the pre-existing
+	// behavior) and also get each document's warning-relevant metadata
+	// (AdditionalBindingsDropped) before any HTTP call is made.
 	docs, err := orchestrator.DecodeWorkspaceEnvelopeDocuments(data)
 	if err != nil {
 		return fmt.Errorf("parse %s: %w", workspaceApplyFile, err)
+	}
+
+	// Split into each document's RAW bytes (not a re-marshal of the parsed
+	// *WorkspaceEnvelopeApply values above) so POST /api/workspaces/apply
+	// sees exactly the field presence the source file had — see
+	// SplitWorkspaceEnvelopeDocuments's doc comment for why re-marshaling
+	// the decoded struct would lose that distinction now that
+	// WorkspaceEnvelopeSpec's fields no longer carry `omitempty` (Blocker 1).
+	rawDocs, err := orchestrator.SplitWorkspaceEnvelopeDocuments(data)
+	if err != nil {
+		return fmt.Errorf("parse %s: %w", workspaceApplyFile, err)
+	}
+	if len(rawDocs) != len(docs) {
+		return fmt.Errorf("internal error: parsed %d document(s) but split %d — %s may use a YAML feature these two decoders disagree on", len(docs), len(rawDocs), workspaceApplyFile)
 	}
 
 	c := client.FromContext(cmd.Context())
 	out := cmd.OutOrStdout()
 	stderr := cmd.ErrOrStderr()
 
-	for _, doc := range docs {
+	for i, doc := range docs {
 		slug := doc.Envelope.Metadata.Name
 		if doc.AdditionalBindingsDropped {
 			slog.Warn("workspace apply: spec.additional_bindings is no longer supported and was dropped", "workspace", slug)
 			fmt.Fprintf(stderr, "warning: workspace %q: spec.additional_bindings is no longer supported (retired) — dropped\n", slug)
 		}
-		if err := applyOneWorkspace(c, out, stderr, doc, workspaceApplyDryRun); err != nil {
+		if err := applyOneWorkspaceDocument(c, out, stderr, slug, rawDocs[i], workspaceApplyDryRun); err != nil {
 			return fmt.Errorf("apply workspace %q: %w", slug, err)
 		}
 	}
 	return nil
 }
 
-// applyOneWorkspace upserts a single workspace document: fetch-if-exists,
-// merge (WorkspaceEnvelopeApply.MergeInto), then either print a dry-run diff
-// or write it (PUT with If-Match for an existing workspace, POST for a new
-// one — the same primitives `workspace edit`/`workspace create` already use;
-// no atomic bulk endpoint was added, per the plan doc's RPC note allowing
-// "single-workspace atomicity" when a bulk endpoint isn't otherwise needed).
-// Project attachment (applyWorkspaceProjects) always runs after, dry-run or
-// not, since it is a separate concern from the meta merge above.
-func applyOneWorkspace(c *client.Client, out, stderr io.Writer, doc *orchestrator.WorkspaceEnvelopeApply, dryRun bool) error {
-	slug := doc.Envelope.Metadata.Name
-
-	statusCode, body, err := c.GetRaw("/api/workspaces/" + slug)
+// applyOneWorkspaceDocument POSTs raw (one document's original bytes) to
+// POST /api/workspaces/apply?dry_run=<dryRun> — the daemon parses it,
+// upserts the workspace metadata, and (if spec.projects is present)
+// reconciles project assignments, all inside one transaction (docs/plans/
+// volume-only-daemon.md PR-1d codex round-1 Blocker 2). Prints the same
+// dry-run diff / created-or-updated / project attach-detach / missing-
+// project warning output the pre-atomic client-side implementation did.
+func applyOneWorkspaceDocument(c *client.Client, out, stderr io.Writer, slug string, raw []byte, dryRun bool) error {
+	path := "/api/workspaces/apply"
+	if dryRun {
+		path += "?dry_run=true"
+	}
+	statusCode, respBody, err := c.PostRaw(path, "application/yaml", raw)
 	if err != nil {
-		return fmt.Errorf("check existing workspace: %w", err)
+		return fmt.Errorf("apply request: %w", err)
+	}
+	if statusCode != http.StatusOK {
+		return fmt.Errorf("apply: %s", formatWorkspaceAPIError(statusCode, respBody))
 	}
 
-	var exists bool
-	var current api.WorkspaceDetail
-	switch statusCode {
-	case http.StatusOK:
-		exists = true
-		if err := json.Unmarshal(body, &current); err != nil {
-			return fmt.Errorf("decode current workspace: %w", err)
-		}
-	case http.StatusNotFound:
-		exists = false
-	default:
-		return fmt.Errorf("check existing workspace: %s", formatWorkspaceAPIError(statusCode, body))
+	var result orchestrator.WorkspaceApplyResult
+	if err := json.Unmarshal(respBody, &result); err != nil {
+		return fmt.Errorf("decode apply response: %w", err)
 	}
-
-	var currentMeta *orchestrator.WorkspaceMeta
-	if exists {
-		currentMeta = current.Meta
-	}
-	merged := doc.MergeInto(currentMeta)
 
 	if dryRun {
-		printWorkspaceApplyDiff(out, slug, exists, currentMeta, merged)
+		printWorkspaceApplyDiff(out, slug, !result.Created, result.Previous, result.Meta)
+	} else if result.Created {
+		fmt.Fprintf(out, "workspace %q created\n", slug)
 	} else {
-		metaYAML, err := yaml.Marshal(merged)
-		if err != nil {
-			return fmt.Errorf("marshal merged meta: %w", err)
-		}
-		if exists {
-			statusCode, respBody, err := c.PutRawWithIfMatch("/api/workspaces/"+slug, "application/yaml", metaYAML, current.Revision)
-			if err != nil {
-				return fmt.Errorf("update workspace: %w", err)
-			}
-			if statusCode != http.StatusOK {
-				return fmt.Errorf("update workspace: %s", formatWorkspaceAPIError(statusCode, respBody))
-			}
-			fmt.Fprintf(out, "workspace %q updated\n", slug)
-		} else {
-			createBody, err := buildWorkspaceCreateBody(slug, metaYAML)
-			if err != nil {
-				return fmt.Errorf("build create request: %w", err)
-			}
-			if err := c.DoWithContentType("POST", "/api/workspaces", "application/yaml", createBody, &api.WorkspaceDetail{}); err != nil {
-				return fmt.Errorf("create workspace: %w", err)
-			}
-			fmt.Fprintf(out, "workspace %q created\n", slug)
-		}
+		fmt.Fprintf(out, "workspace %q updated\n", slug)
 	}
 
-	applyWorkspaceProjects(c, out, stderr, slug, doc.Envelope.Spec.Projects, dryRun)
+	printWorkspaceApplyProjectChanges(out, dryRun, slug, &result)
+	for _, name := range result.MissingProjects {
+		fmt.Fprintf(stderr, "warning: project '%s' referenced in workspace '%s' does not exist yet. Register it separately (or via PR-2's boid project add <url>) then re-apply.\n", name, slug)
+	}
 	return nil
 }
 
-// applyWorkspaceProjects attaches each spec.projects[] entry to slug by
-// name, via the same GET /api/projects/{ref} lookup `boid workspace assign`
-// uses (resolveProjectRef's underlying endpoint) and PUT
-// /api/projects/{id}/workspace. A project that does not resolve (404 unknown
-// name, or 409 ambiguous name — both folded into the same "does not exist
-// yet" message, since apply must never fail over this) prints a warning and
-// continues, per docs/plans/volume-only-daemon.md §論点g: registering a
-// project from spec.projects[].url is PR-2 scope, not this one.
-func applyWorkspaceProjects(c *client.Client, out, stderr io.Writer, slug string, projects []orchestrator.WorkspaceEnvelopeProject, dryRun bool) {
-	for _, ep := range projects {
-		statusCode, body, err := c.GetRaw("/api/projects/" + ep.Name)
-		if err != nil {
-			fmt.Fprintf(stderr, "warning: workspace %q: resolve project %q failed: %v\n", slug, ep.Name, err)
-			continue
+// printWorkspaceApplyProjectChanges prints the project-assignment side
+// effects (or, for dryRun, would-be side effects) of an apply — a project
+// newly attached, one already correctly attached (dry-run preview only,
+// matching the pre-atomic implementation's verbosity), and one detached
+// (moved to the default workspace) because spec.projects was present but
+// no longer listed it.
+func printWorkspaceApplyProjectChanges(out io.Writer, dryRun bool, slug string, result *orchestrator.WorkspaceApplyResult) {
+	verb := "attach"
+	if dryRun {
+		verb = "would attach"
+	}
+	for _, id := range result.AttachedProjects {
+		fmt.Fprintf(out, "  project %q %sed to %q\n", id, verb, slug)
+	}
+	if dryRun {
+		for _, id := range result.AlreadyAttachedProjects {
+			fmt.Fprintf(out, "  project %q already attached to %q (no change)\n", id, slug)
 		}
-
-		switch statusCode {
-		case http.StatusOK:
-			var p orchestrator.Project
-			if err := json.Unmarshal(body, &p); err != nil {
-				fmt.Fprintf(stderr, "warning: workspace %q: decode project %q failed: %v\n", slug, ep.Name, err)
-				continue
-			}
-			if p.WorkspaceID == slug {
-				if dryRun {
-					fmt.Fprintf(out, "  project %q already attached to %q (no change)\n", ep.Name, slug)
-				}
-				continue
-			}
-			if dryRun {
-				fmt.Fprintf(out, "  ~ attach project %q (currently in %q) to %q\n", ep.Name, p.WorkspaceID, slug)
-				continue
-			}
-			var updated orchestrator.Project
-			if err := c.Do("PUT", "/api/projects/"+p.ID+"/workspace", map[string]string{"workspace_id": slug}, &updated); err != nil {
-				fmt.Fprintf(stderr, "warning: workspace %q: attach project %q failed: %v\n", slug, ep.Name, err)
-				continue
-			}
-			fmt.Fprintf(out, "  project %q attached to %q\n", ep.Name, slug)
-
-		case http.StatusNotFound, http.StatusConflict:
-			fmt.Fprintf(stderr, "warning: project '%s' referenced in workspace '%s' does not exist yet. Register it separately (or via PR-2's boid project add <url>) then re-apply.\n", ep.Name, slug)
-
-		default:
-			fmt.Fprintf(stderr, "warning: workspace %q: resolve project %q: %s\n", slug, ep.Name, formatWorkspaceAPIError(statusCode, body))
-		}
+	}
+	detachVerb := "detached"
+	if dryRun {
+		detachVerb = "would be detached"
+	}
+	for _, id := range result.DetachedProjects {
+		fmt.Fprintf(out, "  project %q %s from %q (moved to %q)\n", id, detachVerb, slug, orchestrator.DefaultWorkspaceSlug)
 	}
 }
 
@@ -219,6 +195,9 @@ func printWorkspaceApplyDiff(out io.Writer, slug string, exists bool, current, p
 	}
 	if current == nil {
 		current = &orchestrator.WorkspaceMeta{}
+	}
+	if proposed == nil {
+		proposed = &orchestrator.WorkspaceMeta{}
 	}
 
 	diffField(out, color, "host_commands", formatStringSlice(current.HostCommands), formatStringSlice(proposed.HostCommands))
