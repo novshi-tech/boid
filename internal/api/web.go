@@ -81,6 +81,11 @@ type WebHandler struct {
 	// rejecting attachments while still accepting plain form-urlencoded
 	// submissions.
 	AttachmentsRoot string
+
+	// ConfigService backs GET /settings (web_settings.go,
+	// docs/plans/volume-only-daemon.md §論点 f) — nil in any test/wiring
+	// that never registers the /settings route.
+	ConfigService SettingsConfigService
 }
 
 func (h *WebHandler) Routes() chi.Router {
@@ -107,6 +112,7 @@ func (h *WebHandler) Routes() chi.Router {
 	r.Get("/jobs/{id}", h.JobDetail)
 	r.Get("/jobs/{id}/terminal", h.JobTerminal)
 	r.Post("/projects/{id}/sessions/start", h.PostStartSession)
+	r.Get("/settings", h.Settings)
 	return r
 }
 

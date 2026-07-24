@@ -91,7 +91,7 @@ templ Layout(title string, backURL string) {
 			</script>
 		</head>
 		<body>
-			if !(backURL == "" && (title == "Tasks" || title == "Sessions")) {
+			if !(backURL == "" && (title == "Tasks" || title == "Sessions" || title == "Settings")) {
 				<header class="site-header">
 					if backURL != "" {
 						<a class="site-back" href={ templ.SafeURL(backURL) } aria-label="Back">
@@ -101,10 +101,11 @@ templ Layout(title string, backURL string) {
 					<h1 class="site-title">{ title }</h1>
 				</header>
 			}
-			if backURL == "" && (title == "Tasks" || title == "Sessions") {
+			if backURL == "" && (title == "Tasks" || title == "Sessions" || title == "Settings") {
 				<nav class="site-nav">
 					<a href="/" class={ "site-nav-link", templ.KV("site-nav-link-active", title == "Tasks") }>Tasks</a>
 					<a href="/sessions" class={ "site-nav-link", templ.KV("site-nav-link-active", title == "Sessions") }>Sessions</a>
+					<a href="/settings" class={ "site-nav-link", templ.KV("site-nav-link-active", title == "Settings") }>Settings</a>
 				</nav>
 			}
 			<main class="site-main">

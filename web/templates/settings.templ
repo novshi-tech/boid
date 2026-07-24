@@ -1,0 +1,379 @@
+package templates
+
+// This file implements the /settings page (docs/plans/volume-only-daemon.md
+// §論点 f, the Web UI half — PR-1c of PR-1's 4 sub-PRs). It is a thin
+// client of the daemon's *existing* config surface (internal/api/config.go's
+// GET /api/config, POST /api/config, POST /api/config/mutate — PR-1b): this
+// template only ever renders the *initial* GET /api/config snapshot
+// server-side (buildSettingsView, internal/api/web_settings.go); every Save
+// action is a plain client-side fetch() straight to those same endpoints —
+// there is no settings-specific RPC surface, and no hot-reload path (PR-1b
+// Round 4 reclassified every schema leaf as ReloadRestartRequired; this page
+// never claims otherwise).
+//
+// default_harness is deliberately absent from this form — see
+// internal/config/schema.go's doc comment: the key was removed from the
+// schema outright in Phase 2.5 PR7, before this plan doc was written.
+
+// ForgeRow is one gateway.forges.<id> entry as shown in the form-editor
+// table.
+type ForgeRow struct {
+	ID        string
+	Host      string
+	Forge     string
+	SecretKey string
+}
+
+// SettingsView is everything the /settings page needs to render both its
+// form editor and its raw-YAML tab from a single GET /api/config snapshot
+// (internal/api/web_settings.go's buildSettingsView).
+type SettingsView struct {
+	// Revision is the ETag GET /api/config returned — embedded verbatim as
+	// a data attribute so the page's own JS can round-trip it into the YAML
+	// tab's first POST /api/config's If-Match header, exactly like `boid
+	// config edit` does (cmd/config.go's runConfigEdit).
+	Revision string
+	// YAML is the full config.yaml document, byte-for-byte, as GET
+	// /api/config returned it — the raw-edit tab's initial textarea
+	// content.
+	YAML string
+
+	AllowedDomains []string
+	Forges         []ForgeRow
+	// ForgeKindOptions is config.Schema's "gateway.forges.*.forge" enum
+	// (github/bitbucket today) — read from the schema rather than
+	// hard-coded here, so this dropdown never silently drifts out of sync
+	// with what POST /api/config/mutate will actually accept.
+	ForgeKindOptions []string
+	// NotifyCommand is notify.command's argv, space-joined, for a single
+	// text input — mirrors how a human reads/writes a shell command line.
+	// Saved back as a mutate `set` whose Value is the input split on
+	// whitespace (config.KindStringArray's multi-arg shape, the same one
+	// `boid config set notify.command <arg>...` uses).
+	NotifyCommand string
+	WebPublicURL  string
+}
+
+// Settings renders the /settings page: a form editor (allowed domains /
+// gateway forges / notify command / web public URL) and a raw YAML editor,
+// both seeded from the same GET /api/config snapshot passed in as view.
+// Every Save button talks directly to the existing PR-1b endpoints via
+// fetch() — see this file's top-of-file doc comment.
+templ Settings(view SettingsView) {
+	@Layout("Settings", "") {
+		<div id="settings-restart-banner" class="restart-banner" hidden>
+			<strong>⚠ Configuration saved.</strong> Restart daemon to apply changes.
+			<pre class="restart-banner-cmd">docker compose -f build/container/compose.yml restart daemon</pre>
+			<ul id="settings-restart-warnings" class="restart-banner-warnings"></ul>
+		</div>
+		<div id="settings-conflict" class="error-banner" hidden>
+			config changed since page loaded — reload and merge your changes
+			<button type="button" class="btn btn-sm btn-secondary" onclick="window.location.reload()">Reload</button>
+		</div>
+		<section class="settings-section">
+			<h2 class="section-title">Config (form)</h2>
+			<div id="settings-form-error" class="error-banner" hidden></div>
+			<div id="settings-form-transient" class="form-hint" hidden></div>
+			<div class="form-group">
+				<label class="form-label">sandbox.allowed_domains</label>
+				<div id="domains-list" class="settings-list">
+					for _, d := range view.AllowedDomains {
+						<div class="settings-list-row">
+							<input type="text" class="form-input form-input-sm settings-domain-input" value={ d }/>
+							<button type="button" class="btn btn-sm btn-danger" onclick="this.parentElement.remove()">Remove</button>
+						</div>
+					}
+				</div>
+				<button type="button" class="btn btn-secondary btn-sm" onclick="addDomainRow()">+ Add domain</button>
+				<div class="form-hint">Suffix match: prefix with "." (e.g. ".freee.co.jp"). A bare hostname matches exactly.</div>
+			</div>
+			<div class="form-group">
+				<label class="form-label">gateway.forges</label>
+				<div class="settings-table-wrap">
+					<table class="settings-table" id="forges-table">
+						<thead>
+							<tr>
+								<th>id</th>
+								<th>kind</th>
+								<th>host</th>
+								<th>secret_key (env var name)</th>
+								<th></th>
+							</tr>
+						</thead>
+						<tbody>
+							for _, f := range view.Forges {
+								<tr data-forge-id={ f.ID }>
+									<td class="forge-id-cell">{ f.ID }</td>
+									<td>
+										<select class="form-input form-input-sm forge-kind">
+											for _, k := range view.ForgeKindOptions {
+												<option value={ k } selected?={ k == f.Forge }>{ k }</option>
+											}
+										</select>
+									</td>
+									<td><input type="text" class="form-input form-input-sm forge-host" value={ f.Host }/></td>
+									<td><input type="text" class="form-input form-input-sm forge-secret" value={ f.SecretKey }/></td>
+									<td><button type="button" class="btn btn-sm btn-danger" onclick="this.closest('tr').remove()">Remove</button></td>
+								</tr>
+							}
+						</tbody>
+					</table>
+				</div>
+				<button type="button" class="btn btn-secondary btn-sm" onclick="addForgeRow()">+ Add forge</button>
+				<div class="form-hint">secret_key is the env var <strong>NAME</strong>, not the value — this is not the secret itself. Set the actual value via the deployment env / systemd unit / k8s Secret.</div>
+			</div>
+			<div class="form-group">
+				<label for="notify-command-input" class="form-label">notify.command</label>
+				<input type="text" id="notify-command-input" class="form-input" value={ view.NotifyCommand } placeholder="notify-send -a boid"/>
+				<div class="form-hint">Space-separated argv (e.g. <code>notify-send -a boid</code>).</div>
+			</div>
+			<div class="form-group">
+				<label for="web-public-url-input" class="form-label">web.public_url</label>
+				<input type="text" id="web-public-url-input" class="form-input" value={ view.WebPublicURL } placeholder="https://boid.example.com"/>
+			</div>
+			<button type="button" class="btn btn-primary" onclick="saveForm()">Save form</button>
+		</section>
+		<section class="settings-section">
+			<h2 class="section-title">Config (YAML)</h2>
+			<div id="settings-yaml-error" class="error-banner" hidden></div>
+			<div id="settings-yaml-transient" class="form-hint" hidden></div>
+			<textarea id="yaml-textarea" class="form-input settings-yaml-textarea" data-revision={ view.Revision } rows="20" spellcheck="false">{ view.YAML }</textarea>
+			<button type="button" class="btn btn-primary" onclick="saveYaml()">Save YAML</button>
+			<button type="button" class="btn btn-secondary" onclick="window.location.reload()">Reload</button>
+		</section>
+		<script>
+			(function () {
+				"use strict";
+				var BANNER_KEY = "boid-settings-restart-banner";
+
+				function $(sel, root) { return (root || document).querySelector(sel); }
+				function $all(sel, root) { return Array.prototype.slice.call((root || document).querySelectorAll(sel)); }
+
+				function show(el) { if (el) el.hidden = false; }
+				function hide(el) { if (el) el.hidden = true; }
+
+				function showRestartBanner(warnings) {
+					var el = $("#settings-restart-banner");
+					var list = $("#settings-restart-warnings");
+					list.innerHTML = "";
+					(warnings || []).forEach(function (w) {
+						var li = document.createElement("li");
+						li.textContent = w;
+						list.appendChild(li);
+					});
+					show(el);
+				}
+
+				// A banner staged before a full-page reload (the simplest way to
+				// keep both tabs' server-rendered state authoritative after any
+				// save — see this file's top-of-file doc comment) is picked back
+				// up here, once, on the reloaded page.
+				(function restoreBannerAfterReload() {
+					var stored = sessionStorage.getItem(BANNER_KEY);
+					if (!stored) return;
+					sessionStorage.removeItem(BANNER_KEY);
+					try {
+						var parsed = JSON.parse(stored);
+						showRestartBanner(parsed.warnings || []);
+					} catch (e) { /* ignore malformed sessionStorage content */ }
+				})();
+
+				function finishSave(warnings) {
+					sessionStorage.setItem(BANNER_KEY, JSON.stringify({ warnings: warnings || [] }));
+					window.location.reload();
+				}
+
+				// ---- allowed domains ----
+
+				function addDomainRow() {
+					var row = document.createElement("div");
+					row.className = "settings-list-row";
+					row.innerHTML = '<input type="text" class="form-input form-input-sm settings-domain-input"/>' +
+						'<button type="button" class="btn btn-sm btn-danger" onclick="this.parentElement.remove()">Remove</button>';
+					$("#domains-list").appendChild(row);
+					row.querySelector("input").focus();
+				}
+				window.addDomainRow = addDomainRow;
+
+				function collectDomains() {
+					return $all(".settings-domain-input").map(function (i) { return i.value.trim(); }).filter(Boolean);
+				}
+				var originalDomains = collectDomains();
+
+				// ---- gateway.forges ----
+
+				function addForgeRow() {
+					var tbody = $("#forges-table tbody");
+					var tr = document.createElement("tr");
+					var options = $all("#forges-table .forge-kind option").reduce(function (acc, o) {
+						if (acc.indexOf(o.value) === -1) acc.push(o.value);
+						return acc;
+					}, []);
+					var optionsHTML = options.map(function (o) { return '<option value="' + o + '">' + o + '</option>'; }).join("");
+					tr.innerHTML =
+						'<td><input type="text" class="form-input form-input-sm forge-id" placeholder="id"/></td>' +
+						'<td><select class="form-input form-input-sm forge-kind">' + optionsHTML + '</select></td>' +
+						'<td><input type="text" class="form-input form-input-sm forge-host"/></td>' +
+						'<td><input type="text" class="form-input form-input-sm forge-secret"/></td>' +
+						'<td><button type="button" class="btn btn-sm btn-danger" onclick="this.closest(\'tr\').remove()">Remove</button></td>';
+					tbody.appendChild(tr);
+					tr.querySelector(".forge-id").focus();
+				}
+				window.addForgeRow = addForgeRow;
+
+				function collectForges() {
+					return $all("#forges-table tbody tr").map(function (tr) {
+						var idCell = tr.querySelector(".forge-id-cell");
+						var idInput = tr.querySelector(".forge-id");
+						var id = idCell ? idCell.textContent.trim() : (idInput ? idInput.value.trim() : "");
+						return {
+							id: id,
+							host: tr.querySelector(".forge-host").value.trim(),
+							forge: tr.querySelector(".forge-kind").value,
+							secretKey: tr.querySelector(".forge-secret").value.trim()
+						};
+					}).filter(function (f) { return f.id !== ""; });
+				}
+				var originalForges = {};
+				collectForges().forEach(function (f) { originalForges[f.id] = f; });
+
+				function diffForges() {
+					var calls = [];
+					var seen = {};
+					collectForges().forEach(function (f) {
+						seen[f.id] = true;
+						var o = originalForges[f.id];
+						if (!o) {
+							calls.push({ op: "set", key: "gateway.forges." + f.id + ".host", value: [f.host] });
+							calls.push({ op: "set", key: "gateway.forges." + f.id + ".forge", value: [f.forge] });
+							calls.push({ op: "set", key: "gateway.forges." + f.id + ".secret_key", value: [f.secretKey] });
+							return;
+						}
+						if (o.host !== f.host) calls.push({ op: "set", key: "gateway.forges." + f.id + ".host", value: [f.host] });
+						if (o.forge !== f.forge) calls.push({ op: "set", key: "gateway.forges." + f.id + ".forge", value: [f.forge] });
+						if (o.secretKey !== f.secretKey) calls.push({ op: "set", key: "gateway.forges." + f.id + ".secret_key", value: [f.secretKey] });
+					});
+					Object.keys(originalForges).forEach(function (id) {
+						if (!seen[id]) calls.push({ op: "unset", key: "gateway.forges." + id });
+					});
+					return calls;
+				}
+
+				// ---- scalar fields ----
+
+				var notifyInput = $("#notify-command-input");
+				var publicURLInput = $("#web-public-url-input");
+				var originalNotify = splitArgv(notifyInput.value);
+				var originalPublicURL = publicURLInput.value.trim();
+
+				function splitArgv(s) {
+					s = (s || "").trim();
+					return s === "" ? [] : s.split(/\s+/);
+				}
+
+				function sameArray(a, b) {
+					return JSON.stringify(a) === JSON.stringify(b);
+				}
+
+				// ---- save (form tab) ----
+
+				async function postMutate(req) {
+					var res = await fetch("/api/config/mutate", {
+						method: "POST",
+						headers: { "Content-Type": "application/json" },
+						body: JSON.stringify(req)
+					});
+					var body = {};
+					try { body = await res.json(); } catch (e) { /* no body */ }
+					if (!res.ok) {
+						var msg = (body && body.error) ? body.error : ("request failed (HTTP " + res.status + ")");
+						throw new Error(req.key + ": " + msg);
+					}
+					return body;
+				}
+
+				async function saveForm() {
+					hide($("#settings-form-error"));
+					hide($("#settings-form-transient"));
+
+					var calls = [];
+					var curDomains = collectDomains();
+					if (!sameArray(curDomains, originalDomains)) {
+						calls.push({ op: "set", key: "sandbox.allowed_domains", value: curDomains });
+					}
+					var curNotify = splitArgv(notifyInput.value);
+					if (!sameArray(curNotify, originalNotify)) {
+						calls.push({ op: "set", key: "notify.command", value: curNotify });
+					}
+					var curPublicURL = publicURLInput.value.trim();
+					if (curPublicURL !== originalPublicURL) {
+						calls.push({ op: "set", key: "web.public_url", value: [curPublicURL] });
+					}
+					calls = calls.concat(diffForges());
+
+					if (calls.length === 0) {
+						var t = $("#settings-form-transient");
+						t.textContent = "No changes";
+						show(t);
+						return;
+					}
+
+					var warnings = [];
+					for (var i = 0; i < calls.length; i++) {
+						try {
+							var body = await postMutate(calls[i]);
+							if (body.warnings) warnings = warnings.concat(body.warnings);
+						} catch (e) {
+							var err = $("#settings-form-error");
+							err.textContent = e.message;
+							show(err);
+							return;
+						}
+					}
+					finishSave(warnings);
+				}
+				window.saveForm = saveForm;
+
+				// ---- save (YAML tab) ----
+
+				var yamlTextarea = $("#yaml-textarea");
+				var originalYAML = yamlTextarea.value;
+				var currentRevision = yamlTextarea.dataset.revision || "";
+
+				async function saveYaml() {
+					hide($("#settings-yaml-error"));
+					hide($("#settings-yaml-transient"));
+					hide($("#settings-conflict"));
+
+					var newYAML = yamlTextarea.value;
+					if (newYAML.replace(/\s+$/, "") === originalYAML.replace(/\s+$/, "")) {
+						var t = $("#settings-yaml-transient");
+						t.textContent = "No changes";
+						show(t);
+						return;
+					}
+
+					var res = await fetch("/api/config", {
+						method: "POST",
+						headers: { "Content-Type": "application/yaml", "If-Match": currentRevision },
+						body: newYAML
+					});
+					if (res.status === 412 || res.status === 428) {
+						show($("#settings-conflict"));
+						return;
+					}
+					var body = {};
+					try { body = await res.json(); } catch (e) { /* no body */ }
+					if (!res.ok) {
+						var err = $("#settings-yaml-error");
+						err.textContent = (body && body.error) ? body.error : ("save failed (HTTP " + res.status + ")");
+						show(err);
+						return;
+					}
+					finishSave(body.warnings || []);
+				}
+				window.saveYaml = saveYaml;
+			})();
+		</script>
+	}
+}
