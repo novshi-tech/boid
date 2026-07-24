@@ -33,10 +33,20 @@ func NewWorkspaceRepository(conn *sql.DB) *WorkspaceRepository {
 // WorkspaceStore.Load's contract so callers do not need to branch on which
 // backing store is in use.
 func (r *WorkspaceRepository) Load(slug string) (*WorkspaceMeta, error) {
+	return loadWorkspaceMeta(r.conn, slug)
+}
+
+// loadWorkspaceMeta is the db.DBTX-scoped counterpart of
+// WorkspaceRepository.Load, reused by ApplyWorkspaceEnvelope
+// (workspace_apply.go) so a single all-or-nothing apply transaction can
+// read a workspace's current row through the exact same decode logic
+// against a *sql.Tx instead of r.conn (see saveWorkspaceRow's doc comment
+// for why this split exists for the write side too).
+func loadWorkspaceMeta(dbtx db.DBTX, slug string) (*WorkspaceMeta, error) {
 	if err := ValidWorkspaceSlug(slug); err != nil {
 		return nil, err
 	}
-	row := r.conn.QueryRow(`
+	row := dbtx.QueryRow(`
 		SELECT slug, container_image, host_commands, env, allowed_domains,
 		       extra_repos, capabilities, additional_bindings
 		FROM workspaces WHERE slug = ?`, slug)
@@ -72,10 +82,20 @@ func (r *WorkspaceRepository) Load(slug string) (*WorkspaceMeta, error) {
 // coexisted in the DB. Returns an error wrapping os.ErrNotExist when no row
 // exists for slug, matching Load's contract.
 func (r *WorkspaceRepository) LoadWithRevision(slug string) (*WorkspaceMeta, string, error) {
+	return loadWorkspaceMetaWithRevision(r.conn, slug)
+}
+
+// loadWorkspaceMetaWithRevision is the db.DBTX-scoped counterpart of
+// WorkspaceRepository.LoadWithRevision — see loadWorkspaceMeta's doc
+// comment for why this split exists (PR-1d codex round-1 Blocker 2:
+// ApplyWorkspaceEnvelope needs to read a workspace's current meta+revision
+// from inside its own apply transaction, not a fresh r.conn query that
+// could straddle the transaction's own write).
+func loadWorkspaceMetaWithRevision(dbtx db.DBTX, slug string) (*WorkspaceMeta, string, error) {
 	if err := ValidWorkspaceSlug(slug); err != nil {
 		return nil, "", err
 	}
-	row := r.conn.QueryRow(`
+	row := dbtx.QueryRow(`
 		SELECT container_image, host_commands, env, allowed_domains,
 		       extra_repos, capabilities, additional_bindings, updated_at
 		FROM workspaces WHERE slug = ?`, slug)

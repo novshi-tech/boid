@@ -875,6 +875,13 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 		// its own doc comment) — the same method HostCommandsHandler uses
 		// for GET /api/host_commands below.
 		HostCommands: srv.HostCommands,
+		// WorkspacesConn backs ApplyWorkspace/ExportWorkspaceEnvelopes
+		// (docs/plans/volume-only-daemon.md PR-1d codex round-1 Blocker 2/3):
+		// both need the daemon's raw *sql.DB handle to open their own single
+		// transaction spanning workspace-meta + project-assignment
+		// reads/writes. srv.db is the exact same connection projectRepo
+		// above was built from.
+		WorkspacesConn: srv.db,
 	}
 	boidCfg, err := config.Load()
 	if err != nil {

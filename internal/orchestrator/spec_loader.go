@@ -91,7 +91,19 @@ func ReadProjectMeta(dir string) (*ProjectMeta, error) {
 	if meta.ID == "" {
 		return nil, fmt.Errorf("project.yaml: id is required")
 	}
-	if meta.Name == "" {
+	if strings.TrimSpace(meta.Name) == "" {
+		// PR-1d codex round-5 Minor: a bare `meta.Name == ""` check let a
+		// whitespace-only name (e.g. `name: "  "`) through project.yaml
+		// validation, while workspace apply's resolveWorkspaceApplyProjectNames
+		// (internal/api/project_service.go) already refuses a
+		// whitespace-only spec.projects[].name via
+		// strings.TrimSpace(ep.Name) == "" — a project registered with such a
+		// name could be exported successfully (ExportWorkspaceEnvelopes only
+		// checked the same bare == "" before this fix) but its own export
+		// could never be applied back: apply would fold the whitespace name
+		// into "missing" and silently detach the project. Rejecting it here,
+		// at the source, closes the round-trip gap at its root instead of
+		// only patching each downstream consumer separately.
 		return nil, fmt.Errorf("project.yaml: name is required")
 	}
 

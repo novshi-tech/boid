@@ -127,6 +127,7 @@ var expectedScopeAnnotations = map[string]string{
 	"boid web pair":             scopeRemote,
 	"boid web revoke":           scopeRemote,
 	"boid web revoke-all":       scopeRemote,
+	"boid workspace apply":      scopeRemote,
 	"boid workspace assign":     scopeRemote,
 	"boid workspace clear":      scopeRemote,
 	"boid workspace create":     scopeRemote,

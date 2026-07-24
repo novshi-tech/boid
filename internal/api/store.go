@@ -104,6 +104,23 @@ type ProjectService interface {
 	// against an existing slug, {400} for an invalid slug, an unrecognized
 	// mode value, or an unknown host_commands reference.
 	ImportWorkspace(slug string, meta *orchestrator.WorkspaceMeta, mode string) (*WorkspaceDetail, error)
+
+	// ApplyWorkspace upserts one boid.dev/v1 Workspace envelope document's
+	// metadata and (when apply.FieldsPresent["projects"] is true) project
+	// assignments atomically, in a single DB transaction (docs/plans/
+	// volume-only-daemon.md PR-1d codex round-1 Blocker 2, POST
+	// /api/workspaces/apply). dryRun exercises the same validation/DB
+	// statements but rolls back instead of committing (Major 1).
+	ApplyWorkspace(apply *orchestrator.WorkspaceEnvelopeApply, dryRun bool) (*orchestrator.WorkspaceApplyResult, error)
+
+	// ExportWorkspaceEnvelopes returns one or more boid.dev/v1 Workspace
+	// yaml documents ("---"-separated when more than one), built from a
+	// single atomic DB snapshot (docs/plans/volume-only-daemon.md PR-1d
+	// codex round-1 Blocker 3, GET /api/workspaces/export?all=true or
+	// ?name=<slug>). slugs nil/empty exports every workspace; otherwise
+	// exactly the given slugs. *StatusError{404} when a requested slug does
+	// not exist.
+	ExportWorkspaceEnvelopes(slugs []string) ([]byte, error)
 }
 
 // WorkspaceDetail is the response shape for the workspace create/show/update

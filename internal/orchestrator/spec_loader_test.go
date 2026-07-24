@@ -333,6 +333,26 @@ func TestReadProjectMeta_Errors(t *testing.T) {
 		}
 	})
 
+	// PR-1d codex round-5 Minor: a whitespace-only name (e.g. "  ") must be
+	// rejected the same as an empty one. Before this fix, project.yaml
+	// validation only checked `meta.Name == ""`, so a whitespace-only name
+	// slipped through registration while workspace export/apply's own
+	// checks (internal/api/project_service.go) already used
+	// strings.TrimSpace — a project registered this way could be exported
+	// successfully but its own export could never be applied back (apply
+	// would treat the whitespace name as absent and detach the project).
+	t.Run("whitespace-only name", func(t *testing.T) {
+		dir := t.TempDir()
+		boidDir := filepath.Join(dir, ".boid")
+		_ = os.MkdirAll(boidDir, 0o755)
+		_ = os.WriteFile(filepath.Join(boidDir, "project.yaml"), []byte("id: test-proj\nname: \"   \"\n"), 0o644)
+
+		_, err := projectspec.ReadProjectMeta(dir)
+		if err == nil || !strings.Contains(err.Error(), "name is required") {
+			t.Fatalf("expected name is required for a whitespace-only name, got %v", err)
+		}
+	})
+
 	t.Run("missing project yaml", func(t *testing.T) {
 		_, err := projectspec.ReadProjectMeta(t.TempDir())
 		if err == nil {

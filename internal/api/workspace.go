@@ -5,6 +5,8 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
+	"strconv"
 	"strings"
 
 	"github.com/go-chi/chi/v5"
@@ -27,6 +29,13 @@ func (h *WorkspaceHandler) Routes() chi.Router {
 	r.Get("/", h.List)
 	r.Post("/", h.Create)
 	r.Post("/import", h.Import)
+	// "/export" and "/apply" are static path segments at this same router
+	// level as "/{slug}" — chi's radix tree gives a static segment priority
+	// over a wildcard one at the same depth (the same precedent "/import"
+	// above already establishes for POST), so these never collide with a
+	// workspace literally named "export"/"apply".
+	r.Get("/export", h.ExportEnvelope)
+	r.Post("/apply", h.Apply)
 	r.Get("/{slug}", h.Show)
 	r.Get("/{slug}/export", h.Export)
 	r.Put("/{slug}", h.Update)
@@ -278,4 +287,133 @@ func (h *WorkspaceHandler) Remove(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// Apply handles POST /api/workspaces/apply?dry_run=<bool> (docs/plans/
+// volume-only-daemon.md PR-1d codex round-1 Blocker 2/Major 1): the body is
+// exactly one apiVersion:boid.dev/v1 kind:Workspace yaml document (a
+// multi-document body — more than one "---"-separated document — is
+// rejected; `boid workspace apply` sends one request per document, which is
+// exactly what gives each document its own all-or-nothing DB transaction
+// rather than sharing one across an entire multi-workspace file).
+// dry_run=true runs every read/write the real apply would (same
+// validation, same DB statements) but rolls back instead of committing.
+//
+// ?dry_run is parsed with strconv.ParseBool (PR-1d codex round-2 Major: the
+// previous `== "true"` check failed OPEN — "True", "1", or a typo silently
+// fell through to a real commit instead of the requested preview). An
+// unparseable value is now rejected with 400 rather than defaulting to
+// mutation, and which mode ran is always logged at INFO so a caller can
+// confirm from the server log which path a given request actually took.
+//
+// Presence, not non-emptiness, gates parsing (PR-1d codex round-3 Major):
+// the round-2 fix still checked `raw != ""`, so `?dry_run=` (empty value) or
+// `?dry_run` (no `=` at all — reachable via `?dry_run=${DRY_RUN}` with an
+// unset shell variable) produced raw=="" and fell through as if the
+// parameter were absent entirely, silently performing a real commit for a
+// caller who explicitly asked for dry_run. url.Values.Has reports whether
+// the key was present in the query string at all, independent of its value,
+// so an explicitly-empty dry_run now reaches strconv.ParseBool("") — which
+// fails — and is rejected with 400, same as any other unparseable value.
+//
+// The query string is parsed explicitly with url.ParseQuery rather than the
+// convenience r.URL.Query() (PR-1d codex round-4 Minor): (1) Query() returns
+// only the FIRST value for a repeated key, so `?dry_run=false&dry_run=true`
+// silently used "false" and performed a real commit even though the
+// request also said "true" elsewhere — ambiguous/contradictory input, now
+// rejected with 400 rather than picking one arbitrarily; (2) Query() also
+// silently discards the underlying ParseQuery error (e.g. an unescaped ';'
+// separator, rejected by net/url since Go 1.17), which can make a key
+// disappear from the parsed result entirely rather than surface the
+// malformed request — a malformed query string is now itself a 400 instead
+// of silently degrading to "no dry_run param at all" (a real commit).
+func (h *WorkspaceHandler) Apply(w http.ResponseWriter, r *http.Request) {
+	dryRun := false
+	query, err := url.ParseQuery(r.URL.RawQuery)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid query string: %v", err))
+		return
+	}
+	if values, ok := query["dry_run"]; ok {
+		if len(values) > 1 {
+			writeError(w, http.StatusBadRequest, "dry_run: ambiguous parameter (given more than once)")
+			return
+		}
+		parsed, err := strconv.ParseBool(values[0])
+		if err != nil {
+			writeError(w, http.StatusBadRequest, fmt.Sprintf("dry_run: invalid boolean %q", values[0]))
+			return
+		}
+		dryRun = parsed
+	}
+	slog.Info("workspace apply", "dry_run", dryRun)
+
+	data, ok := readWorkspaceYAMLBody(w, r)
+	if !ok {
+		return
+	}
+	docs, err := orchestrator.DecodeWorkspaceEnvelopeDocuments(data)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if len(docs) != 1 {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("expected exactly one Workspace document per request, got %d", len(docs)))
+		return
+	}
+
+	// PR-1d codex round-2 Minor: `boid workspace apply` (cmd/workspace_apply.go)
+	// already warns client-side when a document still carries a retired
+	// spec.additional_bindings key, but a caller hitting this endpoint
+	// directly (not through the CLI) never saw that warning at all — the
+	// key was silently parsed and discarded. Surface the same warning here
+	// so every caller of this endpoint gets it, not just the CLI's own
+	// pre-parse.
+	if docs[0].AdditionalBindingsDropped {
+		slog.Warn("workspace apply: spec.additional_bindings is no longer supported and was dropped",
+			"workspace", docs[0].Envelope.Metadata.Name)
+	}
+
+	result, err := h.Service.ApplyWorkspace(docs[0], dryRun)
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+	if docs[0].AdditionalBindingsDropped {
+		result.Warnings = append(result.Warnings, fmt.Sprintf("spec.additional_bindings is no longer supported (retired) — dropped for workspace %q", docs[0].Envelope.Metadata.Name))
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+// ExportEnvelope handles GET /api/workspaces/export?all=true or
+// ?name=<slug> (docs/plans/volume-only-daemon.md PR-1d codex round-1
+// Blocker 3): returns one or more apiVersion:boid.dev/v1 kind:Workspace
+// yaml documents built from a single atomic DB snapshot
+// (ProjectAppService.ExportWorkspaceEnvelopes / orchestrator.
+// SnapshotWorkspacesForExport), "---"-separated when more than one.
+func (h *WorkspaceHandler) ExportEnvelope(w http.ResponseWriter, r *http.Request) {
+	all := r.URL.Query().Get("all") == "true"
+	name := r.URL.Query().Get("name")
+	if all == (name != "") {
+		writeError(w, http.StatusBadRequest, "exactly one of ?all=true or ?name=<slug> is required")
+		return
+	}
+
+	var slugs []string
+	if !all {
+		if err := orchestrator.ValidWorkspaceSlug(name); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		slugs = []string{name}
+	}
+
+	data, err := h.Service.ExportWorkspaceEnvelopes(slugs)
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/yaml")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(data)
 }

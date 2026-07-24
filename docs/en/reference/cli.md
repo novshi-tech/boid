@@ -230,10 +230,11 @@ Groups a project's runtime environment (`host_commands` / `env` / `capabilities`
 | `boid workspace create <slug> [--from-file <yaml>]` | Create a new workspace (omit `--from-file` for a blank one). |
 | `boid workspace edit <slug> --from-file <yaml>` | Replace an existing workspace wholesale (automatic If-Match; `--force` for last-write-wins). |
 | `boid workspace import <file> [--mode create-only\|replace] [--slug SLUG]` | Import a workspace definition from yaml. `--mode` defaults to `create-only` (409 on an existing slug). |
-| `boid workspace export <slug> [--output FILE]` | Export a workspace's definition as yaml (stdout by default). |
+| `boid workspace export <slug>\|--all [-o FILE]` | Export a workspace (plus its assigned projects' name/url) as an `apiVersion: boid.dev/v1 / kind: Workspace` yaml document (stdout by default). `--all` exports every workspace into a single `---`-separated file — **`boid workspace export --all` is the only endorsed backup path** (a raw DB copy is not a valid restore mechanism on its own; see [volume-only-daemon.md §論点g](../../plans/volume-only-daemon.md)). |
+| `boid workspace apply -f FILE [--dry-run]` | Apply a yaml document produced by `boid workspace export` (upsert: creates an unknown slug, merges field-by-field into an existing one — a field absent from the document is left untouched, an explicit empty value clears it). Each `spec.projects[]` entry only attaches an already-registered project matched by name (registering from a URL is PR-2 scope). `--dry-run` previews the changes without writing anything. |
 | `boid workspace assign <project-ref> <workspace-id>` | Assign a project to a workspace (404s on an unknown slug, unless a local `workspace.yaml` for it exists — auto-created from that). |
 | `boid workspace clear <project-ref>` | Reset a project's workspace assignment to `default`. |
-| `boid workspace remove <slug> [--force\|--yes]` | Remove a workspace (assigned projects are re-assigned to `default`; `default` itself cannot be removed). Prompts for confirmation, showing the home directory's size (`--force`/`--yes` skips it) — see the [workspace home guide](../guide/workspace-home.md#removing-a-workspace). |
+| `boid workspace remove <slug> [--force\|--yes]` (alias: `delete`) | Remove a workspace (assigned projects are re-assigned to `default`; `default` itself cannot be removed). Prompts for confirmation, showing the home directory's size (`--force`/`--yes` skips it) — see the [workspace home guide](../guide/workspace-home.md#removing-a-workspace). |
 
 ## Host Commands
 
