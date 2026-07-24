@@ -124,84 +124,64 @@ func TestApplyConfigYAML_ValidationErrorLeavesStateUnchanged(t *testing.T) {
 	}
 }
 
-func TestApplyConfigYAML_AllowedDomains_HotReloadedNoWarning(t *testing.T) {
+// TestApplyConfigYAML_AllowedDomains_RestartRequiredWarning pins the PR #830
+// round-4 simplification (nose directive): sandbox.allowed_domains used to
+// be hot-reloaded (ReloadDynamic) via a Server.AllowedDomains() method and a
+// Runner.AllowedDomains func() []string getter — that machinery took 4
+// codex review rounds to land safely and introduced a Server.Stop/dispatch
+// deadlock along the way (round 4 blocker 2). It is ReloadRestartRequired
+// now, same as everything else — see ReloadDynamic's own doc comment
+// (internal/config/schema.go). Applying it just persists to config.yaml
+// (asserted via ConfigYAML()) and warns; Server has no AllowedDomains()
+// method left to observe a live value through at all.
+func TestApplyConfigYAML_AllowedDomains_RestartRequiredWarning(t *testing.T) {
 	srv, _ := newConfigTestServer(t)
 
 	result, err := srv.ApplyConfigYAML([]byte("sandbox:\n  allowed_domains:\n    - .freee.co.jp\n    - .notion.com\n"), "", true)
 	if err != nil {
 		t.Fatalf("ApplyConfigYAML: %v", err)
 	}
-	if len(result.Warnings) != 0 {
-		t.Errorf("expected no warnings for a dynamic-only change, got %v", result.Warnings)
-	}
-
-	// BLOCKER 2 (codex review round 1): the effective list is the built-in
-	// floor UNION the just-applied user entries, not the user entries
-	// alone — a hot-reload must never silently drop the built-in floor.
-	got := srv.AllowedDomains()
-	if !containsAll(got, ".freee.co.jp", ".notion.com") {
-		t.Errorf("AllowedDomains() = %v, want it to contain the just-applied .freee.co.jp/.notion.com", got)
-	}
-	if !containsAll(got, config.DefaultAllowedDomains()...) {
-		t.Errorf("AllowedDomains() = %v, want it to still contain every built-in floor domain", got)
-	}
-}
-
-// TestApplyConfigYAML_AllowedDomains_RemovingUserEntryDropsIt pins BLOCKER
-// 2's other half: removing a user-added domain from sandbox.allowed_domains
-// must actually make it disappear from the effective list (not just from
-// the sparse YAML) — the floor must be recomputed as
-// config.DefaultAllowedDomains() ∪ (the new, narrower) user list, never as
-// "whatever was effective before, plus/minus a diff".
-func TestApplyConfigYAML_AllowedDomains_RemovingUserEntryDropsIt(t *testing.T) {
-	srv, _ := newConfigTestServer(t)
-
-	if _, err := srv.ApplyConfigYAML([]byte("sandbox:\n  allowed_domains:\n    - .exfil.example\n    - .keep.example\n"), "", true); err != nil {
-		t.Fatalf("ApplyConfigYAML (add): %v", err)
-	}
-	if !containsAll(srv.AllowedDomains(), ".exfil.example") {
-		t.Fatalf("precondition failed: .exfil.example not in AllowedDomains() after first apply")
-	}
-
-	if _, err := srv.ApplyConfigYAML([]byte("sandbox:\n  allowed_domains:\n    - .keep.example\n"), "", true); err != nil {
-		t.Fatalf("ApplyConfigYAML (remove): %v", err)
-	}
-	got := srv.AllowedDomains()
-	for _, d := range got {
-		if d == ".exfil.example" {
-			t.Errorf("AllowedDomains() = %v, .exfil.example should have been removed by the second apply", got)
+	found := false
+	for _, w := range result.Warnings {
+		if strings.Contains(w, "sandbox.allowed_domains requires daemon restart") {
+			found = true
 		}
 	}
-	if !containsAll(got, ".keep.example") {
-		t.Errorf("AllowedDomains() = %v, .keep.example should still be present", got)
+	if !found {
+		t.Errorf("Warnings = %v, want a sandbox.allowed_domains restart-required warning", result.Warnings)
 	}
-	if !containsAll(got, config.DefaultAllowedDomains()...) {
-		t.Errorf("AllowedDomains() = %v, built-in floor should still be present after removal", got)
+
+	data, _, err := srv.ConfigYAML()
+	if err != nil {
+		t.Fatalf("ConfigYAML: %v", err)
+	}
+	if !strings.Contains(string(data), ".freee.co.jp") || !strings.Contains(string(data), ".notion.com") {
+		t.Errorf("ConfigYAML() = %s, want it to contain the just-applied domains (persisted immediately even though not live yet)", data)
 	}
 }
 
-func containsAll(haystack []string, wants ...string) bool {
-	set := make(map[string]struct{}, len(haystack))
-	for _, h := range haystack {
-		set[h] = struct{}{}
-	}
-	for _, w := range wants {
-		if _, ok := set[w]; !ok {
-			return false
-		}
-	}
-	return true
-}
-
-func TestApplyConfigYAML_NotifyAndPublicURL_HotReloadedNoWarning(t *testing.T) {
+// TestApplyConfigYAML_NotifyAndPublicURL_RestartRequiredWarning is
+// notify.command/web.public_url's own half of the same PR #830 round-4
+// simplification — both used to hot-apply via notify.Service.Update, now
+// ReloadRestartRequired like everything else.
+func TestApplyConfigYAML_NotifyAndPublicURL_RestartRequiredWarning(t *testing.T) {
 	srv, _ := newConfigTestServer(t)
 
 	result, err := srv.ApplyConfigYAML([]byte("notify:\n  command: [\"/bin/true\"]\nweb:\n  public_url: https://boid.example.com\n"), "", true)
 	if err != nil {
 		t.Fatalf("ApplyConfigYAML: %v", err)
 	}
-	if len(result.Warnings) != 0 {
-		t.Errorf("expected no warnings for notify.command/web.public_url (both dynamic), got %v", result.Warnings)
+	var gotCommand, gotPublicURL bool
+	for _, w := range result.Warnings {
+		if strings.Contains(w, "notify.command requires daemon restart") {
+			gotCommand = true
+		}
+		if strings.Contains(w, "web.public_url requires daemon restart") {
+			gotPublicURL = true
+		}
+	}
+	if !gotCommand || !gotPublicURL {
+		t.Errorf("Warnings = %v, want both a notify.command and a web.public_url restart-required warning", result.Warnings)
 	}
 }
 
@@ -270,6 +250,12 @@ func TestApplyConfigYAML_RestartRequiredFields_AllWarn(t *testing.T) {
 		{"gc.older_than", "gc:\n  older_than: 1h\n", "gc.older_than"},
 		{"web.http_addr", "web:\n  http_addr: 127.0.0.1:9999\n", "web.http_addr"},
 		{"task_ask.disconnect_grace", "task_ask:\n  disconnect_grace: 5m\n", "task_ask.disconnect_grace"},
+		// PR #830 round-4 simplification (nose directive): these three were
+		// ReloadDynamic before — see ReloadDynamic's own doc comment
+		// (internal/config/schema.go).
+		{"sandbox.allowed_domains", "sandbox:\n  allowed_domains:\n    - .example.com\n", "sandbox.allowed_domains"},
+		{"notify.command", "notify:\n  command: [\"/bin/true\"]\n", "notify.command"},
+		{"web.public_url", "web:\n  public_url: https://boid.example.com\n", "web.public_url"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -303,7 +289,7 @@ func TestApplyConfigYAML_RestartRequiredFields_NoWarningWhenUnchanged(t *testing
 		t.Fatalf("ApplyConfigYAML (first): %v", err)
 	}
 	// Second apply: gc.enabled unchanged (still false), only an unrelated
-	// dynamic key changes.
+	// key changes.
 	result, err := srv.ApplyConfigYAML([]byte("gc:\n  enabled: false\nweb:\n  public_url: https://x.example.com\n"), "", true)
 	if err != nil {
 		t.Fatalf("ApplyConfigYAML (second): %v", err)
@@ -311,6 +297,35 @@ func TestApplyConfigYAML_RestartRequiredFields_NoWarningWhenUnchanged(t *testing
 	for _, w := range result.Warnings {
 		if strings.Contains(w, "gc.enabled") {
 			t.Errorf("unexpected gc.enabled warning when it did not change: %v", result.Warnings)
+		}
+	}
+}
+
+// TestApplyConfigYAML_AllowedDomains_NoWarningWhenUnchanged is the
+// array-valued counterpart of TestApplyConfigYAML_RestartRequiredFields_
+// NoWarningWhenUnchanged: restartFieldExtractors renders
+// sandbox.allowed_domains ([]string) by joining on "\x00" so it can be
+// compared as a plain string like every scalar entry — this pins that two
+// applies of the byte-identical slice are correctly seen as "unchanged"
+// (not a false-positive warning on every apply, which a naive
+// strings.Join(..., "") without a separator could produce for adjacent
+// elements that happen to concatenate the same way).
+func TestApplyConfigYAML_AllowedDomains_NoWarningWhenUnchanged(t *testing.T) {
+	srv, _ := newConfigTestServer(t)
+
+	doc := []byte("sandbox:\n  allowed_domains:\n    - .a.example\n    - .b.example\n")
+	if _, err := srv.ApplyConfigYAML(doc, "", true); err != nil {
+		t.Fatalf("ApplyConfigYAML (first): %v", err)
+	}
+	// Second apply: byte-identical sandbox.allowed_domains, only an
+	// unrelated key changes.
+	result, err := srv.ApplyConfigYAML([]byte(string(doc)+"web:\n  public_url: https://x.example.com\n"), "", true)
+	if err != nil {
+		t.Fatalf("ApplyConfigYAML (second): %v", err)
+	}
+	for _, w := range result.Warnings {
+		if strings.Contains(w, "sandbox.allowed_domains") {
+			t.Errorf("unexpected sandbox.allowed_domains warning when it did not change: %v", result.Warnings)
 		}
 	}
 }

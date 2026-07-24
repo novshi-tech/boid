@@ -145,8 +145,16 @@ func TestRunConfigSet_Array_WholesaleReplace(t *testing.T) {
 	if err := runConfigSet(setCmd, []string{"sandbox.allowed_domains", ".a.com"}); err != nil {
 		t.Fatalf("runConfigSet 1: %v", err)
 	}
+	// sandbox.allowed_domains is ReloadRestartRequired (PR #830 round-4
+	// simplification, nose directive — see ReloadDynamic's own doc comment,
+	// internal/config/schema.go): the second set must warn.
+	var setOut2 bytes.Buffer
+	setCmd.SetOut(&setOut2)
 	if err := runConfigSet(setCmd, []string{"sandbox.allowed_domains", ".b.com", ".c.com"}); err != nil {
 		t.Fatalf("runConfigSet 2: %v", err)
+	}
+	if !strings.Contains(setOut2.String(), "sandbox.allowed_domains requires daemon restart") {
+		t.Errorf("expected a sandbox.allowed_domains restart-required warning, got: %s", setOut2.String())
 	}
 
 	var getOut bytes.Buffer
@@ -162,42 +170,6 @@ func TestRunConfigSet_Array_WholesaleReplace(t *testing.T) {
 	if !strings.Contains(got, ".b.com") || !strings.Contains(got, ".c.com") {
 		t.Errorf("expected .b.com and .c.com, got:\n%s", got)
 	}
-
-	// BLOCKER 2 (codex review round 1): the effective list is the built-in
-	// floor UNION the just-set user entries (.a.com must be gone, but the
-	// built-in floor is never dropped by a set) — not an exact 2-entry
-	// list, which was the pre-fix (buggy) contract this assertion used to
-	// pin.
-	if got := ts.Server.AllowedDomains(); !cmdTestContainsAll(got, ".b.com", ".c.com") {
-		t.Errorf("AllowedDomains() (hot-reload) = %v, want it to contain .b.com and .c.com", got)
-	} else if hasAny(got, ".a.com") {
-		t.Errorf("AllowedDomains() (hot-reload) = %v, .a.com should have been replaced away", got)
-	}
-}
-
-// cmdTestContainsAll reports whether every want is present in got.
-func cmdTestContainsAll(got []string, wants ...string) bool {
-	set := make(map[string]struct{}, len(got))
-	for _, g := range got {
-		set[g] = struct{}{}
-	}
-	for _, w := range wants {
-		if _, ok := set[w]; !ok {
-			return false
-		}
-	}
-	return true
-}
-
-func hasAny(got []string, wants ...string) bool {
-	for _, g := range got {
-		for _, w := range wants {
-			if g == w {
-				return true
-			}
-		}
-	}
-	return false
 }
 
 func TestRunConfigSet_UnknownKey_NoDaemonCall(t *testing.T) {
@@ -294,10 +266,19 @@ func TestRunConfigApply_ValidFile(t *testing.T) {
 	if !strings.Contains(out.String(), "config applied") {
 		t.Errorf("expected confirmation, got: %s", out.String())
 	}
+	// sandbox.allowed_domains is ReloadRestartRequired (PR #830 round-4
+	// simplification, nose directive): applying it warns and persists to
+	// config.yaml immediately, but does not reach any live daemon value.
+	if !strings.Contains(out.String(), "sandbox.allowed_domains requires daemon restart") {
+		t.Errorf("expected a sandbox.allowed_domains restart-required warning, got: %s", out.String())
+	}
 
-	got := ts.Server.AllowedDomains()
-	if !cmdTestContainsAll(got, ".apply-test.com") {
-		t.Errorf("AllowedDomains() = %v, want it to contain .apply-test.com", got)
+	data, _, err := ts.Server.ConfigYAML()
+	if err != nil {
+		t.Fatalf("ConfigYAML: %v", err)
+	}
+	if !strings.Contains(string(data), ".apply-test.com") {
+		t.Errorf("ConfigYAML() = %s, want it to contain the just-applied .apply-test.com", data)
 	}
 }
 
@@ -400,36 +381,23 @@ func TestRunConfigApply_ConcurrentApplies_ExactlyOneSucceeds(t *testing.T) {
 	}
 }
 
-// TestRunConfigApply_EndToEnd_ConcurrentSet_GETPrecedesReadFile_NoSilentLoss
-// is the BLOCKER regression test (codex review round 3): the round-2 fix's
-// own doc comment claimed runConfigApply's order had become
-// [GET, validate, POST], but the CODE still read the file before the GET —
-// true order [ReadFile, GET, validate, POST]. That left the exact lost-
-// update window codex round 3 found: a concurrent `config set` landing
-// after ReadFile but before GET would bump the daemon's revision; the GET
-// would observe that bumped revision; the POST — built from data that
-// predates the set — would carry that revision as If-Match, match it, and
-// be accepted, silently discarding the set.
+// TestRunConfigApply_GETPrecedesReadFile pins the same BLOCKER fix (codex
+// review round 3) the deleted TestRunConfigApply_EndToEnd_ConcurrentSet_
+// GETPrecedesReadFile_NoSilentLoss test used to: runConfigApply's GET must
+// run BEFORE it reads configApplyFile off disk (see runConfigApply's own
+// doc comment for the [ReadFile, GET, validate, POST] ordering bug this
+// closes — a `config set` landing between the pre-fix ReadFile and GET
+// could bump the revision such that the POST's If-Match, captured AFTER
+// the set, would match and silently discard it).
 //
-// TestRunConfigApply_ConcurrentApplies_ExactlyOneSucceeds (above) cannot
-// catch this: it calls postConfigApply directly with a revision fetched
-// once up front, never exercising runConfigApply's own GET-vs-ReadFile
-// ordering at all — this is the "regression concern" codex round 3 flagged
-// about that test.
-//
-// This test drives the real runConfigApply cobra entry point and uses
-// configApplyTestSyncAfterGET to deterministically land a concurrent `boid
-// config set` in the window immediately after runConfigApply's GET — which
-// the fix places BEFORE the file read. Post-fix, that means: the set always
-// completes (and bumps the revision) before runConfigApply reads the file,
-// so the file it reads and posts is never stale relative to a write it
-// already observed, but its POST's If-Match (captured from the GET,
-// before the set ran) is now stale relative to the set — the daemon's own
-// If-Match check must reject it with a conflict, and the set's effect must
-// survive on disk. A silent loss (apply reporting success while the set's
-// change vanished) is exactly the round-2 regression this test exists to
-// catch.
-func TestRunConfigApply_EndToEnd_ConcurrentSet_GETPrecedesReadFile_NoSilentLoss(t *testing.T) {
+// PR #830 round-4 simplification (nose directive): the deleted test wrapped
+// this exact same assertion in a channel + "concurrent" framing that was
+// never actually concurrent to begin with — configApplyTestSyncAfterGET
+// runs synchronously, in the same goroutine, immediately after the GET, so
+// there is no second goroutine here to race against — and it failed CI's
+// Unit job with a data race on the round-3 push. This version keeps the
+// identical behavioral assertion with the unnecessary channel removed.
+func TestRunConfigApply_GETPrecedesReadFile(t *testing.T) {
 	ts := testutil.NewTestServer(t)
 	t.Setenv("BOID_SOCKET", ts.Server.SocketPath())
 
@@ -441,11 +409,14 @@ func TestRunConfigApply_EndToEnd_ConcurrentSet_GETPrecedesReadFile_NoSilentLoss(
 	configApplyFile = f
 	defer func() { configApplyFile = "" }()
 
-	setResult := make(chan error, 1)
+	// Runs synchronously, in this same goroutine, right after runConfigApply's
+	// GET and before it reads configApplyFile — see runConfigApply's own doc
+	// comment for exactly where configApplyTestSyncAfterGET is invoked.
+	var setErr error
 	configApplyTestSyncAfterGET = func() {
 		setCmd := &cobra.Command{}
 		setCmd.SetOut(&bytes.Buffer{})
-		setResult <- runConfigSet(setCmd, []string{"gc.enabled", "false"})
+		setErr = runConfigSet(setCmd, []string{"gc.enabled", "false"})
 	}
 	defer func() { configApplyTestSyncAfterGET = nil }()
 
@@ -454,8 +425,8 @@ func TestRunConfigApply_EndToEnd_ConcurrentSet_GETPrecedesReadFile_NoSilentLoss(
 	applyCmd.SetOut(&applyOut)
 	applyErr := runConfigApply(applyCmd, nil)
 
-	if err := <-setResult; err != nil {
-		t.Fatalf("concurrent runConfigSet: %v", err)
+	if setErr != nil {
+		t.Fatalf("runConfigSet (inside the GET/ReadFile window): %v", setErr)
 	}
 
 	// The set landed strictly between apply's GET and its file read, so
@@ -463,7 +434,7 @@ func TestRunConfigApply_EndToEnd_ConcurrentSet_GETPrecedesReadFile_NoSilentLoss(
 	// revision — the daemon MUST reject the apply, never silently accept
 	// it and discard the set.
 	if applyErr == nil {
-		t.Fatalf("expected runConfigApply to be rejected with a conflict (the concurrent set moved the revision), got success: %s", applyOut.String())
+		t.Fatalf("expected runConfigApply to be rejected with a conflict (the set moved the revision inside the GET/ReadFile window), got success: %s", applyOut.String())
 	}
 	if !strings.Contains(applyErr.Error(), "changed since") {
 		t.Errorf("expected a conflict error naming the revision change, got: %v", applyErr)
@@ -475,7 +446,7 @@ func TestRunConfigApply_EndToEnd_ConcurrentSet_GETPrecedesReadFile_NoSilentLoss(
 	}
 	content := string(data)
 	if !strings.Contains(content, "enabled: false") {
-		t.Errorf("the concurrent set's change was lost — daemon config.yaml:\n%s", content)
+		t.Errorf("the set's change was lost — daemon config.yaml:\n%s", content)
 	}
 	if strings.Contains(content, "apply-race.example.com") {
 		t.Errorf("the rejected apply's content was persisted despite the conflict — daemon config.yaml:\n%s", content)
@@ -550,8 +521,16 @@ func TestPostConfigApply_Force_BypassesRevisionCheck(t *testing.T) {
 	if !strings.Contains(out.String(), "config applied") {
 		t.Errorf("expected confirmation, got: %s", out.String())
 	}
-	if got := ts.Server.AllowedDomains(); !cmdTestContainsAll(got, ".force-test.com") {
-		t.Errorf("AllowedDomains() = %v, want it to contain .force-test.com", got)
+	if !strings.Contains(out.String(), "sandbox.allowed_domains requires daemon restart") {
+		t.Errorf("expected a sandbox.allowed_domains restart-required warning, got: %s", out.String())
+	}
+
+	data, _, err := ts.Server.ConfigYAML()
+	if err != nil {
+		t.Fatalf("ConfigYAML: %v", err)
+	}
+	if !strings.Contains(string(data), ".force-test.com") {
+		t.Errorf("ConfigYAML() = %s, want it to contain the just-applied .force-test.com", data)
 	}
 }
 
@@ -579,10 +558,16 @@ func TestRunConfigEdit_AppliesChange(t *testing.T) {
 	if !strings.Contains(out.String(), "config applied") {
 		t.Errorf("expected confirmation, got: %s", out.String())
 	}
+	if !strings.Contains(out.String(), "sandbox.allowed_domains requires daemon restart") {
+		t.Errorf("expected a sandbox.allowed_domains restart-required warning, got: %s", out.String())
+	}
 
-	got := ts.Server.AllowedDomains()
-	if !cmdTestContainsAll(got, ".edit-test.com") {
-		t.Errorf("AllowedDomains() = %v, want it to contain .edit-test.com", got)
+	data, _, err := ts.Server.ConfigYAML()
+	if err != nil {
+		t.Fatalf("ConfigYAML: %v", err)
+	}
+	if !strings.Contains(string(data), ".edit-test.com") {
+		t.Errorf("ConfigYAML() = %s, want it to contain the just-applied .edit-test.com", data)
 	}
 }
 
