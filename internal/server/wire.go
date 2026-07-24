@@ -887,12 +887,29 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 	}
 
 	// Daemon-side config-editing surface (docs/plans/volume-only-daemon.md
-	// §論点 f: `boid config get/set/unset/apply/edit`). srv.notifySvc is
-	// the SAME *notify.Service instance built above (and wired into
-	// TaskAppService.Notify / the git gateway's notifier below) — stored
-	// here so ApplyConfigYAML (internal/server/config_edit.go) can hot-swap
-	// its Command/PublicURL live when notify.command/web.public_url change.
-	// configPath resolution failing (os.UserConfigDir() erroring — the
+	// §論点 f: `boid config get/set/unset/apply/edit`). verifyRestartExtractorCoverage
+	// (BLOCKER, codex review round 3) runs FIRST, before srv.liveConfig or
+	// srv.configPath are set — i.e. before this surface can accept a single
+	// config mutation. Pre-fix, the equivalent exhaustiveness check lived
+	// only inside applyDynamicConfigLocked's own loop, which runs AFTER
+	// applyConfigYAMLLocked has already written the new document to disk
+	// and swapped s.liveConfig (see that function's own doc comment) — so
+	// an incomplete-coverage bug (a future ReloadRestartRequired schema leaf
+	// added without a matching restartFieldExtractors/
+	// restartFieldExtractorExemptions entry) would durably persist a config
+	// mutation and only THEN panic and fail the HTTP request that caused
+	// it, leaving config.yaml and the daemon's in-memory belief about it
+	// out of sync going into the next restart. Panicking here instead,
+	// before mountRoutes ever registers a route, converts "incomplete
+	// coverage" into "the daemon refuses to start" — no config mutation can
+	// ever reach applyConfigYAMLLocked while coverage is incomplete.
+	verifyRestartExtractorCoverage()
+
+	// srv.notifySvc is the SAME *notify.Service instance built above (and
+	// wired into TaskAppService.Notify / the git gateway's notifier below)
+	// — stored here so ApplyConfigYAML (internal/server/config_edit.go) can
+	// hot-swap its Command/PublicURL live when notify.command/web.public_url
+	// change. configPath resolution failing (os.UserConfigDir() erroring — the
 	// same condition config.Load() above already tolerated by falling
 	// back to DefaultConfig()) leaves srv.configPath empty; both
 	// ConfigYAML and ApplyConfigYAML (internal/server/config_edit.go)

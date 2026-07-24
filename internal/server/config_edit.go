@@ -95,13 +95,18 @@ func (s *Server) readConfigLocked() ([]byte, error) {
 //     is nothing to lose by treating identical content as the same
 //     revision).
 //
-// sha256, truncated to its first 8 bytes (16 hex chars): far more collision
-// resistance than a handful-of-KB config.yaml, edited by a handful of
-// humans, could ever exercise — the full 32-byte digest would only make the
-// ETag header needlessly long for no practical benefit.
+// sha256, truncated to its first 16 bytes (32 hex chars, 128 bits) — MINOR
+// (codex review round 3): an earlier version truncated to 8 bytes (64
+// bits), whose ~2^-32 accidental-collision risk at 2^32 distinct documents
+// is small in practice but not zero, and a collision here recreates
+// exactly the stale-ETag overwrite failure this revision scheme exists to
+// prevent (see the doc comment above). 128 bits' collision resistance is
+// effectively unreachable for a handful-of-KB config.yaml edited by a
+// handful of humans, at a trivial (16 extra hex chars) header cost — no
+// reason to settle for less.
 func computeRevision(data []byte) string {
 	sum := sha256.Sum256(data)
-	return hex.EncodeToString(sum[:8])
+	return hex.EncodeToString(sum[:16])
 }
 
 // currentRevisionLocked re-reads config.yaml off disk and returns its
@@ -339,17 +344,22 @@ func (s *Server) applyDynamicConfigLocked(oldCfg, newCfg *config.Config) []strin
 	// gateway.forges.*.{host,forge,secret_key} and gateway.hosts are the two
 	// documented exceptions (restartFieldExtractorExemptions below) — the
 	// per-leaf changedForgeLeaves diff above already covers both with finer
-	// granularity than this generic loop could. Regression concern (codex
-	// review round 2): the pre-fix version of THIS loop silently `continue`d
-	// past ANY ReloadRestartRequired schema leaf missing an extractor, not
-	// just those two documented ones — so a future schema addition with a
-	// Reload of ReloadRestartRequired but no matching restartFieldExtractors
-	// entry would resurrect MAJOR 2's exact bug for that one new key, with
-	// no signal at all that it had happened. Panicking on anything neither
-	// covered nor explicitly exempted makes that failure loud (and, via
-	// TestRestartFieldExtractors_ExhaustiveCoverage, catchable at `go test`
-	// time — long before it would ever reach this runtime path in
-	// production).
+	// granularity than this generic loop could.
+	//
+	// Coverage is verified exhaustively at daemon startup
+	// (verifyRestartExtractorCoverage, called from wire.go's buildRuntime
+	// before mountRoutes ever registers a route) — codex review round 3:
+	// this loop used to panic on an uncovered leaf itself, but that panic
+	// fired AFTER applyConfigYAMLLocked had already written the new
+	// document to disk and swapped s.liveConfig, so an incomplete-coverage
+	// bug would durably persist a config mutation and only then fail the
+	// request that caused it. The branch below is therefore unreachable in
+	// practice — coverage that is complete at startup stays complete
+	// (config.Schema/restartFieldExtractors/restartFieldExtractorExemptions
+	// are all static package vars, not mutated at runtime outside tests) —
+	// and stays a warn-only defense-in-depth rather than a panic, so it
+	// degrades to "no restart warning for this one leaf" instead of a
+	// request-time 500 if it is ever somehow reached anyway.
 	for _, spec := range config.Schema {
 		if spec.Reload != config.ReloadRestartRequired {
 			continue
@@ -359,7 +369,9 @@ func (s *Server) applyDynamicConfigLocked(oldCfg, newCfg *config.Config) []strin
 			if _, exempt := restartFieldExtractorExemptions[spec.Path]; exempt {
 				continue
 			}
-			panic(fmt.Sprintf("config: schema leaf %q is ReloadRestartRequired but registered in neither restartFieldExtractors nor restartFieldExtractorExemptions — add one or the other (internal/server/config_edit.go)", spec.Path))
+			slog.Warn("config: schema leaf is ReloadRestartRequired but registered in neither restartFieldExtractors nor restartFieldExtractorExemptions; startup coverage verification should have caught this — no restart-required warning will be produced for it",
+				"path", spec.Path)
+			continue
 		}
 		if extract(oldCfgSafe) != extract(newCfg) {
 			warnings = append(warnings, restartWarning(spec.Path))
@@ -440,6 +452,33 @@ var restartFieldExtractorExemptions = map[string]string{
 	// its own for an extractor to read — any of its changes already surface
 	// through the Forges diff above instead.
 	"gateway.hosts": "Config retains no Hosts field after UnmarshalYAML folds it into Forges; changes surface through the Forges diff instead",
+}
+
+// verifyRestartExtractorCoverage panics if any config.Schema leaf classified
+// config.ReloadRestartRequired is registered in neither restartFieldExtractors
+// nor restartFieldExtractorExemptions — the same exhaustiveness
+// TestRestartFieldExtractors_ExhaustiveCoverage pins at `go test` time,
+// re-verified here at daemon startup (BLOCKER, codex review round 3).
+//
+// Called once from wire.go's buildRuntime, before srv.liveConfig/
+// srv.configPath are set and therefore before GET/POST /api/config
+// (`boid config get/set/unset/apply/edit`) can accept a single request.
+// This is what makes "a future schema addition forgets to register its
+// restart-required leaf" fail the daemon at startup instead of durably
+// persisting a config mutation and panicking mid-request — see
+// applyDynamicConfigLocked's own doc comment for the pre-fix ordering this
+// closes.
+func verifyRestartExtractorCoverage() {
+	for _, spec := range config.Schema {
+		if spec.Reload != config.ReloadRestartRequired {
+			continue
+		}
+		_, hasExtractor := restartFieldExtractors[spec.Path]
+		_, hasExemption := restartFieldExtractorExemptions[spec.Path]
+		if !hasExtractor && !hasExemption {
+			panic(fmt.Sprintf("config: schema leaf %q is ReloadRestartRequired but registered in neither restartFieldExtractors nor restartFieldExtractorExemptions — add one or the other (internal/server/config_edit.go)", spec.Path))
+		}
+	}
 }
 
 // mergeAllowedDomains returns floor followed by every entry of user not

@@ -2,6 +2,7 @@ package server
 
 import (
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/novshi-tech/boid/internal/config"
@@ -59,15 +60,17 @@ func TestRestartFieldExtractors_ExhaustiveCoverage(t *testing.T) {
 	}
 }
 
-// TestApplyDynamicConfigLocked_UnregisteredRestartRequiredLeaf_Panics proves
-// the runtime half of the same contract directly: a ReloadRestartRequired
-// schema leaf registered in neither map makes applyDynamicConfigLocked
-// panic (rather than silently produce no warning) the moment that leaf's
-// value actually changes between oldCfg and newCfg. Uses a throwaway schema
-// entry spliced into config.Schema for the duration of the test (restored
-// via t.Cleanup) rather than mutating either production map, so this test
-// can never accidentally leave a permanent gap in real coverage behind.
-func TestApplyDynamicConfigLocked_UnregisteredRestartRequiredLeaf_Panics(t *testing.T) {
+// TestVerifyRestartExtractorCoverage_UnregisteredLeaf_Panics is the
+// BLOCKER regression test (codex review round 3) for the startup-time half
+// of the coverage contract: a ReloadRestartRequired schema leaf registered
+// in neither map makes verifyRestartExtractorCoverage panic — the check
+// wire.go's buildRuntime now runs BEFORE srv.liveConfig/srv.configPath are
+// set, i.e. before any config mutation can be accepted at all. Uses a
+// throwaway schema entry spliced into config.Schema for the duration of the
+// test (restored via t.Cleanup) rather than mutating either production map,
+// so this test can never accidentally leave a permanent gap in real
+// coverage behind.
+func TestVerifyRestartExtractorCoverage_UnregisteredLeaf_Panics(t *testing.T) {
 	const bogusPath = "test.only.unregistered_restart_leaf"
 	original := config.Schema
 	config.Schema = append(append([]config.FieldSpec(nil), original...), config.FieldSpec{
@@ -77,21 +80,54 @@ func TestApplyDynamicConfigLocked_UnregisteredRestartRequiredLeaf_Panics(t *test
 	})
 	t.Cleanup(func() { config.Schema = original })
 
-	srv := newInternalConfigTestServer(t)
-
 	defer func() {
 		if r := recover(); r == nil {
-			t.Fatal("expected applyDynamicConfigLocked to panic on an unregistered ReloadRestartRequired schema leaf")
+			t.Fatal("expected verifyRestartExtractorCoverage to panic on an unregistered ReloadRestartRequired schema leaf")
 		}
 	}()
-	// oldCfg=nil (defensive first-ever-call path, per applyDynamicConfigLocked's
-	// own doc comment) vs a freshly-parsed newCfg: extract(oldCfgSafe) would
-	// need a restartFieldExtractors entry to even be called, which bogusPath
-	// deliberately has none of — so this must panic before ever comparing
-	// values, regardless of what oldCfg/newCfg actually contain.
+	verifyRestartExtractorCoverage()
+}
+
+// TestApplyDynamicConfigLocked_UnregisteredRestartRequiredLeaf_WarnsNotPanics
+// pins the MAJOR fix (codex review round 3): applyDynamicConfigLocked's own
+// coverage check is now a fail-SAFE (slog.Warn + skip that leaf's warning),
+// not a fail-loud panic, because it runs AFTER applyConfigYAMLLocked has
+// already written the new document to disk and swapped s.liveConfig — a
+// panic there would report failure for a mutation that had already,
+// irreversibly, taken effect. Coverage completeness is now verified BEFORE
+// any mutation can reach this code at all (verifyRestartExtractorCoverage,
+// called once from wire.go's buildRuntime at startup) — this function's own
+// check degrades gracefully rather than panicking mid-request on the
+// (should-be-impossible) chance it is ever reached anyway.
+func TestApplyDynamicConfigLocked_UnregisteredRestartRequiredLeaf_WarnsNotPanics(t *testing.T) {
+	// Server construction runs FIRST, against the real, fully-covered
+	// config.Schema — buildRuntime's verifyRestartExtractorCoverage call
+	// must NOT panic here (coverage is genuinely complete at this point).
+	// The bogus leaf is spliced in only AFTER the server exists, so this
+	// test isolates applyDynamicConfigLocked's own runtime behavior from
+	// the startup check TestVerifyRestartExtractorCoverage_UnregisteredLeaf_Panics
+	// already covers separately.
+	srv := newInternalConfigTestServer(t)
+
+	const bogusPath = "test.only.unregistered_restart_leaf"
+	original := config.Schema
+	config.Schema = append(append([]config.FieldSpec(nil), original...), config.FieldSpec{
+		Path:   bogusPath,
+		Kind:   config.KindBool,
+		Reload: config.ReloadRestartRequired,
+	})
+	t.Cleanup(func() { config.Schema = original })
+
 	newCfg, err := config.ValidateYAML(nil)
 	if err != nil {
 		t.Fatalf("ValidateYAML(nil): %v", err)
 	}
-	srv.applyDynamicConfigLocked(nil, newCfg)
+	// Must NOT panic despite bogusPath having no restartFieldExtractors/
+	// restartFieldExtractorExemptions entry.
+	warnings := srv.applyDynamicConfigLocked(nil, newCfg)
+	for _, w := range warnings {
+		if strings.Contains(w, bogusPath) {
+			t.Errorf("expected no restart warning for an unregistered leaf, got: %q", w)
+		}
+	}
 }
