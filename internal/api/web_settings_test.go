@@ -68,9 +68,12 @@ gateway:
 	for _, want := range []string{
 		".freee.co.jp",
 		"api.example.com",
-		">notify-send</textarea>",
-		">-a</textarea>",
-		">boid</textarea>",
+		// Leading "\n" per codex review round 4, PR #831 — a browser drops
+		// the FIRST LF immediately after a <textarea> opening tag, so the
+		// template always prepends one to keep the argv value byte-exact.
+		">\nnotify-send</textarea>",
+		">\n-a</textarea>",
+		">\nboid</textarea>",
 		"https://boid.example.com",
 		"github.com",
 		"GITHUB_PAT",

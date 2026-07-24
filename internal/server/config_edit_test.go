@@ -574,6 +574,99 @@ func TestSettingsPage_NotifyCommandEmbeddedNewline_SurvivesUnrelatedEdit(t *test
 	}
 }
 
+// TestSettingsPage_NotifyCommandLeadingLF_SurvivesUnrelatedEdit is the
+// integration test for codex review round 4 (PR #831): per the HTML living
+// standard, a browser drops the FIRST LF immediately following a <textarea>
+// opening tag when parsing it — so an argv element that itself starts with
+// "\n" (e.g. "\necho leading-lf") would silently lose that leading LF the
+// moment JS reads the textarea's .value, unless the template compensates by
+// always prepending an extra "\n" before the argv value
+// (web/templates/settings.templ). This exercises the exact
+// server-rendering round trip end to end through the real HTTP handler
+// (api.WebHandler.Settings for GET /settings) wired to a REAL
+// *server.Server, mirroring
+// TestSettingsPage_NotifyCommandEmbeddedNewline_SurvivesUnrelatedEdit's
+// round-3 pattern:
+//  1. seed notify.command with an argv element that itself starts with "\n"
+//  2. GET /settings and confirm the rendered <textarea> carries the
+//     compensating leading "\n" plus the original value verbatim (i.e. the
+//     rendered text content is "\n" + "\necho leading-lf")
+//  3. "edit an unrelated field" via the raw-YAML apply path (see below for
+//     why not the form tab's per-field mutate)
+//  4. GET /settings again and confirm the same leading-LF-preserving markup
+//     is still there, untouched by the unrelated save
+//
+// Unrelated-edit step uses ApplyConfigYAML (the raw-YAML tab's endpoint),
+// NOT MutateConfig (the form tab's per-field endpoint), because of a
+// pre-existing, orthogonal limitation this test incidentally surfaced:
+// gopkg.in/yaml.v3's encoder emits an invalid block-literal scalar (wrong
+// indentation-indicator arithmetic) for any string whose FIRST character is
+// "\n" when that string sits inside a YAML sequence — confirmed directly
+// against the library (yaml.Marshal(map[string]any{"notify":
+// map[string]any{"command": []any{"\necho x"}}}) produces "- |4-\n  echo
+// x\n", which yaml.Unmarshal itself then rejects with "did not find expected
+// '-' indicator"). MutateConfig always re-marshals tree in full
+// (config_edit.go), so ANY call — even one that only touches an unrelated
+// key — re-serializes notify.command's untouched leading-"\n" value through
+// this broken path and fails. ApplyConfigYAML has no such step: it validates
+// the caller's raw bytes via Unmarshal and, on success, writes them to disk
+// verbatim (config_edit.go's applyConfigYAMLLocked) — exactly what the real
+// page's raw-YAML tab (saveYaml()) sends, and the only save path that
+// actually supports this edge case today. This encoder limitation is a
+// pre-existing PR-1b (dotted-path mutate) concern, out of scope for this
+// PR-1c template fix; flagged here rather than silently worked around.
+func TestSettingsPage_NotifyCommandLeadingLF_SurvivesUnrelatedEdit(t *testing.T) {
+	srv, _ := newConfigTestServer(t)
+	settingsHandler := &api.WebHandler{ConfigService: srv}
+
+	seedDoc := []byte("notify:\n  command:\n    - \"\\necho leading-lf\"\n")
+	if _, err := srv.ApplyConfigYAML(seedDoc, "", true); err != nil {
+		t.Fatalf("seed notify.command: %v", err)
+	}
+
+	getSettings := func() string {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodGet, "/settings", nil)
+		w := httptest.NewRecorder()
+		settingsHandler.Settings(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("GET /settings status = %d, want 200: %s", w.Code, w.Body.String())
+		}
+		return w.Body.String()
+	}
+
+	// The rendered textarea's HTML text content must be "\n" (the template's
+	// compensating prefix) + "\necho leading-lf" (the original argv value) —
+	// i.e. ">\n\necho leading-lf</textarea>". Losing either the compensating
+	// prefix or the original leading "\n" would both collapse to the same
+	// wrong single-newline rendering, so this asserts the double-newline
+	// form specifically, not just "a newline is present somewhere".
+	const wantMarkup = ">\n\necho leading-lf</textarea>"
+
+	before := getSettings()
+	if !strings.Contains(before, wantMarkup) {
+		t.Fatalf("expected the initial /settings render to carry notify.command's leading LF verbatim (compensating prefix + original value), got: %s", before)
+	}
+
+	// "Edit an unrelated field" via the raw-YAML tab: the user's edit only
+	// adds sandbox.allowed_domains: notify.command's raw text is carried
+	// forward byte-for-byte, exactly as saveYaml() would send the whole
+	// textarea's current content back.
+	_, rev, err := srv.ConfigYAML()
+	if err != nil {
+		t.Fatalf("ConfigYAML: %v", err)
+	}
+	updatedDoc := append(append([]byte{}, seedDoc...), []byte("sandbox:\n  allowed_domains:\n    - example.com\n")...)
+	if _, err := srv.ApplyConfigYAML(updatedDoc, rev, false); err != nil {
+		t.Fatalf("ApplyConfigYAML (unrelated field): %v", err)
+	}
+
+	after := getSettings()
+	if !strings.Contains(after, wantMarkup) {
+		t.Errorf("notify.command's leading LF was lost after an unrelated field's save; got: %s", after)
+	}
+}
+
 // TestMutateConfig_UnknownKey_Rejected pins the read-modify-write's
 // validation: MutateConfig re-validates through the exact same
 // config.Set/Unset dotted-path machinery `boid config set/unset` already

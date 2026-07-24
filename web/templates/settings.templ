@@ -147,10 +147,30 @@ templ Settings(view SettingsView) {
 			</div>
 			<div class="form-group">
 				<label class="form-label">notify.command</label>
+				<!--
+					Server-rendered rows deliberately start with an extra "\n"
+					before the argv value (codex review round 4, PR #831): per
+					the HTML living standard, a browser drops the FIRST LF
+					immediately following a <textarea> opening tag when parsing
+					it. Without this, an argv element that itself starts with
+					"\n" (e.g. "\necho hello") would render as
+					<textarea>\necho hello</textarea> and the browser would
+					expose "echo hello" to JS's .value — the leading LF silently
+					and permanently lost the next time the form is saved. The
+					prepended "\n" is exactly what the browser's first-LF-drop
+					consumes, so the original value (including a genuinely empty
+					"" or one starting with "\n") survives byte-for-byte. Also
+					note: a <textarea>'s .value additionally normalizes CRLF/CR
+					to LF — a browser-level behavior that cannot be avoided at
+					the DOM level, so this field accepts LF only. See also
+					addNotifyCommandRow() below, which writes a brand-new row's
+					.value directly (bypassing the HTML parser, so it has no
+					leading-LF-drop to compensate for).
+				-->
 				<div id="notify-command-list" class="settings-list">
 					for _, arg := range view.NotifyCommand {
 						<div class="settings-list-row">
-							<textarea rows="1" class="form-input form-input-sm notify-command-input" spellcheck="false">{ arg }</textarea>
+							<textarea rows="1" class="form-input form-input-sm notify-command-input" spellcheck="false">{ "\n" + arg }</textarea>
 							<button type="button" class="btn btn-sm btn-danger" onclick="this.parentElement.remove()">Remove</button>
 						</div>
 					}
@@ -319,8 +339,20 @@ templ Settings(view SettingsView) {
 					row.className = "settings-list-row";
 					row.innerHTML = '<textarea rows="1" class="form-input form-input-sm notify-command-input" spellcheck="false"></textarea>' +
 						'<button type="button" class="btn btn-sm btn-danger" onclick="this.parentElement.remove()">Remove</button>';
+					var textarea = row.querySelector("textarea");
+					// codex review round 4, PR #831: server-rendered rows carry a
+					// leading "\n" in their HTML text content to counteract the
+					// browser's first-LF-drop parsing rule (see the HTML comment
+					// above notify-command-list). A brand-new row has no such
+					// text content to parse in the first place — assigning
+					// .value directly is a DOM-property write, not HTML text,
+					// so there is no parser and nothing to drop. Setting it
+					// explicitly (rather than relying on a freshly-created
+					// <textarea>'s default empty value) keeps that invariant
+					// obvious at the call site instead of implicit.
+					textarea.value = "";
 					$("#notify-command-list").appendChild(row);
-					row.querySelector("textarea").focus();
+					textarea.focus();
 				}
 				window.addNotifyCommandRow = addNotifyCommandRow;
 
@@ -339,7 +371,13 @@ templ Settings(view SettingsView) {
 				// exactly as-is, no trim, no filter. The user owns the argv
 				// content; this function must not "clean it up". (Round 3:
 				// rows became <textarea>s, but .value reads identically —
-				// no change needed here.)
+				// no change needed here. Round 4: server-rendered rows now
+				// carry a leading "\n" in their HTML text content to
+				// counteract the browser's first-LF-drop parsing rule, but
+				// .value already reflects the *parsed* (post-drop) content —
+				// so this function still needs no change; the compensation
+				// lives entirely in how the textarea is rendered, not in how
+				// it's read.)
 				function collectNotifyCommand() {
 					return $all(".notify-command-input").map(function (i) { return i.value; });
 				}

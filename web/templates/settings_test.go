@@ -68,7 +68,10 @@ func TestSettings_RendersNotifyCommandAndPublicURL(t *testing.T) {
 		WebPublicURL:  "https://boid.example.com",
 	}
 	html := renderSettings(t, view)
-	for _, want := range []string{">notify-send</textarea>", ">-a</textarea>", ">boid</textarea>"} {
+	// Every row carries a leading "\n" before the argv value (codex review
+	// round 4, PR #831) — see TestSettings_NotifyCommandTextareas_HaveLeadingLF
+	// for why. ">\nnotify-send</textarea>", not ">notify-send</textarea>".
+	for _, want := range []string{">\nnotify-send</textarea>", ">\n-a</textarea>", ">\nboid</textarea>"} {
 		if !strings.Contains(html, want) {
 			t.Errorf("expected a notify.command argv textarea carrying %s, got: %s", want, html)
 		}
@@ -85,7 +88,9 @@ func TestSettings_RendersNotifyCommandAndPublicURL(t *testing.T) {
 func TestSettings_NotifyCommandArgWithEmbeddedSpace_SurvivesAsOneField(t *testing.T) {
 	view := SettingsView{NotifyCommand: []string{"sh", "-c", "echo hello"}}
 	html := renderSettings(t, view)
-	if !strings.Contains(html, ">echo hello</textarea>") {
+	// Leading "\n" per codex review round 4, PR #831 — see
+	// TestSettings_NotifyCommandTextareas_HaveLeadingLF.
+	if !strings.Contains(html, ">\necho hello</textarea>") {
 		t.Errorf("expected the embedded-space argument to render as a single textarea's content, got: %s", html)
 	}
 }
@@ -122,6 +127,31 @@ func TestSettings_NotifyCommandRowsAreTextareasNotInputs(t *testing.T) {
 	}
 	if !strings.Contains(section, "line1\nline2") {
 		t.Errorf("expected the embedded newline to survive into the rendered textarea content verbatim, got: %s", section)
+	}
+}
+
+// TestSettings_NotifyCommandTextareas_HaveLeadingLF pins the codex review
+// round 4 fix (PR #831): per the HTML living standard, a browser drops the
+// FIRST LF immediately following a <textarea> opening tag when parsing it.
+// Without a compensating leading "\n" in the rendered HTML, an argv element
+// that itself starts with "\n" (e.g. "\necho hello") would render as
+// <textarea>\necho hello</textarea> and the browser would expose
+// "echo hello" to JS's .value — the leading LF silently and permanently
+// lost the moment the page is saved. Every row must render its argv value
+// with an extra leading "\n" prepended, whatever the value itself is —
+// including an empty string and a value that already starts with "\n".
+func TestSettings_NotifyCommandTextareas_HaveLeadingLF(t *testing.T) {
+	view := SettingsView{NotifyCommand: []string{"hello", "", "\necho leading-lf"}}
+	html := renderSettings(t, view)
+
+	for _, want := range []string{
+		">\nhello</textarea>",             // ordinary value: "\n" + "hello"
+		">\n</textarea>",                  // empty value: "\n" + ""
+		">\n\necho leading-lf</textarea>", // value already starting with "\n": "\n" + "\necho leading-lf"
+	} {
+		if !strings.Contains(html, want) {
+			t.Errorf("expected a notify.command textarea to carry a leading LF before its value (%q), got: %s", want, html)
+		}
 	}
 }
 
