@@ -212,6 +212,14 @@ func TestSettings_BannersHaveAriaLiveRoles(t *testing.T) {
 	mustContainNear("settings-conflict", `role="alert",aria-live="assertive"`)
 	mustContainNear("settings-form-error", `role="alert",aria-live="assertive"`)
 	mustContainNear("settings-yaml-error", `role="alert",aria-live="assertive"`)
+	// codex review round 2 (PR #831): the pre-fix test asserted only the
+	// two error/conflict banners above, leaving both tabs' transient
+	// "No changes" banners (settings-form-transient/settings-yaml-transient)
+	// unchecked even though the markup itself was already correct — a
+	// future accidental regression on either transient banner's
+	// role/aria-live would have gone undetected by this test.
+	mustContainNear("settings-form-transient", `role="status",aria-live="polite"`)
+	mustContainNear("settings-yaml-transient", `role="status",aria-live="polite"`)
 }
 
 func TestSettings_EmptyStateHasAddButtons(t *testing.T) {

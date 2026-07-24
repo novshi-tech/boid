@@ -311,16 +311,22 @@ templ Settings(view SettingsView) {
 				}
 				window.addNotifyCommandRow = addNotifyCommandRow;
 
-				// collectNotifyCommand reads one argv element per row, verbatim
-				// (MAJOR 2, codex review round 1, PR #831) — never joined into a
-				// single string and re-split on whitespace, which silently broke
-				// any argument containing an embedded space (e.g. ["sh", "-c",
-				// "echo hello"] round-tripped as ["sh", "-c", "echo", "hello"]).
-				// Each row IS one argument; only leading/trailing whitespace
-				// (never meaningful in a single argv element typed into a text
-				// input) is trimmed.
+				// collectNotifyCommand reads one argv element per row, byte for
+				// byte (MAJOR 2, codex review round 1, PR #831; PARTIAL fix
+				// flagged in round 2) — never joined into a single string and
+				// re-split on whitespace, which silently broke any argument
+				// containing an embedded space (e.g. ["sh", "-c", "echo
+				// hello"] round-tripped as ["sh", "-c", "echo", "hello"]).
+				// Round 1's fix still called .trim() and dropped empty
+				// elements, which is ALSO lossy: a leading/trailing space or
+				// an empty string can be a deliberate, meaningful argv
+				// element (e.g. ["printf", "%s", "", " x "]), and the user
+				// typed it into its own input specifically to mean that
+				// exact value. Each row IS one argument — collect .value
+				// exactly as-is, no trim, no filter. The user owns the argv
+				// content; this function must not "clean it up".
 				function collectNotifyCommand() {
-					return $all(".notify-command-input").map(function (i) { return i.value.trim(); }).filter(function (v) { return v !== ""; });
+					return $all(".notify-command-input").map(function (i) { return i.value; });
 				}
 				var originalNotifyCommand = collectNotifyCommand();
 

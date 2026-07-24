@@ -1,9 +1,13 @@
 package server_test
 
 import (
+	"bytes"
+	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -444,6 +448,60 @@ func TestMutateConfig_Unset(t *testing.T) {
 	}
 }
 
+// TestConfigHandler_Mutate_NotifyCommand_ArgvPreservedVerbatim is the Go-side
+// integration test for codex review round 2 (PR #831): the settings page's
+// collectNotifyCommand() (web/templates/settings.templ) collects one argv
+// element per row's raw .value, with NO trim and NO empty-element filter —
+// round 1's fix still called .trim() and dropped empty elements, which is
+// lossy for legitimate argv containing an empty element or meaningful
+// leading/trailing whitespace (e.g. ["printf", "%s", "", " x "]). There is
+// no JS test harness in this repo (no package.json/JS runner under web/), so
+// this test exercises the same round trip end to end on the Go side instead:
+// it builds the exact POST /api/config/mutate body collectNotifyCommand()'s
+// output would produce for that argv, sends it through the REAL
+// api.ConfigHandler wired to a REAL *server.Server (not a fake/mock —
+// exactly what the daemon serves in production), and reads the result back
+// through GET /api/config, asserting the argv survived byte for byte.
+func TestConfigHandler_Mutate_NotifyCommand_ArgvPreservedVerbatim(t *testing.T) {
+	srv, _ := newConfigTestServer(t)
+	h := &api.ConfigHandler{Service: srv}
+
+	// The exact argv codex review round 2 flagged as lossy under the old
+	// .trim()+filter(v!=="") collection: an empty element and a
+	// deliberately whitespace-padded element, both meaningful.
+	argv := []string{"printf", "%s", "", " x "}
+
+	reqBody, err := json.Marshal(api.ConfigMutateRequest{
+		Op:    api.ConfigMutateSet,
+		Key:   "notify.command",
+		Value: argv,
+	})
+	if err != nil {
+		t.Fatalf("marshal mutate request: %v", err)
+	}
+	mutateReq := httptest.NewRequest(http.MethodPost, "/mutate", bytes.NewReader(reqBody))
+	mutateW := httptest.NewRecorder()
+	h.Routes().ServeHTTP(mutateW, mutateReq)
+	if mutateW.Code != http.StatusOK {
+		t.Fatalf("POST /mutate status = %d, want 200: %s", mutateW.Code, mutateW.Body.String())
+	}
+
+	getReq := httptest.NewRequest(http.MethodGet, "/", nil)
+	getW := httptest.NewRecorder()
+	h.Routes().ServeHTTP(getW, getReq)
+	if getW.Code != http.StatusOK {
+		t.Fatalf("GET status = %d, want 200: %s", getW.Code, getW.Body.String())
+	}
+
+	gotCfg, err := config.ValidateYAML(getW.Body.Bytes())
+	if err != nil {
+		t.Fatalf("ValidateYAML(GET /api/config body): %v\nbody:\n%s", err, getW.Body.Bytes())
+	}
+	if !reflect.DeepEqual(gotCfg.Notify.Command, argv) {
+		t.Errorf("notify.command round-tripped through POST /mutate -> GET as %#v, want %#v (verbatim, no trim/filter)", gotCfg.Notify.Command, argv)
+	}
+}
+
 // TestMutateConfig_UnknownKey_Rejected pins the read-modify-write's
 // validation: MutateConfig re-validates through the exact same
 // config.Set/Unset dotted-path machinery `boid config set/unset` already
@@ -498,6 +556,107 @@ func TestMutateConfig_ConcurrentSetsOfDifferentKeys_BothSucceed(t *testing.T) {
 	}
 	if !strings.Contains(got, "https://new.example.com") {
 		t.Errorf("final config missing web.public_url change (lost update — BLOCKER 1):\n%s", got)
+	}
+}
+
+// TestConfig_ConcurrentBatchMutateAndFullApply_CASHeldByFullApplyOnly is the
+// regression test for the "batch-vs-full-apply concurrency" concern flagged
+// in codex review round 2 (PR #831): the pre-existing concurrency tests only
+// covered two single-op MutateConfig calls
+// (TestMutateConfig_ConcurrentSetsOfDifferentKeys_BothSucceed) or two
+// ApplyConfigYAML calls
+// (TestApplyConfigYAML_ConcurrentApplies_SharedIfMatch_ExactlyOneSucceeds) —
+// never a batch MutateConfig racing a full ApplyConfigYAML.
+//
+// MutateConfig has NO If-Match parameter at all (see its own doc comment) —
+// it always applies against whatever is currently on disk under configMu,
+// so it can never itself be rejected by a concurrency conflict. The CAS
+// guard lives entirely on ApplyConfigYAML's side: whichever of the two wins
+// the race to acquire configMu first determines whether the OTHER goroutine's
+// captured If-Match is still current by the time it gets the lock.
+//
+//   - If ApplyConfigYAML runs first: it succeeds (If-Match still fresh), and
+//     the batch mutate — which always re-reads the current document under
+//     the lock — runs afterward and lands on top of it. Both changes are
+//     present in the final document.
+//   - If the batch mutate runs first: it always succeeds and advances the
+//     revision out from under ApplyConfigYAML's captured If-Match, so
+//     ApplyConfigYAML is correctly rejected with 412 Precondition Failed —
+//     never silently applied on top of a document it never actually
+//     validated against, and never silently discarding the batch mutate's
+//     already-applied change either.
+//
+// Either way: the batch mutate's change is ALWAYS present in the final
+// document (it can never lose a race), and ApplyConfigYAML's change is
+// present if and only if it succeeded — this is exactly valid CAS behavior,
+// never a silent lost update.
+func TestConfig_ConcurrentBatchMutateAndFullApply_CASHeldByFullApplyOnly(t *testing.T) {
+	srv, _ := newConfigTestServer(t)
+
+	_, rev, err := srv.ConfigYAML()
+	if err != nil {
+		t.Fatalf("ConfigYAML: %v", err)
+	}
+
+	// Distinct keys, so both changes are individually detectable in the
+	// final document regardless of which order the two goroutines land in.
+	fullApplyDoc := []byte("gc:\n  enabled: false\n")
+	const fullApplyMarker = "enabled: false"
+
+	var wg sync.WaitGroup
+	var applyErr, mutateErr error
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		_, applyErr = srv.ApplyConfigYAML(fullApplyDoc, rev, false)
+	}()
+	go func() {
+		defer wg.Done()
+		_, mutateErr = srv.MutateConfig(api.ConfigMutateRequest{Ops: []api.ConfigMutateRequest{
+			{Op: api.ConfigMutateSet, Key: "web.public_url", Value: []string{"https://race-mutate.example.com"}},
+		}})
+	}()
+	wg.Wait()
+
+	// The batch mutate has no CAS guard of its own — it must always
+	// succeed, regardless of interleaving.
+	if mutateErr != nil {
+		t.Errorf("batch MutateConfig failed under concurrency: %v (it has no If-Match guard and should never be rejected)", mutateErr)
+	}
+
+	// ApplyConfigYAML must either succeed outright, or fail specifically
+	// with 412 Precondition Failed (its CAS guard correctly detecting that
+	// the concurrent mutate changed the document out from under its
+	// captured If-Match) — never any other failure mode.
+	applySucceeded := applyErr == nil
+	if applyErr != nil {
+		serr, ok := applyErr.(*api.StatusError)
+		if !ok {
+			t.Fatalf("ApplyConfigYAML failed with a non-StatusError under concurrency: %v", applyErr)
+		}
+		if serr.Code != http.StatusPreconditionFailed {
+			t.Errorf("ApplyConfigYAML failure status = %d, want %d (Precondition Failed)", serr.Code, http.StatusPreconditionFailed)
+		}
+	}
+
+	data, _, err := srv.ConfigYAML()
+	if err != nil {
+		t.Fatalf("ConfigYAML: %v", err)
+	}
+	got := string(data)
+
+	// The batch mutate's change must always be present — it never lost the
+	// race (per its own always-succeeds assertion above).
+	if !strings.Contains(got, "race-mutate.example.com") {
+		t.Errorf("final config missing the batch mutate's change (lost update): %s", got)
+	}
+	// The full apply's change is present exactly when it reported success.
+	hasFullApply := strings.Contains(got, fullApplyMarker)
+	if applySucceeded && !hasFullApply {
+		t.Errorf("ApplyConfigYAML reported success but its change is missing from the final document: %s", got)
+	}
+	if !applySucceeded && hasFullApply {
+		t.Errorf("ApplyConfigYAML reported a conflict (412) but its change is present in the final document anyway (should have been rejected before writing): %s", got)
 	}
 }
 
