@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -96,6 +97,76 @@ func TestLoadOrCreate_RejectsUnsafeKeyPermissions(t *testing.T) {
 
 	if _, err := mtls.LoadOrCreate(dir); err == nil {
 		t.Fatal("LoadOrCreate succeeded against a 0644 ca.key; want an unsafe-permissions error")
+	}
+}
+
+// TestLoadOrCreate_ConcurrentStartup_NoPartialFile pins the same hazard
+// class internal/install.LoadOrCreate's own
+// TestLoadOrCreate_ConcurrentStartup_SameID pins (Major 7, PR6 codex
+// review): two daemon instances racing to boot against the same fresh,
+// empty named volume (docs/plans/volume-only-daemon.md §論点 d) must never
+// observe a half-written ca.crt/ca.key that fails to parse — the plain
+// os.WriteFile this function used before atomicfile.PublishIfAbsent had no
+// such guarantee.
+//
+// This does NOT assert every goroutine ends up with byte-identical
+// cert/key pairs: PublishIfAbsent's one-winner guarantee is per FILE, not
+// per (cert,key) PAIR, so a goroutine that wins the ca.crt publish race
+// while a different goroutine wins the ca.key race would (in the
+// currently-accepted, documented residual risk — see LoadOrCreate's own
+// doc comment) end up with a mismatched pair. In practice this daemon
+// only ever runs as a single compose replica against a given data dir, so
+// that pathological interleaving is not a routine occurrence; asserting
+// it here would make the test flaky on scheduling rather than pin a real
+// regression. What every caller MUST get, unconditionally, is a
+// successfully parsed CA with no error.
+func TestLoadOrCreate_ConcurrentStartup_NoPartialFile(t *testing.T) {
+	dir := t.TempDir()
+	const n = 20
+
+	cas := make([]*mtls.CA, n)
+	errs := make([]error, n)
+	var wg sync.WaitGroup
+	wg.Add(n)
+	for i := 0; i < n; i++ {
+		i := i
+		go func() {
+			defer wg.Done()
+			cas[i], errs[i] = mtls.LoadOrCreate(dir)
+		}()
+	}
+	wg.Wait()
+
+	for i, err := range errs {
+		if err != nil {
+			t.Fatalf("goroutine %d: LoadOrCreate: %v", i, err)
+		}
+		if cas[i] == nil {
+			t.Fatalf("goroutine %d: LoadOrCreate returned a nil CA with no error", i)
+		}
+	}
+
+	certPath := filepath.Join(dir, mtls.CAFileName)
+	keyPath := filepath.Join(dir, mtls.KeyFileName)
+	if info, err := os.Stat(certPath); err != nil {
+		t.Fatalf("stat ca.crt: %v", err)
+	} else if info.Size() == 0 {
+		t.Error("ca.crt written empty")
+	}
+	if info, err := os.Stat(keyPath); err != nil {
+		t.Fatalf("stat ca.key: %v", err)
+	} else if info.Size() == 0 {
+		t.Error("ca.key written empty")
+	} else if perm := info.Mode().Perm(); perm != 0o600 {
+		t.Errorf("ca.key perm = %o, want 0600", perm)
+	}
+
+	// A sequential reload after the race settles must succeed and be
+	// self-consistent (parseCA + the unsafe-permissions check both pass),
+	// proving the files on disk — whichever combination of racing
+	// goroutines actually wrote them — are each complete, not truncated.
+	if _, err := mtls.LoadOrCreate(dir); err != nil {
+		t.Fatalf("reload after concurrent race: %v", err)
 	}
 }
 
