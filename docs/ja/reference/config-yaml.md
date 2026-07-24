@@ -3,7 +3,57 @@
 `~/.config/boid/config.yaml` は boid daemon のユーザ設定ファイルです（XDG 準拠）。
 ファイルが存在しない場合はデフォルト値で動作します。
 
-設定変更は `boid stop && boid start` で反映されます。
+手で直接編集する代わりに `boid config get/set/unset/apply/edit`（後述）を使うと、
+daemon の HTTP API 経由でスキーマ検証つきの編集ができます。volume-only daemon
+（`docs/plans/volume-only-daemon.md`）移行後は config.yaml が daemon 自身の
+named volume 内にあり、host からファイルを直接編集できなくなるため、こちらが
+正式な編集経路になります。
+
+設定変更の反映タイミングはキーによって異なります（`boid config` 節参照）。
+`sandbox.allowed_domains` / `notify.command` / `web.public_url` は即座に反映
+（再起動不要）、`gateway.forges.*` は daemon 再起動が必要です。手で config.yaml
+を直接編集した場合（あるいは `boid config` 経由でない変更）は従来通り
+`boid stop && boid start` で反映してください。
+
+---
+
+## boid config — CLI での編集
+
+```bash
+boid config get                                  # 全体を YAML で dump
+boid config get sandbox.allowed_domains          # 個別キーの値を表示
+
+boid config set sandbox.allowed_domains \
+  .freee.co.jp .notion.com                       # 配列は複数引数で丸ごと置換
+boid config set gateway.forges.github.host bitbucket.org  # map はセグメント traversal
+
+boid config unset web.public_url                 # キー削除（存在しない場合エラー）
+boid config unset gateway.forges.github          # forge エントリ丸ごと削除
+
+boid config apply -f config.yaml                 # ファイルから全体 apply
+boid config edit                                 # $EDITOR（未設定なら vi）で編集
+```
+
+- **検証**: 未知のキーは近いキー名のサジェスト付きで拒否されます。
+  `sandbox.allowed_domains` の各エントリはホスト名として妥当な構文か、
+  `gateway.forges.<id>` は host/forge/secret_key が揃っているかもチェックされます。
+  `boid config apply -f` / `edit` はクライアント側で先にバリデーションしてから
+  daemon に送るため、明らかに壊れたファイルは daemon への往復なしに弾かれます。
+- **`get`（引数なし）の出力**: daemon 上の config.yaml の内容をそのまま返します
+  （defaults を展開した表示ではありません）。明示的に書いたことのないキーは
+  `get`/`unset` から見ると「存在しない」扱いになります（それでも daemon は
+  そのキーの組み込みデフォルト値で動作します — この一覧表の「デフォルト」列
+  の通り）。
+- **反映タイミング**: `set`/`unset`/`apply`/`edit` が成功すると、daemon 側で
+  即座に反映されるキー（dynamic）と、`[warning] ... requires daemon restart`
+  の警告とともに次回再起動まで反映されないキー（restart-required）があります。
+  `sandbox.backend` は特別扱いで、書き込み自体は常に許可されますが
+  （撤去は別 PR — `docs/plans/volume-only-daemon.md` §論点 e）、変更するたびに
+  撤去予定である旨の warning が出ます。
+- **スコープ外**: `boid config` は config.yaml そのものを編集します。
+  `gateway.forges.<forge>.secret_key` はあくまで secret store への参照名で、
+  そこが指す実際のトークン値（env var / secret store の中身）は編集しません
+  — 値は引き続き `boid secret set <key> <value>` で設定してください。
 
 ---
 
