@@ -84,21 +84,41 @@ var workspaceClearCmd = &cobra.Command{
 }
 
 var workspaceRemoveCmd = &cobra.Command{
-	Use:   "remove <slug>",
-	Short: "Remove a workspace and its home directory (DELETE /api/workspaces/{slug}; prompts for confirmation if the home dir exists; --force/--yes skips the prompt)",
-	Args:  cobra.ExactArgs(1),
-	RunE:  runWorkspaceRemove,
+	Use:     "remove <slug>",
+	Aliases: []string{"delete"},
+	Short:   "Remove a workspace and its home directory (DELETE /api/workspaces/{slug}; drops assigned projects back to \"default\"; prompts for confirmation if the home dir exists; --force/--yes skips the prompt)",
+	Args:    cobra.ExactArgs(1),
+	RunE:    runWorkspaceRemove,
 }
 
-// workspaceExportOutput is the optional --output flag value for `workspace
-// export`: a file path to write the exported yaml to, instead of stdout.
+// workspaceExportOutput is the optional -o/--output flag value for
+// `workspace export`: a file path to write the exported yaml to, instead of
+// stdout.
 var workspaceExportOutput string
 
+// workspaceExportAll is the --all flag value for `workspace export`: export
+// every workspace (docs/plans/volume-only-daemon.md §論点g) instead of the
+// single <slug> named as a positional argument.
+var workspaceExportAll bool
+
 var workspaceExportCmd = &cobra.Command{
-	Use:   "export <slug>",
-	Short: "Export a workspace's definition as yaml (GET /api/workspaces/{slug}/export)",
-	Args:  cobra.ExactArgs(1),
-	RunE:  runWorkspaceExport,
+	Use:   "export <slug> [--all] [-o file.yaml]",
+	Short: "Export workspace(s) + their assigned projects as a boid.dev/v1 Workspace yaml document",
+	Long: `Export a workspace's definition — host_commands, env, allowed_domains,
+capabilities, and its assigned projects (name + git URL when known) — as a
+self-describing "apiVersion: boid.dev/v1 / kind: Workspace" yaml document
+(docs/plans/volume-only-daemon.md §論点g).
+
+"boid workspace export <slug>" exports one workspace. "boid workspace export
+--all" exports every workspace into a single "---"-separated multi-document
+file, suitable for "boid workspace apply -f" on a fresh install.
+
+"boid workspace export --all" is the ONLY endorsed backup path for workspace
++ project-assignment state — a raw copy of the daemon's database/volume is
+NOT a valid restore mechanism on its own (task/job history and other DB
+state are treated as volatile; see the plan doc's "backup 契約" decision).`,
+	Args: cobra.MaximumNArgs(1),
+	RunE: runWorkspaceExport,
 }
 
 var (
@@ -137,7 +157,8 @@ func init() {
 	workspaceCreateCmd.Flags().StringVar(&workspaceCreateFromFile, "from-file", "", "yaml file describing the workspace meta (optional; omit to create a blank workspace)")
 	workspaceEditCmd.Flags().StringVar(&workspaceEditFromFile, "from-file", "", "yaml file with the new workspace meta (required)")
 	workspaceEditCmd.Flags().BoolVar(&workspaceEditForce, "force", false, "skip the If-Match revision check (last-write-wins)")
-	workspaceExportCmd.Flags().StringVar(&workspaceExportOutput, "output", "", "file path to write the exported yaml to (default: stdout)")
+	workspaceExportCmd.Flags().StringVarP(&workspaceExportOutput, "output", "o", "", "file path to write the exported yaml to (default: stdout)")
+	workspaceExportCmd.Flags().BoolVar(&workspaceExportAll, "all", false, "export every workspace into a single '---'-separated multi-document file, instead of the <slug> positional argument")
 	workspaceImportCmd.Flags().StringVar(&workspaceImportMode, "mode", "create-only", "import mode: create-only (default, 409 on an existing slug) or replace (upsert)")
 	workspaceImportCmd.Flags().BoolVar(&workspaceImportForce, "force", false, "shorthand for --mode replace")
 	workspaceImportCmd.Flags().StringVar(&workspaceImportSlug, "slug", "", "target workspace slug (default: the import file's basename, extension stripped — the export body itself carries no slug)")
@@ -934,38 +955,11 @@ func formatWorkspaceRemoveResult(resp api.WorkspaceRemoveResponse) string {
 	}
 }
 
-// runWorkspaceExport exports a workspace's definition as yaml via
-// GET /api/workspaces/{slug}/export (docs/plans/workspace-db-consolidation.md
-// PR5 Step D). Unlike every other workspace subcommand, this deliberately
-// does not go through renderOutput: the whole point is to emit the raw yaml
-// document unchanged (to stdout, or --output <path>), not a
-// json/yaml/plain-text rendering of a structured response object.
-func runWorkspaceExport(cmd *cobra.Command, args []string) error {
-	slug := args[0]
-	if err := orchestrator.ValidWorkspaceSlug(slug); err != nil {
-		return err
-	}
-
-	c := client.FromContext(cmd.Context())
-	statusCode, body, err := c.GetRawWithAccept("/api/workspaces/"+slug+"/export", "application/yaml")
-	if err != nil {
-		return fmt.Errorf("export workspace: %w", err)
-	}
-	if statusCode != http.StatusOK {
-		return fmt.Errorf("export workspace: %s", formatWorkspaceAPIError(statusCode, body))
-	}
-
-	if workspaceExportOutput != "" {
-		if err := os.WriteFile(workspaceExportOutput, body, 0o644); err != nil {
-			return fmt.Errorf("write --output: %w", err)
-		}
-		fmt.Fprintf(cmd.OutOrStdout(), "workspace %q exported to %s\n", slug, workspaceExportOutput)
-		return nil
-	}
-
-	_, err = cmd.OutOrStdout().Write(body)
-	return err
-}
+// runWorkspaceExport lives in cmd/workspace_export.go (docs/plans/
+// volume-only-daemon.md §論点g): unlike the pre-existing revision/ETag-based
+// GET /api/workspaces/{slug}/export this used to call directly, export now
+// composes the K8s-like envelope client-side from GET /api/workspaces/{slug}
+// + GET /api/projects?workspace_id={slug}, and supports --all.
 
 // runWorkspaceImport imports a workspace definition from a yaml file via
 // POST /api/workspaces/import?mode=<create-only|replace>

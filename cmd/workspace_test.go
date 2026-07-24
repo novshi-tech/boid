@@ -810,6 +810,10 @@ func resetWorkspaceExportImportFlags(t *testing.T) {
 	if err := workspaceExportCmd.Flags().Set("output", ""); err != nil {
 		t.Fatalf("reset export --output: %v", err)
 	}
+	if err := workspaceExportCmd.Flags().Set("all", "false"); err != nil {
+		t.Fatalf("reset export --all: %v", err)
+	}
+	workspaceExportCmd.Flags().Lookup("all").Changed = false
 	if err := workspaceImportCmd.Flags().Set("mode", "create-only"); err != nil {
 		t.Fatalf("reset import --mode: %v", err)
 	}
@@ -825,11 +829,12 @@ func resetWorkspaceExportImportFlags(t *testing.T) {
 	workspaceExportCmd.Flags().Lookup("output").Changed = false
 }
 
-// TestRunWorkspaceExport_StdoutRoundTrip pins PR5 Step D/A: exporting a
-// workspace to stdout must produce a yaml body that carries the top-level
-// "slug:" key (matching CreateWorkspace/import input shape) so it can be
-// piped straight back into `boid workspace import` without any translation
-// step (codex PR5 review, MAJOR: round-trip 非対称は避ける).
+// TestRunWorkspaceExport_StdoutRoundTrip pins the boid.dev/v1 envelope shape
+// (docs/plans/volume-only-daemon.md §論点g): exporting a workspace to stdout
+// must produce a self-describing "apiVersion/kind/metadata/spec" document
+// that DecodeWorkspaceEnvelopeDocuments (the same decoder `boid workspace
+// apply -f` uses) can parse straight back — round-tripping the fields set
+// via `workspace edit`.
 func TestRunWorkspaceExport_StdoutRoundTrip(t *testing.T) {
 	ts := testutil.NewTestServer(t)
 	t.Setenv("BOID_SOCKET", ts.Server.SocketPath())
@@ -860,31 +865,31 @@ func TestRunWorkspaceExport_StdoutRoundTrip(t *testing.T) {
 	}
 
 	exported := out.Bytes()
-	// The exported body carries the top-level slug key — the round-trip
-	// symmetry that lets `boid workspace export team-a | boid workspace
-	// import` work as-is.
-	if !strings.Contains(string(exported), "slug: team-a") {
-		t.Errorf("exported body must contain 'slug: team-a' at top level: %s", exported)
+	if !strings.Contains(string(exported), "apiVersion: boid.dev/v1") {
+		t.Errorf("exported body must carry the boid.dev/v1 envelope: %s", exported)
+	}
+	if !strings.Contains(string(exported), "name: team-a") {
+		t.Errorf("exported body must carry metadata.name: team-a: %s", exported)
 	}
 
-	// The exported body IS a valid import body: DecodeWorkspaceCreateStrict
-	// (the same decoder POST /api/workspaces/import uses) reconstructs slug
-	// and meta directly.
-	slug, meta, err := orchestrator.DecodeWorkspaceCreateStrict(exported)
+	docs, err := orchestrator.DecodeWorkspaceEnvelopeDocuments(exported)
 	if err != nil {
-		t.Fatalf("DecodeWorkspaceCreateStrict round-trip: %v", err)
+		t.Fatalf("DecodeWorkspaceEnvelopeDocuments round-trip: %v", err)
 	}
-	if slug != "team-a" {
-		t.Errorf("slug = %q, want team-a (from export body)", slug)
+	if len(docs) != 1 {
+		t.Fatalf("len(docs) = %d, want 1", len(docs))
 	}
-	if !equalStrSliceForWorkspaceTest(meta.HostCommands, []string{"gh"}) {
-		t.Errorf("HostCommands = %v, want [gh] (lost across export/import round trip)", meta.HostCommands)
+	if docs[0].Envelope.Metadata.Name != "team-a" {
+		t.Errorf("Metadata.Name = %q, want team-a (from export body)", docs[0].Envelope.Metadata.Name)
+	}
+	if !equalStrSliceForWorkspaceTest(docs[0].Envelope.Spec.HostCommands, []string{"gh"}) {
+		t.Errorf("HostCommands = %v, want [gh] (lost across export/apply round trip)", docs[0].Envelope.Spec.HostCommands)
 	}
 }
 
-// TestRunWorkspaceExport_OutputFile pins the --output flag: the exported
+// TestRunWorkspaceExport_OutputFile pins the -o/--output flag: the exported
 // yaml must be written to the given file path, not stdout, and stdout must
-// stay empty.
+// carry only a confirmation message.
 func TestRunWorkspaceExport_OutputFile(t *testing.T) {
 	ts := testutil.NewTestServer(t)
 	t.Setenv("BOID_SOCKET", ts.Server.SocketPath())
@@ -923,10 +928,146 @@ func TestRunWorkspaceExport_OutputFile(t *testing.T) {
 	if !strings.Contains(string(fileData), "gh") {
 		t.Errorf("--output file content = %q, want it to mention gh", fileData)
 	}
-	// The --output file must carry the top-level slug key (round-trip
-	// symmetry — codex PR5 review, MAJOR).
-	if !strings.Contains(string(fileData), "slug: team-a") {
-		t.Errorf("--output file must contain 'slug: team-a' at top level: %s", fileData)
+	if !strings.Contains(string(fileData), "name: team-a") {
+		t.Errorf("--output file must carry metadata.name: team-a: %s", fileData)
+	}
+}
+
+// TestRunWorkspaceExport_All pins --all: every workspace is exported into a
+// single "---"-separated multi-document file.
+func TestRunWorkspaceExport_All(t *testing.T) {
+	ts := testutil.NewTestServer(t)
+	t.Setenv("BOID_SOCKET", ts.Server.SocketPath())
+	testutil.SeedWorkspace(t, ts, "team-a")
+	testutil.SeedWorkspace(t, ts, "team-b")
+	resetWorkspaceExportImportFlags(t)
+	defer resetWorkspaceExportImportFlags(t)
+
+	if err := workspaceExportCmd.Flags().Set("all", "true"); err != nil {
+		t.Fatalf("set --all: %v", err)
+	}
+
+	var out bytes.Buffer
+	cmd := workspaceExportCmd
+	cmd.SetOut(&out)
+	if err := runWorkspaceExport(cmd, nil); err != nil {
+		t.Fatalf("runWorkspaceExport --all: %v", err)
+	}
+
+	docs, err := orchestrator.DecodeWorkspaceEnvelopeDocuments(out.Bytes())
+	if err != nil {
+		t.Fatalf("DecodeWorkspaceEnvelopeDocuments: %v", err)
+	}
+	// default (always present) + team-a + team-b.
+	if len(docs) != 3 {
+		t.Fatalf("len(docs) = %d, want 3: %s", len(docs), out.String())
+	}
+	names := map[string]bool{}
+	for _, d := range docs {
+		names[d.Envelope.Metadata.Name] = true
+	}
+	for _, want := range []string{orchestrator.DefaultWorkspaceSlug, "team-a", "team-b"} {
+		if !names[want] {
+			t.Errorf("expected workspace %q in --all export, got %v", want, names)
+		}
+	}
+}
+
+// TestRunWorkspaceExport_All_RejectsPositionalArg pins that --all and a
+// <slug> positional argument are mutually exclusive.
+func TestRunWorkspaceExport_All_RejectsPositionalArg(t *testing.T) {
+	resetWorkspaceExportImportFlags(t)
+	defer resetWorkspaceExportImportFlags(t)
+	if err := workspaceExportCmd.Flags().Set("all", "true"); err != nil {
+		t.Fatalf("set --all: %v", err)
+	}
+	err := runWorkspaceExport(workspaceExportCmd, []string{"team-a"})
+	if err == nil {
+		t.Fatal("expected an error combining --all with a <slug> argument")
+	}
+}
+
+// TestRunWorkspaceExport_IncludesProjectURL pins that an assigned project
+// with a known upstream URL is exported with spec.projects[].url set.
+func TestRunWorkspaceExport_IncludesProjectURL(t *testing.T) {
+	ts := testutil.NewTestServer(t)
+	t.Setenv("BOID_SOCKET", ts.Server.SocketPath())
+	testutil.SeedWorkspace(t, ts, "team-a")
+	resetWorkspaceExportImportFlags(t)
+	defer resetWorkspaceExportImportFlags(t)
+
+	dir := writeImportTestProject(t, "rook-server", "Rook Server")
+	var project orchestrator.Project
+	if err := ts.Client.Do("POST", "/api/projects", map[string]string{"work_dir": dir}, &project); err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	if err := ts.Client.Do("PUT", "/api/projects/"+project.ID+"/workspace", map[string]string{"workspace_id": "team-a"}, &project); err != nil {
+		t.Fatalf("assign project: %v", err)
+	}
+
+	var out bytes.Buffer
+	cmd := workspaceExportCmd
+	cmd.SetOut(&out)
+	if err := runWorkspaceExport(cmd, []string{"team-a"}); err != nil {
+		t.Fatalf("runWorkspaceExport: %v", err)
+	}
+
+	docs, err := orchestrator.DecodeWorkspaceEnvelopeDocuments(out.Bytes())
+	if err != nil {
+		t.Fatalf("DecodeWorkspaceEnvelopeDocuments: %v", err)
+	}
+	if len(docs[0].Envelope.Spec.Projects) != 1 {
+		t.Fatalf("Projects = %+v, want 1 entry", docs[0].Envelope.Spec.Projects)
+	}
+	got := docs[0].Envelope.Spec.Projects[0]
+	// The exported name is project.Meta.Name (project.yaml's "name:" field,
+	// here "Rook Server" per writeImportTestProject's 2nd argument) — the
+	// same identity `boid workspace apply`'s project-ref resolution matches
+	// against, not the work_dir basename (a throwaway t.TempDir() path).
+	if got.Name != "Rook Server" {
+		t.Errorf("project Name = %q, want %q", got.Name, "Rook Server")
+	}
+	if got.URL != "https://example.invalid/testutil/repo.git" {
+		t.Errorf("project URL = %q, want the captured upstream URL", got.URL)
+	}
+}
+
+// TestRunWorkspaceExport_WarnsOnHostPathEnv pins the env-host-path advisory
+// warning (docs/plans/volume-only-daemon.md §論点g「env の host path 依存」):
+// export still succeeds, but a matching warning is printed to stderr.
+func TestRunWorkspaceExport_WarnsOnHostPathEnv(t *testing.T) {
+	ts := testutil.NewTestServer(t)
+	t.Setenv("BOID_SOCKET", ts.Server.SocketPath())
+	resetWorkspaceCreateEditFlags(t)
+	resetWorkspaceExportImportFlags(t)
+
+	if err := runWorkspaceCreate(workspaceCreateCmd, []string{"team-a"}); err != nil {
+		t.Fatalf("seed create: %v", err)
+	}
+	editFile := filepath.Join(t.TempDir(), "edit.yaml")
+	if err := os.WriteFile(editFile, []byte("env:\n  GOPATH: /home/nosen/go\n"), 0o644); err != nil {
+		t.Fatalf("write edit file: %v", err)
+	}
+	if err := workspaceEditCmd.Flags().Set("from-file", editFile); err != nil {
+		t.Fatalf("set --from-file: %v", err)
+	}
+	if err := runWorkspaceEdit(workspaceEditCmd, []string{"team-a"}); err != nil {
+		t.Fatalf("seed edit: %v", err)
+	}
+	resetWorkspaceCreateEditFlags(t)
+
+	var out, errOut bytes.Buffer
+	cmd := workspaceExportCmd
+	cmd.SetOut(&out)
+	cmd.SetErr(&errOut)
+	if err := runWorkspaceExport(cmd, []string{"team-a"}); err != nil {
+		t.Fatalf("runWorkspaceExport: %v", err)
+	}
+	if !strings.Contains(errOut.String(), "GOPATH=/home/nosen/go") {
+		t.Errorf("stderr = %q, want a warning mentioning GOPATH=/home/nosen/go", errOut.String())
+	}
+	if !strings.Contains(errOut.String(), "host filesystem path") {
+		t.Errorf("stderr = %q, want the host filesystem path warning text", errOut.String())
 	}
 }
 
