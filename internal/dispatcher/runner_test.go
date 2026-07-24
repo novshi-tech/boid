@@ -110,9 +110,9 @@ func (f fakeWorkspaceLookup) Load(slug string) (*orchestrator.WorkspaceMeta, err
 // port (or a forced error). Used to verify Dispatch wires the
 // resolveAllowedDomains result into ProxyManager.GetOrCreate verbatim.
 type fakeProxyAllocator struct {
-	calls   []fakeProxyAllocCall
-	ports   map[string]int    // workspaceID → port to return
-	errs    map[string]error  // workspaceID → error to return
+	calls []fakeProxyAllocCall
+	ports map[string]int   // workspaceID → port to return
+	errs  map[string]error // workspaceID → error to return
 }
 
 type fakeProxyAllocCall struct {
@@ -139,7 +139,7 @@ func TestResolveWorkspaceProxy_AppliesWorkspaceOverrides(t *testing.T) {
 		"ws-a": {AllowedDomains: []string{".cosmos.azure.com"}},
 	}}
 	r := &Runner{
-		AllowedDomains: func() []string { return floor },
+		AllowedDomains: floor,
 		ProxyPort:      &defaultPort,
 		ProxyAllocator: alloc,
 		Workspaces:     lookup,
@@ -174,7 +174,7 @@ func TestResolveWorkspaceProxy_FloorOnlyWhenWorkspaceMissing(t *testing.T) {
 	alloc := &fakeProxyAllocator{ports: map[string]int{"ws-a": 9100}}
 	lookup := fakeWorkspaceLookup{metas: nil} // every Load returns ErrNotExist
 	r := &Runner{
-		AllowedDomains: func() []string { return floor },
+		AllowedDomains: floor,
 		ProxyPort:      &defaultPort,
 		ProxyAllocator: alloc,
 		Workspaces:     lookup,
@@ -198,7 +198,7 @@ func TestResolveWorkspaceProxy_FallbackWhenAllocatorErrors(t *testing.T) {
 	defaultPort := 8000
 	alloc := &fakeProxyAllocator{errs: map[string]error{"ws-a": fmt.Errorf("listener bind failed")}}
 	r := &Runner{
-		AllowedDomains: func() []string { return floor },
+		AllowedDomains: floor,
 		ProxyPort:      &defaultPort,
 		ProxyAllocator: alloc,
 		Workspaces:     fakeWorkspaceLookup{metas: map[string]*orchestrator.WorkspaceMeta{"ws-a": {AllowedDomains: []string{"new.example.com"}}}},
@@ -218,7 +218,7 @@ func TestResolveWorkspaceProxy_AllocatorUnwired_StaysOnFloor(t *testing.T) {
 	floor := []string{"pypi.org"}
 	defaultPort := 8000
 	r := &Runner{
-		AllowedDomains: func() []string { return floor },
+		AllowedDomains: floor,
 		ProxyPort:      &defaultPort,
 		// ProxyAllocator deliberately nil — test-wired runners (and the
 		// initial daemon boot path before proxy_manager is started) must
@@ -233,47 +233,58 @@ func TestResolveWorkspaceProxy_AllocatorUnwired_StaysOnFloor(t *testing.T) {
 	}
 }
 
-// TestResolveWorkspaceProxy_EmptyWorkspaceID_UsesDedicatedNoWorkspaceListener
-// pins MAJOR 3 (codex review round 2): a job with no workspace at all
-// (`boid exec` / ProfileInit against an unlinked project) must still push
-// the current floor into its listener via ProxyAllocator.GetOrCreate on
-// every call — not just read a static, boot-time-frozen port — so a
-// hot-reloaded sandbox.allowed_domains reaches it immediately.
-//
-// It also pins the BLOCKER fix (codex review round 3): that call must use
-// noWorkspaceProxyKey, NOT orchestrator.DefaultWorkspaceSlug — pre-fix, this
-// test asserted the workspaceID passed to the allocator was
-// orchestrator.DefaultWorkspaceSlug, the exact aliasing bug
-// resolveWorkspaceProxy's own doc comment describes (a real "default"-slug
-// workspace's own AllowedDomains would widen the SAME shared listener a
-// no-workspace job was using). See
-// TestResolveWorkspaceProxy_EmptyWorkspaceAndDefaultWorkspace_DistinctListeners
-// for the end-to-end proof against a real ProxyManager.
-func TestResolveWorkspaceProxy_EmptyWorkspaceID_UsesDedicatedNoWorkspaceListener(t *testing.T) {
+// TestResolveWorkspaceProxy_EmptyWorkspaceID_NeverTouchesAllocator pins the
+// PR #830 round-4 simplification (nose directive): a no-workspace dispatch
+// must never call ProxyAllocator.GetOrCreate at all. The no-workspace
+// listener is now bound ONCE at daemon startup (internal/server's
+// Server.Start, keyed by NoWorkspaceProxyKey) and its port captured into
+// Runner.NoWorkspaceProxyPort — not re-resolved per dispatch, since
+// sandbox.allowed_domains is ReloadRestartRequired now (nothing to refresh
+// mid-process; see ReloadDynamic's own doc comment, internal/config/
+// schema.go). This structurally closes round-4 blocker 1 (a runtime
+// allocation-error fallback path that could return the widened default
+// listener): there is no runtime allocation call here left to fail.
+func TestResolveWorkspaceProxy_EmptyWorkspaceID_NeverTouchesAllocator(t *testing.T) {
 	floor := []string{"pypi.org"}
-	defaultPort := 8000
-	alloc := &fakeProxyAllocator{ports: map[string]int{noWorkspaceProxyKey: 8000}}
+	noWSPort := 9200
+	alloc := &fakeProxyAllocator{}
 	r := &Runner{
-		AllowedDomains: func() []string { return floor },
-		ProxyPort:      &defaultPort,
-		ProxyAllocator: alloc,
+		AllowedDomains:       floor,
+		ProxyAllocator:       alloc,
+		NoWorkspaceProxyPort: &noWSPort,
 	}
+
 	allowed, port := r.resolveWorkspaceProxy("")
-	if port != defaultPort {
-		t.Errorf("port = %d, want %d", port, defaultPort)
+	if port != noWSPort {
+		t.Errorf("port = %d, want the captured NoWorkspaceProxyPort %d", port, noWSPort)
 	}
 	if !equalSlice(allowed, floor) {
 		t.Errorf("allowed = %v, want %v", allowed, floor)
 	}
-	if len(alloc.calls) != 1 {
-		t.Fatalf("alloc calls = %d, want exactly 1 (the no-workspace listener must be refreshed, not skipped)", len(alloc.calls))
+	if len(alloc.calls) != 0 {
+		t.Errorf("alloc.calls = %v, want none — resolveWorkspaceProxy(\"\") must never call the allocator", alloc.calls)
 	}
-	got := alloc.calls[0]
-	if got.workspaceID != noWorkspaceProxyKey {
-		t.Errorf("alloc call workspaceID = %q, want %q (NOT orchestrator.DefaultWorkspaceSlug — that key belongs to the real default workspace)", got.workspaceID, noWorkspaceProxyKey)
+}
+
+// TestResolveWorkspaceProxy_EmptyWorkspaceID_UnwiredNoWorkspacePort_NeverFallsBackToDefault
+// pins the flip side: an unwired NoWorkspaceProxyPort (test wiring, or a
+// daemon build that never called Server.Start) must return port 0, NEVER
+// r.ProxyPort's value. Falling back to the real default-slug workspace's
+// own (editable, live-widening) listener is exactly the isolation leak
+// NoWorkspaceProxyKey's distinctness exists to prevent (BLOCKER, codex
+// review round 3) — a port-0 dispatch failing loudly is safer than a silent
+// aliasing regression.
+func TestResolveWorkspaceProxy_EmptyWorkspaceID_UnwiredNoWorkspacePort_NeverFallsBackToDefault(t *testing.T) {
+	floor := []string{"pypi.org"}
+	defaultPort := 8000
+	r := &Runner{
+		AllowedDomains: floor,
+		ProxyPort:      &defaultPort,
+		// NoWorkspaceProxyPort deliberately left nil.
 	}
-	if !equalSlice(got.allowed, floor) {
-		t.Errorf("alloc call allowed = %v, want %v", got.allowed, floor)
+	_, port := r.resolveWorkspaceProxy("")
+	if port != 0 {
+		t.Errorf("port = %d, want 0 (must never silently fall back to ProxyPort=%d, the default workspace's own listener)", port, defaultPort)
 	}
 }
 
@@ -298,17 +309,31 @@ func TestResolveWorkspaceProxy_EmptyWorkspaceAndDefaultWorkspace_DistinctListene
 	defer mgr.StopAll()
 
 	floor := []string{"pypi.org"}
+
+	// Mirrors what internal/server's Server.Start does once at daemon
+	// startup: bind the no-workspace listener under NoWorkspaceProxyKey and
+	// capture its port. resolveWorkspaceProxy("") below must never call the
+	// allocator itself (PR #830 round-4 simplification, nose directive).
+	noWSPort, err := mgr.GetOrCreate(NoWorkspaceProxyKey, floor)
+	if err != nil {
+		t.Fatalf("seed no-workspace listener: %v", err)
+	}
+
 	r := &Runner{
-		AllowedDomains: func() []string { return floor },
-		ProxyAllocator: mgr,
+		AllowedDomains:       floor,
+		ProxyAllocator:       mgr,
+		NoWorkspaceProxyPort: &noWSPort,
 		Workspaces: fakeWorkspaceLookup{metas: map[string]*orchestrator.WorkspaceMeta{
 			orchestrator.DefaultWorkspaceSlug: {AllowedDomains: []string{"evil.example.com"}},
 		}},
 	}
 
-	noWSAllowed, noWSPort := r.resolveWorkspaceProxy("")
+	noWSAllowed, gotNoWSPort := r.resolveWorkspaceProxy("")
 	if !equalSlice(noWSAllowed, floor) {
 		t.Fatalf("no-workspace allowed = %v, want floor only %v", noWSAllowed, floor)
+	}
+	if gotNoWSPort != noWSPort {
+		t.Fatalf("no-workspace port = %d, want the captured startup port %d", gotNoWSPort, noWSPort)
 	}
 
 	defaultAllowed, defaultPort := r.resolveWorkspaceProxy(orchestrator.DefaultWorkspaceSlug)
@@ -317,13 +342,13 @@ func TestResolveWorkspaceProxy_EmptyWorkspaceAndDefaultWorkspace_DistinctListene
 		t.Fatalf("default-workspace allowed = %v, want %v", defaultAllowed, wantDefault)
 	}
 
-	if noWSPort == defaultPort {
-		t.Fatalf("no-workspace and default-workspace share port %d; want distinct listeners", noWSPort)
+	if gotNoWSPort == defaultPort {
+		t.Fatalf("no-workspace and default-workspace share port %d; want distinct listeners", gotNoWSPort)
 	}
 
 	// The no-workspace listener must remain floor-only after the
 	// default-workspace dispatch widened ITS OWN listener.
-	if got := quickConnectStatus(t, noWSPort, "evil.example.com:443"); got != http.StatusForbidden {
+	if got := quickConnectStatus(t, gotNoWSPort, "evil.example.com:443"); got != http.StatusForbidden {
 		t.Errorf("no-workspace listener allowed evil.example.com after an unrelated default-workspace dispatch widened its own listener: status = %d, want 403", got)
 	}
 
@@ -355,75 +380,6 @@ func quickConnectStatus(t *testing.T, port int, host string) int {
 		t.Fatalf("read response: %v", err)
 	}
 	return resp.StatusCode
-}
-
-// TestResolveWorkspaceProxy_EmptyWorkspaceID_AllowedDomainsRefreshedEveryCall
-// is MAJOR 3's direct hot-reload regression test: two resolveWorkspaceProxy("")
-// calls on the SAME *Runner, with the floor mutated in between (exactly what
-// internal/server's applyDynamicConfigLocked does to whatever
-// Runner.AllowedDomains reads — mirrors
-// TestResolveWorkspaceProxy_AllowedDomainsGetterReadFreshEveryCall's
-// established pattern for the named-workspace path), must push the NEW
-// floor into the default listener on the very next call — not "after
-// another dispatch" and not "only after a restart".
-func TestResolveWorkspaceProxy_EmptyWorkspaceID_AllowedDomainsRefreshedEveryCall(t *testing.T) {
-	current := []string{"pypi.org"}
-	defaultPort := 8000
-	alloc := &fakeProxyAllocator{}
-	r := &Runner{
-		AllowedDomains: func() []string { return current },
-		ProxyPort:      &defaultPort,
-		ProxyAllocator: alloc,
-	}
-
-	if _, _ = r.resolveWorkspaceProxy(""); !equalSlice(alloc.calls[0].allowed, []string{"pypi.org"}) {
-		t.Fatalf("first call: alloc received %v, want [pypi.org]", alloc.calls[0].allowed)
-	}
-
-	// Simulate a config hot-reload (e.g. `boid config set
-	// sandbox.allowed_domains ...`) removing the exfiltration-relevant
-	// domain that was there before.
-	current = []string{"pypi.org", "registry.npmjs.org"}
-
-	if _, _ = r.resolveWorkspaceProxy(""); len(alloc.calls) != 2 {
-		t.Fatalf("alloc calls = %d, want 2 (refreshed on the very next call, not deferred)", len(alloc.calls))
-	}
-	if !equalSlice(alloc.calls[1].allowed, current) {
-		t.Errorf("second call: alloc received %v, want %v (the just-hot-reloaded floor)", alloc.calls[1].allowed, current)
-	}
-}
-
-// TestResolveWorkspaceProxy_AllowedDomainsGetterReadFreshEveryCall pins
-// BLOCKER 2 (codex review round 1): Runner.AllowedDomains is a getter, not a
-// captured slice, precisely so a later swap of whatever backs the getter
-// (internal/server's ApplyConfigYAML hot-reload, in production) is observed
-// by the NEXT dispatch without reconstructing the Runner. This test proves
-// the mechanism directly: mutate the state the getter closes over between
-// two resolveWorkspaceProxy calls on the SAME *Runner and confirm the
-// second call sees the new value — a pre-fix plain []string field could
-// never do this, since the slice would have been copied in at Wire() time.
-func TestResolveWorkspaceProxy_AllowedDomainsGetterReadFreshEveryCall(t *testing.T) {
-	current := []string{"pypi.org"}
-	defaultPort := 8000
-	r := &Runner{
-		AllowedDomains: func() []string { return current },
-		ProxyPort:      &defaultPort,
-	}
-
-	allowed1, _ := r.resolveWorkspaceProxy("")
-	if !equalSlice(allowed1, []string{"pypi.org"}) {
-		t.Fatalf("first call: allowed = %v, want [pypi.org]", allowed1)
-	}
-
-	// Simulate a config hot-reload swapping the underlying state — no
-	// Runner reconstruction, exactly what internal/server's
-	// applyDynamicConfigLocked does to whatever srv.AllowedDomains reads.
-	current = []string{"pypi.org", "registry.npmjs.org"}
-
-	allowed2, _ := r.resolveWorkspaceProxy("")
-	if !equalSlice(allowed2, current) {
-		t.Errorf("second call (after hot-reload): allowed = %v, want %v", allowed2, current)
-	}
 }
 
 func equalSlice(a, b []string) bool {

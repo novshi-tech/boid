@@ -700,29 +700,29 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 	srv.gatewayRegistry = gitgateway.NewRegistry()
 
 	runner := dispatcher.Wire(dispatcher.WireConfig{
-		DB:             srv.db,
-		Runtime:        jobRuntime,
-		Broker:         broker,
-		Sandbox:        dispatcher.NewSandboxPreparer(),
-		SecretStore:    secretStore,
-		Projects:       projectCatalog,
-		Hydrator:       store, // workspace-aware hydration for peer meta.name (buildPeerAdvertise)
-		Workspaces:     wsLookup,
-		ProxyAllocator: srv.proxyManager,
-		BoidBinary:     boidBin,
-		ServerSocket:   cfg.SocketPath,
-		ProxyPort: &srv.proxyPort,
-		// AllowedDomains: a method value, not cfg.AllowedDomains itself
-		// (BLOCKER 2, codex review round 1) — srv.AllowedDomains re-reads
-		// s.cfg.AllowedDomains fresh under s.mu on every dispatch, so a
-		// later ApplyConfigYAML hot-reload (config_edit.go's
-		// applyDynamicConfigLocked, which swaps that exact field) reaches
-		// this already-constructed Runner instead of it being frozen at
-		// today's cfg.AllowedDomains snapshot for the rest of the daemon's
-		// life. See Runner.AllowedDomains's own doc comment
-		// (internal/dispatcher/runner.go) for the full staleness scenario
-		// this closes.
-		AllowedDomains: srv.AllowedDomains,
+		DB:                   srv.db,
+		Runtime:              jobRuntime,
+		Broker:               broker,
+		Sandbox:              dispatcher.NewSandboxPreparer(),
+		SecretStore:          secretStore,
+		Projects:             projectCatalog,
+		Hydrator:             store, // workspace-aware hydration for peer meta.name (buildPeerAdvertise)
+		Workspaces:           wsLookup,
+		ProxyAllocator:       srv.proxyManager,
+		BoidBinary:           boidBin,
+		ServerSocket:         cfg.SocketPath,
+		ProxyPort:            &srv.proxyPort,
+		NoWorkspaceProxyPort: &srv.noWorkspaceProxyPort,
+		// AllowedDomains: captured once here, not a getter (PR #830 round-4
+		// simplification, nose directive — sandbox.allowed_domains is
+		// ReloadRestartRequired: see Runner.AllowedDomains's own doc
+		// comment, internal/dispatcher/runner.go, and ReloadDynamic's own
+		// doc comment, internal/config/schema.go). A later
+		// `boid config set sandbox.allowed_domains ...` persists to
+		// config.yaml immediately but only reaches this Runner on the next
+		// daemon restart, when buildRuntime runs again from the
+		// freshly-loaded config.
+		AllowedDomains: cfg.AllowedDomains,
 		RuntimesDir:    runtimesDirFor(cfg),
 		GitGateway:     srv.gatewayRegistry,
 		GatewayURL:     &srv.gatewayURL,

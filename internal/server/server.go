@@ -120,10 +120,17 @@ type Server struct {
 	secretStore  *dispatcher.SecretStore
 	proxyManager *sandbox.ProxyManager
 	proxyPort    int // port of the default-workspace listener (back-compat /api/proxy surface)
-	router       chi.Router
-	unixLn       net.Listener
-	tcpLn        net.Listener
-	httpServer   *http.Server
+	// noWorkspaceProxyPort is the port of the dedicated egress proxy
+	// listener bound at Start (keyed by dispatcher.NoWorkspaceProxyKey) for
+	// jobs with no workspace at all — see Runner.NoWorkspaceProxyPort's own
+	// doc comment. Same late-binding-via-pointer pattern as proxyPort;
+	// deliberately a separate field so it can never be confused with (or
+	// fall back to) proxyPort's own, editable-default-workspace value.
+	noWorkspaceProxyPort int
+	router               chi.Router
+	unixLn               net.Listener
+	tcpLn                net.Listener
+	httpServer           *http.Server
 	// tcpHandler wraps the router with transport-aware API auth and is served
 	// to the TCP listener only. The UNIX socket is served the bare router
 	// (trusted CLI/agent transport). Set by mountRoutes.
@@ -482,19 +489,6 @@ func (s *Server) KitsDir() string {
 	return s.cfg.KitsDir
 }
 
-// AllowedDomains returns a snapshot of the daemon's current sandbox egress
-// allowlist (s.cfg.AllowedDomains) — the exact value sandbox.ProxyManager.
-// GetOrCreate reads fresh on every dispatch. Exposed primarily so
-// ApplyConfigYAML's `sandbox.allowed_domains` hot-reload (internal/server/
-// config_edit.go) is externally observable/testable without a full sandbox
-// dispatch, mirroring KitsDir()'s existing "expose an effective daemon
-// setting read-only" convention.
-func (s *Server) AllowedDomains() []string {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return append([]string(nil), s.cfg.AllowedDomains...)
-}
-
 // HostCommands returns a deep-copy snapshot of the aggregated host_commands
 // config assembled at startup from every installed kit.yaml
 // (docs/plans/workspace-db-consolidation.md PR2). It is read-only reference
@@ -645,6 +639,23 @@ func (s *Server) Start(ctx context.Context) error {
 		}
 		s.proxyPort = port
 		slog.Info("proxy started", "port", port, "workspace", orchestrator.DefaultWorkspaceSlug)
+
+		// Dedicated listener for jobs with no workspace at all (`boid exec` /
+		// ProfileInit against an unlinked project) — bound once here, under
+		// dispatcher.NoWorkspaceProxyKey, a key DISTINCT from
+		// orchestrator.DefaultWorkspaceSlug (BLOCKER, codex review round 3:
+		// see Runner.NoWorkspaceProxyPort's own doc comment for the aliasing
+		// bug this distinctness prevents). PR #830 round-4 simplification
+		// (nose directive): bound once, never refreshed per-dispatch —
+		// sandbox.allowed_domains is ReloadRestartRequired now, so a
+		// restart is exactly what's needed to pick up a changed floor here
+		// too, same as the default listener above.
+		noWSPort, err := s.proxyManager.GetOrCreate(dispatcher.NoWorkspaceProxyKey, s.cfg.AllowedDomains)
+		if err != nil {
+			return fmt.Errorf("start no-workspace proxy: %w", err)
+		}
+		s.noWorkspaceProxyPort = noWSPort
+		slog.Info("proxy started", "port", noWSPort, "workspace", "<no-workspace>")
 	}
 
 	// git gateway: bind its listener before the UNIX/TCP listeners below so

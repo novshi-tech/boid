@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strconv"
+	"strings"
 
 	"github.com/novshi-tech/boid/internal/api"
 	"github.com/novshi-tech/boid/internal/config"
@@ -269,53 +270,39 @@ func (s *Server) MutateConfig(req api.ConfigMutateRequest) (api.ConfigMutateResu
 // route — mountRoutes only registers GET/POST /api/config after
 // buildRuntime returns — but handled defensively rather than assumed).
 func (s *Server) applyDynamicConfigLocked(oldCfg, newCfg *config.Config) []string {
-	var oldAllowed, oldCommand []string
-	var oldPublicURL string
 	var oldForges map[string]config.ForgeConfig
 	var oldBackend config.SandboxBackendKind
 	if oldCfg != nil {
-		oldAllowed = oldCfg.Sandbox.AllowedDomains
-		oldCommand = oldCfg.Notify.Command
-		oldPublicURL = oldCfg.Web.PublicURL
 		oldForges = oldCfg.Gateway.Forges
 		oldBackend = oldCfg.Sandbox.Backend
 	}
 	// oldCfgSafe backs the generic restart-required-field loop below —
 	// never nil, so restartFieldExtractors' funcs can dereference oldCfg's
 	// sub-structs unconditionally. Mirrors the same "oldCfg nil only on the
-	// defensive first-ever-call path" contract the individual oldX vars
-	// above already follow.
+	// defensive first-ever-call path" contract oldForges/oldBackend above
+	// already follow.
 	oldCfgSafe := oldCfg
 	if oldCfgSafe == nil {
 		oldCfgSafe = &config.Config{}
 	}
 
-	// sandbox.allowed_domains — dynamic: s.cfg.AllowedDomains is read fresh,
-	// under s.mu, by (*Server).AllowedDomains — the exact method value
-	// wire.go wires as dispatcher.Runner.AllowedDomains's getter (BLOCKER 2,
-	// codex review round 1) — so swapping it here is a genuine,
-	// immediately-effective hot reload reaching the already-constructed
-	// Runner, not just this Server's own config struct. The effective value
-	// is ALWAYS recomputed as the built-in floor UNION the just-applied
-	// user list (config.DefaultAllowedDomains() ∪
-	// newCfg.Sandbox.AllowedDomains), never newCfg's sparse list alone —
-	// the pre-fix assignment here silently dropped every built-in domain
-	// (anthropic.com, npm registry, ...) the moment an operator touched
-	// sandbox.allowed_domains at all.
-	if !stringSlicesEqual(oldAllowed, newCfg.Sandbox.AllowedDomains) {
-		s.mu.Lock()
-		s.cfg.AllowedDomains = mergeAllowedDomains(config.DefaultAllowedDomains(), newCfg.Sandbox.AllowedDomains)
-		s.mu.Unlock()
-		slog.Info("config: hot-reloaded", "key", "sandbox.allowed_domains", "count", len(newCfg.Sandbox.AllowedDomains))
-	}
-
-	// notify.command / web.public_url — dynamic: hot-applied via
-	// notify.Service.Update on the very instance wire.go shares with the
-	// git gateway's notifier and TaskAppService.Notify.
-	if s.notifySvc != nil && (!stringSlicesEqual(oldCommand, newCfg.Notify.Command) || oldPublicURL != newCfg.Web.PublicURL) {
-		s.notifySvc.Update(newCfg.Notify.Command, newCfg.Web.PublicURL)
-		slog.Info("config: hot-reloaded", "key", "notify.command,web.public_url")
-	}
+	// sandbox.allowed_domains / notify.command / web.public_url used to be
+	// hot-applied here (ReloadDynamic): sandbox.allowed_domains swapped
+	// s.cfg.AllowedDomains, which dispatcher.Runner.AllowedDomains re-read
+	// on every dispatch via a func() []string getter (BLOCKER 2, codex
+	// review round 1); notify.command/web.public_url called
+	// notify.Service.Update. PR #830 round-4 simplification (nose
+	// directive) reclassified all three as ReloadRestartRequired — see
+	// ReloadDynamic's own doc comment (internal/config/schema.go) for why:
+	// that hot-reload machinery took 4 codex review rounds and introduced a
+	// Server.Stop/dispatch deadlock (round 4 blocker 2, since
+	// Runner.Dispatch called (*Server).AllowedDomains, which locked s.mu —
+	// the same lock Server.Stop holds while waiting on in-flight dispatches
+	// to finish). All three now fall through to the generic
+	// ReloadRestartRequired loop below (restartFieldExtractors has entries
+	// for all three) — this function no longer touches s.cfg or s.notifySvc
+	// at all, and (*Server).AllowedDomains/s.notifySvc.Update's config-edit
+	// call sites are gone entirely.
 
 	var warnings []string
 
@@ -421,12 +408,23 @@ func restartWarning(path string) string {
 // gateway.forges.* and gateway.hosts are deliberately absent — see
 // restartFieldExtractorExemptions below for why, and for the exhaustive-
 // coverage contract that keeps this map (or that one) in sync with Schema.
+//
+// sandbox.allowed_domains/notify.command render their []string value joined
+// on "\x00" (a byte that can never appear in a hostname or a shell argv
+// element, so two distinct slices can never render to the same string) —
+// the same "collapse to a comparable string" trick the scalar entries below
+// use via strconv/.String(), just for a slice instead of a scalar. All
+// three were ReloadDynamic before the PR #830 round-4 simplification (nose
+// directive) — see ReloadDynamic's own doc comment (schema.go).
 var restartFieldExtractors = map[string]func(*config.Config) string{
 	"gc.enabled":                func(c *config.Config) string { return strconv.FormatBool(c.GC.Enabled) },
 	"gc.interval":               func(c *config.Config) string { return c.GC.Interval.String() },
 	"gc.older_than":             func(c *config.Config) string { return c.GC.OlderThan.String() },
 	"web.http_addr":             func(c *config.Config) string { return c.Web.HTTPAddr },
+	"web.public_url":            func(c *config.Config) string { return c.Web.PublicURL },
 	"task_ask.disconnect_grace": func(c *config.Config) string { return c.TaskAsk.DisconnectGrace.String() },
+	"notify.command":            func(c *config.Config) string { return strings.Join(c.Notify.Command, "\x00") },
+	"sandbox.allowed_domains":   func(c *config.Config) string { return strings.Join(c.Sandbox.AllowedDomains, "\x00") },
 }
 
 // restartFieldExtractorExemptions documents every ReloadRestartRequired
@@ -479,48 +477,6 @@ func verifyRestartExtractorCoverage() {
 			panic(fmt.Sprintf("config: schema leaf %q is ReloadRestartRequired but registered in neither restartFieldExtractors nor restartFieldExtractorExemptions — add one or the other (internal/server/config_edit.go)", spec.Path))
 		}
 	}
-}
-
-// mergeAllowedDomains returns floor followed by every entry of user not
-// already present in floor, deduplicated (order-preserving) — the
-// authoritative "effective sandbox.allowed_domains" computation
-// (docs/plans/volume-only-daemon.md §論点 f, BLOCKER 2 sibling fix, codex
-// review round 1). floor is boid's built-in default domains
-// (config.DefaultAllowedDomains()); user is config.yaml's
-// sandbox.allowed_domains as written. Mirrors, and is the sole hot-reload-
-// time counterpart of, cmd/start.go's buildStartConfig boot-time
-// concatenation — that one only runs once at daemon startup and cannot
-// itself react to a later `boid config set sandbox.allowed_domains ...`.
-func mergeAllowedDomains(floor, user []string) []string {
-	out := make([]string, 0, len(floor)+len(user))
-	seen := make(map[string]struct{}, len(floor)+len(user))
-	for _, d := range floor {
-		if _, dup := seen[d]; dup {
-			continue
-		}
-		seen[d] = struct{}{}
-		out = append(out, d)
-	}
-	for _, d := range user {
-		if _, dup := seen[d]; dup {
-			continue
-		}
-		seen[d] = struct{}{}
-		out = append(out, d)
-	}
-	return out
-}
-
-func stringSlicesEqual(a, b []string) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
 }
 
 // changedForgeLeaves returns the sorted set of dotted "<id>.<leaf>" strings

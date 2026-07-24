@@ -50,15 +50,26 @@ type ProxyAllocator interface {
 	GetOrCreate(workspaceID string, allowed []string) (int, error)
 }
 
-// noWorkspaceProxyKey is the ProxyAllocator key resolveWorkspaceProxy uses
-// for jobs with no workspace at all (workspaceID == "") — see that
-// function's doc comment for the aliasing bug (BLOCKER, codex review round
-// 3) this key's distinctness from orchestrator.DefaultWorkspaceSlug fixes.
-// Deliberately contains "_", a character orchestrator.ValidWorkspaceSlug
+// NoWorkspaceProxyKey is the ProxyAllocator key the daemon uses, once at
+// startup (internal/server's Server.Start), to bind a dedicated egress
+// proxy listener for jobs with no workspace at all (`boid exec` /
+// ProfileInit against an unlinked project — see resolveWorkspaceProxy's own
+// doc comment). Exported so internal/server can seed this listener under
+// the exact same key resolveWorkspaceProxy looks up via
+// Runner.NoWorkspaceProxyPort, without either package hard-coding the
+// other's literal.
+//
+// Deliberately DISTINCT from orchestrator.DefaultWorkspaceSlug (BLOCKER,
+// codex review round 3): the real "default"-slug workspace has its own
+// workspace.yaml an operator can add AllowedDomains to, and
+// ProxyManager.GetOrCreate mutates a listener's allowlist in place — keying
+// the no-workspace listener by the SAME string as that real workspace would
+// let a later default-workspace dispatch silently widen the no-workspace
+// listener too. Contains "_", a character orchestrator.ValidWorkspaceSlug
 // never permits in a real workspace slug (only lowercase letters, digits,
 // and "-"), so this key can never collide with a real workspace's own
 // allocator key, now or in the future.
-const noWorkspaceProxyKey = "__no_workspace__"
+const NoWorkspaceProxyKey = "__no_workspace__"
 
 // JobEventSink lets the runner report job lifecycle events to a subscriber
 // (typically the web SSE hub) without taking a hard dependency on it.
@@ -124,29 +135,35 @@ type Runner struct {
 	// error). Workspaces with no overrides reuse this port via the
 	// allocator's GetOrCreate("default", ...) entry.
 	ProxyPort *int
-	// AllowedDomains returns the daemon-wide proxy egress allowlist floor
-	// (built-in defaults ∪ config.yaml's sandbox.allowed_domains), read
-	// fresh on every dispatch via floorAllowedDomains(). Workspace
-	// overrides are added on top via orchestrator.ResolveAllowedDomains.
+	// NoWorkspaceProxyPort is the port of the dedicated egress proxy
+	// listener internal/server's Server.Start binds once at daemon startup,
+	// keyed by NoWorkspaceProxyKey, for jobs with no workspace at all
+	// (workspaceID == "" — see resolveWorkspaceProxy's doc comment). Same
+	// late-binding-via-pointer pattern as ProxyPort (Start fills in the int
+	// this points at after the listener is actually bound). nil (test
+	// wiring, or a daemon build that never calls Start) makes
+	// resolveWorkspaceProxy's empty-workspaceID branch return port 0 —
+	// deliberately NEVER ProxyPort's value: falling back to the real
+	// default workspace's own (editable, live-widening) listener is exactly
+	// the aliasing bug NoWorkspaceProxyKey's distinctness exists to
+	// prevent, and a port-0 dispatch failing loudly is safer than a silent
+	// isolation leak.
+	NoWorkspaceProxyPort *int
+	// AllowedDomains is the daemon-wide proxy egress allowlist floor
+	// (built-in defaults ∪ config.yaml's sandbox.allowed_domains), captured
+	// once when this Runner is built (internal/server/wire.go's
+	// buildRuntime). Workspace overrides are added on top per-dispatch via
+	// orchestrator.ResolveAllowedDomains.
 	//
-	// A getter function, not a captured []string — the Runner is built
-	// once at daemon startup (internal/server/wire.go's buildRuntime), long
-	// before `boid config set sandbox.allowed_domains ...` can ever run
-	// again. A plain slice field would freeze at whatever value existed at
-	// construction time; a later ApplyConfigYAML hot-reload
-	// (internal/server/config_edit.go) swaps *its own* copy but this Runner
-	// would never see it, so the dispatch-time egress allowlist would
-	// silently drift from what `boid config get sandbox.allowed_domains`
-	// reports (BLOCKER 2, codex review round 1 — a security-boundary
-	// staleness bug: a domain the operator just removed stays reachable
-	// from every subsequent sandbox until a daemon restart, and a
-	// newly-added domain stays unreachable). wire.go wires this to
-	// (*server.Server).AllowedDomains — a method value that reads
-	// s.cfg.AllowedDomains fresh under s.mu on every call, the exact field
-	// applyDynamicConfigLocked swaps. nil is a valid, cheap-to-construct
-	// test default: floorAllowedDomains() treats it as "no floor" (the
-	// pre-fix zero-value slice's behavior, unchanged).
-	AllowedDomains func() []string
+	// A plain []string, not a getter — sandbox.allowed_domains is
+	// ReloadRestartRequired (PR #830 round-4 simplification, nose
+	// directive; see ReloadDynamic's own doc comment in
+	// internal/config/schema.go): `boid config set sandbox.allowed_domains
+	// ...` persists to config.yaml immediately but only reaches this field
+	// on the next daemon restart, when wire.go rebuilds the Runner from the
+	// freshly-loaded config. nil is a valid, cheap-to-construct test
+	// default meaning "no floor".
+	AllowedDomains []string
 	RuntimesDir    string
 	JobEvents      JobEventSink // optional; nil disables job lifecycle broadcasts
 
@@ -667,63 +684,66 @@ func (r *Runner) proxyPort() int {
 	return *r.ProxyPort
 }
 
+// noWorkspaceProxyPort returns the dedicated no-workspace listener's port
+// (see NoWorkspaceProxyPort's own doc comment). Deliberately does NOT fall
+// back to r.proxyPort() when unwired — that port belongs to the real,
+// editable default-slug workspace's own listener, and falling back to it
+// here would be precisely the aliasing bug NoWorkspaceProxyKey's
+// distinctness exists to prevent (BLOCKER, codex review round 3; see
+// resolveWorkspaceProxy's own doc comment). An unwired
+// NoWorkspaceProxyPort (test wiring that doesn't set it, or a daemon build
+// that never calls Server.Start) yields port 0 — dispatch fails loudly
+// rather than silently widening what a no-workspace job can reach.
+func (r *Runner) noWorkspaceProxyPort() int {
+	if r.NoWorkspaceProxyPort == nil {
+		return 0
+	}
+	return *r.NoWorkspaceProxyPort
+}
+
 // resolveWorkspaceProxy returns the proxy egress allowlist and the loopback
 // port that should be passed to the sandbox for a job running under the
 // given workspace.
 //
-// Cascade:
+// A job with no workspace at all (workspaceID == "" — `boid exec` or a
+// ProfileInit sandbox against a project with no workspace assigned) always
+// gets r.AllowedDomains (the floor, no workspace overrides — there is no
+// workspace.yaml to load) and r.noWorkspaceProxyPort() — a port bound ONCE
+// at daemon startup (internal/server's Server.Start), keyed by
+// NoWorkspaceProxyKey, a reserved string DISTINCT from
+// orchestrator.DefaultWorkspaceSlug (BLOCKER, codex review round 3: keying
+// this path by DefaultWorkspaceSlug itself — the SAME key the named-
+// workspace branch below uses for the real, editable "default"-slug
+// workspace — let that workspace's own workspace.yaml AllowedDomains
+// silently widen the SAME shared listener a no-workspace job was using).
+// This never re-resolves or re-allocates per dispatch (PR #830 round-4
+// simplification, nose directive: sandbox.allowed_domains is
+// ReloadRestartRequired now, so there is nothing to refresh mid-process —
+// see ReloadDynamic's own doc comment, internal/config/schema.go), which
+// also makes this path immune to round-4 blocker 1 (a runtime allocation
+// failure falling back to the widened default listener): there is no
+// runtime allocation call here to fail.
+//
+// A job WITH a workspace (non-empty workspaceID) still goes through the
+// live cascade:
 //  1. Start from the daemon-wide floor (r.AllowedDomains).
-//  2. If ProxyAllocator and a non-empty workspaceID are present, load the
-//     workspace.yaml (best-effort: ErrNotExist is the documented degraded
-//     window, other errors are warned). Add the workspace AllowedDomains
-//     on top of the floor via orchestrator.ResolveAllowedDomains.
+//  2. If ProxyAllocator is present, load the workspace.yaml (best-effort:
+//     ErrNotExist is the documented degraded window, other errors are
+//     warned). Add the workspace AllowedDomains on top of the floor via
+//     orchestrator.ResolveAllowedDomains.
 //  3. Ask ProxyAllocator.GetOrCreate to bind (or live-update) a listener
 //     for the workspace with that resolved list, and return its port.
 //
-// Fallback: a job with no workspace at all (workspaceID == "" — `boid exec`
-// or a ProfileInit sandbox against a project with no workspace assigned)
-// still goes through ProxyAllocator.GetOrCreate, keyed by
-// noWorkspaceProxyKey — a key DISTINCT from orchestrator.DefaultWorkspaceSlug
-// (BLOCKER, codex review round 3: pre-fix, this branch keyed the call by
-// orchestrator.DefaultWorkspaceSlug itself, the SAME key the named-workspace
-// branch below uses for a real, editable "default"-slug workspace —
-// DefaultWorkspaceSlug is not just a sentinel meaning "no workspace", it is
-// also a genuine workspace that WorkspaceStore.EnsureDefault creates at boot
-// and whose own workspace.yaml an operator can edit to add AllowedDomains.
-// Because ProxyManager.GetOrCreate keys its listeners by this string and
-// SetAllowed mutates a listener's allowlist in place, the two call sites
-// shared one mutable listener: a no-workspace job dispatched with the floor
-// alone, then a real default-workspace dispatch widened that SAME listener
-// with its own workspace-specific domains, silently granting the still-
-// running no-workspace job access it was never resolved to have. Keying the
-// no-workspace path by a reserved string containing "_" — which
-// orchestrator.ValidWorkspaceSlug never allows in a real slug (letters,
-// digits, "-" only) — makes this alias structurally impossible rather than
-// hoping the two call sites' allowlists happen to agree.
-//
-// This branch still re-asserts the current floor through GetOrCreate on
-// every call (MAJOR, codex review round 2: pre-fix, this branch just read
-// r.proxyPort(), the raw int Server.Start captured ONCE at boot, and never
-// touched the underlying listener again, so a hot-reloaded
-// sandbox.allowed_domains never reached `boid exec`/ProfileInit sandboxes
-// until the daemon restarted) — the exact same live-update call the named-
-// workspace branch below already makes on every dispatch. Allocator
-// unwired, or GetOrCreate failing, still falls back to r.proxyPort()'s
-// last-known value — dispatch is never blocked on a proxy-resolution
-// problem.
+// If ProxyAllocator is nil or GetOrCreate errors, this branch falls back to
+// r.proxyPort() — the default-workspace listener — which is the documented,
+// pre-existing (not round-2/3) fallback for a NAMED workspace only; it is
+// never reachable from the empty-workspaceID branch above.
 func (r *Runner) resolveWorkspaceProxy(workspaceID string) ([]string, int) {
-	floor := r.floorAllowedDomains()
-	if r.ProxyAllocator == nil {
-		return floor, r.proxyPort()
-	}
 	if workspaceID == "" {
-		port, err := r.ProxyAllocator.GetOrCreate(noWorkspaceProxyKey, floor)
-		if err != nil {
-			slog.Warn("no-workspace proxy listener refresh failed; falling back to its last-known port",
-				"error", err)
-			return floor, r.proxyPort()
-		}
-		return floor, port
+		return r.AllowedDomains, r.noWorkspaceProxyPort()
+	}
+	if r.ProxyAllocator == nil {
+		return r.AllowedDomains, r.proxyPort()
 	}
 	var wsMeta *orchestrator.WorkspaceMeta
 	if r.Workspaces != nil {
@@ -737,24 +757,14 @@ func (r *Runner) resolveWorkspaceProxy(workspaceID string) ([]string, int) {
 			wsMeta = loaded
 		}
 	}
-	resolved := orchestrator.ResolveAllowedDomains(floor, wsMeta)
+	resolved := orchestrator.ResolveAllowedDomains(r.AllowedDomains, wsMeta)
 	port, err := r.ProxyAllocator.GetOrCreate(workspaceID, resolved)
 	if err != nil {
 		slog.Warn("workspace proxy listener allocation failed; falling back to default proxy",
 			"workspace_id", workspaceID, "error", err)
-		return floor, r.proxyPort()
+		return r.AllowedDomains, r.proxyPort()
 	}
 	return resolved, port
-}
-
-// floorAllowedDomains reads r.AllowedDomains fresh (see its own doc comment
-// for why a getter rather than a captured slice) — nil-safe for test wiring
-// that never sets the field.
-func (r *Runner) floorAllowedDomains() []string {
-	if r.AllowedDomains == nil {
-		return nil
-	}
-	return r.AllowedDomains()
 }
 
 // resolveContainerImage returns the workspace's Phase 6 container image
