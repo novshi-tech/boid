@@ -71,6 +71,25 @@ func TestLoadOrCreateKey_CreatesMissingDir(t *testing.T) {
 	}
 }
 
+// TestLoadOrCreateKey_RejectsUnsafePermissions pins the fix for [Major 3,
+// PR829 round 1 codex review]: a pre-seeded key file (secret.key /
+// web_secret) with permissions broader than 0600 — e.g. restored from an
+// archive, or pre-seeded by an initContainer as 0644 — must be rejected,
+// not silently accepted. Mirrors internal/mtls.LoadOrCreate's existing
+// unsafe-permissions check for ca.key.
+func TestLoadOrCreateKey_RejectsUnsafePermissions(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "secret.key")
+	key := make([]byte, 32)
+	if err := os.WriteFile(path, key, 0o644); err != nil {
+		t.Fatalf("seed 0644 key file: %v", err)
+	}
+
+	if _, err := dispatcher.LoadOrCreateKey(path); err == nil {
+		t.Fatal("LoadOrCreateKey succeeded against a 0644 key file; want an unsafe-permissions error")
+	}
+}
+
 // TestLoadOrCreateKey_RejectsWrongLength pins the existing format-guard
 // (unchanged by this PR — "Do NOT change the on-disk file format").
 func TestLoadOrCreateKey_RejectsWrongLength(t *testing.T) {

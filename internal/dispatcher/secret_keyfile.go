@@ -24,6 +24,22 @@ import (
 func LoadOrCreateKey(path string) ([]byte, error) {
 	data, err := os.ReadFile(path)
 	if err == nil {
+		// [Major 3, PR829 round 1 codex review]: a pre-seeded key file
+		// (e.g. restored from an archive, or pre-seeded by a k8s
+		// initContainer per docs/plans/volume-only-daemon.md §論点 d's own
+		// "file が既にあれば読む" contract) is accepted without ever having
+		// been published at 0600 by this function's own
+		// atomicfile.PublishIfAbsent call below — reusing one with broader
+		// permissions would silently expose signing/encryption material to
+		// other users. Mirrors internal/mtls.LoadOrCreate's existing check
+		// for ca.key.
+		info, statErr := os.Stat(path)
+		if statErr != nil {
+			return nil, fmt.Errorf("stat key: %w", statErr)
+		}
+		if info.Mode().Perm()&0o177 != 0 {
+			return nil, fmt.Errorf("dispatcher: key file %s has unsafe permissions %#o (must be 0600 — same as create-time)", path, info.Mode().Perm())
+		}
 		if len(data) != 32 {
 			return nil, fmt.Errorf("invalid key file: expected 32 bytes, got %d", len(data))
 		}
