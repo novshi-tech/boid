@@ -202,23 +202,37 @@ func (s *Server) applyConfigYAMLLocked(data []byte) (api.ConfigApplyResult, erro
 	return api.ConfigApplyResult{Warnings: warnings}, nil
 }
 
-// MutateConfig performs a single dotted-path set/unset as one
+// MutateConfig performs one or more dotted-path set/unset operations as one
 // configMu-held read-modify-write — BLOCKER 1, codex review round 1: `boid
 // config set/unset` (cmd/config.go) route here instead of the old
 // client-side GET → mutate → POST round trip, whose two separate daemon
 // calls left a window for a second concurrent `set`'s POST to silently
 // discard a first `set`'s already-applied change (configMu only serialized
 // the POSTs, not the whole client-side transaction around them). Holding
-// configMu across the read, the dotted-path Set/Unset, and the write
+// configMu across the read, every op's dotted-path Set/Unset, and the write
 // closes that window entirely: two concurrent MutateConfig calls on
 // different keys are strictly serialized, and BOTH changes land — see
 // TestMutateConfig_ConcurrentSetsOfDifferentKeys_BothSucceed.
 //
+// Batch mode (BLOCKER, codex review round 1 on PR #831): when req.Ops is
+// non-empty, every element is applied to the SAME in-memory tree in order,
+// and the resulting document is validated exactly ONCE, after the last op —
+// not once per op. This is what makes it possible to create a brand-new
+// gateway.forges.<id> entry at all: a single-op call always validates the
+// full document before returning, so setting "<id>.host" alone leaves the
+// document with an empty "<id>.forge", which config.ValidateYAML rejects
+// ("unrecognized forge \"\"") — no sequence of independently-validated
+// single-op calls can ever get all three of host/forge/secret_key in place
+// together. When req.Ops is empty, req itself is treated as the sole
+// operation — the exact pre-existing single-op behavior, unchanged.
+// See TestMutateConfig_Batch_NewForgeAllFieldsAtOnce_Succeeds and
+// TestMutateConfig_Batch_PartialFailureLeavesDocumentUnchanged.
+//
 // No If-Match/force parameter, unlike ApplyConfigYAML: there is no
 // client-supplied stale snapshot to protect against here at all, since the
-// caller only sends an operation + key + value, never a full document — the
-// snapshot MutateConfig reads is always the current one, read fresh under
-// the very same lock that performs the write.
+// caller only sends operations (op + key + value), never a full document —
+// the snapshot MutateConfig reads is always the current one, read fresh
+// under the very same lock that performs the write.
 func (s *Server) MutateConfig(req api.ConfigMutateRequest) (api.ConfigMutateResult, error) {
 	s.configMu.Lock()
 	defer s.configMu.Unlock()
@@ -232,17 +246,24 @@ func (s *Server) MutateConfig(req api.ConfigMutateRequest) (api.ConfigMutateResu
 		return api.ConfigMutateResult{}, err
 	}
 
-	switch req.Op {
-	case api.ConfigMutateSet:
-		if _, err := config.Set(tree, req.Key, req.Value); err != nil {
-			return api.ConfigMutateResult{}, err
+	ops := req.Ops
+	if len(ops) == 0 {
+		ops = []api.ConfigMutateRequest{req}
+	}
+
+	for _, op := range ops {
+		switch op.Op {
+		case api.ConfigMutateSet:
+			if _, err := config.Set(tree, op.Key, op.Value); err != nil {
+				return api.ConfigMutateResult{}, err
+			}
+		case api.ConfigMutateUnset:
+			if _, err := config.Unset(tree, op.Key); err != nil {
+				return api.ConfigMutateResult{}, err
+			}
+		default:
+			return api.ConfigMutateResult{}, fmt.Errorf("unknown op %q (want %q or %q)", op.Op, api.ConfigMutateSet, api.ConfigMutateUnset)
 		}
-	case api.ConfigMutateUnset:
-		if _, err := config.Unset(tree, req.Key); err != nil {
-			return api.ConfigMutateResult{}, err
-		}
-	default:
-		return api.ConfigMutateResult{}, fmt.Errorf("unknown op %q (want %q or %q)", req.Op, api.ConfigMutateSet, api.ConfigMutateUnset)
 	}
 
 	newData, err := yaml.Marshal(tree)
@@ -250,6 +271,14 @@ func (s *Server) MutateConfig(req api.ConfigMutateRequest) (api.ConfigMutateResu
 		return api.ConfigMutateResult{}, fmt.Errorf("marshal config: %w", err)
 	}
 
+	// applyConfigYAMLLocked is the single validation point for the whole
+	// batch (config.ValidateYAML runs once here, against the tree with
+	// every op already applied) — never called per-op above, which is
+	// exactly what lets a multi-leaf structural change succeed. A
+	// validation failure at this point means NONE of tree's in-memory
+	// mutations were ever written to disk (applyConfigYAMLLocked validates
+	// before it writes), so a bad op anywhere in the batch leaves
+	// config.yaml byte-for-byte as it was before this call.
 	result, err := s.applyConfigYAMLLocked(newData)
 	if err != nil {
 		return api.ConfigMutateResult{}, err

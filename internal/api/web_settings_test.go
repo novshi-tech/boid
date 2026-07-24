@@ -68,7 +68,9 @@ gateway:
 	for _, want := range []string{
 		".freee.co.jp",
 		"api.example.com",
-		"notify-send -a boid",
+		`value="notify-send"`,
+		`value="-a"`,
+		`value="boid"`,
 		"https://boid.example.com",
 		"github.com",
 		"GITHUB_PAT",
@@ -174,8 +176,8 @@ func TestBuildSettingsView_MissingKeysAreZeroValue(t *testing.T) {
 	if len(view.Forges) != 0 {
 		t.Errorf("Forges = %v, want empty", view.Forges)
 	}
-	if view.NotifyCommand != "" {
-		t.Errorf("NotifyCommand = %q, want empty", view.NotifyCommand)
+	if len(view.NotifyCommand) != 0 {
+		t.Errorf("NotifyCommand = %v, want empty", view.NotifyCommand)
 	}
 	if view.WebPublicURL != "" {
 		t.Errorf("WebPublicURL = %q, want empty", view.WebPublicURL)

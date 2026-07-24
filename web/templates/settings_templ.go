@@ -8,6 +8,8 @@ package templates
 import "github.com/a-h/templ"
 import templruntime "github.com/a-h/templ/runtime"
 
+import "encoding/json"
+
 // This file implements the /settings page (docs/plans/volume-only-daemon.md
 // §論点 f, the Web UI half — PR-1c of PR-1's 4 sub-PRs). It is a thin
 // client of the daemon's *existing* config surface (internal/api/config.go's
@@ -53,13 +55,34 @@ type SettingsView struct {
 	// hard-coded here, so this dropdown never silently drifts out of sync
 	// with what POST /api/config/mutate will actually accept.
 	ForgeKindOptions []string
-	// NotifyCommand is notify.command's argv, space-joined, for a single
-	// text input — mirrors how a human reads/writes a shell command line.
-	// Saved back as a mutate `set` whose Value is the input split on
-	// whitespace (config.KindStringArray's multi-arg shape, the same one
-	// `boid config set notify.command <arg>...` uses).
-	NotifyCommand string
+	// NotifyCommand is notify.command's argv, one element per row (MAJOR 2,
+	// codex review round 1: a single space-joined text input was lossy for
+	// any argument containing an embedded space — e.g. ["sh", "-c", "echo
+	// hello"] round-tripped through split(/\s+/) as ["sh", "-c", "echo",
+	// "hello"], silently changing command semantics on any edit). Mirrors
+	// AllowedDomains' one-input-per-element list pattern instead. Saved
+	// back as a mutate `set` whose Value is exactly this list
+	// (config.KindStringArray's multi-arg shape, the same one `boid config
+	// set notify.command <arg>...` uses) — never joined or split.
+	NotifyCommand []string
 	WebPublicURL  string
+}
+
+// forgeKindOptionsJSON renders opts as a JSON array literal for the
+// forges-table's data-forge-kinds attribute (MAJOR 1, codex review round 1,
+// PR #831) — addForgeRow's JS reads this fixed, server-provided list
+// directly, instead of deriving a new row's kind <select> options from
+// whatever kind <option>s already happen to exist in the DOM. The old
+// derive-from-DOM approach left the new-row dropdown with zero options
+// whenever gateway.forges itself was empty (nothing existing to derive
+// from), making it impossible to pick a kind for the very first forge added
+// through the form.
+func forgeKindOptionsJSON(opts []string) string {
+	data, err := json.Marshal(opts)
+	if err != nil {
+		return "[]"
+	}
+	return string(data)
 }
 
 // Settings renders the /settings page: a form editor (allowed domains /
@@ -100,7 +123,7 @@ func Settings(view SettingsView) templ.Component {
 				}()
 			}
 			ctx = templ.InitializeContext(ctx)
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 1, "<div id=\"settings-restart-banner\" class=\"restart-banner\" hidden><strong>⚠ Configuration saved.</strong> Restart daemon to apply changes.<pre class=\"restart-banner-cmd\">docker compose -f build/container/compose.yml restart daemon</pre><ul id=\"settings-restart-warnings\" class=\"restart-banner-warnings\"></ul></div><div id=\"settings-conflict\" class=\"error-banner\" hidden>config changed since page loaded — reload and merge your changes <button type=\"button\" class=\"btn btn-sm btn-secondary\" onclick=\"window.location.reload()\">Reload</button></div><section class=\"settings-section\"><h2 class=\"section-title\">Config (form)</h2><div id=\"settings-form-error\" class=\"error-banner\" hidden></div><div id=\"settings-form-transient\" class=\"form-hint\" hidden></div><div class=\"form-group\"><label class=\"form-label\">sandbox.allowed_domains</label><div id=\"domains-list\" class=\"settings-list\">")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 1, "<div id=\"settings-restart-banner\" class=\"restart-banner\" role=\"status\" aria-live=\"polite\" hidden><strong>⚠ Configuration saved.</strong> Restart daemon to apply changes.<pre class=\"restart-banner-cmd\">docker compose -f build/container/compose.yml restart daemon</pre><ul id=\"settings-restart-warnings\" class=\"restart-banner-warnings\"></ul></div><div id=\"settings-conflict\" class=\"error-banner\" role=\"alert\" aria-live=\"assertive\" hidden>config changed since page loaded — reload and merge your changes <button type=\"button\" class=\"btn btn-sm btn-secondary\" onclick=\"window.location.reload()\">Reload</button></div><section class=\"settings-section\"><h2 class=\"section-title\">Config (form)</h2><div id=\"settings-form-error\" class=\"error-banner\" role=\"alert\" aria-live=\"assertive\" hidden></div><div id=\"settings-form-transient\" class=\"form-hint\" role=\"status\" aria-live=\"polite\" hidden></div><div class=\"form-group\"><label class=\"form-label\">sandbox.allowed_domains</label><div id=\"domains-list\" class=\"settings-list\">")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
@@ -112,7 +135,7 @@ func Settings(view SettingsView) templ.Component {
 				var templ_7745c5c3_Var3 string
 				templ_7745c5c3_Var3, templ_7745c5c3_Err = templ.JoinStringErrs(d)
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/settings.templ`, Line: 82, Col: 90}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/settings.templ`, Line: 105, Col: 90}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var3))
 				if templ_7745c5c3_Err != nil {
@@ -123,167 +146,190 @@ func Settings(view SettingsView) templ.Component {
 					return templ_7745c5c3_Err
 				}
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 4, "</div><button type=\"button\" class=\"btn btn-secondary btn-sm\" onclick=\"addDomainRow()\">+ Add domain</button><div class=\"form-hint\">Suffix match: prefix with \".\" (e.g. \".freee.co.jp\"). A bare hostname matches exactly.</div></div><div class=\"form-group\"><label class=\"form-label\">gateway.forges</label><div class=\"settings-table-wrap\"><table class=\"settings-table\" id=\"forges-table\"><thead><tr><th>id</th><th>kind</th><th>host</th><th>secret_key (env var name)</th><th></th></tr></thead> <tbody>")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 4, "</div><button type=\"button\" class=\"btn btn-secondary btn-sm\" onclick=\"addDomainRow()\">+ Add domain</button><div class=\"form-hint\">Suffix match: prefix with \".\" (e.g. \".freee.co.jp\"). A bare hostname matches exactly.</div></div><div class=\"form-group\"><label class=\"form-label\">gateway.forges</label><div class=\"settings-table-wrap\"><table class=\"settings-table\" id=\"forges-table\" data-forge-kinds=\"")
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			var templ_7745c5c3_Var4 string
+			templ_7745c5c3_Var4, templ_7745c5c3_Err = templ.JoinStringErrs(forgeKindOptionsJSON(view.ForgeKindOptions))
+			if templ_7745c5c3_Err != nil {
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/settings.templ`, Line: 116, Col: 115}
+			}
+			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var4))
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 5, "\"><thead><tr><th>id</th><th>kind</th><th>host</th><th>secret_key (env var name)</th><th></th></tr></thead> <tbody>")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 			for _, f := range view.Forges {
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 5, "<tr data-forge-id=\"")
-				if templ_7745c5c3_Err != nil {
-					return templ_7745c5c3_Err
-				}
-				var templ_7745c5c3_Var4 string
-				templ_7745c5c3_Var4, templ_7745c5c3_Err = templ.JoinStringErrs(f.ID)
-				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/settings.templ`, Line: 105, Col: 32}
-				}
-				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var4))
-				if templ_7745c5c3_Err != nil {
-					return templ_7745c5c3_Err
-				}
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 6, "\"><td class=\"forge-id-cell\">")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 6, "<tr data-forge-id=\"")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
 				var templ_7745c5c3_Var5 string
 				templ_7745c5c3_Var5, templ_7745c5c3_Err = templ.JoinStringErrs(f.ID)
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/settings.templ`, Line: 106, Col: 41}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/settings.templ`, Line: 128, Col: 32}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var5))
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 7, "</td><td><select class=\"form-input form-input-sm forge-kind\">")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 7, "\"><td class=\"forge-id-cell\">")
+				if templ_7745c5c3_Err != nil {
+					return templ_7745c5c3_Err
+				}
+				var templ_7745c5c3_Var6 string
+				templ_7745c5c3_Var6, templ_7745c5c3_Err = templ.JoinStringErrs(f.ID)
+				if templ_7745c5c3_Err != nil {
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/settings.templ`, Line: 129, Col: 41}
+				}
+				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var6))
+				if templ_7745c5c3_Err != nil {
+					return templ_7745c5c3_Err
+				}
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 8, "</td><td><select class=\"form-input form-input-sm forge-kind\">")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
 				for _, k := range view.ForgeKindOptions {
-					templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 8, "<option value=\"")
-					if templ_7745c5c3_Err != nil {
-						return templ_7745c5c3_Err
-					}
-					var templ_7745c5c3_Var6 string
-					templ_7745c5c3_Var6, templ_7745c5c3_Err = templ.JoinStringErrs(k)
-					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/settings.templ`, Line: 110, Col: 29}
-					}
-					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var6))
-					if templ_7745c5c3_Err != nil {
-						return templ_7745c5c3_Err
-					}
-					templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 9, "\"")
-					if templ_7745c5c3_Err != nil {
-						return templ_7745c5c3_Err
-					}
-					if k == f.Forge {
-						templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 10, " selected")
-						if templ_7745c5c3_Err != nil {
-							return templ_7745c5c3_Err
-						}
-					}
-					templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 11, ">")
+					templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 9, "<option value=\"")
 					if templ_7745c5c3_Err != nil {
 						return templ_7745c5c3_Err
 					}
 					var templ_7745c5c3_Var7 string
 					templ_7745c5c3_Var7, templ_7745c5c3_Err = templ.JoinStringErrs(k)
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/settings.templ`, Line: 110, Col: 62}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/settings.templ`, Line: 133, Col: 29}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var7))
 					if templ_7745c5c3_Err != nil {
 						return templ_7745c5c3_Err
 					}
-					templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 12, "</option>")
+					templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 10, "\"")
+					if templ_7745c5c3_Err != nil {
+						return templ_7745c5c3_Err
+					}
+					if k == f.Forge {
+						templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 11, " selected")
+						if templ_7745c5c3_Err != nil {
+							return templ_7745c5c3_Err
+						}
+					}
+					templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 12, ">")
+					if templ_7745c5c3_Err != nil {
+						return templ_7745c5c3_Err
+					}
+					var templ_7745c5c3_Var8 string
+					templ_7745c5c3_Var8, templ_7745c5c3_Err = templ.JoinStringErrs(k)
+					if templ_7745c5c3_Err != nil {
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/settings.templ`, Line: 133, Col: 62}
+					}
+					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var8))
+					if templ_7745c5c3_Err != nil {
+						return templ_7745c5c3_Err
+					}
+					templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 13, "</option>")
 					if templ_7745c5c3_Err != nil {
 						return templ_7745c5c3_Err
 					}
 				}
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 13, "</select></td><td><input type=\"text\" class=\"form-input form-input-sm forge-host\" value=\"")
-				if templ_7745c5c3_Err != nil {
-					return templ_7745c5c3_Err
-				}
-				var templ_7745c5c3_Var8 string
-				templ_7745c5c3_Var8, templ_7745c5c3_Err = templ.JoinStringErrs(f.Host)
-				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/settings.templ`, Line: 114, Col: 90}
-				}
-				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var8))
-				if templ_7745c5c3_Err != nil {
-					return templ_7745c5c3_Err
-				}
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 14, "\"></td><td><input type=\"text\" class=\"form-input form-input-sm forge-secret\" value=\"")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 14, "</select></td><td><input type=\"text\" class=\"form-input form-input-sm forge-host\" value=\"")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
 				var templ_7745c5c3_Var9 string
-				templ_7745c5c3_Var9, templ_7745c5c3_Err = templ.JoinStringErrs(f.SecretKey)
+				templ_7745c5c3_Var9, templ_7745c5c3_Err = templ.JoinStringErrs(f.Host)
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/settings.templ`, Line: 115, Col: 97}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/settings.templ`, Line: 137, Col: 90}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var9))
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 15, "\"></td><td><button type=\"button\" class=\"btn btn-sm btn-danger\" onclick=\"this.closest('tr').remove()\">Remove</button></td></tr>")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 15, "\"></td><td><input type=\"text\" class=\"form-input form-input-sm forge-secret\" value=\"")
+				if templ_7745c5c3_Err != nil {
+					return templ_7745c5c3_Err
+				}
+				var templ_7745c5c3_Var10 string
+				templ_7745c5c3_Var10, templ_7745c5c3_Err = templ.JoinStringErrs(f.SecretKey)
+				if templ_7745c5c3_Err != nil {
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/settings.templ`, Line: 138, Col: 97}
+				}
+				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var10))
+				if templ_7745c5c3_Err != nil {
+					return templ_7745c5c3_Err
+				}
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 16, "\"></td><td><button type=\"button\" class=\"btn btn-sm btn-danger\" onclick=\"this.closest('tr').remove()\">Remove</button></td></tr>")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 16, "</tbody></table></div><button type=\"button\" class=\"btn btn-secondary btn-sm\" onclick=\"addForgeRow()\">+ Add forge</button><div class=\"form-hint\">secret_key is the env var <strong>NAME</strong>, not the value — this is not the secret itself. Set the actual value via the deployment env / systemd unit / k8s Secret.</div></div><div class=\"form-group\"><label for=\"notify-command-input\" class=\"form-label\">notify.command</label> <input type=\"text\" id=\"notify-command-input\" class=\"form-input\" value=\"")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 17, "</tbody></table></div><button type=\"button\" class=\"btn btn-secondary btn-sm\" onclick=\"addForgeRow()\">+ Add forge</button><div class=\"form-hint\">secret_key is the env var <strong>NAME</strong>, not the value — this is not the secret itself. Set the actual value via the deployment env / systemd unit / k8s Secret.</div></div><div class=\"form-group\"><label class=\"form-label\">notify.command</label><div id=\"notify-command-list\" class=\"settings-list\">")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			var templ_7745c5c3_Var10 string
-			templ_7745c5c3_Var10, templ_7745c5c3_Err = templ.JoinStringErrs(view.NotifyCommand)
-			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/settings.templ`, Line: 127, Col: 94}
+			for _, arg := range view.NotifyCommand {
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 18, "<div class=\"settings-list-row\"><input type=\"text\" class=\"form-input form-input-sm notify-command-input\" value=\"")
+				if templ_7745c5c3_Err != nil {
+					return templ_7745c5c3_Err
+				}
+				var templ_7745c5c3_Var11 string
+				templ_7745c5c3_Var11, templ_7745c5c3_Err = templ.JoinStringErrs(arg)
+				if templ_7745c5c3_Err != nil {
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/settings.templ`, Line: 153, Col: 91}
+				}
+				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var11))
+				if templ_7745c5c3_Err != nil {
+					return templ_7745c5c3_Err
+				}
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 19, "\"> <button type=\"button\" class=\"btn btn-sm btn-danger\" onclick=\"this.parentElement.remove()\">Remove</button></div>")
+				if templ_7745c5c3_Err != nil {
+					return templ_7745c5c3_Err
+				}
 			}
-			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var10))
-			if templ_7745c5c3_Err != nil {
-				return templ_7745c5c3_Err
-			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 17, "\" placeholder=\"notify-send -a boid\"><div class=\"form-hint\">Space-separated argv (e.g. <code>notify-send -a boid</code>).</div></div><div class=\"form-group\"><label for=\"web-public-url-input\" class=\"form-label\">web.public_url</label> <input type=\"text\" id=\"web-public-url-input\" class=\"form-input\" value=\"")
-			if templ_7745c5c3_Err != nil {
-				return templ_7745c5c3_Err
-			}
-			var templ_7745c5c3_Var11 string
-			templ_7745c5c3_Var11, templ_7745c5c3_Err = templ.JoinStringErrs(view.WebPublicURL)
-			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/settings.templ`, Line: 132, Col: 93}
-			}
-			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var11))
-			if templ_7745c5c3_Err != nil {
-				return templ_7745c5c3_Err
-			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 18, "\" placeholder=\"https://boid.example.com\"></div><button type=\"button\" class=\"btn btn-primary\" onclick=\"saveForm()\">Save form</button></section><section class=\"settings-section\"><h2 class=\"section-title\">Config (YAML)</h2><div id=\"settings-yaml-error\" class=\"error-banner\" hidden></div><div id=\"settings-yaml-transient\" class=\"form-hint\" hidden></div><textarea id=\"yaml-textarea\" class=\"form-input settings-yaml-textarea\" data-revision=\"")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 20, "</div><button type=\"button\" class=\"btn btn-secondary btn-sm\" onclick=\"addNotifyCommandRow()\">+ Add argument</button><div class=\"form-hint\">One argv element per row (e.g. <code>notify-send</code>, <code>-a</code>, <code>boid</code>) — each row is exactly one argument, spaces and all, never split.</div></div><div class=\"form-group\"><label for=\"web-public-url-input\" class=\"form-label\">web.public_url</label> <input type=\"text\" id=\"web-public-url-input\" class=\"form-input\" value=\"")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 			var templ_7745c5c3_Var12 string
-			templ_7745c5c3_Var12, templ_7745c5c3_Err = templ.JoinStringErrs(view.Revision)
+			templ_7745c5c3_Var12, templ_7745c5c3_Err = templ.JoinStringErrs(view.WebPublicURL)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/settings.templ`, Line: 140, Col: 103}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/settings.templ`, Line: 163, Col: 93}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var12))
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 19, "\" rows=\"20\" spellcheck=\"false\">")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 21, "\" placeholder=\"https://boid.example.com\"></div><button type=\"button\" class=\"btn btn-primary\" onclick=\"saveForm()\">Save form</button></section><section class=\"settings-section\"><h2 class=\"section-title\">Config (YAML)</h2><div id=\"settings-yaml-error\" class=\"error-banner\" role=\"alert\" aria-live=\"assertive\" hidden></div><div id=\"settings-yaml-transient\" class=\"form-hint\" role=\"status\" aria-live=\"polite\" hidden></div><textarea id=\"yaml-textarea\" class=\"form-input settings-yaml-textarea\" data-revision=\"")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 			var templ_7745c5c3_Var13 string
-			templ_7745c5c3_Var13, templ_7745c5c3_Err = templ.JoinStringErrs(view.YAML)
+			templ_7745c5c3_Var13, templ_7745c5c3_Err = templ.JoinStringErrs(view.Revision)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/settings.templ`, Line: 140, Col: 146}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/settings.templ`, Line: 171, Col: 103}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var13))
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 20, "</textarea> <button type=\"button\" class=\"btn btn-primary\" onclick=\"saveYaml()\">Save YAML</button> <button type=\"button\" class=\"btn btn-secondary\" onclick=\"window.location.reload()\">Reload</button></section><script>\n\t\t\t(function () {\n\t\t\t\t\"use strict\";\n\t\t\t\tvar BANNER_KEY = \"boid-settings-restart-banner\";\n\n\t\t\t\tfunction $(sel, root) { return (root || document).querySelector(sel); }\n\t\t\t\tfunction $all(sel, root) { return Array.prototype.slice.call((root || document).querySelectorAll(sel)); }\n\n\t\t\t\tfunction show(el) { if (el) el.hidden = false; }\n\t\t\t\tfunction hide(el) { if (el) el.hidden = true; }\n\n\t\t\t\tfunction showRestartBanner(warnings) {\n\t\t\t\t\tvar el = $(\"#settings-restart-banner\");\n\t\t\t\t\tvar list = $(\"#settings-restart-warnings\");\n\t\t\t\t\tlist.innerHTML = \"\";\n\t\t\t\t\t(warnings || []).forEach(function (w) {\n\t\t\t\t\t\tvar li = document.createElement(\"li\");\n\t\t\t\t\t\tli.textContent = w;\n\t\t\t\t\t\tlist.appendChild(li);\n\t\t\t\t\t});\n\t\t\t\t\tshow(el);\n\t\t\t\t}\n\n\t\t\t\t// A banner staged before a full-page reload (the simplest way to\n\t\t\t\t// keep both tabs' server-rendered state authoritative after any\n\t\t\t\t// save — see this file's top-of-file doc comment) is picked back\n\t\t\t\t// up here, once, on the reloaded page.\n\t\t\t\t(function restoreBannerAfterReload() {\n\t\t\t\t\tvar stored = sessionStorage.getItem(BANNER_KEY);\n\t\t\t\t\tif (!stored) return;\n\t\t\t\t\tsessionStorage.removeItem(BANNER_KEY);\n\t\t\t\t\ttry {\n\t\t\t\t\t\tvar parsed = JSON.parse(stored);\n\t\t\t\t\t\tshowRestartBanner(parsed.warnings || []);\n\t\t\t\t\t} catch (e) { /* ignore malformed sessionStorage content */ }\n\t\t\t\t})();\n\n\t\t\t\tfunction finishSave(warnings) {\n\t\t\t\t\tsessionStorage.setItem(BANNER_KEY, JSON.stringify({ warnings: warnings || [] }));\n\t\t\t\t\twindow.location.reload();\n\t\t\t\t}\n\n\t\t\t\t// ---- allowed domains ----\n\n\t\t\t\tfunction addDomainRow() {\n\t\t\t\t\tvar row = document.createElement(\"div\");\n\t\t\t\t\trow.className = \"settings-list-row\";\n\t\t\t\t\trow.innerHTML = '<input type=\"text\" class=\"form-input form-input-sm settings-domain-input\"/>' +\n\t\t\t\t\t\t'<button type=\"button\" class=\"btn btn-sm btn-danger\" onclick=\"this.parentElement.remove()\">Remove</button>';\n\t\t\t\t\t$(\"#domains-list\").appendChild(row);\n\t\t\t\t\trow.querySelector(\"input\").focus();\n\t\t\t\t}\n\t\t\t\twindow.addDomainRow = addDomainRow;\n\n\t\t\t\tfunction collectDomains() {\n\t\t\t\t\treturn $all(\".settings-domain-input\").map(function (i) { return i.value.trim(); }).filter(Boolean);\n\t\t\t\t}\n\t\t\t\tvar originalDomains = collectDomains();\n\n\t\t\t\t// ---- gateway.forges ----\n\n\t\t\t\tfunction addForgeRow() {\n\t\t\t\t\tvar tbody = $(\"#forges-table tbody\");\n\t\t\t\t\tvar tr = document.createElement(\"tr\");\n\t\t\t\t\tvar options = $all(\"#forges-table .forge-kind option\").reduce(function (acc, o) {\n\t\t\t\t\t\tif (acc.indexOf(o.value) === -1) acc.push(o.value);\n\t\t\t\t\t\treturn acc;\n\t\t\t\t\t}, []);\n\t\t\t\t\tvar optionsHTML = options.map(function (o) { return '<option value=\"' + o + '\">' + o + '</option>'; }).join(\"\");\n\t\t\t\t\ttr.innerHTML =\n\t\t\t\t\t\t'<td><input type=\"text\" class=\"form-input form-input-sm forge-id\" placeholder=\"id\"/></td>' +\n\t\t\t\t\t\t'<td><select class=\"form-input form-input-sm forge-kind\">' + optionsHTML + '</select></td>' +\n\t\t\t\t\t\t'<td><input type=\"text\" class=\"form-input form-input-sm forge-host\"/></td>' +\n\t\t\t\t\t\t'<td><input type=\"text\" class=\"form-input form-input-sm forge-secret\"/></td>' +\n\t\t\t\t\t\t'<td><button type=\"button\" class=\"btn btn-sm btn-danger\" onclick=\"this.closest(\\'tr\\').remove()\">Remove</button></td>';\n\t\t\t\t\ttbody.appendChild(tr);\n\t\t\t\t\ttr.querySelector(\".forge-id\").focus();\n\t\t\t\t}\n\t\t\t\twindow.addForgeRow = addForgeRow;\n\n\t\t\t\tfunction collectForges() {\n\t\t\t\t\treturn $all(\"#forges-table tbody tr\").map(function (tr) {\n\t\t\t\t\t\tvar idCell = tr.querySelector(\".forge-id-cell\");\n\t\t\t\t\t\tvar idInput = tr.querySelector(\".forge-id\");\n\t\t\t\t\t\tvar id = idCell ? idCell.textContent.trim() : (idInput ? idInput.value.trim() : \"\");\n\t\t\t\t\t\treturn {\n\t\t\t\t\t\t\tid: id,\n\t\t\t\t\t\t\thost: tr.querySelector(\".forge-host\").value.trim(),\n\t\t\t\t\t\t\tforge: tr.querySelector(\".forge-kind\").value,\n\t\t\t\t\t\t\tsecretKey: tr.querySelector(\".forge-secret\").value.trim()\n\t\t\t\t\t\t};\n\t\t\t\t\t}).filter(function (f) { return f.id !== \"\"; });\n\t\t\t\t}\n\t\t\t\tvar originalForges = {};\n\t\t\t\tcollectForges().forEach(function (f) { originalForges[f.id] = f; });\n\n\t\t\t\tfunction diffForges() {\n\t\t\t\t\tvar calls = [];\n\t\t\t\t\tvar seen = {};\n\t\t\t\t\tcollectForges().forEach(function (f) {\n\t\t\t\t\t\tseen[f.id] = true;\n\t\t\t\t\t\tvar o = originalForges[f.id];\n\t\t\t\t\t\tif (!o) {\n\t\t\t\t\t\t\tcalls.push({ op: \"set\", key: \"gateway.forges.\" + f.id + \".host\", value: [f.host] });\n\t\t\t\t\t\t\tcalls.push({ op: \"set\", key: \"gateway.forges.\" + f.id + \".forge\", value: [f.forge] });\n\t\t\t\t\t\t\tcalls.push({ op: \"set\", key: \"gateway.forges.\" + f.id + \".secret_key\", value: [f.secretKey] });\n\t\t\t\t\t\t\treturn;\n\t\t\t\t\t\t}\n\t\t\t\t\t\tif (o.host !== f.host) calls.push({ op: \"set\", key: \"gateway.forges.\" + f.id + \".host\", value: [f.host] });\n\t\t\t\t\t\tif (o.forge !== f.forge) calls.push({ op: \"set\", key: \"gateway.forges.\" + f.id + \".forge\", value: [f.forge] });\n\t\t\t\t\t\tif (o.secretKey !== f.secretKey) calls.push({ op: \"set\", key: \"gateway.forges.\" + f.id + \".secret_key\", value: [f.secretKey] });\n\t\t\t\t\t});\n\t\t\t\t\tObject.keys(originalForges).forEach(function (id) {\n\t\t\t\t\t\tif (!seen[id]) calls.push({ op: \"unset\", key: \"gateway.forges.\" + id });\n\t\t\t\t\t});\n\t\t\t\t\treturn calls;\n\t\t\t\t}\n\n\t\t\t\t// ---- scalar fields ----\n\n\t\t\t\tvar notifyInput = $(\"#notify-command-input\");\n\t\t\t\tvar publicURLInput = $(\"#web-public-url-input\");\n\t\t\t\tvar originalNotify = splitArgv(notifyInput.value);\n\t\t\t\tvar originalPublicURL = publicURLInput.value.trim();\n\n\t\t\t\tfunction splitArgv(s) {\n\t\t\t\t\ts = (s || \"\").trim();\n\t\t\t\t\treturn s === \"\" ? [] : s.split(/\\s+/);\n\t\t\t\t}\n\n\t\t\t\tfunction sameArray(a, b) {\n\t\t\t\t\treturn JSON.stringify(a) === JSON.stringify(b);\n\t\t\t\t}\n\n\t\t\t\t// ---- save (form tab) ----\n\n\t\t\t\tasync function postMutate(req) {\n\t\t\t\t\tvar res = await fetch(\"/api/config/mutate\", {\n\t\t\t\t\t\tmethod: \"POST\",\n\t\t\t\t\t\theaders: { \"Content-Type\": \"application/json\" },\n\t\t\t\t\t\tbody: JSON.stringify(req)\n\t\t\t\t\t});\n\t\t\t\t\tvar body = {};\n\t\t\t\t\ttry { body = await res.json(); } catch (e) { /* no body */ }\n\t\t\t\t\tif (!res.ok) {\n\t\t\t\t\t\tvar msg = (body && body.error) ? body.error : (\"request failed (HTTP \" + res.status + \")\");\n\t\t\t\t\t\tthrow new Error(req.key + \": \" + msg);\n\t\t\t\t\t}\n\t\t\t\t\treturn body;\n\t\t\t\t}\n\n\t\t\t\tasync function saveForm() {\n\t\t\t\t\thide($(\"#settings-form-error\"));\n\t\t\t\t\thide($(\"#settings-form-transient\"));\n\n\t\t\t\t\tvar calls = [];\n\t\t\t\t\tvar curDomains = collectDomains();\n\t\t\t\t\tif (!sameArray(curDomains, originalDomains)) {\n\t\t\t\t\t\tcalls.push({ op: \"set\", key: \"sandbox.allowed_domains\", value: curDomains });\n\t\t\t\t\t}\n\t\t\t\t\tvar curNotify = splitArgv(notifyInput.value);\n\t\t\t\t\tif (!sameArray(curNotify, originalNotify)) {\n\t\t\t\t\t\tcalls.push({ op: \"set\", key: \"notify.command\", value: curNotify });\n\t\t\t\t\t}\n\t\t\t\t\tvar curPublicURL = publicURLInput.value.trim();\n\t\t\t\t\tif (curPublicURL !== originalPublicURL) {\n\t\t\t\t\t\tcalls.push({ op: \"set\", key: \"web.public_url\", value: [curPublicURL] });\n\t\t\t\t\t}\n\t\t\t\t\tcalls = calls.concat(diffForges());\n\n\t\t\t\t\tif (calls.length === 0) {\n\t\t\t\t\t\tvar t = $(\"#settings-form-transient\");\n\t\t\t\t\t\tt.textContent = \"No changes\";\n\t\t\t\t\t\tshow(t);\n\t\t\t\t\t\treturn;\n\t\t\t\t\t}\n\n\t\t\t\t\tvar warnings = [];\n\t\t\t\t\tfor (var i = 0; i < calls.length; i++) {\n\t\t\t\t\t\ttry {\n\t\t\t\t\t\t\tvar body = await postMutate(calls[i]);\n\t\t\t\t\t\t\tif (body.warnings) warnings = warnings.concat(body.warnings);\n\t\t\t\t\t\t} catch (e) {\n\t\t\t\t\t\t\tvar err = $(\"#settings-form-error\");\n\t\t\t\t\t\t\terr.textContent = e.message;\n\t\t\t\t\t\t\tshow(err);\n\t\t\t\t\t\t\treturn;\n\t\t\t\t\t\t}\n\t\t\t\t\t}\n\t\t\t\t\tfinishSave(warnings);\n\t\t\t\t}\n\t\t\t\twindow.saveForm = saveForm;\n\n\t\t\t\t// ---- save (YAML tab) ----\n\n\t\t\t\tvar yamlTextarea = $(\"#yaml-textarea\");\n\t\t\t\tvar originalYAML = yamlTextarea.value;\n\t\t\t\tvar currentRevision = yamlTextarea.dataset.revision || \"\";\n\n\t\t\t\tasync function saveYaml() {\n\t\t\t\t\thide($(\"#settings-yaml-error\"));\n\t\t\t\t\thide($(\"#settings-yaml-transient\"));\n\t\t\t\t\thide($(\"#settings-conflict\"));\n\n\t\t\t\t\tvar newYAML = yamlTextarea.value;\n\t\t\t\t\tif (newYAML.replace(/\\s+$/, \"\") === originalYAML.replace(/\\s+$/, \"\")) {\n\t\t\t\t\t\tvar t = $(\"#settings-yaml-transient\");\n\t\t\t\t\t\tt.textContent = \"No changes\";\n\t\t\t\t\t\tshow(t);\n\t\t\t\t\t\treturn;\n\t\t\t\t\t}\n\n\t\t\t\t\tvar res = await fetch(\"/api/config\", {\n\t\t\t\t\t\tmethod: \"POST\",\n\t\t\t\t\t\theaders: { \"Content-Type\": \"application/yaml\", \"If-Match\": currentRevision },\n\t\t\t\t\t\tbody: newYAML\n\t\t\t\t\t});\n\t\t\t\t\tif (res.status === 412 || res.status === 428) {\n\t\t\t\t\t\tshow($(\"#settings-conflict\"));\n\t\t\t\t\t\treturn;\n\t\t\t\t\t}\n\t\t\t\t\tvar body = {};\n\t\t\t\t\ttry { body = await res.json(); } catch (e) { /* no body */ }\n\t\t\t\t\tif (!res.ok) {\n\t\t\t\t\t\tvar err = $(\"#settings-yaml-error\");\n\t\t\t\t\t\terr.textContent = (body && body.error) ? body.error : (\"save failed (HTTP \" + res.status + \")\");\n\t\t\t\t\t\tshow(err);\n\t\t\t\t\t\treturn;\n\t\t\t\t\t}\n\t\t\t\t\tfinishSave(body.warnings || []);\n\t\t\t\t}\n\t\t\t\twindow.saveYaml = saveYaml;\n\t\t\t})();\n\t\t</script>")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 22, "\" rows=\"20\" spellcheck=\"false\">")
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			var templ_7745c5c3_Var14 string
+			templ_7745c5c3_Var14, templ_7745c5c3_Err = templ.JoinStringErrs(view.YAML)
+			if templ_7745c5c3_Err != nil {
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/settings.templ`, Line: 171, Col: 146}
+			}
+			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var14))
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 23, "</textarea> <button type=\"button\" class=\"btn btn-primary\" onclick=\"saveYaml()\">Save YAML</button> <button type=\"button\" class=\"btn btn-secondary\" onclick=\"window.location.reload()\">Reload</button></section><script>\n\t\t\t(function () {\n\t\t\t\t\"use strict\";\n\t\t\t\tvar BANNER_KEY = \"boid-settings-restart-banner\";\n\n\t\t\t\tfunction $(sel, root) { return (root || document).querySelector(sel); }\n\t\t\t\tfunction $all(sel, root) { return Array.prototype.slice.call((root || document).querySelectorAll(sel)); }\n\n\t\t\t\tfunction show(el) { if (el) el.hidden = false; }\n\t\t\t\tfunction hide(el) { if (el) el.hidden = true; }\n\n\t\t\t\tfunction showRestartBanner(warnings) {\n\t\t\t\t\tvar el = $(\"#settings-restart-banner\");\n\t\t\t\t\tvar list = $(\"#settings-restart-warnings\");\n\t\t\t\t\tlist.innerHTML = \"\";\n\t\t\t\t\t(warnings || []).forEach(function (w) {\n\t\t\t\t\t\tvar li = document.createElement(\"li\");\n\t\t\t\t\t\tli.textContent = w;\n\t\t\t\t\t\tlist.appendChild(li);\n\t\t\t\t\t});\n\t\t\t\t\tshow(el);\n\t\t\t\t}\n\n\t\t\t\t// A banner staged before a full-page reload (the simplest way to\n\t\t\t\t// keep both tabs' server-rendered state authoritative after any\n\t\t\t\t// save — see this file's top-of-file doc comment) is picked back\n\t\t\t\t// up here, once, on the reloaded page.\n\t\t\t\t(function restoreBannerAfterReload() {\n\t\t\t\t\tvar stored = sessionStorage.getItem(BANNER_KEY);\n\t\t\t\t\tif (!stored) return;\n\t\t\t\t\tsessionStorage.removeItem(BANNER_KEY);\n\t\t\t\t\ttry {\n\t\t\t\t\t\tvar parsed = JSON.parse(stored);\n\t\t\t\t\t\tshowRestartBanner(parsed.warnings || []);\n\t\t\t\t\t} catch (e) { /* ignore malformed sessionStorage content */ }\n\t\t\t\t})();\n\n\t\t\t\tfunction finishSave(warnings) {\n\t\t\t\t\tsessionStorage.setItem(BANNER_KEY, JSON.stringify({ warnings: warnings || [] }));\n\t\t\t\t\twindow.location.reload();\n\t\t\t\t}\n\n\t\t\t\t// ---- allowed domains ----\n\n\t\t\t\tfunction addDomainRow() {\n\t\t\t\t\tvar row = document.createElement(\"div\");\n\t\t\t\t\trow.className = \"settings-list-row\";\n\t\t\t\t\trow.innerHTML = '<input type=\"text\" class=\"form-input form-input-sm settings-domain-input\"/>' +\n\t\t\t\t\t\t'<button type=\"button\" class=\"btn btn-sm btn-danger\" onclick=\"this.parentElement.remove()\">Remove</button>';\n\t\t\t\t\t$(\"#domains-list\").appendChild(row);\n\t\t\t\t\trow.querySelector(\"input\").focus();\n\t\t\t\t}\n\t\t\t\twindow.addDomainRow = addDomainRow;\n\n\t\t\t\tfunction collectDomains() {\n\t\t\t\t\treturn $all(\".settings-domain-input\").map(function (i) { return i.value.trim(); }).filter(Boolean);\n\t\t\t\t}\n\t\t\t\tvar originalDomains = collectDomains();\n\n\t\t\t\t// ---- gateway.forges ----\n\n\t\t\t\t// forgeKindOptions is the fixed, server-provided list of valid\n\t\t\t\t// gateway.forges.*.forge values (config.Schema's enum,\n\t\t\t\t// web_settings.go's forgeKindOptions()) — MAJOR 1 (codex review\n\t\t\t\t// round 1, PR #831): a new row used to derive its <select>'s\n\t\t\t\t// options by scanning kind <option>s already present on\n\t\t\t\t// EXISTING forge rows, which left the new-row dropdown with no\n\t\t\t\t// options at all whenever gateway.forges was empty (nothing to\n\t\t\t\t// scan). Reading the same list the server rendered every\n\t\t\t\t// existing row's <select> from means a brand-new row always has\n\t\t\t\t// a populated dropdown, empty table or not.\n\t\t\t\tvar forgesTableEl = $(\"#forges-table\");\n\t\t\t\tvar forgeKindOptions = JSON.parse((forgesTableEl && forgesTableEl.dataset.forgeKinds) || \"[]\");\n\n\t\t\t\tfunction addForgeRow() {\n\t\t\t\t\tvar tbody = $(\"#forges-table tbody\");\n\t\t\t\t\tvar tr = document.createElement(\"tr\");\n\t\t\t\t\tvar optionsHTML = forgeKindOptions.map(function (o) { return '<option value=\"' + o + '\">' + o + '</option>'; }).join(\"\");\n\t\t\t\t\ttr.innerHTML =\n\t\t\t\t\t\t'<td><input type=\"text\" class=\"form-input form-input-sm forge-id\" placeholder=\"id\"/></td>' +\n\t\t\t\t\t\t'<td><select class=\"form-input form-input-sm forge-kind\">' + optionsHTML + '</select></td>' +\n\t\t\t\t\t\t'<td><input type=\"text\" class=\"form-input form-input-sm forge-host\"/></td>' +\n\t\t\t\t\t\t'<td><input type=\"text\" class=\"form-input form-input-sm forge-secret\"/></td>' +\n\t\t\t\t\t\t'<td><button type=\"button\" class=\"btn btn-sm btn-danger\" onclick=\"this.closest(\\'tr\\').remove()\">Remove</button></td>';\n\t\t\t\t\ttbody.appendChild(tr);\n\t\t\t\t\ttr.querySelector(\".forge-id\").focus();\n\t\t\t\t}\n\t\t\t\twindow.addForgeRow = addForgeRow;\n\n\t\t\t\tfunction collectForges() {\n\t\t\t\t\treturn $all(\"#forges-table tbody tr\").map(function (tr) {\n\t\t\t\t\t\tvar idCell = tr.querySelector(\".forge-id-cell\");\n\t\t\t\t\t\tvar idInput = tr.querySelector(\".forge-id\");\n\t\t\t\t\t\tvar id = idCell ? idCell.textContent.trim() : (idInput ? idInput.value.trim() : \"\");\n\t\t\t\t\t\treturn {\n\t\t\t\t\t\t\tid: id,\n\t\t\t\t\t\t\thost: tr.querySelector(\".forge-host\").value.trim(),\n\t\t\t\t\t\t\tforge: tr.querySelector(\".forge-kind\").value,\n\t\t\t\t\t\t\tsecretKey: tr.querySelector(\".forge-secret\").value.trim()\n\t\t\t\t\t\t};\n\t\t\t\t\t}).filter(function (f) { return f.id !== \"\"; });\n\t\t\t\t}\n\t\t\t\tvar originalForges = {};\n\t\t\t\tcollectForges().forEach(function (f) { originalForges[f.id] = f; });\n\n\t\t\t\tfunction diffForges() {\n\t\t\t\t\tvar calls = [];\n\t\t\t\t\tvar seen = {};\n\t\t\t\t\tcollectForges().forEach(function (f) {\n\t\t\t\t\t\tseen[f.id] = true;\n\t\t\t\t\t\tvar o = originalForges[f.id];\n\t\t\t\t\t\tif (!o) {\n\t\t\t\t\t\t\tcalls.push({ op: \"set\", key: \"gateway.forges.\" + f.id + \".host\", value: [f.host] });\n\t\t\t\t\t\t\tcalls.push({ op: \"set\", key: \"gateway.forges.\" + f.id + \".forge\", value: [f.forge] });\n\t\t\t\t\t\t\tcalls.push({ op: \"set\", key: \"gateway.forges.\" + f.id + \".secret_key\", value: [f.secretKey] });\n\t\t\t\t\t\t\treturn;\n\t\t\t\t\t\t}\n\t\t\t\t\t\tif (o.host !== f.host) calls.push({ op: \"set\", key: \"gateway.forges.\" + f.id + \".host\", value: [f.host] });\n\t\t\t\t\t\tif (o.forge !== f.forge) calls.push({ op: \"set\", key: \"gateway.forges.\" + f.id + \".forge\", value: [f.forge] });\n\t\t\t\t\t\tif (o.secretKey !== f.secretKey) calls.push({ op: \"set\", key: \"gateway.forges.\" + f.id + \".secret_key\", value: [f.secretKey] });\n\t\t\t\t\t});\n\t\t\t\t\tObject.keys(originalForges).forEach(function (id) {\n\t\t\t\t\t\tif (!seen[id]) calls.push({ op: \"unset\", key: \"gateway.forges.\" + id });\n\t\t\t\t\t});\n\t\t\t\t\treturn calls;\n\t\t\t\t}\n\n\t\t\t\t// ---- notify.command ----\n\n\t\t\t\tfunction addNotifyCommandRow() {\n\t\t\t\t\tvar row = document.createElement(\"div\");\n\t\t\t\t\trow.className = \"settings-list-row\";\n\t\t\t\t\trow.innerHTML = '<input type=\"text\" class=\"form-input form-input-sm notify-command-input\"/>' +\n\t\t\t\t\t\t'<button type=\"button\" class=\"btn btn-sm btn-danger\" onclick=\"this.parentElement.remove()\">Remove</button>';\n\t\t\t\t\t$(\"#notify-command-list\").appendChild(row);\n\t\t\t\t\trow.querySelector(\"input\").focus();\n\t\t\t\t}\n\t\t\t\twindow.addNotifyCommandRow = addNotifyCommandRow;\n\n\t\t\t\t// collectNotifyCommand reads one argv element per row, verbatim\n\t\t\t\t// (MAJOR 2, codex review round 1, PR #831) — never joined into a\n\t\t\t\t// single string and re-split on whitespace, which silently broke\n\t\t\t\t// any argument containing an embedded space (e.g. [\"sh\", \"-c\",\n\t\t\t\t// \"echo hello\"] round-tripped as [\"sh\", \"-c\", \"echo\", \"hello\"]).\n\t\t\t\t// Each row IS one argument; only leading/trailing whitespace\n\t\t\t\t// (never meaningful in a single argv element typed into a text\n\t\t\t\t// input) is trimmed.\n\t\t\t\tfunction collectNotifyCommand() {\n\t\t\t\t\treturn $all(\".notify-command-input\").map(function (i) { return i.value.trim(); }).filter(function (v) { return v !== \"\"; });\n\t\t\t\t}\n\t\t\t\tvar originalNotifyCommand = collectNotifyCommand();\n\n\t\t\t\t// ---- scalar fields ----\n\n\t\t\t\tvar publicURLInput = $(\"#web-public-url-input\");\n\t\t\t\tvar originalPublicURL = publicURLInput.value.trim();\n\n\t\t\t\tfunction sameArray(a, b) {\n\t\t\t\t\treturn JSON.stringify(a) === JSON.stringify(b);\n\t\t\t\t}\n\n\t\t\t\t// ---- save (form tab) ----\n\n\t\t\t\t// postMutateBatch sends every pending set/unset as ONE atomic\n\t\t\t\t// POST /api/config/mutate call (BLOCKER, codex review round 1,\n\t\t\t\t// PR #831) — see internal/api/config.go's ConfigMutateRequest.Ops\n\t\t\t\t// doc comment for why: the daemon used to validate the FULL\n\t\t\t\t// document after each individual op, so a brand-new\n\t\t\t\t// gateway.forges.<id> entry's three leaf sets (host/forge/\n\t\t\t\t// secret_key), applied one HTTP call at a time, failed on the\n\t\t\t\t// very first call (an empty \"forge\" is not yet valid). Batching\n\t\t\t\t// them into a single request means the daemon applies all of\n\t\t\t\t// them to the same in-memory document before validating once.\n\t\t\t\tasync function postMutateBatch(ops) {\n\t\t\t\t\tvar res = await fetch(\"/api/config/mutate\", {\n\t\t\t\t\t\tmethod: \"POST\",\n\t\t\t\t\t\theaders: { \"Content-Type\": \"application/json\" },\n\t\t\t\t\t\tbody: JSON.stringify({ ops: ops })\n\t\t\t\t\t});\n\t\t\t\t\tvar body = {};\n\t\t\t\t\ttry { body = await res.json(); } catch (e) { /* no body */ }\n\t\t\t\t\tif (!res.ok) {\n\t\t\t\t\t\tvar msg = (body && body.error) ? body.error : (\"request failed (HTTP \" + res.status + \")\");\n\t\t\t\t\t\tthrow new Error(msg);\n\t\t\t\t\t}\n\t\t\t\t\treturn body;\n\t\t\t\t}\n\n\t\t\t\tasync function saveForm() {\n\t\t\t\t\thide($(\"#settings-form-error\"));\n\t\t\t\t\thide($(\"#settings-form-transient\"));\n\n\t\t\t\t\tvar calls = [];\n\t\t\t\t\tvar curDomains = collectDomains();\n\t\t\t\t\tif (!sameArray(curDomains, originalDomains)) {\n\t\t\t\t\t\tcalls.push({ op: \"set\", key: \"sandbox.allowed_domains\", value: curDomains });\n\t\t\t\t\t}\n\t\t\t\t\tvar curNotify = collectNotifyCommand();\n\t\t\t\t\tif (!sameArray(curNotify, originalNotifyCommand)) {\n\t\t\t\t\t\tcalls.push({ op: \"set\", key: \"notify.command\", value: curNotify });\n\t\t\t\t\t}\n\t\t\t\t\tvar curPublicURL = publicURLInput.value.trim();\n\t\t\t\t\tif (curPublicURL !== originalPublicURL) {\n\t\t\t\t\t\tcalls.push({ op: \"set\", key: \"web.public_url\", value: [curPublicURL] });\n\t\t\t\t\t}\n\t\t\t\t\tcalls = calls.concat(diffForges());\n\n\t\t\t\t\tif (calls.length === 0) {\n\t\t\t\t\t\tvar t = $(\"#settings-form-transient\");\n\t\t\t\t\t\tt.textContent = \"No changes\";\n\t\t\t\t\t\tshow(t);\n\t\t\t\t\t\treturn;\n\t\t\t\t\t}\n\n\t\t\t\t\ttry {\n\t\t\t\t\t\tvar body = await postMutateBatch(calls);\n\t\t\t\t\t\tfinishSave(body.warnings || []);\n\t\t\t\t\t} catch (e) {\n\t\t\t\t\t\tvar err = $(\"#settings-form-error\");\n\t\t\t\t\t\terr.textContent = e.message;\n\t\t\t\t\t\tshow(err);\n\t\t\t\t\t}\n\t\t\t\t}\n\t\t\t\twindow.saveForm = saveForm;\n\n\t\t\t\t// ---- save (YAML tab) ----\n\n\t\t\t\tvar yamlTextarea = $(\"#yaml-textarea\");\n\t\t\t\tvar originalYAML = yamlTextarea.value;\n\t\t\t\tvar currentRevision = yamlTextarea.dataset.revision || \"\";\n\n\t\t\t\tasync function saveYaml() {\n\t\t\t\t\thide($(\"#settings-yaml-error\"));\n\t\t\t\t\thide($(\"#settings-yaml-transient\"));\n\t\t\t\t\thide($(\"#settings-conflict\"));\n\n\t\t\t\t\tvar newYAML = yamlTextarea.value;\n\t\t\t\t\tif (newYAML.replace(/\\s+$/, \"\") === originalYAML.replace(/\\s+$/, \"\")) {\n\t\t\t\t\t\tvar t = $(\"#settings-yaml-transient\");\n\t\t\t\t\t\tt.textContent = \"No changes\";\n\t\t\t\t\t\tshow(t);\n\t\t\t\t\t\treturn;\n\t\t\t\t\t}\n\n\t\t\t\t\t// MINOR 2 (codex review round 1, PR #831): the fetch() call\n\t\t\t\t\t// below rejects on a network failure (as opposed to an\n\t\t\t\t\t// ordinary HTTP error status, which resolves normally and is\n\t\t\t\t\t// handled by the res.ok check further down) — with no\n\t\t\t\t\t// try/catch around it, that rejection went completely\n\t\t\t\t\t// unhandled, silently dropping the failure instead of\n\t\t\t\t\t// showing the same inline error the form-tab save path\n\t\t\t\t\t// already shows via postMutateBatch's throw/catch.\n\t\t\t\t\ttry {\n\t\t\t\t\t\tvar res = await fetch(\"/api/config\", {\n\t\t\t\t\t\t\tmethod: \"POST\",\n\t\t\t\t\t\t\theaders: { \"Content-Type\": \"application/yaml\", \"If-Match\": currentRevision },\n\t\t\t\t\t\t\tbody: newYAML\n\t\t\t\t\t\t});\n\t\t\t\t\t\tif (res.status === 412 || res.status === 428) {\n\t\t\t\t\t\t\tshow($(\"#settings-conflict\"));\n\t\t\t\t\t\t\treturn;\n\t\t\t\t\t\t}\n\t\t\t\t\t\tvar body = {};\n\t\t\t\t\t\ttry { body = await res.json(); } catch (e) { /* no body */ }\n\t\t\t\t\t\tif (!res.ok) {\n\t\t\t\t\t\t\tvar err = $(\"#settings-yaml-error\");\n\t\t\t\t\t\t\terr.textContent = (body && body.error) ? body.error : (\"save failed (HTTP \" + res.status + \")\");\n\t\t\t\t\t\t\tshow(err);\n\t\t\t\t\t\t\treturn;\n\t\t\t\t\t\t}\n\t\t\t\t\t\tfinishSave(body.warnings || []);\n\t\t\t\t\t} catch (e) {\n\t\t\t\t\t\tvar netErr = $(\"#settings-yaml-error\");\n\t\t\t\t\t\tnetErr.textContent = e.message || \"save failed (network error)\";\n\t\t\t\t\t\tshow(netErr);\n\t\t\t\t\t}\n\t\t\t\t}\n\t\t\t\twindow.saveYaml = saveYaml;\n\t\t\t})();\n\t\t</script>")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}

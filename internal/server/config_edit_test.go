@@ -501,6 +501,113 @@ func TestMutateConfig_ConcurrentSetsOfDifferentKeys_BothSucceed(t *testing.T) {
 	}
 }
 
+// TestMutateConfig_SequentialSingleOpsForNewForge_FailsOnFirstOp is the
+// direct regression scenario for BLOCKER (codex review round 1, PR #831):
+// three independent single-op MutateConfig calls that each fully set/unset
+// ONE leaf of a brand-new forge id cannot ever create that forge, because
+// each call validates the WHOLE document on its own — the very first call
+// (setting only "corp.host") already leaves "corp.forge" empty, which fails
+// validation before a second call ever runs. This pins the failure mode the
+// batch path (below) exists to fix; it should keep failing even after the
+// batch fix lands, since nothing about single-op semantics changed.
+func TestMutateConfig_SequentialSingleOpsForNewForge_FailsOnFirstOp(t *testing.T) {
+	srv, _ := newConfigTestServer(t)
+
+	_, err := srv.MutateConfig(api.ConfigMutateRequest{Op: api.ConfigMutateSet, Key: "gateway.forges.corp.host", Value: []string{"git.corp.example"}})
+	if err == nil {
+		t.Fatal("expected the first single-op call to fail — a new forge with only \"host\" set is not yet a valid document")
+	}
+}
+
+// TestMutateConfig_Batch_NewForgeAllFieldsAtOnce_Succeeds pins BLOCKER
+// (codex review round 1, PR #831)'s fix: creating a brand-new custom forge
+// (host + kind + secret_key) through the web settings form's three
+// sequential leaf mutations failed validation on the very first call (see
+// TestMutateConfig_SequentialSingleOpsForNewForge_FailsOnFirstOp). Batching
+// all three ops into one MutateConfig call validates only once, after all
+// three leaves are already in place, so it succeeds.
+func TestMutateConfig_Batch_NewForgeAllFieldsAtOnce_Succeeds(t *testing.T) {
+	srv, _ := newConfigTestServer(t)
+
+	result, err := srv.MutateConfig(api.ConfigMutateRequest{Ops: []api.ConfigMutateRequest{
+		{Op: api.ConfigMutateSet, Key: "gateway.forges.corp.host", Value: []string{"git.corp.example"}},
+		{Op: api.ConfigMutateSet, Key: "gateway.forges.corp.forge", Value: []string{"github"}},
+		{Op: api.ConfigMutateSet, Key: "gateway.forges.corp.secret_key", Value: []string{"CORP_PAT"}},
+	}})
+	if err != nil {
+		t.Fatalf("MutateConfig(batch, new forge): %v", err)
+	}
+	if !strings.Contains(string(result.YAML), "git.corp.example") || !strings.Contains(string(result.YAML), "CORP_PAT") {
+		t.Errorf("MutateConfig result YAML = %s, want it to contain the new forge's host and secret_key", result.YAML)
+	}
+
+	data, _, err := srv.ConfigYAML()
+	if err != nil {
+		t.Fatalf("ConfigYAML: %v", err)
+	}
+	if !strings.Contains(string(data), "git.corp.example") {
+		t.Errorf("ConfigYAML() = %s, want it to reflect the batched forge creation", data)
+	}
+}
+
+// TestMutateConfig_Batch_ExistingLeafEditsSucceed pins the batch path's
+// other everyday case (editing just one leaf of an ALREADY-valid, existing
+// forge) — this already worked via a single op before the batch fix, and
+// must keep working when routed through a one-element-equivalent batch too.
+func TestMutateConfig_Batch_ExistingLeafEditsSucceed(t *testing.T) {
+	srv, _ := newConfigTestServer(t)
+
+	if _, err := srv.MutateConfig(api.ConfigMutateRequest{Ops: []api.ConfigMutateRequest{
+		{Op: api.ConfigMutateSet, Key: "gateway.forges.corp.host", Value: []string{"git.corp.example"}},
+		{Op: api.ConfigMutateSet, Key: "gateway.forges.corp.forge", Value: []string{"github"}},
+		{Op: api.ConfigMutateSet, Key: "gateway.forges.corp.secret_key", Value: []string{"CORP_PAT_1"}},
+	}}); err != nil {
+		t.Fatalf("MutateConfig(batch, create): %v", err)
+	}
+
+	result, err := srv.MutateConfig(api.ConfigMutateRequest{Ops: []api.ConfigMutateRequest{
+		{Op: api.ConfigMutateSet, Key: "gateway.forges.corp.secret_key", Value: []string{"CORP_PAT_2"}},
+	}})
+	if err != nil {
+		t.Fatalf("MutateConfig(batch, edit existing secret_key): %v", err)
+	}
+	if !strings.Contains(string(result.YAML), "CORP_PAT_2") {
+		t.Errorf("MutateConfig result YAML = %s, want the updated secret_key", result.YAML)
+	}
+}
+
+// TestMutateConfig_Batch_PartialFailureLeavesDocumentUnchanged pins the
+// batch path's atomicity: when one op in the batch is invalid, NONE of the
+// batch's earlier, individually-valid ops are persisted — the whole call
+// fails together, and config.yaml on disk is untouched.
+func TestMutateConfig_Batch_PartialFailureLeavesDocumentUnchanged(t *testing.T) {
+	srv, configPath := newConfigTestServer(t)
+
+	before, err := os.ReadFile(configPath)
+	if err != nil && !os.IsNotExist(err) {
+		t.Fatalf("read config before: %v", err)
+	}
+
+	_, err = srv.MutateConfig(api.ConfigMutateRequest{Ops: []api.ConfigMutateRequest{
+		{Op: api.ConfigMutateSet, Key: "web.public_url", Value: []string{"https://should-not-land.example.com"}},
+		{Op: api.ConfigMutateSet, Key: "sandbox.alowed_domains" /* typo */, Value: []string{"x"}},
+	}})
+	if err == nil {
+		t.Fatal("expected the batch to fail because of the unknown key in its second op")
+	}
+
+	after, err := os.ReadFile(configPath)
+	if err != nil {
+		if os.IsNotExist(err) && len(before) == 0 {
+			return // still absent, matching the pre-call state — fine.
+		}
+		t.Fatalf("read config after: %v", err)
+	}
+	if string(after) != string(before) {
+		t.Errorf("config.yaml changed despite the batch failing:\nbefore: %q\nafter:  %q", before, after)
+	}
+}
+
 // TestApplyConfigYAML_IfMatch_MismatchRejected pins the ETag/If-Match
 // concurrency guard `boid config edit`/`apply -f` (without --force) rely
 // on: a stale revision is rejected, not silently overwritten.

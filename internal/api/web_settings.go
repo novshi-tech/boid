@@ -3,7 +3,6 @@ package api
 import (
 	"net/http"
 	"sort"
-	"strings"
 
 	"github.com/novshi-tech/boid/internal/config"
 	"github.com/novshi-tech/boid/web/templates"
@@ -87,7 +86,7 @@ func buildSettingsView(data []byte, revision string) (templates.SettingsView, er
 		view.AllowedDomains = toStringSlice(v)
 	}
 	if v, ok := config.GetPath(tree, "notify.command"); ok {
-		view.NotifyCommand = strings.Join(toStringSlice(v), " ")
+		view.NotifyCommand = toStringSlice(v)
 	}
 	if v, ok := config.GetPath(tree, "web.public_url"); ok {
 		if s, ok2 := v.(string); ok2 {

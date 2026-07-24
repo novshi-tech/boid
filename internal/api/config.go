@@ -47,11 +47,15 @@ type ConfigService interface {
 	// empty, 412 Precondition Failed when it is stale) and neither
 	// validates nor persists data.
 	ApplyConfigYAML(data []byte, ifMatch string, force bool) (ConfigApplyResult, error)
-	// MutateConfig performs a single dotted-path set/unset as one
-	// atomic, server-side read-modify-write (BLOCKER 1, codex review round
-	// 1) — `boid config set/unset` route here instead of a client-side
-	// GET → mutate → POST round trip, which left a window for two
-	// concurrent calls to silently lose one's change. See
+	// MutateConfig performs one or more dotted-path set/unset operations as
+	// a single atomic, server-side read-modify-write (BLOCKER 1, codex
+	// review round 1) — `boid config set/unset` route here instead of a
+	// client-side GET → mutate → POST round trip, which left a window for
+	// two concurrent calls to silently lose one's change. Multiple
+	// operations (ConfigMutateRequest.Ops, BLOCKER, codex review round 1 on
+	// PR #831) are applied to the same document before it is validated
+	// once, so a structural, multi-leaf change (e.g. a brand-new
+	// gateway.forges.<id> entry) can be created in one call. See
 	// internal/server/config_edit.go's MutateConfig doc comment for the
 	// full rationale.
 	MutateConfig(req ConfigMutateRequest) (ConfigMutateResult, error)
@@ -79,13 +83,34 @@ const (
 	ConfigMutateUnset ConfigMutateOp = "unset"
 )
 
-// ConfigMutateRequest is POST /api/config/mutate's request body — `boid
-// config set <key> <value...>` / `unset <key>` (BLOCKER 1, codex review
-// round 1).
+// ConfigMutateRequest is POST /api/config/mutate's request body: either a
+// single `boid config set <key> <value...>` / `unset <key>` operation (the
+// Op/Key/Value fields, unchanged since BLOCKER 1 round 1), or — when Ops is
+// non-empty — a BATCH of operations applied as one atomic read-modify-write
+// (BLOCKER, codex review round 1 on PR #831).
+//
+// The batch shape exists because a single-op call validates the FULL
+// document after every call (MutateConfig's doc comment), which makes it
+// impossible to create a brand-new gateway.forges.<id> entry through a
+// sequence of single-op calls: setting just "<id>.host" leaves the document
+// with an empty "<id>.forge", which config.ValidateYAML rejects
+// ("unrecognized forge \"\"") before a second call ever gets a chance to set
+// "<id>.forge" — see internal/config/config.go's resolveForgeConfig. Ops
+// applies every listed op to the same in-memory tree first, and validates
+// only once against the fully-mutated result, so the three leaves of a new
+// forge (or any other structural, multi-leaf add) land together or not at
+// all.
+//
+// When Ops is non-empty, the top-level Op/Key/Value fields are ignored.
 type ConfigMutateRequest struct {
-	Op    ConfigMutateOp `json:"op"`
-	Key   string         `json:"key"`
+	Op    ConfigMutateOp `json:"op,omitempty"`
+	Key   string         `json:"key,omitempty"`
 	Value []string       `json:"value,omitempty"`
+	// Ops, when non-empty, requests a batch of set/unset operations
+	// (BLOCKER, codex review round 1 on PR #831) — see this type's doc
+	// comment. Each element's own (nested) Ops field, if set, is ignored;
+	// only Op/Key/Value are read per element.
+	Ops []ConfigMutateRequest `json:"ops,omitempty"`
 }
 
 // ConfigMutateResult is POST /api/config/mutate's response body: the same
