@@ -181,6 +181,25 @@ func generateCA() (*CA, []byte, []byte, error) {
 	return &CA{cert: cert, key: key}, certPEM, keyPEM, nil
 }
 
+// parseCA parses cert/key PEM independently loaded from disk and verifies
+// they actually form a matching pair (fix for [Blocker 3, PR829 round 1
+// codex review]).
+//
+// Scenario this guards against: ca.crt publishes successfully on one boot
+// (atomicfile.PublishIfAbsent), then ca.key's own publish fails — ENOSPC,
+// or any other partial-write error — before the process can write it.
+// LoadOrCreate's certErr/keyErr branch above treats "cert present, key
+// missing" as "generate a fresh CA", so the NEXT boot generates a new
+// key... but PublishIfAbsent for ca.crt is a no-op (the file the prior,
+// interrupted boot already wrote still wins the publish race), while the
+// freshly generated ca.key publishes clean. The result: a cert from boot
+// N sitting next to a key from boot N+1 — each individually well-formed
+// PEM that parses without error, but cryptographically unrelated. Nothing
+// in x509.ParseCertificate/ParseECPrivateKey alone catches this; the two
+// files are parsed completely independently. Without this check, every
+// TLS handshake using this CA fails at leaf verification (leaves are
+// signed by the loaded key, but any peer trusts the loaded — mismatched —
+// cert) with no error message anywhere near this file to explain why.
 func parseCA(certPEM, keyPEM []byte) (*CA, error) {
 	certBlock, _ := pem.Decode(certPEM)
 	if certBlock == nil {
@@ -198,7 +217,26 @@ func parseCA(certPEM, keyPEM []byte) (*CA, error) {
 	if err != nil {
 		return nil, fmt.Errorf("mtls: parse ca key: %w", err)
 	}
+	if err := verifyCertKeyPairMatch(cert, key); err != nil {
+		return nil, err
+	}
 	return &CA{cert: cert, key: key}, nil
+}
+
+// verifyCertKeyPairMatch reports an error unless cert's public key and
+// key's public component are the same EC point — i.e. key is actually the
+// private half of cert, not just an independently valid key. See parseCA's
+// doc comment for the failure scenario this closes.
+func verifyCertKeyPairMatch(cert *x509.Certificate, key *ecdsa.PrivateKey) error {
+	certPub, ok := cert.PublicKey.(*ecdsa.PublicKey)
+	if !ok {
+		return fmt.Errorf("mtls: ca cert public key is %T, want *ecdsa.PublicKey (every key this package generates is ECDSA)", cert.PublicKey)
+	}
+	keyPub := key.Public().(*ecdsa.PublicKey) //nolint:forcetypeassert // key.Public() on an *ecdsa.PrivateKey always returns *ecdsa.PublicKey
+	if certPub.X.Cmp(keyPub.X) != 0 || certPub.Y.Cmp(keyPub.Y) != 0 {
+		return fmt.Errorf("mtls: ca.crt and ca.key do not form a matching pair (public keys differ) — this typically means one file's atomic publish succeeded on a prior boot while the other's failed (e.g. ENOSPC) and a later boot published a fresh replacement for only one of the two; remove both files under this CA's directory (rm ca.crt ca.key under tls/) so LoadOrCreate regenerates a fresh, consistent pair — safe per docs/plans/volume-only-daemon.md §論点 d, which treats this material as volatile/regenerable")
+	}
+	return nil
 }
 
 func randomSerial() (*big.Int, error) {
