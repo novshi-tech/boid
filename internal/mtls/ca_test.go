@@ -7,6 +7,8 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -96,6 +98,158 @@ func TestLoadOrCreate_RejectsUnsafeKeyPermissions(t *testing.T) {
 
 	if _, err := mtls.LoadOrCreate(dir); err == nil {
 		t.Fatal("LoadOrCreate succeeded against a 0644 ca.key; want an unsafe-permissions error")
+	}
+}
+
+// TestLoadOrCreate_RejectsMismatchedCertKeyPair pins the fix for [Blocker
+// 3, PR829 round 1 codex review]: a ca.crt / ca.key pair that individually
+// parse fine but do not belong together (e.g. ca.crt published
+// successfully on one boot, then ca.key's publish failed — ENOSPC or
+// similar — and a LATER boot published a freshly generated ca.key next to
+// the old, still-standing ca.crt) must be rejected at load time, not
+// accepted silently. Undetected, every TLS handshake using this CA would
+// fail at leaf verification (leaves are signed by the loaded key but
+// clients trust the mismatched cert) with no diagnostic pointing at the
+// actual cause.
+func TestLoadOrCreate_RejectsMismatchedCertKeyPair(t *testing.T) {
+	dirA := t.TempDir()
+	if _, err := mtls.LoadOrCreate(dirA); err != nil {
+		t.Fatalf("LoadOrCreate dirA: %v", err)
+	}
+	dirB := t.TempDir()
+	if _, err := mtls.LoadOrCreate(dirB); err != nil {
+		t.Fatalf("LoadOrCreate dirB: %v", err)
+	}
+
+	mismatchDir := t.TempDir()
+	certA, err := os.ReadFile(filepath.Join(dirA, mtls.CAFileName))
+	if err != nil {
+		t.Fatalf("read dirA cert: %v", err)
+	}
+	keyB, err := os.ReadFile(filepath.Join(dirB, mtls.KeyFileName))
+	if err != nil {
+		t.Fatalf("read dirB key: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(mismatchDir, mtls.CAFileName), certA, 0o600); err != nil {
+		t.Fatalf("write mismatch cert: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(mismatchDir, mtls.KeyFileName), keyB, 0o600); err != nil {
+		t.Fatalf("write mismatch key: %v", err)
+	}
+
+	_, err = mtls.LoadOrCreate(mismatchDir)
+	if err == nil {
+		t.Fatal("LoadOrCreate succeeded against a mismatched ca.crt/ca.key pair; want an error")
+	}
+	if !strings.Contains(err.Error(), "ca.crt") || !strings.Contains(err.Error(), "ca.key") {
+		t.Errorf("error = %q, want it to reference ca.crt and ca.key so the operator knows what to remove", err.Error())
+	}
+}
+
+// TestLoadOrCreate_ConcurrentStartup_NoPartialFile pins the same hazard
+// class internal/install.LoadOrCreate's own
+// TestLoadOrCreate_ConcurrentStartup_SameID pins (Major 7, PR6 codex
+// review): two daemon instances racing to boot against the same fresh,
+// empty named volume (docs/plans/volume-only-daemon.md §論点 d) must never
+// observe a half-written ca.crt/ca.key that fails to parse — the plain
+// os.WriteFile this function used before atomicfile.PublishIfAbsent had no
+// such guarantee.
+//
+// This does NOT assert every goroutine ends up with byte-identical
+// cert/key pairs, nor that every goroutine even succeeds:
+// PublishIfAbsent's one-winner guarantee is per FILE, not per (cert,key)
+// PAIR, so a goroutine that wins the ca.crt publish race while a
+// different goroutine wins the ca.key race ends up with a mismatched pair
+// on disk (LoadOrCreate's own doc comment's documented residual risk —
+// this daemon only ever runs as a single compose replica against a given
+// data dir in production, so the interleaving is not expected there, but
+// nothing stops this test's own n=20 goroutines from hitting it locally,
+// and empirically they sometimes do). Since [Blocker 3, PR829 round 1
+// codex review] added parseCA's public-key-match check, a goroutine that
+// loses that particular race now gets a hard, specific error instead of a
+// silently-accepted broken CA — this test accepts EITHER outcome per
+// goroutine (success, or exactly that documented mismatch error) as
+// passing, and only fails on anything else (a parse failure, an I/O
+// error, a nil CA with nil error, ...), which would mean a goroutine
+// actually observed real corruption rather than this well-understood
+// race. TestLoadOrCreate_RejectsMismatchedCertKeyPair separately pins
+// that the mismatch-error path itself works correctly and deterministically.
+func TestLoadOrCreate_ConcurrentStartup_NoPartialFile(t *testing.T) {
+	dir := t.TempDir()
+	const n = 20
+
+	cas := make([]*mtls.CA, n)
+	errs := make([]error, n)
+	var wg sync.WaitGroup
+	wg.Add(n)
+	for i := 0; i < n; i++ {
+		i := i
+		go func() {
+			defer wg.Done()
+			cas[i], errs[i] = mtls.LoadOrCreate(dir)
+		}()
+	}
+	wg.Wait()
+
+	// Every goroutine must get EITHER a successfully parsed CA, OR the
+	// specific, documented "do not form a matching pair" error [Blocker 3,
+	// PR829 round 1 codex review] — never anything else (a parse failure,
+	// an I/O error, a nil CA with nil error, ...), which would mean a
+	// goroutine actually observed a half-written file or some other real
+	// corruption. "Matching pair" errors are an accepted, non-fatal
+	// outcome of THIS test's own n=20 goroutines racing the cert and key
+	// publishes independently (LoadOrCreate's own doc comment's documented
+	// residual risk, empirically observed to trigger occasionally at this
+	// concurrency level in practice) — not a bug in the fix under test.
+	const mismatchSubstr = "do not form a matching pair"
+	sawMismatch := false
+	for i, err := range errs {
+		if err != nil {
+			if !strings.Contains(err.Error(), mismatchSubstr) {
+				t.Fatalf("goroutine %d: LoadOrCreate: unexpected error (not the documented cert/key publish race): %v", i, err)
+			}
+			sawMismatch = true
+			continue
+		}
+		if cas[i] == nil {
+			t.Fatalf("goroutine %d: LoadOrCreate returned a nil CA with no error", i)
+		}
+	}
+
+	certPath := filepath.Join(dir, mtls.CAFileName)
+	keyPath := filepath.Join(dir, mtls.KeyFileName)
+	if info, err := os.Stat(certPath); err != nil {
+		t.Fatalf("stat ca.crt: %v", err)
+	} else if info.Size() == 0 {
+		t.Error("ca.crt written empty")
+	}
+	if info, err := os.Stat(keyPath); err != nil {
+		t.Fatalf("stat ca.key: %v", err)
+	} else if info.Size() == 0 {
+		t.Error("ca.key written empty")
+	} else if perm := info.Mode().Perm(); perm != 0o600 {
+		t.Errorf("ca.key perm = %o, want 0600", perm)
+	}
+
+	// A sequential reload after the race settles reads the exact same
+	// files every earlier goroutine raced to publish — its outcome is
+	// therefore deterministic (not itself racy), and must match what the
+	// race actually produced: success if the files ended up consistent, or
+	// the same documented mismatch error if they didn't. Either way, this
+	// proves the files on disk are each complete (not truncated) — a
+	// parse failure or any other error here (rather than success or the
+	// specific mismatch error) would mean real corruption slipped through.
+	_, reloadErr := mtls.LoadOrCreate(dir)
+	switch {
+	case reloadErr == nil:
+		// Consistent pair — every concurrent publish for both files agreed
+		// on the same winner.
+	case strings.Contains(reloadErr.Error(), mismatchSubstr):
+		if !sawMismatch {
+			t.Errorf("reload after concurrent race reported a mismatch, but no concurrent goroutine did — inconsistent with what was actually published")
+		}
+	default:
+		t.Fatalf("reload after concurrent race: unexpected error (not the documented cert/key publish race): %v", reloadErr)
 	}
 }
 

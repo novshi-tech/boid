@@ -31,6 +31,11 @@ type composeDoc struct {
 		Environment map[string]string `yaml:"environment"`
 		ExtraHosts  []string          `yaml:"extra_hosts"`
 	} `yaml:"services"`
+	// TopVolumes is the top-level named-volume declaration block (docs/
+	// plans/volume-only-daemon.md §論点 d) — distinct from each service's
+	// own `Volumes []string` mount-list field above (same YAML key,
+	// different nesting level; Go field names need not match).
+	TopVolumes map[string]any `yaml:"volumes"`
 }
 
 func loadComposeDoc(t *testing.T) composeDoc {
@@ -134,14 +139,20 @@ func TestComposeDaemonHasDockerGroupAdd(t *testing.T) {
 	t.Errorf(`daemon service group_add = %v, want an entry referencing ${DOCKER_GID:-...}`, daemon.GroupAdd)
 }
 
-// TestComposeDaemonDataAndConfigVolumesSourceEqualsTarget pins Major 10
-// (PR6 codex review): BOID_DATA_DIR/BOID_CONFIG_DIR must bind mount
-// source == target, not remap onto some container-internal path — see
-// compose.yml's own "Persistence" header comment for why (a DooD sibling
-// container's mount Source must be a path the HOST filesystem actually
-// has; a daemon-internal remap silently breaks the moment this daemon
-// constructs a mount from an absolute path it computed itself).
-func TestComposeDaemonDataAndConfigVolumesSourceEqualsTarget(t *testing.T) {
+// TestComposeDaemonHasSingleStateVolume pins docs/plans/
+// volume-only-daemon.md §論点 d / §目的's "named volume に 1 本化" invariant
+// (fix for [Major 6, PR829 round 1 codex review]: the original PR-1a
+// implementation split state across TWO volumes — boid_data and
+// boid_config — which lets an operator following the plan doc's own
+// backup contract (§論点 g: "boid workspace export --all が唯一の正式 backup
+// 経路", read alongside the volume itself as a disposable cache) back up
+// or restore one and silently miss the other). A single volume mounted at
+// /home/boid (the image's own $HOME, build/container/Dockerfile's
+// `useradd --home-dir /home/boid`) covers both
+// XDG_DATA_HOME=/home/boid/.local/share and
+// XDG_CONFIG_HOME=/home/boid/.config as ordinary subdirectories — no
+// separate mount needed for each.
+func TestComposeDaemonHasSingleStateVolume(t *testing.T) {
 	doc := loadComposeDoc(t)
 
 	daemon, ok := doc.Services["daemon"]
@@ -149,27 +160,55 @@ func TestComposeDaemonDataAndConfigVolumesSourceEqualsTarget(t *testing.T) {
 		t.Fatal(`compose.yml has no "daemon" service`)
 	}
 
-	for _, want := range []string{"${BOID_DATA_DIR}", "${BOID_CONFIG_DIR}"} {
-		wantEntry := want + ":" + want
-		found := false
-		for _, v := range daemon.Volumes {
-			if v == wantEntry {
-				found = true
-				break
-			}
+	want := "boid_state:/home/boid"
+	found := false
+	for _, v := range daemon.Volumes {
+		if v == want {
+			found = true
+			break
 		}
-		if !found {
-			t.Errorf("daemon volumes = %v, want %q present (source == target)", daemon.Volumes, wantEntry)
+	}
+	if !found {
+		t.Errorf("daemon volumes = %v, want %q present", daemon.Volumes, want)
+	}
+
+	// Neither the retracted host-bind-mount env vars nor the retracted
+	// two-volume split may still appear as a mount source — a regression
+	// back to either shape would defeat the point of this fix.
+	for _, v := range daemon.Volumes {
+		if strings.Contains(v, "BOID_DATA_DIR") || strings.Contains(v, "BOID_CONFIG_DIR") {
+			t.Errorf("daemon volumes = %v, contains a retracted BOID_DATA_DIR/BOID_CONFIG_DIR host-path mount", daemon.Volumes)
+		}
+		if strings.HasPrefix(v, "boid_data:") || strings.HasPrefix(v, "boid_config:") {
+			t.Errorf("daemon volumes = %v, contains a retracted split boid_data/boid_config mount (want single boid_state)", daemon.Volumes)
 		}
 	}
 }
 
-// TestComposeDaemonHasXDGEnv pins the other half of Major 10: cmd/
+// TestComposeDeclaresSingleStateVolume pins that boid_state is actually
+// declared in the top-level `volumes:` block (a compose service
+// referencing an undeclared named volume is a config-time error under
+// real docker/podman compose, not just a dangling reference this
+// package's own narrow YAML model would silently accept), and that the
+// retracted boid_data/boid_config pair is gone from that block too.
+func TestComposeDeclaresSingleStateVolume(t *testing.T) {
+	doc := loadComposeDoc(t)
+
+	if _, ok := doc.TopVolumes["boid_state"]; !ok {
+		t.Errorf("top-level volumes: = %v, want %q declared", doc.TopVolumes, "boid_state")
+	}
+	for _, retracted := range []string{"boid_data", "boid_config"} {
+		if _, ok := doc.TopVolumes[retracted]; ok {
+			t.Errorf("top-level volumes: = %v, still declares retracted %q (want consolidated into boid_state)", doc.TopVolumes, retracted)
+		}
+	}
+}
+
+// TestComposeDaemonHasXDGEnv pins the other half of §論点 d: cmd/
 // start.go's default*Dir/*Path helpers and Go's os.UserConfigDir() must
-// resolve to the exact bind-mounted BOID_DATA_DIR/BOID_CONFIG_DIR
-// (source == target above) rather than the image's own baked-in $HOME —
-// achieved by passing XDG_DATA_HOME/XDG_CONFIG_HOME into the container
-// explicitly.
+// resolve to exactly where the boid_data/boid_config named volumes are
+// mounted — fixed literals now (no longer host-path-derived, unlike the
+// retracted Major 10 design).
 func TestComposeDaemonHasXDGEnv(t *testing.T) {
 	doc := loadComposeDoc(t)
 
@@ -177,11 +216,43 @@ func TestComposeDaemonHasXDGEnv(t *testing.T) {
 	if !ok {
 		t.Fatal(`compose.yml has no "daemon" service`)
 	}
-	for _, key := range []string{"XDG_DATA_HOME", "XDG_CONFIG_HOME"} {
-		if _, ok := daemon.Environment[key]; !ok {
+	want := map[string]string{
+		"XDG_DATA_HOME":   "/home/boid/.local/share",
+		"XDG_CONFIG_HOME": "/home/boid/.config",
+	}
+	for key, wantVal := range want {
+		got, ok := daemon.Environment[key]
+		if !ok {
 			t.Errorf("daemon environment = %v, want %q present", daemon.Environment, key)
+			continue
+		}
+		if got != wantVal {
+			t.Errorf("daemon environment[%q] = %q, want %q", key, got, wantVal)
 		}
 	}
+}
+
+// TestComposeDaemonEngineSocketIsParameterized pins docs/plans/
+// volume-only-daemon.md §論点 i (案 X): the DooD engine-socket bind's
+// SOURCE must be overridable via BOID_DOCKER_SOCK_SRC (podman rootless's
+// socket lives at a different path than docker's fixed
+// /var/run/docker.sock), while the container-side TARGET stays the fixed
+// /var/run/docker.sock every DOCKER_HOST-consuming Go code path already
+// expects — no Go-side change needed for engine portability.
+func TestComposeDaemonEngineSocketIsParameterized(t *testing.T) {
+	doc := loadComposeDoc(t)
+
+	daemon, ok := doc.Services["daemon"]
+	if !ok {
+		t.Fatal(`compose.yml has no "daemon" service`)
+	}
+	want := "${BOID_DOCKER_SOCK_SRC:-/var/run/docker.sock}:/var/run/docker.sock"
+	for _, v := range daemon.Volumes {
+		if v == want {
+			return
+		}
+	}
+	t.Errorf("daemon volumes = %v, want %q present", daemon.Volumes, want)
 }
 
 // TestComposeDaemonHasXDGRuntimeDirEnv pins the PR9 fix for a real gap the

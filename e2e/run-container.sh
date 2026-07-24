@@ -3,6 +3,38 @@ set -euo pipefail
 
 # e2e/run-container.sh
 #
+# ############################################################################
+# # DEPRECATION NOTICE (docs/plans/volume-only-daemon.md §論点 h migration
+# # path, [Major 7, PR829 round 1 codex review]) — read before touching this
+# # file.
+# #
+# # This script is EXPECTED TO FAIL against the current compose.yml
+# # (build/container/compose.yml, PR-1a) because it still assumes daemon
+# # state is a HOST BIND MOUNT — an assumption the volume-only pivot
+# # retired (§決定4 retracted; daemon state is now the single `boid_state`
+# # NAMED VOLUME). CI's e2e-container job (.github/workflows/
+# # blackbox-e2e.yml) has `continue-on-error: true` on this basis — do not
+# # flip it back to false until this script is rewritten.
+# #
+# # Currently-expected failures, both stemming from the same root cause
+# # (this script reads/writes paths under $XDG_DATA_HOME expecting them to
+# # be the host's own view of the daemon's data dir, which is no longer
+# # true — a named volume has no host-visible path at all):
+# #   1. `INSTALL_ID="$(cat "$XDG_DATA_HOME/boid/install_id" ...)"` (below)
+# #      reads install_id from the HOST filesystem; the daemon now writes
+# #      it inside boid_state, invisible to the host.
+# #   2. `boid project add <dir>` (the WS_ROOT/PROJ_A/PROJ_B/PROJ_C fixture
+# #      setup below) registers projects by a host-visible directory path
+# #      the containerized daemon must also be able to see — also no
+# #      longer bind-mounted, so registration fails to find the directory.
+# #
+# # The follow-up PR-2 (docs/plans/volume-only-daemon.md §論点 e "PR 分割案
+# # B" — `boid project add <git-url>` bare-clone registration) is expected
+# # to rewrite this script's project-registration and install_id-discovery
+# # halves for the new model. Until PR-2 lands, treat any failure here as
+# # expected, not a regression to chase.
+# ############################################################################
+#
 # Container backend e2e driver (docs/plans/phase6-container-backend.md
 # §PR9's "e2e-container job"). Unlike e2e/run.sh (which spins up a fresh
 # `boid start` daemon directly on the runner for every scenario), this

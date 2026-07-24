@@ -9,6 +9,7 @@ INTERNAL_DIR="$ROOT_DIR/internal"
 current_allowed=(
   adapters
   api
+  atomicfile
   client
   config
   daemon
@@ -35,6 +36,7 @@ current_allowed=(
 target_allowed=(
   adapters
   api
+  atomicfile
   client
   config
   daemon

@@ -149,6 +149,18 @@ RUN mkdir -p /run/boid/bin \
 # on its own — e.g. for exactly this kind of standalone image smoke test.
 RUN mkdir -p /workspace && chown "${BOID_UID}:${BOID_GID}" /workspace
 
+# /home/boid/.local/share/boid, /home/boid/.config/boid: pre-create the
+# daemon's XDG data/config directories with boid ownership before the compose
+# stack mounts named volumes over them (docs/plans/volume-only-daemon.md
+# §論点 d). Docker's named-volume "copy from image on first mount to an empty
+# volume" behavior includes ownership, so pre-chowning these dirs at build
+# time is what makes the daemon (running as BOID_UID) able to create
+# boid.db + WAL files, secret.key, web_secret, install_id, and tls/ inside
+# those volumes at first boot. Without this, the volumes mount as root:root
+# and the daemon crashes with SQLITE_CANTOPEN before it can log anything.
+RUN mkdir -p /home/boid/.local/share/boid /home/boid/.config/boid \
+    && chown -R "${BOID_UID}:${BOID_GID}" /home/boid/.local /home/boid/.config
+
 USER boid
 WORKDIR /workspace
 
