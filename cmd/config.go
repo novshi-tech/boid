@@ -264,42 +264,51 @@ func runConfigUnset(cmd *cobra.Command, args []string) error {
 }
 
 // runConfigApply implements `boid config apply -f`: fetches the daemon's
-// current revision FIRST, then validates the file locally, then POSTs it
-// gated by that revision as If-Match unless --force is passed.
+// current revision FIRST — before anything else, including reading the
+// local file — then reads and validates the file, then POSTs it gated by
+// that revision as If-Match unless --force is passed.
 //
-// MAJOR (codex review round 2): the pre-fix order was read → validate → GET
-// → POST — i.e. the GET ran AFTER local validation, not right before the
-// POST it protects. That left a real (if narrow) lost-update window: if a
-// concurrent `config set`/`apply` landed between the local validate call and
-// this GET, the GET would observe THAT write's already-bumped revision, and
-// the POST below — built from `data`, which predates the concurrent write —
-// would match that revision and be accepted, silently discarding it. Moving
-// the GET ahead of validate cannot eliminate the window entirely (`data` was
-// always read from a file prepared independently of any live snapshot — see
-// os.ReadFile above, which necessarily still runs first), but it shrinks the
-// window to [GET, validate, POST] instead of [read, validate, GET, POST],
-// and — this is the part that actually matters — ANY write that still lands
-// inside what remains of the window is caught: it is the daemon's own
-// If-Match check (internal/server/config_edit.go's ApplyConfigYAML), not
-// this ordering, that turns "the revision moved between my GET and my POST"
-// into a rejected 412 (postConfigApply's isConfigConflictStatus), never a
-// silent overwrite. See TestPostConfigApply_ConcurrentApplies_SharedIfMatch_ExactlyOneSucceeds
-// for the server-side guarantee this ordering now relies on end to end.
+// MAJOR (codex review round 3 — the round-2 fix was INCOMPLETE): the
+// round-2 comment above this function claimed the order had become
+// [GET, validate, POST] ("moving the GET ahead of validate"), but the code
+// itself never actually moved the GET ahead of the READ — it only moved it
+// ahead of *validate*, leaving the true order as
+// [os.ReadFile, GET, validate, POST]. That still left the exact lost-update
+// window round 2 was supposed to close: a concurrent `config set`/`apply`
+// landing after os.ReadFile captured `data` but before the GET below would
+// bump the daemon's revision; the GET would observe that NEWER revision;
+// the POST — built from `data`, which predates the concurrent write —
+// would carry that newer revision as If-Match, match it, and be accepted,
+// silently discarding the concurrent write. Reading the file BEFORE the GET
+// is precisely what let a stale `data` pair with a fresh `ifMatch` and sail
+// through the daemon's own If-Match check undetected.
+//
+// The fix: the GET now runs FIRST, before os.ReadFile touches the local
+// file at all. `data` read after that GET can only be as stale as the tiny
+// [GET, ReadFile] gap — and even a write landing in exactly that
+// microscopic window is still caught: it is the daemon's own If-Match check
+// (internal/server/config_edit.go's ApplyConfigYAML), not the ordering
+// alone, that turns "the revision moved between my GET and my POST" into a
+// rejected 412 (postConfigApply's isConfigConflictStatus), never a silent
+// overwrite. What ordering alone buys is closing the much larger window a
+// human hand-editing configApplyFile before ever invoking this command
+// would otherwise leave open (read → [edit takes minutes] → GET → POST),
+// which is precisely the scenario `apply -f`/`edit` exist to protect
+// against. See
+// TestRunConfigApply_EndToEnd_ConcurrentSet_GETPrecedesReadFile_NoSilentLoss
+// for the regression test that exercises this exact ordering through the
+// real cobra command, not just postConfigApply in isolation.
 //
 // A malformed/invalid file is still rejected client-side before any POST is
 // attempted (mirrors `boid workspace edit`'s MINOR 1 precedent,
-// cmd/workspace.go's runWorkspaceEdit) — it no longer skips the daemon
-// entirely the way it did pre-fix, since the GET above now always runs
-// first for the non-force path (see
-// TestRunConfigApply_InvalidFile_ValidationErrorReported), but the POST
-// itself is still never attempted for a file that can't validate.
+// cmd/workspace.go's runWorkspaceEdit) — see
+// TestRunConfigApply_InvalidFile_ValidationErrorReported. Validation runs
+// after both the GET and the read (there is nothing to validate before the
+// file exists in memory), but it can never turn a stale write INTO an
+// accepted one — it only ever rejects, never approves, a POST.
 func runConfigApply(cmd *cobra.Command, args []string) error {
 	if configApplyFile == "" {
 		return fmt.Errorf("-f/--file is required")
-	}
-	data, err := os.ReadFile(configApplyFile)
-	if err != nil {
-		return fmt.Errorf("read %s: %w", configApplyFile, err)
 	}
 
 	c := client.FromContext(cmd.Context())
@@ -313,12 +322,34 @@ func runConfigApply(cmd *cobra.Command, args []string) error {
 		ifMatch = rev
 	}
 
+	// configApplyTestSyncAfterGET is nil (a no-op) in production. It exists
+	// solely so TestRunConfigApply_EndToEnd_ConcurrentSet_GETPrecedesReadFile_NoSilentLoss
+	// can deterministically land a concurrent `config set` in the exact
+	// [GET, ReadFile] window this ordering fix narrows the race to — a
+	// real, unforced goroutine race would land in that window at random
+	// and could not reliably re-catch a regression back to the round-2
+	// ordering bug (codex review round 3).
+	if configApplyTestSyncAfterGET != nil {
+		configApplyTestSyncAfterGET()
+	}
+
+	data, err := os.ReadFile(configApplyFile)
+	if err != nil {
+		return fmt.Errorf("read %s: %w", configApplyFile, err)
+	}
+
 	if _, err := config.ValidateYAML(data); err != nil {
 		return fmt.Errorf("validate %s: %w", configApplyFile, err)
 	}
 
 	return postConfigApply(cmd, c, data, ifMatch, configApplyForce, configApplyFile)
 }
+
+// configApplyTestSyncAfterGET, when set by a test, is called synchronously
+// immediately after runConfigApply's GET (and before it reads
+// configApplyFile off disk) — see runConfigApply's own doc comment. Always
+// nil outside of tests.
+var configApplyTestSyncAfterGET func()
 
 // postConfigApply POSTs data to /api/config with the given If-Match/force
 // and reports the result — the actual HTTP call + status-code branching

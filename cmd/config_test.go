@@ -400,6 +400,88 @@ func TestRunConfigApply_ConcurrentApplies_ExactlyOneSucceeds(t *testing.T) {
 	}
 }
 
+// TestRunConfigApply_EndToEnd_ConcurrentSet_GETPrecedesReadFile_NoSilentLoss
+// is the BLOCKER regression test (codex review round 3): the round-2 fix's
+// own doc comment claimed runConfigApply's order had become
+// [GET, validate, POST], but the CODE still read the file before the GET —
+// true order [ReadFile, GET, validate, POST]. That left the exact lost-
+// update window codex round 3 found: a concurrent `config set` landing
+// after ReadFile but before GET would bump the daemon's revision; the GET
+// would observe that bumped revision; the POST — built from data that
+// predates the set — would carry that revision as If-Match, match it, and
+// be accepted, silently discarding the set.
+//
+// TestRunConfigApply_ConcurrentApplies_ExactlyOneSucceeds (above) cannot
+// catch this: it calls postConfigApply directly with a revision fetched
+// once up front, never exercising runConfigApply's own GET-vs-ReadFile
+// ordering at all — this is the "regression concern" codex round 3 flagged
+// about that test.
+//
+// This test drives the real runConfigApply cobra entry point and uses
+// configApplyTestSyncAfterGET to deterministically land a concurrent `boid
+// config set` in the window immediately after runConfigApply's GET — which
+// the fix places BEFORE the file read. Post-fix, that means: the set always
+// completes (and bumps the revision) before runConfigApply reads the file,
+// so the file it reads and posts is never stale relative to a write it
+// already observed, but its POST's If-Match (captured from the GET,
+// before the set ran) is now stale relative to the set — the daemon's own
+// If-Match check must reject it with a conflict, and the set's effect must
+// survive on disk. A silent loss (apply reporting success while the set's
+// change vanished) is exactly the round-2 regression this test exists to
+// catch.
+func TestRunConfigApply_EndToEnd_ConcurrentSet_GETPrecedesReadFile_NoSilentLoss(t *testing.T) {
+	ts := testutil.NewTestServer(t)
+	t.Setenv("BOID_SOCKET", ts.Server.SocketPath())
+
+	dir := t.TempDir()
+	f := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(f, []byte("web:\n  public_url: https://apply-race.example.com\n"), 0o644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+	configApplyFile = f
+	defer func() { configApplyFile = "" }()
+
+	setResult := make(chan error, 1)
+	configApplyTestSyncAfterGET = func() {
+		setCmd := &cobra.Command{}
+		setCmd.SetOut(&bytes.Buffer{})
+		setResult <- runConfigSet(setCmd, []string{"gc.enabled", "false"})
+	}
+	defer func() { configApplyTestSyncAfterGET = nil }()
+
+	applyCmd := configApplyCmd
+	var applyOut bytes.Buffer
+	applyCmd.SetOut(&applyOut)
+	applyErr := runConfigApply(applyCmd, nil)
+
+	if err := <-setResult; err != nil {
+		t.Fatalf("concurrent runConfigSet: %v", err)
+	}
+
+	// The set landed strictly between apply's GET and its file read, so
+	// apply's If-Match is now stale relative to the daemon's current
+	// revision — the daemon MUST reject the apply, never silently accept
+	// it and discard the set.
+	if applyErr == nil {
+		t.Fatalf("expected runConfigApply to be rejected with a conflict (the concurrent set moved the revision), got success: %s", applyOut.String())
+	}
+	if !strings.Contains(applyErr.Error(), "changed since") {
+		t.Errorf("expected a conflict error naming the revision change, got: %v", applyErr)
+	}
+
+	data, _, err := ts.Server.ConfigYAML()
+	if err != nil {
+		t.Fatalf("ConfigYAML: %v", err)
+	}
+	content := string(data)
+	if !strings.Contains(content, "enabled: false") {
+		t.Errorf("the concurrent set's change was lost — daemon config.yaml:\n%s", content)
+	}
+	if strings.Contains(content, "apply-race.example.com") {
+		t.Errorf("the rejected apply's content was persisted despite the conflict — daemon config.yaml:\n%s", content)
+	}
+}
+
 func TestRunConfigApply_MissingFileFlag(t *testing.T) {
 	configApplyFile = ""
 	applyCmd := configApplyCmd
