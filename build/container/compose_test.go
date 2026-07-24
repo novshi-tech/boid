@@ -139,13 +139,20 @@ func TestComposeDaemonHasDockerGroupAdd(t *testing.T) {
 	t.Errorf(`daemon service group_add = %v, want an entry referencing ${DOCKER_GID:-...}`, daemon.GroupAdd)
 }
 
-// TestComposeDaemonDataAndConfigAreNamedVolumes pins docs/plans/
-// volume-only-daemon.md §論点 d (supersedes/retracts the old Major 10
-// source==target host-bind-mount pin this test used to be): BOID_DATA_DIR
-// and BOID_CONFIG_DIR are no longer host bind mounts at all — they are
-// daemon-owned named volumes (`boid_data`/`boid_config`) mounted at the
-// image's fixed, baked-in container paths.
-func TestComposeDaemonDataAndConfigAreNamedVolumes(t *testing.T) {
+// TestComposeDaemonHasSingleStateVolume pins docs/plans/
+// volume-only-daemon.md §論点 d / §目的's "named volume に 1 本化" invariant
+// (fix for [Major 6, PR829 round 1 codex review]: the original PR-1a
+// implementation split state across TWO volumes — boid_data and
+// boid_config — which lets an operator following the plan doc's own
+// backup contract (§論点 g: "boid workspace export --all が唯一の正式 backup
+// 経路", read alongside the volume itself as a disposable cache) back up
+// or restore one and silently miss the other). A single volume mounted at
+// /home/boid (the image's own $HOME, build/container/Dockerfile's
+// `useradd --home-dir /home/boid`) covers both
+// XDG_DATA_HOME=/home/boid/.local/share and
+// XDG_CONFIG_HOME=/home/boid/.config as ordinary subdirectories — no
+// separate mount needed for each.
+func TestComposeDaemonHasSingleStateVolume(t *testing.T) {
 	doc := loadComposeDoc(t)
 
 	daemon, ok := doc.Services["daemon"]
@@ -153,43 +160,46 @@ func TestComposeDaemonDataAndConfigAreNamedVolumes(t *testing.T) {
 		t.Fatal(`compose.yml has no "daemon" service`)
 	}
 
-	for _, want := range []string{
-		"boid_data:/home/boid/.local/share/boid",
-		"boid_config:/home/boid/.config/boid",
-	} {
-		found := false
-		for _, v := range daemon.Volumes {
-			if v == want {
-				found = true
-				break
-			}
-		}
-		if !found {
-			t.Errorf("daemon volumes = %v, want %q present", daemon.Volumes, want)
+	want := "boid_state:/home/boid"
+	found := false
+	for _, v := range daemon.Volumes {
+		if v == want {
+			found = true
+			break
 		}
 	}
+	if !found {
+		t.Errorf("daemon volumes = %v, want %q present", daemon.Volumes, want)
+	}
 
-	// Neither retracted host-bind-mount env var may still appear as a
-	// mount source — a regression back to Major 10's source==target host
-	// path form would defeat the whole point of this PR.
+	// Neither the retracted host-bind-mount env vars nor the retracted
+	// two-volume split may still appear as a mount source — a regression
+	// back to either shape would defeat the point of this fix.
 	for _, v := range daemon.Volumes {
 		if strings.Contains(v, "BOID_DATA_DIR") || strings.Contains(v, "BOID_CONFIG_DIR") {
 			t.Errorf("daemon volumes = %v, contains a retracted BOID_DATA_DIR/BOID_CONFIG_DIR host-path mount", daemon.Volumes)
 		}
+		if strings.HasPrefix(v, "boid_data:") || strings.HasPrefix(v, "boid_config:") {
+			t.Errorf("daemon volumes = %v, contains a retracted split boid_data/boid_config mount (want single boid_state)", daemon.Volumes)
+		}
 	}
 }
 
-// TestComposeDeclaresNamedDataConfigVolumes pins that boid_data/boid_config
-// are actually declared in the top-level `volumes:` block — a compose
-// service referencing an undeclared named volume is a config-time error
-// under real docker/podman compose, not just a dangling reference this
-// package's own narrow YAML model would silently accept.
-func TestComposeDeclaresNamedDataConfigVolumes(t *testing.T) {
+// TestComposeDeclaresSingleStateVolume pins that boid_state is actually
+// declared in the top-level `volumes:` block (a compose service
+// referencing an undeclared named volume is a config-time error under
+// real docker/podman compose, not just a dangling reference this
+// package's own narrow YAML model would silently accept), and that the
+// retracted boid_data/boid_config pair is gone from that block too.
+func TestComposeDeclaresSingleStateVolume(t *testing.T) {
 	doc := loadComposeDoc(t)
 
-	for _, name := range []string{"boid_data", "boid_config"} {
-		if _, ok := doc.TopVolumes[name]; !ok {
-			t.Errorf("top-level volumes: = %v, want %q declared", doc.TopVolumes, name)
+	if _, ok := doc.TopVolumes["boid_state"]; !ok {
+		t.Errorf("top-level volumes: = %v, want %q declared", doc.TopVolumes, "boid_state")
+	}
+	for _, retracted := range []string{"boid_data", "boid_config"} {
+		if _, ok := doc.TopVolumes[retracted]; ok {
+			t.Errorf("top-level volumes: = %v, still declares retracted %q (want consolidated into boid_state)", doc.TopVolumes, retracted)
 		}
 	}
 }

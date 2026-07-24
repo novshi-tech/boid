@@ -14,9 +14,11 @@
 # docs/plans/volume-only-daemon.md (§論点 d secret lifecycle, §論点 i engine
 # socket) for the full incident writeup and the redesign this file now
 # implements: daemon state (BOID_DATA_DIR / BOID_CONFIG_DIR) moved from
-# host BIND mounts to daemon-owned NAMED VOLUMES (`boid_data`/
-# `boid_config` below) — §決定4 ("host BIND mounts で shared state", and
-# the host-daemon-rollback contract that depended on it) is retracted.
+# host BIND mounts to a single daemon-owned NAMED VOLUME (`boid_state`
+# below — consolidated from an earlier boid_data/boid_config split per
+# [Major 6, PR829 round 1 codex review] and §論点 d/§目的's "named volume に
+# 1 本化" invariant) — §決定4 ("host BIND mounts で shared state", and the
+# host-daemon-rollback contract that depended on it) is retracted.
 # Secret material (secret.key / web_secret / the internal mTLS CA) is
 # generated on first boot into the now-empty volume instead of expected to
 # pre-exist on the host (see internal/atomicfile, internal/dispatcher.
@@ -53,19 +55,25 @@
 #     has no path to the internet except back through this daemon's proxy.
 #
 # Persistence (docs/plans/volume-only-daemon.md §論点 d — supersedes §決定4
-# above): BOID_DATA_DIR and BOID_CONFIG_DIR are now daemon-owned NAMED
-# VOLUMES (`boid_data` / `boid_config`, declared at the bottom of this
-# file), mounted at the image's own baked-in, fixed container paths —
-# /home/boid/.local/share/boid and /home/boid/.config/boid (the `boid`
-# user's $HOME, per build/container/Dockerfile's `useradd --home-dir
-# /home/boid`) — not a host path at all. This is the direct fix for two of
-# the three dogfood-incident walls this file's top comment describes: a
-# named volume is container-filesystem-native, so there is no host subuid
-# mapping to collide with (wall 2), and the daemon's own container-internal
-# filesystem view of its data dir no longer diverges from what the host can
-# see (wall 3 — moot now, since nothing here expects the host to see this
-# directory at all; the auto-prune codepath that malfunctioned on that
-# mismatch is being removed as its own invariant, docs/plans/
+# above): BOID_DATA_DIR and BOID_CONFIG_DIR are now a single daemon-owned
+# NAMED VOLUME (`boid_state`, declared at the bottom of this file), mounted
+# at /home/boid — the `boid` user's own $HOME, per build/container/
+# Dockerfile's `useradd --home-dir /home/boid` — not a host path at all.
+# XDG_DATA_HOME/XDG_CONFIG_HOME (this service's own `environment:` block
+# below) point at /home/boid/.local/share and /home/boid/.config, ordinary
+# subdirectories the single volume covers without a separate mount for
+# each ([Major 6, PR829 round 1 codex review] — an earlier revision of this
+# file mounted boid_data/boid_config as two independent volumes at those
+# two subdirectories directly, contradicting §論点 d/§目的's "named volume
+# に 1 本化" invariant and this file's own now-updated single-volume
+# comments below). This is the direct fix for two of the three
+# dogfood-incident walls this file's top comment describes: a named volume
+# is container-filesystem-native, so there is no host subuid mapping to
+# collide with (wall 2), and the daemon's own container-internal
+# filesystem view of its data dir no longer diverges from what the host
+# can see (wall 3 — moot now, since nothing here expects the host to see
+# this directory at all; the auto-prune codepath that malfunctioned on
+# that mismatch is being removed as its own invariant, docs/plans/
 # volume-only-daemon.md §論点 a, not a compose-level concern).
 #
 # Because the container paths are fixed (not derived from a host path the
@@ -233,10 +241,11 @@ services:
       # fixed literals, not interpolated from the launching shell. Make
       # cmd/start.go's default*Dir/*Path helpers (data side) and
       # internal/config.Load (config side, Go's os.UserConfigDir())
-      # resolve to /home/boid/.local/share and /home/boid/.config — the
-      # exact parents of where the `boid_data`/`boid_config` NAMED VOLUMES
-      # below are mounted (both end in a literal `/boid` segment those
-      # helpers append themselves). This is also, not coincidentally, the
+      # resolve to /home/boid/.local/share and /home/boid/.config — both
+      # ordinary subdirectories of where the single `boid_state` NAMED
+      # VOLUME below is mounted (/home/boid; both env vars end in a literal
+      # `/boid` segment the helpers append themselves). This is also, not
+      # coincidentally, the
       # image's own baked-in $HOME (build/container/Dockerfile's `useradd
       # --home-dir /home/boid`) — unlike the retracted host-bind-mount
       # design, there is no host XDG layout these need to track anymore,
@@ -350,15 +359,25 @@ services:
       # regardless of engine, so no Go-side (DOCKER_HOST-consuming) code
       # needed to change.
       - ${BOID_DOCKER_SOCK_SRC:-/var/run/docker.sock}:/var/run/docker.sock
-      # boid_data / boid_config: daemon-owned NAMED VOLUMES (docs/plans/
-      # volume-only-daemon.md §論点 d — see this file's own "Persistence"
-      # header comment above for the full rationale/incident writeup),
-      # replacing the retracted §決定4 host bind mounts. Declared at the
-      # bottom of this file. Mounted at the image's fixed, baked-in paths —
-      # matches the XDG_DATA_HOME/XDG_CONFIG_HOME literals in this
-      # service's own `environment:` block above.
-      - boid_data:/home/boid/.local/share/boid
-      - boid_config:/home/boid/.config/boid
+      # boid_state: the daemon's single, ONE-VOLUME-consolidated persistent
+      # state (docs/plans/volume-only-daemon.md §論点 d / §目的's "named
+      # volume に 1 本化" — see this file's own "Persistence" header comment
+      # above for the full rationale/incident writeup; fix for [Major 6,
+      # PR829 round 1 codex review]: an earlier revision of this file split
+      # state across boid_data/boid_config, two independently
+      # backup-/prune-able volumes, contradicting the plan doc's repeated
+      # single-volume language and its §論点 g backup contract — "boid
+      # workspace export --all が唯一の正式 backup 経路" only covers
+      # workspace/project definitions, so an operator relying on volume
+      # snapshotting for the rest necessarily snapshots ONE volume, not a
+      # pair they could accidentally desync). Mounted at /home/boid — the
+      # image's own baked-in $HOME (build/container/Dockerfile's `useradd
+      # --home-dir /home/boid`) — which covers both
+      # XDG_DATA_HOME=/home/boid/.local/share and
+      # XDG_CONFIG_HOME=/home/boid/.config (this service's own
+      # `environment:` block above) as ordinary subdirectories; no separate
+      # mount is needed for each. Declared at the bottom of this file.
+      - boid_state:/home/boid
       # BOID_RUNTIME_DIR: still a host bind mount, source == target,
       # unchanged (see this file's own "Persistence" header comment for
       # why this one PR does not touch it).
@@ -430,10 +449,14 @@ networks:
     driver: bridge
 
 volumes:
-  # docs/plans/volume-only-daemon.md §論点 d. Plain named volumes (no
-  # driver_opts) — an operator-visible backup story is `boid workspace
-  # export --all` (§論点 g), not raw volume snapshotting, so there is no
-  # need for anything beyond the compose/docker-engine default local
-  # driver here.
-  boid_data:
-  boid_config:
+  # boid_state: the daemon's ENTIRE persistent state, consolidated into a
+  # single named volume (docs/plans/volume-only-daemon.md §論点 d / §目的,
+  # [Major 6, PR829 round 1 codex review] — see the `daemon` service's own
+  # `boid_state` mount comment above for why this was two volumes before
+  # and why that was wrong). Plain named volume (no driver_opts) — the
+  # operator-visible backup story for workspace/project DEFINITIONS is
+  # `boid workspace export --all` (§論点 g), not raw volume snapshotting;
+  # for everything else this volume holds (boid.db, secret material, the
+  # internal mTLS CA), a host operator who does want a backup takes one of
+  # THIS single volume, not a pair that could silently desync.
+  boid_state:
