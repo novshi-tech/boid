@@ -2,29 +2,35 @@
 #
 # scripts/deploy-container.sh
 #
-# Phase 6 PR6 skeleton (docs/plans/phase6-container-backend.md §PR6's
-# "deploy 機構 (イメージビルド → daemon 再起動) を整備" item). Builds the shared
+# Deploy script for the container-backend daemon stack
+# (docs/plans/phase6-container-backend.md §PR6 / §PR7). Builds the shared
 # base image (build/container/Dockerfile) and (re)starts the
 # build/container/compose.yml daemon stack against it.
 #
-# ############################################################################
-# # DO NOT RUN THIS AGAINST A REAL ~/.local/share/boid / ~/.config/boid YET. #
-# ############################################################################
-# docs/plans/phase6-container-backend.md §PR6 is explicit: "PR6 の compose
-# スタックを本番 deploy してはならない" — startup reap / Wait single-ownership /
-# a persistent transcript spool (all PR7) are not in place yet, so an
-# unattended restart of this stack over still-running sibling job containers
-# double-executes them and can lose log data (codex Major 11). This script
-# exists so the build+deploy MECHANISM is exercised and testable ahead of
-# that cutover — not to be run against production data before it lands.
+# The PR6-era "DO NOT RUN THIS AGAINST A REAL ~/.local/share/boid YET"
+# warning that previously lived here has been retired: PR7 (#823) landed the
+# three prerequisites the warning was gating on —
+#   1. startup reap of orphan sibling job containers
+#      (SweepOrphans + install_id-scoped ReapOrphans, wired through
+#      MarkStale*↔auto-reopen so reap-failed tasks are skipped for reopen)
+#   2. Wait single-ownership guarantee
+#      (wire fail-hard on global reap error to prevent double-execution)
+#   3. persistent transcript spool
+#      (container_backend transcript disk spool with sync-before-close and
+#      fail-hard on spool disk failures)
+# Plus §⓪ (broker TCP wire, #825) and §⓪-b (egress proxy dotless refuse,
+# #826) landed 2026-07-23, satisfying the §① dogfood entry conditions of
+# docs/plans/phase6-cutover-followups.md. This script is now the supported
+# deploy path for the dogfood period.
 #
-# host has no docker engine, only podman (CLAUDE.md / this plan doc's own
-# 前提 note as of 2026-07-22) — the `docker`-branch below is exactly what
-# CI (docs/plans/phase6-container-backend.md §PR9's e2e-container job, on a
+# host has no docker engine, only podman (CLAUDE.md as of 2026-07-24) — the
+# `docker`-branch below is exactly what CI
+# (docs/plans/phase6-container-backend.md §PR9's e2e-container job, on a
 # real-docker ubuntu-24.04 runner) exercises; the `podman`/`podman-compose`
 # fallback lets this script also do something useful on today's dev host,
 # but is not the plan's target engine (决定, 前提 note: "cutover 前に docker
-# engine を導入する").
+# engine を導入する"). During §① dogfood the podman-compose fallback is
+# what nose is actually running.
 
 set -euo pipefail
 
@@ -167,4 +173,5 @@ echo "deploy-container: stopping any existing compose stack (explicit down befor
 echo "deploy-container: starting the compose stack"
 "${COMPOSE_CMD[@]}" up -d
 
-echo "deploy-container: done. NOTE: this stack is a PR6 skeleton — see this script's header comment before pointing it at real data."
+echo "deploy-container: done. compose stack is up."
+echo "deploy-container: opt in per-host with 'sandbox: {backend: container}' in ~/.config/boid/config.yaml (default is 'userns' during the §① dogfood period)."
