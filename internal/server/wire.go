@@ -903,10 +903,10 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 	// already an exotic (effectively Linux-only-with-no-$HOME) situation.
 	srv.liveConfig = boidCfg
 	srv.notifySvc = notifySvc
-	// BLOCKER 1 (codex review round 1): revision 1 is the "nothing applied
-	// yet this process lifetime" baseline a fresh GET /api/config's ETag
-	// reports — see Server.configRevision's own doc comment.
-	srv.configRevision = 1
+	// No revision counter to seed here (BLOCKER, codex review round 2):
+	// GET /api/config's ETag is now derived from config.yaml's own bytes
+	// (internal/server/config_edit.go's computeRevision), computed fresh on
+	// every read — there is no in-process baseline to initialize.
 	if p, pathErr := config.DefaultPath(); pathErr == nil {
 		srv.configPath = p
 	} else {

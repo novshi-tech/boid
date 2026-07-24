@@ -585,3 +585,195 @@ func TestConfigYAML_RevisionAdvancesOnEverySuccessfulApply(t *testing.T) {
 		t.Errorf("revision did not advance after a successful apply: rev1=%q rev2=%q", rev1, rev2)
 	}
 }
+
+// TestConfigYAML_RevisionIsContentDerived_SameContentSameRevision pins
+// BLOCKER (codex review round 2)'s core property: the revision is a pure
+// function of the document's bytes, so two independent reads of the SAME
+// content — even across two calls that never share any in-memory state
+// besides the file itself — produce the exact same revision. Two separate
+// ApplyConfigYAML(..., force) calls that happen to write byte-identical
+// content are used here as the "two independent reads" (rather than just
+// calling ConfigYAML twice in a row, which would trivially pass even under
+// the pre-fix counter design) to prove the value doesn't depend on how many
+// writes happened before it, only on what's currently on disk.
+func TestConfigYAML_RevisionIsContentDerived_SameContentSameRevision(t *testing.T) {
+	srv, _ := newConfigTestServer(t)
+	doc := []byte("web:\n  public_url: https://stable.example.com\n")
+
+	if _, err := srv.ApplyConfigYAML(doc, "", true); err != nil {
+		t.Fatalf("ApplyConfigYAML (first): %v", err)
+	}
+	_, rev1, err := srv.ConfigYAML()
+	if err != nil {
+		t.Fatalf("ConfigYAML: %v", err)
+	}
+
+	// Apply something else, then apply the SAME doc bytes again — the
+	// revision must return to exactly rev1, not some new "third" value.
+	if _, err := srv.ApplyConfigYAML([]byte("web:\n  public_url: https://other.example.com\n"), "", true); err != nil {
+		t.Fatalf("ApplyConfigYAML (other): %v", err)
+	}
+	if _, err := srv.ApplyConfigYAML(doc, "", true); err != nil {
+		t.Fatalf("ApplyConfigYAML (second, same bytes as first): %v", err)
+	}
+	_, rev2, err := srv.ConfigYAML()
+	if err != nil {
+		t.Fatalf("ConfigYAML: %v", err)
+	}
+
+	if rev1 != rev2 {
+		t.Errorf("revision for byte-identical content differs: rev1=%q rev2=%q (revision must be a pure function of content)", rev1, rev2)
+	}
+}
+
+// TestConfigYAML_RevisionIsContentDerived_DifferentContentDifferentRevision
+// is the flip side: two genuinely different documents must never produce
+// the same revision.
+func TestConfigYAML_RevisionIsContentDerived_DifferentContentDifferentRevision(t *testing.T) {
+	srv, _ := newConfigTestServer(t)
+
+	if _, err := srv.ApplyConfigYAML([]byte("web:\n  public_url: https://a.example.com\n"), "", true); err != nil {
+		t.Fatalf("ApplyConfigYAML (a): %v", err)
+	}
+	_, revA, err := srv.ConfigYAML()
+	if err != nil {
+		t.Fatalf("ConfigYAML: %v", err)
+	}
+
+	if _, err := srv.ApplyConfigYAML([]byte("web:\n  public_url: https://b.example.com\n"), "", true); err != nil {
+		t.Fatalf("ApplyConfigYAML (b): %v", err)
+	}
+	_, revB, err := srv.ConfigYAML()
+	if err != nil {
+		t.Fatalf("ConfigYAML: %v", err)
+	}
+
+	if revA == revB {
+		t.Errorf("revision identical for different content: revA=%q revB=%q", revA, revB)
+	}
+}
+
+// TestConfigYAML_RevisionStableAcrossSimulatedRestart is the direct
+// regression test for BLOCKER (codex review round 2): a brand-new *Server
+// process (simulating a daemon restart) reading the exact same on-disk
+// config.yaml must report the exact same revision a pre-restart GET already
+// reported — never re-baseline to some fresh "1", which is exactly what let
+// editor A's stale If-Match alias writer B's already-applied change across
+// a restart pre-fix (see computeRevision's own doc comment for the full
+// failure scenario this closes).
+func TestConfigYAML_RevisionStableAcrossSimulatedRestart(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+
+	srv1, err := server.New(server.Config{
+		DBPath:     ":memory:",
+		SocketPath: filepath.Join(t.TempDir(), "boid1.sock"),
+		HTTPAddr:   "127.0.0.1:0",
+	})
+	if err != nil {
+		t.Fatalf("server.New (first process): %v", err)
+	}
+	t.Cleanup(func() { _ = srv1.DB().Close() })
+
+	if _, err := srv1.ApplyConfigYAML([]byte("web:\n  public_url: https://restart-test.example.com\n"), "", true); err != nil {
+		t.Fatalf("ApplyConfigYAML: %v", err)
+	}
+	_, revBeforeRestart, err := srv1.ConfigYAML()
+	if err != nil {
+		t.Fatalf("ConfigYAML (before restart): %v", err)
+	}
+
+	// Simulate a daemon restart: a brand-new *Server, same $XDG_CONFIG_HOME
+	// (so config.DefaultPath() resolves to the exact same config.yaml
+	// srv1 just wrote), no shared in-memory state with srv1 whatsoever.
+	srv2, err := server.New(server.Config{
+		DBPath:     ":memory:",
+		SocketPath: filepath.Join(t.TempDir(), "boid2.sock"),
+		HTTPAddr:   "127.0.0.1:0",
+	})
+	if err != nil {
+		t.Fatalf("server.New (second process, simulated restart): %v", err)
+	}
+	t.Cleanup(func() { _ = srv2.DB().Close() })
+
+	_, revAfterRestart, err := srv2.ConfigYAML()
+	if err != nil {
+		t.Fatalf("ConfigYAML (after restart): %v", err)
+	}
+
+	if revBeforeRestart != revAfterRestart {
+		t.Errorf("revision changed across a simulated restart for identical content: before=%q after=%q — a stale If-Match captured before the restart would wrongly alias the post-restart document", revBeforeRestart, revAfterRestart)
+	}
+}
+
+// TestApplyConfigYAML_ConcurrentApplies_SharedIfMatch_ExactlyOneSucceeds is
+// the direct regression test for regression concern 1 (codex review round
+// 2): the pre-existing TestApplyConfigYAML_ConcurrentApplies_NoTornFile only
+// exercises force=true, so optimistic concurrency itself (the actual
+// If-Match guard) was never tested under real concurrency, only
+// sequentially (TestApplyConfigYAML_IfMatch_MismatchRejected). Two
+// goroutines POST DIFFERENT content sharing the SAME starting If-Match,
+// with force=false: exactly one must succeed (200), and the loser must be
+// rejected with 412 Precondition Failed, never silently overwritten and
+// never both silently applied.
+func TestApplyConfigYAML_ConcurrentApplies_SharedIfMatch_ExactlyOneSucceeds(t *testing.T) {
+	srv, _ := newConfigTestServer(t)
+
+	_, rev, err := srv.ConfigYAML()
+	if err != nil {
+		t.Fatalf("ConfigYAML: %v", err)
+	}
+
+	docs := [][]byte{
+		[]byte("web:\n  public_url: https://race-a.example.com\n"),
+		[]byte("web:\n  public_url: https://race-b.example.com\n"),
+	}
+
+	var wg sync.WaitGroup
+	errs := make([]error, len(docs))
+	wg.Add(len(docs))
+	for i, doc := range docs {
+		i, doc := i, doc
+		go func() {
+			defer wg.Done()
+			_, errs[i] = srv.ApplyConfigYAML(doc, rev, false)
+		}()
+	}
+	wg.Wait()
+
+	successes := 0
+	var conflictErr error
+	for _, err := range errs {
+		if err == nil {
+			successes++
+		} else {
+			conflictErr = err
+		}
+	}
+	if successes != 1 {
+		t.Fatalf("successes = %d, want exactly 1 (a shared If-Match under concurrent applies must reject the loser, not apply both or neither)", successes)
+	}
+	if conflictErr == nil {
+		t.Fatal("expected the losing apply to return a conflict error")
+	}
+	serr, ok := conflictErr.(*api.StatusError)
+	if !ok {
+		t.Fatalf("loser error type = %T, want *api.StatusError: %v", conflictErr, conflictErr)
+	}
+	if serr.Code != http.StatusPreconditionFailed {
+		t.Errorf("loser status = %d, want %d (Precondition Failed)", serr.Code, http.StatusPreconditionFailed)
+	}
+
+	// Exactly one of the two documents must be persisted — never both,
+	// never neither.
+	data, _, err := srv.ConfigYAML()
+	if err != nil {
+		t.Fatalf("ConfigYAML: %v", err)
+	}
+	got := string(data)
+	hasA := strings.Contains(got, "race-a.example.com")
+	hasB := strings.Contains(got, "race-b.example.com")
+	if hasA == hasB {
+		t.Errorf("final config = %q, want exactly one of race-a/race-b, got both=%v", got, hasA && hasB)
+	}
+}

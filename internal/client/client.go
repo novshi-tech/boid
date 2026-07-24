@@ -847,13 +847,27 @@ func (c *Client) GetRawWithAccept(path, accept string) (statusCode int, body []b
 
 // GetRawWithAcceptAndRevision performs a GET request with a custom Accept
 // header, returning the raw response body/status alongside the response's
-// ETag header value, unquoted (BLOCKER 1, codex review round 1) — used by
-// `boid config get`/`apply -f`/`edit` (cmd/config.go) to capture the
-// daemon's current config.yaml revision for a later POST's If-Match.
-// config.yaml's GET response body is raw YAML, not JSON, so unlike `boid
-// workspace edit` (which reads api.WorkspaceDetail.Revision straight out
-// of a JSON body via Do), there is no JSON field to carry the revision —
-// the ETag response header is the only place it exists on the wire.
+// ETag header value VERBATIM, quotes included (Minor 2, codex review round
+// 1; fixed round 2 — see below) — used by `boid config get`/`apply -f`/
+// `edit` (cmd/config.go) to capture the daemon's current config.yaml
+// revision for a later POST's If-Match. config.yaml's GET response body is
+// raw YAML, not JSON, so unlike `boid workspace edit` (which reads
+// api.WorkspaceDetail.Revision straight out of a JSON body via Do), there is
+// no JSON field to carry the revision — the ETag response header is the
+// only place it exists on the wire.
+//
+// Pre-fix (round 1) this stripped the surrounding quotes here, so every
+// subsequent If-Match this value was round-tripped into
+// (PostRawWithIfMatch/PutRawWithIfMatch below, which just
+// req.Header.Set("If-Match", ifMatch) verbatim) sent a bare, unquoted token
+// — valid enough for this daemon's own unquoteETag-on-receipt tolerance
+// (internal/api/workspace.go), but not standard entity-tag syntax
+// (RFC 7232 §2.3: an entity-tag is always DQUOTE ... DQUOTE, optionally
+// W/-prefixed), which a strict intermediary on a remote deployment could
+// reject outright. Returning the header untouched and letting the server's
+// existing unquoteETag do the unwrapping keeps the wire format standard end
+// to end while changing nothing about how ifMatch is used client-side (it
+// stays an opaque string, never parsed here).
 func (c *Client) GetRawWithAcceptAndRevision(path, accept string) (statusCode int, body []byte, revision string, err error) {
 	req, err := http.NewRequest("GET", c.baseURL+path, nil)
 	if err != nil {
@@ -873,7 +887,7 @@ func (c *Client) GetRawWithAcceptAndRevision(path, accept string) (statusCode in
 	if err != nil {
 		return resp.StatusCode, nil, "", fmt.Errorf("read body: %w", err)
 	}
-	return resp.StatusCode, data, strings.Trim(resp.Header.Get("ETag"), `"`), nil
+	return resp.StatusCode, data, resp.Header.Get("ETag"), nil
 }
 
 // PostRaw performs a POST request with a custom Content-Type and raw body,

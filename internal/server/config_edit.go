@@ -1,6 +1,8 @@
 package server
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -49,7 +51,7 @@ func (s *Server) ConfigYAML() (data []byte, revision string, err error) {
 	if err != nil {
 		return nil, "", err
 	}
-	return data, s.revisionLocked(), nil
+	return data, computeRevision(data), nil
 }
 
 // readConfigLocked reads config.yaml off disk verbatim. Callers must
@@ -71,10 +73,48 @@ func (s *Server) readConfigLocked() ([]byte, error) {
 	return data, nil
 }
 
-// revisionLocked renders the current configRevision counter as the string
-// ETag/If-Match value. Callers must already hold configMu.
-func (s *Server) revisionLocked() string {
-	return strconv.FormatUint(s.configRevision, 10)
+// computeRevision derives a content-addressed ETag/If-Match revision from a
+// config.yaml document's raw bytes — BLOCKER (codex review round 2): the
+// pre-fix revision was an in-memory, process-lifetime counter
+// (Server.configRevision, now removed) that always reset to 1 on daemon
+// restart, regardless of what was actually on disk. That let a stale
+// If-Match alias a genuinely different (newer) document across a restart:
+// editor A's GET captured revision "1"; writer B's apply persisted a change
+// and bumped the counter to "2"; the daemon restarted and reset the counter
+// back to "1"; a fresh GET after the restart reported B's now-current
+// document as revision "1" again; A's later POST with If-Match: "1" matched
+// and silently discarded B's change. A revision derived purely from the
+// document's own bytes cannot alias this way — it depends only on what is
+// on disk, so it is:
+//   - stable across process restarts for byte-identical content (no
+//     restart-reset counter to disagree with the file),
+//   - different whenever content actually differs (any single-byte change
+//     flips the hash with overwhelming probability), and
+//   - never colliding by accident between two DIFFERENT documents (and a
+//     "collision" between two byte-identical documents is not a bug — there
+//     is nothing to lose by treating identical content as the same
+//     revision).
+//
+// sha256, truncated to its first 8 bytes (16 hex chars): far more collision
+// resistance than a handful-of-KB config.yaml, edited by a handful of
+// humans, could ever exercise — the full 32-byte digest would only make the
+// ETag header needlessly long for no practical benefit.
+func computeRevision(data []byte) string {
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:8])
+}
+
+// currentRevisionLocked re-reads config.yaml off disk and returns its
+// current content-derived revision — the same value a fresh GET /api/config
+// would report right now. Callers must already hold configMu. Deliberately
+// re-reads rather than trusting any cached value, so ApplyConfigYAML's
+// If-Match check always compares against the true current on-disk state.
+func (s *Server) currentRevisionLocked() (string, error) {
+	data, err := s.readConfigLocked()
+	if err != nil {
+		return "", err
+	}
+	return computeRevision(data), nil
 }
 
 // ApplyConfigYAML validates, persists, and (for hot-reloadable keys)
@@ -95,7 +135,8 @@ func (s *Server) revisionLocked() string {
 // concurrent POST /api/config calls are strictly serialized (docs/plans/
 // volume-only-daemon.md §論点 f's concurrency decision) — the second call's
 // revision check, validation, and diff always see the first call's
-// already-applied liveConfig/configRevision, never a half-applied
+// already-applied liveConfig and on-disk bytes (currentRevisionLocked
+// re-reads them fresh under this same lock), never a half-applied
 // intermediate state, and the on-disk config.yaml is always written by
 // WriteFileAtomic's temp+rename (never a byte-interleaved torn file).
 func (s *Server) ApplyConfigYAML(data []byte, ifMatch string, force bool) (api.ConfigApplyResult, error) {
@@ -109,10 +150,14 @@ func (s *Server) ApplyConfigYAML(data []byte, ifMatch string, force bool) (api.C
 				Message: "If-Match header is required (or pass --force / ?force=true)",
 			}
 		}
-		if ifMatch != s.revisionLocked() {
+		currentRev, err := s.currentRevisionLocked()
+		if err != nil {
+			return api.ConfigApplyResult{}, err
+		}
+		if ifMatch != currentRev {
 			return api.ConfigApplyResult{}, &api.StatusError{
 				Code:    http.StatusPreconditionFailed,
-				Message: fmt.Sprintf("revision mismatch: If-Match %q does not match the current revision %q", ifMatch, s.revisionLocked()),
+				Message: fmt.Sprintf("revision mismatch: If-Match %q does not match the current revision %q", ifMatch, currentRev),
 			}
 		}
 	}
@@ -121,7 +166,8 @@ func (s *Server) ApplyConfigYAML(data []byte, ifMatch string, force bool) (api.C
 }
 
 // applyConfigYAMLLocked runs the actual validate-write-swap-hot-apply
-// sequence, bumping configRevision on every successful write. Callers
+// sequence; the revision the next GET/If-Match check observes simply follows
+// from the new on-disk bytes (computeRevision), no counter to bump. Callers
 // (ApplyConfigYAML, MutateConfig) must already hold configMu — factored out
 // so MutateConfig's server-side read-modify-write can reuse this exact
 // logic after building its own replacement document, without any If-Match
@@ -145,7 +191,6 @@ func (s *Server) applyConfigYAMLLocked(data []byte) (api.ConfigApplyResult, erro
 
 	oldCfg := s.liveConfig
 	s.liveConfig = newCfg
-	s.configRevision++
 
 	warnings := s.applyDynamicConfigLocked(oldCfg, newCfg)
 	return api.ConfigApplyResult{Warnings: warnings}, nil
@@ -206,7 +251,7 @@ func (s *Server) MutateConfig(req api.ConfigMutateRequest) (api.ConfigMutateResu
 	return api.ConfigMutateResult{
 		ConfigApplyResult: result,
 		YAML:              newData,
-		Revision:          s.revisionLocked(),
+		Revision:          computeRevision(newData),
 	}, nil
 }
 
@@ -290,19 +335,31 @@ func (s *Server) applyDynamicConfigLocked(oldCfg, newCfg *config.Config) []strin
 	// kept its old interval/enabled state until the next restart). Iterating
 	// config.Schema directly means a future schema addition only needs an
 	// entry in restartFieldExtractors, not a new arm here.
-	// gateway.forges.* is skipped (restartFieldExtractors has no entry for
-	// its wildcard path; the per-leaf diff above already covers it with
-	// finer granularity than a single wildcard comparison could).
-	// gateway.hosts is skipped too: Config retains no Hosts field after
-	// UnmarshalYAML folds it into Forges, so any of its changes already
-	// surface through the Forges diff above.
+	//
+	// gateway.forges.*.{host,forge,secret_key} and gateway.hosts are the two
+	// documented exceptions (restartFieldExtractorExemptions below) — the
+	// per-leaf changedForgeLeaves diff above already covers both with finer
+	// granularity than this generic loop could. Regression concern (codex
+	// review round 2): the pre-fix version of THIS loop silently `continue`d
+	// past ANY ReloadRestartRequired schema leaf missing an extractor, not
+	// just those two documented ones — so a future schema addition with a
+	// Reload of ReloadRestartRequired but no matching restartFieldExtractors
+	// entry would resurrect MAJOR 2's exact bug for that one new key, with
+	// no signal at all that it had happened. Panicking on anything neither
+	// covered nor explicitly exempted makes that failure loud (and, via
+	// TestRestartFieldExtractors_ExhaustiveCoverage, catchable at `go test`
+	// time — long before it would ever reach this runtime path in
+	// production).
 	for _, spec := range config.Schema {
 		if spec.Reload != config.ReloadRestartRequired {
 			continue
 		}
 		extract, ok := restartFieldExtractors[spec.Path]
 		if !ok {
-			continue
+			if _, exempt := restartFieldExtractorExemptions[spec.Path]; exempt {
+				continue
+			}
+			panic(fmt.Sprintf("config: schema leaf %q is ReloadRestartRequired but registered in neither restartFieldExtractors nor restartFieldExtractorExemptions — add one or the other (internal/server/config_edit.go)", spec.Path))
 		}
 		if extract(oldCfgSafe) != extract(newCfg) {
 			warnings = append(warnings, restartWarning(spec.Path))
@@ -349,19 +406,40 @@ func restartWarning(path string) string {
 // check). Adding a new restart-required scalar to Schema needs only a new
 // entry here, not a new arm in applyDynamicConfigLocked.
 //
-// gateway.forges.* is deliberately absent: changedForgeLeaves's per-id,
-// per-field diff already gives finer-grained warnings (MINOR 2) than a
-// single wildcard schema entry could express, and is iterated separately.
-// gateway.hosts is also absent: Config.UnmarshalYAML always folds it into
-// Gateway.Forges before this function ever runs, so Config retains no Hosts
-// field of its own to compare — any of its changes surface through the
-// Forges diff instead.
+// gateway.forges.* and gateway.hosts are deliberately absent — see
+// restartFieldExtractorExemptions below for why, and for the exhaustive-
+// coverage contract that keeps this map (or that one) in sync with Schema.
 var restartFieldExtractors = map[string]func(*config.Config) string{
 	"gc.enabled":                func(c *config.Config) string { return strconv.FormatBool(c.GC.Enabled) },
 	"gc.interval":               func(c *config.Config) string { return c.GC.Interval.String() },
 	"gc.older_than":             func(c *config.Config) string { return c.GC.OlderThan.String() },
 	"web.http_addr":             func(c *config.Config) string { return c.Web.HTTPAddr },
 	"task_ask.disconnect_grace": func(c *config.Config) string { return c.TaskAsk.DisconnectGrace.String() },
+}
+
+// restartFieldExtractorExemptions documents every ReloadRestartRequired
+// Schema leaf that deliberately has NO restartFieldExtractors entry, and
+// why — the generic loop in applyDynamicConfigLocked panics on any
+// ReloadRestartRequired leaf found in neither map (regression concern,
+// codex review round 2), so a leaf's absence from restartFieldExtractors
+// must always be a documented, intentional choice recorded here, never a
+// silent gap. TestRestartFieldExtractors_ExhaustiveCoverage
+// (config_edit_internal_test.go) pins that every current Schema leaf
+// satisfies this at `go test` time, not just at runtime.
+var restartFieldExtractorExemptions = map[string]string{
+	// changedForgeLeaves's per-id, per-field diff (called separately, just
+	// above the generic loop) already gives finer-grained warnings (MINOR 2,
+	// codex review round 1) than comparing a single wildcard schema entry
+	// ever could — it names which of host/forge/secret_key changed, not
+	// just "something under gateway.forges.<id> changed".
+	"gateway.forges.*.host":       "covered by changedForgeLeaves' per-id, per-field diff (finer-grained than a wildcard comparison)",
+	"gateway.forges.*.forge":      "covered by changedForgeLeaves' per-id, per-field diff (finer-grained than a wildcard comparison)",
+	"gateway.forges.*.secret_key": "covered by changedForgeLeaves' per-id, per-field diff (finer-grained than a wildcard comparison)",
+	// Config.UnmarshalYAML always folds gateway.hosts into Gateway.Forges
+	// before this function ever runs, so Config retains no Hosts field of
+	// its own for an extractor to read — any of its changes already surface
+	// through the Forges diff above instead.
+	"gateway.hosts": "Config retains no Hosts field after UnmarshalYAML folds it into Forges; changes surface through the Forges diff instead",
 }
 
 // mergeAllowedDomains returns floor followed by every entry of user not
