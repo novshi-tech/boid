@@ -2398,6 +2398,20 @@ details[open] > summary {
   flex: 1;
 }
 
+/* notify.command argv rows are <textarea rows="1"> (codex review round 3,
+   PR #831) so embedded newlines survive editing — reading .value off a
+   text <input> silently strips CR/LF, which flattened any existing argv
+   element like ["sh", "-c", "line1\nline2"]. The box still needs to look
+   and behave like the .form-input-sm text inputs it sits next to: only
+   allow vertical (not horizontal) resize, and drop the browser's default
+   textarea min-height down near a single line's worth. */
+.notify-command-input {
+  resize: vertical;
+  min-height: 1em;
+  font-family: var(--font-sans);
+  line-height: 1.4;
+}
+
 .settings-table-wrap {
   overflow-x: auto;
   margin-bottom: var(--space-2);

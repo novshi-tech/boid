@@ -68,9 +68,9 @@ gateway:
 	for _, want := range []string{
 		".freee.co.jp",
 		"api.example.com",
-		`value="notify-send"`,
-		`value="-a"`,
-		`value="boid"`,
+		">notify-send</textarea>",
+		">-a</textarea>",
+		">boid</textarea>",
 		"https://boid.example.com",
 		"github.com",
 		"GITHUB_PAT",

@@ -150,7 +150,7 @@ templ Settings(view SettingsView) {
 				<div id="notify-command-list" class="settings-list">
 					for _, arg := range view.NotifyCommand {
 						<div class="settings-list-row">
-							<input type="text" class="form-input form-input-sm notify-command-input" value={ arg }/>
+							<textarea rows="1" class="form-input form-input-sm notify-command-input" spellcheck="false">{ arg }</textarea>
 							<button type="button" class="btn btn-sm btn-danger" onclick="this.parentElement.remove()">Remove</button>
 						</div>
 					}
@@ -301,13 +301,26 @@ templ Settings(view SettingsView) {
 
 				// ---- notify.command ----
 
+				// Each row is a <textarea rows="1">, not <input type="text">
+				// (MAJOR, codex review round 3, PR #831): per the HTML
+				// living standard, reading `.value` off a text <input> runs
+				// the value sanitization algorithm, which silently strips
+				// every CR/LF byte — so an existing argv element with an
+				// embedded newline (e.g. ["sh", "-c", "line1\nline2"]) would
+				// come back flattened to "line1line2" the moment JS read
+				// .value, even on a row the user never touched. <textarea>
+				// has no such sanitization; rows="1" plus the CSS in
+				// style.css (.notify-command-input) keeps it visually a
+				// single-line control that matches the surrounding
+				// .form-input-sm inputs, while still preserving embedded
+				// newlines byte for byte.
 				function addNotifyCommandRow() {
 					var row = document.createElement("div");
 					row.className = "settings-list-row";
-					row.innerHTML = '<input type="text" class="form-input form-input-sm notify-command-input"/>' +
+					row.innerHTML = '<textarea rows="1" class="form-input form-input-sm notify-command-input" spellcheck="false"></textarea>' +
 						'<button type="button" class="btn btn-sm btn-danger" onclick="this.parentElement.remove()">Remove</button>';
 					$("#notify-command-list").appendChild(row);
-					row.querySelector("input").focus();
+					row.querySelector("textarea").focus();
 				}
 				window.addNotifyCommandRow = addNotifyCommandRow;
 
@@ -324,7 +337,9 @@ templ Settings(view SettingsView) {
 				// typed it into its own input specifically to mean that
 				// exact value. Each row IS one argument — collect .value
 				// exactly as-is, no trim, no filter. The user owns the argv
-				// content; this function must not "clean it up".
+				// content; this function must not "clean it up". (Round 3:
+				// rows became <textarea>s, but .value reads identically —
+				// no change needed here.)
 				function collectNotifyCommand() {
 					return $all(".notify-command-input").map(function (i) { return i.value; });
 				}

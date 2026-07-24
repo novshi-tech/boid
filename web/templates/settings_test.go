@@ -59,7 +59,7 @@ func TestSettings_SecretKeyIsNameNotValueNote(t *testing.T) {
 }
 
 // TestSettings_RendersNotifyCommandAndPublicURL pins MAJOR 2 (codex review
-// round 1, PR #831): notify.command renders as one input PER argv element
+// round 1, PR #831): notify.command renders as one row PER argv element
 // (never space-joined into a single input, which was lossy for any argument
 // containing an embedded space).
 func TestSettings_RendersNotifyCommandAndPublicURL(t *testing.T) {
@@ -68,9 +68,9 @@ func TestSettings_RendersNotifyCommandAndPublicURL(t *testing.T) {
 		WebPublicURL:  "https://boid.example.com",
 	}
 	html := renderSettings(t, view)
-	for _, want := range []string{`value="notify-send"`, `value="-a"`, `value="boid"`} {
+	for _, want := range []string{">notify-send</textarea>", ">-a</textarea>", ">boid</textarea>"} {
 		if !strings.Contains(html, want) {
-			t.Errorf("expected a notify.command argv input carrying %s, got: %s", want, html)
+			t.Errorf("expected a notify.command argv textarea carrying %s, got: %s", want, html)
 		}
 	}
 	if !strings.Contains(html, `value="https://boid.example.com"`) {
@@ -81,12 +81,47 @@ func TestSettings_RendersNotifyCommandAndPublicURL(t *testing.T) {
 // TestSettings_NotifyCommandArgWithEmbeddedSpace_SurvivesAsOneField pins the
 // exact failure scenario MAJOR 2 fixed: an argument containing an embedded
 // space (e.g. `sh -c "echo hello"`'s third element) must round-trip as ONE
-// input's value, not be split across two.
+// row's content, not be split across two.
 func TestSettings_NotifyCommandArgWithEmbeddedSpace_SurvivesAsOneField(t *testing.T) {
 	view := SettingsView{NotifyCommand: []string{"sh", "-c", "echo hello"}}
 	html := renderSettings(t, view)
-	if !strings.Contains(html, `value="echo hello"`) {
-		t.Errorf("expected the embedded-space argument to render as a single input value, got: %s", html)
+	if !strings.Contains(html, ">echo hello</textarea>") {
+		t.Errorf("expected the embedded-space argument to render as a single textarea's content, got: %s", html)
+	}
+}
+
+// TestSettings_NotifyCommandRowsAreTextareasNotInputs pins the round-3 codex
+// review fix (PR #831): notify.command argv rows must be <textarea>, not
+// <input type="text">. Per the HTML living standard, reading .value off a
+// text <input> runs the value sanitization algorithm, which silently strips
+// every CR/LF byte — so an existing argv element with an embedded newline
+// (e.g. ["sh", "-c", "line1\nline2"]) would come back flattened the moment
+// any JS read .value, even on a row the user never edited. <textarea> has
+// no such sanitization.
+func TestSettings_NotifyCommandRowsAreTextareasNotInputs(t *testing.T) {
+	view := SettingsView{NotifyCommand: []string{"sh", "-c", "line1\nline2"}}
+	html := renderSettings(t, view)
+
+	idx := strings.Index(html, `id="notify-command-list"`)
+	if idx == -1 {
+		t.Fatal("expected a #notify-command-list element")
+	}
+	// Bound the search to the notify-command-list's own markup so we don't
+	// accidentally match the unrelated #yaml-textarea further down the page.
+	end := strings.Index(html[idx:], "</div>\n\t\t\t\t\t<button")
+	if end == -1 {
+		end = len(html) - idx
+	}
+	section := html[idx : idx+end]
+
+	if strings.Contains(section, `<input type="text" class="form-input form-input-sm notify-command-input"`) {
+		t.Error("notify.command rows must not render as <input type=\"text\">: browsers strip CR/LF from a text input's .value, silently flattening any existing argv element with an embedded newline")
+	}
+	if !strings.Contains(section, `<textarea rows="1" class="form-input form-input-sm notify-command-input"`) {
+		t.Errorf("expected notify.command rows to render as <textarea rows=\"1\">, got: %s", section)
+	}
+	if !strings.Contains(section, "line1\nline2") {
+		t.Errorf("expected the embedded newline to survive into the rendered textarea content verbatim, got: %s", section)
 	}
 }
 

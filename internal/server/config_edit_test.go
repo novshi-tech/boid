@@ -502,6 +502,78 @@ func TestConfigHandler_Mutate_NotifyCommand_ArgvPreservedVerbatim(t *testing.T) 
 	}
 }
 
+// TestSettingsPage_NotifyCommandEmbeddedNewline_SurvivesUnrelatedEdit is the
+// integration test for codex review round 3 (PR #831): notify.command argv
+// rows moved from <input type="text"> to <textarea rows="1">
+// (web/templates/settings.templ), because per the HTML living standard,
+// reading .value off a text <input> runs the value sanitization algorithm,
+// which silently strips every CR/LF byte from ANY row's value — including a
+// row the user never touched — the instant any JS (saveForm()'s
+// collectNotifyCommand()) reads .value. This exercises the exact
+// browser-observable round trip end to end through the real HTTP handlers
+// (api.WebHandler.Settings for GET /settings, api.ConfigHandler for POST
+// /api/config/mutate) wired to a REAL *server.Server:
+//  1. seed notify.command with an argv element containing an embedded
+//     newline
+//  2. GET /settings and confirm the rendered <textarea> carries the
+//     newline verbatim
+//  3. "edit an unrelated row" — mutate sandbox.allowed_domains only, exactly
+//     what saveForm()'s diff would send when the user edits a different
+//     field and notify.command itself is unchanged
+//  4. GET /settings again and confirm notify.command's embedded newline is
+//     still there, untouched by the unrelated save
+func TestSettingsPage_NotifyCommandEmbeddedNewline_SurvivesUnrelatedEdit(t *testing.T) {
+	srv, _ := newConfigTestServer(t)
+	settingsHandler := &api.WebHandler{ConfigService: srv}
+	mutateHandler := &api.ConfigHandler{Service: srv}
+
+	argv := []string{"sh", "-c", "line1\nline2"}
+	if _, err := srv.MutateConfig(api.ConfigMutateRequest{Op: api.ConfigMutateSet, Key: "notify.command", Value: argv}); err != nil {
+		t.Fatalf("seed notify.command: %v", err)
+	}
+
+	getSettings := func() string {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodGet, "/settings", nil)
+		w := httptest.NewRecorder()
+		settingsHandler.Settings(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("GET /settings status = %d, want 200: %s", w.Code, w.Body.String())
+		}
+		return w.Body.String()
+	}
+
+	before := getSettings()
+	if !strings.Contains(before, "line1\nline2") {
+		t.Fatalf("expected the initial /settings render to carry notify.command's embedded newline verbatim, got: %s", before)
+	}
+
+	// Simulate the browser's saveForm(): the user only edited an unrelated
+	// field (sandbox.allowed_domains), so only that key is sent as a mutate
+	// op — notify.command is left alone, exactly like the real page's
+	// diffing logic (which only emits an op for a field whose collected
+	// value actually changed).
+	reqBody, err := json.Marshal(api.ConfigMutateRequest{
+		Op:    api.ConfigMutateSet,
+		Key:   "sandbox.allowed_domains",
+		Value: []string{"example.com"},
+	})
+	if err != nil {
+		t.Fatalf("marshal mutate request: %v", err)
+	}
+	mutateReq := httptest.NewRequest(http.MethodPost, "/mutate", bytes.NewReader(reqBody))
+	mutateW := httptest.NewRecorder()
+	mutateHandler.Routes().ServeHTTP(mutateW, mutateReq)
+	if mutateW.Code != http.StatusOK {
+		t.Fatalf("POST /mutate (unrelated field) status = %d, want 200: %s", mutateW.Code, mutateW.Body.String())
+	}
+
+	after := getSettings()
+	if !strings.Contains(after, "line1\nline2") {
+		t.Errorf("notify.command's embedded newline was lost after an unrelated field's save; got: %s", after)
+	}
+}
+
 // TestMutateConfig_UnknownKey_Rejected pins the read-modify-write's
 // validation: MutateConfig re-validates through the exact same
 // config.Set/Unset dotted-path machinery `boid config set/unset` already
