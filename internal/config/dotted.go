@@ -5,6 +5,8 @@ import (
 	"sort"
 	"strconv"
 	"time"
+
+	"gopkg.in/yaml.v3"
 )
 
 // Tree is the generic YAML representation `boid config get/set/unset`
@@ -16,6 +18,23 @@ import (
 // unrelated section of a hand-authored config.yaml a user never touches
 // through this CLI is never silently reshaped.
 type Tree = map[string]any
+
+// ParseTree decodes a YAML document into the generic Tree dotted-path
+// operations act on, guaranteeing a non-nil map even for a genuinely empty
+// document. Shared by cmd/config.go's client-side parseConfigTree (which
+// delegates here) and internal/server's MutateConfig (BLOCKER 1, codex
+// review round 1's server-side read-modify-write) so both ends of the
+// GET/mutate/POST-body round trip decode identically.
+func ParseTree(data []byte) (Tree, error) {
+	var tree Tree
+	if err := yaml.Unmarshal(data, &tree); err != nil {
+		return nil, fmt.Errorf("parse config: %w", err)
+	}
+	if tree == nil {
+		tree = Tree{}
+	}
+	return tree, nil
+}
 
 // GetPath reads the value at a dotted path in tree. ok is false when any
 // segment along the way is absent, or an intermediate segment resolves to a
@@ -211,6 +230,13 @@ func coerceValues(spec FieldSpec, values []string) (any, error) {
 			}
 		}
 		return nil, fmt.Errorf("invalid value %q (want one of %s)", values[0], sortedJoin(spec.EnumValues))
+	case KindOpaque:
+		// MAJOR 1 (codex review round 1): gateway.hosts (the only
+		// KindOpaque leaf today) is recognized so validation/get/apply/
+		// edit don't reject it, but it is deliberately not
+		// `boid config set`-able — see schema.go's doc comment on
+		// KindOpaque and gateway.hosts for why.
+		return nil, fmt.Errorf("%s is a deprecated, read-only legacy field — migrate to gateway.forges.<id>.* instead (see docs/ja/reference/config-yaml.md)", spec.Path)
 	default:
 		return nil, fmt.Errorf("unsupported field kind %v", spec.Kind)
 	}

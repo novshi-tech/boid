@@ -217,17 +217,33 @@ func ValidateDomainEntry(entry string) error {
 	if strings.ContainsAny(entry, "/:@?#") {
 		return fmt.Errorf("%q: must be a bare hostname (no path, port, or userinfo)", entry)
 	}
+	// RFC 1035 §3.1: a full hostname (excluding this package's own leading
+	// "." suffix-match marker, which is not part of the DNS name itself)
+	// must not exceed 253 characters (MINOR 3, codex review round 1: the
+	// pre-fix validator had no length ceiling at all).
+	if len(host) > 253 {
+		return fmt.Errorf("%q: host exceeds the 253-character DNS name limit", entry)
+	}
 	labels := strings.Split(host, ".")
 	for _, label := range labels {
 		if label == "" {
 			return fmt.Errorf("%q: empty label (stray \"..\" or trailing \".\")", entry)
 		}
+		// RFC 1035 §2.3.4: a single DNS label is capped at 63 characters
+		// (MINOR 3).
+		if len(label) > 63 {
+			return fmt.Errorf("%q: label %q exceeds the 63-character DNS label limit", entry, label)
+		}
 		if strings.HasPrefix(label, "-") || strings.HasSuffix(label, "-") {
 			return fmt.Errorf("%q: label %q must not start or end with \"-\"", entry, label)
 		}
 		for _, r := range label {
-			if !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '-' || r == '_') {
-				return fmt.Errorf("%q: label %q contains an invalid character %q", entry, label, string(r))
+			// RFC 1035 §2.3.1 restricts a DNS label to letters, digits,
+			// and "-" ("LDH" labels) — no underscore. The pre-fix
+			// validator allowed "_" too, accepting strings that are not
+			// valid DNS hostnames at all (MINOR 3, codex review round 1).
+			if !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '-') {
+				return fmt.Errorf("%q: label %q contains an invalid character %q (only letters, digits, and \"-\" are allowed)", entry, label, string(r))
 			}
 		}
 	}

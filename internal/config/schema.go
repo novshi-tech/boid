@@ -35,6 +35,18 @@ const (
 	KindStringArray
 	// KindEnum is a single scalar string constrained to EnumValues.
 	KindEnum
+	// KindOpaque is a structurally-recognized leaf whose value is NOT
+	// `boid config set/unset`-able — it exists in Schema purely so
+	// ValidateKnownKeys (validate.go's pass 1, the unknown-key trie walk)
+	// does not reject a path the daemon still structurally accepts
+	// elsewhere (Config.UnmarshalYAML's own decode pass, ValidateYAML's
+	// pass 2). Its shape (list, map, whatever) is validated by that pass 2
+	// decode, not duplicated here. coerceValues (dotted.go) rejects any
+	// `boid config set` attempt against a KindOpaque leaf with a
+	// dedicated message rather than falling through to the generic
+	// "unsupported field kind" text (MAJOR 1, codex review round 1 — see
+	// gateway.hosts below, the only KindOpaque entry today).
+	KindOpaque
 )
 
 // ReloadClass classifies whether the daemon can apply a changed leaf live
@@ -89,6 +101,24 @@ var Schema = []FieldSpec{
 	{Path: "gateway.forges.*.host", Kind: KindString, Reload: ReloadRestartRequired},
 	{Path: "gateway.forges.*.forge", Kind: KindEnum, Reload: ReloadRestartRequired, EnumValues: []string{"github", "bitbucket"}},
 	{Path: "gateway.forges.*.secret_key", Kind: KindString, Reload: ReloadRestartRequired},
+
+	// gateway.hosts: the deprecated pre-forges-map legacy schema
+	// (docs/plans/git-gateway-cutover.md PR4's original shape).
+	// Config.UnmarshalYAML (config.go) still parses and folds it into
+	// gateway.forges for one release — see its own doc comment — but this
+	// package's Schema had no entry for it at all, so ValidateKnownKeys
+	// rejected any still-daemon-accepted legacy config.yaml with "unknown
+	// config key: gateway.hosts" before pass 2 (the actual fold) ever ran
+	// (MAJOR 1, codex review round 1). KindOpaque: a bare list of forge
+	// objects has no scalar/array Set arity, and this is a migration
+	// bridge to read/apply/edit through, not a new surface to author
+	// config through — `boid config set gateway.forges.<id>.*` is the
+	// supported way to add a forge. Classified ReloadRestartRequired
+	// like every other gateway.* leaf, though in practice any change here
+	// is picked up by the gateway.forges diff (applyDynamicConfigLocked,
+	// internal/server/config_edit.go) since UnmarshalYAML always folds
+	// Hosts into Forges before the daemon ever compares old vs new.
+	{Path: "gateway.hosts", Kind: KindOpaque, Reload: ReloadRestartRequired},
 }
 
 // segments splits a dotted path into its components. Exported for reuse by

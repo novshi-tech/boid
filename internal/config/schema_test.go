@@ -18,6 +18,7 @@ func TestResolveField_KnownPaths(t *testing.T) {
 		{"gateway.forges.github-enterprise.secret_key", true},
 		{"gateway.forges.github", false}, // whole entry: not a Set/Get leaf, see IsForgeEntryPath
 		{"gateway.forges", false},        // container, not a leaf
+		{"gateway.hosts", true},          // MAJOR 1: recognized (KindOpaque), read-only legacy migration bridge
 		{"default_harness", false},       // removed in Phase 2.5 PR7 — deliberately absent
 		{"sandbox.alowed_domains", false},
 	}
