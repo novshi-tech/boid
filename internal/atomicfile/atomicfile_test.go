@@ -2,9 +2,11 @@ package atomicfile_test
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 
@@ -92,33 +94,78 @@ func TestPublishIfAbsent_SecondCallDoesNotOverwrite(t *testing.T) {
 	}
 }
 
-// TestPublishIfAbsent_RepairsStaleEmptyFile pins the crash-recovery edge
-// case install_id.go's own readValidInstallID/rename-repair logic
-// documents: a path that exists but holds no legitimate content (e.g.
-// truncated by a crash mid-write under some OTHER writer that predates
-// this atomic protocol) has no live concurrent claim on it, so it is
-// safe to replace outright via os.Rename rather than treated as an
-// already-published winner.
-func TestPublishIfAbsent_RepairsStaleEmptyFile(t *testing.T) {
+// TestPublishIfAbsent_EmptyExistingFileFailsSafely pins the fix for
+// codex review finding [Major 1, PR829 round 1]: a path that exists but
+// reads back empty used to be silently "repaired" via os.Rename — but
+// that repair is not one-winner atomic (two concurrent callers both
+// observing the same empty file could each Rename their own temp file
+// over it, "last write wins" instead of a single winner) and the plan
+// doc (docs/plans/volume-only-daemon.md §論点 d) treats every file this
+// primitive publishes as volatile/regenerable, so failing safely and
+// telling the operator to remove the stale artifact is preferable to a
+// racy silent overwrite.
+func TestPublishIfAbsent_EmptyExistingFileFailsSafely(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "secret")
 	if err := os.WriteFile(path, nil, 0o600); err != nil {
 		t.Fatalf("seed empty file: %v", err)
 	}
 
-	got, err := atomicfile.PublishIfAbsent(path, 0o600, []byte("repaired"))
-	if err != nil {
-		t.Fatalf("PublishIfAbsent: %v", err)
+	_, err := atomicfile.PublishIfAbsent(path, 0o600, []byte("repaired"))
+	if err == nil {
+		t.Fatal("PublishIfAbsent succeeded against a pre-existing empty file; want an error (repair path removed)")
 	}
-	if string(got) != "repaired" {
-		t.Errorf("content = %q, want %q", got, "repaired")
+	if !strings.Contains(err.Error(), "empty") {
+		t.Errorf("error = %q, want it to mention the file is empty/stale", err.Error())
 	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("read: %v", err)
+
+	// The pre-existing empty file must be left untouched — no silent
+	// overwrite.
+	data, rerr := os.ReadFile(path)
+	if rerr != nil {
+		t.Fatalf("read: %v", rerr)
 	}
-	if string(data) != "repaired" {
-		t.Errorf("on-disk content = %q, want %q", data, "repaired")
+	if len(data) != 0 {
+		t.Errorf("on-disk content = %q, want it to remain empty (no repair)", data)
+	}
+}
+
+// TestPublishIfAbsent_ExistingFileUnreadableReturnsError pins the other
+// half of [Major 1, PR829 round 1]: if the destination exists but
+// ReadFile fails with something other than "does not exist" (e.g.
+// EACCES from a permission-denied file, or any other transient I/O
+// error), that error must propagate — the prior code discarded it and
+// fell through to a Rename that would have clobbered a file it could
+// not even verify.
+func TestPublishIfAbsent_ExistingFileUnreadableReturnsError(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("running as root: 0000-mode files remain readable, cannot exercise EACCES")
+	}
+	dir := t.TempDir()
+	path := filepath.Join(dir, "secret")
+	if err := os.WriteFile(path, []byte("preexisting"), 0o000); err != nil {
+		t.Fatalf("seed unreadable file: %v", err)
+	}
+	defer os.Chmod(path, 0o600) //nolint:errcheck // best-effort cleanup so t.TempDir() removal succeeds
+
+	_, err := atomicfile.PublishIfAbsent(path, 0o600, []byte("attempted-overwrite"))
+	if err == nil {
+		t.Fatal("PublishIfAbsent succeeded against an unreadable existing file; want the read error to propagate")
+	}
+	if !errors.Is(err, os.ErrPermission) {
+		t.Errorf("error = %v, want it to wrap a permission error", err)
+	}
+
+	// Must NOT have fallen through to Rename and clobbered the file.
+	if err := os.Chmod(path, 0o600); err != nil {
+		t.Fatalf("chmod for verification read: %v", err)
+	}
+	data, rerr := os.ReadFile(path)
+	if rerr != nil {
+		t.Fatalf("read: %v", rerr)
+	}
+	if string(data) != "preexisting" {
+		t.Errorf("on-disk content = %q, want the original %q (must not overwrite on unverifiable read)", data, "preexisting")
 	}
 }
 

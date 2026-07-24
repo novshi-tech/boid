@@ -35,14 +35,38 @@ import (
 // follow-up publish step stays on one filesystem, a hard-link
 // requirement), chmod'd to perm, then published via os.Link — which fails
 // with os.IsExist if path already exists (unlike os.Rename, which would
-// silently replace it) — so "path exists" only ever means "path already
-// has complete content", never a half-written file. A losing caller
-// re-reads the winner's file instead of returning its own,
-// never-actually-persisted content. If path exists but holds no
-// legitimate content (empty — e.g. a stale artifact from a crash
-// predating this protocol, not a live concurrent writer), the temp file
-// is renamed over it instead — safe because nothing else holds a
-// legitimate claim on that content.
+// silently replace it) — so "path exists" only ever means "someone else
+// got there first", never a half-written file. A losing caller re-reads
+// the winner's file instead of returning its own, never-actually-persisted
+// content.
+//
+// Contract (docs/plans/volume-only-daemon.md §論点 d, fix for [Major 1,
+// PR829 round 1 codex review]): this function is publish-if-absent + a
+// safe read-back ONLY. There is no repair path. Earlier revisions renamed
+// a temp file over a pre-existing EMPTY destination on the theory that an
+// empty file has no live claimant — but that repair is not itself
+// one-winner atomic (two concurrent callers can each observe the same
+// empty file and each Rename over it, "last write wins" rather than a
+// single winner), and it silently discarded any error from the read-back
+// (including EACCES / other transient I/O errors) and fell through to an
+// unconditional Rename that could clobber a file it never actually
+// verified. Both hazards are closed by removing the repair branch
+// entirely: an empty existing file, or any read-back error, is now
+// reported to the caller rather than acted on. Every current caller
+// (internal/mtls.LoadOrCreate, internal/dispatcher.LoadOrCreateKey) treats
+// the files this function publishes as volatile/regenerable (the plan
+// doc's own framing), so "fail and tell the operator to remove the stale
+// artifact manually" is an acceptable, safe default — silently guessing
+// which of two racing writers should win is not.
+//
+// Durability note (Major 2, PR829 round 1 codex review, deliberately NOT
+// fixed here — comment-only per the follow-up scope): this function makes
+// no crash-durability guarantee. Write+Close+Link can all report success
+// while content still only lives in page cache; a crash or a delayed-
+// allocation ENOSPC surfaced during writeback after this function returns
+// can still leave path zero-length or short on the next boot. Closing that
+// gap would need an fsync of the temp file before Link and an fsync of dir
+// after — intentionally out of scope for this fix.
 func PublishIfAbsent(path string, perm os.FileMode, content []byte) ([]byte, error) {
 	dir := filepath.Dir(path)
 	tmp, err := os.CreateTemp(dir, ".atomicfile-*.tmp")
@@ -74,19 +98,21 @@ func PublishIfAbsent(path string, perm os.FileMode, content []byte) ([]byte, err
 		}
 		// path already exists. Every writer that ever reaches this point
 		// uses this same write-temp-then-Link protocol, so if a
-		// concurrent PublishIfAbsent call published it first, its
-		// content is already complete — re-reading finds it. The only
-		// other way path can exist here with no legitimate content is a
-		// stale artifact with no live writer racing us — os.Rename
-		// (unlike another os.Link) replaces it outright rather than
-		// failing, which is correct precisely because nothing else
-		// holds a legitimate claim on it.
-		if existing, rerr := os.ReadFile(path); rerr == nil && len(existing) > 0 {
-			return existing, nil
+		// concurrent (or earlier) PublishIfAbsent call published it
+		// first, its content is already complete — read it back and
+		// return it as the winner. Any read failure (including EACCES —
+		// we cannot verify the file, so we must not act on it) or an
+		// empty read-back (no repair path — see this function's own doc
+		// comment) is reported to the caller instead of silently
+		// overwriting.
+		existing, rerr := os.ReadFile(path)
+		if rerr != nil {
+			return nil, fmt.Errorf("atomicfile: read existing %s: %w", path, rerr)
 		}
-		if rerr := os.Rename(tmpPath, path); rerr != nil {
-			return nil, fmt.Errorf("atomicfile: repair %s: %w", path, rerr)
+		if len(existing) == 0 {
+			return nil, fmt.Errorf("atomicfile: %s exists but is empty (stale artifact — remove it manually)", path)
 		}
+		return existing, nil
 	}
 	return content, nil
 }
