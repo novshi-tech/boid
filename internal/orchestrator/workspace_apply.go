@@ -45,6 +45,15 @@ type WorkspaceApplyResult struct {
 	// ApplyWorkspaceEnvelope itself, which only ever sees already-resolved
 	// IDs (projectIDsByName).
 	MissingProjects []string `json:"missing_projects,omitempty"`
+
+	// Warnings is filled in by the caller (WorkspaceHandler.Apply,
+	// internal/api/workspace.go) — non-fatal notices about the applied
+	// document that a direct HTTP caller (not going through `boid workspace
+	// apply`, which already warns client-side) would otherwise never see,
+	// e.g. a retired spec.additional_bindings key that was silently dropped
+	// (PR-1d codex round-2 Minor). Left empty by ApplyWorkspaceEnvelope
+	// itself.
+	Warnings []string `json:"warnings,omitempty"`
 }
 
 // ApplyWorkspaceEnvelope upserts apply's workspace metadata and (when
@@ -118,7 +127,6 @@ func ApplyWorkspaceEnvelope(conn *sql.DB, apply *WorkspaceEnvelopeApply, project
 		Created:  created,
 		Previous: current,
 		Meta:     merged,
-		Revision: newRevision,
 	}
 
 	if apply.FieldsPresent["projects"] {
@@ -132,8 +140,15 @@ func ApplyWorkspaceEnvelope(conn *sql.DB, apply *WorkspaceEnvelopeApply, project
 	}
 
 	if dryRun {
+		// PR-1d codex round-2 Minor: newRevision above was read from a row
+		// this same transaction is about to roll back — it was never
+		// actually committed, so reporting it would hand the caller an
+		// ETag for a revision that does not exist in the DB. Leave
+		// Revision at its zero value, honoring the field's own "empty for
+		// dry run" doc comment.
 		return result, nil
 	}
+	result.Revision = newRevision
 	if err := tx.Commit(); err != nil {
 		return nil, fmt.Errorf("apply workspace %q: commit: %w", slug, err)
 	}

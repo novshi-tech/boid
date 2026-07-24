@@ -212,6 +212,13 @@ func TestApplyWorkspaceEnvelope_DryRunPersistsNothing(t *testing.T) {
 	if !equalStrSlice(result.Meta.HostCommands, []string{"gh"}) {
 		t.Errorf("Meta.HostCommands = %v, want [gh] (dry-run preview)", result.Meta.HostCommands)
 	}
+	// PR-1d codex round-2 Minor: a dry run must never report a revision —
+	// the in-tx row it would have been read from is rolled back, so the
+	// value would be an unusable ETag for a revision that was never
+	// actually committed.
+	if result.Revision != "" {
+		t.Errorf("Revision = %q, want empty for a dry run", result.Revision)
+	}
 
 	repo := NewWorkspaceRepository(d.Conn)
 	if _, err := repo.Load("team-e"); !errors.Is(err, os.ErrNotExist) {

@@ -15,9 +15,23 @@ type WorkspaceExportSnapshot struct {
 	Meta     *WorkspaceMeta
 	Revision string
 	// ProjectIDs is the list of project IDs assigned to this workspace as
-	// of the snapshot transaction. Names/URLs are resolved by the caller
-	// afterward — see SnapshotWorkspacesForExport's doc comment.
+	// of the snapshot transaction.
 	ProjectIDs []string
+	// Projects maps each of ProjectIDs to its full *Project row (id,
+	// work_dir, upstream_url, ...), read from the SAME transaction as
+	// ProjectIDs itself (PR-1d codex round-2 Major: the caller previously
+	// re-queried each project ID with a separate, post-transaction
+	// GetProject call whose error was silently skipped — a concurrent
+	// delete landing in that window could produce a "consistent snapshot"
+	// export that was quietly missing an assignment). Every ID in
+	// ProjectIDs is guaranteed to have an entry here (project_workspaces.
+	// project_id REFERENCES projects(id), read within one transaction), so
+	// a caller indexing this map by an id drawn from ProjectIDs never needs
+	// an "ok" check for correctness — Display name/url resolution (project.
+	// yaml's name: field) still happens outside this transaction, from the
+	// in-memory ProjectMeta cache, which is not DB-backed at all — see
+	// SnapshotWorkspacesForExport's doc comment.
+	Projects map[string]*Project
 }
 
 // SnapshotWorkspacesForExport reads meta + project assignment for every
@@ -36,15 +50,21 @@ type WorkspaceExportSnapshot struct {
 // can never appear against two different workspace_id values in the same
 // read.
 //
-// Project display names/URLs are deliberately NOT part of this snapshot: a
-// project's name (WorkspaceEnvelopeProject.Name) comes from the in-memory
-// ProjectMeta cache (project.yaml's name: field), not a DB column this
-// transaction could read — see ProjectAppService.ExportWorkspaceEnvelopes,
-// which resolves id -> name/url afterward. Doing that resolution outside
-// this transaction cannot reintroduce the cross-workspace inconsistency
-// this function exists to close: it cannot change which workspace_id a
-// project_id is assigned to, only how that already-fixed assignment is
-// displayed.
+// Every assigned project's full row (WorkspaceExportSnapshot.Projects) is
+// ALSO read from this same transaction (PR-1d codex round-2 Blocker 3
+// follow-up) — the id/work_dir/upstream_url/workspace_id columns all live
+// in the same `projects` table this function already reads via
+// ListProjects, so there is no reason to defer that read to a second,
+// separately-fallible, post-transaction lookup per project the way the
+// round-1 version did. Only the project's DISPLAY NAME
+// (WorkspaceEnvelopeProject.Name) is deliberately NOT part of this
+// snapshot: it comes from the in-memory ProjectMeta cache (project.yaml's
+// name: field), not a DB column at all — see
+// ProjectAppService.ExportWorkspaceEnvelopes, which resolves that name
+// afterward. Doing that resolution outside this transaction cannot
+// reintroduce the cross-workspace inconsistency this function exists to
+// close: it cannot change which workspace_id a project_id is assigned to,
+// only how that already-fixed assignment is displayed.
 func SnapshotWorkspacesForExport(conn *sql.DB, slugs []string) ([]*WorkspaceExportSnapshot, error) {
 	tx, err := conn.Begin()
 	if err != nil {
@@ -60,7 +80,7 @@ func SnapshotWorkspacesForExport(conn *sql.DB, slugs []string) ([]*WorkspaceExpo
 		}
 	}
 
-	byWorkspace, err := workspaceProjectAssignmentsByWorkspace(tx)
+	byWorkspace, projectsByID, err := workspaceProjectAssignmentsByWorkspace(tx)
 	if err != nil {
 		return nil, fmt.Errorf("snapshot workspaces for export: %w", err)
 	}
@@ -74,11 +94,17 @@ func SnapshotWorkspacesForExport(conn *sql.DB, slugs []string) ([]*WorkspaceExpo
 			}
 			return nil, fmt.Errorf("snapshot workspace %q: %w", slug, err)
 		}
+		ids := byWorkspace[slug]
+		projects := make(map[string]*Project, len(ids))
+		for _, id := range ids {
+			projects[id] = projectsByID[id]
+		}
 		out = append(out, &WorkspaceExportSnapshot{
 			Slug:       slug,
 			Meta:       meta,
 			Revision:   revision,
-			ProjectIDs: byWorkspace[slug],
+			ProjectIDs: ids,
+			Projects:   projects,
 		})
 	}
 	return out, nil
@@ -104,24 +130,30 @@ func listWorkspaceSlugs(tx *sql.Tx) ([]string, error) {
 	return slugs, rows.Err()
 }
 
-// workspaceProjectAssignmentsByWorkspace reads the ENTIRE project_workspaces
-// table once, in tx, and indexes it by workspace_id — a single query
-// instead of one per workspace (avoiding N+1), and — more importantly —
-// guaranteeing every workspace's project list in the same
-// SnapshotWorkspacesForExport call is read from the identical DB snapshot.
-func workspaceProjectAssignmentsByWorkspace(tx *sql.Tx) (map[string][]string, error) {
-	rows, err := tx.Query(`SELECT workspace_id, project_id FROM project_workspaces ORDER BY project_id`)
+// workspaceProjectAssignmentsByWorkspace reads every projects row ONCE, in
+// tx, via ListProjects — a single query instead of one per workspace
+// (avoiding N+1) — and indexes it both by workspace_id (for
+// WorkspaceExportSnapshot.ProjectIDs) and by project id (for
+// WorkspaceExportSnapshot.Projects). Doing this via ListProjects rather than
+// a bare `SELECT workspace_id, project_id FROM project_workspaces` (the
+// pre-round-2 query) is what closes Blocker 3 (codex round-2): the full
+// *Project row for every assigned project now comes from this SAME
+// transaction, so ExportWorkspaceEnvelopes no longer needs a second,
+// post-transaction GetProject lookup per project — the exact call whose
+// silently-skipped errors could previously drop an assignment from an
+// otherwise-"consistent" snapshot.
+func workspaceProjectAssignmentsByWorkspace(tx *sql.Tx) (byWorkspace map[string][]string, projectsByID map[string]*Project, err error) {
+	projects, err := ListProjects(tx)
 	if err != nil {
-		return nil, fmt.Errorf("list project assignments: %w", err)
+		return nil, nil, fmt.Errorf("list projects: %w", err)
 	}
-	defer rows.Close()
-	byWorkspace := map[string][]string{}
-	for rows.Next() {
-		var workspaceID, projectID string
-		if err := rows.Scan(&workspaceID, &projectID); err != nil {
-			return nil, fmt.Errorf("scan project assignment: %w", err)
+	byWorkspace = map[string][]string{}
+	projectsByID = make(map[string]*Project, len(projects))
+	for _, p := range projects {
+		projectsByID[p.ID] = p
+		if p.WorkspaceID != "" {
+			byWorkspace[p.WorkspaceID] = append(byWorkspace[p.WorkspaceID], p.ID)
 		}
-		byWorkspace[workspaceID] = append(byWorkspace[workspaceID], projectID)
 	}
-	return byWorkspace, rows.Err()
+	return byWorkspace, projectsByID, nil
 }

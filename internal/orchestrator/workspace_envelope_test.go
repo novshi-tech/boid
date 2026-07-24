@@ -189,6 +189,71 @@ spec:
 	}
 }
 
+// TestDecodeWorkspaceEnvelopeDocuments_RejectsUnknownProjectField pins the
+// PR-1d codex round-2 Major "strict decoding doesn't extend to
+// spec.projects[]" finding: a typo'd key inside a projects[] entry (here
+// "nam" instead of "name") must be rejected the same way an unknown
+// top-level or spec-level field already is — not silently decoded into a
+// project with an empty Name, which ResolveProjectRef's substring-match
+// fallback (Contains(x, "") is always true) would then match against
+// whichever project happens to be registered.
+func TestDecodeWorkspaceEnvelopeDocuments_RejectsUnknownProjectField(t *testing.T) {
+	data := []byte(`
+apiVersion: boid.dev/v1
+kind: Workspace
+metadata:
+  name: default
+spec:
+  projects:
+    - nam: intended
+`)
+	_, err := DecodeWorkspaceEnvelopeDocuments(data)
+	if err == nil || !strings.Contains(err.Error(), "nam") {
+		t.Fatalf("expected an unknown field error mentioning \"nam\", got %v", err)
+	}
+}
+
+// TestDecodeWorkspaceEnvelopeDocuments_RejectsEmptyProjectName is the other
+// half of the same round-2 finding: even a well-formed document (no unknown
+// keys) with an explicitly empty/blank projects[].name must be rejected —
+// ResolveProjectRef("") would otherwise match every registered project via
+// its substring-match fallback.
+func TestDecodeWorkspaceEnvelopeDocuments_RejectsEmptyProjectName(t *testing.T) {
+	data := []byte(`
+apiVersion: boid.dev/v1
+kind: Workspace
+metadata:
+  name: default
+spec:
+  projects:
+    - name: ""
+`)
+	_, err := DecodeWorkspaceEnvelopeDocuments(data)
+	if err == nil || !strings.Contains(err.Error(), "name is required") {
+		t.Fatalf("expected a \"name is required\" error, got %v", err)
+	}
+}
+
+// TestDecodeWorkspaceEnvelopeDocuments_RejectsUnknownCapabilitiesField is
+// the capabilities-side counterpart: a typo'd key under spec.capabilities
+// (here "dcoker" instead of "docker") must be rejected rather than silently
+// decoded into a zero-value Capabilities that quietly disables Docker.
+func TestDecodeWorkspaceEnvelopeDocuments_RejectsUnknownCapabilitiesField(t *testing.T) {
+	data := []byte(`
+apiVersion: boid.dev/v1
+kind: Workspace
+metadata:
+  name: default
+spec:
+  capabilities:
+    dcoker: {}
+`)
+	_, err := DecodeWorkspaceEnvelopeDocuments(data)
+	if err == nil || !strings.Contains(err.Error(), "dcoker") {
+		t.Fatalf("expected an unknown field error mentioning \"dcoker\", got %v", err)
+	}
+}
+
 // TestDecodeWorkspaceEnvelopeDocuments_TolerateAdditionalBindings pins the
 // plan doc's decision: additional_bindings is dropped from the schema, but a
 // document that still carries it (e.g. hand-edited from an old export) must
@@ -424,6 +489,80 @@ func TestNewWorkspaceEnvelopeFromMeta_ExplicitEmptyFieldsSurviveExport(t *testin
 		if !doc.FieldsPresent[field] {
 			t.Errorf("FieldsPresent[%q] = false, want true (explicit empty value must round-trip as present)", field)
 		}
+	}
+}
+
+// TestNewWorkspaceEnvelopeFromMeta_ExtraFieldsSurviveExport is round-2's
+// follow-up to TestNewWorkspaceEnvelopeFromMeta_ExplicitEmptyFieldsSurviveExport
+// above: round-1 dropped `omitempty` from host_commands/env/allowed_domains/
+// projects but MISSED extra_repos/container_image/capabilities, so exporting
+// a workspace with no extra repos and Docker disabled silently omitted those
+// three keys instead of emitting an explicit empty value — see
+// TestApplyWorkspaceEnvelope_ClearsStaleExtraReposAndCapabilities below for
+// the full export -> apply round trip this enables.
+func TestNewWorkspaceEnvelopeFromMeta_ExtraFieldsSurviveExport(t *testing.T) {
+	meta := &WorkspaceMeta{
+		ExtraRepos:     []string{},
+		ContainerImage: "",
+		Capabilities:   Capabilities{},
+	}
+	envelope := NewWorkspaceEnvelopeFromMeta("team-empty", meta, nil)
+	data, err := yaml.Marshal(envelope)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	for _, want := range []string{"extra_repos: []", `container_image: ""`, "capabilities: {}"} {
+		if !strings.Contains(string(data), want) {
+			t.Errorf("exported yaml = %q, want it to contain %q", string(data), want)
+		}
+	}
+
+	docs, err := DecodeWorkspaceEnvelopeDocuments(data)
+	if err != nil {
+		t.Fatalf("DecodeWorkspaceEnvelopeDocuments round trip: %v", err)
+	}
+	doc := docs[0]
+	for _, field := range []string{"extra_repos", "container_image", "capabilities"} {
+		if !doc.FieldsPresent[field] {
+			t.Errorf("FieldsPresent[%q] = false, want true (explicit empty value must round-trip as present)", field)
+		}
+	}
+}
+
+// TestApplyWorkspaceEnvelope_ClearsStaleExtraReposAndCapabilities pins
+// Blocker 1's extension (PR-1d codex round-2): exporting a workspace with
+// `extra_repos: []` and `capabilities: {}` and then applying that export
+// over a DIFFERENT workspace that still has a stale extra_repos entry and
+// capabilities.docker enabled must clear both — not silently leave them, as
+// it did before the omitempty tags were dropped from these three fields.
+func TestApplyWorkspaceEnvelope_ClearsStaleExtraReposAndCapabilities(t *testing.T) {
+	// Export side: a workspace with both fields explicitly empty.
+	cleanMeta := &WorkspaceMeta{ExtraRepos: []string{}, Capabilities: Capabilities{}}
+	envelope := NewWorkspaceEnvelopeFromMeta("team-a", cleanMeta, nil)
+	data, err := yaml.Marshal(envelope)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	docs, err := DecodeWorkspaceEnvelopeDocuments(data)
+	if err != nil {
+		t.Fatalf("DecodeWorkspaceEnvelopeDocuments: %v", err)
+	}
+	apply := docs[0]
+
+	// Apply side: an existing workspace with stale extra_repos + Docker
+	// capability enabled.
+	stale := &WorkspaceMeta{
+		ExtraRepos:   []string{"git@example.com:private/leftover.git"},
+		Capabilities: Capabilities{Docker: &DockerCapability{}},
+	}
+	merged := apply.MergeInto(stale)
+	if len(merged.ExtraRepos) != 0 {
+		t.Errorf("ExtraRepos = %v, want cleared", merged.ExtraRepos)
+	}
+	if merged.Capabilities.Docker != nil {
+		t.Errorf("Capabilities.Docker = %+v, want cleared (nil)", merged.Capabilities.Docker)
 	}
 }
 
