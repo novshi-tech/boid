@@ -46,27 +46,21 @@ func TestIsForgeEntryPath(t *testing.T) {
 	}
 }
 
+// TestSchema_ReloadClassification pins the PR #830 round-4 simplification
+// (nose directive): every leaf that used to be ReloadDynamic
+// (sandbox.allowed_domains, notify.command, web.public_url) is now
+// ReloadRestartRequired, same as everything else — see ReloadDynamic's own
+// doc comment for why. No Schema leaf is ReloadDynamic today.
 func TestSchema_ReloadClassification(t *testing.T) {
-	dynamic := map[string]bool{
-		"sandbox.allowed_domains": true,
-		"notify.command":          true,
-		"web.public_url":          true,
-	}
 	restartRequired := map[string]bool{
+		"sandbox.allowed_domains":          true,
+		"notify.command":                   true,
+		"web.public_url":                   true,
 		"gateway.forges.github.host":       true,
 		"gateway.forges.github.forge":      true,
 		"gateway.forges.github.secret_key": true,
 		"gc.enabled":                       true,
 		"web.http_addr":                    true,
-	}
-	for path := range dynamic {
-		spec, ok := ResolveField(path)
-		if !ok {
-			t.Fatalf("ResolveField(%q) not found", path)
-		}
-		if spec.Reload != ReloadDynamic {
-			t.Errorf("%s: reload class = %v, want ReloadDynamic", path, spec.Reload)
-		}
 	}
 	for path := range restartRequired {
 		spec, ok := ResolveField(path)

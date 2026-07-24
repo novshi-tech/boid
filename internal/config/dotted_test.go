@@ -12,8 +12,10 @@ func TestSet_Scalar(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Set: %v", err)
 	}
-	if reload != ReloadDynamic {
-		t.Errorf("reload = %v, want ReloadDynamic", reload)
+	// web.public_url is ReloadRestartRequired as of the PR #830 round-4
+	// simplification (nose directive) — see ReloadDynamic's own doc comment.
+	if reload != ReloadRestartRequired {
+		t.Errorf("reload = %v, want ReloadRestartRequired", reload)
 	}
 	got, ok := GetPath(tree, "web.public_url")
 	if !ok || got != "https://boid.example.com" {
@@ -115,8 +117,8 @@ func TestUnset_RemovesLeaf(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Unset: %v", err)
 	}
-	if reload != ReloadDynamic {
-		t.Errorf("reload = %v, want ReloadDynamic", reload)
+	if reload != ReloadRestartRequired {
+		t.Errorf("reload = %v, want ReloadRestartRequired", reload)
 	}
 	if _, ok := GetPath(tree, "web.public_url"); ok {
 		t.Error("key still present after unset")

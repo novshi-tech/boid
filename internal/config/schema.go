@@ -56,6 +56,20 @@ type ReloadClass int
 const (
 	// ReloadDynamic keys are hot-reloaded silently (an info log line, no
 	// operator-facing warning) as soon as the daemon accepts the write.
+	//
+	// No Schema leaf uses this class today — the PR #830 round-4
+	// simplification pass (nose directive) folded sandbox.allowed_domains,
+	// notify.command, and web.public_url (the only three that ever did) into
+	// ReloadRestartRequired. The codex review trajectory that shipped the
+	// hot-reload machinery for those three (Runner.AllowedDomains as a
+	// func() []string getter, Server.AllowedDomains(), a per-dispatch
+	// ProxyAllocator.GetOrCreate refresh for the no-workspace proxy
+	// listener) took 4 rounds and 2→1→1→2 blockers to land, including a
+	// Server.Stop/dispatch deadlock (round 4 blocker 2) — a complexity/value
+	// ratio nose judged not worth it for a config surface this young. The
+	// constant and this ReloadClass distinction are kept (not deleted) so a
+	// future genuinely-safe-to-hot-reload leaf has an obvious place to go
+	// without re-litigating the enum.
 	ReloadDynamic ReloadClass = iota
 	// ReloadRestartRequired keys are persisted but only take effect on the
 	// next daemon restart — the daemon prints a loud warning naming the
@@ -88,12 +102,12 @@ var Schema = []FieldSpec{
 	{Path: "gc.interval", Kind: KindDuration, Reload: ReloadRestartRequired},
 	{Path: "gc.older_than", Kind: KindDuration, Reload: ReloadRestartRequired},
 
-	{Path: "web.public_url", Kind: KindString, Reload: ReloadDynamic},
+	{Path: "web.public_url", Kind: KindString, Reload: ReloadRestartRequired},
 	{Path: "web.http_addr", Kind: KindString, Reload: ReloadRestartRequired},
 
-	{Path: "notify.command", Kind: KindStringArray, Reload: ReloadDynamic},
+	{Path: "notify.command", Kind: KindStringArray, Reload: ReloadRestartRequired},
 
-	{Path: "sandbox.allowed_domains", Kind: KindStringArray, Reload: ReloadDynamic},
+	{Path: "sandbox.allowed_domains", Kind: KindStringArray, Reload: ReloadRestartRequired},
 	{Path: "sandbox.backend", Kind: KindEnum, Reload: ReloadRetirementWarning, EnumValues: []string{"userns", "container"}},
 
 	{Path: "task_ask.disconnect_grace", Kind: KindDuration, Reload: ReloadRestartRequired},
