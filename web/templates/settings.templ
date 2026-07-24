@@ -1,0 +1,515 @@
+package templates
+
+import "encoding/json"
+
+// This file implements the /settings page (docs/plans/volume-only-daemon.md
+// §論点 f, the Web UI half — PR-1c of PR-1's 4 sub-PRs). It is a thin
+// client of the daemon's *existing* config surface (internal/api/config.go's
+// GET /api/config, POST /api/config, POST /api/config/mutate — PR-1b): this
+// template only ever renders the *initial* GET /api/config snapshot
+// server-side (buildSettingsView, internal/api/web_settings.go); every Save
+// action is a plain client-side fetch() straight to those same endpoints —
+// there is no settings-specific RPC surface, and no hot-reload path (PR-1b
+// Round 4 reclassified every schema leaf as ReloadRestartRequired; this page
+// never claims otherwise).
+//
+// default_harness is deliberately absent from this form — see
+// internal/config/schema.go's doc comment: the key was removed from the
+// schema outright in Phase 2.5 PR7, before this plan doc was written.
+
+// ForgeRow is one gateway.forges.<id> entry as shown in the form-editor
+// table.
+type ForgeRow struct {
+	ID        string
+	Host      string
+	Forge     string
+	SecretKey string
+}
+
+// SettingsView is everything the /settings page needs to render both its
+// form editor and its raw-YAML tab from a single GET /api/config snapshot
+// (internal/api/web_settings.go's buildSettingsView).
+type SettingsView struct {
+	// Revision is the ETag GET /api/config returned — embedded verbatim as
+	// a data attribute so the page's own JS can round-trip it into the YAML
+	// tab's first POST /api/config's If-Match header, exactly like `boid
+	// config edit` does (cmd/config.go's runConfigEdit).
+	Revision string
+	// YAML is the full config.yaml document, byte-for-byte, as GET
+	// /api/config returned it — the raw-edit tab's initial textarea
+	// content.
+	YAML string
+
+	AllowedDomains []string
+	Forges         []ForgeRow
+	// ForgeKindOptions is config.Schema's "gateway.forges.*.forge" enum
+	// (github/bitbucket today) — read from the schema rather than
+	// hard-coded here, so this dropdown never silently drifts out of sync
+	// with what POST /api/config/mutate will actually accept.
+	ForgeKindOptions []string
+	// NotifyCommand is notify.command's argv, one element per row (MAJOR 2,
+	// codex review round 1: a single space-joined text input was lossy for
+	// any argument containing an embedded space — e.g. ["sh", "-c", "echo
+	// hello"] round-tripped through split(/\s+/) as ["sh", "-c", "echo",
+	// "hello"], silently changing command semantics on any edit). Mirrors
+	// AllowedDomains' one-input-per-element list pattern instead. Saved
+	// back as a mutate `set` whose Value is exactly this list
+	// (config.KindStringArray's multi-arg shape, the same one `boid config
+	// set notify.command <arg>...` uses) — never joined or split.
+	NotifyCommand []string
+	WebPublicURL  string
+}
+
+// forgeKindOptionsJSON renders opts as a JSON array literal for the
+// forges-table's data-forge-kinds attribute (MAJOR 1, codex review round 1,
+// PR #831) — addForgeRow's JS reads this fixed, server-provided list
+// directly, instead of deriving a new row's kind <select> options from
+// whatever kind <option>s already happen to exist in the DOM. The old
+// derive-from-DOM approach left the new-row dropdown with zero options
+// whenever gateway.forges itself was empty (nothing existing to derive
+// from), making it impossible to pick a kind for the very first forge added
+// through the form.
+func forgeKindOptionsJSON(opts []string) string {
+	data, err := json.Marshal(opts)
+	if err != nil {
+		return "[]"
+	}
+	return string(data)
+}
+
+// Settings renders the /settings page: a form editor (allowed domains /
+// gateway forges / notify command / web public URL) and a raw YAML editor,
+// both seeded from the same GET /api/config snapshot passed in as view.
+// Every Save button talks directly to the existing PR-1b endpoints via
+// fetch() — see this file's top-of-file doc comment.
+templ Settings(view SettingsView) {
+	@Layout("Settings", "") {
+		<div id="settings-restart-banner" class="restart-banner" role="status" aria-live="polite" hidden>
+			<strong>⚠ Configuration saved.</strong> Restart daemon to apply changes.
+			<pre class="restart-banner-cmd">docker compose -f build/container/compose.yml restart daemon</pre>
+			<ul id="settings-restart-warnings" class="restart-banner-warnings"></ul>
+		</div>
+		<div id="settings-conflict" class="error-banner" role="alert" aria-live="assertive" hidden>
+			config changed since page loaded — reload and merge your changes
+			<button type="button" class="btn btn-sm btn-secondary" onclick="window.location.reload()">Reload</button>
+		</div>
+		<section class="settings-section">
+			<h2 class="section-title">Config (form)</h2>
+			<div id="settings-form-error" class="error-banner" role="alert" aria-live="assertive" hidden></div>
+			<div id="settings-form-transient" class="form-hint" role="status" aria-live="polite" hidden></div>
+			<div class="form-group">
+				<label class="form-label">sandbox.allowed_domains</label>
+				<div id="domains-list" class="settings-list">
+					for _, d := range view.AllowedDomains {
+						<div class="settings-list-row">
+							<input type="text" class="form-input form-input-sm settings-domain-input" value={ d }/>
+							<button type="button" class="btn btn-sm btn-danger" onclick="this.parentElement.remove()">Remove</button>
+						</div>
+					}
+				</div>
+				<button type="button" class="btn btn-secondary btn-sm" onclick="addDomainRow()">+ Add domain</button>
+				<div class="form-hint">Suffix match: prefix with "." (e.g. ".freee.co.jp"). A bare hostname matches exactly.</div>
+			</div>
+			<div class="form-group">
+				<label class="form-label">gateway.forges</label>
+				<div class="settings-table-wrap">
+					<table class="settings-table" id="forges-table" data-forge-kinds={ forgeKindOptionsJSON(view.ForgeKindOptions) }>
+						<thead>
+							<tr>
+								<th>id</th>
+								<th>kind</th>
+								<th>host</th>
+								<th>secret_key (env var name)</th>
+								<th></th>
+							</tr>
+						</thead>
+						<tbody>
+							for _, f := range view.Forges {
+								<tr data-forge-id={ f.ID }>
+									<td class="forge-id-cell">{ f.ID }</td>
+									<td>
+										<select class="form-input form-input-sm forge-kind">
+											for _, k := range view.ForgeKindOptions {
+												<option value={ k } selected?={ k == f.Forge }>{ k }</option>
+											}
+										</select>
+									</td>
+									<td><input type="text" class="form-input form-input-sm forge-host" value={ f.Host }/></td>
+									<td><input type="text" class="form-input form-input-sm forge-secret" value={ f.SecretKey }/></td>
+									<td><button type="button" class="btn btn-sm btn-danger" onclick="this.closest('tr').remove()">Remove</button></td>
+								</tr>
+							}
+						</tbody>
+					</table>
+				</div>
+				<button type="button" class="btn btn-secondary btn-sm" onclick="addForgeRow()">+ Add forge</button>
+				<div class="form-hint">secret_key is the env var <strong>NAME</strong>, not the value — this is not the secret itself. Set the actual value via the deployment env / systemd unit / k8s Secret.</div>
+			</div>
+			<div class="form-group">
+				<label class="form-label">notify.command</label>
+				<!--
+					Server-rendered rows deliberately start with an extra "\n"
+					before the argv value (codex review round 4, PR #831): per
+					the HTML living standard, a browser drops the FIRST LF
+					immediately following a <textarea> opening tag when parsing
+					it. Without this, an argv element that itself starts with
+					"\n" (e.g. "\necho hello") would render as
+					<textarea>\necho hello</textarea> and the browser would
+					expose "echo hello" to JS's .value — the leading LF silently
+					and permanently lost the next time the form is saved. The
+					prepended "\n" is exactly what the browser's first-LF-drop
+					consumes, so the original value (including a genuinely empty
+					"" or one starting with "\n") survives byte-for-byte. Also
+					note: a <textarea>'s .value additionally normalizes CRLF/CR
+					to LF — a browser-level behavior that cannot be avoided at
+					the DOM level, so this field accepts LF only. See also
+					addNotifyCommandRow() below, which writes a brand-new row's
+					.value directly (bypassing the HTML parser, so it has no
+					leading-LF-drop to compensate for).
+				-->
+				<div id="notify-command-list" class="settings-list">
+					for _, arg := range view.NotifyCommand {
+						<div class="settings-list-row">
+							<textarea rows="1" class="form-input form-input-sm notify-command-input" spellcheck="false">{ "\n" + arg }</textarea>
+							<button type="button" class="btn btn-sm btn-danger" onclick="this.parentElement.remove()">Remove</button>
+						</div>
+					}
+				</div>
+				<button type="button" class="btn btn-secondary btn-sm" onclick="addNotifyCommandRow()">+ Add argument</button>
+				<div class="form-hint">One argv element per row (e.g. <code>notify-send</code>, <code>-a</code>, <code>boid</code>) — each row is exactly one argument, spaces and all, never split.</div>
+			</div>
+			<div class="form-group">
+				<label for="web-public-url-input" class="form-label">web.public_url</label>
+				<input type="text" id="web-public-url-input" class="form-input" value={ view.WebPublicURL } placeholder="https://boid.example.com"/>
+			</div>
+			<button type="button" class="btn btn-primary" onclick="saveForm()">Save form</button>
+		</section>
+		<section class="settings-section">
+			<h2 class="section-title">Config (YAML)</h2>
+			<div id="settings-yaml-error" class="error-banner" role="alert" aria-live="assertive" hidden></div>
+			<div id="settings-yaml-transient" class="form-hint" role="status" aria-live="polite" hidden></div>
+			<textarea id="yaml-textarea" class="form-input settings-yaml-textarea" data-revision={ view.Revision } rows="20" spellcheck="false">{ view.YAML }</textarea>
+			<button type="button" class="btn btn-primary" onclick="saveYaml()">Save YAML</button>
+			<button type="button" class="btn btn-secondary" onclick="window.location.reload()">Reload</button>
+		</section>
+		<script>
+			(function () {
+				"use strict";
+				var BANNER_KEY = "boid-settings-restart-banner";
+
+				function $(sel, root) { return (root || document).querySelector(sel); }
+				function $all(sel, root) { return Array.prototype.slice.call((root || document).querySelectorAll(sel)); }
+
+				function show(el) { if (el) el.hidden = false; }
+				function hide(el) { if (el) el.hidden = true; }
+
+				function showRestartBanner(warnings) {
+					var el = $("#settings-restart-banner");
+					var list = $("#settings-restart-warnings");
+					list.innerHTML = "";
+					(warnings || []).forEach(function (w) {
+						var li = document.createElement("li");
+						li.textContent = w;
+						list.appendChild(li);
+					});
+					show(el);
+				}
+
+				// A banner staged before a full-page reload (the simplest way to
+				// keep both tabs' server-rendered state authoritative after any
+				// save — see this file's top-of-file doc comment) is picked back
+				// up here, once, on the reloaded page.
+				(function restoreBannerAfterReload() {
+					var stored = sessionStorage.getItem(BANNER_KEY);
+					if (!stored) return;
+					sessionStorage.removeItem(BANNER_KEY);
+					try {
+						var parsed = JSON.parse(stored);
+						showRestartBanner(parsed.warnings || []);
+					} catch (e) { /* ignore malformed sessionStorage content */ }
+				})();
+
+				function finishSave(warnings) {
+					sessionStorage.setItem(BANNER_KEY, JSON.stringify({ warnings: warnings || [] }));
+					window.location.reload();
+				}
+
+				// ---- allowed domains ----
+
+				function addDomainRow() {
+					var row = document.createElement("div");
+					row.className = "settings-list-row";
+					row.innerHTML = '<input type="text" class="form-input form-input-sm settings-domain-input"/>' +
+						'<button type="button" class="btn btn-sm btn-danger" onclick="this.parentElement.remove()">Remove</button>';
+					$("#domains-list").appendChild(row);
+					row.querySelector("input").focus();
+				}
+				window.addDomainRow = addDomainRow;
+
+				function collectDomains() {
+					return $all(".settings-domain-input").map(function (i) { return i.value.trim(); }).filter(Boolean);
+				}
+				var originalDomains = collectDomains();
+
+				// ---- gateway.forges ----
+
+				// forgeKindOptions is the fixed, server-provided list of valid
+				// gateway.forges.*.forge values (config.Schema's enum,
+				// web_settings.go's forgeKindOptions()) — MAJOR 1 (codex review
+				// round 1, PR #831): a new row used to derive its <select>'s
+				// options by scanning kind <option>s already present on
+				// EXISTING forge rows, which left the new-row dropdown with no
+				// options at all whenever gateway.forges was empty (nothing to
+				// scan). Reading the same list the server rendered every
+				// existing row's <select> from means a brand-new row always has
+				// a populated dropdown, empty table or not.
+				var forgesTableEl = $("#forges-table");
+				var forgeKindOptions = JSON.parse((forgesTableEl && forgesTableEl.dataset.forgeKinds) || "[]");
+
+				function addForgeRow() {
+					var tbody = $("#forges-table tbody");
+					var tr = document.createElement("tr");
+					var optionsHTML = forgeKindOptions.map(function (o) { return '<option value="' + o + '">' + o + '</option>'; }).join("");
+					tr.innerHTML =
+						'<td><input type="text" class="form-input form-input-sm forge-id" placeholder="id"/></td>' +
+						'<td><select class="form-input form-input-sm forge-kind">' + optionsHTML + '</select></td>' +
+						'<td><input type="text" class="form-input form-input-sm forge-host"/></td>' +
+						'<td><input type="text" class="form-input form-input-sm forge-secret"/></td>' +
+						'<td><button type="button" class="btn btn-sm btn-danger" onclick="this.closest(\'tr\').remove()">Remove</button></td>';
+					tbody.appendChild(tr);
+					tr.querySelector(".forge-id").focus();
+				}
+				window.addForgeRow = addForgeRow;
+
+				function collectForges() {
+					return $all("#forges-table tbody tr").map(function (tr) {
+						var idCell = tr.querySelector(".forge-id-cell");
+						var idInput = tr.querySelector(".forge-id");
+						var id = idCell ? idCell.textContent.trim() : (idInput ? idInput.value.trim() : "");
+						return {
+							id: id,
+							host: tr.querySelector(".forge-host").value.trim(),
+							forge: tr.querySelector(".forge-kind").value,
+							secretKey: tr.querySelector(".forge-secret").value.trim()
+						};
+					}).filter(function (f) { return f.id !== ""; });
+				}
+				var originalForges = {};
+				collectForges().forEach(function (f) { originalForges[f.id] = f; });
+
+				function diffForges() {
+					var calls = [];
+					var seen = {};
+					collectForges().forEach(function (f) {
+						seen[f.id] = true;
+						var o = originalForges[f.id];
+						if (!o) {
+							calls.push({ op: "set", key: "gateway.forges." + f.id + ".host", value: [f.host] });
+							calls.push({ op: "set", key: "gateway.forges." + f.id + ".forge", value: [f.forge] });
+							calls.push({ op: "set", key: "gateway.forges." + f.id + ".secret_key", value: [f.secretKey] });
+							return;
+						}
+						if (o.host !== f.host) calls.push({ op: "set", key: "gateway.forges." + f.id + ".host", value: [f.host] });
+						if (o.forge !== f.forge) calls.push({ op: "set", key: "gateway.forges." + f.id + ".forge", value: [f.forge] });
+						if (o.secretKey !== f.secretKey) calls.push({ op: "set", key: "gateway.forges." + f.id + ".secret_key", value: [f.secretKey] });
+					});
+					Object.keys(originalForges).forEach(function (id) {
+						if (!seen[id]) calls.push({ op: "unset", key: "gateway.forges." + id });
+					});
+					return calls;
+				}
+
+				// ---- notify.command ----
+
+				// Each row is a <textarea rows="1">, not <input type="text">
+				// (MAJOR, codex review round 3, PR #831): per the HTML
+				// living standard, reading `.value` off a text <input> runs
+				// the value sanitization algorithm, which silently strips
+				// every CR/LF byte — so an existing argv element with an
+				// embedded newline (e.g. ["sh", "-c", "line1\nline2"]) would
+				// come back flattened to "line1line2" the moment JS read
+				// .value, even on a row the user never touched. <textarea>
+				// has no such sanitization; rows="1" plus the CSS in
+				// style.css (.notify-command-input) keeps it visually a
+				// single-line control that matches the surrounding
+				// .form-input-sm inputs, while still preserving embedded
+				// newlines byte for byte.
+				function addNotifyCommandRow() {
+					var row = document.createElement("div");
+					row.className = "settings-list-row";
+					row.innerHTML = '<textarea rows="1" class="form-input form-input-sm notify-command-input" spellcheck="false"></textarea>' +
+						'<button type="button" class="btn btn-sm btn-danger" onclick="this.parentElement.remove()">Remove</button>';
+					var textarea = row.querySelector("textarea");
+					// codex review round 4, PR #831: server-rendered rows carry a
+					// leading "\n" in their HTML text content to counteract the
+					// browser's first-LF-drop parsing rule (see the HTML comment
+					// above notify-command-list). A brand-new row has no such
+					// text content to parse in the first place — assigning
+					// .value directly is a DOM-property write, not HTML text,
+					// so there is no parser and nothing to drop. Setting it
+					// explicitly (rather than relying on a freshly-created
+					// <textarea>'s default empty value) keeps that invariant
+					// obvious at the call site instead of implicit.
+					textarea.value = "";
+					$("#notify-command-list").appendChild(row);
+					textarea.focus();
+				}
+				window.addNotifyCommandRow = addNotifyCommandRow;
+
+				// collectNotifyCommand reads one argv element per row, byte for
+				// byte (MAJOR 2, codex review round 1, PR #831; PARTIAL fix
+				// flagged in round 2) — never joined into a single string and
+				// re-split on whitespace, which silently broke any argument
+				// containing an embedded space (e.g. ["sh", "-c", "echo
+				// hello"] round-tripped as ["sh", "-c", "echo", "hello"]).
+				// Round 1's fix still called .trim() and dropped empty
+				// elements, which is ALSO lossy: a leading/trailing space or
+				// an empty string can be a deliberate, meaningful argv
+				// element (e.g. ["printf", "%s", "", " x "]), and the user
+				// typed it into its own input specifically to mean that
+				// exact value. Each row IS one argument — collect .value
+				// exactly as-is, no trim, no filter. The user owns the argv
+				// content; this function must not "clean it up". (Round 3:
+				// rows became <textarea>s, but .value reads identically —
+				// no change needed here. Round 4: server-rendered rows now
+				// carry a leading "\n" in their HTML text content to
+				// counteract the browser's first-LF-drop parsing rule, but
+				// .value already reflects the *parsed* (post-drop) content —
+				// so this function still needs no change; the compensation
+				// lives entirely in how the textarea is rendered, not in how
+				// it's read.)
+				function collectNotifyCommand() {
+					return $all(".notify-command-input").map(function (i) { return i.value; });
+				}
+				var originalNotifyCommand = collectNotifyCommand();
+
+				// ---- scalar fields ----
+
+				var publicURLInput = $("#web-public-url-input");
+				var originalPublicURL = publicURLInput.value.trim();
+
+				function sameArray(a, b) {
+					return JSON.stringify(a) === JSON.stringify(b);
+				}
+
+				// ---- save (form tab) ----
+
+				// postMutateBatch sends every pending set/unset as ONE atomic
+				// POST /api/config/mutate call (BLOCKER, codex review round 1,
+				// PR #831) — see internal/api/config.go's ConfigMutateRequest.Ops
+				// doc comment for why: the daemon used to validate the FULL
+				// document after each individual op, so a brand-new
+				// gateway.forges.<id> entry's three leaf sets (host/forge/
+				// secret_key), applied one HTTP call at a time, failed on the
+				// very first call (an empty "forge" is not yet valid). Batching
+				// them into a single request means the daemon applies all of
+				// them to the same in-memory document before validating once.
+				async function postMutateBatch(ops) {
+					var res = await fetch("/api/config/mutate", {
+						method: "POST",
+						headers: { "Content-Type": "application/json" },
+						body: JSON.stringify({ ops: ops })
+					});
+					var body = {};
+					try { body = await res.json(); } catch (e) { /* no body */ }
+					if (!res.ok) {
+						var msg = (body && body.error) ? body.error : ("request failed (HTTP " + res.status + ")");
+						throw new Error(msg);
+					}
+					return body;
+				}
+
+				async function saveForm() {
+					hide($("#settings-form-error"));
+					hide($("#settings-form-transient"));
+
+					var calls = [];
+					var curDomains = collectDomains();
+					if (!sameArray(curDomains, originalDomains)) {
+						calls.push({ op: "set", key: "sandbox.allowed_domains", value: curDomains });
+					}
+					var curNotify = collectNotifyCommand();
+					if (!sameArray(curNotify, originalNotifyCommand)) {
+						calls.push({ op: "set", key: "notify.command", value: curNotify });
+					}
+					var curPublicURL = publicURLInput.value.trim();
+					if (curPublicURL !== originalPublicURL) {
+						calls.push({ op: "set", key: "web.public_url", value: [curPublicURL] });
+					}
+					calls = calls.concat(diffForges());
+
+					if (calls.length === 0) {
+						var t = $("#settings-form-transient");
+						t.textContent = "No changes";
+						show(t);
+						return;
+					}
+
+					try {
+						var body = await postMutateBatch(calls);
+						finishSave(body.warnings || []);
+					} catch (e) {
+						var err = $("#settings-form-error");
+						err.textContent = e.message;
+						show(err);
+					}
+				}
+				window.saveForm = saveForm;
+
+				// ---- save (YAML tab) ----
+
+				var yamlTextarea = $("#yaml-textarea");
+				var originalYAML = yamlTextarea.value;
+				var currentRevision = yamlTextarea.dataset.revision || "";
+
+				async function saveYaml() {
+					hide($("#settings-yaml-error"));
+					hide($("#settings-yaml-transient"));
+					hide($("#settings-conflict"));
+
+					var newYAML = yamlTextarea.value;
+					if (newYAML.replace(/\s+$/, "") === originalYAML.replace(/\s+$/, "")) {
+						var t = $("#settings-yaml-transient");
+						t.textContent = "No changes";
+						show(t);
+						return;
+					}
+
+					// MINOR 2 (codex review round 1, PR #831): the fetch() call
+					// below rejects on a network failure (as opposed to an
+					// ordinary HTTP error status, which resolves normally and is
+					// handled by the res.ok check further down) — with no
+					// try/catch around it, that rejection went completely
+					// unhandled, silently dropping the failure instead of
+					// showing the same inline error the form-tab save path
+					// already shows via postMutateBatch's throw/catch.
+					try {
+						var res = await fetch("/api/config", {
+							method: "POST",
+							headers: { "Content-Type": "application/yaml", "If-Match": currentRevision },
+							body: newYAML
+						});
+						if (res.status === 412 || res.status === 428) {
+							show($("#settings-conflict"));
+							return;
+						}
+						var body = {};
+						try { body = await res.json(); } catch (e) { /* no body */ }
+						if (!res.ok) {
+							var err = $("#settings-yaml-error");
+							err.textContent = (body && body.error) ? body.error : ("save failed (HTTP " + res.status + ")");
+							show(err);
+							return;
+						}
+						finishSave(body.warnings || []);
+					} catch (e) {
+						var netErr = $("#settings-yaml-error");
+						netErr.textContent = e.message || "save failed (network error)";
+						show(netErr);
+					}
+				}
+				window.saveYaml = saveYaml;
+			})();
+		</script>
+	}
+}

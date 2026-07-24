@@ -2,9 +2,11 @@ package server
 
 import (
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
+	"github.com/novshi-tech/boid/internal/api"
 	"github.com/novshi-tech/boid/internal/config"
 )
 
@@ -129,5 +131,52 @@ func TestApplyDynamicConfigLocked_UnregisteredRestartRequiredLeaf_WarnsNotPanics
 		if strings.Contains(w, bogusPath) {
 			t.Errorf("expected no restart warning for an unregistered leaf, got: %q", w)
 		}
+	}
+}
+
+// TestMutateConfig_Batch_FinalValidationFailure_LiveConfigUnchanged is the
+// white-box regression test for the "batch partial-failure at final
+// validation" regression concern flagged in codex review round 2 (PR #831):
+// the pre-existing black-box test
+// (TestMutateConfig_Batch_PartialFailureLeavesDocumentUnchanged,
+// config_edit_test.go) only exercises an op that fails AT THE OP LEVEL — an
+// unknown dotted-path key, which config.Set itself rejects before
+// MutateConfig's single end-of-batch config.ValidateYAML call is ever
+// reached. This test instead builds a batch where EVERY individual op
+// succeeds at the config.Set level (both "gateway.forges.corp.host" and
+// "gateway.forges.corp.secret_key" are known, correctly-typed leaves —
+// config.Set has no cross-field awareness of "forge" still being unset), but
+// the ONE final validation of the fully-mutated document still fails (a
+// forge entry with no "forge" kind is not a valid document —
+// config.go's resolveForgeConfig: `unrecognized forge ""`). Being a
+// white-box (package server) test, it asserts srv.liveConfig ITSELF — not
+// just the on-disk file config_edit_test.go's black-box test already checks
+// — is left completely untouched: both the same pointer (applyConfigYAMLLocked
+// never even reaches its liveConfig-swap line when config.ValidateYAML fails
+// first) and byte-for-byte identical contents.
+func TestMutateConfig_Batch_FinalValidationFailure_LiveConfigUnchanged(t *testing.T) {
+	srv := newInternalConfigTestServer(t)
+
+	before := srv.liveConfig
+
+	_, err := srv.MutateConfig(api.ConfigMutateRequest{Ops: []api.ConfigMutateRequest{
+		{Op: api.ConfigMutateSet, Key: "gateway.forges.corp.host", Value: []string{"git.corp.example"}},
+		{Op: api.ConfigMutateSet, Key: "gateway.forges.corp.secret_key", Value: []string{"CORP_PAT"}},
+		// Deliberately no "gateway.forges.corp.forge" op here — each op
+		// above succeeds individually, but the combined document is still
+		// invalid overall (no forge kind for the new "corp" entry).
+	}})
+	if err == nil {
+		t.Fatal("expected the batch to fail final whole-document validation (a new forge entry with no \"forge\" kind is invalid)")
+	}
+	if !strings.Contains(err.Error(), "unrecognized forge") {
+		t.Errorf("error = %v, want it to name the missing/unrecognized forge kind (confirms this failed at FINAL document validation, not at an individual op's config.Set)", err)
+	}
+
+	if srv.liveConfig != before {
+		t.Errorf("srv.liveConfig pointer changed despite the batch failing final validation: before=%p after=%p", before, srv.liveConfig)
+	}
+	if !reflect.DeepEqual(srv.liveConfig, before) {
+		t.Errorf("srv.liveConfig contents changed despite the batch failing final validation:\nbefore=%+v\nafter=%+v", before, srv.liveConfig)
 	}
 }

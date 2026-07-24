@@ -1,9 +1,13 @@
 package server_test
 
 import (
+	"bytes"
+	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -444,6 +448,225 @@ func TestMutateConfig_Unset(t *testing.T) {
 	}
 }
 
+// TestConfigHandler_Mutate_NotifyCommand_ArgvPreservedVerbatim is the Go-side
+// integration test for codex review round 2 (PR #831): the settings page's
+// collectNotifyCommand() (web/templates/settings.templ) collects one argv
+// element per row's raw .value, with NO trim and NO empty-element filter —
+// round 1's fix still called .trim() and dropped empty elements, which is
+// lossy for legitimate argv containing an empty element or meaningful
+// leading/trailing whitespace (e.g. ["printf", "%s", "", " x "]). There is
+// no JS test harness in this repo (no package.json/JS runner under web/), so
+// this test exercises the same round trip end to end on the Go side instead:
+// it builds the exact POST /api/config/mutate body collectNotifyCommand()'s
+// output would produce for that argv, sends it through the REAL
+// api.ConfigHandler wired to a REAL *server.Server (not a fake/mock —
+// exactly what the daemon serves in production), and reads the result back
+// through GET /api/config, asserting the argv survived byte for byte.
+func TestConfigHandler_Mutate_NotifyCommand_ArgvPreservedVerbatim(t *testing.T) {
+	srv, _ := newConfigTestServer(t)
+	h := &api.ConfigHandler{Service: srv}
+
+	// The exact argv codex review round 2 flagged as lossy under the old
+	// .trim()+filter(v!=="") collection: an empty element and a
+	// deliberately whitespace-padded element, both meaningful.
+	argv := []string{"printf", "%s", "", " x "}
+
+	reqBody, err := json.Marshal(api.ConfigMutateRequest{
+		Op:    api.ConfigMutateSet,
+		Key:   "notify.command",
+		Value: argv,
+	})
+	if err != nil {
+		t.Fatalf("marshal mutate request: %v", err)
+	}
+	mutateReq := httptest.NewRequest(http.MethodPost, "/mutate", bytes.NewReader(reqBody))
+	mutateW := httptest.NewRecorder()
+	h.Routes().ServeHTTP(mutateW, mutateReq)
+	if mutateW.Code != http.StatusOK {
+		t.Fatalf("POST /mutate status = %d, want 200: %s", mutateW.Code, mutateW.Body.String())
+	}
+
+	getReq := httptest.NewRequest(http.MethodGet, "/", nil)
+	getW := httptest.NewRecorder()
+	h.Routes().ServeHTTP(getW, getReq)
+	if getW.Code != http.StatusOK {
+		t.Fatalf("GET status = %d, want 200: %s", getW.Code, getW.Body.String())
+	}
+
+	gotCfg, err := config.ValidateYAML(getW.Body.Bytes())
+	if err != nil {
+		t.Fatalf("ValidateYAML(GET /api/config body): %v\nbody:\n%s", err, getW.Body.Bytes())
+	}
+	if !reflect.DeepEqual(gotCfg.Notify.Command, argv) {
+		t.Errorf("notify.command round-tripped through POST /mutate -> GET as %#v, want %#v (verbatim, no trim/filter)", gotCfg.Notify.Command, argv)
+	}
+}
+
+// TestSettingsPage_NotifyCommandEmbeddedNewline_SurvivesUnrelatedEdit is the
+// integration test for codex review round 3 (PR #831): notify.command argv
+// rows moved from <input type="text"> to <textarea rows="1">
+// (web/templates/settings.templ), because per the HTML living standard,
+// reading .value off a text <input> runs the value sanitization algorithm,
+// which silently strips every CR/LF byte from ANY row's value — including a
+// row the user never touched — the instant any JS (saveForm()'s
+// collectNotifyCommand()) reads .value. This exercises the exact
+// browser-observable round trip end to end through the real HTTP handlers
+// (api.WebHandler.Settings for GET /settings, api.ConfigHandler for POST
+// /api/config/mutate) wired to a REAL *server.Server:
+//  1. seed notify.command with an argv element containing an embedded
+//     newline
+//  2. GET /settings and confirm the rendered <textarea> carries the
+//     newline verbatim
+//  3. "edit an unrelated row" — mutate sandbox.allowed_domains only, exactly
+//     what saveForm()'s diff would send when the user edits a different
+//     field and notify.command itself is unchanged
+//  4. GET /settings again and confirm notify.command's embedded newline is
+//     still there, untouched by the unrelated save
+func TestSettingsPage_NotifyCommandEmbeddedNewline_SurvivesUnrelatedEdit(t *testing.T) {
+	srv, _ := newConfigTestServer(t)
+	settingsHandler := &api.WebHandler{ConfigService: srv}
+	mutateHandler := &api.ConfigHandler{Service: srv}
+
+	argv := []string{"sh", "-c", "line1\nline2"}
+	if _, err := srv.MutateConfig(api.ConfigMutateRequest{Op: api.ConfigMutateSet, Key: "notify.command", Value: argv}); err != nil {
+		t.Fatalf("seed notify.command: %v", err)
+	}
+
+	getSettings := func() string {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodGet, "/settings", nil)
+		w := httptest.NewRecorder()
+		settingsHandler.Settings(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("GET /settings status = %d, want 200: %s", w.Code, w.Body.String())
+		}
+		return w.Body.String()
+	}
+
+	before := getSettings()
+	if !strings.Contains(before, "line1\nline2") {
+		t.Fatalf("expected the initial /settings render to carry notify.command's embedded newline verbatim, got: %s", before)
+	}
+
+	// Simulate the browser's saveForm(): the user only edited an unrelated
+	// field (sandbox.allowed_domains), so only that key is sent as a mutate
+	// op — notify.command is left alone, exactly like the real page's
+	// diffing logic (which only emits an op for a field whose collected
+	// value actually changed).
+	reqBody, err := json.Marshal(api.ConfigMutateRequest{
+		Op:    api.ConfigMutateSet,
+		Key:   "sandbox.allowed_domains",
+		Value: []string{"example.com"},
+	})
+	if err != nil {
+		t.Fatalf("marshal mutate request: %v", err)
+	}
+	mutateReq := httptest.NewRequest(http.MethodPost, "/mutate", bytes.NewReader(reqBody))
+	mutateW := httptest.NewRecorder()
+	mutateHandler.Routes().ServeHTTP(mutateW, mutateReq)
+	if mutateW.Code != http.StatusOK {
+		t.Fatalf("POST /mutate (unrelated field) status = %d, want 200: %s", mutateW.Code, mutateW.Body.String())
+	}
+
+	after := getSettings()
+	if !strings.Contains(after, "line1\nline2") {
+		t.Errorf("notify.command's embedded newline was lost after an unrelated field's save; got: %s", after)
+	}
+}
+
+// TestSettingsPage_NotifyCommandLeadingLF_SurvivesUnrelatedEdit is the
+// integration test for codex review round 4 (PR #831): per the HTML living
+// standard, a browser drops the FIRST LF immediately following a <textarea>
+// opening tag when parsing it — so an argv element that itself starts with
+// "\n" (e.g. "\necho leading-lf") would silently lose that leading LF the
+// moment JS reads the textarea's .value, unless the template compensates by
+// always prepending an extra "\n" before the argv value
+// (web/templates/settings.templ). This exercises the exact
+// server-rendering round trip end to end through the real HTTP handler
+// (api.WebHandler.Settings for GET /settings) wired to a REAL
+// *server.Server, mirroring
+// TestSettingsPage_NotifyCommandEmbeddedNewline_SurvivesUnrelatedEdit's
+// round-3 pattern:
+//  1. seed notify.command with an argv element that itself starts with "\n"
+//  2. GET /settings and confirm the rendered <textarea> carries the
+//     compensating leading "\n" plus the original value verbatim (i.e. the
+//     rendered text content is "\n" + "\necho leading-lf")
+//  3. "edit an unrelated field" via the raw-YAML apply path (see below for
+//     why not the form tab's per-field mutate)
+//  4. GET /settings again and confirm the same leading-LF-preserving markup
+//     is still there, untouched by the unrelated save
+//
+// Unrelated-edit step uses ApplyConfigYAML (the raw-YAML tab's endpoint),
+// NOT MutateConfig (the form tab's per-field endpoint), because of a
+// pre-existing, orthogonal limitation this test incidentally surfaced:
+// gopkg.in/yaml.v3's encoder emits an invalid block-literal scalar (wrong
+// indentation-indicator arithmetic) for any string whose FIRST character is
+// "\n" when that string sits inside a YAML sequence — confirmed directly
+// against the library (yaml.Marshal(map[string]any{"notify":
+// map[string]any{"command": []any{"\necho x"}}}) produces "- |4-\n  echo
+// x\n", which yaml.Unmarshal itself then rejects with "did not find expected
+// '-' indicator"). MutateConfig always re-marshals tree in full
+// (config_edit.go), so ANY call — even one that only touches an unrelated
+// key — re-serializes notify.command's untouched leading-"\n" value through
+// this broken path and fails. ApplyConfigYAML has no such step: it validates
+// the caller's raw bytes via Unmarshal and, on success, writes them to disk
+// verbatim (config_edit.go's applyConfigYAMLLocked) — exactly what the real
+// page's raw-YAML tab (saveYaml()) sends, and the only save path that
+// actually supports this edge case today. This encoder limitation is a
+// pre-existing PR-1b (dotted-path mutate) concern, out of scope for this
+// PR-1c template fix; flagged here rather than silently worked around.
+func TestSettingsPage_NotifyCommandLeadingLF_SurvivesUnrelatedEdit(t *testing.T) {
+	srv, _ := newConfigTestServer(t)
+	settingsHandler := &api.WebHandler{ConfigService: srv}
+
+	seedDoc := []byte("notify:\n  command:\n    - \"\\necho leading-lf\"\n")
+	if _, err := srv.ApplyConfigYAML(seedDoc, "", true); err != nil {
+		t.Fatalf("seed notify.command: %v", err)
+	}
+
+	getSettings := func() string {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodGet, "/settings", nil)
+		w := httptest.NewRecorder()
+		settingsHandler.Settings(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("GET /settings status = %d, want 200: %s", w.Code, w.Body.String())
+		}
+		return w.Body.String()
+	}
+
+	// The rendered textarea's HTML text content must be "\n" (the template's
+	// compensating prefix) + "\necho leading-lf" (the original argv value) —
+	// i.e. ">\n\necho leading-lf</textarea>". Losing either the compensating
+	// prefix or the original leading "\n" would both collapse to the same
+	// wrong single-newline rendering, so this asserts the double-newline
+	// form specifically, not just "a newline is present somewhere".
+	const wantMarkup = ">\n\necho leading-lf</textarea>"
+
+	before := getSettings()
+	if !strings.Contains(before, wantMarkup) {
+		t.Fatalf("expected the initial /settings render to carry notify.command's leading LF verbatim (compensating prefix + original value), got: %s", before)
+	}
+
+	// "Edit an unrelated field" via the raw-YAML tab: the user's edit only
+	// adds sandbox.allowed_domains: notify.command's raw text is carried
+	// forward byte-for-byte, exactly as saveYaml() would send the whole
+	// textarea's current content back.
+	_, rev, err := srv.ConfigYAML()
+	if err != nil {
+		t.Fatalf("ConfigYAML: %v", err)
+	}
+	updatedDoc := append(append([]byte{}, seedDoc...), []byte("sandbox:\n  allowed_domains:\n    - example.com\n")...)
+	if _, err := srv.ApplyConfigYAML(updatedDoc, rev, false); err != nil {
+		t.Fatalf("ApplyConfigYAML (unrelated field): %v", err)
+	}
+
+	after := getSettings()
+	if !strings.Contains(after, wantMarkup) {
+		t.Errorf("notify.command's leading LF was lost after an unrelated field's save; got: %s", after)
+	}
+}
+
 // TestMutateConfig_UnknownKey_Rejected pins the read-modify-write's
 // validation: MutateConfig re-validates through the exact same
 // config.Set/Unset dotted-path machinery `boid config set/unset` already
@@ -498,6 +721,214 @@ func TestMutateConfig_ConcurrentSetsOfDifferentKeys_BothSucceed(t *testing.T) {
 	}
 	if !strings.Contains(got, "https://new.example.com") {
 		t.Errorf("final config missing web.public_url change (lost update — BLOCKER 1):\n%s", got)
+	}
+}
+
+// TestConfig_ConcurrentBatchMutateAndFullApply_CASHeldByFullApplyOnly is the
+// regression test for the "batch-vs-full-apply concurrency" concern flagged
+// in codex review round 2 (PR #831): the pre-existing concurrency tests only
+// covered two single-op MutateConfig calls
+// (TestMutateConfig_ConcurrentSetsOfDifferentKeys_BothSucceed) or two
+// ApplyConfigYAML calls
+// (TestApplyConfigYAML_ConcurrentApplies_SharedIfMatch_ExactlyOneSucceeds) —
+// never a batch MutateConfig racing a full ApplyConfigYAML.
+//
+// MutateConfig has NO If-Match parameter at all (see its own doc comment) —
+// it always applies against whatever is currently on disk under configMu,
+// so it can never itself be rejected by a concurrency conflict. The CAS
+// guard lives entirely on ApplyConfigYAML's side: whichever of the two wins
+// the race to acquire configMu first determines whether the OTHER goroutine's
+// captured If-Match is still current by the time it gets the lock.
+//
+//   - If ApplyConfigYAML runs first: it succeeds (If-Match still fresh), and
+//     the batch mutate — which always re-reads the current document under
+//     the lock — runs afterward and lands on top of it. Both changes are
+//     present in the final document.
+//   - If the batch mutate runs first: it always succeeds and advances the
+//     revision out from under ApplyConfigYAML's captured If-Match, so
+//     ApplyConfigYAML is correctly rejected with 412 Precondition Failed —
+//     never silently applied on top of a document it never actually
+//     validated against, and never silently discarding the batch mutate's
+//     already-applied change either.
+//
+// Either way: the batch mutate's change is ALWAYS present in the final
+// document (it can never lose a race), and ApplyConfigYAML's change is
+// present if and only if it succeeded — this is exactly valid CAS behavior,
+// never a silent lost update.
+func TestConfig_ConcurrentBatchMutateAndFullApply_CASHeldByFullApplyOnly(t *testing.T) {
+	srv, _ := newConfigTestServer(t)
+
+	_, rev, err := srv.ConfigYAML()
+	if err != nil {
+		t.Fatalf("ConfigYAML: %v", err)
+	}
+
+	// Distinct keys, so both changes are individually detectable in the
+	// final document regardless of which order the two goroutines land in.
+	fullApplyDoc := []byte("gc:\n  enabled: false\n")
+	const fullApplyMarker = "enabled: false"
+
+	var wg sync.WaitGroup
+	var applyErr, mutateErr error
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		_, applyErr = srv.ApplyConfigYAML(fullApplyDoc, rev, false)
+	}()
+	go func() {
+		defer wg.Done()
+		_, mutateErr = srv.MutateConfig(api.ConfigMutateRequest{Ops: []api.ConfigMutateRequest{
+			{Op: api.ConfigMutateSet, Key: "web.public_url", Value: []string{"https://race-mutate.example.com"}},
+		}})
+	}()
+	wg.Wait()
+
+	// The batch mutate has no CAS guard of its own — it must always
+	// succeed, regardless of interleaving.
+	if mutateErr != nil {
+		t.Errorf("batch MutateConfig failed under concurrency: %v (it has no If-Match guard and should never be rejected)", mutateErr)
+	}
+
+	// ApplyConfigYAML must either succeed outright, or fail specifically
+	// with 412 Precondition Failed (its CAS guard correctly detecting that
+	// the concurrent mutate changed the document out from under its
+	// captured If-Match) — never any other failure mode.
+	applySucceeded := applyErr == nil
+	if applyErr != nil {
+		serr, ok := applyErr.(*api.StatusError)
+		if !ok {
+			t.Fatalf("ApplyConfigYAML failed with a non-StatusError under concurrency: %v", applyErr)
+		}
+		if serr.Code != http.StatusPreconditionFailed {
+			t.Errorf("ApplyConfigYAML failure status = %d, want %d (Precondition Failed)", serr.Code, http.StatusPreconditionFailed)
+		}
+	}
+
+	data, _, err := srv.ConfigYAML()
+	if err != nil {
+		t.Fatalf("ConfigYAML: %v", err)
+	}
+	got := string(data)
+
+	// The batch mutate's change must always be present — it never lost the
+	// race (per its own always-succeeds assertion above).
+	if !strings.Contains(got, "race-mutate.example.com") {
+		t.Errorf("final config missing the batch mutate's change (lost update): %s", got)
+	}
+	// The full apply's change is present exactly when it reported success.
+	hasFullApply := strings.Contains(got, fullApplyMarker)
+	if applySucceeded && !hasFullApply {
+		t.Errorf("ApplyConfigYAML reported success but its change is missing from the final document: %s", got)
+	}
+	if !applySucceeded && hasFullApply {
+		t.Errorf("ApplyConfigYAML reported a conflict (412) but its change is present in the final document anyway (should have been rejected before writing): %s", got)
+	}
+}
+
+// TestMutateConfig_SequentialSingleOpsForNewForge_FailsOnFirstOp is the
+// direct regression scenario for BLOCKER (codex review round 1, PR #831):
+// three independent single-op MutateConfig calls that each fully set/unset
+// ONE leaf of a brand-new forge id cannot ever create that forge, because
+// each call validates the WHOLE document on its own — the very first call
+// (setting only "corp.host") already leaves "corp.forge" empty, which fails
+// validation before a second call ever runs. This pins the failure mode the
+// batch path (below) exists to fix; it should keep failing even after the
+// batch fix lands, since nothing about single-op semantics changed.
+func TestMutateConfig_SequentialSingleOpsForNewForge_FailsOnFirstOp(t *testing.T) {
+	srv, _ := newConfigTestServer(t)
+
+	_, err := srv.MutateConfig(api.ConfigMutateRequest{Op: api.ConfigMutateSet, Key: "gateway.forges.corp.host", Value: []string{"git.corp.example"}})
+	if err == nil {
+		t.Fatal("expected the first single-op call to fail — a new forge with only \"host\" set is not yet a valid document")
+	}
+}
+
+// TestMutateConfig_Batch_NewForgeAllFieldsAtOnce_Succeeds pins BLOCKER
+// (codex review round 1, PR #831)'s fix: creating a brand-new custom forge
+// (host + kind + secret_key) through the web settings form's three
+// sequential leaf mutations failed validation on the very first call (see
+// TestMutateConfig_SequentialSingleOpsForNewForge_FailsOnFirstOp). Batching
+// all three ops into one MutateConfig call validates only once, after all
+// three leaves are already in place, so it succeeds.
+func TestMutateConfig_Batch_NewForgeAllFieldsAtOnce_Succeeds(t *testing.T) {
+	srv, _ := newConfigTestServer(t)
+
+	result, err := srv.MutateConfig(api.ConfigMutateRequest{Ops: []api.ConfigMutateRequest{
+		{Op: api.ConfigMutateSet, Key: "gateway.forges.corp.host", Value: []string{"git.corp.example"}},
+		{Op: api.ConfigMutateSet, Key: "gateway.forges.corp.forge", Value: []string{"github"}},
+		{Op: api.ConfigMutateSet, Key: "gateway.forges.corp.secret_key", Value: []string{"CORP_PAT"}},
+	}})
+	if err != nil {
+		t.Fatalf("MutateConfig(batch, new forge): %v", err)
+	}
+	if !strings.Contains(string(result.YAML), "git.corp.example") || !strings.Contains(string(result.YAML), "CORP_PAT") {
+		t.Errorf("MutateConfig result YAML = %s, want it to contain the new forge's host and secret_key", result.YAML)
+	}
+
+	data, _, err := srv.ConfigYAML()
+	if err != nil {
+		t.Fatalf("ConfigYAML: %v", err)
+	}
+	if !strings.Contains(string(data), "git.corp.example") {
+		t.Errorf("ConfigYAML() = %s, want it to reflect the batched forge creation", data)
+	}
+}
+
+// TestMutateConfig_Batch_ExistingLeafEditsSucceed pins the batch path's
+// other everyday case (editing just one leaf of an ALREADY-valid, existing
+// forge) — this already worked via a single op before the batch fix, and
+// must keep working when routed through a one-element-equivalent batch too.
+func TestMutateConfig_Batch_ExistingLeafEditsSucceed(t *testing.T) {
+	srv, _ := newConfigTestServer(t)
+
+	if _, err := srv.MutateConfig(api.ConfigMutateRequest{Ops: []api.ConfigMutateRequest{
+		{Op: api.ConfigMutateSet, Key: "gateway.forges.corp.host", Value: []string{"git.corp.example"}},
+		{Op: api.ConfigMutateSet, Key: "gateway.forges.corp.forge", Value: []string{"github"}},
+		{Op: api.ConfigMutateSet, Key: "gateway.forges.corp.secret_key", Value: []string{"CORP_PAT_1"}},
+	}}); err != nil {
+		t.Fatalf("MutateConfig(batch, create): %v", err)
+	}
+
+	result, err := srv.MutateConfig(api.ConfigMutateRequest{Ops: []api.ConfigMutateRequest{
+		{Op: api.ConfigMutateSet, Key: "gateway.forges.corp.secret_key", Value: []string{"CORP_PAT_2"}},
+	}})
+	if err != nil {
+		t.Fatalf("MutateConfig(batch, edit existing secret_key): %v", err)
+	}
+	if !strings.Contains(string(result.YAML), "CORP_PAT_2") {
+		t.Errorf("MutateConfig result YAML = %s, want the updated secret_key", result.YAML)
+	}
+}
+
+// TestMutateConfig_Batch_PartialFailureLeavesDocumentUnchanged pins the
+// batch path's atomicity: when one op in the batch is invalid, NONE of the
+// batch's earlier, individually-valid ops are persisted — the whole call
+// fails together, and config.yaml on disk is untouched.
+func TestMutateConfig_Batch_PartialFailureLeavesDocumentUnchanged(t *testing.T) {
+	srv, configPath := newConfigTestServer(t)
+
+	before, err := os.ReadFile(configPath)
+	if err != nil && !os.IsNotExist(err) {
+		t.Fatalf("read config before: %v", err)
+	}
+
+	_, err = srv.MutateConfig(api.ConfigMutateRequest{Ops: []api.ConfigMutateRequest{
+		{Op: api.ConfigMutateSet, Key: "web.public_url", Value: []string{"https://should-not-land.example.com"}},
+		{Op: api.ConfigMutateSet, Key: "sandbox.alowed_domains" /* typo */, Value: []string{"x"}},
+	}})
+	if err == nil {
+		t.Fatal("expected the batch to fail because of the unknown key in its second op")
+	}
+
+	after, err := os.ReadFile(configPath)
+	if err != nil {
+		if os.IsNotExist(err) && len(before) == 0 {
+			return // still absent, matching the pre-call state — fine.
+		}
+		t.Fatalf("read config after: %v", err)
+	}
+	if string(after) != string(before) {
+		t.Errorf("config.yaml changed despite the batch failing:\nbefore: %q\nafter:  %q", before, after)
 	}
 }
 

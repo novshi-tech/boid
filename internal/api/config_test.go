@@ -307,6 +307,46 @@ func TestConfigHandler_Mutate_ServiceError(t *testing.T) {
 	}
 }
 
+// TestConfigHandler_Mutate_Batch pins BLOCKER (codex review round 1, PR
+// #831)'s batch request shape: a body carrying "ops" (rather than a single
+// top-level op/key/value) decodes into ConfigMutateRequest.Ops and is
+// forwarded to the service as-is — the handler itself does no batch-vs-
+// single branching, that's MutateConfig's job (internal/server/
+// config_edit.go).
+func TestConfigHandler_Mutate_Batch(t *testing.T) {
+	svc := &fakeConfigService{mutateResp: ConfigMutateResult{
+		YAML:     []byte("gateway:\n  forges:\n    corp:\n      host: git.corp.example\n      forge: github\n      secret_key: CORP_PAT\n"),
+		Revision: "3",
+	}}
+	h := &ConfigHandler{Service: svc}
+
+	body := `{"ops":[` +
+		`{"op":"set","key":"gateway.forges.corp.host","value":["git.corp.example"]},` +
+		`{"op":"set","key":"gateway.forges.corp.forge","value":["github"]},` +
+		`{"op":"set","key":"gateway.forges.corp.secret_key","value":["CORP_PAT"]}` +
+		`]}`
+	req := httptest.NewRequest(http.MethodPost, "/mutate", strings.NewReader(body))
+	w := httptest.NewRecorder()
+	h.Routes().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", w.Code, w.Body.String())
+	}
+	if len(svc.lastMutateOp.Ops) != 3 {
+		t.Fatalf("MutateConfig received %d ops, want 3: %+v", len(svc.lastMutateOp.Ops), svc.lastMutateOp)
+	}
+	if svc.lastMutateOp.Ops[0].Key != "gateway.forges.corp.host" || svc.lastMutateOp.Ops[2].Key != "gateway.forges.corp.secret_key" {
+		t.Errorf("Ops = %+v", svc.lastMutateOp.Ops)
+	}
+	var got ConfigMutateResult
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got.Revision != "3" {
+		t.Errorf("Revision = %q, want 3", got.Revision)
+	}
+}
+
 // TestConfigHandler_Mutate_InvalidJSON pins the request-body decode path.
 func TestConfigHandler_Mutate_InvalidJSON(t *testing.T) {
 	svc := &fakeConfigService{}

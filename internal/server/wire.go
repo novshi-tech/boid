@@ -1460,6 +1460,12 @@ func mountRoutes(srv *Server, runtime *appRuntime) error {
 			SessionDispatcher: sessionAdapter,
 			Registry:          runtime.connRegistry,
 			AttachmentsRoot:   dataHomeFor(srv.cfg),
+			// GET /settings (docs/plans/volume-only-daemon.md §論点 f):
+			// srv itself satisfies api.SettingsConfigService directly
+			// (ConfigYAML() already matches that shape — the same method
+			// configHandler above uses), mirroring configHandler's own
+			// `Service: srv` wiring just above.
+			ConfigService: srv,
 		}
 		r.Get("/api/tasks/{id}/events", webHandler.TaskEvents)
 		r.Mount("/", webHandler.Routes())
