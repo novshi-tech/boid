@@ -2,15 +2,31 @@
 #
 # Compose stack for the container-backend daemon
 # (docs/plans/phase6-container-backend.md §PR6). PR7 (#823) landed startup
-# reap, Wait single-ownership, and persistent transcript spool — the three
-# prerequisites the PR6-era "must NOT be run as a production deploy yet"
-# warning was gating on. Combined with §⓪ (broker TCP wire, #825) and §⓪-b
-# (egress proxy dotless refuse, #826), the §① dogfood entry conditions of
-# docs/plans/phase6-cutover-followups.md are met and this stack is the
-# supported deploy path for the §① dogfood period (via
-# `scripts/deploy-container.sh`).
+# reap, Wait single-ownership, and persistent transcript spool. Combined
+# with §⓪ (broker TCP wire, #825) and §⓪-b (egress proxy dotless refuse,
+# #826), this stack briefly became the supported §① dogfood deploy path —
+# but the 2026-07-24 dogfood session hit a fatal architecture wall running
+# it for real (host filesystem bind mounts for daemon state: docker.sock
+# absent on a podman-only host, podman rootless subuid mapping making
+# 0600 host files unreadable from inside the container, and — fatally — an
+# auto-prune codepath deleting the entire DB because the container could
+# not see host project checkouts at all). See
+# docs/plans/volume-only-daemon.md (§論点 d secret lifecycle, §論点 i engine
+# socket) for the full incident writeup and the redesign this file now
+# implements: daemon state (BOID_DATA_DIR / BOID_CONFIG_DIR) moved from
+# host BIND mounts to daemon-owned NAMED VOLUMES (`boid_data`/
+# `boid_config` below) — §決定4 ("host BIND mounts で shared state", and
+# the host-daemon-rollback contract that depended on it) is retracted.
+# Secret material (secret.key / web_secret / the internal mTLS CA) is
+# generated on first boot into the now-empty volume instead of expected to
+# pre-exist on the host (see internal/atomicfile, internal/dispatcher.
+# LoadOrCreateKey, internal/mtls.LoadOrCreate). This is PR-1a of the
+# volume-only-daemon.md staged rollout (§論点 e "PR 分割案 B") — project
+# registration (`boid project add <dir>`, still host-path-based) and the
+# rest of the CLI/Web config-editing surface are NOT yet updated to the
+# volume-only model; those land in the sibling PR-1b/1c/1d and PR-2.
 #
-# Topology (§決定4/5):
+# Topology (§決定4/5, minus the retracted persistence half above):
 #   - `daemon`: the boid daemon itself, containerized (docker-out-of-docker —
 #     mounts the HOST's own /var/run/docker.sock so it can launch job
 #     containers as sibling containers, not nested inside itself). It also
@@ -36,58 +52,40 @@
 #     route to the outside) so a job container placed on a workspace network
 #     has no path to the internet except back through this daemon's proxy.
 #
-# Persistence (§決定4 — host BIND mounts, deliberately not named volumes, so
-# a rollback to the host daemon + userns "旧デプロイ" shares the exact same
-# on-disk state the compose daemon was writing to). Three env vars carry the
-# actual host paths — BOID_DATA_DIR / BOID_CONFIG_DIR / BOID_RUNTIME_DIR —
-# required (no in-file default): a cross-machine-portable default would need
-# `${XDG_DATA_HOME:-${HOME}/.local/share}`-style NESTED interpolation, which
-# is compose-spec legal (and works under real `docker compose`) but is not
-# supported by podman-compose 1.0.6's interpolation (confirmed empirically
-# during PR6 development — it mis-tokenizes the nested `${HOME}` and fails
-# with a bogus "volume ... not defined in top level" error). Pushing the
-# XDG resolution into scripts/deploy-container.sh (plain bash, where nested
-# `${VAR:-$OTHER}` is unambiguous) instead of this YAML sidesteps that gap
-# entirely and works under both tools. See build/container/.env.example for
-# the exact values these three variables need.
+# Persistence (docs/plans/volume-only-daemon.md §論点 d — supersedes §決定4
+# above): BOID_DATA_DIR and BOID_CONFIG_DIR are now daemon-owned NAMED
+# VOLUMES (`boid_data` / `boid_config`, declared at the bottom of this
+# file), mounted at the image's own baked-in, fixed container paths —
+# /home/boid/.local/share/boid and /home/boid/.config/boid (the `boid`
+# user's $HOME, per build/container/Dockerfile's `useradd --home-dir
+# /home/boid`) — not a host path at all. This is the direct fix for two of
+# the three dogfood-incident walls this file's top comment describes: a
+# named volume is container-filesystem-native, so there is no host subuid
+# mapping to collide with (wall 2), and the daemon's own container-internal
+# filesystem view of its data dir no longer diverges from what the host can
+# see (wall 3 — moot now, since nothing here expects the host to see this
+# directory at all; the auto-prune codepath that malfunctioned on that
+# mismatch is being removed as its own invariant, docs/plans/
+# volume-only-daemon.md §論点 a, not a compose-level concern).
 #
-# All three are bound source == target (Major 10, PR6 codex review — a fix
-# to what BOID_DATA_DIR/BOID_CONFIG_DIR did before this PR, matching what
-# BOID_RUNTIME_DIR already did): a DooD sibling container is created via
-# the HOST's own docker daemon (the bind-mounted /var/run/docker.sock
-# below), not a nested one, so a mount Source this daemon process hands to
-# a sibling container it creates (per-job TLS material —
-# internal/dispatcher/container_backend.go's dockerTLSDir bind, PR6-
-# residual work — and, longer term, PR7's real workspace-volume/spec-file
-# mounts) has to be a path the HOST filesystem actually has. Remapping
-# BOID_DATA_DIR to some other in-container path (as this file did
-# pre-Major-10) breaks that the moment such a mount is constructed from an
-# absolute path this daemon computes internally — every one of those paths
-# would be container-internal, not host-visible, and the sibling docker
-# daemon would either mount the wrong host directory or fail outright.
-# Source == target sidesteps the whole class of bug: whatever absolute
-# path boid's own code computes under BOID_DATA_DIR/BOID_CONFIG_DIR/
-# BOID_RUNTIME_DIR is, by construction, already a real path on the host.
-#   - BOID_DATA_DIR -> the SQLite DB, runtimes/, workspace homes/, kits/,
-#     the per-daemon mTLS CA (tls/), install_id, and web_secret. One bind
-#     covers all of it because every one of those already resolves under
-#     this single root — see cmd/start.go's default*Dir/*Path helpers.
-#     Those helpers all resolve relative to $XDG_DATA_HOME (falling back
-#     to $HOME/.local/share) — with the bind mount no longer remapped onto
-#     the image's baked-in `/home/boid` (Major 10), the `environment:`
-#     block below sets XDG_DATA_HOME explicitly to the exact directory
-#     BOID_DATA_DIR was computed under, so those helpers resolve to
-#     BOID_DATA_DIR itself regardless of what $HOME happens to be inside
-#     the container — the "container 内で ${BOID_DATA_DIR} を絶対 path で
-#     扱う" alternative the review offered, applied via the one env var
-#     every default*Dir/*Path helper already keys off, rather than trying
-#     to make the container's $HOME itself match the host's (which would
-#     silently break the moment an operator's host XDG_DATA_HOME diverges
-#     from $HOME/.local/share).
-#   - BOID_CONFIG_DIR -> config.yaml, workspaces/*.yaml, host_commands.yaml
-#     (internal/config.Load, via Go's os.UserConfigDir — same
-#     XDG_CONFIG_HOME-or-$HOME/.config convention, same environment:
-#     override below).
+# Because the container paths are fixed (not derived from a host path the
+# way the retracted BOID_DATA_DIR/BOID_CONFIG_DIR bind-mount env vars were),
+# the `environment:` block below sets XDG_DATA_HOME/XDG_CONFIG_HOME to
+# those same fixed paths as plain literals — cmd/start.go's default*Dir/
+# *Path helpers (data side) and internal/config.Load (config side, Go's
+# os.UserConfigDir()) key off those two env vars, so they resolve to
+# exactly where the named volumes are mounted regardless of what a given
+# operator's host XDG_DATA_HOME/XDG_CONFIG_HOME happen to be — no
+# scripts/deploy-container.sh computation needed for these two anymore
+# (contrast BOID_RUNTIME_DIR below, which is still host-derived).
+#
+# BOID_RUNTIME_DIR remains a host BIND mount (source == target, unchanged
+# from before) — this PR (volume-only-daemon.md §論点 e's PR-1) is scoped
+# to daemon *data* persistence and the engine socket only. The CLI's
+# reliance on reaching this daemon's UNIX socket by host-visible path (the
+# "server socket の host 同一 path bind (相互排他)" mechanism below) is
+# retired in favor of a TCP profile in a later PR (§論点 c) — until then
+# this bind mount is still load-bearing and is left exactly as-is:
 #   - BOID_RUNTIME_DIR -> the host's own socket runtime dir — this is the
 #     "server socket の host 同一 path bind (相互排他)" requirement (§決定4):
 #     `boid start`'s existing `IsSocketAlive` guard
@@ -101,6 +99,18 @@
 #     IsSocketAlive already did the right thing once both sides can see the
 #     same path, which is purely a mount/identity concern this compose file
 #     is responsible for.
+#
+# KNOWN GAP (flagged, not fixed by this PR): internal/dispatcher/
+# container_backend.go materializes per-job DooD sibling-container mounts
+# (dockerTLSDir et al.) from absolute paths it computes under what used to
+# be a host-visible BOID_DATA_DIR. Now that BOID_DATA_DIR is a named
+# volume, any such path is container-internal only — a DooD sibling
+# container the daemon asks the HOST docker engine to create cannot mount
+# it. Nothing in this PR touches container_backend.go; this is real latent
+# breakage for that specific mechanism, deferred to a follow-up (most
+# likely: materialize that per-job material into its own throwaway named
+# volume or an emptyDir-style tmpfs mount shared by daemon+sibling via the
+# docker API, rather than a filesystem path).
 #
 # External listener wire status (broker / git gateway / egress proxy are
 # backed by real listeners on `boid_internal` now that [Blocker 2, PR7
@@ -218,21 +228,21 @@ services:
       # daemon.ShouldLogToStdout's doc comment (internal/daemon/daemon.go)
       # for the full rationale.
       BOID_LOG_STDOUT: "1"
-      # XDG_DATA_HOME / XDG_CONFIG_HOME (Major 10, PR6 codex review): make
-      # cmd/start.go's default*Dir/*Path helpers (data side, via
-      # os.UserHomeDir()-or-XDG_DATA_HOME) and internal/config.Load
-      # (config side, via Go's os.UserConfigDir()) resolve to
-      # BOID_DATA_DIR/BOID_CONFIG_DIR THEMSELVES — the exact directories
-      # the volumes: entries below now bind source == target — regardless
-      # of the image's baked-in $HOME (/home/boid). Set to the PARENT of
-      # BOID_DATA_DIR/BOID_CONFIG_DIR (both end in a literal `/boid`
-      # segment the default*Dir/*Path helpers and os.UserConfigDir()
-      # append themselves), computed by scripts/deploy-container.sh
-      # alongside BOID_DATA_DIR/BOID_CONFIG_DIR so both stay in sync by
-      # construction rather than needing independent values kept manually
-      # consistent.
-      XDG_DATA_HOME: "${XDG_DATA_HOME}"
-      XDG_CONFIG_HOME: "${XDG_CONFIG_HOME}"
+      # XDG_DATA_HOME / XDG_CONFIG_HOME (docs/plans/volume-only-daemon.md
+      # §論点 d — replaces the Major 10/PR6 host-path-derived version):
+      # fixed literals, not interpolated from the launching shell. Make
+      # cmd/start.go's default*Dir/*Path helpers (data side) and
+      # internal/config.Load (config side, Go's os.UserConfigDir())
+      # resolve to /home/boid/.local/share and /home/boid/.config — the
+      # exact parents of where the `boid_data`/`boid_config` NAMED VOLUMES
+      # below are mounted (both end in a literal `/boid` segment those
+      # helpers append themselves). This is also, not coincidentally, the
+      # image's own baked-in $HOME (build/container/Dockerfile's `useradd
+      # --home-dir /home/boid`) — unlike the retracted host-bind-mount
+      # design, there is no host XDG layout these need to track anymore,
+      # so a fixed literal is correct rather than a gap.
+      XDG_DATA_HOME: "/home/boid/.local/share"
+      XDG_CONFIG_HOME: "/home/boid/.config"
       # XDG_STATE_HOME (PR9): makes daemon.LogFilePath() (internal/daemon/
       # daemon.go — $XDG_STATE_HOME/boid/boid.log, falling back to
       # $HOME/.local/state/boid/boid.log) resolve under the ALREADY
@@ -329,16 +339,29 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:
-      # DooD: sibling job containers, not nested (§決定4). The generic
-      # `/var/run/docker.sock` host path resolves correctly under both
-      # docker and podman-as-docker-compat hosts.
-      - /var/run/docker.sock:/var/run/docker.sock
-      # source == target for all three (Major 10, PR6 codex review — see
-      # this file's own "Persistence" header comment for why a DooD sibling
-      # container's mount Source must be a real host path, not a
-      # container-internal remap).
-      - ${BOID_DATA_DIR}:${BOID_DATA_DIR}
-      - ${BOID_CONFIG_DIR}:${BOID_CONFIG_DIR}
+      # DooD: sibling job containers, not nested (§決定4). Engine-agnostic
+      # source (docs/plans/volume-only-daemon.md §論点 i, 案 X — Podman
+      # promoted to primary target): defaults to the docker-shaped path
+      # (works unchanged on a real docker host, and is what CI's
+      # e2e-container job — a real-docker runner — still resolves to),
+      # overridden to the podman rootless user socket by
+      # scripts/deploy-container.sh's engine detection when podman is the
+      # engine in use. Container-side path is always /var/run/docker.sock
+      # regardless of engine, so no Go-side (DOCKER_HOST-consuming) code
+      # needed to change.
+      - ${BOID_DOCKER_SOCK_SRC:-/var/run/docker.sock}:/var/run/docker.sock
+      # boid_data / boid_config: daemon-owned NAMED VOLUMES (docs/plans/
+      # volume-only-daemon.md §論点 d — see this file's own "Persistence"
+      # header comment above for the full rationale/incident writeup),
+      # replacing the retracted §決定4 host bind mounts. Declared at the
+      # bottom of this file. Mounted at the image's fixed, baked-in paths —
+      # matches the XDG_DATA_HOME/XDG_CONFIG_HOME literals in this
+      # service's own `environment:` block above.
+      - boid_data:/home/boid/.local/share/boid
+      - boid_config:/home/boid/.config/boid
+      # BOID_RUNTIME_DIR: still a host bind mount, source == target,
+      # unchanged (see this file's own "Persistence" header comment for
+      # why this one PR does not touch it).
       - ${BOID_RUNTIME_DIR}:${BOID_RUNTIME_DIR}
     networks:
       # boid-dockerproxy: the DNS name a container-backend job's
@@ -405,3 +428,12 @@ networks:
   # this runtime network).
   default:
     driver: bridge
+
+volumes:
+  # docs/plans/volume-only-daemon.md §論点 d. Plain named volumes (no
+  # driver_opts) — an operator-visible backup story is `boid workspace
+  # export --all` (§論点 g), not raw volume snapshotting, so there is no
+  # need for anything beyond the compose/docker-engine default local
+  # driver here.
+  boid_data:
+  boid_config:
