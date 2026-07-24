@@ -1,11 +1,17 @@
 package dispatcher
 
 import (
+	"bufio"
+	"context"
 	"fmt"
+	"net"
+	"net/http"
 	"os"
 	"testing"
+	"time"
 
 	"github.com/novshi-tech/boid/internal/orchestrator"
+	"github.com/novshi-tech/boid/internal/sandbox"
 )
 
 type fakeProjectLookup struct {
@@ -227,20 +233,26 @@ func TestResolveWorkspaceProxy_AllocatorUnwired_StaysOnFloor(t *testing.T) {
 	}
 }
 
-// TestResolveWorkspaceProxy_EmptyWorkspaceID_UsesDefaultListenerAllocator
+// TestResolveWorkspaceProxy_EmptyWorkspaceID_UsesDedicatedNoWorkspaceListener
 // pins MAJOR 3 (codex review round 2): a job with no workspace at all
 // (`boid exec` / ProfileInit against an unlinked project) must still push
-// the current floor into the default listener via
-// ProxyAllocator.GetOrCreate(orchestrator.DefaultWorkspaceSlug, ...) on
+// the current floor into its listener via ProxyAllocator.GetOrCreate on
 // every call — not just read a static, boot-time-frozen port — so a
-// hot-reloaded sandbox.allowed_domains reaches it immediately. See
-// resolveWorkspaceProxy's own doc comment for the pre-fix bug this replaces
-// (pre-fix, this test asserted the OPPOSITE: that the allocator was never
-// called for an empty workspaceID).
-func TestResolveWorkspaceProxy_EmptyWorkspaceID_UsesDefaultListenerAllocator(t *testing.T) {
+// hot-reloaded sandbox.allowed_domains reaches it immediately.
+//
+// It also pins the BLOCKER fix (codex review round 3): that call must use
+// noWorkspaceProxyKey, NOT orchestrator.DefaultWorkspaceSlug — pre-fix, this
+// test asserted the workspaceID passed to the allocator was
+// orchestrator.DefaultWorkspaceSlug, the exact aliasing bug
+// resolveWorkspaceProxy's own doc comment describes (a real "default"-slug
+// workspace's own AllowedDomains would widen the SAME shared listener a
+// no-workspace job was using). See
+// TestResolveWorkspaceProxy_EmptyWorkspaceAndDefaultWorkspace_DistinctListeners
+// for the end-to-end proof against a real ProxyManager.
+func TestResolveWorkspaceProxy_EmptyWorkspaceID_UsesDedicatedNoWorkspaceListener(t *testing.T) {
 	floor := []string{"pypi.org"}
 	defaultPort := 8000
-	alloc := &fakeProxyAllocator{ports: map[string]int{orchestrator.DefaultWorkspaceSlug: 8000}}
+	alloc := &fakeProxyAllocator{ports: map[string]int{noWorkspaceProxyKey: 8000}}
 	r := &Runner{
 		AllowedDomains: func() []string { return floor },
 		ProxyPort:      &defaultPort,
@@ -254,15 +266,95 @@ func TestResolveWorkspaceProxy_EmptyWorkspaceID_UsesDefaultListenerAllocator(t *
 		t.Errorf("allowed = %v, want %v", allowed, floor)
 	}
 	if len(alloc.calls) != 1 {
-		t.Fatalf("alloc calls = %d, want exactly 1 (the default listener must be refreshed, not skipped)", len(alloc.calls))
+		t.Fatalf("alloc calls = %d, want exactly 1 (the no-workspace listener must be refreshed, not skipped)", len(alloc.calls))
 	}
 	got := alloc.calls[0]
-	if got.workspaceID != orchestrator.DefaultWorkspaceSlug {
-		t.Errorf("alloc call workspaceID = %q, want %q", got.workspaceID, orchestrator.DefaultWorkspaceSlug)
+	if got.workspaceID != noWorkspaceProxyKey {
+		t.Errorf("alloc call workspaceID = %q, want %q (NOT orchestrator.DefaultWorkspaceSlug — that key belongs to the real default workspace)", got.workspaceID, noWorkspaceProxyKey)
 	}
 	if !equalSlice(got.allowed, floor) {
 		t.Errorf("alloc call allowed = %v, want %v", got.allowed, floor)
 	}
+}
+
+// TestResolveWorkspaceProxy_EmptyWorkspaceAndDefaultWorkspace_DistinctListeners
+// is the BLOCKER regression test (codex review round 3): it exercises the
+// REAL sandbox.ProxyManager (not the fake) because the bug is specifically
+// about a shared, mutable *sandbox.Proxy instance — a fake keyed by a plain
+// map cannot reproduce the aliasing the pre-fix code exhibited when both
+// call sites passed orchestrator.DefaultWorkspaceSlug.
+//
+// Scenario: a no-workspace job (`boid exec`) dispatches first, floor-only.
+// Then a REAL "default"-slug workspace — which does have its own
+// workspace.yaml AllowedDomains — dispatches with an extra domain. The two
+// must land on distinct listeners: the default-workspace dispatch must not
+// widen the no-workspace listener, and the no-workspace job must never gain
+// the default workspace's own domain.
+func TestResolveWorkspaceProxy_EmptyWorkspaceAndDefaultWorkspace_DistinctListeners(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	mgr := sandbox.NewProxyManager()
+	mgr.Start(ctx)
+	defer mgr.StopAll()
+
+	floor := []string{"pypi.org"}
+	r := &Runner{
+		AllowedDomains: func() []string { return floor },
+		ProxyAllocator: mgr,
+		Workspaces: fakeWorkspaceLookup{metas: map[string]*orchestrator.WorkspaceMeta{
+			orchestrator.DefaultWorkspaceSlug: {AllowedDomains: []string{"evil.example.com"}},
+		}},
+	}
+
+	noWSAllowed, noWSPort := r.resolveWorkspaceProxy("")
+	if !equalSlice(noWSAllowed, floor) {
+		t.Fatalf("no-workspace allowed = %v, want floor only %v", noWSAllowed, floor)
+	}
+
+	defaultAllowed, defaultPort := r.resolveWorkspaceProxy(orchestrator.DefaultWorkspaceSlug)
+	wantDefault := []string{"pypi.org", "evil.example.com"}
+	if !equalSlice(defaultAllowed, wantDefault) {
+		t.Fatalf("default-workspace allowed = %v, want %v", defaultAllowed, wantDefault)
+	}
+
+	if noWSPort == defaultPort {
+		t.Fatalf("no-workspace and default-workspace share port %d; want distinct listeners", noWSPort)
+	}
+
+	// The no-workspace listener must remain floor-only after the
+	// default-workspace dispatch widened ITS OWN listener.
+	if got := quickConnectStatus(t, noWSPort, "evil.example.com:443"); got != http.StatusForbidden {
+		t.Errorf("no-workspace listener allowed evil.example.com after an unrelated default-workspace dispatch widened its own listener: status = %d, want 403", got)
+	}
+
+	// And the reverse: the default workspace's own listener does grant what
+	// its own workspace.yaml resolved to.
+	if got := quickConnectStatus(t, defaultPort, "evil.example.com:443"); got != http.StatusBadGateway && got != http.StatusOK {
+		t.Errorf("default-workspace listener blocked its own allowed domain: status = %d, want 200 or 502", got)
+	}
+}
+
+// quickConnectStatus dials 127.0.0.1:port, sends a CONNECT for host, and
+// returns the response status code. Mirrors internal/sandbox's
+// (unexported-to-this-package) proxy_manager_test.go helper of the same
+// shape, duplicated here because that one lives in package sandbox_test.
+func quickConnectStatus(t *testing.T, port int, host string) int {
+	t.Helper()
+	conn, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", port), 2*time.Second)
+	if err != nil {
+		t.Fatalf("dial proxy: %v", err)
+	}
+	defer conn.Close()
+	conn.SetDeadline(time.Now().Add(5 * time.Second))
+	req := fmt.Sprintf("CONNECT %s HTTP/1.1\r\nHost: %s\r\n\r\n", host, host)
+	if _, err := conn.Write([]byte(req)); err != nil {
+		t.Fatalf("write CONNECT: %v", err)
+	}
+	resp, err := http.ReadResponse(bufio.NewReader(conn), nil)
+	if err != nil {
+		t.Fatalf("read response: %v", err)
+	}
+	return resp.StatusCode
 }
 
 // TestResolveWorkspaceProxy_EmptyWorkspaceID_AllowedDomainsRefreshedEveryCall
