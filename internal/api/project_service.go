@@ -832,24 +832,36 @@ func (s *ProjectAppService) ApplyWorkspace(apply *orchestrator.WorkspaceEnvelope
 // refuse the entire apply before touching the DB rather than proceed with
 // a wrong/partial resolution.
 //
-// A resolution failure that is NOT "no project has this name" (PR-1d codex
-// round-3 Major) — e.g. resolveProjectByNameExact's own s.Projects.
-// ListProjects() call returning a transient 500 — must NOT be folded into
-// missing either: only a genuine StatusError{404} is treated as "this
-// project is simply not registered yet." Any other error aborts the whole
-// apply and propagates the underlying error, the same "refuse before any DB
-// write" discipline the ambiguity case above already established. Silently
-// treating a transient lookup failure as "missing" would omit the target
-// from projectIDsByName and let the subsequent transaction detach a
-// currently-attached project that was, in fact, still listed in the
-// document — the failure was in resolving it, not in the document itself.
+// PR-1d codex round-5 Major: every check and lookup below reads from ONE
+// snapshotRegisteredProjects() call, captured up front. The pre-fix version
+// called s.Projects.ListProjects()+hydrate ONCE for
+// refuseIfAnyRegisteredProjectNameUnavailable's availability check, then
+// AGAIN — separately, once per spec.projects[] entry — inside
+// resolveProjectByNameExact. Those were two (or more) independently timed
+// reads of live, mutable state (s.Meta's in-memory cache), with s.mu not
+// held across any of it. A concurrent ReloadProjects landing in the window
+// between the check and a later per-name lookup could remove a project's
+// cached Meta.Name AFTER the check already verified every name was
+// available, and the stale per-name lookup would then report that project
+// "missing" — the exact "cannot verify" -> "does not exist" mistranslation
+// the round-4 guard exists to prevent, just reopened one level down by the
+// TWO snapshots not agreeing. A single up-front snapshot, reused for both
+// the check and every lookup, makes that disagreement structurally
+// impossible: there is no second read in which the picture could differ.
 func (s *ProjectAppService) resolveWorkspaceApplyProjectNames(projects []orchestrator.WorkspaceEnvelopeProject) (ids map[string]string, missing []string, err error) {
+	snapshot, err := s.snapshotRegisteredProjects()
+	if err != nil {
+		return nil, nil, err
+	}
+
 	// PR-1d codex round-4 Blocker: refuse the whole apply up front when the
 	// registered-project name set is incomplete — see
 	// refuseIfAnyRegisteredProjectNameUnavailable's doc comment for why an
 	// unavailable name must never be allowed to fall through to
-	// resolveProjectByNameExact's ordinary "no match" path below.
-	if err := s.refuseIfAnyRegisteredProjectNameUnavailable(); err != nil {
+	// resolveProjectByNameExact's ordinary "no match" path below. Reads the
+	// SAME snapshot the per-name lookups below use (round-5 Major, see this
+	// function's own doc comment).
+	if err := refuseIfAnyRegisteredProjectNameUnavailable(snapshot); err != nil {
 		return nil, nil, err
 	}
 
@@ -864,13 +876,10 @@ func (s *ProjectAppService) resolveWorkspaceApplyProjectNames(projects []orchest
 			missing = append(missing, ep.Name)
 			continue
 		}
-		matches, resolveErr := s.resolveProjectByNameExact(ep.Name)
-		if resolveErr != nil {
-			if se, ok := resolveErr.(*StatusError); ok && se.Code == http.StatusNotFound {
-				missing = append(missing, ep.Name)
-				continue
-			}
-			return nil, nil, resolveErr
+		matches := resolveProjectByNameExact(snapshot, ep.Name)
+		if len(matches) == 0 {
+			missing = append(missing, ep.Name)
+			continue
 		}
 		if len(matches) > 1 {
 			matchIDs := make([]string, len(matches))
@@ -890,12 +899,33 @@ func (s *ProjectAppService) resolveWorkspaceApplyProjectNames(projects []orchest
 	return ids, missing, nil
 }
 
+// snapshotRegisteredProjects reads every registered project via a SINGLE
+// s.Projects.ListProjects() call and hydrates each with Meta from the
+// in-memory ProjectMeta cache — the one and only DB/cache read
+// resolveWorkspaceApplyProjectNames performs (PR-1d codex round-5 Major).
+// A repository failure here (e.g. a transient 500) aborts the whole apply
+// before any DB write, matching round-3 Major's "any resolution failure
+// that is not a genuine 404 must abort, never fold into missing" discipline
+// — there is no per-name repository call left to fail separately.
+func (s *ProjectAppService) snapshotRegisteredProjects() ([]*orchestrator.Project, error) {
+	projects, err := s.Projects.ListProjects()
+	if err != nil {
+		return nil, &StatusError{Code: http.StatusInternalServerError, Message: err.Error()}
+	}
+	for _, p := range projects {
+		s.hydrateProject(p)
+	}
+	return projects, nil
+}
+
 // refuseIfAnyRegisteredProjectNameUnavailable refuses to proceed when the
 // registered-project name set is incomplete: some project's project.yaml
 // could not be hydrated (removed from disk, unreadable, or malformed),
 // leaving ProjectStore.LoadAll's cached Meta.Name empty while that
 // project's DB row AND any existing workspace assignment are left
-// untouched (PR-1d codex round-4 Blocker).
+// untouched (PR-1d codex round-4 Blocker). snapshot is the caller's single
+// snapshotRegisteredProjects() read (PR-1d codex round-5 Major) — this
+// function performs no lookup of its own.
 //
 // Without this check, resolveProjectByNameExact's exact-match loop simply
 // never matches this project — an empty Meta.Name can never equal a
@@ -921,13 +951,8 @@ func (s *ProjectAppService) resolveWorkspaceApplyProjectNames(projects []orchest
 // only safe response to "I cannot tell" is to refuse before touching the
 // DB, exactly as resolveWorkspaceApplyProjectNames' ambiguous-name and
 // non-404-error cases already do.
-func (s *ProjectAppService) refuseIfAnyRegisteredProjectNameUnavailable() error {
-	projects, err := s.Projects.ListProjects()
-	if err != nil {
-		return &StatusError{Code: http.StatusInternalServerError, Message: err.Error()}
-	}
-	for _, p := range projects {
-		s.hydrateProject(p)
+func refuseIfAnyRegisteredProjectNameUnavailable(snapshot []*orchestrator.Project) error {
+	for _, p := range snapshot {
 		if p.Meta.Name == "" {
 			return &StatusError{
 				Code: http.StatusConflict,
@@ -941,10 +966,15 @@ func (s *ProjectAppService) refuseIfAnyRegisteredProjectNameUnavailable() error 
 	return nil
 }
 
-// resolveProjectByNameExact resolves name to every registered project whose
+// resolveProjectByNameExact resolves name to every project in snapshot whose
 // project.yaml name matches EXACTLY, using ONLY name matching — deliberately
 // not ResolveProjectRef's id-priority-then-name-exact-then-name-substring
-// behavior (PR-1d codex round-3 Blocker).
+// behavior (PR-1d codex round-3 Blocker). snapshot is the caller's single
+// snapshotRegisteredProjects() read (PR-1d codex round-5 Major) — this
+// function performs no lookup of its own, so calling it once per
+// spec.projects[] entry costs no extra DB/cache round trip and, more
+// importantly, cannot observe a different picture than a sibling call made
+// moments earlier against the same snapshot.
 //
 // spec.projects[].name is defined by the Workspace envelope schema
 // (docs/plans/volume-only-daemon.md) as a project.yaml `name:` value, never
@@ -962,28 +992,20 @@ func (s *ProjectAppService) refuseIfAnyRegisteredProjectNameUnavailable() error 
 // document alone, never fuzzy CLI convenience matching some unrelated
 // project by partial name.
 //
-// Returns StatusError{404} when no project has this exact name — the only
-// error resolveWorkspaceApplyProjectNames folds into "missing" (PR-1d codex
-// round-3 Major: any other error, e.g. the ListProjects() call below itself
-// failing, must abort the whole apply instead).
-func (s *ProjectAppService) resolveProjectByNameExact(name string) ([]*orchestrator.Project, error) {
-	projects, err := s.Projects.ListProjects()
-	if err != nil {
-		return nil, &StatusError{Code: http.StatusInternalServerError, Message: err.Error()}
-	}
-	for _, p := range projects {
-		s.hydrateProject(p)
-	}
+// Returns nil when no project in snapshot has this exact name — the caller
+// folds that into "missing" (PR-1d codex round-3 Major: any OTHER
+// resolution failure must abort the whole apply instead; there is no
+// longer a per-name repository call here that could fail that way, so the
+// only failure mode left is snapshotRegisteredProjects' own, handled once
+// by the caller before this function is ever invoked).
+func resolveProjectByNameExact(snapshot []*orchestrator.Project, name string) []*orchestrator.Project {
 	var matches []*orchestrator.Project
-	for _, p := range projects {
+	for _, p := range snapshot {
 		if p.Meta.Name == name {
 			matches = append(matches, p)
 		}
 	}
-	if len(matches) == 0 {
-		return nil, &StatusError{Code: http.StatusNotFound, Message: fmt.Sprintf("no project matches name %q", name)}
-	}
-	return matches, nil
+	return matches
 }
 
 // ExportWorkspaceEnvelopes returns one or more boid.dev/v1 Workspace yaml
@@ -1060,9 +1082,22 @@ func (s *ProjectAppService) ExportWorkspaceEnvelopes(slugs []string) ([]byte, er
 			// would report this project as unresolvable and detach it (or,
 			// worse, attach a different project the basename happened to
 			// collide with).
-			if name == "" {
+			//
+			// PR-1d codex round-5 Minor: strings.TrimSpace, not a bare == ""
+			// comparison — project.yaml validation now refuses a
+			// whitespace-only name at load time (internal/orchestrator/
+			// spec_loader.go), but a project registered by an older boid
+			// build (before that fix landed) could already have one
+			// persisted. A bare == "" check would let such a name through
+			// here, emit `name: "  "` in the document, and then have apply's
+			// own strings.TrimSpace(ep.Name) == "" check (resolveWorkspace
+			// ApplyProjectNames) fold it into "missing" on the way back in —
+			// the same export-succeeds/apply-fails round-trip gap the
+			// name-is-required fix closes for newly-created projects,
+			// defense-in-depth here for ones that predate it.
+			if strings.TrimSpace(name) == "" {
 				return nil, &StatusError{Code: http.StatusConflict, Message: fmt.Sprintf(
-					"project %q has no authoritative name (project.yaml unavailable); fix or unregister the project before exporting",
+					"project %q has no authoritative name (project.yaml unavailable or whitespace-only); fix or unregister the project before exporting",
 					id,
 				)}
 			}

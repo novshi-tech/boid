@@ -2368,6 +2368,21 @@ type stubProjectRepository struct {
 	// (while ProjectAppService.mu is held) so a concurrent SetProjectWorkspace
 	// call can be started and observed blocking on that same mutex.
 	setProjectWorkspaceHook func(projectID, workspaceID string)
+	// listProjectsCalls counts ListProjects invocations (PR-1d codex
+	// round-5 Major: single-snapshot regression guard). Pre-fix,
+	// resolveWorkspaceApplyProjectNames called ListProjects once for its
+	// availability check and AGAIN, separately, once per spec.projects[]
+	// entry being resolved — tests assert this is exactly 1 regardless of
+	// how many names are resolved in one apply.
+	listProjectsCalls int
+	// listProjectsHook, if set, is called synchronously at the start of
+	// EVERY ListProjects invocation, after listProjectsCalls is
+	// incremented and before s.projects is returned (so the hook may
+	// reassign s.projects itself to change what this and only this call
+	// returns). Used to simulate a concurrent ReloadProjects landing
+	// between two DIFFERENT ListProjects call sites (PR-1d codex round-5
+	// Major).
+	listProjectsHook func(call int)
 }
 
 func (s *stubProjectRepository) CreateProject(project *orchestrator.Project) error { return nil }
@@ -2380,6 +2395,10 @@ func (s *stubProjectRepository) GetProject(id string) (*orchestrator.Project, er
 	return nil, fmt.Errorf("project not found: %s", id)
 }
 func (s *stubProjectRepository) ListProjects() ([]*orchestrator.Project, error) {
+	s.listProjectsCalls++
+	if s.listProjectsHook != nil {
+		s.listProjectsHook(s.listProjectsCalls)
+	}
 	return s.projects, s.listErr
 }
 func (s *stubProjectRepository) SetProjectWorkspace(projectID, workspaceID string) error {

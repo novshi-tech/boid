@@ -525,6 +525,62 @@ func TestExportWorkspaceEnvelopes_UnavailableProjectNameRefusesExport(t *testing
 	}
 }
 
+// TestExportWorkspaceEnvelopes_WhitespaceOnlyProjectNameRefusesExport pins
+// the round-5 Minor's export-side defense-in-depth: project.yaml validation
+// now refuses a whitespace-only name at load time
+// (internal/orchestrator/spec_loader.go), but a project registered by an
+// older boid build (before that fix) could already have one persisted in
+// the in-memory ProjectMeta cache. Export's own availability check must
+// still refuse it — a bare `name == ""` comparison would let `name: "   "`
+// through into the emitted document, which apply's
+// strings.TrimSpace(ep.Name) == "" check would then treat as absent,
+// silently detaching the project on a later apply of that same export.
+func TestExportWorkspaceEnvelopes_WhitespaceOnlyProjectNameRefusesExport(t *testing.T) {
+	d := newTestWorkspacesConnDB(t)
+	repo := orchestrator.NewWorkspaceRepository(d.Conn)
+	if err := repo.Save("team-a", &orchestrator.WorkspaceMeta{}); err != nil {
+		t.Fatalf("Save(team-a): %v", err)
+	}
+	if err := orchestrator.CreateProject(d.Conn, &orchestrator.Project{ID: "proj-ws", WorkDir: "/tmp/proj-ws"}); err != nil {
+		t.Fatalf("CreateProject(proj-ws): %v", err)
+	}
+	if err := orchestrator.SetProjectWorkspace(d.Conn, "proj-ws", "team-a"); err != nil {
+		t.Fatalf("SetProjectWorkspace(proj-ws): %v", err)
+	}
+
+	svc := &ProjectAppService{
+		Projects: &stubProjectRepository{
+			projects: []*orchestrator.Project{{ID: "proj-ws"}},
+		},
+		Meta: &stubProjectMetaStore{
+			metas: map[string]*orchestrator.ProjectMeta{
+				// Simulates a project registered before the spec_loader.go
+				// fix, whose persisted name is whitespace-only.
+				"proj-ws": {ID: "proj-ws", Name: "   "},
+			},
+		},
+		WorkspacesConn: d.Conn,
+	}
+
+	data, err := svc.ExportWorkspaceEnvelopes(nil)
+	if err == nil {
+		t.Fatalf("expected a refusal error, got nil (data: %s)", data)
+	}
+	if data != nil {
+		t.Errorf("expected no partial output on refusal, got %q", data)
+	}
+	se, ok := err.(*StatusError)
+	if !ok {
+		t.Fatalf("expected *StatusError, got %T: %v", err, err)
+	}
+	if se.Code != http.StatusConflict {
+		t.Errorf("Code = %d, want %d", se.Code, http.StatusConflict)
+	}
+	if !strings.Contains(se.Message, "proj-ws") || !strings.Contains(se.Message, "no authoritative name") {
+		t.Errorf("Message = %q, want it to name the project and explain it has no authoritative name", se.Message)
+	}
+}
+
 // TestApplyWorkspace_UnavailableProjectNameRefusesApply pins the apply-side
 // refusal: when ANY registered project's Meta.Name is unavailable
 // (project.yaml could not be hydrated), an apply that touches
@@ -639,5 +695,124 @@ func TestApplyWorkspace_UnavailableProjectNameRefusalHappensBeforeDBWrite(t *tes
 	}
 	if beforeRevision != afterRevision {
 		t.Errorf("team-a Revision changed from %q to %q — refused apply must not write to the DB at all", beforeRevision, afterRevision)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// PR-1d codex round-5 Major: apply must resolve spec.projects[] from ONE
+// hydration snapshot, not a separate ListProjects()+hydrate pass for the
+// availability check and another (or several more, one per name) for
+// resolution.
+// ---------------------------------------------------------------------------
+
+// TestApplyWorkspace_ResolvesProjectNamesFromSingleSnapshot pins the
+// round-5 Major at the call-count level: pre-fix,
+// resolveWorkspaceApplyProjectNames called s.Projects.ListProjects() once
+// for refuseIfAnyRegisteredProjectNameUnavailable's check and AGAIN,
+// separately, inside resolveProjectByNameExact for every single
+// spec.projects[] entry — N+1 calls to resolve N names, each one an
+// independently-timed read of live, mutable state. Resolving three names
+// must now cost exactly one ListProjects call.
+func TestApplyWorkspace_ResolvesProjectNamesFromSingleSnapshot(t *testing.T) {
+	d := newTestWorkspacesConnDB(t)
+	for _, id := range []string{"proj-1", "proj-2", "proj-3"} {
+		if err := orchestrator.CreateProject(d.Conn, &orchestrator.Project{ID: id, WorkDir: "/tmp/" + id}); err != nil {
+			t.Fatalf("CreateProject(%s): %v", id, err)
+		}
+	}
+
+	repo := &stubProjectRepository{
+		projects: []*orchestrator.Project{{ID: "proj-1"}, {ID: "proj-2"}, {ID: "proj-3"}},
+	}
+	svc := &ProjectAppService{
+		Projects: repo,
+		Meta: &stubProjectMetaStore{
+			metas: map[string]*orchestrator.ProjectMeta{
+				"proj-1": {ID: "proj-1", Name: "api"},
+				"proj-2": {ID: "proj-2", Name: "web"},
+				"proj-3": {ID: "proj-3", Name: "worker"},
+			},
+		},
+		WorkspacesConn: d.Conn,
+	}
+
+	apply := envelopeApplyDoc("team-a", map[string]bool{"projects": true}, orchestrator.WorkspaceEnvelopeSpec{
+		Projects: []orchestrator.WorkspaceEnvelopeProject{{Name: "api"}, {Name: "web"}, {Name: "worker"}},
+	})
+	if _, err := svc.ApplyWorkspace(apply, false); err != nil {
+		t.Fatalf("ApplyWorkspace: %v", err)
+	}
+	if repo.listProjectsCalls != 1 {
+		t.Errorf("ListProjects called %d times resolving 3 spec.projects[] entries, want exactly 1 (the availability check and every per-name lookup must share ONE hydration snapshot)", repo.listProjectsCalls)
+	}
+}
+
+// TestApplyWorkspace_ConcurrentReloadBetweenCheckAndResolutionDoesNotDetach
+// is the concrete race codex round-5 flagged: pre-fix, the availability
+// check (refuseIfAnyRegisteredProjectNameUnavailable) and a spec.projects[]
+// entry's resolution (resolveProjectByNameExact) each performed their OWN,
+// separately-timed s.Projects.ListProjects()+hydrate pass. A concurrent
+// ReloadProjects landing in the window between them — its LoadAll failing
+// to hydrate a project and Remove()ing it from the cache, exactly
+// ProjectStore.LoadAll's real on-failure behavior — could vanish a
+// project's cached name AFTER the check already confirmed it was present,
+// so the SECOND, now-stale read reported it "missing" and let apply
+// proceed to detach a project the document explicitly listed. This test's
+// stub simulates that: it returns a FRESH *Project (zero Meta, matching
+// the real DB-backed ListProjects which constructs new structs every
+// query) on every call, and deletes the project's cached meta the moment a
+// SECOND ListProjects call is observed. Pre-fix this reproduces the
+// destructive detach; post-fix there is only ever one call, so the
+// simulated concurrent reload never gets a second call to land in.
+func TestApplyWorkspace_ConcurrentReloadBetweenCheckAndResolutionDoesNotDetach(t *testing.T) {
+	d := newTestWorkspacesConnDB(t)
+	if err := orchestrator.CreateProject(d.Conn, &orchestrator.Project{ID: "proj-broken", WorkDir: "/tmp/proj-broken"}); err != nil {
+		t.Fatalf("CreateProject(proj-broken): %v", err)
+	}
+	if err := orchestrator.SetProjectWorkspace(d.Conn, "proj-broken", "team-a"); err != nil {
+		t.Fatalf("SetProjectWorkspace(proj-broken): %v", err)
+	}
+
+	meta := &stubProjectMetaStore{
+		metas: map[string]*orchestrator.ProjectMeta{
+			"proj-broken": {ID: "proj-broken", Name: "critical-svc"},
+		},
+	}
+	repo := &stubProjectRepository{}
+	repo.listProjectsHook = func(call int) {
+		// Every call returns a FRESH *Project (Meta zero-valued) — real
+		// production ListProjects (internal/orchestrator/project_catalog.go
+		// scanProjects) constructs new structs from the DB rows every
+		// query, so hydrateProject's "only overwrite Meta when Get
+		// succeeds" behavior actually observes a vanished cache entry
+		// rather than being masked by a stale Meta left over from a prior
+		// call against a reused pointer.
+		repo.projects = []*orchestrator.Project{{ID: "proj-broken"}}
+		if call == 2 {
+			// Simulate a concurrent ReloadProjects landing between the
+			// availability check's ListProjects() call and a second,
+			// separate per-name resolution call.
+			delete(meta.metas, "proj-broken")
+		}
+	}
+
+	svc := &ProjectAppService{
+		Projects:       repo,
+		Meta:           meta,
+		WorkspacesConn: d.Conn,
+	}
+
+	apply := envelopeApplyDoc("team-a", map[string]bool{"projects": true}, orchestrator.WorkspaceEnvelopeSpec{
+		Projects: []orchestrator.WorkspaceEnvelopeProject{{Name: "critical-svc"}},
+	})
+	result, err := svc.ApplyWorkspace(apply, false)
+	if err != nil {
+		t.Fatalf("ApplyWorkspace: %v (proj-broken must resolve from a single consistent snapshot, not race a concurrent reload)", err)
+	}
+	if len(result.DetachedProjects) != 0 {
+		t.Errorf("DetachedProjects = %v, want none — proj-broken was explicitly listed in the document under the name the check itself observed, and must stay attached", result.DetachedProjects)
+	}
+	if repo.listProjectsCalls != 1 {
+		t.Errorf("ListProjects called %d times, want exactly 1 (PR-1d codex round-5 Major: single-snapshot discipline)", repo.listProjectsCalls)
 	}
 }
