@@ -221,6 +221,88 @@ func TestDecodeWorkspaceEnvelopeDocuments_EmptyBodyIsError(t *testing.T) {
 	}
 }
 
+// TestDecodeWorkspaceEnvelopeDocuments_RejectsUnknownTopLevelField pins
+// MAJOR 2 (codex round-1): a typo'd top-level field (or a mis-indented
+// spec.projects that landed one level up) must be rejected, not silently
+// dropped.
+func TestDecodeWorkspaceEnvelopeDocuments_RejectsUnknownTopLevelField(t *testing.T) {
+	data := []byte(`
+apiVersion: boid.dev/v1
+kind: Workspace
+metadata:
+  name: default
+projectz:
+  - name: oops
+`)
+	_, err := DecodeWorkspaceEnvelopeDocuments(data)
+	if err == nil {
+		t.Fatal("expected an error for the unknown top-level field \"projectz\"")
+	}
+	if !strings.Contains(err.Error(), "projectz") {
+		t.Errorf("error = %v, want it to mention projectz", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// SplitWorkspaceEnvelopeDocuments
+// ---------------------------------------------------------------------------
+
+func TestSplitWorkspaceEnvelopeDocuments_PreservesFieldPresence(t *testing.T) {
+	data := []byte(`
+apiVersion: boid.dev/v1
+kind: Workspace
+metadata:
+  name: team-a
+spec:
+  env: {}
+  host_commands: [gh]
+---
+apiVersion: boid.dev/v1
+kind: Workspace
+metadata:
+  name: team-b
+`)
+	parts, err := SplitWorkspaceEnvelopeDocuments(data)
+	if err != nil {
+		t.Fatalf("SplitWorkspaceEnvelopeDocuments: %v", err)
+	}
+	if len(parts) != 2 {
+		t.Fatalf("len(parts) = %d, want 2", len(parts))
+	}
+
+	docs0, err := DecodeWorkspaceEnvelopeDocuments(parts[0])
+	if err != nil {
+		t.Fatalf("decode part 0: %v", err)
+	}
+	if docs0[0].Envelope.Metadata.Name != "team-a" {
+		t.Errorf("part 0 name = %q, want team-a", docs0[0].Envelope.Metadata.Name)
+	}
+	if !docs0[0].FieldsPresent["env"] {
+		t.Error("part 0 FieldsPresent[env] = false, want true (explicit env: {} preserved)")
+	}
+	if len(docs0[0].Envelope.Spec.Env) != 0 {
+		t.Errorf("part 0 Env = %v, want empty", docs0[0].Envelope.Spec.Env)
+	}
+
+	docs1, err := DecodeWorkspaceEnvelopeDocuments(parts[1])
+	if err != nil {
+		t.Fatalf("decode part 1: %v", err)
+	}
+	if docs1[0].Envelope.Metadata.Name != "team-b" {
+		t.Errorf("part 1 name = %q, want team-b", docs1[0].Envelope.Metadata.Name)
+	}
+	if docs1[0].FieldsPresent["env"] {
+		t.Error("part 1 FieldsPresent[env] = true, want false (spec: absent entirely)")
+	}
+}
+
+func TestSplitWorkspaceEnvelopeDocuments_EmptyBodyIsError(t *testing.T) {
+	_, err := SplitWorkspaceEnvelopeDocuments([]byte(""))
+	if err == nil {
+		t.Fatal("expected an error for an empty file")
+	}
+}
+
 // ---------------------------------------------------------------------------
 // WorkspaceEnvelopeApply.MergeInto
 // ---------------------------------------------------------------------------
@@ -305,6 +387,43 @@ func TestNewWorkspaceEnvelopeFromMeta_RoundTrip(t *testing.T) {
 	}
 	if len(got.Spec.Projects) != 1 || got.Spec.Projects[0].URL != "git@bitbucket.org:x/rook-server.git" {
 		t.Errorf("Projects = %+v", got.Spec.Projects)
+	}
+}
+
+// TestNewWorkspaceEnvelopeFromMeta_ExplicitEmptyFieldsSurviveExport pins
+// Blocker 1 (codex round-1): an export of a workspace with an explicitly
+// empty env / no projects must NOT collapse those fields to "absent" —
+// omitempty previously made "env: {}" and "projects: []" indistinguishable
+// from the key never having been written at all, which meant an apply of
+// that exported document could never clear a workspace's env or detach its
+// projects (FieldsPresent would read false for both).
+func TestNewWorkspaceEnvelopeFromMeta_ExplicitEmptyFieldsSurviveExport(t *testing.T) {
+	meta := &WorkspaceMeta{
+		Env:            map[string]string{},
+		HostCommands:   []string{},
+		AllowedDomains: []string{},
+	}
+	envelope := NewWorkspaceEnvelopeFromMeta("team-empty", meta, []WorkspaceEnvelopeProject{})
+	data, err := yaml.Marshal(envelope)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	for _, want := range []string{"env: {}", "host_commands: []", "allowed_domains: []", "projects: []"} {
+		if !strings.Contains(string(data), want) {
+			t.Errorf("exported yaml = %q, want it to contain %q", string(data), want)
+		}
+	}
+
+	docs, err := DecodeWorkspaceEnvelopeDocuments(data)
+	if err != nil {
+		t.Fatalf("DecodeWorkspaceEnvelopeDocuments round trip: %v", err)
+	}
+	doc := docs[0]
+	for _, field := range []string{"env", "host_commands", "allowed_domains", "projects"} {
+		if !doc.FieldsPresent[field] {
+			t.Errorf("FieldsPresent[%q] = false, want true (explicit empty value must round-trip as present)", field)
+		}
 	}
 }
 

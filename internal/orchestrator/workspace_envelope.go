@@ -58,14 +58,29 @@ type WorkspaceEnvelopeMetadata struct {
 // by decodeWorkspaceEnvelopeSpec (see below) — parsed and discarded, with
 // WorkspaceEnvelopeApply.AdditionalBindingsDropped set so the caller can
 // warn — rather than rejected as an unknown field.
+// host_commands/env/allowed_domains/projects deliberately do NOT carry
+// `omitempty` (PR-1d codex round-1 Blocker 1): missing vs. explicitly-empty
+// is a load-bearing distinction for these four (WorkspaceEnvelopeApply's
+// FieldsPresent-driven merge, and — for projects — ApplyWorkspaceEnvelope's
+// attach/detach reconciliation), and `omitempty` on export would silently
+// collapse "the workspace's env really is empty" into "env was absent from
+// the document", which on a subsequent apply is indistinguishable from
+// "leave the current value untouched" — an export → apply round trip could
+// then never actually clear a field back to empty. yaml.v3 marshals a
+// nil/empty slice or map as `[]`/`{}` either way (verified: no `omitempty`
+// needed to avoid a `null` literal here), so dropping the tag is a pure
+// presence-fidelity fix with no representation change for the non-empty
+// case. extra_repos/container_image/capabilities keep `omitempty`: PR-1d
+// round-1's fix list scoped the change to the four fields with a
+// round-trip test (see workspace_envelope_test.go).
 type WorkspaceEnvelopeSpec struct {
-	HostCommands   []string                   `yaml:"host_commands,omitempty"`
-	Env            map[string]string          `yaml:"env,omitempty"`
-	AllowedDomains []string                   `yaml:"allowed_domains,omitempty"`
+	HostCommands   []string                   `yaml:"host_commands"`
+	Env            map[string]string          `yaml:"env"`
+	AllowedDomains []string                   `yaml:"allowed_domains"`
 	ExtraRepos     []string                   `yaml:"extra_repos,omitempty"`
 	ContainerImage string                     `yaml:"container_image,omitempty"`
 	Capabilities   Capabilities               `yaml:"capabilities,omitempty"`
-	Projects       []WorkspaceEnvelopeProject `yaml:"projects,omitempty"`
+	Projects       []WorkspaceEnvelopeProject `yaml:"projects"`
 }
 
 // WorkspaceEnvelopeProject is one spec.projects[] entry. URL is informational
@@ -194,6 +209,16 @@ func DecodeWorkspaceEnvelopeDocuments(data []byte) ([]*WorkspaceEnvelopeApply, e
 	}
 
 	dec := yaml.NewDecoder(bytes.NewReader(data))
+	// MAJOR 2 (codex round-1): reject an unknown TOP-LEVEL field (a typo'd
+	// "projectz:", or a mis-indented "projects:" that landed one level up
+	// from spec:) instead of silently dropping it. This only governs
+	// rawWorkspaceEnvelope's own struct fields (apiVersion/kind/metadata/
+	// spec) — spec's own allow-list (workspaceEnvelopeSpecFields, including
+	// the additional_bindings tolerance) is enforced separately below by
+	// decodeWorkspaceEnvelopeSpec, which decodes spec into a raw
+	// map[string]yaml.Node and is unaffected by this decoder-level setting
+	// (KnownFields only applies to struct-tagged decode targets).
+	dec.KnownFields(true)
 	var docs []*WorkspaceEnvelopeApply
 	for i := 0; ; i++ {
 		doc, err := decodeOneWorkspaceEnvelope(dec)
@@ -206,6 +231,45 @@ func DecodeWorkspaceEnvelopeDocuments(data []byte) ([]*WorkspaceEnvelopeApply, e
 		docs = append(docs, doc)
 	}
 	return docs, nil
+}
+
+// SplitWorkspaceEnvelopeDocuments splits data (one or more "---"-separated
+// yaml documents) into the raw bytes of each individual document, WITHOUT
+// going through WorkspaceEnvelope's Go struct representation. `boid
+// workspace apply` uses this (rather than re-marshaling the
+// *WorkspaceEnvelopeApply values DecodeWorkspaceEnvelopeDocuments returns)
+// to forward each document's original field-presence exactly as written to
+// POST /api/workspaces/apply, one request per document: since
+// WorkspaceEnvelopeSpec's fields no longer carry `omitempty` (Blocker 1),
+// every zero-value Go field — including one that was never present in the
+// source at all — marshals identically to an explicit empty value, so
+// re-marshaling the decoded struct would erase exactly the missing-vs-empty
+// distinction the fix exists to preserve. Round-tripping through yaml.Node
+// instead doesn't have that problem: a mapping key that was absent from the
+// source has no corresponding child node at all, so re-marshaling the node
+// reproduces the source's exact key set, not a struct's zero-value view of
+// it.
+func SplitWorkspaceEnvelopeDocuments(data []byte) ([][]byte, error) {
+	if len(bytes.TrimSpace(data)) == 0 {
+		return nil, errors.New("empty document: expected at least one apiVersion/kind/metadata/spec Workspace document")
+	}
+	dec := yaml.NewDecoder(bytes.NewReader(data))
+	var out [][]byte
+	for i := 0; ; i++ {
+		var node yaml.Node
+		if err := dec.Decode(&node); err != nil {
+			if errors.Is(err, io.EOF) {
+				break
+			}
+			return nil, fmt.Errorf("document %d: %w", i+1, err)
+		}
+		raw, err := yaml.Marshal(&node)
+		if err != nil {
+			return nil, fmt.Errorf("document %d: re-marshal: %w", i+1, err)
+		}
+		out = append(out, raw)
+	}
+	return out, nil
 }
 
 // rawWorkspaceEnvelope is the outer envelope shape, decoded with spec left
