@@ -876,6 +876,29 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 		PublicURL: boidCfg.Web.PublicURL,
 	}
 
+	// Daemon-side config-editing surface (docs/plans/volume-only-daemon.md
+	// §論点 f: `boid config get/set/unset/apply/edit`). srv.notifySvc is
+	// the SAME *notify.Service instance built above (and wired into
+	// TaskAppService.Notify / the git gateway's notifier below) — stored
+	// here so ApplyConfigYAML (internal/server/config_edit.go) can hot-swap
+	// its Command/PublicURL live when notify.command/web.public_url change.
+	// configPath resolution failing (os.UserConfigDir() erroring — the
+	// same condition config.Load() above already tolerated by falling
+	// back to DefaultConfig()) leaves srv.configPath empty; both
+	// ConfigYAML and ApplyConfigYAML (internal/server/config_edit.go)
+	// treat that as a hard error rather than guessing a path, so
+	// GET/POST /api/config (`boid config get/set/unset/apply/edit`) fail
+	// cleanly instead of reading/writing somewhere unexpected. Every other
+	// daemon feature is unaffected — os.UserConfigDir() failing at all is
+	// already an exotic (effectively Linux-only-with-no-$HOME) situation.
+	srv.liveConfig = boidCfg
+	srv.notifySvc = notifySvc
+	if p, pathErr := config.DefaultPath(); pathErr == nil {
+		srv.configPath = p
+	} else {
+		slog.Warn("failed to resolve config.yaml path; POST /api/config (`boid config set/unset/apply/edit`) will be unavailable", "error", pathErr)
+	}
+
 	// git gateway HTTP handler (docs/plans/git-gateway-cutover.md PR4). Only
 	// the listener bind (127.0.0.1:0) is deferred to Server.Start — the
 	// handler itself, and the Registry it shares with the runner above, are
