@@ -670,14 +670,38 @@ func (r *Runner) proxyPort() int {
 //  3. Ask ProxyAllocator.GetOrCreate to bind (or live-update) a listener
 //     for the workspace with that resolved list, and return its port.
 //
-// Fallback: if any step fails — allocator unwired, workspaceID empty,
-// allocator returns an error — the function returns the floor and the
-// default-workspace port (r.proxyPort()). Dispatch is never blocked on a
+// Fallback: a job with no workspace at all (workspaceID == "" — `boid exec`
+// or a ProfileInit sandbox against a project with no workspace assigned)
+// still goes through ProxyAllocator.GetOrCreate, keyed by
+// orchestrator.DefaultWorkspaceSlug — the SAME key Server.Start uses to seed
+// the listener at boot (MAJOR, codex review round 2: pre-fix, this branch
+// just read r.proxyPort(), the raw int Server.Start captured ONCE at boot,
+// and never touched the underlying listener again. That listener's
+// allowlist stayed frozen at whatever Server.Start (or the last dispatch
+// that happened to use workspaceID==DefaultWorkspaceSlug specifically —
+// which essentially never happens in practice, since that slug is a
+// system-reserved constant, not something a real workspace is named) set it
+// to, so a hot-reloaded sandbox.allowed_domains never reached `boid exec`/
+// ProfileInit sandboxes until the daemon restarted. Re-asserting the
+// current floor through GetOrCreate on every such call — the exact same
+// live-update call the named-workspace branch below already makes on every
+// dispatch — keeps this listener's allowlist exactly as fresh as any
+// per-workspace one.) allocator unwired, or GetOrCreate failing, still fall
+// back to r.proxyPort()'s last-known value — dispatch is never blocked on a
 // proxy-resolution problem.
 func (r *Runner) resolveWorkspaceProxy(workspaceID string) ([]string, int) {
 	floor := r.floorAllowedDomains()
-	if r.ProxyAllocator == nil || workspaceID == "" {
+	if r.ProxyAllocator == nil {
 		return floor, r.proxyPort()
+	}
+	if workspaceID == "" {
+		port, err := r.ProxyAllocator.GetOrCreate(orchestrator.DefaultWorkspaceSlug, floor)
+		if err != nil {
+			slog.Warn("default proxy listener refresh failed; falling back to its last-known port",
+				"error", err)
+			return floor, r.proxyPort()
+		}
+		return floor, port
 	}
 	var wsMeta *orchestrator.WorkspaceMeta
 	if r.Workspaces != nil {

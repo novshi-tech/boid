@@ -227,10 +227,20 @@ func TestResolveWorkspaceProxy_AllocatorUnwired_StaysOnFloor(t *testing.T) {
 	}
 }
 
-func TestResolveWorkspaceProxy_EmptyWorkspaceID_StaysOnFloor(t *testing.T) {
+// TestResolveWorkspaceProxy_EmptyWorkspaceID_UsesDefaultListenerAllocator
+// pins MAJOR 3 (codex review round 2): a job with no workspace at all
+// (`boid exec` / ProfileInit against an unlinked project) must still push
+// the current floor into the default listener via
+// ProxyAllocator.GetOrCreate(orchestrator.DefaultWorkspaceSlug, ...) on
+// every call — not just read a static, boot-time-frozen port — so a
+// hot-reloaded sandbox.allowed_domains reaches it immediately. See
+// resolveWorkspaceProxy's own doc comment for the pre-fix bug this replaces
+// (pre-fix, this test asserted the OPPOSITE: that the allocator was never
+// called for an empty workspaceID).
+func TestResolveWorkspaceProxy_EmptyWorkspaceID_UsesDefaultListenerAllocator(t *testing.T) {
 	floor := []string{"pypi.org"}
 	defaultPort := 8000
-	alloc := &fakeProxyAllocator{}
+	alloc := &fakeProxyAllocator{ports: map[string]int{orchestrator.DefaultWorkspaceSlug: 8000}}
 	r := &Runner{
 		AllowedDomains: func() []string { return floor },
 		ProxyPort:      &defaultPort,
@@ -243,8 +253,51 @@ func TestResolveWorkspaceProxy_EmptyWorkspaceID_StaysOnFloor(t *testing.T) {
 	if !equalSlice(allowed, floor) {
 		t.Errorf("allowed = %v, want %v", allowed, floor)
 	}
-	if len(alloc.calls) != 0 {
-		t.Errorf("alloc should not be called for empty workspaceID, got %v", alloc.calls)
+	if len(alloc.calls) != 1 {
+		t.Fatalf("alloc calls = %d, want exactly 1 (the default listener must be refreshed, not skipped)", len(alloc.calls))
+	}
+	got := alloc.calls[0]
+	if got.workspaceID != orchestrator.DefaultWorkspaceSlug {
+		t.Errorf("alloc call workspaceID = %q, want %q", got.workspaceID, orchestrator.DefaultWorkspaceSlug)
+	}
+	if !equalSlice(got.allowed, floor) {
+		t.Errorf("alloc call allowed = %v, want %v", got.allowed, floor)
+	}
+}
+
+// TestResolveWorkspaceProxy_EmptyWorkspaceID_AllowedDomainsRefreshedEveryCall
+// is MAJOR 3's direct hot-reload regression test: two resolveWorkspaceProxy("")
+// calls on the SAME *Runner, with the floor mutated in between (exactly what
+// internal/server's applyDynamicConfigLocked does to whatever
+// Runner.AllowedDomains reads — mirrors
+// TestResolveWorkspaceProxy_AllowedDomainsGetterReadFreshEveryCall's
+// established pattern for the named-workspace path), must push the NEW
+// floor into the default listener on the very next call — not "after
+// another dispatch" and not "only after a restart".
+func TestResolveWorkspaceProxy_EmptyWorkspaceID_AllowedDomainsRefreshedEveryCall(t *testing.T) {
+	current := []string{"pypi.org"}
+	defaultPort := 8000
+	alloc := &fakeProxyAllocator{}
+	r := &Runner{
+		AllowedDomains: func() []string { return current },
+		ProxyPort:      &defaultPort,
+		ProxyAllocator: alloc,
+	}
+
+	if _, _ = r.resolveWorkspaceProxy(""); !equalSlice(alloc.calls[0].allowed, []string{"pypi.org"}) {
+		t.Fatalf("first call: alloc received %v, want [pypi.org]", alloc.calls[0].allowed)
+	}
+
+	// Simulate a config hot-reload (e.g. `boid config set
+	// sandbox.allowed_domains ...`) removing the exfiltration-relevant
+	// domain that was there before.
+	current = []string{"pypi.org", "registry.npmjs.org"}
+
+	if _, _ = r.resolveWorkspaceProxy(""); len(alloc.calls) != 2 {
+		t.Fatalf("alloc calls = %d, want 2 (refreshed on the very next call, not deferred)", len(alloc.calls))
+	}
+	if !equalSlice(alloc.calls[1].allowed, current) {
+		t.Errorf("second call: alloc received %v, want %v (the just-hot-reloaded floor)", alloc.calls[1].allowed, current)
 	}
 }
 
