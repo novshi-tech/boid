@@ -1,13 +1,14 @@
 # build/container/compose.yml
 #
-# Phase 6 PR6 skeleton (docs/plans/phase6-container-backend.md §PR6). Static
-# scaffold only — see the plan doc's own "PR6 時点では config 非公開" note:
-# this stack must NOT be run as a production deploy yet. startup reap / Wait
-# single-ownership / a persistent transcript spool all land in PR7; without
-# them a bare `compose up` after a crash double-executes in-flight jobs and
-# can lose log data on container removal (codex Major 11, quoted verbatim in
-# the plan doc's §PR6 section). `scripts/deploy-container.sh` (this same PR)
-# is deliberately a build-only skeleton for the same reason.
+# Compose stack for the container-backend daemon
+# (docs/plans/phase6-container-backend.md §PR6). PR7 (#823) landed startup
+# reap, Wait single-ownership, and persistent transcript spool — the three
+# prerequisites the PR6-era "must NOT be run as a production deploy yet"
+# warning was gating on. Combined with §⓪ (broker TCP wire, #825) and §⓪-b
+# (egress proxy dotless refuse, #826), the §① dogfood entry conditions of
+# docs/plans/phase6-cutover-followups.md are met and this stack is the
+# supported deploy path for the §① dogfood period (via
+# `scripts/deploy-container.sh`).
 #
 # Topology (§決定4/5):
 #   - `daemon`: the boid daemon itself, containerized (docker-out-of-docker —
@@ -101,10 +102,12 @@
 #     same path, which is purely a mount/identity concern this compose file
 #     is responsible for.
 #
-# NOT yet true of this file (explicitly out of PR6 scope; [Blocker 2, PR7
-# codex review] closed the git-gateway and egress-proxy halves of this,
-# docs/plans/phase6-cutover-followups.md §⓪ closed the broker half — see
-# the sub-bullets below for what's still outstanding):
+# External listener wire status (broker / git gateway / egress proxy are
+# backed by real listeners on `boid_internal` now that [Blocker 2, PR7
+# codex review] closed the git-gateway and egress-proxy halves and
+# docs/plans/phase6-cutover-followups.md §⓪ closed the broker half;
+# dockerproxy's listener wiring is still residual — see the sub-bullets
+# below for the details):
 #   - the broker's, git gateway's, and the default-workspace egress proxy's
 #     TCP(mTLS)/TCP listeners all now bind on 0.0.0.0 (composeBindHost)
 #     whenever sandbox.backend: container is selected (Server.Start's
@@ -376,12 +379,15 @@ services:
           - boid-broker
           - boid-egress
       default: {}
-    # No restart policy: an unattended restart after a crash would launch a
-    # second daemon over the still-running sibling job containers before
-    # PR7's startup reap exists to reconcile them (see this file's own
-    # header comment, codex Major 11). scripts/deploy-container.sh
-    # (this PR) does an explicit `down` before every `up` instead of relying
-    # on any restart machinery.
+    # No restart policy: `scripts/deploy-container.sh` does an explicit
+    # `down` before every `up` (so operator-visible deploy transitions stay
+    # explicit rather than being papered over by a silent restart on
+    # crash). PR7 (#823) landed startup reap of orphan sibling job
+    # containers (SweepOrphans + install_id-scoped ReapOrphans, wired
+    # through MarkStale*↔auto-reopen), so a crash + fresh `up` no longer
+    # double-executes in-flight jobs the way the pre-PR7 skeleton warned
+    # about — but an explicit down/up still surfaces the crash to the
+    # operator, which a `restart: on-failure` policy would hide.
     restart: "no"
 
 networks:
