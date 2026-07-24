@@ -65,10 +65,20 @@ type WorkspaceExportSnapshot struct {
 // reintroduce the cross-workspace inconsistency this function exists to
 // close: it cannot change which workspace_id a project_id is assigned to,
 // only how that already-fixed assignment is displayed.
-func SnapshotWorkspacesForExport(conn *sql.DB, slugs []string) ([]*WorkspaceExportSnapshot, error) {
+// allProjects (PR-1d codex round-3 regression fix) is EVERY registered
+// project row -- not just ones assigned to a slug in slugs -- read from the
+// exact same transaction as everything else this function returns, keyed by
+// ID. ExportWorkspaceEnvelopes needs the full, tx-consistent project set (not
+// just the exported workspaces' assignments) to detect a project.yaml name
+// colliding with ANOTHER project's name or ID before emitting a
+// spec.projects[] entry a later apply could misresolve. Before this fix,
+// that collision check ran its own separate, post-snapshot ListProjects()
+// call, which could describe a different instant than the export snapshot
+// itself under concurrent project create/delete.
+func SnapshotWorkspacesForExport(conn *sql.DB, slugs []string) (snapshots []*WorkspaceExportSnapshot, allProjects map[string]*Project, err error) {
 	tx, err := conn.Begin()
 	if err != nil {
-		return nil, fmt.Errorf("snapshot workspaces for export: begin tx: %w", err)
+		return nil, nil, fmt.Errorf("snapshot workspaces for export: begin tx: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }() // read-only; never committed
 
@@ -76,13 +86,13 @@ func SnapshotWorkspacesForExport(conn *sql.DB, slugs []string) ([]*WorkspaceExpo
 	if len(targetSlugs) == 0 {
 		targetSlugs, err = listWorkspaceSlugs(tx)
 		if err != nil {
-			return nil, fmt.Errorf("snapshot workspaces for export: %w", err)
+			return nil, nil, fmt.Errorf("snapshot workspaces for export: %w", err)
 		}
 	}
 
 	byWorkspace, projectsByID, err := workspaceProjectAssignmentsByWorkspace(tx)
 	if err != nil {
-		return nil, fmt.Errorf("snapshot workspaces for export: %w", err)
+		return nil, nil, fmt.Errorf("snapshot workspaces for export: %w", err)
 	}
 
 	out := make([]*WorkspaceExportSnapshot, 0, len(targetSlugs))
@@ -90,9 +100,9 @@ func SnapshotWorkspacesForExport(conn *sql.DB, slugs []string) ([]*WorkspaceExpo
 		meta, revision, err := loadWorkspaceMetaWithRevision(tx, slug)
 		if err != nil {
 			if errors.Is(err, os.ErrNotExist) {
-				return nil, fmt.Errorf("workspace %q: %w", slug, os.ErrNotExist)
+				return nil, nil, fmt.Errorf("workspace %q: %w", slug, os.ErrNotExist)
 			}
-			return nil, fmt.Errorf("snapshot workspace %q: %w", slug, err)
+			return nil, nil, fmt.Errorf("snapshot workspace %q: %w", slug, err)
 		}
 		ids := byWorkspace[slug]
 		projects := make(map[string]*Project, len(ids))
@@ -107,7 +117,7 @@ func SnapshotWorkspacesForExport(conn *sql.DB, slugs []string) ([]*WorkspaceExpo
 			Projects:   projects,
 		})
 	}
-	return out, nil
+	return out, projectsByID, nil
 }
 
 // listWorkspaceSlugs returns every workspaces.slug value, sorted, read from

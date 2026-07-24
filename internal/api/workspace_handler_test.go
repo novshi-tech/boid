@@ -783,6 +783,104 @@ func TestWorkspaceHandler_Apply_DryRunInvalidBooleanIs400(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// PR-1d codex round-3 Major: an explicitly empty ?dry_run must not bypass
+// strconv.ParseBool and silently commit
+// ---------------------------------------------------------------------------
+
+// TestWorkspaceHandler_Apply_DryRunPresentButEmptyIs400 pins the round-3
+// Major: `?dry_run=` (present, empty value) must be rejected with 400, not
+// treated as if the parameter were absent (which would silently commit).
+func TestWorkspaceHandler_Apply_DryRunPresentButEmptyIs400(t *testing.T) {
+	svc := &fakeWorkspaceService{
+		applyFn: func(apply *orchestrator.WorkspaceEnvelopeApply, dryRun bool) (*orchestrator.WorkspaceApplyResult, error) {
+			t.Fatal("service.ApplyWorkspace must not be called for ?dry_run= (present, empty)")
+			return nil, nil
+		},
+	}
+	h := &WorkspaceHandler{Service: svc}
+	body := []byte("apiVersion: boid.dev/v1\nkind: Workspace\nmetadata:\n  name: team-a\n")
+	w := doWorkspaceRequest(h.Routes(), http.MethodPost, "/apply?dry_run=", "application/yaml", body, nil)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400: %s", w.Code, w.Body.String())
+	}
+}
+
+// TestWorkspaceHandler_Apply_DryRunKeyWithNoEqualsIs400 covers the second
+// reachable "present but not a valid bool" shape: `?dry_run` with no `=` at
+// all (e.g. `?dry_run=${DRY_RUN}` with an unset shell variable collapses to
+// this). url.Values.Get also returns "" here, same as ?dry_run=, so this
+// must be rejected the same way.
+func TestWorkspaceHandler_Apply_DryRunKeyWithNoEqualsIs400(t *testing.T) {
+	svc := &fakeWorkspaceService{
+		applyFn: func(apply *orchestrator.WorkspaceEnvelopeApply, dryRun bool) (*orchestrator.WorkspaceApplyResult, error) {
+			t.Fatal("service.ApplyWorkspace must not be called for ?dry_run (no =)")
+			return nil, nil
+		},
+	}
+	h := &WorkspaceHandler{Service: svc}
+	body := []byte("apiVersion: boid.dev/v1\nkind: Workspace\nmetadata:\n  name: team-a\n")
+	w := doWorkspaceRequest(h.Routes(), http.MethodPost, "/apply?dry_run", "application/yaml", body, nil)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400: %s", w.Code, w.Body.String())
+	}
+}
+
+// TestWorkspaceHandler_Apply_DryRunAbsentCommits is the regression guard
+// alongside the two tests above: omitting ?dry_run entirely must still
+// default to a real commit (dryRun=false), unchanged from before this fix.
+func TestWorkspaceHandler_Apply_DryRunAbsentCommits(t *testing.T) {
+	var gotDryRun bool
+	called := false
+	svc := &fakeWorkspaceService{
+		applyFn: func(apply *orchestrator.WorkspaceEnvelopeApply, dryRun bool) (*orchestrator.WorkspaceApplyResult, error) {
+			called = true
+			gotDryRun = dryRun
+			return &orchestrator.WorkspaceApplyResult{Slug: apply.Envelope.Metadata.Name, Meta: &orchestrator.WorkspaceMeta{}}, nil
+		},
+	}
+	h := &WorkspaceHandler{Service: svc}
+	body := []byte("apiVersion: boid.dev/v1\nkind: Workspace\nmetadata:\n  name: team-a\n")
+	w := doWorkspaceRequest(h.Routes(), http.MethodPost, "/apply", "application/yaml", body, nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d: %s", w.Code, w.Body.String())
+	}
+	if !called {
+		t.Fatal("service.ApplyWorkspace was not called")
+	}
+	if gotDryRun {
+		t.Error("dryRun passed to service = true, want false (no ?dry_run param at all)")
+	}
+}
+
+// TestWorkspaceHandler_Apply_DryRunExplicitFalseCommits pins that
+// `?dry_run=false` (present, valid, falsy) also commits — a valid explicit
+// "false" must parse cleanly through the same Has+ParseBool path as any
+// other valid boolean.
+func TestWorkspaceHandler_Apply_DryRunExplicitFalseCommits(t *testing.T) {
+	var gotDryRun bool
+	called := false
+	svc := &fakeWorkspaceService{
+		applyFn: func(apply *orchestrator.WorkspaceEnvelopeApply, dryRun bool) (*orchestrator.WorkspaceApplyResult, error) {
+			called = true
+			gotDryRun = dryRun
+			return &orchestrator.WorkspaceApplyResult{Slug: apply.Envelope.Metadata.Name, Meta: &orchestrator.WorkspaceMeta{}}, nil
+		},
+	}
+	h := &WorkspaceHandler{Service: svc}
+	body := []byte("apiVersion: boid.dev/v1\nkind: Workspace\nmetadata:\n  name: team-a\n")
+	w := doWorkspaceRequest(h.Routes(), http.MethodPost, "/apply?dry_run=false", "application/yaml", body, nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d: %s", w.Code, w.Body.String())
+	}
+	if !called {
+		t.Fatal("service.ApplyWorkspace was not called")
+	}
+	if gotDryRun {
+		t.Error("dryRun passed to service = true, want false (?dry_run=false)")
+	}
+}
+
 // TestWorkspaceHandler_Apply_AdditionalBindingsWarningInResponse pins the
 // PR-1d codex round-2 Minor fix: `boid workspace apply` already warns
 // client-side when a document carries a retired spec.additional_bindings

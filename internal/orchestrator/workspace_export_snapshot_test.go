@@ -25,7 +25,7 @@ func TestSnapshotWorkspacesForExport_AllWorkspaces(t *testing.T) {
 		t.Fatalf("SetProjectWorkspace: %v", err)
 	}
 
-	snaps, err := SnapshotWorkspacesForExport(d.Conn, nil)
+	snaps, _, err := SnapshotWorkspacesForExport(d.Conn, nil)
 	if err != nil {
 		t.Fatalf("SnapshotWorkspacesForExport: %v", err)
 	}
@@ -58,7 +58,7 @@ func TestSnapshotWorkspacesForExport_SingleWorkspace(t *testing.T) {
 		t.Fatalf("Save: %v", err)
 	}
 
-	snaps, err := SnapshotWorkspacesForExport(d.Conn, []string{"only-me"})
+	snaps, _, err := SnapshotWorkspacesForExport(d.Conn, []string{"only-me"})
 	if err != nil {
 		t.Fatalf("SnapshotWorkspacesForExport: %v", err)
 	}
@@ -89,9 +89,12 @@ func TestSnapshotWorkspacesForExport_ProjectsMapMatchesProjectIDs(t *testing.T) 
 		t.Fatalf("SetProjectWorkspace: %v", err)
 	}
 
-	snaps, err := SnapshotWorkspacesForExport(d.Conn, []string{"team-a"})
+	snaps, allProjects, err := SnapshotWorkspacesForExport(d.Conn, []string{"team-a"})
 	if err != nil {
 		t.Fatalf("SnapshotWorkspacesForExport: %v", err)
+	}
+	if _, ok := allProjects["proj-1"]; !ok {
+		t.Error("allProjects[\"proj-1\"] missing, want the full project set from the same transaction")
 	}
 	snap := snaps[0]
 	if len(snap.Projects) != 1 {
@@ -115,7 +118,7 @@ func TestSnapshotWorkspacesForExport_UnknownSlugIsNotExist(t *testing.T) {
 	t.Parallel()
 	d := newTestApplyDB(t)
 
-	_, err := SnapshotWorkspacesForExport(d.Conn, []string{"nonexistent"})
+	_, _, err := SnapshotWorkspacesForExport(d.Conn, []string{"nonexistent"})
 	if !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("err = %v, want wrapped os.ErrNotExist", err)
 	}
@@ -175,7 +178,7 @@ func TestSnapshotWorkspacesForExport_ConsistentUnderConcurrentReassignment(t *te
 	}()
 
 	for i := 0; i < iterations; i++ {
-		snaps, err := SnapshotWorkspacesForExport(d.Conn, nil)
+		snaps, _, err := SnapshotWorkspacesForExport(d.Conn, nil)
 		if err != nil {
 			t.Fatalf("SnapshotWorkspacesForExport: %v", err)
 		}

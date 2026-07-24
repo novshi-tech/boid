@@ -304,9 +304,21 @@ func (h *WorkspaceHandler) Remove(w http.ResponseWriter, r *http.Request) {
 // unparseable value is now rejected with 400 rather than defaulting to
 // mutation, and which mode ran is always logged at INFO so a caller can
 // confirm from the server log which path a given request actually took.
+//
+// Presence, not non-emptiness, gates parsing (PR-1d codex round-3 Major):
+// the round-2 fix still checked `raw != ""`, so `?dry_run=` (empty value) or
+// `?dry_run` (no `=` at all — reachable via `?dry_run=${DRY_RUN}` with an
+// unset shell variable) produced raw=="" and fell through as if the
+// parameter were absent entirely, silently performing a real commit for a
+// caller who explicitly asked for dry_run. url.Values.Has reports whether
+// the key was present in the query string at all, independent of its value,
+// so an explicitly-empty dry_run now reaches strconv.ParseBool("") — which
+// fails — and is rejected with 400, same as any other unparseable value.
 func (h *WorkspaceHandler) Apply(w http.ResponseWriter, r *http.Request) {
 	dryRun := false
-	if raw := r.URL.Query().Get("dry_run"); raw != "" {
+	query := r.URL.Query()
+	if query.Has("dry_run") {
+		raw := query.Get("dry_run")
 		parsed, err := strconv.ParseBool(raw)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, fmt.Sprintf("dry_run: invalid boolean %q", raw))

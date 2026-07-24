@@ -2,6 +2,7 @@ package api
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 	"os"
 	"strings"
@@ -231,5 +232,210 @@ func TestExportWorkspaceEnvelopes_UsesSnapshotProjectsNotPostTxLookup(t *testing
 	}
 	if !strings.Contains(string(data), "https://example.com/proj-1.git") {
 		t.Errorf("export = %q, want it to contain the upstream URL", data)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// PR-1d codex round-3 Blocker: name-vs-ID collision (destructive
+// reassignment via ResolveProjectRef's ID-first precedence)
+// ---------------------------------------------------------------------------
+
+// TestApplyWorkspace_NameMatchingAnotherProjectIDResolvesToNameOwner pins the
+// round-3 Blocker: project A (id=proj-a, name=proj-b) and project B
+// (id=proj-b, name=other) are both registered, and A is already attached to
+// team-a. Applying a document listing `name: proj-b` must resolve to A (the
+// project whose project.yaml name actually IS "proj-b") via strict
+// name-only matching — NOT to B via ResolveProjectRef's id-exact-match
+// precedence, which would attach B and destructively detach A even though
+// the document never mentioned B at all.
+func TestApplyWorkspace_NameMatchingAnotherProjectIDResolvesToNameOwner(t *testing.T) {
+	d := newTestWorkspacesConnDB(t)
+	repo := orchestrator.NewWorkspaceRepository(d.Conn)
+	if err := repo.Save("team-a", &orchestrator.WorkspaceMeta{}); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	if err := orchestrator.CreateProject(d.Conn, &orchestrator.Project{ID: "proj-a", WorkDir: "/tmp/proj-a"}); err != nil {
+		t.Fatalf("CreateProject(proj-a): %v", err)
+	}
+	if err := orchestrator.CreateProject(d.Conn, &orchestrator.Project{ID: "proj-b", WorkDir: "/tmp/proj-b"}); err != nil {
+		t.Fatalf("CreateProject(proj-b): %v", err)
+	}
+	if err := orchestrator.SetProjectWorkspace(d.Conn, "proj-a", "team-a"); err != nil {
+		t.Fatalf("SetProjectWorkspace(proj-a): %v", err)
+	}
+
+	svc := &ProjectAppService{
+		Projects: &stubProjectRepository{
+			projects: []*orchestrator.Project{
+				{ID: "proj-a"},
+				{ID: "proj-b"},
+			},
+		},
+		Meta: &stubProjectMetaStore{
+			metas: map[string]*orchestrator.ProjectMeta{
+				"proj-a": {ID: "proj-a", Name: "proj-b"},
+				"proj-b": {ID: "proj-b", Name: "other"},
+			},
+		},
+		WorkspacesConn: d.Conn,
+	}
+
+	apply := envelopeApplyDoc("team-a", map[string]bool{"projects": true}, orchestrator.WorkspaceEnvelopeSpec{
+		Projects: []orchestrator.WorkspaceEnvelopeProject{{Name: "proj-b"}},
+	})
+
+	result, err := svc.ApplyWorkspace(apply, false)
+	if err != nil {
+		t.Fatalf("ApplyWorkspace: %v", err)
+	}
+	if len(result.AttachedProjects) != 0 {
+		t.Errorf("AttachedProjects = %v, want empty (proj-a was already attached; proj-b must never be attached)", result.AttachedProjects)
+	}
+	if len(result.AlreadyAttachedProjects) != 1 || result.AlreadyAttachedProjects[0] != "proj-a" {
+		t.Errorf("AlreadyAttachedProjects = %v, want [proj-a] (resolved by NAME, not by proj-b's ID)", result.AlreadyAttachedProjects)
+	}
+	if len(result.DetachedProjects) != 0 {
+		t.Errorf("DetachedProjects = %v, want empty — proj-a must NOT be detached", result.DetachedProjects)
+	}
+}
+
+// TestExportWorkspaceEnvelopes_NameMatchingAnotherProjectIDRefusesExport
+// pins the export-side half of the round-3 Blocker: emitting proj-a's name
+// ("proj-b") would be indistinguishable from proj-b's own identity on a
+// later apply — export must refuse rather than produce a document that
+// round-trips to the wrong project.
+func TestExportWorkspaceEnvelopes_NameMatchingAnotherProjectIDRefusesExport(t *testing.T) {
+	d := newTestWorkspacesConnDB(t)
+	repo := orchestrator.NewWorkspaceRepository(d.Conn)
+	if err := repo.Save("team-a", &orchestrator.WorkspaceMeta{}); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	if err := orchestrator.CreateProject(d.Conn, &orchestrator.Project{ID: "proj-a", WorkDir: "/tmp/proj-a"}); err != nil {
+		t.Fatalf("CreateProject(proj-a): %v", err)
+	}
+	if err := orchestrator.CreateProject(d.Conn, &orchestrator.Project{ID: "proj-b", WorkDir: "/tmp/proj-b"}); err != nil {
+		t.Fatalf("CreateProject(proj-b): %v", err)
+	}
+	if err := orchestrator.SetProjectWorkspace(d.Conn, "proj-a", "team-a"); err != nil {
+		t.Fatalf("SetProjectWorkspace(proj-a): %v", err)
+	}
+	// proj-b need not be assigned to team-a at all — the collision makes
+	// exporting proj-a's name unsafe regardless of where proj-b lives.
+
+	svc := &ProjectAppService{
+		Projects: &stubProjectRepository{
+			projects: []*orchestrator.Project{
+				{ID: "proj-a"},
+				{ID: "proj-b"},
+			},
+		},
+		Meta: &stubProjectMetaStore{
+			metas: map[string]*orchestrator.ProjectMeta{
+				"proj-a": {ID: "proj-a", Name: "proj-b"},
+				"proj-b": {ID: "proj-b", Name: "other"},
+			},
+		},
+		WorkspacesConn: d.Conn,
+	}
+
+	_, err := svc.ExportWorkspaceEnvelopes([]string{"team-a"})
+	if err == nil {
+		t.Fatal("expected a name-vs-id collision error, got nil")
+	}
+	se, ok := err.(*StatusError)
+	if !ok {
+		t.Fatalf("expected *StatusError, got %T: %v", err, err)
+	}
+	if se.Code != http.StatusConflict {
+		t.Errorf("Code = %d, want %d", se.Code, http.StatusConflict)
+	}
+	if !strings.Contains(se.Message, "proj-b") {
+		t.Errorf("Message = %q, want it to mention the colliding id/name", se.Message)
+	}
+}
+
+// TestExportWorkspaceEnvelopes_SelfConsistentNameEqualsOwnIDIsNotACollision
+// is the regression guard alongside the two tests above: a project whose
+// OWN name happens to equal its OWN id is not a collision — nothing else
+// could be hijacked, since ResolveProjectRef's id-exact-match step would
+// still land on the exact same project either way.
+func TestExportWorkspaceEnvelopes_SelfConsistentNameEqualsOwnIDIsNotACollision(t *testing.T) {
+	d := newTestWorkspacesConnDB(t)
+	repo := orchestrator.NewWorkspaceRepository(d.Conn)
+	if err := repo.Save("team-a", &orchestrator.WorkspaceMeta{}); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	if err := orchestrator.CreateProject(d.Conn, &orchestrator.Project{ID: "proj-a", WorkDir: "/tmp/proj-a"}); err != nil {
+		t.Fatalf("CreateProject(proj-a): %v", err)
+	}
+	if err := orchestrator.SetProjectWorkspace(d.Conn, "proj-a", "team-a"); err != nil {
+		t.Fatalf("SetProjectWorkspace(proj-a): %v", err)
+	}
+
+	svc := &ProjectAppService{
+		Projects: &stubProjectRepository{
+			projects: []*orchestrator.Project{{ID: "proj-a"}},
+		},
+		Meta: &stubProjectMetaStore{
+			metas: map[string]*orchestrator.ProjectMeta{
+				"proj-a": {ID: "proj-a", Name: "proj-a"},
+			},
+		},
+		WorkspacesConn: d.Conn,
+	}
+
+	data, err := svc.ExportWorkspaceEnvelopes([]string{"team-a"})
+	if err != nil {
+		t.Fatalf("ExportWorkspaceEnvelopes: %v (want success — self-consistent name==id is not a collision)", err)
+	}
+	if !strings.Contains(string(data), "name: proj-a") {
+		t.Errorf("export = %q, want it to contain the project name", data)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// PR-1d codex round-3 Major: non-404 project resolution failures must abort
+// apply, not be folded into MissingProjects
+// ---------------------------------------------------------------------------
+
+// TestApplyWorkspace_ProjectResolutionErrorAbortsApply pins the round-3
+// Major: a transient repository failure (e.g. ListProjects returning 500)
+// while resolving spec.projects[].name must abort the WHOLE apply with the
+// underlying error, not be silently folded into "missing project" and let
+// the apply proceed to (potentially) detach a currently-attached project on
+// what may be a merely transient failure.
+func TestApplyWorkspace_ProjectResolutionErrorAbortsApply(t *testing.T) {
+	d := newTestWorkspacesConnDB(t)
+	svc := &ProjectAppService{
+		Projects: &stubProjectRepository{
+			listErr: fmt.Errorf("boom: repository unavailable"),
+		},
+		Meta:           &stubProjectMetaStore{},
+		WorkspacesConn: d.Conn,
+	}
+
+	apply := envelopeApplyDoc("team-a", map[string]bool{"projects": true}, orchestrator.WorkspaceEnvelopeSpec{
+		Projects: []orchestrator.WorkspaceEnvelopeProject{{Name: "api"}},
+	})
+
+	_, err := svc.ApplyWorkspace(apply, false)
+	if err == nil {
+		t.Fatal("expected an error, got nil")
+	}
+	se, ok := err.(*StatusError)
+	if !ok {
+		t.Fatalf("expected *StatusError, got %T: %v", err, err)
+	}
+	if se.Code != http.StatusInternalServerError {
+		t.Errorf("Code = %d, want %d", se.Code, http.StatusInternalServerError)
+	}
+	if !strings.Contains(se.Message, "boom") {
+		t.Errorf("Message = %q, want it to mention the underlying repository error", se.Message)
+	}
+
+	// No side effects: the apply must have been refused before any DB
+	// write, so team-a must not exist at all.
+	if _, loadErr := orchestrator.NewWorkspaceRepository(d.Conn).Load("team-a"); !errors.Is(loadErr, os.ErrNotExist) {
+		t.Errorf("expected team-a to NOT exist after an aborted apply, got err=%v", loadErr)
 	}
 }
