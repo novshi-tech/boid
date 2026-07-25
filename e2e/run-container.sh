@@ -780,14 +780,21 @@ e2e_run "$BUILD_DIR/boid-e2e" wait-health --timeout 30s --interval 200ms "$DAEMO
 CLI_ADDR="127.0.0.1:8442"
 e2e_log "verifying the dedicated CLI listener at $CLI_ADDR"
 
-health_code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "http://${CLI_ADDR}/api/health")"
-[[ "$health_code" == "200" ]] || e2e_fail "GET http://${CLI_ADDR}/api/health = ${health_code}, want 200 (public, no token)"
+# `|| true` on every curl call below (mirrors this script's own
+# probe_http() helper further up): under `set -euo pipefail`, a bare
+# `var="$(curl ...)"` with no guard would abort the WHOLE script on a
+# connection-refused/timeout with an unhelpful shell error instead of the
+# descriptive e2e_fail message immediately below each one. curl itself
+# (no -f/--fail) already returns exit 0 for any HTTP response including
+# 401/404 — only a transport-level failure needs guarding here.
+health_code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "http://${CLI_ADDR}/api/health" || true)"
+[[ "$health_code" == "200" ]] || e2e_fail "GET http://${CLI_ADDR}/api/health = ${health_code:-<no response>}, want 200 (public, no token)"
 
-wrong_code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 -H "Authorization: Bearer wrong-token" "http://${CLI_ADDR}/api/tasks")"
-[[ "$wrong_code" == "401" ]] || e2e_fail "GET http://${CLI_ADDR}/api/tasks with a wrong Bearer token = ${wrong_code}, want 401"
+wrong_code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 -H "Authorization: Bearer wrong-token" "http://${CLI_ADDR}/api/tasks" || true)"
+[[ "$wrong_code" == "401" ]] || e2e_fail "GET http://${CLI_ADDR}/api/tasks with a wrong Bearer token = ${wrong_code:-<no response>}, want 401"
 
-right_code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 -H "Authorization: Bearer ${CLI_TOKEN}" "http://${CLI_ADDR}/api/tasks")"
-[[ "$right_code" == "200" ]] || e2e_fail "GET http://${CLI_ADDR}/api/tasks with the correct Bearer token = ${right_code}, want 200"
+right_code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 -H "Authorization: Bearer ${CLI_TOKEN}" "http://${CLI_ADDR}/api/tasks" || true)"
+[[ "$right_code" == "200" ]] || e2e_fail "GET http://${CLI_ADDR}/api/tasks with the correct Bearer token = ${right_code:-<no response>}, want 200"
 e2e_log "CLI listener token auth OK (health public, wrong token 401, correct token 200)"
 
 e2e_log "verifying BOID_MODE=container CLI dispatch (cmd/host.go)"
