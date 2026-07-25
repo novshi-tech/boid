@@ -32,9 +32,10 @@ package cmd
 //     token as its Bearer credential and inject it into cmd's context,
 //     exactly like the ordinary path's resolveClient does.
 //
-// Deliberate simplification vs. a literal reading of the original
-// go:embed suggestion: build/container/Dockerfile's build context is
-// `COPY . .` — the ENTIRE go source tree, not just the compose/Dockerfile
+// Deliberate simplification vs. a literal reading of the original "embed
+// the compose assets via go's embed directive" suggestion:
+// build/container/Dockerfile's build context is `COPY . .` — the ENTIRE go
+// source tree, not just the compose/Dockerfile
 // assets — so embedding what the image build actually needs into the very
 // binary being built would mean embedding a full second copy of this
 // repository's source inside itself. Impractical (and circular) at this
