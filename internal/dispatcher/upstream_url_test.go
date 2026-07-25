@@ -43,6 +43,11 @@ func TestNormalizeOriginURL(t *testing.T) {
 			want: "https://github.com/owner/repo.git",
 		},
 		{
+			name: "file url passthrough unchanged",
+			raw:  "file:///tmp/some/repo",
+			want: "file:///tmp/some/repo",
+		},
+		{
 			name:    "empty url is an error",
 			raw:     "",
 			wantErr: true,

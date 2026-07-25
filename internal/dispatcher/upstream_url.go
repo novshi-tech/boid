@@ -24,6 +24,18 @@ func NormalizeOriginURL(raw string) (string, error) {
 	if strings.HasPrefix(raw, "https://") {
 		return raw, nil
 	}
+	// file:// is passed through unchanged too, alongside https:// — unlike
+	// the scp-like/ssh/http forms below, there is no "canonical https form"
+	// to convert it to (it names a local filesystem path, not a forge
+	// host), so the only sensible normalization is none. Primarily useful
+	// for daemon-side testing of the git-URL project model (docs/plans/
+	// volume-only-daemon.md §論点a: CreateProjectFromGitURL normalizes via
+	// this function before cloning) against a local fixture repo instead of
+	// a real forge, but also a legitimate git URL scheme in its own right
+	// (e.g. an NFS-shared bare repo mirror).
+	if strings.HasPrefix(raw, "file://") {
+		return raw, nil
+	}
 	slug, err := repoSlugFromOriginURL(raw)
 	if err != nil {
 		return "", fmt.Errorf("normalize origin url %q: %w", raw, err)
