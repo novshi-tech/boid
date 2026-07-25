@@ -242,6 +242,40 @@ YAML
 fi
 '
 
+# --- validate the effective backend (codex round-2, PR834 Major 3) ------
+# The seed step above is idempotent: an EXISTING config.yaml in the volume
+# is left untouched, on the reasonable assumption that preserving an
+# operators own edits is the right default. But an existing config.yaml
+# left over from a prior userns-backend install (or one that only ever set
+# unrelated keys, e.g. web:, with no sandbox: block at all — which resolves
+# to the userns default) means the daemon this script is about to start
+# would silently run the userns backend while this script still prints
+# "sandbox.backend: container, seeded above" below, as if the container
+# backend were actually running. Parsed with sed rather than the boid
+# binary itself: `boid config get` (cmd/config.go) talks to a LIVE daemons
+# HTTP API, which does not exist yet at this point in a fresh deploy (the
+# daemon has not started) or a one-off seed/validate container (which never
+# runs `boid start` at all, only `sh`) — there is no bootstrap-before-
+# first-boot local-file read path to call instead (docs/plans/
+# volume-only-daemon.md §論点f, same gap the seed step above already notes).
+echo "deploy-container: verifying the boid_state volume config.yaml resolves sandbox.backend to container"
+"${COMPOSE_CMD[@]}" run --rm -T --entrypoint sh daemon -c '
+set -e
+cfg="$XDG_CONFIG_HOME/boid/config.yaml"
+backend=""
+if [ -f "$cfg" ]; then
+	backend=$(sed -n "/^sandbox:/,/^[^[:space:]]/{/^[[:space:]]*backend:/p}" "$cfg" | tail -n1 | sed -E "s/^[[:space:]]*backend:[[:space:]]*//; s/[[:space:]]*#.*$//; s/[[:space:]]+$//")
+fi
+backend="${backend:-userns}"
+if [ "$backend" != "container" ]; then
+	echo "deploy-container: ERROR: the boid_state volume config.yaml resolves sandbox.backend to [$backend], not container." >&2
+	echo "deploy-container: an existing config.yaml was preserved above (not overwritten) but does not select the container backend, so the daemon about to start would silently run userns instead of container." >&2
+	echo "deploy-container: fix: update it (boid config set sandbox.backend container against a running daemon, or edit $cfg directly inside the volume) or remove the boid_state volume to fresh-start (this DISCARDS all daemon state)." >&2
+	exit 1
+fi
+echo "deploy-container: confirmed effective sandbox.backend=container" >&2
+'
+
 echo "deploy-container: stopping any existing compose stack (explicit down before up — see this script's own header comment on why no restart: policy exists in compose.yml)"
 "${COMPOSE_CMD[@]}" down || true
 

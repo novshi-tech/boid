@@ -6,6 +6,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+
+	"github.com/novshi-tech/boid/internal/sandbox"
 )
 
 // This file implements the daemon-side per-job clone (docs/plans/
@@ -61,14 +63,22 @@ import (
 // bareRepoPath's own continued existence or mount visibility (see also
 // TestPrepareJobCheckout_NoAlternatesDependency).
 //
-// `git checkout -B <branch> origin/<branch>` (not a plain `git checkout`)
-// mirrors internal/sandbox/runner/clone.go's resolveCloneBranch: forces the
-// local branch to exactly match the bare repo's own ref, discarding any
-// local drift a same-named branch might otherwise carry from `git clone`'s
-// own default-branch checkout — the identical idempotent-by-reclone
-// contract the in-sandbox clone sequence already established (docs/plans/
+// Branch resolution (which ref to check stagingDir out to) is NOT a plain
+// `git checkout -B <branch> origin/<branch>` — it shares
+// sandbox.ResolveCloneBranchRef with internal/sandbox/runner/clone.go's
+// resolveCloneBranch (PR834 PR-2b round-2 codex review Blocker: the two
+// paths had drifted — this function's own pre-fix naive `origin/<branch>`
+// construction neither stripped an "origin/" prefix baseBranch/branch might
+// carry, e.g. a project.yaml `base_branch: origin/main`, which produced an
+// unresolvable "origin/origin/main", nor created a missing base branch from
+// baseBranchForkPoint the ClassifyBaseBranch case-3 way resolveCloneBranch
+// already did). See ResolveCloneBranchRef's own doc comment for the exact
+// algorithm; the net effect is the same idempotent-by-reclone contract the
+// in-sandbox clone sequence already established (docs/plans/
 // branch-policy-simplification.md: reopen = re-running this exact
-// sequence).
+// sequence), forcing the local branch to exactly match the resolved ref,
+// discarding any local drift a same-named branch might otherwise carry from
+// `git clone`'s own default-branch checkout.
 //
 // A prior stagingDir (a leftover from an earlier attempt, or a reopen of
 // the same job) is wiped before cloning fresh — the daemon-side analogue of
@@ -104,10 +114,10 @@ import (
 // including clone failure, so a caller — runner.go's own trackCheckoutDir,
 // which only starts tracking stagingDir on full success — can never be
 // left responsible for cleaning up a staging dir it never learned about).
-func PrepareJobCheckout(ctx context.Context, bareRepoPath, branch, remoteURL, stagingDir string) (err error) {
-	if bareRepoPath == "" || branch == "" || stagingDir == "" {
-		return fmt.Errorf("prepare job checkout: bare_repo_path/branch/staging_dir must all be set (bare_repo_path=%q branch=%q staging_dir=%q)",
-			bareRepoPath, branch, stagingDir)
+func PrepareJobCheckout(ctx context.Context, bareRepoPath, branch, baseBranch, baseBranchForkPoint, remoteURL, stagingDir string) (err error) {
+	if bareRepoPath == "" || branch == "" || baseBranch == "" || stagingDir == "" {
+		return fmt.Errorf("prepare job checkout: bare_repo_path/branch/base_branch/staging_dir must all be set (bare_repo_path=%q branch=%q base_branch=%q staging_dir=%q)",
+			bareRepoPath, branch, baseBranch, stagingDir)
 	}
 
 	if mkErr := os.MkdirAll(filepath.Dir(stagingDir), 0o755); mkErr != nil {
@@ -137,9 +147,11 @@ func PrepareJobCheckout(ctx context.Context, bareRepoPath, branch, remoteURL, st
 		return fmt.Errorf("prepare job checkout: clone from bare repo: %w", cloneErr)
 	}
 
-	checkoutArgs := []string{"-C", stagingDir, "checkout", "-B", branch, "origin/" + branch}
-	if coErr := runGit(exec.CommandContext(ctx, "git", checkoutArgs...)); coErr != nil {
-		return fmt.Errorf("prepare job checkout: checkout branch %q: %w", branch, coErr)
+	run := func(args ...string) error {
+		return runGit(exec.CommandContext(ctx, "git", append([]string{"-C", stagingDir}, args...)...))
+	}
+	if _, resolveErr := sandbox.ResolveCloneBranchRef(run, branch, baseBranch, baseBranchForkPoint); resolveErr != nil {
+		return fmt.Errorf("prepare job checkout: %w", resolveErr)
 	}
 
 	if remoteURL != "" {

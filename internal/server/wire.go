@@ -739,9 +739,64 @@ func reapOrphansBeforeReopen(ctx context.Context, runner *dispatcher.Runner, con
 }
 
 func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, broker dispatcher.CommandBroker, secretStore *dispatcher.SecretStore) (*appRuntime, error) {
+	// sandbox backend selection (docs/plans/phase6-container-backend.md
+	// §PR7 cutover, §決定11): config-driven, global (not per-workspace).
+	// Loaded HERE, at the very top of buildRuntime — before even the
+	// startup orphan-runtime cleanup immediately below — so every call site
+	// in this function that needs to know "is this a container-backend
+	// deploy" (that cleanup, runner.RuntimesDir, sandboxBackendForConfig's
+	// own runtimeDir argument further down, and the matching job-log read
+	// path, transcriptLogReader) agrees on the identical backendCfg/
+	// runtimesRoot values from one config.Load() call, never a second,
+	// independently-timed one.
+	//
+	// PR834 PR-2b round-2 codex review Major 2: this used to run much later
+	// (right before runner construction) — startup orphan-runtime cleanup
+	// above therefore always scanned runtimesDirFor(cfg) (the boid_state
+	// NAMED VOLUME root under container backend), while every actual PR-2b
+	// artifact (per-job clone staging, workspace HOME, transcripts) lands
+	// under hostVisibleRuntimesDirFor(cfg) instead — an orphaned per-job
+	// clone left by a crashed daemon was never reclaimed by this startup
+	// sweep, only by the 30-day GC. See
+	// TestServer_New_ContainerBackend_CleanOrphanRuntimesScansHostVisibleDir.
+	//
+	// [Major 11, PR7 codex review]: config.Load()'s error here is fail-hard
+	// (daemon startup refused), NOT logged-and-defaulted-to-userns. An
+	// operator who set `sandbox.backend: container` in config.yaml has
+	// opted into a real production dispatch path; if config.yaml itself
+	// becomes unreadable at reload time (a torn write from a concurrent
+	// `boid` CLI edit, a permissions change, disk corruption — anything
+	// short of ENOENT, which config.Load's own loadFromPath already treats
+	// as "use defaults" and returns a nil error for) the daemon must not
+	// silently start with the userns backend instead: that is an unnoticed,
+	// unannounced downgrade of the sandbox isolation the operator explicitly
+	// configured, discovered only much later (if ever) by noticing jobs
+	// aren't landing in containers. Refusing to start surfaces the problem
+	// immediately, the same way every other daemon startup precondition in
+	// this file does (buildProjectStore's own "daemon startup refused"
+	// errors above).
+	backendCfg, err := config.Load()
+	if err != nil {
+		return nil, fmt.Errorf("daemon startup refused: load boid config for sandbox backend selection: %w", err)
+	}
+	usingContainerBackend := backendCfg.Sandbox.Backend == config.SandboxBackendContainer
+
+	// Host-visible runtimes root selection (docs/plans/volume-only-daemon.md
+	// — see hostVisibleRuntimesDirFor's own doc comment for the full
+	// rationale): runner.RuntimesDir below, sandboxBackendForConfig's
+	// runtimeDir argument further down, the startup orphan-runtime cleanup
+	// immediately below, and the matching job-log read path
+	// (transcriptLogReader) all use this SAME value, so `boid job log` /
+	// workspace HOME / the PR-2b per-job clone staging area never disagree
+	// about where their own data actually landed.
+	runtimesRoot := runtimesDirFor(cfg)
+	if usingContainerBackend {
+		runtimesRoot = hostVisibleRuntimesDirFor(cfg)
+	}
+
 	// Clean up runtime dirs that have no corresponding job rows (must run before
 	// MarkStaleJobsFailed so we only remove truly orphaned dirs).
-	cleanOrphanRuntimes(runtimesDirFor(cfg), srv.db)
+	cleanOrphanRuntimes(runtimesRoot, srv.db)
 
 	// Clean up jobs left in running state from a previous crash or restart.
 	if err := dispatcher.MarkStaleJobsFailed(srv.db); err != nil {
@@ -794,52 +849,10 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 	// Registry — see the gitgateway.NewServer(...) call below.
 	srv.gatewayRegistry = gitgateway.NewRegistry()
 
-	// sandbox backend selection (docs/plans/phase6-container-backend.md
-	// §PR7 cutover, §決定11): config-driven, global (not per-workspace).
-	// Loaded HERE — before runner is constructed below, earlier than PR7's
-	// own sandboxBackendForConfig call site further down this function —
-	// so its result (backendCfg.Sandbox.Backend) is also available for
-	// this PR's own host-visible-runtimes-root decision immediately below,
-	// without a second, independent config.Load() call that could
-	// theoretically race a concurrent config edit and disagree with the
-	// backendCfg this function actually constructs the backend from (both
-	// derived readings of "is this a container-backend deploy" MUST agree,
-	// or runner.RuntimesDir and containerBackend's own RuntimeDir would
-	// silently diverge again — exactly the bug this PR fixes).
-	//
-	// [Major 11, PR7 codex review]: config.Load()'s error here is fail-hard
-	// (daemon startup refused), NOT logged-and-defaulted-to-userns. An
-	// operator who set `sandbox.backend: container` in config.yaml has
-	// opted into a real production dispatch path; if config.yaml itself
-	// becomes unreadable at reload time (a torn write from a concurrent
-	// `boid` CLI edit, a permissions change, disk corruption — anything
-	// short of ENOENT, which config.Load's own loadFromPath already treats
-	// as "use defaults" and returns a nil error for) the daemon must not
-	// silently start with the userns backend instead: that is an unnoticed,
-	// unannounced downgrade of the sandbox isolation the operator explicitly
-	// configured, discovered only much later (if ever) by noticing jobs
-	// aren't landing in containers. Refusing to start surfaces the problem
-	// immediately, the same way every other daemon startup precondition in
-	// this file does (buildProjectStore's own "daemon startup refused"
-	// errors above).
-	backendCfg, err := config.Load()
-	if err != nil {
-		return nil, fmt.Errorf("daemon startup refused: load boid config for sandbox backend selection: %w", err)
-	}
-	usingContainerBackend := backendCfg.Sandbox.Backend == config.SandboxBackendContainer
-
-	// Host-visible runtimes root selection (docs/plans/volume-only-daemon.md
-	// — see hostVisibleRuntimesDirFor's own doc comment for the full
-	// rationale): runner.RuntimesDir below, sandboxBackendForConfig's
-	// runtimeDir argument further down, and the transcriptLogReader job-log
-	// read path all use this SAME value, so `boid job log` / workspace HOME
-	// / the PR-2b per-job clone staging area never disagree about where
-	// their own data actually landed.
-	runtimesRoot := runtimesDirFor(cfg)
-	if usingContainerBackend {
-		runtimesRoot = hostVisibleRuntimesDirFor(cfg)
-	}
-
+	// backendCfg/usingContainerBackend/runtimesRoot were already resolved at
+	// the very top of this function (see that block's own doc comment for
+	// why it moved there — PR834 PR-2b round-2 codex review Major 2) —
+	// reused here rather than a second config.Load().
 	runner := dispatcher.Wire(dispatcher.WireConfig{
 		DB:                   srv.db,
 		Runtime:              jobRuntime,
@@ -881,9 +894,9 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 	// own cutover gate (container e2e green + rollback rehearsal) is an
 	// operational precondition on actually setting it in a real deploy,
 	// not something enforced here. backendCfg/usingContainerBackend/
-	// runtimesRoot were already resolved earlier in this function (see
-	// their own comments above, near runner's construction) — reused here
-	// rather than a second config.Load().
+	// runtimesRoot were already resolved at the very top of this function
+	// (see that block's own comment) — reused here rather than a second
+	// config.Load().
 	sandboxBackend, berr := sandboxBackendForConfig(backendCfg, srv.installID, runtimesRoot, srv.daemonCA, &srv.brokerTLSSandboxAddr)
 	if berr != nil {
 		return nil, fmt.Errorf("daemon startup refused: %w", berr)
@@ -1125,6 +1138,14 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 	// the identical reason their own doc comment gives (no job token or
 	// sandbox involved; this runs in the daemon process itself).
 	runner.GatewayCredentials = gwCreds
+	// WithProjectLock (PR834 PR-2b round-2 codex review Major 1): shares
+	// projectSvc's own projectMu with the per-job-clone dispatch step above,
+	// so it serializes against a concurrent `project rm` + re-add at the
+	// same managed path — see ProjectAppService.WithProjectLock's own doc
+	// comment for why this is a plain function value rather than a direct
+	// import (internal/dispatcher cannot import internal/api — this package
+	// already imports internal/dispatcher for wiring).
+	runner.WithProjectLock = projectSvc.WithProjectLock
 
 	taskSvc := &api.TaskAppService{
 		Tasks:    taskRepo,

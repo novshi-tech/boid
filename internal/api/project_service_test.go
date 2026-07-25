@@ -2,10 +2,74 @@ package api
 
 import (
 	"net/http"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/novshi-tech/boid/internal/orchestrator"
 )
+
+// TestProjectAppService_WithProjectLock_SerializesConcurrentCallers pins
+// PR834 PR-2b round-2 codex review Major 1's fix: WithProjectLock must
+// actually hold projectMu for fn's whole duration, so a caller outside this
+// package (dispatcher.Runner.Dispatch's per-job-clone step, wired via
+// wire.go's runner.WithProjectLock = projectSvc.WithProjectLock) is truly
+// serialized against CreateProject/CreateProjectFromGitURL/DeleteProject/
+// FetchProject — not just handed a lock that happens to exist but never
+// gets exercised end to end. Two overlapping calls must never run their fn
+// concurrently: the second blocks until the first returns.
+func TestProjectAppService_WithProjectLock_SerializesConcurrentCallers(t *testing.T) {
+	s := &ProjectAppService{}
+
+	var mu sync.Mutex
+	active := 0
+	maxActive := 0
+	track := func() func() {
+		mu.Lock()
+		active++
+		if active > maxActive {
+			maxActive = active
+		}
+		mu.Unlock()
+		return func() {
+			mu.Lock()
+			active--
+			mu.Unlock()
+		}
+	}
+
+	var wg sync.WaitGroup
+	for i := 0; i < 5; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_ = s.WithProjectLock(func() error {
+				done := track()
+				time.Sleep(5 * time.Millisecond)
+				done()
+				return nil
+			})
+		}()
+	}
+	wg.Wait()
+
+	if maxActive != 1 {
+		t.Fatalf("max concurrently-active WithProjectLock callers = %d, want 1 (not serialized)", maxActive)
+	}
+}
+
+// TestProjectAppService_WithProjectLock_PropagatesFnError confirms
+// WithProjectLock is a transparent wrapper: fn's error (dispatcher's own
+// FetchBareRepo/PrepareJobCheckout failure) comes back unchanged, not
+// swallowed or replaced.
+func TestProjectAppService_WithProjectLock_PropagatesFnError(t *testing.T) {
+	s := &ProjectAppService{}
+	wantErr := &StatusError{Code: http.StatusBadGateway, Message: "boom"}
+	err := s.WithProjectLock(func() error { return wantErr })
+	if err != wantErr {
+		t.Fatalf("WithProjectLock error = %v, want %v", err, wantErr)
+	}
+}
 
 // TestSetProjectWorkspace_RejectsNonExistentSlug pins MAJOR 5 (codex review,
 // docs/plans/workspace-db-consolidation.md): assigning a project to a

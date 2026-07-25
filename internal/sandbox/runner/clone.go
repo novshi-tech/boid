@@ -140,59 +140,36 @@ func performCloneSteps(cs sandbox.CloneSpec, st *State) error {
 // exists" case to reconcile; every candidate is either a remote-tracking ref
 // `git clone` already fetched, or a brand-new local branch this function
 // creates.
+//
+// The actual git-command sequence lives in sandbox.ResolveCloneBranchRef
+// (PR834 PR-2b round-2 codex review): internal/dispatcher/checkout.go's
+// PrepareJobCheckout shares this exact algorithm now instead of
+// reimplementing a divergent (and, pre-fix, buggy — it never stripped an
+// "origin/" prefix or created a missing base branch from a fork point) copy
+// of it — see that shared function's own doc comment.
 func resolveCloneBranch(git string, cs sandbox.CloneSpec, st *State) error {
-	dir := cs.TargetDir
-	baseLocal := strings.TrimPrefix(cs.BaseBranch, "origin/")
-	baseRef := "origin/" + baseLocal
+	if !cs.CheckoutOnly {
+		// orchestrator.BuildCloneDeclaration always sets CheckoutOnly=true now,
+		// so this is unreachable in production dispatch. Kept as an explicit,
+		// loud failure (rather than silently falling through to a checkout)
+		// in case a future or test-only CloneSpec ever sets CheckoutOnly=false
+		// again without restoring a real resolution path.
+		return fmt.Errorf("runner clone: CloneSpec.CheckoutOnly is false; per-task fork branches were retired in docs/plans/branch-policy-simplification.md Phase 1")
+	}
 
-	if _, err := runGit(git, dir, "rev-parse", "--verify", "--quiet", baseRef); err != nil {
-		// ClassifyBaseBranch case 3: BaseBranch exists on neither origin nor
-		// locally yet. Create it from BaseBranchForkPoint or
-		// refs/remotes/origin/HEAD.
-		start, source, ferr := resolveCloneForkStart(git, dir, cs.BaseBranchForkPoint)
-		if ferr != nil {
-			return fmt.Errorf("runner clone: resolve base branch %q: %w", cs.BaseBranch, ferr)
-		}
-		if _, cerr := runGit(git, dir, "branch", baseLocal, start); cerr != nil {
-			return fmt.Errorf("runner clone: create base branch %q from %q (%s): %w", baseLocal, start, source, cerr)
-		}
-		baseRef = baseLocal
+	dir := cs.TargetDir
+	run := func(args ...string) error {
+		_, err := runGit(git, dir, args...)
+		return err
+	}
+	created, err := sandbox.ResolveCloneBranchRef(run, cs.Branch, cs.BaseBranch, cs.BaseBranchForkPoint)
+	if err != nil {
+		return fmt.Errorf("runner clone: %w", err)
+	}
+	if created {
 		st.OK("inner-child", "clone-base-branch-created")
 	}
-
-	if cs.CheckoutOnly {
-		// Every task occupies Branch (== BaseBranch by dispatcher's
-		// declaration contract) directly — the per-task "boid/<id8>" branch
-		// and its fork-point are retired
-		// (docs/plans/branch-policy-simplification.md Phase 1).
-		if _, err := runGit(git, dir, "checkout", "-B", cs.Branch, baseRef); err != nil {
-			return fmt.Errorf("runner clone: checkout -B %s %s: %w", cs.Branch, baseRef, err)
-		}
-		return nil
-	}
-
-	// orchestrator.BuildCloneDeclaration always sets CheckoutOnly=true now,
-	// so this is unreachable in production dispatch. Kept as an explicit,
-	// loud failure (rather than silently falling through to a checkout)
-	// in case a future or test-only CloneSpec ever sets CheckoutOnly=false
-	// again without restoring a real resolution path.
-	return fmt.Errorf("runner clone: CloneSpec.CheckoutOnly is false; per-task fork branches were retired in docs/plans/branch-policy-simplification.md Phase 1")
-}
-
-// resolveCloneForkStart picks the start point for creating BaseBranch
-// locally when it does not exist on origin (or locally) yet. No pre-fetch is
-// needed: a fresh clone already has every remote branch's objects and refs.
-func resolveCloneForkStart(git, dir, forkPoint string) (start, source string, err error) {
-	if forkPoint != "" {
-		if _, verr := runGit(git, dir, "rev-parse", "--verify", "--quiet", forkPoint); verr == nil {
-			return forkPoint, "project.yaml fork_point", nil
-		}
-		return "", "", fmt.Errorf("fork_point %q does not resolve in the clone", forkPoint)
-	}
-	if _, verr := runGit(git, dir, "rev-parse", "--verify", "--quiet", "refs/remotes/origin/HEAD"); verr == nil {
-		return "refs/remotes/origin/HEAD", "origin/HEAD", nil
-	}
-	return "", "", fmt.Errorf("no fork point available: fork_point unset and refs/remotes/origin/HEAD is not resolvable (upstream may not advertise a default branch)")
+	return nil
 }
 
 // runGit runs git with args, in dir (unless dir is empty, in which case the

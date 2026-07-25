@@ -697,6 +697,36 @@ func (s *ProjectAppService) FetchProject(ctx context.Context, id string) (*orche
 // to the ordinary legacy-rejection message; DeleteProject skips the
 // RemoveAll and only removes the DB row, exactly as it already does for any
 // WorkDir that was never daemon-managed at all.
+// WithProjectLock runs fn while holding projectMu — the exact same lock
+// CreateProject/CreateProjectFromGitURL/DeleteProject/FetchProject already
+// serialize their own create/delete/fetch critical sections against (see
+// projectMu's own doc comment). Exported so a caller OUTSIDE this package
+// can share the identical serialization contract without duplicating it —
+// specifically, dispatcher.Runner.Dispatch's own best-effort
+// FetchBareRepo + PrepareJobCheckout pair (docs/plans/volume-only-daemon.md
+// §論点b, PR-2b) captures a project snapshot and then clones straight off
+// its WorkDir with NO lock of its own (PR834 PR-2b round-2 codex review
+// Major 1): a concurrent `project rm` + re-add at the identical managed
+// path can land in the window between dispatch's snapshot and its clone,
+// producing a mixed checkout (one project's gateway URL/credentials against
+// another project's bare-repo content). internal/dispatcher cannot import
+// this package directly (internal/api already imports internal/dispatcher
+// for wiring — the reverse would be an import cycle), so
+// internal/server/wire.go closes over this exact method and hands it to
+// Runner.WithProjectLock as a plain function value instead — see that
+// field's own doc comment and wire.go's assignment (next to
+// runner.GatewayCredentials, which shares the same gwCreds this package's
+// own FetchBareRepo closure was wired from).
+//
+// A caller with no error path of its own can ignore the returned error by
+// wrapping a niladic function; every current caller already threads one
+// through.
+func (s *ProjectAppService) WithProjectLock(fn func() error) error {
+	s.projectMu.Lock()
+	defer s.projectMu.Unlock()
+	return fn()
+}
+
 func (s *ProjectAppService) isManagedBareRepoPath(workDir string) bool {
 	if s.DataDir == "" {
 		return orchestrator.IsBareRepoDir(workDir)

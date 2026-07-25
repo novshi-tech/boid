@@ -205,6 +205,35 @@ type Runner struct {
 	// simply be public.
 	GatewayCredentials *gitgateway.CredentialProvider
 
+	// WithProjectLock, when set, runs a function while holding the daemon's
+	// project lifecycle mutex — api.ProjectAppService.projectMu, via that
+	// service's own exported WithProjectLock method — the same lock
+	// CreateProject/CreateProjectFromGitURL/DeleteProject/FetchProject
+	// already serialize their own create/delete/fetch critical sections
+	// against each other (PR834 PR-2b round-2 codex review Major 1). The
+	// PR-2b per-job-clone dispatch step below (FetchBareRepo +
+	// PrepareJobCheckout against selfProject.WorkDir) wraps itself in this
+	// so a concurrent `project rm` + re-add at the identical managed path
+	// cannot land mid-dispatch and produce a mixed checkout (this project's
+	// gateway URL/credentials cloned against a DIFFERENT, just-re-registered
+	// project's bare-repo content).
+	//
+	// internal/dispatcher cannot import internal/api directly to call
+	// ProjectAppService.WithProjectLock itself — internal/api already
+	// imports internal/dispatcher for wiring, so the reverse direction would
+	// be an import cycle — so internal/server/wire.go closes over the same
+	// ProjectAppService instance's WithProjectLock method and hands it here
+	// as a plain function value instead (see wire.go's assignment, right
+	// next to GatewayCredentials above, which is wired from the identical
+	// gwCreds for the identical reason: no cross-package type dependency,
+	// just a shared instance closed over once at startup).
+	//
+	// nil (any dispatcher unit test that does not wire an
+	// api.ProjectAppService at all, and any pre-PR-2b caller) means "no
+	// serialization" — the per-job-clone step below runs unguarded exactly
+	// as it did before this field existed. Production wiring always sets it.
+	WithProjectLock func(fn func() error) error
+
 	tokenMu       sync.Mutex
 	jobTokens     map[string]string
 	waiterMu      sync.Mutex
@@ -582,30 +611,49 @@ func (r *Runner) Dispatch(ctx context.Context, spec *orchestrator.JobSpec, clean
 		// falls through to the pre-PR-2b in-sandbox clone path unchanged —
 		// this is additive, not a replacement of that path.
 		if IsContainerBackend(r.Backend) && cloneWorkspaceDir != "" && selfProject != nil && orchestrator.IsBareRepoDir(selfProject.WorkDir) {
-			// Step 1 (plan doc): bring the bare repo cache up to date
-			// before staging off of it. Best-effort — a transient fetch
-			// failure degrades to dispatching against whatever the cache
-			// already has, matching §論点a's auto-prune-retirement
-			// invariant ("filesystem/remote 観測を根拠に... hard delete
-			// しない"; the same spirit applies here: a stale-but-present
-			// cache must not block dispatch outright).
-			if r.GatewayCredentials != nil {
-				if ferr := FetchBareRepo(ctx, selfProject.WorkDir, r.GatewayCredentials, spec.SecretNamespace); ferr != nil {
-					slog.Warn("per-job clone: refresh bare repo failed; dispatching against the existing cache",
-						"job_id", j.ID, "project_id", spec.ProjectID, "error", ferr)
+			// Steps 1-3 (plan doc) below run inside r.WithProjectLock when
+			// wired (PR834 PR-2b round-2 codex review Major 1): without it,
+			// this fetch+clone reads selfProject.WorkDir and clones from it
+			// with no serialization against api.ProjectAppService's own
+			// project lifecycle mutex — a concurrent `project rm` + re-add at
+			// the identical managed path could land mid-dispatch and produce
+			// a mixed checkout (this job's gateway URL/credentials snapshot
+			// cloned against a DIFFERENT, just-re-registered project's
+			// bare-repo content). See Runner.WithProjectLock's own doc
+			// comment for the full rationale.
+			doFetchAndClone := func() error {
+				// Step 1 (plan doc): bring the bare repo cache up to date
+				// before staging off of it. Best-effort — a transient fetch
+				// failure degrades to dispatching against whatever the cache
+				// already has, matching §論点a's auto-prune-retirement
+				// invariant ("filesystem/remote 観測を根拠に... hard delete
+				// しない"; the same spirit applies here: a stale-but-present
+				// cache must not block dispatch outright).
+				if r.GatewayCredentials != nil {
+					if ferr := FetchBareRepo(ctx, selfProject.WorkDir, r.GatewayCredentials, spec.SecretNamespace); ferr != nil {
+						slog.Warn("per-job clone: refresh bare repo failed; dispatching against the existing cache",
+							"job_id", j.ID, "project_id", spec.ProjectID, "error", ferr)
+					}
 				}
+				// Steps 2-3 (plan doc): stage the per-job checkout directly
+				// into cloneWorkspaceDir — no extra project-name subdirectory
+				// needed, cloneMounts already binds this whole directory at
+				// sandboxCloneDir(name) below. remoteURL rewrites `origin` to
+				// the gateway clone URL so a writable job's own in-sandbox
+				// `git push` still routes through the gateway (token auth,
+				// notify-on-401) instead of a meaningless daemon-local bare
+				// repo path — see PrepareJobCheckout's own doc comment.
+				cd := spec.Visibility.Clone
+				return PrepareJobCheckout(ctx, selfProject.WorkDir, cd.Branch, cd.BaseBranch, cd.BaseBranchForkPoint, gatewayCloneURL, cloneWorkspaceDir)
 			}
-			// Steps 2-3 (plan doc): stage the per-job checkout directly
-			// into cloneWorkspaceDir — no extra project-name subdirectory
-			// needed, cloneMounts already binds this whole directory at
-			// sandboxCloneDir(name) below. remoteURL rewrites `origin` to
-			// the gateway clone URL so a writable job's own in-sandbox
-			// `git push` still routes through the gateway (token auth,
-			// notify-on-401) instead of a meaningless daemon-local bare
-			// repo path — see PrepareJobCheckout's own doc comment.
-			branch := spec.Visibility.Clone.Branch
-			if err := PrepareJobCheckout(ctx, selfProject.WorkDir, branch, gatewayCloneURL, cloneWorkspaceDir); err != nil {
-				err = fmt.Errorf("per-job clone: %w", err)
+			var checkoutErr error
+			if r.WithProjectLock != nil {
+				checkoutErr = r.WithProjectLock(doFetchAndClone)
+			} else {
+				checkoutErr = doFetchAndClone()
+			}
+			if checkoutErr != nil {
+				err := fmt.Errorf("per-job clone: %w", checkoutErr)
 				r.failJob(j, err)
 				if cleanup != nil {
 					cleanup()

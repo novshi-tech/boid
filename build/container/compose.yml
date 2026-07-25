@@ -306,7 +306,35 @@ services:
       # e2e_setup_fixture_upstream, shared with the userns e2e suite). A
       # real production deploy has no reason to ever set this: its git
       # remotes carry real, publicly-trusted certificates.
+      #
+      # This covers ONLY the daemon's Go-level outbound HTTP(S) calls (the
+      # git-gateway reverse proxy a SANDBOXED job's clone goes through) —
+      # NOT the `git` subprocess CloneBareRepo/FetchBareRepo (internal/
+      # dispatcher/bare_repo.go) shell out to directly for `boid project add
+      # <url>` / `project fetch` / PR-2b's own per-job bare-repo refresh.
+      # git's libcurl TLS stack does not read SSL_CERT_FILE at all — see
+      # GIT_SSL_CAINFO immediately below for that half.
       SSL_CERT_FILE: "${SSL_CERT_FILE:-}"
+      # GIT_SSL_CAINFO (PR834 PR-2b round-2 codex review CRITICAL fix): the
+      # `git` subprocess half SSL_CERT_FILE's own comment above flags —
+      # `git clone`/`git fetch` (dispatcher.CloneBareRepo/FetchBareRepo,
+      # invoked directly from the daemon process, not through the
+      # git-gateway reverse proxy at all) resolve TLS trust via git's own
+      # GIT_SSL_CAINFO env var (or the equivalent http.sslCAInfo git-config
+      # key), completely independent of Go's crypto/x509.SystemCertPool.
+      # e2e/run-container.sh already exports this pointing at the identical
+      # BOID_RUNTIME_DIR-backed fixture cert path SSL_CERT_FILE uses (same
+      # file, both env vars) — it was simply missing from this service's own
+      # environment: block, so the value never reached the daemon container
+      # even though the launching host shell already had it exported. This
+      # was the actual root cause of the e2e-container CI failure: `boid
+      # project add https://host.docker.internal:.../...` failing with
+      # "server certificate verification failed. CAfile: none CRLfile:
+      # none" — the container's own git subprocess never saw ANY CA file,
+      # self-signed or otherwise. Empty by default, exactly like
+      # SSL_CERT_FILE above; a real production deploy has no reason to ever
+      # set this either.
+      GIT_SSL_CAINFO: "${GIT_SSL_CAINFO:-}"
     # HostConfig.Init (docker-init/tini as PID 1, owning zombie reap — §決定3)
     # — compose's `init:` maps directly onto it.
     init: true
