@@ -47,11 +47,12 @@ Manage projects ([`project.yaml` reference](project-yaml.md)).
 
 | Command | Role |
 |---|---|
-| `boid project add <dir>` | Register `<dir>/.boid/project.yaml` with `boid`. |
-| `boid project list` | List registered projects. |
+| `boid project add <git-url> --workspace=<name> [--name=<project-name>]` | Register a project by having the daemon clone `<git-url>` into a daemon-managed bare repository (docs/plans/volume-only-daemon.md §論点a/b). `--workspace` is required; `--name` overrides the project name otherwise derived from the URL's last path component. Host directory registration (the pre-volume-only `boid project add <dir>` form) is retired — see [`project init`](#project) below for the still-supported dir-based flow. |
+| `boid project list` | List registered projects, including their status (`ready`/`degraded` — see `project fetch` below). |
 | `boid project show <ref>` | Show details (id exact-match or name partial-match). |
-| `boid project remove <ref>` | Unregister a project. |
+| `boid project remove <ref>` | Unregister a project. The only entry point that deletes a project's row — `boid` never auto-deletes one based on what it observes on disk or over the network (see `project fetch` below). |
 | `boid project reload` | Re-read every registered project's `project.yaml`. |
+| `boid project fetch <ref>` | Run `git fetch --all` inside a git-URL registered project's bare repository and reload `project.yaml`. A fetch or reload failure marks the project `degraded` (visible in `project list`/`show`) instead of deleting it — recovery is `boid project rm` + `boid project add` once the remote is reachable again. |
 | `boid project behaviors <ref>` | List `task_behaviors` defined in the project. |
 
 ### `project local` — Deprecated
