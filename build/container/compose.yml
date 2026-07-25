@@ -108,17 +108,25 @@
 #     same path, which is purely a mount/identity concern this compose file
 #     is responsible for.
 #
-# KNOWN GAP (flagged, not fixed by this PR): internal/dispatcher/
-# container_backend.go materializes per-job DooD sibling-container mounts
-# (dockerTLSDir et al.) from absolute paths it computes under what used to
-# be a host-visible BOID_DATA_DIR. Now that BOID_DATA_DIR is a named
-# volume, any such path is container-internal only — a DooD sibling
-# container the daemon asks the HOST docker engine to create cannot mount
-# it. Nothing in this PR touches container_backend.go; this is real latent
-# breakage for that specific mechanism, deferred to a follow-up (most
-# likely: materialize that per-job material into its own throwaway named
-# volume or an emptyDir-style tmpfs mount shared by daemon+sibling via the
-# docker API, rather than a filesystem path).
+# KNOWN GAP — CLOSED by PR-2b (docs/plans/volume-only-daemon.md §論点b):
+# internal/dispatcher/container_backend.go materializes per-job DooD
+# sibling-container mounts (dockerTLSDir et al.) from absolute paths under
+# what this PR's own runtimeDir parameter used to resolve to
+# runtimesDirFor(cfg) — filepath.Dir(cfg.DBPath), i.e. BOID_DATA_DIR, the
+# boid_state NAMED VOLUME above, invisible to the HOST docker engine a DooD
+# sibling container's bind-mount source must resolve against. PR-2b's
+# internal/server/wire.go hostVisibleRuntimesDirFor(cfg) fixes this: under
+# sandbox.backend: container, every such call site (dockerTLSDir/
+# brokerTLSDir/spec.json/state.json/transcript-spool material, workspace
+# HOME, the per-job clone staging area — dispatcher.PrepareJobCheckout) now
+# resolves under filepath.Dir(cfg.SocketPath) instead — BOID_RUNTIME_DIR,
+# the host BIND mount immediately below, which a DooD sibling container's
+# host-side bind source CAN reach. See that function's own doc comment for
+# the remaining trade-off this does NOT resolve (BOID_RUNTIME_DIR is host
+# XDG_RUNTIME_DIR, typically tmpfs — workspace HOME under container backend
+# does not survive a host reboot the way it does for the userns backend;
+# a docker-managed named volume with per-workspace Subpath mounts is the
+# likely eventual fix, tracked as a follow-up, not blocking this PR).
 #
 # External listener wire status (broker / git gateway / egress proxy are
 # backed by real listeners on `boid_internal` now that [Blocker 2, PR7

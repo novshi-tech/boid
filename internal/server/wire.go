@@ -517,6 +517,61 @@ func runtimesDirFor(cfg Config) string {
 	return filepath.Join(filepath.Dir(cfg.SocketPath), "runtimes")
 }
 
+// hostVisibleRuntimesDirFor returns a runtimes root a docker-out-of-docker
+// (DooD) sibling container's bind-mount SOURCE can actually resolve on the
+// HOST filesystem — the fix for the gap build/container/compose.yml's own
+// "KNOWN GAP" comment flags (docs/plans/volume-only-daemon.md): under the
+// volume-only compose deploy, runtimesDirFor(cfg) above prefers
+// filepath.Dir(cfg.DBPath) — BOID_DATA_DIR, now the `boid_state` NAMED
+// VOLUME, invisible to the daemon container's OWN filesystem view from the
+// perspective of the HOST docker engine a sibling container's bind source
+// must resolve against (§論点i's "DooD path 境界", realization.go's own
+// MountSourceHostPath doc comment).
+//
+// cfg.SocketPath, by contrast, resolves under BOID_RUNTIME_DIR — a HOST
+// BIND mount, source == target, deliberately left untouched by the
+// volume-only pivot's compose.yml (see that file's own "Persistence"
+// header comment: "BOID_RUNTIME_DIR remains a host BIND mount... this PR
+// is scoped to daemon *data* persistence... this bind mount is still
+// load-bearing"). filepath.Dir(cfg.SocketPath) is therefore exactly the
+// host-visible root every DooD sibling-mount-source construction site
+// needs: containerBackend's per-job dockerTLSDir/brokerTLSDir/spec.json/
+// state.json/transcript-spool material (ContainerBackendOptions.RuntimeDir
+// — sandboxBackendForConfig's own call site below), Runner.RuntimesDir's
+// own downstream uses (workspace HOME — dispatcher.WorkspaceHomesDir — and
+// the PR-2b per-job clone staging area, dispatcher.PrepareJobCheckout), and
+// the matching job-log read paths (transcriptLogReader) that must agree
+// with wherever those writes actually landed.
+//
+// Falls back to runtimesDirFor(cfg) when cfg.SocketPath is itself empty (an
+// exotic config with neither a real DB path nor a socket path — matches
+// runtimesDirFor's own last-resort fallback rather than returning "").
+//
+// Trade-off (flagged, not fully resolved by this PR — see compose.yml's
+// own "KNOWN GAP" comment for the longer-term fix): BOID_RUNTIME_DIR is
+// host XDG_RUNTIME_DIR, typically `/run/user/<uid>` — tmpfs, cleared on
+// host reboot (not on container restart). Workspace HOME content
+// dispatched under container backend therefore does NOT survive a host
+// reboot the way home-workspace-volume.md Phase 4 intends for the userns
+// backend. This is strictly better than today's total breakage (container
+// CREATE fails outright — the bind source does not exist on the host at
+// all, since it's the OLD, non-host-visible root), not the final answer;
+// a docker-managed named volume (with per-workspace Subpath mounts) is the
+// likely follow-up.
+//
+// Every call site of this function is conditional on the container backend
+// actually being selected (see each call site's own comment) — a userns
+// deployment (the overwhelming majority of pre-volume-only installs) never
+// calls this function at all, so its own runtimesDirFor(cfg)-based
+// persistence contract (CLAUDE.md's documented 30-day daemon GC, Phase 4's
+// reboot-durable workspace HOME) is completely unaffected.
+func hostVisibleRuntimesDirFor(cfg Config) string {
+	if cfg.SocketPath == "" {
+		return runtimesDirFor(cfg)
+	}
+	return filepath.Join(filepath.Dir(cfg.SocketPath), "runtimes")
+}
+
 // dataHomeFor returns the per-installation data root (typically
 // ~/.local/share/boid). It is the parent of runtimesDirFor and the place
 // where per-task data (e.g. tasks/<id>/attachments) lives. Empty when no
@@ -721,6 +776,52 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 	// Registry — see the gitgateway.NewServer(...) call below.
 	srv.gatewayRegistry = gitgateway.NewRegistry()
 
+	// sandbox backend selection (docs/plans/phase6-container-backend.md
+	// §PR7 cutover, §決定11): config-driven, global (not per-workspace).
+	// Loaded HERE — before runner is constructed below, earlier than PR7's
+	// own sandboxBackendForConfig call site further down this function —
+	// so its result (backendCfg.Sandbox.Backend) is also available for
+	// this PR's own host-visible-runtimes-root decision immediately below,
+	// without a second, independent config.Load() call that could
+	// theoretically race a concurrent config edit and disagree with the
+	// backendCfg this function actually constructs the backend from (both
+	// derived readings of "is this a container-backend deploy" MUST agree,
+	// or runner.RuntimesDir and containerBackend's own RuntimeDir would
+	// silently diverge again — exactly the bug this PR fixes).
+	//
+	// [Major 11, PR7 codex review]: config.Load()'s error here is fail-hard
+	// (daemon startup refused), NOT logged-and-defaulted-to-userns. An
+	// operator who set `sandbox.backend: container` in config.yaml has
+	// opted into a real production dispatch path; if config.yaml itself
+	// becomes unreadable at reload time (a torn write from a concurrent
+	// `boid` CLI edit, a permissions change, disk corruption — anything
+	// short of ENOENT, which config.Load's own loadFromPath already treats
+	// as "use defaults" and returns a nil error for) the daemon must not
+	// silently start with the userns backend instead: that is an unnoticed,
+	// unannounced downgrade of the sandbox isolation the operator explicitly
+	// configured, discovered only much later (if ever) by noticing jobs
+	// aren't landing in containers. Refusing to start surfaces the problem
+	// immediately, the same way every other daemon startup precondition in
+	// this file does (buildProjectStore's own "daemon startup refused"
+	// errors above).
+	backendCfg, err := config.Load()
+	if err != nil {
+		return nil, fmt.Errorf("daemon startup refused: load boid config for sandbox backend selection: %w", err)
+	}
+	usingContainerBackend := backendCfg.Sandbox.Backend == config.SandboxBackendContainer
+
+	// Host-visible runtimes root selection (docs/plans/volume-only-daemon.md
+	// — see hostVisibleRuntimesDirFor's own doc comment for the full
+	// rationale): runner.RuntimesDir below, sandboxBackendForConfig's
+	// runtimeDir argument further down, and the transcriptLogReader job-log
+	// read path all use this SAME value, so `boid job log` / workspace HOME
+	// / the PR-2b per-job clone staging area never disagree about where
+	// their own data actually landed.
+	runtimesRoot := runtimesDirFor(cfg)
+	if usingContainerBackend {
+		runtimesRoot = hostVisibleRuntimesDirFor(cfg)
+	}
+
 	runner := dispatcher.Wire(dispatcher.WireConfig{
 		DB:                   srv.db,
 		Runtime:              jobRuntime,
@@ -745,7 +846,7 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 		// daemon restart, when buildRuntime runs again from the
 		// freshly-loaded config.
 		AllowedDomains: cfg.AllowedDomains,
-		RuntimesDir:    runtimesDirFor(cfg),
+		RuntimesDir:    runtimesRoot,
 		GitGateway:     srv.gatewayRegistry,
 		GatewayURL:     &srv.gatewayURL,
 		GatewayCAPEM:   &srv.gatewayCAPEM,
@@ -761,28 +862,11 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 	// "container" is the opt-in cutover this PR exposes; the plan doc's
 	// own cutover gate (container e2e green + rollback rehearsal) is an
 	// operational precondition on actually setting it in a real deploy,
-	// not something enforced here.
-	//
-	// [Major 11, PR7 codex review]: config.Load()'s error here is fail-hard
-	// (daemon startup refused), NOT logged-and-defaulted-to-userns. An
-	// operator who set `sandbox.backend: container` in config.yaml has
-	// opted into a real production dispatch path; if config.yaml itself
-	// becomes unreadable at reload time (a torn write from a concurrent
-	// `boid` CLI edit, a permissions change, disk corruption — anything
-	// short of ENOENT, which config.Load's own loadFromPath already treats
-	// as "use defaults" and returns a nil error for) the daemon must not
-	// silently start with the userns backend instead: that is an unnoticed,
-	// unannounced downgrade of the sandbox isolation the operator explicitly
-	// configured, discovered only much later (if ever) by noticing jobs
-	// aren't landing in containers. Refusing to start surfaces the problem
-	// immediately, the same way every other daemon startup precondition in
-	// this file does (buildProjectStore's own "daemon startup refused"
-	// errors above).
-	backendCfg, err := config.Load()
-	if err != nil {
-		return nil, fmt.Errorf("daemon startup refused: load boid config for sandbox backend selection: %w", err)
-	}
-	sandboxBackend, berr := sandboxBackendForConfig(backendCfg, srv.installID, runtimesDirFor(cfg), srv.daemonCA, &srv.brokerTLSSandboxAddr)
+	// not something enforced here. backendCfg/usingContainerBackend/
+	// runtimesRoot were already resolved earlier in this function (see
+	// their own comments above, near runner's construction) — reused here
+	// rather than a second config.Load().
+	sandboxBackend, berr := sandboxBackendForConfig(backendCfg, srv.installID, runtimesRoot, srv.daemonCA, &srv.brokerTLSSandboxAddr)
 	if berr != nil {
 		return nil, fmt.Errorf("daemon startup refused: %w", berr)
 	}
@@ -1015,6 +1099,15 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 	}
 	projectSvc.DataDir = dataHomeFor(cfg)
 
+	// docs/plans/volume-only-daemon.md §論点b, PR-2b: Runner.Dispatch's own
+	// per-job-clone step (runner.go) calls dispatcher.FetchBareRepo directly
+	// against a git-URL-registered project's bare repo before staging a
+	// per-job checkout off of it — reusing this exact same gwCreds the two
+	// closures immediately above already wire into ProjectAppService, for
+	// the identical reason their own doc comment gives (no job token or
+	// sandbox involved; this runs in the daemon process itself).
+	runner.GatewayCredentials = gwCreds
+
 	taskSvc := &api.TaskAppService{
 		Tasks:              taskRepo,
 		Actions:            taskRepo,
@@ -1035,7 +1128,14 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 		// api.WebHandler.AttachmentsRoot (below) — the Phase 5b PR2 attachments
 		// RPCs (`boid task attachments list|get`) must read from the identical
 		// directory the upload path writes to (wiring-seams.md #15).
-		srv.broker.BoidExecutor = newBoidBuiltinExecutor(workflow, taskSvc, jobStore, transcriptLogReader{rootDir: runtimesDirFor(cfg)}, runner, dataHomeFor(cfg))
+		// transcriptLogReader.rootDir uses runtimesRoot (not a fresh
+		// runtimesDirFor(cfg)) — under container backend this must be the
+		// SAME host-visible root containerBackend's own transcript spool
+		// (openTranscriptSpool, sandboxBackendForConfig's runtimeDir
+		// argument above) actually writes to, or `boid job log`/`boid task
+		// env`-adjacent broker RPCs would read from the wrong directory.
+		// See hostVisibleRuntimesDirFor's own doc comment.
+		srv.broker.BoidExecutor = newBoidBuiltinExecutor(workflow, taskSvc, jobStore, transcriptLogReader{rootDir: runtimesRoot}, runner, dataHomeFor(cfg))
 		srv.broker.ProjectResolver = projectResolverFor(projectSvc)
 	}
 	globalJobSvc := &globalJobStore{
@@ -1246,6 +1346,24 @@ func (a *sessionDispatcherAdapter) StartExec(ctx context.Context, req api.StartE
 func mountRoutes(srv *Server, runtime *appRuntime) error {
 	r := srv.router
 
+	// Host-visible runtimes root (docs/plans/volume-only-daemon.md — see
+	// hostVisibleRuntimesDirFor's own doc comment): must agree with
+	// buildRuntime's own runtimesRoot determination (runner.RuntimesDir,
+	// sandboxBackendForConfig's runtimeDir argument) or the read paths
+	// wired below (workspace-home size/delete, GC's workspace_homes
+	// listing, `boid gc`, the job-log REST endpoint) would look in the
+	// wrong directory for a container-backend deploy. dispatcher.
+	// IsContainerBackend(runtime.runner.Backend) is the cheap, already-
+	// resolved signal buildRuntime itself left behind (runtime.runner.
+	// Backend is only non-nil when sandboxBackendForConfig actually
+	// constructed a container backend) — reusing it here avoids a second,
+	// independent config.Load() that could theoretically disagree.
+	usingContainerBackend := dispatcher.IsContainerBackend(runtime.runner.Backend)
+	runtimesRoot := runtimesDirFor(srv.cfg)
+	if usingContainerBackend {
+		runtimesRoot = hostVisibleRuntimesDirFor(srv.cfg)
+	}
+
 	// CSRF middleware must be registered before any routes (chi requirement).
 	// The middleware exempts /api/* and /auth paths, so existing API routes are unaffected.
 	r.Use(auth.CSRFMiddleware)
@@ -1320,10 +1438,11 @@ func mountRoutes(srv *Server, runtime *appRuntime) error {
 	workspaceHandler := &api.WorkspaceHandler{
 		Service: runtime.projectSvc,
 		// Home directory size reporting (Show) + deletion (Remove),
-		// docs/plans/home-workspace-volume.md Phase 4 PR5. Same
-		// runtimesDirFor(cfg) value the dispatcher itself resolves
-		// homes/ from (dispatcher.WorkspaceHomesDir).
-		RuntimesDir: runtimesDirFor(srv.cfg),
+		// docs/plans/home-workspace-volume.md Phase 4 PR5. Same runtimesRoot
+		// value the dispatcher itself resolves homes/ from
+		// (dispatcher.WorkspaceHomesDir, via Runner.RuntimesDir) — see this
+		// function's own runtimesRoot comment above.
+		RuntimesDir: runtimesRoot,
 	}
 	r.Mount("/api/workspaces", workspaceHandler.Routes())
 
@@ -1345,7 +1464,7 @@ func mountRoutes(srv *Server, runtime *appRuntime) error {
 	r.Mount("/api/tasks", taskHandler.Routes())
 
 	gcStore := orchestrator.NewTaskGCStore(srv.db).
-		WithRuntimesDir(runtimesDirFor(srv.cfg)).
+		WithRuntimesDir(runtimesRoot).
 		WithSandboxTmpDir(os.TempDir()).
 		WithRuntimeReaper(makeDockerRuntimeReaper()).
 		WithAttachmentsRoot(dataHomeFor(srv.cfg))
@@ -1356,7 +1475,7 @@ func mountRoutes(srv *Server, runtime *appRuntime) error {
 		// Phase 4 PR5) — visibility only, GC never deletes home directories
 		// itself (that's `workspace remove`'s job). Workspaces flags orphan
 		// home dirs (no matching workspace row) in the listing.
-		RuntimesDir: runtimesDirFor(srv.cfg),
+		RuntimesDir: runtimesRoot,
 		Workspaces:  runtime.projectSvc,
 	}
 	r.Mount("/api/gc", gcHandler.Routes())
@@ -1385,7 +1504,7 @@ func mountRoutes(srv *Server, runtime *appRuntime) error {
 		Jobs:      runtime.jobStore,
 		Global:    runtime.globalJobStore,
 		Service:   runtime.workflow,
-		LogReader: transcriptLogReader{rootDir: runtimesDirFor(srv.cfg)},
+		LogReader: transcriptLogReader{rootDir: runtimesRoot},
 		SSEHandler: &api.JobLogSSEHandler{
 			Subscriber: runtime.runner,
 			Registry:   runtime.connRegistry,
