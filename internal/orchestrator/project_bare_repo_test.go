@@ -231,3 +231,110 @@ func TestSafeBareRepoPath_ValidName(t *testing.T) {
 		t.Errorf("SafeBareRepoPath = %q, want %q", got, want)
 	}
 }
+
+// TestSafeBareRepoPath_RejectsSymlinkedWorkspaceDir pins BLOCKER 2 (PR-2a
+// codex round-2 review): the concrete failure scenario codex describes is
+// <dataDir>/repos/<workspace> itself being replaced with a symlink to
+// somewhere outside dataDir entirely — lexically, BareRepoPath's join still
+// "looks" contained (it starts with the right string prefix), but the
+// directory a subsequent clone/RemoveAll would actually touch is wherever
+// the symlink points. PathIsUnderResolved (which SafeBareRepoPath now
+// routes through) must catch this even though the symlink's TARGET
+// directory does not exist yet — SafeBareRepoPath always runs BEFORE any
+// clone, so there is nothing at the leaf path itself to resolve; only the
+// ANCESTOR symlink needs to be caught.
+func TestSafeBareRepoPath_RejectsSymlinkedWorkspaceDir(t *testing.T) {
+	dataDir := t.TempDir()
+	outside := t.TempDir()
+
+	if err := os.MkdirAll(filepath.Join(dataDir, "repos"), 0o755); err != nil {
+		t.Fatalf("mkdir repos: %v", err)
+	}
+	// Replace <dataDir>/repos/team-a with a symlink pointing OUTSIDE dataDir
+	// entirely — the exact scenario codex describes ("If /data/repos/team-a
+	// is replaced with a symlink to /srv/shared").
+	if err := os.Symlink(outside, filepath.Join(dataDir, "repos", "team-a")); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+
+	_, err := orchestrator.SafeBareRepoPath(dataDir, "team-a", "myproj")
+	if err == nil {
+		t.Fatal("expected SafeBareRepoPath to reject a bare-repo path whose workspace ancestor is a symlink escaping dataDir")
+	}
+}
+
+// TestSafeBareRepoPath_ReposRootItselfSymlinked_StillAllowed is the
+// negative-control counterpart: SafeBareRepoPath's boundary is
+// ReposRoot(dataDir) (<dataDir>/repos), so an operator relocating the ENTIRE
+// repos tree by making <dataDir>/repos itself a symlink to alternate
+// storage (e.g. a bigger disk mounted elsewhere) must not be rejected —
+// root and path's ancestor both resolve through the SAME symlink, so they
+// stay consistently related regardless of where it points.
+func TestSafeBareRepoPath_ReposRootItselfSymlinked_StillAllowed(t *testing.T) {
+	dataDir := t.TempDir()
+	realStorage := t.TempDir()
+	if err := os.Symlink(realStorage, filepath.Join(dataDir, "repos")); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+
+	got, err := orchestrator.SafeBareRepoPath(dataDir, "team-a", "myproj")
+	if err != nil {
+		t.Fatalf("SafeBareRepoPath: %v", err)
+	}
+	want := filepath.Join(dataDir, "repos", "team-a", "myproj.git")
+	if got != want {
+		t.Errorf("SafeBareRepoPath = %q, want %q (unresolved form — the leaf itself does not exist yet)", got, want)
+	}
+}
+
+// TestSafeBareRepoPath_RejectsWorkspaceSymlinkEscapingReposRoot is a second
+// escape variant: a per-workspace subdirectory symlinked to somewhere
+// OUTSIDE <dataDir>/repos entirely — even a location still nominally inside
+// dataDir elsewhere (not just outside dataDir altogether, as the primary
+// Blocker 2 test above covers) — must still be rejected, since
+// ReposRoot(dataDir) is the actual managed boundary this whole mechanism
+// protects, not dataDir as a whole.
+func TestSafeBareRepoPath_RejectsWorkspaceSymlinkEscapingReposRoot(t *testing.T) {
+	dataDir := t.TempDir()
+	elsewhereInDataDir := filepath.Join(dataDir, "actual-repos", "team-a")
+	if err := os.MkdirAll(elsewhereInDataDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(dataDir, "repos"), 0o755); err != nil {
+		t.Fatalf("mkdir repos: %v", err)
+	}
+	if err := os.Symlink(elsewhereInDataDir, filepath.Join(dataDir, "repos", "team-a")); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+
+	if _, err := orchestrator.SafeBareRepoPath(dataDir, "team-a", "myproj"); err == nil {
+		t.Fatal("expected SafeBareRepoPath to reject a per-workspace symlink escaping ReposRoot(dataDir), even to a location still nominally under dataDir")
+	}
+}
+
+// TestPathIsUnderResolved_MissingAncestorsStillCompare pins
+// PathIsUnderResolved's register-time behavior directly: neither root nor
+// path need exist yet (SafeBareRepoPath always calls this BEFORE any
+// clone), and the comparison must still succeed for the ordinary
+// no-symlinks-anywhere case.
+func TestPathIsUnderResolved_MissingAncestorsStillCompare(t *testing.T) {
+	dataDir := t.TempDir()
+	root := filepath.Join(dataDir, "repos", "team-a")
+	path := filepath.Join(root, "myproj.git")
+
+	under, err := orchestrator.PathIsUnderResolved(root, path)
+	if err != nil {
+		t.Fatalf("PathIsUnderResolved: %v", err)
+	}
+	if !under {
+		t.Error("expected path to be reported as under root when neither exists yet")
+	}
+
+	notUnder, err := orchestrator.PathIsUnderResolved(root, filepath.Join(dataDir, "elsewhere", "x.git"))
+	if err != nil {
+		t.Fatalf("PathIsUnderResolved: %v", err)
+	}
+	if notUnder {
+		t.Error("expected a sibling path to be reported as NOT under root")
+	}
+}

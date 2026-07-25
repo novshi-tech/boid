@@ -194,13 +194,48 @@ func ValidProjectName(name string) error {
 // projectName from outside the daemon process (currently just
 // ProjectAppService.CreateProjectFromGitURL's --name / URL-derived name)
 // must go through this, not the raw BareRepoPath.
+//
+// The containment check runs through PathIsUnderResolved against
+// ReposRoot(dataDir) — <dataDir>/repos, WITHOUT the workspaceSlug segment —
+// not the plain (lexical-only) PathIsUnder against the per-workspace
+// directory round-1 used (PR-2a codex round-2 Blocker 2). Two things follow
+// from that choice:
+//
+//   - Symlink defense: <dataDir>/repos/<workspaceSlug> ITSELF being
+//     replaced with a symlink to somewhere outside dataDir entirely (codex's
+//     concrete scenario) is only detectable by resolving through it and
+//     comparing against a boundary that sits ABOVE the symlink — comparing
+//     the resolved bareRepoPath against the resolved
+//     <dataDir>/repos/<workspaceSlug> itself is circular (path is always
+//     lexically a child of root by construction, so resolving both through
+//     the SAME symlink trivially keeps that child/parent relationship no
+//     matter where the symlink points). ReposRoot(dataDir) is workspace-slug
+//     scoping, but is the boundary an attacker would actually need to
+//     escape and matches isManagedBareRepoPath's own convention below.
+//   - No loss of protection for the original round-1 traversal-name
+//     scenario: projectName is already constrained by ValidProjectName to a
+//     single clean path segment with no separators and no ".." anywhere —
+//     BareRepoPath's Join always places it immediately after workspaceSlug,
+//     so a validated projectName can never affect which workspace's
+//     directory the result lands in regardless of which boundary this
+//     checks against; only an escape past dataDir/repos entirely is
+//     actually reachable, and every ".."-based escape used to get there
+//     starts by leaving <dataDir>/repos/<workspaceSlug> anyway.
+//
+// Safe to call even though neither root nor path exists yet at register
+// time (the case this function always runs in, BEFORE any clone) — see
+// PathIsUnderResolved's own doc comment.
 func SafeBareRepoPath(dataDir, workspaceSlug, projectName string) (string, error) {
 	if err := ValidProjectName(projectName); err != nil {
 		return "", err
 	}
-	root := filepath.Join(dataDir, "repos", workspaceSlug)
+	root := ReposRoot(dataDir)
 	path := BareRepoPath(dataDir, workspaceSlug, projectName)
-	if !PathIsUnder(root, path) {
+	underRoot, err := PathIsUnderResolved(root, path)
+	if err != nil {
+		return "", fmt.Errorf("verify project name %q does not escape the workspace's repo directory: %w", projectName, err)
+	}
+	if !underRoot {
 		return "", fmt.Errorf("project name %q resolves outside the workspace's repo directory", projectName)
 	}
 	return path, nil

@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"bytes"
+	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -10,6 +11,7 @@ import (
 	"time"
 
 	"github.com/novshi-tech/boid/internal/api"
+	"github.com/novshi-tech/boid/internal/client"
 	projectspec "github.com/novshi-tech/boid/internal/orchestrator"
 	"github.com/novshi-tech/boid/testutil"
 )
@@ -279,6 +281,72 @@ func runGitTestCmd(t *testing.T, dir string, args ...string) {
 	out, err := c.CombinedOutput()
 	if err != nil {
 		t.Fatalf("git %v: %v\n%s", args, err, out)
+	}
+}
+
+// TestLooksLikeGitURL pins Minor 1 (PR-2a codex round-2 review): the
+// pre-fix strings.Contains(s, "://") / bare-"@...:" heuristic searched
+// anywhere in the argument rather than anchoring at the start, so a
+// relative path like "./https://repo" was misclassified as a URL, while a
+// valid scp-style URL with no explicit login user
+// ("host:org/repo.git") was misclassified as a directory.
+func TestLooksLikeGitURL(t *testing.T) {
+	tests := []struct {
+		arg  string
+		want bool
+	}{
+		{"https://github.com/owner/repo.git", true},
+		{"ssh://git@github.com/owner/repo.git", true},
+		{"git://github.com/owner/repo.git", true},
+		{"git@github.com:owner/repo.git", true},
+		{"host:org/repo.git", true}, // scp-like, no explicit login user
+		{"./my-project", false},
+		{"/home/user/my-project", false},
+		{"my-project", false},
+		{".", false},
+		// The two concrete misclassifications codex round-2 named:
+		{"./https://repo", false},
+		{"./git@host:repo", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.arg, func(t *testing.T) {
+			if got := looksLikeGitURL(tt.arg); got != tt.want {
+				t.Errorf("looksLikeGitURL(%q) = %v, want %v", tt.arg, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestProjectAddDir_RejectsRemoteProfile pins the regression concern (PR-2a
+// codex round-2 review): `project add <dir>` computes filepath.Abs on the
+// CLIENT and sends the result to the daemon verbatim as work_dir — correct
+// only when the daemon IS this machine (a unix-socket profile). Against a
+// remote (TCP/https) profile, that path names a location on the wrong
+// machine entirely; this must be refused client-side before any daemon
+// round trip, not silently attempted.
+func TestProjectAddDir_RejectsRemoteProfile(t *testing.T) {
+	withProjectAddWorkspaceFlag(t, "")
+
+	remoteClient, err := client.NewClient("https://example.invalid", "tok")
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+
+	cmd := projectAddCmd
+	cmd.SetContext(client.WithClient(context.Background(), remoteClient))
+	t.Cleanup(func() { cmd.SetContext(context.Background()) })
+	var stderr bytes.Buffer
+	cmd.SetErr(&stderr)
+
+	err = runProjectAdd(cmd, []string{t.TempDir()})
+	if err == nil {
+		t.Fatal("expected an error registering a host directory over a remote profile")
+	}
+	if !strings.Contains(err.Error(), "remote profile") {
+		t.Errorf("expected a remote-profile rejection message, got: %v", err)
+	}
+	if strings.Contains(stderr.String(), "[deprecation]") {
+		t.Error("expected the deprecation notice NOT to print when the call is refused before it")
 	}
 }
 

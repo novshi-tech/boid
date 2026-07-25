@@ -3,6 +3,7 @@ package dispatcher
 import (
 	"fmt"
 	"log/slog"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -84,10 +85,7 @@ func repoSlugFromOriginURL(url string) (string, error) {
 		if !ok {
 			return "", fmt.Errorf("unrecognized origin url form: %q", url)
 		}
-		if h, _, hasPort := strings.Cut(host, ":"); hasPort {
-			host = h
-		}
-		hostAndPath = host + "/" + path
+		hostAndPath = stripSSHPort(host) + "/" + path
 	default:
 		// scp-like form: git@host:owner/repo.git
 		at := strings.Index(url, "@")
@@ -106,6 +104,29 @@ func repoSlugFromOriginURL(url string) (string, error) {
 		return "", fmt.Errorf("unrecognized origin url form: %q", url)
 	}
 	return hostAndPath, nil
+}
+
+// stripSSHPort removes an explicit ":<port>" suffix from an ssh:// URL's
+// host component, IPv6-safe (Minor 2, PR-2a codex round-2 review). The
+// pre-fix code split at the FIRST colon unconditionally
+// (strings.Cut(host, ":")), which mangled a bracketed IPv6 literal host —
+// "[2001:db8::1]:2222" became "[2001", silently discarding everything
+// after the first colon inside the address itself, instead of just
+// dropping the port. net.SplitHostPort correctly recognizes the bracketed
+// form; its result is re-bracketed here since the caller reassembles this
+// into a "host/path" slug that NormalizeOriginURL later prefixes with
+// "https://" — an IPv6 literal is only valid there in bracketed form.
+func stripSSHPort(host string) string {
+	h, _, err := net.SplitHostPort(host)
+	if err != nil {
+		// No explicit ":<port>" suffix at all (the common case — a plain
+		// hostname, or a bare IPv6 literal with no port) — nothing to strip.
+		return host
+	}
+	if strings.Contains(h, ":") {
+		return "[" + h + "]"
+	}
+	return h
 }
 
 // expandRepoSlugEnv rewrites occurrences of repoSlugPlaceholder inside env

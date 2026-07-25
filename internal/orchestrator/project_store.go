@@ -438,11 +438,28 @@ func (s *ProjectStore) LoadAll(projects []*Project) []error {
 
 	var errs []error
 	for _, candidate := range projects {
+		var meta *ProjectMeta
 		var loadErr error
 		if IsBareRepoDir(candidate.WorkDir) {
-			_, loadErr = s.LoadBareRepo(candidate.WorkDir)
+			meta, loadErr = s.LoadBareRepo(candidate.WorkDir)
 		} else {
-			_, loadErr = s.Load(candidate.WorkDir)
+			meta, loadErr = s.Load(candidate.WorkDir)
+		}
+		// MAJOR 4 sibling (PR-2a codex round-2 review, originally flagged
+		// for FetchProject specifically — this is the exact same "upstream
+		// project.yaml id: changed" case hit on every daemon startup/reload
+		// instead, since LoadAll is what backs both): Load/LoadBareRepo
+		// just cached the freshly-read meta under meta.ID, a DIFFERENT key
+		// than candidate.ID's own DB row when the two disagree. Left
+		// unchecked, candidate.ID would be marked "loaded fine" below (its
+		// workspaceIDs entry gets set) while its Meta cache entry is
+		// whatever was ALREADY there from a previous load (or nothing at
+		// all) — and a phantom meta.ID entry with no DB row of its own sits
+		// in the cache forever. Treat a mismatch exactly like any other
+		// load failure for candidate.ID, and drop the phantom entry.
+		if loadErr == nil && meta.ID != candidate.ID {
+			s.Remove(meta.ID)
+			loadErr = fmt.Errorf("project.yaml id %q does not match the registered project id %q; re-register manually", meta.ID, candidate.ID)
 		}
 		if loadErr != nil {
 			s.Remove(candidate.ID)
@@ -468,7 +485,19 @@ func (s *ProjectStore) LoadAll(projects []*Project) []error {
 // tests, which do not call SetReposRoot) skips the upgrade entirely; the
 // plain wrapped error text is still informative on its own.
 func degradedMessageFor(candidate *Project, wrapped error, reposRoot string) string {
-	if reposRoot != "" && !PathIsUnder(reposRoot, candidate.WorkDir) {
+	if reposRoot == "" {
+		return wrapped.Error()
+	}
+	// PathIsUnderResolved (PR-2a codex round-2 Blocker 2 sibling sweep):
+	// this decision has no destructive side effect (it only picks which
+	// wording to show), so a resolution error just falls back to the
+	// lexical-only PathIsUnder rather than failing the whole startup load
+	// loop over a message-wording concern.
+	underRoot, err := PathIsUnderResolved(reposRoot, candidate.WorkDir)
+	if err != nil {
+		underRoot = PathIsUnder(reposRoot, candidate.WorkDir)
+	}
+	if !underRoot {
 		return fmt.Sprintf("legacy project registered from host dir %q; re-add via `boid project add <git-url> --workspace=<name>` (%v)", candidate.WorkDir, wrapped)
 	}
 	return wrapped.Error()
@@ -481,12 +510,97 @@ func degradedMessageFor(candidate *Project, wrapped error, reposRoot string) str
 // computed destination against a traversal-capable projectName
 // (SafeBareRepoPath below) and to classify a project's WorkDir as
 // daemon-managed vs. legacy without duplicating this logic.
+//
+// This is a purely LEXICAL check (filepath.Rel on the two strings as
+// given) — it does not resolve symlinks, so a symlinked ANCESTOR directory
+// can make an out-of-tree location appear to be "under root" (PR-2a codex
+// round-2 Blocker 2: replacing <dataDir>/repos/<workspace> with a symlink
+// to /srv/shared still lexically joins under the right prefix, even though
+// os.RemoveAll on the resulting path actually recurses into wherever the
+// symlink points). Callers that go on to WRITE or DELETE at path based on
+// this answer — SafeBareRepoPath below and internal/api's
+// isManagedBareRepoPath (rm-time/fetch-time classification) — MUST use
+// PathIsUnderResolved instead; this lexical-only form remains appropriate
+// for degradedMessageFor's cosmetic (no side effect) message-wording
+// decision below.
 func PathIsUnder(root, path string) bool {
 	rel, err := filepath.Rel(root, path)
 	if err != nil {
 		return false
 	}
 	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
+// PathIsUnderResolved is PathIsUnder with symlink resolution applied to
+// BOTH root and path before the lexical comparison (PR-2a codex round-2
+// Blocker 2), so a symlinked ancestor directory cannot make an escaped
+// location appear contained. Two different resolution strategies are
+// needed depending on whether root/path already exist on disk:
+//
+//   - Already exists (the common rm-time/fetch-time case: an
+//     already-registered project's bare repo, or the daemon's own
+//     <dataDir>/repos root): filepath.EvalSymlinks resolves every symlink
+//     along the way.
+//   - Does not exist yet (the register-time case: SafeBareRepoPath is
+//     called BEFORE the clone that will create the bare repo directory —
+//     there is nothing there yet that COULD be a symlink): resolves the
+//     deepest EXISTING ancestor via EvalSymlinks and rejoins the
+//     not-yet-created suffix unresolved (nothing below an ancestor that
+//     does not exist could itself be a symlink).
+//
+// Returns an error only for a resolution failure unrelated to "the path
+// does not exist yet" (e.g. a permission error, or a symlink loop) —
+// callers should treat that as "could not verify containment" and fail
+// closed (refuse the write/delete), not silently fall back to the
+// lexical-only check.
+func PathIsUnderResolved(root, path string) (bool, error) {
+	resolvedRoot, err := resolveExistingAncestor(root)
+	if err != nil {
+		return false, fmt.Errorf("resolve %q: %w", root, err)
+	}
+	resolvedPath, err := resolveExistingAncestor(path)
+	if err != nil {
+		return false, fmt.Errorf("resolve %q: %w", path, err)
+	}
+	return PathIsUnder(resolvedRoot, resolvedPath), nil
+}
+
+// resolveExistingAncestor walks p upward until it finds a directory
+// component that actually exists, resolves symlinks on THAT ancestor via
+// filepath.EvalSymlinks, then rejoins the not-yet-existing suffix (if any)
+// back onto the resolved form unmodified — replicating what
+// filepath.EvalSymlinks itself would do for a fully-existing path, for the
+// register-time case where p's leaf (and possibly several of its parents)
+// have not been created yet. A p every component of which is missing all
+// the way up to the filesystem root returns p unchanged (nothing to
+// resolve against).
+func resolveExistingAncestor(p string) (string, error) {
+	clean := filepath.Clean(p)
+	var missingSuffix []string
+	cur := clean
+	for {
+		if _, err := os.Lstat(cur); err == nil {
+			resolved, evalErr := filepath.EvalSymlinks(cur)
+			if evalErr != nil {
+				return "", evalErr
+			}
+			for i := len(missingSuffix) - 1; i >= 0; i-- {
+				resolved = filepath.Join(resolved, missingSuffix[i])
+			}
+			return resolved, nil
+		} else if !os.IsNotExist(err) {
+			return "", err
+		}
+		parent := filepath.Dir(cur)
+		if parent == cur {
+			// Reached the filesystem root with nothing found to exist —
+			// every component of p is missing. Nothing to resolve against;
+			// return the cleaned form as-is.
+			return clean, nil
+		}
+		missingSuffix = append(missingSuffix, filepath.Base(cur))
+		cur = parent
+	}
 }
 
 // wrapPerProjectLoadErr attaches the project ID to a per-project load

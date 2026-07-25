@@ -299,3 +299,33 @@ func TestRepoSlugFromOriginURL_SSHWithPortDropsPort(t *testing.T) {
 		t.Errorf("slug = %q, want %q (port must be dropped)", got, want)
 	}
 }
+
+// TestRepoSlugFromOriginURL_SSHIPv6WithPortDropsPortOnly pins Minor 2
+// (PR-2a codex round-2 review): the pre-fix strings.Cut(host, ":") split at
+// the FIRST colon unconditionally, which mangled a bracketed IPv6 literal
+// host — "[2001:db8::1]:2222" became "[2001", silently discarding
+// everything after the first colon inside the address itself, instead of
+// just dropping the port.
+func TestRepoSlugFromOriginURL_SSHIPv6WithPortDropsPortOnly(t *testing.T) {
+	got, err := repoSlugFromOriginURL("ssh://git@[2001:db8::1]:2222/owner/repo.git")
+	if err != nil {
+		t.Fatalf("repoSlugFromOriginURL: %v", err)
+	}
+	if want := "[2001:db8::1]/owner/repo"; got != want {
+		t.Errorf("slug = %q, want %q (IPv6 address must survive intact, with only the port dropped)", got, want)
+	}
+}
+
+// TestRepoSlugFromOriginURL_SSHIPv6NoPortUnchanged is the no-port
+// counterpart: a bracketed IPv6 literal host with no explicit port must
+// pass through unchanged (net.SplitHostPort correctly reports "missing
+// port" for this shape, which stripSSHPort treats as "nothing to strip").
+func TestRepoSlugFromOriginURL_SSHIPv6NoPortUnchanged(t *testing.T) {
+	got, err := repoSlugFromOriginURL("ssh://git@[2001:db8::1]/owner/repo.git")
+	if err != nil {
+		t.Fatalf("repoSlugFromOriginURL: %v", err)
+	}
+	if want := "[2001:db8::1]/owner/repo"; got != want {
+		t.Errorf("slug = %q, want %q", got, want)
+	}
+}

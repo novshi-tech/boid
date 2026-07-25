@@ -2,6 +2,7 @@ package dispatcher
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 )
 
@@ -35,9 +36,10 @@ func NormalizeOriginURL(raw string) (string, error) {
 	if hasHTTPUserinfo(raw) {
 		return "", fmt.Errorf("credential-embedded URL not supported; use gateway.forges configuration for authentication instead of embedding a token in the URL")
 	}
-	if strings.HasPrefix(raw, "https://") {
-		return raw, nil
-	}
+	var result string
+	switch {
+	case strings.HasPrefix(raw, "https://"):
+		result = raw
 	// file:// is passed through unchanged too, alongside https:// — unlike
 	// the scp-like/ssh/http forms below, there is no "canonical https form"
 	// to convert it to (it names a local filesystem path, not a forge
@@ -47,14 +49,103 @@ func NormalizeOriginURL(raw string) (string, error) {
 	// this function before cloning) against a local fixture repo instead of
 	// a real forge, but also a legitimate git URL scheme in its own right
 	// (e.g. an NFS-shared bare repo mirror).
-	if strings.HasPrefix(raw, "file://") {
-		return raw, nil
+	case strings.HasPrefix(raw, "file://"):
+		result = raw
+	default:
+		slug, err := repoSlugFromOriginURL(raw)
+		if err != nil {
+			return "", fmt.Errorf("normalize origin url %q: %w", SanitizeURLForLogging(raw), err)
+		}
+		result = "https://" + slug + ".git"
 	}
-	slug, err := repoSlugFromOriginURL(raw)
-	if err != nil {
-		return "", fmt.Errorf("normalize origin url %q: %w", raw, err)
+	// BLOCKER 1 (PR-2a codex round-2 review): hasHTTPUserinfo above only
+	// ever inspected the authority component (everything up to the first
+	// "/" after the scheme) of the RAW input — it never saw a credential
+	// smuggled in as a query parameter (?access_token=...), nor one placed
+	// past the first path separator (e.g.
+	// "https://host/x-oauth-basic:TOKEN@repo.git", where the "@" lands
+	// inside what hasHTTPUserinfo already believed was the path). Both
+	// bypassed registration outright: the credential-bearing URL got
+	// clone-attempted (leaking it into the clone command's argv on
+	// failure) and, on success, stored verbatim into remote.origin.url AND
+	// projects.upstream_url. validateURLForClone runs against the FINAL
+	// https:// or file:// form (after any scp-like/ssh login-user stripping
+	// above), so a legitimate ssh "git@host:..." login is never
+	// misclassified — only a credential surviving all the way to what will
+	// actually be stored/cloned is rejected.
+	if err := validateURLForClone(result); err != nil {
+		return "", err
 	}
-	return "https://" + slug + ".git", nil
+	return result, nil
+}
+
+// credentialQueryParamPattern matches "<name>=<value>" query parameters
+// whose name commonly carries a secret across various forge URL
+// conventions (BLOCKER 1, PR-2a codex round-2 review — "URL query" bypass:
+// "https://host/repo.git?access_token=SECRET" sails straight through
+// hasHTTPUserinfo, which never looks at the query string at all). The
+// captured group 1 keeps the "?"/"&" + key + "=" prefix intact so
+// SanitizeURLForLogging can splice a placeholder in for the value alone.
+var credentialQueryParamPattern = regexp.MustCompile(`(?i)([?&](?:access[_-]?token|token|password|oauth[_-]?token|api[_-]?key|client[_-]?secret|auth|secret|pat)=)[^&#\s]*`)
+
+// urlCredentialUserinfoPattern matches a "user:pass@" or "user@" credential
+// shape ANYWHERE it appears in a URL string — not just immediately after a
+// scheme:// (BLOCKER 1's "URL path" bypass:
+// "https://host/x-oauth-basic:TOKEN@repo.git" places the "@" past the
+// first "/", exactly where hasHTTPUserinfo already stopped looking, since
+// it cuts the authority off at the first "/" and never re-inspects
+// anything after it). Deliberately broad — any run of non-slash/non-@
+// characters immediately followed by "@" — since this is only ever run
+// against the FINAL https:// or file:// form a legitimate scp-like/ssh
+// login prefix has already been stripped from (see NormalizeOriginURL's
+// call site), so there is no legitimate reason for one of those forms to
+// contain this shape anywhere at all.
+var urlCredentialUserinfoPattern = regexp.MustCompile(`[^\s/@]+@`)
+
+// SanitizeURLForLogging returns a copy of raw with every recognized
+// credential shape (userinfo anywhere in the string, and any known
+// credential-carrying query parameter) replaced with a redacted
+// placeholder — safe to embed in an error message, log line, or persisted
+// StatusMessage even when raw itself might carry a secret (PR-2a codex
+// round-2 Blocker 1 sibling sweep: every site that echoes a caller-supplied
+// or not-yet-validated URL back into an error/log routes through this
+// instead of interpolating the raw string directly). Deliberately
+// over-redacts rather than under-redacts — e.g. a legitimate scp-like
+// "git@host:path" login prefix reads as "REDACTED@host:path" when run
+// through this on a raw, not-yet-normalized string — since this function's
+// only job is "never let a real secret through," not "produce a pretty
+// error message."
+func SanitizeURLForLogging(raw string) string {
+	out := urlCredentialUserinfoPattern.ReplaceAllString(raw, "REDACTED@")
+	out = credentialQueryParamPattern.ReplaceAllString(out, "${1}REDACTED")
+	return out
+}
+
+// validateURLForClone rejects u — which by the time this runs is ALWAYS
+// the final https:// or file:// form NormalizeOriginURL is about to return,
+// never raw caller input — if it still carries a credential in any form
+// (BLOCKER 1, PR-2a codex round-2 review). Rather than maintaining a
+// growing enumeration of every known encoding trick, this re-runs
+// SanitizeURLForLogging (the exact same redaction every logging/error site
+// below relies on) and rejects outright the moment the sanitized form
+// differs from the input at all — "this looks credential-shaped in some
+// way we did not specifically anticipate" is treated identically to "this
+// is definitely a credential," per codex round-2's explicit request for
+// defense against unknown/future encoding forms rather than only the ones
+// enumerated so far.
+//
+// file:// is exempt: it names a local filesystem path, not a forge host —
+// there is no credential surface to protect there, and rejecting a path
+// that happens to contain "@" (an unusual but legitimate directory/user
+// name) would be a pure false positive.
+func validateURLForClone(u string) error {
+	if strings.HasPrefix(u, "file://") {
+		return nil
+	}
+	if sanitized := SanitizeURLForLogging(u); sanitized != u {
+		return fmt.Errorf("credential-embedded URL not supported (%s); use gateway.forges configuration for authentication instead of embedding a token in the URL", sanitized)
+	}
+	return nil
 }
 
 // hasHTTPUserinfo reports whether rawURL is an http(s) URL with userinfo

@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -206,6 +207,26 @@ func init() {
 	rootCmd.AddCommand(projectCmd)
 }
 
+// gitURLSchemePattern matches an explicit URL scheme ANCHORED at the start
+// of the argument (https://, ssh://, git://, ...) — Minor 1, PR-2a codex
+// round-2 review: the pre-fix strings.Contains(s, "://") searched anywhere
+// in the string, so a plain relative path like "./https://repo" (a
+// directory literally named "https:" one level down — an edge case, but a
+// real one) was misclassified as a URL just because "://" appeared
+// somewhere inside it.
+var gitURLSchemePattern = regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9+.-]*://`)
+
+// scpLikeGitURLPattern matches the scp-like SSH URL shape: an optional
+// "user@" login prefix, a host, a literal ":", and then anything that is
+// not itself a "/" (Minor 1, PR-2a codex round-2 review: the pre-fix check
+// required an explicit "user@" prefix, so a bare "host:org/repo.git" — a
+// perfectly valid `git clone` source with no explicit login user — was
+// misclassified as a directory). Anchored at the start for the same reason
+// as gitURLSchemePattern above: "./git@host:repo" (a directory) must not
+// match just because a "user@host:" shape appears somewhere past the
+// leading "./".
+var scpLikeGitURLPattern = regexp.MustCompile(`^([a-zA-Z0-9_.-]+@)?[a-zA-Z0-9_.-]+:[^/]`)
+
 // looksLikeGitURL is the "clear error" heuristic docs/plans/
 // volume-only-daemon.md §論点a asks for: distinguish a git remote URL from
 // a host filesystem path BEFORE the CLI ever talks to the daemon, so
@@ -215,18 +236,16 @@ func init() {
 // clone` source, which would register a filesystem path in an UpstreamURL
 // field meant to hold a real remote). A URL is recognized by either an
 // explicit scheme (`https://`, `ssh://`, ...) or the scp-like
-// `user@host:path` form (`git@github.com:owner/repo.git`) — the two shapes
-// docs/plans/volume-only-daemon.md and the existing dispatcher URL parser
-// (repoSlugFromOriginURL) both already treat as the complete set of
+// `[user@]host:path` form (`git@github.com:owner/repo.git`, or
+// `github.com:owner/repo.git` with no explicit login user) — the two
+// shapes docs/plans/volume-only-daemon.md and the existing dispatcher URL
+// parser (repoSlugFromOriginURL) both already treat as the complete set of
 // supported git URL forms.
 func looksLikeGitURL(s string) bool {
-	if strings.Contains(s, "://") {
+	if gitURLSchemePattern.MatchString(s) {
 		return true
 	}
-	if at := strings.Index(s, "@"); at != -1 && strings.Contains(s[at:], ":") {
-		return true
-	}
-	return false
+	return scpLikeGitURLPattern.MatchString(s)
 }
 
 // runProjectAdd dispatches to the git-URL or legacy dir-based registration
@@ -303,14 +322,29 @@ func runProjectAddDir(cmd *cobra.Command, dir string) error {
 		return fmt.Errorf("--name is only supported with the git-URL form of 'boid project add' (%q looks like a directory, not a git URL)", dir)
 	}
 
+	c := client.FromContext(cmd.Context())
+
+	// Regression concern (PR-2a codex round-2 review): projectAddCmd is
+	// scopeRemote as a whole — its OTHER form (git-URL registration)
+	// legitimately works against a remote daemon over the network, since
+	// the daemon does the cloning itself. This legacy dir form does not:
+	// filepath.Abs below resolves dir on THIS (the CLI's own) machine
+	// before sending it to the daemon as a work_dir to register verbatim.
+	// Against a remote (non-unix) profile, that path names a location on
+	// the CLIENT's filesystem, not the daemon's — the daemon would then try
+	// to read .boid/project.yaml from a directory that means something
+	// completely different (or nothing at all) on ITS OWN filesystem.
+	// Refuse outright rather than silently registering the wrong location.
+	if !c.IsUnix() {
+		return fmt.Errorf("host-directory registration is not supported over a remote profile (the path %q would be resolved on this machine, not the daemon's); use 'boid project add <git-url> --workspace=<name>' instead", dir)
+	}
+
 	fmt.Fprintln(cmd.ErrOrStderr(), "[deprecation] host-directory registration will be removed in a future release; use 'boid project add <git-url> --workspace=<name>' for volume-only compatibility.")
 
 	absDir, err := filepath.Abs(dir)
 	if err != nil {
 		return err
 	}
-
-	c := client.FromContext(cmd.Context())
 
 	var p projectspec.Project
 	if err := c.Do("POST", "/api/projects", map[string]string{"work_dir": absDir}, &p); err != nil {

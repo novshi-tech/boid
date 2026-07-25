@@ -123,7 +123,16 @@ func refreshBareRepoHEAD(ctx context.Context, bareRepoPath string, extraArgs []s
 	if err != nil {
 		return nil
 	}
-	return runGit(exec.CommandContext(ctx, "git", "-C", bareRepoPath, "symbolic-ref", "HEAD", ref))
+	if err := runGit(exec.CommandContext(ctx, "git", "-C", bareRepoPath, "symbolic-ref", "HEAD", ref)); err != nil {
+		// Best-effort (Minor 3, PR-2a codex round-2 review): this line used
+		// to return the error directly, silently contradicting the doc
+		// comment two paragraphs up — the fetch itself already succeeded
+		// (every ref is up to date), so a failure applying the resolved
+		// symref must not fail the whole `boid project fetch` any more than
+		// the two ls-remote/parse failures above do.
+		return nil
+	}
+	return nil
 }
 
 // parseSymrefHEAD extracts the target ref from `git ls-remote --symref
@@ -191,7 +200,7 @@ func hostFromGitURL(rawURL string) (string, error) {
 	}
 	host, _, ok := strings.Cut(slug, "/")
 	if !ok {
-		return "", fmt.Errorf("unrecognized origin url form: %q", rawURL)
+		return "", fmt.Errorf("unrecognized origin url form: %q", SanitizeURLForLogging(rawURL))
 	}
 	return host, nil
 }
@@ -216,10 +225,20 @@ var credentialHeaderPattern = regexp.MustCompile(`(?i)(Authorization:\s*(?:Basic
 // `http.extraHeader=Authorization: Basic <base64-user:token>` through both
 // surfaces. Every arg is scanned (not just the known `-c` value) so this
 // stays correct even if a future caller passes the header some other way.
+// Every arg additionally passes through SanitizeURLForLogging (BLOCKER 1,
+// PR-2a codex round-2 review sibling sweep): by construction, no caller of
+// CloneBareRepo/FetchBareRepo should ever be able to reach this point with
+// a credential-bearing URL argument any more (NormalizeOriginURL's
+// validateURLForClone rejects it far earlier, before either function is
+// ever invoked) — but this is exactly the same "costs nothing, closes the
+// door defensively in case a future git version / caller ever changes
+// that" reasoning the Basic/Bearer header redaction below already applies
+// to stderr.
 func redactGitArgs(args []string) []string {
 	out := make([]string, len(args))
 	for i, a := range args {
-		out[i] = credentialHeaderPattern.ReplaceAllString(a, "${1}<redacted>")
+		redacted := credentialHeaderPattern.ReplaceAllString(a, "${1}<redacted>")
+		out[i] = SanitizeURLForLogging(redacted)
 	}
 	return out
 }

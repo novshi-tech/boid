@@ -6,9 +6,11 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/novshi-tech/boid/internal/dispatcher"
 	"github.com/novshi-tech/boid/internal/orchestrator"
@@ -516,5 +518,325 @@ func TestDeleteProject_WorksOnDegradedProject(t *testing.T) {
 
 	if _, err := repo.GetProject("proj-degraded"); err == nil {
 		t.Error("expected the project to be gone from the repository after DeleteProject")
+	}
+}
+
+// TestCreateProjectFromGitURL_WorkspaceDeletedDuringClone_NoDanglingAssignment
+// pins MAJOR 2 (PR-2a codex round-2 review): workspace existence is checked
+// ONCE, before the (potentially slow) clone — and the pre-fix code
+// committed the assignment afterward via the plain SetProjectWorkspace
+// (no existence re-check of its own), so a workspace removed during that
+// window produced a SUCCESSFUL registration silently pointing at a
+// workspace_id with no corresponding workspaces row (project_workspaces has
+// no FK to workspaces). AssignWorkspaceIfExists closes the window by
+// re-checking atomically, in the same call, at commit time. This test
+// simulates the race deterministically (via the CloneBareRepo hook, which
+// runs at exactly the point a slow clone would leave the window open)
+// rather than with real goroutines, matching this file's existing
+// concurrency-test conventions.
+func TestCreateProjectFromGitURL_WorkspaceDeletedDuringClone_NoDanglingAssignment(t *testing.T) {
+	src := setupGitURLSourceRepo(t, "proj-race", "Race Project")
+	repo := &stubProjectRepository{existingWorkspaces: map[string]bool{"team-a": true}}
+	svc, dataDir := newGitURLTestService(t, repo)
+
+	realClone := svc.CloneBareRepo
+	svc.CloneBareRepo = func(ctx context.Context, url, dest, namespace string) error {
+		if err := realClone(ctx, url, dest, namespace); err != nil {
+			return err
+		}
+		// Simulate a concurrent `boid workspace rm team-a` landing in the
+		// window between the pre-flight WorkspaceExists check (already
+		// passed, above) and the post-clone assign this call is about to
+		// reach.
+		repo.existingWorkspaces["team-a"] = false
+		return nil
+	}
+
+	_, err := svc.CreateProjectFromGitURL(context.Background(), fileURL(src), "team-a", "")
+	if err == nil {
+		t.Fatal("expected an error when the workspace is removed during clone")
+	}
+	statusErr, ok := err.(*StatusError)
+	if !ok || statusErr.Code != http.StatusNotFound {
+		t.Fatalf("expected *StatusError{404}, got %T: %v", err, err)
+	}
+
+	// The call that failed must have been the atomic AssignWorkspaceIfExists
+	// (not the old unconditional SetProjectWorkspace, which the stub always
+	// succeeds regardless of existence — see its own doc comment).
+	if len(repo.assignWorkspaceIfExistsCalls) == 0 {
+		t.Fatal("expected AssignWorkspaceIfExists to have been called")
+	}
+
+	// No dangling assignment: the whole registration must have been rolled
+	// back — no project row left, no bare repo directory left on disk.
+	if _, getErr := repo.GetProject("proj-race"); getErr == nil {
+		t.Error("expected no dangling project row after a failed workspace assignment")
+	}
+	wantBarePath := orchestrator.BareRepoPath(dataDir, "team-a", filepath.Base(src))
+	if _, statErr := os.Stat(wantBarePath); !os.IsNotExist(statErr) {
+		t.Errorf("expected the bare repo at %s to be rolled back (removed), stat err = %v", wantBarePath, statErr)
+	}
+}
+
+// TestDeleteProject_BareRepoRemovalFails_PreservesRow pins MAJOR 3 (PR-2a
+// codex round-2 review): the pre-fix DeleteProject removed the DB row
+// FIRST and only logged an os.RemoveAll failure as a warning — so a
+// read-only/permission-failing repo directory stayed on disk forever
+// (nothing left to retry through, since the row naming it was already
+// gone) while `boid project rm` still reported SUCCESS. Removing the repo
+// BEFORE the DB row means a removal failure now fails the whole call with
+// the row (and cached Meta) intact, so the delete can simply be retried
+// once the underlying issue is fixed.
+func TestDeleteProject_BareRepoRemovalFails_PreservesRow(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("permission-bit test assumes POSIX permission semantics")
+	}
+	if os.Geteuid() == 0 {
+		t.Skip("running as root: directory permission bits are not enforced")
+	}
+
+	src := setupGitURLSourceRepo(t, "proj-rmfail", "RM Fail Project")
+	repo := &stubProjectRepository{existingWorkspaces: map[string]bool{"team-a": true}}
+	svc, _ := newGitURLTestService(t, repo)
+
+	created, err := svc.CreateProjectFromGitURL(context.Background(), fileURL(src), "team-a", "")
+	if err != nil {
+		t.Fatalf("CreateProjectFromGitURL: %v", err)
+	}
+	repo.projects = []*orchestrator.Project{created}
+
+	// Make the bare repo directory itself unwritable so os.RemoveAll cannot
+	// unlink anything inside it (removing an entry requires write
+	// permission on the CONTAINING directory).
+	if err := os.Chmod(created.WorkDir, 0o500); err != nil {
+		t.Fatalf("chmod: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(created.WorkDir, 0o755) })
+
+	if err := svc.DeleteProject(created.ID); err == nil {
+		t.Fatal("expected DeleteProject to fail when the bare repo cannot be removed")
+	}
+
+	if _, getErr := repo.GetProject(created.ID); getErr != nil {
+		t.Errorf("expected the project row to survive a failed bare-repo removal, got: %v", getErr)
+	}
+	if _, ok := svc.Meta.Get(created.ID); !ok {
+		t.Error("expected cached Meta to survive a failed bare-repo removal")
+	}
+
+	// Fix the permission issue and retry — must now succeed.
+	if err := os.Chmod(created.WorkDir, 0o755); err != nil {
+		t.Fatalf("chmod restore: %v", err)
+	}
+	if err := svc.DeleteProject(created.ID); err != nil {
+		t.Fatalf("retry DeleteProject after fixing permissions: %v", err)
+	}
+	if _, getErr := repo.GetProject(created.ID); getErr == nil {
+		t.Error("expected the project row to be gone after the successful retry")
+	}
+}
+
+// TestFetchProject_ProjectYAMLIDChangedUpstream_Refuses pins MAJOR 4 (PR-2a
+// codex round-2 review): FetchProject loads project.yaml from the bare
+// repo's HEAD but, pre-fix, never checked the loaded id: against the DB
+// row's OWN id — an upstream `id:` rename would silently cache the fetched
+// meta under the NEW id (LoadBareRepo keys by meta.ID) while the DB row
+// stayed on the OLD id, leaving that old id's Meta stale/missing and a
+// phantom cache entry for the new id with no DB row of its own.
+func TestFetchProject_ProjectYAMLIDChangedUpstream_Refuses(t *testing.T) {
+	src := setupGitURLSourceRepo(t, "proj-id-orig", "ID Change Project")
+	repo := &stubProjectRepository{existingWorkspaces: map[string]bool{"team-a": true}}
+	svc, _ := newGitURLTestService(t, repo)
+
+	created, err := svc.CreateProjectFromGitURL(context.Background(), fileURL(src), "team-a", "")
+	if err != nil {
+		t.Fatalf("CreateProjectFromGitURL: %v", err)
+	}
+	repo.projects = []*orchestrator.Project{created}
+
+	// Change project.yaml's id: upstream and commit.
+	if err := os.WriteFile(filepath.Join(src, ".boid", "project.yaml"), []byte("id: proj-id-renamed\nname: ID Change Project\n"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	runGitCmd(t, src, "add", ".")
+	runGitCmd(t, src, "commit", "-q", "-m", "rename id")
+
+	_, err = svc.FetchProject(context.Background(), created.ID)
+	if err == nil {
+		t.Fatal("expected an error when project.yaml's id: no longer matches the registered project id")
+	}
+	statusErr, ok := err.(*StatusError)
+	if !ok {
+		t.Fatalf("expected *StatusError, got %T: %v", err, err)
+	}
+	if !strings.Contains(statusErr.Message, "proj-id-orig") || !strings.Contains(statusErr.Message, "proj-id-renamed") {
+		t.Errorf("expected the error to name both the old and new id, got: %s", statusErr.Message)
+	}
+
+	// The DB row must still be there, still under the OLD id, and now
+	// marked degraded rather than silently continuing under a stale/wrong
+	// cache entry.
+	if _, getErr := repo.GetProject("proj-id-orig"); getErr != nil {
+		t.Fatalf("expected project row to still exist under the original id, got: %v", getErr)
+	}
+	st := svc.Meta.Status("proj-id-orig")
+	if st.State != orchestrator.StatusDegraded {
+		t.Errorf("Status.State = %q, want %q", st.State, orchestrator.StatusDegraded)
+	}
+
+	// No phantom cache entry left behind under the NEW id.
+	if _, ok := svc.Meta.Get("proj-id-renamed"); ok {
+		t.Error("expected no cached Meta entry under the new (unregistered) id")
+	}
+}
+
+// TestProjectMu_SerializesCreateProjectFromGitURL_And_DeleteProject pins
+// MAJOR 1's sibling half (PR-2a codex round-2 review): DeleteProject did
+// not hold registerMu (renamed projectMu — its scope now spans every
+// project create/delete entry point) at all, so it could run its
+// get -> DB-delete -> cache-remove -> RemoveAll sequence fully interleaved
+// with an in-flight CreateProjectFromGitURL — see projectMu's doc comment
+// for the concrete "successful registration whose DB row a concurrent
+// delete already removed out from under it" scenario this closes. This
+// test pauses CreateProjectFromGitURL mid-clone (while it holds projectMu)
+// and proves a concurrent DeleteProject is genuinely blocked until the
+// registration finishes, rather than running straight through — the same
+// pattern internal/api's TestCreateProject_BlockedByAssign already uses for
+// the s.mu workspace-cache lock.
+func TestProjectMu_SerializesCreateProjectFromGitURL_And_DeleteProject(t *testing.T) {
+	cloneStarted := make(chan struct{})
+	proceed := make(chan struct{})
+	var once sync.Once
+
+	repo := &stubProjectRepository{existingWorkspaces: map[string]bool{"team-a": true}}
+	dataDir := t.TempDir()
+	meta := &createProjectMetaStore{meta: &orchestrator.ProjectMeta{ID: "proj-race-lock"}}
+	svc := &ProjectAppService{
+		Projects: repo,
+		Meta:     meta,
+		DataDir:  dataDir,
+		CloneBareRepo: func(ctx context.Context, url, dest, namespace string) error {
+			once.Do(func() {
+				close(cloneStarted)
+				<-proceed
+			})
+			return nil
+		},
+	}
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	var createErr error
+	go func() {
+		defer wg.Done()
+		_, createErr = svc.CreateProjectFromGitURL(context.Background(), "https://example.invalid/owner/proj-race-lock.git", "team-a", "")
+	}()
+
+	select {
+	case <-cloneStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("CreateProjectFromGitURL never reached its clone step")
+	}
+
+	// Mirrors it having already been inserted by the time a concurrent
+	// DeleteProject would resolve it via GetProject — safe to mutate
+	// without synchronization, since the create goroutine is parked on
+	// <-proceed and never touches repo.projects itself.
+	repo.projects = append(repo.projects, &orchestrator.Project{ID: "proj-race-lock", WorkDir: "/fake/bare/repo"})
+
+	deleteDone := make(chan error, 1)
+	go func() {
+		deleteDone <- svc.DeleteProject("proj-race-lock")
+	}()
+
+	select {
+	case <-deleteDone:
+		t.Fatal("DeleteProject completed while CreateProjectFromGitURL was still mid-clone — projectMu did not serialize them")
+	case <-time.After(100 * time.Millisecond):
+		// expected: DeleteProject is blocked on projectMu.
+	}
+
+	close(proceed) // let CreateProjectFromGitURL finish and release projectMu.
+	wg.Wait()
+	if createErr != nil {
+		t.Fatalf("CreateProjectFromGitURL: %v", createErr)
+	}
+
+	select {
+	case err := <-deleteDone:
+		if err != nil {
+			t.Fatalf("DeleteProject: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("DeleteProject never completed after CreateProjectFromGitURL released projectMu")
+	}
+}
+
+// TestProjectMu_SerializesCreateProjectFromGitURL_And_CreateProject is
+// TestProjectMu_SerializesCreateProjectFromGitURL_And_DeleteProject's
+// sibling for the OTHER unguarded entry point round-1 missed: the legacy
+// dir-based CreateProject.
+func TestProjectMu_SerializesCreateProjectFromGitURL_And_CreateProject(t *testing.T) {
+	cloneStarted := make(chan struct{})
+	proceed := make(chan struct{})
+	var once sync.Once
+
+	repo := &stubProjectRepository{existingWorkspaces: map[string]bool{"team-a": true}}
+	dataDir := t.TempDir()
+	meta := &createProjectMetaStore{meta: &orchestrator.ProjectMeta{ID: "proj-legacy-lock"}}
+	svc := &ProjectAppService{
+		Projects: repo,
+		Meta:     meta,
+		DataDir:  dataDir,
+		CloneBareRepo: func(ctx context.Context, url, dest, namespace string) error {
+			once.Do(func() {
+				close(cloneStarted)
+				<-proceed
+			})
+			return nil
+		},
+	}
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	var gitErr error
+	go func() {
+		defer wg.Done()
+		_, gitErr = svc.CreateProjectFromGitURL(context.Background(), "https://example.invalid/owner/proj-legacy-lock.git", "team-a", "")
+	}()
+
+	select {
+	case <-cloneStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("CreateProjectFromGitURL never reached its clone step")
+	}
+
+	legacyDone := make(chan error, 1)
+	go func() {
+		_, err := svc.CreateProject("/some/legacy/work/dir")
+		legacyDone <- err
+	}()
+
+	select {
+	case <-legacyDone:
+		t.Fatal("CreateProject completed while CreateProjectFromGitURL was still mid-clone — projectMu did not serialize them")
+	case <-time.After(100 * time.Millisecond):
+		// expected: CreateProject is blocked on projectMu.
+	}
+
+	close(proceed) // let CreateProjectFromGitURL finish and release projectMu.
+	wg.Wait()
+	if gitErr != nil {
+		t.Fatalf("CreateProjectFromGitURL: %v", gitErr)
+	}
+
+	select {
+	case err := <-legacyDone:
+		if err != nil {
+			t.Fatalf("CreateProject: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("CreateProject never completed after CreateProjectFromGitURL released projectMu")
 	}
 }
