@@ -21,13 +21,13 @@ func TestServerJobRuntimeAttachAndResize(t *testing.T) {
 
 	tmpDir := t.TempDir()
 	sockPath := filepath.Join(tmpDir, "boid.sock")
-	localRuntime := &dispatcher.LocalRuntime{RootDir: filepath.Join(tmpDir, "runtimes")} //nolint:staticcheck // SA1019: LocalRuntime's Deprecated marker (Phase 6 PR9 skeleton) — still the production userns transport this test exercises; actual retirement is a follow-up PR (docs/plans/phase6-cutover-followups.md).
+	ptyBackend := newLocalPTYBackend()
 
 	srv, err := New(Config{
 		DBPath:     ":memory:",
 		SocketPath: sockPath,
 		HTTPAddr:   "127.0.0.1:0",
-		JobRuntime: localRuntime,
+		Backend:    ptyBackend,
 	})
 	if err != nil {
 		t.Fatalf("new server: %v", err)
@@ -57,11 +57,7 @@ func TestServerJobRuntimeAttachAndResize(t *testing.T) {
 	// captures the *actual* post-resize PTY window size — not just that
 	// ResizeJob returned 200 OK (codex review Minor on PR #816: assert the
 	// resize seam changed a real PTY, not merely that the call succeeded).
-	handle, err := localRuntime.Start(context.Background(), dispatcher.RuntimeStartSpec{
-		Command:     "printf 'attach ready'; sleep 0.1; stty size; printf 'done'",
-		Interactive: true,
-		TTY:         true,
-	})
+	runtimeID, err := ptyBackend.StartPTY("printf 'attach ready'; sleep 0.1; stty size; printf 'done'")
 	if err != nil {
 		t.Fatalf("start runtime: %v", err)
 	}
@@ -72,7 +68,7 @@ func TestServerJobRuntimeAttachAndResize(t *testing.T) {
 		ProjectID:   "proj-1",
 		HandlerID:   "hook-a",
 		Role:        "hook",
-		RuntimeID:   handle.ID,
+		RuntimeID:   runtimeID,
 		Interactive: true,
 		TTY:         true,
 	}
@@ -106,7 +102,11 @@ func TestServerJobRuntimeAttachAndResize(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
-	result, err := localRuntime.Wait(ctx, handle.ID)
+	session, ok := ptyBackend.Adopt(ctx, runtimeID)
+	if !ok {
+		t.Fatalf("Adopt(%q) = false, want the session StartPTY registered", runtimeID)
+	}
+	result, err := session.Wait(ctx)
 	if err != nil {
 		t.Fatalf("Wait: %v", err)
 	}
@@ -118,7 +118,7 @@ func TestServerJobRuntimeAttachAndResize(t *testing.T) {
 // TestServerJobRuntimeResizeUnknownRuntimeConflict pins the codex review
 // Blocker 2 fix on PR #816: the HTTP resize handler must reject a job whose
 // RuntimeID the configured SandboxBackend cannot Adopt (here: a RuntimeID
-// LocalRuntime never Start()ed, so its own SupportsAttach reports false)
+// StartPTY never handed out, so localPTYBackend.Adopt reports false for it)
 // with 409, exactly like the pre-Phase-6 type-assertion-based check did —
 // see resolveAttachableJob / Runner.CanAttach.
 func TestServerJobRuntimeResizeUnknownRuntimeConflict(t *testing.T) {
@@ -126,13 +126,12 @@ func TestServerJobRuntimeResizeUnknownRuntimeConflict(t *testing.T) {
 
 	tmpDir := t.TempDir()
 	sockPath := filepath.Join(tmpDir, "boid.sock")
-	localRuntime := &dispatcher.LocalRuntime{RootDir: filepath.Join(tmpDir, "runtimes")} //nolint:staticcheck // SA1019: LocalRuntime's Deprecated marker (Phase 6 PR9 skeleton) — still the production userns transport this test exercises; actual retirement is a follow-up PR (docs/plans/phase6-cutover-followups.md).
 
 	srv, err := New(Config{
 		DBPath:     ":memory:",
 		SocketPath: sockPath,
 		HTTPAddr:   "127.0.0.1:0",
-		JobRuntime: localRuntime,
+		Backend:    newLocalPTYBackend(),
 	})
 	if err != nil {
 		t.Fatalf("new server: %v", err)
@@ -157,8 +156,8 @@ func TestServerJobRuntimeResizeUnknownRuntimeConflict(t *testing.T) {
 		t.Fatalf("create task: %v", err)
 	}
 
-	// RuntimeID that was never handed out by localRuntime.Start — its
-	// SupportsAttach (and therefore usernsBackend.Adopt) reports false for it.
+	// RuntimeID that was never handed out by StartPTY — localPTYBackend.Adopt
+	// reports false for it.
 	job := &dispatcher.Job{
 		ID:        "job-unknown-runtime",
 		TaskID:    "task-1",

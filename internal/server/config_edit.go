@@ -300,10 +300,8 @@ func (s *Server) MutateConfig(req api.ConfigMutateRequest) (api.ConfigMutateResu
 // buildRuntime returns — but handled defensively rather than assumed).
 func (s *Server) applyDynamicConfigLocked(oldCfg, newCfg *config.Config) []string {
 	var oldForges map[string]config.ForgeConfig
-	var oldBackend config.SandboxBackendKind
 	if oldCfg != nil {
 		oldForges = oldCfg.Gateway.Forges
-		oldBackend = oldCfg.Sandbox.Backend
 	}
 	// oldCfgSafe backs the generic restart-required-field loop below —
 	// never nil, so restartFieldExtractors' funcs can dereference oldCfg's
@@ -394,21 +392,6 @@ func (s *Server) applyDynamicConfigLocked(oldCfg, newCfg *config.Config) []strin
 		}
 	}
 
-	// sandbox.backend — still fully valid (its removal is PR-4, docs/plans/
-	// volume-only-daemon.md §論点 e); this PR must not reject writes to it.
-	// The retirement notice fires only when this apply actually changed
-	// the value — an unrelated `set sandbox.allowed_domains ...` call must
-	// not nag about a key nobody touched. Never hot-applied: JobRuntime
-	// backend selection (dispatcher.Runner.Backend) is wired once at
-	// daemon startup (buildRuntime/sandboxBackendForConfig), so an
-	// operator changing this key genuinely does need a restart for
-	// dispatch itself to observe it, even though that is not spelled out
-	// as its own separate warning here — the retirement notice already
-	// tells the operator this key is not a normal live setting.
-	if newCfg.Sandbox.Backend != oldBackend {
-		warnings = append(warnings, "[warning] sandbox.backend is on the retirement path — see docs/plans/volume-only-daemon.md §論点 e; will be removed in PR-4")
-	}
-
 	return warnings
 }
 
@@ -479,6 +462,16 @@ var restartFieldExtractorExemptions = map[string]string{
 	// its own for an extractor to read — any of its changes already surface
 	// through the Forges diff above instead.
 	"gateway.hosts": "Config retains no Hosts field after UnmarshalYAML folds it into Forges; changes surface through the Forges diff instead",
+	// sandbox.backend was removed in PR-4 (docs/plans/volume-only-daemon.md
+	// §論点e) — Config.Sandbox retains no Backend field at all any more
+	// (UnmarshalYAML parses-and-discards the raw value, logging a warning —
+	// see its own doc comment), so there is nothing for an extractor to
+	// read or compare. The key is KindOpaque now (schema.go), so `boid
+	// config set/unset sandbox.backend` is already rejected outright at the
+	// dotted-path layer; this exemption only covers the generic
+	// restart-required-warning loop above, which would otherwise have no
+	// entry to satisfy verifyRestartExtractorCoverage with.
+	"sandbox.backend": "removed in PR-4; Config retains no Backend field to extract — the key is parsed-and-ignored with a load-time warning instead (see config.Config.UnmarshalYAML)",
 }
 
 // verifyRestartExtractorCoverage panics if any config.Schema leaf classified

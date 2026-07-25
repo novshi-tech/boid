@@ -3,7 +3,6 @@ package server
 import (
 	"context"
 	"encoding/json"
-	"os"
 	"strings"
 	"syscall"
 	"testing"
@@ -12,6 +11,7 @@ import (
 	"github.com/novshi-tech/boid/internal/dispatcher"
 	"github.com/novshi-tech/boid/internal/orchestrator"
 	"github.com/novshi-tech/boid/internal/sandbox"
+	"github.com/novshi-tech/boid/internal/sandbox/backend"
 )
 
 // TestBoidBuiltinExecutor_TaskEnvAndPayload_RealRunnerWiring is the
@@ -33,8 +33,7 @@ func TestBoidBuiltinExecutor_TaskEnvAndPayload_RealRunnerWiring(t *testing.T) {
 
 	runner := &dispatcher.Runner{
 		DB:             d.Conn,
-		Sandbox:        &fakeSandboxPreparer{dir: t.TempDir()},
-		Runtime:        &fakeJobRuntime{},
+		Backend:        &fakeSandboxBackend{},
 		AllowedDomains: []string{"github.com"},
 	}
 
@@ -130,8 +129,7 @@ func TestBoidBuiltinExecutor_TaskInstructions_RealRunnerWiring_NoCrossJobLeak(t 
 
 	runner := &dispatcher.Runner{
 		DB:      d.Conn,
-		Sandbox: &fakeSandboxPreparer{dir: t.TempDir()},
-		Runtime: &fakeJobRuntime{},
+		Backend: &fakeSandboxBackend{},
 	}
 
 	// claude-code hook's JobSpec: Evaluator fired it (claude-code is in the
@@ -195,47 +193,47 @@ func TestBoidBuiltinExecutor_TaskInstructions_RealRunnerWiring_NoCrossJobLeak(t 
 	}
 }
 
-// fakeSandboxPreparer is a minimal dispatcher.SandboxPreparer stub — this
-// test never actually needs the artifact contents, only that Dispatch
-// reaches past BuildSandboxSpec successfully. Writes into dir (a t.TempDir())
-// rather than /dev/null so the runner's post-launch cleanup can actually
-// remove the placeholder files instead of warning on a permission error.
-type fakeSandboxPreparer struct {
-	dir string
-}
-
-func (p *fakeSandboxPreparer) PrepareSandbox(_ sandbox.Spec) (*dispatcher.PreparedSandbox, error) {
-	specPath := p.dir + "/runner-spec.json"
-	if err := os.WriteFile(specPath, []byte("{}"), 0o600); err != nil {
-		return nil, err
-	}
-	return &dispatcher.PreparedSandbox{
-		SpecPath:  specPath,
-		StatePath: p.dir + "/runner-state.json",
-	}, nil
-}
-
-// fakeJobRuntime is a minimal dispatcher.JobRuntime stub that "starts"
+// fakeSandboxBackend is a minimal backend.SandboxBackend stub that "starts"
 // without launching any real process, so Dispatch's launchSandbox call
-// succeeds synchronously.
-type fakeJobRuntime struct{}
+// succeeds synchronously — the successor to the pre-PR-4
+// fakeSandboxPreparer (dispatcher.SandboxPreparer) + fakeJobRuntime
+// (dispatcher.JobRuntime) pair, both userns-only seams removed in PR-4
+// (docs/plans/volume-only-daemon.md §論点e). Reused across this package's
+// other Runner-DI test files (wire_orphan_runtimes_dir_test.go,
+// wire_task_runtimes_dir_test.go) via Config.Backend, the successor to
+// their own pre-PR-4 Config.JobRuntime usage.
+type fakeSandboxBackend struct{}
 
-func (r *fakeJobRuntime) Start(_ context.Context, _ dispatcher.RuntimeStartSpec) (*dispatcher.RuntimeHandle, error) {
-	return &dispatcher.RuntimeHandle{ID: "runtime-fake"}, nil
+var _ backend.SandboxBackend = (*fakeSandboxBackend)(nil)
+
+func (b *fakeSandboxBackend) Launch(context.Context, sandbox.Spec, backend.LaunchOptions) (backend.SandboxSession, error) {
+	return &fakeSandboxSession{id: "runtime-fake"}, nil
 }
 
-func (r *fakeJobRuntime) Attach(_ context.Context, _ string, _ dispatcher.RuntimeAttachRequest) error {
+func (b *fakeSandboxBackend) Adopt(context.Context, string) (backend.SandboxSession, bool) {
+	return nil, false
+}
+
+func (b *fakeSandboxBackend) ReapOrphans(context.Context) (backend.ReapReport, error) {
+	return backend.ReapReport{}, nil
+}
+
+// fakeSandboxSession is fakeSandboxBackend's minimal backend.SandboxSession.
+type fakeSandboxSession struct{ id string }
+
+var _ backend.SandboxSession = (*fakeSandboxSession)(nil)
+
+func (s *fakeSandboxSession) ID() string { return s.id }
+func (s *fakeSandboxSession) Subscribe() ([]byte, <-chan []byte, func(), bool) {
+	return nil, nil, func() {}, false
+}
+func (s *fakeSandboxSession) WriteInput([]byte) error { return dispatcher.ErrRuntimeUnsupported }
+func (s *fakeSandboxSession) CloseInput() error       { return dispatcher.ErrRuntimeUnsupported }
+func (s *fakeSandboxSession) Resize(backend.TerminalSize) error {
 	return dispatcher.ErrRuntimeUnsupported
 }
-
-func (r *fakeJobRuntime) Resize(_ context.Context, _ string, _ dispatcher.TerminalSize) error {
-	return dispatcher.ErrRuntimeUnsupported
+func (s *fakeSandboxSession) Wait(context.Context) (backend.RuntimeExit, error) {
+	return backend.RuntimeExit{}, dispatcher.ErrRuntimeUnsupported
 }
-
-func (r *fakeJobRuntime) Wait(_ context.Context, _ string) (dispatcher.RuntimeExit, error) {
-	return dispatcher.RuntimeExit{}, dispatcher.ErrRuntimeUnsupported
-}
-
-func (r *fakeJobRuntime) Stop(_ context.Context, _ string) error { return nil }
-
-func (r *fakeJobRuntime) Signal(_ context.Context, _ string, _ syscall.Signal) error { return nil }
+func (s *fakeSandboxSession) Stop(context.Context) error                   { return nil }
+func (s *fakeSandboxSession) Signal(context.Context, syscall.Signal) error { return nil }
