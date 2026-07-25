@@ -25,6 +25,12 @@ type stubProjectServiceForExec struct {
 func (s *stubProjectServiceForExec) CreateProject(string) (*orchestrator.Project, error) {
 	panic("not implemented")
 }
+func (s *stubProjectServiceForExec) CreateProjectFromGitURL(context.Context, string, string, string) (*orchestrator.Project, error) {
+	panic("not implemented")
+}
+func (s *stubProjectServiceForExec) FetchProject(context.Context, string) (*orchestrator.Project, error) {
+	panic("not implemented")
+}
 func (s *stubProjectServiceForExec) ListProjects(string) ([]*orchestrator.Project, error) {
 	panic("not implemented")
 }

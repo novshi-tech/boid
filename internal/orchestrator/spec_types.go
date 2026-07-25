@@ -490,6 +490,15 @@ type Project struct {
 	UpstreamURL string    `json:"upstream_url,omitempty"`
 	CreatedAt   time.Time `json:"created_at"`
 	UpdatedAt   time.Time `json:"updated_at"`
+	// Status / StatusMessage reflect the daemon's in-memory ProjectStore
+	// view of this project's health (docs/plans/volume-only-daemon.md
+	// §論点a: StatusReady / StatusDegraded). Not a DB column — populated at
+	// hydrate time (internal/api.ProjectAppService.hydrateProject) from
+	// ProjectStore.Status. Omitted from JSON when "ready" (the common case)
+	// to keep existing API response bodies unchanged for clients that
+	// don't care.
+	Status        string `json:"status,omitempty"`
+	StatusMessage string `json:"status_message,omitempty"`
 }
 
 type WorkspaceSummary struct {

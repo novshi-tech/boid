@@ -2,6 +2,7 @@ package dispatcher
 
 import (
 	"os/exec"
+	"strings"
 	"testing"
 )
 
@@ -43,6 +44,11 @@ func TestNormalizeOriginURL(t *testing.T) {
 			want: "https://github.com/owner/repo.git",
 		},
 		{
+			name: "file url passthrough unchanged",
+			raw:  "file:///tmp/some/repo",
+			want: "file:///tmp/some/repo",
+		},
+		{
 			name:    "empty url is an error",
 			raw:     "",
 			wantErr: true,
@@ -55,6 +61,60 @@ func TestNormalizeOriginURL(t *testing.T) {
 		{
 			name:    "unrecognized form is an error",
 			raw:     "not-a-url",
+			wantErr: true,
+		},
+		{
+			// MAJOR 5 (PR-2a codex round-1 review): a credential-bearing
+			// https:// URL must be rejected outright, not stored — see
+			// hasHTTPUserinfo's doc comment for the three surfaces that
+			// would otherwise leak the embedded token.
+			name:    "https url with embedded credentials is rejected",
+			raw:     "https://user:pat@github.com/owner/repo.git",
+			wantErr: true,
+		},
+		{
+			name:    "https url with bare username (no password) is still rejected",
+			raw:     "https://user@github.com/owner/repo.git",
+			wantErr: true,
+		},
+		{
+			name:    "http url with embedded credentials is rejected",
+			raw:     "http://user:pat@github.com/owner/repo.git",
+			wantErr: true,
+		},
+		{
+			name: "git url normalized to https",
+			raw:  "git://github.com/owner/repo.git",
+			want: "https://github.com/owner/repo.git",
+		},
+		{
+			name: "ssh url with explicit port drops the port on https rewrite",
+			raw:  "ssh://git@github.com:2222/owner/repo.git",
+			want: "https://github.com/owner/repo.git",
+		},
+		{
+			// BLOCKER 1 (PR-2a codex round-2 review): the pre-fix
+			// hasHTTPUserinfo only ever inspected the authority component
+			// (before the first "/"), so a query-embedded credential sailed
+			// straight through NormalizeOriginURL unrejected — the URL then
+			// got clone-attempted with the token in argv, and stored
+			// verbatim into remote.origin.url / projects.upstream_url on
+			// success.
+			name:    "https url with credential-bearing query parameter is rejected",
+			raw:     "https://github.com/owner/repo.git?access_token=SECRET",
+			wantErr: true,
+		},
+		{
+			name:    "https url with token query parameter is rejected",
+			raw:     "https://github.com/owner/repo.git?token=SECRET",
+			wantErr: true,
+		},
+		{
+			// BLOCKER 1's "URL path" bypass: the "@" lands past the first
+			// "/" after the host, exactly where hasHTTPUserinfo already
+			// stopped looking (it cuts the authority off at the first "/").
+			name:    "https url with credential-shaped pattern embedded in the path is rejected",
+			raw:     "https://github.com/x-oauth-basic:SECRET@repo.git",
 			wantErr: true,
 		},
 	}
@@ -73,6 +133,82 @@ func TestNormalizeOriginURL(t *testing.T) {
 			}
 			if got != tt.want {
 				t.Errorf("NormalizeOriginURL(%q) = %q, want %q", tt.raw, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestNormalizeOriginURL_RejectedErrorsNeverLeakCredential pins BLOCKER 1's
+// required test assertion (PR-2a codex round-2 review): every credential
+// encoding form must be rejected at input (never returned as a normalized
+// URL), AND the returned error's message itself must never contain the raw
+// secret — a rejection whose own error text echoes the token back would
+// defeat the entire point of rejecting it.
+func TestNormalizeOriginURL_RejectedErrorsNeverLeakCredential(t *testing.T) {
+	const secret = "s3cr3t-token-value"
+	tests := []string{
+		"https://user:" + secret + "@github.com/owner/repo.git",
+		"https://" + secret + "@github.com/owner/repo.git",
+		"https://github.com/owner/repo.git?access_token=" + secret,
+		"https://github.com/owner/repo.git?token=" + secret,
+		"https://github.com/owner/repo.git?password=" + secret,
+		"https://github.com/x-oauth-basic:" + secret + "@repo.git",
+	}
+	for _, raw := range tests {
+		t.Run(raw, func(t *testing.T) {
+			got, err := NormalizeOriginURL(raw)
+			if err == nil {
+				t.Fatalf("NormalizeOriginURL(%q) = %q, want error (credential must be rejected at input, never clone-attempted)", raw, got)
+			}
+			if got != "" {
+				t.Errorf("NormalizeOriginURL(%q) returned a non-empty URL %q alongside an error", raw, got)
+			}
+			if strings.Contains(err.Error(), secret) {
+				t.Errorf("NormalizeOriginURL(%q) error leaks the raw credential: %v", raw, err)
+			}
+		})
+	}
+}
+
+// TestSanitizeURLForLogging pins the redaction helper every credential
+// error-message/log site in this package routes through (PR-2a codex
+// round-2 Blocker 1 sibling sweep).
+func TestSanitizeURLForLogging(t *testing.T) {
+	tests := []struct {
+		name string
+		raw  string
+		want string
+	}{
+		{
+			name: "no credential shape, unchanged",
+			raw:  "https://github.com/owner/repo.git",
+			want: "https://github.com/owner/repo.git",
+		},
+		{
+			name: "userinfo redacted",
+			raw:  "https://user:pat@github.com/owner/repo.git",
+			want: "https://REDACTED@github.com/owner/repo.git",
+		},
+		{
+			name: "query credential redacted, key preserved",
+			raw:  "https://github.com/owner/repo.git?access_token=SECRET",
+			want: "https://github.com/owner/repo.git?access_token=REDACTED",
+		},
+		{
+			name: "query credential redacted, second query param",
+			raw:  "https://github.com/owner/repo.git?foo=bar&token=SECRET",
+			want: "https://github.com/owner/repo.git?foo=bar&token=REDACTED",
+		},
+		{
+			name: "path-embedded credential-shaped pattern redacted",
+			raw:  "https://github.com/x-oauth-basic:SECRET@repo.git",
+			want: "https://github.com/REDACTED@repo.git",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := SanitizeURLForLogging(tt.raw); got != tt.want {
+				t.Errorf("SanitizeURLForLogging(%q) = %q, want %q", tt.raw, got, tt.want)
 			}
 		})
 	}

@@ -5,15 +5,30 @@ import (
 )
 
 // ProjectMissingError is a typed error indicating that a project registered
-// in the DB no longer has a project.yaml on disk (the project directory was
-// removed, the path moved, etc.). It is distinct from
+// in the DB failed to load its project.yaml. It is distinct from
 // *ProjectMigrationError, which signals schema migration is required.
 //
-// Callers (boid start parent / server wire) extract this via errors.As and
-// auto-prune the stale row from the project DB so the daemon can boot
-// instead of refusing because of a dangling registration. The decision is
-// data-safe: the project.yaml is the source of truth, so a DB row that
-// points at a vanished directory is unambiguously stale.
+// Originally (pre docs/plans/volume-only-daemon.md) this covered only the
+// "project directory removed from disk" case, and callers auto-pruned the
+// DB row on sight — safe because the project.yaml was the source of truth,
+// so a row pointing at a vanished directory was unambiguously stale.
+//
+// docs/plans/volume-only-daemon.md §論点a retired that auto-prune: the
+// pivot-triggering incident it documents was caused by exactly this
+// short-circuit firing on a false "missing" signal (host filesystem
+// temporarily unreachable from inside a container). The declared invariant
+// is now: filesystem/remote observations never justify a hard delete, at
+// any point (startup / dispatch / fetch / GC). wrapPerProjectLoadErr
+// (project_store.go) now returns this type for EVERY per-project load
+// failure that is not a *ProjectMigrationError — a missing directory, a
+// YAML parse error, a corrupt/unreachable bare repo (project_bare_repo.go),
+// all of it — because as of the invariant above they all get the same
+// response: internal/server/wire.go's buildProjectStore marks the project
+// "degraded" (ProjectStore.MarkDegraded) and keeps going. The DB row is
+// only ever removed by an explicit `boid project rm` / `boid workspace
+// delete`. The type name stays as-is (not worth the rename-only churn
+// across call sites) despite no longer being specific to the "missing"
+// case.
 type ProjectMissingError struct {
 	ProjectID string // registered project ID
 	Dir       string // expected project root (where .boid/project.yaml should live)

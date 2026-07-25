@@ -889,9 +889,19 @@ type createProjectMetaStore struct {
 func (s *createProjectMetaStore) Load(_ string) (*orchestrator.ProjectMeta, error) {
 	return s.meta, nil
 }
+func (s *createProjectMetaStore) LoadBareRepo(_ string) (*orchestrator.ProjectMeta, error) {
+	return s.meta, nil
+}
+func (s *createProjectMetaStore) LoadBareRepoExpectingID(_, _ string) (*orchestrator.ProjectMeta, error) {
+	return s.meta, nil
+}
 func (s *createProjectMetaStore) Get(_ string) (*orchestrator.ProjectMeta, bool) { return nil, false }
 func (s *createProjectMetaStore) Remove(_ string)                               {}
 func (s *createProjectMetaStore) LoadAll(_ []*orchestrator.Project) []error     { return nil }
+func (s *createProjectMetaStore) Status(_ string) orchestrator.ProjectStatus {
+	return orchestrator.ProjectStatus{State: orchestrator.StatusReady}
+}
+func (s *createProjectMetaStore) MarkDegraded(_, _ string) {}
 func (s *createProjectMetaStore) SetWorkspaceID(projectID, workspaceID string) {
 	if s.setWorkspaceIDCalls == nil {
 		s.setWorkspaceIDCalls = map[string]string{}

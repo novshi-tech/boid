@@ -47,11 +47,13 @@ daemon が止まっているときに以下のコマンドを呼ぶと、自動�
 
 | コマンド | 役割 |
 |---|---|
-| `boid project add <dir>` | `<dir>/.boid/project.yaml` を `boid` に登録 |
-| `boid project list` | 登録済みプロジェクト一覧 |
+| `boid project add <git-url> --workspace=<name> [--name=<project-name>]` | git remote URL を登録し、daemon が bare repository として clone する (docs/plans/volume-only-daemon.md §論点a/b)。`--workspace` は必須、`--name` を省略すると URL の最後のパス要素から project 名を derive する。 |
+| `boid project add <dir> [--workspace=<name>]` | **非推奨** の旧来フォーム: daemon ホスト自身のファイルシステム上の既存 `.boid/project.yaml` から `<dir>` を登録する — 後方互換のため挙動は変更せず維持しているが、使用の度に非推奨警告を出し、将来のリリースで撤去予定。`--workspace` は任意。移行は project 単位で `boid project rm <ref>` の後に上記 git-URL フォームで登録し直す。どちらのフォームが選ばれるかは引数の形 (明示スキームまたは scp-like `user@host:path` の git URL か、それ以外か) で決まる。 |
+| `boid project list` | 登録済みプロジェクト一覧 (status `ready`/`degraded` も表示 — `project fetch` 参照) |
 | `boid project show <ref>` | プロジェクト詳細 (id 完全一致 / 名前部分一致のいずれも可) |
-| `boid project remove <ref>` | プロジェクトを登録解除 |
+| `boid project remove <ref>` (alias: `rm`) | プロジェクトを登録解除。project の DB row を削除する唯一の入口 — `boid` は filesystem / remote の観測結果を根拠に自動削除しない (下記 `project fetch` 参照)。git-URL 登録した project の場合は daemon 管理下の bare repository も削除するため、同じ URL/名前で再度 add しても成功する。 |
 | `boid project reload` | すべてのプロジェクトの `project.yaml` を再読み込み |
+| `boid project fetch <ref>` | git-URL 登録した project の bare repository で `git fetch --all` を実行し project.yaml を再読み込みする。fetch/reload に失敗しても削除はせず `degraded` 状態にする (`project list`/`show` で確認可能) — 復旧は remote に再度到達可能になってから `boid project rm` + `boid project add` |
 | `boid project behaviors <ref>` | そのプロジェクトの task_behaviors 一覧 |
 
 ### `project local` — 廃止

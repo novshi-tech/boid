@@ -36,9 +36,39 @@ func ReadProjectMeta(dir string) (*ProjectMeta, error) {
 		return nil, fmt.Errorf("%s: read: %w", yamlPath, err)
 	}
 
+	meta, err := parseProjectMetaBytes(dir, data)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := resolveProjectHostCommandPaths(dir, meta.HostCommands); err != nil {
+		return nil, err
+	}
+
+	return meta, nil
+}
+
+// parseProjectMetaBytes runs the project.yaml validation/unmarshal pipeline
+// shared between the filesystem-based loader (ReadProjectMeta, above) and
+// the daemon-managed bare-repo loader (ReadProjectMetaFromBareRepo,
+// project_bare_repo.go — docs/plans/volume-only-daemon.md §論点a: "project.yaml
+// は bare repo の HEAD (default branch) から `git show HEAD:.boid/project.yaml`
+// で読む"). dirLabel is used only for error text and
+// ProjectMigrationIssue.Dir (rejectRemovedProjectFields) — a real filesystem
+// directory for the former caller, the bare repo path for the latter; the
+// "boid project migrate <dir>" guidance those messages point at is not
+// literally actionable against a bare repo path the same way, but keeping
+// the message shape uniform is simpler than forking it.
+//
+// Deliberately excluded: resolveProjectHostCommandPaths, which resolves a
+// relative host_commands.path against an on-disk project directory —
+// filesystem callers run it themselves afterward (they have a real
+// directory); the bare-repo caller has none and rejects relative paths
+// outright instead (see ReadProjectMetaFromBareRepo).
+func parseProjectMetaBytes(dirLabel string, data []byte) (*ProjectMeta, error) {
 	var raw map[string]any
 	if err := yaml.Unmarshal(data, &raw); err != nil {
-		return nil, fmt.Errorf("%s: parse: %w", yamlPath, err)
+		return nil, fmt.Errorf("%s: parse: %w", dirLabel, err)
 	}
 	if _, ok := raw["workspace_id"]; ok {
 		return nil, fmt.Errorf("project.yaml: workspace_id is no longer supported; assign workspace via boid workspace assign <project-id> <workspace-id>")
@@ -49,7 +79,7 @@ func ReadProjectMeta(dir string) (*ProjectMeta, error) {
 		}
 	}
 
-	if migErr := rejectRemovedProjectFields(dir, raw); migErr != nil {
+	if migErr := rejectRemovedProjectFields(dirLabel, raw); migErr != nil {
 		return nil, migErr
 	}
 
@@ -57,7 +87,7 @@ func ReadProjectMeta(dir string) (*ProjectMeta, error) {
 		return nil, err
 	}
 
-	warnDeprecatedCommandsKey("project.yaml", dir, raw)
+	warnDeprecatedCommandsKey("project.yaml", dirLabel, raw)
 
 	var meta ProjectMeta
 	if err := yaml.Unmarshal(data, &meta); err != nil {
@@ -66,9 +96,6 @@ func ReadProjectMeta(dir string) (*ProjectMeta, error) {
 	interpolateBindMounts(meta.AdditionalBindings)
 	interpolateHostCommands(meta.HostCommands)
 	interpolateEnvMap(meta.Env)
-	if err := resolveProjectHostCommandPaths(dir, meta.HostCommands); err != nil {
-		return nil, err
-	}
 
 	// Validate hook kind/agent/command invariants at load time. This is
 	// defense-in-depth alongside the runtime check in

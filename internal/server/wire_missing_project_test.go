@@ -8,22 +8,30 @@ import (
 	"github.com/novshi-tech/boid/internal/orchestrator"
 )
 
-// TestBuildProjectStore_AutoPrunesMissingProjectDir pins the auto-prune
-// behaviour the boid start parent depends on when a project's work dir has
-// been physically deleted (e.g. `/tmp/boid-*-smoke/` test artifacts cleaned
-// up out of band).
+// TestBuildProjectStore_DegradesMissingProjectDir_NeverDeletes pins the
+// docs/plans/volume-only-daemon.md §論点a on-startup-auto-prune-retirement
+// invariant, replacing this file's former
+// TestBuildProjectStore_AutoPrunesMissingProjectDir (which pinned the
+// OPPOSITE behavior — auto-deleting the DB row — that this same doc
+// declares dangerous: it is the exact mechanism that turned a transient
+// "container can't see the host filesystem" observation into the
+// 2026-07-24 dogfood incident's mass deletion of 18 projects / 479 tasks /
+// 816 jobs, which is what prompted the doc's pivot in the first place).
 //
-// Before this fix the daemon refused startup with
+// Before that original auto-prune existed the daemon refused startup with
 //
 //	daemon startup refused: failed to load project metadata
 //	  - project "X": .../.boid/project.yaml: read: open ...: no such file or directory
 //	Run `boid project migrate <dir>` ...
 //
-// and the user had no recovery path: `boid project rm` itself needs the
-// daemon running, so the system was stuck. The classification of
-// fs.ErrNotExist as ProjectMissingError lets buildProjectStore delete the
-// stale DB row and boot anyway. Schema migration errors remain fail-fast.
-func TestBuildProjectStore_AutoPrunesMissingProjectDir(t *testing.T) {
+// and the user had no recovery path (`boid project rm` itself needs the
+// daemon running). §論点a's answer is not "go back to refusing startup" —
+// it is "boot anyway, but never delete": a project whose project.yaml
+// fails to load is marked StatusDegraded (in-memory, via
+// ProjectStore.MarkDegraded) and its DB row is left completely alone.
+// Recovery is still available (`boid project rm` once the daemon is up),
+// it's just no longer automatic or silent.
+func TestBuildProjectStore_DegradesMissingProjectDir_NeverDeletes(t *testing.T) {
 	// Isolate the host: workspace store defaults to XDG_CONFIG_HOME/boid/workspaces
 	// and EnsureDefault writes a file there. Without this t.Setenv the test would
 	// scribble onto the developer's ~/.config/boid.
@@ -42,7 +50,7 @@ func TestBuildProjectStore_AutoPrunesMissingProjectDir(t *testing.T) {
 	}
 
 	// 2) Healthy project: WorkDir has a real .boid/project.yaml so it must
-	// still be loaded after the stale row is pruned.
+	// still be loaded alongside the degraded one.
 	healthyDir := t.TempDir()
 	boidDir := filepath.Join(healthyDir, ".boid")
 	if err := os.MkdirAll(boidDir, 0o755); err != nil {
@@ -62,13 +70,25 @@ func TestBuildProjectStore_AutoPrunesMissingProjectDir(t *testing.T) {
 	cfg := Config{DBPath: ":memory:"}
 	store, _, err := buildProjectStore(cfg, d.Conn, repo)
 	if err != nil {
-		t.Fatalf("buildProjectStore should boot after auto-prune, got error: %v", err)
+		t.Fatalf("buildProjectStore should boot despite a project failing to load, got error: %v", err)
 	}
 
-	if _, err := repo.GetProject("stale-proj"); err == nil {
-		t.Error("stale-proj should have been auto-pruned from DB")
+	// The invariant: the stale row must still be there.
+	if _, err := repo.GetProject("stale-proj"); err != nil {
+		t.Errorf("stale-proj DB row must be preserved (never auto-deleted), got: %v", err)
 	}
+	st := store.Status("stale-proj")
+	if st.State != orchestrator.StatusDegraded {
+		t.Errorf("stale-proj Status.State = %q, want %q", st.State, orchestrator.StatusDegraded)
+	}
+	if st.Message == "" {
+		t.Error("expected a non-empty degraded status message for stale-proj")
+	}
+
 	if _, ok := store.Get("healthy-proj"); !ok {
 		t.Error("healthy-proj should still be loaded into the store")
+	}
+	if st := store.Status("healthy-proj"); st.State != orchestrator.StatusReady {
+		t.Errorf("healthy-proj Status.State = %q, want %q", st.State, orchestrator.StatusReady)
 	}
 }

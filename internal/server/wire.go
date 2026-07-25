@@ -57,6 +57,14 @@ func buildProjectStore(cfg Config, conn *sql.DB, projectRepo *orchestrator.Proje
 	// WorkspaceMeta.Kits.
 	store := orchestrator.NewProjectStore()
 
+	// docs/plans/volume-only-daemon.md §論点b: the daemon-managed bare-repo
+	// storage root (<data_dir>/repos/<workspace>/<project>.git). Wired here
+	// (not just at CreateProjectFromGitURL's DataDir field below) so
+	// LoadAll's degraded-status message can recognize a project whose
+	// WorkDir falls outside this root as a pre-cutover, host-filesystem
+	// registration — see ProjectStore.SetReposRoot's own doc comment.
+	store.SetReposRoot(orchestrator.ReposRoot(dataHomeFor(cfg)))
+
 	// Workspace DB cutover (docs/plans/workspace-db-consolidation.md PR3):
 	// migrate any yaml-authority workspaces (DefaultWorkspaceDir()/*.yaml)
 	// and kit host_commands (cfg.KitsDir) into the `workspaces` table before
@@ -224,34 +232,48 @@ func buildProjectStore(cfg Config, conn *sql.DB, projectRepo *orchestrator.Proje
 		return nil, nil, fmt.Errorf("list projects: %w", err)
 	}
 	errs := store.LoadAll(projects)
-	// project.yaml が無くなった project は「dir が物理削除された stale 登録」
-	// と判定して DB から自動 prune + 起動を継続する。 schema migration error は
-	// 従来通り fail-fast (--auto-migrate で auto-resolve)、 parse error 等の
-	// 他の load 失敗も fail-fast (config bug を masking しないため)。
+
+	// INVARIANT (docs/plans/volume-only-daemon.md §論点a "on-startup
+	// auto-prune 撤去"): filesystem/remote observations never justify a
+	// hard delete of a project's DB row, at any point — not at startup, not
+	// at dispatch, not at `boid project fetch`, not at GC. This block used
+	// to auto-prune a project's DB row the moment its project.yaml could
+	// not be read (reasoning: "ENOENT == the dir was physically removed,
+	// safe to delete"). That exact shortcut is what turned a transient
+	// "container can't see the host filesystem" observation into a
+	// mass-deletion of 18 projects / 479 tasks / 816 jobs during the
+	// 2026-07-24 dogfood session that prompted this doc's pivot — a
+	// perfectly healthy DB row was indistinguishable, from inside that
+	// shortcut, from a genuinely stale one.
 	//
-	// daemon が起動失敗していると `boid project rm` が socket を叩けず詰むので、
-	// ENOENT のときに限り auto-prune するのが詰み回避策。 project.yaml は
-	// project の source of truth なので、 dir が消えた DB row を消すのは
-	// データ破壊リスクなし。
-	remaining := errs[:0]
+	// store.LoadAll (project_store.go) already implements the replacement:
+	// every per-project load failure — missing dir, YAML parse error,
+	// corrupt or unreachable bare repo, project.yaml missing from a bare
+	// repo's HEAD — is recorded via ProjectStore.MarkDegraded (StatusDegraded)
+	// and the DB row is left completely untouched. Nothing below this
+	// point deletes anything. The one remaining fail-fast case is a schema
+	// migration requirement (*ProjectMigrationError, resolved via
+	// `boid start --auto-migrate`): unlike the conditions above, that
+	// signals a config SHAPE the daemon has no safe default interpretation
+	// for, not an observational/transient failure, so refusing to start is
+	// still the right call.
+	//
+	// The only two entry points that remove a project's DB row are now
+	// `boid project rm <id>` and `boid workspace delete <name>` — both
+	// explicit operator actions, never an inference from what the daemon
+	// happened to observe on disk or over the network at some point in time.
+	var migrationErrs []error
 	for _, e := range errs {
-		var missErr *orchestrator.ProjectMissingError
-		if errors.As(e, &missErr) {
-			slog.Warn("project dir missing; auto-pruning stale DB row",
-				"project_id", missErr.ProjectID, "dir", missErr.Dir)
-			if delErr := projectRepo.DeleteProject(missErr.ProjectID); delErr != nil {
-				// DB 削除自体に失敗したらそれは fail-fast 対象 (DB が壊れている
-				// 可能性)。 元の missing error を fallthrough させる。
-				slog.Error("failed to auto-prune stale project; falling back to startup failure",
-					"project_id", missErr.ProjectID, "error", delErr)
-				remaining = append(remaining, e)
-			}
+		var migErr *orchestrator.ProjectMigrationError
+		if errors.As(e, &migErr) {
+			migrationErrs = append(migrationErrs, e)
 			continue
 		}
-		remaining = append(remaining, e)
+		slog.Warn("project failed to load; marked degraded, DB row preserved (docs/plans/volume-only-daemon.md §論点a)",
+			"error", e)
 	}
-	if len(remaining) > 0 {
-		return nil, nil, buildProjectLoadStartupError(remaining)
+	if len(migrationErrs) > 0 {
+		return nil, nil, buildProjectLoadStartupError(migrationErrs)
 	}
 
 	backfillUpstreamURLs(projectRepo, projects)
@@ -974,6 +996,24 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 	// TCP(mTLS) listener via gatewayHandler.ListenTLS
 	// (docs/plans/phase6-container-backend.md §PR4).
 	srv.gatewayHandler = gwHandler
+
+	// docs/plans/volume-only-daemon.md §論点a/b: `boid project add <git-url>`
+	// / `boid project fetch <id>` need an authenticated bare clone/fetch —
+	// wired here (rather than inline in the projectSvc literal above)
+	// because both need gwCreds, which is only built once boidCfg is loaded
+	// a few lines up. Reuses the exact same CredentialProvider the sandbox
+	// git gateway reverse proxy authenticates job clones with — see
+	// dispatcher.CloneBareRepo/FetchBareRepo's own doc comments for why this
+	// is a direct CredentialProvider.Resolve call rather than a round trip
+	// through the HTTP reverse proxy (there is no job token / sandbox
+	// involved; this runs in the daemon process itself).
+	projectSvc.CloneBareRepo = func(ctx context.Context, url, dest, namespace string) error {
+		return dispatcher.CloneBareRepo(ctx, url, dest, gwCreds, namespace)
+	}
+	projectSvc.FetchBareRepo = func(ctx context.Context, bareRepoPath, namespace string) error {
+		return dispatcher.FetchBareRepo(ctx, bareRepoPath, gwCreds, namespace)
+	}
+	projectSvc.DataDir = dataHomeFor(cfg)
 
 	taskSvc := &api.TaskAppService{
 		Tasks:              taskRepo,
