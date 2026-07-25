@@ -29,6 +29,28 @@ daemon が止まっているときに以下のコマンドを呼ぶと、自動�
 
 各コマンドは内部で `remote`（daemon の HTTP API だけで完結し、将来リモート daemon に接続しても動作する）/ `local`（daemon lifecycle や CLI プロセス自身が動くホストの filesystem に依存する）/ `neutral`（daemon 接続そのものを必要としない）のいずれかに分類されています（`boid.scope` cobra annotation、全 leaf command が対象で未分類は build failure）。現状はまだこの分類に基づく実行時の接続先チェックは入っていません — Phase 3 (CLI リモート接続) 実装の足場として Phase 2.5 で先行導入されたものです。詳細は `docs/plans/cli-remote-connection.md` を参照。
 
+### Host mode（コンテナ backend 向け、`BOID_MODE=container`）
+
+`sandbox.backend: container` の compose デプロイ（`scripts/deploy-container.sh`、`docs/plans/phase6-container-backend.md`）を使っている場合、`boid` の起動元 shell で以下を設定すると **`boid` CLI 自身が daemon container のライフサイクルを管理する「host mode」** になります（`docs/plans/volume-only-daemon.md` §論点c、Option 4 設計）。
+
+```bash
+export BOID_MODE=container
+```
+
+scope=`remote` なコマンド（`task list` 等、daemon の HTTP API を叩くもの）を呼ぶと、`boid` は内部で:
+
+1. `~/.config/boid/cli-token`（無ければ生成、0600）を読み込む
+2. `http://127.0.0.1:8442/api/health` に届くか確認し、届かなければ `scripts/deploy-container.sh` を起動（image build + `compose up -d`）してから再確認
+3. `Authorization: Bearer <token>` を付けて `http://127.0.0.1:8442` へ実コマンドを dispatch
+
+を行います。素の bare-metal 経路（unix socket 直 dial）は `BOID_MODE` 未設定（既定）のとき完全に無変更です。`boid start`/`stop`/`gc` などの scope=`local` コマンド、`login`/`logout` などの scope=`neutral` コマンドは host mode の影響を受けません（bare-metal 側のまま）。
+
+| 環境変数 | 用途 |
+|---|---|
+| `BOID_MODE=container` | host mode を有効化 |
+| `BOID_CLI_ADDR` | CLI listener の port だけを override（host は常に `127.0.0.1` 固定。既定 `127.0.0.1:8442`） |
+| `BOID_COMPOSE_ROOT` | `scripts/deploy-container.sh` を含む boid リポジトリのルートを明示（既定は cwd から歩いて上る自動検出） |
+
 ## サーバライフサイクル
 
 | コマンド | 役割 |

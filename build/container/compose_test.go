@@ -30,6 +30,7 @@ type composeDoc struct {
 		Volumes     []string          `yaml:"volumes"`
 		Environment map[string]string `yaml:"environment"`
 		ExtraHosts  []string          `yaml:"extra_hosts"`
+		Ports       []string          `yaml:"ports"`
 	} `yaml:"services"`
 	// TopVolumes is the top-level named-volume declaration block (docs/
 	// plans/volume-only-daemon.md §論点 d) — distinct from each service's
@@ -348,5 +349,79 @@ func TestComposeDaemonHasLogStdoutEnv(t *testing.T) {
 	}
 	if got != "1" {
 		t.Errorf(`daemon environment["BOID_LOG_STDOUT"] = %q, want "1"`, got)
+	}
+}
+
+// TestComposeDaemonHasCLITokenEnv pins the PR-3 Option 4 host-mode
+// redesign (docs/plans/volume-only-daemon.md §論点c, nose directive
+// 2026-07-25): the daemon service must interpolate BOID_CLI_TOKEN from
+// its own launching environment (deploy-container.sh, invoked by cmd/
+// host.go with the value already exported) — without this, the compose
+// container never sees the token cmd/host.go generated/read on the host,
+// and internal/api/auth.NewCLITokenAuthMiddleware fails closed (no
+// listener bound at all — see server.Config.CLIAddr's own doc comment),
+// silently stranding every host-mode CLI dispatch.
+func TestComposeDaemonHasCLITokenEnv(t *testing.T) {
+	doc := loadComposeDoc(t)
+
+	daemon, ok := doc.Services["daemon"]
+	if !ok {
+		t.Fatal(`compose.yml has no "daemon" service`)
+	}
+	got, ok := daemon.Environment["BOID_CLI_TOKEN"]
+	if !ok {
+		t.Fatalf("daemon environment = %v, want %q present", daemon.Environment, "BOID_CLI_TOKEN")
+	}
+	if got != "${BOID_CLI_TOKEN:-}" {
+		t.Errorf(`daemon environment["BOID_CLI_TOKEN"] = %q, want "${BOID_CLI_TOKEN:-}" (pass-through, optional for a manual compose up outside host mode)`, got)
+	}
+}
+
+// TestComposeDaemonPublishesCLIPortOnLoopbackOnly pins the CLI listener's
+// host-side publish: 127.0.0.1:8442:8442, matching client.DefaultCLIAddr()
+// — a bare "8442:8442" or "0.0.0.0:8442:8442" would expose the token-only
+// (no TLS) listener to every other interface on the host, not just the
+// same-host `boid` CLI process host mode is designed for.
+func TestComposeDaemonPublishesCLIPortOnLoopbackOnly(t *testing.T) {
+	doc := loadComposeDoc(t)
+
+	daemon, ok := doc.Services["daemon"]
+	if !ok {
+		t.Fatal(`compose.yml has no "daemon" service`)
+	}
+	want := "127.0.0.1:8442:8442"
+	for _, p := range daemon.Ports {
+		if p == want {
+			return
+		}
+	}
+	t.Errorf("daemon service ports = %v, want %q present", daemon.Ports, want)
+}
+
+// TestComposeDaemonUsesBridgeNetworking pins the REVERT of PR-3 round-1's
+// `network_mode: host` pivot (docs/plans/volume-only-daemon.md §論点c,
+// nose directive 2026-07-25 Option 4 redesign): host networking broke
+// daemon<->job docker network attachment (a host-networked container
+// cannot join any other docker network at all — a hard engine
+// constraint), so Option 4 goes back to ordinary bridge networking + an
+// explicit loopback-only port publish for the one listener a HOST process
+// needs (TestComposeDaemonPublishesCLIPortOnLoopbackOnly above) instead of
+// exposing the daemon's entire host network namespace.
+func TestComposeDaemonUsesBridgeNetworking(t *testing.T) {
+	data, err := os.ReadFile("compose.yml")
+	if err != nil {
+		t.Fatalf("read compose.yml: %v", err)
+	}
+	if strings.Contains(string(data), "network_mode: host") {
+		t.Error("compose.yml still contains \"network_mode: host\" — Option 4 redesign reverts this back to bridge networking")
+	}
+
+	doc := loadComposeDoc(t)
+	daemon, ok := doc.Services["daemon"]
+	if !ok {
+		t.Fatal(`compose.yml has no "daemon" service`)
+	}
+	if _, ok := daemon.Networks["boid_internal"]; !ok {
+		t.Error(`daemon service is not a member of the "boid_internal" network (bridge networking must be restored)`)
 	}
 }

@@ -308,15 +308,60 @@ localhost からの接続を **mTLS 不要で通す** loopback trust mode を de
 
 **推奨**: loopback trust mode を default とし、 opt-in で strict mTLS に上げられる形。 nose 判断待ち。
 
-### 未解決論点
+### 実装: PR-3 Option 4 — CLI host mode + BOID_CLI_TOKEN (nose 決定、 2026-07-25)
 
-- **profile bootstrapping**: 初回起動時に `default_profile: local` を自動 seed するのは init wizard ([[project-kit-init-skill-plan]])
-  との合流点 (initwizard で TCP profile 生成 → pair 完了まで一発)
-- **port 選定**: 現行 Web UI (`8080`) と共用するか、 daemon-rpc 用に別 port か。 別 port の方が「Web UI を落として
-  も CLI 生きる」で運用しやすいが、 単一 port の方が operator にとってシンプル
-- **compose 停止時の CLI 挙動**: 現行は socket 無しで即エラー、 新方式では TCP 到達失敗 → 「daemon が起動して
-  ないよ」エラー。 auto-start 経路 ([[stale-boid-daemon-recurring]] の警戒対象) は volume-only 化で自然消滅
-  (daemon = compose service なので CLI から start できない)
+上の「loopback trust」節が推奨していた mTLS + loopback trust 方式は、 PR #835 round-1 実装
+(`feat/volume-only-pr3-cli-tcp-profile-default`) で一度試みたが、 codex round-1 レビューで構造的な壁 2 件が
+見つかり撤回された:
+
+- **Blocker 1**: bridge network 越しの port publish (`ports: 127.0.0.1:8442:8442`) は Docker/Podman の
+  DNAT で RemoteAddr を bridge gateway IP に書き換えるため、 `auth.IsLoopback` が真の loopback を一度も観測
+  できず、 loopback trust の「same-host なら無認証」という前提がそもそも成立しなかった。 回避策として
+  `network_mode: host` を試したが、 host networking は daemon container が他の docker network に一切
+  join できないという engine 制約と衝突し、 job container → daemon (git gateway / broker / egress proxy)
+  の到達性を壊した ([[phase6-dogfood-incident-and-pivot]] と同種の「一つ直すと別の契約が壊れる」パターン)。
+- **Blocker 2**: `boid start --print-cli-profile` + `daemon-ca.pem` 配布という CA bootstrap 機構自体が
+  複雑度に見合わない (既存 config.yaml が CA を受け取れない、 CA 公開に race がある、 等 3 件の Major も
+  同時に見つかった)。
+
+nose の判断: mTLS/loopback-trust 方式を全面撤回し、 **Option 4 (CLI host mode + BOID_CLI_TOKEN)** で再設計。
+
+**新方式の骨子**:
+
+1. **`boid` CLI 自身が daemon container のライフサイクルを管理する「host mode」を持つ** —
+   `BOID_MODE=container` を設定した shell 環境限定の opt-in (デフォルトの bare-metal unix socket 経路は
+   完全に無変更)。任意の `boid <cmd>` (scope=remote のもののみ — `start`/`stop`/`gc` 等 scope=local や
+   `login`/`logout` 等 scope=neutral は素通り) で:
+   - `~/.config/boid/cli-token` (0600) を読み込み、 無ければ 32 byte を生成して永続化
+     (`internal/atomicfile.PublishIfAbsent`、 PR-1a の既存 primitive を再利用)。
+   - `http://127.0.0.1:8442/api/health` (public path) に届くか確認。 届かなければ
+     `~/.config/boid/cli-lock` で flock し、 `scripts/deploy-container.sh` を `BOID_CLI_TOKEN=<token>` 付きで
+     invoke (image build + `compose up -d` は既存スクリプトが担う — engine 検出/podman preflight/
+     idempotent config seed を再実装せず再利用)、 health が返るまで poll。
+   - health が確認できたら `http://127.0.0.1:8442` に対して `Authorization: Bearer <token>` を付けて実際の
+     subcommand を dispatch。
+   - 実装は `cmd/host.go`。 当初ブリーフの「compose アセットを go:embed」案は採用しなかった —
+     `build/container/Dockerfile` の build context が `COPY . .` (go source tree 全体) のため、 それを
+     生成する当のバイナリに埋め込むのは循環している。 代わりに `scripts/deploy-container.sh` を
+     (`BOID_COMPOSE_ROOT` 環境変数 or cwd から歩いて上る形で) **そのまま invoke** する。
+2. **daemon (container 内) 側認証**: `BOID_CLI_TOKEN` env を起動時に読み、 専用の plain HTTP (TLS なし) CLI
+   listener (`internal/server.Config.CLIAddr`/`CLIToken`、 port `8442` — Web UI 用 `8080` とは別) を
+   `auth.NewCLITokenAuthMiddleware` (constant-time Bearer 比較) でガードする。 token 未設定なら listener 自体を
+   bind しない (fail-closed — 空 token で無認証 port が開くことは絶対に避ける)。 loopback trust も device
+   pairing も存在しない — 単一の共有シークレットのみ。
+3. **network / port**: bridge networking に復帰 (`network_mode: host` を revert)、
+   `ports: - "127.0.0.1:8442:8442"` で host 側 loopback のみに publish。 job container → daemon の到達性
+   (`boid_internal` network + `boid-gateway`/`boid-broker`/`boid-egress`/`boid-dockerproxy` alias) は
+   PR-2b が残した形のまま無変更。
+4. **CA cert 配布は撤去**: TLS を使わないため `--print-cli-profile` も `daemon-ca.pem` も丸ごと不要になった。
+
+**Threat model**: single-user boid。 token を host user の home directory に置くことは許容 (nose 承認)。
+
+**残作業/未検証**: e2e-container job (`e2e/run-container.sh`) にホストモード検証 (token 認証 + `BOID_MODE=
+container` dispatch) を追加したが、 sandbox 内からは実行不可 (CLAUDE.md — user namespace 制約) のため
+CI green を待って確定させる必要がある。 `boid start`/`stop`/`gc` 等 daemon lifecycle コマンドを host mode 下で
+どう扱うか (現状は素通りで bare-metal 挙動のまま) は今回スコープ外 — 将来 `boid host up/down` 相当のコマンドを
+追加する可能性はあるが未着手。
 
 ---
 

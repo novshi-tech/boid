@@ -293,6 +293,24 @@ export XDG_CONFIG_HOME="$ROOT/config"
 export XDG_RUNTIME_DIR="$ROOT/run"
 mkdir -p "$XDG_DATA_HOME/boid" "$XDG_CONFIG_HOME/boid" "$XDG_RUNTIME_DIR"
 
+# --- BOID_CLI_TOKEN (PR-3 Option 4 host-mode redesign, docs/plans/
+# volume-only-daemon.md §論点c, nose directive 2026-07-25) -------------------
+# Pre-seeded into $XDG_CONFIG_HOME/boid/cli-token BEFORE the daemon ever
+# boots (below) so a LATER `BOID_MODE=container "$BUILD_DIR/boid" ...`
+# invocation's own loadOrCreateCLIToken (cmd/host.go) reads back this exact
+# value (atomicfile.PublishIfAbsent: an existing file is read back, not
+# regenerated) instead of racing its own fresh one — the two sides
+# (this script's `export BOID_CLI_TOKEN=...` below, consumed by
+# scripts/deploy-container.sh's `compose up` at the bottom of this script,
+# and cmd/host.go's own token file read) must agree on the SAME secret for
+# host-mode CLI dispatch (verify-cli-token-listener below) to authenticate
+# at all.
+CLI_TOKEN_FILE="$XDG_CONFIG_HOME/boid/cli-token"
+CLI_TOKEN="$(head -c32 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+printf '%s' "$CLI_TOKEN" > "$CLI_TOKEN_FILE"
+chmod 600 "$CLI_TOKEN_FILE"
+export BOID_CLI_TOKEN="$CLI_TOKEN"
+
 # scripts/deploy-container.sh derives BOID_RUNTIME_DIR/BOID_UID/BOID_GID/
 # DOCKER_GID from XDG_RUNTIME_DIR/id -u/id -g/getent — mirrored here
 # independently (same values, computed the same way) so every later
@@ -748,6 +766,34 @@ e2e_run bash "$REPO_ROOT/scripts/deploy-container.sh"
 DAEMON_SOCKET="$XDG_RUNTIME_DIR/boid.sock"
 e2e_log "waiting for compose daemon health at $DAEMON_SOCKET"
 e2e_run "$BUILD_DIR/boid-e2e" wait-health --timeout 30s --interval 200ms "$DAEMON_SOCKET"
+
+# --- host-mode CLI verification (PR-3 Option 4 redesign, docs/plans/
+# volume-only-daemon.md §論点c) ----------------------------------------------
+# The daemon this script already brought up (via scripts/deploy-container.sh
+# above, with BOID_CLI_TOKEN in its env — see this script's own "BOID_CLI_
+# TOKEN" section) is the SAME daemon a real BOID_MODE=container CLI
+# invocation would talk to; this section proves the dedicated CLI listener
+# (internal/server.Config.CLIAddr/CLIToken) and cmd/host.go's own client
+# path both work end to end, without a second, redundant compose deploy —
+# ensureHostModeDaemon's own health probe finds the daemon already up and
+# skips straight to dispatch.
+CLI_ADDR="127.0.0.1:8442"
+e2e_log "verifying the dedicated CLI listener at $CLI_ADDR"
+
+health_code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "http://${CLI_ADDR}/api/health")"
+[[ "$health_code" == "200" ]] || e2e_fail "GET http://${CLI_ADDR}/api/health = ${health_code}, want 200 (public, no token)"
+
+wrong_code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 -H "Authorization: Bearer wrong-token" "http://${CLI_ADDR}/api/tasks")"
+[[ "$wrong_code" == "401" ]] || e2e_fail "GET http://${CLI_ADDR}/api/tasks with a wrong Bearer token = ${wrong_code}, want 401"
+
+right_code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 -H "Authorization: Bearer ${CLI_TOKEN}" "http://${CLI_ADDR}/api/tasks")"
+[[ "$right_code" == "200" ]] || e2e_fail "GET http://${CLI_ADDR}/api/tasks with the correct Bearer token = ${right_code}, want 200"
+e2e_log "CLI listener token auth OK (health public, wrong token 401, correct token 200)"
+
+e2e_log "verifying BOID_MODE=container CLI dispatch (cmd/host.go)"
+host_mode_out="$(BOID_MODE=container BOID_COMPOSE_ROOT="$REPO_ROOT" "$BUILD_DIR/boid" task list -o json 2>&1)" || \
+  e2e_fail "BOID_MODE=container 'boid task list' failed: $host_mode_out"
+e2e_log "host-mode CLI dispatch OK"
 
 # install_id (PR-2b): read from INSIDE the running daemon container, not a
 # host-visible file — BOID_DATA_DIR is the boid_state named volume post-
