@@ -229,6 +229,32 @@ type SandboxRuntimeInfo struct {
 	// literals) — the env var is simply omitted in that case.
 	WorkspaceSlug string
 
+	// CloneHostBacked (docs/plans/volume-only-daemon.md §論点b, PR-2b "per-job
+	// clone at dispatch time") signals that Runner.Dispatch has already
+	// materialized CloneWorkspaceDir via dispatcher.PrepareJobCheckout
+	// (`git clone --reference <bare-repo>` from the project's daemon-managed
+	// bare repository into a per-job staging dir under a host-visible
+	// runtimes root), rather than leaving CloneWorkspaceDir as an empty
+	// scratch directory for the SANDBOX's own in-container clone sequence
+	// (buildCloneSpec/performCloneSteps) to populate at job start.
+	//
+	// Only ever true for a git-URL-registered project (orchestrator.
+	// IsBareRepoDir(proj.WorkDir), PR-2a) dispatched under the container
+	// backend with a resolvable host-visible runtimes root — every other
+	// caller (legacy host-dir-registered projects, the userns backend,
+	// r.RuntimesDir unset test wiring) leaves this false, the byte-for-byte
+	// pre-PR-2b default: cloneMounts' /workspace bind stays
+	// container-local (决定 4/10) and buildCloneSpec keeps declaring the
+	// in-sandbox clone exactly as before.
+	//
+	// When true: cloneMounts sets sandbox.Mount.HostBacked on the
+	// /workspace bind (realization.classifySource then treats it as a real
+	// host-path bind, not container-local — see that field's own doc
+	// comment) and buildCloneSpec returns CloneSpec{} (Enabled == false):
+	// the sandbox has nothing left to clone, its /workspace/<name> already
+	// IS the daemon-prepared checkout.
+	CloneHostBacked bool
+
 	// ContainerImage is the workspace's Phase 6 container image override
 	// (`orchestrator.WorkspaceMeta.ContainerImage`, docs/plans/
 	// phase6-container-backend.md §決定 2/11), resolved by
@@ -842,6 +868,13 @@ func cloneMounts(spec *orchestrator.JobSpec, rt SandboxRuntimeInfo) []sandbox.Mo
 			Source: rt.CloneWorkspaceDir,
 			Target: sandboxCloneDir(cloneDirNameForVisibility(spec.Visibility)),
 			Type:   sandbox.MountBind,
+			// HostBacked (docs/plans/volume-only-daemon.md §論点b, PR-2b):
+			// see SandboxRuntimeInfo.CloneHostBacked's own doc comment.
+			// False (every pre-PR-2b caller) keeps the container backend's
+			// existing 決定 4/10 container-local classification for this
+			// target unchanged — only a daemon-pre-populated staging area
+			// opts into a real host-path bind.
+			HostBacked: rt.CloneHostBacked,
 		})
 	}
 
@@ -872,8 +905,19 @@ func realGitBinPath() string {
 // into the sandbox.CloneSpec the runner consumes. Returns the zero value
 // (Enabled == false) when spec.Visibility.Clone is nil — see CloneSpec's own
 // doc comment for why that is a complete no-op for the runner.
+//
+// Also returns the zero value when rt.CloneHostBacked is true (docs/plans/
+// volume-only-daemon.md §論点b, PR-2b): Runner.Dispatch has already cloned
+// and checked out the right branch into CloneWorkspaceDir via
+// dispatcher.PrepareJobCheckout BEFORE the job container ever starts, and
+// cloneMounts' matching HostBacked bind makes that staging dir /workspace/
+// <name> itself — the sandbox has nothing left to clone. Leaving
+// Enabled == true here for a host-backed job would make
+// internal/sandbox/runner/clone.go's performCloneSteps wipe and re-clone
+// the daemon's own pre-populated checkout via the git-gateway HTTP reverse
+// proxy on every dispatch, defeating the entire point of pre-cloning.
 func buildCloneSpec(spec *orchestrator.JobSpec, rt SandboxRuntimeInfo) sandbox.CloneSpec {
-	if spec == nil || spec.Visibility.Clone == nil {
+	if spec == nil || spec.Visibility.Clone == nil || rt.CloneHostBacked {
 		return sandbox.CloneSpec{}
 	}
 	realGitBinPath() // dispatch-time warning only; see doc comment above.

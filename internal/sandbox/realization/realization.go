@@ -266,8 +266,14 @@ func Realize(spec sandbox.Spec) (Realization, error) {
 // build these from resolved absolute directories); a named volume name
 // otherwise (Phase 7 forward-compat, see MountSourceNamedVolume's doc
 // comment — nothing produces this today).
+//
+// m.HostBacked (docs/plans/volume-only-daemon.md §論点b, PR-2b) overrides
+// the `/workspace` container-local default: the daemon has already
+// materialized a real directory at Source (dispatcher.PrepareJobCheckout's
+// per-job clone staging area) and wants it bound in as-is, exactly like any
+// other host-path mount. See sandbox.Mount.HostBacked's own doc comment.
 func classifySource(m sandbox.Mount) MountSource {
-	if isWorkspaceLocalTarget(m.Target) {
+	if isWorkspaceLocalTarget(m.Target) && !m.HostBacked {
 		return MountSource{Kind: MountSourceContainerLocal, Value: m.Target}
 	}
 	if m.Source == "" {

@@ -71,6 +71,36 @@ func TestRealize(t *testing.T) {
 			},
 		},
 		{
+			name: "HostBacked workspace clone target is classified as a real host bind (PR-2b per-job clone)",
+			spec: sandbox.Spec{
+				ID: "job-preclone",
+				Mounts: []sandbox.Mount{
+					{
+						// Mirrors cloneMounts' /workspace bind when
+						// dispatcher.PrepareJobCheckout has already staged a
+						// per-job checkout there (docs/plans/
+						// volume-only-daemon.md §論点b, PR-2b) — unlike the
+						// "workspace clone target... lands container-local"
+						// case above, HostBacked must override the
+						// /workspace-target default.
+						Source:     "/home/boid-user/.local/share/boid/runtimes/job-preclone/workspace",
+						Target:     "/workspace/bm-next",
+						Type:       sandbox.MountBind,
+						HostBacked: true,
+					},
+				},
+			},
+			want: Realization{
+				ID: "job-preclone",
+				Volumes: []VolumeMount{
+					{
+						Source: MountSource{Kind: MountSourceHostPath, Value: "/home/boid-user/.local/share/boid/runtimes/job-preclone/workspace"},
+						Target: "/workspace/bm-next",
+					},
+				},
+			},
+		},
+		{
 			name: "bare /workspace parent (no leaf name) is also container-local",
 			spec: sandbox.Spec{
 				Mounts: []sandbox.Mount{

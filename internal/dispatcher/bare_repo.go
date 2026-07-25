@@ -213,6 +213,21 @@ func hostFromGitURL(rawURL string) (string, error) {
 // (useful for reading the error, still safe to log/return to a client).
 var credentialHeaderPattern = regexp.MustCompile(`(?i)(Authorization:\s*(?:Basic|Bearer)\s+)\S+`)
 
+// gatewayJobTokenPathPattern matches the per-job git gateway job token
+// embedded in a gateway clone URL's path (dispatcher.buildGatewayCloneURL's
+// "<gatewayURL>/j/<token>/<host>/<owner>/<repo>.git" form — gitgateway.
+// PathPrefix is "/j/"), the shape checkout.go's PrepareJobCheckout embeds
+// as remoteURL. This is a DIFFERENT credential shape than
+// credentialHeaderPattern above (an HTTP Basic/Bearer auth header) and than
+// SanitizeURLForLogging's userinfo/query-param forms below — the token
+// lives in the URL PATH, not an Authorization header or `user:pass@`
+// prefix — so neither existing pattern catches it; without this,
+// PrepareJobCheckout's `git remote set-url origin <remoteURL>` error path
+// would leak a live, single-job gateway token through runGit's error
+// message exactly like Blocker 1 (this file's own credentialHeaderPattern)
+// originally did for forge PATs.
+var gatewayJobTokenPathPattern = regexp.MustCompile(`(/j/)[^/]+`)
+
 // redactGitArgs returns a copy of args with any embedded credential value
 // (the Basic/Bearer Authorization header credentialGitArgs injects via
 // `-c http.extraHeader=...`) replaced with a redacted placeholder (PR-2a
@@ -238,6 +253,7 @@ func redactGitArgs(args []string) []string {
 	out := make([]string, len(args))
 	for i, a := range args {
 		redacted := credentialHeaderPattern.ReplaceAllString(a, "${1}<redacted>")
+		redacted = gatewayJobTokenPathPattern.ReplaceAllString(redacted, "${1}<redacted>")
 		out[i] = SanitizeURLForLogging(redacted)
 	}
 	return out

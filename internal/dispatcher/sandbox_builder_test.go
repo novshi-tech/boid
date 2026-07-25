@@ -516,6 +516,45 @@ func TestCloneMounts_IncludesWorkspaceBindWhenCloneWorkspaceDirSet(t *testing.T)
 	}
 }
 
+// TestCloneMounts_WorkspaceBindHostBackedFlag pins docs/plans/
+// volume-only-daemon.md §論点b's PR-2b wiring: cloneMounts must propagate
+// rt.CloneHostBacked onto the /workspace bind's own sandbox.Mount.HostBacked
+// field so realization.classifySource treats a daemon-pre-populated
+// per-job clone staging dir as a real host bind instead of the default
+// container-local classification (决定 4/10).
+func TestCloneMounts_WorkspaceBindHostBackedFlag(t *testing.T) {
+	spec := &orchestrator.JobSpec{
+		ProjectID: "proj-1",
+		Visibility: orchestrator.Visibility{
+			ProjectDir:  "/home/user/project",
+			ProjectName: "bm-next",
+			Clone:       &orchestrator.CloneDeclaration{Branch: "main", BaseBranch: "main", CheckoutOnly: true},
+		},
+	}
+
+	for _, hostBacked := range []bool{false, true} {
+		rt := SandboxRuntimeInfo{
+			CloneWorkspaceDir: "/data/boid/runtimes/job-1/workspace",
+			CloneHostBacked:   hostBacked,
+		}
+		mounts := cloneMounts(spec, rt)
+
+		const wantTarget = "/workspace/bm-next"
+		var workspace *sandbox.Mount
+		for i := range mounts {
+			if mounts[i].Target == wantTarget {
+				workspace = &mounts[i]
+			}
+		}
+		if workspace == nil {
+			t.Fatalf("CloneHostBacked=%v: mount with Target %q not found among %#v", hostBacked, wantTarget, mounts)
+		}
+		if workspace.HostBacked != hostBacked {
+			t.Errorf("CloneHostBacked=%v: workspace bind HostBacked = %v, want %v", hostBacked, workspace.HostBacked, hostBacked)
+		}
+	}
+}
+
 // TestCloneMounts_WorkspaceBindFallsBackToProjectDirBasenameWhenNameEmpty
 // pins the fallback half of the workspace 親化リファクタリング decision: a
 // project with no `name:` in project.yaml still gets a distinct, deterministic
@@ -566,6 +605,33 @@ func TestBuildCloneSpec_NilWhenNoCloneDeclaration(t *testing.T) {
 	got := buildCloneSpec(spec, SandboxRuntimeInfo{GatewayCloneURL: "http://10.0.2.2:9/j/tok/github.com/o/r.git"})
 	if got.Enabled {
 		t.Fatalf("buildCloneSpec = %+v, want Enabled=false when Visibility.Clone is unset", got)
+	}
+}
+
+// TestBuildCloneSpec_HostBackedDisablesInSandboxClone pins docs/plans/
+// volume-only-daemon.md §論点b's PR-2b contract: when Runner.Dispatch has
+// already staged a per-job clone (rt.CloneHostBacked), buildCloneSpec must
+// return the zero value (Enabled == false) even though spec.Visibility.
+// Clone is set — otherwise internal/sandbox/runner/clone.go's
+// performCloneSteps would wipe and re-clone the daemon's own pre-populated
+// checkout via the git gateway on every dispatch, defeating the whole
+// point of pre-cloning.
+func TestBuildCloneSpec_HostBackedDisablesInSandboxClone(t *testing.T) {
+	spec := &orchestrator.JobSpec{
+		ProjectID: "proj-1",
+		Visibility: orchestrator.Visibility{
+			ProjectDir:  "/home/user/project",
+			ProjectName: "bm-next",
+			Clone:       &orchestrator.CloneDeclaration{Branch: "main", BaseBranch: "main", CheckoutOnly: true},
+		},
+	}
+	rt := SandboxRuntimeInfo{
+		GatewayCloneURL: "http://10.0.2.2:9/j/tok/github.com/o/r.git",
+		CloneHostBacked: true,
+	}
+	got := buildCloneSpec(spec, rt)
+	if got.Enabled {
+		t.Fatalf("buildCloneSpec = %+v, want Enabled=false when rt.CloneHostBacked is true", got)
 	}
 }
 
@@ -1064,14 +1130,14 @@ func TestHostCommandSymlinks_PathDoesNotExist_Error(t *testing.T) {
 // still surface (safe names are unaffected).
 func TestHostCommandSymlinks_UnsafeNameDropped(t *testing.T) {
 	byName := map[string]orchestrator.CommandDef{
-		"safe-cmd":              {Name: "safe-cmd", Path: "/usr/bin/safe-cmd"},
-		"":                      {Name: "", Path: "/usr/bin/empty"},
-		".":                     {Name: ".", Path: "/usr/bin/dot"},
-		"..":                    {Name: "..", Path: "/usr/bin/dotdot"},
-		"../etc/passwd":         {Name: "../etc/passwd", Path: "/etc/passwd"},
-		"sub/dir":               {Name: "sub/dir", Path: "/usr/bin/x"},
-		"has\x00null":           {Name: "has\x00null", Path: "/usr/bin/y"},
-		"..hidden-but-starts":   {Name: "..hidden-but-starts", Path: "/usr/bin/z"},
+		"safe-cmd":            {Name: "safe-cmd", Path: "/usr/bin/safe-cmd"},
+		"":                    {Name: "", Path: "/usr/bin/empty"},
+		".":                   {Name: ".", Path: "/usr/bin/dot"},
+		"..":                  {Name: "..", Path: "/usr/bin/dotdot"},
+		"../etc/passwd":       {Name: "../etc/passwd", Path: "/etc/passwd"},
+		"sub/dir":             {Name: "sub/dir", Path: "/usr/bin/x"},
+		"has\x00null":         {Name: "has\x00null", Path: "/usr/bin/y"},
+		"..hidden-but-starts": {Name: "..hidden-but-starts", Path: "/usr/bin/z"},
 	}
 	links := hostCommandSymlinks(byName)
 	if len(links) != 1 {
@@ -1356,12 +1422,13 @@ func TestExpandWorktreeBindings(t *testing.T) {
 }
 
 // worktree=true と worktree=false で同じ project.yaml 宣言が:
-// - clone-mode (Visibility.Clone set): ${WORKTREE} resolves to the
-//   sandbox-internal clone dir, distinct from ${PROJECT_WORKDIR} (the host
-//   path) — src and tgt expand to different paths and the bind is kept
-// - non-clone (plain project mount): ${WORKTREE} == ${PROJECT_WORKDIR} ==
-//   the host project dir — src and tgt collapse to the same path and the
-//   bind is skipped as a redundant self-mount
+//   - clone-mode (Visibility.Clone set): ${WORKTREE} resolves to the
+//     sandbox-internal clone dir, distinct from ${PROJECT_WORKDIR} (the host
+//     path) — src and tgt expand to different paths and the bind is kept
+//   - non-clone (plain project mount): ${WORKTREE} == ${PROJECT_WORKDIR} ==
+//     the host project dir — src and tgt collapse to the same path and the
+//     bind is skipped as a redundant self-mount
+//
 // という End-to-End 挙動を BuildSandboxSpec 越しに検証する。
 func TestBuildSandboxSpec_WorktreeBindingExpansion(t *testing.T) {
 	const projectDir = "/host/proj"

@@ -189,6 +189,22 @@ type Runner struct {
 	// certificate is not also needed). nil disables CA propagation.
 	GatewayCAPEM *[]byte
 
+	// GatewayCredentials resolves forge auth for the daemon's OWN direct
+	// git operations against a bare repo (docs/plans/volume-only-daemon.md
+	// §論点b, PR-2b) — the same gitgateway.CredentialProvider bare_repo.go's
+	// CloneBareRepo/FetchBareRepo already consume (see those functions'
+	// own doc comments for why this is a direct CredentialProvider.Resolve
+	// call, not a round trip through the HTTP reverse proxy: there is no
+	// job token or sandbox involved for this specific use — Dispatch calls
+	// FetchBareRepo itself, from the daemon process, before staging a
+	// per-job checkout via PrepareJobCheckout). nil (every pre-PR-2b
+	// caller, and any test wiring that doesn't need per-job clone) skips
+	// the FetchBareRepo refresh step entirely — matches CloneBareRepo/
+	// FetchBareRepo's own "creds nil -> proceed unauthenticated" fail-open
+	// convention, appropriate here too since a project's bare repo may
+	// simply be public.
+	GatewayCredentials *gitgateway.CredentialProvider
+
 	tokenMu       sync.Mutex
 	jobTokens     map[string]string
 	waiterMu      sync.Mutex
@@ -202,6 +218,8 @@ type Runner struct {
 	gatewayTokens map[string]string // jobID -> git gateway job token
 	jobContextMu  sync.Mutex
 	jobContexts   map[string]JobContextSnapshot // jobID -> Phase 5b PR1 task-context RPC data
+	checkoutMu    sync.Mutex
+	checkoutDirs  map[string]string // jobID -> per-job clone staging dir (docs/plans/volume-only-daemon.md §論点b, PR-2b)
 }
 
 // Dispatch launches a sandbox for the given JobSpec. The optional cleanup
@@ -470,6 +488,12 @@ func (r *Runner) Dispatch(ctx context.Context, spec *orchestrator.JobSpec, clean
 	// project-visible job, so this now runs on the main dispatch path.
 	var gatewayCloneURL, cloneWorkspaceDir string
 	var peerAdvertise map[string]PeerAdvertise
+	var cloneHostBacked bool
+	// selfProject is hoisted out of the r.Projects != nil block below (not
+	// just declared inline in the switch) so the per-job-clone step further
+	// down (docs/plans/volume-only-daemon.md §論点b, PR-2b) can inspect
+	// selfProject.WorkDir without a second, redundant GetProject lookup.
+	var selfProject *orchestrator.Project
 	if spec.Visibility.Clone != nil {
 		// Dispatch-time upstream_url requirement (docs/plans/git-gateway-cutover.md
 		// 「本計画で確定する設計 § 1」: 「欠落 project は... dispatch 時エラー」).
@@ -513,6 +537,7 @@ func (r *Runner) Dispatch(ctx context.Context, spec *orchestrator.JobSpec, clean
 					}
 					return "", err
 				}
+				selfProject = proj
 			}
 		}
 		gatewayCloneURL = r.buildGatewayCloneURL(spec, gatewayURL, gatewayToken)
@@ -534,6 +559,61 @@ func (r *Runner) Dispatch(ctx context.Context, spec *orchestrator.JobSpec, clean
 					"job_id", j.ID, "dir", cloneWorkspaceDir, "error", err)
 				cloneWorkspaceDir = ""
 			}
+		}
+
+		// Per-job clone at dispatch time (docs/plans/volume-only-daemon.md
+		// §論点b "採用経路 (per-job clone、clone 時代整合)", PR-2b): a
+		// git-URL-registered project (orchestrator.IsBareRepoDir(selfProject.
+		// WorkDir), PR-2a) dispatched under the container backend gets its
+		// /workspace/<name> pre-populated by the DAEMON, straight from its
+		// own bare repo cache, instead of leaving the sandbox's own
+		// in-container clone sequence (buildCloneSpec/performCloneSteps) to
+		// fetch it via the git gateway's HTTP reverse proxy at container
+		// start. This is the architecture decision the plan doc's own
+		// §論点b spells out as the worktree-retraction replacement: a
+		// per-job `git clone --reference <bare-repo>` into a staging dir
+		// under r.RuntimesDir (host-visible under container backend as of
+		// this same PR's wire.go fix — see hostVisibleRuntimesDirFor's own
+		// doc comment), bind-mounted into the job container directly.
+		//
+		// Every OTHER combination (userns backend, a legacy host-dir-
+		// registered project, or cloneWorkspaceDir empty because
+		// r.RuntimesDir itself is unset) leaves cloneHostBacked false and
+		// falls through to the pre-PR-2b in-sandbox clone path unchanged —
+		// this is additive, not a replacement of that path.
+		if IsContainerBackend(r.Backend) && cloneWorkspaceDir != "" && selfProject != nil && orchestrator.IsBareRepoDir(selfProject.WorkDir) {
+			// Step 1 (plan doc): bring the bare repo cache up to date
+			// before staging off of it. Best-effort — a transient fetch
+			// failure degrades to dispatching against whatever the cache
+			// already has, matching §論点a's auto-prune-retirement
+			// invariant ("filesystem/remote 観測を根拠に... hard delete
+			// しない"; the same spirit applies here: a stale-but-present
+			// cache must not block dispatch outright).
+			if r.GatewayCredentials != nil {
+				if ferr := FetchBareRepo(ctx, selfProject.WorkDir, r.GatewayCredentials, spec.SecretNamespace); ferr != nil {
+					slog.Warn("per-job clone: refresh bare repo failed; dispatching against the existing cache",
+						"job_id", j.ID, "project_id", spec.ProjectID, "error", ferr)
+				}
+			}
+			// Steps 2-3 (plan doc): stage the per-job checkout directly
+			// into cloneWorkspaceDir — no extra project-name subdirectory
+			// needed, cloneMounts already binds this whole directory at
+			// sandboxCloneDir(name) below. remoteURL rewrites `origin` to
+			// the gateway clone URL so a writable job's own in-sandbox
+			// `git push` still routes through the gateway (token auth,
+			// notify-on-401) instead of a meaningless daemon-local bare
+			// repo path — see PrepareJobCheckout's own doc comment.
+			branch := spec.Visibility.Clone.Branch
+			if err := PrepareJobCheckout(ctx, selfProject.WorkDir, branch, gatewayCloneURL, cloneWorkspaceDir); err != nil {
+				err = fmt.Errorf("per-job clone: %w", err)
+				r.failJob(j, err)
+				if cleanup != nil {
+					cleanup()
+				}
+				return "", err
+			}
+			r.trackCheckoutDir(j.ID, cloneWorkspaceDir)
+			cloneHostBacked = true
 		}
 	}
 
@@ -565,6 +645,7 @@ func (r *Runner) Dispatch(ctx context.Context, spec *orchestrator.JobSpec, clean
 		GatewayJobToken:            gatewayToken,
 		GatewayCloneURL:            gatewayCloneURL,
 		CloneWorkspaceDir:          cloneWorkspaceDir,
+		CloneHostBacked:            cloneHostBacked,
 		WorkspaceHomeDir:           workspaceHomeDir,
 		WorkspaceSlug:              filepath.Base(workspaceHomeDir),
 		ContainerImage:             r.resolveContainerImage(workspaceID),
@@ -1461,6 +1542,48 @@ func (r *Runner) UnregisterJob(jobID string) {
 	}
 
 	r.untrackJobContext(jobID)
+	r.cleanupCheckoutDir(jobID)
+}
+
+// trackCheckoutDir records jobID's per-job clone staging dir (docs/plans/
+// volume-only-daemon.md §論点b, PR-2b) so cleanupCheckoutDir can remove it
+// once the job completes — the same jobID-keyed tracked-resource pattern
+// r.gatewayTokens/r.jobTokens already use for their own per-job cleanup.
+func (r *Runner) trackCheckoutDir(jobID, stagingDir string) {
+	if jobID == "" || stagingDir == "" {
+		return
+	}
+	r.checkoutMu.Lock()
+	defer r.checkoutMu.Unlock()
+	if r.checkoutDirs == nil {
+		r.checkoutDirs = make(map[string]string)
+	}
+	r.checkoutDirs[jobID] = stagingDir
+}
+
+// cleanupCheckoutDir removes jobID's per-job clone staging dir, if any
+// (docs/plans/volume-only-daemon.md §論点b step 5: "job 終了時、 staging
+// area を削除"). Called from UnregisterJob so this runs on every job-
+// completion path that already calls it (CompleteJob's normal exit,
+// watchRuntime's "exited without boid job done" path, and Dispatch's own
+// early-failure paths — see UnregisterJob's other call sites). A missing
+// entry (jobID never reached the per-job-clone step, e.g. a legacy
+// host-dir-registered project or the userns backend) is a silent no-op —
+// the common case for every dispatch this PR does not touch.
+func (r *Runner) cleanupCheckoutDir(jobID string) {
+	r.checkoutMu.Lock()
+	stagingDir, ok := r.checkoutDirs[jobID]
+	if ok {
+		delete(r.checkoutDirs, jobID)
+	}
+	r.checkoutMu.Unlock()
+
+	if !ok {
+		return
+	}
+	if err := CleanupJobCheckout(stagingDir); err != nil {
+		slog.Warn("per-job clone: cleanup staging dir failed", "job_id", jobID, "staging_dir", stagingDir, "error", err)
+	}
 }
 
 func (r *Runner) isJobCompleted(jobID string) bool {
