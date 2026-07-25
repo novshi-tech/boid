@@ -180,6 +180,22 @@
 #     §PR9's e2e-container job. Adding the alias now means the fixed-port/
 #     non-loopback listener work that closes this gap is a compose-neutral
 #     Go-side change, not another compose edit.
+#   - the dedicated CLI TCP(TLS) listener (docs/plans/volume-only-daemon.md
+#     §論点c, internal/server.Config.CLIAddr) — unlike every listener above,
+#     this one is HOST-facing, not job-facing: a job container never dials
+#     it (nothing in internal/dispatcher references it), so it carries no
+#     `boid_internal` alias at all. It is instead published via this
+#     service's own `ports:` entry below (host loopback ONLY — see that
+#     entry's own extensive comment for the container-internal-vs-
+#     host-published bind-address distinction and why 127.0.0.1: on the
+#     host side is the actual security boundary here). Reusing
+#     ServerOnlyTLSConfig like the git gateway (not full mTLS like the
+#     broker): per-connection authorization for THIS listener is enforced
+#     at the HTTP layer instead (auth.NewTCPAPIAuthMiddleware's existing
+#     Bearer/cookie/loopback-trust checks — internal/api/auth/
+#     api_middleware.go), reusing the daemon's already-built device-pair
+#     auth rather than standing up a second, parallel client-certificate
+#     enrollment system just for the CLI.
 #
 # Validated with `podman-compose config` (host has no docker engine, only
 # podman — CLAUDE.md) during PR6 development; CI is the source of truth
@@ -383,6 +399,48 @@ services:
     # up.
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    # ports (docs/plans/volume-only-daemon.md §論点c): the dedicated CLI
+    # TCP(TLS) listener (internal/server.Config.CLIAddr, cmd/start.go's own
+    # defaultStartCLIAddr/client.DefaultCLIAddr default "127.0.0.1:8442")
+    # published on the HOST's loopback interface ONLY — never 0.0.0.0 here,
+    # unlike the container-internal bind address this port maps to (see
+    # below). This is what makes a bare host CLI invocation
+    # (`boid task list` with no profile configured at all) reach the
+    # compose daemon out of the box: profiles.ResolveWithoutToken's
+    # terminal fallback dials exactly this literal by default.
+    #
+    # The container-internal side is NOT loopback-only: Server.Start binds
+    # this listener via gatewayBindHost(usingContainerBackend) — the exact
+    # same helper the broker's and git gateway's own TLS listeners already
+    # use — which resolves to "0.0.0.0" (composeBindHost) whenever
+    # sandbox.backend: container is selected (see this file's own "External
+    # listener wire status" header section above), because docker's own
+    # port-publishing mechanism (docker-proxy / DNAT, whichever this
+    # engine/version uses) reaches a container's PUBLISHED port by
+    # connecting to the container's real network-namespace interface, never
+    # its loopback one — a listener bound only to 127.0.0.1 INSIDE the
+    # container would make this whole `ports:` entry silently unreachable.
+    # The host-side "127.0.0.1:" prefix below is therefore the ENTIRE
+    # access-control boundary for this port (kernel-enforced: nothing
+    # outside this host can ever reach the host's own loopback interface at
+    # all, published port or not) — auth.NewTCPAPIAuthMiddleware's
+    # web.loopback_trust check (internal/api/auth/api_middleware.go) is an
+    # additional, defense-in-depth layer on top of that host-side
+    # restriction, not a substitute for it.
+    #
+    # The literal "8442" is intentionally NOT parameterized (unlike
+    # BOID_UID/BOID_GID/DOCKER_GID elsewhere in this file): both sides of
+    # this mapping — the host-published port here and the daemon's own
+    # default listen port (client.DefaultCLIAddr()) — must always agree,
+    # and a single hardcoded literal makes that agreement structural rather
+    # than something an operator could break by overriding one side and
+    # forgetting the other. An operator who genuinely needs a different
+    # port can override BOTH BOID_CLI_ADDR (this service's own
+    # `environment:` block, consumed by client.DefaultCLIAddr()) and this
+    # `ports:` line together via a compose override file — not attempted
+    # here.
+    ports:
+      - "127.0.0.1:8442:8442"
     volumes:
       # DooD: sibling job containers, not nested (§決定4). Engine-agnostic
       # source (docs/plans/volume-only-daemon.md §論点 i, 案 X — Podman

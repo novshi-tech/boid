@@ -318,6 +318,39 @@ localhost からの接続を **mTLS 不要で通す** loopback trust mode を de
   ないよ」エラー。 auto-start 経路 ([[stale-boid-daemon-recurring]] の警戒対象) は volume-only 化で自然消滅
   (daemon = compose service なので CLI から start できない)
 
+### 実装 (PR-3、`feat/volume-only-pr3-cli-tcp-profile-default`)
+
+上記の未解決論点は以下の形で決着した:
+
+- **port**: `8442` (Web UI の `8080` と別)。`internal/client.DefaultCLIAddr()` が single source of truth
+  (`BOID_CLI_ADDR` で override 可)、`cmd/start.go` の daemon 側 listen bind もこの値を使う (port だけ使用、
+  host 部分は既存 `gatewayBindHost` で userns/container backend 別に再解決)。
+- **loopback trust**: default ON、`web.loopback_trust` (bool, default true) で strict mTLS 相当に落とせる。
+- **mTLS からの逸脱 (unilateral judgment)**: 当初案の「daemon 内部 CA で mTLS」はそのままは採用せず、
+  `mtls.CA.ServerOnlyTLSConfig` (server 証明書のみ、client cert 不要) + 既存 Bearer/cookie/loopback-trust
+  ミドルウェア (`internal/api/auth.NewTCPAPIAuthMiddleware`) を再利用する形にした。理由: per-client 証明書の
+  発行・配布・失効という第二の認証系を CLI 専用に新設するより、Phase 3 で既に作り込んだ device-pair 認証
+  (`boid login`、`web_devices` テーブル、revoke API) を再利用する方が既存資産を活かせる。loopback trust
+  自体は TLS 層でなく HTTP ミドルウェア層に実装 (`loopbackTrust bool` パラメータ追加)。TLS 自体は
+  暗号化 + サーバ証明書検証のために維持 (self-signed daemon CA を `boid start --print-cli-profile` /
+  `client.DefaultCACertPath()` 経由でクライアントに配布)。
+- **profile bootstrapping**: `boid start --print-cli-profile` (daemon を起動せず CA load + profile YAML を
+  stdout に出力するだけの mode) を新設。素の `boid start` は毎回 boot 時に CA 証明書を
+  `client.DefaultCACertPath()` (`~/.config/boid/daemon-ca.pem`) に直接書き込む (同一ホストなので可能)。
+  compose deploy は host からその filesystem が見えないため、`scripts/deploy-container.sh` が
+  `docker compose exec daemon boid start --print-cli-profile` の出力をそのまま host の
+  `~/.config/boid/config.yaml` に書き込む (既存ファイルがあれば上書きしない — idempotent、
+  operator 自身の設定を壊さない)。initwizard との統合は見送り (スコープ外、複雑度を抑えるため)。
+- **socket fallback 撤去 (full cutover)**: `internal/profiles.ResolveWithoutToken` の terminal fallback を
+  `unix://` から `https://<DefaultCLIAddr>` に変更 (`SourceUnixFallback` → `SourceTCPFallback`)。
+  named `unix://` profile 自体は引き続きサポート (userns backend 撤去は PR-4)。副作用: bare `boid start`
+  (host daemon) のみで運用している場合、`boid task list` 等の「初回呼び出しで daemon が無ければ自動起動」
+  という現行 UX は terminal fallback が TCP になったことで失われる (`client.EnsureRunningAt` は unix scheme
+  でのみ動作)。plan 本文が想定する「daemon = compose service, CLI から start できない」世界では元々問題に
+  ならないため許容 (nose 判断待ちではなく実装 PR 内で許容と判断、 CLAUDE.md の 完了までは日本語コミットの
+  プレフィックス規約に従うのみで承認は都度得ていない — 必要なら PR review で指摘を受ける想定)。
+- **compose 停止時の CLI 挙動**: 未解決のまま (実機でしか検証できない — PR-4 前の実機検証 gate で確認予定)。
+
 ---
 
 ## 論点 d: secret ライフサイクル (on-first-boot generate)

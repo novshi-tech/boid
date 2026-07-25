@@ -298,4 +298,47 @@ echo "deploy-container: stopping any existing compose stack (explicit down befor
 echo "deploy-container: starting the compose stack"
 "${COMPOSE_CMD[@]}" up -d
 
+# --- seed the host CLI profile (docs/plans/volume-only-daemon.md §論点c
+# "profile bootstrapping") --------------------------------------------------
+# `boid start --print-cli-profile` (cmd/start.go) prints a
+# profiles.Config-shaped YAML document naming a "default" profile at the
+# compose daemon's dedicated CLI TCP(TLS) listener (published on the host's
+# loopback interface — this file's own compose.yml `ports:` entry, its own
+# doc comment covers the container-internal-vs-host-published bind
+# distinction), with the daemon's internal CA cert embedded inline
+# (profiles.Profile.CACert) — everything the HOST'S own
+# ~/.config/boid/config.yaml needs to reach this daemon with zero `boid
+# login`/device-pair ceremony (web.loopback_trust default true).
+#
+# Unlike a bare `boid start` (which writes the same CA cert straight to
+# client.DefaultCACertPath() on the HOST itself, since it runs directly on
+# it), this compose daemon's filesystem is a named volume the host cannot
+# see — `docker compose exec` (not `run`, unlike the config-seed/validate
+# steps above: this needs the ALREADY-RUNNING daemon `up -d` just started,
+# not a one-off container racing its own CA generation) is the only way to
+# get the profile YAML out to where the host CLI can read it.
+#
+# Idempotent by construction, same as the config.yaml seed above: only
+# written when the host has no config.yaml of its own yet at all — an
+# operator's existing ~/.config/boid/config.yaml (their own profiles, a
+# previously-completed `boid login`, ...) is never overwritten by a
+# re-deploy. An operator who wants to re-seed after editing it away can
+# simply remove/rename it and re-run this script.
+HOST_CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/boid"
+HOST_CONFIG_FILE="$HOST_CONFIG_DIR/config.yaml"
+if [[ -f "$HOST_CONFIG_FILE" ]]; then
+	echo "deploy-container: $HOST_CONFIG_FILE already exists; leaving it as-is (not seeding a CLI profile — an operator's own config.yaml is never overwritten by this script)"
+else
+	echo "deploy-container: seeding host CLI profile into $HOST_CONFIG_FILE"
+	mkdir -p "$HOST_CONFIG_DIR"
+	if "${COMPOSE_CMD[@]}" exec -T daemon /usr/local/bin/boid start --print-cli-profile > "$HOST_CONFIG_FILE.tmp"; then
+		mv "$HOST_CONFIG_FILE.tmp" "$HOST_CONFIG_FILE"
+		chmod 600 "$HOST_CONFIG_FILE"
+		echo "deploy-container: wrote $HOST_CONFIG_FILE — 'boid task list' (and every other CLI command) now reaches this daemon with no further setup"
+	else
+		rm -f "$HOST_CONFIG_FILE.tmp"
+		echo "warning: 'boid start --print-cli-profile' failed inside the daemon container; CLI profile was not seeded. Retry manually: docker compose -f \"$COMPOSE_FILE\" exec daemon boid start --print-cli-profile > $HOST_CONFIG_FILE" >&2
+	fi
+fi
+
 echo "deploy-container: done. compose stack is up (sandbox.backend: container, seeded above)."
