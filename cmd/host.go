@@ -75,9 +75,9 @@ const (
 	boidModeContainer = "container"
 )
 
-// cliTokenFileName / cliLockFileName live under the same
-// ~/.config/boid directory profiles.ConfigPath()/client.DefaultCACertPath
-// (pre-redesign) used — os.UserConfigDir()'s "boid" subdirectory.
+// cliTokenFileName / cliLockFileName live under the same ~/.config/boid
+// directory profiles.ConfigPath() (config.yaml) uses — os.UserConfigDir()'s
+// "boid" subdirectory.
 const (
 	cliTokenFileName = "cli-token"
 	cliLockFileName  = "cli-lock"
