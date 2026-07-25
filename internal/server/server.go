@@ -114,13 +114,21 @@ type Config struct {
 	// listener binds — PR-3 Option 4 host-mode redesign (docs/plans/
 	// volume-only-daemon.md §論点c, nose directive 2026-07-25). Only the
 	// PORT is actually load-bearing: Start() ignores the host half and
-	// ALWAYS binds "127.0.0.1" — this listener is reached exclusively by
-	// the `boid` CLI's own host-mode orchestration (cmd/host.go) dialing
-	// the docker-published port on the SAME host, never by a remote
-	// caller or a sibling job container, so there is no reason to bind
-	// anything wider than loopback. Separate from HTTPAddr (the Web UI's
-	// own TCP listener, default :8080) so a CLI session keeps working even
-	// if an operator firewalls off or disables the Web UI port.
+	// binds gatewayBindHost(s.usingContainerBackend) instead — "127.0.0.1"
+	// for the userns backend (unchanged; this listener is reached
+	// exclusively by the `boid` CLI's own host-mode orchestration,
+	// cmd/host.go, dialing the docker-published port on the SAME host,
+	// never by a remote caller or a sibling job container) or
+	// composeBindHost ("0.0.0.0") for the container backend (round-4 fix:
+	// under compose, this daemon IS the container being dialed — docker's
+	// bridge-mode port publish DNATs the host's own 127.0.0.1 to the
+	// container's bridge IP, never the container's loopback interface, so
+	// a loopback-only bind there is unreachable from the host at all; see
+	// gatewayBindHost's own doc comment for the identical routing already
+	// used by the git gateway/broker TLS listeners). Separate from
+	// HTTPAddr (the Web UI's own TCP listener, default :8080) so a CLI
+	// session keeps working even if an operator firewalls off or disables
+	// the Web UI port.
 	//
 	// Binding is further gated on CLIToken being non-empty (see that
 	// field's own doc comment) — CLIAddr alone is not enough, unlike every
@@ -848,11 +856,25 @@ func (s *Server) Start(ctx context.Context) error {
 		if splitErr != nil {
 			return fmt.Errorf("parse cli addr %q: %w", s.cfg.CLIAddr, splitErr)
 		}
-		// ALWAYS "127.0.0.1" — see Config.CLIAddr's own doc comment: this
-		// listener is reached exclusively by the `boid` CLI's own
-		// host-mode orchestration dialing the docker-published port on the
-		// same host, never by a job container or a remote caller.
-		cliBindAddr := "127.0.0.1:" + cliPort
+		// gatewayBindHost(s.usingContainerBackend) — the same
+		// container-backend-aware routing the git gateway/broker TLS
+		// listeners already use (wire.go), not a hardcoded "127.0.0.1"
+		// (round-4 fix, docs/plans/volume-only-daemon.md §論点c): under the
+		// container backend, this daemon runs inside a compose container
+		// reached via docker's bridge-mode port publish
+		// (`127.0.0.1:8442:8442` in build/container/compose.yml) — the
+		// HOST-side 127.0.0.1 is DNAT'd to the CONTAINER'S bridge-network
+		// IP, never the container's own loopback interface, so a listener
+		// bound to the container's 127.0.0.1 is unreachable from the host
+		// (container-backend E2E's `GET http://127.0.0.1:8442/api/health =
+		// 000`). The userns backend keeps the pre-existing loopback-only
+		// bind unchanged — see Config.CLIAddr's own doc comment for why
+		// this listener still needs no TLS/loopback-trust fallback: the
+		// host-side docker publish is itself loopback-only, and
+		// auth.NewCLITokenAuthMiddleware's Bearer token is the only trust
+		// mechanism regardless of which interface the container-side
+		// listener binds.
+		cliBindAddr := gatewayBindHost(s.usingContainerBackend) + ":" + cliPort
 		cliLn, err := net.Listen("tcp", cliBindAddr)
 		if err != nil {
 			return fmt.Errorf("listen cli: %w", err)
