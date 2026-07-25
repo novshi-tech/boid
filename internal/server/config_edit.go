@@ -451,6 +451,7 @@ var restartFieldExtractors = map[string]func(*config.Config) string{
 	"gc.older_than":             func(c *config.Config) string { return c.GC.OlderThan.String() },
 	"web.http_addr":             func(c *config.Config) string { return c.Web.HTTPAddr },
 	"web.public_url":            func(c *config.Config) string { return c.Web.PublicURL },
+	"web.loopback_trust":        func(c *config.Config) string { return strconv.FormatBool(c.Web.LoopbackTrust) },
 	"task_ask.disconnect_grace": func(c *config.Config) string { return c.TaskAsk.DisconnectGrace.String() },
 	"notify.command":            func(c *config.Config) string { return strings.Join(c.Notify.Command, "\x00") },
 	"sandbox.allowed_domains":   func(c *config.Config) string { return strings.Join(c.Sandbox.AllowedDomains, "\x00") },

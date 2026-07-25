@@ -14,7 +14,7 @@ import (
 
 func TestTCPAPIAuth_NonAPIPaths_PassThrough(t *testing.T) {
 	signer, store := newTestSigner(t)
-	mw := NewTCPAPIAuthMiddleware(signer, store)
+	mw := NewTCPAPIAuthMiddleware(signer, store, false)
 	handler := mw(http.HandlerFunc(okHandler))
 
 	// HTML / auth / static paths are handled by the router's own WebAuth, not
@@ -38,7 +38,7 @@ func TestTCPAPIAuth_Health_Public(t *testing.T) {
 	if err := store.InsertDevice(ctx, "dev-1", "", []byte("h")); err != nil {
 		t.Fatalf("InsertDevice: %v", err)
 	}
-	mw := NewTCPAPIAuthMiddleware(signer, store)
+	mw := NewTCPAPIAuthMiddleware(signer, store, false)
 	handler := mw(http.HandlerFunc(okHandler))
 
 	req := httptest.NewRequest(http.MethodGet, "/api/health", nil)
@@ -53,7 +53,7 @@ func TestTCPAPIAuth_Health_Public(t *testing.T) {
 
 func TestTCPAPIAuth_LoopbackNoDevices_BootstrapPasses(t *testing.T) {
 	signer, store := newTestSigner(t)
-	mw := NewTCPAPIAuthMiddleware(signer, store)
+	mw := NewTCPAPIAuthMiddleware(signer, store, false)
 	handler := mw(http.HandlerFunc(okHandler))
 
 	// Genuine local browser before any device is paired: the Web UI's data-API
@@ -69,7 +69,7 @@ func TestTCPAPIAuth_LoopbackNoDevices_BootstrapPasses(t *testing.T) {
 
 func TestTCPAPIAuth_Tunneled_NoCookie_Unauthorized(t *testing.T) {
 	signer, store := newTestSigner(t)
-	mw := NewTCPAPIAuthMiddleware(signer, store)
+	mw := NewTCPAPIAuthMiddleware(signer, store, false)
 	handler := mw(http.HandlerFunc(okHandler))
 
 	// A request forwarded by a reverse proxy / tunnel (cloudflared) reaches the
@@ -95,7 +95,7 @@ func TestTCPAPIAuth_DevicesRegistered_NoCookie_Unauthorized(t *testing.T) {
 	if err := store.InsertDevice(ctx, "dev-1", "", []byte("h")); err != nil {
 		t.Fatalf("InsertDevice: %v", err)
 	}
-	mw := NewTCPAPIAuthMiddleware(signer, store)
+	mw := NewTCPAPIAuthMiddleware(signer, store, false)
 	handler := mw(http.HandlerFunc(okHandler))
 
 	// Once a device is paired the bootstrap window is closed; an unauthenticated
@@ -121,7 +121,7 @@ func TestTCPAPIAuth_AuthDevice_Public(t *testing.T) {
 	if err := store.InsertDevice(ctx, "dev-1", "", []byte("h")); err != nil {
 		t.Fatalf("InsertDevice: %v", err)
 	}
-	mw := NewTCPAPIAuthMiddleware(signer, store)
+	mw := NewTCPAPIAuthMiddleware(signer, store, false)
 	handler := mw(http.HandlerFunc(okHandler))
 
 	req := httptest.NewRequest(http.MethodPost, "/api/auth/device", nil)
@@ -138,7 +138,7 @@ func TestTCPAPIAuth_AuthDevicesID_StillGated(t *testing.T) {
 	// /api/auth/device (singular, POST) and must NOT be swept up by the new
 	// exemption — it requires Bearer auth just like any other /api/* route.
 	signer, store := newTestSigner(t)
-	mw := NewTCPAPIAuthMiddleware(signer, store)
+	mw := NewTCPAPIAuthMiddleware(signer, store, false)
 	handler := mw(http.HandlerFunc(okHandler))
 
 	req := httptest.NewRequest(http.MethodDelete, "/api/auth/devices/dev-1", nil)
@@ -152,7 +152,7 @@ func TestTCPAPIAuth_AuthDevicesID_StillGated(t *testing.T) {
 
 func TestTCPAPIAuth_InvalidCookie_Unauthorized_NotRedirect(t *testing.T) {
 	signer, store := newTestSigner(t)
-	mw := NewTCPAPIAuthMiddleware(signer, store)
+	mw := NewTCPAPIAuthMiddleware(signer, store, false)
 	handler := mw(http.HandlerFunc(okHandler))
 
 	req := httptest.NewRequest(http.MethodGet, "/api/tasks", nil)
@@ -177,7 +177,7 @@ func TestTCPAPIAuth_ValidBearer_Passes(t *testing.T) {
 		t.Fatalf("InsertDeviceToken: %v", err)
 	}
 
-	mw := NewTCPAPIAuthMiddleware(signer, store)
+	mw := NewTCPAPIAuthMiddleware(signer, store, false)
 	handler := mw(deviceIDEchoHandler())
 
 	req := httptest.NewRequest(http.MethodPost, "/api/tasks", nil)
@@ -196,7 +196,7 @@ func TestTCPAPIAuth_ValidBearer_Passes(t *testing.T) {
 
 func TestTCPAPIAuth_InvalidBearer_Unauthorized(t *testing.T) {
 	signer, store := newTestSigner(t)
-	mw := NewTCPAPIAuthMiddleware(signer, store)
+	mw := NewTCPAPIAuthMiddleware(signer, store, false)
 	handler := mw(http.HandlerFunc(okHandler))
 
 	req := httptest.NewRequest(http.MethodPost, "/api/tasks", nil)
@@ -224,7 +224,7 @@ func TestTCPAPIAuth_RevokedBearer_Unauthorized(t *testing.T) {
 		t.Fatalf("RevokeDevice: %v", err)
 	}
 
-	mw := NewTCPAPIAuthMiddleware(signer, store)
+	mw := NewTCPAPIAuthMiddleware(signer, store, false)
 	handler := mw(http.HandlerFunc(okHandler))
 
 	req := httptest.NewRequest(http.MethodPost, "/api/tasks", nil)
@@ -256,7 +256,7 @@ func TestTCPAPIAuth_BearerHeaderPresent_IgnoresCookieFallback(t *testing.T) {
 		t.Fatalf("Issue: %v", err)
 	}
 
-	mw := NewTCPAPIAuthMiddleware(signer, store)
+	mw := NewTCPAPIAuthMiddleware(signer, store, false)
 	handler := mw(http.HandlerFunc(okHandler))
 
 	req := httptest.NewRequest(http.MethodPost, "/api/tasks", nil)
@@ -278,7 +278,7 @@ func TestTCPAPIAuth_NoBearerHeader_CookiePathUnchanged(t *testing.T) {
 	// the pre-PR0 cookie behavior byte-for-byte intact (bootstrap window
 	// still applies with zero devices registered).
 	signer, store := newTestSigner(t)
-	mw := NewTCPAPIAuthMiddleware(signer, store)
+	mw := NewTCPAPIAuthMiddleware(signer, store, false)
 	handler := mw(http.HandlerFunc(okHandler))
 
 	req := httptest.NewRequest(http.MethodGet, "/api/tasks", nil)
@@ -321,7 +321,7 @@ func TestTCPAPIAuth_ValidBearer_PropagatesAuthMethodBearer(t *testing.T) {
 		t.Fatalf("InsertDeviceToken: %v", err)
 	}
 
-	mw := NewTCPAPIAuthMiddleware(signer, store)
+	mw := NewTCPAPIAuthMiddleware(signer, store, false)
 	handler := mw(authMethodEchoHandler())
 
 	req := httptest.NewRequest(http.MethodPost, "/api/tasks", nil)
@@ -348,7 +348,7 @@ func TestTCPAPIAuth_ValidCookie_PropagatesAuthMethodCookie(t *testing.T) {
 	if err := signer.Issue(w0, "dev-cookie-am"); err != nil {
 		t.Fatalf("Issue: %v", err)
 	}
-	mw := NewTCPAPIAuthMiddleware(signer, store)
+	mw := NewTCPAPIAuthMiddleware(signer, store, false)
 	handler := mw(authMethodEchoHandler())
 
 	req := httptest.NewRequest(http.MethodPost, "/api/tasks", nil)
@@ -375,7 +375,7 @@ func TestTCPAPIAuth_ValidCookie_PropagatesAuthMethodCookie(t *testing.T) {
 // a bootstrap request as some default identity.
 func TestTCPAPIAuth_BootstrapLoopback_LeavesAuthMethodUnset(t *testing.T) {
 	signer, store := newTestSigner(t)
-	mw := NewTCPAPIAuthMiddleware(signer, store)
+	mw := NewTCPAPIAuthMiddleware(signer, store, false)
 	handler := mw(authMethodEchoHandler())
 
 	req := httptest.NewRequest(http.MethodPost, "/api/tasks", nil)
@@ -402,7 +402,7 @@ func TestTCPAPIAuth_ValidCookie_Passes(t *testing.T) {
 	if err := signer.Issue(w0, "dev-1"); err != nil {
 		t.Fatalf("Issue: %v", err)
 	}
-	mw := NewTCPAPIAuthMiddleware(signer, store)
+	mw := NewTCPAPIAuthMiddleware(signer, store, false)
 	handler := mw(http.HandlerFunc(okHandler))
 
 	req := httptest.NewRequest(http.MethodPost, "/api/tasks", nil)
@@ -414,5 +414,99 @@ func TestTCPAPIAuth_ValidCookie_Passes(t *testing.T) {
 	handler.ServeHTTP(w, req)
 	if w.Code != http.StatusOK {
 		t.Fatalf("valid cookie: status = %d, want %d", w.Code, http.StatusOK)
+	}
+}
+
+// --- loopbackTrust=true (docs/plans/volume-only-daemon.md §論点c, the CLI
+// TCP profile's default-ON `web.loopback_trust` behavior) ---
+
+// TestTCPAPIAuth_LoopbackTrustOn_DevicesRegistered_NoCookie_Passes is the
+// key behavioral delta from loopbackTrust=false
+// (TestTCPAPIAuth_DevicesRegistered_NoCookie_Unauthorized, above): with the
+// flag on, a loopback caller with no Bearer header and no cookie is let
+// through even once devices are already registered — the plain bootstrap
+// exemption alone (which only ever applies before the FIRST device pairs)
+// would reject this exact request.
+func TestTCPAPIAuth_LoopbackTrustOn_DevicesRegistered_NoCookie_Passes(t *testing.T) {
+	signer, store := newTestSigner(t)
+	ctx := context.Background()
+	if err := store.InsertDevice(ctx, "dev-1", "", []byte("h")); err != nil {
+		t.Fatalf("InsertDevice: %v", err)
+	}
+	mw := NewTCPAPIAuthMiddleware(signer, store, true)
+	handler := mw(http.HandlerFunc(okHandler))
+
+	for _, path := range []string{"/api/tasks", "/api/secrets", "/api/shutdown", "/api/web/pair"} {
+		req := httptest.NewRequest(http.MethodPost, path, nil)
+		req.RemoteAddr = "127.0.0.1:1234"
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Errorf("%s (loopbackTrust=true, devices registered, no cookie): status = %d, want %d", path, w.Code, http.StatusOK)
+		}
+	}
+}
+
+// TestTCPAPIAuth_LoopbackTrustOn_NonLoopback_StillGated pins that
+// loopbackTrust never widens trust to a non-loopback caller — an external
+// IP with no Bearer/cookie is rejected exactly like loopbackTrust=false.
+func TestTCPAPIAuth_LoopbackTrustOn_NonLoopback_StillGated(t *testing.T) {
+	signer, store := newTestSigner(t)
+	mw := NewTCPAPIAuthMiddleware(signer, store, true)
+	handler := mw(http.HandlerFunc(okHandler))
+
+	req := httptest.NewRequest(http.MethodPost, "/api/tasks", nil)
+	req.RemoteAddr = "203.0.113.5:9876"
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("non-loopback (loopbackTrust=true): status = %d, want %d", w.Code, http.StatusUnauthorized)
+	}
+}
+
+// TestTCPAPIAuth_LoopbackTrustOn_Tunneled_StillGated pins that a
+// proxied/tunneled request (Cloudflare Tunnel etc. — IsLoopback returns
+// false the moment a proxy header is present, regardless of RemoteAddr)
+// is unaffected by loopbackTrust=true: the flag only ever widens trust for
+// a GENUINE loopback connection, never a forwarded one.
+func TestTCPAPIAuth_LoopbackTrustOn_Tunneled_StillGated(t *testing.T) {
+	signer, store := newTestSigner(t)
+	mw := NewTCPAPIAuthMiddleware(signer, store, true)
+	handler := mw(http.HandlerFunc(okHandler))
+
+	req := httptest.NewRequest(http.MethodPost, "/api/tasks", nil)
+	req.RemoteAddr = "127.0.0.1:1234"
+	req.Header.Set("X-Forwarded-For", "203.0.113.5")
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("tunneled (loopbackTrust=true): status = %d, want %d", w.Code, http.StatusUnauthorized)
+	}
+}
+
+// TestTCPAPIAuth_LoopbackTrustOn_LeavesAuthMethodUnset mirrors
+// TestTCPAPIAuth_BootstrapLoopback_LeavesAuthMethodUnset for the widened
+// exemption: a handler must see no AuthMethod tag for a loopback-trust
+// pass-through either, so a self-revoke-only check like DeleteDevice's
+// `method != AuthMethodBearer → 403` still fires for it.
+func TestTCPAPIAuth_LoopbackTrustOn_LeavesAuthMethodUnset(t *testing.T) {
+	signer, store := newTestSigner(t)
+	ctx := context.Background()
+	if err := store.InsertDevice(ctx, "dev-1", "", []byte("h")); err != nil {
+		t.Fatalf("InsertDevice: %v", err)
+	}
+	mw := NewTCPAPIAuthMiddleware(signer, store, true)
+	handler := mw(authMethodEchoHandler())
+
+	req := httptest.NewRequest(http.MethodPost, "/api/tasks", nil)
+	req.RemoteAddr = "127.0.0.1:1234"
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (loopback-trust pass)", w.Code)
+	}
+	if got := w.Body.String(); got != "" {
+		t.Errorf("auth method = %q, want empty (loopback-trust does not set it)", got)
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -36,7 +37,21 @@ import (
 // closes — this test only cares that the handshake itself is reachable,
 // not about a real job's output.
 func TestTCPListener_WSAttach_ReachableViaBearerAndCookie(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	configHome := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", configHome)
+	// web.loopback_trust defaults to true (docs/plans/volume-only-daemon.md
+	// §論点c) — this test's third case specifically pins the pre-§論点c
+	// strict (Bearer-or-cookie-only) behavior once a device is registered,
+	// so it must opt out of the new default to keep testing that, rather
+	// than the loopback-trust exemption
+	// TestTCPListener_LoopbackTrustDefault_DeviceRegistered_NoAuthRequired
+	// (wire_tcp_auth_test.go) covers.
+	if err := os.MkdirAll(filepath.Join(configHome, "boid"), 0o755); err != nil {
+		t.Fatalf("mkdir config dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(configHome, "boid", "config.yaml"), []byte("web:\n  loopback_trust: false\n"), 0o600); err != nil {
+		t.Fatalf("write config.yaml: %v", err)
+	}
 
 	tmpDir := t.TempDir()
 	sockPath := filepath.Join(tmpDir, "boid.sock")
