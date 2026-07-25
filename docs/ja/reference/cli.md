@@ -31,7 +31,7 @@ daemon が止まっているときに以下のコマンドを呼ぶと、自動�
 
 ### Host mode（コンテナ backend 向け、`BOID_MODE=container`）
 
-`sandbox.backend: container` の compose デプロイ（`scripts/deploy-container.sh`、`docs/plans/phase6-container-backend.md`）を使っている場合、`boid` の起動元 shell で以下を設定すると **`boid` CLI 自身が daemon container のライフサイクルを管理する「host mode」** になります（`docs/plans/volume-only-daemon.md` §論点c、Option 4 設計）。
+container backend の compose デプロイ（`scripts/deploy-container.sh`、`docs/plans/phase6-container-backend.md` — PR-4 以降、container backend が唯一の sandbox backend なので `sandbox.backend` の設定は不要）を使っている場合、`boid` の起動元 shell で以下を設定すると **`boid` CLI 自身が daemon container のライフサイクルを管理する「host mode」** になります（`docs/plans/volume-only-daemon.md` §論点c、Option 4 設計）。
 
 ```bash
 export BOID_MODE=container
@@ -74,8 +74,7 @@ CLI listener のアドレスは `127.0.0.1:8442` 固定（override 不可）。`
 
 | コマンド | 役割 |
 |---|---|
-| `boid project add <git-url> --workspace=<name> [--name=<project-name>]` | git remote URL を登録し、daemon が bare repository として clone する (docs/plans/volume-only-daemon.md §論点a/b)。`--workspace` は必須、`--name` を省略すると URL の最後のパス要素から project 名を derive する。 |
-| `boid project add <dir> [--workspace=<name>]` | **非推奨** の旧来フォーム: daemon ホスト自身のファイルシステム上の既存 `.boid/project.yaml` から `<dir>` を登録する — 後方互換のため挙動は変更せず維持しているが、使用の度に非推奨警告を出し、将来のリリースで撤去予定。`--workspace` は任意。移行は project 単位で `boid project rm <ref>` の後に上記 git-URL フォームで登録し直す。どちらのフォームが選ばれるかは引数の形 (明示スキームまたは scp-like `user@host:path` の git URL か、それ以外か) で決まる。 |
+| `boid project add <git-url> --workspace=<name> [--name=<project-name>]` | git remote URL を登録し、daemon が bare repository として clone する (docs/plans/volume-only-daemon.md §論点a/b)。`--workspace` は必須、`--name` を省略すると URL の最後のパス要素から project 名を derive する。旧来のホストディレクトリ登録フォーム (`boid project add <dir>`) は PR-4 で撤去済み — git URL の形 (明示スキームまたは scp-like `user@host:path`) に一致しない引数はクライアント側で拒否される。 |
 | `boid project list` | 登録済みプロジェクト一覧 (status `ready`/`degraded` も表示 — `project fetch` 参照) |
 | `boid project show <ref>` | プロジェクト詳細 (id 完全一致 / 名前部分一致のいずれも可) |
 | `boid project remove <ref>` (alias: `rm`) | プロジェクトを登録解除。project の DB row を削除する唯一の入口 — `boid` は filesystem / remote の観測結果を根拠に自動削除しない (下記 `project fetch` 参照)。git-URL 登録した project の場合は daemon 管理下の bare repository も削除するため、同じ URL/名前で再度 add しても成功する。 |

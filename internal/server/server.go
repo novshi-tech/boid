@@ -25,6 +25,7 @@ import (
 	"github.com/novshi-tech/boid/internal/notify"
 	"github.com/novshi-tech/boid/internal/orchestrator"
 	"github.com/novshi-tech/boid/internal/sandbox"
+	"github.com/novshi-tech/boid/internal/sandbox/backend"
 	"github.com/novshi-tech/boid/internal/skills"
 )
 
@@ -82,10 +83,17 @@ type Config struct {
 	DBPath         string
 	SocketPath     string
 	HTTPAddr       string
-	KitsDir        string                // base dir for installed kit repos
-	KeyFilePath    string                // path to secret encryption key file
-	AllowedDomains []string              // proxy allowed domains
-	JobRuntime     dispatcher.JobRuntime //nolint:staticcheck // SA1019: JobRuntime's Deprecated marker (Phase 6 PR9 skeleton) flags its own type, not a call to remove now — usernsBackend (this field's only production use) is still the default backend; actual retirement is a follow-up PR (docs/plans/phase6-cutover-followups.md).
+	KitsDir        string   // base dir for installed kit repos
+	KeyFilePath    string   // path to secret encryption key file
+	AllowedDomains []string // proxy allowed domains
+	// Backend, when non-nil, overrides buildRuntime's default construction
+	// of a real containerBackend (sandboxBackendForConfig) — a test/DI seam
+	// (the successor to the pre-PR-4 JobRuntime field, which let tests
+	// inject a fake JobRuntime for the now-removed userns backend, docs/
+	// plans/volume-only-daemon.md §論点e) so tests can exercise daemon
+	// startup / the HTTP API / attach-resize wiring against a fake
+	// backend.SandboxBackend without a live docker daemon.
+	Backend backend.SandboxBackend
 	// TLSDir, when non-empty, is the directory holding (or to generate)
 	// the per-daemon internal CA (ca.crt/ca.key) used to secure the
 	// broker/git-gateway TCP(mTLS) listeners added in
@@ -793,8 +801,9 @@ func (s *Server) Start(ctx context.Context) error {
 			// Blocker 2 evidence: `10.0.2.2` is a pasta/slirp userns
 			// artifact with no docker equivalent). Falls through to the
 			// plaintext BackendUserns URL set above when
-			// usingContainerBackend is false (every pre-PR7 deployment) —
-			// gatewayURLFor's own default branch.
+			// usingContainerBackend is false — gatewayURLFor's own default
+			// branch, unreachable in production since PR-4 removed the
+			// userns backend (see gatewayURLFor's own doc comment).
 			if s.usingContainerBackend {
 				tlsPort := gwTLSLn.Addr().(*net.TCPAddr).Port
 				s.gatewayURL = gatewayURLFor(true, port, tlsPort)

@@ -72,8 +72,6 @@ func TestDispatch_LaunchOptions_CarriesWorkspaceAndDockerEnabled(t *testing.T) {
 	r, d := newDispatchRunner(t)
 	be := &capturingLaunchBackend{}
 	r.Backend = be
-	r.Sandbox = newFakeSandboxPrep(t)
-	r.Runtime = newStatefulRuntime()
 	r.Projects = orchestrator.DBProjectCatalog{DB: d.Conn}
 	r.RuntimesDir = t.TempDir()
 
@@ -129,8 +127,6 @@ func TestDispatch_LaunchOptions_DockerDisabled_LeavesDockerEnabledFalse(t *testi
 	r, d := newDispatchRunner(t)
 	be := &capturingLaunchBackend{}
 	r.Backend = be
-	r.Sandbox = newFakeSandboxPrep(t)
-	r.Runtime = newStatefulRuntime()
 	r.Projects = orchestrator.DBProjectCatalog{DB: d.Conn}
 	r.RuntimesDir = t.TempDir()
 

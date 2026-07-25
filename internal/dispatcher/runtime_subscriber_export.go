@@ -52,21 +52,6 @@ func (r *Runner) Subscribe(jobID string) (snapshot []byte, ch <-chan []byte, can
 	return session.Subscribe()
 }
 
-// SubscribeRuntime subscribes to live output of the session identified by runtimeID.
-// Returns the current transcript snapshot, a channel of subsequent chunks,
-// a cancel function to unsubscribe, and whether live streaming is available.
-func (r *LocalRuntime) SubscribeRuntime(runtimeID string) ([]byte, <-chan []byte, func(), bool) {
-	session, err := r.session(runtimeID)
-	if err != nil {
-		return nil, nil, func() {}, false
-	}
-	snap, subID, sessionCh, running := session.subscribe()
-	if !running {
-		return snap, nil, func() {}, false
-	}
-	return snap, sessionCh, func() { session.unsubscribe(subID) }, true
-}
-
 // WriteInput implements RuntimeInputWriter for Runner. It resolves jobID to
 // a runtimeID via the jobs table, then adopts a SandboxSession and writes
 // through it.

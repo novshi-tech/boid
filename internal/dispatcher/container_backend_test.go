@@ -978,7 +978,7 @@ func TestRunner_Backend_DrivesContainerBackendThroughSignalSeam(t *testing.T) {
 			}, nil
 		},
 	}
-	r := &Runner{Runtime: &ubFakeRuntime{}, Backend: NewContainerBackend(api, ContainerBackendOptions{})}
+	r := &Runner{Backend: NewContainerBackend(api, ContainerBackendOptions{})}
 
 	r.SignalJobRuntime("running-container-id", syscall.SIGUSR1)
 

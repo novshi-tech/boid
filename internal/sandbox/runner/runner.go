@@ -1,12 +1,17 @@
-// Package runner is the go-native sandbox runner. It replaces the former bash
-// trio (outer.sh / setup.sh / inner.sh): runner-outer launches pasta, which
-// runs runner-inner (in pasta's user+net namespace), which clones
-// runner-inner-child (CLONE_NEWUSER|CLONE_NEWNS) to lay out the mount namespace,
-// pivot_root, and exec the agent.
+// Package runner is the container-backend sandbox runner entry point (`boid
+// runner-container`, runner_container_linux.go's RunContainer). PR-4
+// (docs/plans/volume-only-daemon.md, the 2026-07 volume-only cutover) removed
+// the former userns backend entirely — runner-outer/pasta/runner-inner/
+// runner-inner-child, the clone(CLONE_NEWUSER|CLONE_NEWNS)/pivot_root path in
+// the now-deleted runner_linux.go, and the mount-guard evaluator that path
+// used — leaving the container backend as the sole sandbox backend. See
+// docs/{ja,en}/architecture/sandbox-internals.md for the current launch
+// chain.
 //
-// The syscall-heavy work lives in runner_linux.go; this file holds the portable
-// helpers (spec decoding, pasta argv, signal mapping, guard evaluation) so they
-// can be unit-tested off the syscall path.
+// This file holds the portable helpers RunContainer and its predecessor
+// shared (spec decoding, signal mapping, the post-namespace-setup file/
+// symlink/PATH/job-done steps) so they can be unit-tested independent of any
+// syscall or container-runtime path.
 package runner
 
 import (
@@ -16,7 +21,6 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
-	"strings"
 	"syscall"
 
 	"github.com/novshi-tech/boid/internal/adapters"
@@ -38,33 +42,14 @@ func readSpec(path string) (sandbox.Spec, error) {
 	return spec, nil
 }
 
-// pastaArgs returns the full pasta argv (excluding the binary name) that
-// launches runner-inner inside a fresh user+net namespace. It mirrors the
-// arguments the former outer.sh passed to pasta 1:1.
-func pastaArgs(self, specPath, statePath string) []string {
-	return []string{
-		"--config-net",
-		// IPv4-only: boid's sandbox is IPv4-only by design (the proxy + DNS
-		// forward both bind v4 addresses). Without `-4`, pasta logs
-		// "No routable interface for IPv6: IPv6 is disabled" on every launch
-		// — pure noise above the harness's own startup output for interactive
-		// sessions.
-		"-4",
-		"-a", "10.0.2.0", "-n", "24", "-g", "10.0.2.2",
-		"--dns-forward", "10.0.2.3",
-		"-t", "none", "-u", "none",
-		"--",
-		self, "runner-inner", "--spec", specPath, "--state", statePath,
-	}
-}
-
 // stopSignal returns the OS signal the runner sets to SIG_IGN. Phase 3-b
 // reduced the per-harness StopSignalName to a hard-coded SIGUSR1: claude is
 // the only supported harness, and Phase 3-c will revisit this if codex /
 // opencode pick a different stop signal. SIG_IGN survives execve so the
-// disposition is inherited by pasta and the child runners; the harness
-// adapter (claude.Adapter.Run) re-installs signal.Notify on the same signal
-// to translate the group signal into a SIGTERM toward the agent process.
+// disposition is inherited across it; the harness adapter (claude.
+// Adapter.Run) re-installs signal.Notify on the same signal to translate the
+// group signal (relayed by the container's PID 1, docker-init/tini) into a
+// SIGTERM toward the agent process.
 func stopSignal() syscall.Signal {
 	return syscall.SIGUSR1
 }
@@ -75,79 +60,24 @@ func ignoreStopSignal(_ sandbox.Spec) {
 	signal.Ignore(stopSignal())
 }
 
-// envSlice converts the spec env map into the KEY=VALUE slice exec.Cmd wants,
-// in sorted order for determinism.
-func envSlice(env map[string]string) []string {
-	keys := sortedEnvKeys(env)
-	out := make([]string, 0, len(keys))
-	for _, k := range keys {
-		out = append(out, k+"="+env[k])
-	}
-	return out
-}
-
-// evalGuard evaluates a bash-style test expression of the form "-d PATH",
-// "-e PATH" or "-f PATH" (PATH possibly single-quoted) against the host
-// filesystem. An empty guard always passes. Unrecognised forms pass (fail-open)
-// so a guard we don't understand never silently drops a mount.
-//
-// The operators follow symlinks (bash test semantics): /lib → /usr/lib on
-// usrmerge hosts must satisfy "-d /lib".
-func evalGuard(guard string) bool {
-	if guard == "" {
-		return true
-	}
-	op, rest, found := strings.Cut(guard, " ")
-	if !found {
-		return true
-	}
-	path := shellUnquote(strings.TrimSpace(rest))
-	info, err := os.Stat(path)
-	switch op {
-	case "-d":
-		return err == nil && info.IsDir()
-	case "-f":
-		return err == nil && info.Mode().IsRegular()
-	case "-e":
-		return err == nil
-	default:
-		return true
-	}
-}
-
-// shellUnquote reverses the single-quote quoting produced by sandbox.shellQuote
-// / shellQuoteDir: a bare token is returned as-is; a single-quoted token has its
-// surrounding quotes stripped and the '"'"' escape sequence collapsed back to a
-// literal single quote.
-func shellUnquote(s string) string {
-	if len(s) < 2 || s[0] != '\'' || s[len(s)-1] != '\'' {
-		return s
-	}
-	inner := s[1 : len(s)-1]
-	return strings.ReplaceAll(inner, `'"'"'`, "'")
-}
-
 // --- Backend-shared post-namespace-setup steps ---------------------------
 //
-// The functions below run after a sandbox's process/mount namespace is
-// already in place and its root filesystem already *is* the sandbox root —
-// they carry no mount/pivot_root syscalls of their own, so they are equally
-// valid called from the userns runner (RunInnerChild, runner_linux.go, once
-// pivot_root has landed) and the Phase 6 container entrypoint (RunContainer,
-// runner_container_linux.go, where the container runtime's own namespace
-// isolation means there is no separate pivot step to wait for at all).
-// Extracted per docs/plans/phase6-container-backend.md §PR2 / §決定 2's
-// "共有ロジックは runner_linux.go から runner/runner.go に抽出" — see that
-// plan section for the shared/not-shared split rationale (mount syscalls
-// stay userns-only in runner_linux.go; file/symlink materialization, PATH
-// resolution, agent dispatch, and job-done reporting are backend-neutral).
+// The functions below run after a sandbox's root filesystem already *is*
+// the sandbox root — they carry no mount/pivot_root syscalls of their own.
+// Originally extracted (docs/plans/phase6-container-backend.md §PR2 / §決定
+// 2, "共有ロジックは runner_linux.go から runner/runner.go に抽出") so this
+// same file/symlink/PATH/agent-dispatch/job-done logic could be called from
+// both the now-deleted userns runner (RunInnerChild, runner_linux.go) and
+// the container entrypoint (RunContainer, runner_container_linux.go). PR-4
+// removed the userns side entirely, so RunContainer is now the sole caller
+// — kept as free functions here (rather than inlined into RunContainer)
+// because it keeps them unit-testable off the container-runtime path.
 
 // applySpecFiles writes every spec.FileWrite verbatim at its absolute
 // sandbox-internal path, recording an OK/Fail runner-state phase per file
-// (and a final "write-files" OK once the whole set has landed — matching
-// RunInnerChild's pre-extraction behaviour exactly). stage names the
-// runner-state.json stage the phase entries are filed under ("inner-child"
-// for the userns runner, "container" for the container entrypoint).
+// (and a final "write-files" OK once the whole set has landed). stage names
+// the runner-state.json stage the phase entries are filed under ("container"
+// for RunContainer, the sole caller).
 func applySpecFiles(stage string, files []sandbox.FileWrite, st *State) error {
 	for _, f := range files {
 		if err := writeFileAt(f.Path, f.Content); err != nil {
@@ -162,20 +92,15 @@ func applySpecFiles(stage string, files []sandbox.FileWrite, st *State) error {
 // applySpecSymlinks materializes every spec.Symlink — the Phase 5 5a-3 shim
 // materialization path (docs/plans/phase5-shim-and-task-context.md, "5a:
 // shim 固定ディレクトリ化" PR3): dispatcher emits `<sandboxShimBinDir>/<name>
-// -> boid` for every host command. From Phase 6 on this is also how the
-// container entrypoint (re-)creates its own per-container shim symlinks:
-// decision 2 forbids baking the per-project `<name>` shims into the shared
-// image (unknown at image-build time), so the container entrypoint derives
-// them from spec.Symlinks on every container start exactly like the userns
-// runner always has.
+// -> boid` for every host command. The container entrypoint (re-)creates its
+// own per-container shim symlinks on every start: decision 2 (docs/plans/
+// phase6-container-backend.md) forbids baking the per-project `<name>`
+// shims into the shared image (unknown at image-build time), so they are
+// always derived fresh from spec.Symlinks.
 //
-// MkdirAll(parent) is load-bearing here — for the userns runner the parent
-// dir (e.g. /run/boid/bin) does not exist yet on the fresh tmpfs root
-// pivot_root just placed the process on until the boid-binary mount created
-// it (see RunInnerChild's call site); a symlink-only invocation (or the
-// container entrypoint, whose image-baked /run/boid/bin already exists but
-// may still be missing a deeper parent for a non-default LinkPath) needs the
-// same guarantee. Errors are surfaced instead of silently swallowed: a
+// MkdirAll(parent) is load-bearing here — the image-baked /run/boid/bin
+// already exists, but may still be missing a deeper parent directory for a
+// non-default LinkPath. Errors are surfaced instead of silently swallowed: a
 // silently-dropped shim symlink degrades to command-not-found at runtime
 // with no diagnostic pointing back to setup.
 func applySpecSymlinks(stage string, symlinks []sandbox.Symlink, st *State) error {
@@ -210,12 +135,12 @@ func applyPathEnv(spec sandbox.Spec) {
 // handle their respective agent jobs.
 func runAgent(spec sandbox.Spec) int {
 	if spec.HarnessType == "" {
-		fmt.Fprintln(os.Stderr, "[boid] runner-inner-child: spec.HarnessType is empty; planner / dispatcher must resolve a harness before dispatch")
+		fmt.Fprintln(os.Stderr, "[boid] runner-container: spec.HarnessType is empty; planner / dispatcher must resolve a harness before dispatch")
 		return 127
 	}
 	adapter := registry.For(spec.HarnessType)
 	if adapter == nil {
-		fmt.Fprintf(os.Stderr, "[boid] runner-inner-child: unknown harness %q\n", spec.HarnessType)
+		fmt.Fprintf(os.Stderr, "[boid] runner-container: unknown harness %q\n", spec.HarnessType)
 		return 127
 	}
 
@@ -248,12 +173,11 @@ func runAgent(spec sandbox.Spec) int {
 	return res.ExitCode
 }
 
-// postJobDone resolves the job output (payload patch → stdout capture →
-// empty) and posts `boid job done` to the broker, reproducing the former
-// EXIT trap. Shared by every backend's entry point that owns a non-
-// foreground job's completion report (userns' RunInnerChild, the Phase 6
-// container entrypoint's RunContainer). stage names the runner-state.json
-// stage the job-done phase entry is filed under.
+// postJobDone resolves the job output (stdout capture → empty) and posts
+// `boid job done` to the broker, reproducing the former EXIT trap. Called
+// from RunContainer, the sole entry point for a non-foreground job's
+// completion report. stage names the runner-state.json stage the job-done
+// phase entry is filed under.
 func postJobDone(stage string, spec sandbox.Spec, exitCode int, st *State) {
 	token := spec.Env["BOID_BROKER_TOKEN"]
 	// broker TCP wire completion (docs/plans/phase6-cutover-followups.md
@@ -305,17 +229,6 @@ func resolveJobOutput(spec sandbox.Spec) []byte {
 		}
 	}
 	return nil
-}
-
-func touchIfMissing(path string) error {
-	if _, err := os.Lstat(path); err == nil {
-		return nil
-	}
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY, 0o644)
-	if err != nil {
-		return err
-	}
-	return f.Close()
 }
 
 func writeFileAt(path, content string) error {

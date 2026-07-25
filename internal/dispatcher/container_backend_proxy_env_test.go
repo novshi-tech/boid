@@ -54,8 +54,6 @@ func TestDispatch_ContainerBackend_PropagatesWorkspaceProxyEnv(t *testing.T) {
 	r := &Runner{
 		DB:         d.Conn,
 		Backend:    be,
-		Sandbox:    &gwFakeSandboxPrep{dir: t.TempDir()},
-		Runtime:    &gwFakeRuntime{},
 		BoidBinary: "/boid",
 		Projects: fakeProjectLookup{projects: []*orchestrator.Project{
 			{ID: "proj-1", WorkspaceID: "ws-a", WorkDir: "/tmp"},
@@ -140,8 +138,6 @@ func TestDispatch_ContainerBackend_NoProxyExcludesGitGatewayHost(t *testing.T) {
 	r := &Runner{
 		DB:         d.Conn,
 		Backend:    be,
-		Sandbox:    &gwFakeSandboxPrep{dir: t.TempDir()},
-		Runtime:    &gwFakeRuntime{},
 		BoidBinary: "/boid",
 		Projects: fakeProjectLookup{projects: []*orchestrator.Project{
 			{ID: "proj-1", WorkspaceID: "ws-a", WorkDir: "/tmp"},

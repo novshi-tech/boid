@@ -36,7 +36,6 @@ type appRuntime struct {
 	taskRepo       *orchestrator.TaskRepository
 	jobStore       api.JobStore
 	globalJobStore api.GlobalJobStore
-	jobRuntime     dispatcher.JobRuntime //nolint:staticcheck // SA1019: JobRuntime's Deprecated marker (Phase 6 PR9 skeleton) flags its own type, not a call to remove now — still the production userns transport; actual retirement is a follow-up PR (docs/plans/phase6-cutover-followups.md).
 	runner         *dispatcher.Runner
 	meta           api.MetaStore
 	projectSvc     *api.ProjectAppService
@@ -356,15 +355,13 @@ func buildProjectLoadStartupError(errs []error) error {
 	return &startupError{aggregate: msg.String(), causes: causes}
 }
 
-// sandboxBackendForConfig selects the SandboxBackend Runner.Backend should
-// be overridden to based on cfg.Sandbox.Backend (docs/plans/
-// phase6-container-backend.md §PR7 cutover, §決定11). Returns (nil, nil)
-// for the default "userns" (or an unset cfg — every pre-PR7 caller):
-// leaving Runner.Backend nil is what makes Runner.sandboxBackend() keep
-// constructing its own usernsBackend, so this is a true no-op for every
-// deployment that hasn't opted in.
+// sandboxBackendForConfig unconditionally constructs the containerBackend
+// Runner.Backend is wired to (docs/plans/volume-only-daemon.md §論点e,
+// PR-4): container is the only sandbox backend now — the userns backend and
+// the sandbox.backend config option that used to select between the two
+// were removed outright, so there is no branch left here, only construction.
 //
-// "container" wires a real docker client (github.com/moby/moby/client —
+// It wires a real docker client (github.com/moby/moby/client —
 // client.New(client.FromEnv) does not dial the docker daemon eagerly; it
 // only resolves DOCKER_HOST/DOCKER_* env and builds the HTTP client
 // config, so this never fails just because docker is unreachable at
@@ -410,13 +407,10 @@ func buildProjectLoadStartupError(errs []error) error {
 // existing "feature disabled" contract (see its own doc comment), so this
 // is a pure additive parameter, not a behavior change for anyone who leaves
 // it nil.
-func sandboxBackendForConfig(cfg *config.Config, installID, runtimeDir string, brokerTLSCA *mtls.CA, brokerTLSAddr *string) (backend.SandboxBackend, error) {
-	if cfg == nil || cfg.Sandbox.Backend != config.SandboxBackendContainer {
-		return nil, nil
-	}
+func sandboxBackendForConfig(installID, runtimeDir string, brokerTLSCA *mtls.CA, brokerTLSAddr *string) (backend.SandboxBackend, error) {
 	dockerClient, err := client.New(client.FromEnv)
 	if err != nil {
-		return nil, fmt.Errorf("sandbox.backend: container: connect to docker: %w", err)
+		return nil, fmt.Errorf("connect to docker: %w", err)
 	}
 	// UID/GID (PR9, §決定4 — "job container は `--user <daemon uid>:<gid>`
 	// で非 root 起動"): os.Getuid()/os.Getgid() are the DAEMON's own actual
@@ -469,9 +463,11 @@ func sandboxBackendForConfig(cfg *config.Config, installID, runtimeDir string, b
 // gatewayBindHost [Blocker 2, PR7 codex review] returns the listen address
 // the git gateway's TCP(mTLS) listener binds to: "0.0.0.0" (composeBindHost)
 // when the container backend is selected, "127.0.0.1" (the pre-PR7
-// literal, byte-for-byte unchanged) otherwise. A pure function — no Server
-// state — so it is independently unit-testable without a live listener;
-// see wire_backend_test.go.
+// literal, byte-for-byte unchanged) otherwise. The container backend is the
+// only one selected in production since PR-4's volume-only cutover removed
+// the userns backend; the false branch remains a test-DI seam. A pure
+// function — no Server state — so it is independently unit-testable
+// without a live listener; see wire_backend_test.go.
 func gatewayBindHost(usingContainerBackend bool) string {
 	if usingContainerBackend {
 		return composeBindHost
@@ -482,16 +478,19 @@ func gatewayBindHost(usingContainerBackend bool) string {
 // gatewayURLFor [Blocker 2, PR7 codex review] computes the git gateway's
 // sandbox-facing base URL for the currently-selected backend:
 //
-//   - usingContainerBackend == false (every pre-PR7 deployment, and every
-//     userns-backend deployment after PR7): gitgateway.BackendUserns's
+//   - usingContainerBackend == false: gitgateway.BackendUserns's
 //     http://10.0.2.2:<plainPort> — byte-for-byte the pre-PR7 literal
 //     (docs/plans/phase6-container-backend.md §PR4: "既存 (10.0.2.2) を
-//     無条件で切り替える禁止").
+//     無条件で切り替える禁止"). PR-4 (volume-only cutover) removed the
+//     userns backend entirely, so this branch is unreachable in
+//     production — `dispatcher.IsContainerBackend(runtime.runner.Backend)`
+//     is always true now — and survives only as a test-DI seam
+//     (wire_backend_test.go exercises both branches directly).
 //   - usingContainerBackend == true: gitgateway.BackendContainer's
 //     https://boid-gateway:<tlsPort> — a sibling job container has no
-//     10.0.2.2 loopback projection at all (that address is a pasta/slirp
-//     userns artifact — this PR's own Blocker 2 evidence), so it MUST use
-//     the compose service DNS name over the mTLS listener instead.
+//     10.0.2.2 loopback projection at all (that address was a pasta/slirp
+//     userns artifact with no docker equivalent), so it MUST use the
+//     compose service DNS name over the mTLS listener instead.
 //
 // tlsPort is only consulted in the container-backend branch; plainPort only
 // in the userns branch — Start's own call sites pass 0 for whichever one
@@ -616,23 +615,6 @@ func webSecretPathFor(cfg Config) string {
 	return ""
 }
 
-// SA1019 (staticcheck) on the JobRuntime/LocalRuntime references below is
-// expected and suppressed inline: their Deprecated marker (Phase 6 PR9
-// skeleton, docs/plans/phase6-cutover-followups.md) flags the still-current
-// production userns construction path, not a stale call to migrate away
-// from now — actual retirement is a follow-up PR.
-func newJobRuntime(cfg Config) (dispatcher.JobRuntime, error) { //nolint:staticcheck
-	if cfg.JobRuntime != nil {
-		return cfg.JobRuntime, nil
-	}
-
-	rootDir := runtimesDirFor(cfg)
-	if err := os.MkdirAll(rootDir, 0o755); err != nil {
-		return nil, fmt.Errorf("mkdir runtime root: %w", err)
-	}
-	return &dispatcher.LocalRuntime{RootDir: rootDir}, nil //nolint:staticcheck
-}
-
 // cleanOrphanRuntimes removes runtime directories that have no corresponding
 // job row in the database. Call this on startup before MarkStaleJobsFailed
 // so that only truly orphaned dirs (no DB row) are removed.
@@ -739,60 +721,36 @@ func reapOrphansBeforeReopen(ctx context.Context, runner *dispatcher.Runner, con
 }
 
 func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, broker dispatcher.CommandBroker, secretStore *dispatcher.SecretStore) (*appRuntime, error) {
-	// sandbox backend selection (docs/plans/phase6-container-backend.md
-	// §PR7 cutover, §決定11): config-driven, global (not per-workspace).
-	// Loaded HERE, at the very top of buildRuntime — before even the
-	// startup orphan-runtime cleanup immediately below — so every call site
-	// in this function that needs to know "is this a container-backend
-	// deploy" (that cleanup, runner.RuntimesDir, sandboxBackendForConfig's
-	// own runtimeDir argument further down, and the matching job-log read
-	// path, transcriptLogReader) agrees on the identical backendCfg/
-	// runtimesRoot values from one config.Load() call, never a second,
-	// independently-timed one.
-	//
-	// PR834 PR-2b round-2 codex review Major 2: this used to run much later
-	// (right before runner construction) — startup orphan-runtime cleanup
-	// above therefore always scanned runtimesDirFor(cfg) (the boid_state
-	// NAMED VOLUME root under container backend), while every actual PR-2b
-	// artifact (per-job clone staging, workspace HOME, transcripts) lands
-	// under hostVisibleRuntimesDirFor(cfg) instead — an orphaned per-job
-	// clone left by a crashed daemon was never reclaimed by this startup
-	// sweep, only by the 30-day GC. See
-	// TestServer_New_ContainerBackend_CleanOrphanRuntimesScansHostVisibleDir.
-	//
-	// [Major 11, PR7 codex review]: config.Load()'s error here is fail-hard
-	// (daemon startup refused), NOT logged-and-defaulted-to-userns. An
-	// operator who set `sandbox.backend: container` in config.yaml has
-	// opted into a real production dispatch path; if config.yaml itself
-	// becomes unreadable at reload time (a torn write from a concurrent
-	// `boid` CLI edit, a permissions change, disk corruption — anything
-	// short of ENOENT, which config.Load's own loadFromPath already treats
-	// as "use defaults" and returns a nil error for) the daemon must not
-	// silently start with the userns backend instead: that is an unnoticed,
-	// unannounced downgrade of the sandbox isolation the operator explicitly
-	// configured, discovered only much later (if ever) by noticing jobs
-	// aren't landing in containers. Refusing to start surfaces the problem
-	// immediately, the same way every other daemon startup precondition in
-	// this file does (buildProjectStore's own "daemon startup refused"
-	// errors above).
-	backendCfg, err := config.Load()
-	if err != nil {
-		return nil, fmt.Errorf("daemon startup refused: load boid config for sandbox backend selection: %w", err)
+	// [Major 11, PR7 codex review, still relevant post-PR-4]: a fail-hard
+	// config.Load() at the very top of buildRuntime — before even the
+	// startup orphan-runtime cleanup immediately below — so a config.yaml
+	// that becomes unreadable at reload time (a torn write from a
+	// concurrent `boid` CLI edit, a permissions change, disk corruption —
+	// anything short of ENOENT, which config.Load's own loadFromPath
+	// already treats as "use defaults" and returns a nil error for) refuses
+	// daemon startup outright rather than silently proceeding on defaults,
+	// the same way every other daemon startup precondition in this file
+	// does (buildProjectStore's own "daemon startup refused" errors above).
+	// The value itself is discarded now: PR-4 (docs/plans/
+	// volume-only-daemon.md §論点e) removed sandbox.backend and the
+	// userns/container branch this load used to gate — container is the
+	// only sandbox backend, so there is nothing left to select — but the
+	// "config.yaml must actually be loadable at boot" invariant this check
+	// also enforced stands on its own regardless.
+	if _, err := config.Load(); err != nil {
+		return nil, fmt.Errorf("daemon startup refused: load boid config: %w", err)
 	}
-	usingContainerBackend := backendCfg.Sandbox.Backend == config.SandboxBackendContainer
 
-	// Host-visible runtimes root selection (docs/plans/volume-only-daemon.md
-	// — see hostVisibleRuntimesDirFor's own doc comment for the full
-	// rationale): runner.RuntimesDir below, sandboxBackendForConfig's
-	// runtimeDir argument further down, the startup orphan-runtime cleanup
-	// immediately below, and the matching job-log read path
-	// (transcriptLogReader) all use this SAME value, so `boid job log` /
-	// workspace HOME / the PR-2b per-job clone staging area never disagree
-	// about where their own data actually landed.
-	runtimesRoot := runtimesDirFor(cfg)
-	if usingContainerBackend {
-		runtimesRoot = hostVisibleRuntimesDirFor(cfg)
-	}
+	// Host-visible runtimes root (docs/plans/volume-only-daemon.md — see
+	// hostVisibleRuntimesDirFor's own doc comment for the full rationale):
+	// runner.RuntimesDir below, sandboxBackendForConfig's runtimeDir
+	// argument further down, the startup orphan-runtime cleanup immediately
+	// below, and the matching job-log read path (transcriptLogReader) all
+	// use this SAME value, so `boid job log` / workspace HOME / the PR-2b
+	// per-job clone staging area never disagree about where their own data
+	// actually landed. Unconditional now (PR-4): every deployment uses the
+	// container backend, so this is no longer choosing between two roots.
+	runtimesRoot := hostVisibleRuntimesDirFor(cfg)
 
 	// Clean up runtime dirs that have no corresponding job rows (must run before
 	// MarkStaleJobsFailed so we only remove truly orphaned dirs).
@@ -825,11 +783,6 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 	jobStore := jobStoreAdapter{repo: jobRepo}
 	tx := apiTransactor{db: srv.db}
 
-	jobRuntime, err := newJobRuntime(cfg)
-	if err != nil {
-		return nil, err
-	}
-
 	boidBin, _ := os.Executable()
 	projectCatalog := orchestrator.DBProjectCatalog{DB: srv.db}
 	taskLookup := orchestrator.DBTaskLookup{DB: srv.db}
@@ -855,9 +808,7 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 	// reused here rather than a second config.Load().
 	runner := dispatcher.Wire(dispatcher.WireConfig{
 		DB:                   srv.db,
-		Runtime:              jobRuntime,
 		Broker:               broker,
-		Sandbox:              dispatcher.NewSandboxPreparer(),
 		SecretStore:          secretStore,
 		Projects:             projectCatalog,
 		Hydrator:             store, // workspace-aware hydration for peer meta.name (buildPeerAdvertise)
@@ -883,35 +834,31 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 		GatewayCAPEM:   &srv.gatewayCAPEM,
 	})
 
-	// sandbox backend selection (docs/plans/phase6-container-backend.md
-	// §PR7 cutover, §決定11): config-driven, global (not per-workspace).
-	// sandboxBackendForConfig returns nil for the default/unset "userns"
-	// case, leaving runner.Backend nil — Runner.sandboxBackend() then
-	// keeps constructing the pre-Phase-6 usernsBackend on every call
-	// exactly as before this PR, so every existing deployment (no
-	// sandbox.backend key in config.yaml) is byte-for-byte unaffected.
-	// "container" is the opt-in cutover this PR exposes; the plan doc's
-	// own cutover gate (container e2e green + rollback rehearsal) is an
-	// operational precondition on actually setting it in a real deploy,
-	// not something enforced here. backendCfg/usingContainerBackend/
-	// runtimesRoot were already resolved at the very top of this function
-	// (see that block's own comment) — reused here rather than a second
-	// config.Load().
-	sandboxBackend, berr := sandboxBackendForConfig(backendCfg, srv.installID, runtimesRoot, srv.daemonCA, &srv.brokerTLSSandboxAddr)
-	if berr != nil {
-		return nil, fmt.Errorf("daemon startup refused: %w", berr)
+	// Sandbox backend construction (docs/plans/volume-only-daemon.md
+	// §論点e, PR-4): unconditional now — container is the only sandbox
+	// backend, so runner.Backend is always set here, never left nil.
+	// runtimesRoot was already resolved at the very top of this function.
+	// cfg.Backend, when set, overrides construction entirely — the test/DI
+	// seam Config.Backend's own doc comment describes (server.go), so a
+	// test can exercise daemon startup against a fake backend.SandboxBackend
+	// without a live docker daemon.
+	sandboxBackend := cfg.Backend
+	if sandboxBackend == nil {
+		var berr error
+		sandboxBackend, berr = sandboxBackendForConfig(srv.installID, runtimesRoot, srv.daemonCA, &srv.brokerTLSSandboxAddr)
+		if berr != nil {
+			return nil, fmt.Errorf("daemon startup refused: %w", berr)
+		}
 	}
-	if sandboxBackend != nil {
-		runner.Backend = sandboxBackend
-		// InstallID (PR9, §決定5): threaded onto Runner too, alongside
-		// Backend — startDockerProxy's per-job SetWorkspaceNetwork call
-		// needs it to compute the exact same containerWorkspaceNetworkName
-		// value ContainerBackendOptions.InstallID (set two lines above, via
-		// sandboxBackendForConfig) gave the container backend itself. See
-		// Runner.InstallID's own doc comment.
-		runner.InstallID = srv.installID
-		slog.Info("sandbox backend: container (docker) — cutover config (docs/plans/phase6-container-backend.md §PR7)")
-	}
+	runner.Backend = sandboxBackend
+	// InstallID (PR9, §決定5): threaded onto Runner too, alongside
+	// Backend — startDockerProxy's per-job SetWorkspaceNetwork call
+	// needs it to compute the exact same containerWorkspaceNetworkName
+	// value ContainerBackendOptions.InstallID (set two lines above, via
+	// sandboxBackendForConfig) gave the container backend itself. See
+	// Runner.InstallID's own doc comment.
+	runner.InstallID = srv.installID
+	slog.Info("sandbox backend: container (docker)")
 
 	lifecycle := jobLifecycleAdapter{runner: runner}
 	claudeAdapter := claude.New()
@@ -1224,7 +1171,6 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 		taskRepo:       taskRepo,
 		jobStore:       jobStore,
 		globalJobStore: globalJobSvc,
-		jobRuntime:     jobRuntime,
 		runner:         runner,
 		meta:           store,
 		projectSvc:     projectSvc,

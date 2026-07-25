@@ -2,40 +2,14 @@ package dispatcher_test
 
 import (
 	"context"
-	"fmt"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/novshi-tech/boid/internal/db"
 	"github.com/novshi-tech/boid/internal/dispatcher"
 	"github.com/novshi-tech/boid/internal/orchestrator"
-	"github.com/novshi-tech/boid/internal/sandbox"
 	"github.com/novshi-tech/boid/testutil"
 )
-
-// fakeSandboxPrep is a minimal SandboxPreparer stub for dispatch tests.
-// It writes a placeholder outer script on each call.
-type fakeSandboxPrep struct {
-	dir string
-}
-
-func newFakeSandboxPrep(t *testing.T) *fakeSandboxPrep {
-	t.Helper()
-	return &fakeSandboxPrep{dir: t.TempDir()}
-}
-
-func (p *fakeSandboxPrep) PrepareSandbox(_ sandbox.Spec) (*dispatcher.PreparedSandbox, error) {
-	specPath := filepath.Join(p.dir, "runner-spec.json")
-	if err := os.WriteFile(specPath, []byte("{}"), 0o600); err != nil {
-		return nil, fmt.Errorf("write runner spec: %w", err)
-	}
-	return &dispatcher.PreparedSandbox{
-		SpecPath:  specPath,
-		StatePath: filepath.Join(p.dir, "runner-state.json"),
-	}, nil
-}
 
 // newDispatchRunner returns a Runner backed by a fresh in-memory DB with
 // project "proj-1" pre-created.
@@ -109,8 +83,7 @@ func TestDispatch_BuildSandboxSpecError_CallsCleanup(t *testing.T) {
 // and WaitForJobCtx must deliver the completion result after CompleteJob.
 func TestDispatch_NormalPath_JobIsRunning(t *testing.T) {
 	r, d := newDispatchRunner(t)
-	r.Sandbox = newFakeSandboxPrep(t)
-	r.Runtime = newStatefulRuntime() // defined in runtime_test_helpers_test.go
+	r.Backend = newStatefulBackend() // defined in runtime_test_helpers_test.go
 
 	spec := &orchestrator.JobSpec{
 		ProjectID: "proj-1",
@@ -155,9 +128,8 @@ func TestDispatch_NormalPath_JobIsRunning(t *testing.T) {
 // command (see runtime_local_linux.go's StdinForward branch).
 func TestDispatch_ExecKindNonInteractive_SetsStdinForward(t *testing.T) {
 	r, d := newDispatchRunner(t)
-	r.Sandbox = newFakeSandboxPrep(t)
-	runtime := newStatefulRuntime()
-	r.Runtime = runtime
+	be := newStatefulBackend()
+	r.Backend = be
 
 	spec := &orchestrator.JobSpec{
 		ProjectID:   "proj-1",
@@ -176,11 +148,11 @@ func TestDispatch_ExecKindNonInteractive_SetsStdinForward(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetJob: %v", err)
 	}
-	startSpec, ok := runtime.StartSpec(job.RuntimeID)
+	opts, ok := be.LaunchOpts(job.RuntimeID)
 	if !ok {
-		t.Fatalf("no RuntimeStartSpec recorded for runtime %q", job.RuntimeID)
+		t.Fatalf("no LaunchOptions recorded for runtime %q", job.RuntimeID)
 	}
-	if !startSpec.StdinForward {
+	if !opts.StdinForward {
 		t.Error("StdinForward = false, want true for a non-interactive JobKindExec dispatch")
 	}
 }
@@ -192,9 +164,8 @@ func TestDispatch_ExecKindNonInteractive_SetsStdinForward(t *testing.T) {
 // on a forwarder nothing will ever attach with real input.
 func TestDispatch_HookKindNonInteractive_LeavesStdinForwardFalse(t *testing.T) {
 	r, d := newDispatchRunner(t)
-	r.Sandbox = newFakeSandboxPrep(t)
-	runtime := newStatefulRuntime()
-	r.Runtime = runtime
+	be := newStatefulBackend()
+	r.Backend = be
 
 	spec := &orchestrator.JobSpec{
 		ProjectID:   "proj-1",
@@ -212,11 +183,11 @@ func TestDispatch_HookKindNonInteractive_LeavesStdinForwardFalse(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetJob: %v", err)
 	}
-	startSpec, ok := runtime.StartSpec(job.RuntimeID)
+	opts, ok := be.LaunchOpts(job.RuntimeID)
 	if !ok {
-		t.Fatalf("no RuntimeStartSpec recorded for runtime %q", job.RuntimeID)
+		t.Fatalf("no LaunchOptions recorded for runtime %q", job.RuntimeID)
 	}
-	if startSpec.StdinForward {
+	if opts.StdinForward {
 		t.Error("StdinForward = true, want false for a hook job")
 	}
 }

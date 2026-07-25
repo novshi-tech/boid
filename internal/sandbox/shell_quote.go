@@ -1,7 +1,6 @@
 package sandbox
 
 import (
-	"fmt"
 	"strings"
 )
 
@@ -28,10 +27,6 @@ func isShellSafe(value string) bool {
 		}
 	}
 	return true
-}
-
-func dirGuard(path string) string {
-	return fmt.Sprintf("-d %s", shellQuote(path))
 }
 
 // ShellQuote is the exported version of shellQuote for use outside the package.

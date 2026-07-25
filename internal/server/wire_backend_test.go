@@ -4,61 +4,31 @@ import (
 	"os"
 	"testing"
 
-	"github.com/novshi-tech/boid/internal/config"
 	"github.com/novshi-tech/boid/internal/dispatcher"
 	"github.com/novshi-tech/boid/internal/mtls"
 )
 
-// This file pins sandboxBackendForConfig — the config-driven backend
-// selection wiring docs/plans/phase6-container-backend.md §PR7 adds to
-// buildRuntime (the "config 公開 (cutover)" TODO) — end to end from a
-// config.Config value to the backend.SandboxBackend Runner.Backend would be
-// set to.
-
-// TestSandboxBackendForConfig_Userns_ReturnsNil pins the default/safe path:
-// an unset (or explicit "userns") sandbox.backend must return (nil, nil) so
-// buildRuntime never touches runner.Backend and Runner.sandboxBackend()
-// keeps constructing its own usernsBackend, exactly as every pre-PR7
-// deployment already does.
-func TestSandboxBackendForConfig_Userns_ReturnsNil(t *testing.T) {
-	be, err := sandboxBackendForConfig(config.DefaultConfig(), "install-1", t.TempDir(), nil, nil)
-	if err != nil {
-		t.Fatalf("sandboxBackendForConfig: %v", err)
-	}
-	if be != nil {
-		t.Fatalf("backend = %v, want nil for the default userns config", be)
-	}
-}
-
-// TestSandboxBackendForConfig_NilConfig_ReturnsNil pins the defensive nil
-// guard: a nil *config.Config (e.g. a caller that skipped config.Load's
-// error path) must not panic and must resolve to the safe userns default.
-func TestSandboxBackendForConfig_NilConfig_ReturnsNil(t *testing.T) {
-	be, err := sandboxBackendForConfig(nil, "install-1", t.TempDir(), nil, nil)
-	if err != nil {
-		t.Fatalf("sandboxBackendForConfig: %v", err)
-	}
-	if be != nil {
-		t.Fatalf("backend = %v, want nil for a nil config", be)
-	}
-}
-
-// TestSandboxBackendForConfig_Container_ReturnsContainerBackend pins the
-// opt-in cutover path: `sandbox.backend: container` must produce a real
-// containerBackend (docs/plans/phase6-container-backend.md §決定11) — the
-// plan's "test: config で sandbox.backend: container → Runner.sandboxBackend()
-// が containerBackend を返すことを pin" requirement, exercised at the
-// config-to-backend-value layer (Runner.Backend's own "override wins" wiring
-// is independently pinned in internal/dispatcher's backend wiring tests).
+// This file pins sandboxBackendForConfig — the backend construction wiring
+// buildRuntime uses to build the runner's SandboxBackend — end to end,
+// producing the backend.SandboxBackend Runner.Backend is set to.
+//
+// PR-4 (docs/plans/volume-only-daemon.md §論点e) removed the userns backend
+// and the sandbox.backend config option entirely: container is now the
+// only sandbox backend, so sandboxBackendForConfig always constructs a
+// containerBackend and never returns (nil, nil) — the userns/nil-config
+// pinning tests this file used to carry (TestSandboxBackendForConfig_
+// Userns_ReturnsNil, _NilConfig_ReturnsNil, _Userns_BrokerTLSIgnored) were
+// removed alongside that behavior, not just renamed.
 //
 // client.New(client.FromEnv) does not dial docker eagerly (see
-// sandboxBackendForConfig's own doc comment), so this test needs no live
-// docker daemon.
-func TestSandboxBackendForConfig_Container_ReturnsContainerBackend(t *testing.T) {
-	cfg := config.DefaultConfig()
-	cfg.Sandbox.Backend = config.SandboxBackendContainer
+// sandboxBackendForConfig's own doc comment), so none of these tests need a
+// live docker daemon.
 
-	be, err := sandboxBackendForConfig(cfg, "install-1", t.TempDir(), nil, nil)
+// TestSandboxBackendForConfig_ReturnsContainerBackend pins the sole
+// production path: sandboxBackendForConfig always produces a real
+// containerBackend now.
+func TestSandboxBackendForConfig_ReturnsContainerBackend(t *testing.T) {
+	be, err := sandboxBackendForConfig("install-1", t.TempDir(), nil, nil)
 	if err != nil {
 		t.Fatalf("sandboxBackendForConfig: %v", err)
 	}
@@ -70,18 +40,15 @@ func TestSandboxBackendForConfig_Container_ReturnsContainerBackend(t *testing.T)
 	}
 }
 
-// TestSandboxBackendForConfig_Container_WiresDiagnosticsCollector pins
-// [Major 7, PR7 codex review]: sandboxBackendForConfig must wire a real
+// TestSandboxBackendForConfig_WiresDiagnosticsCollector pins [Major 7, PR7
+// codex review]: sandboxBackendForConfig must wire a real
 // DiagnosticsCollector (dispatcher.NewDefaultDiagnosticsCollector) into the
-// containerBackend it constructs — before this fix, production wiring left
+// containerBackend it constructs — before that fix, production wiring left
 // it nil (NewContainerBackend's own doc comment: "PR5 leaves this nil (no
 // consumer yet)"), so an OOM-killed or setup-failure job container was
 // removed with no diagnostic capture at all.
-func TestSandboxBackendForConfig_Container_WiresDiagnosticsCollector(t *testing.T) {
-	cfg := config.DefaultConfig()
-	cfg.Sandbox.Backend = config.SandboxBackendContainer
-
-	be, err := sandboxBackendForConfig(cfg, "install-1", t.TempDir(), nil, nil)
+func TestSandboxBackendForConfig_WiresDiagnosticsCollector(t *testing.T) {
+	be, err := sandboxBackendForConfig("install-1", t.TempDir(), nil, nil)
 	if err != nil {
 		t.Fatalf("sandboxBackendForConfig: %v", err)
 	}
@@ -90,7 +57,7 @@ func TestSandboxBackendForConfig_Container_WiresDiagnosticsCollector(t *testing.
 	}
 }
 
-// TestSandboxBackendForConfig_Container_WiresDaemonUIDGID pins the PR9 fix
+// TestSandboxBackendForConfig_WiresDaemonUIDGID pins the PR9 fix
 // (docs/plans/phase6-cutover-followups.md's e2e-container job debugging
 // trail): sandboxBackendForConfig must pass the DAEMON's own actual
 // os.Getuid()/os.Getgid() through to ContainerBackendOptions.UID/GID —
@@ -100,11 +67,8 @@ func TestSandboxBackendForConfig_Container_WiresDiagnosticsCollector(t *testing.
 // workspace home directories) actually ran as. This test's own process
 // uid is a proxy for "the daemon's own uid" (os.Getuid() is deterministic
 // per-process, exactly what sandboxBackendForConfig itself calls).
-func TestSandboxBackendForConfig_Container_WiresDaemonUIDGID(t *testing.T) {
-	cfg := config.DefaultConfig()
-	cfg.Sandbox.Backend = config.SandboxBackendContainer
-
-	be, err := sandboxBackendForConfig(cfg, "install-1", t.TempDir(), nil, nil)
+func TestSandboxBackendForConfig_WiresDaemonUIDGID(t *testing.T) {
+	be, err := sandboxBackendForConfig("install-1", t.TempDir(), nil, nil)
 	if err != nil {
 		t.Fatalf("sandboxBackendForConfig: %v", err)
 	}
@@ -121,30 +85,26 @@ func TestSandboxBackendForConfig_Container_WiresDaemonUIDGID(t *testing.T) {
 	}
 }
 
-// TestSandboxBackendForConfig_Container_WiresBrokerTLS pins the broker TCP
-// wire followup's own plumbing (docs/plans/phase6-cutover-followups.md
-// §⓪): sandboxBackendForConfig must pass a non-nil brokerTLSCA/
-// brokerTLSAddr straight through into ContainerBackendOptions.BrokerTLSCA/
-// BrokerTLSAddr, the same "override wins, nothing silently dropped"
-// contract the other options fields above already have. The addr pointer
-// is dereferenced fresh by dispatcher.ContainerBackendBrokerTLS (the same
-// late-binding indirection containerBackend.Launch itself uses) — this
-// test writes into the pointed-at string AFTER calling
-// sandboxBackendForConfig, mirroring how Server.Start actually populates
-// srv.brokerTLSSandboxAddr only after buildRuntime (and so this call) has
-// already run, to confirm the wiring really is late-bound and not resolved
-// once at construction time.
-func TestSandboxBackendForConfig_Container_WiresBrokerTLS(t *testing.T) {
-	cfg := config.DefaultConfig()
-	cfg.Sandbox.Backend = config.SandboxBackendContainer
-
+// TestSandboxBackendForConfig_WiresBrokerTLS pins the broker TCP wire
+// followup's own plumbing (docs/plans/phase6-cutover-followups.md §⓪):
+// sandboxBackendForConfig must pass a non-nil brokerTLSCA/brokerTLSAddr
+// straight through into ContainerBackendOptions.BrokerTLSCA/BrokerTLSAddr,
+// the same "override wins, nothing silently dropped" contract the other
+// options fields above already have. The addr pointer is dereferenced fresh
+// by dispatcher.ContainerBackendBrokerTLS (the same late-binding indirection
+// containerBackend.Launch itself uses) — this test writes into the
+// pointed-at string AFTER calling sandboxBackendForConfig, mirroring how
+// Server.Start actually populates srv.brokerTLSSandboxAddr only after
+// buildRuntime (and so this call) has already run, to confirm the wiring
+// really is late-bound and not resolved once at construction time.
+func TestSandboxBackendForConfig_WiresBrokerTLS(t *testing.T) {
 	ca, err := mtls.LoadOrCreate(t.TempDir())
 	if err != nil {
 		t.Fatalf("mtls.LoadOrCreate: %v", err)
 	}
 	var addr string
 
-	be, err := sandboxBackendForConfig(cfg, "install-1", t.TempDir(), ca, &addr)
+	be, err := sandboxBackendForConfig("install-1", t.TempDir(), ca, &addr)
 	if err != nil {
 		t.Fatalf("sandboxBackendForConfig: %v", err)
 	}
@@ -168,27 +128,5 @@ func TestSandboxBackendForConfig_Container_WiresBrokerTLS(t *testing.T) {
 	gotAddr, _, _ = dispatcher.ContainerBackendBrokerTLS(be)
 	if gotAddr != "boid-broker:54321" {
 		t.Errorf("BrokerTLSAddr after the late-bound pointer is written = %q, want %q (dereferenced fresh, not resolved at construction time)", gotAddr, "boid-broker:54321")
-	}
-}
-
-// TestSandboxBackendForConfig_Userns_BrokerTLSIgnored pins the companion
-// non-regression: a userns (default) config must return (nil, nil)
-// regardless of brokerTLSCA/brokerTLSAddr being non-nil — the same
-// "container backend selection gates everything in this function" contract
-// TestSandboxBackendForConfig_Userns_ReturnsNil already pins for the other
-// options fields.
-func TestSandboxBackendForConfig_Userns_BrokerTLSIgnored(t *testing.T) {
-	ca, err := mtls.LoadOrCreate(t.TempDir())
-	if err != nil {
-		t.Fatalf("mtls.LoadOrCreate: %v", err)
-	}
-	addr := "boid-broker:1234"
-
-	be, err := sandboxBackendForConfig(config.DefaultConfig(), "install-1", t.TempDir(), ca, &addr)
-	if err != nil {
-		t.Fatalf("sandboxBackendForConfig: %v", err)
-	}
-	if be != nil {
-		t.Fatalf("backend = %v, want nil for the default userns config even with brokerTLSCA/brokerTLSAddr set", be)
 	}
 }

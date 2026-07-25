@@ -16,13 +16,17 @@ import (
 //	                                 own completion call → TaskWorkflowService.CompleteJob)
 //	GET  /api/jobs/{id}            (mirrors cmd/exec.go's fetchExecExitCode poll)
 //
-// This exists because the e2e scenario asserting the same behavior
-// (e2e/scenarios/exec-smoke) is currently not a reliable gate: e2e/run.sh's
-// `(source scenario.sh) > >(tee ...) 2>&1` swallows a failing scenario's exit
-// code (see PR #735's "known issues" note / Opus review finding #2), so a
-// regression here would not actually fail CI today. noopRuntime (defined in
-// server_phase6_test.go) never auto-completes a dispatched job, so nothing
-// but this test's explicit POST .../done call can resolve it.
+// This exists because the equivalent e2e scenario (e2e/scenarios/exec-smoke)
+// no longer exists at all: PR-4 (docs/plans/volume-only-daemon.md §論点e)
+// removed the entire userns/dir-based black-box e2e harness (e2e/run.sh),
+// which every such scenario depended on — this in-process test is now the
+// only coverage for this round trip, not just a CI-reliability backstop for
+// a flaky e2e exit-status bug (the original reason it was added — e2e
+// run.sh's `(source scenario.sh) > >(tee ...) 2>&1` used to swallow a
+// failing scenario's exit code, PR #735's "known issues" note / Opus review
+// finding #2). noopBackend (defined in server_phase6_test.go) never
+// auto-completes a dispatched job, so nothing but this test's explicit
+// POST .../done call can resolve it.
 func TestServer_ExecDispatch_ExitCodeRoundTrips(t *testing.T) {
 	t.Run("nonzero exit", func(t *testing.T) {
 		ts := newSmokeServer(t)

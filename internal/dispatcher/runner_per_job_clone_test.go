@@ -78,8 +78,6 @@ func TestDispatch_ContainerBackend_BareRepoProject_PreClonesIntoStagingDir(t *te
 	r := &Runner{
 		DB:          d.Conn,
 		Backend:     be,
-		Sandbox:     &gwFakeSandboxPrep{dir: t.TempDir()},
-		Runtime:     &gwFakeRuntime{},
 		BoidBinary:  "/boid",
 		RuntimesDir: runtimesDir,
 		Projects: fakeProjectLookup{projects: []*orchestrator.Project{
@@ -138,61 +136,6 @@ func TestDispatch_ContainerBackend_BareRepoProject_PreClonesIntoStagingDir(t *te
 	}
 }
 
-// TestDispatch_UsernsBackend_BareRepoProject_DoesNotPreClone pins the
-// negative case: the userns backend never triggers the per-job-clone path
-// (IsContainerBackend(r.Backend) is false for it) — cloneWorkspaceDir is
-// left for the pre-existing in-sandbox clone sequence to populate exactly
-// as before this PR, even for a git-URL-registered project.
-func TestDispatch_UsernsBackend_BareRepoProject_DoesNotPreClone(t *testing.T) {
-	bareRepoPath := setupPerJobCloneBareRepo(t)
-
-	d := newGatewayTestDB(t)
-	if err := orchestrator.CreateProject(d.Conn, &orchestrator.Project{ID: "proj-1", WorkDir: bareRepoPath}); err != nil {
-		t.Fatalf("create project: %v", err)
-	}
-
-	runtimesDir := t.TempDir()
-	r := &Runner{
-		DB:          d.Conn,
-		Sandbox:     &gwFakeSandboxPrep{dir: t.TempDir()},
-		Runtime:     &gwFakeRuntime{},
-		BoidBinary:  "/boid",
-		RuntimesDir: runtimesDir,
-		Projects: fakeProjectLookup{projects: []*orchestrator.Project{
-			{ID: "proj-1", WorkDir: bareRepoPath, UpstreamURL: "https://example.com/owner/proj-1.git"},
-		}},
-	}
-
-	spec := &orchestrator.JobSpec{
-		ProjectID: "proj-1",
-		Argv:      []string{"echo", "hi"},
-		Kind:      orchestrator.JobKindHook,
-		Visibility: orchestrator.Visibility{
-			ProjectDir:  bareRepoPath,
-			ProjectName: "proj-1",
-			Writable:    true,
-			Clone:       &orchestrator.CloneDeclaration{Branch: "main", BaseBranch: "main", CheckoutOnly: true},
-		},
-	}
-
-	jobID, err := r.Dispatch(context.Background(), spec, nil)
-	if err != nil {
-		t.Fatalf("Dispatch: %v", err)
-	}
-
-	stagingDir := filepath.Join(runtimesDir, jobID, "workspace")
-	if _, err := os.ReadFile(filepath.Join(stagingDir, "README.md")); err == nil {
-		t.Fatalf("expected the userns backend to NOT pre-clone (no PrepareJobCheckout call), but %s/README.md exists", stagingDir)
-	}
-
-	r.checkoutMu.Lock()
-	_, tracked := r.checkoutDirs[jobID]
-	r.checkoutMu.Unlock()
-	if tracked {
-		t.Fatal("checkoutDirs should not track a job the userns backend dispatched")
-	}
-}
-
 // newPerJobCloneRunner builds a Runner wired identically to
 // TestDispatch_ContainerBackend_BareRepoProject_PreClonesIntoStagingDir,
 // factored out so the WithProjectLock tests below (PR834 PR-2b round-2
@@ -209,8 +152,6 @@ func newPerJobCloneRunner(t *testing.T, bareRepoPath, runtimesDir string) *Runne
 	return &Runner{
 		DB:          d.Conn,
 		Backend:     be,
-		Sandbox:     &gwFakeSandboxPrep{dir: t.TempDir()},
-		Runtime:     &gwFakeRuntime{},
 		BoidBinary:  "/boid",
 		RuntimesDir: runtimesDir,
 		Projects: fakeProjectLookup{projects: []*orchestrator.Project{
@@ -482,8 +423,6 @@ func TestDispatch_ContainerBackend_ConcurrentProjectRmReadd_NeverMixesCheckout(t
 	r := &Runner{
 		DB:          d.Conn,
 		Backend:     be,
-		Sandbox:     &gwFakeSandboxPrep{dir: t.TempDir()},
-		Runtime:     &gwFakeRuntime{},
 		BoidBinary:  "/boid",
 		RuntimesDir: runtimesDir,
 		Projects:    projects,

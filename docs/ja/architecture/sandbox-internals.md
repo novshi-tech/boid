@@ -1,6 +1,6 @@
 # サンドボックス内部実装
 
-`boid` のサンドボックスがどう組まれているか、 hook を 1 つ動かすときに何が起きているかを記したページです。 [アーキテクチャ概要](overview.md) の sandbox 節を、ファイルとシステムコールの粒度で掘り下げています。
+`boid` のサンドボックスがどう組まれているか、 hook を 1 つ動かすときに何が起きているかを記したページです。 [アーキテクチャ概要](overview.md) の sandbox 節を、コンテナ起動パラメータとファイルレイアウトの粒度で掘り下げています。
 
 主な読者は `internal/sandbox/` に手を入れる contributor、サンドボックス絡みの不具合を追っている人、あるいは「なぜ**ホスト側**のホームディレクトリが見えないのか」 を最後まで知りたい人です (サンドボックス自身の `$HOME` は別物で workspace スコープです — 後述の「sandbox 内のプロセスからは」を参照)。
 
@@ -13,80 +13,59 @@
 3. **ユーザ ID** — ホストの root には触れない (rootless)
 4. **コマンド** — host で動かすコマンドは kit の `host_commands` で宣言された分だけ通る
 
-これら全てを Linux の標準機構 (mount namespace / user namespace / chroot / pasta / nftables) で組み合わせます。 Docker のような追加ランタイムは要りません。
+これら全てを、boid daemon が Docker/Podman コンテナランタイムに委譲して実現します (PR-4 = volume-only cutover 以降、コンテナ backend が唯一の sandbox backend — `sandbox.backend` config は撤去済み)。 mount/network/user namespace の分離やルートファイルシステムの切り替えはコンテナランタイム自身が担い、boid 側で namespace 系 syscall を直接発行するコードはもうありません。
 
 ## 起動の全体像
 
-`boid` daemon が hook を 1 つ起動するとき、dispatcher が JSON 形式の spec ファイルをディスクに書き出し、`boid runner-outer` を起動します。プロセスチェーンは 5 段です。
+`boid` daemon が hook を 1 つ起動するとき、`internal/dispatcher` の `containerBackend.Launch`（[`internal/dispatcher/container_backend.go`](https://github.com/novshi-tech/boid/blob/main/internal/dispatcher/container_backend.go)）が `sandbox.Spec` を Docker Engine API の `container create` 呼び出しに翻訳し、host 側の docker/podman daemon に対して boid daemon 自身の兄弟コンテナ (sibling container、いわゆる docker-out-of-docker) を 1 つ起動します。
 
 ```
 +-------------------------------------------------------------+
-| runner-outer  (host で実行)                                 |
-|   JSON spec を読み込み                                      |
-|   pasta を子プロセスとして exec ------+                     |
-+----------------------------------------|--------------------+
-                                         ▼
+| boid daemon (bare-metal、または compose の daemon service)  |
+|   containerBackend.Launch が sandbox.Spec を                |
+|   docker `container create` + `start` に翻訳                |
++----------------------------------|---------------------------+
+                                    v  Docker Engine API
 +-------------------------------------------------------------+
-| pasta (ネットワーク namespace + ユーザ namespace)           |
-|   -- boid runner-inner を起動 --------+                    |
-+----------------------------------------|--------------------+
-                                         ▼
-+-------------------------------------------------------------+
-| runner-inner  (pasta の user+net ns 内、 内側 uid 0)        |
-|   nftables で egress を制限 (proxy 経由のみ許可)           |
-|   clone(CLONE_NEWUSER|CLONE_NEWNS) で子を fork ----+       |
-+------------------------------------------------------|------+
-                                                       ▼
-+-------------------------------------------------------------+
-| runner-inner-child  (新規 user+mount ns 内、 uid 0)         |
-|   $ROOT に bind mount で sandbox fs を組み立て              |
-|   pivot_root で $ROOT を新しいルートに                      |
-|   adapter.Run() でエージェントを exec                       |
+| job container (image: build/container/Dockerfile がビルド   |
+| する boid-runner image、`HostConfig.Init: true` で           |
+| PID 1 = docker-init/tini)                                    |
+|   ENTRYPOINT = `/usr/local/bin/boid runner-container`        |
+|     --spec /run/boid/spec.json --state /run/boid/state.json |
+|   spec.Files を書き込み → spec.Symlinks (host command shim) |
+|   を再構成 → sandbox 内 clone (該当時) → adapter.Run() で   |
+|   エージェントを exec                                        |
 +-------------------------------------------------------------+
 ```
 
-実装は [`internal/sandbox/runner/`](https://github.com/novshi-tech/boid/blob/main/internal/sandbox/runner/) に集まっています (Phase 3-a で bash 3 本から Go ネイティブに置換)。
+旧 userns backend にあった `runner-outer → pasta → runner-inner → runner-inner-child` という 5 段プロセスチェーン (`cmd/runner.go` の `runner-outer`/`runner-inner` サブコマンド、`internal/sandbox/runner/runner_linux.go` の `clone(CLONE_NEWUSER|CLONE_NEWNS)` + `pivot_root` パス) は PR-4 (`docs/plans/volume-only-daemon.md`、2026-07 cutover) で完全に撤去されました。 実装は host 側の [`internal/dispatcher/container_backend.go`](https://github.com/novshi-tech/boid/blob/main/internal/dispatcher/container_backend.go)（launch / attach / resize / signal / reap を `backend.SandboxBackend` interface 経由で提供）と、コンテナ内で動く [`internal/sandbox/runner/runner_container_linux.go`](https://github.com/novshi-tech/boid/blob/main/internal/sandbox/runner/runner_container_linux.go) の `RunContainer`（`boid runner-container` の entry point）に分かれています。
 
-### 1. `runner-outer`
+### コンテナ起動パラメータ (`containerBackend.Launch`)
 
-dispatcher が書き出した JSON spec を読み込み、pasta を次の引数で起動します:
+- **イメージ** — `build/container/Dockerfile` がビルドする boid-runner image。 `boid` バイナリは `/usr/local/bin/boid` にビルド時点で焼き込まれ (`COPY --from=builder`)、`ENTRYPOINT` は固定で `["/usr/local/bin/boid", "runner-container"]`。`Cmd` には `--spec`/`--state` の 2 引数だけを渡す
+- **spec / state ファイル** — dispatcher が host 側に書き出した `runner-spec.json` (read-only) / `runner-state.json` (read-write) だけを、それぞれ `/run/boid/spec.json` / `/run/boid/state.json` として bind mount する。 job container から見える host filesystem はこの 2 ファイルのみで、project checkout やホームディレクトリの bind mount は無い (volume-only pivot の帰結。 `docs/plans/volume-only-daemon.md`)
+- **volume** — [`internal/sandbox/realization/`](https://github.com/novshi-tech/boid/blob/main/internal/sandbox/realization/) が解決した volume / tmpfs を Docker の named volume / mount に変換する (`containerMounts`)。 workspace スコープの `$HOME` も named volume (後述)
+- **ネットワーク** — workspace ごとに daemon が使い捨てで作る `internal: true` の docker network に接続する (後述「ネットワーク制御」)
+- **PID 1** — `HostConfig.Init: true` (docker-init/tini) を指定。 SIGUSR1 の中継やゾンビ回収は tini が担い、boid 側で signal-forwarding loop を自前実装する必要はない
+- **uid/gid** — image ビルド時に作成した非 root の固定 uid/gid (`boid` ユーザ) で起動する
 
-```
-pasta --config-net -4 \
-    -a 10.0.2.0 -n 24 -g 10.0.2.2 \
-    --dns-forward 10.0.2.3 \
-    -t none -u none \
-    -- boid runner-inner --spec <spec.json> --state <state.json>
-```
+### `boid runner-container` entrypoint (`RunContainer`)
 
-`pasta` はユーザモードで動くネットワーク namespace ラッパで、サンドボックス内のプロセスから見たネットワークを完全に独立させます。 ホストの NIC 経由ではなく、 pasta が提供するゲートウェイ (`10.0.2.2`) と DNS フォワーダ (`10.0.2.3`) が経路です。 pasta の戻り後にホスト側 cleanup を行います (後述)。
+job container の root filesystem は起動直後から既に image 自身のもの (sandbox root そのもの) なので pivot_root に相当する処理は無い。`RunContainer` が行う手順:
 
-### 2. `runner-inner`
-
-pasta の user+net namespace の内側で動きます。 この時点では**内側 uid 0** です (uid_map: host uid 1000 → container uid 0。 uid 0 がなければ `CAP_SYS_ADMIN` が得られず後続の mount 操作が EPERM になるため)。
-
-主要ステップ:
-
-- **nftables ルール** — uid 0 のうちに `CAP_NET_ADMIN` で egress ルールを書く (proxy ポート以外を drop)
-- **`clone(CLONE_NEWUSER|CLONE_NEWNS)`** — `runner-inner-child` を新しい user+mount namespace に生成する。 uid_map は同じく `ContainerID=0, HostID=<euid>, Size=1`
-
-### 3. `runner-inner-child`
-
-新規の user+mount namespace 内で動きます (uid 0)。 ここで sandbox の fs レイアウトを組み立て、エージェントを起動します。
-
-主要ステップ:
-
-- **bind mount** — kit の `additional_bindings`、 sandbox 内 clone の runtime dir (project が可視な場合)、 `/usr` や `/lib` 等のシステムディレクトリを `$ROOT` 配下に bind / rbind マウント。 これがサンドボックス内から見えるファイルセットを決めます
-- **`pivot_root`** — `$ROOT` を新しいルートに切り替える。 旧ルートは `/.old_root` にピボットしてから umount + rmdir する
-- **シンボリックリンク** — `boid` shim を `/run/boid/bin/<command>` 等にリンク
-- **`adapter.Run()`** — HarnessAdapter 経由でエージェント (claude / codex / opencode / shell) を exec し、停止シグナル (SIGUSR1 → 子に SIGTERM) の中継・終了コード正規化・broker job-done 送信を行う
+1. `spec.Files` を絶対パスへ書き込む
+2. `spec.Symlinks` (project ごとに許可された host command の shim、`/run/boid/bin/<name> -> boid`) を再構成する — image には `boid` 本体の symlink しか焼き込まれていない (許可コマンドの集合は image ビルド時点では未知) ため、コンテナ起動の度に spec から作り直す
+3. `spec.Clone.Enabled` なら sandbox 内 clone を実行する (git gateway 経由、host への broker dispatch は無し)
+4. `spec.Env["PATH"]` を反映する
+5. `adapter.Run()` (HarnessAdapter 経由) でエージェント (claude / codex / opencode) または shell hook を exec し、停止シグナル (SIGUSR1 → 子に SIGTERM) の中継・終了コード正規化を行う
+6. 終了後、broker へ `boid job done` を送信する (後述「host commands と broker」)
 
 sandbox 内のプロセスからは:
 
-- **host 側**のホームディレクトリ・SSH 鍵・他プロジェクトは存在自体が見えない (`$ROOT` 配下に bind しなければパスが解決しない)。 サンドボックス自身の `$HOME` は別物 — 下記参照
-- 自分は uid 0 (内側) で動いているが、 user namespace の外には出られずホストの root へのエスカレーションパスはない
+- **host 側**のホームディレクトリ・SSH 鍵・他プロジェクトは存在自体が見えない (spec/state の 2 ファイル以外、host filesystem への bind mount が無い)。 サンドボックス自身の `$HOME` は別物 — 下記参照
+- コンテナの外 (host や他 job のコンテナ) へは、コンテナランタイム自身の namespace 分離により到達できない
 
-サンドボックス内の `$HOME` は host 共有でも毎回まっさらな tmpfs でもなく、 **同一 workspace に dispatch される job 間で永続する、 read-write bind された workspace スコープの volume** です (docs/plans/home-workspace-volume.md Phase 4)。 hook が `$HOME` 配下に書いたファイルは、 同じ workspace の後続の別 job からも見えます。 `$HOME/.boid` も同様に永続します — Phase 6 PR8 以前は dispatch 毎に job-scoped tmpfs を重ねて `$HOME/.boid/output/payload_patch.json` を job 間で隔離していましたが、 payload patch の唯一経路が broker RPC (`boid task update --payload-patch`) になったことでこのファイル経由の出力自体が撤廃され、 隔離用の tmpfs も不要になりました (詳細は [Hook スクリプトプロトコル / 出力](../reference/hook-contract.md#出力))。
+サンドボックス内の `$HOME` は host 共有でも毎回まっさらな tmpfs でもなく、 **同一 workspace に dispatch される job 間で永続する、 read-write マウントされた workspace スコープの named volume** です (docs/plans/home-workspace-volume.md Phase 4)。 hook が `$HOME` 配下に書いたファイルは、 同じ workspace の後続の別 job からも見えます。 `$HOME/.boid` も同様に永続します — Phase 6 PR8 以前は dispatch 毎に job-scoped tmpfs を重ねて `$HOME/.boid/output/payload_patch.json` を job 間で隔離していましたが、 payload patch の唯一経路が broker RPC (`boid task update --payload-patch`) になったことでこのファイル経由の出力自体が撤廃され、 隔離用の tmpfs も不要になりました (詳細は [Hook スクリプトプロトコル / 出力](../reference/hook-contract.md#出力))。
 
 タスクコンテキストは `boid task current` / `instructions` / `env` / `payload` — shim 経由で呼べる broker RPC — で取得します。 dispatch 時に一括生成する方式ではなく、必要になった時点で pull します。 hook のプロトコル詳細は [Hook スクリプトプロトコル](../reference/hook-contract.md)。
 
@@ -94,17 +73,13 @@ sandbox 内のプロセスからは:
 
 ネットワーク境界は 2 段構えです。
 
-### ① pasta (ネットワーク namespace)
+### ① workspace ごとの docker internal network
 
-pasta はユーザ権限で動くツールで、サンドボックス内に独立したネットワーク namespace を提供します。 ホストの物理 NIC は見えず、外向きの通信は pasta が host 側へリレーします。
+workspace ごとに daemon が使い捨てで `docker network create --internal --label boid.workspace=<slug>` するネットワークに job container を接続します (`ensureWorkspaceNetwork`、[`internal/dispatcher/container_backend.go`](https://github.com/novshi-tech/boid/blob/main/internal/dispatcher/container_backend.go))。 `internal: true` のため、この network 上のコンテナには外部への default route がありません — job container が直接到達できるのは同じ network 上の boid daemon (自分自身) だけです。
 
-### ② nftables による drop ルール
+### ② daemon 内蔵 egress proxy
 
-`runner-inner` が uid 0 のうちに nftables ルールを書き、 proxy ポート以外への外向きパケットを drop します。 結果として:
-
-- HTTP/HTTPS は環境変数 `http_proxy` / `https_proxy` で `10.0.2.2:<port>` を指定して proxy 経由でしか出られない
-- proxy は許可リストに該当するホストだけ中継する
-- 直接の TCP/UDP は遮断される
+daemon container 自身が [`internal/sandbox/proxy_manager.go`](https://github.com/novshi-tech/boid/blob/main/internal/sandbox/proxy_manager.go) の ProxyManager を in-process で動かし、compose network 上に `boid-egress` という DNS alias で待ち受けます (`build/container/compose.yml`)。 job container には環境変数 `http_proxy` / `https_proxy` / `HTTP_PROXY` / `HTTPS_PROXY` に daemon 側アドレスが渡され (`applyProxyEnv`、[`internal/dispatcher/sandbox_builder.go`](https://github.com/novshi-tech/boid/blob/main/internal/dispatcher/sandbox_builder.go))、許可リストに無いドメインへのリクエストは proxy が拒否します。 直接の TCP/UDP は internal network に default route が無いことで既に遮断されています。 daemon container 自身は別途 default bridge network にも所属しており、そちらで proxy 自身の上流フェッチや `docker pull` 用の外部インターネット接続を行います (`build/container/compose.yml` のトポロジ節を参照)。
 
 proxy の実装は [`internal/sandbox/proxy.go`](https://github.com/novshi-tech/boid/blob/main/internal/sandbox/proxy.go) で、 daemon の goroutine として動きます。
 
@@ -229,60 +204,52 @@ to specific subcommands (e.g. allow: [build])
 サンドボックスから host のコマンドを呼ぶには、 `boid` shim と broker のペアが要ります。
 
 ```
-sandbox 内: boid <subcommand>     (shim バイナリ)
-              |
-              | UNIX socket (host 上)
-              v
-host: boid daemon の broker (internal/sandbox.Broker)
-              |
-              | コマンドポリシーを評価
-              v
-host: 許可されたコマンドを実際に exec
+job container 内: boid <subcommand>   (image に焼き込まれた boid バイナリ自身)
+                    |
+                    | TCP + mTLS (workspace の docker network 経由)
+                    v
+daemon container: boid daemon の broker (internal/sandbox.Broker)
+                    |
+                    | コマンドポリシーを評価
+                    v
+daemon container: 許可されたコマンドを実際に exec
 ```
 
-shim は sandbox 起動時に bind mount で sandbox 内に持ち込まれます (実体は `internal/sandbox/boid_shim.go` でビルドされる薄いバイナリ)。 `boid task update` や `boid job done`、 kit が `host_commands` 宣言した `gh` / `git push` 等は、すべてこの経路で host へ流れます。
+shim の実体は `boid` バイナリ自身です (サブコマンドとして shim の動作に切り替わる multi-call binary、`internal/sandbox/boid_shim.go`)。 image ビルド時に `/usr/local/bin/boid` として既に焼き込まれており、project ごとに許可された host command 名の symlink (`/run/boid/bin/<name> -> boid`) はコンテナ起動の度に `spec.Symlinks` から再構成されます (前述「`boid runner-container` entrypoint」)。 job container と daemon container は別プロセス (別コンテナ) のため、broker との通信は UNIX socket ではなく TCP + mTLS で行われます — daemon が job ごとに短命の client 証明書を発行し (`BOID_BROKER_TLS_*` env 経由)、`internal/sandbox/brokerclient` がそれを使って接続します (`docs/plans/phase6-cutover-followups.md` §⓪ broker TCP wire)。 `boid task update` や `boid job done`、 kit が `host_commands` 宣言した `gh` / `git push` 等は、すべてこの経路で daemon へ流れます。
 
 broker は `internal/sandbox/broker.go` にあり、次の責務を持ちます:
 
-- shim からの要求を UNIX socket で受ける
+- shim からの要求を受ける (job container から daemon container への TCP + mTLS 接続、または bare-metal 経路の UNIX socket)
 - リクエストにくっついている **トークン** を見て、どの job が呼んでいるかを特定する
 - そのジョブが許可されたコマンド・サブコマンド・引数パターンに合致するかを `policy.go` の `CheckPolicy` で判定する
-- 許可されていれば host 側で実際に exec し、 stdout / stderr / 終了コードを shim に返す
+- 許可されていれば daemon 側で実際に exec し、 stdout / stderr / 終了コードを shim に返す
 
-トークンは sandbox 起動時に発行され、 sandbox 内の環境変数 `BOID_BROKER_TOKEN` 等で受け渡されます。 sandbox の外からはトークンを知ることができないため、たとえ broker socket のパスが漏れても、別 job のコマンドを許可させることはできません。
+トークンは sandbox 起動時に発行され、 sandbox 内の環境変数 `BOID_BROKER_TOKEN` 等で受け渡されます。 sandbox の外からはトークンを知ることができないため、たとえ broker のアドレスや mTLS 証明書のディレクトリパスが漏れても、別 job のコマンドを許可させることはできません。
 
-host command は host 側で project の checkout ディレクトリではなく中立ディレクトリ (`os.TempDir()`) で実行されます。 stdin も渡りません。 repo 文脈が必要なコマンド (`gh` 等) は kit の `env:` に `${boid:repo_slug}` を書いて渡します (詳細は [`project.yaml` リファレンス](../reference/project-yaml.md) の「host command の実行契約」)。
+host command は daemon 側で project の checkout ディレクトリではなく中立ディレクトリ (`os.TempDir()`) で実行されます。 stdin も渡りません。 repo 文脈が必要なコマンド (`gh` 等) は kit の `env:` に `${boid:repo_slug}` を書いて渡します (詳細は [`project.yaml` リファレンス](../reference/project-yaml.md) の「host command の実行契約」)。
 
 ## 後片付け
 
-後片付けは **`runner-outer`** が pasta の戻り後に Go コードで行います。
+後片付けは job container の **停止・削除** に集約されます。 mount/network/user namespace の生成・破棄をコンテナランタイム自身が担うため、旧 userns backend にあった「mount namespace の破棄をカーネルに任せる」「`$ROOT` を own ns / cross ns のどちらから消すか」といった作り込みは不要になりました。
 
-```go
-// runner-outer (抜粋)
-cleanupRoot(spec.RootDir)          // /tmp/boid-root-* プレフィックス確認後に rm -rf
-for _, p := range spec.CleanupPaths { os.RemoveAll(p) }
-os.Remove(specPath)                // spec は secrets を含むので成否に関わらず削除
-if exitCode == 0 { os.Remove(statePath) }  // state は失敗時のみ保全
-```
+job container が終了すると `containerBackend` ([`internal/dispatcher/container_backend.go`](https://github.com/novshi-tech/boid/blob/main/internal/dispatcher/container_backend.go)) が:
 
-ポイントは 3 つです。
+1. `ContainerRemove` (`RemoveVolumes: true`) でコンテナ本体と、そのコンテナ専用の匿名 volume を削除する (失敗時は `Force: true` で再試行する)
+2. host 側に書き出した `spec.json` / `state.json` (および per-job TLS cert 用の一時ディレクトリ) を削除する — `spec.json` は broker token 等の secrets を含むため終了コードに関わらず必ず削除する
+3. workspace ごとの docker network・named volume はここでは削除しない (同一 workspace の後続 job が再利用するため)
 
-1. **マウント解除はカーネルに任せる**。 `runner-inner` / `runner-inner-child` が動いていた mount namespace は pasta プロセスが exit した時点で破棄され、配下の bind mount はカーネルに自動回収される。 `umount -R` を明示的に呼ぶ必要はない。
-2. **`$ROOT` の削除は namespace の外で行う**。 `runner-outer` が動くのはホストの mount namespace。 pasta が終了した後なので sandbox の bind mount は既に消えており、 `rm -rf` がホストファイルに到達する余地がない。
-3. **`/tmp/boid-root-*` プレフィックスでなければ rm しない**。 `spec.RootDir` が意図しない値になっていてもホストを壊さない安全弁 (`cleanupRoot` が確認)。
+daemon 起動時には `containerBackend.ReapOrphans` が、daemon 再起動やクラッシュを跨いで残った孤児コンテナ・network・volume を `boid.*` label ベースで掃除します (`internal/server/wire.go` の `reapOrphansBeforeReopen` から呼ばれる)。
 
-`exitCode != 0` のときは `runner-state.json` (`/tmp/boid-<runtime_id>-runner-state.json`) を保全して事後解析に使えるようにします。 この JSON には起動フェーズの進行記録・spec (secrets は redact 済)・終了コードが含まれ、30 日後に GC で削除されます。 spec ファイルは成否に関わらず削除します (broker token 等の secrets を含むため)。
-
-過去にマウント越しの `rm -rf` でホストファイルが消えた事例があり、現在の実装は own ns / cross ns の 2 経路すべてで安全側に倒すようになっています。
+失敗時 (`exitCode != 0`) は `state.json` (`runner-state.json`) を削除せず保全し、事後解析に使えるようにします。 この JSON には起動フェーズの進行記録・spec (secrets は redact 済)・終了コードが含まれます。
 
 ## サンドボックス内から呼べる boid builtin 一覧
 
 サンドボックス内のハンドラ (hook / exec) は `boid`、`fetch` の 2 つの builtin を呼ぶことができます。
 いずれも自動的に注入されるため、 `project.yaml` / `kit.yaml` での宣言は不要です。
 
-`git` は broker builtin ではありません。 サンドボックス内の実バイナリ (`/usr` の base rbind 経由) として動作し、
+`git` は broker builtin ではありません。 job container の image に apt でインストールされた実バイナリとして動作し、
 project の clone・fetch・push はすべて sandbox 内の git が git gateway (認証注入リバースプロキシ) 経由で行います
-(host への broker dispatch は無し)。 詳細は [`project.yaml` リファレンス](../reference/project-yaml.md#git-gateway--sandbox-内-clone) を参照してください。
+(daemon への broker dispatch は無し)。 詳細は [`project.yaml` リファレンス](../reference/project-yaml.md#git-gateway--sandbox-内-clone) を参照してください。
 
 ### boid builtin
 

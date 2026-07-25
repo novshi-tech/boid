@@ -2,39 +2,48 @@ package dispatcher_test
 
 import (
 	"context"
-	"fmt"
-	"os"
-	"path/filepath"
 	"testing"
 
 	"github.com/novshi-tech/boid/internal/dispatcher"
 	"github.com/novshi-tech/boid/internal/gitgateway"
 	"github.com/novshi-tech/boid/internal/orchestrator"
 	"github.com/novshi-tech/boid/internal/sandbox"
+	"github.com/novshi-tech/boid/internal/sandbox/backend"
 	"github.com/novshi-tech/boid/testutil"
 )
 
-// capturingSandboxPrep is a SandboxPreparer stub that records the last
-// sandbox.Spec it was asked to prepare, so Dispatch-level tests can assert on
-// the fully-resolved mounts/WorkDir/Clone fields — the same shape BuildSandboxSpec
-// produces internally, but reachable only through the real Dispatch() call path
-// (see .claude/skills/boid-review's wiring-seam doctrine: a unit test of
-// BuildSandboxSpec alone would not catch a dropped Runner.Dispatch wiring step).
-type capturingSandboxPrep struct {
-	dir  string
+// capturingSandboxBackend is a minimal backend.SandboxBackend that records
+// the last sandbox.Spec passed to Launch, so Dispatch-level tests can
+// assert on the fully-resolved mounts/WorkDir/Clone fields — the same shape
+// BuildSandboxSpec produces internally, but reachable only through the real
+// Dispatch() call path (see .claude/skills/boid-review's wiring-seam
+// doctrine: a unit test of BuildSandboxSpec alone would not catch a dropped
+// Runner.Dispatch wiring step).
+//
+// Replaces the pre-PR-4 capturingSandboxPrep (a SandboxPreparer stub —
+// docs/plans/volume-only-daemon.md §論点e removed that userns-only seam);
+// Launch's own spec parameter already carries the exact same sandbox.Spec a
+// SandboxPreparer used to receive, so this simplifies to recording it
+// directly. Reuses capturingLaunchSession (runner_launch_options_workspace_test.go,
+// same package) for the returned session rather than defining a second,
+// near-identical stub.
+type capturingSandboxBackend struct {
 	spec sandbox.Spec
 }
 
-func (p *capturingSandboxPrep) PrepareSandbox(spec sandbox.Spec) (*dispatcher.PreparedSandbox, error) {
-	p.spec = spec
-	specPath := filepath.Join(p.dir, "runner-spec.json")
-	if err := os.WriteFile(specPath, []byte("{}"), 0o600); err != nil {
-		return nil, fmt.Errorf("write runner spec: %w", err)
-	}
-	return &dispatcher.PreparedSandbox{
-		SpecPath:  specPath,
-		StatePath: filepath.Join(p.dir, "runner-state.json"),
-	}, nil
+var _ backend.SandboxBackend = (*capturingSandboxBackend)(nil)
+
+func (b *capturingSandboxBackend) Launch(_ context.Context, spec sandbox.Spec, opts backend.LaunchOptions) (backend.SandboxSession, error) {
+	b.spec = spec
+	return &capturingLaunchSession{id: "fake-runtime-" + opts.JobID}, nil
+}
+
+func (b *capturingSandboxBackend) Adopt(context.Context, string) (backend.SandboxSession, bool) {
+	return nil, false
+}
+
+func (b *capturingSandboxBackend) ReapOrphans(context.Context) (backend.ReapReport, error) {
+	return backend.ReapReport{}, nil
 }
 
 // findMountTarget returns the first mount in mounts whose Target matches, or
@@ -70,12 +79,11 @@ func TestDispatch_CloneMode_NameScopedWorkspaceDir(t *testing.T) {
 	}
 
 	gwURL := "http://10.0.2.2:9"
-	prep := &capturingSandboxPrep{dir: t.TempDir()}
+	prep := &capturingSandboxBackend{}
 	r := &dispatcher.Runner{
 		DB:          d.Conn,
 		Projects:    orchestrator.DBProjectCatalog{DB: d.Conn},
-		Sandbox:     prep,
-		Runtime:     newStatefulRuntime(),
+		Backend:     prep,
 		BoidBinary:  "/boid",
 		GitGateway:  gitgateway.NewRegistry(),
 		GatewayURL:  &gwURL,
@@ -130,12 +138,11 @@ func TestDispatch_CloneMode_FallsBackToProjectDirBasenameWhenNameUnset(t *testin
 	}
 
 	gwURL := "http://10.0.2.2:9"
-	prep := &capturingSandboxPrep{dir: t.TempDir()}
+	prep := &capturingSandboxBackend{}
 	r := &dispatcher.Runner{
 		DB:          d.Conn,
 		Projects:    orchestrator.DBProjectCatalog{DB: d.Conn},
-		Sandbox:     prep,
-		Runtime:     newStatefulRuntime(),
+		Backend:     prep,
 		BoidBinary:  "/boid",
 		GitGateway:  gitgateway.NewRegistry(),
 		GatewayURL:  &gwURL,

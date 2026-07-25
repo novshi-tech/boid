@@ -1,5 +1,0 @@
-id: project-alpha
-name: Project Alpha
-task_behaviors:
-  alpha:
-    transition: one-shot

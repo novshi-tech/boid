@@ -57,6 +57,12 @@ func TestRedactEnv(t *testing.T) {
 	}
 }
 
+// TestBuildSpecDump_RedactsEnvAndCapturesLayout pins buildSpecDump's PR-4
+// shape (docs/plans/volume-only-daemon.md §論点e): the dump reflects
+// spec.Mounts verbatim now — no more synthetic base-mount/nftables plan
+// reconstruction via the removed sandbox.BuildPlan (userns-only), since the
+// container backend's image already has the base OS baked in and has no
+// pivot_root/nft egress mechanism of its own to describe.
 func TestBuildSpecDump_RedactsEnvAndCapturesLayout(t *testing.T) {
 	spec := sandbox.Spec{
 		ID:        "job-9",
@@ -68,8 +74,11 @@ func TestBuildSpecDump_RedactsEnvAndCapturesLayout(t *testing.T) {
 			"BOID_BROKER_TOKEN": "tok",
 			"HOME":              "/home/x",
 		},
+		Mounts: []sandbox.Mount{
+			{Source: "/host/workspace", Target: "/workspace", Type: sandbox.MountBind},
+		},
 	}
-	dump := buildSpecDump(spec, []string{"pasta", "--config-net"})
+	dump := buildSpecDump(spec)
 
 	if dump.Env["BOID_BROKER_TOKEN"] != "<redacted>" {
 		t.Errorf("token must be redacted in spec dump, got %q", dump.Env["BOID_BROKER_TOKEN"])
@@ -77,22 +86,9 @@ func TestBuildSpecDump_RedactsEnvAndCapturesLayout(t *testing.T) {
 	if dump.Env["HOME"] != "/home/x" {
 		t.Errorf("HOME must be kept, got %q", dump.Env["HOME"])
 	}
-	if dump.PivotRoot != "/tmp/boid-root-abc" {
-		t.Errorf("PivotRoot = %q, want root dir", dump.PivotRoot)
-	}
-	// ProxyPort > 0 means nft rules must be present in the dump.
-	if len(dump.NFTRules) == 0 {
-		t.Error("expected nft rules in dump when ProxyPort > 0")
-	}
-	// Base mounts (/usr etc.) must be captured.
-	foundUsr := false
-	for _, m := range dump.Mounts {
-		if m.Target == "/usr" {
-			foundUsr = true
-		}
-	}
-	if !foundUsr {
-		t.Error("expected /usr base mount in dump")
+	// spec.Mounts pass through verbatim (no base-mount synthesis any more).
+	if len(dump.Mounts) != 1 || dump.Mounts[0].Target != "/workspace" {
+		t.Errorf("expected spec.Mounts to pass through verbatim, got %+v", dump.Mounts)
 	}
 }
 
@@ -104,7 +100,7 @@ func TestState_NDJSONAppend(t *testing.T) {
 	if st == nil {
 		t.Fatal("OpenState returned nil for valid path")
 	}
-	st.Spec("outer", sandbox.Spec{ID: "job-1", Env: map[string]string{"X": "secret"}}, []string{"pasta"})
+	st.Spec("outer", sandbox.Spec{ID: "job-1", Env: map[string]string{"X": "secret"}})
 	st.OK("inner", "nft")
 	st.Fail("inner-child", "pivot-root", os.ErrPermission)
 	st.Close()
@@ -199,7 +195,7 @@ func TestBuildSpecDump_CloneRedactsTokenAndCapturesDeclaration(t *testing.T) {
 			BaseBranch:   "main",
 		},
 	}
-	dump := buildSpecDump(spec, nil)
+	dump := buildSpecDump(spec)
 
 	if dump.Clone == nil {
 		t.Fatal("expected non-nil Clone dump when spec.Clone.Enabled")
@@ -224,7 +220,7 @@ func TestBuildSpecDump_CloneRedactsTokenAndCapturesDeclaration(t *testing.T) {
 
 func TestBuildSpecDump_CloneDisabledOmitsCloneField(t *testing.T) {
 	spec := sandbox.Spec{ID: "job-no-clone"}
-	dump := buildSpecDump(spec, nil)
+	dump := buildSpecDump(spec)
 	if dump.Clone != nil {
 		t.Errorf("expected nil Clone dump when spec.Clone.Enabled is false, got %+v", dump.Clone)
 	}
@@ -233,7 +229,7 @@ func TestBuildSpecDump_CloneDisabledOmitsCloneField(t *testing.T) {
 func TestState_NilSafe(t *testing.T) {
 	// OpenState("") returns nil; all methods must be no-ops.
 	var st *State = OpenState("")
-	st.Spec("outer", sandbox.Spec{}, nil)
+	st.Spec("outer", sandbox.Spec{})
 	st.OK("x", "y")
 	st.Fail("x", "y", nil)
 	st.Close()

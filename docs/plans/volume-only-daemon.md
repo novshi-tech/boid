@@ -1,6 +1,6 @@
 # volume-only daemon: Phase 6 の compose 部分の再設計
 
-ステータス: **draft (2026-07-24 作成、実装未着手)**。
+ステータス: **完了 (2026-07-25、全 4 PR landed)**。 PR-1 (volume-only compose stack + secret on-first-boot generate + config CLI + workspace export/import) → PR-2a/2b (project git-URL 化 + bare repo + per-job clone) → PR-3 (CLI TCP profile → host mode + BOID_CLI_TOKEN 方式) → PR-4 (userns backend + `sandbox.backend` config option + bare `boid project add <dir>` + 旧 e2e black-box harness 撤去) の順で完結。 §論点 e の「PR-4 前の実機検証 gate」実施の確認は本 PR の実装 agent からは検証不可（nose host での実機作業のため）— PR-4 の着手判断自体は orchestrator/nose の指示に基づく。 実施記録が本 doc に追記されていない場合は別途確認が必要。 以下は設計時点の draft 本文をそのまま保持（実装時の決定・逸脱は各 PR の PR body / 本ファイル内の追記コメントを参照）。
 親ドキュメント: [phase6-container-backend.md](phase6-container-backend.md) の compose deploy 部分
 (§決定4「host BIND mounts で shared state」) を置換する。
 [phase6-cutover-followups.md](phase6-cutover-followups.md) §①-④ は本 doc の実装 PR 群で吸収される

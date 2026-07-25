@@ -12,85 +12,9 @@ import (
 	"github.com/novshi-tech/boid/internal/sandbox"
 )
 
-func TestPastaArgs_Matches1to1(t *testing.T) {
-	got := pastaArgs("/usr/local/bin/boid", "/tmp/boid-J-runner-spec.json", "/tmp/boid-J-runner-state.json")
-	want := []string{
-		"--config-net",
-		"-4",
-		"-a", "10.0.2.0", "-n", "24", "-g", "10.0.2.2",
-		"--dns-forward", "10.0.2.3",
-		"-t", "none", "-u", "none",
-		"--",
-		"/usr/local/bin/boid", "runner-inner",
-		"--spec", "/tmp/boid-J-runner-spec.json",
-		"--state", "/tmp/boid-J-runner-state.json",
-	}
-	if !reflect.DeepEqual(got, want) {
-		t.Errorf("pastaArgs mismatch\n got: %v\nwant: %v", got, want)
-	}
-}
-
 func TestStopSignalIsSIGUSR1(t *testing.T) {
 	if got := stopSignal(); got != syscall.SIGUSR1 {
 		t.Errorf("stopSignal() = %v, want SIGUSR1", got)
-	}
-}
-
-func TestEvalGuard(t *testing.T) {
-	dir := t.TempDir()
-	subdir := filepath.Join(dir, "adir")
-	if err := os.Mkdir(subdir, 0o755); err != nil {
-		t.Fatalf("mkdir: %v", err)
-	}
-	file := filepath.Join(dir, "afile")
-	if err := os.WriteFile(file, []byte("x"), 0o644); err != nil {
-		t.Fatalf("write: %v", err)
-	}
-	missing := filepath.Join(dir, "nope")
-
-	cases := []struct {
-		guard string
-		want  bool
-	}{
-		{"", true},                    // empty always passes
-		{"-d " + subdir, true},        // dir exists
-		{"-d " + file, false},         // file is not a dir
-		{"-d " + missing, false},      // missing
-		{"-f " + file, true},          // regular file
-		{"-f " + subdir, false},       // dir is not a regular file
-		{"-e " + subdir, true},        // exists (dir)
-		{"-e " + file, true},          // exists (file)
-		{"-e " + missing, false},      // missing
-		{"-z something", true},        // unknown op → fail-open
-		{"-d '" + subdir + "'", true}, // single-quoted path
-	}
-	for _, tc := range cases {
-		if got := evalGuard(tc.guard); got != tc.want {
-			t.Errorf("evalGuard(%q) = %v, want %v", tc.guard, got, tc.want)
-		}
-	}
-}
-
-func TestShellUnquote(t *testing.T) {
-	cases := map[string]string{
-		"/plain/path":    "/plain/path",
-		"'/quoted/path'": "/quoted/path",
-		`'a'"'"'b'`:      "a'b", // shellQuote's embedded-quote escape
-		"bare":           "bare",
-		"'with space'":   "with space",
-	}
-	for in, want := range cases {
-		if got := shellUnquote(in); got != want {
-			t.Errorf("shellUnquote(%q) = %q, want %q", in, got, want)
-		}
-	}
-}
-
-func TestEnvSlice_SortedKeyValue(t *testing.T) {
-	got := envSlice(map[string]string{"B": "2", "A": "1", "C": "3"})
-	want := []string{"A=1", "B=2", "C=3"}
-	if !reflect.DeepEqual(got, want) {
-		t.Errorf("envSlice = %v, want %v", got, want)
 	}
 }
 

@@ -143,87 +143,34 @@ jobs:
       - name: Smoke-test the entrypoint
         # Confirms the default ENTRYPOINT is `boid runner-container` (not
         # some ad-hoc shim) and that it fails fast with a clear message
-        # when required flags are missing — the same contract every other
-        # runner-* subcommand has (cmd/runner.go's newRunnerCmd). Does not
-        # exercise a real --spec run (no sandbox spec / broker to point it
-        # at in CI) — that lands with the containerBackend e2e in PR9.
+        # when required flags are missing (cmd/runner_container.go — the
+        # sole `boid runner-*` subcommand since PR-4 removed the userns
+        # launch chain). Does not exercise a real --spec run (no sandbox
+        # spec / broker to point it at in CI) — that lands with the
+        # containerBackend e2e in PR9.
         run: |
           set -euo pipefail
           out="$(docker run --rm "boid-runner:${GITHUB_SHA}" 2>&1 || true)"
           echo "$out"
           echo "$out" | grep -q -- 'runner-container: --spec is required'
 
-  e2e:
-    name: Black-box E2E
-    runs-on: ubuntu-24.04
-    timeout-minutes: 60
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
-
-      - name: Set up Go
-        uses: actions/setup-go@v5
-        with:
-          go-version-file: go.mod
-          cache: true
-
-      - name: Install runtime dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends tmux passt uidmap nftables
-          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
-
-      - name: Prerequisite self-check
-        run: |
-          set -euxo pipefail
-          uname -a
-          command -v tmux
-          command -v pasta
-          command -v nft
-          command -v unshare
-          bash -n e2e/run.sh
-          tmux -V
-          pasta --help >/dev/null
-          unshare --user --map-root-user --mount -- true
-
-      - name: Regression test run.sh exit-status propagation
-        # Guards the run.sh masking bug found alongside PR #735/#736: a
-        # failing scenario used to silently report success (and CI stayed
-        # green) because of two independent bugs — see run.sh's own comment
-        # on run_scenario, and e2e/selftest/run_sh_exit_status_test.sh's own
-        # header comment for the full story. Runs before the real suite so a
-        # regression here fails fast instead of hiding behind 30+ scenarios'
-        # worth of output.
-        run: bash e2e/selftest/run_sh_exit_status_test.sh
-
-      - name: Regression test run.sh skip marker
-        # Guards the `skip` marker mechanism (PR #736 e2e triage): a handful
-        # of scenarios are known-broken for tracked, non-silent reasons
-        # (pre-cutover scenario content, or a PR-#735 merge dependency — see
-        # each scenario's own `skip` file under e2e/scenarios/) and must be
-        # excluded from the default run without ever going quiet about it —
-        # docs/plans/quality-gates.md's "no silent caps" principle. See
-        # e2e/selftest/run_sh_skip_marker_test.sh's own header comment.
-        run: bash e2e/selftest/run_sh_skip_marker_test.sh
-
-      - name: Run black-box E2E suite
-        run: ./e2e/run.sh
-
   e2e-container:
     name: Container backend E2E (requires-docker)
     # docs/plans/phase6-container-backend.md §PR9: real-docker verification
-    # of the container backend, additive alongside (never replacing) the
-    # `e2e` job above — the userns backend keeps its own full e2e coverage
-    # running in parallel until the post-cutover retirement plan
-    # (docs/plans/phase6-cutover-followups.md) actually removes it. Every
-    # existing docker-proxy-* scenario in the `e2e` job above runs against a
-    # FAKE docker HTTP server over the userns backend (policy-only, no real
-    # data plane) — this job is the one place a real docker engine actually
-    # exercises the container backend's sibling-container path end to end.
-    # "requires-docker" (not a marker FILE like e2e/run.sh's
-    # requires-sandbox — this is a whole separate job, not a scenario
-    # variant) simply means: needs a real docker engine + compose v2
-    # plugin, which ubuntu-24.04 runners carry by default (confirmed,
+    # of the container backend. PR-4 (docs/plans/volume-only-daemon.md
+    # §論点e) removed the userns backend entirely, along with the per-
+    # scenario black-box harness (`e2e` job, e2e/run.sh + e2e/scenarios/*)
+    # that exercised it — every one of those ~40 scenarios depended on
+    # either the userns backend itself or `boid project add <dir>` (host-
+    # directory registration, also removed in PR-4), so neither could be
+    # ported forward as-is. This job is now the SOLE black-box E2E suite —
+    # narrower in scenario-count than the retired one (it pins the
+    # container-backend-specific invariants §決定5 calls out: sibling
+    # connectivity, workspace network isolation, reap-on-shutdown — not
+    # every behavior the retired scenarios covered), a known, tracked gap
+    # flagged in PR-4's own PR body rather than silently absorbed.
+    # "requires-docker" simply means: needs a real docker engine + compose
+    # v2 plugin, which ubuntu-24.04 runners carry by default (confirmed,
     # §前提 note) — the day-to-day dev host used throughout this plan's own
     # development does NOT (podman only), so this job's coverage has no
     # local-host equivalent today.

@@ -6,38 +6,34 @@ import (
 	"testing"
 )
 
-// TestServer_New_ContainerBackend_CleanOrphanRuntimesScansHostVisibleDir
-// pins PR834 PR-2b round-2 codex review Major 2: buildRuntime's startup
-// orphan-runtime-dir cleanup (wire.go's cleanOrphanRuntimes call) used to
-// scan runtimesDirFor(cfg) — the boid_state NAMED VOLUME root, invisible to
-// a DooD sibling job container's own host-side bind-mount source — even
-// under the container backend, where every actual PR-2b artifact (per-job
-// clone staging, workspace HOME, transcripts) lands under
-// hostVisibleRuntimesDirFor(cfg) instead (runner.RuntimesDir,
-// sandboxBackendForConfig's runtimeDir argument, transcriptLogReader — see
-// TestServer_New_ContainerBackend_TaskAppServiceUsesHostVisibleRuntimesDir
-// for the sibling wiring-seam bug this same class of divergence caused).
-// Left unfixed, a daemon crash mid-dispatch under container backend leaves
-// an orphaned per-job clone staging dir under the HOST-VISIBLE root that
-// startup cleanup never even looks at — it accumulates until the 30-day GC
-// threshold instead of being reclaimed on the very next daemon start the
-// way a userns deployment's orphans already are.
+// TestServer_New_CleanOrphanRuntimesScansHostVisibleDir pins PR834 PR-2b
+// round-2 codex review Major 2: buildRuntime's startup orphan-runtime-dir
+// cleanup (wire.go's cleanOrphanRuntimes call) used to scan
+// runtimesDirFor(cfg) — the boid_state NAMED VOLUME root, invisible to a
+// DooD sibling job container's own host-side bind-mount source — instead of
+// hostVisibleRuntimesDirFor(cfg), where every actual PR-2b artifact
+// (per-job clone staging, workspace HOME, transcripts) lands
+// (runner.RuntimesDir, sandboxBackendForConfig's runtimeDir argument,
+// transcriptLogReader — see
+// TestServer_New_TaskAppServiceUsesHostVisibleRuntimesDir for the sibling
+// wiring-seam bug this same class of divergence caused). Left unfixed, a
+// daemon crash mid-dispatch leaves an orphaned per-job clone staging dir
+// under the HOST-VISIBLE root that startup cleanup never even looks at — it
+// accumulates until the 30-day GC threshold instead of being reclaimed on
+// the very next daemon start.
+//
+// PR-4 (docs/plans/volume-only-daemon.md §論点e) made
+// hostVisibleRuntimesDirFor unconditional (container is the only sandbox
+// backend now) — this test no longer needs to seed a config.yaml selecting
+// it.
 //
 // Goes through the real Server.New() -> buildRuntime() wiring (same pattern
 // as wire_task_runtimes_dir_test.go) rather than calling cleanOrphanRuntimes
 // directly: the bug is specifically about WHICH root buildRuntime passes it,
 // not about cleanOrphanRuntimes' own logic (already covered by
 // wire_gc_test.go).
-func TestServer_New_ContainerBackend_CleanOrphanRuntimesScansHostVisibleDir(t *testing.T) {
-	configHome := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", configHome)
-	boidConfigDir := filepath.Join(configHome, "boid")
-	if err := os.MkdirAll(boidConfigDir, 0o755); err != nil {
-		t.Fatalf("mkdir config dir: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(boidConfigDir, "config.yaml"), []byte("sandbox:\n  backend: container\n"), 0o644); err != nil {
-		t.Fatalf("write config.yaml: %v", err)
-	}
+func TestServer_New_CleanOrphanRuntimesScansHostVisibleDir(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 
 	// DBPath and SocketPath deliberately live under DIFFERENT parent
 	// directories, exactly like wire_task_runtimes_dir_test.go's sibling
@@ -58,7 +54,7 @@ func TestServer_New_ContainerBackend_CleanOrphanRuntimesScansHostVisibleDir(t *t
 		SocketPath: filepath.Join(runtimeDir, "boid.sock"),
 		HTTPAddr:   "127.0.0.1:0",
 		TLSDir:     filepath.Join(tmpDir, "tls"),
-		JobRuntime: &fakeJobRuntime{},
+		Backend:    &fakeSandboxBackend{},
 	}
 
 	// Plant an orphan runtime dir (no corresponding job row — the DB is

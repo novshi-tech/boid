@@ -1,9 +1,0 @@
-id: docker-proxy-privileged
-name: Docker Proxy Test - privileged
-task_behaviors:
-  smoke:
-    hooks:
-      - id: run-docker-test
-        command: |
-          bash ".boid/hooks/run-docker-test.sh"
-    name: smoke

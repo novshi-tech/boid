@@ -12,30 +12,49 @@ import (
 	"github.com/novshi-tech/boid/internal/client"
 	"github.com/novshi-tech/boid/internal/dispatcher"
 	"github.com/novshi-tech/boid/internal/orchestrator"
+	"github.com/novshi-tech/boid/internal/sandbox"
+	"github.com/novshi-tech/boid/internal/sandbox/backend"
 	"github.com/novshi-tech/boid/internal/server"
 	"github.com/novshi-tech/boid/testutil"
 )
 
-// noopRuntime is a JobRuntime that starts jobs but never auto-completes them,
-// allowing tests to manually complete jobs via the API.
-type noopRuntime struct{}
+// noopBackend is a backend.SandboxBackend that starts jobs but never
+// auto-completes them, allowing tests to manually complete jobs via the
+// API. Replaces the pre-PR-4 noopRuntime (a dispatcher.JobRuntime fake —
+// docs/plans/volume-only-daemon.md §論点e removed that userns-only seam).
+// Reused across this package's other server_test-package smoke/gateway
+// test files via server.Config.Backend, the successor to their own
+// pre-PR-4 Config.JobRuntime usage.
+type noopBackend struct{}
 
-func (noopRuntime) Start(_ context.Context, _ dispatcher.RuntimeStartSpec) (*dispatcher.RuntimeHandle, error) {
-	return &dispatcher.RuntimeHandle{ID: "noop-runtime"}, nil
+var _ backend.SandboxBackend = (*noopBackend)(nil)
+
+func (noopBackend) Launch(context.Context, sandbox.Spec, backend.LaunchOptions) (backend.SandboxSession, error) {
+	return noopSession{}, nil
 }
-func (noopRuntime) Attach(_ context.Context, _ string, _ dispatcher.RuntimeAttachRequest) error {
-	return dispatcher.ErrRuntimeUnsupported
+func (noopBackend) Adopt(context.Context, string) (backend.SandboxSession, bool) {
+	return nil, false
 }
-func (noopRuntime) Resize(_ context.Context, _ string, _ dispatcher.TerminalSize) error {
-	return dispatcher.ErrRuntimeUnsupported
+func (noopBackend) ReapOrphans(context.Context) (backend.ReapReport, error) {
+	return backend.ReapReport{}, nil
 }
-func (noopRuntime) Wait(_ context.Context, _ string) (dispatcher.RuntimeExit, error) {
-	return dispatcher.RuntimeExit{}, dispatcher.ErrRuntimeUnsupported
+
+type noopSession struct{}
+
+var _ backend.SandboxSession = noopSession{}
+
+func (noopSession) ID() string { return "noop-runtime" }
+func (noopSession) Subscribe() ([]byte, <-chan []byte, func(), bool) {
+	return nil, nil, func() {}, false
 }
-func (noopRuntime) Stop(_ context.Context, _ string) error { return nil }
-func (noopRuntime) Signal(_ context.Context, _ string, _ syscall.Signal) error {
-	return nil
+func (noopSession) WriteInput([]byte) error           { return dispatcher.ErrRuntimeUnsupported }
+func (noopSession) CloseInput() error                 { return dispatcher.ErrRuntimeUnsupported }
+func (noopSession) Resize(backend.TerminalSize) error { return dispatcher.ErrRuntimeUnsupported }
+func (noopSession) Wait(context.Context) (backend.RuntimeExit, error) {
+	return backend.RuntimeExit{}, dispatcher.ErrRuntimeUnsupported
 }
+func (noopSession) Stop(context.Context) error                   { return nil }
+func (noopSession) Signal(context.Context, syscall.Signal) error { return nil }
 
 func TestServer_Smoke_StartDispatchJobDoneAndAutoAdvance(t *testing.T) {
 	ts := newSmokeServer(t)
@@ -169,7 +188,7 @@ func newSmokeServer(t *testing.T) *testutil.TestServer {
 		DBPath:     dbPath,
 		SocketPath: sockPath,
 		HTTPAddr:   "127.0.0.1:0",
-		JobRuntime: noopRuntime{},
+		Backend:    &noopBackend{},
 	})
 	if err != nil {
 		t.Fatalf("new server: %v", err)

@@ -45,7 +45,9 @@ const (
 	// `boid config set` attempt against a KindOpaque leaf with a
 	// dedicated message rather than falling through to the generic
 	// "unsupported field kind" text (MAJOR 1, codex review round 1 — see
-	// gateway.hosts below, the only KindOpaque entry today).
+	// gateway.hosts and sandbox.backend below, the two KindOpaque entries
+	// today) — see FieldSpec.Note for how that message's field-specific
+	// tail is authored per leaf.
 	KindOpaque
 )
 
@@ -75,12 +77,6 @@ const (
 	// next daemon restart — the daemon prints a loud warning naming the
 	// restart command.
 	ReloadRestartRequired
-	// ReloadRetirementWarning is sandbox.backend's own bucket: still a
-	// fully valid, accepted write (its removal is PR-4, docs/plans/
-	// volume-only-daemon.md §論点 e) but flagged with a retirement notice
-	// on every successful set, distinct wording from the ordinary
-	// restart-required warning.
-	ReloadRetirementWarning
 )
 
 // FieldSpec describes one CLI-editable scalar/array leaf in config.yaml.
@@ -91,6 +87,12 @@ type FieldSpec struct {
 	Kind       FieldKind
 	Reload     ReloadClass
 	EnumValues []string
+	// Note is an optional field-specific clause appended to a KindOpaque
+	// leaf's generic "not settable"/"not unsettable" rejection message
+	// (dotted.go's coerceValues/Unset) — e.g. where to migrate instead.
+	// Empty leaves the generic message with no follow-up clause. Every
+	// other Kind ignores this field.
+	Note string
 }
 
 // Schema is every leaf path `boid config set/get/unset` (and `apply`'s
@@ -108,7 +110,15 @@ var Schema = []FieldSpec{
 	{Path: "notify.command", Kind: KindStringArray, Reload: ReloadRestartRequired},
 
 	{Path: "sandbox.allowed_domains", Kind: KindStringArray, Reload: ReloadRestartRequired},
-	{Path: "sandbox.backend", Kind: KindEnum, Reload: ReloadRetirementWarning, EnumValues: []string{"userns", "container"}},
+	// sandbox.backend: removed in PR-4 (docs/plans/volume-only-daemon.md
+	// §論点e) — container is the only sandbox backend now, so the key has
+	// nothing left to select. KindOpaque (not deleted from Schema outright)
+	// per PR-1b's own gateway.hosts precedent: an old config.yaml that
+	// still sets it must keep loading (Config.UnmarshalYAML logs a warning
+	// and drops the value — see its own doc comment) rather than hard-fail
+	// an operator's existing deployment on daemon restart.
+	{Path: "sandbox.backend", Kind: KindOpaque, Reload: ReloadRestartRequired,
+		Note: "removed in the volume-only cutover (docs/plans/volume-only-daemon.md §論点e) — container is the only sandbox backend now"},
 
 	{Path: "task_ask.disconnect_grace", Kind: KindDuration, Reload: ReloadRestartRequired},
 
@@ -132,7 +142,8 @@ var Schema = []FieldSpec{
 	// is picked up by the gateway.forges diff (applyDynamicConfigLocked,
 	// internal/server/config_edit.go) since UnmarshalYAML always folds
 	// Hosts into Forges before the daemon ever compares old vs new.
-	{Path: "gateway.hosts", Kind: KindOpaque, Reload: ReloadRestartRequired},
+	{Path: "gateway.hosts", Kind: KindOpaque, Reload: ReloadRestartRequired,
+		Note: "migrate to gateway.forges.<id>.* instead (see docs/ja/reference/config-yaml.md)"},
 }
 
 // segments splits a dotted path into its components. Exported for reuse by

@@ -9,9 +9,7 @@ import (
 
 type WireConfig struct {
 	DB          *sql.DB
-	Runtime     JobRuntime
 	Broker      CommandBroker
-	Sandbox     SandboxPreparer
 	SecretStore *SecretStore
 
 	Projects ProjectLookup
@@ -74,17 +72,15 @@ type WireConfig struct {
 	// late-binding-via-pointer pattern). A container-backend clone-mode
 	// job needs this to verify the git gateway's TLS server certificate
 	// (see SandboxRuntimeInfo.GatewayCAPEM's own doc comment). nil
-	// disables CA propagation — the userns backend's plaintext gateway URL
-	// never needs it either way.
+	// disables CA propagation — the plaintext gateway URL of the (now
+	// removed, PR-4) userns backend never needed it either way.
 	GatewayCAPEM *[]byte
 }
 
 func Wire(cfg WireConfig) *Runner {
 	return &Runner{
 		DB:                   cfg.DB,
-		Runtime:              cfg.Runtime,
 		Broker:               cfg.Broker,
-		Sandbox:              cfg.Sandbox,
 		SecretStore:          cfg.SecretStore,
 		Projects:             cfg.Projects,
 		Hydrator:             cfg.Hydrator,

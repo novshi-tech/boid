@@ -1,9 +1,0 @@
-id: docker-proxy-capadd
-name: Docker Proxy Test - capadd
-task_behaviors:
-  smoke:
-    hooks:
-      - id: run-docker-test
-        command: |
-          bash ".boid/hooks/run-docker-test.sh"
-    name: smoke

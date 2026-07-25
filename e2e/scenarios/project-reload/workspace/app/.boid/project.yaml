@@ -1,5 +1,0 @@
-id: project-reload
-name: Project Reload
-task_behaviors:
-  smoke-v1:
-    transition: one-shot

@@ -12,14 +12,12 @@ import (
 
 // This file pins Runner's attach/resize/signal ingress points end-to-end
 // through the backend.SandboxBackend/SandboxSession seam (codex review
-// Major 1 on PR #816): TestUsernsSession_Signal and
-// TestBoidBuiltinExecutor_AgentStop_SignalsRuntimeOnly each stop short of
-// Runner.SignalJobRuntime itself — the former constructs a usernsSession
-// directly, the latter stubs JobLifecycle and never reaches the
-// backend/session layer at all. Neither exercises the actual
-// Runner.SignalJobRuntime → SandboxBackend.Adopt → SandboxSession.Signal
-// chain. A fake backend (Runner.Backend, the same seam CanAttach/Adopt use
-// in production) closes that gap here.
+// Major 1 on PR #816): TestBoidBuiltinExecutor_AgentStop_SignalsRuntimeOnly
+// stubs JobLifecycle and never reaches the backend/session layer at all, so
+// it does not exercise the actual Runner.SignalJobRuntime →
+// SandboxBackend.Adopt → SandboxSession.Signal chain. A fake backend
+// (Runner.Backend, the same seam CanAttach/Adopt use in production) closes
+// that gap here.
 
 // wireFakeSession is a minimal backend.SandboxSession recording every
 // Signal/Resize call it receives, keyed by the runtimeID Adopt was given.
@@ -100,7 +98,7 @@ func (b *wireFakeBackend) ReapOrphans(context.Context) (backend.ReapReport, erro
 func TestRunner_SignalJobRuntime_RoutesThroughBackendAdoptToSessionSignal(t *testing.T) {
 	sess := &wireFakeSession{id: "runtime-xyz"}
 	be := &wireFakeBackend{adoptable: map[string]*wireFakeSession{"runtime-xyz": sess}}
-	r := &Runner{Runtime: &ubFakeRuntime{}, Backend: be}
+	r := &Runner{Backend: be}
 
 	r.SignalJobRuntime("runtime-xyz", syscall.SIGUSR1)
 
@@ -118,7 +116,7 @@ func TestRunner_SignalJobRuntime_RoutesThroughBackendAdoptToSessionSignal(t *tes
 func TestRunner_SignalJobRuntime_UnadoptableRuntimeIDNeverReachesSession(t *testing.T) {
 	sess := &wireFakeSession{id: "runtime-xyz"}
 	be := &wireFakeBackend{adoptable: map[string]*wireFakeSession{"runtime-xyz": sess}}
-	r := &Runner{Runtime: &ubFakeRuntime{}, Backend: be}
+	r := &Runner{Backend: be}
 
 	r.SignalJobRuntime("runtime-does-not-exist", syscall.SIGUSR1)
 
@@ -137,7 +135,7 @@ func TestRunner_SignalJobRuntime_UnadoptableRuntimeIDNeverReachesSession(t *test
 func TestRunner_ResizeRuntimeID_RoutesThroughBackendAdoptToSessionResize(t *testing.T) {
 	sess := &wireFakeSession{id: "runtime-xyz"}
 	be := &wireFakeBackend{adoptable: map[string]*wireFakeSession{"runtime-xyz": sess}}
-	r := &Runner{Runtime: &ubFakeRuntime{}, Backend: be}
+	r := &Runner{Backend: be}
 
 	size := TerminalSize{Rows: 50, Cols: 120}
 	if err := r.ResizeRuntimeID(context.Background(), "runtime-xyz", size); err != nil {
@@ -161,7 +159,7 @@ func TestRunner_ReapOrphans_DelegatesToBackend(t *testing.T) {
 		FailedJobIDs: []string{"job-bad"},
 	}
 	be := &wireFakeBackend{reapReport: want}
-	r := &Runner{Runtime: &ubFakeRuntime{}, Backend: be}
+	r := &Runner{Backend: be}
 
 	got, err := r.ReapOrphans(context.Background())
 	if err != nil {
@@ -178,25 +176,6 @@ func TestRunner_ReapOrphans_DelegatesToBackend(t *testing.T) {
 	}
 }
 
-// TestRunner_ReapOrphans_UsesUsernsStubByDefault pins that a Runner with no
-// Backend override (the production default, absent config sandbox.backend:
-// container) still gets a nil error and a zero ReapReport back — the
-// userns backend's ReapOrphans no-op stub — rather than a nil-pointer
-// panic. internal/server/wire.go calls this unconditionally on every
-// daemon startup, so it must never blow up when the userns backend (every
-// pre-PR7 deployment) is in play.
-func TestRunner_ReapOrphans_UsesUsernsStubByDefault(t *testing.T) {
-	r := &Runner{Runtime: &ubFakeRuntime{}}
-
-	got, err := r.ReapOrphans(context.Background())
-	if err != nil {
-		t.Fatalf("ReapOrphans: %v", err)
-	}
-	if len(got.ReapedJobIDs) != 0 || len(got.FailedJobIDs) != 0 || got.GlobalError != nil {
-		t.Errorf("ReapReport = %+v, want the zero value (userns backend stub)", got)
-	}
-}
-
 // TestRunner_StopJobRuntime_RoutesThroughBackendAdoptToSessionStop pins
 // [Blocker 3, PR7 codex review]: `boid task stop`/task abort's
 // StopJobRuntime call must reach a session's Stop method via
@@ -205,7 +184,7 @@ func TestRunner_ReapOrphans_UsesUsernsStubByDefault(t *testing.T) {
 func TestRunner_StopJobRuntime_RoutesThroughBackendAdoptToSessionStop(t *testing.T) {
 	sess := &wireFakeSession{id: "runtime-xyz"}
 	be := &wireFakeBackend{adoptable: map[string]*wireFakeSession{"runtime-xyz": sess}}
-	r := &Runner{Runtime: &ubFakeRuntime{}, Backend: be}
+	r := &Runner{Backend: be}
 
 	r.StopJobRuntime("runtime-xyz")
 
@@ -223,7 +202,7 @@ func TestRunner_StopJobRuntime_RoutesThroughBackendAdoptToSessionStop(t *testing
 func TestRunner_StopJobRuntime_UnadoptableRuntimeIDNeverReachesSession(t *testing.T) {
 	sess := &wireFakeSession{id: "runtime-xyz"}
 	be := &wireFakeBackend{adoptable: map[string]*wireFakeSession{"runtime-xyz": sess}}
-	r := &Runner{Runtime: &ubFakeRuntime{}, Backend: be}
+	r := &Runner{Backend: be}
 
 	r.StopJobRuntime("runtime-does-not-exist")
 
@@ -244,7 +223,7 @@ func TestRunner_CleanupTaskWindow_RoutesThroughBackendAdoptToSessionStop(t *test
 		"runtime-1": sess1,
 		"runtime-2": sess2,
 	}}
-	r := &Runner{Runtime: &ubFakeRuntime{}, Backend: be}
+	r := &Runner{Backend: be}
 	r.trackTaskRuntime("task-1", "runtime-1")
 	r.trackTaskRuntime("task-1", "runtime-2")
 

@@ -334,33 +334,36 @@ func TestApplyConfigYAML_AllowedDomains_NoWarningWhenUnchanged(t *testing.T) {
 	}
 }
 
-func TestApplyConfigYAML_SandboxBackend_RetirementWarningOnlyWhenChanged(t *testing.T) {
+// TestApplyConfigYAML_SandboxBackend_NeverWarns pins PR-4's removal of the
+// sandbox.backend retirement-warning machinery entirely (docs/plans/
+// volume-only-daemon.md §論点e): the key is now KindOpaque
+// (accepted-but-ignored — see TestLoadFromPath_SandboxBackend_
+// AcceptedButIgnored in internal/config for the load-time half of this
+// contract), so applying a document that sets or changes it produces no
+// warning of any kind — not even the generic restart-required one, since
+// Config retains no Backend field to compare old-vs-new against
+// (restartFieldExtractorExemptions' own "sandbox.backend" entry,
+// config_edit.go).
+func TestApplyConfigYAML_SandboxBackend_NeverWarns(t *testing.T) {
 	srv, _ := newConfigTestServer(t)
 
-	// First apply: backend goes userns -> container. Warning fires.
 	result, err := srv.ApplyConfigYAML([]byte("sandbox:\n  backend: container\n"), "", true)
 	if err != nil {
 		t.Fatalf("ApplyConfigYAML: %v", err)
 	}
-	found := false
 	for _, w := range result.Warnings {
-		if strings.Contains(w, "retirement path") {
-			found = true
+		if strings.Contains(w, "sandbox.backend") {
+			t.Errorf("unexpected sandbox.backend warning — the key is inert now: %v", result.Warnings)
 		}
 	}
-	if !found {
-		t.Errorf("expected retirement warning on backend change, got %v", result.Warnings)
-	}
 
-	// Second apply: backend unchanged (still container), only an unrelated
-	// key changes. No retirement warning should fire.
-	result2, err := srv.ApplyConfigYAML([]byte("sandbox:\n  backend: container\n  allowed_domains:\n    - .example.com\n"), "", true)
+	result2, err := srv.ApplyConfigYAML([]byte("sandbox:\n  backend: userns\n  allowed_domains:\n    - .example.com\n"), "", true)
 	if err != nil {
 		t.Fatalf("ApplyConfigYAML: %v", err)
 	}
 	for _, w := range result2.Warnings {
-		if strings.Contains(w, "retirement path") {
-			t.Errorf("unexpected retirement warning when sandbox.backend was unchanged: %v", result2.Warnings)
+		if strings.Contains(w, "sandbox.backend") {
+			t.Errorf("unexpected sandbox.backend warning on a changed-but-inert value: %v", result2.Warnings)
 		}
 	}
 }

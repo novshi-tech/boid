@@ -733,33 +733,33 @@ func TestWaitForHealthy_StaleImage404_FailsFastWithClearError(t *testing.T) {
 	}
 }
 
-// TestDeployFromEmbeddedAssets_RunsUnifiedScript_PerformsConfigBootstrap is
-// the round-3 codex review Blocker 1 regression test, and the
-// "Regression coverage" item 1 ("fresh deploy via embed path -> daemon
-// comes up in container backend mode, not userns") at the level this
-// sandbox can actually exercise without a real docker/podman engine or
-// root (no container can really be started here — see this repo's own
-// e2e/run-container.sh for the real end-to-end verification, CLAUDE.md's
-// "E2E テストは CI でしか検証できない").
+// TestDeployFromEmbeddedAssets_RunsUnifiedScript_StartsComposeStack is the
+// round-3 codex review Blocker 1 regression test, and the
+// "Regression coverage" item 1 ("fresh deploy via embed path -> the compose
+// stack actually starts") at the level this sandbox can actually exercise
+// without a real docker/podman engine or root (no container can really be
+// started here — see this repo's own e2e/run-container.sh for the real
+// end-to-end verification, CLAUDE.md's "E2E テストは CI でしか検証できない").
 //
 // Before this fix, deployFromEmbeddedAssets ran a bare `compose up -d`
-// directly and NEVER invoked scripts/deploy-container.sh's own config-seed
-// + effective-backend-validate steps — so a fresh, no-checkout deploy
-// against an empty boid_state volume silently defaulted to
-// sandbox.backend: userns, leaving the CLI listener unreachable. This test
-// fakes the `docker` binary on PATH (logging every invocation's argv and
-// the DEPLOY_CONTAINER_SKIP_BUILD env value to a file, always succeeding,
-// and answering the effective-backend-validate step's own `boid config
-// effective-backend` call with "container" on stdout — the only content
-// that step's output actually needs) and lets the REAL, embedded
-// deploy-container.sh run end to end through
-// deployFromEmbeddedAssets — proving the config-seed and
-// effective-backend-validate `compose run` steps (and not just `compose up
-// -d`) actually execute under the embedded-assets fallback, and that no
-// `docker build` is ever attempted (DEPLOY_CONTAINER_SKIP_BUILD=1 is set
-// for every invocation — the embedded path can never build a fresh image,
-// this file's own header comment).
-func TestDeployFromEmbeddedAssets_RunsUnifiedScript_PerformsConfigBootstrap(t *testing.T) {
+// directly instead of invoking scripts/deploy-container.sh at all. This
+// test fakes the `docker` binary on PATH (logging every invocation's argv
+// and the DEPLOY_CONTAINER_SKIP_BUILD env value to a file, always
+// succeeding) and lets the REAL, embedded deploy-container.sh run end to
+// end through deployFromEmbeddedAssets — proving the actual script (not a
+// narrower Go-level reimplementation of it) runs, and that no `docker
+// build` is ever attempted (DEPLOY_CONTAINER_SKIP_BUILD=1 is set for every
+// invocation — the embedded path can never build a fresh image, this
+// file's own header comment).
+//
+// PR-4 (docs/plans/volume-only-daemon.md §論点e) removed
+// deploy-container.sh's config-seed + effective-backend-validate
+// `compose run --rm` steps entirely (container is the only sandbox backend
+// now, selected unconditionally, not by a config.yaml key a fresh deploy
+// needed to seed) — this test accordingly no longer asserts on those
+// steps, only on the `compose up -d` invocation and the SKIP_BUILD
+// propagation.
+func TestDeployFromEmbeddedAssets_RunsUnifiedScript_StartsComposeStack(t *testing.T) {
 	dir := t.TempDir()
 	logPath := filepath.Join(dir, "docker-invocations.log")
 
@@ -768,15 +768,6 @@ func TestDeployFromEmbeddedAssets_RunsUnifiedScript_PerformsConfigBootstrap(t *t
   echo "ARGS: $*"
   echo "SKIP_BUILD=${DEPLOY_CONTAINER_SKIP_BUILD:-unset}"
 } >> %q
-case "$*" in
-  *"--entrypoint sh"*)
-    # The effective-backend-validate step captures this call's stdout via
-    # command substitution and compares it against "container" — the
-    # config-seed step (the other --entrypoint sh call) doesn't capture
-    # stdout at all, so printing it there too is harmless.
-    echo "container"
-    ;;
-esac
 exit 0
 `, logPath))
 	// dir first (our fake docker must shadow any real one), then the real
@@ -812,9 +803,6 @@ exit 0
 	}
 	log := string(logData)
 
-	if got := strings.Count(log, "run --rm"); got < 2 {
-		t.Errorf("expected at least 2 `compose run --rm` invocations (config seed + effective-backend validate), got %d; log:\n%s", got, log)
-	}
 	if !strings.Contains(log, "up -d") {
 		t.Errorf("expected a `compose up -d` invocation; log:\n%s", log)
 	}

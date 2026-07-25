@@ -98,8 +98,7 @@ func TestDispatch_WorkspaceHomeInitSucceeds_ThreadsCorrectSlugThroughDispatch(t 
 		Projects: fakeProjectLookup{projects: []*orchestrator.Project{
 			{ID: "proj-1", WorkDir: "/tmp", WorkspaceID: "myws"},
 		}},
-		Sandbox:    &gwFakeSandboxPrep{dir: t.TempDir()},
-		Runtime:    &gwFakeRuntime{},
+		Backend:    &gwFakeBackend{},
 		BoidBinary: "/boid",
 	}
 

@@ -266,12 +266,11 @@ func writeGitURLTestProject(t *testing.T, id, name string) string {
 
 // gitFileURL turns a local filesystem path into a "file://" URL —
 // looksLikeGitURL (project.go) requires an explicit scheme or the scp-like
-// form, so a bare local path (which git itself happily clones) is exactly
-// the shape `boid project add` routes to the LEGACY dir-based flow instead
-// (see TestProjectAddDir_RegistersViaLegacyEndpoint_WithDeprecationWarning).
-// Wrapping test fixture directories in file:// lets these tests exercise
-// the git-URL code path while still pointing at a local, credential-free
-// source repo.
+// form, so a bare local path (which git itself happily clones) is rejected
+// outright by runProjectAdd since PR-4 removed the legacy dir-based form
+// (see TestProjectAdd_RejectsHostDirectory). Wrapping test fixture
+// directories in file:// lets these tests exercise the git-URL code path
+// while still pointing at a local, credential-free source repo.
 func gitFileURL(dir string) string { return "file://" + dir }
 
 func runGitTestCmd(t *testing.T, dir string, args ...string) {
@@ -317,14 +316,34 @@ func TestLooksLikeGitURL(t *testing.T) {
 	}
 }
 
-// TestProjectAddDir_RejectsRemoteProfile pins the regression concern (PR-2a
-// codex round-2 review): `project add <dir>` computes filepath.Abs on the
-// CLIENT and sends the result to the daemon verbatim as work_dir — correct
-// only when the daemon IS this machine (a unix-socket profile). Against a
-// remote (TCP/https) profile, that path names a location on the wrong
-// machine entirely; this must be refused client-side before any daemon
-// round trip, not silently attempted.
-func TestProjectAddDir_RejectsRemoteProfile(t *testing.T) {
+// TestProjectAdd_RejectsHostDirectory pins PR-4's removal of the legacy
+// `boid project add <dir>` form (docs/plans/volume-only-daemon.md §論点e):
+// any argument that does not look like a git URL (looksLikeGitURL) is
+// rejected client-side, before any daemon round trip, with the exact
+// message the plan doc's CLI-scope bullet specifies — pointing the operator
+// at the still-working git-URL form rather than silently registering
+// nothing or (worse) misinterpreting the path as something else.
+func TestProjectAdd_RejectsHostDirectory(t *testing.T) {
+	withProjectAddWorkspaceFlag(t, "")
+
+	err := runProjectAdd(projectAddCmd, []string{t.TempDir()})
+	if err == nil {
+		t.Fatal("expected an error registering a host directory — the legacy form was removed in PR-4")
+	}
+	if !strings.Contains(err.Error(), "host directory registration was removed") {
+		t.Errorf("expected the PR-4 removal message, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "boid project add <git-url> --workspace=<name>") {
+		t.Errorf("expected the error to point at the git-URL form, got: %v", err)
+	}
+}
+
+// TestProjectAdd_RejectsHostDirectory_EvenOverRemoteProfile pins that the
+// rejection fires purely from the argument's shape (looksLikeGitURL),
+// before any profile/transport check runs at all — a remote (non-unix)
+// profile gets the identical rejection, not a different "remote profile
+// unsupported" message the pre-PR-4 legacy form used to produce.
+func TestProjectAdd_RejectsHostDirectory_EvenOverRemoteProfile(t *testing.T) {
 	withProjectAddWorkspaceFlag(t, "")
 
 	remoteClient, err := client.NewClient("https://example.invalid", "tok")
@@ -335,128 +354,13 @@ func TestProjectAddDir_RejectsRemoteProfile(t *testing.T) {
 	cmd := projectAddCmd
 	cmd.SetContext(client.WithClient(context.Background(), remoteClient))
 	t.Cleanup(func() { cmd.SetContext(context.Background()) })
-	var stderr bytes.Buffer
-	cmd.SetErr(&stderr)
 
 	err = runProjectAdd(cmd, []string{t.TempDir()})
 	if err == nil {
 		t.Fatal("expected an error registering a host directory over a remote profile")
 	}
-	if !strings.Contains(err.Error(), "remote profile") {
-		t.Errorf("expected a remote-profile rejection message, got: %v", err)
-	}
-	if strings.Contains(stderr.String(), "[deprecation]") {
-		t.Error("expected the deprecation notice NOT to print when the call is refused before it")
-	}
-}
-
-// TestProjectAddDir_RegistersViaLegacyEndpoint_WithDeprecationWarning pins
-// the PR-2a codex round-1 CRITICAL fix: `boid project add <dir>` must keep
-// working exactly as it did pre-cutover (registers via POST /api/projects,
-// internal/api.ProjectAppService.CreateProject — the dir-based flow was
-// never removed server-side, only rejected client-side by the first cut of
-// this command), because the plan doc's migration for host-directory
-// registration is explicitly MANUAL/incremental (`project rm` + `project
-// add <url>`, one project at a time — docs/plans/volume-only-daemon.md
-// §論点a), not a hard cutoff — and the e2e suite (42 scenarios) still
-// registers its fixture project by directory. A deprecation notice must
-// still be printed to stderr on every use, per the migration guidance.
-func TestProjectAddDir_RegistersViaLegacyEndpoint_WithDeprecationWarning(t *testing.T) {
-	ts := testutil.NewTestServer(t)
-	t.Setenv("BOID_SOCKET", ts.Server.SocketPath())
-	withProjectAddWorkspaceFlag(t, "")
-
-	dir := t.TempDir()
-	testutil.InitGitRepoWithOrigin(t, dir)
-	boidDir := filepath.Join(dir, ".boid")
-	if err := os.MkdirAll(boidDir, 0o755); err != nil {
-		t.Fatalf("mkdir .boid: %v", err)
-	}
-	yaml := "id: project-add-dir-legacy\nname: Legacy Dir Project\n"
-	if err := os.WriteFile(filepath.Join(boidDir, "project.yaml"), []byte(yaml), 0o644); err != nil {
-		t.Fatalf("write project.yaml: %v", err)
-	}
-
-	var out, stderr bytes.Buffer
-	cmd := projectAddCmd
-	cmd.SetOut(&out)
-	cmd.SetErr(&stderr)
-	if err := runProjectAdd(cmd, []string{dir}); err != nil {
-		t.Fatalf("runProjectAdd(%q): %v", dir, err)
-	}
-
-	if !strings.Contains(stderr.String(), "[deprecation]") {
-		t.Errorf("expected a [deprecation] notice on stderr, got:\n%s", stderr.String())
-	}
-	if !strings.Contains(stderr.String(), "boid project add <git-url> --workspace=<name>") {
-		t.Errorf("expected the deprecation notice to point at the git-URL form, got:\n%s", stderr.String())
-	}
-
-	var projects []projectspec.Project
-	if err := ts.Client.Do("GET", "/api/projects", nil, &projects); err != nil {
-		t.Fatalf("list projects: %v", err)
-	}
-	if len(projects) != 1 {
-		t.Fatalf("expected exactly one registered project, got %d", len(projects))
-	}
-	if projects[0].WorkDir != dir {
-		t.Errorf("WorkDir = %q, want the host directory %q (legacy dir-based registration, not a daemon-managed bare repo)", projects[0].WorkDir, dir)
-	}
-	if projects[0].Meta.Name != "Legacy Dir Project" {
-		t.Errorf("Meta.Name = %q, want %q", projects[0].Meta.Name, "Legacy Dir Project")
-	}
-}
-
-// TestProjectAddDir_WithWorkspaceFlag_Assigns pins the legacy form's
-// optional (not required) --workspace flag, restored unchanged from its
-// pre-cutover behavior (assignProjectWorkspace, get-or-create).
-func TestProjectAddDir_WithWorkspaceFlag_Assigns(t *testing.T) {
-	ts := testutil.NewTestServer(t)
-	t.Setenv("BOID_SOCKET", ts.Server.SocketPath())
-	withProjectAddWorkspaceFlag(t, "legacy-dir-ws")
-
-	dir := t.TempDir()
-	testutil.InitGitRepoWithOrigin(t, dir)
-	boidDir := filepath.Join(dir, ".boid")
-	if err := os.MkdirAll(boidDir, 0o755); err != nil {
-		t.Fatalf("mkdir .boid: %v", err)
-	}
-	yaml := "id: project-add-dir-ws\nname: Legacy Dir WS Project\n"
-	if err := os.WriteFile(filepath.Join(boidDir, "project.yaml"), []byte(yaml), 0o644); err != nil {
-		t.Fatalf("write project.yaml: %v", err)
-	}
-
-	var out, stderr bytes.Buffer
-	cmd := projectAddCmd
-	cmd.SetOut(&out)
-	cmd.SetErr(&stderr)
-	if err := runProjectAdd(cmd, []string{dir}); err != nil {
-		t.Fatalf("runProjectAdd(%q): %v", dir, err)
-	}
-
-	var projects []projectspec.Project
-	if err := ts.Client.Do("GET", "/api/projects", nil, &projects); err != nil {
-		t.Fatalf("list projects: %v", err)
-	}
-	if len(projects) != 1 || projects[0].WorkspaceID != "legacy-dir-ws" {
-		t.Fatalf("expected the project to be assigned to legacy-dir-ws, got: %+v", projects)
-	}
-}
-
-// TestProjectAddDir_RejectsNameFlag pins that --name (git-URL-form-only) is
-// rejected with a clear client-side error for the legacy dir form, rather
-// than silently having no effect.
-func TestProjectAddDir_RejectsNameFlag(t *testing.T) {
-	withProjectAddWorkspaceFlag(t, "")
-	projectAddName = "should-not-be-used"
-	t.Cleanup(func() { projectAddName = "" })
-
-	err := runProjectAdd(projectAddCmd, []string{t.TempDir()})
-	if err == nil {
-		t.Fatal("expected an error for --name combined with a directory argument")
-	}
-	if !strings.Contains(err.Error(), "--name is only supported with the git-URL form") {
-		t.Errorf("expected a clear --name-unsupported error, got: %v", err)
+	if !strings.Contains(err.Error(), "host directory registration was removed") {
+		t.Errorf("expected the PR-4 removal message, got: %v", err)
 	}
 }
 

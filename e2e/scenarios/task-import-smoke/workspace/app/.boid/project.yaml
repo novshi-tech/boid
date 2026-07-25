@@ -1,5 +1,0 @@
-id: e2e-import
-name: E2E Import
-task_behaviors:
-  smoke:
-    transition: one-shot

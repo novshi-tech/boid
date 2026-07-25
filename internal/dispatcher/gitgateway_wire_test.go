@@ -3,8 +3,6 @@ package dispatcher
 import (
 	"context"
 	"fmt"
-	"os"
-	"path/filepath"
 	"strings"
 	"syscall"
 	"testing"
@@ -14,6 +12,7 @@ import (
 	"github.com/novshi-tech/boid/internal/gitgateway"
 	"github.com/novshi-tech/boid/internal/orchestrator"
 	"github.com/novshi-tech/boid/internal/sandbox"
+	"github.com/novshi-tech/boid/internal/sandbox/backend"
 )
 
 // newGatewayTestDB returns an in-memory, migrated DB. Deliberately not
@@ -358,69 +357,56 @@ func TestBuildPeerAdvertise_NilWhenGatewayUnwiredOrNoProjects(t *testing.T) {
 
 // --- Dispatch-level gateway lifecycle wiring ---
 
-// gwFakeSandboxPrep is a minimal SandboxPreparer stub, mirroring
-// dispatcher_test's fakeSandboxPrep (which lives in a different Go package —
-// package dispatcher_test — and so cannot be reused directly from this
-// internal-package test file).
-type gwFakeSandboxPrep struct{ dir string }
+// gwFakeBackend is a minimal backend.SandboxBackend stub for gateway
+// lifecycle wiring tests — replaces the pre-PR-4 gwFakeSandboxPrep
+// (SandboxPreparer) + gwFakeRuntime/gwFakeRuntimeStartError (JobRuntime)
+// pair, both userns-only plumbing removed in PR-4 (docs/plans/
+// volume-only-daemon.md §論点e). launchErr, when set, makes Launch fail —
+// the gwFakeRuntimeStartError shape, exercising Dispatch's
+// post-token-registration error path (docs/plans/git-gateway-cutover.md
+// PR5 token-leak fix guard below): by the time launchSandbox calls
+// Launch, both the broker token and the git gateway job token have
+// already been registered.
+type gwFakeBackend struct {
+	nextID    int
+	launchErr error
+}
 
-func (p *gwFakeSandboxPrep) PrepareSandbox(_ sandbox.Spec) (*PreparedSandbox, error) {
-	specPath := filepath.Join(p.dir, "runner-spec.json")
-	if err := os.WriteFile(specPath, []byte("{}"), 0o600); err != nil {
-		return nil, fmt.Errorf("write runner spec: %w", err)
+var _ backend.SandboxBackend = (*gwFakeBackend)(nil)
+
+func (b *gwFakeBackend) Launch(_ context.Context, _ sandbox.Spec, _ backend.LaunchOptions) (backend.SandboxSession, error) {
+	if b.launchErr != nil {
+		return nil, b.launchErr
 	}
-	return &PreparedSandbox{
-		SpecPath:  specPath,
-		StatePath: filepath.Join(p.dir, "runner-state.json"),
-	}, nil
+	b.nextID++
+	return &gwFakeSession{id: fmt.Sprintf("gw-runtime-%d", b.nextID)}, nil
+}
+func (b *gwFakeBackend) Adopt(_ context.Context, _ string) (backend.SandboxSession, bool) {
+	return nil, false
+}
+func (b *gwFakeBackend) ReapOrphans(context.Context) (backend.ReapReport, error) {
+	return backend.ReapReport{}, nil
 }
 
-// gwFakeRuntime is a minimal JobRuntime stub that always starts successfully
-// and never completes on its own (Wait blocks forever in production; here it
-// just reports ErrRuntimeUnsupported since the test never calls Wait).
-type gwFakeRuntime struct{ nextID int }
+// gwFakeSession is a minimal backend.SandboxSession that never completes on
+// its own (Wait blocks forever in production; here it just reports
+// ErrRuntimeUnsupported since these tests never call Wait).
+type gwFakeSession struct{ id string }
 
-func (r *gwFakeRuntime) Start(_ context.Context, _ RuntimeStartSpec) (*RuntimeHandle, error) {
-	r.nextID++
-	return &RuntimeHandle{ID: fmt.Sprintf("gw-runtime-%d", r.nextID)}, nil
-}
-func (r *gwFakeRuntime) Attach(_ context.Context, _ string, _ RuntimeAttachRequest) error {
-	return ErrRuntimeUnsupported
-}
-func (r *gwFakeRuntime) Resize(_ context.Context, _ string, _ TerminalSize) error {
-	return ErrRuntimeUnsupported
-}
-func (r *gwFakeRuntime) Wait(_ context.Context, _ string) (RuntimeExit, error) {
-	return RuntimeExit{}, ErrRuntimeUnsupported
-}
-func (r *gwFakeRuntime) Stop(_ context.Context, _ string) error { return nil }
-func (r *gwFakeRuntime) Signal(_ context.Context, _ string, _ syscall.Signal) error {
-	return nil
-}
+var _ backend.SandboxSession = (*gwFakeSession)(nil)
 
-// gwFakeRuntimeStartError is a JobRuntime stub whose Start always fails, so
-// tests can exercise Dispatch's post-token-registration error path (the
-// docs/plans/git-gateway-cutover.md PR5 token-leak fix guard below): by the
-// time launchSandbox calls Runtime.Start, both the broker token and the git
-// gateway job token have already been registered.
-type gwFakeRuntimeStartError struct{}
-
-func (r *gwFakeRuntimeStartError) Start(_ context.Context, _ RuntimeStartSpec) (*RuntimeHandle, error) {
-	return nil, fmt.Errorf("boom: runtime start failed")
+func (s *gwFakeSession) ID() string { return s.id }
+func (s *gwFakeSession) Subscribe() ([]byte, <-chan []byte, func(), bool) {
+	return nil, nil, func() {}, false
 }
-func (r *gwFakeRuntimeStartError) Attach(_ context.Context, _ string, _ RuntimeAttachRequest) error {
-	return ErrRuntimeUnsupported
+func (s *gwFakeSession) WriteInput([]byte) error           { return ErrRuntimeUnsupported }
+func (s *gwFakeSession) CloseInput() error                 { return ErrRuntimeUnsupported }
+func (s *gwFakeSession) Resize(backend.TerminalSize) error { return ErrRuntimeUnsupported }
+func (s *gwFakeSession) Wait(context.Context) (backend.RuntimeExit, error) {
+	return backend.RuntimeExit{}, ErrRuntimeUnsupported
 }
-func (r *gwFakeRuntimeStartError) Resize(_ context.Context, _ string, _ TerminalSize) error {
-	return ErrRuntimeUnsupported
-}
-func (r *gwFakeRuntimeStartError) Wait(_ context.Context, _ string) (RuntimeExit, error) {
-	return RuntimeExit{}, ErrRuntimeUnsupported
-}
-func (r *gwFakeRuntimeStartError) Stop(_ context.Context, _ string) error { return nil }
-func (r *gwFakeRuntimeStartError) Signal(_ context.Context, _ string, _ syscall.Signal) error {
-	return nil
-}
+func (s *gwFakeSession) Stop(context.Context) error                   { return nil }
+func (s *gwFakeSession) Signal(context.Context, syscall.Signal) error { return nil }
 
 // gwFakeFailingBroker is a minimal CommandBroker stub that hands out a fresh
 // token on every RegisterCommands call and records both registrations and
@@ -460,8 +446,7 @@ func TestDispatch_RegistersAndUnregistersGatewayToken(t *testing.T) {
 	r := &Runner{
 		DB:         d.Conn,
 		Projects:   orchestrator.DBProjectCatalog{DB: d.Conn},
-		Sandbox:    &gwFakeSandboxPrep{dir: t.TempDir()},
-		Runtime:    &gwFakeRuntime{},
+		Backend:    &gwFakeBackend{},
 		BoidBinary: "/boid",
 		GitGateway: registry,
 		GatewayURL: &gwURL,
@@ -527,8 +512,7 @@ func TestDispatch_RegistersGatewayTokenWithSecretNamespace(t *testing.T) {
 	r := &Runner{
 		DB:         d.Conn,
 		Projects:   orchestrator.DBProjectCatalog{DB: d.Conn},
-		Sandbox:    &gwFakeSandboxPrep{dir: t.TempDir()},
-		Runtime:    &gwFakeRuntime{},
+		Backend:    &gwFakeBackend{},
 		BoidBinary: "/boid",
 		GitGateway: registry,
 		GatewayURL: &gwURL,
@@ -573,8 +557,7 @@ func TestDispatch_GatewayUnwired_NoTokenNoPanic(t *testing.T) {
 	r := &Runner{
 		DB:         d.Conn,
 		Projects:   orchestrator.DBProjectCatalog{DB: d.Conn},
-		Sandbox:    &gwFakeSandboxPrep{dir: t.TempDir()},
-		Runtime:    &gwFakeRuntime{},
+		Backend:    &gwFakeBackend{},
 		BoidBinary: "/boid",
 		// GitGateway deliberately left nil.
 	}
@@ -614,8 +597,7 @@ func TestDispatch_RuntimeStartError_UnregistersBrokerAndGatewayTokens(t *testing
 	r := &Runner{
 		DB:         d.Conn,
 		Projects:   orchestrator.DBProjectCatalog{DB: d.Conn},
-		Sandbox:    &gwFakeSandboxPrep{dir: t.TempDir()},
-		Runtime:    &gwFakeRuntimeStartError{},
+		Backend:    &gwFakeBackend{launchErr: fmt.Errorf("boom: runtime start failed")},
 		Broker:     broker,
 		BoidBinary: "/boid",
 		GitGateway: registry,
@@ -690,8 +672,7 @@ func TestDispatch_CloneMode_ProjectLookupError_FailsLoud(t *testing.T) {
 	r := &Runner{
 		DB:         d.Conn,
 		Projects:   erroringProjectLookup{err: fmt.Errorf("db read failed")},
-		Sandbox:    &gwFakeSandboxPrep{dir: t.TempDir()},
-		Runtime:    &gwFakeRuntime{},
+		Backend:    &gwFakeBackend{},
 		BoidBinary: "/boid",
 	}
 	spec := &orchestrator.JobSpec{
@@ -722,8 +703,7 @@ func TestDispatch_CloneMode_ProjectNotFound_FailsLoud(t *testing.T) {
 	r := &Runner{
 		DB:         d.Conn,
 		Projects:   fakeProjectLookup{projects: nil}, // GetProject returns (nil, nil)
-		Sandbox:    &gwFakeSandboxPrep{dir: t.TempDir()},
-		Runtime:    &gwFakeRuntime{},
+		Backend:    &gwFakeBackend{},
 		BoidBinary: "/boid",
 	}
 	if err := orchestrator.CreateProject(d.Conn, &orchestrator.Project{ID: "proj-1", WorkDir: "/tmp"}); err != nil {
@@ -758,8 +738,7 @@ func TestDispatch_CloneMode_MissingUpstreamURL_FailsLoud(t *testing.T) {
 	r := &Runner{
 		DB:         d.Conn,
 		Projects:   orchestrator.DBProjectCatalog{DB: d.Conn},
-		Sandbox:    &gwFakeSandboxPrep{dir: t.TempDir()},
-		Runtime:    &gwFakeRuntime{},
+		Backend:    &gwFakeBackend{},
 		BoidBinary: "/boid",
 	}
 	spec := &orchestrator.JobSpec{

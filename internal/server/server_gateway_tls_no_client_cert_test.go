@@ -48,7 +48,7 @@ func TestServer_Start_GatewayTLS_DoesNotRequireClientCert(t *testing.T) {
 		SocketPath: filepath.Join(tmpDir, "boid.sock"),
 		HTTPAddr:   "127.0.0.1:0",
 		TLSDir:     filepath.Join(tmpDir, "tls"),
-		JobRuntime: noopRuntime{},
+		Backend:    &noopBackend{},
 	})
 	if err != nil {
 		t.Fatalf("new server: %v", err)
@@ -109,7 +109,7 @@ func TestServer_Start_BrokerTLS_StillRequiresClientCert(t *testing.T) {
 		SocketPath: filepath.Join(tmpDir, "boid.sock"),
 		HTTPAddr:   "127.0.0.1:0",
 		TLSDir:     tlsDir,
-		JobRuntime: noopRuntime{},
+		Backend:    &noopBackend{},
 	})
 	if err != nil {
 		t.Fatalf("new server: %v", err)
