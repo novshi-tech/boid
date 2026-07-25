@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/novshi-tech/boid/internal/dispatcher"
 	"github.com/novshi-tech/boid/internal/orchestrator"
 	"gopkg.in/yaml.v3"
 )
@@ -21,11 +22,45 @@ type ProjectAppService struct {
 	Projects ProjectRepository
 	Meta     interface {
 		Load(workDir string) (*orchestrator.ProjectMeta, error)
+		// LoadBareRepo reads .boid/project.yaml from a daemon-managed bare
+		// git repository's HEAD (docs/plans/volume-only-daemon.md §論点a/b)
+		// — the bare-repo counterpart to Load, used by
+		// CreateProjectFromGitURL (first load after `git clone --mirror`)
+		// and FetchProject (`boid project fetch <id>`, reload after
+		// `git fetch --all`).
+		LoadBareRepo(bareRepoPath string) (*orchestrator.ProjectMeta, error)
 		Get(id string) (*orchestrator.ProjectMeta, bool)
 		Remove(id string)
 		LoadAll(projects []*orchestrator.Project) []error
 		SetWorkspaceID(projectID, workspaceID string)
+		// Status / MarkDegraded expose the on-startup-auto-prune-retirement
+		// invariant's in-memory status tracking (docs/plans/
+		// volume-only-daemon.md §論点a). hydrateProject reads Status to
+		// populate Project.Status/StatusMessage on every read path;
+		// CreateProjectFromGitURL/FetchProject call MarkDegraded when a
+		// clone/fetch/load step fails, preserving the DB row per the
+		// invariant instead of ever deleting it.
+		Status(id string) orchestrator.ProjectStatus
+		MarkDegraded(id, message string)
 	}
+	// CloneBareRepo clones a git URL as a daemon-managed bare (mirror)
+	// repository at destPath, injecting forge credentials scoped to
+	// namespace (the registering project's workspace slug) — wired in
+	// internal/server/wire.go to dispatcher.CloneBareRepo, closed over the
+	// daemon's gitgateway.CredentialProvider. nil (e.g. in tests that do not
+	// exercise CreateProjectFromGitURL) makes that method fail with a clear
+	// "not wired" error instead of panicking.
+	CloneBareRepo func(ctx context.Context, url, destPath, namespace string) error
+	// FetchBareRepo runs `git fetch --all` inside an existing daemon-managed
+	// bare repo — wired in internal/server/wire.go to
+	// dispatcher.FetchBareRepo. Same nil-safety convention as CloneBareRepo.
+	FetchBareRepo func(ctx context.Context, bareRepoPath, namespace string) error
+	// DataDir is the daemon's data-home (docs/plans/volume-only-daemon.md
+	// §論点b: "<data_dir>/repos/<workspace-slug>/<project-name>.git/"),
+	// wired in internal/server/wire.go to dataHomeFor(cfg) — the same value
+	// TaskGCStore.WithAttachmentsRoot uses. Required by
+	// CreateProjectFromGitURL to compute a new project's bare-repo path.
+	DataDir string
 	// Hydrator is optional. When set, callers that need fully-resolved meta
 	// (workspace-level capabilities / host_commands / env merged in +
 	// SecretNamespace injected) go through GetWithWorkspace instead of the
@@ -134,6 +169,27 @@ func (s *ProjectAppService) hydrateProject(project *orchestrator.Project) *orche
 	if meta, ok := s.Meta.Get(project.ID); ok {
 		project.Meta = *meta
 	}
+	return s.applyStatus(project)
+}
+
+// applyStatus populates project.Status/StatusMessage from the in-memory
+// ProjectStore health snapshot (docs/plans/volume-only-daemon.md §論点a).
+// Every read path (hydrateProject and hydrateProjectWithWorkspace's success
+// branch) funnels through this so `boid project list`/`show` — and any API
+// client — can see a degraded project without the daemon ever having
+// deleted its row.
+func (s *ProjectAppService) applyStatus(project *orchestrator.Project) *orchestrator.Project {
+	if project == nil {
+		return nil
+	}
+	st := s.Meta.Status(project.ID)
+	if st.State != orchestrator.StatusReady {
+		project.Status = st.State
+		project.StatusMessage = st.Message
+	} else {
+		project.Status = ""
+		project.StatusMessage = ""
+	}
 	return project
 }
 
@@ -150,7 +206,7 @@ func (s *ProjectAppService) hydrateProjectWithWorkspace(ctx context.Context, pro
 		meta, err := s.Hydrator.GetWithWorkspace(ctx, project.ID)
 		if err == nil && meta != nil {
 			project.Meta = *meta
-			return project
+			return s.applyStatus(project)
 		}
 		// Fall back to bare meta on hydration error so the API stays usable
 		// even when workspace.yaml is malformed. The hydrator already logs.
@@ -220,6 +276,188 @@ func (s *ProjectAppService) CreateProject(workDir string) (*orchestrator.Project
 
 	project.Meta = *meta
 	return project, nil
+}
+
+// CreateProjectFromGitURL registers a project from a git remote URL
+// (docs/plans/volume-only-daemon.md §論点a: `boid project add <git-url>
+// --workspace=<name> [--name=<project-name>]`, the CLI form's server-side
+// counterpart). Unlike CreateProject (still used by `boid project init`'s
+// dir-based flow — see cmd/project.go's own doc comment on why that path is
+// left alone for this PR), workspaceSlug is REQUIRED, not eagerly defaulted:
+// there is no host-filesystem project.yaml sitting around to "just register
+// as-is" here, so an unassigned bare clone would be an orphaned volume
+// directory with no way back to it.
+//
+// This follows the plan doc's §論点a unresolved-point recommendation
+// ("Failure means the register itself fails, no half-added project"):
+// clone, project.yaml load, and DB/workspace-assignment all happen
+// synchronously in this one call, and any failure rolls back everything
+// this call itself created (the bare repo directory, the in-memory Meta
+// cache entry, the DB row) so a failed `project add` never leaves a
+// half-registered project behind. This is a DIFFERENT case from the
+// on-startup-auto-prune-retirement invariant (docs/plans/
+// volume-only-daemon.md §論点a) that governs already-registered projects
+// going degraded later (FetchProject, daemon startup) — a project that
+// never successfully finished registering has no DB row to preserve in the
+// first place.
+func (s *ProjectAppService) CreateProjectFromGitURL(ctx context.Context, gitURL, workspaceSlug, nameOverride string) (*orchestrator.Project, error) {
+	gitURL = strings.TrimSpace(gitURL)
+	if gitURL == "" {
+		return nil, &StatusError{Code: http.StatusBadRequest, Message: "url is required"}
+	}
+	// Normalize to HTTPS (or leave a file:// URL as-is — see
+	// dispatcher.NormalizeOriginURL's own doc comment) BEFORE deriving the
+	// name / cloning / storing UpstreamURL, not just at storage time: the
+	// daemon container has no SSH agent/keys, so an scp-like or ssh://
+	// argument MUST become an https:// URL for dispatcher.CloneBareRepo's
+	// forge-credential injection (HTTPS Basic auth via gitgateway) to have
+	// any chance of authenticating — cloning the literal ssh:// form the
+	// user typed would silently fall back to SSH transport and fail with a
+	// confusing auth error instead of this clear one. A URL that cannot be
+	// normalized at all (unrecognized form) is rejected outright rather
+	// than attempted.
+	normalizedURL, normErr := dispatcher.NormalizeOriginURL(gitURL)
+	if normErr != nil {
+		return nil, &StatusError{Code: http.StatusBadRequest, Message: fmt.Sprintf("unrecognized git URL %q: %v", gitURL, normErr)}
+	}
+	gitURL = normalizedURL
+	if strings.TrimSpace(workspaceSlug) == "" {
+		return nil, &StatusError{Code: http.StatusBadRequest, Message: "workspace is required (git-URL registration has no host directory to eagerly default into the default workspace the way `boid project init` does)"}
+	}
+	if err := orchestrator.ValidWorkspaceSlug(workspaceSlug); err != nil {
+		return nil, &StatusError{Code: http.StatusBadRequest, Message: err.Error()}
+	}
+	if s.CloneBareRepo == nil {
+		return nil, &StatusError{Code: http.StatusInternalServerError, Message: "git clone not wired"}
+	}
+	if s.DataDir == "" {
+		return nil, &StatusError{Code: http.StatusInternalServerError, Message: "daemon data directory not wired"}
+	}
+
+	name := strings.TrimSpace(nameOverride)
+	if name == "" {
+		derived, err := orchestrator.DeriveProjectNameFromURL(gitURL)
+		if err != nil {
+			return nil, &StatusError{Code: http.StatusBadRequest, Message: err.Error()}
+		}
+		name = derived
+	}
+
+	// Refuse before any write (PR-1b/1d learning: a refuse must land BEFORE
+	// any DB/filesystem mutation, never after a partial write) when the
+	// target workspace does not exist — `boid workspace create <slug>`
+	// first, same contract SetProjectWorkspace's AssignWorkspaceIfExists
+	// already enforces for the legacy flow. DefaultWorkspaceSlug always
+	// exists (EnsureDefault at startup), so this only ever blocks a typo'd
+	// or not-yet-created custom slug.
+	exists, err := s.Projects.WorkspaceExists(workspaceSlug)
+	if err != nil {
+		return nil, &StatusError{Code: http.StatusInternalServerError, Message: err.Error()}
+	}
+	if !exists {
+		return nil, &StatusError{Code: http.StatusNotFound, Message: fmt.Sprintf("workspace %q not found; create it first with `boid workspace create %s`", workspaceSlug, workspaceSlug)}
+	}
+
+	bareRepoPath := orchestrator.BareRepoPath(s.DataDir, workspaceSlug, name)
+	if _, statErr := os.Stat(bareRepoPath); statErr == nil {
+		return nil, &StatusError{Code: http.StatusConflict, Message: fmt.Sprintf("a project is already registered at %s; remove it first (`boid project rm`) or choose a different --name", bareRepoPath)}
+	}
+
+	if err := s.CloneBareRepo(ctx, gitURL, bareRepoPath, workspaceSlug); err != nil {
+		return nil, &StatusError{Code: http.StatusBadGateway, Message: fmt.Sprintf("clone %q: %v", gitURL, err)}
+	}
+
+	meta, err := s.Meta.LoadBareRepo(bareRepoPath)
+	if err != nil {
+		// Synchronous-validation contract (see this method's doc comment):
+		// a project.yaml that fails to load at add time fails the whole
+		// registration, not a half-added degraded row. Roll back the clone.
+		if rmErr := os.RemoveAll(bareRepoPath); rmErr != nil {
+			slog.Warn("CreateProjectFromGitURL: failed to roll back bare repo after project.yaml load failure",
+				"path", bareRepoPath, "error", rmErr)
+		}
+		return nil, &StatusError{Code: http.StatusBadRequest, Message: fmt.Sprintf("load project.yaml from %s (%s): %v", gitURL, bareRepoPath, err)}
+	}
+
+	project := &orchestrator.Project{
+		ID:          meta.ID,
+		WorkDir:     bareRepoPath,
+		UpstreamURL: gitURL,
+	}
+
+	if err := s.Projects.CreateProject(project); err != nil {
+		s.Meta.Remove(meta.ID)
+		if rmErr := os.RemoveAll(bareRepoPath); rmErr != nil {
+			slog.Warn("CreateProjectFromGitURL: failed to roll back bare repo after DB insert failure",
+				"path", bareRepoPath, "error", rmErr)
+		}
+		return nil, &StatusError{Code: http.StatusInternalServerError, Message: err.Error()}
+	}
+
+	// MAJOR 1 (codex review round 3, mirrors CreateProject above): this
+	// cache write races every other workspace-cache writer the same way —
+	// see the mu field's doc comment.
+	s.mu.Lock()
+	if err := s.Projects.SetProjectWorkspace(project.ID, workspaceSlug); err != nil {
+		s.mu.Unlock()
+		// Unlike CreateProject's eager default-workspace assign (best-effort,
+		// non-fatal — see that method's comment), workspaceSlug is a REQUIRED
+		// input here, already validated to exist above; a failure at this
+		// point is unexpected enough (a DELETE landing in the tiny window
+		// between the existence check and here) that leaving a workspace-less
+		// project row around would violate this method's whole "workspace
+		// required" contract. Roll back everything.
+		s.Projects.DeleteProject(project.ID) //nolint:errcheck // best-effort rollback; the StatusError below already reports failure
+		s.Meta.Remove(meta.ID)
+		if rmErr := os.RemoveAll(bareRepoPath); rmErr != nil {
+			slog.Warn("CreateProjectFromGitURL: failed to roll back bare repo after workspace assignment failure",
+				"path", bareRepoPath, "error", rmErr)
+		}
+		return nil, &StatusError{Code: http.StatusInternalServerError, Message: fmt.Sprintf("assign workspace %q: %v", workspaceSlug, err)}
+	}
+	project.WorkspaceID = workspaceSlug
+	s.Meta.SetWorkspaceID(project.ID, workspaceSlug)
+	s.mu.Unlock()
+
+	project.Meta = *meta
+	return s.applyStatus(project), nil
+}
+
+// FetchProject runs `git fetch --all` inside id's bare repo and reloads
+// project.yaml (`boid project fetch <id>`, docs/plans/volume-only-daemon.md
+// §論点b fetch 経路). Unlike CreateProjectFromGitURL, a failure here does
+// NOT roll anything back or delete the project — id is already a registered
+// project the on-startup-auto-prune-retirement invariant (§論点a) protects;
+// a fetch or reload failure marks it StatusDegraded (via s.Meta.MarkDegraded)
+// and returns an error, leaving the DB row and any previously-loaded Meta
+// exactly as they were.
+func (s *ProjectAppService) FetchProject(ctx context.Context, id string) (*orchestrator.Project, error) {
+	project, err := s.Projects.GetProject(id)
+	if err != nil {
+		return nil, &StatusError{Code: http.StatusNotFound, Message: err.Error()}
+	}
+	if s.FetchBareRepo == nil {
+		return nil, &StatusError{Code: http.StatusInternalServerError, Message: "git fetch not wired"}
+	}
+	if !orchestrator.IsBareRepoDir(project.WorkDir) {
+		return nil, &StatusError{Code: http.StatusBadRequest, Message: fmt.Sprintf("project %q is not a git-URL registered project (legacy host-dir project; re-add via `boid project add <git-url> --workspace=<name>`)", id)}
+	}
+
+	if err := s.FetchBareRepo(ctx, project.WorkDir, project.WorkspaceID); err != nil {
+		msg := fmt.Sprintf("fetch failed: %v", err)
+		s.Meta.MarkDegraded(id, msg)
+		return nil, &StatusError{Code: http.StatusBadGateway, Message: msg}
+	}
+
+	meta, err := s.Meta.LoadBareRepo(project.WorkDir)
+	if err != nil {
+		msg := fmt.Sprintf("project.yaml load failed after fetch: %v", err)
+		s.Meta.MarkDegraded(id, msg)
+		return nil, &StatusError{Code: http.StatusBadRequest, Message: msg}
+	}
+
+	project.Meta = *meta
+	return s.hydrateProjectWithWorkspace(ctx, project), nil
 }
 
 func (s *ProjectAppService) ListProjects(workspaceID string) ([]*orchestrator.Project, error) {

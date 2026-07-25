@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -32,6 +33,12 @@ type fakeWorkspaceService struct {
 }
 
 func (s *fakeWorkspaceService) CreateProject(string) (*orchestrator.Project, error) {
+	panic("not implemented")
+}
+func (s *fakeWorkspaceService) CreateProjectFromGitURL(context.Context, string, string, string) (*orchestrator.Project, error) {
+	panic("not implemented")
+}
+func (s *fakeWorkspaceService) FetchProject(context.Context, string) (*orchestrator.Project, error) {
 	panic("not implemented")
 }
 func (s *fakeWorkspaceService) ListProjects(string) ([]*orchestrator.Project, error) {

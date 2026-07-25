@@ -25,10 +25,17 @@ func (s *upstreamURLMetaStore) Load(_ string) (*orchestrator.ProjectMeta, error)
 	}
 	return s.meta, nil
 }
+func (s *upstreamURLMetaStore) LoadBareRepo(_ string) (*orchestrator.ProjectMeta, error) {
+	return s.meta, s.loadErr
+}
 func (s *upstreamURLMetaStore) Get(_ string) (*orchestrator.ProjectMeta, bool) { return nil, false }
 func (s *upstreamURLMetaStore) Remove(id string)                               { s.removed = append(s.removed, id) }
 func (s *upstreamURLMetaStore) LoadAll(_ []*orchestrator.Project) []error      { return nil }
 func (s *upstreamURLMetaStore) SetWorkspaceID(_, _ string)                     {}
+func (s *upstreamURLMetaStore) Status(_ string) orchestrator.ProjectStatus {
+	return orchestrator.ProjectStatus{State: orchestrator.StatusReady}
+}
+func (s *upstreamURLMetaStore) MarkDegraded(_, _ string) {}
 
 // TestProjectAppService_CreateProject_CapturesUpstreamURL verifies that a
 // successful capture is normalized onto the created project (PR2 of

@@ -46,11 +46,13 @@ func (h *ProjectHandler) resolveRef(w http.ResponseWriter, ref string) *orchestr
 func (h *ProjectHandler) Routes() chi.Router {
 	r := chi.NewRouter()
 	r.Post("/", h.Create)
+	r.Post("/git", h.CreateFromGitURL)
 	r.Get("/", h.List)
 	r.Post("/reload", h.Reload)
 	r.Put("/{id}/workspace", h.SetWorkspace)
 	r.Post("/{id}/sessions", h.StartSession)
 	r.Post("/{id}/exec", h.StartExec)
+	r.Post("/{id}/fetch", h.Fetch)
 	r.Get("/{id}", h.Get)
 	r.Delete("/{id}", h.Delete)
 	return r
@@ -58,6 +60,16 @@ func (h *ProjectHandler) Routes() chi.Router {
 
 type CreateProjectRequest struct {
 	WorkDir string `json:"work_dir"`
+}
+
+// CreateProjectFromGitURLRequest is POST /api/projects/git's body
+// (docs/plans/volume-only-daemon.md §論点a — `boid project add <git-url>
+// --workspace=<name> [--name=<project-name>]`). Workspace is required; Name
+// empty derives the project name from URL's last path component.
+type CreateProjectFromGitURLRequest struct {
+	URL       string `json:"url"`
+	Workspace string `json:"workspace"`
+	Name      string `json:"name,omitempty"`
 }
 
 type SetProjectWorkspaceRequest struct {
@@ -81,6 +93,48 @@ func (h *ProjectHandler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusCreated, project)
+}
+
+// CreateFromGitURL handles POST /api/projects/git (docs/plans/
+// volume-only-daemon.md §論点a — `boid project add <git-url>
+// --workspace=<name>`, the new git-URL registration model).
+func (h *ProjectHandler) CreateFromGitURL(w http.ResponseWriter, r *http.Request) {
+	var req CreateProjectFromGitURLRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if req.URL == "" {
+		writeError(w, http.StatusBadRequest, "url is required")
+		return
+	}
+	if req.Workspace == "" {
+		writeError(w, http.StatusBadRequest, "workspace is required")
+		return
+	}
+
+	project, err := h.Service.CreateProjectFromGitURL(r.Context(), req.URL, req.Workspace, req.Name)
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, project)
+}
+
+// Fetch handles POST /api/projects/{id}/fetch (docs/plans/
+// volume-only-daemon.md §論点b fetch 経路 — `boid project fetch <id>`).
+func (h *ProjectHandler) Fetch(w http.ResponseWriter, r *http.Request) {
+	ref := chi.URLParam(r, "id")
+	project := h.resolveRef(w, ref)
+	if project == nil {
+		return
+	}
+	updated, err := h.Service.FetchProject(r.Context(), project.ID)
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, updated)
 }
 
 func (h *ProjectHandler) List(w http.ResponseWriter, r *http.Request) {

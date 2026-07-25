@@ -60,6 +60,24 @@ type BrokerRegistry interface {
 
 type ProjectService interface {
 	CreateProject(workDir string) (*orchestrator.Project, error)
+	// CreateProjectFromGitURL registers a project from a git remote URL
+	// (docs/plans/volume-only-daemon.md §論点a, POST /api/projects/git —
+	// `boid project add <git-url> --workspace=<name>`). workspaceSlug is
+	// required (unlike CreateProject's eager default-workspace assign);
+	// nameOverride empty derives the project name from the URL's last path
+	// component. *StatusError{400} for a missing url/workspace or an
+	// unparseable URL, {404} for an unknown workspace, {409} if a project is
+	// already registered at the computed bare-repo path, {502} for a clone
+	// failure, {500} if the daemon has no git-clone/data-dir wiring.
+	CreateProjectFromGitURL(ctx context.Context, gitURL, workspaceSlug, nameOverride string) (*orchestrator.Project, error)
+	// FetchProject runs `git fetch --all` inside id's bare repo and reloads
+	// its project.yaml (POST /api/projects/{id}/fetch — `boid project fetch
+	// <id>`). *StatusError{404} unknown id, {400} for a legacy (non-bare,
+	// pre-cutover) project or a project.yaml that fails to parse after
+	// fetch, {502} for a fetch failure. Never deletes id's row on failure —
+	// see the method's own doc comment for the on-startup-auto-prune-
+	// retirement invariant this preserves.
+	FetchProject(ctx context.Context, id string) (*orchestrator.Project, error)
 	ListProjects(workspaceID string) ([]*orchestrator.Project, error)
 	ListWorkspaces() ([]*orchestrator.WorkspaceSummary, error)
 	GetProject(id string) (*orchestrator.Project, error)

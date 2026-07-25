@@ -2410,7 +2410,16 @@ func (s *stubProjectRepository) SetProjectWorkspace(projectID, workspaceID strin
 func (s *stubProjectRepository) ListWorkspaces() ([]*orchestrator.WorkspaceSummary, error) {
 	return nil, nil
 }
-func (s *stubProjectRepository) DeleteProject(id string) error { return nil }
+func (s *stubProjectRepository) DeleteProject(id string) error {
+	kept := s.projects[:0]
+	for _, p := range s.projects {
+		if p.ID != id {
+			kept = append(kept, p)
+		}
+	}
+	s.projects = kept
+	return nil
+}
 
 func (s *stubProjectRepository) WorkspaceExists(slug string) (bool, error) {
 	return s.existingWorkspaces[slug], nil
@@ -2475,6 +2484,13 @@ type stubProjectMetaStore struct {
 func (s *stubProjectMetaStore) Load(workDir string) (*orchestrator.ProjectMeta, error) {
 	return nil, nil
 }
+func (s *stubProjectMetaStore) LoadBareRepo(bareRepoPath string) (*orchestrator.ProjectMeta, error) {
+	return nil, nil
+}
+func (s *stubProjectMetaStore) Status(id string) orchestrator.ProjectStatus {
+	return orchestrator.ProjectStatus{State: orchestrator.StatusReady}
+}
+func (s *stubProjectMetaStore) MarkDegraded(id, message string) {}
 func (s *stubProjectMetaStore) Get(id string) (*orchestrator.ProjectMeta, bool) {
 	if s.metas == nil {
 		return nil, false
