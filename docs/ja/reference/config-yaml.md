@@ -72,9 +72,14 @@ boid config edit                                 # $EDITOR（未設定なら vi�
   codex レビュー 4 ラウンドを経てもブロッカーが収束せず `Server.Stop` の
   デッドロックまで招いたため撤回し、全キー一律 restart-required にしました
   （nose 判断、PR #830 round 4 — 「反映経路が少ないほど壊れ方も少ない」という
-  判断）。`sandbox.backend` は特別扱いで、書き込み自体は常に許可されますが
-  （撤去は別 PR — `docs/plans/volume-only-daemon.md` §論点 e）、変更するたびに
-  上記と別文言の撤去予定 warning が出ます。
+  判断）。`sandbox.backend` は PR-4（`docs/plans/volume-only-daemon.md` §論点 e）で
+  撤去済みです — container が唯一の sandbox backend になったため選択の余地が
+  無くなりました。キー自体は `KindOpaque` として引き続き構造的に認識されます
+  （古い `config.yaml` の読み込みを壊さないため）が、`boid config set/unset`
+  では使えません（読み取り専用の廃止済みフィールドという専用エラーになります）。
+  `boid config apply -f`/`edit` で丸ごとのドキュメントに含まれていても
+  エラーにはならず、値は静かに無視されます（daemon 起動時ログに warning が
+  一度出ます）。
 - **並行編集の保護**: `set`/`unset` は daemon 側で 1 回のアトミックな
   read-modify-write として処理されるため、異なるキーへの同時 `set` が
   互いを打ち消し合うことはありません。`apply -f`/`edit` はドキュメント全体を
@@ -164,18 +169,20 @@ sandbox:
   allowed_domains:
     - ".github.com"       # ドット始まりはサフィックスマッチ
     - "api.example.com"   # ドットなしは完全一致
-  backend: userns          # userns（デフォルト）| container
 ```
 
 | キー | 型 | デフォルト | 説明 |
 |---|---|---|---|
 | `allowed_domains` | []string | `[]` | デフォルトの許可リストに追加するドメイン |
-| `backend` | string | `userns` | サンドボックス実行 backend。`userns`（デフォルト、`clone(NEWUSER)`+pivot_root）または `container`（Phase 6、docker sibling コンテナ）|
 
 起動時に `defaultAllowedDomains`（Anthropic/OpenAI API・各言語パッケージレジストリ等）へ追記されます。
 プロキシ許可リストの詳細は [サンドボックス内部](../architecture/sandbox-internals.md) を参照してください。
 
-`backend: container` は Phase 6（`docs/plans/phase6-container-backend.md`）の cutover 設定で、全 workspace 共通（workspace 単位の切替はできない）。切り替える前に container e2e green + rollback rehearsal（deploy-level reaper 込み）を済ませておくこと（plan の cutover gate）。値は daemon 起動時に検証され、`userns` / `container` 以外はエラーで起動を拒否する（サイレントフォールバック無し）。
+> **`backend` キーは撤去済み（PR-4、2026-07-25）:** container backend
+> （Phase 6 `docs/plans/phase6-container-backend.md`）が唯一の sandbox
+> backend になったため、`sandbox.backend`（`userns` | `container`）の
+> 選択自体が無意味になりました。古い `config.yaml` に残っていても
+> エラーにはならず、静かに無視されます。
 
 ---
 

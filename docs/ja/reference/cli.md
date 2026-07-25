@@ -31,7 +31,7 @@ daemon が止まっているときに以下のコマンドを呼ぶと、自動�
 
 ### Host mode（コンテナ backend 向け、`BOID_MODE=container`）
 
-`sandbox.backend: container` の compose デプロイ（`scripts/deploy-container.sh`、`docs/plans/phase6-container-backend.md`）を使っている場合、`boid` の起動元 shell で以下を設定すると **`boid` CLI 自身が daemon container のライフサイクルを管理する「host mode」** になります（`docs/plans/volume-only-daemon.md` §論点c、Option 4 設計）。
+container backend の compose デプロイ（`scripts/deploy-container.sh`、`docs/plans/phase6-container-backend.md` — PR-4 以降、container backend が唯一の sandbox backend なので `sandbox.backend` の設定は不要）を使っている場合、`boid` の起動元 shell で以下を設定すると **`boid` CLI 自身が daemon container のライフサイクルを管理する「host mode」** になります（`docs/plans/volume-only-daemon.md` §論点c、Option 4 設計）。
 
 ```bash
 export BOID_MODE=container

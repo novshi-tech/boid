@@ -11,8 +11,8 @@ go test -race ./...     # レースコンディション検出
 go vet ./...            # 静的解析
 ```
 
-E2E テスト（`e2e/scenarios/` 配下）はホスト側では `./e2e/run.sh [scenario]` で実行する。
-サンドボックス内 (Claude Code 等) からは `run-e2e [scenario]` (declared short name) を PATH 経由で呼ぶ — Phase 5 5a-3 cutover 後は `/run/boid/bin/run-e2e` symlink 経由で host 側 broker に dispatch される (実体は host で動く)。 サンドボックス内で `./e2e/run.sh` を直接叩くと、 それは sandbox 内のスクリプトを実行する形になり、 sandbox 内から user namespace を作れないため失敗する。
+E2E テスト（`e2e/run-container.sh`、real docker/podman engine が必要）はホスト側では `./e2e/run-container.sh` で実行する。 PR-4（`docs/plans/volume-only-daemon.md` §論点e）で userns backend を撤去したのに伴い、それに依存していた per-scenario black-box harness（`e2e/run.sh` + `e2e/scenarios/*`）は撤去済み — container backend の compose sibling-connectivity / workspace network isolation / reap 系の固定 flow のみを検証する単一スクリプトになった。
+サンドボックス内 (Claude Code 等) からは `run-e2e` (declared short name、scenario 引数は撤去済み) を PATH 経由で呼ぶ — `/run/boid/bin/run-e2e` symlink 経由で host 側 broker に dispatch される (実体は host で動く)。 サンドボックス内で `./e2e/run-container.sh` を直接叩くと、 サンドボックス内から docker/podman engine にアクセスできないため失敗する。
 
 ## プロジェクト構成
 
@@ -77,12 +77,9 @@ hook の定義経路は `hooks[].command`（inline shell command、`sh -c` 経�
 
 ## サンドボックス実行バックエンド
 
-サンドボックスの実装は `SandboxBackend` interface (`internal/sandbox/backend/`) で抽象化されており、2 backend が併存する（Phase 6、`docs/plans/phase6-container-backend.md`、PR1-8 landed、PR9 finale は実装 PR 提出済み・CI green 待ち 2026-07-23 時点）:
+サンドボックスの実装は `SandboxBackend` interface (`internal/sandbox/backend/`) で抽象化されている。 **container backend が唯一の backend**（Phase 6 `docs/plans/phase6-container-backend.md` で実装、PR-4 `docs/plans/volume-only-daemon.md` §論点e で userns backend を完全撤去し単一化、2026-07-25）: docker コンテナを job ごとに使い捨てで生成する docker-out-of-docker 方式。job は workspace 単位で分離された docker network に閉じ込められる。daemon 自体は `docker compose`（`build/container/compose.yml`、`scripts/deploy-container.sh`）でコンテナ化して運用するのが推奨だが、bare `boid start`（host process 直接起動）から動かす場合も同じ container backend で dispatch する（docker/podman socket へのアクセスが必須）。
 
-- **userns backend**（既定・現行運用）: rootless userns + pivot_root + 5 段 mount。config に `sandbox.backend` を指定しない場合はこちら。
-- **container backend**（opt-in）: docker コンテナを job ごとに使い捨てで生成する docker-out-of-docker 方式。`config.yaml` に `sandbox.backend: container` を設定し、daemon 自体も `docker compose`（`build/container/compose.yml`、`scripts/deploy-container.sh`）でコンテナ化した上で運用する。job は workspace 単位で分離された docker network に閉じ込められる。
-
-**両 backend の恒久併存はしない方針**（nose 決定）。userns backend は「container backend の dogfood 安定後に撤去される短期 fallback」として位置づけられている。撤去計画（3 段階 + config option fold のタイムライン）は `docs/plans/phase6-cutover-followups.md` を参照。撤去は未着手（2026-07-23 時点、`usernsBackend`/`LocalRuntime`/`SandboxPreparer`/`JobRuntime` に `Deprecated:` doc comment を付与した skeleton 段階のみ）。
+`sandbox.backend` config option は撤去済み（container 以外の選択肢が無いため）。旧 config.yaml に残っている場合は起動時に warning を出して無視する（`KindOpaque`、`internal/config/schema.go`）。userns backend（rootless userns + pivot_root + 5 段 mount）のコードは完全に削除済み — 撤去計画は `docs/plans/phase6-cutover-followups.md`（歴史記録）を参照。
 
 ## サンドボックス内での Web アクセス
 
