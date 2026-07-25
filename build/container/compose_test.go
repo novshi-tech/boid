@@ -30,6 +30,8 @@ type composeDoc struct {
 		Volumes     []string          `yaml:"volumes"`
 		Environment map[string]string `yaml:"environment"`
 		ExtraHosts  []string          `yaml:"extra_hosts"`
+		NetworkMode string            `yaml:"network_mode"`
+		Ports       []string          `yaml:"ports"`
 	} `yaml:"services"`
 	// TopVolumes is the top-level named-volume declaration block (docs/
 	// plans/volume-only-daemon.md §論点 d) — distinct from each service's
@@ -51,68 +53,58 @@ func loadComposeDoc(t *testing.T) composeDoc {
 	return doc
 }
 
-// TestComposeDaemonHasDockerProxyAlias pins Blocker 3 (PR6 codex review):
-// the daemon service's boid_internal network membership must carry a
-// "boid-dockerproxy" alias — the DNS name a container-backend job's
-// DOCKER_HOST env (internal/dispatcher/container_backend.go's
-// withDockerTLSEnv) is set to. Without this alias, that env var points at
-// a name compose never declares, so a container-backend job would fail
-// DNS resolution outright trying to reach it — see compose.yml's own "NOT
-// yet true of this file" note for what this alias does, and does not (the
-// listener itself is not yet reachable — that's docs/plans/
-// phase6-container-backend.md §PR9's e2e-container job), fix.
-func TestComposeDaemonHasDockerProxyAlias(t *testing.T) {
+// TestComposeDaemonUsesHostNetworking pins the PR-3 codex round-1 review
+// design pivot (nose decision, 2026-07-25, docs/plans/
+// volume-only-daemon.md §論点c): the daemon service runs with
+// `network_mode: host` — the only way the dedicated CLI TLS listener's
+// loopback-trust exemption (auth.IsLoopback) can ever see a genuine
+// "127.0.0.1" RemoteAddr from a same-host CLI, since bridge-mode port
+// publishing always rewrites RemoteAddr to the bridge gateway address
+// instead. `network_mode` and `networks`/`ports` are mutually exclusive on
+// the same compose service (a host-networked container has no network
+// namespace of its own left to attach an additional interface into, or a
+// port to publish out of) — this test pins both halves of that: the mode
+// is set, and neither of the retracted keys reappears.
+//
+// KNOWN, FLAGGED CONSEQUENCE this test deliberately does NOT re-pin (see
+// compose.yml's own top header comment for the full writeup): the prior
+// TestComposeDaemonHasDockerProxyAlias/
+// TestComposeDaemonHasGatewayBrokerEgressAliases tests this replaces used
+// to pin the daemon's STATIC boid_internal network membership + DNS
+// aliases (boid-gateway/boid-broker/boid-egress/boid-dockerproxy) — gone
+// now that the daemon cannot join any docker network at all under host
+// networking. That static membership was only ever authoritative for the
+// DEFAULT workspace anyway; every OTHER workspace's job→daemon
+// reachability goes through a DIFFERENT, DYNAMIC mechanism this compose
+// test cannot see — internal/dispatcher/container_backend.go's
+// SelfContainerID-driven per-Launch NetworkConnect self-attach (see
+// container_backend_workspace_network_test.go's own
+// TestContainerBackend_Launch_SelfContainerID_
+// ConnectsDaemonWithGatewayEgressBrokerAliases) — which will ALSO fail for
+// the exact same "host-networked container cannot join another network"
+// reason, for every workspace, not just default. That failure is
+// non-fatal to Launch itself (TestContainerBackend_Launch_
+// SelfConnectFailure_DoesNotFailLaunch already covers a NetworkConnect
+// failure degrading to a warning) but leaves git-gateway/broker/egress
+// genuinely unreachable from inside a container-backend job until a
+// follow-up redesigns that reachability path for a host-networked daemon.
+// Out of scope for this PR ("CLI TCP profile + loopback trust") —
+// flagged, not silently absorbed.
+func TestComposeDaemonUsesHostNetworking(t *testing.T) {
 	doc := loadComposeDoc(t)
 
 	daemon, ok := doc.Services["daemon"]
 	if !ok {
 		t.Fatal(`compose.yml has no "daemon" service`)
 	}
-	net, ok := daemon.Networks["boid_internal"]
-	if !ok {
-		t.Fatal(`daemon service is not a member of the "boid_internal" network`)
+	if daemon.NetworkMode != "host" {
+		t.Errorf(`daemon service network_mode = %q, want "host"`, daemon.NetworkMode)
 	}
-	for _, a := range net.Aliases {
-		if a == "boid-dockerproxy" {
-			return
-		}
+	if len(daemon.Networks) != 0 {
+		t.Errorf("daemon service networks = %v, want none (mutually exclusive with network_mode: host)", daemon.Networks)
 	}
-	t.Errorf(`daemon service's boid_internal network aliases = %v, want "boid-dockerproxy" present`, net.Aliases)
-}
-
-// TestComposeDaemonHasGatewayBrokerEgressAliases pins [Blocker 2, PR7 codex
-// review]: the daemon service's boid_internal network membership must also
-// carry "boid-gateway", "boid-broker", and "boid-egress" aliases — the DNS
-// names internal/server/server.go's gatewayURLFor/composeBrokerServiceName
-// and dispatcher.composeEgressServiceName resolve a container-backend
-// job's git gateway clone URL and HTTP(S)_PROXY host to. Unlike
-// boid-dockerproxy (still a bare alias with nothing reachable behind it as
-// of PR7 — see compose.yml's own "NOT yet true of this file" note),
-// boid-gateway and boid-egress ARE backed by a real listener as of this
-// fix: Server.Start binds the git gateway TLS listener and the
-// ProxyManager's default listener on 0.0.0.0 whenever sandbox.backend:
-// container is selected.
-func TestComposeDaemonHasGatewayBrokerEgressAliases(t *testing.T) {
-	doc := loadComposeDoc(t)
-
-	daemon, ok := doc.Services["daemon"]
-	if !ok {
-		t.Fatal(`compose.yml has no "daemon" service`)
-	}
-	net, ok := daemon.Networks["boid_internal"]
-	if !ok {
-		t.Fatal(`daemon service is not a member of the "boid_internal" network`)
-	}
-	want := map[string]bool{"boid-gateway": false, "boid-broker": false, "boid-egress": false}
-	for _, a := range net.Aliases {
-		if _, ok := want[a]; ok {
-			want[a] = true
-		}
-	}
-	for alias, found := range want {
-		if !found {
-			t.Errorf("daemon service's boid_internal network aliases = %v, want %q present", net.Aliases, alias)
-		}
+	if len(daemon.Ports) != 0 {
+		t.Errorf("daemon service ports = %v, want none (mutually exclusive with network_mode: host — nothing to publish, 127.0.0.1 inside the container already IS the host's own loopback)", daemon.Ports)
 	}
 }
 

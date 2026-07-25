@@ -197,6 +197,67 @@
 #     auth rather than standing up a second, parallel client-certificate
 #     enrollment system just for the CLI.
 #
+# network_mode: host (PR-3 codex round-1 review — nose's design pivot,
+# 2026-07-25, docs/plans/volume-only-daemon.md §論点c): the `daemon`
+# service below runs with the HOST's own network namespace instead of a
+# private bridge one. This closes a Blocker the original bridge-mode
+# design (host `ports: 127.0.0.1:8442:8442` publish, unchanged from PR6
+# onward until this fix) could not close: Docker/Podman's port-publish
+# mechanism (DNAT / docker-proxy, whichever the engine/version uses)
+# always replaces a published-port connection's RemoteAddr, as observed
+# INSIDE the container, with the bridge gateway's address — never the
+# real "127.0.0.1" a same-host CLI actually dialed. auth.IsLoopback
+# (internal/api/auth) therefore never saw a genuine loopback RemoteAddr no
+# matter how tightly the host-side publish was restricted, so
+# web.loopback_trust's entire "no `boid login` step needed for a same-host
+# caller" promise silently never worked for the published-port path — only
+# a test that dials the listener from INSIDE the same network namespace
+# (every unit/integration test in internal/server) could ever exercise
+# it. Under host networking, "127.0.0.1" inside this container IS the
+# host's real loopback interface — no NAT, no DNAT, no docker-proxy hop —
+# so the daemon sees the CLI's connection exactly as a bare `boid start`
+# running directly on the host always has.
+#
+# Consequences, closed by companion fixes elsewhere in this same PR:
+#   - No `ports:` section is needed (or valid — compose/docker/podman
+#     reject combining `network_mode` with `ports` on the same service)
+#     any more: every listener this daemon binds to "127.0.0.1" is
+#     already the host's own loopback, reachable at that literal address
+#     with zero publish step. The Web UI's own :8080 (defaultStartHTTPAddr,
+#     cmd/start.go) becomes reachable at the host's 127.0.0.1:8080 the
+#     same way, with no `ports:` entry of its own ever having existed
+#     here either.
+#   - The dedicated CLI TLS listener (internal/server.Config.CLIAddr) now
+#     ALWAYS binds "127.0.0.1" regardless of `sandbox.backend` (see that
+#     Config field's own doc comment) — under bridge-mode compose it used
+#     to follow gatewayBindHost(usingContainerBackend) ("0.0.0.0" for the
+#     container backend, needed for the OLD host-side port-publish to
+#     reach it at all); under host networking that would instead have
+#     newly exposed it on every OTHER host network interface, not just
+#     loopback, since there is no bridge-mode publish boundary to fall
+#     back on any more. Fixed as its own companion change.
+#
+# KNOWN, NOT-YET-CLOSED CONSEQUENCE (flagged, not fixed by this PR — out
+# of scope for "PR-3: CLI TCP profile + loopback trust"; needs its own
+# follow-up design/PR): a container in `network_mode: host` CANNOT be
+# attached to ANY other docker network — Docker has no network namespace
+# left on this container to plug a second interface into, a hard engine
+# constraint, not a config oversight. This daemon can therefore no longer
+# carry the `boid-gateway`/`boid-broker`/`boid-egress`/`boid-dockerproxy`
+# DNS aliases the `networks:` block below USED to declare (removed by this
+# same change) — a JOB container (still ordinary bridge-networked, DooD
+# sibling, per-workspace network — unaffected by this daemon's own network
+# mode) can no longer resolve those names to reach this daemon at all. The
+# broker-TLS reachability path (docs/plans/phase6-cutover-followups.md §⓪,
+# e2e/run-container.sh's own verify-broker-tls.sh hook) is the one place
+# this repo currently exercises that reachability end to end, and is
+# expected to start failing until a follow-up redesigns job -> daemon
+# reachability for a host-networked daemon (likely candidate: the job's
+# own bridge network's gateway IP + a fixed, published port, the same
+# "host-gateway" mechanism this file's own `extra_hosts:` entry below
+# already uses for a different purpose — not attempted here). Flagged
+# for nose's decision before this lands, not silently absorbed.
+#
 # Validated with `podman-compose config` (host has no docker engine, only
 # podman — CLAUDE.md) during PR6 development; CI is the source of truth
 # going forward (docs/plans/phase6-container-backend.md §PR9's
@@ -399,48 +460,22 @@ services:
     # up.
     extra_hosts:
       - "host.docker.internal:host-gateway"
-    # ports (docs/plans/volume-only-daemon.md §論点c): the dedicated CLI
-    # TCP(TLS) listener (internal/server.Config.CLIAddr, cmd/start.go's own
-    # defaultStartCLIAddr/client.DefaultCLIAddr default "127.0.0.1:8442")
-    # published on the HOST's loopback interface ONLY — never 0.0.0.0 here,
-    # unlike the container-internal bind address this port maps to (see
-    # below). This is what makes a bare host CLI invocation
-    # (`boid task list` with no profile configured at all) reach the
-    # compose daemon out of the box: profiles.ResolveWithoutToken's
-    # terminal fallback dials exactly this literal by default.
-    #
-    # The container-internal side is NOT loopback-only: Server.Start binds
-    # this listener via gatewayBindHost(usingContainerBackend) — the exact
-    # same helper the broker's and git gateway's own TLS listeners already
-    # use — which resolves to "0.0.0.0" (composeBindHost) whenever
-    # sandbox.backend: container is selected (see this file's own "External
-    # listener wire status" header section above), because docker's own
-    # port-publishing mechanism (docker-proxy / DNAT, whichever this
-    # engine/version uses) reaches a container's PUBLISHED port by
-    # connecting to the container's real network-namespace interface, never
-    # its loopback one — a listener bound only to 127.0.0.1 INSIDE the
-    # container would make this whole `ports:` entry silently unreachable.
-    # The host-side "127.0.0.1:" prefix below is therefore the ENTIRE
-    # access-control boundary for this port (kernel-enforced: nothing
-    # outside this host can ever reach the host's own loopback interface at
-    # all, published port or not) — auth.NewTCPAPIAuthMiddleware's
-    # web.loopback_trust check (internal/api/auth/api_middleware.go) is an
-    # additional, defense-in-depth layer on top of that host-side
-    # restriction, not a substitute for it.
-    #
-    # The literal "8442" is intentionally NOT parameterized (unlike
-    # BOID_UID/BOID_GID/DOCKER_GID elsewhere in this file): both sides of
-    # this mapping — the host-published port here and the daemon's own
-    # default listen port (client.DefaultCLIAddr()) — must always agree,
-    # and a single hardcoded literal makes that agreement structural rather
-    # than something an operator could break by overriding one side and
-    # forgetting the other. An operator who genuinely needs a different
-    # port can override BOTH BOID_CLI_ADDR (this service's own
-    # `environment:` block, consumed by client.DefaultCLIAddr()) and this
-    # `ports:` line together via a compose override file — not attempted
-    # here.
-    ports:
-      - "127.0.0.1:8442:8442"
+    # network_mode: host (this file's own top header comment has the full
+    # rationale/incident-writeup version — this is the short form at the
+    # actual declaration site): replaces both the `ports:` entry this PR
+    # retires (the dedicated CLI TLS listener, internal/server.
+    # Config.CLIAddr, needed a host-side publish under bridge networking;
+    # under host networking "127.0.0.1" inside this container already IS
+    # the host's own loopback, so no publish step exists to declare) and
+    # this service's own `networks:` block (mutually exclusive with
+    # `network_mode` — a host-networked container has no network namespace
+    # of its own left to attach an additional docker network's interface
+    # into). See the top header comment's own "KNOWN, NOT-YET-CLOSED
+    # CONSEQUENCE" paragraph for what this loses (the boid-gateway/
+    # boid-broker/boid-egress/boid-dockerproxy DNS aliases a job container
+    # used to resolve to reach this daemon) and why it is deliberately not
+    # addressed by this same change.
+    network_mode: host
     volumes:
       # DooD: sibling job containers, not nested (§決定4). Engine-agnostic
       # source (docs/plans/volume-only-daemon.md §論点 i, 案 X — Podman
@@ -476,45 +511,13 @@ services:
       # unchanged (see this file's own "Persistence" header comment for
       # why this one PR does not touch it).
       - ${BOID_RUNTIME_DIR}:${BOID_RUNTIME_DIR}
-    networks:
-      # boid-dockerproxy: the DNS name a container-backend job's
-      # DOCKER_HOST env (internal/dispatcher/container_backend.go's
-      # withDockerTLSEnv) is set to — see this file's own "NOT yet true of
-      # this file" note above for what this alias does and does not fix
-      # yet (PR6 codex review, Blocker 3; dockerproxy's actual reachable
-      # TCP listener is still §PR9 territory).
-      #
-      # boid-gateway / boid-broker / boid-egress [Blocker 2, PR7 codex
-      # review; broker TCP wire completed by docs/plans/
-      # phase6-cutover-followups.md §⓪]: the compose service DNS names
-      # internal/server/server.go's gatewayURLFor/composeEgressServiceName
-      # (git gateway sandbox URL, egress proxy HTTP_PROXY host) and
-      # composeBrokerServiceName resolve to. Unlike boid-dockerproxy above,
-      # all three ARE now backed by a reachable listener: Server.Start
-      # binds the git gateway's and broker's TCP(mTLS) listeners, plus the
-      # egress proxy's plain TCP listener, on composeBindHost ("0.0.0.0")
-      # whenever sandbox.backend: container is selected (gatewayBindHost /
-      # ProxyManager.BindHost), instead of the loopback-only "127.0.0.1"
-      # every other deployment uses — no further compose-side
-      # `ports:`/`expose:` section is needed for inter-container
-      # reachability on the same docker network (only host-external
-      # exposure needs those). A container-backend job's BOID_BROKER_TLS_ADDR
-      # env (internal/dispatcher/container_backend.go's withBrokerTLSEnv)
-      # is set to exactly "boid-broker:<port>", so this alias is what makes
-      # `boid task update`/`boid job done`/host-command exec actually reach
-      # this container from a sibling job container — the broker's older
-      # bind-mounted-UNIX-socket path (sandbox_builder.go's BrokerSocket
-      # handling) still coexists unchanged for the userns backend, but a
-      # container-backend job cannot rely on it (no shared mount namespace
-      # with a sibling container the way userns has with the daemon
-      # process).
-      boid_internal:
-        aliases:
-          - boid-dockerproxy
-          - boid-gateway
-          - boid-broker
-          - boid-egress
-      default: {}
+    # No `networks:` block (PR-3 codex round-1 review — nose's design
+    # pivot): mutually exclusive with `network_mode: host` above. This
+    # used to be where the daemon carried its "boid-dockerproxy"/
+    # "boid-gateway"/"boid-broker"/"boid-egress" static aliases on the
+    # `boid_internal` network below — see this file's own top header
+    # comment's "KNOWN, NOT-YET-CLOSED CONSEQUENCE" paragraph for what
+    # that loses and why it is deliberately not fixed by this same change.
     # No restart policy: `scripts/deploy-container.sh` does an explicit
     # `down` before every `up` (so operator-visible deploy transitions stay
     # explicit rather than being papered over by a silent restart on

@@ -325,7 +325,11 @@ localhost からの接続を **mTLS 不要で通す** loopback trust mode を de
 - **port**: `8442` (Web UI の `8080` と別)。`internal/client.DefaultCLIAddr()` が single source of truth
   (`BOID_CLI_ADDR` で override 可)、`cmd/start.go` の daemon 側 listen bind もこの値を使う (port だけ使用、
   host 部分は既存 `gatewayBindHost` で userns/container backend 別に再解決)。
-- **loopback trust**: default ON、`web.loopback_trust` (bool, default true) で strict mTLS 相当に落とせる。
+- **loopback trust**: default ON、`web.loopback_trust` (bool, default true) を false にすると bootstrap-only
+  exemption まで狭まる (`auth.NewTCPAPIAuthMiddleware`) — 実装は元々 server-only TLS
+  (`mtls.CA.ServerOnlyTLSConfig`、client 証明書は要求しない) なので、false にしても実体は「strict mTLS」では
+  なく「既存 Bearer/cookie 認証への回帰」(PR-3 codex round-1 review Minor 指摘、 2026-07-25 修正: 旧文言
+  「strict mTLS 相当」は不正確だった)。
 - **mTLS からの逸脱 (unilateral judgment)**: 当初案の「daemon 内部 CA で mTLS」はそのままは採用せず、
   `mtls.CA.ServerOnlyTLSConfig` (server 証明書のみ、client cert 不要) + 既存 Bearer/cookie/loopback-trust
   ミドルウェア (`internal/api/auth.NewTCPAPIAuthMiddleware`) を再利用する形にした。理由: per-client 証明書の
@@ -350,6 +354,52 @@ localhost からの接続を **mTLS 不要で通す** loopback trust mode を de
   ならないため許容 (nose 判断待ちではなく実装 PR 内で許容と判断、 CLAUDE.md の 完了までは日本語コミットの
   プレフィックス規約に従うのみで承認は都度得ていない — 必要なら PR review で指摘を受ける想定)。
 - **compose 停止時の CLI 挙動**: 未解決のまま (実機でしか検証できない — PR-4 前の実機検証 gate で確認予定)。
+
+### PR-3 codex round-1 review fixes + host network pivot (2026-07-25)
+
+codex round-1 レビューで実装 PR (#835) に Blocker 2 件・Major 3 件・Minor 2 件が見つかり、 nose 判断で
+「full cutover」方針そのものを撤回した。
+
+- **[Blocker] Black-box E2E 42 シナリオ破壊**: 「socket fallback 撤去 (full cutover)」(上のセクション) が
+  実装した「terminal fallback は常に TCP」は、 userns backend (daemon が host で直接動く、 e2e 含む) の
+  host-visible unix socket を無視する結果になり、 42 本の E2E シナリオが軒並み落ちた。
+  **撤回して auto-detect に変更**: `client.DefaultSocketPath()` にファイルが実在すれば `unix://`
+  (`SourceUnixFallback` 復活)、 無ければ `https://<DefaultCLIAddr>` (`SourceTCPFallback`) —
+  `internal/profiles/resolve.go`。 named `unix://` profile は元々変更なし。
+- **[Blocker] compose 経由の loopback trust が機能しない**: bridge network 越しの port publish
+  (`ports: 127.0.0.1:8442:8442`) は Docker/Podman の DNAT で RemoteAddr を bridge gateway IP に書き換えて
+  しまうため、`auth.IsLoopback` が真の loopback を一度も観測できず、 loopback trust の「same-host なら
+  無認証」という前提がそもそも成立しなかった。**nose 決定: daemon container を `network_mode: host` に**
+  (`build/container/compose.yml`) — container 内の `127.0.0.1` が host の実 loopback と同一になるため、
+  DNAT を経由しない。副作用として `ports:` 宣言は撤去 (host networking と併用不可)、 CLI TLS listener の
+  bind host も `gatewayBindHost(usingContainerBackend)` 依存を止めて常に `127.0.0.1` 固定に変更
+  (`internal/server/server.go`) — 0.0.0.0 のままだと host networking 下で全 host interface に露出する
+  regression になるため。
+- **[Major] 既存 config.yaml が compose CA を受け取れない**: `scripts/deploy-container.sh` は
+  `~/.config/boid/config.yaml` が既に存在すると bootstrap 手順を丸ごとスキップしていたため、 CA cert
+  (`daemon-ca.pem`) が config.yaml の有無に関わらず独立して更新されるべきところ、 一緒に握り潰されていた。
+  CA 抽出ステップを config.yaml seed とは独立させ、 毎 deploy 無条件で `daemon-ca.pem` を上書きするよう修正。
+- **[Major] CA 公開の race**: `cmd/start.go` は fd3 の "ready" signal (`daemon.CloseStartupFD3`) を CA
+  bootstrap file の書き込みより先に出していたため、 起動直後の CLI 呼び出しが不完全な CA ファイルを読む
+  余地があった。 CA 書き込みを `server.New` 直後 (`srv.Start` — socket が listen 可能になるより前) に前倒しし、
+  `atomicfile.WriteAtomic` (write-temp + rename) で不可分化。
+- **[Major] bare-metal autostart 回帰**: 「terminal fallback は常に TCP」だった間、 fresh install で daemon が
+  未起動だと `cmd/root.go` の autostart (`IsUnix()` gate) が発火せず `connection refused` になっていた —
+  上記の auto-detect 復活で自然に解消 (unix socket が無ければ従来通り autostart 対象)。
+- **[Minor]** `web.loopback_trust: false` の「strict mTLS 相当」という文言修正 (上のセクション参照)。
+  `BOID_CLI_ADDR` の host 部分 override は cert SAN (127.0.0.1/localhost 固定) と整合しないため、
+  port だけ override 可能に制限 (`internal/client.DefaultCLIAddr()`)。
+
+**残された既知のギャップ (このラウンドでは未対応、 flagged)**: `network_mode: host` は daemon container が
+他の docker network に一切 join できないという engine 制約と衝突する。 static `boid_internal` の DNS alias
+撤去だけでなく、 `internal/dispatcher/container_backend.go` の `SelfContainerID` 経由の動的
+`NetworkConnect` self-attach (workspace ごとに daemon 自身を job network へ繋ぎ直す仕組み、 default
+workspace 限定ではなく全 workspace が対象) も同じ理由で失敗するようになる。 `Launch` 自体は
+`SelfConnectFailure` を warning 止まりで許容する設計のため job dispatch 自体は動くが、 git gateway /
+broker / egress proxy への到達性は container-backend job から失われる — `e2e/run-container.sh` の
+`verify-broker-tls.sh` はこの影響を直接受ける想定 (CI job は `continue-on-error: false`)。 host-gateway IP +
+固定 port 経由の再設計が必要 (`extra_hosts: host.docker.internal:host-gateway` と同じ発想)。 PR-3 のスコープ
+(「CLI TCP profile + loopback trust」) 外として次 PR へ持ち越し — nose 判断待ち。
 
 ---
 

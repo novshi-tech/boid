@@ -298,39 +298,79 @@ echo "deploy-container: stopping any existing compose stack (explicit down befor
 echo "deploy-container: starting the compose stack"
 "${COMPOSE_CMD[@]}" up -d
 
+HOST_CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/boid"
+HOST_CONFIG_FILE="$HOST_CONFIG_DIR/config.yaml"
+
+# --- refresh the host CA-trust bootstrap file (docs/plans/
+# volume-only-daemon.md §論点c, PR-3 codex round-1 review Major fix:
+# "existing configs never receive the compose CA") ---------------------------
+# client.DefaultCACertPath() (~/.config/boid/daemon-ca.pem) is the file
+# profiles.ResolveWithoutToken's TERMINAL fallback (no --profile/
+# BOID_PROFILE/default_profile at all, AND no unix socket file reachable —
+# see profiles.SourceTCPFallback's own doc comment) trusts to verify this
+# daemon's self-signed internal CA. It is DELIBERATELY INDEPENDENT of
+# config.yaml (a separate file, written unconditionally below, every single
+# deploy) — unlike the "seed the host CLI profile" step further down,
+# which — correctly — never overwrites an operator's own config.yaml once
+# one exists. Before this fix, the CA extraction ONLY ever happened as a
+# side effect of that same config.yaml-seed step, so an EXISTING host
+# config.yaml (any prior compose deploy, or an old bare-metal `boid start`
+# that wrote a config.yaml of its own for unrelated settings) skipped it
+# entirely — silently leaving daemon-ca.pem stale (or altogether absent)
+# forever, breaking the TCP terminal fallback's TLS verification on every
+# subsequent re-deploy that rotated or regenerated this daemon's CA.
+#
+# `docker compose exec` (the ALREADY-RUNNING daemon `up -d` just started,
+# not a one-off `run` container racing its own CA generation) reads the CA
+# cert file straight out of the daemon's own TLS dir
+# (internal/mtls.LoadOrCreate's ca.crt, under cfg.TLSDir = $XDG_DATA_HOME/
+# boid/tls inside the container) and this script writes it to the host
+# path unconditionally — atomic-ish via a temp file + mv, and safe to
+# overwrite every deploy: a CA certificate is public, non-secret material
+# (cmd/start.go's own bare-`boid start` bootstrap write uses the identical
+# "overwrite unconditionally, every boot" contract for the exact same
+# reason — see atomicfile.WriteAtomic's doc comment).
+echo "deploy-container: refreshing daemon CA bootstrap file at $HOST_CONFIG_DIR/daemon-ca.pem (independent of config.yaml — always refreshed on deploy)"
+mkdir -p "$HOST_CONFIG_DIR"
+HOST_CA_FILE="$HOST_CONFIG_DIR/daemon-ca.pem"
+if "${COMPOSE_CMD[@]}" exec -T daemon sh -c 'cat "$XDG_DATA_HOME/boid/tls/ca.crt"' > "$HOST_CA_FILE.tmp"; then
+	mv "$HOST_CA_FILE.tmp" "$HOST_CA_FILE"
+	chmod 644 "$HOST_CA_FILE"
+	echo "deploy-container: wrote $HOST_CA_FILE"
+else
+	rm -f "$HOST_CA_FILE.tmp"
+	echo "warning: could not read the daemon's CA cert from inside the container; $HOST_CA_FILE was not refreshed. Retry manually: docker compose -f \"$COMPOSE_FILE\" exec daemon cat \\\$XDG_DATA_HOME/boid/tls/ca.crt > $HOST_CA_FILE" >&2
+fi
+
 # --- seed the host CLI profile (docs/plans/volume-only-daemon.md §論点c
 # "profile bootstrapping") --------------------------------------------------
 # `boid start --print-cli-profile` (cmd/start.go) prints a
 # profiles.Config-shaped YAML document naming a "default" profile at the
-# compose daemon's dedicated CLI TCP(TLS) listener (published on the host's
-# loopback interface — this file's own compose.yml `ports:` entry, its own
-# doc comment covers the container-internal-vs-host-published bind
-# distinction), with the daemon's internal CA cert embedded inline
-# (profiles.Profile.CACert) — everything the HOST'S own
-# ~/.config/boid/config.yaml needs to reach this daemon with zero `boid
-# login`/device-pair ceremony (web.loopback_trust default true).
+# compose daemon's dedicated CLI TCP(TLS) listener — reachable directly on
+# the host's own loopback interface now that the daemon service runs
+# `network_mode: host` (this file's own header comment / compose.yml's own
+# top header comment have the full rationale) — with the daemon's internal
+# CA cert embedded inline too (profiles.Profile.CACert, the same cert the
+# standalone daemon-ca.pem file above also carries — this step is what a
+# NAMED default_profile needs; the file above is what the anonymous
+# terminal fallback needs, see profiles.Resolve's own isLoopbackURL branch
+# for why a named loopback profile like this one needs no device token
+# either) — everything the HOST'S own ~/.config/boid/config.yaml needs to
+# reach this daemon with zero `boid login`/device-pair ceremony
+# (web.loopback_trust default true).
 #
-# Unlike a bare `boid start` (which writes the same CA cert straight to
-# client.DefaultCACertPath() on the HOST itself, since it runs directly on
-# it), this compose daemon's filesystem is a named volume the host cannot
-# see — `docker compose exec` (not `run`, unlike the config-seed/validate
-# steps above: this needs the ALREADY-RUNNING daemon `up -d` just started,
-# not a one-off container racing its own CA generation) is the only way to
-# get the profile YAML out to where the host CLI can read it.
-#
-# Idempotent by construction, same as the config.yaml seed above: only
-# written when the host has no config.yaml of its own yet at all — an
-# operator's existing ~/.config/boid/config.yaml (their own profiles, a
-# previously-completed `boid login`, ...) is never overwritten by a
-# re-deploy. An operator who wants to re-seed after editing it away can
-# simply remove/rename it and re-run this script.
-HOST_CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/boid"
-HOST_CONFIG_FILE="$HOST_CONFIG_DIR/config.yaml"
+# Idempotent by construction: only written when the host has no
+# config.yaml of its own yet at all — an operator's existing
+# ~/.config/boid/config.yaml (their own profiles, a previously-completed
+# `boid login`, ...) is never overwritten by a re-deploy. An operator who
+# wants to re-seed after editing it away can simply remove/rename it and
+# re-run this script. Unlike the CA file above, config.yaml legitimately
+# needs this "leave it alone if present" behavior — it can carry an
+# operator's own hand-edited settings the CA file never does.
 if [[ -f "$HOST_CONFIG_FILE" ]]; then
 	echo "deploy-container: $HOST_CONFIG_FILE already exists; leaving it as-is (not seeding a CLI profile — an operator's own config.yaml is never overwritten by this script)"
 else
 	echo "deploy-container: seeding host CLI profile into $HOST_CONFIG_FILE"
-	mkdir -p "$HOST_CONFIG_DIR"
 	if "${COMPOSE_CMD[@]}" exec -T daemon /usr/local/bin/boid start --print-cli-profile > "$HOST_CONFIG_FILE.tmp"; then
 		mv "$HOST_CONFIG_FILE.tmp" "$HOST_CONFIG_FILE"
 		chmod 600 "$HOST_CONFIG_FILE"

@@ -12,6 +12,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/novshi-tech/boid/internal/atomicfile"
 	"github.com/novshi-tech/boid/internal/client"
 	"github.com/novshi-tech/boid/internal/config"
 	"github.com/novshi-tech/boid/internal/daemon"
@@ -550,18 +551,6 @@ func runDaemonChild(cfg server.Config) error {
 		return fmt.Errorf("create server: %w", err)
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	if err := srv.Start(ctx); err != nil {
-		daemon.WriteStartupStatusOnFD3(err)
-		return fmt.Errorf("start server: %w", err)
-	}
-
-	// Startup succeeded. EOF on the parent's read-end means OK; do not
-	// touch fd 3 after this point.
-	daemon.CloseStartupFD3()
-
 	// Bootstrap CA-trust file (docs/plans/volume-only-daemon.md §論点c): a
 	// bare `boid start` runs directly on the host, so — unlike the compose
 	// deployment (whose filesystem is a named volume the host cannot see,
@@ -574,20 +563,47 @@ func runDaemonChild(cfg server.Config) error {
 	// step at all. Idempotent and safe to overwrite unconditionally — a CA
 	// certificate is public, non-secret material (srv.GatewayCAPEM() is the
 	// exact same CA the dedicated CLI TLS listener's own cert is issued
-	// from, reused here rather than duplicating a second load of
-	// cfg.TLSDir). Best-effort: a write failure here must not take down an
-	// otherwise-healthy daemon — logged and otherwise ignored.
+	// from, populated by server.New above — Start has not even been called
+	// yet, let alone opened the socket).
+	//
+	// PR-3 codex round-1 review Major ("CA publication race"): this block
+	// used to run AFTER srv.Start(ctx) AND after daemon.CloseStartupFD3()
+	// (the "startup succeeded" signal a waiting parent/CLI treats as "safe
+	// to connect now") — an immediate or concurrent CLI invocation could
+	// therefore observe cfg.SocketPath already dialable (Start opens it)
+	// or fd3 already closed, race ahead, and read a missing or partially
+	// written CA cert file. Moved here (before Start ever runs, so
+	// strictly before the socket becomes reachable at all) and switched
+	// from a plain os.WriteFile (readable mid-write — a reader could see a
+	// truncated file) to atomicfile.WriteAtomic (write-temp + rename,
+	// PR-1a's own pattern): the file is either still its old complete
+	// content or already the new complete content, never a partial write
+	// a concurrent reader could observe. Best-effort beyond that: a
+	// failure here must not take down an otherwise-healthy daemon —
+	// logged and otherwise ignored.
 	if caCertPath, err := client.DefaultCACertPath(); err != nil {
 		slog.Warn("could not resolve daemon CA bootstrap file path; CLI TCP terminal fallback will not trust this daemon's self-signed cert automatically", "error", err)
 	} else if caPEM := srv.GatewayCAPEM(); len(caPEM) > 0 {
 		if err := os.MkdirAll(filepath.Dir(caCertPath), 0o755); err != nil {
 			slog.Warn("could not create daemon CA bootstrap file directory", "path", caCertPath, "error", err)
-		} else if err := os.WriteFile(caCertPath, caPEM, 0o644); err != nil {
+		} else if err := atomicfile.WriteAtomic(caCertPath, 0o644, caPEM); err != nil {
 			slog.Warn("could not write daemon CA bootstrap file", "path", caCertPath, "error", err)
 		} else {
 			slog.Info("wrote cli daemon-ca bootstrap file", "path", caCertPath)
 		}
 	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if err := srv.Start(ctx); err != nil {
+		daemon.WriteStartupStatusOnFD3(err)
+		return fmt.Errorf("start server: %w", err)
+	}
+
+	// Startup succeeded. EOF on the parent's read-end means OK; do not
+	// touch fd 3 after this point.
+	daemon.CloseStartupFD3()
 
 	slog.Info("boid server started", "socket", cfg.SocketPath, "http", cfg.HTTPAddr)
 

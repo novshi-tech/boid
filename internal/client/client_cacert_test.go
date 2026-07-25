@@ -121,9 +121,33 @@ func TestDefaultCLIAddr_DefaultAndOverride(t *testing.T) {
 	if got := DefaultCLIAddr(); got != "127.0.0.1:8442" {
 		t.Errorf("DefaultCLIAddr() = %q, want %q", got, "127.0.0.1:8442")
 	}
+	t.Setenv("BOID_CLI_ADDR", "127.0.0.1:9999")
+	if got := DefaultCLIAddr(); got != "127.0.0.1:9999" {
+		t.Errorf("DefaultCLIAddr() with a loopback BOID_CLI_ADDR = %q, want %q", got, "127.0.0.1:9999")
+	}
+}
+
+// TestDefaultCLIAddr_NonLoopbackHostOverride_HostForcedToLoopback pins the
+// PR-3 codex round-1 review Minor fix: a BOID_CLI_ADDR naming a non-
+// loopback host (the daemon's cert only ever carries 127.0.0.1/localhost
+// SANs, and the listener only ever binds loopback) must not be honored
+// verbatim — only the port half survives, the host is forced back to the
+// loopback default.
+func TestDefaultCLIAddr_NonLoopbackHostOverride_HostForcedToLoopback(t *testing.T) {
 	t.Setenv("BOID_CLI_ADDR", "10.0.0.5:9999")
-	if got := DefaultCLIAddr(); got != "10.0.0.5:9999" {
-		t.Errorf("DefaultCLIAddr() with BOID_CLI_ADDR set = %q, want %q", got, "10.0.0.5:9999")
+	if got := DefaultCLIAddr(); got != "127.0.0.1:9999" {
+		t.Errorf("DefaultCLIAddr() with a non-loopback host override = %q, want %q (host forced to loopback, port kept)", got, "127.0.0.1:9999")
+	}
+}
+
+// TestDefaultCLIAddr_MalformedOverride_FallsBackToDefault pins the other
+// edge case: an override with no valid "host:port" shape at all (e.g. a
+// bare port, or garbage) must not propagate to a listen/dial call — it is
+// ignored, falling back to the plain default literal.
+func TestDefaultCLIAddr_MalformedOverride_FallsBackToDefault(t *testing.T) {
+	t.Setenv("BOID_CLI_ADDR", "not-a-host-port")
+	if got := DefaultCLIAddr(); got != "127.0.0.1:8442" {
+		t.Errorf("DefaultCLIAddr() with a malformed override = %q, want the default %q", got, "127.0.0.1:8442")
 	}
 }
 

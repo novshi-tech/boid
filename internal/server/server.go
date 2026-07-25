@@ -117,23 +117,33 @@ type Config struct {
 	// plan's own port-separation decision, so a CLI session keeps working
 	// even if an operator firewalls off or otherwise disables the Web UI
 	// port. Only the PORT is actually load-bearing here: Start() ignores
-	// the host half and rebinds via gatewayBindHost(usingContainerBackend)
-	// instead — the exact same "127.0.0.1 for userns, 0.0.0.0
-	// (composeBindHost) for the compose/container-backend deployment"
-	// rule the broker's and git gateway's own TLS listeners already use
-	// just above in this file, since a container-backend job's sibling
-	// docker-proxy port publish cannot reach a listener bound to only
-	// THIS container's own loopback interface (see composeBindHost's own
-	// doc comment). Empty (the zero value, and every pre-§論点c
-	// caller/test) skips binding this listener entirely — cmd/start.go
-	// sets a real default ("127.0.0.1:8442") so a live daemon actually
-	// binds it. Like the broker/gateway TLS listeners, binding is further
-	// gated on cfg.TLSDir being set (daemonCA != nil) — this listener has
-	// no non-TLS fallback, since unlike the Web UI's own TCP listener it
-	// is never meant to be reached in plaintext even for local
-	// development (mTLS-CA-backed TLS is cheap to always have once
-	// cfg.TLSDir is already configured, which cmd/start.go does
-	// unconditionally).
+	// the host half and ALWAYS binds "127.0.0.1" regardless of backend —
+	// UNLIKE the broker/gateway TLS listeners just above in this file,
+	// which bind gatewayBindHost(usingContainerBackend) ("0.0.0.0" for the
+	// compose/container-backend deployment) so a job's sibling container
+	// can reach them over the shared compose network. This listener is
+	// never dialed by a job container at all (its cert only ever carries
+	// "127.0.0.1"/"localhost" SANs — see the bind site's own doc comment
+	// for the full reasoning) — the compose daemon container instead runs
+	// with `network_mode: host` (build/container/compose.yml, nose's PR-3
+	// codex round-1 design pivot), which makes "127.0.0.1" INSIDE the
+	// container the same loopback interface as the HOST's own, so a local
+	// CLI dialing the host's 127.0.0.1:8442 needs no port-publish/DNAT at
+	// all. Binding this one listener to 0.0.0.0 the way the compose-only
+	// pre-pivot design briefly did would have newly exposed it on every
+	// OTHER host network interface too (host networking has no
+	// per-container port-publish boundary to fall back on the way bridge
+	// networking's own "ports: 127.0.0.1:...:..." restriction did) — a
+	// real regression this fixed bind host closes. Empty (the zero value,
+	// and every pre-§論点c caller/test) skips binding this listener
+	// entirely — cmd/start.go sets a real default ("127.0.0.1:8442") so a
+	// live daemon actually binds it. Like the broker/gateway TLS
+	// listeners, binding is further gated on cfg.TLSDir being set
+	// (daemonCA != nil) — this listener has no non-TLS fallback, since
+	// unlike the Web UI's own TCP listener it is never meant to be
+	// reached in plaintext even for local development (mTLS-CA-backed TLS
+	// is cheap to always have once cfg.TLSDir is already configured,
+	// which cmd/start.go does unconditionally).
 	CLIAddr string
 }
 
@@ -863,7 +873,11 @@ func (s *Server) Start(ctx context.Context) error {
 		if err != nil {
 			return fmt.Errorf("cli tls config: %w", err)
 		}
-		cliBindAddr := gatewayBindHost(s.usingContainerBackend) + ":" + cliPort
+		// ALWAYS "127.0.0.1", never gatewayBindHost(s.usingContainerBackend)
+		// — see Config.CLIAddr's own doc comment for why this listener
+		// does not follow the broker/gateway listeners' 0.0.0.0-for-
+		// container-backend rule.
+		cliBindAddr := "127.0.0.1:" + cliPort
 		cliLn, err := tls.Listen("tcp", cliBindAddr, cliTLSCfg)
 		if err != nil {
 			return fmt.Errorf("listen cli tls: %w", err)

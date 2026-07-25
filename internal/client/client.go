@@ -329,26 +329,41 @@ func DefaultSocketPath() string {
 	return fmt.Sprintf("/tmp/boid-%s.sock", uid)
 }
 
+// defaultCLIAddrHost is the loopback literal DefaultCLIAddr always binds/
+// dials — see that function's own doc comment for why BOID_CLI_ADDR cannot
+// override it.
+const defaultCLIAddrHost = "127.0.0.1"
+
 // DefaultCLIAddr resolves the "host:port" a CLI invocation with no
 // configured profile at all now dials (docs/plans/volume-only-daemon.md
-// §論点c: profiles.ResolveWithoutToken's terminal fallback, changed from a
-// unix:// socket to this TCP address by that PR — "full cutover" per the
-// plan's own recommendation). cmd/start.go's own defaultStartCLIAddr uses
-// this exact same value to bind the daemon's dedicated CLI TLS listener
-// (Config.CLIAddr) — a single source of truth for the literal so the two
-// ends can never drift apart silently.
+// §論点c: profiles.ResolveWithoutToken's terminal-fallback auto-detect —
+// see SourceTCPFallback's own doc comment — falls back to this address
+// when no local unix socket is reachable). cmd/start.go's own
+// defaultStartCLIAddr uses this exact same value to bind the daemon's
+// dedicated CLI TLS listener (Config.CLIAddr) — a single source of truth
+// for the literal so the two ends can never drift apart silently.
 //
 // Honors BOID_CLI_ADDR (mirrors BOID_SOCKET's override convention just
-// above) so a non-default deployment can repoint both ends without editing
-// a named profile; "127.0.0.1:8442" otherwise — 8442, not 8080, because the
-// plan explicitly separates this listener from the Web UI's own TCP
-// listener (default :8080) so a CLI session keeps working even if an
-// operator firewalls off or disables the Web UI port.
+// above) for the PORT only — "127.0.0.1:8442" otherwise (8442, not 8080,
+// because the plan explicitly separates this listener from the Web UI's
+// own TCP listener, default :8080, so a CLI session keeps working even if
+// an operator firewalls off or disables the Web UI port). A HOST override
+// is deliberately rejected (PR-3 codex round-1 review, Minor): the
+// daemon's own dedicated CLI TLS listener only ever binds the loopback
+// interface and its cert only ever carries "127.0.0.1"/"localhost" SANs
+// (internal/server's ServerOnlyTLSConfig call) — an override naming any
+// other host would either dial an interface nothing is listening on or
+// fail hostname verification against a cert that was never issued for it.
+// A malformed override (no valid "host:port" shape at all) is likewise
+// ignored rather than propagated to a listen/dial call far from the
+// actual mistake.
 func DefaultCLIAddr() string {
 	if a := os.Getenv("BOID_CLI_ADDR"); a != "" {
-		return a
+		if _, port, err := net.SplitHostPort(a); err == nil && port != "" {
+			return net.JoinHostPort(defaultCLIAddrHost, port)
+		}
 	}
-	return "127.0.0.1:8442"
+	return defaultCLIAddrHost + ":8442"
 }
 
 // DefaultCACertPath returns the well-known host path a CLI invocation with

@@ -5,7 +5,9 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"net/http"
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -147,5 +149,65 @@ func TestServer_CLITLS_NoClientCert_LoopbackTrust_ReachesGatedAPI(t *testing.T) 
 	defer resp.Body.Close()
 	if resp.StatusCode == http.StatusUnauthorized {
 		t.Fatalf("GET /api/tasks: status = %d, want != 401 (loopback trust should authorize a same-host caller with no credentials)", resp.StatusCode)
+	}
+}
+
+// TestServer_Start_ContainerBackend_CLITLSListener_StaysLoopbackOnly pins
+// the PR-3 codex round-1 review companion fix (Config.CLIAddr's own doc
+// comment): unlike GatewayTLSAddr (which binds "0.0.0.0" under
+// `sandbox.backend: container` — see
+// TestServer_Start_ContainerBackend_GatewayURLUsesComposeServiceDNS in
+// server_container_backend_gateway_test.go), the dedicated CLI TLS
+// listener must stay bound to "127.0.0.1" regardless of backend. This
+// listener is never dialed by a job container (only a host CLI process);
+// with the compose daemon now running `network_mode: host`
+// (build/container/compose.yml), "0.0.0.0" here would newly expose it on
+// every OTHER host network interface too, not just loopback — a real
+// security regression a naive "match the gateway listener's bind rule"
+// change would have introduced.
+func TestServer_Start_ContainerBackend_CLITLSListener_StaysLoopbackOnly(t *testing.T) {
+	configHome := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", configHome)
+	boidConfigDir := filepath.Join(configHome, "boid")
+	if err := os.MkdirAll(boidConfigDir, 0o755); err != nil {
+		t.Fatalf("mkdir config dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(boidConfigDir, "config.yaml"), []byte("sandbox:\n  backend: container\n"), 0o644); err != nil {
+		t.Fatalf("write config.yaml: %v", err)
+	}
+
+	tmpDir := t.TempDir()
+	srv, err := server.New(server.Config{
+		DBPath:     filepath.Join(tmpDir, "boid.db"),
+		SocketPath: filepath.Join(tmpDir, "boid.sock"),
+		HTTPAddr:   "127.0.0.1:0",
+		TLSDir:     filepath.Join(tmpDir, "tls"),
+		CLIAddr:    "127.0.0.1:0",
+		JobRuntime: noopRuntime{},
+	})
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+	if err := srv.Start(context.Background()); err != nil {
+		t.Fatalf("start server: %v", err)
+	}
+	t.Cleanup(func() { _ = srv.Stop() })
+
+	cliAddr := srv.CLITLSAddr()
+	if cliAddr == "" {
+		t.Fatal("CLITLSAddr() is empty, want a bound TLS listener (CLIAddr was set)")
+	}
+	if !strings.HasPrefix(cliAddr, "127.0.0.1:") {
+		t.Errorf("CLITLSAddr() = %q, want it bound loopback-only even under sandbox.backend: container", cliAddr)
+	}
+
+	// Sanity check this test actually exercises the container-backend
+	// code path (not silently degraded to userns by a config-loading
+	// bug): the gateway listener (unlike the CLI one) really does bind
+	// non-loopback here — same pin as
+	// TestServer_Start_ContainerBackend_GatewayURLUsesComposeServiceDNS.
+	gatewayAddr := srv.GatewayTLSAddr()
+	if strings.HasPrefix(gatewayAddr, "127.0.0.1:") {
+		t.Fatalf("GatewayTLSAddr() = %q, want NOT loopback-only under sandbox.backend: container (this test's own precondition) — container-backend config was not actually picked up", gatewayAddr)
 	}
 }

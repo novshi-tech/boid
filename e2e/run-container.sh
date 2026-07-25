@@ -8,13 +8,37 @@ set -euo pipefail
 # `boid start` daemon directly on the runner for every scenario), this
 # script drives the REAL deploy path: it builds the shared base image and
 # brings up the build/container/compose.yml stack via
-# scripts/deploy-container.sh, points the `boid`/`boid-e2e` CLIs at that
-# compose daemon's own (bind-mounted, host-visible) socket, and dispatches
-# real tasks against it — exercising the actual DooD sibling-container path
-# real docker provides, which no other test in this repo does (every
-# existing docker-proxy-* e2e scenario runs against a FAKE docker HTTP
-# server over the userns backend, policy-only, no real data plane — see
-# those scenarios' own scenario.sh header comments).
+# scripts/deploy-container.sh, then dispatches real tasks against it —
+# exercising the actual DooD sibling-container path real docker provides,
+# which no other test in this repo does (every existing docker-proxy-*
+# e2e scenario runs against a FAKE docker HTTP server over the userns
+# backend, policy-only, no real data plane — see those scenarios' own
+# scenario.sh header comments).
+#
+# PR-3 codex round-1 review / host network pivot (2026-07-25, docs/plans/
+# volume-only-daemon.md §論点c): this script's two CLI helpers now reach
+# the compose daemon over two DIFFERENT transports, deliberately —
+#   - `$BUILD_DIR/boid` (the real, cobra-based CLI — workspace create,
+#     project add, task create, ...) resolves its profile the normal way
+#     (internal/profiles.Resolve). deploy-container.sh's own "seed the
+#     host CLI profile" step writes a `default_profile` into THIS
+#     script's own $XDG_CONFIG_HOME/boid/config.yaml (exported below,
+#     before deploy-container.sh ever runs) naming the daemon's dedicated
+#     CLI TLS listener at 127.0.0.1:8442 — reachable directly, no
+#     NAT/port-publish, now that the daemon service runs
+#     `network_mode: host` (build/container/compose.yml) — so every such
+#     invocation exercises the SAME loopback-trust TCP path a real
+#     compose deployment's host CLI uses, not a host-visible-socket
+#     shortcut this script happens to have but a real operator would not.
+#   - `$BUILD_DIR/boid-e2e` (this repo's own minimal e2e helper, e2e/cmd/
+#     boid-e2e) is NOT the cobra CLI and has no profile resolution at
+#     all — it always dials client.DefaultSocketPath() directly
+#     (client.NewUnixClient), unaffected by any of the above. Its own
+#     unix socket reachability still works unchanged: BOID_RUNTIME_DIR
+#     stays a host bind mount regardless of network mode (a filesystem
+#     concern, orthogonal to the daemon's network namespace), so the
+#     compose daemon's socket file still lands at the identical
+#     host-visible path this script's own XDG_RUNTIME_DIR points at.
 #
 # ############################################################################
 # # PR-2b rewrite (docs/plans/volume-only-daemon.md §論点 e "PR 分割案 B",

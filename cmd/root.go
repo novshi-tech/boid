@@ -147,15 +147,19 @@ var rootCmd = &cobra.Command{
 		// running to have accepted the connection). Fail hard rather than
 		// fail-open, per decision 6.
 		//
-		// The TERMINAL fallback (rp.Source == SourceTCPFallback, docs/plans/
-		// volume-only-daemon.md §論点c) is deliberately EXEMPTED from this
-		// check even though it is now an https-scheme URL too (the "full
-		// cutover" from a unix:// default — see profiles.ResolveWithoutToken):
-		// unlike a named profile, nobody explicitly pointed this invocation
-		// anywhere — it is simply "no profile configured, use the local
-		// default", which §論点c changed from a unix socket to
-		// client.DefaultCLIAddr() over TCP+TLS. Both name the SAME local
-		// daemon; rejecting it here would make `boid start` (and every other
+		// The TERMINAL TCP fallback (rp.Source == SourceTCPFallback,
+		// docs/plans/volume-only-daemon.md §論点c) is deliberately EXEMPTED
+		// from this check even though it is an https-scheme URL — see
+		// profiles.ResolveWithoutToken's terminal-fallback branch
+		// (auto-detects unix vs TCP; the OTHER terminal-fallback outcome,
+		// SourceUnixFallback, already passes the `!rp.IsUnix()` half of
+		// this condition on its own and never needs this exemption at
+		// all): unlike a named profile, nobody explicitly pointed this
+		// invocation anywhere — it is simply "no profile configured, use
+		// the local default", which happens to resolve to
+		// client.DefaultCLIAddr() over TCP+TLS specifically when no local
+		// unix socket file is reachable. Both name the SAME local daemon;
+		// rejecting it here would make `boid start` (and every other
 		// scope=local command) hard-fail on a completely ordinary fresh
 		// install with no config.yaml at all — exactly the case this check
 		// must never fire for.
