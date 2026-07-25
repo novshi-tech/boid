@@ -19,6 +19,11 @@ import (
 var projectAddWorkspace string
 var projectInitWorkspace string
 
+// --name flag for project add: overrides the project name otherwise derived
+// from the git URL's last path component (docs/plans/volume-only-daemon.md
+// §論点a).
+var projectAddName string
+
 // --agent flag value for project init; empty falls back to initwizard.DefaultAgent.
 var projectInitAgent string
 
@@ -35,25 +40,39 @@ func mustCanonicalBehavior(alias string) string {
 	return canonical
 }
 
-// projectAddCmd is scopeLocal (codex review round 2, docs/plans/
-// cli-remote-connection.md classification table: "境界越えで壊れる | project
-// add / init / reload | work_dir のパス文字列を daemon 側 FS で解決"). This
-// command's own work does go through the daemon's HTTP API today (POST
-// /api/projects), which is why it used to be scopeRemote — but <dir> is a
-// path on the machine the CLI process runs on, and the daemon resolves it
-// against its *own* local filesystem (reads .boid/project.yaml, captures
-// the git origin remote, etc.). That only ever coincides with the CLI's
-// filesystem because there is no remote-daemon transport yet; against a
-// future https:// profile (Phase 3), the same dir string would resolve
-// against the wrong host's filesystem entirely. Phase 6
-// (docs/plans/container-based-boid.md) is expected to move project
-// registration to a remote-git-URL model, at which point this reclassifies
-// to scopeRemote.
+// projectAddCmd is scopeRemote as of docs/plans/volume-only-daemon.md
+// §論点a's cutover — the reclassification this command's OLD doc comment
+// (codex review round 2, docs/plans/cli-remote-connection.md classification
+// table) predicted: "Phase 6 ... is expected to move project registration
+// to a remote-git-URL model, at which point this reclassifies to
+// scopeRemote". The old form, `boid project add <dir>`, resolved a path on
+// the machine the CLI process runs on against the DAEMON's own filesystem
+// (reads .boid/project.yaml, captures the git origin remote) — that only
+// ever worked because there was no remote-daemon transport yet, and would
+// resolve against the wrong host's filesystem under a future non-loopback
+// profile. The new form, `boid project add <git-url>`, has no local
+// filesystem dependency at all: the daemon clones the URL itself into a
+// daemon-managed bare repository (see internal/api.ProjectAppService.
+// CreateProjectFromGitURL) — a plain HTTP API operation like any other
+// scopeRemote command.
 var projectAddCmd = &cobra.Command{
-	Use:         "add <dir>",
-	Short:       "Register a project from .boid/project.yaml",
+	Use:   "add <git-url>",
+	Short: "Register a project from a git remote URL",
+	Long: `Register a project by having the daemon clone a git remote URL into a
+daemon-managed bare repository (docs/plans/volume-only-daemon.md §論点a/b).
+--workspace is required; --name overrides the project name otherwise
+derived from the URL's last path component.
+
+Host directory registration (the pre-volume-only "boid project add <dir>"
+form) was retired in the volume-only cutover: the daemon container has no
+access to host checkouts any more, only to git remote URLs it can clone
+itself. If <dir> is passed here it is rejected with this same message —
+push it upstream first, then register the URL:
+
+  boid project add <git-url> --workspace=<name> [--name=<project-name>]
+`,
 	Args:        cobra.ExactArgs(1),
-	Annotations: map[string]string{scopeAnnotationKey: scopeLocal},
+	Annotations: map[string]string{scopeAnnotationKey: scopeRemote},
 	RunE:        runProjectAdd,
 }
 
@@ -133,41 +152,92 @@ var projectBehaviorsCmd = &cobra.Command{
 	RunE:              runProjectBehaviors,
 }
 
+// projectFetchCmd is scopeRemote: it runs `git fetch --all` inside a
+// git-URL registered project's daemon-managed bare repo and reloads
+// project.yaml (docs/plans/volume-only-daemon.md §論点b fetch 経路) — a
+// plain HTTP API operation, same as `project show`/`project list`.
+var projectFetchCmd = &cobra.Command{
+	Use:               "fetch <project-ref>",
+	Short:             "Fetch the latest git refs for a git-URL registered project and reload project.yaml",
+	Args:              cobra.ExactArgs(1),
+	ValidArgsFunction: completeProjectRefs,
+	Annotations:       map[string]string{scopeAnnotationKey: scopeRemote},
+	RunE:              runProjectFetch,
+}
+
 func init() {
-	projectAddCmd.Flags().StringVar(&projectAddWorkspace, "workspace", "", "Assign the project to a workspace after registration (get-or-create)")
+	projectAddCmd.Flags().StringVar(&projectAddWorkspace, "workspace", "", "Workspace to register the project into (required, get-or-create)")
+	projectAddCmd.Flags().StringVar(&projectAddName, "name", "", "Project name override (default: derived from the git URL's last path component)")
 	projectInitSubCmd.Flags().StringVar(&projectInitWorkspace, "workspace", "", "Assign the project to a workspace after initialization (get-or-create)")
 	projectInitSubCmd.Flags().StringVar(&projectInitAgent, "agent", "", "Harness agent baked into each behavior's default_instruction (default: claude-code)")
 
-	projectCmd.AddCommand(projectAddCmd, projectInitSubCmd, projectListCmd, projectRemoveCmd, projectReloadCmd, projectShowCmd, projectBehaviorsCmd)
+	projectCmd.AddCommand(projectAddCmd, projectInitSubCmd, projectListCmd, projectRemoveCmd, projectReloadCmd, projectFetchCmd, projectShowCmd, projectBehaviorsCmd)
 	rootCmd.AddCommand(projectCmd)
 }
 
+// looksLikeGitURL is the "clear error" heuristic docs/plans/
+// volume-only-daemon.md §論点a asks for: distinguish a git remote URL from
+// a host filesystem path BEFORE the CLI ever talks to the daemon, so
+// `boid project add <dir>` fails fast with actionable guidance instead of a
+// confusing daemon-side clone error (or, worse, git silently treating <dir>
+// as a local clone source — a directory path IS technically a valid `git
+// clone` source, which would register a filesystem path in an UpstreamURL
+// field meant to hold a real remote). A URL is recognized by either an
+// explicit scheme (`https://`, `ssh://`, ...) or the scp-like
+// `user@host:path` form (`git@github.com:owner/repo.git`) — the two shapes
+// docs/plans/volume-only-daemon.md and the existing dispatcher URL parser
+// (repoSlugFromOriginURL) both already treat as the complete set of
+// supported git URL forms.
+func looksLikeGitURL(s string) bool {
+	if strings.Contains(s, "://") {
+		return true
+	}
+	if at := strings.Index(s, "@"); at != -1 && strings.Contains(s[at:], ":") {
+		return true
+	}
+	return false
+}
+
 func runProjectAdd(cmd *cobra.Command, args []string) error {
-	dir, err := filepath.Abs(args[0])
-	if err != nil {
-		return err
+	gitURL := args[0]
+	if !looksLikeGitURL(gitURL) {
+		return fmt.Errorf("host directory registration retired in volume-only cutover; use a git URL instead:\n  boid project add <git-url> --workspace=<name> [--name=<project-name>]\n(%q does not look like a git URL — push it upstream first if it is a local checkout)", gitURL)
+	}
+	if projectAddWorkspace == "" {
+		return fmt.Errorf("--workspace is required: boid project add <git-url> --workspace=<name>")
+	}
+	if err := projectspec.ValidWorkspaceSlug(projectAddWorkspace); err != nil {
+		return fmt.Errorf("invalid --workspace value: %w", err)
 	}
 
 	c := client.FromContext(cmd.Context())
 
-	var p projectspec.Project
-	if err := c.Do("POST", "/api/projects", map[string]string{"work_dir": dir}, &p); err != nil {
-		return fmt.Errorf("register project: %w", err)
+	// get-or-create the workspace client-side (same UX as project init's
+	// --workspace flag / `boid workspace assign`) so a typo'd-but-plausible
+	// new slug does not require a separate `boid workspace create` round
+	// trip. The server-side CreateProjectFromGitURL still validates the
+	// workspace exists (404 otherwise) as a belt-and-suspenders check —
+	// see that method's own doc comment for why it does not itself
+	// get-or-create (a git-URL registration has no host-dir fallback to
+	// eagerly default into like the legacy CreateProject flow does).
+	if err := ensureWorkspaceExistsGetOrCreate(c, projectAddWorkspace, cmd.OutOrStdout()); err != nil {
+		return fmt.Errorf("get-or-create workspace %q: %w", projectAddWorkspace, err)
 	}
 
-	// Optionally assign workspace (get-or-create: DB row is created even for unknown slug).
-	if projectAddWorkspace != "" {
-		if err := assignProjectWorkspace(c, p.ID, projectAddWorkspace, cmd.OutOrStdout()); err != nil {
-			return err
-		}
-		p.WorkspaceID = projectAddWorkspace
+	body := map[string]string{"url": gitURL, "workspace": projectAddWorkspace}
+	if projectAddName != "" {
+		body["name"] = projectAddName
+	}
+
+	var p projectspec.Project
+	if err := c.Do("POST", "/api/projects/git", body, &p); err != nil {
+		return fmt.Errorf("register project: %w", err)
 	}
 
 	return renderOutput(cmd, &p, func() error {
 		fmt.Fprintf(cmd.OutOrStdout(), "project registered: %s (%s)\n", p.ID, p.Meta.Name)
-		if p.WorkspaceID != "" {
-			fmt.Fprintf(cmd.OutOrStdout(), "  workspace: %s\n", p.WorkspaceID)
-		}
+		fmt.Fprintf(cmd.OutOrStdout(), "  workspace: %s\n", p.WorkspaceID)
+		fmt.Fprintf(cmd.OutOrStdout(), "  bare repo: %s\n", p.WorkDir)
 		// Check hook requires
 		for _, b := range p.Meta.TaskBehaviors {
 			for _, h := range b.Hooks {
@@ -178,6 +248,27 @@ func runProjectAdd(cmd *cobra.Command, args []string) error {
 				}
 			}
 		}
+		return nil
+	})
+}
+
+// runProjectFetch handles `boid project fetch <project-ref>` (docs/plans/
+// volume-only-daemon.md §論点b fetch 経路).
+func runProjectFetch(cmd *cobra.Command, args []string) error {
+	c := client.FromContext(cmd.Context())
+
+	p, err := resolveProjectRef(c, os.Stdin, cmd.OutOrStdout(), args[0])
+	if err != nil {
+		return fmt.Errorf("resolve project: %w", err)
+	}
+
+	var updated projectspec.Project
+	if err := c.Do("POST", "/api/projects/"+p.ID+"/fetch", nil, &updated); err != nil {
+		return fmt.Errorf("fetch project: %w", err)
+	}
+
+	return renderOutput(cmd, &updated, func() error {
+		fmt.Fprintf(cmd.OutOrStdout(), "project fetched: %s (%s)\n", updated.ID, updated.Meta.Name)
 		return nil
 	})
 }
@@ -277,11 +368,18 @@ func runProjectList(cmd *cobra.Command, args []string) error {
 			return nil
 		}
 		for _, p := range projects {
-			fmt.Fprintf(cmd.OutOrStdout(), "%-20s %s  (%s)", p.ID, p.Meta.Name, p.WorkDir)
+			status := p.Status
+			if status == "" {
+				status = "ready"
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "%-20s %-9s %s  (%s)", p.ID, status, p.Meta.Name, p.WorkDir)
 			if p.UpstreamURL != "" {
 				fmt.Fprintf(cmd.OutOrStdout(), "  upstream=%s", p.UpstreamURL)
 			}
 			fmt.Fprintln(cmd.OutOrStdout())
+			if p.Status != "" && p.StatusMessage != "" {
+				fmt.Fprintf(cmd.OutOrStdout(), "  %s\n", p.StatusMessage)
+			}
 		}
 		return nil
 	})
@@ -366,6 +464,15 @@ func renderProjectDetail(p *projectspec.Project) {
 	}
 	fmt.Printf("CreatedAt:   %s\n", formatTime(p.CreatedAt))
 	fmt.Printf("UpdatedAt:   %s\n", formatTime(p.UpdatedAt))
+	if p.Status != "" {
+		// Status is omitted from the API response (and thus zero here) for
+		// the common "ready" case — see orchestrator.Project.Status's doc
+		// comment — so only print the line when there is something to say.
+		fmt.Printf("Status:      %s\n", p.Status)
+		if p.StatusMessage != "" {
+			fmt.Printf("             %s\n", p.StatusMessage)
+		}
+	}
 
 	m := p.Meta
 

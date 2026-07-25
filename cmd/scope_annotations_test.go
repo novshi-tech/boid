@@ -69,11 +69,19 @@ func TestAllCommandsHaveScopeAnnotation(t *testing.T) {
 //   - `check`: pinned to scopeLocal — its exec.LookPath/unshare probes
 //     inspect the machine the CLI process runs on, which only coincides
 //     with the daemon's host under today's UNIX-socket-only transport.
-//   - `project add` / `project init` / `project reload`: pinned to
-//     scopeLocal per the plan doc's "境界越えで壊れる" row — each resolves a
-//     local filesystem path (or a project's stored WorkDir) against the
-//     daemon's own host, which only works because there is no remote
-//     daemon transport yet. Phase 6 is expected to move this to scopeRemote.
+//   - `project init` / `project reload`: pinned to scopeLocal per the plan
+//     doc's "境界越えで壊れる" row — each resolves a local filesystem path (or
+//     a project's stored WorkDir) against the daemon's own host, which only
+//     works because there is no remote daemon transport yet.
+//   - `project add`: RECLASSIFIED to scopeRemote by docs/plans/
+//     volume-only-daemon.md §論点a — this is the exact cutover the comment
+//     above used to predict ("Phase 6 is expected to move this to
+//     scopeRemote"). `boid project add <git-url>` no longer resolves any
+//     local filesystem path at all; the daemon clones the URL itself into a
+//     bare repository it manages, so this is now an ordinary HTTP API
+//     operation like `project show`/`project list`. `project fetch` (new in
+//     the same PR — `boid project fetch <id>`, runs `git fetch --all`
+//     inside the bare repo) is scopeRemote for the identical reason.
 //
 // See cmd/check.go, cmd/gc.go, and cmd/project.go's own annotation comments
 // for the full reasoning behind each.
@@ -99,7 +107,9 @@ var expectedScopeAnnotations = map[string]string{
 	"boid job log":              scopeRemote,
 	"boid job show":             scopeRemote,
 	"boid job watch":            scopeRemote,
+	"boid project add":          scopeRemote,
 	"boid project behaviors":    scopeRemote,
+	"boid project fetch":        scopeRemote,
 	"boid project list":         scopeRemote,
 	"boid project remove":       scopeRemote,
 	"boid project show":         scopeRemote,
@@ -145,7 +155,6 @@ var expectedScopeAnnotations = map[string]string{
 	"boid fetch":              scopeLocal,
 	"boid gc":                 scopeLocal,
 	"boid init":               scopeLocal,
-	"boid project add":        scopeLocal,
 	"boid project init":       scopeLocal,
 	"boid project migrate":    scopeLocal,
 	"boid project reload":     scopeLocal,
