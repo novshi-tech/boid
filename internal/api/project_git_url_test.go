@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/novshi-tech/boid/internal/dispatcher"
@@ -296,6 +297,181 @@ func TestFetchProject_UnreachableRemote_MarksDegradedNotDeleted(t *testing.T) {
 	// LoadBareRepo (a plain Load, not a fetch) must still succeed.
 	if _, loadErr := svc.Meta.LoadBareRepo(created.WorkDir); loadErr != nil {
 		t.Errorf("expected the bare repo's cached HEAD to still be readable: %v", loadErr)
+	}
+}
+
+// TestCreateProjectFromGitURL_RejectsPathTraversalName pins BLOCKER 2 (codex
+// round-1 review) at the ProjectAppService integration level — see
+// orchestrator.TestSafeBareRepoPath_RejectsTraversal for the underlying unit
+// test — proving CreateProjectFromGitURL actually routes through
+// orchestrator.SafeBareRepoPath rather than the raw (traversal-unsafe)
+// BareRepoPath.
+func TestCreateProjectFromGitURL_RejectsPathTraversalName(t *testing.T) {
+	src := setupGitURLSourceRepo(t, "proj-traversal", "Traversal Project")
+	repo := &stubProjectRepository{existingWorkspaces: map[string]bool{"team-a": true}}
+	svc, dataDir := newGitURLTestService(t, repo)
+
+	_, err := svc.CreateProjectFromGitURL(context.Background(), fileURL(src), "team-a", "../../../../tmp/owned")
+	if err == nil {
+		t.Fatal("expected error for a traversal --name")
+	}
+	statusErr, ok := err.(*StatusError)
+	if !ok || statusErr.Code != http.StatusBadRequest {
+		t.Fatalf("expected *StatusError{400}, got %T: %v", err, err)
+	}
+
+	// Refused before any write (PR-1b/1d learning): nothing was cloned
+	// anywhere under this workspace's repos directory.
+	if _, statErr := os.Stat(filepath.Join(dataDir, "repos", "team-a")); !os.IsNotExist(statErr) {
+		t.Errorf("expected no repos/team-a directory to exist after a refused traversal --name, stat err = %v", statErr)
+	}
+}
+
+// TestCreateProjectFromGitURL_ConcurrentSameURL_ExactlyOneSucceeds pins
+// MAJOR 3 (codex round-1 review): concurrent `project add` calls for the
+// SAME url (and therefore the same derived name / bareRepoPath, since none
+// of them pass --name) must not all race past the "already registered at
+// this path" collision check — pre-fix, they could all observe an empty
+// bareRepoPath via os.Stat before any of them had cloned, each proceed to
+// clone/cache/insert, and a losing insert's rollback (Meta.Remove) could
+// delete a WINNING call's cache entry out from under it. registerMu
+// serializes the whole clone -> load -> DB-insert -> workspace-assign
+// pipeline, so every call after the first cannot even begin cloning until
+// the winner has already fully committed, and deterministically hits the
+// ordinary 409 collision check instead.
+func TestCreateProjectFromGitURL_ConcurrentSameURL_ExactlyOneSucceeds(t *testing.T) {
+	src := setupGitURLSourceRepo(t, "proj-concurrent", "Concurrent Project")
+	repo := &stubProjectRepository{existingWorkspaces: map[string]bool{"team-a": true}}
+	svc, dataDir := newGitURLTestService(t, repo)
+
+	const n = 5
+	var wg sync.WaitGroup
+	results := make([]error, n)
+	projects := make([]*orchestrator.Project, n)
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			p, err := svc.CreateProjectFromGitURL(context.Background(), fileURL(src), "team-a", "")
+			results[i] = err
+			projects[i] = p
+		}(i)
+	}
+	wg.Wait()
+
+	succeeded := 0
+	var winner *orchestrator.Project
+	for i := 0; i < n; i++ {
+		if results[i] == nil {
+			succeeded++
+			winner = projects[i]
+			continue
+		}
+		if statusErr, ok := results[i].(*StatusError); !ok || statusErr.Code != http.StatusConflict {
+			t.Errorf("call %d: expected either success or *StatusError{409}, got %T: %v", i, results[i], results[i])
+		}
+	}
+	if succeeded != 1 {
+		t.Fatalf("expected exactly 1 of %d concurrent adds to succeed, got %d", n, succeeded)
+	}
+
+	// No cache corruption: the winner's project ID must still be resolvable
+	// through the in-memory Meta cache — a pre-fix run could leave it
+	// deleted by a loser's rollback landing after the winner's own write.
+	if _, ok := svc.Meta.Get(winner.ID); !ok {
+		t.Errorf("expected winner project %q to still be cached after all concurrent adds settled", winner.ID)
+	}
+
+	wantBarePath := orchestrator.BareRepoPath(dataDir, "team-a", filepath.Base(src))
+	if winner.WorkDir != wantBarePath {
+		t.Errorf("winner.WorkDir = %q, want %q", winner.WorkDir, wantBarePath)
+	}
+	if !orchestrator.IsBareRepoDir(winner.WorkDir) {
+		t.Errorf("expected a healthy bare repo at %s after concurrent adds settled", winner.WorkDir)
+	}
+}
+
+// TestDeleteProject_RemovesBareRepo_AllowsReRegistration pins MAJOR 1 (codex
+// round-1 review): DeleteProject must remove the daemon-managed bare repo
+// directory, not just the DB row — otherwise re-adding the SAME URL/name
+// after `boid project rm` always 409s (CreateProjectFromGitURL's pre-flight
+// "already registered at this path" check), making the documented degraded-
+// recovery procedure ("rm the project, re-add it") ineffective.
+func TestDeleteProject_RemovesBareRepo_AllowsReRegistration(t *testing.T) {
+	src := setupGitURLSourceRepo(t, "proj-rm", "RM Project")
+	repo := &stubProjectRepository{existingWorkspaces: map[string]bool{"team-a": true}}
+	svc, _ := newGitURLTestService(t, repo)
+
+	created, err := svc.CreateProjectFromGitURL(context.Background(), fileURL(src), "team-a", "")
+	if err != nil {
+		t.Fatalf("CreateProjectFromGitURL: %v", err)
+	}
+	repo.projects = []*orchestrator.Project{created}
+
+	if err := svc.DeleteProject(created.ID); err != nil {
+		t.Fatalf("DeleteProject: %v", err)
+	}
+	if _, statErr := os.Stat(created.WorkDir); !os.IsNotExist(statErr) {
+		t.Fatalf("expected the bare repo at %s to be removed after DeleteProject, stat err = %v", created.WorkDir, statErr)
+	}
+
+	// Re-add the SAME url/name — must succeed. Pre-fix, this always 409'd
+	// because the old bare repo directory was left occupying the computed
+	// path.
+	recreated, err := svc.CreateProjectFromGitURL(context.Background(), fileURL(src), "team-a", "")
+	if err != nil {
+		t.Fatalf("re-CreateProjectFromGitURL after rm: %v", err)
+	}
+	if recreated.WorkDir != created.WorkDir {
+		t.Errorf("WorkDir = %q, want the same path as before removal %q", recreated.WorkDir, created.WorkDir)
+	}
+}
+
+// TestFetchProject_CorruptManagedRepo_DegradesNotLegacyRejected pins MAJOR 2
+// (codex round-1 review): a managed (git-URL registered) project whose LOCAL
+// bare repo loses its HEAD file (disk corruption, an operator `rm`ing the
+// wrong thing) must degrade via FetchProject, not get misclassified as a
+// legacy host-dir project and rejected with a plain 400 that never records
+// the failure anywhere.
+func TestFetchProject_CorruptManagedRepo_DegradesNotLegacyRejected(t *testing.T) {
+	src := setupGitURLSourceRepo(t, "proj-corrupt", "Corrupt Project")
+	repo := &stubProjectRepository{existingWorkspaces: map[string]bool{"team-a": true}}
+	svc, _ := newGitURLTestService(t, repo)
+
+	created, err := svc.CreateProjectFromGitURL(context.Background(), fileURL(src), "team-a", "")
+	if err != nil {
+		t.Fatalf("CreateProjectFromGitURL: %v", err)
+	}
+	repo.projects = []*orchestrator.Project{created}
+
+	// Corrupt the LOCAL bare repo (not the source) by removing its HEAD
+	// file — orchestrator.IsBareRepoDir now reports false for it, exactly
+	// the pre-fix trigger for the legacy-rejection misclassification.
+	if err := os.Remove(filepath.Join(created.WorkDir, "HEAD")); err != nil {
+		t.Fatalf("remove HEAD: %v", err)
+	}
+	if orchestrator.IsBareRepoDir(created.WorkDir) {
+		t.Fatal("test setup: expected IsBareRepoDir to report false after removing HEAD")
+	}
+
+	_, err = svc.FetchProject(context.Background(), created.ID)
+	if err == nil {
+		t.Fatal("expected an error fetching a corrupt managed bare repo")
+	}
+	statusErr, ok := err.(*StatusError)
+	if !ok {
+		t.Fatalf("expected *StatusError, got %T: %v", err, err)
+	}
+	if strings.Contains(statusErr.Message, "legacy host-dir project") {
+		t.Errorf("expected the corrupt MANAGED repo NOT to be misclassified as legacy, got message: %s", statusErr.Message)
+	}
+	if statusErr.Code == http.StatusBadRequest {
+		t.Errorf("expected a non-400 status for a corrupt managed repo (400 is the legacy-rejection code), got %d: %s", statusErr.Code, statusErr.Message)
+	}
+
+	st := svc.Meta.Status(created.ID)
+	if st.State != orchestrator.StatusDegraded {
+		t.Errorf("Status.State = %q, want %q (a corrupt managed repo must degrade, not just 400)", st.State, orchestrator.StatusDegraded)
 	}
 }
 

@@ -269,3 +269,33 @@ func TestRepoSlugFromOriginURL_NonGithubHostKeptAsIs(t *testing.T) {
 		t.Errorf("slug = %q, want %q", got, want)
 	}
 }
+
+// TestRepoSlugFromOriginURL_GitScheme pins Minor 1 (PR-2a codex round-1
+// review): git:// passes the CLI's looksLikeGitURL heuristic (it has a
+// "://" scheme) but was previously rejected here with "unrecognized origin
+// url form", making NormalizeOriginURL fail every git:// URL despite the
+// CLI accepting it as a valid <git-url> argument.
+func TestRepoSlugFromOriginURL_GitScheme(t *testing.T) {
+	got, err := repoSlugFromOriginURL("git://github.com/owner/repo.git")
+	if err != nil {
+		t.Fatalf("repoSlugFromOriginURL: %v", err)
+	}
+	if want := "github.com/owner/repo"; got != want {
+		t.Errorf("slug = %q, want %q", got, want)
+	}
+}
+
+// TestRepoSlugFromOriginURL_SSHWithPortDropsPort pins Minor 1's other half:
+// an ssh://host:port/... URL's port must NOT survive into the derived
+// host/owner/repo slug — it feeds NormalizeOriginURL's https:// rewrite,
+// and an SSH port has nothing to do with the (always-443) HTTPS port a
+// forge's REST/git-over-https endpoint actually listens on.
+func TestRepoSlugFromOriginURL_SSHWithPortDropsPort(t *testing.T) {
+	got, err := repoSlugFromOriginURL("ssh://git@github.com:2222/owner/repo.git")
+	if err != nil {
+		t.Fatalf("repoSlugFromOriginURL: %v", err)
+	}
+	if want := "github.com/owner/repo"; got != want {
+		t.Errorf("slug = %q, want %q (port must be dropped)", got, want)
+	}
+}

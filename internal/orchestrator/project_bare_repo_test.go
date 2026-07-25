@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/novshi-tech/boid/internal/orchestrator"
@@ -171,5 +172,62 @@ func TestDeriveProjectNameFromURL_Invalid(t *testing.T) {
 		if _, err := orchestrator.DeriveProjectNameFromURL(url); err == nil {
 			t.Errorf("DeriveProjectNameFromURL(%q): expected error", url)
 		}
+	}
+}
+
+// TestValidProjectName pins the PR-2a codex round-1 Blocker 2 fix: a
+// traversal-shaped --name (or a URL-derived name that happens to look like
+// one) must be rejected before it ever reaches BareRepoPath's filepath.Join.
+func TestValidProjectName(t *testing.T) {
+	valid := []string{"myproj", "my-proj_2", "my.proj", "a", "PROJECT-123"}
+	for _, name := range valid {
+		if err := orchestrator.ValidProjectName(name); err != nil {
+			t.Errorf("ValidProjectName(%q): unexpected error: %v", name, err)
+		}
+	}
+
+	invalid := []string{
+		"",
+		"../../../../tmp/owned",
+		"..",
+		".",
+		".hidden",
+		"sub/dir",
+		`sub\dir`,
+		"foo..bar",
+		"has space",
+		"has/../traversal",
+		strings.Repeat("x", 129),
+	}
+	for _, name := range invalid {
+		if err := orchestrator.ValidProjectName(name); err == nil {
+			t.Errorf("ValidProjectName(%q): expected error, got nil", name)
+		}
+	}
+}
+
+// TestSafeBareRepoPath_RejectsTraversal pins the concrete failure scenario
+// codex's Blocker 2 finding describes: a --name of
+// "../../../../tmp/owned" must never produce a path outside
+// <data_dir>/repos/<workspace> — SafeBareRepoPath must refuse it outright
+// rather than let filepath.Join silently clean it into an escaping path.
+func TestSafeBareRepoPath_RejectsTraversal(t *testing.T) {
+	dataDir := "/data"
+	if _, err := orchestrator.SafeBareRepoPath(dataDir, "team-a", "../../../../tmp/owned"); err == nil {
+		t.Fatal("expected SafeBareRepoPath to reject a traversal name")
+	}
+}
+
+// TestSafeBareRepoPath_ValidName mirrors TestBareRepoPath's expectation for
+// an ordinary name, confirming SafeBareRepoPath's extra validation does not
+// change the computed path for the common case.
+func TestSafeBareRepoPath_ValidName(t *testing.T) {
+	got, err := orchestrator.SafeBareRepoPath("/data", "myws", "myproj")
+	if err != nil {
+		t.Fatalf("SafeBareRepoPath: %v", err)
+	}
+	want := filepath.Join("/data", "repos", "myws", "myproj.git")
+	if got != want {
+		t.Errorf("SafeBareRepoPath = %q, want %q", got, want)
 	}
 }

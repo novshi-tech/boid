@@ -3,13 +3,19 @@ package dispatcher_test
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
+	"sync"
 	"testing"
 
 	"github.com/novshi-tech/boid/internal/dispatcher"
 	"github.com/novshi-tech/boid/internal/gitgateway"
+	"github.com/novshi-tech/boid/internal/orchestrator"
 )
 
 func runGitT(t *testing.T, dir string, args ...string) {
@@ -59,36 +65,120 @@ func TestCloneBareRepo_LocalSource(t *testing.T) {
 	}
 }
 
-func TestCloneBareRepo_DoesNotPersistCredentialsInURL(t *testing.T) {
-	src := setupSourceRepo(t)
-	dest := filepath.Join(t.TempDir(), "dest.git")
+// gitCredentialFixtureServer starts an httptest.Server standing in for a
+// forge host, recording the Authorization header of every request it
+// receives (so a test can prove credentialGitArgs' `-c http.extraHeader=...`
+// actually reached an outbound git request) before always responding 404 —
+// enough for git's smart-HTTP discovery (`GET .../info/refs?service=...`) to
+// fail cleanly and quickly, without needing a real git-http-backend.
+func gitCredentialFixtureServer(t *testing.T) (url string, lastAuth func() string) {
+	t.Helper()
+	var mu sync.Mutex
+	var got string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		got = r.Header.Get("Authorization")
+		mu.Unlock()
+		http.Error(w, "not found", http.StatusNotFound)
+	}))
+	t.Cleanup(srv.Close)
+	return srv.URL, func() string {
+		mu.Lock()
+		defer mu.Unlock()
+		return got
+	}
+}
 
-	// Configure creds for a host that never matches "src" (a local path has
-	// no recognizable host), so credentialGitArgs takes the "can't
-	// determine host" no-op branch — clone still succeeds unauthenticated.
-	resolver := func(namespace, key string) (string, error) { return "secret-token", nil }
+// TestCloneBareRepo_DoesNotPersistCredentialsInURL pins two things at once
+// against a real HTTP fixture whose host credentialGitArgs actually
+// recognizes (Minor 3, codex round-1 review: the pre-fix version pointed
+// creds at "github.com" while cloning from a bare local filesystem path,
+// whose host can never be determined — credentialGitArgs took its "can't
+// determine host" no-op branch, so the test never exercised
+// `http.extraHeader` at all):
+//
+//  1. the Authorization header the fixture server observed proves the
+//     credential really was injected via `-c http.extraHeader=...`
+//     (positive proof the mechanism engaged, not just "clone succeeded
+//     unauthenticated");
+//  2. the returned error from the resulting (expected) clone failure does
+//     not contain the raw token or its base64-encoded Basic-auth form
+//     (Blocker 1: runGit used to join cmd.Args — including that
+//     `http.extraHeader=Authorization: Basic <token>` argument — verbatim
+//     into the error CreateProjectFromGitURL/FetchProject surface to the
+//     CLI/API caller and, for FetchProject, persist as StatusMessage).
+func TestCloneBareRepo_DoesNotPersistCredentialsInURL(t *testing.T) {
+	srvURL, lastAuth := gitCredentialFixtureServer(t)
+	host := strings.TrimPrefix(srvURL, "http://")
+
+	const rawToken = "s3cr3t-pat-token"
+	resolver := func(namespace, key string) (string, error) { return rawToken, nil }
 	creds := gitgateway.NewCredentialProvider([]gitgateway.HostForgeConfig{
-		{Host: "github.com", Forge: gitgateway.ForgeGitHub, SecretKey: "github-pat"},
+		{Host: host, Forge: gitgateway.ForgeGitHub, SecretKey: "github-pat"},
 	}, resolver)
 
-	if err := dispatcher.CloneBareRepo(context.Background(), src, dest, creds, "default"); err != nil {
+	dest := filepath.Join(t.TempDir(), "dest.git")
+	err := dispatcher.CloneBareRepo(context.Background(), srvURL+"/owner/repo.git", dest, creds, "default")
+	if err == nil {
+		t.Fatal("expected clone to fail against a non-git HTTP fixture (404 on info/refs)")
+	}
+
+	auth := lastAuth()
+	if auth == "" {
+		t.Fatal("fixture server never saw an Authorization header — credentialGitArgs did not engage http.extraHeader")
+	}
+	wantB64 := base64.StdEncoding.EncodeToString([]byte("x-access-token:" + rawToken))
+	if auth != "Basic "+wantB64 {
+		t.Fatalf("Authorization header = %q, want %q", auth, "Basic "+wantB64)
+	}
+
+	errMsg := err.Error()
+	if strings.Contains(errMsg, rawToken) {
+		t.Errorf("CloneBareRepo error leaks the raw credential token: %s", errMsg)
+	}
+	if strings.Contains(errMsg, wantB64) {
+		t.Errorf("CloneBareRepo error leaks the base64-encoded Basic-auth header: %s", errMsg)
+	}
+}
+
+// TestFetchBareRepo_ErrorDoesNotLeakCredentials is FetchBareRepo's
+// counterpart to the clone-side test above — the same Blocker 1 leak path
+// exists independently on the fetch side (dispatcher.FetchBareRepo ->
+// credentialGitArgs -> runGit), and FetchProject additionally persists a
+// fetch failure's message as the project's StatusMessage (visible via
+// `boid project list`/`show` from then on), so pinning it here too matters.
+func TestFetchBareRepo_ErrorDoesNotLeakCredentials(t *testing.T) {
+	src := setupSourceRepo(t)
+	dest := filepath.Join(t.TempDir(), "dest.git")
+	if err := dispatcher.CloneBareRepo(context.Background(), src, dest, nil, "default"); err != nil {
 		t.Fatalf("CloneBareRepo: %v", err)
 	}
 
-	cmd := exec.Command("git", "-C", dest, "remote", "get-url", "origin")
-	out, err := cmd.Output()
-	if err != nil {
-		t.Fatalf("git remote get-url origin: %v", err)
+	srvURL, lastAuth := gitCredentialFixtureServer(t)
+	host := strings.TrimPrefix(srvURL, "http://")
+	runGitT(t, dest, "remote", "set-url", "origin", srvURL+"/owner/repo.git")
+
+	const rawToken = "another-s3cr3t-token"
+	resolver := func(namespace, key string) (string, error) { return rawToken, nil }
+	creds := gitgateway.NewCredentialProvider([]gitgateway.HostForgeConfig{
+		{Host: host, Forge: gitgateway.ForgeGitHub, SecretKey: "github-pat"},
+	}, resolver)
+
+	err := dispatcher.FetchBareRepo(context.Background(), dest, creds, "default")
+	if err == nil {
+		t.Fatal("expected fetch to fail against a non-git HTTP fixture (404 on info/refs)")
 	}
-	got := string(out)
-	if got == "" {
-		t.Fatal("empty remote origin url")
+
+	if lastAuth() == "" {
+		t.Fatal("fixture server never saw an Authorization header — credentialGitArgs did not engage http.extraHeader")
 	}
-	// The stored origin URL must be exactly the plain source path — no
-	// embedded Basic-auth credentials, confirming CloneBareRepo never wrote
-	// a credentialed URL into the bare repo's own config.
-	if got[:len(got)-1] != src {
-		t.Errorf("remote.origin.url = %q, want %q (must not contain embedded credentials)", got, src)
+	errMsg := err.Error()
+	if strings.Contains(errMsg, rawToken) {
+		t.Errorf("FetchBareRepo error leaks the raw credential token: %s", errMsg)
+	}
+	wantB64 := base64.StdEncoding.EncodeToString([]byte("x-access-token:" + rawToken))
+	if strings.Contains(errMsg, wantB64) {
+		t.Errorf("FetchBareRepo error leaks the base64-encoded Basic-auth header: %s", errMsg)
 	}
 }
 
@@ -126,6 +216,40 @@ func TestFetchBareRepo_LocalSource(t *testing.T) {
 	}
 	if !bytes.Contains(out, []byte("second")) {
 		t.Errorf("expected the fetched 'second' commit in refs/heads/main log, got:\n%s", out)
+	}
+}
+
+// TestFetchBareRepo_RefreshesHEADAfterRemoteDefaultBranchChange pins MAJOR 4
+// (PR-2a codex round-1 review): a --mirror clone's fetch refspec updates
+// refs/heads/* in place but never touches HEAD on its own, so a forge that
+// renames its default branch after the project was registered must not
+// permanently strand the project reading the old (and, once `--prune`
+// removes it, nonexistent) branch.
+func TestFetchBareRepo_RefreshesHEADAfterRemoteDefaultBranchChange(t *testing.T) {
+	src := setupSourceRepo(t)
+	dest := filepath.Join(t.TempDir(), "dest.git")
+	if err := dispatcher.CloneBareRepo(context.Background(), src, dest, nil, "default"); err != nil {
+		t.Fatalf("CloneBareRepo: %v", err)
+	}
+	if got, err := orchestrator.DefaultBranch(dest); err != nil || got != "main" {
+		t.Fatalf("precondition: HEAD = %q, err = %v, want main", got, err)
+	}
+
+	// Rename the source's default branch — simulating a forge's "main"
+	// (deprecated) -> "trunk" default-branch change — then fetch with
+	// --prune, which removes the now-gone "main" local ref entirely.
+	runGitT(t, src, "branch", "-m", "main", "trunk")
+
+	if err := dispatcher.FetchBareRepo(context.Background(), dest, nil, "default"); err != nil {
+		t.Fatalf("FetchBareRepo: %v", err)
+	}
+
+	got, err := orchestrator.DefaultBranch(dest)
+	if err != nil {
+		t.Fatalf("HEAD after fetch is unreadable (expected it refreshed to trunk): %v", err)
+	}
+	if got != "trunk" {
+		t.Errorf("HEAD after fetch = %q, want trunk (HEAD was not refreshed to the remote's new default branch)", got)
 	}
 }
 

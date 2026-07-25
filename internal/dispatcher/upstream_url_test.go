@@ -62,6 +62,35 @@ func TestNormalizeOriginURL(t *testing.T) {
 			raw:     "not-a-url",
 			wantErr: true,
 		},
+		{
+			// MAJOR 5 (PR-2a codex round-1 review): a credential-bearing
+			// https:// URL must be rejected outright, not stored — see
+			// hasHTTPUserinfo's doc comment for the three surfaces that
+			// would otherwise leak the embedded token.
+			name:    "https url with embedded credentials is rejected",
+			raw:     "https://user:pat@github.com/owner/repo.git",
+			wantErr: true,
+		},
+		{
+			name:    "https url with bare username (no password) is still rejected",
+			raw:     "https://user@github.com/owner/repo.git",
+			wantErr: true,
+		},
+		{
+			name:    "http url with embedded credentials is rejected",
+			raw:     "http://user:pat@github.com/owner/repo.git",
+			wantErr: true,
+		},
+		{
+			name: "git url normalized to https",
+			raw:  "git://github.com/owner/repo.git",
+			want: "https://github.com/owner/repo.git",
+		},
+		{
+			name: "ssh url with explicit port drops the port on https rewrite",
+			raw:  "ssh://git@github.com:2222/owner/repo.git",
+			want: "https://github.com/owner/repo.git",
+		},
 	}
 
 	for _, tt := range tests {

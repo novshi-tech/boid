@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"os/exec"
+	"regexp"
 	"strings"
 
 	"github.com/novshi-tech/boid/internal/gitgateway"
@@ -57,7 +58,11 @@ func CloneBareRepo(ctx context.Context, rawURL, destPath string, creds *gitgatew
 // daemon-managed bare (mirror) repo (`boid project fetch <id>`),
 // re-resolving credentials against the repo's own remote.origin.url —
 // which, per CloneBareRepo's doc comment, is always the plain
-// (uncredentialed) URL the project was registered with.
+// (uncredentialed) URL the project was registered with. After a successful
+// fetch, also refreshes bareRepoPath's symbolic HEAD to match the remote's
+// current default branch (MAJOR 4, PR-2a codex round-1 review) — see
+// refreshBareRepoHEAD's doc comment for why this needs its own step (a
+// mirror clone's fetch refspec never touches HEAD on its own).
 func FetchBareRepo(ctx context.Context, bareRepoPath string, creds *gitgateway.CredentialProvider, namespace string) error {
 	originURL, err := gitRemoteURL(ctx, bareRepoPath)
 	if err != nil {
@@ -68,7 +73,75 @@ func FetchBareRepo(ctx context.Context, bareRepoPath string, creds *gitgateway.C
 		return err
 	}
 	args := append(append([]string{}, extraArgs...), "-C", bareRepoPath, "fetch", "--all", "--prune")
-	return runGit(exec.CommandContext(ctx, "git", args...))
+	if err := runGit(exec.CommandContext(ctx, "git", args...)); err != nil {
+		return err
+	}
+	return refreshBareRepoHEAD(ctx, bareRepoPath, extraArgs)
+}
+
+// refreshBareRepoHEAD points bareRepoPath's symbolic HEAD at origin's
+// current default branch (MAJOR 4, PR-2a codex round-1 review). A `--mirror`
+// clone's fetch refspec (`+refs/*:refs/*`, see CloneBareRepo's doc comment)
+// updates every refs/heads/* ref in place but never touches HEAD itself —
+// so when a forge's default branch changes (e.g. main -> master), `boid
+// project fetch` silently keeps reading project.yaml from the OLD branch
+// forever; if that old branch is later deleted upstream (`--prune` removes
+// the local ref too), the project permanently degrades ("HEAD: not a valid
+// object name") even though the repository is otherwise perfectly healthy.
+//
+// `git remote set-head origin --auto` — the usual fix for this — does NOT
+// work here: it resolves the remote's HEAD from the LOCAL
+// refs/remotes/origin/* tracking namespace, which a --mirror clone's
+// `+refs/*:refs/*` refspec never populates (refs land directly at
+// refs/heads/*, with no "origin/" prefix at all — confirmed empirically:
+// `git remote set-head origin --auto` against a --mirror clone whose remote
+// renamed its default branch left the local HEAD pointing at the
+// now-deleted old branch name). `git ls-remote --symref origin HEAD`
+// instead asks the remote SERVER directly which branch its HEAD currently
+// points at — no local tracking-ref dependency — and the result is applied
+// locally via `git symbolic-ref`.
+//
+// Failure to determine or apply the new HEAD is intentionally non-fatal:
+// the fetch itself already succeeded (every ref is up to date), so this is
+// purely an improvement on top when it works, never a regression when it
+// can't (e.g. a remote that reports no symref for HEAD at all, or a
+// transient failure right after a successful fetch) — the project simply
+// keeps reading from whatever HEAD already pointed at, exactly like before
+// this refresh step existed.
+func refreshBareRepoHEAD(ctx context.Context, bareRepoPath string, extraArgs []string) error {
+	args := append(append([]string{}, extraArgs...), "-C", bareRepoPath, "ls-remote", "--symref", "origin", "HEAD")
+	cmd := exec.CommandContext(ctx, "git", args...)
+	var stdout bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &bytes.Buffer{}
+	if err := cmd.Run(); err != nil {
+		// Best-effort: see the doc comment above for why a failure here
+		// does not propagate.
+		return nil
+	}
+	ref, err := parseSymrefHEAD(stdout.String())
+	if err != nil {
+		return nil
+	}
+	return runGit(exec.CommandContext(ctx, "git", "-C", bareRepoPath, "symbolic-ref", "HEAD", ref))
+}
+
+// parseSymrefHEAD extracts the target ref from `git ls-remote --symref
+// <remote> HEAD`'s output, whose first matching line (when the remote
+// advertises a symref for HEAD) looks like "ref: refs/heads/main\tHEAD".
+func parseSymrefHEAD(out string) (string, error) {
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "ref: ") {
+			continue
+		}
+		fields := strings.Fields(strings.TrimPrefix(line, "ref: "))
+		if len(fields) == 0 {
+			continue
+		}
+		return fields[0], nil
+	}
+	return "", fmt.Errorf("no symref reported for HEAD")
 }
 
 // gitRemoteURL returns bareRepoPath's `origin` remote URL.
@@ -123,17 +196,52 @@ func hostFromGitURL(rawURL string) (string, error) {
 	return host, nil
 }
 
+// credentialHeaderPattern matches an `Authorization: Basic <token>` (or
+// `Bearer <token>`) value the way credentialGitArgs embeds it into a
+// `-c http.extraHeader=...` argument, capturing everything up to (but not
+// including) the token itself so redactGitArgs can splice a placeholder in
+// its place without losing the surrounding `http.extraHeader=` prefix
+// (useful for reading the error, still safe to log/return to a client).
+var credentialHeaderPattern = regexp.MustCompile(`(?i)(Authorization:\s*(?:Basic|Bearer)\s+)\S+`)
+
+// redactGitArgs returns a copy of args with any embedded credential value
+// (the Basic/Bearer Authorization header credentialGitArgs injects via
+// `-c http.extraHeader=...`) replaced with a redacted placeholder (PR-2a
+// codex round-1 Blocker 1). Without this, runGit's error path below joined
+// cmd.Args verbatim into the returned error — which CreateProjectFromGitURL
+// / FetchProject then surface straight to the CLI/API caller and, for
+// FetchProject, persist as a project's StatusMessage (readable via
+// `boid project list`/`show` from then on) — so a single typo'd private-repo
+// URL with a configured forge PAT would leak
+// `http.extraHeader=Authorization: Basic <base64-user:token>` through both
+// surfaces. Every arg is scanned (not just the known `-c` value) so this
+// stays correct even if a future caller passes the header some other way.
+func redactGitArgs(args []string) []string {
+	out := make([]string, len(args))
+	for i, a := range args {
+		out[i] = credentialHeaderPattern.ReplaceAllString(a, "${1}<redacted>")
+	}
+	return out
+}
+
 // runGit executes cmd, wrapping a failure with cmd's args and captured
-// stderr for a useful daemon-log / API-error message.
+// stderr for a useful daemon-log / API-error message. Both the args and the
+// captured stderr are passed through redactGitArgs first (Blocker 1 — see
+// its doc comment): stderr is not known to ever echo the injected
+// credential header back (git does not print the command line it was
+// invoked with), but redacting it too costs nothing and closes that door
+// defensively in case a future git version, `GIT_CURL_VERBOSE`, or a
+// misbehaving credential helper ever changes that.
 func runGit(cmd *exec.Cmd) error {
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
-		msg := strings.TrimSpace(stderr.String())
+		argsStr := strings.Join(redactGitArgs(cmd.Args), " ")
+		msg := strings.TrimSpace(redactGitArgs([]string{stderr.String()})[0])
 		if msg != "" {
-			return fmt.Errorf("%s: %w: %s", strings.Join(cmd.Args, " "), err, msg)
+			return fmt.Errorf("%s: %w: %s", argsStr, err, msg)
 		}
-		return fmt.Errorf("%s: %w", strings.Join(cmd.Args, " "), err)
+		return fmt.Errorf("%s: %w", argsStr, err)
 	}
 	return nil
 }

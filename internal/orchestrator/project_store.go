@@ -468,14 +468,20 @@ func (s *ProjectStore) LoadAll(projects []*Project) []error {
 // tests, which do not call SetReposRoot) skips the upgrade entirely; the
 // plain wrapped error text is still informative on its own.
 func degradedMessageFor(candidate *Project, wrapped error, reposRoot string) string {
-	if reposRoot != "" && !pathIsUnder(reposRoot, candidate.WorkDir) {
+	if reposRoot != "" && !PathIsUnder(reposRoot, candidate.WorkDir) {
 		return fmt.Sprintf("legacy project registered from host dir %q; re-add via `boid project add <git-url> --workspace=<name>` (%v)", candidate.WorkDir, wrapped)
 	}
 	return wrapped.Error()
 }
 
-// pathIsUnder reports whether path is root itself or a descendant of it.
-func pathIsUnder(root, path string) bool {
+// PathIsUnder reports whether path is root itself or a descendant of it.
+// Exported (PR-2a codex round-1 Blocker 2/Major 2) so internal/api's
+// ProjectAppService can reuse the exact same containment check
+// degradedMessageFor already relies on, both to defend BareRepoPath's
+// computed destination against a traversal-capable projectName
+// (SafeBareRepoPath below) and to classify a project's WorkDir as
+// daemon-managed vs. legacy without duplicating this logic.
+func PathIsUnder(root, path string) bool {
 	rel, err := filepath.Rel(root, path)
 	if err != nil {
 		return false

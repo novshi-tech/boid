@@ -124,8 +124,86 @@ func DefaultBranch(bareRepoPath string) (string, error) {
 // <project-name>.git/"). dataDir is the daemon's data-home
 // (~/.local/share/boid equivalent — container-side
 // /home/boid/.local/share/boid in the eventual volume-only deploy).
+//
+// This is a plain filepath.Join with no validation of its own — a
+// projectName such as "../../../../tmp/owned" cleans straight through it
+// and moves the result outside dataDir/repos/workspaceSlug entirely (PR-2a
+// codex round-1 Blocker 2). Callers that accept projectName from an
+// external caller (an API request body's --name override, ultimately) MUST
+// use SafeBareRepoPath below instead, not this function directly.
 func BareRepoPath(dataDir, workspaceSlug, projectName string) string {
 	return filepath.Join(dataDir, "repos", workspaceSlug, projectName+".git")
+}
+
+// ValidProjectName checks that name is safe to use as the last path segment
+// of a daemon-managed bare-repo path (BareRepoPath's projectName argument) —
+// PR-2a codex round-1 Blocker 2. Rejects:
+//   - empty, or longer than 128 chars;
+//   - any path separator ('/' or '\'), which would let projectName escape
+//     its intended single path segment entirely (e.g. "sub/dir");
+//   - a name that is exactly "." or ".." or starts with '.' (a leading dot
+//     is never meaningful for a project name and ".."-prefixed forms are
+//     exactly the traversal shape the concrete failure scenario uses:
+//     "../../../../tmp/owned" cleans through filepath.Join and moves
+//     CreateProjectFromGitURL's clone destination outside
+//     <data_dir>/repos/<workspace>, persisting that external path as
+//     work_dir and potentially handing it to os.RemoveAll during rollback);
+//   - a ".." component anywhere else in the name (defense in depth: even a
+//     non-leading "foo..bar" is rejected, since there is no legitimate
+//     project name that needs it and it costs nothing to disallow);
+//   - any character outside [a-zA-Z0-9._-].
+//
+// Applies to BOTH an explicit --name override and a URL-derived name
+// (DeriveProjectNameFromURL only strips a trailing ".git" and takes the
+// last '/'- or ':'-delimited segment of whatever URL string it was given —
+// it does not itself guarantee the result is traversal-safe against an
+// adversarial URL, so CreateProjectFromGitURL must validate the derived
+// name too, not just an explicit override).
+func ValidProjectName(name string) error {
+	if name == "" {
+		return fmt.Errorf("project name is empty")
+	}
+	if len(name) > 128 {
+		return fmt.Errorf("project name %q exceeds 128 chars", name)
+	}
+	if strings.ContainsAny(name, `/\`) {
+		return fmt.Errorf("project name %q must not contain path separators", name)
+	}
+	if name == "." || name == ".." || strings.HasPrefix(name, ".") {
+		return fmt.Errorf("project name %q must not start with '.'", name)
+	}
+	if strings.Contains(name, "..") {
+		return fmt.Errorf("project name %q must not contain '..'", name)
+	}
+	for _, r := range name {
+		if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' || r == '.' || r == '-') {
+			return fmt.Errorf("project name %q contains invalid character %q", name, string(r))
+		}
+	}
+	return nil
+}
+
+// SafeBareRepoPath is BareRepoPath with defense-in-depth validation applied
+// (PR-2a codex round-1 Blocker 2): projectName must satisfy ValidProjectName
+// AND the resulting join must still resolve beneath
+// <dataDir>/repos/<workspaceSlug> — the latter check protects against both
+// a bug in ValidProjectName's character-level allowlist and any future
+// change to BareRepoPath's own Join call that reintroduces a traversal
+// (belt-and-suspenders: input validation at the edge, output validation at
+// the boundary it is meant to protect). Every caller that accepts
+// projectName from outside the daemon process (currently just
+// ProjectAppService.CreateProjectFromGitURL's --name / URL-derived name)
+// must go through this, not the raw BareRepoPath.
+func SafeBareRepoPath(dataDir, workspaceSlug, projectName string) (string, error) {
+	if err := ValidProjectName(projectName); err != nil {
+		return "", err
+	}
+	root := filepath.Join(dataDir, "repos", workspaceSlug)
+	path := BareRepoPath(dataDir, workspaceSlug, projectName)
+	if !PathIsUnder(root, path) {
+		return "", fmt.Errorf("project name %q resolves outside the workspace's repo directory", projectName)
+	}
+	return path, nil
 }
 
 // ReposRoot returns the daemon's bare-repo storage root
