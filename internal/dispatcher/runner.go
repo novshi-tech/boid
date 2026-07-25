@@ -90,18 +90,18 @@ type dockerProxyState struct {
 
 type Runner struct {
 	DB          *sql.DB
-	Runtime     JobRuntime
 	Broker      CommandBroker
-	Sandbox     SandboxPreparer
 	SecretStore *SecretStore
 	Projects    ProjectLookup
-	// Backend, when non-nil, overrides sandboxBackend()'s default
-	// construction of a userns backend from Sandbox/Runtime/BoidBinary — a
-	// test/DI seam so callers (and tests) can exercise the
-	// launch/attach/resize/signal call sites against a fake
-	// backend.SandboxBackend without needing a real SandboxPreparer/
-	// JobRuntime pair. nil (the production default) preserves the PR1
-	// behavior of always constructing the userns backend.
+	// Backend is the SandboxBackend every sandbox launch/attach/resize/
+	// signal call site routes through (sandboxBackend() below). Production
+	// wiring (internal/server/wire.go's buildRuntime) always sets this to a
+	// real containerBackend — container is the only sandbox backend since
+	// PR-4 removed the userns backend (docs/plans/volume-only-daemon.md
+	// §論点e) and the config-driven userns/container branch that used to
+	// leave this nil for the userns default. Tests set it to a fake
+	// backend.SandboxBackend directly (the same DI seam this field has
+	// always been).
 	Backend backend.SandboxBackend
 	// InstallID mirrors ContainerBackendOptions.InstallID (§決定6): threaded
 	// through separately here (not read back off Backend) so
@@ -1180,18 +1180,15 @@ func (r *Runner) CompleteJob(jobID string, result JobCompletionResult) {
 	}
 }
 
-// sandboxBackend returns the SandboxBackend Runner launches through. PR1
-// (docs/plans/phase6-container-backend.md) wires only the userns backend,
-// built fresh from Sandbox/Runtime/BoidBinary on every call — it owns no
-// state, so there is nothing to cache. A config-driven choice between
-// userns/container backends (sandbox.backend: userns|container) lands in
-// PR5+; until then this is the sole selection point. r.Backend, when set,
-// overrides this (test/DI seam — see its doc comment).
+// sandboxBackend returns the SandboxBackend Runner launches through —
+// r.Backend directly (PR-4, docs/plans/volume-only-daemon.md §論点e): the
+// userns fallback construction this function used to fall back to when
+// r.Backend was nil is gone along with the userns backend itself, since
+// production wiring (internal/server/wire.go) now always sets Backend to a
+// real containerBackend. A nil r.Backend here is a caller/test wiring bug,
+// not a valid "use the default backend" signal any more.
 func (r *Runner) sandboxBackend() backend.SandboxBackend {
-	if r.Backend != nil {
-		return r.Backend
-	}
-	return newUsernsBackend(r.Sandbox, r.Runtime, r.BoidBinary)
+	return r.Backend
 }
 
 // launchSandbox launches a sandbox for job via the configured
@@ -1211,17 +1208,11 @@ func (r *Runner) launchSandbox(ctx context.Context, job *Job, spec sandbox.Spec,
 	if job == nil {
 		return "", fmt.Errorf("job is required")
 	}
-	if r.Sandbox == nil {
+	if r.Backend == nil {
 		if cleanup != nil {
 			cleanup()
 		}
-		return "", fmt.Errorf("sandbox preparer is required")
-	}
-	if r.Runtime == nil {
-		if cleanup != nil {
-			cleanup()
-		}
-		return "", fmt.Errorf("job runtime is required")
+		return "", fmt.Errorf("sandbox backend is required")
 	}
 
 	session, err := r.sandboxBackend().Launch(ctx, spec, backend.LaunchOptions{
@@ -1245,12 +1236,15 @@ func (r *Runner) launchSandbox(ctx context.Context, job *Job, spec sandbox.Spec,
 		StdinForward: job.Role == string(orchestrator.JobKindExec),
 	})
 	if err != nil {
-		// Only a JobRuntime.Start-phase failure tears down the
-		// desiredRuntimeID docker proxy pre-allocated before Start ran — a
-		// PrepareSandbox-phase failure never did (pre-Phase-6 behavior,
-		// preserved via usernsStartError; see its doc comment).
-		var startErr *usernsStartError
-		if desiredRuntimeID != "" && errors.As(err, &startErr) {
+		// Tear down the desiredRuntimeID docker proxy pre-allocated before
+		// Launch ran — any Launch failure means the container was never
+		// successfully started, so nothing else will ever clean it up.
+		// (Pre-PR-4, this only fired on a JobRuntime.Start-phase failure
+		// specifically, distinguished via the userns backend's own
+		// usernsStartError sentinel — containerBackend.Launch has no
+		// analogous two-phase prepare/start split to distinguish, so that
+		// distinction no longer applies.)
+		if desiredRuntimeID != "" {
 			r.stopDockerProxy(desiredRuntimeID)
 		}
 		if cleanup != nil {
@@ -1260,17 +1254,11 @@ func (r *Runner) launchSandbox(ctx context.Context, job *Job, spec sandbox.Spec,
 	}
 
 	// session is handled purely through the backend.SandboxSession
-	// interface from here on — no concrete-type assertion — so a future
-	// container backend (PR5, docs/plans/phase6-container-backend.md) that
-	// returns a different SandboxSession implementation needs no change
-	// here. Interactive/TTY are read back from the already-known spec.TTY
-	// (identical to what LaunchOptions.Interactive/TTY carried into Launch)
-	// rather than from the session, since the userns backend's contract is
-	// to echo them back unchanged (LocalRuntime.Start does exactly that) —
-	// see sessionLocalArtifacts for the one piece of userns-specific state
-	// (PrepareSandbox's on-disk artifacts) that genuinely has no
-	// backend-agnostic equivalent yet, handled via a capability probe
-	// instead.
+	// interface from here on — no concrete-type assertion. Interactive/TTY
+	// are read back from the already-known spec.TTY (identical to what
+	// LaunchOptions.Interactive/TTY carried into Launch) rather than from
+	// the session, since containerBackend's contract is to echo them back
+	// unchanged.
 	handleID := session.ID()
 
 	// When DesiredID was set, the proxy was pre-registered under desiredRuntimeID.
@@ -1286,7 +1274,6 @@ func (r *Runner) launchSandbox(ctx context.Context, job *Job, spec sandbox.Spec,
 	if err := UpdateJob(r.DB, job); err != nil {
 		_ = session.Stop(context.Background())
 		r.stopDockerProxy(handleID)
-		cleanupSandboxArtifacts(sessionLocalArtifacts(session))
 		if cleanup != nil {
 			cleanup()
 		}
@@ -1300,26 +1287,19 @@ func (r *Runner) launchSandbox(ctx context.Context, job *Job, spec sandbox.Spec,
 	return job.ID, nil
 }
 
-// [Major 6, PR7 codex review]: this used to bail out entirely (before ever
-// calling session.Wait) whenever sessionLocalArtifacts(session) returned nil
-// — true for EVERY container-backend session, since a containerSession has
-// no PreparedSandbox (userns-only scaffolding/spec/state files — see
-// sessionLocalArtifacts' own doc comment). That meant r.reapAndCloseDockerProxy
-// never ran for a container-backend job: a docker-enabled job's sibling
-// resources (created by the *client* inside the sandbox — docker CLI,
-// TestContainers, ... — via the per-job dockerproxy) never got reaped, and
-// the per-sandbox dockerproxy server itself never got closed, for every
-// single container-backend job.
+// cleanupSandboxAfterWait waits for the session to exit and reaps/closes its
+// per-sandbox docker proxy. All sandbox-local artifact cleanup (spec/state
+// files, scaffolding dirs) is owned by the session's own backend now —
+// containerSession.waitLoop removes its own specPath/dockerTLSDir material
+// by the time Wait returns below — since PR-4 removed the userns backend's
+// PreparedSandbox capability probe this function used to delegate that
+// cleanup through (docs/plans/volume-only-daemon.md §論点e).
 //
-// The guard now only bails on an empty runtimeID (nothing to reap/close
-// against at all). prepared==nil (every containerSession, and any
-// Adopt-reconstructed usernsSession) still runs session.Wait +
-// reapAndCloseDockerProxy — the backend-agnostic parts — and simply skips
-// the userns-only scaffolding/spec/state file cleanup below, which has no
-// meaning for a backend with no local PreparedSandbox artifacts to begin
-// with (a containerSession's own equivalent — specPath/dockerTLSDir removal
-// — is handled inside containerSession.waitLoop itself, since only the
-// session, not this caller, knows those paths).
+// [Major 6, PR7 codex review, still relevant]: reap/close must run
+// regardless of backend — this is what makes a docker-enabled job's sibling
+// resources (created by the *client* inside the sandbox — docker CLI,
+// TestContainers, ... — via the per-job dockerproxy) get reaped and the
+// per-sandbox dockerproxy server itself get closed, for every job.
 func (r *Runner) cleanupSandboxAfterWait(session backend.SandboxSession, extra orchestrator.CleanupFunc) {
 	defer func() {
 		if extra != nil {
@@ -1333,15 +1313,11 @@ func (r *Runner) cleanupSandboxAfterWait(session backend.SandboxSession, extra o
 	if runtimeID == "" {
 		return
 	}
-	prepared := sessionLocalArtifacts(session)
-	result, err := session.Wait(context.Background())
+	_, err := session.Wait(context.Background())
 	if err != nil {
 		if errors.Is(err, ErrRuntimeUnsupported) {
 			// Reap docker resources even on unsupported-wait paths (best effort).
 			r.reapAndCloseDockerProxy(runtimeID)
-			if prepared != nil {
-				cleanupSandboxArtifacts(prepared)
-			}
 			return
 		}
 		slog.Warn("skip sandbox cleanup: runtime wait failed", "runtime_id", runtimeID, "error", err)
@@ -1350,89 +1326,7 @@ func (r *Runner) cleanupSandboxAfterWait(session backend.SandboxSession, extra o
 
 	// Docker Reap + proxy Close: run unconditionally (success or failure) and
 	// before the runtime dir is removed so the ledger is still readable.
-	// Backend-agnostic — this is what makes a docker-enabled container
-	// -backend job's sibling resources get reaped and its per-sandbox
-	// dockerproxy server closed, same as a userns job (Major 6 fix).
 	r.reapAndCloseDockerProxy(runtimeID)
-
-	if prepared == nil {
-		// No userns-local scaffolding/spec/state files to clean up (every
-		// containerSession, and any Adopt-reconstructed usernsSession) —
-		// containerSession.waitLoop already owns and has already removed
-		// its own equivalent artifacts (specPath/dockerTLSDir) by the time
-		// Wait returned above.
-		return
-	}
-
-	// Scaffolding (RootDir, StagingDir) は runner-outer が常に削除するので、
-	// ここでは保険として idempotent に rm するだけ。 exit_code に関わらず実行。
-	cleanupSandboxScaffolding(prepared)
-	// The spec file carries secrets (broker token / API keys), so it is removed
-	// unconditionally — even on failure. The redacted runner-state.json is the
-	// diagnostic artifact retained for post-hoc analysis instead.
-	cleanupSandboxSpec(prepared)
-	if result.ExitCode != 0 {
-		// silent な exit_code != 0 ケースの事後解析を可能にするため、 runner-state
-		// だけ保全する。 transcript.log が 0 byte で daemon log にも有用情報が無い
-		// 場合、 runner-state.json (spec dump + 到達 phase) がほぼ唯一の手がかりに
-		// なる。 GC や手動削除に任せる。
-		slog.Warn("retained runner-state for diagnosis (exit_code!=0)",
-			"runtime_id", runtimeID,
-			"exit_code", result.ExitCode,
-			"state_path", prepared.StatePath,
-		)
-		return
-	}
-	cleanupSandboxState(prepared)
-}
-
-// cleanupSandboxArtifacts removes every sandbox artifact (scaffolding + spec +
-// state). Used by runtime-unsupported paths and tests.
-func cleanupSandboxArtifacts(prepared *PreparedSandbox) {
-	cleanupSandboxScaffolding(prepared)
-	cleanupSandboxSpec(prepared)
-	cleanupSandboxState(prepared)
-}
-
-// cleanupSandboxScaffolding removes the sandbox ROOT directory and the staging
-// dir. Both are normally rm'd by runner-outer; this call is a best-effort safety
-// net for the case where runner-outer was killed before its cleanup ran.
-func cleanupSandboxScaffolding(prepared *PreparedSandbox) {
-	if prepared == nil {
-		return
-	}
-	if prepared.RootDir != "" {
-		if err := os.RemoveAll(prepared.RootDir); err != nil {
-			slog.Warn("remove sandbox root", "path", prepared.RootDir, "error", err)
-		}
-	}
-	if prepared.StagingDir != "" {
-		if err := os.RemoveAll(prepared.StagingDir); err != nil {
-			slog.Warn("remove sandbox staging dir", "path", prepared.StagingDir, "error", err)
-		}
-	}
-}
-
-// cleanupSandboxSpec removes the JSON sandbox spec file (carries secrets, so it
-// is removed unconditionally).
-func cleanupSandboxSpec(prepared *PreparedSandbox) {
-	if prepared == nil || prepared.SpecPath == "" {
-		return
-	}
-	if err := os.Remove(prepared.SpecPath); err != nil && !os.IsNotExist(err) {
-		slog.Warn("remove sandbox spec", "path", prepared.SpecPath, "error", err)
-	}
-}
-
-// cleanupSandboxState removes the runner-state.json diagnostic file. It is
-// deliberately retained on exit_code != 0 for post-hoc diagnosis.
-func cleanupSandboxState(prepared *PreparedSandbox) {
-	if prepared == nil || prepared.StatePath == "" {
-		return
-	}
-	if err := os.Remove(prepared.StatePath); err != nil && !os.IsNotExist(err) {
-		slog.Warn("remove runner-state", "path", prepared.StatePath, "error", err)
-	}
 }
 
 // StopJobRuntime stops the runtime identified by runtimeID.
@@ -1440,18 +1334,10 @@ func cleanupSandboxState(prepared *PreparedSandbox) {
 //
 // [Blocker 3, PR7 codex review]: routes through SandboxBackend.Adopt →
 // SandboxSession.Stop (the same seam SignalJobRuntime/ResizeRuntimeID/
-// CanAttach already use, docs/plans/phase6-container-backend.md §PR1)
-// instead of calling r.Runtime.Stop directly. r.Runtime (LocalRuntime) can
-// only ever stop a userns process — with sandbox.backend: container
-// selected, a task abort/`boid task stop` used to call StopJobRuntime and
-// have it silently do nothing useful against a docker container (LocalRuntime
-// has no notion of runtimeID being a container ID), leaving the old agent's
-// container running and free to keep mutating the task's $HOME/workspace
-// after the daemon believed the task was stopped. Adopt(runtimeID) resolves
-// to the correct backend's session regardless of which one is configured —
-// for userns that is still, transitively, r.Runtime.Stop (usernsSession.Stop
-// delegates to it), so this is behavior-preserving for every pre-PR7
-// deployment.
+// CanAttach already use, docs/plans/phase6-container-backend.md §PR1) so a
+// task abort/`boid task stop` reaches the actual container the job is
+// running in via Adopt(runtimeID), not a backend-specific transport this
+// function would otherwise have to know about directly.
 func (r *Runner) StopJobRuntime(runtimeID string) {
 	if runtimeID == "" {
 		return
@@ -1474,11 +1360,9 @@ func (r *Runner) StopJobRuntime(runtimeID string) {
 //
 // Routes through SandboxBackend.Adopt → SandboxSession.Signal
 // (docs/plans/phase6-container-backend.md §PR1: this is the `boid agent
-// stop` seam the plan calls out by name) rather than reaching into
-// r.Runtime directly, so a future container backend's signal-forwarding
-// entrypoint (§決定 3) is reachable from the same call site.
+// stop` seam the plan calls out by name).
 func (r *Runner) SignalJobRuntime(runtimeID string, sig syscall.Signal) {
-	if r.Runtime == nil || runtimeID == "" {
+	if r.Backend == nil || runtimeID == "" {
 		return
 	}
 	session, ok := r.sandboxBackend().Adopt(context.Background(), runtimeID)
@@ -1494,10 +1378,9 @@ func (r *Runner) SignalJobRuntime(runtimeID string, sig syscall.Signal) {
 // behind, via the configured SandboxBackend (docs/plans/
 // phase6-container-backend.md §PR7 / §決定 6). It is a thin delegation —
 // r.sandboxBackend().ReapOrphans(ctx) — so callers (internal/server/wire.go's
-// startup sequence) never need to know which backend is live: the userns
-// backend's ReapOrphans is a permanent no-op stub, so calling this on every
-// daemon startup is always safe and only does real work when the container
-// backend is selected (config sandbox.backend: container).
+// startup sequence) never need to know backend construction details;
+// container is the only sandbox backend since PR-4, so this always does
+// real reconciliation work now.
 //
 // Callers MUST run this — and act on ReapReport.FailedJobIDs, e.g. by
 // skipping auto-reopen for the corresponding tasks — strictly BEFORE
@@ -1513,21 +1396,11 @@ func (r *Runner) ReapOrphans(ctx context.Context) (backend.ReapReport, error) {
 
 // CanAttach reports whether runtimeID can currently be adopted by the
 // configured SandboxBackend — i.e. whether an attach/resize/signal ingress
-// against it should be allowed. This is the single source of truth for
-// "is this runtime attachable" now that a live session may be held by any
-// SandboxBackend implementation, not just JobRuntime's own in-memory
-// session map: internal/server/job_runtime_routes.go's resolveAttachableJob
-// used to answer this by type-asserting runtime.jobRuntime onto a
-// runtimeAttachSupport (SupportsAttach) interface directly, bypassing the
-// SandboxBackend/SandboxSession seam entirely — for the userns backend that
-// happened to still give the right answer (since the JobRuntime it wraps is
-// the same one), but a future container backend's session may not be
-// backed by a JobRuntime session map at all, so that check would (wrongly)
-// always fail for it. Routing through Adopt fixes both: userns behavior is
-// unchanged (usernsBackend.Adopt itself now probes JobRuntime's
-// SupportsAttach capability, see its doc comment), and any future backend
-// answers with its own notion of session liveness (codex review Blocker 2
-// on PR #816).
+// against it should be allowed. Routes through Adopt so the backend answers
+// with its own notion of session liveness (codex review Blocker 2 on PR
+// #816) rather than internal/server/job_runtime_routes.go's
+// resolveAttachableJob type-asserting onto a backend-specific capability
+// directly.
 func (r *Runner) CanAttach(ctx context.Context, runtimeID string) bool {
 	if runtimeID == "" {
 		return false
@@ -1559,11 +1432,9 @@ func (r *Runner) ResizeRuntimeID(ctx context.Context, runtimeID string, size Ter
 // CleanupTaskWindow stops all tracked runtimes associated with a task.
 //
 // [Blocker 3, PR7 codex review]: routes through StopJobRuntime (itself
-// SandboxBackend.Adopt → SandboxSession.Stop, see its doc comment) instead
-// of calling r.Runtime.Stop directly — the same fix, for the same reason:
-// with sandbox.backend: container selected, r.Runtime.Stop cannot stop a
-// docker container, so aborting a task used to leave its job container
-// running behind the daemon's back.
+// SandboxBackend.Adopt → SandboxSession.Stop, see its doc comment) so
+// aborting a task actually stops its job container, not just an in-memory
+// bookkeeping entry.
 func (r *Runner) CleanupTaskWindow(taskID string) {
 	runtimeIDs := r.takeTaskRuntimes(taskID)
 	for _, runtimeID := range runtimeIDs {

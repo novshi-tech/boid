@@ -17,8 +17,7 @@ import (
 
 func TestDispatch_TracksJobContext_EnvAndPayload(t *testing.T) {
 	r, _ := newDispatchRunner(t)
-	r.Sandbox = newFakeSandboxPrep(t)
-	r.Runtime = newStatefulRuntime()
+	r.Backend = newStatefulBackend()
 	r.AllowedDomains = []string{"github.com", "example.com"}
 
 	payload := json.RawMessage(`{"artifact":{"report":"ok"}}`)
@@ -61,8 +60,7 @@ func TestDispatch_TracksJobContext_EnvAndPayload(t *testing.T) {
 // a project-meta edit that happened after this exact job was dispatched.
 func TestDispatch_TracksJobContext_PayloadPatchAllowedTraits(t *testing.T) {
 	r, _ := newDispatchRunner(t)
-	r.Sandbox = newFakeSandboxPrep(t)
-	r.Runtime = newStatefulRuntime()
+	r.Backend = newStatefulBackend()
 
 	spec := &orchestrator.JobSpec{
 		ProjectID:          "proj-1",
@@ -99,8 +97,7 @@ func TestDispatch_TracksJobContext_PayloadPatchAllowedTraits(t *testing.T) {
 // "unrestricted".
 func TestDispatch_TracksJobContext_PayloadPatchAllowedTraits_NilJobSpecFieldYieldsNil(t *testing.T) {
 	r, _ := newDispatchRunner(t)
-	r.Sandbox = newFakeSandboxPrep(t)
-	r.Runtime = newStatefulRuntime()
+	r.Backend = newStatefulBackend()
 
 	spec := &orchestrator.JobSpec{
 		ProjectID: "proj-1",
@@ -128,8 +125,7 @@ func TestDispatch_TracksJobContext_PayloadPatchAllowedTraits_NilJobSpecFieldYiel
 // instructions.yaml for this exact job.
 func TestDispatch_TracksJobContext_Instructions_MatchesJobSpec(t *testing.T) {
 	r, _ := newDispatchRunner(t)
-	r.Sandbox = newFakeSandboxPrep(t)
-	r.Runtime = newStatefulRuntime()
+	r.Backend = newStatefulBackend()
 
 	spec := &orchestrator.JobSpec{
 		ProjectID: "proj-1",
@@ -169,8 +165,7 @@ func TestDispatch_TracksJobContext_Instructions_MatchesJobSpec(t *testing.T) {
 // the other hook's agent's instruction).
 func TestDispatch_TracksJobContext_Instructions_NilJobSpecInstructionYieldsEmpty(t *testing.T) {
 	r, _ := newDispatchRunner(t)
-	r.Sandbox = newFakeSandboxPrep(t)
-	r.Runtime = newStatefulRuntime()
+	r.Backend = newStatefulBackend()
 
 	// Simulates the claude-code hook's JobSpec when the task's instruction
 	// history is [claude-code, codex] (active/last entry is codex): the
@@ -200,8 +195,7 @@ func TestDispatch_TracksJobContext_Instructions_NilJobSpecInstructionYieldsEmpty
 
 func TestDispatch_TracksJobContext_NilPrimaryInput(t *testing.T) {
 	r, _ := newDispatchRunner(t)
-	r.Sandbox = newFakeSandboxPrep(t)
-	r.Runtime = newStatefulRuntime()
+	r.Backend = newStatefulBackend()
 
 	spec := &orchestrator.JobSpec{
 		ProjectID: "proj-1",
@@ -225,8 +219,7 @@ func TestDispatch_TracksJobContext_NilPrimaryInput(t *testing.T) {
 
 func TestUnregisterJob_RemovesJobContext(t *testing.T) {
 	r, _ := newDispatchRunner(t)
-	r.Sandbox = newFakeSandboxPrep(t)
-	r.Runtime = newStatefulRuntime()
+	r.Backend = newStatefulBackend()
 
 	spec := &orchestrator.JobSpec{
 		ProjectID: "proj-1",

@@ -8,105 +8,129 @@ import (
 	"syscall"
 
 	"github.com/novshi-tech/boid/internal/dispatcher"
+	"github.com/novshi-tech/boid/internal/sandbox"
+	"github.com/novshi-tech/boid/internal/sandbox/backend"
 )
 
-type statefulRuntime struct {
+// statefulBackend is a minimal backend.SandboxBackend recording every
+// Launch call's opts, keyed by the generated runtimeID, so Dispatch-level
+// tests can assert on what a real launch would have received
+// (LaunchOpts) without a real container/userns runtime.
+//
+// PR-4 (docs/plans/volume-only-daemon.md §論点e) replaced this file's
+// former statefulRuntime (a JobRuntime fake wrapping Runner.Sandbox +
+// Runner.Runtime through the removed userns backend's fallback
+// construction) — Runner.Backend is now the sole launch seam, so the fake
+// implements backend.SandboxBackend directly instead.
+type statefulBackend struct {
 	mu       sync.Mutex
 	nextID   int
-	starts   map[string]dispatcher.RuntimeStartSpec
-	stopped  []string
-	handles  []dispatcher.RuntimeHandle
-	startErr error
-	stopErr  error
+	sessions map[string]*statefulSession
+	launches map[string]backend.LaunchOptions
 }
 
-func newStatefulRuntime() *statefulRuntime {
-	return &statefulRuntime{starts: make(map[string]dispatcher.RuntimeStartSpec)}
-}
+var _ backend.SandboxBackend = (*statefulBackend)(nil)
 
-func (r *statefulRuntime) Start(_ context.Context, spec dispatcher.RuntimeStartSpec) (*dispatcher.RuntimeHandle, error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	if r.startErr != nil {
-		return nil, r.startErr
+func newStatefulBackend() *statefulBackend {
+	return &statefulBackend{
+		sessions: make(map[string]*statefulSession),
+		launches: make(map[string]backend.LaunchOptions),
 	}
+}
 
-	handle := dispatcher.RuntimeHandle{
-		ID:          fmt.Sprintf("runtime-%d", r.nextID),
-		Interactive: spec.Interactive,
-		TTY:         spec.TTY,
+func (b *statefulBackend) Launch(_ context.Context, _ sandbox.Spec, opts backend.LaunchOptions) (backend.SandboxSession, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	id := opts.DesiredID
+	if id == "" {
+		id = fmt.Sprintf("runtime-%d", b.nextID)
+		b.nextID++
 	}
-	r.nextID++
-	if len(r.handles) > 0 {
-		handle = r.handles[0]
-		r.handles = r.handles[1:]
-	}
-	r.starts[handle.ID] = spec
-	return &handle, nil
+	sess := &statefulSession{id: id, owner: b}
+	b.sessions[id] = sess
+	b.launches[id] = opts
+	return sess, nil
 }
 
-func (r *statefulRuntime) Attach(_ context.Context, _ string, _ dispatcher.RuntimeAttachRequest) error {
-	return dispatcher.ErrRuntimeUnsupported
+func (b *statefulBackend) Adopt(_ context.Context, runtimeID string) (backend.SandboxSession, bool) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	sess, ok := b.sessions[runtimeID]
+	return sess, ok
 }
 
-func (r *statefulRuntime) Resize(_ context.Context, _ string, _ dispatcher.TerminalSize) error {
-	return dispatcher.ErrRuntimeUnsupported
+func (b *statefulBackend) ReapOrphans(context.Context) (backend.ReapReport, error) {
+	return backend.ReapReport{}, nil
 }
 
-func (r *statefulRuntime) Wait(_ context.Context, _ string) (dispatcher.RuntimeExit, error) {
-	return dispatcher.RuntimeExit{}, dispatcher.ErrRuntimeUnsupported
-}
-
-func (r *statefulRuntime) Stop(_ context.Context, runtimeID string) error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	if r.stopErr != nil {
-		return r.stopErr
-	}
-	delete(r.starts, runtimeID)
-	r.stopped = append(r.stopped, runtimeID)
-	return nil
-}
-
-func (r *statefulRuntime) Signal(_ context.Context, _ string, _ syscall.Signal) error {
-	return nil
-}
-
-func (r *statefulRuntime) ActiveRuntimeIDs() []string {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	ids := make([]string, 0, len(r.starts))
-	for id := range r.starts {
+// ActiveRuntimeIDs returns the sorted set of runtimeIDs currently tracked
+// (launched, not yet stopped-and-removed).
+func (b *statefulBackend) ActiveRuntimeIDs() []string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	ids := make([]string, 0, len(b.sessions))
+	for id := range b.sessions {
 		ids = append(ids, id)
 	}
 	sort.Strings(ids)
 	return ids
 }
 
-func (r *statefulRuntime) StoppedRuntimeIDs() []string {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	ids := append([]string(nil), r.stopped...)
-	sort.Strings(ids)
-	return ids
+// LaunchOpts returns the backend.LaunchOptions a previous Launch call
+// recorded for runtimeID — the successor to the pre-PR-4 StartSpec, now
+// returning LaunchOptions (the seam Launch itself receives) rather than the
+// removed dispatcher.RuntimeStartSpec.
+func (b *statefulBackend) LaunchOpts(runtimeID string) (backend.LaunchOptions, bool) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	opts, ok := b.launches[runtimeID]
+	return opts, ok
 }
 
-func (r *statefulRuntime) StartSpec(runtimeID string) (dispatcher.RuntimeStartSpec, bool) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
+// statefulSession is a minimal backend.SandboxSession: Stop removes itself
+// from the owning backend's session map (mirroring the pre-PR-4
+// statefulRuntime.Stop's bookkeeping), everything else is a no-op.
+type statefulSession struct {
+	id string
 
-	spec, ok := r.starts[runtimeID]
-	return spec, ok
+	mu      sync.Mutex
+	stopped bool
+	owner   *statefulBackend
 }
 
-func (r *statefulRuntime) SupportsAttach(runtimeID string) bool {
-	r.mu.Lock()
-	defer r.mu.Unlock()
+var _ backend.SandboxSession = (*statefulSession)(nil)
 
-	_, ok := r.starts[runtimeID]
-	return ok
+func (s *statefulSession) ID() string { return s.id }
+func (s *statefulSession) Subscribe() ([]byte, <-chan []byte, func(), bool) {
+	return nil, nil, func() {}, false
 }
+func (s *statefulSession) WriteInput([]byte) error           { return nil }
+func (s *statefulSession) CloseInput() error                 { return nil }
+func (s *statefulSession) Resize(backend.TerminalSize) error { return nil }
+
+// Wait returns immediately with ErrRuntimeUnsupported — mirroring the
+// pre-PR-4 statefulRuntime.Wait's exact contract (it never actually
+// blocked; Runner never calls Wait on this fake in production dispatch
+// paths, and Runner.cleanupSandboxAfterWait's own ErrRuntimeUnsupported
+// branch treats this as "runtime unsupported, reap and move on" rather
+// than an error to surface). Returning immediately (not blocking on
+// ctx.Done, which is never cancelled by these tests) avoids leaking the
+// launchSandbox-spawned cleanup goroutine for the life of the test binary.
+func (s *statefulSession) Wait(context.Context) (backend.RuntimeExit, error) {
+	return backend.RuntimeExit{}, dispatcher.ErrRuntimeUnsupported
+}
+
+func (s *statefulSession) Stop(context.Context) error {
+	s.mu.Lock()
+	s.stopped = true
+	s.mu.Unlock()
+	if s.owner != nil {
+		s.owner.mu.Lock()
+		delete(s.owner.sessions, s.id)
+		s.owner.mu.Unlock()
+	}
+	return nil
+}
+
+func (s *statefulSession) Signal(context.Context, syscall.Signal) error { return nil }

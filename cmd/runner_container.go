@@ -1,27 +1,58 @@
 package cmd
 
 import (
+	"fmt"
+	"os"
+
 	"github.com/novshi-tech/boid/internal/sandbox/runner"
+	"github.com/spf13/cobra"
 )
 
-// runner-container is the Phase 6 container-backend entry point
+// runner-container is the container-backend entry point
 // (docs/plans/phase6-container-backend.md §PR2): a job container's
 // ENTRYPOINT execs the image-baked boid binary as
 // `boid runner-container --spec ... --state ...` directly (no shim, no
-// pasta relay — see runner.RunContainer's doc comment for what it does and
-// deliberately does not do relative to the userns runner-outer/-inner/
-// -inner-child chain in cmd/runner.go).
+// pasta relay). It is internal plumbing: hidden from help and never
+// autostarts the daemon (it IS part of a sandbox the daemon launched). It
+// reads the JSON sandbox spec from --spec and appends diagnostics to
+// --state, then exits with the sandbox's exit code.
 //
-// Registered in its own init() (rather than added to cmd/runner.go's) so
-// this file, and the parallel PR2/PR3/PR4 tracks that also touch the
-// runner/sandbox layer, don't collide on the same source line.
-//
-// Still entirely inert as of PR2: nothing in the dispatcher builds a
-// `boid runner-container` command line yet (that lands with the
-// containerBackend in PR5, and stays config-gated off until the PR7
-// cutover).
+// PR-4 (docs/plans/volume-only-daemon.md §論点e) removed the userns launch
+// chain this used to run alongside (`boid runner-outer`/`runner-inner`/
+// `runner-inner-child`, cmd/runner.go — unshare/pivot_root/pasta) along
+// with the newRunnerCmd helper those three shared; `boid runner-container`
+// is now the sole `boid runner-*` subcommand, so it builds its own minimal
+// cobra.Command directly rather than sharing a factory with call sites that
+// no longer exist.
 func init() {
-	rootCmd.AddCommand(
-		newRunnerCmd("runner-container", "Internal: container entrypoint (Phase 6, inert until PR5/PR7)", runner.RunContainer),
-	)
+	cmd := &cobra.Command{
+		Use:           "runner-container",
+		Short:         "Internal: container entrypoint (the sole sandbox launch path since PR-4)",
+		Hidden:        true,
+		SilenceUsage:  true,
+		SilenceErrors: true,
+		Annotations: map[string]string{
+			annotationSkipAutostart: "skip",
+			// scopeLocal: this is the sandbox launch chain itself (the job
+			// container's own ENTRYPOINT), not a client calling the
+			// daemon's API.
+			scopeAnnotationKey: scopeLocal,
+		},
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			specPath, _ := cmd.Flags().GetString("spec")
+			statePath, _ := cmd.Flags().GetString("state")
+			if specPath == "" {
+				return fmt.Errorf("runner-container: --spec is required")
+			}
+			code, err := runner.RunContainer(specPath, statePath)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "[boid] runner-container: %v\n", err)
+			}
+			os.Exit(code)
+			return nil
+		},
+	}
+	cmd.Flags().String("spec", "", "path to the JSON sandbox spec")
+	cmd.Flags().String("state", "", "path to the runner-state.json diagnostic file")
+	rootCmd.AddCommand(cmd)
 }

@@ -77,21 +77,17 @@ type specDump struct {
 	// hand the agent off to. Added in Phase 3-c so post-hoc diagnostics can
 	// tell apart claude / codex / opencode runs and the legacy exec-Argv
 	// path (HarnessType="") without having to grep the kit binding set.
-	HarnessType  string            `json:"harness_type,omitempty"`
-	Argv         []string          `json:"argv"`
-	WorkDir      string            `json:"workdir"`
-	RootDir      string            `json:"root_dir"`
-	ProxyPort    int               `json:"proxy_port"`
-	TTY          bool              `json:"tty"`
-	Foreground   bool              `json:"foreground"`
-	StopSignal   string            `json:"stop_signal"`
-	Cloneflags   []string          `json:"cloneflags"`
-	PivotRoot    string            `json:"pivot_root"`
-	PastaCmdline []string          `json:"pasta_cmdline"`
-	Mounts       []mountDump       `json:"mounts"`
-	NFTRules     [][]string        `json:"nft_rules"`
-	Env          map[string]string `json:"env"`
-	Clone        *cloneDump        `json:"clone,omitempty"`
+	HarnessType string            `json:"harness_type,omitempty"`
+	Argv        []string          `json:"argv"`
+	WorkDir     string            `json:"workdir"`
+	RootDir     string            `json:"root_dir"`
+	ProxyPort   int               `json:"proxy_port"`
+	TTY         bool              `json:"tty"`
+	Foreground  bool              `json:"foreground"`
+	StopSignal  string            `json:"stop_signal"`
+	Mounts      []mountDump       `json:"mounts"`
+	Env         map[string]string `json:"env"`
+	Clone       *cloneDump        `json:"clone,omitempty"`
 }
 
 type mountDump struct {
@@ -147,12 +143,20 @@ func redactCloneURLToken(url string) string {
 	return url[:i+len(marker)] + "<redacted>" + rest[slash:]
 }
 
-// buildSpecDump composes the redacted spec view. pastaCmdline is the resolved
-// pasta argv (so the diagnostic shows exactly how the sandbox was launched).
-func buildSpecDump(spec sandbox.Spec, pastaCmdline []string) specDump {
-	plan := sandbox.BuildPlan(spec)
-	mounts := make([]mountDump, 0, len(plan.Mounts))
-	for _, m := range plan.Mounts {
+// buildSpecDump composes the redacted spec view.
+//
+// PR-4 (docs/plans/volume-only-daemon.md §論点e) removed the userns
+// backend, so this no longer routes spec.Mounts through sandbox.BuildPlan
+// (the userns-specific base-mount + nftables synthesis: /bin,/usr,/etc
+// rbinds, DNS stub, nft egress-drop rules — none of which apply to the
+// container backend, whose image already has the base OS baked in and
+// whose egress control is the compose network + egress proxy, decision 5).
+// The dump now reflects spec.Mounts verbatim — the caller-supplied mounts
+// RunContainer actually materializes — rather than reconstructing a
+// synthetic plan a real launch no longer builds.
+func buildSpecDump(spec sandbox.Spec) specDump {
+	mounts := make([]mountDump, 0, len(spec.Mounts))
+	for _, m := range spec.Mounts {
 		mounts = append(mounts, mountDump{
 			Source:   m.Source,
 			Target:   m.Target,
@@ -161,10 +165,6 @@ func buildSpecDump(spec sandbox.Spec, pastaCmdline []string) specDump {
 			Slave:    m.Slave,
 			Guard:    m.Guard,
 		})
-	}
-	nft := make([][]string, 0, len(plan.NFTRules))
-	for _, r := range plan.NFTRules {
-		nft = append(nft, r.Args)
 	}
 	var cloneDumpPtr *cloneDump
 	if spec.Clone.Enabled {
@@ -180,22 +180,18 @@ func buildSpecDump(spec sandbox.Spec, pastaCmdline []string) specDump {
 		}
 	}
 	return specDump{
-		ID:           spec.ID,
-		HarnessType:  string(spec.HarnessType),
-		Argv:         spec.Argv,
-		WorkDir:      spec.WorkDir,
-		RootDir:      spec.RootDir,
-		ProxyPort:    spec.ProxyPort,
-		TTY:          spec.TTY,
-		Foreground:   spec.Foreground,
-		StopSignal:   "USR1", // Phase 3-b hardcoded; see runner.stopSignal()
-		Cloneflags:   []string{"CLONE_NEWUSER", "CLONE_NEWNS"},
-		PivotRoot:    spec.RootDir,
-		PastaCmdline: pastaCmdline,
-		Mounts:       mounts,
-		NFTRules:     nft,
-		Env:          redactEnv(spec.Env),
-		Clone:        cloneDumpPtr,
+		ID:          spec.ID,
+		HarnessType: string(spec.HarnessType),
+		Argv:        spec.Argv,
+		WorkDir:     spec.WorkDir,
+		RootDir:     spec.RootDir,
+		ProxyPort:   spec.ProxyPort,
+		TTY:         spec.TTY,
+		Foreground:  spec.Foreground,
+		StopSignal:  "USR1", // Phase 3-b hardcoded; see runner.stopSignal()
+		Mounts:      mounts,
+		Env:         redactEnv(spec.Env),
+		Clone:       cloneDumpPtr,
 	}
 }
 
@@ -248,8 +244,8 @@ func (s *State) writeLine(line stateLine) {
 }
 
 // Spec records the launch-time spec dump (first line of the file).
-func (s *State) Spec(stage string, spec sandbox.Spec, pastaCmdline []string) {
-	dump := buildSpecDump(spec, pastaCmdline)
+func (s *State) Spec(stage string, spec sandbox.Spec) {
+	dump := buildSpecDump(spec)
 	s.writeLine(stateLine{Stage: stage, Spec: &dump})
 }
 

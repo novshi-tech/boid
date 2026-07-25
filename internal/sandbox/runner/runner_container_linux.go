@@ -45,12 +45,9 @@ func RunContainer(specPath, statePath string) (exitCode int, retErr error) {
 
 	st := OpenState(statePath)
 	defer st.Close()
-	// Unlike the userns chain (where only RunOuter records the launch-time
-	// spec, once, before handing off to pasta), RunContainer is the sole
-	// entry point for its whole run — record the spec dump here so
-	// runner-state.json still carries it for diagnosis. pastaCmdline is nil:
-	// there is no pasta hop in the container path.
-	st.Spec("container", spec, nil)
+	// RunContainer is the sole entry point for its whole run — record the
+	// spec dump here so runner-state.json still carries it for diagnosis.
+	st.Spec("container", spec)
 
 	// reachedAgent gates the broker job-done, mirroring RunInnerChild: a
 	// setup failure (below) sends no `boid job done` and relies on the

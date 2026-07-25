@@ -38,8 +38,7 @@ func TestDispatch_SkillsSyncSucceeds_DeploysEmbeddedSkillsToWorkspaceHome(t *tes
 		Projects: fakeProjectLookup{projects: []*orchestrator.Project{
 			{ID: "proj-1", WorkDir: "/tmp", WorkspaceID: "myws"},
 		}},
-		Sandbox:    &gwFakeSandboxPrep{dir: t.TempDir()},
-		Runtime:    &gwFakeRuntime{},
+		Backend:    &gwFakeBackend{},
 		BoidBinary: "/boid",
 	}
 

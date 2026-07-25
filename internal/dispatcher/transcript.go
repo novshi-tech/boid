@@ -6,6 +6,15 @@ import (
 	"path/filepath"
 )
 
+// localRuntimeTranscriptFile is the filename every per-runtime transcript is
+// recorded under, inside its own runtime directory (rootDir/<runtimeID>/).
+// Formerly declared in the userns backend's runtime_local_linux.go (removed
+// in PR-4, docs/plans/volume-only-daemon.md §論点e) — containerBackend uses
+// the exact same convention (container_backend.go), so the constant moved
+// here, ReadTranscript/StatTranscript's own home, rather than being
+// duplicated per backend.
+const localRuntimeTranscriptFile = "transcript.log"
+
 // ReadTranscript reads the transcript.log for the given runtimeID from rootDir.
 // Returns os.ErrNotExist if the transcript file does not exist (e.g. runtime was gc'd).
 func ReadTranscript(rootDir, runtimeID string) ([]byte, error) {
