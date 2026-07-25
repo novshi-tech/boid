@@ -63,7 +63,13 @@ func writeRootTestTokenFile(t *testing.T, profileName, content string) {
 
 // --- resolveClient (TDD step 8's non-cobra-execution half: unit-level) ---
 
-func TestResolveClient_NoProfile_ReturnsUnixClient(t *testing.T) {
+// TestResolveClient_NoProfile_ReturnsTCPFallbackClient pins docs/plans/
+// volume-only-daemon.md §論点c's "full cutover" behavior change: with no
+// profile configured at all, resolveClient now builds an https-scheme
+// client targeting client.DefaultCLIAddr() — replacing the pre-§論点c
+// unix-socket 現行互換 default (a named-volume daemon deployment has no
+// host-visible socket file at that path any more).
+func TestResolveClient_NoProfile_ReturnsTCPFallbackClient(t *testing.T) {
 	writeRootTestConfigYAML(t, "") // no config.yaml at all
 	cmd := newProfileTestCmd(t, "", nil)
 
@@ -71,8 +77,8 @@ func TestResolveClient_NoProfile_ReturnsUnixClient(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolveClient: %v", err)
 	}
-	if !c.IsUnix() {
-		t.Error("expected the 現行互換 unix fallback client")
+	if c.IsUnix() {
+		t.Error("expected the TCP terminal-fallback client (docs/plans/volume-only-daemon.md §論点c), not a unix-scheme one")
 	}
 }
 
@@ -108,7 +114,6 @@ func TestResolveClient_HTTPSProfile_ReturnsNonUnixClient(t *testing.T) {
 
 func TestPersistentPreRunE_InjectsResolvedClientIntoContext(t *testing.T) {
 	writeRootTestConfigYAML(t, "")
-	t.Setenv("BOID_SOCKET", filepath.Join(t.TempDir(), "pinned-for-test.sock"))
 	cmd := newProfileTestCmd(t, "", map[string]string{annotationSkipAutostart: "skip"})
 
 	if err := rootCmd.PersistentPreRunE(cmd, nil); err != nil {
@@ -118,8 +123,11 @@ func TestPersistentPreRunE_InjectsResolvedClientIntoContext(t *testing.T) {
 	if c == nil {
 		t.Fatal("expected a client to have been injected into cmd's context")
 	}
-	if !c.IsUnix() {
-		t.Error("expected the default unix client to have been injected")
+	// docs/plans/volume-only-daemon.md §論点c: the terminal fallback (no
+	// profile configured) is now the TCP client, not the pre-§論点c unix
+	// one.
+	if c.IsUnix() {
+		t.Error("expected the TCP terminal-fallback client to have been injected")
 	}
 }
 
@@ -255,9 +263,17 @@ func TestPersistentPreRunE_NeutralScope_BrokenDefaultProfileToken_Swallowed(t *t
 // boid.autostart=skip annotation) must still reach — and fail through —
 // client.EnsureRunning's own no-autostart error path, proving the
 // autostart check actually ran.
+//
+// docs/plans/volume-only-daemon.md §論点c changed the IMPLICIT
+// no-profile-configured default from unix to TCP (see
+// TestPersistentPreRunE_TCPFallback_SkipsAutostartCheck below for that
+// case's own, opposite pin) — a unix-scheme profile is still fully
+// supported, just no longer reachable without naming it, so this test now
+// configures one explicitly via default_profile instead of relying on the
+// old implicit fallback.
 func TestPersistentPreRunE_UnixProfile_RunsAutostartCheck(t *testing.T) {
-	writeRootTestConfigYAML(t, "")
-	t.Setenv("BOID_SOCKET", filepath.Join(t.TempDir(), "no-daemon-here.sock"))
+	sockPath := filepath.Join(t.TempDir(), "no-daemon-here.sock")
+	writeRootTestConfigYAML(t, "default_profile: local\nprofiles:\n  local:\n    url: unix://"+sockPath+"\n")
 	t.Setenv(client.NoAutostartEnv, "1")
 	cmd := newProfileTestCmd(t, "", nil) // no skip annotation
 
@@ -267,6 +283,29 @@ func TestPersistentPreRunE_UnixProfile_RunsAutostartCheck(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "boid server is not running") {
 		t.Errorf("expected EnsureRunning's no-autostart error, got %v", err)
+	}
+}
+
+// TestPersistentPreRunE_TCPFallback_SkipsAutostartCheck is the TCP-fallback
+// counterpart of TestPersistentPreRunE_HTTPSProfile_SkipsAutostartCheck,
+// below: the terminal fallback (docs/plans/volume-only-daemon.md §論点c) is
+// https-scheme too, so it must never invoke client.EnsureRunning either —
+// BOID_NO_AUTOSTART is irrelevant here precisely because the check is
+// skipped outright (decision 6: autostart only ever makes sense for a
+// daemon this same host can spawn directly by unix socket path; a compose
+// daemon cannot be "spawned" by the CLI at all — see §論点c's own
+// unresolved-points note, "auto-start 経路は volume-only 化で自然消滅").
+func TestPersistentPreRunE_TCPFallback_SkipsAutostartCheck(t *testing.T) {
+	writeRootTestConfigYAML(t, "") // no config.yaml at all -> terminal fallback
+	t.Setenv(client.NoAutostartEnv, "1")
+	cmd := newProfileTestCmd(t, "", nil) // no skip annotation
+
+	if err := rootCmd.PersistentPreRunE(cmd, nil); err != nil {
+		t.Fatalf("the TCP terminal fallback must not trigger the autostart check at all: %v", err)
+	}
+	c := client.FromContext(cmd.Context())
+	if c.IsUnix() {
+		t.Error("expected the TCP terminal-fallback client to have been injected")
 	}
 }
 
@@ -356,27 +395,58 @@ func TestPersistentPreRunE_ScopeLocal_HTTPSProfile_MissingToken_StillLocalReject
 	}
 }
 
-// TestPersistentPreRunE_ScopeLocal_UnixProfile_Allowed pins the "before"
-// half of decision 6: a scope=local command against the default (unix
+// TestPersistentPreRunE_ScopeLocal_TCPFallback_Allowed pins the "before"
+// half of decision 6: a scope=local command against the default (terminal
 // fallback) profile is unaffected — this is the overwhelmingly common case
-// pre-Phase-3 and must keep working exactly as before.
-func TestPersistentPreRunE_ScopeLocal_UnixProfile_Allowed(t *testing.T) {
+// (e.g. `boid start` on a completely fresh install with no config.yaml at
+// all) and must keep working. docs/plans/volume-only-daemon.md §論点c
+// changed that default's transport from unix to TCP+TLS, which is exactly
+// why cmd/root.go's isLocalScope check now special-cases
+// profiles.SourceTCPFallback — see that check's own doc comment — this test
+// pins that the exemption actually works end-to-end through
+// PersistentPreRunE, not just in isolation.
+func TestPersistentPreRunE_ScopeLocal_TCPFallback_Allowed(t *testing.T) {
 	writeRootTestConfigYAML(t, "")
-	t.Setenv("BOID_SOCKET", filepath.Join(t.TempDir(), "pinned-for-test.sock"))
 	cmd := newProfileTestCmd(t, "", map[string]string{
 		scopeAnnotationKey:      scopeLocal,
 		annotationSkipAutostart: "skip",
 	})
 
 	if err := rootCmd.PersistentPreRunE(cmd, nil); err != nil {
-		t.Fatalf("a scope=local command against a unix profile must not be rejected: %v", err)
+		t.Fatalf("a scope=local command against the TCP terminal fallback must not be rejected: %v", err)
+	}
+	c := client.FromContext(cmd.Context())
+	if c == nil {
+		t.Fatal("expected a client to have been injected")
+	}
+	if c.IsUnix() {
+		t.Error("expected the TCP terminal-fallback client to have been injected")
+	}
+}
+
+// TestPersistentPreRunE_ScopeLocal_NamedUnixProfile_Allowed pins that a
+// genuinely unix-scheme profile (named explicitly, not the implicit
+// terminal fallback) is still, of course, allowed for a scope=local
+// command — unix support itself is unchanged by docs/plans/
+// volume-only-daemon.md §論点c, only the IMPLICIT no-profile-configured
+// default's transport changed.
+func TestPersistentPreRunE_ScopeLocal_NamedUnixProfile_Allowed(t *testing.T) {
+	sockPath := filepath.Join(t.TempDir(), "pinned-for-test.sock")
+	writeRootTestConfigYAML(t, "default_profile: local\nprofiles:\n  local:\n    url: unix://"+sockPath+"\n")
+	cmd := newProfileTestCmd(t, "", map[string]string{
+		scopeAnnotationKey:      scopeLocal,
+		annotationSkipAutostart: "skip",
+	})
+
+	if err := rootCmd.PersistentPreRunE(cmd, nil); err != nil {
+		t.Fatalf("a scope=local command against a named unix profile must not be rejected: %v", err)
 	}
 	c := client.FromContext(cmd.Context())
 	if c == nil {
 		t.Fatal("expected a client to have been injected")
 	}
 	if !c.IsUnix() {
-		t.Error("expected the default unix client to have been injected")
+		t.Error("expected a unix-scheme client to have been injected")
 	}
 }
 

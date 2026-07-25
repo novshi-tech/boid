@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -14,9 +15,12 @@ import (
 	"github.com/novshi-tech/boid/internal/client"
 	"github.com/novshi-tech/boid/internal/config"
 	"github.com/novshi-tech/boid/internal/daemon"
+	"github.com/novshi-tech/boid/internal/mtls"
+	"github.com/novshi-tech/boid/internal/profiles"
 	"github.com/novshi-tech/boid/internal/server"
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
+	"gopkg.in/yaml.v3"
 )
 
 const (
@@ -44,12 +48,14 @@ var startCmd = &cobra.Command{
 }
 
 var (
-	startDBPath      string
-	startSocketPath  string
-	startKitsDir     string
-	startKeyFilePath string
-	startAutoMigrate bool
-	startForeground  bool
+	startDBPath          string
+	startSocketPath      string
+	startKitsDir         string
+	startKeyFilePath     string
+	startCLIAddr         string
+	startAutoMigrate     bool
+	startForeground      bool
+	startPrintCLIProfile bool
 )
 
 func init() {
@@ -61,10 +67,13 @@ func init() {
 	startCmd.Flags().StringVar(&startSocketPath, "socket-path", "", "Path to the UNIX socket")
 	startCmd.Flags().StringVar(&startKitsDir, "kits-dir", "", "Base directory for installed kits")
 	startCmd.Flags().StringVar(&startKeyFilePath, "key-file-path", "", "Path to the secret encryption key file")
+	startCmd.Flags().StringVar(&startCLIAddr, "cli-addr", "", "host:port for the dedicated CLI TCP(TLS) listener (docs/plans/volume-only-daemon.md §論点c; default: client.DefaultCLIAddr(), \"127.0.0.1:8442\")")
 	startCmd.Flags().BoolVar(&startAutoMigrate, "auto-migrate", false,
 		"When project.yaml schema migration is needed, run `boid project migrate <dir> --apply` for each affected project automatically and respawn the daemon (skips the confirmation prompt on TTY too)")
 	startCmd.Flags().BoolVar(&startForeground, "foreground", false,
 		"Run the daemon directly in this process, skipping the double-fork self-respawn — for a process supervisor (systemd Type=simple, a container entrypoint, ...) that already owns respawn/liveness. Equivalent to (and takes precedence over) setting BOID_DAEMON_CHILD=1, which remains supported for existing supervisor configs (build/container/compose.yml) that set the env var instead of passing this flag")
+	startCmd.Flags().BoolVar(&startPrintCLIProfile, "print-cli-profile", false,
+		"Print a bootstrap CLI connection profile (URL + daemon CA cert, docs/plans/volume-only-daemon.md §論点c) as YAML to stdout and exit immediately — does NOT start the daemon. For scripts/deploy-container.sh to seed the host's ~/.config/boid/config.yaml after the compose daemon has booted (a bare 'boid start' writes the equivalent bootstrap file itself on every boot — see client.DefaultCACertPath — so this flag exists mainly for the compose deployment, whose filesystem the host cannot see directly).")
 	rootCmd.AddCommand(startCmd)
 }
 
@@ -143,6 +152,11 @@ type startConfigOptions struct {
 	SocketPath  string
 	KitsDir     string
 	KeyFilePath string
+	// CLIAddr overrides the dedicated CLI TCP(TLS) listener's bind address
+	// (docs/plans/volume-only-daemon.md §論点c) — empty falls back to
+	// client.DefaultCLIAddr() below, mirroring every other opts.* field's
+	// "" -> default* helper pattern in this function.
+	CLIAddr string
 }
 
 func buildStartConfig(opts startConfigOptions) (server.Config, error) {
@@ -151,6 +165,7 @@ func buildStartConfig(opts startConfigOptions) (server.Config, error) {
 		SocketPath:     opts.SocketPath,
 		KitsDir:        opts.KitsDir,
 		KeyFilePath:    opts.KeyFilePath,
+		CLIAddr:        opts.CLIAddr,
 		AllowedDomains: defaultAllowedDomains(),
 	}
 
@@ -165,6 +180,9 @@ func buildStartConfig(opts startConfigOptions) (server.Config, error) {
 	}
 	if cfg.KeyFilePath == "" {
 		cfg.KeyFilePath = defaultKeyFilePath()
+	}
+	if cfg.CLIAddr == "" {
+		cfg.CLIAddr = client.DefaultCLIAddr()
 	}
 	cfg.TLSDir = defaultTLSDir()
 	cfg.InstallIDDir = defaultInstallIDDir()
@@ -188,15 +206,71 @@ func runStart(cmd *cobra.Command, args []string) error {
 		SocketPath:  startSocketPath,
 		KitsDir:     startKitsDir,
 		KeyFilePath: startKeyFilePath,
+		CLIAddr:     startCLIAddr,
 	})
 	if err != nil {
 		return err
+	}
+
+	if startPrintCLIProfile {
+		return printCLIProfile(cmd, cfg)
 	}
 
 	if shouldRunForeground(startForeground) {
 		return runDaemonChild(cfg)
 	}
 	return runDaemonParent(cfg)
+}
+
+// bootstrapProfileName is the profile name `--print-cli-profile` writes
+// under (docs/plans/volume-only-daemon.md §論点c) — matches the
+// conventional "default" name a fresh install's config.yaml would use for
+// its one and only profile, so `default_profile: default` reads naturally
+// alongside it in the printed YAML.
+const bootstrapProfileName = "default"
+
+// printCLIProfile implements `boid start --print-cli-profile`
+// (docs/plans/volume-only-daemon.md §論点c "profile bootstrapping"): loads
+// (or, on a truly first-ever invocation, generates — mtls.LoadOrCreate is
+// idempotent, the exact same call Server.New itself makes) the daemon's
+// internal CA from cfg.TLSDir, and prints a profiles.Config-shaped YAML
+// document naming a "default" profile at cfg.CLIAddr with the CA's own
+// certificate embedded inline (profiles.Profile.CACert) — everything a
+// host's ~/.config/boid/config.yaml needs to reach this daemon's dedicated
+// CLI TLS listener with no `boid login`/device-pair step (loopback trust,
+// web.loopback_trust default true).
+//
+// This does NOT start the daemon, bind any listener, or touch config.yaml
+// itself — it only prints to stdout. scripts/deploy-container.sh is the
+// intended caller for the compose deployment (`docker compose exec daemon
+// boid start --print-cli-profile`, run once after the daemon container has
+// booted, so cfg.TLSDir already has a CA to load rather than this call
+// racing the daemon's own first-boot generation): the compose daemon's
+// filesystem is a named volume the host cannot see directly, so unlike a
+// bare `boid start` (which writes client.DefaultCACertPath() straight to
+// the host's own ~/.config/boid — see runDaemonChild), there is no other
+// way for the host's config.yaml to learn this CA's certificate.
+func printCLIProfile(cmd *cobra.Command, cfg server.Config) error {
+	ca, err := mtls.LoadOrCreate(cfg.TLSDir)
+	if err != nil {
+		return fmt.Errorf("load or create tls ca: %w", err)
+	}
+
+	doc := profiles.Config{
+		DefaultProfile: bootstrapProfileName,
+		Profiles: map[string]profiles.Profile{
+			bootstrapProfileName: {
+				URL:    (&url.URL{Scheme: "https", Host: cfg.CLIAddr}).String(),
+				CACert: string(ca.CertPEM()),
+			},
+		},
+	}
+	data, err := yaml.Marshal(&doc)
+	if err != nil {
+		return fmt.Errorf("marshal cli profile: %w", err)
+	}
+	_, err = cmd.OutOrStdout().Write(data)
+	return err
 }
 
 // shouldRunForeground reports whether runStart should skip the
@@ -487,6 +561,33 @@ func runDaemonChild(cfg server.Config) error {
 	// Startup succeeded. EOF on the parent's read-end means OK; do not
 	// touch fd 3 after this point.
 	daemon.CloseStartupFD3()
+
+	// Bootstrap CA-trust file (docs/plans/volume-only-daemon.md §論点c): a
+	// bare `boid start` runs directly on the host, so — unlike the compose
+	// deployment (whose filesystem is a named volume the host cannot see,
+	// requiring the separate `boid start --print-cli-profile` +
+	// deploy-container.sh seeding flow) — it can just write the daemon's CA
+	// cert straight to client.DefaultCACertPath() itself, on every boot.
+	// This is what makes the CLI's TCP terminal fallback
+	// (profiles.ResolveWithoutToken's SourceTCPFallback) work out of the
+	// box against a bare host daemon with no `boid start --print-cli-profile`
+	// step at all. Idempotent and safe to overwrite unconditionally — a CA
+	// certificate is public, non-secret material (srv.GatewayCAPEM() is the
+	// exact same CA the dedicated CLI TLS listener's own cert is issued
+	// from, reused here rather than duplicating a second load of
+	// cfg.TLSDir). Best-effort: a write failure here must not take down an
+	// otherwise-healthy daemon — logged and otherwise ignored.
+	if caCertPath, err := client.DefaultCACertPath(); err != nil {
+		slog.Warn("could not resolve daemon CA bootstrap file path; CLI TCP terminal fallback will not trust this daemon's self-signed cert automatically", "error", err)
+	} else if caPEM := srv.GatewayCAPEM(); len(caPEM) > 0 {
+		if err := os.MkdirAll(filepath.Dir(caCertPath), 0o755); err != nil {
+			slog.Warn("could not create daemon CA bootstrap file directory", "path", caCertPath, "error", err)
+		} else if err := os.WriteFile(caCertPath, caPEM, 0o644); err != nil {
+			slog.Warn("could not write daemon CA bootstrap file", "path", caCertPath, "error", err)
+		} else {
+			slog.Info("wrote cli daemon-ca bootstrap file", "path", caCertPath)
+		}
+	}
 
 	slog.Info("boid server started", "socket", cfg.SocketPath, "http", cfg.HTTPAddr)
 

@@ -20,6 +20,21 @@ import (
 // config.yaml — see decision 2 (docs/plans/cli-remote-connection.md).
 type Profile struct {
 	URL string `yaml:"url"`
+	// CACert is an inline PEM-encoded certificate this profile trusts as an
+	// ADDITIONAL root CA when dialing an "https://" URL (docs/plans/
+	// volume-only-daemon.md §論点c) — alongside the system cert pool, not
+	// instead of it (see client.NewClientWithCACert's own doc comment).
+	// Empty ("", the zero value, and every pre-§論点c profile) means "system
+	// pool only" — byte-for-byte the original https-profile contract
+	// (`boid login`'s own profiles never set this; a remote daemon reached
+	// via Cloudflare Tunnel etc. carries a publicly-trusted certificate and
+	// needs no extra trust anchor). This is what `boid start
+	// --print-cli-profile`'s YAML output embeds for the bootstrap "default"
+	// profile it prints — the daemon's own self-signed internal CA
+	// (mtls.CA, the same CA internal/server's dedicated CLI TLS listener's
+	// cert is issued from) — so a profile written from that output can
+	// verify the listener's certificate with no separate CA file to manage.
+	CACert string `yaml:"ca_cert,omitempty"`
 }
 
 // Config is the profile-related subset of ~/.config/boid/config.yaml.

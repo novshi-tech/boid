@@ -37,18 +37,24 @@ func writeResolveConfig(t *testing.T, content string) {
 	}
 }
 
-func TestResolve_NoConfigNoProfile_FallsBackToUnix(t *testing.T) {
+// TestResolve_NoConfigNoProfile_FallsBackToTCP pins the docs/plans/
+// volume-only-daemon.md §論点c "full cutover" behavior change: the terminal
+// fallback (no --profile/BOID_PROFILE/default_profile at all) now resolves
+// to client.DefaultCLIAddr() over TCP+TLS, replacing the pre-§論点c
+// unix://DefaultSocketPath() default — a named-volume daemon deployment has
+// no host-visible socket file at that path any more.
+func TestResolve_NoConfigNoProfile_FallsBackToTCP(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir()) // no config.yaml written
-	t.Setenv("BOID_SOCKET", "/tmp/pinned-for-test.sock")
+	t.Setenv("BOID_CLI_ADDR", "127.0.0.1:19999")
 
 	rp, err := Resolve(nil)
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
-	if rp.Source != SourceUnixFallback {
-		t.Errorf("Source = %q, want %q", rp.Source, SourceUnixFallback)
+	if rp.Source != SourceTCPFallback {
+		t.Errorf("Source = %q, want %q", rp.Source, SourceTCPFallback)
 	}
-	want := "unix://" + client.DefaultSocketPath()
+	want := "https://" + client.DefaultCLIAddr()
 	if rp.URL != want {
 		t.Errorf("URL = %q, want %q", rp.URL, want)
 	}
@@ -56,7 +62,49 @@ func TestResolve_NoConfigNoProfile_FallsBackToUnix(t *testing.T) {
 		t.Errorf("Name = %q, want empty", rp.Name)
 	}
 	if rp.Token != "" {
-		t.Errorf("Token = %q, want empty (unix fallback never needs one)", rp.Token)
+		t.Errorf("Token = %q, want empty (TCP fallback never needs one — loopback trust)", rp.Token)
+	}
+}
+
+// TestResolve_NoConfigNoProfile_TCPFallback_LoadsCACertIfPresent pins the
+// bootstrap-file half of the TCP fallback: when
+// client.DefaultCACertPath() exists (written by a bare `boid start` on
+// every boot, or by deploy-container.sh from `boid start
+// --print-cli-profile`'s output), Resolve loads its contents into CACert so
+// client.NewClientWithCACert can trust the daemon's self-signed internal CA.
+func TestResolve_NoConfigNoProfile_TCPFallback_LoadsCACertIfPresent(t *testing.T) {
+	configDir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", configDir) // no config.yaml written
+	if err := os.MkdirAll(filepath.Join(configDir, "boid"), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(configDir, "boid", "daemon-ca.pem"), []byte("fake-ca-pem"), 0o600); err != nil {
+		t.Fatalf("write daemon-ca.pem: %v", err)
+	}
+
+	rp, err := Resolve(nil)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if rp.CACert != "fake-ca-pem" {
+		t.Errorf("CACert = %q, want %q", rp.CACert, "fake-ca-pem")
+	}
+}
+
+// TestResolve_NoConfigNoProfile_TCPFallback_NoCACertFile_EmptyCACert pins
+// the absent-file case: no daemon-ca.pem means CACert stays empty (not an
+// error) — the eventual dial just falls back to the system cert pool, which
+// then fails TLS verification against the daemon's self-signed cert with an
+// ordinary error at request time.
+func TestResolve_NoConfigNoProfile_TCPFallback_NoCACertFile_EmptyCACert(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir()) // no config.yaml, no daemon-ca.pem
+
+	rp, err := Resolve(nil)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if rp.CACert != "" {
+		t.Errorf("CACert = %q, want empty", rp.CACert)
 	}
 }
 

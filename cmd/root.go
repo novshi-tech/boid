@@ -140,12 +140,26 @@ var rootCmd = &cobra.Command{
 		// scope=local commands (docs/plans/cli-remote-connection.md decision
 		// 6, PR4) complete entirely without a remote daemon — they either
 		// never talk to one at all, or *are* daemon lifecycle machinery
-		// itself (start/stop/gc/...). Running one against a resolved
-		// https-scheme profile would silently operate on the wrong host (or
-		// simply make no sense, e.g. `boid start` for a daemon that already
-		// has to be running to have accepted the connection). Fail hard
-		// rather than fail-open, per decision 6.
-		if isLocalScope(cmd) && !rp.IsUnix() {
+		// itself (start/stop/gc/...). Running one against an EXPLICITLY
+		// NAMED (--profile/BOID_PROFILE/default_profile) https-scheme
+		// profile would silently operate on the wrong host (or simply make
+		// no sense, e.g. `boid start` for a daemon that already has to be
+		// running to have accepted the connection). Fail hard rather than
+		// fail-open, per decision 6.
+		//
+		// The TERMINAL fallback (rp.Source == SourceTCPFallback, docs/plans/
+		// volume-only-daemon.md §論点c) is deliberately EXEMPTED from this
+		// check even though it is now an https-scheme URL too (the "full
+		// cutover" from a unix:// default — see profiles.ResolveWithoutToken):
+		// unlike a named profile, nobody explicitly pointed this invocation
+		// anywhere — it is simply "no profile configured, use the local
+		// default", which §論点c changed from a unix socket to
+		// client.DefaultCLIAddr() over TCP+TLS. Both name the SAME local
+		// daemon; rejecting it here would make `boid start` (and every other
+		// scope=local command) hard-fail on a completely ordinary fresh
+		// install with no config.yaml at all — exactly the case this check
+		// must never fire for.
+		if isLocalScope(cmd) && !rp.IsUnix() && rp.Source != profiles.SourceTCPFallback {
 			return fmt.Errorf(
 				"'%s' はローカル専用コマンドだよ。\n"+
 					"現在の接続先: %s (profile: %s)\n"+
@@ -221,7 +235,11 @@ func resolveClient(cmd *cobra.Command) (*client.Client, error) {
 	if err != nil {
 		return nil, err
 	}
-	c, err := client.NewClient(rp.URL, rp.Token)
+	// NewClientWithCACert with rp.CACert=="" is byte-for-byte NewClient's
+	// existing behavior (system pool only) — rp.CACert is only ever
+	// non-empty for the TCP terminal fallback or a named profile that set
+	// ca_cert (docs/plans/volume-only-daemon.md §論点c).
+	c, err := client.NewClientWithCACert(rp.URL, rp.Token, []byte(rp.CACert))
 	if err != nil {
 		return nil, err
 	}
