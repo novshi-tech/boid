@@ -350,11 +350,11 @@ e2e_log "building the boid-runner image (before config seed, so it has an image 
 DEPLOY_CONTAINER_BUILD_ONLY=1 e2e_run bash "$REPO_ROOT/scripts/deploy-container.sh"
 
 # --- seed config.yaml into the (fresh) boid_state volume --------------------
-# `sandbox.backend: container` must be in place BEFORE the daemon's own
-# first boot (internal/server/wire.go's buildRuntime reads it once, via
-# config.Load(), long before any `boid config apply` RPC could possibly
-# reach a not-yet-running daemon) — and BOID_CONFIG_DIR is the boid_state
-# NAMED VOLUME as of the volume-only pivot, so simply writing
+# web.http_addr must be in place BEFORE the daemon's own first boot
+# (internal/server/wire.go's buildRuntime reads it once, via config.Load(),
+# long before any `boid config apply` RPC could possibly reach a
+# not-yet-running daemon) — and BOID_CONFIG_DIR is the boid_state NAMED
+# VOLUME as of the volume-only pivot, so simply writing
 # $XDG_CONFIG_HOME/boid/config.yaml on THIS script's own host filesystem
 # (what the previous revision did, back when that path was a host bind
 # mount) no longer reaches the container at all. `docker compose run` with
@@ -364,11 +364,14 @@ DEPLOY_CONTAINER_BUILD_ONLY=1 e2e_run bash "$REPO_ROOT/scripts/deploy-container.
 # subsequent `up` (scripts/deploy-container.sh, below) starts the real,
 # long-running daemon against that now-seeded volume. (The image itself is
 # already guaranteed to exist by the build step immediately above.)
-e2e_log "seeding config.yaml into the boid_state volume (sandbox.backend: container)"
+#
+# sandbox.backend: container is no longer seeded here (PR-4, docs/plans/
+# volume-only-daemon.md §論点e) — container is the only sandbox backend
+# now, selected unconditionally by internal/server/wire.go's buildRuntime,
+# not by config.
+e2e_log "seeding config.yaml into the boid_state volume (web.http_addr)"
 (cd "$REPO_ROOT" && docker compose -f build/container/compose.yml run --rm -T --entrypoint sh daemon -c \
   'mkdir -p "$XDG_CONFIG_HOME/boid" && cat > "$XDG_CONFIG_HOME/boid/config.yaml"') <<'YAML'
-sandbox:
-  backend: container
 web:
   http_addr: "127.0.0.1:0"
 YAML

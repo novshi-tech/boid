@@ -1,9 +1,0 @@
-id: docker-proxy-network-create
-name: Docker Proxy Test - network-create
-task_behaviors:
-  smoke:
-    hooks:
-      - id: run-docker-test
-        command: |
-          bash ".boid/hooks/run-docker-test.sh"
-    name: smoke

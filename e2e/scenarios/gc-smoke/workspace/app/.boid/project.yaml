@@ -1,5 +1,0 @@
-id: gc-smoke
-name: GC Smoke
-task_behaviors:
-  smoke:
-    transition: one-shot
