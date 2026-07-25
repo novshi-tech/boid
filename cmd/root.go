@@ -140,30 +140,12 @@ var rootCmd = &cobra.Command{
 		// scope=local commands (docs/plans/cli-remote-connection.md decision
 		// 6, PR4) complete entirely without a remote daemon — they either
 		// never talk to one at all, or *are* daemon lifecycle machinery
-		// itself (start/stop/gc/...). Running one against an EXPLICITLY
-		// NAMED (--profile/BOID_PROFILE/default_profile) https-scheme
-		// profile would silently operate on the wrong host (or simply make
-		// no sense, e.g. `boid start` for a daemon that already has to be
-		// running to have accepted the connection). Fail hard rather than
-		// fail-open, per decision 6.
-		//
-		// The TERMINAL TCP fallback (rp.Source == SourceTCPFallback,
-		// docs/plans/volume-only-daemon.md §論点c) is deliberately EXEMPTED
-		// from this check even though it is an https-scheme URL — see
-		// profiles.ResolveWithoutToken's terminal-fallback branch
-		// (auto-detects unix vs TCP; the OTHER terminal-fallback outcome,
-		// SourceUnixFallback, already passes the `!rp.IsUnix()` half of
-		// this condition on its own and never needs this exemption at
-		// all): unlike a named profile, nobody explicitly pointed this
-		// invocation anywhere — it is simply "no profile configured, use
-		// the local default", which happens to resolve to
-		// client.DefaultCLIAddr() over TCP+TLS specifically when no local
-		// unix socket file is reachable. Both name the SAME local daemon;
-		// rejecting it here would make `boid start` (and every other
-		// scope=local command) hard-fail on a completely ordinary fresh
-		// install with no config.yaml at all — exactly the case this check
-		// must never fire for.
-		if isLocalScope(cmd) && !rp.IsUnix() && rp.Source != profiles.SourceTCPFallback {
+		// itself (start/stop/gc/...). Running one against a resolved
+		// https-scheme profile would silently operate on the wrong host (or
+		// simply make no sense, e.g. `boid start` for a daemon that already
+		// has to be running to have accepted the connection). Fail hard
+		// rather than fail-open, per decision 6.
+		if isLocalScope(cmd) && !rp.IsUnix() {
 			return fmt.Errorf(
 				"'%s' はローカル専用コマンドだよ。\n"+
 					"現在の接続先: %s (profile: %s)\n"+
@@ -239,11 +221,7 @@ func resolveClient(cmd *cobra.Command) (*client.Client, error) {
 	if err != nil {
 		return nil, err
 	}
-	// NewClientWithCACert with rp.CACert=="" is byte-for-byte NewClient's
-	// existing behavior (system pool only) — rp.CACert is only ever
-	// non-empty for the TCP terminal fallback or a named profile that set
-	// ca_cert (docs/plans/volume-only-daemon.md §論点c).
-	c, err := client.NewClientWithCACert(rp.URL, rp.Token, []byte(rp.CACert))
+	c, err := client.NewClient(rp.URL, rp.Token)
 	if err != nil {
 		return nil, err
 	}

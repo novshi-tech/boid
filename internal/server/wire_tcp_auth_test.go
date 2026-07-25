@@ -3,11 +3,9 @@ package server_test
 import (
 	"context"
 	"net/http"
-	"os"
 	"path/filepath"
 	"testing"
 
-	"github.com/novshi-tech/boid/internal/api/auth"
 	"github.com/novshi-tech/boid/internal/server"
 )
 
@@ -89,92 +87,5 @@ func TestTCPListener_DataAPI_RequiresAuth(t *testing.T) {
 	resp.Body.Close()
 	if resp.StatusCode == http.StatusUnauthorized {
 		t.Errorf("tcp loopback (no devices) GET /api/tasks: got 401, want bootstrap pass")
-	}
-}
-
-// newTestServerWithConfig writes config.yaml (under a fresh, isolated
-// $XDG_CONFIG_HOME) with the given raw YAML body, then boots a *server.Server
-// against it exactly like TestTCPListener_DataAPI_RequiresAuth above — shared
-// by the web.loopback_trust tests below, which (unlike that test) need to
-// control the config the daemon actually loads instead of relying on
-// DefaultConfig().
-func newTestServerWithConfig(t *testing.T, configYAML string) (srv *server.Server, tcpAddr string) {
-	t.Helper()
-	configHome := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", configHome)
-	if err := os.MkdirAll(filepath.Join(configHome, "boid"), 0o755); err != nil {
-		t.Fatalf("mkdir config dir: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(configHome, "boid", "config.yaml"), []byte(configYAML), 0o600); err != nil {
-		t.Fatalf("write config.yaml: %v", err)
-	}
-
-	tmpDir := t.TempDir()
-	srv, err := server.New(server.Config{
-		DBPath:     ":memory:",
-		SocketPath: filepath.Join(tmpDir, "boid.sock"),
-		HTTPAddr:   "127.0.0.1:0",
-	})
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
-	if err := srv.Start(context.Background()); err != nil {
-		t.Fatalf("Start: %v", err)
-	}
-	t.Cleanup(func() { _ = srv.Stop() })
-
-	tcpAddr = srv.TCPAddr()
-	if tcpAddr == "" {
-		t.Fatal("TCP listener should be open")
-	}
-	return srv, tcpAddr
-}
-
-// TestTCPListener_LoopbackTrustDefault_DeviceRegistered_NoAuthRequired is
-// the server-integration counterpart of
-// TestTCPAPIAuth_LoopbackTrustOn_DevicesRegistered_NoCookie_Passes
-// (internal/api/auth/api_middleware_test.go) — docs/plans/
-// volume-only-daemon.md §論点c: with no explicit config.yaml
-// web.loopback_trust key at all, DefaultConfig's default (true) applies, so
-// a same-host caller (like the CLI's dedicated TCP(TLS) listener's clients —
-// see cliTLSLn) reaches the data API with no Bearer/cookie even once a
-// device is already paired — unlike the pre-§論点c bootstrap window, which
-// closed the moment the FIRST device registered.
-func TestTCPListener_LoopbackTrustDefault_DeviceRegistered_NoAuthRequired(t *testing.T) {
-	srv, tcpAddr := newTestServerWithConfig(t, "") // no config.yaml body at all → DefaultConfig()
-
-	store := auth.NewStore(srv.DB())
-	if err := store.InsertDevice(context.Background(), "dev-loopback-trust", "", []byte("h")); err != nil {
-		t.Fatalf("InsertDevice: %v", err)
-	}
-
-	resp, err := http.Get("http://" + tcpAddr + "/api/tasks")
-	if err != nil {
-		t.Fatalf("tcp loopback GET /api/tasks: %v", err)
-	}
-	resp.Body.Close()
-	if resp.StatusCode == http.StatusUnauthorized {
-		t.Errorf("tcp loopback (device registered, loopback_trust default true) GET /api/tasks: got 401, want loopback-trust pass")
-	}
-}
-
-// TestTCPListener_LoopbackTrustFalse_DeviceRegistered_StillGated pins the
-// operator opt-out: `web.loopback_trust: false` restores the pre-§論点c
-// bootstrap-only behavior even for a genuine loopback caller.
-func TestTCPListener_LoopbackTrustFalse_DeviceRegistered_StillGated(t *testing.T) {
-	srv, tcpAddr := newTestServerWithConfig(t, "web:\n  loopback_trust: false\n")
-
-	store := auth.NewStore(srv.DB())
-	if err := store.InsertDevice(context.Background(), "dev-strict", "", []byte("h")); err != nil {
-		t.Fatalf("InsertDevice: %v", err)
-	}
-
-	resp, err := http.Get("http://" + tcpAddr + "/api/tasks")
-	if err != nil {
-		t.Fatalf("tcp loopback GET /api/tasks: %v", err)
-	}
-	resp.Body.Close()
-	if resp.StatusCode != http.StatusUnauthorized {
-		t.Errorf("tcp loopback (device registered, loopback_trust=false) GET /api/tasks: status = %d, want 401", resp.StatusCode)
 	}
 }

@@ -104,7 +104,6 @@ var Schema = []FieldSpec{
 
 	{Path: "web.public_url", Kind: KindString, Reload: ReloadRestartRequired},
 	{Path: "web.http_addr", Kind: KindString, Reload: ReloadRestartRequired},
-	{Path: "web.loopback_trust", Kind: KindBool, Reload: ReloadRestartRequired},
 
 	{Path: "notify.command", Kind: KindStringArray, Reload: ReloadRestartRequired},
 

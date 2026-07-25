@@ -67,54 +67,6 @@ import (
 // can still leave path zero-length or short on the next boot. Closing that
 // gap would need an fsync of the temp file before Link and an fsync of dir
 // after — intentionally out of scope for this fix.
-// WriteAtomic atomically (over)writes content to path via the same
-// write-temp-in-the-same-directory protocol PublishIfAbsent uses, but
-// publishes via os.Rename instead of os.Link — so, unlike PublishIfAbsent,
-// a pre-existing file at path is unconditionally replaced rather than
-// treated as "someone already published, read it back". Readers can never
-// observe a partially-written file: os.Rename within one filesystem is
-// atomic, so path either still holds its old content or already holds the
-// complete new content, with no window in between.
-//
-// Use this instead of PublishIfAbsent when content is expected to be
-// regenerated/refreshed on every call rather than published-once — e.g.
-// cmd/start.go's CLI CA-trust bootstrap file (docs/plans/
-// volume-only-daemon.md §論点c, PR-3 codex round-1 review [Major, "CA
-// publication race"]): a bare `boid start` re-derives and rewrites this
-// file every boot (the CA itself is stable across boots in the common
-// case, but a wiped-and-regenerated TLSDir must not leave a stale, no-
-// longer-matching cert silently readable forever the way PublishIfAbsent's
-// "first write wins" contract would).
-func WriteAtomic(path string, perm os.FileMode, content []byte) error {
-	dir := filepath.Dir(path)
-	tmp, err := os.CreateTemp(dir, ".atomicfile-*.tmp")
-	if err != nil {
-		return fmt.Errorf("atomicfile: create temp file: %w", err)
-	}
-	tmpPath := tmp.Name()
-	// Rename (the only path through this function) always consumes the
-	// temp name; this Remove is a harmless no-op ENOENT in that case and
-	// only actually fires if an earlier step failed and returned first.
-	defer os.Remove(tmpPath)
-
-	if err := tmp.Chmod(perm); err != nil {
-		tmp.Close()
-		return fmt.Errorf("atomicfile: chmod temp file: %w", err)
-	}
-	if _, err := tmp.Write(content); err != nil {
-		tmp.Close()
-		return fmt.Errorf("atomicfile: write temp file: %w", err)
-	}
-	if err := tmp.Close(); err != nil {
-		return fmt.Errorf("atomicfile: close temp file: %w", err)
-	}
-
-	if err := os.Rename(tmpPath, path); err != nil {
-		return fmt.Errorf("atomicfile: publish %s: %w", path, err)
-	}
-	return nil
-}
-
 func PublishIfAbsent(path string, perm os.FileMode, content []byte) ([]byte, error) {
 	dir := filepath.Dir(path)
 	tmp, err := os.CreateTemp(dir, ".atomicfile-*.tmp")

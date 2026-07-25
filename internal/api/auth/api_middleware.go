@@ -34,34 +34,10 @@ import (
 // (IsLoopback==false because of proxy headers) get no bootstrap and must
 // authenticate.
 //
-// loopbackTrust (docs/plans/volume-only-daemon.md §論点c, `web.loopback_trust`
-// config key — default true) widens that exemption: when true, EVERY
-// loopback request with no Bearer header and no session cookie is let
-// through unconditionally, regardless of how many devices are already
-// registered — not just the pre-first-pairing bootstrap window the
-// zero-devices check above governs. This is what makes the CLI's TCP
-// profile (internal/server's dedicated CLI TLS listener) usable with no
-// `boid login`/device-pair step at all when it dials 127.0.0.1: the
-// listener already only accepts connections from the same host (bind
-// address + — for the compose deployment — the host-only port publish), so
-// requiring a Bearer token or client cert on top adds pairing friction with
-// no additional security in the single-user threat model this daemon
-// targets (CLAUDE.md's セキュリティモデル section; nose decision, plan doc
-// §論点c "Threat model: single-user boid. Loopback = trusted"). A tunneled/
-// proxied request is NEVER covered by this — IsLoopback already returns
-// false the moment a proxy header is present, so the reverse-proxy exposure
-// path (Cloudflare Tunnel, docs/ja/guide/web-ui.md) is unaffected by this
-// flag either way and always falls through to the existing cookie/Bearer
-// checks below.
-//
-// When loopbackTrust is false (an operator explicitly set
-// `web.loopback_trust: false` for strict per-connection auth), behavior is
-// byte-for-byte the pre-§論点c bootstrap-only exemption.
-//
 // Failures return 401 JSON (not a 302 redirect to /login) because callers here
 // are API clients. Non-/api paths (HTML pages, /login, /auth, /static) fall
 // through to the router, which applies its own WebAuthMiddleware.
-func NewTCPAPIAuthMiddleware(signer *SessionSigner, store *Store, loopbackTrust bool) func(http.Handler) http.Handler {
+func NewTCPAPIAuthMiddleware(signer *SessionSigner, store *Store) func(http.Handler) http.Handler {
 	var bearer *BearerVerifier
 	if store != nil {
 		bearer = NewBearerVerifier(store)
@@ -98,19 +74,10 @@ func NewTCPAPIAuthMiddleware(signer *SessionSigner, store *Store, loopbackTrust 
 			}
 
 			if _, err := r.Cookie(cookieName); err != nil {
-				// No session cookie, no Bearer header. loopbackTrust (see this
-				// function's own doc comment) widens the exemption to every
-				// loopback caller, not just the pre-pairing bootstrap window —
-				// checked first so it also covers the "devices already
-				// registered" case the plain bootstrap check below does not.
-				if loopbackTrust && IsLoopback(r) {
-					next.ServeHTTP(w, r)
-					return
-				}
-				// Allow only the pre-pairing bootstrap window (a genuine local
-				// browser with no devices yet); reject everything else —
-				// including proxied/tunneled requests, which IsLoopback
-				// already rejects — with 401.
+				// No session cookie. Allow only the pre-pairing bootstrap
+				// window (a genuine local browser with no devices yet); reject
+				// everything else — including proxied/tunneled requests, which
+				// IsLoopback already rejects — with 401.
 				if IsLoopback(r) && store != nil {
 					if has, dbErr := store.HasAnyDevice(r.Context()); dbErr == nil && !has {
 						next.ServeHTTP(w, r)

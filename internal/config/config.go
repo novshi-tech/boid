@@ -211,25 +211,6 @@ type GCConfig struct {
 type WebConfig struct {
 	PublicURL string `yaml:"public_url"`
 	HTTPAddr  string `yaml:"http_addr"`
-	// LoopbackTrust (docs/plans/volume-only-daemon.md §論点c) governs
-	// auth.NewTCPAPIAuthMiddleware's loopbackTrust parameter: when true
-	// (DefaultConfig's default), any request arriving over TCP from a
-	// genuine loopback address (127.0.0.0/8 / ::1 — never a
-	// proxied/tunneled one, see auth.IsLoopback) with no Bearer header and
-	// no session cookie is treated as authenticated, regardless of how
-	// many devices are already paired. This is what lets the CLI's
-	// dedicated TCP(TLS) listener (internal/server's cliTLSLn) work with
-	// no `boid login`/device-pair step for a same-host caller — the
-	// listener's own reachability (bind address, and for the compose
-	// deployment, the host-only port publish) already restricts callers to
-	// "this machine", so requiring a Bearer token or client cert on top
-	// adds pairing friction with no additional security in the
-	// single-user threat model this daemon targets (CLAUDE.md's
-	// セキュリティモデル section). An operator can set
-	// `web.loopback_trust: false` to fall back to the pre-§論点c
-	// bootstrap-only exemption (a loopback caller is only ever trusted
-	// before the FIRST device pairs) for strict per-connection auth.
-	LoopbackTrust bool `yaml:"loopback_trust"`
 }
 
 // DefaultAllowedDomains returns boid's built-in sandbox.allowed_domains
@@ -279,9 +260,6 @@ func DefaultConfig() *Config {
 			Enabled:   true,
 			Interval:  24 * time.Hour,
 			OlderThan: 720 * time.Hour,
-		},
-		Web: WebConfig{
-			LoopbackTrust: true,
 		},
 		TaskAsk: TaskAskConfig{
 			DisconnectGrace: 30 * time.Minute,
@@ -378,9 +356,8 @@ func (c *Config) UnmarshalYAML(value *yaml.Node) error {
 			OlderThan string `yaml:"older_than"`
 		} `yaml:"gc"`
 		Web struct {
-			PublicURL     string `yaml:"public_url"`
-			HTTPAddr      string `yaml:"http_addr"`
-			LoopbackTrust *bool  `yaml:"loopback_trust"`
+			PublicURL string `yaml:"public_url"`
+			HTTPAddr  string `yaml:"http_addr"`
 		} `yaml:"web"`
 		Notify struct {
 			Command []string `yaml:"command"`
@@ -431,10 +408,6 @@ func (c *Config) UnmarshalYAML(value *yaml.Node) error {
 
 	c.Web.PublicURL = raw.Web.PublicURL
 	c.Web.HTTPAddr = raw.Web.HTTPAddr
-	c.Web.LoopbackTrust = defaults.Web.LoopbackTrust
-	if raw.Web.LoopbackTrust != nil {
-		c.Web.LoopbackTrust = *raw.Web.LoopbackTrust
-	}
 
 	c.Notify.Command = raw.Notify.Command
 

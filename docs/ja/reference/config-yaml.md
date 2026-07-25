@@ -125,28 +125,18 @@ gc:
 web:
   http_addr: ":8080"                    # listen アドレス（デフォルト: :8080）
   public_url: "https://boid.example.com"  # 外部公開 URL（マジックリンク用）
-  loopback_trust: true                    # localhost からの接続は device-pair 不要（デフォルト: true）
 ```
 
 | キー | 型 | デフォルト | 説明 |
 |---|---|---|---|
 | `http_addr` | string | `""` | HTTP サーバの listen アドレス |
 | `public_url` | string | — | Cloudflare Tunnel 等で公開する場合の外部 URL |
-| `loopback_trust` | bool | `true` | localhost (127.0.0.1/::1) からの TCP 接続を device-pair 不要で通す |
 
 > **デフォルトアドレスについて:** `config.DefaultConfig()` では `http_addr` は空です。実効デフォルトの `127.0.0.1:8080` は起動時に `cmd/start.go` のフォールバック処理で適用されます。
 
 `http_addr` は `boid web set-addr <addr>` コマンドでも変更できます。
 
 > **警告:** `boid web set-addr` および `boid web set-url` は YAML round-trip（`yaml.Marshal`）で `config.yaml` を書き換えるため、**ファイル内のコメントがすべて削除**されます。
-
-### `loopback_trust`（docs/plans/volume-only-daemon.md §論点c）
-
-`true`（デフォルト）の場合、TCP 経由の `/api/*` リクエストが genuine loopback（`127.0.0.0/8` / `::1`。プロキシ/トンネル経由は `X-Forwarded-For` 等のヘッダで判定され対象外）から来ていて、かつ Bearer token も session cookie も付いていない場合、device 登録数に関わらず認証済み扱いで通す（`internal/api/auth.NewTCPAPIAuthMiddleware`）。
-
-これは CLI の「デフォルト TCP profile」（`docs/plans/volume-only-daemon.md` §論点c）が `boid login` なしで動く根拠になっている: `internal/server` の専用 CLI TLS listener (`web.http_addr` の Web UI listener とは別ポート、デフォルト `127.0.0.1:8442`。プロファイル未設定時の CLI 既定接続先でもある — `internal/profiles.ResolveWithoutToken` の terminal fallback、旧 unix socket 既定から §論点c で置き換え) は loopback からのみ到達可能（compose デプロイではホスト側 `127.0.0.1:` 限定 port publish、素の `boid start` ならプロセス自体が loopback bind）なので、それ以上の認証を要求しても single-user モデルでは追加のセキュリティ価値がない、という判断（CLAUDE.md のセキュリティモデル節と同じ threat model）。
-
-`false` に設定すると、device が 1 台も登録されていない「初回ペアリング前」の bootstrap window のみ loopback を許可する、§論点c 以前の厳密な挙動に戻る（`boid web pair` / `boid login` を経由した認証が常に必要）。
 
 ---
 

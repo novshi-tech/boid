@@ -3,8 +3,6 @@ package client
 import (
 	"bytes"
 	"context"
-	"crypto/tls"
-	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -81,20 +79,6 @@ func NewUnixClient(socketPath string) *Client {
 //     unsupported; plain-HTTP remote daemons are not a supported
 //     configuration) — a hard error.
 func NewClient(rawURL, token string) (*Client, error) {
-	return NewClientWithCACert(rawURL, token, nil)
-}
-
-// NewClientWithCACert is NewClient with one addition: for an "https://"
-// url, caCertPEM (when non-empty) is trusted as an ADDITIONAL root CA for
-// verifying the server's certificate, alongside the system cert pool — not
-// instead of it (see newHTTPSClient's own doc comment for why appending,
-// not replacing, matters). This is what lets the CLI's TCP profile
-// (docs/plans/volume-only-daemon.md §論点c) verify a compose/bare-metal
-// daemon's self-signed internal CA cert (mtls.CA, internal/server's
-// dedicated CLI TLS listener) without disabling certificate verification
-// altogether — nil/empty caCertPEM (every pre-§論点c caller) is
-// byte-for-byte NewClient's existing "system pool only" behavior.
-func NewClientWithCACert(rawURL, token string, caCertPEM []byte) (*Client, error) {
 	u, err := url.Parse(rawURL)
 	if err != nil {
 		return nil, fmt.Errorf("parse client url %q: %w", rawURL, err)
@@ -114,7 +98,7 @@ func NewClientWithCACert(rawURL, token string, caCertPEM []byte) (*Client, error
 		}
 		return NewUnixClient(path), nil
 	case "https":
-		return newHTTPSClient(u, token, nil, caCertPEM)
+		return newHTTPSClient(u, token, nil)
 	default:
 		return nil, fmt.Errorf("unsupported client url scheme %q (want \"unix\" or \"https\"): %s", u.Scheme, rawURL)
 	}
@@ -220,42 +204,15 @@ func (c *Client) IsUnix() bool {
 // same-origin-redirect behavior can be exercised without disabling TLS
 // verification process-wide — production callers (NewClient) always pass
 // nil and get the system cert store.
-//
-// caCertPEM (NewClientWithCACert's own parameter, plumbed through
-// unchanged), when non-empty, builds a dedicated *tls.Config whose RootCAs
-// pool is seeded from the SYSTEM cert pool (x509.SystemCertPool, falling
-// back to an empty pool if that call itself fails — e.g. a minimal
-// container image with no system trust store at all) plus caCertPEM
-// appended on top — additive, not a replacement, so a profile that happens
-// to carry a self-signed daemon CA cert does not accidentally stop trusting
-// ordinary publicly-trusted HTTPS origins too (not that any production
-// caller mixes the two today, but nothing about this signature should rule
-// it out for a future one). transport takes precedence when both are
-// non-nil/non-empty — today no caller actually passes both at once (tests
-// use transport with caCertPEM always nil; production passes the reverse),
-// but the precedence itself is deliberate: an explicit transport is a
-// caller saying "I already built the exact RoundTripper I want", which
-// should not be silently re-wrapped.
-func newHTTPSClient(u *url.URL, token string, transport http.RoundTripper, caCertPEM []byte) (*Client, error) {
+func newHTTPSClient(u *url.URL, token string, transport http.RoundTripper) (*Client, error) {
 	if u.Host == "" {
 		return nil, fmt.Errorf("https client url %q: missing host", u.String())
 	}
 	origin := (&url.URL{Scheme: "https", Host: u.Host}).String()
-	base := transport
-	if base == nil && len(caCertPEM) > 0 {
-		pool, err := x509.SystemCertPool()
-		if err != nil || pool == nil {
-			pool = x509.NewCertPool()
-		}
-		if !pool.AppendCertsFromPEM(caCertPEM) {
-			return nil, fmt.Errorf("https client url %q: caCertPEM did not parse as a valid PEM certificate", u.String())
-		}
-		base = &http.Transport{TLSClientConfig: &tls.Config{RootCAs: pool}}
-	}
 	return &Client{
 		baseURL: origin,
 		httpClient: &http.Client{
-			Transport:     &bearerTransport{token: token, base: base},
+			Transport:     &bearerTransport{token: token, base: transport},
 			CheckRedirect: sameOriginCheckRedirect,
 		},
 	}, nil
@@ -327,74 +284,6 @@ func DefaultSocketPath() string {
 		return filepath.Join(runDir, "boid.sock")
 	}
 	return fmt.Sprintf("/tmp/boid-%s.sock", uid)
-}
-
-// defaultCLIAddrHost is the loopback literal DefaultCLIAddr always binds/
-// dials — see that function's own doc comment for why BOID_CLI_ADDR cannot
-// override it.
-const defaultCLIAddrHost = "127.0.0.1"
-
-// DefaultCLIAddr resolves the "host:port" a CLI invocation with no
-// configured profile at all now dials (docs/plans/volume-only-daemon.md
-// §論点c: profiles.ResolveWithoutToken's terminal-fallback auto-detect —
-// see SourceTCPFallback's own doc comment — falls back to this address
-// when no local unix socket is reachable). cmd/start.go's own
-// defaultStartCLIAddr uses this exact same value to bind the daemon's
-// dedicated CLI TLS listener (Config.CLIAddr) — a single source of truth
-// for the literal so the two ends can never drift apart silently.
-//
-// Honors BOID_CLI_ADDR (mirrors BOID_SOCKET's override convention just
-// above) for the PORT only — "127.0.0.1:8442" otherwise (8442, not 8080,
-// because the plan explicitly separates this listener from the Web UI's
-// own TCP listener, default :8080, so a CLI session keeps working even if
-// an operator firewalls off or disables the Web UI port). A HOST override
-// is deliberately rejected (PR-3 codex round-1 review, Minor): the
-// daemon's own dedicated CLI TLS listener only ever binds the loopback
-// interface and its cert only ever carries "127.0.0.1"/"localhost" SANs
-// (internal/server's ServerOnlyTLSConfig call) — an override naming any
-// other host would either dial an interface nothing is listening on or
-// fail hostname verification against a cert that was never issued for it.
-// A malformed override (no valid "host:port" shape at all) is likewise
-// ignored rather than propagated to a listen/dial call far from the
-// actual mistake.
-func DefaultCLIAddr() string {
-	if a := os.Getenv("BOID_CLI_ADDR"); a != "" {
-		if _, port, err := net.SplitHostPort(a); err == nil && port != "" {
-			return net.JoinHostPort(defaultCLIAddrHost, port)
-		}
-	}
-	return defaultCLIAddrHost + ":8442"
-}
-
-// DefaultCACertPath returns the well-known host path a CLI invocation with
-// no explicit ca_cert on its resolved profile falls back to trusting for
-// the TCP terminal-fallback profile (docs/plans/volume-only-daemon.md
-// §論点c): ~/.config/boid/daemon-ca.pem, honoring $XDG_CONFIG_HOME the same
-// way profiles.ConfigPath() resolves config.yaml itself (both live under
-// os.UserConfigDir()'s "boid" subdirectory).
-//
-// Two producers write this file:
-//   - a bare `boid start` (cmd/start.go's runDaemonChild) writes it on every
-//     successful boot — idempotent and safe to overwrite unconditionally,
-//     since a CA certificate is public, non-secret material.
-//   - `boid start --print-cli-profile`'s YAML output embeds the same cert
-//     inline (for a NAMED profile entry) — scripts/deploy-container.sh
-//     additionally extracts it to this bare path for the compose
-//     deployment, where cmd/start.go's own direct-write path cannot run
-//     (the daemon's filesystem is a named volume the host cannot see).
-//
-// A missing file is not this function's error to report — the caller
-// (profiles.ResolveWithoutToken) treats "no CA to trust" as "fall back to
-// the system cert pool", which then fails TLS verification against the
-// daemon's self-signed cert with an ordinary, if slightly less specific,
-// error at request time — rather than refusing to even attempt the
-// terminal-fallback dial.
-func DefaultCACertPath() (string, error) {
-	configDir, err := os.UserConfigDir()
-	if err != nil {
-		return "", fmt.Errorf("resolve user config directory: %w", err)
-	}
-	return filepath.Join(configDir, "boid", "daemon-ca.pem"), nil
 }
 
 // Do issues an HTTP request with no deadline. Suitable for foreground CLI

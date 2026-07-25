@@ -200,7 +200,7 @@ func newTestTLSHTTPSClient(t *testing.T, handler http.Handler, token string) (*C
 	if err != nil {
 		t.Fatalf("parse test server url: %v", err)
 	}
-	c, err := newHTTPSClient(u, token, ts.Client().Transport, nil)
+	c, err := newHTTPSClient(u, token, ts.Client().Transport)
 	if err != nil {
 		t.Fatalf("newHTTPSClient: %v", err)
 	}
@@ -292,7 +292,7 @@ func TestHTTPSClient_CrossOriginRedirect_Rejected(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse test server url: %v", err)
 	}
-	c, err := newHTTPSClient(u, "tk_cross_origin", mainTS.Client().Transport, nil)
+	c, err := newHTTPSClient(u, "tk_cross_origin", mainTS.Client().Transport)
 	if err != nil {
 		t.Fatalf("newHTTPSClient: %v", err)
 	}
