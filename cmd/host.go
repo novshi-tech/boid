@@ -32,13 +32,23 @@ package cmd
 //     token as its Bearer credential and inject it into cmd's context,
 //     exactly like the ordinary path's resolveClient does.
 //
+// Both paths below invoke the SAME scripts/deploy-container.sh — single
+// source of truth for what "deploy the container backend" means (round-3
+// codex review: an earlier revision of the fallback path ran a bare
+// `compose up -d` directly, silently skipping that script's config-seed +
+// effective-backend validation, BOID_UID/BOID_GID/DOCKER_GID setup,
+// runtime-dir provisioning, and podman socket preflight — a fresh
+// no-checkout deploy would start the daemon in userns mode instead of
+// container mode, with the CLI listener unreachable). They differ only in
+// which ROOT directory the script runs from, and whether that root is
+// allowed to BUILD a fresh image from it.
+//
 // PRIMARY path (findComposeRoot found a checkout — BOID_COMPOSE_ROOT env
 // override, or walking up from cwd looking for scripts/deploy-container.sh
 // — nose's actual dev workflow always runs `boid` from within, or below,
-// this checkout): host mode invokes the existing, already-tested
-// deploy-container.sh directly (deployFromCheckout) rather than
-// reimplementing its image build + engine detection + podman preflight in
-// Go. build/container/Dockerfile's build context is `COPY . .` — the
+// this checkout): host mode invokes deploy-container.sh directly out of
+// that checkout (deployFromCheckout), letting it build a fresh image when
+// needed. build/container/Dockerfile's build context is `COPY . .` — the
 // ENTIRE go source tree — so this path is the only one that can ever BUILD
 // a fresh image; there is no way around needing a real checkout for that
 // (embedding what an image build needs into the very binary being built
@@ -48,18 +58,27 @@ package cmd
 // FALLBACK path (round-2 codex review Major 1 — "host mode cannot autostart
 // from an installed standalone CLI"; no checkout discoverable, e.g.
 // /usr/local/bin/boid invoked from an ordinary project directory):
-// deployFromEmbeddedAssets extracts build/container/{compose.yml,Dockerfile}
-// (go:embed'd into build/container's own package, boidcontainer.Assets) to
-// a stable path and runs `compose up -d` against them directly — but ONLY
-// when a "boid-runner:latest" image already exists locally (built at some
-// earlier point from within a real checkout — the common case for repeat
-// invocations from an installed CLI on a host that has run host mode at
-// least once before from a checkout). No image and no checkout is a genuine
-// dead end (nothing to build from, nothing to run) and fails with a clear,
-// specific message rather than either the old "could not locate
-// scripts/deploy-container.sh" error (which fired even when a perfectly
-// usable pre-built image already existed) or a confusing `docker build`
-// failure against a source-less extracted context.
+// deployFromEmbeddedAssets extracts scripts/deploy-container.sh (go:embed'd
+// into its own package, boidscripts.Assets — a separate package from
+// compose.yml/Dockerfile below since go:embed cannot cross a directory
+// boundary with "..") ALONGSIDE build/container/{compose.yml,Dockerfile}
+// (go:embed'd into build/container's own package, boidcontainer.Assets)
+// into a directory tree that mirrors this repo's own layout (so the
+// script's own `ROOT_DIR="$(dirname "${BASH_SOURCE[0]}")/.."`-relative
+// path computation resolves exactly as it would from a real checkout), then
+// runs that extracted script with DEPLOY_CONTAINER_SKIP_BUILD=1 — which
+// requires a "boid-runner:latest" image to already exist locally (built at
+// some earlier point from within a real checkout — the common case for
+// repeat invocations from an installed CLI on a host that has run host mode
+// at least once before from a checkout) rather than attempting to build one
+// (Dockerfile's `COPY . .` context is not present in an extracted asset
+// directory — see above). No image and no checkout is a genuine dead end
+// (nothing to build from, nothing to run) and fails with a clear, specific
+// message before ever invoking the script, rather than either the old
+// "could not locate scripts/deploy-container.sh" error (which fired even
+// when a perfectly usable pre-built image already existed) or a confusing
+// `docker build`/`git rev-parse` failure against a source-less extracted
+// context.
 
 import (
 	"context"
@@ -77,6 +96,7 @@ import (
 	boidcontainer "github.com/novshi-tech/boid/build/container"
 	"github.com/novshi-tech/boid/internal/atomicfile"
 	"github.com/novshi-tech/boid/internal/client"
+	boidscripts "github.com/novshi-tech/boid/scripts"
 	"github.com/spf13/cobra"
 )
 
@@ -89,9 +109,12 @@ const (
 	boidModeContainer = "container"
 )
 
-// cliTokenFileName / cliLockFileName live under the same ~/.config/boid
-// directory profiles.ConfigPath() (config.yaml) uses — os.UserConfigDir()'s
-// "boid" subdirectory.
+// cliTokenFileName names the persistent shared-secret file under
+// hostModeConfigDir() (~/.config/boid — profiles.ConfigPath()'s
+// os.UserConfigDir()-based "boid" subdirectory). cliLockFileName names the
+// flock file under hostModeAssetsDir() instead (XDG_STATE_HOME — round-3
+// codex review Minor 2, withHostModeLock's own doc comment explains why it
+// moved out of the config dir).
 const (
 	cliTokenFileName = "cli-token"
 	cliLockFileName  = "cli-lock"
@@ -201,10 +224,37 @@ func validateCLIToken(path string, raw []byte) (string, error) {
 	return token, nil
 }
 
-// hostModeHealthy reports whether the daemon container's dedicated CLI
-// listener answers GET /api/cli-token-check — an AUTHENTICATED no-op route
-// (internal/server/wire.go) — within hostModeProbeTimeout, using token as
-// the Authorization: Bearer credential.
+// hostModeProbeResult is probeHostMode's outcome — distinguishes "not
+// reachable yet, keep polling" from "reachable but will never succeed, stop
+// polling" (round-3 codex review Regression coverage item 3).
+type hostModeProbeResult int
+
+const (
+	// hostModeUnreachable covers everything retry-worthy: connection
+	// refused/timeout (daemon still starting), and any non-2xx/non-404
+	// status (e.g. 401 for a wrong/stale token — see
+	// TestHostModeHealthy_WrongToken_ReportsUnhealthy's own comment for why
+	// that specific case is deliberately treated as retryable here rather
+	// than a third terminal outcome).
+	hostModeUnreachable hostModeProbeResult = iota
+	hostModeHealthyResult
+	// hostModeStaleImage means the daemon answered HTTP at all but returned
+	// 404 for /api/cli-token-check specifically — the endpoint genuinely
+	// does not exist in whatever image is running, not "not authenticated
+	// yet" or "still starting". That only happens with a boid-runner image
+	// built before this CLI-listener endpoint existed. Waiting out the full
+	// hostModeStartTimeout for a condition that can never resolve on its
+	// own wastes 5 minutes on every single invocation; ensureHostModeDaemon
+	// already has everything it needs to detect this immediately.
+	hostModeStaleImage
+)
+
+// probeHostMode issues one GET /api/cli-token-check against addr — an
+// AUTHENTICATED no-op route (internal/server/wire.go) — using token as the
+// Authorization: Bearer credential, and classifies the result. See
+// hostModeHealthy (kept as the simple bool wrapper most callers want) and
+// waitForHealthy (which needs the finer hostModeStaleImage distinction) for
+// how the two outcomes besides "healthy" are used.
 //
 // round-2 codex review Blocker 2: this used to hit the public /api/health
 // instead, which proves only that some process is listening, not that the
@@ -219,20 +269,31 @@ func validateCLIToken(path string, raw []byte) (string, error) {
 // dispatch its real request with, against the SAME auth middleware that
 // gates every other /api/* route, closes that gap directly instead of
 // reimplementing a parallel comparison here.
-func hostModeHealthy(ctx context.Context, addr, token string) bool {
+func probeHostMode(ctx context.Context, addr, token string) hostModeProbeResult {
 	reqCtx, cancel := context.WithTimeout(ctx, hostModeProbeTimeout)
 	defer cancel()
 	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, "http://"+addr+"/api/cli-token-check", nil)
 	if err != nil {
-		return false
+		return hostModeUnreachable
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return false
+		return hostModeUnreachable
 	}
 	defer resp.Body.Close()
-	return resp.StatusCode >= 200 && resp.StatusCode < 300
+	switch {
+	case resp.StatusCode >= 200 && resp.StatusCode < 300:
+		return hostModeHealthyResult
+	case resp.StatusCode == http.StatusNotFound:
+		return hostModeStaleImage
+	default:
+		return hostModeUnreachable
+	}
+}
+
+func hostModeHealthy(ctx context.Context, addr, token string) bool {
+	return probeHostMode(ctx, addr, token) == hostModeHealthyResult
 }
 
 // findComposeRoot locates the boid repo checkout containing
@@ -279,12 +340,19 @@ func findComposeRoot() (string, error) {
 const composeImageTag = "boid-runner:latest"
 
 // hostModeAssetsDir returns (creating if necessary) the stable directory
-// deployFromEmbeddedAssets extracts its embedded compose.yml/Dockerfile
-// into — $XDG_STATE_HOME/boid/compose (or ~/.local/state/boid/compose),
-// mirroring internal/client's autostartLogPath's own XDG_STATE_HOME
-// fallback convention. State-dir, not config-dir (hostModeConfigDir):
-// these are regenerable, binary-version-derived artifacts, not a
-// standalone secret like cli-token.
+// deployFromEmbeddedAssets extracts its embedded assets into —
+// $XDG_STATE_HOME/boid/compose (or ~/.local/state/boid/compose), mirroring
+// internal/client's autostartLogPath's own XDG_STATE_HOME fallback
+// convention. State-dir, not config-dir (hostModeConfigDir): these are
+// regenerable, binary-version-derived artifacts, not a standalone secret
+// like cli-token.
+//
+// This directory doubles as an emulated boid-repo ROOT for
+// scripts/deploy-container.sh's own purposes (extractComposeAssets writes
+// scripts/deploy-container.sh and build/container/{compose.yml,Dockerfile}
+// underneath it, mirroring this repo's own layout) — the returned path is
+// what deployFromEmbeddedAssets passes as ROOT to runDeployScript, exactly
+// like findComposeRoot's checkout root is for deployFromCheckout.
 func hostModeAssetsDir() (string, error) {
 	stateDir := os.Getenv("XDG_STATE_HOME")
 	if stateDir == "" {
@@ -301,19 +369,39 @@ func hostModeAssetsDir() (string, error) {
 	return dir, nil
 }
 
-// extractComposeAssets writes the embedded compose.yml and Dockerfile
-// (boidcontainer.Assets, build/container/assets.go) into
-// hostModeAssetsDir(), unconditionally overwriting on every call — cheap,
-// and keeps the extracted copy from ever drifting stale against whichever
-// `boid` binary version is running (unlike loadOrCreateCLIToken's
-// generate-ONCE secret, there is no "first writer wins" concern here: the
-// content is a deterministic function of the binary, not random state, and
-// this only ever runs serialized under withHostModeLock's flock anyway).
-// Returns the directory the two files were written into.
+// extractComposeAssets writes the embedded scripts/deploy-container.sh
+// (boidscripts.Assets, scripts/embed.go) and compose.yml/Dockerfile
+// (boidcontainer.Assets, build/container/assets.go) into a directory tree
+// rooted at hostModeAssetsDir() that mirrors this repo's own layout —
+// <root>/scripts/deploy-container.sh and
+// <root>/build/container/{compose.yml,Dockerfile} — so the extracted
+// script's own `ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"`
+// relative-path computation resolves exactly as it would from a real
+// checkout (round-3 codex review: unify the checkout and embedded-assets
+// host-mode paths onto the SAME script, rather than reimplementing a
+// second, narrower copy of its config-seed/UID-GID/podman-preflight logic
+// directly in Go). Returns <root>.
+//
+// Unconditionally overwrites on every call via atomicfile.WriteAtomic
+// (write-temp + rename) — cheap, keeps the extracted copy from ever
+// drifting stale against whichever `boid` binary version is running, and
+// closes a real hazard a plain os.WriteFile would leave open (round-3
+// codex review Minor 2): a concurrent reader (this repo's own
+// deploy-container.sh, invoked by a second `boid` process) could otherwise
+// observe a truncated/partially-written file mid-extraction. This is
+// independent, defense-in-depth hardening alongside withHostModeLock's own
+// fix (its own doc comment) for the specific race that motivated it —
+// different XDG_CONFIG_HOME values resolving to different lock files
+// while sharing the same XDG_STATE_HOME.
 func extractComposeAssets() (string, error) {
-	dir, err := hostModeAssetsDir()
+	root, err := hostModeAssetsDir()
 	if err != nil {
 		return "", err
+	}
+
+	script, err := boidscripts.Assets.ReadFile("deploy-container.sh")
+	if err != nil {
+		return "", fmt.Errorf("read embedded deploy-container.sh: %w", err)
 	}
 	compose, err := boidcontainer.Assets.ReadFile("compose.yml")
 	if err != nil {
@@ -323,13 +411,28 @@ func extractComposeAssets() (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("read embedded Dockerfile: %w", err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "compose.yml"), compose, 0o644); err != nil {
+
+	scriptsDir := filepath.Join(root, "scripts")
+	if err := os.MkdirAll(scriptsDir, 0o755); err != nil {
+		return "", fmt.Errorf("mkdir %s: %w", scriptsDir, err)
+	}
+	buildDir := filepath.Join(root, "build", "container")
+	if err := os.MkdirAll(buildDir, 0o755); err != nil {
+		return "", fmt.Errorf("mkdir %s: %w", buildDir, err)
+	}
+
+	// 0755: the script must be executable (runDeployScript execs it
+	// directly, not via `sh scripts/deploy-container.sh`).
+	if err := atomicfile.WriteAtomic(filepath.Join(scriptsDir, "deploy-container.sh"), 0o755, script); err != nil {
+		return "", fmt.Errorf("extract deploy-container.sh: %w", err)
+	}
+	if err := atomicfile.WriteAtomic(filepath.Join(buildDir, "compose.yml"), 0o644, compose); err != nil {
 		return "", fmt.Errorf("extract compose.yml: %w", err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "Dockerfile"), dockerfile, 0o644); err != nil {
+	if err := atomicfile.WriteAtomic(filepath.Join(buildDir, "Dockerfile"), 0o644, dockerfile); err != nil {
 		return "", fmt.Errorf("extract Dockerfile: %w", err)
 	}
-	return dir, nil
+	return root, nil
 }
 
 // usableEngine reports whether name (docker or podman) is not just present
@@ -347,16 +450,30 @@ func usableEngine(ctx context.Context, name string) bool {
 	return exec.CommandContext(checkCtx, name, "version").Run() == nil
 }
 
+// dockerComposeUsable reports whether `docker compose version` succeeds —
+// distinct from usableEngine(ctx, "docker"), which only proves the docker
+// ENGINE is reachable (`docker version`), not that the compose v2 PLUGIN
+// this whole file's compose invocations depend on is installed alongside
+// it (round-3 codex review Minor 1). A docker install with a reachable
+// daemon but no compose plugin would otherwise be preferred over a
+// genuinely usable podman+podman-compose and only fail much later, at the
+// actual `up` call.
+func dockerComposeUsable(ctx context.Context) bool {
+	checkCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	return exec.CommandContext(checkCtx, "docker", "compose", "version").Run() == nil
+}
+
 // detectComposeEngine picks a usable engine + compose invocation, the same
 // preference order as scripts/deploy-container.sh's own engine selection
 // (docker first, podman via podman-compose second) — kept independent of
-// that script (this is the no-checkout fallback path, which by definition
-// cannot invoke a script that only exists inside a checkout), but
-// deliberately narrow: unlike the script, this has no build/podman-socket-
-// preflight/config-seed responsibilities at all, only "pick a `compose up
-// -d` command line that will work".
+// that script (this decides whether the no-checkout fallback is even
+// possible at all, before extracting/invoking a script that only exists
+// once extracted), but deliberately narrow: unlike the script, this has no
+// build/podman-socket-preflight/config-seed responsibilities at all, only
+// "is there an engine that can plausibly run `compose up -d`".
 func detectComposeEngine(ctx context.Context) (engine string, composeCmd []string, err error) {
-	if usableEngine(ctx, "docker") {
+	if usableEngine(ctx, "docker") && dockerComposeUsable(ctx) {
 		return "docker", []string{"docker", "compose"}, nil
 	}
 	if usableEngine(ctx, "podman") {
@@ -365,53 +482,68 @@ func detectComposeEngine(ctx context.Context) (engine string, composeCmd []strin
 		}
 		return "", nil, fmt.Errorf("podman found but no podman-compose on PATH")
 	}
-	return "", nil, fmt.Errorf("no usable docker or podman engine found on PATH")
+	return "", nil, fmt.Errorf("no usable docker+compose or podman+podman-compose engine found on PATH")
 }
 
 // imageExists reports whether composeImageTag is already present in the
 // given engine's local image store — the precondition
-// deployFromEmbeddedAssets requires before attempting `compose up` at all,
-// since compose.yml has no `build:` section to fall back to.
+// deployFromEmbeddedAssets requires before invoking the deploy script at
+// all, since the embedded-assets fallback can never build a fresh image
+// (this file's own header comment).
 func imageExists(ctx context.Context, engine, tag string) bool {
 	checkCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	return exec.CommandContext(checkCtx, engine, "image", "inspect", tag).Run() == nil
 }
 
-// hostModeRuntimeDir mirrors scripts/deploy-container.sh's own
-// BOID_RUNTIME_DIR computation (that script's own header comment explains
-// why this must match internal/client.DefaultSocketPath()'s fallback chain
-// rather than just XDG_RUNTIME_DIR-or-/run/user/<uid>) — duplicated here,
-// narrowly, because deployFromEmbeddedAssets runs `compose up` directly
-// rather than through that script when no checkout is available to invoke
-// it from.
-func hostModeRuntimeDir() string {
-	if v := os.Getenv("BOID_RUNTIME_DIR"); v != "" {
-		return v
+// runDeployScript invokes <root>/scripts/deploy-container.sh — the single
+// implementation both deployFromCheckout and deployFromEmbeddedAssets
+// share (round-3 codex review: no more separate, narrower reimplementation
+// of the embedded path). skipBuild, when true, sets
+// DEPLOY_CONTAINER_SKIP_BUILD=1 in the child's environment — the embedded
+// path's root has none of the go source Dockerfile's `COPY . .` build
+// context needs, so it must never attempt a build (this file's own header
+// comment); the checkout path always leaves it false, letting the script
+// build a fresh image exactly as it always has.
+func runDeployScript(ctx context.Context, root, token, addr string, skipBuild bool) error {
+	scriptPath := filepath.Join(root, "scripts", "deploy-container.sh")
+	deployCmd := exec.CommandContext(ctx, scriptPath) //nolint:gosec // scriptPath is built from a fixed, repo-relative suffix under either a located checkout root or this process's own extraction dir — not attacker-controlled input
+	deployCmd.Dir = root
+	// Filter out any inherited BOID_CLI_TOKEN before appending ours: a
+	// naive append(os.Environ(), "BOID_CLI_TOKEN="+token) would leave TWO
+	// entries when the invoking shell already exported one (e.g. a
+	// stale/different value from a previous manual `docker compose` run)
+	// — which one the child process sees for a duplicate key is
+	// libc-dependent, not guaranteed to be "last wins". Filtering first
+	// makes token's value unambiguous.
+	env := append(filterEnv(os.Environ(), "BOID_CLI_TOKEN"), "BOID_CLI_TOKEN="+token)
+	if skipBuild {
+		env = append(env, "DEPLOY_CONTAINER_SKIP_BUILD=1")
 	}
-	if v := os.Getenv("XDG_RUNTIME_DIR"); v != "" {
-		return v
+	deployCmd.Env = env
+	// Progress goes to stderr, keeping stdout clean for the eventual
+	// subcommand's own output (e.g. `boid task list -o json`).
+	deployCmd.Stdout = os.Stderr
+	deployCmd.Stderr = os.Stderr
+	if err := deployCmd.Run(); err != nil {
+		return fmt.Errorf("%s failed: %w", scriptPath, err)
 	}
-	uid := os.Getuid()
-	runDir := fmt.Sprintf("/run/user/%d", uid)
-	if _, err := os.Stat(runDir); err == nil {
-		return runDir
-	}
-	return "/tmp"
+	return waitForHealthy(ctx, addr, token)
 }
 
 // deployFromEmbeddedAssets is the round-2 codex review Major 1 fallback:
 // invoked by ensureHostModeDaemon only when findComposeRoot could not
 // locate a real boid repo checkout (see this file's own header comment for
-// the two-path design). Brings the compose stack up directly against the
-// extracted embedded compose.yml, WITHOUT ever attempting a `docker build`
-// — that only works when composeImageTag already exists locally (checked
-// explicitly up front, so the failure mode for a genuinely fresh host with
-// neither a checkout nor a pre-built image is one clear, specific error
-// rather than a confusing docker-build failure against a source-less
-// context).
+// the two-path design). Extracts the embedded assets to an emulated
+// checkout root (extractComposeAssets) and runs that root's own
+// scripts/deploy-container.sh with DEPLOY_CONTAINER_SKIP_BUILD=1 — never
+// attempting a `docker build`, which only ever works when composeImageTag
+// already exists locally (checked explicitly up front, so the failure mode
+// for a genuinely fresh host with neither a checkout nor a pre-built image
+// is one clear, specific error rather than a confusing docker-build/
+// git-rev-parse failure against a source-less extracted context).
 func deployFromEmbeddedAssets(ctx context.Context, token, addr string) error {
-	engine, composeCmd, err := detectComposeEngine(ctx)
+	engine, _, err := detectComposeEngine(ctx)
 	if err != nil {
 		return fmt.Errorf(
 			"no boid repo checkout found (set BOID_COMPOSE_ROOT, or run `boid` from within one) to build a fresh image, and %w", err)
@@ -423,46 +555,34 @@ func deployFromEmbeddedAssets(ctx context.Context, token, addr string) error {
 				"(scripts/deploy-container.sh) or pre-provision the image out of band", composeImageTag)
 	}
 
-	assetsDir, err := extractComposeAssets()
+	root, err := extractComposeAssets()
 	if err != nil {
 		return fmt.Errorf("extract embedded compose assets: %w", err)
 	}
-	composePath := filepath.Join(assetsDir, "compose.yml")
 
-	fmt.Fprintln(os.Stderr, "boid: daemon container not reachable; no boid repo checkout found, starting the existing "+composeImageTag+" image via the embedded compose.yml...")
+	fmt.Fprintln(os.Stderr, "boid: daemon container not reachable; no boid repo checkout found, starting the existing "+composeImageTag+" image via the embedded scripts/deploy-container.sh...")
 
-	args := append(append([]string{}, composeCmd[1:]...), "-f", composePath, "up", "-d")
-	upCmd := exec.CommandContext(ctx, composeCmd[0], args...) //nolint:gosec // engine/composeCmd come from detectComposeEngine's own fixed literals, not attacker-controlled input
-	upCmd.Env = append(filterEnv(os.Environ(), "BOID_CLI_TOKEN"),
-		"BOID_CLI_TOKEN="+token,
-		"BOID_RUNTIME_DIR="+hostModeRuntimeDir(),
-	)
-	if engine == "podman" {
-		// Mirrors scripts/deploy-container.sh's own podman rootless socket
-		// default — compose.yml's BOID_DOCKER_SOCK_SRC has no default that
-		// works for podman (it's deliberately docker-shaped, see that
-		// variable's own doc comment in compose.yml).
-		upCmd.Env = append(upCmd.Env, fmt.Sprintf("BOID_DOCKER_SOCK_SRC=/run/user/%d/podman/podman.sock", os.Getuid()))
-	}
-	upCmd.Stdout = os.Stderr
-	upCmd.Stderr = os.Stderr
-	if err := upCmd.Run(); err != nil {
-		return fmt.Errorf("%s up -d (embedded compose.yml) failed: %w", strings.Join(composeCmd, " "), err)
-	}
-
-	return waitForHealthy(ctx, addr, token)
+	return runDeployScript(ctx, root, token, addr, true)
 }
 
-// waitForHealthy polls hostModeHealthy until it reports healthy or
-// hostModeStartTimeout passes — shared by both deployFromCheckout and
-// deployFromEmbeddedAssets so the two deploy strategies report readiness
-// identically.
+// waitForHealthy polls probeHostMode until it reports healthy, reports a
+// stale image (fails immediately — see hostModeStaleImage's own doc
+// comment), or hostModeStartTimeout passes — shared by both
+// deployFromCheckout and deployFromEmbeddedAssets (via runDeployScript) so
+// the two deploy strategies report readiness identically.
 func waitForHealthy(ctx context.Context, addr, token string) error {
 	deadline := time.Now().Add(hostModeStartTimeout)
 	for time.Now().Before(deadline) {
-		if hostModeHealthy(ctx, addr, token) {
+		switch probeHostMode(ctx, addr, token) {
+		case hostModeHealthyResult:
 			fmt.Fprintln(os.Stderr, "boid: daemon container is up")
 			return nil
+		case hostModeStaleImage:
+			return fmt.Errorf(
+				"daemon container at %s is reachable but does not expose /api/cli-token-check (404) — "+
+					"this looks like a stale boid-runner image that predates the CLI listener; the boid-runner image needs an update "+
+					"(rebuild it from within a boid repo checkout via scripts/deploy-container.sh, or pre-provision a newer boid-runner:latest) "+
+					"rather than waiting out the full startup timeout for a condition that cannot resolve on its own", addr)
 		}
 		time.Sleep(hostModeHealthPollInterval)
 	}
@@ -475,33 +595,32 @@ func waitForHealthy(ctx context.Context, addr, token string) error {
 // can ever build a fresh image.
 func deployFromCheckout(ctx context.Context, root, token, addr string) error {
 	fmt.Fprintln(os.Stderr, "boid: daemon container not reachable; starting it now (this can take a while on first run)...")
-	deployCmd := exec.CommandContext(ctx, filepath.Join(root, "scripts", "deploy-container.sh")) //nolint:gosec // fixed, repo-relative script path — not attacker-controlled input
-	deployCmd.Dir = root
-	// Filter out any inherited BOID_CLI_TOKEN before appending ours:
-	// a naive append(os.Environ(), "BOID_CLI_TOKEN="+token) would leave
-	// TWO entries when the invoking shell already exported one (e.g. a
-	// stale/different value from a previous manual `docker compose`
-	// run) — which one `deploy-container.sh`'s child process sees for
-	// a duplicate key is libc-dependent, not guaranteed to be "last
-	// wins". Filtering first makes token's value unambiguous.
-	deployCmd.Env = append(filterEnv(os.Environ(), "BOID_CLI_TOKEN"), "BOID_CLI_TOKEN="+token)
-	// Progress goes to stderr, keeping stdout clean for the eventual
-	// subcommand's own output (e.g. `boid task list -o json`).
-	deployCmd.Stdout = os.Stderr
-	deployCmd.Stderr = os.Stderr
-	if err := deployCmd.Run(); err != nil {
-		return fmt.Errorf("scripts/deploy-container.sh failed: %w", err)
-	}
-	return waitForHealthy(ctx, addr, token)
+	return runDeployScript(ctx, root, token, addr, false)
 }
 
 // withHostModeLock serializes concurrent daemon-start attempts (multiple
 // `boid` invocations racing to notice "daemon not running" at once) behind
-// an flock on ~/.config/boid/cli-lock, so at most one deploy-container.sh
-// invocation runs at a time. Linux-only (CLAUDE.md) — syscall.Flock is a
-// direct, dependency-free fit; no need for a cross-platform library here.
+// an flock, so at most one deploy-container.sh invocation — and, for the
+// embedded-assets path, at most one extractComposeAssets extraction — runs
+// at a time. Linux-only (CLAUDE.md) — syscall.Flock is a direct,
+// dependency-free fit; no need for a cross-platform library here.
+//
+// The lock file lives beside the extracted assets, under
+// hostModeAssetsDir() (XDG_STATE_HOME) — NOT under hostModeConfigDir()
+// (XDG_CONFIG_HOME), where it lived before this fix (round-3 codex review
+// Minor 2). Two `boid` invocations that happen to see different
+// XDG_CONFIG_HOME values (e.g. two shells with slightly different
+// environments) but the SAME XDG_STATE_HOME previously took two DIFFERENT
+// locks while racing to write the SAME extracted files — no mutual
+// exclusion at all despite both intending to serialize against each other.
+// Deriving the lock path from the same directory the race is actually
+// over closes that gap directly; extractComposeAssets's own
+// atomicfile.WriteAtomic use is independent, defense-in-depth hardening
+// for the same race (its own doc comment) rather than a substitute for
+// this fix — the two mechanisms guard different things (mutual exclusion
+// vs. no reader ever observing a torn write).
 func withHostModeLock(fn func() error) error {
-	dir, err := hostModeConfigDir()
+	dir, err := hostModeAssetsDir()
 	if err != nil {
 		return err
 	}
@@ -562,13 +681,14 @@ func ensureHostModeDaemon(ctx context.Context, addr, token string) error {
 		}
 
 		// PRIMARY path: a real checkout was found — build (if needed) +
-		// compose up via the existing, already-tested deploy-container.sh,
-		// unchanged from before round-2's Major 1 fix. FALLBACK
-		// (round-2 codex review Major 1): no checkout found at all —
-		// deployFromEmbeddedAssets can still bring up an ALREADY-BUILT
-		// image via the embedded compose.yml. See this file's own header
-		// comment for the full rationale of why these are two genuinely
-		// different code paths rather than one unified implementation.
+		// deploy via the existing, already-tested deploy-container.sh
+		// (round-2 codex review Major 1). FALLBACK (round-2 Major 1, root
+		// cause fixed round-3): no checkout found at all —
+		// deployFromEmbeddedAssets extracts and runs that SAME script
+		// against an ALREADY-BUILT image instead of reimplementing a
+		// second, narrower copy of it. See this file's own header comment
+		// for the full rationale of why these are the same script run from
+		// two different roots, not two different implementations.
 		if root, err := findComposeRoot(); err == nil {
 			return deployFromCheckout(ctx, root, token, addr)
 		}

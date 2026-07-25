@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -366,16 +367,24 @@ func writeFakeExecutable(t *testing.T, dir, name, body string) {
 }
 
 // TestExtractComposeAssets_WritesEmbeddedContentByteForByte pins the
-// round-2 codex review Major 1 fix's extraction step: compose.yml and
-// Dockerfile written into hostModeAssetsDir() must be byte-for-byte
-// identical to the real files this checkout ships (build/container/
-// {compose.yml,Dockerfile}) — go:embed captured them at build time
-// (build/container/assets.go), this just proves the extraction round-trip
-// doesn't corrupt/truncate/mismatch them.
+// round-2 codex review Major 1 fix's extraction step, extended by round-3
+// (unifying the checkout and embedded-assets host-mode paths onto the SAME
+// script): compose.yml, Dockerfile, AND deploy-container.sh, written into a
+// tree rooted at hostModeAssetsDir(), must be byte-for-byte identical to
+// the real files this checkout ships (build/container/{compose.yml,
+// Dockerfile}, scripts/deploy-container.sh) — go:embed captured them at
+// build time (build/container/assets.go, scripts/embed.go), this just
+// proves the extraction round-trip doesn't corrupt/truncate/mismatch them.
+// Also pins the layout itself: the returned root must mirror this repo's
+// own directory structure (root/scripts/deploy-container.sh,
+// root/build/container/{compose.yml,Dockerfile}) so the extracted script's
+// own `dirname "${BASH_SOURCE[0]}"`-relative path computation resolves
+// exactly as it would from a real checkout — and the script must be
+// executable, since runDeployScript execs it directly.
 func TestExtractComposeAssets_WritesEmbeddedContentByteForByte(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 
-	dir, err := extractComposeAssets()
+	root, err := extractComposeAssets()
 	if err != nil {
 		t.Fatalf("extractComposeAssets: %v", err)
 	}
@@ -384,7 +393,7 @@ func TestExtractComposeAssets_WritesEmbeddedContentByteForByte(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read real compose.yml: %v", err)
 	}
-	gotCompose, err := os.ReadFile(filepath.Join(dir, "compose.yml"))
+	gotCompose, err := os.ReadFile(filepath.Join(root, "build", "container", "compose.yml"))
 	if err != nil {
 		t.Fatalf("read extracted compose.yml: %v", err)
 	}
@@ -396,12 +405,33 @@ func TestExtractComposeAssets_WritesEmbeddedContentByteForByte(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read real Dockerfile: %v", err)
 	}
-	gotDockerfile, err := os.ReadFile(filepath.Join(dir, "Dockerfile"))
+	gotDockerfile, err := os.ReadFile(filepath.Join(root, "build", "container", "Dockerfile"))
 	if err != nil {
 		t.Fatalf("read extracted Dockerfile: %v", err)
 	}
 	if string(gotDockerfile) != string(wantDockerfile) {
 		t.Error("extracted Dockerfile does not match the real build/container/Dockerfile byte-for-byte")
+	}
+
+	wantScript, err := os.ReadFile(filepath.Join("..", "scripts", "deploy-container.sh"))
+	if err != nil {
+		t.Fatalf("read real deploy-container.sh: %v", err)
+	}
+	scriptPath := filepath.Join(root, "scripts", "deploy-container.sh")
+	gotScript, err := os.ReadFile(scriptPath)
+	if err != nil {
+		t.Fatalf("read extracted deploy-container.sh: %v", err)
+	}
+	if string(gotScript) != string(wantScript) {
+		t.Error("extracted deploy-container.sh does not match the real scripts/deploy-container.sh byte-for-byte")
+	}
+
+	info, err := os.Stat(scriptPath)
+	if err != nil {
+		t.Fatalf("stat extracted deploy-container.sh: %v", err)
+	}
+	if info.Mode().Perm()&0o100 == 0 {
+		t.Errorf("extracted deploy-container.sh mode = %o, want the owner-execute bit set", info.Mode().Perm())
 	}
 }
 
@@ -472,6 +502,59 @@ func TestDetectComposeEngine_FallsBackToPodmanWhenDockerUnusable(t *testing.T) {
 	}
 }
 
+// TestDetectComposeEngine_DockerWithoutComposePlugin_FallsBackToPodman
+// pins the round-3 codex review Minor 1 fix: `docker version` succeeding
+// is not proof the compose v2 plugin (`docker compose version`) is
+// installed — a docker with a reachable engine but no compose plugin must
+// not be preferred over a genuinely usable podman+podman-compose sitting
+// right next to it.
+func TestDetectComposeEngine_DockerWithoutComposePlugin_FallsBackToPodman(t *testing.T) {
+	dir := t.TempDir()
+	// `docker version` succeeds (engine reachable) but `docker compose
+	// version` fails (no v2 plugin installed) — case-dispatch on $1 the
+	// same way TestDeployFromEmbeddedAssets_NoImage_ClearError's fake
+	// does.
+	writeFakeExecutable(t, dir, "docker", `
+case "$1" in
+  version) exit 0 ;;
+  *) exit 1 ;;
+esac
+`)
+	writeFakeExecutable(t, dir, "podman", "exit 0")
+	writeFakeExecutable(t, dir, "podman-compose", "exit 0")
+	t.Setenv("PATH", dir)
+
+	engine, composeCmd, err := detectComposeEngine(context.Background())
+	if err != nil {
+		t.Fatalf("detectComposeEngine: %v", err)
+	}
+	if engine != "podman" {
+		t.Errorf("engine = %q, want podman (docker usable but missing the compose v2 plugin)", engine)
+	}
+	if len(composeCmd) != 1 || composeCmd[0] != "podman-compose" {
+		t.Errorf("composeCmd = %v, want [podman-compose]", composeCmd)
+	}
+}
+
+// TestDetectComposeEngine_DockerWithoutComposePlugin_NoPodman_Errors is the
+// companion dead-end case: docker usable but no compose plugin, AND no
+// podman at all — must error rather than silently picking a docker
+// invocation that would fail at the actual `up` call.
+func TestDetectComposeEngine_DockerWithoutComposePlugin_NoPodman_Errors(t *testing.T) {
+	dir := t.TempDir()
+	writeFakeExecutable(t, dir, "docker", `
+case "$1" in
+  version) exit 0 ;;
+  *) exit 1 ;;
+esac
+`)
+	t.Setenv("PATH", dir)
+
+	if _, _, err := detectComposeEngine(context.Background()); err == nil {
+		t.Fatal("expected an error when docker lacks the compose plugin and no podman is present")
+	}
+}
+
 func TestDetectComposeEngine_PodmanWithoutPodmanCompose_Errors(t *testing.T) {
 	dir := t.TempDir()
 	writeFakeExecutable(t, dir, "podman", "exit 0")
@@ -537,12 +620,14 @@ func TestDeployFromEmbeddedAssets_NoImage_ClearError(t *testing.T) {
 	t.Setenv("PATH", dir)
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 
-	// Rewrite the fake so `version` succeeds but `image inspect` fails —
-	// distinguishing the two subcommands the way a real docker with no
-	// matching image locally would.
+	// Rewrite the fake so `version` and `compose version` succeed but
+	// `image inspect` fails — distinguishing the subcommands the way a
+	// real docker with a working compose plugin but no matching image
+	// locally would.
 	writeFakeExecutable(t, dir, "docker", `
 case "$1" in
   version) exit 0 ;;
+  compose) exit 0 ;;
   image) exit 1 ;;
   *) exit 1 ;;
 esac
@@ -576,5 +661,180 @@ func TestFilterEnv_NoMatch(t *testing.T) {
 	got := filterEnv(env, "BOID_CLI_TOKEN")
 	if len(got) != 2 {
 		t.Errorf("filterEnv() with no match = %v, want unchanged", got)
+	}
+}
+
+// TestWithHostModeLock_LivesBesideAssetsDir_NotConfigDir pins the round-3
+// codex review Minor 2 fix: the flock file must live under
+// hostModeAssetsDir() (XDG_STATE_HOME), not hostModeConfigDir()
+// (XDG_CONFIG_HOME) as it did before this fix. Set to two DIFFERENT temp
+// dirs here specifically to prove the lock path only depends on the
+// state-home value — the concrete hazard this closes (withHostModeLock's
+// own doc comment): two `boid` invocations with different XDG_CONFIG_HOME
+// but the same XDG_STATE_HOME must take the SAME lock, or they gain no
+// mutual exclusion at all despite both intending to serialize the same
+// extraction/deploy race.
+func TestWithHostModeLock_LivesBesideAssetsDir_NotConfigDir(t *testing.T) {
+	configHome := t.TempDir()
+	stateHome := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", configHome)
+	t.Setenv("XDG_STATE_HOME", stateHome)
+
+	ran := false
+	if err := withHostModeLock(func() error {
+		ran = true
+		return nil
+	}); err != nil {
+		t.Fatalf("withHostModeLock: %v", err)
+	}
+	if !ran {
+		t.Fatal("withHostModeLock did not invoke fn")
+	}
+
+	assetsLock := filepath.Join(stateHome, "boid", "compose", cliLockFileName)
+	if _, err := os.Stat(assetsLock); err != nil {
+		t.Errorf("expected lock file at %s (beside the extracted assets, XDG_STATE_HOME-based): %v", assetsLock, err)
+	}
+	configLock := filepath.Join(configHome, "boid", cliLockFileName)
+	if _, err := os.Stat(configLock); err == nil {
+		t.Errorf("did not expect a lock file at %s (XDG_CONFIG_HOME-based) — the lock must live beside the assets it protects, not the cli-token's directory", configLock)
+	}
+}
+
+// TestWaitForHealthy_StaleImage404_FailsFastWithClearError pins the
+// round-3 codex review "Regression coverage" item 3: a daemon that answers
+// HTTP at all but returns 404 for /api/cli-token-check specifically (a
+// boid-runner image built before that endpoint existed) must fail
+// IMMEDIATELY with a clear "image needs update" error, not silently retry
+// for the full hostModeStartTimeout (5 minutes) on a condition that can
+// never resolve on its own. The test itself finishing quickly (well under
+// the suite's normal timeout) is part of what it pins — a regression back
+// to the old "404 is just another kind of unhealthy" behavior would hang
+// this test for 5 minutes.
+func TestWaitForHealthy_StaleImage404_FailsFastWithClearError(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Every request 404s — the endpoint genuinely does not exist in
+		// this "image", regardless of path/token, mirroring a pre-PR-3
+		// boid-runner image that predates the CLI listener entirely.
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer ts.Close()
+
+	addr := ts.Listener.Addr().String()
+	err := waitForHealthy(context.Background(), addr, "any-token")
+	if err == nil {
+		t.Fatal("expected an error for a 404 /api/cli-token-check response")
+	}
+	if !strings.Contains(err.Error(), "cli-token-check") {
+		t.Errorf("error = %q, want it to mention the missing endpoint", err.Error())
+	}
+	if !strings.Contains(err.Error(), "image") {
+		t.Errorf("error = %q, want it to mention the stale image / need to rebuild", err.Error())
+	}
+}
+
+// TestDeployFromEmbeddedAssets_RunsUnifiedScript_PerformsConfigBootstrap is
+// the round-3 codex review Blocker 1 regression test, and the
+// "Regression coverage" item 1 ("fresh deploy via embed path -> daemon
+// comes up in container backend mode, not userns") at the level this
+// sandbox can actually exercise without a real docker/podman engine or
+// root (no container can really be started here — see this repo's own
+// e2e/run-container.sh for the real end-to-end verification, CLAUDE.md's
+// "E2E テストは CI でしか検証できない").
+//
+// Before this fix, deployFromEmbeddedAssets ran a bare `compose up -d`
+// directly and NEVER invoked scripts/deploy-container.sh's own config-seed
+// + effective-backend-validate steps — so a fresh, no-checkout deploy
+// against an empty boid_state volume silently defaulted to
+// sandbox.backend: userns, leaving the CLI listener unreachable. This test
+// fakes the `docker` binary on PATH (logging every invocation's argv and
+// the DEPLOY_CONTAINER_SKIP_BUILD env value to a file, always succeeding,
+// and answering the effective-backend-validate step's own `boid config
+// effective-backend` call with "container" on stdout — the only content
+// that step's output actually needs) and lets the REAL, embedded
+// deploy-container.sh run end to end through
+// deployFromEmbeddedAssets — proving the config-seed and
+// effective-backend-validate `compose run` steps (and not just `compose up
+// -d`) actually execute under the embedded-assets fallback, and that no
+// `docker build` is ever attempted (DEPLOY_CONTAINER_SKIP_BUILD=1 is set
+// for every invocation — the embedded path can never build a fresh image,
+// this file's own header comment).
+func TestDeployFromEmbeddedAssets_RunsUnifiedScript_PerformsConfigBootstrap(t *testing.T) {
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "docker-invocations.log")
+
+	writeFakeExecutable(t, dir, "docker", fmt.Sprintf(`
+{
+  echo "ARGS: $*"
+  echo "SKIP_BUILD=${DEPLOY_CONTAINER_SKIP_BUILD:-unset}"
+} >> %q
+case "$*" in
+  *"--entrypoint sh"*)
+    # The effective-backend-validate step captures this call's stdout via
+    # command substitution and compares it against "container" — the
+    # config-seed step (the other --entrypoint sh call) doesn't capture
+    # stdout at all, so printing it there too is harmless.
+    echo "container"
+    ;;
+esac
+exit 0
+`, logPath))
+	// dir first (our fake docker must shadow any real one), then the real
+	// PATH — unlike the other fakes-on-PATH tests in this file (which only
+	// ever exec the fake directly), this one runs the REAL extracted
+	// deploy-container.sh (a bash script, `#!/usr/bin/env bash` shebang)
+	// end to end, so bash/mkdir/chown/id/getent/etc. must still resolve.
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/cli-token-check" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		if r.Header.Get("Authorization") != "Bearer good-token" {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer ts.Close()
+	addr := ts.Listener.Addr().String()
+
+	if err := deployFromEmbeddedAssets(context.Background(), "good-token", addr); err != nil {
+		t.Fatalf("deployFromEmbeddedAssets: %v", err)
+	}
+
+	logData, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("read invocation log: %v", err)
+	}
+	log := string(logData)
+
+	if got := strings.Count(log, "run --rm"); got < 2 {
+		t.Errorf("expected at least 2 `compose run --rm` invocations (config seed + effective-backend validate), got %d; log:\n%s", got, log)
+	}
+	if !strings.Contains(log, "up -d") {
+		t.Errorf("expected a `compose up -d` invocation; log:\n%s", log)
+	}
+	if strings.Contains(log, "ARGS: build") {
+		t.Errorf("expected no `docker build` invocation under the embedded-assets path (no source tree to build from); log:\n%s", log)
+	}
+	// Only the actual compose-PROJECT invocations (`compose -f <file>
+	// run/down/up`, both deploy-container.sh's own AND cmd/host.go's own
+	// earlier detectComposeEngine/imageExists probe calls like bare
+	// `compose version` are deliberately excluded via the "-f" match)
+	// spawned from WITHIN deploy-container.sh need to have inherited
+	// DEPLOY_CONTAINER_SKIP_BUILD=1 — deployFromEmbeddedAssets's own
+	// earlier Go-level precondition check (detectComposeEngine +
+	// imageExists) legitimately runs BEFORE runDeployScript ever sets that
+	// env var at all, so its `version`/`compose version`/`image inspect`
+	// probes are expected to show SKIP_BUILD=unset.
+	lines := strings.Split(log, "\n")
+	for i := 0; i+1 < len(lines); i++ {
+		if strings.HasPrefix(lines[i], "ARGS: compose -f") && lines[i+1] == "SKIP_BUILD=unset" {
+			t.Errorf("compose invocation %q ran without DEPLOY_CONTAINER_SKIP_BUILD=1; log:\n%s", lines[i], log)
+		}
 	}
 }

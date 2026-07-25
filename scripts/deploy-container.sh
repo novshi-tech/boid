@@ -62,7 +62,19 @@ usable() {
 	command -v "$1" >/dev/null 2>&1 && "$1" version >/dev/null 2>&1
 }
 
-if usable docker; then
+# docker_compose_usable() (round-3 codex review Minor 1): `docker version`
+# succeeding only proves the docker ENGINE is reachable, not that the
+# compose v2 PLUGIN this script's COMPOSE_CMD depends on
+# (`docker compose ...`, not the standalone python `docker-compose`) is
+# installed alongside it — a docker install with no compose plugin would
+# otherwise be selected here and only fail much later, at the actual `up`
+# call, when a genuinely usable podman+podman-compose might have been
+# sitting right next to it.
+docker_compose_usable() {
+	command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1
+}
+
+if usable docker && docker_compose_usable; then
 	ENGINE=docker
 	BUILD_CMD=(docker build)
 	COMPOSE_CMD=(docker compose -f "$COMPOSE_FILE")
@@ -76,7 +88,7 @@ elif usable podman; then
 		echo "warning: podman found but no podman-compose; skipping the compose up/down step (image build only)" >&2
 	fi
 elif command -v docker >/dev/null 2>&1; then
-	echo "error: docker is on PATH but not usable ('docker version' failed — daemon not running/unreachable), and no usable podman was found either" >&2
+	echo "error: docker is on PATH but not usable (either 'docker version' failed — daemon not running/unreachable — or the compose v2 plugin ('docker compose version') is missing), and no usable podman was found either" >&2
 	exit 1
 elif command -v podman >/dev/null 2>&1; then
 	echo "error: podman is on PATH but not usable ('podman version' failed), and no usable docker was found either" >&2
@@ -176,16 +188,40 @@ fi
 : "${DOCKER_GID:=999}"
 export BOID_RUNTIME_DIR BOID_UID BOID_GID DOCKER_GID
 
-IMAGE_TAG="boid:$(git -C "$ROOT_DIR" rev-parse HEAD)"
+# DEPLOY_CONTAINER_SKIP_BUILD (round-3 codex review of #835, PR-3's
+# host-mode fallback): set by cmd/host.go's deployFromEmbeddedAssets when
+# ROOT_DIR is an extracted, repo-root-SHAPED directory (this script itself,
+# plus build/container/{compose.yml,Dockerfile}, all go:embed'd into the
+# `boid` binary and written out to mirror this repo's own directory layout
+# — see scripts/embed.go and build/container/assets.go) rather than a real
+# git checkout. Both `docker build ... "$ROOT_DIR"` (Dockerfile's own build
+# context is `COPY . .`, the ENTIRE go source tree, which an extracted
+# asset directory never has — embedding what a build needs into the very
+# binary being built from that same source would be circular) and
+# `git -C "$ROOT_DIR" rev-parse HEAD` (no `.git` there) would fail in that
+# directory regardless, so this branch skips the whole build step (not
+# just the build call) and instead requires an already-built
+# boid-runner:latest image (built at some earlier point from within a real
+# checkout) to already exist locally.
+if [[ "${DEPLOY_CONTAINER_SKIP_BUILD:-0}" == "1" ]]; then
+	IMAGE_TAG="boid-runner:latest"
+	if ! "$ENGINE" image inspect "$IMAGE_TAG" >/dev/null 2>&1; then
+		echo "error: DEPLOY_CONTAINER_SKIP_BUILD=1 but no local $IMAGE_TAG image found — build it once from within a boid repo checkout (this script, without DEPLOY_CONTAINER_SKIP_BUILD) or pre-provision the image out of band" >&2
+		exit 1
+	fi
+	echo "deploy-container: DEPLOY_CONTAINER_SKIP_BUILD=1 — using existing local $IMAGE_TAG image, skipping image build"
+else
+	IMAGE_TAG="boid:$(git -C "$ROOT_DIR" rev-parse HEAD)"
 
-echo "deploy-container: building $IMAGE_TAG from $DOCKERFILE"
-"${BUILD_CMD[@]}" \
-	--build-arg "BOID_UID=$BOID_UID" \
-	--build-arg "BOID_GID=$BOID_GID" \
-	-t "$IMAGE_TAG" \
-	-t boid-runner:latest \
-	-f "$DOCKERFILE" \
-	"$ROOT_DIR"
+	echo "deploy-container: building $IMAGE_TAG from $DOCKERFILE"
+	"${BUILD_CMD[@]}" \
+		--build-arg "BOID_UID=$BOID_UID" \
+		--build-arg "BOID_GID=$BOID_GID" \
+		-t "$IMAGE_TAG" \
+		-t boid-runner:latest \
+		-f "$DOCKERFILE" \
+		"$ROOT_DIR"
+fi
 
 # DEPLOY_CONTAINER_BUILD_ONLY (codex round-1, PR834 Blocker 2): lets a
 # caller (e2e/run-container.sh) invoke just this build step, standalone,

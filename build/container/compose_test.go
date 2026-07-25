@@ -22,6 +22,10 @@ import (
 // compose.yml — deliberately narrow (not a full compose-spec model) so it
 // only breaks when something these tests actually assert about changes.
 type composeDoc struct {
+	// Name is the top-level explicit compose project name (round-3 codex
+	// review of #835, PR-3's host-mode fallback, Blocker 2 — see this
+	// field's own test below).
+	Name     string `yaml:"name"`
 	Services map[string]struct {
 		Networks map[string]struct {
 			Aliases []string `yaml:"aliases"`
@@ -50,6 +54,28 @@ func loadComposeDoc(t *testing.T) composeDoc {
 		t.Fatalf("parse compose.yml: %v", err)
 	}
 	return doc
+}
+
+// TestComposeHasExplicitProjectName pins the round-3 codex review of #835
+// (PR-3's host-mode fallback) Blocker 2 fix: without a top-level `name:`,
+// compose derives the project name from the containing directory — this
+// file's own build/container/ location for a checkout invocation
+// (`docker compose -f build/container/compose.yml ...`), but a DIFFERENT
+// directory for cmd/host.go's embedded-assets fallback (extracted to
+// $XDG_STATE_HOME/boid/compose/build/container/ for a standalone-installed
+// `boid` with no repo checkout — see cmd/host.go's deployFromEmbeddedAssets
+// and TestExtractComposeAssets in cmd/host_test.go). Two different project
+// names mean two different containers/networks/`boid_state` volumes for
+// what is meant to be the exact same daemon deployment (concrete failure:
+// a stale token check hits the wrong stack's daemon entirely, or a second
+// `up` collides with the first stack's still-running port publish). An
+// explicit name makes project identity a property of this file's content,
+// not of the invoking directory, so both paths always agree.
+func TestComposeHasExplicitProjectName(t *testing.T) {
+	doc := loadComposeDoc(t)
+	if doc.Name != "boid" {
+		t.Errorf("compose.yml top-level name = %q, want %q (explicit project identity shared by the checkout and embedded-assets host-mode paths)", doc.Name, "boid")
+	}
 }
 
 // TestComposeDaemonHasDockerProxyAlias pins Blocker 3 (PR6 codex review):

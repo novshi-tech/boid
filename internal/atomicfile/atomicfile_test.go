@@ -177,6 +177,81 @@ func TestPublishIfAbsent_ExistingFileUnreadableReturnsError(t *testing.T) {
 // exactly this scenario — must never error (which would happen if a
 // goroutine observed a half-written file) and must all agree on exactly
 // one winning content.
+// TestWriteAtomic_CreatesFileWithContentAndMode pins WriteAtomic's basic
+// happy path — unlike PublishIfAbsent, this is an unconditional-overwrite
+// primitive (write-temp + os.Rename, not "publish if absent" via os.Link),
+// for content that is a deterministic function of something else (e.g. an
+// embedded asset) rather than a value that must only ever be generated
+// once.
+func TestWriteAtomic_CreatesFileWithContentAndMode(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "compose.yml")
+
+	if err := atomicfile.WriteAtomic(path, 0o644, []byte("hello")); err != nil {
+		t.Fatalf("WriteAtomic: %v", err)
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if string(data) != "hello" {
+		t.Errorf("content = %q, want %q", data, "hello")
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+	if perm := info.Mode().Perm(); perm != 0o644 {
+		t.Errorf("mode = %o, want 0644", perm)
+	}
+}
+
+// TestWriteAtomic_OverwritesExistingContent pins the deliberate contrast
+// with PublishIfAbsent: a second WriteAtomic call against the same path
+// must replace the content, not preserve the first writer's — extracted,
+// binary-version-derived assets (compose.yml/Dockerfile/deploy-container.sh)
+// must never drift stale against a newer `boid` binary.
+func TestWriteAtomic_OverwritesExistingContent(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "compose.yml")
+
+	if err := atomicfile.WriteAtomic(path, 0o644, []byte("v1")); err != nil {
+		t.Fatalf("first WriteAtomic: %v", err)
+	}
+	if err := atomicfile.WriteAtomic(path, 0o644, []byte("v2-longer-content")); err != nil {
+		t.Fatalf("second WriteAtomic: %v", err)
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if string(data) != "v2-longer-content" {
+		t.Errorf("content = %q, want %q (second write must win)", data, "v2-longer-content")
+	}
+}
+
+// TestWriteAtomic_NoTempLeftover mirrors
+// TestPublishIfAbsent_NoTempLeftover: the staging temp file must never
+// survive a successful call.
+func TestWriteAtomic_NoTempLeftover(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "compose.yml")
+
+	if err := atomicfile.WriteAtomic(path, 0o644, []byte("x")); err != nil {
+		t.Fatalf("WriteAtomic: %v", err)
+	}
+
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("readdir: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("dir has %d entries, want exactly 1 (no leftover temp file): %v", len(entries), entries)
+	}
+}
+
 func TestPublishIfAbsent_ConcurrentRace_OneWinnerNoPartialRead(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "secret")

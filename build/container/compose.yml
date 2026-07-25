@@ -185,6 +185,23 @@
 # podman — CLAUDE.md) during PR6 development; CI is the source of truth
 # going forward (docs/plans/phase6-container-backend.md §PR9's
 # e2e-container job actually runs this stack).
+#
+# name: boid (round-3 codex review of #835, PR-3's host-mode fallback,
+# Blocker 2): compose derives a project name from the containing
+# directory by default when none is declared — "container" for this
+# file's own build/container/ location. cmd/host.go's embedded-assets
+# fallback (deployFromEmbeddedAssets, for a standalone-installed `boid`
+# with no repo checkout) extracts this exact file to a DIFFERENT
+# directory ($XDG_STATE_HOME/boid/compose/build/container/), which would
+# otherwise derive a DIFFERENT default project name — and therefore a
+# different container/network/`boid_state` volume identity — than the
+# checkout path's `docker compose -f build/container/compose.yml ...`
+# invocation, even though both are meant to manage the exact same daemon
+# deployment. An explicit top-level `name:` makes the project identity a
+# property of this file's CONTENT, not of whatever directory it happens to
+# be invoked from, so both paths always resolve to the same stack.
+
+name: boid
 
 services:
   daemon:

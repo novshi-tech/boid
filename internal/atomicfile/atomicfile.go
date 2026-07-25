@@ -116,3 +116,51 @@ func PublishIfAbsent(path string, perm os.FileMode, content []byte) ([]byte, err
 	}
 	return content, nil
 }
+
+// WriteAtomic atomically (over)writes content to path — write-temp +
+// os.Rename, unconditional overwrite — the counterpart to PublishIfAbsent
+// for content that is a deterministic function of something else (e.g. an
+// embedded go:embed asset keyed to the running binary's version) rather
+// than a value that must only ever be generated once. Unlike
+// PublishIfAbsent's os.Link (which fails if path already exists, so a
+// second call never clobbers the first), os.Rename always replaces
+// path — the intended behavior here: every call is "the latest, correct
+// content", and a stale extracted copy from an older `boid` binary must
+// never survive a newer one's extraction.
+//
+// This closes a real hazard (round-3 codex review of #835, PR-3's
+// host-mode fallback): a bare os.WriteFile truncates path in place before
+// writing the new bytes, so a reader (a concurrent `boid` invocation, or
+// this same process's own subsequent read of the file it just wrote) can
+// observe a partially-written or truncated file mid-call. write-temp +
+// rename guarantees any reader always sees either the complete old content
+// or the complete new content, never a partial mix — path's parent
+// directory must already exist.
+func WriteAtomic(path string, perm os.FileMode, content []byte) error {
+	dir := filepath.Dir(path)
+	tmp, err := os.CreateTemp(dir, ".atomicfile-*.tmp")
+	if err != nil {
+		return fmt.Errorf("atomicfile: create temp file: %w", err)
+	}
+	tmpPath := tmp.Name()
+	// Rename (the success path) consumes tmpPath; this Remove is then a
+	// harmless no-op ENOENT. Any earlier error path leaves it behind
+	// without this, so always attempt cleanup.
+	defer os.Remove(tmpPath)
+
+	if err := tmp.Chmod(perm); err != nil {
+		tmp.Close()
+		return fmt.Errorf("atomicfile: chmod temp file: %w", err)
+	}
+	if _, err := tmp.Write(content); err != nil {
+		tmp.Close()
+		return fmt.Errorf("atomicfile: write temp file: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("atomicfile: close temp file: %w", err)
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		return fmt.Errorf("atomicfile: rename into place %s: %w", path, err)
+	}
+	return nil
+}
