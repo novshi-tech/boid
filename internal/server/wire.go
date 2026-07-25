@@ -1694,5 +1694,16 @@ func mountRoutes(srv *Server, runtime *appRuntime) error {
 	// same router wrapped with transport-aware API auth, so the data/control
 	// /api/* surface requires a session over TCP. See Server.Start.
 	srv.tcpHandler = auth.NewTCPAPIAuthMiddleware(runtime.sessionSigner, runtime.authStore)(r)
+
+	// The dedicated CLI TCP listener (Config.CLIAddr/CLIToken, PR-3 Option 4
+	// host-mode redesign, docs/plans/volume-only-daemon.md §論点c) is served
+	// the same router wrapped with a DIFFERENT auth layer: a single shared
+	// BOID_CLI_TOKEN secret, not the Web UI's session/device-pair/loopback-
+	// trust machinery — see auth.NewCLITokenAuthMiddleware's own doc
+	// comment. Built unconditionally here (byte-for-byte cheap when
+	// cfg.CLIToken==""; NewCLITokenAuthMiddleware rejects every request in
+	// that case) — Server.Start only actually SERVES it when cfg.CLIAddr is
+	// also set.
+	srv.cliHandler = auth.NewCLITokenAuthMiddleware(srv.cfg.CLIToken)(r)
 	return nil
 }

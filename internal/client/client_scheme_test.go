@@ -145,13 +145,42 @@ func TestClient_ProbeAlive_HTTPSUnreachable(t *testing.T) {
 	}
 }
 
-func TestNewClient_HTTPScheme_Rejected(t *testing.T) {
+// TestNewClient_HTTPScheme_NonLoopback_Rejected pins decision 4's original
+// verdict for anything that ISN'T loopback: a plain-HTTP remote daemon
+// stays unsupported (would send BOID_CLI_TOKEN/any Bearer token in
+// cleartext over the network). Host mode's own loopback exception (see the
+// next test) does not widen this.
+func TestNewClient_HTTPScheme_NonLoopback_Rejected(t *testing.T) {
 	_, err := NewClient("http://example.com", "tok")
 	if err == nil {
-		t.Fatal("expected an error for http:// scheme (decision 4: unsupported)")
+		t.Fatal("expected an error for a non-loopback http:// scheme")
 	}
-	if !strings.Contains(err.Error(), "unsupported") {
-		t.Errorf("error should mention 'unsupported', got %q", err.Error())
+	if !strings.Contains(err.Error(), "loopback") {
+		t.Errorf("error should mention 'loopback', got %q", err.Error())
+	}
+}
+
+// TestNewClient_HTTPScheme_Loopback_Accepted pins the PR-3 Option 4
+// host-mode redesign (docs/plans/volume-only-daemon.md §論点c): an
+// http://127.0.0.1[:port] (or ::1/localhost) url is now a supported
+// scheme — cmd/host.go's own dispatch client for the container-backend
+// daemon's dedicated CLI TCP listener.
+func TestNewClient_HTTPScheme_Loopback_Accepted(t *testing.T) {
+	for _, host := range []string{"127.0.0.1:8442", "localhost:8442", "[::1]:8442"} {
+		c, err := NewClient("http://"+host, "tok")
+		if err != nil {
+			t.Fatalf("NewClient(http://%s): %v", host, err)
+		}
+		if c.IsUnix() {
+			t.Errorf("http://%s: expected IsUnix() == false", host)
+		}
+	}
+}
+
+func TestNewClient_HTTPScheme_MissingHost_Rejected(t *testing.T) {
+	_, err := NewClient("http://", "tok")
+	if err == nil {
+		t.Fatal("expected an error for an http:// url with no host")
 	}
 }
 
@@ -186,6 +215,35 @@ func TestNewClient_HTTPSScheme_MissingHost_Rejected(t *testing.T) {
 	_, err := NewClient("https://", "tok")
 	if err == nil {
 		t.Fatal("expected an error for an https:// url with no host")
+	}
+}
+
+// --- newHTTPClient (PR-3 Option 4 host-mode redesign, docs/plans/
+// volume-only-daemon.md §論点c) — mirrors the https Bearer-header test
+// below, minus TLS. httptest.NewServer's URL is always loopback
+// ("127.0.0.1:<port>"), so newHTTPClient's own loopback-host check passes
+// unremarkably here. ---
+
+func TestHTTPClient_SendsAuthorizationBearerHeader(t *testing.T) {
+	var gotAuth string
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer ts.Close()
+	u, err := url.Parse(ts.URL)
+	if err != nil {
+		t.Fatalf("parse test server url: %v", err)
+	}
+	c, err := newHTTPClient(u, "cli_tok_abc", nil)
+	if err != nil {
+		t.Fatalf("newHTTPClient: %v", err)
+	}
+	if err := c.Do("GET", "/api/tasks", nil, nil); err != nil {
+		t.Fatalf("Do: %v", err)
+	}
+	if gotAuth != "Bearer cli_tok_abc" {
+		t.Errorf("Authorization header = %q, want %q", gotAuth, "Bearer cli_tok_abc")
 	}
 }
 
@@ -306,5 +364,29 @@ func TestHTTPSClient_CrossOriginRedirect_Rejected(t *testing.T) {
 	}
 	if evilSawRequest {
 		t.Errorf("the cross-origin target must never have been reached at all (Authorization header %q would have leaked)", evilSawAuth)
+	}
+}
+
+// --- DefaultCLIAddr (PR-3 Option 4 host-mode redesign, docs/plans/
+// volume-only-daemon.md §論点c) ---
+
+func TestDefaultCLIAddr_NoOverride(t *testing.T) {
+	t.Setenv("BOID_CLI_ADDR", "")
+	if got := DefaultCLIAddr(); got != "127.0.0.1:8442" {
+		t.Errorf("DefaultCLIAddr() = %q, want %q", got, "127.0.0.1:8442")
+	}
+}
+
+func TestDefaultCLIAddr_PortOverride(t *testing.T) {
+	t.Setenv("BOID_CLI_ADDR", "0.0.0.0:19999")
+	if got := DefaultCLIAddr(); got != "127.0.0.1:19999" {
+		t.Errorf("DefaultCLIAddr() = %q, want %q (host override ignored, port honored)", got, "127.0.0.1:19999")
+	}
+}
+
+func TestDefaultCLIAddr_MalformedOverride_Ignored(t *testing.T) {
+	t.Setenv("BOID_CLI_ADDR", "not-a-host-port")
+	if got := DefaultCLIAddr(); got != "127.0.0.1:8442" {
+		t.Errorf("DefaultCLIAddr() = %q, want the default %q for a malformed override", got, "127.0.0.1:8442")
 	}
 }

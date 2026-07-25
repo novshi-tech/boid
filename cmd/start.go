@@ -48,6 +48,7 @@ var (
 	startSocketPath  string
 	startKitsDir     string
 	startKeyFilePath string
+	startCLIAddr     string
 	startAutoMigrate bool
 	startForeground  bool
 )
@@ -61,6 +62,7 @@ func init() {
 	startCmd.Flags().StringVar(&startSocketPath, "socket-path", "", "Path to the UNIX socket")
 	startCmd.Flags().StringVar(&startKitsDir, "kits-dir", "", "Base directory for installed kits")
 	startCmd.Flags().StringVar(&startKeyFilePath, "key-file-path", "", "Path to the secret encryption key file")
+	startCmd.Flags().StringVar(&startCLIAddr, "cli-addr", "", "host:port for the dedicated CLI TCP listener (docs/plans/volume-only-daemon.md §論点c; only bound when BOID_CLI_TOKEN is also set; default: client.DefaultCLIAddr(), \"127.0.0.1:8442\")")
 	startCmd.Flags().BoolVar(&startAutoMigrate, "auto-migrate", false,
 		"When project.yaml schema migration is needed, run `boid project migrate <dir> --apply` for each affected project automatically and respawn the daemon (skips the confirmation prompt on TTY too)")
 	startCmd.Flags().BoolVar(&startForeground, "foreground", false,
@@ -143,6 +145,12 @@ type startConfigOptions struct {
 	SocketPath  string
 	KitsDir     string
 	KeyFilePath string
+	// CLIAddr overrides the dedicated CLI TCP listener's bind address
+	// (docs/plans/volume-only-daemon.md §論点c, PR-3 Option 4 host-mode
+	// redesign) — empty falls back to client.DefaultCLIAddr() below,
+	// mirroring every other opts.* field's "" -> default* helper pattern
+	// in this function.
+	CLIAddr string
 }
 
 func buildStartConfig(opts startConfigOptions) (server.Config, error) {
@@ -151,6 +159,7 @@ func buildStartConfig(opts startConfigOptions) (server.Config, error) {
 		SocketPath:     opts.SocketPath,
 		KitsDir:        opts.KitsDir,
 		KeyFilePath:    opts.KeyFilePath,
+		CLIAddr:        opts.CLIAddr,
 		AllowedDomains: defaultAllowedDomains(),
 	}
 
@@ -166,6 +175,18 @@ func buildStartConfig(opts startConfigOptions) (server.Config, error) {
 	if cfg.KeyFilePath == "" {
 		cfg.KeyFilePath = defaultKeyFilePath()
 	}
+	if cfg.CLIAddr == "" {
+		cfg.CLIAddr = client.DefaultCLIAddr()
+	}
+	// BOID_CLI_TOKEN (PR-3 Option 4 host-mode redesign): the shared secret
+	// `boid`'s own host-mode orchestration (cmd/host.go) generates/reads
+	// from ~/.config/boid/cli-token and passes to the daemon container via
+	// build/container/compose.yml's `environment:` block. Empty for every
+	// non-container-mode invocation (a bare `boid start` on the host, or
+	// the userns backend's own e2e suite) — Server.Start skips binding the
+	// CLIAddr listener whenever CLIToken is empty (Config.CLIAddr's own
+	// doc comment), so this is a pure no-op there, not a behavior change.
+	cfg.CLIToken = os.Getenv("BOID_CLI_TOKEN")
 	cfg.TLSDir = defaultTLSDir()
 	cfg.InstallIDDir = defaultInstallIDDir()
 
@@ -188,6 +209,7 @@ func runStart(cmd *cobra.Command, args []string) error {
 		SocketPath:  startSocketPath,
 		KitsDir:     startKitsDir,
 		KeyFilePath: startKeyFilePath,
+		CLIAddr:     startCLIAddr,
 	})
 	if err != nil {
 		return err
@@ -468,6 +490,25 @@ func runDaemonChild(cfg server.Config) error {
 			daemon.WriteStartupStatusOnFD3(err)
 			return fmt.Errorf("setsid: %w", err)
 		}
+	}
+
+	// BOID_CLI_TOKEN misconfiguration warning (PR-3 Option 4 host-mode
+	// redesign, docs/plans/volume-only-daemon.md §論点c): daemon.
+	// ShouldLogToStdout() is the exact same "are we running as the
+	// compose/container daemon" signal BOID_LOG_STDOUT's own block above
+	// already uses — reused here rather than inventing a second env var.
+	// A bare `boid start` on the host (ShouldLogToStdout()==false) never
+	// warns: cfg.CLIToken is expected to be empty there (host mode's own
+	// dedicated CLI listener has no reason to exist outside the container
+	// deployment its BOID_CLI_TOKEN passthrough targets), and
+	// Server.Start already no-ops the listener bind in that case — see
+	// Config.CLIAddr's own doc comment. Under the container supervisor,
+	// though, an unset token silently leaves host-mode CLI dispatch
+	// unreachable (no listener bound at all) with no other symptom until
+	// someone notices `boid` commands hang waiting on a connection that
+	// never completes — surfaced loudly here instead.
+	if cfg.CLIToken == "" && daemon.ShouldLogToStdout() {
+		slog.Warn("BOID_CLI_TOKEN is unset; the dedicated CLI TCP listener will not be bound — host-mode `boid` CLI dispatch (cmd/host.go) will not be able to reach this daemon (docs/plans/volume-only-daemon.md §論点c)")
 	}
 
 	srv, err := server.New(cfg)
