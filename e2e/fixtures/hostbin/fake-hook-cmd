@@ -10,9 +10,13 @@ set -euo pipefail
 # the sandbox against a path under the project dir can never see a file the
 # host writes there after dispatch). This command itself always runs on the
 # host (host_commands are broker-executed host subprocesses), so it sees the
-# real host filesystem regardless of the sandbox's own isolated view. See
-# e2e/scenarios/readonly-hook-gate and daemon-restart-resume's hook scripts
-# for the calling convention (a tight poll loop calling this repeatedly).
+# real host filesystem regardless of the sandbox's own isolated view. The
+# calling convention is a tight poll loop calling this repeatedly; the
+# userns-era scenarios that exercised it (readonly-hook-gate,
+# daemon-restart-resume) were removed in PR-4 (docs/plans/
+# volume-only-daemon.md) along with the rest of e2e/scenarios/ — this
+# fixture is kept for a future container-backend scenario needing the same
+# release-signal pattern.
 if [[ "${1:-}" == "--check-file" ]]; then
   if [[ -f "${2:?--check-file requires a path argument}" ]]; then
     exit 0

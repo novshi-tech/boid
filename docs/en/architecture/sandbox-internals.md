@@ -1,6 +1,6 @@
 # Sandbox internals
 
-How `boid`'s sandbox is built, and what actually happens when one hook runs. This is the file-and-syscall-level zoom of the sandbox section in the [Architecture overview](overview.md).
+How `boid`'s sandbox is built, and what actually happens when one hook runs. This is the container-launch-parameters-and-filesystem-layout-level zoom of the sandbox section in the [Architecture overview](overview.md).
 
 The intended readers are contributors who touch `internal/sandbox/`, anyone debugging a sandbox-shaped bug, or anyone who wants to know exactly *why* their **host** home directory is invisible from inside (the sandbox's own `$HOME` is a different, workspace-scoped thing — see the "From inside the sandbox" section below).
 
@@ -13,80 +13,59 @@ The sandbox draws four boundaries simultaneously:
 3. **User ID.** The host's `root` is unreachable (rootless).
 4. **Commands.** Only host commands declared in the kit's `host_commands` cross the boundary.
 
-All of this is built from stock Linux primitives (mount namespace, user namespace, chroot, pasta, nftables). No extra runtime like Docker is required.
+All of this is delegated to a Docker/Podman container runtime by the boid daemon (as of PR-4 = the volume-only cutover, the container backend is the sole sandbox backend — `sandbox.backend` config was removed). Mount/network/user namespace isolation and the root filesystem switch are handled entirely by the container runtime; boid no longer issues any namespace-related syscalls directly.
 
 ## The launch chain
 
-When the daemon starts a hook, the dispatcher writes a JSON spec file to disk and forks `boid runner-outer`. The full chain is five levels deep:
+When the daemon starts a hook, `internal/dispatcher`'s `containerBackend.Launch` ([`internal/dispatcher/container_backend.go`](https://github.com/novshi-tech/boid/blob/main/internal/dispatcher/container_backend.go)) translates a `sandbox.Spec` into a Docker Engine API `container create` call, asking the host-side docker/podman daemon to start a sibling container of the boid daemon itself (docker-out-of-docker).
 
 ```
 +-------------------------------------------------------------+
-| runner-outer  (runs on the host)                            |
-|   reads the JSON spec                                       |
-|   forks pasta as a child process  --------+                 |
-+-------------------------------------------|------------------+
-                                            v
+| boid daemon (bare-metal, or the compose daemon service)     |
+|   containerBackend.Launch translates sandbox.Spec into a    |
+|   docker `container create` + `start` call                  |
++----------------------------------|---------------------------+
+                                    v  Docker Engine API
 +-------------------------------------------------------------+
-| pasta (network namespace + user namespace)                  |
-|   -- forks boid runner-inner  ------------+                 |
-+-------------------------------------------|------------------+
-                                            v
-+-------------------------------------------------------------+
-| runner-inner  (inside pasta's user+net ns, inner uid 0)     |
-|   applies nftables egress rules                             |
-|   clone(CLONE_NEWUSER|CLONE_NEWNS) → runner-inner-child -+ |
-+-----------------------------------------------------------|--+
-                                                           v
-+-------------------------------------------------------------+
-| runner-inner-child  (new user+mount ns, uid 0)              |
-|   bind-mount sandbox fs into $ROOT                          |
-|   pivot_root into $ROOT                                     |
-|   adapter.Run() → exec the agent                            |
+| job container (image built by build/container/Dockerfile,   |
+| boid-runner; `HostConfig.Init: true` makes docker-init/tini  |
+| PID 1)                                                        |
+|   ENTRYPOINT = `/usr/local/bin/boid runner-container`        |
+|     --spec /run/boid/spec.json --state /run/boid/state.json |
+|   writes spec.Files → materialises spec.Symlinks (host       |
+|   command shims) → in-sandbox clone (if declared) →          |
+|   adapter.Run() execs the agent                              |
 +-------------------------------------------------------------+
 ```
 
-The implementation lives in [`internal/sandbox/runner/`](https://github.com/novshi-tech/boid/blob/main/internal/sandbox/runner/) (replaced the former bash trio in Phase 3-a).
+The five-level process chain the former userns backend used (`runner-outer → pasta → runner-inner → runner-inner-child`; `cmd/runner.go`'s `runner-outer`/`runner-inner` subcommands, `internal/sandbox/runner/runner_linux.go`'s `clone(CLONE_NEWUSER|CLONE_NEWNS)` + `pivot_root` path) was removed entirely in PR-4 (`docs/plans/volume-only-daemon.md`, the 2026-07 cutover). The implementation is now split between the host-side [`internal/dispatcher/container_backend.go`](https://github.com/novshi-tech/boid/blob/main/internal/dispatcher/container_backend.go) (launch / attach / resize / signal / reap, exposed via the `backend.SandboxBackend` interface) and [`internal/sandbox/runner/runner_container_linux.go`](https://github.com/novshi-tech/boid/blob/main/internal/sandbox/runner/runner_container_linux.go)'s `RunContainer`, which runs inside the container as the `boid runner-container` entry point.
 
-### 1. `runner-outer`
+### Container launch parameters (`containerBackend.Launch`)
 
-Reads the JSON spec and launches pasta with:
+- **Image** — the boid-runner image built by `build/container/Dockerfile`. The `boid` binary is baked into `/usr/local/bin/boid` at build time (`COPY --from=builder`); `ENTRYPOINT` is fixed at `["/usr/local/bin/boid", "runner-container"]`; `Cmd` carries only the `--spec`/`--state` pair.
+- **spec / state files** — only the `runner-spec.json` (read-only) / `runner-state.json` (read-write) the dispatcher wrote host-side are bind-mounted, at `/run/boid/spec.json` / `/run/boid/state.json` respectively. These two files are the only host filesystem visible from the job container — there is no project-checkout or home-directory bind mount (a direct consequence of the volume-only pivot; see `docs/plans/volume-only-daemon.md`).
+- **Volumes** — [`internal/sandbox/realization/`](https://github.com/novshi-tech/boid/blob/main/internal/sandbox/realization/) resolves volume/tmpfs entries into Docker named-volume/mount entries (`containerMounts`). The workspace-scoped `$HOME` is also a named volume (see below).
+- **Network** — connects to a disposable, per-workspace `internal: true` docker network the daemon creates on demand (see [Network control](#network-control) below).
+- **PID 1** — `HostConfig.Init: true` (docker-init/tini). SIGUSR1 relay and zombie reaping are tini's job; boid no longer implements its own signal-forwarding loop.
+- **uid/gid** — runs as the fixed non-root uid/gid (the `boid` user) created at image-build time.
 
-```
-pasta --config-net -4 \
-    -a 10.0.2.0 -n 24 -g 10.0.2.2 \
-    --dns-forward 10.0.2.3 \
-    -t none -u none \
-    -- boid runner-inner --spec <spec.json> --state <state.json>
-```
+### The `boid runner-container` entrypoint (`RunContainer`)
 
-`pasta` is a user-mode network-namespace wrapper. It gives the sandbox its own network stack — the host's NICs are not visible. Outbound traffic is relayed through pasta's gateway (`10.0.2.2`) and DNS forwarder (`10.0.2.3`). After pasta returns, `runner-outer` performs host-side cleanup (see [Cleanup](#cleanup)).
+The job container's root filesystem already *is* the image's own filesystem (the sandbox root) from the moment the process starts, so there is nothing equivalent to `pivot_root` to do. `RunContainer`'s steps:
 
-### 2. `runner-inner`
-
-Runs inside pasta's user+network namespace as **inner uid 0** (uid_map: host uid 1000 → container uid 0; uid 0 is required to hold `CAP_SYS_ADMIN` for the subsequent mount operations).
-
-Main steps:
-
-- **nftables rules** — while holding uid 0 and `CAP_NET_ADMIN`, programmes the egress drop rules (proxy port only).
-- **`clone(CLONE_NEWUSER|CLONE_NEWNS)`** — forks `runner-inner-child` into a fresh user+mount namespace with the same uid_map (`ContainerID=0, HostID=<euid>, Size=1`).
-
-### 3. `runner-inner-child`
-
-Runs in the new user+mount namespace (uid 0). Builds the sandbox filesystem and launches the agent.
-
-Main steps:
-
-- **bind mounts** — the kit's `additional_bindings`, the in-sandbox clone's runtime directory (when the project is visible), and system directories (`/usr`, `/lib`, etc.) are bind-mounted (or rbind-mounted) into `$ROOT`. This determines the file set visible inside the sandbox.
-- **`pivot_root`** — switches the root to `$ROOT`; the old root is pivoted to `/.old_root` then unmounted and removed.
-- **symlinks** — the `boid` shim is symlinked at `/run/boid/bin/<command>` etc.
-- **`adapter.Run()`** — invokes the HarnessAdapter (claude / codex / opencode / shell) to exec the agent, relay the stop signal (SIGUSR1 → SIGTERM to the agent), normalise the exit code, and post the broker job-done via `brokerclient`. (`shell` is the fall-through adapter used by `boid exec` and non-agent hook scripts; the `boid agent shell` session variant was retired after the git gateway cutover.)
+1. Write every `spec.Files` entry at its absolute path.
+2. Materialise `spec.Symlinks` (per-project host-command shims, `/run/boid/bin/<name> -> boid`) — the image bakes in only the `boid` symlink itself (the set of allowed commands is unknown at image-build time), so every container start re-derives them fresh from the spec.
+3. Run the in-sandbox clone when `spec.Clone.Enabled` (over the git gateway; no broker dispatch to the daemon).
+4. Apply `spec.Env["PATH"]`.
+5. Invoke `adapter.Run()` (via the HarnessAdapter) to exec the agent (claude / codex / opencode) or the shell hook, relaying the stop signal (SIGUSR1 → SIGTERM to the agent) and normalising the exit code.
+6. Post `boid job done` to the broker afterward (see [Host commands and the broker](#host-commands-and-the-broker) below).
 
 From inside the sandbox:
 
-- The *host's* home directory, SSH keys, and other projects do not exist (paths don't resolve unless bind-mounted into `$ROOT`). The sandbox's own `$HOME` is a different thing entirely — see below.
-- The process runs as uid 0 inside the user namespace but cannot escape it — there is no escalation path to the host root.
+- The *host's* home directory, SSH keys, and other projects do not exist (there is no host filesystem bind mount besides the spec/state pair). The sandbox's own `$HOME` is a different thing entirely — see below.
+- There is no path out of the container — to the host or to another job's container — because the container runtime's own namespace isolation provides it.
 
-`$HOME` inside the sandbox is not host-shared and not a fresh tmpfs either: it is a **workspace-scoped volume bind-mounted read-write, that persists across every job dispatched against the same workspace** (docs/plans/home-workspace-volume.md Phase 4). A file a hook writes under `$HOME` is visible to a later, unrelated job in the same workspace. `$HOME/.boid` persists the same way — before Phase 6 PR8 it was a fresh, job-scoped tmpfs on every dispatch to keep `$HOME/.boid/output/payload_patch.json` from leaking between jobs sharing a workspace; now that the sole payload-patch path is the broker RPC (`boid task update --payload-patch`), that file-based output was retired and the isolating tmpfs with it (see [Hook script protocol / Outputs](../reference/hook-contract.md#outputs)).
+`$HOME` inside the sandbox is not host-shared and not a fresh tmpfs either: it is a **workspace-scoped named volume, mounted read-write, that persists across every job dispatched against the same workspace** (docs/plans/home-workspace-volume.md Phase 4). A file a hook writes under `$HOME` is visible to a later, unrelated job in the same workspace. `$HOME/.boid` persists the same way — before Phase 6 PR8 it was a fresh, job-scoped tmpfs on every dispatch to keep `$HOME/.boid/output/payload_patch.json` from leaking between jobs sharing a workspace; now that the sole payload-patch path is the broker RPC (`boid task update --payload-patch`), that file-based output was retired and the isolating tmpfs with it (see [Hook script protocol / Outputs](../reference/hook-contract.md#outputs)).
 
 Task context is available by calling `boid task current` / `instructions` / `env` / `payload` — broker RPCs reachable over the shim, pulled on demand rather than materialized at dispatch time. The handler-side protocol is documented in [Hook script protocol](../reference/hook-contract.md).
 
@@ -94,17 +73,13 @@ Task context is available by calling `boid task current` / `instructions` / `env
 
 Network containment has two layers.
 
-### ① pasta (the network namespace)
+### ① a per-workspace docker internal network
 
-pasta is a user-privilege network-namespace wrapper. The sandbox sees only pasta's virtual network; the host's physical NICs are invisible. Outbound traffic is relayed back to the host by pasta itself.
+Each workspace gets a disposable network the daemon creates with `docker network create --internal --label boid.workspace=<slug>` (`ensureWorkspaceNetwork`, [`internal/dispatcher/container_backend.go`](https://github.com/novshi-tech/boid/blob/main/internal/dispatcher/container_backend.go)), and every job container for that workspace is connected to it. `internal: true` means containers on this network have no default route to the outside world — a job container can only reach the boid daemon (itself) on the same network directly.
 
-### ② nftables drop rules
+### ② the daemon's built-in egress proxy
 
-`runner-inner` programmes nftables while holding uid 0 to drop all outbound traffic except to the proxy port. The end result:
-
-- HTTP/HTTPS goes only through `http_proxy` / `https_proxy` pointing at `10.0.2.2:<port>`.
-- The proxy forwards only those domains in the allowlist (see below).
-- Other TCP/UDP is blocked.
+The daemon container itself runs [`internal/sandbox/proxy_manager.go`](https://github.com/novshi-tech/boid/blob/main/internal/sandbox/proxy_manager.go)'s ProxyManager in-process, reachable on the compose network under the `boid-egress` DNS alias (`build/container/compose.yml`). The job container gets the daemon's address via `http_proxy` / `https_proxy` / `HTTP_PROXY` / `HTTPS_PROXY` env vars (`applyProxyEnv`, [`internal/dispatcher/sandbox_builder.go`](https://github.com/novshi-tech/boid/blob/main/internal/dispatcher/sandbox_builder.go)); requests to domains not on the allowlist are rejected by the proxy. Direct TCP/UDP is already blocked by the internal network having no default route. The daemon container is separately attached to the default bridge network too, which is where it gets its own outbound internet access — both for the proxy's own upstream fetches and for the `docker pull`s it issues when creating job containers (see the topology notes in `build/container/compose.yml`).
 
 The proxy itself lives in [`internal/sandbox/proxy.go`](https://github.com/novshi-tech/boid/blob/main/internal/sandbox/proxy.go) and runs as a goroutine inside the daemon.
 
@@ -229,51 +204,43 @@ An unrestricted entry would let sandbox processes run the real `docker` binary d
 To call a host-side command from inside the sandbox, two pieces work together: the `boid` shim and the broker.
 
 ```
-inside sandbox: boid <subcommand>      (shim binary)
-                  |
-                  | UNIX socket (on the host)
-                  v
-host: boid daemon's broker (internal/sandbox.Broker)
-                  |
-                  | evaluates the host-command policy
-                  v
-host: actually exec the allowed command
+inside the job container: boid <subcommand>  (the boid binary baked into the image)
+                            |
+                            | TCP + mTLS (over the workspace's docker network)
+                            v
+daemon container: boid daemon's broker (internal/sandbox.Broker)
+                            |
+                            | evaluates the host-command policy
+                            v
+daemon container: actually exec the allowed command
 ```
 
-The shim is bind-mounted into the sandbox at startup — it is a small binary built in `internal/sandbox/boid_shim.go`. `boid task update`, `boid job done`, and any commands the kit declared in `host_commands` (`gh`, `git push`, ...) all flow over this path.
+The shim *is* the `boid` binary itself (a multi-call binary that switches into shim behavior by subcommand, `internal/sandbox/boid_shim.go`), already baked into the image at `/usr/local/bin/boid` at build time. Per-project host-command name symlinks (`/run/boid/bin/<name> -> boid`) are re-materialised from `spec.Symlinks` on every container start (see "The `boid runner-container` entrypoint" above). Because the job container and the daemon container are separate processes (separate containers), the broker connection is TCP + mTLS rather than a UNIX socket — the daemon issues a short-lived client certificate per job (delivered via `BOID_BROKER_TLS_*` env vars), and `internal/sandbox/brokerclient` uses it to connect (docs/plans/phase6-cutover-followups.md §⓪, the broker TCP wire). `boid task update`, `boid job done`, and any commands the kit declared in `host_commands` (`gh`, `git push`, ...) all flow over this path.
 
 The broker lives in `internal/sandbox/broker.go` and is responsible for:
 
-- Accepting requests from the shim over the UNIX socket.
+- Accepting requests from the shim (over TCP + mTLS from the job container, or a UNIX socket on the bare-metal path).
 - Looking up the **token** attached to the request to identify which job is calling.
 - Checking the call (command, subcommand, arguments) against the policy in `policy.go` via `CheckPolicy`.
-- If allowed, exec'ing on the host and streaming stdout / stderr / exit code back to the shim.
+- If allowed, exec'ing on the daemon side and streaming stdout / stderr / exit code back to the shim.
 
-The token is issued at sandbox start and passed in via environment variables such as `BOID_BROKER_TOKEN`. Outside the sandbox the token is unknown, so even if the broker socket path leaks, another job's commands cannot be authorised.
+The token is issued at sandbox start and passed in via environment variables such as `BOID_BROKER_TOKEN`. Outside the sandbox the token is unknown, so even if the broker's address or mTLS cert directory path leaks, another job's commands cannot be authorised.
 
-Host commands run on the host in a neutral directory (`os.TempDir()`), never any project checkout, and stdin is never forwarded. Commands that need repo context (e.g. `gh`) get it via a kit `env:` entry of `${boid:repo_slug}` (see "Host command execution contract" in the [`project.yaml` reference](../reference/project-yaml.md)).
+Host commands run daemon-side in a neutral directory (`os.TempDir()`), never any project checkout, and stdin is never forwarded. Commands that need repo context (e.g. `gh`) get it via a kit `env:` entry of `${boid:repo_slug}` (see "Host command execution contract" in the [`project.yaml` reference](../reference/project-yaml.md)).
 
 ## Cleanup
 
-Cleanup runs in **`runner-outer`** (Go code) after pasta returns:
+Cleanup reduces to **stopping and removing the job container**. Because the container runtime itself owns creating and tearing down the mount/network/user namespaces, the former userns backend's concerns — "let the kernel reclaim the mount namespace", "remove `$ROOT` from the own-namespace vs. cross-namespace side" — no longer apply.
 
-```go
-// runner-outer (excerpt)
-cleanupRoot(spec.RootDir)          // rm -rf guarded by /tmp/boid-root-* prefix
-for _, p := range spec.CleanupPaths { os.RemoveAll(p) }
-os.Remove(specPath)                // spec contains secrets; remove unconditionally
-if exitCode == 0 { os.Remove(statePath) }  // state file retained on failure
-```
+When a job container exits, `containerBackend` ([`internal/dispatcher/container_backend.go`](https://github.com/novshi-tech/boid/blob/main/internal/dispatcher/container_backend.go)):
 
-Three points:
+1. Calls `ContainerRemove` (`RemoveVolumes: true`) to remove the container itself and any anonymous volume created for it (retrying with `Force: true` on failure).
+2. Removes the `spec.json` / `state.json` (and any per-job TLS cert scratch directory) it wrote host-side — `spec.json` is always removed regardless of exit code, since it carries the broker token and other secrets.
+3. Leaves the workspace's docker network and named volumes alone (later jobs on the same workspace reuse them).
 
-1. **The kernel reclaims mounts.** `runner-inner` and `runner-inner-child` ran inside namespaces owned by pasta's process tree. When pasta exits, those namespaces are destroyed and all bind mounts underneath are automatically reclaimed by the kernel — no explicit `umount` is needed.
-2. **`$ROOT` is removed from outside the sandbox namespace.** By the time `runner-outer` runs its cleanup, the sandbox mount namespace is already gone, so `rm -rf` only sees empty scaffolding on the host and cannot traverse into any bind-mounted host content.
-3. **`/tmp/boid-root-*` prefix guard.** `cleanupRoot` skips and logs a warning if `spec.RootDir` does not start with `/tmp/boid-root-`, preventing accidental host damage from misconfiguration.
+On daemon startup, `containerBackend.ReapOrphans` sweeps up orphaned containers/networks/volumes left behind by a daemon restart or crash, using `boid.*` labels (called from `internal/server/wire.go`'s `reapOrphansBeforeReopen`).
 
-On failure, a `runner-state.json` file (`/tmp/boid-<runtime_id>-runner-state.json`) is kept for post-mortem diagnosis. It contains the phase-level progress log, the spec (with secrets redacted), and the exit code. The file is removed by the daemon's 30-day GC cycle. The spec file is always removed regardless of exit code (it carries the broker token and other secrets).
-
-A previous regression where bind mounts traversed during `rm -rf` deleted host files motivated the current design — both the own-namespace and cross-namespace paths now fail closed.
+On failure (`exitCode != 0`), the `state.json` (`runner-state.json`) is kept rather than removed, for post-mortem diagnosis. It contains the phase-level progress log, the spec (with secrets redacted), and the exit code.
 
 ## Allowed boid builtins from inside the sandbox
 

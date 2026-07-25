@@ -3,7 +3,6 @@ package runner
 import (
 	"encoding/json"
 	"os"
-	"sort"
 	"strings"
 	"time"
 
@@ -73,8 +72,8 @@ func envKeyAllowed(key string) bool {
 // first line of runner-state.json.
 type specDump struct {
 	ID string `json:"id"`
-	// HarnessType identifies the HarnessAdapter the runner-inner-child will
-	// hand the agent off to. Added in Phase 3-c so post-hoc diagnostics can
+	// HarnessType identifies the HarnessAdapter RunContainer will hand the
+	// agent off to. Added in Phase 3-c so post-hoc diagnostics can
 	// tell apart claude / codex / opencode runs and the legacy exec-Argv
 	// path (HarnessType="") without having to grep the kit binding set.
 	HarnessType string            `json:"harness_type,omitempty"`
@@ -272,14 +271,4 @@ func (s *State) Close() {
 		return
 	}
 	_ = s.f.Close()
-}
-
-// sortedEnvKeys is a small helper kept for deterministic env iteration in tests.
-func sortedEnvKeys(env map[string]string) []string {
-	keys := make([]string, 0, len(env))
-	for k := range env {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	return keys
 }

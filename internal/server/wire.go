@@ -463,9 +463,11 @@ func sandboxBackendForConfig(installID, runtimeDir string, brokerTLSCA *mtls.CA,
 // gatewayBindHost [Blocker 2, PR7 codex review] returns the listen address
 // the git gateway's TCP(mTLS) listener binds to: "0.0.0.0" (composeBindHost)
 // when the container backend is selected, "127.0.0.1" (the pre-PR7
-// literal, byte-for-byte unchanged) otherwise. A pure function — no Server
-// state — so it is independently unit-testable without a live listener;
-// see wire_backend_test.go.
+// literal, byte-for-byte unchanged) otherwise. The container backend is the
+// only one selected in production since PR-4's volume-only cutover removed
+// the userns backend; the false branch remains a test-DI seam. A pure
+// function — no Server state — so it is independently unit-testable
+// without a live listener; see wire_backend_test.go.
 func gatewayBindHost(usingContainerBackend bool) string {
 	if usingContainerBackend {
 		return composeBindHost
@@ -476,16 +478,19 @@ func gatewayBindHost(usingContainerBackend bool) string {
 // gatewayURLFor [Blocker 2, PR7 codex review] computes the git gateway's
 // sandbox-facing base URL for the currently-selected backend:
 //
-//   - usingContainerBackend == false (every pre-PR7 deployment, and every
-//     userns-backend deployment after PR7): gitgateway.BackendUserns's
+//   - usingContainerBackend == false: gitgateway.BackendUserns's
 //     http://10.0.2.2:<plainPort> — byte-for-byte the pre-PR7 literal
 //     (docs/plans/phase6-container-backend.md §PR4: "既存 (10.0.2.2) を
-//     無条件で切り替える禁止").
+//     無条件で切り替える禁止"). PR-4 (volume-only cutover) removed the
+//     userns backend entirely, so this branch is unreachable in
+//     production — `dispatcher.IsContainerBackend(runtime.runner.Backend)`
+//     is always true now — and survives only as a test-DI seam
+//     (wire_backend_test.go exercises both branches directly).
 //   - usingContainerBackend == true: gitgateway.BackendContainer's
 //     https://boid-gateway:<tlsPort> — a sibling job container has no
-//     10.0.2.2 loopback projection at all (that address is a pasta/slirp
-//     userns artifact — this PR's own Blocker 2 evidence), so it MUST use
-//     the compose service DNS name over the mTLS listener instead.
+//     10.0.2.2 loopback projection at all (that address was a pasta/slirp
+//     userns artifact with no docker equivalent), so it MUST use the
+//     compose service DNS name over the mTLS listener instead.
 //
 // tlsPort is only consulted in the container-backend branch; plainPort only
 // in the userns branch — Start's own call sites pass 0 for whichever one

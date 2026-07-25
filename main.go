@@ -42,11 +42,17 @@ func main() {
 }
 
 // isReservedRunnerSubcommand reports whether argv[1] (when present) names
-// one of the internal "boid runner-*" entrypoints (cmd/runner.go,
-// cmd/runner_container.go) — always the real cmd.Execute() dispatch,
-// never the builtin shim, regardless of BOID_BUILTIN_SHIM (PR9 fix, see
-// shouldRunBoidBuiltinShim's own doc comment for why this distinction is
-// required specifically for the container backend).
+// one of the internal "boid runner-*" entrypoints — always the real
+// cmd.Execute() dispatch, never the builtin shim, regardless of
+// BOID_BUILTIN_SHIM (PR9 fix, see shouldRunBoidBuiltinShim's own doc
+// comment for why this distinction is required specifically for the
+// container backend). "runner-container" (cmd/runner_container.go) is the
+// only one of these subcommands PR-4 (docs/plans/volume-only-daemon.md)
+// left registered with cmd.Execute() — the userns trio ("runner-outer",
+// "runner-inner", "runner-inner-child", formerly cmd/runner.go, now
+// deleted) is kept reserved here defensively, so an invocation using one of
+// those old names still routes to cmd.Execute()'s "unknown command" error
+// instead of silently falling through to the generic host-command shim.
 func isReservedRunnerSubcommand(argv []string) bool {
 	if len(argv) < 2 {
 		return false

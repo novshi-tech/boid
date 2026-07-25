@@ -17,13 +17,20 @@ import "fmt"
 type Backend string
 
 const (
-	// BackendUserns is the current (and, until Phase 6 PR5, only) sandbox
-	// backend: pasta provides a slirp NAT with the host loopback projected
-	// into the sandbox at 10.0.2.2.
+	// BackendUserns identifies the former userns sandbox backend: pasta
+	// provided a slirp NAT with the host loopback projected into the
+	// sandbox at 10.0.2.2. PR-4 (docs/plans/volume-only-daemon.md, the
+	// 2026-07 volume-only cutover) removed that backend entirely — the
+	// container backend (BackendContainer) is the only one selected in
+	// production. This constant, and SandboxURL's BackendUserns branch,
+	// are retained solely as a test-DI seam / documented API surface for
+	// SandboxURLOptions.Backend's zero value; no production caller sets
+	// Backend == BackendUserns anymore.
 	BackendUserns Backend = "userns"
-	// BackendContainer is the Phase 6 container backend (PR5+): daemon
-	// and job share a compose network, so the gateway is reached by its
-	// compose service name over DNS instead of a loopback projection.
+	// BackendContainer is the container backend (Phase 6 PR5+; the sole
+	// sandbox backend in production since PR-4): daemon and job share a
+	// compose network, so the gateway is reached by its compose service
+	// name over DNS instead of a loopback projection.
 	BackendContainer Backend = "container"
 )
 
@@ -40,10 +47,8 @@ type SandboxURLOptions struct {
 	Port int
 	// ServiceName is the compose network DNS name of the daemon's
 	// service (e.g. "boid-daemon"). Only consulted when Backend ==
-	// BackendContainer; PR4 does not run any container backend
-	// deployment, so no real caller sets this yet — PR5/PR6 own actually
-	// populating it from compose service discovery. Defaults to
-	// "boid-gateway" when left empty under BackendContainer.
+	// BackendContainer. Defaults to "boid-gateway" when left empty under
+	// BackendContainer.
 	ServiceName string
 }
 

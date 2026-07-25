@@ -19,11 +19,11 @@ import (
 //
 // PR-4 (docs/plans/volume-only-daemon.md §論点e) removed the userns launch
 // chain this used to run alongside (`boid runner-outer`/`runner-inner`/
-// `runner-inner-child`, cmd/runner.go — unshare/pivot_root/pasta) along
-// with the newRunnerCmd helper those three shared; `boid runner-container`
-// is now the sole `boid runner-*` subcommand, so it builds its own minimal
-// cobra.Command directly rather than sharing a factory with call sites that
-// no longer exist.
+// `runner-inner-child`, formerly defined in cmd/runner.go — unshare/
+// pivot_root/pasta, that file now deleted) along with the newRunnerCmd
+// helper those three shared; `boid runner-container` is now the sole `boid
+// runner-*` subcommand, so it builds its own minimal cobra.Command directly
+// rather than sharing a factory with call sites that no longer exist.
 func init() {
 	cmd := &cobra.Command{
 		Use:           "runner-container",

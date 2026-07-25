@@ -801,8 +801,9 @@ func (s *Server) Start(ctx context.Context) error {
 			// Blocker 2 evidence: `10.0.2.2` is a pasta/slirp userns
 			// artifact with no docker equivalent). Falls through to the
 			// plaintext BackendUserns URL set above when
-			// usingContainerBackend is false (every pre-PR7 deployment) —
-			// gatewayURLFor's own default branch.
+			// usingContainerBackend is false — gatewayURLFor's own default
+			// branch, unreachable in production since PR-4 removed the
+			// userns backend (see gatewayURLFor's own doc comment).
 			if s.usingContainerBackend {
 				tlsPort := gwTLSLn.Addr().(*net.TCPAddr).Port
 				s.gatewayURL = gatewayURLFor(true, port, tlsPort)
