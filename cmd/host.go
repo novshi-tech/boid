@@ -59,6 +59,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -234,6 +235,22 @@ func withHostModeLock(fn func() error) error {
 	return fn()
 }
 
+// filterEnv returns env with every "key=..." entry removed — used to strip
+// an inherited value before appending a caller-controlled replacement (see
+// ensureHostModeDaemon's own BOID_CLI_TOKEN comment for why a plain append
+// isn't safe when the key might already be present).
+func filterEnv(env []string, key string) []string {
+	prefix := key + "="
+	out := make([]string, 0, len(env))
+	for _, e := range env {
+		if strings.HasPrefix(e, prefix) {
+			continue
+		}
+		out = append(out, e)
+	}
+	return out
+}
+
 // ensureHostModeDaemon confirms the daemon container is reachable at
 // client.DefaultCLIAddr(), starting it via scripts/deploy-container.sh
 // (with BOID_CLI_TOKEN=token in its environment) if it is not.
@@ -258,7 +275,14 @@ func ensureHostModeDaemon(ctx context.Context, token string) error {
 		fmt.Fprintln(os.Stderr, "boid: daemon container not reachable; starting it now (this can take a while on first run)...")
 		deployCmd := exec.CommandContext(ctx, filepath.Join(root, "scripts", "deploy-container.sh")) //nolint:gosec // fixed, repo-relative script path — not attacker-controlled input
 		deployCmd.Dir = root
-		deployCmd.Env = append(os.Environ(), "BOID_CLI_TOKEN="+token)
+		// Filter out any inherited BOID_CLI_TOKEN before appending ours:
+		// a naive append(os.Environ(), "BOID_CLI_TOKEN="+token) would leave
+		// TWO entries when the invoking shell already exported one (e.g. a
+		// stale/different value from a previous manual `docker compose`
+		// run) — which one `deploy-container.sh`'s child process sees for
+		// a duplicate key is libc-dependent, not guaranteed to be "last
+		// wins". Filtering first makes token's value unambiguous.
+		deployCmd.Env = append(filterEnv(os.Environ(), "BOID_CLI_TOKEN"), "BOID_CLI_TOKEN="+token)
 		// Progress goes to stderr, keeping stdout clean for the eventual
 		// subcommand's own output (e.g. `boid task list -o json`).
 		deployCmd.Stdout = os.Stderr

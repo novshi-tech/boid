@@ -190,3 +190,25 @@ func TestHostModeHealthy_Unreachable(t *testing.T) {
 		t.Error("expected hostModeHealthy() == false against a closed port")
 	}
 }
+
+func TestFilterEnv(t *testing.T) {
+	env := []string{"PATH=/usr/bin", "BOID_CLI_TOKEN=stale-value", "HOME=/home/x"}
+	got := filterEnv(env, "BOID_CLI_TOKEN")
+	want := []string{"PATH=/usr/bin", "HOME=/home/x"}
+	if len(got) != len(want) {
+		t.Fatalf("filterEnv() = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("filterEnv()[%d] = %q, want %q", i, got[i], want[i])
+		}
+	}
+}
+
+func TestFilterEnv_NoMatch(t *testing.T) {
+	env := []string{"PATH=/usr/bin", "HOME=/home/x"}
+	got := filterEnv(env, "BOID_CLI_TOKEN")
+	if len(got) != 2 {
+		t.Errorf("filterEnv() with no match = %v, want unchanged", got)
+	}
+}
