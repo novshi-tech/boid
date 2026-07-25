@@ -571,7 +571,7 @@ func (r *Runner) Dispatch(ctx context.Context, spec *orchestrator.JobSpec, clean
 		// fetch it via the git gateway's HTTP reverse proxy at container
 		// start. This is the architecture decision the plan doc's own
 		// §論点b spells out as the worktree-retraction replacement: a
-		// per-job `git clone --reference <bare-repo>` into a staging dir
+		// per-job `git clone file://<bare-repo>` into a staging dir
 		// under r.RuntimesDir (host-visible under container backend as of
 		// this same PR's wire.go fix — see hostVisibleRuntimesDirFor's own
 		// doc comment), bind-mounted into the job container directly.

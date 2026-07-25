@@ -548,15 +548,33 @@ func runtimesDirFor(cfg Config) string {
 // runtimesDirFor's own last-resort fallback rather than returning "").
 //
 // Trade-off (flagged, not fully resolved by this PR — see compose.yml's
-// own "KNOWN GAP" comment for the longer-term fix): BOID_RUNTIME_DIR is
-// host XDG_RUNTIME_DIR, typically `/run/user/<uid>` — tmpfs, cleared on
-// host reboot (not on container restart). Workspace HOME content
-// dispatched under container backend therefore does NOT survive a host
-// reboot the way home-workspace-volume.md Phase 4 intends for the userns
-// backend. This is strictly better than today's total breakage (container
-// CREATE fails outright — the bind source does not exist on the host at
-// all, since it's the OLD, non-host-visible root), not the final answer;
-// a docker-managed named volume (with per-workspace Subpath mounts) is the
+// own "KNOWN GAP" comment for the longer-term fix; codex round-1, PR834
+// Minor 2 — this comment previously named only workspace HOME, understating
+// the trade-off's actual scope): BOID_RUNTIME_DIR is host XDG_RUNTIME_DIR,
+// typically `/run/user/<uid>` — tmpfs, cleared on host reboot (not on
+// container restart). EVERY surface this function's own doc comment above
+// lists therefore does NOT survive a host reboot under container backend,
+// not just workspace HOME:
+//   - workspace HOME content (dispatcher.WorkspaceHomesDir) — the one
+//     home-workspace-volume.md Phase 4 intends to survive reboots for the
+//     userns backend.
+//   - job transcripts (containerBackend's transcript-spool material) and
+//     runner-state.json diagnostics (spec.json/state.json) — `boid job log`
+//     and post-mortem failure diagnosis both lose their on-disk backing the
+//     moment the host reboots, for every job that ever ran under container
+//     backend, not merely ones still in flight.
+//   - the per-job dockerTLSDir/brokerTLSDir TLS material — inert after a
+//     reboot regardless (per-job, reissued on the next dispatch), so this
+//     one is harmless, but named here for completeness since it shares the
+//     same root.
+//   - the PR-2b per-job clone staging area (dispatcher.PrepareJobCheckout)
+//     — also harmless by the same reasoning (re-cloned fresh per dispatch,
+//     never expected to survive between jobs let alone a reboot).
+//
+// This is strictly better than today's total breakage (container CREATE
+// fails outright — the bind source does not exist on the host at all,
+// since it's the OLD, non-host-visible root), not the final answer; a
+// docker-managed named volume (with per-workspace Subpath mounts) is the
 // likely follow-up.
 //
 // Every call site of this function is conditional on the container backend
@@ -1109,13 +1127,25 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 	runner.GatewayCredentials = gwCreds
 
 	taskSvc := &api.TaskAppService{
-		Tasks:              taskRepo,
-		Actions:            taskRepo,
-		Jobs:               jobStore,
-		Meta:               store,
-		Workflow:           workflow,
-		Projects:           projectRepo,
-		RuntimesDir:        runtimesDirFor(cfg),
+		Tasks:    taskRepo,
+		Actions:  taskRepo,
+		Jobs:     jobStore,
+		Meta:     store,
+		Workflow: workflow,
+		Projects: projectRepo,
+		// runtimesRoot (not a fresh runtimesDirFor(cfg) — codex round-1,
+		// PR834 Minor 1): must agree with runner's own RuntimesDir and
+		// transcriptLogReader.rootDir just below, both already using
+		// runtimesRoot for exactly this reason (see runtimesRoot's own
+		// comment above). Under the container backend, runtimesDirFor(cfg)
+		// resolves under the boid_state NAMED VOLUME (invisible on the
+		// host), while task-detail's own workspace_path — sourced from this
+		// RuntimesDir — needs the SAME host-visible root every other
+		// per-job artifact (transcript, runner-state.json, the PR-2b clone
+		// staging area) actually landed under, or `boid task get`/the web
+		// UI's task detail would report a workspace_path nothing on the
+		// host can resolve.
+		RuntimesDir:        runtimesRoot,
 		Notify:             notifySvc,
 		BlockingAsk:        api.NewBlockingAskRegistry(),
 		AskDisconnectGrace: boidCfg.TaskAsk.DisconnectGrace,

@@ -232,7 +232,7 @@ type SandboxRuntimeInfo struct {
 	// CloneHostBacked (docs/plans/volume-only-daemon.md §論点b, PR-2b "per-job
 	// clone at dispatch time") signals that Runner.Dispatch has already
 	// materialized CloneWorkspaceDir via dispatcher.PrepareJobCheckout
-	// (`git clone --reference <bare-repo>` from the project's daemon-managed
+	// (`git clone file://<bare-repo>` from the project's daemon-managed
 	// bare repository into a per-job staging dir under a host-visible
 	// runtimes root), rather than leaving CloneWorkspaceDir as an empty
 	// scratch directory for the SANDBOX's own in-container clone sequence

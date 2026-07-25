@@ -187,6 +187,10 @@ dump_diagnostics() {
     printf '[e2e-container] ===== task C (broker TLS, last observed) =====\n' >&2
     cat "$ROOT/task_c.json" >&2 || true
   fi
+  if [[ -f "$ROOT/task_c2.json" ]]; then
+    printf '[e2e-container] ===== task C2 (git push, last observed) =====\n' >&2
+    cat "$ROOT/task_c2.json" >&2 || true
+  fi
 }
 
 cleanup() {
@@ -205,8 +209,24 @@ cleanup() {
   # docker resource it created (docs/plans/quality-gates.md's own "no silent
   # caps" spirit: a failed run's teardown failing too must be VISIBLE, not
   # swallowed by an early exit).
-  e2e_log "tearing down compose stack"
-  (cd "$REPO_ROOT" && docker compose -f build/container/compose.yml down --timeout 15) >"$ROOT/compose-down.log" 2>&1 || \
+  #
+  # --volumes (codex round-1, PR834 Major 3): without it, the fixed-name
+  # `boid_state` named volume (build/container/compose.yml's own
+  # `volumes:` section — NOT a per-run-random name; compose derives its
+  # name from the project name, which this script's every invocation
+  # resolves identically) survives this teardown and is reused verbatim by
+  # the NEXT run's `up`. That next run's own config-seed step (this
+  # script's own "seed config.yaml" step above) only ever touches
+  # config.yaml — boid.db (and everything else this run wrote into
+  # boid_state: workspace/project rows, secret material, ...) carries over
+  # untouched, so the next run's workspace/project creation calls collide
+  # with this run's own leftover rows instead of starting from a genuinely
+  # fresh daemon. `--volumes` removes the named volume along with the
+  # stack, restoring the fresh-daemon precondition every invocation of this
+  # script actually depends on (and that a persistent, non-CI runner would
+  # otherwise violate on its second and every subsequent run).
+  e2e_log "tearing down compose stack (including named volumes)"
+  (cd "$REPO_ROOT" && docker compose -f build/container/compose.yml down --volumes --timeout 15) >"$ROOT/compose-down.log" 2>&1 || \
     printf '[e2e-container] WARN: docker compose down failed, see %s\n' "$ROOT/compose-down.log" >&2
 
   if [[ -n "$INSTALL_ID" ]]; then
@@ -294,6 +314,23 @@ export DOCKER_GID
 DOCKER_GID="$(getent group docker 2>/dev/null | cut -d: -f3)"
 : "${DOCKER_GID:=999}"
 
+# --- build the boid-runner image FIRST (codex round-1, PR834 Blocker 2) -----
+# The config-seed step immediately below runs `docker compose run ... daemon`
+# — and build/container/compose.yml's `daemon` service has no `build:`
+# section, only `image: boid-runner:latest` — so on a fresh runner with no
+# LOCAL boid-runner:latest image yet (true of every CI runner before this
+# script has ever built one), that `run` would try to PULL a nonexistent/
+# private image and fail before configuration (or anything else) ever gets a
+# chance to run. This previously only happened much later, inside
+# scripts/deploy-container.sh's own call at the bottom of this script — too
+# late for the config-seed step above it. DEPLOY_CONTAINER_BUILD_ONLY=1 runs
+# just that script's build step, standalone, so the image exists before this
+# script's own FIRST `docker compose` call of any kind; deploy-container.sh's
+# own later, unconditional (full build+seed+up) invocation re-runs the same
+# build, cheaply, thanks to docker/podman's own layer cache.
+e2e_log "building the boid-runner image (before config seed, so it has an image to run against)"
+DEPLOY_CONTAINER_BUILD_ONLY=1 e2e_run bash "$REPO_ROOT/scripts/deploy-container.sh"
+
 # --- seed config.yaml into the (fresh) boid_state volume --------------------
 # `sandbox.backend: container` must be in place BEFORE the daemon's own
 # first boot (internal/server/wire.go's buildRuntime reads it once, via
@@ -307,7 +344,8 @@ DOCKER_GID="$(getent group docker 2>/dev/null | cut -d: -f3)"
 # service definition (same image, same boid_state volume mount, same
 # BOID_UID:BOID_GID `user:`) purely to write the file, then exits — the
 # subsequent `up` (scripts/deploy-container.sh, below) starts the real,
-# long-running daemon against that now-seeded volume.
+# long-running daemon against that now-seeded volume. (The image itself is
+# already guaranteed to exist by the build step immediately above.)
 e2e_log "seeding config.yaml into the boid_state volume (sandbox.backend: container)"
 (cd "$REPO_ROOT" && docker compose -f build/container/compose.yml run --rm -T --entrypoint sh daemon -c \
   'mkdir -p "$XDG_CONFIG_HOME/boid" && cat > "$XDG_CONFIG_HOME/boid/config.yaml"') <<'YAML'
@@ -396,6 +434,21 @@ YAML
 # this one exists solely to pin docs/plans/phase6-cutover-followups.md §⓪
 # ("broker TCP wire completion") itself, distinct from proj-a/proj-b's own
 # sibling-connectivity requirements 1/2. See verify-broker-tls.sh below.
+#
+# git-push (codex round-1, PR834 Minor 3): a second, independent behavior on
+# the SAME project — exercises `git push` from inside a job container,
+# something neither the verify-broker-tls task above nor proj-a/proj-b's own
+# sibling-reachability tasks ever touch. Covers two gaps together:
+#   1. remote.origin.url was actually rewritten to the gateway clone URL
+#      (dispatcher.PrepareJobCheckout's own remoteURL step), not left
+#      pointing at the daemon-local bare-repo filesystem path a job
+#      container cannot even see.
+#   2. the per-job clone's own object store is a genuine, standalone
+#      COPY, not a `--reference` alternates pointer back at the daemon's
+#      bare repo (codex round-1 Blocker 1, internal/dispatcher/checkout.go)
+#      — `git commit` (a HEAD-touching operation exactly like the alternates
+#      failure mode described in that fix) must succeed for this task's
+#      own commit-then-push sequence to get anywhere at all.
 cat > "$PROJ_C/.boid/project.yaml" <<'YAML'
 id: container-e2e-ws-c
 name: Container E2E - workspace C (broker TLS)
@@ -406,6 +459,17 @@ task_behaviors:
         command: |
           bash ".boid/hooks/verify-broker-tls.sh"
     name: verify
+  git-push:
+    # readonly: false (orchestrator's own TaskBehavior.Readonly doc comment:
+    # fail-safe default is readonly=true for every behavior except the
+    # canonical "executor") — this task's own hook needs a writable sandbox
+    # to add push-probe.txt, `git commit`, and `git push`.
+    readonly: false
+    hooks:
+      - id: verify-git-push
+        command: |
+          bash ".boid/hooks/verify-git-push.sh"
+    name: git-push
 YAML
 
 # Shared helpers both hook scripts below inline (kept duplicated rather than
@@ -581,6 +645,52 @@ done
 printf '{"artifact":{"result":"pass","broker_transport":"tls","broker_tls_addr":"%s"}}\n' "$BOID_BROKER_TLS_ADDR" | boid task update --payload-patch @-
 BASH
 chmod +x "$PROJ_C/.boid/hooks/verify-broker-tls.sh"
+
+# verify-git-push.sh (codex round-1, PR834 Minor 3): the job's own cwd is
+# already the PR-2b per-job clone staging checkout (dispatcher.
+# PrepareJobCheckout) — no separate clone/setup needed here. Two things are
+# pinned, both load-bearing preconditions the rest of this project.yaml's
+# tasks never happen to exercise:
+#   1. remote.origin.url actually got rewritten to the gateway clone URL
+#      ("/j/<token>/..." — dispatcher.buildGatewayCloneURL's own shape),
+#      not left pointing at the daemon-local bare-repo path.
+#   2. `git commit` + `git push origin HEAD` both succeed standalone — the
+#      concrete, load-bearing consequence of codex round-1 Blocker 1's fix
+#      (checkout.go's `--reference` alternates dependency): a job container
+#      never mounts the daemon's own bare-repo path, so an alternates-based
+#      clone's `git commit` (which touches HEAD's object graph) would have
+#      failed resolving objects through a path this container cannot see.
+# The runner script itself (below, after this task completes) verifies the
+# push landed by reading the fixture upstream's bare repo directly off the
+# HOST filesystem (the strongest possible check — independent of this job's
+# own self-reported "pass").
+cat > "$PROJ_C/.boid/hooks/verify-git-push.sh" <<'BASH'
+#!/usr/bin/env bash
+set -euo pipefail
+
+fail_with_diag() {
+  local reason="$1"
+  printf '{"artifact":{"result":"fail","reason":"%s"}}\n' "$reason" | boid task update --payload-patch @- >/dev/null 2>&1 || true
+  echo "FAIL: $reason" >&2
+  exit 1
+}
+
+origin_url="$(git remote get-url origin 2>&1)" || fail_with_diag "git remote get-url origin failed: ${origin_url:-<no output>}"
+case "$origin_url" in
+  */j/*) ;;
+  *) fail_with_diag "remote.origin.url does not look like a gateway clone URL (no /j/<token>/ segment): ${origin_url}" ;;
+esac
+
+marker="e2e-container git push probe ${BOID_TASK_ID:-unknown}"
+printf '%s\n' "$marker" >> push-probe.txt
+git add push-probe.txt
+git -c user.email="e2e-container-job@boid.test" -c user.name="E2E Container Job" commit -q -m "$marker" \
+  || fail_with_diag "git commit failed (per-job clone's object store may still be alternates-dependent — see checkout.go's own doc comment)"
+git push -q origin HEAD || fail_with_diag "git push origin HEAD failed"
+
+printf '{"artifact":{"result":"pass","remote_origin_url":"%s","push_marker":"%s"}}\n' "$origin_url" "$marker" | boid task update --payload-patch @-
+BASH
+chmod +x "$PROJ_C/.boid/hooks/verify-git-push.sh"
 
 # --- seed fixture git upstream: commit .boid/project.yaml + hooks INTO the
 # repo (PR-2b) and push, so the daemon's own `boid project add <url>`
@@ -762,6 +872,40 @@ e2e_log "broker tls listener log line: ${broker_tls_log_line}"
 if printf '%s' "$broker_tls_log_line" | grep -q '127\.0\.0\.1'; then
   e2e_fail "broker TLS listener bound loopback-only (127.0.0.1) even though sandbox.backend: container is selected — gatewayBindHost wiring regressed"
 fi
+
+# git-push (workspace C, codex round-1, PR834 Minor 3): a SECOND, independent
+# task on the same project — see .boid/hooks/verify-git-push.sh's own header
+# comment for what it pins (remote.origin.url rewrite + git commit/push both
+# succeeding from inside the per-job clone). Placed here, alongside task C's
+# own broker-tls check and before the sibling A/B dance, for the same reason
+# that check is dispatched first: no dependency on (and nothing here should
+# block) the docker-sibling machinery task A/B exercise below.
+e2e_log "dispatching verify-git-push (workspace C)"
+task_c2_out="$(create_task container-e2e-ws-c "verify git push" git-push)"
+printf '%s\n' "$task_c2_out"
+task_c2_id="$(printf '%s\n' "$task_c2_out" | parse_task_id)"
+[[ -n "$task_c2_id" ]] || e2e_fail "failed to parse task C2 (git-push) id from: $task_c2_out"
+e2e_run "$BUILD_DIR/boid" action send --task "$task_c2_id" --type start
+wait_for_done "$task_c2_id" "$ROOT/task_c2.json"
+
+task_c2_json="$(cat "$ROOT/task_c2.json")"
+e2e_assert_contains "$task_c2_json" '"status":"done"'
+e2e_assert_contains "$task_c2_json" '"result":"pass"'
+e2e_log "per-job clone git push (job -> gateway -> fixture upstream) reported OK"
+
+# Strongest available check: read the push back directly off the fixture
+# upstream's bare repo on the HOST filesystem — boid-e2e upstream-serve runs
+# as a plain host process here (this script's own "fixture git upstream"
+# section above), not inside any container, so its bare repos are ordinary,
+# directly-readable directories under $UPSTREAM_DIR. This is independent of
+# the job's own self-reported "pass" and is the actual regression codex
+# round-1 Blocker 1 would have caused: a job whose `git commit` fails
+# outright (the alternates-dependency failure mode) never reaches `git push`
+# at all, so this repo's HEAD would simply never gain the new commit.
+upstream_c_log="$(git -C "$UPSTREAM_DIR/e2e-fixture/proj-c.git" log --oneline -1 2>&1)" || \
+  e2e_fail "reading fixture upstream proj-c.git log failed: $upstream_c_log"
+e2e_assert_contains "$upstream_c_log" "e2e-container git push probe ${task_c2_id}"
+e2e_log "fixture upstream proj-c.git HEAD carries the job's own push: ${upstream_c_log}"
 
 e2e_log "dispatching setup-sibling (workspace B) in the background"
 task_b_out="$(create_task container-e2e-ws-b "setup sibling B" setup)"

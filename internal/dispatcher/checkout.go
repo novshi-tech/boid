@@ -21,9 +21,9 @@ import (
 // absolute path back to the bare repo, which only resolves inside the SAME
 // container/mount-namespace the bare repo lives in; a DooD sibling job
 // container has no such path). A plain clone has no such cross-container
-// path dependency: TargetDir's own .git is fully self-contained (modulo
-// --reference, which only ever needs to resolve from the DAEMON's own
-// process — the job container never runs git against it).
+// path dependency: TargetDir's own .git is fully self-contained — see
+// PrepareJobCheckout's own doc comment for why this means a `file://`
+// clone, not `git clone --reference`.
 //
 // Unlike bare_repo.go's CloneBareRepo/FetchBareRepo, this package-internal
 // clone never talks to a remote forge and therefore needs no
@@ -41,15 +41,25 @@ import (
 // が job 用 staging area を用意... bare repo から per-job clone... を staging
 // area に配置").
 //
-// `--reference bareRepoPath` (alongside cloning directly FROM bareRepoPath)
-// is not strictly load-bearing for object sharing — a same-filesystem local
-// clone already auto-hardlinks objects with its source — but makes the
-// intended object-sharing relationship explicit rather than relying on
-// git's own local-clone heuristic, matching the plan doc's own "git clone
-// --reference で cache 参照" wording. Because stagingDir's `.git/objects`
-// ends up as an alternates reference into bareRepoPath rather than a full
-// copy, stagingDir must never outlive bareRepoPath (it does not, by
-// contract — see CleanupJobCheckout).
+// Cloning is a plain `git clone file://<bareRepoPath>` — deliberately NOT
+// `git clone --reference bareRepoPath` (codex round-1, PR834 Blocker 1):
+// `--reference` records bareRepoPath itself in stagingDir's own
+// `.git/objects/info/alternates`, which only ever resolves from a process
+// that can see bareRepoPath on ITS OWN filesystem — true of the daemon
+// process that runs this clone, but NOT true of the job container the
+// staging area gets bind-mounted into (the job container mounts only
+// stagingDir's own subtree, e.g. `checkouts/<jobID>/<project>/`, never the
+// daemon's own data/runtime volume bareRepoPath lives under). A job
+// container running `git status`/`git commit`/anything that touches HEAD's
+// object graph would fail resolving objects through an alternates path it
+// cannot see. The explicit `file://` scheme (rather than a bare local path,
+// which git would otherwise still auto-hardlink against the source without
+// an alternates entry) forces git's own transport-based clone machinery —
+// a real, standalone copy of every object stagingDir needs, no alternates
+// file, no shared inodes with bareRepoPath — so stagingDir is fully
+// self-contained the moment this function returns and never depends on
+// bareRepoPath's own continued existence or mount visibility (see also
+// TestPrepareJobCheckout_NoAlternatesDependency).
 //
 // `git checkout -B <branch> origin/<branch>` (not a plain `git checkout`)
 // mirrors internal/sandbox/runner/clone.go's resolveCloneBranch: forces the
@@ -85,39 +95,57 @@ import (
 // specific /j/<token>/ shape — see bare_repo.go's
 // gatewayJobTokenPathPattern).
 //
-// On any failure, stagingDir is removed before returning so a caller never
-// inherits a half-populated staging area.
-func PrepareJobCheckout(ctx context.Context, bareRepoPath, branch, remoteURL, stagingDir string) error {
+// On any failure ONCE stagingDir has actually started being populated (i.e.
+// after the pre-clone RemoveAll below), stagingDir is removed before
+// returning so a caller never inherits a half-populated staging area
+// (codex round-1, PR834 Major 1: this previously only happened on the
+// checkout/remote-url failure paths, not on `git clone` itself failing —
+// the deferred cleanup below now covers every failure path uniformly,
+// including clone failure, so a caller — runner.go's own trackCheckoutDir,
+// which only starts tracking stagingDir on full success — can never be
+// left responsible for cleaning up a staging dir it never learned about).
+func PrepareJobCheckout(ctx context.Context, bareRepoPath, branch, remoteURL, stagingDir string) (err error) {
 	if bareRepoPath == "" || branch == "" || stagingDir == "" {
 		return fmt.Errorf("prepare job checkout: bare_repo_path/branch/staging_dir must all be set (bare_repo_path=%q branch=%q staging_dir=%q)",
 			bareRepoPath, branch, stagingDir)
 	}
 
-	if err := os.MkdirAll(filepath.Dir(stagingDir), 0o755); err != nil {
-		return fmt.Errorf("prepare job checkout: create staging parent dir: %w", err)
+	if mkErr := os.MkdirAll(filepath.Dir(stagingDir), 0o755); mkErr != nil {
+		return fmt.Errorf("prepare job checkout: create staging parent dir: %w", mkErr)
 	}
 	// Reopen: idempotent by re-clone (see doc comment above) — wipe any
 	// leftover stagingDir from a previous attempt before cloning fresh.
-	if err := os.RemoveAll(stagingDir); err != nil {
-		return fmt.Errorf("prepare job checkout: clear stale staging dir: %w", err)
+	if rmErr := os.RemoveAll(stagingDir); rmErr != nil {
+		return fmt.Errorf("prepare job checkout: clear stale staging dir: %w", rmErr)
 	}
 
-	cloneArgs := []string{"clone", "--reference", bareRepoPath, "--", bareRepoPath, stagingDir}
-	if err := runGit(exec.CommandContext(ctx, "git", cloneArgs...)); err != nil {
-		return fmt.Errorf("prepare job checkout: clone from bare repo: %w", err)
+	// From this point on, a failure may leave stagingDir partially
+	// populated (a clone half-copied, a checkout that ran but a subsequent
+	// remote set-url that didn't, ...) — clean it up unconditionally on any
+	// non-nil return so the caller never has to. `return fmt.Errorf(...)`
+	// below still assigns the named `err` result before this defer runs,
+	// even though each step's own error is captured in a step-local
+	// variable first.
+	defer func() {
+		if err != nil {
+			_ = os.RemoveAll(stagingDir)
+		}
+	}()
+
+	cloneArgs := []string{"clone", "--", "file://" + bareRepoPath, stagingDir}
+	if cloneErr := runGit(exec.CommandContext(ctx, "git", cloneArgs...)); cloneErr != nil {
+		return fmt.Errorf("prepare job checkout: clone from bare repo: %w", cloneErr)
 	}
 
 	checkoutArgs := []string{"-C", stagingDir, "checkout", "-B", branch, "origin/" + branch}
-	if err := runGit(exec.CommandContext(ctx, "git", checkoutArgs...)); err != nil {
-		_ = os.RemoveAll(stagingDir)
-		return fmt.Errorf("prepare job checkout: checkout branch %q: %w", branch, err)
+	if coErr := runGit(exec.CommandContext(ctx, "git", checkoutArgs...)); coErr != nil {
+		return fmt.Errorf("prepare job checkout: checkout branch %q: %w", branch, coErr)
 	}
 
 	if remoteURL != "" {
 		remoteArgs := []string{"-C", stagingDir, "remote", "set-url", "origin", remoteURL}
-		if err := runGit(exec.CommandContext(ctx, "git", remoteArgs...)); err != nil {
-			_ = os.RemoveAll(stagingDir)
-			return fmt.Errorf("prepare job checkout: set remote origin url: %w", err)
+		if remErr := runGit(exec.CommandContext(ctx, "git", remoteArgs...)); remErr != nil {
+			return fmt.Errorf("prepare job checkout: set remote origin url: %w", remErr)
 		}
 	}
 
@@ -127,9 +155,10 @@ func PrepareJobCheckout(ctx context.Context, bareRepoPath, branch, remoteURL, st
 // CleanupJobCheckout removes stagingDir (docs/plans/volume-only-daemon.md
 // §論点b step 5: "job 終了時、 staging area を削除") — the bare repo cache at
 // bareRepoPath (never touched by this function) remains untouched;
-// stagingDir's own `.git/objects` is only ever an alternates REFERENCE into
-// it (PrepareJobCheckout's own doc comment), never a copy, so removing
-// stagingDir never risks the bare repo's own object store.
+// stagingDir's own `.git/objects` is a full, standalone copy of what it
+// needs (PrepareJobCheckout's own doc comment — a plain `file://` clone,
+// not an alternates reference), so removing stagingDir never risks the bare
+// repo's own object store either way.
 //
 // A no-op (nil error) for an empty stagingDir — the same "nothing to do"
 // convention os.RemoveAll itself already has for a path that doesn't exist,

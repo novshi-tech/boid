@@ -71,7 +71,7 @@ type Mount struct {
 	// Used by dispatcher.cloneMounts (docs/plans/volume-only-daemon.md
 	// §論点b, PR-2b "per-job clone at dispatch time"): when the daemon has
 	// already pre-populated Source via dispatcher.PrepareJobCheckout
-	// (`git clone --reference <bare-repo>` into a per-job staging dir under
+	// (`git clone file://<bare-repo>` into a per-job staging dir under
 	// a host-visible runtimes root), the container backend must bind that
 	// real directory in — not skip it as "the in-container clone target,
 	// created fresh". Ignored by the userns backend (internal/sandbox/

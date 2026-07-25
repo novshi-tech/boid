@@ -83,13 +83,18 @@ func TestPrepareJobCheckout_ChecksOutNonDefaultBranch(t *testing.T) {
 	}
 }
 
-// TestPrepareJobCheckout_ReferenceSharesObjects pins that stagingDir's
-// object store is an alternates REFERENCE into bareRepoPath, not a full
-// copy (PrepareJobCheckout's own doc comment: "stagingDir must never
-// outlive bareRepoPath") — the concrete, observable signal is an
-// objects/info/alternates file inside stagingDir's .git pointing back at
-// bareRepoPath's own objects dir.
-func TestPrepareJobCheckout_ReferenceSharesObjects(t *testing.T) {
+// TestPrepareJobCheckout_NoAlternatesDependency pins codex round-1 (PR834)
+// Blocker 1's fix: stagingDir's object store must be a full, standalone
+// copy, NOT an alternates REFERENCE into bareRepoPath — a job container
+// only ever mounts stagingDir's own subtree, never the daemon's own
+// bareRepoPath, so an alternates entry pointing back at bareRepoPath would
+// be unresolvable the moment any in-sandbox git command (status/commit/
+// log/...) needed to read an object through it. The concrete, observable
+// signals: no objects/info/alternates file inside stagingDir's .git, and
+// git operations against stagingDir still succeed standalone even after
+// bareRepoPath is removed entirely (proving the object data was actually
+// copied, not merely referenced/hardlinked).
+func TestPrepareJobCheckout_NoAlternatesDependency(t *testing.T) {
 	bareRepoPath := setupBareRepoFixture(t)
 	stagingDir := filepath.Join(t.TempDir(), "staging", "job-3", "proj")
 
@@ -97,13 +102,18 @@ func TestPrepareJobCheckout_ReferenceSharesObjects(t *testing.T) {
 		t.Fatalf("PrepareJobCheckout: %v", err)
 	}
 
-	alternates, err := os.ReadFile(filepath.Join(stagingDir, ".git", "objects", "info", "alternates"))
-	if err != nil {
-		t.Fatalf("read objects/info/alternates: %v", err)
+	if _, err := os.Stat(filepath.Join(stagingDir, ".git", "objects", "info", "alternates")); !os.IsNotExist(err) {
+		t.Fatalf("expected no objects/info/alternates file in stagingDir, stat err = %v", err)
 	}
-	if !strings.Contains(string(alternates), bareRepoPath) {
-		t.Fatalf("alternates = %q, want it to reference bare repo path %q", alternates, bareRepoPath)
+
+	// Remove the bare repo entirely (simulating it being invisible/unmounted
+	// from a job container's own perspective) and verify stagingDir's git
+	// operations still work standalone.
+	if err := os.RemoveAll(bareRepoPath); err != nil {
+		t.Fatalf("remove bare repo: %v", err)
 	}
+	runGitT(t, stagingDir, "status")
+	runGitT(t, stagingDir, "log", "-1", "--oneline")
 }
 
 func TestPrepareJobCheckout_ReopenWipesStaleContent(t *testing.T) {
@@ -152,9 +162,13 @@ func TestPrepareJobCheckout_NoRemoteURLLeavesOriginAtBareRepo(t *testing.T) {
 		t.Fatalf("PrepareJobCheckout: %v", err)
 	}
 
+	// "file://" + bareRepoPath (codex round-1, PR834 Blocker 1's fix — the
+	// clone itself now uses the file:// scheme, not a bare local path with
+	// --reference), not the bare bareRepoPath value.
+	want := "file://" + bareRepoPath
 	got := remoteOriginURL(t, stagingDir)
-	if got != bareRepoPath {
-		t.Fatalf("remote.origin.url = %q, want bare repo path %q (unchanged, no remoteURL given)", got, bareRepoPath)
+	if got != want {
+		t.Fatalf("remote.origin.url = %q, want %q (unchanged, no remoteURL given)", got, want)
 	}
 }
 
@@ -179,6 +193,29 @@ func TestPrepareJobCheckout_MissingArgsError(t *testing.T) {
 				t.Fatal("expected an error for missing required argument, got nil")
 			}
 		})
+	}
+}
+
+// TestPrepareJobCheckout_CloneFailureCleansUpStagingDir pins codex round-1
+// (PR834) Major 1: a failure in the `git clone` step itself (not just the
+// later checkout/remote-set-url steps, already covered by
+// TestPrepareJobCheckout_InvalidBranchCleansUpStagingDir) must not leave an
+// orphaned stagingDir behind — runner.go's own trackCheckoutDir only starts
+// tracking stagingDir on FULL success, so a caller has no other way to find
+// and clean up a staging dir abandoned mid-clone.
+func TestPrepareJobCheckout_CloneFailureCleansUpStagingDir(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not found in PATH")
+	}
+	bareRepoPath := filepath.Join(t.TempDir(), "does-not-exist.git")
+	stagingDir := filepath.Join(t.TempDir(), "staging", "job-9", "proj")
+
+	err := dispatcher.PrepareJobCheckout(context.Background(), bareRepoPath, "main", "", stagingDir)
+	if err == nil {
+		t.Fatal("expected an error cloning from a nonexistent bare repo path")
+	}
+	if _, statErr := os.Stat(stagingDir); !os.IsNotExist(statErr) {
+		t.Fatalf("expected staging dir to be cleaned up after a failed clone, stat err = %v", statErr)
 	}
 }
 

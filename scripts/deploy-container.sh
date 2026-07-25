@@ -169,6 +169,21 @@ echo "deploy-container: building $IMAGE_TAG from $DOCKERFILE"
 	-f "$DOCKERFILE" \
 	"$ROOT_DIR"
 
+# DEPLOY_CONTAINER_BUILD_ONLY (codex round-1, PR834 Blocker 2): lets a
+# caller (e2e/run-container.sh) invoke just this build step, standalone,
+# BEFORE it needs the resulting boid-runner:latest image for its own
+# `docker compose run` config-seed step — compose.yml's `daemon` service has
+# no `build:` section (it only ever references the image by tag), so any
+# `docker compose run`/`up` against a fresh runner with no local
+# boid-runner:latest image would otherwise try to PULL a nonexistent/private
+# image instead of building one. This script's own later, unconditional
+# build (this exact step, re-run) stays cheap on a second invocation thanks
+# to docker/podman's own layer cache.
+if [[ "${DEPLOY_CONTAINER_BUILD_ONLY:-0}" == "1" ]]; then
+	echo "deploy-container: DEPLOY_CONTAINER_BUILD_ONLY=1 — image built ($IMAGE_TAG); skipping compose seed/up (caller owns those steps)"
+	exit 0
+fi
+
 if [[ ${#COMPOSE_CMD[@]} -eq 0 ]]; then
 	echo "deploy-container: image built ($IMAGE_TAG); compose up skipped (see warning above)"
 	exit 0
@@ -194,20 +209,43 @@ mkdir -p "$BOID_RUNTIME_DIR"
 chown "$BOID_UID:$BOID_GID" "$BOID_RUNTIME_DIR" 2>/dev/null || \
 	echo "warning: could not chown $BOID_RUNTIME_DIR to ${BOID_UID}:${BOID_GID} (continuing — it may already be owned correctly)" >&2
 
+# --- seed config.yaml (first boot only) --------------------------------
+# codex round-1, PR834 Major 2: this used to run AFTER `compose up -d`
+# below (as a printed instruction telling the operator to have already done
+# it, which is unusable — the daemon has by then already started against
+# whatever config.yaml happens to pre-exist in the volume, i.e. none, i.e.
+# the userns-backend default, on a genuinely first deploy). `boid config`
+# still has no bootstrap-before-first-boot path of its own (docs/plans/
+# volume-only-daemon.md §論点f) — until it does, this script seeds
+# sandbox.backend directly, the same way e2e/run-container.sh's own "seed
+# config.yaml" step does: `docker compose run --rm --entrypoint sh daemon`
+# is a ONE-OFF container from the exact same service definition (same
+# image, same boid_state volume mount, same BOID_UID:BOID_GID `user:`)
+# purely to write the file, before the real long-running daemon (`up`
+# below) ever starts. Idempotent: only writes config.yaml if the volume
+# doesn't already have one, so re-running this script against a live,
+# already-configured deploy never clobbers an operator's own edits (e.g. a
+# later `boid config set` against the running daemon, or a hand-edited
+# config.yaml with settings beyond just sandbox.backend).
+echo "deploy-container: seeding config.yaml into the boid_state volume (sandbox.backend: container) if not already present"
+"${COMPOSE_CMD[@]}" run --rm -T --entrypoint sh daemon -c '
+set -e
+mkdir -p "$XDG_CONFIG_HOME/boid"
+if [ -f "$XDG_CONFIG_HOME/boid/config.yaml" ]; then
+	echo "deploy-container: config.yaml already exists in the boid_state volume; leaving it as-is" >&2
+else
+	cat > "$XDG_CONFIG_HOME/boid/config.yaml" <<YAML
+sandbox:
+  backend: container
+YAML
+	echo "deploy-container: seeded default config.yaml (sandbox.backend: container) into the boid_state volume" >&2
+fi
+'
+
 echo "deploy-container: stopping any existing compose stack (explicit down before up — see this script's own header comment on why no restart: policy exists in compose.yml)"
 "${COMPOSE_CMD[@]}" down || true
 
 echo "deploy-container: starting the compose stack"
 "${COMPOSE_CMD[@]}" up -d
 
-echo "deploy-container: done. compose stack is up."
-# NOT "~/.config/boid/config.yaml" (stale post-pivot — BOID_CONFIG_DIR is
-# the boid_state NAMED VOLUME now, invisible to the host; a host-side edit
-# at that path has no effect on the running daemon). Until `boid config`
-# grows a bootstrap-before-first-boot path (docs/plans/volume-only-daemon.md
-# §論点f), seed sandbox.backend the same way e2e/run-container.sh does
-# (PR-2b): `docker compose run --rm --entrypoint sh daemon -c '...'`
-# writing $XDG_CONFIG_HOME/boid/config.yaml INSIDE the volume, before this
-# script's own `up` above — see that script's own "seed config.yaml" step
-# for a concrete example.
-echo "deploy-container: opt in per-host with 'sandbox: {backend: container}' — seed it into the boid_state volume BEFORE first boot (see e2e/run-container.sh's own 'seed config.yaml' step for how; default is 'userns' during the migration period)."
+echo "deploy-container: done. compose stack is up (sandbox.backend: container, seeded above)."
