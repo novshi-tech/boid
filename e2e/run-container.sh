@@ -787,8 +787,25 @@ e2e_log "verifying the dedicated CLI listener at $CLI_ADDR"
 # descriptive e2e_fail message immediately below each one. curl itself
 # (no -f/--fail) already returns exit 0 for any HTTP response including
 # 401/404 — only a transport-level failure needs guarding here.
-health_code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "http://${CLI_ADDR}/api/health" || true)"
-[[ "$health_code" == "200" ]] || e2e_fail "GET http://${CLI_ADDR}/api/health = ${health_code:-<no response>}, want 200 (public, no token)"
+#
+# The health check retries for up to 10s: the app-level listener binding
+# inside the container (confirmed by the daemon's own "cli listener
+# started" log line) and the HOST-side docker port-publish/NAT rule
+# actually routing to it are two separate events — `docker compose ps`
+# reporting "Up" (and even boid-e2e's own unix-socket wait-health above
+# succeeding, a completely different listener) does not guarantee the
+# LATTER has caught up yet. A single one-shot curl right after wait-health
+# hit exactly this race in practice (connection refused / curl code 000).
+# The wrong/right-token checks immediately below do not need their own
+# retry: by the time the health check above succeeds, the port-publish
+# path is confirmed live for every subsequent request.
+health_code=""
+for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+  health_code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 2 "http://${CLI_ADDR}/api/health" || true)"
+  [[ "$health_code" == "200" ]] && break
+  sleep 0.5
+done
+[[ "$health_code" == "200" ]] || e2e_fail "GET http://${CLI_ADDR}/api/health = ${health_code:-<no response>}, want 200 (public, no token) after retrying for 10s"
 
 wrong_code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 -H "Authorization: Bearer wrong-token" "http://${CLI_ADDR}/api/tasks" || true)"
 [[ "$wrong_code" == "401" ]] || e2e_fail "GET http://${CLI_ADDR}/api/tasks with a wrong Bearer token = ${wrong_code:-<no response>}, want 401"
