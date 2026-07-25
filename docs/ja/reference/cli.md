@@ -29,6 +29,33 @@ daemon が止まっているときに以下のコマンドを呼ぶと、自動�
 
 各コマンドは内部で `remote`（daemon の HTTP API だけで完結し、将来リモート daemon に接続しても動作する）/ `local`（daemon lifecycle や CLI プロセス自身が動くホストの filesystem に依存する）/ `neutral`（daemon 接続そのものを必要としない）のいずれかに分類されています（`boid.scope` cobra annotation、全 leaf command が対象で未分類は build failure）。現状はまだこの分類に基づく実行時の接続先チェックは入っていません — Phase 3 (CLI リモート接続) 実装の足場として Phase 2.5 で先行導入されたものです。詳細は `docs/plans/cli-remote-connection.md` を参照。
 
+### Host mode（コンテナ backend 向け、`BOID_MODE=container`）
+
+`sandbox.backend: container` の compose デプロイ（`scripts/deploy-container.sh`、`docs/plans/phase6-container-backend.md`）を使っている場合、`boid` の起動元 shell で以下を設定すると **`boid` CLI 自身が daemon container のライフサイクルを管理する「host mode」** になります（`docs/plans/volume-only-daemon.md` §論点c、Option 4 設計）。
+
+```bash
+export BOID_MODE=container
+```
+
+scope=`remote` なコマンド（`task list` 等、daemon の HTTP API を叩くもの）を呼ぶと、`boid` は内部で:
+
+1. `~/.config/boid/cli-token`（無ければ生成、0600）を読み込む
+2. `http://127.0.0.1:8442/api/cli-token-check` に `Authorization: Bearer <token>` 付きで届くか確認し（届かない、または token が daemon 側と不一致なら）`scripts/deploy-container.sh` を起動（image build + `compose up -d`）してから再確認 — 認証済みの endpoint を叩くのは、daemon が起動していても token が古い（`~/.config/boid/cli-token` を消して作り直した等）ケースを見逃さないため（`/api/health` は無認証なので token 不一致を検知できない）
+3. `Authorization: Bearer <token>` を付けて `http://127.0.0.1:8442` へ実コマンドを dispatch
+
+を行います。素の bare-metal 経路（unix socket 直 dial）は `BOID_MODE` 未設定（既定）のとき完全に無変更です。`boid start`/`stop`/`gc` などの scope=`local` コマンド、`login`/`logout` などの scope=`neutral` コマンドは host mode の影響を受けません（bare-metal 側のまま）。
+
+`BOID_NO_AUTOSTART=1` を設定すると、daemon が unreachable でも自動起動を試みずエラーで即座に失敗します（bare-metal 側の `client.EnsureRunningAt` と同じ既存の opt-out 契約）。
+
+| 環境変数 | 用途 |
+|---|---|
+| `BOID_MODE=container` | host mode を有効化 |
+| `BOID_COMPOSE_ROOT` | `scripts/deploy-container.sh` を含む boid リポジトリのルートを明示（既定は cwd から歩いて上る自動検出） |
+
+boid リポジトリのチェックアウトが見つからない場合（`/usr/local/bin/boid` を単体インストールし、任意の project ディレクトリから起動する等）でも、`boid-runner:latest` image が既にローカルに存在していれば、埋め込み済みの `compose.yml`（`build/container/assets.go`、`go:embed`）を `$XDG_STATE_HOME/boid/compose/` に展開して `compose up -d` を直接実行するフォールバックが働きます（round-2 codex review Major 1）。image を fresh build できるのはチェックアウトがある場合のみ（`Dockerfile` の build context が `COPY . .` = go source tree 全体のため）。image・チェックアウトのどちらも無い場合は明確なエラーで失敗します。
+
+CLI listener のアドレスは `127.0.0.1:8442` 固定（override 不可）。`build/container/compose.yml` の port publish (`127.0.0.1:8442:8442`) と daemon 自身の listener bind の双方に配線されていない override は実質機能しないため（round-2 codex review Major 2）、host 側は override 手段を持たない。
+
 ## サーバライフサイクル
 
 | コマンド | 役割 |

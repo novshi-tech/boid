@@ -185,6 +185,23 @@
 # podman — CLAUDE.md) during PR6 development; CI is the source of truth
 # going forward (docs/plans/phase6-container-backend.md §PR9's
 # e2e-container job actually runs this stack).
+#
+# name: boid (round-3 codex review of #835, PR-3's host-mode fallback,
+# Blocker 2): compose derives a project name from the containing
+# directory by default when none is declared — "container" for this
+# file's own build/container/ location. cmd/host.go's embedded-assets
+# fallback (deployFromEmbeddedAssets, for a standalone-installed `boid`
+# with no repo checkout) extracts this exact file to a DIFFERENT
+# directory ($XDG_STATE_HOME/boid/compose/build/container/), which would
+# otherwise derive a DIFFERENT default project name — and therefore a
+# different container/network/`boid_state` volume identity — than the
+# checkout path's `docker compose -f build/container/compose.yml ...`
+# invocation, even though both are meant to manage the exact same daemon
+# deployment. An explicit top-level `name:` makes the project identity a
+# property of this file's CONTENT, not of whatever directory it happens to
+# be invoked from, so both paths always resolve to the same stack.
+
+name: boid
 
 services:
   daemon:
@@ -335,6 +352,23 @@ services:
       # SSL_CERT_FILE above; a real production deploy has no reason to ever
       # set this either.
       GIT_SSL_CAINFO: "${GIT_SSL_CAINFO:-}"
+      # BOID_CLI_TOKEN (PR-3 Option 4 host-mode redesign, docs/plans/
+      # volume-only-daemon.md §論点c, nose directive 2026-07-25): the
+      # shared secret internal/api/auth.NewCLITokenAuthMiddleware requires
+      # on every request to the dedicated CLI listener (`ports:` below).
+      # `boid`'s own host-mode orchestration (cmd/host.go) generates/reads
+      # this value from the HOST's ~/.config/boid/cli-token and passes it
+      # through the environment when it invokes
+      # scripts/deploy-container.sh — this is the compose-interpolation
+      # half of that handoff (`${BOID_CLI_TOKEN:-}` reads the value
+      # already exported into deploy-container.sh's own process
+      # environment, the same pass-through convention this service's other
+      # `${VAR:-}` optional env vars already use). Empty for a manual
+      # `docker/podman compose up` invoked directly (not through host
+      # mode) — cmd/start.go's own doc comment on Config.CLIToken covers
+      # what an empty token means daemon-side (the listener simply never
+      # binds; not an open, unauthenticated port).
+      BOID_CLI_TOKEN: "${BOID_CLI_TOKEN:-}"
     # HostConfig.Init (docker-init/tini as PID 1, owning zombie reap — §決定3)
     # — compose's `init:` maps directly onto it.
     init: true
@@ -383,6 +417,26 @@ services:
     # up.
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    # ports: the dedicated CLI TCP listener (internal/server.
+    # Config.CLIAddr/CLIToken — PR-3 Option 4 host-mode redesign, docs/
+    # plans/volume-only-daemon.md §論点c) is the ONLY listener this daemon
+    # binds that a HOST process (not a sibling docker-network container)
+    # needs to reach — everything else a job container needs
+    # (boid-gateway/boid-broker/boid-egress/boid-dockerproxy) resolves over
+    # the `boid_internal` network below instead. Published on the host's
+    # OWN loopback interface only (`127.0.0.1:8442:8442`, not
+    # `8442:8442`/`0.0.0.0:8442:8442`) — `boid`'s host-mode orchestration
+    # (cmd/host.go) always dials 127.0.0.1 (client.DefaultCLIAddr()) from
+    # the same host this compose stack runs on; there is no legitimate
+    # caller from any OTHER interface, and internal/api/auth.
+    # NewCLITokenAuthMiddleware's single shared-secret token is this
+    # listener's only auth layer (no TLS certificate to bind the trust
+    # boundary to an interface the way the git-gateway/broker TLS listeners
+    # do) — restricting the publish to loopback keeps the token as the
+    # authorization mechanism, not the only thing standing between an
+    # exposed port and the daemon's full API surface.
+    ports:
+      - "127.0.0.1:8442:8442"
     volumes:
       # DooD: sibling job containers, not nested (§決定4). Engine-agnostic
       # source (docs/plans/volume-only-daemon.md §論点 i, 案 X — Podman

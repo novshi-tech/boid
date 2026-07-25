@@ -52,6 +52,49 @@ func TestBuildStartConfig_UsesDefaults(t *testing.T) {
 	if len(cfg.AllowedDomains) == 0 {
 		t.Fatal("AllowedDomains should not be empty")
 	}
+	// PR-3 Option 4 host-mode redesign (docs/plans/volume-only-daemon.md
+	// §論点c): CLIAddr defaults to client.DefaultCLIAddr() ("127.0.0.1:8442")
+	// when no --cli-addr override is given, exactly like every other
+	// opts.* field above.
+	if cfg.CLIAddr != "127.0.0.1:8442" {
+		t.Fatalf("CLIAddr = %q, want %q", cfg.CLIAddr, "127.0.0.1:8442")
+	}
+	if cfg.CLIToken != "" {
+		t.Fatalf("CLIToken = %q, want empty (BOID_CLI_TOKEN not set)", cfg.CLIToken)
+	}
+}
+
+// TestBuildStartConfig_CLIAddrOverride pins startConfigOptions.CLIAddr
+// (--cli-addr) taking precedence over client.DefaultCLIAddr(), mirroring
+// TestBuildStartConfig_UsesOverrides' own coverage of the other opts.*
+// fields.
+func TestBuildStartConfig_CLIAddrOverride(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+
+	cfg, err := buildStartConfig(startConfigOptions{CLIAddr: "127.0.0.1:19999"})
+	if err != nil {
+		t.Fatalf("buildStartConfig() error = %v", err)
+	}
+	if cfg.CLIAddr != "127.0.0.1:19999" {
+		t.Fatalf("CLIAddr = %q, want %q", cfg.CLIAddr, "127.0.0.1:19999")
+	}
+}
+
+// TestBuildStartConfig_CLITokenFromEnv pins BOID_CLI_TOKEN -> cfg.CLIToken
+// (PR-3 Option 4 host-mode redesign): `boid`'s own host-mode orchestration
+// (cmd/host.go) passes the shared secret to the daemon container via this
+// env var, and buildStartConfig is the only place that reads it.
+func TestBuildStartConfig_CLITokenFromEnv(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("BOID_CLI_TOKEN", "test-token-value")
+
+	cfg, err := buildStartConfig(startConfigOptions{})
+	if err != nil {
+		t.Fatalf("buildStartConfig() error = %v", err)
+	}
+	if cfg.CLIToken != "test-token-value" {
+		t.Fatalf("CLIToken = %q, want %q", cfg.CLIToken, "test-token-value")
+	}
 }
 
 // TestShouldRunForeground pins Major 6 (PR6 codex review): the double-fork

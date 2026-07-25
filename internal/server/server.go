@@ -110,6 +110,45 @@ type Config struct {
 	// still test/DI-only — see NewContainerBackend's doc comment — the
 	// same "config 非公開" scope PR5 shipped under).
 	InstallIDDir string
+	// CLIAddr, when non-empty, is the "host:port" the dedicated CLI TCP
+	// listener binds — PR-3 Option 4 host-mode redesign (docs/plans/
+	// volume-only-daemon.md §論点c, nose directive 2026-07-25). Only the
+	// PORT is actually load-bearing: Start() ignores the host half and
+	// binds gatewayBindHost(s.usingContainerBackend) instead — "127.0.0.1"
+	// for the userns backend (unchanged; this listener is reached
+	// exclusively by the `boid` CLI's own host-mode orchestration,
+	// cmd/host.go, dialing the docker-published port on the SAME host,
+	// never by a remote caller or a sibling job container) or
+	// composeBindHost ("0.0.0.0") for the container backend (round-4 fix:
+	// under compose, this daemon IS the container being dialed — docker's
+	// bridge-mode port publish DNATs the host's own 127.0.0.1 to the
+	// container's bridge IP, never the container's loopback interface, so
+	// a loopback-only bind there is unreachable from the host at all; see
+	// gatewayBindHost's own doc comment for the identical routing already
+	// used by the git gateway/broker TLS listeners). Separate from
+	// HTTPAddr (the Web UI's own TCP listener, default :8080) so a CLI
+	// session keeps working even if an operator firewalls off or disables
+	// the Web UI port.
+	//
+	// Binding is further gated on CLIToken being non-empty (see that
+	// field's own doc comment) — CLIAddr alone is not enough, unlike every
+	// other listener in this Config, because this listener has no
+	// TLS/loopback-trust/cookie fallback: an unset token would otherwise
+	// mean an open, unauthenticated TCP port.
+	CLIAddr string
+	// CLIToken, when non-empty, is the shared secret
+	// (auth.NewCLITokenAuthMiddleware) the dedicated CLI TCP listener
+	// (CLIAddr) requires on every request's `Authorization: Bearer`
+	// header — PR-3 Option 4 host-mode redesign. Sourced from the
+	// BOID_CLI_TOKEN env var (cmd/start.go's buildStartConfig), which
+	// `boid`'s own host-mode orchestration (cmd/host.go) generates/reads
+	// from ~/.config/boid/cli-token and passes to the daemon container via
+	// build/container/compose.yml's `environment:` block — the same value
+	// on both ends is what authenticates a host-mode CLI dispatch with no
+	// TLS and no device-pairing ceremony. Empty (the zero value, and every
+	// non-container-mode caller/test) skips binding the CLIAddr listener
+	// entirely, same as CLIAddr=="" — see Start()'s own bind condition.
+	CLIToken string
 }
 
 type Server struct {
@@ -136,6 +175,19 @@ type Server struct {
 	// (trusted CLI/agent transport). Set by mountRoutes.
 	tcpHandler http.Handler
 	tcpServer  *http.Server
+	// cliLn/cliServer/cliHandler are the dedicated CLI TCP listener — PR-3
+	// Option 4 host-mode redesign (docs/plans/volume-only-daemon.md
+	// §論点c). Bound in Start only when both cfg.CLIAddr and cfg.CLIToken
+	// are set (see Config.CLIAddr's own doc comment for why token presence
+	// gates the bind, not just the address). cliHandler wraps the same
+	// bare router mountRoutes builds tcpHandler from, but with
+	// auth.NewCLITokenAuthMiddleware(cfg.CLIToken) instead of
+	// NewTCPAPIAuthMiddleware — a single shared-secret Bearer token, no
+	// TLS, no cookie/loopback-trust fallback. nil whenever the listener
+	// was never bound.
+	cliLn      net.Listener
+	cliServer  *http.Server
+	cliHandler http.Handler
 	gcLoop     *orchestrator.GCLoop // nil if GC is disabled
 	workflow   *api.TaskWorkflowService
 
@@ -791,6 +843,52 @@ func (s *Server) Start(ctx context.Context) error {
 	s.tcpServer = &http.Server{Handler: tcpHandler}
 	go func() { _ = s.tcpServer.Serve(tcpLn) }() // returns ErrServerClosed on Stop
 
+	// Dedicated CLI TCP listener (docs/plans/volume-only-daemon.md §論点c,
+	// PR-3 Option 4 host-mode redesign): additive alongside tcpLn/tcpServer
+	// above, on its own port — see Config.CLIAddr's own doc comment for
+	// why a separate listener. Gated on BOTH cfg.CLIAddr and cfg.CLIToken
+	// being set — unlike tcpLn (which always binds), this listener has no
+	// fallback auth path at all (no TLS, no cookie, no loopback trust), so
+	// an unset token must skip binding entirely rather than open an
+	// unauthenticated port.
+	if s.cfg.CLIAddr != "" && s.cfg.CLIToken != "" {
+		_, cliPort, splitErr := net.SplitHostPort(s.cfg.CLIAddr)
+		if splitErr != nil {
+			return fmt.Errorf("parse cli addr %q: %w", s.cfg.CLIAddr, splitErr)
+		}
+		// gatewayBindHost(s.usingContainerBackend) — the same
+		// container-backend-aware routing the git gateway/broker TLS
+		// listeners already use (wire.go), not a hardcoded "127.0.0.1"
+		// (round-4 fix, docs/plans/volume-only-daemon.md §論点c): under the
+		// container backend, this daemon runs inside a compose container
+		// reached via docker's bridge-mode port publish
+		// (`127.0.0.1:8442:8442` in build/container/compose.yml) — the
+		// HOST-side 127.0.0.1 is DNAT'd to the CONTAINER'S bridge-network
+		// IP, never the container's own loopback interface, so a listener
+		// bound to the container's 127.0.0.1 is unreachable from the host
+		// (container-backend E2E's `GET http://127.0.0.1:8442/api/health =
+		// 000`). The userns backend keeps the pre-existing loopback-only
+		// bind unchanged — see Config.CLIAddr's own doc comment for why
+		// this listener still needs no TLS/loopback-trust fallback: the
+		// host-side docker publish is itself loopback-only, and
+		// auth.NewCLITokenAuthMiddleware's Bearer token is the only trust
+		// mechanism regardless of which interface the container-side
+		// listener binds.
+		cliBindAddr := gatewayBindHost(s.usingContainerBackend) + ":" + cliPort
+		cliLn, err := net.Listen("tcp", cliBindAddr)
+		if err != nil {
+			return fmt.Errorf("listen cli: %w", err)
+		}
+		s.cliLn = cliLn
+		cliHandler := s.cliHandler
+		if cliHandler == nil {
+			cliHandler = s.router
+		}
+		s.cliServer = &http.Server{Handler: cliHandler}
+		go func() { _ = s.cliServer.Serve(cliLn) }() // returns ErrServerClosed on Stop
+		slog.Info("cli listener started", "addr", cliLn.Addr().String())
+	}
+
 	return nil
 }
 
@@ -806,6 +904,11 @@ func (s *Server) Stop() error {
 	}
 	if s.tcpServer != nil {
 		if err := s.tcpServer.Close(); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	if s.cliServer != nil {
+		if err := s.cliServer.Close(); err != nil {
 			errs = append(errs, err)
 		}
 	}
@@ -904,6 +1007,18 @@ func (s *Server) GatewayTLSAddr() string {
 func (s *Server) TCPAddr() string {
 	if s.tcpLn != nil {
 		return s.tcpLn.Addr().String()
+	}
+	return ""
+}
+
+// CLIListenAddr returns the dedicated CLI TCP listener's bound address
+// (docs/plans/volume-only-daemon.md §論点c, PR-3 Option 4 host-mode
+// redesign), or "" when it was never bound (cfg.CLIAddr=="" or
+// cfg.CLIToken=="" — see Config.CLIAddr's own doc comment) or before
+// Start has run.
+func (s *Server) CLIListenAddr() string {
+	if s.cliLn != nil {
+		return s.cliLn.Addr().String()
 	}
 	return ""
 }

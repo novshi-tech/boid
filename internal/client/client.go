@@ -75,9 +75,20 @@ func NewUnixClient(socketPath string) *Client {
 //     "Authorization: Bearer <token>" on every request (including same-
 //     origin redirects; decision 7 rejects cross-origin ones outright — see
 //     sameOriginCheckRedirect).
-//   - anything else ("http://" included — decision 4 explicitly leaves it
-//     unsupported; plain-HTTP remote daemons are not a supported
-//     configuration) — a hard error.
+//   - "http://<loopback-host>[:port]" — PR-3 Option 4 host-mode redesign
+//     (docs/plans/volume-only-daemon.md §論点c, nose directive
+//     2026-07-25): the `boid` CLI's own host-mode orchestration
+//     (cmd/host.go) dials the container-backend daemon's dedicated CLI
+//     TCP listener this way — a shared-secret Bearer token
+//     (BOID_CLI_TOKEN) instead of TLS, since host mode already owns the
+//     daemon container's lifecycle end to end (no cert to verify, no
+//     remote network hop to encrypt). Restricted to a loopback hostname
+//     (127.0.0.1/::1/localhost) — see newHTTPClient's own doc comment —
+//     so this scheme can never be (mis)used to send a Bearer token in
+//     cleartext to a genuinely remote host; decision 4's original
+//     "plain-HTTP remote daemons are not supported" verdict still holds
+//     for anything that isn't loopback.
+//   - anything else — a hard error.
 func NewClient(rawURL, token string) (*Client, error) {
 	u, err := url.Parse(rawURL)
 	if err != nil {
@@ -99,8 +110,10 @@ func NewClient(rawURL, token string) (*Client, error) {
 		return NewUnixClient(path), nil
 	case "https":
 		return newHTTPSClient(u, token, nil)
+	case "http":
+		return newHTTPClient(u, token, nil)
 	default:
-		return nil, fmt.Errorf("unsupported client url scheme %q (want \"unix\" or \"https\"): %s", u.Scheme, rawURL)
+		return nil, fmt.Errorf("unsupported client url scheme %q (want \"unix\", \"https\", or loopback \"http\"): %s", u.Scheme, rawURL)
 	}
 }
 
@@ -218,6 +231,44 @@ func newHTTPSClient(u *url.URL, token string, transport http.RoundTripper) (*Cli
 	}, nil
 }
 
+// newHTTPClient builds an http (no TLS) scheme Client — PR-3 Option 4
+// host-mode redesign (docs/plans/volume-only-daemon.md §論点c). Same
+// bearerTransport/sameOriginCheckRedirect wiring as newHTTPSClient, minus
+// TLS entirely: host mode's whole point is that the `boid` CLI itself
+// already owns the daemon container's lifecycle (cmd/host.go), so there is
+// no independent trust decision left for a certificate to make — the
+// Bearer token (BOID_CLI_TOKEN, checked by
+// auth.NewCLITokenAuthMiddleware) is the only credential.
+//
+// Rejects a non-loopback host outright (Minor safety net, not load-bearing
+// for the single-user threat model this exists under — CLAUDE.md's
+// セキュリティモデル section — but cheap insurance against a named
+// profile or hand-edited config accidentally sending BOID_CLI_TOKEN in
+// cleartext to a genuinely remote host): only 127.0.0.1/::1/localhost are
+// accepted. transport, when nil, defaults to http.DefaultTransport at
+// request time (bearerTransport.base) — tests pass a transport pinned to
+// an httptest.NewServer's client so this can be exercised without a real
+// loopback listener.
+func newHTTPClient(u *url.URL, token string, transport http.RoundTripper) (*Client, error) {
+	if u.Host == "" {
+		return nil, fmt.Errorf("http client url %q: missing host", u.String())
+	}
+	switch u.Hostname() {
+	case "127.0.0.1", "::1", "localhost":
+		// supported
+	default:
+		return nil, fmt.Errorf("http client url %q: only a loopback host (127.0.0.1/::1/localhost) is supported for the unencrypted http scheme; use https:// for a remote daemon", u.String())
+	}
+	origin := (&url.URL{Scheme: "http", Host: u.Host}).String()
+	return &Client{
+		baseURL: origin,
+		httpClient: &http.Client{
+			Transport:     &bearerTransport{token: token, base: transport},
+			CheckRedirect: sameOriginCheckRedirect,
+		},
+	}, nil
+}
+
 // bearerTransport injects "Authorization: Bearer <token>" into every
 // outgoing request (RFC 6750; matches internal/api/auth/bearer_verifier.go's
 // case-insensitive scheme parsing on the server side). It applies the
@@ -284,6 +335,40 @@ func DefaultSocketPath() string {
 		return filepath.Join(runDir, "boid.sock")
 	}
 	return fmt.Sprintf("/tmp/boid-%s.sock", uid)
+}
+
+// defaultCLIAddrHost is the loopback literal DefaultCLIAddr always binds/
+// dials — mirrors newHTTPClient's own loopback-only restriction (a Bearer
+// token has no business leaving the local host on this transport).
+const defaultCLIAddrHost = "127.0.0.1"
+
+// DefaultCLIAddr resolves the "host:port" the container-backend daemon's
+// dedicated CLI TCP listener binds/is published on, and that `boid`'s
+// host-mode orchestration (cmd/host.go, BOID_MODE=container — nose's
+// Option 4 redesign of PR-3, docs/plans/volume-only-daemon.md §論点c)
+// dials once the daemon container is confirmed healthy. cmd/start.go's own
+// buildStartConfig uses this exact same value to bind
+// server.Config.CLIAddr — a single source of truth for the literal so the
+// two ends can never drift apart silently, and build/container/compose.yml
+// publishes the identical port on the host's own loopback interface
+// (`127.0.0.1:8442:8442`).
+//
+// Fixed at "127.0.0.1:8442" — no BOID_CLI_ADDR override (round-2 codex
+// review Major 2, removed here; a PORT-only override used to be honored,
+// but nothing ever propagated it into build/container/compose.yml's own
+// hardcoded `127.0.0.1:8442:8442` port-publish or into the daemon
+// container's own listener bind, so an operator setting it would have the
+// host CLI poll a port the daemon was never actually reachable on for the
+// full hostModeStartTimeout, then time out). This literal must always
+// match compose.yml's own hardcoded port until a real end-to-end plumbed
+// override (host CLI dial port AND compose's published port AND the
+// container's own bound port, all three, kept in lockstep) is worth the
+// complexity — not needed for this single-user, same-host deployment
+// shape. A genuinely remote daemon (a named `https://` profile,
+// profiles.Resolve) is unaffected — that path has its own, independently
+// configurable port as part of the profile URL.
+func DefaultCLIAddr() string {
+	return defaultCLIAddrHost + ":8442"
 }
 
 // Do issues an HTTP request with no deadline. Suitable for foreground CLI

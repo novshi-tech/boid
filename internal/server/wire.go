@@ -1428,6 +1428,27 @@ func mountRoutes(srv *Server, runtime *appRuntime) error {
 		}
 	})
 
+	// GET /api/cli-token-check (round-2 codex review Blocker 2, PR-3 Option
+	// 4 host-mode redesign): an authenticated no-op host mode's readiness
+	// probe (cmd/host.go's hostModeHealthy) hits INSTEAD of the public
+	// /api/health above — proving the CONFIGURED BOID_CLI_TOKEN actually
+	// works against the running daemon container, not merely that some
+	// process answers on the port. /api/health alone cannot catch a token
+	// mismatch: e.g. ~/.config/boid/cli-token deleted and regenerated on
+	// the host while the container keeps running with the OLD value still
+	// baked into its process environment — health would keep returning 200
+	// forever while every real request 401s indefinitely. Deliberately NOT
+	// added to auth.apiAuthRequired's exemption list, so both the CLI TCP
+	// listener (auth.NewCLITokenAuthMiddleware) and the Web UI's TCP
+	// listener (auth.NewTCPAPIAuthMiddleware) gate it exactly like any
+	// other /api/* route — reusing the SAME auth machinery a readiness
+	// probe needs to prove is actually working, rather than hand-rolling a
+	// parallel token comparison here.
+	r.Get("/api/cli-token-check", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"status":"ok"}`))
+	})
+
 	r.Post("/api/shutdown", func(w http.ResponseWriter, req *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"status":"ok"}`))
@@ -1694,5 +1715,16 @@ func mountRoutes(srv *Server, runtime *appRuntime) error {
 	// same router wrapped with transport-aware API auth, so the data/control
 	// /api/* surface requires a session over TCP. See Server.Start.
 	srv.tcpHandler = auth.NewTCPAPIAuthMiddleware(runtime.sessionSigner, runtime.authStore)(r)
+
+	// The dedicated CLI TCP listener (Config.CLIAddr/CLIToken, PR-3 Option 4
+	// host-mode redesign, docs/plans/volume-only-daemon.md §論点c) is served
+	// the same router wrapped with a DIFFERENT auth layer: a single shared
+	// BOID_CLI_TOKEN secret, not the Web UI's session/device-pair/loopback-
+	// trust machinery — see auth.NewCLITokenAuthMiddleware's own doc
+	// comment. Built unconditionally here (byte-for-byte cheap when
+	// cfg.CLIToken==""; NewCLITokenAuthMiddleware rejects every request in
+	// that case) — Server.Start only actually SERVES it when cfg.CLIAddr is
+	// also set.
+	srv.cliHandler = auth.NewCLITokenAuthMiddleware(srv.cfg.CLIToken)(r)
 	return nil
 }

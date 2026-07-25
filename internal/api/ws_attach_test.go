@@ -471,6 +471,45 @@ func TestWSAttachHandler_NoBearerHeader_FallsBackToContextDeviceID(t *testing.T)
 	}
 }
 
+// TestWSAttachHandler_CLITokenAuthenticated_BypassesDeviceBearerCheck pins
+// the round-2 codex review Blocker 1 fix: a request already authenticated
+// by auth.NewCLITokenAuthMiddleware (context marked via
+// auth.WithCLITokenAuthenticated) must not have its Bearer header
+// re-verified as a device-pair token here — BOID_CLI_TOKEN is never a value
+// InsertDeviceToken wrote to the auth store, so h.Bearer.Verify would
+// always reject it, breaking `boid attach`/`exec` end to end over host
+// mode. A Bearer header carrying an arbitrary (non-device) token is
+// deliberately present on the request below, mirroring exactly what the
+// real CLI-token listener forwards downstream — the handshake must still
+// succeed.
+func TestWSAttachHandler_CLITokenAuthenticated_BypassesDeviceBearerCheck(t *testing.T) {
+	store := newTestAuthStoreForWS(t)
+	ch := make(chan []byte)
+	sub := &stubSubscriber{ch: ch, ok: true}
+	h := &WSAttachHandler{Subscriber: sub, Bearer: auth.NewBearerVerifier(store)}
+
+	r := chi.NewRouter()
+	r.Get("/api/jobs/{id}/attach/ws", func(w http.ResponseWriter, req *http.Request) {
+		ctx := auth.WithCLITokenAuthenticated(req.Context())
+		h.ServeHTTP(w, req.WithContext(ctx))
+	})
+	srv := httptest.NewServer(r)
+	defer srv.Close()
+
+	ctx := context.Background()
+	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http") + "/api/jobs/job-cli-token/attach/ws"
+	conn, _, err := websocket.Dial(ctx, wsURL, &websocket.DialOptions{
+		HTTPHeader: http.Header{
+			"Origin":        []string{srv.URL},
+			"Authorization": []string{"Bearer some-cli-token-not-a-device-token"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("ws dial with CLI-token-authenticated context should succeed, got: %v", err)
+	}
+	defer conn.CloseNow()
+}
+
 func TestWSAttachHandler_OriginRejected(t *testing.T) {
 	sub := &stubSubscriber{ok: false}
 	h := &WSAttachHandler{Subscriber: sub, PublicURL: "https://example.com"}
