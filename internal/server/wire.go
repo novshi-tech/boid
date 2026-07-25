@@ -1428,6 +1428,27 @@ func mountRoutes(srv *Server, runtime *appRuntime) error {
 		}
 	})
 
+	// GET /api/cli-token-check (round-2 codex review Blocker 2, PR-3 Option
+	// 4 host-mode redesign): an authenticated no-op host mode's readiness
+	// probe (cmd/host.go's hostModeHealthy) hits INSTEAD of the public
+	// /api/health above — proving the CONFIGURED BOID_CLI_TOKEN actually
+	// works against the running daemon container, not merely that some
+	// process answers on the port. /api/health alone cannot catch a token
+	// mismatch: e.g. ~/.config/boid/cli-token deleted and regenerated on
+	// the host while the container keeps running with the OLD value still
+	// baked into its process environment — health would keep returning 200
+	// forever while every real request 401s indefinitely. Deliberately NOT
+	// added to auth.apiAuthRequired's exemption list, so both the CLI TCP
+	// listener (auth.NewCLITokenAuthMiddleware) and the Web UI's TCP
+	// listener (auth.NewTCPAPIAuthMiddleware) gate it exactly like any
+	// other /api/* route — reusing the SAME auth machinery a readiness
+	// probe needs to prove is actually working, rather than hand-rolling a
+	// parallel token comparison here.
+	r.Get("/api/cli-token-check", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"status":"ok"}`))
+	})
+
 	r.Post("/api/shutdown", func(w http.ResponseWriter, req *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"status":"ok"}`))

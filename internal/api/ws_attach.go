@@ -182,7 +182,23 @@ func (h *WSAttachHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // auth.DeviceIDFromContext(r.Context()) — the device ID set by whatever
 // cookie-based middleware sits in front of this handler in the router,
 // unchanged from before PR0.
+//
+// PR-3 Option 4 round-2 codex review Blocker 1: a request that already
+// authenticated via the dedicated CLI TCP listener
+// (auth.NewCLITokenAuthMiddleware, marked via
+// auth.WithCLITokenAuthenticated) must short-circuit here BEFORE the Bearer
+// branch below — that listener's Bearer header carries BOID_CLI_TOKEN, a
+// single shared secret never written to the auth store as a device token,
+// so handing it to h.Bearer.Verify would always fail with 401 even though
+// the request is already fully authenticated (this is exactly how `boid
+// attach`/`exec` broke over host mode: the CLI middleware accepted the
+// token, then this handler re-checked the same header and rejected it).
+// No device ID to report either way — CLI-token auth carries no
+// paired-device identity to register with h.Registry for revocation.
 func (h *WSAttachHandler) authenticateDevice(r *http.Request) (deviceID string, ok bool, err error) {
+	if auth.CLITokenAuthenticated(r.Context()) {
+		return "", false, nil
+	}
 	if _, present, _ := auth.ExtractBearerToken(r); present {
 		if h.Bearer == nil {
 			return "", false, auth.ErrInvalidSession

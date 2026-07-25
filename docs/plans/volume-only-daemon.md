@@ -334,16 +334,27 @@ nose の判断: mTLS/loopback-trust 方式を全面撤回し、 **Option 4 (CLI 
    `login`/`logout` 等 scope=neutral は素通り) で:
    - `~/.config/boid/cli-token` (0600) を読み込み、 無ければ 32 byte を生成して永続化
      (`internal/atomicfile.PublishIfAbsent`、 PR-1a の既存 primitive を再利用)。
-   - `http://127.0.0.1:8442/api/health` (public path) に届くか確認。 届かなければ
-     `~/.config/boid/cli-lock` で flock し、 `scripts/deploy-container.sh` を `BOID_CLI_TOKEN=<token>` 付きで
-     invoke (image build + `compose up -d` は既存スクリプトが担う — engine 検出/podman preflight/
-     idempotent config seed を再実装せず再利用)、 health が返るまで poll。
+   - `http://127.0.0.1:8442/api/cli-token-check` (認証必須 endpoint) に `Authorization: Bearer <token>` 付きで
+     届くか確認 (round-2 codex review Blocker 2 で `/api/health` から変更 — 無認証 health だけでは token が
+     daemon 側と食い違っていても 200 を返し続け、 実コマンドが 401 し続ける状態を検知できないため)。 届かない
+     ( or 401) なら `~/.config/boid/cli-lock` で flock し、 `scripts/deploy-container.sh` を
+     `BOID_CLI_TOKEN=<token>` 付きで invoke (image build + `compose up -d` は既存スクリプトが担う — engine 検出/
+     podman preflight/idempotent config seed を再実装せず再利用)、 health が返るまで poll。
+     `BOID_NO_AUTOSTART=1` (bare-metal 側と共通の既存 opt-out) が設定されている場合は自動起動を試みずエラーで
+     即座に失敗する。
    - health が確認できたら `http://127.0.0.1:8442` に対して `Authorization: Bearer <token>` を付けて実際の
      subcommand を dispatch。
-   - 実装は `cmd/host.go`。 当初ブリーフの「compose アセットを go:embed」案は採用しなかった —
-     `build/container/Dockerfile` の build context が `COPY . .` (go source tree 全体) のため、 それを
-     生成する当のバイナリに埋め込むのは循環している。 代わりに `scripts/deploy-container.sh` を
-     (`BOID_COMPOSE_ROOT` 環境変数 or cwd から歩いて上る形で) **そのまま invoke** する。
+   - 実装は `cmd/host.go`。 PRIMARY path は `scripts/deploy-container.sh` を (`BOID_COMPOSE_ROOT` 環境変数 or
+     cwd から歩いて上る形で見つけたチェックアウトから) **そのまま invoke** する — image を fresh build
+     できるのはこの経路のみ (`build/container/Dockerfile` の build context が `COPY . .` = go source tree
+     全体のため、 それを生成する当のバイナリへの完全な埋め込みは循環していて不可能)。
+     round-2 codex review Major 1 (「installed standalone CLI から autostart できない」) を受けて FALLBACK path
+     を追加: `build/container/{compose.yml,Dockerfile}` は `build/container/assets.go` の `go:embed` で
+     バイナリに埋め込み済み、 チェックアウトが見つからない場合は安定パス
+     (`$XDG_STATE_HOME/boid/compose/`) に展開して `compose up -d` を直接叩く (`deployFromEmbeddedAssets`) —
+     ただし `boid-runner:latest` image が既に存在する場合のみ (以前どこかのチェックアウトから build 済み、
+     が典型ケース)。 image も checkout も無い場合は明確なエラーで失敗する (`docker build` がソース無しで
+     壊れたイメージを作ろうとする、 という紛らわしい失敗は避ける)。
 2. **daemon (container 内) 側認証**: `BOID_CLI_TOKEN` env を起動時に読み、 専用の plain HTTP (TLS なし) CLI
    listener (`internal/server.Config.CLIAddr`/`CLIToken`、 port `8442` — Web UI 用 `8080` とは別) を
    `auth.NewCLITokenAuthMiddleware` (constant-time Bearer 比較) でガードする。 token 未設定なら listener 自体を

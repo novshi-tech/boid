@@ -370,23 +370,19 @@ func TestHTTPSClient_CrossOriginRedirect_Rejected(t *testing.T) {
 // --- DefaultCLIAddr (PR-3 Option 4 host-mode redesign, docs/plans/
 // volume-only-daemon.md §論点c) ---
 
-func TestDefaultCLIAddr_NoOverride(t *testing.T) {
-	t.Setenv("BOID_CLI_ADDR", "")
-	if got := DefaultCLIAddr(); got != "127.0.0.1:8442" {
-		t.Errorf("DefaultCLIAddr() = %q, want %q", got, "127.0.0.1:8442")
-	}
-}
-
-func TestDefaultCLIAddr_PortOverride(t *testing.T) {
-	t.Setenv("BOID_CLI_ADDR", "0.0.0.0:19999")
-	if got := DefaultCLIAddr(); got != "127.0.0.1:19999" {
-		t.Errorf("DefaultCLIAddr() = %q, want %q (host override ignored, port honored)", got, "127.0.0.1:19999")
-	}
-}
-
-func TestDefaultCLIAddr_MalformedOverride_Ignored(t *testing.T) {
-	t.Setenv("BOID_CLI_ADDR", "not-a-host-port")
-	if got := DefaultCLIAddr(); got != "127.0.0.1:8442" {
-		t.Errorf("DefaultCLIAddr() = %q, want the default %q for a malformed override", got, "127.0.0.1:8442")
+// TestDefaultCLIAddr_FixedNoOverride pins the round-2 codex review Major 2
+// fix: DefaultCLIAddr is a fixed "127.0.0.1:8442" literal with no
+// BOID_CLI_ADDR override anymore. A port-only override used to be honored
+// here, but nothing ever propagated it into build/container/compose.yml's
+// own hardcoded port-publish or into the daemon container's listener bind
+// — so setting it just made the host CLI poll a port the daemon was never
+// reachable on until hostModeStartTimeout expired. Setting the env var
+// (even to a well-formed override) must have no effect at all now.
+func TestDefaultCLIAddr_FixedNoOverride(t *testing.T) {
+	for _, v := range []string{"", "0.0.0.0:19999", "not-a-host-port"} {
+		t.Setenv("BOID_CLI_ADDR", v)
+		if got := DefaultCLIAddr(); got != "127.0.0.1:8442" {
+			t.Errorf("BOID_CLI_ADDR=%q: DefaultCLIAddr() = %q, want the fixed %q (no override honored)", v, got, "127.0.0.1:8442")
+		}
 	}
 }

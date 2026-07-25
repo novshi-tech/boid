@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/coder/websocket"
 	"github.com/novshi-tech/boid/internal/server"
 )
 
@@ -148,6 +149,56 @@ func TestCLIListener_NotBoundWithoutAddr(t *testing.T) {
 	if addr := srv.CLIListenAddr(); addr != "" {
 		t.Errorf("CLIListenAddr() = %q, want \"\" (no CLIAddr configured, listener must not bind)", addr)
 	}
+}
+
+// TestCLIListener_WSAttach_ReachesOverCLIToken is the end-to-end regression
+// test for round-2 codex review Blocker 1: `boid attach`/`exec` (over
+// BOID_MODE=container host mode) dial GET /api/jobs/{id}/attach/ws against
+// this exact listener with `Authorization: Bearer <BOID_CLI_TOKEN>` — the
+// bug was that WSAttachHandler.authenticateDevice re-verified that same
+// header as a paired-device token and rejected it, even though
+// NewCLITokenAuthMiddleware had already authenticated the request. The
+// target job id does not exist, which is fine (see
+// TestTCPListener_WSAttach_ReachableViaBearerAndCookie's own doc comment
+// for why) — this test only cares that the handshake itself succeeds.
+func TestCLIListener_WSAttach_ReachesOverCLIToken(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+
+	tmpDir := t.TempDir()
+	sockPath := filepath.Join(tmpDir, "boid.sock")
+
+	srv, err := server.New(server.Config{
+		DBPath:     ":memory:",
+		SocketPath: sockPath,
+		HTTPAddr:   "127.0.0.1:0",
+		CLIAddr:    "127.0.0.1:0",
+		CLIToken:   "test-cli-token",
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := srv.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer srv.Stop()
+
+	cliAddr := srv.CLIListenAddr()
+	if cliAddr == "" {
+		t.Fatal("CLI listener should be open (CLIAddr and CLIToken were both set)")
+	}
+
+	wsURL := "ws://" + cliAddr + "/api/jobs/nonexistent-job/attach/ws"
+	conn, resp, err := websocket.Dial(context.Background(), wsURL, &websocket.DialOptions{
+		HTTPHeader: http.Header{"Authorization": []string{"Bearer test-cli-token"}},
+	})
+	if err != nil {
+		status := 0
+		if resp != nil {
+			status = resp.StatusCode
+		}
+		t.Fatalf("ws dial over CLI token listener: %v (status=%d)", err, status)
+	}
+	conn.CloseNow()
 }
 
 // TestCLIListener_ContainerBackend_BindsAllInterfaces pins the round-4 fix:

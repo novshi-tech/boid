@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"crypto/sha256"
 	"crypto/subtle"
 	"net/http"
 )
@@ -45,21 +46,43 @@ func NewCLITokenAuthMiddleware(token string) func(http.Handler) http.Handler {
 				writeAPIUnauthorized(w)
 				return
 			}
-			next.ServeHTTP(w, r)
+			// Mark the request as CLI-token-authenticated (round-2 codex
+			// review Blocker 1, WithCLITokenAuthenticated's own doc
+			// comment): downstream handlers sharing this router with the
+			// UNIX socket / Web UI TCP listener (e.g. WSAttachHandler) must
+			// not re-verify this same Bearer header as a device-pair token
+			// — it never was one.
+			next.ServeHTTP(w, r.WithContext(WithCLITokenAuthenticated(r.Context())))
 		})
 	}
 }
 
-// cliTokenEqual compares two tokens in constant time, guarding the
-// zero-length case explicitly: subtle.ConstantTimeCompare returns 0
-// (unequal) for mismatched lengths WITHOUT a timing leak on the length
-// check itself, but two empty slices would compare "equal" — never
-// reachable in practice here (NewCLITokenAuthMiddleware's own caller
-// already rejects token=="" before this is invoked), guarded anyway so
-// this helper is correct standalone, not just correct-by-caller-contract.
+// cliTokenEqual compares two tokens in constant time. Both are hashed
+// (SHA-256) before the comparison (round-2 codex review Minor 1) so
+// subtle.ConstantTimeCompare always runs over two fixed-length 32-byte
+// digests, regardless of a/b's own lengths: subtle.ConstantTimeCompare
+// itself returns 0 immediately, WITHOUT running its constant-time loop at
+// all, whenever the two inputs' lengths differ — comparing raw token bytes
+// directly (the previous implementation) meant a mismatched-length probe
+// short-circuited in a way that is, in principle, distinguishable in time
+// from a same-length mismatch. In practice this was low-impact (generated
+// tokens — loadOrCreateCLIToken — are always exactly 64 hex chars, so a
+// genuine token is never a different length from an attacker's guess
+// unless the guess is already wrong on length alone, which leaks nothing
+// interesting), but hashing first makes the comparison satisfy the
+// constant-time claim unconditionally rather than relying on that
+// generation-time invariant.
+//
+// The zero-length guard stays explicit: two empty slices would hash equal
+// (sha256("") == sha256("")) — never reachable in practice
+// (NewCLITokenAuthMiddleware's own caller already rejects token=="" before
+// this is invoked), guarded anyway so this helper is correct standalone,
+// not just correct-by-caller-contract.
 func cliTokenEqual(a, b string) bool {
 	if len(a) == 0 || len(b) == 0 {
 		return false
 	}
-	return subtle.ConstantTimeCompare([]byte(a), []byte(b)) == 1
+	ah := sha256.Sum256([]byte(a))
+	bh := sha256.Sum256([]byte(b))
+	return subtle.ConstantTimeCompare(ah[:], bh[:]) == 1
 }

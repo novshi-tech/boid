@@ -87,6 +87,61 @@ func TestCLITokenAuth_PublicPaths_NoAuthRequired(t *testing.T) {
 	}
 }
 
+// TestCLITokenAuth_ValidBearer_MarksContextCLITokenAuthenticated pins the
+// round-2 codex review Blocker 1 fix: a successfully authenticated request
+// must carry auth.CLITokenAuthenticated(ctx)==true into the wrapped
+// handler, so downstream handlers sharing this router with other
+// transports (e.g. WSAttachHandler) can tell a CLI-token-authenticated
+// request apart from one that still needs its own device-pair check.
+func TestCLITokenAuth_ValidBearer_MarksContextCLITokenAuthenticated(t *testing.T) {
+	var sawMarker bool
+	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sawMarker = CLITokenAuthenticated(r.Context())
+		w.WriteHeader(http.StatusNoContent)
+	})
+	h := NewCLITokenAuthMiddleware("secret-token")(inner)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/tasks", nil)
+	req.Header.Set("Authorization", "Bearer secret-token")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusNoContent)
+	}
+	if !sawMarker {
+		t.Error("CLITokenAuthenticated(ctx) = false in downstream handler, want true")
+	}
+}
+
+// TestCLITokenEqual pins cliTokenEqual's correctness across a mix of
+// equal-length and mismatched-length inputs (round-2 codex review Minor 1:
+// both sides are now hashed before subtle.ConstantTimeCompare, so the
+// comparison itself always runs over two fixed-length digests regardless
+// of the raw input lengths below).
+func TestCLITokenEqual(t *testing.T) {
+	cases := []struct {
+		name string
+		a, b string
+		want bool
+	}{
+		{"equal", "secret-token", "secret-token", true},
+		{"different same length", "secret-token", "wrong-token!", false},
+		{"different length, b shorter", "secret-token", "short", false},
+		{"different length, b longer", "secret-token", "a-much-longer-token-value", false},
+		{"a empty", "", "secret-token", false},
+		{"b empty", "secret-token", "", false},
+		{"both empty", "", "", false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := cliTokenEqual(c.a, c.b); got != c.want {
+				t.Errorf("cliTokenEqual(%q, %q) = %v, want %v", c.a, c.b, got, c.want)
+			}
+		})
+	}
+}
+
 func TestCLITokenAuth_MalformedBearerHeader_Rejected(t *testing.T) {
 	h := newCLITokenTestHandler(t, "secret-token")
 	req := httptest.NewRequest(http.MethodGet, "/api/tasks", nil)

@@ -50,11 +50,23 @@ COMPOSE_FILE="$ROOT_DIR/build/container/compose.yml"
 # uses) but treats podman as a fully supported second engine, not a
 # best-effort fallback (docs/plans/volume-only-daemon.md §論点 i's 案 X:
 # "podman のほうがセキュリティに優れる、podman で動かせることは必須").
-if command -v docker >/dev/null 2>&1; then
+#
+# usable() checks more than PATH presence (round-2 codex review Major 4): a
+# host can have a `docker` CLI installed with no reachable daemon/socket
+# (stale install, permission issue, daemon not running) while a genuinely
+# working `podman` sits right next to it — presence-only selection would
+# pick the unusable docker every time and never fall back. `docker
+# version`/`podman version` round-trips to the actual engine, not just the
+# CLI binary.
+usable() {
+	command -v "$1" >/dev/null 2>&1 && "$1" version >/dev/null 2>&1
+}
+
+if usable docker; then
 	ENGINE=docker
 	BUILD_CMD=(docker build)
 	COMPOSE_CMD=(docker compose -f "$COMPOSE_FILE")
-elif command -v podman >/dev/null 2>&1; then
+elif usable podman; then
 	ENGINE=podman
 	BUILD_CMD=(podman build)
 	if command -v podman-compose >/dev/null 2>&1; then
@@ -63,6 +75,12 @@ elif command -v podman >/dev/null 2>&1; then
 		COMPOSE_CMD=()
 		echo "warning: podman found but no podman-compose; skipping the compose up/down step (image build only)" >&2
 	fi
+elif command -v docker >/dev/null 2>&1; then
+	echo "error: docker is on PATH but not usable ('docker version' failed — daemon not running/unreachable), and no usable podman was found either" >&2
+	exit 1
+elif command -v podman >/dev/null 2>&1; then
+	echo "error: podman is on PATH but not usable ('podman version' failed), and no usable docker was found either" >&2
+	exit 1
 else
 	echo "error: neither docker nor podman found on PATH" >&2
 	exit 1
@@ -185,8 +203,17 @@ if [[ "${DEPLOY_CONTAINER_BUILD_ONLY:-0}" == "1" ]]; then
 fi
 
 if [[ ${#COMPOSE_CMD[@]} -eq 0 ]]; then
-	echo "deploy-container: image built ($IMAGE_TAG); compose up skipped (see warning above)"
-	exit 0
+	# round-2 codex review Major 4: this used to print a warning and exit 0
+	# here — reporting overall success even though the compose stack was
+	# NEVER started, which left a caller polling the daemon's health
+	# endpoint for the full timeout with no way to tell "still starting"
+	# apart from "will never start". DEPLOY_CONTAINER_BUILD_ONLY=1 (handled
+	# above, before this point) remains the one legitimate "image-only,
+	# caller owns the rest" exit — reaching here means the caller wanted an
+	# actually-running stack and podman-compose is simply missing, which is
+	# an unmet requirement, not a degraded-but-OK outcome.
+	echo "error: podman-compose is required to bring the compose stack up (image built: $IMAGE_TAG, but compose up was skipped — see warning above); install podman-compose or set DEPLOY_CONTAINER_BUILD_ONLY=1 if you only wanted the image" >&2
+	exit 1
 fi
 
 # --- pre-provision the still-bind-mounted runtime dir -----------------------

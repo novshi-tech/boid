@@ -353,22 +353,21 @@ const defaultCLIAddrHost = "127.0.0.1"
 // publishes the identical port on the host's own loopback interface
 // (`127.0.0.1:8442:8442`).
 //
-// Honors BOID_CLI_ADDR for the PORT only — "127.0.0.1:8442" otherwise
-// (8442, not 8080, so a CLI session over host mode keeps working even if
-// an operator firewalls off or disables the separate Web UI port). A HOST
-// override is deliberately rejected: this listener is only ever published
-// on loopback (docker's own `127.0.0.1:8442:8442` port-publish syntax,
-// build/container/compose.yml) and newHTTPClient itself refuses to dial
-// anything else — an override naming any other host would just fail that
-// check. A malformed override (no valid "host:port" shape at all) is
-// likewise ignored rather than propagated to a listen/dial call far from
-// the actual mistake.
+// Fixed at "127.0.0.1:8442" — no BOID_CLI_ADDR override (round-2 codex
+// review Major 2, removed here; a PORT-only override used to be honored,
+// but nothing ever propagated it into build/container/compose.yml's own
+// hardcoded `127.0.0.1:8442:8442` port-publish or into the daemon
+// container's own listener bind, so an operator setting it would have the
+// host CLI poll a port the daemon was never actually reachable on for the
+// full hostModeStartTimeout, then time out). This literal must always
+// match compose.yml's own hardcoded port until a real end-to-end plumbed
+// override (host CLI dial port AND compose's published port AND the
+// container's own bound port, all three, kept in lockstep) is worth the
+// complexity — not needed for this single-user, same-host deployment
+// shape. A genuinely remote daemon (a named `https://` profile,
+// profiles.Resolve) is unaffected — that path has its own, independently
+// configurable port as part of the profile URL.
 func DefaultCLIAddr() string {
-	if a := os.Getenv("BOID_CLI_ADDR"); a != "" {
-		if _, port, err := net.SplitHostPort(a); err == nil && port != "" {
-			return net.JoinHostPort(defaultCLIAddrHost, port)
-		}
-	}
 	return defaultCLIAddrHost + ":8442"
 }
 
