@@ -103,6 +103,29 @@ var rootCmd = &cobra.Command{
 		if isCompletionScriptGen(cmd) {
 			return nil
 		}
+		// Host mode (PR-3 Option 4 redesign, docs/plans/
+		// volume-only-daemon.md §論点c, nose directive 2026-07-25):
+		// BOID_MODE=container opts a shell environment into `boid` itself
+		// managing the container-backend daemon's lifecycle (cmd/host.go)
+		// instead of the profiles.Resolve chain below. Only intercepts
+		// scope=remote commands — scope=local (start/stop/gc/...) and
+		// scope=neutral (login/logout) fall through unchanged, since
+		// host.go has no opinion about bare-metal daemon lifecycle or
+		// profile-less commands. TAB-completion queries degrade silently
+		// (same posture as a broken profile below) rather than
+		// potentially blocking a shell TAB press on a multi-minute
+		// container build.
+		if hostModeEnabled() && isRemoteScope(cmd) {
+			if isCompletionQuery(cmd) {
+				return nil
+			}
+			c, err := resolveHostModeClient(cmd.Context())
+			if err != nil {
+				return err
+			}
+			cmd.SetContext(client.WithClient(cmd.Context(), c))
+			return nil
+		}
 		// Two-phase resolution (docs/plans/cli-remote-connection.md
 		// decision 6, PR4 codex review round 1): resolve profile
 		// identity (name / URL / scheme) FIRST — deliberately without
