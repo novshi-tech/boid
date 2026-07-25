@@ -307,17 +307,6 @@ func resolveJobOutput(spec sandbox.Spec) []byte {
 	return nil
 }
 
-func touchIfMissing(path string) error {
-	if _, err := os.Lstat(path); err == nil {
-		return nil
-	}
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY, 0o644)
-	if err != nil {
-		return err
-	}
-	return f.Close()
-}
-
 func writeFileAt(path, content string) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
