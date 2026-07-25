@@ -702,21 +702,28 @@ func (s *ProjectAppService) FetchProject(ctx context.Context, id string) (*orche
 // serialize their own create/delete/fetch critical sections against (see
 // projectMu's own doc comment). Exported so a caller OUTSIDE this package
 // can share the identical serialization contract without duplicating it —
-// specifically, dispatcher.Runner.Dispatch's own best-effort
-// FetchBareRepo + PrepareJobCheckout pair (docs/plans/volume-only-daemon.md
-// §論点b, PR-2b) captures a project snapshot and then clones straight off
-// its WorkDir with NO lock of its own (PR834 PR-2b round-2 codex review
-// Major 1): a concurrent `project rm` + re-add at the identical managed
-// path can land in the window between dispatch's snapshot and its clone,
-// producing a mixed checkout (one project's gateway URL/credentials against
-// another project's bare-repo content). internal/dispatcher cannot import
-// this package directly (internal/api already imports internal/dispatcher
-// for wiring — the reverse would be an import cycle), so
-// internal/server/wire.go closes over this exact method and hands it to
-// Runner.WithProjectLock as a plain function value instead — see that
-// field's own doc comment and wire.go's assignment (next to
-// runner.GatewayCredentials, which shares the same gwCreds this package's
-// own FetchBareRepo closure was wired from).
+// specifically, dispatcher.Runner.Dispatch's own project-registry-guarded
+// dispatch section (docs/plans/volume-only-daemon.md §論点b, PR-2b):
+// gateway-token registration, the selfProject lookup, the gatewayCloneURL/
+// peerAdvertise snapshot, managed-bare-repo classification, and the
+// FetchBareRepo + PrepareJobCheckout pair all read/derive from a project
+// snapshot and then clone straight off its WorkDir. Round-2 (PR834 PR-2b
+// round-2 codex review Major 1) wrapped only the final FetchBareRepo +
+// PrepareJobCheckout call in this lock, leaving the lookup and URL/token
+// snapshot that FEED it unguarded; round-3 (Major 1) widened Dispatch's own
+// closure to cover the whole sequence, because a concurrent `project rm` +
+// re-add at the identical managed path could otherwise land in the window
+// between dispatch's snapshot and the (locked) clone, producing a mixed
+// checkout (one project's gateway URL/credentials against a DIFFERENT,
+// just-re-registered project's bare-repo content) — see Dispatch's own
+// "project-registry-guarded dispatch section" comment for the full
+// rationale. internal/dispatcher cannot import this package directly
+// (internal/api already imports internal/dispatcher for wiring — the
+// reverse would be an import cycle), so internal/server/wire.go closes over
+// this exact method and hands it to Runner.WithProjectLock as a plain
+// function value instead — see that field's own doc comment and wire.go's
+// assignment (next to runner.GatewayCredentials, which shares the same
+// gwCreds this package's own FetchBareRepo closure was wired from).
 //
 // A caller with no error path of its own can ignore the returned error by
 // wrapping a niladic function; every current caller already threads one

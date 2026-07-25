@@ -129,6 +129,108 @@ func TestLoadFromPath_InvalidYAML(t *testing.T) {
 	}
 }
 
+// TestLoadFromPath_SandboxBackend_Variants pins PR834 PR-2b round-3 codex
+// review Major 2: scripts/deploy-container.sh used to validate a
+// boid_state volume's config.yaml with a sed one-liner scanning the
+// sandbox: block for any indented `backend:` line, which diverged from
+// this package's own yaml.v3 decode (Config.UnmarshalYAML) in exactly the
+// ways this table exercises — a nested key sed would false-accept, and a
+// quoted/folded scalar sed would false-reject. loadFromPath (and its
+// exported LoadFromPath wrapper the new `boid config effective-backend`
+// CLI subcommand calls — see that command's own doc comment) is the single
+// source of truth the daemon itself uses at startup; this test is that
+// contract's own pin, independent of the deploy script.
+func TestLoadFromPath_SandboxBackend_Variants(t *testing.T) {
+	cases := []struct {
+		name    string
+		content string // "" means: don't create the file at all
+		want    SandboxBackendKind
+		wantErr bool
+	}{
+		{
+			name:    "explicit container",
+			content: "sandbox:\n  backend: container\n",
+			want:    SandboxBackendContainer,
+		},
+		{
+			name:    "explicit userns",
+			content: "sandbox:\n  backend: userns\n",
+			want:    SandboxBackendUserns,
+		},
+		{
+			name:    "no sandbox key at all",
+			content: "web:\n  http_addr: \"127.0.0.1:8080\"\n",
+			want:    SandboxBackendUserns,
+		},
+		{
+			name:    "missing file entirely",
+			content: "",
+			want:    SandboxBackendUserns,
+		},
+		{
+			name:    "allowed_domains before backend",
+			content: "sandbox:\n  allowed_domains:\n    - example.com\n  backend: container\n",
+			want:    SandboxBackendContainer,
+		},
+		{
+			name:    "sandbox as the last top-level key",
+			content: "web:\n  http_addr: \"127.0.0.1:8080\"\nsandbox:\n  backend: container\n",
+			want:    SandboxBackendContainer,
+		},
+		{
+			// The exact round-3 false-accept case: a sed scan of the
+			// sandbox: block matches this `backend:` line regardless of its
+			// nesting depth, but yaml.v3 (and so Config.UnmarshalYAML)
+			// leaves sandbox.backend unset here — the real daemon selects
+			// userns, so validation must too.
+			name:    "backend nested under an unrelated key is NOT the real sandbox.backend",
+			content: "sandbox:\n  ignored:\n    backend: container\n",
+			want:    SandboxBackendUserns,
+		},
+		{
+			name:    "quoted container",
+			content: "sandbox:\n  backend: \"container\"\n",
+			want:    SandboxBackendContainer,
+		},
+		{
+			name:    "folded scalar container",
+			content: "sandbox:\n  backend: >-\n    container\n",
+			want:    SandboxBackendContainer,
+		},
+		{
+			name:    "unrecognized value is a hard error, not a silent fallback",
+			content: "sandbox:\n  backend: bogus\n",
+			wantErr: true,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, "config.yaml")
+			if tc.content != "" {
+				if err := os.WriteFile(path, []byte(tc.content), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			cfg, err := LoadFromPath(path)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("expected an error, got backend=%q", cfg.Sandbox.Backend)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if cfg.Sandbox.Backend != tc.want {
+				t.Errorf("Sandbox.Backend = %q, want %q", cfg.Sandbox.Backend, tc.want)
+			}
+		})
+	}
+}
+
 func TestLoadFromPath_PartialYAML_UsesDefaults(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")

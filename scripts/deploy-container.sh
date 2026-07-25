@@ -242,7 +242,7 @@ YAML
 fi
 '
 
-# --- validate the effective backend (codex round-2, PR834 Major 3) ------
+# --- validate the effective backend (codex round-3, PR834 Major 2) ------
 # The seed step above is idempotent: an EXISTING config.yaml in the volume
 # is left untouched, on the reasonable assumption that preserving an
 # operators own edits is the right default. But an existing config.yaml
@@ -251,22 +251,38 @@ fi
 # to the userns default) means the daemon this script is about to start
 # would silently run the userns backend while this script still prints
 # "sandbox.backend: container, seeded above" below, as if the container
-# backend were actually running. Parsed with sed rather than the boid
-# binary itself: `boid config get` (cmd/config.go) talks to a LIVE daemons
-# HTTP API, which does not exist yet at this point in a fresh deploy (the
-# daemon has not started) or a one-off seed/validate container (which never
-# runs `boid start` at all, only `sh`) — there is no bootstrap-before-
-# first-boot local-file read path to call instead (docs/plans/
-# volume-only-daemon.md §論点f, same gap the seed step above already notes).
+# backend were actually running.
+#
+# Round-2 parsed this with a sed one-liner scanning the sandbox: block for
+# any indented `backend:` line — codex round-3 flagged that as unsafe: it
+# accepts a `backend:` key nested ARBITRARILY deep under sandbox: (e.g.
+# `sandbox:\n  ignored:\n    backend: container`), which Go's yaml.v3
+# decoder (Config.UnmarshalYAML) leaves unset — the real daemon would
+# select userns while the sed scan reported container — and it
+# false-rejects a quoted `"container"` or a folded scalar value, neither of
+# which sed's plain-text match handles. `boid config get` (cmd/config.go)
+# still can't help here — it always talks to a LIVE daemon's HTTP API, which
+# does not exist yet at this point in a fresh deploy (the daemon has not
+# started) or a one-off seed/validate container (which never runs `boid
+# start`, only this shell) — but `internal/config.LoadFromPath` (the
+# primitive `boid config get` itself sits on top of) is a pure
+# filesystem-read + yaml.v3 decode with NO daemon dependency at all, so the
+# NEW `boid config effective-backend <path>` subcommand (cmd/config.go,
+# scopeLocal — see its own doc comment) exposes exactly that: the same
+# nesting/quoting/folded-scalar semantics — and the same hard-error-on-
+# unrecognized-value behavior — Config.UnmarshalYAML applies at real daemon
+# startup, run standalone against an explicit path via the boid binary
+# already baked into this image (build/container/Dockerfile's
+# `/usr/local/bin/boid`).
 echo "deploy-container: verifying the boid_state volume config.yaml resolves sandbox.backend to container"
 "${COMPOSE_CMD[@]}" run --rm -T --entrypoint sh daemon -c '
 set -e
 cfg="$XDG_CONFIG_HOME/boid/config.yaml"
-backend=""
-if [ -f "$cfg" ]; then
-	backend=$(sed -n "/^sandbox:/,/^[^[:space:]]/{/^[[:space:]]*backend:/p}" "$cfg" | tail -n1 | sed -E "s/^[[:space:]]*backend:[[:space:]]*//; s/[[:space:]]*#.*$//; s/[[:space:]]+$//")
+if ! backend=$(/usr/local/bin/boid config effective-backend "$cfg"); then
+	echo "deploy-container: ERROR: the boid_state volume config.yaml at $cfg failed to parse (see the boid error above)." >&2
+	echo "deploy-container: fix: update it (boid config set sandbox.backend container against a running daemon, or edit $cfg directly inside the volume) or remove the boid_state volume to fresh-start (this DISCARDS all daemon state)." >&2
+	exit 1
 fi
-backend="${backend:-userns}"
 if [ "$backend" != "container" ]; then
 	echo "deploy-container: ERROR: the boid_state volume config.yaml resolves sandbox.backend to [$backend], not container." >&2
 	echo "deploy-container: an existing config.yaml was preserved above (not overwritten) but does not select the container backend, so the daemon about to start would silently run userns instead of container." >&2

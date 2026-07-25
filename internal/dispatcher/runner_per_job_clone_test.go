@@ -366,3 +366,169 @@ func TestDispatch_ContainerBackend_WithProjectLockSerializesConcurrentDispatches
 		t.Fatalf("max concurrently-active WithProjectLock fetch+clone closures = %d, want 1 (not serialized)", maxActive)
 	}
 }
+
+// signalingProjectLookup wraps a single, fixed *orchestrator.Project and
+// sends (best-effort, non-blocking) on signal once GetProject has been
+// called more than skipCalls times — used by
+// TestDispatch_ContainerBackend_ConcurrentProjectRmReadd_NeverMixesCheckout
+// below to detect the exact instant Dispatch's project-registry-guarded
+// section (the one this round-3 fix wraps in r.WithProjectLock) reads the
+// project, without relying on sleep-based timing. skipCalls exists because
+// Dispatch also does an EARLIER, unrelated GetProject call via
+// resolveProjectRuntime (workspaceID/projectWorkDir resolution for
+// legacy-dir host-command detection — out of scope for this fix, see this
+// test's own doc comment) before it ever reaches the locked section; a
+// signal on that first, legitimately-unlocked call would let the attacker
+// race ahead of the lock for a reason unrelated to what round-3 fixed,
+// producing a false failure.
+type signalingProjectLookup struct {
+	signal    chan struct{}
+	project   *orchestrator.Project
+	skipCalls int
+
+	mu    sync.Mutex
+	calls int
+}
+
+func (f *signalingProjectLookup) GetProject(id string) (*orchestrator.Project, error) {
+	f.mu.Lock()
+	f.calls++
+	n := f.calls
+	f.mu.Unlock()
+	if n > f.skipCalls {
+		select {
+		case f.signal <- struct{}{}:
+		default:
+		}
+	}
+	if f.project != nil && f.project.ID == id {
+		return f.project, nil
+	}
+	return nil, nil
+}
+
+func (f *signalingProjectLookup) ListProjects() ([]*orchestrator.Project, error) {
+	if f.project == nil {
+		return nil, nil
+	}
+	return []*orchestrator.Project{f.project}, nil
+}
+
+// TestDispatch_ContainerBackend_ConcurrentProjectRmReadd_NeverMixesCheckout
+// pins PR834 PR-2b round-3 codex review Major 1: round-2's fix (the tests
+// above) only wrapped the final FetchBareRepo+PrepareJobCheckout call in
+// r.WithProjectLock, leaving the selfProject lookup — and the
+// gatewayCloneURL/UpstreamURL snapshot derived from it — to run BEFORE the
+// lock was ever acquired (Dispatch's own "project-registry-guarded dispatch
+// section" comment has the full rationale). A concurrent `project rm` +
+// re-add at the identical (id, path) — an ordinary "remove and re-add the
+// same project" operator flow, since re-adding the same upstream URL reads
+// the SAME project.yaml `id:` back out — could swap the bare repo's
+// on-disk content in that pre-lock window: selfProject.WorkDir is just a
+// path string captured before the swap, so the (already-locked) fetch+
+// clone step would go on to clone whatever now lives at that path,
+// mismatched against the gateway route/credentials snapshotted from the
+// project as it looked BEFORE the swap.
+//
+// The race is simulated deterministically (not via sleep-based timing):
+// signalingProjectLookup.GetProject signals a channel the moment Dispatch
+// reads the project, and a second ("attacker") goroutine waits on that
+// signal before attempting its own r.WithProjectLock-guarded "rm + re-add"
+// (an in-place bare-repo content swap — `os.RemoveAll` + a mirror-clone of
+// a DIFFERENT upstream into the same path — simulating what the real
+// `project rm`/`project add` handlers do, both of which already serialize
+// through this exact lock via api.ProjectAppService.projectMu). If
+// Dispatch's project-registry-guarded section correctly holds the SAME
+// lock across the whole lookup-through-clone sequence, the attacker's
+// WithProjectLock call is guaranteed — by ordinary mutex exclusion, not
+// scheduling luck — to block until Dispatch's closure has fully finished,
+// so Dispatch must always observe repo A consistently (or fail cleanly;
+// never a mix). Reverting the round-3 fix (moving the lookup back outside
+// the lock) makes this test flake to observing repo B's content instead,
+// since the signal then fires before Dispatch ever acquires the lock.
+func TestDispatch_ContainerBackend_ConcurrentProjectRmReadd_NeverMixesCheckout(t *testing.T) {
+	bareRepoPath := setupPerJobCloneBareRepo(t) // repo A content: "per-job-clone fixture\n"
+
+	// srcB/its mirror-clone: a second, distinguishable fixture ("repo B")
+	// the attacker mirror-clones OVER bareRepoPath mid-dispatch.
+	srcB := t.TempDir()
+	runGitPJC(t, srcB, "init", "-q", "-b", "main")
+	runGitPJC(t, srcB, "config", "user.email", "test@example.com")
+	runGitPJC(t, srcB, "config", "user.name", "Test")
+	if err := os.WriteFile(filepath.Join(srcB, "README.md"), []byte("repo-B fixture\n"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	runGitPJC(t, srcB, "add", ".")
+	runGitPJC(t, srcB, "commit", "-q", "-m", "initial-B")
+
+	d := newGatewayTestDB(t)
+	if err := orchestrator.CreateProject(d.Conn, &orchestrator.Project{ID: "proj-1", WorkDir: bareRepoPath}); err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+
+	lookedUp := make(chan struct{}, 8)
+	projects := &signalingProjectLookup{
+		signal: lookedUp,
+		// skipCalls: 1 skips Dispatch's earlier, unrelated
+		// resolveProjectRuntime lookup — see signalingProjectLookup's own
+		// doc comment.
+		skipCalls: 1,
+		project:   &orchestrator.Project{ID: "proj-1", WorkDir: bareRepoPath, UpstreamURL: "https://example.com/owner/repoA.git"},
+	}
+
+	api := &fakeDockerAPI{}
+	be := NewContainerBackend(api, ContainerBackendOptions{})
+	runtimesDir := t.TempDir()
+	r := &Runner{
+		DB:          d.Conn,
+		Backend:     be,
+		Sandbox:     &gwFakeSandboxPrep{dir: t.TempDir()},
+		Runtime:     &gwFakeRuntime{},
+		BoidBinary:  "/boid",
+		RuntimesDir: runtimesDir,
+		Projects:    projects,
+	}
+
+	var realLock sync.Mutex
+	r.WithProjectLock = func(fn func() error) error {
+		realLock.Lock()
+		defer realLock.Unlock()
+		return fn()
+	}
+
+	attackerDone := make(chan struct{})
+	go func() {
+		defer close(attackerDone)
+		<-lookedUp
+		_ = r.WithProjectLock(func() error {
+			if err := os.RemoveAll(bareRepoPath); err != nil {
+				t.Errorf("attacker: remove bare repo: %v", err)
+				return nil
+			}
+			cmd := exec.Command("git", "clone", "-q", "--mirror", srcB, bareRepoPath)
+			if out, err := cmd.CombinedOutput(); err != nil {
+				t.Errorf("attacker: mirror-clone repo B: %v\n%s", err, out)
+			}
+			return nil
+		})
+	}()
+
+	jobID, err := r.Dispatch(context.Background(), perJobCloneSpec(bareRepoPath), nil)
+	<-attackerDone
+	if err != nil {
+		// A clean failure (e.g. the clone racing a mid-swap/momentarily
+		// missing bare repo) is an acceptable outcome under this fix's own
+		// contract ("succeeds atomically with A OR fails cleanly") —
+		// nothing further to assert.
+		return
+	}
+
+	stagingDir := filepath.Join(runtimesDir, jobID, "workspace")
+	data, rerr := os.ReadFile(filepath.Join(stagingDir, "README.md"))
+	if rerr != nil {
+		t.Fatalf("read staged README.md: %v", rerr)
+	}
+	if string(data) != "per-job-clone fixture\n" {
+		t.Fatalf("staged checkout content = %q; want repo A's content — dispatch cloned the concurrently-swapped repository (B) instead, proving the lookup->clone sequence is not fully lock-guarded", data)
+	}
+}
