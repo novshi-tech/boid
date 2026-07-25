@@ -1692,7 +1692,14 @@ func mountRoutes(srv *Server, runtime *appRuntime) error {
 	// transport). The TCP listener — which may be exposed directly, via a
 	// tunnel, or to other local users on the shared loopback — is served the
 	// same router wrapped with transport-aware API auth, so the data/control
-	// /api/* surface requires a session over TCP. See Server.Start.
-	srv.tcpHandler = auth.NewTCPAPIAuthMiddleware(runtime.sessionSigner, runtime.authStore)(r)
+	// /api/* surface requires a session over TCP. See Server.Start. The
+	// dedicated CLI TLS listener (docs/plans/volume-only-daemon.md §論点c)
+	// reuses this exact handler too (Server.Start wraps it in TLS, not a
+	// second auth-mounting pass) — web.loopback_trust therefore governs
+	// both the Web UI's TCP listener and the CLI's, consistently. srv.
+	// liveConfig is always non-nil here: it is set unconditionally earlier
+	// in buildRuntime (this function's own caller chain), strictly before
+	// mountRoutes ever runs.
+	srv.tcpHandler = auth.NewTCPAPIAuthMiddleware(runtime.sessionSigner, runtime.authStore, srv.liveConfig.Web.LoopbackTrust)(r)
 	return nil
 }

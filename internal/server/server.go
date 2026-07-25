@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"crypto/tls"
 	"database/sql"
 	"fmt"
 	"log/slog"
@@ -110,6 +111,30 @@ type Config struct {
 	// still test/DI-only — see NewContainerBackend's doc comment — the
 	// same "config 非公開" scope PR5 shipped under).
 	InstallIDDir string
+	// CLIAddr, when non-empty, is the "host:port" the dedicated CLI TCP
+	// listener binds (docs/plans/volume-only-daemon.md §論点c) — separate
+	// from HTTPAddr (the Web UI's own TCP listener, default :8080) per the
+	// plan's own port-separation decision, so a CLI session keeps working
+	// even if an operator firewalls off or otherwise disables the Web UI
+	// port. Only the PORT is actually load-bearing here: Start() ignores
+	// the host half and rebinds via gatewayBindHost(usingContainerBackend)
+	// instead — the exact same "127.0.0.1 for userns, 0.0.0.0
+	// (composeBindHost) for the compose/container-backend deployment"
+	// rule the broker's and git gateway's own TLS listeners already use
+	// just above in this file, since a container-backend job's sibling
+	// docker-proxy port publish cannot reach a listener bound to only
+	// THIS container's own loopback interface (see composeBindHost's own
+	// doc comment). Empty (the zero value, and every pre-§論点c
+	// caller/test) skips binding this listener entirely — cmd/start.go
+	// sets a real default ("127.0.0.1:8442") so a live daemon actually
+	// binds it. Like the broker/gateway TLS listeners, binding is further
+	// gated on cfg.TLSDir being set (daemonCA != nil) — this listener has
+	// no non-TLS fallback, since unlike the Web UI's own TCP listener it
+	// is never meant to be reached in plaintext even for local
+	// development (mTLS-CA-backed TLS is cheap to always have once
+	// cfg.TLSDir is already configured, which cmd/start.go does
+	// unconditionally).
+	CLIAddr string
 }
 
 type Server struct {
@@ -136,8 +161,19 @@ type Server struct {
 	// (trusted CLI/agent transport). Set by mountRoutes.
 	tcpHandler http.Handler
 	tcpServer  *http.Server
-	gcLoop     *orchestrator.GCLoop // nil if GC is disabled
-	workflow   *api.TaskWorkflowService
+	// cliTLSLn/cliTLSServer are the dedicated CLI TCP(TLS) listener
+	// (docs/plans/volume-only-daemon.md §論点c), bound in Start only when
+	// both cfg.CLIAddr and cfg.TLSDir (daemonCA != nil) are set. Serves the
+	// exact same srv.tcpHandler as tcpServer above — same Bearer/cookie/
+	// loopback-trust auth, same routes — just over its own TLS-wrapped
+	// listener on a distinct port so the CLI keeps working even if the Web
+	// UI's own TCP listener (tcpLn/tcpServer) is disabled or firewalled
+	// off. nil whenever the listener was never bound (cfg.CLIAddr=="" or
+	// no TLS CA configured) — every pre-§論点c caller/test.
+	cliTLSLn     net.Listener
+	cliTLSServer *http.Server
+	gcLoop       *orchestrator.GCLoop // nil if GC is disabled
+	workflow     *api.TaskWorkflowService
 
 	// hostCommands is the aggregated host_commands config assembled by
 	// buildProjectStore's preflight (docs/plans/workspace-db-consolidation.md
@@ -791,6 +827,53 @@ func (s *Server) Start(ctx context.Context) error {
 	s.tcpServer = &http.Server{Handler: tcpHandler}
 	go func() { _ = s.tcpServer.Serve(tcpLn) }() // returns ErrServerClosed on Stop
 
+	// Dedicated CLI TCP(TLS) listener (docs/plans/volume-only-daemon.md
+	// §論点c): additive alongside tcpLn/tcpServer above, on its own port —
+	// see Config.CLIAddr's own doc comment for why a separate listener
+	// (rather than just adding TLS to tcpLn) and why only the port half of
+	// cfg.CLIAddr is actually used. Gated on both cfg.CLIAddr being set AND
+	// daemonCA != nil (cfg.TLSDir configured) — this listener has no
+	// plaintext fallback, unlike tcpLn.
+	if s.cfg.CLIAddr != "" && daemonCA != nil {
+		_, cliPort, splitErr := net.SplitHostPort(s.cfg.CLIAddr)
+		if splitErr != nil {
+			return fmt.Errorf("parse cli addr %q: %w", s.cfg.CLIAddr, splitErr)
+		}
+		// ServerOnlyTLSConfig (not ServerTLSConfig/mTLS): per-connection
+		// authorization for this listener is enforced at the HTTP auth
+		// layer (auth.NewTCPAPIAuthMiddleware, the exact same tcpHandler
+		// tcpServer above serves) via the Bearer/cookie/loopback-trust
+		// checks that mechanism already implements — see that
+		// middleware's own doc comment for the design reasoning (reusing
+		// the daemon's existing, already-tested device-pair auth instead
+		// of standing up a second, parallel per-client-certificate
+		// enrollment/issuance/distribution system purely for the CLI).
+		// TLS itself is still real (encrypts the wire, and — via
+		// daemonCA's SAN below — authenticates the SERVER to a CLI
+		// client that trusts this CA's cert, the same way the git
+		// gateway's own ServerOnlyTLSConfig listener works). Only
+		// "127.0.0.1"/"localhost" SANs are needed (unlike the broker/
+		// gateway listeners, which also carry a compose-service-name SAN
+		// for job-container-to-daemon reachability): this listener is
+		// reached exclusively by a HOST CLI process dialing the
+		// host-published port — never by a sibling job container over a
+		// compose network DNS name — so a CLI client's TLS ServerName is
+		// always one of these two literals.
+		cliTLSCfg, err := daemonCA.ServerOnlyTLSConfig("127.0.0.1", "localhost")
+		if err != nil {
+			return fmt.Errorf("cli tls config: %w", err)
+		}
+		cliBindAddr := gatewayBindHost(s.usingContainerBackend) + ":" + cliPort
+		cliLn, err := tls.Listen("tcp", cliBindAddr, cliTLSCfg)
+		if err != nil {
+			return fmt.Errorf("listen cli tls: %w", err)
+		}
+		s.cliTLSLn = cliLn
+		s.cliTLSServer = &http.Server{Handler: tcpHandler}
+		go func() { _ = s.cliTLSServer.Serve(cliLn) }() // returns ErrServerClosed on Stop
+		slog.Info("cli tls listener started", "addr", cliLn.Addr().String())
+	}
+
 	return nil
 }
 
@@ -806,6 +889,11 @@ func (s *Server) Stop() error {
 	}
 	if s.tcpServer != nil {
 		if err := s.tcpServer.Close(); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	if s.cliTLSServer != nil {
+		if err := s.cliTLSServer.Close(); err != nil {
 			errs = append(errs, err)
 		}
 	}
@@ -904,6 +992,17 @@ func (s *Server) GatewayTLSAddr() string {
 func (s *Server) TCPAddr() string {
 	if s.tcpLn != nil {
 		return s.tcpLn.Addr().String()
+	}
+	return ""
+}
+
+// CLITLSAddr returns the dedicated CLI TCP(TLS) listener's bound address
+// (docs/plans/volume-only-daemon.md §論点c), or "" when it was never bound
+// (cfg.CLIAddr=="" or no TLS CA configured — see Config.CLIAddr's own doc
+// comment) or before Start has run.
+func (s *Server) CLITLSAddr() string {
+	if s.cliTLSLn != nil {
+		return s.cliTLSLn.Addr().String()
 	}
 	return ""
 }
