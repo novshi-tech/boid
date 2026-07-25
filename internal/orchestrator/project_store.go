@@ -200,6 +200,65 @@ func (s *ProjectStore) LoadBareRepo(bareRepoPath string) (*ProjectMeta, error) {
 	return meta, nil
 }
 
+// LoadBareRepoExpectingID is LoadBareRepo's id-validated counterpart (PR-2a
+// codex round-3 M2 fix). Pre-fix, LoadBareRepo cached the freshly-read meta
+// under its OWN id BEFORE any caller got a chance to check it against the id
+// the caller actually expected — so if project A's project.yaml `id:`
+// drifted (upstream rename) to collide with an already-registered,
+// completely unrelated project B, A's load silently overwrote B's cache
+// entry, and the caller's own mismatch-cleanup branch (a bare Remove(meta.ID))
+// then deleted that just-clobbered entry outright — corrupting B's in-memory
+// state even though B itself was never touched on disk.
+//
+// Used by FetchProject (via the Meta interface) and LoadAll below — both
+// call sites already have a specific expected id to validate the freshly-
+// read meta against, unlike LoadBareRepo's other caller
+// (CreateProjectFromGitURL's first load right after a fresh clone), which
+// has no prior id to compare against: a brand-new registration adopts
+// whatever id project.yaml declares, so that call site is deliberately left
+// on the original LoadBareRepo (unconditional cache commit).
+//
+// Metadata is read into a scratch value first (ReadProjectMetaFromBareRepo
+// does not touch the cache); the shared cache is only mutated once
+// expectedID has been confirmed to match. A mismatch still returns the
+// scratch meta — so the caller can report both the old and new id in its own
+// error message, same as before this fix — but leaves EVERY existing cache
+// entry, including any prior entry registered under the drifted id itself,
+// completely untouched.
+func (s *ProjectStore) LoadBareRepoExpectingID(bareRepoPath, expectedID string) (*ProjectMeta, error) {
+	meta, err := ReadProjectMetaFromBareRepo(bareRepoPath)
+	if err != nil {
+		return nil, err
+	}
+	if meta.ID != expectedID {
+		return meta, nil
+	}
+	s.mu.Lock()
+	s.metas[meta.ID] = meta
+	s.mu.Unlock()
+	s.MarkReady(meta.ID)
+	return meta, nil
+}
+
+// LoadExpectingID is Load's id-validated counterpart — see
+// LoadBareRepoExpectingID's doc comment for the full M2 rationale, which
+// applies identically to the legacy host-dir registration path LoadAll
+// dispatches to here.
+func (s *ProjectStore) LoadExpectingID(workDir, expectedID string) (*ProjectMeta, error) {
+	meta, err := ReadProjectMetaWithKits(workDir)
+	if err != nil {
+		return nil, err
+	}
+	if meta.ID != expectedID {
+		return meta, nil
+	}
+	s.mu.Lock()
+	s.metas[meta.ID] = meta
+	s.mu.Unlock()
+	s.MarkReady(meta.ID)
+	return meta, nil
+}
+
 // Get returns the cached meta for a project.
 func (s *ProjectStore) Get(id string) (*ProjectMeta, bool) {
 	s.mu.RLock()
@@ -441,24 +500,24 @@ func (s *ProjectStore) LoadAll(projects []*Project) []error {
 		var meta *ProjectMeta
 		var loadErr error
 		if IsBareRepoDir(candidate.WorkDir) {
-			meta, loadErr = s.LoadBareRepo(candidate.WorkDir)
+			meta, loadErr = s.LoadBareRepoExpectingID(candidate.WorkDir, candidate.ID)
 		} else {
-			meta, loadErr = s.Load(candidate.WorkDir)
+			meta, loadErr = s.LoadExpectingID(candidate.WorkDir, candidate.ID)
 		}
 		// MAJOR 4 sibling (PR-2a codex round-2 review, originally flagged
 		// for FetchProject specifically — this is the exact same "upstream
 		// project.yaml id: changed" case hit on every daemon startup/reload
-		// instead, since LoadAll is what backs both): Load/LoadBareRepo
-		// just cached the freshly-read meta under meta.ID, a DIFFERENT key
-		// than candidate.ID's own DB row when the two disagree. Left
-		// unchecked, candidate.ID would be marked "loaded fine" below (its
-		// workspaceIDs entry gets set) while its Meta cache entry is
-		// whatever was ALREADY there from a previous load (or nothing at
-		// all) — and a phantom meta.ID entry with no DB row of its own sits
-		// in the cache forever. Treat a mismatch exactly like any other
-		// load failure for candidate.ID, and drop the phantom entry.
+		// instead, since LoadAll is what backs both): a mismatch here is
+		// treated exactly like any other load failure for candidate.ID.
+		//
+		// M2 (PR-2a codex round-3 review): unlike before this fix,
+		// LoadBareRepoExpectingID/LoadExpectingID never cache a mismatched
+		// meta under its own (drifted) id in the first place — see either
+		// method's doc comment — so there is no phantom entry to clean up
+		// here any more, and no risk of this branch's cleanup clobbering an
+		// unrelated already-registered project whose id happens to equal
+		// the drifted meta.ID.
 		if loadErr == nil && meta.ID != candidate.ID {
-			s.Remove(meta.ID)
 			loadErr = fmt.Errorf("project.yaml id %q does not match the registered project id %q; re-register manually", meta.ID, candidate.ID)
 		}
 		if loadErr != nil {

@@ -159,6 +159,73 @@ func TestProjectStore_LoadAll(t *testing.T) {
 	}
 }
 
+// TestProjectStore_LoadAll_IDDriftToExistingProject_DoesNotCorruptOtherProjectsCache
+// pins M2's LoadAll sibling (PR-2a codex round-3 review): pre-fix, LoadAll
+// dispatched into the plain Load/LoadBareRepo, which cached the freshly-read
+// meta under its OWN id BEFORE the mismatch check below ever ran — so if
+// proj-a's project.yaml `id:` drifts to collide with an ALREADY-cached,
+// completely unrelated proj-b, and proj-b is processed EARLIER in the same
+// LoadAll call (candidate order matters here, unlike the single-project
+// FetchProject case), proj-a's load would clobber proj-b's just-committed
+// cache entry, and the mismatch branch's cleanup (a bare Remove(meta.ID))
+// then deleted that just-clobbered entry outright — leaving proj-b entirely
+// UNCACHED by the time LoadAll returns, even though proj-b's own source
+// directory was never touched. LoadExpectingID/LoadBareRepoExpectingID close
+// this by validating BEFORE committing to the shared cache.
+func TestProjectStore_LoadAll_IDDriftToExistingProject_DoesNotCorruptOtherProjectsCache(t *testing.T) {
+	dir1 := t.TempDir()
+	setupProjectDir(t, dir1, "proj-a", "Project A")
+
+	dir2 := t.TempDir()
+	setupProjectDir(t, dir2, "proj-b", "Project B")
+
+	s := orchestrator.NewProjectStore()
+
+	// proj-b listed BEFORE proj-a: this ordering is what exposes the bug —
+	// proj-b must already be correctly cached by the time proj-a's drifted
+	// load is processed later in this same call.
+	projects := []*projectspec.Project{
+		{ID: "proj-b", WorkDir: dir2},
+		{ID: "proj-a", WorkDir: dir1},
+	}
+	if errs := s.LoadAll(projects); len(errs) != 0 {
+		t.Fatalf("initial LoadAll: unexpected errors %v", errs)
+	}
+	if _, ok := s.Get("proj-b"); !ok {
+		t.Fatal("test setup: expected proj-b to be cached after the initial LoadAll")
+	}
+
+	// Drift proj-a's project.yaml id: to collide with proj-b's already-
+	// registered id.
+	setupProjectDir(t, dir1, "proj-b", "Project A Renamed")
+
+	errs := s.LoadAll(projects)
+	if len(errs) != 1 {
+		t.Fatalf("expected 1 error (proj-a's drifted id), got %d: %v", len(errs), errs)
+	}
+
+	// The fix: proj-b must still be cached (pre-fix, it would have been
+	// deleted outright by proj-a's mismatch-cleanup landing after it).
+	bAfter, ok := s.Get("proj-b")
+	if !ok {
+		t.Fatal("expected proj-b to still be cached after proj-a's reload failed on an id collision — it must not have been deleted as a side effect of proj-a's mismatch cleanup")
+	}
+	if bAfter.Name != "Project B" {
+		t.Errorf("proj-b Meta.Name = %q, want %q (must not have been clobbered by proj-a's drifted metadata, even transiently)", bAfter.Name, "Project B")
+	}
+
+	// proj-a's own stale cache entry must have been dropped (unchanged
+	// behavior from before this fix — it no longer loads under its OWN
+	// registered id) and marked degraded.
+	if _, ok := s.Get("proj-a"); ok {
+		t.Error("expected proj-a's stale cache entry to be dropped after its id drifted away from its own registered id")
+	}
+	st := s.Status("proj-a")
+	if st.State != orchestrator.StatusDegraded {
+		t.Errorf("proj-a Status.State = %q, want %q", st.State, orchestrator.StatusDegraded)
+	}
+}
+
 // TestProjectStore_LoadAll_MissingDirReturnsTypedError pins the
 // classification that lets the boid start parent / server wire auto-prune
 // stale project DB rows instead of refusing daemon startup. When the

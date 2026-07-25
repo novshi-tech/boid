@@ -25,10 +25,22 @@ type ProjectAppService struct {
 		// LoadBareRepo reads .boid/project.yaml from a daemon-managed bare
 		// git repository's HEAD (docs/plans/volume-only-daemon.md §論点a/b)
 		// — the bare-repo counterpart to Load, used by
-		// CreateProjectFromGitURL (first load after `git clone --mirror`)
-		// and FetchProject (`boid project fetch <id>`, reload after
-		// `git fetch --all`).
+		// CreateProjectFromGitURL (first load after `git clone --mirror`),
+		// which has no prior expected id to validate the freshly-read meta
+		// against (see LoadBareRepoExpectingID's doc comment for why that
+		// call site is the one exception).
 		LoadBareRepo(bareRepoPath string) (*orchestrator.ProjectMeta, error)
+		// LoadBareRepoExpectingID is LoadBareRepo's id-validated counterpart
+		// (PR-2a codex round-3 M2 fix), used by FetchProject (`boid project
+		// fetch <id>`, reload after `git fetch --all`) — the one LoadBareRepo
+		// caller that already has a specific id to check the freshly-read
+		// meta against. See orchestrator.ProjectStore.LoadBareRepoExpectingID's
+		// doc comment for the cache-corruption bug this closes: the meta is
+		// only committed to the shared cache once expectedID is confirmed to
+		// match, so an id drifted to collide with an unrelated already-
+		// registered project can never clobber (or, on cleanup, delete) that
+		// other project's cache entry.
+		LoadBareRepoExpectingID(bareRepoPath, expectedID string) (*orchestrator.ProjectMeta, error)
 		Get(id string) (*orchestrator.ProjectMeta, bool)
 		Remove(id string)
 		LoadAll(projects []*orchestrator.Project) []error
@@ -199,6 +211,12 @@ type ProjectAppService struct {
 	// row — and, if isManagedBareRepoPath, the bare repo directory — a
 	// still-in-flight CreateProjectFromGitURL call believes it just
 	// successfully created). All three now share this one lock.
+	//
+	// M3 (PR-2a codex round-3 review): FetchProject now also holds this
+	// lock for its whole get -> git-fetch -> reload -> cache-commit
+	// sequence — see that method's own doc comment for the concrete
+	// "half-old/half-new Project object" race this closes against a
+	// concurrent DeleteProject + re-registration at the same WorkDir.
 	//
 	// A single global lock (rather than sharding by, say, project name or
 	// derived id) trades registration/removal throughput for simplicity:
@@ -504,26 +522,44 @@ func (s *ProjectAppService) CreateProjectFromGitURL(ctx context.Context, gitURL,
 		// point is unexpected enough (a DELETE landing in the window between
 		// the existence check and here) that leaving a workspace-less
 		// project row around would violate this method's whole "workspace
-		// required" contract. Roll back everything — unless the rollback
-		// DeleteProject call itself also fails (MAJOR 6, codex round-1
-		// review): in that case the DB row is STILL there, pointing at
-		// bareRepoPath, so removing the Meta cache entry and the bare repo
-		// directory would leave that surviving row referencing metadata/
-		// files that no longer exist — a strictly worse state than leaving
-		// everything in place for an operator to inspect/retry.
+		// required" contract. Roll back everything.
+		//
+		// M1 (PR-2a codex round-3 review): the bare repo is removed BEFORE
+		// the DB row and Meta cache entry, not after — mirroring
+		// DeleteProject's own MAJOR 3 fix (codex round-2) and for the exact
+		// same reason. The pre-fix order deleted the DB row FIRST and only
+		// logged an os.RemoveAll failure as a warning, so a permission- or
+		// I/O-failing bare repo directory was orphaned on disk with no row
+		// left to retry cleanup through, and re-adding the same URL/name
+		// then 409'd forever (this method's own pre-flight "already
+		// registered at this path" check). Removing the bare repo first
+		// means a removal failure now fails the WHOLE call with the DB row
+		// (and cached Meta) intact — the operator fixes the underlying
+		// issue and retries `boid project rm` to finish cleanup.
+		if rmErr := os.RemoveAll(bareRepoPath); rmErr != nil {
+			slog.Error("CreateProjectFromGitURL: workspace assignment failed AND bare-repo rollback removal also failed; leaving the project row and its cached meta in place so the bare repo can still be removed on retry",
+				"project_id", project.ID, "workspace", workspaceSlug, "path", bareRepoPath, "assign_error", err, "remove_error", rmErr)
+			return nil, &StatusError{Code: http.StatusInternalServerError, Message: fmt.Sprintf(
+				"assign workspace %q failed (%v) and automatic bare-repo rollback also failed (%v); project %q was left registered — fix the underlying issue and retry `boid project rm %s` to finish cleanup, or `boid project show %s` to inspect its state",
+				workspaceSlug, err, rmErr, project.ID, project.ID, project.ID,
+			)}
+		}
+		// The bare repo is gone; the DB row and cached Meta are now safe to
+		// remove too. If DeleteProject itself fails here (MAJOR 6, codex
+		// round-1 review — e.g. the DB is unreachable), the row survives
+		// pointing at a bareRepoPath that no longer exists on disk; that is
+		// still strictly better than the pre-fix "row gone, directory
+		// orphaned, nothing left to retry through" state, since
+		// `boid project rm` remains available to finish the job.
 		if delErr := s.Projects.DeleteProject(project.ID); delErr != nil {
-			slog.Error("CreateProjectFromGitURL: workspace assignment failed AND rollback DeleteProject also failed; leaving the project row, its cached meta, and the bare repo in place to avoid a dangling reference",
+			slog.Error("CreateProjectFromGitURL: workspace assignment failed; bare repo was rolled back but DB row deletion also failed; retry `boid project rm` to finish removing the dangling row",
 				"project_id", project.ID, "workspace", workspaceSlug, "assign_error", err, "delete_error", delErr)
 			return nil, &StatusError{Code: http.StatusInternalServerError, Message: fmt.Sprintf(
-				"assign workspace %q failed (%v) and automatic rollback also failed (%v); project %q was left registered — run `boid project rm %s` manually to clean up, or `boid project show %s` to inspect its state",
-				workspaceSlug, err, delErr, project.ID, project.ID, project.ID,
+				"assign workspace %q failed (%v) and DB row cleanup also failed (%v); the bare repo has already been removed — retry `boid project rm %s` to finish removing the dangling row",
+				workspaceSlug, err, delErr, project.ID,
 			)}
 		}
 		s.Meta.Remove(meta.ID)
-		if rmErr := os.RemoveAll(bareRepoPath); rmErr != nil {
-			slog.Warn("CreateProjectFromGitURL: failed to roll back bare repo after workspace assignment failure",
-				"path", bareRepoPath, "error", rmErr)
-		}
 		if errors.Is(err, os.ErrNotExist) {
 			return nil, &StatusError{Code: http.StatusNotFound, Message: fmt.Sprintf(
 				"workspace %q was removed while this registration was in progress; retry `boid project add` once the workspace exists again", workspaceSlug,
@@ -548,6 +584,21 @@ func (s *ProjectAppService) CreateProjectFromGitURL(ctx context.Context, gitURL,
 // and returns an error, leaving the DB row and any previously-loaded Meta
 // exactly as they were.
 func (s *ProjectAppService) FetchProject(ctx context.Context, id string) (*orchestrator.Project, error) {
+	// M3 (PR-2a codex round-3 review): serialize this whole
+	// get -> filesystem-fetch -> reload -> cache-commit sequence against
+	// CreateProject/CreateProjectFromGitURL/DeleteProject's own critical
+	// sections — see projectMu's doc comment. Round-2 only widened projectMu
+	// to those three create/delete entry points, leaving FetchProject able
+	// to read id's DB row here, then have a concurrent DeleteProject +
+	// re-registration at the SAME WorkDir land before this method's own
+	// fetch/reload resumed — producing a returned Project that mixes id's
+	// OLD DB fields (read before the race) with the NEW bare repo's
+	// metadata (loaded after it). FetchProject never calls any of
+	// CreateProject/CreateProjectFromGitURL/DeleteProject (nor do they call
+	// it), so this widening carries no new deadlock risk.
+	s.projectMu.Lock()
+	defer s.projectMu.Unlock()
+
 	project, err := s.Projects.GetProject(id)
 	if err != nil {
 		return nil, &StatusError{Code: http.StatusNotFound, Message: err.Error()}
@@ -578,7 +629,14 @@ func (s *ProjectAppService) FetchProject(ctx context.Context, id string) (*orche
 		return nil, &StatusError{Code: http.StatusBadGateway, Message: msg}
 	}
 
-	meta, err := s.Meta.LoadBareRepo(project.WorkDir)
+	// M2 (PR-2a codex round-3 review): LoadBareRepoExpectingID, not the
+	// plain LoadBareRepo this used to call — see that method's own doc
+	// comment. The freshly-read meta is only committed to the shared cache
+	// once its `id:` is confirmed to match id (the DB row this fetch was
+	// invoked against); a mismatch below is guaranteed to have left every
+	// existing cache entry, including one already registered under the
+	// drifted id, completely untouched.
+	meta, err := s.Meta.LoadBareRepoExpectingID(project.WorkDir, id)
 	if err != nil {
 		msg := fmt.Sprintf("project.yaml load failed after fetch: %v", err)
 		s.Meta.MarkDegraded(id, msg)
@@ -587,25 +645,21 @@ func (s *ProjectAppService) FetchProject(ctx context.Context, id string) (*orche
 
 	// MAJOR 4 (PR-2a codex round-2 review): refuse when project.yaml's own
 	// `id:` no longer matches id, the DB row this fetch was invoked against.
-	// LoadBareRepo just cached the freshly-read meta under meta.ID — a
-	// DIFFERENT key than id when the two disagree (an upstream `id:`
-	// rename) — so silently continuing here would report this fetch as
-	// SUCCESSFUL while id's own Meta cache entry is left stale (whatever it
-	// was before this call), and a phantom meta.ID entry with no DB row of
-	// its own sits in the cache. LoadAll hits the exact same mismatch on
-	// every subsequent daemon restart (see that method's own comment) — the
-	// two call sites share this failure mode by construction, since both
-	// key off Meta.Load{,BareRepo}'s return value the same way.
+	// LoadAll hits the exact same mismatch on every subsequent daemon
+	// restart (see that method's own comment) — the two call sites share
+	// this failure mode by construction, since both key off
+	// LoadExpectingID/LoadBareRepoExpectingID's return value the same way.
 	if meta.ID != id {
 		msg := fmt.Sprintf(
 			"project.yaml id changed upstream from %q to %q; re-register manually (`boid project rm %s` then `boid project add <git-url> --workspace=%s`) rather than continue under a stale id",
 			id, meta.ID, id, project.WorkspaceID,
 		)
 		s.Meta.MarkDegraded(id, msg)
-		// The mismatched meta.ID entry LoadBareRepo just cached has no DB
-		// row of its own (id's row still points at this bare repo) — drop
-		// it rather than leave a phantom, never-cleaned-up cache entry.
-		s.Meta.Remove(meta.ID)
+		// M2 fix: LoadBareRepoExpectingID never cached this mismatched meta
+		// under its own (drifted) id in the first place — unlike before this
+		// fix, there is no phantom cache entry to remove here, and no risk
+		// of clobbering an unrelated already-registered project whose id
+		// happens to equal meta.ID.
 		return nil, &StatusError{Code: http.StatusConflict, Message: msg}
 	}
 

@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"os"
 	"os/exec"
@@ -393,6 +394,104 @@ func TestCreateProjectFromGitURL_ConcurrentSameURL_ExactlyOneSucceeds(t *testing
 	}
 }
 
+// TestCreateProjectFromGitURL_AssignFailsAndBareRepoRemovalFails_PreservesRow
+// pins M1 (PR-2a codex round-3 review): the workspace-assignment rollback
+// path used to delete the DB row FIRST and only THEN attempt os.RemoveAll on
+// the bare repo — the opposite order from DeleteProject's own MAJOR 3 fix
+// (codex round-2, see TestDeleteProject_BareRepoRemovalFails_PreservesRow
+// below). Concrete failure this closes: AssignWorkspaceIfExists fails (here,
+// simulated directly) AND the bare-repo directory cannot be removed
+// (permission denied). Pre-fix, the DB row was already gone by the time the
+// removal failure was discovered — an orphaned bare-repo directory with no
+// row left to retry cleanup through, and re-adding the same name 409s
+// forever (this method's own pre-flight "already registered at this path"
+// check). Post-fix, os.RemoveAll runs FIRST; on its failure the DB row (and
+// cached Meta) must survive so the operator can fix the permission issue and
+// retry `boid project rm`.
+func TestCreateProjectFromGitURL_AssignFailsAndBareRepoRemovalFails_PreservesRow(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("permission-bit test assumes POSIX permission semantics")
+	}
+	if os.Geteuid() == 0 {
+		t.Skip("running as root: directory permission bits are not enforced")
+	}
+
+	src := setupGitURLSourceRepo(t, "proj-assignfail-rmfail", "Assign+RM Fail Project")
+	repo := &stubProjectRepository{existingWorkspaces: map[string]bool{"team-a": true}}
+	svc, _ := newGitURLTestService(t, repo)
+
+	// Unlike most tests in this file, this one needs the DB row to actually
+	// exist after CreateProjectFromGitURL's own CreateProject call (the
+	// stub's default CreateProject is a no-op — see its own doc comment) so
+	// GetProject below can genuinely observe whether it survived a failed
+	// rollback.
+	repo.createProjectHook = func(project *orchestrator.Project) error {
+		repo.projects = append(repo.projects, project)
+		return nil
+	}
+
+	// Force the atomic assign step to fail, so the rollback path is
+	// exercised (WorkspaceExists already passed above, unaffected by this).
+	repo.assignWorkspaceIfExistsErr = fmt.Errorf("simulated assign failure")
+
+	// Make the freshly cloned bare repo directory itself unwritable, right
+	// after the clone completes, so the rollback's os.RemoveAll cannot
+	// unlink anything inside it — same technique
+	// TestDeleteProject_BareRepoRemovalFails_PreservesRow uses.
+	realClone := svc.CloneBareRepo
+	var barePath string
+	svc.CloneBareRepo = func(ctx context.Context, url, dest, namespace string) error {
+		if err := realClone(ctx, url, dest, namespace); err != nil {
+			return err
+		}
+		barePath = dest
+		if err := os.Chmod(dest, 0o500); err != nil {
+			t.Fatalf("chmod: %v", err)
+		}
+		return nil
+	}
+	t.Cleanup(func() {
+		if barePath != "" {
+			_ = os.Chmod(barePath, 0o755)
+		}
+	})
+
+	_, err := svc.CreateProjectFromGitURL(context.Background(), fileURL(src), "team-a", "")
+	if err == nil {
+		t.Fatal("expected an error when both workspace assignment and bare-repo rollback fail")
+	}
+
+	// The fix: the DB row must survive a failed rollback removal.
+	if _, getErr := repo.GetProject("proj-assignfail-rmfail"); getErr != nil {
+		t.Errorf("expected the project row to survive a failed bare-repo rollback removal, got: %v", getErr)
+	}
+	// The bare repo directory itself must still be there too (the removal
+	// genuinely failed, it was not silently skipped).
+	if barePath == "" {
+		t.Fatal("test setup: CloneBareRepo hook never ran")
+	}
+	if _, statErr := os.Stat(barePath); statErr != nil {
+		t.Errorf("expected the bare repo at %s to still exist after a failed rollback removal: %v", barePath, statErr)
+	}
+	// Cached Meta must survive as well — nothing was cleaned up given the
+	// bare repo itself could not be removed.
+	if _, ok := svc.Meta.Get("proj-assignfail-rmfail"); !ok {
+		t.Error("expected cached Meta to survive a failed bare-repo rollback removal")
+	}
+
+	// Fix the permission issue and retry `boid project rm` — must now
+	// succeed, same recovery path DeleteProject's own MAJOR 3 fix restored.
+	if err := os.Chmod(barePath, 0o755); err != nil {
+		t.Fatalf("chmod restore: %v", err)
+	}
+	if err := svc.DeleteProject("proj-assignfail-rmfail"); err != nil {
+		t.Fatalf("retry DeleteProject after fixing permissions: %v", err)
+	}
+	if _, getErr := repo.GetProject("proj-assignfail-rmfail"); getErr == nil {
+		t.Error("expected the project row to be gone after the successful retry")
+	}
+}
+
 // TestDeleteProject_RemovesBareRepo_AllowsReRegistration pins MAJOR 1 (codex
 // round-1 review): DeleteProject must remove the daemon-managed bare repo
 // directory, not just the DB row — otherwise re-adding the SAME URL/name
@@ -691,6 +790,99 @@ func TestFetchProject_ProjectYAMLIDChangedUpstream_Refuses(t *testing.T) {
 	}
 }
 
+// TestFetchProject_ProjectYAMLIDChangedToExistingProject_DoesNotCorruptOtherProjectsCache
+// pins M2 (PR-2a codex round-3 review): LoadBareRepo cached the freshly-read
+// meta under its OWN (drifted) id BEFORE FetchProject ever validated it
+// against the DB row's own id — so if project A's project.yaml `id:` drifts
+// to an id ALREADY used by a different, completely unrelated registered
+// project B, A's fetch used to silently overwrite B's cache entry with A's
+// bare-repo metadata, and the mismatch-cleanup branch then deleted that
+// just-clobbered entry outright — corrupting B's in-memory state even though
+// B itself was never touched on disk (still healthy, still its own bare
+// repo). LoadBareRepoExpectingID closes this by validating BEFORE
+// committing to the shared cache — see that method's own doc comment.
+func TestFetchProject_ProjectYAMLIDChangedToExistingProject_DoesNotCorruptOtherProjectsCache(t *testing.T) {
+	srcA := setupGitURLSourceRepo(t, "proj-a", "Project A")
+	srcB := setupGitURLSourceRepo(t, "proj-b", "Project B")
+	repo := &stubProjectRepository{existingWorkspaces: map[string]bool{"team-a": true}}
+	svc, _ := newGitURLTestService(t, repo)
+
+	createdA, err := svc.CreateProjectFromGitURL(context.Background(), fileURL(srcA), "team-a", "")
+	if err != nil {
+		t.Fatalf("CreateProjectFromGitURL(A): %v", err)
+	}
+	createdB, err := svc.CreateProjectFromGitURL(context.Background(), fileURL(srcB), "team-a", "")
+	if err != nil {
+		t.Fatalf("CreateProjectFromGitURL(B): %v", err)
+	}
+	repo.projects = []*orchestrator.Project{createdA, createdB}
+
+	// Capture both projects' cached meta BEFORE the fetch, to compare
+	// against afterward by pointer identity — ProjectStore.Get returns the
+	// exact map-stored pointer, so any write to either cache entry (even an
+	// eventual clobber-then-delete-then-nothing sequence) is guaranteed to
+	// be visible as a changed/missing pointer.
+	bBefore, ok := svc.Meta.Get("proj-b")
+	if !ok {
+		t.Fatal("test setup: expected proj-b to be cached")
+	}
+	aBefore, ok := svc.Meta.Get("proj-a")
+	if !ok {
+		t.Fatal("test setup: expected proj-a to be cached")
+	}
+
+	// Drift A's project.yaml id: to collide with B's already-registered id.
+	if err := os.WriteFile(filepath.Join(srcA, ".boid", "project.yaml"), []byte("id: proj-b\nname: Project A Renamed\n"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	runGitCmd(t, srcA, "add", ".")
+	runGitCmd(t, srcA, "commit", "-q", "-m", "drift id to collide with B")
+
+	_, err = svc.FetchProject(context.Background(), "proj-a")
+	if err == nil {
+		t.Fatal("expected an error when project.yaml's id: drifts to collide with an already-registered project")
+	}
+	statusErr, ok := err.(*StatusError)
+	if !ok || statusErr.Code != http.StatusConflict {
+		t.Fatalf("expected *StatusError{409}, got %T: %v", err, err)
+	}
+
+	// B's cache entry must be COMPLETELY untouched — pre-fix, it would have
+	// been overwritten with A's drifted metadata and then deleted outright
+	// by the mismatch cleanup that used to run afterward.
+	bAfter, ok := svc.Meta.Get("proj-b")
+	if !ok {
+		t.Fatal("expected proj-b to still be cached after A's fetch failed on an id collision")
+	}
+	if bAfter != bBefore {
+		t.Error("expected proj-b's cached Meta to be the exact same value (pointer identity) as before A's fetch — the cache was overwritten")
+	}
+	if bAfter.Name != "Project B" {
+		t.Errorf("proj-b Meta.Name = %q, want %q (must not have been clobbered by A's drifted metadata)", bAfter.Name, "Project B")
+	}
+
+	// A's OWN cache entry must also be untouched — still the pre-fetch
+	// metadata, not (even partially) A's just-read drifted meta.
+	aAfter, ok := svc.Meta.Get("proj-a")
+	if !ok {
+		t.Fatal("expected proj-a to still be cached after its own fetch failed on an id collision")
+	}
+	if aAfter != aBefore {
+		t.Error("expected proj-a's cached Meta to be the exact same value (pointer identity) as before its own failed fetch")
+	}
+	if aAfter.Name != "Project A" {
+		t.Errorf("proj-a Meta.Name = %q, want %q (must not reflect the drifted-but-refused fetch)", aAfter.Name, "Project A")
+	}
+
+	// Both DB rows must survive too (a fetch failure never deletes a row).
+	if _, getErr := repo.GetProject("proj-a"); getErr != nil {
+		t.Errorf("expected proj-a's row to survive, got: %v", getErr)
+	}
+	if _, getErr := repo.GetProject("proj-b"); getErr != nil {
+		t.Errorf("expected proj-b's row to survive, got: %v", getErr)
+	}
+}
+
 // TestProjectMu_SerializesCreateProjectFromGitURL_And_DeleteProject pins
 // MAJOR 1's sibling half (PR-2a codex round-2 review): DeleteProject did
 // not hold registerMu (renamed projectMu — its scope now spans every
@@ -838,5 +1030,97 @@ func TestProjectMu_SerializesCreateProjectFromGitURL_And_CreateProject(t *testin
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("CreateProject never completed after CreateProjectFromGitURL released projectMu")
+	}
+}
+
+// TestProjectMu_SerializesFetchProject_And_DeleteProject pins M3 (PR-2a
+// codex round-3 review): FetchProject did not hold projectMu at all, so its
+// get -> git-fetch -> reload -> cache-commit sequence could run fully
+// interleaved with an in-flight DeleteProject for the SAME project — a
+// concurrent delete-then-re-registration landing in that window could leave
+// FetchProject returning a Project object combining the OLD DB fields it
+// read before the race with the NEW bare repo's metadata loaded after it.
+// This test pauses FetchProject mid-fetch (while it holds projectMu) and
+// proves a concurrent DeleteProject is genuinely blocked until the fetch
+// finishes — the same pattern
+// TestProjectMu_SerializesCreateProjectFromGitURL_And_DeleteProject above
+// already uses, confirming FetchProject either completes atomically or
+// cleanly errors, with no half-old/half-new state ever observable.
+func TestProjectMu_SerializesFetchProject_And_DeleteProject(t *testing.T) {
+	src := setupGitURLSourceRepo(t, "proj-fetch-lock", "Fetch Lock Project")
+	repo := &stubProjectRepository{existingWorkspaces: map[string]bool{"team-a": true}}
+	svc, _ := newGitURLTestService(t, repo)
+
+	created, err := svc.CreateProjectFromGitURL(context.Background(), fileURL(src), "team-a", "")
+	if err != nil {
+		t.Fatalf("CreateProjectFromGitURL: %v", err)
+	}
+	repo.projects = []*orchestrator.Project{created}
+
+	fetchStarted := make(chan struct{})
+	proceed := make(chan struct{})
+	var once sync.Once
+
+	realFetch := svc.FetchBareRepo
+	svc.FetchBareRepo = func(ctx context.Context, bareRepoPath, namespace string) error {
+		once.Do(func() {
+			close(fetchStarted)
+			<-proceed
+		})
+		return realFetch(ctx, bareRepoPath, namespace)
+	}
+
+	fetchDone := make(chan error, 1)
+	go func() {
+		_, ferr := svc.FetchProject(context.Background(), created.ID)
+		fetchDone <- ferr
+	}()
+
+	select {
+	case <-fetchStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("FetchProject never reached its fetch step")
+	}
+
+	deleteDone := make(chan error, 1)
+	go func() {
+		deleteDone <- svc.DeleteProject(created.ID)
+	}()
+
+	select {
+	case <-deleteDone:
+		t.Fatal("DeleteProject completed while FetchProject was still mid-fetch — projectMu did not serialize them")
+	case <-time.After(100 * time.Millisecond):
+		// expected: DeleteProject is blocked on projectMu.
+	}
+
+	close(proceed) // let FetchProject finish and release projectMu.
+
+	select {
+	case ferr := <-fetchDone:
+		if ferr != nil {
+			t.Fatalf("FetchProject: %v", ferr)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("FetchProject never completed after being unblocked")
+	}
+
+	select {
+	case derr := <-deleteDone:
+		if derr != nil {
+			t.Fatalf("DeleteProject: %v", derr)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("DeleteProject never completed after FetchProject released projectMu")
+	}
+
+	// No half-state: DeleteProject only ever ran strictly after FetchProject
+	// finished (never interleaved with it), so the project is now cleanly
+	// gone — both the DB row and the bare repo directory.
+	if _, getErr := repo.GetProject(created.ID); getErr == nil {
+		t.Error("expected the project row to be gone after DeleteProject")
+	}
+	if _, statErr := os.Stat(created.WorkDir); !os.IsNotExist(statErr) {
+		t.Errorf("expected the bare repo at %s to be removed after DeleteProject, stat err = %v", created.WorkDir, statErr)
 	}
 }

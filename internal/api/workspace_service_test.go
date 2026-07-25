@@ -892,6 +892,9 @@ func (s *createProjectMetaStore) Load(_ string) (*orchestrator.ProjectMeta, erro
 func (s *createProjectMetaStore) LoadBareRepo(_ string) (*orchestrator.ProjectMeta, error) {
 	return s.meta, nil
 }
+func (s *createProjectMetaStore) LoadBareRepoExpectingID(_, _ string) (*orchestrator.ProjectMeta, error) {
+	return s.meta, nil
+}
 func (s *createProjectMetaStore) Get(_ string) (*orchestrator.ProjectMeta, bool) { return nil, false }
 func (s *createProjectMetaStore) Remove(_ string)                               {}
 func (s *createProjectMetaStore) LoadAll(_ []*orchestrator.Project) []error     { return nil }

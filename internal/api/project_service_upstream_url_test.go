@@ -28,6 +28,9 @@ func (s *upstreamURLMetaStore) Load(_ string) (*orchestrator.ProjectMeta, error)
 func (s *upstreamURLMetaStore) LoadBareRepo(_ string) (*orchestrator.ProjectMeta, error) {
 	return s.meta, s.loadErr
 }
+func (s *upstreamURLMetaStore) LoadBareRepoExpectingID(_, _ string) (*orchestrator.ProjectMeta, error) {
+	return s.meta, s.loadErr
+}
 func (s *upstreamURLMetaStore) Get(_ string) (*orchestrator.ProjectMeta, bool) { return nil, false }
 func (s *upstreamURLMetaStore) Remove(id string)                               { s.removed = append(s.removed, id) }
 func (s *upstreamURLMetaStore) LoadAll(_ []*orchestrator.Project) []error      { return nil }

@@ -2383,9 +2383,21 @@ type stubProjectRepository struct {
 	// between two DIFFERENT ListProjects call sites (PR-1d codex round-5
 	// Major).
 	listProjectsHook func(call int)
+	// createProjectHook, if set, is called synchronously by CreateProject
+	// instead of its default no-op (PR-2a codex round-3 M1). Used by
+	// TestCreateProjectFromGitURL_AssignFailsAndBareRepoRemovalFails_
+	// PreservesRow to simulate the DB row genuinely being inserted, so a
+	// later GetProject/DeleteProject call in the same test can observe
+	// whether the row survived a failed rollback.
+	createProjectHook func(project *orchestrator.Project) error
 }
 
-func (s *stubProjectRepository) CreateProject(project *orchestrator.Project) error { return nil }
+func (s *stubProjectRepository) CreateProject(project *orchestrator.Project) error {
+	if s.createProjectHook != nil {
+		return s.createProjectHook(project)
+	}
+	return nil
+}
 func (s *stubProjectRepository) GetProject(id string) (*orchestrator.Project, error) {
 	for _, p := range s.projects {
 		if p.ID == id {
@@ -2485,6 +2497,9 @@ func (s *stubProjectMetaStore) Load(workDir string) (*orchestrator.ProjectMeta, 
 	return nil, nil
 }
 func (s *stubProjectMetaStore) LoadBareRepo(bareRepoPath string) (*orchestrator.ProjectMeta, error) {
+	return nil, nil
+}
+func (s *stubProjectMetaStore) LoadBareRepoExpectingID(bareRepoPath, expectedID string) (*orchestrator.ProjectMeta, error) {
 	return nil, nil
 }
 func (s *stubProjectMetaStore) Status(id string) orchestrator.ProjectStatus {
