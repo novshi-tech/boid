@@ -272,88 +272,16 @@ mkdir -p "$BOID_RUNTIME_DIR"
 chown "$BOID_UID:$BOID_GID" "$BOID_RUNTIME_DIR" 2>/dev/null || \
 	echo "warning: could not chown $BOID_RUNTIME_DIR to ${BOID_UID}:${BOID_GID} (continuing — it may already be owned correctly)" >&2
 
-# --- seed config.yaml (first boot only) --------------------------------
-# codex round-1, PR834 Major 2: this used to run AFTER `compose up -d`
-# below (as a printed instruction telling the operator to have already done
-# it, which is unusable — the daemon has by then already started against
-# whatever config.yaml happens to pre-exist in the volume, i.e. none, i.e.
-# the userns-backend default, on a genuinely first deploy). `boid config`
-# still has no bootstrap-before-first-boot path of its own (docs/plans/
-# volume-only-daemon.md §論点f) — until it does, this script seeds
-# sandbox.backend directly, the same way e2e/run-container.sh's own "seed
-# config.yaml" step does: `docker compose run --rm --entrypoint sh daemon`
-# is a ONE-OFF container from the exact same service definition (same
-# image, same boid_state volume mount, same BOID_UID:BOID_GID `user:`)
-# purely to write the file, before the real long-running daemon (`up`
-# below) ever starts. Idempotent: only writes config.yaml if the volume
-# doesn't already have one, so re-running this script against a live,
-# already-configured deploy never clobbers an operator's own edits (e.g. a
-# later `boid config set` against the running daemon, or a hand-edited
-# config.yaml with settings beyond just sandbox.backend).
-echo "deploy-container: seeding config.yaml into the boid_state volume (sandbox.backend: container) if not already present"
-"${COMPOSE_CMD[@]}" run --rm -T --entrypoint sh daemon -c '
-set -e
-mkdir -p "$XDG_CONFIG_HOME/boid"
-if [ -f "$XDG_CONFIG_HOME/boid/config.yaml" ]; then
-	echo "deploy-container: config.yaml already exists in the boid_state volume; leaving it as-is" >&2
-else
-	cat > "$XDG_CONFIG_HOME/boid/config.yaml" <<YAML
-sandbox:
-  backend: container
-YAML
-	echo "deploy-container: seeded default config.yaml (sandbox.backend: container) into the boid_state volume" >&2
-fi
-'
-
-# --- validate the effective backend (codex round-3, PR834 Major 2) ------
-# The seed step above is idempotent: an EXISTING config.yaml in the volume
-# is left untouched, on the reasonable assumption that preserving an
-# operators own edits is the right default. But an existing config.yaml
-# left over from a prior userns-backend install (or one that only ever set
-# unrelated keys, e.g. web:, with no sandbox: block at all — which resolves
-# to the userns default) means the daemon this script is about to start
-# would silently run the userns backend while this script still prints
-# "sandbox.backend: container, seeded above" below, as if the container
-# backend were actually running.
-#
-# Round-2 parsed this with a sed one-liner scanning the sandbox: block for
-# any indented `backend:` line — codex round-3 flagged that as unsafe: it
-# accepts a `backend:` key nested ARBITRARILY deep under sandbox: (e.g.
-# `sandbox:\n  ignored:\n    backend: container`), which Go's yaml.v3
-# decoder (Config.UnmarshalYAML) leaves unset — the real daemon would
-# select userns while the sed scan reported container — and it
-# false-rejects a quoted `"container"` or a folded scalar value, neither of
-# which sed's plain-text match handles. `boid config get` (cmd/config.go)
-# still can't help here — it always talks to a LIVE daemon's HTTP API, which
-# does not exist yet at this point in a fresh deploy (the daemon has not
-# started) or a one-off seed/validate container (which never runs `boid
-# start`, only this shell) — but `internal/config.LoadFromPath` (the
-# primitive `boid config get` itself sits on top of) is a pure
-# filesystem-read + yaml.v3 decode with NO daemon dependency at all, so the
-# NEW `boid config effective-backend <path>` subcommand (cmd/config.go,
-# scopeLocal — see its own doc comment) exposes exactly that: the same
-# nesting/quoting/folded-scalar semantics — and the same hard-error-on-
-# unrecognized-value behavior — Config.UnmarshalYAML applies at real daemon
-# startup, run standalone against an explicit path via the boid binary
-# already baked into this image (build/container/Dockerfile's
-# `/usr/local/bin/boid`).
-echo "deploy-container: verifying the boid_state volume config.yaml resolves sandbox.backend to container"
-"${COMPOSE_CMD[@]}" run --rm -T --entrypoint sh daemon -c '
-set -e
-cfg="$XDG_CONFIG_HOME/boid/config.yaml"
-if ! backend=$(/usr/local/bin/boid config effective-backend "$cfg"); then
-	echo "deploy-container: ERROR: the boid_state volume config.yaml at $cfg failed to parse (see the boid error above)." >&2
-	echo "deploy-container: fix: update it (boid config set sandbox.backend container against a running daemon, or edit $cfg directly inside the volume) or remove the boid_state volume to fresh-start (this DISCARDS all daemon state)." >&2
-	exit 1
-fi
-if [ "$backend" != "container" ]; then
-	echo "deploy-container: ERROR: the boid_state volume config.yaml resolves sandbox.backend to [$backend], not container." >&2
-	echo "deploy-container: an existing config.yaml was preserved above (not overwritten) but does not select the container backend, so the daemon about to start would silently run userns instead of container." >&2
-	echo "deploy-container: fix: update it (boid config set sandbox.backend container against a running daemon, or edit $cfg directly inside the volume) or remove the boid_state volume to fresh-start (this DISCARDS all daemon state)." >&2
-	exit 1
-fi
-echo "deploy-container: confirmed effective sandbox.backend=container" >&2
-'
+# --- config.yaml seed / effective-backend validation: removed (PR-4) ----
+# docs/plans/volume-only-daemon.md §論点e: container is now the only
+# sandbox backend (the userns backend and the sandbox.backend config key
+# that used to select between the two are both gone), so there is nothing
+# left to seed into a fresh boid_state volume's config.yaml before first
+# boot, and nothing left to validate before starting the compose stack —
+# every deployment runs the container backend unconditionally, by
+# construction (internal/server/wire.go's buildRuntime), not by config.
+# `boid config effective-backend` (cmd/config.go), this step's sole
+# caller, was removed in the same PR.
 
 echo "deploy-container: stopping any existing compose stack (explicit down before up — see this script's own header comment on why no restart: policy exists in compose.yml)"
 "${COMPOSE_CMD[@]}" down || true
@@ -361,4 +289,4 @@ echo "deploy-container: stopping any existing compose stack (explicit down befor
 echo "deploy-container: starting the compose stack"
 "${COMPOSE_CMD[@]}" up -d
 
-echo "deploy-container: done. compose stack is up (sandbox.backend: container, seeded above)."
+echo "deploy-container: done. compose stack is up (container backend)."

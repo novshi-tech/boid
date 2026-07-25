@@ -41,61 +41,44 @@ func mustCanonicalBehavior(alias string) string {
 	return canonical
 }
 
-// projectAddCmd accepts BOTH a git remote URL and a legacy host directory
-// path (PR-2a codex round-1 review, CRITICAL fix): the plan doc's cutover
-// for host-directory registration is a MANUAL migration (`project rm` +
-// `project add <url>`, one project at a time — docs/plans/
-// volume-only-daemon.md §論点a), not a hard cutoff. The first cut of this
-// command rejected `boid project add <dir>` outright, which broke every
-// e2e scenario (42 of them) that still registers its fixture project by
-// directory — those scenarios exercise userns-backend / host-checkout
-// dispatch paths that predate the git-URL model and are not part of THIS
-// migration. Both code paths are kept fully intact side by side:
+// projectAddCmd accepts ONLY a git remote URL: PR-4 (docs/plans/
+// volume-only-daemon.md §論点e) removed the legacy host-directory
+// registration form (`boid project add <dir>`) that PR-2a had restored
+// side by side with the git-URL form — the manual migration window
+// (`project rm` + `project add <url>`, one project at a time) that form
+// existed to support has closed; the e2e fixtures that used to depend on
+// it were themselves removed in the same PR (docs/plans/
+// volume-only-daemon.md §論点e's e2e coverage audit — every one of them
+// exercised the now-removed userns backend anyway).
 //
-//   - `boid project add <git-url> --workspace=<name> [--name=<override>]` —
-//     the new form: the daemon clones the URL itself into a daemon-managed
-//     bare repository (internal/api.ProjectAppService.CreateProjectFromGitURL).
-//     --workspace is required for this form.
-//   - `boid project add <dir> [--workspace=<name>]` — the legacy form,
-//     UNCHANGED from its pre-cutover behavior: resolves <dir> against the
-//     daemon's own filesystem, reads .boid/project.yaml, captures the git
-//     origin remote (internal/api.ProjectAppService.CreateProject).
-//     --workspace is optional (falls back to the eager default-workspace
-//     assignment CreateProject itself performs). Prints a one-line
-//     deprecation warning to stderr on every use.
+// The daemon-side dir-based endpoint (POST /api/projects,
+// internal/api.ProjectAppService.CreateProject) is NOT removed — this
+// package's own test suite (and internal/server's) still uses it directly
+// as a lightweight test-fixture registration primitive, a legitimate
+// "repurposed, not CLI-exposed" use PR-4's own scope explicitly allows. Only
+// this CLI command's dir-taking form is gone.
 //
-// Removing the dir-based path entirely is a FUTURE PR (PR-4 or later, once
-// e2e fixtures and any remaining dogfood workflows have migrated) — this PR
-// only ADDS the git-URL form back on top of the pre-existing one, it does
-// not retire anything.
-//
-// looksLikeGitURL decides which form a given argument is; see its own doc
-// comment for the exact detection rule.
+// looksLikeGitURL still gates the accept/reject decision, now purely to
+// produce a clear, specific rejection message for an argument that is NOT a
+// git URL, rather than to pick between two working code paths.
 var projectAddCmd = &cobra.Command{
-	Use:   "add <git-url|dir>",
-	Short: "Register a project from a git remote URL, or (legacy) a host directory",
-	Long: `Register a project. Two forms are accepted:
+	Use:   "add <git-url>",
+	Short: "Register a project from a git remote URL",
+	Long: `Register a project from a git remote URL:
 
   boid project add <git-url> --workspace=<name> [--name=<project-name>]
 
-    Has the daemon clone a git remote URL into a daemon-managed bare
-    repository (docs/plans/volume-only-daemon.md §論点a/b) — the
-    volume-only-compatible form. --workspace is required; --name overrides
-    the project name otherwise derived from the URL's last path component.
+Has the daemon clone the URL itself into a daemon-managed bare repository
+(docs/plans/volume-only-daemon.md §論点a/b). --workspace is required;
+--name overrides the project name otherwise derived from the URL's last
+path component.
 
-  boid project add <dir> [--workspace=<name>]
-
-    DEPRECATED legacy form: registers a project from an existing
-    .boid/project.yaml on the daemon host's own filesystem at <dir>.
-    Will be removed in a future release — migrate one project at a time
-    with 'boid project rm <ref>' followed by the git-URL form above.
-    --workspace is optional (falls back to the default workspace).
-
-Which form applies is decided from the argument's shape: it is treated as a
-git URL if it has an explicit scheme (https://, ssh://, git://, ...) or is
-scp-like (user@host:path, e.g. git@github.com:owner/repo.git); anything
-else (including a bare relative or absolute filesystem path) is treated as
-the legacy directory form.
+A git URL is recognized by an explicit scheme (https://, ssh://, git://,
+...) or the scp-like form (user@host:path, e.g.
+git@github.com:owner/repo.git). Anything else (including a bare relative or
+absolute filesystem path) is rejected — host-directory registration was
+removed; migrate an existing one with 'boid project rm <ref>' followed by
+this command.
 `,
 	Args:        cobra.ExactArgs(1),
 	Annotations: map[string]string{scopeAnnotationKey: scopeRemote},
@@ -248,15 +231,16 @@ func looksLikeGitURL(s string) bool {
 	return scpLikeGitURLPattern.MatchString(s)
 }
 
-// runProjectAdd dispatches to the git-URL or legacy dir-based registration
-// flow based on the argument's shape (looksLikeGitURL) — see projectAddCmd's
-// own doc comment for why both forms are kept.
+// runProjectAdd rejects any argument that does not look like a git URL
+// (looksLikeGitURL) — PR-4 removed the legacy host-directory registration
+// form this used to fall back to (see projectAddCmd's own doc comment) —
+// and otherwise registers it via runProjectAddGitURL.
 func runProjectAdd(cmd *cobra.Command, args []string) error {
 	arg := args[0]
-	if looksLikeGitURL(arg) {
-		return runProjectAddGitURL(cmd, arg)
+	if !looksLikeGitURL(arg) {
+		return fmt.Errorf("host directory registration was removed; use `boid project add <git-url> --workspace=<name>`")
 	}
-	return runProjectAddDir(cmd, arg)
+	return runProjectAddGitURL(cmd, arg)
 }
 
 func runProjectAddGitURL(cmd *cobra.Command, gitURL string) error {
@@ -295,76 +279,6 @@ func runProjectAddGitURL(cmd *cobra.Command, gitURL string) error {
 		fmt.Fprintf(cmd.OutOrStdout(), "project registered: %s (%s)\n", p.ID, p.Meta.Name)
 		fmt.Fprintf(cmd.OutOrStdout(), "  workspace: %s\n", p.WorkspaceID)
 		fmt.Fprintf(cmd.OutOrStdout(), "  bare repo: %s\n", p.WorkDir)
-		// Check hook requires
-		for _, b := range p.Meta.TaskBehaviors {
-			for _, h := range b.Hooks {
-				for _, req := range h.Requires {
-					if _, err := exec.LookPath(req); err != nil {
-						fmt.Fprintf(cmd.OutOrStdout(), "  warning: hook %q requires %q but it's not found in PATH\n", h.ID, req)
-					}
-				}
-			}
-		}
-		return nil
-	})
-}
-
-// runProjectAddDir is the legacy `boid project add <dir>` flow (PR-2a codex
-// round-1 review, CRITICAL fix — see projectAddCmd's own doc comment for
-// why it was restored), kept AS-IS from its pre-cutover behavior: resolves
-// dir against the daemon's own filesystem via POST /api/projects
-// (internal/api.ProjectAppService.CreateProject — the same endpoint
-// `boid project init` already uses), then optionally assigns --workspace
-// (get-or-create, same as before). Emits a one-line deprecation notice on
-// every invocation, per the migration guidance in projectAddCmd's Long text.
-func runProjectAddDir(cmd *cobra.Command, dir string) error {
-	if projectAddName != "" {
-		return fmt.Errorf("--name is only supported with the git-URL form of 'boid project add' (%q looks like a directory, not a git URL)", dir)
-	}
-
-	c := client.FromContext(cmd.Context())
-
-	// Regression concern (PR-2a codex round-2 review): projectAddCmd is
-	// scopeRemote as a whole — its OTHER form (git-URL registration)
-	// legitimately works against a remote daemon over the network, since
-	// the daemon does the cloning itself. This legacy dir form does not:
-	// filepath.Abs below resolves dir on THIS (the CLI's own) machine
-	// before sending it to the daemon as a work_dir to register verbatim.
-	// Against a remote (non-unix) profile, that path names a location on
-	// the CLIENT's filesystem, not the daemon's — the daemon would then try
-	// to read .boid/project.yaml from a directory that means something
-	// completely different (or nothing at all) on ITS OWN filesystem.
-	// Refuse outright rather than silently registering the wrong location.
-	if !c.IsUnix() {
-		return fmt.Errorf("host-directory registration is not supported over a remote profile (the path %q would be resolved on this machine, not the daemon's); use 'boid project add <git-url> --workspace=<name>' instead", dir)
-	}
-
-	fmt.Fprintln(cmd.ErrOrStderr(), "[deprecation] host-directory registration will be removed in a future release; use 'boid project add <git-url> --workspace=<name>' for volume-only compatibility.")
-
-	absDir, err := filepath.Abs(dir)
-	if err != nil {
-		return err
-	}
-
-	var p projectspec.Project
-	if err := c.Do("POST", "/api/projects", map[string]string{"work_dir": absDir}, &p); err != nil {
-		return fmt.Errorf("register project: %w", err)
-	}
-
-	// Optionally assign workspace (get-or-create: DB row is created even for
-	// an unknown slug) — same as the pre-cutover behavior.
-	if projectAddWorkspace != "" {
-		if err := assignProjectWorkspace(c, p.ID, projectAddWorkspace, cmd.OutOrStdout()); err != nil {
-			return err
-		}
-		p.WorkspaceID = projectAddWorkspace
-	}
-
-	return renderOutput(cmd, &p, func() error {
-		fmt.Fprintf(cmd.OutOrStdout(), "project registered: %s (%s)\n", p.ID, p.Meta.Name)
-		if p.WorkspaceID != "" {
-			fmt.Fprintf(cmd.OutOrStdout(), "  workspace: %s\n", p.WorkspaceID)
-		}
 		// Check hook requires
 		for _, b := range p.Meta.TaskBehaviors {
 			for _, h := range b.Hooks {
