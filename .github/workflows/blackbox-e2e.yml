@@ -229,33 +229,21 @@ jobs:
     # local-host equivalent today.
     runs-on: ubuntu-24.04
     timeout-minutes: 20
-    # continue-on-error: TRUE again (regressed back from `false` — [Major
-    # 7, PR829 round 1 codex review], docs/plans/volume-only-daemon.md
-    # §論点 h migration path). This job's `false` setting below the
-    # dashes was correct as of the PR that set it (§⓪-b, both gaps it
-    # names really were closed at that point) but the volume-only pivot
-    # (this same doc's own §背景と pivot 経緯, 2026-07-24) broke a
-    # DIFFERENT precondition this job depends on: e2e/run-container.sh
-    # reads the daemon's install_id from a HOST-visible
-    # $XDG_DATA_HOME/boid/install_id path and registers fixture projects
-    # (`boid project add <dir>`) under WS_ROOT="$XDG_DATA_HOME/boid/..."
-    # — both assume BOID_DATA_DIR is still a host bind mount, which
-    # compose.yml's own "Persistence" section above no longer is (it's the
-    # boid_state named volume now). This job is EXPECTED TO FAIL until the
-    # follow-up PR-2 (§論点 e "PR 分割案 B") rewrites run-container.sh for
-    # the new project-registration model — see that script's own top-of-
-    # file TODO block for the itemized list of what specifically breaks.
-    # Left running (not skipped) so CI still surfaces exactly where/how it
-    # fails, which is the regression signal PR-2 needs to close this back
-    # out to `false`. Do not flip this back to `false` until PR-2 lands.
-    continue-on-error: true
-    # ---- historical note below (kept for the §⓪/§⓪-b fix record; the
-    # continue-on-error value it justified has since been regressed by the
-    # comment above — do not read the following as still governing this
-    # job's current continue-on-error setting) ----
+    # continue-on-error: false (docs/plans/volume-only-daemon.md §論点 h
+    # migration path, PR-2b — [Major 7, PR829 round 1 codex review]'s
+    # `true` regression is closed here). e2e/run-container.sh has been
+    # rewritten for the volume-only project-registration model (git-URL
+    # `boid project add <url> --workspace=<slug>` instead of a host
+    # directory, install_id read from inside the running daemon container
+    # instead of a host-visible file, config.yaml seeded into the fresh
+    # boid_state named volume before first boot) — see that script's own
+    # header comment for the itemized list of what changed and why. This
+    # job is expected to pass again; a red run here after this PR is a real
+    # regression signal, not an already-known gap.
     #
-    # Both PR9-era gaps that had kept this job advisory were closed on the
-    # commit this note originally described:
+    # Historical note (kept for the §⓪/§⓪-b fix record — both gaps it
+    # names were closed independently of, and before, the volume-only
+    # pivot that later regressed this setting back to `true`):
     #
     #   * §⓪ (broker TCP wire completion, PR #825): the broker's TCP mTLS
     #     listener binds gatewayBindHost(usingContainerBackend) ("0.0.0.0"

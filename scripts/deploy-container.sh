@@ -201,4 +201,13 @@ echo "deploy-container: starting the compose stack"
 "${COMPOSE_CMD[@]}" up -d
 
 echo "deploy-container: done. compose stack is up."
-echo "deploy-container: opt in per-host with 'sandbox: {backend: container}' in ~/.config/boid/config.yaml (default is 'userns' during the migration period)."
+# NOT "~/.config/boid/config.yaml" (stale post-pivot — BOID_CONFIG_DIR is
+# the boid_state NAMED VOLUME now, invisible to the host; a host-side edit
+# at that path has no effect on the running daemon). Until `boid config`
+# grows a bootstrap-before-first-boot path (docs/plans/volume-only-daemon.md
+# §論点f), seed sandbox.backend the same way e2e/run-container.sh does
+# (PR-2b): `docker compose run --rm --entrypoint sh daemon -c '...'`
+# writing $XDG_CONFIG_HOME/boid/config.yaml INSIDE the volume, before this
+# script's own `up` above — see that script's own "seed config.yaml" step
+# for a concrete example.
+echo "deploy-container: opt in per-host with 'sandbox: {backend: container}' — seed it into the boid_state volume BEFORE first boot (see e2e/run-container.sh's own 'seed config.yaml' step for how; default is 'userns' during the migration period)."
