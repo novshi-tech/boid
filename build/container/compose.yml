@@ -108,17 +108,25 @@
 #     same path, which is purely a mount/identity concern this compose file
 #     is responsible for.
 #
-# KNOWN GAP (flagged, not fixed by this PR): internal/dispatcher/
-# container_backend.go materializes per-job DooD sibling-container mounts
-# (dockerTLSDir et al.) from absolute paths it computes under what used to
-# be a host-visible BOID_DATA_DIR. Now that BOID_DATA_DIR is a named
-# volume, any such path is container-internal only — a DooD sibling
-# container the daemon asks the HOST docker engine to create cannot mount
-# it. Nothing in this PR touches container_backend.go; this is real latent
-# breakage for that specific mechanism, deferred to a follow-up (most
-# likely: materialize that per-job material into its own throwaway named
-# volume or an emptyDir-style tmpfs mount shared by daemon+sibling via the
-# docker API, rather than a filesystem path).
+# KNOWN GAP — CLOSED by PR-2b (docs/plans/volume-only-daemon.md §論点b):
+# internal/dispatcher/container_backend.go materializes per-job DooD
+# sibling-container mounts (dockerTLSDir et al.) from absolute paths under
+# what this PR's own runtimeDir parameter used to resolve to
+# runtimesDirFor(cfg) — filepath.Dir(cfg.DBPath), i.e. BOID_DATA_DIR, the
+# boid_state NAMED VOLUME above, invisible to the HOST docker engine a DooD
+# sibling container's bind-mount source must resolve against. PR-2b's
+# internal/server/wire.go hostVisibleRuntimesDirFor(cfg) fixes this: under
+# sandbox.backend: container, every such call site (dockerTLSDir/
+# brokerTLSDir/spec.json/state.json/transcript-spool material, workspace
+# HOME, the per-job clone staging area — dispatcher.PrepareJobCheckout) now
+# resolves under filepath.Dir(cfg.SocketPath) instead — BOID_RUNTIME_DIR,
+# the host BIND mount immediately below, which a DooD sibling container's
+# host-side bind source CAN reach. See that function's own doc comment for
+# the remaining trade-off this does NOT resolve (BOID_RUNTIME_DIR is host
+# XDG_RUNTIME_DIR, typically tmpfs — workspace HOME under container backend
+# does not survive a host reboot the way it does for the userns backend;
+# a docker-managed named volume with per-workspace Subpath mounts is the
+# likely eventual fix, tracked as a follow-up, not blocking this PR).
 #
 # External listener wire status (broker / git gateway / egress proxy are
 # backed by real listeners on `boid_internal` now that [Blocker 2, PR7
@@ -298,7 +306,35 @@ services:
       # e2e_setup_fixture_upstream, shared with the userns e2e suite). A
       # real production deploy has no reason to ever set this: its git
       # remotes carry real, publicly-trusted certificates.
+      #
+      # This covers ONLY the daemon's Go-level outbound HTTP(S) calls (the
+      # git-gateway reverse proxy a SANDBOXED job's clone goes through) —
+      # NOT the `git` subprocess CloneBareRepo/FetchBareRepo (internal/
+      # dispatcher/bare_repo.go) shell out to directly for `boid project add
+      # <url>` / `project fetch` / PR-2b's own per-job bare-repo refresh.
+      # git's libcurl TLS stack does not read SSL_CERT_FILE at all — see
+      # GIT_SSL_CAINFO immediately below for that half.
       SSL_CERT_FILE: "${SSL_CERT_FILE:-}"
+      # GIT_SSL_CAINFO (PR834 PR-2b round-2 codex review CRITICAL fix): the
+      # `git` subprocess half SSL_CERT_FILE's own comment above flags —
+      # `git clone`/`git fetch` (dispatcher.CloneBareRepo/FetchBareRepo,
+      # invoked directly from the daemon process, not through the
+      # git-gateway reverse proxy at all) resolve TLS trust via git's own
+      # GIT_SSL_CAINFO env var (or the equivalent http.sslCAInfo git-config
+      # key), completely independent of Go's crypto/x509.SystemCertPool.
+      # e2e/run-container.sh already exports this pointing at the identical
+      # BOID_RUNTIME_DIR-backed fixture cert path SSL_CERT_FILE uses (same
+      # file, both env vars) — it was simply missing from this service's own
+      # environment: block, so the value never reached the daemon container
+      # even though the launching host shell already had it exported. This
+      # was the actual root cause of the e2e-container CI failure: `boid
+      # project add https://host.docker.internal:.../...` failing with
+      # "server certificate verification failed. CAfile: none CRLfile:
+      # none" — the container's own git subprocess never saw ANY CA file,
+      # self-signed or otherwise. Empty by default, exactly like
+      # SSL_CERT_FILE above; a real production deploy has no reason to ever
+      # set this either.
+      GIT_SSL_CAINFO: "${GIT_SSL_CAINFO:-}"
     # HostConfig.Init (docker-init/tini as PID 1, owning zombie reap — §決定3)
     # — compose's `init:` maps directly onto it.
     init: true

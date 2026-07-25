@@ -189,6 +189,58 @@ type Runner struct {
 	// certificate is not also needed). nil disables CA propagation.
 	GatewayCAPEM *[]byte
 
+	// GatewayCredentials resolves forge auth for the daemon's OWN direct
+	// git operations against a bare repo (docs/plans/volume-only-daemon.md
+	// §論点b, PR-2b) — the same gitgateway.CredentialProvider bare_repo.go's
+	// CloneBareRepo/FetchBareRepo already consume (see those functions'
+	// own doc comments for why this is a direct CredentialProvider.Resolve
+	// call, not a round trip through the HTTP reverse proxy: there is no
+	// job token or sandbox involved for this specific use — Dispatch calls
+	// FetchBareRepo itself, from the daemon process, before staging a
+	// per-job checkout via PrepareJobCheckout). nil (every pre-PR-2b
+	// caller, and any test wiring that doesn't need per-job clone) skips
+	// the FetchBareRepo refresh step entirely — matches CloneBareRepo/
+	// FetchBareRepo's own "creds nil -> proceed unauthenticated" fail-open
+	// convention, appropriate here too since a project's bare repo may
+	// simply be public.
+	GatewayCredentials *gitgateway.CredentialProvider
+
+	// WithProjectLock, when set, runs a function while holding the daemon's
+	// project lifecycle mutex — api.ProjectAppService.projectMu, via that
+	// service's own exported WithProjectLock method — the same lock
+	// CreateProject/CreateProjectFromGitURL/DeleteProject/FetchProject
+	// already serialize their own create/delete/fetch critical sections
+	// against each other (PR834 PR-2b round-2 codex review Major 1). The
+	// entire project-registry-guarded dispatch section below — gateway-token
+	// registration, the selfProject lookup, the gatewayCloneURL/
+	// peerAdvertise snapshot, managed-bare-repo classification, AND the
+	// FetchBareRepo + PrepareJobCheckout pair against selfProject.WorkDir —
+	// runs as one closure inside this lock (round-3 codex review Major 1:
+	// round-2 only wrapped the final fetch+clone call, leaving the lookup
+	// and URL/token snapshot that feed it unguarded — see Dispatch's own
+	// "project-registry-guarded dispatch section" comment for the mixed-
+	// checkout race that left open), so a concurrent `project rm` + re-add
+	// at the identical managed path cannot land ANYWHERE in that sequence
+	// and produce a mixed checkout (this project's gateway URL/credentials
+	// cloned against a DIFFERENT, just-re-registered project's bare-repo
+	// content).
+	//
+	// internal/dispatcher cannot import internal/api directly to call
+	// ProjectAppService.WithProjectLock itself — internal/api already
+	// imports internal/dispatcher for wiring, so the reverse direction would
+	// be an import cycle — so internal/server/wire.go closes over the same
+	// ProjectAppService instance's WithProjectLock method and hands it here
+	// as a plain function value instead (see wire.go's assignment, right
+	// next to GatewayCredentials above, which is wired from the identical
+	// gwCreds for the identical reason: no cross-package type dependency,
+	// just a shared instance closed over once at startup).
+	//
+	// nil (any dispatcher unit test that does not wire an
+	// api.ProjectAppService at all, and any pre-PR-2b caller) means "no
+	// serialization" — the per-job-clone step below runs unguarded exactly
+	// as it did before this field existed. Production wiring always sets it.
+	WithProjectLock func(fn func() error) error
+
 	tokenMu       sync.Mutex
 	jobTokens     map[string]string
 	waiterMu      sync.Mutex
@@ -202,6 +254,8 @@ type Runner struct {
 	gatewayTokens map[string]string // jobID -> git gateway job token
 	jobContextMu  sync.Mutex
 	jobContexts   map[string]JobContextSnapshot // jobID -> Phase 5b PR1 task-context RPC data
+	checkoutMu    sync.Mutex
+	checkoutDirs  map[string]string // jobID -> per-job clone staging dir (docs/plans/volume-only-daemon.md §論点b, PR-2b)
 }
 
 // Dispatch launches a sandbox for the given JobSpec. The optional cleanup
@@ -419,11 +473,11 @@ func (r *Runner) Dispatch(ctx context.Context, spec *orchestrator.JobSpec, clean
 	// for the cascade (floor → workspace overrides) and the fallback rules
 	// when any step fails.
 	allowedDomains, proxyPort := r.resolveWorkspaceProxy(workspaceID)
-	gatewayURL, gatewayToken := r.registerGatewayToken(j.ID, spec, workspaceID)
 	// gatewayCAPEM: see SandboxRuntimeInfo.GatewayCAPEM's own doc comment.
 	// r.GatewayCAPEM nil (every pre-PR9-fix caller/test, or a daemon with
 	// no TLS CA configured) leaves this nil, matching gatewayURL's own
-	// "unwired" degrade.
+	// "unwired" degrade. Daemon-level CA material, not per-project, so this
+	// stays outside the project-registry-guarded section below.
 	var gatewayCAPEM []byte
 	if r.GatewayCAPEM != nil {
 		gatewayCAPEM = *r.GatewayCAPEM
@@ -456,7 +510,8 @@ func (r *Runner) Dispatch(ctx context.Context, spec *orchestrator.JobSpec, clean
 	//
 	// `boid task current` does NOT need this: it re-derives live from the
 	// task row (orchestrator.SnapshotTask), which carries no job-scoped
-	// routing ambiguity the way instructions does.
+	// routing ambiguity the way instructions does. No project-registry
+	// dependency either, so this also runs outside the locked section below.
 	r.trackJobContext(j.ID, JobContextSnapshot{
 		Instructions:              routedInstructionSlice(spec.Instruction),
 		Env:                       BuildWorkspaceEnvView(allowedDomains, spec.HostCommands),
@@ -464,13 +519,56 @@ func (r *Runner) Dispatch(ctx context.Context, spec *orchestrator.JobSpec, clean
 		PayloadPatchAllowedTraits: spec.HookTraitsProduces,
 	})
 
-	// gatewayCloneURL is only worth resolving (an extra Projects lookup)
-	// when the opt-in sandbox-clone path is actually declared. As of the PR6
-	// cutover, planner.go / session_job.go set Visibility.Clone for every
-	// project-visible job, so this now runs on the main dispatch path.
-	var gatewayCloneURL, cloneWorkspaceDir string
-	var peerAdvertise map[string]PeerAdvertise
-	if spec.Visibility.Clone != nil {
+	// --- project-registry-guarded dispatch section (PR834 PR-2b round-3
+	// codex review Major 1) -------------------------------------------------
+	// Round-2's fix only wrapped the final fetch+clone call
+	// (FetchBareRepo/PrepareJobCheckout) in r.WithProjectLock. Everything
+	// that FEEDS that call still ran BEFORE the lock was acquired:
+	// gateway-token registration (registerGatewayToken -> buildGatewayRepos,
+	// which reads THIS project's own upstream_url to build its self-repo
+	// permission entry), the selfProject lookup (WorkDir/UpstreamURL), the
+	// gatewayCloneURL/peerAdvertise snapshot (buildGatewayCloneURL/
+	// buildPeerAdvertise each independently re-read r.Projects too), and the
+	// managed-bare-repo classification
+	// (orchestrator.IsBareRepoDir(selfProject.WorkDir)).
+	//
+	// A concurrent `project rm` + re-add at the identical (workspace, name)
+	// path can land in that pre-lock window — SafeBareRepoPath is
+	// deterministic on those two inputs alone, not on project id or
+	// content, so "remove and re-add at the same slot" is an ordinary
+	// operator flow, not just an adversarial one. selfProject.WorkDir is
+	// just a path string captured before the race; by the time round-2's
+	// lock finally ran the fetch+clone, that path could already hold a
+	// DIFFERENT repository's content while gatewayCloneURL/gatewayToken
+	// were still built from the OLD project's upstream_url — exactly the
+	// "clone repository B using project A's gateway route/credentials"
+	// mismatch this closes. Wrapping the entire read-then-clone sequence in
+	// one r.WithProjectLock closure means it now either observes
+	// spec.ProjectID's project consistently from lookup through clone, or
+	// (WithProjectLock unset — dispatcher unit tests that don't wire an
+	// api.ProjectAppService) runs unguarded exactly as it did before this
+	// fix existed.
+	var (
+		gatewayURL, gatewayToken           string
+		gatewayCloneURL, cloneWorkspaceDir string
+		peerAdvertise                      map[string]PeerAdvertise
+		cloneHostBacked                    bool
+	)
+	// selfProject is hoisted to this scope (mirrors the pre-fix code) purely
+	// for readability; nothing outside the closure reads it.
+	var selfProject *orchestrator.Project
+	dispatchProjectSection := func() error {
+		gatewayURL, gatewayToken = r.registerGatewayToken(j.ID, spec, workspaceID)
+
+		// gatewayCloneURL is only worth resolving (an extra Projects lookup)
+		// when the opt-in sandbox-clone path is actually declared. As of the
+		// PR6 cutover, planner.go / session_job.go set Visibility.Clone for
+		// every project-visible job, so this now runs on the main dispatch
+		// path.
+		if spec.Visibility.Clone == nil {
+			return nil
+		}
+
 		// Dispatch-time upstream_url requirement (docs/plans/git-gateway-cutover.md
 		// 「本計画で確定する設計 § 1」: 「欠落 project は... dispatch 時エラー」).
 		// A project with no captured upstream_url would otherwise silently
@@ -492,27 +590,14 @@ func (r *Runner) Dispatch(ctx context.Context, spec *orchestrator.JobSpec, clean
 			proj, perr := r.Projects.GetProject(spec.ProjectID)
 			switch {
 			case perr != nil:
-				err := fmt.Errorf("clone-mode dispatch: look up project %q: %w", spec.ProjectID, perr)
-				r.failJob(j, err)
-				if cleanup != nil {
-					cleanup()
-				}
-				return "", err
+				return fmt.Errorf("clone-mode dispatch: look up project %q: %w", spec.ProjectID, perr)
 			case proj == nil:
-				err := fmt.Errorf("clone-mode dispatch: project %q not found (registry drift?); rerun `boid project add` or check `boid project list`", spec.ProjectID)
-				r.failJob(j, err)
-				if cleanup != nil {
-					cleanup()
-				}
-				return "", err
+				return fmt.Errorf("clone-mode dispatch: project %q not found (registry drift?); rerun `boid project add` or check `boid project list`", spec.ProjectID)
 			default:
 				if err := orchestrator.RequireUpstreamURL(proj); err != nil {
-					r.failJob(j, err)
-					if cleanup != nil {
-						cleanup()
-					}
-					return "", err
+					return err
 				}
+				selfProject = proj
 			}
 		}
 		gatewayCloneURL = r.buildGatewayCloneURL(spec, gatewayURL, gatewayToken)
@@ -535,6 +620,75 @@ func (r *Runner) Dispatch(ctx context.Context, spec *orchestrator.JobSpec, clean
 				cloneWorkspaceDir = ""
 			}
 		}
+
+		// Per-job clone at dispatch time (docs/plans/volume-only-daemon.md
+		// §論点b "採用経路 (per-job clone、clone 時代整合)", PR-2b): a
+		// git-URL-registered project (orchestrator.IsBareRepoDir(selfProject.
+		// WorkDir), PR-2a) dispatched under the container backend gets its
+		// /workspace/<name> pre-populated by the DAEMON, straight from its
+		// own bare repo cache, instead of leaving the sandbox's own
+		// in-container clone sequence (buildCloneSpec/performCloneSteps) to
+		// fetch it via the git gateway's HTTP reverse proxy at container
+		// start. This is the architecture decision the plan doc's own
+		// §論点b spells out as the worktree-retraction replacement: a
+		// per-job `git clone file://<bare-repo>` into a staging dir
+		// under r.RuntimesDir (host-visible under container backend as of
+		// this same PR's wire.go fix — see hostVisibleRuntimesDirFor's own
+		// doc comment), bind-mounted into the job container directly.
+		//
+		// Every OTHER combination (userns backend, a legacy host-dir-
+		// registered project, or cloneWorkspaceDir empty because
+		// r.RuntimesDir itself is unset) leaves cloneHostBacked false and
+		// falls through to the pre-PR-2b in-sandbox clone path unchanged —
+		// this is additive, not a replacement of that path.
+		if IsContainerBackend(r.Backend) && cloneWorkspaceDir != "" && selfProject != nil && orchestrator.IsBareRepoDir(selfProject.WorkDir) {
+			// Step 1 (plan doc): bring the bare repo cache up to date before
+			// staging off of it. Best-effort — a transient fetch failure
+			// degrades to dispatching against whatever the cache already
+			// has, matching §論点a's auto-prune-retirement invariant
+			// ("filesystem/remote 観測を根拠に... hard delete しない"; the
+			// same spirit applies here: a stale-but-present cache must not
+			// block dispatch outright).
+			if r.GatewayCredentials != nil {
+				if ferr := FetchBareRepo(ctx, selfProject.WorkDir, r.GatewayCredentials, spec.SecretNamespace); ferr != nil {
+					slog.Warn("per-job clone: refresh bare repo failed; dispatching against the existing cache",
+						"job_id", j.ID, "project_id", spec.ProjectID, "error", ferr)
+				}
+			}
+			// Steps 2-3 (plan doc): stage the per-job checkout directly into
+			// cloneWorkspaceDir — no extra project-name subdirectory needed,
+			// cloneMounts already binds this whole directory at
+			// sandboxCloneDir(name) below. remoteURL rewrites `origin` to
+			// the gateway clone URL so a writable job's own in-sandbox
+			// `git push` still routes through the gateway (token auth,
+			// notify-on-401) instead of a meaningless daemon-local bare
+			// repo path — see PrepareJobCheckout's own doc comment.
+			cd := spec.Visibility.Clone
+			if err := PrepareJobCheckout(ctx, selfProject.WorkDir, cd.Branch, cd.BaseBranch, cd.BaseBranchForkPoint, gatewayCloneURL, cloneWorkspaceDir); err != nil {
+				return fmt.Errorf("per-job clone: %w", err)
+			}
+			r.trackCheckoutDir(j.ID, cloneWorkspaceDir)
+			cloneHostBacked = true
+		}
+		return nil
+	}
+	// The closure above now runs as a single r.WithProjectLock critical
+	// section when wired (production — see WithProjectLock's own doc
+	// comment); nil only for dispatcher unit tests that never wire an
+	// api.ProjectAppService, matching every pre-existing nil-safety
+	// convention in this file.
+	var projectSectionErr error
+	if r.WithProjectLock != nil {
+		projectSectionErr = r.WithProjectLock(dispatchProjectSection)
+	} else {
+		projectSectionErr = dispatchProjectSection()
+	}
+	if projectSectionErr != nil {
+		r.failJob(j, projectSectionErr)
+		if cleanup != nil {
+			cleanup()
+		}
+		return "", projectSectionErr
 	}
 
 	// [Blocker 2, PR7 codex review]: proxyHost stays "" (applyProxyEnv's own
@@ -565,6 +719,7 @@ func (r *Runner) Dispatch(ctx context.Context, spec *orchestrator.JobSpec, clean
 		GatewayJobToken:            gatewayToken,
 		GatewayCloneURL:            gatewayCloneURL,
 		CloneWorkspaceDir:          cloneWorkspaceDir,
+		CloneHostBacked:            cloneHostBacked,
 		WorkspaceHomeDir:           workspaceHomeDir,
 		WorkspaceSlug:              filepath.Base(workspaceHomeDir),
 		ContainerImage:             r.resolveContainerImage(workspaceID),
@@ -1461,6 +1616,48 @@ func (r *Runner) UnregisterJob(jobID string) {
 	}
 
 	r.untrackJobContext(jobID)
+	r.cleanupCheckoutDir(jobID)
+}
+
+// trackCheckoutDir records jobID's per-job clone staging dir (docs/plans/
+// volume-only-daemon.md §論点b, PR-2b) so cleanupCheckoutDir can remove it
+// once the job completes — the same jobID-keyed tracked-resource pattern
+// r.gatewayTokens/r.jobTokens already use for their own per-job cleanup.
+func (r *Runner) trackCheckoutDir(jobID, stagingDir string) {
+	if jobID == "" || stagingDir == "" {
+		return
+	}
+	r.checkoutMu.Lock()
+	defer r.checkoutMu.Unlock()
+	if r.checkoutDirs == nil {
+		r.checkoutDirs = make(map[string]string)
+	}
+	r.checkoutDirs[jobID] = stagingDir
+}
+
+// cleanupCheckoutDir removes jobID's per-job clone staging dir, if any
+// (docs/plans/volume-only-daemon.md §論点b step 5: "job 終了時、 staging
+// area を削除"). Called from UnregisterJob so this runs on every job-
+// completion path that already calls it (CompleteJob's normal exit,
+// watchRuntime's "exited without boid job done" path, and Dispatch's own
+// early-failure paths — see UnregisterJob's other call sites). A missing
+// entry (jobID never reached the per-job-clone step, e.g. a legacy
+// host-dir-registered project or the userns backend) is a silent no-op —
+// the common case for every dispatch this PR does not touch.
+func (r *Runner) cleanupCheckoutDir(jobID string) {
+	r.checkoutMu.Lock()
+	stagingDir, ok := r.checkoutDirs[jobID]
+	if ok {
+		delete(r.checkoutDirs, jobID)
+	}
+	r.checkoutMu.Unlock()
+
+	if !ok {
+		return
+	}
+	if err := CleanupJobCheckout(stagingDir); err != nil {
+		slog.Warn("per-job clone: cleanup staging dir failed", "job_id", jobID, "staging_dir", stagingDir, "error", err)
+	}
 }
 
 func (r *Runner) isJobCompleted(jobID string) bool {

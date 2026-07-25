@@ -305,6 +305,26 @@ func Load() (*Config, error) {
 	return loadFromPath(path)
 }
 
+// LoadFromPath is loadFromPath's exported counterpart (PR834 PR-2b round-3
+// codex review Major 2, docs/plans/volume-only-daemon.md §論点f): a pure
+// filesystem read + yaml.v3 decode with no daemon/HTTP dependency at all —
+// unlike `boid config get` (cmd/config.go), which always talks to a live
+// daemon's HTTP API and therefore has no bootstrap-before-first-boot path.
+// Exported so a scopeLocal CLI subcommand (`boid config effective-backend`)
+// and any future standalone tooling (e.g. scripts/deploy-container.sh's own
+// config-seed validation step, which used to hand-parse config.yaml with a
+// sed one-liner that didn't share this package's actual YAML nesting/
+// quoting/folded-scalar semantics — see UnmarshalYAML's sandbox.backend
+// handling above) can resolve a config.yaml's EFFECTIVE values — including
+// the strict validation UnmarshalYAML performs (e.g. an unrecognized
+// sandbox.backend value is a hard error here too, not a silent fallback) —
+// against an arbitrary path, not just the CLI process's own XDG default.
+// Same not-found semantics as Load()/loadFromPath: a missing file returns
+// DefaultConfig(), not an error.
+func LoadFromPath(path string) (*Config, error) {
+	return loadFromPath(path)
+}
+
 // loadFromPath reads the configuration from the given path.
 // If the file does not exist, the default configuration is returned without error.
 func loadFromPath(path string) (*Config, error) {

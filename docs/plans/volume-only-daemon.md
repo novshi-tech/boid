@@ -232,16 +232,23 @@ job dispatch 時のフロー:
 1. daemon が bare repo (`<data_dir>/repos/<workspace>/<project>.git`) に fetch (up-to-date 化、
    git gateway 経由)
 2. daemon が job 用 staging area (workspace_volume 内 `checkouts/<jobID>/<project>/` 相当) を用意
-3. daemon が bare repo から per-job clone (`git clone --reference` で cache 参照 + `git checkout <branch>`)
+3. daemon が bare repo から per-job clone (`git clone file://<bare-repo>` + `git checkout <branch>`)
    を staging area に配置
 4. job container を start、 `/workspace/<project-name>/` に staging area を mount (per-job 独立)
 5. job 終了時、 staging area を削除 (bare repo は cache として残る)
 
 per-job clone は staging area 消滅で objects もろとも消えるため、 workspace HOME を汚染しない
 (staging area は per-job subpath mount で他 job から不可視、 §i の container isolation invariant
-と整合)。 `--reference` で bare repo と objects DB を共有できる (同 daemon volume 内、 host mirror
-`--reference` の origin/* 追跡ブランチ問題 [[git-gateway-clone-perf-local-mirror-idea-rejected]] は
-発生しない — 却下理由は host working checkout 起因で、 daemon-managed bare repo には当たらない)。
+と整合)。 **[codex round-1, PR834 Blocker 1 で撤回]** 当初案は `--reference` で bare repo と
+objects DB を共有する想定だったが (`--reference` の origin/* 追跡ブランチ問題
+[[git-gateway-clone-perf-local-mirror-idea-rejected]] は host working checkout 起因で
+daemon-managed bare repo には当たらないため、その観点では問題なかった)、`--reference` は
+stagingDir の `.git/objects/info/alternates` に bareRepoPath (daemon 自身のファイルシステム上の
+パス) を直接記録してしまう — job container は staging area の subtree しか mount しない (daemon 自身の
+volume は見えない) ため、 job 内から `git status`/`git commit` 等 HEAD の object graph に触れる操作が
+alternates 経由の解決に失敗する。 実装は `git clone file://<bare-repo>` (transport 経由のフル
+コピー、 alternates 無し) に変更、 stagingDir は bareRepoPath の生死・mount 可視性と無関係に
+自己完結する (internal/dispatcher/checkout.go の PrepareJobCheckout 実装コメント参照)。
 
 ### fetch cache 戦略
 

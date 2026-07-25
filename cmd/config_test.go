@@ -623,6 +623,94 @@ func TestRunConfigEdit_ValidationFailure_KeepsTempFile(t *testing.T) {
 	}
 }
 
+// TestRunConfigEffectiveBackend_NoDaemonRequired pins PR834 PR-2b round-3
+// codex review Major 2's whole point: unlike every other config subcommand
+// above (all of which start a testutil.NewTestServer and point BOID_SOCKET
+// at it), `boid config effective-backend <path>` takes an explicit
+// config.yaml path and never dials a daemon at all — deliberately NOT
+// calling testutil.NewTestServer here proves it (any scopeRemote command's
+// client call would fail immediately with no daemon reachable).
+func TestRunConfigEffectiveBackend_NoDaemonRequired(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(path, []byte("sandbox:\n  backend: container\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var out bytes.Buffer
+	cmd := configEffectiveBackendCmd
+	cmd.SetOut(&out)
+	if err := runConfigEffectiveBackend(cmd, []string{path}); err != nil {
+		t.Fatalf("runConfigEffectiveBackend: %v", err)
+	}
+	if got := strings.TrimSpace(out.String()); got != "container" {
+		t.Errorf("effective-backend = %q, want container", got)
+	}
+}
+
+// TestRunConfigEffectiveBackend_MissingFile_DefaultsToUserns mirrors
+// internal/config.LoadFromPath's own not-found contract (a missing file
+// resolves to DefaultConfig(), not an error) — exactly what
+// scripts/deploy-container.sh's validate step depends on for a config.yaml
+// that (unexpectedly) never got seeded.
+func TestRunConfigEffectiveBackend_MissingFile_DefaultsToUserns(t *testing.T) {
+	var out bytes.Buffer
+	cmd := configEffectiveBackendCmd
+	cmd.SetOut(&out)
+	if err := runConfigEffectiveBackend(cmd, []string{filepath.Join(t.TempDir(), "does-not-exist.yaml")}); err != nil {
+		t.Fatalf("runConfigEffectiveBackend: %v", err)
+	}
+	if got := strings.TrimSpace(out.String()); got != "userns" {
+		t.Errorf("effective-backend = %q, want userns", got)
+	}
+}
+
+// TestRunConfigEffectiveBackend_InvalidValue_Errors: an unrecognized
+// sandbox.backend value is a hard error here, exactly like a real daemon
+// startup — never a silent fallback that would mask a typo from
+// scripts/deploy-container.sh's validation.
+func TestRunConfigEffectiveBackend_InvalidValue_Errors(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(path, []byte("sandbox:\n  backend: bogus\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := configEffectiveBackendCmd
+	cmd.SetOut(&bytes.Buffer{})
+	err := runConfigEffectiveBackend(cmd, []string{path})
+	if err == nil {
+		t.Fatal("expected an error for an unrecognized sandbox.backend value")
+	}
+	if !strings.Contains(err.Error(), "bogus") {
+		t.Errorf("expected error to name the bad value, got: %v", err)
+	}
+}
+
+// TestRunConfigEffectiveBackend_NestedKeyIsNotRealBackend pins the exact
+// round-3 false-accept case the retired sed-based deploy-container.sh
+// validation used to fall for: a `backend:` key nested under an unrelated
+// sandbox.* map key is NOT sandbox.backend, and must resolve to the userns
+// default like the real daemon does, not to whatever value that nested key
+// happens to hold.
+func TestRunConfigEffectiveBackend_NestedKeyIsNotRealBackend(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(path, []byte("sandbox:\n  ignored:\n    backend: container\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var out bytes.Buffer
+	cmd := configEffectiveBackendCmd
+	cmd.SetOut(&out)
+	if err := runConfigEffectiveBackend(cmd, []string{path}); err != nil {
+		t.Fatalf("runConfigEffectiveBackend: %v", err)
+	}
+	if got := strings.TrimSpace(out.String()); got != "userns" {
+		t.Errorf("effective-backend = %q, want userns (nested backend: key must not count)", got)
+	}
+}
+
 func TestRunConfigEdit_EmptyEditorEnv_DefaultsToVi(t *testing.T) {
 	// Not actually exercised interactively — just confirms an unset
 	// $EDITOR does not itself error out before exec attempts "vi" (which

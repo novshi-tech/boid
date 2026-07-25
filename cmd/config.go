@@ -123,11 +123,43 @@ var configEditCmd = &cobra.Command{
 	RunE:  runConfigEdit,
 }
 
+// configEffectiveBackendCmd (PR834 PR-2b round-3 codex review Major 2,
+// docs/plans/volume-only-daemon.md §論点f) prints a config.yaml FILE's
+// effective sandbox.backend — "userns" or "container" — by parsing it
+// through internal/config.LoadFromPath, the exact same yaml.v3 decode path
+// (Config.UnmarshalYAML) the daemon itself uses at startup. Unlike every
+// other config subcommand above, this does NOT talk to a daemon at all: it
+// takes an explicit path argument and reads it directly off whatever
+// filesystem this CLI process can see — the point being that
+// scripts/deploy-container.sh needs to validate a config.yaml sitting in a
+// not-yet-started daemon's own boid_state volume (via a one-off container
+// invocation of THIS binary), where no daemon HTTP API exists yet to ask
+// instead (see LoadFromPath's own doc comment). Replaces that script's
+// former sed-based scan of the sandbox: block, which accepted a
+// deeply-nested/incorrectly-indented `backend:` key Go's decoder would
+// actually ignore, and false-rejected a quoted "container" or folded
+// scalar value — every failure mode LoadFromPath's real yaml.v3 decode
+// does not have.
+var configEffectiveBackendCmd = &cobra.Command{
+	Use:   "effective-backend <config-file>",
+	Short: "Print a config.yaml file's effective sandbox.backend (userns or container) — no daemon required",
+	Args:  cobra.ExactArgs(1),
+	RunE:  runConfigEffectiveBackend,
+}
+
 func init() {
 	// Every config subcommand talks to the daemon's HTTP API — all
-	// scopeRemote, same classification as `boid workspace *`.
+	// scopeRemote, same classification as `boid workspace *` — EXCEPT
+	// configEffectiveBackendCmd, which is scopeLocal (see its own doc
+	// comment: it reads an explicit file path directly, with no daemon
+	// involved at all, and must keep working before any daemon has ever
+	// started).
 	for _, c := range []*cobra.Command{configGetCmd, configSetCmd, configUnsetCmd, configApplyCmd, configEditCmd} {
 		c.Annotations = map[string]string{scopeAnnotationKey: scopeRemote}
+	}
+	configEffectiveBackendCmd.Annotations = map[string]string{
+		annotationSkipAutostart: "skip",
+		scopeAnnotationKey:      scopeLocal,
 	}
 	configApplyCmd.Flags().StringVarP(&configApplyFile, "file", "f", "", "yaml file to apply (required)")
 	// --force (BLOCKER 1, codex review round 1): mirrors `boid workspace
@@ -138,8 +170,24 @@ func init() {
 	configApplyCmd.Flags().BoolVar(&configApplyForce, "force", false,
 		"apply without checking the current revision (last-write-wins; skips the concurrency guard)")
 
-	configCmd.AddCommand(configGetCmd, configSetCmd, configUnsetCmd, configApplyCmd, configEditCmd)
+	configCmd.AddCommand(configGetCmd, configSetCmd, configUnsetCmd, configApplyCmd, configEditCmd, configEffectiveBackendCmd)
 	rootCmd.AddCommand(configCmd)
+}
+
+// runConfigEffectiveBackend implements `boid config effective-backend
+// <path>`: parses path with config.LoadFromPath (a missing file resolves to
+// the default config, exactly like a fresh daemon would see it) and prints
+// the resulting Sandbox.Backend value. A malformed file — including an
+// unrecognized sandbox.backend value, which Config.UnmarshalYAML rejects as
+// a hard error rather than silently defaulting — fails the command instead
+// of guessing.
+func runConfigEffectiveBackend(cmd *cobra.Command, args []string) error {
+	cfg, err := config.LoadFromPath(args[0])
+	if err != nil {
+		return fmt.Errorf("load %s: %w", args[0], err)
+	}
+	fmt.Fprintln(cmd.OutOrStdout(), string(cfg.Sandbox.Backend))
+	return nil
 }
 
 // fetchConfigYAML performs GET /api/config, returning the daemon's current
