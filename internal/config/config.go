@@ -33,39 +33,16 @@ type TaskAskConfig struct {
 }
 
 // SandboxConfig holds sandbox-related settings.
+//
+// Backend (formerly a SandboxBackendKind field selecting "userns" vs
+// "container") was removed in PR-4 (docs/plans/volume-only-daemon.md
+// §論点e): container is now the only sandbox backend, so there is nothing
+// left to select. An old config.yaml that still sets sandbox.backend keeps
+// loading without error — see UnmarshalYAML's handling below — the key is
+// just parsed-and-ignored, with a warning logged.
 type SandboxConfig struct {
 	AllowedDomains []string `yaml:"allowed_domains"`
-	// Backend selects the SandboxBackend implementation daemon startup
-	// wires the dispatcher's Runner to (docs/plans/
-	// phase6-container-backend.md §PR7 cutover, §決定11): "userns" (the
-	// default — safe, pre-Phase-6 behavior, zero code change for any
-	// existing deployment with no sandbox.backend key at all) or
-	// "container" (opt-in — every job dispatches into a docker sibling
-	// container instead of a userns sandbox process). Selection is
-	// GLOBAL, not per-workspace (§決定11 — workspace.ContainerImage only
-	// selects WHICH image, never userns-vs-container).
-	//
-	// This flips a real production dispatch path; the plan doc's own
-	// cutover gate ("config 公開 (cutover) の gate: container e2e green +
-	// rollback rehearsal (deploy-level reaper 込み) の完了を前提にする")
-	// is an operational precondition on setting this to "container" in a
-	// real deploy, not something this package enforces — Load only
-	// validates the string is one of the two recognized values.
-	Backend SandboxBackendKind `yaml:"backend"`
 }
-
-// SandboxBackendKind names a SandboxConfig.Backend value.
-type SandboxBackendKind string
-
-const (
-	// SandboxBackendUserns is the default: the pre-Phase-6 userns sandbox
-	// (clone(NEWUSER)+pivot_root, in-process on the daemon host).
-	SandboxBackendUserns SandboxBackendKind = "userns"
-	// SandboxBackendContainer opts into Phase 6's container backend
-	// (docker-out-of-docker sibling containers) — see
-	// docs/plans/phase6-container-backend.md.
-	SandboxBackendContainer SandboxBackendKind = "container"
-)
 
 // ForgeConfig configures the git gateway's credential injection for a
 // single forge id (the map key in GatewayConfig.Forges). Only the forge
@@ -264,9 +241,6 @@ func DefaultConfig() *Config {
 		TaskAsk: TaskAskConfig{
 			DisconnectGrace: 30 * time.Minute,
 		},
-		Sandbox: SandboxConfig{
-			Backend: SandboxBackendUserns,
-		},
 		Gateway: GatewayConfig{
 			// Built in so `boid secret set github-pat <PAT>` (or
 			// bitbucket-token) lights up the gateway with zero
@@ -310,17 +284,18 @@ func Load() (*Config, error) {
 // filesystem read + yaml.v3 decode with no daemon/HTTP dependency at all —
 // unlike `boid config get` (cmd/config.go), which always talks to a live
 // daemon's HTTP API and therefore has no bootstrap-before-first-boot path.
-// Exported so a scopeLocal CLI subcommand (`boid config effective-backend`)
-// and any future standalone tooling (e.g. scripts/deploy-container.sh's own
-// config-seed validation step, which used to hand-parse config.yaml with a
-// sed one-liner that didn't share this package's actual YAML nesting/
-// quoting/folded-scalar semantics — see UnmarshalYAML's sandbox.backend
-// handling above) can resolve a config.yaml's EFFECTIVE values — including
-// the strict validation UnmarshalYAML performs (e.g. an unrecognized
-// sandbox.backend value is a hard error here too, not a silent fallback) —
-// against an arbitrary path, not just the CLI process's own XDG default.
-// Same not-found semantics as Load()/loadFromPath: a missing file returns
+// Exported so any standalone tooling can resolve a config.yaml's EFFECTIVE
+// values — including the strict validation UnmarshalYAML performs — against
+// an arbitrary path, not just the CLI process's own XDG default. Same
+// not-found semantics as Load()/loadFromPath: a missing file returns
 // DefaultConfig(), not an error.
+//
+// Formerly also the primitive behind `boid config effective-backend`
+// (scripts/deploy-container.sh's pre-PR-4 config-seed validation step) —
+// that subcommand was removed in PR-4 (docs/plans/volume-only-daemon.md
+// §論点e) once "container" became the only sandbox backend, so there was no
+// longer an effective backend selection worth validating. LoadFromPath
+// itself stays exported as a general-purpose primitive.
 func LoadFromPath(path string) (*Config, error) {
 	return loadFromPath(path)
 }
@@ -413,23 +388,20 @@ func (c *Config) UnmarshalYAML(value *yaml.Node) error {
 
 	c.Sandbox.AllowedDomains = raw.Sandbox.AllowedDomains
 
-	// sandbox.backend (docs/plans/phase6-container-backend.md §PR7
-	// cutover): unset/"" defaults to userns (safe, byte-for-byte the
-	// pre-Phase-6 behavior for every config.yaml written before this
-	// field existed). Any value other than the two recognized kinds is a
-	// hard error at load time — a typo here should never silently fall
-	// back to userns (masking that the operator's intended backend
-	// selection didn't take effect) nor silently fall forward to
-	// container (a security-relevant flip that must never happen by
-	// accident).
-	switch SandboxBackendKind(raw.Sandbox.Backend) {
-	case "", SandboxBackendUserns:
-		c.Sandbox.Backend = SandboxBackendUserns
-	case SandboxBackendContainer:
-		c.Sandbox.Backend = SandboxBackendContainer
-	default:
-		return fmt.Errorf("sandbox.backend: unrecognized value %q (want %q or %q)",
-			raw.Sandbox.Backend, SandboxBackendUserns, SandboxBackendContainer)
+	// sandbox.backend: removed in PR-4 (docs/plans/volume-only-daemon.md
+	// §論点e) — container is the only sandbox backend now, so the key
+	// carries no meaning any more. Accepted-but-ignored (any value,
+	// including a typo/garbage one) rather than a hard load error: an
+	// operator's existing config.yaml from before this cutover must keep
+	// loading unattended (smooth migration, PR-1b's own KindOpaque
+	// precedent for a retired field — see gateway.hosts's fold-in above
+	// for the analogous case). A warning is still logged so the key's
+	// no-op-ness is discoverable, matching schema.go's KindOpaque
+	// rejection message `boid config set/unset sandbox.backend` itself
+	// gives for the CLI-editing path.
+	if raw.Sandbox.Backend != "" {
+		slog.Warn("sandbox.backend is no longer used; container is the only sandbox backend now (docs/plans/volume-only-daemon.md §論点e) — this key is ignored",
+			"value", raw.Sandbox.Backend)
 	}
 
 	if raw.TaskAsk.DisconnectGrace != "" {

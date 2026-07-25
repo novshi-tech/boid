@@ -26,12 +26,8 @@ gateway:
 }
 
 func TestValidateYAML_EmptyDocument(t *testing.T) {
-	cfg, err := ValidateYAML(nil)
-	if err != nil {
+	if _, err := ValidateYAML(nil); err != nil {
 		t.Fatalf("ValidateYAML(nil): %v", err)
-	}
-	if cfg.Sandbox.Backend != SandboxBackendUserns {
-		t.Errorf("expected default backend, got %v", cfg.Sandbox.Backend)
 	}
 }
 
@@ -71,11 +67,15 @@ func TestValidateYAML_UnknownForgeField(t *testing.T) {
 	}
 }
 
-func TestValidateYAML_InvalidSandboxBackend(t *testing.T) {
+// TestValidateYAML_SandboxBackend_AcceptedButIgnored pins PR-4's removal of
+// sandbox.backend (docs/plans/volume-only-daemon.md §論点e): `boid config
+// apply -f`/`edit` must not reject a document that still sets it (any value)
+// — see TestLoadFromPath_SandboxBackend_AcceptedButIgnored (config_test.go)
+// for the same contract on daemon startup load.
+func TestValidateYAML_SandboxBackend_AcceptedButIgnored(t *testing.T) {
 	data := []byte("sandbox:\n  backend: bogus\n")
-	_, err := ValidateYAML(data)
-	if err == nil {
-		t.Fatal("expected error for invalid sandbox.backend")
+	if _, err := ValidateYAML(data); err != nil {
+		t.Fatalf("expected sandbox.backend to be accepted-but-ignored, got error: %v", err)
 	}
 }
 

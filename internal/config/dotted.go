@@ -193,7 +193,7 @@ func Unset(tree Tree, path string) (ReloadClass, error) {
 		return 0, unknownKeyError(path)
 	}
 	if spec.Kind == KindOpaque {
-		return 0, fmt.Errorf("%s is a deprecated, read-only legacy field and cannot be unset — migrate to gateway.forges.<id>.* instead (see docs/ja/reference/config-yaml.md)", spec.Path)
+		return 0, fmt.Errorf("%s is a deprecated, read-only legacy field and cannot be unset%s", spec.Path, noteClause(spec.Note))
 	}
 	if !deletePathRaw(tree, path) {
 		return 0, fmt.Errorf("key not found: %s", path)
@@ -245,15 +245,26 @@ func coerceValues(spec FieldSpec, values []string) (any, error) {
 		}
 		return nil, fmt.Errorf("invalid value %q (want one of %s)", values[0], sortedJoin(spec.EnumValues))
 	case KindOpaque:
-		// MAJOR 1 (codex review round 1): gateway.hosts (the only
-		// KindOpaque leaf today) is recognized so validation/get/apply/
-		// edit don't reject it, but it is deliberately not
+		// MAJOR 1 (codex review round 1): gateway.hosts and sandbox.backend
+		// (the two KindOpaque leaves today) are recognized so
+		// validation/get/apply/edit don't reject them, but neither is
 		// `boid config set`-able — see schema.go's doc comment on
-		// KindOpaque and gateway.hosts for why.
-		return nil, fmt.Errorf("%s is a deprecated, read-only legacy field — migrate to gateway.forges.<id>.* instead (see docs/ja/reference/config-yaml.md)", spec.Path)
+		// KindOpaque for why. spec.Note carries the field-specific
+		// migration/removal guidance appended below.
+		return nil, fmt.Errorf("%s is a deprecated, read-only legacy field%s", spec.Path, noteClause(spec.Note))
 	default:
 		return nil, fmt.Errorf("unsupported field kind %v", spec.Kind)
 	}
+}
+
+// noteClause renders a FieldSpec.Note as a " — <note>" suffix, or "" when
+// note is empty — the shared tail coerceValues' KindOpaque branch and
+// Unset's KindOpaque branch both append to their generic rejection message.
+func noteClause(note string) string {
+	if note == "" {
+		return ""
+	}
+	return " — " + note
 }
 
 func sortedJoin(vals []string) string {

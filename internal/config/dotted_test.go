@@ -84,17 +84,49 @@ func TestSet_MapSlotWithoutLeafRejected(t *testing.T) {
 	}
 }
 
+// TestSet_EnumValidation exercises KindEnum validation against
+// gateway.forges.*.forge (github.com/bitbucket) — sandbox.backend used to be
+// this test's example enum leaf, but PR-4 (docs/plans/volume-only-daemon.md
+// §論点e) demoted it to KindOpaque (container is the only backend now); see
+// TestSet_KindOpaque_SandboxBackend_Rejected below for its own coverage.
 func TestSet_EnumValidation(t *testing.T) {
 	tree := Tree{}
-	if _, err := Set(tree, "sandbox.backend", []string{"bogus"}); err == nil {
+	if _, err := Set(tree, "gateway.forges.github.forge", []string{"bogus"}); err == nil {
 		t.Fatal("expected error for invalid enum value")
 	}
-	reload, err := Set(tree, "sandbox.backend", []string{"container"})
+	reload, err := Set(tree, "gateway.forges.github.forge", []string{"github"})
 	if err != nil {
 		t.Fatalf("Set: %v", err)
 	}
-	if reload != ReloadRetirementWarning {
-		t.Errorf("reload = %v, want ReloadRetirementWarning", reload)
+	if reload != ReloadRestartRequired {
+		t.Errorf("reload = %v, want ReloadRestartRequired", reload)
+	}
+}
+
+// TestSet_KindOpaque_SandboxBackend_Rejected pins PR-4's removal of
+// sandbox.backend (docs/plans/volume-only-daemon.md §論点e, PR-1b's
+// KindOpaque pattern): the key is still structurally recognized (so
+// `boid config get/apply` never chokes on an old config.yaml that still sets
+// it — see TestLoadFromPath_SandboxBackend_AcceptedButIgnored in
+// config_test.go) but is no longer `boid config set`-able, the same
+// read-only contract gateway.hosts already established.
+func TestSet_KindOpaque_SandboxBackend_Rejected(t *testing.T) {
+	tree := Tree{}
+	if _, err := Set(tree, "sandbox.backend", []string{"container"}); err == nil {
+		t.Fatal("expected Set(sandbox.backend, ...) to fail — it was removed in the volume-only cutover")
+	}
+}
+
+// TestUnset_KindOpaque_SandboxBackend_Rejected mirrors
+// TestUnset_KindOpaque_Rejected (gateway.hosts) for sandbox.backend.
+func TestUnset_KindOpaque_SandboxBackend_Rejected(t *testing.T) {
+	tree := Tree{"sandbox": Tree{"backend": "container"}}
+	_, err := Unset(tree, "sandbox.backend")
+	if err == nil {
+		t.Fatal("expected Unset(sandbox.backend) to fail — it is read-only via the dotted-path CLI")
+	}
+	if strings.Contains(err.Error(), "key not found") {
+		t.Errorf("expected a read-only rejection, not a 'key not found' error: %v", err)
 	}
 }
 

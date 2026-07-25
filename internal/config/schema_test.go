@@ -71,11 +71,20 @@ func TestSchema_ReloadClassification(t *testing.T) {
 			t.Errorf("%s: reload class = %v, want ReloadRestartRequired", path, spec.Reload)
 		}
 	}
+	// sandbox.backend (PR-4, docs/plans/volume-only-daemon.md §論点e): now
+	// KindOpaque, same read-only-legacy-migration-bridge shape as
+	// gateway.hosts, so it takes the same ReloadRestartRequired class those
+	// leaves share (see restartFieldExtractorExemptions in
+	// internal/server/config_edit.go for why it needs no live-value
+	// extractor).
 	spec, ok := ResolveField("sandbox.backend")
 	if !ok {
 		t.Fatal("ResolveField(sandbox.backend) not found")
 	}
-	if spec.Reload != ReloadRetirementWarning {
-		t.Errorf("sandbox.backend: reload class = %v, want ReloadRetirementWarning", spec.Reload)
+	if spec.Kind != KindOpaque {
+		t.Errorf("sandbox.backend: kind = %v, want KindOpaque", spec.Kind)
+	}
+	if spec.Reload != ReloadRestartRequired {
+		t.Errorf("sandbox.backend: reload class = %v, want ReloadRestartRequired", spec.Reload)
 	}
 }

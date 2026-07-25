@@ -140,72 +140,40 @@ func TestLoadFromPath_InvalidYAML(t *testing.T) {
 // CLI subcommand calls — see that command's own doc comment) is the single
 // source of truth the daemon itself uses at startup; this test is that
 // contract's own pin, independent of the deploy script.
-func TestLoadFromPath_SandboxBackend_Variants(t *testing.T) {
+// TestLoadFromPath_SandboxBackend_AcceptedButIgnored pins PR-4's removal of
+// sandbox.backend (docs/plans/volume-only-daemon.md §論点e): container is
+// now the only sandbox backend, so the key carries no meaning any more. Per
+// the PR-1b KindOpaque precedent (gateway.hosts), an old config.yaml that
+// still sets it — any value, including a typo/garbage one — must keep
+// loading without error (smooth migration for an existing deployment), with
+// a warning logged rather than a silent no-op so an operator inspecting logs
+// can tell the key had no effect.
+func TestLoadFromPath_SandboxBackend_AcceptedButIgnored(t *testing.T) {
 	cases := []struct {
-		name    string
-		content string // "" means: don't create the file at all
-		want    SandboxBackendKind
-		wantErr bool
+		name       string
+		content    string // "" means: don't create the file at all
+		wantWarned bool
 	}{
+		{name: "explicit container", content: "sandbox:\n  backend: container\n", wantWarned: true},
+		{name: "explicit userns", content: "sandbox:\n  backend: userns\n", wantWarned: true},
+		{name: "no sandbox key at all", content: "web:\n  http_addr: \"127.0.0.1:8080\"\n", wantWarned: false},
+		{name: "missing file entirely", content: "", wantWarned: false},
+		{name: "unrecognized/garbage value never errors any more", content: "sandbox:\n  backend: bogus\n", wantWarned: true},
 		{
-			name:    "explicit container",
-			content: "sandbox:\n  backend: container\n",
-			want:    SandboxBackendContainer,
-		},
-		{
-			name:    "explicit userns",
-			content: "sandbox:\n  backend: userns\n",
-			want:    SandboxBackendUserns,
-		},
-		{
-			name:    "no sandbox key at all",
-			content: "web:\n  http_addr: \"127.0.0.1:8080\"\n",
-			want:    SandboxBackendUserns,
-		},
-		{
-			name:    "missing file entirely",
-			content: "",
-			want:    SandboxBackendUserns,
-		},
-		{
-			name:    "allowed_domains before backend",
-			content: "sandbox:\n  allowed_domains:\n    - example.com\n  backend: container\n",
-			want:    SandboxBackendContainer,
-		},
-		{
-			name:    "sandbox as the last top-level key",
-			content: "web:\n  http_addr: \"127.0.0.1:8080\"\nsandbox:\n  backend: container\n",
-			want:    SandboxBackendContainer,
-		},
-		{
-			// The exact round-3 false-accept case: a sed scan of the
-			// sandbox: block matches this `backend:` line regardless of its
-			// nesting depth, but yaml.v3 (and so Config.UnmarshalYAML)
-			// leaves sandbox.backend unset here — the real daemon selects
-			// userns, so validation must too.
-			name:    "backend nested under an unrelated key is NOT the real sandbox.backend",
-			content: "sandbox:\n  ignored:\n    backend: container\n",
-			want:    SandboxBackendUserns,
-		},
-		{
-			name:    "quoted container",
-			content: "sandbox:\n  backend: \"container\"\n",
-			want:    SandboxBackendContainer,
-		},
-		{
-			name:    "folded scalar container",
-			content: "sandbox:\n  backend: >-\n    container\n",
-			want:    SandboxBackendContainer,
-		},
-		{
-			name:    "unrecognized value is a hard error, not a silent fallback",
-			content: "sandbox:\n  backend: bogus\n",
-			wantErr: true,
+			// Nested under an unrelated key: yaml.v3 (Config.UnmarshalYAML's
+			// raw struct) leaves raw.Sandbox.Backend empty here, same as
+			// before this PR — no warning since nothing was actually set at
+			// sandbox.backend itself.
+			name:       "backend nested under an unrelated key is NOT the real sandbox.backend",
+			content:    "sandbox:\n  ignored:\n    backend: container\n",
+			wantWarned: false,
 		},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			buf := captureSlog(t)
+
 			dir := t.TempDir()
 			path := filepath.Join(dir, "config.yaml")
 			if tc.content != "" {
@@ -214,18 +182,13 @@ func TestLoadFromPath_SandboxBackend_Variants(t *testing.T) {
 				}
 			}
 
-			cfg, err := LoadFromPath(path)
-			if tc.wantErr {
-				if err == nil {
-					t.Fatalf("expected an error, got backend=%q", cfg.Sandbox.Backend)
-				}
-				return
-			}
-			if err != nil {
+			if _, err := LoadFromPath(path); err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
-			if cfg.Sandbox.Backend != tc.want {
-				t.Errorf("Sandbox.Backend = %q, want %q", cfg.Sandbox.Backend, tc.want)
+
+			warned := bytes.Contains(buf.Bytes(), []byte("sandbox.backend"))
+			if warned != tc.wantWarned {
+				t.Errorf("sandbox.backend warning logged = %v, want %v (log: %s)", warned, tc.wantWarned, buf.String())
 			}
 		})
 	}
@@ -712,65 +675,5 @@ func TestDefaultConfig(t *testing.T) {
 	}
 	if cfg.GC.OlderThan != 720*time.Hour {
 		t.Errorf("default GC.OlderThan: got %v, want 720h", cfg.GC.OlderThan)
-	}
-	if cfg.Sandbox.Backend != SandboxBackendUserns {
-		t.Errorf("default Sandbox.Backend: got %q, want %q (safe default — docs/plans/phase6-container-backend.md §PR7)", cfg.Sandbox.Backend, SandboxBackendUserns)
-	}
-}
-
-// TestLoadFromPath_SandboxBackend_UnsetDefaultsToUserns pins that a
-// config.yaml written before sandbox.backend existed (or one that simply
-// omits the key) keeps resolving to the userns backend — the byte-for-byte
-// "every existing deployment is unaffected" guarantee docs/plans/
-// phase6-container-backend.md §PR7 requires of this cutover.
-func TestLoadFromPath_SandboxBackend_UnsetDefaultsToUserns(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "config.yaml")
-	if err := os.WriteFile(path, []byte("gc:\n  enabled: true\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	cfg, err := loadFromPath(path)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if cfg.Sandbox.Backend != SandboxBackendUserns {
-		t.Errorf("Sandbox.Backend = %q, want %q", cfg.Sandbox.Backend, SandboxBackendUserns)
-	}
-}
-
-// TestLoadFromPath_SandboxBackend_Container pins the opt-in path: an
-// explicit `sandbox.backend: container` in config.yaml round-trips to
-// SandboxBackendContainer.
-func TestLoadFromPath_SandboxBackend_Container(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "config.yaml")
-	content := "sandbox:\n  backend: container\n"
-	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	cfg, err := loadFromPath(path)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if cfg.Sandbox.Backend != SandboxBackendContainer {
-		t.Errorf("Sandbox.Backend = %q, want %q", cfg.Sandbox.Backend, SandboxBackendContainer)
-	}
-}
-
-// TestLoadFromPath_SandboxBackend_UnrecognizedRejected pins that a typo
-// (e.g. "docker" instead of "container") is a hard load error, not a silent
-// fallback in either direction — see SandboxConfig.Backend's doc comment.
-func TestLoadFromPath_SandboxBackend_UnrecognizedRejected(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "config.yaml")
-	content := "sandbox:\n  backend: docker\n"
-	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	if _, err := loadFromPath(path); err == nil {
-		t.Fatal("expected an error for an unrecognized sandbox.backend value, got nil")
 	}
 }
