@@ -15,16 +15,6 @@ e2e_require_cmd() {
   command -v "$cmd" >/dev/null 2>&1 || e2e_fail "required command not found: $cmd"
 }
 
-e2e_require_sandbox_prereqs() {
-  e2e_require_cmd pasta
-  e2e_require_cmd unshare
-  e2e_require_cmd nft
-
-  if ! unshare --user --mount --map-root-user -- true >/dev/null 2>&1; then
-    e2e_fail "sandbox prerequisite check failed: unshare --user --mount --map-root-user"
-  fi
-}
-
 e2e_assert_contains() {
   local haystack="$1"
   local needle="$2"
