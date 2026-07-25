@@ -3,7 +3,9 @@ package orchestrator_test
 import (
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/novshi-tech/boid/internal/orchestrator"
@@ -229,6 +231,156 @@ func TestProjectStore_LoadAll_InvalidatesStaleMetaOnReloadFailure(t *testing.T) 
 
 	if _, ok := s.Get("proj-a"); ok {
 		t.Fatal("stale meta should be invalidated after reload failure")
+	}
+}
+
+// TestProjectStore_LoadAll_MarksDegradedNotDeleted pins the docs/plans/
+// volume-only-daemon.md §論点a on-startup-auto-prune-retirement invariant at
+// the ProjectStore level: a project whose project.yaml fails to load (any
+// reason — missing dir here, corrupt bare repo covered by
+// project_bare_repo_test.go's TestReadProjectMetaFromBareRepo_CorruptRepo)
+// must come out of LoadAll in the StatusDegraded state, never removed from
+// the caller's candidate list / never causing the store to forget it was
+// ever registered. The actual DB row deletion decision lives one layer up
+// (internal/server/wire.go); this test only pins what LoadAll itself must
+// guarantee: MarkDegraded fires, the project stays queryable via Status.
+func TestProjectStore_LoadAll_MarksDegradedNotDeleted(t *testing.T) {
+	dir1 := t.TempDir()
+	setupProjectDir(t, dir1, "proj-a", "Project A")
+
+	dir2 := t.TempDir() // no .boid/project.yaml — simulates a load failure
+
+	s := orchestrator.NewProjectStore()
+	errs := s.LoadAll([]*projectspec.Project{
+		{ID: "proj-a", WorkDir: dir1},
+		{ID: "proj-b", WorkDir: dir2},
+	})
+	if len(errs) != 1 {
+		t.Fatalf("expected 1 error, got %d: %v", len(errs), errs)
+	}
+
+	st := s.Status("proj-b")
+	if st.State != orchestrator.StatusDegraded {
+		t.Errorf("proj-b Status.State = %q, want %q", st.State, orchestrator.StatusDegraded)
+	}
+	if st.Message == "" {
+		t.Error("expected a non-empty degraded status message for proj-b")
+	}
+
+	// proj-a loaded fine and must report ready (the implicit default).
+	if st := s.Status("proj-a"); st.State != orchestrator.StatusReady {
+		t.Errorf("proj-a Status.State = %q, want %q", st.State, orchestrator.StatusReady)
+	}
+}
+
+// TestProjectStore_LoadAll_LegacyHostDirMessage pins the migration-path
+// guidance docs/plans/volume-only-daemon.md §論点a describes: once
+// SetReposRoot is configured, a project whose WorkDir falls outside the
+// daemon's bare-repo storage root (and isn't a bare repo itself) is
+// recognized as a pre-cutover, host-filesystem registration and gets
+// pointed at the new `boid project add <git-url>` form instead of a bare
+// "no such file or directory".
+func TestProjectStore_LoadAll_LegacyHostDirMessage(t *testing.T) {
+	reposRoot := filepath.Join(t.TempDir(), "repos")
+	legacyDir := t.TempDir() // outside reposRoot entirely, no project.yaml
+
+	s := orchestrator.NewProjectStore()
+	s.SetReposRoot(reposRoot)
+
+	errs := s.LoadAll([]*projectspec.Project{{ID: "proj-legacy", WorkDir: legacyDir}})
+	if len(errs) != 1 {
+		t.Fatalf("expected 1 error, got %d: %v", len(errs), errs)
+	}
+
+	st := s.Status("proj-legacy")
+	if st.State != orchestrator.StatusDegraded {
+		t.Fatalf("Status.State = %q, want %q", st.State, orchestrator.StatusDegraded)
+	}
+	if !strings.Contains(st.Message, "boid project add <git-url>") {
+		t.Errorf("expected legacy-migration guidance in status message, got: %s", st.Message)
+	}
+}
+
+// TestProjectStore_LoadAll_CorruptBareRepo_MarksDegradedNotDeleted and
+// TestProjectStore_LoadAll_MissingProjectYAMLInBareRepo_MarksDegradedNotDeleted
+// are the bare-repo-model counterparts of TestProjectStore_LoadAll_
+// MarksDegradedNotDeleted above, pinning the two other §論点a scenarios the
+// PR-2a task brief calls out by name ("Bare repo becomes corrupt → project
+// marked degraded, NOT deleted" / "project.yaml deleted from bare repo HEAD
+// → same") at the LoadAll (not just the lower-level
+// ReadProjectMetaFromBareRepo, project_bare_repo_test.go) integration
+// point — the level internal/server/wire.go's buildProjectStore actually
+// calls.
+
+func TestProjectStore_LoadAll_CorruptBareRepo_MarksDegradedNotDeleted(t *testing.T) {
+	// A directory that LOOKS bare (HEAD file + objects dir, so
+	// IsBareRepoDir routes LoadAll into LoadBareRepo) but has no real git
+	// plumbing underneath — simulates a corrupted bare repo.
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "HEAD"), []byte("ref: refs/heads/main\n"), 0o644); err != nil {
+		t.Fatalf("write HEAD: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "objects"), 0o755); err != nil {
+		t.Fatalf("mkdir objects: %v", err)
+	}
+
+	s := orchestrator.NewProjectStore()
+	errs := s.LoadAll([]*projectspec.Project{{ID: "proj-corrupt", WorkDir: dir}})
+	if len(errs) != 1 {
+		t.Fatalf("expected 1 error, got %d: %v", len(errs), errs)
+	}
+
+	st := s.Status("proj-corrupt")
+	if st.State != orchestrator.StatusDegraded {
+		t.Errorf("Status.State = %q, want %q", st.State, orchestrator.StatusDegraded)
+	}
+	if st.Message == "" {
+		t.Error("expected a non-empty degraded status message")
+	}
+}
+
+func TestProjectStore_LoadAll_MissingProjectYAMLInBareRepo_MarksDegradedNotDeleted(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not found in PATH")
+	}
+	root := t.TempDir()
+	work := filepath.Join(root, "work")
+	if err := os.MkdirAll(work, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(work, "README.md"), []byte("no project.yaml here"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	runGitLocal(t, work, "init", "-q", "-b", "main")
+	runGitLocal(t, work, "config", "user.email", "test@example.com")
+	runGitLocal(t, work, "config", "user.name", "Test")
+	runGitLocal(t, work, "add", ".")
+	runGitLocal(t, work, "commit", "-q", "-m", "initial")
+	bare := filepath.Join(root, "repo.git")
+	runGitLocal(t, root, "clone", "-q", "--bare", work, bare)
+
+	s := orchestrator.NewProjectStore()
+	errs := s.LoadAll([]*projectspec.Project{{ID: "proj-no-yaml", WorkDir: bare}})
+	if len(errs) != 1 {
+		t.Fatalf("expected 1 error, got %d: %v", len(errs), errs)
+	}
+
+	st := s.Status("proj-no-yaml")
+	if st.State != orchestrator.StatusDegraded {
+		t.Errorf("Status.State = %q, want %q", st.State, orchestrator.StatusDegraded)
+	}
+	if st.Message == "" {
+		t.Error("expected a non-empty degraded status message")
+	}
+}
+
+func runGitLocal(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %v: %v\n%s", args, err, out)
 	}
 }
 

@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 )
 
@@ -22,7 +24,48 @@ type ProjectStore struct {
 	// resolved against at GetWithWorkspace hydration time. Wired via
 	// SetHostCommands — see internal/server/wire.go's buildProjectStore.
 	hostCommands map[string]HostCommandSpec
+	// statuses tracks each project's in-memory health (docs/plans/
+	// volume-only-daemon.md §論点a: "status field ('ready'/'degraded' 相当)
+	// の in-memory ... 実装"). A project with no entry is implicitly "ready"
+	// (StatusReady is the zero value of ProjectStatus.State) — see Status's
+	// doc comment. This is intentionally NOT persisted to the DB (the plan
+	// doc calls out either choice as invariant-satisfying); it resets to
+	// "ready" for every project on daemon restart, which is fine because
+	// LoadAll re-derives it on every startup anyway.
+	statuses map[string]ProjectStatus
+	// reposRoot is <data_dir>/repos (docs/plans/volume-only-daemon.md §論点b
+	// layout), set via SetReposRoot. LoadAll uses it purely for a nicer
+	// degraded-status message: a project whose WorkDir falls outside this
+	// prefix AND fails to load as a bare repo is very likely a pre-cutover
+	// project registered against a host filesystem directory (the "移行
+	// path" §論点a describes), so it gets pointed at `boid project add
+	// <git-url>` instead of a generic parse/read error. Empty (the
+	// zero value) just skips that message upgrade — every other
+	// invariant-driven behavior (never hard-delete, always mark degraded)
+	// holds regardless of whether this was ever configured.
+	reposRoot string
 }
+
+// ProjectStatus is a project's in-memory health snapshot (docs/plans/
+// volume-only-daemon.md §論点a). See Status/MarkDegraded/MarkReady.
+type ProjectStatus struct {
+	// State is StatusReady or StatusDegraded.
+	State string
+	// Message explains why State is StatusDegraded (empty for StatusReady).
+	Message string
+}
+
+const (
+	// StatusReady means project.yaml loaded successfully and no
+	// fetch/load failure has been observed since (the zero value / default
+	// for any project with no statuses entry).
+	StatusReady = "ready"
+	// StatusDegraded means the project's row is preserved (per the
+	// on-startup-auto-prune-retirement invariant, docs/plans/
+	// volume-only-daemon.md §論点a) but its project.yaml/bare-repo could not
+	// be loaded — see ProjectStatus.Message for why.
+	StatusDegraded = "degraded"
+)
 
 // NewProjectStore creates a new store.
 func NewProjectStore() *ProjectStore {
@@ -30,6 +73,53 @@ func NewProjectStore() *ProjectStore {
 		metas:        make(map[string]*ProjectMeta),
 		workspaceIDs: make(map[string]string),
 	}
+}
+
+// SetReposRoot configures the daemon's bare-repo storage root, used by
+// LoadAll to recognize a legacy (pre-volume-only, host-filesystem) project
+// registration and upgrade its degraded-status message accordingly. See the
+// reposRoot field's doc comment.
+func (s *ProjectStore) SetReposRoot(dir string) {
+	s.mu.Lock()
+	s.reposRoot = dir
+	s.mu.Unlock()
+}
+
+// MarkDegraded records that projectID's project.yaml/bare-repo could not be
+// loaded, without touching its DB row or its (possibly still-cached) Meta —
+// this is the "エラー化 (status field で可視化)" half of docs/plans/
+// volume-only-daemon.md §論点a's on-startup-auto-prune-retirement invariant.
+// Overwrites any prior status for projectID.
+func (s *ProjectStore) MarkDegraded(projectID, message string) {
+	s.mu.Lock()
+	if s.statuses == nil {
+		s.statuses = make(map[string]ProjectStatus)
+	}
+	s.statuses[projectID] = ProjectStatus{State: StatusDegraded, Message: message}
+	s.mu.Unlock()
+}
+
+// MarkReady clears any degraded status for projectID (back to the implicit
+// "ready" default). Called automatically by Load/LoadBareRepo on a
+// successful load — most callers never need to call this directly; it is
+// exported for the rare caller that needs to clear a status without a full
+// reload (none exist yet, kept for symmetry with MarkDegraded).
+func (s *ProjectStore) MarkReady(projectID string) {
+	s.mu.Lock()
+	delete(s.statuses, projectID)
+	s.mu.Unlock()
+}
+
+// Status returns projectID's current health snapshot. A project with no
+// tracked status (never failed to load, or never registered at all) reports
+// {State: StatusReady}.
+func (s *ProjectStore) Status(projectID string) ProjectStatus {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if st, ok := s.statuses[projectID]; ok {
+		return st
+	}
+	return ProjectStatus{State: StatusReady}
 }
 
 // SetWorkspaceStore configures the workspace store used by GetWithWorkspace.
@@ -88,6 +178,25 @@ func (s *ProjectStore) Load(workDir string) (*ProjectMeta, error) {
 	s.mu.Lock()
 	s.metas[meta.ID] = meta
 	s.mu.Unlock()
+	s.MarkReady(meta.ID)
+	return meta, nil
+}
+
+// LoadBareRepo reads .boid/project.yaml from a daemon-managed bare git
+// repository's HEAD (docs/plans/volume-only-daemon.md §論点a/b) and stores
+// the meta in memory — the bare-repo counterpart to Load. Used both by
+// ProjectAppService.CreateProjectFromGitURL (first load right after a fresh
+// `git clone --bare`) and ProjectAppService.FetchProject (`boid project
+// fetch <id>`, reload after `git fetch --all`).
+func (s *ProjectStore) LoadBareRepo(bareRepoPath string) (*ProjectMeta, error) {
+	meta, err := ReadProjectMetaFromBareRepo(bareRepoPath)
+	if err != nil {
+		return nil, err
+	}
+	s.mu.Lock()
+	s.metas[meta.ID] = meta
+	s.mu.Unlock()
+	s.MarkReady(meta.ID)
 	return meta, nil
 }
 
@@ -300,21 +409,46 @@ func (s *ProjectStore) Remove(id string) {
 	s.mu.Unlock()
 }
 
-// LoadAll reads project.yaml for each registered project and records each
+// LoadAll reads project.yaml for each registered project — dispatching to
+// LoadBareRepo for a git-URL registered project (IsBareRepoDir) or Load for
+// a filesystem-checkout registered project (the pre-volume-only model,
+// still supported for `boid project init` — see docs/plans/
+// volume-only-daemon.md §論点a's migration-path note: existing dir-based
+// registrations are left alone, not auto-migrated) — and records each
 // project's workspaceID so that GetWithWorkspace can hydrate at call time.
 //
 // Per-project errors are returned in the original order. When the inner
 // error is a *ProjectMigrationError, the candidate's project ID is stamped
 // onto every Issue in the returned error so downstream callers (e.g. the
 // boid start parent picking issues out via errors.As) can drive
-// auto-migration without parsing strings. Non-migration errors retain the
-// legacy `project "<id>": <wrapped>` form.
+// auto-migration without parsing strings — this is the one case
+// internal/server/wire.go's buildProjectStore still treats as fail-fast.
+// Every OTHER per-project failure (missing dir, YAML parse error, corrupt
+// or unreachable bare repo, project.yaml missing from a bare repo's HEAD...)
+// is wrapped as *ProjectMissingError and, in addition to being returned
+// here, is recorded via MarkDegraded before this method returns — callers
+// no longer need a second pass to implement the docs/plans/
+// volume-only-daemon.md §論点a auto-prune-retirement invariant themselves;
+// LoadAll already leaves every failed candidate in the StatusDegraded state
+// with its DB row (and any previously cached Meta) untouched.
 func (s *ProjectStore) LoadAll(projects []*Project) []error {
+	s.mu.RLock()
+	reposRoot := s.reposRoot
+	s.mu.RUnlock()
+
 	var errs []error
 	for _, candidate := range projects {
-		if _, err := s.Load(candidate.WorkDir); err != nil {
+		var loadErr error
+		if IsBareRepoDir(candidate.WorkDir) {
+			_, loadErr = s.LoadBareRepo(candidate.WorkDir)
+		} else {
+			_, loadErr = s.Load(candidate.WorkDir)
+		}
+		if loadErr != nil {
 			s.Remove(candidate.ID)
-			errs = append(errs, wrapPerProjectLoadErr(candidate.ID, candidate.WorkDir, err))
+			wrapped := wrapPerProjectLoadErr(candidate.ID, candidate.WorkDir, loadErr)
+			s.MarkDegraded(candidate.ID, degradedMessageFor(candidate, wrapped, reposRoot))
+			errs = append(errs, wrapped)
 			continue
 		}
 		// Record workspace association (empty for unlinked projects).
@@ -325,21 +459,48 @@ func (s *ProjectStore) LoadAll(projects []*Project) []error {
 	return errs
 }
 
+// degradedMessageFor upgrades a generic load-failure message to the
+// docs/plans/volume-only-daemon.md §論点a migration-path guidance when the
+// project's WorkDir is neither a bare repo (LoadAll already ruled that out
+// via IsBareRepoDir before calling this) nor under the daemon's own
+// bare-repo storage root — i.e. it looks like a pre-cutover, host-filesystem
+// project registration. reposRoot empty (never configured — e.g. most
+// tests, which do not call SetReposRoot) skips the upgrade entirely; the
+// plain wrapped error text is still informative on its own.
+func degradedMessageFor(candidate *Project, wrapped error, reposRoot string) string {
+	if reposRoot != "" && !pathIsUnder(reposRoot, candidate.WorkDir) {
+		return fmt.Sprintf("legacy project registered from host dir %q; re-add via `boid project add <git-url> --workspace=<name>` (%v)", candidate.WorkDir, wrapped)
+	}
+	return wrapped.Error()
+}
+
+// pathIsUnder reports whether path is root itself or a descendant of it.
+func pathIsUnder(root, path string) bool {
+	rel, err := filepath.Rel(root, path)
+	if err != nil {
+		return false
+	}
+	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
 // wrapPerProjectLoadErr attaches the project ID to a per-project load
-// error. Three classifications:
+// error. Two classifications:
 //   - *ProjectMigrationError: schema migration is needed. Preserved as the
 //     typed error with ProjectID filled on each Issue so callers can drive
-//     auto-migration via errors.As.
-//   - fs.ErrNotExist (project.yaml missing): returned as
-//     *ProjectMissingError so the boid start parent / server wire can
-//     auto-prune the stale DB row instead of refusing startup.
-//   - everything else: wrapped with the legacy `project "<id>": <inner>`
-//     text. Parse errors, permission errors, etc. remain fail-fast because
-//     they can mask real config bugs.
+//     auto-migration via errors.As. This remains the one fail-fast case
+//     (internal/server/wire.go's buildProjectStore still refuses daemon
+//     startup for it) — everything else below is degrade-not-fail-fast.
+//   - everything else: returned as *ProjectMissingError (see that type's
+//     doc comment for why the name stayed even though its scope broadened
+//     well past "missing") so callers mark the project degraded — per
+//     docs/plans/volume-only-daemon.md §論点a's invariant, a missing dir, a
+//     YAML parse error, and a corrupt/unreachable bare repo are all handled
+//     identically: preserve the DB row, surface the failure via status, and
+//     let daemon startup continue.
 //
 // dir is the project work directory, used to populate
-// ProjectMissingError.Dir for diagnostics. It is ignored on the other two
-// branches.
+// ProjectMissingError.Dir for diagnostics. It is ignored on the migration
+// branch.
 func wrapPerProjectLoadErr(projectID, dir string, err error) error {
 	var migErr *ProjectMigrationError
 	if errors.As(err, &migErr) {
@@ -354,12 +515,9 @@ func wrapPerProjectLoadErr(projectID, dir string, err error) error {
 		}
 		return stamped
 	}
-	if errors.Is(err, os.ErrNotExist) {
-		return &ProjectMissingError{
-			ProjectID: projectID,
-			Dir:       dir,
-			Err:       err,
-		}
+	return &ProjectMissingError{
+		ProjectID: projectID,
+		Dir:       dir,
+		Err:       err,
 	}
-	return fmt.Errorf("project %q: %w", projectID, err)
 }
