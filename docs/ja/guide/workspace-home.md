@@ -38,16 +38,34 @@ claude CLI のインストールなど、workspace home 側に一度だけセッ
 
 ### 実行契約
 
-- **実行タイミング**: そのworkspace への最初の dispatch 時、および **`init.sh` の内容が
-  変わった時** (sha256 ハッシュで比較。完了マーカーは
-  `~/.local/share/boid/homes/<slug>.init.json` に書かれ、`$HOME` の外にあるためサンドボックスから
-  改竄できない)
+- **実行タイミング**: そのworkspace への最初の dispatch 時、**`init.sh` の内容が
+  変わった時** (sha256 ハッシュで比較)、および **workspace home 自体が初期化後に
+  空になった / 別物に入れ替わった時** (次項)。完了マーカーは
+  `~/.local/share/boid/homes-meta/<slug>.init.json` — workspace home ではなく **daemon 自身の
+  データ領域** (`boid.db` と同じディレクトリ) に書かれる。 job が `$HOME` として
+  マウントされるディレクトリの外なので、 **job が自分の `$HOME` 経由で触ることはできない**
+- **マーカーは単独では信用せず、実体と突合する**: 初期化に成功するたびに、
+  workspace home 内の `.boid-workspace-home-id` にランダムな識別トークンを書き、
+  同じ値をマーカーにも記録する。 初期化を skip するのは **script hash とこのトークンの
+  両方が一致したとき**だけ。 したがって「マーカーだけ残って home が消えた」状態
+  (home の置き場は daemon のデータ領域ほど永続とは限らない) では、次の dispatch は
+  空の `$HOME` で agent を走らせるのではなく `init.sh` を再実行する。
+  この突合が守るのは **workspace home が事故で消えた / 別物に置き換わったことの検出**
+  (ホスト再起動でのディレクトリ消失、volume の削除、古いバックアップからの復元など) であって、
+  job による意図的な細工ではない。 job はこのファイルを**読める**ので、値を控えたまま home の
+  中身を消して書き戻す、という細工までは防げない — home 自体が job の書き込み領域である以上
+  構造的に防げず、その場合の影響も「同じ workspace の次の job が壊れた home で走る」ことに
+  留まる (job は元々自分の home の中身を自由に消せる)。 一方、このファイルを消す・壊す・
+  別の種類のファイル (symlink や FIFO) に置き換えるといった操作で起きるのは
+  **余分な初期化が 1 回走ること**だけで (init.sh は冪等が契約なので無害)、
+  **boid 本体を止めることはできない** — boid はこのファイルを symlink として辿らず、
+  通常ファイルであることと 1 KiB 以下であることを確かめてから読む
 - **同時実行の直列化**: 同じ workspace への複数 job が同時に初回 dispatch されても、
   `init.sh` の実行は 1 回だけ (flock で直列化)。待つ側は完了を待ってから続行する
 - **実行環境**: ホスト側 (trusted) で `/bin/bash` により実行される。
   shebang 行は無視される。 **boid は `init.sh` を直接 exec せず、hash した bytes を
-  `~/.local/share/boid/homes/` 配下の一時ファイルにコピーしてから実行する** (symlink 経由の
-  TOCTOU 対策と、実行内容とマーカー hash の同一性を保証するため)。
+  `~/.local/share/boid/homes-meta/` 配下の一時ファイルにコピーしてから実行する** (symlink 経由の
+  TOCTOU 対策と、実行内容とマーカー hash の同一性を保証するため。 flock と同じディレクトリ)。
   そのため以下の制約がある:
   - `$0` は元の `init.sh` パスではなく一時ファイル path になる。 `dirname "$0"` から
     `~/.config/boid/workspaces/<slug>/` 配下の補助ファイルを参照する記述は動かない
@@ -178,9 +196,11 @@ workspace homes:
 - orphan を実際に片付けたい場合は**手動で直接削除する**:
   ```bash
   rm -rf ~/.local/share/boid/homes/<slug>/
-  rm -f ~/.local/share/boid/homes/<slug>.init.json
-  rm -f ~/.local/share/boid/homes/<slug>.lock
+  rm -f ~/.local/share/boid/homes-meta/<slug>.init.json
+  rm -f ~/.local/share/boid/homes-meta/<slug>.lock
   ```
+  (古い boid が作った `~/.local/share/boid/homes/<slug>.init.json` /
+  `.lock` が残っている場合もある。 現行 boid はこれを読まないので消しても消さなくてもよい)
   `boid workspace remove <slug>` は対応する DB row がないため 404 で失敗する
   (orphan の定義上、既に DB row は無いので)。 直接 rm するのが唯一の cleanup 経路
 - サイズ計算に失敗した場合は `?` と表示され、合計サイズの計算にも含まれない

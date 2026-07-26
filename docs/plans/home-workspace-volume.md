@@ -98,6 +98,14 @@ Phase 2.5 (workspace DB 一元化・kit 機構退役、
 - script が無い workspace は「初期化不要」として素通し (マーカーだけ打つ)
 - 完了マーカー・lock: `~/.local/share/boid/homes/<slug>.init.json` / `.lock`
   (**home ディレクトリの外**に置く。$HOME 内に置くと sandbox が改竄できてしまう)
+  → **置き場は変更済み**。 `workspace-home-volume-persistence.md` の論点b / PR2 で
+  `~/.local/share/boid/homes-meta/<slug>.{init.json,lock}` (= daemon 自身のデータ領域、
+  `boid.db` と同じ dir) に移設した。 「home ディレクトリの外」という要件は
+  **新旧どちらの置き場でも同じように満たされる** (移設の理由は改竄耐性ではなく、
+  PR6 で home が volume 化しても daemon が普通の file I/O + flock を保てること)。
+  なお PR2 は**マーカーが実体より長生きするようになった**副作用への対策として、
+  home 内に nonce (`.boid-workspace-home-id`) を書いてマーカーと突合する仕組みを併せて入れた。
+  「script が無い workspace はマーカーだけ打つ」場合も nonce は書かれる
 
 ---
 
@@ -106,11 +114,21 @@ Phase 2.5 (workspace DB 一元化・kit 機構退役、
 ```
 ~/.local/share/boid/
   homes/<slug>/            # workspace home 実体 (sandbox の $HOME に rw bind)
-  homes/<slug>.init.json   # 完了マーカー (script hash / boid version / 時刻)
-  homes/<slug>.lock        # init 直列化用 flock
+  homes/<slug>.init.json   # 完了マーカー → homes-meta/ へ移設済み (下記注記)
+  homes/<slug>.lock        # init 直列化用 flock → 同上
   skills/<name>/           # embedded skills の正本 (既存)
   runtimes/ worktrees/ kits/ ...  # 既存
 ```
+
+> **注記 (2026-07-26)**: marker / lock / init.sh 実行用一時ファイルは
+> `workspace-home-volume-persistence.md` PR2 で `homes-meta/<slug>.{init.json,lock}` に移った。
+> 由来する dir も変わっており、 `homes/` は runtimesDir 由来 (container backend では tmpfs)、
+> `homes-meta/` は daemon の永続データ root (実デプロイでは `dataHomeFor(cfg)` = `boid.db` の dir) 由来。
+> 旧 marker は読まれず削除もされないので、 upgrade 後の初回 dispatch で init.sh が 1 回だけ再実行される。
+>
+> **2 つの root の寿命が違う**ため、 同 PR で `homes/<slug>/.boid-workspace-home-id` (nonce) を
+> 追加した。 marker の `home_id` と一致しない限り初期化は skip されない
+> (= ホスト再起動で `homes/` だけ消えても、 残った marker を根拠に空の HOME で job が走ることはない)。
 
 - slug 検証は `ValidWorkspaceSlug` (`internal/orchestrator/workspace_slug.go:15`) を流用
 - `WorkspaceID == ""` (workspace 未割当 project) は `default` に正規化して

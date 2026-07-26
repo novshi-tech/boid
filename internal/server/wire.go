@@ -591,9 +591,39 @@ func hostVisibleRuntimesDirFor(cfg Config) string {
 
 // dataHomeFor returns the per-installation data root (typically
 // ~/.local/share/boid). It is the parent of runtimesDirFor and the place
-// where per-task data (e.g. tasks/<id>/attachments) lives. Empty when no
-// suitable on-disk path can be derived (DB is in-memory and no socket path
-// is configured) — callers should treat that as "feature disabled".
+// where per-task data (e.g. tasks/<id>/attachments), the bare-repo storage
+// root (orchestrator.ReposRoot) and the workspace home init bookkeeping
+// (dispatcher's homes-meta/) live.
+//
+// It is NOT simply "the directory boid.db lives in", despite that being the
+// only case that occurs in a real deployment. The full contract, in order:
+//
+//  1. filepath.Dir(cfg.DBPath) when the DB is a real file. This is the
+//     production answer, and under the volume-only compose deploy it is the
+//     `boid_state` named volume (build/container/compose.yml) — the same
+//     directory as web_secret / install_id / secret.key / tls/ / kits/ /
+//     skills/.
+//  2. filepath.Dir(cfg.SocketPath) when cfg.DBPath is empty or ":memory:".
+//     Test wiring, chiefly: an in-memory DB has no directory of its own, and
+//     the socket's parent is the only other on-disk root such a config
+//     names. Note that this is a DIFFERENT root from case 1 under the
+//     container deploy (it resolves under BOID_RUNTIME_DIR — see
+//     hostVisibleRuntimesDirFor), so a config that hits this branch does not
+//     get the persistence properties case 1 has.
+//  3. "" when neither is configured.
+//
+// Callers do not all read "" the same way, and both readings are deliberate:
+//
+//   - projectSvc.DataDir (attachments), webSecretPathFor's sibling logic and
+//     orchestrator.ReposRoot treat "" as "feature disabled" — there is no
+//     path to put the data at, so the feature simply does not operate.
+//   - dispatcher.WireConfig.DataHomeDir does not. dispatcher's
+//     workspaceHomeMetaDir falls back to the $XDG_DATA_HOME/ ~/.local/share
+//     convention when it receives "" (see its own doc comment), because a
+//     bare &dispatcher.Runner{} — the standard minimal test wiring — must
+//     still resolve marker/lock somewhere rather than failing dispatch. That
+//     fallback is why every package whose tests can reach Runner.Dispatch
+//     installs testutil/homeenv's TestMain isolation.
 func dataHomeFor(cfg Config) string {
 	if cfg.DBPath != "" && cfg.DBPath != ":memory:" {
 		return filepath.Dir(cfg.DBPath)
@@ -829,9 +859,30 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 		// freshly-loaded config.
 		AllowedDomains: cfg.AllowedDomains,
 		RuntimesDir:    runtimesRoot,
-		GitGateway:     srv.gatewayRegistry,
-		GatewayURL:     &srv.gatewayURL,
-		GatewayCAPEM:   &srv.gatewayCAPEM,
+		// DataHomeDir: deliberately dataHomeFor(cfg), NOT runtimesRoot
+		// (docs/plans/workspace-home-volume-persistence.md 論点b, PR2). The
+		// two are different roots since the volume-only pivot: runtimesRoot
+		// is host-visible but lives under BOID_RUNTIME_DIR (tmpfs — see
+		// hostVisibleRuntimesDirFor's own doc comment), whereas
+		// dataHomeFor(cfg) resolves — in a real deployment, where cfg.DBPath
+		// is a real file — to the `boid_state` volume that already holds
+		// boid.db / web_secret / install_id (see dataHomeFor's own doc
+		// comment for the in-memory-DB and empty cases, which only arise in
+		// test wiring). The workspace home init marker and lock are daemon
+		// bookkeeping that must outlive a host reboot and, from PR6 on, must
+		// stay reachable by ordinary file I/O once the homes themselves
+		// become named volumes — so they follow the DB, not the runtime dir.
+		// Same value passed to projectSvc.DataDir, the attachments root and
+		// orchestrator.ReposRoot elsewhere in this file.
+		//
+		// Giving the marker a different lifetime from the home it describes
+		// is precisely why resolveWorkspaceHome also stamps an identity into
+		// the home and refuses to trust a marker whose identity no longer
+		// matches — see workspaceHomeMarker.HomeID.
+		DataHomeDir:  dataHomeFor(cfg),
+		GitGateway:   srv.gatewayRegistry,
+		GatewayURL:   &srv.gatewayURL,
+		GatewayCAPEM: &srv.gatewayCAPEM,
 	})
 
 	// Sandbox backend construction (docs/plans/volume-only-daemon.md

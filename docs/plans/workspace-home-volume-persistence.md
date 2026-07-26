@@ -1,6 +1,6 @@
 # workspace HOME の named volume 化 (永続性退行の修復)
 
-**状態**: 設計 (2026-07-26 作成、実装未着手)
+**状態**: 実装中 (2026-07-26 作成。PR1 / PR2 landed、PR3 以降未着手)
 **発端**: 2026-07-26 volume-only dogfood
 **関連**: `home-workspace-volume.md` (Phase 4、破られた契約の出典) / `volume-only-daemon.md` (退行を持ち込んだ cutover) / `phase6-container-backend.md`
 
@@ -223,27 +223,109 @@ daemon は自分の volume なので普通の file I/O で扱え、flock もそ�
 注意: 現行の `acquireWorkspaceHomeLock` の flock 意味論をそのまま維持すること
 (PR #787 の TOCTOU fix — lock 取得後に script を再読込・再ハッシュする二重チェック)。
 
-**ただし marker と実体が別ライフサイクルになる副作用を潰すこと。** 現行は marker と home dir が
-同じ親ディレクトリにあり、揮発するときも同時だった。新設計では volume だけが消える状況が生じる
-(手動 `docker volume rm`、論点 a の reap 誤爆、workspace remove の半完了など)。そのとき次の
-dispatch は marker を見て init を skip し、**空の HOME で job が走る**。実際に出るエラーは
+**決定 (PR2 で確定・実装済み)**:
+
+| 項目 | 確定値 |
+|---|---|
+| 置き場 | `<dataHome>/homes-meta/<slug>.{init.json,lock}`。dir は 0700 で `MkdirAll`。`homes/` と対になる命名 (`grep` で対応関係が読める) |
+| `<dataHome>` の出所 | `internal/server/wire.go` の `dataHomeFor(cfg)`。実デプロイ (`cfg.DBPath` が実ファイル) では `filepath.Dir(cfg.DBPath)` で、`boid.db` / `web_secret` / `install_id` / `secret.key` / `tls/` / `kits/` / `skills/` と同じ dir、container デプロイでは `boid_state` volume の中。ただし `dataHomeFor` は**それだけの関数ではない**: DB が `:memory:` / 空なら `filepath.Dir(cfg.SocketPath)` に落ち、両方空なら `""` を返す (下段参照) |
+| `dataHomeFor` が `""` を返したとき | **`dataHomeFor` の空値の意味は呼び出し側ごとに違う**。attachments (`projectSvc.DataDir`) / `orchestrator.ReposRoot` は「feature disabled」と読むが、`WireConfig.DataHomeDir` は読まない — dispatcher 側の `workspaceHomeMetaDir` が `$XDG_DATA_HOME/boid` へ fallback する (下段)。`dataHomeFor` の doc comment は元々「callers should treat that as feature disabled」とだけ書いていて PR2 の新しい読み方と食い違っていたので、両方の読み方を明記するよう修正した |
+| **新設した配線 seam** | `dataHomeFor(cfg)` → `dispatcher.WireConfig.DataHomeDir` → `Runner.DataHomeDir` → `workspaceHomeMetaDir()`。**`Runner` は daemon の永続領域を知らなかった** (持っていたのは `RuntimesDir` だけ) ので、本 PR は「位置替えのみ」ではなく**配線が 1 本増える** |
+| bare `Runner{}` の fallback | `DataHomeDir` が空なら `workspaceDataHomeRoot()` = `$XDG_DATA_HOME/boid`。`WorkspaceHomesDir` が同じ理由で持っている fallback と同型。**ただしこの fallback は「実ユーザの `$HOME` を汚さない」保証にはならない** — 汚さないのは `internal/dispatcher` に `TestMain` があるからで、fallback 自体は ambient env を見るだけ。実際 `internal/server` は bare `&Runner{}` で `Dispatch` していて `TestMain` を持っていなかったため、`go test ./internal/server/` が実ユーザの `~/.local/share/boid/` を汚し、`~/.config/boid/workspaces/default/init.sh` を**実行**していた。対策は `testutil/homeenv` + 各 package の `TestMain` (後述) |
+| init.sh の一時ファイル | **`homes-meta` 側へ一緒に移す**。`runWorkspaceInitScript` の doc comment は「一時ファイルの置き場は lock-serialized」を TOCTOU 保証 (PR #787) の根拠にしているので、lock だけ移すとその前提が嘘になる |
+| 旧 marker | **移行も削除もしない**。読まないだけ。結果として upgrade 後の初回 dispatch で init.sh が 1 回だけ再実行される (init.sh は冪等が契約)。この一連の挙動は `TestResolveWorkspaceHome_LegacyMarkerBesideHomes_NotReadNotDeleted` で pin 済み |
+| `homes/` 側の残骸 | `ListWorkspaceHomeSizes` の `IsDir()` フィルタは**残す**。旧 marker / lock が残っている環境で workspace として誤検出しないため (テスト名を `..._IgnoresLegacyMarkerAndLockFiles` に改名し、意味を「同居ファイルの除外」から「レガシー残骸の除外」に更新) |
+| 改竄耐性の根拠 | 「home dir の**外**だから」は**新旧どちらの置き場でも成立する** (旧 `homes/<slug>.init.json` も mount の外) ので、移設の理由としては使わない。移設の理由は PR6 で home が volume 化しても daemon が普通の file I/O + flock を保てること。**「daemon の領域だから job から一切見えない」とは主張しない** — 下の「未解決」節の `boid_state` volume mount 参照 |
+| marker ↔ 実体の identity 突合 (nonce) | **本 PR に含める**。理由は下記 |
+| テスト隔離 | `testutil/homeenv` を新設し、`internal/dispatcher` / `internal/server` / `cmd` の `TestMain` を一本化。`homeenv.AssertIsolated` を各 package に常設ガードとして置く |
+
+**この PR で挙動が変わる点**: (a) marker / lock / init.sh 一時ファイルの**置き場**、
+(b) marker が **home の identity (nonce) を記録し、突合が取れないと init を再実行する**。
+(a) から派生して、旧 marker が読まれなくなるため upgrade 後 workspace ごとに init.sh が 1 回だけ再実行される
+(nonce を持たない marker も同じ扱いなので、この再実行は 1 回に統合される)。
+それ以外 (workspace HOME 実体の位置、init.sh の実行環境、flock の意味論) は不変。
+marker の JSON には `home_id` フィールドが 1 つ増える (`omitempty`、旧 marker は読めるまま)。
+なお `homes/` はこの時点でも `RuntimesDir` 由来のまま (= container backend では tmpfs) — volume 化は PR6。
+
+**marker と実体が別ライフサイクルになる副作用を、同じ PR で潰す。** 移設前は marker と home dir が
+同じ親ディレクトリにあり、揮発するときも同時だった。移設後は marker だけが生き残る状況が生じる。
+発生条件は PR6 を待たない — **PR2 の時点で既に成立している**:
+`homes/` は `RuntimesDir` 由来 = `BOID_RUNTIME_DIR` = tmpfs、`homes-meta/` は `boid_state` volume なので、
+**ホスト再起動のたびに「HOME だけ消えて marker が残る」**。PR6 以降はこれに加えて
+手動 `docker volume rm`、論点 a の reap 誤爆、workspace remove の半完了が乗る。
+そのとき次の dispatch は marker を見て init を skip し、**空の HOME で job が走る**。実際に出るエラーは
 adapter の「CLI not found」(`internal/adapters/claude/run.go:43`) で、これは init.sh 未整備を
-指す文面なので真因 (volume 消失) に誘導しない。
+指す文面なので真因 (HOME の消失) に誘導しない。
 
-対策として marker に volume の identity を持たせ、実体と突合してから skip する:
-init 時に volume 内へ nonce を書き marker にも記録する (VolumeInspect の CreatedAt でもよいが、
-engine 差が出る)。nonce を volume 内に置く方式は、marker を home の外に置いた元々の理由
-(`workspace_home.go:20-24` — sandbox からの改竄耐性) と両立するかを実装時に確認すること。
+対策: init 完了時に **home 内へ crypto/rand 由来の nonce ファイル
+(`<homeDir>/.boid-workspace-home-id`) を書き、同じ値を marker の `home_id` にも記録する**。
+skip 条件を「marker の hash が一致」から「**hash 一致 かつ nonce ファイルが存在し marker の記録と一致**」に変える。
+不一致・不在・`home_id` 無し (旧 build の marker) はすべて **fail-safe 側 = 再 init**。
 
-**nonce を書く主体は次節の prep ステップである** — init.sh を持たない workspace では
-init container が一度も走らないため、prep を条件付きにすると nonce の書き込み機会が無くなる。
+**nonce が検出できるもの / できないもの** (codex review 2 巡目で初版の記述を訂正):
+
+| | 内容 |
+|---|---|
+| **検出できる** | **事故による desync**。ホスト再起動での tmpfs 消失、`docker volume rm`、論点 a の reap 誤爆、workspace remove の半完了、別 incarnation のバックアップからの復元。いずれも nonce ファイルごと消える / 別物に置き換わるので、検出はこのクラスに対して完全に機能する。**これが nonce を入れた理由そのもの** (= marker と実体の寿命を分離したことの埋め合わせ) |
+| **検出できない** | **意図的な細工**。job は自分の `$HOME` 内の nonce を**読める**ので、値を控えたまま home の中身を消し、nonce だけ書き戻せば skip を誘発できる |
+
+初版はここを「job は marker 側 (自分の `$HOME` mount の外) を読めないので、skip を誘発する値を
+偽造できない」と書いていたが、**これは誤り**。marker を読む必要も偽造する必要もなく、
+自分の home にある nonce をそのまま replay すればよい。
+
+**意図的な細工に対しては防御しない。** これは構造的な限界であり、機構を足しても解決しない:
+nonce は home と同じ寿命を持つ必要があるので home 内に置くしかなく、home は job が rw で所有する。
+そこに置いた何であれ job には読めて書き戻せる。そして脅威モデル上の実害も小さい —
+この攻撃の成果は「同じ workspace の次の job が壊れた home で走る」ことだけで、
+**job は nonce の有無に関係なく今でも自分の home の中身を自由に消せる**。
+単一ユーザのパーソナルオーケストレータにおける自傷の範疇であり、nonce は事態を悪化させていない。
+
+**ただし daemon を巻き込ませてはいけない。** ここだけは自傷では済まず、別タスクの dispatch が
+巻き添えになる。これは nonce の「値」ではなく「読み方」の問題で、初版の `readWorkspaceHomeNonce` は
+素の `os.ReadFile` だったため、job が終了時に細工を残すだけで 2 経路の DoS が成立していた
+(codex review 2 巡目、Blocker):
+
+- nonce を **FIFO に置換** → 次の dispatch が `open(2)` で**無期限にブロック**する
+  (job の container が消えた後、書き手は永久に現れない)。再 init にすら到達しない
+- nonce を **`/dev/zero` 等への symlink** に置換 → daemon が OOM まで読み続ける
+
+対策として読み取りを `O_NOFOLLOW` (symlink を辿らない) + `O_NONBLOCK` (FIFO の open で待たない) +
+`fstat` による regular file 確認 + 1 KiB のサイズ上限に変更した。いずれかに引っかかったら
+**「nonce 無効」= 再 init** (fail-safe 方向は維持) とし、定常遷移ではないので `slog.Warn` を出す。
+`internal/skills/safe_deploy.go` の openat2 + `RESOLVE_NO_SYMLINKS` による全 component の
+再歩行までは採らない — あちらは job が差し替えられる**サブディレクトリ**に書くのに対し、
+こちらで攻撃者が制御できるのは最終 component だけ (その上は mount point 自身とその親で、
+job は自分の `$HOME` の中からそれらを rename できない) だから。
+テストは `TestReadWorkspaceHomeNonce_RejectsUnsafeFiles` /
+`TestResolveWorkspaceHome_NonceReplacedByFifo_DoesNotWedgeNextDispatch` /
+`TestResolveWorkspaceHome_NonceReplacedBySymlink_NotFollowed` で pin。
+
+**この読み取りを入れた上で初めて**「改竄の代償は冪等な init.sh の 1 回余分な実行だけ」という
+記述が真になる。以上の整理は `workspace_home.go` の `workspaceHomeNonceFileName` /
+`workspaceHomeMarker.HomeID` / `workspaceHomeInitialized` / `readWorkspaceHomeNonce` の
+doc comment にも同じ内容で書いてある。
+
+**nonce は init.sh の実行有無に関わらず書く。** Phase 4 の契約では script を持たない workspace も
+marker だけは打たれる (`home-workspace-volume.md:98`) ので、条件分岐させるとそのクラスにだけ
+突合が効かなくなる。PR5 で init.sh を container 実行に移す際は、この書き込みが
+次節の prep ステップに移る (prep を条件付きにしてはいけない理由も同じ)。
+
+**割り当てを PR5/PR6 から PR2 に前倒しした理由**: nonce は「marker と実体の寿命を分離した」ことの
+埋め合わせであり、**分離を行う PR がその埋め合わせを負う**のが筋。PR5/PR6 に置くと、
+上に書いたとおり PR2 landed 直後からホスト再起動のたびに窓が開き、PR6 まで開きっぱなしになる。
+初版は nonce を「volume の identity」と捉えていたため volume 化の PR に置いていたが、
+実際に必要なのは volume ではなく **home ディレクトリの incarnation の identity** で、
+これは PR2 の時点で既に必要になっている。
 
 ### 論点 b-2: volume prep ステップ (init.sh の有無に関わらず必ず 1 回走らせる)
 
 **volume 作成後、init.sh の有無に関わらず prep container を 1 回走らせる。** 仕事は 2 つ:
 
 1. **skeleton の mkdir** (`~/.claude`、`~/.claude/skills`、`~/.local/bin` など) を **uid 1000 で**作る
-2. **nonce の書き込み** (論点 b)
+2. **nonce の書き込み** (論点 b)。**nonce 機構そのものは PR2 で導入済み**なので、ここで新規に
+   設計するのではなく「daemon プロセスの `writeWorkspaceHomeNonce` による直接書き込み」を
+   「prep container 内での書き込み」に**移設する**のが PR5 の仕事になる。
+   marker 側 (`home_id`) は daemon の永続領域に残るので変わらない
 
 **1 が必要な理由 (実測)**: job container は `$HOME/.claude/skills` に skills を重ねる
 (論点 e-2)。このとき bind target が volume 内に存在しないと、**engine が中間パスを
@@ -437,11 +519,11 @@ uid mapping を理由に退けた engine bind が要る)。したがって「起
 | PR | 内容 | 挙動変化 | 依存 |
 |---|---|---|---|
 | 1 | **[landed]** volume 破壊経路 **7 つ**の封じ込め: 論点 e = (i) 採用 + `internal/dockerres` 新設 (label / prefix / 命名の単一出典) + `ensureNamedVolumes` の label 分離・warning 条件見直し・volume 名 validation + `reap.Run` の **2 本立て volume 列挙**・name 除外・`WorkspaceHomePolicy` + `boid reap --include-workspace-homes` 契約宣言 + `reapOrphanVolumes` の name/label 二重除外 (label は presence 判定) + dockerproxy policy の `boid-ws-` volume create/delete deny・**`/volumes/prune` deny**・**`Mounts[].Source` deny**・**`VolumesFrom` deny** + `dockerproxy.Reap` 側 name-prefix 除外 | sandbox 内 `docker volume prune` と `docker run --volumes-from` が 403 になる (それ以外は無し — 対象 volume がまだ存在しない) | — |
-| 2 | marker/lock を daemon 永続領域 (`boid_state`) へ移設 | 無し (位置替えのみ。旧 marker 消失は再 init で吸収) | — |
+| 2 | **[landed]** marker/lock **+ init.sh 実行用一時ファイル**を daemon 永続領域 (`boid_state` = `dataHomeFor(cfg)`) の `homes-meta/` へ移設。**`dataHomeFor(cfg)` → `WireConfig.DataHomeDir` → `Runner.DataHomeDir` の配線を 1 本新設** (`Runner` は永続領域を知らなかった)。**＋ 論点 b の nonce (marker `home_id` ↔ `<homeDir>/.boid-workspace-home-id` の突合) を同 PR で導入** (初版は PR5/PR6 に割り当てていた。移した理由は論点 b 参照)。**＋ nonce の読み取り安全化** (`O_NOFOLLOW` / `O_NONBLOCK` / regular file 確認 / 1 KiB 上限。job が nonce を FIFO や symlink に置換して daemon を止められた経路を塞ぐ — 論点 b 参照)。**＋ `testutil/homeenv` によるテスト隔離** (`internal/dispatcher` / `internal/server` / `cmd` の `TestMain`) | 置き場 + 突合。**旧 marker (置き場も `home_id` も違う) は読まないので upgrade 後 workspace ごとに init.sh が 1 回だけ再実行される** (冪等前提で吸収)。旧 marker の削除はしない。以後は **HOME が消えれば marker があっても再 init される** | — |
 | 3 | skills の materialize 先を host-visible runtime dir へ + `$HOME/.claude/skills` へ RO overlay | 無し (現行の host bind HOME でも同じく機能する) | — |
 | 4 | `WorkspaceSlug` を独立に thread する (`runner.go:724` の `filepath.Base` 依存を切る) | 無し | — |
-| 5 | init.sh + prep を使い捨て container 実行へ (network / stdin / 多重実行防止 / prep skeleton + nonce)。**この時点では現行の host-visible homes dir を engine bind して検証する** | init.sh の実行環境が変わる | 3 |
-| 6 | **[不可分コア]** `resolveWorkspaceHome` を volume ベースへ + `homeMounts` の volume 化 + nonce 突合 + 契約 doc 更新 | **workspace HOME が volume になる** | 1,2,4,5 |
+| 5 | init.sh + prep を使い捨て container 実行へ (network / stdin / 多重実行防止 / prep skeleton + **nonce 書き込みの移設**: 機構は PR2 で入っているので、書く主体を daemon プロセスから prep container に移すだけ)。**この時点では現行の host-visible homes dir を engine bind して検証する** | init.sh の実行環境が変わる | 3 |
+| 6 | **[不可分コア]** `resolveWorkspaceHome` を volume ベースへ + `homeMounts` の volume 化 + 契約 doc 更新 (nonce 突合は PR2 で導入済み。ここでは nonce の読み書きが volume 越しになることの確認のみ) | **workspace HOME が volume になる** | 1,2,4,5 |
 | 7 | workspace remove 連動の削除・サイズ可視化・orphan 検出を volume API へ rewiring (論点 a-2) | | 6 |
 | 8 | 既存 homes の移行 CLI (`boid workspace import-home`、uid mapping を跨ぐ tar stdin) | | 6 |
 | 9 | init.sh の CLI 経路 (export/import の `init_script` + 専用 CLI) | | — (独立) |
@@ -478,5 +560,21 @@ label / reap 側の封じ込めに置き換えた。
 - **`boid web set-addr` / `set-url` の撤去** (dogfood で判明した silent no-op、
   `scopeLocal` のまま host の config.yaml を書いて成功表示する)
 - **`notify.command` の host path 依存** (`/home/nosen/.local/bin/ntfy.sh` が container 内に無い)
+- **`capabilities.docker` を持つ job から daemon の state volume が mount できる**。
+  compose デプロイでは daemon の永続領域は `boid_state` named volume
+  (compose project prefix 込みで `boid_boid_state`) で、`/home/boid` 全体にマウントされている。
+  dockerproxy policy の volume 判定 (`dockerres.IsReservedVolumeName`) は
+  **`boid-ws-` prefix しか予約していない**ので、job は
+  `{"Type":"volume","Source":"boid_boid_state","Target":"/state"}` を mount した
+  sibling container を作れる。読めるのは workspace home の init marker どころではなく
+  **`secret.key` / `boid.db` / `tls/ca.key` / `web_secret` / `install_id` 一式**である。
+  PR1 が塞いだのは「job が *workspace HOME volume* を壊す」経路であって、
+  「job が *daemon 自身の state volume* を読む」経路ではない。
+  **PR2 より前から存在し、PR2 の範囲を超えるので本 PR では塞いでいない。**
+  したがって「marker は daemon の領域にあるから job から一切見えない」という主張は成立せず、
+  `workspace_home.go` の doc comment も正確な範囲 (「job 自身の `$HOME` mount 経由では触れない」)
+  に書き直してある。対策の方向としては予約 prefix を daemon の state volume 名まで広げる、
+  あるいは volume mount source を allowlist 方式に反転させる等が考えられるが、
+  **`capabilities.docker` の脅威モデル全体を見直す別件**として扱う
 - k8s (Phase 7) での PersistentVolumeClaim への読み替え。named volume 前提の設計は
   そのまま PVC に対応付くはずだが、本 doc では扱わない

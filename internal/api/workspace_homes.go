@@ -121,9 +121,19 @@ func computeWorkspaceHomeSize(runtimesDir, slug string) WorkspaceHomeSize {
 
 // ListWorkspaceHomeSizes enumerates every directory under runtimesDir's
 // sibling homes/ directory (docs/plans/home-workspace-volume.md's layout:
-// homes/<slug>/, alongside sibling homes/<slug>.init.json and
-// homes/<slug>.lock files that os.ReadDir's IsDir() filter excludes), and
-// reports each one's size. Unlike computeWorkspaceHomeSize's single-slug
+// homes/<slug>/) and reports each one's size.
+//
+// os.ReadDir's IsDir() filter below is what keeps non-directory entries out
+// of the listing. Current daemons no longer put any there: the init
+// completion marker and the init lock moved to the daemon's own data root,
+// <dataHome>/homes-meta/<slug>.{init.json,lock}, in PR2 of
+// docs/plans/workspace-home-volume-persistence.md (論点b). The filter stays
+// because PR2 deliberately leaves the copies an older daemon wrote to
+// homes/<slug>.init.json and homes/<slug>.lock in place — every upgraded
+// installation still has them sitting next to its homes, and mistaking one
+// for a workspace would report a bogus (and, via Orphan, alarming) entry.
+//
+// Unlike computeWorkspaceHomeSize's single-slug
 // lookup (driven by an already-known, already-validated slug), this walks
 // the directory itself — so it also surfaces home directories with no
 // corresponding workspace row at all ("orphans": docs/plans/

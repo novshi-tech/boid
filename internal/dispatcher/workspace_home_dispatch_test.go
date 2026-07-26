@@ -179,9 +179,18 @@ func TestDispatch_ProjectLookupError_FailsLoudBeforeWorkspaceHomeInit(t *testing
 
 	// No workspace home directory should have been created for the default
 	// slug (or any slug) — the dispatch must fail before resolveWorkspaceHome
-	// ever runs.
-	homesDir := filepath.Join(os.Getenv("XDG_DATA_HOME"), "boid", "homes")
-	if entries, statErr := os.ReadDir(homesDir); statErr == nil && len(entries) != 0 {
-		t.Errorf("homesDir %s should be empty (resolveWorkspaceHome must not run after a resolveProjectRuntime error), got %v", homesDir, entries)
+	// ever runs. Both of resolveWorkspaceHome's roots are checked: since PR2
+	// (docs/plans/workspace-home-volume-persistence.md 論点b) the completion
+	// marker and the init lock live under homes-meta/, not beside the homes,
+	// so asserting homes/ alone would keep passing while no longer proving
+	// that resolveWorkspaceHome never ran.
+	dataHome := filepath.Join(os.Getenv("XDG_DATA_HOME"), "boid")
+	for _, dir := range []string{
+		filepath.Join(dataHome, "homes"),
+		filepath.Join(dataHome, "homes-meta"),
+	} {
+		if entries, statErr := os.ReadDir(dir); statErr == nil && len(entries) != 0 {
+			t.Errorf("%s should be empty (resolveWorkspaceHome must not run after a resolveProjectRuntime error), got %v", dir, entries)
+		}
 	}
 }
