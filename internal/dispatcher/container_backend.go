@@ -564,6 +564,30 @@ func ContainerBackendBrokerTLS(be backend.SandboxBackend) (addr string, hasCA bo
 	return addr, cb.brokerTLSCA != nil, true
 }
 
+// ContainerBackendUsesDockerAPI reports whether be is a *containerBackend
+// whose engine handle IS api — pointer identity, not merely "both are
+// non-nil docker clients". Same external-package introspection rationale as
+// ContainerBackendUIDGID/ContainerBackendBrokerTLS.
+//
+// It exists because the wiring test for [round 2 Major 2, codex review
+// 2026-07-26] could not state its own claim from internal/server [round 3
+// Minor 2]: buildRuntime must hand the container backend and the
+// daemon-state-volume self-inspection (DetectDaemonStateVolumes) THE SAME
+// client.New(client.FromEnv) result, and asserting only that each got some
+// non-nil *client.Client passes just as happily on a regression that builds
+// two — which is exactly the shape round 2 removed, and exactly the shape (a
+// second synchronous DOCKER_CERT_PATH read on the startup path) whose cost is
+// invisible until a wedged filesystem hangs `boid start`. A nil api never
+// matches, so the helper cannot report a shared handle where neither side has
+// one.
+func ContainerBackendUsesDockerAPI(be backend.SandboxBackend, api any) bool {
+	cb, isContainer := be.(*containerBackend)
+	if !isContainer || api == nil || cb.api == nil {
+		return false
+	}
+	return cb.api == api
+}
+
 // formatIntPtr renders a *int for logging: "<unset>" for nil, the decimal
 // value otherwise. Used by NewContainerBackend's uid/gid rejection warning
 // so the log line shows the caller's actual (possibly nil) input rather

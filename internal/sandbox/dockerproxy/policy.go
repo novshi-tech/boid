@@ -23,6 +23,94 @@ type Verdict struct {
 func allow() Verdict             { return Verdict{Allow: true} }
 func deny(reason string) Verdict { return Verdict{Allow: false, Reason: reason} }
 
+// ReservedVolumes is the set of docker volume names a sandboxed client may
+// neither create, delete, nor mount. It has two halves and they are ADDITIVE,
+// never alternatives:
+//
+//   - dockerres.IsReservedVolumeName — the static "boid-ws-" namespace boid
+//     names itself and can therefore recognize without asking anyone (PR1,
+//     docs/plans/workspace-home-volume-persistence.md 論点 a).
+//   - names, the set discovered at daemon startup by inspecting the daemon's
+//     OWN container (internal/dispatcher.DetectDaemonStateVolumes). These
+//     cannot be recognized by shape: under the compose deploy the daemon's
+//     entire persistent state lives in a volume the COMPOSE PROJECT names
+//     ("boid_boid_state" — build/container/compose.yml's `name: boid` plus the
+//     `boid_state` key), so boid does not choose the string and cannot pattern
+//     match it. It shares no prefix with anything boid generates, which is
+//     exactly why PR1's prefix rule left the single highest-value volume in
+//     the deployment — boid.db, secret.key, tls/ca.key, web_secret, install_id
+//     — mountable from inside any `capabilities.docker` job.
+//
+// Two cheaper-looking alternatives were considered and rejected by the owner
+// (2026-07-26): denying a blanket "boid_"/"boid-" prefix (misfires on an
+// operator's own `boid_myapp` volume, and stops protecting anything the
+// moment the compose project is renamed), and denying every mount whose
+// volume is not in the job's own ledger (the tightest rule available, but it
+// breaks legitimate sibling use such as testcontainers reusing a fixture
+// volume).
+//
+// The zero value is valid and means "static prefix only" — the exact pre-PR
+// behavior. That is deliberate: bare `boid start` has no state volume to
+// protect, and a detection failure must not silently swap one rule for
+// another (see TestZeroReservedVolumes_behavesExactlyLikePR1).
+type ReservedVolumes struct {
+	// names is the runtime half. Kept unexported and only ever built by
+	// NewReservedVolumes so a caller cannot mutate a Server's live policy
+	// input after startup — CheckRequest's purity depends on this value
+	// being fixed before the first request, not on it being immutable Go.
+	names map[string]struct{}
+}
+
+// NewReservedVolumes captures names as the runtime half of the reserved set.
+// Empty/blank entries are dropped: an empty Source or Name is how a client
+// spells "anonymous volume", and reserving "" would deny every one of those.
+func NewReservedVolumes(names []string) ReservedVolumes {
+	if len(names) == 0 {
+		return ReservedVolumes{}
+	}
+	set := make(map[string]struct{}, len(names))
+	for _, n := range names {
+		if n == "" {
+			continue
+		}
+		set[n] = struct{}{}
+	}
+	if len(set) == 0 {
+		return ReservedVolumes{}
+	}
+	return ReservedVolumes{names: set}
+}
+
+// IsReserved reports whether a sandboxed docker client is forbidden from
+// naming this volume, for any of create / delete / mount.
+//
+// Exact string match on the runtime half, no prefix semantics: the names come
+// from the engine's own answer about this very container, so there is nothing
+// to generalize from and every generalization ("anything starting with the
+// compose project name") is a way to catch an operator's unrelated volume.
+func (r ReservedVolumes) IsReserved(name string) bool {
+	if dockerres.IsReservedVolumeName(name) {
+		return true
+	}
+	_, ok := r.names[name]
+	return ok
+}
+
+// explain returns a parenthetical naming WHY the volume is reserved, appended
+// to the deny reason. The two halves fail for genuinely different reasons and
+// an operator staring at a 403 needs to tell them apart: "you tried to touch
+// another workspace's HOME" is a very different report from "you tried to
+// mount the daemon's own secrets". Empty for the static half, whose existing
+// message ("reserved by boid") is unchanged so PR1's tests still describe the
+// behavior they were written for.
+func (r ReservedVolumes) explain(name string) string {
+	if _, ok := r.names[name]; ok {
+		return " — it is this boid daemon's own state volume (boid.db, secret.key," +
+			" the internal mTLS CA and the web session key live in it)"
+	}
+	return ""
+}
+
 // apiVersionRe matches /v<major>.<minor> prefix.
 var apiVersionRe = regexp.MustCompile(`^/v\d+\.\d+(/.*)?$`)
 
@@ -56,7 +144,18 @@ func stripVersion(path string) string {
 // `docker run -P`, ...) to publish a port to the host, and denying it
 // unconditionally (the pre-fix behavior) would silently turn every one of
 // those existing userns hooks into a 403.
-func CheckRequest(method, path string, body []byte, denyHostPortPublish bool) Verdict {
+//
+// reserved is the volume-name set the three name-dependent branches below
+// consult (POST /volumes/create's Name, DELETE /volumes/{name}, and
+// POST /containers/create's HostConfig.Mounts[].Source). It is a plain VALUE
+// computed once at daemon startup and handed in, never a callback or an
+// engine handle: this function stays a pure function of its arguments so it
+// remains auditable and so no policy decision can depend on a live query
+// whose answer could change (or hang) mid-request. See ReservedVolumes for
+// what goes in it and why the daemon's own state volume cannot be recognized
+// by shape the way the "boid-ws-" namespace can. The zero value reproduces
+// the pre-existing behavior exactly.
+func CheckRequest(method, path string, body []byte, denyHostPortPublish bool, reserved ReservedVolumes) Verdict {
 	bare := stripVersion(path)
 	method = strings.ToUpper(method)
 
@@ -67,7 +166,7 @@ func CheckRequest(method, path string, body []byte, denyHostPortPublish bool) Ve
 
 	// Explicit allow-list for mutating endpoints that don't need body inspection.
 	// Everything not listed here is fail-closed (deny).
-	if isAllowedMutating(method, bare) {
+	if isAllowedMutating(method, bare, reserved) {
 		return allow()
 	}
 
@@ -78,7 +177,7 @@ func CheckRequest(method, path string, body []byte, denyHostPortPublish bool) Ve
 	if method == "DELETE" && matchesPattern(bare, "/volumes/*") {
 		// Reaching here means isAllowedMutating's own name check refused it.
 		_, name := scopeTarget(bare)
-		return deny(fmt.Sprintf("volumes/delete: volume name %q is reserved by boid", name))
+		return deny(fmt.Sprintf("volumes/delete: volume name %q is reserved by boid%s", name, reserved.explain(name)))
 	}
 	if method == "POST" && bare == "/volumes/prune" {
 		// The fifth destruction path, and the only one that cannot be
@@ -96,7 +195,7 @@ func CheckRequest(method, path string, body []byte, denyHostPortPublish bool) Ve
 	if method == "POST" {
 		switch {
 		case bare == "/containers/create":
-			return checkContainersCreate(body, denyHostPortPublish)
+			return checkContainersCreate(body, denyHostPortPublish, reserved)
 		case matchesPattern(bare, "/containers/*/exec"):
 			return checkExecCreate(body)
 		case matchesPattern(bare, "/containers/*/start"):
@@ -104,7 +203,7 @@ func CheckRequest(method, path string, body []byte, denyHostPortPublish bool) Ve
 		case bare == "/networks/create":
 			return checkNetworksCreate(body)
 		case bare == "/volumes/create":
-			return checkVolumesCreate(body)
+			return checkVolumesCreate(body, reserved)
 		case bare == "/build" || bare == "/session":
 			return deny("image build is not permitted")
 		}
@@ -122,7 +221,14 @@ func CheckRequest(method, path string, body []byte, denyHostPortPublish bool) Ve
 // POST /volumes/prune is gone entirely, and DELETE /volumes/{name} moved out
 // of the pattern list into a name-dependent branch. CheckRequest turns both
 // refusals into an explicit deny reason.
-func isAllowedMutating(method, bare string) bool {
+//
+// reserved is threaded in (rather than the DELETE branch calling
+// dockerres.IsReservedVolumeName directly, as it did in PR1) so the static
+// namespace and the runtime-detected daemon state volume are consulted
+// through ONE predicate. A second, independently-maintained call site is how
+// the two halves drift apart — see internal/dockerres' package doc for the
+// failure mode that whole package exists to prevent.
+func isAllowedMutating(method, bare string, reserved ReservedVolumes) bool {
 	switch method {
 	case "POST":
 		return matchesAny(bare,
@@ -158,7 +264,7 @@ func isAllowedMutating(method, bare string) bool {
 			// therefore off limits; scopeTarget already does this extraction
 			// for the ledger scope check.
 			_, name := scopeTarget(bare)
-			return !dockerres.IsReservedVolumeName(name)
+			return !reserved.IsReserved(name)
 		}
 		// Networks are deliberately NOT subject to the reserved-name rule
 		// even though boid's own per-workspace network names share the
@@ -278,6 +384,13 @@ type mountSpec struct {
 	// (nothing is created, nothing is deleted) while the credentials and
 	// toolchain inside it are gone.
 	//
+	// This is also the branch that closes the daemon's OWN state volume
+	// (docs/plans/workspace-home-volume-persistence.md, "未解決" → resolved):
+	// mounting it needs no write access at all, so the other two name paths
+	// (create/delete) were never what stood between a `capabilities.docker`
+	// job and `cat /state/.local/share/boid/secret.key`. See ReservedVolumes
+	// for why that name has to be discovered at runtime rather than matched.
+	//
 	// Why the check ignores Type rather than firing only on
 	// strings.ToLower(Type)=="volume": the policy would otherwise have to
 	// model the engine's own Type normalization exactly — what an omitted
@@ -330,7 +443,7 @@ func readBody(body []byte) ([]byte, bool) {
 	return b, true
 }
 
-func checkContainersCreate(body []byte, denyHostPortPublish bool) Verdict {
+func checkContainersCreate(body []byte, denyHostPortPublish bool, reserved ReservedVolumes) Verdict {
 	b, ok := readBody(body)
 	if !ok {
 		return deny("body exceeds maximum size limit")
@@ -358,8 +471,9 @@ func checkContainersCreate(body []byte, denyHostPortPublish bool) Verdict {
 
 	for _, m := range hc.Mounts {
 		// Type-independent by design — see mountSpec.Source's doc comment.
-		if dockerres.IsReservedVolumeName(m.Source) {
-			return deny(fmt.Sprintf("HostConfig.Mounts: mount source %q is reserved by boid", m.Source))
+		if reserved.IsReserved(m.Source) {
+			return deny(fmt.Sprintf("HostConfig.Mounts: mount source %q is reserved by boid%s",
+				m.Source, reserved.explain(m.Source)))
 		}
 		switch strings.ToLower(m.Type) {
 		case "bind":
@@ -485,7 +599,7 @@ func checkNetworksCreate(body []byte) Verdict {
 	return allow()
 }
 
-func checkVolumesCreate(body []byte) Verdict {
+func checkVolumesCreate(body []byte, reserved ReservedVolumes) Verdict {
 	b, ok := readBody(body)
 	if !ok {
 		return deny("body exceeds maximum size limit")
@@ -500,8 +614,9 @@ func checkVolumesCreate(body []byte) Verdict {
 	// Reserved namespace: see volumesCreateBody.Name's doc comment. An empty
 	// Name is an anonymous volume — docker generates the id, so it can never
 	// collide with boid's.
-	if dockerres.IsReservedVolumeName(req.Name) {
-		return deny(fmt.Sprintf("volumes/create: volume name %q is reserved by boid", req.Name))
+	if reserved.IsReserved(req.Name) {
+		return deny(fmt.Sprintf("volumes/create: volume name %q is reserved by boid%s",
+			req.Name, reserved.explain(req.Name)))
 	}
 	// DriverOpts with device= or o=bind is a host bind mount via local driver (system 3).
 	if _, hasDevice := req.DriverOpts["device"]; hasDevice {

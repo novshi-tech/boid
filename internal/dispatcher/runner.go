@@ -186,7 +186,28 @@ type Runner struct {
 	// install testutil/homeenv's TestMain isolation or it will operate on the
 	// developer's real boid installation.
 	DataHomeDir string
-	JobEvents   JobEventSink // optional; nil disables job lifecycle broadcasts
+	// ReservedVolumeNames is the set of docker volume names startDockerProxy
+	// injects into every per-job dockerproxy's policy, on top of the static
+	// "boid-ws-" namespace that always applies
+	// (dockerproxy.Server.SetReservedVolumeNames).
+	//
+	// Production wiring (internal/server/wire.go's buildRuntime) fills this
+	// with the named volumes the daemon found mounted into its OWN container
+	// at startup — under the compose deploy, `boid_boid_state`, which holds
+	// boid.db / secret.key / tls/ca.key / web_secret / install_id. That name
+	// is chosen by the compose project, not by boid, so it matches no prefix
+	// rule and had to be discovered: see DetectDaemonStateVolumes.
+	//
+	// Captured once at Runner construction, exactly like AllowedDomains: the
+	// answer cannot change without the daemon container itself being
+	// recreated, at which point this process is gone too.
+	//
+	// nil is valid and is the correct value for every deployment where the
+	// daemon is NOT in a container (bare `boid start` — no state volume
+	// exists to name) as well as for test wiring. It leaves the policy
+	// behaving exactly as it did before this field existed.
+	ReservedVolumeNames []string
+	JobEvents           JobEventSink // optional; nil disables job lifecycle broadcasts
 
 	// GitGateway is the git gateway's job-token registry
 	// (docs/plans/git-gateway-cutover.md PR4: gateway lifecycle + dispatch
@@ -1021,6 +1042,13 @@ func (r *Runner) startDockerProxy(runtimeID string) (*dockerProxyState, error) {
 
 	ledger := dockerproxy.NewLedger(ledgerPath)
 	proxy := dockerproxy.NewWithLedger(upstream, ledger)
+	// Daemon state volume containment: refuse this job's docker client the
+	// volumes the daemon itself is mounted on (see Runner.ReservedVolumeNames
+	// and DetectDaemonStateVolumes). Set BEFORE Serve below — the policy input
+	// must be fixed before the first request can arrive, not updated live.
+	// A nil/empty slice is a no-op, which is the correct behavior for every
+	// non-containerized daemon.
+	proxy.SetReservedVolumeNames(r.ReservedVolumeNames)
 	go func() {
 		if err := proxy.Serve(ln); err != nil {
 			slog.Debug("docker proxy serve ended", "runtime_id", runtimeID, "error", err)

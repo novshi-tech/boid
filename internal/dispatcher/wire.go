@@ -69,6 +69,14 @@ type WireConfig struct {
 	// unlike dataHomeFor's other consumers, which do read "" as "feature
 	// disabled".
 	DataHomeDir string
+	// ReservedVolumeNames is threaded straight to Runner.ReservedVolumeNames
+	// (see its doc comment): the docker volume names a sandboxed docker
+	// client may not create, delete or mount, discovered at daemon startup by
+	// inspecting the daemon's own container. server/wire.go passes
+	// dispatcher.DetectDaemonStateVolumes' result. nil — every non-container
+	// deployment and all test wiring — leaves the dockerproxy policy exactly
+	// as it was before this field existed.
+	ReservedVolumeNames []string
 	// GitGateway is the git gateway's job-token registry
 	// (docs/plans/git-gateway-cutover.md PR4). nil disables gateway token
 	// registration entirely.
@@ -104,6 +112,7 @@ func Wire(cfg WireConfig) *Runner {
 		AllowedDomains:       cfg.AllowedDomains,
 		RuntimesDir:          cfg.RuntimesDir,
 		DataHomeDir:          cfg.DataHomeDir,
+		ReservedVolumeNames:  cfg.ReservedVolumeNames,
 		GitGateway:           cfg.GitGateway,
 		GatewayURL:           cfg.GatewayURL,
 		GatewayCAPEM:         cfg.GatewayCAPEM,

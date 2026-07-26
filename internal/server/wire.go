@@ -361,12 +361,29 @@ func buildProjectLoadStartupError(errs []error) error {
 // the sandbox.backend config option that used to select between the two
 // were removed outright, so there is no branch left here, only construction.
 //
-// It wires a real docker client (github.com/moby/moby/client —
+// dockerClient is passed IN rather than built here, and the difference is
+// load-bearing rather than stylistic [round 2 Major 2, codex review
+// 2026-07-26]. The daemon-state-volume self-inspection
+// (dispatcher.DetectDaemonStateVolumes) needs a docker client too, and when it
+// built its own there were two constructions on the startup path. Two costs
+// followed: a self-inspect that could fail on its own on a deployment whose
+// backend is perfectly healthy — reported as an error the caller then had to
+// be careful not to drop — and, less obviously, a second SYNCHRONOUS read of
+// DOCKER_CERT_PATH's ca.pem/cert.pem/key.pem, which client.New(client.FromEnv)
+// performs eagerly (moby client_options.go's WithTLSClientConfigFromEnv). That
+// read is not interruptible by any context, so a wedged filesystem behind
+// DOCKER_CERT_PATH would hang `boid start` inside a feature whose entire
+// design is "warn and continue". buildRuntime now makes exactly one client and
+// hands it to both, which puts that read back where it already was: a
+// precondition of the container backend itself, which every release since the
+// volume-only cutover has had.
+//
+// The client is real (github.com/moby/moby/client —
 // client.New(client.FromEnv) does not dial the docker daemon eagerly; it
 // only resolves DOCKER_HOST/DOCKER_* env and builds the HTTP client
-// config, so this never fails just because docker is unreachable at
+// config, so constructing it never fails just because docker is unreachable at
 // daemon-boot time — the same lazy-connect behavior cmd/reap.go's
-// runReap already relies on) into a fresh containerBackend, carrying this
+// runReap already relies on). It carries this
 // installation's install_id (§決定6 resource labeling) and the
 // host-visible runtimes directory (so `boid job log`'s transcript spool —
 // §PR7's transcript persistence — and the per-job dockerproxy TLS
@@ -407,11 +424,7 @@ func buildProjectLoadStartupError(errs []error) error {
 // existing "feature disabled" contract (see its own doc comment), so this
 // is a pure additive parameter, not a behavior change for anyone who leaves
 // it nil.
-func sandboxBackendForConfig(installID, runtimeDir string, brokerTLSCA *mtls.CA, brokerTLSAddr *string) (backend.SandboxBackend, error) {
-	dockerClient, err := client.New(client.FromEnv)
-	if err != nil {
-		return nil, fmt.Errorf("connect to docker: %w", err)
-	}
+func sandboxBackendForConfig(dockerClient *client.Client, installID, runtimeDir string, brokerTLSCA *mtls.CA, brokerTLSAddr *string) backend.SandboxBackend {
 	// UID/GID (PR9, §決定4 — "job container は `--user <daemon uid>:<gid>`
 	// で非 root 起動"): os.Getuid()/os.Getgid() are the DAEMON's own actual
 	// runtime uid/gid — under compose these are whatever `user:
@@ -457,7 +470,126 @@ func sandboxBackendForConfig(installID, runtimeDir string, brokerTLSCA *mtls.CA,
 		SelfContainerID: os.Getenv("HOSTNAME"),
 		BrokerTLSCA:     brokerTLSCA,
 		BrokerTLSAddr:   brokerTLSAddr,
-	}), nil
+	})
+}
+
+// detectDaemonStateVolumesFn is the package-level indirection that lets
+// reservedDaemonStateVolumes' CALLER be tested without a container or an
+// engine — the same DI shape as internal/api/workspace_homes.go's
+// apparentSizeFn and internal/dispatcher's daemonUID. The detection internals
+// have their own seams one layer down (dispatcher's readSelfMountInfo /
+// readSelfCgroup). Production never reassigns it.
+//
+// It is a bare alias for dispatcher.DetectDaemonStateVolumes and deliberately
+// carries no logic of its own [round 2 Major 2, codex review 2026-07-26]. It
+// used to construct a docker client here first, which put an engine-shaped
+// failure IN FRONT of the engine-independent classification: a client that
+// failed to build returned a zero DaemonStateVolumes — StateVolumeExpected
+// false, i.e. the one value that means "nothing to protect, stay silent" —
+// alongside a real error the caller then read second and discarded. A daemon
+// with an unreadable DOCKER_CERT_PATH or a malformed DOCKER_HOST started with
+// containment off and logged nothing at all, which is precisely the failure
+// mode this whole feature exists to eliminate. buildRuntime now builds the one
+// docker client (shared with the container backend, see
+// sandboxBackendForConfig) and passes it in, so nothing between the caller and
+// the classification can fail.
+var detectDaemonStateVolumesFn = dispatcher.DetectDaemonStateVolumes
+
+// reservedDaemonStateVolumes returns the docker volume names a sandboxed
+// docker client must not be allowed to create, delete, or mount because THIS
+// daemon's own persistent state lives in them
+// (docs/plans/workspace-home-volume-persistence.md, the "未解決" entry this
+// PR resolves: under the compose deploy that is `boid_boid_state`, holding
+// boid.db / secret.key / tls/ca.key / web_secret / install_id).
+//
+// Never fatal, and the outcomes are deliberately logged differently. Silence
+// is reserved for the ONE case that is a positive finding rather than a
+// missing answer — that distinction is the whole of [Major 1] and is pinned by
+// TestReservedDaemonStateVolumes_warnContract:
+//
+//   - No volume can be holding the daemon's state — its data root is an
+//     ordinary directory on the root filesystem, i.e. bare `boid start`:
+//     silent. Nothing is unprotected, and a warning would be pure noise on a
+//     perfectly correct deployment.
+//   - Detection failed (unknown id, ambiguous id, inspect error, inspect
+//     timeout): ONE warning at startup, saying what is unprotected and how to
+//     check it by hand. Refusing to boot would trade an exposure every release
+//     so far has shipped with for a daemon that does not run at all on any
+//     runtime this detection does not understand — a far worse deal.
+//   - Detected: an info line naming the volumes, plus a warning if the
+//     daemon's own data root turns out not to be inside any of them (every
+//     step succeeded, yet the thing worth protecting is not covered).
+//
+// The warning text has to serve two very different readers, because the
+// classification is deliberately biased toward warning: an operator running
+// the compose/k8s deploy, for whom it means "your secrets are reachable from a
+// job", and an operator running `boid start` on a host that merely keeps /home
+// on its own filesystem, for whom it means "nothing to do". It therefore names
+// the condition that produced it rather than asserting a breach.
+//
+// api is the docker client buildRuntime built for the container backend, or
+// nil when there is none to share (cfg.Backend overridden — the test/DI seam).
+// Nil is handled by the detection itself, as a failure that warns rather than
+// as an answer.
+func reservedDaemonStateVolumes(ctx context.Context, api dispatcher.SelfContainerInspector, dataHome string) []string {
+	res, err := detectDaemonStateVolumesFn(ctx, api, dataHome)
+	// ERROR FIRST [round 2 Major 2, codex review 2026-07-26]. This used to
+	// branch on res.StateVolumeExpected before looking at err, so any failure
+	// that came back with a zero result took the "nothing to protect" exit and
+	// the error was never read. DetectDaemonStateVolumes now guarantees the
+	// complementary half — every error return it makes carries
+	// StateVolumeExpected=true — but the ordering here is what makes the two
+	// halves independent: a future detection path that forgets the invariant
+	// gets a spurious warning, not silence.
+	if err != nil {
+		slog.Warn("daemon state volume containment is INACTIVE: a named volume may be holding this daemon's own "+
+			"persistent state, and no volume name could be reserved because the check did not complete. "+
+			"If this daemon runs in a container, a job with capabilities.docker can mount the volume holding "+
+			"boid.db and secret.key — find it with `docker inspect <this container>` / `docker volume ls` and see "+
+			"docs/plans/workspace-home-volume-persistence.md. "+
+			"If this daemon runs directly on a host that simply keeps its data root on a separate filesystem, "+
+			"there is nothing to protect and nothing to do",
+			"error", err, "data_home", dataHome)
+		return nil
+	}
+	if !res.StateVolumeExpected {
+		// A positive "nothing to protect". Detection reports this only when it
+		// actually established that the data root is on the root mount, never
+		// as the result of a check it could not complete.
+		return nil
+	}
+	if len(res.Names) == 0 {
+		slog.Warn("daemon state volume containment reserved nothing: this daemon's container has no named volume mounted. "+
+			"If its persistent state is on a bind mount that is already covered (dockerproxy denies bind mounts outright); "+
+			"if it is on a volume, the sandbox docker policy is not protecting it",
+			"container_id", res.ContainerID, "data_home", dataHome)
+		return nil
+	}
+	slog.Info("daemon state volume containment active",
+		"container_id", res.ContainerID, "volumes", res.Names, "data_home_covered", res.DataHomeCovered)
+	// Reported separately from the INACTIVE warning above [round 3 Minor 1,
+	// codex review]: containment IS active here — the volumes were named and
+	// reserved — but data_home_covered was computed against a data root the
+	// daemon could not normalize, so that one field is not trustworthy. This
+	// used to be dropped entirely, which meant a broken symlink in the data
+	// root produced a completely clean startup log.
+	if res.DataHomeUnresolved != nil {
+		slog.Warn("daemon data root could not be normalized for the coverage check; "+
+			"the volumes above ARE reserved, but data_home_covered was computed against an unresolved path and may be wrong",
+			"data_home", dataHome, "error", res.DataHomeUnresolved)
+	}
+	// Gated on DataHomeUnresolved being nil: this line states as FACT the very
+	// thing the warning above disclaims, so emitting both turns a real signal
+	// into a contradiction an operator cannot act on. When resolution failed,
+	// DataHomeCovered was computed against an unresolved path, so its false is
+	// not evidence of anything — the warning above already says coverage is
+	// unknown, so nothing goes unreported.
+	if dataHome != "" && !res.DataHomeCovered && res.DataHomeUnresolved == nil {
+		slog.Warn("daemon data root is not inside any of the reserved volumes; "+
+			"name-based reservation is not protecting boid.db / secret.key",
+			"data_home", dataHome, "volumes", res.Names)
+	}
+	return res.Names
 }
 
 // gatewayBindHost [Blocker 2, PR7 codex review] returns the listen address
@@ -831,6 +963,42 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 	// Registry — see the gitgateway.NewServer(...) call below.
 	srv.gatewayRegistry = gitgateway.NewRegistry()
 
+	// THE docker client — singular, and that is the point [round 2 Major 2,
+	// codex review 2026-07-26]. Two consumers need one: the container backend
+	// (sandboxBackendForConfig, further down) and the daemon-state-volume
+	// self-inspection (reservedDaemonStateVolumes, just below). Each used to
+	// build its own; see sandboxBackendForConfig's doc comment for why the
+	// duplicate was not merely redundant but a startup-hang and a
+	// silent-failure surface of its own.
+	//
+	// Constructed here, before either consumer, because a failure is fatal to
+	// the same thing in both cases: without a docker client there is no
+	// sandbox backend, and PR-4 (docs/plans/volume-only-daemon.md §論点e) made
+	// the container backend the only one. Refusing startup is what the daemon
+	// already did — this only moves the refusal a few lines earlier and gives
+	// it one call site instead of two. client.New(client.FromEnv) does not
+	// dial (it resolves DOCKER_HOST/DOCKER_* and builds an HTTP client config;
+	// API version negotiation is deferred to the first request), so this does
+	// not require a reachable engine, only a coherent configuration.
+	//
+	// cfg.Backend set means a test/DI backend was injected and no engine is
+	// involved at all, so no client is built. selfInspector is declared
+	// separately rather than passing dockerClient directly for Go's typed-nil
+	// trap: a nil *client.Client assigned into a SelfContainerInspector
+	// parameter is a NON-nil interface that panics on first use, exactly the
+	// hazard wsLookup above is guarded for. Detection handles a genuinely nil
+	// interface as a failure that warns.
+	var dockerClient *client.Client
+	var selfInspector dispatcher.SelfContainerInspector
+	if cfg.Backend == nil {
+		var derr error
+		dockerClient, derr = client.New(client.FromEnv)
+		if derr != nil {
+			return nil, fmt.Errorf("daemon startup refused: connect to docker: %w", derr)
+		}
+		selfInspector = dockerClient
+	}
+
 	// backendCfg/usingContainerBackend/runtimesRoot were already resolved at
 	// the very top of this function (see that block's own doc comment for
 	// why it moved there — PR834 PR-2b round-2 codex review Major 2) —
@@ -878,10 +1046,21 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 		// is precisely why resolveWorkspaceHome also stamps an identity into
 		// the home and refuses to trust a marker whose identity no longer
 		// matches — see workspaceHomeMarker.HomeID.
-		DataHomeDir:  dataHomeFor(cfg),
-		GitGateway:   srv.gatewayRegistry,
-		GatewayURL:   &srv.gatewayURL,
-		GatewayCAPEM: &srv.gatewayCAPEM,
+		DataHomeDir: dataHomeFor(cfg),
+		// ReservedVolumeNames: the volumes this daemon is itself mounted on,
+		// which a sandboxed docker client must not be able to mount into a
+		// sibling container. Resolved by asking the engine about THIS
+		// container at startup — see reservedDaemonStateVolumes, and
+		// dispatcher.DetectDaemonStateVolumes for why the name cannot simply
+		// be pattern-matched. Empty when the daemon's data root is a plain
+		// directory on the root filesystem (nothing to protect), and empty
+		// with a warning if detection failed; never fatal, and bounded by
+		// dispatcher's selfInspectTimeout so a wedged engine socket cannot
+		// stall startup here.
+		ReservedVolumeNames: reservedDaemonStateVolumes(context.Background(), selfInspector, dataHomeFor(cfg)),
+		GitGateway:          srv.gatewayRegistry,
+		GatewayURL:          &srv.gatewayURL,
+		GatewayCAPEM:        &srv.gatewayCAPEM,
 	})
 
 	// Sandbox backend construction (docs/plans/volume-only-daemon.md
@@ -891,14 +1070,13 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 	// cfg.Backend, when set, overrides construction entirely — the test/DI
 	// seam Config.Backend's own doc comment describes (server.go), so a
 	// test can exercise daemon startup against a fake backend.SandboxBackend
-	// without a live docker daemon.
+	// without a live docker daemon. dockerClient is the one built above and
+	// already handed to the self-inspection — the same handle, deliberately
+	// (see sandboxBackendForConfig's doc comment); it is non-nil exactly when
+	// cfg.Backend is nil, which is exactly this branch.
 	sandboxBackend := cfg.Backend
 	if sandboxBackend == nil {
-		var berr error
-		sandboxBackend, berr = sandboxBackendForConfig(srv.installID, runtimesRoot, srv.daemonCA, &srv.brokerTLSSandboxAddr)
-		if berr != nil {
-			return nil, fmt.Errorf("daemon startup refused: %w", berr)
-		}
+		sandboxBackend = sandboxBackendForConfig(dockerClient, srv.installID, runtimesRoot, srv.daemonCA, &srv.brokerTLSSandboxAddr)
 	}
 	runner.Backend = sandboxBackend
 	// InstallID (PR9, §決定5): threaded onto Runner too, alongside

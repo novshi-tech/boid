@@ -4,6 +4,7 @@ import (
 	"os"
 	"testing"
 
+	"github.com/moby/moby/client"
 	"github.com/novshi-tech/boid/internal/dispatcher"
 	"github.com/novshi-tech/boid/internal/mtls"
 )
@@ -28,10 +29,7 @@ import (
 // production path: sandboxBackendForConfig always produces a real
 // containerBackend now.
 func TestSandboxBackendForConfig_ReturnsContainerBackend(t *testing.T) {
-	be, err := sandboxBackendForConfig("install-1", t.TempDir(), nil, nil)
-	if err != nil {
-		t.Fatalf("sandboxBackendForConfig: %v", err)
-	}
+	be := sandboxBackendForConfig(dockerClientForTest(t), "install-1", t.TempDir(), nil, nil)
 	if be == nil {
 		t.Fatal("backend = nil, want a non-nil containerBackend")
 	}
@@ -48,10 +46,7 @@ func TestSandboxBackendForConfig_ReturnsContainerBackend(t *testing.T) {
 // consumer yet)"), so an OOM-killed or setup-failure job container was
 // removed with no diagnostic capture at all.
 func TestSandboxBackendForConfig_WiresDiagnosticsCollector(t *testing.T) {
-	be, err := sandboxBackendForConfig("install-1", t.TempDir(), nil, nil)
-	if err != nil {
-		t.Fatalf("sandboxBackendForConfig: %v", err)
-	}
+	be := sandboxBackendForConfig(dockerClientForTest(t), "install-1", t.TempDir(), nil, nil)
 	if !dispatcher.ContainerBackendHasDiagnosticsCollector(be) {
 		t.Error("containerBackend was constructed without a DiagnosticsCollector, want NewDefaultDiagnosticsCollector wired")
 	}
@@ -68,10 +63,7 @@ func TestSandboxBackendForConfig_WiresDiagnosticsCollector(t *testing.T) {
 // uid is a proxy for "the daemon's own uid" (os.Getuid() is deterministic
 // per-process, exactly what sandboxBackendForConfig itself calls).
 func TestSandboxBackendForConfig_WiresDaemonUIDGID(t *testing.T) {
-	be, err := sandboxBackendForConfig("install-1", t.TempDir(), nil, nil)
-	if err != nil {
-		t.Fatalf("sandboxBackendForConfig: %v", err)
-	}
+	be := sandboxBackendForConfig(dockerClientForTest(t), "install-1", t.TempDir(), nil, nil)
 	gotUID, gotGID, ok := dispatcher.ContainerBackendUIDGID(be)
 	if !ok {
 		t.Fatal("ContainerBackendUIDGID: be is not a containerBackend")
@@ -104,10 +96,7 @@ func TestSandboxBackendForConfig_WiresBrokerTLS(t *testing.T) {
 	}
 	var addr string
 
-	be, err := sandboxBackendForConfig("install-1", t.TempDir(), ca, &addr)
-	if err != nil {
-		t.Fatalf("sandboxBackendForConfig: %v", err)
-	}
+	be := sandboxBackendForConfig(dockerClientForTest(t), "install-1", t.TempDir(), ca, &addr)
 
 	gotAddr, hasCA, ok := dispatcher.ContainerBackendBrokerTLS(be)
 	if !ok {
@@ -129,4 +118,19 @@ func TestSandboxBackendForConfig_WiresBrokerTLS(t *testing.T) {
 	if gotAddr != "boid-broker:54321" {
 		t.Errorf("BrokerTLSAddr after the late-bound pointer is written = %q, want %q (dereferenced fresh, not resolved at construction time)", gotAddr, "boid-broker:54321")
 	}
+}
+
+// dockerClientForTest builds the docker client sandboxBackendForConfig now
+// takes as a parameter rather than constructing for itself (see its own doc
+// comment: buildRuntime builds exactly one and shares it with the
+// daemon-state-volume self-inspection). client.New(client.FromEnv) does not
+// dial, so this needs no live engine — the same property the file header
+// above already relies on, just moved one call up.
+func dockerClientForTest(t *testing.T) *client.Client {
+	t.Helper()
+	cli, err := client.New(client.FromEnv)
+	if err != nil {
+		t.Fatalf("client.New: %v", err)
+	}
+	return cli
 }

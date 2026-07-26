@@ -235,7 +235,7 @@ daemon は自分の volume なので普通の file I/O で扱え、flock もそ�
 | init.sh の一時ファイル | **`homes-meta` 側へ一緒に移す**。`runWorkspaceInitScript` の doc comment は「一時ファイルの置き場は lock-serialized」を TOCTOU 保証 (PR #787) の根拠にしているので、lock だけ移すとその前提が嘘になる |
 | 旧 marker | **移行も削除もしない**。読まないだけ。結果として upgrade 後の初回 dispatch で init.sh が 1 回だけ再実行される (init.sh は冪等が契約)。この一連の挙動は `TestResolveWorkspaceHome_LegacyMarkerBesideHomes_NotReadNotDeleted` で pin 済み |
 | `homes/` 側の残骸 | `ListWorkspaceHomeSizes` の `IsDir()` フィルタは**残す**。旧 marker / lock が残っている環境で workspace として誤検出しないため (テスト名を `..._IgnoresLegacyMarkerAndLockFiles` に改名し、意味を「同居ファイルの除外」から「レガシー残骸の除外」に更新) |
-| 改竄耐性の根拠 | 「home dir の**外**だから」は**新旧どちらの置き場でも成立する** (旧 `homes/<slug>.init.json` も mount の外) ので、移設の理由としては使わない。移設の理由は PR6 で home が volume 化しても daemon が普通の file I/O + flock を保てること。**「daemon の領域だから job から一切見えない」とは主張しない** — 下の「未解決」節の `boid_state` volume mount 参照 |
+| 改竄耐性の根拠 | 「home dir の**外**だから」は**新旧どちらの置き場でも成立する** (旧 `homes/<slug>.init.json` も mount の外) ので、移設の理由としては使わない。移設の理由は PR6 で home が volume 化しても daemon が普通の file I/O + flock を保てること。**「daemon の領域だから job から一切見えない」とは主張しない** — 下の「解決済み: `capabilities.docker` を持つ job から daemon の state volume が mount できた」節を参照 (PR2.5 で塞いだが、daemon が自分の container を特定できる環境に限る) |
 | marker ↔ 実体の identity 突合 (nonce) | **本 PR に含める**。理由は下記 |
 | テスト隔離 | `testutil/homeenv` を新設し、`internal/dispatcher` / `internal/server` / `cmd` の `TestMain` を一本化。`homeenv.AssertIsolated` を各 package に常設ガードとして置く |
 
@@ -670,21 +670,273 @@ label / reap 側の封じ込めに置き換えた。
 - **`boid web set-addr` / `set-url` の撤去** (dogfood で判明した silent no-op、
   `scopeLocal` のまま host の config.yaml を書いて成功表示する)
 - **`notify.command` の host path 依存** (`/home/nosen/.local/bin/ntfy.sh` が container 内に無い)
-- **`capabilities.docker` を持つ job から daemon の state volume が mount できる**。
-  compose デプロイでは daemon の永続領域は `boid_state` named volume
-  (compose project prefix 込みで `boid_boid_state`) で、`/home/boid` 全体にマウントされている。
-  dockerproxy policy の volume 判定 (`dockerres.IsReservedVolumeName`) は
-  **`boid-ws-` prefix しか予約していない**ので、job は
-  `{"Type":"volume","Source":"boid_boid_state","Target":"/state"}` を mount した
-  sibling container を作れる。読めるのは workspace home の init marker どころではなく
-  **`secret.key` / `boid.db` / `tls/ca.key` / `web_secret` / `install_id` 一式**である。
-  PR1 が塞いだのは「job が *workspace HOME volume* を壊す」経路であって、
-  「job が *daemon 自身の state volume* を読む」経路ではない。
-  **PR2 より前から存在し、PR2 の範囲を超えるので本 PR では塞いでいない。**
-  したがって「marker は daemon の領域にあるから job から一切見えない」という主張は成立せず、
-  `workspace_home.go` の doc comment も正確な範囲 (「job 自身の `$HOME` mount 経由では触れない」)
-  に書き直してある。対策の方向としては予約 prefix を daemon の state volume 名まで広げる、
-  あるいは volume mount source を allowlist 方式に反転させる等が考えられるが、
-  **`capabilities.docker` の脅威モデル全体を見直す別件**として扱う
 - k8s (Phase 7) での PersistentVolumeClaim への読み替え。named volume 前提の設計は
   そのまま PVC に対応付くはずだが、本 doc では扱わない
+
+## 解決済み: `capabilities.docker` を持つ job から daemon の state volume が mount できた
+
+**PR2.5 で解決 (2026-07-26)**。以下は当初この節に「未解決」として記録していた露出と、その決着。
+
+### 露出 (PR1 の穴)
+
+compose デプロイでは daemon の永続領域は `boid_state` named volume
+(compose の `name: boid` が付くので **engine 上の実名は `boid_boid_state`**) で、
+`/home/boid` 全体にマウントされている。dockerproxy policy の volume 判定
+(`dockerres.IsReservedVolumeName`) は **`boid-ws-` prefix しか予約していなかった**ので、
+job は次を投げるだけで daemon の $HOME を丸ごと読めた:
+
+```json
+{"Image":"busybox","Cmd":["sh","-c","cat /state/.local/share/boid/secret.key"],
+ "HostConfig":{"Mounts":[{"Type":"volume","Source":"boid_boid_state","Target":"/state"}]}}
+```
+
+読めるのは workspace home の init marker どころではなく
+**`secret.key` / `boid.db` / `tls/ca.key` / `web_secret` / `install_id` 一式**である。
+PR1 が塞いだのは「job が *workspace HOME volume* を壊す」経路であって、
+「job が *daemon 自身の state volume* を読む」経路ではなかった。**書き込み権限を一切要さない**
+(mount するだけ) ので、経路 4 の create/delete deny は元から関係なかった点に注意。
+
+### 採った方式: daemon の自己 inspect + policy への実行時注入
+
+**「boid が自分で名前を決める volume」は prefix で判定できるが、`boid_boid_state` は
+compose project が決める名前**なので、boid 側にパターンが無い。したがって
+**daemon が起動時に「自分が何にマウントされているか」を engine に訊く**:
+
+0. まず `/proc/self/mountinfo` を見て、daemon の永続領域が**独立した mount point の上に
+   載っているか**を判定する。載っていなければ (root mount 上のただのディレクトリ =
+   bare `boid start`) 守るべき volume が存在しないので、engine には一切問い合わせずに
+   **無警告で終了**する。載っていれば以降に進み、**失敗したら必ず WARN する**
+   (下記「判定軸を engine ではなく資産に置いた理由」)。
+   比較の前に dataHome を `filepath.Abs` + `filepath.EvalSymlinks` で
+   **kernel が mountinfo に書くのと同じ形に正規化**する (下記「dataHome の正規化」)。
+   **engine を必要とするのはここから先だけ**なので、この順序が
+   「どんな engine 由来の失敗も必ず `StateVolumeExpected=true` を伴う」を保証する
+1. `/proc/self/mountinfo` から自分の container ID を取る
+   (`internal/dispatcher/daemon_state_volume.go`)
+2. その ID で `ContainerInspect` し、`Mounts[]` のうち `Type == volume` の `Name` を集める
+   (ここまで全体に 5s の deadline。下記 [Major 2])
+3. `internal/server/wire.go` → `dispatcher.WireConfig.ReservedVolumeNames` →
+   `Runner.ReservedVolumeNames` → `startDockerProxy` →
+   `dockerproxy.Server.SetReservedVolumeNames` で policy の予約集合に載せる
+4. policy 側は PR1 の 3 経路 (`POST /volumes/create` の `Name` /
+   `DELETE /volumes/{name}` / `POST /containers/create` の `HostConfig.Mounts[].Source`)
+   を**そのまま再利用**し、判定だけ「静的 prefix ∪ 実行時集合」に広げた
+   (`dockerproxy.ReservedVolumes`)。`CheckRequest` は純関数のままで、集合は起動時に確定した
+   **値**として渡す (リクエスト処理中に engine へ問い合わせない)
+
+`HostConfig.VolumesFrom` は PR1 が既に無条件 deny 済みで、本 PR では確認のみ (回帰テストを追加)。
+
+**`/proc/self/cgroup` を主にしなかった理由**: 実機 (rootless podman 4.9.3) の daemon container で
+`cat /proc/self/cgroup` は `0::/` しか返さない (cgroup v2)。同じ container で `HOSTNAME` env も
+**空**だった (`ContainerBackendOptions.SelfContainerID` が使っている経路)。一方 mountinfo は
+両 engine とも container ID を含む:
+
+| engine | mountinfo の root field |
+|---|---|
+| docker | `/var/lib/docker/containers/<64hex>/hostname` (moby 自身の test corpus) |
+| podman rootless | `/containers/overlay-containers/<64hex>/userdata/hostname` (実機 2026-07-26) |
+
+判定は「`/etc/hostname` `/etc/hosts` `/etc/resolv.conf` `/run/.containerenv` のいずれかを
+mount 先とする行の root に、64 桁 hex の segment がちょうど 1 つ」。mount **先**を見ないと、
+docker host の mountinfo に現れる `/var/lib/docker/containers/<別 container>/shm` を拾ってしまう。
+cgroup は fallback として併用 (cgroup v1 / `libpod-<id>.scope`)。
+
+### 却下した案
+
+- **`boid_` / `boid-` prefix を一律 deny** — 実装は最小だが、ユーザの `boid_myapp` に誤爆する。
+  compose project 名を変えると守れなくなる (名前は boid のものではない)
+- **ledger 所有でない volume の mount を全部 deny** — 最も堅いが挙動変化が大きすぎる
+  (testcontainers 等の正当な用途を壊す)。`capabilities.docker` の脅威モデルを見直すなら本命
+
+### 検出できなかったときの挙動
+
+**「守るべき資産が volume に載っている可能性があるか」**と
+**「volume 名が取れたか」**を別に判定する。前者は当初 sentinel file
+(`/run/.containerenv` / `/.dockerenv`) の有無で判定していたが、codex レビュー
+[Major 1] で撤回した (下記「判定軸を engine ではなく資産に置いた理由」)。
+
+- **volume が載っている余地が無い** = daemon の永続領域 (`filepath.Dir(cfg.DBPath)`) が
+  root mount 上のただのディレクトリ (= bare `boid start`) → state volume がそもそも
+  存在しないので **no-op・無警告**
+- **載っている可能性があるのに特定に失敗** (ID 不明 / 曖昧 / inspect エラー / inspect timeout)
+  → 起動時に **1 回 WARN** して続行。fail-closed で daemon の起動を止めるのは代償が大きすぎる
+  (この露出は全リリースで存在していたので、「起動しない」に置き換える取引にはならない)
+- **特定できたが dataHome がどの volume にも含まれない** → 各段は成功しているのに守れていない
+  状態なので、別途 WARN
+- **判定不能** (mountinfo が読めない / dataHome が空 / dataHome を正規化できない /
+  mountinfo に該当 mount 行が無い)
+  → **WARN 側に倒す**。「無警告」は肯定的に「守るものが無い」と確認できたときだけの答えであり、
+  確認に失敗した結果として無言になってはならない
+- **dataHome の正規化だけ失敗し、ID 特定も inspect も成功した** → containment は**有効**
+  (volume は実際に予約されている) なので error にはせず、`DataHomeUnresolved` に載せて
+  **INACTIVE とは別文面の WARN** を出す。伝えているのは「予約が効いていない」ではなく
+  「`data_home_covered` が信用できない」であり、両者を同じ文面に混ぜると
+  健全なデプロイに対して `grep INACTIVE` が誤検知する
+  (下記「dataHome の正規化」の round 3 追記、codex round 3 [Minor 1])
+
+**不変条件**: `DetectDaemonStateVolumes` の **error を返す経路はすべて
+`StateVolumeExpected=true` を伴う**。`StateVolumeExpected=false` は
+「root mount 上のただのディレクトリだと肯定的に確認できた」1 経路だけが返し、そこは error が nil。
+これにより呼び出し側は「error → WARN」「!StateVolumeExpected → 無言」を
+互いに独立した分岐として書ける。`TestDetectDaemonStateVolumes_everyErrorCarriesStateVolumeExpected`
+で全 error 経路を列挙して pin してある。呼び出し側 (`reservedDaemonStateVolumes`) も
+**error を先に読む** ので、将来この不変条件が崩れても「無言」ではなく「余計な WARN」に倒れる
+(codex round 2 [Major 2])。
+
+### 判定軸を engine ではなく資産に置いた理由 (codex [Major 1] 対応)
+
+sentinel file 判定には**失敗が no-op と区別できない**という致命的な性質があった。
+containerd / Kubernetes は `/run/.containerenv` も `/.dockerenv` も書かず、mountinfo の
+runtime 注入行にも 64 hex の container ID が出ず、cgroup v2 は `0::/` しか返さない。
+この環境では「container 外」と誤分類され、**成功扱いの空集合を無警告で返して containment が
+まるごと無効**になる。node が docker 互換 socket を job に見せている構成 (この機能が意味を持つ
+唯一の構成) なら攻撃はそのまま成立する。
+
+代わりに「daemon の永続領域が `/proc/self/mountinfo` 上で**独立した mount point の上に
+載っているか**」を見る。named volume は必ず「載っている」側であり、この性質は engine 種別にも
+sentinel にも依存せず、かつ**守ろうとしている資産そのもの**に直結しているので feature から
+乖離しようがない。実測 (2026-07-26):
+
+| 環境 | dataHome | それを覆う mount point | 判定 |
+|---|---|---|---|
+| live rootless podman daemon container | `/home/boid/.local/share/boid` | `/home/boid` (volume `boid_boid_state`) | 載っている → 特定へ |
+| 開発ホスト (bare `boid start` 相当) | `/home/nosen/.local/share/boid` | `/` (mount point は `/` `/boot` `/run` `/dev` `/sys` のみ、`/home` は無い) | 載っていない → 無警告 no-op |
+
+**既知の false positive**: `/home` や `/var` を独立パーティションにしている bare host は
+「載っている」と判定され、container ID が取れず WARN が 1 回出る。守るものが無い環境での
+1 行のノイズと、守るものだらけの環境での沈黙とのトレードで、後者を潰す方を選んだ。
+WARN 文面は両方の読者に成立するよう「観測した条件」を述べる形にしてある。
+
+### dataHome の正規化 (codex round 2 [Major 1] 対応)
+
+mount 比較は純粋な文字列比較で、`pathIsWithin` は mount point `"/"` に対して無条件に true を返す。
+したがって **kernel が書かない綴りの path はすべて `/` にマッチして「root mount 上のただの
+ディレクトリ = 守るものが無い」と判定され、唯一の無警告経路に落ちる**。初版はこれを踏んでいた:
+
+| 綴り | 実例 | 初版の判定 |
+|---|---|---|
+| 相対パス | `boid start --db-path ../home/boid/.local/share/boid/boid.db` (cwd `/workspace`)。`cmd/start.go` は `--db-path` を**拒否も絶対化もしない** | `/` にマッチ → **無警告で保護無効** |
+| 途中に symlink | `/home/boid` → `/mnt/state` 等 | 同上 |
+
+対策として比較前に `filepath.Abs` → `filepath.EvalSymlinks` を通す
+(`resolveDataHomeForMountComparison`)。**正規化に失敗したら沈黙ではなく「判定不能 = WARN 側」**
+に倒す (未作成の dataHome での ENOENT も含む。実運用では buildRuntime 時点で boid.db が
+その path に開かれているので起きない)。
+
+初版が `EvalSymlinks` を避けた理由は「hung NFS/FUSE の下だと context deadline でも中断できない
+無限待ちを作る」だったが、これは**撤回**した。daemon はそもそも**同じ path で boid.db を開く**ので、
+そこが hung なら self-inspect の有無に関わらず起動は詰まる。避けても可用性は 1 ミリも買えておらず、
+上表の取り逃しだけが残っていた。
+
+`DataHomeCovered` の判定にも正規化後の path を使う (engine が返す mount destination は
+kernel 解決済みの絶対パスなので、相対/symlink 綴りだと必ず false になってしまう)。
+
+#### 正規化失敗の行き先 (codex round 3 [Minor 1] 対応)
+
+上の「判定不能 = WARN 側」は**特定にも失敗した場合**の話で、`errors.Join` で error に畳まれる。
+問題は **ID 特定も inspect も成功し、正規化だけ失敗した**経路だった。round 2 実装ではこの
+`resolveErr` を error 経路でしか使っておらず、**この組み合わせでは黙って捨てられていた**
+(nil error + volume 名あり + `DataHomeCovered` あり = 起動ログが完全に綺麗)。
+壊れた symlink を dataHome に持つ container デプロイがちょうどこの形になる。
+
+かといって error として返すのも誤りである。呼び出し側にとって error は
+**「containment INACTIVE」**を意味するが、実際には volume は名前が取れて予約されており、
+containment は有効だからである。したがって `DaemonStateVolumes.DataHomeUnresolved`
+(error 型フィールド) に載せ、`reservedDaemonStateVolumes` が
+**INACTIVE 文面とは別の WARN** を出す。伝えているのは
+「`data_home_covered` はこの run では信用できない」という**フィールド 1 個の信頼性**の話であって、
+予約そのものの失敗ではない。
+
+`DataHomeCovered` は false に倒さず、**絶対化だけ済んだ (symlink 未解決の) 綴り**で判定を続ける。
+false は「crown jewels はどの予約 volume にも入っていない」という**別の**主張になってしまい、
+それもまた根拠が無いからである。
+
+pin: 生成側 `TestDetectDaemonStateVolumes_unresolvableDataHomeStillReportsItWhenIdentified`
+(internal/dispatcher)、呼び出し側
+`TestReservedDaemonStateVolumes_unresolvedDataHomeWarnsWithoutClaimingInactive`
+(internal/server、WARN が出ること + それが INACTIVE 文面**でない**ことの両方を assert)。
+
+### 自己 inspect の deadline (codex [Major 2] 対応)
+
+self-inspect 全体に `selfInspectTimeout` (5s) を張る。守る対象は「engine が落ちている」
+(即 dial error) ではなく **「socket は accept するが応答しない」** (wedged engine、engine 再起動を
+生き延びた half-open socket、前段 proxy) で、deadline が無いと `context.Background()` を
+引き継いで `boid start` が**永久に停止**する。「WARN して続行」という設計自体が成立しなくなる。
+timeout は「container 内だが特定失敗」として WARN + 続行に落ちる。
+`/proc` の `os.ReadFile` は procfs が in-kernel state から生成するのでブロックしない。
+`filepath.EvalSymlinks` は実ファイルシステムを触るが、上記のとおり同じ path の DB open が
+先に走っているので新しい停止要因ではない。
+
+**docker client は self-inspect が自前で作らない** (codex round 2 [Major 2])。
+`client.New(client.FromEnv)` は `DOCKER_CERT_PATH` の ca/cert/key を**同期的に読む**ので
+(moby `client_options.go` の `WithTLSClientConfigFromEnv`)、self-inspect が独自に構築すると
+**deadline で中断できない読み取りが起動経路にもう 1 つ増える**。加えて構築失敗が
+「零値 + error」という *`StateVolumeExpected=false` を伴う error* を作り出し、
+呼び出し側がフラグを先に見て**無警告で捨てていた**。
+`buildRuntime` が docker client を**1 個だけ**作り、container backend
+(`sandboxBackendForConfig`) と self-inspect の両方に渡す形に変更した。
+構築失敗は従来どおり **daemon 起動拒否** (container backend が唯一の backend なので
+どのみち起動できない)。これで同期読みは「container backend の前提条件」に戻り、
+self-inspect 固有のリスクではなくなった。
+
+pin は `TestServer_New_SelfInspectGetsTheBackendsDockerClient` で、
+**両者が同一ポインタであること**を assert する
+(`dispatcher.ContainerBackendUsesDockerAPI`)。「どちらも non-nil な `*client.Client`」では
+2 個作る退行がそのまま通ってしまう — 上のコストはどちらも *2 個目* のコストだからである
+(codex round 3 [Minor 2])。
+
+### 曖昧な container ID を推測しない (codex [Major 3] 対応)
+
+cgroup fallback は「最初に見つけた 64 hex」を返していた。nested runtime は**親の ID を先に**書く:
+
+```
+0::/docker/<親 container ID>/docker/<自己 container ID>
+```
+
+これで親を inspect すると、親にも volume があれば `DataHomeCovered=true` で
+「containment 有効」と表示しながら**自分の state volume は予約されない** — 予約ゼロより悪い。
+本来 WARN すべき場面が成功に見えるからである。したがって **distinct な ID が 2 つ以上出たら
+「曖昧」として推測せずに失敗扱い** (= WARN + fail-open) にする。
+「曖昧」の定義は *ファイル全体を走査して、各 runtime の unit wrapper (`docker-` / `libpod-` /
+`crio-` / `cri-containerd-` / `containerd-`、`.scope` / `.slice`) を剥がした後に残る
+**相異なる** 64 桁 hex が 2 つ以上*。cgroup v1 が controller ごとに同じ ID を並べる形は
+**曖昧ではない** (重複は無視)。mountinfo 側は元から同じ規律 (1 行に 2 つ hex があればその行を
+捨て、複数行が別々の ID を主張したら error) で、両者が揃った。
+
+### 残る限界
+
+- **daemon が自分の container を特定できない環境では効かない**。mountinfo/cgroup のどちらにも
+  ID が出ない runtime (k8s / containerd、gVisor 等) では**無防備のまま**。ただし Major 1 修正後は
+  そこで必ず **WARN が出る**ので、「知らないうちに無防備」ではなくなった
+- **nested runtime (docker-in-docker) では原理的に自分を特定できない**。曖昧と判定して
+  fail-open + WARN になる。推測しないことを選んだ結果であり、この環境では守れない
+- **判定は daemon の *data root* だけを見る**。`XDG_CONFIG_HOME` を data root と別 volume に
+  分離した構成で、data root だけが root mount 上にある場合、config 側 volume は無警告で
+  無防備になる。現行 compose (`/home/boid` 配下に両方) では起きない
+- **同じ理由で、container 内でも data root が overlay rootfs 上 (= volume 化されていない)
+  なら no-op になる**。この場合 daemon の永続 state は再作成で消える運用なので守る対象が
+  無いが、同じ container に別の named volume が付いていてもそれは予約されない。
+  sentinel 判定を残していれば拾えたケースだが、拾うために container 内で volume が
+  1 本も無い構成に毎回 WARN を出すのは割に合わないと判断した
+- **dataHome が解決できない環境では (無防備ではなく) WARN に倒れる**。相対パス / symlink は
+  `filepath.Abs` + `filepath.EvalSymlinks` で解決するようになった (上記「dataHome の正規化」) が、
+  解決自体が失敗する場合 — 未作成のディレクトリ、権限、symlink ループ — は「判定不能」として
+  WARN + fail-open になる。実運用では daemon が同じ path で boid.db を開いた後に走るので
+  起きないが、`--db-path` に存在しない dir を渡した起動などでは 1 行出る
+- **ただし正規化失敗そのものは containment を無効にしない**。ID 特定と inspect が成功していれば
+  volume は予約され、無効化されるのは `data_home_covered` の**信頼性だけ**である
+  (`DataHomeUnresolved` + 専用 WARN、上記「正規化失敗の行き先」)。この場合
+  `data_home_covered` は symlink 未解決の絶対パスで計算した近似値なので、
+  **true でも「crown jewels が予約 volume 内にある」証拠にはならない**。
+  この 1 行が出ている起動では coverage の主張を根拠に使わず、dataHome を直せ
+- **正規化は起動時の一度きり**。以後 dataHome の途中の symlink が張り替えられても追随しない
+  (volume 名のスナップショットと同じ前提)
+- **engine socket そのものが sandbox に露出している構造は変わっていない**。dockerproxy の
+  allowlist が唯一の壁であり、policy をすり抜ける API 形があれば同じ場所に戻る
+- **`HostConfig.VolumesFrom` は「名前で守る」ことが原理的にできない**。request が container を
+  指すため body から「何を継承するか」が分からない。無条件 deny で塞いでいるだけで、
+  もし将来この deny を緩めれば daemon container 経由で state volume が再び到達可能になる
+- **daemon container 自身に対する操作は ledger scope check 頼み**。予約しているのは volume 名で
+  あって container ID ではない
+- **volume 名は起動時にスナップショットする**。daemon の稼働中に新しい volume が daemon に
+  mount されることは (container を作り直さない限り) 起きないので実害は無いが、設計上の前提
