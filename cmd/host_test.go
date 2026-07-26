@@ -401,6 +401,24 @@ func TestExtractComposeAssets_WritesEmbeddedContentByteForByte(t *testing.T) {
 		t.Error("extracted compose.yml does not match the real build/container/compose.yml byte-for-byte")
 	}
 
+	// compose.podman.override.yml (2026-07-26 dogfood): the deploy script
+	// stacks this overlay on top of compose.yml when it detects rootless
+	// podman. Missing from the extraction, the no-checkout fallback would
+	// invoke a script whose `-f <root>/build/container/
+	// compose.podman.override.yml` argument points at nothing — failing on
+	// exactly the engine the overlay exists for, and only there.
+	wantOverride, err := os.ReadFile(filepath.Join("..", "build", "container", "compose.podman.override.yml"))
+	if err != nil {
+		t.Fatalf("read real compose.podman.override.yml: %v", err)
+	}
+	gotOverride, err := os.ReadFile(filepath.Join(root, "build", "container", "compose.podman.override.yml"))
+	if err != nil {
+		t.Fatalf("read extracted compose.podman.override.yml: %v", err)
+	}
+	if string(gotOverride) != string(wantOverride) {
+		t.Error("extracted compose.podman.override.yml does not match the real build/container/compose.podman.override.yml byte-for-byte")
+	}
+
 	wantDockerfile, err := os.ReadFile(filepath.Join("..", "build", "container", "Dockerfile"))
 	if err != nil {
 		t.Fatalf("read real Dockerfile: %v", err)

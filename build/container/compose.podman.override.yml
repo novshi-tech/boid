@@ -1,0 +1,56 @@
+# build/container/compose.podman.override.yml
+#
+# Engine-specific overlay stacked on compose.yml by
+# scripts/deploy-container.sh when — and only when — it detects a ROOTLESS
+# PODMAN engine (`podman info`'s Host.Security.Rootless). Docker
+# deployments, and rootful podman, never load this file.
+#
+# WHY IT IS SEPARATE FROM compose.yml
+#
+# `userns_mode: keep-id` is a podman extension. `docker compose` rejects the
+# value outright ("Value 'keep-id' is not valid"), so carrying it in the
+# base file would break every docker deployment — including the
+# e2e-container CI job, which runs against a real docker engine — in order
+# to fix podman. Keeping it in a separate, conditionally-applied file lets
+# each engine get exactly what it needs, with compose.yml remaining the
+# single source of truth for everything that is NOT engine-specific
+# (build/container/compose_podman_override_test.go pins that minimality).
+#
+# WHY IT IS NEEDED (2026-07-26 volume-only dogfood)
+#
+# Rootless podman runs a container in a user namespace where the
+# container's uid 1000 maps to a host SUBUID (~100999), not to the host
+# user who invoked podman. Everything compose.yml bind-mounts from the host
+# is owned by that host user, so without keep-id the daemon container comes
+# up unable to read any of it. Observed, in order, on the first real deploy:
+#
+#   WARN  cleanup orphan runtimes: read dir failed
+#         error="open /run/user/1000/runtimes: permission denied"
+#   ERROR startup reap failed ...
+#         error="list orphan containers: permission denied while trying to
+#         connect to the docker API at unix:///var/run/docker.sock"
+#   start server: start broker: listen: listen unix
+#         /run/user/1000/boid-broker.sock: bind: permission denied
+#
+# — the last of which is fatal, so the container exits 1 and host mode
+# times out waiting for a health endpoint that never binds.
+#
+# keep-id maps the invoking host user to the same uid inside the container,
+# so the daemon's in-container uid once again owns the host paths it is
+# given. This is the daemon-side half of the fix; the job-container half
+# (podman-detected through the docker API rather than a shell check) lives
+# in internal/dispatcher/container_backend_userns.go.
+#
+# WHY NOT JUST DROP THE HOST BIND MOUNT INSTEAD
+#
+# The volume-only redesign (docs/plans/volume-only-daemon.md) already moved
+# daemon STATE off host bind mounts and onto a named volume, which is what
+# removed the 2026-07-24 incident's "wall 2". BOID_RUNTIME_DIR is
+# deliberately still a host bind mount: internal/server/wire.go's
+# hostVisibleRuntimesDirFor materializes per-job DooD sibling-container
+# mount sources under it, and a DooD sibling's bind source must resolve
+# against the HOST engine — a named volume's interior is invisible there.
+# See compose.yml's own "Persistence" header comment for the full rationale.
+services:
+  daemon:
+    userns_mode: keep-id

@@ -51,6 +51,13 @@ type fakeDockerAPI struct {
 	VolumeCreateFunc     func(ctx context.Context, options client.VolumeCreateOptions) (client.VolumeCreateResult, error)
 	VolumeListFunc       func(ctx context.Context, options client.VolumeListOptions) (client.VolumeListResult, error)
 	VolumeRemoveFunc     func(ctx context.Context, volumeID string, options client.VolumeRemoveOptions) (client.VolumeRemoveResult, error)
+	// ServerVersionFunc / InfoFunc back resolveUsernsMode's engine-identity
+	// probe (container_backend_userns.go). Left nil by every test that does
+	// not care, whose zero-valued results identify no particular engine —
+	// which is exactly the "plain docker, leave UsernsMode unset" case those
+	// tests already assert byte-for-byte.
+	ServerVersionFunc func(ctx context.Context, options client.ServerVersionOptions) (client.ServerVersionResult, error)
+	InfoFunc          func(ctx context.Context, options client.InfoOptions) (client.SystemInfoResult, error)
 
 	nextID int
 
@@ -290,6 +297,20 @@ func (f *fakeDockerAPI) VolumeRemove(ctx context.Context, volumeID string, optio
 		return f.VolumeRemoveFunc(ctx, volumeID, options)
 	}
 	return client.VolumeRemoveResult{}, nil
+}
+
+func (f *fakeDockerAPI) ServerVersion(ctx context.Context, options client.ServerVersionOptions) (client.ServerVersionResult, error) {
+	if f.ServerVersionFunc != nil {
+		return f.ServerVersionFunc(ctx, options)
+	}
+	return client.ServerVersionResult{}, nil
+}
+
+func (f *fakeDockerAPI) Info(ctx context.Context, options client.InfoOptions) (client.SystemInfoResult, error) {
+	if f.InfoFunc != nil {
+		return f.InfoFunc(ctx, options)
+	}
+	return client.SystemInfoResult{}, nil
 }
 
 // waitCallCount returns how many times ContainerWait has been invoked so

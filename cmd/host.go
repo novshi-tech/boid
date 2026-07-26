@@ -407,6 +407,15 @@ func extractComposeAssets() (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("read embedded compose.yml: %w", err)
 	}
+	// compose.podman.override.yml: the rootless-podman overlay
+	// deploy-container.sh stacks on compose.yml (2026-07-26 dogfood — see
+	// that file's own header comment). Extracted unconditionally, exactly
+	// like the other two, because the extraction cannot know which engine
+	// the script will go on to detect.
+	podmanOverride, err := boidcontainer.Assets.ReadFile("compose.podman.override.yml")
+	if err != nil {
+		return "", fmt.Errorf("read embedded compose.podman.override.yml: %w", err)
+	}
 	dockerfile, err := boidcontainer.Assets.ReadFile("Dockerfile")
 	if err != nil {
 		return "", fmt.Errorf("read embedded Dockerfile: %w", err)
@@ -428,6 +437,9 @@ func extractComposeAssets() (string, error) {
 	}
 	if err := atomicfile.WriteAtomic(filepath.Join(buildDir, "compose.yml"), 0o644, compose); err != nil {
 		return "", fmt.Errorf("extract compose.yml: %w", err)
+	}
+	if err := atomicfile.WriteAtomic(filepath.Join(buildDir, "compose.podman.override.yml"), 0o644, podmanOverride); err != nil {
+		return "", fmt.Errorf("extract compose.podman.override.yml: %w", err)
 	}
 	if err := atomicfile.WriteAtomic(filepath.Join(buildDir, "Dockerfile"), 0o644, dockerfile); err != nil {
 		return "", fmt.Errorf("extract Dockerfile: %w", err)
