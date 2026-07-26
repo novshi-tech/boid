@@ -173,11 +173,19 @@ func TestListWorkspaceHomeSizes_ListsAllDirsAndFlagsOrphans(t *testing.T) {
 	}
 }
 
-// TestListWorkspaceHomeSizes_IgnoresMarkerAndLockFiles pins that the
-// sibling homes/<slug>.init.json and homes/<slug>.lock files documented in
-// docs/plans/home-workspace-volume.md's layout section are not mistaken for
-// workspace home directories (os.ReadDir's IsDir() filter).
-func TestListWorkspaceHomeSizes_IgnoresMarkerAndLockFiles(t *testing.T) {
+// TestListWorkspaceHomeSizes_IgnoresLegacyMarkerAndLockFiles pins that
+// leftover homes/<slug>.init.json and homes/<slug>.lock files are not
+// mistaken for workspace home directories (os.ReadDir's IsDir() filter).
+//
+// Those files are LEGACY as of PR2 of
+// docs/plans/workspace-home-volume-persistence.md (論点b): current daemons
+// write the marker and the lock to the daemon's own data root
+// (<dataHome>/homes-meta/) instead, and PR2 deliberately neither migrates nor
+// deletes the copies an older daemon left in homes/. So this stays a real
+// scenario on any upgraded installation, and the IsDir() filter stays
+// load-bearing — it just guards against residue now rather than against
+// files the current code still puts there.
+func TestListWorkspaceHomeSizes_IgnoresLegacyMarkerAndLockFiles(t *testing.T) {
 	runtimesDir := newTestRuntimesDir(t)
 	writeHomeFile(t, runtimesDir, "myws", "x", 10)
 	// resolveWorkspaceHomePath(runtimesDir, "") joins the empty slug onto

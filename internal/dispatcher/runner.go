@@ -165,7 +165,29 @@ type Runner struct {
 	// default meaning "no floor".
 	AllowedDomains []string
 	RuntimesDir    string
-	JobEvents      JobEventSink // optional; nil disables job lifecycle broadcasts
+	// DataHomeDir is the daemon's OWN persistent data root —
+	// server/wire.go's dataHomeFor(cfg), which in a real deployment is
+	// filepath.Dir(cfg.DBPath): the directory boid.db / web_secret /
+	// install_id / secret.key / tls/ / kits/ / skills/ already live in, which
+	// under the volume-only compose deploy is the `boid_state` named volume.
+	// (dataHomeFor also has a socket-path fallback and an empty case that
+	// only test wiring reaches — see its own doc comment.)
+	//
+	// Deliberately NOT derivable from RuntimesDir: since the volume-only
+	// pivot those are two genuinely different roots (RuntimesDir resolves via
+	// hostVisibleRuntimesDirFor(cfg) to BOID_RUNTIME_DIR, host-visible but
+	// tmpfs). Currently consumed only by workspaceHomeMetaDir — the workspace
+	// home init marker, the init lock, and the private temp copy of init.sh
+	// (docs/plans/workspace-home-volume-persistence.md 論点b, PR2).
+	//
+	// Empty (minimal test wiring, or a daemon build that never wired it)
+	// falls back to $XDG_DATA_HOME/boid; see workspaceHomeMetaDir's own doc
+	// comment. That fallback resolves against the ambient environment, so any
+	// package whose tests construct a bare &Runner{} and reach Dispatch must
+	// install testutil/homeenv's TestMain isolation or it will operate on the
+	// developer's real boid installation.
+	DataHomeDir string
+	JobEvents   JobEventSink // optional; nil disables job lifecycle broadcasts
 
 	// GitGateway is the git gateway's job-token registry
 	// (docs/plans/git-gateway-cutover.md PR4: gateway lifecycle + dispatch

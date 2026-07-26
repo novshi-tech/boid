@@ -58,6 +58,17 @@ type WireConfig struct {
 	// runtime directory here to host the per-sandbox docker proxy socket and
 	// resource ledger.
 	RuntimesDir string
+	// DataHomeDir is the daemon's own persistent data root, threaded
+	// straight to Runner.DataHomeDir (see its doc comment). server/wire.go
+	// passes dataHomeFor(cfg) — the same value it already gives
+	// projectSvc.DataDir, the attachments root and the repos root, so
+	// workspace home init bookkeeping lands in the `boid_state` volume with
+	// the rest of the daemon's durable state rather than on tmpfs
+	// (docs/plans/workspace-home-volume-persistence.md 論点b, PR2). Empty
+	// falls back to $XDG_DATA_HOME/boid rather than disabling anything —
+	// unlike dataHomeFor's other consumers, which do read "" as "feature
+	// disabled".
+	DataHomeDir string
 	// GitGateway is the git gateway's job-token registry
 	// (docs/plans/git-gateway-cutover.md PR4). nil disables gateway token
 	// registration entirely.
@@ -92,6 +103,7 @@ func Wire(cfg WireConfig) *Runner {
 		NoWorkspaceProxyPort: cfg.NoWorkspaceProxyPort,
 		AllowedDomains:       cfg.AllowedDomains,
 		RuntimesDir:          cfg.RuntimesDir,
+		DataHomeDir:          cfg.DataHomeDir,
 		GitGateway:           cfg.GitGateway,
 		GatewayURL:           cfg.GatewayURL,
 		GatewayCAPEM:         cfg.GatewayCAPEM,

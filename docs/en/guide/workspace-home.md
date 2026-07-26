@@ -43,19 +43,38 @@ unchanged.
 
 ### Contract
 
-- **When it runs**: on the first dispatch into the workspace, and again whenever
-  `init.sh`'s content changes (compared by sha256 hash). The completion marker lives at
-  `~/.local/share/boid/homes/<slug>.init.json`, outside `$HOME` itself, so a sandboxed job
-  cannot tamper with it
+- **When it runs**: on the first dispatch into the workspace, again whenever `init.sh`'s
+  content changes (compared by sha256 hash), and again whenever the workspace home itself
+  has been emptied or replaced since it was last initialized (see the next bullet). The
+  completion marker lives at `~/.local/share/boid/homes-meta/<slug>.init.json` — in the
+  **daemon's own data directory** (the one holding `boid.db`), not in the workspace home
+  — so it is outside the directory a sandboxed job gets mounted as its `$HOME`, and a job
+  cannot reach it that way
+- **The marker is checked against the home, not trusted on its own**: every successful
+  init also writes a random identity token to `<workspace home>/.boid-workspace-home-id`
+  and records the same value in the marker. Initialization is skipped only when both the
+  script hash and that token match. So if the home directory is wiped while the marker
+  survives — its parent directory is not guaranteed to be as durable as the daemon's own
+  data directory — the next dispatch re-runs `init.sh` rather than handing the agent an
+  empty `$HOME`. What this comparison protects against is the home being lost or replaced
+  by accident (the directory disappearing, a volume being removed, a restore from an old
+  backup) — not deliberate tampering by a job: a job can read this file inside its own
+  `$HOME`, so it can wipe the home and write the recorded value back. That is structural
+  (the home is the job's own writable area) and its worst outcome is that the next job in
+  the same workspace runs against a home this one already broke, which a job could do
+  regardless. Deleting, corrupting or replacing this file (with a symlink, a FIFO,
+  anything) only ever costs one extra — harmless, since `init.sh` must be idempotent —
+  initialization run, and can never take boid itself down: boid never follows this path
+  as a symlink, and checks that it is a regular file of at most 1 KiB before reading it
 - **Concurrent dispatch is serialized**: if multiple jobs dispatch into the same
   never-initialized workspace at once, `init.sh` still runs exactly once (an flock
   serializes it); the other callers wait for it to finish before continuing
 - **Execution environment**: runs on the host (trusted) with `/bin/bash` — the
   shebang line is ignored. **boid does NOT exec `init.sh` from its configured path**:
   the hashed bytes are copied to a private temporary file under
-  `~/.local/share/boid/homes/` first and bash is invoked on that copy (this closes a
-  symlink-based TOCTOU and guarantees that the hash recorded in the marker matches the
-  bytes that actually ran). As a result:
+  `~/.local/share/boid/homes-meta/` first — the same directory as the flock — and bash is
+  invoked on that copy (this closes a symlink-based TOCTOU and guarantees that the hash
+  recorded in the marker matches the bytes that actually ran). As a result:
   - `$0` is the temp file path, not the original `init.sh` path. A `dirname "$0"` cannot
     be used to reach sibling files under `~/.config/boid/workspaces/<slug>/`
   - Do not depend on the script's own location (`source ./foo`, `$PWD`-relative reads,
@@ -187,9 +206,12 @@ workspace homes:
 - To actually clean up an orphan, **delete the files directly by hand**:
   ```bash
   rm -rf ~/.local/share/boid/homes/<slug>/
-  rm -f ~/.local/share/boid/homes/<slug>.init.json
-  rm -f ~/.local/share/boid/homes/<slug>.lock
+  rm -f ~/.local/share/boid/homes-meta/<slug>.init.json
+  rm -f ~/.local/share/boid/homes-meta/<slug>.lock
   ```
+  (An installation upgraded from an older boid may still have
+  `~/.local/share/boid/homes/<slug>.init.json` / `.lock` lying around. The current daemon
+  never reads those, so removing them is optional.)
   `boid workspace remove <slug>` cannot be used here — by orphan's definition the DB
   row is already gone, so the command would 404. Manual `rm` is the only cleanup path
 - A size that fails to compute is shown as `?` and excluded from the total (this is not
