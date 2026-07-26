@@ -38,14 +38,16 @@ such as installing the claude CLI.
 `host_commands.yaml` in the host-side config directory — the sandbox can neither see nor
 write to it.
 
-A workspace with no `init.sh` is treated as "nothing to initialize" and dispatch proceeds
-unchanged.
+A workspace with no `init.sh` is treated as "no SCRIPT to run". The preparation step (prep)
+described below still runs exactly once either way.
 
 ### Contract
 
 - **When it runs**: on the first dispatch into the workspace, again whenever `init.sh`'s
-  content changes (compared by sha256 hash), and again whenever the workspace home itself
-  has been emptied or replaced since it was last initialized (see the next bullet). The
+  content changes (compared by sha256 hash), again whenever the workspace home itself
+  has been emptied or replaced since it was last initialized (see the next bullet), and
+  again whenever boid changes the environment it runs `init.sh` IN (see "When the init
+  environment changes" below). The
   completion marker lives at `~/.local/share/boid/homes-meta/<slug>.init.json` — in the
   **daemon's own data directory** (the one holding `boid.db`), not in the workspace home
   — so it is outside the directory a sandboxed job gets mounted as its `$HOME`, and a job
@@ -66,32 +68,68 @@ unchanged.
   anything) only ever costs one extra — harmless, since `init.sh` must be idempotent —
   initialization run, and can never take boid itself down: boid never follows this path
   as a symlink, and checks that it is a regular file of at most 1 KiB before reading it
+- **When the init environment changes**: the completion marker also records a generation
+  number identifying the environment that prepared the home. When a boid upgrade changes
+  where `init.sh` runs (most recently: from the daemon process on the host to a throwaway
+  container, which also moved `$HOME` to the path a job sees), the marker's generation no
+  longer matches and `init.sh` runs once more for that workspace. The toolchain itself is
+  already in the home, so an idempotent `init.sh` finishes quickly; what the re-run is
+  really for is the artifacts an installer bakes an ABSOLUTE PATH into — symlink targets,
+  shebangs, wrapper scripts — which have to be re-pointed at the new one. A plain version
+  bump does not trigger this; only a change of environment does
 - **Concurrent dispatch is serialized**: if multiple jobs dispatch into the same
-  never-initialized workspace at once, `init.sh` still runs exactly once (an flock
-  serializes it); the other callers wait for it to finish before continuing
-- **Execution environment**: runs on the host (trusted) with `/bin/bash` — the
-  shebang line is ignored. **boid does NOT exec `init.sh` from its configured path**:
-  the hashed bytes are copied to a private temporary file under
-  `~/.local/share/boid/homes-meta/` first — the same directory as the flock — and bash is
-  invoked on that copy (this closes a symlink-based TOCTOU and guarantees that the hash
-  recorded in the marker matches the bytes that actually ran). As a result:
-  - `$0` is the temp file path, not the original `init.sh` path. A `dirname "$0"` cannot
-    be used to reach sibling files under `~/.config/boid/workspaces/<slug>/`
-  - Do not depend on the script's own location (`source ./foo`, `$PWD`-relative reads,
-    etc.). Inline whatever the script needs, or read from files already present in the
-    workspace home
-  - `cwd` is set to `$BOID_WORKSPACE_HOME` (the workspace home directory)
-  The following environment variables are set:
-  - `HOME` — the workspace home directory (subsequent installs should land here)
-  - `BOID_WORKSPACE_SLUG` — the workspace's slug
-  - `BOID_WORKSPACE_HOME` — same value as `HOME`
-  - `PATH` / `USER` / `LOGNAME` / `LANG` / `LC_ALL` / `TERM` are inherited from the host
-    unchanged. Every other host environment variable (including the host's own `HOME` /
-    `XDG_*`) is deliberately NOT inherited
+  never-initialized workspace at once, `init.sh` still runs exactly once. Within one
+  daemon process an flock serializes it; ACROSS processes the exclusion is a deterministic
+  container name (`boid-ws-init-<installID8>-<slug>`), because an flock is released when
+  its process dies while the init container outlives it. If an init container is still
+  running under that name, the next dispatch waits for it to finish rather than racing it
+- **Execution environment**: runs inside a **throwaway container boid starts** (trusted),
+  with `bash`. It is no longer executed on the host.
+  - The image is the **default boid runner image**. A workspace's own
+    `container_image` override is NOT used: an override is only accepted if it carries
+    the `boid.runner_protocol` label, and no image bakes that label yet — so honoring it
+    would leave every workspace that sets `container_image` unable to prepare its home
+    at all
+  - The workspace home is mounted into that container, and `$HOME` is that **mount
+    target** — the same path a job sees its own `$HOME` at. Tools that bake absolute
+    paths under `$HOME` into wrapper scripts, shebangs or symlinks therefore keep working
+    inside the sandbox
+  - The network is the **engine's default bridge**, not the per-workspace network job
+    containers get (`internal: true`, egress only through an allowlist proxy), so
+    toolchain downloads succeed. The flip side is that **init.sh has unrestricted
+    egress** — deliberately, as part of the trusted boundary: boid chooses the script and
+    starts the container, and none of this runs inside a sandboxed job
+  - The shebang line is ignored. **boid does NOT exec `init.sh` from its configured
+    path**: the hashed bytes are written to a temporary file inside the container and
+    bash is invoked on that copy, which is what guarantees that the hash recorded in the
+    marker matches the bytes that actually ran. As a result:
+    - `$0` is that container-local temp path (`/tmp/...`), not the original `init.sh`
+      path. A `dirname "$0"` cannot be used to reach sibling files under
+      `~/.config/boid/workspaces/<slug>/`
+    - Do not depend on the script's own location (`source ./foo`, `$PWD`-relative reads,
+      etc.). Inline whatever the script needs, or read from files already present in the
+      workspace home
+    - The temp file is removed after the run
+  - `cwd` is set to `$BOID_WORKSPACE_HOME` (the workspace home)
+  - **stdin is `/dev/null`** — reading from standard input yields nothing
+  - Exactly **three** environment variables are set:
+    - `HOME` — the workspace home (subsequent installs should land here)
+    - `BOID_WORKSPACE_SLUG` — the workspace's slug
+    - `BOID_WORKSPACE_HOME` — same value as `HOME`
+
+    `PATH` comes from the image. The host's `PATH` / `USER` / `LOGNAME` / `LANG` /
+    `LC_ALL` / `TERM` are **no longer forwarded** (they were, before this changed); set
+    them yourself if you need them. Commands installed only on the host are unreachable —
+    install anything the image lacks from within `init.sh`
+- **The preparation step (prep) always runs**: at the start and end of that same
+  container, boid creates the bind-target skeleton (`~/.claude`, and
+  `~/.claude/skills/<name>` for each built-in skill) and writes the identity token
+  described above. A workspace with no `init.sh` still gets exactly one container run
 - **A failure fails dispatch**: a non-zero exit from `init.sh` does not silently skip
   initialization — the dispatch fails explicitly (the job ends up `failed`, the task
-  `aborted`), and the error message includes the exit code and a tail of the script's
-  output
+  `aborted`), and the error message names **which stage failed** (`prelude` /
+  `script-setup` / `init.sh` / `postlude`), the exit code, and a tail of the output.
+  `init.sh`'s own exit code is propagated unchanged
 
 ### What script authors must guarantee
 
@@ -132,9 +170,9 @@ is stored inside the workspace home). They are mounted per skill rather than as 
 mount of the whole directory so that the hand-copied skills below stay visible.
 
 Host-only custom skills you keep under `~/.claude/skills/<name>/` (e.g. a bitbucket or
-jira skill) are a different story: `init.sh` cannot copy them, because although it runs on
-the host, it is not given any variable pointing at the *real* host `$HOME` — `HOME` inside
-`init.sh` is already the workspace home.
+jira skill) are a different story: `init.sh` cannot copy them, because it runs inside a
+throwaway container that has no access to the host filesystem at all — the workspace home
+is the only thing mounted into it.
 
 To use this kind of skill in a workspace, copy it by hand once, as a human, when you set
 the workspace up:

@@ -5,9 +5,20 @@
 # workspace 側 (~/.config/boid/workspaces/<slug>/init.sh) にコピーして使う。
 #
 # 実行環境:
-#   - ホスト側 (trusted) で boid が dispatch 前に呼ぶ
-#   - HOME は workspace home に切替済み (以降の install はこの HOME 配下に着地する)
-#   - env: BOID_WORKSPACE_SLUG / BOID_WORKSPACE_HOME (= HOME) が入る
+#   - boid が dispatch 前に起こす**使い捨て container** の中 (trusted)。
+#     ホスト側での直接実行は PR5 (docs/plans/workspace-home-volume-persistence.md
+#     論点c) で廃止された。 image は job container と同じ boid-runner base、
+#     network は engine の既定 bridge (= 無制限 egress)
+#   - HOME は workspace home に切替済み (以降の install はこの HOME 配下に着地する)。
+#     しかもその path は **job が sandbox 内で見る $HOME と同一**なので、
+#     $HOME 配下に絶対 path を焼き込んでも sandbox 内で壊れない
+#     (PR5 以前はホスト側の実 path だったため絶対 symlink が dangling した —
+#     下の link_sandbox_safe が存在する理由)
+#   - env は **3 つだけ**: BOID_WORKSPACE_SLUG / BOID_WORKSPACE_HOME (= HOME) / HOME。
+#     PATH は image の値。 ホストの PATH / USER / LOGNAME / LANG / LC_ALL / TERM は
+#     **渡らない** (PR5 以前は渡っていた)
+#   - 使えるコマンドは image が持っているもの (bash / coreutils / curl / git / gh 等)。
+#     ホストにだけ入れてあるツールには到達できない
 #
 # 契約:
 #   - 冪等 (完了マーカー破損 or script 更新での再実行に耐える)
@@ -27,7 +38,11 @@ log() { printf '[init %s] %s\n' "${BOID_WORKSPACE_SLUG:-?}" "$*" >&2; }
 
 require() {
     if ! command -v "$1" >/dev/null 2>&1; then
-        log "error: '$1' not found on host — install it before dispatch"
+        # "in the init container", not "on host": since PR5 this script runs
+        # inside boid's own runner image, so the fix is to add the tool to
+        # build/container/Dockerfile (or install it from this script), not to
+        # the machine the daemon happens to be running on.
+        log "error: '$1' not found in the init container — add it to the boid runner image (build/container/Dockerfile) or install it here"
         exit 1
     fi
 }
@@ -35,11 +50,15 @@ require() {
 # sandbox-safe な symlink を張るヘルパー。
 #
 # 背景 (docs/plans/home-workspace-volume.md):
-#   host 側で workspace HOME (`~/.local/share/boid/homes/<slug>/`) に install
-#   したツールは、 sandbox 内では `/home/<user>` に bind mount 経由で
-#   見えるだけで、host の実 path は sandbox からは見えない。
-#   絶対 path で symlink を張ると sandbox 内で dangling する。
-#   `$HOME` 配下の絶対 path なら link ディレクトリからの相対に置き換える。
+#   PR5 以前、このスクリプトは host 側で走り、 workspace HOME は
+#   `~/.local/share/boid/homes/<slug>/` という host の実 path だった。
+#   一方 sandbox 内ではそれが `/home/<user>` に bind mount 経由で見えるだけなので、
+#   絶対 path で張った symlink は sandbox 内で dangling した。
+#   PR5 (docs/plans/workspace-home-volume-persistence.md 論点c) で init が
+#   container 実行になり、 `$HOME` は **job が見るのと同じ path** になったので
+#   この不一致は解消している。 それでもこのヘルパーを残しているのは、
+#   相対 symlink なら home ごと別の path へ移しても壊れないからで、
+#   移行中の環境や将来の path 変更に対する保険として引き続き推奨される。
 #
 # $1: target (絶対 path でも相対 path でも可)
 # $2: link path

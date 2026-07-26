@@ -1,6 +1,6 @@
 # workspace HOME の named volume 化 (永続性退行の修復)
 
-**状態**: 実装中 (2026-07-26 作成。PR1 / PR2 / PR3 / PR4 landed、PR5 以降未着手)
+**状態**: 実装中 (2026-07-26 作成。PR1 / PR2 / PR3 / PR4 / PR5 landed、PR6 以降未着手)
 **発端**: 2026-07-26 volume-only dogfood
 **関連**: `home-workspace-volume.md` (Phase 4、破られた契約の出典) / `volume-only-daemon.md` (退行を持ち込んだ cutover) / `phase6-container-backend.md`
 
@@ -317,15 +317,72 @@ marker だけは打たれる (`home-workspace-volume.md:98`) ので、条件分�
 実際に必要なのは volume ではなく **home ディレクトリの incarnation の identity** で、
 これは PR2 の時点で既に必要になっている。
 
+#### marker の世代 (`init_generation`) — PR5 codex レビュー 2 巡目 [Major 1] で追加
+
+**決定**: marker に `init_generation` (int、`omitempty`) を持たせ、
+**現在の世代と一致しない marker は再 init 扱い**にする。現在値は
+`dispatcher.workspaceHomeInitGeneration`。
+
+| 世代 | 実行環境 |
+|---|---|
+| **0** (= フィールド不在) | PR2-PR4。daemon プロセスが `/bin/bash` を直接 exec し、`$HOME` は host の `~/.local/share/boid/homes/<slug>` |
+| **1** | PR5 以降。runner image から起こす使い捨て container。`$HOME` は **job が見るのと同じ container 内 path** (`hostHomeDir()`) |
+
+**なぜ必要か**: PR5 の skip 条件は script hash と nonce だけで、**どちらも PR2-PR4 期に
+init 済みの workspace で一致する**。つまり PR5 の新経路が既存 install で一度も実行されず、
+「init.sh が job と同じ `$HOME` パスを見る」という PR5 の目的 (論点c §D9 / 挙動変化 2) が
+**既存 workspace に一切反映されない**。 script の内容は変わっていないが、
+それを実行した**環境**が変わっており、この 2 つは独立した軸である
+(`ScriptSHA256` が前者、`init_generation` が後者)。
+
+**なぜコストが低いか**: 世代 1 の時点では home の**実体は変わっていない**
+(host の `homes/<slug>` を bind するだけ) ので、toolchain は既にそこにある。
+冪等が契約の init.sh は大半を短絡する。再 init が実際に直すのは
+**絶対パスを焼き込んだ artifact** — symlink の target、shebang、wrapper script、
+installer が記録した prefix。
+
+**なぜ PR6 まで待てないか**: PR6 は fresh volume なので nonce ファイルが無く、
+nonce 突合だけでも自然に再 init される。**問題は PR8** — 移行 CLI は既存 host home の
+**内容を volume にコピー**するので、忠実にコピーすれば `.boid-workspace-home-id` も一緒に運ばれる。
+すると **nonce が一致してしまい init が skip され、host 時代の焼き込みがそのまま生き残る**。
+そのとき唯一食い違うのが世代である (論点 f 参照)。
+
+**比較は等値であって下限ではない**。`>=` は「必要な世代以上なら OK」と読めて自然だが、
+リリースを rollback した環境で「実行中の build が用意していない home」を skip してしまう。
+不一致はすべて再 init。
+
+**`BoidVersion` を流用しない理由**: 既に記録されており毎リリース変わるので、比較に使うと
+**環境が変わっていない patch release でも全 workspace が再 init される**。
+世代は「名前が指すものが変わったときだけ変わる」ので、不一致に意味がある。
+
+以上は `workspace_home.go` の `workspaceHomeInitGeneration` /
+`workspaceHomeMarker.InitGeneration` / `workspaceHomeInitialized` の doc comment にも
+同じ内容で書いてある。テストは
+`TestResolveWorkspaceHome_MarkerFromAnOlderExecutionGeneration_ReInitializes` /
+`..._MarkerRecordsTheCurrentExecutionGeneration` /
+`..._MarkerFromANewerExecutionGeneration_ReInitializes` で pin。
+
+**今後この機構を使う条件**: 実行環境を変える PR は世代を bump する。逆に
+「script の解釈が変わらず、用意される home も同一」であれば bump しない。
+
 ### 論点 b-2: volume prep ステップ (init.sh の有無に関わらず必ず 1 回走らせる)
 
 **volume 作成後、init.sh の有無に関わらず prep container を 1 回走らせる。** 仕事は 2 つ:
 
-1. **skeleton の mkdir** を **uid 1000 で**作る。 作るべきものは
-   `~/.claude` と、**embedded skill ごとの `~/.claude/skills/<name>`**
+> **PR5 で実装済み (2026-07-27)**。 独立した prep container ではなく、init container の
+> builtin prelude / postlude として統合した (論点c §D1)。 実際に作る集合は
+> `dispatcher.workspaceHomeSkeletonDirs()` が単一出典で、daemon 側の `prepareBindTarget`
+> と共有している (drift すると engine が uid 0 でその 1 本だけ作ってしまうため)。
+> `~/.local/bin` などは**入れていない** — bind target ではないので engine の自動生成対象に
+> ならず、必要なら init.sh が自分で作れる。
+
+1. **skeleton の mkdir** を **backend の uid/gid で**作る (§D7 — daemon の
+   `os.Getuid()` 由来であり、**リテラルの 1000 ではない**。 GH Actions では 1001 になる実績がある)。
+   作るべきものは `~/.claude` と、**embedded skill ごとの `~/.claude/skills/<name>`**
    (`skills.EmbeddedSkillNames()` の各 entry — 論点 e-2 の決定で bind は
    skill ごとに 1 本ずつになったので、`~/.claude/skills` を作るだけでは
-   足りない)、加えて `~/.local/bin` など。
+   足りない) の**ちょうどその集合だけ**であり、`~/.local/bin` のような
+   bind target でないディレクトリは**含まない** (上の PR5 注記を参照)。
    **PR3 が daemon プロセスの `skills.MkdirAllNoSymlink` で暫定的にやっているのと
    同じ集合**であり、PR5 の仕事はその移設である (論点 e-2 の
    `syncEmbeddedSkills` doc comment 参照)
@@ -358,6 +415,8 @@ drwxrwxr-x 2 1000 1000 4096 Jul 26 05:24 .claude/skills
 「**script 実行なし (prep は必ず行う)**」に改める。init.sh を持つ workspace では、
 prep を init container の先頭に boid が挿入する builtin prelude として統合すればよい
 (container 起動は 1 回で済む)。
+→ **PR5 で `docs/plans/home-workspace-volume.md` の 契約節・`docs/{ja,en}/guide/workspace-home.md`・
+`docs/examples/workspace-home-init.sh` に反映済み。**
 
 #### bind target の TOCTOU: 窓は閉じない・**回復不能な結果だけ**塞ぐ (PR3 codex レビューの判断)
 
@@ -426,39 +485,62 @@ engine が uid 0 で自動生成する。
 案 A ではこれを **workspace volume をマウントした使い捨て container** に置き換える。
 DooD の仕組み (job container 生成) は既にあるので流用できる。
 
-- image: `boid-runner:latest` (job と同じ)
-- mount: workspace volume → `/home/boid`
-- env: `buildWorkspaceInitEnv` 相当 (HOME / BOID_WORKSPACE_SLUG / BOID_WORKSPACE_HOME +
-  PATH 等の allowlist)。ただし **host の PATH を引き継ぐ意味が無くなる** ので、
-  container の PATH に読み替える必要がある
-- script の渡し方: **stdin (`bash -s`) に一本化する**。daemon container 内の一時ファイルは
-  host engine から見えないので sibling container の bind source にできない
-  (compose.yml の KNOWN GAP 節と同じ構造)。素朴に `os.CreateTemp` すると詰まる
-- 出力: 現行同様に集約して `slog` へ。失敗時は exit code と tail をエラーに含める
-- **network**: 明示的に決めること。job container は per-workspace の internal network
-  (`internal: true`、egress は allowlist proxy 経由のみ) に閉じ込められるが、init.sh の
-  主目的は toolchain のダウンロード (実測 1.5GB: go / node / volta / claude / codex / opencode) で、
-  その allowlist 下では installer がほぼ全滅する。無制限 egress を持つ network に置くのが
-  妥当だが、それは「trusted 境界は維持される」の一部として明文で宣言すべき事項であって、
-  暗黙に決めてよいことではない。**どの network に attach するかを実装者が一意に読めるよう
-  書くこと** — 「compose project の default network (`boid_default`) に
-  `docker network connect` する」のか「engine の既定 bridge に置く」のかで指定が変わる
-- **多重実行の防止**: flock はプロセス死で解放されるが、container は親プロセスの死を生き延びる。
-  daemon が crash して再起動した場合、次の dispatch が再 init を始めた時点で**旧 init container が
-  まだ volume に書いている**可能性がある。Phase 4 の「同時 dispatch でも実行は 1 回」契約
-  (`home-workspace-volume.md:83`) が破れる。決定的な container 名
-  (例 `boid-ws-init-<installID8>-<slug>`) を name 衝突による相互排除に使い、
-  起動前に既存 init container を検出して待つか殺すこと
-- **init container の label**: `boid.job_id` を付けてはいけない。`ReapOrphans` の
-  `ReapedJobIDs` → MarkStale / auto-reopen の job 会計を汚染する
-  (`container_backend.go:1261` 付近)。かといって無 label だと誰も掃除しないので、
-  専用 label と掃除規則を論点 a と揃えて決めること
-
 **trusted 境界は維持される** — script を選ぶのも container を起こすのも daemon であり、
 sandbox 化された job の中で走るわけではない (A' との違いはここ)。ただし
 「ホスト側で実行」という文面は「daemon が制御する専用 container で実行」に更新が要る。
-`home-workspace-volume.md` の init.sh 契約節と、リファレンス実装 init.sh の
-冒頭コメントの両方を直すこと。
+
+**決定 (PR5 で確定・実装済み)**。以下 §D1〜§D10 は実装が従っている決定であり、
+対応する doc comment (`internal/dispatcher/workspace_init.go` /
+`container_backend_workspace_init.go`) に同じ内容が根拠つきで書いてある。
+
+| # | 項目 | 確定値 |
+|---|---|---|
+| **D1** | container の回数 | **1 回だけ**。prep (skeleton mkdir / nonce 書き込み) は別 container ではなく、boid が挿入する **builtin prelude / postlude** として同じ container に統合する。**init.sh の有無に関わらず必ず 1 回走る** (論点 b-2 の 2 — 素通し workspace に nonce を書く主体が無くなるため) |
+| **D2** | user script の渡し方 | wrapper 全体を container の **stdin に流す** (`bash -s`)。daemon container 内の一時ファイルは host engine から見えず sibling container の bind source にできない (compose.yml の KNOWN GAP と同じ構造)。user script は wrapper に**連結しない** — **quoted heredoc** (`<<'DELIM'`) で container 内の一時ファイルに書き出してから `bash <file>` で実行する。delimiter は **crypto/rand 由来の推測不能な文字列** (`BOID_INIT_EOF_<32 hex>`) を run ごとに生成する。**「hash した bytes == 実行した bytes」は維持されるが、hash 対象は user script であって wrapper 全体ではない**。heredoc は最終行を必ず改行終端するので、**改行で終わらない script は 1 byte 増える** — そこだけ `truncate -s -1` で戻して byte 一致を保つ。NUL byte を含む script と delimiter 行を含む script は **fail-closed で拒否**する (前者は heredoc で運べない、後者は無言の切り詰めになる) |
+| **D3** | exit code | user script が非ゼロなら init は失敗し、**その exit code をそのまま伝播**する。prelude / script-setup / postlude は boid 側の段階なので専用 code (91 / 92 / 93) を返す。**postlude (nonce) は user script が成功したときだけ実行する**。段階の判別は wrapper が stderr に出す `boid-init: stage=<stage> exit=<code>` マーカー行 (**最後の 1 行が勝つ**) を第一根拠とし、マーカーが無いときだけ exit code 表に落ちる — user script が 91 を返しても prelude 失敗と誤認しないため。マーカーも boid code も無い場合は `unknown` (例: OOM kill の 137、engine 側の起動失敗) で、**init.sh のせいにはしない** |
+| **D4** | network | **engine の既定 bridge** (`NetworkingConfig` も `NetworkMode` も設定しない)。理由: ①job 用 workspace network は `Internal: true` + allowlist proxy で、init.sh の主目的である toolchain ダウンロード (実測 1.5GB) がほぼ全滅する。②compose の `boid_default` に `docker network connect` する案は却下 — daemon の自己特定に依存するが `ContainerBackendOptions.SelfContainerID` は `os.Getenv("HOSTNAME")` 由来で**実環境 (live rootless podman) では空になる実績がある**。必要な性質は「外に出られる」ことだけ。③init container は daemon の内部サービス (broker / gateway / egress / dockerproxy) と話す必要が無い。**無制限 egress を持つことは trusted 境界の一部として明示的に宣言する** |
+| **D5** | label と掃除 | 専用キー `boid.workspace_init` (値 = slug) + `boid.workspace_init_install_id`。**`boid.job_id` を付けてはいけない** — `ReapOrphans` は presence だけで列挙し `ContainerRemove{Force, RemoveVolumes}` するので 1.5GB ダウンロード途中でも殺され、さらに remove 失敗が `FailedJobIDs` に載って**無関係な task の auto-reopen を抑止**する。`boid.install_id` も同様に `reap.Run` の filter。掃除は `ReapOrphans` に**専用 label を見る別ループ** (`reapOrphanWorkspaceInitContainers`) を足して行い、**`ReapedJobIDs` / `FailedJobIDs` は一切汚さない**。回収対象は**終端状態の allowlist** = `exited` / `dead` のみ (`workspaceInitContainerIsTerminal`)。初版は `running` / `restarting` を守る denylist だったが **`paused` が force remove に流れていた** (codex レビュー 2 巡目 [Major 2])。paused は終了済みの残骸ではなく**途中状態を保持した生存プロセス**で、daemon 再起動だけで install が破棄される。allowlist に反転すると**未知の状態文字列が自動的に保護側**に落ちる — engine は state を増やすし wire 型はただの string なので、denylist は同じ形のバグを将来分ぶん抱える。`created` も**終端ではない**ので回収しない (create と start の間の並行 daemon と区別できない)。`removing` は engine が既に処分中。回収し損ねた container は決定的名により次の init が D6 の経路で解決するので、誤って残す代償は container レコード 1 個に収まる。集合の出典は `container.ContainerState` (`moby/moby/api/types/container/state.go`) と `ValidateContainerState` |
+| **D6** | 多重実行の防止 | 決定的な container 名 `boid-ws-init-<installID8>-<slug>` (`dockerres.WorkspaceInitContainerName`) による名前衝突。flock はプロセス死で解放されるが container は生き延びるので、daemon crash 後の再 init を止められるのは engine 側の 409 だけ。衝突は `errdefs.IsConflict` で検出し、既存が **running なら完了を待つ** (上限 30 分)、**停止していると確認できたときだけ**即 remove、その後 create を 1 回だけ retry し、**2 回目も conflict したら fail loud**。**破壊の前に「自分のものか」を 3 つの label 値すべてで確認する**: `boid.workspace_init` の**存在**・その**値 == 今 init しようとしている slug**・`boid.workspace_init_install_id` == 自 install。初版は slug の**値**を比較せず「名前は (installIDPart, slug) の純関数だから構成上一致する」と論じていたが、**これは循環している** — 衝突相手がその生成関数で作られた保証こそが未知だからである (`docker rename` で他 workspace の init container が名前を奪える。codex レビュー 2 巡目 [Blocker])。また `InspectResponse.State` は**ポインタ**であり `nil` は「停止」ではなく「engine が状態を答えなかった」なので、**inspect が 500 を返したときと同じく fail loud** にして何も消さない (同 [Blocker])。待ち上限を超えた場合は **force kill せず fail** する (上限超過時に boid は「遅い install」と「wedge」を区別できず、後者を誤って kill する代償の方が大きい)。flock は同一プロセス内の直列化として**引き続き維持** |
+| **D7** | uid / userns | `User` は job container と同じ `b.uid:b.gid` (daemon の `os.Getuid()` 由来。**リテラルの 1000 は書かない** — GH Actions では 1001 になる実績がある)。rootless podman では `UsernsMode: keep-id` (`resolveUsernsMode` の backend 単位キャッシュを流用) — 付けないと prep が作ったディレクトリが host 側で subuid 所有になり、PR3 の `prepareBindTarget` が即 fail する |
+| **D8** | image と Entrypoint | image は **backend の default (`boid-runner:latest`)**。workspace の `ContainerImage` override は**尊重しない**: ①`resolveWorkspaceHome` は `Runner.resolveContainerImage` より前に走り、backend 外から image を解決する公開経路が無い。②`resolveImage` は `boid.runner_protocol=v1` label の無い override を拒否し、その label を焼いている image は**まだ存在しない**ので、尊重すると `container_image` を設定した workspace は home 初期化ごと不可能になる。③§決定 11 により override は base image 由来が必須なので base は常に部分集合。image の ENTRYPOINT は `["/usr/local/bin/boid","runner-container"]` 固定なので **`Entrypoint: ["/bin/bash","-s"]` で明示的に上書き**し、`Cmd` は空 slice (nil は image の CMD を継承する)。TTY 無しなので出力は `demuxDockerFrame` で demux する |
+| **D9** | env | **`HOME` / `BOID_WORKSPACE_SLUG` / `BOID_WORKSPACE_HOME` の 3 つだけ**。旧 allowlist (`PATH` / `USER` / `LOGNAME` / `LANG` / `LC_ALL` / `TERM` を daemon プロセスの値で) は全部落とす。`PATH` は **key ごと出さない** — そうすることで engine が image の PATH を適用し、boid 側に image と drift しうる定数を持たなくて済む。`USER`/`LOGNAME` は daemon の host 上の identity で container の user とは無関係 (image は該当 uid の `/etc/passwd` entry を焼いてある)。`LANG`/`LC_ALL` は image に無い locale を指すと glibc/perl が警告を出す。`TERM` は TTY が無いのに curses 系 installer が描画を試みる原因になる。**`HOME` の値は job が見るのと同じ container 内 path** (`hostHomeDir()`) — installer が `$HOME` 配下に焼き込む絶対 path が sandbox 内で有効であるために必須 |
+| **D10** | 実装の置き場 | `RunWorkspaceInit` は **backend 側 (`*containerBackend`)**。ただし `backend.SandboxBackend` interface には足さない — あれは **job** の lifecycle 契約 (Launch/session/Wait/ReapOrphans) であり、init には job row も session も transcript も job 会計も無い。代わりに **`dispatcher.WorkspaceInitExecutor` を新設して `Runner.Backend` に型アサーション**する (既存様式: `IsContainerBackend` / `ContainerBackendUIDGID` / `ContainerBackendBrokerTLS`)。request 型 `dispatcher.WorkspaceInitRequest` は **export する** — しないと他 package のテストが自前 backend で interface を満たせず、「この fake は workspace home を用意できない」が compile error ではなく実行時エラーになる。`backend.SandboxSession` は通さない (transcript spool / registerSession / diagnostics collector が付いてくる) — `ContainerCreate` + attach + `ContainerWait` + demux を直接叩く軽量パス |
+
+**PR5 が持ち込む挙動変化** (ユーザから見えるもの):
+
+1. **init.sh の実行環境が host から container になった** — 使えるコマンドは image が持つものだけ。
+   ホストにしか無いツールには到達できない
+2. **`$HOME` の値が変わった** — ホストの `~/.local/share/boid/homes/<slug>` から
+   container 内の mount 先 (job が見るのと同じ path) へ。 **副作用として、
+   `$HOME` 配下に絶対 path を焼き込むツールが sandbox 内で壊れなくなった**
+   (`docs/examples/workspace-home-init.sh` の `link_sandbox_safe` が存在する理由が消えた。
+   ヘルパー自体は path 変更に対する保険として残す)
+3. **env が 3 つに絞られた** (§D9)
+4. **`$0` の値が変わった** — daemon 側 `homes-meta/` の一時ファイルから container 内 `/tmp/...` へ
+5. **stdin が `/dev/null` になった** (旧実装も `exec.Cmd{Stdin: nil}` = /dev/null なので実質不変だが、
+   wrapper が stdin 経由で来る以上「user script が stdin を読むと wrapper を食う」罠が生じるため、
+   明示的に `</dev/null` を付けて維持している)
+6. **prep が init.sh の有無に関わらず走る** (§D1)。素通し workspace でも container が 1 回起動する
+7. **エラー文面に段階名が入る** (§D3)
+8. **skeleton mkdir の失敗が prelude で先に出る** — fresh workspace で `<home>/.claude` が
+   ファイルで塞がれている場合、以前は `prepareBindTarget` の (復旧手順つきの) エラーだったが、
+   PR5 では prelude の mkdir が先に当たる。 どちらも fail loud で、
+   `prepareBindTarget` の経路は **初期化済み home に対して**引き続き効く
+   (そもそもそれが検出したい状況 — prep 後に job が `~/.claude` を差し替える — の形である)
+9. **既存 workspace で init.sh が upgrade 後 1 回だけ再実行される** — marker の
+   `init_generation` が世代 0 (PR2-PR4 の host 実行) のままなので、PR5 の実行環境で
+   1 度も init されていない home として扱われる。 これが無いと 1〜8 のどれも既存 install に
+   届かない (上の 2 — `$HOME` パスの統一 — が特に効かない)。 詳細と根拠は
+   論点 b の「marker の世代」節
+
+**PR5 で意図的に残したもの**: `syncEmbeddedSkills` の daemon 側 mkdir
+(`prepareBindTarget`) は**撤去しない**。論点 b-2 は「PR5 の prep へ移設する」と書いているが、
+prep は home につき 1 回しか走らない (marker は init.sh の hash しか見ない) のに対し、
+**embedded skill の集合は boid バイナリの性質**である。 skill を 1 つ増やした release は
+marker が一致したままの home に bind target を 1 つ増やすので、daemon 側 mkdir を今消すと
+その target だけ engine が uid 0 で作る — 論点 b-2 が塞いだはずの罠がそのまま再発する。
+PR6 で home が volume 化したときに「消す」のではなく「volume でも効く形に置き換える」こと。
+所有者**検証**を daemon 側に残すのは論点 e-2 の明文の決定どおり (作る側と同じ場所に置くと意味を失う)。
 
 ### 論点 d: init.sh 自身の置き場 (別課題だが密結合)
 
@@ -590,7 +672,8 @@ mkdir の直後には**所有者検証**が付く (`prepareBindTarget`)。これ
 
 **この方式は論点 b-2 の prep ステップとセットでなければ完成しない。** PR6 で
 workspace HOME が volume になると上記の daemon 側 mkdir が効かなくなるので、prep で
-`~/.claude`、`~/.claude/skills`、`~/.claude/skills/<name>` を uid 1000 で先に作っておくこと。
+`~/.claude`、`~/.claude/skills`、`~/.claude/skills/<name>` を **backend の uid/gid で**
+(§D7 のとおり daemon の `os.Getuid()` 由来。 リテラルの 1000 ではない) 先に作っておくこと。
 併せて、volume 化後は daemon から `fstat` で所有者を読む今の実装が使えなくなるため、
 所有者検証の実現手段 (prep container 内での検証 + 結果の持ち帰り等) を PR6 で決め直すこと。
 **検証そのものを落としてはならない** — 落とすと「認証が毎回消える」silent failure が戻る。
@@ -620,6 +703,36 @@ uid mapping を理由に退けた engine bind が要る)。したがって「起
 
 一度きりの移行なので **CLI (`boid workspace import-home <slug> --from <dir>`) に限定するのが素直**。
 
+#### PR8 への申し送り: 移行時に nonce / marker をどう扱うか (PR5 codex レビュー 2 巡目)
+
+移行は「中身のコピー」なので、素直に書くと **`<home>/.boid-workspace-home-id` も一緒に運ばれる**。
+そのとき marker 側の `home_id` は書き換えられていないので **nonce 突合が通ってしまい**、
+volume に移った直後の home に対して init が skip される。これは
+「PR6 は fresh volume だから nonce が無く自然に再 init される」という PR6 の想定が
+**PR8 では成立しない**ことを意味する。
+
+**PR5 の時点で `init_generation` を入れたのはこのためである** (論点 b の該当節)。
+世代が食い違っている限り、nonce が一致していても再 init される。
+
+PR8 が満たすべき条件は次のいずれかであり、**「何もしない」は選択肢に入らない**:
+
+1. **tar から nonce ファイルを除外する** (`--exclude`)。突合が「nonce 不在」で落ちるので
+   確実に再 init される。中身のコピーとしても正しい — nonce は home の
+   **incarnation の identity** であって home の内容ではないので、別の入れ物に移した以上
+   同じ値を名乗るべきではない
+2. **移行後に marker を削除する**。次の dispatch が marker 不在から再 init する
+3. **世代に頼る**。PR6/PR8 が実行環境を変える (volume 化 = §D-mount が変わる) なら
+   その PR で `workspaceHomeInitGeneration` を bump し、旧世代の marker として弾く
+
+**1 と 3 の併用を推奨する**。1 は移行 CLI 自身の中で完結し、他の PR の作為に依存しない。
+3 は「host home を volume に移したのに init は host 時代のまま」という
+**PR8 を経由しない経路** (手動 `docker cp`、backup からの復元) にも効く。
+2 は marker を消すと `boid_version` / `completed_at` の履歴も失うので単独では採らない。
+
+**どの案でも移行直後に init.sh が 1 回走る**ことは PR8 の受け入れ条件として明示すること。
+1.5GB の toolchain が既にコピー済みなので、冪等な init.sh なら短時間で終わる。
+逆に「移行したのに init が 1 度も走らない」場合は上記の穴が開いている。
+
 ## PR 分割案
 
 | PR | 内容 | 挙動変化 | 依存 |
@@ -628,7 +741,7 @@ uid mapping を理由に退けた engine bind が要る)。したがって「起
 | 2 | **[landed]** marker/lock **+ init.sh 実行用一時ファイル**を daemon 永続領域 (`boid_state` = `dataHomeFor(cfg)`) の `homes-meta/` へ移設。**`dataHomeFor(cfg)` → `WireConfig.DataHomeDir` → `Runner.DataHomeDir` の配線を 1 本新設** (`Runner` は永続領域を知らなかった)。**＋ 論点 b の nonce (marker `home_id` ↔ `<homeDir>/.boid-workspace-home-id` の突合) を同 PR で導入** (初版は PR5/PR6 に割り当てていた。移した理由は論点 b 参照)。**＋ nonce の読み取り安全化** (`O_NOFOLLOW` / `O_NONBLOCK` / regular file 確認 / 1 KiB 上限。job が nonce を FIFO や symlink に置換して daemon を止められた経路を塞ぐ — 論点 b 参照)。**＋ `testutil/homeenv` によるテスト隔離** (`internal/dispatcher` / `internal/server` / `cmd` の `TestMain`) | 置き場 + 突合。**旧 marker (置き場も `home_id` も違う) は読まないので upgrade 後 workspace ごとに init.sh が 1 回だけ再実行される** (冪等前提で吸収)。旧 marker の削除はしない。以後は **HOME が消えれば marker があっても再 init される** | — |
 | 3 | **[landed]** skills の materialize 先を host-visible runtime dir (`<runtimesRoot>/skills`) へ + `$HOME/.claude/skills/<name>` へ **skill ごとに RO bind** + bind target の daemon 側 mkdir (`skills.MkdirAllNoSymlink`、PR5 の prep に移る暫定) + `internal/server/server.go` の dead な `DeployAll` 撤去 | workspace HOME に skill の実体を置かなくなる (既存 install の `<home>/.claude/skills/<name>` は RO bind に覆われて見えなくなるだけで、削除はしない)。 sandbox 内で skill が **RO** になる (従来は rw、job が書き換えても次 dispatch で復元されていた)。 `<dataHome>/skills` が更新されなくなる (読み手はいない) | — |
 | 4 | **[landed]** `WorkspaceSlug` を独立に thread する: `resolveWorkspaceHome` の戻り値を `(homeDir, slug, error)` にして、正規化 (`normalizeWorkspaceSlug`) が起きるその場から slug を返す。`Dispatch` はそれを `SandboxRuntimeInfo.WorkspaceSlug` へ流し、`runner.go` の `filepath.Base(workspaceHomeDir)` 依存を撤去 (slug の計算箇所は 1 つのまま — 2 箇所で独立に計算する形にはしない)。**＋ home dir 名を決める 1 行を `workspaceHomeDirFor` へ切り出す**: PR6 が volume 名 (`boid-ws-home-<installID8>-<slug>`) に差し替える地点であり、同時に**「basename ≠ slug」の状況をテストが作れる唯一の seam** — 現行レイアウトでは両者が一致するので、これが無いと「パスから導出していない」ことを検証するテストが tautological になり退行を検出できない | 無し (同じ値が別経路で渡るだけ) | — |
-| 5 | init.sh + prep を使い捨て container 実行へ (network / stdin / 多重実行防止 / prep skeleton = **PR3 が daemon 側でやっている `~/.claude` + skill ごとの `~/.claude/skills/<name>` の mkdir をここへ移設** + **nonce 書き込みの移設**: 機構は PR2 で入っているので、書く主体を daemon プロセスから prep container に移すだけ)。**この時点では現行の host-visible homes dir を engine bind して検証する** | init.sh の実行環境が変わる | 3 |
+| 5 | **[landed]** init.sh + prep を使い捨て container 実行へ (論点c §D1-§D10: 既定 bridge / stdin + quoted heredoc / 決定的 container 名による多重実行防止 / prep skeleton mkdir と nonce 書き込みを prelude・postlude として統合 / 専用 label + `ReapOrphans` の別ループ / `WorkspaceInitExecutor` の型アサーション)。**現行の host-visible homes dir を engine bind して検証する**。`prepareBindTarget` の daemon 側 mkdir は**残した** (理由は論点c の「意図的に残したもの」)。**＋ marker の `init_generation`** (論点 b の該当節) — 無いと新経路が既存 workspace で一度も走らない | **init.sh の実行環境が変わる** (host → container)。`$HOME` の値・env 一覧・`$0`・素通し workspace の扱い・エラー文面が変わる — 一覧は論点c の「PR5 が持ち込む挙動変化」。**既存 workspace は upgrade 後 1 回だけ init.sh が再実行される** | 3 |
 | 6 | **[不可分コア]** `resolveWorkspaceHome` を volume ベースへ + `homeMounts` の volume 化 + 契約 doc 更新 (nonce 突合は PR2 で導入済み。ここでは nonce の読み書きが volume 越しになることの確認のみ) | **workspace HOME が volume になる** | 1,2,4,5 |
 | 7 | workspace remove 連動の削除・サイズ可視化・orphan 検出を volume API へ rewiring (論点 a-2) | | 6 |
 | 8 | 既存 homes の移行 CLI (`boid workspace import-home`、uid mapping を跨ぐ tar stdin) | | 6 |

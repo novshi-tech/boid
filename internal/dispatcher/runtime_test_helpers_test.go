@@ -3,7 +3,10 @@ package dispatcher_test
 import (
 	"context"
 	"fmt"
+	"os"
+	"os/exec"
 	"sort"
+	"strings"
 	"sync"
 	"syscall"
 
@@ -58,6 +61,13 @@ func (b *statefulBackend) Adopt(_ context.Context, runtimeID string) (backend.Sa
 	defer b.mu.Unlock()
 	sess, ok := b.sessions[runtimeID]
 	return sess, ok
+}
+
+// RunWorkspaceInit satisfies dispatcher.WorkspaceInitExecutor, which
+// resolveWorkspaceHome requires of every backend since PR5 — see
+// runWorkspaceInitInProcess (runtime_test_helpers_test.go).
+func (b *statefulBackend) RunWorkspaceInit(ctx context.Context, req dispatcher.WorkspaceInitRequest) error {
+	return runWorkspaceInitInProcess(ctx, req)
 }
 
 func (b *statefulBackend) ReapOrphans(context.Context) (backend.ReapReport, error) {
@@ -134,3 +144,38 @@ func (s *statefulSession) Stop(context.Context) error {
 }
 
 func (s *statefulSession) Signal(context.Context, syscall.Signal) error { return nil }
+
+// runWorkspaceInitInProcess is this package's stand-in for the throwaway init
+// container PR5 introduced (docs/plans/workspace-home-volume-persistence.md
+// 論点 c): it runs the wrapper resolveWorkspaceHome assembled under a real
+// bash, in this test process.
+//
+// Every fake backend in this package embeds it rather than returning nil,
+// because resolveWorkspaceHome's contract depends on the run having HAPPENED:
+// the bind-target skeleton has to exist and the home has to carry its identity
+// token, or the very next dispatch re-runs init and logs a desync warning. A
+// no-op would leave every Dispatch test running against a workspace home in a
+// state production never produces.
+//
+// It is not a container. HOME/BOID_WORKSPACE_HOME are rewritten from the
+// request's container-side target back to its host-side source, since there is
+// no mount here to make the two the same thing.
+func runWorkspaceInitInProcess(ctx context.Context, req dispatcher.WorkspaceInitRequest) error {
+	env := make([]string, 0, len(req.Env)+1)
+	for k, v := range req.Env {
+		if v == req.HomeTarget {
+			v = req.HomeSource
+		}
+		env = append(env, k+"="+v)
+	}
+	env = append(env, "PATH="+os.Getenv("PATH"))
+
+	cmd := exec.CommandContext(ctx, "/bin/bash", "-s")
+	cmd.Stdin = strings.NewReader(req.Script)
+	cmd.Env = env
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("workspace init (in-process stand-in) failed: %w\n%s", err, out)
+	}
+	return nil
+}

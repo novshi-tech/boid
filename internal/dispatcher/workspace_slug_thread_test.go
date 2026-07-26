@@ -164,9 +164,9 @@ func TestResolveWorkspaceHome_ReturnsNormalizedSlugAlongsideHomeDir(t *testing.T
 		{"unassigned project normalizes to the default workspace", "", orchestrator.DefaultWorkspaceSlug},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			r := &Runner{RuntimesDir: filepath.Join(t.TempDir(), "runtimes")}
+			r := &Runner{RuntimesDir: filepath.Join(t.TempDir(), "runtimes"), Backend: newBashWorkspaceInitBackend(t)}
 
-			homeDir, slug, err := r.resolveWorkspaceHome(tc.workspaceID)
+			homeDir, slug, err := r.resolveWorkspaceHome(context.Background(), tc.workspaceID)
 			if err != nil {
 				t.Fatalf("resolveWorkspaceHome(%q): %v", tc.workspaceID, err)
 			}

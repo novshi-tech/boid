@@ -183,3 +183,64 @@ func TestIsValidVolumeName(t *testing.T) {
 		}
 	}
 }
+
+// --- workspace HOME init container (PR5, docs/plans/
+// workspace-home-volume-persistence.md 論点 c §D5/§D6) ---
+
+// TestWorkspaceInitLabelKeys pins the init container's own two label keys and,
+// more importantly, that they are NOT any of the keys an existing sweep
+// enumerates on. This is the whole reason they exist as separate keys: a
+// boid.job_id on a container that may be 20 minutes into a 1.5GB toolchain
+// download would put it in ReapOrphans' force-remove list, and its job id into
+// ReapReport.ReapedJobIDs/FailedJobIDs — which drive MarkStale and gate every
+// task's auto-reopen for that boot.
+func TestWorkspaceInitLabelKeys(t *testing.T) {
+	if LabelWorkspaceInit != "boid.workspace_init" {
+		t.Errorf("LabelWorkspaceInit = %q, want %q", LabelWorkspaceInit, "boid.workspace_init")
+	}
+	if LabelWorkspaceInitInstallID != "boid.workspace_init_install_id" {
+		t.Errorf("LabelWorkspaceInitInstallID = %q, want %q", LabelWorkspaceInitInstallID, "boid.workspace_init_install_id")
+	}
+	for _, enumerated := range []string{LabelJobID, LabelWorkspace, LabelInstallID} {
+		if LabelWorkspaceInit == enumerated || LabelWorkspaceInitInstallID == enumerated {
+			t.Errorf("workspace-init label collides with the enumeration filter %q", enumerated)
+		}
+	}
+}
+
+// TestWorkspaceInitContainerName pins the deterministic name PR5 §D6 uses as
+// a cross-process mutual exclusion: two daemons (or a daemon and the leftover
+// container of its own previous incarnation) computing this for the same
+// (installID, slug) must collide on the engine, because that collision is the
+// ONLY thing that survives the process death a flock does not.
+func TestWorkspaceInitContainerName(t *testing.T) {
+	cases := []struct {
+		installID, workspace, want string
+	}{
+		{"0123456789abcdef", "default", "boid-ws-init-01234567-default"},
+		{"", "default", "boid-ws-init-noinst-default"},
+		{"0123456789abcdef", "has space", "boid-ws-init-01234567-has-space"},
+		{"0123456789abcdef", "", "boid-ws-init-01234567-x"},
+	}
+	for _, c := range cases {
+		if got := WorkspaceInitContainerName(c.installID, c.workspace); got != c.want {
+			t.Errorf("WorkspaceInitContainerName(%q, %q) = %q, want %q", c.installID, c.workspace, got, c.want)
+		}
+	}
+}
+
+// TestWorkspaceInitContainerName_SharesTheInstallScopingOfTheOtherNames keeps
+// the three generators from drifting apart in how they scope by install: a
+// name that stopped being install-scoped would make two installs sharing one
+// engine mutually exclude each other's workspace inits.
+func TestWorkspaceInitContainerName_SharesTheInstallScopingOfTheOtherNames(t *testing.T) {
+	const workspace = "default"
+	a := WorkspaceInitContainerName("aaaaaaaaaaaa", workspace)
+	b := WorkspaceInitContainerName("bbbbbbbbbbbb", workspace)
+	if a == b {
+		t.Errorf("two installs produced the same init container name %q", a)
+	}
+	if got := WorkspaceInitContainerName("aaaaaaaaaaaa", workspace); got != a {
+		t.Errorf("WorkspaceInitContainerName is not deterministic: %q then %q", a, got)
+	}
+}

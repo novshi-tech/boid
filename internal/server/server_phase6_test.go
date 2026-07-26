@@ -3,8 +3,11 @@ package server_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -35,6 +38,31 @@ func (noopBackend) Launch(context.Context, sandbox.Spec, backend.LaunchOptions) 
 func (noopBackend) Adopt(context.Context, string) (backend.SandboxSession, bool) {
 	return nil, false
 }
+
+// RunWorkspaceInit satisfies dispatcher.WorkspaceInitExecutor — required of
+// every backend since PR5 of docs/plans/workspace-home-volume-persistence.md,
+// which moved workspace home preparation into a throwaway container the
+// backend owns. Runs the wrapper the dispatcher assembled under a real bash,
+// with HOME rewritten from the request's container-side target back to its
+// host-side source (there is no mount here to make the two the same thing).
+func (noopBackend) RunWorkspaceInit(ctx context.Context, req dispatcher.WorkspaceInitRequest) error {
+	env := make([]string, 0, len(req.Env)+1)
+	for k, v := range req.Env {
+		if v == req.HomeTarget {
+			v = req.HomeSource
+		}
+		env = append(env, k+"="+v)
+	}
+	env = append(env, "PATH="+os.Getenv("PATH"))
+	cmd := exec.CommandContext(ctx, "/bin/bash", "-s")
+	cmd.Stdin = strings.NewReader(req.Script)
+	cmd.Env = env
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("workspace init (test stand-in) failed: %w\n%s", err, out)
+	}
+	return nil
+}
+
 func (noopBackend) ReapOrphans(context.Context) (backend.ReapReport, error) {
 	return backend.ReapReport{}, nil
 }

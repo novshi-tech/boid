@@ -214,6 +214,12 @@ func (b *fakeSandboxBackend) Adopt(context.Context, string) (backend.SandboxSess
 	return nil, false
 }
 
+// RunWorkspaceInit satisfies dispatcher.WorkspaceInitExecutor — required of
+// every backend since PR5; see runWorkspaceInitStub.
+func (b *fakeSandboxBackend) RunWorkspaceInit(ctx context.Context, req dispatcher.WorkspaceInitRequest) error {
+	return runWorkspaceInitStub(ctx, req)
+}
+
 func (b *fakeSandboxBackend) ReapOrphans(context.Context) (backend.ReapReport, error) {
 	return backend.ReapReport{}, nil
 }

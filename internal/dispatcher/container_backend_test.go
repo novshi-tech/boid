@@ -16,6 +16,7 @@ import (
 	"github.com/moby/moby/api/types/mount"
 	"github.com/moby/moby/client"
 
+	"github.com/novshi-tech/boid/internal/dockerres"
 	"github.com/novshi-tech/boid/internal/sandbox"
 	"github.com/novshi-tech/boid/internal/sandbox/backend"
 )
@@ -495,6 +496,15 @@ func TestContainerBackend_Adopt_ConcurrentCacheMissSharesOneAttach(t *testing.T)
 func TestContainerBackend_ReapOrphans_LabelBasedDestroy(t *testing.T) {
 	api := &fakeDockerAPI{
 		ContainerListFunc: func(ctx context.Context, options client.ContainerListOptions) (client.ContainerListResult, error) {
+			// Filter-aware, because ReapOrphans issues two independent
+			// enumerations as of PR5 (docs/plans/workspace-home-volume-persistence.md
+			// 論点 c §D5) and a fake that answered both with the same items
+			// would have the workspace-init sweep re-remove every job
+			// container — the very cross-contamination the separate label
+			// keys exist to prevent.
+			if !options.Filters["label"][labelJobID] {
+				return client.ContainerListResult{}, nil
+			}
 			return client.ContainerListResult{Items: []container.Summary{
 				{ID: "orphan-1", Labels: map[string]string{labelJobID: "job-a"}},
 				{ID: "orphan-2", Labels: map[string]string{labelJobID: "job-b"}},
@@ -520,11 +530,17 @@ func TestContainerBackend_ReapOrphans_LabelBasedDestroy(t *testing.T) {
 		t.Errorf("FailedJobIDs = %v, want [job-b]", report.FailedJobIDs)
 	}
 
-	if len(api.listFilters) != 1 {
-		t.Fatalf("ContainerList calls = %d, want 1", len(api.listFilters))
+	// Two enumerations: the job sweep (§決定 6's global boid.job_id filter)
+	// and, since PR5, the workspace-init sweep on its own label. They are
+	// deliberately not one query — see reapOrphanWorkspaceInitContainers.
+	if len(api.listFilters) != 2 {
+		t.Fatalf("ContainerList calls = %d, want 2 (the job sweep and the workspace-init sweep)", len(api.listFilters))
 	}
 	if _, ok := api.listFilters[0]["label"][labelJobID]; !ok {
 		t.Errorf("ContainerList filter = %+v, want a %q label filter (§決定 6 global filter)", api.listFilters[0], labelJobID)
+	}
+	if _, ok := api.listFilters[1]["label"][dockerres.LabelWorkspaceInit]; !ok {
+		t.Errorf("second ContainerList filter = %+v, want a %q label filter", api.listFilters[1], dockerres.LabelWorkspaceInit)
 	}
 	if api.volumeListCalls == 0 {
 		t.Error("VolumeList was not called (ReapOrphans should sweep volumes too)")
@@ -543,6 +559,9 @@ func TestContainerBackend_ReapOrphans_LabelBasedDestroy(t *testing.T) {
 func TestContainerBackend_ReapOrphans_ScopesByInstallID(t *testing.T) {
 	api := &fakeDockerAPI{
 		ContainerListFunc: func(ctx context.Context, options client.ContainerListOptions) (client.ContainerListResult, error) {
+			if !options.Filters["label"][labelJobID] {
+				return client.ContainerListResult{}, nil
+			}
 			return client.ContainerListResult{Items: []container.Summary{
 				{ID: "mine-1", Labels: map[string]string{labelJobID: "job-mine", labelInstallID: "install-A"}},
 				{ID: "theirs-1", Labels: map[string]string{labelJobID: "job-theirs", labelInstallID: "install-B"}},
@@ -578,6 +597,9 @@ func TestContainerBackend_ReapOrphans_ScopesByInstallID(t *testing.T) {
 func TestContainerBackend_ReapOrphans_EmptyInstallID_FallsBackToGlobalFilter(t *testing.T) {
 	api := &fakeDockerAPI{
 		ContainerListFunc: func(ctx context.Context, options client.ContainerListOptions) (client.ContainerListResult, error) {
+			if !options.Filters["label"][labelJobID] {
+				return client.ContainerListResult{}, nil
+			}
 			return client.ContainerListResult{Items: []container.Summary{
 				{ID: "orphan-1", Labels: map[string]string{labelJobID: "job-a", labelInstallID: "install-A"}},
 				{ID: "orphan-2", Labels: map[string]string{labelJobID: "job-b"}},

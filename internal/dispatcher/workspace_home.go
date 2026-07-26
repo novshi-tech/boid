@@ -1,7 +1,7 @@
 package dispatcher
 
 import (
-	"bytes"
+	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
@@ -11,7 +11,6 @@ import (
 	"io"
 	"log/slog"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"syscall"
@@ -85,10 +84,77 @@ type workspaceHomeMarker struct {
 	// replacement of the home, not deliberate tampering by a job that owns
 	// the home's other copy of the token; see workspaceHomeNonceFileName for
 	// why that limit is structural and why it costs nothing.
-	HomeID      string    `json:"home_id,omitempty"`
-	BoidVersion string    `json:"boid_version"`
-	CompletedAt time.Time `json:"completed_at"`
+	HomeID string `json:"home_id,omitempty"`
+	// InitGeneration records WHICH EXECUTION ENVIRONMENT ran the init this
+	// marker vouches for (workspaceHomeInitGeneration). A marker whose
+	// generation is not the current one triggers a re-init, exactly like a
+	// changed script hash — see workspaceHomeInitialized.
+	//
+	// ScriptSHA256 answers "did the instructions change"; this answers "did
+	// the machine that carried them out change". Those are independent, and
+	// PR5 is the case that proves it: the script content was untouched, but
+	// init moved from the daemon process (host `$HOME`,
+	// ~/.local/share/boid/homes/<slug>) into a throwaway container whose
+	// `$HOME` is the path a JOB sees. What a toolchain installer leaves behind
+	// is full of that path — shebangs, wrapper scripts, symlink targets,
+	// recorded prefixes — so a home prepared under the old one is not
+	// equivalent to a home prepared under the new one, however identical the
+	// script.
+	//
+	// Empty/zero means "written by a build that predates this field", i.e. by
+	// the host-exec generation, and is therefore treated as a mismatch rather
+	// than as "probably fine" — the same fail-safe reading HomeID gives its own
+	// empty value.
+	InitGeneration int       `json:"init_generation,omitempty"`
+	BoidVersion    string    `json:"boid_version"`
+	CompletedAt    time.Time `json:"completed_at"`
 }
+
+// workspaceHomeInitGeneration identifies the environment
+// resolveWorkspaceHome currently runs an init in. Bump it in any PR that
+// changes that environment in a way a prepared home can observe.
+//
+//	1 — PR5 of docs/plans/workspace-home-volume-persistence.md (論点c): a
+//	    throwaway container started from the runner image, with the home
+//	    mounted at the path a job sees it at (hostHomeDir()). Generation 0 is
+//	    the absence of this field: PR2-PR4, where the daemon process exec'd
+//	    /bin/bash itself against the host homes/<slug> path.
+//
+// # Why an existing installation must re-init rather than be grandfathered
+//
+// Without this field the PR5 skip condition (script hash + home identity) is
+// satisfied by every workspace a PR2-PR4 daemon had already prepared, so the
+// new execution path would never run on any existing installation and the
+// homes would keep the host-era absolute paths baked into them.
+//
+// The cost of re-running is low and bounded. At generation 1 the home's actual
+// STORAGE is unchanged (still the host homes/<slug> directory, bind-mounted
+// into the init container) — the toolchain is physically still there, so a
+// contractually idempotent init.sh
+// (docs/plans/home-workspace-volume.md 「script 作者が守ること」) short-circuits
+// most of its work. What the re-run is really for is the artifacts that
+// encode a path rather than the payload: symlinks, shebangs, wrapper scripts.
+//
+// # Why this cannot wait for PR6
+//
+// PR6 gives each workspace a FRESH named volume, which carries no identity
+// file, so the nonce check alone would force a re-init there — the generation
+// would be redundant if PR6 were the only sequel. It is not: PR8's migration
+// CLI copies an existing host home's CONTENTS into that volume, and a faithful
+// copy includes <home>/.boid-workspace-home-id. The nonce then MATCHES on the
+// other side and init is skipped over a volume full of host-era paths, with
+// nothing anywhere reporting a problem. The generation is what still
+// disagrees. See docs/plans/workspace-home-volume-persistence.md 論点 f for
+// the corresponding note on PR8's side.
+//
+// # Why a generation rather than reusing BoidVersion
+//
+// BoidVersion is already recorded and already changes on every release, so
+// comparing it would force a re-init far more often than the environment
+// actually changes — every patch release, for every workspace. A generation
+// changes when the thing it names changes, which is what makes "the marker
+// disagrees" mean something.
+const workspaceHomeInitGeneration = 1
 
 // workspaceHomeNonceFileName is the basename of the identity file written
 // INSIDE the workspace home, whose content must match the governing marker's
@@ -165,24 +231,42 @@ const workspaceHomeNonceFileName = ".boid-workspace-home-id"
 //
 // Contract (see the plan doc's 契約 section):
 //   - the home directory always exists on return (nil error)
-//   - init.sh runs at most once per distinct script content AND per
-//     incarnation of the home directory: a completion marker keyed by the
-//     script's sha256 short-circuits every later call with the same content,
-//     but only while the home still carries the identity that marker records
-//     (see workspaceHomeInitialized)
+//   - init.sh runs at most once per distinct script content, per incarnation
+//     of the home directory, AND per execution environment: a completion
+//     marker keyed by the script's sha256 short-circuits every later call with
+//     the same content, but only while the home still carries the identity
+//     that marker records and only while the marker records the generation of
+//     the environment this build runs inits in (see workspaceHomeInitialized,
+//     workspaceHomeMarker.HomeID and workspaceHomeInitGeneration)
 //   - concurrent calls for the same slug serialize on a flock so the script
 //     runs exactly once; waiters block until the winner finishes and then
-//     re-check the marker
+//     re-check the marker. As of PR5 the flock is only HALF of that: it dies
+//     with the process, and the init container does not, so the deterministic
+//     container name is what keeps a crashed daemon's in-flight init from
+//     being raced by its successor (dockerres.WorkspaceInitContainerName)
 //   - a failing init script returns an error and leaves no marker, so the
 //     next call retries from scratch
 //   - every successful return has stamped the home with an identity, whether
 //     or not an init.sh existed to run
 //
-// The home directory and the init bookkeeping (marker, lock, executed temp
-// script) live under two different roots as of PR2 of
+// Where it runs changed in PR5 (論点c): the daemon no longer exec's
+// `/bin/bash <tmpfile>` itself. Both the builtin prep steps and the
+// workspace's own init.sh run inside a throwaway container that mounts the
+// home, because from PR6 the home is a named volume the daemon can neither
+// write to nor chdir into. The trusted boundary is unchanged — boid picks the
+// image, assembles the script and starts the container; nothing about this
+// runs inside a sandboxed job (論点c's A vs A') — but several script-visible
+// details did change, and they are recorded in docs/plans/home-workspace-volume.md
+// 「契約」and docs/{ja,en}/guide/workspace-home.md rather than only here.
+//
+// The home directory and the init bookkeeping (marker, lock) live under two
+// different roots as of PR2 of
 // docs/plans/workspace-home-volume-persistence.md (論点b): homes/ stays
 // derived from RuntimesDir, while homes-meta/ moves to the daemon's own
-// persistent data root. See workspaceHomeMetaDir for why.
+// persistent data root. See workspaceHomeMetaDir for why. PR5 removed the
+// third inhabitant of that directory, the private temp copy of init.sh: the
+// bytes now travel to the container on its stdin, since a file the daemon
+// writes is not a path the sibling engine can mount.
 //
 // Splitting those roots is also what makes the identity check above
 // load-bearing rather than decorative: it gave the marker a strictly longer
@@ -198,7 +282,7 @@ const workspaceHomeNonceFileName = ".boid-workspace-home-id"
 // observable consequence on an upgraded installation is one extra init.sh
 // run per workspace, absorbed by the contractual idempotence of init scripts
 // (docs/plans/home-workspace-volume.md 「script 作者が守ること」).
-func (r *Runner) resolveWorkspaceHome(workspaceID string) (string, string, error) {
+func (r *Runner) resolveWorkspaceHome(ctx context.Context, workspaceID string) (string, string, error) {
 	slug, err := normalizeWorkspaceSlug(workspaceID)
 	if err != nil {
 		return "", "", err
@@ -275,40 +359,66 @@ func (r *Runner) resolveWorkspaceHome(workspaceID string) (string, string, error
 		return homeDir, slug, nil
 	}
 
-	if scriptExists {
-		if err := runWorkspaceInitScript(scriptBytes, metaDir, slug, homeDir); err != nil {
-			return "", "", fmt.Errorf("workspace home %q: init script failed: %w", slug, err)
-		}
-	}
-
-	// Mint the home's new identity and write it into the home BEFORE the
-	// marker that vouches for it. Ordering matters in one direction only: if
-	// the nonce lands and the marker write then fails, the next call finds no
-	// (or a stale) marker and re-inits — correct. The reverse order would let
-	// a marker exist that claims an identity the home does not carry, which
-	// is indistinguishable from the tampering case and would also re-init,
-	// but only after having reported success for a home that was never
-	// stamped.
+	// One throwaway container per init, ALWAYS — not only when the workspace
+	// declares an init.sh (PR5 §D1, 論点b-2). It carries three things in one
+	// start: the bind-target skeleton, the workspace's own script if it has
+	// one, and the home identity stamp. The first and third are needed by
+	// every workspace, so making the run conditional the way the old host exec
+	// was would leave the pass-through class (docs/plans/home-workspace-volume.md
+	// 「script が無い workspace は素通し (マーカーだけ打つ)」) with no writer for
+	// either — and the identity check below would then be the one thing that
+	// does not apply to exactly the workspaces most likely to be hit by it.
 	//
-	// Unconditional, i.e. also for a workspace with no init.sh at all. That
-	// class still gets a marker (docs/plans/home-workspace-volume.md「script
-	// が無い workspace は素通し (マーカーだけ打つ)」), so it needs the matching
-	// identity or the desync check simply would not apply to it — see 論点b-2
-	// in docs/plans/workspace-home-volume-persistence.md, which makes the same
-	// point for the PR5 prep container.
+	// The identity is minted here and stamped into the home by the container's
+	// postlude, BEFORE the marker that vouches for it is written here.
+	// Ordering matters in one direction only: if the stamp lands and the marker
+	// write then fails, the next call finds no (or a stale) marker and re-inits
+	// — correct. The reverse order would let a marker exist that claims an
+	// identity the home does not carry, which is indistinguishable from the
+	// tampering case and would also re-init, but only after having reported
+	// success for a home that was never stamped.
 	nonce, err := newWorkspaceHomeNonce()
 	if err != nil {
 		return "", "", fmt.Errorf("workspace home %q: mint home id: %w", slug, err)
 	}
-	if err := writeWorkspaceHomeNonce(homeDir, nonce); err != nil {
-		return "", "", fmt.Errorf("workspace home %q: write home id: %w", slug, err)
+	req, err := buildWorkspaceInitRequest(workspaceInitParams{
+		Slug:       slug,
+		HomeSource: homeDir,
+		// hostHomeDir() is the path a JOB container sees its own $HOME at
+		// (BuildSandboxSpec's homeDir). Preparing the home under the very
+		// same path is not cosmetic: a toolchain installer bakes absolute
+		// paths into wrapper scripts, shebangs and symlinks, so anything
+		// init.sh installs under a path the harness does not later run under
+		// is installed wrong. Before PR5 those two genuinely differed — the
+		// script saw the host homes/<slug> path — which is why
+		// docs/examples/workspace-home-init.sh carries a helper whose only job
+		// is to rewrite absolute $HOME symlinks as relative ones.
+		HomeTarget:   hostHomeDir(),
+		SkeletonDirs: workspaceHomeSkeletonDirs(),
+		Script:       scriptBytes,
+		ScriptExists: scriptExists,
+		Nonce:        nonce,
+	})
+	if err != nil {
+		return "", "", err
+	}
+	executor, err := workspaceInitExecutorFor(r)
+	if err != nil {
+		return "", "", fmt.Errorf("workspace home %q: %w", slug, err)
+	}
+	if err := executor.RunWorkspaceInit(ctx, req); err != nil {
+		return "", "", fmt.Errorf("workspace home %q: init failed: %w", slug, err)
 	}
 
 	marker := workspaceHomeMarker{
 		ScriptSHA256: scriptSHA,
 		HomeID:       nonce,
-		BoidVersion:  boidVersion,
-		CompletedAt:  time.Now().UTC(),
+		// Recorded from the constant, never from the marker being replaced:
+		// this marker vouches for the run that just happened, in the
+		// environment this build runs inits in.
+		InitGeneration: workspaceHomeInitGeneration,
+		BoidVersion:    boidVersion,
+		CompletedAt:    time.Now().UTC(),
 	}
 	if err := writeWorkspaceHomeMarker(markerPath, marker); err != nil {
 		return "", "", fmt.Errorf("workspace home %q: write marker: %w", slug, err)
@@ -325,6 +435,12 @@ func (r *Runner) resolveWorkspaceHome(workspaceID string) (string, string, error
 // Every "no" answer means one extra run of a contractually idempotent
 // init.sh, which is why every uncertain case answers no:
 //
+//   - marker.InitGeneration is not the current one — the run it records
+//     happened in a different execution environment, so the home it produced
+//     is not the home this build would produce. Zero (the field's absence)
+//     means a PR2-PR4 daemon that ran init on the host; see
+//     workspaceHomeInitGeneration. The comparison is deliberately an equality
+//     and not a floor, so a rolled-back release re-inits too.
 //   - marker.HomeID empty — written before the identity check existed, so it
 //     vouches for nothing.
 //   - nonce file missing — the home was wiped (host reboot clearing tmpfs,
@@ -344,6 +460,12 @@ func (r *Runner) resolveWorkspaceHome(workspaceID string) (string, string, error
 // the daemon; see readWorkspaceHomeNonce.
 func workspaceHomeInitialized(marker workspaceHomeMarker, scriptSHA, homeDir, slug string) bool {
 	if marker.ScriptSHA256 != scriptSHA {
+		return false
+	}
+	if marker.InitGeneration != workspaceHomeInitGeneration {
+		slog.Info("workspace home: completion marker records a different init execution environment, re-running init (docs/plans/workspace-home-volume-persistence.md 論点c)",
+			"workspace_slug", slug, "home_dir", homeDir,
+			"marker_generation", marker.InitGeneration, "current_generation", workspaceHomeInitGeneration)
 		return false
 	}
 	if marker.HomeID == "" {
@@ -472,72 +594,6 @@ func readWorkspaceHomeNonce(homeDir string) (string, bool, error) {
 	return strings.TrimSpace(string(data)), true, nil
 }
 
-// writeWorkspaceHomeNonce writes nonce into homeDir via a sibling temp file +
-// rename, so a crash mid-write can never leave a truncated token behind that
-// would compare unequal to the marker forever (which would be a permanent
-// re-init loop rather than a one-shot recovery).
-func writeWorkspaceHomeNonce(homeDir, nonce string) (retErr error) {
-	tmp, err := os.CreateTemp(homeDir, "."+workspaceHomeNonceFileName+".*.tmp")
-	if err != nil {
-		return fmt.Errorf("create temp home id file: %w", err)
-	}
-	tmpPath := tmp.Name()
-	cleanup := true
-	defer func() {
-		if cleanup {
-			_ = os.Remove(tmpPath)
-		}
-	}()
-	if _, err := tmp.WriteString(nonce); err != nil {
-		_ = tmp.Close()
-		return fmt.Errorf("write temp home id file: %w", err)
-	}
-	if err := tmp.Chmod(0o600); err != nil {
-		_ = tmp.Close()
-		return fmt.Errorf("chmod temp home id file: %w", err)
-	}
-	if err := tmp.Sync(); err != nil {
-		_ = tmp.Close()
-		return fmt.Errorf("sync temp home id file: %w", err)
-	}
-	if err := tmp.Close(); err != nil {
-		return fmt.Errorf("close temp home id file: %w", err)
-	}
-	// Clear whatever currently occupies the path first. os.Rename replaces an
-	// existing regular file, FIFO or symlink atomically, but it CANNOT
-	// replace a directory — it returns EISDIR/EEXIST regardless of the
-	// source. A sandboxed job owns this directory, so it can leave a
-	// directory here (codex review round 3, Major), and without this the
-	// workspace would wedge permanently: every dispatch would re-run init.sh
-	// (the read side correctly refuses the directory), fail at the rename,
-	// and leave the directory in place to do it again — violating PR2's
-	// contract that a tampered identity file costs exactly one extra
-	// idempotent init run.
-	//
-	// RemoveAll rather than Remove because the directory need not be empty,
-	// and it is safe on the two shapes that matter: on a symlink it unlinks
-	// the link and never touches its target, and everything it can reach is
-	// inside the workspace HOME the job already owns outright. A failure is
-	// not fatal on its own — the rename below is what has to succeed, and it
-	// still does for every non-directory shape.
-	noncePath := workspaceHomeNoncePath(homeDir)
-	if err := os.RemoveAll(noncePath); err != nil {
-		slog.Warn("workspace home: could not clear the existing home identity path before rewriting it",
-			"path", noncePath, "error", err)
-	}
-	if err := os.Rename(tmpPath, noncePath); err != nil {
-		return fmt.Errorf("rename home id file: %w", err)
-	}
-	cleanup = false
-	// Best-effort parent dir fsync, mirroring writeWorkspaceHomeMarker: the
-	// nonce must be at least as durable as the marker that points at it.
-	if dirFile, err := os.Open(homeDir); err == nil {
-		_ = dirFile.Sync()
-		_ = dirFile.Close()
-	}
-	return nil
-}
-
 // boidVersion is embedded into every completion marker's boid_version field.
 // No build-time version stamping (ldflags -X) exists in this repo yet, so
 // this stays empty for now — a later PR can wire it up without touching the
@@ -656,9 +712,15 @@ var workspaceHomeDirFor = func(homesDir, slug string) string {
 }
 
 // workspaceHomeMetaDir returns <dataHome>/homes-meta, the directory holding
-// the per-workspace init completion marker, the per-workspace init lock, and
-// the private temp copy of init.sh that actually gets executed
+// the per-workspace init completion marker and the per-workspace init lock
 // (docs/plans/workspace-home-volume-persistence.md 論点b, PR2).
+//
+// PR2 also put the private temp copy of init.sh here, so that
+// runWorkspaceInitScript's "the executed bytes sit in the same lock-serialized
+// directory as the lock" argument stayed self-contained. PR5 removed that file
+// along with the host exec itself: the bytes now reach the init container on
+// its stdin, and the TOCTOU property they were there for is carried by the
+// heredoc instead (see buildWorkspaceInitRequest).
 //
 // dataHome is the daemon's OWN persistent data root — server/wire.go's
 // dataHomeFor(cfg). In a real deployment (cfg.DBPath is a real file) that is
@@ -871,110 +933,4 @@ func acquireWorkspaceHomeLock(lockPath string) (release func(), err error) {
 		_ = syscall.Flock(int(lockFile.Fd()), syscall.LOCK_UN)
 		_ = lockFile.Close()
 	}, nil
-}
-
-// runWorkspaceInitScript executes scriptBytes on the host (trusted side,
-// never inside the sandbox) with HOME redirected to homeDir and
-// BOID_WORKSPACE_SLUG / BOID_WORKSPACE_HOME set, per the plan doc's
-// contract. Combined stdout+stderr is logged on success and included (tail)
-// in the returned error on failure.
-//
-// scriptBytes — not a path — is what gets executed: it is written to a
-// private temp file inside metaDir (already lock-serialized and isolated
-// from any sandbox mount) and run from there, rather than re-opening the
-// configured init.sh path by name. Re-resolving that path at spawn time
-// would reopen the exact TOCTOU window resolveWorkspaceHome's caller just
-// closed by re-reading+re-hashing under the lock: a writer could otherwise
-// swap the on-disk init.sh between the hash computation and the actual
-// exec, so the marker would record a hash for content that never ran
-// (codex review, PR #787). Executing the very bytes that were just hashed
-// makes "hash recorded == content executed" true by construction.
-//
-// The temp file moved from homesDir to metaDir in PR2 of
-// docs/plans/workspace-home-volume-persistence.md (論点b) so that the
-// "already lock-serialized and isolated from any sandbox mount" premise
-// above stays true: the flock now lives in metaDir, and homes/ is on its way
-// to becoming a per-workspace named volume (PR6) that the daemon cannot
-// write to with plain file I/O at all. Keeping the executed bytes in the
-// same directory as the lock that serializes them is what makes the TOCTOU
-// argument above self-contained.
-//
-// Trade-off: init.sh's shebang line is ignored (always run via /bin/bash,
-// matching prior behavior) and $0 inside the script resolves to the temp
-// path rather than the configured init.sh location — scripts must not
-// depend on their own path (documented contract in the plan doc).
-func runWorkspaceInitScript(scriptBytes []byte, metaDir, slug, homeDir string) error {
-	tmpFile, err := os.CreateTemp(metaDir, "."+slug+".init.sh.*.tmp")
-	if err != nil {
-		return fmt.Errorf("create temp init script: %w", err)
-	}
-	tmpPath := tmpFile.Name()
-	defer func() { _ = os.Remove(tmpPath) }()
-
-	if _, err := tmpFile.Write(scriptBytes); err != nil {
-		_ = tmpFile.Close()
-		return fmt.Errorf("write temp init script %q: %w", tmpPath, err)
-	}
-	if err := tmpFile.Chmod(0o700); err != nil {
-		_ = tmpFile.Close()
-		return fmt.Errorf("chmod temp init script %q: %w", tmpPath, err)
-	}
-	if err := tmpFile.Sync(); err != nil {
-		_ = tmpFile.Close()
-		return fmt.Errorf("sync temp init script %q: %w", tmpPath, err)
-	}
-	if err := tmpFile.Close(); err != nil {
-		return fmt.Errorf("close temp init script %q: %w", tmpPath, err)
-	}
-
-	cmd := exec.Command("/bin/bash", tmpPath)
-	cmd.Dir = homeDir
-	cmd.Env = buildWorkspaceInitEnv(slug, homeDir)
-
-	var out bytes.Buffer
-	cmd.Stdout = &out
-	cmd.Stderr = &out
-
-	runErr := cmd.Run()
-	output := out.String()
-	if runErr != nil {
-		exitCode := -1
-		var exitErr *exec.ExitError
-		if errors.As(runErr, &exitErr) {
-			exitCode = exitErr.ExitCode()
-		}
-		const maxTail = 4096
-		tail := output
-		if len(tail) > maxTail {
-			tail = tail[len(tail)-maxTail:]
-		}
-		return fmt.Errorf("init script (workspace %q) exited %d: %w\n--- output tail ---\n%s", slug, exitCode, runErr, tail)
-	}
-
-	slog.Info("workspace init script completed",
-		"workspace_slug", slug, "output_bytes", len(output))
-	return nil
-}
-
-// buildWorkspaceInitEnv builds the environment for an init.sh run: the
-// contractually guaranteed vars (HOME, BOID_WORKSPACE_SLUG,
-// BOID_WORKSPACE_HOME) plus a curated allowlist of host env vars a
-// well-behaved installer script is likely to need (PATH for locating
-// installers/package managers it shells out to, basic locale/user identity).
-// Everything else is intentionally NOT inherited: the script's whole job is
-// to populate a *different* HOME than the one the daemon process itself
-// runs under, so carrying over host XDG_*/HOME-relative vars unchanged would
-// be actively misleading.
-func buildWorkspaceInitEnv(slug, homeDir string) []string {
-	env := []string{
-		"HOME=" + homeDir,
-		"BOID_WORKSPACE_SLUG=" + slug,
-		"BOID_WORKSPACE_HOME=" + homeDir,
-	}
-	for _, key := range []string{"PATH", "USER", "LOGNAME", "LANG", "LC_ALL", "TERM"} {
-		if v := os.Getenv(key); v != "" {
-			env = append(env, key+"="+v)
-		}
-	}
-	return env
 }

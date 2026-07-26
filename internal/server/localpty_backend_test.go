@@ -10,6 +10,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/novshi-tech/boid/internal/dispatcher"
 	"github.com/novshi-tech/boid/internal/sandbox"
 	"github.com/novshi-tech/boid/internal/sandbox/backend"
 	"golang.org/x/sys/unix"
@@ -99,6 +100,12 @@ func (b *localPTYBackend) Adopt(_ context.Context, runtimeID string) (backend.Sa
 	defer b.mu.Unlock()
 	sess, ok := b.sessions[runtimeID]
 	return sess, ok
+}
+
+// RunWorkspaceInit satisfies dispatcher.WorkspaceInitExecutor — required of
+// every backend since PR5; see runWorkspaceInitStub.
+func (b *localPTYBackend) RunWorkspaceInit(ctx context.Context, req dispatcher.WorkspaceInitRequest) error {
+	return runWorkspaceInitStub(ctx, req)
 }
 
 func (b *localPTYBackend) ReapOrphans(context.Context) (backend.ReapReport, error) {

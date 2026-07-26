@@ -264,24 +264,40 @@ func TestDispatch_SkillsMaterializeFails_MarksJobFailedAndCallsCleanup(t *testin
 //
 // Induced exactly the way the pre-PR3 sync-failure case was: a plain file at
 // <home>/.claude makes every mkdir underneath it fail with ENOTDIR.
+//
+// PR5 changed WHEN this test has to plant that file. The init container's
+// builtin prelude now creates the same skeleton (workspaceHomeSkeletonDirs),
+// so on a FRESH workspace the blocker is hit there first and the dispatch
+// fails — loudly, but with the prelude's message rather than this one. The
+// per-dispatch bind-target step is what runs for an ALREADY-INITIALIZED home,
+// which is also the only state in which the condition it detects can arise
+// (a job of this workspace replacing ~/.claude after prep finished — see
+// syncEmbeddedSkills' doc comment on the window that is deliberately left
+// open). So the home is initialized first, and only then blocked.
 func TestDispatch_SkillsBindTargetPrepFails_MarksJobFailedAndCallsCleanup(t *testing.T) {
 	setupWorkspaceHomeTestDirs(t)
 	root := t.TempDir()
 	runtimesDir := filepath.Join(root, "runtimes")
 
-	homeDir := filepath.Join(root, "homes", orchestrator.DefaultWorkspaceSlug)
-	if err := os.MkdirAll(homeDir, 0o700); err != nil {
-		t.Fatalf("mkdir home dir: %v", err)
+	r := skillsSyncTestRunner(t, runtimesDir, "")
+
+	// Initialize the home for real, so the next resolve short-circuits on the
+	// completion marker and the prelude does not run again.
+	homeDir, _, err := r.resolveWorkspaceHome(context.Background(), "")
+	if err != nil {
+		t.Fatalf("initialize the workspace home: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(homeDir, ".claude"), []byte("not a directory"), 0o644); err != nil {
+	claudeDir := filepath.Join(homeDir, ".claude")
+	if err := os.RemoveAll(claudeDir); err != nil {
+		t.Fatalf("remove the prepared .claude: %v", err)
+	}
+	if err := os.WriteFile(claudeDir, []byte("not a directory"), 0o644); err != nil {
 		t.Fatalf("write blocking file: %v", err)
 	}
 
-	r := skillsSyncTestRunner(t, runtimesDir, "")
-
 	assertDispatchFailsWithCleanup(t, r,
 		"prepare skill bind target",
-		filepath.Join(homeDir, ".claude"),
+		claudeDir,
 		"not a directory")
 }
 

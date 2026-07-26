@@ -73,6 +73,34 @@ const (
 	// boid.install_id would normally provide, under a key no reap filter
 	// enumerates on.
 	LabelWorkspaceHomeInstallID = "boid.workspace_home_install_id"
+
+	// LabelWorkspaceInit carries the workspace slug of a throwaway workspace
+	// HOME init container (docs/plans/workspace-home-volume-persistence.md
+	// 論点 c, PR5). Its own key for the same reason LabelWorkspaceHome has
+	// one, but the consequence of getting it wrong is different in kind:
+	//
+	//   - boid.job_id would put the container in containerBackend.ReapOrphans'
+	//     primary sweep, which lists on the mere PRESENCE of that key and
+	//     removes with Force+RemoveVolumes. An init container is routinely
+	//     minutes into a ~1.5GB toolchain download, so a daemon restart would
+	//     kill it mid-install.
+	//   - worse, the job id read off that label would then land in
+	//     ReapReport.ReapedJobIDs / FailedJobIDs, which drive MarkStale and
+	//     gate auto-reopen — so a workspace init would corrupt the job
+	//     accounting of unrelated tasks (a remove failure alone suppresses
+	//     another task's auto-reopen for that whole boot).
+	//   - boid.install_id would put it in internal/reap.Run's own sweep.
+	//
+	// Being invisible to those sweeps is not the same as being nobody's
+	// problem: containerBackend.reapOrphanWorkspaceInitContainers enumerates
+	// on THIS key at startup so a container orphaned by a daemon crash is
+	// still collected, without touching the job accounting above.
+	LabelWorkspaceInit = "boid.workspace_init"
+
+	// LabelWorkspaceInitInstallID carries the install id for the init
+	// container, under a key no other sweep enumerates on — same arrangement
+	// as LabelWorkspaceHomeInstallID.
+	LabelWorkspaceInitInstallID = "boid.workspace_init_install_id"
 )
 
 // Volume/network name prefixes. See the package doc for why these two are
@@ -84,6 +112,15 @@ const (
 	// WorkspaceHomeVolumePrefix is the persistent workspace HOME volume
 	// namespace — the volumes both reapers skip by default.
 	WorkspaceHomeVolumePrefix = ReservedVolumeNamePrefix + "home-"
+
+	// WorkspaceInitContainerPrefix namespaces the throwaway CONTAINER that
+	// prepares a workspace HOME (PR5). Note this is a container namespace, not
+	// a volume one: it shares ReservedVolumeNamePrefix's leading text purely
+	// so `docker ps`/`docker volume ls` output reads consistently, and
+	// IsReservedVolumeName must never be pointed at it — a sandboxed docker
+	// client naming its own container is not the threat that predicate is
+	// about.
+	WorkspaceInitContainerPrefix = ReservedVolumeNamePrefix + "init-"
 
 	// noInstallIDPart substitutes for an empty install id, so a name stays
 	// deterministic (just not install-scoped) for the test/DI callers that
@@ -162,7 +199,25 @@ func WorkspaceHomeVolumeName(installID, workspace string) string {
 	return WorkspaceHomeVolumePrefix + installIDPart(installID) + "-" + SanitizeNamePart(workspace)
 }
 
-// installIDPart renders the install-id segment shared by the two name
+// WorkspaceInitContainerName returns the deterministic name of the throwaway
+// container that runs a workspace HOME's prep + init.sh
+// (docs/plans/workspace-home-volume-persistence.md 論点 c, PR5), following
+// WorkspaceNetworkName's convention.
+//
+// Determinism is the mechanism, not a convenience. The flock that serializes
+// init runs (dispatcher.acquireWorkspaceHomeLock) is released when its process
+// dies, but a container outlives the process that created it — so after a
+// daemon crash the next dispatch would start a second init while the first one
+// is still writing into the same home, breaking Phase 4's "同時 dispatch でも
+// 実行は 1 回" contract (docs/plans/home-workspace-volume.md:83). Two runs
+// computing the same name means the engine itself rejects the second create
+// with a 409, which the caller resolves by waiting for (or removing) the
+// incumbent instead of racing it.
+func WorkspaceInitContainerName(installID, workspace string) string {
+	return WorkspaceInitContainerPrefix + installIDPart(installID) + "-" + SanitizeNamePart(workspace)
+}
+
+// installIDPart renders the install-id segment shared by the name
 // builders above.
 func installIDPart(installID string) string {
 	if installID == "" {

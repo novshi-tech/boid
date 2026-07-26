@@ -34,13 +34,15 @@ claude CLI のインストールなど、workspace home 側に一度だけセッ
 `host_commands.yaml` と同じ、ホスト側の config ディレクトリです — サンドボックスからは
 見えず、書き換えることもできません。)
 
-`init.sh` を持たない workspace は「初期化不要」として何もせず素通しされます。
+`init.sh` を持たない workspace は「**スクリプト実行**は不要」として素通しされます。
+ただし後述の準備ステップ (prep) は `init.sh` の有無に関わらず必ず 1 回実行されます。
 
 ### 実行契約
 
 - **実行タイミング**: そのworkspace への最初の dispatch 時、**`init.sh` の内容が
-  変わった時** (sha256 ハッシュで比較)、および **workspace home 自体が初期化後に
-  空になった / 別物に入れ替わった時** (次項)。完了マーカーは
+  変わった時** (sha256 ハッシュで比較)、**workspace home 自体が初期化後に
+  空になった / 別物に入れ替わった時** (次項)、および **boid が `init.sh` を実行する
+  環境そのものを変えた時** (下記「初期化環境が変わったとき」)。完了マーカーは
   `~/.local/share/boid/homes-meta/<slug>.init.json` — workspace home ではなく **daemon 自身の
   データ領域** (`boid.db` と同じディレクトリ) に書かれる。 job が `$HOME` として
   マウントされるディレクトリの外なので、 **job が自分の `$HOME` 経由で触ることはできない**
@@ -60,30 +62,67 @@ claude CLI のインストールなど、workspace home 側に一度だけセッ
   **余分な初期化が 1 回走ること**だけで (init.sh は冪等が契約なので無害)、
   **boid 本体を止めることはできない** — boid はこのファイルを symlink として辿らず、
   通常ファイルであることと 1 KiB 以下であることを確かめてから読む
+- **初期化環境が変わったとき**: 完了マーカーには「どの実行環境で初期化したか」を表す世代
+  番号も記録される。 boid のバージョンアップで `init.sh` の実行環境が変わると
+  (直近の例: ホスト上の daemon プロセスによる直接実行 → 使い捨て container 内での実行。
+  これに伴い `$HOME` の値が job から見えるパスに変わった)、 マーカーの世代が古くなるので
+  **その workspace で `init.sh` が 1 回だけ再実行される**。 toolchain 自体は既に home に
+  あるので、冪等な `init.sh` なら短時間で終わる。 再実行が必要なのは主に、
+  インストーラが `$HOME` 配下に**絶対パスを焼き込んだもの** (symlink の向き先、shebang、
+  wrapper script) を新しいパスに合わせ直すため。 なお boid のバージョンが上がっただけでは
+  再実行されない — 実行環境が変わったときだけ
 - **同時実行の直列化**: 同じ workspace への複数 job が同時に初回 dispatch されても、
-  `init.sh` の実行は 1 回だけ (flock で直列化)。待つ側は完了を待ってから続行する
-- **実行環境**: ホスト側 (trusted) で `/bin/bash` により実行される。
-  shebang 行は無視される。 **boid は `init.sh` を直接 exec せず、hash した bytes を
-  `~/.local/share/boid/homes-meta/` 配下の一時ファイルにコピーしてから実行する** (symlink 経由の
-  TOCTOU 対策と、実行内容とマーカー hash の同一性を保証するため。 flock と同じディレクトリ)。
-  そのため以下の制約がある:
-  - `$0` は元の `init.sh` パスではなく一時ファイル path になる。 `dirname "$0"` から
-    `~/.config/boid/workspaces/<slug>/` 配下の補助ファイルを参照する記述は動かない
-  - script 自身の配置場所 (`~/.config/boid/workspaces/<slug>/`) に依存する `source ./foo` や
-    `$PWD` 依存のような書き方は避ける
-  - 補助ファイルが必要ならすべて `init.sh` に inline するか、workspace home にすでにある
-    ものを参照する
-  - cwd は `$BOID_WORKSPACE_HOME` (workspace home ディレクトリ) に設定される
-  以下の環境変数が渡る:
-  - `HOME` — workspace home ディレクトリ (以降のインストールはここに着地させる)
-  - `BOID_WORKSPACE_SLUG` — workspace の slug
-  - `BOID_WORKSPACE_HOME` — `HOME` と同じ値
-  - 加えて `PATH` / `USER` / `LOGNAME` / `LANG` / `LC_ALL` / `TERM` はホストの値がそのまま渡る。
-    それ以外のホスト環境変数 (ホストの `XDG_*` や `HOME` 等) は意図的に継承されない
+  `init.sh` の実行は 1 回だけ。同一 daemon プロセス内は flock で直列化し、
+  **プロセスを跨ぐ分は決定的な container 名** (`boid-ws-init-<installID8>-<slug>`) の
+  名前衝突で排他する (flock はプロセスが死ぬと解放されるが、init container は
+  daemon の死を生き延びるため)。既存の init container がまだ動いていれば、
+  次の dispatch はそれの完了を待ってから進む
+- **実行環境**: **boid が起こす使い捨て container の中**で `bash` により実行される
+  (trusted)。ホスト側での直接実行はしない。
+  - image は **default の boid runner image**。 workspace の `container_image` override は
+    使わない — override は `boid.runner_protocol` label を持つことを要求されるが、その label を
+    焼いている image は現時点で存在しないため、override を尊重すると `container_image` を
+    指定した workspace は home の準備そのものができなくなる
+  - workspace home がその container に mount され、`$HOME` はその **mount 先の path**
+    (= job が sandbox 内で見る `$HOME` と同じ path) になる。
+    したがって `$HOME` 配下に絶対 path を焼き込むツール (wrapper script、shebang、
+    symlink 等) を入れても sandbox 内で壊れない
+  - network は **engine の既定 bridge**。job 用の workspace network (`internal: true`、
+    egress は allowlist proxy 経由のみ) ではないので、toolchain のダウンロードが通る。
+    裏を返すと **init.sh は無制限の egress を持つ** — これは trusted 境界の一部として
+    意図的にそうしている (script を選ぶのも container を起こすのも boid であり、
+    sandbox 化された job の中で走るわけではない)
+  - shebang 行は無視される。**boid は `init.sh` を直接 exec せず、hash した bytes を
+    container 内の一時ファイルに書き出してから実行する**
+    (実行内容とマーカー hash の同一性を保証するため)。そのため以下の制約がある:
+    - `$0` は元の `init.sh` パスではなく container 内の一時ファイル path (`/tmp/...`) になる。
+      `dirname "$0"` から `~/.config/boid/workspaces/<slug>/` 配下の補助ファイルを
+      参照する記述は動かない
+    - script 自身の配置場所 (`~/.config/boid/workspaces/<slug>/`) に依存する `source ./foo` や
+      `$PWD` 依存のような書き方は避ける
+    - 補助ファイルが必要ならすべて `init.sh` に inline するか、workspace home にすでにある
+      ものを参照する
+    - 一時ファイルは実行後に削除される
+  - cwd は `$BOID_WORKSPACE_HOME` (workspace home) に設定される
+  - **stdin は `/dev/null`**。`read` や `cat` で標準入力から読もうとしても何も来ない
+  - 渡る環境変数は **次の 3 つだけ**:
+    - `HOME` — workspace home (以降のインストールはここに着地させる)
+    - `BOID_WORKSPACE_SLUG` — workspace の slug
+    - `BOID_WORKSPACE_HOME` — `HOME` と同じ値
+
+    `PATH` は image のものが適用される。**ホストの `PATH` / `USER` / `LOGNAME` /
+    `LANG` / `LC_ALL` / `TERM` は渡らない** (旧仕様では渡っていた)。必要なら
+    script 内で自分で設定すること。ホストにだけ入れてあるコマンドには到達できないので、
+    image に無いツールは `init.sh` の中でインストールする
+- **準備ステップ (prep) は必ず走る**: 同じ container の先頭と末尾で、boid 自身が
+  `~/.claude` や `~/.claude/skills/<skill 名>` (組み込み skill の bind 先) の作成と、
+  上記の識別トークンの書き込みを行う。`init.sh` を持たない workspace でも
+  この container は 1 回起動する
 - **失敗時は dispatch も失敗する**: `init.sh` が非ゼロ終了すると、その dispatch は
   「黙って初期化なしで走る」のではなく明示的にエラーとして fail する
-  (job は `failed`、task は `aborted` になる)。エラーメッセージには終了コードと
-  出力の tail が含まれる
+  (job は `failed`、task は `aborted` になる)。エラーメッセージには
+  **どの段階で失敗したか** (`prelude` / `script-setup` / `init.sh` / `postlude`) と
+  終了コードと出力の tail が含まれる。`init.sh` の終了コードはそのまま伝播する
 
 ### script 作者が守ること
 
@@ -125,8 +164,9 @@ bind mount** するので `init.sh` で扱う必要はありません (workspace
 
 一方、bitbucket / jira のようなホスト側にだけ置いてある独自 skill
 (`~/.claude/skills/<name>/`) は `init.sh` からはコピーできません —
-`init.sh` はホスト側 (trusted) で実行されますが、その時点のホストの実 `$HOME` を
-指す変数は渡っていないためです (`HOME` は既に workspace home に切り替わっています)。
+`init.sh` は boid が起こす使い捨て container の中で実行されるので、
+ホストのファイルシステムにそもそも到達できないためです
+(mount されているのは workspace home だけです)。
 
 この種の skill を workspace で使いたい場合は、workspace セットアップ時に
 **人間が手動で** ホストの skill をコピーしてください:
