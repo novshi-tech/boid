@@ -140,12 +140,21 @@ func TestDeployAll_NoOpWhenUnchanged(t *testing.T) {
 
 // The tests below pin the symlink-attack defense added in response to a
 // codex Blocker on PR #789 (docs/plans/home-workspace-volume.md Phase 4
-// PR3): baseDir is workspace HOME's `.claude/skills`, which is rw bind
-// mounted into the sandbox. A compromised or malicious job can replace any
-// path component under baseDir — including baseDir's own skill dirs and
-// their subdirs — with a symlink to an arbitrary host path. DeployAll must
-// refuse to follow such symlinks rather than silently writing through them
-// as the daemon's own (uid 1000, real user permissions) process.
+// PR3). The threat model: a caller may hand DeployAll a baseDir that some
+// less-trusted party can write to — as the Phase 4 caller literally did, by
+// passing workspace HOME's `.claude/skills`, rw bind mounted into every
+// sandbox dispatched against the workspace. Such a party can replace any path
+// component under baseDir — including baseDir's own skill dirs and their
+// subdirs — with a symlink to an arbitrary host path. DeployAll must refuse to
+// follow such symlinks rather than silently writing through them as the
+// daemon's own (real user permissions) process.
+//
+// PR3 of docs/plans/workspace-home-volume-persistence.md moved the production
+// caller's baseDir to <RuntimesDir>/skills, which no job can reach, so today
+// nothing exercises this defense in production. It is pinned anyway: the
+// guarantee is DeployAll's, not its current caller's, and the same helpers
+// still serve MkdirAllNoSymlink, whose caller does write into a job-owned tree
+// (see safe_deploy.go's package comment).
 
 // TestDeployAll_RejectsPreexistingSymlinkSkillDir pins the case where a
 // skill directory itself (e.g. baseDir/boid-task) was replaced with a
@@ -234,6 +243,67 @@ func TestDeployAll_RejectsSymlinkBaseDirItself(t *testing.T) {
 	}
 	if len(entries) != 0 {
 		t.Errorf("attack target received unexpected entries: %v", entries)
+	}
+}
+
+// TestDeployAll_ErrorsDoNotNameACallerSpecificLocation pins that DeployAll's
+// own error text stays caller-neutral. internal/skills is a general-purpose
+// package: baseDir is whatever the caller passed, and since PR3 of
+// docs/plans/workspace-home-volume-persistence.md the production caller
+// (internal/dispatcher's syncEmbeddedSkills) passes <RuntimesDir>/skills, not
+// a workspace HOME. An error that says "workspace HOME %q" therefore sends
+// whoever reads a failed job's Output to a directory that has nothing to do
+// with the failure — and would keep doing so for any future caller too. The
+// path itself is already in the message (%q), which is the only location
+// information this package can state truthfully.
+//
+// Both error-producing branches of DeployAll are exercised: the
+// openBaseDirSafe failure (baseDir itself unusable) and the per-skill
+// deploySkill failure (something under baseDir unusable).
+func TestDeployAll_ErrorsDoNotNameACallerSpecificLocation(t *testing.T) {
+	// Any phrase that asserts WHERE baseDir is rather than merely quoting it.
+	forbidden := []string{"workspace HOME", "workspace home", "$HOME", "~/.claude"}
+
+	t.Run("baseDir itself unusable", func(t *testing.T) {
+		parent := t.TempDir()
+		baseDir := filepath.Join(parent, "skills")
+		if err := os.Symlink(t.TempDir(), baseDir); err != nil {
+			t.Fatalf("symlink: %v", err)
+		}
+
+		err := skills.DeployAll(baseDir)
+		if err == nil {
+			t.Fatal("DeployAll: expected an error for a symlinked baseDir, got nil")
+		}
+		assertCallerNeutral(t, err, baseDir, forbidden)
+	})
+
+	t.Run("a skill dir under baseDir unusable", func(t *testing.T) {
+		baseDir := t.TempDir()
+		if err := os.Symlink(t.TempDir(), filepath.Join(baseDir, "boid-task")); err != nil {
+			t.Fatalf("symlink: %v", err)
+		}
+
+		err := skills.DeployAll(baseDir)
+		if err == nil {
+			t.Fatal("DeployAll: expected an error for a symlinked skill dir, got nil")
+		}
+		assertCallerNeutral(t, err, baseDir, forbidden)
+	})
+}
+
+// assertCallerNeutral fails t when err's text claims a specific location for
+// baseDir instead of just quoting it.
+func assertCallerNeutral(t *testing.T, err error, baseDir string, forbidden []string) {
+	t.Helper()
+	msg := err.Error()
+	for _, phrase := range forbidden {
+		if strings.Contains(msg, phrase) {
+			t.Errorf("DeployAll error names a caller-specific location %q, but internal/skills cannot know where baseDir is; got: %s", phrase, msg)
+		}
+	}
+	if !strings.Contains(msg, baseDir) {
+		t.Errorf("DeployAll error does not quote baseDir %q, so it names no location at all; got: %s", baseDir, msg)
 	}
 }
 
@@ -345,10 +415,13 @@ func TestDeployAll_CleansUpStaleTempFiles(t *testing.T) {
 // concurrent DeployAll call against the same baseDir — reaping it would
 // race the true owner's own imminent renameat call out from under it,
 // producing a "rename ... no such file or directory" failure
-// (internal/dispatcher/runner.go dispatches DeployAll once per job, with no
-// cross-dispatch locking on a shared workspace HOME directory, so two
-// concurrent dispatches against the same workspace do call DeployAll on the
-// same baseDir). The test process's own PID (os.Getpid()) is guaranteed
+// (internal/dispatcher calls DeployAll once per dispatch with no
+// cross-dispatch locking, so concurrent dispatches do call DeployAll on the
+// same baseDir — originally the per-workspace HOME shared by every job of one
+// workspace, and since PR3 of docs/plans/workspace-home-volume-persistence.md
+// the single <RuntimesDir>/skills shared by every job of the whole
+// installation, i.e. the overlap got wider). The test process's own PID
+// (os.Getpid()) is guaranteed
 // alive for the duration of the test, standing in for "another concurrently
 // running DeployAll call".
 func TestDeployAll_PreservesTempFileOwnedByLiveProcess(t *testing.T) {
@@ -424,5 +497,166 @@ func assertNoTempFiles(t *testing.T, dir string) {
 	})
 	if err != nil {
 		t.Fatalf("walk %s: %v", dir, err)
+	}
+}
+
+// --- MkdirAllNoSymlink (PR3 of docs/plans/workspace-home-volume-persistence.md,
+// 論点 e-2) ---
+
+// TestMkdirAllNoSymlink_CreatesMissingComponents pins the primitive PR3's
+// dispatcher-side bind-target preparation relies on: every missing component
+// of the requested path is created, and the call is idempotent.
+func TestMkdirAllNoSymlink_CreatesMissingComponents(t *testing.T) {
+	base := t.TempDir()
+	target := filepath.Join(base, ".claude", "skills", "boid-task")
+
+	if _, err := skills.MkdirAllNoSymlink(target); err != nil {
+		t.Fatalf("MkdirAllNoSymlink: %v", err)
+	}
+	info, err := os.Stat(target)
+	if err != nil {
+		t.Fatalf("stat %s: %v", target, err)
+	}
+	if !info.IsDir() {
+		t.Fatalf("%s is not a directory", target)
+	}
+	if _, err := skills.MkdirAllNoSymlink(target); err != nil {
+		t.Fatalf("MkdirAllNoSymlink (2nd, must be idempotent): %v", err)
+	}
+}
+
+// TestMkdirAllNoSymlink_RefusesSymlinkComponent is the reason this is not a
+// plain os.MkdirAll: the dispatcher creates these directories inside a
+// workspace HOME that the job itself owns read-write, so a job that swaps
+// ~/.claude for a symlink must not turn the daemon's next mkdir into a write
+// outside the home.
+func TestMkdirAllNoSymlink_RefusesSymlinkComponent(t *testing.T) {
+	base := t.TempDir()
+	elsewhere := t.TempDir()
+	if err := os.Symlink(elsewhere, filepath.Join(base, ".claude")); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+
+	_, err := skills.MkdirAllNoSymlink(filepath.Join(base, ".claude", "skills", "boid-task"))
+	if err == nil {
+		t.Fatal("MkdirAllNoSymlink through a symlinked component must fail")
+	}
+	if _, statErr := os.Stat(filepath.Join(elsewhere, "skills")); statErr == nil {
+		t.Errorf("MkdirAllNoSymlink followed the symlink and created %s/skills", elsewhere)
+	}
+}
+
+// TestMkdirAllNoSymlink_RejectsRelativePath pins the absolute-path
+// precondition MkdirAllNoSymlink inherits from the openat2 walk (it starts at
+// "/"), so a caller that forgot to resolve a root gets an error rather than a
+// directory tree rooted at the daemon's cwd.
+func TestMkdirAllNoSymlink_RejectsRelativePath(t *testing.T) {
+	if _, err := skills.MkdirAllNoSymlink("relative/path"); err == nil {
+		t.Fatal("MkdirAllNoSymlink on a relative path must fail")
+	}
+}
+
+// TestMkdirAllNoSymlink_ReportsOwnerUID pins the owner uid MkdirAllNoSymlink
+// returns alongside the directory it prepared. The caller needs it to answer
+// one question the mkdir alone cannot: whether the directory now at that path
+// is the one this process owns, or one somebody else created first.
+//
+// It has to come from this function rather than a follow-up os.Stat by the
+// caller, and it has to be an fstat(2) on the very descriptor the symlink-safe
+// walk ended on: a separate stat by path would re-resolve every component from
+// scratch, so it could report the owner of a *different* directory than the
+// one this call created or entered. That is the same check-then-use gap
+// safe_deploy.go's whole openat2 design exists to remove — reintroducing it in
+// the ownership check would make the check itself the race.
+//
+// os.Getuid() rather than a literal uid: the daemon's uid is environment
+// dependent (a developer machine, a CI runner and the compose deploy's
+// in-image `boid` user are all different), and the property being pinned is
+// "the process that created it owns it", not "uid 1000 owns it".
+// linuxPathMax is PATH_MAX from <linux/limits.h>: the hard ceiling on the
+// length of a path STRING any single path-based syscall (stat(2), openat(2)
+// with a multi-component name, ...) will accept, independent of how deep the
+// directory tree itself may go. Exceeding it is ENAMETOOLONG.
+//
+// fd-relative resolution has no such ceiling, because each syscall only ever
+// sees one component name — which is what
+// TestMkdirAllNoSymlink_ReportsOwnerUIDWithoutReResolvingThePath below turns
+// into an observable difference.
+const linuxPathMax = 4096
+
+// TestMkdirAllNoSymlink_ReportsOwnerUIDWithoutReResolvingThePath is the
+// regression guard for HOW the owner uid is obtained, as opposed to what it
+// comes out as (TestMkdirAllNoSymlink_ReportsOwnerUID above).
+//
+// MkdirAllNoSymlink must read the owner with fstat(2) on the descriptor its
+// symlink-checked walk ended on, never with a stat by path: a stat by path
+// re-resolves every component from scratch, so it can report the owner of a
+// different directory than the one just created or entered — the exact
+// check-then-use gap safe_deploy.go's openat2 design exists to remove, which
+// would make the ownership check itself the race (see MkdirAllNoSymlink's own
+// doc comment, and internal/dispatcher/skills_overlay.go for the caller that
+// acts on the result).
+//
+// Every no-contention test — including the uid comparison directly above —
+// passes either way, because with nothing racing the walk, both readings name
+// the same directory. Producing a real divergence would need either a
+// privileged chown or a won race, neither of which a test can arrange
+// deterministically. What CAN be arranged deterministically is a path that
+// only fd-relative resolution can reach at all: past PATH_MAX, every
+// path-based syscall fails with ENAMETOOLONG while an openat2 walk — one short
+// component name per syscall — is unaffected, and so is an fstat on the
+// descriptor it produced. A regression to any stat-by-path therefore turns
+// this call into an error instead of a uid.
+//
+// The premise is asserted rather than assumed: the case fails loudly if
+// os.Stat on the very same path unexpectedly succeeds, since the whole test
+// would then be proving nothing.
+func TestMkdirAllNoSymlink_ReportsOwnerUIDWithoutReResolvingThePath(t *testing.T) {
+	base := t.TempDir()
+
+	// One 120-char component at a time until the whole path is comfortably
+	// past PATH_MAX. Depth is irrelevant to what is being pinned — only the
+	// length of the assembled string is.
+	target := base
+	for len(target) <= linuxPathMax+512 {
+		target = filepath.Join(target, strings.Repeat("d", 120))
+	}
+
+	if _, err := os.Stat(target); err == nil {
+		t.Fatalf("test premise broken: os.Stat on a %d-character path succeeded, so this case can no longer tell fstat(fd) apart from a stat by path", len(target))
+	}
+
+	uid, err := skills.MkdirAllNoSymlink(target)
+	if err != nil {
+		t.Fatalf("MkdirAllNoSymlink on a %d-character path: %v\n"+
+			"An fd-relative walk plus an fstat on the descriptor it ends on has no PATH_MAX ceiling; "+
+			"an ENAMETOOLONG here means some step re-resolved the whole path string instead.", len(target), err)
+	}
+	if uid != os.Getuid() {
+		t.Errorf("owner uid = %d, want the calling process's uid %d", uid, os.Getuid())
+	}
+}
+
+func TestMkdirAllNoSymlink_ReportsOwnerUID(t *testing.T) {
+	base := t.TempDir()
+	target := filepath.Join(base, ".claude", "skills", "boid-task")
+
+	uid, err := skills.MkdirAllNoSymlink(target)
+	if err != nil {
+		t.Fatalf("MkdirAllNoSymlink: %v", err)
+	}
+	if uid != os.Getuid() {
+		t.Errorf("owner uid of a freshly created dir = %d, want the calling process's uid %d", uid, os.Getuid())
+	}
+
+	// The already-exists path resolves through a different branch of
+	// openOrCreateDirNoSymlink (the fast-path Openat2, not the mkdirat +
+	// retry), so it needs its own assertion rather than being implied.
+	uid, err = skills.MkdirAllNoSymlink(target)
+	if err != nil {
+		t.Fatalf("MkdirAllNoSymlink (2nd, already exists): %v", err)
+	}
+	if uid != os.Getuid() {
+		t.Errorf("owner uid of an existing dir = %d, want the calling process's uid %d", uid, os.Getuid())
 	}
 }

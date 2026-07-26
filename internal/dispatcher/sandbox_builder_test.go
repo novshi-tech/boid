@@ -3,12 +3,14 @@ package dispatcher
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/novshi-tech/boid/internal/orchestrator"
 	"github.com/novshi-tech/boid/internal/sandbox"
+	"github.com/novshi-tech/boid/internal/skills"
 )
 
 // fakeGetOriginURL is a shared ResolveHostCommands getOriginURL stub for
@@ -324,7 +326,7 @@ func TestBuildSandboxSpec_BoidBinaryBoundAtShimBinDir(t *testing.T) {
 // これにより sandbox 内プロセスが .git/config 等を直接書き換えられない。
 func TestProjectVisibilityMounts_GitROBind_Writable(t *testing.T) {
 	const effectiveDir = "/home/user/project"
-	mounts := projectVisibilityMounts(effectiveDir, effectiveDir, "/home/user", "", true, nil)
+	mounts := projectVisibilityMounts(effectiveDir, effectiveDir, "/home/user", "", "", true, nil)
 
 	var gitMount *sandbox.Mount
 	for i := range mounts {
@@ -356,7 +358,7 @@ func TestProjectVisibilityMounts_GitROBind_Writable(t *testing.T) {
 // read-only project では .git の ro re-bind は追加しない（既に親が read-only）。
 func TestProjectVisibilityMounts_GitROBind_ReadOnly(t *testing.T) {
 	const effectiveDir = "/home/user/project"
-	mounts := projectVisibilityMounts(effectiveDir, effectiveDir, "/home/user", "", false, nil)
+	mounts := projectVisibilityMounts(effectiveDir, effectiveDir, "/home/user", "", "", false, nil)
 
 	for _, m := range mounts {
 		if m.Target == effectiveDir+"/.git" && m.ReadOnly && m.DetectType {
@@ -380,7 +382,7 @@ func TestProjectVisibilityMounts_BoidBind(t *testing.T) {
 	}
 
 	// writable タスク: .boid は origProjectDir から bind され書き込み可。
-	wMounts := projectVisibilityMounts(origProject, origProject, "/home/user", "", true, nil)
+	wMounts := projectVisibilityMounts(origProject, origProject, "/home/user", "", "", true, nil)
 	w := findBoid(wMounts)
 	if w == nil {
 		t.Fatal(".boid bind not found in writable project mounts")
@@ -399,7 +401,7 @@ func TestProjectVisibilityMounts_BoidBind(t *testing.T) {
 	}
 
 	// readonly タスク: .boid は依然 bind されるが ro。
-	roMounts := projectVisibilityMounts(origProject, origProject, "/home/user", "", false, nil)
+	roMounts := projectVisibilityMounts(origProject, origProject, "/home/user", "", "", false, nil)
 	ro := findBoid(roMounts)
 	if ro == nil {
 		t.Fatal(".boid bind not found in read-only project mounts")
@@ -2112,10 +2114,10 @@ func mountTargetIndex(mounts []sandbox.Mount, target string) int {
 	return -1
 }
 
-// TestHomeMounts_WorkspaceHomeDirSet_ReturnsBindOnly pins the Phase 6 PR8
-// state (docs/plans/phase6-container-backend.md §決定 9): homeMounts returns
-// a single read-write bind of the workspace home, with no $HOME/.boid tmpfs
-// overlay layered on top.
+// TestHomeMounts_WorkspaceHomeDirSet_NoSkillsSource_ReturnsBindOnly pins the
+// Phase 6 PR8 state (docs/plans/phase6-container-backend.md §決定 9):
+// homeMounts returns a single read-write bind of the workspace home, with no
+// $HOME/.boid tmpfs overlay layered on top.
 //
 // That overlay existed from Phase 4 PR2 through Phase 6 PR7 to isolate the
 // well-known $HOME/.boid/output/payload_patch.json file between concurrent
@@ -2126,10 +2128,14 @@ func mountTargetIndex(mounts []sandbox.Mount, target string) int {
 // sendTaskUpdatePayloadPatch) to the broker's `boid task update
 // --payload-patch` RPC (JobID-scoped, applied under a per-task lock), which
 // needs no shared file and therefore no filesystem isolation to guard.
-func TestHomeMounts_WorkspaceHomeDirSet_ReturnsBindOnly(t *testing.T) {
+//
+// An empty skillsSourceDir (minimal test wiring that never threaded
+// SandboxRuntimeInfo.SkillsSourceDir) degrades to exactly that pre-PR3
+// layout, the same graceful-degrade convention WorkspaceHomeDir itself has.
+func TestHomeMounts_WorkspaceHomeDirSet_NoSkillsSource_ReturnsBindOnly(t *testing.T) {
 	const homeDir = "/home/user"
 	const wsHome = "/data/boid/homes/default"
-	mounts := homeMounts(homeDir, wsHome)
+	mounts := homeMounts(homeDir, wsHome, "")
 	if len(mounts) != 1 {
 		t.Fatalf("homeMounts returned %d mounts, want 1 (bind only, no .boid tmpfs overlay): %+v", len(mounts), mounts)
 	}
@@ -2141,11 +2147,59 @@ func TestHomeMounts_WorkspaceHomeDirSet_ReturnsBindOnly(t *testing.T) {
 	}
 }
 
+// TestHomeMounts_SkillsSourceDirSet_AppendsPerSkillReadOnlyBinds pins PR3 of
+// docs/plans/workspace-home-volume-persistence.md (論点 e-2): the embedded
+// skills reach the sandbox as one read-only bind PER SKILL, layered on top of
+// the workspace home bind.
+//
+// Per-skill rather than one bind of the whole ~/.claude/skills directory:
+// covering the directory would hide any non-embedded skill the workspace's
+// own init.sh copied in, an arrangement internal/adapters/opencode/
+// bindings.go actively documents as the supported way to expose host skills
+// (`cp -r ~/.claude/skills/<name> "$BOID_WORKSPACE_HOME/.claude/skills/"`).
+func TestHomeMounts_SkillsSourceDirSet_AppendsPerSkillReadOnlyBinds(t *testing.T) {
+	const homeDir = "/home/user"
+	const wsHome = "/data/boid/homes/default"
+	const skillsSrc = "/run/user/1000/runtimes/skills"
+
+	mounts := homeMounts(homeDir, wsHome, skillsSrc)
+
+	names := skills.EmbeddedSkillNames()
+	if len(names) == 0 {
+		t.Fatal("EmbeddedSkillNames() returned nothing; this test would be vacuous")
+	}
+	if len(mounts) != 1+len(names) {
+		t.Fatalf("homeMounts returned %d mounts, want %d (home bind + one per embedded skill): %+v", len(mounts), 1+len(names), mounts)
+	}
+	if mounts[0].Source != wsHome || mounts[0].Type != sandbox.MountBind || mounts[0].ReadOnly {
+		t.Errorf("mounts[0] = %+v, want the read-write workspace home bind", mounts[0])
+	}
+	for i, name := range names {
+		m := mounts[1+i]
+		wantSource := filepath.Join(skillsSrc, name)
+		wantTarget := filepath.Join(homeDir, ".claude", "skills", name)
+		if m.Source != wantSource || m.Target != wantTarget || m.Type != sandbox.MountBind {
+			t.Errorf("mounts[%d] = %+v, want bind %s -> %s", 1+i, m, wantSource, wantTarget)
+		}
+		if !m.ReadOnly {
+			t.Errorf("mounts[%d] (%s) must be read-only: %+v", 1+i, name, m)
+		}
+		if m.Guard != "" {
+			t.Errorf("mounts[%d] (%s) must not carry a Guard: a missing source is a dispatch failure, not a silently skipped mount: %+v", 1+i, name, m)
+		}
+	}
+}
+
+// TestHomeMounts_WorkspaceHomeDirEmpty_FallsBackToTmpfs pins that the tmpfs
+// fallback stays a single mount even when a skills source IS available.
+// resolveWorkspaceHome never returns an empty home on a real dispatch, so
+// this branch is reached only by test wiring; layering skills onto it would
+// change behaviour no production path exercises.
 func TestHomeMounts_WorkspaceHomeDirEmpty_FallsBackToTmpfs(t *testing.T) {
 	const homeDir = "/home/user"
-	mounts := homeMounts(homeDir, "")
+	mounts := homeMounts(homeDir, "", "/run/user/1000/runtimes/skills")
 	if len(mounts) != 1 {
-		t.Fatalf("homeMounts returned %d mounts, want 1 (fallback tmpfs): %+v", len(mounts), mounts)
+		t.Fatalf("homeMounts returned %d mounts, want 1 (fallback tmpfs, no skills overlay): %+v", len(mounts), mounts)
 	}
 	if mounts[0].Target != homeDir || mounts[0].Type != sandbox.MountTmpfs || mounts[0].Source != "" {
 		t.Errorf("mounts[0] = %+v, want plain tmpfs at %s", mounts[0], homeDir)
@@ -2184,6 +2238,52 @@ func TestBuildSandboxSpec_CloneEnabled_WorkspaceHomeBind(t *testing.T) {
 	}
 	if idx := mountTargetIndex(out.Mounts, homeDir+"/.boid"); idx != -1 {
 		t.Errorf("unexpected /.boid tmpfs overlay mount (retired by Phase 6 PR8): %+v", out.Mounts[idx])
+	}
+}
+
+// TestBuildSandboxSpec_SkillsSourceDir_EndToEndPerSkillBinds is the
+// end-to-end wiring guard for PR3 of
+// docs/plans/workspace-home-volume-persistence.md (論点 e-2): a
+// SandboxRuntimeInfo carrying SkillsSourceDir must come out of
+// BuildSandboxSpec with one read-only bind per embedded skill under the
+// sandbox's own $HOME. Runner.Dispatch fills that field from the directory it
+// just materialized the skill set into, so a break in this seam is exactly
+// the failure mode where /boid-task stops resolving inside the harness with
+// no error anywhere.
+func TestBuildSandboxSpec_SkillsSourceDir_EndToEndPerSkillBinds(t *testing.T) {
+	homeDir := hostHomeDir()
+	if homeDir == "" {
+		t.Skip("hostHomeDir() returned empty; cannot exercise mount layout")
+	}
+	spec := &orchestrator.JobSpec{
+		ProjectID: "proj-1",
+		Argv:      []string{"/bin/true"},
+		Visibility: orchestrator.Visibility{
+			ProjectDir: "/home/user/project",
+			Writable:   true,
+		},
+	}
+	const wsHome = "/data/boid/homes/default"
+	const skillsSrc = "/run/user/1000/runtimes/skills"
+	rt := SandboxRuntimeInfo{JobID: "job-1", WorkspaceHomeDir: wsHome, SkillsSourceDir: skillsSrc}
+	out, err := BuildSandboxSpec(spec, rt)
+	if err != nil {
+		t.Fatalf("BuildSandboxSpec: %v", err)
+	}
+	names := skills.EmbeddedSkillNames()
+	if len(names) == 0 {
+		t.Fatal("EmbeddedSkillNames() returned nothing; this test would be vacuous")
+	}
+	for _, name := range names {
+		target := filepath.Join(homeDir, ".claude", "skills", name)
+		idx := mountTargetIndex(out.Mounts, target)
+		if idx == -1 {
+			t.Fatalf("embedded skill bind at %s not found: %+v", target, out.Mounts)
+		}
+		m := out.Mounts[idx]
+		if m.Source != filepath.Join(skillsSrc, name) || m.Type != sandbox.MountBind || !m.ReadOnly {
+			t.Errorf("mount for %s = %+v, want read-only bind from %s", name, m, filepath.Join(skillsSrc, name))
+		}
 	}
 }
 
@@ -2232,15 +2332,26 @@ func TestBuildSandboxSpec_CloneEnabled_NoWorkspaceHome_FallsBackToTmpfs(t *testi
 
 // TestProjectVisibilityMounts_WorkspaceHomeBind_Order pins the full mount
 // order projectVisibilityMounts produces once a workspace home is resolved:
-// [bind effectiveDir, bind homeDir<-workspaceHomeDir, re-bind effectiveDir,
-// peers..., .boid bind, .git ro re-bind]. Phase 6 PR8 (docs/plans/
-// phase6-container-backend.md §決定 9) removed the $HOME/.boid tmpfs overlay
-// that used to sit between the home bind and the effectiveDir re-mount.
+// [bind effectiveDir, bind homeDir<-workspaceHomeDir, per-embedded-skill ro
+// binds, re-bind effectiveDir, peers..., .boid bind, .git ro re-bind]. Phase
+// 6 PR8 (docs/plans/phase6-container-backend.md §決定 9) removed the
+// $HOME/.boid tmpfs overlay that used to sit between the home bind and the
+// effectiveDir re-mount; PR3 of docs/plans/workspace-home-volume-persistence.md
+// put the embedded-skill binds there instead, because they are produced by
+// homeMounts (論点 e-2 / 決定 D5: one function owns the whole HOME layer, so
+// PR6's switch to a named volume is a single-function change).
+//
+// The re-mount's index is therefore derived from the skill count rather than
+// hard-coded: what this case pins is that the re-mount comes IMMEDIATELY
+// after the whole HOME layer, which is what keeps the HOME bind from
+// shadowing a project directory nested under it.
 func TestProjectVisibilityMounts_WorkspaceHomeBind_Order(t *testing.T) {
 	const effectiveDir = "/home/user/project"
 	const homeDir = "/home/user"
 	const wsHome = "/data/boid/homes/default"
-	mounts := projectVisibilityMounts(effectiveDir, effectiveDir, homeDir, wsHome, true, map[string]string{"peer": "/home/user/peer"})
+	const skillsSrc = "/run/user/1000/runtimes/skills"
+	skillCount := len(skills.EmbeddedSkillNames())
+	mounts := projectVisibilityMounts(effectiveDir, effectiveDir, homeDir, wsHome, skillsSrc, true, map[string]string{"peer": "/home/user/peer"})
 
 	effIdx := mountTargetIndex(mounts, effectiveDir)
 	homeIdx := mountTargetIndex(mounts, homeDir)
@@ -2268,8 +2379,19 @@ func TestProjectVisibilityMounts_WorkspaceHomeBind_Order(t *testing.T) {
 	if idx := mountTargetIndex(mounts, homeDir+"/.boid"); idx != -1 {
 		t.Errorf("unexpected /.boid tmpfs overlay mount (retired by Phase 6 PR8): %+v", mounts[idx])
 	}
-	if remountIdx != 2 {
-		t.Errorf("effectiveDir re-mount index = %d, want 2 (immediately after home bind)", remountIdx)
+	if wantRemount := 2 + skillCount; remountIdx != wantRemount {
+		t.Errorf("effectiveDir re-mount index = %d, want %d (immediately after the home bind + %d embedded-skill binds)", remountIdx, wantRemount, skillCount)
+	}
+	for _, name := range skills.EmbeddedSkillNames() {
+		target := filepath.Join(homeDir, ".claude", "skills", name)
+		idx := mountTargetIndex(mounts, target)
+		if idx == -1 {
+			t.Errorf("embedded skill bind at %s not found: %+v", target, mounts)
+			continue
+		}
+		if idx <= homeIdx || idx >= remountIdx {
+			t.Errorf("embedded skill bind %s at index %d, want between the home bind (%d) and the re-mount (%d)", target, idx, homeIdx, remountIdx)
+		}
 	}
 	if peerIdx <= remountIdx {
 		t.Errorf("peer bind index = %d, want after re-mount (%d)", peerIdx, remountIdx)
@@ -2284,7 +2406,7 @@ func TestProjectVisibilityMounts_WorkspaceHomeBind_Order(t *testing.T) {
 func TestProjectVisibilityMounts_NoWorkspaceHome_FallsBackToTmpfs(t *testing.T) {
 	const effectiveDir = "/home/user/project"
 	const homeDir = "/home/user"
-	mounts := projectVisibilityMounts(effectiveDir, effectiveDir, homeDir, "", true, nil)
+	mounts := projectVisibilityMounts(effectiveDir, effectiveDir, homeDir, "", "", true, nil)
 
 	var found *sandbox.Mount
 	for i := range mounts {

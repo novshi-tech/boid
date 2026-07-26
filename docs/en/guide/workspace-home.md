@@ -125,8 +125,11 @@ installs go / volta / node (lts) / claude / codex / opencode end-to-end
 
 #### Copying non-embedded skills
 
-boid's built-in skills (`/boid-task` etc.) are synced into the workspace home
-automatically on every dispatch, so `init.sh` never needs to handle them.
+boid's built-in skills (`/boid-task` etc.) are extracted from the boid binary on
+every dispatch and **bind-mounted read-only, one mount per skill**, at
+`~/.claude/skills/<name>`, so `init.sh` never needs to handle them (no copy of them
+is stored inside the workspace home). They are mounted per skill rather than as one
+mount of the whole directory so that the hand-copied skills below stay visible.
 
 Host-only custom skills you keep under `~/.claude/skills/<name>/` (e.g. a bitbucket or
 jira skill) are a different story: `init.sh` cannot copy them, because although it runs on

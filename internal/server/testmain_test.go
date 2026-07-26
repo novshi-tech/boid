@@ -21,8 +21,11 @@ import (
 // TestMain existed, `go test ./internal/server/` on an ordinary developer
 // machine would:
 //
-//   - mkdir ~/.local/share/boid/homes/default and sync the embedded skills
-//     into it (runner.go's skills.DeployAll),
+//   - mkdir ~/.local/share/boid/homes/default, materialize the embedded
+//     skills under ~/.local/share/boid/skills and mkdir the per-skill bind
+//     targets under the home (skills_overlay.go's syncEmbeddedSkills — the
+//     skills root is <RuntimesDir>/skills, which with RuntimesDir empty
+//     falls back to the same $XDG_DATA_HOME/boid),
 //   - write ~/.local/share/boid/homes-meta/default.{init.json,lock}
 //     (docs/plans/workspace-home-volume-persistence.md 論点b, PR2 — this
 //     directory is what made the pre-existing homes/ pollution visible), and

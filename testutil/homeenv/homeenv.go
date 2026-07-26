@@ -34,7 +34,9 @@ import (
 //   - HOME: os.UserHomeDir's source, the last-resort root behind both
 //     dispatcher.workspaceDataHomeRoot and os.UserConfigDir.
 //   - XDG_DATA_HOME: ~/.local/share/boid — homes/, homes-meta/, boid.db,
-//     skills/, runtimes/.
+//     runtimes/ (which since PR3 of
+//     docs/plans/workspace-home-volume-persistence.md also holds the
+//     materialized embedded skills, under runtimes/skills).
 //   - XDG_CONFIG_HOME: ~/.config/boid — workspaces/<slug>/init.sh (which a
 //     dispatch will happily EXECUTE if a marker miss makes it eligible),
 //     host_commands.yaml, config.yaml.

@@ -601,8 +601,7 @@ func hostVisibleRuntimesDirFor(cfg Config) string {
 //  1. filepath.Dir(cfg.DBPath) when the DB is a real file. This is the
 //     production answer, and under the volume-only compose deploy it is the
 //     `boid_state` named volume (build/container/compose.yml) — the same
-//     directory as web_secret / install_id / secret.key / tls/ / kits/ /
-//     skills/.
+//     directory as web_secret / install_id / secret.key / tls/ / kits/.
 //  2. filepath.Dir(cfg.SocketPath) when cfg.DBPath is empty or ":memory:".
 //     Test wiring, chiefly: an in-memory DB has no directory of its own, and
 //     the socket's parent is the only other on-disk root such a config

@@ -11,11 +11,17 @@ import (
 // ~/.opencode, ~/.config/opencode, the opencode CLI binary, and the workspace
 // skills tree all live directly in the sandbox's $HOME because
 // Runner.Dispatch bind-mounts the workspace's persistent home directory
-// there; embedded skills are copy-synced by skills.DeployAll. Exposing
-// non-embedded host skills to opencode is now the workspace's init.sh's
-// responsibility (see bindings.go's doc comment). A regression here (a
+// there. Exposing non-embedded host skills to opencode is the workspace's
+// init.sh's responsibility (see bindings.go's doc comment).
+//
+// Embedded skills ARE bind-mounted again as of PR3 of
+// docs/plans/workspace-home-volume-persistence.md (論点 e-2) — one read-only
+// bind per skill onto ~/.claude/skills/<name>, per-skill precisely so the
+// init.sh-copied host skills stay visible — but those mounts are declared by
+// the dispatcher (internal/dispatcher/skills_overlay.go + homeMounts), not
+// by this method, so the assertion below is unchanged. A regression here (a
 // binding creeping back in) would silently reintroduce the retired
-// bind-per-workspace-home coupling this PR removed.
+// per-adapter host-path coupling Phase 4 PR3 removed.
 func TestBindings_ReturnsEmpty(t *testing.T) {
 	mounts := New().Bindings("/home/test")
 	if len(mounts) != 0 {

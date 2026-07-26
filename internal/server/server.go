@@ -26,7 +26,6 @@ import (
 	"github.com/novshi-tech/boid/internal/orchestrator"
 	"github.com/novshi-tech/boid/internal/sandbox"
 	"github.com/novshi-tech/boid/internal/sandbox/backend"
-	"github.com/novshi-tech/boid/internal/skills"
 )
 
 // gatewayTLSShutdownTimeout bounds how long Stop waits for the git
@@ -363,17 +362,27 @@ func New(cfg Config) (*Server, error) {
 		return nil, fmt.Errorf("migrate: %w", err)
 	}
 
-	if cfg.DBPath != "" && cfg.DBPath != ":memory:" {
-		skillsDir := filepath.Join(filepath.Dir(cfg.DBPath), "skills")
-		if err := skills.DeployAll(skillsDir); err != nil {
-			d.Close()
-			return nil, fmt.Errorf("deploy skills: %w", err)
-		}
-	}
+	// No embedded-skill deployment here. New() used to run
+	// skills.DeployAll(filepath.Dir(cfg.DBPath) + "/skills") at this point,
+	// producing the tree the claude / codex / opencode adapters' Bindings()
+	// bound into the sandbox's ~/.claude/skills/<name>. Phase 4 PR3
+	// (docs/plans/home-workspace-volume.md) retired all three Bindings()
+	// implementations to nil, which left this write with no reader anywhere
+	// in the repository — dead, but not obviously so, since the directory it
+	// produced kept looking like the canonical copy.
+	//
+	// PR3 of docs/plans/workspace-home-volume-persistence.md (論点 e-2, 決定
+	// D6) removes it, because that PR re-introduces bind-based delivery from
+	// a DIFFERENT root (<RuntimesDir>/skills, host-visible so a sibling
+	// container's bind source resolves — see dispatcher's embeddedSkillsDir)
+	// and having two materialization points, one of them dead, is the exact
+	// confusion 論点 e-2 had to untangle. Pinned by
+	// TestNew_DoesNotDeploySkillsBesideTheDB. Whatever an existing
+	// installation already has under <dataHome>/skills is left alone.
 
 	// Install identity (docs/plans/phase6-container-backend.md §PR6/§決定6):
 	// loaded (or generated once) here, alongside the other on-disk
-	// daemon-identity artifacts New() already establishes (skills,
+	// daemon-identity artifacts New() already establishes (install_id,
 	// migrations). Empty cfg.InstallIDDir (every pre-PR6 caller/test) skips
 	// this — installID stays "".
 	//
