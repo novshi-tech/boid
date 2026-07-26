@@ -200,11 +200,15 @@ type HarnessAdapter interface {
 	// all return nil now): CLI state dirs, resolved-binary PATH entries, and
 	// embedded-skill binds are superseded by the workspace HOME volume —
 	// Runner.Dispatch bind-mounts a persistent per-workspace home directory
-	// at the sandbox's $HOME (internal/dispatcher/workspace_home.go) and
-	// copy-syncs embedded skills into it (skills.DeployAll), so that state
-	// simply already exists at the right paths without any adapter-declared
-	// bind. The method is kept on the interface for a future
-	// $HOME-independent bind a harness might need; returning nil (or an
-	// empty slice) is the expected steady state.
+	// at the sandbox's $HOME (internal/dispatcher/workspace_home.go), so that
+	// state simply already exists at the right paths without any
+	// adapter-declared bind. The embedded skills are bind-mounted once more
+	// as of PR3 of docs/plans/workspace-home-volume-persistence.md, but by
+	// the dispatcher (internal/dispatcher/skills_overlay.go + homeMounts) —
+	// staging a sandbox is boid's job and is identical across harnesses,
+	// which is why that did not bring these implementations back. The method
+	// is kept on the interface for a future $HOME-independent bind a harness
+	// might need; returning nil (or an empty slice) is the expected steady
+	// state.
 	Bindings(homeDir string) []BindMount
 }

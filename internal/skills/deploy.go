@@ -16,13 +16,32 @@ var skillsFS embed.FS
 // Each skill is deployed to baseDir/<skill-name>/.
 // Files are only written when their content differs from the embedded version.
 //
-// baseDir is workspace HOME's `.claude/skills` (see
-// internal/dispatcher/runner.go), a directory rw bind mounted into every
-// sandbox dispatched against the workspace. Every write below it therefore
-// goes through the symlink-safe, fd-relative helpers in safe_deploy.go
-// rather than string-path-based os.MkdirAll/os.CreateTemp/os.Rename — see
-// that file's package doc comment for the threat model (PR #789 review,
-// 2026-07-17).
+// baseDir is entirely the caller's choice and this package makes no claim
+// about where it lives — which is why the errors below quote the path and say
+// nothing else about it. They used to read "workspace HOME %q ...", from the
+// era when this package had exactly one caller and that caller passed a
+// workspace HOME; PR3 of docs/plans/workspace-home-volume-persistence.md moved
+// the destination to <RuntimesDir>/skills and left the message behind,
+// pointing a reader of a failed job's Output at a directory unrelated to the
+// failure. A general-purpose package naming its caller's layout is the bug,
+// not merely the stale value.
+//
+// The current production caller is internal/dispatcher's syncEmbeddedSkills,
+// which re-materializes the set on every dispatch and bind-mounts it into each
+// job read-only, one bind per skill (PR3, 論点 e-2) — informational, not a
+// precondition.
+//
+// Every write below goes through the symlink-safe, fd-relative helpers in
+// safe_deploy.go rather than string-path-based os.MkdirAll/os.CreateTemp/
+// os.Rename. That hardening was originally required because baseDir *was*
+// workspace HOME's `.claude/skills`, rw bind mounted into every sandbox
+// dispatched against the workspace (PR #789 review, 2026-07-17). It is
+// retained rather than unwound now that the default caller's baseDir is out of
+// reach of any job: the same helpers also serve MkdirAllNoSymlink, whose
+// caller DOES write into the job-owned workspace HOME, and nothing about them
+// costs anything on a directory jobs cannot reach. A future caller is
+// therefore free to point baseDir at attacker-writable storage again without
+// re-deriving the threat model.
 func DeployAll(baseDir string) error {
 	entries, err := skillsFS.ReadDir("data")
 	if err != nil {
@@ -31,7 +50,7 @@ func DeployAll(baseDir string) error {
 
 	baseFd, err := openBaseDirSafe(baseDir)
 	if err != nil {
-		return fmt.Errorf("workspace HOME %q に symlink 混入を検出、または safe path 解決に失敗: %w", baseDir, err)
+		return fmt.Errorf("skills の materialize 先 %q に symlink 混入を検出、または safe path 解決に失敗: %w", baseDir, err)
 	}
 	defer func() { _ = unix.Close(baseFd) }()
 
@@ -40,7 +59,7 @@ func DeployAll(baseDir string) error {
 			continue
 		}
 		if err := deploySkill(baseFd, e.Name()); err != nil {
-			return fmt.Errorf("workspace HOME %q: %w", baseDir, err)
+			return fmt.Errorf("skills の materialize 先 %q: %w", baseDir, err)
 		}
 	}
 	return nil
@@ -48,7 +67,17 @@ func DeployAll(baseDir string) error {
 
 // EmbeddedSkillNames returns the slugs of the embedded skill directories in
 // stable lexical order. dispatcher uses it to compute the claude-side
-// ~/.claude/skills/<name> bind targets without hard-coding the list.
+// ~/.claude/skills/<name> bind targets without hard-coding the list — both
+// the mkdir of those targets inside the workspace HOME and the per-skill
+// read-only mounts homeMounts declares (internal/dispatcher/
+// skills_overlay.go and sandbox_builder.go).
+//
+// The caller was the claude/codex/opencode adapters' Bindings() until Phase
+// 4 PR3 (docs/plans/home-workspace-volume.md) retired those to nil and
+// switched to a copy-sync; this function then sat with no callers at all
+// until PR3 of docs/plans/workspace-home-volume-persistence.md moved skill
+// delivery back to bind mounts, declared by the dispatcher rather than by an
+// adapter.
 func EmbeddedSkillNames() []string {
 	entries, err := skillsFS.ReadDir("data")
 	if err != nil {

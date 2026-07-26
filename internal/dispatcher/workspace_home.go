@@ -564,7 +564,9 @@ func workspaceDataHomeRoot() (string, error) {
 // Note that root is NOT the daemon's persistent data root, despite what this
 // comment claimed while the userns backend still existed (it named
 // runtimesDirFor(cfg) — filepath.Dir(cfg.DBPath) + "/runtimes" — and called
-// it "the same per-installation data root skills/ already lives under").
+// it "the same per-installation data root skills/ already lives under"; the
+// daemon stopped writing a skills/ dir there at all in PR3 of
+// docs/plans/workspace-home-volume-persistence.md).
 // server/wire.go now wires Runner.RuntimesDir from hostVisibleRuntimesDirFor
 // (cfg) unconditionally, which resolves under cfg.SocketPath's dir =
 // BOID_RUNTIME_DIR, typically tmpfs — see that function's own doc comment,
@@ -604,7 +606,7 @@ func (r *Runner) workspaceHomesDir() (string, error) {
 // dataHome is the daemon's OWN persistent data root — server/wire.go's
 // dataHomeFor(cfg). In a real deployment (cfg.DBPath is a real file) that is
 // filepath.Dir(cfg.DBPath), i.e. the directory boid.db / web_secret /
-// install_id / secret.key / tls/ / kits/ / skills/ already live in, which
+// install_id / secret.key / tls/ / kits/ already live in, which
 // under the volume-only compose deploy is the `boid_state` named volume.
 // dataHomeFor has two further branches that only arise in test wiring — an
 // in-memory or unset DB path falls back to filepath.Dir(cfg.SocketPath), and

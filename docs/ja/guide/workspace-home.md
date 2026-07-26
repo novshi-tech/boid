@@ -118,7 +118,10 @@ go / volta 経由の node / codex / opencode のインストールなど、よ�
 #### 非 embedded skill のコピーについて
 
 boid 組み込みの skill (`/boid-task` 等) は dispatch のたびに daemon が
-workspace home へ自動同期するので `init.sh` で扱う必要はありません。
+boid バイナリから展開し、`~/.claude/skills/<name>` に **read-only で 1 本ずつ
+bind mount** するので `init.sh` で扱う必要はありません (workspace home の中には
+実体を置きません)。 skill ごとに分けて mount するのは、下記の手動コピーで置いた
+非 embedded skill を隠さないためです。
 
 一方、bitbucket / jira のようなホスト側にだけ置いてある独自 skill
 (`~/.claude/skills/<name>/`) は `init.sh` からはコピーできません —

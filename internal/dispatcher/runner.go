@@ -22,7 +22,6 @@ import (
 	"github.com/novshi-tech/boid/internal/sandbox"
 	"github.com/novshi-tech/boid/internal/sandbox/backend"
 	"github.com/novshi-tech/boid/internal/sandbox/dockerproxy"
-	"github.com/novshi-tech/boid/internal/skills"
 )
 
 // ProjectLookup lets dispatcher resolve ProjectID → WorkspaceID and enumerate
@@ -168,7 +167,7 @@ type Runner struct {
 	// DataHomeDir is the daemon's OWN persistent data root —
 	// server/wire.go's dataHomeFor(cfg), which in a real deployment is
 	// filepath.Dir(cfg.DBPath): the directory boid.db / web_secret /
-	// install_id / secret.key / tls/ / kits/ / skills/ already live in, which
+	// install_id / secret.key / tls/ / kits/ already live in, which
 	// under the volume-only compose deploy is the `boid_state` named volume.
 	// (dataHomeFor also has a socket-path fallback and an empty case that
 	// only test wiring reaches — see its own doc comment.)
@@ -382,22 +381,27 @@ func (r *Runner) Dispatch(ctx context.Context, spec *orchestrator.JobSpec, clean
 		return "", err
 	}
 
-	// Embedded skills sync (docs/plans/home-workspace-volume.md Phase 4
-	// PR3): re-syncs the embedded skill set into the just-resolved workspace
-	// home's ~/.claude/skills/ on every dispatch, so /boid-task /
-	// /boid-orchestrate / /boid-web resolve inside claude even though the
-	// claude/codex/opencode adapters no longer bind-mount them from
-	// ~/.local/share/boid/skills (see internal/adapters/*/bindings.go,
-	// retired this same PR). skills.DeployAll only rewrites files whose
-	// content differs from the embedded copy, so this is a cheap no-op on
-	// every dispatch after the first for a given boid build. A sync failure
-	// fails the dispatch outright, matching every other pre-BuildSandboxSpec
-	// error path in this function (including the init.sh failure just
-	// above) — a job started against a stale or missing skill set would
-	// otherwise silently misbehave instead of erroring loudly.
-	workspaceSkillsDir := filepath.Join(workspaceHomeDir, ".claude", "skills")
-	if err := skills.DeployAll(workspaceSkillsDir); err != nil {
-		err = fmt.Errorf("sync embedded skills to workspace home %q: %w", workspaceSkillsDir, err)
+	// Embedded skills (docs/plans/workspace-home-volume-persistence.md 論点
+	// e-2, PR3): materializes the embedded skill set under the host-visible
+	// runtimes root and prepares the per-skill bind targets inside the
+	// workspace home, so /boid-task / /boid-orchestrate / /boid-web resolve
+	// inside the harness even though the claude/codex/opencode adapters no
+	// longer declare bind mounts for them (internal/adapters/*/bindings.go).
+	// The returned directory is threaded into rtInfo below, where homeMounts
+	// turns it into one read-only bind per skill.
+	//
+	// Phase 4 PR3 (docs/plans/home-workspace-volume.md) instead copy-synced
+	// the content into <workspaceHomeDir>/.claude/skills — a direct daemon
+	// write into the workspace HOME, which PR6 turns into a named volume the
+	// daemon cannot write to. See syncEmbeddedSkills for why the destination
+	// moved rather than the timing, and why the call stays per-dispatch.
+	//
+	// A failure fails the dispatch outright, matching every other
+	// pre-BuildSandboxSpec error path in this function (including the init.sh
+	// failure just above) — a job started against a stale or missing skill
+	// set would otherwise silently misbehave instead of erroring loudly.
+	skillsSourceDir, err := r.syncEmbeddedSkills(workspaceHomeDir)
+	if err != nil {
 		r.failJob(j, err)
 		if cleanup != nil {
 			cleanup()
@@ -744,6 +748,7 @@ func (r *Runner) Dispatch(ctx context.Context, spec *orchestrator.JobSpec, clean
 		CloneHostBacked:            cloneHostBacked,
 		WorkspaceHomeDir:           workspaceHomeDir,
 		WorkspaceSlug:              filepath.Base(workspaceHomeDir),
+		SkillsSourceDir:            skillsSourceDir,
 		ContainerImage:             r.resolveContainerImage(workspaceID),
 	}
 	// Server socket is only exposed to jobs that have no broker policies

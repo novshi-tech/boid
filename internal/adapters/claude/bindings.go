@@ -21,10 +21,19 @@ import (
 // an explicit message from Run() (run.go) instead of silently falling back
 // to a bind that no longer exists.
 //
-// Embedded skills are synced into the workspace home's ~/.claude/skills/ by
-// skills.DeployAll (internal/skills/deploy.go), called from Runner.Dispatch
-// right after the workspace home is resolved — copy-based distribution
-// replaces the bind-mount this method used to declare per skill.
+// Embedded skills DO reach ~/.claude/skills/<name> as read-only bind mounts
+// again, one per skill — but the dispatcher declares them, not this method.
+// PR3 of docs/plans/workspace-home-volume-persistence.md (論点 e-2)
+// materializes the embedded set under the host-visible runtimes root
+// (internal/dispatcher/skills_overlay.go) and homeMounts layers it onto the
+// workspace home bind. In between, Phase 4 PR3 distributed them by copying
+// the content into the workspace home (skills.DeployAll straight into
+// <home>/.claude/skills); that write had to go once the home became a named
+// volume the daemon cannot write to.
+//
+// Declaring them dispatcher-side rather than restoring them here is what
+// keeps this method nil: the mounts are a property of how boid stages a
+// sandbox, identical for every harness, not of what the claude CLI needs.
 //
 // The HarnessAdapter interface still requires this method; returning an
 // empty slice keeps the contract satisfied for any future $HOME-independent

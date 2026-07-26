@@ -53,8 +53,13 @@ func missingCLIError(slug string, cause error) error {
 //
 // codex has no slash command / skill loader mechanism, so the claude pattern
 // of passing "/boid-task" as positional does not apply. Instead we point the
-// agent at the skill file via its read-file tool — the SKILL.md is bind
-// mounted into ~/.boid/skills/boid-task/ by Bindings() below.
+// agent at the skill file via its read-file tool, at
+// ~/.claude/skills/boid-task/SKILL.md — the path all three harnesses share
+// since PR #616 (opencode also recognises skills under .claude). The
+// dispatcher bind-mounts it there read-only, one bind per embedded skill
+// (internal/dispatcher/skills_overlay.go, PR3 of
+// docs/plans/workspace-home-volume-persistence.md). Bindings() below declares
+// nothing; it stopped being the delivery mechanism in Phase 4 PR3.
 //
 // codex also has no --append-system-prompt equivalent, so the lifecycle
 // reminder ("call boid task notify before exiting") is collapsed into the

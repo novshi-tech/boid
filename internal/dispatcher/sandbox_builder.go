@@ -15,6 +15,7 @@ import (
 	"github.com/novshi-tech/boid/internal/adapters/registry"
 	"github.com/novshi-tech/boid/internal/orchestrator"
 	"github.com/novshi-tech/boid/internal/sandbox"
+	"github.com/novshi-tech/boid/internal/skills"
 )
 
 // SandboxRuntimeInfo carries the dispatcher-internal facts that are required
@@ -229,6 +230,27 @@ type SandboxRuntimeInfo struct {
 	// literals) — the env var is simply omitted in that case.
 	WorkspaceSlug string
 
+	// SkillsSourceDir is the host-visible directory Runner.Dispatch just
+	// materialized the embedded skill set into — <RuntimesDir>/skills, see
+	// embeddedSkillsDir / syncEmbeddedSkills (docs/plans/
+	// workspace-home-volume-persistence.md 論点 e-2, PR3).
+	//
+	// homeMounts turns it into one READ-ONLY bind per embedded skill,
+	// <SkillsSourceDir>/<name> → <HOME>/.claude/skills/<name>, layered on top
+	// of the workspace home bind. Per skill rather than one bind of the whole
+	// ~/.claude/skills directory on purpose: a directory-wide bind would hide
+	// any non-embedded skill the workspace's init.sh copied into the home,
+	// which internal/adapters/opencode/bindings.go documents as the supported
+	// way to expose host skills (bitbucket, jira, google-*, ...) to a harness.
+	// skills.EmbeddedSkillNames() enumerates the names, so the mount set
+	// tracks the embed directive rather than a hard-coded list.
+	//
+	// Empty (test wiring that never threaded it, the same minimal
+	// SandboxRuntimeInfo{} literals WorkspaceHomeDir degrades for) means no
+	// skill binds at all — the HOME layer is then byte-for-byte what it was
+	// before PR3.
+	SkillsSourceDir string
+
 	// CloneHostBacked (docs/plans/volume-only-daemon.md §論点b, PR-2b "per-job
 	// clone at dispatch time") signals that Runner.Dispatch has already
 	// materialized CloneWorkspaceDir via dispatcher.PrepareJobCheckout
@@ -398,13 +420,14 @@ func BuildSandboxSpec(spec *orchestrator.JobSpec, rt SandboxRuntimeInfo) (sandbo
 		// reason. HOME still gets the workspace home bind or a private tmpfs
 		// fallback (docs/plans/home-workspace-volume.md Phase 4 PR2), exactly
 		// like the "no project visible" case below.
-		mounts = append(mounts, homeMounts(homeDir, rt.WorkspaceHomeDir)...)
+		mounts = append(mounts, homeMounts(homeDir, rt.WorkspaceHomeDir, rt.SkillsSourceDir)...)
 	case projectDir != "":
 		mounts = append(mounts, projectVisibilityMounts(
 			projectDir,
 			projectDir,
 			homeDir,
 			rt.WorkspaceHomeDir,
+			rt.SkillsSourceDir,
 			spec.Visibility.Writable,
 			rt.WorkspacePeers,
 		)...)
@@ -436,10 +459,10 @@ func BuildSandboxSpec(spec *orchestrator.JobSpec, rt SandboxRuntimeInfo) (sandbo
 			Type:   sandbox.MountTmpfs,
 		})
 	default:
-		// No project visible: HOME gets the workspace home bind (+ .boid
-		// tmpfs overlay) or a fresh tmpfs fallback, same as the Clone case
-		// above (docs/plans/home-workspace-volume.md Phase 4 PR2).
-		mounts = append(mounts, homeMounts(homeDir, rt.WorkspaceHomeDir)...)
+		// No project visible: HOME gets the workspace home bind (+ the
+		// embedded-skill binds) or a fresh tmpfs fallback, same as the Clone
+		// case above (docs/plans/home-workspace-volume.md Phase 4 PR2).
+		mounts = append(mounts, homeMounts(homeDir, rt.WorkspaceHomeDir, rt.SkillsSourceDir)...)
 	}
 
 	// Sandbox-internal clone mounts (docs/plans/git-gateway-cutover.md PR5):
@@ -973,23 +996,55 @@ func buildCloneSpec(spec *orchestrator.JobSpec, rt SandboxRuntimeInfo) sandbox.C
 // (internal/sandbox/runner) and claude/run.go's sendTaskUpdatePayloadPatch
 // for the writer/reader retirement this overlay's removal completes.
 //
+// PR3 of docs/plans/workspace-home-volume-persistence.md (論点 e-2) adds the
+// embedded-skill layer here rather than anywhere else in this file, and
+// deliberately so (決定 D5): when PR6 replaces the workspace home bind with a
+// per-workspace named volume, the entire HOME layer — the home itself plus
+// everything layered on top of it — changes inside this one function. The
+// realization/containerMounts pipeline below already handles a volume and a
+// host path side by side in the same mount list, so nothing else has to move
+// with it.
+//
+// skillsSourceDir is <RuntimesDir>/skills (SandboxRuntimeInfo.SkillsSourceDir);
+// see that field's doc comment for why the binds are per-skill and read-only.
+// They carry no Guard: a source that has gone missing means the daemon's
+// materialize step and the mount disagree, and the job must fail rather than
+// start with a silently reduced skill set (決定 D4 — the same fail-loud
+// contract Runner.Dispatch applies to the materialize step itself).
+//
 // Shared by the Clone branch, the default (no-project) branch and
 // projectVisibilityMounts's HOME step below so all three switch over
 // identically.
-func homeMounts(homeDir, workspaceHomeDir string) []sandbox.Mount {
+func homeMounts(homeDir, workspaceHomeDir, skillsSourceDir string) []sandbox.Mount {
 	if workspaceHomeDir == "" {
+		// No workspace home resolved: a plain private tmpfs, with no skills
+		// layered on. resolveWorkspaceHome never returns an empty directory
+		// on a real dispatch (it mkdir's the home or fails), so this branch
+		// is test wiring only and there is no behaviour here worth changing.
 		return []sandbox.Mount{{
 			Target: homeDir,
 			Type:   sandbox.MountTmpfs,
 		}}
 	}
-	return []sandbox.Mount{
+	mounts := []sandbox.Mount{
 		{
 			Source: workspaceHomeDir,
 			Target: homeDir,
 			Type:   sandbox.MountBind,
 		},
 	}
+	if skillsSourceDir == "" {
+		return mounts
+	}
+	for _, name := range skills.EmbeddedSkillNames() {
+		mounts = append(mounts, sandbox.Mount{
+			Source:   filepath.Join(skillsSourceDir, name),
+			Target:   filepath.Join(homeDir, ".claude", "skills", name),
+			Type:     sandbox.MountBind,
+			ReadOnly: true,
+		})
+	}
+	return mounts
 }
 
 // projectVisibilityMounts returns the canonical mount layout that lets the
@@ -997,7 +1052,7 @@ func homeMounts(homeDir, workspaceHomeDir string) []sandbox.Mount {
 // home bind, or a tmpfs fallback — see homeMounts) that shadows host files
 // but re-mounts the project on top.
 func projectVisibilityMounts(
-	origProjectDir, effectiveDir, homeDir, workspaceHomeDir string,
+	origProjectDir, effectiveDir, homeDir, workspaceHomeDir, skillsSourceDir string,
 	writable bool,
 	peers map[string]string,
 ) []sandbox.Mount {
@@ -1012,10 +1067,11 @@ func projectVisibilityMounts(
 	})
 
 	// 2) HOME mount(s) on top of user's home (isolates config files from
-	// host): workspace home bind, or a fresh tmpfs fallback when no
-	// workspace home is resolved (docs/plans/home-workspace-volume.md
-	// Phase 4 PR2).
-	out = append(out, homeMounts(homeDir, workspaceHomeDir)...)
+	// host): workspace home bind plus the per-embedded-skill read-only binds
+	// on top of it, or a fresh tmpfs fallback when no workspace home is
+	// resolved (docs/plans/home-workspace-volume.md Phase 4 PR2;
+	// docs/plans/workspace-home-volume-persistence.md 論点 e-2 for the skills).
+	out = append(out, homeMounts(homeDir, workspaceHomeDir, skillsSourceDir)...)
 
 	// 3) re-mount the effective dir so the HOME mount (tmpfs or workspace
 	// bind) does not shadow it.

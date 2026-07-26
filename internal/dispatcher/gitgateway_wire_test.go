@@ -370,11 +370,28 @@ func TestBuildPeerAdvertise_NilWhenGatewayUnwiredOrNoProjects(t *testing.T) {
 type gwFakeBackend struct {
 	nextID    int
 	launchErr error
+
+	// launched records the sandbox.Spec of every Launch call in order,
+	// including the ones launchErr then fails: what a case asserts on is what
+	// Dispatch ASKED the backend to run, which is decided before Launch can
+	// fail.
+	//
+	// It exists so a Dispatch-level case can assert against the spec that
+	// actually came out of BuildSandboxSpec rather than one the test built by
+	// hand. A hand-built SandboxRuntimeInfo proves the builder maps its fields
+	// to mounts; it says nothing about whether Runner.Dispatch ever FILLS the
+	// field it maps — the "both ends wired, never crossed" gap the boid-review
+	// skill's Lens 1 is about. See
+	// TestDispatch_EmbeddedSkills_ReachLaunchedSpecAsPerSkillReadOnlyBinds in
+	// workspace_skills_sync_dispatch_test.go, the case this field was added
+	// for.
+	launched []sandbox.Spec
 }
 
 var _ backend.SandboxBackend = (*gwFakeBackend)(nil)
 
-func (b *gwFakeBackend) Launch(_ context.Context, _ sandbox.Spec, _ backend.LaunchOptions) (backend.SandboxSession, error) {
+func (b *gwFakeBackend) Launch(_ context.Context, spec sandbox.Spec, _ backend.LaunchOptions) (backend.SandboxSession, error) {
+	b.launched = append(b.launched, spec)
 	if b.launchErr != nil {
 		return nil, b.launchErr
 	}

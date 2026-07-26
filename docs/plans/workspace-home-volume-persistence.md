@@ -1,6 +1,6 @@
 # workspace HOME の named volume 化 (永続性退行の修復)
 
-**状態**: 実装中 (2026-07-26 作成。PR1 / PR2 landed、PR3 以降未着手)
+**状態**: 実装中 (2026-07-26 作成。PR1 / PR2 / PR3 landed、PR4 以降未着手)
 **発端**: 2026-07-26 volume-only dogfood
 **関連**: `home-workspace-volume.md` (Phase 4、破られた契約の出典) / `volume-only-daemon.md` (退行を持ち込んだ cutover) / `phase6-container-backend.md`
 
@@ -321,7 +321,14 @@ marker だけは打たれる (`home-workspace-volume.md:98`) ので、条件分�
 
 **volume 作成後、init.sh の有無に関わらず prep container を 1 回走らせる。** 仕事は 2 つ:
 
-1. **skeleton の mkdir** (`~/.claude`、`~/.claude/skills`、`~/.local/bin` など) を **uid 1000 で**作る
+1. **skeleton の mkdir** を **uid 1000 で**作る。 作るべきものは
+   `~/.claude` と、**embedded skill ごとの `~/.claude/skills/<name>`**
+   (`skills.EmbeddedSkillNames()` の各 entry — 論点 e-2 の決定で bind は
+   skill ごとに 1 本ずつになったので、`~/.claude/skills` を作るだけでは
+   足りない)、加えて `~/.local/bin` など。
+   **PR3 が daemon プロセスの `skills.MkdirAllNoSymlink` で暫定的にやっているのと
+   同じ集合**であり、PR5 の仕事はその移設である (論点 e-2 の
+   `syncEmbeddedSkills` doc comment 参照)
 2. **nonce の書き込み** (論点 b)。**nonce 機構そのものは PR2 で導入済み**なので、ここで新規に
    設計するのではなく「daemon プロセスの `writeWorkspaceHomeNonce` による直接書き込み」を
    「prep container 内での書き込み」に**移設する**のが PR5 の仕事になる。
@@ -351,6 +358,63 @@ drwxrwxr-x 2 1000 1000 4096 Jul 26 05:24 .claude/skills
 「**script 実行なし (prep は必ず行う)**」に改める。init.sh を持つ workspace では、
 prep を init container の先頭に boid が挿入する builtin prelude として統合すればよい
 (container 起動は 1 回で済む)。
+
+#### bind target の TOCTOU: 窓は閉じない・**回復不能な結果だけ**塞ぐ (PR3 codex レビューの判断)
+
+bind target を用意してから job container が起動するまでには窓がある。同一 workspace の
+**並行 job はその workspace HOME を rw で共有している** (`homeMounts` の bind に `ReadOnly` は無く、
+`resolveWorkspaceHome` は slug だけで home を引く — job ごとではない) ので、その窓で
+job A が `~/.claude` を rename / delete でき、job B の起動時に bind target が不在になって
+engine が uid 0 で自動生成する。
+
+**窓そのものは閉じない。** 理由は 3 つ:
+
+1. **PR3 が持ち込んだ窓ではない。** job A は今でも `~/.claude/.credentials.json` を直接消せるし
+   `~/.claude` を rename できる。bind target の有無に関わらず成立していた性質で、
+   新しい脆弱性クラスではない (`homeMounts` の doc comment が Phase 5b PR6 の codex レビュー以来
+   「同一 workspace の 2 job は並行しうる」を明記している)
+2. **閉じるには workspace 単位で mkdir 〜 container 起動を直列化するしかない。**
+   全 dispatch が container 起動を含む区間でロックを持つことになり、代償が (1) に見合わない
+3. **PR5 の prep container でも解消しない。** prep は workspace HOME につき 1 回走るだけで、
+   その後も job は HOME を rw で持ち続ける。prep 直後から同じ rename が可能になる
+
+**新しいのは「結果が回復不能になる」点だけ**であり、そこは PR3 で塞いだ。uid 0
+(rootless podman では host subuid に写像された root) 所有のディレクトリは、uid 1000 の harness は
+もちろん **daemon 自身も chown で修復できない**。放置すると workspace HOME が永続的に poisoning され、
+症状は「認証が毎回消える」という silent failure になる。
+
+**PR3 の実装**: `prepareBindTarget` (`internal/dispatcher/skills_overlay.go`) が mkdir の**後**に
+`skills.MkdirAllNoSymlink` の返す所有者 uid を daemon 自身の uid と突き合わせ、
+一致しなければ dispatch を fail させる。比較対象は **daemon が所有していること**であって
+特定 uid ではない (deploy 形態で uid は変わる)。所有者 uid は walk が最後に開いた fd への
+`fstat(2)` で読む — path 指定の stat では別ディレクトリの所有者を報告しうるので、
+チェック自体が race になる。
+
+**これは lock ではなく detector である。** チェック通過後に差し替えが起きればその job は負ける。
+価値は「**次の** dispatch が poisoning を黙って踏まずに、修復手順つきで報告する」ことにある。
+
+**エラーが案内する修復手順は「当該ディレクトリの所有者権限での直接削除」**
+(rootless podman なら `podman unshare rm -rf <dir>`、rootful docker なら `sudo rm -rf <dir>`)。
+次の dispatch が daemon 所有で作り直すので、HOME の他の中身は残る。
+初版は `boid workspace remove <slug>` を案内していたが、これは修復手順として成立しない
+(PR3 codex レビュー 2 巡目):
+
+- **`default` には使えない**。予約 slug なので `cmd/workspace.go` の `runWorkspaceRemove` /
+  `api.ProjectAppService.RemoveWorkspace` / `orchestrator.WorkspaceRepository.Remove` の 3 層で拒否され、
+  さらに `api.deleteWorkspaceHome` が同じ slug で home 削除を明示的にスキップする。
+  workspace 未割り当ての project は全部この workspace に dispatch される (`normalizeWorkspaceSlug`)。
+- **非 default でも home 削除は best-effort**。`api.WorkspaceHandler.Remove` は DB row を先に消し、
+  `os.RemoveAll` が失敗しても 200 のまま返す (`WorkspaceRemoveResponse` の part-completed 契約)。
+  所有者の違うディレクトリが**中身を持つ**場合 RemoveAll は EACCES で失敗する
+  (実測: 書き込み権の無いディレクトリ配下の子の `unlinkat` が EACCES。空なら親の権限だけで消せる。
+  engine の自動生成は不在パス全体を作るので必ず子を持つ)。結果は
+  「workspace 定義だけ消えて poisoning された home が孤児として残る」という最悪の組み合わせで、
+  成否は CLI 出力の `home dir deleted:` / `warning: home dir delete failed` でしか判別できない。
+- **成功しても workspace 定義ごと消える**。assign 済み project は `default` に戻される
+  (`WorkspaceRepository.Remove` の transaction) ので、作り直して再 assign が要る。
+
+したがってエラー文では直接削除を主手順とし、`workspace remove` は上記 3 点の但し書き付きの
+代替として残す (home がこの 1 ディレクトリを超えて壊れている場合には依然として出口だから)。
 
 ### 論点 c: init.sh の実行経路
 
@@ -469,9 +533,11 @@ userns backend は撤去済みなので、bind 版の workspace HOME 経路を�
 
 ### 論点 e-2: embedded skills sync が workspace HOME に直接書いている
 
-`internal/dispatcher/runner.go:377` は **dispatch のたびに**
+(以下 2 段落は PR3 以前の状態。解決済み — 下の決定表を参照)
+
+`internal/dispatcher/runner.go` は **dispatch のたびに**
 `skills.DeployAll(workspaceHomeDir + "/.claude/skills")` で workspace HOME へ直接 file I/O し、
-失敗すると dispatch 自体を fail させる (Phase 4 PR3 で、adapter の bind-mount 経路を
+失敗すると dispatch 自体を fail させていた (Phase 4 PR3 で、adapter の bind-mount 経路を
 retire した代わりに入った経路)。
 
 volume 化すると daemon はこのパスに書けなくなる。放置すると
@@ -479,15 +545,55 @@ volume 化すると daemon はこのパスに書けなくなる。放置する�
 書き込みエラーで全 dispatch 停止のどちらかになる。**論点 b の marker/lock と同列の
 「daemon が workspace HOME に書く経路」であり、同時に解決しなければならない。**
 
-毎 dispatch に使い捨て container を起こすのはコスト的に非現実的なので、方針候補:
+毎 dispatch に使い捨て container を起こすのはコスト的に非現実的なので、
 embedded skill は boid バイナリから常に再生成できる (揮発してよい) 性質を使い、
 host-visible runtime dir (`hostVisibleRuntimesDirFor` 配下) に materialize して
-job container に `$HOME/.claude/skills` へ RO で重ねる。
+job container に RO で重ねる。
 
-**この方式は論点 b-2 の prep ステップとセットでなければ成立しない。** bind target
-`~/.claude/skills` が volume 内に存在しないと engine が `~/.claude` を uid 0 所有で
-自動作成し、認証情報が書けなくなる (実測結果は論点 b-2 を参照)。prep で
-`~/.claude` と `~/.claude/skills` を uid 1000 で先に作っておくこと。
+**決定 (PR3 で確定・実装済み)**:
+
+| 項目 | 確定値 |
+|---|---|
+| 重ね方 | **skill ごとに 1 本ずつ RO bind** (`<src>/<name>` → `$HOME/.claude/skills/<name>`)。 `$HOME/.claude/skills` を丸ごと重ねる案は**不採用** — ユーザが手で置いた非 embedded skill (bitbucket / jira 等) が隠れる。 これは机上の懸念ではなく、`internal/adapters/opencode/bindings.go` の doc comment と `docs/{ja,en}/guide/workspace-home.md` が「init.sh / 手動で `~/.claude/skills/<name>` にコピーする」運用を実際に案内しているので退行になる。 列挙は `skills.EmbeddedSkillNames()` (Phase 4 PR3 で呼び出し元ゼロになっていたが、doc comment がまさにこの用途で残っていた) |
+| materialize 先 | `<runtimesRoot>/skills` = `dispatcher.embeddedSkillsDir(RuntimesDir)`。**install ごとに 1 箇所** (workspace ごとでも job ごとでもない)。 job container の bind source は host から見えている必要があるので、daemon 自身の data root (compose では `boid_state` volume) ではなく `hostVisibleRuntimesDirFor` 配下 |
+| 呼び出し頻度 | **dispatch ごとに再 materialize** (現行維持)。 `skills.DeployAll` は内容一致なら書かない冪等実装で、同一 baseDir への並行呼び出しも安全 (`internal/skills/safe_deploy.go` の temp file 掃除が PID 生存判定つき)。 install 1 箇所に集約したことで並行 dispatch の重なりは**広がった**が、それを安全にしているのが同じ機構 |
+| `cleanOrphanRuntimes` との相互作用 | `internal/server/wire.go` の `cleanOrphanRuntimes` は daemon 起動時に runtimes root 直下の全ディレクトリを走査し、対応する job row が無ければ `os.RemoveAll` する。 よって `<root>/skills` は **daemon 再起動のたびに消える**。 既存の `spec/` `tls/` `broker-tls/` と同じ扱いで、**dispatch ごとに再 materialize する限り無害**。 逆に言えば「毎回 DeployAll するのは無駄」と見て `sync.Once` や存在チェックで条件付きにすると、再起動後の job が skill 無しで走る。 この相互作用は `embeddedSkillsDir` の doc comment に明記した |
+| bind target の作成 | **PR3 では daemon が明示的に mkdir する** (`<home>/.claude`、`<home>/.claude/skills`、`<home>/.claude/skills/<name>`)。 中間の `skills` も明示的に作るのは、engine の自動生成が leaf だけでなく**不在パス全体**を作るため、所有者チェックの対象に含める必要があるから。 理由と PR6 での行き先は下記 |
+| bind target の所有者検証 | **mkdir の直後に daemon 所有であることを検証し、違えば dispatch を fail** (PR3 codex レビュー)。 TOCTOU の窓は閉じない — 閉じるには workspace 単位の直列化が要り、PR5 の prep でも解消しない。 塞ぐのは「uid 0 所有になると daemon も harness も修復できない」という**回復不能な結果**だけ。 詳細は論点 b-2 の該当節 |
+| 失敗時 | **fail loud を維持** (決定 D4)。 materialize 失敗も bind target 作成失敗も dispatch ごと失敗させる。 `sandbox.Mount.Guard` は**付けない** — source 消失時に silent skip すると、skill 無しで job が走って「/boid-task が無い」という診断しにくい形で出る |
+| `internal/server/server.go` の `DeployAll` | **撤去**。 出力先 `<dataHome>/skills` を読むコードはリポジトリ内に存在しなかった (adapter の bind 経路が Phase 4 PR3 で退役した際の残骸)。 materialize 地点が 2 つあってうち 1 つが dead、という状態が本論点の混乱の元だったので、片方を残さない。 既存 install に既にあるディレクトリは削除しない (読まれないだけ) |
+
+**bind target を PR3 で daemon が mkdir する理由** (調査時の推奨とは逆の判断):
+現状 `skills.DeployAll(<home>/.claude/skills)` が `openBaseDirSafe` で `/` から掘り下げるため、
+`.claude` / `.claude/skills` は**副作用として必ず存在していた**。 PR3 でその書き込みを
+runtime dir 側へ移すと、fresh workspace では bind target が存在しなくなる。
+bind target が無いと **engine が中間パスを uid 0 所有で自動作成する** (実測は論点 b-2) ため、
+**論点 b-2 が PR6 の問題として記述している罠が PR3 で発火する**。 workspace HOME は
+PR3 時点ではまだ host path なので daemon から書ける。
+
+この mkdir は **PR5 の prep container (論点 b-2) に移る暫定**である。
+mount spec 側で表現する道は無い — `sandbox.Mount.NeedsDirs` は userns backend の
+runner だけが読んでいて、PR-4 (`volume-only-daemon.md` §論点e) の backend 撤去で
+**dead になっている** (`realization` 層は見ていない)。
+
+mkdir は `os.MkdirAll` ではなく `skills.MkdirAllNoSymlink` (PR3 で
+`openBaseDirSafe` を export したもの) を使う。 書き込み先が job の rw 所有下
+(`$HOME` の中) だからで、`internal/skills/safe_deploy.go` が最初から扱っていた
+脅威モデルそのものである。 DeployAll 自身の書き込み先は job の届かない場所へ移ったが、
+その hardening は**この mkdir に引き継がれた**。
+
+mkdir の直後には**所有者検証**が付く (`prepareBindTarget`)。これは mkdir と対で移設するもの
+ではない — **prep へ移すのは mkdir だけで、検証は daemon 側に残す**。検証の目的は
+「prep やこの mkdir が作ったはずのディレクトリが、その後 engine か job に差し替えられていないか」を
+**次の dispatch の時点で**見ることであり、作る側と同じ場所に置くと意味を失う。
+判断の根拠は論点 b-2 の「bind target の TOCTOU」節を参照。
+
+**この方式は論点 b-2 の prep ステップとセットでなければ完成しない。** PR6 で
+workspace HOME が volume になると上記の daemon 側 mkdir が効かなくなるので、prep で
+`~/.claude`、`~/.claude/skills`、`~/.claude/skills/<name>` を uid 1000 で先に作っておくこと。
+併せて、volume 化後は daemon から `fstat` で所有者を読む今の実装が使えなくなるため、
+所有者検証の実現手段 (prep container 内での検証 + 結果の持ち帰り等) を PR6 で決め直すこと。
+**検証そのものを落としてはならない** — 落とすと「認証が毎回消える」silent failure が戻る。
 
 ### 論点 f: 既存 workspace HOME の移行
 
@@ -520,18 +626,22 @@ uid mapping を理由に退けた engine bind が要る)。したがって「起
 |---|---|---|---|
 | 1 | **[landed]** volume 破壊経路 **7 つ**の封じ込め: 論点 e = (i) 採用 + `internal/dockerres` 新設 (label / prefix / 命名の単一出典) + `ensureNamedVolumes` の label 分離・warning 条件見直し・volume 名 validation + `reap.Run` の **2 本立て volume 列挙**・name 除外・`WorkspaceHomePolicy` + `boid reap --include-workspace-homes` 契約宣言 + `reapOrphanVolumes` の name/label 二重除外 (label は presence 判定) + dockerproxy policy の `boid-ws-` volume create/delete deny・**`/volumes/prune` deny**・**`Mounts[].Source` deny**・**`VolumesFrom` deny** + `dockerproxy.Reap` 側 name-prefix 除外 | sandbox 内 `docker volume prune` と `docker run --volumes-from` が 403 になる (それ以外は無し — 対象 volume がまだ存在しない) | — |
 | 2 | **[landed]** marker/lock **+ init.sh 実行用一時ファイル**を daemon 永続領域 (`boid_state` = `dataHomeFor(cfg)`) の `homes-meta/` へ移設。**`dataHomeFor(cfg)` → `WireConfig.DataHomeDir` → `Runner.DataHomeDir` の配線を 1 本新設** (`Runner` は永続領域を知らなかった)。**＋ 論点 b の nonce (marker `home_id` ↔ `<homeDir>/.boid-workspace-home-id` の突合) を同 PR で導入** (初版は PR5/PR6 に割り当てていた。移した理由は論点 b 参照)。**＋ nonce の読み取り安全化** (`O_NOFOLLOW` / `O_NONBLOCK` / regular file 確認 / 1 KiB 上限。job が nonce を FIFO や symlink に置換して daemon を止められた経路を塞ぐ — 論点 b 参照)。**＋ `testutil/homeenv` によるテスト隔離** (`internal/dispatcher` / `internal/server` / `cmd` の `TestMain`) | 置き場 + 突合。**旧 marker (置き場も `home_id` も違う) は読まないので upgrade 後 workspace ごとに init.sh が 1 回だけ再実行される** (冪等前提で吸収)。旧 marker の削除はしない。以後は **HOME が消えれば marker があっても再 init される** | — |
-| 3 | skills の materialize 先を host-visible runtime dir へ + `$HOME/.claude/skills` へ RO overlay | 無し (現行の host bind HOME でも同じく機能する) | — |
+| 3 | **[landed]** skills の materialize 先を host-visible runtime dir (`<runtimesRoot>/skills`) へ + `$HOME/.claude/skills/<name>` へ **skill ごとに RO bind** + bind target の daemon 側 mkdir (`skills.MkdirAllNoSymlink`、PR5 の prep に移る暫定) + `internal/server/server.go` の dead な `DeployAll` 撤去 | workspace HOME に skill の実体を置かなくなる (既存 install の `<home>/.claude/skills/<name>` は RO bind に覆われて見えなくなるだけで、削除はしない)。 sandbox 内で skill が **RO** になる (従来は rw、job が書き換えても次 dispatch で復元されていた)。 `<dataHome>/skills` が更新されなくなる (読み手はいない) | — |
 | 4 | `WorkspaceSlug` を独立に thread する (`runner.go:724` の `filepath.Base` 依存を切る) | 無し | — |
-| 5 | init.sh + prep を使い捨て container 実行へ (network / stdin / 多重実行防止 / prep skeleton + **nonce 書き込みの移設**: 機構は PR2 で入っているので、書く主体を daemon プロセスから prep container に移すだけ)。**この時点では現行の host-visible homes dir を engine bind して検証する** | init.sh の実行環境が変わる | 3 |
+| 5 | init.sh + prep を使い捨て container 実行へ (network / stdin / 多重実行防止 / prep skeleton = **PR3 が daemon 側でやっている `~/.claude` + skill ごとの `~/.claude/skills/<name>` の mkdir をここへ移設** + **nonce 書き込みの移設**: 機構は PR2 で入っているので、書く主体を daemon プロセスから prep container に移すだけ)。**この時点では現行の host-visible homes dir を engine bind して検証する** | init.sh の実行環境が変わる | 3 |
 | 6 | **[不可分コア]** `resolveWorkspaceHome` を volume ベースへ + `homeMounts` の volume 化 + 契約 doc 更新 (nonce 突合は PR2 で導入済み。ここでは nonce の読み書きが volume 越しになることの確認のみ) | **workspace HOME が volume になる** | 1,2,4,5 |
 | 7 | workspace remove 連動の削除・サイズ可視化・orphan 検出を volume API へ rewiring (論点 a-2) | | 6 |
 | 8 | 既存 homes の移行 CLI (`boid workspace import-home`、uid mapping を跨ぐ tar stdin) | | 6 |
 | 9 | init.sh の CLI 経路 (export/import の `init_script` + 専用 CLI) | | — (独立) |
 
-**分割の考え方**: 「daemon が workspace HOME に書く経路」は 3 つある (marker/lock、init.sh 実行、
+**分割の考え方**: 「daemon が workspace HOME に書く経路」は 3 つあった (marker/lock、init.sh 実行、
 skills sync)。**volume への切り替えを跨ぐ変更は 1 PR にまとめる必要がある**が、
 PR2-5 はいずれも**現行の path ベース HOME のまま挙動を保って先行 land できる**ため、
 最リスクの PR6 を「切り替えそのもの」だけに縮められる。
+
+PR2 / PR3 landed 時点で残っている HOME への daemon 書き込みは 2 つ: init.sh 実行と、
+PR3 が新設した bind target の mkdir (skill 実体の書き込みは runtime dir へ退いた)。
+どちらも PR5 の prep / init container へ移す。
 
 初版は 3+4 を「必要なら 1 PR」、第 2 版は 6 項目を「必ず 1 PR」としていたが、後者は過大だった
 (Fable 再レビュー R-3)。`volume-only-daemon.md` が「巨大 1 PR は review 困難・CI failure の

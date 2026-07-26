@@ -12,16 +12,26 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// This file implements the symlink-attack-resistant primitives DeployAll
-// uses to write into baseDir (workspace HOME's `.claude/skills`, per
-// internal/dispatcher/runner.go). That directory is rw bind mounted into
-// the sandbox for the whole lifetime of every job dispatched against the
-// workspace, so every path component under it — including baseDir's own
-// skill directories and their subdirectories, not merely the leaf files —
-// must be treated as attacker-controlled: a compromised job can replace any
-// of them with a symlink to an arbitrary host path between two DeployAll
-// calls, or concurrently with one in flight, hoping the daemon (which runs
-// as a real, uid 1000 user) writes through it.
+// This file implements the symlink-attack-resistant primitives this package
+// uses to create directories and write files under a path the DAEMON walks
+// but a JOB controls.
+//
+// The original such path was DeployAll's baseDir, workspace HOME's
+// `.claude/skills`: rw bind mounted into the sandbox for the whole lifetime
+// of every job dispatched against the workspace, so every path component
+// under it — including baseDir's own skill directories and their
+// subdirectories, not merely the leaf files — had to be treated as
+// attacker-controlled: a compromised job can replace any of them with a
+// symlink to an arbitrary host path between two DeployAll calls, or
+// concurrently with one in flight, hoping the daemon (which runs as a real,
+// uid 1000 user) writes through it.
+//
+// PR3 of docs/plans/workspace-home-volume-persistence.md moved DeployAll's
+// own destination out of the workspace HOME (to <RuntimesDir>/skills, which
+// no job can reach) but did not retire the concern — it split it out into
+// MkdirAllNoSymlink, which the dispatcher calls to create the per-skill bind
+// TARGETS inside the workspace HOME, i.e. squarely back inside the
+// job-controlled tree the reasoning below is about.
 //
 // A Lstat/EvalSymlinks pre-check cannot close this: a concurrent job can
 // swap a real directory for a symlink in the window between the check and
@@ -37,6 +47,66 @@ import (
 // against the open file description, not the path).
 //
 // PR #789 codex review (2026-07-17), Blocker 1.
+
+// MkdirAllNoSymlink creates dir and every missing component leading to it,
+// using the same symlink-refusing openat2 walk DeployAll writes through (see
+// this file's package comment for the threat model), and reports the uid that
+// owns the resulting directory. dir must be absolute; creating an
+// already-existing directory is a no-op.
+//
+// It exists for PR3 of docs/plans/workspace-home-volume-persistence.md (論点
+// e-2 決定 D3): the dispatcher stops copy-syncing skill CONTENT into the
+// workspace HOME and instead bind-mounts each embedded skill in from a
+// host-visible runtime dir, so it has to pre-create the bind TARGETS
+// (<home>/.claude and <home>/.claude/skills/<name>) itself — the directories
+// DeployAll's own walk used to create as a side effect of writing there. A
+// missing bind target would otherwise be auto-created by the container engine
+// as uid 0, which locks the uid 1000 harness out of ~/.claude/.credentials.json
+// (measured; see the plan doc's 論点 b-2).
+//
+// Those targets sit inside a directory the job owns read-write, which is
+// precisely why this is not an os.MkdirAll: a job that leaves ~/.claude
+// behind as a symlink must not turn the next dispatch's mkdir into a write
+// somewhere else on the daemon's filesystem.
+//
+// The returned uid answers the question a bare mkdir cannot: "is the directory
+// now at this path one I own, or one somebody else created first?" A caller
+// that pre-creates a bind target inside job-owned storage needs that — an
+// EEXIST is indistinguishable from success otherwise, and a target already
+// created by the engine as uid 0 is not repairable afterwards (see
+// internal/dispatcher/skills_overlay.go, the caller that acts on it, for why
+// that is the outcome worth failing on). It is deliberately a plain uid rather
+// than a bool: this package cannot know which uid its caller considers its
+// own, and hard-coding one (1000) would be wrong on any deploy that runs the
+// daemon as some other user.
+//
+// It is read with fstat(2) on the descriptor the walk ended on, never a stat
+// by path. A stat by path would re-resolve every component from scratch, so it
+// could report the owner of a directory other than the one just created or
+// entered — exactly the check-then-use gap this file's openat2 design exists
+// to remove. Doing the ownership check through such a gap would make the check
+// itself the race.
+//
+// No separate "is it a directory" result is returned because there is nothing
+// left to report: every component of the walk is opened with O_DIRECTORY (see
+// openOrCreateDirNoSymlink), so a non-directory at any position — a plain file
+// left at ~/.claude, say — fails the call outright with ENOTDIR rather than
+// reaching this return. internal/dispatcher's
+// TestDispatch_SkillsBindTargetPrepFails_MarksJobFailedAndCallsCleanup pins
+// that end of it.
+func MkdirAllNoSymlink(dir string) (ownerUID int, err error) {
+	fd, err := openBaseDirSafe(dir)
+	if err != nil {
+		return 0, err
+	}
+	defer func() { _ = unix.Close(fd) }()
+
+	var st unix.Stat_t
+	if err := unix.Fstat(fd, &st); err != nil {
+		return 0, fmt.Errorf("fstat %q: %w", dir, err)
+	}
+	return int(st.Uid), nil
+}
 
 // openBaseDirSafe opens (creating any missing directory along the way)
 // baseDir — an absolute path — verifying that no component of the path, at
@@ -231,10 +301,14 @@ func isStaleTempName(name string) bool {
 //
 // PR4 E2E investigation (docs/plans/home-workspace-volume.md): a name
 // matching isStaleTempName is not necessarily abandoned — two DeployAll
-// calls can legitimately run concurrently against the SAME baseDir (e.g. a
-// workspace's HOME directory is shared across every job dispatched against
-// it, and internal/dispatcher/runner.go calls DeployAll once per dispatch
-// with no cross-dispatch locking). Before this fix, cleanupStaleTempFiles
+// calls can legitimately run concurrently against the SAME baseDir, and
+// internal/dispatcher/skills_overlay.go calls DeployAll once per dispatch
+// with no cross-dispatch locking. That was originally because a workspace's
+// HOME directory is shared across every job dispatched against the
+// workspace; since PR3 of docs/plans/workspace-home-volume-persistence.md
+// baseDir is shared by every job of the whole INSTALLATION, so the overlap
+// this reasoning covers got wider, not narrower — which is precisely what
+// makes the single materialization point safe. Before this fix, cleanupStaleTempFiles
 // unlinked *every* name matching the pattern unconditionally — including
 // one a still-running, concurrently-executing DeployAll call had just
 // created and was about to renameat into place — producing exactly the
