@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 )
@@ -136,5 +137,51 @@ func TestReap_multipleContainers(t *testing.T) {
 	}
 	if netIdx < 4 {
 		t.Errorf("network delete at index %d should come after all container ops: %v", netIdx, ops)
+	}
+}
+
+// TestReap_skipsWorkspaceHomeVolumes is the last-resort guard of 経路 4
+// (docs/plans/workspace-home-volume-persistence.md 論点 a): even if a
+// boid-ws-home-* name somehow reached a job's ledger — a pre-PR1 job's
+// leftover ledger file, or a policy hole — the per-job reaper must not
+// DELETE it. Reaching this branch means the policy above it failed, so it
+// warns rather than staying silent.
+func TestReap_skipsWorkspaceHomeVolumes(t *testing.T) {
+	var mu sync.Mutex
+	var ops []string
+
+	upstream := newFakeUpstream(t, func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		ops = append(ops, r.Method+" "+r.URL.Path)
+		mu.Unlock()
+		w.WriteHeader(http.StatusNoContent)
+	})
+
+	l := NewLedger(filepath.Join(t.TempDir(), "l.jsonl"))
+	_ = l.Append(ResourceEntry{Type: "volume", ID: "boid-ws-home-abcd1234-default"})
+	_ = l.Append(ResourceEntry{Type: "volume", ID: "scratch-vol"})
+	// A reserved-but-not-HOME name (the workspace NETWORK namespace shape):
+	// regenerable, so the reaper is still allowed to delete it.
+	_ = l.Append(ResourceEntry{Type: "volume", ID: "boid-ws-abcd1234-default"})
+
+	if err := Reap(context.Background(), upstream.sockPath, l); err != nil {
+		t.Fatal("Reap:", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	for _, op := range ops {
+		if strings.Contains(op, "boid-ws-home-") {
+			t.Errorf("Reap issued %q for a workspace HOME volume; want it skipped", op)
+		}
+	}
+	want := []string{"DELETE /volumes/scratch-vol", "DELETE /volumes/boid-ws-abcd1234-default"}
+	if len(ops) != len(want) {
+		t.Fatalf("upstream ops = %v, want %v", ops, want)
+	}
+	for i, w := range want {
+		if ops[i] != w {
+			t.Errorf("ops[%d] = %q, want %q", i, ops[i], w)
+		}
 	}
 }

@@ -91,13 +91,25 @@ boid-ws-home-<installID8>-<sanitized-slug>
 
 **label 設計は「reap のために付ける」ではなく「reap に見つからないようにする」が正しい。**
 現行の掃除経路を素直に踏襲すると、daemon を再起動するたびに認証データが消える —
-本 doc が直そうとしているインシデントの再演になる。破壊経路は 3 つある:
+本 doc が直そうとしているインシデントの再演になる。破壊経路は **7 つ**ある
+(初版は 4 つ、経路 5 = `POST /volumes/prune` は PR1 実装時に発見。
+経路 6 / 7 は PR1 の codex レビューで発見した。この 2 つは
+**volume object を消さずに中身だけ破壊する**点が 1-5 と質的に違う):
 
 1. `internal/reap/reap.go:124` — `reap.Run` は列挙した volume を `VolumeRemove{Force: true}` で
    **無条件に全削除**する。列挙の filter は `boid.install_id=<id>`。そしてこれは
    `boid reap` CLI 専用ではなく、`internal/dispatcher/container_backend.go:1296` の
    `ReapOrphans` (**daemon 起動時の startup reap**) から毎回呼ばれる。job container が
-   生きていれば in-use で守られるが、ホスト再起動直後は必ず成功する
+   生きていれば in-use で守られるが、ホスト再起動直後は必ず成功する。
+
+   **列挙は 2 本必要** (PR1 codex レビュー Blocker 1)。HOME volume は
+   `boid.install_id` を**意図的に持たない** (それがこの filter そのものだから) ので、
+   1 本目の query では**そもそも列挙されない**。列挙されなければ skip 判定にも到達せず、
+   「skip した volume は必ず出力する」契約が嘘になり、`--include-workspace-homes` は
+   完全な no-op になる。よって `unionResources` は
+   `boid.workspace_home_install_id=<id>` を filter にした 2 本目の `VolumeList` を
+   **常に** (既定モードでも) 発行して union する。destroy するか skip するかは
+   列挙後に `WorkspaceHomePolicy` が決める
 2. `container_backend.go:1319` の `reapOrphanVolumes` — 発火条件は `ReapOrphans` が渡す
    list filter = **`boid.job_id` label の presence** (:1248)。そのうえで
    `reapOwnsLabels` (:1312) が install_id 一致を確認する。つまり job_id label を付けなければ
@@ -121,18 +133,61 @@ boid-ws-home-<installID8>-<sanitized-slug>
    **ledger に載り**、job 終了時に消される。`dockerproxy/policy.go` は volume の
    mount オプションは検査するが **volume 名は検査していない**
 
-経路 4 の対策は label ではなく名前空間の予約になる:
-dockerproxy policy で予約 prefix (`boid-ws-`) に対する volume create / remove を deny し、
+5. **`internal/sandbox/dockerproxy/policy.go` の `POST /volumes/prune`** — PR1 実装時に発見した
+   5 つ目の経路。`isAllowedMutating` の POST allowlist に載っていて **無条件 allow** だった。
+   `docker volume prune` は「どのコンテナにも使われていない volume」を消すので、
+   **その job が使っていない他 workspace の HOME volume が確実に巻き込まれる**。
+   リクエストに名前が乗らないので prefix 判定では防げず、endpoint ごと塞ぐしかない
+
+6. **`internal/sandbox/dockerproxy/policy.go` の `POST /containers/create` の
+   `HostConfig.Mounts[].Source`** — PR1 codex レビューで発見。`mountSpec` は
+   `Type` と `VolumeOptions` しか見ておらず **`Source` フィールドを持っていなかった**。
+   よって sandbox 内 docker client が
+   `{"Type":"volume","Source":"boid-ws-home-<installID8>-<slug>","Target":"/victim"}` を
+   mount した使い捨て container で `rm -rf /victim/*` を実行すると通る。
+   **volume object は消えないので経路 4 の create/delete deny を一度も経由しない**が、
+   中身 (認証情報 + toolchain) は全滅する。対策は `Source` が予約 prefix なら deny。
+   `Type` の値には**依存させない** — engine 側の Type 正規化 (未指定時の既定、
+   大小文字、docker/podman 差分、将来の type 追加) を policy が正確にモデル化する必要が
+   出た時点でそこが bypass になるため。`policy.go` は既に
+   parser differential (`TestParserDifferential_*`) を脅威モデルに置いている
+
+7. **同 `POST /containers/create` の `HostConfig.VolumesFrom`** — PR1 codex レビューで発見。
+   構造体に**フィールドすら無く parse されていなかった** (= 無条件 allow)。
+   `--volumes-from <container>` は他 container の mount 一式を丸ごと継承するので、
+   PR6 以降 job container 自身が HOME volume を mount するようになると経路 6 と同じ破壊が成立する。
+   **リクエストに乗るのは container 名なので prefix 判定は原理的に不可能**
+   (継承元が何を mount しているかは policy から検証できない。engine に inspect を投げれば
+   `CheckRequest` の純関数性が壊れるうえ TOCTOU になる)。よって **非空なら deny**。
+   sandbox 側の実害は無い — 自分の named volume を複数 container で共有したいなら
+   `Mounts` で書けばよく、そちらは従来どおり allow
+
+経路 4 / 5 / 6 / 7 の対策は label ではなく名前空間の予約と endpoint 封鎖になる:
+dockerproxy policy で予約 prefix (`boid-ws-`) に対する volume create / delete /
+**mount source** を deny し、`POST /volumes/prune` と `HostConfig.VolumesFrom` は
+検査不能なので丸ごと deny、
 防御として `dockerproxy.Reap` と `reap.Run` の volume ループにも name-prefix 除外を入れる。
 
-**決定すべきこと (実装時送りにしない)**:
+なお **`PUT /containers/{id}/archive`** (`docker cp` の書き込み方向) と
+**legacy `POST /containers/{id}/start` の `HostConfig`** は経路 6 と同じ形の攻撃になりうるが、
+前者は `isAllowedMutating` が PUT を一切許可しない fail-closed、
+後者は `checkContainerStart` が非空 `HostConfig` を無条件 deny で、いずれも元から塞がっている
+(PR1 でそれを pin するテストだけ追加した)。
 
-- workspace HOME volume には `boid.job_id` と素の `boid.install_id` を**付けない**。
-  専用 label (例: `boid.workspace_home=<slug>` + install scope を別キーで持つ) にする
-- 上記 4 経路すべてに除外規則を入れる (経路 4 は label ではなく name-prefix 予約)
-- `boid reap` (deploy 全体を破壊する CLI) が workspace HOME を消すべきか否かを**契約として宣言**する。
-  「このインストールの docker リソースを全部消す」コマンドの意味論と、
-  「認証情報は消えてほしくない」要求のどちらを優先するか
+**決定 (PR1 で確定・実装済み)**:
+
+| 項目 | 確定値 |
+|---|---|
+| 単一出典 package | **`internal/dockerres`** を新設 (import ゼロの leaf)。`dispatcher → reap → dockerproxy` の 3 者すべてが import できる。既存の「定数を重複定義して doc comment で drift を戒める」流儀は撤去 |
+| workspace HOME volume の label | `boid.workspace_home=<slug>` + `boid.workspace_home_install_id=<installID>` の **2 つのみ**。`boid.job_id` / `boid.install_id` / `boid.workspace` は**付けない** (それぞれが既存の列挙 filter) |
+| 予約 prefix (広い) | `boid-ws-` = `dockerres.ReservedVolumeNamePrefix`。**dockerproxy の volume deny 判定のみ**に使う。workspace *network* 名と同じ prefix なので network には適用しない |
+| 永続 prefix (狭い) | `boid-ws-home-` = `dockerres.WorkspaceHomeVolumePrefix`。**reap 除外の判定に使う**。workspace network は再生成可能なので reap が消してよい |
+| volume 名 | `boid-ws-home-<installID8>-<sanitized-slug>` (`dockerres.WorkspaceHomeVolumeName`)。PR1 では誰も呼ばないが、予約 prefix と実際の命名が乖離しないよう同じ場所に置いた |
+| `boid reap` の契約 | **既定で workspace HOME volume を残す**。`--include-workspace-homes` で明示的に消せる。skip した volume は `skipped volume <name> (workspace HOME; use --include-workspace-homes to destroy)` として `nothing to reap` より前に出力する。`Report.Empty()` の定義は変えない (skip は destroy ではない) |
+| `reap.Run` の volume 列挙 | `boid.install_id=<id>` と `boid.workspace_home_install_id=<id>` の **2 本の `VolumeList` の union**。2 本目はモードに関わらず**常に**発行する (列挙しないと skip を報告できない)。`installID` が空のときの流儀は 1 本目と同じ (term は空値で出す) |
+| 保護判定の非対称性 | 名前判定 (`IsWorkspaceHomeVolumeName`) は `reap.Run` / `dockerproxy.Reap` / `reapOrphanVolumes` 共通。label 判定 (`reapOrphanVolumes` のみ) は **key の presence** で見る (`_, ok := labels[...]`)。値は workspace slug なので空文字になりうる (slug 未設定の DI 経路)。値の非空判定にすると doc と実装が食い違い、その分だけ保護から漏れる |
+| startup reap | `container_backend.go` の `ReapOrphans` からの `reap.Run` 呼び出しは**常に除外側** (`reap.PreserveWorkspaceHomes`)。daemon 再起動で認証が消えることは絶対に許さない |
+| ledger に残った過去分 | skip した volume は destroy していないので `destroyed` map に入れず、ledger からも drain しない。経路 4 の deny により **新規に ledger へ載ること自体が起きなくなる**ので、残るのは PR1 以前の分だけ。無害 (skip されるだけ) で、job の runtime dir が GC されると消える |
 
 **Phase 4 の「homes/ は GC 対象外」契約をここで再度落とさないこと。**
 
@@ -313,7 +368,19 @@ realization 層は既に 3-way 分類を持ち、**named volume を end-to-end �
 - (ii) 明示的な `MountVolume` 型を足し、既存の暗黙規約と併存させるか置き換える。
   意図は明確になるが、`classifySource` の分類と両立させる設計が要る
 
-どちらでも `ensureNamedVolumes` の label 問題 (論点 a) は別途対応が必要。
+**決定 (PR1): (i) を採用。新しい `MountType` は足さない。**
+根拠は上に引用した `realization.go:65-73` の doc comment がまさにこの用途を想定して
+先行実装されたと明記していること。guard は `ensureNamedVolumes` に入れた —
+各 name を `dockerres.IsValidVolumeName` (`^[a-zA-Z0-9][a-zA-Z0-9_.-]*$`) で検証し、
+不正なら **Launch を fail-closed で落とす** (エラー文面に問題の Source 名を含める)。
+`Realize` はエラーを返さないシグネチャなのでそこは変えていない。
+
+`sandbox_builder.go` の `homeMounts` は PR1 では触っていない (volume 化は PR6)。
+
+`ensureNamedVolumes` の label 問題 (論点 a) は PR1 で対応済み: name ごとに label を出し分け、
+workspace HOME volume には論点 a の 2 label のみを付ける。
+「`boid.job_id` label が無い volume」への `slog.Warn` も workspace HOME では出さない
+(label が無いのが**正しい状態**なので、warn するとノイズになって本来の警告が無視される)。
 
 userns backend は撤去済みなので、bind 版の workspace HOME 経路を残す必要はない
 (`workspaceHomeDir == ""` の tmpfs fallback は、workspace 未解決時の挙動として維持)。
@@ -369,7 +436,7 @@ uid mapping を理由に退けた engine bind が要る)。したがって「起
 
 | PR | 内容 | 挙動変化 | 依存 |
 |---|---|---|---|
-| 1 | volume 破壊経路 4 つの封じ込め: 論点 e の (i)/(ii) 決定 + `ensureNamedVolumes` の label 分離と warning 条件見直し + `reap.Run` / `reapOrphanVolumes` の label 除外 + dockerproxy policy の `boid-ws-` prefix deny と reap 側 name-prefix 除外 | 無し (対象 volume がまだ存在しない) | — |
+| 1 | **[landed]** volume 破壊経路 **7 つ**の封じ込め: 論点 e = (i) 採用 + `internal/dockerres` 新設 (label / prefix / 命名の単一出典) + `ensureNamedVolumes` の label 分離・warning 条件見直し・volume 名 validation + `reap.Run` の **2 本立て volume 列挙**・name 除外・`WorkspaceHomePolicy` + `boid reap --include-workspace-homes` 契約宣言 + `reapOrphanVolumes` の name/label 二重除外 (label は presence 判定) + dockerproxy policy の `boid-ws-` volume create/delete deny・**`/volumes/prune` deny**・**`Mounts[].Source` deny**・**`VolumesFrom` deny** + `dockerproxy.Reap` 側 name-prefix 除外 | sandbox 内 `docker volume prune` と `docker run --volumes-from` が 403 になる (それ以外は無し — 対象 volume がまだ存在しない) | — |
 | 2 | marker/lock を daemon 永続領域 (`boid_state`) へ移設 | 無し (位置替えのみ。旧 marker 消失は再 init で吸収) | — |
 | 3 | skills の materialize 先を host-visible runtime dir へ + `$HOME/.claude/skills` へ RO overlay | 無し (現行の host bind HOME でも同じく機能する) | — |
 | 4 | `WorkspaceSlug` を独立に thread する (`runner.go:724` の `filepath.Base` 依存を切る) | 無し | — |
@@ -393,6 +460,16 @@ silent no-op になり volume が残る。一時的に許容する (手動 `dock
 
 初版にあった「PR1: `sandbox.Mount` に volume 型追加」は論点 e の事実誤認に基づいていたので削除し、
 label / reap 側の封じ込めに置き換えた。
+
+**PR1 で追加された sandbox 可視の挙動変化は 2 点**: `POST /volumes/prune` (論点 a 経路 5) と
+`HostConfig.VolumesFrom` (経路 7) が 403 になる。いずれも**リクエストから対象 volume を
+特定できない**ため prefix 判定では防げず、塞ぐしかなかった。
+`VolumesFrom` の代替は `Mounts` での明示 mount で、そちらは従来どおり allow。
+`/containers/prune` / `/images/prune` / `/networks/prune` / `/system/prune` は従来どおり allow
+(いずれも volume に触れない。`/system/prune` は docker/podman のいずれの Engine API にも
+実在しない — `docker system prune` は client 側で個別 prune に分解される — ので allowlist に
+載っていても dead entry)。予約 prefix への volume create / delete / mount source も deny に
+なるが、これは「そもそも sandbox が触るべきでない名前」なので実挙動の退行にはあたらない。
 
 ## 未解決 / 本 doc の範囲外
 

@@ -77,6 +77,7 @@ type fakeDockerAPI struct {
 	inspectIDs          []string
 	imageInspectRefs    []string
 	volumeCreateCalls   []client.VolumeCreateOptions
+	volumeRemoveIDs     []string
 	volumeListCalls     int
 	networkListCalls    int
 	networkCreateCalls  []client.NetworkCreateOptions
@@ -293,10 +294,25 @@ func (f *fakeDockerAPI) VolumeList(ctx context.Context, options client.VolumeLis
 }
 
 func (f *fakeDockerAPI) VolumeRemove(ctx context.Context, volumeID string, options client.VolumeRemoveOptions) (client.VolumeRemoveResult, error) {
+	f.mu.Lock()
+	f.volumeRemoveIDs = append(f.volumeRemoveIDs, volumeID)
+	f.mu.Unlock()
 	if f.VolumeRemoveFunc != nil {
 		return f.VolumeRemoveFunc(ctx, volumeID, options)
 	}
 	return client.VolumeRemoveResult{}, nil
+}
+
+// volumeRemoveIDsSnapshot returns the volume names VolumeRemove has been
+// called with so far — the symmetric counterpart of removeIDs for
+// containers, added so the workspace-HOME containment tests
+// (container_backend_workspace_home_test.go) can assert on which volumes a
+// reap sweep did NOT touch. A copy under f.mu, since ReapOrphans's internal
+// reap.Run pass shares this fake.
+func (f *fakeDockerAPI) volumeRemoveIDsSnapshot() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.volumeRemoveIDs...)
 }
 
 func (f *fakeDockerAPI) ServerVersion(ctx context.Context, options client.ServerVersionOptions) (client.ServerVersionResult, error) {

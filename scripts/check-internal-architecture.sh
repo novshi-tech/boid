@@ -15,6 +15,7 @@ current_allowed=(
   daemon
   db
   dispatcher
+  dockerres
   gitgateway
   humanize
   initwizard
@@ -42,6 +43,7 @@ target_allowed=(
   daemon
   db
   dispatcher
+  dockerres
   gitgateway
   humanize
   initwizard
@@ -166,6 +168,21 @@ check_forbidden_imports() {
       github.com/novshi-tech/boid/internal/db)
         if [[ "$imports" == *"github.com/novshi-tech/boid/internal/"* ]]; then
           echo "forbidden import: internal/db should not depend on other internal packages" >&2
+          failed=1
+        fi
+        ;;
+      github.com/novshi-tech/boid/internal/dockerres)
+        # dockerres (docs/plans/workspace-home-volume-persistence.md PR1) は
+        # boid が docker リソースに付ける名前と label の単一出典。存在理由が
+        # 「互いを import できない 3 パッケージ (dispatcher / reap /
+        # dockerproxy) が同じ文字列に合意する」ことなので、leaf であることが
+        # 機能要件そのものである。ここで内部依存が 1 本でも生えると
+        # internal/reap が cmd から import できなくなり (= daemon が起動不能な
+        # 状態でも動く `boid reap` の契約が壊れ)、逃げ道として各パッケージが
+        # 文字列を再び手打ちで複製する — prefix の drift が workspace の
+        # 認証情報消失に直結する、まさにこの package が潰した失敗モード。
+        if [[ "$imports" == *"github.com/novshi-tech/boid/internal/"* ]]; then
+          echo "forbidden import: internal/dockerres must stay a leaf (no other internal packages)" >&2
           failed=1
         fi
         ;;

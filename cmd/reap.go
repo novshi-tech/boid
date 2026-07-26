@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"fmt"
+	"io"
 	"path/filepath"
 
 	"github.com/moby/moby/client"
@@ -19,6 +20,12 @@ import (
 // describes, where the reaper may need to run from a location whose
 // default data dir differs from the compose daemon's.
 var reapInstallIDOverride string
+
+// reapIncludeWorkspaceHomes opts into destroying the persistent
+// per-workspace HOME volumes too (docs/plans/workspace-home-volume-persistence.md
+// 論点 a). Off by default: see reapCmd's Long description for the declared
+// contract and why the default falls on the "keep the credentials" side.
+var reapIncludeWorkspaceHomes bool
 
 var reapCmd = &cobra.Command{
 	Use:   "reap",
@@ -42,7 +49,16 @@ This talks to the docker engine directly (DOCKER_HOST / the platform
 default socket) and does NOT require the boid daemon to be running — it is
 meant to work as the deploy-level rollback reaper from host daemon +
 userns "旧デプロイ" back after the container (compose) deploy, per
-docs/plans/phase6-container-backend.md's rollback contract.`,
+docs/plans/phase6-container-backend.md's rollback contract.
+
+Persistent workspace HOME volumes (boid-ws-home-*) are PRESERVED by default
+and reported as "skipped volume ...". They hold each workspace's harness
+authentication and its installed toolchain — state boid cannot regenerate,
+and whose loss on every daemon restart is the regression
+docs/plans/workspace-home-volume-persistence.md exists to fix. Pass
+--include-workspace-homes to destroy them along with everything else; doing
+so means every workspace must be interactively re-authenticated and
+re-provisioned afterwards.`,
 	SilenceUsage: true,
 	RunE:         runReap,
 }
@@ -59,7 +75,19 @@ func init() {
 		scopeAnnotationKey:      scopeLocal,
 	}
 	reapCmd.Flags().StringVar(&reapInstallIDOverride, "install-id", "", "Reap this install_id instead of the local ~/.local/share/boid/install_id")
+	reapCmd.Flags().BoolVar(&reapIncludeWorkspaceHomes, "include-workspace-homes", false,
+		"Also destroy the persistent per-workspace HOME volumes (harness authentication + toolchain); preserved by default")
 	rootCmd.AddCommand(reapCmd)
+}
+
+// reapWorkspaceHomePolicy maps the CLI flag onto internal/reap's named
+// policy, so the flag's meaning lives in exactly one place and is unit
+// testable without a docker engine.
+func reapWorkspaceHomePolicy(includeWorkspaceHomes bool) reap.WorkspaceHomePolicy {
+	if includeWorkspaceHomes {
+		return reap.IncludeWorkspaceHomes
+	}
+	return reap.PreserveWorkspaceHomes
 }
 
 func runReap(cmd *cobra.Command, args []string) error {
@@ -87,9 +115,27 @@ func runReap(cmd *cobra.Command, args []string) error {
 	out := cmd.OutOrStdout()
 	fmt.Fprintf(out, "reaping install_id=%s (runtimes dir: %s)\n", installID, runtimesDir)
 
-	report, err := reap.Run(context.Background(), dockerClient, installID, runtimesDir)
+	report, err := reap.Run(context.Background(), dockerClient, installID, runtimesDir,
+		reapWorkspaceHomePolicy(reapIncludeWorkspaceHomes))
 	if err != nil {
 		return fmt.Errorf("reap: %w", err)
+	}
+
+	return printReapReport(out, report)
+}
+
+// printReapReport renders a reap.Report and returns the error runReap exits
+// with (non-nil only when the report carries per-resource failures).
+//
+// Preserved workspace HOME volumes are printed FIRST, before the
+// report.Empty() "nothing to reap" shortcut: Report.Empty() deliberately
+// ignores SkippedVolumes (a skip is not a destroy — see its doc comment), so
+// a run that only preserved volumes takes the "nothing to reap" branch, and
+// an operator wondering why a volume they expected gone is still there must
+// still see the reason.
+func printReapReport(out io.Writer, report reap.Report) error {
+	for _, name := range report.SkippedVolumes {
+		fmt.Fprintf(out, "  skipped volume %s (workspace HOME; use --include-workspace-homes to destroy)\n", name)
 	}
 
 	if report.Empty() {

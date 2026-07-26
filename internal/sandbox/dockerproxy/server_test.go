@@ -658,7 +658,7 @@ func TestProxy_hijack_bidirectional(t *testing.T) {
 
 	// Send CLIENT_TO_UP toward the upstream.
 	clientConn.SetWriteDeadline(time.Now().Add(time.Second)) //nolint:errcheck
-	clientConn.Write([]byte("CLIENT_TO_UP"))                  //nolint:errcheck
+	clientConn.Write([]byte("CLIENT_TO_UP"))                 //nolint:errcheck
 
 	// Verify upstream received it.
 	select {
@@ -1204,3 +1204,44 @@ func TestIDRecord_versionPrefixedPath(t *testing.T) {
 	}
 }
 
+// TestIDRecord_volumeCreate_reservedNameNeverReachesLedger is the
+// end-to-end counterpart of TestIDRecord_volumeCreate_usesName above, for
+// 経路 4 of docs/plans/workspace-home-volume-persistence.md 論点 a. The
+// ledger is what makes the pre-PR1 attack work: `docker volume create
+// boid-ws-home-<inst8>-<slug>` succeeds idempotently against the REAL
+// volume, records that name in the job's ledger, and Reap then deletes it by
+// name when the job ends. The create must be refused at the proxy, never
+// forwarded upstream, and never recorded.
+func TestIDRecord_volumeCreate_reservedNameNeverReachesLedger(t *testing.T) {
+	const volName = "boid-ws-home-abcd1234-default"
+
+	var upstreamHits int
+	upstream := newFakeUpstream(t, func(w http.ResponseWriter, _ *http.Request) {
+		upstreamHits++
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		fmt.Fprintf(w, `{"Name":%q,"Driver":"local"}`, volName)
+	})
+
+	l := newTempLedger(t)
+	proxySock := newProxyWithLedger(t, upstream.sockPath, l)
+
+	resp := doProxyRequest(t, proxySock, "POST", "/volumes/create",
+		mustJSON(map[string]interface{}{"Name": volName}))
+	io.Copy(io.Discard, resp.Body) //nolint:errcheck
+	resp.Body.Close()
+
+	if resp.StatusCode != http.StatusForbidden {
+		t.Errorf("status = %d, want %d", resp.StatusCode, http.StatusForbidden)
+	}
+	if upstreamHits != 0 {
+		t.Errorf("upstream was contacted %d times, want 0 (the request must not be forwarded)", upstreamHits)
+	}
+	ok, err := l.Contains("volume", volName)
+	if err != nil {
+		t.Fatalf("ledger Contains: %v", err)
+	}
+	if ok {
+		t.Error("reserved volume name was recorded in the job ledger; Reap would then delete the real volume")
+	}
+}
