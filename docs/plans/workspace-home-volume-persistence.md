@@ -94,23 +94,42 @@ boid-ws-home-<installID8>-<sanitized-slug>
 本 doc が直そうとしているインシデントの再演になる。破壊経路は 3 つある:
 
 1. `internal/reap/reap.go:124` — `reap.Run` は列挙した volume を `VolumeRemove{Force: true}` で
-   **無条件に全削除**する。そしてこれは `boid reap` CLI 専用ではなく、
-   `internal/dispatcher/container_backend.go:1296` の `ReapOrphans` (**daemon 起動時の
-   startup reap**) から毎回呼ばれる。job container が生きていれば in-use で守られるが、
-   ホスト再起動直後は必ず成功する
-2. `container_backend.go:1319` の `reapOrphanVolumes` — `reapOwnsLabels` (:1312) は
-   `labels[labelInstallID] == b.installID` だけを見るので、install_id label を付けた時点で対象になる
+   **無条件に全削除**する。列挙の filter は `boid.install_id=<id>`。そしてこれは
+   `boid reap` CLI 専用ではなく、`internal/dispatcher/container_backend.go:1296` の
+   `ReapOrphans` (**daemon 起動時の startup reap**) から毎回呼ばれる。job container が
+   生きていれば in-use で守られるが、ホスト再起動直後は必ず成功する
+2. `container_backend.go:1319` の `reapOrphanVolumes` — 発火条件は `ReapOrphans` が渡す
+   list filter = **`boid.job_id` label の presence** (:1248)。そのうえで
+   `reapOwnsLabels` (:1312) が install_id 一致を確認する。つまり job_id label を付けなければ
+   そもそも列挙されない (初版はここを「install_id label を付けた時点で対象」と書いていたが
+   不正確だった。install_id 単独で死ぬのは経路 1 の方)
 3. `container_backend.go:1565` の `ensureNamedVolumes` — named volume を作る既存経路だが、
    **job の label 一式 (`boid.job_id` 含む) を付けて `VolumeCreate` する**。しかも
    `boid.job_id` label が無い volume には「ReapOrphans's volume sweep will not find it」と
    `slog.Warn` を出す。永続 volume ではこの warning は**正しい状態**なので、
-   警告条件の見直しも必要になる
+   警告条件の見直しも必要になる。なお同関数の doc comment (:1557) は
+   「既存 volume に request の label を適用しない」と明記しているので、
+   `resolveWorkspaceHome` 側で正しい label 付きに先行 `VolumeCreate` しておけば、
+   Launch 側の後追い呼び出しは label 面では無害になる
+4. **`internal/sandbox/dockerproxy/reap.go:67`** — job 終了時の `dockerproxy.Reap` は
+   per-job ledger に記録された volume を **label を一切見ずに name で DELETE** する
+   (`reapDelete(ctx, client, "/volumes/"+id)`)。`reap.Run` の ledger union (`reap.go:250`) も同様。
+   **label 設計だけでは防げない経路**である点が 1-3 と決定的に違う。
+   `capabilities.docker` を持つ job の sandbox 内 docker client が
+   `docker volume create boid-ws-home-<installID8>-<slug>` を発行すると、
+   volume 名は決定的で予測可能なため、既存 volume に対する create が冪等成功しつつ
+   **ledger に載り**、job 終了時に消される。`dockerproxy/policy.go` は volume の
+   mount オプションは検査するが **volume 名は検査していない**
+
+経路 4 の対策は label ではなく名前空間の予約になる:
+dockerproxy policy で予約 prefix (`boid-ws-`) に対する volume create / remove を deny し、
+防御として `dockerproxy.Reap` と `reap.Run` の volume ループにも name-prefix 除外を入れる。
 
 **決定すべきこと (実装時送りにしない)**:
 
 - workspace HOME volume には `boid.job_id` と素の `boid.install_id` を**付けない**。
   専用 label (例: `boid.workspace_home=<slug>` + install scope を別キーで持つ) にする
-- 上記 3 箇所すべてに除外規則を入れる。PR2 のスコープに 3 箇所を明記する
+- 上記 4 経路すべてに除外規則を入れる (経路 4 は label ではなく name-prefix 予約)
 - `boid reap` (deploy 全体を破壊する CLI) が workspace HOME を消すべきか否かを**契約として宣言**する。
   「このインストールの docker リソースを全部消す」コマンドの意味論と、
   「認証情報は消えてほしくない」要求のどちらを優先するか
@@ -130,9 +149,12 @@ Phase 4 の契約は「GC 対象外」と対で「**掃除は workspace remove �
   `GET /api/workspaces/{slug}` のサイズ表示と `POST /api/gc` の orphan 検出も全滅
   (全 workspace が `Exists=false` になる)
 
-**rewiring 方針**: 削除は `VolumeRemove`、サイズは VolumeInspect の UsageData
-(`docker system df -v` 相当)、orphan 検出は volume 列挙と workspace DB row の差分。
-これを扱う PR を分割表に持つこと (下記 PR4)。
+**rewiring 方針**: 削除は `VolumeRemove`、orphan 検出は volume 列挙と workspace DB row の差分。
+
+サイズは注意が必要で、`Volume.UsageData` は **`GET /system/df` (DiskUsage) の応答でのみ
+populate され、`VolumeInspect` では省略される** (moby の型定義に基づく。オフラインのため
+一次情報未確認 — 実装前に裏取りすること)。しかも system df は engine 全体を走査するため重い。
+使い捨て container 内で `du` を取る方式も選択肢として比較すること。
 
 ### 論点 b: marker / lock の置き場
 
@@ -158,6 +180,41 @@ init 時に volume 内へ nonce を書き marker にも記録する (VolumeInspe
 engine 差が出る)。nonce を volume 内に置く方式は、marker を home の外に置いた元々の理由
 (`workspace_home.go:20-24` — sandbox からの改竄耐性) と両立するかを実装時に確認すること。
 
+**nonce を書く主体は次節の prep ステップである** — init.sh を持たない workspace では
+init container が一度も走らないため、prep を条件付きにすると nonce の書き込み機会が無くなる。
+
+### 論点 b-2: volume prep ステップ (init.sh の有無に関わらず必ず 1 回走らせる)
+
+**volume 作成後、init.sh の有無に関わらず prep container を 1 回走らせる。** 仕事は 2 つ:
+
+1. **skeleton の mkdir** (`~/.claude`、`~/.claude/skills`、`~/.local/bin` など) を **uid 1000 で**作る
+2. **nonce の書き込み** (論点 b)
+
+**1 が必要な理由 (実測)**: job container は `$HOME/.claude/skills` に skills を重ねる
+(論点 e-2)。このとき bind target が volume 内に存在しないと、**engine が中間パスを
+uid 0 所有で自動作成する**。空 volume を `/home/boid` に、host dir を
+`/home/boid/.claude/skills` に mount した container を podman 4.9.3 で起動して実測した結果:
+
+```
+drwxr-xr-t 3    0    0 4096 Jul 26 05:24 .claude      ← root 所有で自動生成
+drwxrwxr-x 2 1000 1000 4096 Jul 26 05:24 .claude/skills
+```
+
+`~/.claude` が root:root になるため、uid 1000 で走る harness は
+`~/.claude/.credentials.json` も `~/.claude/projects/*.jsonl` も**書けない**。
+自動作成は container start 時 (entrypoint 実行前) に engine が行うので、runner 側の
+コードでは防げない。**認証永続を守るための設計が、そのままでは認証を書けなくする。**
+
+**2 が必要な理由**: Phase 4 の契約は「script が無い workspace は素通し (マーカーだけ打つ)」
+(`home-workspace-volume.md:98`)。prep を init.sh 有無で条件分岐させると、
+素通し workspace には nonce を書く主体が存在せず、論点 b の desync 対策が
+そのクラスに適用できない。
+
+**契約の更新**: 素通しの文面を「container 実行なし」ではなく
+「**script 実行なし (prep は必ず行う)**」に改める。init.sh を持つ workspace では、
+prep を init container の先頭に boid が挿入する builtin prelude として統合すればよい
+(container 起動は 1 回で済む)。
+
 ### 論点 c: init.sh の実行経路
 
 現行は daemon プロセスが `/bin/bash <tmpfile>` を直接 exec し、`HOME` を workspace HOME に
@@ -180,9 +237,11 @@ DooD の仕組み (job container 生成) は既にあるので流用できる。
 - **network**: 明示的に決めること。job container は per-workspace の internal network
   (`internal: true`、egress は allowlist proxy 経由のみ) に閉じ込められるが、init.sh の
   主目的は toolchain のダウンロード (実測 1.5GB: go / node / volta / claude / codex / opencode) で、
-  その allowlist 下では installer がほぼ全滅する。daemon と同じ default bridge
-  (無制限 egress) に置くのが妥当だが、それは「trusted 境界は維持される」の一部として
-  明文で宣言すべき事項であって、暗黙に決めてよいことではない
+  その allowlist 下では installer がほぼ全滅する。無制限 egress を持つ network に置くのが
+  妥当だが、それは「trusted 境界は維持される」の一部として明文で宣言すべき事項であって、
+  暗黙に決めてよいことではない。**どの network に attach するかを実装者が一意に読めるよう
+  書くこと** — 「compose project の default network (`boid_default`) に
+  `docker network connect` する」のか「engine の既定 bridge に置く」のかで指定が変わる
 - **多重実行の防止**: flock はプロセス死で解放されるが、container は親プロセスの死を生き延びる。
   daemon が crash して再起動した場合、次の dispatch が再 init を始めた時点で**旧 init container が
   まだ volume に書いている**可能性がある。Phase 4 の「同時 dispatch でも実行は 1 回」契約
@@ -274,9 +333,12 @@ volume 化すると daemon はこのパスに書けなくなる。放置する�
 毎 dispatch に使い捨て container を起こすのはコスト的に非現実的なので、方針候補:
 embedded skill は boid バイナリから常に再生成できる (揮発してよい) 性質を使い、
 host-visible runtime dir (`hostVisibleRuntimesDirFor` 配下) に materialize して
-job container に `$HOME/.claude/skills` へ RO で重ねる。この場合 volume 側の HOME に
-skills が存在しないことになるので、`.claude/` 配下の他の内容 (認証情報) と
-mount が競合しないかを確認すること。
+job container に `$HOME/.claude/skills` へ RO で重ねる。
+
+**この方式は論点 b-2 の prep ステップとセットでなければ成立しない。** bind target
+`~/.claude/skills` が volume 内に存在しないと engine が `~/.claude` を uid 0 所有で
+自動作成し、認証情報が書けなくなる (実測結果は論点 b-2 を参照)。prep で
+`~/.claude` と `~/.claude/skills` を uid 1000 で先に作っておくこと。
 
 ### 論点 f: 既存 workspace HOME の移行
 
@@ -296,29 +358,41 @@ volume 内に作られるファイルの所有者が job container の実行 uid
 **方針**: bind mount を使わず **tar を stdin で流し込み**、展開側で uid を正規化する
 (`--no-same-owner` 相当)。`boid.json` などの 0600 ファイルの mode は維持すること。
 
-一度きりの移行なので CLI (`boid workspace import-home <slug> --from <dir>`) でもよいし、
-起動時の自動移行でもよい。実装時に決める。
+**この方式は host mode CLI からの実行に限定される。** tar の生成側が host dir を読める必要があり、
+container 内 daemon は起動時に backup dir に到達できない (到達させるには本 doc が
+uid mapping を理由に退けた engine bind が要る)。したがって「起動時の自動移行」を
+選ぶなら、bind + container uid 0 での読み取り + 展開時 chown 1000 という別の変種になる。
+
+一度きりの移行なので **CLI (`boid workspace import-home <slug> --from <dir>`) に限定するのが素直**。
 
 ## PR 分割案
 
-| PR | 内容 | 依存 |
-|---|---|---|
-| 1 | volume 化の下準備: 論点 e の (i)/(ii) 決定 + `ensureNamedVolumes` の label 分離と warning 条件見直し + reap 3 箇所 (`reap.Run` / `reapOrphanVolumes` / `ensureNamedVolumes`) の除外規則 | — |
-| 2 | **[不可分]** `resolveWorkspaceHome` を volume ベースへ + marker/lock を daemon 永続領域へ + marker の volume identity 突合 + init.sh を使い捨て container 実行へ + skills sync の materialize 先変更 + `WorkspaceSlug` 導出の修正 + 契約 doc 更新 | 1 |
-| 3 | workspace remove 連動の削除・サイズ可視化・orphan 検出を volume API へ rewiring (論点 a-2) | 2 |
-| 4 | 既存 homes の移行経路 (uid mapping を跨ぐ tar stdin) | 2 |
-| 5 | init.sh の CLI 経路 (export/import の `init_script` + 専用 CLI) | — (独立) |
+| PR | 内容 | 挙動変化 | 依存 |
+|---|---|---|---|
+| 1 | volume 破壊経路 4 つの封じ込め: 論点 e の (i)/(ii) 決定 + `ensureNamedVolumes` の label 分離と warning 条件見直し + `reap.Run` / `reapOrphanVolumes` の label 除外 + dockerproxy policy の `boid-ws-` prefix deny と reap 側 name-prefix 除外 | 無し (対象 volume がまだ存在しない) | — |
+| 2 | marker/lock を daemon 永続領域 (`boid_state`) へ移設 | 無し (位置替えのみ。旧 marker 消失は再 init で吸収) | — |
+| 3 | skills の materialize 先を host-visible runtime dir へ + `$HOME/.claude/skills` へ RO overlay | 無し (現行の host bind HOME でも同じく機能する) | — |
+| 4 | `WorkspaceSlug` を独立に thread する (`runner.go:724` の `filepath.Base` 依存を切る) | 無し | — |
+| 5 | init.sh + prep を使い捨て container 実行へ (network / stdin / 多重実行防止 / prep skeleton + nonce)。**この時点では現行の host-visible homes dir を engine bind して検証する** | init.sh の実行環境が変わる | 3 |
+| 6 | **[不可分コア]** `resolveWorkspaceHome` を volume ベースへ + `homeMounts` の volume 化 + nonce 突合 + 契約 doc 更新 | **workspace HOME が volume になる** | 1,2,4,5 |
+| 7 | workspace remove 連動の削除・サイズ可視化・orphan 検出を volume API へ rewiring (論点 a-2) | | 6 |
+| 8 | 既存 homes の移行 CLI (`boid workspace import-home`、uid mapping を跨ぐ tar stdin) | | 6 |
+| 9 | init.sh の CLI 経路 (export/import の `init_script` + 専用 CLI) | | — (独立) |
 
-**PR2 が不可分である理由**: 「daemon が workspace HOME に書く経路」が 3 つあり
-(marker/lock、init.sh 実行、skills sync)、どれか 1 つだけを volume 側に切り替えると
-job container が見る HOME と daemon が書く場所がずれる。初版は 3 (resolveWorkspaceHome) と
-4 (init.sh) を分けて「必要なら 1 PR に」と書いていたが、skills sync (論点 e-2) と
-`WorkspaceSlug` 導出 (`runner.go:724` が `filepath.Base(workspaceHomeDir)` で slug を得ており、
-戻り値が volume 名になると `BOID_WORKSPACE_SLUG` と adapter のエラーメッセージが壊れる) も
-同じ切り替えに巻き込まれるため、**「必ず 1 PR」に格上げする**。
+**分割の考え方**: 「daemon が workspace HOME に書く経路」は 3 つある (marker/lock、init.sh 実行、
+skills sync)。**volume への切り替えを跨ぐ変更は 1 PR にまとめる必要がある**が、
+PR2-5 はいずれも**現行の path ベース HOME のまま挙動を保って先行 land できる**ため、
+最リスクの PR6 を「切り替えそのもの」だけに縮められる。
+
+初版は 3+4 を「必要なら 1 PR」、第 2 版は 6 項目を「必ず 1 PR」としていたが、後者は過大だった
+(Fable 再レビュー R-3)。`volume-only-daemon.md` が「巨大 1 PR は review 困難・CI failure の
+切り分け困難」を理由に段階案を採った経緯とも整合しない。
+
+**PR6→PR7 の中間状態**: PR7 が landed するまで `boid workspace remove` の home 削除は
+silent no-op になり volume が残る。一時的に許容する (手動 `docker volume rm` で対応可能)。
 
 初版にあった「PR1: `sandbox.Mount` に volume 型追加」は論点 e の事実誤認に基づいていたので削除し、
-label / reap 側の下準備に置き換えた。
+label / reap 側の封じ込めに置き換えた。
 
 ## 未解決 / 本 doc の範囲外
 
