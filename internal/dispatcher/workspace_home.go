@@ -39,15 +39,21 @@ import (
 // What this deliberately does NOT claim is that the marker is unreachable by
 // a job outright. Under the container deploy the daemon's data root IS a
 // docker named volume (`boid_state`, mounted at /home/boid by
-// build/container/compose.yml), and dockerproxy's volume policy only reserves
-// the `boid-ws-` name prefix — so a job holding capabilities.docker can still
-// create a sibling container that mounts that volume by name and read (or
-// write) everything in it. That exposure predates PR2 and is much wider than
-// this marker (secret.key, boid.db and tls/ca.key live in the same volume);
-// it is tracked as an open item in docs/plans/workspace-home-volume-persistence.md's
-// 「未解決 / 本 doc の範囲外」 section, not closed here. The accurate scope of
-// the guarantee is therefore: a job cannot reach the marker through the one
-// path every job has, its own rw-mounted $HOME.
+// build/container/compose.yml), and when PR2 was written dockerproxy's volume
+// policy reserved only the `boid-ws-` name prefix — so a job holding
+// capabilities.docker could create a sibling container that mounted that
+// volume by name and read (or write) everything in it. That exposure predated
+// PR2 and was much wider than this marker (secret.key, boid.db and tls/ca.key
+// live in the same volume).
+//
+// PR2.5 closed it: the daemon now identifies its own container at startup and
+// injects the volumes mounted into it into the dockerproxy policy's reserved
+// set (DetectDaemonStateVolumes -> Runner.ReservedVolumeNames). The closure is
+// conditional, not absolute — it depends on the daemon being able to identify
+// its own container (see that function's contract for the fail-open case, which
+// warns and continues) — so the guarantee stated here is unchanged and is still
+// the one worth relying on: a job cannot reach the marker through the one path
+// every job has, its own rw-mounted $HOME.
 type workspaceHomeMarker struct {
 	ScriptSHA256 string `json:"script_sha256"`
 	// HomeID ties this marker to one specific incarnation of the workspace
@@ -747,11 +753,12 @@ func workspaceInitScriptPath(slug string) (string, error) {
 // qualify — it moved to readWorkspaceHomeNonce, which explains what a bare
 // os.ReadFile hands an attacker who controls the target. Adding a caller
 // here means first checking that its path is on the daemon's side of that
-// line; both of the current ones have the residual exposure documented in
-// docs/plans/workspace-home-volume-persistence.md's 「未解決 / 本 doc の範囲外」
-// section (a job holding capabilities.docker can mount the boid_state volume
-// by name from a sibling container), which is wider than anything a read
-// hardening could address and is tracked there rather than here.
+// line. Both of the current ones used to carry a residual exposure — a job
+// holding capabilities.docker could mount the boid_state volume by name from a
+// sibling container — which PR2.5 closed by reserving the daemon's own volumes
+// in the dockerproxy policy (see DetectDaemonStateVolumes). That closure is
+// conditional on the daemon being able to identify its own container, so the
+// rule above still stands on its own rather than on the proxy holding.
 func readIfExists(path string) ([]byte, bool, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {

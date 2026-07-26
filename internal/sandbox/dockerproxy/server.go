@@ -26,6 +26,32 @@ type Server struct {
 	// /containers/create request this Server allows gets forced onto — see
 	// SetWorkspaceNetwork's doc comment.
 	workspaceNetwork string
+	// reservedVolumes is the runtime half of the volume-name reservation
+	// CheckRequest enforces — see SetReservedVolumeNames.
+	reservedVolumes ReservedVolumes
+}
+
+// SetReservedVolumeNames adds names to the set of volume names this Server
+// refuses to let a sandboxed docker client create, delete, or mount, on top of
+// the static "boid-ws-" namespace that always applies.
+//
+// Production passes the volumes the daemon discovered mounted into its OWN
+// container at startup (internal/dispatcher.DetectDaemonStateVolumes, wired
+// through Runner.ReservedVolumeNames in startDockerProxy). Under the compose
+// deploy that is `boid_boid_state` — the single volume holding boid.db,
+// secret.key, tls/ca.key, web_secret and install_id. Nothing about that name
+// is derivable from boid's own naming conventions (the compose project names
+// it), which is why it has to be injected rather than pattern matched.
+//
+// Call this BEFORE Serve/ServeTLS. It is a startup-time configuration knob
+// with the same single-writer contract as SetWorkspaceNetwork, not a live
+// policy update: CheckRequest is a pure function over its arguments and this
+// value is one of them, so mutating it while requests are in flight would be
+// both a data race and an unauditable policy change. Never calling it (bare
+// `boid start`, every existing test) leaves the zero ReservedVolumes, which
+// behaves exactly as the policy did before this method existed.
+func (s *Server) SetReservedVolumeNames(names []string) {
+	s.reservedVolumes = NewReservedVolumes(names)
 }
 
 // SetWorkspaceNetwork configures the "sibling の workspace network 強制注入"
@@ -146,7 +172,7 @@ func (s *Server) serveHTTP(w http.ResponseWriter, r *http.Request) {
 	// real workspace network" (see its own doc comment on why empty is
 	// equivalent to "never called"), rather than adding a second bool this
 	// Server would have to keep in sync with it.
-	verdict := CheckRequest(method, r.URL.Path, bodyBytes, s.workspaceNetwork != "")
+	verdict := CheckRequest(method, r.URL.Path, bodyBytes, s.workspaceNetwork != "", s.reservedVolumes)
 	if !verdict.Allow {
 		slog.Warn("docker proxy: DENY", "method", method, "path", r.URL.Path, "reason", verdict.Reason)
 		http.Error(w, "forbidden: "+verdict.Reason, http.StatusForbidden)

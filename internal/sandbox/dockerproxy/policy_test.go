@@ -31,7 +31,7 @@ func createBody(hc map[string]interface{}) []byte {
 
 func assertAllow(t *testing.T, method, path string, body []byte) {
 	t.Helper()
-	v := CheckRequest(method, path, body, true)
+	v := CheckRequest(method, path, body, true, ReservedVolumes{})
 	if !v.Allow {
 		t.Errorf("expected ALLOW for %s %s, got DENY: %s", method, path, v.Reason)
 	}
@@ -39,7 +39,7 @@ func assertAllow(t *testing.T, method, path string, body []byte) {
 
 func assertDeny(t *testing.T, method, path string, body []byte) {
 	t.Helper()
-	v := CheckRequest(method, path, body, true)
+	v := CheckRequest(method, path, body, true, ReservedVolumes{})
 	if v.Allow {
 		t.Errorf("expected DENY for %s %s, got ALLOW", method, path)
 	}
@@ -47,7 +47,7 @@ func assertDeny(t *testing.T, method, path string, body []byte) {
 
 func assertDenyContains(t *testing.T, method, path string, body []byte, substr string) {
 	t.Helper()
-	v := CheckRequest(method, path, body, true)
+	v := CheckRequest(method, path, body, true, ReservedVolumes{})
 	if v.Allow {
 		t.Errorf("expected DENY for %s %s, got ALLOW", method, path)
 		return
@@ -265,7 +265,7 @@ func TestPortBindings_gate_userns_allow(t *testing.T) {
 			"80/tcp": []map[string]string{{"HostPort": "8080"}},
 		},
 	})
-	v := CheckRequest("POST", "/containers/create", body, false)
+	v := CheckRequest("POST", "/containers/create", body, false, ReservedVolumes{})
 	if !v.Allow {
 		t.Errorf("expected ALLOW (denyHostPortPublish=false), got DENY: %s", v.Reason)
 	}
@@ -275,7 +275,7 @@ func TestPortBindings_gate_userns_allow(t *testing.T) {
 // TestPortBindings_gate_userns_allow for PublishAllPorts.
 func TestPublishAllPorts_gate_userns_allow(t *testing.T) {
 	body := createBody(map[string]interface{}{"PublishAllPorts": true})
-	v := CheckRequest("POST", "/containers/create", body, false)
+	v := CheckRequest("POST", "/containers/create", body, false, ReservedVolumes{})
 	if !v.Allow {
 		t.Errorf("expected ALLOW (denyHostPortPublish=false), got DENY: %s", v.Reason)
 	}
@@ -483,7 +483,7 @@ func TestMaxBodyBytes_exceeded_deny(t *testing.T) {
 func TestParserDifferential_duplicateKey_deny(t *testing.T) {
 	// Craft raw JSON with duplicate Privileged keys: first false, last true.
 	raw := []byte(`{"HostConfig":{"Privileged":false,"Privileged":true}}`)
-	v := CheckRequest("POST", "/containers/create", raw, true)
+	v := CheckRequest("POST", "/containers/create", raw, true, ReservedVolumes{})
 	if v.Allow {
 		t.Error("expected DENY for duplicate key attack (last Privileged=true should win)")
 	}
