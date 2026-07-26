@@ -128,7 +128,29 @@ const workspaceHomeNonceFileName = ".boid-workspace-home-id"
 // resolveWorkspaceHome ensures the on-disk home directory for the workspace
 // identified by workspaceID exists and, if the workspace declares an
 // init.sh, that it has been run for the current content of that script. It
-// returns the absolute path to the (now-ready) workspace home directory.
+// returns the absolute path to the (now-ready) workspace home directory and
+// the normalized workspace slug that directory belongs to, in that order.
+//
+// Returning the slug is PR4 of docs/plans/workspace-home-volume-persistence.md.
+// It is not a convenience: this function is the ONLY place a workspaceID is
+// normalized into a slug (normalizeWorkspaceSlug, first statement below), and
+// before PR4 its one caller recovered that slug with
+// filepath.Base(<returned home dir>) — correct only while workspaceHomeDirFor
+// happens to name a home directory after its slug. PR6 replaces that name
+// with a per-workspace named volume (boid-ws-home-<installID8>-<slug>, 論点a),
+// so the basename stops being the slug; every consumer of
+// SandboxRuntimeInfo.WorkspaceSlug (env BOID_WORKSPACE_SLUG, and through it
+// the claude/codex/opencode adapters' "CLI not found in workspace $HOME"
+// error, which tells the operator which workspace's init.sh to edit) would
+// then silently name a workspace that does not exist. Handing the slug back
+// from where it is decided removes the second derivation entirely rather than
+// keeping two computations that have to be kept in agreement.
+//
+// Note that the empty-workspaceID case makes this strictly more than a
+// refactor even today: a project with no explicit workspace normalizes to
+// orchestrator.DefaultWorkspaceSlug here, and the caller's own workspaceID is
+// still "" — so the returned slug is the only in-band source of that value
+// that does not go through the path.
 //
 // Phase 4 PR1 (docs/plans/home-workspace-volume.md): this is wiring only —
 // the returned directory is threaded into SandboxRuntimeInfo.WorkspaceHomeDir
@@ -170,40 +192,40 @@ const workspaceHomeNonceFileName = ".boid-workspace-home-id"
 // observable consequence on an upgraded installation is one extra init.sh
 // run per workspace, absorbed by the contractual idempotence of init scripts
 // (docs/plans/home-workspace-volume.md 「script 作者が守ること」).
-func (r *Runner) resolveWorkspaceHome(workspaceID string) (string, error) {
+func (r *Runner) resolveWorkspaceHome(workspaceID string) (string, string, error) {
 	slug, err := normalizeWorkspaceSlug(workspaceID)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 
 	homesDir, err := r.workspaceHomesDir()
 	if err != nil {
-		return "", fmt.Errorf("workspace home: %w", err)
+		return "", "", fmt.Errorf("workspace home: %w", err)
 	}
 	if err := os.MkdirAll(homesDir, 0o700); err != nil {
-		return "", fmt.Errorf("workspace home: create homes dir %q: %w", homesDir, err)
+		return "", "", fmt.Errorf("workspace home: create homes dir %q: %w", homesDir, err)
 	}
 
 	metaDir, err := r.workspaceHomeMetaDir()
 	if err != nil {
-		return "", fmt.Errorf("workspace home: %w", err)
+		return "", "", fmt.Errorf("workspace home: %w", err)
 	}
 	if err := os.MkdirAll(metaDir, 0o700); err != nil {
-		return "", fmt.Errorf("workspace home: create homes meta dir %q: %w", metaDir, err)
+		return "", "", fmt.Errorf("workspace home: create homes meta dir %q: %w", metaDir, err)
 	}
 
-	homeDir := filepath.Join(homesDir, slug)
+	homeDir := workspaceHomeDirFor(homesDir, slug)
 	if err := os.MkdirAll(homeDir, 0o700); err != nil {
-		return "", fmt.Errorf("workspace home %q: create home dir %q: %w", slug, homeDir, err)
+		return "", "", fmt.Errorf("workspace home %q: create home dir %q: %w", slug, homeDir, err)
 	}
 
 	scriptPath, err := workspaceInitScriptPath(slug)
 	if err != nil {
-		return "", fmt.Errorf("workspace home %q: %w", slug, err)
+		return "", "", fmt.Errorf("workspace home %q: %w", slug, err)
 	}
 	scriptBytes, scriptExists, err := readIfExists(scriptPath)
 	if err != nil {
-		return "", fmt.Errorf("workspace home %q: read init script %q: %w", slug, scriptPath, err)
+		return "", "", fmt.Errorf("workspace home %q: read init script %q: %w", slug, scriptPath, err)
 	}
 	scriptSHA := scriptSHA256Hex(scriptBytes, scriptExists)
 
@@ -212,15 +234,15 @@ func (r *Runner) resolveWorkspaceHome(workspaceID string) (string, error) {
 	// Fast path: already initialized for this exact script content AND the
 	// home the marker describes is still the one on disk, no lock needed.
 	if marker, ok, err := readWorkspaceHomeMarker(markerPath); err != nil {
-		return "", fmt.Errorf("workspace home %q: read marker %q: %w", slug, markerPath, err)
+		return "", "", fmt.Errorf("workspace home %q: read marker %q: %w", slug, markerPath, err)
 	} else if ok && workspaceHomeInitialized(marker, scriptSHA, homeDir, slug) {
-		return homeDir, nil
+		return homeDir, slug, nil
 	}
 
 	lockPath := workspaceHomeLockPath(metaDir, slug)
 	release, err := acquireWorkspaceHomeLock(lockPath)
 	if err != nil {
-		return "", fmt.Errorf("workspace home %q: acquire init lock: %w", slug, err)
+		return "", "", fmt.Errorf("workspace home %q: acquire init lock: %w", slug, err)
 	}
 	defer release()
 
@@ -234,7 +256,7 @@ func (r *Runner) resolveWorkspaceHome(workspaceID string) (string, error) {
 	// diverge from the content that ran.
 	scriptBytes, scriptExists, err = readIfExists(scriptPath)
 	if err != nil {
-		return "", fmt.Errorf("workspace home %q: read init script %q: %w", slug, scriptPath, err)
+		return "", "", fmt.Errorf("workspace home %q: read init script %q: %w", slug, scriptPath, err)
 	}
 	scriptSHA = scriptSHA256Hex(scriptBytes, scriptExists)
 
@@ -242,14 +264,14 @@ func (r *Runner) resolveWorkspaceHome(workspaceID string) (string, error) {
 	// waiting on the lock. Same identity check as the fast path — a marker
 	// alone still does not prove the home behind it survived.
 	if marker, ok, err := readWorkspaceHomeMarker(markerPath); err != nil {
-		return "", fmt.Errorf("workspace home %q: read marker %q: %w", slug, markerPath, err)
+		return "", "", fmt.Errorf("workspace home %q: read marker %q: %w", slug, markerPath, err)
 	} else if ok && workspaceHomeInitialized(marker, scriptSHA, homeDir, slug) {
-		return homeDir, nil
+		return homeDir, slug, nil
 	}
 
 	if scriptExists {
 		if err := runWorkspaceInitScript(scriptBytes, metaDir, slug, homeDir); err != nil {
-			return "", fmt.Errorf("workspace home %q: init script failed: %w", slug, err)
+			return "", "", fmt.Errorf("workspace home %q: init script failed: %w", slug, err)
 		}
 	}
 
@@ -270,10 +292,10 @@ func (r *Runner) resolveWorkspaceHome(workspaceID string) (string, error) {
 	// point for the PR5 prep container.
 	nonce, err := newWorkspaceHomeNonce()
 	if err != nil {
-		return "", fmt.Errorf("workspace home %q: mint home id: %w", slug, err)
+		return "", "", fmt.Errorf("workspace home %q: mint home id: %w", slug, err)
 	}
 	if err := writeWorkspaceHomeNonce(homeDir, nonce); err != nil {
-		return "", fmt.Errorf("workspace home %q: write home id: %w", slug, err)
+		return "", "", fmt.Errorf("workspace home %q: write home id: %w", slug, err)
 	}
 
 	marker := workspaceHomeMarker{
@@ -283,10 +305,10 @@ func (r *Runner) resolveWorkspaceHome(workspaceID string) (string, error) {
 		CompletedAt:  time.Now().UTC(),
 	}
 	if err := writeWorkspaceHomeMarker(markerPath, marker); err != nil {
-		return "", fmt.Errorf("workspace home %q: write marker: %w", slug, err)
+		return "", "", fmt.Errorf("workspace home %q: write marker: %w", slug, err)
 	}
 
-	return homeDir, nil
+	return homeDir, slug, nil
 }
 
 // workspaceHomeInitialized reports whether marker may be trusted to
@@ -596,6 +618,35 @@ func WorkspaceHomesDir(runtimesDir string) (string, error) {
 // workspaceHomesDir is a thin *Runner-bound wrapper around WorkspaceHomesDir.
 func (r *Runner) workspaceHomesDir() (string, error) {
 	return WorkspaceHomesDir(r.RuntimesDir)
+}
+
+// workspaceHomeDirFor decides the on-disk NAME a workspace's home is stored
+// under inside homesDir. Today that name simply IS the slug, so
+// filepath.Base(<home dir>) == <slug> holds by construction — a coincidence
+// PR6 of docs/plans/workspace-home-volume-persistence.md ends, when the home
+// becomes a per-workspace named volume called
+// boid-ws-home-<installID8>-<sanitized-slug> (論点a).
+//
+// Naming that one line is the point: everything downstream that needs the
+// slug must take it from resolveWorkspaceHome's own return value rather than
+// re-deriving it from the path (PR4). Keeping the derivation behind a single
+// indirection is what lets a test construct the post-PR6 shape — a home
+// directory whose basename is NOT the slug — and so makes the "threaded, not
+// re-derived" property observable BEFORE PR6 makes it load-bearing in
+// production. Without that, every such test would be tautological: the two
+// values are equal today, so asserting one against the other proves nothing.
+//
+// Swappable-var rather than a plain function for exactly that reason,
+// mirroring internal/api/workspace_homes.go's apparentSizeFn and this
+// package's daemonUID / bindTargetOwnerUID. Production never reassigns it.
+//
+// Note that internal/api/workspace_homes.go's resolveWorkspaceHomePath still
+// open-codes the same filepath.Join for its size/GC reporting. That is
+// deliberate for now — it is a different package with no *Runner in hand, and
+// PR7 rewires the whole of it onto the volume API rather than onto this
+// helper.
+var workspaceHomeDirFor = func(homesDir, slug string) string {
+	return filepath.Join(homesDir, slug)
 }
 
 // workspaceHomeMetaDir returns <dataHome>/homes-meta, the directory holding

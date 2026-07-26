@@ -34,12 +34,22 @@ var lookPath = exec.LookPath
 // "command not found" a user has no actionable next step for. slug names
 // the workspace whose init.sh needs the fix; it comes from
 // rc.Env["BOID_WORKSPACE_SLUG"] (set by BuildSandboxSpec from
-// SandboxRuntimeInfo.WorkspaceSlug, which Runner.Dispatch derives from the
-// resolved workspace home) and falls back to "default" for callers that
-// never wired it through (bare unit tests, or a caller that predates the
-// wiring). cause is the underlying lookup error, wrapped with %w so
+// SandboxRuntimeInfo.WorkspaceSlug) and falls back to "default" for callers
+// that never wired it through (bare unit tests, or a caller that predates
+// the wiring). cause is the underlying lookup error, wrapped with %w so
 // errors.Is(err, exec.ErrNotFound) still holds for callers that want to
 // distinguish this from other Run failure modes.
+//
+// That slug arrives from resolveWorkspaceHome, the one place it is
+// normalized; Runner.Dispatch deliberately does NOT re-derive it from the
+// resolved workspace home's path (PR4 of
+// docs/plans/workspace-home-volume-persistence.md). This message is the
+// reason that distinction is worth making: PR6 renames the home to a named
+// volume (boid-ws-home-<installID8>-<slug>), and a path-derived slug would
+// then send the operator to
+// ~/.config/boid/workspaces/boid-ws-home-<installID8>-<slug>/init.sh — a
+// path that does not exist, in an error whose whole value is being
+// actionable.
 func missingCLIError(slug string, cause error) error {
 	if slug == "" {
 		slug = "default"

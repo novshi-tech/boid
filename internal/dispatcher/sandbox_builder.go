@@ -219,8 +219,20 @@ type SandboxRuntimeInfo struct {
 	WorkspaceHomeDir string
 
 	// WorkspaceSlug is the normalized workspace slug WorkspaceHomeDir was
-	// resolved for (docs/plans/home-workspace-volume.md Phase 4 PR3) —
-	// filepath.Base(WorkspaceHomeDir), computed once by Runner.Dispatch.
+	// resolved for (docs/plans/home-workspace-volume.md Phase 4 PR3), taken
+	// straight from resolveWorkspaceHome's second return value by
+	// Runner.Dispatch.
+	//
+	// It used to be filepath.Base(WorkspaceHomeDir) instead. PR4 of
+	// docs/plans/workspace-home-volume-persistence.md cut that dependency:
+	// the two agree only while a workspace home directory is named after its
+	// slug, which stops being true in PR6 (the home becomes a named volume,
+	// boid-ws-home-<installID8>-<slug>). Filling this field from the path
+	// would then quietly put a volume name into BOID_WORKSPACE_SLUG and into
+	// the adapter error message below. Nothing else in this struct may
+	// re-derive it either — the pairing with WorkspaceHomeDir is a fact about
+	// today's layout, not a contract.
+	//
 	// BuildSandboxSpec threads it into env["BOID_WORKSPACE_SLUG"] so the
 	// claude/codex/opencode adapters' fail-fast "harness CLI not found"
 	// error (run.go, triggered when PR3's retired adapter bindings leave no

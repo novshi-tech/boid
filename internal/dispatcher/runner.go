@@ -372,7 +372,14 @@ func (r *Runner) Dispatch(ctx context.Context, spec *orchestrator.JobSpec, clean
 	// the dispatch outright (the contract's 「init 失敗時は dispatch を明示
 	// エラーで fail」), matching every other pre-BuildSandboxSpec error path
 	// in this function.
-	workspaceHomeDir, err := r.resolveWorkspaceHome(workspaceID)
+	//
+	// Both return values are used: workspaceSlug is the normalized slug this
+	// call just resolved workspaceID into, threaded to rtInfo.WorkspaceSlug
+	// below. It is deliberately NOT re-derived from workspaceHomeDir — see
+	// resolveWorkspaceHome's doc comment (PR4 of
+	// docs/plans/workspace-home-volume-persistence.md) for why that derivation
+	// breaks the moment PR6 turns the home into a named volume.
+	workspaceHomeDir, workspaceSlug, err := r.resolveWorkspaceHome(workspaceID)
 	if err != nil {
 		r.failJob(j, err)
 		if cleanup != nil {
@@ -747,7 +754,7 @@ func (r *Runner) Dispatch(ctx context.Context, spec *orchestrator.JobSpec, clean
 		CloneWorkspaceDir:          cloneWorkspaceDir,
 		CloneHostBacked:            cloneHostBacked,
 		WorkspaceHomeDir:           workspaceHomeDir,
-		WorkspaceSlug:              filepath.Base(workspaceHomeDir),
+		WorkspaceSlug:              workspaceSlug,
 		SkillsSourceDir:            skillsSourceDir,
 		ContainerImage:             r.resolveContainerImage(workspaceID),
 	}
