@@ -35,6 +35,10 @@ type composeDoc struct {
 		Environment map[string]string `yaml:"environment"`
 		ExtraHosts  []string          `yaml:"extra_hosts"`
 		Ports       []string          `yaml:"ports"`
+		// UsernsMode is set ONLY by compose.podman.override.yml (see
+		// compose_podman_override_test.go) — the base file must never carry
+		// it, since "keep-id" is a podman-only value docker rejects outright.
+		UsernsMode string `yaml:"userns_mode"`
 	} `yaml:"services"`
 	// TopVolumes is the top-level named-volume declaration block (docs/
 	// plans/volume-only-daemon.md §論点 d) — distinct from each service's

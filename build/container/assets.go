@@ -23,5 +23,12 @@ package container
 
 import "embed"
 
-//go:embed compose.yml Dockerfile
+// compose.podman.override.yml rides along because the no-checkout fallback
+// has to be able to deploy on the same engines a checkout can — and on
+// rootless podman that means the deploy script needs this overlay present
+// beside compose.yml (see that file's own header comment, and
+// cmd/host.go's extractComposeAssets, which mirrors this repo's layout for
+// exactly that reason).
+//
+//go:embed compose.yml compose.podman.override.yml Dockerfile
 var Assets embed.FS

@@ -90,6 +90,15 @@ type containerBackend struct {
 	// entirely.
 	selfContainerID string
 
+	// usernsOnce/usernsMode cache the engine-identity probe backing
+	// resolveUsernsMode (container_backend_userns.go): rootless podman needs
+	// every job container created with "keep-id" so the job's uid keeps
+	// matching the daemon-created bind mounts it has to read. Resolved
+	// lazily on the first Launch rather than in NewContainerBackend, which
+	// has no context to probe with and must not do I/O.
+	usernsOnce sync.Once
+	usernsMode container.UsernsMode
+
 	mu       sync.Mutex
 	sessions map[string]*containerSession
 	// adopting tracks in-flight Adopt cache-miss resolutions, keyed by
@@ -604,6 +613,14 @@ type dockerAPI interface {
 	NetworkCreate(ctx context.Context, name string, options client.NetworkCreateOptions) (client.NetworkCreateResult, error)
 	NetworkConnect(ctx context.Context, networkID string, options client.NetworkConnectOptions) (client.NetworkConnectResult, error)
 
+	// ServerVersion / Info identify the ENGINE behind the socket, not any
+	// one container: resolveUsernsMode (container_backend_userns.go) needs
+	// to know whether it is talking to rootless podman, which requires job
+	// containers be created with a podman-specific userns mode that docker
+	// would reject. Probed once per backend and cached.
+	ServerVersion(ctx context.Context, options client.ServerVersionOptions) (client.ServerVersionResult, error)
+	Info(ctx context.Context, options client.InfoOptions) (client.SystemInfoResult, error)
+
 	VolumeCreate(ctx context.Context, options client.VolumeCreateOptions) (client.VolumeCreateResult, error)
 	VolumeList(ctx context.Context, options client.VolumeListOptions) (client.VolumeListResult, error)
 	VolumeRemove(ctx context.Context, volumeID string, options client.VolumeRemoveOptions) (client.VolumeRemoveResult, error)
@@ -938,6 +955,12 @@ func (b *containerBackend) Launch(ctx context.Context, spec sandbox.Spec, opts b
 		Init:        &initTrue,
 		Mounts:      mounts,
 		NetworkMode: workspaceNetworkMode,
+		// UsernsMode: "" on every engine but rootless podman — see
+		// container_backend_userns.go's resolveUsernsMode. Without it, a
+		// rootless-podman job container's uid maps to a host subuid and
+		// cannot read any of the Mounts above, starting with its own
+		// workspace HOME.
+		UsernsMode: b.resolveUsernsMode(ctx),
 	}
 	hostCfg.Resources.PidsLimit = &pidsLimit
 

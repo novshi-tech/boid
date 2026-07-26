@@ -43,6 +43,9 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DOCKERFILE="$ROOT_DIR/build/container/Dockerfile"
 COMPOSE_FILE="$ROOT_DIR/build/container/compose.yml"
+# Stacked on COMPOSE_FILE for rootless podman only — see the podman branch
+# below, and that file's own header comment.
+PODMAN_OVERRIDE_FILE="$ROOT_DIR/build/container/compose.podman.override.yml"
 
 # --- select an engine -------------------------------------------------------
 # Prefers docker (compose v2 syntax, DOCKER_HOST semantics dockerproxy/
@@ -128,6 +131,30 @@ if [[ "$ENGINE" == "podman" ]]; then
 		echo "error: podman.socket is not active — required for the DooD engine-socket bind (BOID_DOCKER_SOCK_SRC=$BOID_DOCKER_SOCK_SRC)." >&2
 		echo "  fix: systemctl --user enable --now podman.socket" >&2
 		exit 1
+	fi
+
+	# Rootless podman needs the daemon container created with
+	# `userns_mode: keep-id`, or its in-container uid maps to a host subuid
+	# that owns none of the host paths compose.yml bind-mounts in — the
+	# daemon then dies on its own broker socket bind (2026-07-26 dogfood;
+	# build/container/compose.podman.override.yml's header comment has the
+	# full symptom list). That value is podman-only — `docker compose`
+	# rejects it — so it lives in a separate overlay stacked on here rather
+	# than in compose.yml itself.
+	#
+	# Gated on rootless specifically because podman REFUSES keep-id for
+	# containers created by root: emitting it unconditionally would turn a
+	# working rootful-podman deploy into a hard create failure. The same
+	# rootless-only reasoning is applied independently, against the docker
+	# API rather than this CLI, for JOB containers
+	# (internal/dispatcher/container_backend_userns.go).
+	if [[ ${#COMPOSE_CMD[@]} -gt 0 ]]; then
+		if [[ "$(podman info --format '{{.Host.Security.Rootless}}' 2>/dev/null)" == "true" ]]; then
+			echo "deploy-container: rootless podman — layering $PODMAN_OVERRIDE_FILE (userns keep-id)"
+			COMPOSE_CMD+=(-f "$PODMAN_OVERRIDE_FILE")
+		else
+			echo "deploy-container: rootful podman — skipping the keep-id overlay (podman rejects keep-id for root-created containers)"
+		fi
 	fi
 fi
 
