@@ -331,7 +331,26 @@ services:
       # <url>` / `project fetch` / PR-2b's own per-job bare-repo refresh.
       # git's libcurl TLS stack does not read SSL_CERT_FILE at all — see
       # GIT_SSL_CAINFO immediately below for that half.
-      SSL_CERT_FILE: "${SSL_CERT_FILE:-}"
+      #
+      # PASSTHROUGH FORM, not "${SSL_CERT_FILE:-}" (2026-07-26 dogfood): the
+      # interpolated form's claim above — "a no-op unless the launching shell
+      # actually exports it" — is FALSE, and was disproven the first time a
+      # real deploy tried to clone anything. `${VAR:-}` always SETS the
+      # variable, to the empty string when the host has none; it never omits
+      # it. An empty SSL_CERT_FILE/GIT_SSL_CAINFO is NOT equivalent to an
+      # unset one: git's libcurl reads the empty value as an explicit "use
+      # THIS CA file" instruction, finds nothing at path "", and fails every
+      # HTTPS remote with `Problem with the SSL CA cert (path? access
+      # rights?)` — reproduced directly in the container (`git ls-remote`
+      # fails with the empty value exported, succeeds after `unset`), and
+      # first surfaced as `boid project add https://github.com/...` failing
+      # on a stock host with publicly-trusted certificates, precisely the
+      # deploy shape the comment claimed was unaffected. The bare
+      # `KEY:`/null form below is compose's actual passthrough: the variable
+      # is forwarded when the launching shell exports it (e2e/
+      # run-container.sh's fixture-CA case, unchanged) and OMITTED entirely
+      # otherwise, leaving the image's own /etc/ssl/certs default in force.
+      SSL_CERT_FILE:
       # GIT_SSL_CAINFO (PR834 PR-2b round-2 codex review CRITICAL fix): the
       # `git` subprocess half SSL_CERT_FILE's own comment above flags —
       # `git clone`/`git fetch` (dispatcher.CloneBareRepo/FetchBareRepo,
@@ -351,7 +370,10 @@ services:
       # self-signed or otherwise. Empty by default, exactly like
       # SSL_CERT_FILE above; a real production deploy has no reason to ever
       # set this either.
-      GIT_SSL_CAINFO: "${GIT_SSL_CAINFO:-}"
+      # Passthrough form for the same reason as SSL_CERT_FILE above — this
+      # is in fact the variable whose empty value git's libcurl reads
+      # directly (see that comment's reproduction notes).
+      GIT_SSL_CAINFO:
       # BOID_CLI_TOKEN (PR-3 Option 4 host-mode redesign, docs/plans/
       # volume-only-daemon.md §論点c, nose directive 2026-07-25): the
       # shared secret internal/api/auth.NewCLITokenAuthMiddleware requires
@@ -435,8 +457,29 @@ services:
     # do) — restricting the publish to loopback keeps the token as the
     # authorization mechanism, not the only thing standing between an
     # exposed port and the daemon's full API surface.
+    #
+    # 8080 (Web UI / HTTP API — internal/server.Config.HTTPAddr, config.yaml's
+    # `web.http_addr`) is published on loopback too (nose directive,
+    # 2026-07-26 dogfood): the pre-dogfood revision of this file published
+    # ONLY 8442 on the reasoning that host mode's CLI is the sole host-side
+    # caller, which overlooked the Web UI itself — nose's actual deployment
+    # fronts it with a Cloudflare Tunnel (`cloudflared` → http://localhost:8080
+    # → boid.nosen.dev, docs/ja/guide/web-ui.md), so a stack without this
+    # entry takes the entire Web UI (and every paired device behind that
+    # tunnel) offline at cutover. Same loopback-only publish rationale as
+    # 8442 above: the tunnel connects from this host, and `boid web set-addr`
+    # remains the deliberate opt-in for anything wider.
+    #
+    # NOTE: publishing the port is necessary but NOT sufficient — the daemon
+    # must also bind 0.0.0.0 INSIDE the container for the published port to
+    # reach it (a container-internal 127.0.0.1 bind, which is what a
+    # fresh/empty config volume defaults to via cmd/start.go's
+    # defaultStartHTTPAddr, is unreachable from the host side of the port
+    # mapping). Until that default is made container-aware, a fresh volume
+    # needs `boid web set-addr 0.0.0.0:8080` once.
     ports:
       - "127.0.0.1:8442:8442"
+      - "127.0.0.1:8080:8080"
     volumes:
       # DooD: sibling job containers, not nested (§決定4). Engine-agnostic
       # source (docs/plans/volume-only-daemon.md §論点 i, 案 X — Podman
