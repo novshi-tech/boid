@@ -1281,6 +1281,14 @@ func (b *containerBackend) ReapOrphans(ctx context.Context) (backend.ReapReport,
 
 	b.reapOrphanVolumes(ctx, filters)
 	b.reapOrphanNetworks(ctx, filters)
+	// A separate enumeration, on a separate label, contributing nothing to
+	// `report` — see reapOrphanWorkspaceInitContainers' own doc comment
+	// (docs/plans/workspace-home-volume-persistence.md 論点 c §D5). It cannot
+	// share `filters` above: the whole reason a workspace init container does
+	// not carry boid.job_id is that the sweep above would force-remove it
+	// mid-toolchain-install and fold a non-existent job id into the accounting
+	// that gates other tasks' auto-reopen.
+	b.reapOrphanWorkspaceInitContainers(ctx)
 
 	// [Major 6, PR7 codex review]: dockerproxy's sibling child resources
 	// (created by the *client* inside a job's sandbox — docker CLI,

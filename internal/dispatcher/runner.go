@@ -400,7 +400,7 @@ func (r *Runner) Dispatch(ctx context.Context, spec *orchestrator.JobSpec, clean
 	// resolveWorkspaceHome's doc comment (PR4 of
 	// docs/plans/workspace-home-volume-persistence.md) for why that derivation
 	// breaks the moment PR6 turns the home into a named volume.
-	workspaceHomeDir, workspaceSlug, err := r.resolveWorkspaceHome(workspaceID)
+	workspaceHomeDir, workspaceSlug, err := r.resolveWorkspaceHome(ctx, workspaceID)
 	if err != nil {
 		r.failJob(j, err)
 		if cleanup != nil {

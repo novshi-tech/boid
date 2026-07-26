@@ -102,10 +102,16 @@ func embeddedSkillsDir(runtimesDir string) (string, error) {
 // written. The engine does this before the entrypoint runs, so nothing on
 // the sandbox side can repair it.
 //
-// Creating them from the daemon is deliberately a STOPGAP, and the plan doc
-// says where it goes: PR5 introduces a prep container that runs once per
-// workspace home as uid 1000, and the skeleton mkdir moves there (論点 b-2),
-// because from PR6 the home is a volume the daemon cannot write to at all.
+// PR5 landed the prep container 論点 b-2 assigns this work to: its builtin
+// prelude creates the SAME set (workspaceHomeSkeletonDirs, shared with this
+// function so the two cannot drift) inside the home, as the job uid. The
+// daemon-side mkdir here nonetheless stays, and workspaceHomeSkeletonDirs'
+// own doc comment says why: prep runs once per home while the embedded skill
+// set is a property of the boid binary, so a release that adds a skill adds a
+// bind target to a home whose completion marker still matches. PR6 — where
+// the home becomes a volume the daemon cannot write to at all — has to
+// REPLACE this with something volume-capable rather than simply delete it.
+//
 // Expressing the requirement in the mount spec instead is not an option
 // today: sandbox.Mount.NeedsDirs exists but is dead — the userns runner was
 // its only reader and PR-4 of docs/plans/volume-only-daemon.md removed that
@@ -143,10 +149,10 @@ func embeddedSkillsDir(runtimesDir string) (string, error) {
 //     workspace would hold a lock across container startup. That price is not
 //     worth paying for a race whose window is already reachable by simpler
 //     means (1).
-//  3. PR5's prep container does not close it either. Prep runs once per
+//  3. PR5's prep container does not close it either — and now that PR5 has
+//     landed, that is observed rather than predicted. Prep runs once per
 //     workspace home; jobs keep the home rw afterwards, so the same rename is
-//     available the moment prep finishes. Deferring to PR5 would be deferring
-//     to something that never arrives.
+//     available the moment prep finishes.
 //
 // What IS closed is the part that does not heal. A uid 0 directory — under
 // rootless podman, a host subuid mapped away from the daemon's own uid — can
@@ -170,25 +176,58 @@ func (r *Runner) syncEmbeddedSkills(workspaceHomeDir string) (string, error) {
 		return "", fmt.Errorf("materialize embedded skills into %q: %w", sourceDir, err)
 	}
 
-	// Every ancestor of a per-skill bind target, then the targets themselves.
-	// <home>/.claude/skills is prepared explicitly rather than left to the
-	// per-skill walk to create as a side effect, so that it too is covered by
-	// the ownership check — the engine auto-creates the whole missing path, not
-	// just its leaf, so any component of it can be the poisoned one.
-	claudeDir := filepath.Join(workspaceHomeDir, ".claude")
-	if err := prepareBindTarget(claudeDir); err != nil {
-		return "", err
-	}
-	skillsDir := filepath.Join(claudeDir, "skills")
-	if err := prepareBindTarget(skillsDir); err != nil {
-		return "", err
-	}
-	for _, name := range skills.EmbeddedSkillNames() {
-		if err := prepareBindTarget(filepath.Join(skillsDir, name)); err != nil {
+	for _, rel := range workspaceHomeSkeletonDirs() {
+		if err := prepareBindTarget(filepath.Join(workspaceHomeDir, rel)); err != nil {
 			return "", err
 		}
 	}
 	return sourceDir, nil
+}
+
+// workspaceHomeSkeletonDirs lists, relative to a workspace home, every
+// directory that must exist before a job container starts: each per-skill bind
+// target and every ancestor of one.
+//
+// The ancestors are listed explicitly rather than left to `mkdir -p`/the
+// per-skill walk to create as a side effect, because the condition being
+// guarded against applies to them individually — the container engine
+// auto-creates the WHOLE missing path as uid 0, not just its leaf, so any
+// component of it can be the poisoned one and each therefore has to be covered
+// by prepareBindTarget's ownership check.
+//
+// One function, two consumers, and that is the point (PR5 of
+// docs/plans/workspace-home-volume-persistence.md, 論点 b-2): the init
+// container's builtin prelude creates this set inside the home, and
+// syncEmbeddedSkills prepares the same set from the daemon on every dispatch.
+// A drift between them is not cosmetic — a directory the prelude forgot is one
+// the engine creates at uid 0 on the next launch, which neither the uid 1000
+// harness nor the daemon can chown back.
+//
+// Why BOTH still run, in PR5 specifically. 論点 b-2 assigns the mkdir to the
+// prep container and calls the daemon-side copy a stopgap, and PR6 is where the
+// daemon genuinely loses the ability to do it (the home becomes a volume). But
+// dropping the daemon-side copy HERE would open a gap PR5 has no answer for:
+// prep runs once per home (it is gated by the completion marker, whose hash
+// covers init.sh and nothing else), while the skill set is a property of the
+// BOID BINARY. A release that adds an embedded skill therefore adds a bind
+// target to a home whose marker still matches — no prep, no directory, engine
+// creates it as uid 0. So PR5 keeps the per-dispatch mkdir, which is harmless
+// while the home is still an ordinary directory (it is an EEXIST no-op after
+// the prelude has run, since both create these as the same uid — see §D7), and
+// PR6 has to replace it with something volume-capable rather than simply delete
+// it. That, and the ownership VERIFICATION, which 論点 e-2 explicitly keeps on
+// the daemon side: its job is to notice that whatever created these
+// directories has since been replaced, so it cannot live in the thing that
+// creates them.
+func workspaceHomeSkeletonDirs() []string {
+	dirs := []string{
+		".claude",
+		filepath.Join(".claude", "skills"),
+	}
+	for _, name := range skills.EmbeddedSkillNames() {
+		dirs = append(dirs, filepath.Join(".claude", "skills", name))
+	}
+	return dirs
 }
 
 // The two variables below are the ONLY seams in this file, and they exist for

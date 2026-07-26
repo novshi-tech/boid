@@ -84,6 +84,16 @@ func (b *wireFakeBackend) Adopt(_ context.Context, runtimeID string) (backend.Sa
 	}
 	return sess, true
 }
+
+// RunWorkspaceInit satisfies WorkspaceInitExecutor, which
+// resolveWorkspaceHome requires of every backend since PR5. Delegated to the
+// same real-bash stand-in the workspace-home tests use
+// (workspace_init_bash_backend_test.go), so a Dispatch through this fake
+// leaves the home in the state production leaves it in.
+func (b *wireFakeBackend) RunWorkspaceInit(ctx context.Context, req WorkspaceInitRequest) error {
+	return (&bashWorkspaceInitBackend{}).RunWorkspaceInit(ctx, req)
+}
+
 func (b *wireFakeBackend) ReapOrphans(context.Context) (backend.ReapReport, error) {
 	b.reapCalls++
 	return b.reapReport, b.reapErr

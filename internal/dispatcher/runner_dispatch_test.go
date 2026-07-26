@@ -19,7 +19,10 @@ func newDispatchRunner(t *testing.T) (*dispatcher.Runner, *db.DB) {
 	if err := orchestrator.CreateProject(d.Conn, &orchestrator.Project{ID: "proj-1", WorkDir: "/tmp"}); err != nil {
 		t.Fatalf("create project: %v", err)
 	}
-	return &dispatcher.Runner{DB: d.Conn}, d
+	// Backend, even though these cases never reach a launch: since PR5 the
+	// workspace home is prepared by the backend (a throwaway init container),
+	// and that step runs before every one of the failures below.
+	return &dispatcher.Runner{DB: d.Conn, Backend: newStatefulBackend()}, d
 }
 
 // specWithBadHostCmd returns a JobSpec whose HostCommands entry has a

@@ -34,6 +34,13 @@ func (b *fakeReapBackend) Launch(context.Context, sandbox.Spec, backend.LaunchOp
 func (b *fakeReapBackend) Adopt(context.Context, string) (backend.SandboxSession, bool) {
 	return nil, false
 }
+
+// RunWorkspaceInit satisfies dispatcher.WorkspaceInitExecutor — required of
+// every backend since PR5; see runWorkspaceInitStub.
+func (b *fakeReapBackend) RunWorkspaceInit(ctx context.Context, req dispatcher.WorkspaceInitRequest) error {
+	return runWorkspaceInitStub(ctx, req)
+}
+
 func (b *fakeReapBackend) ReapOrphans(context.Context) (backend.ReapReport, error) {
 	return b.report, b.err
 }

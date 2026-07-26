@@ -5,6 +5,7 @@ import (
 	"syscall"
 	"testing"
 
+	"github.com/novshi-tech/boid/internal/dispatcher"
 	"github.com/novshi-tech/boid/internal/orchestrator"
 	"github.com/novshi-tech/boid/internal/sandbox"
 	"github.com/novshi-tech/boid/internal/sandbox/backend"
@@ -27,6 +28,13 @@ func (b *capturingLaunchBackend) Launch(_ context.Context, _ sandbox.Spec, opts 
 
 func (b *capturingLaunchBackend) Adopt(context.Context, string) (backend.SandboxSession, bool) {
 	return nil, false
+}
+
+// RunWorkspaceInit satisfies dispatcher.WorkspaceInitExecutor, which
+// resolveWorkspaceHome requires of every backend since PR5 — see
+// runWorkspaceInitInProcess (runtime_test_helpers_test.go).
+func (b *capturingLaunchBackend) RunWorkspaceInit(ctx context.Context, req dispatcher.WorkspaceInitRequest) error {
+	return runWorkspaceInitInProcess(ctx, req)
 }
 
 func (b *capturingLaunchBackend) ReapOrphans(context.Context) (backend.ReapReport, error) {

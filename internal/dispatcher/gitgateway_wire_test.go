@@ -401,6 +401,16 @@ func (b *gwFakeBackend) Launch(_ context.Context, spec sandbox.Spec, _ backend.L
 func (b *gwFakeBackend) Adopt(_ context.Context, _ string) (backend.SandboxSession, bool) {
 	return nil, false
 }
+
+// RunWorkspaceInit satisfies WorkspaceInitExecutor, which
+// resolveWorkspaceHome requires of every backend since PR5. Delegated to the
+// same real-bash stand-in the workspace-home tests use
+// (workspace_init_bash_backend_test.go), so a Dispatch through this fake
+// leaves the home in the state production leaves it in.
+func (b *gwFakeBackend) RunWorkspaceInit(ctx context.Context, req WorkspaceInitRequest) error {
+	return (&bashWorkspaceInitBackend{}).RunWorkspaceInit(ctx, req)
+}
+
 func (b *gwFakeBackend) ReapOrphans(context.Context) (backend.ReapReport, error) {
 	return backend.ReapReport{}, nil
 }

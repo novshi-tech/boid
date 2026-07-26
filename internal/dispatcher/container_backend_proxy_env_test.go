@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/moby/moby/client"
+
 	"github.com/novshi-tech/boid/internal/gitgateway"
 	"github.com/novshi-tech/boid/internal/orchestrator"
 )
@@ -88,10 +90,7 @@ func TestDispatch_ContainerBackend_PropagatesWorkspaceProxyEnv(t *testing.T) {
 			alloc.calls[0].allowed)
 	}
 
-	if len(api.createCalls) != 1 {
-		t.Fatalf("ContainerCreate calls = %d, want 1", len(api.createCalls))
-	}
-	env := api.createCalls[0].Config.Env
+	env := jobContainerCreate(t, api).Config.Env
 	const wantProxy = "http://boid-egress:9321"
 	var gotHTTPProxy, gotHTTPSProxy string
 	for _, kv := range env {
@@ -160,10 +159,7 @@ func TestDispatch_ContainerBackend_NoProxyExcludesGitGatewayHost(t *testing.T) {
 		t.Fatalf("Dispatch: %v", err)
 	}
 
-	if len(api.createCalls) != 1 {
-		t.Fatalf("ContainerCreate calls = %d, want 1", len(api.createCalls))
-	}
-	env := api.createCalls[0].Config.Env
+	env := jobContainerCreate(t, api).Config.Env
 	var gotNoProxy string
 	for _, kv := range env {
 		if strings.HasPrefix(kv, "NO_PROXY=") {
@@ -174,4 +170,25 @@ func TestDispatch_ContainerBackend_NoProxyExcludesGitGatewayHost(t *testing.T) {
 		t.Errorf("container Env NO_PROXY = %q, want it to include the git gateway host %q (else the sandbox-internal clone gets routed through HTTPS_PROXY and rejected by the egress proxy's domain allowlist)",
 			gotNoProxy, "boid-gateway")
 	}
+}
+
+// jobContainerCreate picks the JOB container out of everything a Dispatch
+// created. Since PR5 a dispatch can also create a workspace-home init
+// container (docs/plans/workspace-home-volume-persistence.md 論点 c), so
+// "the only create" is no longer a safe way to name the one under test —
+// and picking by index would be even worse, since the init comes first.
+func jobContainerCreate(t *testing.T, api *fakeDockerAPI) client.ContainerCreateOptions {
+	t.Helper()
+	api.mu.Lock()
+	defer api.mu.Unlock()
+	var found []client.ContainerCreateOptions
+	for _, c := range api.createCalls {
+		if strings.HasPrefix(c.Name, "boid-job-") {
+			found = append(found, c)
+		}
+	}
+	if len(found) != 1 {
+		t.Fatalf("found %d job container creates among %d creates, want exactly 1", len(found), len(api.createCalls))
+	}
+	return found[0]
 }

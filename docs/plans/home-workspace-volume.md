@@ -78,12 +78,34 @@ Phase 2.5 (workspace DB 一元化・kit 機構退役、
 **boid が保証すること**:
 
 - workspace home ディレクトリの存在 (dispatch 前に ensure)
-- init script の実行タイミング: 初回 dispatch 時、および script 内容が変わった時
-  (完了マーカーに script の hash を含める)
+- init script の実行タイミング: 初回 dispatch 時、script 内容が変わった時
+  (完了マーカーに script の hash を含める)、および **boid 側の実行環境が変わった時**
+  (完了マーカーに `init_generation` を含める。 PR5 で追加 —
+  `workspace-home-volume-persistence.md` 論点b「marker の世代」)。
+  script の内容と、それを実行した環境は独立した軸である
 - 同時 dispatch でも実行は 1 回 (flock による直列化。待つ側は完了を待って続行)
-- 実行環境: ホスト側 (trusted)・`HOME=<workspace home>` を設定した状態で実行。
-  `BOID_WORKSPACE_SLUG` / `BOID_WORKSPACE_HOME` を env で渡す
-- init 失敗時は dispatch を明示エラーで fail (黙って初期化無しで走らせない)
+  → **PR5 で二重化**。 flock はプロセス死で解放されるが init container は生き延びるので、
+  決定的な container 名 (`boid-ws-init-<installID8>-<slug>`) による名前衝突を
+  プロセス跨ぎの相互排除に使う。 既存 container が running なら完了を待つ
+  (`workspace-home-volume-persistence.md` 論点c §D6)
+- 実行環境: **daemon が制御する使い捨て container** (trusted)。
+  `workspace-home-volume-persistence.md` の論点c / PR5 で ホスト側の
+  `/bin/bash <tmpfile>` 直接 exec から移行した。
+  workspace home を `HOME=<job が見るのと同じ container 内 path>` にマウントした
+  container 内で `bash -s` に流し込んで実行する。
+  **trusted 境界は不変** — image を選ぶのも script を組み立てるのも container を
+  起こすのも daemon であり、sandbox 化された job の中で走るわけではない。
+  network は **engine の既定 bridge** (job 用の workspace network は `internal: true` で
+  egress が allowlist proxy 経由に限られ、toolchain installer がほぼ全滅するため)。
+  したがって init container は **無制限 egress を持つ** — これは trusted 境界の一部として
+  明示的に宣言する
+- 渡る env は `HOME` / `BOID_WORKSPACE_SLUG` / `BOID_WORKSPACE_HOME` の **3 つだけ**。
+  PR5 以前は加えて `PATH` / `USER` / `LOGNAME` / `LANG` / `LC_ALL` / `TERM` を
+  **daemon プロセスの値**で渡していたが、container 実行では意味を失うので落とした
+  (`PATH` は image の値が適用される。 詳細は `buildWorkspaceInitEnv` の doc comment)
+- init 失敗時は dispatch を明示エラーで fail (黙って初期化無しで走らせない)。
+  エラーには **どの段階で失敗したか** (prelude / script-setup / init.sh / postlude) と
+  exit code と出力の tail が入る
 
 **script 作者が守ること**:
 
@@ -95,7 +117,12 @@ Phase 2.5 (workspace DB 一元化・kit 機構退役、
 
 - init script: `~/.config/boid/workspaces/<slug>/init.sh`
   (workspace.yaml と同じ config 側。sandbox からは不可視・不可書)
-- script が無い workspace は「初期化不要」として素通し (マーカーだけ打つ)
+- script が無い workspace は「**script 実行**不要」として素通しする。
+  ただし **prep は必ず走る** — PR5 で init container の先頭/末尾に boid が挿入する
+  builtin prelude (bind target の skeleton mkdir) と postlude (nonce 書き込み) は
+  init.sh の有無に関わらず 1 回実行される。 条件分岐させると素通し workspace にだけ
+  nonce を書く主体が無くなり、論点b の突合がそのクラスに適用できなくなる
+  (`workspace-home-volume-persistence.md` 論点b-2)
 - 完了マーカー・lock: `~/.local/share/boid/homes/<slug>.init.json` / `.lock`
   (**home ディレクトリの外**に置く。$HOME 内に置くと sandbox が改竄できてしまう)
   → **置き場は変更済み**。 `workspace-home-volume-persistence.md` の論点b / PR2 で

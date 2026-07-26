@@ -60,6 +60,10 @@ type fakeDockerAPI struct {
 	InfoFunc          func(ctx context.Context, options client.InfoOptions) (client.SystemInfoResult, error)
 
 	nextID int
+	// lastConn is the fakeAttachConn most recently handed out by an
+	// ContainerAttachFunc that calls recordAttachConn — the workspace-init
+	// wiring test reads back what was written to the container's stdin.
+	lastConn *fakeAttachConn
 
 	createCalls         []client.ContainerCreateOptions
 	startIDs            []string
@@ -131,7 +135,16 @@ func (f *fakeDockerAPI) ContainerAttach(ctx context.Context, containerID string,
 		return f.ContainerAttachFunc(ctx, containerID, options)
 	}
 	conn := newFakeAttachConn()
+	f.recordAttachConn(conn)
 	return client.ContainerAttachResult{HijackedResponse: client.NewHijackedResponse(conn, "")}, nil
+}
+
+// recordAttachConn remembers the connection a ContainerAttach handed out, so a
+// test can read back what the implementation wrote to the container's stdin.
+func (f *fakeDockerAPI) recordAttachConn(conn *fakeAttachConn) {
+	f.mu.Lock()
+	f.lastConn = conn
+	f.mu.Unlock()
 }
 
 func (f *fakeDockerAPI) ContainerWait(ctx context.Context, containerID string, options client.ContainerWaitOptions) client.ContainerWaitResult {
