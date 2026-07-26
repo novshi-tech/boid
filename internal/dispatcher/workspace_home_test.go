@@ -234,7 +234,7 @@ func TestWire_DataHomeDir_ReachesMarkerAndLockOnDisk(t *testing.T) {
 		t.Fatalf("Wire dropped DataHomeDir: got %q, want %q", r.DataHomeDir, dataHome)
 	}
 
-	homeDir, err := r.resolveWorkspaceHome("myws")
+	homeDir, _, err := r.resolveWorkspaceHome("myws")
 	if err != nil {
 		t.Fatalf("resolveWorkspaceHome: %v", err)
 	}
@@ -269,7 +269,7 @@ func TestResolveWorkspaceHome_NoScript_PassesThrough(t *testing.T) {
 	dataDir, _ := setupWorkspaceHomeTestDirs(t)
 	r := &Runner{}
 
-	homeDir, err := r.resolveWorkspaceHome("myws")
+	homeDir, _, err := r.resolveWorkspaceHome("myws")
 	if err != nil {
 		t.Fatalf("resolveWorkspaceHome: %v", err)
 	}
@@ -305,7 +305,7 @@ func TestResolveWorkspaceHome_FirstRun_ExecutesScriptWithExpectedEnv(t *testing.
 	writeInitScript(t, configDir, "myws", "#!/bin/bash\nenv > \"$BOID_WORKSPACE_HOME/env-dump\"\n")
 
 	r := &Runner{}
-	homeDir, err := r.resolveWorkspaceHome("myws")
+	homeDir, _, err := r.resolveWorkspaceHome("myws")
 	if err != nil {
 		t.Fatalf("resolveWorkspaceHome: %v", err)
 	}
@@ -349,10 +349,10 @@ func TestResolveWorkspaceHome_UnchangedScript_RunsOnlyOnce(t *testing.T) {
 	writeInitScript(t, configDir, "myws", "#!/bin/bash\necho x >> \"$BOID_WORKSPACE_HOME/counter\"\n")
 
 	r := &Runner{}
-	if _, err := r.resolveWorkspaceHome("myws"); err != nil {
+	if _, _, err := r.resolveWorkspaceHome("myws"); err != nil {
 		t.Fatalf("first call: %v", err)
 	}
-	homeDir, err := r.resolveWorkspaceHome("myws")
+	homeDir, _, err := r.resolveWorkspaceHome("myws")
 	if err != nil {
 		t.Fatalf("second call: %v", err)
 	}
@@ -369,14 +369,14 @@ func TestResolveWorkspaceHome_ScriptContentChanged_ReRuns(t *testing.T) {
 	writeInitScript(t, configDir, "myws", "#!/bin/bash\necho x >> \"$BOID_WORKSPACE_HOME/counter\"\n")
 
 	r := &Runner{}
-	if _, err := r.resolveWorkspaceHome("myws"); err != nil {
+	if _, _, err := r.resolveWorkspaceHome("myws"); err != nil {
 		t.Fatalf("first call: %v", err)
 	}
 
 	// Same observable effect, different content -> different hash.
 	writeInitScript(t, configDir, "myws", "#!/bin/bash\n# v2\necho x >> \"$BOID_WORKSPACE_HOME/counter\"\n")
 
-	homeDir, err := r.resolveWorkspaceHome("myws")
+	homeDir, _, err := r.resolveWorkspaceHome("myws")
 	if err != nil {
 		t.Fatalf("second call: %v", err)
 	}
@@ -405,7 +405,7 @@ func TestResolveWorkspaceHome_ConcurrentCalls_RunExactlyOnce(t *testing.T) {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			home, err := r.resolveWorkspaceHome("myws")
+			home, _, err := r.resolveWorkspaceHome("myws")
 			homes[i] = home
 			errs[i] = err
 		}(i)
@@ -436,7 +436,7 @@ func TestResolveWorkspaceHome_ScriptFails_ReturnsErrorNoMarkerThenRetries(t *tes
 	writeInitScript(t, configDir, "myws", "#!/bin/bash\necho boom >&2\nexit 1\n")
 
 	r := &Runner{}
-	if _, err := r.resolveWorkspaceHome("myws"); err == nil {
+	if _, _, err := r.resolveWorkspaceHome("myws"); err == nil {
 		t.Fatal("expected an error from a failing init script")
 	}
 
@@ -447,13 +447,13 @@ func TestResolveWorkspaceHome_ScriptFails_ReturnsErrorNoMarkerThenRetries(t *tes
 
 	// Still failing -> still an error on retry (no silent "already tried"
 	// caching of the failure).
-	if _, err := r.resolveWorkspaceHome("myws"); err == nil {
+	if _, _, err := r.resolveWorkspaceHome("myws"); err == nil {
 		t.Fatal("expected an error on retry while the script still fails")
 	}
 
 	// Fix the script; the next call must succeed and write the marker.
 	writeInitScript(t, configDir, "myws", "#!/bin/bash\nexit 0\n")
-	if _, err := r.resolveWorkspaceHome("myws"); err != nil {
+	if _, _, err := r.resolveWorkspaceHome("myws"); err != nil {
 		t.Fatalf("expected success after fixing the script: %v", err)
 	}
 	if _, ok, err := readWorkspaceHomeMarker(markerPath); err != nil || !ok {
@@ -467,7 +467,7 @@ func TestResolveWorkspaceHome_EmptyWorkspaceID_UsesDefaultSlug(t *testing.T) {
 	dataDir, _ := setupWorkspaceHomeTestDirs(t)
 	r := &Runner{}
 
-	homeDir, err := r.resolveWorkspaceHome("")
+	homeDir, _, err := r.resolveWorkspaceHome("")
 	if err != nil {
 		t.Fatalf("resolveWorkspaceHome: %v", err)
 	}
@@ -484,7 +484,7 @@ func TestResolveWorkspaceHome_InvalidSlug_ReturnsError(t *testing.T) {
 	r := &Runner{}
 
 	for _, bad := range []string{"../etc", "a b", "Has/Slash", "UPPERCASE", strings.Repeat("x", 65)} {
-		if _, err := r.resolveWorkspaceHome(bad); err == nil {
+		if _, _, err := r.resolveWorkspaceHome(bad); err == nil {
 			t.Errorf("resolveWorkspaceHome(%q) = nil error, want error", bad)
 		}
 	}
@@ -544,7 +544,7 @@ func TestResolveWorkspaceHome_TOCTOU_MarkerRecordsExecutedBytesNotLaterRewrite(t
 	}
 
 	r := &Runner{}
-	homeDir, err := r.resolveWorkspaceHome("myws")
+	homeDir, _, err := r.resolveWorkspaceHome("myws")
 	if err != nil {
 		t.Fatalf("first call: %v", err)
 	}
@@ -570,7 +570,7 @@ func TestResolveWorkspaceHome_TOCTOU_MarkerRecordsExecutedBytesNotLaterRewrite(t
 		t.Fatalf("init.sh on disk after first run = %q, want v2 %q", onDisk, v2)
 	}
 
-	if _, err := r.resolveWorkspaceHome("myws"); err != nil {
+	if _, _, err := r.resolveWorkspaceHome("myws"); err != nil {
 		t.Fatalf("second call: %v", err)
 	}
 	if lines := countLines(t, filepath.Join(homeDir, "counter")); lines != 2 {
@@ -642,7 +642,7 @@ func TestResolveWorkspaceHome_TOCTOU_ExecutesTheSnapshotReadUnderTheLock(t *test
 	}
 	done := make(chan result, 1)
 	go func() {
-		home, err := r.resolveWorkspaceHome("myws")
+		home, _, err := r.resolveWorkspaceHome("myws")
 		done <- result{home, err}
 	}()
 
@@ -742,7 +742,7 @@ func TestResolveWorkspaceHome_TOCTOU_ConcurrentCallsWithMidFlightRewrite(t *test
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			home, err := r.resolveWorkspaceHome("myws")
+			home, _, err := r.resolveWorkspaceHome("myws")
 			homes[i] = home
 			errs[i] = err
 		}(i)
@@ -809,7 +809,7 @@ func TestResolveWorkspaceHome_TOCTOU_TempInitScriptRemovedAfterRun(t *testing.T)
 		"#!/bin/bash\nprintf '%s\\n' \"$0\" > \"$BOID_WORKSPACE_HOME/tmp-script-path\"\n")
 
 	r := &Runner{}
-	homeDir, err := r.resolveWorkspaceHome("myws")
+	homeDir, _, err := r.resolveWorkspaceHome("myws")
 	if err != nil {
 		t.Fatalf("resolveWorkspaceHome: %v", err)
 	}
@@ -873,7 +873,7 @@ func TestResolveWorkspaceHome_HomeWipedWhileMarkerSurvives_ReRunsInit(t *testing
 	writeInitScript(t, configDir, "myws", "#!/bin/bash\necho x >> \"$BOID_WORKSPACE_HOME/counter\"\n")
 	r := splitRootRunner(t)
 
-	homeDir, err := r.resolveWorkspaceHome("myws")
+	homeDir, _, err := r.resolveWorkspaceHome("myws")
 	if err != nil {
 		t.Fatalf("first call: %v", err)
 	}
@@ -890,7 +890,7 @@ func TestResolveWorkspaceHome_HomeWipedWhileMarkerSurvives_ReRunsInit(t *testing
 		t.Fatalf("test setup bug: the marker must have survived the wipe: ok=%v err=%v", ok, err)
 	}
 
-	homeDir2, err := r.resolveWorkspaceHome("myws")
+	homeDir2, _, err := r.resolveWorkspaceHome("myws")
 	if err != nil {
 		t.Fatalf("second call: %v", err)
 	}
@@ -907,7 +907,7 @@ func TestResolveWorkspaceHome_HomeWipedWhileMarkerSurvives_ReRunsInit(t *testing
 
 	// ...and the re-init must be one-shot: a third call sees a home whose
 	// nonce now matches the (rewritten) marker again and skips.
-	if _, err := r.resolveWorkspaceHome("myws"); err != nil {
+	if _, _, err := r.resolveWorkspaceHome("myws"); err != nil {
 		t.Fatalf("third call: %v", err)
 	}
 	if lines := countLines(t, counter); lines != 1 {
@@ -925,7 +925,7 @@ func TestResolveWorkspaceHome_NoScript_HomeWipedWhileMarkerSurvives_ReSeedsNonce
 	setupWorkspaceHomeTestDirs(t)
 	r := splitRootRunner(t)
 
-	homeDir, err := r.resolveWorkspaceHome("myws")
+	homeDir, _, err := r.resolveWorkspaceHome("myws")
 	if err != nil {
 		t.Fatalf("first call: %v", err)
 	}
@@ -941,7 +941,7 @@ func TestResolveWorkspaceHome_NoScript_HomeWipedWhileMarkerSurvives_ReSeedsNonce
 	if err := os.RemoveAll(homeDir); err != nil {
 		t.Fatalf("wipe home dir: %v", err)
 	}
-	if _, err := r.resolveWorkspaceHome("myws"); err != nil {
+	if _, _, err := r.resolveWorkspaceHome("myws"); err != nil {
 		t.Fatalf("second call: %v", err)
 	}
 	second, err := os.ReadFile(noncePath)
@@ -991,7 +991,7 @@ func TestResolveWorkspaceHome_MarkerWithoutHomeID_ReInitializes(t *testing.T) {
 		t.Fatalf("write legacy marker: %v", err)
 	}
 
-	if _, err := r.resolveWorkspaceHome("myws"); err != nil {
+	if _, _, err := r.resolveWorkspaceHome("myws"); err != nil {
 		t.Fatalf("resolveWorkspaceHome: %v", err)
 	}
 	if _, statErr := os.Stat(filepath.Join(homeDir, "counter")); statErr != nil {
@@ -1010,7 +1010,7 @@ func TestResolveWorkspaceHome_NonceTamperedInsideHome_ReInitializes(t *testing.T
 	writeInitScript(t, configDir, "myws", "#!/bin/bash\necho x >> \"$BOID_WORKSPACE_HOME/counter\"\n")
 	r := splitRootRunner(t)
 
-	homeDir, err := r.resolveWorkspaceHome("myws")
+	homeDir, _, err := r.resolveWorkspaceHome("myws")
 	if err != nil {
 		t.Fatalf("first call: %v", err)
 	}
@@ -1022,7 +1022,7 @@ func TestResolveWorkspaceHome_NonceTamperedInsideHome_ReInitializes(t *testing.T
 	if err := os.WriteFile(filepath.Join(homeDir, workspaceHomeNonceFileName), []byte("forged-by-a-job"), 0o600); err != nil {
 		t.Fatalf("tamper with nonce: %v", err)
 	}
-	if _, err := r.resolveWorkspaceHome("myws"); err != nil {
+	if _, _, err := r.resolveWorkspaceHome("myws"); err != nil {
 		t.Fatalf("second call: %v", err)
 	}
 	if lines := countLines(t, counter); lines != 2 {
@@ -1048,7 +1048,7 @@ func TestResolveWorkspaceHome_NonceIsPerHomeAndUnpredictable(t *testing.T) {
 
 	read := func(slug string) (homeDir, nonce string) {
 		t.Helper()
-		homeDir, err := r.resolveWorkspaceHome(slug)
+		homeDir, _, err := r.resolveWorkspaceHome(slug)
 		if err != nil {
 			t.Fatalf("resolveWorkspaceHome(%q): %v", slug, err)
 		}
@@ -1144,7 +1144,7 @@ func resolveWorkspaceHomeWithin(t *testing.T, r *Runner, slug string, d time.Dur
 	}
 	ch := make(chan result, 1)
 	go func() {
-		home, err := r.resolveWorkspaceHome(slug)
+		home, _, err := r.resolveWorkspaceHome(slug)
 		ch <- result{home, err}
 	}()
 	select {
@@ -1283,7 +1283,7 @@ func TestResolveWorkspaceHome_NonceReplacedByFifo_DoesNotWedgeNextDispatch(t *te
 	writeInitScript(t, configDir, "myws", "#!/bin/bash\necho x >> \"$BOID_WORKSPACE_HOME/counter\"\n")
 	r := splitRootRunner(t)
 
-	homeDir, err := r.resolveWorkspaceHome("myws")
+	homeDir, _, err := r.resolveWorkspaceHome("myws")
 	if err != nil {
 		t.Fatalf("first call: %v", err)
 	}
@@ -1338,7 +1338,7 @@ func TestResolveWorkspaceHome_NonceReplacedByDirectory_RecoversInOneReInit(t *te
 	writeInitScript(t, configDir, "myws", "#!/bin/bash\necho x >> \"$BOID_WORKSPACE_HOME/counter\"\n")
 	r := splitRootRunner(t)
 
-	homeDir, err := r.resolveWorkspaceHome("myws")
+	homeDir, _, err := r.resolveWorkspaceHome("myws")
 	if err != nil {
 		t.Fatalf("first call: %v", err)
 	}
@@ -1394,7 +1394,7 @@ func TestResolveWorkspaceHome_NonceReplacedBySymlink_NotFollowed(t *testing.T) {
 	writeInitScript(t, configDir, "myws", "#!/bin/bash\necho x >> \"$BOID_WORKSPACE_HOME/counter\"\n")
 	r := splitRootRunner(t)
 
-	homeDir, err := r.resolveWorkspaceHome("myws")
+	homeDir, _, err := r.resolveWorkspaceHome("myws")
 	if err != nil {
 		t.Fatalf("first call: %v", err)
 	}
@@ -1472,7 +1472,7 @@ func TestResolveWorkspaceHome_LegacyMarkerBesideHomes_NotReadNotDeleted(t *testi
 		t.Fatalf("write legacy lock: %v", err)
 	}
 
-	if _, err := r.resolveWorkspaceHome("myws"); err != nil {
+	if _, _, err := r.resolveWorkspaceHome("myws"); err != nil {
 		t.Fatalf("first call: %v", err)
 	}
 	counter := filepath.Join(homeDir, "counter")
@@ -1484,7 +1484,7 @@ func TestResolveWorkspaceHome_LegacyMarkerBesideHomes_NotReadNotDeleted(t *testi
 	}
 
 	// Steady state: the second call reads the NEW marker and skips.
-	if _, err := r.resolveWorkspaceHome("myws"); err != nil {
+	if _, _, err := r.resolveWorkspaceHome("myws"); err != nil {
 		t.Fatalf("second call: %v", err)
 	}
 	if lines := countLines(t, counter); lines != 1 {
