@@ -3,9 +3,12 @@ package dockerproxy
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"regexp"
 	"strings"
+
+	"github.com/novshi-tech/boid/internal/dockerres"
 )
 
 // MaxBodyBytes caps body reads to prevent DoS / memory exhaustion.
@@ -68,6 +71,27 @@ func CheckRequest(method, path string, body []byte, denyHostPortPublish bool) Ve
 		return allow()
 	}
 
+	// The two volume-destruction shapes isAllowedMutating deliberately
+	// refuses, spelled out here so the client gets a reason it can act on
+	// rather than the generic "unknown mutating endpoint" fail-closed
+	// message (docs/plans/workspace-home-volume-persistence.md 論点 a 経路 4).
+	if method == "DELETE" && matchesPattern(bare, "/volumes/*") {
+		// Reaching here means isAllowedMutating's own name check refused it.
+		_, name := scopeTarget(bare)
+		return deny(fmt.Sprintf("volumes/delete: volume name %q is reserved by boid", name))
+	}
+	if method == "POST" && bare == "/volumes/prune" {
+		// The fifth destruction path, and the only one that cannot be
+		// name-filtered: `docker volume prune` destroys every volume no
+		// container currently references, and the workspace HOME volumes of
+		// every OTHER workspace are exactly in that state during any given
+		// job. The request carries no name to inspect, so the endpoint is
+		// closed outright. This is the only sandbox-visible behavior change
+		// PR1 makes; the other prunes (containers/images/networks/system)
+		// stay allowed because none of them touches volumes.
+		return deny("volumes/prune: pruning volumes is not permitted — it would destroy boid's persistent workspace HOME volumes, which no container in this job references")
+	}
+
 	// Endpoints that require body inspection.
 	if method == "POST" {
 		switch {
@@ -92,6 +116,12 @@ func CheckRequest(method, path string, body []byte, denyHostPortPublish bool) Ve
 
 // isAllowedMutating returns true for mutating endpoints that are explicitly safe
 // (no body inspection needed, transparent pass-through allowed).
+//
+// Two volume endpoints that used to be listed here no longer are
+// (docs/plans/workspace-home-volume-persistence.md 論点 a 経路 4):
+// POST /volumes/prune is gone entirely, and DELETE /volumes/{name} moved out
+// of the pattern list into a name-dependent branch. CheckRequest turns both
+// refusals into an explicit deny reason.
 func isAllowedMutating(method, bare string) bool {
 	switch method {
 	case "POST":
@@ -112,7 +142,6 @@ func isAllowedMutating(method, bare string) bool {
 			"/images/*/push",
 			"/networks/*/connect",
 			"/networks/*/disconnect",
-			"/volumes/prune",
 			"/containers/prune",
 			"/images/prune",
 			"/networks/prune",
@@ -121,11 +150,25 @@ func isAllowedMutating(method, bare string) bool {
 	case "PUT":
 		return false
 	case "DELETE":
+		if matchesPattern(bare, "/volumes/*") {
+			// Volume names are the one resource id in this API a sandboxed
+			// client can choose freely AND that boid also derives
+			// deterministically, so the same name can denote boid's own
+			// persistent volume. Everything in the reserved namespace is
+			// therefore off limits; scopeTarget already does this extraction
+			// for the ledger scope check.
+			_, name := scopeTarget(bare)
+			return !dockerres.IsReservedVolumeName(name)
+		}
+		// Networks are deliberately NOT subject to the reserved-name rule
+		// even though boid's own per-workspace network names share the
+		// "boid-ws-" prefix: boid names those itself, they are recreated on
+		// demand, and the ledger scope check already stops a sandbox from
+		// deleting a network it did not create.
 		return matchesAny(bare,
 			"/containers/*",
 			"/images/*",
 			"/networks/*",
-			"/volumes/*",
 		)
 	}
 	return false
@@ -195,10 +238,61 @@ type hostConfig struct {
 	// CheckRequest's doc comment for why this is not an unconditional deny.
 	PortBindings    map[string]interface{} `json:"PortBindings"`
 	PublishAllPorts bool                   `json:"PublishAllPorts"`
+
+	// VolumesFrom inherits ANOTHER container's entire mount set
+	// (docker run --volumes-from). It is denied outright whenever it is
+	// non-empty — docs/plans/workspace-home-volume-persistence.md 論点 a
+	// 経路 7, PR1 codex review Blocker 2.
+	//
+	// The reserved-name rule that guards Mounts/Binds/volumes-create cannot
+	// be applied here, because the request never names a volume: it names a
+	// CONTAINER, and what that container mounts is not knowable from the
+	// request body. Answering "does this inherit a boid volume?" would mean
+	// the policy issuing its own inspect call against the upstream engine and
+	// then trusting a TOCTOU-prone answer — CheckRequest is a pure function
+	// over (method, path, body) precisely so it is auditable, and it has no
+	// engine handle to do that with. So the check is "is it non-empty", the
+	// only question the body can answer.
+	//
+	// Denying costs a sandboxed client nothing real: it can mount its own
+	// named volumes into as many sibling containers as it likes via Mounts,
+	// which is the modern spelling of the same thing and stays allowed. The
+	// only capability lost is inheriting mounts from a container whose mount
+	// set this policy never got to inspect — including, once PR6 lands and
+	// the job container itself mounts the workspace HOME volume, that very
+	// container.
+	VolumesFrom []string `json:"VolumesFrom"`
 }
 
 type mountSpec struct {
-	Type          string      `json:"Type"`
+	Type string `json:"Type"`
+
+	// Source is the named volume (or host path, for Type=bind) the mount
+	// attaches. checkContainersCreate rejects any Source in boid's reserved
+	// volume namespace, REGARDLESS of Type
+	// (docs/plans/workspace-home-volume-persistence.md 論点 a 経路 6, PR1
+	// codex review Blocker 2). Before this field existed, a mount was only
+	// inspected via VolumeOptions, so a sandboxed client could attach the
+	// real workspace HOME volume to a throwaway container and `rm -rf` its
+	// mountpoint: the volume object survives every containment 経路 4 added
+	// (nothing is created, nothing is deleted) while the credentials and
+	// toolchain inside it are gone.
+	//
+	// Why the check ignores Type rather than firing only on
+	// strings.ToLower(Type)=="volume": the policy would otherwise have to
+	// model the engine's own Type normalization exactly — what an omitted
+	// Type defaults to, how a future or vendor-specific type name is
+	// resolved, whether docker and podman agree — and any divergence becomes
+	// a bypass. This file already treats that class of parser differential as
+	// the threat model to design against (see the
+	// TestParserDifferential_* cases and the case-insensitive field matching
+	// they pin). Checking Source unconditionally makes the rule independent
+	// of that modelling: for Type=bind a reserved Source is already denied by
+	// the blanket bind rule, and for every other type a Source inside boid's
+	// namespace has no legitimate meaning for a sandboxed client, so nothing
+	// legitimate is lost by refusing it.
+	Source string `json:"Source"`
+
 	VolumeOptions *volumeOpts `json:"VolumeOptions"`
 }
 
@@ -256,7 +350,17 @@ func checkContainersCreate(body []byte, denyHostPortPublish bool) Verdict {
 		return deny("HostConfig.Binds: bind mounts are not permitted")
 	}
 
+	if len(hc.VolumesFrom) > 0 {
+		return deny("HostConfig.VolumesFrom: inheriting another container's mounts is not permitted " +
+			"(the request names a container, not a volume, so this proxy cannot verify what would be inherited — " +
+			"it could include boid's persistent workspace HOME volume; mount your own named volumes via HostConfig.Mounts instead)")
+	}
+
 	for _, m := range hc.Mounts {
+		// Type-independent by design — see mountSpec.Source's doc comment.
+		if dockerres.IsReservedVolumeName(m.Source) {
+			return deny(fmt.Sprintf("HostConfig.Mounts: mount source %q is reserved by boid", m.Source))
+		}
 		switch strings.ToLower(m.Type) {
 		case "bind":
 			return deny("HostConfig.Mounts: type=bind mount is not permitted")
@@ -350,7 +454,15 @@ type networksCreateBody struct {
 }
 
 // volumesCreateBody mirrors the Docker API POST /volumes/create body.
+//
+// Name is inspected because VolumeCreate is IDEMPOTENT: for an existing
+// name docker returns the existing volume with 201 rather than an error. A
+// sandboxed client naming boid's own (deterministic, therefore guessable)
+// workspace HOME volume would thus "create" the real one, get it recorded
+// in the job's ledger, and have Reap delete it when the job ends —
+// docs/plans/workspace-home-volume-persistence.md 論点 a 経路 4.
 type volumesCreateBody struct {
+	Name       string            `json:"Name"`
 	DriverOpts map[string]string `json:"DriverOpts"`
 }
 
@@ -384,6 +496,12 @@ func checkVolumesCreate(body []byte) Verdict {
 	var req volumesCreateBody
 	if err := json.Unmarshal(b, &req); err != nil {
 		return deny("invalid JSON body")
+	}
+	// Reserved namespace: see volumesCreateBody.Name's doc comment. An empty
+	// Name is an anonymous volume — docker generates the id, so it can never
+	// collide with boid's.
+	if dockerres.IsReservedVolumeName(req.Name) {
+		return deny(fmt.Sprintf("volumes/create: volume name %q is reserved by boid", req.Name))
 	}
 	// DriverOpts with device= or o=bind is a host bind mount via local driver (system 3).
 	if _, hasDevice := req.DriverOpts["device"]; hasDevice {

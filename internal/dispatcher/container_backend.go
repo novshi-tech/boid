@@ -24,6 +24,7 @@ import (
 	"github.com/moby/moby/client"
 	"golang.org/x/sys/unix"
 
+	"github.com/novshi-tech/boid/internal/dockerres"
 	"github.com/novshi-tech/boid/internal/mtls"
 	"github.com/novshi-tech/boid/internal/reap"
 	"github.com/novshi-tech/boid/internal/sandbox"
@@ -390,16 +391,21 @@ const (
 	// is non-empty (PR6 territory — see its doc comment). ReapOrphans (§決定
 	// 6) filters on the mere presence of boid.job_id ("global filter") since
 	// install_id-scoped filtering needs PR6's install_id generation.
-	labelJobID     = "boid.job_id"
-	labelWorkspace = "boid.workspace"
-	labelInstallID = "boid.install_id"
+	//
+	// The literals themselves live in internal/dockerres, the import-free
+	// leaf package internal/reap and internal/sandbox/dockerproxy can reach
+	// too (docs/plans/workspace-home-volume-persistence.md PR1 §D2). The
+	// aliases below are kept so this package's many existing call sites need
+	// no rewrite; the previous arrangement — each package hand-typing its
+	// own copy of "boid.install_id" with a doc comment warning about drift —
+	// is gone, and with it the drift.
+	labelJobID     = dockerres.LabelJobID
+	labelWorkspace = dockerres.LabelWorkspace
+	labelInstallID = dockerres.LabelInstallID
 
 	// LabelJobID / LabelWorkspace / LabelInstallID are exported aliases of
-	// the label constants above, so PR6's daemon-independent `boid reap`
-	// CLI (internal/reap, cmd/reap.go — docs/plans/phase6-container-backend.md
-	// §決定6) and this package's own label emission read the exact same
-	// string literal rather than risking drift between two independently
-	// hand-typed copies of "boid.install_id".
+	// the label constants above, kept for the external callers that already
+	// reference them.
 	LabelJobID     = labelJobID
 	LabelWorkspace = labelWorkspace
 	LabelInstallID = labelInstallID
@@ -631,51 +637,20 @@ type dockerAPI interface {
 // SetWorkspaceNetwork call for that job's dockerproxy — see runner.go's
 // startDockerProxy caller) both compute independently for the SAME
 // (installID, workspace) pair (PR9, §決定5's "internal network は workspace
-// 単位で分離する"). It has to be a pure function of just those two values —
-// not cached state on either side — because the two call sites (Launch
-// here, and the docker-proxy setup in Dispatch) construct their own
-// pieces of a job's sandbox independently and must still land on the same
-// network without coordinating directly.
+// 単位で分離する").
 //
-// installID scopes the name so two independent boid installations sharing
-// one docker engine (e.g. a stray leftover from another install during
-// local development) never collide on the same network name; "noinst"
-// substitutes when installID is empty (every pre-PR6 test/DI caller) —
-// still deterministic, just not install-scoped. Docker network names must
-// match `[a-zA-Z0-9][a-zA-Z0-9_.-]*`; the "boid-ws-" prefix already
-// satisfies the leading-character rule regardless of what workspace/
-// installID contain, and sanitizeDockerNamePart defensively maps any other
-// character to '-' so an unexpected workspace slug can never produce an
-// invalid docker name.
+// A thin delegate to internal/dockerres.WorkspaceNetworkName, which now owns
+// the naming convention so internal/sandbox/dockerproxy's reserved-namespace
+// policy and internal/reap's skip rules key off the exact same prefix
+// (docs/plans/workspace-home-volume-persistence.md PR1 §D2). Kept as a
+// package-local name because both this file and runner.go call it.
+//
+// The sanitizeDockerNamePart helper that used to live next to it moved to
+// dockerres.SanitizeNamePart wholesale rather than staying behind as a
+// delegate: WorkspaceNetworkName was its only caller, so a delegate would be
+// dead code and .golangci.yml enables the `unused` linter.
 func containerWorkspaceNetworkName(installID, workspace string) string {
-	instPart := "noinst"
-	if installID != "" {
-		instPart = sanitizeDockerNamePart(installID)
-		if len(instPart) > 8 {
-			instPart = instPart[:8]
-		}
-	}
-	return "boid-ws-" + instPart + "-" + sanitizeDockerNamePart(workspace)
-}
-
-// sanitizeDockerNamePart maps every rune outside docker's
-// `[a-zA-Z0-9_.-]` name-body charset to '-', and substitutes a
-// placeholder for an empty result — see containerWorkspaceNetworkName's
-// doc comment.
-func sanitizeDockerNamePart(s string) string {
-	var b strings.Builder
-	for _, r := range s {
-		switch {
-		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '_', r == '.', r == '-':
-			b.WriteRune(r)
-		default:
-			b.WriteRune('-')
-		}
-	}
-	if b.Len() == 0 {
-		return "x"
-	}
-	return b.String()
+	return dockerres.WorkspaceNetworkName(installID, workspace)
 }
 
 // ensureWorkspaceNetwork idempotently creates (or confirms) the isolated
@@ -926,7 +901,7 @@ func (b *containerBackend) Launch(ctx context.Context, spec sandbox.Spec, opts b
 	}
 
 	mounts, namedVolumes := containerMounts(realized)
-	if err := b.ensureNamedVolumes(ctx, namedVolumes, labels); err != nil {
+	if err := b.ensureNamedVolumes(ctx, namedVolumes, opts.Workspace, labels); err != nil {
 		cleanupFiles()
 		return nil, err
 	}
@@ -1239,11 +1214,19 @@ func (b *containerBackend) doAdopt(ctx context.Context, runtimeID string) *conta
 // every boid.job_id-labeled container is a fair reap target, exactly as
 // before this fix; this is the same degrade NewContainerBackend's own
 // InstallID doc comment already documents for the empty-installID case
-// elsewhere (resource labeling degrades the same way). Volumes and networks
-// are reaped by the identical logic — nothing in PR5/PR6 creates
-// job-labeled volumes/networks yet (workspace HOME stays a host bind through
-// Phase 6, §決定 4; workspace networks are PR6), so these two loops are
-// forward-compat scaffolding, not exercised by real traffic yet.
+// elsewhere (resource labeling degrades the same way).
+//
+// Volumes and networks are reaped by the same install-scoped logic, with one
+// exception. The workspace network sweep is unconditional — a per-workspace
+// network is recreated on demand by ensureWorkspaceNetwork, so destroying it
+// costs nothing. The volume sweep is NOT: reapOrphanVolumes now preserves
+// persistent workspace HOME volumes (docs/plans/workspace-home-volume-persistence.md
+// 論点 a 経路 2). The older note here — that the volume/network loops were
+// "forward-compat scaffolding, not exercised by real traffic" because
+// workspace HOME stayed a host bind through Phase 6 (§決定 4) — no longer
+// holds: workspace networks have been real traffic since PR9, and PR6 of the
+// workspace-HOME plan makes the volume loop real too, which is exactly why
+// its exclusion rule has to be in place first.
 func (b *containerBackend) ReapOrphans(ctx context.Context) (backend.ReapReport, error) {
 	filters := client.Filters{}.Add("label", labelJobID)
 
@@ -1294,7 +1277,7 @@ func (b *containerBackend) ReapOrphans(ctx context.Context) (backend.ReapReport,
 	// task's auto-reopen (ReapReport's own job-level contract — see its doc
 	// comment; only the primary-container loop above feeds FailedJobIDs).
 	if b.runtimeDir != "" {
-		if _, rerr := reap.Run(ctx, b.api, b.installID, b.runtimeDir); rerr != nil {
+		if _, rerr := reap.Run(ctx, b.api, b.installID, b.runtimeDir, reap.PreserveWorkspaceHomes); rerr != nil {
 			slog.Warn("container backend: reap.Run ledger-union pass failed", "error", rerr)
 		}
 	}
@@ -1316,6 +1299,29 @@ func (b *containerBackend) reapOwnsLabels(labels map[string]string) bool {
 	return labels[labelInstallID] == b.installID
 }
 
+// reapOrphanVolumes destroys this installation's job-labeled volumes, with
+// one class deliberately excluded: the persistent per-workspace HOME volumes
+// (docs/plans/workspace-home-volume-persistence.md 論点 a 経路 2). Those hold
+// harness authentication and a multi-GB toolchain — state boid cannot
+// regenerate — and this sweep runs on every daemon startup, so failing to
+// exclude them means a restart silently de-authenticates every workspace.
+//
+// The exclusion is checked two independent ways (defense in depth), either
+// of which alone is sufficient:
+//
+//   - the NAME is in the boid-ws-home- namespace. Note this is the NARROW
+//     prefix: the wider reserved "boid-ws-" namespace also covers the
+//     per-workspace network names, and a volume that merely shares that
+//     prefix is still reaped, since networks are regenerable (see
+//     internal/dockerres's package doc).
+//   - the boid.workspace_home label is PRESENT, so a volume created under a
+//     future/legacy naming scheme is still recognized. Presence, not a
+//     non-empty value: ensureNamedVolumes sets this key to opts.Workspace,
+//     which is empty for the DI/test wiring that never supplies a workspace,
+//     and a value check would drop exactly those volumes back out of the
+//     protected set while the doc claimed otherwise (PR1 codex review,
+//     Minor). The fail-safe reading of "boid.workspace_home is set at all" is
+//     "this is a workspace HOME volume".
 func (b *containerBackend) reapOrphanVolumes(ctx context.Context, filters client.Filters) {
 	listRes, err := b.api.VolumeList(ctx, client.VolumeListOptions{Filters: filters})
 	if err != nil {
@@ -1323,6 +1329,12 @@ func (b *containerBackend) reapOrphanVolumes(ctx context.Context, filters client
 		return
 	}
 	for _, v := range listRes.Items {
+		_, hasHomeLabel := v.Labels[dockerres.LabelWorkspaceHome]
+		if dockerres.IsWorkspaceHomeVolumeName(v.Name) || hasHomeLabel {
+			slog.Debug("container backend: preserving workspace HOME volume during orphan sweep",
+				"volume", v.Name, "workspace", v.Labels[dockerres.LabelWorkspaceHome])
+			continue
+		}
 		if !b.reapOwnsLabels(v.Labels) {
 			continue
 		}
@@ -1547,28 +1559,66 @@ func containerMounts(r realization.Realization) (mounts []mount.Mount, namedVolu
 }
 
 // ensureNamedVolumes explicitly creates every named volume Launch's mounts
-// reference, carrying the same job/install/workspace labels the container
-// itself gets. Docker auto-creates a missing named volume the first time a
-// container references it, but that auto-created volume gets NO labels —
-// and ReapOrphans's volume sweep (reapOrphanVolumes) only finds
-// labelJobID-labeled volumes, so an auto-created volume would silently
-// never be reaped (PR5 review Major 6).
+// reference, before ContainerCreate would otherwise auto-create it unlabeled
+// (PR5 review Major 6). Which labels it applies depends on WHICH volume it
+// is, because the two classes have opposite lifecycle requirements
+// (docs/plans/workspace-home-volume-persistence.md 論点 a 経路 3):
+//
+//   - a JOB volume is ephemeral and must be found by the reapers, so it
+//     carries jobLabels (boid.job_id / boid.workspace / boid.install_id).
+//     reapOrphanVolumes enumerates on boid.job_id; an unlabeled volume would
+//     leak forever, which is the gap Major 6 closed.
+//   - a WORKSPACE HOME volume is persistent and must NOT be found by them,
+//     so it carries only boid.workspace_home (+ boid.workspace_home_install_id
+//     for the install scoping boid.install_id would otherwise provide). Every
+//     one of the three job labels is itself an enumeration filter: with
+//     boid.install_id it would be force-removed by reap.Run on every daemon
+//     startup, with boid.job_id by reapOrphanVolumes. "Correctly labeled"
+//     here means "invisible to the sweeps", the exact inverse of the job case.
+//
+// workspace is the slug recorded in the workspace-home label; it is Launch's
+// opts.Workspace, the same value that produced jobLabels[boid.workspace].
+//
+// Each name is validated against docker's volume-name grammar first. The
+// container backend classifies a mount source as a named volume purely by
+// "it does not start with /" (internal/sandbox/realization.classifySource —
+// the convention 論点 e's option (i) deliberately reuses rather than adding a
+// MountType), so a relative path that lands in the mount list by accident
+// would otherwise be handed to the engine as a volume name. Failing closed
+// here surfaces it as a Launch error naming the offending source instead.
 //
 // VolumeCreate is idempotent (Docker returns the existing volume, unchanged,
 // for an already-existing name — it does not error, and it does NOT apply
 // the request's labels to an existing volume, since the API has no
 // volume-label-update endpoint), so this is safe to call on every Launch.
-// An already-existing volume that predates this fix (no boid.job_id label)
-// is left as-is rather than deleted-and-recreated, which would be
-// destructive to whatever it holds; a warning is logged instead so the
-// reap gap is at least visible.
-func (b *containerBackend) ensureNamedVolumes(ctx context.Context, names []string, labels map[string]string) error {
+// An already-existing JOB volume that predates Major 6's fix (no boid.job_id
+// label) is left as-is rather than deleted-and-recreated, which would be
+// destructive to whatever it holds; a warning is logged instead so the reap
+// gap is at least visible. That warning does NOT apply to workspace HOME
+// volumes: for them, having no boid.job_id label is the correct and intended
+// state, so warning about it would be noise that trains operators to ignore
+// the message that matters.
+func (b *containerBackend) ensureNamedVolumes(ctx context.Context, names []string, workspace string, jobLabels map[string]string) error {
 	for _, name := range names {
+		if !dockerres.IsValidVolumeName(name) {
+			return fmt.Errorf("mount source %q is not a valid docker volume name "+
+				"(a relative path reached the named-volume classification; mount sources must be absolute host paths or valid volume names)", name)
+		}
+
+		isWorkspaceHome := dockerres.IsWorkspaceHomeVolumeName(name)
+		labels := jobLabels
+		if isWorkspaceHome {
+			labels = map[string]string{dockerres.LabelWorkspaceHome: workspace}
+			if b.installID != "" {
+				labels[dockerres.LabelWorkspaceHomeInstallID] = b.installID
+			}
+		}
+
 		res, err := b.api.VolumeCreate(ctx, client.VolumeCreateOptions{Name: name, Labels: labels})
 		if err != nil {
 			return fmt.Errorf("create named volume %q: %w", name, err)
 		}
-		if res.Volume.Labels[labelJobID] == "" {
+		if !isWorkspaceHome && res.Volume.Labels[labelJobID] == "" {
 			slog.Warn("container backend: named volume exists without a boid.job_id label; ReapOrphans's volume sweep will not find it",
 				"volume", name)
 		}

@@ -18,6 +18,18 @@
 //     inside the sandbox (docker CLI, TestContainers, ...) creates them, not
 //     boid — so the label query alone would never find them (§決定6: "従来
 //     どおり per-job ledger... 管理").
+//
+// # Workspace HOME volumes are preserved by default
+//
+// Run takes a WorkspaceHomePolicy because "destroy everything this install
+// created" and "do not destroy the workspace's credentials" are genuinely
+// in tension (docs/plans/workspace-home-volume-persistence.md 論点 a asks
+// for this to be declared as a contract rather than left implicit). The
+// declared contract: `boid reap` preserves persistent workspace HOME volumes
+// by default, and `boid reap --include-workspace-homes` destroys them.
+// containerBackend.ReapOrphans's startup pass ALWAYS preserves them — a
+// daemon restart must never cost a workspace its harness authentication,
+// which is the exact regression this policy exists to prevent.
 package reap
 
 import (
@@ -29,17 +41,47 @@ import (
 	"github.com/containerd/errdefs"
 	"github.com/moby/moby/client"
 
+	"github.com/novshi-tech/boid/internal/dockerres"
 	"github.com/novshi-tech/boid/internal/sandbox/dockerproxy"
 )
 
 // LabelInstallID is the docker resource label reap's live query filters on.
-// Duplicated (as a plain string, not an import) from
-// internal/dispatcher.LabelInstallID deliberately: this package must stay
-// importable from cmd (a daemon-independent CLI path — see cmd/reap.go)
-// without pulling in internal/dispatcher's much larger dependency graph
-// (DB, orchestrator, sqlite, ...), which would defeat "works even when the
-// daemon — and everything it needs to build — is unable to start".
-const LabelInstallID = "boid.install_id"
+// An alias of internal/dockerres.LabelInstallID, which internal/dispatcher's
+// own label emission reads too — the previous hand-copied literal (and the
+// doc comment warning about drift between the two copies) is gone now that
+// there is a leaf package both sides can import. internal/dockerres is
+// import-free by construction precisely so this package stays importable
+// from cmd (a daemon-independent CLI path — see cmd/reap.go) without pulling
+// in internal/dispatcher's much larger dependency graph (DB, orchestrator,
+// sqlite, ...), which would defeat "works even when the daemon — and
+// everything it needs to build — is unable to start".
+const LabelInstallID = dockerres.LabelInstallID
+
+// WorkspaceHomePolicy tells Run what to do with the persistent workspace
+// HOME volumes it enumerates (docs/plans/workspace-home-volume-persistence.md
+// 論点 a). Its zero value is the fail-safe one: a caller that forgets to
+// think about this preserves the data rather than destroying it.
+type WorkspaceHomePolicy int
+
+const (
+	// PreserveWorkspaceHomes leaves every volume dockerres classifies as a
+	// workspace HOME (boid-ws-home-*) alone, reporting it under
+	// Report.SkippedVolumes instead. The default, and the only value
+	// containerBackend.ReapOrphans's startup pass ever passes.
+	PreserveWorkspaceHomes WorkspaceHomePolicy = iota
+
+	// IncludeWorkspaceHomes destroys workspace HOME volumes along with
+	// everything else — the explicit `boid reap --include-workspace-homes`
+	// opt-in, for an operator who really is tearing the whole install down
+	// and accepts losing every workspace's harness authentication and
+	// toolchain with it.
+	IncludeWorkspaceHomes
+)
+
+// preserves reports whether p protects volumeName from destruction.
+func (p WorkspaceHomePolicy) preserves(volumeName string) bool {
+	return p == PreserveWorkspaceHomes && dockerres.IsWorkspaceHomeVolumeName(volumeName)
+}
 
 // dockerAPI is the narrow, package-owned subset of the docker Engine API
 // Run needs — same "accept a small interface, not the SDK's big one" shape
@@ -58,18 +100,29 @@ type dockerAPI interface {
 	VolumeRemove(ctx context.Context, volumeID string, options client.VolumeRemoveOptions) (client.VolumeRemoveResult, error)
 }
 
-// Report summarizes what Run destroyed (Destroyed*) or failed to
-// (Errors — one formatted line per failure, "<type> <id>: <error>", so a
-// CLI caller can print it directly without re-deriving context).
+// Report summarizes what Run destroyed (Destroyed*), deliberately left
+// alone (SkippedVolumes), or failed to destroy (Errors — one formatted line
+// per failure, "<type> <id>: <error>", so a CLI caller can print it directly
+// without re-deriving context).
 type Report struct {
 	DestroyedContainers []string
 	DestroyedNetworks   []string
 	DestroyedVolumes    []string
-	Errors              []string
+
+	// SkippedVolumes lists the workspace HOME volumes Run enumerated but did
+	// not destroy under PreserveWorkspaceHomes. Deliberately NOT part of
+	// Empty(): a skip is not a destruction, so a run that only skipped
+	// things is still "already clean" as far as Empty() is concerned.
+	// cmd/reap.go prints these lines before consulting Empty() so the
+	// preservation stays visible even in the "nothing to reap" case.
+	SkippedVolumes []string
+
+	Errors []string
 }
 
 // Empty reports whether Run found (and so, modulo failures, destroyed)
 // nothing at all — the "already clean" case cmd/reap.go prints specially.
+// SkippedVolumes is intentionally excluded; see its own doc comment.
 func (r Report) Empty() bool {
 	return len(r.DestroyedContainers) == 0 && len(r.DestroyedNetworks) == 0 && len(r.DestroyedVolumes) == 0 && len(r.Errors) == 0
 }
@@ -96,7 +149,14 @@ func (r Report) Empty() bool {
 //
 // runtimesDir may be empty (ledger union skipped; the label query still
 // runs) — see ledgerEntries.
-func Run(ctx context.Context, api dockerAPI, installID, runtimesDir string) (Report, error) {
+//
+// homes decides what happens to the persistent workspace HOME volumes among
+// the enumerated set (docs/plans/workspace-home-volume-persistence.md 論点 a
+// 経路 1). The check is by NAME, not by label, because the ledger half of
+// the union contributes bare ids with no labels attached at all — a
+// label-based rule could not see them. Preserved volumes land in
+// Report.SkippedVolumes.
+func Run(ctx context.Context, api dockerAPI, installID, runtimesDir string, homes WorkspaceHomePolicy) (Report, error) {
 	containers, networks, volumes, ledgerSource, err := unionResources(ctx, api, installID, runtimesDir)
 	if err != nil {
 		return Report{}, err
@@ -122,6 +182,21 @@ func Run(ctx context.Context, api dockerAPI, installID, runtimesDir string) (Rep
 		destroyed["network:"+id] = true
 	}
 	for _, id := range volumes {
+		if homes.preserves(id) {
+			// Deliberately NOT recorded in destroyed: this volume still
+			// exists, so claiming it destroyed would make drainLedgers drop
+			// a ledger entry for a live resource. The cost is that a
+			// boid-ws-home-* entry that DID reach a ledger stays there and
+			// is re-reported on every subsequent run. That is bounded, not
+			// permanent growth: dockerproxy's policy now denies a sandboxed
+			// docker client creating a volume in the reserved namespace at
+			// all (docs/plans/workspace-home-volume-persistence.md 論点 a
+			// 経路 4), so no NEW such entry can be recorded; whatever a
+			// pre-PR1 job already wrote is harmless — it is skipped, not
+			// acted on — and disappears with its job's runtime dir at GC.
+			report.SkippedVolumes = append(report.SkippedVolumes, id)
+			continue
+		}
 		if _, err := api.VolumeRemove(ctx, id, client.VolumeRemoveOptions{Force: true}); err != nil && !errdefs.IsNotFound(err) {
 			report.Errors = append(report.Errors, fmt.Sprintf("volume %s: %v", id, err))
 			continue
@@ -208,8 +283,41 @@ func stopAndRemoveContainer(ctx context.Context, api dockerAPI, id string) error
 // label query alone found has no entry here) — Run's drain step
 // (drainLedgers) uses it to know which file to rewrite once an id is
 // confirmed destroyed.
+//
+// # Volumes are enumerated TWICE, once per label namespace
+//
+// The boid.install_id query cannot see a workspace HOME volume, by design:
+// that label IS this query's filter, so ensureNamedVolumes deliberately
+// withholds it and records the install scope under
+// boid.workspace_home_install_id instead
+// (docs/plans/workspace-home-volume-persistence.md 論点 a — the label table
+// in 論点 a's 決定 section, and internal/dockerres.LabelWorkspaceHomeInstallID's
+// own doc comment). A single-query unionResources therefore left BOTH halves
+// of the declared `boid reap` contract broken (PR1 codex review Blocker 1):
+// under PreserveWorkspaceHomes the skip branch was unreachable, so a
+// preserved volume never appeared in Report.SkippedVolumes even though the
+// contract promises every skip is printed; and under IncludeWorkspaceHomes
+// VolumeRemove was never called, making `--include-workspace-homes` a
+// complete no-op.
+//
+// So the second query runs UNCONDITIONALLY, not just under
+// IncludeWorkspaceHomes: enumeration is what feeds the skip report, and a
+// policy that suppresses destruction must still be able to say what it
+// suppressed. Run's homes.preserves check decides the fate of each name after
+// enumeration, exactly as it already does for the ledger-sourced ids.
+//
+// Both queries treat an empty installID the same way the pre-existing one
+// did — the filter term is emitted with an empty value ("<label>=") rather
+// than dropped — so this fix does not change the empty-installID behavior in
+// either direction. The practical consequence is unchanged and symmetric: a
+// HOME volume created while the daemon had no install id carries no
+// boid.workspace_home_install_id at all (ensureNamedVolumes only sets it when
+// b.installID != ""), so an install-scoped reap will not enumerate it — the
+// same degrade the install_id-labeled resources already have, and the
+// fail-safe direction for a volume holding credentials.
 func unionResources(ctx context.Context, api dockerAPI, installID, runtimesDir string) (containers, networks, volumes []string, ledgerSource map[string]string, err error) {
 	filters := client.Filters{}.Add("label", LabelInstallID+"="+installID)
+	homeFilters := client.Filters{}.Add("label", dockerres.LabelWorkspaceHomeInstallID+"="+installID)
 
 	cSet := map[string]struct{}{}
 	nSet := map[string]struct{}{}
@@ -236,6 +344,14 @@ func unionResources(ctx context.Context, api dockerAPI, installID, runtimesDir s
 		return nil, nil, nil, nil, fmt.Errorf("reap: list volumes: %w", err)
 	}
 	for _, v := range vList.Items {
+		vSet[v.Name] = struct{}{}
+	}
+
+	homeList, err := api.VolumeList(ctx, client.VolumeListOptions{Filters: homeFilters})
+	if err != nil {
+		return nil, nil, nil, nil, fmt.Errorf("reap: list workspace home volumes: %w", err)
+	}
+	for _, v := range homeList.Items {
 		vSet[v.Name] = struct{}{}
 	}
 
