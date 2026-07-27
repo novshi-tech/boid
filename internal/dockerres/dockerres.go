@@ -74,6 +74,36 @@ const (
 	// enumerates on.
 	LabelWorkspaceHomeInstallID = "boid.workspace_home_install_id"
 
+	// LabelWorkspaceHomeID carries a per-volume identity token: 32 bytes of
+	// crypto/rand, hex-encoded, minted when the volume is created and never
+	// changed afterwards (PR6 of
+	// docs/plans/workspace-home-volume-persistence.md, 論点 b).
+	//
+	// It is what lets the daemon tell "the home my completion marker
+	// describes" from "a different home that happens to have the same name".
+	// The name alone cannot: it is a pure function of (install id, slug), so
+	// a volume deleted and re-created comes back under exactly the same name,
+	// empty, and a marker left over from the previous incarnation would
+	// short-circuit init over it.
+	//
+	// The mechanism is one VolumeCreate, which is why this is a LABEL rather
+	// than a file inside the volume. VolumeCreate is idempotent AND returns
+	// the EXISTING volume's own labels for a name that already exists
+	// (measured against podman 4.9.3, 2026-07-27: three creates of one name
+	// with different label sets all returned 201 carrying the FIRST call's
+	// labels). So "make sure the volume exists" and "read its identity" are
+	// the same single call, and the fast path of a settled workspace never has
+	// to start a container.
+	//
+	// What that costs is stated rather than implied: this detects the volume
+	// being replaced, not its CONTENTS being replaced underneath a surviving
+	// volume. A file inside the volume would cover the latter, but nothing on
+	// the daemon side can read one — that is the whole premise of the
+	// volume-only pivot — so such a file could only ever be written, never
+	// checked. See internal/dispatcher/workspace_home.go's
+	// workspaceHomeMarker.HomeID for the full account of what moved and why.
+	LabelWorkspaceHomeID = "boid.workspace_home_id"
+
 	// LabelWorkspaceInit carries the workspace slug of a throwaway workspace
 	// HOME init container (docs/plans/workspace-home-volume-persistence.md
 	// 論点 c, PR5). Its own key for the same reason LabelWorkspaceHome has
@@ -189,12 +219,20 @@ func WorkspaceNetworkName(installID, workspace string) string {
 // WorkspaceHomeVolumeName returns the deterministic name of a workspace's
 // persistent HOME volume, following WorkspaceNetworkName's convention.
 //
-// Nothing calls this yet: the volume is created and mounted by PR6 of
-// docs/plans/workspace-home-volume-persistence.md. It lives here in PR1
-// anyway so the name and the WorkspaceHomeVolumePrefix that PR1's
-// containment rules key off can never drift apart — a generator emitting a
-// name the skip rules do not recognize is exactly the failure this whole
-// package exists to prevent (see the package doc).
+// As of PR6 of docs/plans/workspace-home-volume-persistence.md this IS the
+// workspace home: dispatcher.resolveWorkspaceHome returns this name, the job
+// container and the init container both mount it at the harness's $HOME, and
+// the containment rules PR1 built around WorkspaceHomeVolumePrefix are what
+// keep the reapers and a sandboxed docker client away from it. Living in the
+// same file as that prefix is what makes "the generator emits a name the skip
+// rules recognize" true by construction rather than by review (see the
+// package doc).
+//
+// Determinism is load-bearing in a second way here: it is also what makes the
+// name recomputable from (install id, slug) alone, so nothing has to persist
+// the mapping. The volume's IDENTITY — which incarnation of that name a
+// completion marker describes — is a separate matter and lives in
+// LabelWorkspaceHomeID, precisely because the name cannot express it.
 func WorkspaceHomeVolumeName(installID, workspace string) string {
 	return WorkspaceHomeVolumePrefix + installIDPart(installID) + "-" + SanitizeNamePart(workspace)
 }

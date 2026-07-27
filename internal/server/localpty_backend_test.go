@@ -102,8 +102,13 @@ func (b *localPTYBackend) Adopt(_ context.Context, runtimeID string) (backend.Sa
 	return sess, ok
 }
 
-// RunWorkspaceInit satisfies dispatcher.WorkspaceInitExecutor — required of
-// every backend since PR5; see runWorkspaceInitStub.
+// EnsureWorkspaceHomeVolume and RunWorkspaceInit satisfy
+// dispatcher.WorkspaceInitExecutor — required of every backend since PR5/PR6;
+// see workspace_init_stub_test.go.
+func (b *localPTYBackend) EnsureWorkspaceHomeVolume(_ context.Context, req dispatcher.WorkspaceHomeVolumeRequest) (string, error) {
+	return ensureWorkspaceHomeVolumeStub(req)
+}
+
 func (b *localPTYBackend) RunWorkspaceInit(ctx context.Context, req dispatcher.WorkspaceInitRequest) error {
 	return runWorkspaceInitStub(ctx, req)
 }

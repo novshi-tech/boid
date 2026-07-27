@@ -77,7 +77,13 @@ Phase 2.5 (workspace DB 一元化・kit 機構退役、
 
 **boid が保証すること**:
 
-- workspace home ディレクトリの存在 (dispatch 前に ensure)
+- workspace home の存在 (dispatch 前に ensure)。
+  **PR6 (`workspace-home-volume-persistence.md` 論点a/e) で実体が
+  ディレクトリから per-workspace の docker named volume
+  (`boid-ws-home-<installID8>-<slug>`) に変わった**。 job container と init container の
+  両方がこの volume を `HOME` にマウントする。 tmpfs 由来の runtimes root から
+  離れたので、 **ホスト再起動で認証情報と toolchain が消えなくなった** —
+  これが本計画の発端の退行の修復そのもの
 - init script の実行タイミング: 初回 dispatch 時、script 内容が変わった時
   (完了マーカーに script の hash を含める)、および **boid 側の実行環境が変わった時**
   (完了マーカーに `init_generation` を含める。 PR5 で追加 —
@@ -105,7 +111,8 @@ Phase 2.5 (workspace DB 一元化・kit 機構退役、
   (`PATH` は image の値が適用される。 詳細は `buildWorkspaceInitEnv` の doc comment)
 - init 失敗時は dispatch を明示エラーで fail (黙って初期化無しで走らせない)。
   エラーには **どの段階で失敗したか** (prelude / script-setup / init.sh / postlude) と
-  exit code と出力の tail が入る
+  exit code と出力の tail が入る。 **PR6 で postlude は廃止**したので段階は
+  prelude / script-setup / init.sh の 3 つ (下記「置き場」を参照)
 
 **script 作者が守ること**:
 
@@ -118,11 +125,13 @@ Phase 2.5 (workspace DB 一元化・kit 機構退役、
 - init script: `~/.config/boid/workspaces/<slug>/init.sh`
   (workspace.yaml と同じ config 側。sandbox からは不可視・不可書)
 - script が無い workspace は「**script 実行**不要」として素通しする。
-  ただし **prep は必ず走る** — PR5 で init container の先頭/末尾に boid が挿入する
-  builtin prelude (bind target の skeleton mkdir) と postlude (nonce 書き込み) は
-  init.sh の有無に関わらず 1 回実行される。 条件分岐させると素通し workspace にだけ
-  nonce を書く主体が無くなり、論点b の突合がそのクラスに適用できなくなる
-  (`workspace-home-volume-persistence.md` 論点b-2)
+  ただし **prep は必ず走る** — PR5 で init container の先頭に boid が挿入する
+  builtin prelude (bind target の skeleton mkdir) は init.sh の有無に関わらず
+  1 回実行される。 条件分岐させると素通し workspace の `~/.claude` を作る主体が
+  無くなり、 最初の job launch で container engine が uid 0 で自動生成してしまう
+  (`workspace-home-volume-persistence.md` 論点b-2)。
+  **PR6 で postlude (nonce 書き込み) は廃止**した — home の identity は volume の
+  label に移り、 home 内のファイルは誰も読まなくなったため (下記)
 - 完了マーカー・lock: `~/.local/share/boid/homes/<slug>.init.json` / `.lock`
   (**home ディレクトリの外**に置く。$HOME 内に置くと sandbox が改竄できてしまう)
   → **置き場は変更済み**。 `workspace-home-volume-persistence.md` の論点b / PR2 で
@@ -132,18 +141,32 @@ Phase 2.5 (workspace DB 一元化・kit 機構退役、
   PR6 で home が volume 化しても daemon が普通の file I/O + flock を保てること)。
   なお PR2 は**マーカーが実体より長生きするようになった**副作用への対策として、
   home 内に nonce (`.boid-workspace-home-id`) を書いてマーカーと突合する仕組みを併せて入れた。
-  「script が無い workspace はマーカーだけ打つ」場合も nonce は書かれる
+  **PR6 でこの nonce は撤去**し、 identity は home volume の
+  `boid.workspace_home_id` label に移した。 volume の中身は daemon から読めない —
+  読むには container を起こすしかなく、 それを毎 dispatch やると marker が存在する
+  理由 (fast path) が消える。 突合は `VolumeCreate` 1 回で済む
+  (既存 volume に対しては**その volume の label をそのまま返す**。 podman 4.9.3 実測)。
+  検出できるのは **volume の削除・再作成**で、 volume が残ったまま中身だけ
+  入れ替わったケースは検出できない (詳細は
+  `workspace-home-volume-persistence.md` 論点b)
 
 ---
 
 ## レイアウト
 
 ```
+docker volume boid-ws-home-<installID8>-<slug>   # workspace home 実体 (PR6)
+                                                 #   labels: boid.workspace_home=<slug>
+                                                 #           boid.workspace_home_install_id=<id>
+                                                 #           boid.workspace_home_id=<random>
+<dataHome>/                                      # daemon 自身の永続領域 (= boid.db の dir)
+  homes-meta/<slug>.init.json  # 完了マーカー (PR2 で移設)
+  homes-meta/<slug>.lock       # init 直列化用 flock (同上)
+
 ~/.local/share/boid/
-  homes/<slug>/            # workspace home 実体 (sandbox の $HOME に rw bind)
-  homes/<slug>.init.json   # 完了マーカー → homes-meta/ へ移設済み (下記注記)
-  homes/<slug>.lock        # init 直列化用 flock → 同上
-  skills/<name>/           # embedded skills の正本 (既存)
+  homes/<slug>/            # PR6 以前の workspace home。 読まれも消されもしない
+  homes/<slug>.init.json   # PR2 以前の完了マーカー。 同上
+  homes/<slug>.lock        # PR2 以前の flock。 同上
   runtimes/ worktrees/ kits/ ...  # 既存
 ```
 
@@ -156,12 +179,24 @@ Phase 2.5 (workspace DB 一元化・kit 機構退役、
 > **2 つの root の寿命が違う**ため、 同 PR で `homes/<slug>/.boid-workspace-home-id` (nonce) を
 > 追加した。 marker の `home_id` と一致しない限り初期化は skip されない
 > (= ホスト再起動で `homes/` だけ消えても、 残った marker を根拠に空の HOME で job が走ることはない)。
+>
+> **注記 (2026-07-27, PR6)**: home 実体が named volume になり、 nonce は volume の
+> `boid.workspace_home_id` label に移った (home 内のファイルは撤去)。 marker には
+> `skeleton_dirs` (bind target の集合) も加わり、 embedded skill を増やしたリリースで
+> prep が追随するようになった。 `init_generation` は **2**。
+> `homes/` 配下の旧データは PR6 では削除しない — PR8 の移行 CLI が読む必要があるため。
 
 - slug 検証は `ValidWorkspaceSlug` (`internal/orchestrator/workspace_slug.go:15`) を流用
 - `WorkspaceID == ""` (workspace 未割当 project) は `default` に正規化して
   default workspace の home を使う (`runner.go:367-376` が "" を返すケース)
-- `homes/` は runtimes/ と違い **GC 対象外** (workspace 永続)。
-  掃除は workspace remove 連動のみ
+- workspace home は runtimes/ と違い **GC 対象外** (workspace 永続)。
+  掃除は workspace remove 連動のみ。
+  **PR6 → PR7 の中間状態**: PR6 は home を volume 化したが
+  `internal/api/workspace_homes.go` は host path 前提のままなので、
+  `boid workspace remove` の home 削除は silent no-op、 サイズ表示は常に空、
+  orphan 検出も効かない。 PR7 で volume API へ rewiring するまでの間は
+  `docker volume rm boid-ws-home-<installID8>-<slug>` で手動対応する
+  (`workspace-home-volume-persistence.md` 論点a-2)
 
 ---
 

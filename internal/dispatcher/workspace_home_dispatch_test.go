@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/novshi-tech/boid/internal/dockerres"
 	"github.com/novshi-tech/boid/internal/orchestrator"
 )
 
@@ -85,7 +86,7 @@ func TestDispatch_WorkspaceHomeInitFails_MarksJobFailedAndCallsCleanup(t *testin
 // reaching BuildSandboxSpec, and that a successful init lets dispatch proceed
 // normally to a running job.
 func TestDispatch_WorkspaceHomeInitSucceeds_ThreadsCorrectSlugThroughDispatch(t *testing.T) {
-	dataDir, configDir := setupWorkspaceHomeTestDirs(t)
+	_, configDir := setupWorkspaceHomeTestDirs(t)
 	writeInitScript(t, configDir, "myws", "#!/bin/bash\ntouch \"$BOID_WORKSPACE_HOME/sentinel\"\n")
 
 	d := newGatewayTestDB(t)
@@ -116,7 +117,10 @@ func TestDispatch_WorkspaceHomeInitSucceeds_ThreadsCorrectSlugThroughDispatch(t 
 		t.Fatal("expected a non-empty job ID from a successful Dispatch")
 	}
 
-	sentinel := filepath.Join(dataDir, "boid", "homes", "myws", "sentinel")
+	// The home is the per-workspace named volume as of PR6; the fake backend
+	// models its contents as a directory.
+	home := r.Backend.(*gwFakeBackend).workspaceHomeDir(dockerres.WorkspaceHomeVolumeName(r.InstallID, "myws"))
+	sentinel := filepath.Join(home, "sentinel")
 	if _, err := os.Stat(sentinel); err != nil {
 		t.Errorf("init.sh sentinel not found at %s (Dispatch did not run resolveWorkspaceHome for the project's workspace slug %q): %v",
 			sentinel, "myws", err)

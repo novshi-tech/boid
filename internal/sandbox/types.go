@@ -53,7 +53,22 @@ type BindMount struct {
 // Types: bind, rbind, tmpfs. Flags cover read-only remount, file vs dir
 // handling, slave propagation, guards, and required sub-directory creation.
 type Mount struct {
-	Source     string // host path (empty for tmpfs)
+	// Source is what gets mounted, and its SPELLING selects between two
+	// kinds. An absolute path is a host path; anything else is taken to be a
+	// docker NAMED VOLUME name — that is the whole of
+	// internal/sandbox/realization.classifySource's rule, and PR6 of
+	// docs/plans/workspace-home-volume-persistence.md (論点 e option (i))
+	// deliberately reuses it rather than adding a MountType, so the workspace
+	// HOME mount is an ordinary MountBind whose Source is
+	// dockerres.WorkspaceHomeVolumeName(...). Empty for tmpfs.
+	//
+	// The consequence worth stating: a relative path that reaches this field
+	// by accident is not a broken path, it is a volume name. The container
+	// backend fails Launch closed on one that does not match docker's volume
+	// grammar (dockerres.IsValidVolumeName), but a *plausible-looking* one
+	// would be created as a junk volume, so callers must never construct this
+	// value by joining onto something that might not be absolute.
+	Source     string
 	Target     string // absolute path inside sandbox
 	Type       MountType
 	ReadOnly   bool

@@ -179,7 +179,7 @@ func TestEnsureNamedVolumes_WorkspaceHomeGetsOwnLabelsOnly(t *testing.T) {
 			{Source: homeVol, Target: "/home/boid", Type: sandbox.MountBind},
 		},
 	}
-	mustLaunch(t, be, spec, backend.LaunchOptions{JobID: "job-home-vol", Workspace: "myworkspace"})
+	mustLaunch(t, be, spec, backend.LaunchOptions{JobID: "job-home-vol", Workspace: "myworkspace", WorkspaceSlug: "myworkspace"})
 
 	if len(api.volumeCreateCalls) != 1 {
 		t.Fatalf("VolumeCreate calls = %d, want 1", len(api.volumeCreateCalls))
@@ -219,7 +219,7 @@ func TestEnsureNamedVolumes_JobVolumeKeepsJobLabelsAlongsideHomeVolume(t *testin
 			{Source: "job-cache-vol", Target: "/mnt/cache", Type: sandbox.MountBind},
 		},
 	}
-	mustLaunch(t, be, spec, backend.LaunchOptions{JobID: "job-mixed", Workspace: "myworkspace"})
+	mustLaunch(t, be, spec, backend.LaunchOptions{JobID: "job-mixed", Workspace: "myworkspace", WorkspaceSlug: "myworkspace"})
 
 	byName := map[string]map[string]string{}
 	for _, c := range api.volumeCreateCalls {

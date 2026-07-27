@@ -35,8 +35,13 @@ func (b *fakeReapBackend) Adopt(context.Context, string) (backend.SandboxSession
 	return nil, false
 }
 
-// RunWorkspaceInit satisfies dispatcher.WorkspaceInitExecutor — required of
-// every backend since PR5; see runWorkspaceInitStub.
+// EnsureWorkspaceHomeVolume and RunWorkspaceInit satisfy
+// dispatcher.WorkspaceInitExecutor — required of every backend since PR5/PR6;
+// see workspace_init_stub_test.go.
+func (b *fakeReapBackend) EnsureWorkspaceHomeVolume(_ context.Context, req dispatcher.WorkspaceHomeVolumeRequest) (string, error) {
+	return ensureWorkspaceHomeVolumeStub(req)
+}
+
 func (b *fakeReapBackend) RunWorkspaceInit(ctx context.Context, req dispatcher.WorkspaceInitRequest) error {
 	return runWorkspaceInitStub(ctx, req)
 }

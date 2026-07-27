@@ -2,14 +2,18 @@
 // separates "how a sandboxed agent process is launched and attached to"
 // from the dispatcher's job orchestration.
 //
-// Phase 6 (docs/plans/phase6-container-backend.md) introduces this
-// interface so a second backend (container/docker, PR5) can be added
-// later without touching the attach/resize/signal call sites that already
-// exist for the current userns backend. PR1 (§PR1 / §決定 1 of the plan
-// doc) only extracts the existing userns implementation behind this
-// interface — internal/dispatcher's usernsBackend/usernsSession — and
-// rewires the attach/resize/signal seams to go through it. Behavior is
-// unchanged; this is an inert refactor.
+// Phase 6 (docs/plans/phase6-container-backend.md) introduced it as an inert
+// refactor: §PR1 extracted the then-only implementation, the userns backend
+// (internal/dispatcher's usernsBackend/usernsSession), behind this interface so
+// that a container backend could be added without touching the
+// attach/resize/signal call sites.
+//
+// Both halves of that history are over. The container backend landed in §PR5,
+// and PR-4 of docs/plans/volume-only-daemon.md (§論点e) then removed the userns
+// backend outright, so internal/dispatcher's containerBackend is the ONLY
+// implementation — the seam now earns its keep by keeping the ingress call
+// sites (WS attach, the SSE follow endpoint, the resize route, `boid agent
+// stop`) independent of docker rather than by hosting two backends.
 package backend
 
 import (
@@ -43,8 +47,9 @@ type RuntimeExit struct {
 // LaunchOptions carries the per-job parameters a backend needs to start a
 // sandbox session. It mirrors dispatcher.RuntimeStartSpec's fields minus
 // Command: a backend decides its own entrypoint/command internally
-// (usernsBackend builds `boid runner-outer --spec ... --state ...`; a
-// future containerBackend will build a docker create/start call instead).
+// (containerBackend builds a docker create/start call whose image entrypoint is
+// `boid runner-container`; the retired userns backend built `boid runner-outer
+// --spec ... --state ...`).
 type LaunchOptions struct {
 	JobID     string
 	TaskID    string
@@ -62,6 +67,53 @@ type LaunchOptions struct {
 	// consumers need to be able to trust is always present (PR5 review
 	// Minor finding).
 	Workspace string
+
+	// WorkspaceSlug is the NORMALIZED workspace slug — what
+	// dispatcher.resolveWorkspaceHome turned Workspace into, which for a
+	// project with no explicit workspace assignment is the default slug rather
+	// than the empty string Workspace carries.
+	//
+	// It is a second field rather than a normalization of the first because the
+	// two answer different questions and PR6 of
+	// docs/plans/workspace-home-volume-persistence.md (論点 D5) needed only one
+	// of them changed. Workspace decides the boid.workspace label and whether
+	// the job gets a per-workspace isolated network at all (empty means "no
+	// workspace network"), so normalizing it would silently move every
+	// unassigned project onto a `default` workspace network — a real behaviour
+	// change to network isolation, unrelated to workspace homes.
+	// WorkspaceSlug identifies the workspace whose persistent HOME volume this
+	// job mounts, and that volume's NAME is already built from the normalized
+	// slug; containerBackend stamps this value onto the volume's
+	// boid.workspace_home label so name and label agree.
+	//
+	// Empty is tolerated the same way Workspace's empty is: the label is set to
+	// it explicitly rather than omitted. Callers that resolve a workspace home
+	// always have the value — it is resolveWorkspaceHome's second return.
+	WorkspaceSlug string
+
+	// WorkspaceHomeID is the identity dispatcher.resolveWorkspaceHome
+	// OBSERVED on this workspace's HOME volume during this dispatch — the
+	// value of its dockerres.LabelWorkspaceHomeID label, and the value the
+	// completion marker that let init be skipped was compared against.
+	//
+	// It is threaded down here so the backend can check, at the moment it is
+	// about to hand the volume to a container, that it is still the same
+	// volume. Resolving and mounting are two engine calls apart, and in
+	// between the volume can be removed — by an operator, by a reap misfire,
+	// by a half-completed workspace remove — after which the mount silently
+	// gets a BRAND NEW, empty, never-initialized home (the engine creates a
+	// missing volume implicitly at container create, unlabelled). The
+	// resolver's own check cannot see that far forward; only the caller of
+	// VolumeCreate can, by comparing what it got back against this value.
+	//
+	// Empty means "no identity was resolved for this launch", which production
+	// never produces (Runner.Dispatch resolves the home before it builds the
+	// spec that mounts it) but DI/test wiring that calls Launch directly does.
+	// The backend then falls back to its pre-PR6 behaviour of minting an
+	// identity for a volume it has to create; see
+	// containerBackend.ensureNamedVolumes for why that is not a silent
+	// weakening of the check.
+	WorkspaceHomeID string
 
 	// Interactive and TTY mirror dispatcher.RuntimeStartSpec's fields of
 	// the same name — see its doc comments for the PTY-vs-pipe distinction
@@ -87,14 +139,15 @@ type LaunchOptions struct {
 	// capabilities.docker. containerBackend uses this to decide whether to
 	// issue a per-job dockerproxy client cert and deliver it via
 	// DOCKER_HOST/DOCKER_CERT_PATH/DOCKER_TLS_VERIFY env (see
-	// ContainerBackendOptions.DockerTLSCA's doc comment) — the userns
-	// backend's equivalent decision (Runner.launchSandbox,
-	// spec.Visibility.DockerEnabled) already exists and is unaffected by
-	// this field. Like Workspace above, production wiring of this field
-	// into Runner.launchSandbox's LaunchOptions construction is left for
-	// the config-cutover PR (PR7) that actually selects containerBackend —
-	// containerBackend's own handling of it is exercised directly against
-	// this struct in tests today.
+	// ContainerBackendOptions.DockerTLSCA's doc comment).
+	//
+	// Runner.launchSandbox fills it from the *orchestrator.JobSpec on every
+	// dispatch. It did not always: through Phase 6 PR6 this field (and
+	// Workspace) were left at their zero value on every real Dispatch, which
+	// silently disabled per-job docker-capability delivery and workspace
+	// network isolation, and nothing noticed because the userns backend of the
+	// day read neither. PR9 closed that gap; it is named here because "the
+	// struct has the field" and "the caller fills it in" are separate facts.
 	DockerEnabled bool
 }
 
@@ -110,10 +163,9 @@ type ReapReport struct {
 }
 
 // SandboxBackend launches and re-attaches to sandboxed agent sessions. The
-// current (and, until Phase 6 PR5, only) implementation is the userns
-// backend (internal/dispatcher's usernsBackend), which wraps
-// SandboxPreparer + `boid runner-outer` + JobRuntime — see
-// docs/plans/phase6-container-backend.md §PR1.
+// only implementation is internal/dispatcher's containerBackend, which creates
+// one throwaway docker container per job; the userns backend this interface was
+// extracted from was removed in PR-4 of docs/plans/volume-only-daemon.md.
 type SandboxBackend interface {
 	// Launch prepares and starts a new sandbox session for spec.
 	Launch(ctx context.Context, spec sandbox.Spec, opts LaunchOptions) (SandboxSession, error)
@@ -125,13 +177,13 @@ type SandboxBackend interface {
 	// notion of that session).
 	Adopt(ctx context.Context, runtimeID string) (SandboxSession, bool)
 	// ReapOrphans reconciles sandbox resources left behind by a daemon
-	// restart. usernsBackend's ReapOrphans is a permanent no-op stub
-	// (returns a zero ReapReport, nil error — live re-attach isn't a
-	// userns concept); containerBackend's real (label-based) implementation
-	// landed in PR5/PR6. PR7 is what actually CALLS this on every daemon
-	// startup, between MarkStaleJobsFailed/task-abort and the
-	// daemon_shutdown auto-reopen sweep (internal/server/wire.go's
-	// reapOrphansBeforeReopen via dispatcher.Runner.ReapOrphans) — see
+	// restart: containerBackend's label-based implementation removes orphaned
+	// containers, networks and job volumes (leaving persistent workspace HOME
+	// volumes alone — docs/plans/workspace-home-volume-persistence.md 論点 a).
+	// It is called on every daemon startup, between MarkStaleJobsFailed /
+	// task-abort and the daemon_shutdown auto-reopen sweep
+	// (internal/server/wire.go's reapOrphansBeforeReopen via
+	// dispatcher.Runner.ReapOrphans) — see
 	// docs/plans/phase6-container-backend.md §決定 6.
 	ReapOrphans(ctx context.Context) (ReapReport, error)
 }

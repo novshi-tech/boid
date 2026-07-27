@@ -38,7 +38,7 @@ func TestWire_WorkspaceInit_ReachesTheContainerBackendAsAContainerRun(t *testing
 	r.Backend = NewContainerBackend(api, ContainerBackendOptions{InstallID: testWorkspaceInitInstallID})
 	r.InstallID = testWorkspaceInitInstallID
 
-	homeDir, slug, err := r.resolveWorkspaceHome(context.Background(), "myws")
+	homeDir, slug, _, err := r.resolveWorkspaceHome(context.Background(), "myws")
 	if err != nil {
 		t.Fatalf("resolveWorkspaceHome: %v", err)
 	}
@@ -112,7 +112,7 @@ func TestResolveWorkspaceHome_NoBackendCapability_FailsLoud(t *testing.T) {
 	setupWorkspaceHomeTestDirs(t)
 	r := &Runner{}
 
-	_, _, err := r.resolveWorkspaceHome(context.Background(), "myws")
+	_, _, _, err := r.resolveWorkspaceHome(context.Background(), "myws")
 	if err == nil {
 		t.Fatal("resolveWorkspaceHome succeeded with a backend that cannot prepare a workspace home")
 	}

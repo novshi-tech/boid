@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -63,9 +64,14 @@ func (b *statefulBackend) Adopt(_ context.Context, runtimeID string) (backend.Sa
 	return sess, ok
 }
 
-// RunWorkspaceInit satisfies dispatcher.WorkspaceInitExecutor, which
-// resolveWorkspaceHome requires of every backend since PR5 — see
-// runWorkspaceInitInProcess (runtime_test_helpers_test.go).
+// EnsureWorkspaceHomeVolume and RunWorkspaceInit satisfy
+// dispatcher.WorkspaceInitExecutor, which resolveWorkspaceHome requires of
+// every backend since PR5/PR6 — see runWorkspaceInitInProcess
+// (runtime_test_helpers_test.go).
+func (b *statefulBackend) EnsureWorkspaceHomeVolume(_ context.Context, req dispatcher.WorkspaceHomeVolumeRequest) (string, error) {
+	return ensureWorkspaceHomeVolumeInProcess(req)
+}
+
 func (b *statefulBackend) RunWorkspaceInit(ctx context.Context, req dispatcher.WorkspaceInitRequest) error {
 	return runWorkspaceInitInProcess(ctx, req)
 }
@@ -145,26 +151,63 @@ func (s *statefulSession) Stop(context.Context) error {
 
 func (s *statefulSession) Signal(context.Context, syscall.Signal) error { return nil }
 
-// runWorkspaceInitInProcess is this package's stand-in for the throwaway init
-// container PR5 introduced (docs/plans/workspace-home-volume-persistence.md
-// 論点 c): it runs the wrapper resolveWorkspaceHome assembled under a real
-// bash, in this test process.
+// The two functions below are this package's (dispatcher_test, the EXTERNAL
+// test package) stand-in for what a real backend does for a workspace home:
+// create the named volume that holds it (PR6), and run the preparation wrapper
+// against that volume (PR5).
 //
-// Every fake backend in this package embeds it rather than returning nil,
-// because resolveWorkspaceHome's contract depends on the run having HAPPENED:
-// the bind-target skeleton has to exist and the home has to carry its identity
-// token, or the very next dispatch re-runs init and logs a desync warning. A
-// no-op would leave every Dispatch test running against a workspace home in a
-// state production never produces.
+// Every fake backend here embeds them rather than returning nil, because
+// resolveWorkspaceHome's contract depends on the run having HAPPENED: the
+// bind-target skeleton has to exist, or the very next dispatch's job container
+// gets a $HOME whose ~/.claude the ENGINE created as uid 0. A no-op would leave
+// every Dispatch test running against a workspace home in a state production
+// never produces.
 //
-// It is not a container. HOME/BOID_WORKSPACE_HOME are rewritten from the
-// request's container-side target back to its host-side source, since there is
-// no mount here to make the two the same thing.
+// A docker volume is modelled as a directory and its identity label as a
+// sibling file. Modelling the identity rather than returning a constant is what
+// keeps these fakes honest about the property the fast path rests on:
+// VolumeCreate reports the EXISTING volume's label, so a second dispatch sees
+// the same identity and does not re-run init.
+
+// workspaceHomeVolumeDirForTests roots the modelled volumes under whatever
+// throwaway XDG_DATA_HOME testutil/homeenv established, so they are removed
+// with it and no two tests share one.
+func workspaceHomeVolumeDirForTests(name string) string {
+	root := os.Getenv("XDG_DATA_HOME")
+	if root == "" {
+		root = os.TempDir()
+	}
+	return filepath.Join(root, "boid-test-volumes", name)
+}
+
+func ensureWorkspaceHomeVolumeInProcess(req dispatcher.WorkspaceHomeVolumeRequest) (string, error) {
+	dir := workspaceHomeVolumeDirForTests(req.Name)
+	idPath := dir + ".id"
+	if data, err := os.ReadFile(idPath); err == nil {
+		return strings.TrimSpace(string(data)), nil
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", err
+	}
+	if err := os.WriteFile(idPath, []byte(req.CandidateID), 0o600); err != nil {
+		return "", err
+	}
+	return req.CandidateID, nil
+}
+
+// runWorkspaceInitInProcess runs the wrapper resolveWorkspaceHome assembled
+// under a real bash, in this test process. It is not a container: there is no
+// mount, so HOME/BOID_WORKSPACE_HOME are rewritten from the request's
+// container-side target to the directory modelling its volume.
 func runWorkspaceInitInProcess(ctx context.Context, req dispatcher.WorkspaceInitRequest) error {
+	homeDir := workspaceHomeVolumeDirForTests(req.HomeSource)
+	if err := os.MkdirAll(homeDir, 0o700); err != nil {
+		return err
+	}
 	env := make([]string, 0, len(req.Env)+1)
 	for k, v := range req.Env {
 		if v == req.HomeTarget {
-			v = req.HomeSource
+			v = homeDir
 		}
 		env = append(env, k+"="+v)
 	}

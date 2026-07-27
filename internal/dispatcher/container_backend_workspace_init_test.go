@@ -39,16 +39,18 @@ func newWorkspaceInitBackend(api dockerAPI) *containerBackend {
 
 func testWorkspaceInitRequest() WorkspaceInitRequest {
 	return WorkspaceInitRequest{
-		Slug:       "myws",
-		HomeSource: "/srv/boid/homes/myws",
+		Slug: "myws",
+		// A VOLUME NAME as of PR6, not a path — see workspaceInitHomeMount.
+		HomeSource: dockerres.WorkspaceHomeVolumeName(testWorkspaceInitInstallID, "myws"),
 		HomeTarget: "/home/boid",
 		Env: map[string]string{
 			"HOME":                "/home/boid",
 			"BOID_WORKSPACE_SLUG": "myws",
 			"BOID_WORKSPACE_HOME": "/home/boid",
 		},
-		Script: "# wrapper\nexit 0\n",
-		Nonce:  "deadbeef",
+		Script:       "# wrapper\nexit 0\n",
+		SkeletonDirs: []string{".claude"},
+		HomeID:       "deadbeef",
 	}
 }
 
@@ -195,14 +197,40 @@ func TestContainerBackend_RunWorkspaceInit_CreateOptions(t *testing.T) {
 		t.Errorf("env = %v, want %v", got.Config.Env, wantEnv)
 	}
 
-	// The mount: the workspace home, read-write, at the same path a job sees
-	// its $HOME at.
+	// The mount: the workspace home VOLUME, read-write, at the same path a job
+	// sees its $HOME at (PR6 — a bind of a host path here would prepare
+	// something other than the home the job will actually get).
 	if len(got.HostConfig.Mounts) != 1 {
 		t.Fatalf("mounts = %+v, want exactly the workspace home", got.HostConfig.Mounts)
 	}
 	m := got.HostConfig.Mounts[0]
-	if m.Type != mount.TypeBind || m.Source != req.HomeSource || m.Target != req.HomeTarget || m.ReadOnly {
-		t.Errorf("home mount = %+v, want a read-write bind %s -> %s", m, req.HomeSource, req.HomeTarget)
+	if m.Type != mount.TypeVolume || m.Source != req.HomeSource || m.Target != req.HomeTarget || m.ReadOnly {
+		t.Errorf("home mount = %+v, want a read-write VOLUME mount %s -> %s", m, req.HomeSource, req.HomeTarget)
+	}
+
+	// §D4 of 論点 a: the init container does not go through Launch, so nothing
+	// else would create the volume with its labels — the engine would
+	// auto-create it unlabelled when the container starts, and the identity
+	// resolveWorkspaceHome compares its marker against would be permanently
+	// absent.
+	if len(api.volumeCreateCalls) != 1 {
+		t.Fatalf("VolumeCreate calls = %d, want 1 (the init container must create the home volume itself)", len(api.volumeCreateCalls))
+	}
+	vc := api.volumeCreateCalls[0]
+	if vc.Name != req.HomeSource {
+		t.Errorf("VolumeCreate Name = %q, want %q", vc.Name, req.HomeSource)
+	}
+	if got, want := vc.Labels[dockerres.LabelWorkspaceHomeID], req.HomeID; got != want {
+		t.Errorf("VolumeCreate Labels[%q] = %q, want the identity the daemon resolved (%q)",
+			dockerres.LabelWorkspaceHomeID, got, want)
+	}
+	if got, want := vc.Labels[dockerres.LabelWorkspaceHome], req.Slug; got != want {
+		t.Errorf("VolumeCreate Labels[%q] = %q, want %q", dockerres.LabelWorkspaceHome, got, want)
+	}
+	for _, forbidden := range []string{labelJobID, labelInstallID, labelWorkspace} {
+		if _, present := vc.Labels[forbidden]; present {
+			t.Errorf("the home volume carries %q, which is a reap enumeration filter (論点 a)", forbidden)
+		}
 	}
 
 	// §D4: the engine's default bridge. Neither field is set — the job
@@ -1049,26 +1077,46 @@ func TestContainerBackend_RunWorkspaceInit_RootlessPodmanKeepsTheHostUIDMapping(
 	}
 }
 
-// TestContainerBackend_RunWorkspaceInit_RejectsANonAbsoluteHomeSource is the
-// fail-closed guard on the one field PR6 changes. Through PR5 the home is a
-// host path; the moment it becomes a named volume this method has to grow the
-// volume branch, and a silently mis-typed mount (docker would treat a
-// relative source as a volume NAME and auto-create an empty one) would look
-// like a workspace whose home is simply always empty.
-func TestContainerBackend_RunWorkspaceInit_RejectsANonAbsoluteHomeSource(t *testing.T) {
-	api := &fakeDockerAPI{ContainerWaitFunc: exitWith(0)}
-	api.ContainerAttachFunc = attachThenEOF(api, "")
-	b := newWorkspaceInitBackend(api)
-	req := testWorkspaceInitRequest()
-	req.HomeSource = "boid-ws-home-01234567-myws"
+// TestContainerBackend_RunWorkspaceInit_RejectsAHomeSourceThatIsNotAVolumeName
+// is the fail-closed guard on the one field PR6 changed, and its polarity is
+// INVERTED from the PR5 version of this test on purpose.
+//
+// Through PR5 the home was a host path and a relative source had to be refused,
+// because docker reads a relative mount source as a volume NAME and would have
+// silently prepared a brand new empty volume. The home IS a volume name now, so
+// the dangerous value is the other one: an absolute source would bind some host
+// directory into the container, the init would report success, the marker would
+// be stamped — and the workspace's real home would never be prepared. Both eras
+// fail the same way when the two representations are confused, so the check
+// tracks which one is current rather than disappearing.
+func TestContainerBackend_RunWorkspaceInit_RejectsAHomeSourceThatIsNotAVolumeName(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		homeSource string
+	}{
+		{"an absolute host path (the pre-PR6 representation)", "/srv/boid/homes/myws"},
+		{"a relative path that is not a valid volume name", "../escape"},
+		{"empty", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			api := &fakeDockerAPI{ContainerWaitFunc: exitWith(0)}
+			api.ContainerAttachFunc = attachThenEOF(api, "")
+			b := newWorkspaceInitBackend(api)
+			req := testWorkspaceInitRequest()
+			req.HomeSource = tc.homeSource
 
-	if err := b.RunWorkspaceInit(context.Background(), req); err == nil {
-		t.Error("RunWorkspaceInit accepted a non-absolute home source; through PR5 the home is a host path")
-	}
-	api.mu.Lock()
-	defer api.mu.Unlock()
-	if len(api.createCalls) != 0 {
-		t.Error("a container was created despite the rejected mount source")
+			if err := b.RunWorkspaceInit(context.Background(), req); err == nil {
+				t.Errorf("RunWorkspaceInit accepted home source %q; as of PR6 the home is a docker named volume", tc.homeSource)
+			}
+			api.mu.Lock()
+			defer api.mu.Unlock()
+			if len(api.createCalls) != 0 {
+				t.Error("a container was created despite the rejected mount source")
+			}
+			if len(api.volumeCreateCalls) != 0 {
+				t.Errorf("a volume was created for the rejected source: %+v", api.volumeCreateCalls)
+			}
+		})
 	}
 }
 

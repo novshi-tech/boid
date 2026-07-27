@@ -15,15 +15,15 @@
 // can tell a host bind apart from a container-local directory apart from a
 // named volume (決定 4's DooD path 境界).
 //
-// This package is inert scaffolding: Realize is a pure function (no docker
-// API calls, no filesystem access, no process execution) and nothing in the
-// daemon calls it yet — that wiring lands in PR5 together with the
-// containerBackend implementation. It does not import docker/docker/client
-// or any docker SDK type. It also does not touch, depend on, or change the
-// behaviour of the existing userns realization path (sandbox.BuildPlan /
-// internal/sandbox/runner / internal/sandbox/dockerproxy / the sandbox
-// package's proxy.go+proxy_manager.go) — see this package's unit tests for
-// the pinned translation contract, not that path.
+// Realize is a pure function (no docker API calls, no filesystem access, no
+// process execution) and this package imports no docker SDK type, but it is
+// not scaffolding: containerBackend.Launch calls it on every dispatch
+// (internal/dispatcher/container_backend.go), and the userns backend this
+// package was originally written alongside no longer exists — PR-4 of
+// docs/plans/volume-only-daemon.md (§論点e) removed it, leaving the container
+// backend as boid's only one. The purity is a property worth keeping rather
+// than a sign nothing uses it: it is what lets this package's unit tests pin
+// the whole translation contract without an engine.
 package realization
 
 import (
@@ -63,13 +63,18 @@ type MountSourceKind int
 
 const (
 	// MountSourceNamedVolume is a docker-managed named volume, e.g.
-	// "boid-home-workspace-foo". Nothing in the current (Phase 6) dispatcher
-	// produces this yet — workspace HOME stays a host bind through Phase 6
-	// (決定 4, confirmed 2026-07-22: the #813 draft's "named volume 化" call
-	// was a correction, reverted). Named-volume HOME is a Phase 7 follow-up
-	// (docs/plans/phase6-container-backend.md スコープ節「含まない」). The
-	// kind exists now so Realize's classification is complete and so PR5 /
-	// Phase 7 can opt a mount into it without changing this package.
+	// "boid-ws-home-01234567-default".
+	//
+	// The kind was added ahead of any producer (Phase 6 決定 4 kept workspace
+	// HOME a host bind, and the #813 draft's "named volume 化" call was
+	// reverted as a correction on 2026-07-22), specifically so that a later
+	// change could opt a mount into it without touching this package. PR6 of
+	// docs/plans/workspace-home-volume-persistence.md collected on that: the
+	// workspace HOME mount's Source is now
+	// dockerres.WorkspaceHomeVolumeName(installID, slug) — a name, not a path
+	// — and dispatcher.homeMounts is the producer. It is still spelled as an
+	// ordinary sandbox.MountBind; classifySource's "does not start with /"
+	// rule below is the whole of the opt-in (論点 e option (i)).
 	MountSourceNamedVolume MountSourceKind = iota
 
 	// MountSourceHostPath is a host absolute path bind. Per the DooD path
@@ -262,10 +267,11 @@ func Realize(spec sandbox.Spec) (Realization, error) {
 // container-local when the mount targets the sandbox-internal
 // `/workspace`/`/workspace/<name>` clone dir or has no Source at all; a host
 // absolute path bind when Source starts with "/" (every host-path Source in
-// the current codebase is already absolute — cloneMounts/homeMounts always
-// build these from resolved absolute directories); a named volume name
-// otherwise (Phase 7 forward-compat, see MountSourceNamedVolume's doc
-// comment — nothing produces this today).
+// the current codebase is already absolute — cloneMounts always builds these
+// from resolved absolute directories); a named volume name otherwise, which is
+// how the workspace HOME mount is classified as of PR6 of
+// docs/plans/workspace-home-volume-persistence.md (see
+// MountSourceNamedVolume's doc comment).
 //
 // m.HostBacked (docs/plans/volume-only-daemon.md §論点b, PR-2b) overrides
 // the `/workspace` container-local default: the daemon has already

@@ -11,6 +11,25 @@ import (
 	"github.com/novshi-tech/boid/internal/orchestrator"
 )
 
+// # PR6 STATUS: these cases are green and inert, and PR7 is where they become
+// meaningful again.
+//
+// Everything in this file exercises the functions under test against real
+// directories under <runtimesRoot>/homes/<slug>. PR6 of
+// docs/plans/workspace-home-volume-persistence.md moved the workspace home into
+// a docker named volume, so a RUNNING daemon never puts anything there any
+// more: on a real installation the size lookup reports Exists=false for every
+// workspace, the GC listing is empty, and `workspace remove` deletes nothing.
+// These tests still describe what the code does; they no longer describe
+// anything production reaches.
+//
+// They are kept rather than deleted because 論点 a-2's rewiring (PR7) has to
+// preserve the CONTRACTS they state — the reserved default slug is never
+// deleted, a missing home is not an error, a sizing failure does not block
+// deletion, an orphan is a home with no workspace row — while replacing the
+// mechanism underneath them. Deleting them now would leave PR7 to rediscover
+// each of those from scratch. See workspace_homes.go's own PR6 status note.
+//
 // newTestRuntimesDir returns a runtimesDir (as server/wire.go's
 // runtimesDirFor(cfg) would produce) whose sibling "homes" directory lives
 // under t.TempDir() — matching dispatcher.WorkspaceHomesDir's derivation

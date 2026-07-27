@@ -188,16 +188,26 @@ type SandboxRuntimeInfo struct {
 	// non-default degrade (working tree + build artifacts in RAM).
 	CloneWorkspaceDir string
 
-	// WorkspaceHomeDir is the host-side per-workspace home directory
-	// resolved by Runner.resolveWorkspaceHome
-	// (docs/plans/home-workspace-volume.md Phase 4 PR1):
-	// ~/.local/share/boid/homes/<slug>, guaranteed to exist (and, if the
-	// workspace declares an init.sh, already initialized) by the time
-	// Dispatch reaches BuildSandboxSpec.
+	// WorkspaceHomeVolume is the NAME of the docker named volume holding this
+	// workspace's persistent home, as resolved by
+	// Runner.resolveWorkspaceHome: dockerres.WorkspaceHomeVolumeName(installID,
+	// slug), guaranteed to exist — and to have had its bind-target skeleton
+	// and, if the workspace declares one, its init.sh run against it — by the
+	// time Dispatch reaches BuildSandboxSpec.
 	//
-	// PR2 (docs/plans/home-workspace-volume.md) reads this field: the
-	// Clone / projectVisible / default HOME branches below (via homeMounts)
-	// bind it read-write at HOME's sandbox-internal path instead of a plain
+	// It is a volume name, NOT a path, as of PR6 of
+	// docs/plans/workspace-home-volume-persistence.md (論点 a/e). Through Phase
+	// 4 and Phase 6 this field was called WorkspaceHomeDir and held
+	// <runtimesRoot>/homes/<slug>; that root resolves under BOID_RUNTIME_DIR in
+	// every real deployment, i.e. tmpfs, so a host reboot destroyed every
+	// workspace's harness credentials and its ~1.5GB toolchain. The rename is
+	// deliberate: the value now selects a completely different mount kind
+	// (internal/sandbox/realization.classifySource treats any non-absolute
+	// Source as a named volume), and a field still called ...Dir would invite
+	// exactly the filepath.Join that silently produces a second, junk volume.
+	//
+	// The Clone / projectVisible / default HOME branches below (via homeMounts)
+	// mount it read-write at HOME's sandbox-internal path instead of a plain
 	// tmpfs. From Phase 4 PR2 through Phase 6 PR7, $HOME/.boid was
 	// additionally layered with a job-scoped tmpfs overlay to isolate
 	// $HOME/.boid/output/payload_patch.json between concurrent jobs sharing
@@ -216,22 +226,20 @@ type SandboxRuntimeInfo struct {
 	// single fresh tmpfs. The ProfileInit branch never reads this field at
 	// all — see its own doc comment for why bind-mounting HOME there would
 	// defeat its host-tool-discovery purpose.
-	WorkspaceHomeDir string
+	WorkspaceHomeVolume string
 
-	// WorkspaceSlug is the normalized workspace slug WorkspaceHomeDir was
+	// WorkspaceSlug is the normalized workspace slug WorkspaceHomeVolume was
 	// resolved for (docs/plans/home-workspace-volume.md Phase 4 PR3), taken
 	// straight from resolveWorkspaceHome's second return value by
 	// Runner.Dispatch.
 	//
-	// It used to be filepath.Base(WorkspaceHomeDir) instead. PR4 of
-	// docs/plans/workspace-home-volume-persistence.md cut that dependency:
-	// the two agree only while a workspace home directory is named after its
-	// slug, which stops being true in PR6 (the home becomes a named volume,
-	// boid-ws-home-<installID8>-<slug>). Filling this field from the path
-	// would then quietly put a volume name into BOID_WORKSPACE_SLUG and into
-	// the adapter error message below. Nothing else in this struct may
-	// re-derive it either — the pairing with WorkspaceHomeDir is a fact about
-	// today's layout, not a contract.
+	// It used to be filepath.Base(<the home path>) instead. PR4 of
+	// docs/plans/workspace-home-volume-persistence.md cut that dependency and
+	// PR6 collected on it: the home is now a named volume called
+	// boid-ws-home-<installID8>-<slug>, so that derivation would put a VOLUME
+	// NAME into BOID_WORKSPACE_SLUG and into the adapter error message below —
+	// naming a workspace that does not exist to an operator being told which
+	// init.sh to edit. Nothing in this struct may re-derive it.
 	//
 	// BuildSandboxSpec threads it into env["BOID_WORKSPACE_SLUG"] so the
 	// claude/codex/opencode adapters' fail-fast "harness CLI not found"
@@ -258,7 +266,7 @@ type SandboxRuntimeInfo struct {
 	// tracks the embed directive rather than a hard-coded list.
 	//
 	// Empty (test wiring that never threaded it, the same minimal
-	// SandboxRuntimeInfo{} literals WorkspaceHomeDir degrades for) means no
+	// SandboxRuntimeInfo{} literals WorkspaceHomeVolume degrades for) means no
 	// skill binds at all — the HOME layer is then byte-for-byte what it was
 	// before PR3.
 	SkillsSourceDir string
@@ -422,42 +430,38 @@ func BuildSandboxSpec(spec *orchestrator.JobSpec, rt SandboxRuntimeInfo) (sandbo
 	// Project / workspace peers / .boid layer.
 	projectDir := spec.Visibility.ProjectDir
 	switch {
-	case spec.Visibility.Clone != nil:
-		// Sandbox-clone path (docs/plans/git-gateway-cutover.md PR6 cutover,
-		// PR5 Opus review note): skip projectVisibilityMounts entirely.
-		// cloneMounts (below) mounts the reference `.git` dirs and the clone
-		// target at the neutral /workspace path; there is no host ProjectDir
-		// bind for this job at all, so binding projectDir here too would
-		// double-mount the same host path at two sandbox targets for no
-		// reason. HOME still gets the workspace home bind or a private tmpfs
-		// fallback (docs/plans/home-workspace-volume.md Phase 4 PR2), exactly
-		// like the "no project visible" case below.
-		mounts = append(mounts, homeMounts(homeDir, rt.WorkspaceHomeDir, rt.SkillsSourceDir)...)
-	case projectDir != "":
-		mounts = append(mounts, projectVisibilityMounts(
-			projectDir,
-			projectDir,
-			homeDir,
-			rt.WorkspaceHomeDir,
-			rt.SkillsSourceDir,
-			spec.Visibility.Writable,
-			rt.WorkspacePeers,
-		)...)
 	case spec.SandboxProfile == int(sandbox.ProfileInit):
 		// ProfileInit (boid kit init / workspace configure): the plan rbinds the
 		// entire host root read-only precisely so the scan can discover host
 		// state, and most of the interesting tooling lives under HOME
 		// (`~/.volta/bin/volta`, `~/.local/bin/go`, `~/.nvm/versions/...`, ...).
-		// Layering a full HOME tmpfs on top would shadow exactly those paths and
-		// make `which volta` / `ls ~/.volta/bin` return nothing — defeating the
-		// whole point of ProfileInit. Layer a tmpfs over `<HOME>/.boid` only so
-		// any script write under $HOME/.boid/* still lands on writable storage
-		// without hiding the rest of HOME. ProfileInit jobs get no broker
-		// socket (see Runner.Dispatch), so they were never a payload_patch.json
+		// Layering a full HOME tmpfs — or the workspace HOME volume — on top
+		// would shadow exactly those paths and make `which volta` / `ls
+		// ~/.volta/bin` return nothing, defeating the whole point of
+		// ProfileInit. Layer a tmpfs over `<HOME>/.boid` only so any script
+		// write under $HOME/.boid/* still lands on writable storage without
+		// hiding the rest of HOME. ProfileInit jobs get no broker socket (see
+		// Runner.Dispatch), so they were never a payload_patch.json
 		// producer/consumer to begin with — this mount is unrelated to, and
 		// unaffected by, the Phase 6 PR8 payload-patch-RPC retirement of the
-		// homeMounts overlay above (docs/plans/phase6-container-backend.md
+		// homeMounts overlay below (docs/plans/phase6-container-backend.md
 		// §決定 9).
+		//
+		// FIRST in this switch, ahead of the visibility arms (codex review of
+		// PR6, Minor 2). The profile describes what the job DOES (scan the
+		// host) while Visibility is assembled independently by whoever builds
+		// the JobSpec, so nothing structurally keeps a ProfileInit job from
+		// also carrying a ProjectDir or a Clone declaration. Ordered the other
+		// way round, either of those took HOME back — through
+		// projectVisibilityMounts' own homeMounts step, or the Clone arm's —
+		// and the contract this branch and homeSkeleton both state ("ProfileInit
+		// never mounts the workspace home; $HOME there is the host's own")
+		// held only for the profile in isolation. Nothing is lost by winning
+		// here: under a read-only rbind of the whole host root the project is
+		// already visible at its own path, and a directory that must be
+		// WRITABLE is expressed as an rw additional binding, which is applied
+		// below regardless of which arm ran (see additionalBindingMounts'
+		// Source==Target rw carve-out, written for exactly this profile).
 		//
 		// The tmpfs target must exist on the host (mounts cannot create their
 		// own mountpoint), so make sure `<HOME>/.boid` is present before the
@@ -470,11 +474,32 @@ func BuildSandboxSpec(spec *orchestrator.JobSpec, rt SandboxRuntimeInfo) (sandbo
 			Target: homeDir + "/.boid",
 			Type:   sandbox.MountTmpfs,
 		})
+	case spec.Visibility.Clone != nil:
+		// Sandbox-clone path (docs/plans/git-gateway-cutover.md PR6 cutover,
+		// PR5 Opus review note): skip projectVisibilityMounts entirely.
+		// cloneMounts (below) mounts the reference `.git` dirs and the clone
+		// target at the neutral /workspace path; there is no host ProjectDir
+		// bind for this job at all, so binding projectDir here too would
+		// double-mount the same host path at two sandbox targets for no
+		// reason. HOME still gets the workspace home bind or a private tmpfs
+		// fallback (docs/plans/home-workspace-volume.md Phase 4 PR2), exactly
+		// like the "no project visible" case below.
+		mounts = append(mounts, homeMounts(homeDir, rt.WorkspaceHomeVolume, rt.SkillsSourceDir)...)
+	case projectDir != "":
+		mounts = append(mounts, projectVisibilityMounts(
+			projectDir,
+			projectDir,
+			homeDir,
+			rt.WorkspaceHomeVolume,
+			rt.SkillsSourceDir,
+			spec.Visibility.Writable,
+			rt.WorkspacePeers,
+		)...)
 	default:
 		// No project visible: HOME gets the workspace home bind (+ the
 		// embedded-skill binds) or a fresh tmpfs fallback, same as the Clone
 		// case above (docs/plans/home-workspace-volume.md Phase 4 PR2).
-		mounts = append(mounts, homeMounts(homeDir, rt.WorkspaceHomeDir, rt.SkillsSourceDir)...)
+		mounts = append(mounts, homeMounts(homeDir, rt.WorkspaceHomeVolume, rt.SkillsSourceDir)...)
 	}
 
 	// Sandbox-internal clone mounts (docs/plans/git-gateway-cutover.md PR5):
@@ -642,6 +667,8 @@ func BuildSandboxSpec(spec *orchestrator.JobSpec, rt SandboxRuntimeInfo) (sandbo
 		userAnswer = spec.Env["BOID_USER_ANSWER"]
 	}
 
+	homeSkeletonRoot, homeSkeletonDirs := homeSkeleton(homeDir, rt, mounts)
+
 	out := sandbox.Spec{
 		ID:                rt.JobID,
 		Mounts:            mounts,
@@ -666,8 +693,89 @@ func BuildSandboxSpec(spec *orchestrator.JobSpec, rt SandboxRuntimeInfo) (sandbo
 		Profile:        sandbox.Profile(spec.SandboxProfile),
 		Clone:          buildCloneSpec(spec, rt),
 		ContainerImage: rt.ContainerImage,
+		// The bind-target skeleton the job's own runner verifies before
+		// starting the harness (PR6 — see sandbox.Spec.HomeSkeletonDirs and
+		// runner.verifyHomeSkeleton for why the check moved into the
+		// container). Both values are derived from the mount list assembled
+		// above rather than from rt's fields, so nothing here can name a
+		// directory the check cannot actually observe — see homeSkeleton.
+		HomeSkeletonRoot: homeSkeletonRoot,
+		HomeSkeletonDirs: homeSkeletonDirs,
 	}
 	return out, nil
+}
+
+// homeSkeleton decides what the JOB CONTAINER's own runner is asked to verify
+// about the workspace HOME before it starts the harness: the root the entries
+// are relative to (the sandbox $HOME), and the entries themselves — the subset
+// of workspaceHomeSkeletonDirs this sandbox can actually observe. Both are
+// zero when there is nothing to check.
+//
+// # The answer comes from the MOUNT LIST, not from the runtime info
+//
+// The tempting gate is "rt.WorkspaceHomeVolume and rt.SkillsSourceDir are both
+// set", and it is wrong in both directions:
+//
+//   - A ProfileInit sandbox (`boid kit init` / workspace configure) has both
+//     fields — Runner.Dispatch resolves the workspace home before it knows the
+//     profile — yet the ProfileInit branch of the mount switch deliberately
+//     never mounts it. $HOME there is the host's own, rbind-mounted read-only.
+//     Every entry would then be a directory nothing was going to create, and
+//     the runner would fail every such job.
+//   - The per-skill leaves (.claude/skills/<name>) ARE covered, by a read-only
+//     bind added a few lines above. Inside the container the bind is
+//     established before the runner starts, so os.Stat on a leaf reads the bind
+//     SOURCE — the daemon-materialized skills tree under the runtimes root —
+//     and not the directory inside the workspace HOME volume the check is
+//     about. Every leaf therefore passed unconditionally, on evidence about a
+//     different directory: not a weak check, an absent one, while its doc
+//     comment and its tests claimed a set it never covered (codex review of
+//     PR6, Minor 1).
+//
+// Reading the assembled mounts answers both at once, and keeps answering them
+// if the layout changes: a future mount laid over .claude would make THAT
+// unobservable in exactly the same way, and would drop out here for the same
+// reason rather than turning into an assertion about a bind source.
+//
+// # What the unverifiable leaves can still cost
+//
+// A leaf missing from the volume is still created by the engine as uid 0 — this
+// changes what is reported, not what happens. But for the whole life of every
+// container that has that skill the uid-0 directory is immediately covered by a
+// READ-ONLY bind, so nothing in the sandbox writes into it and nothing needs
+// to: embedded skills are regenerable content boid supplies, not state the
+// harness keeps. What the volume is left with is an empty, root-owned directory
+// that becomes visible only if a later release stops shipping that skill (the
+// bind disappears with it) — a leftover an operator clears with the same
+// host-side delete verifyHomeSkeleton already prints. It is categorically not
+// the failure the check exists for: that one is ~/.claude itself, which is an
+// ancestor of every leaf, is therefore created uid-0 alongside them, and IS
+// verified here.
+func homeSkeleton(homeDir string, rt SandboxRuntimeInfo, mounts []sandbox.Mount) (root string, dirs []string) {
+	if rt.WorkspaceHomeVolume == "" || rt.SkillsSourceDir == "" {
+		return "", nil
+	}
+	covered := make(map[string]struct{}, len(mounts))
+	homeMounted := false
+	for _, m := range mounts {
+		covered[m.Target] = struct{}{}
+		if m.Target == homeDir && m.Source == rt.WorkspaceHomeVolume {
+			homeMounted = true
+		}
+	}
+	if !homeMounted {
+		return "", nil
+	}
+	for _, rel := range workspaceHomeSkeletonDirs() {
+		if _, shadowed := covered[filepath.Join(homeDir, rel)]; shadowed {
+			continue
+		}
+		dirs = append(dirs, rel)
+	}
+	if len(dirs) == 0 {
+		return "", nil
+	}
+	return homeDir, dirs
 }
 
 // resolveWorkDir returns the initial cd target inside the sandbox. The
@@ -970,12 +1078,31 @@ func buildCloneSpec(spec *orchestrator.JobSpec, rt SandboxRuntimeInfo) sandbox.C
 }
 
 // homeMounts returns the HOME mount(s) for a sandbox (docs/plans/home-
-// workspace-volume.md Phase 4 PR2). When workspaceHomeDir is non-empty, HOME
-// becomes a plain read-write bind of the workspace's persistent home
-// directory. When workspaceHomeDir is empty (test wiring that never resolved
-// a workspace home, or any caller that has not threaded
-// SandboxRuntimeInfo.WorkspaceHomeDir through yet) this degrades gracefully
-// to the pre-PR2 behaviour: a single fresh tmpfs at homeDir.
+// workspace-volume.md Phase 4 PR2). When workspaceHomeVolume is non-empty,
+// HOME becomes a read-write mount of the workspace's persistent home. When it
+// is empty (test wiring that never resolved a workspace home, or any caller
+// that has not threaded SandboxRuntimeInfo.WorkspaceHomeVolume through yet)
+// this degrades gracefully to the pre-PR2 behaviour: a single fresh tmpfs at
+// homeDir.
+//
+// # The HOME mount is a named VOLUME, spelled as a MountBind (PR6, 論点 e)
+//
+// workspaceHomeVolume is a docker volume NAME, and the sandbox.Mount that
+// carries it is still Type: MountBind. That is not an oversight: the
+// realization layer decides bind-vs-volume from the SOURCE, not the type —
+// internal/sandbox/realization.classifySource returns MountSourceNamedVolume
+// for any Source that does not begin with "/", and containerMounts turns that
+// into mount.TypeVolume. 論点 e's decision (i) reuses that existing convention
+// rather than adding a MountType, on the strength of realization.go's own doc
+// comment, which records that the kind was implemented ahead of time precisely
+// so this mount could opt into it "without changing this package".
+//
+// So the whole PR6 cutover is the value handed to this function changing from
+// <runtimesRoot>/homes/<slug> to boid-ws-home-<installID8>-<slug>, and that is
+// exactly why the mount was concentrated here in PR3 (決定 D5): the entire HOME
+// layer — the home itself plus every per-skill bind layered on top — switches
+// in one function, and containerMounts already handles a volume and host paths
+// side by side in one mount list.
 //
 // Phase 5b PR6 (docs/plans/phase5-shim-and-task-context.md, decision 7)
 // originally retired the $HOME/.boid overlay this function used to layer on
@@ -1027,8 +1154,8 @@ func buildCloneSpec(spec *orchestrator.JobSpec, rt SandboxRuntimeInfo) sandbox.C
 // Shared by the Clone branch, the default (no-project) branch and
 // projectVisibilityMounts's HOME step below so all three switch over
 // identically.
-func homeMounts(homeDir, workspaceHomeDir, skillsSourceDir string) []sandbox.Mount {
-	if workspaceHomeDir == "" {
+func homeMounts(homeDir, workspaceHomeVolume, skillsSourceDir string) []sandbox.Mount {
+	if workspaceHomeVolume == "" {
 		// No workspace home resolved: a plain private tmpfs, with no skills
 		// layered on. resolveWorkspaceHome never returns an empty directory
 		// on a real dispatch (it mkdir's the home or fails), so this branch
@@ -1040,7 +1167,7 @@ func homeMounts(homeDir, workspaceHomeDir, skillsSourceDir string) []sandbox.Mou
 	}
 	mounts := []sandbox.Mount{
 		{
-			Source: workspaceHomeDir,
+			Source: workspaceHomeVolume,
 			Target: homeDir,
 			Type:   sandbox.MountBind,
 		},
@@ -1064,7 +1191,7 @@ func homeMounts(homeDir, workspaceHomeDir, skillsSourceDir string) []sandbox.Mou
 // home bind, or a tmpfs fallback — see homeMounts) that shadows host files
 // but re-mounts the project on top.
 func projectVisibilityMounts(
-	origProjectDir, effectiveDir, homeDir, workspaceHomeDir, skillsSourceDir string,
+	origProjectDir, effectiveDir, homeDir, workspaceHomeVolume, skillsSourceDir string,
 	writable bool,
 	peers map[string]string,
 ) []sandbox.Mount {
@@ -1083,7 +1210,7 @@ func projectVisibilityMounts(
 	// on top of it, or a fresh tmpfs fallback when no workspace home is
 	// resolved (docs/plans/home-workspace-volume.md Phase 4 PR2;
 	// docs/plans/workspace-home-volume-persistence.md 論点 e-2 for the skills).
-	out = append(out, homeMounts(homeDir, workspaceHomeDir, skillsSourceDir)...)
+	out = append(out, homeMounts(homeDir, workspaceHomeVolume, skillsSourceDir)...)
 
 	// 3) re-mount the effective dir so the HOME mount (tmpfs or workspace
 	// bind) does not shadow it.

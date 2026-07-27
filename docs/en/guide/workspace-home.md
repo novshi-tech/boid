@@ -6,19 +6,33 @@ full design background (Japanese only for now).
 
 ## What is a workspace home
 
-Every workspace has a dedicated, persistent directory at
-`~/.local/share/boid/homes/<slug>/`. Every job (hook, exec, or session) that belongs to a
-project assigned to that workspace mounts this directory as its sandbox `$HOME`,
-read-write.
+Every workspace has a dedicated, persistent **docker named volume** called
+`boid-ws-home-<installID8>-<slug>`. Every job (hook, exec, or session) that belongs to a
+project assigned to that workspace mounts this volume as its sandbox `$HOME`, read-write.
+
+> **Changed on 2026-07-27**: this used to be a host directory,
+> `~/.local/share/boid/homes/<slug>/`. Under the container backend that path resolves
+> below `$XDG_RUNTIME_DIR` — normally tmpfs — so **a host reboot took the credentials and
+> the toolchain with it**. Moving to a named volume is what fixes that. The old
+> directories are left in place, not deleted (a migration CLI has to read them).
 
 - **Persists across jobs**: files written to `$HOME` by one job (credentials, package
   caches, installed tools, ...) are still there for the next job in the same workspace
-- **`$HOME/.boid` is the one exception**: it is used for the context/output file protocol
-  and gets a fresh tmpfs layered on top for every single job. Nothing written there
-  survives to the next job — a separate lifecycle from the rest of the workspace home
+- **`$HOME/.boid` is not an exception**: it persists like the rest of `$HOME`. Before
+  Phase 6 PR8 it alone got a fresh, job-scoped tmpfs layered on top, but the file path
+  that isolation existed for (`$HOME/.boid/output/payload_patch.json`) was retired, and
+  the overlay went with it — see
+  [`docs/en/reference/hook-contract.md`](../reference/hook-contract.md)
+- **The only thing layered over the volume is the embedded-skill binds**: each embedded
+  skill is bind-mounted read-only at `~/.claude/skills/<name>`. Their contents are not
+  stored in the volume (the daemon unpacks them from the boid binary on every dispatch);
+  every other path shows the volume itself
 - **Not shared across workspaces**: workspace A's `$HOME` and workspace B's `$HOME` are
-  different directories, and neither is shared with the real host `$HOME` (nor with the
+  different volumes, and neither is shared with the real host `$HOME` (nor with the
   `boid` daemon process's own `$HOME`)
+- **To look inside one**: `docker volume inspect boid-ws-home-<installID8>-<slug>` reports
+  the `Mountpoint`. Under rootless podman its contents are owned by a host subuid, so
+  reading or writing them needs `podman unshare`
 
 A project with no explicit workspace assignment uses the `default` workspace's home.
 
@@ -52,22 +66,24 @@ described below still runs exactly once either way.
   **daemon's own data directory** (the one holding `boid.db`), not in the workspace home
   — so it is outside the directory a sandboxed job gets mounted as its `$HOME`, and a job
   cannot reach it that way
-- **The marker is checked against the home, not trusted on its own**: every successful
-  init also writes a random identity token to `<workspace home>/.boid-workspace-home-id`
-  and records the same value in the marker. Initialization is skipped only when both the
-  script hash and that token match. So if the home directory is wiped while the marker
-  survives — its parent directory is not guaranteed to be as durable as the daemon's own
-  data directory — the next dispatch re-runs `init.sh` rather than handing the agent an
-  empty `$HOME`. What this comparison protects against is the home being lost or replaced
-  by accident (the directory disappearing, a volume being removed, a restore from an old
-  backup) — not deliberate tampering by a job: a job can read this file inside its own
-  `$HOME`, so it can wipe the home and write the recorded value back. That is structural
-  (the home is the job's own writable area) and its worst outcome is that the next job in
-  the same workspace runs against a home this one already broke, which a job could do
-  regardless. Deleting, corrupting or replacing this file (with a symlink, a FIFO,
-  anything) only ever costs one extra — harmless, since `init.sh` must be idempotent —
-  initialization run, and can never take boid itself down: boid never follows this path
-  as a symlink, and checks that it is a regular file of at most 1 KiB before reading it
+- **The marker is checked against the home, not trusted on its own**: the home volume is
+  created carrying a random identity token on its `boid.workspace_home_id` label, and the
+  marker records the same value. Initialization is skipped only when both the script hash
+  and that token match, so if the volume is removed while the marker survives, the next
+  dispatch re-runs `init.sh` rather than handing the agent an empty `$HOME`. What this
+  detects is the **volume being deleted and re-created** (`docker volume rm`, a reap
+  misfire, a half-completed workspace removal). What it does **not** detect is the volume
+  surviving while its contents are emptied or replaced in place — nothing on the daemon
+  side can see inside a volume (that would take starting a container, and doing so on
+  every dispatch would defeat the point of having a completion marker at all), so the
+  check is limited to what the daemon can ask the engine.
+  Deliberate tampering by a job was never covered either, before or after: the home is the
+  job's own writable area, so this is structural, and its worst outcome is that the next
+  job in the same workspace runs against a home this one already broke — which a job could
+  do regardless.
+  If boid finds a `boid-ws-home-*` volume it did not create (no identity label — somebody
+  made it by hand), it **fails the dispatch and says so**: the Engine API cannot add a
+  label to an existing volume, so re-initializing would never converge
 - **When the init environment changes**: the completion marker also records a generation
   number identifying the environment that prepared the home. When a boid upgrade changes
   where `init.sh` runs (most recently: from the daemon process on the host to a throwaway
@@ -121,14 +137,16 @@ described below still runs exactly once either way.
     `LC_ALL` / `TERM` are **no longer forwarded** (they were, before this changed); set
     them yourself if you need them. Commands installed only on the host are unreachable —
     install anything the image lacks from within `init.sh`
-- **The preparation step (prep) always runs**: at the start and end of that same
-  container, boid creates the bind-target skeleton (`~/.claude`, and
-  `~/.claude/skills/<name>` for each built-in skill) and writes the identity token
-  described above. A workspace with no `init.sh` still gets exactly one container run
+- **The preparation step (prep) always runs**: ahead of your script, in that same
+  container, boid creates the bind-target skeleton (`~/.claude`, `~/.claude/skills`, and
+  `~/.claude/skills/<name>` for each built-in skill). A workspace with no `init.sh` still
+  gets exactly one container run. The identity token described above is not written here
+  — it is stamped on the volume itself when the volume is created, so nothing inside the
+  home carries it
 - **A failure fails dispatch**: a non-zero exit from `init.sh` does not silently skip
   initialization — the dispatch fails explicitly (the job ends up `failed`, the task
   `aborted`), and the error message names **which stage failed** (`prelude` /
-  `script-setup` / `init.sh` / `postlude`), the exit code, and a tail of the output.
+  `script-setup` / `init.sh`), the exit code, and a tail of the output.
   `init.sh`'s own exit code is propagated unchanged
 
 ### What script authors must guarantee
@@ -178,8 +196,11 @@ To use this kind of skill in a workspace, copy it by hand once, as a human, when
 the workspace up:
 
 ```bash
-mkdir -p ~/.local/share/boid/homes/<slug>/.claude/skills
-cp -r ~/.claude/skills/bitbucket ~/.local/share/boid/homes/<slug>/.claude/skills/
+# The workspace home is a named volume, so doing this from init.sh is the reliable
+# route. From the host, go through the volume's Mountpoint:
+VOL=$(docker volume inspect -f '{{.Mountpoint}}' boid-ws-home-<installID8>-<slug>)
+mkdir -p "$VOL/.claude/skills"
+cp -r ~/.claude/skills/bitbucket "$VOL/.claude/skills/"
 ```
 
 ## First login
@@ -205,7 +226,14 @@ state with each other.
 ## Removing a workspace
 
 `boid workspace remove <slug>` removes both the workspace's definition (DB row) and its
-home directory.
+home.
+
+> **Known intermediate state (since 2026-07-27)**: the workspace home became a named
+> volume, but deletion, size reporting and orphan detection still look at the old host
+> directory. So right now **the home volume is not removed, sizes always come back empty,
+> and no orphan is ever reported**. To clean the volume up after removing a workspace, run
+> `docker volume rm boid-ws-home-<installID8>-<slug>` by hand. The next release rewires
+> this onto the volume API.
 
 ```
 $ boid workspace remove my-workspace
@@ -226,8 +254,8 @@ home dir deleted: /home/you/.local/share/boid/homes/my-workspace (128.4 MB)
 
 ## `boid gc`'s workspace home listing
 
-`boid gc` (and `boid gc --dry-run`) prints every workspace home directory it finds under
-`~/.local/share/boid/homes/`, with its size:
+`boid gc` (and `boid gc --dry-run`) prints every workspace home it finds, with its size
+(during the intermediate state described above this listing is **always empty**):
 
 ```
 $ boid gc
@@ -246,9 +274,9 @@ workspace homes:
   directory was not cleaned up
 - To actually clean up an orphan, **delete the files directly by hand**:
   ```bash
-  rm -rf ~/.local/share/boid/homes/<slug>/
-  rm -f ~/.local/share/boid/homes-meta/<slug>.init.json
-  rm -f ~/.local/share/boid/homes-meta/<slug>.lock
+  docker volume rm boid-ws-home-<installID8>-<slug>
+  rm -f <dataHome>/homes-meta/<slug>.init.json
+  rm -f <dataHome>/homes-meta/<slug>.lock
   ```
   (An installation upgraded from an older boid may still have
   `~/.local/share/boid/homes/<slug>.init.json` / `.lock` lying around. The current daemon

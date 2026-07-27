@@ -3,9 +3,9 @@ package dispatcher
 import (
 	"context"
 	"path/filepath"
-	"strings"
 	"testing"
 
+	"github.com/novshi-tech/boid/internal/dockerres"
 	"github.com/novshi-tech/boid/internal/orchestrator"
 )
 
@@ -17,46 +17,20 @@ import (
 // claude/codex/opencode adapters' "CLI not found in workspace $HOME" error),
 // instead of being re-derived from the resolved home directory's path.
 //
-// Why this needs its own file and its own seam: Dispatch used to fill the
-// field with filepath.Base(workspaceHomeDir), which is CORRECT today only
-// because workspaceHomeDirFor names a home directory after its slug. PR6
-// replaces that name with a named volume (boid-ws-home-<installID8>-<slug>,
-// 論点a), at which point the basename stops being the slug and both the env
-// var and the adapter error message silently start naming a workspace that
-// does not exist — the operator is then told to edit
+// Why this needs its own file: Dispatch used to fill the field with
+// filepath.Base(workspaceHomeDir), which was CORRECT only while a home
+// directory was named after its slug. PR6 replaced that home with a named
+// volume (boid-ws-home-<installID8>-<slug>, 論点a), so the basename is no
+// longer the slug and a re-derivation would make both the env var and the
+// adapter error message name a workspace that does not exist — the operator
+// would be told to edit
 // ~/.config/boid/workspaces/boid-ws-home-1a2b3c4d-myws/init.sh.
 //
-// Every assertion below therefore runs against a home directory whose
-// basename is deliberately NOT the slug (stubWorkspaceHomeDirName), and each
-// case asserts that divergence itself first. Without that, the assertions
-// would be tautological: the two values are equal in today's production
-// layout, so a test that merely checks "the slug is myws" passes just as well
-// against the filepath.Base implementation it is meant to rule out.
-
-// stubWorkspaceHomeDirPrefix is the marker the stubbed layout prepends to a
-// slug to build the home directory's basename. Shaped after the volume name
-// PR6 introduces (docs/plans/workspace-home-volume-persistence.md 論点a) so
-// the divergence being simulated is the one that actually arrives, not an
-// arbitrary one.
-const stubWorkspaceHomeDirPrefix = "boid-ws-home-1a2b3c4d-"
-
-// stubWorkspaceHomeDirName makes resolveWorkspaceHome place a workspace's
-// home at <homesDir>/boid-ws-home-1a2b3c4d-<slug> for the duration of the
-// calling test, restoring the production layout afterwards.
-//
-// The stub still derives the directory from the slug (rather than returning
-// some fixed constant) so that distinct slugs keep distinct homes and the
-// rest of resolveWorkspaceHome — marker, lock, nonce, init.sh — behaves
-// exactly as in production. What it removes is only the accidental identity
-// filepath.Base(homeDir) == slug.
-func stubWorkspaceHomeDirName(t *testing.T) {
-	t.Helper()
-	orig := workspaceHomeDirFor
-	t.Cleanup(func() { workspaceHomeDirFor = orig })
-	workspaceHomeDirFor = func(homesDir, slug string) string {
-		return filepath.Join(homesDir, stubWorkspaceHomeDirPrefix+slug)
-	}
-}
+// PR4 had to SIMULATE that divergence with a swappable home-name function,
+// because the two values were equal in the production layout of the day and
+// every assertion here would otherwise have been tautological. PR6 made the
+// divergence real, so the stub is gone and each case asserts the divergence
+// directly against the value production actually produces.
 
 // TestDispatch_WorkspaceSlug_ReachesLaunchedSpecEnvWithoutPathDerivation is
 // the wiring-seam guard for PR4, asserted against the sandbox.Spec the
@@ -78,7 +52,6 @@ func stubWorkspaceHomeDirName(t *testing.T) {
 // re-deriving the value with filepath.Base at any link fails here.
 func TestDispatch_WorkspaceSlug_ReachesLaunchedSpecEnvWithoutPathDerivation(t *testing.T) {
 	setupWorkspaceHomeTestDirs(t)
-	stubWorkspaceHomeDirName(t)
 	runtimesDir := filepath.Join(t.TempDir(), "runtimes")
 
 	r := skillsSyncTestRunner(t, runtimesDir, "myws")
@@ -106,8 +79,8 @@ func TestDispatch_WorkspaceSlug_ReachesLaunchedSpecEnvWithoutPathDerivation(t *t
 			hostHomeDir(), launched.Mounts)
 	}
 	homeSource := launched.Mounts[homeIdx].Source
-	if base := filepath.Base(homeSource); base == "myws" {
-		t.Fatalf("test wiring: the workspace home directory is still named after its slug (%s); stubWorkspaceHomeDirName did not take effect and this case would be tautological", homeSource)
+	if homeSource == "myws" || filepath.Base(homeSource) == "myws" {
+		t.Fatalf("test wiring: the mounted workspace home (%s) is named after its slug, so this case would be tautological — PR6's volume name is boid-ws-home-<installID8>-<slug>", homeSource)
 	}
 
 	if got := launched.Env["BOID_WORKSPACE_SLUG"]; got != "myws" {
@@ -125,7 +98,6 @@ func TestDispatch_WorkspaceSlug_ReachesLaunchedSpecEnvWithoutPathDerivation(t *t
 // right answer once the path stops carrying the slug.
 func TestDispatch_WorkspaceSlug_DefaultWorkspace_ReachesLaunchedSpecEnv(t *testing.T) {
 	setupWorkspaceHomeTestDirs(t)
-	stubWorkspaceHomeDirName(t)
 	runtimesDir := filepath.Join(t.TempDir(), "runtimes")
 
 	r := skillsSyncTestRunner(t, runtimesDir, "")
@@ -146,14 +118,57 @@ func TestDispatch_WorkspaceSlug_DefaultWorkspace_ReachesLaunchedSpecEnv(t *testi
 	}
 }
 
+// TestDispatch_WorkspaceHomeIdentity_ReachesLaunchOptions is the same kind of
+// seam guard for the identity PR6's codex review (Major 1) added: the value
+// resolveWorkspaceHome observed on the home volume has to reach the BACKEND, or
+// the backend's own re-check of it is inert.
+//
+// It is the classic "both ends wired, nothing crosses" shape, and unusually
+// invisible here: containerBackend treats an EMPTY WorkspaceHomeID as "this
+// caller did not resolve a home" and skips the comparison entirely (DI/test
+// wiring calls Launch directly). So a Dispatch that stopped filling the field
+// would not fail anything — it would silently go back to mounting whatever
+// volume happens to hold the name, which is exactly the state Major 1
+// described.
+func TestDispatch_WorkspaceHomeIdentity_ReachesLaunchOptions(t *testing.T) {
+	setupWorkspaceHomeTestDirs(t)
+	runtimesDir := filepath.Join(t.TempDir(), "runtimes")
+
+	r := skillsSyncTestRunner(t, runtimesDir, "myws")
+	be, ok := r.Backend.(*gwFakeBackend)
+	if !ok {
+		t.Fatalf("test wiring: Runner.Backend is %T, want *gwFakeBackend", r.Backend)
+	}
+
+	if _, err := r.Dispatch(context.Background(), skillsSyncTestSpec(), nil); err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+	if len(be.launchOpts) != 1 {
+		t.Fatalf("backend received %d Launch calls, want exactly 1", len(be.launchOpts))
+	}
+	opts := be.launchOpts[0]
+
+	want := be.workspaceHomes().identityOf(t, dockerres.WorkspaceHomeVolumeName(r.InstallID, "myws"))
+	if want == "" {
+		t.Fatal("test wiring: the modelled home volume carries no identity, so this case cannot prove anything")
+	}
+	if opts.WorkspaceHomeID != want {
+		t.Errorf("LaunchOptions.WorkspaceHomeID = %q, want the identity resolveWorkspaceHome observed (%q). "+
+			"An empty value disables containerBackend's own check silently — see verifyWorkspaceHomeIdentity",
+			opts.WorkspaceHomeID, want)
+	}
+	if opts.WorkspaceSlug != "myws" {
+		t.Errorf("LaunchOptions.WorkspaceSlug = %q, want %q", opts.WorkspaceSlug, "myws")
+	}
+}
+
 // TestResolveWorkspaceHome_ReturnsNormalizedSlugAlongsideHomeDir pins the
 // producing end on its own: resolveWorkspaceHome hands back the slug it
-// normalized, so no caller has to reconstruct it. Same non-slug-named layout,
-// so a "return filepath.Base(homeDir)" implementation of the second return
-// value fails here rather than passing by coincidence.
+// normalized, so no caller has to reconstruct it. A "return
+// filepath.Base(<first return value>)" implementation fails here rather than
+// passing by coincidence, because the first return value is a volume name.
 func TestResolveWorkspaceHome_ReturnsNormalizedSlugAlongsideHomeDir(t *testing.T) {
 	setupWorkspaceHomeTestDirs(t)
-	stubWorkspaceHomeDirName(t)
 
 	for _, tc := range []struct {
 		name        string
@@ -166,19 +181,19 @@ func TestResolveWorkspaceHome_ReturnsNormalizedSlugAlongsideHomeDir(t *testing.T
 		t.Run(tc.name, func(t *testing.T) {
 			r := &Runner{RuntimesDir: filepath.Join(t.TempDir(), "runtimes"), Backend: newBashWorkspaceInitBackend(t)}
 
-			homeDir, slug, err := r.resolveWorkspaceHome(context.Background(), tc.workspaceID)
+			home, slug, _, err := r.resolveWorkspaceHome(context.Background(), tc.workspaceID)
 			if err != nil {
 				t.Fatalf("resolveWorkspaceHome(%q): %v", tc.workspaceID, err)
 			}
-			if base := filepath.Base(homeDir); base == tc.wantSlug {
-				t.Fatalf("test wiring: home dir %q is still named after its slug; stubWorkspaceHomeDirName did not take effect and this case would be tautological", homeDir)
+			if home == tc.wantSlug || filepath.Base(home) == tc.wantSlug {
+				t.Fatalf("test wiring: the resolved home %q is named after its slug, so this case would be tautological", home)
 			}
 			if slug != tc.wantSlug {
-				t.Errorf("resolveWorkspaceHome(%q) slug = %q, want %q (the normalized slug, not anything derived from home dir %q)",
-					tc.workspaceID, slug, tc.wantSlug, homeDir)
+				t.Errorf("resolveWorkspaceHome(%q) slug = %q, want %q (the normalized slug, not anything derived from the home %q)",
+					tc.workspaceID, slug, tc.wantSlug, home)
 			}
-			if !strings.HasSuffix(homeDir, stubWorkspaceHomeDirPrefix+tc.wantSlug) {
-				t.Errorf("resolveWorkspaceHome(%q) home dir = %q, want it to end in %q", tc.workspaceID, homeDir, stubWorkspaceHomeDirPrefix+tc.wantSlug)
+			if want := dockerres.WorkspaceHomeVolumeName(r.InstallID, tc.wantSlug); home != want {
+				t.Errorf("resolveWorkspaceHome(%q) home = %q, want the named volume %q", tc.workspaceID, home, want)
 			}
 		})
 	}

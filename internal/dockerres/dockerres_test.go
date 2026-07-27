@@ -14,11 +14,38 @@ func TestLabelKeys(t *testing.T) {
 		{LabelInstallID, "boid.install_id"},
 		{LabelWorkspaceHome, "boid.workspace_home"},
 		{LabelWorkspaceHomeInstallID, "boid.workspace_home_install_id"},
+		{LabelWorkspaceHomeID, "boid.workspace_home_id"},
 	}
 	for _, c := range cases {
 		if c.got != c.want {
 			t.Errorf("label = %q, want %q", c.got, c.want)
 		}
+	}
+}
+
+// TestLabelKeys_AreAllDistinct pins the property the whole label scheme rests
+// on, and that a copy-paste in the block above would silently break: each key
+// is enumerated on by a DIFFERENT sweep, and two keys colliding would put a
+// persistent workspace HOME volume into a reaper's filter
+// (docs/plans/workspace-home-volume-persistence.md 論点 a).
+//
+// boid.workspace_home_id in particular reads like a variant of
+// boid.workspace_home_install_id; if either were ever written as the other, the
+// completion marker's identity check would compare a workspace slug or an
+// install id — the same value for every incarnation of a volume — and would
+// therefore never notice a volume being deleted and re-created.
+func TestLabelKeys_AreAllDistinct(t *testing.T) {
+	keys := []string{
+		LabelJobID, LabelWorkspace, LabelInstallID,
+		LabelWorkspaceHome, LabelWorkspaceHomeInstallID, LabelWorkspaceHomeID,
+		LabelWorkspaceInit, LabelWorkspaceInitInstallID,
+	}
+	seen := map[string]int{}
+	for i, k := range keys {
+		if j, dup := seen[k]; dup {
+			t.Errorf("label keys %d and %d are both %q", j, i, k)
+		}
+		seen[k] = i
 	}
 }
 

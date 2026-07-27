@@ -62,7 +62,10 @@ set -euo pipefail
 #      network isolation actually holds under real docker, not just a fake
 #      HTTP mock).
 #   3. `docker compose down` + `boid reap` leaves zero containers/networks/
-#      volumes carrying this run's boid.install_id label.
+#      volumes belonging to this run — both the ones carrying its
+#      boid.install_id label AND the per-workspace HOME volumes, which
+#      deliberately carry boid.workspace_home_install_id INSTEAD (see the
+#      teardown below).
 #
 # Requires a real docker engine (`docker compose` v2 plugin) — ubuntu-24.04
 # GitHub Actions runners carry one by default; the day-to-day dev host used
@@ -237,18 +240,45 @@ cleanup() {
     # daemon container's own boid_state volume entirely (PR-2b; see this
     # script's own header comment). INSTALL_ID was already captured from
     # INSIDE the running daemon container, before the `down` above.
-    e2e_log "running boid reap --install-id ${INSTALL_ID}"
-    "$BUILD_DIR/boid" reap --install-id "$INSTALL_ID" >"$ROOT/reap.log" 2>&1 || \
+    #
+    # --include-workspace-homes (PR6 of
+    # docs/plans/workspace-home-volume-persistence.md): a workspace HOME volume
+    # is PERSISTENT by design and carries neither boid.install_id nor
+    # boid.job_id — being invisible to every sweep is the whole point of 論点
+    # a's label decision, since a daemon restart must never take a workspace's
+    # credentials and toolchain with it. Three consequences meet here, and only
+    # the flag resolves them:
+    #
+    #   - `docker compose down --volumes` removes only volumes DECLARED in
+    #     compose.yml, so it does not touch these (their names are computed at
+    #     run time from the install id).
+    #   - a plain `boid reap --install-id` deliberately skips them, and says so
+    #     in its output.
+    #   - the leak check below enumerates by label, and boid.install_id is not
+    #     one they carry.
+    #
+    # So without this, every e2e run that dispatches a job — which is every run,
+    # the sibling-connectivity requirements are hook jobs — would leave one
+    # boid-ws-home-* volume per workspace behind on the CI host, forever, with
+    # requirement 3 reporting success. The install id is fresh per run, so they
+    # would not even be reused.
+    e2e_log "running boid reap --install-id ${INSTALL_ID} --include-workspace-homes"
+    "$BUILD_DIR/boid" reap --install-id "$INSTALL_ID" --include-workspace-homes >"$ROOT/reap.log" 2>&1 || \
       printf '[e2e-container] WARN: boid reap failed, see %s\n' "$ROOT/reap.log" >&2
     cat "$ROOT/reap.log" >&2 || true
 
+    # Both label families, because they name disjoint sets: boid.install_id
+    # covers the job containers/networks/volumes, boid.workspace_home_install_id
+    # covers the persistent HOME volumes. Checking only the first is what would
+    # let the leak above go unnoticed.
     local leaked
-    leaked="$(docker ps -aq --filter "label=boid.install_id=${INSTALL_ID}")$(docker network ls -q --filter "label=boid.install_id=${INSTALL_ID}")$(docker volume ls -q --filter "label=boid.install_id=${INSTALL_ID}")"
+    leaked="$(docker ps -aq --filter "label=boid.install_id=${INSTALL_ID}")$(docker network ls -q --filter "label=boid.install_id=${INSTALL_ID}")$(docker volume ls -q --filter "label=boid.install_id=${INSTALL_ID}")$(docker volume ls -q --filter "label=boid.workspace_home_install_id=${INSTALL_ID}")"
     if [[ -n "$leaked" ]]; then
       printf '[e2e-container] ===== leaked resources after reap (install_id=%s) =====\n' "$INSTALL_ID" >&2
       docker ps -a --filter "label=boid.install_id=${INSTALL_ID}" >&2 || true
       docker network ls --filter "label=boid.install_id=${INSTALL_ID}" >&2 || true
       docker volume ls --filter "label=boid.install_id=${INSTALL_ID}" >&2 || true
+      docker volume ls --filter "label=boid.workspace_home_install_id=${INSTALL_ID}" >&2 || true
       exit_code=1
       e2e_log "requirement 3 (reap sweeps everything) FAILED"
     else
