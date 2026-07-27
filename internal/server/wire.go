@@ -46,6 +46,14 @@ type appRuntime struct {
 	authStore      *auth.Store
 	sessionSigner  *auth.SessionSigner
 	connRegistry   *auth.ConnectionRegistry
+	// workspaceHomes is the engine-backed view of workspace HOME volumes
+	// (docs/plans/workspace-home-volume-persistence.md 論点 a-2, PR7), built
+	// in buildRuntime from the one docker client it already has and consumed
+	// by mountRoutes' WorkspaceHandler/GCHandler. nil when there is no engine
+	// (cfg.Backend injected — the test/DI seam), which is the feature's off
+	// switch: see api.WorkspaceHomeStore's doc comment for why the engine
+	// handle replaced the old RuntimesDir gate.
+	workspaceHomes api.WorkspaceHomeStore
 }
 
 func buildProjectStore(cfg Config, conn *sql.DB, projectRepo *orchestrator.ProjectRepository) (*orchestrator.ProjectStore, map[string]orchestrator.HostCommandSpec, error) {
@@ -473,10 +481,25 @@ func sandboxBackendForConfig(dockerClient *client.Client, installID, runtimeDir 
 	})
 }
 
+// newWorkspaceHomeStoreFn is the package-level indirection that lets the
+// workspace-HOME wiring be exercised end to end — buildRuntime through
+// mountRoutes into a live HTTP response — without an engine, the same DI
+// shape as detectDaemonStateVolumesFn below. Production never reassigns it.
+//
+// It takes the engine handle as dispatcher.WorkspaceHomeVolumeAPI rather than
+// *client.Client for Go's typed-nil trap: a nil *client.Client assigned into
+// an interface is a NON-nil interface, and the whole point of the nil check at
+// the call site is that api.WorkspaceHandler.Homes / api.GCHandler.Homes being
+// nil is what turns the feature off (see api.WorkspaceHomeStore's doc
+// comment). buildRuntime therefore decides nil-ness on the CONCRETE
+// *client.Client, before anything reaches an interface.
+var newWorkspaceHomeStoreFn = func(engine dispatcher.WorkspaceHomeVolumeAPI, installID string) api.WorkspaceHomeStore {
+	return &dispatcher.WorkspaceHomeVolumeStore{API: engine, InstallID: installID}
+}
+
 // detectDaemonStateVolumesFn is the package-level indirection that lets
 // reservedDaemonStateVolumes' CALLER be tested without a container or an
-// engine — the same DI shape as internal/api/workspace_homes.go's
-// apparentSizeFn and internal/dispatcher's daemonUID. The detection internals
+// engine — the same DI shape as internal/dispatcher's daemonUID. The detection internals
 // have their own seams one layer down (dispatcher's readSelfMountInfo /
 // readSelfCgroup). Production never reassigns it.
 //
@@ -1409,7 +1432,29 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 		authStore:      authStore,
 		sessionSigner:  sessionSigner,
 		connRegistry:   connRegistry,
+		// workspaceHomes: the SAME dockerClient the container backend and the
+		// startup self-inspection got (see sandboxBackendForConfig's doc
+		// comment on why there is exactly one), so `workspace show`/`workspace
+		// remove`/`boid gc` talk to the engine that actually holds the
+		// volumes. Left nil when dockerClient is nil, which happens exactly
+		// when cfg.Backend injected a test/DI backend — nil on the CONCRETE
+		// pointer, decided here, because a typed-nil handed through the
+		// interface would be non-nil as an interface and turn the feature
+		// silently ON against a client that panics on first use.
+		workspaceHomes: workspaceHomeStore(dockerClient, srv.installID),
 	}, nil
+}
+
+// workspaceHomeStore builds the workspace-HOME volume store from the daemon's
+// one docker client, or returns a nil api.WorkspaceHomeStore when there is no
+// client to build it from. The nil-ness decision lives here, on the concrete
+// *client.Client, for the typed-nil reason newWorkspaceHomeStoreFn's doc
+// comment gives; every caller downstream only ever sees the interface.
+func workspaceHomeStore(dockerClient *client.Client, installID string) api.WorkspaceHomeStore {
+	if dockerClient == nil {
+		return nil
+	}
+	return newWorkspaceHomeStoreFn(dockerClient, installID)
 }
 
 // makeDockerRuntimeReaper returns a GC runtime-reaper function that checks each
@@ -1575,9 +1620,13 @@ func mountRoutes(srv *Server, runtime *appRuntime) error {
 	// hostVisibleRuntimesDirFor's own doc comment): must agree with
 	// buildRuntime's own runtimesRoot determination (runner.RuntimesDir,
 	// sandboxBackendForConfig's runtimeDir argument) or the read paths
-	// wired below (workspace-home size/delete, GC's workspace_homes
-	// listing, `boid gc`, the job-log REST endpoint) would look in the
-	// wrong directory for a container-backend deploy. dispatcher.
+	// wired below (`boid gc`'s runtime-directory sweep, the job-log REST
+	// endpoint) would look in the wrong directory for a container-backend
+	// deploy. Workspace-home size/delete and GC's workspace_homes listing
+	// USED to be on that list; PR7 of
+	// docs/plans/workspace-home-volume-persistence.md took them off it —
+	// they read the engine's volume API now and never resolve a host path.
+	// dispatcher.
 	// IsContainerBackend(runtime.runner.Backend) is the cheap, already-
 	// resolved signal buildRuntime itself left behind (runtime.runner.
 	// Backend is only non-nil when sandboxBackendForConfig actually
@@ -1683,12 +1732,15 @@ func mountRoutes(srv *Server, runtime *appRuntime) error {
 
 	workspaceHandler := &api.WorkspaceHandler{
 		Service: runtime.projectSvc,
-		// Home directory size reporting (Show) + deletion (Remove),
-		// docs/plans/home-workspace-volume.md Phase 4 PR5. Same runtimesRoot
-		// value the dispatcher itself resolves homes/ from
-		// (dispatcher.WorkspaceHomesDir, via Runner.RuntimesDir) — see this
-		// function's own runtimesRoot comment above.
-		RuntimesDir: runtimesRoot,
+		// Workspace HOME size reporting (Show) + deletion (Remove),
+		// docs/plans/home-workspace-volume.md Phase 4 PR5, rewired onto the
+		// engine's volume API by 論点 a-2 / PR7 of
+		// docs/plans/workspace-home-volume-persistence.md. This deliberately
+		// no longer takes runtimesRoot: the home is a named volume
+		// (dockerres.WorkspaceHomeVolumeName) and there is no host path left
+		// to resolve. nil here — no docker client — is the feature's off
+		// switch, see api.WorkspaceHomeStore's doc comment.
+		Homes: runtime.workspaceHomes,
 	}
 	r.Mount("/api/workspaces", workspaceHandler.Routes())
 
@@ -1718,11 +1770,13 @@ func mountRoutes(srv *Server, runtime *appRuntime) error {
 	gcHandler := &api.GCHandler{
 		Service: gcAppService,
 		// workspace_homes size listing (docs/plans/home-workspace-volume.md
-		// Phase 4 PR5) — visibility only, GC never deletes home directories
-		// itself (that's `workspace remove`'s job). Workspaces flags orphan
-		// home dirs (no matching workspace row) in the listing.
-		RuntimesDir: runtimesRoot,
-		Workspaces:  runtime.projectSvc,
+		// Phase 4 PR5, on the engine's volume API since 論点 a-2 / PR7 of
+		// docs/plans/workspace-home-volume-persistence.md) — visibility only,
+		// GC never deletes a workspace home itself (that's `workspace
+		// remove`'s job). Workspaces flags orphan homes (a HOME volume with
+		// no matching workspace row) in the listing.
+		Homes:      runtime.workspaceHomes,
+		Workspaces: runtime.projectSvc,
 	}
 	r.Mount("/api/gc", gcHandler.Routes())
 

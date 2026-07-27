@@ -1,6 +1,6 @@
 // Package homeenv isolates a test binary from the real developer machine's
-// $HOME and XDG base directories, and lets a test assert that the isolation
-// is actually in place.
+// persistent boid state — $HOME, the XDG base directories, and the docker
+// engine — and lets a test assert that the isolation is actually in place.
 //
 // Why this exists as a package rather than a copy-pasted TestMain body: boid
 // resolves several persistent roots — the workspace homes root
@@ -16,9 +16,15 @@
 // single-source reasoning internal/dockerres was created for in PR1 of that
 // same plan doc.
 //
-// Everything here is test-only. It is imported exclusively from _test.go
-// files, so it never links into the shipped binary despite importing
-// "testing".
+// The engine went on the same list in PR7 of that plan doc (論点 a-2), because
+// the volume-only pivot moved a persistent root the tests can destroy OFF the
+// filesystem entirely: a workspace's $HOME is a docker named volume now, so
+// isolating $XDG_DATA_HOME no longer isolates it. See dockerSocketName's own
+// comment for the measured incident.
+//
+// Everything here is test-only. It is imported from _test.go files and from
+// testutil (itself test-only — it takes *testing.T), so it never links into
+// the shipped binary despite importing "testing".
 package homeenv
 
 import (
@@ -41,7 +47,42 @@ import (
 //     dispatch will happily EXECUTE if a marker miss makes it eligible),
 //     host_commands.yaml, config.yaml.
 //   - XDG_STATE_HOME: ~/.local/state/boid — daemon.LogFilePath.
-var isolatedKeys = []string{"HOME", "XDG_DATA_HOME", "XDG_CONFIG_HOME", "XDG_STATE_HOME"}
+//   - DOCKER_HOST: the engine holding the workspace HOME volumes. See
+//     dockerSocketName's comment.
+var isolatedKeys = []string{"HOME", "XDG_DATA_HOME", "XDG_CONFIG_HOME", "XDG_STATE_HOME", "DOCKER_HOST"}
+
+// clearedKeys are the remaining variables client.New(client.FromEnv) reads.
+// They are UNSET by Isolate rather than redirected, so "isolated" means empty
+// for them (Unisolated encodes that difference).
+//
+// They are not a safety hole on their own — DOCKER_HOST alone decides which
+// engine is addressed — but leaving a developer's DOCKER_CERT_PATH /
+// DOCKER_TLS_VERIFY / DOCKER_API_VERSION applied to the dead socket Isolate
+// installs would make client.New load (or fail to load) their real TLS
+// material, turning `daemon startup refused: connect to docker` into a
+// machine-dependent test failure. The isolated environment should be
+// self-consistent, not half-inherited.
+var clearedKeys = []string{"DOCKER_API_VERSION", "DOCKER_CERT_PATH", "DOCKER_TLS_VERIFY"}
+
+// dockerSocketName is the basename Isolate points DOCKER_HOST at, inside its
+// throwaway directory. Nothing ever creates it: an engine that cannot be
+// dialled is the isolation.
+//
+// This is on the list for the same reason $XDG_DATA_HOME is, and the reason
+// arrived late. Until the volume-only pivot a workspace's $HOME was a
+// directory under $XDG_DATA_HOME, so isolating that root isolated the homes
+// with it. PR6 of docs/plans/workspace-home-volume-persistence.md made the
+// home a docker named volume and PR7 wired
+// `DELETE /api/workspaces/{slug}` onto the engine's volume API, at which point
+// a testutil.NewTestServer daemon — which builds its client from
+// client.New(client.FromEnv), i.e. from DOCKER_HOST — issues
+// VolumeRemove(Force: true) against whatever engine the developer's shell
+// happens to point at. Measured while reviewing PR7 (2026-07-27): a single
+// `go test ./cmd/ -run TestRunWorkspaceRemove...` with a reachable engine
+// destroyed a real `boid-ws-home-noinst-team-c` volume. Redirecting the
+// address is the only isolation that works for every consumer, because the
+// engine handle is resolved deep inside buildRuntime rather than passed in.
+const dockerSocketName = "docker-engine-must-not-be-reachable.sock"
 
 // original records each isolatedKeys entry as it was when this package was
 // initialized. Go initializes an imported package's variables before the
@@ -79,8 +120,9 @@ func Run(m *testing.M) int {
 	return m.Run()
 }
 
-// Isolate points HOME and the XDG base directories at a fresh temp directory
-// and returns a function that removes it. Callers that use Isolate directly
+// Isolate points HOME, the XDG base directories and DOCKER_HOST at a fresh
+// temp directory (clearing the remaining docker transport variables) and
+// returns a function that removes it. Callers that use Isolate directly
 // (rather than Run) are responsible for calling the returned cleanup — and
 // for not calling os.Exit before it runs.
 func Isolate() (cleanup func(), err error) {
@@ -95,8 +137,20 @@ func Isolate() (cleanup func(), err error) {
 		"XDG_DATA_HOME":   filepath.Join(dir, "data"),
 		"XDG_CONFIG_HOME": filepath.Join(dir, "config"),
 		"XDG_STATE_HOME":  filepath.Join(dir, "state"),
+		// A path inside dir, deliberately never created. client.New parses
+		// the address and builds an HTTP transport for it without dialling,
+		// so daemon startup still succeeds; every actual engine call then
+		// fails with ENOENT, which is precisely the "no engine reachable"
+		// degradation every workspace-home code path already handles.
+		"DOCKER_HOST": "unix://" + filepath.Join(dir, dockerSocketName),
 	} {
 		if err := os.Setenv(key, val); err != nil {
+			_ = os.RemoveAll(dir)
+			return nil, err
+		}
+	}
+	for _, key := range clearedKeys {
+		if err := os.Unsetenv(key); err != nil {
 			_ = os.RemoveAll(dir)
 			return nil, err
 		}
@@ -104,24 +158,47 @@ func Isolate() (cleanup func(), err error) {
 	return func() { _ = os.RemoveAll(dir) }, nil
 }
 
-// AssertIsolated fails t when any isolatedKeys variable still holds the value
-// it had when this test binary started — i.e. when the package under test has
-// no TestMain calling Run/Isolate, or gained a new variable the list above
-// covers but that TestMain does not.
+// Unisolated reports every variable this package manages that is still the
+// developer's own: an isolatedKeys entry unchanged since the test binary
+// started, or a clearedKeys entry that is still set. An empty result means
+// Isolate (or Run) has taken effect.
+//
+// Exported as a plain predicate, rather than living inside AssertIsolated, so
+// the same judgment can be made where there is no *testing.T-shaped assertion
+// to hang off — specifically testutil.NewTestServer, which refuses to boot a
+// daemon into an un-isolated environment. Two copies of this rule would be two
+// places for the key list to drift.
+func Unisolated() []string {
+	var keys []string
+	for _, key := range isolatedKeys {
+		if os.Getenv(key) == original[key] {
+			keys = append(keys, key)
+		}
+	}
+	for _, key := range clearedKeys {
+		if os.Getenv(key) != "" {
+			keys = append(keys, key)
+		}
+	}
+	return keys
+}
+
+// AssertIsolated fails t when Unisolated reports anything — i.e. when the
+// package under test has no TestMain calling Run/Isolate, or gained a new
+// variable the lists above cover but that TestMain does not.
 //
 // Call it from a test in every package whose suite can reach a code path that
-// resolves a boid data/config root from the environment. Without it, losing
-// the TestMain is silent: the suite keeps passing, it just starts writing
-// into (and, via init.sh, executing code from) the real user's boid
-// installation. That is not hypothetical — it is exactly what
-// internal/server's suite did until PR2 of
-// docs/plans/workspace-home-volume-persistence.md added its TestMain.
+// resolves a boid data/config root, or a docker engine, from the environment.
+// Without it, losing the TestMain is silent: the suite keeps passing, it just
+// starts writing into (and, via init.sh, executing code from) the real user's
+// boid installation — and, since PR7 of
+// docs/plans/workspace-home-volume-persistence.md, deleting named volumes off
+// their real engine. That is not hypothetical — it is exactly what
+// internal/server's suite did until PR2 of that same plan doc added its
+// TestMain, and what internal/api's did until PR7's round-2 review.
 func AssertIsolated(t *testing.T) {
 	t.Helper()
-	for _, key := range isolatedKeys {
-		got := os.Getenv(key)
-		if got == original[key] {
-			t.Errorf("%s = %q — unchanged since this test binary started, so this package's tests resolve boid's data/config roots from the REAL user environment. Add `func TestMain(m *testing.M) { os.Exit(homeenv.Run(m)) }` to this package.", key, got)
-		}
+	for _, key := range Unisolated() {
+		t.Errorf("%s = %q — still the value this test binary started with, so this package's tests resolve boid's data/config roots (and its docker engine) from the REAL user environment. Add `func TestMain(m *testing.M) { os.Exit(homeenv.Run(m)) }` to this package.", key, os.Getenv(key))
 	}
 }

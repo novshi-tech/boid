@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"bytes"
+	"os"
 	"strings"
 	"testing"
 
@@ -23,26 +24,61 @@ func resetGCFlags(t *testing.T) {
 	}
 }
 
-// TestRunGC_NoRuntimesDirWiredIsImpossibleInPractice is intentionally absent:
-// server/wire.go always wires GCHandler.RuntimesDir from runtimesDirFor(cfg),
-// which is never empty for a real daemon (see runtimesDirFor's doc comment).
-// The "RuntimesDir empty" branch is instead covered directly at the
-// internal/api handler level (TestGCHandler_Run_NoRuntimesDir_OmitsWorkspaceHomes).
+// TestRunGC_NoHomeStoreWiredIsImpossibleInPractice is intentionally absent:
+// server/wire.go always wires GCHandler.Homes for a real daemon (it is nil
+// only when cfg.Backend injected a test/DI sandbox backend, so no docker
+// client was built at all). The nil branch is covered directly at the
+// internal/api handler level (TestGCHandler_Run_NoHomeStore_OmitsWorkspaceHomes).
 
-// TestRunGC_DisplaysWorkspaceHomesWithOrphanFlagAndTotal exercises the full
-// CLI -> daemon -> disk round trip for `boid gc`'s workspace_homes listing
-// (docs/plans/home-workspace-volume.md Phase 4 PR5): a workspace home dir
-// backing a real workspace row is listed and sized, an orphan dir (no
-// matching workspace row) is flagged, and the printed total sums both.
-func TestRunGC_DisplaysWorkspaceHomesWithOrphanFlagAndTotal(t *testing.T) {
+// The workspace_homes listing became engine-backed in PR7 of
+// docs/plans/workspace-home-volume-persistence.md (論点 a-2), so the "seed a
+// directory, then assert `boid gc` sizes it" round trip these tests used to
+// run is no longer expressible without a live docker/podman engine — the
+// daemon enumerates VOLUMES now, and no amount of writing files under
+// runtimes/ produces one. That coverage moved to where it can be exercised
+// deterministically:
+//
+//   - the orphan flag, the sizes and the lister-failure degrade:
+//     internal/api's TestGCHandler_Run_WithHomeStore_* cases;
+//   - the engine calls behind them: internal/dispatcher's
+//     TestWorkspaceHomeVolumeStore_* cases;
+//   - the rendering itself: TestPrintWorkspaceHomes_UnitFormatting below,
+//     which was already a pure unit test of the helper.
+//
+// What stays here is the part that IS observable end to end without an
+// engine, and that matters more than the listing does: `boid gc` still does
+// its actual job when the volume listing cannot be produced, and it says so.
+//
+// TestRunGC_NoWorkspaceHomesYet_OmitsSection is also gone, and not for the
+// same reason. Its premise — a daemon with a reachable engine that has no
+// workspace home volumes on it — is not something this suite can construct at
+// all (homeenv points DOCKER_HOST at a socket nothing answers, deliberately:
+// see testutil.NewTestServer's guard). What it actually observed was an
+// enumeration failure rendering as silence, which is the very defect PR7
+// round-2 review Major 2 fixed. The property it meant to pin — an empty
+// listing prints no section — is unchanged and covered deterministically by
+// TestPrintWorkspaceHomes_EmptyList_NoOutput below.
+
+// TestRunGC_EngineUnavailable_ReportsWhyAndStillDoesItsOwnWork pins both
+// halves of `boid gc`'s behavior when the engine cannot enumerate volumes.
+//
+// Non-fatal: the record deletion has already happened by then, and losing its
+// report over a docker socket that is not there would be a much worse trade
+// than losing the size listing.
+//
+// Not silent (PR7 round-2 codex review, Major 2): the reason has to reach the
+// operator. Printing only the delete-stats line makes a wedged engine look
+// exactly like an install that has never been dispatched into — and the size
+// listing is the only place `boid gc` would ever have mentioned the engine at
+// all, so there is no other line for the operator to notice something is
+// wrong in.
+func TestRunGC_EngineUnavailable_ReportsWhyAndStillDoesItsOwnWork(t *testing.T) {
 	ts := testutil.NewTestServer(t)
 	t.Setenv("BOID_SOCKET", ts.Server.SocketPath())
 	resetGCFlags(t)
 	defer resetGCFlags(t)
 
 	testutil.SeedWorkspace(t, ts, "known-ws")
-	writeWorkspaceHomeFileForTest(t, ts, "known-ws", 1000)  // -> "1.00 KB"
-	writeWorkspaceHomeFileForTest(t, ts, "orphan-ws", 2000) // -> "2.00 KB", no workspace row.
 
 	var out bytes.Buffer
 	cmd := gcCmd
@@ -50,60 +86,38 @@ func TestRunGC_DisplaysWorkspaceHomesWithOrphanFlagAndTotal(t *testing.T) {
 	if err := runGC(cmd, nil); err != nil {
 		t.Fatalf("runGC: %v", err)
 	}
-
 	got := out.String()
-	if !strings.Contains(got, "workspace homes:") {
-		t.Fatalf("expected a workspace homes section, got: %s", got)
+	if !strings.Contains(got, "deleted:") {
+		t.Errorf("expected the delete-stats line, got: %s", got)
 	}
-	if !strings.Contains(got, "known-ws:") || strings.Contains(got, "(orphan) known-ws:") {
-		t.Errorf("known-ws must be listed without an orphan prefix, got: %s", got)
+	if !strings.Contains(got, "listing unavailable") {
+		t.Errorf("expected the workspace-home listing failure to be reported, got: %s", got)
 	}
-	if !strings.Contains(got, "(orphan) orphan-ws:") {
-		t.Errorf("orphan-ws must be listed with an orphan prefix, got: %s", got)
+	// The isolated engine socket is what the daemon failed to reach, so its
+	// path is what the reason has to name. Asserting on the reason's CONTENT,
+	// not merely its presence, is what keeps this from passing on a generic
+	// "unavailable" with the cause dropped.
+	if !strings.Contains(got, os.Getenv("DOCKER_HOST")[len("unix://"):]) {
+		t.Errorf("expected the reason to name the engine that could not be reached, got: %s", got)
 	}
-	if !strings.Contains(got, "1.00 KB") {
-		t.Errorf("expected known-ws's size 1.00 KB in output, got: %s", got)
-	}
-	if !strings.Contains(got, "2.00 KB") {
-		t.Errorf("expected orphan-ws's size 2.00 KB in output, got: %s", got)
-	}
-	if !strings.Contains(got, "total:") || !strings.Contains(got, "3.00 KB") {
-		t.Errorf("expected a 3.00 KB total (1.00 KB + 2.00 KB), got: %s", got)
+	if strings.Contains(got, "total:") {
+		t.Errorf("expected no size table when the listing itself could not be produced, got: %s", got)
 	}
 }
 
-// TestRunGC_NoWorkspaceHomesYet_OmitsSection pins that a fresh installation
-// (no workspace has ever been dispatched into, so homes/ does not exist on
-// disk yet) prints no "workspace homes:" section at all rather than an
-// empty one.
-func TestRunGC_NoWorkspaceHomesYet_OmitsSection(t *testing.T) {
-	ts := testutil.NewTestServer(t)
-	t.Setenv("BOID_SOCKET", ts.Server.SocketPath())
-	resetGCFlags(t)
-	defer resetGCFlags(t)
-
-	var out bytes.Buffer
-	cmd := gcCmd
-	cmd.SetOut(&out)
-	if err := runGC(cmd, nil); err != nil {
-		t.Fatalf("runGC: %v", err)
-	}
-	if strings.Contains(out.String(), "workspace homes:") {
-		t.Errorf("expected no workspace homes section when homes/ does not exist, got: %s", out.String())
-	}
-}
-
-// TestRunGC_DryRun_StillReportsWorkspaceHomes pins that --dry-run does not
-// suppress the size listing — it is visibility-only reporting, not a
-// pending mutation, so there is nothing for --dry-run to gate.
-func TestRunGC_DryRun_StillReportsWorkspaceHomes(t *testing.T) {
+// TestRunGC_DryRun_StillCompletes keeps the --dry-run path exercised end to
+// end. Its former companion assertion — that --dry-run does not SUPPRESS the
+// listing, since visibility-only reporting has no pending mutation for
+// --dry-run to gate — moved to internal/api's
+// TestGCHandler_Run_DryRun_StillListsWorkspaceHomes, which can wire a home
+// store and therefore actually observe the listing.
+func TestRunGC_DryRun_StillCompletes(t *testing.T) {
 	ts := testutil.NewTestServer(t)
 	t.Setenv("BOID_SOCKET", ts.Server.SocketPath())
 	resetGCFlags(t)
 	defer resetGCFlags(t)
 
 	testutil.SeedWorkspace(t, ts, "known-ws")
-	writeWorkspaceHomeFileForTest(t, ts, "known-ws", 500)
 	if err := gcCmd.Flags().Set("dry-run", "true"); err != nil {
 		t.Fatalf("set --dry-run: %v", err)
 	}
@@ -114,12 +128,8 @@ func TestRunGC_DryRun_StillReportsWorkspaceHomes(t *testing.T) {
 	if err := runGC(cmd, nil); err != nil {
 		t.Fatalf("runGC: %v", err)
 	}
-	got := out.String()
-	if !strings.Contains(got, "dry run:") {
+	if got := out.String(); !strings.Contains(got, "dry run:") {
 		t.Errorf("expected the dry-run delete-stats line, got: %s", got)
-	}
-	if !strings.Contains(got, "workspace homes:") {
-		t.Errorf("expected workspace homes listing even under --dry-run, got: %s", got)
 	}
 }
 

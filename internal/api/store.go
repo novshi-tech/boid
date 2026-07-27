@@ -154,12 +154,14 @@ type WorkspaceDetail struct {
 	// view) don't need to len() the slice themselves.
 	ProjectCount     int      `json:"project_count"`
 	AssignedProjects []string `json:"assigned_projects"`
-	// Home reports the workspace home directory's on-disk size (docs/plans/
-	// home-workspace-volume.md Phase 4 PR5). Populated only by GET
+	// Home reports the workspace home VOLUME's size, read from the engine's
+	// own disk-usage accounting (docs/plans/workspace-home-volume-persistence.md
+	// 論点 a-2, PR7 — it was a directory-tree walk under Phase 4 PR5, before
+	// the home became a docker named volume). Populated only by GET
 	// /api/workspaces/{slug} (WorkspaceHandler.Show) — Create/Update/Import
-	// leave it nil, since computing it means walking a directory tree and
-	// none of those callers need it. nil (omitted from the JSON body) when
-	// the handler was not wired with a RuntimesDir to resolve it from.
+	// leave it nil, since reading it costs an engine round trip and none of
+	// those callers need it. nil (omitted from the JSON body) when the
+	// handler has no home store, i.e. no engine handle to ask.
 	Home *WorkspaceHomeSize `json:"home,omitempty"`
 }
 

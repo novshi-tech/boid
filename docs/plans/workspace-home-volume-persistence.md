@@ -1,6 +1,6 @@
 # workspace HOME の named volume 化 (永続性退行の修復)
 
-**状態**: 実装中 (2026-07-26 作成。PR1 / PR2 / PR3 / PR4 / PR5 / **PR6** landed、PR7 以降未着手)
+**状態**: 実装中 (2026-07-26 作成。PR1 / PR2 / PR3 / PR4 / PR5 / **PR6** landed、**PR7** 実装済み、PR8 以降未着手)
 **発端**: 2026-07-26 volume-only dogfood
 **関連**: `home-workspace-volume.md` (Phase 4、破られた契約の出典) / `volume-only-daemon.md` (退行を持ち込んだ cutover) / `phase6-container-backend.md`
 
@@ -204,20 +204,49 @@ Phase 4 の契約は「GC 対象外」と対で「**掃除は workspace remove �
   `GET /api/workspaces/{slug}` のサイズ表示と `POST /api/gc` の orphan 検出も全滅
   (全 workspace が `Exists=false` になる)
 
-**PR6 landed 時点の現況 (2026-07-27)**: PR6 は home を volume 化したが本節の rewiring は
-PR7 に残っている。 したがって現在は上記 2 点が**そのまま発現している** — `workspace remove` の
-home 削除は silent no-op、サイズは全 workspace で空、orphan は 1 件も検出されない。
-これは意図した中間状態であり、`internal/api/workspace_homes.go` の冒頭と
-`docs/{ja,en}/guide/workspace-home.md` に「踏んだときに何が起きるか」と
-手動対応 (`docker volume rm boid-ws-home-<installID8>-<slug>`) を明記した。
-同 package のテストも「通るが実態を見ていない」状態なので、その旨をファイル冒頭に書いた。
+**PR7 で実装済み (2026-07-27)**。 PR6→PR7 の間だけ上記 2 点がそのまま発現していた
+(`workspace remove` の home 削除は silent no-op、サイズは全 workspace で空、orphan は 1 件も
+検出されない)。 中間状態の注記は `internal/api/workspace_homes.go` の冒頭と
+`docs/{ja,en}/guide/workspace-home.md` から撤去した。
 
-**rewiring 方針**: 削除は `VolumeRemove`、orphan 検出は volume 列挙と workspace DB row の差分。
+**機構**: 削除は `VolumeRemove`、サイズは `DiskUsage` (`GET /system/df`)、
+orphan 検出は volume 列挙と workspace DB row の差分。
+engine 呼び出しは `internal/dispatcher/workspace_home_volumes.go` の
+`WorkspaceHomeVolumeStore` に閉じ、`internal/api` は方針 (予約 slug の保護 / orphan 判定 /
+degrade の仕方) だけを持つ。 この分割は **`internal/api` が moby の型を一切 import しない**
+状態を保つため (下表 D2)。
 
-サイズは注意が必要で、`Volume.UsageData` は **`GET /system/df` (DiskUsage) の応答でのみ
-populate され、`VolumeInspect` では省略される** (moby の型定義に基づく。オフラインのため
-一次情報未確認 — 実装前に裏取りすること)。しかも system df は engine 全体を走査するため重い。
-使い捨て container 内で `du` を取る方式も選択肢として比較すること。
+#### 実測 (rootless podman 4.9.3、read-only、2026-07-27)
+
+| 確認事項 | 結果 |
+|---|---|
+| `GET /volumes/<name>` (VolumeInspect) の `UsageData` | **返らない** (フィールド自体が無い) |
+| `GET /volumes` (VolumeList、label filter 有無問わず) の `UsageData` | **返らない** |
+| `GET /system/df` の `UsageData` | **`{RefCount, Size}` が全 volume に付く** |
+| `GET /system/df` の所要時間 | **0.47–0.72s** (images 469 / volumes 157 / containers 10 のホスト、warm) |
+| `?type=volume` / `?verbose=1` の効果 | **podman 4.9.3 は両方とも黙って無視** — 3 パターンとも応答が 151995 bytes で byte-identical |
+| `Size` の意味論 | **`du --apparent-size` と完全一致**。1MiB 実ファイル + 100MiB sparse + hardlink + symlink + 小ファイルの probe volume で **105906193 bytes**、mountpoint に対する `du -sb` と同値 |
+| in-use volume の `DELETE /volumes/<name>` | **409** `volume is being used by the following container(s): <id>` |
+| in-use volume の `DELETE /volumes/<name>?force=1` | **同じく 409** — force は in-use を剥がさない |
+| 不在 volume の `DELETE ?force=1` / 非 force | **204** / **404** |
+| in-use 時の `RefCount` | **1** |
+
+#### 決定
+
+| # | 論点 | 決定 | 根拠 |
+|---|---|---|---|
+| **D2** | `internal/api` から engine を叩く seam | engine 呼び出しは `dispatcher.WorkspaceHomeVolumeStore` (narrow interface `WorkspaceHomeVolumeAPI` = `VolumeInspect`/`VolumeList`/`VolumeRemove`/`DiskUsage`)。 `internal/api` は消費側 interface `WorkspaceHomeStore` を自前で宣言し、平データ `dispatcher.WorkspaceHomeVolume` だけを受け取る | `SelfContainerInspector` と同じ様式。 `internal/api → internal/dispatcher` は既存の向きで、逆向きは作れない (cycle) ので、データ型は dispatcher 側に置くしかない。 結果として **`internal/api` は moby を 1 つも import しない**まま |
+| **D3** | サイズ取得の方式 | **`DiskUsage`(`Volumes: true, Verbose: true`) を 1 回**。 使い捨て container の `du` は不採用 | `UsageData` を返す endpoint は df だけ (実測)。 `du` container 案は volume ごとに container 起動 + image 依存 + init container と同型の失敗面を増やすのに、得られる数値は **df と同じ単位**。 engine 全体走査のコストは呼び出し元が `workspace show` / `workspace remove` / `boid gc` の 3 つだけで dispatch 経路に無いため許容 (0.47–0.72s 実測、`workspaceHomeVolumeTimeout` = 30s で bound) |
+| **D3-a** | `Verbose` を付ける理由 | podman では無意味だが**必須** | moby client v0.5.0 は API >= 1.52 の分岐で `Verbose` が無いと `VolumesDiskUsage.Items` を捨てる。 podman は Ping が 1.41 を返すので legacy 分岐に落ち Items が無条件に入る = **dogfood では露見しない**。 実 docker で全サイズが unknown になる |
+| **D3-b** | apparent size 契約の変化 | **hardlink は 1 回だけ数える**ようになり、**symlink はリンク先文字列長を数える**ようになった。 sparse は従来どおり論理サイズ | 旧 `humanize.ApparentSize` は regular file の `info.Size()` を名前ごとに単純加算していた。 df の Size は本物の `du` 意味論。 ユーザ向け doc の該当記述を更新した |
+| **D4** | `WorkspaceHomeSize.Path` の語彙 | `Path` (`json:"path"`) を **`Volume` (`json:"volume"`) に置換**。 `WorkspaceRemoveResponse.HomePath` → `HomeVolume` (`json:"home_volume"`)。 併存させない | volume 名は path ではない。 併存させると「2 PR 前に使うのをやめた directory」を指す legacy field を出し続けることになる。 CLI/daemon skew は本 repo に API versioning が無く、知らない field は zero value に落ちるだけ (`printWorkspaceHomes` の doc comment が旧 daemon 挙動として既に明文化している流儀)。 Phase 3 でリモート接続が入った以上 skew は現実にあるので、**renderer 側が空の識別子を「未報告」として括弧ごと省く**ようにした — サイズは出る、出所だけ出ない |
+| **D4-b** | skew 時の `workspace remove` (round-2 review Blocker 1) | 「識別子を省く」だけでは**不足**だった。 `HomeDeleted=false` + 削除エラー無しのとき、**`HomeVolume` が空なら黙らず warning を出す** (`docker volume ls --filter label=boid.workspace_home=<slug>` を案内)。 `HomeVolume` がある = daemon が volume 名を答えている場合のみ「home が無かった」として無言 | D4 の「サイズは出る、出所だけ出ない」は `workspace show` には成り立つが `remove` には成り立たない。 PR6 daemon は存在しない host directory を `os.RemoveAll` して `home_deleted=false` / エラー無し / `home_path` (PR7 CLI は読まない) を返すため、**DB row だけ消えて認証情報入り volume が engine に残っているのに CLI は "removed" しか出さない**。 判別は `Volume` field の有無で行う — store は volume の存在有無に関わらず `Volume` を必ず埋めるので、空 = 「home 経路を通っていない daemon」と一意に決まる。 同じ理由で `HomeSizeError` があって未削除のケース (= `VolumeInspect` が失敗し存在を確認できていない) も「size unknown」ではなく「削除を確認できなかった」として出す |
+| **D5** | 機能有効化ゲート | `RuntimesDir != ""` → **`Homes != nil`** (engine handle の有無)。 false のときの挙動 (home 情報を丸ごと省略) は不変 | rewiring 後この機能の依存は engine handle だけで、host path は 1 つも残らない。 nil 判定は `*client.Client` の**具象**側で行う (`workspaceHomeStore()`) — typed-nil を interface に入れると non-nil になり、機能が silent に ON になって初回使用で panic する |
+| **D6** | in-use 時の削除 | `Force: true` は維持するが、**409 は握り潰さず `HomeDeleteError` に載せる** | 実測どおり force は in-use を剥がさない。 force が買っているのは「inspect と remove の間に消えた volume を 404 にしない」= 旧 `os.RemoveAll` の寛容さだけ。 成功扱いにすると「認証情報を消した」と嘘をつくことになる |
+| **D7** | orphan 検出の突合 | 列挙は `boid.workspace_home` の **presence filter**。 slug は**label の値**から取る。 install scope は **名前の再構成** (`WorkspaceHomeVolumeName(myInstallID, labelSlug) == v.Name`) で判定し、`boid.workspace_home_install_id` は**参照しない** | `SanitizeNamePart` は非可逆なので名前から slug は復元できない。 install-id label は installID が空のとき付かない (`ensureNamedVolumes`) ので、`reap.Run` 流の install-scoped filter は**その環境で 1 件も列挙しない** — 破壊する reap には fail-safe だが、報告するだけの listing では逆。 名前再構成なら label の有無に関わらず同じに効き、engine を共有する 2 install が互いの home を orphan として報告することも防げる。 degrade するのは「install id を持つ前に作った `...-noinst-<slug>` volume」だけで、それは daemon が mount もしていないので listing から外れる方が一貫する (doc に手動 cleanup 手段を明記) |
+| **D8** | engine 呼び出しの deadline 粒度 (round-2 review Major 1) | `workspaceHomeVolumeTimeout` は **1 operation ではなく 1 engine call** を縛る。 `Get`/`List`/`Remove` は各リクエストの直前に caller の ctx から新しい deadline を切る (`engineCall`) | 1 つの ctx を `DiskUsage` → `VolumeRemove` で共有すると、**df が deadline を使い切った時点で削除が期限切れ ctx で即失敗する** = 本 package の最重要契約「サイズ失敗は削除を妨げない」が壊れる。 しかも `WorkspaceHandler.Remove` は DB row を先に消すので、結果は「workspace は消えた・認証情報 volume は残った」という最悪形。 operation 全体の上限は伸びる (`Remove` は最大 3×) が、caller 側 ctx で縛れば済む話であり、契約を捨てて上限を守る意味はない。 fake も ctx 期限切れを模倣できるようにして (`dfHangs` / `slowBy` + 各メソッドの `ctx.Err()` 確認) 経路を pin した |
+| **D9** | listing 失敗の伝達 (round-2 review Major 2) | engine の volume 列挙失敗を **`WorkspaceHomesListError` に載せる** (lister 失敗と同じ field)。 daemon log だけに残すのは不可 | 省略された section + 空の list error は「home volume が 0 件の install」と**バイト単位で同じ**で、CLI は何も出さない = engine down と区別できない。 host path 版は列挙失敗時に `listErr` を設定していたので、載せないのは新規の欠落ではなく**契約の後退**。 field を分けないのは CLI の行動が同じ (「一覧は出せない・理由はこれ」) だから |
+| **D10** | test が実 engine を触らない構造 (round-2 review Blocker 2) | `testutil/homeenv` の isolate 対象に **`DOCKER_HOST` を追加** (throwaway dir 内の存在しない socket を指す) し、`DOCKER_API_VERSION`/`DOCKER_CERT_PATH`/`DOCKER_TLS_VERIFY` は unset。 `testutil.NewTestServer` は un-isolated な環境では `t.Fatal` する | `NewTestServer` は `Config.Backend` を注入しない = **production path** なので、`client.New(client.FromEnv)` が開発者の engine に繋がる。 PR7 で `DELETE /api/workspaces/{slug}` が `VolumeRemove(Force: true)` になったため、**テストが実 volume を消す** (実測: `go test ./cmd/` 1 回で `boid-ws-home-noinst-team-c` が消滅)。 engine 注入 seam ではなく env 側で塞いだのは、engine handle が `buildRuntime` の奥で解決されるため consumer 全部に効く唯一の場所だから。 `internal/api` は `TestMain` 自体が無かった (= AssertIsolated も無かった) ので、`NewTestServer` 側の guard を choke point として追加した |
 
 ### 論点 b: marker / lock の置き場
 
@@ -596,12 +625,15 @@ engine が uid 0 で自動生成する。
   さらに `api.deleteWorkspaceHome` が同じ slug で home 削除を明示的にスキップする。
   workspace 未割り当ての project は全部この workspace に dispatch される (`normalizeWorkspaceSlug`)。
 - **非 default でも home 削除は best-effort**。`api.WorkspaceHandler.Remove` は DB row を先に消し、
-  `os.RemoveAll` が失敗しても 200 のまま返す (`WorkspaceRemoveResponse` の part-completed 契約)。
-  所有者の違うディレクトリが**中身を持つ**場合 RemoveAll は EACCES で失敗する
-  (実測: 書き込み権の無いディレクトリ配下の子の `unlinkat` が EACCES。空なら親の権限だけで消せる。
-  engine の自動生成は不在パス全体を作るので必ず子を持つ)。結果は
-  「workspace 定義だけ消えて poisoning された home が孤児として残る」という最悪の組み合わせで、
-  成否は CLI 出力の `home dir deleted:` / `warning: home dir delete failed` でしか判別できない。
+  home の削除が失敗しても 200 のまま返す (`WorkspaceRemoveResponse` の part-completed 契約)。
+  結果は「workspace 定義だけ消えて poisoning された home が孤児として残る」という
+  最悪の組み合わせになりうる。 成否は CLI 出力
+  (`home volume deleted` / `warning: home volume delete failed`) でしか判別できない。
+  失敗要因は PR6/PR7 で変わった: 当時は所有者の違うディレクトリに対する `os.RemoveAll` の
+  EACCES (実測: 書き込み権の無いディレクトリ配下の子の `unlinkat` が EACCES。空なら親の権限だけで
+  消せる。engine の自動生成は不在パス全体を作るので必ず子を持つ)。 PR7 以降は `VolumeRemove` なので
+  所有者は関係なく、代わりに **その workspace で job が走っていると engine が 409 を返す**
+  (論点 a-2 D6。force でも剥がせない)。
 - **成功しても workspace 定義ごと消える**。assign 済み project は `default` に戻される
   (`WorkspaceRepository.Remove` の transaction) ので、作り直して再 assign が要る。
 
@@ -924,7 +956,7 @@ uid mapping を理由に退けた engine bind が要る)。したがって「起
 | 4 | **[landed]** `WorkspaceSlug` を独立に thread する: `resolveWorkspaceHome` の戻り値を `(homeDir, slug, error)` にして、正規化 (`normalizeWorkspaceSlug`) が起きるその場から slug を返す。`Dispatch` はそれを `SandboxRuntimeInfo.WorkspaceSlug` へ流し、`runner.go` の `filepath.Base(workspaceHomeDir)` 依存を撤去 (slug の計算箇所は 1 つのまま — 2 箇所で独立に計算する形にはしない)。**＋ home dir 名を決める 1 行を `workspaceHomeDirFor` へ切り出す**: PR6 が volume 名 (`boid-ws-home-<installID8>-<slug>`) に差し替える地点であり、同時に**「basename ≠ slug」の状況をテストが作れる唯一の seam** — 現行レイアウトでは両者が一致するので、これが無いと「パスから導出していない」ことを検証するテストが tautological になり退行を検出できない | 無し (同じ値が別経路で渡るだけ) | — |
 | 5 | **[landed]** init.sh + prep を使い捨て container 実行へ (論点c §D1-§D10: 既定 bridge / stdin + quoted heredoc / 決定的 container 名による多重実行防止 / prep skeleton mkdir と nonce 書き込みを prelude・postlude として統合 / 専用 label + `ReapOrphans` の別ループ / `WorkspaceInitExecutor` の型アサーション)。**現行の host-visible homes dir を engine bind して検証する**。`prepareBindTarget` の daemon 側 mkdir は**残した** (理由は論点c の「意図的に残したもの」)。**＋ marker の `init_generation`** (論点 b の該当節) — 無いと新経路が既存 workspace で一度も走らない | **init.sh の実行環境が変わる** (host → container)。`$HOME` の値・env 一覧・`$0`・素通し workspace の扱い・エラー文面が変わる — 一覧は論点c の「PR5 が持ち込む挙動変化」。**既存 workspace は upgrade 後 1 回だけ init.sh が再実行される** | 3 |
 | 6 | **[landed]** **[不可分コア]** `resolveWorkspaceHome` を volume ベースへ (返り値が volume 名になる) + `homeMounts` / `workspaceInitHomeMount` の volume 化 + **identity を home 内 nonce から volume label `boid.workspace_home_id` へ移設** (論点b の該当節) + **marker に `skeleton_dirs` を追加**して daemon 側 mkdir を撤去 + **所有者検証を job container の runner へ移設** (論点b-2 / e-2 — 検証対象は mount に覆われていない祖先のみ、復旧案内は volume 内相対パス) + `LaunchOptions.WorkspaceSlug` / `LaunchOptions.WorkspaceHomeID` 新設 (論点D5、後者は identity を使用地点で再突合するため) + `init_generation` を **2** に bump + e2e teardown に HOME volume の掃除を追加 + 契約 doc 更新 | **workspace HOME が volume になる** (= ホスト再起動で認証と toolchain が消えなくなる)。 **既存 workspace は upgrade 後に 1 回 init.sh が走る** (fresh volume)。 postlude と `<home>/.boid-workspace-home-id` が無くなる。 PR7 まで `workspace remove` の home 削除 / サイズ / orphan が効かない | 1,2,4,5 |
-| 7 | workspace remove 連動の削除・サイズ可視化・orphan 検出を volume API へ rewiring (論点 a-2) | | 6 |
+| 7 | workspace remove 連動の削除・サイズ可視化・orphan 検出を volume API へ rewiring (論点 a-2)。 engine 呼び出しは `dispatcher.WorkspaceHomeVolumeStore` に閉じ、`internal/api` は moby を import しないまま (D2)。 サイズは `DiskUsage`(`Volumes+Verbose`) 1 回 (D3)、in-use は 409 を握り潰さず報告 (D6)、orphan 突合は label 値 + 名前再構成 (D7)、ゲートは `RuntimesDir != ""` から engine handle の有無へ (D5) | **`workspace remove` が home volume を実際に消すようになった**。 サイズ表示と orphan 検出が復活。 **`path` / `home_path` field が `volume` / `home_volume` に置き換わり、CLI の表示が host path から volume 名になった** (D4)。 サイズ意味論が本物の `du` に揃い、hardlink の重複計上が無くなった (D3-b)。 job が走っている workspace を remove すると 409 が warning として出る (従来は silent) | 6 |
 | 8 | 既存 homes の移行 CLI (`boid workspace import-home`、uid mapping を跨ぐ tar stdin) | | 6 |
 | 9 | init.sh の CLI 経路 (export/import の `init_script` + 専用 CLI) | | — (独立) |
 
@@ -941,11 +973,11 @@ PR3 が新設した bind target の mkdir (skill 実体の書き込みは runtim
 (Fable 再レビュー R-3)。`volume-only-daemon.md` が「巨大 1 PR は review 困難・CI failure の
 切り分け困難」を理由に段階案を採った経緯とも整合しない。
 
-**PR6→PR7 の中間状態**: PR7 が landed するまで `boid workspace remove` の home 削除は
-silent no-op になり volume が残る。一時的に許容する (手動 `docker volume rm` で対応可能)。
-サイズ表示と orphan 検出も同時に無効化される。 PR6 landed 時点でこれは
-仮定ではなく**現況**であり、コード側 (`internal/api/workspace_homes.go` 冒頭) と
-利用者向け doc の両方に明記した。
+**PR6→PR7 の中間状態 (解消済み)**: PR7 が入るまで `boid workspace remove` の home 削除は
+silent no-op になり volume が残っていた。サイズ表示と orphan 検出も同時に無効だった。
+その間はコード側 (`internal/api/workspace_homes.go` 冒頭) と利用者向け doc の両方に
+「踏んだときに何が起きるか」と手動対応 (`docker volume rm boid-ws-home-<installID8>-<slug>`)
+を明記していた。PR7 でどちらの注記も撤去した。
 
 初版にあった「PR1: `sandbox.Mount` に volume 型追加」は論点 e の事実誤認に基づいていたので削除し、
 label / reap 側の封じ込めに置き換えた。
@@ -981,8 +1013,8 @@ label / reap 側の封じ込めに置き換えた。
 6. **`boid-ws-home-*` という名前の label 無し volume があると dispatch が止まる** —
    boid が作った volume は必ず identity label を持つので、外部で作られたと判断して
    fail loud する (再 init しても収束しないため)
-7. **PR7 まで `boid workspace remove` の home 削除・サイズ表示・orphan 検出が効かない**
-   (論点 a-2 の現況)
+7. **`boid workspace remove` の home 削除・サイズ表示・orphan 検出が PR7 まで効かなかった**
+   (論点 a-2。PR7 で解消済み)
 8. **e2e の teardown が `boid reap --include-workspace-homes` を使うようになった** —
    HOME volume は設計上 `boid.install_id` を持たないので、そうしないと CI ホストに
    1 run につき workspace 数ぶんの volume が永久に残り、leak チェックは成功を報告し続ける

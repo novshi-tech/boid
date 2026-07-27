@@ -1,65 +1,129 @@
 package api
 
 import (
+	"context"
 	"errors"
-	"os"
-	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 
+	"github.com/novshi-tech/boid/internal/dispatcher"
+	"github.com/novshi-tech/boid/internal/dockerres"
 	"github.com/novshi-tech/boid/internal/orchestrator"
 )
 
-// # PR6 STATUS: these cases are green and inert, and PR7 is where they become
-// meaningful again.
+// PR7 of docs/plans/workspace-home-volume-persistence.md (論点 a-2) replaced
+// the mechanism under these cases — <runtimesRoot>/homes/<slug> directories
+// became per-workspace docker named volumes — while keeping the CONTRACTS the
+// PR6-era versions of these tests stated. Each of the four is still here,
+// under a name that says which one it is:
 //
-// Everything in this file exercises the functions under test against real
-// directories under <runtimesRoot>/homes/<slug>. PR6 of
-// docs/plans/workspace-home-volume-persistence.md moved the workspace home into
-// a docker named volume, so a RUNNING daemon never puts anything there any
-// more: on a real installation the size lookup reports Exists=false for every
-// workspace, the GC listing is empty, and `workspace remove` deletes nothing.
-// These tests still describe what the code does; they no longer describe
-// anything production reaches.
+//   - the reserved `default` slug is never deleted
+//     (TestDeleteWorkspaceHome_DefaultWorkspace_NeverDeleted)
+//   - a home that is not there is not an error
+//     (TestComputeWorkspaceHomeSize_NotYetCreated,
+//     TestDeleteWorkspaceHome_NotYetCreated_NoOp)
+//   - a sizing failure does not block deletion
+//     (TestDeleteWorkspaceHome_SizeErrorDoesNotBlockDeletion)
+//   - an orphan is a home with no workspace row
+//     (TestListWorkspaceHomeSizes_ListsAllAndFlagsOrphans)
 //
-// They are kept rather than deleted because 論点 a-2's rewiring (PR7) has to
-// preserve the CONTRACTS they state — the reserved default slug is never
-// deleted, a missing home is not an error, a sizing failure does not block
-// deletion, an orphan is a home with no workspace row — while replacing the
-// mechanism underneath them. Deleting them now would leave PR7 to rediscover
-// each of those from scratch. See workspace_homes.go's own PR6 status note.
-//
-// newTestRuntimesDir returns a runtimesDir (as server/wire.go's
-// runtimesDirFor(cfg) would produce) whose sibling "homes" directory lives
-// under t.TempDir() — matching dispatcher.WorkspaceHomesDir's derivation
-// (filepath.Dir(runtimesDir)/homes).
-func newTestRuntimesDir(t *testing.T) string {
-	t.Helper()
-	return filepath.Join(t.TempDir(), "runtimes")
+// One PR6-era case is deliberately gone rather than translated:
+// TestListWorkspaceHomeSizes_IgnoresLegacyMarkerAndLockFiles pinned an
+// os.ReadDir IsDir() filter that kept leftover homes/<slug>.init.json and
+// homes/<slug>.lock files from being mistaken for workspace homes. A volume
+// listing has no such residue to confuse — the engine enumerates volumes,
+// and the legacy files are ordinary files in a directory nothing here reads
+// any more. The filter itself still exists, in dispatcher.WorkspaceHomesDir's
+// world, for PR8's migration CLI to worry about.
+
+// stubWorkspaceHomeStore is a WorkspaceHomeStore backed by a map, standing in
+// for dispatcher.WorkspaceHomeVolumeStore's engine calls. The engine-side
+// contracts (which endpoint reports a size, what force does to an in-use
+// volume) are pinned in internal/dispatcher's own tests; what these tests are
+// about is the policy this package layers on top.
+type stubWorkspaceHomeStore struct {
+	installID string
+	// homes maps slug -> size in bytes for every volume that exists.
+	homes map[string]int64
+	// sizeErrs maps slug -> a sizing failure to report for it.
+	sizeErrs map[string]string
+	// removeErrs maps slug -> an engine failure to report from Remove.
+	removeErrs map[string]error
+	listErr    error
+
+	removed []string
 }
 
-func writeHomeFile(t *testing.T, runtimesDir, slug, name string, size int) {
-	t.Helper()
-	path, err := resolveWorkspaceHomePath(runtimesDir, slug)
-	if err != nil {
-		t.Fatalf("resolveWorkspaceHomePath: %v", err)
+func (s *stubWorkspaceHomeStore) volumeName(slug string) string {
+	return dockerres.WorkspaceHomeVolumeName(s.installID, slug)
+}
+
+func (s *stubWorkspaceHomeStore) get(slug string) dispatcher.WorkspaceHomeVolume {
+	info := dispatcher.WorkspaceHomeVolume{Slug: slug, Volume: s.volumeName(slug)}
+	if msg, ok := s.sizeErrs[slug]; ok {
+		info.SizeError = msg
 	}
-	if err := os.MkdirAll(path, 0o755); err != nil {
-		t.Fatalf("mkdir home dir: %v", err)
+	size, ok := s.homes[slug]
+	if !ok {
+		return info
 	}
-	if err := os.WriteFile(filepath.Join(path, name), make([]byte, size), 0o644); err != nil {
-		t.Fatalf("write home file: %v", err)
+	info.Exists = true
+	if info.SizeError == "" {
+		info.Bytes = size
 	}
+	return info
+}
+
+func (s *stubWorkspaceHomeStore) Get(_ context.Context, slug string) dispatcher.WorkspaceHomeVolume {
+	return s.get(slug)
+}
+
+func (s *stubWorkspaceHomeStore) List(_ context.Context) ([]dispatcher.WorkspaceHomeVolume, error) {
+	if s.listErr != nil {
+		return nil, s.listErr
+	}
+	// Sorted by slug, as dispatcher.WorkspaceHomeVolumeStore.List promises.
+	var slugs []string
+	for slug := range s.homes {
+		slugs = append(slugs, slug)
+	}
+	for i := 0; i < len(slugs); i++ {
+		for j := i + 1; j < len(slugs); j++ {
+			if slugs[j] < slugs[i] {
+				slugs[i], slugs[j] = slugs[j], slugs[i]
+			}
+		}
+	}
+	out := make([]dispatcher.WorkspaceHomeVolume, 0, len(slugs))
+	for _, slug := range slugs {
+		out = append(out, s.get(slug))
+	}
+	return out, nil
+}
+
+func (s *stubWorkspaceHomeStore) Remove(_ context.Context, slug string) (dispatcher.WorkspaceHomeVolume, bool, error) {
+	info := s.get(slug)
+	s.removed = append(s.removed, slug)
+	if err, ok := s.removeErrs[slug]; ok {
+		return info, false, err
+	}
+	delete(s.homes, slug)
+	return info, info.Exists, nil
+}
+
+func newStubHomeStore(homes map[string]int64) *stubWorkspaceHomeStore {
+	return &stubWorkspaceHomeStore{installID: "inst1234", homes: homes}
 }
 
 // --- computeWorkspaceHomeSize ---
 
 func TestComputeWorkspaceHomeSize_NotYetCreated(t *testing.T) {
-	runtimesDir := newTestRuntimesDir(t)
-	got := computeWorkspaceHomeSize(runtimesDir, "myws")
+	store := newStubHomeStore(map[string]int64{})
+
+	got := computeWorkspaceHomeSize(context.Background(), store, "myws")
+
 	if got.Exists {
-		t.Errorf("Exists = true, want false for a home dir that was never created")
+		t.Errorf("Exists = true, want false for a workspace never dispatched into")
 	}
 	if got.Bytes != 0 {
 		t.Errorf("Bytes = %d, want 0", got.Bytes)
@@ -67,18 +131,16 @@ func TestComputeWorkspaceHomeSize_NotYetCreated(t *testing.T) {
 	if got.SizeError != "" {
 		t.Errorf("SizeError = %q, want empty (not-yet-created is not an error)", got.SizeError)
 	}
-	wantPath, _ := resolveWorkspaceHomePath(runtimesDir, "myws")
-	if got.Path != wantPath {
-		t.Errorf("Path = %q, want %q", got.Path, wantPath)
+	if want := store.volumeName("myws"); got.Volume != want {
+		t.Errorf("Volume = %q, want %q (reported even when the volume does not exist yet)", got.Volume, want)
 	}
 }
 
 func TestComputeWorkspaceHomeSize_ExistingContent(t *testing.T) {
-	runtimesDir := newTestRuntimesDir(t)
-	writeHomeFile(t, runtimesDir, "myws", "a.txt", 123)
-	writeHomeFile(t, runtimesDir, "myws", "b.txt", 77)
+	store := newStubHomeStore(map[string]int64{"myws": 200})
 
-	got := computeWorkspaceHomeSize(runtimesDir, "myws")
+	got := computeWorkspaceHomeSize(context.Background(), store, "myws")
+
 	if !got.Exists {
 		t.Fatal("Exists = false, want true")
 	}
@@ -90,35 +152,17 @@ func TestComputeWorkspaceHomeSize_ExistingContent(t *testing.T) {
 	}
 }
 
-func TestComputeWorkspaceHomeSize_UnreadableDir_ReportsSizeError(t *testing.T) {
-	if runtime.GOOS != "linux" {
-		t.Skip("permission-bit test assumes POSIX permission semantics")
-	}
-	if os.Geteuid() == 0 {
-		t.Skip("running as root: directory permission bits are not enforced")
-	}
+func TestComputeWorkspaceHomeSize_SizingFailure_ReportsSizeError(t *testing.T) {
+	store := newStubHomeStore(map[string]int64{"myws": 200})
+	store.sizeErrs = map[string]string{"myws": "engine busy"}
 
-	runtimesDir := newTestRuntimesDir(t)
-	writeHomeFile(t, runtimesDir, "myws", "a.txt", 10)
-	homePath, _ := resolveWorkspaceHomePath(runtimesDir, "myws")
-	locked := filepath.Join(homePath, "locked")
-	if err := os.MkdirAll(locked, 0o755); err != nil {
-		t.Fatalf("mkdir locked: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(locked, "secret.txt"), []byte("x"), 0o644); err != nil {
-		t.Fatalf("write secret: %v", err)
-	}
-	if err := os.Chmod(locked, 0o000); err != nil {
-		t.Fatalf("chmod locked: %v", err)
-	}
-	t.Cleanup(func() { _ = os.Chmod(locked, 0o755) })
+	got := computeWorkspaceHomeSize(context.Background(), store, "myws")
 
-	got := computeWorkspaceHomeSize(runtimesDir, "myws")
 	if !got.Exists {
-		t.Error("Exists = false, want true (the home dir itself is readable, only a subdir is locked)")
+		t.Error("Exists = false, want true (the volume is there; only sizing failed)")
 	}
 	if got.SizeError == "" {
-		t.Error("SizeError = empty, want a non-empty error from the permission-denied subdirectory")
+		t.Error("SizeError = empty, want the store's sizing failure")
 	}
 	if got.Bytes != 0 {
 		t.Errorf("Bytes = %d, want 0 when SizeError is set", got.Bytes)
@@ -136,9 +180,10 @@ func (s *stubWorkspaceSlugLister) ListWorkspaces() ([]*orchestrator.WorkspaceSum
 	return s.summaries, s.err
 }
 
-func TestListWorkspaceHomeSizes_NoHomesDirYet(t *testing.T) {
-	runtimesDir := newTestRuntimesDir(t)
-	got, listErr, err := ListWorkspaceHomeSizes(runtimesDir, nil)
+func TestListWorkspaceHomeSizes_NoVolumesYet(t *testing.T) {
+	store := newStubHomeStore(map[string]int64{})
+
+	got, listErr, err := ListWorkspaceHomeSizes(context.Background(), store, nil)
 	if err != nil {
 		t.Fatalf("ListWorkspaceHomeSizes: %v", err)
 	}
@@ -150,18 +195,18 @@ func TestListWorkspaceHomeSizes_NoHomesDirYet(t *testing.T) {
 	}
 }
 
-func TestListWorkspaceHomeSizes_ListsAllDirsAndFlagsOrphans(t *testing.T) {
-	runtimesDir := newTestRuntimesDir(t)
-	writeHomeFile(t, runtimesDir, "default", "x", 100)
-	writeHomeFile(t, runtimesDir, "known-ws", "x", 200)
-	writeHomeFile(t, runtimesDir, "orphan-ws", "x", 50)
-
+func TestListWorkspaceHomeSizes_ListsAllAndFlagsOrphans(t *testing.T) {
+	store := newStubHomeStore(map[string]int64{
+		"default":   100,
+		"known-ws":  200,
+		"orphan-ws": 50,
+	})
 	lister := &stubWorkspaceSlugLister{summaries: []*orchestrator.WorkspaceSummary{
 		{ID: "default"},
 		{ID: "known-ws"},
 	}}
 
-	got, listErr, err := ListWorkspaceHomeSizes(runtimesDir, lister)
+	got, listErr, err := ListWorkspaceHomeSizes(context.Background(), store, lister)
 	if err != nil {
 		t.Fatalf("ListWorkspaceHomeSizes: %v", err)
 	}
@@ -190,66 +235,21 @@ func TestListWorkspaceHomeSizes_ListsAllDirsAndFlagsOrphans(t *testing.T) {
 	if !byslug["orphan-ws"].Orphan {
 		t.Error("orphan-ws: Orphan = false, want true (no matching workspace row)")
 	}
-}
-
-// TestListWorkspaceHomeSizes_IgnoresLegacyMarkerAndLockFiles pins that
-// leftover homes/<slug>.init.json and homes/<slug>.lock files are not
-// mistaken for workspace home directories (os.ReadDir's IsDir() filter).
-//
-// Those files are LEGACY as of PR2 of
-// docs/plans/workspace-home-volume-persistence.md (論点b): current daemons
-// write the marker and the lock to the daemon's own data root
-// (<dataHome>/homes-meta/) instead, and PR2 deliberately neither migrates nor
-// deletes the copies an older daemon left in homes/. So this stays a real
-// scenario on any upgraded installation, and the IsDir() filter stays
-// load-bearing — it just guards against residue now rather than against
-// files the current code still puts there.
-func TestListWorkspaceHomeSizes_IgnoresLegacyMarkerAndLockFiles(t *testing.T) {
-	runtimesDir := newTestRuntimesDir(t)
-	writeHomeFile(t, runtimesDir, "myws", "x", 10)
-	// resolveWorkspaceHomePath(runtimesDir, "") joins the empty slug onto
-	// homesDir, which filepath.Join collapses right back down to homesDir
-	// itself (Join("/a/b", "") == "/a/b") — a convenient way to resolve
-	// homesDir without duplicating dispatcher.WorkspaceHomesDir's own call.
-	homesDir, err := resolveWorkspaceHomePath(runtimesDir, "")
-	if err != nil {
-		t.Fatalf("resolveWorkspaceHomePath: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(homesDir, "myws.init.json"), []byte("{}"), 0o600); err != nil {
-		t.Fatalf("write marker: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(homesDir, "myws.lock"), nil, 0o600); err != nil {
-		t.Fatalf("write lock: %v", err)
-	}
-
-	got, listErr, err := ListWorkspaceHomeSizes(runtimesDir, nil)
-	if err != nil {
-		t.Fatalf("ListWorkspaceHomeSizes: %v", err)
-	}
-	if listErr != "" {
-		t.Errorf("listErr = %q, want empty", listErr)
-	}
-	if len(got) != 1 {
-		t.Fatalf("len(got) = %d, want 1 (marker/lock files must not be listed): %+v", len(got), got)
-	}
-	if got[0].Slug != "myws" {
-		t.Errorf("Slug = %q, want myws", got[0].Slug)
+	if want := store.volumeName("known-ws"); byslug["known-ws"].Volume != want {
+		t.Errorf("known-ws: Volume = %q, want %q", byslug["known-ws"].Volume, want)
 	}
 }
 
-// TestListWorkspaceHomeSizes_ListerError_OmitsListingWithListError pins
-// Should-fix #3 (codex PR #791 review): a lister failure used to leave the
-// full homes/ listing intact but with every entry mismarked Orphan=true
+// TestListWorkspaceHomeSizes_ListerError_OmitsListingWithListError carries
+// PR #791 Should-fix #3 across the mechanism change: a lister failure used to
+// leave the listing intact with every entry mismarked Orphan=true
 // (indistinguishable from "every workspace really was deleted"). Selection A
-// instead omits the listing outright on a lister failure — homes comes back
-// empty, not populated-but-untrustworthy — and reports the reason via
-// listErr.
+// omits the listing outright instead and reports the reason.
 func TestListWorkspaceHomeSizes_ListerError_OmitsListingWithListError(t *testing.T) {
-	runtimesDir := newTestRuntimesDir(t)
-	writeHomeFile(t, runtimesDir, "myws", "x", 10)
-
+	store := newStubHomeStore(map[string]int64{"myws": 10})
 	lister := &stubWorkspaceSlugLister{err: errors.New("db unavailable")}
-	got, listErr, err := ListWorkspaceHomeSizes(runtimesDir, lister)
+
+	got, listErr, err := ListWorkspaceHomeSizes(context.Background(), store, lister)
 	if err != nil {
 		t.Fatalf("ListWorkspaceHomeSizes should not fail on a lister error: %v", err)
 	}
@@ -264,34 +264,45 @@ func TestListWorkspaceHomeSizes_ListerError_OmitsListingWithListError(t *testing
 	}
 }
 
+// TestListWorkspaceHomeSizes_StoreError_IsAGenuineFailure keeps the third
+// return value's meaning distinct from listErr's: an engine enumeration
+// failure means the whole call failed, not just orphan detection.
+func TestListWorkspaceHomeSizes_StoreError_IsAGenuineFailure(t *testing.T) {
+	store := newStubHomeStore(map[string]int64{})
+	store.listErr = errors.New("engine down")
+
+	if _, _, err := ListWorkspaceHomeSizes(context.Background(), store, nil); err == nil {
+		t.Fatal("err = nil, want the engine enumeration failure")
+	}
+}
+
 // --- deleteWorkspaceHome ---
 
 func TestDeleteWorkspaceHome_DefaultWorkspace_NeverDeleted(t *testing.T) {
-	runtimesDir := newTestRuntimesDir(t)
-	writeHomeFile(t, runtimesDir, orchestrator.DefaultWorkspaceSlug, "x", 10)
+	store := newStubHomeStore(map[string]int64{orchestrator.DefaultWorkspaceSlug: 10})
 
-	info, deleted, err := deleteWorkspaceHome(runtimesDir, orchestrator.DefaultWorkspaceSlug)
+	info, deleted, err := deleteWorkspaceHome(context.Background(), store, orchestrator.DefaultWorkspaceSlug)
 	if err != nil {
 		t.Fatalf("deleteWorkspaceHome: %v", err)
 	}
 	if deleted {
 		t.Error("deleted = true, want false (default workspace home must never be deleted)")
 	}
-	homePath, _ := resolveWorkspaceHomePath(runtimesDir, orchestrator.DefaultWorkspaceSlug)
-	if _, statErr := os.Stat(homePath); statErr != nil {
-		t.Errorf("default workspace home dir was removed from disk: stat err=%v", statErr)
+	if len(store.removed) != 0 {
+		t.Errorf("store.Remove was called %v, want no call at all for the reserved default slug", store.removed)
 	}
-	if info.Path != homePath {
-		t.Errorf("info.Path = %q, want %q", info.Path, homePath)
+	if _, still := store.homes[orchestrator.DefaultWorkspaceSlug]; !still {
+		t.Error("default workspace home volume was removed")
+	}
+	if want := store.volumeName(orchestrator.DefaultWorkspaceSlug); info.Volume != want {
+		t.Errorf("info.Volume = %q, want %q", info.Volume, want)
 	}
 }
 
-func TestDeleteWorkspaceHome_ExistingHome_RemovesFromDisk(t *testing.T) {
-	runtimesDir := newTestRuntimesDir(t)
-	writeHomeFile(t, runtimesDir, "myws", "x", 42)
-	homePath, _ := resolveWorkspaceHomePath(runtimesDir, "myws")
+func TestDeleteWorkspaceHome_ExistingHome_RemovesVolume(t *testing.T) {
+	store := newStubHomeStore(map[string]int64{"myws": 42})
 
-	info, deleted, err := deleteWorkspaceHome(runtimesDir, "myws")
+	info, deleted, err := deleteWorkspaceHome(context.Background(), store, "myws")
 	if err != nil {
 		t.Fatalf("deleteWorkspaceHome: %v", err)
 	}
@@ -301,36 +312,20 @@ func TestDeleteWorkspaceHome_ExistingHome_RemovesFromDisk(t *testing.T) {
 	if info.Bytes != 42 {
 		t.Errorf("info.Bytes = %d, want 42 (size as observed before deletion)", info.Bytes)
 	}
-	if _, statErr := os.Stat(homePath); !os.IsNotExist(statErr) {
-		t.Errorf("home dir still present after delete: stat err=%v", statErr)
+	if _, still := store.homes["myws"]; still {
+		t.Error("home volume still present after delete")
 	}
 }
 
-// TestDeleteWorkspaceHome_SizeErrorDoesNotBlockDeletion pins Should-fix #2
-// (codex PR #791 review): a sizing failure (humanize.ApparentSize erroring
-// partway through the walk, e.g. because a concurrent dispatch job deleted
-// cache files mid-walk) must not skip the os.RemoveAll attempt entirely —
-// the pre-review behavior treated any SizeError as "could not even size it,
-// do not attempt a blind RemoveAll" and returned before ever calling
-// RemoveAll, which left an orphaned, still-undeleted directory on disk after
-// the workspace row itself was already gone. apparentSizeFn is stubbed
-// (rather than relying on a real permission trick) because a real
-// filesystem permission error that blocks sizing would, on this codebase's
-// implementation, also block RemoveAll for the identical reason — this test
-// needs a sizing failure that is independent of the deletion outcome to
-// actually exercise the "best-effort" contract.
+// TestDeleteWorkspaceHome_SizeErrorDoesNotBlockDeletion carries PR #791
+// Should-fix #2 across the mechanism change: a sizing failure must not skip
+// the removal attempt, which used to leave an undeletable-looking orphan
+// behind after the workspace row was already gone.
 func TestDeleteWorkspaceHome_SizeErrorDoesNotBlockDeletion(t *testing.T) {
-	runtimesDir := newTestRuntimesDir(t)
-	writeHomeFile(t, runtimesDir, "myws", "a.txt", 10)
-	homePath, _ := resolveWorkspaceHomePath(runtimesDir, "myws")
+	store := newStubHomeStore(map[string]int64{"myws": 10})
+	store.sizeErrs = map[string]string{"myws": "simulated sizing failure"}
 
-	orig := apparentSizeFn
-	apparentSizeFn = func(string) (int64, error) {
-		return 0, errors.New("simulated sizing failure (e.g. concurrent dispatch ENOENT mid-walk)")
-	}
-	t.Cleanup(func() { apparentSizeFn = orig })
-
-	info, deleted, err := deleteWorkspaceHome(runtimesDir, "myws")
+	info, deleted, err := deleteWorkspaceHome(context.Background(), store, "myws")
 	if err != nil {
 		t.Fatalf("deleteWorkspaceHome: %v, want nil (a sizing failure must not surface as a deletion error)", err)
 	}
@@ -340,15 +335,15 @@ func TestDeleteWorkspaceHome_SizeErrorDoesNotBlockDeletion(t *testing.T) {
 	if info.SizeError == "" {
 		t.Error("info.SizeError = empty, want the injected sizing failure")
 	}
-	if _, statErr := os.Stat(homePath); !os.IsNotExist(statErr) {
-		t.Errorf("home dir still present after delete: stat err=%v", statErr)
+	if _, still := store.homes["myws"]; still {
+		t.Error("home volume still present after delete")
 	}
 }
 
 func TestDeleteWorkspaceHome_NotYetCreated_NoOp(t *testing.T) {
-	runtimesDir := newTestRuntimesDir(t)
+	store := newStubHomeStore(map[string]int64{})
 
-	info, deleted, err := deleteWorkspaceHome(runtimesDir, "myws")
+	info, deleted, err := deleteWorkspaceHome(context.Background(), store, "myws")
 	if err != nil {
 		t.Fatalf("deleteWorkspaceHome: %v", err)
 	}
@@ -360,38 +355,24 @@ func TestDeleteWorkspaceHome_NotYetCreated_NoOp(t *testing.T) {
 	}
 }
 
-func TestDeleteWorkspaceHome_PermissionDenied_ReturnsErrorNotDeleted(t *testing.T) {
-	if runtime.GOOS != "linux" {
-		t.Skip("permission-bit test assumes POSIX permission semantics")
-	}
-	if os.Geteuid() == 0 {
-		t.Skip("running as root: directory permission bits are not enforced")
+// TestDeleteWorkspaceHome_InUse_ReturnsErrorNotDeleted pins 論点 a-2's D6 at
+// the policy layer: removing a workspace while a job is still running in it
+// leaves the volume behind, and that has to reach the operator as a
+// part-completed remove rather than as a success.
+func TestDeleteWorkspaceHome_InUse_ReturnsErrorNotDeleted(t *testing.T) {
+	store := newStubHomeStore(map[string]int64{"myws": 10})
+	store.removeErrs = map[string]error{
+		"myws": errors.New("volume is being used by the following container(s): abc123"),
 	}
 
-	runtimesDir := newTestRuntimesDir(t)
-	homePath, _ := resolveWorkspaceHomePath(runtimesDir, "myws")
-	homesDir := filepath.Dir(homePath)
-	if err := os.MkdirAll(homesDir, 0o755); err != nil {
-		t.Fatalf("mkdir homes dir: %v", err)
-	}
-	if err := os.MkdirAll(homePath, 0o755); err != nil {
-		t.Fatalf("mkdir home dir: %v", err)
-	}
-	// Deny read+execute on homes/ itself so even os.Stat(homePath) fails
-	// with a permission error (not ENOENT) — deleteWorkspaceHome still
-	// attempts os.RemoveAll(homePath) regardless (sizing is best-effort), but
-	// that attempt fails for the exact same underlying permission reason, so
-	// the end-to-end contract (error, not deleted) is unchanged.
-	if err := os.Chmod(homesDir, 0o000); err != nil {
-		t.Fatalf("chmod homes dir: %v", err)
-	}
-	t.Cleanup(func() { _ = os.Chmod(homesDir, 0o755) })
-
-	_, deleted, err := deleteWorkspaceHome(runtimesDir, "myws")
+	_, deleted, err := deleteWorkspaceHome(context.Background(), store, "myws")
 	if err == nil {
 		t.Fatal("expected an error, got nil")
 	}
 	if deleted {
 		t.Error("deleted = true, want false")
+	}
+	if _, still := store.homes["myws"]; !still {
+		t.Error("home volume was removed after the engine reported a conflict")
 	}
 }
