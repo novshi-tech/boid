@@ -126,12 +126,17 @@ func TestInitScript_RehomeDanglingSymlink_RepointsAnOldHomeAbsoluteLink(t *testi
 }
 
 // TestInitScript_RehomeDanglingSymlink_LeavesResolvableLinksAlone: 生きている
-// link に触ると、 意図して張られた relative link を壊しかねない。
+// link に触ると、 意図して張られた link を壊しかねない。
+//
+// target を **絶対 path** にしているのが要点。 相対にすると「相対 target には
+// 触らない」側の枝でも同じ結果になり、 「解決できる link には触らない」という
+// この契約を pin できない (mutation proof で実際に素通りした)。
 func TestInitScript_RehomeDanglingSymlink_LeavesResolvableLinksAlone(t *testing.T) {
 	home := t.TempDir()
-	mustFile(t, filepath.Join(home, ".local/share/claude/versions/2.1.220"))
+	real := filepath.Join(home, ".local/share/claude/versions/2.1.220")
+	mustFile(t, real)
 	link := filepath.Join(home, ".local/bin/claude")
-	mustSymlink(t, "../share/claude/versions/2.1.220", link)
+	mustSymlink(t, real, link)
 
 	runInitScriptHelper(t, home, "rehome_dangling_symlink \"$HOME/.local/bin/claude\"")
 
@@ -139,28 +144,32 @@ func TestInitScript_RehomeDanglingSymlink_LeavesResolvableLinksAlone(t *testing.
 	if err != nil {
 		t.Fatalf("readlink: %v", err)
 	}
-	if got != "../share/claude/versions/2.1.220" {
-		t.Errorf("a resolvable link was rewritten to %q; it must be left alone", got)
+	if got != real {
+		t.Errorf("a resolvable link was rewritten to %q; it must be left alone (was %q)", got, real)
 	}
 }
 
 // TestInitScript_RehomeDanglingSymlink_LeavesRelativeDanglingLinksAlone:
-// 相対 dangling は「引っ越しで壊れた」のではなく単に対象が無いだけなので、
+// 相対 dangling は「引っ越しで壊れた」のではなく target が無いだけなので、
 // suffix 探索で別物に繋ぎ替えると害のほうが大きい。
+//
+// target は「$HOME からの相対と読むと実在してしまう」ものにしてある
+// (`.volta/bin/volta-shim` は link のある `.local/bin/` からは解決しないが、
+// $HOME からは解決する)。 こうしないと相対ガードを外しても探索が何にも
+// 当たらず、 テストが緑のままになる (mutation proof で実際に素通りした)。
 func TestInitScript_RehomeDanglingSymlink_LeavesRelativeDanglingLinksAlone(t *testing.T) {
 	home := t.TempDir()
-	// 探索が走ってしまうと当たってしまう囮を置く。
-	mustFile(t, filepath.Join(home, "bin/tool"))
-	link := filepath.Join(home, ".local/bin/tool")
-	mustSymlink(t, "../../bin/tool-that-is-gone", link)
+	mustFile(t, filepath.Join(home, ".volta/bin/volta-shim"))
+	link := filepath.Join(home, ".local/bin/node")
+	mustSymlink(t, ".volta/bin/volta-shim", link)
 
-	runInitScriptHelper(t, home, "rehome_dangling_symlink \"$HOME/.local/bin/tool\"")
+	runInitScriptHelper(t, home, "rehome_dangling_symlink \"$HOME/.local/bin/node\"")
 
 	got, err := os.Readlink(link)
 	if err != nil {
 		t.Fatalf("readlink: %v", err)
 	}
-	if got != "../../bin/tool-that-is-gone" {
+	if got != ".volta/bin/volta-shim" {
 		t.Errorf("a relative dangling link was rewritten to %q; it must be left alone", got)
 	}
 }
