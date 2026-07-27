@@ -228,34 +228,50 @@ state with each other.
 `boid workspace remove <slug>` removes both the workspace's definition (DB row) and its
 home.
 
-> **Known intermediate state (since 2026-07-27)**: the workspace home became a named
-> volume, but deletion, size reporting and orphan detection still look at the old host
-> directory. So right now **the home volume is not removed, sizes always come back empty,
-> and no orphan is ever reported**. To clean the volume up after removing a workspace, run
-> `docker volume rm boid-ws-home-<installID8>-<slug>` by hand. The next release rewires
-> this onto the volume API.
-
 ```
 $ boid workspace remove my-workspace
-home size: 128.4 MB (/home/you/.local/share/boid/homes/my-workspace)
+home size: 128.4 MB (volume boid-ws-home-a1b2c3d4-my-workspace)
 workspace remove "my-workspace" — really delete it? [y/N]: y
 workspace "my-workspace" removed (any assigned projects were re-assigned to "default").
-home dir deleted: /home/you/.local/share/boid/homes/my-workspace (128.4 MB)
+home volume deleted (volume boid-ws-home-a1b2c3d4-my-workspace) (128.4 MB)
 ```
 
-- **Confirmation prompt**: always shown regardless of whether a home directory exists or
-  what size it reports (`--force` is the only way to skip it; `--yes` is an alias for
-  `--force`)
-- **Size shown**: apparent size (roughly `du --apparent-size` — the sum of each file's
-  logical byte length, not block-based disk usage) — a rough indicator, not an exact
-  figure
+- **Confirmation prompt**: always shown regardless of whether a home exists or what size
+  it reports (`--force` is the only way to skip it; `--yes` is an alias for `--force`)
+- **The identifier shown is the volume name**: the workspace home is a named volume, so
+  what is printed is exactly what you would pass to `docker volume rm`
+- **Size shown**: the volume size the engine reports through `docker system df`, which
+  has `du --apparent-size` semantics (sparse files count logically, a hardlinked file
+  counts once, a symlink counts its target string's length) — a rough indicator, not an
+  exact block-based figure
 - **The `default` workspace cannot be removed**: it is the reserved fallback every project
   ends up re-assigned to, so it is protected outright
+- **Deletion fails while a job is running in that workspace**: the engine refuses to
+  remove a volume that is in use with a 409, and no force flag overrides that. The result
+  is a **part-completed** remove — the DB row is gone, the volume is not — reported as:
+  ```
+  warning: home volume delete failed (volume boid-ws-home-a1b2c3d4-my-workspace): ...volume is being used by...
+  ```
+  Re-running `boid workspace remove` will 404, since the row is already gone. Once the job
+  finishes, run `docker volume rm boid-ws-home-a1b2c3d4-my-workspace` by hand.
+- **A deletion that could not be confirmed is reported, not passed over in silence**: if
+  the daemon does not say whether the home volume went away — because it could not reach
+  the engine to check, or because it is older than the volume rewiring and still answers
+  in terms of a host directory — the CLI says so and tells you how to look:
+  ```
+  warning: could not confirm the home volume was deleted: the daemon reported no home volume name (a daemon older than the volume rewiring, or one with no engine handle)
+    the workspace row is gone either way; check with `docker volume ls --filter label=boid.workspace_home=my-workspace` and remove any match with `docker volume rm <name>`
+  ```
+  This matters most when your `boid` CLI and daemon are different versions, which is
+  possible since the CLI can drive a remote daemon. The label filter works regardless of
+  version because the volume carries the workspace slug verbatim as a label.
+  A workspace that was never dispatched into simply has no home volume, and that case
+  stays quiet — the daemon can tell the two apart, so the warning only appears when
+  something really is unknown.
 
 ## `boid gc`'s workspace home listing
 
-`boid gc` (and `boid gc --dry-run`) prints every workspace home it finds, with its size
-(during the intermediate state described above this listing is **always empty**):
+`boid gc` (and `boid gc --dry-run`) prints every workspace home it finds, with its size:
 
 ```
 $ boid gc
@@ -268,10 +284,15 @@ workspace homes:
 
 - **Display only**: `boid gc` never auto-deletes a workspace home (unlike `runtimes/`,
   workspace homes are designed to be persistent data)
-- **The `(orphan)` flag**: means only the home directory remains — **no matching DB
+- **The `(orphan)` flag**: means only the home volume remains — **no matching DB
   workspace row exists** (`workspace.yaml`'s presence is not part of orphan detection).
-  Typically the result of an old workspace whose DB row was removed but whose home
-  directory was not cleaned up
+  Typically the result of an old workspace whose DB row was removed but whose home volume
+  was not cleaned up, or of the part-completed remove described above
+- **Only this install's homes are listed**: volume names are
+  `boid-ws-home-<installID8>-<slug>`, so two boid installs sharing one engine never list
+  each other's homes. The flip side: a volume created before this install had an id
+  (`boid-ws-home-noinst-<slug>`) is not listed either, because the current daemon no
+  longer mounts it — find those with `docker volume ls` and remove them by hand
 - To actually clean up an orphan, **delete the files directly by hand**:
   ```bash
   docker volume rm boid-ws-home-<installID8>-<slug>
@@ -283,8 +304,26 @@ workspace homes:
   never reads those, so removing them is optional.)
   `boid workspace remove <slug>` cannot be used here — by orphan's definition the DB
   row is already gone, so the command would 404. Manual `rm` is the only cleanup path
-- A size that fails to compute is shown as `?` and excluded from the total (this is not
-  treated as an error — `gc` still completes)
+- **Two engine calls, two different degrades.** The listing and the sizes do not come
+  from the same request — the volumes are enumerated (`docker volume ls` equivalent) and
+  then sized in one engine-wide sweep (`docker system df` equivalent) — so failing to
+  reach the engine degrades differently depending on which call it was:
+  - **only the sizing call failed**: the listing is kept, and every entry shows `?`.
+    A `?` size is excluded from the total (an unknown size must not silently understate
+    it) and is not treated as an error — `gc` still completes. Because the sizes come
+    from one sweep rather than one call per volume, this is normally all-or-nothing: a
+    listing where every entry is `?` means that single call failed, not that the volumes
+    are individually unreadable
+  - **the enumeration itself failed**: there is no listing to show, so `boid gc` prints
+    the reason instead of the table and still reports the deletions it actually
+    performed:
+    ```
+    deleted: 3 tasks, 5 jobs, 5 actions, 2 runtimes, 0 sandbox tmp entries
+    workspace homes: listing unavailable (list workspace home volumes: ...)
+    ```
+    The reason is printed rather than only logged on the daemon, because an omitted
+    section would otherwise look exactly like an install that simply has no workspace
+    home volumes yet
 
 ## See also
 

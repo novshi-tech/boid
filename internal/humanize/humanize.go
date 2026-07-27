@@ -2,8 +2,13 @@
 // directory tree's apparent (logical) size, for boid's workspace-home size
 // reporting (docs/plans/home-workspace-volume.md Phase 4 PR5: `boid
 // workspace show`, `boid gc`'s workspace_homes listing, and the confirmation
-// prompt on `boid workspace remove`). See ApparentSize's doc comment for why
-// "apparent" rather than a `du`-equivalent block-based size.
+// prompt on `boid workspace remove`).
+//
+// FormatBytes is what those three still use. ApparentSize is not — PR7 of
+// docs/plans/workspace-home-volume-persistence.md moved sizing onto the
+// engine, since a workspace home is a docker volume the daemon cannot walk.
+// See ApparentSize's own doc comment for its current status, and for how the
+// engine's numbers differ from the ones it produces.
 package humanize
 
 import (
@@ -56,6 +61,25 @@ func formatUnit(n, unit int64, suffix string) string {
 	return fmt.Sprintf("%.2f %s", float64(n)/float64(unit), suffix)
 }
 
+// # Status as of PR7 of docs/plans/workspace-home-volume-persistence.md
+//
+// ApparentSize has NO production caller any more. The workspace home became a
+// docker named volume in PR6, and PR7 rewired sizing onto the engine's
+// GET /system/df, which is the only endpoint that reports a volume's size at
+// all — the daemon cannot walk a volume's contents from outside a container,
+// so there is nothing here for it to point at.
+//
+// It is kept rather than deleted because PR8's migration CLI
+// (`boid workspace import-home`) reads the LEGACY <runtimesRoot>/homes/<slug>
+// directories an upgraded installation still has, and sizing one of those is
+// exactly this function's job. If PR8 lands without using it, delete it then.
+//
+// Worth knowing when comparing old and new numbers: df's size is real `du`
+// semantics, so it differs from this function on two of the trade-offs listed
+// below — it counts a hardlinked file once per inode, not once per name, and
+// it counts a symlink's target-string length. Sparse files stay logical in
+// both.
+//
 // ApparentSize returns the total *apparent* (logical) size, in bytes, of
 // every regular file found by recursively walking root — directory entries
 // themselves do not contribute to the total, only file content sizes do.

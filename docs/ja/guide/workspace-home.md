@@ -218,33 +218,50 @@ boid agent claude -p <project-ref>
 
 `boid workspace remove <slug>` は workspace の定義 (DB row) に加えて home も削除します。
 
-> **既知の中間状態 (2026-07-27〜)**: workspace home が named volume に変わった一方で、
-> 削除・サイズ表示・orphan 検出はまだホスト側ディレクトリを見ています。 そのため
-> 現在は **home volume が削除されず、サイズも常に空、orphan も検出されません**。
-> workspace を消したあと volume も片付けたい場合は
-> `docker volume rm boid-ws-home-<installID8>-<slug>` を手で実行してください。
-> 次のリリースで volume API 側へ切り替えます。
-
 ```
 $ boid workspace remove my-workspace
-home size: 128.4 MB (/home/you/.local/share/boid/homes/my-workspace)
+home size: 128.4 MB (volume boid-ws-home-a1b2c3d4-my-workspace)
 workspace remove "my-workspace" — 本当に削除しますか? [y/N]: y
 workspace "my-workspace" removed (any assigned projects were re-assigned to "default").
-home dir deleted: /home/you/.local/share/boid/homes/my-workspace (128.4 MB)
+home volume deleted (volume boid-ws-home-a1b2c3d4-my-workspace) (128.4 MB)
 ```
 
-- **確認プロンプト**: home ディレクトリの有無やサイズに関わらず常に表示される
+- **確認プロンプト**: home の有無やサイズに関わらず常に表示される
   (`--force` を付けたときのみスキップ)。`--yes` は `--force` のエイリアス
-- **サイズ表示**: `apparent size` (`du --apparent-size` 相当。スパースファイルの
-  実ブロック数ではなく、ファイルの見かけ上のバイト数の合計) — 厳密な block-based
-  サイズではなく、あくまで目安
+- **表示される識別子は volume 名**: workspace home は named volume なので、
+  `docker volume rm` に渡せる名前をそのまま表示する
+- **サイズ表示**: engine の `docker system df` が報告する volume サイズで、
+  `du --apparent-size` と同じ意味論 (スパースファイルは論理サイズ、
+  ハードリンクは 1 回だけ、シンボリックリンクはリンク先文字列の長さ)。
+  厳密な block-based サイズではなく、あくまで目安
 - **`default` workspace は削除できない**: 全プロジェクトが最終的に `default` へ
   再割り当てされる先であるため、予約済みとして保護されている
+- **その workspace で job が走っていると削除に失敗する**: engine は使用中の volume の
+  削除を 409 で拒否し、これは `--force` 相当のフラグでも剥がせない。 その場合は
+  workspace の DB row だけが消えた**部分完了**状態になり、次のような warning が出る:
+  ```
+  warning: home volume delete failed (volume boid-ws-home-a1b2c3d4-my-workspace): ...volume is being used by...
+  ```
+  DB row は既に無いので `boid workspace remove` の再実行は 404 になる。 job の終了後に
+  `docker volume rm boid-ws-home-a1b2c3d4-my-workspace` を手で実行する
+- **削除できたか確認が取れなかった場合も黙らず報告する**: daemon が home volume の
+  行方を答えられなかったとき — engine に到達できず確認できなかった、あるいは daemon が
+  volume 化以前のバージョンでホスト側ディレクトリの話をしている — CLI はその旨と
+  調べ方を出す:
+  ```
+  warning: could not confirm the home volume was deleted: the daemon reported no home volume name (a daemon older than the volume rewiring, or one with no engine handle)
+    the workspace row is gone either way; check with `docker volume ls --filter label=boid.workspace_home=my-workspace` and remove any match with `docker volume rm <name>`
+  ```
+  特に効いてくるのは CLI と daemon のバージョンがずれているとき (CLI はリモート daemon
+  も操作できるので起こりうる)。 volume は workspace slug をそのまま label に持つので、
+  この label filter はバージョンに関係なく効く。
+  一度も dispatch していない workspace には home volume がそもそも無く、そのケースは
+  警告を出さない — daemon 側でこの 2 つは区別できるので、本当に不明なときだけ出る
 
 ## `boid gc` の workspace home 表示
 
 `boid gc` (および `boid gc --dry-run`) の出力には、workspace home 一覧とそのサイズが
-表示されます (上記の中間状態のあいだ、この一覧は**常に空**になります):
+表示されます:
 
 ```
 $ boid gc
@@ -257,10 +274,15 @@ workspace homes:
 
 - **これは表示のみ**: `boid gc` は workspace home を**自動削除しません**
   (`runtimes/` とは違う扱い — workspace home は永続データという設計)
-- **`(orphan)` フラグ**: home ディレクトリだけが残っていて対応する **DB workspace row が
+- **`(orphan)` フラグ**: home volume だけが残っていて対応する **DB workspace row が
   存在しない**状態を示す (`workspace.yaml` の有無ではなく DB 側で判定)。典型的には
-  過去の boid で作成した workspace が既に DB から削除されたが home ディレクトリだけ
-  残ったケース
+  過去の boid で作成した workspace が既に DB から削除されたが home volume だけ
+  残ったケース、または上記の「job が走っていて削除に失敗した」部分完了状態
+- **一覧に出るのはこの install が作った home だけ**: volume 名は
+  `boid-ws-home-<installID8>-<slug>` で install ごとに固有なので、1 つの engine を
+  複数の boid install で共有していても互いの home は出てこない。
+  逆に、install ID を持つ前に作られた `boid-ws-home-noinst-<slug>` は現行 daemon が
+  mount しないため一覧にも出ない — 残っている場合は `docker volume ls` で確認して手動で消す
 - orphan を実際に片付けたい場合は**手動で直接削除する**:
   ```bash
   docker volume rm boid-ws-home-<installID8>-<slug>
@@ -271,8 +293,23 @@ workspace homes:
   `.lock` が残っている場合もある。 現行 boid はこれを読まないので消しても消さなくてもよい)
   `boid workspace remove <slug>` は対応する DB row がないため 404 で失敗する
   (orphan の定義上、既に DB row は無いので)。 直接 rm するのが唯一の cleanup 経路
-- サイズ計算に失敗した場合は `?` と表示され、合計サイズの計算にも含まれない
-  (エラーとして扱わず、gc 全体は継続する)
+- **engine 呼び出しは 2 回あり、degrade も 2 通りある**。 一覧の取得
+  (`docker volume ls` 相当) とサイズの取得 (engine 全体を走査する
+  `docker system df` 相当の 1 回の呼び出し) は別のリクエストなので、engine に到達
+  できなかったときの degrade はどちらが失敗したかで変わる:
+  - **サイズ取得だけ失敗した場合**: 一覧はそのまま残り、各 entry が `?` になる。
+    `?` は合計サイズの計算に含まれず (不明なサイズで合計を過小申告しないため)、
+    エラーとしても扱わない (gc 全体は継続する)。 サイズは volume ごとではなく 1 回の
+    走査でまとめて取るので、通常は all-or-nothing — 全 entry が `?` なら
+    「その 1 回が失敗した」であって「volume が個別に読めない」ではない
+  - **一覧の取得自体が失敗した場合**: 表示すべき一覧が無いので、表の代わりに理由を
+    出し、gc 本来の削除結果は引き続き報告する:
+    ```
+    deleted: 3 tasks, 5 jobs, 5 actions, 2 runtimes, 0 sandbox tmp entries
+    workspace homes: listing unavailable (list workspace home volumes: ...)
+    ```
+    daemon 側のログに残すだけでなく理由を表示するのは、一覧を省略しただけだと
+    「まだ workspace home が 1 つも無い install」と見分けがつかないため
 
 ## 関連ドキュメント
 

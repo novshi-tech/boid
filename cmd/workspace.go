@@ -16,6 +16,7 @@ import (
 
 	"github.com/novshi-tech/boid/internal/api"
 	"github.com/novshi-tech/boid/internal/client"
+	"github.com/novshi-tech/boid/internal/dockerres"
 	"github.com/novshi-tech/boid/internal/humanize"
 	"github.com/novshi-tech/boid/internal/orchestrator"
 	"github.com/spf13/cobra"
@@ -86,7 +87,7 @@ var workspaceClearCmd = &cobra.Command{
 var workspaceRemoveCmd = &cobra.Command{
 	Use:     "remove <slug>",
 	Aliases: []string{"delete"},
-	Short:   "Remove a workspace and its home directory (DELETE /api/workspaces/{slug}; drops assigned projects back to \"default\"; prompts for confirmation if the home dir exists; --force/--yes skips the prompt)",
+	Short:   "Remove a workspace and its HOME volume (DELETE /api/workspaces/{slug}; drops assigned projects back to \"default\"; always prompts for confirmation; --force/--yes skips the prompt)",
 	Args:    cobra.ExactArgs(1),
 	RunE:    runWorkspaceRemove,
 }
@@ -162,7 +163,7 @@ func init() {
 	workspaceImportCmd.Flags().StringVar(&workspaceImportMode, "mode", "create-only", "import mode: create-only (default, 409 on an existing slug) or replace (upsert)")
 	workspaceImportCmd.Flags().BoolVar(&workspaceImportForce, "force", false, "shorthand for --mode replace")
 	workspaceImportCmd.Flags().StringVar(&workspaceImportSlug, "slug", "", "target workspace slug (default: the import file's basename, extension stripped — the export body itself carries no slug)")
-	workspaceRemoveCmd.Flags().BoolVar(&workspaceRemoveForce, "force", false, "skip the home directory deletion confirmation prompt")
+	workspaceRemoveCmd.Flags().BoolVar(&workspaceRemoveForce, "force", false, "skip the home volume deletion confirmation prompt")
 	workspaceRemoveCmd.Flags().BoolVar(&workspaceRemoveForce, "yes", false, "alias for --force")
 
 	workspaceCmd.AddCommand(
@@ -216,9 +217,10 @@ type workspaceShowView struct {
 	Slug     string                      `json:"slug"`
 	Meta     *orchestrator.WorkspaceMeta `json:"meta,omitempty"`
 	Revision string                      `json:"revision,omitempty"`
-	// Home reports the workspace home directory's on-disk size
-	// (docs/plans/home-workspace-volume.md Phase 4 PR5), mirrored straight
-	// from the GET /api/workspaces/{slug} response.
+	// Home reports the workspace HOME VOLUME's size as the engine sees it
+	// (docs/plans/home-workspace-volume.md Phase 4 PR5, engine-backed since
+	// 論点 a-2 / PR7 of docs/plans/workspace-home-volume-persistence.md),
+	// mirrored straight from the GET /api/workspaces/{slug} response.
 	Home     *api.WorkspaceHomeSize  `json:"home,omitempty"`
 	Projects []*orchestrator.Project `json:"projects"`
 }
@@ -861,18 +863,18 @@ func defaultWorkspaceRemoveConfirmPrompt(in io.Reader) (bool, error) {
 // first.
 //
 // docs/plans/home-workspace-volume.md Phase 4 PR5 adds a confirmation step
-// on top of that: unless --force is given, the workspace's current home
-// directory size is fetched first (GET /api/workspaces/{slug}, the same
+// on top of that: unless --force is given, the workspace's current HOME
+// VOLUME size is fetched first (GET /api/workspaces/{slug}, the same
 // `workspace show` endpoint — no separate dry-run endpoint needed) and a y/N
 // confirmation is required before the DELETE call is made at all.
 //
 // The prompt is unconditional — it no longer skips just because GET reported
-// Exists=false (codex PR #791 review, Blocker: a home dir that does not
-// exist *yet* at GET time can still exist by the time DELETE runs, if a
-// concurrent dispatch job creates it in between; skipping the prompt in that
-// window meant DELETE could silently destroy data that GET never got a
-// chance to show the operator). This is a minimal defense, not a full fix —
-// see docs/plans/home-workspace-volume.md's 落とし穴・注意 section for the
+// Exists=false (codex PR #791 review, Blocker: a home that does not exist
+// *yet* at GET time can still exist by the time DELETE runs, if a concurrent
+// dispatch job creates it in between; skipping the prompt in that window
+// meant DELETE could silently destroy data that GET never got a chance to
+// show the operator). This is a minimal defense, not a full fix — see
+// docs/plans/home-workspace-volume.md's 落とし穴・注意 section for the
 // still-open daemon-side lifecycle-lock gap this does not close. The home
 // size line stays purely informational: "home 未作成" when nothing has been
 // dispatched into the workspace yet, rather than gating whether the prompt
@@ -920,39 +922,117 @@ func runWorkspaceRemove(cmd *cobra.Command, args []string) error {
 
 	fmt.Fprintf(out, "workspace %q removed (any assigned projects were re-assigned to %q).\n",
 		slug, orchestrator.DefaultWorkspaceSlug)
-	fmt.Fprint(out, formatWorkspaceRemoveResult(resp))
+	fmt.Fprint(out, formatWorkspaceRemoveResult(slug, resp))
 	return nil
 }
 
 // formatWorkspaceRemoveResult renders `workspace remove`'s post-deletion
 // summary line(s) from the DELETE response (docs/plans/
 // home-workspace-volume.md Phase 4 PR5). Extended per codex PR #791 review
-// Should-fix #2: sizing and deletion are now two independent failure modes
-// on WorkspaceRemoveResponse (HomeSizeError vs. HomeDeleteError — see that
-// struct's doc comment), so this covers all four combinations rather than
-// conflating a sizing hiccup into what used to be a single
-// "home_delete_error" message: plain success, size lookup failed only,
-// deletion failed only, and both failed. Returns "" (no output at all) when
-// there is nothing to report — no RuntimesDir wired on the daemon, the
-// default workspace's protected home, or a home directory that never
-// existed in the first place.
-func formatWorkspaceRemoveResult(resp api.WorkspaceRemoveResponse) string {
+// Should-fix #2: sizing and deletion are two independent failure modes on
+// WorkspaceRemoveResponse (HomeSizeError vs. HomeDeleteError — see that
+// struct's doc comment), so this covers each combination rather than
+// conflating a sizing hiccup into a single "home_delete_error" message.
+//
+// The identifier in each line is the HOME VOLUME's name (論点 a-2 D4, PR7 of
+// docs/plans/workspace-home-volume-persistence.md), which is exactly what an
+// operator passes to `docker volume rm` when the delete failed — the most
+// likely reason being a job still running in that workspace, which the engine
+// answers with a 409 that no force flag overrides.
+//
+// # Why "not deleted, and no error" is not silence (PR7 round-2 review, Blocker 1)
+//
+// HomeDeleted=false with both error fields empty has two meanings, and only
+// one of them is benign:
+//
+//   - The daemon looked and there was no home volume — a workspace never
+//     dispatched into. That is the init-on-first-dispatch contract ("a missing
+//     home is not an error"), and it stays silent. What identifies this case is
+//     that HomeVolume is still SET: dispatcher.WorkspaceHomeVolumeStore fills
+//     WorkspaceHomeVolume.Volume unconditionally, existing volume or not, so a
+//     daemon that ran the home path at all always names the volume it looked
+//     for.
+//   - Nothing was established at all. Either the daemon predates PR7 and
+//     answered with the old `home_path` key — which decodes into no field this
+//     CLI reads, leaving HomeVolume "" — or it had no engine handle and skipped
+//     the home block outright. Both are reachable: Phase 3 made the CLI able to
+//     drive a remote daemon, and this repo has no API version handshake, so
+//     skew is a live possibility rather than a theoretical one. In both, the
+//     DB row is already gone while a volume holding the workspace's harness
+//     credentials may well still be on the engine.
+//
+// Collapsing the second into "" was the defect: `workspace remove` printed
+// "workspace ... removed." and stopped, which reads as a complete removal. The
+// same reasoning covers HomeSizeError-with-no-deletion: the store only reports
+// a size error alongside deleted=false when its VolumeInspect failed, i.e. when
+// it never established the volume was there — so its VolumeRemove coming back
+// clean proves nothing either, and calling that merely "size unknown"
+// understates it.
+//
+// slug is taken so the actionable follow-up can be exact even when no volume
+// name came back: dockerres.LabelWorkspaceHome carries the slug VERBATIM
+// (論点 a-2 D7 — the name is sanitized and not invertible, the label is not),
+// so a label filter on it finds the workspace's home volume without the CLI
+// needing to know the daemon's install id.
+func formatWorkspaceRemoveResult(slug string, resp api.WorkspaceRemoveResponse) string {
+	where := formatWorkspaceHomeVolumeRef(resp.HomeVolume)
 	switch {
+	// FIRST, ahead of every success case [codex review round 2, Blocker]. An
+	// empty HomeVolume means the responding daemon never looked at a volume
+	// at all, so nothing it reports about the deletion can be a statement
+	// about one — including HomeDeleted=true. A pre-PR7 daemon that finds a
+	// leftover pre-PR6 host home directory (workspace_home.go records that
+	// those survive) deletes THAT and answers home_deleted=true with a
+	// home_path this CLI does not decode; ordering this case after the
+	// success arm turned that into "home volume deleted", which is the exact
+	// claim the volume rewiring cannot support. The workspace row is gone
+	// either way, so the only safe report is that the volume is unconfirmed.
+	case resp.HomeVolume == "":
+		return fmt.Sprintf("warning: could not confirm the home volume was deleted: the daemon reported no home volume name"+
+			" (a daemon older than the volume rewiring, or one with no engine handle)\n"+
+			"  the workspace row is gone either way; check with `docker volume ls --filter label=%s=%s` and remove any match with `docker volume rm <name>`\n",
+			dockerres.LabelWorkspaceHome, slug)
 	case resp.HomeSizeError != "" && resp.HomeDeleteError != "":
-		return fmt.Sprintf("warning: home dir size unknown and delete failed (%s): size_error=%s delete_error=%s\n",
-			resp.HomePath, resp.HomeSizeError, resp.HomeDeleteError)
+		return fmt.Sprintf("warning: home volume size unknown and delete failed%s: size_error=%s delete_error=%s\n",
+			where, resp.HomeSizeError, resp.HomeDeleteError)
 	case resp.HomeDeleteError != "":
-		return fmt.Sprintf("warning: home dir delete failed (%s): %s\n", resp.HomePath, resp.HomeDeleteError)
-	case resp.HomeSizeError != "":
-		if resp.HomeDeleted {
-			return fmt.Sprintf("home dir deleted: %s (size unknown: %s)\n", resp.HomePath, resp.HomeSizeError)
-		}
-		return fmt.Sprintf("warning: home dir size unknown (%s): %s\n", resp.HomePath, resp.HomeSizeError)
+		return fmt.Sprintf("warning: home volume delete failed%s: %s\n", where, resp.HomeDeleteError)
 	case resp.HomeDeleted:
-		return fmt.Sprintf("home dir deleted: %s (%s)\n", resp.HomePath, humanize.FormatBytes(resp.HomeBytes))
+		if resp.HomeSizeError != "" {
+			return fmt.Sprintf("home volume deleted%s (size unknown: %s)\n", where, resp.HomeSizeError)
+		}
+		return fmt.Sprintf("home volume deleted%s (%s)\n", where, humanize.FormatBytes(resp.HomeBytes))
+	// Everything below here: nothing was deleted, and the daemon reported no
+	// deletion failure to explain why.
+	case resp.HomeSizeError != "":
+		return fmt.Sprintf("warning: could not confirm the home volume was deleted%s: %s\n"+
+			"  the workspace row is gone either way; check with `docker volume ls --filter name=%s` and remove it with `docker volume rm %s` if it is still there\n",
+			where, resp.HomeSizeError, resp.HomeVolume, resp.HomeVolume)
 	default:
+		// HomeVolume named, nothing failed, nothing deleted: the daemon
+		// positively established there was no home volume to delete.
 		return ""
 	}
+}
+
+// formatWorkspaceHomeVolumeRef renders " (volume <name>)", or "" when the
+// daemon reported no name.
+//
+// The empty case is CLI/daemon version skew, not an internal error: this repo
+// has no API versioning, so a daemon predating PR7 sends the old `home_path`
+// / `path` key and the volume field decodes to "". Rendering a bare "()"
+// there would look like a bug in the size lookup; omitting the parenthetical
+// degrades to "the size, unattributed", which is what `boid gc`'s listing
+// already does for an old daemon (see printWorkspaceHomes in cmd/gc.go).
+//
+// Omitting the identifier is NOT the same as omitting the outcome: see
+// formatWorkspaceRemoveResult on why a missing name makes `workspace remove`
+// warn rather than go quiet.
+func formatWorkspaceHomeVolumeRef(volume string) string {
+	if volume == "" {
+		return ""
+	}
+	return fmt.Sprintf(" (volume %s)", volume)
 }
 
 // runWorkspaceExport lives in cmd/workspace_export.go (docs/plans/
@@ -1066,17 +1146,24 @@ func formatStringSlice(ss []string) string {
 // formatWorkspaceHomeSize renders a *api.WorkspaceHomeSize as a single
 // human-readable line for `boid workspace show` (docs/plans/
 // home-workspace-volume.md Phase 4 PR5's three display cases): a normal
-// size + path, "0 B (未作成: <path>)" for a workspace never dispatched
-// into, or "?" when the daemon could not compute the size (e.g. permission
-// denied) — matching the "never fail the whole command over a size lookup"
-// contract the plan doc sets for this feature.
+// size + the home's docker volume name, "0 B (未作成: ...)" for a workspace
+// never dispatched into, or "?" when the daemon could not determine the size
+// — matching the "never fail the whole command over a size lookup" contract
+// the plan doc sets for this feature.
+//
+// The identifier switched from a host directory path to the volume name in
+// PR7 (論点 a-2, D4); formatWorkspaceHomeVolumeRef explains what an empty one
+// means and why it is rendered as an omission rather than as "()".
 func formatWorkspaceHomeSize(h *api.WorkspaceHomeSize) string {
 	switch {
 	case h.SizeError != "":
-		return fmt.Sprintf("home size: ? (%s)", h.Path)
+		return fmt.Sprintf("home size: ?%s", formatWorkspaceHomeVolumeRef(h.Volume))
 	case !h.Exists:
-		return fmt.Sprintf("home size: 0 B (未作成: %s)", h.Path)
+		if h.Volume == "" {
+			return "home size: 0 B (未作成)"
+		}
+		return fmt.Sprintf("home size: 0 B (未作成: volume %s)", h.Volume)
 	default:
-		return fmt.Sprintf("home size: %s (%s)", humanize.FormatBytes(h.Bytes), h.Path)
+		return fmt.Sprintf("home size: %s%s", humanize.FormatBytes(h.Bytes), formatWorkspaceHomeVolumeRef(h.Volume))
 	}
 }

@@ -4,12 +4,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 
@@ -306,16 +304,23 @@ func TestWorkspaceHandler_Remove_DefaultRejected400(t *testing.T) {
 	}
 }
 
-// --- Home directory size / deletion (docs/plans/home-workspace-volume.md
-// Phase 4 PR5) ---
+// --- Workspace HOME size / deletion (docs/plans/home-workspace-volume.md
+// Phase 4 PR5, rewired onto the engine's volume API by 論点 a-2 / PR7 of
+// docs/plans/workspace-home-volume-persistence.md) ---
+//
+// The gate these cases exercise changed with the mechanism: it used to be
+// "was RuntimesDir wired", it is now "is there an engine handle"
+// (WorkspaceHandler.Homes) — the feature's only remaining dependency, since
+// nothing here resolves a host path any more. See WorkspaceHomeStore's doc
+// comment for the full rationale (論点 a-2, D5).
 
-func TestWorkspaceHandler_Show_NoRuntimesDir_OmitsHome(t *testing.T) {
+func TestWorkspaceHandler_Show_NoHomeStore_OmitsHome(t *testing.T) {
 	svc := &fakeWorkspaceService{
 		getFn: func(slug string) (*WorkspaceDetail, error) {
 			return &WorkspaceDetail{Slug: slug, Meta: &orchestrator.WorkspaceMeta{}}, nil
 		},
 	}
-	h := &WorkspaceHandler{Service: svc} // RuntimesDir left empty.
+	h := &WorkspaceHandler{Service: svc} // Homes left nil.
 	w := doWorkspaceRequest(h.Routes(), http.MethodGet, "/team-a", "", nil, nil)
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d: %s", w.Code, w.Body.String())
@@ -325,29 +330,18 @@ func TestWorkspaceHandler_Show_NoRuntimesDir_OmitsHome(t *testing.T) {
 		t.Fatalf("unmarshal: %v", err)
 	}
 	if detail.Home != nil {
-		t.Errorf("Home = %+v, want nil (no RuntimesDir wired)", detail.Home)
+		t.Errorf("Home = %+v, want nil (no engine handle wired)", detail.Home)
 	}
 }
 
-func TestWorkspaceHandler_Show_WithRuntimesDir_PopulatesHome(t *testing.T) {
-	runtimesDir := filepath.Join(t.TempDir(), "runtimes")
-	homePath, err := resolveWorkspaceHomePath(runtimesDir, "team-a")
-	if err != nil {
-		t.Fatalf("resolveWorkspaceHomePath: %v", err)
-	}
-	if err := os.MkdirAll(homePath, 0o755); err != nil {
-		t.Fatalf("mkdir home dir: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(homePath, "a.txt"), make([]byte, 42), 0o644); err != nil {
-		t.Fatalf("write home file: %v", err)
-	}
-
+func TestWorkspaceHandler_Show_WithHomeStore_PopulatesHome(t *testing.T) {
+	store := newStubHomeStore(map[string]int64{"team-a": 42})
 	svc := &fakeWorkspaceService{
 		getFn: func(slug string) (*WorkspaceDetail, error) {
 			return &WorkspaceDetail{Slug: slug, Meta: &orchestrator.WorkspaceMeta{}}, nil
 		},
 	}
-	h := &WorkspaceHandler{Service: svc, RuntimesDir: runtimesDir}
+	h := &WorkspaceHandler{Service: svc, Homes: store}
 	w := doWorkspaceRequest(h.Routes(), http.MethodGet, "/team-a", "", nil, nil)
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d: %s", w.Code, w.Body.String())
@@ -365,19 +359,47 @@ func TestWorkspaceHandler_Show_WithRuntimesDir_PopulatesHome(t *testing.T) {
 	if detail.Home.Bytes != 42 {
 		t.Errorf("Home.Bytes = %d, want 42", detail.Home.Bytes)
 	}
-	if detail.Home.Path != homePath {
-		t.Errorf("Home.Path = %q, want %q", detail.Home.Path, homePath)
+	if want := store.volumeName("team-a"); detail.Home.Volume != want {
+		t.Errorf("Home.Volume = %q, want %q", detail.Home.Volume, want)
 	}
 }
 
-func TestWorkspaceHandler_Show_WithRuntimesDir_NotYetCreated(t *testing.T) {
-	runtimesDir := filepath.Join(t.TempDir(), "runtimes")
+// TestWorkspaceHandler_Show_HomeVolumeIsTheJSONKey pins the wire key itself,
+// not just the Go field: 論点 a-2's D4 REPLACES the `path` key rather than
+// keeping it alongside, and the CLI renderers this PR updates read the new
+// one. A silent rename in only one of the two directions is exactly the drift
+// this asserts against.
+func TestWorkspaceHandler_Show_HomeVolumeIsTheJSONKey(t *testing.T) {
+	store := newStubHomeStore(map[string]int64{"team-a": 42})
 	svc := &fakeWorkspaceService{
 		getFn: func(slug string) (*WorkspaceDetail, error) {
 			return &WorkspaceDetail{Slug: slug, Meta: &orchestrator.WorkspaceMeta{}}, nil
 		},
 	}
-	h := &WorkspaceHandler{Service: svc, RuntimesDir: runtimesDir}
+	h := &WorkspaceHandler{Service: svc, Homes: store}
+	w := doWorkspaceRequest(h.Routes(), http.MethodGet, "/team-a", "", nil, nil)
+
+	var raw struct {
+		Home map[string]any `json:"home"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &raw); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got, ok := raw.Home["volume"]; !ok || got != store.volumeName("team-a") {
+		t.Errorf(`home["volume"] = %v (present=%v), want %q`, got, ok, store.volumeName("team-a"))
+	}
+	if _, ok := raw.Home["path"]; ok {
+		t.Error(`home["path"] is still present: PR7 replaces it with "volume" rather than keeping a key that would render a volume name as if it were a path`)
+	}
+}
+
+func TestWorkspaceHandler_Show_WithHomeStore_NotYetCreated(t *testing.T) {
+	svc := &fakeWorkspaceService{
+		getFn: func(slug string) (*WorkspaceDetail, error) {
+			return &WorkspaceDetail{Slug: slug, Meta: &orchestrator.WorkspaceMeta{}}, nil
+		},
+	}
+	h := &WorkspaceHandler{Service: svc, Homes: newStubHomeStore(map[string]int64{})}
 	w := doWorkspaceRequest(h.Routes(), http.MethodGet, "/team-a", "", nil, nil)
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d: %s", w.Code, w.Body.String())
@@ -394,21 +416,10 @@ func TestWorkspaceHandler_Show_WithRuntimesDir_NotYetCreated(t *testing.T) {
 	}
 }
 
-func TestWorkspaceHandler_Remove_WithRuntimesDir_DeletesHomeDirAndReportsIt(t *testing.T) {
-	runtimesDir := filepath.Join(t.TempDir(), "runtimes")
-	homePath, err := resolveWorkspaceHomePath(runtimesDir, "team-a")
-	if err != nil {
-		t.Fatalf("resolveWorkspaceHomePath: %v", err)
-	}
-	if err := os.MkdirAll(homePath, 0o755); err != nil {
-		t.Fatalf("mkdir home dir: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(homePath, "a.txt"), make([]byte, 7), 0o644); err != nil {
-		t.Fatalf("write home file: %v", err)
-	}
-
+func TestWorkspaceHandler_Remove_WithHomeStore_DeletesVolumeAndReportsIt(t *testing.T) {
+	store := newStubHomeStore(map[string]int64{"team-a": 7})
 	svc := &fakeWorkspaceService{removeFn: func(string) error { return nil }}
-	h := &WorkspaceHandler{Service: svc, RuntimesDir: runtimesDir}
+	h := &WorkspaceHandler{Service: svc, Homes: store}
 	w := doWorkspaceRequest(h.Routes(), http.MethodDelete, "/team-a", "", nil, nil)
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d: %s", w.Code, w.Body.String())
@@ -424,31 +435,45 @@ func TestWorkspaceHandler_Remove_WithRuntimesDir_DeletesHomeDirAndReportsIt(t *t
 	if resp.HomeBytes != 7 {
 		t.Errorf("HomeBytes = %d, want 7", resp.HomeBytes)
 	}
-	if resp.HomePath != homePath {
-		t.Errorf("HomePath = %q, want %q", resp.HomePath, homePath)
+	if want := store.volumeName("team-a"); resp.HomeVolume != want {
+		t.Errorf("HomeVolume = %q, want %q", resp.HomeVolume, want)
 	}
-	if _, statErr := os.Stat(homePath); !os.IsNotExist(statErr) {
-		t.Errorf("home dir still present on disk after remove: stat err=%v", statErr)
+	if _, still := store.homes["team-a"]; still {
+		t.Error("home volume still on the engine after remove")
 	}
 }
 
-// TestWorkspaceHandler_Remove_DefaultWorkspace_NeverDeletesHomeDir is defense
-// in depth (docs/plans/home-workspace-volume.md PR5: "万一 remove が通っても
-// home dir は削除しない多重防御"): even if a bug in the service layer let a
-// remove of the reserved default workspace's row through, the handler must
-// still refuse to touch its home directory on disk.
-func TestWorkspaceHandler_Remove_DefaultWorkspace_NeverDeletesHomeDir(t *testing.T) {
-	runtimesDir := filepath.Join(t.TempDir(), "runtimes")
-	homePath, err := resolveWorkspaceHomePath(runtimesDir, orchestrator.DefaultWorkspaceSlug)
-	if err != nil {
-		t.Fatalf("resolveWorkspaceHomePath: %v", err)
-	}
-	if err := os.MkdirAll(homePath, 0o755); err != nil {
-		t.Fatalf("mkdir home dir: %v", err)
-	}
-
+// TestWorkspaceHandler_Remove_NoHomeStore_LeavesTheVolumeAlone pins the other
+// side of the D5 gate: with no engine handle, remove still succeeds on the
+// row and simply reports that no home deletion was attempted.
+func TestWorkspaceHandler_Remove_NoHomeStore_LeavesTheVolumeAlone(t *testing.T) {
 	svc := &fakeWorkspaceService{removeFn: func(string) error { return nil }}
-	h := &WorkspaceHandler{Service: svc, RuntimesDir: runtimesDir}
+	h := &WorkspaceHandler{Service: svc} // Homes left nil.
+	w := doWorkspaceRequest(h.Routes(), http.MethodDelete, "/team-a", "", nil, nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d: %s", w.Code, w.Body.String())
+	}
+	var resp WorkspaceRemoveResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if resp.HomeDeleted {
+		t.Error("HomeDeleted = true, want false")
+	}
+	if resp.HomeVolume != "" {
+		t.Errorf("HomeVolume = %q, want empty (nothing was looked at)", resp.HomeVolume)
+	}
+}
+
+// TestWorkspaceHandler_Remove_DefaultWorkspace_NeverDeletesHomeVolume is
+// defense in depth (docs/plans/home-workspace-volume.md PR5: "万一 remove が
+// 通っても home dir は削除しない多重防御"): even if a bug in the service layer
+// let a remove of the reserved default workspace's row through, the handler
+// must still refuse to touch its home.
+func TestWorkspaceHandler_Remove_DefaultWorkspace_NeverDeletesHomeVolume(t *testing.T) {
+	store := newStubHomeStore(map[string]int64{orchestrator.DefaultWorkspaceSlug: 10})
+	svc := &fakeWorkspaceService{removeFn: func(string) error { return nil }}
+	h := &WorkspaceHandler{Service: svc, Homes: store}
 	w := doWorkspaceRequest(h.Routes(), http.MethodDelete, "/"+orchestrator.DefaultWorkspaceSlug, "", nil, nil)
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d: %s", w.Code, w.Body.String())
@@ -461,41 +486,29 @@ func TestWorkspaceHandler_Remove_DefaultWorkspace_NeverDeletesHomeDir(t *testing
 	if resp.HomeDeleted {
 		t.Error("HomeDeleted = true, want false")
 	}
-	if _, statErr := os.Stat(homePath); statErr != nil {
-		t.Errorf("default workspace home dir was removed from disk: stat err=%v", statErr)
+	if len(store.removed) != 0 {
+		t.Errorf("engine VolumeRemove was issued for %v, want none for the reserved default slug", store.removed)
+	}
+	if _, still := store.homes[orchestrator.DefaultWorkspaceSlug]; !still {
+		t.Error("default workspace home volume was removed")
 	}
 }
 
 // TestWorkspaceHandler_Remove_HomeDeleteFailure_StillReturns200 pins the
 // "part-completed" contract: the workspace row is already gone by the time
-// home-directory deletion is attempted, so a deletion failure must not turn
-// the whole request into an error response — it is surfaced in the body
-// instead (docs/plans/home-workspace-volume.md PR5: "削除失敗... workspace
-// 設定 (DB) の削除は先に完了させる (part-completed 状態を許容...)").
+// home deletion is attempted, so a deletion failure must not turn the whole
+// request into an error response — it is surfaced in the body instead
+// (docs/plans/home-workspace-volume.md PR5: "削除失敗... workspace 設定 (DB)
+// の削除は先に完了させる (part-completed 状態を許容...)"). The engine failure
+// modelled here is the one 論点 a-2's D6 measured: a 409 for a volume a
+// running job still holds.
 func TestWorkspaceHandler_Remove_HomeDeleteFailure_StillReturns200(t *testing.T) {
-	if runtime.GOOS != "linux" {
-		t.Skip("permission-bit test assumes POSIX permission semantics")
+	store := newStubHomeStore(map[string]int64{"team-a": 10})
+	store.removeErrs = map[string]error{
+		"team-a": errors.New("volume is being used by the following container(s): abc123"),
 	}
-	if os.Geteuid() == 0 {
-		t.Skip("running as root: directory permission bits are not enforced")
-	}
-
-	runtimesDir := filepath.Join(t.TempDir(), "runtimes")
-	homePath, err := resolveWorkspaceHomePath(runtimesDir, "team-a")
-	if err != nil {
-		t.Fatalf("resolveWorkspaceHomePath: %v", err)
-	}
-	homesDir := filepath.Dir(homePath)
-	if err := os.MkdirAll(homePath, 0o755); err != nil {
-		t.Fatalf("mkdir home dir: %v", err)
-	}
-	if err := os.Chmod(homesDir, 0o000); err != nil {
-		t.Fatalf("chmod homes dir: %v", err)
-	}
-	t.Cleanup(func() { _ = os.Chmod(homesDir, 0o755) })
-
 	svc := &fakeWorkspaceService{removeFn: func(string) error { return nil }}
-	h := &WorkspaceHandler{Service: svc, RuntimesDir: runtimesDir}
+	h := &WorkspaceHandler{Service: svc, Homes: store}
 	w := doWorkspaceRequest(h.Routes(), http.MethodDelete, "/team-a", "", nil, nil)
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200 even on a home-delete failure: %s", w.Code, w.Body.String())
@@ -510,6 +523,9 @@ func TestWorkspaceHandler_Remove_HomeDeleteFailure_StillReturns200(t *testing.T)
 	}
 	if resp.HomeDeleteError == "" {
 		t.Error("HomeDeleteError = empty, want a non-empty error")
+	}
+	if !strings.Contains(resp.HomeDeleteError, "being used") {
+		t.Errorf("HomeDeleteError = %q, want the engine's conflict message passed through", resp.HomeDeleteError)
 	}
 }
 

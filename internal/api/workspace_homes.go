@@ -1,215 +1,188 @@
 package api
 
 import (
+	"context"
 	"log/slog"
-	"os"
-	"path/filepath"
-	"sort"
 
 	"github.com/novshi-tech/boid/internal/dispatcher"
-	"github.com/novshi-tech/boid/internal/humanize"
 	"github.com/novshi-tech/boid/internal/orchestrator"
 )
 
-// # PR6 STATUS: everything in this file reports on a location the dispatcher
-// no longer uses. PR7 rewires it; until then it is inert, not wrong-in-flight.
+// Workspace HOME reporting and deletion (docs/plans/home-workspace-volume.md
+// Phase 4 PR5, rewired onto the engine by 論点 a-2 / PR7 of
+// docs/plans/workspace-home-volume-persistence.md).
 //
-// PR6 of docs/plans/workspace-home-volume-persistence.md moved the workspace
-// home into a per-workspace docker named volume
-// (dockerres.WorkspaceHomeVolumeName). Every function here still resolves
-// <runtimesRoot>/homes/<slug>, so on an installation running PR6:
+// PR6 made a workspace's $HOME a per-workspace docker named volume
+// (dockerres.WorkspaceHomeVolumeName), which left everything in this file
+// resolving a <runtimesRoot>/homes/<slug> directory the dispatcher no longer
+// touches: sizes came back empty for every workspace, no orphan was ever
+// detected, and `workspace remove` silently left a volume full of harness
+// credentials behind. PR7 replaces the mechanism — the engine's volume API,
+// via dispatcher.WorkspaceHomeVolumeStore — and keeps the policy here, where
+// the workspace rows are.
 //
-//   - GET /api/workspaces/{slug} reports Exists=false and Bytes=0 for every
-//     workspace;
-//   - POST /api/gc's workspace_homes listing is empty, so no orphan is ever
-//     detected;
-//   - DELETE /api/workspaces/{slug} finds nothing to delete and reports the
-//     home as absent, which means removing a workspace leaves its HOME VOLUME
-//     — credentials and toolchain included — behind indefinitely.
-//
-// That intermediate state is a deliberate, documented consequence of splitting
-// the cutover from the rewiring (the plan doc's PR 分割案 and its PR6→PR7 note):
-// `docker volume rm boid-ws-home-<installID8>-<slug>` is the manual stand-in.
-// 論点 a-2 carries the design for the replacement — VolumeRemove for deletion,
-// a volume listing diffed against the workspace rows for orphan detection, and
-// an explicitly-decided answer for sizing (Volume.UsageData is populated only
-// by GET /system/df, which walks the whole engine).
-//
-// The TESTS in this package are in the same position: they exercise these
-// functions against real directories, so they still pass and still describe
-// what the code does — they just no longer describe anything a running daemon
-// does. Each of them names PR7 for that reason.
-//
-// WorkspaceHomeSize describes one workspace home directory's on-disk
-// footprint (docs/plans/home-workspace-volume.md Phase 4 PR5): used both by
+// This package still imports no moby types (論点 a-2, D2): the store hands
+// back dispatcher.WorkspaceHomeVolume, a plain struct, and WorkspaceHomeStore
+// below is the narrow consumer-side interface a test can stub without an
+// engine.
+
+// WorkspaceHomeSize describes one workspace home's footprint: used both by
 // GET /api/workspaces/{slug} (a single entry, WorkspaceDetail.Home) and by
-// POST /api/gc's workspace_homes listing (one entry per directory found
-// under homes/).
+// POST /api/gc's workspace_homes listing (one entry per workspace home volume
+// this install has).
 type WorkspaceHomeSize struct {
 	Slug string `json:"slug"`
-	// Path is the absolute on-disk path to the home directory, whether or
-	// not it currently exists.
-	Path string `json:"path"`
-	// Exists reports whether Path exists on disk. false means the workspace
-	// has never been dispatched into (docs/plans/home-workspace-volume.md's
-	// init-on-first-dispatch contract) — not an error.
+
+	// Volume is the engine-side name of the workspace's HOME volume,
+	// dockerres.WorkspaceHomeVolumeName(installID, slug) — the same name the
+	// dispatcher mounts as the harness's $HOME, and the name to pass to
+	// `docker volume rm` for manual cleanup. Always set, whether or not the
+	// volume currently exists.
+	//
+	// It REPLACES the `path` field this struct carried through PR6, rather
+	// than joining it (論点 a-2, D4). A volume name is not a path, and the
+	// only consumers are boid's own CLI renderers (cmd/workspace.go's
+	// formatWorkspaceHomeSize / formatWorkspaceRemoveResult, cmd/gc.go's
+	// printWorkspaceHomes), which this PR updates in lockstep. Keeping a
+	// `path` key alive with a volume name in it would have made every one of
+	// them print a lie that reads like a path; keeping BOTH would have meant
+	// emitting a legacy field describing a directory the daemon stopped
+	// using two PRs ago.
+	//
+	// On CLI/daemon version skew: this repo has no API versioning and no
+	// compatibility shim — a field the peer does not know decodes to its zero
+	// value, which is precisely how `boid gc`'s listing already documents its
+	// own old-daemon behavior ("either the daemon was too old to report it,
+	// or no workspace has ever been dispatched into yet", cmd/gc.go's
+	// printWorkspaceHomes). Skew is reachable since Phase 3 made the CLI able
+	// to talk to a remote daemon, so the renderers updated by this PR treat
+	// an empty identifier as "not reported" and omit the parenthetical
+	// instead of printing an empty one. That is the whole cost in both
+	// directions: a size still renders, only unattributed.
+	Volume string `json:"volume"`
+
+	// Exists reports whether the volume is currently on the engine. false
+	// means the workspace has never been dispatched into (docs/plans/
+	// home-workspace-volume.md's init-on-first-dispatch contract) — not an
+	// error.
 	Exists bool `json:"exists"`
-	// Bytes is the recursive apparent size of Path (humanize.ApparentSize —
-	// not a `du`-equivalent block-based size, see that function's doc
-	// comment), meaningful only when Exists is true and SizeError is empty.
+
+	// Bytes is the volume's size as the engine's GET /system/df reports it,
+	// meaningful only when Exists is true and SizeError is empty. See
+	// dispatcher.WorkspaceHomeVolumeStore's doc comment for what that number
+	// means (du --apparent-size semantics) and why that endpoint is the only
+	// one that can produce it.
 	Bytes int64 `json:"bytes"`
-	// Orphan is true when Path was found on disk but Slug has no
-	// corresponding workspace row — a workspace.yaml/DB row that was
-	// removed (or never assign/create'd) while its home directory survived.
-	// Only ever set by the GC listing (ListWorkspaceHomeSizes); the single-
-	// slug lookup used by GET /api/workspaces/{slug} always has a live
-	// workspace row (it is 404 otherwise), so it never carries Orphan=true.
+
+	// Orphan is true when a workspace HOME volume exists but Slug has no
+	// corresponding workspace row — a workspace removed (or never
+	// assign/create'd) while its home volume survived. Only ever set by the
+	// GC listing (ListWorkspaceHomeSizes); the single-slug lookup used by
+	// GET /api/workspaces/{slug} always has a live workspace row (it is 404
+	// otherwise), so it never carries Orphan=true.
 	Orphan bool `json:"orphan"`
-	// SizeError is non-empty when humanize.ApparentSize (or stat-ing Path in
-	// the first place) failed for a reason other than "does not exist" —
-	// typically a permission error, or a concurrent dispatch mutating the
-	// tree mid-walk. Bytes is 0 and must not be trusted when this is set;
-	// callers render "?" instead (docs/plans/home-workspace-volume.md PR5:
-	// "エラー時はエラーにせず「?」表示"). A non-empty SizeError does *not*
-	// imply the directory itself is gone or undeletable — deleteWorkspaceHome
-	// treats sizing as best-effort and still attempts deletion regardless
-	// (codex PR #791 review, Should-fix #2).
+
+	// SizeError is non-empty when the size could not be determined — the
+	// engine's disk-usage call failed, or it listed the volume without usage
+	// data. Bytes is 0 and must not be trusted when this is set; callers
+	// render "?" instead (docs/plans/home-workspace-volume.md PR5: "エラー時は
+	// エラーにせず「?」表示"). A non-empty SizeError does *not* imply the
+	// volume is gone or undeletable — deleteWorkspaceHome treats sizing as
+	// best-effort and still attempts deletion regardless (codex PR #791
+	// review, Should-fix #2).
 	SizeError string `json:"size_error,omitempty"`
 }
 
 // WorkspaceSlugLister exposes the set of currently known workspace slugs,
-// used to flag orphaned home directories (a directory under homes/ with no
-// corresponding workspace row). *ProjectAppService already satisfies this
-// via its existing ListWorkspaces method — no new implementation is needed,
-// only threading it through as this narrower interface at the handler
-// construction site (server/wire.go) so GCHandler does not need the whole
-// ProjectService surface.
+// used to flag orphaned home volumes (a workspace HOME volume with no
+// corresponding workspace row). *ProjectAppService already satisfies this via
+// its existing ListWorkspaces method — no new implementation is needed, only
+// threading it through as this narrower interface at the handler construction
+// site (server/wire.go) so GCHandler does not need the whole ProjectService
+// surface.
 type WorkspaceSlugLister interface {
 	ListWorkspaces() ([]*orchestrator.WorkspaceSummary, error)
 }
 
-// resolveWorkspaceHomePath returns the absolute on-disk path for slug's
-// workspace home directory, derived from runtimesDir via
-// dispatcher.WorkspaceHomesDir.
+// WorkspaceHomeStore is the engine-backed view of workspace HOME volumes.
+// *dispatcher.WorkspaceHomeVolumeStore is the only implementation;
+// server/wire.go builds one from the single docker client buildRuntime
+// already has and hands it to WorkspaceHandler.Homes / GCHandler.Homes.
 //
-// Through Phase 4 this was the exact same computation the dispatcher used to
-// mount a job's $HOME (docs/plans/home-workspace-volume.md Phase 4 PR2), so a
-// size reported here always matched what was actually mounted. As of PR6 of
-// docs/plans/workspace-home-volume-persistence.md it no longer does: the
-// dispatcher mounts the named volume dockerres.WorkspaceHomeVolumeName
-// (installID, slug) and never resolves this path at all, so what this returns
-// is the LEGACY location — an upgraded installation's leftover directory, or
-// nothing at all on a fresh one. See this file's PR6 status note above for the
-// per-endpoint consequences and for what PR7 replaces this with. Does not check
-// whether the path exists.
-func resolveWorkspaceHomePath(runtimesDir, slug string) (string, error) {
-	homesDir, err := dispatcher.WorkspaceHomesDir(runtimesDir)
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(homesDir, slug), nil
+// Declared here, on the consumer side, so this package can be tested with a
+// map-backed stub — and typed in terms of dispatcher.WorkspaceHomeVolume
+// rather than moby's volume.Volume so no moby type reaches internal/api
+// (論点 a-2, D2). internal/api already imports internal/dispatcher; the
+// reverse edge does not exist and must not be created, which is why the
+// data type lives on the dispatcher side.
+//
+// A nil WorkspaceHomeStore is the feature's OFF switch, and is what the
+// handlers gate on now that RuntimesDir no longer participates (論点 a-2,
+// D5): server/wire.go leaves the field nil exactly when it has no docker
+// client (Config.Backend injected — the test/DI path), and both handlers then
+// omit home information entirely, unchanged from what an empty RuntimesDir
+// used to do. The engine handle is the feature's only remaining dependency,
+// so it is the honest condition; a nil interface is also the only form of
+// "off" that cannot be faked by a typed-nil *client.Client, which is why
+// wire.go assigns the field rather than always constructing a store.
+type WorkspaceHomeStore interface {
+	Get(ctx context.Context, slug string) dispatcher.WorkspaceHomeVolume
+	List(ctx context.Context) ([]dispatcher.WorkspaceHomeVolume, error)
+	Remove(ctx context.Context, slug string) (dispatcher.WorkspaceHomeVolume, bool, error)
 }
 
-// apparentSizeFn is a package-level indirection to humanize.ApparentSize,
-// swappable in tests (mirrors internal/orchestrator/workspace_migration.go's
-// workspaceYAMLReadFile and internal/sandbox/fetch_builtin.go's
-// newFetchClient) — lets a test inject a sizing failure deterministically
-// without needing a real filesystem race or a permission trick that would
-// also block the RemoveAll deleteWorkspaceHome attempts alongside it (codex
-// PR #791 review, Should-fix #2: "サイズ計算失敗しても削除は成功する" needs a
-// sizing failure that does *not* also block deletion, which real permission
-// bits cannot isolate on their own).
-var apparentSizeFn = humanize.ApparentSize
-
-// computeWorkspaceHomeSize resolves slug's home directory path and reports
-// its on-disk size, never returning an error itself: every failure mode
-// (unresolvable runtimesDir, the directory not existing yet, a permission
-// error walking it) is instead reflected in the returned WorkspaceHomeSize's
-// Exists/SizeError fields, matching the "never block the rest of the
-// response on a size lookup failure" contract PR5's brief sets for both
-// `workspace show` and `boid gc`.
-func computeWorkspaceHomeSize(runtimesDir, slug string) WorkspaceHomeSize {
-	entry := WorkspaceHomeSize{Slug: slug}
-
-	path, err := resolveWorkspaceHomePath(runtimesDir, slug)
-	if err != nil {
-		entry.SizeError = err.Error()
-		return entry
+// homeSizeFrom converts the store's plain report into the wire shape. Kept as
+// one function so the two callers cannot drift on which field means what.
+func homeSizeFrom(v dispatcher.WorkspaceHomeVolume) WorkspaceHomeSize {
+	return WorkspaceHomeSize{
+		Slug:      v.Slug,
+		Volume:    v.Volume,
+		Exists:    v.Exists,
+		Bytes:     v.Bytes,
+		SizeError: v.SizeError,
 	}
-	entry.Path = path
-
-	if _, statErr := os.Stat(path); statErr != nil {
-		if os.IsNotExist(statErr) {
-			return entry // Exists stays false; not an error.
-		}
-		entry.SizeError = statErr.Error()
-		return entry
-	}
-	entry.Exists = true
-
-	n, sizeErr := apparentSizeFn(path)
-	if sizeErr != nil {
-		entry.SizeError = sizeErr.Error()
-		return entry
-	}
-	entry.Bytes = n
-	return entry
 }
 
-// ListWorkspaceHomeSizes enumerates every directory under runtimesDir's
-// sibling homes/ directory (docs/plans/home-workspace-volume.md's layout:
-// homes/<slug>/) and reports each one's size.
-//
-// os.ReadDir's IsDir() filter below is what keeps non-directory entries out
-// of the listing. Current daemons no longer put any there: the init
-// completion marker and the init lock moved to the daemon's own data root,
-// <dataHome>/homes-meta/<slug>.{init.json,lock}, in PR2 of
-// docs/plans/workspace-home-volume-persistence.md (論点b). The filter stays
-// because PR2 deliberately leaves the copies an older daemon wrote to
-// homes/<slug>.init.json and homes/<slug>.lock in place — every upgraded
-// installation still has them sitting next to its homes, and mistaking one
-// for a workspace would report a bogus (and, via Orphan, alarming) entry.
-//
-// Unlike computeWorkspaceHomeSize's single-slug
-// lookup (driven by an already-known, already-validated slug), this walks
-// the directory itself — so it also surfaces home directories with no
-// corresponding workspace row at all ("orphans": docs/plans/
-// home-workspace-volume.md PR5: "workspace.yaml が消えて home だけ残った
-// 孤児はレポートのみ"), which lister (when non-nil) is consulted to detect.
-//
-// Orphan detection depends on a successful WorkspaceSlugLister.List call. A
-// lister failure means orphan status is simply unknowable for every entry —
-// rather than marking every entry Orphan=true (this function's pre-#791-
-// review behavior, which silently misreported every real workspace's home
-// as an "orphan" on a merely transient DB hiccup), a lister failure now
-// omits the listing outright: homes comes back an empty (non-nil) slice, and
-// listErr carries the lister's error message so a caller can render "size
-// listing unavailable: <reason>" instead of trusting bogus per-entry orphan
-// flags. This preserves the invariant "every WorkspaceHomeSize actually
-// returned has a trustworthy Orphan flag" (codex PR #791 review, Should-fix
-// #3, selection A — the plan's rejected alternative, selection B, would
-// instead add a 3-state `orphan_known bool` per entry).
-//
-// err (the third return) is reserved for a genuine directory-walk failure —
-// an unresolvable runtimesDir, or os.ReadDir failing for a reason other than
-// "does not exist yet". Unlike listErr, a non-nil err means the whole call
-// failed, not just orphan detection; GC's own record-deletion work does not
-// depend on workspace-home reporting succeeding, so callers should still
-// treat a non-nil err as non-fatal to the rest of their own response.
-//
-// Returns an empty (non-nil) slice, not an error, when homes/ does not exist
-// yet (a fresh installation that has never dispatched a job).
-func ListWorkspaceHomeSizes(runtimesDir string, lister WorkspaceSlugLister) (homes []WorkspaceHomeSize, listErr string, err error) {
-	homesDir, err := dispatcher.WorkspaceHomesDir(runtimesDir)
-	if err != nil {
-		return nil, "", err
-	}
+// computeWorkspaceHomeSize reports slug's workspace HOME volume, never
+// returning an error itself: every failure mode (no engine, the volume not
+// existing yet, a disk-usage call that failed) is instead reflected in the
+// returned WorkspaceHomeSize's Exists/SizeError fields, matching the "never
+// block the rest of the response on a size lookup failure" contract PR5's
+// brief sets for both `workspace show` and `boid gc`.
+func computeWorkspaceHomeSize(ctx context.Context, store WorkspaceHomeStore, slug string) WorkspaceHomeSize {
+	return homeSizeFrom(store.Get(ctx, slug))
+}
 
-	entries, err := os.ReadDir(homesDir)
+// ListWorkspaceHomeSizes enumerates every workspace HOME volume belonging to
+// this install and reports each one's size, flagging the ones with no
+// corresponding workspace row as orphans (docs/plans/home-workspace-volume.md
+// PR5: "workspace.yaml が消えて home だけ残った孤児はレポートのみ").
+//
+// Orphan detection depends on a successful WorkspaceSlugLister call. A lister
+// failure means orphan status is simply unknowable for every entry — rather
+// than marking every entry Orphan=true (this function's pre-#791-review
+// behavior, which silently misreported every real workspace's home as an
+// "orphan" on a merely transient DB hiccup), a lister failure now omits the
+// listing outright: homes comes back an empty (non-nil) slice, and listErr
+// carries the lister's error message so a caller can render "size listing
+// unavailable: <reason>" instead of trusting bogus per-entry orphan flags.
+// This preserves the invariant "every WorkspaceHomeSize actually returned has
+// a trustworthy Orphan flag" (codex PR #791 review, Should-fix #3,
+// selection A).
+//
+// err (the third return) is reserved for a genuine enumeration failure — the
+// engine's volume listing failing. Unlike listErr, a non-nil err means the
+// whole call failed, not just orphan detection; GC's own record-deletion work
+// does not depend on workspace-home reporting succeeding, so callers should
+// still treat a non-nil err as non-fatal to the rest of their own response.
+//
+// A sizing failure is neither of those: the store still returns the listing,
+// with SizeError set per entry, because the listing is what drives orphan
+// detection and losing it over a busy disk-usage call would be a much worse
+// trade than an entry rendering "?".
+func ListWorkspaceHomeSizes(ctx context.Context, store WorkspaceHomeStore, lister WorkspaceSlugLister) (homes []WorkspaceHomeSize, listErr string, err error) {
+	volumes, err := store.List(ctx)
 	if err != nil {
-		if os.IsNotExist(err) {
-			return []WorkspaceHomeSize{}, "", nil
-		}
 		return nil, "", err
 	}
 
@@ -225,18 +198,10 @@ func ListWorkspaceHomeSizes(runtimesDir string, lister WorkspaceSlugLister) (hom
 		}
 	}
 
-	var slugs []string
-	for _, e := range entries {
-		if e.IsDir() {
-			slugs = append(slugs, e.Name())
-		}
-	}
-	sort.Strings(slugs)
-
-	result := make([]WorkspaceHomeSize, 0, len(slugs))
-	for _, slug := range slugs {
-		entry := computeWorkspaceHomeSize(runtimesDir, slug)
-		entry.Orphan = !known[slug]
+	result := make([]WorkspaceHomeSize, 0, len(volumes))
+	for _, v := range volumes {
+		entry := homeSizeFrom(v)
+		entry.Orphan = !known[v.Slug]
 		result = append(result, entry)
 	}
 	return result, "", nil
@@ -244,87 +209,84 @@ func ListWorkspaceHomeSizes(runtimesDir string, lister WorkspaceSlugLister) (hom
 
 // WorkspaceRemoveResponse is the response body for DELETE
 // /api/workspaces/{slug} (docs/plans/home-workspace-volume.md Phase 4 PR5).
-// The workspace row is always removed before any home-directory deletion is
-// attempted (WorkspaceHandler.Remove calls Service.RemoveWorkspace first),
-// so a non-empty HomeDeleteError (or HomeSizeError) reports a *partially*
+// The workspace row is always removed before any home deletion is attempted
+// (WorkspaceHandler.Remove calls Service.RemoveWorkspace first), so a
+// non-empty HomeDeleteError (or HomeSizeError) reports a *partially*
 // completed remove — deliberately allowed per the plan doc ("削除失敗...
 // workspace 設定 (DB) の削除は先に完了させる (part-completed 状態を許容...)")
 // rather than treated as a request failure: the response status stays 200.
 type WorkspaceRemoveResponse struct {
 	Status string `json:"status"`
-	// HomePath/HomeBytes describe the home directory as it was found right
-	// before the deletion attempt (empty/0 when RuntimesDir was not wired
-	// into the handler, or slug is the reserved default workspace). HomeBytes
-	// is only trustworthy when HomeSizeError is empty.
-	HomePath  string `json:"home_path,omitempty"`
-	HomeBytes int64  `json:"home_bytes,omitempty"`
+
+	// HomeVolume/HomeBytes describe the workspace's HOME volume as it was
+	// found right before the deletion attempt (empty/0 when no docker client
+	// was wired into the handler, or slug is the reserved default workspace).
+	// HomeBytes is only trustworthy when HomeSizeError is empty.
+	//
+	// HomeVolume replaces the `home_path` field this struct carried through
+	// PR6 — see WorkspaceHomeSize.Volume for the reasoning and for the
+	// CLI/daemon-skew consequences.
+	HomeVolume string `json:"home_volume,omitempty"`
+	HomeBytes  int64  `json:"home_bytes,omitempty"`
+
 	// HomeSizeError is non-empty when the daemon could not determine
-	// HomePath's on-disk size before attempting deletion (mirrors
+	// HomeVolume's size before attempting deletion (mirrors
 	// WorkspaceHomeSize.SizeError) — independent of whether the deletion
 	// itself subsequently succeeded. Split out from HomeDeleteError (codex
 	// PR #791 review, Should-fix #2): the two used to be conflated into a
 	// single field, so a caller could not tell "we don't know the size" (a
-	// diagnostic-only hiccup, e.g. a concurrent dispatch mutating the tree
-	// mid-walk) apart from "the directory is still there and undeletable" (a
-	// real part-completed-remove problem worth investigating).
+	// diagnostic-only hiccup) apart from "the volume is still there and
+	// undeletable" (a real part-completed-remove problem worth
+	// investigating).
 	HomeSizeError string `json:"home_size_error,omitempty"`
-	// HomeDeleted is true only when a home directory existed and os.RemoveAll
-	// on it succeeded. false covers every other case: no RuntimesDir wired,
-	// the default workspace's protected home, no home directory to begin
-	// with, or a deletion failure (see HomeDeleteError for that last one).
-	// Sizing is best-effort (see HomeSizeError) and never gates whether
-	// deletion is attempted — HomeDeleted can be true even when
-	// HomeSizeError is also non-empty.
+
+	// HomeDeleted is true only when a home volume existed and the engine
+	// removed it. false covers every other case: no docker client wired, the
+	// default workspace's protected home, no volume to begin with, or a
+	// deletion failure (see HomeDeleteError for that last one). Sizing is
+	// best-effort (see HomeSizeError) and never gates whether deletion is
+	// attempted — HomeDeleted can be true even when HomeSizeError is also
+	// non-empty.
 	HomeDeleted bool `json:"home_deleted"`
-	// HomeDeleteError is non-empty only when os.RemoveAll on the home
-	// directory itself failed. Never populated merely because sizing failed
-	// (see HomeSizeError for that).
+
+	// HomeDeleteError is non-empty only when the engine's VolumeRemove
+	// failed. Never populated merely because sizing failed (see
+	// HomeSizeError for that).
+	//
+	// The case worth naming: removing a workspace while a job is still
+	// running in it. The engine answers 409 ("volume is being used by the
+	// following container(s): <id>") and — measured against podman 4.9.3,
+	// 2026-07-27 — keeps answering 409 with force set, so there is nothing
+	// boid can do about it beyond reporting it. The row is gone and the
+	// volume is not; re-running `boid workspace remove` is not an option
+	// (the row is already removed, so it 404s), which makes
+	// `docker volume rm <home_volume>` the follow-up. See
+	// docs/{ja,en}/guide/workspace-home.md.
 	HomeDeleteError string `json:"home_delete_error,omitempty"`
 }
 
-// deleteWorkspaceHome removes slug's workspace home directory (docs/plans/
+// deleteWorkspaceHome removes slug's workspace HOME volume (docs/plans/
 // home-workspace-volume.md Phase 4 PR5, DELETE /api/workspaces/{slug}).
 //
 // The reserved default workspace is refused unconditionally here as defense
 // in depth: ProjectAppService.RemoveWorkspace already rejects removing the
 // default workspace's *row* before WorkspaceHandler.Remove ever calls this
 // function, so in practice this branch should be unreachable — but home
-// directory deletion gets its own independent guard anyway, so a future
-// caller of this function (or a bug in the row-level guard) cannot
-// accidentally destroy the default workspace's persistent $HOME.
+// deletion gets its own independent guard anyway, so a future caller of this
+// function (or a bug in the row-level guard) cannot accidentally destroy the
+// default workspace's persistent $HOME. The guard is placed BEFORE the store
+// call, not after: the store's Remove would otherwise have already issued the
+// engine's VolumeRemove by the time this function got to decide.
 //
-// Sizing is best-effort (codex PR #791 review, Should-fix #1/#2): the
-// pre-#791-review version bailed out here whenever info.SizeError was set —
-// including the common case where computeWorkspaceHomeSize's top-level
-// os.Stat succeeded (info.Exists is true — something is really there) but
-// the subsequent humanize.ApparentSize walk failed partway through, e.g.
-// because a concurrent dispatch job deleted cache files out from under it.
-// That meant a mere sizing hiccup silently skipped os.RemoveAll entirely,
-// leaving an undeleted directory behind after the workspace row itself was
-// already gone (an orphan). RemoveAll is now attempted whenever anything
-// might be there — info.Exists is true, or info.Path resolved to something
-// stat could not conclusively rule out (a permission error, not ENOENT) — so
-// a sizing failure never blocks the delete attempt; only info.Path being
-// empty (runtimesDir itself unresolvable) skips it outright, since there is
-// then no path to call RemoveAll on at all.
-func deleteWorkspaceHome(runtimesDir, slug string) (info WorkspaceHomeSize, deleted bool, err error) {
-	info = computeWorkspaceHomeSize(runtimesDir, slug)
-
+// Sizing is best-effort (codex PR #791 review, Should-fix #1/#2) and never
+// blocks the deletion attempt; that contract now lives inside
+// dispatcher.WorkspaceHomeVolumeStore.Remove, which issues VolumeRemove
+// regardless of whether it could size — or even confirm the existence of —
+// the volume first.
+func deleteWorkspaceHome(ctx context.Context, store WorkspaceHomeStore, slug string) (info WorkspaceHomeSize, deleted bool, err error) {
 	if slug == orchestrator.DefaultWorkspaceSlug {
-		return info, false, nil
+		return homeSizeFrom(store.Get(ctx, slug)), false, nil
 	}
-	if info.Path == "" {
-		// runtimesDir itself could not be resolved (info.SizeError already
-		// explains why) — there is no path to attempt RemoveAll on.
-		return info, false, nil
-	}
-
-	if err := os.RemoveAll(info.Path); err != nil {
-		return info, false, err
-	}
-	// os.RemoveAll succeeds (nil error) even when info.Path never existed in
-	// the first place — report deleted=true only when something was
-	// actually found there beforehand (info.Exists), not merely because the
-	// no-op RemoveAll call itself didn't error.
-	return info, info.Exists, nil
+	v, deleted, err := store.Remove(ctx, slug)
+	return homeSizeFrom(v), deleted, err
 }

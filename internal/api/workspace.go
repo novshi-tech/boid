@@ -15,13 +15,14 @@ import (
 
 type WorkspaceHandler struct {
 	Service ProjectService
-	// RuntimesDir, when non-empty, is server/wire.go's runtimesDirFor(cfg) —
-	// used to resolve each workspace's home directory (docs/plans/
-	// home-workspace-volume.md Phase 4 PR5) for Show's size reporting and
-	// Remove's home-directory deletion. Left empty, both features degrade
-	// gracefully: Show omits WorkspaceDetail.Home, Remove reports
-	// home_deleted=false with no attempt made.
-	RuntimesDir string
+	// Homes, when non-nil, is the engine-backed view of workspace HOME
+	// volumes (docs/plans/workspace-home-volume-persistence.md 論点 a-2, PR7)
+	// used for Show's size reporting and Remove's home deletion. Left nil,
+	// both features degrade gracefully: Show omits WorkspaceDetail.Home,
+	// Remove reports home_deleted=false with no attempt made — the same
+	// degradation an empty RuntimesDir used to produce, now keyed on the
+	// feature's only actual dependency. See WorkspaceHomeStore's doc comment.
+	Homes WorkspaceHomeStore
 }
 
 func (h *WorkspaceHandler) Routes() chi.Router {
@@ -150,8 +151,8 @@ func (h *WorkspaceHandler) Show(w http.ResponseWriter, r *http.Request) {
 		writeServiceError(w, err)
 		return
 	}
-	if h.RuntimesDir != "" {
-		home := computeWorkspaceHomeSize(h.RuntimesDir, slug)
+	if h.Homes != nil {
+		home := computeWorkspaceHomeSize(r.Context(), h.Homes, slug)
 		detail.Home = &home
 	}
 	setWorkspaceETag(w, detail)
@@ -251,15 +252,17 @@ func (h *WorkspaceHandler) Import(w http.ResponseWriter, r *http.Request) {
 // at the service/repository layer (ProjectAppService.RemoveWorkspace →
 // orchestrator.WorkspaceRepository.Remove's transaction).
 //
-// docs/plans/home-workspace-volume.md Phase 4 PR5 adds home directory
-// deletion on top of the pre-existing row removal: the workspace row is
-// always removed first (via h.Service.RemoveWorkspace), and only then does
-// this attempt to delete slug's home directory on disk — trusted-side
-// deletion, since a sandboxed job or a remote CLI client has no way to
-// remove a path on the daemon's own filesystem itself. A home-deletion
-// failure (e.g. permission denied) is reported in the response but does not
-// turn this into an error response: the row is already gone, and the plan
-// doc explicitly allows this "part-completed" outcome (see
+// docs/plans/home-workspace-volume.md Phase 4 PR5 adds home deletion on top
+// of the pre-existing row removal: the workspace row is always removed first
+// (via h.Service.RemoveWorkspace), and only then does this attempt to delete
+// slug's home — trusted-side deletion, since a sandboxed job or a remote CLI
+// client has no way to reach the daemon's docker socket itself (and, since
+// PR1 of docs/plans/workspace-home-volume-persistence.md, is denied the
+// boid-ws- volume namespace outright even when it has one). A home-deletion
+// failure — most plausibly the engine's 409 for a volume a running job still
+// holds, see WorkspaceRemoveResponse.HomeDeleteError — is reported in the
+// response but does not turn this into an error response: the row is already
+// gone, and the plan doc explicitly allows this "part-completed" outcome (see
 // WorkspaceRemoveResponse's doc comment) rather than trying to make the two
 // deletions atomic.
 func (h *WorkspaceHandler) Remove(w http.ResponseWriter, r *http.Request) {
@@ -270,20 +273,20 @@ func (h *WorkspaceHandler) Remove(w http.ResponseWriter, r *http.Request) {
 	}
 
 	resp := WorkspaceRemoveResponse{Status: "removed"}
-	if h.RuntimesDir != "" {
-		info, deleted, delErr := deleteWorkspaceHome(h.RuntimesDir, slug)
-		resp.HomePath = info.Path
+	if h.Homes != nil {
+		info, deleted, delErr := deleteWorkspaceHome(r.Context(), h.Homes, slug)
+		resp.HomeVolume = info.Volume
 		resp.HomeBytes = info.Bytes
 		resp.HomeSizeError = info.SizeError
 		resp.HomeDeleted = deleted
 		if info.SizeError != "" {
-			slog.Warn("workspace remove: home directory size lookup failed (deletion proceeds regardless, best-effort)",
-				"slug", slug, "path", info.Path, "error", info.SizeError)
+			slog.Warn("workspace remove: home volume size lookup failed (deletion proceeds regardless, best-effort)",
+				"slug", slug, "volume", info.Volume, "error", info.SizeError)
 		}
 		if delErr != nil {
 			resp.HomeDeleteError = delErr.Error()
-			slog.Warn("workspace remove: home directory deletion failed",
-				"slug", slug, "path", info.Path, "error", delErr)
+			slog.Warn("workspace remove: home volume deletion failed",
+				"slug", slug, "volume", info.Volume, "error", delErr)
 		}
 	}
 	writeJSON(w, http.StatusOK, resp)

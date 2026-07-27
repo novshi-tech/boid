@@ -13,6 +13,7 @@ import (
 
 	"github.com/novshi-tech/boid/internal/api"
 	"github.com/novshi-tech/boid/internal/client"
+	"github.com/novshi-tech/boid/internal/dockerres"
 	"github.com/novshi-tech/boid/internal/orchestrator"
 	"github.com/novshi-tech/boid/internal/server"
 	"github.com/novshi-tech/boid/testutil"
@@ -710,7 +711,7 @@ func TestRunWorkspaceAssign_AutoCreate_FailsOnUnresolvedKit(t *testing.T) {
 // to defaultKitsDir(), this kit lookup 404s and the assign fails.
 func TestRunWorkspaceAssign_AutoCreate_HonorsCustomKitsDir(t *testing.T) {
 	cfgDir := t.TempDir()
-	dataDir := t.TempDir()      // defaultKitsDir() resolves under here — deliberately WITHOUT the kit.
+	dataDir := t.TempDir()       // defaultKitsDir() resolves under here — deliberately WITHOUT the kit.
 	customKitsDir := t.TempDir() // the daemon's actual --kits-dir — WITH the kit.
 
 	t.Setenv("XDG_CONFIG_HOME", cfgDir)
@@ -1408,37 +1409,30 @@ func resetWorkspaceRemoveFlags(t *testing.T) {
 	workspaceRemoveConfirmPrompt = defaultWorkspaceRemoveConfirmPrompt
 }
 
-// workspaceHomesDirForTest returns the on-disk homes/ directory the running
-// test daemon resolves workspace homes under: server/wire.go's
-// runtimesDirFor(cfg) is filepath.Dir(SocketPath)/runtimes when DBPath is
-// ":memory:" (testutil.NewTestServer's config), and
-// dispatcher.WorkspaceHomesDir derives homes/ as that path's sibling — so
-// this collapses back down to filepath.Dir(SocketPath)/homes.
-func workspaceHomesDirForTest(ts *testutil.TestServer) string {
-	return filepath.Join(filepath.Dir(ts.Server.SocketPath()), "homes")
-}
+// The workspace HOME became a docker named volume in PR6 of
+// docs/plans/workspace-home-volume-persistence.md, and PR7 (論点 a-2) rewired
+// size reporting and deletion onto the engine's volume API. So the helpers
+// that used to seed a homes/<slug> directory on disk are gone: there is no
+// host path left for the daemon to look at, and nothing the CLI can create
+// without a live docker/podman engine.
+//
+// The substance those tests carried moved to where it is deterministic —
+// internal/api's TestWorkspaceHandler_* / internal/dispatcher's
+// TestWorkspaceHomeVolumeStore_* cases, and the rendering unit tests further
+// down this file. What stays here is what IS observable end to end against a
+// daemon with no reachable engine, and it is the contract that matters most
+// for an interactive CLI: neither `workspace show` nor `workspace remove`
+// fails because the home could not be sized or deleted.
 
-// writeWorkspaceHomeFileForTest creates slug's home directory (as the daemon
-// itself would resolve it) with one file of the given size, without going
-// through a real dispatch — PR5's size reporting only cares that something
-// is on disk at the expected path, not how it got there.
-func writeWorkspaceHomeFileForTest(t *testing.T, ts *testutil.TestServer, slug string, size int) string {
-	t.Helper()
-	homeDir := filepath.Join(workspaceHomesDirForTest(ts), slug)
-	if err := os.MkdirAll(homeDir, 0o755); err != nil {
-		t.Fatalf("mkdir home dir: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(homeDir, "data.bin"), make([]byte, size), 0o644); err != nil {
-		t.Fatalf("write home file: %v", err)
-	}
-	return homeDir
-}
-
-func TestRunWorkspaceShow_DisplaysHomeSize(t *testing.T) {
+// TestRunWorkspaceShow_HomeVolumeNamedEvenWhenUnsizeable pins two things at
+// once: `workspace show` names the workspace's HOME VOLUME (論点 a-2's D4
+// identifier — what an operator would pass to `docker volume rm`), and an
+// engine it cannot reach renders as "?" rather than failing the command
+// (docs/plans/home-workspace-volume.md PR5: "エラー時はエラーにせず「?」表示").
+func TestRunWorkspaceShow_HomeVolumeNamedEvenWhenUnsizeable(t *testing.T) {
 	ts := testutil.NewTestServer(t)
 	t.Setenv("BOID_SOCKET", ts.Server.SocketPath())
 	testutil.SeedWorkspace(t, ts, "team-a")
-	homeDir := writeWorkspaceHomeFileForTest(t, ts, "team-a", 2048)
 
 	var out bytes.Buffer
 	cmd := workspaceShowCmd
@@ -1447,38 +1441,25 @@ func TestRunWorkspaceShow_DisplaysHomeSize(t *testing.T) {
 		t.Fatalf("runWorkspaceShow: %v", err)
 	}
 	got := out.String()
-	if !strings.Contains(got, "home size: 2.05 KB") {
-		t.Errorf("expected formatted home size in output, got: %s", got)
+	if !strings.Contains(got, "home size: ?") {
+		t.Errorf("expected an unknown size rather than a command failure, got: %s", got)
 	}
-	if !strings.Contains(got, homeDir) {
-		t.Errorf("expected home dir path %q in output, got: %s", homeDir, got)
-	}
-}
-
-func TestRunWorkspaceShow_HomeNotYetCreated(t *testing.T) {
-	ts := testutil.NewTestServer(t)
-	t.Setenv("BOID_SOCKET", ts.Server.SocketPath())
-	testutil.SeedWorkspace(t, ts, "team-b")
-
-	var out bytes.Buffer
-	cmd := workspaceShowCmd
-	cmd.SetOut(&out)
-	if err := runWorkspaceShow(cmd, []string{"team-b"}); err != nil {
-		t.Fatalf("runWorkspaceShow: %v", err)
-	}
-	got := out.String()
-	if !strings.Contains(got, "home size: 0 B (未作成:") {
-		t.Errorf("expected the not-yet-created display, got: %s", got)
+	// The install id is empty for a test daemon, so the name carries the
+	// "noinst" placeholder — computed here through the same single source of
+	// truth the daemon uses rather than spelled out, so a change to the naming
+	// convention cannot pass this test by accident.
+	wantVolume := dockerres.WorkspaceHomeVolumeName("", "team-a")
+	if !strings.Contains(got, wantVolume) {
+		t.Errorf("expected the home volume name %q in output, got: %s", wantVolume, got)
 	}
 }
 
-func TestRunWorkspaceRemove_PromptsAndDeletesHomeDir(t *testing.T) {
+func TestRunWorkspaceRemove_PromptsAndReportsHomeOutcome(t *testing.T) {
 	ts := testutil.NewTestServer(t)
 	t.Setenv("BOID_SOCKET", ts.Server.SocketPath())
 	resetWorkspaceRemoveFlags(t)
 	defer resetWorkspaceRemoveFlags(t)
 	testutil.SeedWorkspace(t, ts, "team-c")
-	homeDir := writeWorkspaceHomeFileForTest(t, ts, "team-c", 10)
 
 	promptCalls := 0
 	workspaceRemoveConfirmPrompt = func(io.Reader) (bool, error) {
@@ -1493,16 +1474,22 @@ func TestRunWorkspaceRemove_PromptsAndDeletesHomeDir(t *testing.T) {
 		t.Fatalf("runWorkspaceRemove: %v", err)
 	}
 	if promptCalls != 1 {
-		t.Errorf("prompt called %d times, want 1 (home dir exists, --force not set)", promptCalls)
-	}
-	if !strings.Contains(out.String(), "home dir deleted") {
-		t.Errorf("expected a home-dir-deleted confirmation, got: %s", out.String())
-	}
-	if _, statErr := os.Stat(homeDir); !os.IsNotExist(statErr) {
-		t.Errorf("home dir still present after remove: stat err=%v", statErr)
+		t.Errorf("prompt called %d times, want 1 (--force not set)", promptCalls)
 	}
 	if err := ts.Client.Do("GET", "/api/workspaces/team-c", nil, &api.WorkspaceDetail{}); err == nil {
 		t.Error("expected team-c to be gone after remove")
+	}
+	// The engine is unreachable here, so the home deletion fails — which must
+	// be REPORTED (a part-completed remove: the row is gone, the volume is
+	// not) and must NOT turn the command into a failure. Pinning the warning
+	// rather than a success message is deliberate: the pre-PR7 daemon
+	// silently reported nothing at all in this situation, which is the bug
+	// 論点 a-2 exists to fix.
+	if !strings.Contains(out.String(), "delete failed") {
+		t.Errorf("expected the home-volume delete failure to be reported, got: %s", out.String())
+	}
+	if !strings.Contains(out.String(), dockerres.WorkspaceHomeVolumeName("", "team-c")) {
+		t.Errorf("expected the warning to name the volume an operator would clean up by hand, got: %s", out.String())
 	}
 }
 
@@ -1512,7 +1499,6 @@ func TestRunWorkspaceRemove_PromptDeclined_AbortsWithoutDeleting(t *testing.T) {
 	resetWorkspaceRemoveFlags(t)
 	defer resetWorkspaceRemoveFlags(t)
 	testutil.SeedWorkspace(t, ts, "team-d")
-	homeDir := writeWorkspaceHomeFileForTest(t, ts, "team-d", 10)
 
 	workspaceRemoveConfirmPrompt = func(io.Reader) (bool, error) { return false, nil }
 
@@ -1525,9 +1511,6 @@ func TestRunWorkspaceRemove_PromptDeclined_AbortsWithoutDeleting(t *testing.T) {
 	if !strings.Contains(out.String(), "aborted") {
 		t.Errorf("expected an abort message, got: %s", out.String())
 	}
-	if _, statErr := os.Stat(homeDir); statErr != nil {
-		t.Errorf("home dir should still be present after a declined prompt: stat err=%v", statErr)
-	}
 	if err := ts.Client.Do("GET", "/api/workspaces/team-d", nil, &api.WorkspaceDetail{}); err != nil {
 		t.Errorf("expected team-d to still exist after a declined prompt: %v", err)
 	}
@@ -1539,7 +1522,6 @@ func TestRunWorkspaceRemove_ForceSkipsPrompt(t *testing.T) {
 	resetWorkspaceRemoveFlags(t)
 	defer resetWorkspaceRemoveFlags(t)
 	testutil.SeedWorkspace(t, ts, "team-e")
-	homeDir := writeWorkspaceHomeFileForTest(t, ts, "team-e", 10)
 
 	promptCalls := 0
 	workspaceRemoveConfirmPrompt = func(io.Reader) (bool, error) {
@@ -1559,25 +1541,24 @@ func TestRunWorkspaceRemove_ForceSkipsPrompt(t *testing.T) {
 	if promptCalls != 0 {
 		t.Errorf("prompt called %d times, want 0 (--force must skip it)", promptCalls)
 	}
-	if _, statErr := os.Stat(homeDir); !os.IsNotExist(statErr) {
-		t.Errorf("home dir still present after --force remove: stat err=%v", statErr)
+	if err := ts.Client.Do("GET", "/api/workspaces/team-e", nil, &api.WorkspaceDetail{}); err == nil {
+		t.Error("expected team-e to be gone after a --force remove")
 	}
 }
 
-// TestRunWorkspaceRemove_NoHomeDir_StillPrompts pins the codex PR #791
+// TestRunWorkspaceRemove_NoHome_StillPrompts pins the codex PR #791
 // review Blocker fix (GET-DELETE race): unlike the pre-fix behavior where a
-// workspace whose home directory was never created (GET reports
-// Exists=false) skipped the confirmation prompt entirely, the prompt is now
-// unconditional whenever --force is not given, regardless of what GET
-// reported — a concurrent dispatch job could create the home directory in
-// the window between GET and DELETE, and skipping the prompt removed the
-// operator's only chance to notice.
-func TestRunWorkspaceRemove_NoHomeDir_StillPrompts(t *testing.T) {
+// workspace whose home was never created (GET reports Exists=false) skipped
+// the confirmation prompt entirely, the prompt is now unconditional whenever
+// --force is not given, regardless of what GET reported — a concurrent
+// dispatch job could create the home in the window between GET and DELETE,
+// and skipping the prompt removed the operator's only chance to notice.
+func TestRunWorkspaceRemove_NoHome_StillPrompts(t *testing.T) {
 	ts := testutil.NewTestServer(t)
 	t.Setenv("BOID_SOCKET", ts.Server.SocketPath())
 	resetWorkspaceRemoveFlags(t)
 	defer resetWorkspaceRemoveFlags(t)
-	testutil.SeedWorkspace(t, ts, "team-f") // no home dir ever created for it.
+	testutil.SeedWorkspace(t, ts, "team-f") // never dispatched into, so no home volume exists.
 
 	promptCalls := 0
 	workspaceRemoveConfirmPrompt = func(io.Reader) (bool, error) {
@@ -1592,22 +1573,19 @@ func TestRunWorkspaceRemove_NoHomeDir_StillPrompts(t *testing.T) {
 		t.Fatalf("runWorkspaceRemove: %v", err)
 	}
 	if promptCalls != 1 {
-		t.Errorf("prompt called %d times, want 1 (prompt is now unconditional, even with no home dir)", promptCalls)
-	}
-	if !strings.Contains(out.String(), "未作成") {
-		t.Errorf("expected the size line to note the home dir was never created, got: %s", out.String())
+		t.Errorf("prompt called %d times, want 1 (prompt is now unconditional, even with no home)", promptCalls)
 	}
 	if err := ts.Client.Do("GET", "/api/workspaces/team-f", nil, &api.WorkspaceDetail{}); err == nil {
 		t.Error("expected team-f to be gone after remove (prompt was approved)")
 	}
 }
 
-// TestRunWorkspaceRemove_NoHomeDir_PromptDeclined_AbortsWithoutRemoving is
-// the decline counterpart of the above: since the prompt is now
-// unconditional, declining it must abort the remove even when there was no
-// home directory to delete in the first place — a case the pre-fix code
-// could never even reach, since the prompt never appeared for it.
-func TestRunWorkspaceRemove_NoHomeDir_PromptDeclined_AbortsWithoutRemoving(t *testing.T) {
+// TestRunWorkspaceRemove_NoHome_PromptDeclined_AbortsWithoutRemoving is the
+// decline counterpart of the above: since the prompt is now unconditional,
+// declining it must abort the remove even when there was no home to delete in
+// the first place — a case the pre-fix code could never even reach, since the
+// prompt never appeared for it.
+func TestRunWorkspaceRemove_NoHome_PromptDeclined_AbortsWithoutRemoving(t *testing.T) {
 	ts := testutil.NewTestServer(t)
 	t.Setenv("BOID_SOCKET", ts.Server.SocketPath())
 	resetWorkspaceRemoveFlags(t)
@@ -1630,17 +1608,39 @@ func TestRunWorkspaceRemove_NoHomeDir_PromptDeclined_AbortsWithoutRemoving(t *te
 	}
 }
 
-// TestFormatWorkspaceRemoveResult_FourPatterns pins the four independent
-// outcome combinations codex PR #791 review Should-fix #2 asked for once
-// HomeSizeError and HomeDeleteError became separate fields: plain success,
-// size lookup failed only (delete still went through, best-effort), delete
-// failed only, and both failed. Exercised as a pure unit test against
-// api.WorkspaceRemoveResponse values directly rather than a live daemon,
-// since a real permission-based failure would trip both fields together and
-// could not isolate each case (mirrors internal/api's
-// TestDeleteWorkspaceHome_SizeErrorDoesNotBlockDeletion for the same
-// reason).
-func TestFormatWorkspaceRemoveResult_FourPatterns(t *testing.T) {
+// TestFormatWorkspaceRemoveResult_EveryOutcome pins every combination of the
+// three independent things the DELETE response can say about the home volume —
+// was it deleted, could it be sized, did the deletion fail — including the two
+// this renderer used to answer with silence.
+//
+// The four "…Error" combinations are the ones codex PR #791 review Should-fix
+// #2 asked for once HomeSizeError and HomeDeleteError became separate fields.
+// The `deleted=false, no error at all` rows are PR7 round-2 review Blocker 1,
+// and they are the whole reason this test grew a name that is not
+// "FourPatterns": that combination has TWO meanings and the renderer used to
+// collapse both into "" —
+//
+//   - the daemon looked, and there genuinely was no home volume (the
+//     init-on-first-dispatch contract: "a missing home is not an error"). The
+//     tell is that it still named the volume it looked for, because
+//     dispatcher.WorkspaceHomeVolumeStore fills WorkspaceHomeVolume.Volume
+//     whether or not the volume exists.
+//   - nobody established anything: either the daemon predates PR7 and sent the
+//     old `home_path` key (which decodes into no field this CLI reads), or it
+//     had no engine handle and skipped the home block entirely. Both leave
+//     home_volume empty, and in both cases a volume full of harness
+//     credentials may still be sitting on the engine while the DB row is
+//     already gone.
+//
+// Reporting the second as "workspace removed." and nothing else was the actual
+// defect: a CLI/daemon skew is reachable (Phase 3 made the CLI able to drive a
+// remote daemon), and this repo has no API version handshake to catch it.
+//
+// Exercised as a pure unit test against api.WorkspaceRemoveResponse values
+// rather than a live daemon, since a real failure would trip several fields
+// together and could not isolate each case (mirrors internal/api's
+// TestDeleteWorkspaceHome_SizeErrorDoesNotBlockDeletion for the same reason).
+func TestFormatWorkspaceRemoveResult_EveryOutcome(t *testing.T) {
 	cases := []struct {
 		name string
 		resp api.WorkspaceRemoveResponse
@@ -1649,41 +1649,67 @@ func TestFormatWorkspaceRemoveResult_FourPatterns(t *testing.T) {
 	}{
 		{
 			name: "success",
-			resp: api.WorkspaceRemoveResponse{HomePath: "/homes/team-a", HomeBytes: 1000, HomeDeleted: true},
-			want: []string{"home dir deleted", "/homes/team-a", "1.00 KB"},
+			resp: api.WorkspaceRemoveResponse{HomeVolume: "boid-ws-home-abcd1234-team-a", HomeBytes: 1000, HomeDeleted: true},
+			want: []string{"home volume deleted", "boid-ws-home-abcd1234-team-a", "1.00 KB"},
 		},
 		{
 			name: "size error only, delete still succeeded",
-			resp: api.WorkspaceRemoveResponse{HomePath: "/homes/team-b", HomeDeleted: true, HomeSizeError: "walk: ENOENT"},
-			want: []string{"home dir deleted", "/homes/team-b", "size unknown", "walk: ENOENT"},
-		},
-		{
-			name: "size error only, delete never attempted/succeeded",
-			resp: api.WorkspaceRemoveResponse{HomePath: "/homes/team-c", HomeDeleted: false, HomeSizeError: "stat: EACCES"},
-			want: []string{"warning", "/homes/team-c", "size unknown", "stat: EACCES"},
+			resp: api.WorkspaceRemoveResponse{HomeVolume: "boid-ws-home-abcd1234-team-b", HomeDeleted: true, HomeSizeError: "engine busy"},
+			want: []string{"home volume deleted", "boid-ws-home-abcd1234-team-b", "size unknown", "engine busy"},
 		},
 		{
 			name: "delete error only",
-			resp: api.WorkspaceRemoveResponse{HomePath: "/homes/team-d", HomeDeleted: false, HomeDeleteError: "remove: EACCES"},
-			want: []string{"warning", "/homes/team-d", "delete failed", "remove: EACCES"},
+			resp: api.WorkspaceRemoveResponse{HomeVolume: "boid-ws-home-abcd1234-team-d", HomeDeleted: false, HomeDeleteError: "volume is being used by the following container(s): abc123"},
+			want: []string{"warning", "boid-ws-home-abcd1234-team-d", "delete failed", "being used"},
 		},
 		{
 			name: "both size and delete errors",
-			resp: api.WorkspaceRemoveResponse{HomePath: "/homes/team-e", HomeDeleted: false, HomeSizeError: "stat: EACCES", HomeDeleteError: "remove: EACCES"},
-			want: []string{"warning", "/homes/team-e", "size unknown", "delete failed", "stat: EACCES", "remove: EACCES"},
+			resp: api.WorkspaceRemoveResponse{HomeVolume: "boid-ws-home-abcd1234-team-e", HomeDeleted: false, HomeSizeError: "engine busy", HomeDeleteError: "409 conflict"},
+			want: []string{"warning", "boid-ws-home-abcd1234-team-e", "size unknown", "delete failed", "engine busy", "409 conflict"},
 		},
 		{
-			name: "nothing to report",
-			resp: api.WorkspaceRemoveResponse{},
+			// The normal, quiet outcome: a workspace that was never dispatched
+			// into has no home volume, and saying so on every remove would
+			// train operators to ignore the line that matters.
+			name: "no home volume existed, and the daemon says so by naming the one it looked for",
+			resp: api.WorkspaceRemoveResponse{HomeVolume: "boid-ws-home-abcd1234-team-f"},
 			none: true,
+		},
+		{
+			// Blocker 1, skew half: a PR6 daemon deletes a host directory that
+			// has not been the home since PR6, reports home_deleted=false with
+			// no error, and describes it with a `home_path` key this CLI does
+			// not read. The volume survives, credentials and all.
+			name: "daemon reported no volume identifier at all (version skew, or no engine wired)",
+			resp: api.WorkspaceRemoveResponse{Status: "removed"},
+			want: []string{
+				"could not confirm",
+				"docker volume ls",
+				"boid.workspace_home=team-x", // the label carries the slug verbatim, so the filter is exact
+			},
+		},
+		{
+			// Blocker 1, unknown-existence half: the store could not establish
+			// whether the volume was there (its VolumeInspect failed), so its
+			// VolumeRemove returning nil proves nothing. The old rendering
+			// called this "size unknown", which understates it — the size is
+			// the least of what is unknown.
+			name: "existence never established, so a clean deletion proves nothing",
+			resp: api.WorkspaceRemoveResponse{HomeVolume: "boid-ws-home-abcd1234-team-c", HomeDeleted: false, HomeSizeError: "inspect workspace home volume: engine busy"},
+			want: []string{
+				"could not confirm",
+				"boid-ws-home-abcd1234-team-c",
+				"engine busy",
+				"docker volume",
+			},
 		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := formatWorkspaceRemoveResult(tc.resp)
+			got := formatWorkspaceRemoveResult("team-x", tc.resp)
 			if tc.none {
 				if got != "" {
-					t.Errorf("got %q, want empty (nothing to report)", got)
+					t.Errorf("got %q, want empty (the daemon positively established there was no home volume)", got)
 				}
 				return
 			}
@@ -1693,6 +1719,78 @@ func TestFormatWorkspaceRemoveResult_FourPatterns(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestFormatWorkspaceHomeSize_RendersTheVolumeName pins `workspace show`'s
+// three display cases against the volume-name identifier PR7 substitutes for
+// the old host path (論点 a-2, D4).
+func TestFormatWorkspaceHomeSize_RendersTheVolumeName(t *testing.T) {
+	cases := []struct {
+		name string
+		home api.WorkspaceHomeSize
+		want []string
+	}{
+		{
+			name: "existing",
+			home: api.WorkspaceHomeSize{Volume: "boid-ws-home-abcd1234-team-a", Exists: true, Bytes: 1000},
+			want: []string{"home size: 1.00 KB", "boid-ws-home-abcd1234-team-a"},
+		},
+		{
+			name: "never dispatched into",
+			home: api.WorkspaceHomeSize{Volume: "boid-ws-home-abcd1234-team-a"},
+			want: []string{"home size: 0 B", "未作成", "boid-ws-home-abcd1234-team-a"},
+		},
+		{
+			name: "size unknown",
+			home: api.WorkspaceHomeSize{Volume: "boid-ws-home-abcd1234-team-a", Exists: true, SizeError: "engine busy"},
+			want: []string{"home size: ?", "boid-ws-home-abcd1234-team-a"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := formatWorkspaceHomeSize(&tc.home)
+			for _, want := range tc.want {
+				if !strings.Contains(got, want) {
+					t.Errorf("got %q, want it to contain %q", got, want)
+				}
+			}
+		})
+	}
+}
+
+// TestFormatWorkspaceHome_OldDaemonOmitsTheIdentifier pins the CLI/daemon skew
+// behavior 論点 a-2's D4 signs up for. This repo has no API versioning: a
+// daemon that predates PR7 sends `home_path`, this CLI decodes `home_volume`,
+// and the field arrives empty. That must render as a size with no
+// identifier — not as an empty "()" that reads like a bug — in both the
+// `workspace show` line and the `workspace remove` summary.
+func TestFormatWorkspaceHome_OldDaemonOmitsTheIdentifier(t *testing.T) {
+	showed := formatWorkspaceHomeSize(&api.WorkspaceHomeSize{Exists: true, Bytes: 1000})
+	if !strings.Contains(showed, "1.00 KB") {
+		t.Errorf("workspace show line = %q, want the size to still render", showed)
+	}
+	if strings.Contains(showed, "()") || strings.Contains(showed, "( )") {
+		t.Errorf("workspace show line = %q, want no empty parenthetical when the daemon reported no volume name", showed)
+	}
+
+	// The remove summary is deliberately NOT symmetric with the show line
+	// [codex review round 2, Blocker]. `workspace show` reporting a size
+	// without an identifier loses only the identifier. `workspace remove`
+	// claiming "home volume deleted" when the responding daemon never looked
+	// at a volume is a false statement about destruction: a pre-PR7 daemon
+	// answers home_deleted=true after removing a leftover pre-PR6 host home
+	// DIRECTORY, while the named volume holding the credentials survives. So
+	// this case must warn, whatever HomeDeleted says.
+	removed := formatWorkspaceRemoveResult("team-x", api.WorkspaceRemoveResponse{HomeBytes: 1000, HomeDeleted: true})
+	if !strings.Contains(removed, "could not confirm") {
+		t.Errorf("workspace remove summary = %q, want a warning: an empty home_volume means the daemon reported on something other than the volume, so home_deleted=true cannot be relayed as the volume being gone", removed)
+	}
+	if strings.Contains(removed, "home volume deleted") {
+		t.Errorf("workspace remove summary = %q, must not claim the volume was deleted when the daemon never named one", removed)
+	}
+	if !strings.Contains(removed, "docker volume ls") {
+		t.Errorf("workspace remove summary = %q, want the follow-up command an operator can actually run", removed)
 	}
 }
 

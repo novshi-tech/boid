@@ -670,14 +670,15 @@ func workspaceDataHomeRoot() (string, error) {
 // As of PR6 of docs/plans/workspace-home-volume-persistence.md a workspace home
 // is a docker named volume (dockerres.WorkspaceHomeVolumeName), so
 // resolveWorkspaceHome neither creates nor reads anything under this
-// directory. It is kept, and still exported, because internal/api's
-// size-reporting, orphan-detection and `workspace remove` handlers are still
-// written against it — 論点 a-2's rewiring onto the volume API is PR7. Until
-// then those handlers see every workspace as non-existent (Exists=false):
-// `workspace remove` skips the home deletion silently, sizes come back empty
-// and no orphan is ever reported. That intermediate state is deliberate and
-// documented in the plan doc's PR 分割案; `docker volume rm
-// boid-ws-home-<installID8>-<slug>` is the manual stand-in meanwhile.
+// directory. PR7 finished 論点 a-2's rewiring, so internal/api's
+// size-reporting, orphan-detection and `workspace remove` handlers now go
+// through the engine (dispatcher.WorkspaceHomeVolumeStore) rather than
+// through this path, and the intermediate state PR6 documented here — silent
+// no-op deletes, empty sizes, no orphans — is over.
+//
+// This function is kept, and still exported, for the legacy root itself: it
+// is where the pre-PR6 homes live, and PR8's migration CLI resolves them
+// from here.
 //
 // Existing directories under this root are NOT deleted by PR6. They hold the
 // pre-PR6 homes, and PR8's migration CLI has to be able to read them.

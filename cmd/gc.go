@@ -59,16 +59,19 @@ func runGC(cmd *cobra.Command, args []string) error {
 		Actions    int64 `json:"actions"`
 		Runtimes   int64 `json:"runtimes"`
 		SandboxTmp int64 `json:"sandbox_tmp"`
-		// WorkspaceHomes lists every workspace home directory's on-disk size
-		// (docs/plans/home-workspace-volume.md Phase 4 PR5) — visibility
-		// only, GC never deletes a home directory itself (`workspace
-		// remove` does that). Comes back empty (with
-		// WorkspaceHomesListError set) when the workspace lister itself
-		// failed (codex PR #791 review, Should-fix #3).
+		// WorkspaceHomes lists every workspace HOME VOLUME this install has
+		// on the engine, with its size (docs/plans/home-workspace-volume.md
+		// Phase 4 PR5, rewired onto the engine's volume API by 論点 a-2 / PR7
+		// of docs/plans/workspace-home-volume-persistence.md) — visibility
+		// only, GC never deletes a workspace home itself (`workspace remove`
+		// does that). Comes back empty, with WorkspaceHomesListError set,
+		// whenever no trustworthy listing could be produced.
 		WorkspaceHomes []api.WorkspaceHomeSize `json:"workspace_homes,omitempty"`
 		// WorkspaceHomesListError is non-empty when the daemon could not
-		// trust orphan detection for WorkspaceHomes (a transient DB error
-		// listing workspaces, typically) — see printWorkspaceHomes.
+		// produce or trust the listing: the engine's volume enumeration
+		// failed (PR7 round-2 codex review, Major 2), or the workspace lister
+		// did, which makes orphan detection untrustworthy (codex PR #791
+		// review, Should-fix #3). See printWorkspaceHomes.
 		WorkspaceHomesListError string `json:"workspace_homes_list_error,omitempty"`
 	}
 	if err := c.Do("POST", "/api/gc", body, &result); err != nil {
@@ -89,17 +92,26 @@ func runGC(cmd *cobra.Command, args []string) error {
 }
 
 // printWorkspaceHomes renders `boid gc`'s workspace_homes listing
-// (docs/plans/home-workspace-volume.md Phase 4 PR5): one line per workspace
-// home directory found on disk, an "(orphan) " prefix for any with no
-// matching workspace row, and a total. A size computation failure renders
-// as "?" rather than a bogus 0 B, and is excluded from the total (an
-// unknown size must not silently understate it). No output at all when
-// homes is empty and listErr is also empty — either the daemon was too old
-// to report it, or no workspace has ever been dispatched into yet. When
-// listErr is non-empty (codex PR #791 review, Should-fix #3: a workspace
-// lister failure makes orphan detection untrustworthy, so the daemon omits
-// the listing outright rather than sending bogus per-entry orphan flags),
-// a single warning line reports it instead of a (necessarily empty) table.
+// (docs/plans/home-workspace-volume.md Phase 4 PR5, engine-backed since 論点
+// a-2 / PR7 of docs/plans/workspace-home-volume-persistence.md): one line per
+// workspace HOME VOLUME the daemon's engine reports for this install, an
+// "(orphan) " prefix for any with no matching workspace row, and a total.
+//
+// A size failure renders as "?" rather than a bogus 0 B, and is excluded from
+// the total (an unknown size must not silently understate it). Sizes come from
+// one engine-wide disk-usage call, so this is normally all-or-nothing across
+// the listing — a listing whose entries are all "?" means that one call failed,
+// not that the volumes are unreadable one by one.
+//
+// No output at all when homes is empty and listErr is also empty — either the
+// daemon was too old to report it, or no workspace has ever been dispatched
+// into yet. A non-empty listErr reports a single warning line instead of a
+// (necessarily empty) table, which covers both reasons the daemon withholds a
+// listing: its engine could not enumerate the volumes (PR7 round-2 codex
+// review, Major 2), or its workspace lister failed and orphan flags would
+// therefore be untrustworthy (codex PR #791 review, Should-fix #3). Printing
+// nothing in either case would be indistinguishable from a clean install with
+// no homes, which is precisely what hid a wedged engine.
 func printWorkspaceHomes(out io.Writer, homes []api.WorkspaceHomeSize, listErr string) {
 	if listErr != "" {
 		fmt.Fprintf(out, "workspace homes: listing unavailable (%s)\n", listErr)

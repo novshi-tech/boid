@@ -7,8 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -26,13 +25,13 @@ func (s *stubGCStore) GC(olderThan time.Duration, dryRun bool) (*orchestrator.GC
 
 func TestGCHandler_Run(t *testing.T) {
 	tests := []struct {
-		name       string
-		body       string
+		name        string
+		body        string
 		storeResult *orchestrator.GCResult
-		storeErr   error
-		wantStatus int
-		wantTasks  int64
-		wantDryRun bool
+		storeErr    error
+		wantStatus  int
+		wantTasks   int64
+		wantDryRun  bool
 	}{
 		{
 			name:        "default older_than",
@@ -142,11 +141,13 @@ func (s *stubDeviceGCStore) DeleteRevokedDevices(_ context.Context, _ bool) (int
 	return s.n, s.err
 }
 
-// --- workspace_homes listing (docs/plans/home-workspace-volume.md Phase 4 PR5) ---
+// --- workspace_homes listing (docs/plans/home-workspace-volume.md Phase 4
+// PR5, rewired onto the engine's volume API by 論点 a-2 / PR7 of
+// docs/plans/workspace-home-volume-persistence.md) ---
 
-func TestGCHandler_Run_NoRuntimesDir_OmitsWorkspaceHomes(t *testing.T) {
+func TestGCHandler_Run_NoHomeStore_OmitsWorkspaceHomes(t *testing.T) {
 	svc := &GCAppService{Store: &stubGCStore{result: &orchestrator.GCResult{Tasks: 1}}}
-	h := &GCHandler{Service: svc} // RuntimesDir left empty.
+	h := &GCHandler{Service: svc} // Homes left nil.
 	w := httptest.NewRecorder()
 	h.Routes().ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/", bytes.NewBufferString(`{}`)))
 
@@ -158,36 +159,20 @@ func TestGCHandler_Run_NoRuntimesDir_OmitsWorkspaceHomes(t *testing.T) {
 		t.Fatalf("decode: %v", err)
 	}
 	if resp.WorkspaceHomes != nil {
-		t.Errorf("WorkspaceHomes = %+v, want nil (no RuntimesDir wired)", resp.WorkspaceHomes)
+		t.Errorf("WorkspaceHomes = %+v, want nil (no engine handle wired)", resp.WorkspaceHomes)
 	}
 }
 
-func TestGCHandler_Run_WithRuntimesDir_ListsWorkspaceHomesWithOrphanFlag(t *testing.T) {
-	runtimesDir := filepath.Join(t.TempDir(), "runtimes")
-	for _, tc := range []struct {
-		slug string
-		size int
-	}{
-		{"default", 100},
-		{"known-ws", 200},
-		{"orphan-ws", 50},
-	} {
-		path, err := resolveWorkspaceHomePath(runtimesDir, tc.slug)
-		if err != nil {
-			t.Fatalf("resolveWorkspaceHomePath: %v", err)
-		}
-		if err := os.MkdirAll(path, 0o755); err != nil {
-			t.Fatalf("mkdir: %v", err)
-		}
-		if err := os.WriteFile(filepath.Join(path, "x"), make([]byte, tc.size), 0o644); err != nil {
-			t.Fatalf("write: %v", err)
-		}
-	}
-
+func TestGCHandler_Run_WithHomeStore_ListsWorkspaceHomesWithOrphanFlag(t *testing.T) {
+	store := newStubHomeStore(map[string]int64{
+		"default":   100,
+		"known-ws":  200,
+		"orphan-ws": 50,
+	})
 	svc := &GCAppService{Store: &stubGCStore{result: &orchestrator.GCResult{}}}
 	h := &GCHandler{
-		Service:     svc,
-		RuntimesDir: runtimesDir,
+		Service: svc,
+		Homes:   store,
 		Workspaces: &stubWorkspaceSlugLister{summaries: []*orchestrator.WorkspaceSummary{
 			{ID: "default"}, {ID: "known-ws"},
 		}},
@@ -215,6 +200,9 @@ func TestGCHandler_Run_WithRuntimesDir_ListsWorkspaceHomesWithOrphanFlag(t *test
 	if byslug["known-ws"].Bytes != 200 {
 		t.Errorf("known-ws: Bytes = %d, want 200", byslug["known-ws"].Bytes)
 	}
+	if want := store.volumeName("known-ws"); byslug["known-ws"].Volume != want {
+		t.Errorf("known-ws: Volume = %q, want %q", byslug["known-ws"].Volume, want)
+	}
 	if !byslug["orphan-ws"].Orphan {
 		t.Error("orphan-ws: Orphan = false, want true")
 	}
@@ -223,26 +211,17 @@ func TestGCHandler_Run_WithRuntimesDir_ListsWorkspaceHomesWithOrphanFlag(t *test
 	}
 }
 
-// TestGCHandler_Run_WithRuntimesDir_ListerError_ReportsListErrorAndEmptyHomes
+// TestGCHandler_Run_WithHomeStore_ListerError_ReportsListErrorAndEmptyHomes
 // pins Should-fix #3 (codex PR #791 review) at the /api/gc response level: a
 // lister failure must not come back as every home mismarked Orphan=true —
 // WorkspaceHomes is reported empty and WorkspaceHomesListError carries the
 // reason (selection A, see ListWorkspaceHomeSizes's doc comment).
-func TestGCHandler_Run_WithRuntimesDir_ListerError_ReportsListErrorAndEmptyHomes(t *testing.T) {
-	runtimesDir := filepath.Join(t.TempDir(), "runtimes")
-	path, err := resolveWorkspaceHomePath(runtimesDir, "known-ws")
-	if err != nil {
-		t.Fatalf("resolveWorkspaceHomePath: %v", err)
-	}
-	if err := os.MkdirAll(path, 0o755); err != nil {
-		t.Fatalf("mkdir: %v", err)
-	}
-
+func TestGCHandler_Run_WithHomeStore_ListerError_ReportsListErrorAndEmptyHomes(t *testing.T) {
 	svc := &GCAppService{Store: &stubGCStore{result: &orchestrator.GCResult{}}}
 	h := &GCHandler{
-		Service:     svc,
-		RuntimesDir: runtimesDir,
-		Workspaces:  &stubWorkspaceSlugLister{err: fmt.Errorf("db unavailable")},
+		Service:    svc,
+		Homes:      newStubHomeStore(map[string]int64{"known-ws": 1}),
+		Workspaces: &stubWorkspaceSlugLister{err: fmt.Errorf("db unavailable")},
 	}
 	w := httptest.NewRecorder()
 	h.Routes().ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/", bytes.NewBufferString(`{}`)))
@@ -259,6 +238,74 @@ func TestGCHandler_Run_WithRuntimesDir_ListerError_ReportsListErrorAndEmptyHomes
 	}
 	if resp.WorkspaceHomesListError == "" {
 		t.Error("WorkspaceHomesListError = empty, want the lister's error message")
+	}
+}
+
+// TestGCHandler_Run_DryRun_StillListsWorkspaceHomes pins that --dry-run does
+// not suppress the listing: it is visibility-only reporting, not a pending
+// mutation, so there is nothing for --dry-run to gate. Moved here from cmd's
+// TestRunGC_DryRun_StillReportsWorkspaceHomes, which could no longer observe
+// a listing once it became engine-backed (PR7).
+func TestGCHandler_Run_DryRun_StillListsWorkspaceHomes(t *testing.T) {
+	svc := &GCAppService{Store: &stubGCStore{result: &orchestrator.GCResult{}}}
+	h := &GCHandler{Service: svc, Homes: newStubHomeStore(map[string]int64{"known-ws": 500})}
+	w := httptest.NewRecorder()
+	h.Routes().ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/", bytes.NewBufferString(`{"dry_run":true}`)))
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d: %s", w.Code, w.Body.String())
+	}
+	var resp gcResponse
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if !resp.DryRun {
+		t.Error("DryRun = false, want true")
+	}
+	if len(resp.WorkspaceHomes) != 1 {
+		t.Fatalf("len(WorkspaceHomes) = %d, want 1 (--dry-run must not suppress a read-only listing): %+v", len(resp.WorkspaceHomes), resp.WorkspaceHomes)
+	}
+}
+
+// TestGCHandler_Run_WithHomeStore_EnumerationFailure_ReportsWhyAndKeepsTheRest
+// pins both halves of what an engine that cannot list volumes must cost the
+// caller.
+//
+// The cheap half: GC's own record-deletion counts are already computed and
+// must still be reported.
+//
+// The half this test exists for (PR7 round-2 codex review, Major 2): the
+// REASON has to reach the response. Logging it daemon-side and sending back an
+// omitted section makes "the engine is down" indistinguishable from "this
+// install has no workspace home volumes" — both are an absent workspace_homes
+// key and an empty workspace_homes_list_error — so `boid gc` printed nothing
+// at all and an operator had no way to tell a broken engine from a clean one.
+// The host-path implementation this replaced did set listErr on its own
+// enumeration failure, so going quiet here was a regression, not a new gap.
+func TestGCHandler_Run_WithHomeStore_EnumerationFailure_ReportsWhyAndKeepsTheRest(t *testing.T) {
+	store := newStubHomeStore(map[string]int64{"known-ws": 1})
+	store.listErr = fmt.Errorf("engine down")
+	svc := &GCAppService{Store: &stubGCStore{result: &orchestrator.GCResult{Tasks: 3}}}
+	h := &GCHandler{Service: svc, Homes: store}
+	w := httptest.NewRecorder()
+	h.Routes().ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/", bytes.NewBufferString(`{}`)))
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", w.Code, w.Body.String())
+	}
+	var resp gcResponse
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.Tasks != 3 {
+		t.Errorf("Tasks = %d, want 3 (GC's own work must survive a volume-listing failure)", resp.Tasks)
+	}
+	if len(resp.WorkspaceHomes) != 0 {
+		t.Errorf("WorkspaceHomes = %+v, want empty", resp.WorkspaceHomes)
+	}
+	if !strings.Contains(resp.WorkspaceHomesListError, "engine down") {
+		t.Errorf("WorkspaceHomesListError = %q, want it to carry the engine's failure — otherwise a down engine "+
+			"is indistinguishable from an install with no workspace home volumes", resp.WorkspaceHomesListError)
 	}
 }
 
