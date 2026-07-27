@@ -59,6 +59,9 @@ require() {
 #   この不一致は解消している。 それでもこのヘルパーを残しているのは、
 #   相対 symlink なら home ごと別の path へ移しても壊れないからで、
 #   移行中の環境や将来の path 変更に対する保険として引き続き推奨される。
+#   (PR6 で workspace HOME の実体は docker named volume
+#   `boid-ws-home-<installID8>-<slug>` になった。 container 内から見える path は
+#   変わっていないが、「home は別の入れ物に移りうる」という前提が現実になった。)
 #
 # $1: target (絶対 path でも相対 path でも可)
 # $2: link path

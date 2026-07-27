@@ -19,15 +19,21 @@ import (
 // This file covers the WRAPPER SCRIPT half of PR5 of
 // docs/plans/workspace-home-volume-persistence.md (論点 b-2 / 論点 c): the
 // text boid assembles from the workspace's own init.sh plus a builtin prelude
-// (bind-target skeleton) and postlude (home identity nonce), and feeds to
-// `bash -s` on a throwaway container's stdin.
+// (bind-target skeleton), and feeds to `bash -s` on a throwaway container's
+// stdin.
+//
+// PR6 removed the postlude these tests also covered. It stamped a home
+// identity token into a file inside the home, which nothing could read once the
+// home became a docker named volume; the identity moved onto the volume's own
+// label instead (workspaceHomeMarker.HomeID), and the tests for it moved to
+// workspace_home_volume_test.go.
 //
 // Every test here runs that text through a REAL bash. That is deliberate and
 // not redundant with the fake-docker tests in
 // container_backend_workspace_init_test.go, which pin what boid asks the
 // engine for (name, labels, mounts, uid, userns, network) but would happily
 // pass on a wrapper whose heredoc never terminates, whose exit code is
-// swallowed, or whose postlude runs after a failed init.sh. Those are exactly
+// swallowed, or whose prelude never creates the skeleton. Those are exactly
 // the regressions the pre-PR5 tests caught by executing init.sh directly, and
 // they have to keep being caught somewhere.
 //
@@ -71,19 +77,25 @@ func runWorkspaceInitWrapper(t *testing.T, req WorkspaceInitRequest) (exitCode i
 }
 
 // newWorkspaceInitRequestForBash builds a request whose home is a real
-// directory this test process owns, so the wrapper's own writes (skeleton,
-// nonce) and the user script's writes land somewhere the test can inspect.
+// directory this test process owns, so the wrapper's own writes (the skeleton)
+// and the user script's writes land somewhere the test can inspect.
+//
+// HomeSource is deliberately NOT that directory: in production it is a docker
+// volume NAME, and the value never reaches the wrapper text — only HomeTarget
+// does, through BOID_WORKSPACE_HOME. Passing a name here keeps the fixture
+// shaped like production; passing the directory would hide a wrapper that
+// started depending on the source.
 func newWorkspaceInitRequestForBash(t *testing.T, script string, scriptExists bool) (WorkspaceInitRequest, string) {
 	t.Helper()
 	homeDir := t.TempDir()
 	req, err := buildWorkspaceInitRequest(workspaceInitParams{
 		Slug:         "myws",
-		HomeSource:   homeDir,
+		HomeSource:   "boid-ws-home-testinst-myws",
 		HomeTarget:   homeDir,
 		SkeletonDirs: workspaceHomeSkeletonDirs(),
 		Script:       []byte(script),
 		ScriptExists: scriptExists,
-		Nonce:        "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+		HomeID:       "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
 	})
 	if err != nil {
 		t.Fatalf("buildWorkspaceInitRequest: %v", err)
@@ -278,11 +290,11 @@ func TestBuildWorkspaceInitRequest_RejectsAScriptItCannotCarryVerbatim(t *testin
 	homeDir := t.TempDir()
 	base := workspaceInitParams{
 		Slug:         "myws",
-		HomeSource:   homeDir,
+		HomeSource:   "boid-ws-home-testinst-myws",
 		HomeTarget:   homeDir,
 		SkeletonDirs: workspaceHomeSkeletonDirs(),
 		ScriptExists: true,
-		Nonce:        "abc",
+		HomeID:       "abc",
 	}
 
 	base.Script = []byte("echo hi\x00\n")
@@ -363,15 +375,25 @@ func TestBuildWorkspaceInitRequest_PreludeFailureIsDistinguishable(t *testing.T)
 	}
 }
 
-// --- 3. postlude (論点 b の nonce) ---
+// --- 3. postlude が無いこと (PR6) ---
 
-// TestBuildWorkspaceInitRequest_PostludeStampsTheHomeIdentity pins that the
-// nonce PR2 introduced is now written by the prep run rather than by the
-// daemon process, and that a workspace with NO init.sh gets it too — 論点 b-2's
-// reason for making prep unconditional (a pass-through workspace otherwise has
-// no writer for it, so the marker/home identity check simply would not apply
-// to that whole class).
-func TestBuildWorkspaceInitRequest_PostludeStampsTheHomeIdentity(t *testing.T) {
+// TestBuildWorkspaceInitRequest_NoPostludeWritesIntoTheHome pins PR6's removal
+// of the postlude, which is a deletion worth a test rather than one that just
+// happens.
+//
+// PR5's postlude stamped a home identity token into
+// <home>/.boid-workspace-home-id after a successful init.sh. PR6 moved that
+// identity onto the home VOLUME's own label, because the daemon cannot read
+// anything inside a volume without starting a container and doing that on every
+// dispatch would destroy the fast path the completion marker exists to provide.
+// Keeping the write anyway would leave a value that looks like a check and is
+// not one: written by every init, compared by nothing, and — since it lives in
+// storage the job owns read-write — freely forgeable by the thing it would
+// appear to be defending against.
+//
+// So the wrapper must leave the home holding exactly what the prelude and the
+// user script put there.
+func TestBuildWorkspaceInitRequest_NoPostludeWritesIntoTheHome(t *testing.T) {
 	for _, tc := range []struct {
 		name         string
 		script       string
@@ -386,64 +408,16 @@ func TestBuildWorkspaceInitRequest_PostludeStampsTheHomeIdentity(t *testing.T) {
 			if code != 0 {
 				t.Fatalf("wrapper exited %d, want 0\n%s", code, out)
 			}
-			nonce, exists, err := readWorkspaceHomeNonce(homeDir)
-			if err != nil || !exists {
-				t.Fatalf("read nonce: exists=%v err=%v", exists, err)
+			if _, err := os.Lstat(filepath.Join(homeDir, ".boid-workspace-home-id")); !os.IsNotExist(err) {
+				t.Errorf("the wrapper wrote an identity file into the home (lstat err=%v); PR6 moved the identity onto the volume label", err)
 			}
-			if nonce != req.Nonce {
-				t.Errorf("nonce on disk = %q, want %q", nonce, req.Nonce)
-			}
-			info, err := os.Lstat(workspaceHomeNoncePath(homeDir))
-			if err != nil {
-				t.Fatalf("lstat nonce: %v", err)
-			}
-			if perm := info.Mode().Perm(); perm != 0o600 {
-				t.Errorf("nonce mode = %v, want 0600", perm)
+			// The prelude, which PR6 keeps, still ran.
+			for _, rel := range req.SkeletonDirs {
+				if info, err := os.Stat(filepath.Join(homeDir, rel)); err != nil || !info.IsDir() {
+					t.Errorf("skeleton dir %q missing after the run: %v", rel, err)
+				}
 			}
 		})
-	}
-}
-
-// TestBuildWorkspaceInitRequest_PostludeSkippedWhenTheUserScriptFails is the
-// §D3 ordering guarantee, and the one with teeth: a nonce written before (or
-// regardless of) init.sh's result would make the NEXT dispatch skip init
-// against a home the failed run left half-built. resolveWorkspaceHome writes
-// no marker on failure, so the marker alone would not save it — the identity
-// check is what does, and only if the stamp is genuinely last.
-func TestBuildWorkspaceInitRequest_PostludeSkippedWhenTheUserScriptFails(t *testing.T) {
-	req, homeDir := newWorkspaceInitRequestForBash(t, "echo boom >&2\nexit 3\n", true)
-	code, out := runWorkspaceInitWrapper(t, req)
-	if code != 3 {
-		t.Fatalf("exit = %d, want 3 (the user script's own code)\n%s", code, out)
-	}
-	if _, exists, err := readWorkspaceHomeNonce(homeDir); err != nil || exists {
-		t.Errorf("the home was stamped despite a failing init.sh: exists=%v err=%v", exists, err)
-	}
-}
-
-// TestBuildWorkspaceInitRequest_PostludeReplacesADirectoryAtTheNoncePath ports
-// the write-side recovery PR2's round-3 review added (a job can leave a
-// non-empty DIRECTORY where its identity file belongs, and a rename onto a
-// directory is EISDIR no matter what the source is). The rule survived the
-// move off the daemon process: without it the workspace wedges — every
-// dispatch re-runs init.sh, fails to stamp, and leaves the directory to do it
-// again.
-func TestBuildWorkspaceInitRequest_PostludeReplacesADirectoryAtTheNoncePath(t *testing.T) {
-	req, homeDir := newWorkspaceInitRequestForBash(t, "true\n", true)
-	if err := os.MkdirAll(filepath.Join(workspaceHomeNoncePath(homeDir), "decoy"), 0o700); err != nil {
-		t.Fatalf("plant a directory at the nonce path: %v", err)
-	}
-
-	code, out := runWorkspaceInitWrapper(t, req)
-	if code != 0 {
-		t.Fatalf("wrapper exited %d, want 0\n%s", code, out)
-	}
-	nonce, exists, err := readWorkspaceHomeNonce(homeDir)
-	if err != nil || !exists {
-		t.Fatalf("read nonce after replacing a directory: exists=%v err=%v", exists, err)
-	}
-	if nonce != req.Nonce {
-		t.Errorf("nonce = %q, want %q", nonce, req.Nonce)
 	}
 }
 
@@ -484,9 +458,11 @@ func TestWorkspaceInitStageOf_PrefersTheMarkerOverTheExitCode(t *testing.T) {
 		{"last marker wins",
 			"boid-init: stage=prelude exit=1\nboid-init: stage=init.sh exit=2\n", 2, workspaceInitStageUserScript},
 		{"a marker forged mid-output does not shadow the real one",
-			"boid-init: stage=postlude exit=0\nboid-init: stage=prelude exit=5\n", workspaceInitPreludeExitCode, workspaceInitStagePrelude},
+			"boid-init: stage=script-setup exit=0\nboid-init: stage=prelude exit=5\n", workspaceInitPreludeExitCode, workspaceInitStagePrelude},
 		{"no marker falls back to the code table",
-			"nothing useful\n", workspaceInitPostludeExitCode, workspaceInitStagePostlude},
+			"nothing useful\n", workspaceInitScriptSetupExitCode, workspaceInitStageScriptSetup},
+		{"a stage name PR6 retired is not recognized, even as a marker",
+			"boid-init: stage=postlude exit=0\n", 0, workspaceInitStageUnknown},
 		{"no marker and an unknown code",
 			"", 137, workspaceInitStageUnknown},
 	}
@@ -509,7 +485,7 @@ func TestWorkspaceInitStageOf_PrefersTheMarkerOverTheExitCode(t *testing.T) {
 // printed NO marker of its own — an OOM kill or a SIGKILL takes the container
 // down between the user script and `__boid_stage`, leaving exit 137 and
 // whatever the script last wrote. If a line the script printed is allowed to
-// match anywhere within itself, that run gets classified as a clean `postlude`
+// match anywhere within itself, that run gets classified as a clean `prelude`
 // (or any other stage the script happened to mention) instead of `unknown`,
 // which is the answer §D3 wants for "the wrapper never got to report".
 func TestWorkspaceInitStageOf_OnlyReadsAMarkerAtTheStartOfALine(t *testing.T) {
@@ -523,13 +499,13 @@ func TestWorkspaceInitStageOf_OnlyReadsAMarkerAtTheStartOfALine(t *testing.T) {
 			// The SIGKILL case: no wrapper marker, only the script's own echo
 			// of one, and it is not at the start of a line.
 			name:     "a marker embedded mid-line is not the wrapper's",
-			output:   "downloading toolchain: boid-init: stage=postlude exit=0\n",
+			output:   "downloading toolchain: boid-init: stage=prelude exit=0\n",
 			exitCode: 137,
 			want:     workspaceInitStageUnknown,
 		},
 		{
 			name:     "the wrapper's marker still wins over an embedded one printed later",
-			output:   "boid-init: stage=init.sh exit=1\nlog: boid-init: stage=postlude exit=0\n",
+			output:   "boid-init: stage=init.sh exit=1\nlog: boid-init: stage=prelude exit=0\n",
 			exitCode: 1,
 			want:     workspaceInitStageUserScript,
 		},
@@ -543,7 +519,7 @@ func TestWorkspaceInitStageOf_OnlyReadsAMarkerAtTheStartOfALine(t *testing.T) {
 			// The retention bound discards from the FRONT, so the first line in
 			// the retained window is routinely a fragment of a longer one.
 			name:     "a truncated leading fragment is not promoted to a line start",
-			output:   "progress boid-init: stage=postlude exit=0\nboid-init: stage=init.sh exit=9\n",
+			output:   "progress boid-init: stage=prelude exit=0\nboid-init: stage=init.sh exit=9\n",
 			exitCode: 9,
 			want:     workspaceInitStageUserScript,
 		},
@@ -683,10 +659,10 @@ func mustWriteInitOutput(t *testing.T, out *workspaceInitOutput, s string) {
 // TestBuildWorkspaceInitRequest_UserScriptStdinIsNotTheWrapperStream is the
 // regression guard for the trap that comes free with feeding the wrapper to
 // `bash -s`: the wrapper IS bash's stdin, so a user script that reads stdin
-// would consume the rest of the wrapper — silently dropping the postlude, and
-// with it the home identity stamp. The old host-exec route had cmd.Stdin nil
-// (i.e. /dev/null), so this is a property the new route has to restore rather
-// than one it may quietly change.
+// would consume the rest of the wrapper — including its own exit-status check,
+// so a failing init.sh would be reported as a success. The old host-exec route
+// had cmd.Stdin nil (i.e. /dev/null), so this is a property the new route has
+// to restore rather than one it may quietly change.
 func TestBuildWorkspaceInitRequest_UserScriptStdinIsNotTheWrapperStream(t *testing.T) {
 	script := `cat > "$BOID_WORKSPACE_HOME/slurped"` + "\n"
 	req, homeDir := newWorkspaceInitRequestForBash(t, script, true)
@@ -702,10 +678,14 @@ func TestBuildWorkspaceInitRequest_UserScriptStdinIsNotTheWrapperStream(t *testi
 	if len(slurped) != 0 {
 		t.Errorf("init.sh read %d bytes off stdin, want 0 — it must not be able to eat the wrapper:\n%q", len(slurped), slurped)
 	}
-	// ...and the postlude, which lives after the user script in the very
-	// stream a slurping script would have eaten, still ran.
-	if _, exists, err := readWorkspaceHomeNonce(homeDir); err != nil || !exists {
-		t.Errorf("the postlude did not run: exists=%v err=%v", exists, err)
+	// ...and the wrapper still reached its own end: a script that had eaten
+	// the rest of the stream would leave bash with nothing after `bash
+	// "$__boid_script"`, so the status check and the final `exit 0` would
+	// never run and the wrapper would exit on the LAST command's status
+	// instead. Re-running with a failing script is what makes that visible.
+	failing, _ := newWorkspaceInitRequestForBash(t, `cat > /dev/null; exit 7`+"\n", true)
+	if code, out := runWorkspaceInitWrapper(t, failing); code != 7 {
+		t.Errorf("wrapper exited %d for a script that slurped stdin and failed, want 7 — the wrapper's own tail was eaten\n%s", code, out)
 	}
 }
 

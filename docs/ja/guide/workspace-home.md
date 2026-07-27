@@ -5,17 +5,31 @@ workspace ごとの永続 `$HOME` (workspace home) の作り方と、初回セ�
 
 ## workspace home とは
 
-各 workspace には `~/.local/share/boid/homes/<slug>/` という専用の永続ディレクトリがあり、
-その workspace に属するプロジェクトの job (hook / exec / session いずれも) はサンドボックス内の
-`$HOME` としてこのディレクトリを read-write bind mount します。
+各 workspace には `boid-ws-home-<installID8>-<slug>` という専用の永続 **docker named volume**
+があり、その workspace に属するプロジェクトの job (hook / exec / session いずれも) は
+サンドボックス内の `$HOME` としてこの volume を read-write でマウントします。
+
+> **2026-07-27 に変わりました**: 以前は `~/.local/share/boid/homes/<slug>/` という
+> ホスト側ディレクトリでした。 container backend ではこのディレクトリが
+> `$XDG_RUNTIME_DIR` (通常 tmpfs) 配下に解決されるため、**ホストを再起動すると
+> 認証情報も toolchain も消えていました**。 named volume に移したことでこれが直っています。
+> 旧ディレクトリは削除されず、そのまま残ります (移行 CLI が読むため)。
 
 - **永続する**: 同じ workspace の job であれば、前の job が `$HOME` に書いたファイル
   (認証情報、パッケージキャッシュ、インストール済みツール等) は次の job でもそのまま見える
-- **`$HOME/.boid` だけは例外**: context/output ファイルのやり取りに使う `$HOME/.boid` は
-  job ごとに新しい tmpfs が重ねてマウントされる。前の job が `$HOME/.boid` に書いたものは
-  次の job には残らない (workspace home 本体とは別のライフサイクル)
+- **`$HOME/.boid` も例外ではない**: 他の `$HOME` 配下と同じく永続する。 Phase 6 PR8 以前は
+  ここだけ job ごとの tmpfs で隔離されていたが、隔離の対象だったファイル経路
+  (`$HOME/.boid/output/payload_patch.json`) 自体が撤廃されたため overlay も撤去済み
+  (詳細は [`docs/ja/reference/hook-contract.md`](../reference/hook-contract.md) 参照)
+- **volume の上に重なるのは組み込み skill の bind だけ**: `~/.claude/skills/<name>` に
+  組み込み skill が read-only で 1 本ずつ bind される。その中身は volume には残らない
+  (dispatch のたびに daemon が boid バイナリから展開したものを見せている)。
+  それ以外のパスは volume がそのまま見える
 - **workspace をまたいでは共有されない**: workspace A の `$HOME` と workspace B の `$HOME` は
-  別ディレクトリ。ホストの実 `$HOME` とも共有されない (`boid` daemon 自身の `$HOME` とも別)
+  別 volume。ホストの実 `$HOME` とも共有されない (`boid` daemon 自身の `$HOME` とも別)
+- **中身を直接見たいとき**: `docker volume inspect boid-ws-home-<installID8>-<slug>` の
+  `Mountpoint` が実体のパス。 rootless podman では所有者がホスト側 subuid に写像されて
+  いるので、読み書きには `podman unshare` が要ります
 
 workspace を明示的に割り当てていないプロジェクトは `default` workspace の home を使います。
 
@@ -46,22 +60,23 @@ claude CLI のインストールなど、workspace home 側に一度だけセッ
   `~/.local/share/boid/homes-meta/<slug>.init.json` — workspace home ではなく **daemon 自身の
   データ領域** (`boid.db` と同じディレクトリ) に書かれる。 job が `$HOME` として
   マウントされるディレクトリの外なので、 **job が自分の `$HOME` 経由で触ることはできない**
-- **マーカーは単独では信用せず、実体と突合する**: 初期化に成功するたびに、
-  workspace home 内の `.boid-workspace-home-id` にランダムな識別トークンを書き、
-  同じ値をマーカーにも記録する。 初期化を skip するのは **script hash とこのトークンの
-  両方が一致したとき**だけ。 したがって「マーカーだけ残って home が消えた」状態
-  (home の置き場は daemon のデータ領域ほど永続とは限らない) では、次の dispatch は
-  空の `$HOME` で agent を走らせるのではなく `init.sh` を再実行する。
-  この突合が守るのは **workspace home が事故で消えた / 別物に置き換わったことの検出**
-  (ホスト再起動でのディレクトリ消失、volume の削除、古いバックアップからの復元など) であって、
-  job による意図的な細工ではない。 job はこのファイルを**読める**ので、値を控えたまま home の
-  中身を消して書き戻す、という細工までは防げない — home 自体が job の書き込み領域である以上
-  構造的に防げず、その場合の影響も「同じ workspace の次の job が壊れた home で走る」ことに
-  留まる (job は元々自分の home の中身を自由に消せる)。 一方、このファイルを消す・壊す・
-  別の種類のファイル (symlink や FIFO) に置き換えるといった操作で起きるのは
-  **余分な初期化が 1 回走ること**だけで (init.sh は冪等が契約なので無害)、
-  **boid 本体を止めることはできない** — boid はこのファイルを symlink として辿らず、
-  通常ファイルであることと 1 KiB 以下であることを確かめてから読む
+- **マーカーは単独では信用せず、実体と突合する**: home volume を作るときに
+  `boid.workspace_home_id` という label にランダムな識別トークンを載せ、同じ値を
+  マーカーにも記録する。 初期化を skip するのは **script hash とこのトークンの
+  両方が一致したとき**だけ。 したがって「マーカーだけ残って volume が消えた」状態では、
+  次の dispatch は空の `$HOME` で agent を走らせるのではなく `init.sh` を再実行する。
+  検出できるのは **volume の削除・再作成** (`docker volume rm`、reap の誤爆、
+  workspace remove の半完了) であって、**volume が残ったまま中身だけ入れ替わったケースは
+  検出できない** — volume の中身は daemon からは読めず (読むには container を起こすしかなく、
+  それを毎 dispatch やると完了マーカーが存在する意味が無くなる)、検出できるのは
+  daemon が engine に訊ける範囲だけだからです。
+  なお **job による意図的な細工**は以前から防げていません (home 自体が job の
+  書き込み領域である以上、構造的に防げない)。 その場合の影響も「同じ workspace の
+  次の job が壊れた home で走る」ことに留まります (job は元々自分の home の中身を
+  自由に消せる)。
+  **boid が作った覚えのない volume** (label の無い、手で作られた `boid-ws-home-*`) を
+  見つけた場合は、初期化を繰り返しても label を後から付けられない (Engine API に
+  volume label の更新は無い) ため、boid は **dispatch をエラーで止めて報告します**
 - **初期化環境が変わったとき**: 完了マーカーには「どの実行環境で初期化したか」を表す世代
   番号も記録される。 boid のバージョンアップで `init.sh` の実行環境が変わると
   (直近の例: ホスト上の daemon プロセスによる直接実行 → 使い捨て container 内での実行。
@@ -114,14 +129,15 @@ claude CLI のインストールなど、workspace home 側に一度だけセッ
     `LANG` / `LC_ALL` / `TERM` は渡らない** (旧仕様では渡っていた)。必要なら
     script 内で自分で設定すること。ホストにだけ入れてあるコマンドには到達できないので、
     image に無いツールは `init.sh` の中でインストールする
-- **準備ステップ (prep) は必ず走る**: 同じ container の先頭と末尾で、boid 自身が
-  `~/.claude` や `~/.claude/skills/<skill 名>` (組み込み skill の bind 先) の作成と、
-  上記の識別トークンの書き込みを行う。`init.sh` を持たない workspace でも
-  この container は 1 回起動する
+- **準備ステップ (prep) は必ず走る**: 同じ container の中で、あなたの script より前に、
+  boid 自身が `~/.claude` / `~/.claude/skills` / `~/.claude/skills/<skill 名>`
+  (組み込み skill の bind 先) を作成する。`init.sh` を持たない workspace でも
+  この container は 1 回起動する。上記の識別トークンはここでは書かれない —
+  volume の作成時に volume 自身の label に載るので、home の中にはトークンは存在しない
 - **失敗時は dispatch も失敗する**: `init.sh` が非ゼロ終了すると、その dispatch は
   「黙って初期化なしで走る」のではなく明示的にエラーとして fail する
   (job は `failed`、task は `aborted` になる)。エラーメッセージには
-  **どの段階で失敗したか** (`prelude` / `script-setup` / `init.sh` / `postlude`) と
+  **どの段階で失敗したか** (`prelude` / `script-setup` / `init.sh`) と
   終了コードと出力の tail が含まれる。`init.sh` の終了コードはそのまま伝播する
 
 ### script 作者が守ること
@@ -172,8 +188,11 @@ bind mount** するので `init.sh` で扱う必要はありません (workspace
 **人間が手動で** ホストの skill をコピーしてください:
 
 ```bash
-mkdir -p ~/.local/share/boid/homes/<slug>/.claude/skills
-cp -r ~/.claude/skills/bitbucket ~/.local/share/boid/homes/<slug>/.claude/skills/
+# workspace home は named volume なので、init.sh の中で行うのが確実です。
+# ホスト側から直接入れる場合は volume の Mountpoint を経由します:
+VOL=$(docker volume inspect -f '{{.Mountpoint}}' boid-ws-home-<installID8>-<slug>)
+mkdir -p "$VOL/.claude/skills"
+cp -r ~/.claude/skills/bitbucket "$VOL/.claude/skills/"
 ```
 
 ## 初回ログイン
@@ -197,8 +216,14 @@ boid agent claude -p <project-ref>
 
 ## workspace の削除
 
-`boid workspace remove <slug>` は workspace の定義 (DB row) に加えて home ディレクトリも
-削除します。
+`boid workspace remove <slug>` は workspace の定義 (DB row) に加えて home も削除します。
+
+> **既知の中間状態 (2026-07-27〜)**: workspace home が named volume に変わった一方で、
+> 削除・サイズ表示・orphan 検出はまだホスト側ディレクトリを見ています。 そのため
+> 現在は **home volume が削除されず、サイズも常に空、orphan も検出されません**。
+> workspace を消したあと volume も片付けたい場合は
+> `docker volume rm boid-ws-home-<installID8>-<slug>` を手で実行してください。
+> 次のリリースで volume API 側へ切り替えます。
 
 ```
 $ boid workspace remove my-workspace
@@ -218,8 +243,8 @@ home dir deleted: /home/you/.local/share/boid/homes/my-workspace (128.4 MB)
 
 ## `boid gc` の workspace home 表示
 
-`boid gc` (および `boid gc --dry-run`) の出力には、`~/.local/share/boid/homes/` 配下に
-実在する workspace home 一覧とそのサイズが表示されます:
+`boid gc` (および `boid gc --dry-run`) の出力には、workspace home 一覧とそのサイズが
+表示されます (上記の中間状態のあいだ、この一覧は**常に空**になります):
 
 ```
 $ boid gc
@@ -238,9 +263,9 @@ workspace homes:
   残ったケース
 - orphan を実際に片付けたい場合は**手動で直接削除する**:
   ```bash
-  rm -rf ~/.local/share/boid/homes/<slug>/
-  rm -f ~/.local/share/boid/homes-meta/<slug>.init.json
-  rm -f ~/.local/share/boid/homes-meta/<slug>.lock
+  docker volume rm boid-ws-home-<installID8>-<slug>
+  rm -f <dataHome>/homes-meta/<slug>.init.json
+  rm -f <dataHome>/homes-meta/<slug>.lock
   ```
   (古い boid が作った `~/.local/share/boid/homes/<slug>.init.json` /
   `.lock` が残っている場合もある。 現行 boid はこれを読まないので消しても消さなくてもよい)

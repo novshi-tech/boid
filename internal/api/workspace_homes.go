@@ -11,6 +11,35 @@ import (
 	"github.com/novshi-tech/boid/internal/orchestrator"
 )
 
+// # PR6 STATUS: everything in this file reports on a location the dispatcher
+// no longer uses. PR7 rewires it; until then it is inert, not wrong-in-flight.
+//
+// PR6 of docs/plans/workspace-home-volume-persistence.md moved the workspace
+// home into a per-workspace docker named volume
+// (dockerres.WorkspaceHomeVolumeName). Every function here still resolves
+// <runtimesRoot>/homes/<slug>, so on an installation running PR6:
+//
+//   - GET /api/workspaces/{slug} reports Exists=false and Bytes=0 for every
+//     workspace;
+//   - POST /api/gc's workspace_homes listing is empty, so no orphan is ever
+//     detected;
+//   - DELETE /api/workspaces/{slug} finds nothing to delete and reports the
+//     home as absent, which means removing a workspace leaves its HOME VOLUME
+//     — credentials and toolchain included — behind indefinitely.
+//
+// That intermediate state is a deliberate, documented consequence of splitting
+// the cutover from the rewiring (the plan doc's PR 分割案 and its PR6→PR7 note):
+// `docker volume rm boid-ws-home-<installID8>-<slug>` is the manual stand-in.
+// 論点 a-2 carries the design for the replacement — VolumeRemove for deletion,
+// a volume listing diffed against the workspace rows for orphan detection, and
+// an explicitly-decided answer for sizing (Volume.UsageData is populated only
+// by GET /system/df, which walks the whole engine).
+//
+// The TESTS in this package are in the same position: they exercise these
+// functions against real directories, so they still pass and still describe
+// what the code does — they just no longer describe anything a running daemon
+// does. Each of them names PR7 for that reason.
+//
 // WorkspaceHomeSize describes one workspace home directory's on-disk
 // footprint (docs/plans/home-workspace-volume.md Phase 4 PR5): used both by
 // GET /api/workspaces/{slug} (a single entry, WorkspaceDetail.Home) and by
@@ -61,10 +90,18 @@ type WorkspaceSlugLister interface {
 
 // resolveWorkspaceHomePath returns the absolute on-disk path for slug's
 // workspace home directory, derived from runtimesDir via
-// dispatcher.WorkspaceHomesDir — the exact same computation the dispatcher
-// itself uses to mount a job's $HOME (docs/plans/home-workspace-volume.md
-// Phase 4 PR2), so a size reported here always matches what is actually
-// mounted. Does not check whether the path exists.
+// dispatcher.WorkspaceHomesDir.
+//
+// Through Phase 4 this was the exact same computation the dispatcher used to
+// mount a job's $HOME (docs/plans/home-workspace-volume.md Phase 4 PR2), so a
+// size reported here always matched what was actually mounted. As of PR6 of
+// docs/plans/workspace-home-volume-persistence.md it no longer does: the
+// dispatcher mounts the named volume dockerres.WorkspaceHomeVolumeName
+// (installID, slug) and never resolves this path at all, so what this returns
+// is the LEGACY location — an upgraded installation's leftover directory, or
+// nothing at all on a fresh one. See this file's PR6 status note above for the
+// per-endpoint consequences and for what PR7 replaces this with. Does not check
+// whether the path exists.
 func resolveWorkspaceHomePath(runtimesDir, slug string) (string, error) {
 	homesDir, err := dispatcher.WorkspaceHomesDir(runtimesDir)
 	if err != nil {

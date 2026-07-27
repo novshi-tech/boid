@@ -45,6 +45,10 @@ func (b *capturingSandboxBackend) Adopt(context.Context, string) (backend.Sandbo
 // RunWorkspaceInit satisfies dispatcher.WorkspaceInitExecutor, which
 // resolveWorkspaceHome requires of every backend since PR5 — see
 // runWorkspaceInitInProcess (runtime_test_helpers_test.go).
+func (b *capturingSandboxBackend) EnsureWorkspaceHomeVolume(_ context.Context, req dispatcher.WorkspaceHomeVolumeRequest) (string, error) {
+	return ensureWorkspaceHomeVolumeInProcess(req)
+}
+
 func (b *capturingSandboxBackend) RunWorkspaceInit(ctx context.Context, req dispatcher.WorkspaceInitRequest) error {
 	return runWorkspaceInitInProcess(ctx, req)
 }

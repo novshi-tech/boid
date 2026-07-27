@@ -39,17 +39,48 @@ func (noopBackend) Adopt(context.Context, string) (backend.SandboxSession, bool)
 	return nil, false
 }
 
-// RunWorkspaceInit satisfies dispatcher.WorkspaceInitExecutor — required of
-// every backend since PR5 of docs/plans/workspace-home-volume-persistence.md,
-// which moved workspace home preparation into a throwaway container the
-// backend owns. Runs the wrapper the dispatcher assembled under a real bash,
-// with HOME rewritten from the request's container-side target back to its
-// host-side source (there is no mount here to make the two the same thing).
+// EnsureWorkspaceHomeVolume and RunWorkspaceInit satisfy
+// dispatcher.WorkspaceInitExecutor — required of every backend since PR5/PR6 of
+// docs/plans/workspace-home-volume-persistence.md, which moved workspace home
+// preparation into a throwaway container the backend owns and the home itself
+// into a docker named volume. See workspace_init_stub_test.go.
+// (Duplicated rather than shared with workspace_init_stub_test.go: this file is
+// package server_test, that one is package server.)
+func (noopBackend) EnsureWorkspaceHomeVolume(_ context.Context, req dispatcher.WorkspaceHomeVolumeRequest) (string, error) {
+	dir := noopBackendVolumeDir(req.Name)
+	idPath := dir + ".id"
+	if data, err := os.ReadFile(idPath); err == nil {
+		return strings.TrimSpace(string(data)), nil
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", err
+	}
+	if err := os.WriteFile(idPath, []byte(req.CandidateID), 0o600); err != nil {
+		return "", err
+	}
+	return req.CandidateID, nil
+}
+
+// noopBackendVolumeDir models a docker volume as a directory under whatever
+// throwaway XDG_DATA_HOME testutil/homeenv established, so it is removed with
+// it and no two tests share one.
+func noopBackendVolumeDir(name string) string {
+	root := os.Getenv("XDG_DATA_HOME")
+	if root == "" {
+		root = os.TempDir()
+	}
+	return filepath.Join(root, "boid-test-volumes", name)
+}
+
 func (noopBackend) RunWorkspaceInit(ctx context.Context, req dispatcher.WorkspaceInitRequest) error {
+	homeDir := noopBackendVolumeDir(req.HomeSource)
+	if err := os.MkdirAll(homeDir, 0o700); err != nil {
+		return err
+	}
 	env := make([]string, 0, len(req.Env)+1)
 	for k, v := range req.Env {
 		if v == req.HomeTarget {
-			v = req.HomeSource
+			v = homeDir
 		}
 		env = append(env, k+"="+v)
 	}

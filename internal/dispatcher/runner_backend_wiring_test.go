@@ -3,6 +3,7 @@ package dispatcher
 import (
 	"context"
 	"fmt"
+	"os"
 	"syscall"
 	"testing"
 
@@ -69,6 +70,10 @@ type wireFakeBackend struct {
 	reapReport backend.ReapReport
 	reapErr    error
 	reapCalls  int
+
+	// homes is the modelled volume store the WorkspaceInitExecutor methods
+	// below delegate to (see bashWorkspaceInitBackend).
+	homes *bashWorkspaceInitBackend
 }
 
 var _ backend.SandboxBackend = (*wireFakeBackend)(nil)
@@ -90,8 +95,24 @@ func (b *wireFakeBackend) Adopt(_ context.Context, runtimeID string) (backend.Sa
 // same real-bash stand-in the workspace-home tests use
 // (workspace_init_bash_backend_test.go), so a Dispatch through this fake
 // leaves the home in the state production leaves it in.
+func (b *wireFakeBackend) EnsureWorkspaceHomeVolume(ctx context.Context, req WorkspaceHomeVolumeRequest) (string, error) {
+	return b.workspaceHomes().EnsureWorkspaceHomeVolume(ctx, req)
+}
+
 func (b *wireFakeBackend) RunWorkspaceInit(ctx context.Context, req WorkspaceInitRequest) error {
-	return (&bashWorkspaceInitBackend{}).RunWorkspaceInit(ctx, req)
+	return b.workspaceHomes().RunWorkspaceInit(ctx, req)
+}
+
+// workspaceHomes lazily creates this fake's modelled volume store.
+func (b *wireFakeBackend) workspaceHomes() *bashWorkspaceInitBackend {
+	if b.homes == nil {
+		dir, err := os.MkdirTemp("", "boid-wire-fake-volumes-")
+		if err != nil {
+			panic("wireFakeBackend: create modelled volume store: " + err.Error())
+		}
+		b.homes = &bashWorkspaceInitBackend{volRoot: dir, volumes: map[string]string{}}
+	}
+	return b.homes
 }
 
 func (b *wireFakeBackend) ReapOrphans(context.Context) (backend.ReapReport, error) {

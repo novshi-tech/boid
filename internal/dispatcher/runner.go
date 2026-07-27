@@ -385,22 +385,27 @@ func (r *Runner) Dispatch(ctx context.Context, spec *orchestrator.JobSpec, clean
 	}
 
 	// Workspace home ensure + init (docs/plans/home-workspace-volume.md
-	// Phase 4 PR1): guarantees ~/.local/share/boid/homes/<slug> exists and,
-	// if the workspace declares an init.sh, has been run for its current
-	// content, before any sandbox is built for this dispatch. PR1 is
-	// wiring-only — the resolved dir is threaded into rtInfo below but
-	// BuildSandboxSpec does not read it yet — while init failure still fails
-	// the dispatch outright (the contract's 「init 失敗時は dispatch を明示
-	// エラーで fail」), matching every other pre-BuildSandboxSpec error path
-	// in this function.
+	// Phase 4 PR1, as rebuilt by PR6 of
+	// docs/plans/workspace-home-volume-persistence.md): guarantees this
+	// workspace's persistent HOME VOLUME exists and has had boid's builtin prep
+	// — and, if the workspace declares an init.sh, that script — run against
+	// this incarnation of it, before any sandbox is built for this dispatch.
+	// Init failure fails the dispatch outright (the contract's 「init 失敗時は
+	// dispatch を明示エラーで fail」), matching every other
+	// pre-BuildSandboxSpec error path in this function.
 	//
-	// Both return values are used: workspaceSlug is the normalized slug this
-	// call just resolved workspaceID into, threaded to rtInfo.WorkspaceSlug
-	// below. It is deliberately NOT re-derived from workspaceHomeDir — see
-	// resolveWorkspaceHome's doc comment (PR4 of
-	// docs/plans/workspace-home-volume-persistence.md) for why that derivation
-	// breaks the moment PR6 turns the home into a named volume.
-	workspaceHomeDir, workspaceSlug, err := r.resolveWorkspaceHome(ctx, workspaceID)
+	// All three return values are used, and the first is a docker VOLUME NAME
+	// rather than a path — do not join anything onto it (see
+	// resolveWorkspaceHome). workspaceSlug is the normalized slug this call
+	// resolved workspaceID into, threaded to rtInfo.WorkspaceSlug and to
+	// LaunchOptions.WorkspaceSlug below; re-deriving it from the volume name
+	// would yield "boid-ws-home-<installID8>-<slug>". workspaceHomeID is the
+	// identity that volume was observed to carry, threaded to
+	// LaunchOptions.WorkspaceHomeID so the backend can confirm, at the moment it
+	// mounts the volume, that it is still the same one — the check this call
+	// makes is over long before ContainerCreate runs (codex review of PR6,
+	// Major 1; see verifyWorkspaceHomeIdentity).
+	workspaceHomeVolume, workspaceSlug, workspaceHomeID, err := r.resolveWorkspaceHome(ctx, workspaceID)
 	if err != nil {
 		r.failJob(j, err)
 		if cleanup != nil {
@@ -411,24 +416,25 @@ func (r *Runner) Dispatch(ctx context.Context, spec *orchestrator.JobSpec, clean
 
 	// Embedded skills (docs/plans/workspace-home-volume-persistence.md 論点
 	// e-2, PR3): materializes the embedded skill set under the host-visible
-	// runtimes root and prepares the per-skill bind targets inside the
-	// workspace home, so /boid-task / /boid-orchestrate / /boid-web resolve
+	// runtimes root, so /boid-task / /boid-orchestrate / /boid-web resolve
 	// inside the harness even though the claude/codex/opencode adapters no
 	// longer declare bind mounts for them (internal/adapters/*/bindings.go).
 	// The returned directory is threaded into rtInfo below, where homeMounts
 	// turns it into one read-only bind per skill.
 	//
 	// Phase 4 PR3 (docs/plans/home-workspace-volume.md) instead copy-synced
-	// the content into <workspaceHomeDir>/.claude/skills — a direct daemon
-	// write into the workspace HOME, which PR6 turns into a named volume the
-	// daemon cannot write to. See syncEmbeddedSkills for why the destination
-	// moved rather than the timing, and why the call stays per-dispatch.
+	// the content into <workspace home>/.claude/skills — a direct daemon write
+	// into the workspace HOME, which PR6 turned into a named volume the daemon
+	// cannot write to at all. PR3 moved the destination; PR6 removed the last
+	// thing this call still did inside the home (creating the per-skill bind
+	// TARGETS) — see syncEmbeddedSkills for where creating and verifying them
+	// went, and why the materialize itself stays per-dispatch.
 	//
 	// A failure fails the dispatch outright, matching every other
 	// pre-BuildSandboxSpec error path in this function (including the init.sh
 	// failure just above) — a job started against a stale or missing skill
 	// set would otherwise silently misbehave instead of erroring loudly.
-	skillsSourceDir, err := r.syncEmbeddedSkills(workspaceHomeDir)
+	skillsSourceDir, err := r.syncEmbeddedSkills()
 	if err != nil {
 		r.failJob(j, err)
 		if cleanup != nil {
@@ -774,7 +780,7 @@ func (r *Runner) Dispatch(ctx context.Context, spec *orchestrator.JobSpec, clean
 		GatewayCloneURL:            gatewayCloneURL,
 		CloneWorkspaceDir:          cloneWorkspaceDir,
 		CloneHostBacked:            cloneHostBacked,
-		WorkspaceHomeDir:           workspaceHomeDir,
+		WorkspaceHomeVolume:        workspaceHomeVolume,
 		WorkspaceSlug:              workspaceSlug,
 		SkillsSourceDir:            skillsSourceDir,
 		ContainerImage:             r.resolveContainerImage(workspaceID),
@@ -835,7 +841,7 @@ func (r *Runner) Dispatch(ctx context.Context, spec *orchestrator.JobSpec, clean
 		}
 		return "", err
 	}
-	return r.launchSandbox(ctx, j, sbSpec, cleanup, desiredRuntimeID, workspaceID, spec.Visibility.DockerEnabled)
+	return r.launchSandbox(ctx, j, sbSpec, cleanup, desiredRuntimeID, workspaceID, workspaceSlug, workspaceHomeID, spec.Visibility.DockerEnabled)
 }
 
 // resolveProjectRuntime resolves projectID to its (WorkspaceID, WorkDir).
@@ -1256,9 +1262,18 @@ func (r *Runner) sandboxBackend() backend.SandboxBackend {
 // launchSandbox launches a sandbox for job via the configured
 // SandboxBackend and persists the resulting runtime metadata.
 //
-// workspace and dockerEnabled (PR9, §決定5) are threaded through explicitly
-// from Dispatch's own already-resolved workspaceID / spec.Visibility.
-// DockerEnabled (the *orchestrator.JobSpec, not the sandbox.Spec parameter
+// workspace, workspaceSlug, workspaceHomeID and dockerEnabled are threaded
+// through explicitly from Dispatch's own already-resolved workspaceID /
+// resolveWorkspaceHome's slug and identity / spec.Visibility.DockerEnabled.
+// workspace and workspaceSlug are BOTH passed, unnormalized and normalized,
+// because backend.LaunchOptions uses them for different things — see that
+// struct's WorkspaceSlug doc comment (PR6 論点 D5) for why normalizing the one
+// field would have changed network isolation as a side effect. workspaceHomeID
+// travels the same way and for a related reason: the sandbox.Spec below carries
+// the home volume's NAME (as the HOME mount's source) but nothing that says
+// WHICH INCARNATION of it this dispatch resolved, and that is precisely what the
+// backend has to confirm before mounting it (codex review of PR6, Major 1 —
+// verifyWorkspaceHomeIdentity). The rest (the *orchestrator.JobSpec, not the sandbox.Spec parameter
 // below, which carries neither) — see backend.LaunchOptions.Workspace/
 // DockerEnabled's own doc comments for why containerBackend needs both and
 // why this was previously a wiring gap (both fields were left at their
@@ -1266,7 +1281,7 @@ func (r *Runner) sandboxBackend() backend.SandboxBackend {
 // docker-capability delivery and workspace network isolation for the
 // container backend specifically — the userns backend never read either
 // field, so nothing exercised the gap before PR9).
-func (r *Runner) launchSandbox(ctx context.Context, job *Job, spec sandbox.Spec, cleanup orchestrator.CleanupFunc, desiredRuntimeID string, workspace string, dockerEnabled bool) (string, error) {
+func (r *Runner) launchSandbox(ctx context.Context, job *Job, spec sandbox.Spec, cleanup orchestrator.CleanupFunc, desiredRuntimeID string, workspace, workspaceSlug, workspaceHomeID string, dockerEnabled bool) (string, error) {
 	if job == nil {
 		return "", fmt.Errorf("job is required")
 	}
@@ -1284,8 +1299,10 @@ func (r *Runner) launchSandbox(ctx context.Context, job *Job, spec sandbox.Spec,
 		HandlerID: job.HandlerID,
 		Role:      job.Role,
 
-		Workspace:     workspace,
-		DockerEnabled: dockerEnabled,
+		Workspace:       workspace,
+		WorkspaceSlug:   workspaceSlug,
+		WorkspaceHomeID: workspaceHomeID,
+		DockerEnabled:   dockerEnabled,
 
 		Interactive: spec.TTY,
 		TTY:         spec.TTY,

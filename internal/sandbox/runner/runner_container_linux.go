@@ -29,9 +29,14 @@ package runner
 //     SIGTERM — exactly the same as it does today when this same code runs
 //     as the userns runner's L3 child. Nothing new to write here.
 //
-// RunContainer is still entirely inert as of PR2: no dispatcher /
-// containerBackend code path invokes `boid runner-container` yet — that
-// wiring lands in PR5 (config still non-public until the PR7 cutover).
+// RunContainer is the entry point of EVERY sandboxed job. It was inert when
+// written (Phase 6 PR2 added it ahead of the backend that invokes it), which
+// stopped being true in PR5 of that plan and is doubly untrue now: the image's
+// own ENTRYPOINT is ["/usr/local/bin/boid","runner-container"]
+// (build/container/Dockerfile), the container backend is boid's only backend
+// since PR-4 of docs/plans/volume-only-daemon.md removed the userns one, and
+// the `sandbox.backend` config option it was once gated behind no longer
+// exists. Anything added here runs on every dispatch.
 func RunContainer(specPath, statePath string) (exitCode int, retErr error) {
 	spec, err := readSpec(specPath)
 	if err != nil {
@@ -59,6 +64,19 @@ func RunContainer(specPath, statePath string) (exitCode int, retErr error) {
 		}
 		postJobDone("container", spec, exitCode, st)
 	}()
+
+	// The workspace HOME's bind-target skeleton, checked before anything else
+	// touches the filesystem (PR6 of
+	// docs/plans/workspace-home-volume-persistence.md, 論点 b-2 / e-2). It is
+	// first on purpose: what it detects is a $HOME the harness cannot write
+	// into, and every step below — spec.Files, the clone, the agent itself —
+	// would otherwise fail later, further from the cause, or not at all.
+	// See verifyHomeSkeleton for why this check lives in the job container
+	// rather than on the daemon.
+	if err := verifyHomeSkeleton(spec); err != nil {
+		st.Fail("container", "home-skeleton", err)
+		return 1, err
+	}
 
 	// spec.Files: the container's own root filesystem already *is* the
 	// sandbox root (no pivot_root to wait for, unlike RunInnerChild).

@@ -120,4 +120,75 @@ type Spec struct {
 	// use: `docker inspect` the image and require the
 	// `boid.runner_protocol` label to match, rejecting Launch otherwise.
 	ContainerImage string
+
+	// HomeSkeletonRoot is the absolute in-sandbox path the workspace HOME is
+	// mounted at, i.e. $HOME. It is the root HomeSkeletonDirs' entries are
+	// relative to, and — because the HOME mount is the whole of the workspace
+	// home volume — it is also the point that separates an in-container path
+	// from a path INSIDE the volume.
+	//
+	// That second role is why it is carried at all rather than being implied.
+	// The only repair for what HomeSkeletonDirs detects is deleting the
+	// offending directory from the host side (`docker volume inspect`'s
+	// Mountpoint, under `podman unshare` or `sudo`), and the path to give the
+	// operator there is <Mountpoint>/<the entry>, NOT <Mountpoint>/<the
+	// in-container absolute path>. Those differ by exactly this prefix, and
+	// naming the wrong one sends the operator to a path that does not exist:
+	// they delete nothing, the uid-0 directory survives, and the next job fails
+	// the same check — a loop the error itself caused (codex review of PR6,
+	// Major 2).
+	//
+	// Empty when HomeSkeletonDirs is empty. A non-empty skeleton with no root
+	// is a wiring bug and the runner fails the job rather than resolving the
+	// entries against whatever the process's cwd happens to be.
+	HomeSkeletonRoot string
+
+	// HomeSkeletonDirs are directories, RELATIVE to HomeSkeletonRoot, that
+	// must already exist and be owned by the uid the sandbox runs as before
+	// the harness starts. The container runner checks them and fails the job
+	// when one is not (internal/sandbox/runner's verifyHomeSkeleton).
+	//
+	// Relative rather than absolute so that they are the same values the rest
+	// of the mechanism already speaks in: dispatcher.workspaceHomeSkeletonDirs
+	// produces them relative to the home, the init container's prelude mkdir's
+	// them relative to the home, and the completion marker records them
+	// relative to the home. An absolute spelling here would be a fourth
+	// representation, convertible back only by string surgery at the point
+	// where it matters most (see HomeSkeletonRoot).
+	//
+	// They are the workspace HOME's bind-target ancestors — .claude and
+	// .claude/skills. The check exists because an ABSENT bind target is created
+	// by the container ENGINE, at container start, as uid 0: measured on podman
+	// 4.9.3 with a named-volume home and keep-id, ~/.claude comes out
+	// root-owned and the uid-1000 harness can no longer write
+	// ~/.claude/.credentials.json, which under rootless podman neither it nor
+	// the daemon can repair (the host-side owner is a subuid). The symptom
+	// without this check is not an error but a workspace whose authentication
+	// silently stops persisting.
+	//
+	// # Why the per-skill LEAVES are not in here
+	//
+	// The set the prelude creates also has one entry per embedded skill
+	// (.claude/skills/<name>), and those are deliberately excluded: each is
+	// itself a read-only bind target in this same Spec, so by the time this
+	// process runs, os.Stat on one reads the BIND SOURCE — the daemon-side
+	// materialized skill directory — not the directory inside the volume. A
+	// check that cannot observe its subject is not a weaker check, it is a
+	// different one, and dispatcher.homeSkeletonDirs drops any entry a mount
+	// covers rather than pretending otherwise. See its doc comment for what
+	// that leaves exposed (a stale, empty, root-owned leaf survives in the
+	// volume, harmlessly, until a release stops shipping that skill).
+	//
+	// Verification lives HERE rather than on the daemon side because PR6 of
+	// docs/plans/workspace-home-volume-persistence.md made the home a docker
+	// named volume: the daemon can neither stat nor repair anything inside it.
+	// 論点 e-2 requires the check to sit outside whatever creates these
+	// directories (the init container's prelude does), and the job container
+	// satisfies that while also being the only place that observes the state
+	// the harness will actually meet — after the engine's auto-creation, as the
+	// harness's own uid.
+	//
+	// Empty means "nothing to check": test wiring, and any sandbox with no
+	// workspace home (the tmpfs-HOME degrade in dispatcher.homeMounts).
+	HomeSkeletonDirs []string
 }

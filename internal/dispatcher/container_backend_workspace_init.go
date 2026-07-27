@@ -137,6 +137,38 @@ func (b *containerBackend) RunWorkspaceInit(ctx context.Context, req WorkspaceIn
 	if err != nil {
 		return err
 	}
+	// §D4 — the init container does NOT go through Launch, so it does not go
+	// through ensureNamedVolumes either. Without this call ContainerCreate
+	// would happily auto-create the volume implicitly, unlabeled: the name
+	// checks in reap and dockerproxy would still recognize it (they key off
+	// the name prefix), but every label-based check would not — including the
+	// identity resolveWorkspaceHome compares its completion marker against,
+	// which would then be permanently absent and wedge this workspace (see
+	// Runner.ensureWorkspaceHomeVolume for why that cannot be repaired by
+	// re-running).
+	//
+	// resolveWorkspaceHome has normally already created it moments ago; this
+	// is idempotent and re-creates it with the SAME identity if it vanished in
+	// between, so the marker written afterwards stays accurate either way.
+	//
+	// The ANSWER is checked, not just the call (codex review of PR6, Major 1).
+	// A volume that survived reports the identity it was born with and the
+	// request's CandidateID is discarded, so "it came back as something else"
+	// means a third incarnation of this name is in place — and preparing THAT
+	// while resolveWorkspaceHome goes on to stamp a marker recording req.HomeID
+	// produces a marker that vouches for contents nobody prepared. See
+	// verifyWorkspaceHomeIdentity for what the check does and does not close.
+	got, err := b.EnsureWorkspaceHomeVolume(ctx, WorkspaceHomeVolumeRequest{
+		Slug:        req.Slug,
+		Name:        req.HomeSource,
+		CandidateID: req.HomeID,
+	})
+	if err != nil {
+		return err
+	}
+	if err := verifyWorkspaceHomeIdentity(req.HomeSource, req.HomeID, got); err != nil {
+		return fmt.Errorf("workspace init container for %q: %w", req.Slug, err)
+	}
 	image, err := b.resolveImage(ctx, "")
 	if err != nil {
 		return fmt.Errorf("workspace init container for %q: %w", req.Slug, err)
@@ -211,29 +243,143 @@ func (b *containerBackend) RunWorkspaceInit(ctx context.Context, req WorkspaceIn
 }
 
 // workspaceInitHomeMount turns req's home into the one mount the init
-// container gets.
+// container gets: a VOLUME mount of the workspace's own named volume (PR6, 論点
+// a/e).
 //
-// Fail-closed on a non-absolute source. Through PR5 the workspace home is
-// still a host directory (論点 c's "この時点では現行の host-visible homes dir を
-// engine bind して検証する"), and docker reads a relative mount source as a
-// VOLUME NAME — so a home path that stopped being absolute would not error, it
-// would silently prepare a brand new empty volume and report success, leaving
-// a workspace whose home is mysteriously empty on every dispatch. PR6 is where
-// this grows the named-volume branch, deliberately as a change to this
-// function rather than as an untested "if it looks like a volume name" path
-// shipped ahead of the thing that produces one.
+// Fail-closed on an absolute source, which is the exact inverse of what this
+// function guarded through PR5 — and the inversion is the point. The home was a
+// host directory then, and docker reads a RELATIVE mount source as a volume
+// name, so a path that stopped being absolute would have silently prepared a
+// brand new empty volume and reported success. Now the home IS a volume name,
+// and an absolute value would silently bind some host directory into the
+// container instead: the init would appear to succeed, the marker would be
+// stamped, and the workspace's real home would never be prepared. Both eras
+// fail the same way when the two representations are confused, so the check
+// tracks which representation is current rather than being dropped.
+//
+// The name is validated against docker's own grammar as well, for the reason
+// dockerres.IsValidVolumeName exists: a mount source is classified as a named
+// volume purely by "it does not start with /", so a stray relative path would
+// otherwise reach the engine as a volume name.
 func workspaceInitHomeMount(req WorkspaceInitRequest) (mount.Mount, error) {
-	if !filepath.IsAbs(req.HomeSource) {
+	if filepath.IsAbs(req.HomeSource) {
 		return mount.Mount{}, fmt.Errorf(
-			"workspace init container for %q: home source %q is not an absolute path; "+
-				"through PR5 of docs/plans/workspace-home-volume-persistence.md the workspace home is a host directory "+
-				"(PR6 replaces it with a named volume and this mount with a volume mount)", req.Slug, req.HomeSource)
+			"workspace init container for %q: home source %q is an absolute path; as of PR6 of "+
+				"docs/plans/workspace-home-volume-persistence.md the workspace home is a docker named volume "+
+				"(dockerres.WorkspaceHomeVolumeName), and binding a host path here would prepare something other than "+
+				"the home the job will actually get", req.Slug, req.HomeSource)
+	}
+	if !dockerres.IsValidVolumeName(req.HomeSource) {
+		return mount.Mount{}, fmt.Errorf(
+			"workspace init container for %q: home source %q is not a valid docker volume name", req.Slug, req.HomeSource)
 	}
 	if !filepath.IsAbs(req.HomeTarget) {
 		return mount.Mount{}, fmt.Errorf(
 			"workspace init container for %q: home target %q is not an absolute path", req.Slug, req.HomeTarget)
 	}
-	return mount.Mount{Type: mount.TypeBind, Source: req.HomeSource, Target: req.HomeTarget}, nil
+	return mount.Mount{Type: mount.TypeVolume, Source: req.HomeSource, Target: req.HomeTarget}, nil
+}
+
+// EnsureWorkspaceHomeVolume creates the workspace HOME volume if it is not
+// there and reports the identity it carries afterwards (PR6, 論点 a/b).
+//
+// One VolumeCreate does both jobs. The Engine API returns an already-existing
+// volume for a create of the same name — 201, the existing volume, the
+// EXISTING labels, request labels discarded (measured against podman 4.9.3 on
+// 2026-07-27: three creates of one name carrying different label sets all came
+// back with the first call's labels). So a fresh volume gets req.CandidateID
+// stamped on it and a surviving one reports whatever it was born with, which is
+// what makes "this volume was deleted and re-created since the marker was
+// written" observable at all.
+//
+// It follows that the identity CANNOT be updated afterwards, and everything
+// downstream is built on that: see Runner.ensureWorkspaceHomeVolume for why an
+// unlabelled volume is a hard error rather than a re-init.
+//
+// The labels are 論点 a's decision, unchanged: boid.workspace_home +
+// boid.workspace_home_install_id and NOTHING else, because each of the three
+// job labels is an enumeration filter that would put a persistent volume into a
+// reaper's sweep. The identity label joins them; it is likewise a key nothing
+// enumerates on.
+func (b *containerBackend) EnsureWorkspaceHomeVolume(ctx context.Context, req WorkspaceHomeVolumeRequest) (string, error) {
+	if !dockerres.IsValidVolumeName(req.Name) {
+		return "", fmt.Errorf("workspace home volume name %q is not a valid docker volume name", req.Name)
+	}
+	if req.CandidateID == "" {
+		return "", fmt.Errorf("workspace home volume %q: no candidate identity to stamp on it", req.Name)
+	}
+	labels := map[string]string{
+		dockerres.LabelWorkspaceHome:   req.Slug,
+		dockerres.LabelWorkspaceHomeID: req.CandidateID,
+	}
+	if b.installID != "" {
+		labels[dockerres.LabelWorkspaceHomeInstallID] = b.installID
+	}
+	res, err := b.api.VolumeCreate(ctx, client.VolumeCreateOptions{Name: req.Name, Labels: labels})
+	if err != nil {
+		return "", fmt.Errorf("create workspace home volume %q: %w", req.Name, err)
+	}
+	return res.Volume.Labels[dockerres.LabelWorkspaceHomeID], nil
+}
+
+// verifyWorkspaceHomeIdentity reports whether the volume a caller is ABOUT TO
+// MOUNT is still the incarnation the daemon resolved: got is what this caller's
+// own VolumeCreate answered with, want is the identity
+// Runner.resolveWorkspaceHome observed and (for the init path) is going to
+// record in the completion marker.
+//
+// # Why the check is repeated at each use site instead of trusted from resolve
+//
+// resolveWorkspaceHome already compares the volume's identity against the
+// marker, but that comparison is finished before either container exists. Two
+// things can happen in the gap, and both are ordinary rather than exotic — an
+// operator's `docker volume rm`, a reap misfire, a half-completed workspace
+// remove:
+//
+//   - the volume is REPLACED, and the mount silently attaches somebody else's
+//     contents;
+//   - the volume is simply GONE, in which case the create on this path brings
+//     back an empty one — or, if nothing calls VolumeCreate at all,
+//     ContainerCreate does it implicitly and UNLABELLED, which is
+//     unrecoverable (the Engine API has no way to add a label to an existing
+//     volume, so Runner.ensureWorkspaceHomeVolume hard-fails every later
+//     dispatch of that workspace forever).
+//
+// The daemon has no way to hold a volume in place across those calls: docker
+// has no lease, no reservation and no compare-and-swap on a volume, and the
+// mount is not established until the container is created.
+//
+// # What this does NOT close
+//
+// The race is not closed, only narrowed, and deliberately so. The volume can
+// still be removed AFTER this returns and before ContainerCreate takes the
+// mount — the window shrinks from "the whole of resolve + init + spec build +
+// launch" to "two adjacent engine calls", but it does not reach zero. What the
+// check buys is the difference between a mismatch that is SILENT (a marker
+// vouching for contents nobody prepared; an agent starting against an empty
+// $HOME and reporting "CLI not found") and one that is LOUD, at the point of
+// use, naming both identities. That is the same trade the identity mechanism
+// makes everywhere else — see workspaceHomeMarker.HomeID's account of what a
+// volume label can and cannot witness.
+func verifyWorkspaceHomeIdentity(volumeName, want, got string) error {
+	if want == "" || want == got {
+		return nil
+	}
+	if got == "" {
+		return fmt.Errorf(
+			"the workspace HOME volume %q carries no %s label, so this is not the volume boid resolved for this dispatch "+
+				"(it expected the identity %q). Every volume boid creates for a workspace home is labelled at creation, so an "+
+				"unlabelled one under this name was created by something else — most likely the container engine's own "+
+				"implicit create after the real volume was removed. "+
+				"[復旧] その volume が不要なら削除する (`docker volume rm %[1]s`) — 次の dispatch が正しい label 付きで作り直す",
+			volumeName, dockerres.LabelWorkspaceHomeID, want)
+	}
+	return fmt.Errorf(
+		"the workspace HOME volume %q carries the identity %q, but this dispatch resolved %q — the volume was removed and "+
+			"re-created after boid checked it and before it could be mounted (a `docker volume rm`, a reap misfire, a "+
+			"half-completed workspace remove). Refusing to use it: its contents are not the ones the completion marker "+
+			"vouches for. The next dispatch re-runs the workspace home init against the volume that is there now",
+		volumeName, got, want)
 }
 
 // createWorkspaceInitContainer creates the container, resolving a name

@@ -2,7 +2,6 @@ package dispatcher
 
 import (
 	"fmt"
-	"os"
 	"path/filepath"
 
 	"github.com/novshi-tech/boid/internal/skills"
@@ -10,7 +9,8 @@ import (
 
 // This file owns the daemon side of how the embedded skills (/boid-task,
 // /boid-orchestrate, /boid-web) reach a job's sandbox — PR3 of
-// docs/plans/workspace-home-volume-persistence.md (論点 e-2).
+// docs/plans/workspace-home-volume-persistence.md (論点 e-2), as amended by
+// PR6.
 //
 // Phase 4 PR3 (docs/plans/home-workspace-volume.md) had Runner.Dispatch
 // copy-sync the skill content straight into the workspace HOME
@@ -28,6 +28,11 @@ import (
 // are the one piece of workspace HOME content that may freely be volatile,
 // which is why they can leave the persistent home while the harness
 // credentials and toolchain cannot.
+//
+// PR6 completed that move: the workspace HOME is now the named volume this
+// file's prose anticipated, and the last daemon-side write into it — the
+// per-dispatch mkdir of the bind targets — is gone with it. See
+// syncEmbeddedSkills for where creating and verifying those directories went.
 
 // embeddedSkillsDir returns <runtimesDir>/skills, the single per-INSTALLATION
 // directory Runner.Dispatch materializes the embedded skill set into.
@@ -80,42 +85,61 @@ func embeddedSkillsDir(runtimesDir string) (string, error) {
 
 // syncEmbeddedSkills materializes the embedded skill set for this dispatch
 // and returns the directory holding it, for BuildSandboxSpec to bind each
-// skill in from (SandboxRuntimeInfo.SkillsSourceDir → homeMounts).
+// skill in from (SandboxRuntimeInfo.SkillsSourceDir -> homeMounts).
 //
-// It also creates the bind TARGETS inside the workspace home:
-// <home>/.claude, and <home>/.claude/skills/<name> for every embedded skill.
-// Those directories used to exist as a side effect — skills.DeployAll's
-// symlink-safe walk created them on its way to writing the content there —
-// and something has to keep creating them now that the content lands
-// elsewhere, because an ABSENT bind target is not a benign condition: the
-// container engine creates the missing intermediate path itself, at container
-// start, as uid 0. Measured on podman 4.9.3 with an empty home and a
-// /home/boid/.claude/skills bind (docs/plans/workspace-home-volume-persistence.md
-// 論点 b-2):
+// # What it no longer does, and where that work went (PR6)
 //
-//	drwxr-xr-t 3    0    0 .claude          ← engine-created, root-owned
-//	drwxrwxr-x 2 1000 1000 .claude/skills
+// PR3 also had this function create the bind TARGETS inside the workspace home
+// — <home>/.claude, <home>/.claude/skills and one directory per embedded skill
+// — on every dispatch, and verify that the daemon owned each of them. That was
+// never optional work: an ABSENT bind target is not a benign condition, because
+// the container engine creates the whole missing path itself, at container
+// start, as uid 0. Measured on podman 4.9.3 with a named-volume home and
+// UsernsMode keep-id (2026-07-27, re-confirming 論点 b-2's earlier measurement
+// against the new storage):
 //
-// A root-owned ~/.claude locks the uid 1000 harness out of
-// ~/.claude/.credentials.json and ~/.claude/projects/*.jsonl — i.e. the
-// change made to protect the credentials would be what stops them being
-// written. The engine does this before the entrypoint runs, so nothing on
-// the sandbox side can repair it.
+//	drwxr-xr-t 3    0    0 .claude          <- engine-created, root-owned
+//	drwxr-xr-t 3    0    0 .claude/skills
+//	$ touch /home/boid/.claude/probe   ->   Permission denied
 //
-// PR5 landed the prep container 論点 b-2 assigns this work to: its builtin
-// prelude creates the SAME set (workspaceHomeSkeletonDirs, shared with this
-// function so the two cannot drift) inside the home, as the job uid. The
-// daemon-side mkdir here nonetheless stays, and workspaceHomeSkeletonDirs'
-// own doc comment says why: prep runs once per home while the embedded skill
-// set is a property of the boid binary, so a release that adds a skill adds a
-// bind target to a home whose completion marker still matches. PR6 — where
-// the home becomes a volume the daemon cannot write to at all — has to
-// REPLACE this with something volume-capable rather than simply delete it.
+// A root-owned ~/.claude locks the uid-1000 harness out of
+// ~/.claude/.credentials.json and ~/.claude/projects/*.jsonl — the change made
+// to protect the credentials would be what stops them being written — and under
+// rootless podman the host-side owner is a subuid (100000, measured) that
+// neither the harness nor the daemon can chown back.
 //
-// Expressing the requirement in the mount spec instead is not an option
-// today: sandbox.Mount.NeedsDirs exists but is dead — the userns runner was
-// its only reader and PR-4 of docs/plans/volume-only-daemon.md removed that
-// backend, so internal/sandbox/realization never looks at the field.
+// PR6 turns the workspace home into a docker named volume, which takes the
+// daemon's ability to create those directories away outright. The work split in
+// two, and both halves are load-bearing:
+//
+//   - CREATION moved into the init container's builtin prelude, which already
+//     created the same set (workspaceHomeSkeletonDirs, shared so the two cannot
+//     drift). What PR6 had to add is a reason for that container to run again
+//     when the SET changes rather than only when init.sh changes: the completion
+//     marker now records the skeleton it was prepared for
+//     (workspaceHomeMarker.SkeletonDirs). Without that, a release adding an
+//     embedded skill would add a bind target to a home whose marker still
+//     matched — no prep, no directory, engine creates it as uid 0.
+//   - VERIFICATION moved into the job container itself, where
+//     sandbox.Spec.HomeSkeletonDirs is checked by the runner before the harness
+//     starts (internal/sandbox/runner's verifyHomeSkeleton). 論点 e-2 requires
+//     the check to live somewhere other than the thing that creates these
+//     directories, and the runner satisfies that better than the daemon did: it
+//     is not the creator, it runs on EVERY dispatch (the creator does not), it
+//     runs after the engine's auto-creation rather than before it, and it runs
+//     as the very uid whose write access is the property in question.
+//
+// What is genuinely lost is the daemon-side mkdir's incidental HEALING: a job
+// that deleted ~/.claude and exited used to have it re-created, correctly
+// owned, by the next dispatch. Nothing daemon-side can do that to a volume, so
+// the next launch now poisons the home instead and the runner reports it. The
+// detection this trades against was always the documented value of the check
+// (「これは lock ではなく detector である」, 論点 b-2) and the window it covers
+// was never closed; the healing was a side effect of doing the mkdir at all.
+// See docs/plans/workspace-home-volume-persistence.md 論点 b-2 for the full
+// account.
+//
+// # Everything below is unchanged from PR3
 //
 // Failure is loud: the returned error fails the whole dispatch, preserving
 // the contract Phase 4 PR3 established for the copy-sync this replaces. A
@@ -125,61 +149,13 @@ func embeddedSkillsDir(runtimesDir string) (string, error) {
 // best-effort, and the mounts homeMounts derives from the returned directory
 // deliberately carry no Guard: a vanished source must abort the job, not be
 // skipped.
-//
-// # The bind-target race, and the deliberate decision not to close it
-//
-// prepareBindTarget's mkdir and the container launch that consumes its result
-// are separated by the whole rest of Runner.Dispatch. Another job of the SAME
-// workspace holds that workspace home read-write for its entire lifetime —
-// homeMounts binds <homes>/<slug> at $HOME with no ReadOnly, and
-// resolveWorkspaceHome keys that directory by workspace slug alone, not by job
-// — so in that window a concurrent job can rename or delete ~/.claude. The
-// engine then finds the bind target missing at launch and auto-creates it as
-// uid 0, exactly as measured above. That window is NOT closed here, for three
-// reasons:
-//
-//  1. It is not new. A job of this workspace can already delete
-//     ~/.claude/.credentials.json outright, or rename ~/.claude, at any moment
-//     — with or without the bind targets this function creates. PR3 introduced
-//     no new capability on that side; homeMounts' own doc comment has recorded
-//     the "two jobs sharing a workspace can run concurrently" premise since
-//     the Phase 5b PR6 codex review.
-//  2. Closing it means serializing dispatch. The check and the launch would
-//     have to be one critical section per workspace, i.e. every dispatch of a
-//     workspace would hold a lock across container startup. That price is not
-//     worth paying for a race whose window is already reachable by simpler
-//     means (1).
-//  3. PR5's prep container does not close it either — and now that PR5 has
-//     landed, that is observed rather than predicted. Prep runs once per
-//     workspace home; jobs keep the home rw afterwards, so the same rename is
-//     available the moment prep finishes.
-//
-// What IS closed is the part that does not heal. A uid 0 directory — under
-// rootless podman, a host subuid mapped away from the daemon's own uid — can
-// be repaired by neither the uid 1000 harness nor the daemon itself, so the
-// workspace home stays poisoned for every future dispatch and the symptom is a
-// silent failure to persist ~/.claude/.credentials.json. prepareBindTarget
-// therefore verifies, after each mkdir, that the directory now at that path is
-// owned by this daemon, and fails the dispatch when it is not. That converts a
-// permanent silent breakage into one loud failure carrying the repair steps.
-//
-// The check is a detector, not a lock: a swap landing after it still wins the
-// race. Its value is that the NEXT dispatch reports the poisoning instead of
-// running into it. Recorded as such in 論点 b-2 of
-// docs/plans/workspace-home-volume-persistence.md.
-func (r *Runner) syncEmbeddedSkills(workspaceHomeDir string) (string, error) {
+func (r *Runner) syncEmbeddedSkills() (string, error) {
 	sourceDir, err := embeddedSkillsDir(r.RuntimesDir)
 	if err != nil {
 		return "", fmt.Errorf("resolve embedded skills dir: %w", err)
 	}
 	if err := skills.DeployAll(sourceDir); err != nil {
 		return "", fmt.Errorf("materialize embedded skills into %q: %w", sourceDir, err)
-	}
-
-	for _, rel := range workspaceHomeSkeletonDirs() {
-		if err := prepareBindTarget(filepath.Join(workspaceHomeDir, rel)); err != nil {
-			return "", err
-		}
 	}
 	return sourceDir, nil
 }
@@ -193,33 +169,29 @@ func (r *Runner) syncEmbeddedSkills(workspaceHomeDir string) (string, error) {
 // guarded against applies to them individually — the container engine
 // auto-creates the WHOLE missing path as uid 0, not just its leaf, so any
 // component of it can be the poisoned one and each therefore has to be covered
-// by prepareBindTarget's ownership check.
+// by the checks below.
 //
-// One function, two consumers, and that is the point (PR5 of
-// docs/plans/workspace-home-volume-persistence.md, 論点 b-2): the init
-// container's builtin prelude creates this set inside the home, and
-// syncEmbeddedSkills prepares the same set from the daemon on every dispatch.
+// One function, three consumers, and that is the point (論点 b-2):
+//
+//   - the init container's builtin prelude CREATES this set inside the home
+//     (dispatcher.buildWorkspaceInitScript);
+//   - resolveWorkspaceHome RECORDS it in the completion marker, so a release
+//     that changes the set makes the prelude run again
+//     (workspaceHomeMarker.SkeletonDirs);
+//   - BuildSandboxSpec puts it into sandbox.Spec.HomeSkeletonDirs, where the
+//     job container's own runner VERIFIES it before the harness starts.
+//
 // A drift between them is not cosmetic — a directory the prelude forgot is one
 // the engine creates at uid 0 on the next launch, which neither the uid 1000
 // harness nor the daemon can chown back.
 //
-// Why BOTH still run, in PR5 specifically. 論点 b-2 assigns the mkdir to the
-// prep container and calls the daemon-side copy a stopgap, and PR6 is where the
-// daemon genuinely loses the ability to do it (the home becomes a volume). But
-// dropping the daemon-side copy HERE would open a gap PR5 has no answer for:
-// prep runs once per home (it is gated by the completion marker, whose hash
-// covers init.sh and nothing else), while the skill set is a property of the
-// BOID BINARY. A release that adds an embedded skill therefore adds a bind
-// target to a home whose marker still matches — no prep, no directory, engine
-// creates it as uid 0. So PR5 keeps the per-dispatch mkdir, which is harmless
-// while the home is still an ordinary directory (it is an EEXIST no-op after
-// the prelude has run, since both create these as the same uid — see §D7), and
-// PR6 has to replace it with something volume-capable rather than simply delete
-// it. That, and the ownership VERIFICATION, which 論点 e-2 explicitly keeps on
-// the daemon side: its job is to notice that whatever created these
-// directories has since been replaced, so it cannot live in the thing that
-// creates them.
-func workspaceHomeSkeletonDirs() []string {
+// A swappable var rather than a plain function so a test can produce the one
+// input that matters and cannot otherwise be constructed: a DIFFERENT skeleton
+// set. The real set is decided by the embed directive, so it is a constant of
+// the binary under test, and "the marker notices a release that added a skill"
+// is otherwise unobservable. Same style as internal/api/workspace_homes.go's
+// apparentSizeFn; production never reassigns it.
+var workspaceHomeSkeletonDirs = func() []string {
 	dirs := []string{
 		".claude",
 		filepath.Join(".claude", "skills"),
@@ -228,170 +200,4 @@ func workspaceHomeSkeletonDirs() []string {
 		dirs = append(dirs, filepath.Join(".claude", "skills", name))
 	}
 	return dirs
-}
-
-// The two variables below are the ONLY seams in this file, and they exist for
-// the same underlying reason: the condition prepareBindTarget detects — a bind
-// target owned by somebody other than this daemon — cannot be created by a
-// test at all, because chown(2) to a foreign uid needs privileges no test
-// process has. So the inequality has to be produced by moving one side of the
-// comparison instead. Both are plain function variables initialized to the
-// real implementation, in the same style as internal/api/workspace_homes.go's
-// apparentSizeFn and internal/sandbox/fetch_builtin.go's newFetchClient: the
-// production path has no test-only branch in it, and reads exactly as if the
-// indirection were not there.
-//
-// Which seam a test reaches for follows from which property it pins, and
-// neither subsumes the other:
-//
-//   - daemonUID moves the DAEMON's side, globally. The directory is real and
-//     the fstat is real, so this is the axis that pins "the comparison is
-//     against whatever uid this process runs as", not a hard-coded 1000 —
-//     a literal would survive bindTargetOwnerUID, since a test running as uid
-//     1000 would still see the injected 1001 rejected.
-//   - bindTargetOwnerUID moves the DIRECTORY's side, for one path at a time
-//     (the test wrapper delegates to the real function for every other path).
-//     That is the only axis on which "which component was checked" is
-//     observable, which is what makes deleting one of the three
-//     prepareBindTarget call sites in syncEmbeddedSkills detectable.
-//
-// See TestDispatch_SkillsBindTargetNotDaemonOwned_FailsDispatch and
-// TestDispatch_SkillsBindTargetForeignOwner_FailsPerComponent respectively.
-
-// daemonUID reports the uid this daemon process runs as, i.e. the uid every
-// directory the daemon itself creates ends up owned by.
-var daemonUID = os.Getuid
-
-// bindTargetOwnerUID creates one bind target directory and reports the uid
-// owning the result — skills.MkdirAllNoSymlink, which does both in a single
-// symlink-checked walk and reads the owner with fstat(2) on the descriptor
-// that walk ended on (see its doc comment for why the ownership read cannot be
-// a separate stat by path).
-var bindTargetOwnerUID = skills.MkdirAllNoSymlink
-
-// prepareBindTarget creates one per-skill bind target (or one of their shared
-// ancestors) inside the workspace home and verifies the daemon owns the result.
-//
-// The mkdir is skills.MkdirAllNoSymlink rather than os.MkdirAll because the
-// path is inside storage the job owns read-write; see that function and
-// internal/skills/safe_deploy.go's package comment for the symlink threat
-// model it exists for.
-//
-// The ownership check is the part that is about a DIFFERENT threat. A symlink
-// makes the daemon write somewhere else and is refused outright by the walk; a
-// directory already created by the container engine at uid 0 is a perfectly
-// ordinary directory that the walk happily enters — the mkdir returns EEXIST,
-// the dispatch proceeds, and the job starts against a $HOME it cannot write
-// its credentials into. Nothing later in dispatch would notice. See
-// syncEmbeddedSkills' doc comment for why this is detected here rather than
-// prevented.
-//
-// Both the mkdir and the ownership read go through bindTargetOwnerUID (see its
-// doc comment and the seam note above it): one symlink-checked walk that ends
-// on a descriptor, and an fstat on that same descriptor. Splitting them into a
-// mkdir plus a follow-up stat by path would put a check-then-use gap back
-// exactly where this function is trying to remove one.
-//
-// The comparison is against the daemon's own uid (daemonUID), never a literal:
-// which uid runs the daemon differs between a bare `boid start`, the compose
-// deploy's in-image `boid` user, a developer machine and CI, and the property
-// that matters is "did I create this" rather than "is this uid 1000". A
-// consequence worth naming: a daemon that itself runs as uid 0 accepts an
-// engine-created uid 0 directory, correctly — such a daemon CAN chown it — even
-// though the uid-1000 harness still could not write there. That combination
-// (rootful daemon, non-root harness) is outside the deploy this project
-// supports; the check does not pretend to cover it.
-//
-// # Why the recovery below is a direct deletion rather than `workspace remove`
-//
-// This error's entire value is that it turns a permanently, silently broken
-// workspace HOME into one diagnosable failure. That value is only real if the
-// steps it names can actually be carried out, so the primary instruction is the
-// one that works everywhere: delete the offending directory with whatever
-// privileges its owner requires. Under rootless podman the owner is a host
-// subuid the daemon's own user owns the range of but cannot unlink as itself,
-// which is what `podman unshare` exists for; under rootful docker it is real
-// root, so `sudo`. The next dispatch then re-creates the directory as the
-// daemon (syncEmbeddedSkills runs on every dispatch — see its doc comment).
-//
-// Nothing of value is lost with it. Only this directory's own subtree goes,
-// leaving the rest of the workspace HOME — the toolchain init.sh installed,
-// everything outside the deleted path — untouched; and the harness demonstrably
-// never managed to write inside the deleted subtree, since being unable to
-// write there is the failure this error reports.
-//
-// `boid workspace remove <slug>` was the pre-review recommendation and is a bad
-// primary instruction on three independent counts, each verified against the
-// code rather than assumed:
-//
-//   - The `default` workspace cannot be removed at all, and it is the workspace
-//     every project without an explicit assignment dispatches into
-//     (normalizeWorkspaceSlug). Three layers reject the reserved slug before
-//     anything is deleted — cmd/workspace.go's runWorkspaceRemove, internal/
-//     api's ProjectAppService.RemoveWorkspace, and orchestrator.
-//     WorkspaceRepository.Remove — and internal/api/workspace_homes.go's
-//     deleteWorkspaceHome additionally short-circuits on the same slug, so even
-//     a caller that got past the row guard would not delete its home directory.
-//   - For any other workspace, home deletion is best-effort and merely
-//     REPORTED. api.WorkspaceHandler.Remove deletes the DB row first and keeps
-//     the response at 200 even when the subsequent os.RemoveAll fails, per
-//     WorkspaceRemoveResponse's documented "part-completed" contract. A
-//     foreign-owned directory inside the home — precisely the condition this
-//     error is about — is what makes that RemoveAll fail: unlinking the entries
-//     UNDER a uid 0 directory needs write permission on that directory, which
-//     the daemon's uid does not have (measured: RemoveAll over a non-writable
-//     directory with a child returns EACCES on the child's unlinkat; over an
-//     empty one it succeeds, since only the parent's permissions matter then).
-//     The engine-created case always has children, because it creates the whole
-//     missing bind-target path rather than just its leaf — 論点 b-2's measured
-//     .claude + .claude/skills pair. The outcome is the worst of both:
-//     the workspace definition is gone and the poisoned home is still there,
-//     now an orphan (ListWorkspaceHomeSizes reports it as such). Whether that
-//     happened is only visible in the CLI output line — `home dir deleted:` vs
-//     `warning: home dir delete failed` (formatWorkspaceRemoveResult).
-//   - Even on complete success it removes the workspace itself, re-pointing
-//     every project assigned to it at `default` (WorkspaceRepository.Remove's
-//     transaction). Recovering from that means recreating the workspace and
-//     re-assigning those projects, which is a great deal more than the operator
-//     asked for when all they needed was one directory gone.
-//
-// It stays in the message as a documented fallback with its caveats attached,
-// rather than being cut: it is genuinely the way out when the home is damaged
-// beyond this one directory. TestPrepareBindTarget_ForeignOwnerRecoveryIsAvailable
-// pins that pairing — mention it, and the caveats must come with it.
-//
-// The init.sh claim the pre-review text made is separately true but was
-// attached to the wrong route: deleting the home directory (by any means) takes
-// the .boid-workspace-home-id nonce with it, so workspaceHomeInitialized
-// refuses the surviving completion marker and the next dispatch re-runs init.sh
-// (see workspace_home.go, 論点b). That is why the direct-deletion route below
-// says the rest of the home survives — it deletes strictly less than the home.
-func prepareBindTarget(dir string) error {
-	ownerUID, err := bindTargetOwnerUID(dir)
-	if err != nil {
-		return fmt.Errorf("prepare skill bind target %q: %w", dir, err)
-	}
-	if ownerUID == daemonUID() {
-		return nil
-	}
-	return fmt.Errorf(
-		"prepare skill bind target %[1]q: このディレクトリの所有者が daemon (uid %[2]d) ではなく uid %[3]d になっている。"+
-			"考えられる原因は 2 つ: (a) 同じ workspace の並行 job がこのディレクトリを削除/rename し、"+
-			"bind target 不在のまま job container が起動したため container engine が uid 0 "+
-			"(rootless podman では host 側 subuid に写像される) で自動生成した、"+
-			"(b) job が直接この所有者に差し替えた。"+
-			"いずれの場合も daemon はこのディレクトリを chown で修復できず、"+
-			"このまま dispatch すると harness が ~/.claude/.credentials.json を保存できないまま走り、"+
-			"認証が毎回失われる。"+
-			"[復旧] 当該ディレクトリを所有者権限で削除する — rootless podman なら `podman unshare rm -rf %[1]q`、"+
-			"rootful docker なら `sudo rm -rf %[1]q`。次の dispatch が daemon 所有で作り直す。"+
-			"消えるのはこのディレクトリ配下だけなので workspace HOME の他の中身 (init.sh が入れた toolchain 等) は残り、"+
-			"配下に harness の認証情報も入っていない (書き込めないことがこの障害そのもの)。"+
-			"[非推奨: `boid workspace remove <slug>`] default workspace は予約 slug なので削除自体が拒否され、"+
-			"home ディレクトリの削除もスキップされるため、この復旧には使えない。"+
-			"他の workspace でも home の削除は best-effort で、所有者の違うディレクトリが残っていると削除に失敗し、"+
-			"workspace 定義 (DB) だけ消えて home が孤児として残る — 出力の `home dir deleted:` / "+
-			"`warning: home dir delete failed` で成否の確認が必須。"+
-			"削除に成功した場合も workspace 定義ごと消えるので、workspace を作り直して project を再 assign する必要がある",
-		dir, daemonUID(), ownerUID)
 }

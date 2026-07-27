@@ -2,12 +2,12 @@ package dispatcher
 
 import (
 	"context"
-	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/novshi-tech/boid/internal/dockerres"
 	"github.com/novshi-tech/boid/internal/orchestrator"
 	"github.com/novshi-tech/boid/internal/sandbox"
 	"github.com/novshi-tech/boid/internal/skills"
@@ -16,10 +16,10 @@ import (
 // This file holds the Dispatch-level wiring guards for the embedded-skills
 // half of docs/plans/workspace-home-volume-persistence.md 論点 e-2 (PR3):
 // proof that Runner.Dispatch materializes the embedded skill set under the
-// host-visible runtimes root — NOT into the workspace home, which PR6 turns
-// into a named volume the daemon cannot write to — that it prepares the
-// per-skill bind targets inside the workspace home, and that a failure of
-// either step fails the dispatch the same way an init.sh failure does
+// host-visible runtimes root — NOT into the workspace home, which PR6 turned
+// into a named volume the daemon cannot write to — that the per-skill bind
+// targets exist inside the workspace home by the time a job launches, and that
+// a materialize failure fails the dispatch the same way an init.sh failure does
 // (failJob + cleanup + error return).
 //
 // The pre-PR3 version of this file pinned the opposite of the first
@@ -99,24 +99,36 @@ func TestDispatch_SkillsSync_MaterializesUnderRuntimesRoot(t *testing.T) {
 	}
 }
 
-// TestDispatch_SkillsSync_CreatesPerSkillBindTargetsInWorkspaceHome pins the
-// other half of PR3: the daemon explicitly creates <home>/.claude and
-// <home>/.claude/skills/<name> for every embedded skill, so the engine never
-// gets to auto-create the intermediate ~/.claude as uid 0 when it realizes
-// the per-skill bind (論点 b-2's measured failure mode — a root-owned
-// ~/.claude means the harness can no longer write ~/.claude/.credentials.json).
+// TestDispatch_SkillsSync_CreatesPerSkillBindTargetsInWorkspaceHome pins that
+// a dispatch leaves <home>/.claude and <home>/.claude/skills/<name> in place
+// for every embedded skill, so the engine never gets to auto-create the
+// intermediate ~/.claude as uid 0 when it realizes the per-skill bind (論点
+// b-2's measured failure mode — a root-owned ~/.claude means the harness can no
+// longer write ~/.claude/.credentials.json).
+//
+// PR3 satisfied this with a daemon-side mkdir on every dispatch. PR6 satisfies
+// it from inside the init container instead, because the home is a named volume
+// the daemon cannot write to — so the assertion is unchanged and deliberately
+// says nothing about WHICH side created them: it is the property that has to
+// survive the move, and the point of keeping it here is that the move must not
+// quietly lose it.
 func TestDispatch_SkillsSync_CreatesPerSkillBindTargetsInWorkspaceHome(t *testing.T) {
 	setupWorkspaceHomeTestDirs(t)
 	root := t.TempDir()
 	runtimesDir := filepath.Join(root, "runtimes")
 
 	r := skillsSyncTestRunner(t, runtimesDir, "myws")
+	be, ok := r.Backend.(*gwFakeBackend)
+	if !ok {
+		t.Fatalf("test wiring: Runner.Backend is %T, want *gwFakeBackend", r.Backend)
+	}
 
 	if _, err := r.Dispatch(context.Background(), skillsSyncTestSpec(), nil); err != nil {
 		t.Fatalf("Dispatch: %v", err)
 	}
 
-	claudeDir := filepath.Join(root, "homes", "myws", ".claude")
+	homeDir := be.workspaceHomeDir(dockerres.WorkspaceHomeVolumeName(r.InstallID, "myws"))
+	claudeDir := filepath.Join(homeDir, ".claude")
 	if info, err := os.Stat(claudeDir); err != nil || !info.IsDir() {
 		t.Fatalf("stat %s: info=%v err=%v, want an existing directory", claudeDir, info, err)
 	}
@@ -255,275 +267,36 @@ func TestDispatch_SkillsMaterializeFails_MarksJobFailedAndCallsCleanup(t *testin
 		"not a directory")
 }
 
-// TestDispatch_SkillsBindTargetPrepFails_MarksJobFailedAndCallsCleanup pins
-// that the bind-target mkdir PR3 adds is held to the same fail-loud contract
-// as the materialize step. A dispatch that could not prepare
-// <home>/.claude/skills/<name> would otherwise hand the engine a missing
-// bind target and get a root-owned ~/.claude (論点 b-2), which shows up much
-// later as an unwritable ~/.claude/.credentials.json.
+// --- PR6: creating and verifying the bind targets both left this package ----
 //
-// Induced exactly the way the pre-PR3 sync-failure case was: a plain file at
-// <home>/.claude makes every mkdir underneath it fail with ENOTDIR.
+// PR3 had Runner.Dispatch mkdir the per-skill bind targets inside the workspace
+// home on every dispatch and verify, with an fstat, that the daemon owned each
+// one. PR6 turned the home into a docker named volume, which the daemon can
+// neither write to nor stat, so the five cases that used to live here
+// (SkillsBindTargetPrepFails / NotDaemonOwned / ForeignOwnerPerComponent /
+// ForeignOwnerRecoveryIsAvailable / OwnershipCheckAcceptsDaemonOwned) moved
+// rather than being dropped:
 //
-// PR5 changed WHEN this test has to plant that file. The init container's
-// builtin prelude now creates the same skeleton (workspaceHomeSkeletonDirs),
-// so on a FRESH workspace the blocker is hit there first and the dispatch
-// fails — loudly, but with the prelude's message rather than this one. The
-// per-dispatch bind-target step is what runs for an ALREADY-INITIALIZED home,
-// which is also the only state in which the condition it detects can arise
-// (a job of this workspace replacing ~/.claude after prep finished — see
-// syncEmbeddedSkills' doc comment on the window that is deliberately left
-// open). So the home is initialized first, and only then blocked.
-func TestDispatch_SkillsBindTargetPrepFails_MarksJobFailedAndCallsCleanup(t *testing.T) {
-	setupWorkspaceHomeTestDirs(t)
-	root := t.TempDir()
-	runtimesDir := filepath.Join(root, "runtimes")
-
-	r := skillsSyncTestRunner(t, runtimesDir, "")
-
-	// Initialize the home for real, so the next resolve short-circuits on the
-	// completion marker and the prelude does not run again.
-	homeDir, _, err := r.resolveWorkspaceHome(context.Background(), "")
-	if err != nil {
-		t.Fatalf("initialize the workspace home: %v", err)
-	}
-	claudeDir := filepath.Join(homeDir, ".claude")
-	if err := os.RemoveAll(claudeDir); err != nil {
-		t.Fatalf("remove the prepared .claude: %v", err)
-	}
-	if err := os.WriteFile(claudeDir, []byte("not a directory"), 0o644); err != nil {
-		t.Fatalf("write blocking file: %v", err)
-	}
-
-	assertDispatchFailsWithCleanup(t, r,
-		"prepare skill bind target",
-		claudeDir,
-		"not a directory")
-}
-
-// TestDispatch_SkillsBindTargetNotDaemonOwned_FailsDispatch pins the one
-// consequence of the bind-target TOCTOU that is NOT recoverable, and is
-// therefore the only part of it PR3 closes.
+//   - CREATION is the init container's builtin prelude, gated on a completion
+//     marker that now records the skeleton set — so a release that adds an
+//     embedded skill re-prepares the home instead of leaving the engine to
+//     auto-create the new bind target as uid 0. Pinned by
+//     TestResolveWorkspaceHome_SkeletonSetChanged_ReInitializes and
+//     TestResolveWorkspaceHome_MarkerRecordsTheVolumeIdentityAndSkeletonSet
+//     (workspace_home_volume_test.go), and by the prelude's own real-bash
+//     tests in workspace_init_test.go.
+//   - VERIFICATION is the job container's own runner, which checks
+//     sandbox.Spec.HomeSkeletonDirs before the harness starts. 論点 e-2 requires
+//     the check to sit outside whatever creates those directories; the runner
+//     also runs on every dispatch, AFTER the engine's auto-creation rather than
+//     before it, and as the very uid whose write access is in question. Pinned
+//     by internal/sandbox/runner's home_skeleton_linux_test.go, and the wiring
+//     from workspaceHomeSkeletonDirs into the spec by
+//     TestBuildSandboxSpec_HomeSkeletonDirs_* (sandbox_builder_test.go).
 //
-// The window itself stays open by decision (see syncEmbeddedSkills' doc
-// comment): a concurrent job of the same workspace holds the same workspace
-// HOME rw, so between this dispatch's mkdir and its container's launch that
-// job can rename or delete ~/.claude, and the engine then auto-creates the
-// missing bind-target path as uid 0. What that leaves behind is not a failed
-// job — it is a workspace HOME with a root-owned ~/.claude, which neither the
-// uid-1000 harness nor the daemon (uid 1000, or a rootless-podman host subuid
-// away from the engine's uid 0) can chown back. Every later dispatch against
-// that workspace then starts fine and silently fails to persist
-// ~/.claude/.credentials.json. Detecting the poisoned directory at the next
-// dispatch and refusing to run converts that permanent, silent breakage into
-// one loud, diagnosable failure.
-//
-// A test cannot chown a directory to a foreign uid without privileges, so the
-// comparison is faked from the daemon's side rather than the directory's: the
-// fstat still runs for real against a real directory the test process really
-// owns, and only "which uid the daemon believes it is" moves. That exercises
-// the same inequality the real case produces, and keeps the assertion free of
-// any hard-coded uid — the property is "not owned by this process", not "owned
-// by 0".
-func TestDispatch_SkillsBindTargetNotDaemonOwned_FailsDispatch(t *testing.T) {
-	setupWorkspaceHomeTestDirs(t)
-	root := t.TempDir()
-	runtimesDir := filepath.Join(root, "runtimes")
-
-	realUID := os.Getuid()
-	restore := daemonUID
-	daemonUID = func() int { return realUID + 1 }
-	t.Cleanup(func() { daemonUID = restore })
-
-	r := skillsSyncTestRunner(t, runtimesDir, "myws")
-
-	// The very first bind target prepared is <home>/.claude, so that is the
-	// path named in the error — pinning it proves the check runs before any
-	// deeper target is touched, not merely somewhere in the loop.
-	assertDispatchFailsWithCleanup(t, r,
-		filepath.Join(root, "homes", "myws", ".claude"),
-		"所有者",
-		fmt.Sprintf("uid %d", realUID),
-		"workspace HOME")
-}
-
-// poisonBindTargetOwner makes prepareBindTarget see exactly ONE directory —
-// the one at poisoned — as owned by somebody other than this daemon, for the
-// duration of t, and returns the foreign uid it will report.
-//
-// The real skills.MkdirAllNoSymlink still runs for every path, poisoned or
-// not: its mkdir really happens, and so does its fstat on the descriptor the
-// symlink-checked walk ended on. Only the uid ANSWER is rewritten, and only
-// for one path. What that reproduces is the condition a test cannot otherwise
-// produce at all — chown(2) to a foreign uid needs privileges no test has —
-// while leaving every other component of the same dispatch genuinely
-// daemon-owned, which is what makes "this component specifically is checked"
-// observable.
-//
-// It complements, rather than replaces, the daemonUID seam that
-// TestDispatch_SkillsBindTargetNotDaemonOwned_FailsDispatch uses above: that
-// one moves the DAEMON's side of the comparison against a real, really-fstat'ed
-// directory, which is what pins the comparison to this process's own uid rather
-// than a hard-coded 1000 (a hard-coded literal survives THIS seam, because a
-// test running as uid 1000 would still see the injected 1001 rejected). This
-// one moves the DIRECTORY's side per path, which is the only way to say which
-// component was checked. Neither axis alone covers both properties.
-func poisonBindTargetOwner(t *testing.T, poisoned string) int {
-	t.Helper()
-	realOwner := bindTargetOwnerUID
-	foreign := os.Getuid() + 1
-	bindTargetOwnerUID = func(dir string) (int, error) {
-		uid, err := realOwner(dir)
-		if err != nil || dir != poisoned {
-			return uid, err
-		}
-		return foreign, nil
-	}
-	t.Cleanup(func() { bindTargetOwnerUID = realOwner })
-	return foreign
-}
-
-// TestDispatch_SkillsBindTargetForeignOwner_FailsPerComponent pins that EVERY
-// component of the per-skill bind target path is individually ownership-
-// checked, not just the first one.
-//
-// This is the gap the single daemonUID-seam case above could not cover: that
-// seam moves the daemon's believed uid globally, so every component fails at
-// once and the dispatch reports the first — <home>/.claude. Deleting the
-// explicit prepareBindTarget call for <home>/.claude/skills, or the per-skill
-// loop's own check, left it green (verified by mutation). That mattered because the engine's auto-creation
-// of a missing bind target creates the WHOLE missing path as uid 0, not merely
-// its leaf (docs/plans/workspace-home-volume-persistence.md 論点 b-2), so any
-// component of it can be the poisoned one — and an unchecked component is a
-// silently unwritable ~/.claude for every later dispatch of that workspace.
-//
-// The leaf case deliberately poisons the LAST embedded skill, so the case also
-// fails if the loop stops early instead of covering every name.
-func TestDispatch_SkillsBindTargetForeignOwner_FailsPerComponent(t *testing.T) {
-	names := skills.EmbeddedSkillNames()
-	if len(names) == 0 {
-		t.Fatal("EmbeddedSkillNames() returned nothing; the leaf case below would be vacuous")
-	}
-
-	cases := []struct {
-		name string
-		// rel is the poisoned directory's path relative to the workspace home.
-		rel []string
-	}{
-		{name: "claude dir", rel: []string{".claude"}},
-		{name: "skills dir", rel: []string{".claude", "skills"}},
-		{name: "last skill leaf", rel: []string{".claude", "skills", names[len(names)-1]}},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			setupWorkspaceHomeTestDirs(t)
-			root := t.TempDir()
-			runtimesDir := filepath.Join(root, "runtimes")
-
-			poisoned := filepath.Join(append([]string{root, "homes", "myws"}, tc.rel...)...)
-			foreign := poisonBindTargetOwner(t, poisoned)
-
-			r := skillsSyncTestRunner(t, runtimesDir, "myws")
-
-			// %q, not the bare path: the leaf targets have the two directory
-			// targets as string PREFIXES, so a bare-path assertion for
-			// ".../.claude/skills" would also be satisfied by a failure at
-			// ".../.claude/skills/boid-task". The closing quote is what makes
-			// each case name exactly one component.
-			assertDispatchFailsWithCleanup(t, r,
-				"prepare skill bind target",
-				fmt.Sprintf("%q", poisoned),
-				"所有者",
-				fmt.Sprintf("uid %d", foreign))
-		})
-	}
-}
-
-// TestPrepareBindTarget_ForeignOwnerRecoveryIsAvailable pins that the recovery
-// this error hands the operator is one that actually exists.
-//
-// The message's whole value is that it converts a permanently, silently broken
-// workspace HOME into one diagnosable failure — which it only does if the steps
-// it names can be carried out. Its first version pointed at `boid workspace
-// remove <slug>` as the way out, and that instruction is unavailable or
-// incomplete on every path an operator can reach it from:
-//
-//   - `default` cannot be removed at all. Three layers reject the reserved
-//     slug before anything is deleted (cmd/workspace.go's runWorkspaceRemove,
-//     api.ProjectAppService.RemoveWorkspace, and
-//     orchestrator.WorkspaceRepository.Remove), and internal/api/
-//     workspace_homes.go's deleteWorkspaceHome skips the home directory for it
-//     explicitly on top of that.
-//   - For a non-default workspace, home deletion is best effort and reported,
-//     not enforced: WorkspaceHandler.Remove deletes the DB row FIRST and keeps
-//     the response 200 even when os.RemoveAll then fails — which is exactly
-//     what a foreign-owned child directory (the very condition this error is
-//     about) causes. The outcome is an orphaned home plus a vanished
-//     workspace.
-//   - Even on full success it removes the workspace itself, so the operator is
-//     left having to recreate it and re-assign its projects.
-//
-// The assertions are therefore: the message must name a directly executable
-// deletion of the offending directory, and if it mentions `workspace remove`
-// at all it must carry all three caveats. A rewrite that drops the suggestion
-// entirely stays green — the conditional is the point, since the requirement
-// is honesty about that route, not its presence.
-//
-// Same shape as internal/skills/deploy_test.go's
-// TestDeployAll_ErrorsDoNotNameACallerSpecificLocation: an error message with a
-// contract gets a test on the contract.
-func TestPrepareBindTarget_ForeignOwnerRecoveryIsAvailable(t *testing.T) {
-	dir := filepath.Join(t.TempDir(), ".claude")
-	foreign := poisonBindTargetOwner(t, dir)
-
-	err := prepareBindTarget(dir)
-	if err == nil {
-		t.Fatal("prepareBindTarget on a foreign-owned directory must fail")
-	}
-	msg := err.Error()
-
-	// The directly executable route: delete the offending directory with the
-	// privileges its owner requires. That one works on every workspace,
-	// default included, and touches nothing else in the home.
-	for _, want := range []string{
-		fmt.Sprintf("%q", dir),
-		fmt.Sprintf("uid %d", foreign),
-		"rm -rf",
-	} {
-		if !strings.Contains(msg, want) {
-			t.Errorf("error does not mention %q, so it does not spell out a recovery the operator can actually run; got: %s", want, msg)
-		}
-	}
-
-	if !strings.Contains(msg, "workspace remove") {
-		return
-	}
-	for _, want := range []struct{ token, why string }{
-		{orchestrator.DefaultWorkspaceSlug, "the reserved default workspace cannot be removed, and its home deletion is skipped outright"},
-		{"確認", "home deletion is best-effort: the DB row is removed first and the response stays 200 even when the directory survives"},
-		{"作り直", "a successful remove takes the workspace definition with it, so it has to be recreated and its projects re-assigned"},
-	} {
-		if !strings.Contains(msg, want.token) {
-			t.Errorf("error recommends `workspace remove` without mentioning %q — %s; got: %s", want.token, want.why, msg)
-		}
-	}
-}
-
-// TestDispatch_SkillsBindTargetOwnershipCheck_AcceptsDaemonOwned is the
-// negative control for the cases above: with neither seam moved, the very same
-// dispatch must succeed. Without it, a check that rejected *every* bind target
-// (an inverted comparison, say) would still make the failure cases pass.
-func TestDispatch_SkillsBindTargetOwnershipCheck_AcceptsDaemonOwned(t *testing.T) {
-	setupWorkspaceHomeTestDirs(t)
-	root := t.TempDir()
-	runtimesDir := filepath.Join(root, "runtimes")
-
-	r := skillsSyncTestRunner(t, runtimesDir, "myws")
-
-	if _, err := r.Dispatch(context.Background(), skillsSyncTestSpec(), nil); err != nil {
-		t.Fatalf("Dispatch against bind targets the daemon itself created: %v", err)
-	}
-}
+// The recovery instructions the daemon-side error carried moved with the check
+// (see runner.verifyHomeSkeleton), including the part PR3's codex review
+// established: `boid workspace remove` is not a usable primary instruction.
 
 // assertDispatchFailsWithCleanup runs one dispatch that is expected to fail
 // during the embedded-skills step and asserts the shared failure contract: no
@@ -578,5 +351,46 @@ func assertDispatchFailsWithCleanup(t *testing.T, r *Runner, wantErrParts ...str
 		if !strings.Contains(jobs[0].Output, want) {
 			t.Errorf("failed job Output does not mention %q, so the failure reaches the DB row stripped of its diagnosis; got: %s", want, jobs[0].Output)
 		}
+	}
+}
+
+// TestDispatch_HomeSkeletonDirs_ReachTheLaunchedSpec is the Dispatch-level half
+// of the seam TestBuildSandboxSpec_HomeSkeletonDirs_* covers from the builder
+// side (PR6). BuildSandboxSpec derives the field from the SandboxRuntimeInfo it
+// is handed, so a Dispatch that stopped filling WorkspaceHomeVolume or
+// SkillsSourceDir would silently produce a spec with nothing to verify — and
+// the job container's check would then pass on every home, including a poisoned
+// one, with nothing anywhere reporting it.
+//
+// The expected set is the bind-target ANCESTORS only. The per-skill leaves are
+// excluded by homeSkeletonDirs because this same spec covers each of them with
+// a read-only bind, which is what an os.Stat inside the container would then be
+// reading — see that function for the exclusion and what it leaves exposed.
+func TestDispatch_HomeSkeletonDirs_ReachTheLaunchedSpec(t *testing.T) {
+	setupWorkspaceHomeTestDirs(t)
+	runtimesDir := filepath.Join(t.TempDir(), "runtimes")
+
+	r := skillsSyncTestRunner(t, runtimesDir, "myws")
+	be, ok := r.Backend.(*gwFakeBackend)
+	if !ok {
+		t.Fatalf("test wiring: Runner.Backend is %T, want *gwFakeBackend", r.Backend)
+	}
+
+	if _, err := r.Dispatch(context.Background(), skillsSyncTestSpec(), nil); err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+	if len(be.launched) != 1 {
+		t.Fatalf("backend received %d Launch calls, want exactly 1", len(be.launched))
+	}
+
+	launched := be.launched[0]
+	if launched.HomeSkeletonRoot != hostHomeDir() {
+		t.Errorf("the launched sandbox.Spec carries HomeSkeletonRoot = %q, want the sandbox $HOME %q",
+			launched.HomeSkeletonRoot, hostHomeDir())
+	}
+	want := []string{".claude", filepath.Join(".claude", "skills")}
+	if !equalStringSets(launched.HomeSkeletonDirs, want) {
+		t.Errorf("the launched sandbox.Spec carries HomeSkeletonDirs = %v, want %v — the job container's skeleton check has nothing to verify without them",
+			launched.HomeSkeletonDirs, want)
 	}
 }

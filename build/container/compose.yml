@@ -121,12 +121,20 @@
 # HOME, the per-job clone staging area — dispatcher.PrepareJobCheckout) now
 # resolves under filepath.Dir(cfg.SocketPath) instead — BOID_RUNTIME_DIR,
 # the host BIND mount immediately below, which a DooD sibling container's
-# host-side bind source CAN reach. See that function's own doc comment for
-# the remaining trade-off this does NOT resolve (BOID_RUNTIME_DIR is host
-# XDG_RUNTIME_DIR, typically tmpfs — workspace HOME under container backend
-# does not survive a host reboot the way it does for the userns backend;
-# a docker-managed named volume with per-workspace Subpath mounts is the
-# likely eventual fix, tracked as a follow-up, not blocking this PR).
+# host-side bind source CAN reach.
+#
+# The trade-off this note used to describe as unresolved — BOID_RUNTIME_DIR is
+# host XDG_RUNTIME_DIR, typically tmpfs, so the workspace HOME did not survive
+# a host reboot — was RESOLVED by PR6 of
+# docs/plans/workspace-home-volume-persistence.md (2026-07-27). The workspace
+# HOME is no longer derived from this root at all: it is a per-workspace docker
+# named volume, boid-ws-home-<installID8>-<slug>, created and mounted by the
+# daemon. Note the mechanism is NOT the per-workspace `Subpath` mount this note
+# guessed at — podman 4.9.3 accepts that field and silently ignores it, which
+# would have collapsed every workspace onto one shared volume root (論点 a of
+# that doc has the measurement). Everything else listed above (TLS material,
+# spec/state json, transcript spool, the per-job clone staging area) is still
+# host-visible and still needs this bind mount.
 #
 # External listener wire status (broker / git gateway / egress proxy are
 # backed by real listeners on `boid_internal` now that [Blocker 2, PR7

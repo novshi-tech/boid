@@ -2,7 +2,6 @@ package dispatcher
 
 import (
 	"context"
-	"encoding/hex"
 	"fmt"
 	"io"
 	"os"
@@ -13,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/novshi-tech/boid/internal/dockerres"
 	"github.com/novshi-tech/boid/internal/orchestrator"
 )
 
@@ -131,26 +131,6 @@ func TestWorkspaceHomesDir_FallsBackToXDGDataHome(t *testing.T) {
 	}
 }
 
-// TestRunnerWorkspaceHomesDir_MatchesFreeFunction pins that the *Runner
-// method is now a pure delegation to the exported free function — no
-// behavior drift from the PR5 export refactor.
-func TestRunnerWorkspaceHomesDir_MatchesFreeFunction(t *testing.T) {
-	setupWorkspaceHomeTestDirs(t)
-	r := &Runner{RuntimesDir: filepath.Join(t.TempDir(), "data", "runtimes")}
-
-	got, err := r.workspaceHomesDir()
-	if err != nil {
-		t.Fatalf("r.workspaceHomesDir: %v", err)
-	}
-	want, err := WorkspaceHomesDir(r.RuntimesDir)
-	if err != nil {
-		t.Fatalf("WorkspaceHomesDir: %v", err)
-	}
-	if got != want {
-		t.Errorf("r.workspaceHomesDir() = %q, want %q (WorkspaceHomesDir(r.RuntimesDir))", got, want)
-	}
-}
-
 // --- 0-b. workspaceHomeMetaDir (docs/plans/workspace-home-volume-persistence.md
 // 論点b, PR2) — marker/lock moved off the (soon-to-be-a-named-volume) homes/
 // root onto the daemon's OWN persistent data root. ---
@@ -238,14 +218,8 @@ func TestWire_DataHomeDir_ReachesMarkerAndLockOnDisk(t *testing.T) {
 		t.Fatalf("Wire dropped DataHomeDir: got %q, want %q", r.DataHomeDir, dataHome)
 	}
 
-	homeDir, _, err := r.resolveWorkspaceHome(context.Background(), "myws")
-	if err != nil {
+	if _, _, _, err := r.resolveWorkspaceHome(context.Background(), "myws"); err != nil {
 		t.Fatalf("resolveWorkspaceHome: %v", err)
-	}
-
-	wantHome := filepath.Join(filepath.Dir(runtimesDir), "homes", "myws")
-	if homeDir != wantHome {
-		t.Errorf("homeDir = %q, want %q (still derived from RuntimesDir — PR2 moves marker/lock only)", homeDir, wantHome)
 	}
 
 	metaDir := filepath.Join(dataHome, "homes-meta")
@@ -255,15 +229,13 @@ func TestWire_DataHomeDir_ReachesMarkerAndLockOnDisk(t *testing.T) {
 		}
 	}
 
-	// ...and nothing marker/lock-shaped was left behind next to the homes.
-	entries, err := os.ReadDir(filepath.Dir(homeDir))
-	if err != nil {
-		t.Fatalf("read homes dir: %v", err)
-	}
-	for _, e := range entries {
-		if e.Name() != "myws" {
-			t.Errorf("unexpected entry %q under homes/ — marker/lock must no longer live beside workspace homes", e.Name())
-		}
+	// ...and nothing was left behind under the (now unused) homes/ root. PR6
+	// moved the home itself into a named volume, so that root should not be
+	// touched at all — a daemon still mkdir'ing it there would be the pre-PR6
+	// tmpfs layout quietly surviving the cutover.
+	homesRoot := filepath.Join(filepath.Dir(runtimesDir), "homes")
+	if _, statErr := os.Stat(homesRoot); !os.IsNotExist(statErr) {
+		t.Errorf("the RuntimesDir-derived homes root %s exists; PR6 neither creates nor uses it", homesRoot)
 	}
 }
 
@@ -271,19 +243,18 @@ func TestWire_DataHomeDir_ReachesMarkerAndLockOnDisk(t *testing.T) {
 
 func TestResolveWorkspaceHome_NoScript_PassesThrough(t *testing.T) {
 	dataDir, _ := setupWorkspaceHomeTestDirs(t)
-	r := newWorkspaceHomeTestRunner(t)
+	r, be := newWorkspaceHomeTestRunnerWithBackend(t)
 
-	homeDir, _, err := r.resolveWorkspaceHome(context.Background(), "myws")
+	vol, _, _, err := r.resolveWorkspaceHome(context.Background(), "myws")
 	if err != nil {
 		t.Fatalf("resolveWorkspaceHome: %v", err)
 	}
 
-	wantHome := filepath.Join(dataDir, "boid", "homes", "myws")
-	if homeDir != wantHome {
-		t.Errorf("homeDir = %q, want %q", homeDir, wantHome)
+	if want := dockerres.WorkspaceHomeVolumeName(r.InstallID, "myws"); vol != want {
+		t.Errorf("workspace home = %q, want the named volume %q", vol, want)
 	}
-	if info, statErr := os.Stat(homeDir); statErr != nil || !info.IsDir() {
-		t.Fatalf("home dir not created: stat err=%v", statErr)
+	if info, statErr := os.Stat(be.dirFor(vol)); statErr != nil || !info.IsDir() {
+		t.Fatalf("home volume not created: stat err=%v", statErr)
 	}
 
 	markerPath := filepath.Join(dataDir, "boid", "homes-meta", "myws.init.json")
@@ -309,10 +280,11 @@ func TestResolveWorkspaceHome_FirstRun_ExecutesScriptWithExpectedEnv(t *testing.
 	writeInitScript(t, configDir, "myws", "#!/bin/bash\nenv > \"$BOID_WORKSPACE_HOME/env-dump\"\n")
 
 	r := newWorkspaceHomeTestRunner(t)
-	homeDir, _, err := r.resolveWorkspaceHome(context.Background(), "myws")
+	vol, _, _, err := r.resolveWorkspaceHome(context.Background(), "myws")
 	if err != nil {
 		t.Fatalf("resolveWorkspaceHome: %v", err)
 	}
+	homeDir := workspaceHomeDirOf(t, r, vol)
 
 	dump, err := os.ReadFile(filepath.Join(homeDir, "env-dump"))
 	if err != nil {
@@ -353,15 +325,15 @@ func TestResolveWorkspaceHome_UnchangedScript_RunsOnlyOnce(t *testing.T) {
 	writeInitScript(t, configDir, "myws", "#!/bin/bash\necho x >> \"$BOID_WORKSPACE_HOME/counter\"\n")
 
 	r := newWorkspaceHomeTestRunner(t)
-	if _, _, err := r.resolveWorkspaceHome(context.Background(), "myws"); err != nil {
+	if _, _, _, err := r.resolveWorkspaceHome(context.Background(), "myws"); err != nil {
 		t.Fatalf("first call: %v", err)
 	}
-	homeDir, _, err := r.resolveWorkspaceHome(context.Background(), "myws")
+	vol, _, _, err := r.resolveWorkspaceHome(context.Background(), "myws")
 	if err != nil {
 		t.Fatalf("second call: %v", err)
 	}
 
-	if lines := countLines(t, filepath.Join(homeDir, "counter")); lines != 1 {
+	if lines := countLines(t, filepath.Join(workspaceHomeDirOf(t, r, vol), "counter")); lines != 1 {
 		t.Errorf("counter lines = %d, want 1 (script must not re-run for an unchanged script)", lines)
 	}
 }
@@ -373,19 +345,19 @@ func TestResolveWorkspaceHome_ScriptContentChanged_ReRuns(t *testing.T) {
 	writeInitScript(t, configDir, "myws", "#!/bin/bash\necho x >> \"$BOID_WORKSPACE_HOME/counter\"\n")
 
 	r := newWorkspaceHomeTestRunner(t)
-	if _, _, err := r.resolveWorkspaceHome(context.Background(), "myws"); err != nil {
+	if _, _, _, err := r.resolveWorkspaceHome(context.Background(), "myws"); err != nil {
 		t.Fatalf("first call: %v", err)
 	}
 
 	// Same observable effect, different content -> different hash.
 	writeInitScript(t, configDir, "myws", "#!/bin/bash\n# v2\necho x >> \"$BOID_WORKSPACE_HOME/counter\"\n")
 
-	homeDir, _, err := r.resolveWorkspaceHome(context.Background(), "myws")
+	vol, _, _, err := r.resolveWorkspaceHome(context.Background(), "myws")
 	if err != nil {
 		t.Fatalf("second call: %v", err)
 	}
 
-	if lines := countLines(t, filepath.Join(homeDir, "counter")); lines != 2 {
+	if lines := countLines(t, filepath.Join(workspaceHomeDirOf(t, r, vol), "counter")); lines != 2 {
 		t.Errorf("counter lines = %d, want 2 (script content change must trigger a re-run)", lines)
 	}
 }
@@ -409,7 +381,7 @@ func TestResolveWorkspaceHome_ConcurrentCalls_RunExactlyOnce(t *testing.T) {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			home, _, err := r.resolveWorkspaceHome(context.Background(), "myws")
+			home, _, _, err := r.resolveWorkspaceHome(context.Background(), "myws")
 			homes[i] = home
 			errs[i] = err
 		}(i)
@@ -421,14 +393,14 @@ func TestResolveWorkspaceHome_ConcurrentCalls_RunExactlyOnce(t *testing.T) {
 			t.Errorf("goroutine %d: %v", i, err)
 		}
 		if homes[i] != homes[0] {
-			t.Errorf("goroutine %d homeDir = %q, want %q (same as goroutine 0)", i, homes[i], homes[0])
+			t.Errorf("goroutine %d home volume = %q, want %q (same as goroutine 0)", i, homes[i], homes[0])
 		}
 	}
 	if t.Failed() {
 		return
 	}
 
-	if lines := countLines(t, filepath.Join(homes[0], "counter")); lines != 1 {
+	if lines := countLines(t, filepath.Join(workspaceHomeDirOf(t, r, homes[0]), "counter")); lines != 1 {
 		t.Errorf("counter lines = %d, want exactly 1 across %d concurrent calls", lines, n)
 	}
 }
@@ -440,7 +412,7 @@ func TestResolveWorkspaceHome_ScriptFails_ReturnsErrorNoMarkerThenRetries(t *tes
 	writeInitScript(t, configDir, "myws", "#!/bin/bash\necho boom >&2\nexit 1\n")
 
 	r := newWorkspaceHomeTestRunner(t)
-	if _, _, err := r.resolveWorkspaceHome(context.Background(), "myws"); err == nil {
+	if _, _, _, err := r.resolveWorkspaceHome(context.Background(), "myws"); err == nil {
 		t.Fatal("expected an error from a failing init script")
 	}
 
@@ -451,13 +423,13 @@ func TestResolveWorkspaceHome_ScriptFails_ReturnsErrorNoMarkerThenRetries(t *tes
 
 	// Still failing -> still an error on retry (no silent "already tried"
 	// caching of the failure).
-	if _, _, err := r.resolveWorkspaceHome(context.Background(), "myws"); err == nil {
+	if _, _, _, err := r.resolveWorkspaceHome(context.Background(), "myws"); err == nil {
 		t.Fatal("expected an error on retry while the script still fails")
 	}
 
 	// Fix the script; the next call must succeed and write the marker.
 	writeInitScript(t, configDir, "myws", "#!/bin/bash\nexit 0\n")
-	if _, _, err := r.resolveWorkspaceHome(context.Background(), "myws"); err != nil {
+	if _, _, _, err := r.resolveWorkspaceHome(context.Background(), "myws"); err != nil {
 		t.Fatalf("expected success after fixing the script: %v", err)
 	}
 	if _, ok, err := readWorkspaceHomeMarker(markerPath); err != nil || !ok {
@@ -468,16 +440,19 @@ func TestResolveWorkspaceHome_ScriptFails_ReturnsErrorNoMarkerThenRetries(t *tes
 // --- 7. workspace slug 正規化 ("" -> default) ---
 
 func TestResolveWorkspaceHome_EmptyWorkspaceID_UsesDefaultSlug(t *testing.T) {
-	dataDir, _ := setupWorkspaceHomeTestDirs(t)
+	setupWorkspaceHomeTestDirs(t)
 	r := newWorkspaceHomeTestRunner(t)
 
-	homeDir, _, err := r.resolveWorkspaceHome(context.Background(), "")
+	vol, slug, _, err := r.resolveWorkspaceHome(context.Background(), "")
 	if err != nil {
 		t.Fatalf("resolveWorkspaceHome: %v", err)
 	}
-	want := filepath.Join(dataDir, "boid", "homes", orchestrator.DefaultWorkspaceSlug)
-	if homeDir != want {
-		t.Errorf("homeDir = %q, want %q", homeDir, want)
+	if slug != orchestrator.DefaultWorkspaceSlug {
+		t.Errorf("slug = %q, want %q", slug, orchestrator.DefaultWorkspaceSlug)
+	}
+	want := dockerres.WorkspaceHomeVolumeName(r.InstallID, orchestrator.DefaultWorkspaceSlug)
+	if vol != want {
+		t.Errorf("home volume = %q, want %q", vol, want)
 	}
 }
 
@@ -488,7 +463,7 @@ func TestResolveWorkspaceHome_InvalidSlug_ReturnsError(t *testing.T) {
 	r := newWorkspaceHomeTestRunner(t)
 
 	for _, bad := range []string{"../etc", "a b", "Has/Slash", "UPPERCASE", strings.Repeat("x", 65)} {
-		if _, _, err := r.resolveWorkspaceHome(context.Background(), bad); err == nil {
+		if _, _, _, err := r.resolveWorkspaceHome(context.Background(), bad); err == nil {
 			t.Errorf("resolveWorkspaceHome(%q) = nil error, want error", bad)
 		}
 	}
@@ -548,10 +523,11 @@ func TestResolveWorkspaceHome_TOCTOU_MarkerRecordsExecutedBytesNotLaterRewrite(t
 	}
 
 	r := newWorkspaceHomeTestRunner(t)
-	homeDir, _, err := r.resolveWorkspaceHome(context.Background(), "myws")
+	vol, _, _, err := r.resolveWorkspaceHome(context.Background(), "myws")
 	if err != nil {
 		t.Fatalf("first call: %v", err)
 	}
+	homeDir := workspaceHomeDirOf(t, r, vol)
 	if lines := countLines(t, filepath.Join(homeDir, "counter")); lines != 1 {
 		t.Fatalf("counter lines after first call = %d, want 1", lines)
 	}
@@ -574,7 +550,7 @@ func TestResolveWorkspaceHome_TOCTOU_MarkerRecordsExecutedBytesNotLaterRewrite(t
 		t.Fatalf("init.sh on disk after first run = %q, want v2 %q", onDisk, v2)
 	}
 
-	if _, _, err := r.resolveWorkspaceHome(context.Background(), "myws"); err != nil {
+	if _, _, _, err := r.resolveWorkspaceHome(context.Background(), "myws"); err != nil {
 		t.Fatalf("second call: %v", err)
 	}
 	if lines := countLines(t, filepath.Join(homeDir, "counter")); lines != 2 {
@@ -646,7 +622,7 @@ func TestResolveWorkspaceHome_TOCTOU_ExecutesTheSnapshotReadUnderTheLock(t *test
 	}
 	done := make(chan result, 1)
 	go func() {
-		home, _, err := r.resolveWorkspaceHome(context.Background(), "myws")
+		home, _, _, err := r.resolveWorkspaceHome(context.Background(), "myws")
 		done <- result{home, err}
 	}()
 
@@ -697,7 +673,7 @@ func TestResolveWorkspaceHome_TOCTOU_ExecutesTheSnapshotReadUnderTheLock(t *test
 		t.Fatalf("resolveWorkspaceHome: %v", res.err)
 	}
 
-	executed, err := os.ReadFile(filepath.Join(res.home, "executed"))
+	executed, err := os.ReadFile(filepath.Join(workspaceHomeDirOf(t, r, res.home), "executed"))
 	if err != nil {
 		t.Fatalf("read the executed-versions log: %v", err)
 	}
@@ -746,7 +722,7 @@ func TestResolveWorkspaceHome_TOCTOU_ConcurrentCallsWithMidFlightRewrite(t *test
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			home, _, err := r.resolveWorkspaceHome(context.Background(), "myws")
+			home, _, _, err := r.resolveWorkspaceHome(context.Background(), "myws")
 			homes[i] = home
 			errs[i] = err
 		}(i)
@@ -772,7 +748,7 @@ func TestResolveWorkspaceHome_TOCTOU_ConcurrentCallsWithMidFlightRewrite(t *test
 		t.Fatalf("read marker: ok=%v err=%v", ok, err)
 	}
 
-	raw, err := os.ReadFile(filepath.Join(homes[0], "executed"))
+	raw, err := os.ReadFile(filepath.Join(workspaceHomeDirOf(t, r, homes[0]), "executed"))
 	if err != nil {
 		t.Fatalf("read the executed-versions log: %v", err)
 	}
@@ -814,12 +790,12 @@ func TestResolveWorkspaceHome_TOCTOU_NoHostSideCopyOfInitShSurvivesTheRun(t *tes
 		"#!/bin/bash\nprintf '%s\\n' \"$0\" > \"$BOID_WORKSPACE_HOME/executed-from\"\n")
 
 	r := newWorkspaceHomeTestRunner(t)
-	homeDir, _, err := r.resolveWorkspaceHome(context.Background(), "myws")
+	vol, _, _, err := r.resolveWorkspaceHome(context.Background(), "myws")
 	if err != nil {
 		t.Fatalf("resolveWorkspaceHome: %v", err)
 	}
 
-	pathBytes, err := os.ReadFile(filepath.Join(homeDir, "executed-from"))
+	pathBytes, err := os.ReadFile(filepath.Join(workspaceHomeDirOf(t, r, vol), "executed-from"))
 	if err != nil {
 		t.Fatalf("read the path the script reported for itself: %v", err)
 	}
@@ -869,10 +845,9 @@ func TestResolveWorkspaceHome_InitRunsInAContainerNotOnTheDaemon(t *testing.T) {
 			if tc.script != "" {
 				writeInitScript(t, configDir, "myws", tc.script)
 			}
-			be := newBashWorkspaceInitBackend(t)
-			r := &Runner{Backend: be}
+			r, be := newWorkspaceHomeTestRunnerWithBackend(t)
 
-			homeDir, _, err := r.resolveWorkspaceHome(context.Background(), "myws")
+			vol, _, _, err := r.resolveWorkspaceHome(context.Background(), "myws")
 			if err != nil {
 				t.Fatalf("resolveWorkspaceHome: %v", err)
 			}
@@ -883,18 +858,21 @@ func TestResolveWorkspaceHome_InitRunsInAContainerNotOnTheDaemon(t *testing.T) {
 			if req.Slug != "myws" {
 				t.Errorf("request slug = %q, want %q", req.Slug, "myws")
 			}
-			if req.HomeSource != homeDir {
-				t.Errorf("request home source = %q, want the resolved home %q", req.HomeSource, homeDir)
+			if req.HomeSource != vol {
+				t.Errorf("request home source = %q, want the resolved home volume %q", req.HomeSource, vol)
 			}
 			if req.HomeTarget != hostHomeDir() {
 				t.Errorf("request home target = %q, want %q (the path a job sees its $HOME at)", req.HomeTarget, hostHomeDir())
 			}
-			if req.Nonce == "" {
-				t.Error("request carries no home identity token")
+			if req.HomeID == "" {
+				t.Error("request carries no home volume identity")
+			}
+			if !equalStringSets(req.SkeletonDirs, workspaceHomeSkeletonDirs()) {
+				t.Errorf("request SkeletonDirs = %v, want %v", req.SkeletonDirs, workspaceHomeSkeletonDirs())
 			}
 			// The prep half landed regardless of whether there was a script.
 			for _, rel := range workspaceHomeSkeletonDirs() {
-				if _, statErr := os.Stat(filepath.Join(homeDir, rel)); statErr != nil {
+				if _, statErr := os.Stat(filepath.Join(be.dirFor(vol), rel)); statErr != nil {
 					t.Errorf("skeleton dir %q missing after init: %v", rel, statErr)
 				}
 			}
@@ -924,7 +902,7 @@ func TestResolveWorkspaceHome_InitEnvIsTheContainerContract(t *testing.T) {
 	be := newBashWorkspaceInitBackend(t)
 	r := &Runner{Backend: be}
 
-	if _, _, err := r.resolveWorkspaceHome(context.Background(), "myws"); err != nil {
+	if _, _, _, err := r.resolveWorkspaceHome(context.Background(), "myws"); err != nil {
 		t.Fatalf("resolveWorkspaceHome: %v", err)
 	}
 	got := be.lastRequest(t).Env
@@ -945,16 +923,21 @@ func TestResolveWorkspaceHome_InitEnvIsTheContainerContract(t *testing.T) {
 	}
 }
 
-// --- 12-16. marker と実体の identity 突合 (nonce) ---
+// --- 12-16. marker と実体の identity 突合 ---
 //
 // docs/plans/workspace-home-volume-persistence.md 論点b. PR2 moved the
 // completion marker into the daemon's own persistent data root while the
-// workspace home itself stayed derived from RuntimesDir. Those are two
-// different lifetimes now (the marker survives a host reboot inside the
-// boid_state volume; the home does not, since BOID_RUNTIME_DIR is tmpfs), so
-// "the marker says initialized" stopped implying "the home is initialized".
-// A nonce written into the home and recorded in the marker is what re-ties
-// them together.
+// workspace home lived somewhere else entirely — first a tmpfs-backed
+// directory, and as of PR6 a docker named volume. Those are two independent
+// lifetimes, so "the marker says initialized" does not imply "the home it
+// describes still exists". A random identity minted per home incarnation and
+// recorded in the marker is what re-ties them together; PR6 moved it from a
+// file inside the home onto the volume's own label, because the daemon can no
+// longer read anything inside the home (workspaceHomeMarker.HomeID).
+//
+// The volume-specific cases — a deleted-and-recreated volume, an unlabelled
+// one, the identity's format and per-incarnation freshness — live in
+// workspace_home_volume_test.go.
 
 // splitRootRunner returns a Runner wired the way production wires one after
 // PR2: the marker/lock root (DataHomeDir) and the workspace home root
@@ -972,42 +955,46 @@ func splitRootRunner(t *testing.T) *Runner {
 
 // TestResolveWorkspaceHome_HomeWipedWhileMarkerSurvives_ReRunsInit is the
 // regression guard for the failure mode 論点b predicts: the workspace home
-// vanishes (host reboot clears BOID_RUNTIME_DIR's tmpfs, a stray `docker
-// volume rm`, a reap misfire) while the marker in the daemon's own persistent
-// root survives, so the next dispatch skips init.sh and hands the job an
-// EMPTY $HOME. The error that surfaces from there is the adapter's "CLI not
-// found" (internal/adapters/claude/run.go), which points at an unconfigured
-// init.sh rather than at the real cause.
+// vanishes (a stray `docker volume rm`, a reap misfire, a half-completed
+// workspace remove) while the marker in the daemon's own persistent root
+// survives, so the next dispatch skips init.sh and hands the job an EMPTY
+// $HOME. The error that surfaces from there is the adapter's "CLI not found"
+// (internal/adapters/claude/run.go), which points at an unconfigured init.sh
+// rather than at the real cause.
+//
+// This is the end-to-end statement over the SPLIT ROOTS specifically — the
+// marker's root and the home's are unrelated here, so the wipe cannot touch
+// the marker by accident. workspace_home_volume_test.go states the same
+// property from the volume's side.
 func TestResolveWorkspaceHome_HomeWipedWhileMarkerSurvives_ReRunsInit(t *testing.T) {
 	_, configDir := setupWorkspaceHomeTestDirs(t)
 	writeInitScript(t, configDir, "myws", "#!/bin/bash\necho x >> \"$BOID_WORKSPACE_HOME/counter\"\n")
 	r := splitRootRunner(t)
 
-	homeDir, _, err := r.resolveWorkspaceHome(context.Background(), "myws")
+	vol, _, _, err := r.resolveWorkspaceHome(context.Background(), "myws")
 	if err != nil {
 		t.Fatalf("first call: %v", err)
 	}
-	if lines := countLines(t, filepath.Join(homeDir, "counter")); lines != 1 {
+	be := r.Backend.(*bashWorkspaceInitBackend)
+	if lines := countLines(t, filepath.Join(be.dirFor(vol), "counter")); lines != 1 {
 		t.Fatalf("counter lines after first call = %d, want 1", lines)
 	}
 
-	// Host reboot: the home's root is tmpfs, the marker's root is not.
-	if err := os.RemoveAll(homeDir); err != nil {
-		t.Fatalf("wipe home dir: %v", err)
-	}
+	// The home volume goes; the marker's root is untouched by that.
+	be.removeVolume(t, vol)
 	markerPath := workspaceHomeMarkerPath(filepath.Join(r.DataHomeDir, "homes-meta"), "myws")
 	if _, ok, err := readWorkspaceHomeMarker(markerPath); err != nil || !ok {
 		t.Fatalf("test setup bug: the marker must have survived the wipe: ok=%v err=%v", ok, err)
 	}
 
-	homeDir2, _, err := r.resolveWorkspaceHome(context.Background(), "myws")
+	vol2, _, _, err := r.resolveWorkspaceHome(context.Background(), "myws")
 	if err != nil {
 		t.Fatalf("second call: %v", err)
 	}
-	if homeDir2 != homeDir {
-		t.Fatalf("homeDir changed across calls: %q -> %q", homeDir, homeDir2)
+	if vol2 != vol {
+		t.Fatalf("home volume name changed across calls: %q -> %q", vol, vol2)
 	}
-	counter := filepath.Join(homeDir2, "counter")
+	counter := filepath.Join(be.dirFor(vol2), "counter")
 	if _, statErr := os.Stat(counter); statErr != nil {
 		t.Fatalf("init.sh was skipped for a wiped home: %v — the surviving marker must not be trusted on its own (docs/plans/workspace-home-volume-persistence.md 論点b)", statErr)
 	}
@@ -1015,525 +1002,13 @@ func TestResolveWorkspaceHome_HomeWipedWhileMarkerSurvives_ReRunsInit(t *testing
 		t.Errorf("counter lines after re-init = %d, want 1 (exactly one re-run against the fresh home)", lines)
 	}
 
-	// ...and the re-init must be one-shot: a third call sees a home whose
-	// nonce now matches the (rewritten) marker again and skips.
-	if _, _, err := r.resolveWorkspaceHome(context.Background(), "myws"); err != nil {
+	// ...and the re-init must be one-shot: a third call sees a volume whose
+	// identity now matches the (rewritten) marker again and skips.
+	if _, _, _, err := r.resolveWorkspaceHome(context.Background(), "myws"); err != nil {
 		t.Fatalf("third call: %v", err)
 	}
 	if lines := countLines(t, counter); lines != 1 {
 		t.Errorf("counter lines after third call = %d, want 1 (the identity check must re-settle, not re-run on every dispatch)", lines)
-	}
-}
-
-// TestResolveWorkspaceHome_NoScript_HomeWipedWhileMarkerSurvives_ReSeedsNonce
-// covers the pass-through class: a workspace with no init.sh still gets a
-// marker written (docs/plans/home-workspace-volume.md「script が無い workspace
-// は素通し (マーカーだけ打つ)」), so it needs a nonce for exactly the same
-// reason — otherwise the identity check simply does not apply to that class
-// and the desync window stays open for it.
-func TestResolveWorkspaceHome_NoScript_HomeWipedWhileMarkerSurvives_ReSeedsNonce(t *testing.T) {
-	setupWorkspaceHomeTestDirs(t)
-	r := splitRootRunner(t)
-
-	homeDir, _, err := r.resolveWorkspaceHome(context.Background(), "myws")
-	if err != nil {
-		t.Fatalf("first call: %v", err)
-	}
-	noncePath := filepath.Join(homeDir, workspaceHomeNonceFileName)
-	first, err := os.ReadFile(noncePath)
-	if err != nil {
-		t.Fatalf("a script-less workspace must still get a nonce written into its home: %v", err)
-	}
-	if len(first) == 0 {
-		t.Fatal("nonce file is empty")
-	}
-
-	if err := os.RemoveAll(homeDir); err != nil {
-		t.Fatalf("wipe home dir: %v", err)
-	}
-	if _, _, err := r.resolveWorkspaceHome(context.Background(), "myws"); err != nil {
-		t.Fatalf("second call: %v", err)
-	}
-	second, err := os.ReadFile(noncePath)
-	if err != nil {
-		t.Fatalf("nonce not re-seeded after the home was wiped: %v", err)
-	}
-	if string(second) == string(first) {
-		t.Error("re-seeded nonce equals the pre-wipe one — a fresh init must mint a fresh identity, otherwise a home restored from an old backup would masquerade as the current one")
-	}
-}
-
-// TestResolveWorkspaceHome_MarkerWithoutHomeID_ReInitializes pins the
-// fail-safe direction for markers written by a pre-nonce build: they carry no
-// identity to compare against, so they must be treated as "unknown", not as
-// "verified". The home here is fully populated and even has a nonce file —
-// only the marker's record of it is missing — so a build that skipped on the
-// hash alone would pass this test.
-func TestResolveWorkspaceHome_MarkerWithoutHomeID_ReInitializes(t *testing.T) {
-	_, configDir := setupWorkspaceHomeTestDirs(t)
-	script := "#!/bin/bash\necho x >> \"$BOID_WORKSPACE_HOME/counter\"\n"
-	writeInitScript(t, configDir, "myws", script)
-	r := splitRootRunner(t)
-
-	homesDir, err := r.workspaceHomesDir()
-	if err != nil {
-		t.Fatalf("workspaceHomesDir: %v", err)
-	}
-	metaDir, err := r.workspaceHomeMetaDir()
-	if err != nil {
-		t.Fatalf("workspaceHomeMetaDir: %v", err)
-	}
-	homeDir := filepath.Join(homesDir, "myws")
-	if err := os.MkdirAll(homeDir, 0o700); err != nil {
-		t.Fatalf("mkdir home: %v", err)
-	}
-	if err := os.MkdirAll(metaDir, 0o700); err != nil {
-		t.Fatalf("mkdir meta: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(homeDir, workspaceHomeNonceFileName), []byte("some-old-nonce"), 0o600); err != nil {
-		t.Fatalf("seed nonce: %v", err)
-	}
-	// A pre-nonce daemon's marker: correct hash, no identity field at all.
-	if err := writeWorkspaceHomeMarker(workspaceHomeMarkerPath(metaDir, "myws"), workspaceHomeMarker{
-		ScriptSHA256: scriptSHA256Hex([]byte(script), true),
-		CompletedAt:  time.Now().UTC(),
-	}); err != nil {
-		t.Fatalf("write legacy marker: %v", err)
-	}
-
-	if _, _, err := r.resolveWorkspaceHome(context.Background(), "myws"); err != nil {
-		t.Fatalf("resolveWorkspaceHome: %v", err)
-	}
-	if _, statErr := os.Stat(filepath.Join(homeDir, "counter")); statErr != nil {
-		t.Fatalf("init.sh was skipped on a marker with no home_id: %v — a marker that records no identity cannot vouch for the home (fail-safe: re-init)", statErr)
-	}
-}
-
-// TestResolveWorkspaceHome_NonceTamperedInsideHome_ReInitializes pins the
-// direction a sandboxed job CAN push this in. The nonce lives inside the
-// workspace home, which a job gets an rw mount of, so a job can delete or
-// rewrite it — but it cannot read the marker's copy, so the only reachable
-// outcome is a redundant re-init of a contractually idempotent script, never
-// a spurious skip. Pinning it keeps that asymmetry from silently inverting.
-func TestResolveWorkspaceHome_NonceTamperedInsideHome_ReInitializes(t *testing.T) {
-	_, configDir := setupWorkspaceHomeTestDirs(t)
-	writeInitScript(t, configDir, "myws", "#!/bin/bash\necho x >> \"$BOID_WORKSPACE_HOME/counter\"\n")
-	r := splitRootRunner(t)
-
-	homeDir, _, err := r.resolveWorkspaceHome(context.Background(), "myws")
-	if err != nil {
-		t.Fatalf("first call: %v", err)
-	}
-	counter := filepath.Join(homeDir, "counter")
-	if lines := countLines(t, counter); lines != 1 {
-		t.Fatalf("counter lines after first call = %d, want 1", lines)
-	}
-
-	if err := os.WriteFile(filepath.Join(homeDir, workspaceHomeNonceFileName), []byte("forged-by-a-job"), 0o600); err != nil {
-		t.Fatalf("tamper with nonce: %v", err)
-	}
-	if _, _, err := r.resolveWorkspaceHome(context.Background(), "myws"); err != nil {
-		t.Fatalf("second call: %v", err)
-	}
-	if lines := countLines(t, counter); lines != 2 {
-		t.Errorf("counter lines after tampering = %d, want 2 (a nonce that does not match the marker must force a re-init)", lines)
-	}
-}
-
-// TestResolveWorkspaceHome_NonceIsPerHomeAndUnpredictable pins what the
-// identity check leans on: every init mints a FRESH random token, so the
-// value identifies one incarnation of one home rather than the home's name.
-//
-// "Differs between two workspaces" and "is long" are not enough on their own
-// — a deterministic derivation such as sha256(slug) satisfies both, and the
-// pre-review version of this test accepted exactly that (verified by
-// mutation). What rules it out is re-minting the SAME slug: a derived value
-// would come back identical, and then a home restored from an old backup of
-// that workspace — or one a job re-stamped with a value it recorded earlier —
-// would present a matching identity for a home that is not the one the
-// marker describes.
-func TestResolveWorkspaceHome_NonceIsPerHomeAndUnpredictable(t *testing.T) {
-	setupWorkspaceHomeTestDirs(t)
-	r := splitRootRunner(t)
-
-	read := func(slug string) (homeDir, nonce string) {
-		t.Helper()
-		homeDir, _, err := r.resolveWorkspaceHome(context.Background(), slug)
-		if err != nil {
-			t.Fatalf("resolveWorkspaceHome(%q): %v", slug, err)
-		}
-		data, err := os.ReadFile(filepath.Join(homeDir, workspaceHomeNonceFileName))
-		if err != nil {
-			t.Fatalf("read nonce for %q: %v", slug, err)
-		}
-		return homeDir, string(data)
-	}
-
-	homeA, a := read("ws-a")
-	_, b := read("ws-b")
-	if a == b {
-		t.Errorf("both workspaces got the same nonce %q — the identity must be per-home", a)
-	}
-	// newWorkspaceHomeNonce's stated format: 32 bytes, hex-encoded.
-	if want := 2 * 32; len(a) != want {
-		t.Errorf("nonce %q is %d chars, want %d (32 bytes hex-encoded)", a, len(a), want)
-	}
-	if _, err := hex.DecodeString(a); err != nil {
-		t.Errorf("nonce %q is not hex: %v", a, err)
-	}
-
-	metaDir, err := r.workspaceHomeMetaDir()
-	if err != nil {
-		t.Fatalf("workspaceHomeMetaDir: %v", err)
-	}
-	marker, ok, err := readWorkspaceHomeMarker(workspaceHomeMarkerPath(metaDir, "ws-a"))
-	if err != nil || !ok {
-		t.Fatalf("read marker: ok=%v err=%v", ok, err)
-	}
-	if marker.HomeID != a {
-		t.Errorf("marker.HomeID = %q, want the nonce written into the home %q — the two copies are what the identity check compares", marker.HomeID, a)
-	}
-
-	// Re-mint the same workspace: wipe the home so the next call re-inits.
-	if err := os.RemoveAll(homeA); err != nil {
-		t.Fatalf("wipe ws-a's home: %v", err)
-	}
-	_, a2 := read("ws-a")
-	if a2 == a {
-		t.Errorf("re-initializing ws-a produced the same nonce %q — the token must identify the incarnation of the home, not the workspace slug (a value derived from the slug, or any other fixed input, is not usable here)", a)
-	}
-}
-
-// --- 17-b. nonce 読み取りの安全性 (codex review 2 巡目, Blocker) ---
-//
-// The nonce is the ONE file in this mechanism that a sandboxed job can write
-// to, and the daemon reads it on every dispatch. So the read itself is part
-// of the attack surface: before this hardening it was a bare os.ReadFile,
-// which follows symlinks, happily opens a FIFO (blocking the daemon
-// forever, wedging every later dispatch for every workspace that goes
-// through the same code path) and grows its buffer to whatever the file
-// yields (a symlink to /dev/zero reads until OOM). Both outcomes hit the
-// daemon — the trusted side — so a single job could take out unrelated
-// tasks, which is well outside the "worst case is a redundant re-init"
-// contract the nonce is documented to have.
-
-// readNonceWithin runs readWorkspaceHomeNonce(homeDir) in a goroutine and
-// fails the test if it has not returned within d, instead of deadlocking.
-// Required because the exact regression under test — a nonce replaced by a
-// FIFO — makes an unguarded read block forever, which would turn a red run
-// into `go test`'s 10-minute panic dump rather than a legible failure.
-func readNonceWithin(t *testing.T, homeDir string, d time.Duration) (string, bool, error) {
-	t.Helper()
-	type result struct {
-		value  string
-		exists bool
-		err    error
-	}
-	ch := make(chan result, 1)
-	go func() {
-		v, ok, err := readWorkspaceHomeNonce(homeDir)
-		ch <- result{v, ok, err}
-	}()
-	select {
-	case r := <-ch:
-		return r.value, r.exists, r.err
-	case <-time.After(d):
-		t.Fatalf("readWorkspaceHomeNonce(%q) did not return within %s — the daemon must never block on a file a sandboxed job controls", homeDir, d)
-		return "", false, nil
-	}
-}
-
-// resolveWorkspaceHomeWithin is readNonceWithin's whole-call equivalent, for
-// the two end-to-end guards below: what actually matters is that the next
-// DISPATCH is not wedged, not merely that one helper returns.
-func resolveWorkspaceHomeWithin(t *testing.T, r *Runner, slug string, d time.Duration) (string, error) {
-	t.Helper()
-	type result struct {
-		home string
-		err  error
-	}
-	ch := make(chan result, 1)
-	go func() {
-		home, _, err := r.resolveWorkspaceHome(context.Background(), slug)
-		ch <- result{home, err}
-	}()
-	select {
-	case res := <-ch:
-		return res.home, res.err
-	case <-time.After(d):
-		t.Fatalf("resolveWorkspaceHome(%q) did not return within %s — a job must not be able to wedge the next dispatch by tampering with its own $HOME", slug, d)
-		return "", nil
-	}
-}
-
-// elide shortens a value for a failure message. One of the rejections under
-// test is "this file is megabytes long", and dumping the whole thing into
-// the test log makes a red run unreadable.
-func elide(s string) string {
-	const max = 64
-	if len(s) <= max {
-		return fmt.Sprintf("%q", s)
-	}
-	return fmt.Sprintf("%q...(%d bytes total)", s[:max], len(s))
-}
-
-// TestReadWorkspaceHomeNonce_RejectsUnsafeFiles pins the read-side contract
-// file-shape by file-shape: only a small, regular, non-symlinked file is
-// accepted; everything else is reported as unreadable, which
-// workspaceHomeInitialized turns into a re-init (the fail-safe direction).
-func TestReadWorkspaceHomeNonce_RejectsUnsafeFiles(t *testing.T) {
-	const goodNonce = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
-
-	cases := []struct {
-		name       string
-		prepare    func(t *testing.T, homeDir, noncePath string)
-		wantValue  string
-		wantExists bool
-		wantErr    bool
-	}{
-		{
-			name: "regular file is read, trailing newline trimmed",
-			prepare: func(t *testing.T, _, noncePath string) {
-				if err := os.WriteFile(noncePath, []byte(goodNonce+"\n"), 0o600); err != nil {
-					t.Fatalf("write nonce: %v", err)
-				}
-			},
-			wantValue:  goodNonce,
-			wantExists: true,
-		},
-		{
-			name:    "absent file is not an error",
-			prepare: func(t *testing.T, _, _ string) {},
-		},
-		{
-			name: "symlink is not followed",
-			prepare: func(t *testing.T, _, noncePath string) {
-				target := filepath.Join(t.TempDir(), "outside-the-home")
-				if err := os.WriteFile(target, []byte(goodNonce), 0o600); err != nil {
-					t.Fatalf("write symlink target: %v", err)
-				}
-				if err := os.Symlink(target, noncePath); err != nil {
-					t.Fatalf("symlink nonce: %v", err)
-				}
-			},
-			wantErr: true,
-		},
-		{
-			name: "fifo is refused instead of blocking",
-			prepare: func(t *testing.T, _, noncePath string) {
-				if err := syscall.Mkfifo(noncePath, 0o600); err != nil {
-					t.Fatalf("mkfifo nonce: %v", err)
-				}
-			},
-			wantErr: true,
-		},
-		{
-			name: "directory is refused",
-			prepare: func(t *testing.T, _, noncePath string) {
-				if err := os.Mkdir(noncePath, 0o700); err != nil {
-					t.Fatalf("mkdir nonce: %v", err)
-				}
-			},
-			wantErr: true,
-		},
-		{
-			name: "oversized regular file is refused instead of being slurped",
-			prepare: func(t *testing.T, _, noncePath string) {
-				big := make([]byte, 4<<20)
-				for i := range big {
-					big[i] = 'a'
-				}
-				if err := os.WriteFile(noncePath, big, 0o600); err != nil {
-					t.Fatalf("write oversized nonce: %v", err)
-				}
-			},
-			wantErr: true,
-		},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			homeDir := t.TempDir()
-			tc.prepare(t, homeDir, workspaceHomeNoncePath(homeDir))
-
-			value, exists, err := readNonceWithin(t, homeDir, 10*time.Second)
-			if tc.wantErr {
-				if err == nil {
-					t.Fatalf("readWorkspaceHomeNonce = (%s, %v, nil), want a non-nil error so the caller re-inits", elide(value), exists)
-				}
-				if exists {
-					t.Errorf("readWorkspaceHomeNonce reported exists=true alongside an error; a rejected file must not look like a usable identity")
-				}
-				if value != "" {
-					t.Errorf("readWorkspaceHomeNonce returned value %s alongside an error, want \"\"", elide(value))
-				}
-				return
-			}
-			if err != nil {
-				t.Fatalf("readWorkspaceHomeNonce: %v", err)
-			}
-			if exists != tc.wantExists {
-				t.Errorf("exists = %v, want %v", exists, tc.wantExists)
-			}
-			if value != tc.wantValue {
-				t.Errorf("value = %q, want %q", value, tc.wantValue)
-			}
-		})
-	}
-}
-
-// TestResolveWorkspaceHome_NonceReplacedByFifo_DoesNotWedgeNextDispatch is
-// the end-to-end statement of the same Blocker: a job that leaves a FIFO
-// behind where its nonce used to be must cost one extra init.sh run, not the
-// daemon's ability to dispatch anything at all. An unguarded os.ReadFile
-// blocks in open(2) until some process opens the FIFO for writing — which,
-// after the job's container is gone, never happens.
-func TestResolveWorkspaceHome_NonceReplacedByFifo_DoesNotWedgeNextDispatch(t *testing.T) {
-	_, configDir := setupWorkspaceHomeTestDirs(t)
-	writeInitScript(t, configDir, "myws", "#!/bin/bash\necho x >> \"$BOID_WORKSPACE_HOME/counter\"\n")
-	r := splitRootRunner(t)
-
-	homeDir, _, err := r.resolveWorkspaceHome(context.Background(), "myws")
-	if err != nil {
-		t.Fatalf("first call: %v", err)
-	}
-	counter := filepath.Join(homeDir, "counter")
-	if lines := countLines(t, counter); lines != 1 {
-		t.Fatalf("counter lines after first call = %d, want 1", lines)
-	}
-
-	noncePath := workspaceHomeNoncePath(homeDir)
-	if err := os.Remove(noncePath); err != nil {
-		t.Fatalf("remove nonce: %v", err)
-	}
-	if err := syscall.Mkfifo(noncePath, 0o600); err != nil {
-		t.Fatalf("mkfifo over the nonce path: %v", err)
-	}
-
-	if _, err := resolveWorkspaceHomeWithin(t, r, "myws", 10*time.Second); err != nil {
-		t.Fatalf("second call: %v", err)
-	}
-	if lines := countLines(t, counter); lines != 2 {
-		t.Errorf("counter lines = %d, want 2 (an unreadable nonce must force exactly one re-init)", lines)
-	}
-	info, err := os.Lstat(noncePath)
-	if err != nil {
-		t.Fatalf("lstat nonce after re-init: %v", err)
-	}
-	if !info.Mode().IsRegular() {
-		t.Errorf("nonce is still %s after re-init, want a regular file (the re-init must replace the tampered entry)", info.Mode())
-	}
-
-	// ...and the workspace settles again rather than re-initializing forever.
-	if _, err := resolveWorkspaceHomeWithin(t, r, "myws", 10*time.Second); err != nil {
-		t.Fatalf("third call: %v", err)
-	}
-	if lines := countLines(t, counter); lines != 2 {
-		t.Errorf("counter lines after third call = %d, want 2 (the recovery is one-shot)", lines)
-	}
-}
-
-// TestResolveWorkspaceHome_NonceReplacedByDirectory_RecoversInOneReInit is
-// the case the read-side hardening alone does not cover (codex review round 3,
-// Major). Refusing to READ a directory is only half the recovery: the re-init
-// it triggers then has to be able to PUT a regular file back at that path,
-// and os.Rename onto an existing directory fails with EISDIR no matter what
-// the source is. Without the write-side fix the workspace wedges — every
-// subsequent dispatch re-runs init.sh, fails at the rename, and leaves the
-// directory in place to do it all again — which breaks PR2's declared
-// contract that the worst outcome of a tampered identity file is exactly one
-// extra idempotent init run.
-func TestResolveWorkspaceHome_NonceReplacedByDirectory_RecoversInOneReInit(t *testing.T) {
-	_, configDir := setupWorkspaceHomeTestDirs(t)
-	writeInitScript(t, configDir, "myws", "#!/bin/bash\necho x >> \"$BOID_WORKSPACE_HOME/counter\"\n")
-	r := splitRootRunner(t)
-
-	homeDir, _, err := r.resolveWorkspaceHome(context.Background(), "myws")
-	if err != nil {
-		t.Fatalf("first call: %v", err)
-	}
-	counter := filepath.Join(homeDir, "counter")
-	if lines := countLines(t, counter); lines != 1 {
-		t.Fatalf("counter lines after first call = %d, want 1", lines)
-	}
-
-	noncePath := workspaceHomeNoncePath(homeDir)
-	if err := os.Remove(noncePath); err != nil {
-		t.Fatalf("remove nonce: %v", err)
-	}
-	// Non-empty, so a plain os.Remove on the write side would not be enough
-	// either — a sandboxed job is under no obligation to leave it empty.
-	if err := os.MkdirAll(filepath.Join(noncePath, "decoy"), 0o700); err != nil {
-		t.Fatalf("mkdir over the nonce path: %v", err)
-	}
-
-	if _, err := resolveWorkspaceHomeWithin(t, r, "myws", 10*time.Second); err != nil {
-		t.Fatalf("second call: %v — a directory at the identity path must not fail the dispatch", err)
-	}
-	if lines := countLines(t, counter); lines != 2 {
-		t.Errorf("counter lines = %d, want 2 (a directory at the nonce path must force exactly one re-init)", lines)
-	}
-	info, err := os.Lstat(noncePath)
-	if err != nil {
-		t.Fatalf("lstat nonce after re-init: %v", err)
-	}
-	if !info.Mode().IsRegular() {
-		t.Errorf("nonce is still %s after re-init, want a regular file", info.Mode())
-	}
-
-	// ...and the workspace settles rather than re-initializing forever.
-	if _, err := resolveWorkspaceHomeWithin(t, r, "myws", 10*time.Second); err != nil {
-		t.Fatalf("third call: %v", err)
-	}
-	if lines := countLines(t, counter); lines != 2 {
-		t.Errorf("counter lines after third call = %d, want 2 (the recovery is one-shot)", lines)
-	}
-}
-
-// TestResolveWorkspaceHome_NonceReplacedBySymlink_NotFollowed pins the
-// no-symlink half where it is actually load-bearing rather than merely
-// hygienic: the symlink here points at a file holding the CORRECT nonce
-// value, so a read that follows it observes a match and SKIPS init. The
-// value is unguessable from inside a sandbox, so this is not a practical
-// forgery — it is the construction that makes "we do not follow the symlink"
-// the only reason the test can pass, instead of "the tampered content
-// happened not to match anyway", which is what the other tamper tests in
-// this file already cover.
-func TestResolveWorkspaceHome_NonceReplacedBySymlink_NotFollowed(t *testing.T) {
-	_, configDir := setupWorkspaceHomeTestDirs(t)
-	writeInitScript(t, configDir, "myws", "#!/bin/bash\necho x >> \"$BOID_WORKSPACE_HOME/counter\"\n")
-	r := splitRootRunner(t)
-
-	homeDir, _, err := r.resolveWorkspaceHome(context.Background(), "myws")
-	if err != nil {
-		t.Fatalf("first call: %v", err)
-	}
-	counter := filepath.Join(homeDir, "counter")
-	if lines := countLines(t, counter); lines != 1 {
-		t.Fatalf("counter lines after first call = %d, want 1", lines)
-	}
-
-	noncePath := workspaceHomeNoncePath(homeDir)
-	real, err := os.ReadFile(noncePath)
-	if err != nil {
-		t.Fatalf("read nonce: %v", err)
-	}
-	stash := filepath.Join(t.TempDir(), "stashed-nonce")
-	if err := os.WriteFile(stash, real, 0o600); err != nil {
-		t.Fatalf("stash nonce: %v", err)
-	}
-	if err := os.Remove(noncePath); err != nil {
-		t.Fatalf("remove nonce: %v", err)
-	}
-	if err := os.Symlink(stash, noncePath); err != nil {
-		t.Fatalf("symlink nonce: %v", err)
-	}
-
-	if _, err := resolveWorkspaceHomeWithin(t, r, "myws", 10*time.Second); err != nil {
-		t.Fatalf("second call: %v", err)
-	}
-	if lines := countLines(t, counter); lines != 2 {
-		t.Errorf("counter lines = %d, want 2 (the identity file must be read as a file, never followed as a symlink — a followed symlink here yields the matching value and skips init)", lines)
 	}
 }
 
@@ -1546,28 +1021,31 @@ func TestResolveWorkspaceHome_NonceReplacedBySymlink_NotFollowed(t *testing.T) {
 // means exactly one extra init.sh run on the first dispatch after the
 // upgrade, then steady state again.
 //
-// The legacy marker planted here is deliberately a COMPLETE one — current
-// script hash, plus a home_id matching a nonce file seeded into the home — so
-// it would satisfy every skip condition the current code has if the current
-// code were reading that path. Without that, this test would be satisfied by
-// the nonce check alone and would stop saying anything about the location.
+// The legacy marker planted here is deliberately as COMPLETE as that era could
+// make it — current script hash, plus a home_id matching a nonce file seeded
+// into the old home directory — so it would satisfy that era's every skip
+// condition if the current code were reading that path. PR6 additionally moved
+// the home itself out of this directory, so the test now pins two things at
+// once: the old marker is not read, and the old home directory is not touched
+// (PR8's migration CLI has to be able to read it).
 func TestResolveWorkspaceHome_LegacyMarkerBesideHomes_NotReadNotDeleted(t *testing.T) {
 	_, configDir := setupWorkspaceHomeTestDirs(t)
 	script := "#!/bin/bash\necho x >> \"$BOID_WORKSPACE_HOME/counter\"\n"
 	writeInitScript(t, configDir, "myws", script)
 	r := splitRootRunner(t)
+	be := r.Backend.(*bashWorkspaceInitBackend)
 
-	homesDir, err := r.workspaceHomesDir()
+	homesDir, err := WorkspaceHomesDir(r.RuntimesDir)
 	if err != nil {
-		t.Fatalf("workspaceHomesDir: %v", err)
+		t.Fatalf("WorkspaceHomesDir: %v", err)
 	}
-	homeDir := filepath.Join(homesDir, "myws")
-	if err := os.MkdirAll(homeDir, 0o700); err != nil {
-		t.Fatalf("mkdir home: %v", err)
+	legacyHomeDir := filepath.Join(homesDir, "myws")
+	if err := os.MkdirAll(legacyHomeDir, 0o700); err != nil {
+		t.Fatalf("mkdir legacy home: %v", err)
 	}
 	const legacyNonce = "legacy-nonce-value"
-	if err := os.WriteFile(filepath.Join(homeDir, workspaceHomeNonceFileName), []byte(legacyNonce), 0o600); err != nil {
-		t.Fatalf("seed nonce: %v", err)
+	if err := os.WriteFile(filepath.Join(legacyHomeDir, ".boid-workspace-home-id"), []byte(legacyNonce), 0o600); err != nil {
+		t.Fatalf("seed legacy nonce: %v", err)
 	}
 	legacyMarkerPath := workspaceHomeMarkerPath(homesDir, "myws")
 	if err := writeWorkspaceHomeMarker(legacyMarkerPath, workspaceHomeMarker{
@@ -1582,10 +1060,11 @@ func TestResolveWorkspaceHome_LegacyMarkerBesideHomes_NotReadNotDeleted(t *testi
 		t.Fatalf("write legacy lock: %v", err)
 	}
 
-	if _, _, err := r.resolveWorkspaceHome(context.Background(), "myws"); err != nil {
+	vol, _, _, err := r.resolveWorkspaceHome(context.Background(), "myws")
+	if err != nil {
 		t.Fatalf("first call: %v", err)
 	}
-	counter := filepath.Join(homeDir, "counter")
+	counter := filepath.Join(be.dirFor(vol), "counter")
 	if _, statErr := os.Stat(counter); statErr != nil {
 		t.Fatalf("init.sh was skipped: %v — a marker in the pre-PR2 location must not be read", statErr)
 	}
@@ -1594,7 +1073,7 @@ func TestResolveWorkspaceHome_LegacyMarkerBesideHomes_NotReadNotDeleted(t *testi
 	}
 
 	// Steady state: the second call reads the NEW marker and skips.
-	if _, _, err := r.resolveWorkspaceHome(context.Background(), "myws"); err != nil {
+	if _, _, _, err := r.resolveWorkspaceHome(context.Background(), "myws"); err != nil {
 		t.Fatalf("second call: %v", err)
 	}
 	if lines := countLines(t, counter); lines != 1 {
@@ -1623,6 +1102,11 @@ func TestResolveWorkspaceHome_LegacyMarkerBesideHomes_NotReadNotDeleted(t *testi
 	if _, statErr := os.Stat(legacyLockPath); statErr != nil {
 		t.Errorf("legacy lock file was deleted: %v", statErr)
 	}
+	// ...including the pre-PR6 home directory itself, which PR8's migration
+	// CLI is the one that gets to read it.
+	if _, statErr := os.Stat(filepath.Join(legacyHomeDir, ".boid-workspace-home-id")); statErr != nil {
+		t.Errorf("the pre-PR6 home directory was disturbed: %v", statErr)
+	}
 }
 
 // --- 18. 実行環境の世代 (PR5 codex round 2, Major 1) ---
@@ -1638,27 +1122,34 @@ func TestResolveWorkspaceHome_LegacyMarkerBesideHomes_NotReadNotDeleted(t *testi
 // one field under test.
 func seedInitializedWorkspaceHome(t *testing.T, r *Runner, slug, script string, marker workspaceHomeMarker) (homeDir, markerPath string) {
 	t.Helper()
-	homesDir, err := r.workspaceHomesDir()
-	if err != nil {
-		t.Fatalf("workspaceHomesDir: %v", err)
+	be, ok := r.Backend.(*bashWorkspaceInitBackend)
+	if !ok {
+		t.Fatalf("runner backend is %T, not the modelled-volume test backend", r.Backend)
 	}
 	metaDir, err := r.workspaceHomeMetaDir()
 	if err != nil {
 		t.Fatalf("workspaceHomeMetaDir: %v", err)
 	}
-	homeDir = filepath.Join(homesDir, slug)
-	if err := os.MkdirAll(homeDir, 0o700); err != nil {
-		t.Fatalf("mkdir home: %v", err)
-	}
 	if err := os.MkdirAll(metaDir, 0o700); err != nil {
 		t.Fatalf("mkdir meta: %v", err)
 	}
-	const nonce = "seeded-home-identity"
-	if err := os.WriteFile(filepath.Join(homeDir, workspaceHomeNonceFileName), []byte(nonce), 0o600); err != nil {
-		t.Fatalf("seed nonce: %v", err)
+	// The volume is created through the backend, so it carries a real identity
+	// label — the marker below records THAT value. Seeding a made-up identity
+	// instead would make every one of these tests pass on the identity check
+	// alone, and they would stop saying anything about the field under test.
+	volume := dockerres.WorkspaceHomeVolumeName(r.InstallID, slug)
+	homeID, err := be.EnsureWorkspaceHomeVolume(context.Background(), WorkspaceHomeVolumeRequest{
+		Slug: slug, Name: volume, CandidateID: "seeded-home-identity",
+	})
+	if err != nil {
+		t.Fatalf("seed home volume: %v", err)
 	}
+	homeDir = be.dirFor(volume)
 	marker.ScriptSHA256 = scriptSHA256Hex([]byte(script), true)
-	marker.HomeID = nonce
+	marker.HomeID = homeID
+	if marker.SkeletonDirs == nil {
+		marker.SkeletonDirs = workspaceHomeSkeletonDirs()
+	}
 	marker.CompletedAt = time.Now().UTC()
 	markerPath = workspaceHomeMarkerPath(metaDir, slug)
 	if err := writeWorkspaceHomeMarker(markerPath, marker); err != nil {
@@ -1693,7 +1184,7 @@ func TestResolveWorkspaceHome_MarkerFromAnOlderExecutionGeneration_ReInitializes
 	// field at all (the zero value here is what unmarshalling one produces).
 	homeDir, _ := seedInitializedWorkspaceHome(t, r, "myws", script, workspaceHomeMarker{})
 
-	if _, _, err := r.resolveWorkspaceHome(context.Background(), "myws"); err != nil {
+	if _, _, _, err := r.resolveWorkspaceHome(context.Background(), "myws"); err != nil {
 		t.Fatalf("first call: %v", err)
 	}
 	counter := filepath.Join(homeDir, "counter")
@@ -1707,7 +1198,7 @@ func TestResolveWorkspaceHome_MarkerFromAnOlderExecutionGeneration_ReInitializes
 	// One-shot: the rewritten marker records the current generation, so the
 	// next dispatch skips. A re-init on EVERY dispatch would be a far worse
 	// regression than the one this fixes.
-	if _, _, err := r.resolveWorkspaceHome(context.Background(), "myws"); err != nil {
+	if _, _, _, err := r.resolveWorkspaceHome(context.Background(), "myws"); err != nil {
 		t.Fatalf("second call: %v", err)
 	}
 	if lines := countLines(t, counter); lines != 1 {
@@ -1729,7 +1220,7 @@ func TestResolveWorkspaceHome_MarkerRecordsTheCurrentExecutionGeneration(t *test
 	writeInitScript(t, configDir, "myws", "#!/bin/bash\nexit 0\n")
 	r := splitRootRunner(t)
 
-	if _, _, err := r.resolveWorkspaceHome(context.Background(), "myws"); err != nil {
+	if _, _, _, err := r.resolveWorkspaceHome(context.Background(), "myws"); err != nil {
 		t.Fatalf("resolveWorkspaceHome: %v", err)
 	}
 	metaDir, err := r.workspaceHomeMetaDir()
@@ -1763,7 +1254,7 @@ func TestResolveWorkspaceHome_MarkerFromANewerExecutionGeneration_ReInitializes(
 		InitGeneration: workspaceHomeInitGeneration + 1,
 	})
 
-	if _, _, err := r.resolveWorkspaceHome(context.Background(), "myws"); err != nil {
+	if _, _, _, err := r.resolveWorkspaceHome(context.Background(), "myws"); err != nil {
 		t.Fatalf("resolveWorkspaceHome: %v", err)
 	}
 	if _, statErr := os.Stat(filepath.Join(homeDir, "counter")); statErr != nil {

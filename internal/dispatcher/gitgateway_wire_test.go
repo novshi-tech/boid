@@ -3,6 +3,7 @@ package dispatcher
 import (
 	"context"
 	"fmt"
+	"os"
 	"strings"
 	"syscall"
 	"testing"
@@ -386,12 +387,44 @@ type gwFakeBackend struct {
 	// workspace_skills_sync_dispatch_test.go, the case this field was added
 	// for.
 	launched []sandbox.Spec
+
+	// launchOpts records the backend.LaunchOptions of every Launch call, in
+	// step with launched. The spec alone cannot witness the whole of what
+	// Dispatch resolved: LaunchOptions carries the fields the sandbox.Spec has
+	// no room for — the raw and normalized workspace, and the workspace HOME
+	// volume's IDENTITY, which the spec expresses only as a mount source (the
+	// volume's name, which says nothing about which incarnation of it this
+	// dispatch resolved).
+	launchOpts []backend.LaunchOptions
+
+	// homes is the modelled volume store shared by the two
+	// WorkspaceInitExecutor methods below (see bashWorkspaceInitBackend, which
+	// this delegates to so a Dispatch through this fake leaves the home in the
+	// state production leaves it in).
+	homes *bashWorkspaceInitBackend
 }
 
 var _ backend.SandboxBackend = (*gwFakeBackend)(nil)
+var _ WorkspaceInitExecutor = (*gwFakeBackend)(nil)
 
-func (b *gwFakeBackend) Launch(_ context.Context, spec sandbox.Spec, _ backend.LaunchOptions) (backend.SandboxSession, error) {
+// workspaceHomes lazily creates the modelled volume store. Lazy because
+// gwFakeBackend is constructed as a bare &gwFakeBackend{} in a dozen places,
+// and threading a constructor through all of them would buy nothing: the store
+// is a temp dir either way.
+func (b *gwFakeBackend) workspaceHomes() *bashWorkspaceInitBackend {
+	if b.homes == nil {
+		dir, err := os.MkdirTemp("", "boid-gw-fake-volumes-")
+		if err != nil {
+			panic("gwFakeBackend: create modelled volume store: " + err.Error())
+		}
+		b.homes = &bashWorkspaceInitBackend{volRoot: dir, volumes: map[string]string{}}
+	}
+	return b.homes
+}
+
+func (b *gwFakeBackend) Launch(_ context.Context, spec sandbox.Spec, opts backend.LaunchOptions) (backend.SandboxSession, error) {
 	b.launched = append(b.launched, spec)
+	b.launchOpts = append(b.launchOpts, opts)
 	if b.launchErr != nil {
 		return nil, b.launchErr
 	}
@@ -402,13 +435,23 @@ func (b *gwFakeBackend) Adopt(_ context.Context, _ string) (backend.SandboxSessi
 	return nil, false
 }
 
-// RunWorkspaceInit satisfies WorkspaceInitExecutor, which
-// resolveWorkspaceHome requires of every backend since PR5. Delegated to the
-// same real-bash stand-in the workspace-home tests use
-// (workspace_init_bash_backend_test.go), so a Dispatch through this fake
-// leaves the home in the state production leaves it in.
+// EnsureWorkspaceHomeVolume and RunWorkspaceInit satisfy
+// WorkspaceInitExecutor, which resolveWorkspaceHome requires of every backend
+// since PR5/PR6. Delegated to the same real-bash, modelled-volume stand-in the
+// workspace-home tests use (workspace_init_bash_backend_test.go), so a Dispatch
+// through this fake leaves the home in the state production leaves it in.
+func (b *gwFakeBackend) EnsureWorkspaceHomeVolume(ctx context.Context, req WorkspaceHomeVolumeRequest) (string, error) {
+	return b.workspaceHomes().EnsureWorkspaceHomeVolume(ctx, req)
+}
+
 func (b *gwFakeBackend) RunWorkspaceInit(ctx context.Context, req WorkspaceInitRequest) error {
-	return (&bashWorkspaceInitBackend{}).RunWorkspaceInit(ctx, req)
+	return b.workspaceHomes().RunWorkspaceInit(ctx, req)
+}
+
+// workspaceHomeDir is where this fake put the contents of the named volume
+// holding a workspace's home, for cases that want to look inside it.
+func (b *gwFakeBackend) workspaceHomeDir(volumeName string) string {
+	return b.workspaceHomes().dirFor(volumeName)
 }
 
 func (b *gwFakeBackend) ReapOrphans(context.Context) (backend.ReapReport, error) {

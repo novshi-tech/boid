@@ -88,6 +88,37 @@ type fakeDockerAPI struct {
 	networkCreateNames  []string
 	networkConnectCalls []client.NetworkConnectOptions
 	networkConnectIDs   []string
+
+	// volumes is the modelled volume store: name -> the labels that volume
+	// actually carries. It exists so VolumeCreate can answer with something
+	// OTHER than what the caller asked for, which is the only shape in which
+	// the engine's real behaviour can be observed — see VolumeCreate.
+	// VolumeRemove takes entries back out again, so a name can go through more
+	// than one incarnation within a single test — see VolumeRemove.
+	volumes map[string]map[string]string
+}
+
+// seedVolume pre-creates a volume the fake engine already holds, carrying
+// labels the caller did not ask for.
+//
+// This is the input every identity check needs and nothing else can produce.
+// VolumeCreate against an EXISTING name returns that volume with its OWN
+// labels and silently discards the request's (measured against podman 4.9.3,
+// see dockerres.LabelWorkspaceHomeID), so "the volume boid ends up mounting is
+// not the one it resolved" is expressible only by putting a different volume
+// there first. Pass nil labels to model a volume created by somebody other than
+// boid — one that carries no identity at all.
+func (f *fakeDockerAPI) seedVolume(name string, labels map[string]string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.volumes == nil {
+		f.volumes = map[string]map[string]string{}
+	}
+	stored := map[string]string{}
+	for k, v := range labels {
+		stored[k] = v
+	}
+	f.volumes[name] = stored
 }
 
 var _ dockerAPI = (*fakeDockerAPI)(nil)
@@ -283,6 +314,23 @@ func (f *fakeDockerAPI) NetworkConnect(ctx context.Context, networkID string, op
 	return client.NetworkConnectResult{}, nil
 }
 
+// VolumeCreate models the Engine API's idempotent create: a name that is not
+// there yet is created with the requested labels, and a name that IS there
+// comes back UNCHANGED, with its own labels, the request's discarded.
+//
+// The second half is the whole reason this is stateful rather than an echo.
+// Every identity check boid makes rests on it — "this volume is still the one
+// the completion marker describes" is only answerable because a surviving
+// volume reports the label it was born with — and an echoing fake makes the
+// request and the response the same value, so a caller that never compares them
+// is indistinguishable from one that does. That is exactly the gap that let
+// both PR6 use sites ship without verifying the returned identity (codex review
+// Major 1): every assertion in this package looked at what was REQUESTED.
+//
+// Measured against podman 4.9.3 on 2026-07-27 (three creates of one name
+// carrying different label sets all came back with the first call's labels);
+// docker behaves the same way, and the API has no volume-label-update endpoint
+// at all.
 func (f *fakeDockerAPI) VolumeCreate(ctx context.Context, options client.VolumeCreateOptions) (client.VolumeCreateResult, error) {
 	f.mu.Lock()
 	f.volumeCreateCalls = append(f.volumeCreateCalls, options)
@@ -290,10 +338,20 @@ func (f *fakeDockerAPI) VolumeCreate(ctx context.Context, options client.VolumeC
 	if f.VolumeCreateFunc != nil {
 		return f.VolumeCreateFunc(ctx, options)
 	}
-	// Default: a fresh volume, carrying whatever labels the caller asked
-	// for — the "newly created" case. Tests exercising the "already exists
-	// without labels" case supply their own VolumeCreateFunc.
-	return client.VolumeCreateResult{Volume: volume.Volume{Name: options.Name, Labels: options.Labels}}, nil
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.volumes == nil {
+		f.volumes = map[string]map[string]string{}
+	}
+	if existing, ok := f.volumes[options.Name]; ok {
+		return client.VolumeCreateResult{Volume: volume.Volume{Name: options.Name, Labels: existing}}, nil
+	}
+	created := map[string]string{}
+	for k, v := range options.Labels {
+		created[k] = v
+	}
+	f.volumes[options.Name] = created
+	return client.VolumeCreateResult{Volume: volume.Volume{Name: options.Name, Labels: created}}, nil
 }
 
 func (f *fakeDockerAPI) VolumeList(ctx context.Context, options client.VolumeListOptions) (client.VolumeListResult, error) {
@@ -306,6 +364,18 @@ func (f *fakeDockerAPI) VolumeList(ctx context.Context, options client.VolumeLis
 	return client.VolumeListResult{}, nil
 }
 
+// VolumeRemove models `docker volume rm`: the volume leaves the store, and the
+// next VolumeCreate for that name therefore creates a NEW one carrying the
+// labels of whoever asked for it.
+//
+// The store mutation is the whole point, and it is the half a call recorder
+// cannot supply. VolumeCreate answering with an existing volume's own labels
+// (see above) is only half the engine's contract; without the removal half, a
+// name boid has ever seen keeps answering with its first incarnation's identity
+// forever, so "the volume was removed and re-created underneath us" — the
+// accident every identity check in this package exists to catch — is the one
+// sequence the fake reports as nothing having happened (codex review of PR6,
+// Minor 1).
 func (f *fakeDockerAPI) VolumeRemove(ctx context.Context, volumeID string, options client.VolumeRemoveOptions) (client.VolumeRemoveResult, error) {
 	f.mu.Lock()
 	f.volumeRemoveIDs = append(f.volumeRemoveIDs, volumeID)
@@ -313,6 +383,9 @@ func (f *fakeDockerAPI) VolumeRemove(ctx context.Context, volumeID string, optio
 	if f.VolumeRemoveFunc != nil {
 		return f.VolumeRemoveFunc(ctx, volumeID, options)
 	}
+	f.mu.Lock()
+	delete(f.volumes, volumeID)
+	f.mu.Unlock()
 	return client.VolumeRemoveResult{}, nil
 }
 

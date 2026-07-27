@@ -27,14 +27,20 @@ import (
 //
 // # One container, not two (§D1)
 //
-// The prep work — the bind-target skeleton (論点 b-2 §1) and the home identity
-// nonce (論点 b-2 §2) — is not a second container run. It is a builtin prelude
-// and postlude around the user's script, so a workspace with an init.sh still
-// costs exactly one container start. Prep is UNCONDITIONAL: a workspace with no
-// init.sh at all still gets a run, because it still needs both of those things
-// and there would otherwise be no writer for either (Phase 4's pass-through
-// class, docs/plans/home-workspace-volume.md:98, would silently be the one
-// class the identity check does not cover).
+// The prep work — the bind-target skeleton (論点 b-2 §1) — is not a second
+// container run. It is a builtin prelude ahead of the user's script, so a
+// workspace with an init.sh still costs exactly one container start. Prep is
+// UNCONDITIONAL: a workspace with no init.sh at all still gets a run, because
+// its ~/.claude has to exist before any job container starts or the ENGINE
+// creates it as uid 0 (論点 b-2's measurement). Making the run conditional
+// would leave Phase 4's pass-through class
+// (docs/plans/home-workspace-volume.md:98) with nothing to prepare it.
+//
+// PR5 also had a builtin POSTLUDE here, stamping a home identity token into a
+// file inside the home. PR6 removed it along with the file: the identity moved
+// onto the home volume's own label, where one idempotent VolumeCreate both
+// ensures the volume and reads it back (workspaceHomeMarker.HomeID). A write
+// nothing can read is not a check.
 //
 // # What "hash した bytes をそのまま実行する" means here (§D2)
 //
@@ -64,16 +70,21 @@ const (
 	// workspaceInitStageOf resolves that ambiguity from the marker line the
 	// wrapper prints, and only falls back to these when there is no output
 	// at all to read. See §D3.
+	//
+	// 93 is deliberately not reused: it belonged to the postlude PR5 added to
+	// stamp an identity file inside the home, which PR6 removed along with the
+	// file (the identity moved onto the volume's own label — see
+	// workspaceHomeMarker.HomeID). A marker line or an exit code from a
+	// straggling PR5-era container should not be re-interpreted as some new
+	// stage's.
 	workspaceInitPreludeExitCode     = 91
 	workspaceInitScriptSetupExitCode = 92
-	workspaceInitPostludeExitCode    = 93
 
 	// Stage names, as they appear both in the wrapper's marker lines and in
 	// the operator-facing error.
 	workspaceInitStagePrelude     = "prelude"
 	workspaceInitStageScriptSetup = "script-setup"
 	workspaceInitStageUserScript  = "init.sh"
-	workspaceInitStagePostlude    = "postlude"
 	workspaceInitStageUnknown     = "unknown"
 
 	// workspaceInitStageMarker prefixes the one line the wrapper prints to
@@ -125,11 +136,13 @@ type WorkspaceInitRequest struct {
 	// its label, BOID_WORKSPACE_SLUG and every diagnostic.
 	Slug string
 
-	// HomeSource is what the executor mounts: through PR5 an absolute host
-	// path (the current homes/<slug> directory, still host-visible because it
-	// is derived from RuntimesDir = BOID_RUNTIME_DIR — 論点 c's "この時点では
-	// 現行の host-visible homes dir を engine bind して検証する"). PR6 replaces
-	// it with a named volume.
+	// HomeSource is what the executor mounts: as of PR6 the NAME of this
+	// workspace's docker named volume (dockerres.WorkspaceHomeVolumeName), not
+	// a path. Through PR5 it was an absolute host path — the homes/<slug>
+	// directory, host-visible only because it derived from RuntimesDir =
+	// BOID_RUNTIME_DIR, i.e. tmpfs, which is the persistence regression PR6
+	// closed. workspaceInitHomeMount rejects an absolute value outright rather
+	// than binding it, so the two eras cannot be confused silently.
 	HomeSource string
 
 	// HomeTarget is where HomeSource is mounted INSIDE the container, and
@@ -146,22 +159,72 @@ type WorkspaceInitRequest struct {
 	// for what is in it and, more to the point, what is deliberately not.
 	Env map[string]string
 
-	// Script is the assembled wrapper (prelude + user script + postlude),
+	// Script is the assembled wrapper (builtin prelude + user script),
 	// fed to `bash -s` on the container's stdin. Never a path: the daemon's
 	// own filesystem is not visible to the sibling engine that has to start
 	// the container (build/container/compose.yml's KNOWN GAP note), so a
 	// temp file the daemon writes cannot be a bind source.
 	Script string
 
-	// Nonce is the home identity token the postlude stamps into the home
-	// (論点 b). resolveWorkspaceHome records the same value in the completion
-	// marker's home_id, and compares the two on every later dispatch.
-	Nonce string
+	// SkeletonDirs are the bind-target directories the prelude creates,
+	// relative to the home (workspaceHomeSkeletonDirs). Carried on the request
+	// rather than recomputed by the executor so that the set the init actually
+	// created and the set resolveWorkspaceHome records in the completion
+	// marker are the same value, not two evaluations of one function.
+	SkeletonDirs []string
+
+	// HomeID is the identity the workspace home volume carries on its
+	// dockerres.LabelWorkspaceHomeID label (論点 b). resolveWorkspaceHome
+	// records the same value in the completion marker's home_id and compares
+	// the two on every later dispatch.
+	//
+	// The executor needs it because it has to guarantee the volume exists
+	// before creating a container that mounts it, and a volume that vanished
+	// between resolveWorkspaceHome's check and this run must come back with
+	// THIS identity — otherwise the marker written afterwards would describe
+	// an incarnation that no longer exists and every subsequent dispatch would
+	// re-init.
+	HomeID string
+}
+
+// WorkspaceHomeVolumeRequest asks an executor to make sure one workspace's
+// HOME volume exists, and to report the identity it carries.
+//
+// The two halves are one request, and one engine call, on purpose: VolumeCreate
+// is idempotent and returns an ALREADY-EXISTING volume together with its own
+// labels, so "ensure" and "read the identity" are the same operation. Splitting
+// them into ensure-then-inspect would double the per-dispatch engine round
+// trips on the hot path and open a window between them. See
+// dockerres.LabelWorkspaceHomeID for the measurement this rests on.
+type WorkspaceHomeVolumeRequest struct {
+	// Slug is the normalized workspace slug; it becomes the value of the
+	// dockerres.LabelWorkspaceHome label on a newly created volume.
+	Slug string
+
+	// Name is the volume name, computed by the caller
+	// (dockerres.WorkspaceHomeVolumeName). Executors must use it verbatim
+	// rather than recomputing it: this same string becomes the job container's
+	// HOME mount source, and two independent computations of a deterministic
+	// name are two things that can disagree.
+	Name string
+
+	// CandidateID is the identity to stamp on the volume IF this call is the
+	// one that creates it. For a volume that already exists it is discarded by
+	// the engine, and the executor reports the incumbent identity instead —
+	// which is exactly how a deleted-and-recreated volume becomes detectable.
+	CandidateID string
 }
 
 // WorkspaceInitExecutor is the capability resolveWorkspaceHome needs from a
-// sandbox backend: run one WorkspaceInitRequest to completion and report
-// whether it succeeded.
+// sandbox backend: bring a workspace's HOME volume into existence, report its
+// identity, and run one WorkspaceInitRequest to completion.
+//
+// Both methods live on one interface because after PR6 they are inseparable: a
+// backend that cannot create a named volume cannot host a workspace home at
+// all, and a backend that cannot start a container cannot prepare one. Two
+// interfaces would let a backend satisfy half the contract and fail the other
+// half at run time, which is precisely what the assertion in
+// workspaceInitExecutorFor exists to turn into a startup-time answer.
 //
 // §D10 — why this is a separate, assertion-discovered interface rather than a
 // method on backend.SandboxBackend:
@@ -183,6 +246,12 @@ type WorkspaceInitRequest struct {
 //     both the interface and *containerBackend live in this package — needs no
 //     exported helper at all.
 type WorkspaceInitExecutor interface {
+	// EnsureWorkspaceHomeVolume creates req.Name if it does not exist (with
+	// req.CandidateID as its identity) and returns the identity the volume
+	// carries afterwards. An empty return means the volume exists but was not
+	// created by boid; the caller decides what to do about that.
+	EnsureWorkspaceHomeVolume(ctx context.Context, req WorkspaceHomeVolumeRequest) (string, error)
+
 	RunWorkspaceInit(ctx context.Context, req WorkspaceInitRequest) error
 }
 
@@ -222,8 +291,9 @@ type workspaceInitParams struct {
 	// resolveWorkspaceHome under the lock. Ignored when ScriptExists is false.
 	Script       []byte
 	ScriptExists bool
-	// Nonce is the freshly minted home identity token.
-	Nonce string
+	// HomeID is the identity the home volume carries, as reported by
+	// EnsureWorkspaceHomeVolume.
+	HomeID string
 
 	// heredocDelimiter overrides the randomly minted delimiter. Test-only:
 	// the collision refusal below is unreachable at 2^-128 odds, and a
@@ -234,8 +304,8 @@ type workspaceInitParams struct {
 // buildWorkspaceInitRequest assembles the wrapper script and the environment
 // for one workspace-home preparation run.
 func buildWorkspaceInitRequest(p workspaceInitParams) (WorkspaceInitRequest, error) {
-	if p.Nonce == "" {
-		return WorkspaceInitRequest{}, fmt.Errorf("workspace home %q: init request has no home identity token", p.Slug)
+	if p.HomeID == "" {
+		return WorkspaceInitRequest{}, fmt.Errorf("workspace home %q: init request has no home volume identity", p.Slug)
 	}
 	if p.HomeTarget == "" {
 		return WorkspaceInitRequest{}, fmt.Errorf("workspace home %q: init request has no container-side home path", p.Slug)
@@ -273,12 +343,13 @@ func buildWorkspaceInitRequest(p workspaceInitParams) (WorkspaceInitRequest, err
 		return WorkspaceInitRequest{}, err
 	}
 	return WorkspaceInitRequest{
-		Slug:       p.Slug,
-		HomeSource: p.HomeSource,
-		HomeTarget: p.HomeTarget,
-		Env:        buildWorkspaceInitEnv(p.Slug, p.HomeTarget),
-		Script:     wrapper,
-		Nonce:      p.Nonce,
+		Slug:         p.Slug,
+		HomeSource:   p.HomeSource,
+		HomeTarget:   p.HomeTarget,
+		Env:          buildWorkspaceInitEnv(p.Slug, p.HomeTarget),
+		Script:       wrapper,
+		SkeletonDirs: p.SkeletonDirs,
+		HomeID:       p.HomeID,
 	}, nil
 }
 
@@ -365,24 +436,14 @@ func buildWorkspaceInitScript(p workspaceInitParams, script []byte, delim string
 		b.WriteString("if [ \"$__boid_status\" -ne 0 ]; then __boid_stage " + workspaceInitStageUserScript + " \"$__boid_status\"; exit \"$__boid_status\"; fi\n")
 	}
 
-	// ---- postlude ---------------------------------------------------------
-	//
-	// Strictly after a SUCCESSFUL user script (§D3). A home stamped before, or
-	// regardless of, init.sh's result would make the next dispatch skip init
-	// against a home the failed run left half-built — resolveWorkspaceHome
-	// writes no marker on failure, but the identity check is what has to hold
-	// when a marker from an EARLIER, successful run is still there.
-	b.WriteString("\n# --- postlude: stamp the home's identity (論点 b) ---\n")
-	b.WriteString("__boid_nonce=" + shellQuoteDir(workspaceHomeNonceFileName) + "\n")
-	// rm -rf, not rm -f: a job owns this directory read-write and can leave a
-	// non-empty DIRECTORY here, which `mv` refuses with EISDIR no matter what
-	// the source is (PR2 codex review round 3). On a symlink rm unlinks the
-	// link and never follows it, matching the read side's O_NOFOLLOW.
-	b.WriteString("rm -rf -- \"$__boid_nonce\" \"$__boid_nonce.tmp\"\n")
-	b.WriteString("printf '%s' " + shellQuoteDir(p.Nonce) + " > \"$__boid_nonce.tmp\" && " +
-		"chmod 600 \"$__boid_nonce.tmp\" && mv -f -- \"$__boid_nonce.tmp\" \"$__boid_nonce\"\n")
-	b.WriteString(workspaceInitStageCheck(workspaceInitStagePostlude, workspaceInitPostludeExitCode))
-	b.WriteString("exit 0\n")
+	// No postlude. PR5 ended here by writing an identity token into a file
+	// inside the home, which PR6 removed together with the file: the identity
+	// now lives on the VOLUME's own label, where the daemon can read it with a
+	// single VolumeCreate instead of needing a container (論点 b, and
+	// workspaceHomeMarker.HomeID for what that trade does and does not cover).
+	// Stamping it from in here as well would produce a second copy that
+	// nothing ever compares — a value that looks like a check and is not one.
+	b.WriteString("\nexit 0\n")
 
 	return b.String(), nil
 }
@@ -513,7 +574,7 @@ func workspaceInitStageOf(output string, exitCode int) string {
 		}
 		switch rest {
 		case workspaceInitStagePrelude, workspaceInitStageScriptSetup,
-			workspaceInitStageUserScript, workspaceInitStagePostlude:
+			workspaceInitStageUserScript:
 			return rest
 		}
 	}
@@ -522,8 +583,6 @@ func workspaceInitStageOf(output string, exitCode int) string {
 		return workspaceInitStagePrelude
 	case workspaceInitScriptSetupExitCode:
 		return workspaceInitStageScriptSetup
-	case workspaceInitPostludeExitCode:
-		return workspaceInitStagePostlude
 	}
 	// No marker and no boid code: the wrapper never got to report, so nothing
 	// here knows which stage was running. Deliberately NOT attributed to

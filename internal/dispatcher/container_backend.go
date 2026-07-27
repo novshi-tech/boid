@@ -925,7 +925,7 @@ func (b *containerBackend) Launch(ctx context.Context, spec sandbox.Spec, opts b
 	}
 
 	mounts, namedVolumes := containerMounts(realized)
-	if err := b.ensureNamedVolumes(ctx, namedVolumes, opts.Workspace, labels); err != nil {
+	if err := b.ensureNamedVolumes(ctx, namedVolumes, opts.WorkspaceSlug, opts.WorkspaceHomeID, labels); err != nil {
 		cleanupFiles()
 		return nil, err
 	}
@@ -1608,8 +1608,58 @@ func containerMounts(r realization.Realization) (mounts []mount.Mount, namedVolu
 //     startup, with boid.job_id by reapOrphanVolumes. "Correctly labeled"
 //     here means "invisible to the sweeps", the exact inverse of the job case.
 //
-// workspace is the slug recorded in the workspace-home label; it is Launch's
-// opts.Workspace, the same value that produced jobLabels[boid.workspace].
+// workspaceSlug is the slug recorded in the workspace-home label. It is
+// Launch's opts.WorkspaceSlug, NOT opts.Workspace, and PR6 (論点 D5) is where
+// that distinction started to matter. opts.Workspace is the raw
+// project.WorkspaceID — empty for every project with no explicit workspace
+// assignment — while the volume NAME is built from the slug
+// resolveWorkspaceHome normalized that value into, so "" becomes "default".
+// Labelling the volume from the raw field would leave a volume called
+// boid-ws-home-<install8>-default carrying boid.workspace_home="", which no
+// lookup by slug can find. The reapers are unaffected (both test the label's
+// PRESENCE, deliberately — 論点 a), but 論点 a-2's workspace-remove and
+// orphan-detection rewiring in PR7 is a lookup by value.
+//
+// opts.Workspace keeps its own meaning untouched (the boid.workspace job label
+// and the per-workspace network name); normalizing THAT would change which jobs
+// get an isolated network, which is a different decision and not PR6's.
+//
+// A workspace HOME volume created HERE is also given a freshly minted identity
+// (dockerres.LabelWorkspaceHomeID). Normally resolveWorkspaceHome created it
+// long before Launch runs and this create is a no-op that changes nothing — but
+// the volume can be removed in the window between the two, and an unlabelled
+// one left behind here would make every later dispatch of that workspace fail
+// (Runner.ensureWorkspaceHomeVolume, which cannot repair a missing label
+// because the Engine API has no way to add one). Minting keeps the invariant
+// "every workspace HOME volume boid brings into existence carries an identity"
+// true on BOTH creation paths, and the mismatch with the completion marker
+// resolves itself with one re-init.
+//
+// # workspaceHomeID: what the create ANSWERED with is checked, not just made
+//
+// The identity is minted FRESH here even though the caller knows which one it
+// resolved (opts.WorkspaceHomeID, threaded down as workspaceHomeID), and that
+// is the load-bearing part rather than an oversight. Stamping the resolved
+// identity onto a volume this call had to create would make the empty
+// replacement indistinguishable from the real home — the label would match by
+// construction, and the mismatch that makes a vanished home detectable at all
+// would be erased by the very code meant to detect it.
+//
+// So: mint a fresh candidate, then compare what came back against
+// workspaceHomeID. VolumeCreate returns an EXISTING volume with its own labels
+// and discards the request's, so a surviving home answers with the resolved
+// identity and matches, while a volume that was removed (this call created it)
+// or replaced (somebody else created it) answers with something else and fails
+// Launch. See verifyWorkspaceHomeIdentity for why the check has to happen here,
+// at the point of use, and for the window it narrows without closing.
+//
+// An EMPTY workspaceHomeID means the caller resolved no home for this launch,
+// which production never does — Runner.Dispatch resolves the home before it
+// builds the spec that mounts it — but DI/test wiring that calls Launch
+// directly does. That case keeps the pre-check behaviour (mint, create, do not
+// compare): there is no expectation to compare against, and refusing would turn
+// "this test did not go through a resolve" into a Launch failure while
+// protecting nothing.
 //
 // Each name is validated against docker's volume-name grammar first. The
 // container backend classifies a mount source as a named volume purely by
@@ -1630,7 +1680,7 @@ func containerMounts(r realization.Realization) (mounts []mount.Mount, namedVolu
 // volumes: for them, having no boid.job_id label is the correct and intended
 // state, so warning about it would be noise that trains operators to ignore
 // the message that matters.
-func (b *containerBackend) ensureNamedVolumes(ctx context.Context, names []string, workspace string, jobLabels map[string]string) error {
+func (b *containerBackend) ensureNamedVolumes(ctx context.Context, names []string, workspaceSlug, workspaceHomeID string, jobLabels map[string]string) error {
 	for _, name := range names {
 		if !dockerres.IsValidVolumeName(name) {
 			return fmt.Errorf("mount source %q is not a valid docker volume name "+
@@ -1640,7 +1690,14 @@ func (b *containerBackend) ensureNamedVolumes(ctx context.Context, names []strin
 		isWorkspaceHome := dockerres.IsWorkspaceHomeVolumeName(name)
 		labels := jobLabels
 		if isWorkspaceHome {
-			labels = map[string]string{dockerres.LabelWorkspaceHome: workspace}
+			candidate, err := newWorkspaceHomeID()
+			if err != nil {
+				return fmt.Errorf("create named volume %q: mint home id: %w", name, err)
+			}
+			labels = map[string]string{
+				dockerres.LabelWorkspaceHome:   workspaceSlug,
+				dockerres.LabelWorkspaceHomeID: candidate,
+			}
 			if b.installID != "" {
 				labels[dockerres.LabelWorkspaceHomeInstallID] = b.installID
 			}
@@ -1650,7 +1707,13 @@ func (b *containerBackend) ensureNamedVolumes(ctx context.Context, names []strin
 		if err != nil {
 			return fmt.Errorf("create named volume %q: %w", name, err)
 		}
-		if !isWorkspaceHome && res.Volume.Labels[labelJobID] == "" {
+		if isWorkspaceHome {
+			if err := verifyWorkspaceHomeIdentity(name, workspaceHomeID, res.Volume.Labels[dockerres.LabelWorkspaceHomeID]); err != nil {
+				return err
+			}
+			continue
+		}
+		if res.Volume.Labels[labelJobID] == "" {
 			slog.Warn("container backend: named volume exists without a boid.job_id label; ReapOrphans's volume sweep will not find it",
 				"volume", name)
 		}

@@ -2114,7 +2114,7 @@ func mountTargetIndex(mounts []sandbox.Mount, target string) int {
 	return -1
 }
 
-// TestHomeMounts_WorkspaceHomeDirSet_NoSkillsSource_ReturnsBindOnly pins the
+// TestHomeMounts_WorkspaceHomeVolumeSet_NoSkillsSource_ReturnsBindOnly pins the
 // Phase 6 PR8 state (docs/plans/phase6-container-backend.md §決定 9):
 // homeMounts returns a single read-write bind of the workspace home, with no
 // $HOME/.boid tmpfs overlay layered on top.
@@ -2131,10 +2131,10 @@ func mountTargetIndex(mounts []sandbox.Mount, target string) int {
 //
 // An empty skillsSourceDir (minimal test wiring that never threaded
 // SandboxRuntimeInfo.SkillsSourceDir) degrades to exactly that pre-PR3
-// layout, the same graceful-degrade convention WorkspaceHomeDir itself has.
-func TestHomeMounts_WorkspaceHomeDirSet_NoSkillsSource_ReturnsBindOnly(t *testing.T) {
+// layout, the same graceful-degrade convention WorkspaceHomeVolume itself has.
+func TestHomeMounts_WorkspaceHomeVolumeSet_NoSkillsSource_ReturnsBindOnly(t *testing.T) {
 	const homeDir = "/home/user"
-	const wsHome = "/data/boid/homes/default"
+	const wsHome = "boid-ws-home-01234567-default"
 	mounts := homeMounts(homeDir, wsHome, "")
 	if len(mounts) != 1 {
 		t.Fatalf("homeMounts returned %d mounts, want 1 (bind only, no .boid tmpfs overlay): %+v", len(mounts), mounts)
@@ -2159,7 +2159,7 @@ func TestHomeMounts_WorkspaceHomeDirSet_NoSkillsSource_ReturnsBindOnly(t *testin
 // (`cp -r ~/.claude/skills/<name> "$BOID_WORKSPACE_HOME/.claude/skills/"`).
 func TestHomeMounts_SkillsSourceDirSet_AppendsPerSkillReadOnlyBinds(t *testing.T) {
 	const homeDir = "/home/user"
-	const wsHome = "/data/boid/homes/default"
+	const wsHome = "boid-ws-home-01234567-default"
 	const skillsSrc = "/run/user/1000/runtimes/skills"
 
 	mounts := homeMounts(homeDir, wsHome, skillsSrc)
@@ -2190,12 +2190,12 @@ func TestHomeMounts_SkillsSourceDirSet_AppendsPerSkillReadOnlyBinds(t *testing.T
 	}
 }
 
-// TestHomeMounts_WorkspaceHomeDirEmpty_FallsBackToTmpfs pins that the tmpfs
+// TestHomeMounts_WorkspaceHomeVolumeEmpty_FallsBackToTmpfs pins that the tmpfs
 // fallback stays a single mount even when a skills source IS available.
 // resolveWorkspaceHome never returns an empty home on a real dispatch, so
 // this branch is reached only by test wiring; layering skills onto it would
 // change behaviour no production path exercises.
-func TestHomeMounts_WorkspaceHomeDirEmpty_FallsBackToTmpfs(t *testing.T) {
+func TestHomeMounts_WorkspaceHomeVolumeEmpty_FallsBackToTmpfs(t *testing.T) {
 	const homeDir = "/home/user"
 	mounts := homeMounts(homeDir, "", "/run/user/1000/runtimes/skills")
 	if len(mounts) != 1 {
@@ -2223,8 +2223,8 @@ func TestBuildSandboxSpec_CloneEnabled_WorkspaceHomeBind(t *testing.T) {
 			Clone:      &orchestrator.CloneDeclaration{Branch: "main", BaseBranch: "main"},
 		},
 	}
-	const wsHome = "/data/boid/homes/default"
-	rt := SandboxRuntimeInfo{JobID: "job-1", CloneWorkspaceDir: "/data/boid/runtimes/job-1/workspace", WorkspaceHomeDir: wsHome}
+	const wsHome = "boid-ws-home-01234567-default"
+	rt := SandboxRuntimeInfo{JobID: "job-1", CloneWorkspaceDir: "/data/boid/runtimes/job-1/workspace", WorkspaceHomeVolume: wsHome}
 	out, err := BuildSandboxSpec(spec, rt)
 	if err != nil {
 		t.Fatalf("BuildSandboxSpec: %v", err)
@@ -2234,7 +2234,7 @@ func TestBuildSandboxSpec_CloneEnabled_WorkspaceHomeBind(t *testing.T) {
 		t.Fatalf("workspace home bind at %s not found: %+v", homeDir, out.Mounts)
 	}
 	if out.Mounts[bindIdx].Source != wsHome || out.Mounts[bindIdx].Type != sandbox.MountBind {
-		t.Errorf("home mount = %+v, want bind from %s", out.Mounts[bindIdx], wsHome)
+		t.Errorf("home mount = %+v, want the named volume %s (spelled MountBind — realization classifies by SOURCE, PR6 論点 e)", out.Mounts[bindIdx], wsHome)
 	}
 	if idx := mountTargetIndex(out.Mounts, homeDir+"/.boid"); idx != -1 {
 		t.Errorf("unexpected /.boid tmpfs overlay mount (retired by Phase 6 PR8): %+v", out.Mounts[idx])
@@ -2263,9 +2263,9 @@ func TestBuildSandboxSpec_SkillsSourceDir_EndToEndPerSkillBinds(t *testing.T) {
 			Writable:   true,
 		},
 	}
-	const wsHome = "/data/boid/homes/default"
+	const wsHome = "boid-ws-home-01234567-default"
 	const skillsSrc = "/run/user/1000/runtimes/skills"
-	rt := SandboxRuntimeInfo{JobID: "job-1", WorkspaceHomeDir: wsHome, SkillsSourceDir: skillsSrc}
+	rt := SandboxRuntimeInfo{JobID: "job-1", WorkspaceHomeVolume: wsHome, SkillsSourceDir: skillsSrc}
 	out, err := BuildSandboxSpec(spec, rt)
 	if err != nil {
 		t.Fatalf("BuildSandboxSpec: %v", err)
@@ -2288,7 +2288,7 @@ func TestBuildSandboxSpec_SkillsSourceDir_EndToEndPerSkillBinds(t *testing.T) {
 }
 
 // TestBuildSandboxSpec_CloneEnabled_NoWorkspaceHome_FallsBackToTmpfs pins the
-// test-wiring graceful degrade: an empty WorkspaceHomeDir (e.g. Runner not
+// test-wiring graceful degrade: an empty WorkspaceHomeVolume (e.g. Runner not
 // wired, or a minimal test SandboxRuntimeInfo{}) must still produce the
 // pre-PR2 single tmpfs at HOME, not a bind of an empty path.
 func TestBuildSandboxSpec_CloneEnabled_NoWorkspaceHome_FallsBackToTmpfs(t *testing.T) {
@@ -2321,11 +2321,11 @@ func TestBuildSandboxSpec_CloneEnabled_NoWorkspaceHome_FallsBackToTmpfs(t *testi
 		t.Fatalf("no mount targeting HOME (%s) found: %+v", homeDir, out.Mounts)
 	}
 	if found.Type != sandbox.MountTmpfs || found.Source != "" {
-		t.Errorf("HOME mount = %+v, want plain tmpfs (no source) when WorkspaceHomeDir is empty", found)
+		t.Errorf("HOME mount = %+v, want plain tmpfs (no source) when WorkspaceHomeVolume is empty", found)
 	}
 	for _, m := range out.Mounts {
 		if m.Target == homeDir+"/.boid" {
-			t.Errorf("unexpected /.boid mount when WorkspaceHomeDir is empty (fallback should be a single HOME tmpfs): %+v", m)
+			t.Errorf("unexpected /.boid mount when WorkspaceHomeVolume is empty (fallback should be a single HOME tmpfs): %+v", m)
 		}
 	}
 }
@@ -2348,7 +2348,7 @@ func TestBuildSandboxSpec_CloneEnabled_NoWorkspaceHome_FallsBackToTmpfs(t *testi
 func TestProjectVisibilityMounts_WorkspaceHomeBind_Order(t *testing.T) {
 	const effectiveDir = "/home/user/project"
 	const homeDir = "/home/user"
-	const wsHome = "/data/boid/homes/default"
+	const wsHome = "boid-ws-home-01234567-default"
 	const skillsSrc = "/run/user/1000/runtimes/skills"
 	skillCount := len(skills.EmbeddedSkillNames())
 	mounts := projectVisibilityMounts(effectiveDir, effectiveDir, homeDir, wsHome, skillsSrc, true, map[string]string{"peer": "/home/user/peer"})
@@ -2434,8 +2434,8 @@ func TestBuildSandboxSpec_DefaultProfile_WorkspaceHomeBind(t *testing.T) {
 		t.Skip("hostHomeDir() returned empty; cannot exercise mount layout")
 	}
 	spec := &orchestrator.JobSpec{} // ProfileDefault, no project
-	const wsHome = "/data/boid/homes/default"
-	result, err := BuildSandboxSpec(spec, SandboxRuntimeInfo{WorkspaceHomeDir: wsHome})
+	const wsHome = "boid-ws-home-01234567-default"
+	result, err := BuildSandboxSpec(spec, SandboxRuntimeInfo{WorkspaceHomeVolume: wsHome})
 	if err != nil {
 		t.Fatalf("BuildSandboxSpec: %v", err)
 	}
@@ -2444,20 +2444,20 @@ func TestBuildSandboxSpec_DefaultProfile_WorkspaceHomeBind(t *testing.T) {
 		t.Fatalf("workspace home bind at %s not found: %+v", homeDir, result.Mounts)
 	}
 	if result.Mounts[bindIdx].Source != wsHome || result.Mounts[bindIdx].Type != sandbox.MountBind {
-		t.Errorf("home mount = %+v, want bind from %s", result.Mounts[bindIdx], wsHome)
+		t.Errorf("home mount = %+v, want the named volume %s (spelled MountBind — realization classifies by SOURCE, PR6 論点 e)", result.Mounts[bindIdx], wsHome)
 	}
 	if idx := mountTargetIndex(result.Mounts, homeDir+"/.boid"); idx != -1 {
 		t.Errorf("unexpected /.boid tmpfs overlay mount (retired by Phase 6 PR8): %+v", result.Mounts[idx])
 	}
 }
 
-// TestBuildSandboxSpec_ProfileInit_IgnoresWorkspaceHomeDir is the regression
+// TestBuildSandboxSpec_ProfileInit_IgnoresWorkspaceHomeVolume is the regression
 // pin for docs/plans/home-workspace-volume.md Phase 4 PR2's explicit
-// decision to leave ProfileInit untouched: even when rt.WorkspaceHomeDir is
+// decision to leave ProfileInit untouched: even when rt.WorkspaceHomeVolume is
 // set, ProfileInit must never bind it over HOME (that would shadow the host
 // tools ProfileInit's host-root rbind exists to expose), and must keep the
 // single $HOME/.boid tmpfs it already had.
-func TestBuildSandboxSpec_ProfileInit_IgnoresWorkspaceHomeDir(t *testing.T) {
+func TestBuildSandboxSpec_ProfileInit_IgnoresWorkspaceHomeVolume(t *testing.T) {
 	homeDir := hostHomeDir()
 	if homeDir == "" {
 		t.Skip("hostHomeDir() returned empty; cannot exercise mount layout")
@@ -2465,14 +2465,14 @@ func TestBuildSandboxSpec_ProfileInit_IgnoresWorkspaceHomeDir(t *testing.T) {
 	spec := &orchestrator.JobSpec{
 		SandboxProfile: int(sandbox.ProfileInit),
 	}
-	rt := SandboxRuntimeInfo{WorkspaceHomeDir: "/data/boid/homes/default"}
+	rt := SandboxRuntimeInfo{WorkspaceHomeVolume: "boid-ws-home-01234567-default"}
 	result, err := BuildSandboxSpec(spec, rt)
 	if err != nil {
 		t.Fatalf("BuildSandboxSpec: %v", err)
 	}
 	for _, m := range result.Mounts {
 		if m.Target == homeDir && m.Type == sandbox.MountBind {
-			t.Errorf("ProfileInit must not bind WorkspaceHomeDir over HOME: %+v", m)
+			t.Errorf("ProfileInit must not bind WorkspaceHomeVolume over HOME: %+v", m)
 		}
 	}
 	boidTmpfsCount := 0
@@ -2486,5 +2486,215 @@ func TestBuildSandboxSpec_ProfileInit_IgnoresWorkspaceHomeDir(t *testing.T) {
 	}
 	if boidTmpfsCount != 1 {
 		t.Errorf("found %d mounts targeting %s/.boid, want exactly 1", boidTmpfsCount, homeDir)
+	}
+}
+
+// TestBuildSandboxSpec_ProfileInit_IgnoresWorkspaceHomeVolume_UnderEveryVisibility
+// is the case the ProfileInit-alone pin above cannot see: the mount switch's
+// Clone and ProjectDir branches are BOTH evaluated before its ProfileInit
+// branch, so either one being set used to take the HOME volume back — the exact
+// shadowing that pin exists to forbid, reachable through a different arm of the
+// same switch.
+//
+// The visibility a ProfileInit job carries is not hypothetical: it is assembled
+// by whichever caller builds the JobSpec, while the profile is a property of
+// what that job DOES (scan the host), so nothing structurally couples the two.
+// A profile whose whole contract is "$HOME is the host's own, seen through the
+// host-root rbind" has to hold regardless of which visibility arm would
+// otherwise have applied — see the mount switch's own ProfileInit branch for
+// why HOME must stay unshadowed, and homeSkeleton for what a HOME mount would
+// additionally switch on here (a skeleton check against a $HOME nothing
+// prepared, failing every such job).
+func TestBuildSandboxSpec_ProfileInit_IgnoresWorkspaceHomeVolume_UnderEveryVisibility(t *testing.T) {
+	homeDir := hostHomeDir()
+	if homeDir == "" {
+		t.Skip("hostHomeDir() returned empty; cannot exercise mount layout")
+	}
+	const wsHome = "boid-ws-home-01234567-default"
+
+	cases := []struct {
+		name       string
+		visibility orchestrator.Visibility
+	}{
+		{
+			name:       "project visible",
+			visibility: orchestrator.Visibility{ProjectDir: "/srv/projects/demo", ProjectName: "demo"},
+		},
+		{
+			name: "project visible and writable",
+			visibility: orchestrator.Visibility{
+				ProjectDir: "/srv/projects/demo", ProjectName: "demo", Writable: true,
+			},
+		},
+		{
+			name: "sandbox clone declared",
+			visibility: orchestrator.Visibility{
+				ProjectName: "demo",
+				Clone:       &orchestrator.CloneDeclaration{Branch: "main", BaseBranch: "main", CheckoutOnly: true},
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			result, err := BuildSandboxSpec(&orchestrator.JobSpec{
+				SandboxProfile: int(sandbox.ProfileInit),
+				Visibility:     tc.visibility,
+			}, SandboxRuntimeInfo{
+				WorkspaceHomeVolume: wsHome,
+				SkillsSourceDir:     "/run/user/1000/runtimes/skills",
+			})
+			if err != nil {
+				t.Fatalf("BuildSandboxSpec: %v", err)
+			}
+
+			for _, m := range result.Mounts {
+				if m.Target == homeDir {
+					t.Errorf("ProfileInit mounted %+v over HOME; that hides ~/.volta, ~/.local/bin etc. which the "+
+						"host scan exists to find", m)
+				}
+				if m.Source == wsHome {
+					t.Errorf("ProfileInit mounted the workspace HOME volume at %s: %+v", m.Target, m)
+				}
+			}
+
+			// The ProfileInit branch really did run — without this the test
+			// would also pass on a build that simply dropped every HOME mount.
+			if idx := mountTargetIndex(result.Mounts, homeDir+"/.boid"); idx == -1 {
+				t.Errorf("no tmpfs at %s/.boid; the ProfileInit branch did not run at all, mounts=%+v",
+					homeDir, result.Mounts)
+			} else if result.Mounts[idx].Type != sandbox.MountTmpfs {
+				t.Errorf(".boid mount = %+v, want tmpfs", result.Mounts[idx])
+			}
+
+			// And with no HOME mount there is nothing for the job container's
+			// runner to verify — a declared skeleton would fail every such job
+			// on a directory nothing was going to create (see homeSkeleton).
+			if len(result.HomeSkeletonDirs) != 0 || result.HomeSkeletonRoot != "" {
+				t.Errorf("HomeSkeletonRoot=%q HomeSkeletonDirs=%v, want both empty",
+					result.HomeSkeletonRoot, result.HomeSkeletonDirs)
+			}
+		})
+	}
+}
+
+// TestBuildSandboxSpec_HomeSkeletonDirs_ReachTheSpecAsVerifiableHomeRelativePaths
+// is the builder half of the wiring PR6 needs for the ownership check it moved
+// into the job container (docs/plans/workspace-home-volume-persistence.md
+// 論点 b-2 / e-2).
+//
+// The check itself is covered in internal/sandbox/runner, and the set is
+// covered where it is produced (workspaceHomeSkeletonDirs). What neither can
+// see is the field being left empty here: the runner would then verify nothing,
+// on every job, and the only symptom would be a workspace whose authentication
+// silently stops persisting some weeks later.
+//
+// Two properties are asserted, and they fail differently. The set has to be
+// the VERIFIABLE part of workspaceHomeSkeletonDirs — the ancestors, not the
+// per-skill leaves, each of which this same spec covers with a read-only bind
+// so that os.Stat inside the container reads the bind SOURCE rather than the
+// volume (codex review of PR6, Minor 1; see homeSkeletonDirs). And the root has
+// to be the sandbox's own $HOME, because the entries are relative to it and the
+// runner resolves them against nothing else.
+func TestBuildSandboxSpec_HomeSkeletonDirs_ReachTheSpecAsVerifiableHomeRelativePaths(t *testing.T) {
+	homeDir := hostHomeDir()
+	if homeDir == "" {
+		t.Skip("hostHomeDir() returned empty; cannot exercise mount layout")
+	}
+	rt := SandboxRuntimeInfo{
+		JobID:               "job-1",
+		WorkspaceHomeVolume: "boid-ws-home-01234567-default",
+		SkillsSourceDir:     "/run/user/1000/runtimes/skills",
+	}
+	out, err := BuildSandboxSpec(&orchestrator.JobSpec{}, rt)
+	if err != nil {
+		t.Fatalf("BuildSandboxSpec: %v", err)
+	}
+
+	if out.HomeSkeletonRoot != homeDir {
+		t.Errorf("HomeSkeletonRoot = %q, want the sandbox $HOME %q — the entries are relative to it, and the runner's "+
+			"recovery instructions name the volume-internal path by taking it off", out.HomeSkeletonRoot, homeDir)
+	}
+	if !equalStringSets(out.HomeSkeletonDirs, []string{".claude", filepath.Join(".claude", "skills")}) {
+		t.Errorf("HomeSkeletonDirs = %v, want the bind-target ANCESTORS relative to the home", out.HomeSkeletonDirs)
+	}
+
+	// The leaves are excluded on purpose, and this is the evidence for why:
+	// each one is a mount target in this very spec, so a check on it would
+	// stat the daemon-side bind source instead of the workspace HOME volume.
+	// Asserting the exclusion together with the mount that causes it keeps the
+	// two from being changed independently.
+	for _, name := range skills.EmbeddedSkillNames() {
+		target := filepath.Join(homeDir, ".claude", "skills", name)
+		if mountTargetIndex(out.Mounts, target) == -1 {
+			t.Errorf("test wiring: %s is not a mount target, so its exclusion from HomeSkeletonDirs would be unexplained", target)
+		}
+		for _, rel := range out.HomeSkeletonDirs {
+			if filepath.Join(homeDir, rel) == target {
+				t.Errorf("HomeSkeletonDirs contains %q, which this spec covers with a read-only bind; the runner's os.Stat "+
+					"would read the bind SOURCE and the check would be about a different directory", rel)
+			}
+		}
+	}
+}
+
+// TestBuildSandboxSpec_HomeSkeletonDirs_EmptyWithoutAWorkspaceHomeOrSkills pins
+// the two conditions under which there is genuinely nothing to check, so the
+// runner does not fail jobs over directories no mount depends on: a sandbox
+// whose $HOME is the tmpfs fallback (no workspace home resolved), and one with
+// no per-skill binds layered on (no skills source).
+func TestBuildSandboxSpec_HomeSkeletonDirs_EmptyWithoutAWorkspaceHomeOrSkills(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		rt   SandboxRuntimeInfo
+	}{
+		{"no workspace home", SandboxRuntimeInfo{SkillsSourceDir: "/run/user/1000/runtimes/skills"}},
+		{"no skills source", SandboxRuntimeInfo{WorkspaceHomeVolume: "boid-ws-home-01234567-default"}},
+		{"neither", SandboxRuntimeInfo{}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			out, err := BuildSandboxSpec(&orchestrator.JobSpec{}, tc.rt)
+			if err != nil {
+				t.Fatalf("BuildSandboxSpec: %v", err)
+			}
+			if len(out.HomeSkeletonDirs) != 0 {
+				t.Errorf("HomeSkeletonDirs = %v, want empty", out.HomeSkeletonDirs)
+			}
+			if out.HomeSkeletonRoot != "" {
+				t.Errorf("HomeSkeletonRoot = %q, want empty", out.HomeSkeletonRoot)
+			}
+		})
+	}
+}
+
+// TestBuildSandboxSpec_HomeSkeletonDirs_EmptyForProfileInit covers the third
+// condition, and it is the one neither field can express: a ProfileInit sandbox
+// (`boid kit init` / workspace configure) resolves a workspace home like any
+// other dispatch — Runner.Dispatch does that before it knows the profile — but
+// the ProfileInit branch of the mount switch deliberately never mounts it, so
+// $HOME inside that sandbox is the host's own, rbind-mounted read-only, with no
+// ~/.claude of boid's making anywhere in it.
+//
+// Declaring a skeleton anyway makes the runner fail EVERY such job on a missing
+// directory that nothing was ever going to create. Deriving the answer from the
+// mount list instead of from the SandboxRuntimeInfo fields is what makes this
+// come out right without the builder having to know which branch it took.
+func TestBuildSandboxSpec_HomeSkeletonDirs_EmptyForProfileInit(t *testing.T) {
+	rt := SandboxRuntimeInfo{
+		JobID:               "job-1",
+		WorkspaceHomeVolume: "boid-ws-home-01234567-default",
+		SkillsSourceDir:     "/run/user/1000/runtimes/skills",
+	}
+	out, err := BuildSandboxSpec(&orchestrator.JobSpec{SandboxProfile: int(sandbox.ProfileInit)}, rt)
+	if err != nil {
+		t.Fatalf("BuildSandboxSpec: %v", err)
+	}
+	if mountTargetIndex(out.Mounts, hostHomeDir()) != -1 {
+		t.Fatalf("test wiring: a ProfileInit spec mounted something at %s; this case assumes it does not", hostHomeDir())
+	}
+	if len(out.HomeSkeletonDirs) != 0 || out.HomeSkeletonRoot != "" {
+		t.Errorf("HomeSkeletonRoot=%q HomeSkeletonDirs=%v, want both empty — the workspace home is not mounted in a "+
+			"ProfileInit sandbox, so every entry would be a directory the runner fails the job over for no reason",
+			out.HomeSkeletonRoot, out.HomeSkeletonDirs)
 	}
 }
