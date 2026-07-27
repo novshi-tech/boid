@@ -139,9 +139,8 @@ func (s *stubWorkspaceHomeVolumeAPI) spendTime() {
 // seconds for it.
 func withShortWorkspaceHomeVolumeTimeout(t *testing.T, d time.Duration) {
 	t.Helper()
-	restore := workspaceHomeVolumeTimeout
-	workspaceHomeVolumeTimeout = d
-	t.Cleanup(func() { workspaceHomeVolumeTimeout = restore })
+	restore := workspaceHomeVolumeTimeout.Set(d)
+	t.Cleanup(func() { workspaceHomeVolumeTimeout.Set(restore) })
 }
 
 // matchesFilters implements just enough of the engine's label filter for the

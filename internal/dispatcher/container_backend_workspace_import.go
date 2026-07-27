@@ -67,9 +67,17 @@ import (
 // against a responsive engine, far shorter than a daemon shutdown will wait, so
 // it only fires when the engine is genuinely not answering.
 //
-// A var rather than a const purely so a test can shrink it
+// Mutable purely so a test can shrink it
 // (shrinkWorkspaceHomeContainerCleanupTimeout); nothing in production writes it.
-var workspaceHomeContainerCleanupTimeout = 30 * time.Second
+//
+// atomic rather than a plain var, and this is not defensive style [CI race
+// detector, PR8]. containerCleanupContext's readers include waitLoop, which
+// runs on a goroutine that outlives the test that started its session — so a
+// later test shrinking the value races a previous test's teardown, with no
+// t.Parallel() anywhere in the package. A plain var was reported as a genuine
+// data race by -race on CI while passing locally, which is exactly the shape
+// that ordering-dependent bug takes.
+var workspaceHomeContainerCleanupTimeout = newAtomicDuration(30 * time.Second)
 
 // removeWorkspaceHomeContainer deletes a throwaway workspace-home container,
 // under a context that has dropped the caller's cancellation and carries a bound
@@ -129,7 +137,7 @@ func (b *containerBackend) removeWorkspaceHomeContainer(ctx context.Context, id,
 // The caller MUST call the returned cancel (defer, or immediately after the
 // call) — a leaked timer per failed launch is small, but it is still a leak.
 func containerCleanupContext(ctx context.Context) (context.Context, context.CancelFunc) {
-	return context.WithTimeout(context.WithoutCancel(ctx), workspaceHomeContainerCleanupTimeout)
+	return context.WithTimeout(context.WithoutCancel(ctx), workspaceHomeContainerCleanupTimeout.Get())
 }
 
 var _ WorkspaceHomeImporter = (*containerBackend)(nil)

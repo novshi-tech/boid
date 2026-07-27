@@ -518,7 +518,7 @@ func removeWorkspaceHomeMigrationRecord(path string) error {
 // a sweep that RETURNS instead of hanging — cannot be observed at 30s without a
 // 30-second test, and asserting only that a deadline exists would not show the
 // sweep surviving the engine that never answers.
-var workspaceHomeMigrationSweepTimeout = 30 * time.Second
+var workspaceHomeMigrationSweepTimeout = newAtomicDuration(30 * time.Second)
 
 // SweepInterruptedWorkspaceHomeMigrations resolves every leftover
 // interrupted-migration record on this installation and reports how many it
@@ -669,7 +669,7 @@ func (r *Runner) sweepOneInterruptedWorkspaceHomeMigration(ctx context.Context, 
 	// It wraps only the engine-facing part. The two exclusions above are process-
 	// local (a mutex-backed registry and a flock this daemon is alone in wanting
 	// at startup), so a deadline on them would bound nothing that can hang.
-	boundedCtx, cancel := context.WithTimeout(ctx, workspaceHomeMigrationSweepTimeout)
+	boundedCtx, cancel := context.WithTimeout(ctx, workspaceHomeMigrationSweepTimeout.Get())
 	defer cancel()
 
 	_, err := r.discardInterruptedWorkspaceHomeMigrationLocked(boundedCtx, importerFor, metaDir, slug)

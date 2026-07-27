@@ -1075,9 +1075,8 @@ func TestRunner_SweepInterruptedWorkspaceHomeMigrations_ReturnsWhenTheEngineNeve
 	r, be, volume := settledWorkspaceHome(t, "myws")
 	killedMigrationResidue(t, r, be, "myws", volume)
 
-	prev := workspaceHomeMigrationSweepTimeout
-	workspaceHomeMigrationSweepTimeout = 50 * time.Millisecond
-	t.Cleanup(func() { workspaceHomeMigrationSweepTimeout = prev })
+	prev := workspaceHomeMigrationSweepTimeout.Set(50 * time.Millisecond)
+	t.Cleanup(func() { workspaceHomeMigrationSweepTimeout.Set(prev) })
 	be.blockRemoveUntilDone = true
 
 	rebooted := &Runner{Backend: be}

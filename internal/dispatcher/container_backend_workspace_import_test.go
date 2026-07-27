@@ -432,9 +432,8 @@ func TestContainerBackend_RunWorkspaceInit_BoundsTheContainerCleanup(t *testing.
 // setUmaskForTest relies on).
 func shrinkWorkspaceHomeContainerCleanupTimeout(t *testing.T, d time.Duration) (restore func()) {
 	t.Helper()
-	prev := workspaceHomeContainerCleanupTimeout
-	workspaceHomeContainerCleanupTimeout = d
-	restore = func() { workspaceHomeContainerCleanupTimeout = prev }
+	prev := workspaceHomeContainerCleanupTimeout.Set(d)
+	restore = func() { workspaceHomeContainerCleanupTimeout.Set(prev) }
 	t.Cleanup(restore)
 	return restore
 }

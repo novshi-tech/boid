@@ -969,9 +969,8 @@ func (hangingInspector) ContainerInspect(ctx context.Context, _ string, _ client
 // for a test suite.
 func withSelfInspectTimeout(t *testing.T, d time.Duration) {
 	t.Helper()
-	prev := selfInspectTimeout
-	t.Cleanup(func() { selfInspectTimeout = prev })
-	selfInspectTimeout = d
+	prev := selfInspectTimeout.Set(d)
+	t.Cleanup(func() { selfInspectTimeout.Set(prev) })
 }
 
 // dockerAPI (the container backend's full engine interface) must satisfy the
