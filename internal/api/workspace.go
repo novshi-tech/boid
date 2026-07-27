@@ -51,6 +51,11 @@ func (h *WorkspaceHandler) Routes() chi.Router {
 	// per-workspace operation, and so a future "/{slug}/home/..." surface
 	// (export, prune) has an obvious place to live.
 	r.Post("/{slug}/home/import", h.ImportHome)
+	// PR9 (論点 d), the surface PR8's comment above anticipated: the
+	// workspace's init.sh, read and written through the daemon because the
+	// file lives in the daemon's own volume. See workspace_init_script.go.
+	r.Get("/{slug}/init-script", h.GetInitScript)
+	r.Put("/{slug}/init-script", h.PutInitScript)
 	r.Put("/{slug}", h.Update)
 	r.Delete("/{slug}", h.Remove)
 	return r
@@ -284,6 +289,18 @@ func (h *WorkspaceHandler) Import(w http.ResponseWriter, r *http.Request) {
 // overlapping migration leaves a volume full of credentials that no dispatch can
 // mount and this very endpoint can no longer target. Both deletions therefore
 // run inside the exclusion taken below.
+//
+// A workspace has a THIRD piece — its init.sh — and that one is deleted by
+// RemoveWorkspace itself, not here (PR9 codex round 3, Major 3). Not left
+// behind: dispatch resolves a script from the SLUG alone, so the next
+// workspace created with the same name would inherit the removed one's script
+// and run it against a brand-new, empty HOME volume, with no way to clean it
+// up first (every /{slug}/init-script route 404s once the row is gone). Not
+// deleted from here either, because a second service call means a second
+// critical section, and an apply landing between the two upserted the slug,
+// wrote a script, answered 200 — and had that script deleted by the removal
+// still finishing. The service does both under one hold of its mutex; this
+// function only reports the outcome.
 func (h *WorkspaceHandler) Remove(w http.ResponseWriter, r *http.Request) {
 	slug := chi.URLParam(r, "slug")
 
@@ -317,12 +334,25 @@ func (h *WorkspaceHandler) Remove(w http.ResponseWriter, r *http.Request) {
 		defer release()
 	}
 
-	if err := h.Service.RemoveWorkspace(slug); err != nil {
+	// The row AND the workspace's init.sh, in one call because they have to be
+	// excluded from a concurrent apply together (PR9 codex round 3, Major 3 —
+	// see ProjectAppService.RemoveWorkspace). The script's fate comes back in
+	// the result rather than being raised: by the time it is touched the row
+	// is already gone.
+	removal, err := h.Service.RemoveWorkspace(slug)
+	if err != nil {
 		writeServiceError(w, err)
 		return
 	}
 
 	resp := WorkspaceRemoveResponse{Status: "removed"}
+	resp.InitScriptDeleted = removal.InitScriptDeleted
+	if removal.InitScriptError != nil {
+		resp.InitScriptDeleteError = removal.InitScriptError.Error()
+		slog.Warn("workspace remove: init.sh deletion failed (the workspace row is already gone; delete it by hand or a later workspace of the same name will inherit it)",
+			"slug", slug, "error", removal.InitScriptError)
+	}
+
 	if h.Homes != nil {
 		info, deleted, delErr := deleteWorkspaceHome(r.Context(), h.Homes, slug)
 		resp.HomeVolume = info.Volume
@@ -339,6 +369,7 @@ func (h *WorkspaceHandler) Remove(w http.ResponseWriter, r *http.Request) {
 				"slug", slug, "volume", info.Volume, "error", delErr)
 		}
 	}
+
 	writeJSON(w, http.StatusOK, resp)
 }
 

@@ -22,12 +22,14 @@ type fakeWorkspaceService struct {
 	createFn          func(slug string, meta *orchestrator.WorkspaceMeta) (*WorkspaceDetail, error)
 	getFn             func(slug string) (*WorkspaceDetail, error)
 	updateFn          func(slug string, meta *orchestrator.WorkspaceMeta, ifMatch string, force bool) (*WorkspaceDetail, error)
-	removeFn          func(slug string) error
+	removeFn          func(slug string) (*WorkspaceRemoval, error)
 	listFn            func() ([]*orchestrator.WorkspaceSummary, error)
 	exportFn          func(slug string) ([]byte, string, error)
 	importFn          func(slug string, meta *orchestrator.WorkspaceMeta, mode string) (*WorkspaceDetail, error)
 	applyFn           func(apply *orchestrator.WorkspaceEnvelopeApply, dryRun bool) (*orchestrator.WorkspaceApplyResult, error)
 	exportEnvelopesFn func(slugs []string) ([]byte, error)
+	getInitScriptFn   func(slug string) (*WorkspaceInitScript, error)
+	setInitScriptFn   func(slug string, content []byte, ifMatch string, force bool) (*WorkspaceInitScriptResult, error)
 }
 
 func (s *fakeWorkspaceService) CreateProject(string) (*orchestrator.Project, error) {
@@ -70,7 +72,7 @@ func (s *fakeWorkspaceService) GetWorkspace(slug string) (*WorkspaceDetail, erro
 func (s *fakeWorkspaceService) UpdateWorkspace(slug string, meta *orchestrator.WorkspaceMeta, ifMatch string, force bool) (*WorkspaceDetail, error) {
 	return s.updateFn(slug, meta, ifMatch, force)
 }
-func (s *fakeWorkspaceService) RemoveWorkspace(slug string) error {
+func (s *fakeWorkspaceService) RemoveWorkspace(slug string) (*WorkspaceRemoval, error) {
 	return s.removeFn(slug)
 }
 func (s *fakeWorkspaceService) ExportWorkspace(slug string) ([]byte, string, error) {
@@ -88,6 +90,18 @@ func (s *fakeWorkspaceService) ApplyWorkspace(apply *orchestrator.WorkspaceEnvel
 func (s *fakeWorkspaceService) ExportWorkspaceEnvelopes(slugs []string) ([]byte, error) {
 	if s.exportEnvelopesFn != nil {
 		return s.exportEnvelopesFn(slugs)
+	}
+	panic("not implemented")
+}
+func (s *fakeWorkspaceService) GetWorkspaceInitScript(slug string) (*WorkspaceInitScript, error) {
+	if s.getInitScriptFn != nil {
+		return s.getInitScriptFn(slug)
+	}
+	panic("not implemented")
+}
+func (s *fakeWorkspaceService) SetWorkspaceInitScript(slug string, content []byte, ifMatch string, force bool) (*WorkspaceInitScriptResult, error) {
+	if s.setInitScriptFn != nil {
+		return s.setInitScriptFn(slug, content, ifMatch, force)
 	}
 	panic("not implemented")
 }
@@ -276,9 +290,9 @@ func TestWorkspaceHandler_Update_MismatchPropagates412(t *testing.T) {
 func TestWorkspaceHandler_Remove_Success(t *testing.T) {
 	var gotSlug string
 	svc := &fakeWorkspaceService{
-		removeFn: func(slug string) error {
+		removeFn: func(slug string) (*WorkspaceRemoval, error) {
 			gotSlug = slug
-			return nil
+			return &WorkspaceRemoval{}, nil
 		},
 	}
 	h := &WorkspaceHandler{Service: svc}
@@ -293,8 +307,8 @@ func TestWorkspaceHandler_Remove_Success(t *testing.T) {
 
 func TestWorkspaceHandler_Remove_DefaultRejected400(t *testing.T) {
 	svc := &fakeWorkspaceService{
-		removeFn: func(slug string) error {
-			return &StatusError{Code: http.StatusBadRequest, Message: "reserved"}
+		removeFn: func(slug string) (*WorkspaceRemoval, error) {
+			return nil, &StatusError{Code: http.StatusBadRequest, Message: "reserved"}
 		},
 	}
 	h := &WorkspaceHandler{Service: svc}
@@ -418,7 +432,7 @@ func TestWorkspaceHandler_Show_WithHomeStore_NotYetCreated(t *testing.T) {
 
 func TestWorkspaceHandler_Remove_WithHomeStore_DeletesVolumeAndReportsIt(t *testing.T) {
 	store := newStubHomeStore(map[string]int64{"team-a": 7})
-	svc := &fakeWorkspaceService{removeFn: func(string) error { return nil }}
+	svc := &fakeWorkspaceService{removeFn: func(string) (*WorkspaceRemoval, error) { return &WorkspaceRemoval{}, nil }}
 	h := &WorkspaceHandler{Service: svc, Homes: store}
 	w := doWorkspaceRequest(h.Routes(), http.MethodDelete, "/team-a", "", nil, nil)
 	if w.Code != http.StatusOK {
@@ -447,7 +461,7 @@ func TestWorkspaceHandler_Remove_WithHomeStore_DeletesVolumeAndReportsIt(t *test
 // side of the D5 gate: with no engine handle, remove still succeeds on the
 // row and simply reports that no home deletion was attempted.
 func TestWorkspaceHandler_Remove_NoHomeStore_LeavesTheVolumeAlone(t *testing.T) {
-	svc := &fakeWorkspaceService{removeFn: func(string) error { return nil }}
+	svc := &fakeWorkspaceService{removeFn: func(string) (*WorkspaceRemoval, error) { return &WorkspaceRemoval{}, nil }}
 	h := &WorkspaceHandler{Service: svc} // Homes left nil.
 	w := doWorkspaceRequest(h.Routes(), http.MethodDelete, "/team-a", "", nil, nil)
 	if w.Code != http.StatusOK {
@@ -472,7 +486,7 @@ func TestWorkspaceHandler_Remove_NoHomeStore_LeavesTheVolumeAlone(t *testing.T) 
 // must still refuse to touch its home.
 func TestWorkspaceHandler_Remove_DefaultWorkspace_NeverDeletesHomeVolume(t *testing.T) {
 	store := newStubHomeStore(map[string]int64{orchestrator.DefaultWorkspaceSlug: 10})
-	svc := &fakeWorkspaceService{removeFn: func(string) error { return nil }}
+	svc := &fakeWorkspaceService{removeFn: func(string) (*WorkspaceRemoval, error) { return &WorkspaceRemoval{}, nil }}
 	h := &WorkspaceHandler{Service: svc, Homes: store}
 	w := doWorkspaceRequest(h.Routes(), http.MethodDelete, "/"+orchestrator.DefaultWorkspaceSlug, "", nil, nil)
 	if w.Code != http.StatusOK {
@@ -507,7 +521,7 @@ func TestWorkspaceHandler_Remove_HomeDeleteFailure_StillReturns200(t *testing.T)
 	store.removeErrs = map[string]error{
 		"team-a": errors.New("volume is being used by the following container(s): abc123"),
 	}
-	svc := &fakeWorkspaceService{removeFn: func(string) error { return nil }}
+	svc := &fakeWorkspaceService{removeFn: func(string) (*WorkspaceRemoval, error) { return &WorkspaceRemoval{}, nil }}
 	h := &WorkspaceHandler{Service: svc, Homes: store}
 	w := doWorkspaceRequest(h.Routes(), http.MethodDelete, "/team-a", "", nil, nil)
 	if w.Code != http.StatusOK {

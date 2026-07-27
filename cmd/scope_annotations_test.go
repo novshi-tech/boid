@@ -153,9 +153,20 @@ var expectedScopeAnnotations = map[string]string{
 	// is a tar stream rather than a bind mount (docs/plans/
 	// workspace-home-volume-persistence.md 論点 f).
 	"boid workspace import-home": scopeRemote,
-	"boid workspace list":        scopeRemote,
-	"boid workspace remove":      scopeRemote,
-	"boid workspace show":        scopeRemote,
+	// The init-script quartet (PR9 of
+	// docs/plans/workspace-home-volume-persistence.md, 論点 d). scopeRemote on
+	// the same axis import-home above is: -f/-o name files on THIS machine and
+	// are opened in this process, but the init.sh itself lives with the daemon
+	// — in its own config root, which under the container deploy is inside its
+	// state volume — so every one of these is an API call and none of them
+	// works without a daemon.
+	"boid workspace get-init-script":   scopeRemote,
+	"boid workspace set-init-script":   scopeRemote,
+	"boid workspace edit-init-script":  scopeRemote,
+	"boid workspace unset-init-script": scopeRemote,
+	"boid workspace list":              scopeRemote,
+	"boid workspace remove":            scopeRemote,
+	"boid workspace show":              scopeRemote,
 
 	// local — daemon lifecycle machinery itself, sandbox-launch plumbing,
 	// commands that never talk to a daemon, or (see the doc comment above)

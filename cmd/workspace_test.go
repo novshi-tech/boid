@@ -17,6 +17,7 @@ import (
 	"github.com/novshi-tech/boid/internal/orchestrator"
 	"github.com/novshi-tech/boid/internal/server"
 	"github.com/novshi-tech/boid/testutil"
+	"github.com/spf13/cobra"
 )
 
 // seedHostCommandsForTest hand-writes the aggregated host_commands.yaml and
@@ -1087,6 +1088,212 @@ func TestRunWorkspaceExport_404OnMissing(t *testing.T) {
 	}
 }
 
+// newFakeExportServer starts a stub UNIX-socket HTTP server answering every
+// request with the given status and raw body, and returns a *cobra.Command
+// bound to a client pointed at it — enough to drive runWorkspaceExport against
+// a response a real daemon should never produce.
+func newFakeExportServer(t *testing.T, statusCode int, body string, out, errOut *bytes.Buffer) *cobra.Command {
+	t.Helper()
+	sockPath := filepath.Join(t.TempDir(), "fake-export.sock")
+	ln, err := net.Listen("unix", sockPath)
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	srv := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(statusCode)
+		_, _ = w.Write([]byte(body))
+	})}
+	go func() { _ = srv.Serve(ln) }()
+	t.Cleanup(func() { _ = srv.Close() })
+
+	cmd := workspaceExportCmd
+	prev := cmd.Context()
+	t.Cleanup(func() { cmd.SetContext(prev) })
+	cmd.SetOut(out)
+	cmd.SetErr(errOut)
+	cmd.SetContext(client.WithClient(context.Background(), client.NewUnixClient(sockPath)))
+	return cmd
+}
+
+// TestRunWorkspaceExport_RefusesAnUndecodableResponse is PR9 codex round 4,
+// Major 1's CLI half.
+//
+// warnExportedWorkspaceEnvelopes decoded the response only to print advisory
+// warnings and swallowed the decode error, so a 200 whose body is not a
+// restorable set of Workspace documents was written to -o/--output and reported
+// as "exported N workspace(s)" — with N = 0, the only hint, on a line an
+// operator reads as success. `boid workspace export` is the endorsed backup
+// path; a file it wrote that its own `apply` cannot read is the one outcome
+// that must never be silent.
+func TestRunWorkspaceExport_RefusesAnUndecodableResponse(t *testing.T) {
+	resetWorkspaceExportImportFlags(t)
+	defer resetWorkspaceExportImportFlags(t)
+
+	outFile := filepath.Join(t.TempDir(), "exported.yaml")
+	if err := workspaceExportCmd.Flags().Set("output", outFile); err != nil {
+		t.Fatalf("set --output: %v", err)
+	}
+
+	var out, errOut bytes.Buffer
+	// Valid yaml, but not a boid.dev/v1 Workspace document — the shape a
+	// daemon emitting something broken (or a proxy answering 200 with an error
+	// page) would produce.
+	cmd := newFakeExportServer(t, http.StatusOK, "not: a workspace document\n", &out, &errOut)
+
+	if err := runWorkspaceExport(cmd, []string{"team-a"}); err == nil {
+		t.Fatal("export of an undecodable response succeeded; the file it wrote cannot be applied")
+	}
+	if _, err := os.Stat(outFile); !os.IsNotExist(err) {
+		data, _ := os.ReadFile(outFile)
+		t.Errorf("--output file exists after a refused export (%q); nothing that cannot be restored may be written", data)
+	}
+}
+
+// TestRunWorkspaceExport_RefusesAnEmptyResponse is the same contract for the
+// degenerate case: a 200 with nothing in it wrote a zero-byte "backup" and
+// reported "exported 0 workspace(s)".
+func TestRunWorkspaceExport_RefusesAnEmptyResponse(t *testing.T) {
+	resetWorkspaceExportImportFlags(t)
+	defer resetWorkspaceExportImportFlags(t)
+
+	outFile := filepath.Join(t.TempDir(), "exported.yaml")
+	if err := workspaceExportCmd.Flags().Set("output", outFile); err != nil {
+		t.Fatalf("set --output: %v", err)
+	}
+
+	var out, errOut bytes.Buffer
+	cmd := newFakeExportServer(t, http.StatusOK, "", &out, &errOut)
+
+	if err := runWorkspaceExport(cmd, []string{"team-a"}); err == nil {
+		t.Fatal("export of an empty response succeeded")
+	}
+	if _, err := os.Stat(outFile); !os.IsNotExist(err) {
+		t.Error("--output file exists after a refused export")
+	}
+}
+
+// preInitScriptExportDocument is what a daemon PREDATING PR9 answers
+// GET /api/workspaces/export with: a perfectly valid boid.dev/v1 Workspace
+// document that simply has no spec.init_script key, because that daemon has no
+// such concept. `slug` names the workspace so a multi-document body can be
+// assembled from several of these.
+func preInitScriptExportDocument(slug string) string {
+	return "apiVersion: boid.dev/v1\nkind: Workspace\nmetadata:\n  name: " + slug +
+		"\nspec:\n  host_commands:\n    - gh\n  env: {}\n  allowed_domains: []\n" +
+		"  extra_repos: []\n  container_image: \"\"\n  capabilities: {}\n  projects: []\n"
+}
+
+// TestRunWorkspaceExport_RefusesADocumentWithoutInitScript is PR9 codex round 4
+// (final), Major 1: the version-skew half of "a file this command wrote can
+// always be restored".
+//
+// The decode gate above only proves the response is READABLE by `apply`, and
+// `apply`'s schema reads a missing spec.init_script as "leave this workspace's
+// init.sh alone" — a legitimate instruction for a hand-written document, and a
+// silent hole for a backup. A new CLI pointed at a daemon that predates PR9
+// (these are scopeRemote commands, and fetchWorkspaceInitScript already handles
+// exactly this skew for the init-script routes) gets a valid old envelope with
+// no init_script key, writes it, and reports success. Restoring it brings the
+// metadata back and no init.sh, so the workspace's HOME volume comes up with no
+// toolchain in it and the next dispatch cannot start a harness.
+func TestRunWorkspaceExport_RefusesADocumentWithoutInitScript(t *testing.T) {
+	resetWorkspaceExportImportFlags(t)
+	defer resetWorkspaceExportImportFlags(t)
+
+	outFile := filepath.Join(t.TempDir(), "exported.yaml")
+	if err := workspaceExportCmd.Flags().Set("output", outFile); err != nil {
+		t.Fatalf("set --output: %v", err)
+	}
+
+	var out, errOut bytes.Buffer
+	cmd := newFakeExportServer(t, http.StatusOK, preInitScriptExportDocument("team-a"), &out, &errOut)
+
+	err := runWorkspaceExport(cmd, []string{"team-a"})
+	if err == nil {
+		t.Fatal("export of a document with no spec.init_script succeeded; that file restores a workspace with no init.sh")
+	}
+	// What happened, and what to do about it.
+	if !strings.Contains(err.Error(), "init_script") {
+		t.Errorf("error = %q, want it to name the missing spec.init_script key", err)
+	}
+	if !strings.Contains(err.Error(), "team-a") {
+		t.Errorf("error = %q, want it to name the workspace", err)
+	}
+	if !strings.Contains(err.Error(), "upgrade") {
+		t.Errorf("error = %q, want it to tell the operator to upgrade the daemon", err)
+	}
+	if _, statErr := os.Stat(outFile); !os.IsNotExist(statErr) {
+		data, _ := os.ReadFile(outFile)
+		t.Errorf("--output file exists after a refused export (%q); an incomplete backup must never be written", data)
+	}
+}
+
+// TestRunWorkspaceExport_All_RefusesADocumentWithoutInitScript is the same
+// contract for --all, where the shortfall can be partial: the check has to be
+// per DOCUMENT, not "did any document carry the key". A body whose first
+// workspace has a script and whose second does not must still be refused
+// wholesale — `--all` is the endorsed backup path, and a backup that silently
+// drops one workspace's init.sh is the same failure, just harder to notice.
+func TestRunWorkspaceExport_All_RefusesADocumentWithoutInitScript(t *testing.T) {
+	resetWorkspaceExportImportFlags(t)
+	defer resetWorkspaceExportImportFlags(t)
+
+	outFile := filepath.Join(t.TempDir(), "exported.yaml")
+	if err := workspaceExportCmd.Flags().Set("output", outFile); err != nil {
+		t.Fatalf("set --output: %v", err)
+	}
+	if err := workspaceExportCmd.Flags().Set("all", "true"); err != nil {
+		t.Fatalf("set --all: %v", err)
+	}
+
+	body := "apiVersion: boid.dev/v1\nkind: Workspace\nmetadata:\n  name: team-a\nspec:\n  init_script: |\n    echo hi\n" +
+		"---\n" + preInitScriptExportDocument("team-b")
+
+	var out, errOut bytes.Buffer
+	cmd := newFakeExportServer(t, http.StatusOK, body, &out, &errOut)
+
+	err := runWorkspaceExport(cmd, nil)
+	if err == nil {
+		t.Fatal("--all export succeeded with one document missing spec.init_script")
+	}
+	if !strings.Contains(err.Error(), "team-b") {
+		t.Errorf("error = %q, want it to name the workspace whose init_script is missing", err)
+	}
+	if _, statErr := os.Stat(outFile); !os.IsNotExist(statErr) {
+		t.Error("--output file exists after a refused --all export")
+	}
+}
+
+// TestRunWorkspaceExport_RefusedBeforeAnyAdvisoryWarning keeps the refusal from
+// arriving underneath a pile of advisory noise: a refused export produced
+// nothing, so warnings about what is in it describe a file that does not exist.
+func TestRunWorkspaceExport_RefusedBeforeAnyAdvisoryWarning(t *testing.T) {
+	resetWorkspaceExportImportFlags(t)
+	defer resetWorkspaceExportImportFlags(t)
+
+	if err := workspaceExportCmd.Flags().Set("all", "true"); err != nil {
+		t.Fatalf("set --all: %v", err)
+	}
+
+	// Document 1 would warn (a project with no captured url); document 2 is the
+	// one that fails the check.
+	body := "apiVersion: boid.dev/v1\nkind: Workspace\nmetadata:\n  name: team-a\nspec:\n  init_script: \"\"\n  projects:\n    - name: rook\n" +
+		"---\n" + preInitScriptExportDocument("team-b")
+
+	var out, errOut bytes.Buffer
+	cmd := newFakeExportServer(t, http.StatusOK, body, &out, &errOut)
+
+	if err := runWorkspaceExport(cmd, nil); err == nil {
+		t.Fatal("export succeeded with one document missing spec.init_script")
+	}
+	if errOut.Len() != 0 {
+		t.Errorf("stderr = %q, want no advisory warning about a document that was never written", errOut.String())
+	}
+	if out.Len() != 0 {
+		t.Errorf("stdout = %q, want nothing emitted for a refused export", out.String())
+	}
+}
+
 // TestRunWorkspaceExport_DoesNotWarnOnHomeBoidPath pins Minor 1 (codex
 // round-1): /home/boid/* is the valid container path for the boid user's
 // own home (the plan doc's own documented example, "GOPATH: /home/boid/go")
@@ -1719,6 +1926,44 @@ func TestFormatWorkspaceRemoveResult_EveryOutcome(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestFormatWorkspaceRemoveResult_ReportsAFailedInitScriptDeletion is PR9
+// codex round 2, Major 1's CLI half.
+//
+// `workspace remove` now deletes the workspace's init.sh alongside the home
+// volume, and on the same best-effort footing — so the same reasoning applies
+// to reporting it. A leftover init.sh is inherited by the next workspace
+// created with that slug and run against its fresh HOME volume, and with the
+// row gone `boid workspace unset-init-script` can no longer remove it. If the
+// CLI stays quiet about the failure, nothing tells the operator that.
+//
+// The successful deletion is deliberately silent, like the home volume's
+// "there was nothing to delete" case: it is the expected outcome of the
+// command that was just run.
+func TestFormatWorkspaceRemoveResult_ReportsAFailedInitScriptDeletion(t *testing.T) {
+	failed := formatWorkspaceRemoveResult("team-x", api.WorkspaceRemoveResponse{
+		HomeVolume:            "boid-ws-home-abcd1234-team-x",
+		HomeDeleted:           true,
+		InitScriptDeleteError: "remove /home/boid/.config/boid/workspaces/team-x/init.sh: permission denied",
+	})
+	for _, want := range []string{
+		"init.sh",
+		"/home/boid/.config/boid/workspaces/team-x/init.sh",
+		// The consequence, not just the error: this is what makes it worth a line.
+		"inherit",
+	} {
+		if !strings.Contains(failed, want) {
+			t.Errorf("remove summary = %q, want it to contain %q", failed, want)
+		}
+	}
+
+	quiet := formatWorkspaceRemoveResult("team-x", api.WorkspaceRemoveResponse{
+		HomeVolume: "boid-ws-home-abcd1234-team-x", HomeDeleted: true, InitScriptDeleted: true,
+	})
+	if strings.Contains(quiet, "init.sh") {
+		t.Errorf("remove summary = %q, want no init.sh line when the deletion succeeded", quiet)
 	}
 }
 

@@ -424,7 +424,7 @@ func TestNewWorkspaceEnvelopeFromMeta_RoundTrip(t *testing.T) {
 		AllowedDomains: []string{"example.com"},
 	}
 	projects := []WorkspaceEnvelopeProject{{Name: "rook-server", URL: "git@bitbucket.org:x/rook-server.git"}}
-	envelope := NewWorkspaceEnvelopeFromMeta("default", meta, projects)
+	envelope := NewWorkspaceEnvelopeFromMeta("default", meta, projects, "")
 	if envelope.APIVersion != WorkspaceEnvelopeAPIVersion {
 		t.Errorf("APIVersion = %q", envelope.APIVersion)
 	}
@@ -468,7 +468,7 @@ func TestNewWorkspaceEnvelopeFromMeta_ExplicitEmptyFieldsSurviveExport(t *testin
 		HostCommands:   []string{},
 		AllowedDomains: []string{},
 	}
-	envelope := NewWorkspaceEnvelopeFromMeta("team-empty", meta, []WorkspaceEnvelopeProject{})
+	envelope := NewWorkspaceEnvelopeFromMeta("team-empty", meta, []WorkspaceEnvelopeProject{}, "")
 	data, err := yaml.Marshal(envelope)
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
@@ -506,7 +506,7 @@ func TestNewWorkspaceEnvelopeFromMeta_ExtraFieldsSurviveExport(t *testing.T) {
 		ContainerImage: "",
 		Capabilities:   Capabilities{},
 	}
-	envelope := NewWorkspaceEnvelopeFromMeta("team-empty", meta, nil)
+	envelope := NewWorkspaceEnvelopeFromMeta("team-empty", meta, nil, "")
 	data, err := yaml.Marshal(envelope)
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
@@ -539,7 +539,7 @@ func TestNewWorkspaceEnvelopeFromMeta_ExtraFieldsSurviveExport(t *testing.T) {
 func TestApplyWorkspaceEnvelope_ClearsStaleExtraReposAndCapabilities(t *testing.T) {
 	// Export side: a workspace with both fields explicitly empty.
 	cleanMeta := &WorkspaceMeta{ExtraRepos: []string{}, Capabilities: Capabilities{}}
-	envelope := NewWorkspaceEnvelopeFromMeta("team-a", cleanMeta, nil)
+	envelope := NewWorkspaceEnvelopeFromMeta("team-a", cleanMeta, nil, "")
 	data, err := yaml.Marshal(envelope)
 	if err != nil {
 		t.Fatalf("marshal: %v", err)

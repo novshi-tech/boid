@@ -1256,6 +1256,21 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 		// reads/writes. srv.db is the exact same connection projectRepo
 		// above was built from.
 		WorkspacesConn: srv.db,
+		// InitScripts backs GET/PUT /api/workspaces/{slug}/init-script and the
+		// spec.init_script half of export/apply (PR9 of
+		// docs/plans/workspace-home-volume-persistence.md, 論点 d).
+		//
+		// The zero value is the whole wiring: the store deliberately has no
+		// configurable root, because it must resolve the SAME path
+		// resolveWorkspaceHome reads the script from — which comes from the
+		// daemon's own os.UserConfigDir. Under the container deploy that is
+		// inside the daemon's state volume, which is exactly why an HTTP
+		// surface had to exist at all.
+		//
+		// Unconditional, unlike Homes/HomeImporter below: this store needs no
+		// engine handle and no container backend, so there is no environment
+		// where the daemon can serve workspaces but not their init scripts.
+		InitScripts: dispatcher.WorkspaceInitScriptStore{},
 	}
 	boidCfg, err := config.Load()
 	if err != nil {

@@ -444,7 +444,7 @@ func TestProjectAppService_RemoveWorkspace_Success(t *testing.T) {
 	ws.metas["team-a"] = &orchestrator.WorkspaceMeta{}
 	svc := newWorkspaceTestService(ws, nil, nil)
 
-	if err := svc.RemoveWorkspace("team-a"); err != nil {
+	if _, err := svc.RemoveWorkspace("team-a"); err != nil {
 		t.Fatalf("RemoveWorkspace: %v", err)
 	}
 	if _, ok := ws.metas["team-a"]; ok {
@@ -454,7 +454,7 @@ func TestProjectAppService_RemoveWorkspace_Success(t *testing.T) {
 
 func TestProjectAppService_RemoveWorkspace_RejectsDefault(t *testing.T) {
 	svc := newWorkspaceTestService(newStubWorkspaceStore(), nil, nil)
-	err := svc.RemoveWorkspace(orchestrator.DefaultWorkspaceSlug)
+	_, err := svc.RemoveWorkspace(orchestrator.DefaultWorkspaceSlug)
 	if err == nil {
 		t.Fatal("expected error removing default workspace, got nil")
 	}
@@ -507,7 +507,7 @@ func TestProjectAppService_RemoveWorkspace_SyncsInMemoryCacheForReassignedProjec
 		Workspaces: ws,
 	}
 
-	if err := svc.RemoveWorkspace("team-a"); err != nil {
+	if _, err := svc.RemoveWorkspace("team-a"); err != nil {
 		t.Fatalf("RemoveWorkspace: %v", err)
 	}
 
@@ -553,7 +553,7 @@ func TestRemoveWorkspaceAndAssign_RaceOnCacheSync(t *testing.T) {
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		_ = svc.RemoveWorkspace("team-a")
+		_, _ = svc.RemoveWorkspace("team-a")
 	}()
 	go func() {
 		defer wg.Done()
@@ -568,7 +568,7 @@ func TestRemoveWorkspaceAndAssign_RaceOnCacheSync(t *testing.T) {
 
 func TestProjectAppService_RemoveWorkspace_NotFound(t *testing.T) {
 	svc := newWorkspaceTestService(newStubWorkspaceStore(), nil, nil)
-	err := svc.RemoveWorkspace("ghost")
+	_, err := svc.RemoveWorkspace("ghost")
 	if err == nil {
 		t.Fatal("expected not-found error, got nil")
 	}
@@ -626,7 +626,8 @@ func TestUpdateWorkspace_ForcePathBlocksMidDelete(t *testing.T) {
 
 	removeDone := make(chan error, 1)
 	go func() {
-		removeDone <- svc.RemoveWorkspace("team-a")
+		_, err := svc.RemoveWorkspace("team-a")
+		removeDone <- err
 	}()
 
 	// Give RemoveWorkspace a chance to run to completion here if s.mu did
@@ -701,7 +702,8 @@ func TestCreateWorkspace_BlocksMidRemove(t *testing.T) {
 
 	removeDone := make(chan error, 1)
 	go func() {
-		removeDone <- svc.RemoveWorkspace("team-a")
+		_, err := svc.RemoveWorkspace("team-a")
+		removeDone <- err
 	}()
 
 	// Without s.mu covering CreateWorkspace, RemoveWorkspace would run here
@@ -848,7 +850,8 @@ func TestReloadProjects_BlockedByRemove(t *testing.T) {
 
 	removeDone := make(chan error, 1)
 	go func() {
-		removeDone <- svc.RemoveWorkspace("team-a")
+		_, err := svc.RemoveWorkspace("team-a")
+		removeDone <- err
 	}()
 
 	select {

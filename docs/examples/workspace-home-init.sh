@@ -2,7 +2,21 @@
 # workspace home 初期化スクリプト (リファレンス実装)
 #
 # docs/plans/home-workspace-volume.md の init.sh 契約に沿ったサンプル。
-# workspace 側 (~/.config/boid/workspaces/<slug>/init.sh) にコピーして使う。
+#
+# 登録方法 (このファイルをコピー・編集した上で):
+#   boid workspace set-init-script <slug> -f workspace-home-init.sh
+#
+# init.sh は daemon が保持している。 実体は daemon の
+# ~/.config/boid/workspaces/<slug>/init.sh だが、これは **daemon 自身の**
+# ファイルシステム上の path であり、container デプロイでは daemon の state volume
+# の中なので、ホスト側の同名 path にコピーしても読まれない
+# (PR9 / docs/plans/workspace-home-volume-persistence.md 論点 d)。
+# 現在の内容は `boid workspace get-init-script <slug>`、
+# その場で編集するなら `boid workspace edit-init-script <slug>`。
+#
+# なお 1 行目の shebang は **無視される**: boid は init.sh を exec せず、
+# bytes を読んで使い捨て container 内の bash に渡す (下記「実行環境」)。
+# ローカルで shellcheck / 直接実行するときのために残してある。
 #
 # 実行環境:
 #   - boid が dispatch 前に起こす**使い捨て container** の中 (trusted)。

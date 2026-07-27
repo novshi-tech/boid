@@ -10,6 +10,7 @@ import (
 	"reflect"
 	"sort"
 
+	"github.com/novshi-tech/boid/internal/api"
 	"github.com/novshi-tech/boid/internal/client"
 	"github.com/novshi-tech/boid/internal/orchestrator"
 	"github.com/spf13/cobra"
@@ -143,6 +144,12 @@ func applyOneWorkspaceDocument(c *client.Client, out, stderr io.Writer, slug str
 	}
 
 	printWorkspaceApplyProjectChanges(out, dryRun, slug, &result)
+	printWorkspaceApplyInitScriptChange(out, dryRun, slug, &result)
+	// result.Warnings is deliberately NOT printed here: its doc comment
+	// (orchestrator.WorkspaceApplyResult) scopes it to callers that hit the
+	// endpoint directly, precisely because this command already emits the
+	// same notices client-side — printing both would double every one of
+	// them.
 	for _, name := range result.MissingProjects {
 		fmt.Fprintf(stderr, "warning: project '%s' referenced in workspace '%s' does not exist yet. Register it separately (or via PR-2's boid project add <url>) then re-apply.\n", name, slug)
 	}
@@ -175,6 +182,39 @@ func printWorkspaceApplyProjectChanges(out io.Writer, dryRun bool, slug string, 
 	for _, id := range result.DetachedProjects {
 		fmt.Fprintf(out, "  project %q %s from %q (moved to %q)\n", id, detachVerb, slug, orchestrator.DefaultWorkspaceSlug)
 	}
+}
+
+// printWorkspaceApplyInitScriptChange reports what the apply did (or would do)
+// to the workspace's init.sh — PR9 of
+// docs/plans/workspace-home-volume-persistence.md, 論点 d.
+//
+// Printed as its own line rather than folded into printWorkspaceApplyDiff's
+// field list, because it is not a WorkspaceMeta field and did not land in the
+// same transaction: it is a separate write to a file on the daemon, and a
+// reader has to be able to see that. An empty InitScriptAction means the
+// document carried no spec.init_script key at all — nothing to say.
+//
+// "unchanged" is printed too, unlike the project listing's already-attached
+// case (dry-run only). Re-applying a backup and being told nothing about the
+// script leaves "the script is identical" and "this daemon ignored the field"
+// looking the same, and only one of them is fine.
+func printWorkspaceApplyInitScriptChange(out io.Writer, dryRun bool, slug string, result *orchestrator.WorkspaceApplyResult) {
+	if result.InitScriptAction == "" {
+		return
+	}
+	verb := map[string]string{
+		api.WorkspaceInitScriptWritten:   "written",
+		api.WorkspaceInitScriptCleared:   "cleared (the workspace now runs no init script)",
+		api.WorkspaceInitScriptUnchanged: "unchanged",
+	}[result.InitScriptAction]
+	if verb == "" {
+		verb = result.InitScriptAction
+	}
+	if dryRun {
+		fmt.Fprintf(out, "  init.sh would be %s\n", verb)
+		return
+	}
+	fmt.Fprintf(out, "  init.sh %s\n", verb)
 }
 
 // printWorkspaceApplyDiff renders --dry-run's preview: per WorkspaceMeta

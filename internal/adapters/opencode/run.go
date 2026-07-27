@@ -24,21 +24,34 @@ var lookPath = exec.LookPath
 // missingCLIError for the full rationale (Phase 4 PR3 retired the adapter's
 // own CLI bind-mount — opencode/bindings.go — in favor of the workspace HOME
 // volume, so a lookup miss now points at the workspace's init.sh instead of
-// a generic "command not found"). slug comes from
-// rc.Env["BOID_WORKSPACE_SLUG"] and falls back to "default"; cause is
-// wrapped with %w so errors.Is(err, exec.ErrNotFound) still holds.
+// a generic "command not found"; PR9 of
+// docs/plans/workspace-home-volume-persistence.md then replaced the host path
+// it used to print with the CLI commands that actually reach the daemon's
+// copy). slug comes from rc.Env["BOID_WORKSPACE_SLUG"] and falls back to
+// "default"; cause is wrapped with %w so errors.Is(err, exec.ErrNotFound)
+// still holds.
+//
+// Kept literal-identical to the other two adapters' copies on purpose: this is
+// one message with three call sites, and a divergence here would show up as an
+// operator being told different things depending on which harness they
+// happened to run.
 func missingCLIError(slug string, cause error) error {
 	if slug == "" {
 		slug = "default"
 	}
 	return fmt.Errorf(
 		"%s CLI not found in workspace $HOME.\n"+
-			"Phase 4 では workspace 単位の $HOME に harness CLI をインストールする必要があります。\n"+
-			"~/.config/boid/workspaces/%s/init.sh に %s のインストールコマンドを記述し、次回 dispatch 時に自動セットアップされます。\n"+
-			"例: init.sh の中で `curl -fsSL https://claude.ai/install.sh | bash` (実際のインストール方法はハーネスによる)。\n"+
-			"詳細: docs/plans/home-workspace-volume.md の init.sh 契約節を参照。\n"+
+			"workspace ごとの $HOME (named volume) に harness CLI をインストールする必要があり、それを行うのが workspace の init.sh です。\n"+
+			"init.sh は daemon が保持しているので、ホスト側の ~/.config/boid/workspaces/%s/init.sh を編集しても反映されません。\n"+
+			"  現在の内容:   boid workspace get-init-script %s\n"+
+			"  ファイルから: boid workspace set-init-script %s -f init.sh\n"+
+			"  直接編集:     boid workspace edit-init-script %s\n"+
+			"init.sh に %s のインストールコマンドを書くと、次回 dispatch 時に自動セットアップされます。\n"+
+			"例: `curl -fsSL https://claude.ai/install.sh | bash` (実際のインストール方法はハーネスによる)。\n"+
+			"shebang 行は無視される (boid は init.sh を exec せず bash に渡す)。\n"+
+			"詳細: docs/ja/guide/workspace-home.md の init.sh 節を参照。\n"+
 			"(lookup error: %w)",
-		harnessCLI, slug, harnessCLI, cause,
+		harnessCLI, slug, slug, slug, slug, harnessCLI, cause,
 	)
 }
 

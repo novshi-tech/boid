@@ -195,7 +195,15 @@ func TestRun_MissingCLI_ReturnsFailFastError(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected an error when codex is not on PATH")
 	}
-	for _, want := range []string{"codex", "myws", "init.sh", "docs/plans/home-workspace-volume.md"} {
+	// PR9 of docs/plans/workspace-home-volume-persistence.md (論点 d, D4):
+	// the message must name the CLI COMMAND that fixes this, not a host
+	// path. Before PR9 it said "~/.config/boid/workspaces/<slug>/init.sh",
+	// which reads as a file on the operator's machine and, since the
+	// volume-only cutover, is not one — that path resolves inside the
+	// daemon's own state volume, so editing the host copy does nothing at
+	// all. The three adapters carry the same message and are changed in
+	// lockstep.
+	for _, want := range []string{"codex", "myws", "init.sh", "boid workspace set-init-script myws"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error = %q, want it to contain %q", err.Error(), want)
 		}

@@ -38,15 +38,71 @@ workspace を明示的に割り当てていないプロジェクトは `default`
 workspace に `init.sh` を置いておくと、その workspace への **最初の dispatch 時に自動実行**されます。
 claude CLI のインストールなど、workspace home 側に一度だけセットアップしておきたい作業に使います。
 
-### 置き場所
+### 置き場所と編集方法
 
-```
-~/.config/boid/workspaces/<slug>/init.sh
+`init.sh` は **daemon が保持**します。 実体は daemon の config ディレクトリ
+(`~/.config/boid/workspaces/<slug>/init.sh`、`$XDG_CONFIG_HOME` が設定されていれば
+そちら) ですが、これは **daemon 自身のファイルシステム上の**パスです —
+container デプロイでは daemon の state volume の中なので、**ホスト側の
+`~/.config/boid/` を編集しても反映されません**。
+
+編集は CLI 経由で行います:
+
+```bash
+# 現在の内容を見る (ファイルに落とすなら -o init.sh)
+boid workspace get-init-script <slug>
+
+# ローカルのファイルから登録する (- で stdin)
+boid workspace set-init-script <slug> -f init.sh
+
+# $EDITOR で直接編集する (保存時に適用)
+boid workspace edit-init-script <slug>
+
+# 削除して「init.sh 無し」の状態に戻す
+boid workspace unset-init-script <slug>
 ```
 
-(`$XDG_CONFIG_HOME` が設定されていればそちらが優先されます。`workspace.yaml` や
-`host_commands.yaml` と同じ、ホスト側の config ディレクトリです — サンドボックスからは
-見えず、書き換えることもできません。)
+`set-init-script` / `edit-init-script` / `unset-init-script` は書き込み前に現在の
+リビジョン (ETag) を確認するので、読んでから書くまでの間に他の経路で内容が変わっていれば
+上書きせずにエラーになります (`--force` で無効化)。
+
+`boid workspace export` した yaml には `spec.init_script` として **init.sh の内容も
+含まれます**。 `boid workspace apply -f <file>` で復元でき、これが workspace ごと
+別 install へ移す経路です。 `spec.init_script: ""` (明示的な空文字列) は
+「この workspace に init.sh は無い」の意味で、apply 時に既存の init.sh を削除します。
+キー自体が無い場合は現在の init.sh に触れません。
+
+空の init.sh は保存できません — 空の内容を書くと「init.sh 無し」として削除されます
+(空のスクリプトと未設定は dispatch から見て同じ状態なので、2 つの表現を持ちません)。
+
+`init.sh` の上限は **128 KiB** で、これは init.sh を保存する**すべての経路**に効きます
+(専用エンドポイントでも、apply する文書の `spec.init_script` でも同じ)。 daemon は hash と
+heredoc への埋め込みのために内容を全部メモリに載せるので上限自体が必要で、その値は
+「受理した script は `workspace export` → `workspace apply` で必ず戻せる」ことから
+逆算しています — export は script を yaml 文書に埋めるので膨らみ、`apply` はその文書を
+1 MiB の body 上限で読むためです。 手書きの init.sh は数 KB (リファレンス実装で 5 KB 未満)
+なので実害はありません。
+
+この保証のもう半分は export 側にあります: export した文書が `apply` の 1 MiB を超える
+workspace があると、**`boid workspace export` は該当 workspace 名を挙げて失敗します** —
+復元できないファイルを黙って書き出すよりはエラーの方がましだからです。 script の取り分は
+上の上限で抑えられているので、ここに引っかかるのは workspace の**メタデータ**が巨大な場合
+(数百 KB の `env` 値など) に限られます。 メタデータを減らすか、`--all` をやめて
+残りの workspace を `boid workspace export <slug>` で個別に export してください。
+
+export が失敗するもう 1 つのケースが **daemon の版ずれ**です。 応答の文書に
+`spec.init_script` が無い (= その daemon が PR9 以前で init.sh を知らない) 場合、
+CLI は該当 workspace 名を挙げて失敗し、**ファイルを書きません**。 その文書は yaml として
+妥当で apply も通ってしまいますが、復元されるのは metadata だけで **init.sh は戻らず**、
+次の dispatch で harness が入らない workspace になるためです。 daemon を upgrade してから
+export し直してください。 なお `boid workspace apply` の側は `spec.init_script` の無い
+文書を従来どおり受理します — 手書きで `env` だけを直す文書に init.sh 全文を書かせない
+ためで、そちらでは「キーが無い = 触らない」が正しい意味です。
+
+API を直接叩く場合、body の `Content-Type` は **未指定でも構いません**。 拒否されるのは
+yaml / json / xml / tar のような構造化データの type だけです (それらが来る場合、送り先を
+間違えている — workspace の yaml 文書は `PUT /api/workspaces/{slug}`、boid.dev/v1 envelope は
+`POST /api/workspaces/apply` です)。
 
 `init.sh` を持たない workspace は「**スクリプト実行**は不要」として素通しされます。
 ただし後述の準備ステップ (prep) は `init.sh` の有無に関わらず必ず 1 回実行されます。
@@ -168,7 +224,8 @@ go / volta 経由の node / codex / opencode のインストールなど、よ�
 に go / volta / node (lts) / claude / codex / opencode を全部セットアップする実装例が
 あります (`GO_VERSION` 等を env で override 可能、RETURN trap で temp dir を掃除、
 `command -v` による冪等性チェック付き)。 workspace の init.sh の雛形として
-`~/.config/boid/workspaces/<slug>/init.sh` にコピーしてカスタマイズしてください。
+カスタマイズし、`boid workspace set-init-script <slug> -f docs/examples/workspace-home-init.sh`
+で登録してください。
 
 #### 非 embedded skill のコピーについて
 
@@ -419,6 +476,12 @@ home volume deleted (volume boid-ws-home-a1b2c3d4-my-workspace) (128.4 MB)
   厳密な block-based サイズではなく、あくまで目安
 - **`default` workspace は削除できない**: 全プロジェクトが最終的に `default` へ
   再割り当てされる先であるため、予約済みとして保護されている
+- **workspace の `init.sh` も一緒に削除される**: dispatch は init.sh を slug だけで
+  引くので、残しておくと**同じ名前で作り直した workspace が古い script を継承**し、
+  まっさらな HOME volume に対して実行してしまう。 home volume と同じ best-effort 扱いで、
+  削除に失敗しても remove 自体は成功として返り、warning に daemon 側の path が出る
+  (row は既に無いので `boid workspace unset-init-script` では消せない — daemon 側で
+  手で消すことになる)
 - **その workspace で job が走っていると削除に失敗する**: engine は使用中の volume の
   削除を 409 で拒否し、これは `--force` 相当のフラグでも剥がせない。 その場合は
   workspace の DB row だけが消えた**部分完了**状態になり、次のような warning が出る:

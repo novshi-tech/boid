@@ -263,6 +263,56 @@ type WorkspaceRemoveResponse struct {
 	// `docker volume rm <home_volume>` the follow-up. See
 	// docs/{ja,en}/guide/workspace-home.md.
 	HomeDeleteError string `json:"home_delete_error,omitempty"`
+
+	// InitScriptDeleted is true only when the workspace HAD an init.sh and it
+	// was removed (PR9 codex round 2, Major 1). false covers a workspace that
+	// never had one, the reserved default workspace, a daemon with no init
+	// script store wired, and a failed deletion — see InitScriptDeleteError
+	// for that last one.
+	//
+	// Reported at all because leaving a workspace's init.sh behind is not a
+	// harmless leftover: dispatch resolves the script from the SLUG, so the
+	// next workspace created with the same name inherits it and runs it
+	// against a brand-new, empty HOME volume. The row is gone by then, which
+	// also means `boid workspace unset-init-script` can no longer reach it.
+	InitScriptDeleted bool `json:"init_script_deleted"`
+
+	// InitScriptDeleteError is non-empty only when the daemon tried to delete
+	// the workspace's init.sh and could not. Best-effort, exactly like
+	// HomeDeleteError and for the same reason: the row removal has already
+	// committed, so failing the whole request would report a failure over an
+	// irreversible success — and re-running `boid workspace remove` is not
+	// available, since it 404s on the row that is already gone.
+	//
+	// The message carries the daemon-side path (WorkspaceInitScriptStore.
+	// Remove wraps it in), which is what an operator needs to delete the
+	// leftover by hand — and, under the container deploy, to know which
+	// filesystem it is on.
+	InitScriptDeleteError string `json:"init_script_delete_error,omitempty"`
+}
+
+// deleteWorkspaceInitScript removes slug's init.sh as part of
+// DELETE /api/workspaces/{slug} (PR9 codex round 2, Major 1), reporting
+// whether there was one to remove.
+//
+// Called from ProjectAppService.RemoveWorkspace, with the service mutex held
+// and the row already gone (PR9 codex round 3, Major 3) — NOT from the handler
+// alongside deleteWorkspaceHome below, which is where it started. See
+// RemoveWorkspace for the interleaving that move closes.
+//
+// A nil store is not an error: the same "this daemon has no such capability"
+// off switch a nil Homes gets above, answered with removed=false so the
+// response never claims a deletion that was not attempted.
+//
+// The reserved default workspace is refused here as well as at the row level,
+// the defense-in-depth deleteWorkspaceHome's doc comment argues for: the guard
+// belongs with the destructive act, not only with the caller that currently
+// happens to precede it.
+func deleteWorkspaceInitScript(store WorkspaceInitScriptStore, slug string) (bool, error) {
+	if store == nil || slug == orchestrator.DefaultWorkspaceSlug {
+		return false, nil
+	}
+	return store.Remove(slug)
 }
 
 // deleteWorkspaceHome removes slug's workspace HOME volume (docs/plans/

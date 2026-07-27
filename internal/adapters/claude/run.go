@@ -44,24 +44,42 @@ var lookPath = exec.LookPath
 // normalized; Runner.Dispatch deliberately does NOT re-derive it from the
 // resolved workspace home's path (PR4 of
 // docs/plans/workspace-home-volume-persistence.md). This message is the
-// reason that distinction is worth making: PR6 renames the home to a named
+// reason that distinction is worth making: PR6 renamed the home to a named
 // volume (boid-ws-home-<installID8>-<slug>), and a path-derived slug would
-// then send the operator to
-// ~/.config/boid/workspaces/boid-ws-home-<installID8>-<slug>/init.sh — a
-// path that does not exist, in an error whose whole value is being
-// actionable.
+// send the operator to a workspace that does not exist, in an error whose
+// whole value is being actionable.
+//
+// # Why this names a command and not a path (PR9, 論点 d's D4)
+//
+// Through PR8 this message said "~/.config/boid/workspaces/<slug>/init.sh".
+// That was true when the daemon was a host process and false afterwards: the
+// daemon resolves that path against ITS OWN config root, which under the
+// container deploy is inside its state volume. An operator following the old
+// message would create a file on their host that nothing ever reads, and the
+// next dispatch would fail with this identical message — the worst shape a
+// "here is how to fix it" error can take. The fix is named as a command
+// because a command is the only form of the instruction that works from
+// wherever the CLI happens to be.
+//
+// All three adapters (claude / codex / opencode) carry this message verbatim
+// and are changed together; see the other two for the pointer back here.
 func missingCLIError(slug string, cause error) error {
 	if slug == "" {
 		slug = "default"
 	}
 	return fmt.Errorf(
 		"%s CLI not found in workspace $HOME.\n"+
-			"Phase 4 では workspace 単位の $HOME に harness CLI をインストールする必要があります。\n"+
-			"~/.config/boid/workspaces/%s/init.sh に %s のインストールコマンドを記述し、次回 dispatch 時に自動セットアップされます。\n"+
-			"例: init.sh の中で `curl -fsSL https://claude.ai/install.sh | bash` (実際のインストール方法はハーネスによる)。\n"+
-			"詳細: docs/plans/home-workspace-volume.md の init.sh 契約節を参照。\n"+
+			"workspace ごとの $HOME (named volume) に harness CLI をインストールする必要があり、それを行うのが workspace の init.sh です。\n"+
+			"init.sh は daemon が保持しているので、ホスト側の ~/.config/boid/workspaces/%s/init.sh を編集しても反映されません。\n"+
+			"  現在の内容:   boid workspace get-init-script %s\n"+
+			"  ファイルから: boid workspace set-init-script %s -f init.sh\n"+
+			"  直接編集:     boid workspace edit-init-script %s\n"+
+			"init.sh に %s のインストールコマンドを書くと、次回 dispatch 時に自動セットアップされます。\n"+
+			"例: `curl -fsSL https://claude.ai/install.sh | bash` (実際のインストール方法はハーネスによる)。\n"+
+			"shebang 行は無視される (boid は init.sh を exec せず bash に渡す)。\n"+
+			"詳細: docs/ja/guide/workspace-home.md の init.sh 節を参照。\n"+
 			"(lookup error: %w)",
-		harnessCLI, slug, harnessCLI, cause,
+		harnessCLI, slug, slug, slug, slug, harnessCLI, cause,
 	)
 }
 
