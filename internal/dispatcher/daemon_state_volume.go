@@ -97,7 +97,7 @@ import (
 // daemon already had.
 //
 // A var only so tests can shrink it; production never reassigns it.
-var selfInspectTimeout = 5 * time.Second
+var selfInspectTimeout = newAtomicDuration(5 * time.Second)
 
 // readSelfMountInfo / readSelfCgroup are the package-level indirections that
 // make this testable with no container and no engine, mirroring
@@ -245,7 +245,7 @@ func DetectDaemonStateVolumes(ctx context.Context, api SelfContainerInspector, d
 	// [Major 2] One deadline over the whole thing, including the engine call.
 	// WithTimeout takes the earlier of this and any deadline the caller already
 	// set, so a caller may tighten it but not remove it.
-	ctx, cancel := context.WithTimeout(ctx, selfInspectTimeout)
+	ctx, cancel := context.WithTimeout(ctx, selfInspectTimeout.Get())
 	defer cancel()
 
 	// ORDER MATTERS, and it is the second half of [round 2 Major 2]. The

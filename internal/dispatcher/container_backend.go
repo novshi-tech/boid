@@ -1059,7 +1059,7 @@ func (b *containerBackend) Launch(ctx context.Context, spec sandbox.Spec, opts b
 	// removal.
 	spoolFile, spoolPath, spoolErr := b.openTranscriptSpool(createRes.ID)
 	if spoolErr != nil {
-		_, _ = b.api.ContainerRemove(context.Background(), createRes.ID, client.ContainerRemoveOptions{Force: true})
+		b.removeHalfBuiltContainer(ctx, createRes.ID)
 		cleanupFiles()
 		return nil, fmt.Errorf("open transcript spool: %w", spoolErr)
 	}
@@ -1074,7 +1074,7 @@ func (b *containerBackend) Launch(ctx context.Context, spec sandbox.Spec, opts b
 		if sess.transcriptFile != nil {
 			_ = sess.transcriptFile.Close()
 		}
-		_, _ = b.api.ContainerRemove(context.Background(), createRes.ID, client.ContainerRemoveOptions{Force: true})
+		b.removeHalfBuiltContainer(ctx, createRes.ID)
 		cleanupFiles()
 		return nil, fmt.Errorf("container attach: %w", err)
 	}
@@ -1086,7 +1086,7 @@ func (b *containerBackend) Launch(ctx context.Context, spec sandbox.Spec, opts b
 		if sess.transcriptFile != nil {
 			_ = sess.transcriptFile.Close()
 		}
-		_, _ = b.api.ContainerRemove(context.Background(), createRes.ID, client.ContainerRemoveOptions{Force: true})
+		b.removeHalfBuiltContainer(ctx, createRes.ID)
 		cleanupFiles()
 		return nil, fmt.Errorf("container start: %w", err)
 	}
@@ -1094,6 +1094,32 @@ func (b *containerBackend) Launch(ctx context.Context, spec sandbox.Spec, opts b
 	sess.start()
 	b.registerSession(sess)
 	return sess, nil
+}
+
+// removeHalfBuiltContainer tears down a container Launch created but could not
+// finish wiring up (spool open, attach, or start failed).
+//
+// The removal deliberately runs outside the caller's cancellation — a Launch
+// cancelled mid-flight is exactly when the teardown matters most — and, since
+// the codex round-2 review of PR8 (Major 3), under a bound as well. Each of
+// these three sites used to pass a bare context.Background(), which supplies the
+// first property and not the second: against an engine socket that accepts a
+// request and never answers, Launch would never return the error it already had,
+// and (since PR8) never release the workspace's in-flight home registration
+// either, so every later `boid workspace import-home` for that workspace would
+// be refused with a message about a job that is not running. See
+// containerCleanupContext.
+//
+// Force is set for the same reason it always was here: the container may be
+// created, created-and-attached, or created-attached-and-started depending on
+// which branch got here, and an unforced remove refuses a running one.
+func (b *containerBackend) removeHalfBuiltContainer(ctx context.Context, id string) {
+	cleanupCtx, cancel := containerCleanupContext(ctx)
+	defer cancel()
+	if _, err := b.api.ContainerRemove(cleanupCtx, id, client.ContainerRemoveOptions{Force: true}); err != nil {
+		slog.Warn("container backend: could not remove a half-built container after a failed launch; it is left for the next daemon start's orphan sweep",
+			"container_id", id, "error", err)
+	}
 }
 
 // Adopt reconstructs (or returns the already-cached) SandboxSession for a
@@ -2484,12 +2510,22 @@ func (s *containerSession) waitLoop() {
 	}
 
 	s.backend.forgetSession(s.id)
-	if _, err := s.api.ContainerRemove(context.Background(), s.id, client.ContainerRemoveOptions{RemoveVolumes: true}); err != nil {
+	// Bounded, like every other teardown removal in this file (codex round 2 of
+	// PR8, Major 3 — see containerCleanupContext). This one blocks no caller (the
+	// exit is already published and s.done already closed), so an unbounded
+	// version leaks a goroutine rather than wedging a dispatch; it is bounded
+	// anyway so that "a teardown ContainerRemove in this package always has a
+	// deadline" is a property of the file rather than of each site. The base is
+	// Background() rather than a request context because waitLoop outlives every
+	// request that could have started it.
+	removeCtx, cancelRemove := containerCleanupContext(context.Background())
+	if _, err := s.api.ContainerRemove(removeCtx, s.id, client.ContainerRemoveOptions{RemoveVolumes: true}); err != nil {
 		slog.Warn("container backend: remove exited container failed; retrying with Force", "container_id", s.id, "error", err)
-		if _, ferr := s.api.ContainerRemove(context.Background(), s.id, client.ContainerRemoveOptions{Force: true, RemoveVolumes: true}); ferr != nil {
+		if _, ferr := s.api.ContainerRemove(removeCtx, s.id, client.ContainerRemoveOptions{Force: true, RemoveVolumes: true}); ferr != nil {
 			slog.Warn("container backend: force remove exited container failed", "container_id", s.id, "error", ferr)
 		}
 	}
+	cancelRemove()
 	if s.specDir != "" {
 		// Blocker 1 (PR7 codex review): a runtimeDir-scoped spec lives in its
 		// own per-job directory (<runtimeDir>/spec/<spec.ID>/) — remove it

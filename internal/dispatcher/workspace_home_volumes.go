@@ -59,7 +59,7 @@ import (
 // operation by silently sacrificing its point. Callers that need a tighter
 // overall bound impose it the normal way, on the context they pass in: these
 // deadlines only ever shorten it, never extend it.
-var workspaceHomeVolumeTimeout = 30 * time.Second
+var workspaceHomeVolumeTimeout = newAtomicDuration(30 * time.Second)
 
 // WorkspaceHomeVolumeAPI is the engine surface workspace HOME reporting and
 // deletion needs, declared as its own narrow interface for the same two
@@ -365,7 +365,7 @@ func (s *WorkspaceHomeVolumeStore) Remove(ctx context.Context, slug string) (Wor
 // merely deferred to the end of the enclosing function, so a long operation
 // does not accumulate live timers.
 func engineCall(ctx context.Context) (context.Context, context.CancelFunc) {
-	return context.WithTimeout(ctx, workspaceHomeVolumeTimeout)
+	return context.WithTimeout(ctx, workspaceHomeVolumeTimeout.Get())
 }
 
 // errNoWorkspaceHomeEngine is what every method degrades to with a nil API.

@@ -1158,6 +1158,45 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 	// happened to enumerate.
 	reapSkipTasks, reapBlockAllReopen := reapOrphansBeforeReopen(context.Background(), runner, srv.db)
 
+	// Startup sweep of interrupted workspace-home migrations (PR8 round-2 codex
+	// review Major 2, docs/plans/workspace-home-volume-persistence.md 論点 f).
+	//
+	// Separate from the reap above and not foldable into it: that one reaps
+	// CONTAINERS by label, and what an interrupted migration leaves behind is a
+	// VOLUME — a workspace HOME holding whatever crossed before the daemon was
+	// killed, with its completion marker already deleted. Left in place, the next
+	// dispatch runs init.sh against it, and an init.sh that probes for what it
+	// installs concludes the toolchain is already there and lets the daemon write
+	// a fresh completion marker over a broken home.
+	//
+	// Placed HERE — after reap, before the auto-reopen sweep below — because
+	// auto-reopen is the first thing in daemon startup that can dispatch, and the
+	// discard has to be finished before any job can mount one of these volumes.
+	//
+	// A failure does not abort startup, for the same reason a reap failure does
+	// not: it is scoped to resource reconciliation. The records stay on disk, so
+	// the next start retries.
+	//
+	// context.Background() is correct here and not an oversight: this call is not
+	// inside a request and has nothing better to derive from. The BOUND lives in
+	// the sweep itself (workspaceHomeMigrationSweepTimeout, codex round 4 Major),
+	// because "startup cannot park forever inside this step" is a property of the
+	// step rather than of who calls it — an engine socket that accepts the
+	// connection and then answers nothing would otherwise stop the daemon here,
+	// before auto-reopen and before the API listener.
+	//
+	// The count is RECORDS RESOLVED, of which only some involved destroying
+	// anything: a leftover record whose migration finished, or was refused before
+	// it changed anything, is resolved by deleting the record alone. Which kind
+	// each was is in the sweep's own per-record log line.
+	if resolved, err := runner.SweepInterruptedWorkspaceHomeMigrations(context.Background()); err != nil {
+		slog.Error("startup: could not resolve the leftover record(s) of an interrupted `boid workspace import-home`; they are left in place and a later start will retry (docs/plans/workspace-home-volume-persistence.md 論点 f)",
+			"error", err)
+	} else if resolved > 0 {
+		slog.Warn("startup: resolved leftover `boid workspace import-home` record(s); any whose migration had actually destroyed a home have had that home discarded and will be initialized from scratch on their next dispatch",
+			"count", resolved)
+	}
+
 	// Auto-reopen tasks that were interrupted by the previous daemon shutdown.
 	// These tasks were aborted with code=daemon_shutdown either by
 	// abortOnDispatchError (hook in flight when SIGTERM fired) or by
@@ -1344,6 +1383,22 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 	// import (internal/dispatcher cannot import internal/api — this package
 	// already imports internal/dispatcher for wiring).
 	runner.WithProjectLock = projectSvc.WithProjectLock
+	// ConfirmWorkspaceExists (PR8 round-2 codex review Major 1): closes over the
+	// same projectSvc so Runner.ImportWorkspaceHome can re-check the workspace
+	// ROW while holding its migration registration. Without it, a
+	// `boid workspace remove` that completes between the API handler's own
+	// pre-check and the migration's first engine call leaves the migration
+	// creating a HOME volume for a row that is gone — credentials in a volume no
+	// dispatch can mount and `workspace remove` can no longer delete. A plain
+	// function value for the same reason WithProjectLock above is one.
+	//
+	// The service's error is passed through unchanged (an *api.StatusError, i.e.
+	// a 404 for a workspace that is gone) because the handler maps it back to a
+	// status — see WorkspaceHandler.ImportHome's errors.As branch.
+	runner.ConfirmWorkspaceExists = func(slug string) error {
+		_, err := projectSvc.GetWorkspace(slug)
+		return err
+	}
 
 	taskSvc := &api.TaskAppService{
 		Tasks:    taskRepo,
@@ -1741,6 +1796,22 @@ func mountRoutes(srv *Server, runtime *appRuntime) error {
 		// to resolve. nil here — no docker client — is the feature's off
 		// switch, see api.WorkspaceHomeStore's doc comment.
 		Homes: runtime.workspaceHomes,
+		// PR8 of the same plan doc (論点 f): the migration of a pre-PR6 host
+		// home directory into the workspace's HOME volume. The Runner is the
+		// implementation because everything the migration has to keep
+		// consistent is the Runner's — the completion marker under
+		// <dataHome>/homes-meta/, the per-workspace init flock, and the
+		// identity label it mints — see dispatcher.Runner.ImportWorkspaceHome's
+		// D1 note for why this is not a CLI that drives the engine directly the
+		// way `boid reap` does.
+		//
+		// Unlike Homes above, this does NOT gate on a docker client: the
+		// capability is discovered on the BACKEND by type assertion
+		// (dispatcher.WorkspaceHomeImporter), so a DI backend that implements it
+		// serves the route and one that does not fails with a message naming
+		// itself. Gating on the engine handle here would additionally turn off
+		// the route for exactly the backends that can serve it in tests.
+		HomeImporter: runtime.runner,
 	}
 	r.Mount("/api/workspaces", workspaceHandler.Routes())
 

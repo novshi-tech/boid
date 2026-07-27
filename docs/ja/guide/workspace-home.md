@@ -214,6 +214,189 @@ boid agent claude -p <project-ref>
 **ホストの `~/.claude.json` はコピーしません。** workspace ごとに独立してまっさらな
 状態からログインするのが意図した契約です (workspace 間でホストの認証状態を共有しない)。
 
+## 旧 workspace home (ホスト側ディレクトリ) の移行
+
+named volume 化 (2026-07-27) より前の install には、workspace ごとの認証情報と
+toolchain が `~/.local/share/boid/homes/<slug>/` に残っています。
+volume 側は空のまま始まるので、中身を移すには移行コマンドを 1 回実行します:
+
+```bash
+boid workspace import-home <slug>                        # ~/.local/share/boid/homes/<slug> から
+boid workspace import-home <slug> --from /path/to/backup # backup から復元する場合
+boid workspace import-home <slug> --dry-run              # 何がどれだけ移るかだけ見る
+boid workspace import-home <slug> --yes                  # 確認プロンプトを飛ばす (--force も同じ)
+```
+
+```
+$ boid workspace import-home khi --dry-run
+dry-run: would import /home/nosen/.local/share/boid/homes/khi into workspace "khi"'s HOME volume
+  38412 files, 4102 dirs, 517 symlinks (1204 hard links), 4.3 GB
+  nothing was sent and nothing was destroyed; re-run without --dry-run to migrate
+```
+
+### 動作
+
+- CLI が `--from` のディレクトリを **読んで tar に固め、daemon にストリーム**します。
+  daemon 側が volume を作り直し、使い捨て container に tar を流し込みます
+- **bind mount は使いません**。rootless podman では container 内 uid とホスト uid が
+  別物なので、bind すると `0600` の `.credentials.json` が読めません
+  (volume-only pivot の発端と同じ罠)。tar なら「ホストのユーザが自分のファイルを読む →
+  データとして渡る → container 側の uid で作り直される」ので mapping を跨げます
+- **mode は維持されます** (`0600` は `0600` のまま)。所有者は移りません
+  (job container と同じ uid で展開されます)
+- **hard link は link のまま**送られます (node/volta 系 toolchain は hard link を
+  多用するため、実体を二重に送らない)
+- socket / FIFO / device ノードは復元できないので**スキップされ、名前が表示されます**
+- **`--from` 自体が symlink の場合はリンク先を辿ります** (`homes/team-a ->
+  /mnt/backup/team-a` のような、別ディスクに置いた home を指す普通の形)。 辿った先は
+  確認プロンプトにも `--dry-run` の出力にも `typed (-> resolved)` の形で出るので、
+  何を読んでいるかは実行前に分かります。 **home の中の symlink は辿りません** —
+  そちらは home 自身の構造なので symlink のまま送られます (上記)
+
+### 安全性
+
+- **`--from` は読むだけです。** 削除も変更もしません。失敗しても元のディレクトリは
+  そのままなので、何度でもやり直せます
+- **その workspace で job が走っていると拒否されます。** engine は使用中の volume の
+  削除を 409 で返し、その時点では**まだ何も壊れていません**:
+  ```
+  Error: import workspace home: workspace home "khi": refusing to migrate while a job is
+  running in it — the engine is holding the volume "boid-ws-home-a1b2c3d4-khi" for a live
+  container, and nothing has been changed. Wait for the job to finish (`boid job list`) and re-run
+  ```
+- **job が「起動しかけ」でも拒否されます。** engine が volume を使用中と見なすのは
+  container が作られてからで、それより前 —— daemon が home volume を解決してから
+  container を作るまでの間 —— は engine からは空いているように見えます。 その間に
+  移行を通すと、job container は volume を**名前で** mount するので、展開中の volume を
+  掴んだ job が起動してしまいます。 daemon は自前でこの区間を記録していて、同じく
+  409 で断ります (`the workspace HOME volume is busy in this daemon`)。 これも
+  **何も壊れる前**の拒否です
+- **逆に、移行中に来た dispatch は失敗せず待ちます。** 移行は端末の前にいる人の操作
+  なので断っても再実行 1 回で済みますが、dispatch は hook 評価から来るため断ると
+  **job の失敗**として task に残ります。 待ち時間は移行の所要時間で頭打ちです
+- **移行対象が 0 件なら拒否されます。** 空の tar を送ると、daemon は「body を読む前に
+  home volume を破棄する」順序のせいで**空の home で置き換えて 200 を返します** ——
+  認証情報も toolchain も消えたまま「imported」と表示される、この機能で一番まずい
+  結果です。 そこで **CLI 側 (1 バイトも送る前・確認プロンプトより前)** と
+  **daemon 側 (何も壊す前)** の両方で断ります。 原因は `--from` の typo、未マウントの
+  backup、空のディレクトリなど様々ですが、結果は同じなので**結果の側で**断っています。
+  意図して home を空にしたい場合は `boid workspace remove <slug>` して作り直してください
+- **既存の home volume は破棄されます。** undo はありません。`--yes` を付けない限り
+  確認プロンプトが出ます
+- **途中で失敗した場合**は「一度も dispatch していない workspace」と同じ状態になります —
+  途中まで展開された volume は**削除され**、完了マーカーも消えているので、次の dispatch が
+  空から init.sh で作り直します。移行元は無傷なので、そのまま再実行するのが復旧手順です。
+  volume を消すのは、途中まで展開された home が残ると `command -v claude` のような
+  在庫確認で早期 return する冪等な `init.sh` が「もう入っている」と誤判定し、
+  完了マーカーまで書いて**壊れた状態が固定される**からです
+  (実体が未転送でも `.local/bin/claude` だけ届いていれば確認は通ってしまう)
+- **その削除自体に失敗した場合**は、展開エラーと一緒に報告されます。 案内どおり
+  `docker volume rm <volume>` を手で実行してから移行をやり直すのが最短ですが、
+  放置しても次の daemon 起動時に下記の掃除が引き取ります
+- **daemon が移行中に強制終了した場合** (SIGKILL / OOM kill / `docker compose down -t 0` /
+  電源断) も、途中まで展開された volume は残りません。 daemon は**何かを壊す前に**
+  `<dataHome>/homes-meta/<slug>.migrating.json` に「移行中」の記録を書き、進行に合わせて
+  その `phase` を更新します:
+
+  | `phase` | 書かれる時点 | 次回起動 (および dispatch) の動作 |
+  |---|---|---|
+  | `recorded` | まだ何も壊していない時点 | 記録を消すだけ。 home には触らない |
+  | `home-destroyed` | 旧 volume の削除が成功した時点 | home volume・完了マーカー・記録を削除 |
+  | `home-absent` | volume が無いことを確認した時点 | 記録を消すだけ。 home には触らない |
+  | `home-rebuilt` | 展開が完了した時点 | 記録を消すだけ。 home には触らない |
+
+  `home-destroyed` は「新しい volume を作る前」に書かれ「展開が終わった後」に書き換えられる
+  ので、**どの時点で落ちても安全側に倒れます** —— volume が本当に中途半端な中身を持っている
+  瞬間に落ちた場合だけ削除して init から作り直し、それ以外の時点で落ちた場合は home に
+  手を触れません。 `phase` が無い記録 (これより古い boid が書いたもの) は
+  `home-destroyed` として扱います —— それが当時の記録の意味だからです
+
+  `home-absent` は「移行が途中で終わり、この名前の volume が無いことまで確認できた」
+  状態です (展開失敗後に途中の volume を消せた場合など)。 **記録を消す前に**書かれるのが
+  肝心なところで、記録の削除は「消えたように見えるが電源断で巻き戻りうる」失敗の仕方を
+  するため、削除に頼って phase を放置すると、その後に作り直された正常な home を
+  次回起動が破棄しうるからです
+- **起動時の掃除が失敗しても、次の dispatch が引き取ります。** 起動時に engine が
+  一時的に応答しないと volume の削除に失敗しますが、その場合も記録は残り、起動は
+  そのまま続きます。 `home-destroyed` の記録が残っている workspace に dispatch が来ると、
+  daemon は**init.sh を走らせる前に**もう一度削除を試み、成功すれば空の home から
+  作り直します (engine が復旧していれば自動で直る)。 まだ削除できない場合は、その dispatch は
+  **失敗します** —— 途中の home に init.sh を走らせて完了マーカーを書いてしまうより、
+  job 1 本を失敗させる方が安いためです。 エラーには volume 名と
+  `docker volume rm <volume>` が出ます。 なお起動時の削除には 1 件あたり 30 秒の上限が
+  あるので、接続だけ受けて応答しない engine が daemon の起動を止め続けることはありません
+- **記録が書けない (fsync できない) 場合は、何も壊さずに中止します。** 記録は
+  「壊す直前」に書かれるので、ここで失敗しても workspace は無傷のままです。
+  daemon の state 領域が書けるか確認してから再実行してください。 `home-destroyed` への
+  更新が書けない場合も同様に中止します —— 旧 volume は既に消えていますが、「未完了と
+  判別できない volume」に展開を始めるよりは、home が空のまま次の dispatch に
+  作り直させる方が安全なためです。 なお `home-absent` への更新が書けない場合は
+  **記録を消さずに残します** —— 同じ state 領域が書けない状況では削除も
+  「消えたように見えて巻き戻る」向きに失敗するためで、残った記録は次の起動・dispatch が
+  (存在しない volume に対して) 無害に片付けます
+- **移行成功後に記録の削除だけ失敗した場合**は、その旨とファイル名が warning に出ます。
+  通常はその前に記録が `home-rebuilt` に更新されているので **home は安全**で、次の
+  daemon 起動はそのファイルを消すだけです (対処不要。 ただし state 領域が書けない状態
+  自体は調べる価値があります)。 warning が**次の daemon 起動でこの home が破棄される**と
+  言っている場合だけ記録が `home-destroyed` のまま残っているので、再起動前にそのファイルを
+  消してください
+
+### 移行後に init.sh が 1 回走ります
+
+これは仕様です。移行は「中身のコピー」なので、それだけでは boid 側の完了マーカー
+(script hash / 世代 / skeleton / volume identity) が**どれも変化しません**。
+何もしないと、ホスト時代の絶対パスが焼き込まれた toolchain がそのまま生き残り、
+`init.sh` は二度と走りません。そこで移行コマンドは 2 つの手段を**両方**取ります:
+
+1. **volume を作り直す** — 新しい incarnation は新しい identity を持つので、
+   マーカーの `home_id` と一致しなくなる
+2. **完了マーカーを削除する** — `<dataHome>/homes-meta/<slug>.init.json`
+
+片方が失敗しても、もう片方だけで再 init に倒れます。移行済みの home に対する
+冪等な `init.sh` の再実行なので、通常は短時間で終わります。
+
+## PR8 を経由しない移行 (手動 `docker cp` / backup 復元) — マーカーを手で消す
+
+`boid workspace import-home` を使わずに volume の中身を入れ替えた場合
+(`docker cp` で直接流し込んだ、`docker volume` の Mountpoint を `podman unshare`
+経由で書き換えた、volume そのものを backup から復元した、など)、
+**boid はそれを検出できません**。
+
+これは実装漏れではなく境界そのものです。daemon は volume の**中身**を見られません
+(見るには container を起こす必要があり、dispatch のたびにそれをやると完了マーカーが
+存在する意味が無くなる)。マーカーが指しているのは「**入れ物の incarnation**」であって
+中身ではないので、「入れ物は同じまま中身だけ入れ替わった」ことは原理的に見えません。
+
+したがって**その操作をした運用者が、完了マーカーを手で消す**必要があります。
+消さないと `init.sh` は二度と走らず、流し込んだ中身に対する初期化が行われません。
+
+**マーカーはホストから直接は消せません。** 置き場は daemon 自身の永続領域
+(`<dataHome>/homes-meta/<slug>.init.json`) で、container デプロイではそれが
+`boid_state` named volume の中にあるためです (ホスト側にパスがありません)。
+デプロイ形態ごとの消し方:
+
+```bash
+# (a) container デプロイ (docker compose / scripts/deploy-container.sh) — daemon 経由
+docker exec boid_daemon_1 rm -f /home/boid/.local/share/boid/homes-meta/<slug>.init.json
+
+# (b) daemon が止まっている / exec できない場合 — 使い捨て container から volume を触る
+docker run --rm -v boid_boid_state:/state docker.io/library/debian:bookworm-slim \
+  rm -f /state/.local/share/boid/homes-meta/<slug>.init.json
+
+# (c) bare `boid start` (ホストプロセス直接起動) — 普通のファイル
+rm -f ~/.local/share/boid/homes-meta/<slug>.init.json
+```
+
+- volume 名 (`boid_boid_state`) は compose のプロジェクト名 (`boid`) + volume 名。
+  `docker volume ls` で確認できます
+- container デプロイでの daemon 側パスは `XDG_DATA_HOME=/home/boid/.local/share`
+  (compose の env) + `boid/homes-meta/` です
+- **より確実なのは volume ごと消すことです** — `docker volume rm
+  boid-ws-home-<installID8>-<slug>` してから `boid workspace import-home` を使う。
+  こちらは identity ごと変わるので、マーカーの消し忘れが起きません
+- 消しても失うのは `boid_version` / `completed_at` の履歴だけです。マーカーが無ければ
+  次の dispatch が再 init します (`init.sh` は冪等である前提)
+
 ## workspace の削除
 
 `boid workspace remove <slug>` は workspace の定義 (DB row) に加えて home も削除します。
@@ -244,6 +427,16 @@ home volume deleted (volume boid-ws-home-a1b2c3d4-my-workspace) (128.4 MB)
   ```
   DB row は既に無いので `boid workspace remove` の再実行は 404 になる。 job の終了後に
   `docker volume rm boid-ws-home-a1b2c3d4-my-workspace` を手で実行する
+- **その workspace で `boid workspace import-home` が走っていると 409 で拒否される**:
+  移行は volume を消して**同じ名前で作り直し中身を書き込む**ので、削除と重なると
+  「DB row は消えたのに認証情報入りの volume だけ残る」状態になる。 その volume は
+  どの dispatch も mount せず、`boid workspace remove` でも消せない (row が無いので 404)。
+  拒否は **DB row を消す前**に起きるので何も壊れていない。 移行の完了を待って再実行する
+  ```
+  Error: workspace home "my-workspace": refusing to remove this workspace while
+  `boid workspace import-home` is replacing its HOME volume ...
+  ```
+  逆向き (移行中に削除が先) も同じく 409 で拒否される
 - **削除できたか確認が取れなかった場合も黙らず報告する**: daemon が home volume の
   行方を答えられなかったとき — engine に到達できず確認できなかった、あるいは daemon が
   volume 化以前のバージョンでホスト側ディレクトリの話をしている — CLI はその旨と
