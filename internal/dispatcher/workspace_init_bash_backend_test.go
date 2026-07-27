@@ -3,6 +3,7 @@ package dispatcher
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -54,11 +55,81 @@ type bashWorkspaceInitBackend struct {
 	// seedUnlabeledVolume).
 	volRoot string
 	volumes map[string]string
+
+	// --- PR8 (論点 f), the migration half -------------------------------
+	//
+	// imports records every WorkspaceHomeImportRequest this backend was handed;
+	// removes counts RemoveWorkspaceHomeVolume calls. removeVolumeErr /
+	// importErr let a test model the two engine-side failures the migration has
+	// to behave correctly under: a volume held by a running job (409 ->
+	// ErrWorkspaceHomeInUse) and an extraction that died partway through.
+	imports         []WorkspaceHomeImportRequest
+	removes         int
+	removeVolumeErr error
+	importErr       error
+
+	// removeVolumeErrFromCall restricts removeVolumeErr to the Nth
+	// RemoveWorkspaceHomeVolume call and later (1-based; 0 means "every call",
+	// which is what every pre-existing case wants).
+	//
+	// It exists for exactly one situation, and that situation is the reason the
+	// field is not just a second error variable: the migration issues TWO
+	// removals — the one that replaces the home, and the one that discards a
+	// half-extracted volume after a failed extraction — and the failure worth
+	// testing is the second one failing while the first succeeded. A single
+	// removeVolumeErr cannot express that, because making it fire on call 1
+	// means the migration never gets far enough to attempt call 2.
+	removeVolumeErrFromCall int
+
+	// importPartial names entries ImportWorkspaceHome writes into the volume
+	// BEFORE returning importErr.
+	//
+	// This is the failure the extraction actually has. The archive arrives as a
+	// stream over a socket, so tar has already created directories and files by
+	// the time the upload is cut short or the disk fills — a double that errors
+	// before touching the volume models a failure mode that does not exist and
+	// would keep "a failed migration leaves the workspace as if it had never
+	// been dispatched into" green while the volume held a half-installed
+	// toolchain. The dangerous residue is specifically an executable an
+	// idempotent init.sh probes for with `command -v` and concludes is already
+	// installed.
+	importPartial []string
+
+	// removeDeadline records, per RemoveWorkspaceHomeVolume call, whether the
+	// context it was handed carried a DEADLINE.
+	//
+	// It is the only way to observe round 4's Major from a unit test at its
+	// production timeout: the property being asserted is "the caller bounded this
+	// call", and waiting 30s to watch a bound fire would test the same thing far
+	// more slowly and far more flakily. The moby client turns a context deadline
+	// into a request deadline, so a call with none can wait on a hung engine
+	// forever — which inside daemon startup means no auto-reopen and no API
+	// listener, ever.
+	removeDeadline []bool
+
+	// blockRemoveUntilDone makes RemoveWorkspaceHomeVolume park until its context
+	// is done, standing in for an engine socket that accepts the connection and
+	// then answers nothing. Paired with a shrunk
+	// workspaceHomeMigrationSweepTimeout it is what shows the sweep RETURNING
+	// rather than merely being handed a deadline.
+	blockRemoveUntilDone bool
+
+	// onImport, when non-nil, runs at the top of ImportWorkspaceHome — before
+	// the partial residue is written and before importErr is returned.
+	//
+	// It exists for one case and it is the case codex round 2 (Minor 2) said was
+	// untested: the commonest route to a failed extraction is the OPERATOR'S CLI
+	// GOING AWAY mid-upload, which cancels the HTTP request context, which is the
+	// same context the migration is running under. A test that models that has to
+	// be able to cancel exactly there — after the destructive removal, during the
+	// extraction — which is a moment no test can reach from the outside.
+	onImport func()
 }
 
 var (
 	_ backend.SandboxBackend = (*bashWorkspaceInitBackend)(nil)
 	_ WorkspaceInitExecutor  = (*bashWorkspaceInitBackend)(nil)
+	_ WorkspaceHomeImporter  = (*bashWorkspaceInitBackend)(nil)
 )
 
 func newBashWorkspaceInitBackend(t *testing.T) *bashWorkspaceInitBackend {
@@ -144,6 +215,174 @@ func (b *bashWorkspaceInitBackend) removeVolume(t *testing.T, volumeName string)
 		t.Fatalf("remove modelled volume %q: %v", volumeName, err)
 	}
 	delete(b.volumes, volumeName)
+}
+
+// volumeExists reports whether the modelled engine still has a volume under
+// this name — the question "did the migration clean up after itself" is asked
+// of the volume STORE, not of the directory, because a directory that happens
+// to be gone would also be reported by an implementation that only emptied it.
+func (b *bashWorkspaceInitBackend) volumeExists(volumeName string) bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	_, ok := b.volumes[volumeName]
+	return ok
+}
+
+// setIdentity rewrites the identity label a modelled volume carries WITHOUT
+// touching its contents — a thing the Engine API cannot do, and which exists
+// here only so a test can un-do exactly one of 論点 f's two re-init triggers
+// and check that the other one still fires on its own.
+func (b *bashWorkspaceInitBackend) setIdentity(t *testing.T, volumeName, identity string) {
+	t.Helper()
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if _, ok := b.volumes[volumeName]; !ok {
+		t.Fatalf("no volume named %q was ever created", volumeName)
+	}
+	b.volumes[volumeName] = identity
+}
+
+// RemoveWorkspaceHomeVolume models `docker volume rm` as the migration issues
+// it: the volume object AND its contents go, a name that is not there is not an
+// error (the CLI can migrate into a workspace never dispatched into), and
+// removeVolumeErr stands in for the engine's 409 when a job holds it.
+//
+// It HONOURS ctx, which is not decoration (codex round 2, Minor 2): the moby
+// client fails a request whose context is already done without touching the
+// engine, so a double that ignored ctx would keep
+// discardPartialWorkspaceHome's context.WithoutCancel green after it was
+// changed back to an ordinary derived context — i.e. it would stop testing the
+// one property that cleanup exists for.
+func (b *bashWorkspaceInitBackend) RemoveWorkspaceHomeVolume(ctx context.Context, volumeName string) (bool, error) {
+	_, hasDeadline := ctx.Deadline()
+	b.mu.Lock()
+	b.removeDeadline = append(b.removeDeadline, hasDeadline)
+	block := b.blockRemoveUntilDone
+	b.mu.Unlock()
+
+	if block {
+		// Outside the mutex on purpose: a real engine that never answers does not
+		// stop the rest of the daemon from touching its own bookkeeping, and a
+		// double that held the lock would deadlock the assertions instead of
+		// modelling the hang.
+		<-ctx.Done()
+	}
+
+	if err := ctx.Err(); err != nil {
+		return false, fmt.Errorf("volume remove %q: %w", volumeName, err)
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.removes++
+	from := b.removeVolumeErrFromCall
+	if from == 0 {
+		from = 1
+	}
+	if b.removeVolumeErr != nil && b.removes >= from {
+		return false, b.removeVolumeErr
+	}
+	_, existed := b.volumes[volumeName]
+	if err := os.RemoveAll(filepath.Join(b.volRoot, volumeName)); err != nil {
+		return false, err
+	}
+	delete(b.volumes, volumeName)
+	return existed, nil
+}
+
+// ImportWorkspaceHome models the extraction container: it runs the REAL
+// extraction argv (workspaceHomeImportArgv) against the directory standing in
+// for the volume, with the request's tar on its stdin.
+//
+// Running the actual argv rather than an archive/tar reader in Go is the whole
+// value of this double for PR8: the flags on that command line are what decide
+// whether a 0600 credentials file survives the trip, and a Go-side extraction
+// would keep TestRunner_ImportWorkspaceHome_PreservesModes green while the
+// command boid actually ships lost `--same-permissions`.
+func (b *bashWorkspaceInitBackend) ImportWorkspaceHome(ctx context.Context, req WorkspaceHomeImportRequest) error {
+	b.mu.Lock()
+	b.imports = append(b.imports, req)
+	importErr := b.importErr
+	partial := append([]string(nil), b.importPartial...)
+	onImport := b.onImport
+	_, volumeExists := b.volumes[req.HomeSource]
+	b.mu.Unlock()
+
+	if onImport != nil {
+		onImport()
+	}
+
+	if !volumeExists {
+		// The container backend gets this for free — ContainerCreate cannot
+		// mount a volume that is not there (and its implicit create is the
+		// unlabelled-volume trap verifyWorkspaceHomeIdentity exists for). The
+		// double has to assert it explicitly or an implementation that never
+		// re-created the volume would still "succeed" here.
+		return fmt.Errorf("no volume named %q to extract into", req.HomeSource)
+	}
+	dir := b.dirFor(req.HomeSource)
+	if importErr != nil {
+		// The half-written volume a real interrupted extraction leaves behind
+		// (see importPartial's doc comment), created before the error is
+		// returned rather than instead of it.
+		for _, name := range partial {
+			full := filepath.Join(dir, name)
+			if err := os.MkdirAll(filepath.Dir(full), 0o700); err != nil {
+				return err
+			}
+			if err := os.WriteFile(full, []byte("half-extracted "+name+"\n"), 0o755); err != nil {
+				return err
+			}
+		}
+		return importErr
+	}
+
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	argv := workspaceHomeImportArgv(dir)
+	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
+	cmd.Stdin = req.Tar
+	out := newWorkspaceInitOutput()
+	cmd.Stdout = out
+	cmd.Stderr = out
+	if err := cmd.Run(); err != nil {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
+			return fmt.Errorf("extract into workspace home %q (exit %d): %s", req.Slug, exitErr.ExitCode(), out.Tail(512))
+		}
+		return err
+	}
+	return nil
+}
+
+func (b *bashWorkspaceInitBackend) importCount() int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return len(b.imports)
+}
+
+func (b *bashWorkspaceInitBackend) removeCount() int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.removes
+}
+
+// removeDeadlines reports, in call order, whether each
+// RemoveWorkspaceHomeVolume was given a context with a deadline.
+func (b *bashWorkspaceInitBackend) removeDeadlines() []bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return append([]bool(nil), b.removeDeadline...)
+}
+
+func (b *bashWorkspaceInitBackend) lastImport(t *testing.T) WorkspaceHomeImportRequest {
+	t.Helper()
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if len(b.imports) == 0 {
+		t.Fatal("no workspace home import request reached the backend")
+	}
+	return b.imports[len(b.imports)-1]
 }
 
 // seedUnlabeledVolume models the one state boid cannot produce itself: a volume

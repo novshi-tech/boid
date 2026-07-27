@@ -223,6 +223,198 @@ later job in that workspace stays authenticated.
 workspace, is the intended contract — workspaces deliberately do not share host-side auth
 state with each other.
 
+## Migrating a legacy (host-directory) workspace home
+
+Installations that predate the move to named volumes (2026-07-27) still have each
+workspace's credentials and toolchain sitting in `~/.local/share/boid/homes/<slug>/`. The
+volume side starts out empty, so moving the contents across takes one run of the migration
+command:
+
+```bash
+boid workspace import-home <slug>                        # from ~/.local/share/boid/homes/<slug>
+boid workspace import-home <slug> --from /path/to/backup # restoring from a backup
+boid workspace import-home <slug> --dry-run              # just show what would move
+boid workspace import-home <slug> --yes                  # skip the confirmation (--force is the same)
+```
+
+```
+$ boid workspace import-home khi --dry-run
+dry-run: would import /home/nosen/.local/share/boid/homes/khi into workspace "khi"'s HOME volume
+  38412 files, 4102 dirs, 517 symlinks (1204 hard links), 4.3 GB
+  nothing was sent and nothing was destroyed; re-run without --dry-run to migrate
+```
+
+### How it works
+
+- The CLI **reads** the `--from` directory, packs it into a tar and **streams it to the
+  daemon**. The daemon replaces the volume and feeds the tar to a throwaway container.
+- **No bind mount is involved.** Under rootless podman a container's uid is not the host's,
+  so a bind makes a `0600` `.credentials.json` unreadable — the same trap that triggered
+  the volume-only pivot. A tar crosses the mapping as data: the host user reads their own
+  files, and the extraction re-creates them as the container's uid.
+- **Modes are preserved** (`0600` stays `0600`). Ownership is not carried across; everything
+  lands owned by the same uid a job container runs as.
+- **Hard links stay links** (node/volta toolchains use them heavily, so the payload is not
+  sent twice).
+- Sockets, FIFOs and device nodes cannot be restored, so they are **skipped and listed by
+  name**.
+- **A `--from` that is itself a symlink is followed** (`homes/team-a -> /mnt/backup/team-a`
+  — the ordinary way to point at a home that lives on another disk). Where it resolved to is
+  printed in the confirmation prompt and in `--dry-run` output as `typed (-> resolved)`, so
+  what is about to be read is visible before anything happens. **Symlinks INSIDE the home are
+  not followed** — those are the home's own structure and cross as symlinks (above).
+
+### Safety
+
+- **`--from` is only ever read.** Nothing deletes or modifies it, so the migration can be
+  re-run as often as needed.
+- **A workspace with a running job is refused.** The engine answers 409 for a volume a live
+  container is holding, and at that point **nothing has been destroyed yet**:
+  ```
+  Error: import workspace home: workspace home "khi": refusing to migrate while a job is
+  running in it — the engine is holding the volume "boid-ws-home-a1b2c3d4-khi" for a live
+  container, and nothing has been changed. Wait for the job to finish (`boid job list`) and re-run
+  ```
+- **A job that is merely STARTING is refused too.** The engine only considers a volume in use
+  once a container references it, so the interval between the daemon resolving the home volume
+  and creating the container looks free from the engine's side. A migration slipping through
+  there would be extracting into the very volume a starting job is about to mount — job
+  containers mount it by NAME. The daemon tracks that interval itself and answers the same 409
+  (`the workspace HOME volume is busy in this daemon`), also before anything is destroyed.
+- **A dispatch that arrives DURING a migration waits rather than failing.** A migration is
+  something a person runs at a terminal, so refusing it costs one re-run; a dispatch comes out
+  of hook evaluation, and refusing that means a failed job recorded on the task. The wait is
+  bounded by how long the migration takes.
+- **A source with nothing to migrate is refused.** Sending an empty tar would, because of the
+  order this route cannot avoid (the volume is destroyed before the body is read), **replace
+  the home with an empty one and answer 200** — the credentials and the toolchain gone while
+  the CLI prints "imported". That is the worst outcome this feature can produce, so it is
+  refused on **both** sides: by the CLI before a single byte is sent and before the
+  confirmation prompt, and by the daemon before anything is destroyed. The causes vary (a typo
+  in `--from`, a backup that was never populated, a mount that is not mounted) and the outcome
+  does not, so the check is on the outcome. To deliberately start a workspace's home over, use
+  `boid workspace remove <slug>` and re-create it.
+- **The existing home volume is destroyed.** There is no undo, and the confirmation prompt
+  appears unless `--yes` is given.
+- **If the transfer fails partway**, the workspace ends up in the same state as one that was
+  never dispatched into: the half-extracted volume is **removed** and the completion marker is
+  gone, so the next dispatch rebuilds it from `init.sh` starting from nothing. The source is
+  untouched, so simply re-running the migration is the recovery. The volume is removed rather
+  than left in place because a partial home is what makes an idempotent `init.sh` — the kind
+  that probes with `command -v claude` and returns early — conclude the toolchain is already
+  installed: it would exit 0, the daemon would write a completion marker for it, and the
+  broken state would be frozen in (a delivered `.local/bin/claude` passes that probe even when
+  its payload never crossed).
+- **If that removal ALSO fails**, it is reported alongside the extraction error. Removing the
+  volume by hand as the message instructs (`docker volume rm <volume>`) and re-running is the
+  quickest repair, but leaving it alone is also safe: the next daemon start picks it up.
+- **If the daemon is killed mid-migration** (SIGKILL, an OOM kill, `docker compose down -t 0`,
+  a power cut) the half-extracted volume does not survive either. Before it destroys anything
+  the daemon writes an in-progress record to `<dataHome>/homes-meta/<slug>.migrating.json`, and
+  it keeps that record's `phase` field current as it goes:
+
+  | `phase` | written when | what the next start (or dispatch) does |
+  |---|---|---|
+  | `recorded` | before anything is destroyed | deletes the record, touches nothing else |
+  | `home-destroyed` | once the old volume is actually gone | deletes the home volume, the completion marker and the record |
+  | `home-absent` | once there is confirmed to be no volume under that name | deletes the record, touches nothing else |
+  | `home-rebuilt` | once the extraction has finished | deletes the record, touches nothing else |
+
+  Because `home-destroyed` is written before the replacement volume is created and replaced
+  only after the extraction finishes, **a kill at any point falls on the safe side**: a kill
+  while the volume genuinely holds a half-written home discards it and rebuilds from `init.sh`,
+  and a kill at any other moment leaves the home alone. A record with no `phase` at all (one
+  written by a boid older than this) is read as `home-destroyed`, because that is what those
+  records meant.
+
+  `home-absent` covers a migration that ended early with the volume confirmed gone — an
+  extraction that failed and whose half-written volume was then successfully removed, for
+  instance. It is written **before** the record is deleted, and that ordering is the whole
+  point: deleting the record fails in the awkward direction (it looks deleted, and a power cut
+  can bring it back), so relying on the deletion and leaving the phase alone would let a later
+  start discard a home that had been rebuilt correctly in the meantime.
+- **If the startup cleanup fails, the next dispatch picks it up.** An engine that is briefly
+  unreachable at boot makes that volume removal fail; the record stays and startup continues.
+  A dispatch into a workspace that still has a `home-destroyed` record retries the removal
+  **before it runs `init.sh`**, and rebuilds from an empty home once it succeeds — so a
+  transient engine problem heals itself. If the removal still fails, that dispatch **fails**:
+  losing one job is cheaper than running `init.sh` over a partial home and freezing the
+  breakage behind a fresh completion marker. The error names the volume and the
+  `docker volume rm` that clears it. Each such removal is bounded (30s), so an engine that
+  accepts the connection and then answers nothing cannot park daemon startup.
+- **If the record cannot be made durable, the migration stops with nothing destroyed.** The
+  record is written immediately before the first destructive step precisely so this failure is
+  free — check that the daemon's state area is writable and re-run. The same applies to the
+  `home-destroyed` update: if the old volume was removed but that fact could not be recorded
+  durably, the migration stops there rather than extract into a volume nothing could later
+  identify as unfinished. The home is then simply empty, and the next dispatch rebuilds it.
+  A `home-absent` update that cannot be made durable is different: the record is **kept**
+  rather than deleted, because on a state area that cannot be flushed the deletion would fail
+  in the looks-deleted-but-comes-back direction. The record that stays is then resolved
+  harmlessly by the next start or dispatch, against a volume that no longer exists.
+- **If only the record's deletion fails after a successful migration**, that is reported as a
+  warning naming the file. In the ordinary case the record was already moved to `home-rebuilt`,
+  so **the home is safe** and the next daemon start just deletes the file — nothing to do,
+  though an unwritable state area is worth looking into. Only if the warning also says the
+  **next daemon start will discard this home** does the record still say `home-destroyed`; then
+  delete the named file before restarting.
+
+### init.sh runs once after the migration
+
+That is intended. A migration copies CONTENTS, and none of the five things boid's completion
+marker records (script hash, generation, skeleton set, volume identity) changes as a result.
+Left alone, a toolchain with host-era absolute paths baked into it would survive forever and
+`init.sh` would never run again. So the migration does **both** of the available things:
+
+1. **Replaces the volume** — a new incarnation carries a new identity, which no longer
+   matches the marker's `home_id`.
+2. **Deletes the completion marker** — `<dataHome>/homes-meta/<slug>.init.json`.
+
+Either one alone is enough to force the re-init, which is why both are done: whichever step
+fails, the result still falls on the re-initialize side. Since the home is already populated,
+an idempotent `init.sh` finishes quickly.
+
+## Migrating WITHOUT `import-home` — removing the marker by hand
+
+If you replace a volume's contents by any other means — `docker cp`ing files in, editing the
+volume's Mountpoint through `podman unshare`, restoring the whole volume from a backup —
+**boid cannot detect it**.
+
+That is the boundary itself rather than a gap in the implementation. The daemon cannot see
+INSIDE a volume (doing so needs a container, and starting one on every dispatch would defeat
+the point of having a completion marker at all). What the marker identifies is the
+**incarnation of the container**, not its contents, so "same volume, different contents" is
+invisible by construction.
+
+So **whoever performed that operation has to delete the completion marker by hand**. Without
+that, `init.sh` never runs again and whatever was copied in is never initialized.
+
+**The marker cannot be deleted from the host directly.** It lives in the daemon's own
+persistent root (`<dataHome>/homes-meta/<slug>.init.json`), which under the container deploy
+is inside the `boid_state` named volume — there is no host path for it. Per deployment shape:
+
+```bash
+# (a) container deploy (docker compose / scripts/deploy-container.sh) — through the daemon
+docker exec boid_daemon_1 rm -f /home/boid/.local/share/boid/homes-meta/<slug>.init.json
+
+# (b) daemon stopped, or exec unavailable — reach the volume from a throwaway container
+docker run --rm -v boid_boid_state:/state docker.io/library/debian:bookworm-slim \
+  rm -f /state/.local/share/boid/homes-meta/<slug>.init.json
+
+# (c) bare `boid start` (daemon as a host process) — an ordinary file
+rm -f ~/.local/share/boid/homes-meta/<slug>.init.json
+```
+
+- The volume name (`boid_boid_state`) is the compose project name (`boid`) plus the volume
+  name; `docker volume ls` confirms it.
+- The daemon-side path under the container deploy is `XDG_DATA_HOME=/home/boid/.local/share`
+  (set in compose) plus `boid/homes-meta/`.
+- **Removing the whole volume is the more reliable route**: `docker volume rm
+  boid-ws-home-<installID8>-<slug>` followed by `boid workspace import-home`. That changes
+  the identity too, so there is no marker left to forget.
+- Deleting the marker only loses its `boid_version` / `completed_at` history. With no marker,
+  the next dispatch re-initializes (init scripts are contractually idempotent).
+
 ## Removing a workspace
 
 `boid workspace remove <slug>` removes both the workspace's definition (DB row) and its
@@ -254,6 +446,18 @@ home volume deleted (volume boid-ws-home-a1b2c3d4-my-workspace) (128.4 MB)
   ```
   Re-running `boid workspace remove` will 404, since the row is already gone. Once the job
   finishes, run `docker volume rm boid-ws-home-a1b2c3d4-my-workspace` by hand.
+- **Removal is refused with a 409 while `boid workspace import-home` is running for that
+  workspace**: a migration deletes the home volume, **re-creates it under the same name and
+  writes into it**, so overlapping the two leaves the DB row gone and a volume full of harness
+  credentials behind — one no dispatch can mount and `boid workspace remove` can no longer
+  delete (it 404s on the missing row). The refusal lands **before the row is deleted**, so
+  nothing has been changed; wait for the migration to finish and re-run.
+  ```
+  Error: workspace home "my-workspace": refusing to remove this workspace while
+  `boid workspace import-home` is replacing its HOME volume ...
+  ```
+  The reverse order (a removal already in flight when a migration starts) is refused the same
+  way.
 - **A deletion that could not be confirmed is reported, not passed over in silence**: if
   the daemon does not say whether the home volume went away — because it could not reach
   the engine to check, or because it is older than the volume rewiring and still answers

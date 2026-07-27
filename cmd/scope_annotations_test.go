@@ -144,9 +144,18 @@ var expectedScopeAnnotations = map[string]string{
 	"boid workspace edit":       scopeRemote,
 	"boid workspace export":     scopeRemote,
 	"boid workspace import":     scopeRemote,
-	"boid workspace list":       scopeRemote,
-	"boid workspace remove":     scopeRemote,
-	"boid workspace show":       scopeRemote,
+	// import-home reads a LOCAL directory to build its payload and is still
+	// scopeRemote, unlike `project init` / `project reload`, which also read a
+	// local path and are scopeLocal. The axis is whose filesystem the path has
+	// to be on: those two hand the DAEMON a path it opens itself (so they only
+	// work while CLI and daemon share a host), while import-home opens it in
+	// this process and streams the BYTES — which is exactly why PR8's payload
+	// is a tar stream rather than a bind mount (docs/plans/
+	// workspace-home-volume-persistence.md 論点 f).
+	"boid workspace import-home": scopeRemote,
+	"boid workspace list":        scopeRemote,
+	"boid workspace remove":      scopeRemote,
+	"boid workspace show":        scopeRemote,
 
 	// local — daemon lifecycle machinery itself, sandbox-launch plumbing,
 	// commands that never talk to a daemon, or (see the doc comment above)

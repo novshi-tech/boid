@@ -3,6 +3,7 @@ package dispatcher
 import (
 	"bytes"
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -1087,5 +1088,70 @@ func TestContainerBackend_ImageOverride_RequiresBoidBaseDerivedLabel(t *testing.
 				t.Errorf("ContainerCreate was called %d times, want 0 (rejected before create)", len(api.createCalls))
 			}
 		})
+	}
+}
+
+// TestContainerBackend_Launch_BoundsTheTeardownOnAFailedLaunch is the third
+// occurrence of the defect codex round 2 named as Major 3 for the migration's
+// extraction container, found by the grep it asked for.
+//
+// Launch tears its own half-built container down on three error paths (spool
+// open, attach, start) and every one of them issued ContainerRemove on a bare
+// context.Background(): no cancellation, and no deadline either. Against an
+// engine socket that accepts a request and never answers, Launch never returns
+// the error it already has — and since PR8, Dispatch holds this workspace's
+// in-flight home registration across the whole of Launch, so a wedged teardown
+// also refuses every later `boid workspace import-home` for that workspace with
+// a message about a job that is not running.
+//
+// Dropping the caller's cancellation is still right (a job launch cancelled
+// mid-flight is exactly when the teardown matters most, and inheriting the
+// cancellation would leak the container). The missing half is the bound.
+func TestContainerBackend_Launch_BoundsTheTeardownOnAFailedLaunch(t *testing.T) {
+	restore := shrinkWorkspaceHomeContainerCleanupTimeout(t, 100*time.Millisecond)
+	defer restore()
+
+	removeCtx := make(chan context.Context, 4)
+	api := &fakeDockerAPI{
+		ContainerAttachFunc: func(context.Context, string, client.ContainerAttachOptions) (client.ContainerAttachResult, error) {
+			return client.ContainerAttachResult{}, errors.New("attach refused")
+		},
+		ContainerRemoveFunc: func(ctx context.Context, _ string, _ client.ContainerRemoveOptions) (client.ContainerRemoveResult, error) {
+			removeCtx <- ctx
+			<-ctx.Done() // an engine that accepted the request and never answers
+			return client.ContainerRemoveResult{}, ctx.Err()
+		},
+	}
+	be := NewContainerBackend(api, ContainerBackendOptions{})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := be.Launch(ctx, sandbox.Spec{ID: "job-wedged", Argv: []string{"true"}}, backend.LaunchOptions{JobID: "job-wedged"})
+		done <- err
+	}()
+
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("test wiring: this Launch was supposed to fail at attach")
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Launch never returned: its teardown ContainerRemove is issued on a context with no deadline, so a " +
+			"wedged engine socket pins the dispatch — and with it the workspace's in-flight home registration — forever")
+	}
+
+	select {
+	case got := <-removeCtx:
+		if _, ok := got.Deadline(); !ok {
+			t.Error("the teardown removal was issued on a context with no deadline")
+		}
+		if errors.Is(got.Err(), context.Canceled) {
+			t.Error("the teardown removal inherited the caller's cancellation, so a cancelled Launch leaks its container")
+		}
+	default:
+		t.Fatal("ContainerRemove was never called: the half-built container is leaked")
 	}
 }

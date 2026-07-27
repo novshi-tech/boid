@@ -346,6 +346,24 @@ func (r *Runner) resolveWorkspaceHome(ctx context.Context, workspaceID string) (
 		return "", "", "", fmt.Errorf("workspace home: create homes meta dir %q: %w", metaDir, err)
 	}
 
+	// Before ANY of the volume work below (codex review of PR8 round 3, Blocker
+	// 1): a workspace whose interrupted-migration record is still on disk holds a
+	// home nobody vouched for, and the whole point of that record is that no init
+	// and no job may run against it. The startup sweep normally clears it, but a
+	// sweep whose VolumeRemove failed logs and lets startup continue, so a
+	// dispatch is the second — and last — place the invariant can be enforced.
+	//
+	// Placed above ensureWorkspaceHomeVolume rather than beside the marker check
+	// because it is the VOLUME that is wreckage: observing its identity first
+	// would mean minting one for a volume about to be removed, and the marker
+	// question does not arise at all until the home is known to be a home.
+	//
+	// See recoverInterruptedWorkspaceHomeMigration for why this repairs in place
+	// rather than refusing, and for what it does when the engine is still down.
+	if err := r.recoverInterruptedWorkspaceHomeMigration(ctx, metaDir, slug); err != nil {
+		return "", "", "", err
+	}
+
 	// Computed HERE and handed to everything downstream, rather than
 	// recomputed by the backend from its own installID: the job container's
 	// mount, the init container's mount and this function's return value have
@@ -678,10 +696,15 @@ func workspaceDataHomeRoot() (string, error) {
 //
 // This function is kept, and still exported, for the legacy root itself: it
 // is where the pre-PR6 homes live, and PR8's migration CLI resolves them
-// from here.
+// from here — `boid workspace import-home`'s --from default is
+// <this>/<slug>, computed in cmd/workspace_import_home.go's
+// defaultWorkspaceHomeSource with an EMPTY runtimesDir (a CLI has no way to
+// know the daemon's, and the fallback branch below is exactly where a pre-PR6
+// install put them).
 //
-// Existing directories under this root are NOT deleted by PR6. They hold the
-// pre-PR6 homes, and PR8's migration CLI has to be able to read them.
+// Existing directories under this root are NOT deleted by PR6, and PR8 does
+// not delete them either: the migration only READS them, which is what makes
+// it re-runnable and what makes a failed migration recoverable.
 //
 // Prefers deriving from runtimesDir when non-empty. Deriving homes/ from
 // whatever root the runtime dirs use means a daemon instance running against
@@ -878,15 +901,85 @@ func readWorkspaceHomeMarker(path string) (workspaceHomeMarker, bool, error) {
 // writeWorkspaceHomeMarker writes marker to path via a sibling temp file +
 // rename, so concurrent readers (or a crash mid-write) never observe a
 // partially written marker.
-func writeWorkspaceHomeMarker(path string, marker workspaceHomeMarker) (retErr error) {
-	data, err := json.MarshalIndent(marker, "", "  ")
+//
+// homesMetaBestEffortDurability, deliberately: see that constant, and
+// TestWriteWorkspaceHomeMarker_ToleratesADirectorySyncFailure for the behaviour
+// it buys.
+func writeWorkspaceHomeMarker(path string, marker workspaceHomeMarker) error {
+	return writeWorkspaceHomeJSONFile(path, marker, homesMetaBestEffortDurability)
+}
+
+// homesMetaDurability says what a file under <dataHome>/homes-meta/ needs from
+// its parent-directory fsync — the step that decides whether a rename or an
+// unlink survives the machine losing power.
+//
+// It is a policy rather than a constant because the two files in that directory
+// want OPPOSITE answers when that fsync fails, and getting one of them wrong is
+// invisible until an incident (codex review of PR8 round 3, Major).
+type homesMetaDurability int
+
+const (
+	// homesMetaBestEffortDurability: try to flush, ignore a failure.
+	//
+	// This is the completion marker's policy. What the marker needs from this
+	// writer is ATOMICITY — a concurrent dispatch must never read a half-written
+	// one — and atomicity comes from the temp-file + rename, not from the fsync.
+	// Losing the rename to a power cut costs exactly one extra run of a
+	// contractually idempotent init.sh, which is the direction every uncertain
+	// marker already resolves to (workspaceHomeInitialized). Failing hard instead
+	// would convert a storage hiccup into a failed dispatch for that workspace —
+	// strictly worse than the outcome being avoided.
+	homesMetaBestEffortDurability homesMetaDurability = iota
+
+	// homesMetaRequiredDurability: a failure to flush is a failure to write.
+	//
+	// This is the interrupted-migration record's policy, and its whole existence
+	// is the argument. The record is written immediately BEFORE the home volume is
+	// destroyed, so that a daemon which stops existing mid-migration leaves
+	// something the next start can recognize. A record that is still only in the
+	// page cache records nothing, and reporting success for one would let the
+	// migration proceed to destroy the volume while its only safety net may not
+	// be there after a crash — reintroducing exactly the state
+	// workspace_home_migration_sentinel.go exists to make impossible (a partial
+	// home, no marker, no record, and a dispatch that runs init.sh over it).
+	//
+	// Failing here is cheap in a way failing anywhere later is not: nothing has
+	// been destroyed yet, so the operator still has the workspace they had and can
+	// re-run once the storage is healthy.
+	homesMetaRequiredDurability
+)
+
+// writeWorkspaceHomeJSONFile is the durable-write discipline every file under
+// <dataHome>/homes-meta/ is written with: marshal, write to a sibling temp file,
+// chmod 0600, fsync it, rename over the target, then fsync the parent directory.
+//
+// Each step earns its place, and the two consumers need them for different
+// reasons. The completion marker (workspaceHomeMarker) needs the ATOMICITY: a
+// concurrent dispatch reading a half-written marker would see a shorter script
+// hash and re-run an init for no reason. The interrupted-migration record
+// (workspaceHomeMigrationRecord) needs the DURABILITY: its whole job is to
+// survive the machine going away, so a record that is still only in the page
+// cache when the power cuts records nothing at all.
+//
+// Extracted from writeWorkspaceHomeMarker rather than duplicated (PR8 round 2,
+// Major 2) because "the record is fsync'd" is an argument the sweep depends on,
+// and an argument that lives in one place cannot be half-true in another.
+//
+// durability is what round 3's Major added: sharing the steps must not mean
+// sharing the answer to "what if the last one fails". See homesMetaDurability
+// for why the marker and the record want opposite answers.
+func writeWorkspaceHomeJSONFile(path string, value any, durability homesMetaDurability) (retErr error) {
+	data, err := json.MarshalIndent(value, "", "  ")
 	if err != nil {
-		return fmt.Errorf("marshal marker: %w", err)
+		return fmt.Errorf("marshal %s: %w", filepath.Base(path), err)
 	}
 	dir := filepath.Dir(path)
-	tmp, err := os.CreateTemp(dir, ".init.json.*.tmp")
+	// The pattern ends in ".tmp" on purpose: SweepInterruptedWorkspaceHomeMigrations
+	// enumerates this directory by suffix, and a temp file that could end in
+	// ".migrating.json" would be read as a record of its own.
+	tmp, err := os.CreateTemp(dir, ".homes-meta.*.tmp")
 	if err != nil {
-		return fmt.Errorf("create temp marker file: %w", err)
+		return fmt.Errorf("create temp file beside %s: %w", filepath.Base(path), err)
 	}
 	tmpPath := tmp.Name()
 	cleanup := true
@@ -897,30 +990,142 @@ func writeWorkspaceHomeMarker(path string, marker workspaceHomeMarker) (retErr e
 	}()
 	if _, err := tmp.Write(data); err != nil {
 		_ = tmp.Close()
-		return fmt.Errorf("write temp marker file: %w", err)
+		return fmt.Errorf("write temp file for %s: %w", filepath.Base(path), err)
 	}
 	if err := tmp.Chmod(0o600); err != nil {
 		_ = tmp.Close()
-		return fmt.Errorf("chmod temp marker file: %w", err)
+		return fmt.Errorf("chmod temp file for %s: %w", filepath.Base(path), err)
 	}
 	if err := tmp.Sync(); err != nil {
 		_ = tmp.Close()
-		return fmt.Errorf("sync temp marker file: %w", err)
+		return fmt.Errorf("sync temp file for %s: %w", filepath.Base(path), err)
 	}
 	if err := tmp.Close(); err != nil {
-		return fmt.Errorf("close temp marker file: %w", err)
+		return fmt.Errorf("close temp file for %s: %w", filepath.Base(path), err)
 	}
 	if err := os.Rename(tmpPath, path); err != nil {
-		return fmt.Errorf("rename marker file: %w", err)
+		return fmt.Errorf("rename %s into place: %w", filepath.Base(path), err)
 	}
 	cleanup = false
-	// Best-effort parent dir fsync so the rename survives a crash right
-	// after this call returns; not fatal if unsupported.
-	if dirFile, err := os.Open(dir); err == nil {
-		_ = dirFile.Sync()
-		_ = dirFile.Close()
+	// The parent dir fsync, which is what makes the rename above survive the
+	// machine going away rather than merely surviving this process. Whether a
+	// failure here fails the write is the caller's call — see homesMetaDurability.
+	if err := fsyncDir(dir); err != nil {
+		if durability == homesMetaRequiredDurability {
+			return fmt.Errorf(
+				"sync the directory holding %s so the write survives a crash: %w (the file is on disk but nothing "+
+					"guarantees it stays there, and this record only has value if it does)", filepath.Base(path), err)
+		}
+		slog.Warn("workspace home: could not sync the homes-meta directory after writing; the write may not survive a power cut",
+			"path", path, "error", err)
 	}
 	return nil
+}
+
+// mkdirAllDurable is os.MkdirAll for a directory whose CONTENTS will be written
+// with homesMetaRequiredDurability — i.e. one whose own existence has to survive
+// a power cut too (codex review of PR8 round 4, Blocker 2).
+//
+// # The hole it closes
+//
+// writeWorkspaceHomeJSONFile fsyncs the directory it renames into, which makes
+// the RENAME durable. It says nothing about the directory itself: a directory's
+// entry lives in its PARENT, so a homes-meta/ that was created moments ago and
+// never had <dataHome> flushed can be lost whole by a power cut — record and all
+// — while the partial home volume the record described survives in the engine's
+// own store. The next start's sweep then reads "no homes-meta" as "no
+// interrupted migration", the next dispatch re-creates the directory, and
+// init.sh runs against a partial home with nothing left to say so. That is
+// exactly the state workspace_home_migration_sentinel.go exists to make
+// impossible, reached by losing the sentinel rather than by never writing it.
+//
+// # How far up it flushes, and why
+//
+//   - The parent of every directory this call CREATED. MkdirAll can create
+//     several levels (a fresh install where <dataHome> itself is not there yet),
+//     and each level's entry lives one level up, so each level needs its own
+//     parent flushed. Flushing only the deepest would leave the whole subtree
+//     hanging off an entry that is still only in the page cache.
+//   - The immediate parent of path even when NOTHING was created. This is not
+//     belt-and-braces: homes-meta/ is created by whichever of resolveWorkspaceHome
+//     and ImportWorkspaceHome gets there first, and the former's MkdirAll is
+//     deliberately not durable (the only file it writes there is the completion
+//     marker, whose policy is homesMetaBestEffortDurability). So a migration can
+//     find the directory already present and still be standing on an entry a
+//     dispatch created seconds earlier without flushing. The cost of asking
+//     unconditionally is one fsync of one directory per migration, against a
+//     multi-GB extraction.
+//
+// It deliberately stops there rather than walking to the filesystem root. Every
+// ancestor above <dataHome> either was created by this call (covered by the
+// first rule) or is part of the installation's long-lived layout — <dataHome>
+// itself holds boid.db, whose SQLite writes have flushed that entry many times
+// over — and an unbounded walk would spend fsyncs on / and /home to defend
+// against a directory tree that vanished for other reasons.
+//
+// A failure is returned rather than logged: the one caller needs the answer
+// before it destroys anything, and "the directory may not survive" has the same
+// consequence there as "the record may not survive" — see homesMetaDurability.
+func mkdirAllDurable(path string, perm os.FileMode) error {
+	// Collect the missing prefix BEFORE creating anything; afterwards there is no
+	// way to tell which levels this call was responsible for.
+	var created []string
+	for p := filepath.Clean(path); ; {
+		if _, err := os.Stat(p); err == nil {
+			break
+		} else if !os.IsNotExist(err) {
+			return fmt.Errorf("stat %q: %w", p, err)
+		}
+		created = append(created, p)
+		parent := filepath.Dir(p)
+		if parent == p {
+			break
+		}
+		p = parent
+	}
+
+	if err := os.MkdirAll(path, perm); err != nil {
+		return err
+	}
+
+	// Deduplicated because the unconditional entry below overlaps the created
+	// set whenever path itself was created.
+	dirs := make([]string, 0, len(created)+1)
+	seen := map[string]bool{}
+	for _, dir := range append(created, filepath.Clean(path)) {
+		parent := filepath.Dir(dir)
+		if parent == dir || seen[parent] {
+			continue
+		}
+		seen[parent] = true
+		dirs = append(dirs, parent)
+	}
+	for _, dir := range dirs {
+		if err := fsyncDir(dir); err != nil {
+			return fmt.Errorf(
+				"sync %q so that %q survives a crash: %w (a directory entry that is only in the page cache can be lost "+
+					"whole, taking the interrupted-migration record inside it with it)", dir, path, err)
+		}
+	}
+	return nil
+}
+
+// fsyncDir flushes a directory's own metadata — i.e. makes a rename or an
+// unlink inside it survive a power cut — and is a variable only so tests can
+// make it fail: there is no portable way to provoke an fsync(2) error on healthy
+// storage, and the branches that depend on one are exactly the branches that
+// only matter when the storage is not healthy.
+var fsyncDir = func(dir string) error {
+	f, err := os.Open(dir)
+	if err != nil {
+		return err
+	}
+	syncErr := f.Sync()
+	closeErr := f.Close()
+	if syncErr != nil {
+		return syncErr
+	}
+	return closeErr
 }
 
 // acquireWorkspaceHomeLock opens (creating if needed) lockPath and takes an

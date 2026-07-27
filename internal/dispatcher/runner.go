@@ -283,6 +283,32 @@ type Runner struct {
 	// as it did before this field existed. Production wiring always sets it.
 	WithProjectLock func(fn func() error) error
 
+	// ConfirmWorkspaceExists reports whether a workspace row still exists,
+	// returning the service's own error (an *api.StatusError, i.e. a 404) when it
+	// does not. server/wire.go closes over api.ProjectAppService.GetWorkspace to
+	// supply it — the same no-cross-package-dependency trick WithProjectLock
+	// above uses, and for the same reason (internal/api already imports
+	// internal/dispatcher, so the reverse direction would be an import cycle).
+	//
+	// ImportWorkspaceHome is the only caller, and it calls this while holding its
+	// in-flight registration — which is the entire point (codex round 2, Major
+	// 1). The API handler already checks the workspace before reading the body;
+	// what that check cannot do is stay true, because `boid workspace remove`
+	// deletes the row and then the volume, and a removal that completes between
+	// the handler's check and the migration's first engine call leaves the
+	// migration minting a HOME volume for a workspace that no longer exists —
+	// full of harness credentials, unreachable by any dispatch, and no longer
+	// deletable by `workspace remove` (it 404s on the missing row). Re-checking
+	// under the registration is what makes the answer hold: from that point a
+	// removal of this workspace is refused (workspaceHomeInFlight.beginRemoval).
+	//
+	// nil means "no confirmation", which is what every dispatcher unit test that
+	// does not wire an api.ProjectAppService gets, and what the pre-PR8 behaviour
+	// was. Production wiring always sets it. The consequence of leaving it nil is
+	// narrow rather than open-ended: the API handler's own pre-check still runs,
+	// so what is lost is only the re-check under the registration.
+	ConfirmWorkspaceExists func(slug string) error
+
 	tokenMu       sync.Mutex
 	jobTokens     map[string]string
 	waiterMu      sync.Mutex
@@ -298,6 +324,14 @@ type Runner struct {
 	jobContexts   map[string]JobContextSnapshot // jobID -> Phase 5b PR1 task-context RPC data
 	checkoutMu    sync.Mutex
 	checkoutDirs  map[string]string // jobID -> per-job clone staging dir (docs/plans/volume-only-daemon.md §論点b, PR-2b)
+	// homeInFlight excludes a workspace HOME volume's destructive replacement
+	// (ImportWorkspaceHome) against the dispatches that are about to mount it,
+	// for the interval between resolveWorkspaceHome's fast path and
+	// ContainerCreate — which neither the per-workspace flock (the fast path
+	// takes none) nor the engine's own in-use 409 (no container yet) covers.
+	// See workspaceHomeInFlight for the interleaving and for what it does not
+	// close. Zero value ready to use, like every other lock here.
+	homeInFlight workspaceHomeInFlight
 }
 
 // Dispatch launches a sandbox for the given JobSpec. The optional cleanup
@@ -405,6 +439,35 @@ func (r *Runner) Dispatch(ctx context.Context, spec *orchestrator.JobSpec, clean
 	// mounts the volume, that it is still the same one — the check this call
 	// makes is over long before ContainerCreate runs (codex review of PR6,
 	// Major 1; see verifyWorkspaceHomeIdentity).
+	//
+	// The registration below has to come BEFORE that call, and be held until
+	// this function returns (codex review of PR8, Blocker 2). It excludes
+	// `boid workspace import-home` — the one operation that deletes this
+	// workspace's home volume, re-creates it under the same name and then
+	// writes into it — for the whole interval in which this dispatch holds a
+	// resolved answer that the engine cannot yet defend: resolveWorkspaceHome's
+	// fast path takes no flock, and the volume only becomes in-use, and the
+	// engine's own 409 only starts applying, once Launch has created the
+	// container. A `defer` rather than a release at the launch site because the
+	// span has a dozen failure exits between here and there and a leaked
+	// registration would refuse every later migration of this workspace for the
+	// life of the daemon; releasing a little late (after UpdateJob, after the
+	// watcher goroutines start) costs nothing, since by then the engine is
+	// holding the volume anyway.
+	//
+	// A migration already in flight makes this WAIT rather than fail — see
+	// workspaceHomeInFlight.beginDispatch for why the two directions are not
+	// symmetric.
+	releaseHome, err := r.beginWorkspaceHomeDispatch(ctx, workspaceID)
+	if err != nil {
+		r.failJob(j, err)
+		if cleanup != nil {
+			cleanup()
+		}
+		return "", err
+	}
+	defer releaseHome()
+
 	workspaceHomeVolume, workspaceSlug, workspaceHomeID, err := r.resolveWorkspaceHome(ctx, workspaceID)
 	if err != nil {
 		r.failJob(j, err)

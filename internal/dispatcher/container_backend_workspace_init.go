@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/containerd/errdefs"
@@ -219,17 +220,14 @@ func (b *containerBackend) RunWorkspaceInit(ctx context.Context, req WorkspaceIn
 	if err != nil {
 		return err
 	}
-	defer func() {
-		// Unconditional: this container is throwaway, and leaving it behind
-		// would additionally hold the deterministic name the NEXT init for
-		// this workspace needs.
-		if _, rerr := b.api.ContainerRemove(context.Background(), id, client.ContainerRemoveOptions{Force: true}); rerr != nil {
-			slog.Warn("container backend: remove workspace init container failed",
-				"workspace_slug", req.Slug, "container", name, "error", rerr)
-		}
-	}()
+	// Unconditional: this container is throwaway, and leaving it behind would
+	// additionally hold the deterministic name the NEXT init for this workspace
+	// needs. Bounded and cancellation-free — see removeWorkspaceHomeContainer
+	// for why an unbounded context.Background() here could pin every future
+	// dispatch of this workspace on the init flock.
+	defer b.removeWorkspaceHomeContainer(ctx, id, name, req.Slug)
 
-	exitCode, output, err := b.runWorkspaceInitContainer(ctx, id, req)
+	exitCode, output, err := b.runWorkspaceHomeContainer(ctx, id, req.Slug, strings.NewReader(req.Script))
 	if err != nil {
 		return fmt.Errorf("workspace init container for %q: %w", req.Slug, err)
 	}
@@ -262,22 +260,32 @@ func (b *containerBackend) RunWorkspaceInit(ctx context.Context, req WorkspaceIn
 // volume purely by "it does not start with /", so a stray relative path would
 // otherwise reach the engine as a volume name.
 func workspaceInitHomeMount(req WorkspaceInitRequest) (mount.Mount, error) {
-	if filepath.IsAbs(req.HomeSource) {
+	return workspaceHomeVolumeMount(req.Slug, req.HomeSource, req.HomeTarget)
+}
+
+// workspaceHomeVolumeMount is the shared body: the init container (above) and
+// PR8's extraction container (containerBackend.ImportWorkspaceHome) mount the
+// same volume at the same path, and the checks below are exactly as
+// load-bearing for the second as for the first — an extraction that bound a
+// host directory instead would report success while the workspace's real home
+// stayed empty.
+func workspaceHomeVolumeMount(slug, source, target string) (mount.Mount, error) {
+	if filepath.IsAbs(source) {
 		return mount.Mount{}, fmt.Errorf(
-			"workspace init container for %q: home source %q is an absolute path; as of PR6 of "+
+			"workspace home container for %q: home source %q is an absolute path; as of PR6 of "+
 				"docs/plans/workspace-home-volume-persistence.md the workspace home is a docker named volume "+
 				"(dockerres.WorkspaceHomeVolumeName), and binding a host path here would prepare something other than "+
-				"the home the job will actually get", req.Slug, req.HomeSource)
+				"the home the job will actually get", slug, source)
 	}
-	if !dockerres.IsValidVolumeName(req.HomeSource) {
+	if !dockerres.IsValidVolumeName(source) {
 		return mount.Mount{}, fmt.Errorf(
-			"workspace init container for %q: home source %q is not a valid docker volume name", req.Slug, req.HomeSource)
+			"workspace home container for %q: home source %q is not a valid docker volume name", slug, source)
 	}
-	if !filepath.IsAbs(req.HomeTarget) {
+	if !filepath.IsAbs(target) {
 		return mount.Mount{}, fmt.Errorf(
-			"workspace init container for %q: home target %q is not an absolute path", req.Slug, req.HomeTarget)
+			"workspace home container for %q: home target %q is not an absolute path", slug, target)
 	}
-	return mount.Mount{Type: mount.TypeVolume, Source: req.HomeSource, Target: req.HomeTarget}, nil
+	return mount.Mount{Type: mount.TypeVolume, Source: source, Target: target}, nil
 }
 
 // EnsureWorkspaceHomeVolume creates the workspace HOME volume if it is not
@@ -361,6 +369,15 @@ func (b *containerBackend) EnsureWorkspaceHomeVolume(ctx context.Context, req Wo
 // use, naming both identities. That is the same trade the identity mechanism
 // makes everywhere else — see workspaceHomeMarker.HomeID's account of what a
 // volume label can and cannot witness.
+//
+// One thing this narrowing is NOT enough for, and which is handled elsewhere:
+// the MIGRATION (Runner.ImportWorkspaceHome) does not merely remove the volume,
+// it re-creates one under the same name and then writes into it. A replacement
+// landing after this check therefore passes no check at all — it is mounted by
+// name, and the job's agent and the migration's tar share a volume rather than
+// failing loudly. PR8's codex review recorded that as Blocker 2; the fix is an
+// exclusion rather than another comparison, because no comparison here can be
+// atomic with ContainerCreate. See workspaceHomeInFlight.
 func verifyWorkspaceHomeIdentity(volumeName, want, got string) error {
 	if want == "" || want == got {
 		return nil
@@ -645,13 +662,18 @@ func (b *containerBackend) verifyWorkspaceInitIncumbent(name, slug string, incum
 	return nil
 }
 
-// runWorkspaceInitContainer attaches, starts, feeds the wrapper to stdin and
-// collects the exit code plus the combined output.
+// runWorkspaceHomeContainer attaches, starts, feeds stdin and collects the exit
+// code plus the combined output.
 //
 // Attach precedes start for the same reason it does in Launch: output produced
 // between the first byte and a post-start attach would be lost, and here that
-// output is the entire diagnosis of a failed init.
-func (b *containerBackend) runWorkspaceInitContainer(ctx context.Context, id string, req WorkspaceInitRequest) (int, *workspaceInitOutput, error) {
+// output is the entire diagnosis of a failed run.
+//
+// stdin is an io.Reader rather than the init wrapper's string because PR8's
+// extraction container (containerBackend.ImportWorkspaceHome) needs the SAME
+// lifecycle with a multi-GB tar on that stream — see this function's write step
+// for why streaming rather than buffering is the whole point there.
+func (b *containerBackend) runWorkspaceHomeContainer(ctx context.Context, id, slug string, stdin io.Reader) (int, *workspaceInitOutput, error) {
 	attachRes, err := b.api.ContainerAttach(ctx, id, client.ContainerAttachOptions{
 		Stream: true,
 		Stdin:  true,
@@ -688,16 +710,22 @@ func (b *containerBackend) runWorkspaceInitContainer(ctx context.Context, id str
 		return 0, nil, fmt.Errorf("start: %w", err)
 	}
 
-	// Feed the wrapper, then half-close: `bash -s` reads its whole script from
-	// stdin and will not run the last command until it sees EOF.
-	if _, err := io.WriteString(hijack.Conn, req.Script); err != nil {
+	// Feed stdin, then half-close. Both consumers need the EOF: `bash -s` reads
+	// its whole script from stdin and will not run the last command until it
+	// sees one, and `tar -xf -` will not finish its last entry without one.
+	//
+	// io.Copy, not a buffered write: the extraction payload is a whole workspace
+	// home (4.3GB on the machine PR8 was written for) arriving over the daemon's
+	// own request body, and materializing it would put it in the daemon's heap
+	// on its way from one socket to another.
+	if _, err := io.Copy(hijack.Conn, stdin); err != nil {
 		hijack.Close()
 		<-outCh
-		return 0, nil, fmt.Errorf("write the init wrapper to the container's stdin: %w", err)
+		return 0, nil, fmt.Errorf("write to the container's stdin: %w", err)
 	}
 	if err := hijack.CloseWrite(); err != nil {
-		slog.Warn("container backend: half-closing the workspace init container's stdin failed",
-			"workspace_slug", req.Slug, "error", err)
+		slog.Warn("container backend: half-closing the workspace home container's stdin failed",
+			"workspace_slug", slug, "error", err)
 	}
 
 	waitRes := b.api.ContainerWait(ctx, id, client.ContainerWaitOptions{

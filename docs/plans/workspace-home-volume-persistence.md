@@ -1,6 +1,6 @@
 # workspace HOME の named volume 化 (永続性退行の修復)
 
-**状態**: 実装中 (2026-07-26 作成。PR1 / PR2 / PR3 / PR4 / PR5 / **PR6** landed、**PR7** 実装済み、PR8 以降未着手)
+**状態**: 実装中 (2026-07-26 作成。PR1 / PR2 / PR3 / PR4 / PR5 / **PR6** / **PR7** landed、**PR8** 実装済み、PR9 未着手)
 **発端**: 2026-07-26 volume-only dogfood
 **関連**: `home-workspace-volume.md` (Phase 4、破られた契約の出典) / `volume-only-daemon.md` (退行を持ち込んだ cutover) / `phase6-container-backend.md`
 
@@ -892,7 +892,416 @@ uid mapping を理由に退けた engine bind が要る)。したがって「起
 
 一度きりの移行なので **CLI (`boid workspace import-home <slug> --from <dir>`) に限定するのが素直**。
 
+#### 決定 (PR8 で確定・実装済み、2026-07-27)
+
+| 論点 | 確定値 |
+|---|---|
+| 実行主体 | **daemon**。CLI は host dir を読んで tar を作り、`POST /api/workspaces/{slug}/home/import` に**ストリームするだけ**。上の「host mode CLI からの実行に限定される」は **tar の生成側**にかかる制約であって、engine 操作を CLI に置く理由ではない — marker (`<dataHome>/homes-meta/<slug>.init.json`) は `boid_state` volume の中で CLI から触れず、init flock も identity 生成も daemon 側の不変条件だからである。`boid reap` が engine を直接叩く前例はあるが、あれは「**daemon が落ちていても動く**」ことが要件 (`phase6-container-backend.md` §決定6) で、本件は逆に「**daemon が生きていないと正しくなれない**」 |
+| endpoint | `POST /api/workspaces/{slug}/home/import`、`Content-Type: application/x-tar`、body = 非圧縮 tar。他の workspace endpoint と違い `http.MaxBytesReader`(1 MiB) を**かけない** (実測 4.3GB)。body は `io.Reader` のまま `containerBackend.runWorkspaceHomeContainer` の `io.Copy` を通って container の stdin へ渡り、daemon の heap には載らない |
+| 前提条件の順序 | 副作用なしで断れるものを全部先に: media type → workspace row の存在 (404) → importer 配線 (501)。この後に初めて volume を壊す |
+| media type は**必須** (codex Blocker 1、2026-07-27 修正) | 初版は「宣言されていれば検証する」形で、**未指定は素通しして importer を呼んでいた**。 `curl --data-binary @file` は既定で `Content-Type` を送らないので、**手で叩いたときに最も出やすい形が唯一チェックを飛ばす形**だった。 このルートは body を 1 byte も読む前に home volume を破棄するので、素通しの代償は「型を推測する」ではなく「認証情報を消してから tar で失敗する」。 未指定も誤指定と**同じ 400** で断る |
+| in-use 検出 | **`VolumeRemove` の 409 そのもの** (`errdefs.IsConflict` → `dispatcher.ErrWorkspaceHomeInUse` → HTTP 409)。検出と破壊が 1 つの atomic な engine 操作なので、job が走っている workspace は**何も壊れる前に**断られる。事前の `ContainerList` は「より stale になりうるだけ」で保証を増やさないので採らない。`Force` は付けない — 付けると「元々無かった」(404) と「消した」(204) が区別できなくなり、一度も dispatch していない workspace への移行という正常系が潰れる |
+| init container の流用 (D3) | **primitive は流用、関数は流用しない**。`createWorkspaceInitContainer` / `clearWorkspaceInitContainer` / `runWorkspaceInitContainer` (→ `runWorkspaceHomeContainer` に一般化、stdin が `io.Reader` になった) をそのまま使い、**決定的 container 名と label も init と共有する** — 共有することで「移行と init が同時に同じ home に書く」ことが engine 側で排他になる (flock は 1 プロセス内でしか効かない)。`RunWorkspaceInit` 自体は流用しない: stdin が shell program か payload か、entrypoint が `bash -s` か `tar` か、が違い、init 側の stage marker / boid 固有 exit code は存在しない stage を指すことになる。network だけは共有しない (init は既定 bridge が要る、こちらは `none`) |
+| 展開 argv | `tar --extract --file - --directory <target> --no-same-owner --same-permissions` (`workspaceHomeImportArgv`)。`--same-permissions` が無いと非 root の GNU tar が umask を被せる — `0600` は umask では緩まないが `0666`/`0755` は削れるので、「mode はだいたい合っている」を契約にしないために明示する (mutation で実証: 外すと `0755`→`0705`, `0666`→`0606`) |
+| tar の作り方 | `dispatcher.WriteWorkspaceHomeTar` (host 側)。mode 維持 / 所有者は uid=gid=0 に正規化 (どうせ `--no-same-owner` で捨てる + host アカウントを跨境界の artifact に残さない) / symlink は target 逐語 (絶対 symlink も書き換えない) / **hard link は `TypeLink` で dedupe** (node・volta 系は hard link を多用し、実体二重送信は数 GB の無駄) / socket・FIFO・device は skip して**名前を報告** / sparse は dense に読む |
+| 安全性 (D4) | source は読むだけ。既定は対話確認 (`--yes`/`--force` で skip)。`--dry-run` は walk だけして「何がどれだけ動くか」を出す。進捗は 2 秒ごとに files/bytes を出す |
+| 失敗時 | volume 破棄後に展開が失敗したら **volume ごと削除する** (codex Major、2026-07-27 修正)。 初版は「途中まで展開された volume + marker 無し」を残して「一度も dispatch していない workspace と同じ状態」と称していたが、**同じではない**: 一度も dispatch していない workspace には volume が無い。 途中まで展開された home は init.sh が「空でない home」に対して走る、というのが差で、これは危険な差である — init.sh は契約上冪等で、その素直な書き方は `command -v claude` 型の在庫確認による早期 return である。 `.local/bin/claude` だけ届いて実体が未転送の home はこの確認に **YES と答える**ので、init.sh が exit 0 → daemon が完了 marker を書く → 以後その marker が毎回一致し、**壊れた状態が恒久的に固定**され、ずっと後で adapter の「CLI not found」として出る。 削除しておけば次の dispatch が空から作り直す。 削除自体に失敗した場合は握り潰さず、展開エラーと**両方**を返して `docker volume rm` の手順を案内する (再実行では直らない状態なので)。 cleanup は**呼び出し元の ctx を使わない** (`context.WithoutCancel` + 30s) — 展開が失敗する最頻経路は CLI の切断であり、それは ctx を cancel 済みだから |
+
+##### 移行後の再 init: 2 つの leg と、その順序
+
+PR8 は下の申し送りが要求する 2 手段を**併用**し、順序を「副作用なしで断れる step を先に」で決めた:
+
+1. `RemoveWorkspaceHomeVolume` (= in-use 検出。ここで断れば副作用ゼロ)
+2. marker 削除 (leg 2) — **volume を壊した直後**。ここから先は marker が指す home が既に無いので、
+   daemon が突然死しても再 init 側に倒れる。失敗しても fatal にせず result で報告する
+3. `EnsureWorkspaceHomeVolume` で作り直し (leg 1、新しい identity)
+4. tar 展開
+
+step 1 が成功した後は**どの結末でも再 init される**: 全部成功 = marker 無し + identity 新規 /
+step 2 だけ失敗 = marker はあるが存在しない identity を指す (leg 1) /
+step 3 or 4 が失敗 = marker が無い (leg 2、step 3 失敗なら volume 自体が無いので両方)。
+
+テストは 2 つの leg を**独立に**押さえている (`TestRunner_ImportWorkspaceHome_ReInitsWithTheMarkerRemovalUNDONE` /
+`..._ReInitsWithTheVolumeRecreateUNDONE`): 片方を undo して、もう片方だけで init が走ることを見る。
+mutation proof も取ってある — volume 作り直しを外すと leg 1 のテストだけが赤、marker 削除を外すと
+leg 2 のテストだけが赤、両方外すと受け入れテスト (`..._NextDispatchRunsInitExactlyOnce`) が赤になる。
+
+##### dispatch との排他 (codex レビュー Blocker 2、2026-07-27 修正)
+
+flock は `resolveWorkspaceHome` の **fast path (marker 一致) では取られない**。
+つまり settled な workspace の dispatch は「home を resolve してから container を作るまで」
+**何のロックも持っていない**。そこに移行が入ると:
+
+```
+dispatch : volume A を resolve、identity A を観測          ...
+移行     :                    A を削除 → B を作成 → B へ展開開始
+dispatch :                             ... ensureNamedVolumes(名前) → B
+                                           → ContainerCreate(B)
+両方     :                                 agent と tar が B に同時書き込み
+```
+
+**初版はこの窓を「`verifyWorkspaceHomeIdentity` が覆っており job 側が大声で失敗する」と書いていたが、
+これは誤り**だった。あの再検査は `ensureNamedVolumes` の `VolumeCreate` が返した identity を
+resolve 時の値と突き合わせるもので、**`ContainerCreate` と atomic ではない**。
+再検査の *前* に入れ替わった場合しか捕まらず、*後* に入れ替わった場合は名前で mount されるだけで
+比較すべきものが残らない。 実装側の doc comment (`ensureNamedVolumes` の
+「the window it narrows without closing」) は元々そう認めており、誤っていたのは本 doc の結論の方。
+
+**確定した対処**: daemon プロセス内の in-flight 登録簿 (`dispatcher.workspaceHomeInFlight`、
+mutex + slug ごとの map)。
+
+| | 挙動 | 理由 |
+|---|---|---|
+| dispatch 側 | `resolveWorkspaceHome` を呼ぶ **前**に登録し、`Dispatch` の `defer` で解放 (= `Launch` 完了後) | 登録を resolve の後にすると resolve 自身が窓の中に残る。 解放が `defer` なのは、この区間に十数個の失敗 exit があり、1 つでも漏らすと以後その workspace の移行が daemon の寿命いっぱい拒否され続けるから |
+| 移行側 | 同じ mutex を取り、in-flight な dispatch があれば **断る** (`ErrWorkspaceHomeBusy` → HTTP 409) | 移行は端末の前にいる operator の操作で、拒否は volume に触る前に起きるので**再実行 1 回**しか失わない |
+| 移行中に来た dispatch | **待つ** (ctx でのみ中断) | dispatch は hook 評価から来る。 拒否 = **job の失敗**で task 状態に記録が残る。 しかも marker 不一致の dispatch は元々同じ flock で待っており、fast path が待たなかったのは lock を取っていなかったからに過ぎない |
+| 移行 vs 移行 | 断る | 元々 flock で直列化はされていたが、2 本目の HTTP request が**無言で数分ブロック**するだけだった |
+
+**なぜ flock を延ばさなかったか**: 両者とも同一プロセスの goroutine であり (移行は daemon の
+HTTP route にしか存在しない)、file lock が要る相手は居ない。 一方で fast path にも lock を取らせて
+`Launch` まで保持すると、project registry で守られた dispatch 区間全体 (`Runner.WithProjectLock` =
+`api.ProjectAppService.projectMu` や git gateway の staging と交差する) に file lock を跨がせることになり、
+どちらの側を読んでも順序が確定できなくなる。
+
+##### `workspace remove` との排他 (codex round 2 Major 1、2026-07-27 修正)
+
+初版は「削除しかしない経路はわざと対象外」に `boid workspace remove` を含めていた。
+この根拠は **dispatch 側については正しく、移行側については盲点**だった。
+`workspace remove` は **DB row を先に消し、home volume を後で消す**。 一方 import 側は
+handler で `GetWorkspace` を通した後、その結果を保持せずに移行を始める。 したがって:
+
+```
+import : GetWorkspace("myws") → ok
+remove :                        row を削除 → volume を削除
+import :                                              volume 削除 (不在 = 正常系) →
+                                            作成 → 認証情報を展開
+import : 200 OK
+```
+
+残るのは **workspace row の無い、認証情報入りの home volume**。 どの dispatch も mount せず、
+`boid gc` には orphan として出て、`boid workspace remove` でも消せない (row が無いので 404)。
+これは API 層の doc comment が「防ぐ」と書いていた状態そのものである。
+
+**確定した対処は 2 つで、どちらか片方では閉じない**:
+
+| | 内容 |
+|---|---|
+| ① 登録簿を remove にも広げる | `workspace remove` は **row 削除と volume 削除の両方**を `beginRemoval` で囲む。 移行中なら **409 で断る** (待たない): 移行は 4.3GB の展開で分単位、`workspace remove` を無言で数分待たせるより、何も壊す前に断って再実行させる方が良い。 逆に移行側は removal が in-flight なら断る。 **dispatch は removal で待たせない** — removal は「消すだけ」で、それは `verifyWorkspaceHomeIdentity` が本当に覆う側であり、待たせると「job が走っている workspace の remove」の既定の part-completed 挙動が硬い拒否に変わってしまう |
+| ② 移行が **登録簿を保持したまま** row を再確認する | ①だけでは「remove が **import の登録より前に開始し終了した**」順序が残る (登録簿に見えるものが無い)。 `Runner.ConfirmWorkspaceExists` (`server/wire.go` が `ProjectAppService.GetWorkspace` を closure で渡す) を `beginMigration` の**直後**に呼ぶ。 この時点以降 removal は拒否されるので、答えが陳腐化しない。 **登録の前に呼ぶと窓が狭まるだけで閉じない** — mutation proof 済み (`..._ConfirmsTheWorkspaceUnderTheRegistration` が赤くなる) |
+
+##### daemon の強制終了に対する耐性 (codex round 2 Major 2、2026-07-27 追加)
+
+上の「失敗時」の cleanup は `ImportWorkspaceHome` が**エラーを返した**場合しか走らない。
+SIGKILL / OOM kill / `docker compose down -t 0` / 電源断は戻り値を作らないので defer も cleanup も
+走らず、**途中まで展開された volume + marker 無し**という、まさに round 1 で潰した状態が残る。
+起動時の orphan sweep も救わない — あれは **container** を label で reap するもので、
+生き残るのは **volume** の方である。
+
+**確定した対処**: `<dataHome>/homes-meta/<slug>.migrating.json` に「移行中」の sentinel を置き、
+daemon 起動時 (`buildRuntime` の startup reap の直後、auto-reopen の**前**) に
+`Runner.SweepInterruptedWorkspaceHomeMigrations` が掃く。
+
+- **volume の label では表現できない**ことを確認済み: Engine API に**既存 volume の label を
+  更新する手段が無い** (`VolumeCreate` は既存名に対して「そのまま返す」— これは
+  `ensureWorkspaceHomeVolume` の fast path が乗っている性質そのものであり、
+  だからこそ label 無し volume は「再 init で直る」ではなく hard error になっている)。
+  volume **名**に状態を載せる案は、dispatch が mount しない volume に展開することになるので却下。
+- **順序** (round 4 で phase を挟む形に改訂。 下の「record に phase を持たせる」を参照 —
+  以下は round 2 時点の記述として残す):
+  `record 書き込み → volume 削除 → marker 削除 → volume 作成 → 展開 → record 削除`。
+  record は「最初の破壊の**直前**」に書き、「最後の建設の**直後**」に消す。
+  書き込みは marker と同じ temp+rename+**fsync** (`writeWorkspaceHomeJSONFile` に括り出した) —
+  電源断を跨ぐのが仕事なので page cache 止まりでは記録にならない。
+- **どの時点で落ちても「削除して init から作り直す」側に倒れる**。 record を書く前に落ちれば
+  何も壊れていない。 record を書いた後・削除前に落ちると、**無傷の home も消す**ことになるが、
+  これは安全側である —— **ただしこの over-reach は round 4 で phase を入れて解消した**
+  (無傷と分かっている record は home に触らない)。 以下はその判断が必要だった当時の根拠であり、
+  phase が「判断できない」に落ちる場合の fallback の根拠として今も有効である: (a) operator はその home の置き換えをまさに依頼した後であり、
+  (b) 移行元は読むだけで消していないので再実行で完全に戻り (それは元々あらゆる失敗時の
+  復旧手順)、(c) 逆に「残す」側に倒すと、在庫確認型の冪等 init.sh が途中 home を
+  「もう入っている」と誤判定して完了 marker を書き、**壊れた状態が恒久固定**される。
+- **副作用ゼロの拒否 (in-use 409 / busy / row 消失) では record も消す** — 何も壊していない
+  workspace の home を次回起動が消してしまうため (round 4 以降はこの unlink が失敗しても
+  phase が `recorded` のままなので安全側に倒れる。 **round 4 の Blocker 1 経路 B は
+  まさにこの unlink の失敗**だった)。 逆に **partial cleanup が失敗した場合は
+  record を残す** ので、手で消さなくても次回起動が引き取る。
+- 残る窓は「展開完了 ～ record 削除」の 1 unlink 分 (round 4 で「展開完了 ～ `home-rebuilt` の
+  rename」に縮んだ)。 数分の操作に対して無視できる幅で、代償は再実行 1 回。
+  **record 削除に失敗したとき**は API/CLI が warning でファイル名を出す
+  (round 4 以降、文言は `migration_record_discards_home` で分岐する)。
+- テストは実際の移行を展開中に gate して meta dir を snapshot し、移行が (Go の defer を
+  飛ばせないので) 正常に巻き戻った後にその snapshot を書き戻すことで、
+  **SIGKILL 直後の on-disk 状態を実装から採取して**再現している。
+
+##### engine cleanup の deadline (codex round 2 Major 3、2026-07-27 修正)
+
+展開 container の `defer ContainerRemove` は cancel 済み ctx を捨てて `context.Background()` を
+使っていた。 cancel を落とすのは正しい (展開失敗の最頻経路が CLI 切断なので、
+呼び出し元の ctx を使うと cleanup がまさに必要な場面で失敗する) が、**deadline が無かった**。
+accept したまま応答しない engine socket に当たると defer が永久停止し、
+`ImportWorkspaceHome` はエラーを返さない → 30s bound の volume cleanup に到達しない →
+`doneMigration` も走らないので同 workspace の後続 dispatch が待ち続ける。
+
+`containerCleanupContext` (= `WithoutCancel` + 30s) に統一し、grep で同種を洗って
+**init container の defer** (同じ形。しかも呼び出し元は init flock を保持しているので、
+落ちるとその workspace の全 dispatch が syscall で固まる) と
+**`Launch` の 3 つの teardown 経路** (spool open / attach / start 失敗) にも適用した。
+`waitLoop` の exit 後 remove も同じ形にした (呼び出し元をブロックはしないが、
+「この package の teardown remove には必ず deadline がある」を file の性質にするため)。
+`ContainerWait` は本質的に無期限なので対象外。
+
+##### それでも閉じていない窓 (意図的)
+
+- **別プロセス**。 登録簿は daemon プロセス内。 同一 engine に対する 2 つ目の daemon は依然として
+  素通りする (flock は slow path のみ、従来どおり)。 1 install = 1 daemon が前提なので許容する。
+- **削除しかしない経路** (`boid reap --include-workspace-homes` /
+  operator の `docker volume rm`) は**わざと対象外**。 `boid workspace remove` は
+  round 2 まで ここに書かれていたが、上記のとおり**対象に含めた** (理由は dispatch 側ではなく
+  移行側 — remove は破壊者ではなく被害者で、移行が volume を作り直す先の row を消してしまう)。 これらは消すだけで、同じ名前で作り直して
+  書き込むことはない。 home を消された dispatch は自分の `ensureNamedVolumes` が作った
+  fresh volume の identity 不一致で **loud に落ちる** — こちらは `verifyWorkspaceHomeIdentity` が
+  本当に覆っている場合である。 移行だけが「削除 → 同名で再作成 → 書き込み」をやるので、
+  dispatch が検査する前に検査を通ってしまう volume を作れる。
+- `ensureNamedVolumes` と `ContainerCreate` の**間**に削除が入る窓は、上記のどの経路からも残る
+  (engine が mount 用に unlabeled volume を暗黙作成し、job が空 home で走る)。 本 PR で変わっておらず、
+  PR1/PR6 が元々記述していた残余窓と同じもの。
+
+##### 中断された移行の残骸は dispatch 側でも封じる (codex round 3 Blocker 1、2026-07-27 修正)
+
+起動時 sweep (`SweepInterruptedWorkspaceHomeMigrations`) だけでは**不十分だった**。
+sweep は volume 削除に失敗しても `defer done()` で登録を解放し、`buildRuntime` は
+その error を**ログに出して startup を続ける** (reap と同様、reconciliation の失敗で
+daemon 起動を潰さないため)。 したがって次の 1 本の道筋だけで、2 度目の crash 無しに
+機構全体が無効化される:
+
+```
+移行中に kill → 途中まで展開された volume + record、marker 無し
+起動 (engine が一時的に不調) → sweep の VolumeRemove が失敗、record は残り startup 継続
+engine 復旧 → sweep を再実行するものが無い
+auto-reopen / 通常 dispatch → in-flight 登録簿は空なので誰も待たない
+                            → 途中の home に init.sh が走る
+```
+
+在庫確認型の init.sh は「もう入っている」と答えて exit 0 → daemon が完了 marker を書く →
+**壊れた状態が固定**され、ずっと後に adapter の「CLI not found」として出る。
+
+**確定した対処**: 不変条件を「**record がある間、その home に init も job も走らせない**」と
+言い直し、`resolveWorkspaceHome` の先頭 (volume を ensure する前) でも record を見る。
+
+- **見つけたら repair する** (案 (a))。 拒否 (案 (b)) も健全だが、実際に起きるケースで劣る:
+  record が残る理由は typically「engine が一時的に落ちていた」で、job が来る頃には
+  engine は戻っている。 拒否は一時障害を「人間が volume 名を調べて手で消すまで
+  その workspace が使えない」に変換するが、repair は「init が 1 回余分に走る」に変換する
+  — この file が他の全箇所で既に受け入れているコスト。
+- **discard は sweep と同一実装** (`discardInterruptedWorkspaceHomeMigrationLocked`、
+  volume → marker → record の順)。 dispatch が治した workspace と boot が治した
+  workspace が違う状態になってはいけない。
+- **engine がまだ応答しないなら dispatch は失敗させる**。 job 1 本の失敗は task に残り
+  再実行できるが、途中の home に書かれた完了 marker は恒久的で、しかも別の場所に出る。
+  error には volume 名と `docker volume rm` を入れる。
+- 排他は既に揃っている: dispatch は `beginWorkspaceHomeDispatch` の登録を持っており、
+  それが移行を排除する。 ここで `beginMigration` を取ると**自分の dispatch 登録と
+  deadlock する**ので取らない (flock だけ取る)。
+- 通常経路のコストは「存在しない path への `os.Stat` 1 回 / dispatch」。
+
+##### sentinel の durability は fail-closed (codex round 3 Major、2026-07-27 修正)
+
+「durable な record」を不変条件にしておきながら、共有 writer
+(`writeWorkspaceHomeJSONFile`) が**親ディレクトリ fsync のエラーを全部捨てて成功を返して
+いた**。 失敗しているストレージ上では「durable でない sentinel を持ったまま home volume を
+破壊する」ことになり、電源断で rename が失われれば**途中の volume に sentinel が無い** ——
+この機構が消そうとしていた状態そのものが再現する。
+
+| 対象 | policy | 理由 |
+|---|---|---|
+| 完了 marker | **best-effort** (`homesMetaBestEffortDurability`) | marker がこの writer に求めるのは**原子性** (temp + rename) であって durability ではない。 rename が飛んでも「冪等な init.sh が 1 回余分に走る」で、これは marker の不確実性を常に解決している向きと同じ。 ここで hard fail させると、ストレージの一時不調が**その workspace の dispatch 失敗**に化ける (防ごうとしている結果より悪い) |
+| 移行中 record | **required** (`homesMetaRequiredDurability`) | 呼び出し元の**次の文が home volume の破壊**。 ここで止めれば何も壊れていないので、operator は同じ workspace を持ったまま、ストレージが直ってから再実行できる |
+
+削除側 (`removeWorkspaceHomeMigrationRecord`) も **unlink 後に親 dir を fsync する**。
+unlink が電源断で巻き戻ると record が復活し、**完璧に移行できた home を次回起動の sweep が
+破棄する** (数 GB + operator の午後)。 失敗は握り潰さず
+`MigrationRecordRemoveError` として報告する (= 再起動前に該当ファイルを消せる)。
+「元々無い」場合は sync せずに成功を返す (消すものが無いので、冪等な呼び出し経路に
+失敗モードを増やすだけになる)。
+
+fsync を失敗させる移植可能な方法が無いので、`fsyncDir` を package 変数にして
+テストから差し替えている。
+
+##### 空の tar と symlink の `--from` (codex round 3 Blocker 2、2026-07-27 修正)
+
+`--from` が**ディレクトリへの symlink** だと、CLI と tar writer の事前検査
+(どちらも symlink を辿る `os.Stat`) は「ディレクトリだ」と答えるのに、
+`filepath.WalkDir` は**ルートの symlink を辿らない** — callback は `path == root` で
+無条件に skip されるので、**entry 0 件の tar が正常終了する**。
+daemon は body を読む前に volume を破棄するので、結果は
+「**空 volume に空 archive を展開して 200 を返す**」+ CLI が「imported」と表示。
+
+2 段構えで直した:
+
+1. **入口で正しく判定する**。 `ResolveWorkspaceHomeSource` が `os.Lstat` でルートを見て、
+   symlink なら `EvalSymlinks` で**解決して walk する** (拒否ではなく解決を選んだ:
+   別ディスクの home を symlink で指すのは普通の運用で、他のツールも辿る)。
+   解決先は確認プロンプトと `--dry-run` に `typed (-> resolved)` の形で出す。
+   **末尾コンポーネントだけ**解決する — 途中の symlink は WalkDir が正常に扱う。
+   home の**中**の symlink は従来どおり symlink のまま送る (home 自身の構造だから)。
+2. **「移行対象が 0 件なら破壊しない」**。 原因は symlink 以外にもある (typo、
+   未マウントの backup、空ディレクトリ)。 結果が同じなので**結果の側で**断る:
+   - **CLI 側**: `WorkspaceHomeSourceHasEntries` (最初の 1 件で `fs.SkipAll` するので
+     実質 readdir 1 回)。 1 byte 送る前・確認プロンプトより前。 `--dry-run` でも同じく断る
+     (dry-run は「本番が何をするか」を予告するものなので)。
+   - **daemon 側**: `peekWorkspaceHomeTarHasEntries` が body の**先頭 1 block (512B)** を
+     見て、全部ゼロなら `ErrWorkspaceHomeImportEmpty` → **HTTP 400**。 読んだ block は
+     `io.MultiReader` で**replay する**ので展開側は byte 0 から受け取る
+     (`..._StillMigratesTheFirstEntry` が vacuity guard)。 これが**破壊と同じ側にある
+     唯一の guard** なので、古い CLI・手書き curl・producer 側の次のバグにも効く。
+   意図的に空の home にしたい場合は `boid workspace remove` + 再作成で表現できるので、
+   拒否して問題ない。
+
+##### record に phase を持たせる (codex round 4 Blocker 1、2026-07-27 修正)
+
+round 3 で「record がある間その home には何も走らせない」「dispatch が record を見つけたら
+その場で volume を discard する」を入れたが、**record が残る理由は「移行が中断した」だけでは
+ない**。 record は「移行を開始した」しか意味しておらず、recovery はそれを無条件に
+「破壊済み」と読んでいた。 実際に起きる残り方は 2 つあり、**どちらも home は無事**である:
+
+| | 経路 | round 3 での帰結 |
+|---|---|---|
+| A | 展開が**完了**し、最後の unlink が失敗する (homes-meta が書けない / read-only remount / EIO)。 API は 200 を返す | 次の dispatch が、移行済みの認証情報と toolchain を含む volume を破棄する |
+| B | step 1 の in-use 409 (= **何も壊していないことが保証された唯一の拒否**) の後、cleanup の unlink が失敗する。 error はログに捨てられる | 利用中の job が終わった後に来た dispatch が、旧 home を破棄する |
+
+**確定した対処**: record に `phase` を持たせ、recovery は**ファイルの存在ではなく phase**で
+判断する。
+
+| `phase` | 書く時点 | recovery |
+|---|---|---|
+| `recorded` | 何も壊す前 (= record 作成時) | record を消すだけ |
+| `home-destroyed` | `VolumeRemove` が**成功した**時点 | volume・marker・record を削除 |
+| `home-absent` | volume が**無いことを確認した**時点 (round 5) | record を消すだけ |
+| `home-rebuilt` | 展開が完了した時点 | record を消すだけ |
+| (無い / 未知) | round 4 より前の build が書いたもの | **`home-destroyed` として扱う** |
+
+- **順序**: `"recorded" 書き込み → volume 削除 → "home-destroyed" 書き込み → marker 削除
+  → volume 作成 → 展開 → "home-rebuilt" 書き込み → record 削除`。
+  この線から早く抜ける経路は `"home-rebuilt"` の代わりに `"home-absent"` を書いてから
+  record を消す (round 5、下記)。
+- **round 2 の「記録された区間の方が広い」性質は保たれる**。 ただし区間の言い方を
+  正確にする必要がある: 危険なのは「home が無い区間」ではなく
+  「**その名前の volume が、誰も保証していない中身を持って存在する区間**」である。
+  それは step 3 (volume 再作成) に開き step 4 (展開) の復帰で閉じる。 `home-destroyed` は
+  **step 3 の前**に commit され **step 4 の後**にしか書き換えられないので、両端で厳密に広い。
+  `VolumeRemove` 成功から `home-destroyed` 書き込みまでの隙間で落ちた場合は
+  **volume が存在しない**ので、これは「一度も dispatch していない workspace」と同じ状態
+  であり、次の dispatch が普通に作り直す。
+- **phase 更新も fail-closed** (round 3 で record 作成に入れたのと同じ扱い)。
+  `home-destroyed` が page cache 止まりのまま展開に進むと「途中の home + 何も壊していないと
+  言う record」になり、recovery がそれを init.sh に渡してしまう。 書けなかった場合は
+  **そこで中止する** — volume は既に消えているので home は空になるだけで、次の dispatch が
+  作り直す。
+- **`home-rebuilt` だけは fatal にしない**。 これが守るものはもう無い (移行は成功しており
+  home は完全) ので、失敗させると無事な workspace に対して障害を報告することになる。
+  代わりに**閉じられたかどうかを API/CLI に出す** (`migration_record_discards_home`):
+  false なら「次回起動はファイルを消すだけ・対処不要」、true なら round 3 までと同じ
+  「次回起動でこの home が破棄される・再起動前に消せ」。 安いケースで重い文言を出すのは
+  無害ではない — compose deploy ではそのファイルは daemon の volume の中で、
+  operator は到達すらできないので、**本当に効くべき warning を無視する習慣**がつく。
+- **未知の phase が `home-destroyed` に倒れる**のは後方互換と fail-safe の両方から。
+  round 3 までの record は「移行を開始した」= discard 許可の意味だったし、
+  「boid が判断できない」ときの向きは marker の不確実性と同じ側 (over-reach = 再 init 1 回)
+  で良い。 この build が書く record は 3 つとも phase を明示するので、この arm には落ちない。
+- recovery が「discard を許可しない record」を処理する経路は **engine を一切呼ばない**ので、
+  backend が `WorkspaceHomeImporter` を実装していなくても片付く。 importer の解決を
+  **lazy** にしたのはこのため (up-front だと、無害な record が
+  「この backend では移行できない」を理由にその workspace の全 dispatch を失敗させる)。
+- テストは**実装が最後に書いた record を採取して**書き戻すことで「unlink が失敗した」を
+  再現する (`migrationRecordTrace`、seam は既存の `fsyncDir`)。 手書きの record だと
+  「daemon がもう書かない state」を検査してしまう。 vacuity guard は
+  **展開中に採取した record** を書き戻して round 3 の挙動 (discard する) が
+  残っていることを確認する。
+
+##### homes-meta 自体の durability (codex round 4 Blocker 2、2026-07-27 修正)
+
+record writer が fsync するのは `homes-meta` **自身**だけだった。 ディレクトリの
+directory entry は**その親**にあるので、一度も dispatch していない workspace を移行すると
+`MkdirAll` → record 書き込み → volume 作成 → 展開途中で電源断、で
+**`homes-meta` の生成だけが失われ partial volume は残る**。 起動 sweep は meta dir 不在を
+「中断なし」と読み、dispatch が meta dir を作り直して record の無い partial home に
+init を実行する — sentinel が防ぐはずの状態そのもの。
+
+`mkdirAllDurable` を追加し、**作成した各階層の親** (`MkdirAll` は途中の階層も作りうる) と、
+**`path` の直接の親を無条件に** fsync する。 後者は belt-and-braces ではない:
+`homes-meta` は `resolveWorkspaceHome` と `ImportWorkspaceHome` の**先に来た方**が作り、
+前者の `MkdirAll` は durable でない (そこに書くのは best-effort policy の完了 marker だけ)
+ので、「既にあった」は「既に durable」を意味しない。 それより上へは辿らない —
+`<dataHome>` は `boid.db` を含む長命なレイアウトで、SQLite の書き込みが何度もその entry を
+flush している。
+
+##### 起動時 sweep の engine 呼び出しに deadline (codex round 4 Major、2026-07-27 修正)
+
+`buildRuntime` は `context.Background()` を渡し、それがそのまま `VolumeRemove` に渡っていた。
+moby client 自身は timeout を持たないので、接続だけ受けて応答しない engine socket に当たると
+**daemon は sweep 内で永久停止し、auto-reopen にも API listener にも到達しない**。
+
+- **bound は sweep の中に置く** (`workspaceHomeMigrationSweepTimeout`)。 「起動がこの step で
+  止まらない」は step の性質であって呼び出し元の性質ではないし、`buildRuntime` に
+  渡せるより良い ctx は無い。
+- **volume ごと**にした。 sweep 全体で 1 つだと、engine に到達できない 1 件が予算を使い切って
+  後続が既に expire した ctx で即失敗し、その残骸は「最後の砦」である dispatch 側に回る
+  (eager に掃く意味が消える)。 総時間は `件数 × 30s` になるが、件数は install の規模の関数では
+  なく「**operator が手で始めた移行が中断され、その後どの起動も dispatch も片付けていない
+  workspace**」の数なので、実質 0、たまに 1 である。
+- **timeout した場合は record が残る** — timeout した `VolumeRemove` は失敗した
+  `VolumeRemove` であり、phase も書き換えない (sweep が phase を書くのは
+  **削除に成功した後の `home-absent`** だけで、timeout はそこに到達しない)。
+  `home-destroyed` のままなので次回起動と次の dispatch が引き取る。 逆に非破壊 phase の
+  record は engine を呼ばないので、応答しない engine に取り残されることが原理的に無い。
+
+##### unlink は durability の手段ではない (codex round 5 Blocker、2026-07-27 修正)
+
+round 4 は**成功経路**にだけ「unlink の前に非破壊 phase を commit する」を入れ、
+**失敗経路は `home-destroyed` のまま unlink する**ままだった。 これが安全でないのは
+移行中の crash とは無関係な理由による: `removeWorkspaceHomeMigrationRecord` は
+**先に unlink し、その後で directory を fsync する**ので、失敗の仕方が厄介な向きになる ——
+**このプロセスにも以後の dispatch にも record は「消えた」と見えるが、消えたままである保証が無い**。
+
+```
+volume が無いことは確定・record は "home-destroyed" のまま
+unlink 成功、その directory fsync が EIO   -> ログに出して捨てる (sweep 経路では握り潰し)
+次の dispatch は record を見ない            -> init.sh で正常な home を作る
+電源断で unlink が巻き戻る                  -> durable な "home-destroyed" が復活
+次回起動の recovery が phase に従う          -> その正常な home を破棄する
+```
+
+第 2 の bug も、移行中の crash も要らない。 対処は round 4 と同じ形を**volume が
+「壊れている」ではなく「無い」で終わる経路**に適用すること:
+
+- **`home-absent` を新設**した (`recorded` / `home-rebuilt` の使い回しではなく)。 recovery の
+  **動作**は 3 つとも同じ (record を消すだけ) なので、分ける理由は record が**何を主張するか**
+  にある —— record のもう 1 つの仕事は「incident 後に operator が読む」ことで、
+  `recorded` は「何も壊していない」、`home-rebuilt` は「完全な home がこの名前で存在する」と
+  主張してしまい、どちらもこの状況では偽。 「volume が無い」と「volume に正常な中身がある」を
+  recovery が区別する必要は**今は無い** (`discardsHome` は両方 false) が、両者が互いの事実を
+  主張しないので、後で区別が要る変更が来たときに record から再導出せずに済む。
+- 適用箇所は 3 つ: `ImportWorkspaceHome` の `windowErr` 経路と step 4b の cleanup
+  (どちらも `clearWorkspaceHomeMigrationRecordForAnAbsentHome` 経由)、および
+  **recovery 自身の discard** (`discardInterruptedWorkspaceHomeMigrationLocked`)。
+  3 つ目は dispatch 経路だけなら不要だった (unlink の error を返すので、消せなかった record の
+  裏で home が作られることはない) が、**sweep は buildRuntime が意図的にログして続行する**ので
+  そこだけ穴が開いていた。
+- **非破壊 phase の書き込み自体が失敗したら record は残す** (unlink しない)。 非対称性が
+  決め手: **見えている** record は当該 workspace の全 dispatch を
+  `recoverInterruptedWorkspaceHomeMigration` で止め、volume が作られる前に解決される ——
+  そして存在しない volume に対する解決は**ただ**である (`VolumeRemove` の NotFound は成功扱い、
+  marker 削除は ENOENT 許容)。 一方 **unlink 済みだが flush されていない** record は
+  「dispatch が正常な home を作る」時間だけ見えず、その後で復活する。 残した場合の最悪の
+  durable 結果は「存在しない volume を指す `home-destroyed` record」で、これは無害。
+- 旧 build (round 4) が `home-absent` を読むと未知 phase → discard に倒れるが、これも
+  上と同じ理由で無害 (指している volume が存在せず、recovery は volume 作成より前に走る)。
+
 #### PR8 への申し送り: 移行後に init を必ず 1 回走らせるには
+
+> **PR8 で消化済み (2026-07-27)**。下の要求どおり 1 と 2 を併用した。実装と順序、
+> および 2 つの leg を独立に検証するテスト / mutation proof は上の「決定 (PR8 で
+> 確定・実装済み)」を参照。本節は要求の記録としてそのまま残す。
 
 > **PR6 で全面書き直し (2026-07-27、codex レビュー Minor 2)**。初版は
 > 「移行の tar から `<home>/.boid-workspace-home-id` を除外せよ」と要求していたが、
@@ -957,7 +1366,7 @@ uid mapping を理由に退けた engine bind が要る)。したがって「起
 | 5 | **[landed]** init.sh + prep を使い捨て container 実行へ (論点c §D1-§D10: 既定 bridge / stdin + quoted heredoc / 決定的 container 名による多重実行防止 / prep skeleton mkdir と nonce 書き込みを prelude・postlude として統合 / 専用 label + `ReapOrphans` の別ループ / `WorkspaceInitExecutor` の型アサーション)。**現行の host-visible homes dir を engine bind して検証する**。`prepareBindTarget` の daemon 側 mkdir は**残した** (理由は論点c の「意図的に残したもの」)。**＋ marker の `init_generation`** (論点 b の該当節) — 無いと新経路が既存 workspace で一度も走らない | **init.sh の実行環境が変わる** (host → container)。`$HOME` の値・env 一覧・`$0`・素通し workspace の扱い・エラー文面が変わる — 一覧は論点c の「PR5 が持ち込む挙動変化」。**既存 workspace は upgrade 後 1 回だけ init.sh が再実行される** | 3 |
 | 6 | **[landed]** **[不可分コア]** `resolveWorkspaceHome` を volume ベースへ (返り値が volume 名になる) + `homeMounts` / `workspaceInitHomeMount` の volume 化 + **identity を home 内 nonce から volume label `boid.workspace_home_id` へ移設** (論点b の該当節) + **marker に `skeleton_dirs` を追加**して daemon 側 mkdir を撤去 + **所有者検証を job container の runner へ移設** (論点b-2 / e-2 — 検証対象は mount に覆われていない祖先のみ、復旧案内は volume 内相対パス) + `LaunchOptions.WorkspaceSlug` / `LaunchOptions.WorkspaceHomeID` 新設 (論点D5、後者は identity を使用地点で再突合するため) + `init_generation` を **2** に bump + e2e teardown に HOME volume の掃除を追加 + 契約 doc 更新 | **workspace HOME が volume になる** (= ホスト再起動で認証と toolchain が消えなくなる)。 **既存 workspace は upgrade 後に 1 回 init.sh が走る** (fresh volume)。 postlude と `<home>/.boid-workspace-home-id` が無くなる。 PR7 まで `workspace remove` の home 削除 / サイズ / orphan が効かない | 1,2,4,5 |
 | 7 | workspace remove 連動の削除・サイズ可視化・orphan 検出を volume API へ rewiring (論点 a-2)。 engine 呼び出しは `dispatcher.WorkspaceHomeVolumeStore` に閉じ、`internal/api` は moby を import しないまま (D2)。 サイズは `DiskUsage`(`Volumes+Verbose`) 1 回 (D3)、in-use は 409 を握り潰さず報告 (D6)、orphan 突合は label 値 + 名前再構成 (D7)、ゲートは `RuntimesDir != ""` から engine handle の有無へ (D5) | **`workspace remove` が home volume を実際に消すようになった**。 サイズ表示と orphan 検出が復活。 **`path` / `home_path` field が `volume` / `home_volume` に置き換わり、CLI の表示が host path から volume 名になった** (D4)。 サイズ意味論が本物の `du` に揃い、hardlink の重複計上が無くなった (D3-b)。 job が走っている workspace を remove すると 409 が warning として出る (従来は silent) | 6 |
-| 8 | 既存 homes の移行 CLI (`boid workspace import-home`、uid mapping を跨ぐ tar stdin) | | 6 |
+| 8 | **[landed]** 既存 homes の移行 CLI (`boid workspace import-home <slug> [--from DIR] [--dry-run] [--yes]`、論点 f の決定表)。 **CLI は host dir を読んで tar を作りストリームするだけ**で、engine 操作・marker 削除・identity 生成はすべて daemon (`POST /api/workspaces/{slug}/home/import` → `dispatcher.Runner.ImportWorkspaceHome`)。 移行後の再 init は 論点 f の 2 leg 併用 (volume 作り直し + marker 削除) + `internal/client.PostStream` (streaming body) + `dispatcher.WriteWorkspaceHomeTar` (mode 維持 / hard link dedupe / 不正規ファイル skip 報告) + 展開は init container の primitive 流用 (決定的 container 名を共有して init と排他、network だけ `none`) + **daemon 内 in-flight 登録簿で dispatch と排他** (`dispatcher.workspaceHomeInFlight`、codex Blocker 2) | **移行した workspace は次の dispatch で `init.sh` が 1 回走る** (論点 f の受け入れ条件、意図的)。 **移行元 `homes/<slug>` は読むだけ** — 削除も変更もしない。 job が走っている workspace への移行は 409 で拒否され、その時点で何も壊れていない (engine の 409 に加え、**container 作成前の dispatch でも 409**)。 逆に移行中に来た dispatch は**待つ** (拒否 = job 失敗になるため)。 既存 home volume は破棄されるので既定で対話確認 (`--yes`/`--force` で skip)。 途中で失敗すると **volume ごと削除**され、「一度も dispatch していない workspace」と本当に同じ状態になり、次の dispatch が init から作り直す | 6 |
 | 9 | init.sh の CLI 経路 (export/import の `init_script` + 専用 CLI) | | — (独立) |
 
 **分割の考え方**: 「daemon が workspace HOME に書く経路」は 3 つあった (marker/lock、init.sh 実行、

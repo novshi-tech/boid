@@ -975,6 +975,50 @@ func (c *Client) GetRawWithAcceptAndRevision(path, accept string) (statusCode in
 	return resp.StatusCode, data, resp.Header.Get("ETag"), nil
 }
 
+// PostStream performs a POST request whose body is STREAMED from body rather
+// than buffered, returning the raw response status code and body regardless of
+// status (PostRaw's shape, PostRaw's rationale).
+//
+// It exists for `boid workspace import-home` (PR8 of
+// docs/plans/workspace-home-volume-persistence.md, 論点 f), whose body is a tar
+// of an entire workspace home — 4.3GB on the machine that feature was written
+// for. Every other method here takes a []byte, which for this payload would
+// mean holding the whole archive in the CLI's heap on its way to a local
+// socket.
+//
+// Two consequences of streaming, both deliberate:
+//
+//   - The request is sent with chunked transfer encoding (no Content-Length):
+//     the size is not knowable without walking the tree twice, and the walk is
+//     the expensive part.
+//   - The server can answer BEFORE the body has finished uploading, and
+//     net/http's transport surfaces that response rather than the resulting
+//     write error. That is precisely what this caller wants: the daemon refuses
+//     a workspace with a running job at the very start of the request, and an
+//     operator should be told so in the first second rather than after
+//     streaming multiple gigabytes.
+//
+// ctx is honored for the whole exchange, so a caller can abort a transfer.
+func (c *Client) PostStream(ctx context.Context, path, contentType string, body io.Reader) (statusCode int, respBody []byte, err error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+path, body)
+	if err != nil {
+		return 0, nil, fmt.Errorf("create request: %w", err)
+	}
+	req.Header.Set("Content-Type", contentType)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return 0, nil, fmt.Errorf("request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return resp.StatusCode, nil, fmt.Errorf("read body: %w", err)
+	}
+	return resp.StatusCode, data, nil
+}
+
 // PostRaw performs a POST request with a custom Content-Type and raw body,
 // returning the raw response status code and body regardless of status
 // (mirrors PutRawWithIfMatch's rationale) — used by `boid workspace import`

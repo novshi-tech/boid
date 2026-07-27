@@ -23,6 +23,13 @@ type WorkspaceHandler struct {
 	// degradation an empty RuntimesDir used to produce, now keyed on the
 	// feature's only actual dependency. See WorkspaceHomeStore's doc comment.
 	Homes WorkspaceHomeStore
+
+	// HomeImporter, when non-nil, serves POST /api/workspaces/{slug}/home/import
+	// — PR8's migration of a pre-PR6 host home directory into the workspace's
+	// HOME volume (docs/plans/workspace-home-volume-persistence.md 論点 f).
+	// Left nil the route answers 501, the same "the daemon has no runner to do
+	// this" degradation a nil Homes produces for the size/delete surface.
+	HomeImporter WorkspaceHomeImporter
 }
 
 func (h *WorkspaceHandler) Routes() chi.Router {
@@ -39,6 +46,11 @@ func (h *WorkspaceHandler) Routes() chi.Router {
 	r.Post("/apply", h.Apply)
 	r.Get("/{slug}", h.Show)
 	r.Get("/{slug}/export", h.Export)
+	// PR8 (論点 f). Nested under the slug rather than a top-level
+	// "/import-home" so the target is a path parameter like every other
+	// per-workspace operation, and so a future "/{slug}/home/..." surface
+	// (export, prune) has an obvious place to live.
+	r.Post("/{slug}/home/import", h.ImportHome)
 	r.Put("/{slug}", h.Update)
 	r.Delete("/{slug}", h.Remove)
 	return r
@@ -265,8 +277,46 @@ func (h *WorkspaceHandler) Import(w http.ResponseWriter, r *http.Request) {
 // gone, and the plan doc explicitly allows this "part-completed" outcome (see
 // WorkspaceRemoveResponse's doc comment) rather than trying to make the two
 // deletions atomic.
+//
+// What that tolerance does NOT extend to is interleaving with
+// `boid workspace import-home` (PR8 round-2 codex review, Major 1): a
+// part-completed remove leaves a volume an operator can delete by hand, while an
+// overlapping migration leaves a volume full of credentials that no dispatch can
+// mount and this very endpoint can no longer target. Both deletions therefore
+// run inside the exclusion taken below.
 func (h *WorkspaceHandler) Remove(w http.ResponseWriter, r *http.Request) {
 	slug := chi.URLParam(r, "slug")
+
+	// Both deletions run inside this bracket (codex round 2 of PR8, Major 1).
+	//
+	// The two of them are not atomic and are not meant to be — the part-completed
+	// outcome is documented above — but they must not INTERLEAVE with
+	// `boid workspace import-home`, which deletes this workspace's HOME volume,
+	// re-creates it under the same name and extracts the operator's credentials
+	// into it. A migration that lands anywhere around these two statements leaves
+	// a populated HOME volume whose workspace row is gone: `boid gc` reports it as
+	// an orphan, no dispatch can ever mount it, and `boid workspace remove` — the
+	// obvious cleanup — 404s on the row it no longer has. Held across BOTH
+	// statements rather than just the volume deletion, because it is the ROW's
+	// disappearance that the migration has to be excluded from.
+	//
+	// Refused rather than queued when a migration is already running: see
+	// dispatcher's workspaceHomeInFlight.beginRemoval for why this one refuses
+	// where a dispatch waits. Nothing has been changed at that point, so the
+	// operator loses only the retry.
+	//
+	// A nil HomeImporter means no runner is wired, so no migration can be running
+	// in this daemon either and there is nothing to exclude — the same off-switch
+	// reading a nil Homes gets.
+	if h.HomeImporter != nil {
+		release, err := h.HomeImporter.BeginWorkspaceHomeRemoval(slug)
+		if err != nil {
+			writeError(w, http.StatusConflict, err.Error())
+			return
+		}
+		defer release()
+	}
+
 	if err := h.Service.RemoveWorkspace(slug); err != nil {
 		writeServiceError(w, err)
 		return

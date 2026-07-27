@@ -262,6 +262,7 @@ project の実行環境 (`host_commands` / `env` / `capabilities` / `allowed_dom
 | `boid workspace apply -f FILE [--dry-run]` | `boid workspace export` が出力した yaml を適用 (upsert: 未知の slug は新規作成、既存 slug はフィールド単位でマージ — 省略フィールドは現状維持、明示的な空値は clear)。`spec.projects[]` は名前が一致する既存 project への割当のみ行う (URL からの新規登録は PR-2 待ち)。`--dry-run` で書き込みなしのプレビューのみ |
 | `boid workspace assign <project-ref> <workspace-id>` | プロジェクトをワークスペースに紐付け (未知の slug は 404。ただしローカル `workspace.yaml` が存在すればそこから auto-create) |
 | `boid workspace clear <project-ref>` | プロジェクトの紐付けを `default` にリセット |
+| `boid workspace import-home <slug> [--from DIR] [--dry-run] [--yes\|--force]` | volume 化以前のホスト側 workspace home (既定 `~/.local/share/boid/homes/<slug>`) の中身を、その workspace の HOME volume へ移行する。CLI が DIR を **読んで** tar にし daemon にストリーム、daemon が volume を作り直して展開する (bind mount は使わない — rootless podman の uid mapping を跨げないため)。`0600` などの mode は維持。**移行元は読むだけで削除も変更もしない**。job が走っている workspace は 409 で拒否 (この時点では何も壊れていない)。既存 volume は破棄されるため既定で確認プロンプト。移行後は次の dispatch で `init.sh` が 1 回走る (仕様)。詳細は [workspace home ガイド](../guide/workspace-home.md#旧-workspace-home-ホスト側ディレクトリ-の移行) |
 | `boid workspace remove <slug> [--force\|--yes]` (alias: `delete`) | ワークスペースを削除 (割り当て済み project は `default` へ再割当。`default` 自体は削除不可)。home ディレクトリのサイズ表示付き確認プロンプトが出る (`--force`/`--yes` でスキップ)。詳細は [workspace home ガイド](../guide/workspace-home.md#workspace-の削除) |
 
 ## Host Commands
