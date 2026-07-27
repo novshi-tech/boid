@@ -1,7 +1,6 @@
 package cmd
 
 import (
-	"bytes"
 	"fmt"
 	"io"
 	"net/http"
@@ -59,7 +58,10 @@ func runWorkspaceExport(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("export: %s", formatWorkspaceAPIError(statusCode, output))
 	}
 
-	docCount := warnExportedWorkspaceEnvelopes(stderr, output)
+	docCount, err := checkExportedWorkspaceEnvelopes(stderr, output)
+	if err != nil {
+		return fmt.Errorf("export: %w", err)
+	}
 
 	if workspaceExportOutput != "" {
 		if err := os.WriteFile(workspaceExportOutput, output, 0o644); err != nil {
@@ -73,22 +75,41 @@ func runWorkspaceExport(cmd *cobra.Command, args []string) error {
 	return err
 }
 
-// warnExportedWorkspaceEnvelopes decodes the raw export response and prints
-// the same two advisory warnings the pre-atomic client-side export used to
-// (a project with no captured upstream_url yet, an env value that looks
-// like a host filesystem path), then returns the number of documents found
-// (for the "exported N workspace(s)" message). Warnings are best-effort: a
-// decode failure here (which would mean the daemon emitted something that
-// is not a valid Workspace document) is silently skipped rather than
-// failing the export — the raw bytes the daemon returned are still written
-// out untouched either way.
-func warnExportedWorkspaceEnvelopes(stderr io.Writer, data []byte) int {
-	if len(bytes.TrimSpace(data)) == 0 {
-		return 0
-	}
+// checkExportedWorkspaceEnvelopes decodes the raw export response with the
+// SAME decoder `boid workspace apply -f` uses, requires every document to be a
+// COMPLETE one, returns the number of documents found (for the "exported N
+// workspace(s)" message), and prints the two advisory warnings the pre-atomic
+// client-side export used to (a project with no captured upstream_url yet, an
+// env value that looks like a host filesystem path).
+//
+// The decode is a GATE, not a best-effort courtesy (PR9 codex round 4, Major 1).
+// It used to swallow its own error and return 0, so a 200 whose body is not a
+// restorable set of Workspace documents — a daemon bug, a proxy's error page,
+// an emitter defect like the one workspace_envelope_marshal.go exists for — was
+// written to -o/--output and announced as "exported 0 workspace(s)", a line an
+// operator reads as success. `boid workspace export` is the endorsed backup
+// path (docs/plans/volume-only-daemon.md §論点g); a file it wrote that its own
+// `apply` cannot read is the one outcome that must never be silent, and the
+// only moment it can be caught is before the file exists.
+//
+// An EMPTY body is refused by the same reasoning, and by the decoder itself: a
+// zero-byte backup restores nothing, and `apply` rejects it.
+//
+// The WARNINGS stay best-effort in the other direction — they are advisory, and
+// nothing below can fail the export once the documents passed the checks above.
+// They are also printed only AFTER every document has been accepted: a refused
+// export wrote no file, so warnings about what is in it would describe
+// something that does not exist.
+func checkExportedWorkspaceEnvelopes(stderr io.Writer, data []byte) (int, error) {
 	docs, err := orchestrator.DecodeWorkspaceEnvelopeDocuments(data)
 	if err != nil {
-		return 0
+		return 0, fmt.Errorf(
+			"the daemon's response is not a set of Workspace documents this boid can apply, so nothing was written: %w", err)
+	}
+	for _, doc := range docs {
+		if err := checkExportedDocumentIsComplete(doc); err != nil {
+			return 0, err
+		}
 	}
 	for _, doc := range docs {
 		slug := doc.Envelope.Metadata.Name
@@ -99,7 +120,56 @@ func warnExportedWorkspaceEnvelopes(stderr io.Writer, data []byte) int {
 			}
 		}
 	}
-	return len(docs)
+	return len(docs), nil
+}
+
+// checkExportedDocumentIsComplete requires one exported document to carry
+// spec.init_script (PR9 codex round 4 final, Major 1) — the version-skew half
+// of "a file this command wrote can always be restored".
+//
+// # Why decoding successfully is not enough
+//
+// The decoder deliberately treats a missing spec.init_script as a legitimate
+// value: "leave this workspace's init.sh alone" (see
+// orchestrator.WorkspaceEnvelopeSpec.InitScript). So a response that predates
+// PR9 — a daemon with no notion of an init.sh at all — decodes cleanly, applies
+// cleanly, and restores a workspace whose HOME volume then has no toolchain in
+// it and whose next dispatch cannot start a harness. The decode gate above
+// cannot see that: it asks whether `apply` can READ the response, and the answer
+// is yes.
+//
+// The skew is reachable rather than theoretical. Every `boid workspace *`
+// command is scopeRemote, so a new CLI routinely talks to whatever daemon is at
+// the other end of the socket, and this PR's own init-script commands already
+// carry explicit handling for a daemon that predates them
+// (fetchWorkspaceInitScript's "HTTP 404 with no ETag" branch).
+//
+// # Why this is an export-side requirement only
+//
+// `boid workspace apply` must keep ACCEPTING a document with no
+// spec.init_script, and TestWorkspaceApply_AcceptsADocumentWithNoInitScriptKey
+// pins that it does. The two surfaces read the same absence differently because
+// they are answering different questions:
+//
+//   - apply reads a document a human may have WRITTEN, to state a change. One
+//     that adjusts env alone has no business restating an init.sh it is not
+//     touching, and "absent = don't touch" is what makes a partial document
+//     expressible at all. Requiring the key here would force every hand-written
+//     apply file to carry a copy of the whole script;
+//   - export writes a document meant to RESTORE the workspace as a whole. There
+//     is no partial export — the daemon emits every field on every document —
+//     so an absent key cannot mean "don't touch"; it can only mean the daemon
+//     did not know the field exists.
+func checkExportedDocumentIsComplete(doc *orchestrator.WorkspaceEnvelopeApply) error {
+	if doc.FieldsPresent["init_script"] {
+		return nil
+	}
+	return fmt.Errorf(
+		"the daemon's export of workspace %q carries no spec.init_script, so it is not a complete backup: "+
+			"restoring it would bring the workspace's settings back WITHOUT its init.sh, leaving its HOME volume with no "+
+			"toolchain and no harness. This daemon predates `boid workspace set-init-script` — upgrade the daemon, then "+
+			"re-run this export. Nothing was written",
+		doc.Envelope.Metadata.Name)
 }
 
 // hostPathPattern matches an env value that looks like it references a host

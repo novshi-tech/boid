@@ -115,6 +115,25 @@ type ProjectAppService struct {
 	// endpoints with a 500 (same "not wired" convention as Workspaces
 	// above) — tests that do not exercise them can leave this unset.
 	WorkspacesConn *sql.DB
+	// InitScripts reads and writes a workspace's init.sh at the path the
+	// DISPATCHER reads it from (PR9 of
+	// docs/plans/workspace-home-volume-persistence.md, 論点 d). Wired in
+	// internal/server/wire.go to dispatcher.WorkspaceInitScriptStore{}.
+	//
+	// nil is the feature's off switch, the same convention Workspaces /
+	// WorkspacesConn above use: GetWorkspaceInitScript and
+	// SetWorkspaceInitScript answer 501, and ApplyWorkspace warns about a
+	// spec.init_script it cannot honor rather than dropping it silently.
+	//
+	// One field, held by the service rather than by the handler, because
+	// three call sites need it — the two endpoints, ApplyWorkspace's
+	// hydration, and ExportWorkspaceEnvelopes' — and two of those are inside
+	// this type. Wiring a second copy onto WorkspaceHandler would be
+	// harmless here (the store is stateless) but would put two answers to
+	// "where does this daemon keep init.sh" in the wiring graph, which is the
+	// thing PR8's WorkspaceHomeImporter comment argues against for a case
+	// where it was NOT harmless.
+	InitScripts WorkspaceInitScriptStore
 	// mu serializes every workspace-mutating entry point — CreateWorkspace,
 	// UpdateWorkspace, RemoveWorkspace, and SetProjectWorkspace — against
 	// each other. It started out narrower (MAJOR 3, codex review round 1)
@@ -1067,15 +1086,39 @@ func (s *ProjectAppService) validateHostCommandRefs(refs []string) error {
 // leaving the in-memory cache pointing at "default" while the DB (and any
 // fresh GetWithWorkspace hydration) says the project belongs to the new
 // workspace.
-func (s *ProjectAppService) RemoveWorkspace(slug string) error {
+//
+// # The init.sh goes with the row, inside the same critical section
+//
+// PR9 codex round 3, Major 3. The script's deletion started life as a second
+// service call made by WorkspaceHandler.Remove after this one returned, which
+// left a window with the mutex free: a `workspace apply` could upsert the same
+// slug, write a new init.sh and answer 200 in it, and the removal — still in
+// flight — then deleted that script. The end state was a workspace row that
+// existed with a committed apply's script silently missing, indistinguishable
+// from a workspace that never had one.
+//
+// Doing it here makes the two atomic with respect to every other
+// workspace-mutating entry point, because they all take this mutex: an apply
+// is now either entirely before the removal (its row and its script both go —
+// correct) or entirely after it (a fresh workspace keeps the script it was
+// just given — correct). The HOME volume's deletion stays outside, in the
+// handler: it needs an engine this type does not have, and it is excluded from
+// the migration it actually races by a different mechanism
+// (BeginWorkspaceHomeRemoval, which brackets this call too).
+//
+// It is still NOT atomic with the row — a file unlink and a database
+// transaction cannot commit together — so the outcome is REPORTED rather than
+// pretended away, which is why this returns a WorkspaceRemoval instead of
+// folding a failed unlink into the error. See WorkspaceRemoval.InitScriptError.
+func (s *ProjectAppService) RemoveWorkspace(slug string) (*WorkspaceRemoval, error) {
 	if err := orchestrator.ValidWorkspaceSlug(slug); err != nil {
-		return &StatusError{Code: http.StatusBadRequest, Message: err.Error()}
+		return nil, &StatusError{Code: http.StatusBadRequest, Message: err.Error()}
 	}
 	if slug == orchestrator.DefaultWorkspaceSlug {
-		return &StatusError{Code: http.StatusBadRequest, Message: fmt.Sprintf("workspace %q is reserved and cannot be removed", slug)}
+		return nil, &StatusError{Code: http.StatusBadRequest, Message: fmt.Sprintf("workspace %q is reserved and cannot be removed", slug)}
 	}
 	if s.Workspaces == nil {
-		return &StatusError{Code: http.StatusInternalServerError, Message: "workspace store not wired"}
+		return nil, &StatusError{Code: http.StatusInternalServerError, Message: "workspace store not wired"}
 	}
 
 	s.mu.Lock()
@@ -1083,20 +1126,26 @@ func (s *ProjectAppService) RemoveWorkspace(slug string) error {
 
 	assigned, err := s.ListProjects(slug)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	if err := s.Workspaces.Remove(slug); err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return &StatusError{Code: http.StatusNotFound, Message: fmt.Sprintf("workspace %q not found", slug)}
+			return nil, &StatusError{Code: http.StatusNotFound, Message: fmt.Sprintf("workspace %q not found", slug)}
 		}
-		return &StatusError{Code: http.StatusInternalServerError, Message: err.Error()}
+		return nil, &StatusError{Code: http.StatusInternalServerError, Message: err.Error()}
 	}
 
 	for _, p := range assigned {
 		s.Meta.SetWorkspaceID(p.ID, orchestrator.DefaultWorkspaceSlug)
 	}
-	return nil
+
+	// AFTER the row is gone, still holding the mutex. After, because a failed
+	// unlink must not be able to abort a row removal that has already
+	// committed; still holding, because that is the whole of the fix above.
+	removal := &WorkspaceRemoval{}
+	removal.InitScriptDeleted, removal.InitScriptError = deleteWorkspaceInitScript(s.InitScripts, slug)
+	return removal, nil
 }
 
 // buildWorkspaceDetail assembles the WorkspaceDetail response for callers
@@ -1293,6 +1342,14 @@ func (s *ProjectAppService) ApplyWorkspace(apply *orchestrator.WorkspaceEnvelope
 			return nil, err
 		}
 	}
+	// spec.init_script's content check belongs HERE, with the other
+	// pre-transaction validations, even though the script itself is written
+	// after the commit — see validateWorkspaceApplyInitScript for why the two
+	// halves are split (PR9 of
+	// docs/plans/workspace-home-volume-persistence.md, 論点 d).
+	if err := validateWorkspaceApplyInitScript(apply); err != nil {
+		return nil, err
+	}
 
 	var projectIDsByName map[string]string
 	var missing []string
@@ -1330,6 +1387,30 @@ func (s *ProjectAppService) ApplyWorkspace(apply *orchestrator.WorkspaceEnvelope
 		for _, id := range result.DetachedProjects {
 			s.Meta.SetWorkspaceID(id, orchestrator.DefaultWorkspaceSlug)
 		}
+	}
+
+	// spec.init_script, LAST and outside the transaction (PR9 of
+	// docs/plans/workspace-home-volume-persistence.md, 論点 d): it is a file on
+	// the daemon, not a row. See applyWorkspaceInitScript for why this order
+	// rather than the other one, and for what a failure here means — the
+	// metadata is already committed at this point, so the error says so
+	// instead of implying the whole apply was rejected.
+	action, warning, err := s.applyWorkspaceInitScript(apply, dryRun)
+	if err != nil {
+		return nil, fmt.Errorf(
+			"workspace %q: metadata and project assignments were applied, but spec.init_script was not: %w", slug, err)
+	}
+	result.InitScriptAction = action
+	if warning != "" {
+		// Both channels, the same way WorkspaceHandler.Apply handles a dropped
+		// spec.additional_bindings: the response field is what a direct HTTP
+		// caller sees, and the log is what an operator finds afterwards when a
+		// workspace turns out not to have the script its document specified.
+		// `boid workspace apply` prints neither (see its own comment on why it
+		// does not echo result.Warnings) — this warning describes a daemon
+		// that is missing wiring, not a problem with the document.
+		slog.Warn("workspace apply: spec.init_script could not be applied", "workspace", slug, "reason", warning)
+		result.Warnings = append(result.Warnings, warning)
 	}
 	return result, nil
 }
@@ -1649,10 +1730,31 @@ func (s *ProjectAppService) ExportWorkspaceEnvelopes(slugs []string) ([]byte, er
 				URL:  p.UpstreamURL,
 			})
 		}
-		envelope := orchestrator.NewWorkspaceEnvelopeFromMeta(snap.Slug, snap.Meta, envProjects)
-		data, err := yaml.Marshal(envelope)
+		// The workspace's init.sh (PR9 of
+		// docs/plans/workspace-home-volume-persistence.md, 論点 d). Read here
+		// rather than inside SnapshotWorkspacesForExport's transaction because
+		// it is a FILE, not a row — there is no snapshot to be part of, and
+		// pretending otherwise by threading it through the tx signature would
+		// suggest an atomicity that does not exist. The window it opens is
+		// small and benign: a script rewritten between the snapshot and this
+		// read exports the newer script alongside the older metadata, and both
+		// halves are independently valid.
+		initScript, err := s.exportWorkspaceInitScript(snap.Slug)
+		if err != nil {
+			return nil, err
+		}
+		envelope := orchestrator.NewWorkspaceEnvelopeFromMeta(snap.Slug, snap.Meta, envProjects, initScript)
+		// MarshalWorkspaceEnvelope, not yaml.Marshal: it re-parses its own
+		// output and refuses to hand back a document that does not read back as
+		// the workspace it describes (PR9 codex round 4, Major 1). That is the
+		// restorability half of "an export can always be applied"; the size half
+		// is checkWorkspaceEnvelopeIsApplicable, below.
+		data, err := orchestrator.MarshalWorkspaceEnvelope(envelope)
 		if err != nil {
 			return nil, &StatusError{Code: http.StatusInternalServerError, Message: fmt.Sprintf("marshal workspace %q: %v", snap.Slug, err)}
+		}
+		if err := checkWorkspaceEnvelopeIsApplicable(snap.Slug, data, len(initScript)); err != nil {
+			return nil, err
 		}
 		docs = append(docs, data)
 	}

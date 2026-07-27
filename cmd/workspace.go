@@ -130,10 +130,21 @@ var (
 	// workspaceImportForce is a shorthand for --mode replace.
 	workspaceImportForce bool
 	// workspaceImportSlug is the optional --slug flag value for `workspace
-	// import`: the export endpoint's yaml body carries no "slug" key (see
-	// WorkspaceHandler.Export's doc comment), so import must recover a
-	// target slug from somewhere else — either this flag, or (if omitted)
-	// the import file's basename with its extension stripped.
+	// import`: an OVERRIDE of the target slug, not the only way to supply
+	// one.
+	//
+	// GET /api/workspaces/{slug}/export does put a top-level "slug:" key in
+	// its body (ProjectAppService.ExportWorkspace splices it on, precisely so
+	// the export → import round trip needs no translation step), and
+	// buildWorkspaceCreateBody below overwrites whatever the file carries
+	// with the slug this command resolved. This flag, and the
+	// basename-derived default behind it, exist so a hand-written or
+	// renamed file still imports and so an operator can retarget an export
+	// at a different workspace.
+	//
+	// See runWorkspaceImport's doc comment for the full correction — this
+	// comment and the flag's help text both claimed the body carried NO slug
+	// key, which stopped being true when that round-trip fix landed.
 	workspaceImportSlug string
 )
 
@@ -162,7 +173,7 @@ func init() {
 	workspaceExportCmd.Flags().BoolVar(&workspaceExportAll, "all", false, "export every workspace into a single '---'-separated multi-document file, instead of the <slug> positional argument")
 	workspaceImportCmd.Flags().StringVar(&workspaceImportMode, "mode", "create-only", "import mode: create-only (default, 409 on an existing slug) or replace (upsert)")
 	workspaceImportCmd.Flags().BoolVar(&workspaceImportForce, "force", false, "shorthand for --mode replace")
-	workspaceImportCmd.Flags().StringVar(&workspaceImportSlug, "slug", "", "target workspace slug (default: the import file's basename, extension stripped — the export body itself carries no slug)")
+	workspaceImportCmd.Flags().StringVar(&workspaceImportSlug, "slug", "", "target workspace slug, overriding the one in the file (default: the import file's basename, extension stripped)")
 	workspaceRemoveCmd.Flags().BoolVar(&workspaceRemoveForce, "force", false, "skip the home volume deletion confirmation prompt")
 	workspaceRemoveCmd.Flags().BoolVar(&workspaceRemoveForce, "yes", false, "alias for --force")
 
@@ -975,6 +986,39 @@ func runWorkspaceRemove(cmd *cobra.Command, args []string) error {
 // so a label filter on it finds the workspace's home volume without the CLI
 // needing to know the daemon's install id.
 func formatWorkspaceRemoveResult(slug string, resp api.WorkspaceRemoveResponse) string {
+	return formatWorkspaceRemoveHomeResult(slug, resp) + formatWorkspaceRemoveInitScriptResult(resp)
+}
+
+// formatWorkspaceRemoveInitScriptResult renders the init.sh half of the
+// summary (PR9 codex round 2, Major 1) — a warning when the deletion failed,
+// and nothing at all otherwise.
+//
+// Silent on success for the same reason the home volume's "there was nothing
+// to delete" case is silent: it is the expected outcome of the command that
+// was just run, and a line per non-event trains an operator to skim past the
+// one that matters.
+//
+// The failure is not skippable, though, and it is not the same kind of
+// leftover as a stranded volume. Dispatch resolves a workspace's init.sh from
+// the SLUG, so the file that survived this remove will be picked up by the
+// next workspace created with the same name and run against its brand-new
+// HOME volume. The row is already gone, which also rules out the obvious
+// cleanup: `boid workspace unset-init-script` 404s on the missing row. The
+// daemon puts its own path in the error, and the message says what the
+// leftover will do rather than only that a file could not be removed.
+func formatWorkspaceRemoveInitScriptResult(resp api.WorkspaceRemoveResponse) string {
+	if resp.InitScriptDeleteError == "" {
+		return ""
+	}
+	return fmt.Sprintf("warning: the workspace's init.sh could not be deleted: %s\n"+
+		"  it is on the DAEMON's filesystem (inside its state volume under the container deploy), and the workspace row is\n"+
+		"  already gone, so `boid workspace unset-init-script` can no longer remove it — delete it there by hand.\n"+
+		"  Left in place, a workspace re-created under this same name will inherit it and run it against its new HOME volume.\n",
+		resp.InitScriptDeleteError)
+}
+
+// formatWorkspaceRemoveHomeResult renders the HOME volume half of the summary.
+func formatWorkspaceRemoveHomeResult(slug string, resp api.WorkspaceRemoveResponse) string {
 	where := formatWorkspaceHomeVolumeRef(resp.HomeVolume)
 	switch {
 	// FIRST, ahead of every success case [codex review round 2, Blocker]. An
@@ -1045,14 +1089,29 @@ func formatWorkspaceHomeVolumeRef(volume string) string {
 // POST /api/workspaces/import?mode=<create-only|replace>
 // (docs/plans/workspace-db-consolidation.md PR5 Step E).
 //
-// The export endpoint's body (GET .../export) deliberately carries no
-// top-level "slug" key — the slug is already known from the URL it hangs
-// off of — so import must recover a target slug from elsewhere: --slug when
-// given, otherwise the import file's basename with its extension stripped
-// (e.g. "team-a.yaml" -> "team-a"). This asymmetry is why `workspace
-// export`'s output cannot be piped straight back into `workspace import`
-// without either naming the file after the slug or passing --slug
-// explicitly.
+// The document this reads is the META shape — a marshaled WorkspaceMeta with
+// a top-level "slug:" key, i.e. what GET /api/workspaces/{slug}/export
+// returns and what POST /api/workspaces/import accepts. It is NOT the
+// boid.dev/v1 envelope `boid workspace export` writes; that one is applied
+// with `boid workspace apply`, and DecodeWorkspaceMetaStrict below rejects it
+// outright (apiVersion/kind/metadata are unknown fields to it).
+//
+// The target slug is resolved CLIENT-side and always wins over the file:
+// --slug when given, otherwise the import file's basename with its extension
+// stripped (e.g. "team-a.yaml" -> "team-a"). buildWorkspaceCreateBody then
+// sets it on the outgoing body, overwriting whatever the file said. That is a
+// choice — it lets an operator retarget one workspace's definition at another
+// — not a workaround for a missing key: ProjectAppService.ExportWorkspace
+// splices "slug:" onto its body precisely so an export IS a valid import
+// body.
+//
+// (This paragraph, workspaceImportSlug's doc comment and --slug's help text
+// all used to say the export body carried NO slug key, and that the
+// resulting asymmetry was why an export could not be piped back in. Both
+// halves were stale — the key was added when that round trip was fixed, and
+// the CLI's own `export` moved to the envelope shape besides. Corrected in
+// PR9 of docs/plans/workspace-home-volume-persistence.md, 論点 d's doc-drift
+// half.)
 //
 // --mode defaults to "create-only" (the safe choice per docs/plans/
 // workspace-db-consolidation.md's PR5 note recommending it as the default

@@ -46,6 +46,19 @@ type WorkspaceApplyResult struct {
 	// IDs (projectIDsByName).
 	MissingProjects []string `json:"missing_projects,omitempty"`
 
+	// InitScriptAction reports what this apply did — or, for a dry run, would
+	// do — to the workspace's init.sh: "written", "cleared", "unchanged", or
+	// empty when the document carried no spec.init_script key at all (PR9 of
+	// docs/plans/workspace-home-volume-persistence.md, 論点 d).
+	//
+	// Also filled in by the caller, and for a stronger reason than
+	// MissingProjects: init.sh is a FILE on the daemon, not a row this
+	// function's transaction could touch (WorkspaceEnvelopeSpec.InitScript).
+	// It is reported separately from Meta for the same reason — a reader of
+	// this result must be able to see that the script and the metadata are
+	// two commits, not one.
+	InitScriptAction string `json:"init_script_action,omitempty"`
+
 	// Warnings is filled in by the caller (WorkspaceHandler.Apply,
 	// internal/api/workspace.go) — non-fatal notices about the applied
 	// document that a direct HTTP caller (not going through `boid workspace

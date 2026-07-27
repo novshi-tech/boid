@@ -103,15 +103,32 @@ type ProjectService interface {
 	// *StatusError{428} missing ifMatch, {412} stale ifMatch, {404} unknown
 	// slug.
 	UpdateWorkspace(slug string, meta *orchestrator.WorkspaceMeta, ifMatch string, force bool) (*WorkspaceDetail, error)
-	// RemoveWorkspace deletes slug (DELETE /api/workspaces/{slug}).
+	// RemoveWorkspace deletes slug's row AND its init.sh (DELETE
+	// /api/workspaces/{slug}), reporting what became of the latter.
 	// *StatusError{400} for the reserved default slug, {404} unknown slug.
-	RemoveWorkspace(slug string) error
+	//
+	// The two deletions are one operation because they have to be excluded
+	// from a concurrent apply together (PR9 codex round 3, Major 3) — see
+	// ProjectAppService.RemoveWorkspace. They are still not atomic with each
+	// other, hence the result: an error inside it means the row is gone and
+	// the script is not.
+	RemoveWorkspace(slug string) (*WorkspaceRemoval, error)
 
 	// ExportWorkspace returns slug's raw yaml body (the marshaled
-	// WorkspaceMeta, deliberately with no top-level "slug" key — the slug is
-	// already known from the URL this backs) and its current revision (GET
-	// /api/workspaces/{slug}/export, docs/plans/workspace-db-consolidation.md
-	// PR5 Step A). *StatusError{404} when slug is unknown.
+	// WorkspaceMeta with a top-level "slug:" key spliced onto the front) and
+	// its current revision (GET /api/workspaces/{slug}/export,
+	// docs/plans/workspace-db-consolidation.md PR5 Step A).
+	// *StatusError{404} when slug is unknown.
+	//
+	// The slug IS in the body, deliberately — this comment used to say the
+	// opposite (drift, corrected in PR9 of
+	// docs/plans/workspace-home-volume-persistence.md). An earlier iteration
+	// omitted it on the reasoning that the URL already carries it, and the
+	// codex review of PR5 had that reversed: without the key the exported
+	// document is not a valid POST /api/workspaces/import body, so the
+	// export → import round trip needed a translation step that did not
+	// exist. See ProjectAppService.ExportWorkspace for the fix and its
+	// rationale.
 	ExportWorkspace(slug string) (yamlBytes []byte, revision string, err error)
 	// ImportWorkspace inserts (mode="create-only") or upserts
 	// (mode="replace") slug's workspace meta from an import body (POST
@@ -137,8 +154,51 @@ type ProjectService interface {
 	// codex round-1 Blocker 3, GET /api/workspaces/export?all=true or
 	// ?name=<slug>). slugs nil/empty exports every workspace; otherwise
 	// exactly the given slugs. *StatusError{404} when a requested slug does
-	// not exist.
+	// not exist. Each document carries the workspace's init.sh in
+	// spec.init_script (PR9 of docs/plans/workspace-home-volume-persistence.md,
+	// 論点 d) — an export without it is not a restorable backup.
 	ExportWorkspaceEnvelopes(slugs []string) ([]byte, error)
+
+	// GetWorkspaceInitScript returns slug's init.sh (GET
+	// /api/workspaces/{slug}/init-script, PR9 of
+	// docs/plans/workspace-home-volume-persistence.md 論点 d). A workspace
+	// with no script is NOT an error: the result carries Exists=false and
+	// Revision=WorkspaceInitScriptAbsentRevision, and the handler turns that
+	// into a 404 with the sentinel ETag. *StatusError{400} for an invalid
+	// slug, {404} for an unknown workspace, {501} when the daemon has no init
+	// script store wired.
+	GetWorkspaceInitScript(slug string) (*WorkspaceInitScript, error)
+	// SetWorkspaceInitScript replaces slug's init.sh with content (PUT
+	// /api/workspaces/{slug}/init-script), enforcing optimistic concurrency
+	// via ifMatch against the current revision unless force is true — the
+	// same 428/412 contract UpdateWorkspace and ApplyConfigYAML use. An
+	// EMPTY content clears the script (see
+	// workspaceInitScriptContentIsAbsent). *StatusError{400} for an invalid
+	// slug or a script containing a NUL byte, {404} unknown workspace,
+	// {428} missing ifMatch, {412} stale ifMatch, {501} no store wired.
+	SetWorkspaceInitScript(slug string, content []byte, ifMatch string, force bool) (*WorkspaceInitScriptResult, error)
+}
+
+// WorkspaceRemoval reports what RemoveWorkspace did to the half of a workspace
+// that is not a row (PR9 codex round 2 Major 1, moved inside the row's critical
+// section by round 3 Major 3).
+//
+// It exists because a file unlink and a database transaction cannot commit
+// together: by the time the script is touched the row is already gone, so a
+// failure has to be described rather than rolled back or raised. The handler
+// copies both fields into WorkspaceRemoveResponse, which is where their
+// operator-facing meaning is documented.
+type WorkspaceRemoval struct {
+	// InitScriptDeleted is true only when the workspace HAD an init.sh and it
+	// was removed. false covers a workspace that never had one, a daemon with
+	// no init script store wired, and a failed deletion.
+	InitScriptDeleted bool
+	// InitScriptError is the unlink failure, if any. Deliberately NOT a
+	// *StatusError: the row removal has already committed, so this must not
+	// become the response's status — see
+	// WorkspaceRemoveResponse.InitScriptDeleteError. The message carries the
+	// daemon-side path, which is what an operator needs to clean up by hand.
+	InitScriptError error
 }
 
 // WorkspaceDetail is the response shape for the workspace create/show/update

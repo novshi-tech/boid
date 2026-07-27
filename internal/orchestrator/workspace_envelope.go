@@ -85,6 +85,31 @@ type WorkspaceEnvelopeSpec struct {
 	ContainerImage string                     `yaml:"container_image"`
 	Capabilities   Capabilities               `yaml:"capabilities"`
 	Projects       []WorkspaceEnvelopeProject `yaml:"projects"`
+	// InitScript is the workspace's init.sh, verbatim (PR9 of
+	// docs/plans/workspace-home-volume-persistence.md, 論点 d).
+	//
+	// Like Projects it has NO WorkspaceMeta counterpart, and for a sharper
+	// reason: init.sh is a FILE the daemon owns (dispatcher's
+	// workspaceInitScriptPath), deliberately not a workspaces-table column —
+	// see that function's doc comment for the standing decision (environment-
+	// dependent shell content, outside the workspace's otherwise
+	// environment-independent DB-backed config). It is carried here anyway
+	// because an export that omits it is not a backup: restoring a workspace
+	// without its init.sh gives you a home volume with no toolchain in it and
+	// a harness that cannot start.
+	//
+	// MergeInto therefore does not touch it — the hydration happens in
+	// internal/api, which holds the store (ProjectAppService.ApplyWorkspace).
+	//
+	// Missing vs. explicitly-empty is load-bearing exactly as it is for the
+	// fields above: no key means "leave this workspace's init.sh alone", and
+	// `init_script: ""` means "this workspace has no init.sh", which on apply
+	// deletes the target's. An empty script and no script are the same state
+	// by construction — the dispatch wrapper writes the bytes to a file and
+	// runs bash on it, so zero bytes is a no-op run — and collapsing them
+	// keeps a workspace from acquiring a completion-marker hash that describes
+	// nothing.
+	InitScript string `yaml:"init_script"`
 }
 
 // WorkspaceEnvelopeProject is one spec.projects[] entry. URL is informational
@@ -112,6 +137,7 @@ var workspaceEnvelopeSpecFields = map[string]bool{
 	"container_image":     true,
 	"capabilities":        true,
 	"projects":            true,
+	"init_script":         true,
 	"additional_bindings": true,
 }
 
@@ -127,11 +153,16 @@ type WorkspaceEnvelopeApply struct {
 	// FieldsPresent records which spec.* keys were present in the source
 	// document (by their yaml key name: "host_commands", "env",
 	// "allowed_domains", "extra_repos", "container_image", "capabilities",
-	// "projects"). A key absent from this map was not present in the
-	// document at all and MergeInto leaves the corresponding WorkspaceMeta
-	// field untouched; a key present (even if its decoded value is the zero
-	// value / an explicit empty list or map) means the document explicitly
-	// wants that field replaced with the decoded value.
+	// "projects", "init_script"). A key absent from this map was not present
+	// in the document at all and MergeInto leaves the corresponding
+	// WorkspaceMeta field untouched; a key present (even if its decoded value
+	// is the zero value / an explicit empty list or map) means the document
+	// explicitly wants that field replaced with the decoded value.
+	//
+	// "init_script" is in this map but not in MergeInto's switch: it has no
+	// WorkspaceMeta field to merge into (see WorkspaceEnvelopeSpec.InitScript).
+	// Its consumer is ProjectAppService.ApplyWorkspace, which reads the same
+	// flag to decide between "leave the file alone" and "write/clear it".
 	FieldsPresent map[string]bool
 	// AdditionalBindingsDropped is true when the source document had a
 	// spec.additional_bindings key (any shape, including an explicit empty
@@ -142,13 +173,19 @@ type WorkspaceEnvelopeApply struct {
 }
 
 // NewWorkspaceEnvelopeFromMeta builds a WorkspaceEnvelope for `boid workspace
-// export` from a workspace's current WorkspaceMeta and its resolved project
+// export` from a workspace's current WorkspaceMeta, its resolved project
 // entries (name + url, url may be empty pre-PR-2 — see
-// WorkspaceEnvelopeProject's doc comment). meta may be nil (an empty/never-
-// configured workspace), in which case the spec carries only projects (if
-// any).
-func NewWorkspaceEnvelopeFromMeta(name string, meta *WorkspaceMeta, projects []WorkspaceEnvelopeProject) *WorkspaceEnvelope {
-	spec := WorkspaceEnvelopeSpec{Projects: projects}
+// WorkspaceEnvelopeProject's doc comment) and its init.sh. meta may be nil (an
+// empty/never-configured workspace), in which case the spec carries only
+// projects (if any) and the script.
+//
+// initScript is a plain string rather than a (content, exists) pair because
+// the two states an init.sh can be in are "some bytes" and "none", and the
+// empty string is how the envelope spells the second one — see
+// WorkspaceEnvelopeSpec.InitScript. A caller with nothing to export passes "",
+// which is emitted as `init_script: ""` and read back as an explicit clear.
+func NewWorkspaceEnvelopeFromMeta(name string, meta *WorkspaceMeta, projects []WorkspaceEnvelopeProject, initScript string) *WorkspaceEnvelope {
+	spec := WorkspaceEnvelopeSpec{Projects: projects, InitScript: initScript}
 	if meta != nil {
 		spec.HostCommands = meta.HostCommands
 		spec.Env = meta.Env
@@ -169,6 +206,14 @@ func NewWorkspaceEnvelopeFromMeta(name string, meta *WorkspaceMeta, projects []W
 // workspace, i.e. a `boid workspace apply` create rather than update) per
 // field, honoring FieldsPresent's "missing = don't touch" contract, and
 // returns the resulting *WorkspaceMeta. current is never mutated.
+//
+// spec.init_script is deliberately absent from the field list below: it is a
+// file on the daemon, not a workspaces-table column, so there is nothing on
+// *WorkspaceMeta to merge it into (WorkspaceEnvelopeSpec.InitScript). Its
+// FieldsPresent flag is honored by ProjectAppService.ApplyWorkspace, outside
+// this function and outside the DB transaction — a file write and a
+// transaction cannot be made atomic, and pretending otherwise by routing it
+// through here would only hide that.
 func (a *WorkspaceEnvelopeApply) MergeInto(current *WorkspaceMeta) *WorkspaceMeta {
 	merged := &WorkspaceMeta{}
 	if current != nil {
@@ -267,6 +312,11 @@ func SplitWorkspaceEnvelopeDocuments(data []byte) ([][]byte, error) {
 			}
 			return nil, fmt.Errorf("document %d: %w", i+1, err)
 		}
+		// Before re-emitting: make every scalar's style one this document's
+		// own reader can take back (PR9 codex round 2, Major 3). The decode
+		// above preserved each scalar's source style, and yaml.v3 cannot
+		// re-emit some of those correctly — see forceRoundTrippableScalars.
+		forceRoundTrippableScalars(&node)
 		raw, err := yaml.Marshal(&node)
 		if err != nil {
 			return nil, fmt.Errorf("document %d: re-marshal: %w", i+1, err)
@@ -378,6 +428,18 @@ func decodeWorkspaceEnvelopeSpec(specNode yaml.Node) (spec WorkspaceEnvelopeSpec
 		fieldsPresent["container_image"] = true
 		if err := n.Decode(&spec.ContainerImage); err != nil {
 			return spec, nil, false, fmt.Errorf("spec.container_image: %w", err)
+		}
+	}
+	if n, ok := raw["init_script"]; ok {
+		fieldsPresent["init_script"] = true
+		// A null value (`init_script:` with nothing after it) decodes into the
+		// zero string, which this schema reads as "no init.sh" — the same
+		// answer as `init_script: ""`. That is the right collapse here (there
+		// is no third state for a file to be in), unlike env above where nil
+		// vs. empty map would otherwise reach MergeInto as two different
+		// things.
+		if err := n.Decode(&spec.InitScript); err != nil {
+			return spec, nil, false, fmt.Errorf("spec.init_script: %w", err)
 		}
 	}
 	if n, ok := raw["capabilities"]; ok {

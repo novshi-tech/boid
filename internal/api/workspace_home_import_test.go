@@ -342,9 +342,9 @@ func TestWorkspaceHandler_ImportHome_RunnerSatisfiesTheInterface(t *testing.T) {
 // but "the guard was still open while the row was being deleted".
 func TestWorkspaceHandler_Remove_BracketsTheDeletionWithTheMigrationGuard(t *testing.T) {
 	imp := &stubHomeImporter{}
-	svc := &fakeWorkspaceService{removeFn: func(string) error {
+	svc := &fakeWorkspaceService{removeFn: func(string) (*WorkspaceRemoval, error) {
 		imp.removalOpenDuringRemove = imp.removalsOpen
-		return nil
+		return &WorkspaceRemoval{}, nil
 	}}
 	h := &WorkspaceHandler{Service: svc, HomeImporter: imp}
 
@@ -373,7 +373,7 @@ func TestWorkspaceHandler_Remove_BracketsTheDeletionWithTheMigrationGuard(t *tes
 func TestWorkspaceHandler_Remove_ConflictsWithAnInFlightMigration(t *testing.T) {
 	imp := &stubHomeImporter{removalErr: fmt.Errorf("workspace home %q: a migration is running: %w", "team-a", dispatcher.ErrWorkspaceHomeBusy)}
 	removed := false
-	svc := &fakeWorkspaceService{removeFn: func(string) error { removed = true; return nil }}
+	svc := &fakeWorkspaceService{removeFn: func(string) (*WorkspaceRemoval, error) { removed = true; return &WorkspaceRemoval{}, nil }}
 	h := &WorkspaceHandler{Service: svc, HomeImporter: imp}
 
 	w := doWorkspaceRequest(h.Routes(), http.MethodDelete, "/team-a", "", nil, nil)
@@ -391,7 +391,7 @@ func TestWorkspaceHandler_Remove_ConflictsWithAnInFlightMigration(t *testing.T) 
 // cannot run a migration either, so there is nothing to exclude.
 func TestWorkspaceHandler_Remove_WithoutAnImporterStillWorks(t *testing.T) {
 	removed := false
-	h := &WorkspaceHandler{Service: &fakeWorkspaceService{removeFn: func(string) error { removed = true; return nil }}}
+	h := &WorkspaceHandler{Service: &fakeWorkspaceService{removeFn: func(string) (*WorkspaceRemoval, error) { removed = true; return &WorkspaceRemoval{}, nil }}}
 
 	w := doWorkspaceRequest(h.Routes(), http.MethodDelete, "/team-a", "", nil, nil)
 	if w.Code != http.StatusOK {

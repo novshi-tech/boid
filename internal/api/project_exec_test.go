@@ -62,7 +62,7 @@ func (s *stubProjectServiceForExec) GetWorkspace(string) (*WorkspaceDetail, erro
 func (s *stubProjectServiceForExec) UpdateWorkspace(string, *orchestrator.WorkspaceMeta, string, bool) (*WorkspaceDetail, error) {
 	panic("not implemented")
 }
-func (s *stubProjectServiceForExec) RemoveWorkspace(string) error {
+func (s *stubProjectServiceForExec) RemoveWorkspace(string) (*WorkspaceRemoval, error) {
 	panic("not implemented")
 }
 func (s *stubProjectServiceForExec) ExportWorkspace(string) ([]byte, string, error) {
@@ -72,6 +72,12 @@ func (s *stubProjectServiceForExec) ImportWorkspace(string, *orchestrator.Worksp
 	panic("not implemented")
 }
 func (s *stubProjectServiceForExec) ApplyWorkspace(*orchestrator.WorkspaceEnvelopeApply, bool) (*orchestrator.WorkspaceApplyResult, error) {
+	panic("not implemented")
+}
+func (s *stubProjectServiceForExec) GetWorkspaceInitScript(string) (*WorkspaceInitScript, error) {
+	panic("not implemented")
+}
+func (s *stubProjectServiceForExec) SetWorkspaceInitScript(string, []byte, string, bool) (*WorkspaceInitScriptResult, error) {
 	panic("not implemented")
 }
 func (s *stubProjectServiceForExec) ExportWorkspaceEnvelopes([]string) ([]byte, error) {

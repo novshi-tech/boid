@@ -42,15 +42,72 @@ Placing an `init.sh` under a workspace's config makes it run automatically **on 
 dispatch into that workspace** — useful for one-time setup work in the workspace home,
 such as installing the claude CLI.
 
-### Location
+### Location, and how to edit it
 
-```
-~/.config/boid/workspaces/<slug>/init.sh
+The `init.sh` belongs to the **daemon**. It is stored in the daemon's config directory
+(`~/.config/boid/workspaces/<slug>/init.sh`, or `$XDG_CONFIG_HOME`'s equivalent), but that
+path is on the **daemon's own filesystem**: under the container deployment it resolves
+inside the daemon's state volume, so **editing `~/.config/boid/` on this host changes
+nothing**.
+
+Edit it through the CLI:
+
+```bash
+# print the current script (-o <file> writes it to a file instead)
+boid workspace get-init-script <slug>
+
+# upload a local file ("-" reads from stdin)
+boid workspace set-init-script <slug> -f init.sh
+
+# edit in $EDITOR, applied on save
+boid workspace edit-init-script <slug>
+
+# delete it, returning the workspace to the no-script state
+boid workspace unset-init-script <slug>
 ```
 
-(`$XDG_CONFIG_HOME` takes precedence when set.) This lives alongside `workspace.yaml` and
-`host_commands.yaml` in the host-side config directory — the sandbox can neither see nor
-write to it.
+`set-init-script` / `edit-init-script` / `unset-init-script` fetch the current revision
+(ETag) first and send it back as `If-Match`, so a script that changed through another route
+in between is reported rather than silently overwritten (`--force` skips the check).
+
+`boid workspace export` includes the script as `spec.init_script`, and
+`boid workspace apply -f <file>` restores it — that is how a workspace is moved to another
+install. An explicit `spec.init_script: ""` means "this workspace has no init.sh" and
+DELETES the target's on apply; omitting the key entirely leaves it untouched.
+
+An empty script cannot be stored: writing empty content clears the script instead. An empty
+script and no script are the same thing to dispatch, so boid keeps only one representation
+of it.
+
+An `init.sh` is capped at **128 KiB**, on every route that stores one — the dedicated
+endpoint and `spec.init_script` in an applied document alike. A cap is needed at all because
+the daemon buffers the whole script to hash it and wrap it in a heredoc; the particular
+figure is derived from the guarantee that anything this API accepts can be restored through
+`workspace export` → `workspace apply` — an export embeds the script in a yaml document,
+which inflates it, and `apply` reads that document under a 1 MiB body cap. A hand-authored
+init.sh is a few KB (the reference implementation is under 5 KB), so the cap is not a
+practical constraint.
+
+The other half of that guarantee is on the export side: if a workspace's exported document
+would come out over the 1 MiB `apply` reads it under, **`boid workspace export` fails**
+naming that workspace, rather than writing a file that cannot be restored. The script's
+share is bounded by the cap above, so reaching this means the workspace's *metadata* is
+enormous — an `env` value of several hundred KB or similar. Shrink it, or drop `--all` and
+export the remaining workspaces one at a time with `boid workspace export <slug>`.
+
+An export also fails on a **daemon version skew**: if a document in the response carries no
+`spec.init_script` — that daemon predates the field and knows nothing about init.sh — the
+CLI names the workspace and writes **no file**. That document is valid yaml and would apply
+cleanly, but it restores the metadata alone, leaving a workspace with **no init.sh** and so
+no harness on its next dispatch. Upgrade the daemon and export again. `boid workspace apply`
+still accepts a document without `spec.init_script`, on purpose: a hand-written document
+that only adjusts `env` should not have to carry a copy of the whole script, and there an
+absent key correctly means "leave it alone".
+
+Driving the API directly, the body's `Content-Type` may be **omitted**. The only types
+refused are structured-data formats — yaml, json, xml, tar and the like — whose arrival
+means the request is at the wrong endpoint (a workspace yaml document goes to
+`PUT /api/workspaces/{slug}`, a boid.dev/v1 envelope to `POST /api/workspaces/apply`).
 
 A workspace with no `init.sh` is treated as "no SCRIPT to run". The preparation step (prep)
 described below still runs exactly once either way.
@@ -176,8 +233,8 @@ the same pattern — "already installed? skip" — once per tool.
 **Reference implementation**: [`docs/examples/workspace-home-init.sh`](../../examples/workspace-home-init.sh)
 installs go / volta / node (lts) / claude / codex / opencode end-to-end
 (`GO_VERSION` etc. overridable via env vars, RETURN trap for temp cleanup,
-`command -v`-based idempotency checks). Copy it into
-`~/.config/boid/workspaces/<slug>/init.sh` as a starting template and customize.
+`command -v`-based idempotency checks). Customize it as a starting template, then register
+it with `boid workspace set-init-script <slug> -f docs/examples/workspace-home-init.sh`.
 
 #### Copying non-embedded skills
 
@@ -438,6 +495,13 @@ home volume deleted (volume boid-ws-home-a1b2c3d4-my-workspace) (128.4 MB)
   exact block-based figure
 - **The `default` workspace cannot be removed**: it is the reserved fallback every project
   ends up re-assigned to, so it is protected outright
+- **The workspace's `init.sh` is deleted too**: dispatch resolves a script from the slug
+  alone, so leaving it behind would make a **workspace re-created under the same name
+  inherit the old script** and run it against a brand-new HOME volume. It is best-effort
+  like the home volume — a failed deletion still returns success and reports the
+  daemon-side path in a warning, and it cannot be cleaned up with
+  `boid workspace unset-init-script` afterwards (the row is already gone), so it has to be
+  removed by hand on the daemon
 - **Deletion fails while a job is running in that workspace**: the engine refuses to
   remove a volume that is in use with a 409, and no force flag overrides that. The result
   is a **part-completed** remove — the DB row is gone, the volume is not — reported as:
