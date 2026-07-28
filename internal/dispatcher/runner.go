@@ -1845,11 +1845,16 @@ func (r *Runner) takeTaskRuntimes(taskID string) []string {
 // StatusCode; see waitResponseEngineError's doc comment in
 // container_backend_workspace_init.go). Before this field existed, that case
 // and an ordinary silent crash/kill produced the byte-identical job.Output
-// ("job runtime exited without boid job done ..."), so `boid job log` / the
-// Web UI gave an operator no way to tell "my hook script crashed" from
-// "docker/podman itself misbehaved" — the same asymmetry the workspace-init
-// path (container_backend_workspace_init.go:783) already carried its own fix
-// for, with its "this is not init.sh failing" wording. When EngineError is
+// ("job runtime exited without boid job done ..."), so an operator reading
+// it back — `boid job show` / `boid job watch` (cmd/observe.go's renderJob),
+// or the Web UI (internal/api/web.go, web/templates/jobs_templ.go) — had no
+// way to tell "my hook script crashed" from "docker/podman itself
+// misbehaved". (NOT `boid job log`: cmd/job.go's runJobLog prints the job's
+// TRANSCRIPT, GET /api/jobs/{id}/log — a separate artifact, and one an
+// engine fault is exactly the case most likely to leave empty.) This is the
+// same asymmetry the workspace-init path
+// (container_backend_workspace_init.go:783) already carried its own fix for,
+// with its "this is not init.sh failing" wording. When EngineError is
 // non-empty, output below names the fault as the engine's and carries the
 // engine's own message (the only surviving description of what went wrong —
 // the container, and its logs, are gone by the time this runs); the ordinary

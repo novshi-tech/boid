@@ -742,6 +742,20 @@ func TestContainerSession_Wait_SingleOwnerFanOut(t *testing.T) {
 		if results[i].ExitCode != 7 {
 			t.Errorf("Wait() call %d ExitCode = %d, want 7", i, results[i].ExitCode)
 		}
+		// This is the healthy StatusCode path (no Error on the wait
+		// response) — EngineError must stay empty. Pinned here (rather than
+		// only in the two engine-fault tests below) because those tests can
+		// only prove EngineError gets SET on a fault; nothing otherwise pins
+		// that the healthy branch leaves it UNSET. A future refactor that
+		// hoists engineError assignment out of the two fault branches (or a
+		// waitResponseEngineError change that starts returning non-nil for a
+		// healthy response) would let every silently-crashed job's
+		// job.Output read as an engine fault instead — exactly the
+		// regression requirement 4 exists to prevent — while every test
+		// scoped to a fault path stays green.
+		if results[i].EngineError != "" {
+			t.Errorf("Wait() call %d EngineError = %q, want empty (StatusCode: 7 is a healthy wait response, not an engine fault)", i, results[i].EngineError)
+		}
 	}
 	if got := api.waitCallCount(); got != 1 {
 		t.Errorf("ContainerWait was called %d times, want exactly 1 (§決定 7 single-owner fan-out)", got)
@@ -834,6 +848,42 @@ func TestContainerSession_WaitLoop_ContainerWaitAPICallFailureCarriesEngineError
 	}
 	if exit.EngineError != engineMessage {
 		t.Errorf("EngineError = %q, want %q (the ContainerWait call's own error must reach the exit)", exit.EngineError, engineMessage)
+	}
+}
+
+// TestContainerSession_WaitLoop_ContainerWaitErrorChannelClosedWithoutError
+// pins a defensive guard on the <-waitRes.Error branch: nothing may call
+// err.Error() on a nil err. moby/moby/client@v0.5.0's own ContainerWait
+// never sends a nil error on this channel today (container_wait.go's errC
+// is never closed, and every send is a real error), so this is unreached in
+// production as of this writing — but s.api is the dockerAPI INTERFACE, not
+// that concrete client, and nothing stops a future implementation or test
+// double from closing its error channel instead of leaving it open, which
+// makes a receive resolve to the zero value (nil) immediately. waitLoop is
+// this session's sole ContainerWait owner, running in its own goroutine
+// (§決定 7) — an unrecovered panic there does not just fail one job, it
+// takes the whole daemon process down with it. Modelled here by closing
+// errCh with nothing ever sent on it.
+func TestContainerSession_WaitLoop_ContainerWaitErrorChannelClosedWithoutError(t *testing.T) {
+	errCh := make(chan error)
+	close(errCh)
+	api := &fakeDockerAPI{
+		ContainerWaitFunc: func(ctx context.Context, containerID string, options client.ContainerWaitOptions) client.ContainerWaitResult {
+			return client.ContainerWaitResult{Result: make(chan container.WaitResponse), Error: errCh}
+		},
+	}
+	be := NewContainerBackend(api, ContainerBackendOptions{})
+	sess := mustLaunch(t, be, sandbox.Spec{ID: "job-wait-nil-error", Argv: []string{"true"}}, backend.LaunchOptions{JobID: "job-wait-nil-error"})
+
+	exit, err := sess.Wait(context.Background())
+	if err != nil {
+		t.Fatalf("Wait: %v", err)
+	}
+	if exit.ExitCode != 1 {
+		t.Errorf("ExitCode = %d, want 1", exit.ExitCode)
+	}
+	if exit.EngineError == "" {
+		t.Error("EngineError is empty, want a fallback message describing an unreported engine fault (a nil err must not be silently read as a healthy exit)")
 	}
 }
 

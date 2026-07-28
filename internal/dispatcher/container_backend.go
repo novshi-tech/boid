@@ -2564,7 +2564,22 @@ func (s *containerSession) waitLoop() {
 	case err := <-waitRes.Error:
 		slog.Warn("container backend: ContainerWait failed", "container_id", s.id, "error", err)
 		exitCode = 1
-		engineError = err.Error()
+		if err != nil {
+			engineError = err.Error()
+		} else {
+			// moby/moby/client@v0.5.0's own ContainerWait never sends a nil
+			// error on this channel (container_wait.go's errC is never
+			// closed, and every send is a real error), so this branch is
+			// unreached in production as of this writing. It exists because
+			// s.api is the dockerAPI INTERFACE, not that concrete client —
+			// a future implementation/wrapper that closes its error channel
+			// instead of leaving it open would deliver a nil error here, and
+			// err.Error() on a nil error panics this goroutine. waitLoop is
+			// this session's sole ContainerWait owner (§決定 7), running
+			// unsupervised in its own goroutine, so that panic would take
+			// the whole daemon process down, not just fail one job.
+			engineError = "the engine's wait channel closed without an error"
+		}
 	}
 
 	// The container process has exited, but its attach stream can still

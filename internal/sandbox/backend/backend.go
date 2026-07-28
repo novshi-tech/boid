@@ -53,11 +53,15 @@ type RuntimeExit struct {
 	// This is NOT the exited process's own stderr or exit reason — ExitCode
 	// above is a forced substitute value (containerSession.waitLoop sets it
 	// to 1) precisely because the engine never filled one in. EngineError is
-	// the only description of what actually went wrong, and the empty
-	// string is the explicit "the engine reported a normal exit; ExitCode is
-	// real" case — a caller (Runner.watchRuntime, in particular) must not
-	// report a hook script as having failed on its own when this is set;
-	// see watchRuntime's doc comment for how it renders the distinction.
+	// the only description of what actually went wrong, and empty means "no
+	// engine fault was reported for this exit" — NOT "ExitCode is real": a
+	// Wait() returned alongside ErrRuntimeUnsupported (the pre-existing
+	// convention for a session with no notion of Wait at all — see e.g.
+	// statefulSession.Wait in dispatcher_test) is also RuntimeExit{}, and its
+	// zero ExitCode carries no meaning either. A caller (Runner.watchRuntime,
+	// in particular) must not report a hook script as having failed on its
+	// own when EngineError is set; see watchRuntime's doc comment for how it
+	// renders the distinction.
 	EngineError string
 }
 
