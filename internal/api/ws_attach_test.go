@@ -23,7 +23,7 @@ import (
 
 // stubSubscriber is a fake RuntimeSubscriber for testing. finished mirrors
 // RuntimeSubscriber.Subscribe's own finished return (Opus review of PR
-// #857, B2) — every pre-existing test literal below that sets ok:false
+// #864, B2) — every pre-existing test literal below that sets ok:false
 // also now sets finished explicitly (true for every one of them: none of
 // this file's pre-B2 tests exercise the "still running, no stream" case),
 // so this file's zero-value default of finished:false is never silently

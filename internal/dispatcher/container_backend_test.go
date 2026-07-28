@@ -632,7 +632,7 @@ func TestContainerBackend_Adopt_CacheHitReattachesAfterEngineRecovers(t *testing
 	// container's pre-existing logs is not just safe here, it's the only
 	// way to backfill whatever ran before this daemon ever knew about the
 	// container. See reattachIfLost's own doc comment (Opus review of PR
-	// #857, B1) for why this must NOT also be true for a re-attach whose
+	// #864, B1) for why this must NOT also be true for a re-attach whose
 	// transcript already has content (TestContainerBackend_Adopt_ReattachAfterMidStreamDropDoesNotDuplicateTranscript
 	// pins that side).
 	connMu.Lock()
@@ -1526,7 +1526,7 @@ func TestContainerSession_WaitLoop_DrainsAttachBeforeClosingConn(t *testing.T) {
 		t.Errorf("transcript = %q, want it to contain the final burst %q (drained before close)", snapshot, finalBurst)
 	}
 	// Regression pin alongside B1/B2's own new tests (Opus review of PR
-	// #857): a genuinely, cleanly exited container must still report
+	// #864): a genuinely, cleanly exited container must still report
 	// ok=false, finished=true — the pre-existing "job done" case B2's
 	// finished field must not accidentally flip for.
 	if subOK {

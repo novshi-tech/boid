@@ -2345,7 +2345,7 @@ func newContainerSession(b *containerBackend, id string, tty bool, specPath, doc
 		running:      true,
 		done:         make(chan struct{}),
 		// readDone is deliberately NOT initialized here (Opus review of PR
-		// #857, N7): both callers of this constructor (Launch, doAdopt)
+		// #864, N7): both callers of this constructor (Launch, doAdopt)
 		// always call attach() — which unconditionally sets readDone,
 		// success or failure — before start() ever launches the waitLoop
 		// goroutine that is readDone's only reader. A placeholder channel
