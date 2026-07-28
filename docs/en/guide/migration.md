@@ -39,7 +39,7 @@ boid project migrate ~/src/myproject --workspace dev --apply --on-collision skip
 - If the workspace slug has no row in the daemon yet: it is created with `POST /api/workspaces`.
 - If the slug already exists: its current content is fetched with `GET /api/workspaces/<slug>`, merged with the fields this migration generated, and written back with `PUT /api/workspaces/<slug>` (`If-Match: <revision>`) (`mergeLegacyFieldsIntoWorkspace`). **The merge precedence favors the migration side** (the values derived from `project.yaml`): `env` entries from the migration overwrite the workspace's existing value on a matching key, and `capabilities.docker` is overwritten when `project.yaml` set it. When this migration generated a legacy kit, its `host_commands` (reference names) are unioned in (existing entries are never dropped), and its `additional_bindings` overwrite the workspace's existing entry on a matching Source. Every other existing field is carried over untouched.
 - A `412 Precondition Failed` (revision mismatch — concurrent edit) re-fetches, re-merges, and retries, up to 3 times.
-- If the daemon is unreachable, or the retries are exhausted without resolving, the change only lands in the shadow yaml. The command's output explains how to apply it by hand (`boid workspace import <file> --slug <slug>` or `boid workspace edit <slug> --from-file <file>`) — follow that guidance, since **`project.yaml` itself has already been rewritten regardless of whether the workspace push succeeded** (unless this was a dry run).
+- If the daemon is unreachable, or the retries are exhausted without resolving, the change only lands in the shadow yaml. The command's output explains how to apply it by hand (`boid workspace create <slug> --from-file <file>` if the workspace doesn't exist yet, or `boid workspace edit <slug> --from-file <file>` if it already does — `boid workspace import` was retired 2026-07-28) — follow that guidance, since **`project.yaml` itself has already been rewritten regardless of whether the workspace push succeeded** (unless this was a dry run).
 
 ## `project.local.yaml` removal
 
@@ -70,13 +70,13 @@ After this migration, the `workspaces` table is the sole authority; `~/.config/b
 
 The `boid project migrate` conversion logic described above (generating a kit, wiring it into `workspace.yaml`) is unaffected by PR6 — what changed is that there is no longer a CLI to **inspect or remove** the generated `kit.yaml` afterward. Edit or delete `~/.local/share/boid/kits/<name>/kit.yaml` by hand instead.
 
-To set up a workspace's contents from scratch, use `boid workspace create` / `edit` / `import` (yaml, passed directly) instead of the retired `boid workspace configure`. See [Onboarding](../guide/onboarding.md) for details.
+To set up a workspace's contents from scratch, use `boid workspace create` / `edit` / `apply` (yaml, passed directly) instead of the retired `boid workspace configure`. See [Onboarding](../guide/onboarding.md) for details.
 
 ## Final retirement of the kit mechanism (Phase 2.5 PR7)
 
 The `WorkspaceMeta.Kits` field (workspace.yaml's `kits:`) was removed from the code outright in Phase 2.5 PR7 (2026-07). Consequences:
 
-- `POST` / `PUT` / `import /api/workspaces` now reject a request body containing a `kits:` key with 400 (`unknown field kits`).
+- `POST` / `PUT /api/workspaces` now reject a request body containing a `kits:` key with 400 (`unknown field kits`).
 - `boid project migrate` still name-validates and displays a legacy project.yaml's `kits:` refs informationally, but no longer resolves them into the workspace at all (see "What `boid project migrate` converts" above). The legacy kit it generates from `host_commands`/`additional_bindings` is unaffected — its content is still folded in, just directly rather than via a kit reference.
 - The one remaining caller that still honors a legacy `kits:` list is `boid workspace assign`'s auto-create convenience path (for a hand-authored or e2e-fixture workspace shadow yaml) — it resolves the reference client-side against the installed kits directory before submitting an already-materialized (kits-free) body.
 - **(Correction)** The shadow yaml files kept for rollback (`~/.config/boid/workspaces/*.yaml`) and the `~/.local/share/boid/kits/` directory are *not* fully unread once the DB is authoritative — two dependencies remain, so the earlier "safe to delete any time, no effect on the daemon" guidance above is retracted:

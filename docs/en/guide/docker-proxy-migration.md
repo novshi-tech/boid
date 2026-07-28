@@ -17,42 +17,59 @@ The boid native proxy solves both problems:
 
 ## Migration steps
 
-> **Note:** `capabilities` and `host_commands` are no longer `project.yaml` fields. The current schema rejects both of them at load time — machine-local runtime configuration lives on a **workspace** instead (`boid workspace create/edit/import`). If your `project.yaml` still carries these fields under the old schema, convert it to a workspace first with `boid project migrate <dir> --apply` (see the [Migration guide](migration.md)).
+> **Note:** `capabilities` and `host_commands` are no longer `project.yaml` fields. The current schema rejects both of them at load time — machine-local runtime configuration lives on a **workspace** instead (`boid workspace create`/`edit`, or `boid workspace apply -f` for the exported envelope shape used below). If your `project.yaml` still carries these fields under the old schema, convert it to a workspace first with `boid project migrate <dir> --apply` (see the [Migration guide](migration.md)).
 
 ### 1. Update the workspace
 
-Remove the docker kit reference from the workspace's `kits:` and add `capabilities.docker` directly to the workspace. First, check its current contents:
+Remove the docker kit reference from the workspace's `kits:` and add `capabilities.docker` directly to the workspace. First, export its current contents — `boid workspace export` writes an `apiVersion: boid.dev/v1 / kind: Workspace` envelope document (2026-07, docs/plans/volume-only-daemon.md §論点g), the same shape `boid workspace apply -f` reads back, so this file can be edited and re-applied directly with no reshaping in between:
 
 ```bash
 boid workspace export <slug> > ws.yaml
 ```
 
-> **Note (Phase 2.5 PR7):** `WorkspaceMeta.Kits` was removed from the code outright, so `boid workspace export`'s output can no longer contain `kits:` (a DB-backed workspace never had a `kits` column to begin with), and `boid workspace edit --from-file` rejects a body containing one. The "Before" example below illustrates hand-editing an old (not-yet-migrated) workspace shadow yaml — the actual steps in this guide only ever submit the "After" content (no `kits:`), so this guide's own workflow is unaffected by PR7.
+> **Note (Phase 2.5 PR7):** `WorkspaceMeta.Kits` was removed from the code outright, so `boid workspace export`'s output never contains a `kits:` key at all (a DB-backed workspace never had a `kits` column to begin with) — there is nothing to remove from the exported file itself. `kits:` only ever shows up in a legacy, not-yet-migrated workspace *shadow yaml* hand-edited directly on disk (a different, less common path than the export/apply flow below); if that is what you are editing, see `boid workspace assign`'s auto-create convenience path instead.
 
-**Before (`ws.yaml`, still referencing the docker kit in `kits:`):**
+The examples below are illustrative — your actual `ws.yaml` reflects whatever the workspace currently has (`env`, assigned `projects`, etc., all populated, not empty). The only change to make is adding `spec.capabilities.docker`; leave every other field exactly as exported, especially `spec.projects` — it is present in a real export and, per `apply`'s upsert semantics, REPLACES the workspace's whole project-assignment set, so clearing or hand-typing it risks detaching every project actually assigned to this workspace.
+
+**Before (`ws.yaml`, as `boid workspace export` writes it — `capabilities` absent/empty):**
 
 ```yaml
-kits:
-  - docker   # ← legacy kit reference. Remove it.
-
-env:
-  ...
+apiVersion: boid.dev/v1
+kind: Workspace
+metadata:
+  name: <slug>
+spec:
+  host_commands: []
+  env: {}
+  allowed_domains: []
+  extra_repos: []
+  container_image: ""
+  capabilities: {}
+  projects: []
 ```
 
-**After:**
+**After (add `spec.capabilities.docker`, leave every other field as exported):**
 
 ```yaml
-capabilities:
-  docker: {}   # ← add
-
-env:
-  ...
+apiVersion: boid.dev/v1
+kind: Workspace
+metadata:
+  name: <slug>
+spec:
+  host_commands: []
+  env: {}
+  allowed_domains: []
+  extra_repos: []
+  container_image: ""
+  capabilities:
+    docker: {}   # ← add
+  projects: []
 ```
 
 Apply it:
 
 ```bash
-boid workspace edit <slug> --from-file ws.yaml
+boid workspace apply -f ws.yaml
 ```
 
 | Old (`project.yaml`, removed) | New (workspace) |

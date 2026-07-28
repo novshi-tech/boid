@@ -275,11 +275,110 @@ func DecodeWorkspaceEnvelopeDocuments(data []byte) ([]*WorkspaceEnvelopeApply, e
 			break
 		}
 		if err != nil {
+			if bmErr := bareMetaSentToTheWrongDoor(data); bmErr != nil {
+				return nil, bmErr
+			}
 			return nil, fmt.Errorf("document %d: %w", i+1, err)
 		}
 		docs = append(docs, doc)
 	}
 	return docs, nil
+}
+
+// bareMetaKnownFieldNames is every yaml key bareMetaSentToTheWrongDoor
+// treats as evidence of a bare workspace-meta document: the yaml tag of
+// every WorkspaceMeta field (workspace_meta.go) — env, capabilities,
+// allowed_domains, extra_repos, host_commands, container_image — plus two
+// keys WorkspaceMeta itself has no field for but that a real bare-meta
+// document can still legitimately carry: "slug" (the wire-only wrapper key
+// workspaceCreateStrict, and the retired GET /api/workspaces/{slug}/export,
+// splice onto the front of a WorkspaceMeta body) and "additional_bindings"
+// (a retired-but-tolerated field, see workspace_meta_strict.go's package doc
+// comment).
+//
+// This is a package-level var, not inlined into bareMetaSentToTheWrongDoor,
+// specifically so TestBareMetaKnownFieldNames_CoversEveryWorkspaceMetaField
+// (workspace_envelope_test.go) can reflect over WorkspaceMeta's real yaml
+// tags and assert every one of them is a key here — a future field added to
+// WorkspaceMeta that is NOT added here would otherwise silently narrow this
+// guard's detection (a document using only the new field would fall through
+// to the raw, unexported-type-name decode error this function exists to
+// avoid) with nothing to catch the omission.
+var bareMetaKnownFieldNames = map[string]bool{
+	"slug":                true,
+	"env":                 true,
+	"capabilities":        true,
+	"allowed_domains":     true,
+	"extra_repos":         true,
+	"host_commands":       true,
+	"container_image":     true,
+	"additional_bindings": true,
+}
+
+// bareMetaSentToTheWrongDoor is the reciprocal of workspace_meta_strict.go's
+// envelopeSentToTheWrongDoor: it detects a BARE workspace-meta document (no
+// apiVersion/kind, host_commands:/env:/... at the top level — what `boid
+// workspace create --from-file`/`edit --from-file` take, and what a
+// hand-authored workspace yaml or `boid project migrate`'s shadow file
+// usually is) landing at `apply`'s decoder instead of one of those.
+//
+// Without this, the KnownFields unmarshal above fails with e.g. "document 1:
+// yaml: unmarshal errors:\n  line 1: field host_commands not found in type
+// orchestrator.rawWorkspaceEnvelope" — an unexported Go type name that
+// describes the document by what it is not and never mentions the
+// one-word-different commands that actually accept this shape. Found
+// 2026-07-28 alongside `boid workspace import`'s retirement: that command
+// used to be the one place a bare meta document reliably worked end to end
+// (however brokenly — see cmd/workspace.go's runWorkspaceImportDeprecated),
+// so pointing its deprecation message at `apply -f` would otherwise dead-end
+// on this exact error for the common case (a bare meta file, not an
+// envelope) — the same gap envelopeSentToTheWrongDoor closed for the
+// opposite direction (docs/plans/workspace-home-volume-persistence.md 論点
+// d, 2026-07-28 dogfood).
+//
+// Detection is deliberately loose, matching envelopeSentToTheWrongDoor's own
+// posture: apiVersion and kind both absent, AND at least one field name
+// WorkspaceMeta actually has is present at the top level. A document with
+// neither an envelope's identifying keys nor any recognizable meta field
+// (e.g. a typo of everything) falls through to the original decode error,
+// which is exactly as informative for that case as it always was.
+func bareMetaSentToTheWrongDoor(data []byte) error {
+	// Decoded as a generic map, not a fixed struct: bareMetaKnownFieldNames
+	// above is the single source of truth for which keys count as "looks
+	// like a meta document", so adding a field there (prompted by the drift
+	// test) is enough — no second struct to keep in sync by hand.
+	//
+	// yaml.Unmarshal only ever reads the FIRST "---" document, which is
+	// fine here — a multi-document apply file where a LATER document is the
+	// malformed one falls through to the original error below rather than
+	// misreporting based on document 1's shape, the same conservative
+	// trade-off envelopeSentToTheWrongDoor's own single-document probe
+	// makes.
+	var doc map[string]yaml.Node
+	if err := yaml.Unmarshal(data, &doc); err != nil {
+		return nil
+	}
+	if v, ok := doc["apiVersion"]; ok && v.Value != "" {
+		return nil
+	}
+	if v, ok := doc["kind"]; ok && v.Value != "" {
+		return nil
+	}
+	foundMetaField := false
+	for key := range doc {
+		if bareMetaKnownFieldNames[key] {
+			foundMetaField = true
+			break
+		}
+	}
+	if !foundMetaField {
+		return nil
+	}
+	return errors.New(
+		"this looks like a bare workspace meta document (no apiVersion/kind), which `apply` does not take — " +
+			"it wants a boid.dev/v1 Workspace envelope (what `boid workspace export` writes). Use " +
+			"`boid workspace create <slug> --from-file <file>` for a brand-new workspace, or " +
+			"`boid workspace edit <slug> --from-file <file>` for an existing one, instead")
 }
 
 // SplitWorkspaceEnvelopeDocuments splits data (one or more "---"-separated

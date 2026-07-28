@@ -122,48 +122,72 @@ state are treated as volatile; see the plan doc's "backup 契約" decision).`,
 	RunE: runWorkspaceExport,
 }
 
+// workspaceImportMode/workspaceImportForce/workspaceImportSlug are
+// `workspace import`'s pre-deprecation flags (--mode/--force/--slug). The
+// command's RunE (runWorkspaceImportDeprecated) no longer reads them — the
+// meta-format import it used to drive was retired 2026-07-28 (see that
+// function's doc comment). They stay registered only so an existing `boid
+// workspace import <file> --mode ... --slug ...` invocation still PARSES
+// successfully and reaches the deprecation guidance below, instead of cobra
+// rejecting an unrecognized flag before RunE gets a chance to say where the
+// functionality moved.
 var (
-	// workspaceImportMode is the --mode flag value for `workspace import`:
-	// "create-only" (default, safe — never overwrites an existing slug) or
-	// "replace" (explicit upsert, last-write-wins).
-	workspaceImportMode string
-	// workspaceImportForce is a shorthand for --mode replace.
+	workspaceImportMode  string
 	workspaceImportForce bool
-	// workspaceImportSlug is the optional --slug flag value for `workspace
-	// import`: an OVERRIDE of the target slug, not the only way to supply
-	// one.
-	//
-	// GET /api/workspaces/{slug}/export does put a top-level "slug:" key in
-	// its body (ProjectAppService.ExportWorkspace splices it on, precisely so
-	// the export → import round trip needs no translation step), and
-	// buildWorkspaceCreateBody below overwrites whatever the file carries
-	// with the slug this command resolved. This flag, and the
-	// basename-derived default behind it, exist so a hand-written or
-	// renamed file still imports and so an operator can retarget an export
-	// at a different workspace.
-	//
-	// See runWorkspaceImport's doc comment for the full correction — this
-	// comment and the flag's help text both claimed the body carried NO slug
-	// key, which stopped being true when that round-trip fix landed.
-	workspaceImportSlug string
+	workspaceImportSlug  string
 )
 
+// workspaceImportCmd is retired (2026-07-28): the meta-format round trip it
+// and GET /api/workspaces/{slug}/export used to share never actually
+// worked end to end (see runWorkspaceImportDeprecated's doc comment for the
+// three concrete failures). Kept as a Hidden command, per the "壊れた入り口
+// はエラーで正しい入り口へ誘導する" pattern (docs/plans/
+// workspace-home-volume-persistence.md 論点 d's envelopeSentToTheWrongDoor
+// precedent) rather than removed outright, so a caller relying on old
+// muscle memory or a stale script is told where the functionality moved
+// instead of hitting cobra's generic "unknown command".
+// workspaceImportCmd's Annotations are set separately from the shared
+// scopeRemote loop in init() below (codex review, this PR): unlike every
+// other workspace subcommand, it no longer talks to a daemon at all — its
+// RunE (runWorkspaceImportDeprecated) always fails before making any HTTP
+// call. Left in the scopeRemote loop, PersistentPreRunE (cmd/root.go) would
+// still autostart a daemon (or reject a non-unix profile as if this were a
+// live remote operation) BEFORE RunE ever gets a chance to print the
+// deprecation guidance — measured live: `boid workspace import x` against an
+// unreachable socket fails with an unrelated "daemon startup failed: ..."
+// error and never shows the guidance at all, while against a reachable one
+// it has the side effect of spinning up a daemon just to run a command that
+// does nothing. scopeLocal + annotationSkipAutostart=skip, mirroring the
+// other deprecated stub in this tree (`boid init`, cmd/init.go), makes this
+// exactly as inert as any other command that never reaches the network.
 var workspaceImportCmd = &cobra.Command{
-	Use:   "import <file>",
-	Short: "Import a workspace definition from yaml (POST /api/workspaces/import?mode=<create-only|replace>)",
-	Args:  cobra.ExactArgs(1),
-	RunE:  runWorkspaceImport,
+	Use:    "import <file>",
+	Short:  "(廃止) boid workspace apply -f / create,edit --from-file を使ってください",
+	Hidden: true,
+	Args:   cobra.ArbitraryArgs,
+	RunE:   runWorkspaceImportDeprecated,
+	// The usage block cobra prints after a RunE error would otherwise follow
+	// the deprecation message with a full flag listing that reads like this
+	// command still does something — silence it, matching the message's own
+	// "this command always fails" posture.
+	SilenceUsage: true,
 }
 
 func init() {
 	// Every workspace subcommand talks to the daemon's HTTP API — all
-	// scopeRemote (docs/plans/workspace-db-consolidation.md decision 18).
+	// scopeRemote (docs/plans/workspace-db-consolidation.md decision 18) —
+	// EXCEPT workspaceImportCmd, annotated separately below (see its own
+	// doc comment for why).
 	for _, c := range []*cobra.Command{
 		workspaceListCmd, workspaceShowCmd, workspaceCreateCmd, workspaceEditCmd,
 		workspaceAssignCmd, workspaceClearCmd, workspaceRemoveCmd,
-		workspaceExportCmd, workspaceImportCmd,
+		workspaceExportCmd,
 	} {
 		c.Annotations = map[string]string{scopeAnnotationKey: scopeRemote}
+	}
+	workspaceImportCmd.Annotations = map[string]string{
+		annotationSkipAutostart: "skip",
+		scopeAnnotationKey:      scopeLocal,
 	}
 
 	workspaceCreateCmd.Flags().StringVar(&workspaceCreateFromFile, "from-file", "", "yaml file describing the workspace meta (optional; omit to create a blank workspace)")
@@ -171,9 +195,9 @@ func init() {
 	workspaceEditCmd.Flags().BoolVar(&workspaceEditForce, "force", false, "skip the If-Match revision check (last-write-wins)")
 	workspaceExportCmd.Flags().StringVarP(&workspaceExportOutput, "output", "o", "", "file path to write the exported yaml to (default: stdout)")
 	workspaceExportCmd.Flags().BoolVar(&workspaceExportAll, "all", false, "export every workspace into a single '---'-separated multi-document file, instead of the <slug> positional argument")
-	workspaceImportCmd.Flags().StringVar(&workspaceImportMode, "mode", "create-only", "import mode: create-only (default, 409 on an existing slug) or replace (upsert)")
-	workspaceImportCmd.Flags().BoolVar(&workspaceImportForce, "force", false, "shorthand for --mode replace")
-	workspaceImportCmd.Flags().StringVar(&workspaceImportSlug, "slug", "", "target workspace slug, overriding the one in the file (default: the import file's basename, extension stripped)")
+	workspaceImportCmd.Flags().StringVar(&workspaceImportMode, "mode", "create-only", "(no longer used; accepted only so an existing invocation still parses and reaches the deprecation guidance)")
+	workspaceImportCmd.Flags().BoolVar(&workspaceImportForce, "force", false, "(no longer used; accepted only so an existing invocation still parses and reaches the deprecation guidance)")
+	workspaceImportCmd.Flags().StringVar(&workspaceImportSlug, "slug", "", "(no longer used; accepted only so an existing invocation still parses and reaches the deprecation guidance)")
 	workspaceRemoveCmd.Flags().BoolVar(&workspaceRemoveForce, "force", false, "skip the home volume deletion confirmation prompt")
 	workspaceRemoveCmd.Flags().BoolVar(&workspaceRemoveForce, "yes", false, "alias for --force")
 
@@ -1085,113 +1109,68 @@ func formatWorkspaceHomeVolumeRef(volume string) string {
 // composes the K8s-like envelope client-side from GET /api/workspaces/{slug}
 // + GET /api/projects?workspace_id={slug}, and supports --all.
 
-// runWorkspaceImport imports a workspace definition from a yaml file via
-// POST /api/workspaces/import?mode=<create-only|replace>
-// (docs/plans/workspace-db-consolidation.md PR5 Step E).
+// runWorkspaceImportDeprecated replaces the old meta-format `workspace
+// import` (docs/plans/workspace-db-consolidation.md PR5 Step E), retired
+// 2026-07-28 because its round trip with GET /api/workspaces/{slug}/export
+// (also retired — see WorkspaceHandler.Routes) never actually worked
+// end to end, on either side:
 //
-// The document this reads is the META shape — a marshaled WorkspaceMeta with
-// a top-level "slug:" key, i.e. what GET /api/workspaces/{slug}/export
-// returns and what POST /api/workspaces/import accepts. It is NOT the
-// boid.dev/v1 envelope `boid workspace export` writes; that one is applied
-// with `boid workspace apply`, and DecodeWorkspaceMetaStrict below rejects it
-// outright (apiVersion/kind/metadata are unknown fields to it).
+//   - an EMPTY workspace exported as "slug: default\n{}\n" — the marshal of
+//     a zero-value WorkspaceMeta ("{}", every field omitempty) concatenated
+//     with the spliced "slug:" line — which is not one valid yaml mapping,
+//     so no decoder downstream of it, including this command's own, could
+//     read it back;
+//   - even a NON-empty export's top-level "slug:" key — spliced on by
+//     ProjectAppService.ExportWorkspace precisely so the round trip needed
+//     no translation step — was rejected by THIS command's own client-side
+//     orchestrator.DecodeWorkspaceMetaStrict call, a bare-meta decoder that
+//     has never accepted a "slug" field.
 //
-// The target slug is resolved CLIENT-side and always wins over the file:
-// --slug when given, otherwise the import file's basename with its extension
-// stripped (e.g. "team-a.yaml" -> "team-a"). buildWorkspaceCreateBody then
-// sets it on the outgoing body, overwriting whatever the file said. That is a
-// choice — it lets an operator retarget one workspace's definition at another
-// — not a workaround for a missing key: ProjectAppService.ExportWorkspace
-// splices "slug:" onto its body precisely so an export IS a valid import
-// body.
+// Both failures were found in the 2026-07-28 dogfood of a live daemon.
+// Patching one half would not have fixed the other, so both were retired in
+// favor of the boid.dev/v1 envelope format `boid workspace export`/`apply`
+// already use successfully (docs/plans/volume-only-daemon.md §論点g) — the
+// one round trip in this family that is actually exercised end to end (see
+// cmd/workspace_apply_test.go).
 //
-// (This paragraph, workspaceImportSlug's doc comment and --slug's help text
-// all used to say the export body carried NO slug key, and that the
-// resulting asymmetry was why an export could not be piped back in. Both
-// halves were stale — the key was added when that round trip was fixed, and
-// the CLI's own `export` moved to the envelope shape besides. Corrected in
-// PR9 of docs/plans/workspace-home-volume-persistence.md, 論点 d's doc-drift
-// half.)
+// This always fails, pointing at the two paths that cover what `workspace
+// import` did depending on the file's shape: `apply -f` for a boid.dev/v1
+// envelope document, or `create`/`edit --from-file` for a bare workspace-meta
+// document (host_commands:/env:/... at the top level, no apiVersion/kind —
+// e.g. the shadow yaml `boid project migrate` writes).
 //
-// --mode defaults to "create-only" (the safe choice per docs/plans/
-// workspace-db-consolidation.md's PR5 note recommending it as the default
-// where the plan doc itself leaves this unspecified); --force is a shorthand
-// for --mode replace, mirroring `workspace edit`'s own --force convention
-// even though the underlying semantics differ (edit's --force skips an
-// If-Match check on an existing row; import's --mode replace is a full
-// create-or-overwrite upsert).
-func runWorkspaceImport(cmd *cobra.Command, args []string) error {
-	file := args[0]
+// That pair does NOT losslessly replace `--mode replace`'s one thing: a
+// single command that creates-or-overwrites without the caller needing to
+// know beforehand whether the slug exists (Workspaces.Save is a true
+// upsert). cmd/project_migrate.go's own manual-fallback guidance
+// (shadowFileApplyHintBothCases) has THREE call sites, and two of them are
+// reached specifically because the daemon could not be asked whether the
+// slug exists at all — those two now have to name BOTH `create` and `edit`
+// and let the operator pick (or try one, then the other on failure), where
+// `--mode replace` used to make that a non-question. (The third call site,
+// createMigratedWorkspaceInDaemon, is the one case that already knew the
+// slug was brand-new before this retirement — it always recommended
+// `create` alone, never relied on the blind-upsert behavior, and is
+// unaffected.) This gap is accepted as a minor, guidance-text-only
+// regression — every one of those three sites is printed only when the
+// daemon is being reached OFFLINE by a human reading terminal output, not a
+// codepath anything else depends on — not a reason to keep either retired
+// endpoint alive.
+func runWorkspaceImportDeprecated(cmd *cobra.Command, args []string) error {
+	msg := `boid workspace import は廃止されました (meta 形式の export/import が
+双方向とも壊れていたため、envelope 形式に一本化)。 ファイルの形式に応じて
+次のいずれかを使ってください:
 
-	// --force is a shorthand for --mode replace, but only when --mode was
-	// left at its default. If the caller explicitly set --mode to a value
-	// other than "replace" *and* also passed --force, the two directives
-	// disagree — fail loudly rather than silently letting --force overwrite
-	// an explicit "create-only" (codex PR5 review, minor: --force が
-	// silent に上書きするのは危険、 特に "--mode create-only" は明示的な
-	// 安全宣言なので勝手に replace に翻訳しない).
-	modeFlag := cmd.Flags().Lookup("mode")
-	modeExplicit := modeFlag != nil && modeFlag.Changed
-	mode := workspaceImportMode
-	if workspaceImportForce {
-		if modeExplicit && workspaceImportMode != "replace" {
-			return fmt.Errorf("--force conflicts with --mode %q; either drop --force or set --mode replace explicitly", workspaceImportMode)
-		}
-		mode = "replace"
-	}
-	switch mode {
-	case "create-only", "replace":
-	default:
-		return fmt.Errorf("invalid --mode %q (want create-only or replace)", mode)
-	}
+  apiVersion/kind 付きの envelope 文書 (boid workspace export の出力):
+    boid workspace apply -f <file>
 
-	slug := workspaceImportSlug
-	if slug == "" {
-		base := filepath.Base(file)
-		slug = strings.TrimSuffix(base, filepath.Ext(base))
-	}
-	if err := orchestrator.ValidWorkspaceSlug(slug); err != nil {
-		return fmt.Errorf("resolve target slug (pass --slug explicitly): %w", err)
-	}
-
-	data, err := os.ReadFile(file)
-	if err != nil {
-		return fmt.Errorf("read %s: %w", file, err)
-	}
-
-	// Client-side fail-fast strict validation before making any daemon call
-	// — the same double-validation pattern `workspace create`/`workspace
-	// edit` already follow (see buildWorkspaceCreateBody's and
-	// runWorkspaceEdit's doc comments): the server runs the identical check
-	// again on the constructed body below, but failing here saves a round
-	// trip and works even with no daemon reachable.
-	if _, err := orchestrator.DecodeWorkspaceMetaStrict(data); err != nil {
-		return fmt.Errorf("validate %s: %w", file, err)
-	}
-
-	body, err := buildWorkspaceCreateBody(slug, data)
-	if err != nil {
-		return fmt.Errorf("build import request: %w", err)
-	}
-
-	c := client.FromContext(cmd.Context())
-	statusCode, respBody, err := c.PostRaw("/api/workspaces/import?mode="+mode, "application/yaml", body)
-	if err != nil {
-		return fmt.Errorf("import workspace: %w", err)
-	}
-	if statusCode != http.StatusOK {
-		return fmt.Errorf("import workspace: %s", formatWorkspaceAPIError(statusCode, respBody))
-	}
-
-	var detail api.WorkspaceDetail
-	if err := json.Unmarshal(respBody, &detail); err != nil {
-		return fmt.Errorf("decode response: %w", err)
-	}
-
-	return renderOutput(cmd, &detail, func() error {
-		fmt.Fprintf(cmd.OutOrStdout(), "workspace imported: %s (revision %s, mode %s)\n", detail.Slug, detail.Revision, mode)
-		return nil
-	})
+  host_commands: / env: などが top-level にある bare な workspace meta 文書
+  (boid project migrate が書き出す shadow yaml など):
+    boid workspace create <slug> --from-file <file>   (新規 workspace)
+    boid workspace edit   <slug> --from-file <file>   (既存 workspace)
+`
+	fmt.Fprint(cmd.ErrOrStderr(), msg)
+	return fmt.Errorf("boid workspace import is deprecated; see the guidance above")
 }
 
 // formatStringSlice formats a slice for display: "(none)" when empty, or comma-joined.

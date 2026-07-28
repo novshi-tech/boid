@@ -247,51 +247,37 @@ func TestListWorkspaces_ServerError(t *testing.T) {
 	}
 }
 
-// --- GetRawWithAccept / PostRaw (docs/plans/workspace-db-consolidation.md
-// PR5, `boid workspace export`/`boid workspace import`) ---
-
-func TestGetRawWithAccept_SendsAcceptHeaderAndReturnsStatusRegardlessOfCode(t *testing.T) {
-	transport := roundTripFunc(func(req *http.Request) (*http.Response, error) {
-		if req.Method != http.MethodGet {
-			t.Errorf("method: want GET, got %s", req.Method)
-		}
-		if req.URL.Path != "/api/workspaces/team-a/export" {
-			t.Errorf("path: want %q, got %q", "/api/workspaces/team-a/export", req.URL.Path)
-		}
-		if got := req.Header.Get("Accept"); got != "application/yaml" {
-			t.Errorf("Accept header = %q, want application/yaml", got)
-		}
-		return &http.Response{
-			StatusCode: http.StatusNotFound,
-			Body:       io.NopCloser(strings.NewReader(`{"error":"not found"}`)),
-			Header:     make(http.Header),
-		}, nil
-	})
-
-	c := newTestClient(transport)
-	statusCode, body, err := c.GetRawWithAccept("/api/workspaces/team-a/export", "application/yaml")
-	if err != nil {
-		t.Fatalf("GetRawWithAccept transport error: %v", err)
-	}
-	if statusCode != http.StatusNotFound {
-		t.Errorf("statusCode = %d, want 404 (GetRawWithAccept must not collapse non-2xx into an error)", statusCode)
-	}
-	if !strings.Contains(string(body), "not found") {
-		t.Errorf("body = %q, should still be returned on a non-2xx status", body)
-	}
-}
+// --- PostRaw (docs/plans/workspace-db-consolidation.md PR5; live callers
+// today are `boid workspace apply` and `boid project migrate`'s daemon
+// push, see internal/client/client.go's PostRaw doc comment) ---
+//
+// GetRawWithAccept (this section's other half) was removed 2026-07-28: it
+// had no production caller left — `boid workspace export` switched to the
+// envelope-format GET /api/workspaces/export (plain GetRaw, no custom Accept
+// header) some time before this, and the single-workspace meta export
+// endpoint it was written for (GET /api/workspaces/{slug}/export) was
+// retired the same day. Its own test (this one used to be) was the only
+// remaining reference.
+//
+// This test's example path used to be POST /api/workspaces/import, retired
+// alongside GET /api/workspaces/{slug}/export in the same PR — PostRaw
+// itself is a generic transport method with no opinion about which endpoint
+// it targets, so the path below is now POST /api/workspaces/apply (one of
+// PostRaw's two live callers) purely for a realistic, non-stale example;
+// this test still exercises PostRaw's own behavior, not real server
+// routing.
 
 func TestPostRaw_SendsBodyAndContentTypeAndReturnsStatusRegardlessOfCode(t *testing.T) {
-	wantBody := []byte("slug: team-a\nhost_commands:\n  - gh\n")
+	wantBody := []byte("apiVersion: boid.dev/v1\nkind: Workspace\nmetadata:\n  name: team-a\n")
 	transport := roundTripFunc(func(req *http.Request) (*http.Response, error) {
 		if req.Method != http.MethodPost {
 			t.Errorf("method: want POST, got %s", req.Method)
 		}
-		if req.URL.Path != "/api/workspaces/import" {
-			t.Errorf("path: want %q, got %q", "/api/workspaces/import", req.URL.Path)
+		if req.URL.Path != "/api/workspaces/apply" {
+			t.Errorf("path: want %q, got %q", "/api/workspaces/apply", req.URL.Path)
 		}
-		if req.URL.RawQuery != "mode=create-only" {
-			t.Errorf("query: want mode=create-only, got %q", req.URL.RawQuery)
+		if req.URL.RawQuery != "dry_run=true" {
+			t.Errorf("query: want dry_run=true, got %q", req.URL.RawQuery)
 		}
 		if got := req.Header.Get("Content-Type"); got != "application/yaml" {
 			t.Errorf("Content-Type = %q, want application/yaml", got)
@@ -308,7 +294,7 @@ func TestPostRaw_SendsBodyAndContentTypeAndReturnsStatusRegardlessOfCode(t *test
 	})
 
 	c := newTestClient(transport)
-	statusCode, body, err := c.PostRaw("/api/workspaces/import?mode=create-only", "application/yaml", wantBody)
+	statusCode, body, err := c.PostRaw("/api/workspaces/apply?dry_run=true", "application/yaml", wantBody)
 	if err != nil {
 		t.Fatalf("PostRaw transport error: %v", err)
 	}

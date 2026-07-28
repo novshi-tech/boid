@@ -1335,261 +1335,123 @@ func TestRunWorkspaceExport_DoesNotWarnOnHomeBoidPath(t *testing.T) {
 	}
 }
 
-// TestRunWorkspaceImport_CreateOnlyMode pins the safe default: importing a
-// brand-new slug succeeds, and importing the same slug again (still
-// create-only, the default) 409s rather than silently overwriting.
-func TestRunWorkspaceImport_CreateOnlyMode(t *testing.T) {
-	ts := testutil.NewTestServer(t)
-	t.Setenv("BOID_SOCKET", ts.Server.SocketPath())
-	seedHostCommandsForTest(t, ts, "gh")
+// TestRunWorkspaceImportDeprecated_AlwaysFailsWithGuidance pins `workspace
+// import`'s retirement (2026-07-28, docs/plans/workspace-db-consolidation.md
+// PR5 Step E's meta-format round trip never worked — see
+// runWorkspaceImportDeprecated's doc comment): the command must now always
+// return an error and print guidance pointing at the two commands that
+// actually cover what it used to do (`apply -f` for an envelope document,
+// `create`/`edit --from-file` for a bare meta document) — regardless of
+// whether the named file exists or is valid yaml.
+//
+// This calls runWorkspaceImportDeprecated directly, which does NOT exercise
+// rootCmd.PersistentPreRunE (cmd/root.go) — that layer, not this test, is
+// what decides whether a daemon autostart is attempted before RunE runs at
+// all. This test's BOID_SOCKET setenv only avoids leaking a real socket path
+// into the environment; it is not what proves autostart is skipped. That
+// guarantee comes from workspaceImportCmd.Annotations (pinned by
+// TestWorkspaceImportCmd_Annotations below) combined with
+// cmd/root_test.go's TestPersistentPreRunE_ScopeLocal_UnixProfile_Allowed,
+// which proves the scopeLocal + annotationSkipAutostart=skip combination
+// never reaches client.EnsureRunningAt. (An earlier version of this comment
+// claimed this test itself pinned "no daemon is ever attempted" — that was
+// false: this function is a direct RunE call, several layers below
+// PersistentPreRunE, and could not have caught the missing annotation that
+// round 2 review of this PR found by running the real binary.)
+func TestRunWorkspaceImportDeprecated_AlwaysFailsWithGuidance(t *testing.T) {
 	resetWorkspaceExportImportFlags(t)
 	defer resetWorkspaceExportImportFlags(t)
+	t.Setenv("BOID_SOCKET", filepath.Join(t.TempDir(), "no-daemon-here.sock"))
 
-	importFile := filepath.Join(t.TempDir(), "team-c.yaml")
-	if err := os.WriteFile(importFile, []byte("host_commands:\n  - gh\n"), 0o644); err != nil {
-		t.Fatalf("write import file: %v", err)
-	}
-	if err := workspaceImportCmd.Flags().Set("slug", "team-c"); err != nil {
-		t.Fatalf("set --slug: %v", err)
-	}
-
-	var out bytes.Buffer
 	cmd := workspaceImportCmd
+	var out, errOut bytes.Buffer
 	cmd.SetOut(&out)
-	if err := runWorkspaceImport(cmd, []string{importFile}); err != nil {
-		t.Fatalf("runWorkspaceImport (first, should create): %v", err)
-	}
-
-	var detail api.WorkspaceDetail
-	if err := ts.Client.Do("GET", "/api/workspaces/team-c", nil, &detail); err != nil {
-		t.Fatalf("verify import: %v", err)
-	}
-	if !equalStrSliceForWorkspaceTest(detail.Meta.HostCommands, []string{"gh"}) {
-		t.Errorf("HostCommands = %v, want [gh]", detail.Meta.HostCommands)
-	}
-
-	// Second import of the same slug, still create-only (the default), must
-	// fail rather than silently overwrite.
-	var out2 bytes.Buffer
-	cmd2 := workspaceImportCmd
-	cmd2.SetOut(&out2)
-	err := runWorkspaceImport(cmd2, []string{importFile})
+	cmd.SetErr(&errOut)
+	err := runWorkspaceImportDeprecated(cmd, []string{"whatever.yaml"})
 	if err == nil {
-		t.Fatal("expected an error re-importing an existing slug with mode=create-only, got nil")
+		t.Fatal("expected an error; workspace import must always fail now")
 	}
-	if !strings.Contains(err.Error(), "409") && !strings.Contains(strings.ToLower(err.Error()), "already exists") {
-		t.Errorf("expected a conflict error, got: %v", err)
+	if !strings.Contains(err.Error(), "deprecated") {
+		t.Errorf("error = %q, want it to say the command is deprecated", err.Error())
 	}
-}
-
-// TestRunWorkspaceImport_ReplaceMode pins --mode replace's upsert semantics:
-// re-importing an existing slug must succeed and overwrite wholesale.
-func TestRunWorkspaceImport_ReplaceMode(t *testing.T) {
-	ts := testutil.NewTestServer(t)
-	t.Setenv("BOID_SOCKET", ts.Server.SocketPath())
-	seedHostCommandsForTest(t, ts, "gh", "aws")
-	resetWorkspaceExportImportFlags(t)
-	defer resetWorkspaceExportImportFlags(t)
-
-	createBody, err := buildWorkspaceCreateBody("team-d", []byte("host_commands:\n  - gh\n"))
-	if err != nil {
-		t.Fatalf("buildWorkspaceCreateBody: %v", err)
+	if !strings.Contains(errOut.String(), "boid workspace apply -f") {
+		t.Errorf("stderr = %q, want guidance pointing at `boid workspace apply -f`", errOut.String())
 	}
-	if err := ts.Client.DoWithContentType("POST", "/api/workspaces", "application/yaml", createBody, &api.WorkspaceDetail{}); err != nil {
-		t.Fatalf("seed create: %v", err)
-	}
-
-	importFile := filepath.Join(t.TempDir(), "team-d.yaml")
-	if err := os.WriteFile(importFile, []byte("host_commands:\n  - aws\n"), 0o644); err != nil {
-		t.Fatalf("write import file: %v", err)
-	}
-	if err := workspaceImportCmd.Flags().Set("mode", "replace"); err != nil {
-		t.Fatalf("set --mode replace: %v", err)
-	}
-	if err := workspaceImportCmd.Flags().Set("slug", "team-d"); err != nil {
-		t.Fatalf("set --slug: %v", err)
-	}
-
-	var out bytes.Buffer
-	cmd := workspaceImportCmd
-	cmd.SetOut(&out)
-	if err := runWorkspaceImport(cmd, []string{importFile}); err != nil {
-		t.Fatalf("runWorkspaceImport --mode replace: %v", err)
-	}
-
-	var detail api.WorkspaceDetail
-	if err := ts.Client.Do("GET", "/api/workspaces/team-d", nil, &detail); err != nil {
-		t.Fatalf("verify import: %v", err)
-	}
-	if !equalStrSliceForWorkspaceTest(detail.Meta.HostCommands, []string{"aws"}) {
-		t.Errorf("HostCommands = %v, want [aws] (replace must overwrite wholesale)", detail.Meta.HostCommands)
+	if !strings.Contains(errOut.String(), "boid workspace create") || !strings.Contains(errOut.String(), "boid workspace edit") {
+		t.Errorf("stderr = %q, want guidance pointing at `create`/`edit --from-file` too (the bare-meta-document case)", errOut.String())
 	}
 }
 
-// TestRunWorkspaceImport_ForceFlagIsReplaceAlias pins --force as a shorthand
-// for --mode replace.
-func TestRunWorkspaceImport_ForceFlagIsReplaceAlias(t *testing.T) {
-	ts := testutil.NewTestServer(t)
-	t.Setenv("BOID_SOCKET", ts.Server.SocketPath())
-	seedHostCommandsForTest(t, ts, "gh")
-	resetWorkspaceExportImportFlags(t)
-	defer resetWorkspaceExportImportFlags(t)
-
-	createBody, err := buildWorkspaceCreateBody("team-e", nil)
-	if err != nil {
-		t.Fatalf("buildWorkspaceCreateBody: %v", err)
-	}
-	if err := ts.Client.DoWithContentType("POST", "/api/workspaces", "application/yaml", createBody, &api.WorkspaceDetail{}); err != nil {
-		t.Fatalf("seed create: %v", err)
-	}
-
-	importFile := filepath.Join(t.TempDir(), "team-e.yaml")
-	if err := os.WriteFile(importFile, []byte("host_commands:\n  - gh\n"), 0o644); err != nil {
-		t.Fatalf("write import file: %v", err)
-	}
-	if err := workspaceImportCmd.Flags().Set("force", "true"); err != nil {
-		t.Fatalf("set --force: %v", err)
-	}
-	if err := workspaceImportCmd.Flags().Set("slug", "team-e"); err != nil {
-		t.Fatalf("set --slug: %v", err)
-	}
-
-	var out bytes.Buffer
-	cmd := workspaceImportCmd
-	cmd.SetOut(&out)
-	if err := runWorkspaceImport(cmd, []string{importFile}); err != nil {
-		t.Fatalf("runWorkspaceImport --force: %v", err)
-	}
-
-	var detail api.WorkspaceDetail
-	if err := ts.Client.Do("GET", "/api/workspaces/team-e", nil, &detail); err != nil {
-		t.Fatalf("verify import: %v", err)
-	}
-	if !equalStrSliceForWorkspaceTest(detail.Meta.HostCommands, []string{"gh"}) {
-		t.Errorf("HostCommands = %v, want [gh] (--force did not act as --mode replace)", detail.Meta.HostCommands)
+// TestRunWorkspaceImportDeprecated_HiddenFromHelp pins that the retired
+// command no longer clutters `boid workspace --help`'s command list — it is
+// still directly invocable (the test above), just not advertised.
+func TestRunWorkspaceImportDeprecated_HiddenFromHelp(t *testing.T) {
+	if !workspaceImportCmd.Hidden {
+		t.Error("workspaceImportCmd.Hidden = false, want true (deprecated command should not clutter --help)")
 	}
 }
 
-// TestRunWorkspaceImport_AutoDetectsSlugFromBasename pins the CLI-side
-// resolution of the export/import yaml shape asymmetry (docs/plans/
-// workspace-db-consolidation.md PR5 brief: export bodies carry no "slug"
-// key): when --slug is omitted, the target slug is derived from the
-// import file's basename (extension stripped).
-func TestRunWorkspaceImport_AutoDetectsSlugFromBasename(t *testing.T) {
-	ts := testutil.NewTestServer(t)
-	t.Setenv("BOID_SOCKET", ts.Server.SocketPath())
-	seedHostCommandsForTest(t, ts, "gh")
-	resetWorkspaceExportImportFlags(t)
-	defer resetWorkspaceExportImportFlags(t)
-
-	importFile := filepath.Join(t.TempDir(), "team-f.yaml")
-	if err := os.WriteFile(importFile, []byte("host_commands:\n  - gh\n"), 0o644); err != nil {
-		t.Fatalf("write import file: %v", err)
+// TestWorkspaceImportCmd_Annotations pins the Blocker-1 fix from this PR's
+// second review round: workspaceImportCmd must be scopeLocal (NOT
+// scopeRemote — its RunE never makes an HTTP call) and must carry
+// annotationSkipAutostart=skip. Left in the shared scopeRemote loop
+// (init()'s original wiring, matching every other workspace subcommand),
+// rootCmd.PersistentPreRunE would still try to autostart a daemon (or hard-
+// reject a non-unix profile) BEFORE runWorkspaceImportDeprecated ever gets a
+// chance to print its guidance — measured live: `BOID_SOCKET=/nonexistent
+// boid workspace import x` failed with an unrelated "daemon startup
+// failed: ..." error and never showed the deprecation message at all, while
+// against a reachable daemon it had the side effect of spinning one up just
+// to run a command that does nothing on success. Mirrors
+// cmd/login_test.go's TestLoginCmd_Annotations / cmd/web_test.go's
+// TestWebSetURLSkipsAutostart for the same two-annotation idiom; the
+// mechanism itself (this exact annotation combination skipping
+// client.EnsureRunningAt) is proven generically by cmd/root_test.go's
+// TestPersistentPreRunE_ScopeLocal_UnixProfile_Allowed.
+func TestWorkspaceImportCmd_Annotations(t *testing.T) {
+	if workspaceImportCmd.Annotations[scopeAnnotationKey] != scopeLocal {
+		t.Errorf("workspaceImportCmd scope annotation = %q, want %q", workspaceImportCmd.Annotations[scopeAnnotationKey], scopeLocal)
 	}
-
-	var out bytes.Buffer
-	cmd := workspaceImportCmd
-	cmd.SetOut(&out)
-	if err := runWorkspaceImport(cmd, []string{importFile}); err != nil {
-		t.Fatalf("runWorkspaceImport (auto-detect slug): %v", err)
-	}
-
-	var detail api.WorkspaceDetail
-	if err := ts.Client.Do("GET", "/api/workspaces/team-f", nil, &detail); err != nil {
-		t.Fatalf("verify auto-detected slug team-f: %v", err)
+	if workspaceImportCmd.Annotations[annotationSkipAutostart] != "skip" {
+		t.Error("workspaceImportCmd must have annotationSkipAutostart=skip")
 	}
 }
 
-// TestRunWorkspaceImport_RejectsMultipleDocuments mirrors
-// TestRunWorkspaceCreate_RejectsMultipleDocuments/
-// TestRunWorkspaceEdit_RejectsMultipleDocuments for the import path: a
-// multi-document import file must be rejected client-side before any daemon
-// call is attempted.
-func TestRunWorkspaceImport_RejectsMultipleDocuments(t *testing.T) {
-	resetWorkspaceExportImportFlags(t)
-	defer resetWorkspaceExportImportFlags(t)
-	dir := t.TempDir()
-	file := filepath.Join(dir, "multi.yaml")
-	if err := os.WriteFile(file, []byte(multiDocWorkspaceYAML), 0o644); err != nil {
-		t.Fatalf("write multi-doc yaml: %v", err)
-	}
-	if err := workspaceImportCmd.Flags().Set("slug", "team-a"); err != nil {
-		t.Fatalf("set --slug: %v", err)
-	}
-	t.Setenv("BOID_SOCKET", filepath.Join(dir, "no-daemon-here.sock"))
+// TestWorkspaceImportCmd_NeverAttemptsDaemonAutostart drives the REAL
+// workspaceImportCmd through rootCmd.PersistentPreRunE — the layer that
+// actually decides whether to autostart a daemon (cmd/root.go) — against a
+// unix socket path that names no running daemon. This must return no error
+// at all: if workspaceImportCmd.Annotations were missing or wrong (this
+// PR's first round: no annotationSkipAutostart, scopeRemote instead of
+// scopeLocal), this would instead fail with the same unrelated "daemon
+// startup failed: ..." error round 2 review reproduced against a live
+// binary — exactly the failure mode TestWorkspaceImportCmd_Annotations
+// above and this test together rule out: one pins the annotation values,
+// this one proves those values actually reach PersistentPreRunE on the real,
+// registered command object (not a synthetic stand-in).
+//
+// client.NoAutostartEnv=1 (mirroring cmd/root_test.go's
+// TestPersistentPreRunE_UnixProfile_RunsAutostartCheck) is set so a missing
+// annotation fails this test as a clean assertion instead of as a spawn: if
+// the skip annotation were absent, client.EnsureRunningAt would otherwise
+// take the SPAWN branch (BOID_SOCKET here also happens to be
+// client.DefaultSocketPath's value, since that reads the same env var
+// first) — spawnServer re-execs os.Executable(), which in a go-test binary
+// IS this test binary, with "start" appended, re-running the whole suite as
+// a child process. testutil/homeenv isolates HOME/XDG_DATA|CONFIG|STATE_HOME
+// but not XDG_RUNTIME_DIR, so that child would inherit the parent's flock
+// path, and PersistentPreRunE passes context.Background() to EnsureRunningAt
+// (no deadline) — not something worth exercising for real in this test. With
+// NoAutostartEnv=1, a missing/wrong annotation instead surfaces as
+// EnsureRunning's own "boid server is not running" error, an ordinary
+// t.Fatalf, nothing spawned.
+func TestWorkspaceImportCmd_NeverAttemptsDaemonAutostart(t *testing.T) {
+	writeRootTestConfigYAML(t, "")
+	t.Setenv("BOID_SOCKET", filepath.Join(t.TempDir(), "no-daemon-here.sock"))
+	t.Setenv(client.NoAutostartEnv, "1")
 
-	cmd := workspaceImportCmd
-	var out bytes.Buffer
-	cmd.SetOut(&out)
-	err := runWorkspaceImport(cmd, []string{file})
-	if err == nil {
-		t.Fatal("expected an error rejecting the multi-document import file")
-	}
-	if !strings.Contains(err.Error(), "multiple YAML documents") {
-		t.Errorf("expected a multi-document rejection error, got: %v", err)
-	}
-}
-
-// TestRunWorkspaceImport_RejectsInvalidMode pins client-side --mode
-// validation: an unrecognized --mode value must fail before any daemon call.
-func TestRunWorkspaceImport_RejectsInvalidMode(t *testing.T) {
-	resetWorkspaceExportImportFlags(t)
-	defer resetWorkspaceExportImportFlags(t)
-	dir := t.TempDir()
-	file := filepath.Join(dir, "team-a.yaml")
-	if err := os.WriteFile(file, []byte("host_commands: [gh]\n"), 0o644); err != nil {
-		t.Fatalf("write yaml: %v", err)
-	}
-	if err := workspaceImportCmd.Flags().Set("mode", "bogus"); err != nil {
-		t.Fatalf("set --mode: %v", err)
-	}
-	t.Setenv("BOID_SOCKET", filepath.Join(dir, "no-daemon-here.sock"))
-
-	cmd := workspaceImportCmd
-	var out bytes.Buffer
-	cmd.SetOut(&out)
-	err := runWorkspaceImport(cmd, []string{file})
-	if err == nil {
-		t.Fatal("expected an error for an invalid --mode value")
-	}
-	if !strings.Contains(err.Error(), "mode") {
-		t.Errorf("expected the error to mention --mode, got: %v", err)
-	}
-}
-
-// TestRunWorkspaceImport_ForceAndCreateOnlyConflict pins the codex PR5
-// review's minor finding: `--force` is a shorthand for `--mode replace`,
-// but if the caller *also* passes `--mode create-only` explicitly, the two
-// directives disagree. Silently letting --force upgrade an explicit safety
-// declaration into replace is dangerous — surface the conflict as an
-// error instead. --force with default --mode (unset) still translates to
-// replace; --force with an explicit `--mode replace` is redundant-but-OK
-// (same effect, no conflict).
-func TestRunWorkspaceImport_ForceAndCreateOnlyConflict(t *testing.T) {
-	resetWorkspaceExportImportFlags(t)
-	defer resetWorkspaceExportImportFlags(t)
-	dir := t.TempDir()
-	file := filepath.Join(dir, "team-a.yaml")
-	if err := os.WriteFile(file, []byte("host_commands: [gh]\n"), 0o644); err != nil {
-		t.Fatalf("write yaml: %v", err)
-	}
-	if err := workspaceImportCmd.Flags().Set("mode", "create-only"); err != nil {
-		t.Fatalf("set --mode: %v", err)
-	}
-	if err := workspaceImportCmd.Flags().Set("force", "true"); err != nil {
-		t.Fatalf("set --force: %v", err)
-	}
-	t.Setenv("BOID_SOCKET", filepath.Join(dir, "no-daemon-here.sock"))
-
-	cmd := workspaceImportCmd
-	var out bytes.Buffer
-	cmd.SetOut(&out)
-	err := runWorkspaceImport(cmd, []string{file})
-	if err == nil {
-		t.Fatal("expected an error for --force conflicting with --mode create-only")
-	}
-	if !strings.Contains(err.Error(), "--force") || !strings.Contains(err.Error(), "create-only") {
-		t.Errorf("expected the error to mention both --force and create-only, got: %v", err)
+	if err := rootCmd.PersistentPreRunE(workspaceImportCmd, []string{"whatever.yaml"}); err != nil {
+		t.Fatalf("PersistentPreRunE must not attempt to autostart a daemon for workspaceImportCmd: %v", err)
 	}
 }
 

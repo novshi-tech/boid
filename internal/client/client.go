@@ -902,34 +902,6 @@ func (c *Client) GetRaw(path string) (statusCode int, body []byte, err error) {
 	return resp.StatusCode, data, nil
 }
 
-// GetRawWithAccept performs a GET request with a custom Accept header,
-// returning the raw response body and status code regardless of status
-// (mirrors GetRaw) — used by `boid workspace export`
-// (docs/plans/workspace-db-consolidation.md PR5 Step D) to explicitly
-// request the yaml export body, even though the server today always
-// responds with application/yaml regardless of Accept.
-func (c *Client) GetRawWithAccept(path, accept string) (statusCode int, body []byte, err error) {
-	req, err := http.NewRequest("GET", c.baseURL+path, nil)
-	if err != nil {
-		return 0, nil, fmt.Errorf("create request: %w", err)
-	}
-	if accept != "" {
-		req.Header.Set("Accept", accept)
-	}
-
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return 0, nil, fmt.Errorf("request failed: %w", err)
-	}
-	defer resp.Body.Close()
-
-	data, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return resp.StatusCode, nil, fmt.Errorf("read body: %w", err)
-	}
-	return resp.StatusCode, data, nil
-}
-
 // GetRawWithAcceptAndRevision performs a GET request with a custom Accept
 // header, returning the raw response body/status alongside the response's
 // ETag header value VERBATIM, quotes included (Minor 2, codex review round
@@ -1021,11 +993,20 @@ func (c *Client) PostStream(ctx context.Context, path, contentType string, body 
 
 // PostRaw performs a POST request with a custom Content-Type and raw body,
 // returning the raw response status code and body regardless of status
-// (mirrors PutRawWithIfMatch's rationale) — used by `boid workspace import`
-// (docs/plans/workspace-db-consolidation.md PR5 Step E) so the CLI can
-// distinguish 409 (create-only conflict against an existing slug) from 400
-// (bad mode/host_commands reference) from 200 (success) instead of losing
-// that distinction to a single generic error string.
+// (mirrors PutRawWithIfMatch's rationale) — used by `boid workspace apply`
+// (cmd/workspace_apply.go, one raw envelope document per POST
+// /api/workspaces/apply) and `boid project migrate`'s daemon push
+// (cmd/project_migrate.go, POST /api/workspaces) so each caller can
+// distinguish the status codes its own body can provoke (409 conflict, 400
+// bad field/reference, 200 success) instead of losing that distinction to a
+// single generic error string.
+//
+// Historical note: this doc comment used to cite `boid workspace import`
+// (docs/plans/workspace-db-consolidation.md PR5 Step E) as the motivating
+// caller — that command, and the POST /api/workspaces/import endpoint it
+// drove, were both retired 2026-07-28 (see cmd/workspace.go's
+// runWorkspaceImportDeprecated); PostRaw itself is unaffected, since its two
+// remaining callers above always used it independently of that one.
 func (c *Client) PostRaw(path, contentType string, body []byte) (statusCode int, respBody []byte, err error) {
 	req, err := http.NewRequest(http.MethodPost, c.baseURL+path, bytes.NewReader(body))
 	if err != nil {

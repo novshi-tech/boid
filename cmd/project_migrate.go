@@ -53,11 +53,12 @@ import (
 // shadow yaml in this case, so a project already cut over to the DB-backed
 // `workspaces` table never actually had its migrated fields land anywhere a
 // subsequent successful daemon start would read from. The shadow yaml is
-// still written either way, for review/rollback (`boid workspace
-// import`/`edit --from-file`). This closes the gap identified in codex
-// review MAJOR 4 (docs/plans/workspace-db-consolidation.md): before that
-// fix, --apply always looked like it succeeded but never touched what a
-// live daemon uses at all.
+// still written either way, for review/rollback (`boid workspace create
+// --from-file`/`edit --from-file` — `boid workspace import` is retired,
+// 2026-07-28: see cmd/workspace.go's runWorkspaceImportDeprecated). This
+// closes the gap identified in codex review MAJOR 4 (docs/plans/
+// workspace-db-consolidation.md): before that fix, --apply always looked
+// like it succeeded but never touched what a live daemon uses at all.
 var projectMigrateCmd = &cobra.Command{
 	Use:   "migrate <dir>",
 	Short: "Migrate a project from the old project.yaml schema to the new workspace+kit schema (no daemon required)",
@@ -79,7 +80,7 @@ running (e.g. boid start --auto-migrate, which runs this after the daemon
 has already failed to start), the same merge is applied directly to the
 database instead. Either way, a reviewable yaml file is also written, and
 can still be applied by hand if wanted:
-  boid workspace import <file> --slug <slug>       (brand-new slug)
+  boid workspace create <slug> --from-file <file>  (brand-new slug)
   boid workspace edit <slug> --from-file <file>    (slug already exists)
 
 Secret migration copies secrets from the old namespace (secret_namespace field)
@@ -864,6 +865,24 @@ func workspaceShadowPath(slug string) (string, error) {
 // responds.
 const pushMigrateDaemonPingTimeout = 500 * time.Millisecond
 
+// shadowFileApplyHintBothCases formats the "start the daemon and re-run, or
+// apply the shadow file by hand" fallback line for a call site that does NOT
+// know whether slug already has a DB row (the whole reason each of these
+// call sites was reached is that the daemon could not be asked). `boid
+// workspace import <file> --slug <slug>` used to be the single recommendation
+// here — its --mode covered both cases without the caller needing to pick —
+// but it was retired 2026-07-28 (its meta-format round trip with GET
+// /api/workspaces/{slug}/export never worked end to end; see
+// cmd/workspace.go's runWorkspaceImportDeprecated), so this now names both
+// surviving commands and lets the operator pick.
+func shadowFileApplyHintBothCases(shadowPath, slug string) string {
+	return fmt.Sprintf(
+		"  Start the daemon and re-run this command, or apply it by hand:\n"+
+			"    boid workspace create %s --from-file %s   (if %q doesn't exist yet)\n"+
+			"    boid workspace edit %s --from-file %s     (if %q already exists)\n",
+		slug, shadowPath, slug, slug, shadowPath, slug)
+}
+
 // pushMigratedWorkspaceToDaemon applies the migrated workspace content to
 // the `workspaces` DB table, closing the gap identified in codex review
 // MAJOR 4 (docs/plans/workspace-db-consolidation.md): once Phase 2.5's
@@ -929,7 +948,7 @@ func pushMigratedWorkspaceToDaemon(plan *migratePlan, boidDB *db.DB, shadowPath 
 		fmt.Fprintln(out)
 		fmt.Fprintf(out, "warning: could not sync workspace %q's legacy kit host_commands with the daemon (%v).\n", plan.workspaceSlug, err)
 		fmt.Fprintf(out, "  The migrated content was written only to the (daemon-unread) shadow file:\n    %s\n", shadowPath)
-		fmt.Fprintf(out, "  Start the daemon and re-run this command, or apply it by hand:\n    boid workspace import %s --slug %s\n", shadowPath, plan.workspaceSlug)
+		fmt.Fprint(out, shadowFileApplyHintBothCases(shadowPath, plan.workspaceSlug))
 		return nil
 	}
 
@@ -943,7 +962,7 @@ func pushMigratedWorkspaceToDaemon(plan *migratePlan, boidDB *db.DB, shadowPath 
 		fmt.Fprintln(out)
 		fmt.Fprintf(out, "warning: could not reach the boid daemon to apply workspace %q (%v).\n", plan.workspaceSlug, err)
 		fmt.Fprintf(out, "  The migrated content was written only to the (daemon-unread) shadow file:\n    %s\n", shadowPath)
-		fmt.Fprintf(out, "  Start the daemon and re-run this command, or apply it by hand:\n    boid workspace import %s --slug %s\n", shadowPath, plan.workspaceSlug)
+		fmt.Fprint(out, shadowFileApplyHintBothCases(shadowPath, plan.workspaceSlug))
 		return nil
 	}
 
@@ -1107,7 +1126,11 @@ func createMigratedWorkspaceInDaemon(c *client.Client, plan *migratePlan, shadow
 		fmt.Fprintln(out)
 		fmt.Fprintf(out, "warning: could not reach the boid daemon to apply workspace %q (%v).\n", plan.workspaceSlug, err)
 		fmt.Fprintf(out, "  The migrated content was written only to the (daemon-unread) shadow file:\n    %s\n", shadowPath)
-		fmt.Fprintf(out, "  Start the daemon and re-run this command, or apply it by hand:\n    boid workspace import %s --slug %s\n", shadowPath, plan.workspaceSlug)
+		// This branch (unlike shadowFileApplyHintBothCases's call sites above)
+		// already knows plan.workspaceSlug has no DB row yet — that is why
+		// this function chose POST /api/workspaces in the first place — so
+		// `create --from-file` alone is the accurate recommendation, not both.
+		fmt.Fprintf(out, "  Start the daemon and re-run this command, or apply it by hand:\n    boid workspace create %s --from-file %s\n", plan.workspaceSlug, shadowPath)
 		return
 	}
 

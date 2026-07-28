@@ -7,7 +7,7 @@ boid's initial setup is **2 steps**. If the `default` workspace is good enough, 
 | Step | Command | Role |
 |---|---|---|
 | 1 | `boid project init [dir]` / `boid project add <dir>` | Register the project with the daemon (scaffolds it too, for a new one) |
-| 2 (optional) | `boid workspace create` / `edit` / `import` + `boid workspace assign` | Set up a dedicated workspace for the project (skip if `default` is enough) |
+| 2 (optional) | `boid workspace create` / `edit` / `apply` + `boid workspace assign` | Set up a dedicated workspace for the project (skip if `default` is enough) |
 
 Registering a project assigns it to the `default` workspace automatically (the daemon guarantees `default` always exists at startup). Only set up a dedicated workspace when you need to customize the runtime environment — `host_commands` / `env` / `capabilities` / `allowed_domains`, etc.
 
@@ -65,7 +65,7 @@ When `default` isn't enough, a workspace's contents can be set up through any of
 |---|---|
 | CLI: create new | `boid workspace create <slug> [--from-file <yaml>]` (omit `--from-file` for a blank workspace) |
 | CLI: replace an existing one wholesale | `boid workspace edit <slug> --from-file <yaml>` |
-| CLI: import from yaml | `boid workspace import <yaml> [--mode create-only\|replace]` |
+| CLI: apply an exported envelope | `boid workspace apply -f <yaml>` (applies `boid workspace export`'s output; `boid workspace import` is retired) |
 | API: direct POST/PUT | `POST /api/workspaces` / `PUT /api/workspaces/{slug}` (body: `application/yaml`) |
 | Legacy path (still supported): hand-edit the yaml | Edit `~/.config/boid/workspaces/<slug>.yaml` directly, then `boid workspace assign <project> <slug>` auto-creates the DB row from it |
 
@@ -80,7 +80,7 @@ allowed_domains:
   - example.com
 ```
 
-`host_commands` here is a list of **reference names**, not definitions — see [Defining host_commands](#defining-host_commands-the-daemon-wide-registry) below for what has to exist before a workspace can reference `gh`. Referencing an undefined name returns `400 unknown host_commands reference(s): ...` from `workspace create`/`edit`/`import`.
+`host_commands` here is a list of **reference names**, not definitions — see [Defining host_commands](#defining-host_commands-the-daemon-wide-registry) below for what has to exist before a workspace can reference `gh`. Referencing an undefined name returns `400 unknown host_commands reference(s): ...` from `workspace create`/`edit`/`apply`.
 
 Use `boid workspace show <slug>` to inspect a workspace's contents, or `boid workspace export <slug>` to get it back out as yaml.
 

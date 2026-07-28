@@ -36,16 +36,29 @@ func (h *WorkspaceHandler) Routes() chi.Router {
 	r := chi.NewRouter()
 	r.Get("/", h.List)
 	r.Post("/", h.Create)
-	r.Post("/import", h.Import)
 	// "/export" and "/apply" are static path segments at this same router
 	// level as "/{slug}" — chi's radix tree gives a static segment priority
-	// over a wildcard one at the same depth (the same precedent "/import"
-	// above already establishes for POST), so these never collide with a
-	// workspace literally named "export"/"apply".
+	// over a wildcard one at the same depth, but only for the METHOD each
+	// static route actually registers, not the path as a whole: GET
+	// /api/workspaces/export resolves to ExportEnvelope below (never
+	// Show), but PUT/DELETE /api/workspaces/export — no static route
+	// registers those methods on "/export" — fall through to "/{slug}"
+	// and hit Update/Remove("export") instead, same as any other slug.
+	// Likewise GET /api/workspaces/apply falls through to Show("apply"),
+	// since only POST is registered here (this is the exact shape "/import"
+	// is in after its own POST registration was removed 2026-07-28 — see
+	// TestWorkspaceHandler_ImportRouteRemoved). ValidWorkspaceSlug
+	// (workspace_slug.go) has no reserved-word list, so a workspace can
+	// really be created named "export"/"apply"/"import" and remains
+	// reachable through every method this router does not shadow for that
+	// literal path — pre-existing, unchanged by this PR, and not itself a
+	// bug this PR introduces or need fix, but flagged as a possible
+	// follow-up (reserving these names, or moving them off the bare
+	// "/{name}" segment) rather than silently left for the next reader to
+	// rediscover.
 	r.Get("/export", h.ExportEnvelope)
 	r.Post("/apply", h.Apply)
 	r.Get("/{slug}", h.Show)
-	r.Get("/{slug}/export", h.Export)
 	// PR8 (論点 f). Nested under the slug rather than a top-level
 	// "/import-home" so the target is a path parameter like every other
 	// per-workspace operation, and so a future "/{slug}/home/..." surface
@@ -196,66 +209,6 @@ func (h *WorkspaceHandler) Update(w http.ResponseWriter, r *http.Request) {
 	ifMatch := unquoteETag(r.Header.Get("If-Match"))
 
 	detail, err := h.Service.UpdateWorkspace(slug, meta, ifMatch, force)
-	if err != nil {
-		writeServiceError(w, err)
-		return
-	}
-	setWorkspaceETag(w, detail)
-	writeJSON(w, http.StatusOK, detail)
-}
-
-// Export handles GET /api/workspaces/{slug}/export (docs/plans/
-// workspace-db-consolidation.md PR5 Step A): the response body is the raw
-// yaml the service returns verbatim (the marshaled WorkspaceMeta with a
-// top-level "slug:" key inlined — the exact same shape POST
-// /api/workspaces/import accepts, so an export → import round-trip needs
-// no translation step — see ProjectAppService.ExportWorkspace's doc
-// comment for the rationale). An ETag header mirrors the revision so a
-// caller can round-trip it into a subsequent PUT's If-Match if it chooses
-// that route instead of POST import.
-func (h *WorkspaceHandler) Export(w http.ResponseWriter, r *http.Request) {
-	slug := chi.URLParam(r, "slug")
-	data, revision, err := h.Service.ExportWorkspace(slug)
-	if err != nil {
-		writeServiceError(w, err)
-		return
-	}
-	if revision != "" {
-		w.Header().Set("ETag", `"`+revision+`"`)
-	}
-	w.Header().Set("Content-Type", "application/yaml")
-	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write(data)
-}
-
-// Import handles POST /api/workspaces/import?mode=<create-only|replace>
-// (docs/plans/workspace-db-consolidation.md PR5 Step B): the body shape
-// mirrors Create's (top-level "slug:" key alongside the meta fields, decoded
-// by the same DecodeWorkspaceCreateStrict). mode defaults to "create-only"
-// (the safe choice — never overwrites an existing workspace) when the query
-// param is omitted; an unrecognized mode value is rejected by
-// ImportWorkspace itself with 400.
-func (h *WorkspaceHandler) Import(w http.ResponseWriter, r *http.Request) {
-	mode := r.URL.Query().Get("mode")
-	if mode == "" {
-		mode = workspaceImportModeCreateOnly
-	}
-
-	data, ok := readWorkspaceYAMLBody(w, r)
-	if !ok {
-		return
-	}
-	slug, meta, err := orchestrator.DecodeWorkspaceCreateStrict(data)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	if slug == "" {
-		writeError(w, http.StatusBadRequest, "slug is required (top-level \"slug:\" key in the request body)")
-		return
-	}
-
-	detail, err := h.Service.ImportWorkspace(slug, meta, mode)
 	if err != nil {
 		writeServiceError(w, err)
 		return

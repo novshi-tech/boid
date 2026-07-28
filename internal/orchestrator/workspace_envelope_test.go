@@ -1,6 +1,7 @@
 package orchestrator
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 
@@ -305,6 +306,187 @@ projectz:
 	}
 	if !strings.Contains(err.Error(), "projectz") {
 		t.Errorf("error = %v, want it to mention projectz", err)
+	}
+}
+
+// TestDecodeWorkspaceEnvelopeDocuments_BareMetaDocumentGuidesToCreateOrEdit
+// pins bareMetaSentToTheWrongDoor: a bare workspace-meta document (no
+// apiVersion/kind, host_commands:/env:/... at the top level — what `boid
+// workspace create --from-file`/`edit --from-file` take, and what a
+// hand-authored yaml or `boid project migrate`'s shadow file usually is)
+// fed to `apply` must be redirected to those two commands by name, not left
+// to the underlying decoder's raw "field host_commands not found in type
+// orchestrator.rawWorkspaceEnvelope" error — the same UX gap
+// envelopeSentToTheWrongDoor (workspace_meta_strict.go) already closed for
+// the opposite direction (a `workspace export` envelope fed to
+// create/edit), found 2026-07-28 while retiring `boid workspace import`
+// (whose deprecation message points here for envelope-shaped files, but
+// most of its actual callers' files are this bare shape instead).
+func TestDecodeWorkspaceEnvelopeDocuments_BareMetaDocumentGuidesToCreateOrEdit(t *testing.T) {
+	data := []byte("host_commands:\n  - gh\nenv:\n  FOO: bar\n")
+	_, err := DecodeWorkspaceEnvelopeDocuments(data)
+	if err == nil {
+		t.Fatal("expected an error for a bare meta document")
+	}
+	if strings.Contains(err.Error(), "rawWorkspaceEnvelope") {
+		t.Errorf("error = %v, must not leak the unexported Go type name", err)
+	}
+	if !strings.Contains(err.Error(), "boid workspace create") || !strings.Contains(err.Error(), "boid workspace edit") {
+		t.Errorf("error = %v, want it to point at both `boid workspace create --from-file` and `edit --from-file`", err)
+	}
+}
+
+// TestDecodeWorkspaceEnvelopeDocuments_BareMetaDocumentWithSlugKeyAlsoGuides
+// covers the specific shape the (now-retired) GET /api/workspaces/{slug}/export
+// endpoint used to produce — a bare meta document with a top-level "slug:"
+// key spliced on — landing at `apply` instead of `create`/`edit --from-file`.
+func TestDecodeWorkspaceEnvelopeDocuments_BareMetaDocumentWithSlugKeyAlsoGuides(t *testing.T) {
+	data := []byte("slug: default\nenv:\n  FOO: bar\n")
+	_, err := DecodeWorkspaceEnvelopeDocuments(data)
+	if err == nil {
+		t.Fatal("expected an error for a bare meta document carrying a slug key")
+	}
+	if !strings.Contains(err.Error(), "boid workspace create") || !strings.Contains(err.Error(), "boid workspace edit") {
+		t.Errorf("error = %v, want it to point at both `boid workspace create --from-file` and `edit --from-file`", err)
+	}
+}
+
+// TestDecodeWorkspaceEnvelopeDocuments_UnrelatedTypoDoesNotTriggerTheGuide
+// pins bareMetaSentToTheWrongDoor's own doc comment: a document with NEITHER
+// an envelope's identifying keys NOR any recognizable WorkspaceMeta field
+// name must fall through to the original decode error unchanged — the guide
+// is specifically for the bare-meta shape, not a catch-all for anything
+// unparsable.
+func TestDecodeWorkspaceEnvelopeDocuments_UnrelatedTypoDoesNotTriggerTheGuide(t *testing.T) {
+	data := []byte("totally: bogus\n")
+	_, err := DecodeWorkspaceEnvelopeDocuments(data)
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	if strings.Contains(err.Error(), "bare workspace meta document") {
+		t.Errorf("error = %v, the bare-meta guide must not fire for an unrelated typo", err)
+	}
+	if !strings.Contains(err.Error(), "totally") {
+		t.Errorf("error = %v, want the original unknown-field error mentioning \"totally\"", err)
+	}
+}
+
+// TestDecodeWorkspaceEnvelopeDocuments_ValidEnvelopeIsUnaffectedByTheGuide
+// pins that a well-formed envelope document (apiVersion/kind present) is
+// unaffected by bareMetaSentToTheWrongDoor even though its own decode error
+// case (an unknown spec field) is exercised elsewhere
+// (TestDecodeWorkspaceEnvelopeDocuments_RejectsUnknownSpecField) — this one
+// specifically pins the SUCCESS path still works with the new check wired in.
+func TestDecodeWorkspaceEnvelopeDocuments_ValidEnvelopeIsUnaffectedByTheGuide(t *testing.T) {
+	data := []byte(`
+apiVersion: boid.dev/v1
+kind: Workspace
+metadata:
+  name: team-a
+spec:
+  host_commands: [gh]
+`)
+	docs, err := DecodeWorkspaceEnvelopeDocuments(data)
+	if err != nil {
+		t.Fatalf("DecodeWorkspaceEnvelopeDocuments: %v", err)
+	}
+	if len(docs) != 1 || docs[0].Envelope.Metadata.Name != "team-a" {
+		t.Fatalf("docs = %+v, want one document named team-a", docs)
+	}
+}
+
+// TestDecodeWorkspaceEnvelopeDocuments_OldEmptyExportIsAPlainSyntaxError pins
+// a known, ACCEPTED gap in bareMetaSentToTheWrongDoor's guidance, not a bug:
+// the exact byte sequence the now-retired GET /api/workspaces/{slug}/export
+// used to produce for an EMPTY workspace — "slug: default\n{}\n", the
+// concatenation of a spliced "slug:" line with a zero-value WorkspaceMeta's
+// "{}" marshal — is not valid yaml at all (a "{}" flow mapping cannot follow
+// a completed key: value pair at the same indentation), so
+// bareMetaSentToTheWrongDoor's own `yaml.Unmarshal(data, &doc)` fails
+// exactly like DecodeWorkspaceEnvelopeDocuments' own decode does, and the
+// guide's `if err != nil { return nil }` branch (see its doc comment) falls
+// through to the raw syntax error untouched. Fixing this would require a
+// second, more tolerant parse attempt purely to improve an error message for
+// a byte sequence NOTHING can produce any more (the endpoint that wrote it
+// is deleted) — not worth the complexity. If this test ever starts failing
+// because the error becomes friendly, that is a welcome surprise, not a
+// break; if it fails because bareMetaSentToTheWrongDoor started PANICKING or
+// mis-detecting on malformed input, that is the regression to investigate.
+func TestDecodeWorkspaceEnvelopeDocuments_OldEmptyExportIsAPlainSyntaxError(t *testing.T) {
+	data := []byte("slug: default\n{}\n")
+	_, err := DecodeWorkspaceEnvelopeDocuments(data)
+	if err == nil {
+		t.Fatal("expected an error for the old empty-export byte sequence")
+	}
+	if !strings.Contains(err.Error(), "could not find expected") {
+		t.Errorf("error = %v, want a plain yaml syntax error (not bareMetaSentToTheWrongDoor's guidance — this input can't reach it, see doc comment)", err)
+	}
+}
+
+// TestDecodeWorkspaceEnvelopeDocuments_MultiDocumentBareMetaSecondDocLeaksTypeName
+// pins the other known, accepted gap bareMetaSentToTheWrongDoor's own doc
+// comment describes: in a multi-document apply file, the guide only probes
+// the FIRST document's shape (yaml.Unmarshal's own behavior; see the
+// function's doc comment for why re-probing per-document was judged not
+// worth it). When document 1 is a valid envelope and a LATER document is the
+// bare-meta one, the raw unexported-type-name error still leaks for that
+// document — this test exists so that gap stays a documented, deliberate
+// trade-off instead of silently changing shape (e.g. if a future refactor
+// accidentally started probing every document and this test caught it
+// passing instead of failing, that would be worth a second look, not
+// necessarily a problem).
+func TestDecodeWorkspaceEnvelopeDocuments_MultiDocumentBareMetaSecondDocLeaksTypeName(t *testing.T) {
+	data := []byte(`apiVersion: boid.dev/v1
+kind: Workspace
+metadata:
+  name: team-a
+spec:
+  host_commands: [gh]
+---
+host_commands: [aws]
+`)
+	_, err := DecodeWorkspaceEnvelopeDocuments(data)
+	if err == nil {
+		t.Fatal("expected an error for the second, bare-meta document")
+	}
+	if !strings.Contains(err.Error(), "document 2") {
+		t.Errorf("error = %v, want it to name document 2", err)
+	}
+	if !strings.Contains(err.Error(), "rawWorkspaceEnvelope") {
+		t.Errorf("error = %v, want the raw unexported-type-name error (known accepted gap, see doc comment) since only document 1 is probed", err)
+	}
+}
+
+// TestBareMetaKnownFieldNames_CoversEveryWorkspaceMetaField is the drift
+// guard bareMetaKnownFieldNames' own doc comment promises: every yaml-tagged
+// field of WorkspaceMeta (workspace_meta.go) must have a corresponding entry
+// in bareMetaKnownFieldNames, found here via reflection rather than by
+// re-listing the fields by hand (the same class of drift a hand-maintained
+// second list could silently fall behind on). Without this, adding a new
+// WorkspaceMeta field would silently narrow bareMetaSentToTheWrongDoor's
+// detection — a bare-meta document that only sets the new field would fall
+// through to the raw "field ... not found in type
+// orchestrator.rawWorkspaceEnvelope" error this guard exists to replace —
+// with nothing failing to flag the gap. bareMetaKnownFieldNames is
+// deliberately allowed to carry MORE entries than WorkspaceMeta has fields
+// ("slug", "additional_bindings" — see its own doc comment for why), so this
+// only asserts one direction: every WorkspaceMeta field name must appear in
+// bareMetaKnownFieldNames, not the reverse.
+func TestBareMetaKnownFieldNames_CoversEveryWorkspaceMetaField(t *testing.T) {
+	typ := reflect.TypeOf(WorkspaceMeta{})
+	for i := 0; i < typ.NumField(); i++ {
+		f := typ.Field(i)
+		tag := f.Tag.Get("yaml")
+		if tag == "" {
+			t.Fatalf("WorkspaceMeta field %s has no yaml tag; bareMetaKnownFieldNames cannot be checked against it", f.Name)
+		}
+		// Strip yaml tag options (e.g. "host_commands,omitempty" -> "host_commands").
+		name := strings.SplitN(tag, ",", 2)[0]
+		if !bareMetaKnownFieldNames[name] {
+			t.Errorf("WorkspaceMeta field %s (yaml key %q) is missing from bareMetaKnownFieldNames — "+
+				"add it there so bareMetaSentToTheWrongDoor still recognizes a bare-meta document that only sets this field",
+				f.Name, name)
+		}
 	}
 }
 

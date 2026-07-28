@@ -1,7 +1,6 @@
 package api_test
 
 import (
-	"bytes"
 	"fmt"
 	"net/http"
 	"strings"
@@ -257,110 +256,65 @@ func TestWorkspaceAPI_RemoveDefaultRejected(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Export / Import (docs/plans/workspace-db-consolidation.md PR5)
+// Export/Import (docs/plans/workspace-db-consolidation.md PR5) — both
+// retired 2026-07-28, second review round of this PR.
+//
+// The export half, GET /api/workspaces/{slug}/export, was retired first:
+// its round trip with `boid workspace import` never actually worked (an
+// empty workspace exported as invalid yaml, and a non-empty export's
+// "slug:" key was rejected by the CLI's own client-side decode). The
+// import half, POST /api/workspaces/import, was retired in the same PR's
+// second review round: once `boid workspace import` (its only caller,
+// production or test) became a deprecated stub that never issues this
+// request, keeping the endpoint alive was a duplicate, zero-reference entry
+// point contradicting the "one entry point" premise this PR unifies onto —
+// its functionality is fully covered by POST /api/workspaces (409 on an
+// existing slug), PUT /api/workspaces/{slug} (If-Match), and POST
+// /api/workspaces/apply (upsert). See cmd/workspace.go's
+// runWorkspaceImportDeprecated for the CLI-side replacement.
 // ---------------------------------------------------------------------------
 
-// TestWorkspaceAPI_ExportImportRoundTrip exercises export → import end to
-// end against a real daemon: the exported yaml body already carries a
-// top-level "slug: team-a" line (matching CreateWorkspace's / import's
-// input shape — codex PR5 review, MAJOR: round-trip 非対称は避ける), so
-// re-targeting is done by swapping the slug line rather than stitching one
-// in from outside.
-func TestWorkspaceAPI_ExportImportRoundTrip(t *testing.T) {
-	ts := testutil.NewTestServer(t)
-	seedHostCommands(t, ts, "gh", "aws")
-
-	var created api.WorkspaceDetail
-	createBody := []byte("slug: team-a\nhost_commands:\n  - gh\n  - aws\nenv:\n  FOO: bar\n")
-	if err := ts.Client.DoWithContentType("POST", "/api/workspaces", "application/yaml", createBody, &created); err != nil {
-		t.Fatalf("create workspace: %v", err)
-	}
-
-	statusCode, exported, err := ts.Client.GetRaw("/api/workspaces/team-a/export")
-	if err != nil {
-		t.Fatalf("export workspace: transport error: %v", err)
-	}
-	if statusCode != http.StatusOK {
-		t.Fatalf("export workspace: status = %d, want 200: %s", statusCode, exported)
-	}
-	// The exported body MUST carry the top-level slug key so it can be
-	// posted directly to the import endpoint (or, in this test, re-targeted
-	// by rewriting the slug line).
-	if !strings.Contains(string(exported), "slug: team-a") {
-		t.Errorf("exported body must contain 'slug: team-a' at top level: %s", exported)
-	}
-
-	// Re-target: replace the "slug: team-a\n" line with "slug: team-b\n".
-	// This is what a real CLI --slug override would do; the raw body is
-	// otherwise import-ready as-is.
-	importBody := bytes.Replace(exported, []byte("slug: team-a\n"), []byte("slug: team-b\n"), 1)
-
-	var imported api.WorkspaceDetail
-	if err := ts.Client.DoWithContentType("POST", "/api/workspaces/import?mode=create-only", "application/yaml", importBody, &imported); err != nil {
-		t.Fatalf("import workspace: %v", err)
-	}
-	if imported.Slug != "team-b" {
-		t.Fatalf("imported.Slug = %q, want team-b", imported.Slug)
-	}
-	if !equalStrSlice(imported.Meta.HostCommands, []string{"gh", "aws"}) {
-		t.Errorf("imported.Meta.HostCommands = %v, want [gh aws]", imported.Meta.HostCommands)
-	}
-	if imported.Meta.Env["FOO"] != "bar" {
-		t.Errorf("imported.Meta.Env[FOO] = %q, want bar", imported.Meta.Env["FOO"])
-	}
-}
-
-// TestWorkspaceAPI_ImportCreateOnlyConflict409 pins decision 5's
-// create-only semantics against a real daemon: importing to an existing
-// slug with mode=create-only (the default) must 409, not silently overwrite.
-func TestWorkspaceAPI_ImportCreateOnlyConflict409(t *testing.T) {
+// TestWorkspaceAPI_SlugExportEndpointRemoved_Returns404 pins that a request
+// against the retired GET /api/workspaces/{slug}/export path 404s — chi has
+// no route left to answer it, not a handler-level not-found response —
+// regardless of whether the named workspace exists.
+func TestWorkspaceAPI_SlugExportEndpointRemoved_Returns404(t *testing.T) {
 	ts := testutil.NewTestServer(t)
 	seedHostCommands(t, ts, "gh")
 
-	body := []byte("slug: team-a\nhost_commands:\n  - gh\n")
-	if err := ts.Client.DoWithContentType("POST", "/api/workspaces", "application/yaml", body, &api.WorkspaceDetail{}); err != nil {
+	createBody := []byte("slug: team-a\nhost_commands:\n  - gh\n")
+	if err := ts.Client.DoWithContentType("POST", "/api/workspaces", "application/yaml", createBody, &api.WorkspaceDetail{}); err != nil {
 		t.Fatalf("create workspace: %v", err)
 	}
 
-	code, respBody, err := ts.Client.PostRaw("/api/workspaces/import?mode=create-only", "application/yaml", body)
+	statusCode, body, err := ts.Client.GetRaw("/api/workspaces/team-a/export")
 	if err != nil {
-		t.Fatalf("import workspace: transport error: %v", err)
+		t.Fatalf("transport error: %v", err)
 	}
-	if code != http.StatusConflict {
-		t.Fatalf("import with mode=create-only against existing slug: status = %d, want 409: %s", code, respBody)
+	if statusCode != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404 (route removed): %s", statusCode, body)
 	}
 }
 
-// TestWorkspaceAPI_ImportReplaceModeUpserts409lessOverwrite pins decision 5's
-// replace semantics: mode=replace against an existing slug must succeed and
-// overwrite wholesale, never 409.
-func TestWorkspaceAPI_ImportReplaceModeUpserts(t *testing.T) {
+// TestWorkspaceAPI_ImportEndpointRemoved_Returns405 is
+// ExportEndpointRemoved's counterpart for POST /api/workspaces/import: a
+// request against the retired path must fail, regardless of body shape.
+//
+// The status is 405, not 404 — see internal/api/workspace_handler_test.go's
+// TestWorkspaceHandler_ImportRouteRemoved for the routing reason (a
+// one-segment "/import" now falls through to the "/{slug}" wildcard, which
+// has routes, just none for POST); this test pins the same outcome end to
+// end against a real daemon (real chi router + real DB), not just the
+// handler's Routes() in isolation.
+func TestWorkspaceAPI_ImportEndpointRemoved_Returns405(t *testing.T) {
 	ts := testutil.NewTestServer(t)
-	seedHostCommands(t, ts, "gh", "aws")
-
 	body := []byte("slug: team-a\nhost_commands:\n  - gh\n")
-	if err := ts.Client.DoWithContentType("POST", "/api/workspaces", "application/yaml", body, &api.WorkspaceDetail{}); err != nil {
-		t.Fatalf("create workspace: %v", err)
+	statusCode, respBody, err := ts.Client.PostRaw("/api/workspaces/import?mode=create-only", "application/yaml", body)
+	if err != nil {
+		t.Fatalf("transport error: %v", err)
 	}
-
-	replaceBody := []byte("slug: team-a\nhost_commands:\n  - aws\n")
-	var replaced api.WorkspaceDetail
-	if err := ts.Client.DoWithContentType("POST", "/api/workspaces/import?mode=replace", "application/yaml", replaceBody, &replaced); err != nil {
-		t.Fatalf("import with mode=replace against existing slug: %v", err)
-	}
-	if !equalStrSlice(replaced.Meta.HostCommands, []string{"aws"}) {
-		t.Errorf("replaced.Meta.HostCommands = %v, want [aws]", replaced.Meta.HostCommands)
-	}
-}
-
-// TestWorkspaceAPI_ImportUnknownModeIs400 pins that an unrecognized ?mode=
-// value is rejected rather than silently falling back to a default.
-func TestWorkspaceAPI_ImportUnknownModeIs400(t *testing.T) {
-	ts := testutil.NewTestServer(t)
-	body := []byte("slug: team-a\n")
-	err := ts.Client.DoWithContentType("POST", "/api/workspaces/import?mode=bogus", "application/yaml", body, &api.WorkspaceDetail{})
-	if err == nil {
-		t.Fatal("expected error for unknown import mode, got nil")
+	if statusCode != http.StatusMethodNotAllowed {
+		t.Fatalf("status = %d, want 405 (route removed): %s", statusCode, respBody)
 	}
 }
 

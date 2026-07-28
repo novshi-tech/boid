@@ -39,7 +39,7 @@ boid project migrate ~/src/myproject --workspace dev --apply --on-collision skip
 - workspace slug が daemon にまだ無い場合: `POST /api/workspaces` で新規作成する
 - 既存 slug の場合: 現在の内容を `GET /api/workspaces/<slug>` で取得し、 今回の migration が生成したフィールドとマージした上で `PUT /api/workspaces/<slug>` (`If-Match: <revision>`) で書き戻す (`mergeLegacyFieldsIntoWorkspace`)。 **マージの優先順位は「migration 側 (project.yaml から生成された値) が優先」** — `env` は同一キーなら migration 側の新値で上書き、 `capabilities.docker` は project.yaml 側が設定していれば上書きする。 legacy kit が生成された場合の `host_commands` (参照名) は union (既存の値を消さない)、 `additional_bindings` は Source が一致すれば migration 側が上書きする。 それ以外の既存フィールドはそのまま保持される
 - `412 Precondition Failed` (revision 不一致 = 同時編集) を受けた場合は再取得してマージからやり直し、 最大 3 回リトライする
-- daemon に到達できない場合、 または 3 回リトライしても解決しない場合は、 反映は shadow yaml にしか行われない。 コマンド出力に手動反映の手順 (`boid workspace import <file> --slug <slug>` または `boid workspace edit <slug> --from-file <file>`) が案内されるので、 その通りに実行すること — **`project.yaml` 自体の書き換えはこの反映結果とは無関係にすでに実行済み** であることに注意 (dry-run ではない限り)
+- daemon に到達できない場合、 または 3 回リトライしても解決しない場合は、 反映は shadow yaml にしか行われない。 コマンド出力に手動反映の手順 (workspace が未作成なら `boid workspace create <slug> --from-file <file>`、 既存なら `boid workspace edit <slug> --from-file <file>`。 `boid workspace import` は 2026-07-28 に廃止済み) が案内されるので、 その通りに実行すること — **`project.yaml` 自体の書き換えはこの反映結果とは無関係にすでに実行済み** であることに注意 (dry-run ではない限り)
 
 ## `project.local.yaml` の廃止
 
@@ -72,13 +72,13 @@ boid project migrate ~/src/myproject --workspace dev --apply --on-collision skip
 
 上の「使い方」節で説明した `boid project migrate` 自体の変換内容 (kit 生成・workspace.yaml への反映) は PR6 の影響を受けていません — 変わったのは生成された `kit.yaml` を後から**閲覧・削除する CLI が無くなった**点です。`~/.local/share/boid/kits/<name>/kit.yaml` は手で編集・削除してください。
 
-workspace の中身を新規に用意する場合は、`boid workspace configure` の代わりに `boid workspace create` / `edit` / `import` (yaml 直接指定) を使います。詳細は [オンボーディング](../guide/onboarding.md) を参照してください。
+workspace の中身を新規に用意する場合は、`boid workspace configure` の代わりに `boid workspace create` / `edit` / `apply` (yaml 直接指定) を使います。詳細は [オンボーディング](../guide/onboarding.md) を参照してください。
 
 ## kit 機構の最終撤去 (Phase 2.5 PR7)
 
 `WorkspaceMeta.Kits` フィールド (workspace.yaml の `kits:`) は Phase 2.5 PR7 (2026-07) でコードから完全撤去されました。影響:
 
-- `POST` / `PUT` / `import /api/workspaces` に `kits:` キーを含む body を送ると 400 (`unknown field kits`) で reject される
+- `POST` / `PUT /api/workspaces` に `kits:` キーを含む body を送ると 400 (`unknown field kits`) で reject される
 - `boid project migrate` は legacy project.yaml の `kits:` 参照を名前検証・informational 表示のみ行い、 workspace への自動解決はしなくなった (上の「`boid project migrate` の変換内容」参照)。 migrate が生成する legacy kit 自体 (`host_commands` + `additional_bindings` を同梱) は変わらず生成され、 その内容は workspace の対応フィールドに直接追記される
 - 唯一残る legacy `kits:` 対応経路は `boid workspace assign` の auto-create 補助 (手書き/e2e フィクスチャの workspace shadow yaml 向け) — クライアント側でインストール済み kit を解決してから (kits: を含まない) body を送信する
 - **(訂正)** rollback 用に残置している shadow yaml (`~/.config/boid/workspaces/*.yaml`) や `~/.local/share/boid/kits/` ディレクトリは、 「DB 権威切り替え後は読まれない」わけではなく、 依然として次の 2 経路から読まれる依存が残っている — 「削除しても daemon の動作に影響はない」という案内は誤りなので撤回する:

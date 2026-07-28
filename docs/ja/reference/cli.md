@@ -64,7 +64,7 @@ CLI listener のアドレスは `127.0.0.1:8442` 固定（override 不可）。`
 | `boid stop` | daemon を停止。 PID 指定で kill すると socket が残るのでこちらを使う |
 | `boid gc [--older-than DURATION] [--dry-run]` | 古い完了 / abort タスクを GC (daemon が起動時から自動でも回している)。`--dry-run` を付けると削除せずに対象一覧を表示する。出力には workspace home のサイズ一覧も表示される (表示のみ、削除はしない。詳細は [workspace home ガイド](../guide/workspace-home.md#boid-gc-の-workspace-home-表示)) |
 | `boid check` | host の前提コマンドや hook の依存をチェック |
-| `boid init [DIR]` | **(廃止)** 廃止ガイダンスを表示。`boid project init\|add` (+ 任意で `boid workspace create/edit/import`) を使ってください。詳細は [オンボーディング](../guide/onboarding.md) を参照 |
+| `boid init [DIR]` | **(廃止)** 廃止ガイダンスを表示。`boid project init\|add` (+ 任意で `boid workspace create/edit`) を使ってください。詳細は [オンボーディング](../guide/onboarding.md) を参照 |
 
 詳細は [Getting started / インストール](../getting-started/01-install.md) を参照。
 
@@ -221,7 +221,7 @@ hook の実行記録を扱います。
 
 `boid kit init` / `boid kit list` / `boid kit remove` および `boid workspace configure` は Phase 2.5 PR6 (2026-07) で撤去されました。`env` は現在 [Workspace](#workspace) の CLI で workspace に直接設定します (`additional_bindings` は Phase 4 PR4 で撤去済み — [workspace home `init.sh`](../guide/workspace-home.md) を使う)。`host_commands` はこれらとは違う二層構造です — workspace が持つのは参照名の `[]string` (`host_commands: [gh, aws]`) だけで、実際の定義 (`path` / `allow` / `deny` / `env`) は daemon 側の `~/.config/boid/host_commands.yaml` に集約管理されています。`kit init` が無くなった今どうやってこのファイルを埋めるかは、下記の [Host Commands](#host-commands)（または [オンボーディング / host_commands を定義する](../guide/onboarding.md#host_commands-を定義する-daemon-側の集約レジストリ)）を参照してください。
 
-`kit.yaml` 自体のフォーマットは無くなっていません (手で `kit.yaml` を書いて配置する運用は引き続き可能)。 ただし Phase 2.5 PR7 で `WorkspaceMeta.Kits` フィールドがコードから完全撤去され、 `boid workspace create/edit/import` に `kits:` を直接渡す経路は reject されるようになりました。 残っているのは `boid workspace assign` の auto-create 補助 (legacy shadow yaml の `kits:` をクライアント側で一度だけ解決) と、 `boid project migrate` が生成する legacy kit (host_commands を workspace に直接畳み込み。 legacy kit の `additional_bindings` は Phase 4 PR4 で撤去済みなので無視される) の 2 経路のみです。フォーマットの詳細は [Kit 作者向け概要](../kit-authoring/overview.md) を、退役の経緯は [オンボーディング / kit 機構の退役について](../guide/onboarding.md#kit-機構の退役について) を参照してください。
+`kit.yaml` 自体のフォーマットは無くなっていません (手で `kit.yaml` を書いて配置する運用は引き続き可能)。 ただし Phase 2.5 PR7 で `WorkspaceMeta.Kits` フィールドがコードから完全撤去され、 `boid workspace create/edit` に `kits:` を直接渡す経路は reject されるようになりました。 残っているのは `boid workspace assign` の auto-create 補助 (legacy shadow yaml の `kits:` をクライアント側で一度だけ解決) と、 `boid project migrate` が生成する legacy kit (host_commands を workspace に直接畳み込み。 legacy kit の `additional_bindings` は Phase 4 PR4 で撤去済みなので無視される) の 2 経路のみです。フォーマットの詳細は [Kit 作者向け概要](../kit-authoring/overview.md) を、退役の経緯は [オンボーディング / kit 機構の退役について](../guide/onboarding.md#kit-機構の退役について) を参照してください。
 
 ## Web
 
@@ -257,7 +257,7 @@ project の実行環境 (`host_commands` / `env` / `capabilities` / `allowed_dom
 | `boid workspace show <slug>` | 定義 (host_commands/env/capabilities) と割り当て済み project を表示 |
 | `boid workspace create <slug> [--from-file <yaml>]` | 新規作成 (`--from-file` 省略時は空の workspace)。`--from-file` が取るのは **meta の平の mapping** (`env:` / `host_commands:` 等が top-level)。 `boid workspace export` が書く envelope 文書 (`apiVersion:` / `kind:` 付き) は受け付けない — そちらは `boid workspace apply -f` を使う |
 | `boid workspace edit <slug> --from-file <yaml>` | 既存 workspace を丸ごと置き換え (自動 If-Match、`--force` で last-write-wins)。`--from-file` の形式は `create` と同じ (envelope は不可) |
-| `boid workspace import <file> [--mode create-only\|replace] [--slug SLUG]` | yaml ファイルから取り込み。`--mode` 省略時は `create-only` (既存 slug には 409) |
+| `boid workspace import <file>` | **廃止 (2026-07-28)、hidden コマンド**。meta 形式の export/import round trip が双方向とも壊れていたため envelope 形式に一本化した (詳細は [volume-only-daemon.md 論点g](../../plans/volume-only-daemon.md))。実行すると常にエラーで終了し、ファイルの形式に応じて `boid workspace apply -f <file>` (envelope 文書) または `boid workspace create/edit <slug> --from-file <file>` (bare meta 文書) を案内する |
 | `boid workspace export <slug>\|--all [-o FILE]` | workspace (+ 割り当て済み project 群の name/url + `spec.init_script` = workspace の `init.sh` 全文) を `apiVersion: boid.dev/v1 / kind: Workspace` の yaml として書き出す (省略時 stdout)。`--all` で全 workspace を 1 file に `---` 区切りでまとめて書き出す — **`boid workspace export --all` が唯一の正式 backup 経路** (DB の生コピーは復元手段として不十分。詳細は [volume-only-daemon.md 論点g](../../plans/volume-only-daemon.md))。 `boid workspace apply` が読めないサイズの文書になる場合は、書き出さずに該当 workspace 名を挙げて失敗する — **成功した export は必ず apply できる**。 同じ理由で、応答の文書が `spec.init_script` を持たない場合 (= daemon が PR9 以前で init.sh を知らない) も、**init.sh の入っていない backup を書かずに失敗する** — daemon を upgrade してから再実行する |
 | `boid workspace apply -f FILE [--dry-run]` | `boid workspace export` が出力した yaml を適用 (upsert: 未知の slug は新規作成、既存 slug はフィールド単位でマージ — 省略フィールドは現状維持、明示的な空値は clear)。`spec.projects[]` は名前が一致する既存 project への割当のみ行う (URL からの新規登録は PR-2 待ち)。`spec.init_script` があれば workspace の `init.sh` も復元する (明示的な空文字列は削除、キー自体が無ければ現状維持 — DB の transaction とは別コミットなので、metadata だけ適用されて init.sh が失敗した場合はその旨をエラーで報告する)。`--dry-run` で書き込みなしのプレビューのみ |
 | `boid workspace assign <project-ref> <workspace-id>` | プロジェクトをワークスペースに紐付け (未知の slug は 404。ただしローカル `workspace.yaml` が存在すればそこから auto-create) |

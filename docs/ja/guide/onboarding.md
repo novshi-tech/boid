@@ -7,7 +7,7 @@ boid の初回セットアップは **2 段** です。`default` workspace で�
 | 順序 | コマンド | 役割 |
 |---|---|---|
 | 1 | `boid project init [dir]` / `boid project add <dir>` | project を daemon に登録（新規なら雛形も作成） |
-| 2 (任意) | `boid workspace create` / `edit` / `import` + `boid workspace assign` | project 専用の workspace を用意（`default` で足りるなら不要） |
+| 2 (任意) | `boid workspace create` / `edit` / `apply` + `boid workspace assign` | project 専用の workspace を用意（`default` で足りるなら不要） |
 
 project を登録すると自動的に `default` workspace に割り当てられます（daemon 起動時に `default` は常に存在が保証される）。`host_commands` / `env` / `capabilities` / `allowed_domains` など実行環境をカスタマイズしたいときだけ、専用の workspace を用意してください。
 
@@ -65,7 +65,7 @@ boid project add ~/src/another-project --workspace dev
 |---|---|
 | CLI: 新規作成 | `boid workspace create <slug> [--from-file <yaml>]`（`--from-file` 省略時は空の workspace） |
 | CLI: 既存を丸ごと置き換え | `boid workspace edit <slug> --from-file <yaml>` |
-| CLI: yaml から取り込み | `boid workspace import <yaml> [--mode create-only\|replace]` |
+| CLI: export した envelope 文書を適用 | `boid workspace apply -f <yaml>`（`boid workspace export` の出力を適用。`boid workspace import` は廃止済み） |
 | API: 直接 POST/PUT | `POST /api/workspaces` / `PUT /api/workspaces/{slug}`（body は `application/yaml`） |
 | 旧経路 (残置): yaml を手で置く | `~/.config/boid/workspaces/<slug>.yaml` を直接編集 → `boid workspace assign <project> <slug>` で auto-create |
 
@@ -80,7 +80,7 @@ allowed_domains:
   - example.com
 ```
 
-ここでの `host_commands` は**参照名**のリストであって定義そのものではありません — `gh` を参照する前に何が必要かは後述の [host_commands を定義する](#host_commands-を定義する-daemon-側の集約レジストリ) を参照してください。未定義の名前を参照すると `workspace create`/`edit`/`import` は `400 unknown host_commands reference(s): ...` を返します。
+ここでの `host_commands` は**参照名**のリストであって定義そのものではありません — `gh` を参照する前に何が必要かは後述の [host_commands を定義する](#host_commands-を定義する-daemon-側の集約レジストリ) を参照してください。未定義の名前を参照すると `workspace create`/`edit`/`apply` は `400 unknown host_commands reference(s): ...` を返します。
 
 既存 workspace の中身を確認するには `boid workspace show <slug>`、そのまま yaml として取り出すには `boid workspace export <slug>` を使います。
 
