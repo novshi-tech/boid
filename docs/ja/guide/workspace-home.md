@@ -196,17 +196,19 @@ yaml / json / xml / tar のような構造化データの type だけです (そ
   (job は `failed`、task は `aborted` になる)。エラーメッセージには
   **どの段階で失敗したか** (`prelude` / `script-setup` / `init.sh`) と
   終了コードと出力の tail が含まれる。`init.sh` の終了コードはそのまま伝播する
-- **成功時も出力が残る**: 0 で終了した場合も、daemon のログに
-  `workspace home init completed` として**出力の末尾 2000 バイト**が
-  `output_tail` に記録される (それより前が切られた場合は
-  `[boid: omitted ... bytes]` の注記が付く)。`init.sh` は
+- **成功時も出力が残る (ただし `log.level` が既定の `info` のときに限る)**:
+  0 で終了した場合も、daemon のログに `workspace home init completed` として
+  **出力の末尾 2000 バイト**が `output_tail` に記録される (それより前が
+  切られた場合は `[boid: omitted ... bytes]` の注記が付く)。`init.sh` は
   「成功したのに home が壊れている」形で失敗しうる —— インストーラが
   警告だけ出して終了 0 を返す、といったケース —— ので、
   その調査の最初の手がかりはこのログになる。tail だけでは足りない場合、
   `config.yaml` で `log.level: debug` にすると、保持している全量
-  (最大 `workspaceInitOutputLimit` 分、既定 1MiB) が別行
-  `workspace home init full output` として追加で出る
-  ([設定リファレンス](../reference/config-yaml.md) 参照)
+  (最大 1MiB) が別行 `workspace home init full output` として追加で出る
+  ([設定リファレンス](../reference/config-yaml.md) 参照)。
+  逆に `log.level: warn` / `error` にすると、この `output_tail` の行は
+  (他の INFO ログと同様に) **一切出なくなる** — 静音運用にすると、この
+  init 成功時の記録そのものが失われることに注意する
 
 ### script 作者が守ること
 

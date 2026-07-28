@@ -7,6 +7,7 @@ import (
 	"log"
 	"log/slog"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -596,6 +597,71 @@ func TestContainerBackend_RunWorkspaceInit_SuccessDebugOffSkipsMaterializingFull
 					got, tc.level, tc.wantCalls)
 			}
 		})
+	}
+}
+
+// extractSlogMessages pulls every slog.TextHandler `msg="..."` field out of
+// captured log text, in order. Deliberately not a regexp: every message this
+// file logs through captureLogs is plain ASCII with no embedded quote, so a
+// literal `msg="` scan is exact for what this test needs and adds no new
+// import.
+func extractSlogMessages(t *testing.T, text string) []string {
+	t.Helper()
+	const key = `msg="`
+	var msgs []string
+	for {
+		idx := strings.Index(text, key)
+		if idx < 0 {
+			return msgs
+		}
+		text = text[idx+len(key):]
+		end := strings.Index(text, `"`)
+		if end < 0 {
+			t.Fatalf("malformed msg=\"...\" field in captured log (no closing quote): %q", text)
+		}
+		msgs = append(msgs, text[:end])
+		text = text[end+1:]
+	}
+}
+
+// TestContainerBackend_RunWorkspaceInit_SuccessLogMessagesArePinned pins NB-4
+// of PR #861's independent review: this PR promoted two string literals into
+// a documented operator contract — docs/ja/guide/workspace-home.md now tells
+// an operator to look for the INFO message "workspace home init completed"
+// and the DEBUG message "workspace home init full output" by name, and
+// RunWorkspaceInit's own doc comment (container_backend_workspace_init.go)
+// asserts the DEBUG one is deliberately NOT a prefix extension of the INFO
+// one, precisely so a runbook grepping the INFO phrase does not also match a
+// line that can be a megabyte long.
+//
+// Nothing enforced either claim before this test: renaming either message,
+// or reverting the DEBUG one to "workspace home init completed: full
+// output" — exactly the prefix collision the doc comment says it avoids —
+// left every other test in this file green, because they all assert on
+// MARKER CONTENT inside the log, never on the message strings themselves.
+func TestContainerBackend_RunWorkspaceInit_SuccessLogMessagesArePinned(t *testing.T) {
+	const wantInfoMsg = "workspace home init completed"
+	const wantDebugMsg = "workspace home init full output"
+	if strings.HasPrefix(wantDebugMsg, wantInfoMsg) {
+		t.Fatalf("test bug: the two EXPECTED messages collide by construction (%q is a prefix of %q); "+
+			"this test would pass for the wrong reason", wantInfoMsg, wantDebugMsg)
+	}
+
+	buf := captureLogs(t, slog.LevelDebug)
+	runInitPrinting(t, "some output\n")
+
+	msgs := extractSlogMessages(t, buf.String())
+	if !slices.Contains(msgs, wantInfoMsg) {
+		t.Errorf("no log line carried msg=%q; got messages %v", wantInfoMsg, msgs)
+	}
+	if !slices.Contains(msgs, wantDebugMsg) {
+		t.Errorf("no log line carried msg=%q; got messages %v", wantDebugMsg, msgs)
+	}
+	for _, got := range msgs {
+		if got != wantInfoMsg && strings.HasPrefix(got, wantInfoMsg) {
+			t.Errorf("log message %q extends the INFO completion message %q as a prefix — "+
+				"a runbook grepping the exact INFO phrase would now also match this line", got, wantInfoMsg)
+		}
 	}
 }
 
