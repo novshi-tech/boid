@@ -195,6 +195,13 @@ yaml / json / xml / tar のような構造化データの type だけです (そ
   (job は `failed`、task は `aborted` になる)。エラーメッセージには
   **どの段階で失敗したか** (`prelude` / `script-setup` / `init.sh`) と
   終了コードと出力の tail が含まれる。`init.sh` の終了コードはそのまま伝播する
+- **成功時も出力が残る**: 0 で終了した場合も、daemon のログに
+  `workspace home init completed` として**出力の末尾 2000 バイト**が
+  `output_tail` に記録される (それより前が切られた場合は
+  `[boid: omitted ... bytes]` の注記が付く)。`init.sh` は
+  「成功したのに home が壊れている」形で失敗しうる —— インストーラが
+  警告だけ出して終了 0 を返す、といったケース —— ので、
+  その調査の最初の手がかりはこのログになる
 
 ### script 作者が守ること
 

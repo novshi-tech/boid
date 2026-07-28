@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"log/slog"
 	"strconv"
 	"strings"
 	"testing"
@@ -290,6 +291,106 @@ func joinBytes(chunks [][]byte) []byte {
 		out = append(out, c...)
 	}
 	return out
+}
+
+// captureLogs redirects the default slog logger into a buffer for the length
+// of the test, at the given level.
+func captureLogs(t *testing.T, level slog.Level) *bytes.Buffer {
+	t.Helper()
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: level})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+	return &buf
+}
+
+// runInitPrinting runs a successful init whose container printed out.
+func runInitPrinting(t *testing.T, out string) {
+	t.Helper()
+	api := &fakeDockerAPI{ContainerWaitFunc: exitWith(0)}
+	api.ContainerAttachFunc = attachThenEOF(api, out)
+	b := newWorkspaceInitBackend(api)
+	if err := b.RunWorkspaceInit(context.Background(), testWorkspaceInitRequest()); err != nil {
+		t.Fatalf("RunWorkspaceInit: %v", err)
+	}
+}
+
+// TestContainerBackend_RunWorkspaceInit_SuccessKeepsTheOutput pins that a
+// SUCCESSFUL init leaves a record of what the script printed.
+//
+// Only the failure path used to carry the output (workspaceInitFailure);
+// exit 0 logged a byte COUNT and dropped the bytes. init.sh is the
+// operator's own script — it installs toolchains, and the way it fails
+// operationally is by "succeeding" while leaving something subtly wrong.
+// That is exactly what happened on 2026-07-28: a run that exited 0 left a
+// workspace whose volta shims were all dangling, and with the output gone
+// there was nothing to read, so the diagnosis went the long way round
+// through an overlay-mounted replay of the volume.
+func TestContainerBackend_RunWorkspaceInit_SuccessKeepsTheOutput(t *testing.T) {
+	buf := captureLogs(t, slog.LevelDebug)
+	const said = "volta: linking shims for node@24"
+
+	runInitPrinting(t, said+"\nboid-init: stage=done exit=0\n")
+
+	if !strings.Contains(buf.String(), said) {
+		t.Errorf("a successful init discarded what its script printed; log was:\n%s", buf.String())
+	}
+}
+
+// TestContainerBackend_RunWorkspaceInit_SuccessTailSurvivesAtInfoLevel pins
+// that the record above does NOT depend on debug logging being on. A
+// workspace init takes minutes (8–9 measured for a real toolchain install),
+// so "reproduce it with -v" is not a diagnosis path an operator actually
+// takes — the tail has to already be there at the default level.
+func TestContainerBackend_RunWorkspaceInit_SuccessTailSurvivesAtInfoLevel(t *testing.T) {
+	buf := captureLogs(t, slog.LevelInfo)
+	const lastThingSaid = "volta: linking shims for node@24"
+
+	runInitPrinting(t, "earlier progress\n"+lastThingSaid+"\n")
+
+	if !strings.Contains(buf.String(), lastThingSaid) {
+		t.Errorf("nothing of the init output survives at info level; log was:\n%s", buf.String())
+	}
+}
+
+// TestContainerBackend_RunWorkspaceInit_SuccessTailIsBounded is the other
+// side of that trade: the default-level record must stay a TAIL. An init
+// that prints megabytes of progress (npm, cargo, apt all do) would otherwise
+// push that volume through the daemon log on every workspace's first
+// dispatch.
+func TestContainerBackend_RunWorkspaceInit_SuccessTailIsBounded(t *testing.T) {
+	buf := captureLogs(t, slog.LevelInfo)
+	noisy := strings.Repeat("progress line that says very little\n", 40_000)
+
+	runInitPrinting(t, noisy+"boid-init: stage=done exit=0\n")
+
+	if got := buf.Len(); got > 8*workspaceInitSuccessTailLimit {
+		t.Errorf("info-level log is %d bytes for a %d-byte init; the tail bound is not being applied", got, len(noisy))
+	}
+	if !strings.Contains(buf.String(), "stage=done exit=0") {
+		t.Error("the bounded tail dropped the END of the output; it must keep the end, which is where a failure explains itself")
+	}
+}
+
+// TestContainerBackend_RunWorkspaceInit_TruncatedTailSaysSo pins that a
+// tail cut out of a longer run announces the cut. The bound is the whole
+// reason this is safe to log unconditionally, so a reader has to be able to
+// tell "this is everything the script printed" from "this is the last few
+// lines of it" — otherwise the record invites the wrong conclusion about
+// output that is simply not shown.
+func TestContainerBackend_RunWorkspaceInit_TruncatedTailSaysSo(t *testing.T) {
+	buf := captureLogs(t, slog.LevelInfo)
+	filler := strings.Repeat("...installing a package nobody will read about\n", 500)
+	if len(filler) <= workspaceInitSuccessTailLimit {
+		t.Fatalf("test is not exercising truncation: %d bytes of filler fits in a %d-byte tail",
+			len(filler), workspaceInitSuccessTailLimit)
+	}
+
+	runInitPrinting(t, filler+"boid-init: stage=done exit=0\n")
+
+	if !strings.Contains(buf.String(), workspaceInitTruncationPrefix) {
+		t.Errorf("a truncated tail was logged with no notice that anything was cut; log was:\n%s", buf.String())
+	}
 }
 
 // TestContainerBackend_RunWorkspaceInit_NonZeroExitCarriesStageAndOutput pins
