@@ -1550,21 +1550,35 @@ func TestContainerSession_WaitLoop_DrainsAttachBeforeClosingConn(t *testing.T) {
 // asserted from the outside (worth recording here since it shapes what
 // this test can and cannot prove): mutating waitLoop's `if attached {...}
 // else {...}` split to unconditionally enter the select branch does NOT
-// make this test fail. That is not a gap in this test — it is a provable
-// consequence of an invariant every attached=false-setting site in this
-// file maintains: attach()'s own error path closes its freshly-allocated
-// readDone BEFORE it publishes attached=false, and readLoop's deferred
-// close(readDone) likewise always accompanies (and is the only writer of)
-// the transition to attached=false. Both attached and readDone are always
-// read together under one s.mu critical section (here and in Subscribe),
-// so any snapshot observing attached=false is guaranteed to be paired with
-// an ALREADY-CLOSED readDone — meaning entering the select unconditionally
-// still returns immediately via its `case <-readDone` arm. The `else`
-// branch is therefore a clarity/directness simplification over relying on
-// that indirection (see waitLoop's own doc comment) rather than a
-// currently-reachable bug fix — this test pins the property that actually
-// matters (prompt teardown) rather than a mutation this design makes
-// unreachable.
+// make this test fail. That is not a gap in this test — it is a
+// consequence (though a slightly less absolute one than an earlier version
+// of this comment claimed — Opus review of PR #864, NB3, 2nd round) of how
+// every attached=false-setting site in this file sequences readDone's
+// close against attached's own publish:
+//
+//   - attach()'s own error path closes its freshly-allocated readDone
+//     BEFORE publishing attached=false (close, then lock+set+unlock) — for
+//     this path the pairing IS unconditional: no goroutine can observe
+//     attached=false without readDone already closed.
+//   - readLoop's deferred cleanup publishes attached=false BEFORE closing
+//     readDone (lock+set+unlock, then close — see readLoop's own doc
+//     comment for why this order was chosen). This leaves a real, if tiny,
+//     window where a concurrent snapshot could observe attached=false with
+//     readDone NOT YET closed.
+//
+// That window is harmless here: the `else` branch never reads readDone at
+// all (it only calls closeConn()), so which side of readLoop's own two
+// deferred statements a racing snapshot happens to land on changes
+// nothing about what the else branch does. And if a future version DID
+// select on readDone unconditionally, landing in this window would block
+// only for the length of the window itself (readLoop's very next
+// statement is the close) — not attachDrainGracePeriod — so this test's
+// actual assertion (elapsed well under attachDrainGracePeriod) still holds
+// either way. The `else` branch remains a clarity/directness simplification
+// over relying on this indirection (see waitLoop's own doc comment) rather
+// than a currently-reachable bug fix — this test pins the property that
+// actually matters (prompt teardown) rather than a mutation this design
+// makes unreachable in practice.
 func TestContainerSession_WaitLoop_SkipsDrainSelectWhenNeverAttached(t *testing.T) {
 	waitCh := make(chan container.WaitResponse, 1)
 	api := &fakeDockerAPI{

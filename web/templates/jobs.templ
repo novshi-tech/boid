@@ -166,7 +166,7 @@ templ JobDetail(job *JobContextView) {
 							// job_log_sse.go emits this NAMED event (distinct from the
 							// default "message" event onmessage above already handles)
 							// when the job is still running but has no live stream to
-							// offer right now (Opus review of PR #857, B2) — e.g. the
+							// offer right now (Opus review of PR #864, B2) — e.g. the
 							// container backend's adopt-time attach failed and has not
 							// been re-attached yet. Before this existed the SSE stream
 							// just silently ended in this case, indistinguishable from

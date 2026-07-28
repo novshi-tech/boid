@@ -197,13 +197,25 @@ func newRunnerTestDBWithJob(t *testing.T, runtimeID string) (dbConn *sql.DB, job
 // attach / Web UI SSE follow ingress: Subscribe must not hang forever when
 // Adopt's underlying engine call (a cache-miss ContainerInspect) never
 // answers.
+//
+// Also pins NB2 (Opus review of PR #864, 2nd round): this is exactly the
+// "Adopt itself timed out" scenario Subscribe's own doc comment describes
+// — hangingAdoptBackend.Adopt blocks until ctx.Done() fires, so ctx.Err()
+// is guaranteed non-nil by the time Subscribe's !adopted branch reads it.
+// finished must be false here: the job could very well still be running
+// (nothing here tells us the container has exited — the engine simply
+// never answered in time), so reporting finished=true (this branch's
+// pre-NB2 hardcoded value) would tell a WS/SSE caller the job is done when
+// it might not be — the exact false positive class B2 already fixed for
+// the "adopted successfully but lost its stream" case, reopened through
+// this different door.
 func TestRunner_Subscribe_HangingAdoptHitsDeadline(t *testing.T) {
 	withSessionControlCallTimeout(t, 200*time.Millisecond)
 	dbConn, jobID := newRunnerTestDBWithJob(t, "runtime-xyz")
 	r := &Runner{DB: dbConn, Backend: &hangingAdoptBackend{}}
 
 	start := time.Now()
-	_, _, _, ok, _ := r.Subscribe(jobID)
+	_, _, _, ok, finished := r.Subscribe(jobID)
 	elapsed := time.Since(start)
 
 	if elapsed > 5*time.Second {
@@ -211,6 +223,98 @@ func TestRunner_Subscribe_HangingAdoptHitsDeadline(t *testing.T) {
 	}
 	if ok {
 		t.Fatal("want ok=false: Adopt never resolved before the deadline")
+	}
+	if finished {
+		t.Error("want finished=false: Adopt timing out against a wedged engine tells us nothing about whether the job has actually exited")
+	}
+}
+
+// promptlyNotFoundBackend is a backend.SandboxBackend whose Adopt returns
+// ok=false IMMEDIATELY, without ever touching ctx — modelling Adopt
+// legitimately answering "no such session" (the backend has no notion of
+// this runtimeID at all: already exited and reaped, or never existed) with
+// plenty of ctx budget left, the opposite of hangingAdoptBackend's
+// ctx-exhausted case. Used to pin the OTHER half of NB2: Subscribe's
+// !adopted branch must still report finished=true when ctx.Err() is nil.
+type promptlyNotFoundBackend struct{}
+
+var _ backend.SandboxBackend = (*promptlyNotFoundBackend)(nil)
+
+func (b *promptlyNotFoundBackend) Launch(context.Context, sandbox.Spec, backend.LaunchOptions) (backend.SandboxSession, error) {
+	return nil, fmt.Errorf("promptlyNotFoundBackend.Launch is not implemented")
+}
+func (b *promptlyNotFoundBackend) Adopt(context.Context, string) (backend.SandboxSession, bool) {
+	return nil, false
+}
+func (b *promptlyNotFoundBackend) ReapOrphans(context.Context) (backend.ReapReport, error) {
+	return backend.ReapReport{}, nil
+}
+
+// TestRunner_Subscribe_AdoptPromptlyNotFoundReportsFinished pins the other
+// half of NB2 (Opus review of PR #864, 2nd round): when Adopt answers
+// ok=false with ctx still healthy (no deadline pressure at all — the
+// backend genuinely has no notion of this runtimeID), Subscribe must still
+// report finished=true — the container really is gone (or never existed),
+// so a WS/SSE caller reporting "job done" here is correct, not a false
+// positive. This is the regression guard alongside
+// TestRunner_Subscribe_HangingAdoptHitsDeadline just above, which pins the
+// opposite (ctx-exhausted) case.
+func TestRunner_Subscribe_AdoptPromptlyNotFoundReportsFinished(t *testing.T) {
+	dbConn, jobID := newRunnerTestDBWithJob(t, "runtime-xyz")
+	r := &Runner{DB: dbConn, Backend: &promptlyNotFoundBackend{}}
+
+	_, _, _, ok, finished := r.Subscribe(jobID)
+	if ok {
+		t.Fatal("want ok=false: promptlyNotFoundBackend.Adopt always returns false")
+	}
+	if !finished {
+		t.Error("want finished=true: Adopt found nothing with ctx still healthy — the container is genuinely gone, not merely unreachable")
+	}
+}
+
+// TestRunner_Subscribe_NoRuntimeIDYetButJobRowExists_ReportsNotFinished
+// pins the "no runtime_id yet" half of NB2: a job row that exists but has
+// not been given a runtime_id yet (the window between CreateJob and
+// launchSandbox's own UpdateJob call — see Subscribe's own doc comment)
+// must NOT be reported as finished. The job may still be about to launch
+// (BuildSandboxSpec / workspace-home resolution / init can take real
+// wall-clock time — PR #861 added a debug log specifically because that
+// step can be slow), so finished=true here would tell a caller landing in
+// this exact window that a job which hasn't even started yet is already
+// done.
+func TestRunner_Subscribe_NoRuntimeIDYetButJobRowExists_ReportsNotFinished(t *testing.T) {
+	// runtimeID "" models a job row CreateJob has already persisted but
+	// launchSandbox has not yet reached its own `job.RuntimeID = handleID`
+	// UpdateJob call for.
+	dbConn, jobID := newRunnerTestDBWithJob(t, "")
+	r := &Runner{DB: dbConn, Backend: &promptlyNotFoundBackend{}}
+
+	_, _, _, ok, finished := r.Subscribe(jobID)
+	if ok {
+		t.Fatal("want ok=false: the job has no runtime_id yet")
+	}
+	if finished {
+		t.Error("want finished=false: the job row exists and may still be about to launch, not already done")
+	}
+}
+
+// TestRunner_Subscribe_UnknownJobID_ReportsFinished is the regression guard
+// alongside the test just above: a jobID with NO row at all (typo'd, or a
+// job old enough to have been GC'd) will never resolve, so finished=true
+// (a clean, terminating answer) remains correct — the pre-NB2 behavior for
+// this specific sub-case was already right, and must stay right now that
+// the OTHER sub-case (row exists, no runtime_id yet) no longer shares its
+// hardcoded value.
+func TestRunner_Subscribe_UnknownJobID_ReportsFinished(t *testing.T) {
+	dbConn, _ := newRunnerTestDBWithJob(t, "runtime-xyz")
+	r := &Runner{DB: dbConn, Backend: &promptlyNotFoundBackend{}}
+
+	_, _, _, ok, finished := r.Subscribe("no-such-job-id")
+	if ok {
+		t.Fatal("want ok=false: no job row matches this jobID")
+	}
+	if !finished {
+		t.Error("want finished=true: a jobID with no row at all will never resolve")
 	}
 }
 

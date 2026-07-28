@@ -211,7 +211,7 @@ func TestJobLogSSEHandler_RevokeClosesSSE(t *testing.T) {
 // — a regression guard alongside
 // TestJobLogSSEHandler_StillRunningButUnavailable_SendsNamedSSEEvent below,
 // which pins the NEW behavior for the opposite (finished=false) case (Opus
-// review of PR #857, B2). A finished job's SSE stream must still just end
+// review of PR #864, B2). A finished job's SSE stream must still just end
 // after the snapshot, with no named event of any kind.
 func TestJobLogSSEHandler_Finished_EndsStreamSilently(t *testing.T) {
 	sub := &fakeRuntimeSubscriber{
