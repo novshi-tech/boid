@@ -78,7 +78,7 @@ workspace の中身を新規に用意する場合は、`boid workspace configure
 
 `WorkspaceMeta.Kits` フィールド (workspace.yaml の `kits:`) は Phase 2.5 PR7 (2026-07) でコードから完全撤去されました。影響:
 
-- `POST` / `PUT` / `import /api/workspaces` に `kits:` キーを含む body を送ると 400 (`unknown field kits`) で reject される
+- `POST` / `PUT /api/workspaces` に `kits:` キーを含む body を送ると 400 (`unknown field kits`) で reject される
 - `boid project migrate` は legacy project.yaml の `kits:` 参照を名前検証・informational 表示のみ行い、 workspace への自動解決はしなくなった (上の「`boid project migrate` の変換内容」参照)。 migrate が生成する legacy kit 自体 (`host_commands` + `additional_bindings` を同梱) は変わらず生成され、 その内容は workspace の対応フィールドに直接追記される
 - 唯一残る legacy `kits:` 対応経路は `boid workspace assign` の auto-create 補助 (手書き/e2e フィクスチャの workspace shadow yaml 向け) — クライアント側でインストール済み kit を解決してから (kits: を含まない) body を送信する
 - **(訂正)** rollback 用に残置している shadow yaml (`~/.config/boid/workspaces/*.yaml`) や `~/.local/share/boid/kits/` ディレクトリは、 「DB 権威切り替え後は読まれない」わけではなく、 依然として次の 2 経路から読まれる依存が残っている — 「削除しても daemon の動作に影響はない」という案内は誤りなので撤回する:

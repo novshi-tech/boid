@@ -76,7 +76,7 @@ To set up a workspace's contents from scratch, use `boid workspace create` / `ed
 
 The `WorkspaceMeta.Kits` field (workspace.yaml's `kits:`) was removed from the code outright in Phase 2.5 PR7 (2026-07). Consequences:
 
-- `POST` / `PUT` / `import /api/workspaces` now reject a request body containing a `kits:` key with 400 (`unknown field kits`).
+- `POST` / `PUT /api/workspaces` now reject a request body containing a `kits:` key with 400 (`unknown field kits`).
 - `boid project migrate` still name-validates and displays a legacy project.yaml's `kits:` refs informationally, but no longer resolves them into the workspace at all (see "What `boid project migrate` converts" above). The legacy kit it generates from `host_commands`/`additional_bindings` is unaffected — its content is still folded in, just directly rather than via a kit reference.
 - The one remaining caller that still honors a legacy `kits:` list is `boid workspace assign`'s auto-create convenience path (for a hand-authored or e2e-fixture workspace shadow yaml) — it resolves the reference client-side against the installed kits directory before submitting an already-materialized (kits-free) body.
 - **(Correction)** The shadow yaml files kept for rollback (`~/.config/boid/workspaces/*.yaml`) and the `~/.local/share/boid/kits/` directory are *not* fully unread once the DB is authoritative — two dependencies remain, so the earlier "safe to delete any time, no effect on the daemon" guidance above is retracted:

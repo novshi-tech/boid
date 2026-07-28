@@ -285,33 +285,6 @@ func DecodeWorkspaceEnvelopeDocuments(data []byte) ([]*WorkspaceEnvelopeApply, e
 	return docs, nil
 }
 
-// bareMetaSentToTheWrongDoor is the reciprocal of workspace_meta_strict.go's
-// envelopeSentToTheWrongDoor: it detects a BARE workspace-meta document (no
-// apiVersion/kind, host_commands:/env:/... at the top level — what `boid
-// workspace create --from-file`/`edit --from-file` take, and what a
-// hand-authored workspace yaml or `boid project migrate`'s shadow file
-// usually is) landing at `apply`'s decoder instead of one of those.
-//
-// Without this, the KnownFields unmarshal above fails with e.g. "document 1:
-// yaml: unmarshal errors:\n  line 1: field host_commands not found in type
-// orchestrator.rawWorkspaceEnvelope" — an unexported Go type name that
-// describes the document by what it is not and never mentions the
-// one-word-different commands that actually accept this shape. Found
-// 2026-07-28 alongside `boid workspace import`'s retirement: that command
-// used to be the one place a bare meta document reliably worked end to end
-// (however brokenly — see cmd/workspace.go's runWorkspaceImportDeprecated),
-// so pointing its deprecation message at `apply -f` would otherwise dead-end
-// on this exact error for the common case (a bare meta file, not an
-// envelope) — the same gap envelopeSentToTheWrongDoor closed for the
-// opposite direction (docs/plans/workspace-home-volume-persistence.md 論点
-// d, 2026-07-28 dogfood).
-//
-// Detection is deliberately loose, matching envelopeSentToTheWrongDoor's own
-// posture: apiVersion and kind both absent, AND at least one field name
-// WorkspaceMeta actually has is present at the top level. A document with
-// neither an envelope's identifying keys nor any recognizable meta field
-// (e.g. a typo of everything) falls through to the original decode error,
-// which is exactly as informative for that case as it always was.
 // bareMetaKnownFieldNames is every yaml key bareMetaSentToTheWrongDoor
 // treats as evidence of a bare workspace-meta document: the yaml tag of
 // every WorkspaceMeta field (workspace_meta.go) — env, capabilities,
@@ -342,6 +315,33 @@ var bareMetaKnownFieldNames = map[string]bool{
 	"additional_bindings": true,
 }
 
+// bareMetaSentToTheWrongDoor is the reciprocal of workspace_meta_strict.go's
+// envelopeSentToTheWrongDoor: it detects a BARE workspace-meta document (no
+// apiVersion/kind, host_commands:/env:/... at the top level — what `boid
+// workspace create --from-file`/`edit --from-file` take, and what a
+// hand-authored workspace yaml or `boid project migrate`'s shadow file
+// usually is) landing at `apply`'s decoder instead of one of those.
+//
+// Without this, the KnownFields unmarshal above fails with e.g. "document 1:
+// yaml: unmarshal errors:\n  line 1: field host_commands not found in type
+// orchestrator.rawWorkspaceEnvelope" — an unexported Go type name that
+// describes the document by what it is not and never mentions the
+// one-word-different commands that actually accept this shape. Found
+// 2026-07-28 alongside `boid workspace import`'s retirement: that command
+// used to be the one place a bare meta document reliably worked end to end
+// (however brokenly — see cmd/workspace.go's runWorkspaceImportDeprecated),
+// so pointing its deprecation message at `apply -f` would otherwise dead-end
+// on this exact error for the common case (a bare meta file, not an
+// envelope) — the same gap envelopeSentToTheWrongDoor closed for the
+// opposite direction (docs/plans/workspace-home-volume-persistence.md 論点
+// d, 2026-07-28 dogfood).
+//
+// Detection is deliberately loose, matching envelopeSentToTheWrongDoor's own
+// posture: apiVersion and kind both absent, AND at least one field name
+// WorkspaceMeta actually has is present at the top level. A document with
+// neither an envelope's identifying keys nor any recognizable meta field
+// (e.g. a typo of everything) falls through to the original decode error,
+// which is exactly as informative for that case as it always was.
 func bareMetaSentToTheWrongDoor(data []byte) error {
 	// Decoded as a generic map, not a fixed struct: bareMetaKnownFieldNames
 	// above is the single source of truth for which keys count as "looks

@@ -571,11 +571,14 @@ func TestWorkspaceHandler_SlugExportRouteRemoved(t *testing.T) {
 //
 // TestWorkspaceHandler_ImportRouteRemoved pins that POST /api/workspaces/import
 // is gone from routing entirely (2026-07-28, second review round of this PR):
-// it was ImportWorkspace/DecodeWorkspaceCreateStrict's only remaining caller
-// once `boid workspace import` (the CLI side) became a deprecated stub that
-// never issues this request — a duplicate, zero-reference entry point that
-// contradicted the PR's own "one entry point" premise, per the same
-// unification this PR already applies to GET /export above.
+// it was ImportWorkspace's only remaining caller once `boid workspace
+// import` (the CLI side) became a deprecated stub that never issues this
+// request — a duplicate, zero-reference entry point that contradicted the
+// PR's own "one entry point" premise, per the same unification this PR
+// already applies to GET /export above. (DecodeWorkspaceCreateStrict, the
+// decoder Import used, is NOT similarly orphaned — Create, POST
+// /api/workspaces, decodes with it too; only ImportWorkspace and the route
+// itself were this endpoint's alone to lose.)
 //
 // The expected status is 405, NOT 404, and that is a real routing quirk
 // worth spelling out rather than a mistake: "/import" is a single path
@@ -586,11 +589,20 @@ func TestWorkspaceHandler_SlugExportRouteRemoved(t *testing.T) {
 // so chi's router answers 405 Method Not Allowed rather than 404 (contrast
 // TestWorkspaceHandler_SlugExportRouteRemoved below: "/{slug}/export" is
 // a TWO-segment path with no other route matching it at all, so THAT one
-// really is a plain 404). GET /api/workspaces/import would, unchanged from
-// before this PR, resolve to Show("import") — same as GET /api/workspaces/export
-// already did pre-PR for the identical reason; this endpoint's static POST
-// registration existing or not was never what protected a workspace
-// literally named "import"/"export" from that method-specific shadowing.
+// really is a plain 404).
+//
+// GET /api/workspaces/import would, unchanged from before this PR, resolve
+// to Show("import") for the same method-specific-shadowing reason — but the
+// accurate same-shape example is GET /api/workspaces/apply -> Show("apply")
+// (apply only registers POST, so GET falls through to "/{slug}" exactly
+// like import now does), or PUT/DELETE /api/workspaces/export ->
+// Update/Remove("export") (export only registers GET). GET
+// /api/workspaces/export itself is NOT such an example — it resolves to
+// ExportEnvelope, not Show, because "/export" DOES have a GET route
+// registered (r.Get("/export", h.ExportEnvelope) above); the static/wildcard
+// shadowing this comment describes is scoped to the METHOD, not the path,
+// and this endpoint's POST registration existing or not was never what
+// protected a workspace literally named "import"/"export"/"apply" from it.
 func TestWorkspaceHandler_ImportRouteRemoved(t *testing.T) {
 	svc := &fakeWorkspaceService{}
 	h := &WorkspaceHandler{Service: svc}

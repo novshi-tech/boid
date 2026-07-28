@@ -1429,9 +1429,26 @@ func TestWorkspaceImportCmd_Annotations(t *testing.T) {
 // above and this test together rule out: one pins the annotation values,
 // this one proves those values actually reach PersistentPreRunE on the real,
 // registered command object (not a synthetic stand-in).
+//
+// client.NoAutostartEnv=1 (mirroring cmd/root_test.go's
+// TestPersistentPreRunE_UnixProfile_RunsAutostartCheck) is set so a missing
+// annotation fails this test as a clean assertion instead of as a spawn: if
+// the skip annotation were absent, client.EnsureRunningAt would otherwise
+// take the SPAWN branch (BOID_SOCKET here also happens to be
+// client.DefaultSocketPath's value, since that reads the same env var
+// first) — spawnServer re-execs os.Executable(), which in a go-test binary
+// IS this test binary, with "start" appended, re-running the whole suite as
+// a child process. testutil/homeenv isolates HOME/XDG_DATA|CONFIG|STATE_HOME
+// but not XDG_RUNTIME_DIR, so that child would inherit the parent's flock
+// path, and PersistentPreRunE passes context.Background() to EnsureRunningAt
+// (no deadline) — not something worth exercising for real in this test. With
+// NoAutostartEnv=1, a missing/wrong annotation instead surfaces as
+// EnsureRunning's own "boid server is not running" error, an ordinary
+// t.Fatalf, nothing spawned.
 func TestWorkspaceImportCmd_NeverAttemptsDaemonAutostart(t *testing.T) {
 	writeRootTestConfigYAML(t, "")
 	t.Setenv("BOID_SOCKET", filepath.Join(t.TempDir(), "no-daemon-here.sock"))
+	t.Setenv(client.NoAutostartEnv, "1")
 
 	if err := rootCmd.PersistentPreRunE(workspaceImportCmd, []string{"whatever.yaml"}); err != nil {
 		t.Fatalf("PersistentPreRunE must not attempt to autostart a daemon for workspaceImportCmd: %v", err)

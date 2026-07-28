@@ -38,8 +38,24 @@ func (h *WorkspaceHandler) Routes() chi.Router {
 	r.Post("/", h.Create)
 	// "/export" and "/apply" are static path segments at this same router
 	// level as "/{slug}" — chi's radix tree gives a static segment priority
-	// over a wildcard one at the same depth, so these never collide with a
-	// workspace literally named "export"/"apply".
+	// over a wildcard one at the same depth, but only for the METHOD each
+	// static route actually registers, not the path as a whole: GET
+	// /api/workspaces/export resolves to ExportEnvelope below (never
+	// Show), but PUT/DELETE /api/workspaces/export — no static route
+	// registers those methods on "/export" — fall through to "/{slug}"
+	// and hit Update/Remove("export") instead, same as any other slug.
+	// Likewise GET /api/workspaces/apply falls through to Show("apply"),
+	// since only POST is registered here (this is the exact shape "/import"
+	// is in after its own POST registration was removed 2026-07-28 — see
+	// TestWorkspaceHandler_ImportRouteRemoved). ValidWorkspaceSlug
+	// (workspace_slug.go) has no reserved-word list, so a workspace can
+	// really be created named "export"/"apply"/"import" and remains
+	// reachable through every method this router does not shadow for that
+	// literal path — pre-existing, unchanged by this PR, and not itself a
+	// bug this PR introduces or need fix, but flagged as a possible
+	// follow-up (reserving these names, or moving them off the bare
+	// "/{name}" segment) rather than silently left for the next reader to
+	// rediscover.
 	r.Get("/export", h.ExportEnvelope)
 	r.Post("/apply", h.Apply)
 	r.Get("/{slug}", h.Show)
