@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"log"
 	"log/slog"
+	"os"
 	"strconv"
 	"strings"
 	"testing"
@@ -491,6 +493,109 @@ func TestContainerBackend_RunWorkspaceInit_SuccessDebugFullOutputIsRetentionBoun
 	if got, bound := buf.Len(), 2*workspaceInitOutputLimit; got > bound {
 		t.Errorf("captured log is %d bytes, which exceeds %d (2x workspaceInitOutputLimit=%d); "+
 			"the debug full dump is not respecting the retention bound", got, bound, workspaceInitOutputLimit)
+	}
+}
+
+// captureDefaultLoggerOutput redirects the standard "log" package's output —
+// exactly what slog's package-private DEFAULT handler writes through, as
+// long as nothing calls slog.SetDefault (see internal/daemon.ApplyLogLevel's
+// doc comment for why that invariant matters in production) — into an
+// in-memory buffer for the duration of the test, and sets slog's bridge
+// level the same way internal/daemon.ApplyLogLevel does (slog.
+// SetLogLoggerLevel, never a custom Handler).
+//
+// captureLogs above installs a slog.NewTextHandler via slog.SetDefault
+// instead, which is enough to pin log CONTENT (it's what every other test in
+// this file uses) but is a different code path from the one production
+// actually runs through. Duplicated here rather than reusing
+// internal/daemon/log_level_test.go's captureStdLog because that package
+// depends on internal/config, and the dependency here would have to run the
+// other way.
+func captureDefaultLoggerOutput(t *testing.T, level slog.Level) *bytes.Buffer {
+	t.Helper()
+	var buf bytes.Buffer
+	log.SetOutput(&buf)
+	log.SetFlags(log.LstdFlags)
+	slog.SetLogLoggerLevel(level)
+	t.Cleanup(func() {
+		log.SetOutput(os.Stderr)
+		slog.SetLogLoggerLevel(slog.LevelInfo)
+	})
+	return &buf
+}
+
+// TestContainerBackend_RunWorkspaceInit_SuccessDebugOffSkipsMaterializingFullOutput
+// pins NB-1 of PR #861's independent (Claude/Opus) review: with debug OFF,
+// a successful init must not pay the cost of materializing the full retained
+// window at all, not merely "not log it".
+//
+// Go evaluates a function call's arguments before the call itself runs, so
+// `slog.Debug(msg, "output", output.String())` executes output.String() —
+// the whole trimmed buffer copied into a fresh string, up to
+// workspaceInitOutputLimit bytes — EVERY time, whether or not slog.Debug's
+// own internal Enabled() check then throws the record away. Passing output
+// itself (a fmt.Stringer, via its pointer receiver String method) instead of
+// output.String() lets slog defer that conversion to whichever
+// Handler.Handle renders the record, and Handle is never invoked for a
+// level the logger has disabled — so the cost only exists when something is
+// actually listening at DEBUG.
+//
+// workspaceInitOutputStringCalls is the only way to observe this: nothing
+// outside workspace_init.go ever gets a handle on the *workspaceInitOutput a
+// RunWorkspaceInit call constructs, so the log CONTENT looks identical
+// either way (the earlier tests above already pin that) and only a call
+// counter can tell eager from lazy apart.
+func TestContainerBackend_RunWorkspaceInit_SuccessDebugOffSkipsMaterializingFullOutput(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		level     slog.Level
+		wantCalls int64
+	}{
+		{"debug disabled (INFO threshold)", slog.LevelInfo, 0},
+		{"debug enabled", slog.LevelDebug, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			captureLogs(t, tc.level)
+			workspaceInitOutputStringCalls.Store(0)
+
+			runInitPrinting(t, "some output\n")
+
+			if got := workspaceInitOutputStringCalls.Load(); got != tc.wantCalls {
+				t.Errorf("workspaceInitOutput.String() called %d time(s) at handler level %s, want %d",
+					got, tc.level, tc.wantCalls)
+			}
+		})
+	}
+}
+
+// TestContainerBackend_RunWorkspaceInit_SuccessDebugOffSkipsMaterializingFullOutput_RealHandler
+// re-runs the pin above against the handler PRODUCTION actually uses —
+// slog's package-private default, bridged through the standard "log"
+// package and gated by slog.SetLogLoggerLevel (internal/daemon.
+// ApplyLogLevel), never a slog.NewTextHandler installed via SetDefault. The
+// two are not guaranteed to defer a fmt.Stringer argument identically, so
+// this confirms the property against the handler that ships rather than
+// leaving it as an inference from the TextHandler-based test above.
+func TestContainerBackend_RunWorkspaceInit_SuccessDebugOffSkipsMaterializingFullOutput_RealHandler(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		level     slog.Level
+		wantCalls int64
+	}{
+		{"debug disabled (INFO threshold)", slog.LevelInfo, 0},
+		{"debug enabled", slog.LevelDebug, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			captureDefaultLoggerOutput(t, tc.level)
+			workspaceInitOutputStringCalls.Store(0)
+
+			runInitPrinting(t, "some output\n")
+
+			if got := workspaceInitOutputStringCalls.Load(); got != tc.wantCalls {
+				t.Errorf("workspaceInitOutput.String() called %d time(s) at logger level %s (real default handler), want %d",
+					got, tc.level, tc.wantCalls)
+			}
+		})
 	}
 }
 

@@ -202,7 +202,11 @@ yaml / json / xml / tar のような構造化データの type だけです (そ
   `[boid: omitted ... bytes]` の注記が付く)。`init.sh` は
   「成功したのに home が壊れている」形で失敗しうる —— インストーラが
   警告だけ出して終了 0 を返す、といったケース —— ので、
-  その調査の最初の手がかりはこのログになる
+  その調査の最初の手がかりはこのログになる。tail だけでは足りない場合、
+  `config.yaml` で `log.level: debug` にすると、保持している全量
+  (最大 `workspaceInitOutputLimit` 分、既定 1MiB) が別行
+  `workspace home init full output` として追加で出る
+  ([設定リファレンス](../reference/config-yaml.md) 参照)
 
 ### script 作者が守ること
 
