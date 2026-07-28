@@ -749,8 +749,9 @@ func TestContainerSession_Wait_SingleOwnerFanOut(t *testing.T) {
 }
 
 // TestContainerSession_WaitLoop_EngineErrorInTheWaitResponseFailsTheJob pins
-// that waitLoop treats an engine-reported wait error the same as a failed
-// exit, on the job dispatch path — the counterpart of
+// that waitLoop treats an engine-reported wait error the same as the
+// ContainerWait API-call failure path right below it (case err :=
+// <-waitRes.Error), on the job dispatch path — the counterpart of
 // TestContainerBackend_RunWorkspaceInit_EngineErrorInTheWaitResponseFailsTheRun
 // (container_backend_workspace_init_test.go), which already pins this for
 // the workspace-init path via the shared waitResponseEngineError helper.
@@ -759,10 +760,16 @@ func TestContainerSession_Wait_SingleOwnerFanOut(t *testing.T) {
 // is an exit status: when the engine cannot report one — the runtime failed
 // to wait, the shim died, the container never started — it answers with
 // StatusCode: 0 and a non-nil Error, which is exactly the shape of a
-// successful exit if only StatusCode is read. Because a hook's exit 0 is
-// boid's "task done" signal, a waitLoop that reads only StatusCode turns an
-// engine-side failure into a task moving to done for a job whose container
-// never actually ran or reported.
+// successful exit if only StatusCode is read. This session's own ExitCode is
+// therefore wrong on its own terms whether or not any particular caller
+// happens to paper over it afterward — see the doc comment on this case in
+// waitLoop itself for how Runner.watchRuntime's independent 0→1 coercion
+// relates to (but does not substitute for) this.
+//
+// Asserted as == 1, not just != 0: the exact value matters because it pins
+// parity with the adjacent case's existing exitCode = 1, not merely "some
+// nonzero code" (which an unrelated regression, e.g. exitCode = 2, would
+// still satisfy).
 func TestContainerSession_WaitLoop_EngineErrorInTheWaitResponseFailsTheJob(t *testing.T) {
 	const engineMessage = "runtime wait failed"
 	api := &fakeDockerAPI{
@@ -781,8 +788,8 @@ func TestContainerSession_WaitLoop_EngineErrorInTheWaitResponseFailsTheJob(t *te
 	if err != nil {
 		t.Fatalf("Wait: %v", err)
 	}
-	if exit.ExitCode == 0 {
-		t.Errorf("ExitCode = 0 for a wait the engine answered with an error (%q); a job whose container never reported an exit status must not be reported as exit 0 / task done", engineMessage)
+	if exit.ExitCode != 1 {
+		t.Errorf("ExitCode = %d for a wait the engine answered with an error (%q), want 1 (parity with the adjacent <-waitRes.Error failure path's existing exitCode = 1)", exit.ExitCode, engineMessage)
 	}
 }
 

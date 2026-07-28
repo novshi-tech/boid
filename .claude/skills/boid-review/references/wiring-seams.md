@@ -32,6 +32,7 @@ has the same shape:
 15. [attachments RPC write ↔ read path](#15-attachments-rpc-write--read-path)
 16. [adapter-issued task-context RPC (claude readSessionsFromRPC ↔ sandbox env)](#16-adapter-issued-task-context-rpc)
 17. [payload_patch direct-pass merge parity, persistence, and concurrency](#17-payload_patch-direct-pass-merge-parity-persistence-and-concurrency)
+18. [engine wait response → RuntimeExit → job status/diagnostics](#18-engine-wait-response--runtimeexit--job-statusdiagnostics)
 
 ---
 
@@ -902,3 +903,55 @@ with a completion-time persist step it does not control.
   (decision 6/7: kept alive until a later phase retires it, together with the `$HOME/.boid`
   job-scoped tmpfs overlay that isolates it — see seam #13's PR6 update) is untouched by this PR and
   remains fully separate infrastructure; this seam is about the new RPC path only.
+
+## 18. engine wait response → RuntimeExit → job status/diagnostics
+
+Whether a docker `container.WaitResponse` the ENGINE could not fill in (`Error` set, `StatusCode`
+left at its zero value — the runtime failed to wait, the shim died, the container never started) is
+read correctly at the layer that owns exit-status *meaning* (`containerSession.waitLoop`), and
+whether the layer that turns an exit code into job/task outcome (`Runner.watchRuntime`) still fails
+the job even when the first layer's own check is bypassed or weakened. moby/moby/client's
+`ContainerWait` forwards the response body verbatim without inspecting `Error`, so a caller reading
+only `StatusCode` sees an engine failure as an ordinary "exited 0". The two ends currently overlap —
+losing one does not (today) cause a false job success — which is exactly the shape of seam where a
+later "the other end already covers it" edit removes the wrong one.
+
+- **End A (produce — exit-code honesty)**: `containerSession.waitLoop`
+  (`internal/dispatcher/container_backend.go`) and `containerBackend.RunWorkspaceInit`'s incumbent-
+  wait path (`internal/dispatcher/container_backend_workspace_init.go`) both call the shared
+  `waitResponseEngineError(res)` helper before trusting `res.StatusCode`. This is what keeps THIS
+  layer's own `backend.RuntimeExit.ExitCode` honest, and what `NewDefaultDiagnosticsCollector`'s
+  `exit.ExitCode != 0` gate (`internal/dispatcher/container_backend_diagnostics.go`) depends on to
+  fire for an engine-side wait failure — the collector exists specifically to capture "the container
+  didn't run right", and an unread `Error` used to make it skip exactly that case.
+- **End B (consume — job/task outcome)**: `Runner.watchRuntime` (`internal/dispatcher/runner.go`)
+  independently coerces a zero `RuntimeExit.ExitCode` to 1 and unconditionally sets
+  `job.Status = JobStatusFailed` whenever a container exits without the in-container runner's own
+  "job done" broker report ever arriving. A job is only ever marked successfully completed
+  (`JobStatusCompleted`) via that separate in-container report path (`postJobDone` →
+  `internal/server/boid_executor.go` → `Runner.CompleteJob`), which `watchRuntime` never touches — so
+  End B, on its own, already prevents an engine-side wait failure from becoming a false "task done",
+  independently of whatever End A does with `res.StatusCode`.
+- **Invariant**: End A and End B currently each independently prevent a different bad outcome (End A:
+  a dishonest exit code / a skipped diagnostics capture; End B: a job wrongly marked done) — do not
+  assume either one's presence makes the other's redundant. **Past break**: `containerSession.waitLoop`
+  read only `res.StatusCode` (missing End A) until PR #855 fixed it — this had NO consequence for job
+  status or task completion (End B's unconditional-fail coercion already covered that independently),
+  but it did mean `NewDefaultDiagnosticsCollector` silently never fired for an engine wait failure, and
+  `job.Output`'s rendered `exit_code=%d` (from the unread, still-zero `result.ExitCode`) contradicted
+  the `job.ExitCode` field `watchRuntime` had just forced to 1 in the same call.
+- **Guard**: `TestContainerSession_WaitLoop_EngineErrorInTheWaitResponseFailsTheJob`
+  (`internal/dispatcher/container_backend_test.go`) pins End A on the job dispatch path;
+  `TestContainerBackend_RunWorkspaceInit_EngineErrorInTheWaitResponseFailsTheRun`
+  (`container_backend_workspace_init_test.go`) pins it on the workspace-init path (which has no End B
+  — a failed `RunWorkspaceInit` call is its own terminal outcome, not a job status). Neither test
+  exercises End B's coercion directly, and there is no test today that pins "an engine wait error
+  still fails the job even with End A's own check removed" — treat that as a known coverage gap, not
+  as proof the two ends are redundant on purpose.
+- **When you touch it**: if you touch `waitResponseEngineError`, either of its call sites, or
+  `backend.RuntimeExit`'s shape, verify `NewDefaultDiagnosticsCollector`'s zero-check and
+  `watchRuntime`'s 0→1 coercion still see the value you intend. If you ever remove or weaken
+  `watchRuntime`'s unconditional-fail coercion (e.g. on the reasoning "waitLoop already reports engine
+  errors correctly now, so this is redundant"), that is exactly the moment End A's check stops being
+  cosmetic and starts being load-bearing for task-done correctness — add a test that pins the
+  consequence before doing so, rather than relying on the other end having always been there.
