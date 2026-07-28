@@ -8,9 +8,20 @@ import (
 
 // ApplyLogLevel sets the daemon process's slog output level from
 // config.yaml's log.level, called once from cmd/start.go's runDaemonChild
-// right after the log file redirect is in place — before anything else in
-// the daemon's startup path emits a log line, so the whole process lifetime
-// observes one consistent level.
+// right after the log file redirect is in place — the first slog-affecting
+// call WITHIN runDaemonChild, so everything that function itself logs (the
+// BOID_CLI_TOKEN warning, "boid server started", ...) observes the
+// configured level. This is not quite "before anything else in the whole
+// process": runStart's own earlier config.Load() call (buildStartConfig,
+// in the same process, before runDaemonChild is even invoked) can itself
+// emit a couple of slog.Warn lines (the deprecated sandbox.backend /
+// gateway.hosts warnings, internal/config/config.go) — those land on
+// whatever stdout/stderr this process inherited, before
+// RedirectToLogRotating swaps it to the log file, and before any log.level
+// value could apply to them even if it wanted to. In practice this is a
+// cosmetic gap (those two warnings fire regardless of log.level, and no
+// slog.Debug call sits in that earlier window today), not a correctness
+// one.
 //
 // It works entirely by calling the standard library's
 // slog.SetLogLoggerLevel, WITHOUT installing a slog.Handler (no

@@ -33,6 +33,7 @@ has the same shape:
 16. [adapter-issued task-context RPC (claude readSessionsFromRPC ↔ sandbox env)](#16-adapter-issued-task-context-rpc)
 17. [payload_patch direct-pass merge parity, persistence, and concurrency](#17-payload_patch-direct-pass-merge-parity-persistence-and-concurrency)
 18. [engine wait response → RuntimeExit → job status/diagnostics](#18-engine-wait-response--runtimeexit--job-statusdiagnostics)
+19. [config schema seam (schema leaf → Config field → extractor → buildStartConfig → consumer)](#19-config-schema-seam)
 
 ---
 
@@ -955,3 +956,52 @@ later "the other end already covers it" edit removes the wrong one.
   errors correctly now, so this is redundant"), that is exactly the moment End A's check stops being
   cosmetic and starts being load-bearing for task-done correctness — add a test that pins the
   consequence before doing so, rather than relying on the other end having always been there.
+
+## 19. config schema seam
+
+Whether a new `internal/config/schema.go` leaf actually reaches the daemon behavior it's
+meant to configure. Adding a config.yaml key touches a six-link chain — `Schema` leaf →
+`Config` struct field → `Config.UnmarshalYAML` parse/validate → (if `ReloadRestartRequired`)
+`restartFieldExtractors` entry → `cmd/start.go`'s `buildStartConfig` copying the resolved
+value onto `server.Config` → whatever actually consumes that `server.Config` field. The
+first four links are self-defending; the last two are not.
+
+- **End A (schema ↔ extractor, self-defending)**: `config.Schema` (`internal/config/schema.go`),
+  `Config`/`Config.UnmarshalYAML` (`internal/config/config.go`), and
+  `restartFieldExtractors`/`restartFieldExtractorExemptions`
+  (`internal/server/config_edit.go`). A `ReloadRestartRequired` leaf missing from both of the
+  latter two maps makes `verifyRestartExtractorCoverage` **panic at daemon startup** (called
+  from `wire.go`'s `buildRuntime`, before `GET/POST /api/config` can accept a single request) —
+  and `TestRestartFieldExtractors_ExhaustiveCoverage`
+  (`internal/server/config_edit_internal_test.go`) catches the same gap at `go test` time. A
+  forgotten entry here cannot silently ship.
+- **End B (buildStartConfig → consumer, NOT self-defending)**: `cmd/start.go`'s
+  `buildStartConfig` reads the loaded `*config.Config` and copies each field it cares about
+  onto the `server.Config` it returns (e.g. `cfg.HTTPAddr = appCfg.Web.HTTPAddr`,
+  `cfg.LogLevel = appCfg.Log.Level`) — a plain, hand-written assignment per key, with **no
+  compiler or test forcing every `Config` field to have one**. Nothing panics, nothing fails a
+  build, and no generic coverage test exists if a future config key is added to `Schema` +
+  `Config` + `restartFieldExtractors` (satisfying End A completely) but the
+  `buildStartConfig`/`server.Config` copy is simply forgotten: `boid config set` accepts the
+  key, `boid config get` shows it, the daemon even warns "requires restart" on change — and
+  after that restart, the value never reaches whatever was supposed to consume it. The key
+  looks fully wired end-to-end from every angle End A's forcing functions can see.
+- **Invariant**: a `Schema` leaf that has an `internal/server/config_edit.go` extractor (or
+  exemption) is not, by itself, evidence that the value reaches a live consumer — that
+  requires a *second*, independent check on the `buildStartConfig`/`server.Config` half, which
+  today only exists per-key (a dedicated test for that one field), never generically.
+- **Past break**: none yet — flagged during PR #858 review (log.level) as a gap the PR itself
+  happened to close correctly for its own key (see Guard below), not as an existing bug.
+- **Guard**: End A has the generic, exhaustive tests named above. End B has **no generic
+  test** — only per-key coverage as each key's own PR happens to add it, e.g.
+  `TestBuildStartConfig_LogLevelFromConfig`/`TestBuildStartConfig_LogLevelUnset_Empty`
+  (`cmd/start_test.go`) for `log.level`, or `TestBuildStartConfig_UsesDefaults`'s assertions on
+  `cfg.HTTPAddr`/`cfg.AllowedDomains`/etc. for the older keys. A key added without its own
+  `buildStartConfig`-level test would pass every existing test in the tree.
+- **When you touch it**: when you add a new `config.yaml` key that a live daemon process is
+  supposed to act on (not just persist), verify the chain past End A too — grep
+  `buildStartConfig` for whether your key's `appCfg.*` value is actually copied onto the
+  `server.Config` (or wherever else the daemon's runtime config lives) it returns, and add a
+  test asserting that copy, the same way `TestBuildStartConfig_LogLevelFromConfig` does. Don't
+  stop at "the schema/extractor tests pass" — that only proves the key round-trips through
+  config.yaml, not that anything reads it.

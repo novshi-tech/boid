@@ -252,13 +252,16 @@ func (b *containerBackend) RunWorkspaceInit(ctx context.Context, req WorkspaceIn
 	// overlay mount to find out what the installer had said.
 	//
 	// Logged at INFO, not DEBUG, even though a per-dispatch record of a
-	// successful run is exactly the kind of thing debug level is for: boid
-	// has no way to turn debug level ON. Nothing in the daemon ever calls
-	// slog.SetDefault or installs a Handler, so the process runs at slog's
-	// built-in default (info) for its whole life, and a slog.Debug line here
-	// would be an output nobody could ever produce. Bounded and at info is
-	// the version that actually exists. If a level knob lands later, the
-	// natural follow-up is a debug line carrying output.String() — the full
+	// successful run is exactly the kind of thing debug level is for.
+	// config.yaml's log.level (internal/config.LogConfig, internal/daemon.
+	// ApplyLogLevel) now lets an operator turn slog.Debug ON — the level
+	// knob this comment used to say boid had no way to land — but this call
+	// site itself has NOT been switched to Debug: that's a separate,
+	// deliberately deferred decision (see the PR that introduced log.level
+	// for the "why not both at once" rationale), not something this comment
+	// should silently imply is still impossible. Bounded and at info is the
+	// version that actually exists today. The natural follow-up, if that
+	// decision is made, is a debug line carrying output.String() — the full
 	// retained window — with this tail staying as the default-level record.
 	slog.Info("workspace home init completed",
 		"workspace_slug", req.Slug, "container", name,

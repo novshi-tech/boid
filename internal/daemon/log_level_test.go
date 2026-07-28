@@ -14,19 +14,30 @@ import (
 // exactly what slog's package-private defaultHandler writes through, as
 // long as nothing calls slog.SetDefault (see ApplyLogLevel's own doc
 // comment for why that invariant matters) — into an in-memory buffer for
-// the duration of the test, restoring both the previous writer and slog's
-// log-package bridge level (reset to its zero-value default, LevelInfo) on
-// cleanup so tests in this file cannot leak global state into each other or
-// into any other test in this package's binary.
+// the duration of the test, restoring the previous writer, slog's
+// log-package bridge level (reset to its zero-value default, LevelInfo),
+// AND slog's default Logger on cleanup. The default-Logger restore matters
+// even though nothing in this package calls slog.SetDefault today: `go
+// test` runs every test in a package binary sequentially, and slog.Default
+// is process-wide — internal/config, internal/orchestrator, and
+// internal/server's own test suites each install a captured
+// slog.NewTextHandler default for the duration of a test (see e.g.
+// internal/config/config_test.go's captureSlog); the day any of that ever
+// lands in this package too, an unrestored default here would leak into
+// whichever test in this file's binary runs next, and that test's own
+// assertions would fail for a reason having nothing to do with its own
+// logic.
 func captureStdLog(t *testing.T) *bytes.Buffer {
 	t.Helper()
 	var buf bytes.Buffer
+	prevDefault := slog.Default()
 	log.SetOutput(&buf)
 	log.SetFlags(log.LstdFlags)
 	slog.SetLogLoggerLevel(slog.LevelInfo)
 	t.Cleanup(func() {
 		log.SetOutput(os.Stderr)
 		slog.SetLogLoggerLevel(slog.LevelInfo)
+		slog.SetDefault(prevDefault)
 	})
 	return &buf
 }
@@ -100,20 +111,29 @@ func TestApplyLogLevel_Empty_KeepsDefault_NoDebugOutput(t *testing.T) {
 	}
 }
 
-// TestApplyLogLevel_InvalidLevel_FallsBackToDefaultWithWarning pins the
+// TestApplyLogLevel_InvalidLevel_KeepsCurrentLevelWithWarning pins the
 // decision (task instructions: "決めて pin する") for a log.level string
 // ApplyLogLevel does not recognize: this path should be unreachable in
 // practice (Config.UnmarshalYAML already rejects it at config-load time —
 // see internal/config.TestLoadFromPath_LogLevel_InvalidRejected), but
-// defensively, ApplyLogLevel warns and leaves the level at its default
-// (info) rather than panicking or silently enabling debug output.
-func TestApplyLogLevel_InvalidLevel_FallsBackToDefaultWithWarning(t *testing.T) {
+// defensively, ApplyLogLevel warns and returns without changing the level
+// AT ALL — it does not reset to any default, it just leaves whatever the
+// level already was. Deliberately verified from a non-default starting
+// level (debug, set by a prior valid call), not from captureStdLog's own
+// reset-to-info baseline: asserting only "debug stayed off" after an
+// invalid call starting from info would pass even if ApplyLogLevel reset to
+// info on every invalid input, which is a materially different (and
+// wrong-named) behavior from "leaves the current level untouched".
+func TestApplyLogLevel_InvalidLevel_KeepsCurrentLevelWithWarning(t *testing.T) {
 	buf := captureStdLog(t)
-	ApplyLogLevel("verbose") // not one of config.LogLevelNames
+	ApplyLogLevel("debug") // establish a non-default current level first
+	buf.Reset()
 
-	slog.Debug("should NOT appear (invalid level fell back to default)", "k", "v")
-	if strings.Contains(buf.String(), "should NOT appear") {
-		t.Errorf("invalid log.level unexpectedly enabled debug output: %q", buf.String())
+	ApplyLogLevel("verbose") // not one of config.LogLevelNames; must not touch the level set above
+
+	slog.Debug("should still appear (invalid level must not reset the level)", "k", "v")
+	if !strings.Contains(buf.String(), "DEBUG should still appear") {
+		t.Errorf("expected the prior debug level to survive an invalid ApplyLogLevel call, got: %q", buf.String())
 	}
 	if !strings.Contains(buf.String(), "WARN") {
 		t.Errorf("expected a WARN line about the invalid level, got: %q", buf.String())
