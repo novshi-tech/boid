@@ -61,10 +61,14 @@ func (h *WorkspaceHandler) Routes() chi.Router {
 	// edit` and `workspace remove` as well — all three failing with
 	// ExportEnvelope's "exactly one of ?all=true or ?name=<slug> is
 	// required", an error naming a query parameter the operator never used.
-	// The only way through is --force, which is
-	// precisely the flag that discards edit's If-Match CAS and skips
-	// remove's destructive-delete confirmation. create/list/apply are
-	// unaffected.
+	// For the latter two the way through is --force, which is precisely the
+	// flag that discards edit's If-Match CAS and skips remove's
+	// destructive-delete confirmation; `workspace show` has no flags at all,
+	// so the only way to read a colliding workspace's definition is `boid
+	// workspace export <slug>` (which goes through ?name= and works). Every
+	// other subcommand is unaffected — create, list, apply, export, and the
+	// "/{slug}/..." sub-routes (init-script, home/import), which chi
+	// backtracks to correctly past the static node.
 	//
 	// That was raised as a follow-up when this comment was first written and
 	// has since been CLOSED AS ACCEPTED (nose, 2026-07-28) rather than fixed
@@ -74,8 +78,8 @@ func (h *WorkspaceHandler) Routes() chi.Router {
 	// refuses to LOAD, not merely to create: ValidWorkspaceSlug runs on the
 	// read path too (workspace_repository.go's loadWorkspaceMeta returns its
 	// error before the SELECT, and workspace_store.go's yaml-mode List
-	// silently drops rows that fail it), so the row becomes unreadable rather
-	// than merely un-creatable. Moving the envelope routes off the bare
+	// silently drops the entries that fail it), so what already exists
+	// becomes unreadable rather than merely un-creatable. Moving the envelope routes off the bare
 	// "/{name}" segment is an API change every client — the CLI included —
 	// would have to follow, to buy back two names nobody has asked for.
 	// TestWorkspaceRouteShadowing_AcceptedCollision pins the accepted
