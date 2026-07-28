@@ -49,13 +49,23 @@ func (h *WorkspaceHandler) Routes() chi.Router {
 	// is in after its own POST registration was removed 2026-07-28 — see
 	// TestWorkspaceHandler_ImportRouteRemoved). ValidWorkspaceSlug
 	// (workspace_slug.go) has no reserved-word list, so a workspace can
-	// really be created named "export"/"apply"/"import" and remains
-	// reachable through every method this router does not shadow for that
-	// literal path — pre-existing, unchanged by this PR, and not itself a
-	// bug this PR introduces or need fix, but flagged as a possible
-	// follow-up (reserving these names, or moving them off the bare
-	// "/{name}" segment) rather than silently left for the next reader to
-	// rediscover.
+	// really be created named "export"/"apply"/"import": it stays reachable
+	// through every method this router does not shadow for that literal
+	// path, and is unreachable through the ones it does — `boid workspace
+	// show export` in particular resolves to ExportEnvelope and answers 400
+	// instead of showing the workspace.
+	//
+	// That was raised as a follow-up when this comment was first written and
+	// has since been CLOSED AS ACCEPTED (nose, 2026-07-28) rather than fixed
+	// — this is the decision record, not a still-open item. Both alternatives
+	// cost more than the collision does. Reserving the names turns a workspace
+	// already created under one of them into a workspace the daemon then
+	// refuses to accept, trading a partially-shadowed slug for a hard failure
+	// on data that already exists. Moving the envelope routes off the bare
+	// "/{name}" segment is an API change every client — the CLI included —
+	// would have to follow, to buy back three names nobody has asked for.
+	// TestWorkspaceRouteShadowing_AcceptedCollision pins the accepted
+	// behaviour so a later change to it is a deliberate one.
 	r.Get("/export", h.ExportEnvelope)
 	r.Post("/apply", h.Apply)
 	r.Get("/{slug}", h.Show)
