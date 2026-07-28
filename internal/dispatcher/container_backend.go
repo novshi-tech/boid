@@ -2455,7 +2455,23 @@ func (s *containerSession) waitLoop() {
 	var exitCode int
 	select {
 	case res := <-waitRes.Result:
-		exitCode = int(res.StatusCode)
+		// A response is not the same thing as an exit status: container.WaitResponse
+		// carries two independent facts, and only StatusCode is one. When the engine
+		// could not report an exit status at all (the runtime failed to wait, the
+		// shim died, the container never started), it answers with StatusCode: 0 and
+		// a non-nil Error — the SDK does not distinguish this from an actual "exited
+		// 0" (moby/moby/client@v0.5.0 container_wait.go forwards the body verbatim;
+		// see waitResponseEngineError's doc comment in
+		// container_backend_workspace_init.go). Because a hook's exit 0 is boid's
+		// "task done" signal, reading only res.StatusCode here turns an engine-side
+		// failure into a fabricated success. Treated the same as the ContainerWait
+		// API-call failure below, for consistency with that existing failure path.
+		if eerr := waitResponseEngineError(res); eerr != nil {
+			slog.Warn("container backend: ContainerWait response carried an engine error", "container_id", s.id, "error", eerr)
+			exitCode = 1
+		} else {
+			exitCode = int(res.StatusCode)
+		}
 	case err := <-waitRes.Error:
 		slog.Warn("container backend: ContainerWait failed", "container_id", s.id, "error", err)
 		exitCode = 1

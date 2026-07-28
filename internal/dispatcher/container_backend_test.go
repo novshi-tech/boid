@@ -748,6 +748,44 @@ func TestContainerSession_Wait_SingleOwnerFanOut(t *testing.T) {
 	}
 }
 
+// TestContainerSession_WaitLoop_EngineErrorInTheWaitResponseFailsTheJob pins
+// that waitLoop treats an engine-reported wait error the same as a failed
+// exit, on the job dispatch path — the counterpart of
+// TestContainerBackend_RunWorkspaceInit_EngineErrorInTheWaitResponseFailsTheRun
+// (container_backend_workspace_init_test.go), which already pins this for
+// the workspace-init path via the shared waitResponseEngineError helper.
+//
+// container.WaitResponse carries two independent facts and only one of them
+// is an exit status: when the engine cannot report one — the runtime failed
+// to wait, the shim died, the container never started — it answers with
+// StatusCode: 0 and a non-nil Error, which is exactly the shape of a
+// successful exit if only StatusCode is read. Because a hook's exit 0 is
+// boid's "task done" signal, a waitLoop that reads only StatusCode turns an
+// engine-side failure into a task moving to done for a job whose container
+// never actually ran or reported.
+func TestContainerSession_WaitLoop_EngineErrorInTheWaitResponseFailsTheJob(t *testing.T) {
+	const engineMessage = "runtime wait failed"
+	api := &fakeDockerAPI{
+		ContainerWaitFunc: waitResponding(container.WaitResponse{
+			// Exactly the shape that makes the omission invisible: the
+			// status code is the success value, and the only evidence of
+			// the failure is in Error.
+			StatusCode: 0,
+			Error:      &container.WaitExitError{Message: engineMessage},
+		}),
+	}
+	be := NewContainerBackend(api, ContainerBackendOptions{})
+	sess := mustLaunch(t, be, sandbox.Spec{ID: "job-engine-error", Argv: []string{"true"}}, backend.LaunchOptions{JobID: "job-engine-error"})
+
+	exit, err := sess.Wait(context.Background())
+	if err != nil {
+		t.Fatalf("Wait: %v", err)
+	}
+	if exit.ExitCode == 0 {
+		t.Errorf("ExitCode = 0 for a wait the engine answered with an error (%q); a job whose container never reported an exit status must not be reported as exit 0 / task done", engineMessage)
+	}
+}
+
 // TestContainerSession_WaitLoop_DrainsAttachBeforeClosingConn pins Major 3
 // from the PR5 review: once ContainerWait resolves (the container process
 // exited), waitLoop must let readLoop drain any output still in flight on
