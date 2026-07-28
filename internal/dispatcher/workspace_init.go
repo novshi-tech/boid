@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"sync/atomic"
 )
 
 // This file owns the BACKEND-INDEPENDENT half of PR5 of
@@ -674,12 +675,32 @@ func (o *workspaceInitOutput) Dropped() int {
 	return o.dropped
 }
 
+// workspaceInitOutputStringCalls counts calls to workspaceInitOutput.String,
+// across every instance. It exists purely so a test can observe WHETHER
+// String was called at all — see
+// TestContainerBackend_RunWorkspaceInit_SuccessDebugOffSkipsMaterializingFullOutput,
+// which pins that RunWorkspaceInit's DEBUG line (container_backend_
+// workspace_init.go) passes the output itself, not output.String(), to
+// slog.Debug: a *workspaceInitOutput satisfies fmt.Stringer, so slog defers
+// the String() call to whichever Handler.Handle actually renders the
+// record — and Handle is never invoked for a level the logger has disabled.
+// Calling .String() directly at the call site (the mistake this counts)
+// defeats that: Go evaluates a function's arguments before the call, so
+// output.String() runs and materializes the whole retained window every
+// time, whether or not anything is listening at DEBUG. An atomic package
+// counter, not a field, because RunWorkspaceInit's own *workspaceInitOutput
+// is created and discarded inside runWorkspaceHomeContainer — nothing
+// outside this file ever gets a handle on the instance to read a field off
+// of.
+var workspaceInitOutputStringCalls atomic.Int64
+
 // String returns the retained window verbatim, with no truncation notice.
 //
 // This is what workspaceInitStageOf reads: it scans for a marker line the
 // wrapper printed, and a boid-authored banner in that text would be one more
 // thing it has to not mistake for output the container produced.
 func (o *workspaceInitOutput) String() string {
+	workspaceInitOutputStringCalls.Add(1)
 	o.trim()
 	return string(o.buf)
 }

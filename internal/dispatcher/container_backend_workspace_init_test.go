@@ -4,7 +4,10 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"log"
 	"log/slog"
+	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -390,6 +393,275 @@ func TestContainerBackend_RunWorkspaceInit_TruncatedTailSaysSo(t *testing.T) {
 
 	if !strings.Contains(buf.String(), workspaceInitTruncationPrefix) {
 		t.Errorf("a truncated tail was logged with no notice that anything was cut; log was:\n%s", buf.String())
+	}
+}
+
+// TestContainerBackend_RunWorkspaceInit_SuccessDebugCarriesFullOutput pins the
+// PR #852 follow-up (doc comment on workspaceInitSuccessTailLimit): once
+// log.level: debug is on (internal/config.LogConfig, internal/daemon.
+// ApplyLogLevel — PR #858), a successful init logs the FULL retained window
+// (output.String()), not just the workspaceInitSuccessTailLimit-byte tail the
+// INFO line carries. The marker here sits well before the last
+// workspaceInitSuccessTailLimit bytes of the run's output, so it can only
+// reach the log through the full dump.
+func TestContainerBackend_RunWorkspaceInit_SuccessDebugCarriesFullOutput(t *testing.T) {
+	buf := captureLogs(t, slog.LevelDebug)
+	const earlyMarker = "FULL-OUTPUT-MARKER-EARLY"
+	// Padding after the marker has to clear workspaceInitSuccessTailLimit so
+	// the marker cannot be explained by the (unconditional) INFO tail alone.
+	trailing := strings.Repeat("x", workspaceInitSuccessTailLimit+3000)
+
+	runInitPrinting(t, earlyMarker+"\n"+trailing+"\nboid-init: stage=done exit=0\n")
+
+	if !strings.Contains(buf.String(), earlyMarker) {
+		t.Errorf("full output was not logged at debug level; log was missing %q:\n%s", earlyMarker, buf.String())
+	}
+}
+
+// TestContainerBackend_RunWorkspaceInit_SuccessDebugOffOmitsFullOutput is the
+// other side of that: with log.level left at its default (no DEBUG output),
+// the full dump must not appear at all — only the bounded INFO tail. Run
+// against the SAME output as the test above so a regression that logs the
+// full dump unconditionally (ignoring the level) is caught here rather than
+// only being a "nice to have" in the debug test.
+func TestContainerBackend_RunWorkspaceInit_SuccessDebugOffOmitsFullOutput(t *testing.T) {
+	buf := captureLogs(t, slog.LevelInfo)
+	const earlyMarker = "FULL-OUTPUT-MARKER-EARLY"
+	trailing := strings.Repeat("x", workspaceInitSuccessTailLimit+3000)
+
+	runInitPrinting(t, earlyMarker+"\n"+trailing+"\nboid-init: stage=done exit=0\n")
+
+	if strings.Contains(buf.String(), earlyMarker) {
+		t.Errorf("the full output leaked into the log with debug OFF; log was:\n%s", buf.String())
+	}
+	if strings.Contains(buf.String(), "level=DEBUG") {
+		t.Errorf("a DEBUG-level record was emitted even though the handler's threshold is INFO; log was:\n%s", buf.String())
+	}
+}
+
+// TestContainerBackend_RunWorkspaceInit_InfoTailPresentRegardlessOfDebugLevel
+// is the regression guard the task calls out explicitly: the unconditional
+// INFO output_tail line — the whole point of PR #852 — must survive adding
+// the debug full-dump line untouched, whether or not log.level: debug is on.
+// A change that moved the tail's log call under a debug-only branch, or
+// demoted "workspace home init completed" from Info to Debug outright, would
+// pass the debug-level sub-test but fail the info-level one.
+func TestContainerBackend_RunWorkspaceInit_InfoTailPresentRegardlessOfDebugLevel(t *testing.T) {
+	const said = "volta: linking shims for node@24"
+	script := "earlier progress\n" + said + "\n"
+
+	for _, lvl := range []slog.Level{slog.LevelInfo, slog.LevelDebug} {
+		t.Run(lvl.String(), func(t *testing.T) {
+			buf := captureLogs(t, lvl)
+			runInitPrinting(t, script)
+
+			if !strings.Contains(buf.String(), "output_tail=") {
+				t.Errorf("no output_tail key at handler level %s; log was:\n%s", lvl, buf.String())
+			}
+			if !strings.Contains(buf.String(), said) {
+				t.Errorf("output_tail did not carry the run's own output at handler level %s; log was:\n%s", lvl, buf.String())
+			}
+		})
+	}
+}
+
+// TestContainerBackend_RunWorkspaceInit_SuccessDebugFullOutputIsRetentionBounded
+// pins that the debug full dump does not open a new unbounded memory/log
+// path: it is exactly output.String(), which workspaceInitOutput already
+// caps at workspaceInitOutputLimit (see that type's trim). Feeds far more
+// than the retention limit, then checks two things: the front of the stream
+// really was dropped (proving the bound is doing something, not merely
+// "happens to fit"), and the debug line still surfaces content from deep
+// inside the retained window rather than only the INFO tail.
+func TestContainerBackend_RunWorkspaceInit_SuccessDebugFullOutputIsRetentionBounded(t *testing.T) {
+	buf := captureLogs(t, slog.LevelDebug)
+	const droppedMarker = "SHOULD-BE-DROPPED-FRONT-MARKER"
+	const lateMarker = "FULL-OUTPUT-MARKER-LATE"
+	filler := strings.Repeat("z", 3*workspaceInitOutputLimit)
+	// Keeps lateMarker inside the retained (last workspaceInitOutputLimit
+	// bytes) window while still clearing workspaceInitSuccessTailLimit, so a
+	// pass here cannot be explained by the INFO tail alone.
+	trailing := strings.Repeat("y", workspaceInitSuccessTailLimit+3000)
+
+	runInitPrinting(t, droppedMarker+"\n"+filler+lateMarker+"\n"+trailing)
+
+	if strings.Contains(buf.String(), droppedMarker) {
+		t.Fatalf("test is not exercising retention trimming: the front-of-stream marker survived")
+	}
+	if !strings.Contains(buf.String(), lateMarker) {
+		t.Errorf("the retained window did not reach the debug log; log was missing %q", lateMarker)
+	}
+	if got, bound := buf.Len(), 2*workspaceInitOutputLimit; got > bound {
+		t.Errorf("captured log is %d bytes, which exceeds %d (2x workspaceInitOutputLimit=%d); "+
+			"the debug full dump is not respecting the retention bound", got, bound, workspaceInitOutputLimit)
+	}
+}
+
+// captureDefaultLoggerOutput redirects the standard "log" package's output —
+// exactly what slog's package-private DEFAULT handler writes through, as
+// long as nothing calls slog.SetDefault (see internal/daemon.ApplyLogLevel's
+// doc comment for why that invariant matters in production) — into an
+// in-memory buffer for the duration of the test, and sets slog's bridge
+// level the same way internal/daemon.ApplyLogLevel does (slog.
+// SetLogLoggerLevel, never a custom Handler).
+//
+// captureLogs above installs a slog.NewTextHandler via slog.SetDefault
+// instead, which is enough to pin log CONTENT (it's what every other test in
+// this file uses) but is a different code path from the one production
+// actually runs through. Duplicated here rather than reusing
+// internal/daemon/log_level_test.go's captureStdLog because that package
+// depends on internal/config, and the dependency here would have to run the
+// other way.
+func captureDefaultLoggerOutput(t *testing.T, level slog.Level) *bytes.Buffer {
+	t.Helper()
+	var buf bytes.Buffer
+	log.SetOutput(&buf)
+	log.SetFlags(log.LstdFlags)
+	slog.SetLogLoggerLevel(level)
+	t.Cleanup(func() {
+		log.SetOutput(os.Stderr)
+		slog.SetLogLoggerLevel(slog.LevelInfo)
+	})
+	return &buf
+}
+
+// TestContainerBackend_RunWorkspaceInit_SuccessDebugOffSkipsMaterializingFullOutput
+// pins NB-1 of PR #861's independent (Claude/Opus) review: with debug OFF,
+// a successful init must not pay the cost of materializing the full retained
+// window at all, not merely "not log it".
+//
+// Go evaluates a function call's arguments before the call itself runs, so
+// `slog.Debug(msg, "output", output.String())` executes output.String() —
+// the whole trimmed buffer copied into a fresh string, up to
+// workspaceInitOutputLimit bytes — EVERY time, whether or not slog.Debug's
+// own internal Enabled() check then throws the record away. Passing output
+// itself (a fmt.Stringer, via its pointer receiver String method) instead of
+// output.String() lets slog defer that conversion to whichever
+// Handler.Handle renders the record, and Handle is never invoked for a
+// level the logger has disabled — so the cost only exists when something is
+// actually listening at DEBUG.
+//
+// workspaceInitOutputStringCalls is the only way to observe this: nothing
+// outside workspace_init.go ever gets a handle on the *workspaceInitOutput a
+// RunWorkspaceInit call constructs, so the log CONTENT looks identical
+// either way (the earlier tests above already pin that) and only a call
+// counter can tell eager from lazy apart.
+func TestContainerBackend_RunWorkspaceInit_SuccessDebugOffSkipsMaterializingFullOutput(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		level     slog.Level
+		wantCalls int64
+	}{
+		{"debug disabled (INFO threshold)", slog.LevelInfo, 0},
+		{"debug enabled", slog.LevelDebug, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			captureLogs(t, tc.level)
+			workspaceInitOutputStringCalls.Store(0)
+
+			runInitPrinting(t, "some output\n")
+
+			if got := workspaceInitOutputStringCalls.Load(); got != tc.wantCalls {
+				t.Errorf("workspaceInitOutput.String() called %d time(s) at handler level %s, want %d",
+					got, tc.level, tc.wantCalls)
+			}
+		})
+	}
+}
+
+// TestContainerBackend_RunWorkspaceInit_SuccessDebugOffSkipsMaterializingFullOutput_RealHandler
+// re-runs the pin above against the handler PRODUCTION actually uses —
+// slog's package-private default, bridged through the standard "log"
+// package and gated by slog.SetLogLoggerLevel (internal/daemon.
+// ApplyLogLevel), never a slog.NewTextHandler installed via SetDefault. The
+// two are not guaranteed to defer a fmt.Stringer argument identically, so
+// this confirms the property against the handler that ships rather than
+// leaving it as an inference from the TextHandler-based test above.
+func TestContainerBackend_RunWorkspaceInit_SuccessDebugOffSkipsMaterializingFullOutput_RealHandler(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		level     slog.Level
+		wantCalls int64
+	}{
+		{"debug disabled (INFO threshold)", slog.LevelInfo, 0},
+		{"debug enabled", slog.LevelDebug, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			captureDefaultLoggerOutput(t, tc.level)
+			workspaceInitOutputStringCalls.Store(0)
+
+			runInitPrinting(t, "some output\n")
+
+			if got := workspaceInitOutputStringCalls.Load(); got != tc.wantCalls {
+				t.Errorf("workspaceInitOutput.String() called %d time(s) at logger level %s (real default handler), want %d",
+					got, tc.level, tc.wantCalls)
+			}
+		})
+	}
+}
+
+// extractSlogMessages pulls every slog.TextHandler `msg="..."` field out of
+// captured log text, in order. Deliberately not a regexp: every message this
+// file logs through captureLogs is plain ASCII with no embedded quote, so a
+// literal `msg="` scan is exact for what this test needs and adds no new
+// import.
+func extractSlogMessages(t *testing.T, text string) []string {
+	t.Helper()
+	const key = `msg="`
+	var msgs []string
+	for {
+		idx := strings.Index(text, key)
+		if idx < 0 {
+			return msgs
+		}
+		text = text[idx+len(key):]
+		end := strings.Index(text, `"`)
+		if end < 0 {
+			t.Fatalf("malformed msg=\"...\" field in captured log (no closing quote): %q", text)
+		}
+		msgs = append(msgs, text[:end])
+		text = text[end+1:]
+	}
+}
+
+// TestContainerBackend_RunWorkspaceInit_SuccessLogMessagesArePinned pins NB-4
+// of PR #861's independent review: this PR promoted two string literals into
+// a documented operator contract — docs/ja/guide/workspace-home.md now tells
+// an operator to look for the INFO message "workspace home init completed"
+// and the DEBUG message "workspace home init full output" by name, and
+// RunWorkspaceInit's own doc comment (container_backend_workspace_init.go)
+// asserts the DEBUG one is deliberately NOT a prefix extension of the INFO
+// one, precisely so a runbook grepping the INFO phrase does not also match a
+// line that can be a megabyte long.
+//
+// Nothing enforced either claim before this test: renaming either message,
+// or reverting the DEBUG one to "workspace home init completed: full
+// output" — exactly the prefix collision the doc comment says it avoids —
+// left every other test in this file green, because they all assert on
+// MARKER CONTENT inside the log, never on the message strings themselves.
+func TestContainerBackend_RunWorkspaceInit_SuccessLogMessagesArePinned(t *testing.T) {
+	const wantInfoMsg = "workspace home init completed"
+	const wantDebugMsg = "workspace home init full output"
+	if strings.HasPrefix(wantDebugMsg, wantInfoMsg) {
+		t.Fatalf("test bug: the two EXPECTED messages collide by construction (%q is a prefix of %q); "+
+			"this test would pass for the wrong reason", wantInfoMsg, wantDebugMsg)
+	}
+
+	buf := captureLogs(t, slog.LevelDebug)
+	runInitPrinting(t, "some output\n")
+
+	msgs := extractSlogMessages(t, buf.String())
+	if !slices.Contains(msgs, wantInfoMsg) {
+		t.Errorf("no log line carried msg=%q; got messages %v", wantInfoMsg, msgs)
+	}
+	if !slices.Contains(msgs, wantDebugMsg) {
+		t.Errorf("no log line carried msg=%q; got messages %v", wantDebugMsg, msgs)
+	}
+	for _, got := range msgs {
+		if got != wantInfoMsg && strings.HasPrefix(got, wantInfoMsg) {
+			t.Errorf("log message %q extends the INFO completion message %q as a prefix — "+
+				"a runbook grepping the exact INFO phrase would now also match this line", got, wantInfoMsg)
+		}
 	}
 }
 
