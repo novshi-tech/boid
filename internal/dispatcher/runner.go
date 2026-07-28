@@ -1830,6 +1830,37 @@ func (r *Runner) takeTaskRuntimes(taskID string) []string {
 	return out
 }
 
+// watchRuntime is the fallback path for a job whose sandboxed process
+// exited without ever calling `boid job done` (the in-container runner's own
+// normal completion report): it waits on the session, then marks the job
+// failed and delivers a JobCompletionResult so a caller blocked in
+// WaitForJobCtx is not stuck forever.
+//
+// result.EngineError distinguishes WHY the process exited that way (Opus
+// review of PR #855, follow-up to PR #855 itself, which deliberately left
+// this gap open rather than invent a new failure shape mid-review):
+// containerSession.waitLoop sets it when the container ENGINE — not the
+// job's own command — failed to report a real exit status (ContainerWait
+// itself failing, or its response carrying an engine-side Error instead of a
+// StatusCode; see waitResponseEngineError's doc comment in
+// container_backend_workspace_init.go). Before this field existed, that case
+// and an ordinary silent crash/kill produced the byte-identical job.Output
+// ("job runtime exited without boid job done ..."), so an operator reading
+// it back — `boid job show` / `boid job watch` (cmd/observe.go's renderJob),
+// or the Web UI (internal/api/web.go, web/templates/jobs_templ.go) — had no
+// way to tell "my hook script crashed" from "docker/podman itself
+// misbehaved". (NOT `boid job log`: cmd/job.go's runJobLog prints the job's
+// TRANSCRIPT, GET /api/jobs/{id}/log — a separate artifact, and one an
+// engine fault is exactly the case most likely to leave empty.) This is the
+// same asymmetry the workspace-init path
+// (container_backend_workspace_init.go:783) already carried its own fix for,
+// with its "this is not init.sh failing" wording. When EngineError is
+// non-empty, output below names the fault as the engine's and carries the
+// engine's own message (the only surviving description of what went wrong —
+// the container, and its logs, are gone by the time this runs); the ordinary
+// "no engine fault" wording is otherwise byte-for-byte UNCHANGED, since
+// existing operator tooling (log greps, docs, cmd/exec.go's own reference to
+// this fallback) depends on its exact text.
 func (r *Runner) watchRuntime(jobID string, session backend.SandboxSession) {
 	if session == nil {
 		return
@@ -1863,6 +1894,14 @@ func (r *Runner) watchRuntime(jobID string, session backend.SandboxSession) {
 		exitCode = 1
 	}
 	output := fmt.Sprintf("job runtime exited without boid job done (runtime_id=%s, exit_code=%d)", runtimeID, result.ExitCode)
+	if result.EngineError != "" {
+		// See this function's doc comment: this is the engine-fault branch,
+		// distinct from (and must stay distinct from) the wording above.
+		output = fmt.Sprintf(
+			"job runtime exited: the engine failed to report an exit status, this is NOT the job's own command failing (runtime_id=%s): %s",
+			runtimeID, result.EngineError,
+		)
+	}
 
 	job.Status = JobStatusFailed
 	job.ExitCode = exitCode

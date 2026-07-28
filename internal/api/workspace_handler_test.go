@@ -612,6 +612,125 @@ func TestWorkspaceHandler_ImportRouteRemoved(t *testing.T) {
 	}
 }
 
+// TestWorkspaceRouteShadowing_AcceptedCollision pins the decision recorded in
+// Routes()' doc comment: a workspace really can be named "export" or
+// "apply", the static routes at the same depth as "/{slug}" really do shadow
+// it per-method, and that is ACCEPTED (nose, 2026-07-28) rather than an open
+// follow-up. Without this test the decision lives only in prose, and the two
+// rejected alternatives — a reserved-word list in ValidWorkspaceSlug, or
+// moving the envelope routes off the bare "/{name}" segment — could each be
+// re-introduced later as an apparent bugfix with nothing failing to say the
+// tradeoff was already weighed.
+//
+// "import" is in the table too, but as the CONTROL: since #859 removed its
+// POST registration it shadows nothing, so its rows pin that a workspace
+// named "import" behaves exactly like "team-a". They are what makes the
+// "export"/"apply" rows mean something rather than being the only data
+// point.
+//
+// The headline consequence is the GET /export row: `boid workspace show
+// export` issues exactly that request and gets ExportEnvelope's 400, not the
+// workspace. It is asserted here as the behaviour of record.
+func TestWorkspaceRouteShadowing_AcceptedCollision(t *testing.T) {
+	// ValidWorkspaceSlug has no reserved-word list, deliberately: these are
+	// the names the router shadows (plus the one it used to), and all three
+	// remain creatable.
+	for _, slug := range []string{"export", "apply", "import"} {
+		if err := orchestrator.ValidWorkspaceSlug(slug); err != nil {
+			t.Errorf("ValidWorkspaceSlug(%q) = %v, want nil (no reserved-word list by design)", slug, err)
+		}
+	}
+
+	// routed is returned by every recorder below: which service method ran is
+	// the fact under test, so none of them needs to produce a valid response.
+	routed := errors.New("routed")
+	var got string
+	newHandler := func() *WorkspaceHandler {
+		got = ""
+		return &WorkspaceHandler{Service: &fakeWorkspaceService{
+			getFn: func(slug string) (*WorkspaceDetail, error) { got = "Show(" + slug + ")"; return nil, routed },
+			updateFn: func(slug string, _ *orchestrator.WorkspaceMeta, _ string, _ bool) (*WorkspaceDetail, error) {
+				got = "Update(" + slug + ")"
+				return nil, routed
+			},
+			removeFn: func(slug string) (*WorkspaceRemoval, error) { got = "Remove(" + slug + ")"; return nil, routed },
+			applyFn: func(*orchestrator.WorkspaceEnvelopeApply, bool) (*orchestrator.WorkspaceApplyResult, error) {
+				got = "Apply"
+				return nil, routed
+			},
+			exportEnvelopesFn: func([]string) ([]byte, error) { got = "ExportEnvelope"; return nil, routed },
+		}}
+	}
+
+	yaml := "application/yaml"
+	meta := "host_commands:\n  - gh\n" // valid WorkspaceMeta: anything else 400s in the strict decoder before Update runs
+	envelope := "apiVersion: boid.dev/v1\nkind: Workspace\nmetadata:\n  name: team-a\n"
+	// Every cell of the 3x4 table, so a change to any of them is a visible
+	// change rather than a silent one. want is the service method the router
+	// dispatched to; wantStatus, when non-zero, is additionally asserted (the
+	// 405 cells reach no service method at all, so "" alone would not
+	// distinguish "router rejected it" from "handler ran but called nothing").
+	for _, tc := range []struct {
+		name       string
+		method     string
+		path       string
+		body       string
+		want       string
+		wantStatus int
+	}{
+		// "/export" registers GET only: GET is shadowed, POST has no route on
+		// either "/export" or "/{slug}" so chi answers 405, and PUT/DELETE
+		// fall through to "/{slug}" with slug == "export".
+		{"GET /export reaches the envelope export, not Show", http.MethodGet, "/export?all=true", "", "ExportEnvelope", 0},
+		{"POST /export is 405, reaching no handler", http.MethodPost, "/export", meta, "", http.StatusMethodNotAllowed},
+		{"PUT /export falls through to Update", http.MethodPut, "/export", meta, "Update(export)", 0},
+		{"DELETE /export falls through to Remove", http.MethodDelete, "/export", "", "Remove(export)", 0},
+		// "/apply" registers POST only, so GET/PUT/DELETE are NOT shadowed.
+		{"GET /apply falls through to Show", http.MethodGet, "/apply", "", "Show(apply)", 0},
+		{"POST /apply reaches Apply", http.MethodPost, "/apply", envelope, "Apply", 0},
+		{"PUT /apply falls through to Update", http.MethodPut, "/apply", meta, "Update(apply)", 0},
+		{"DELETE /apply falls through to Remove", http.MethodDelete, "/apply", "", "Remove(apply)", 0},
+		// "/import" registers nothing since #859 removed its POST route
+		// (2026-07-28), so it shadows NOTHING: these four rows are the control
+		// — they are exactly what any ordinary slug does, POST's 405 included
+		// (that 405 is "no POST /{slug} exists", not a static route winning;
+		// see TestWorkspaceHandler_ImportRouteRemoved).
+		{"GET /import falls through to Show", http.MethodGet, "/import", "", "Show(import)", 0},
+		{"POST /import is 405 like any other slug", http.MethodPost, "/import", meta, "", http.StatusMethodNotAllowed},
+		{"PUT /import falls through to Update", http.MethodPut, "/import", meta, "Update(import)", 0},
+		{"DELETE /import falls through to Remove", http.MethodDelete, "/import", "", "Remove(import)", 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHandler()
+			var body []byte
+			ct := ""
+			if tc.body != "" {
+				body, ct = []byte(tc.body), yaml
+			}
+			w := doWorkspaceRequest(h.Routes(), tc.method, tc.path, ct, body, nil)
+			if got != tc.want {
+				t.Fatalf("%s %s dispatched to %q, want %q", tc.method, tc.path, got, tc.want)
+			}
+			if tc.wantStatus != 0 && w.Code != tc.wantStatus {
+				t.Fatalf("%s %s status = %d, want %d: %s", tc.method, tc.path, w.Code, tc.wantStatus, w.Body.String())
+			}
+		})
+	}
+
+	// The operator-visible edge: `boid workspace show export` issues a bare
+	// GET /api/workspaces/export, which ExportEnvelope rejects for having
+	// neither ?all=true nor ?name= — the workspace is unreachable through
+	// `workspace show`, and never reaches the service at all.
+	h := newHandler()
+	w := doWorkspaceRequest(h.Routes(), http.MethodGet, "/export", "", nil, nil)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("GET /export status = %d, want 400 from ExportEnvelope: %s", w.Code, w.Body.String())
+	}
+	if got != "" {
+		t.Fatalf("GET /export reached the service as %q, want no service call (ExportEnvelope rejects before dispatching)", got)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Apply (docs/plans/volume-only-daemon.md PR-1d codex round-1 Blocker 2/
 // Major 1, POST /api/workspaces/apply)

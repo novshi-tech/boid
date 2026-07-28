@@ -55,6 +55,18 @@ type containerDiagnostics struct {
 	// (§決定8's silent-exit classification, the reason this collector
 	// exists at all). Truncated to diagnosticsMaxLogBytes.
 	DockerLogsTail string `json:"docker_logs_tail,omitempty"`
+	// EngineError mirrors backend.RuntimeExit.EngineError verbatim (Opus
+	// review of PR #863's NB-3): when the container ENGINE itself failed to
+	// report an exit status — as opposed to the job's own command failing —
+	// this is the only surviving description of what went wrong, and it is
+	// exactly the case this collector exists to help diagnose (an engine
+	// fault is indistinguishable from a silent crash / OOM kill without it).
+	// Carrying it here, alongside InspectError/CollectorError, means an
+	// operator reading diagnostics.json for a job whose engine misbehaved
+	// does not have to separately go find job.Output (Runner.watchRuntime
+	// renders the same message there) to learn the one fact that actually
+	// explains the exit. Empty when this exit was not an engine fault.
+	EngineError string `json:"engine_error,omitempty"`
 }
 
 // NewDefaultDiagnosticsCollector returns a ContainerBackendOptions.
@@ -76,13 +88,17 @@ type containerDiagnostics struct {
 // happy path already has its full output durable via the transcript spool
 // — §決定8's distinction between "full persistence" and "silent-exit
 // diagnosis" — so a clean exit does not pay the extra ContainerInspect/
-// ContainerLogs round trip). On an abnormal exit it captures ContainerInspect
-// (exit code / status / OOMKilled / dockerd's own State.Error) and a
-// bounded tail of ContainerLogs (dockerd's own independently-retained log
-// buffer — the attach-stream transcript spool can be empty or truncated for
-// a SIGKILL'd container, but dockerd's own buffer isn't), and writes both
-// to <runtimeDir>/<containerID>/diagnostics.json — the sibling of
-// transcript.log under the same per-job directory. Every step is
+// ContainerLogs round trip; an engine-fault exit is always != 0 — waitLoop
+// forces exitCode to 1 whenever it sets EngineError — so this scope covers
+// it too). On an abnormal exit it captures ContainerInspect (exit code /
+// status / OOMKilled / dockerd's own State.Error), a bounded tail of
+// ContainerLogs (dockerd's own independently-retained log buffer — the
+// attach-stream transcript spool can be empty or truncated for
+// a SIGKILL'd container, but dockerd's own buffer isn't), and exit.EngineError
+// verbatim when the exit was an engine fault rather than the job's own
+// command failing (containerDiagnostics.EngineError's own doc comment) —
+// and writes all of it to <runtimeDir>/<containerID>/diagnostics.json — the
+// sibling of transcript.log under the same per-job directory. Every step is
 // best-effort: an inspect or logs failure is recorded in the
 // diagnostics.json itself (CollectorError) rather than losing the whole
 // artifact, and the collector NEVER returns an error to its caller
@@ -103,6 +119,7 @@ func NewDefaultDiagnosticsCollector(api dockerAPI, runtimeDir string) func(ctx c
 			ContainerID: containerID,
 			CapturedAt:  time.Now().UTC(),
 			ExitCode:    exit.ExitCode,
+			EngineError: exit.EngineError,
 		}
 
 		insp, err := api.ContainerInspect(ctx, containerID, client.ContainerInspectOptions{})

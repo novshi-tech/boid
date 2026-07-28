@@ -237,7 +237,7 @@ func (b *containerBackend) RunWorkspaceInit(ctx context.Context, req WorkspaceIn
 	if exitCode != 0 {
 		return workspaceInitFailure(req.Slug, exitCode, output)
 	}
-	// A successful init keeps its output, in two sizes.
+	// A successful init keeps its output, in two forms at two levels.
 	//
 	// Through PR9 this logged only byte COUNTS and let the bytes go: the
 	// container is removed on return, so exit 0 meant the run left no record
@@ -251,35 +251,78 @@ func (b *containerBackend) RunWorkspaceInit(ctx context.Context, req WorkspaceIn
 	// dangling and the investigation had to replay the whole volume under an
 	// overlay mount to find out what the installer had said.
 	//
-	// Logged at INFO, not DEBUG, even though a per-dispatch record of a
-	// successful run is exactly the kind of thing debug level is for.
-	// config.yaml's log.level (internal/config.LogConfig, internal/daemon.
-	// ApplyLogLevel) now lets an operator turn slog.Debug ON — the level
-	// knob this comment used to say boid had no way to land — but this call
-	// site itself has NOT been switched to Debug: that's a separate,
-	// deliberately deferred decision (see PR #858, which introduced
-	// log.level, for the "why not both at once" rationale), not something
-	// this comment should silently imply is still impossible. Bounded and
-	// at info is the version that actually exists today. The natural
-	// follow-up, if that decision is made, is a debug line carrying
-	// output.String() — the full retained window — with this tail staying
-	// as the default-level record.
+	// The INFO line stays exactly what it was through PR #852: a small,
+	// UNCONDITIONAL tail (workspaceInitSuccessTailLimit bytes), written on
+	// every first dispatch of every workspace as long as log.level has not
+	// been RAISED past its default — "unconditional" here means "not gated
+	// behind opting into more logging", not "immune to log.level" outright:
+	// config.LogLevelNames also accepts warn and error, either of which
+	// silences this INFO line same as any other (see
+	// workspaceInitSuccessTailLimit's own doc comment). That is deliberate
+	// and does not get "upgraded" to Debug here — an operator who never
+	// touches log.level still gets the last words of the script that just
+	// ran.
+	//
+	// The DEBUG line is the PR #858 follow-up this comment used to describe
+	// as future work: config.yaml's log.level (internal/config.LogConfig,
+	// internal/daemon.ApplyLogLevel) now lets an operator turn slog.Debug ON,
+	// so a second line carries the FULL retained window for whoever actually
+	// needs to replay more than the last couple of dozen lines.
+	//
+	// It passes output itself, NOT output.String(), and that is load-bearing
+	// rather than cosmetic (independent review of this PR, NB-1): Go
+	// evaluates a call's arguments before the call runs, so an inline
+	// output.String() would materialize the whole retained window — up to
+	// workspaceInitOutputLimit bytes, copied fresh — on EVERY successful
+	// init, whether or not slog.Debug's own Enabled check then discards the
+	// record. A *workspaceInitOutput satisfies fmt.Stringer, so passing the
+	// value itself lets slog defer that conversion to whichever
+	// Handler.Handle ends up rendering the record, and Handle is never
+	// invoked for a level the logger has disabled. Measured with
+	// workspaceInitOutputStringCalls (internal/dispatcher/
+	// container_backend_workspace_init_test.go): 0 calls with debug off, 1
+	// with it on, against both a slog.NewTextHandler and the real default
+	// handler production actually uses. This is also why the line still adds
+	// no new unbounded cost either way: whichever path renders it reads
+	// exactly what workspaceInitOutput already retains, itself capped at
+	// workspaceInitOutputLimit, so turning log.level: debug on trades log
+	// volume for detail, never memory for detail.
+	//
+	// The message deliberately does NOT start with "workspace home init
+	// completed" (the INFO line's own message): a runbook that greps that
+	// exact phrase to find the completion record would otherwise also match
+	// this line — the one line here that can be a megabyte long.
 	slog.Info("workspace home init completed",
 		"workspace_slug", req.Slug, "container", name,
 		"retained_output_bytes", output.Len(), "dropped_output_bytes", output.Dropped(),
 		"output_tail", output.Tail(workspaceInitSuccessTailLimit))
+	slog.Debug("workspace home init full output",
+		"workspace_slug", req.Slug, "container", name,
+		"output", output)
 	return nil
 }
 
 // workspaceInitSuccessTailLimit is how much of a SUCCESSFUL init run's
-// output the completion log carries.
+// output the INFO line carries at boid's DEFAULT log.level (info).
 //
 // Deliberately much smaller than workspaceInitOutputLimit (the retention
-// bound the failure path's tail is cut from): a failure is being read by
-// someone who already knows something went wrong and wants everything,
-// while this one is written on every first dispatch of every workspace,
-// whether or not anybody will ever read it. What it needs to answer is
+// bound the DEBUG line's full dump and the failure path's tail are both cut
+// from): a failure is being read by someone who already knows something went
+// wrong and wants everything, while THIS line is written on every first
+// dispatch of every workspace, whether or not anybody will ever read it,
+// PROVIDED log.level has not been raised past info. It is not immune to
+// log.level outright — config.LogLevelNames also accepts warn and error, and
+// setting either silences this line exactly as it silences any other
+// slog.Info call in the process (internal/daemon.ApplyLogLevel works by
+// moving slog's own level threshold, not by special-casing this call site).
+// What the line needs to answer, for an operator who has NOT done that, is
 // "what was the script doing when it finished" — a couple of dozen lines.
+//
+// An operator who wants the whole retained window does not get it by raising
+// this constant; they set log.level: debug and get it from the DEBUG line
+// RunWorkspaceInit logs right alongside this one (carrying the full
+// retention-bounded window — see PR #858, which introduced log.level, for
+// how that knob reaches this process).
 const workspaceInitSuccessTailLimit = 2000
 
 // workspaceInitHomeMount turns req's home into the one mount the init

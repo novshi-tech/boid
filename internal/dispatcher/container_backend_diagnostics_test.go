@@ -162,3 +162,72 @@ func TestNewDefaultDiagnosticsCollector_InspectFails_StillWritesLogsAndError(t *
 		t.Errorf("DockerLogsTail = %q, want the log content despite the inspect failure", diag.DockerLogsTail)
 	}
 }
+
+// TestNewDefaultDiagnosticsCollector_EngineError_CarriesIntoDiagnosticsFile
+// pins that the collector, which now receives a RuntimeExit that already
+// carries the only surviving description of an ENGINE fault
+// (RuntimeExit.EngineError — see containerSession.waitLoop's doc comment in
+// container_backend.go), does not discard it. Before this fix, an
+// engine-fault exit (ContainerWait itself failing, or its response carrying
+// an engine-side Error) produced a diagnostics.json with nothing but
+// ExitCode: 1 and whatever ContainerInspect/ContainerLogs could still scrape
+// off an already-gone-or-dying container — exactly the case
+// NewDefaultDiagnosticsCollector exists to help diagnose, yet the one piece
+// of evidence that already existed in memory (the engine's own message) was
+// thrown away rather than written out.
+func TestNewDefaultDiagnosticsCollector_EngineError_CarriesIntoDiagnosticsFile(t *testing.T) {
+	runtimeDir := t.TempDir()
+	const containerID = "diag-container-engine-error"
+	const engineMessage = "runtime wait failed: engine socket hung up"
+
+	api := &fakeDockerAPI{
+		ContainerInspectFunc: func(ctx context.Context, id string, options client.ContainerInspectOptions) (client.ContainerInspectResult, error) {
+			return client.ContainerInspectResult{}, context.DeadlineExceeded
+		},
+	}
+	collector := NewDefaultDiagnosticsCollector(api, runtimeDir)
+	collector(context.Background(), containerID, backend.RuntimeExit{ExitCode: 1, EngineError: engineMessage})
+
+	data, err := os.ReadFile(filepath.Join(runtimeDir, containerID, diagnosticsFileName))
+	if err != nil {
+		t.Fatalf("read diagnostics file: %v", err)
+	}
+	var diag containerDiagnostics
+	if err := json.Unmarshal(data, &diag); err != nil {
+		t.Fatalf("unmarshal diagnostics: %v", err)
+	}
+	if diag.EngineError != engineMessage {
+		t.Errorf("EngineError = %q, want %q (RuntimeExit.EngineError must reach diagnostics.json instead of being discarded)", diag.EngineError, engineMessage)
+	}
+}
+
+// TestNewDefaultDiagnosticsCollector_NoEngineError_OmitsField is the
+// companion regression guard: an ordinary abnormal exit (no engine fault)
+// must not grow an engine_error field out of nowhere.
+func TestNewDefaultDiagnosticsCollector_NoEngineError_OmitsField(t *testing.T) {
+	runtimeDir := t.TempDir()
+	const containerID = "diag-container-no-engine-error"
+
+	api := &fakeDockerAPI{
+		ContainerInspectFunc: func(ctx context.Context, id string, options client.ContainerInspectOptions) (client.ContainerInspectResult, error) {
+			return client.ContainerInspectResult{}, context.DeadlineExceeded
+		},
+	}
+	collector := NewDefaultDiagnosticsCollector(api, runtimeDir)
+	collector(context.Background(), containerID, backend.RuntimeExit{ExitCode: 1})
+
+	data, err := os.ReadFile(filepath.Join(runtimeDir, containerID, diagnosticsFileName))
+	if err != nil {
+		t.Fatalf("read diagnostics file: %v", err)
+	}
+	if strings.Contains(string(data), "engine_error") {
+		t.Errorf("diagnostics.json unexpectedly contains an engine_error field for a non-engine-fault exit:\n%s", data)
+	}
+	var diag containerDiagnostics
+	if err := json.Unmarshal(data, &diag); err != nil {
+		t.Fatalf("unmarshal diagnostics: %v", err)
+	}
+	if diag.EngineError != "" {
+		t.Errorf("EngineError = %q, want empty", diag.EngineError)
+	}
+}
