@@ -1417,7 +1417,7 @@ func (r *Runner) launchSandbox(ctx context.Context, job *Job, spec sandbox.Spec,
 		// Bounded: the container already started successfully, so this Stop
 		// is best-effort cleanup after a persistence failure, not a caller
 		// waiting on job completion — see sessionControlCallTimeout's doc
-		// comment (container_backend.go) for why an unbounded
+		// comment (below, StopJobRuntime's neighbor) for why an unbounded
 		// context.Background() here would instead hang this dispatch call
 		// (and every future dispatch waiting behind it) against a wedged
 		// engine.
@@ -1480,8 +1480,49 @@ func (r *Runner) cleanupSandboxAfterWait(session backend.SandboxSession, extra o
 	r.reapAndCloseDockerProxy(runtimeID)
 }
 
+// sessionControlCallTimeout bounds every foreground SandboxSession control
+// call that has no caller-supplied context to inherit a deadline from:
+// containerSession.Resize (container_backend.go — whose
+// backend.SandboxSession interface method takes no context at all) and the
+// ad-hoc contexts StopJobRuntime/SignalJobRuntime below and
+// runtime_subscriber_export.go's Subscribe/WriteInput/ResizeRuntime/
+// CloseInput synthesize before Adopt (and, for the first two, before
+// Stop/Signal). Living here rather than in container_backend.go (codex
+// review Nit 7 on this PR) because most of its consumers are Runner
+// methods — containerSession.Resize is the only one that isn't, and same-
+// package visibility makes the file split cost nothing.
+//
+// These are all expected to return near-instantly against a healthy engine
+// (a resize, a stop request, a signal, a session lookup) — nothing like
+// session.Wait, which blocks for the job's entire lifetime and must keep
+// context.Background() unbounded precisely because a deadline would break
+// it (see Wait's own doc comment). Against a wedged engine socket that
+// accepts a request and never answers, an unbounded context.Background()
+// here instead hung the caller — an interactive WS resize, `boid task
+// stop`, `boid agent stop` — forever, instead of returning the error it
+// already had the shape to report. This includes the case where the
+// runtimeID's Adopt is already in-flight for another caller
+// (containerBackend.Adopt's doc comment): the in-flight join now selects on
+// ctx too (codex review Major 1 on this PR), so a bounded caller here does
+// not inherit an unrelated in-flight attempt's own unboundedness.
+//
+// Same value as reapAndCloseDockerProxy's bound just above in this file
+// (the pre-existing 30s exemplar this fix matches) and the various
+// *CleanupTimeout bounds in container_backend*.go. Kept as its own var
+// rather than reusing one of those: its callers are a different class of
+// operation (a foreground control call blocking a live caller, not a
+// background teardown running off a defer), so collapsing it into a
+// cleanup-purposed constant would blur why each one exists. Mutable
+// (atomicDuration, not a plain const) purely so a test can shrink it —
+// this package's established pattern for exactly this shape of test (see
+// e.g. selfInspectTimeout).
+var sessionControlCallTimeout = newAtomicDuration(30 * time.Second)
+
 // StopJobRuntime stops the runtime identified by runtimeID.
-// It is a best-effort operation: errors are logged at debug level only.
+// It is a best-effort operation: errors are logged at debug level only,
+// EXCEPT when the control-call deadline itself was hit (see below), which
+// is loud (Warn) because it means the container may still be running with
+// no further mechanism in place to stop it.
 //
 // [Blocker 3, PR7 codex review]: routes through SandboxBackend.Adopt →
 // SandboxSession.Stop (the same seam SignalJobRuntime/ResizeRuntimeID/
@@ -1494,17 +1535,35 @@ func (r *Runner) StopJobRuntime(runtimeID string) {
 		return
 	}
 	// One shared deadline for the whole call (Adopt + Stop), not
-	// context.Background() — see sessionControlCallTimeout's doc comment
-	// (container_backend.go) for why: a `boid task stop`/task-abort caller
-	// blocked here against a wedged engine would otherwise never get its
-	// error back.
+	// context.Background() — see sessionControlCallTimeout's doc comment for
+	// why: a `boid task stop`/task-abort caller blocked here against a
+	// wedged engine would otherwise never get its error back.
 	ctx, cancel := context.WithTimeout(context.Background(), sessionControlCallTimeout.Get())
 	defer cancel()
 	session, ok := r.sandboxBackend().Adopt(ctx, runtimeID)
 	if !ok {
+		// [Moderate 4, codex review]: distinguish "Adopt legitimately found
+		// nothing" (the common case — the runtime already exited/was
+		// reaped, ctx still has budget left) from "the control-call
+		// deadline fired before Adopt could resolve" (ctx.Err() != nil): the
+		// caller (finalizeTerminal → CleanupTaskWindow, synchronous, no
+		// return value) cannot tell "stopped" from "gave up" apart on its
+		// own, and a task aborts either way — silently, the container could
+		// be left running with nothing left to reap it until the next
+		// daemon restart's orphan sweep. Warn, not Debug, so an operator
+		// grepping boid.log sees it.
+		if ctx.Err() != nil {
+			slog.Warn("stop job runtime: adopt did not resolve before the control-call deadline; the container may still be running",
+				"runtime_id", runtimeID, "timeout", sessionControlCallTimeout.Get())
+		}
 		return
 	}
 	if err := session.Stop(ctx); err != nil {
+		if errors.Is(err, context.DeadlineExceeded) {
+			slog.Warn("stop job runtime: engine did not respond before the control-call deadline; the container may still be running",
+				"runtime_id", runtimeID, "timeout", sessionControlCallTimeout.Get(), "error", err)
+			return
+		}
 		slog.Debug("stop job runtime", "runtime_id", runtimeID, "error", err)
 	}
 }
@@ -1514,7 +1573,9 @@ func (r *Runner) StopJobRuntime(runtimeID string) {
 // agent (run-agent.py) to stop the agent session gracefully — the go-native
 // runner subcommands keep the signal SIG_IGN (inherited across execve), so they
 // survive while run-agent.py acts on it and runner-inner-child still posts
-// `boid job done` through the broker. Best-effort: errors at debug level only.
+// `boid job done` through the broker. Best-effort: errors at debug level
+// only, with the same control-call-deadline exception as StopJobRuntime
+// above (Moderate 4).
 //
 // Routes through SandboxBackend.Adopt → SandboxSession.Signal
 // (docs/plans/phase6-container-backend.md §PR1: this is the `boid agent
@@ -1530,9 +1591,18 @@ func (r *Runner) SignalJobRuntime(runtimeID string, sig syscall.Signal) {
 	defer cancel()
 	session, ok := r.sandboxBackend().Adopt(ctx, runtimeID)
 	if !ok {
+		if ctx.Err() != nil {
+			slog.Warn("signal job runtime: adopt did not resolve before the control-call deadline; the agent may not have received the signal",
+				"runtime_id", runtimeID, "signal", sig, "timeout", sessionControlCallTimeout.Get())
+		}
 		return
 	}
 	if err := session.Signal(ctx, sig); err != nil {
+		if errors.Is(err, context.DeadlineExceeded) {
+			slog.Warn("signal job runtime: engine did not respond before the control-call deadline; the agent may not have received the signal",
+				"runtime_id", runtimeID, "signal", sig, "timeout", sessionControlCallTimeout.Get(), "error", err)
+			return
+		}
 		slog.Debug("signal job runtime", "runtime_id", runtimeID, "signal", sig, "error", err)
 	}
 }
@@ -1589,7 +1659,20 @@ func (r *Runner) ResizeRuntimeID(ctx context.Context, runtimeID string, size Ter
 	if !ok {
 		return ErrRuntimeUnsupported
 	}
-	return session.Resize(size)
+	if err := session.Resize(size); err != nil {
+		// [Minor 6, codex review]: session.Resize's underlying
+		// ContainerResize returns a bare context.DeadlineExceeded,
+		// undecorated, once sessionControlCallTimeout fires (moby client
+		// hands context errors back unwrapped) — surfacing that verbatim to
+		// the HTTP resize route's caller would read as
+		// `Get ".../resize": context deadline exceeded`, which says nothing
+		// about an unresponsive engine being the cause. Wrap it so it does.
+		if errors.Is(err, context.DeadlineExceeded) {
+			return fmt.Errorf("resize runtime: engine did not respond in time: %w", err)
+		}
+		return err
+	}
+	return nil
 }
 
 // CleanupTaskWindow stops all tracked runtimes associated with a task.

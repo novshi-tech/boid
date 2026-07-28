@@ -1179,7 +1179,20 @@ func (b *containerBackend) Adopt(ctx context.Context, runtimeID string) (backend
 	}
 	if attempt, inFlight := b.adopting[runtimeID]; inFlight {
 		b.mu.Unlock()
-		<-attempt.done
+		// select on ctx too (codex review of this PR, Major 1): a caller that
+		// passed a bounded ctx specifically so it would not hang forever
+		// (StopJobRuntime, SignalJobRuntime, the runtime_subscriber_export.go
+		// ingress points) would otherwise wait on <-attempt.done alone, which
+		// only resolves when the FIRST caller's own doAdopt returns — itself
+		// unbounded whenever that first caller passed context.Background()
+		// (every one of those call sites did, pre-fix). Against a wedged
+		// engine the owning attempt's ContainerInspect never returns, so
+		// every later joiner — bounded ctx or not — hung right alongside it.
+		select {
+		case <-attempt.done:
+		case <-ctx.Done():
+			return nil, false
+		}
 		if attempt.session == nil {
 			return nil, false
 		}
@@ -2402,33 +2415,10 @@ func (s *containerSession) CloseInput() error {
 	return nil
 }
 
-// sessionControlCallTimeout bounds every foreground SandboxSession control
-// call that has no caller-supplied context to inherit a deadline from:
-// Resize below (whose backend.SandboxSession interface method takes no
-// context at all — see backend.SandboxSession.Resize) and the ad-hoc
-// contexts Runner.StopJobRuntime/SignalJobRuntime synthesize in runner.go
-// before Adopt/Stop/Signal.
-//
-// These are all expected to return near-instantly against a healthy engine
-// (a resize, a stop request, a signal, a session lookup) — nothing like
-// session.Wait, which blocks for the job's entire lifetime and must keep
-// context.Background() unbounded precisely because a deadline would break
-// it (see Wait's own doc comment). Against a wedged engine socket that
-// accepts a request and never answers, an unbounded context.Background()
-// here instead hung the caller — an interactive WS resize, `boid task
-// stop`, `boid agent stop` — forever, instead of returning the error it
-// already had the shape to report.
-//
-// Same value as runner.go's reapAndCloseDockerProxy bound (the pre-existing
-// 30s exemplar this fix matches) and the various *CleanupTimeout bounds
-// elsewhere in this package. Kept as its own var rather than reusing one of
-// those: its callers are a different class of operation (a foreground
-// control call blocking a live caller, not a background teardown running
-// off a defer), so collapsing it into a cleanup-purposed constant would
-// blur why each one exists. Mutable (atomicDuration, not a plain const)
-// purely so a test can shrink it — this package's established pattern for
-// exactly this shape of test (see e.g. selfInspectTimeout).
-var sessionControlCallTimeout = newAtomicDuration(30 * time.Second)
+// sessionControlCallTimeout is defined in runner.go (moved there, codex
+// review Nit 7 on this PR: most of its consumers are Runner methods, not
+// containerSession ones) — see its doc comment there for the full
+// rationale. Resize below is the one containerSession-side consumer.
 
 func (s *containerSession) Resize(size backend.TerminalSize) error {
 	if size.Rows <= 0 || size.Cols <= 0 {

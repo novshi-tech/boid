@@ -5,6 +5,9 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log/slog"
+	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -20,12 +23,26 @@ import (
 
 // This file pins next-session-container-backend-loose-ends.md §2: every
 // foreground SandboxSession control call (Resize / Stop / Signal / the
-// Adopt lookup that precedes them) must be bounded, so a wedged
-// docker/podman engine socket that accepts a request and never answers
-// costs the caller a bounded delay and an error, not a permanent hang.
-// session.Wait is deliberately NOT covered here — it blocks for the job's
-// entire lifetime by design and must keep an unbounded context (see
-// session.Wait's own doc comment).
+// Adopt lookup that precedes them, INCLUDING Adopt's own in-flight-join
+// wait) must be bounded, so a wedged docker/podman engine socket that
+// accepts a request and never answers costs the caller a bounded delay and
+// an error, not a permanent hang. session.Wait is deliberately NOT covered
+// here — it blocks for the job's entire lifetime by design and must keep an
+// unbounded context (see session.Wait's own doc comment).
+//
+// Extended after an Opus review of the first version of this fix found
+// three real gaps (see PR #857's history): (Major 1) Adopt's in-flight-join
+// wait ignored the caller's ctx entirely, so a bounded StopJobRuntime/
+// SignalJobRuntime caller still hung if some OTHER caller's Adopt for the
+// same runtimeID was the one stuck against the engine; (Major 2)
+// runtime_subscriber_export.go's Subscribe/WriteInput/ResizeRuntime/
+// CloseInput passed context.Background() into Adopt directly — the exact
+// symptom (WS resize) this PR's own body claimed to have fixed, but hadn't;
+// (Major 3) a doc comment on hangingControlBackend below claimed Adopt's
+// ctx propagation was covered by a daemon_state_volume_test.go test that
+// in fact exercises a different function (DetectDaemonStateVolumes) and
+// never calls Adopt/doAdopt at all. All three are pinned by tests in this
+// file now.
 
 // withSessionControlCallTimeout shrinks sessionControlCallTimeout for the
 // duration of one test — this package's established pattern for pinning a
@@ -40,10 +57,10 @@ func withSessionControlCallTimeout(t *testing.T, d time.Duration) {
 // --- containerSession.Resize --------------------------------------------
 
 // TestContainerSession_Resize_HangingEngineHitsDeadline pins the
-// container_backend.go:2409 fix: Resize's backend.SandboxSession interface
-// method takes no context to inherit a deadline from, so it must synthesize
-// its own bounded one rather than calling ContainerResize under a bare
-// context.Background().
+// container_backend.go Resize fix: Resize's backend.SandboxSession
+// interface method takes no context to inherit a deadline from, so it must
+// synthesize its own bounded one rather than calling ContainerResize under
+// a bare context.Background().
 func TestContainerSession_Resize_HangingEngineHitsDeadline(t *testing.T) {
 	withSessionControlCallTimeout(t, 200*time.Millisecond)
 
@@ -71,15 +88,203 @@ func TestContainerSession_Resize_HangingEngineHitsDeadline(t *testing.T) {
 	}
 }
 
+// --- containerBackend.Adopt's in-flight join (Major 1) --------------------
+
+// TestContainerBackend_Adopt_InFlightJoinRespectsContextDeadline pins Major
+// 1 directly at the containerBackend level: when a runtimeID's Adopt is
+// already in flight (some other caller reached the cache-miss path first),
+// a LATER caller with its own bounded ctx must not be held hostage by the
+// FIRST caller's own context — which, pre-fix, was very often
+// context.Background() (every real call site into Adopt used it before
+// this PR). Before Major 1's fix, `<-attempt.done` alone ignored ctx
+// entirely.
+func TestContainerBackend_Adopt_InFlightJoinRespectsContextDeadline(t *testing.T) {
+	inspectStarted := make(chan struct{})
+	var closeOnce sync.Once
+	api := &fakeDockerAPI{
+		ContainerInspectFunc: func(ctx context.Context, containerID string, options client.ContainerInspectOptions) (client.ContainerInspectResult, error) {
+			closeOnce.Do(func() { close(inspectStarted) })
+			<-ctx.Done()
+			return client.ContainerInspectResult{}, ctx.Err()
+		},
+	}
+	be := NewContainerBackend(api, ContainerBackendOptions{})
+
+	// The "owner" attempt: Adopt with an unbounded context, modelling every
+	// pre-fix real caller. containerBackend.Adopt registers the runtimeID in
+	// b.adopting BEFORE calling doAdopt/ContainerInspect (see Adopt's own
+	// doc comment), so by the time ContainerInspectFunc runs (and closes
+	// inspectStarted below), the second Adopt call below is guaranteed to
+	// observe an in-flight attempt rather than racing to become the owner
+	// itself.
+	go func() {
+		_, _ = be.Adopt(context.Background(), "rt-inflight")
+	}()
+	<-inspectStarted
+
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+
+	start := time.Now()
+	_, ok := be.Adopt(ctx, "rt-inflight")
+	elapsed := time.Since(start)
+
+	if elapsed > 5*time.Second {
+		t.Fatalf("Adopt (in-flight join) took %v against an owner attempt stuck on an unbounded context", elapsed)
+	}
+	if ok {
+		t.Fatal("want ok=false: the in-flight attempt never resolved before this caller's ctx expired")
+	}
+}
+
+// --- Runner.Subscribe / WriteInput / ResizeRuntime / CloseInput (Major 2) -
+
+// hangingAdoptBackend is a backend.SandboxBackend whose Adopt blocks until
+// the context it is given is done, then reports ok=false — modelling a
+// cache-miss Adopt against a wedged engine (containerBackend.doAdopt's
+// ContainerInspect never returning). Used to pin Major 2:
+// runtime_subscriber_export.go's Subscribe/WriteInput/ResizeRuntime/
+// CloseInput must pass a bounded context into Adopt, not
+// context.Background().
+type hangingAdoptBackend struct{}
+
+var _ backend.SandboxBackend = (*hangingAdoptBackend)(nil)
+
+func (b *hangingAdoptBackend) Launch(context.Context, sandbox.Spec, backend.LaunchOptions) (backend.SandboxSession, error) {
+	return nil, fmt.Errorf("hangingAdoptBackend.Launch is not implemented")
+}
+func (b *hangingAdoptBackend) Adopt(ctx context.Context, _ string) (backend.SandboxSession, bool) {
+	<-ctx.Done()
+	return nil, false
+}
+func (b *hangingAdoptBackend) ReapOrphans(context.Context) (backend.ReapReport, error) {
+	return backend.ReapReport{}, nil
+}
+
+// newRunnerTestDBWithJob returns a migrated in-memory *sql.DB containing one
+// project/task/job row with runtime_id set to runtimeID, plus the created
+// job's ID — the minimum runtimeIDForJob (runtime_subscriber_export.go)
+// needs to resolve jobID to runtimeID. Opens the DB directly (not
+// testutil.NewTestDB) for the same import-cycle reason as
+// gitgateway_wire_test.go's newGatewayTestDB: testutil transitively imports
+// internal/server, which imports internal/dispatcher.
+func newRunnerTestDBWithJob(t *testing.T, runtimeID string) (dbConn *sql.DB, jobID string) {
+	t.Helper()
+	d, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	if err := migrate.Apply(d.Conn); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	t.Cleanup(func() { d.Conn.Close() })
+
+	if err := orchestrator.CreateProject(d.Conn, &orchestrator.Project{ID: "proj-1", WorkDir: "/tmp"}); err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	task := &orchestrator.Task{ProjectID: "proj-1", Title: "Task", Behavior: "dev"}
+	if err := orchestrator.CreateTask(d.Conn, task); err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	job := &Job{TaskID: task.ID, ProjectID: "proj-1", HandlerID: "h", RuntimeID: runtimeID}
+	if err := CreateJob(d.Conn, job); err != nil {
+		t.Fatalf("create job: %v", err)
+	}
+	return d.Conn, job.ID
+}
+
+// TestRunner_Subscribe_HangingAdoptHitsDeadline pins Major 2 for the WS
+// attach / Web UI SSE follow ingress: Subscribe must not hang forever when
+// Adopt's underlying engine call (a cache-miss ContainerInspect) never
+// answers.
+func TestRunner_Subscribe_HangingAdoptHitsDeadline(t *testing.T) {
+	withSessionControlCallTimeout(t, 200*time.Millisecond)
+	dbConn, jobID := newRunnerTestDBWithJob(t, "runtime-xyz")
+	r := &Runner{DB: dbConn, Backend: &hangingAdoptBackend{}}
+
+	start := time.Now()
+	_, _, _, ok := r.Subscribe(jobID)
+	elapsed := time.Since(start)
+
+	if elapsed > 5*time.Second {
+		t.Fatalf("Subscribe took %v against an Adopt whose engine call never answers; a WS attach would hang", elapsed)
+	}
+	if ok {
+		t.Fatal("want ok=false: Adopt never resolved before the deadline")
+	}
+}
+
+// TestRunner_WriteInput_HangingAdoptHitsDeadline is WriteInput's sibling of
+// the Subscribe test above.
+func TestRunner_WriteInput_HangingAdoptHitsDeadline(t *testing.T) {
+	withSessionControlCallTimeout(t, 200*time.Millisecond)
+	dbConn, jobID := newRunnerTestDBWithJob(t, "runtime-xyz")
+	r := &Runner{DB: dbConn, Backend: &hangingAdoptBackend{}}
+
+	start := time.Now()
+	err := r.WriteInput(jobID, []byte("hello"))
+	elapsed := time.Since(start)
+
+	if elapsed > 5*time.Second {
+		t.Fatalf("WriteInput took %v against an Adopt whose engine call never answers", elapsed)
+	}
+	if err == nil {
+		t.Fatal("want an error: Adopt never resolved before the deadline")
+	}
+}
+
+// TestRunner_ResizeRuntime_HangingAdoptHitsDeadline is ResizeRuntime's
+// sibling — the WS "resize" frame ingress this PR's own body originally
+// (and incorrectly) claimed was already fully fixed via
+// containerSession.Resize alone.
+func TestRunner_ResizeRuntime_HangingAdoptHitsDeadline(t *testing.T) {
+	withSessionControlCallTimeout(t, 200*time.Millisecond)
+	dbConn, jobID := newRunnerTestDBWithJob(t, "runtime-xyz")
+	r := &Runner{DB: dbConn, Backend: &hangingAdoptBackend{}}
+
+	start := time.Now()
+	err := r.ResizeRuntime(jobID, TerminalSize{Rows: 24, Cols: 80})
+	elapsed := time.Since(start)
+
+	if elapsed > 5*time.Second {
+		t.Fatalf("ResizeRuntime took %v against an Adopt whose engine call never answers; a WS resize frame would hang the connection", elapsed)
+	}
+	if err == nil {
+		t.Fatal("want an error: Adopt never resolved before the deadline")
+	}
+}
+
+// TestRunner_CloseInput_HangingAdoptHitsDeadline is CloseInput's sibling.
+func TestRunner_CloseInput_HangingAdoptHitsDeadline(t *testing.T) {
+	withSessionControlCallTimeout(t, 200*time.Millisecond)
+	dbConn, jobID := newRunnerTestDBWithJob(t, "runtime-xyz")
+	r := &Runner{DB: dbConn, Backend: &hangingAdoptBackend{}}
+
+	start := time.Now()
+	err := r.CloseInput(jobID)
+	elapsed := time.Since(start)
+
+	if elapsed > 5*time.Second {
+		t.Fatalf("CloseInput took %v against an Adopt whose engine call never answers", elapsed)
+	}
+	if err == nil {
+		t.Fatal("want an error: Adopt never resolved before the deadline")
+	}
+}
+
 // --- Runner.StopJobRuntime / Runner.SignalJobRuntime ---------------------
 
 // hangingControlSession is a backend.SandboxSession whose Stop/Signal block
 // until the context they are given is done — modelling a wedged
 // docker/podman engine socket that accepts the request and never answers.
-// Resize/Subscribe/WriteInput/CloseInput/Wait are not exercised by the
-// tests in this file and return ErrRuntimeUnsupported/zero values.
+// Subscribe/WriteInput/CloseInput/Wait are not exercised by the tests in
+// this file and return ErrRuntimeUnsupported/zero values. Resize returns
+// resizeErr verbatim (default nil) — TestRunner_ResizeRuntimeID_
+// DeadlineErrorIsWrapped below sets it to context.DeadlineExceeded to model
+// what containerSession.Resize's own internal timeout produces.
 type hangingControlSession struct {
-	id string
+	id        string
+	resizeErr error
 }
 
 var _ backend.SandboxSession = (*hangingControlSession)(nil)
@@ -91,7 +296,7 @@ func (s *hangingControlSession) Subscribe() ([]byte, <-chan []byte, func(), bool
 func (s *hangingControlSession) WriteInput([]byte) error { return ErrRuntimeUnsupported }
 func (s *hangingControlSession) CloseInput() error       { return ErrRuntimeUnsupported }
 func (s *hangingControlSession) Resize(backend.TerminalSize) error {
-	return ErrRuntimeUnsupported
+	return s.resizeErr
 }
 func (s *hangingControlSession) Wait(context.Context) (backend.RuntimeExit, error) {
 	return backend.RuntimeExit{}, ErrRuntimeUnsupported
@@ -106,16 +311,17 @@ func (s *hangingControlSession) Signal(ctx context.Context, _ syscall.Signal) er
 }
 
 // hangingControlBackend is a backend.SandboxBackend whose Adopt hands back
-// a hangingControlSession immediately (this file's tests target the
-// Stop/Signal deadline, not the Adopt one — the Adopt engine call's own
-// context propagation is already covered by
-// TestDetectDaemonStateVolumes_inspectHangsHitsDeadline's sibling coverage
-// of containerBackend.doAdopt/ContainerInspect) and whose Launch, when sess
-// is set, "starts" that same session successfully — TestRunner_LaunchSandbox_
-// PersistFailureStopsSessionUnderDeadline below needs a Launch that
-// succeeds so launchSandbox reaches its post-UpdateJob-failure Stop call.
+// a pre-configured session immediately (this file's Stop/Signal/Resize
+// tests target what happens AFTER Adopt resolves — Adopt's own ctx
+// propagation, including the in-flight-join gap Major 1 fixed, is pinned
+// separately by TestContainerBackend_Adopt_InFlightJoinRespectsContextDeadline
+// and the Hanging*AdoptHitsDeadline tests above) and whose Launch, when
+// sess is set, "starts" that same session successfully —
+// TestRunner_LaunchSandbox_PersistFailureStopsSessionUnderDeadline below
+// needs a Launch that succeeds so launchSandbox reaches its
+// post-UpdateJob-failure Stop call.
 type hangingControlBackend struct {
-	sess *hangingControlSession
+	sess backend.SandboxSession
 }
 
 var _ backend.SandboxBackend = (*hangingControlBackend)(nil)
@@ -134,9 +340,8 @@ func (b *hangingControlBackend) ReapOrphans(context.Context) (backend.ReapReport
 }
 
 // TestRunner_StopJobRuntime_HangingEngineHitsDeadline pins the runner.go
-// StopJobRuntime fix (lines 1487/1491 in the pre-fix numbering): a
-// `boid task stop`/task-abort call must not hang forever when the adopted
-// session's Stop blocks against a wedged engine.
+// StopJobRuntime fix: a `boid task stop`/task-abort call must not hang
+// forever when the adopted session's Stop blocks against a wedged engine.
 func TestRunner_StopJobRuntime_HangingEngineHitsDeadline(t *testing.T) {
 	withSessionControlCallTimeout(t, 200*time.Millisecond)
 
@@ -152,9 +357,30 @@ func TestRunner_StopJobRuntime_HangingEngineHitsDeadline(t *testing.T) {
 	}
 }
 
+// TestRunner_StopJobRuntime_TimeoutWarnsLoudly pins Moderate 4: when the
+// control-call deadline fires, StopJobRuntime must say so loudly (Warn),
+// not silently (Debug) — the caller (finalizeTerminal → CleanupTaskWindow)
+// is synchronous with no return value, so an operator grepping boid.log is
+// the only way to learn the container may still be running.
+func TestRunner_StopJobRuntime_TimeoutWarnsLoudly(t *testing.T) {
+	withSessionControlCallTimeout(t, 200*time.Millisecond)
+	buf := captureLogs(t, slog.LevelDebug)
+
+	sess := &hangingControlSession{id: "runtime-xyz"}
+	r := &Runner{Backend: &hangingControlBackend{sess: sess}}
+
+	r.StopJobRuntime("runtime-xyz")
+
+	if !strings.Contains(buf.String(), "level=WARN") {
+		t.Errorf("StopJobRuntime timing out logged nothing at WARN; log was:\n%s", buf.String())
+	}
+	if !strings.Contains(buf.String(), "runtime-xyz") {
+		t.Errorf("the warning does not name the runtime_id; log was:\n%s", buf.String())
+	}
+}
+
 // TestRunner_SignalJobRuntime_HangingEngineHitsDeadline is the Signal
-// sibling of the Stop test above, pinning the fix at runner.go lines
-// 1510/1514 in the pre-fix numbering: `boid agent stop`'s SIGUSR1 delivery
+// sibling of the Stop test above: `boid agent stop`'s SIGUSR1 delivery
 // (NotifyTask → SignalJobRuntime) must not hang forever either.
 func TestRunner_SignalJobRuntime_HangingEngineHitsDeadline(t *testing.T) {
 	withSessionControlCallTimeout(t, 200*time.Millisecond)
@@ -168,6 +394,48 @@ func TestRunner_SignalJobRuntime_HangingEngineHitsDeadline(t *testing.T) {
 
 	if elapsed > 5*time.Second {
 		t.Fatalf("SignalJobRuntime took %v against an engine that never answers; `boid agent stop` would hang", elapsed)
+	}
+}
+
+// TestRunner_SignalJobRuntime_TimeoutWarnsLoudly is SignalJobRuntime's
+// sibling of TestRunner_StopJobRuntime_TimeoutWarnsLoudly (Moderate 4).
+func TestRunner_SignalJobRuntime_TimeoutWarnsLoudly(t *testing.T) {
+	withSessionControlCallTimeout(t, 200*time.Millisecond)
+	buf := captureLogs(t, slog.LevelDebug)
+
+	sess := &hangingControlSession{id: "runtime-xyz"}
+	r := &Runner{Backend: &hangingControlBackend{sess: sess}}
+
+	r.SignalJobRuntime("runtime-xyz", syscall.SIGUSR1)
+
+	if !strings.Contains(buf.String(), "level=WARN") {
+		t.Errorf("SignalJobRuntime timing out logged nothing at WARN; log was:\n%s", buf.String())
+	}
+}
+
+// --- Runner.ResizeRuntimeID's error wrapping (Minor 6) --------------------
+
+// TestRunner_ResizeRuntimeID_DeadlineErrorIsWrapped pins Minor 6: the moby
+// client hands context errors back UNDECORATED (Adopt/Stop/Signal's own
+// callers rely on this — see this test file's other errors.Is assertions),
+// so a raw context.DeadlineExceeded from session.Resize must not reach the
+// HTTP resize route's caller verbatim (it would read as
+// `context deadline exceeded` with nothing naming an unresponsive engine as
+// the cause).
+func TestRunner_ResizeRuntimeID_DeadlineErrorIsWrapped(t *testing.T) {
+	sess := &hangingControlSession{id: "runtime-xyz", resizeErr: context.DeadlineExceeded}
+	r := &Runner{Backend: &hangingControlBackend{sess: sess}}
+
+	err := r.ResizeRuntimeID(context.Background(), "runtime-xyz", TerminalSize{Rows: 24, Cols: 80})
+
+	if err == nil {
+		t.Fatal("want an error")
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("error %v no longer wraps context.DeadlineExceeded", err)
+	}
+	if err.Error() == context.DeadlineExceeded.Error() {
+		t.Errorf("error %q is the bare context error, not wrapped with engine-unresponsive context", err)
 	}
 }
 
@@ -199,9 +467,9 @@ func newClosedTestDB(t *testing.T) *sql.DB {
 }
 
 // TestRunner_LaunchSandbox_PersistFailureStopsSessionUnderDeadline pins the
-// runner.go:1417 fix: when UpdateJob fails right after a successful Launch,
-// the best-effort session.Stop cleanup it triggers must not be able to hang
-// this dispatch call forever against a wedged engine.
+// runner.go launchSandbox fix: when UpdateJob fails right after a
+// successful Launch, the best-effort session.Stop cleanup it triggers must
+// not be able to hang this dispatch call forever against a wedged engine.
 func TestRunner_LaunchSandbox_PersistFailureStopsSessionUnderDeadline(t *testing.T) {
 	withSessionControlCallTimeout(t, 200*time.Millisecond)
 
