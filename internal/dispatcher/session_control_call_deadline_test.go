@@ -211,6 +211,15 @@ func newRunnerTestDBWithJob(t *testing.T, runtimeID string) (dbConn *sql.DB, job
 	return d.Conn, job.ID
 }
 
+// subscribeResult carries Runner.Subscribe's two boolean returns out of the
+// goroutine every timeout-shaped test in this file runs it in — see
+// TestRunner_CanAttach_UnboundedCallerContextHitsDeadline's NB-3 note for
+// why the calls under test are never made inline here.
+type subscribeResult struct {
+	ok       bool
+	finished bool
+}
+
 // TestRunner_Subscribe_HangingAdoptHitsDeadline pins Major 2 for the WS
 // attach / Web UI SSE follow ingress: Subscribe must not hang forever when
 // Adopt's underlying engine call (a cache-miss ContainerInspect) never
@@ -227,23 +236,35 @@ func newRunnerTestDBWithJob(t *testing.T, runtimeID string) (dbConn *sql.DB, job
 // it might not be — the exact false positive class B2 already fixed for
 // the "adopted successfully but lost its stream" case, reopened through
 // this different door.
+//
+// [next-session-container-backend-followups.md #2]: goroutine + select, not
+// an inline call plus an elapsed check. PR #862 converted the eight call
+// sites it touched and left this one (and the five below) in the inline
+// shape; both forms PASS identically today, but they FAIL differently — the
+// inline form never reaches its own elapsed assertion when the deadline it
+// pins regresses, it just blocks in Adopt until go test's -timeout (10
+// minutes by default) kills the whole package with a goroutine dump.
 func TestRunner_Subscribe_HangingAdoptHitsDeadline(t *testing.T) {
 	withSessionControlCallTimeout(t, 200*time.Millisecond)
 	dbConn, jobID := newRunnerTestDBWithJob(t, "runtime-xyz")
 	r := &Runner{DB: dbConn, Backend: &hangingAdoptBackend{}}
 
-	start := time.Now()
-	_, _, _, ok, finished := r.Subscribe(jobID)
-	elapsed := time.Since(start)
+	done := make(chan subscribeResult, 1)
+	go func() {
+		_, _, _, ok, finished := r.Subscribe(jobID)
+		done <- subscribeResult{ok: ok, finished: finished}
+	}()
 
-	if elapsed > 5*time.Second {
-		t.Fatalf("Subscribe took %v against an Adopt whose engine call never answers; a WS attach would hang", elapsed)
-	}
-	if ok {
-		t.Fatal("want ok=false: Adopt never resolved before the deadline")
-	}
-	if finished {
-		t.Error("want finished=false: Adopt timing out against a wedged engine tells us nothing about whether the job has actually exited")
+	select {
+	case res := <-done:
+		if res.ok {
+			t.Fatal("want ok=false: Adopt never resolved before the deadline")
+		}
+		if res.finished {
+			t.Error("want finished=false: Adopt timing out against a wedged engine tells us nothing about whether the job has actually exited")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Subscribe did not return within 5s against an Adopt whose engine call never answers; a WS attach would hang")
 	}
 }
 
@@ -381,21 +402,22 @@ func TestRunner_Subscribe_PreLaunchFailedJob_ReportsFinished(t *testing.T) {
 }
 
 // TestRunner_WriteInput_HangingAdoptHitsDeadline is WriteInput's sibling of
-// the Subscribe test above.
+// the Subscribe test above — goroutine + select for the same reason.
 func TestRunner_WriteInput_HangingAdoptHitsDeadline(t *testing.T) {
 	withSessionControlCallTimeout(t, 200*time.Millisecond)
 	dbConn, jobID := newRunnerTestDBWithJob(t, "runtime-xyz")
 	r := &Runner{DB: dbConn, Backend: &hangingAdoptBackend{}}
 
-	start := time.Now()
-	err := r.WriteInput(jobID, []byte("hello"))
-	elapsed := time.Since(start)
+	done := make(chan error, 1)
+	go func() { done <- r.WriteInput(jobID, []byte("hello")) }()
 
-	if elapsed > 5*time.Second {
-		t.Fatalf("WriteInput took %v against an Adopt whose engine call never answers", elapsed)
-	}
-	if err == nil {
-		t.Fatal("want an error: Adopt never resolved before the deadline")
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("want an error: Adopt never resolved before the deadline")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("WriteInput did not return within 5s against an Adopt whose engine call never answers")
 	}
 }
 
@@ -408,15 +430,16 @@ func TestRunner_ResizeRuntime_HangingAdoptHitsDeadline(t *testing.T) {
 	dbConn, jobID := newRunnerTestDBWithJob(t, "runtime-xyz")
 	r := &Runner{DB: dbConn, Backend: &hangingAdoptBackend{}}
 
-	start := time.Now()
-	err := r.ResizeRuntime(jobID, TerminalSize{Rows: 24, Cols: 80})
-	elapsed := time.Since(start)
+	done := make(chan error, 1)
+	go func() { done <- r.ResizeRuntime(jobID, TerminalSize{Rows: 24, Cols: 80}) }()
 
-	if elapsed > 5*time.Second {
-		t.Fatalf("ResizeRuntime took %v against an Adopt whose engine call never answers; a WS resize frame would hang the connection", elapsed)
-	}
-	if err == nil {
-		t.Fatal("want an error: Adopt never resolved before the deadline")
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("want an error: Adopt never resolved before the deadline")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("ResizeRuntime did not return within 5s against an Adopt whose engine call never answers; a WS resize frame would hang the connection")
 	}
 }
 
@@ -426,15 +449,16 @@ func TestRunner_CloseInput_HangingAdoptHitsDeadline(t *testing.T) {
 	dbConn, jobID := newRunnerTestDBWithJob(t, "runtime-xyz")
 	r := &Runner{DB: dbConn, Backend: &hangingAdoptBackend{}}
 
-	start := time.Now()
-	err := r.CloseInput(jobID)
-	elapsed := time.Since(start)
+	done := make(chan error, 1)
+	go func() { done <- r.CloseInput(jobID) }()
 
-	if elapsed > 5*time.Second {
-		t.Fatalf("CloseInput took %v against an Adopt whose engine call never answers", elapsed)
-	}
-	if err == nil {
-		t.Fatal("want an error: Adopt never resolved before the deadline")
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("want an error: Adopt never resolved before the deadline")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("CloseInput did not return within 5s against an Adopt whose engine call never answers")
 	}
 }
 
@@ -564,7 +588,16 @@ func TestRunner_StopJobRuntime_AdoptTimeoutWarnsLoudly(t *testing.T) {
 
 	r := &Runner{Backend: &hangingAdoptBackend{}}
 
-	r.StopJobRuntime("runtime-xyz")
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		r.StopJobRuntime("runtime-xyz")
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("StopJobRuntime did not return within 5s against an Adopt whose engine call never answers; want it bounded by sessionControlCallTimeout")
+	}
 
 	if !strings.Contains(buf.String(), "level=WARN") {
 		t.Errorf("StopJobRuntime's Adopt timing out logged nothing at WARN; log was:\n%s", buf.String())
@@ -619,7 +652,16 @@ func TestRunner_SignalJobRuntime_AdoptTimeoutWarnsLoudly(t *testing.T) {
 
 	r := &Runner{Backend: &hangingAdoptBackend{}}
 
-	r.SignalJobRuntime("runtime-xyz", syscall.SIGUSR1)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		r.SignalJobRuntime("runtime-xyz", syscall.SIGUSR1)
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("SignalJobRuntime did not return within 5s against an Adopt whose engine call never answers; want it bounded by sessionControlCallTimeout")
+	}
 
 	if !strings.Contains(buf.String(), "level=WARN") {
 		t.Errorf("SignalJobRuntime's Adopt timing out logged nothing at WARN; log was:\n%s", buf.String())
@@ -677,6 +719,181 @@ func TestRunner_ResizeRuntimeID_AdoptTimeoutIsWrapped(t *testing.T) {
 	}
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Errorf("error %v does not wrap context.DeadlineExceeded", err)
+	}
+}
+
+// --- Runner.ResizeRuntimeID's deadline floor (next-session-container-
+// backend-followups.md #1, Opus review of PR #862) ------------------------
+
+// TestRunner_ResizeRuntimeID_UnboundedCallerContextHitsDeadline pins the
+// runner.go ResizeRuntimeID fix, the exact defect PR #862 fixed one function
+// higher up in this same file for CanAttach and left in place here: ctx went
+// into Adopt completely unbounded. ResizeRuntimeID's only caller
+// (internal/server/job_runtime_routes.go's POST /api/jobs/{id}/resize)
+// passes req.Context(), and the daemon's own http.Server sets neither
+// ReadTimeout nor WriteTimeout (internal/server/server.go), so a client that
+// stays connected gives ResizeRuntimeID an effectively unbounded ctx.
+//
+// As with CanAttach, this does not hang ResizeRuntimeID itself — Adopt's
+// in-flight join already selects on ctx (Major 1, PR #857). What it does is
+// let an unbounded ResizeRuntimeID sit as the in-flight attempt's OWNER for
+// that runtimeID against a wedged engine, so every bounded joiner for the
+// SAME runtimeID (StopJobRuntime, SignalJobRuntime, ...) burns its whole
+// sessionControlCallTimeout budget waiting on that owner instead of getting
+// a real answer: a `boid task stop` that fails every single time.
+//
+// Runs ResizeRuntimeID in a goroutine and asserts via select/time.After for
+// the reason spelled out on TestRunner_CanAttach_
+// UnboundedCallerContextHitsDeadline: called inline, a regression that drops
+// the floor does not fail this test, it HANGS it until go test's own
+// -timeout kills the package with a goroutine dump.
+func TestRunner_ResizeRuntimeID_UnboundedCallerContextHitsDeadline(t *testing.T) {
+	withSessionControlCallTimeout(t, 200*time.Millisecond)
+	r := &Runner{Backend: &hangingAdoptBackend{}}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- r.ResizeRuntimeID(context.Background(), "runtime-xyz", TerminalSize{Rows: 24, Cols: 80})
+	}()
+
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("want an error: Adopt never resolved before the deadline")
+		}
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Errorf("error %v does not wrap context.DeadlineExceeded", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("ResizeRuntimeID did not return within 5s against an unbounded caller ctx and an Adopt whose engine call never answers; want it bounded by sessionControlCallTimeout")
+	}
+}
+
+// TestRunner_ResizeRuntimeID_CallerShorterDeadlineWins pins that
+// sessionControlCallTimeout is a FLOOR under the caller's own ctx, not a
+// fixed replacement for it — the sibling of
+// TestRunner_CanAttach_CallerShorterDeadlineWins. The floor is set larger
+// than the caller's deadline here, so a pass is only possible if the
+// caller's own, shorter deadline actually governs.
+func TestRunner_ResizeRuntimeID_CallerShorterDeadlineWins(t *testing.T) {
+	withSessionControlCallTimeout(t, 5*time.Second)
+	r := &Runner{Backend: &hangingAdoptBackend{}}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	start := time.Now()
+	err := r.ResizeRuntimeID(ctx, "runtime-xyz", TerminalSize{Rows: 24, Cols: 80})
+	elapsed := time.Since(start)
+
+	if elapsed > 2*time.Second {
+		t.Fatalf("ResizeRuntimeID took %v; want it bounded by the caller's own ~100ms deadline, not sessionControlCallTimeout's 5s floor", elapsed)
+	}
+	if err == nil {
+		t.Fatal("want an error: Adopt never resolved before the caller's own deadline")
+	}
+}
+
+// TestRunner_ResizeRuntimeID_TimeoutWarnsLoudly pins the operator-visibility
+// half of this fix: ResizeRuntimeID's caller turns its error into a plain
+// HTTP 400 body (job_runtime_routes.go), which is not in boid.log at all, so
+// an operator grepping the daemon log for "why did resize stop working"
+// sees nothing unless ResizeRuntimeID itself says so — the same argument
+// StopJobRuntime/SignalJobRuntime/CanAttach's own Warns already make.
+func TestRunner_ResizeRuntimeID_TimeoutWarnsLoudly(t *testing.T) {
+	withSessionControlCallTimeout(t, 200*time.Millisecond)
+	buf := captureLogs(t, slog.LevelDebug)
+	r := &Runner{Backend: &hangingAdoptBackend{}}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- r.ResizeRuntimeID(context.Background(), "runtime-xyz", TerminalSize{Rows: 24, Cols: 80})
+	}()
+
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("want an error: Adopt never resolved before the deadline")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("ResizeRuntimeID did not return within 5s; want it bounded by sessionControlCallTimeout")
+	}
+
+	if !strings.Contains(buf.String(), "level=WARN") {
+		t.Errorf("ResizeRuntimeID's Adopt timing out logged nothing at WARN; log was:\n%s", buf.String())
+	}
+	if !strings.Contains(buf.String(), "runtime-xyz") {
+		t.Errorf("the warning does not name the runtime_id; log was:\n%s", buf.String())
+	}
+}
+
+// TestRunner_ResizeRuntimeID_CallerCancelIsNotReportedAsEngineTimeout pins
+// the two-causes split PR #862 made for CanAttach and this function was left
+// without. ctx here is derived from the CALLER's ctx, so ctx.Err() after a
+// false Adopt can be Canceled (the HTTP client disconnected mid-request —
+// ordinary and non-actionable) just as easily as DeadlineExceeded (the floor
+// fired — the engine may be wedged). Pre-fix, both produced the identical
+// `engine did not respond in time: context canceled` error, which names the
+// engine for something the engine had nothing to do with, and logged
+// nothing at all.
+//
+// Two assertions, matching TestRunner_CanAttach_CancelLogsDebugNotWarn: the
+// cancellation must not be logged at WARN (it is not evidence of a wedged
+// engine), and the returned error must not blame the engine's response time.
+func TestRunner_ResizeRuntimeID_CallerCancelIsNotReportedAsEngineTimeout(t *testing.T) {
+	withSessionControlCallTimeout(t, 5*time.Second)
+	buf := captureLogs(t, slog.LevelDebug)
+	r := &Runner{Backend: &hangingAdoptBackend{}}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- r.ResizeRuntimeID(ctx, "runtime-xyz", TerminalSize{Rows: 24, Cols: 80})
+	}()
+
+	time.Sleep(50 * time.Millisecond)
+	cancel()
+
+	var err error
+	select {
+	case err = <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("ResizeRuntimeID did not return promptly after its caller's ctx was canceled")
+	}
+
+	if err == nil {
+		t.Fatal("want an error: Adopt never resolved before cancellation")
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("error %v does not wrap context.Canceled", err)
+	}
+	if strings.Contains(err.Error(), "did not respond in time") {
+		t.Errorf("error %q blames the engine's response time for what is an ordinary client disconnect", err)
+	}
+	if strings.Contains(buf.String(), "level=WARN") {
+		t.Errorf("ResizeRuntimeID logged at WARN for an ordinary client cancellation; log was:\n%s", buf.String())
+	}
+	if !strings.Contains(buf.String(), "level=DEBUG") {
+		t.Errorf("ResizeRuntimeID logged nothing at DEBUG for the canceled case; log was:\n%s", buf.String())
+	}
+}
+
+// TestRunner_ResizeRuntimeID_NotFoundDoesNotWarn is the regression guard for
+// the two tests above, sibling of TestRunner_CanAttach_NotFoundDoesNotWarn:
+// the ordinary "no such runtime" result (Adopt resolves immediately to
+// ok=false, ctx never expires) must stay silent at WARN and must keep
+// returning ErrRuntimeUnsupported, not an engine-blaming error.
+func TestRunner_ResizeRuntimeID_NotFoundDoesNotWarn(t *testing.T) {
+	buf := captureLogs(t, slog.LevelDebug)
+	r := &Runner{Backend: &notAdoptableBackend{}}
+
+	err := r.ResizeRuntimeID(context.Background(), "runtime-xyz", TerminalSize{Rows: 24, Cols: 80})
+
+	if !errors.Is(err, ErrRuntimeUnsupported) {
+		t.Errorf("want ErrRuntimeUnsupported for a legitimate not-found Adopt result, got %v", err)
+	}
+	if strings.Contains(buf.String(), "level=WARN") {
+		t.Errorf("ResizeRuntimeID logged a WARN for a legitimate not-found Adopt result; log was:\n%s", buf.String())
 	}
 }
 
@@ -992,10 +1209,6 @@ func TestRunner_Subscribe_AdoptTimeoutWarnsLoudly(t *testing.T) {
 	dbConn, jobID := newRunnerTestDBWithJob(t, "runtime-xyz")
 	r := &Runner{DB: dbConn, Backend: &hangingAdoptBackend{}}
 
-	type subscribeResult struct {
-		ok       bool
-		finished bool
-	}
 	done := make(chan subscribeResult, 1)
 	go func() {
 		_, _, _, ok, finished := r.Subscribe(jobID)
