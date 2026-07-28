@@ -234,11 +234,46 @@ func (b *containerBackend) RunWorkspaceInit(ctx context.Context, req WorkspaceIn
 	if exitCode != 0 {
 		return workspaceInitFailure(req.Slug, exitCode, output)
 	}
+	// A successful init keeps its output, in two sizes.
+	//
+	// Through PR9 this logged only byte COUNTS and let the bytes go: the
+	// container is removed on return, so exit 0 meant the run left no record
+	// of itself anywhere. That reads as reasonable — a success has nothing to
+	// explain — and is wrong for this particular container, because the
+	// script it ran is the OPERATOR's (init.sh), not boid's. The failure mode
+	// an operator's install script actually has is exiting 0 while leaving
+	// the home subtly wrong, which is precisely the case with no error
+	// message to carry the evidence. Measured cost of not having it: the
+	// 2026-07-28 dogfood, where an init that exited 0 left every volta shim
+	// dangling and the investigation had to replay the whole volume under an
+	// overlay mount to find out what the installer had said.
+	//
+	// Logged at INFO, not DEBUG, even though a per-dispatch record of a
+	// successful run is exactly the kind of thing debug level is for: boid
+	// has no way to turn debug level ON. Nothing in the daemon ever calls
+	// slog.SetDefault or installs a Handler, so the process runs at slog's
+	// built-in default (info) for its whole life, and a slog.Debug line here
+	// would be an output nobody could ever produce. Bounded and at info is
+	// the version that actually exists. If a level knob lands later, the
+	// natural follow-up is a debug line carrying output.String() — the full
+	// retained window — with this tail staying as the default-level record.
 	slog.Info("workspace home init completed",
 		"workspace_slug", req.Slug, "container", name,
-		"retained_output_bytes", output.Len(), "dropped_output_bytes", output.Dropped())
+		"retained_output_bytes", output.Len(), "dropped_output_bytes", output.Dropped(),
+		"output_tail", output.Tail(workspaceInitSuccessTailLimit))
 	return nil
 }
+
+// workspaceInitSuccessTailLimit is how much of a SUCCESSFUL init run's
+// output the completion log carries.
+//
+// Deliberately much smaller than workspaceInitOutputLimit (the retention
+// bound the failure path's tail is cut from): a failure is being read by
+// someone who already knows something went wrong and wants everything,
+// while this one is written on every first dispatch of every workspace,
+// whether or not anybody will ever read it. What it needs to answer is
+// "what was the script doing when it finished" — a couple of dozen lines.
+const workspaceInitSuccessTailLimit = 2000
 
 // workspaceInitHomeMount turns req's home into the one mount the init
 // container gets: a VOLUME mount of the workspace's own named volume (PR6, 論点
