@@ -1634,10 +1634,39 @@ func (r *Runner) ReapOrphans(ctx context.Context) (backend.ReapReport, error) {
 // #816) rather than internal/server/job_runtime_routes.go's
 // resolveAttachableJob type-asserting onto a backend-specific capability
 // directly.
+//
+// sessionControlCallTimeout is layered on top of the caller's own ctx as a
+// FLOOR, not a replacement (next-session-container-backend-followups.md #2,
+// Opus review of PR #857): CanAttach's only caller
+// (job_runtime_routes.go's resolveAttachableJob) passes req.Context(),
+// which stays open for as long as the HTTP client stays connected — before
+// this, that gave Adopt an effectively unbounded ctx. Adopt's in-flight-join
+// wait already selects on ctx (Major 1 in
+// session_control_call_deadline_test.go), so this did not itself hang — but
+// an unbounded CanAttach caller could still sit as the in-flight attempt's
+// "owner" against a wedged engine, and every bounded joiner for the SAME
+// runtimeID (StopJobRuntime, SignalJobRuntime, ...) would then exhaust its
+// own sessionControlCallTimeout budget waiting on that owner instead of the
+// engine ever answering — `boid task stop` failing every time, not
+// hanging, but never succeeding either. context.WithTimeout(ctx, ...) keeps
+// whichever of the caller's own deadline (if shorter) and
+// sessionControlCallTimeout fires first, and the caller's own
+// cancellation (the HTTP client disconnecting) still propagates through
+// unchanged, because the new ctx is derived FROM ctx rather than from
+// context.Background().
+//
+// A false result here still can't distinguish "Adopt legitimately found
+// nothing" from "the floor fired before Adopt could resolve" — both surface
+// identically as job_runtime_routes.go's 409 "job runtime does not support
+// attach" to the caller. That ambiguity predates this fix (it already
+// existed whenever ctx itself expired before this change) and is left
+// alone here; see this PR's description for why.
 func (r *Runner) CanAttach(ctx context.Context, runtimeID string) bool {
 	if runtimeID == "" {
 		return false
 	}
+	ctx, cancel := context.WithTimeout(ctx, sessionControlCallTimeout.Get())
+	defer cancel()
 	_, ok := r.sandboxBackend().Adopt(ctx, runtimeID)
 	return ok
 }

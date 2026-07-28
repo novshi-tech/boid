@@ -43,6 +43,24 @@ import (
 // in fact exercises a different function (DetectDaemonStateVolumes) and
 // never calls Adopt/doAdopt at all. All three are pinned by tests in this
 // file now.
+//
+// Extended again for two follow-ups PR #857 deliberately deferred (Opus
+// review of PR #857, and next-session-container-backend-followups.md #2/
+// #3): (#2) Runner.CanAttach was the one foreground control call that never
+// got a deadline floor at all — it forwards its caller's own ctx straight
+// into Adopt, and job_runtime_routes.go's resolveAttachableJob passes
+// req.Context(), which an unbounded engine leaves open for as long as the
+// HTTP client stays connected. Adopt's in-flight-join wait already selects
+// on ctx (Major 1 above), so this did not hang CanAttach itself — but an
+// unbounded CanAttach owning the in-flight attempt for a runtimeID starved
+// every OTHER bounded joiner of that runtimeID (StopJobRuntime,
+// SignalJobRuntime, ...) of its own sessionControlCallTimeout budget,
+// turning a transient engine hiccup into a `boid task stop` that fails
+// every single time. (#3) runtime_subscriber_export.go's Subscribe/
+// WriteInput/ResizeRuntime/CloseInput logged nothing when their own Adopt
+// call hit the deadline — an operator debugging a "WS attach silently does
+// nothing" report could not tell that apart from the routine "no such
+// runtime" result. Both are pinned by tests in this file now.
 
 // withSessionControlCallTimeout shrinks sessionControlCallTimeout for the
 // duration of one test — this package's established pattern for pinning a
@@ -564,5 +582,298 @@ func TestRunner_LaunchSandbox_PersistFailureStopsSessionUnderDeadline(t *testing
 	}
 	if err == nil {
 		t.Fatal("want an error: UpdateJob was forced to fail against a closed DB")
+	}
+}
+
+// --- Runner.CanAttach's deadline floor (next-session-container-backend-
+// followups.md #2, Opus review of PR #857) --------------------------------
+
+// TestRunner_CanAttach_UnboundedCallerContextHitsDeadline pins the runner.go
+// CanAttach fix: before it, ctx went into Adopt completely unbounded —
+// CanAttach's only caller (internal/server/job_runtime_routes.go's
+// resolveAttachableJob) passes req.Context(), so a client that stayed
+// connected gave CanAttach an effectively unbounded ctx. Adopt's in-flight
+// join already selects on ctx (Major 1 above), so this did not itself hang
+// — but an unbounded CanAttach caller could sit as the in-flight attempt's
+// "owner" against a wedged engine, and every bounded joiner for the SAME
+// runtimeID (StopJobRuntime, SignalJobRuntime, ...) would then exhaust its
+// own sessionControlCallTimeout budget waiting on that unbounded owner
+// instead of ever getting a real answer from the engine — a `boid task
+// stop` that fails every single time, not hangs.
+func TestRunner_CanAttach_UnboundedCallerContextHitsDeadline(t *testing.T) {
+	withSessionControlCallTimeout(t, 200*time.Millisecond)
+	r := &Runner{Backend: &hangingAdoptBackend{}}
+
+	start := time.Now()
+	ok := r.CanAttach(context.Background(), "runtime-xyz")
+	elapsed := time.Since(start)
+
+	if elapsed > 5*time.Second {
+		t.Fatalf("CanAttach took %v against an unbounded caller ctx and an Adopt whose engine call never answers", elapsed)
+	}
+	if ok {
+		t.Fatal("want false: Adopt never resolved before the deadline")
+	}
+}
+
+// TestRunner_CanAttach_CallerShorterDeadlineWins pins that
+// sessionControlCallTimeout acts as a FLOOR under CanAttach's caller-supplied
+// ctx, not a fixed replacement for it: when the caller's own ctx already
+// carries a shorter deadline than sessionControlCallTimeout,
+// context.WithTimeout(ctx, sessionControlCallTimeout.Get()) keeps whichever
+// of the two fires first — but only because CanAttach derives its ctx FROM
+// the caller's ctx. sessionControlCallTimeout is deliberately set larger
+// than the caller's deadline here so a pass is only possible if the
+// caller's own, shorter deadline actually governs.
+func TestRunner_CanAttach_CallerShorterDeadlineWins(t *testing.T) {
+	withSessionControlCallTimeout(t, 5*time.Second)
+	r := &Runner{Backend: &hangingAdoptBackend{}}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	start := time.Now()
+	ok := r.CanAttach(ctx, "runtime-xyz")
+	elapsed := time.Since(start)
+
+	if elapsed > 2*time.Second {
+		t.Fatalf("CanAttach took %v; want it bounded by the caller's own ~100ms deadline, not sessionControlCallTimeout's 5s floor", elapsed)
+	}
+	if ok {
+		t.Fatal("want false: Adopt never resolved before the caller's own deadline")
+	}
+}
+
+// TestRunner_CanAttach_CallerCancelPropagates pins that a caller's own
+// cancellation — job_runtime_routes.go's resolveAttachableJob passes
+// req.Context(), so an HTTP client disconnecting mid-request cancels this —
+// still reaches Adopt once the floor is layered on top of ctx, the same as
+// it did when ctx flowed straight through before this fix.
+// sessionControlCallTimeout is set well above the cancellation delay below,
+// so a prompt return is only possible via the caller's cancel, not the
+// floor firing.
+func TestRunner_CanAttach_CallerCancelPropagates(t *testing.T) {
+	withSessionControlCallTimeout(t, 5*time.Second)
+	r := &Runner{Backend: &hangingAdoptBackend{}}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan bool, 1)
+	go func() { done <- r.CanAttach(ctx, "runtime-xyz") }()
+
+	time.Sleep(50 * time.Millisecond)
+	cancel()
+
+	select {
+	case ok := <-done:
+		if ok {
+			t.Fatal("want false: Adopt never resolved before cancellation")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("CanAttach did not return promptly after its caller's ctx was canceled")
+	}
+}
+
+// --- runtime_subscriber_export.go Adopt-timeout visibility (next-session-
+// container-backend-followups.md #3, Opus review of PR #857) -------------
+
+// notAdoptableBackend is a backend.SandboxBackend whose Adopt reports
+// ok=false immediately without ever touching ctx — modelling Adopt's most
+// common false result: the runtimeID's job has already exited/been reaped,
+// with no engine round-trip involved at all, let alone a slow one. Used by
+// the regression-guard tests below: Subscribe/WriteInput/ResizeRuntime/
+// CloseInput's new ctx.Err()-gated Warn logging and error wrapping must NOT
+// fire for this ordinary case — an operator/API caller must still be able
+// to tell "there is nothing here" apart from "the engine did not answer".
+type notAdoptableBackend struct{}
+
+var _ backend.SandboxBackend = (*notAdoptableBackend)(nil)
+
+func (b *notAdoptableBackend) Launch(context.Context, sandbox.Spec, backend.LaunchOptions) (backend.SandboxSession, error) {
+	return nil, fmt.Errorf("notAdoptableBackend.Launch is not implemented")
+}
+func (b *notAdoptableBackend) Adopt(context.Context, string) (backend.SandboxSession, bool) {
+	return nil, false
+}
+func (b *notAdoptableBackend) ReapOrphans(context.Context) (backend.ReapReport, error) {
+	return backend.ReapReport{}, nil
+}
+
+// TestRunner_Subscribe_AdoptTimeoutWarnsLoudly pins #3 for Subscribe: when
+// Adopt's control-call deadline fires, "the WS attach / SSE follow endpoint
+// could not attach" must not look identical in the logs to "this job has no
+// live output to attach to" (the routine, healthy case) — an operator
+// grepping boid.log for a "terminal stayed blank" report needs to be able to
+// tell the two apart.
+func TestRunner_Subscribe_AdoptTimeoutWarnsLoudly(t *testing.T) {
+	withSessionControlCallTimeout(t, 200*time.Millisecond)
+	buf := captureLogs(t, slog.LevelDebug)
+	dbConn, jobID := newRunnerTestDBWithJob(t, "runtime-xyz")
+	r := &Runner{DB: dbConn, Backend: &hangingAdoptBackend{}}
+
+	_, _, _, ok := r.Subscribe(jobID)
+
+	if ok {
+		t.Fatal("want ok=false: Adopt never resolved before the deadline")
+	}
+	if !strings.Contains(buf.String(), "level=WARN") {
+		t.Errorf("Subscribe's Adopt timing out logged nothing at WARN; log was:\n%s", buf.String())
+	}
+	if !strings.Contains(buf.String(), "runtime-xyz") {
+		t.Errorf("the warning does not name the runtime_id; log was:\n%s", buf.String())
+	}
+}
+
+// TestRunner_Subscribe_NotFoundDoesNotWarn is
+// TestRunner_Subscribe_AdoptTimeoutWarnsLoudly's regression guard: the
+// ordinary "no runtime to subscribe to" result (Adopt resolves immediately
+// to ok=false, ctx never expires) must stay silent at WARN — it is the
+// routine, expected outcome for any job whose sandbox has already exited,
+// not something an operator should be paged about.
+func TestRunner_Subscribe_NotFoundDoesNotWarn(t *testing.T) {
+	buf := captureLogs(t, slog.LevelDebug)
+	dbConn, jobID := newRunnerTestDBWithJob(t, "runtime-xyz")
+	r := &Runner{DB: dbConn, Backend: &notAdoptableBackend{}}
+
+	_, _, _, ok := r.Subscribe(jobID)
+
+	if ok {
+		t.Fatal("want ok=false")
+	}
+	if strings.Contains(buf.String(), "level=WARN") {
+		t.Errorf("Subscribe logged a WARN for a legitimate not-found Adopt result; log was:\n%s", buf.String())
+	}
+}
+
+// TestRunner_WriteInput_AdoptTimeoutWarnsLoudly is Subscribe's sibling for
+// WriteInput, which additionally returns an error to its caller: that error
+// must name the engine as the cause (errors.Is context.DeadlineExceeded),
+// not read as an ordinary ErrRuntimeUnsupported.
+func TestRunner_WriteInput_AdoptTimeoutWarnsLoudly(t *testing.T) {
+	withSessionControlCallTimeout(t, 200*time.Millisecond)
+	buf := captureLogs(t, slog.LevelDebug)
+	dbConn, jobID := newRunnerTestDBWithJob(t, "runtime-xyz")
+	r := &Runner{DB: dbConn, Backend: &hangingAdoptBackend{}}
+
+	err := r.WriteInput(jobID, []byte("hello"))
+
+	if err == nil {
+		t.Fatal("want an error: Adopt never resolved before the deadline")
+	}
+	if errors.Is(err, ErrRuntimeUnsupported) {
+		t.Errorf("error %v is ErrRuntimeUnsupported; an Adopt timeout must be distinguished from a normal unsupported-runtime result", err)
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("error %v does not wrap context.DeadlineExceeded", err)
+	}
+	if !strings.Contains(buf.String(), "level=WARN") {
+		t.Errorf("WriteInput's Adopt timing out logged nothing at WARN; log was:\n%s", buf.String())
+	}
+	if !strings.Contains(buf.String(), "runtime-xyz") {
+		t.Errorf("the warning does not name the runtime_id; log was:\n%s", buf.String())
+	}
+}
+
+// TestRunner_WriteInput_NotFoundDoesNotWarn is WriteInput's regression
+// guard, sibling of TestRunner_Subscribe_NotFoundDoesNotWarn.
+func TestRunner_WriteInput_NotFoundDoesNotWarn(t *testing.T) {
+	buf := captureLogs(t, slog.LevelDebug)
+	dbConn, jobID := newRunnerTestDBWithJob(t, "runtime-xyz")
+	r := &Runner{DB: dbConn, Backend: &notAdoptableBackend{}}
+
+	err := r.WriteInput(jobID, []byte("hello"))
+
+	if !errors.Is(err, ErrRuntimeUnsupported) {
+		t.Errorf("want ErrRuntimeUnsupported for a legitimate not-found Adopt result, got %v", err)
+	}
+	if strings.Contains(buf.String(), "level=WARN") {
+		t.Errorf("WriteInput logged a WARN for a legitimate not-found Adopt result; log was:\n%s", buf.String())
+	}
+}
+
+// TestRunner_ResizeRuntime_AdoptTimeoutWarnsLoudly is Subscribe's sibling for
+// ResizeRuntime — the WS attach transport's "resize" frame ingress.
+func TestRunner_ResizeRuntime_AdoptTimeoutWarnsLoudly(t *testing.T) {
+	withSessionControlCallTimeout(t, 200*time.Millisecond)
+	buf := captureLogs(t, slog.LevelDebug)
+	dbConn, jobID := newRunnerTestDBWithJob(t, "runtime-xyz")
+	r := &Runner{DB: dbConn, Backend: &hangingAdoptBackend{}}
+
+	err := r.ResizeRuntime(jobID, TerminalSize{Rows: 24, Cols: 80})
+
+	if err == nil {
+		t.Fatal("want an error: Adopt never resolved before the deadline")
+	}
+	if errors.Is(err, ErrRuntimeUnsupported) {
+		t.Errorf("error %v is ErrRuntimeUnsupported; an Adopt timeout must be distinguished from a normal unsupported-runtime result", err)
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("error %v does not wrap context.DeadlineExceeded", err)
+	}
+	if !strings.Contains(buf.String(), "level=WARN") {
+		t.Errorf("ResizeRuntime's Adopt timing out logged nothing at WARN; log was:\n%s", buf.String())
+	}
+	if !strings.Contains(buf.String(), "runtime-xyz") {
+		t.Errorf("the warning does not name the runtime_id; log was:\n%s", buf.String())
+	}
+}
+
+// TestRunner_ResizeRuntime_NotFoundDoesNotWarn is ResizeRuntime's regression
+// guard, sibling of TestRunner_Subscribe_NotFoundDoesNotWarn.
+func TestRunner_ResizeRuntime_NotFoundDoesNotWarn(t *testing.T) {
+	buf := captureLogs(t, slog.LevelDebug)
+	dbConn, jobID := newRunnerTestDBWithJob(t, "runtime-xyz")
+	r := &Runner{DB: dbConn, Backend: &notAdoptableBackend{}}
+
+	err := r.ResizeRuntime(jobID, TerminalSize{Rows: 24, Cols: 80})
+
+	if !errors.Is(err, ErrRuntimeUnsupported) {
+		t.Errorf("want ErrRuntimeUnsupported for a legitimate not-found Adopt result, got %v", err)
+	}
+	if strings.Contains(buf.String(), "level=WARN") {
+		t.Errorf("ResizeRuntime logged a WARN for a legitimate not-found Adopt result; log was:\n%s", buf.String())
+	}
+}
+
+// TestRunner_CloseInput_AdoptTimeoutWarnsLoudly is Subscribe's sibling for
+// CloseInput.
+func TestRunner_CloseInput_AdoptTimeoutWarnsLoudly(t *testing.T) {
+	withSessionControlCallTimeout(t, 200*time.Millisecond)
+	buf := captureLogs(t, slog.LevelDebug)
+	dbConn, jobID := newRunnerTestDBWithJob(t, "runtime-xyz")
+	r := &Runner{DB: dbConn, Backend: &hangingAdoptBackend{}}
+
+	err := r.CloseInput(jobID)
+
+	if err == nil {
+		t.Fatal("want an error: Adopt never resolved before the deadline")
+	}
+	if errors.Is(err, ErrRuntimeUnsupported) {
+		t.Errorf("error %v is ErrRuntimeUnsupported; an Adopt timeout must be distinguished from a normal unsupported-runtime result", err)
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("error %v does not wrap context.DeadlineExceeded", err)
+	}
+	if !strings.Contains(buf.String(), "level=WARN") {
+		t.Errorf("CloseInput's Adopt timing out logged nothing at WARN; log was:\n%s", buf.String())
+	}
+	if !strings.Contains(buf.String(), "runtime-xyz") {
+		t.Errorf("the warning does not name the runtime_id; log was:\n%s", buf.String())
+	}
+}
+
+// TestRunner_CloseInput_NotFoundDoesNotWarn is CloseInput's regression
+// guard, sibling of TestRunner_Subscribe_NotFoundDoesNotWarn.
+func TestRunner_CloseInput_NotFoundDoesNotWarn(t *testing.T) {
+	buf := captureLogs(t, slog.LevelDebug)
+	dbConn, jobID := newRunnerTestDBWithJob(t, "runtime-xyz")
+	r := &Runner{DB: dbConn, Backend: &notAdoptableBackend{}}
+
+	err := r.CloseInput(jobID)
+
+	if !errors.Is(err, ErrRuntimeUnsupported) {
+		t.Errorf("want ErrRuntimeUnsupported for a legitimate not-found Adopt result, got %v", err)
+	}
+	if strings.Contains(buf.String(), "level=WARN") {
+		t.Errorf("CloseInput logged a WARN for a legitimate not-found Adopt result; log was:\n%s", buf.String())
 	}
 }
