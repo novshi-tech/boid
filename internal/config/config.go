@@ -15,11 +15,46 @@ import (
 // Config holds the global boid configuration.
 type Config struct {
 	GC      GCConfig      `yaml:"gc"`
+	Log     LogConfig     `yaml:"log"`
 	Web     WebConfig     `yaml:"web"`
 	Notify  NotifyConfig  `yaml:"notify"`
 	Sandbox SandboxConfig `yaml:"sandbox"`
 	TaskAsk TaskAskConfig `yaml:"task_ask"`
 	Gateway GatewayConfig `yaml:"gateway"`
+}
+
+// LogConfig holds daemon logging settings.
+//
+// Level controls slog's built-in bridge-to-log-package minimum level
+// (slog.SetLogLoggerLevel — applied once at daemon startup by
+// internal/daemon.ApplyLogLevel, called from cmd/start.go's runDaemonChild)
+// WITHOUT installing a custom slog.Handler and WITHOUT changing boid.log's
+// line format at all. Nothing in the daemon calls slog.SetDefault or
+// installs a Handler (grep the whole tree — internal/dispatcher/
+// container_backend_workspace_init.go's own doc comment notes this exact
+// fact), so every slog.Info/Debug/Warn/Error call already goes through
+// slog's package-private defaultHandler, which formats via the standard
+// "log" package (today's "2009/11/10 23:00:00 INFO msg key=value" lines) and
+// checks slog.SetLogLoggerLevel's threshold before emitting anything.
+// Calling that one function is therefore sufficient to gate slog.Debug
+// output on/off — it changes nothing about HOW a line is formatted, only
+// WHETHER a given level's line is emitted at all. A real TextHandler/
+// JSONHandler would instead produce "time=... level=... msg=..." lines,
+// breaking every existing boid.log-grepping runbook (daemon liveness
+// checks, etc.) — which is exactly why this package never installs one.
+//
+// Empty (the zero value, and every config.yaml written before this field
+// existed) means "leave slog's own built-in default (info) alone" — the
+// exact pre-this-field behavior, byte-for-byte.
+type LogConfig struct {
+	// Level is one of LogLevelNames ("debug"/"info"/"warn"/"error").
+	// Config.UnmarshalYAML rejects any other non-empty value as a hard
+	// config-load error (ParseLogLevel), the same treatment
+	// gateway.forges.*.forge's unrecognized-forge case and gc.interval's
+	// invalid-duration case already get elsewhere in this file — a typo'd
+	// level should fail `boid start`/`boid config apply` loudly, not
+	// silently fall back to some default.
+	Level string `yaml:"level,omitempty"`
 }
 
 // TaskAskConfig holds settings for the blocking `boid task ask` Q&A RPC.
@@ -330,6 +365,9 @@ func (c *Config) UnmarshalYAML(value *yaml.Node) error {
 			Interval  string `yaml:"interval"`
 			OlderThan string `yaml:"older_than"`
 		} `yaml:"gc"`
+		Log struct {
+			Level string `yaml:"level"`
+		} `yaml:"log"`
 		Web struct {
 			PublicURL string `yaml:"public_url"`
 			HTTPAddr  string `yaml:"http_addr"`
@@ -361,6 +399,7 @@ func (c *Config) UnmarshalYAML(value *yaml.Node) error {
 	}
 
 	c.GC = defaults.GC
+	c.Log = defaults.Log
 	c.TaskAsk = defaults.TaskAsk
 
 	if raw.GC.Enabled != nil {
@@ -379,6 +418,13 @@ func (c *Config) UnmarshalYAML(value *yaml.Node) error {
 			return fmt.Errorf("gc.older_than: %w", err)
 		}
 		c.GC.OlderThan = d
+	}
+
+	if raw.Log.Level != "" {
+		if _, err := ParseLogLevel(raw.Log.Level); err != nil {
+			return fmt.Errorf("log.level: %w", err)
+		}
+		c.Log.Level = raw.Log.Level
 	}
 
 	c.Web.PublicURL = raw.Web.PublicURL

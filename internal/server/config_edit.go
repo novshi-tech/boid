@@ -432,6 +432,7 @@ var restartFieldExtractors = map[string]func(*config.Config) string{
 	"gc.enabled":                func(c *config.Config) string { return strconv.FormatBool(c.GC.Enabled) },
 	"gc.interval":               func(c *config.Config) string { return c.GC.Interval.String() },
 	"gc.older_than":             func(c *config.Config) string { return c.GC.OlderThan.String() },
+	"log.level":                 func(c *config.Config) string { return c.Log.Level },
 	"web.http_addr":             func(c *config.Config) string { return c.Web.HTTPAddr },
 	"web.public_url":            func(c *config.Config) string { return c.Web.PublicURL },
 	"task_ask.disconnect_grace": func(c *config.Config) string { return c.TaskAsk.DisconnectGrace.String() },

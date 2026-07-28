@@ -199,6 +199,7 @@ func buildStartConfig(opts startConfigOptions) (server.Config, error) {
 		cfg.HTTPAddr = defaultStartHTTPAddr
 	}
 	cfg.AllowedDomains = append(cfg.AllowedDomains, appCfg.Sandbox.AllowedDomains...)
+	cfg.LogLevel = appCfg.Log.Level
 
 	return cfg, nil
 }
@@ -471,6 +472,16 @@ func runDaemonChild(cfg server.Config) error {
 			return fmt.Errorf("setsid: %w", err)
 		}
 	}
+
+	// log.level (docs/ja/reference/config-yaml.md "log" section): applied
+	// unconditionally, regardless of ShouldLogToStdout()'s branch above —
+	// the level gates what slog emits either way, whether the destination
+	// is the rotating log file or a container runtime's own stdout capture.
+	// Deliberately the very first slog-affecting call in this function
+	// (before the CLIToken warning below, which itself calls slog.Warn), so
+	// the whole daemon child's lifetime observes one consistent level from
+	// its first log line onward.
+	daemon.ApplyLogLevel(cfg.LogLevel)
 
 	// BOID_CLI_TOKEN misconfiguration warning (PR-3 Option 4 host-mode
 	// redesign, docs/plans/volume-only-daemon.md §論点c): daemon.

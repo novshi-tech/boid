@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 )
@@ -61,6 +62,68 @@ func TestBuildStartConfig_UsesDefaults(t *testing.T) {
 	}
 	if cfg.CLIToken != "" {
 		t.Fatalf("CLIToken = %q, want empty (BOID_CLI_TOKEN not set)", cfg.CLIToken)
+	}
+}
+
+// TestBuildStartConfig_LogLevelFromConfig pins that config.yaml's
+// `log.level` flows through to server.Config.LogLevel unchanged — the value
+// cmd/start.go's runDaemonChild later passes to
+// internal/daemon.ApplyLogLevel. Unset (no config.yaml at all, the default
+// TestBuildStartConfig_UsesDefaults case) leaves LogLevel empty.
+func TestBuildStartConfig_LogLevelFromConfig(t *testing.T) {
+	configHome := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", configHome)
+	if err := os.MkdirAll(filepath.Join(configHome, "boid"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	configPath := filepath.Join(configHome, "boid", "config.yaml")
+	if err := os.WriteFile(configPath, []byte("log:\n  level: debug\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := buildStartConfig(startConfigOptions{})
+	if err != nil {
+		t.Fatalf("buildStartConfig() error = %v", err)
+	}
+	if cfg.LogLevel != "debug" {
+		t.Fatalf("LogLevel = %q, want %q", cfg.LogLevel, "debug")
+	}
+}
+
+// TestBuildStartConfig_LogLevelUnset_Empty pins the default: no `log:` block
+// in config.yaml (the common case, and every pre-log.level config.yaml)
+// leaves cfg.LogLevel empty, the no-op internal/daemon.ApplyLogLevel treats
+// as "leave slog's built-in default (info) alone."
+func TestBuildStartConfig_LogLevelUnset_Empty(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+
+	cfg, err := buildStartConfig(startConfigOptions{})
+	if err != nil {
+		t.Fatalf("buildStartConfig() error = %v", err)
+	}
+	if cfg.LogLevel != "" {
+		t.Fatalf("LogLevel = %q, want empty", cfg.LogLevel)
+	}
+}
+
+// TestBuildStartConfig_LogLevelInvalid_Rejected pins that an unrecognized
+// log.level value fails buildStartConfig outright (via config.Load's own
+// Config.UnmarshalYAML validation) — the same "config.Load()'s error is
+// buildStartConfig's error too" contract every other config.yaml validation
+// failure already gets here (e.g. an invalid gc.interval).
+func TestBuildStartConfig_LogLevelInvalid_Rejected(t *testing.T) {
+	configHome := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", configHome)
+	if err := os.MkdirAll(filepath.Join(configHome, "boid"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	configPath := filepath.Join(configHome, "boid", "config.yaml")
+	if err := os.WriteFile(configPath, []byte("log:\n  level: verbose\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := buildStartConfig(startConfigOptions{}); err == nil {
+		t.Fatal("expected buildStartConfig() to fail for an invalid log.level, got nil error")
 	}
 }
 

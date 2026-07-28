@@ -124,6 +124,45 @@ gc:
 
 ---
 
+## log — ログレベル
+
+```yaml
+log:
+  level: debug   # debug / info / warn / error（デフォルト: 未設定 = info）
+```
+
+| キー | 型 | デフォルト | 説明 |
+|---|---|---|---|
+| `level` | enum (`debug`/`info`/`warn`/`error`) | 未設定（実効値 `info`） | daemon プロセス全体の slog 出力レベル |
+
+`level` を明示的に設定しない場合、Go の `log/slog` パッケージの組み込みデフォルト（`info`）がそのまま使われます —
+これは本キー導入前の boid daemon の挙動と完全に同一です。不正な値（`debug`/`info`/`warn`/`error` 以外の文字列）は
+`boid start` 起動時 / `boid config apply`・`edit` 時に**設定読み込みエラー**として拒否されます（`gc.interval` に不正な
+duration 文字列を渡した場合や `gateway.forges.*.forge` に未知の forge 名を渡した場合と同じ扱い）。既定へのフォール
+バックはしません。
+
+### boid.log の行形式は変わらない
+
+boid daemon はコード中のどこでも `slog.SetDefault` を呼ばず、独自の `slog.Handler`（`TextHandler`/`JSONHandler` 等）も
+インストールしていません。そのため `slog.Info`/`slog.Debug` 呼び出しは常に slog 組み込みの
+`defaultHandler`（標準 `log` パッケージ経由で出力する非公開ハンドラ）を通り、boid.log の行は今までどおり
+
+```
+2009/11/10 23:00:00 INFO msg key=value
+```
+
+の形式（日時 + レベル + メッセージ + `key=value` 属性）のまま変わりません。`log.level` の実装は
+`log/slog` 標準ライブラリの `slog.SetLogLoggerLevel`（`log` パッケージへのブリッジのしきい値だけを変える関数、
+Handler には一切触れない）を daemon 起動時に一度呼ぶだけで、行の書式そのものには影響しません。もし将来
+`slog.SetDefault` で本物の `Handler` を差し込む変更が入った場合は、boid.log の行形式が
+`time=... level=INFO msg=...` のような別形式に変わり、daemon の生死判定など既存の boid.log grep 手順が壊れる
+ため、その変更は別途大きな決定として扱ってください（`internal/config/log_level.go` / `internal/daemon/log_level.go`
+の doc comment 参照）。
+
+反映には daemon の再起動が必要です（本ファイル冒頭の「設定変更の反映タイミング」参照）。
+
+---
+
 ## web — Web UI
 
 ```yaml

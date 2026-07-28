@@ -239,6 +239,65 @@ gc:
 	}
 }
 
+// TestLoadFromPath_LogLevel_Default pins that an unset log.level (no `log:`
+// block at all in config.yaml) leaves Config.Log.Level empty — the
+// "leave slog's own built-in default (info) alone" no-op case
+// internal/daemon.ApplyLogLevel treats specially.
+func TestLoadFromPath_LogLevel_Default(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(path, []byte("gc:\n  interval: 6h\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := loadFromPath(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Log.Level != "" {
+		t.Errorf("Log.Level = %q, want empty (no log.level configured)", cfg.Log.Level)
+	}
+}
+
+// TestLoadFromPath_LogLevel_Valid pins that every accepted log.level string
+// loads successfully and is carried through to Config.Log.Level verbatim.
+func TestLoadFromPath_LogLevel_Valid(t *testing.T) {
+	for _, level := range LogLevelNames {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "config.yaml")
+		content := "log:\n  level: " + level + "\n"
+		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		cfg, err := loadFromPath(path)
+		if err != nil {
+			t.Fatalf("log.level %q: unexpected error: %v", level, err)
+		}
+		if cfg.Log.Level != level {
+			t.Errorf("log.level %q: Log.Level = %q, want %q", level, cfg.Log.Level, level)
+		}
+	}
+}
+
+// TestLoadFromPath_LogLevel_InvalidRejected pins the decision (task
+// instructions: "決めて pin する") that an unrecognized log.level value is a
+// hard config-load error — the same treatment
+// TestLoadFromPath_GatewayForges_UnrecognizedForgeRejected already pins for
+// gateway.forges.*.forge, and TestLoadFromPath_InvalidDuration pins for
+// gc.interval. A typo'd log.level must fail `boid start`/`boid config
+// apply` loudly, not silently fall back to some default level.
+func TestLoadFromPath_LogLevel_InvalidRejected(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	content := "log:\n  level: verbose\n"
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, err := loadFromPath(path)
+	if err == nil {
+		t.Fatal("expected error for invalid log.level, got nil")
+	}
+}
+
 // hostConfig looks up a single resolved gitgateway.HostForgeConfig by host
 // from GatewayConfig.HostConfigs(), failing the test if it is absent.
 func hostConfig(t *testing.T, cfg *Config, host string) gitgateway.HostForgeConfig {
