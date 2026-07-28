@@ -45,25 +45,39 @@ func (h *WorkspaceHandler) Routes() chi.Router {
 	// registers those methods on "/export" — fall through to "/{slug}"
 	// and hit Update/Remove("export") instead, same as any other slug.
 	// Likewise GET /api/workspaces/apply falls through to Show("apply"),
-	// since only POST is registered here (this is the exact shape "/import"
-	// is in after its own POST registration was removed 2026-07-28 — see
-	// TestWorkspaceHandler_ImportRouteRemoved). ValidWorkspaceSlug
-	// (workspace_slug.go) has no reserved-word list, so a workspace can
-	// really be created named "export"/"apply"/"import": it stays reachable
-	// through every method this router does not shadow for that literal
-	// path, and is unreachable through the ones it does — `boid workspace
-	// show export` in particular resolves to ExportEnvelope and answers 400
-	// instead of showing the workspace.
+	// since only POST is registered here. "/import" is NOT the same shape,
+	// despite being reachable the same way: its own POST registration was
+	// removed 2026-07-28 (see TestWorkspaceHandler_ImportRouteRemoved), so
+	// it registers nothing at all and a workspace named "import" is now
+	// indistinguishable from one named "team-a" on every method, POST's 405
+	// included. The shadowed set is exactly {"export", "apply"}.
+	//
+	// ValidWorkspaceSlug (workspace_slug.go) has no reserved-word list, so a
+	// workspace really can be created under either name. What that costs is
+	// bigger than the one shadowed request: `boid workspace edit` and `boid
+	// workspace remove` each issue a preflight GET /api/workspaces/{slug}
+	// before their real call (cmd/workspace.go), so for a workspace named
+	// "export" it is not just `workspace show` that breaks but `workspace
+	// edit` and `workspace remove` as well — all three failing with
+	// ExportEnvelope's "exactly one of ?all=true or ?name=<slug> is
+	// required", an error naming a query parameter the operator never used.
+	// The only way through is --force, which is
+	// precisely the flag that discards edit's If-Match CAS and skips
+	// remove's destructive-delete confirmation. create/list/apply are
+	// unaffected.
 	//
 	// That was raised as a follow-up when this comment was first written and
 	// has since been CLOSED AS ACCEPTED (nose, 2026-07-28) rather than fixed
 	// — this is the decision record, not a still-open item. Both alternatives
 	// cost more than the collision does. Reserving the names turns a workspace
 	// already created under one of them into a workspace the daemon then
-	// refuses to accept, trading a partially-shadowed slug for a hard failure
-	// on data that already exists. Moving the envelope routes off the bare
+	// refuses to LOAD, not merely to create: ValidWorkspaceSlug runs on the
+	// read path too (workspace_repository.go's loadWorkspaceMeta returns its
+	// error before the SELECT, and workspace_store.go's yaml-mode List
+	// silently drops rows that fail it), so the row becomes unreadable rather
+	// than merely un-creatable. Moving the envelope routes off the bare
 	// "/{name}" segment is an API change every client — the CLI included —
-	// would have to follow, to buy back three names nobody has asked for.
+	// would have to follow, to buy back two names nobody has asked for.
 	// TestWorkspaceRouteShadowing_AcceptedCollision pins the accepted
 	// behaviour so a later change to it is a deliberate one.
 	r.Get("/export", h.ExportEnvelope)

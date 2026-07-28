@@ -251,6 +251,8 @@ API トークン等を暗号化して保存します。鍵は `~/.local/share/bo
 
 project の実行環境 (`host_commands` / `env` / `capabilities` / `allowed_domains`) を machine 単位でまとめる機能です。`workspaces` テーブルで DB 管理され (Phase 2.5)、`default` workspace は daemon 起動時に常に自動生成されます。project を登録すると自動的に `default` に割り当てられ、`boid project init/add --workspace <slug>` は get-or-create (未知の slug でも空の workspace を自動作成してから紐付け)。各 workspace は永続的な `$HOME` (workspace home) を持ち、ツールチェーンの設置は `additional_bindings` (撤去済み) ではなく [`init.sh`](../guide/workspace-home.md) で行う。
 
+> **slug に `export` / `apply` は使わないこと。** この 2 つは HTTP API 側で workspace 名と同じ階層の静的ルートになっているため、その名前の workspace は `boid workspace show` / `edit` / `remove` から到達できなくなる (`exactly one of ?all=true or ?name=<slug> is required` という、指定した覚えのないクエリパラメータの話をするエラーになる)。作成自体はできてしまう — 既に作ってしまった場合は `--force` を付ければ `edit` / `remove` は通るが、`--force` は `edit` の If-Match による競合検出と `remove` の削除確認プロンプトを両方とも無効にするので、リネーム目的以外では使わないこと。予約語として弾いていないのは意図的な判断 (2026-07-28)。
+
 | コマンド | 役割 |
 |---|---|
 | `boid workspace list` | ワークスペース一覧 |
