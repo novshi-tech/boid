@@ -2518,6 +2518,15 @@ func (s *containerSession) waitLoop() {
 		Condition: container.WaitConditionNotRunning,
 	})
 	var exitCode int
+	// engineError mirrors the RuntimeExit.EngineError this session reports
+	// from Wait — see that field's doc comment (internal/sandbox/backend/
+	// backend.go) for the full contract. Left empty on the ordinary
+	// "the engine gave us a real StatusCode" path below; only the two
+	// engine-fault branches (wait response carrying an Error, and the
+	// ContainerWait call itself failing) set it, from the ONE place either
+	// error's message is still available — the container is gone, and its
+	// logs with it, by the time anything downstream of Wait() runs.
+	var engineError string
 	select {
 	case res := <-waitRes.Result:
 		// A response is not the same thing as an exit status: container.WaitResponse
@@ -2548,12 +2557,14 @@ func (s *containerSession) waitLoop() {
 		if eerr := waitResponseEngineError(res); eerr != nil {
 			slog.Warn("container backend: ContainerWait response carried an engine error", "container_id", s.id, "error", eerr)
 			exitCode = 1
+			engineError = eerr.Error()
 		} else {
 			exitCode = int(res.StatusCode)
 		}
 	case err := <-waitRes.Error:
 		slog.Warn("container backend: ContainerWait failed", "container_id", s.id, "error", err)
 		exitCode = 1
+		engineError = err.Error()
 	}
 
 	// The container process has exited, but its attach stream can still
@@ -2609,7 +2620,7 @@ func (s *containerSession) waitLoop() {
 
 	s.mu.Lock()
 	s.running = false
-	s.exit = backend.RuntimeExit{ExitCode: exitCode, TranscriptPath: s.transcriptPath}
+	s.exit = backend.RuntimeExit{ExitCode: exitCode, TranscriptPath: s.transcriptPath, EngineError: engineError}
 	s.closeSubscribersLocked()
 	exit := s.exit
 	s.mu.Unlock()

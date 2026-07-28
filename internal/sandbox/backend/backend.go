@@ -42,6 +42,23 @@ type RuntimeExit struct {
 	// TranscriptPath is the file holding the child process's captured
 	// stdout/stderr, when the backend supports it. Empty when unsupported.
 	TranscriptPath string
+	// EngineError carries the container ENGINE's own failure message when
+	// the engine itself could not report an exit status for this session —
+	// e.g. the ContainerWait API call failing outright, or its response
+	// carrying an engine-side Error instead of a real StatusCode (see
+	// waitResponseEngineError's doc comment in
+	// internal/dispatcher/container_backend_workspace_init.go for why
+	// StatusCode alone cannot be trusted in that case).
+	//
+	// This is NOT the exited process's own stderr or exit reason — ExitCode
+	// above is a forced substitute value (containerSession.waitLoop sets it
+	// to 1) precisely because the engine never filled one in. EngineError is
+	// the only description of what actually went wrong, and the empty
+	// string is the explicit "the engine reported a normal exit; ExitCode is
+	// real" case — a caller (Runner.watchRuntime, in particular) must not
+	// report a hook script as having failed on its own when this is set;
+	// see watchRuntime's doc comment for how it renders the distinction.
+	EngineError string
 }
 
 // LaunchOptions carries the per-job parameters a backend needs to start a
