@@ -748,6 +748,51 @@ func TestContainerSession_Wait_SingleOwnerFanOut(t *testing.T) {
 	}
 }
 
+// TestContainerSession_WaitLoop_EngineErrorInTheWaitResponseFailsTheJob pins
+// that waitLoop treats an engine-reported wait error the same as the
+// ContainerWait API-call failure path right below it (case err :=
+// <-waitRes.Error), on the job dispatch path — the counterpart of
+// TestContainerBackend_RunWorkspaceInit_EngineErrorInTheWaitResponseFailsTheRun
+// (container_backend_workspace_init_test.go), which already pins this for
+// the workspace-init path via the shared waitResponseEngineError helper.
+//
+// container.WaitResponse carries two independent facts and only one of them
+// is an exit status: when the engine cannot report one — the runtime failed
+// to wait, the shim died, the container never started — it answers with
+// StatusCode: 0 and a non-nil Error, which is exactly the shape of a
+// successful exit if only StatusCode is read. This session's own ExitCode is
+// therefore wrong on its own terms whether or not any particular caller
+// happens to paper over it afterward — see the doc comment on this case in
+// waitLoop itself for how Runner.watchRuntime's independent 0→1 coercion
+// relates to (but does not substitute for) this.
+//
+// Asserted as == 1, not just != 0: the exact value matters because it pins
+// parity with the adjacent case's existing exitCode = 1, not merely "some
+// nonzero code" (which an unrelated regression, e.g. exitCode = 2, would
+// still satisfy).
+func TestContainerSession_WaitLoop_EngineErrorInTheWaitResponseFailsTheJob(t *testing.T) {
+	const engineMessage = "runtime wait failed"
+	api := &fakeDockerAPI{
+		ContainerWaitFunc: waitResponding(container.WaitResponse{
+			// Exactly the shape that makes the omission invisible: the
+			// status code is the success value, and the only evidence of
+			// the failure is in Error.
+			StatusCode: 0,
+			Error:      &container.WaitExitError{Message: engineMessage},
+		}),
+	}
+	be := NewContainerBackend(api, ContainerBackendOptions{})
+	sess := mustLaunch(t, be, sandbox.Spec{ID: "job-engine-error", Argv: []string{"true"}}, backend.LaunchOptions{JobID: "job-engine-error"})
+
+	exit, err := sess.Wait(context.Background())
+	if err != nil {
+		t.Fatalf("Wait: %v", err)
+	}
+	if exit.ExitCode != 1 {
+		t.Errorf("ExitCode = %d for a wait the engine answered with an error (%q), want 1 (parity with the adjacent <-waitRes.Error failure path's existing exitCode = 1)", exit.ExitCode, engineMessage)
+	}
+}
+
 // TestContainerSession_WaitLoop_DrainsAttachBeforeClosingConn pins Major 3
 // from the PR5 review: once ContainerWait resolves (the container process
 // exited), waitLoop must let readLoop drain any output still in flight on
