@@ -237,7 +237,7 @@ func (b *containerBackend) RunWorkspaceInit(ctx context.Context, req WorkspaceIn
 	if exitCode != 0 {
 		return workspaceInitFailure(req.Slug, exitCode, output)
 	}
-	// A successful init keeps its output, in two sizes.
+	// A successful init keeps its output, in two forms at two levels.
 	//
 	// Through PR9 this logged only byte COUNTS and let the bytes go: the
 	// container is removed on return, so exit 0 meant the run left no record
@@ -251,35 +251,48 @@ func (b *containerBackend) RunWorkspaceInit(ctx context.Context, req WorkspaceIn
 	// dangling and the investigation had to replay the whole volume under an
 	// overlay mount to find out what the installer had said.
 	//
-	// Logged at INFO, not DEBUG, even though a per-dispatch record of a
-	// successful run is exactly the kind of thing debug level is for.
-	// config.yaml's log.level (internal/config.LogConfig, internal/daemon.
-	// ApplyLogLevel) now lets an operator turn slog.Debug ON — the level
-	// knob this comment used to say boid had no way to land — but this call
-	// site itself has NOT been switched to Debug: that's a separate,
-	// deliberately deferred decision (see PR #858, which introduced
-	// log.level, for the "why not both at once" rationale), not something
-	// this comment should silently imply is still impossible. Bounded and
-	// at info is the version that actually exists today. The natural
-	// follow-up, if that decision is made, is a debug line carrying
-	// output.String() — the full retained window — with this tail staying
-	// as the default-level record.
+	// The INFO line stays exactly what it was through PR #852: a small,
+	// UNCONDITIONAL tail (workspaceInitSuccessTailLimit bytes), written on
+	// every first dispatch of every workspace regardless of log.level. That
+	// is deliberate and does not get "upgraded" to Debug here — an operator
+	// who never touches log.level still gets the last words of the script
+	// that just ran.
+	//
+	// The DEBUG line is the PR #858 follow-up this comment used to describe
+	// as future work: config.yaml's log.level (internal/config.LogConfig,
+	// internal/daemon.ApplyLogLevel) now lets an operator turn slog.Debug ON,
+	// so a second line carries the FULL retained window — output.String() —
+	// for whoever actually needs to replay more than the last couple of dozen
+	// lines. It adds no new unbounded cost: output.String() returns exactly
+	// what workspaceInitOutput already retains, which is itself capped at
+	// workspaceInitOutputLimit, so turning log.level: debug on trades log
+	// volume for detail, never memory for detail.
 	slog.Info("workspace home init completed",
 		"workspace_slug", req.Slug, "container", name,
 		"retained_output_bytes", output.Len(), "dropped_output_bytes", output.Dropped(),
 		"output_tail", output.Tail(workspaceInitSuccessTailLimit))
+	slog.Debug("workspace home init completed: full output",
+		"workspace_slug", req.Slug, "container", name,
+		"output", output.String())
 	return nil
 }
 
 // workspaceInitSuccessTailLimit is how much of a SUCCESSFUL init run's
-// output the completion log carries.
+// output the UNCONDITIONAL INFO line carries.
 //
 // Deliberately much smaller than workspaceInitOutputLimit (the retention
-// bound the failure path's tail is cut from): a failure is being read by
-// someone who already knows something went wrong and wants everything,
-// while this one is written on every first dispatch of every workspace,
-// whether or not anybody will ever read it. What it needs to answer is
+// bound the DEBUG line's full dump and the failure path's tail are both cut
+// from): a failure is being read by someone who already knows something went
+// wrong and wants everything, while THIS line is written on every first
+// dispatch of every workspace, whether or not anybody will ever read it and
+// whether or not log.level is ever touched. What it needs to answer is
 // "what was the script doing when it finished" — a couple of dozen lines.
+//
+// An operator who wants the whole retained window does not get it by raising
+// this constant; they set log.level: debug and get it from the DEBUG line
+// RunWorkspaceInit logs right alongside this one (carrying output.String(),
+// the full retention-bounded window — see PR #858, which introduced
+// log.level, for how that knob reaches this process).
 const workspaceInitSuccessTailLimit = 2000
 
 // workspaceInitHomeMount turns req's home into the one mount the init

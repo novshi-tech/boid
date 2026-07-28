@@ -393,6 +393,107 @@ func TestContainerBackend_RunWorkspaceInit_TruncatedTailSaysSo(t *testing.T) {
 	}
 }
 
+// TestContainerBackend_RunWorkspaceInit_SuccessDebugCarriesFullOutput pins the
+// PR #852 follow-up (doc comment on workspaceInitSuccessTailLimit): once
+// log.level: debug is on (internal/config.LogConfig, internal/daemon.
+// ApplyLogLevel — PR #858), a successful init logs the FULL retained window
+// (output.String()), not just the workspaceInitSuccessTailLimit-byte tail the
+// INFO line carries. The marker here sits well before the last
+// workspaceInitSuccessTailLimit bytes of the run's output, so it can only
+// reach the log through the full dump.
+func TestContainerBackend_RunWorkspaceInit_SuccessDebugCarriesFullOutput(t *testing.T) {
+	buf := captureLogs(t, slog.LevelDebug)
+	const earlyMarker = "FULL-OUTPUT-MARKER-EARLY"
+	// Padding after the marker has to clear workspaceInitSuccessTailLimit so
+	// the marker cannot be explained by the (unconditional) INFO tail alone.
+	trailing := strings.Repeat("x", workspaceInitSuccessTailLimit+3000)
+
+	runInitPrinting(t, earlyMarker+"\n"+trailing+"\nboid-init: stage=done exit=0\n")
+
+	if !strings.Contains(buf.String(), earlyMarker) {
+		t.Errorf("full output was not logged at debug level; log was missing %q:\n%s", earlyMarker, buf.String())
+	}
+}
+
+// TestContainerBackend_RunWorkspaceInit_SuccessDebugOffOmitsFullOutput is the
+// other side of that: with log.level left at its default (no DEBUG output),
+// the full dump must not appear at all — only the bounded INFO tail. Run
+// against the SAME output as the test above so a regression that logs the
+// full dump unconditionally (ignoring the level) is caught here rather than
+// only being a "nice to have" in the debug test.
+func TestContainerBackend_RunWorkspaceInit_SuccessDebugOffOmitsFullOutput(t *testing.T) {
+	buf := captureLogs(t, slog.LevelInfo)
+	const earlyMarker = "FULL-OUTPUT-MARKER-EARLY"
+	trailing := strings.Repeat("x", workspaceInitSuccessTailLimit+3000)
+
+	runInitPrinting(t, earlyMarker+"\n"+trailing+"\nboid-init: stage=done exit=0\n")
+
+	if strings.Contains(buf.String(), earlyMarker) {
+		t.Errorf("the full output leaked into the log with debug OFF; log was:\n%s", buf.String())
+	}
+	if strings.Contains(buf.String(), "level=DEBUG") {
+		t.Errorf("a DEBUG-level record was emitted even though the handler's threshold is INFO; log was:\n%s", buf.String())
+	}
+}
+
+// TestContainerBackend_RunWorkspaceInit_InfoTailPresentRegardlessOfDebugLevel
+// is the regression guard the task calls out explicitly: the unconditional
+// INFO output_tail line — the whole point of PR #852 — must survive adding
+// the debug full-dump line untouched, whether or not log.level: debug is on.
+// A change that moved the tail's log call under a debug-only branch, or
+// demoted "workspace home init completed" from Info to Debug outright, would
+// pass the debug-level sub-test but fail the info-level one.
+func TestContainerBackend_RunWorkspaceInit_InfoTailPresentRegardlessOfDebugLevel(t *testing.T) {
+	const said = "volta: linking shims for node@24"
+	script := "earlier progress\n" + said + "\n"
+
+	for _, lvl := range []slog.Level{slog.LevelInfo, slog.LevelDebug} {
+		t.Run(lvl.String(), func(t *testing.T) {
+			buf := captureLogs(t, lvl)
+			runInitPrinting(t, script)
+
+			if !strings.Contains(buf.String(), "output_tail=") {
+				t.Errorf("no output_tail key at handler level %s; log was:\n%s", lvl, buf.String())
+			}
+			if !strings.Contains(buf.String(), said) {
+				t.Errorf("output_tail did not carry the run's own output at handler level %s; log was:\n%s", lvl, buf.String())
+			}
+		})
+	}
+}
+
+// TestContainerBackend_RunWorkspaceInit_SuccessDebugFullOutputIsRetentionBounded
+// pins that the debug full dump does not open a new unbounded memory/log
+// path: it is exactly output.String(), which workspaceInitOutput already
+// caps at workspaceInitOutputLimit (see that type's trim). Feeds far more
+// than the retention limit, then checks two things: the front of the stream
+// really was dropped (proving the bound is doing something, not merely
+// "happens to fit"), and the debug line still surfaces content from deep
+// inside the retained window rather than only the INFO tail.
+func TestContainerBackend_RunWorkspaceInit_SuccessDebugFullOutputIsRetentionBounded(t *testing.T) {
+	buf := captureLogs(t, slog.LevelDebug)
+	const droppedMarker = "SHOULD-BE-DROPPED-FRONT-MARKER"
+	const lateMarker = "FULL-OUTPUT-MARKER-LATE"
+	filler := strings.Repeat("z", 3*workspaceInitOutputLimit)
+	// Keeps lateMarker inside the retained (last workspaceInitOutputLimit
+	// bytes) window while still clearing workspaceInitSuccessTailLimit, so a
+	// pass here cannot be explained by the INFO tail alone.
+	trailing := strings.Repeat("y", workspaceInitSuccessTailLimit+3000)
+
+	runInitPrinting(t, droppedMarker+"\n"+filler+lateMarker+"\n"+trailing)
+
+	if strings.Contains(buf.String(), droppedMarker) {
+		t.Fatalf("test is not exercising retention trimming: the front-of-stream marker survived")
+	}
+	if !strings.Contains(buf.String(), lateMarker) {
+		t.Errorf("the retained window did not reach the debug log; log was missing %q", lateMarker)
+	}
+	if got, bound := buf.Len(), 2*workspaceInitOutputLimit; got > bound {
+		t.Errorf("captured log is %d bytes, which exceeds %d (2x workspaceInitOutputLimit=%d); "+
+			"the debug full dump is not respecting the retention bound", got, bound, workspaceInitOutputLimit)
+	}
+}
+
 // TestContainerBackend_RunWorkspaceInit_NonZeroExitCarriesStageAndOutput pins
 // that a failure is reported with the container's own exit status and the
 // output that explains it. Neither survives the call otherwise: the container
