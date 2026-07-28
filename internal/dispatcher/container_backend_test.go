@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -1056,7 +1057,36 @@ func TestContainerBackend_ImagePullAlways_RevalidatesAfterPull(t *testing.T) {
 	}
 }
 
-func TestContainerBackend_ImageOverride_RequiresBoidBaseDerivedLabel(t *testing.T) {
+// TestBoidRunnerProtocolLabel_IsBakedIntoTheImage is the other end of the
+// override gate: resolveImage rejects any override image that does not carry
+// boid.runner_protocol=v1, so unless the shared base image actually declares
+// it, EVERY override is rejected — including boid's own `boid-runner:latest`
+// passed explicitly. That was the state through 2026-07-28: the constants
+// existed, build/container/Dockerfile had no LABEL instruction at all, and a
+// live image's labels were measured as {"io.buildah.version":"1.33.7"}. The
+// code's own comment said the gate was harmless "because containerBackend is
+// not wired into production dispatch as of PR5", a premise the container
+// cutover removed without anyone revisiting the conclusion.
+//
+// What this pins is that the Dockerfile and the constants agree. It cannot
+// pin that a BUILT image carries the label — an instruction can be added to
+// the wrong build stage and this still passes — so the built image is
+// checked separately, against a real `docker image inspect`, in
+// .github/workflows/blackbox-e2e.yml's image-build job.
+func TestBoidRunnerProtocolLabel_IsBakedIntoTheImage(t *testing.T) {
+	path := filepath.Join("..", "..", "build", "container", "Dockerfile")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	want := fmt.Sprintf("LABEL %s=%q", boidRunnerProtocolLabel, boidRunnerProtocolVersion)
+	if !strings.Contains(string(data), want) {
+		t.Errorf("build/container/Dockerfile does not contain %s\n"+
+			"Every workspace container_image override is rejected without it, because resolveImage requires that exact label/value pair.", want)
+	}
+}
+
+func TestContainerBackend_ImageOverride_RequiresTheProtocolLabel(t *testing.T) {
 	tests := []struct {
 		name       string
 		labelValue string // "" omits the label entirely

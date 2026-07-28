@@ -151,9 +151,10 @@ yaml / json / xml / tar のような構造化データの type だけです (そ
 - **実行環境**: **boid が起こす使い捨て container の中**で `bash` により実行される
   (trusted)。ホスト側での直接実行はしない。
   - image は **default の boid runner image**。 workspace の `container_image` override は
-    使わない — override は `boid.runner_protocol` label を持つことを要求されるが、その label を
-    焼いている image は現時点で存在しないため、override を尊重すると `container_image` を
-    指定した workspace は home の準備そのものができなくなる
+    ここでは使わない — 準備に要るのは bash と coreutils と `init.sh` が叩くものだけで、
+    override を尊重すると override 側の失敗 (pull できない image、`boid.runner_protocol`
+    label が古い等) が home の準備経路に載ってしまう。 job 1 本が動かないのではなく
+    workspace が home そのものを用意できなくなる
   - workspace home がその container に mount され、`$HOME` はその **mount 先の path**
     (= job が sandbox 内で見る `$HOME` と同じ path) になる。
     したがって `$HOME` 配下に絶対 path を焼き込むツール (wrapper script、shebang、

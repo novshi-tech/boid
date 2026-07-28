@@ -159,10 +159,11 @@ described below still runs exactly once either way.
 - **Execution environment**: runs inside a **throwaway container boid starts** (trusted),
   with `bash`. It is no longer executed on the host.
   - The image is the **default boid runner image**. A workspace's own
-    `container_image` override is NOT used: an override is only accepted if it carries
-    the `boid.runner_protocol` label, and no image bakes that label yet — so honoring it
-    would leave every workspace that sets `container_image` unable to prepare its home
-    at all
+    `container_image` override is NOT used here: the prep only needs `bash`, coreutils
+    and whatever the operator's `init.sh` reaches for, and honoring an override would
+    put that override's own failure modes (an unpullable image, a stale
+    `boid.runner_protocol` label) on the path that prepares the home — leaving the
+    workspace unable to prepare its home at all, rather than unable to run one job
   - The workspace home is mounted into that container, and `$HOME` is that **mount
     target** — the same path a job sees its own `$HOME` at. Tools that bake absolute
     paths under `$HOME` into wrapper scripts, shebangs or symlinks therefore keep working
