@@ -1665,7 +1665,7 @@ func (r *Runner) ReapOrphans(ctx context.Context) (backend.ReapReport, error) {
 //
 // The boid.log side of that same ambiguity IS fixed (NB-1, Opus independent
 // review of this PR): when ok is false because ctx.Err() != nil rather than
-// a legitimate Adopt miss, this logs a Warn — the same distinction
+// a legitimate Adopt miss, this logs — the same distinction
 // StopJobRuntime/SignalJobRuntime/ResizeRuntimeID/the four
 // runtime_subscriber_export.go routes already make, so an operator grepping
 // boid.log for "why did this attach/resize get rejected" is not stuck
@@ -1673,11 +1673,16 @@ func (r *Runner) ReapOrphans(ctx context.Context) (backend.ReapReport, error) {
 // Unlike those five, ctx here is derived from the CALLER's own ctx (not
 // context.Background()), so ctx.Err() at this point can be either
 // DeadlineExceeded (the floor fired, or the caller's own deadline did) OR
-// Canceled (the HTTP client disconnected — job_runtime_routes.go passes
-// req.Context()) — an ordinary, non-actionable event, not evidence of a
-// wedged engine. The message below and the logged ctx.Err() value both
-// stay agnostic between the two rather than hardcoding "engine did not
-// respond" for a cause that might just be a client giving up.
+// Canceled (the HTTP client disconnecting mid-request —
+// job_runtime_routes.go passes req.Context()). The level differs between
+// the two (nit, Opus independent review of this PR, round 2):
+// DeadlineExceeded is Warn, the same actionable signal StopJobRuntime's own
+// Warn is (the engine may be wedged); Canceled is only Debug — an ordinary,
+// non-actionable client disconnect, not evidence of anything wrong with the
+// engine, so it must not carry the same "something needs attention" weight
+// as the deadline case. The message and the logged ctx.Err() value stay
+// agnostic between the two rather than hardcoding "engine did not respond"
+// for a cause that might just be a client giving up.
 func (r *Runner) CanAttach(ctx context.Context, runtimeID string) bool {
 	if runtimeID == "" {
 		return false
@@ -1685,9 +1690,15 @@ func (r *Runner) CanAttach(ctx context.Context, runtimeID string) bool {
 	ctx, cancel := context.WithTimeout(ctx, sessionControlCallTimeout.Get())
 	defer cancel()
 	_, ok := r.sandboxBackend().Adopt(ctx, runtimeID)
-	if !ok && ctx.Err() != nil {
-		slog.Warn("can attach: adopt did not resolve before ctx was done; the caller's resulting 409 is indistinguishable from a legitimate not-found result",
-			"runtime_id", runtimeID, "timeout", sessionControlCallTimeout.Get(), "error", ctx.Err())
+	if !ok {
+		switch {
+		case errors.Is(ctx.Err(), context.Canceled):
+			slog.Debug("can attach: adopt did not resolve before the caller's ctx was canceled; the caller's resulting 409 is indistinguishable from a legitimate not-found result",
+				"runtime_id", runtimeID, "error", ctx.Err())
+		case ctx.Err() != nil:
+			slog.Warn("can attach: adopt did not resolve before ctx was done; the caller's resulting 409 is indistinguishable from a legitimate not-found result",
+				"runtime_id", runtimeID, "timeout", sessionControlCallTimeout.Get(), "error", ctx.Err())
+		}
 	}
 	return ok
 }
