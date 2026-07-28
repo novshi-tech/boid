@@ -1414,7 +1414,16 @@ func (r *Runner) launchSandbox(ctx context.Context, job *Job, spec sandbox.Spec,
 	job.Interactive = spec.TTY
 	job.TTY = spec.TTY
 	if err := UpdateJob(r.DB, job); err != nil {
-		_ = session.Stop(context.Background())
+		// Bounded: the container already started successfully, so this Stop
+		// is best-effort cleanup after a persistence failure, not a caller
+		// waiting on job completion — see sessionControlCallTimeout's doc
+		// comment (container_backend.go) for why an unbounded
+		// context.Background() here would instead hang this dispatch call
+		// (and every future dispatch waiting behind it) against a wedged
+		// engine.
+		stopCtx, stopCancel := context.WithTimeout(context.Background(), sessionControlCallTimeout.Get())
+		_ = session.Stop(stopCtx)
+		stopCancel()
 		r.stopDockerProxy(handleID)
 		if cleanup != nil {
 			cleanup()
@@ -1484,11 +1493,18 @@ func (r *Runner) StopJobRuntime(runtimeID string) {
 	if runtimeID == "" {
 		return
 	}
-	session, ok := r.sandboxBackend().Adopt(context.Background(), runtimeID)
+	// One shared deadline for the whole call (Adopt + Stop), not
+	// context.Background() — see sessionControlCallTimeout's doc comment
+	// (container_backend.go) for why: a `boid task stop`/task-abort caller
+	// blocked here against a wedged engine would otherwise never get its
+	// error back.
+	ctx, cancel := context.WithTimeout(context.Background(), sessionControlCallTimeout.Get())
+	defer cancel()
+	session, ok := r.sandboxBackend().Adopt(ctx, runtimeID)
 	if !ok {
 		return
 	}
-	if err := session.Stop(context.Background()); err != nil {
+	if err := session.Stop(ctx); err != nil {
 		slog.Debug("stop job runtime", "runtime_id", runtimeID, "error", err)
 	}
 }
@@ -1507,11 +1523,16 @@ func (r *Runner) SignalJobRuntime(runtimeID string, sig syscall.Signal) {
 	if r.Backend == nil || runtimeID == "" {
 		return
 	}
-	session, ok := r.sandboxBackend().Adopt(context.Background(), runtimeID)
+	// One shared deadline for the whole call (Adopt + Signal) — same
+	// reasoning as StopJobRuntime just above: `boid agent stop`'s SIGUSR1
+	// delivery must not hang forever against a wedged engine.
+	ctx, cancel := context.WithTimeout(context.Background(), sessionControlCallTimeout.Get())
+	defer cancel()
+	session, ok := r.sandboxBackend().Adopt(ctx, runtimeID)
 	if !ok {
 		return
 	}
-	if err := session.Signal(context.Background(), sig); err != nil {
+	if err := session.Signal(ctx, sig); err != nil {
 		slog.Debug("signal job runtime", "runtime_id", runtimeID, "signal", sig, "error", err)
 	}
 }
