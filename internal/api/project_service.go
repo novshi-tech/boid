@@ -279,6 +279,40 @@ func (s *ProjectAppService) applyStatus(project *orchestrator.Project) *orchestr
 	return project
 }
 
+// removeCachedMetaUnlessRegistered rolls back a Meta cache write made by a
+// registration attempt that then failed — but only when no project row
+// actually owns that id.
+//
+// s.Meta caches by project.yaml's `id:`, not by the directory it was read
+// from, so an attempt to register a repo whose id is ALREADY registered
+// overwrites the established project's cache entry on the way in. An
+// unconditional Remove on the failure path then deletes that established
+// project's meta, leaving it with a valid DB row and no cached meta:
+// `boid project list` prints an empty name, ref-by-name lookup stops
+// resolving, and task_behaviors read as empty until the next
+// `boid project reload`. Observed on the real daemon (2026-07-28) from
+// `boid project add <already-registered url> --workspace=<other slug>` —
+// re-adding the same repo cannot be caught by the pre-flight same-path 409
+// check when the path differs, and --name cannot avoid the collision because
+// the id comes from the committed project.yaml.
+//
+// projectMu (see its own doc comment) serializes concurrent registrations,
+// which is the only half of this class its "impossible by construction"
+// claim actually covers: in the sequential case the winning cache write
+// landed in a long-since-finished call, so there is no window to exclude.
+//
+// The discriminator is a row lookup rather than "did this call write the
+// entry": whoever owns the row owns the cached meta, so an id backed by a
+// live row must keep whatever meta that row's project loaded. Callers that
+// have already deleted their own row (the workspace-assign rollback in
+// CreateProjectFromGitURL) are correct to call s.Meta.Remove directly.
+func (s *ProjectAppService) removeCachedMetaUnlessRegistered(id string) {
+	if existing, err := s.Projects.GetProject(id); err == nil && existing != nil {
+		return
+	}
+	s.Meta.Remove(id)
+}
+
 // hydrateProjectWithWorkspace fills project.Meta with workspace-aware
 // hydration when a Hydrator is wired; otherwise it falls back to the bare
 // cache. Use this for paths that build sandbox specs (session / exec /
@@ -330,7 +364,7 @@ func (s *ProjectAppService) CreateProject(workDir string) (*orchestrator.Project
 	if s.CaptureUpstreamURL != nil {
 		upstreamURL, err := s.CaptureUpstreamURL(workDir)
 		if err != nil {
-			s.Meta.Remove(meta.ID)
+			s.removeCachedMetaUnlessRegistered(meta.ID)
 			return nil, &StatusError{
 				Code: http.StatusBadRequest,
 				Message: fmt.Sprintf(
@@ -343,7 +377,7 @@ func (s *ProjectAppService) CreateProject(workDir string) (*orchestrator.Project
 	}
 
 	if err := s.Projects.CreateProject(project); err != nil {
-		s.Meta.Remove(meta.ID)
+		s.removeCachedMetaUnlessRegistered(meta.ID)
 		return nil, &StatusError{Code: http.StatusInternalServerError, Message: err.Error()}
 	}
 
@@ -506,7 +540,15 @@ func (s *ProjectAppService) CreateProjectFromGitURL(ctx context.Context, gitURL,
 	}
 
 	if err := s.Projects.CreateProject(project); err != nil {
-		s.Meta.Remove(meta.ID)
+		// Not an unconditional Remove: the insert most plausibly failed
+		// because this id is ALREADY registered, and the cache entry then
+		// belongs to that established project, not to this call. See
+		// removeCachedMetaUnlessRegistered's doc comment.
+		s.removeCachedMetaUnlessRegistered(meta.ID)
+		// bareRepoPath stays an unconditional removal: it is this call's own
+		// freshly cloned directory (the pre-flight check above already 409s
+		// when something is registered at this exact path), so it is never
+		// the established project's repo even when the ids collide.
 		if rmErr := os.RemoveAll(bareRepoPath); rmErr != nil {
 			slog.Warn("CreateProjectFromGitURL: failed to roll back bare repo after DB insert failure",
 				"path", bareRepoPath, "error", rmErr)

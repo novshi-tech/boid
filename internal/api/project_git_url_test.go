@@ -1124,3 +1124,71 @@ func TestProjectMu_SerializesFetchProject_And_DeleteProject(t *testing.T) {
 		t.Errorf("expected the bare repo at %s to be removed after DeleteProject, stat err = %v", created.WorkDir, statErr)
 	}
 }
+
+// TestCreateProjectFromGitURL_InsertConflict_KeepsTheEstablishedProjectsMeta
+// pins the sequential half of the cache-corruption class projectMu's own doc
+// comment describes.
+//
+// That comment closes with "projectMu makes this impossible by construction",
+// which holds only for two registrations racing each other. It does nothing
+// for the far more ordinary SEQUENTIAL case: a repo registered days ago, then
+// `boid project add <the same url> --workspace=<other>` today. The lock is
+// free, so the second call runs start to finish — and because s.Meta caches by
+// project.yaml's `id:` rather than by the directory it was read from,
+// LoadBareRepo overwrites the ESTABLISHED project's cache entry on the way in,
+// and the insert-failure rollback's unconditional Remove then deletes it.
+//
+// Observed on the real daemon (2026-07-28): the established project was left
+// with a valid DB row and no cached meta — `boid project list` printed an
+// empty name, ref lookup by name stopped resolving, and task_behaviors read as
+// empty until `boid project reload`.
+func TestCreateProjectFromGitURL_InsertConflict_KeepsTheEstablishedProjectsMeta(t *testing.T) {
+	src := setupGitURLSourceRepo(t, "proj-dup", "Established Project")
+	// The same id is already registered — exactly what re-adding an
+	// already-registered repo under a different --name produces, since the
+	// id comes from the committed project.yaml, not from the name.
+	established := &orchestrator.Project{ID: "proj-dup", WorkDir: "/already/registered"}
+	repo := &stubProjectRepository{
+		projects:           []*orchestrator.Project{established},
+		existingWorkspaces: map[string]bool{"team-a": true},
+	}
+	svc, _ := newGitURLTestService(t, repo)
+
+	// What the real sqlite PRIMARY KEY returns for this case.
+	repo.createProjectHook = func(*orchestrator.Project) error {
+		return fmt.Errorf("insert project: constraint failed: UNIQUE constraint failed: projects.id (1555)")
+	}
+
+	if _, err := svc.CreateProjectFromGitURL(context.Background(), fileURL(src), "team-a", ""); err == nil {
+		t.Fatal("expected the duplicate registration to fail")
+	}
+
+	if _, ok := svc.Meta.Get("proj-dup"); !ok {
+		t.Error("the established project's cached meta was removed by a failed duplicate registration; " +
+			"its `boid project list` name and task_behaviors would read empty until `boid project reload`")
+	}
+}
+
+// TestCreateProjectFromGitURL_InsertFails_StillRollsBackItsOwnCacheWrite is
+// the other side of the test above: the rollback must still happen when the
+// cache entry really was this call's own to remove (no project row owns that
+// id). Without this, "keep the meta when a row exists" could be over-applied
+// into "never roll back", silently leaking a failed registration's meta.
+func TestCreateProjectFromGitURL_InsertFails_StillRollsBackItsOwnCacheWrite(t *testing.T) {
+	src := setupGitURLSourceRepo(t, "proj-fresh", "Brand New Project")
+	// No project owns "proj-fresh" — the cache write below is this call's own.
+	repo := &stubProjectRepository{existingWorkspaces: map[string]bool{"team-a": true}}
+	svc, _ := newGitURLTestService(t, repo)
+
+	repo.createProjectHook = func(*orchestrator.Project) error {
+		return fmt.Errorf("simulated DB failure unrelated to any id conflict")
+	}
+
+	if _, err := svc.CreateProjectFromGitURL(context.Background(), fileURL(src), "team-a", ""); err == nil {
+		t.Fatal("expected the registration to fail")
+	}
+
+	if _, ok := svc.Meta.Get("proj-fresh"); ok {
+		t.Error("a failed registration left its own cache write behind")
+	}
+}
