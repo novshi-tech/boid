@@ -1224,7 +1224,20 @@ func (b *containerBackend) Adopt(ctx context.Context, runtimeID string) (backend
 	}
 	if attempt, inFlight := b.adopting[runtimeID]; inFlight {
 		b.mu.Unlock()
-		<-attempt.done
+		// select on ctx too (Opus review of PR #857, Major 1): a caller that
+		// passed a bounded ctx specifically so it would not hang forever
+		// (StopJobRuntime, SignalJobRuntime, the runtime_subscriber_export.go
+		// ingress points) would otherwise wait on <-attempt.done alone, which
+		// only resolves when the FIRST caller's own doAdopt returns — itself
+		// unbounded whenever that first caller passed context.Background()
+		// (every one of those call sites did, pre-fix). Against a wedged
+		// engine the owning attempt's ContainerInspect never returns, so
+		// every later joiner — bounded ctx or not — hung right alongside it.
+		select {
+		case <-attempt.done:
+		case <-ctx.Done():
+			return nil, false
+		}
 		if attempt.session == nil {
 			return nil, false
 		}
@@ -2447,11 +2460,18 @@ func (s *containerSession) CloseInput() error {
 	return nil
 }
 
+// sessionControlCallTimeout is defined in runner.go (moved there, Opus
+// review of PR #857, Nit 7: most of its consumers are Runner methods, not
+// containerSession ones) — see its doc comment there for the full
+// rationale. Resize below is the one containerSession-side consumer.
+
 func (s *containerSession) Resize(size backend.TerminalSize) error {
 	if size.Rows <= 0 || size.Cols <= 0 {
 		return nil
 	}
-	_, err := s.api.ContainerResize(context.Background(), s.id, client.ContainerResizeOptions{
+	ctx, cancel := context.WithTimeout(context.Background(), sessionControlCallTimeout.Get())
+	defer cancel()
+	_, err := s.api.ContainerResize(ctx, s.id, client.ContainerResizeOptions{
 		Height: uint(size.Rows),
 		Width:  uint(size.Cols),
 	})

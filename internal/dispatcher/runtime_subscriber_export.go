@@ -40,12 +40,22 @@ func (r *Runner) runtimeIDForJob(jobID string) (runtimeID string, found bool) {
 // (docs/plans/phase6-container-backend.md §PR1 — this is the "stream 1 本"
 // seam shared by WS attach and the Web UI's SSE follow endpoint, both of
 // which call through this same method).
+//
+// Adopt runs under sessionControlCallTimeout (runner.go — Opus review of
+// PR #857, Major 2), not context.Background(): a
+// cache-miss Adopt (fresh daemon restart, before anything has repopulated
+// containerBackend's session cache — exactly the case Adopt's own doc
+// comment names as its reason to exist) does a real `docker inspect`
+// against the engine, and an unbounded context here would hang a WS attach
+// or the Web UI's SSE follow request forever against a wedged engine.
 func (r *Runner) Subscribe(jobID string) (snapshot []byte, ch <-chan []byte, cancel func(), ok bool) {
 	runtimeID, found := r.runtimeIDForJob(jobID)
 	if !found {
 		return nil, nil, func() {}, false
 	}
-	session, adopted := r.sandboxBackend().Adopt(context.Background(), runtimeID)
+	ctx, cancelCtx := context.WithTimeout(context.Background(), sessionControlCallTimeout.Get())
+	defer cancelCtx()
+	session, adopted := r.sandboxBackend().Adopt(ctx, runtimeID)
 	if !adopted {
 		return nil, nil, func() {}, false
 	}
@@ -54,13 +64,16 @@ func (r *Runner) Subscribe(jobID string) (snapshot []byte, ch <-chan []byte, can
 
 // WriteInput implements RuntimeInputWriter for Runner. It resolves jobID to
 // a runtimeID via the jobs table, then adopts a SandboxSession and writes
-// through it.
+// through it. Adopt is bounded — see Subscribe's doc comment just above for
+// why.
 func (r *Runner) WriteInput(jobID string, data []byte) error {
 	runtimeID, found := r.runtimeIDForJob(jobID)
 	if !found {
 		return fmt.Errorf("runtime not found for job %s", jobID)
 	}
-	session, adopted := r.sandboxBackend().Adopt(context.Background(), runtimeID)
+	ctx, cancel := context.WithTimeout(context.Background(), sessionControlCallTimeout.Get())
+	defer cancel()
+	session, adopted := r.sandboxBackend().Adopt(ctx, runtimeID)
 	if !adopted {
 		return ErrRuntimeUnsupported
 	}
@@ -71,13 +84,18 @@ func (r *Runner) WriteInput(jobID string, data []byte) error {
 // transport's "resize" frame ingress (docs/plans/phase6-container-backend.md
 // §PR1's other resize seam is the HTTP route, see Runner.ResizeRuntimeID).
 // It resolves jobID to a runtimeID via the jobs table, then adopts a
-// SandboxSession and resizes through it.
+// SandboxSession and resizes through it. Adopt is bounded — see Subscribe's
+// doc comment above for why (session.Resize itself is separately bounded,
+// container_backend.go, since its interface signature takes no context to
+// inherit one from).
 func (r *Runner) ResizeRuntime(jobID string, size TerminalSize) error {
 	runtimeID, found := r.runtimeIDForJob(jobID)
 	if !found {
 		return fmt.Errorf("runtime not found for job %s", jobID)
 	}
-	session, adopted := r.sandboxBackend().Adopt(context.Background(), runtimeID)
+	ctx, cancel := context.WithTimeout(context.Background(), sessionControlCallTimeout.Get())
+	defer cancel()
+	session, adopted := r.sandboxBackend().Adopt(ctx, runtimeID)
 	if !adopted {
 		return ErrRuntimeUnsupported
 	}
@@ -86,13 +104,16 @@ func (r *Runner) ResizeRuntime(jobID string, size TerminalSize) error {
 
 // CloseInput implements RuntimeInputWriter for Runner. It resolves jobID to
 // a runtimeID via the jobs table, then adopts a SandboxSession and closes
-// its input through it.
+// its input through it. Adopt is bounded — see Subscribe's doc comment
+// above for why.
 func (r *Runner) CloseInput(jobID string) error {
 	runtimeID, found := r.runtimeIDForJob(jobID)
 	if !found {
 		return fmt.Errorf("runtime not found for job %s", jobID)
 	}
-	session, adopted := r.sandboxBackend().Adopt(context.Background(), runtimeID)
+	ctx, cancel := context.WithTimeout(context.Background(), sessionControlCallTimeout.Get())
+	defer cancel()
+	session, adopted := r.sandboxBackend().Adopt(ctx, runtimeID)
 	if !adopted {
 		return ErrRuntimeUnsupported
 	}
