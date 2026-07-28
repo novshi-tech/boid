@@ -154,6 +154,24 @@ jobs:
           echo "$out"
           echo "$out" | grep -q -- 'runner-container: --spec is required'
 
+      - name: The runner protocol label is baked into the built image
+        # A workspace's container_image override is only accepted if the
+        # image declares boid.runner_protocol=v1
+        # (internal/dispatcher/container_backend.go's resolveImage, §決定 11),
+        # so an image missing it makes every override fail at launch. That was
+        # the state until 2026-07-28: the Dockerfile carried no LABEL at all
+        # and a live image's labels were {"io.buildah.version":"1.33.7"}.
+        #
+        # A Go unit test already pins that the Dockerfile and the constants
+        # agree, but a LABEL can be correct and still land in the wrong build
+        # stage — where it applies to the builder image and never reaches the
+        # runtime one. Only inspecting a BUILT image catches that.
+        run: |
+          set -euo pipefail
+          got="$(docker image inspect -f '{{ index .Config.Labels "boid.runner_protocol" }}' "boid-runner:${GITHUB_SHA}")"
+          echo "boid.runner_protocol=${got}"
+          test "$got" = "v1"
+
   e2e-container:
     name: Container backend E2E (requires-docker)
     # docs/plans/phase6-container-backend.md §PR9: real-docker verification

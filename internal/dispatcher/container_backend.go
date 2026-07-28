@@ -412,13 +412,28 @@ const (
 
 	// boidRunnerProtocolLabel / boidRunnerProtocolVersion gate workspace
 	// image overrides (§決定 11): an override image must carry this label
-	// with this exact value, proving it derives from the shared boid base
-	// image (§決定 2), before containerBackend.Launch will use it. Nothing
-	// bakes this label into build/container/Dockerfile yet (that lands
-	// alongside the real image-provenance work in PR6/PR7 — see the plan
-	// doc's PR5 TODO note); until then every real override is rejected,
-	// which is safe because containerBackend is not wired into production
-	// dispatch as of PR5.
+	// with this exact value before containerBackend.Launch will use it.
+	// build/container/Dockerfile bakes it (pinned by
+	// TestBoidRunnerProtocolLabel_IsBakedIntoTheImage against the Dockerfile
+	// and by the image-build CI job against a built image).
+	//
+	// This is a COMPATIBILITY DECLARATION, not a provenance proof, and the
+	// distinction is worth stating because this comment used to claim the
+	// stronger thing ("proving it derives from the shared boid base image").
+	// A label is three lines of Dockerfile that anyone can write, so it
+	// establishes nothing about an image's origin; what it catches is an
+	// override aimed at an image that was never meant to be a boid runner,
+	// turning a confusing mid-job failure into a clear launch-time one. Real
+	// provenance would be a separate mechanism (signatures, a registry
+	// allowlist), not a stricter reading of this check.
+	//
+	// Until 2026-07-28 nothing baked the label at all, so EVERY override was
+	// rejected — including boid's own boid-runner:latest named explicitly —
+	// while `container_image` remained a public field on the DB row, the
+	// envelope and the spec. The comment here justified that with "safe
+	// because containerBackend is not wired into production dispatch as of
+	// PR5", a premise the container cutover retired without the conclusion
+	// being revisited.
 	boidRunnerProtocolLabel   = "boid.runner_protocol"
 	boidRunnerProtocolVersion = "v1"
 
@@ -1435,7 +1450,7 @@ func (b *containerBackend) forgetSession(id string) {
 
 // resolveImage picks the image Launch creates the container from (spec's
 // override or the backend's default) and enforces both the pull policy and
-// (for an override only) §決定 11's boid-base-derived label check. A single
+// (for an override only) §決定 11's runner-protocol label check. A single
 // ImageInspect call serves both the presence check most pull-policy
 // branches need and the label read the override check needs — reused
 // rather than inspecting twice.
@@ -1480,7 +1495,7 @@ func (b *containerBackend) resolveImage(ctx context.Context, override string) (s
 		}
 		if got != boidRunnerProtocolVersion {
 			return "", fmt.Errorf(
-				"container image override %q rejected: %s label = %q, want %q (workspace override images must derive from the boid base image — §決定 11)",
+				"container image override %q rejected: %s label = %q, want %q — an override image must declare the runner protocol it speaks, which the boid base image does (build/container/Dockerfile); build yours FROM it, or add the same LABEL if you assemble the runner yourself (§決定 11)",
 				override, boidRunnerProtocolLabel, got, boidRunnerProtocolVersion)
 		}
 	}

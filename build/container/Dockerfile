@@ -71,6 +71,29 @@ RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -o /out/boid .
 
 # ---- runtime --------------------------------------------------------------
 FROM docker.io/library/debian:bookworm-slim
+
+# The runner protocol this image speaks. A workspace's `container_image`
+# override must carry this exact label/value or containerBackend.resolveImage
+# refuses to launch from it (internal/dispatcher/container_backend.go's
+# boidRunnerProtocolLabel / boidRunnerProtocolVersion, §決定 11).
+#
+# What the check does and does not buy, stated plainly because the constant's
+# own comment used to overstate it: this is a COMPATIBILITY DECLARATION, not
+# a provenance proof. Anyone can put this label on any image — three lines of
+# Dockerfile — so it establishes nothing about where the image came from. What
+# it does catch is the mistake that actually happens: an override pointed at
+# an image that was never meant to be a boid runner (a base language image, a
+# leftover app image, a typo'd tag), which would otherwise fail deep inside
+# the job with a confusing error instead of at launch with a clear one.
+# Anything stronger — signatures, a registry allowlist — is a separate
+# mechanism, not a stricter reading of this one.
+#
+# Bump the value only when the runner contract itself changes incompatibly,
+# and bump boidRunnerProtocolVersion in the same commit; a Go unit test pins
+# that these two agree, and the image-build CI job pins that a BUILT image
+# really carries it.
+LABEL boid.runner_protocol="v1"
+
 ARG BOID_UID
 ARG BOID_GID
 # gh CLI version pin (Minor 14, PR6 codex review): `apt-get install gh`

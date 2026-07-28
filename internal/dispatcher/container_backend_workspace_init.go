@@ -124,15 +124,18 @@ func waitResponseEngineError(res container.WaitResponse) error {
 //     runs later in Dispatch, and resolveWorkspaceHome (which owns the init
 //     lock) runs before it. Threading it in would add a second workspace
 //     lookup on the init path for no gain.
-//   - It would turn an optional job-image override into a hard init failure
-//     TODAY. resolveImage rejects any override that does not carry
-//     boid.runner_protocol=v1, and nothing bakes that label yet (see
-//     boidRunnerProtocolLabel) — so every workspace that sets container_image
-//     would stop being able to prepare its home at all.
 //   - The prep does not need it. What the wrapper uses is bash, coreutils and
-//     whatever the operator's init.sh reaches for; §決定 11 requires an
-//     override to derive from this same base image, so the base is a subset of
-//     any legal override rather than a different environment.
+//     whatever the operator's init.sh reaches for, all of which the base
+//     image has. An override exists to add things to a JOB's environment, and
+//     nothing in the init path consults them.
+//   - Honoring it would put an override's own failure modes on the path that
+//     prepares the home. resolveImage rejects an override whose
+//     boid.runner_protocol label is absent or stale, and an override can also
+//     simply be unpullable; either would leave the workspace unable to prepare
+//     its home at all, rather than unable to run one job. (Through 2026-07-28
+//     this was worse still — nothing baked the label, so EVERY override was
+//     rejected — but the argument does not depend on that, which is why it
+//     survives the label being baked.)
 func (b *containerBackend) RunWorkspaceInit(ctx context.Context, req WorkspaceInitRequest) error {
 	homeMount, err := workspaceInitHomeMount(req)
 	if err != nil {
