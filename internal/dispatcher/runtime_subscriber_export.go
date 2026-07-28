@@ -5,6 +5,7 @@ package dispatcher
 import (
 	"context"
 	"fmt"
+	"log/slog"
 )
 
 // RuntimeSubscriber subscribes to live output of a running job identified by jobID.
@@ -48,6 +49,18 @@ func (r *Runner) runtimeIDForJob(jobID string) (runtimeID string, found bool) {
 // comment names as its reason to exist) does a real `docker inspect`
 // against the engine, and an unbounded context here would hang a WS attach
 // or the Web UI's SSE follow request forever against a wedged engine.
+//
+// When Adopt's !adopted is caused by that same deadline firing (ctx.Err()
+// != nil) rather than a legitimate "no such runtime" result, this logs a
+// Warn naming the cause (next-session-container-backend-followups.md #3,
+// Opus review of PR #857) — before this, a wedged engine and an
+// already-exited job were indistinguishable to an operator reading the
+// logs, both surfacing as silent ok=false, turning a "terminal stayed
+// blank" bug report into a guessing game between "nothing to attach to"
+// and "the engine never answered". Subscribe's signature has no error to
+// carry the distinction into (unlike WriteInput/ResizeRuntime/CloseInput
+// below), so the Warn log is the only place it can surface; ok stays false
+// either way — the caller-visible contract is unchanged.
 func (r *Runner) Subscribe(jobID string) (snapshot []byte, ch <-chan []byte, cancel func(), ok bool) {
 	runtimeID, found := r.runtimeIDForJob(jobID)
 	if !found {
@@ -57,6 +70,10 @@ func (r *Runner) Subscribe(jobID string) (snapshot []byte, ch <-chan []byte, can
 	defer cancelCtx()
 	session, adopted := r.sandboxBackend().Adopt(ctx, runtimeID)
 	if !adopted {
+		if ctx.Err() != nil {
+			slog.Warn("subscribe: adopt did not resolve before the control-call deadline; the runtime's live output cannot be attached to",
+				"job_id", jobID, "runtime_id", runtimeID, "timeout", sessionControlCallTimeout.Get())
+		}
 		return nil, nil, func() {}, false
 	}
 	return session.Subscribe()
@@ -65,7 +82,14 @@ func (r *Runner) Subscribe(jobID string) (snapshot []byte, ch <-chan []byte, can
 // WriteInput implements RuntimeInputWriter for Runner. It resolves jobID to
 // a runtimeID via the jobs table, then adopts a SandboxSession and writes
 // through it. Adopt is bounded — see Subscribe's doc comment just above for
-// why.
+// why, including the ctx.Err()-gated Warn below.
+//
+// Unlike Subscribe, WriteInput has an error return, so an Adopt-deadline
+// !adopted also gets a wrapped error distinguishing it from the ordinary
+// ErrRuntimeUnsupported result (next-session-container-backend-followups.md
+// #3, Opus review of PR #857) — the same "engine did not respond in time"
+// phrasing ResizeRuntimeID (runner.go) already uses for session.Resize's own
+// deadline error, so the two read as the same class of failure.
 func (r *Runner) WriteInput(jobID string, data []byte) error {
 	runtimeID, found := r.runtimeIDForJob(jobID)
 	if !found {
@@ -75,6 +99,11 @@ func (r *Runner) WriteInput(jobID string, data []byte) error {
 	defer cancel()
 	session, adopted := r.sandboxBackend().Adopt(ctx, runtimeID)
 	if !adopted {
+		if ctx.Err() != nil {
+			slog.Warn("write input: adopt did not resolve before the control-call deadline; input was not delivered",
+				"job_id", jobID, "runtime_id", runtimeID, "timeout", sessionControlCallTimeout.Get())
+			return fmt.Errorf("write input: engine did not respond in time: %w", ctx.Err())
+		}
 		return ErrRuntimeUnsupported
 	}
 	return session.WriteInput(data)
@@ -87,7 +116,9 @@ func (r *Runner) WriteInput(jobID string, data []byte) error {
 // SandboxSession and resizes through it. Adopt is bounded — see Subscribe's
 // doc comment above for why (session.Resize itself is separately bounded,
 // container_backend.go, since its interface signature takes no context to
-// inherit one from).
+// inherit one from), including the ctx.Err()-gated Warn + wrapped error
+// below, matching WriteInput's just above (next-session-container-backend-
+// followups.md #3, Opus review of PR #857).
 func (r *Runner) ResizeRuntime(jobID string, size TerminalSize) error {
 	runtimeID, found := r.runtimeIDForJob(jobID)
 	if !found {
@@ -97,6 +128,11 @@ func (r *Runner) ResizeRuntime(jobID string, size TerminalSize) error {
 	defer cancel()
 	session, adopted := r.sandboxBackend().Adopt(ctx, runtimeID)
 	if !adopted {
+		if ctx.Err() != nil {
+			slog.Warn("resize runtime: adopt did not resolve before the control-call deadline; the terminal was not resized",
+				"job_id", jobID, "runtime_id", runtimeID, "timeout", sessionControlCallTimeout.Get())
+			return fmt.Errorf("resize runtime: engine did not respond in time: %w", ctx.Err())
+		}
 		return ErrRuntimeUnsupported
 	}
 	return session.Resize(size)
@@ -105,7 +141,9 @@ func (r *Runner) ResizeRuntime(jobID string, size TerminalSize) error {
 // CloseInput implements RuntimeInputWriter for Runner. It resolves jobID to
 // a runtimeID via the jobs table, then adopts a SandboxSession and closes
 // its input through it. Adopt is bounded — see Subscribe's doc comment
-// above for why.
+// above for why, including the ctx.Err()-gated Warn + wrapped error below,
+// matching WriteInput/ResizeRuntime above (next-session-container-backend-
+// followups.md #3, Opus review of PR #857).
 func (r *Runner) CloseInput(jobID string) error {
 	runtimeID, found := r.runtimeIDForJob(jobID)
 	if !found {
@@ -115,6 +153,11 @@ func (r *Runner) CloseInput(jobID string) error {
 	defer cancel()
 	session, adopted := r.sandboxBackend().Adopt(ctx, runtimeID)
 	if !adopted {
+		if ctx.Err() != nil {
+			slog.Warn("close input: adopt did not resolve before the control-call deadline; input was not closed",
+				"job_id", jobID, "runtime_id", runtimeID, "timeout", sessionControlCallTimeout.Get())
+			return fmt.Errorf("close input: engine did not respond in time: %w", ctx.Err())
+		}
 		return ErrRuntimeUnsupported
 	}
 	return session.CloseInput()

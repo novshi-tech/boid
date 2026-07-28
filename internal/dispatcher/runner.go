@@ -1634,11 +1634,72 @@ func (r *Runner) ReapOrphans(ctx context.Context) (backend.ReapReport, error) {
 // #816) rather than internal/server/job_runtime_routes.go's
 // resolveAttachableJob type-asserting onto a backend-specific capability
 // directly.
+//
+// sessionControlCallTimeout is layered on top of the caller's own ctx as a
+// FLOOR, not a replacement (next-session-container-backend-followups.md #2,
+// Opus review of PR #857): CanAttach's only caller
+// (job_runtime_routes.go's resolveAttachableJob) passes req.Context(),
+// which stays open for as long as the HTTP client stays connected — before
+// this, that gave Adopt an effectively unbounded ctx. Adopt's in-flight-join
+// wait already selects on ctx (Major 1 in
+// session_control_call_deadline_test.go), so this did not itself hang — but
+// an unbounded CanAttach caller could still sit as the in-flight attempt's
+// "owner" against a wedged engine, and every bounded joiner for the SAME
+// runtimeID (StopJobRuntime, SignalJobRuntime, ...) would then exhaust its
+// own sessionControlCallTimeout budget waiting on that owner instead of the
+// engine ever answering — `boid task stop` failing every time, not
+// hanging, but never succeeding either. context.WithTimeout(ctx, ...) keeps
+// whichever of the caller's own deadline (if shorter) and
+// sessionControlCallTimeout fires first, and the caller's own
+// cancellation (the HTTP client disconnecting) still propagates through
+// unchanged, because the new ctx is derived FROM ctx rather than from
+// context.Background().
+//
+// The bool result here still can't distinguish "Adopt legitimately found
+// nothing" from "ctx was done before Adopt could resolve" — both surface
+// identically as job_runtime_routes.go's 409 "job runtime does not support
+// attach" to the HTTP caller. That ambiguity predates this fix (it already
+// existed whenever ctx itself expired before this change) and changing the
+// HTTP-visible contract (status code / response shape) to fix it is left
+// alone here; see this PR's description for why.
+//
+// The boid.log side of that same ambiguity IS fixed (NB-1, Opus independent
+// review of this PR): when ok is false because ctx.Err() != nil rather than
+// a legitimate Adopt miss, this logs — the same distinction
+// StopJobRuntime/SignalJobRuntime/ResizeRuntimeID/the four
+// runtime_subscriber_export.go routes already make, so an operator grepping
+// boid.log for "why did this attach/resize get rejected" is not stuck
+// guessing between "no such runtime" and "the engine never answered".
+// Unlike those five, ctx here is derived from the CALLER's own ctx (not
+// context.Background()), so ctx.Err() at this point can be either
+// DeadlineExceeded (the floor fired, or the caller's own deadline did) OR
+// Canceled (the HTTP client disconnecting mid-request —
+// job_runtime_routes.go passes req.Context()). The level differs between
+// the two (nit, Opus independent review of this PR, round 2):
+// DeadlineExceeded is Warn, the same actionable signal StopJobRuntime's own
+// Warn is (the engine may be wedged); Canceled is only Debug — an ordinary,
+// non-actionable client disconnect, not evidence of anything wrong with the
+// engine, so it must not carry the same "something needs attention" weight
+// as the deadline case. The message and the logged ctx.Err() value stay
+// agnostic between the two rather than hardcoding "engine did not respond"
+// for a cause that might just be a client giving up.
 func (r *Runner) CanAttach(ctx context.Context, runtimeID string) bool {
 	if runtimeID == "" {
 		return false
 	}
+	ctx, cancel := context.WithTimeout(ctx, sessionControlCallTimeout.Get())
+	defer cancel()
 	_, ok := r.sandboxBackend().Adopt(ctx, runtimeID)
+	if !ok {
+		switch {
+		case errors.Is(ctx.Err(), context.Canceled):
+			slog.Debug("can attach: adopt did not resolve before the caller's ctx was canceled; the caller's resulting 409 is indistinguishable from a legitimate not-found result",
+				"runtime_id", runtimeID, "error", ctx.Err())
+		case ctx.Err() != nil:
+			slog.Warn("can attach: adopt did not resolve before ctx was done; the caller's resulting 409 is indistinguishable from a legitimate not-found result",
+				"runtime_id", runtimeID, "timeout", sessionControlCallTimeout.Get(), "error", ctx.Err())
+		}
+	}
 	return ok
 }
 
