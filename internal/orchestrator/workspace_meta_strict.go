@@ -163,12 +163,62 @@ func DecodeWorkspaceMetaStrict(data []byte) (*WorkspaceMeta, error) {
 		if errors.Is(err, io.EOF) {
 			return &WorkspaceMeta{}, nil
 		}
+		if envErr := envelopeSentToTheWrongDoor(data); envErr != nil {
+			return nil, envErr
+		}
 		return nil, fmt.Errorf("decode workspace meta: %w", err)
 	}
 	if err := RejectTrailingYAMLDocument(dec); err != nil {
 		return nil, fmt.Errorf("decode workspace meta: %w", err)
 	}
 	return strict.toWorkspaceMeta(), nil
+}
+
+// envelopeSentToTheWrongDoor returns the error to report when data is an
+// apiVersion/kind envelope — the shape `boid workspace export` writes and
+// `boid workspace apply` reads — that arrived at one of the decoders above,
+// which take a BARE meta mapping instead. It returns nil for anything else,
+// leaving the caller's own decode error to stand.
+//
+// There are two ways to hand boid a workspace as yaml and only one of them
+// takes the exported format. Exporting a workspace and feeding the file to
+// `workspace create --from-file` is the obvious next move, and it failed
+// with `field apiVersion not found in type orchestrator.workspaceMetaStrict`
+// — a message that names an unexported Go type, describes the document by
+// what it is not, and says nothing about the one-word-different command that
+// does accept it. Distributing a standard environment as yaml is a large
+// part of why this format exists, so the wrong door points at the right one
+// (found in the 2026-07-28 dogfood).
+//
+// Detection is deliberately loose — ANY apiVersion or kind key, not just the
+// supported values. A document carrying `apiVersion: boid.dev/v2` from a
+// newer boid, or a typo'd kind, is still unmistakably an envelope, and its
+// author is still better served by being sent to `apply` (whose own
+// validation will then say exactly what is wrong with it) than by a list of
+// unknown fields from a decoder that was never going to accept the document.
+func envelopeSentToTheWrongDoor(data []byte) error {
+	var probe struct {
+		APIVersion string `yaml:"apiVersion"`
+		Kind       string `yaml:"kind"`
+	}
+	// Loose (no KnownFields): every other key in the document is expected to
+	// be unknown to this probe, which is the whole point of it.
+	if err := yaml.Unmarshal(data, &probe); err != nil {
+		return nil
+	}
+	if probe.APIVersion == "" && probe.Kind == "" {
+		return nil
+	}
+	return fmt.Errorf(
+		"this is a %s %s envelope document (what `boid workspace export` writes), which create/edit do not take — they want a bare workspace meta mapping. Apply it instead: boid workspace apply -f <file>",
+		orEmpty(probe.APIVersion, "?"), orEmpty(probe.Kind, "?"))
+}
+
+func orEmpty(s, fallback string) string {
+	if s == "" {
+		return fallback
+	}
+	return s
 }
 
 // workspaceCreateStrict is the on-wire shape of a POST /api/workspaces
@@ -200,6 +250,9 @@ func DecodeWorkspaceCreateStrict(data []byte) (slug string, meta *WorkspaceMeta,
 	if err := dec.Decode(&strict); err != nil {
 		if errors.Is(err, io.EOF) {
 			return "", &WorkspaceMeta{}, nil
+		}
+		if envErr := envelopeSentToTheWrongDoor(data); envErr != nil {
+			return "", nil, envErr
 		}
 		return "", nil, fmt.Errorf("decode workspace create body: %w", err)
 	}
