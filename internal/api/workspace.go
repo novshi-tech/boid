@@ -45,7 +45,6 @@ func (h *WorkspaceHandler) Routes() chi.Router {
 	r.Get("/export", h.ExportEnvelope)
 	r.Post("/apply", h.Apply)
 	r.Get("/{slug}", h.Show)
-	r.Get("/{slug}/export", h.Export)
 	// PR8 (論点 f). Nested under the slug rather than a top-level
 	// "/import-home" so the target is a path parameter like every other
 	// per-workspace operation, and so a future "/{slug}/home/..." surface
@@ -204,34 +203,22 @@ func (h *WorkspaceHandler) Update(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, detail)
 }
 
-// Export handles GET /api/workspaces/{slug}/export (docs/plans/
-// workspace-db-consolidation.md PR5 Step A): the response body is the raw
-// yaml the service returns verbatim (the marshaled WorkspaceMeta with a
-// top-level "slug:" key inlined — the exact same shape POST
-// /api/workspaces/import accepts, so an export → import round-trip needs
-// no translation step — see ProjectAppService.ExportWorkspace's doc
-// comment for the rationale). An ETag header mirrors the revision so a
-// caller can round-trip it into a subsequent PUT's If-Match if it chooses
-// that route instead of POST import.
-func (h *WorkspaceHandler) Export(w http.ResponseWriter, r *http.Request) {
-	slug := chi.URLParam(r, "slug")
-	data, revision, err := h.Service.ExportWorkspace(slug)
-	if err != nil {
-		writeServiceError(w, err)
-		return
-	}
-	if revision != "" {
-		w.Header().Set("ETag", `"`+revision+`"`)
-	}
-	w.Header().Set("Content-Type", "application/yaml")
-	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write(data)
-}
-
 // Import handles POST /api/workspaces/import?mode=<create-only|replace>
 // (docs/plans/workspace-db-consolidation.md PR5 Step B): the body shape
 // mirrors Create's (top-level "slug:" key alongside the meta fields, decoded
-// by the same DecodeWorkspaceCreateStrict). mode defaults to "create-only"
+// by the same DecodeWorkspaceCreateStrict).
+//
+// Its counterpart, GET /api/workspaces/{slug}/export, was retired
+// (2026-07-28): the round trip between the two never actually worked (an
+// empty workspace exported as invalid yaml — "slug: default\n{}\n" — and
+// even a non-empty export's "slug:" key, spliced on so the round trip
+// needed no translation, was rejected by `boid workspace import`'s own
+// client-side decode). `boid workspace import` is now a deprecated stub
+// (cmd/workspace.go's runWorkspaceImportDeprecated) pointing at `boid
+// workspace apply -f` (envelope documents) or `create`/`edit --from-file`
+// (bare meta documents) instead. This endpoint itself is unaffected — it
+// still accepts a hand-authored or programmatically constructed body of
+// this shape from any other caller. mode defaults to "create-only"
 // (the safe choice — never overwrites an existing workspace) when the query
 // param is omitted; an unrecognized mode value is rejected by
 // ImportWorkspace itself with 400.

@@ -902,34 +902,6 @@ func (c *Client) GetRaw(path string) (statusCode int, body []byte, err error) {
 	return resp.StatusCode, data, nil
 }
 
-// GetRawWithAccept performs a GET request with a custom Accept header,
-// returning the raw response body and status code regardless of status
-// (mirrors GetRaw) — used by `boid workspace export`
-// (docs/plans/workspace-db-consolidation.md PR5 Step D) to explicitly
-// request the yaml export body, even though the server today always
-// responds with application/yaml regardless of Accept.
-func (c *Client) GetRawWithAccept(path, accept string) (statusCode int, body []byte, err error) {
-	req, err := http.NewRequest("GET", c.baseURL+path, nil)
-	if err != nil {
-		return 0, nil, fmt.Errorf("create request: %w", err)
-	}
-	if accept != "" {
-		req.Header.Set("Accept", accept)
-	}
-
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return 0, nil, fmt.Errorf("request failed: %w", err)
-	}
-	defer resp.Body.Close()
-
-	data, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return resp.StatusCode, nil, fmt.Errorf("read body: %w", err)
-	}
-	return resp.StatusCode, data, nil
-}
-
 // GetRawWithAcceptAndRevision performs a GET request with a custom Accept
 // header, returning the raw response body/status alongside the response's
 // ETag header value VERBATIM, quotes included (Minor 2, codex review round

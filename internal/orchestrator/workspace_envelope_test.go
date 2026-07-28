@@ -308,6 +308,92 @@ projectz:
 	}
 }
 
+// TestDecodeWorkspaceEnvelopeDocuments_BareMetaDocumentGuidesToCreateOrEdit
+// pins bareMetaSentToTheWrongDoor: a bare workspace-meta document (no
+// apiVersion/kind, host_commands:/env:/... at the top level — what `boid
+// workspace create --from-file`/`edit --from-file` take, and what a
+// hand-authored yaml or `boid project migrate`'s shadow file usually is)
+// fed to `apply` must be redirected to those two commands by name, not left
+// to the underlying decoder's raw "field host_commands not found in type
+// orchestrator.rawWorkspaceEnvelope" error — the same UX gap
+// envelopeSentToTheWrongDoor (workspace_meta_strict.go) already closed for
+// the opposite direction (a `workspace export` envelope fed to
+// create/edit), found 2026-07-28 while retiring `boid workspace import`
+// (whose deprecation message points here for envelope-shaped files, but
+// most of its actual callers' files are this bare shape instead).
+func TestDecodeWorkspaceEnvelopeDocuments_BareMetaDocumentGuidesToCreateOrEdit(t *testing.T) {
+	data := []byte("host_commands:\n  - gh\nenv:\n  FOO: bar\n")
+	_, err := DecodeWorkspaceEnvelopeDocuments(data)
+	if err == nil {
+		t.Fatal("expected an error for a bare meta document")
+	}
+	if strings.Contains(err.Error(), "rawWorkspaceEnvelope") {
+		t.Errorf("error = %v, must not leak the unexported Go type name", err)
+	}
+	if !strings.Contains(err.Error(), "boid workspace create") || !strings.Contains(err.Error(), "boid workspace edit") {
+		t.Errorf("error = %v, want it to point at both `boid workspace create --from-file` and `edit --from-file`", err)
+	}
+}
+
+// TestDecodeWorkspaceEnvelopeDocuments_BareMetaDocumentWithSlugKeyAlsoGuides
+// covers the specific shape the (now-retired) GET /api/workspaces/{slug}/export
+// endpoint used to produce — a bare meta document with a top-level "slug:"
+// key spliced on — landing at `apply` instead of `create`/`edit --from-file`.
+func TestDecodeWorkspaceEnvelopeDocuments_BareMetaDocumentWithSlugKeyAlsoGuides(t *testing.T) {
+	data := []byte("slug: default\nenv:\n  FOO: bar\n")
+	_, err := DecodeWorkspaceEnvelopeDocuments(data)
+	if err == nil {
+		t.Fatal("expected an error for a bare meta document carrying a slug key")
+	}
+	if !strings.Contains(err.Error(), "boid workspace create") || !strings.Contains(err.Error(), "boid workspace edit") {
+		t.Errorf("error = %v, want it to point at both `boid workspace create --from-file` and `edit --from-file`", err)
+	}
+}
+
+// TestDecodeWorkspaceEnvelopeDocuments_UnrelatedTypoDoesNotTriggerTheGuide
+// pins bareMetaSentToTheWrongDoor's own doc comment: a document with NEITHER
+// an envelope's identifying keys NOR any recognizable WorkspaceMeta field
+// name must fall through to the original decode error unchanged — the guide
+// is specifically for the bare-meta shape, not a catch-all for anything
+// unparsable.
+func TestDecodeWorkspaceEnvelopeDocuments_UnrelatedTypoDoesNotTriggerTheGuide(t *testing.T) {
+	data := []byte("totally: bogus\n")
+	_, err := DecodeWorkspaceEnvelopeDocuments(data)
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	if strings.Contains(err.Error(), "bare workspace meta document") {
+		t.Errorf("error = %v, the bare-meta guide must not fire for an unrelated typo", err)
+	}
+	if !strings.Contains(err.Error(), "totally") {
+		t.Errorf("error = %v, want the original unknown-field error mentioning \"totally\"", err)
+	}
+}
+
+// TestDecodeWorkspaceEnvelopeDocuments_ValidEnvelopeIsUnaffectedByTheGuide
+// pins that a well-formed envelope document (apiVersion/kind present) is
+// unaffected by bareMetaSentToTheWrongDoor even though its own decode error
+// case (an unknown spec field) is exercised elsewhere
+// (TestDecodeWorkspaceEnvelopeDocuments_RejectsUnknownSpecField) — this one
+// specifically pins the SUCCESS path still works with the new check wired in.
+func TestDecodeWorkspaceEnvelopeDocuments_ValidEnvelopeIsUnaffectedByTheGuide(t *testing.T) {
+	data := []byte(`
+apiVersion: boid.dev/v1
+kind: Workspace
+metadata:
+  name: team-a
+spec:
+  host_commands: [gh]
+`)
+	docs, err := DecodeWorkspaceEnvelopeDocuments(data)
+	if err != nil {
+		t.Fatalf("DecodeWorkspaceEnvelopeDocuments: %v", err)
+	}
+	if len(docs) != 1 || docs[0].Envelope.Metadata.Name != "team-a" {
+		t.Fatalf("docs = %+v, want one document named team-a", docs)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // SplitWorkspaceEnvelopeDocuments
 // ---------------------------------------------------------------------------

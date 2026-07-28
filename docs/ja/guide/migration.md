@@ -39,7 +39,7 @@ boid project migrate ~/src/myproject --workspace dev --apply --on-collision skip
 - workspace slug が daemon にまだ無い場合: `POST /api/workspaces` で新規作成する
 - 既存 slug の場合: 現在の内容を `GET /api/workspaces/<slug>` で取得し、 今回の migration が生成したフィールドとマージした上で `PUT /api/workspaces/<slug>` (`If-Match: <revision>`) で書き戻す (`mergeLegacyFieldsIntoWorkspace`)。 **マージの優先順位は「migration 側 (project.yaml から生成された値) が優先」** — `env` は同一キーなら migration 側の新値で上書き、 `capabilities.docker` は project.yaml 側が設定していれば上書きする。 legacy kit が生成された場合の `host_commands` (参照名) は union (既存の値を消さない)、 `additional_bindings` は Source が一致すれば migration 側が上書きする。 それ以外の既存フィールドはそのまま保持される
 - `412 Precondition Failed` (revision 不一致 = 同時編集) を受けた場合は再取得してマージからやり直し、 最大 3 回リトライする
-- daemon に到達できない場合、 または 3 回リトライしても解決しない場合は、 反映は shadow yaml にしか行われない。 コマンド出力に手動反映の手順 (`boid workspace import <file> --slug <slug>` または `boid workspace edit <slug> --from-file <file>`) が案内されるので、 その通りに実行すること — **`project.yaml` 自体の書き換えはこの反映結果とは無関係にすでに実行済み** であることに注意 (dry-run ではない限り)
+- daemon に到達できない場合、 または 3 回リトライしても解決しない場合は、 反映は shadow yaml にしか行われない。 コマンド出力に手動反映の手順 (workspace が未作成なら `boid workspace create <slug> --from-file <file>`、 既存なら `boid workspace edit <slug> --from-file <file>`。 `boid workspace import` は 2026-07-28 に廃止済み) が案内されるので、 その通りに実行すること — **`project.yaml` 自体の書き換えはこの反映結果とは無関係にすでに実行済み** であることに注意 (dry-run ではない限り)
 
 ## `project.local.yaml` の廃止
 

@@ -65,7 +65,7 @@ When `default` isn't enough, a workspace's contents can be set up through any of
 |---|---|
 | CLI: create new | `boid workspace create <slug> [--from-file <yaml>]` (omit `--from-file` for a blank workspace) |
 | CLI: replace an existing one wholesale | `boid workspace edit <slug> --from-file <yaml>` |
-| CLI: import from yaml | `boid workspace import <yaml> [--mode create-only\|replace]` |
+| CLI: apply an exported envelope | `boid workspace apply -f <yaml>` (applies `boid workspace export`'s output; `boid workspace import` is retired) |
 | API: direct POST/PUT | `POST /api/workspaces` / `PUT /api/workspaces/{slug}` (body: `application/yaml`) |
 | Legacy path (still supported): hand-edit the yaml | Edit `~/.config/boid/workspaces/<slug>.yaml` directly, then `boid workspace assign <project> <slug>` auto-creates the DB row from it |
 

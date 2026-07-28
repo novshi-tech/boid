@@ -65,7 +65,7 @@ boid project add ~/src/another-project --workspace dev
 |---|---|
 | CLI: 新規作成 | `boid workspace create <slug> [--from-file <yaml>]`（`--from-file` 省略時は空の workspace） |
 | CLI: 既存を丸ごと置き換え | `boid workspace edit <slug> --from-file <yaml>` |
-| CLI: yaml から取り込み | `boid workspace import <yaml> [--mode create-only\|replace]` |
+| CLI: export した envelope 文書を適用 | `boid workspace apply -f <yaml>`（`boid workspace export` の出力を適用。`boid workspace import` は廃止済み） |
 | API: 直接 POST/PUT | `POST /api/workspaces` / `PUT /api/workspaces/{slug}`（body は `application/yaml`） |
 | 旧経路 (残置): yaml を手で置く | `~/.config/boid/workspaces/<slug>.yaml` を直接編集 → `boid workspace assign <project> <slug>` で auto-create |
 

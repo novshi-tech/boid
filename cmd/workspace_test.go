@@ -1335,261 +1335,46 @@ func TestRunWorkspaceExport_DoesNotWarnOnHomeBoidPath(t *testing.T) {
 	}
 }
 
-// TestRunWorkspaceImport_CreateOnlyMode pins the safe default: importing a
-// brand-new slug succeeds, and importing the same slug again (still
-// create-only, the default) 409s rather than silently overwriting.
-func TestRunWorkspaceImport_CreateOnlyMode(t *testing.T) {
-	ts := testutil.NewTestServer(t)
-	t.Setenv("BOID_SOCKET", ts.Server.SocketPath())
-	seedHostCommandsForTest(t, ts, "gh")
+// TestRunWorkspaceImportDeprecated_AlwaysFailsWithGuidance pins `workspace
+// import`'s retirement (2026-07-28, docs/plans/workspace-db-consolidation.md
+// PR5 Step E's meta-format round trip never worked — see
+// runWorkspaceImportDeprecated's doc comment): the command must now always
+// return an error and print guidance pointing at the two commands that
+// actually cover what it used to do (`apply -f` for an envelope document,
+// `create`/`edit --from-file` for a bare meta document) — regardless of
+// whether the named file exists, is valid yaml, or a daemon is even
+// reachable. No daemon socket is configured here at all, pinning that this
+// never attempts one.
+func TestRunWorkspaceImportDeprecated_AlwaysFailsWithGuidance(t *testing.T) {
 	resetWorkspaceExportImportFlags(t)
 	defer resetWorkspaceExportImportFlags(t)
+	t.Setenv("BOID_SOCKET", filepath.Join(t.TempDir(), "no-daemon-here.sock"))
 
-	importFile := filepath.Join(t.TempDir(), "team-c.yaml")
-	if err := os.WriteFile(importFile, []byte("host_commands:\n  - gh\n"), 0o644); err != nil {
-		t.Fatalf("write import file: %v", err)
-	}
-	if err := workspaceImportCmd.Flags().Set("slug", "team-c"); err != nil {
-		t.Fatalf("set --slug: %v", err)
-	}
-
-	var out bytes.Buffer
 	cmd := workspaceImportCmd
+	var out, errOut bytes.Buffer
 	cmd.SetOut(&out)
-	if err := runWorkspaceImport(cmd, []string{importFile}); err != nil {
-		t.Fatalf("runWorkspaceImport (first, should create): %v", err)
-	}
-
-	var detail api.WorkspaceDetail
-	if err := ts.Client.Do("GET", "/api/workspaces/team-c", nil, &detail); err != nil {
-		t.Fatalf("verify import: %v", err)
-	}
-	if !equalStrSliceForWorkspaceTest(detail.Meta.HostCommands, []string{"gh"}) {
-		t.Errorf("HostCommands = %v, want [gh]", detail.Meta.HostCommands)
-	}
-
-	// Second import of the same slug, still create-only (the default), must
-	// fail rather than silently overwrite.
-	var out2 bytes.Buffer
-	cmd2 := workspaceImportCmd
-	cmd2.SetOut(&out2)
-	err := runWorkspaceImport(cmd2, []string{importFile})
+	cmd.SetErr(&errOut)
+	err := runWorkspaceImportDeprecated(cmd, []string{"whatever.yaml"})
 	if err == nil {
-		t.Fatal("expected an error re-importing an existing slug with mode=create-only, got nil")
+		t.Fatal("expected an error; workspace import must always fail now")
 	}
-	if !strings.Contains(err.Error(), "409") && !strings.Contains(strings.ToLower(err.Error()), "already exists") {
-		t.Errorf("expected a conflict error, got: %v", err)
+	if !strings.Contains(err.Error(), "deprecated") {
+		t.Errorf("error = %q, want it to say the command is deprecated", err.Error())
 	}
-}
-
-// TestRunWorkspaceImport_ReplaceMode pins --mode replace's upsert semantics:
-// re-importing an existing slug must succeed and overwrite wholesale.
-func TestRunWorkspaceImport_ReplaceMode(t *testing.T) {
-	ts := testutil.NewTestServer(t)
-	t.Setenv("BOID_SOCKET", ts.Server.SocketPath())
-	seedHostCommandsForTest(t, ts, "gh", "aws")
-	resetWorkspaceExportImportFlags(t)
-	defer resetWorkspaceExportImportFlags(t)
-
-	createBody, err := buildWorkspaceCreateBody("team-d", []byte("host_commands:\n  - gh\n"))
-	if err != nil {
-		t.Fatalf("buildWorkspaceCreateBody: %v", err)
+	if !strings.Contains(errOut.String(), "boid workspace apply -f") {
+		t.Errorf("stderr = %q, want guidance pointing at `boid workspace apply -f`", errOut.String())
 	}
-	if err := ts.Client.DoWithContentType("POST", "/api/workspaces", "application/yaml", createBody, &api.WorkspaceDetail{}); err != nil {
-		t.Fatalf("seed create: %v", err)
-	}
-
-	importFile := filepath.Join(t.TempDir(), "team-d.yaml")
-	if err := os.WriteFile(importFile, []byte("host_commands:\n  - aws\n"), 0o644); err != nil {
-		t.Fatalf("write import file: %v", err)
-	}
-	if err := workspaceImportCmd.Flags().Set("mode", "replace"); err != nil {
-		t.Fatalf("set --mode replace: %v", err)
-	}
-	if err := workspaceImportCmd.Flags().Set("slug", "team-d"); err != nil {
-		t.Fatalf("set --slug: %v", err)
-	}
-
-	var out bytes.Buffer
-	cmd := workspaceImportCmd
-	cmd.SetOut(&out)
-	if err := runWorkspaceImport(cmd, []string{importFile}); err != nil {
-		t.Fatalf("runWorkspaceImport --mode replace: %v", err)
-	}
-
-	var detail api.WorkspaceDetail
-	if err := ts.Client.Do("GET", "/api/workspaces/team-d", nil, &detail); err != nil {
-		t.Fatalf("verify import: %v", err)
-	}
-	if !equalStrSliceForWorkspaceTest(detail.Meta.HostCommands, []string{"aws"}) {
-		t.Errorf("HostCommands = %v, want [aws] (replace must overwrite wholesale)", detail.Meta.HostCommands)
+	if !strings.Contains(errOut.String(), "boid workspace create") || !strings.Contains(errOut.String(), "boid workspace edit") {
+		t.Errorf("stderr = %q, want guidance pointing at `create`/`edit --from-file` too (the bare-meta-document case)", errOut.String())
 	}
 }
 
-// TestRunWorkspaceImport_ForceFlagIsReplaceAlias pins --force as a shorthand
-// for --mode replace.
-func TestRunWorkspaceImport_ForceFlagIsReplaceAlias(t *testing.T) {
-	ts := testutil.NewTestServer(t)
-	t.Setenv("BOID_SOCKET", ts.Server.SocketPath())
-	seedHostCommandsForTest(t, ts, "gh")
-	resetWorkspaceExportImportFlags(t)
-	defer resetWorkspaceExportImportFlags(t)
-
-	createBody, err := buildWorkspaceCreateBody("team-e", nil)
-	if err != nil {
-		t.Fatalf("buildWorkspaceCreateBody: %v", err)
-	}
-	if err := ts.Client.DoWithContentType("POST", "/api/workspaces", "application/yaml", createBody, &api.WorkspaceDetail{}); err != nil {
-		t.Fatalf("seed create: %v", err)
-	}
-
-	importFile := filepath.Join(t.TempDir(), "team-e.yaml")
-	if err := os.WriteFile(importFile, []byte("host_commands:\n  - gh\n"), 0o644); err != nil {
-		t.Fatalf("write import file: %v", err)
-	}
-	if err := workspaceImportCmd.Flags().Set("force", "true"); err != nil {
-		t.Fatalf("set --force: %v", err)
-	}
-	if err := workspaceImportCmd.Flags().Set("slug", "team-e"); err != nil {
-		t.Fatalf("set --slug: %v", err)
-	}
-
-	var out bytes.Buffer
-	cmd := workspaceImportCmd
-	cmd.SetOut(&out)
-	if err := runWorkspaceImport(cmd, []string{importFile}); err != nil {
-		t.Fatalf("runWorkspaceImport --force: %v", err)
-	}
-
-	var detail api.WorkspaceDetail
-	if err := ts.Client.Do("GET", "/api/workspaces/team-e", nil, &detail); err != nil {
-		t.Fatalf("verify import: %v", err)
-	}
-	if !equalStrSliceForWorkspaceTest(detail.Meta.HostCommands, []string{"gh"}) {
-		t.Errorf("HostCommands = %v, want [gh] (--force did not act as --mode replace)", detail.Meta.HostCommands)
-	}
-}
-
-// TestRunWorkspaceImport_AutoDetectsSlugFromBasename pins the CLI-side
-// resolution of the export/import yaml shape asymmetry (docs/plans/
-// workspace-db-consolidation.md PR5 brief: export bodies carry no "slug"
-// key): when --slug is omitted, the target slug is derived from the
-// import file's basename (extension stripped).
-func TestRunWorkspaceImport_AutoDetectsSlugFromBasename(t *testing.T) {
-	ts := testutil.NewTestServer(t)
-	t.Setenv("BOID_SOCKET", ts.Server.SocketPath())
-	seedHostCommandsForTest(t, ts, "gh")
-	resetWorkspaceExportImportFlags(t)
-	defer resetWorkspaceExportImportFlags(t)
-
-	importFile := filepath.Join(t.TempDir(), "team-f.yaml")
-	if err := os.WriteFile(importFile, []byte("host_commands:\n  - gh\n"), 0o644); err != nil {
-		t.Fatalf("write import file: %v", err)
-	}
-
-	var out bytes.Buffer
-	cmd := workspaceImportCmd
-	cmd.SetOut(&out)
-	if err := runWorkspaceImport(cmd, []string{importFile}); err != nil {
-		t.Fatalf("runWorkspaceImport (auto-detect slug): %v", err)
-	}
-
-	var detail api.WorkspaceDetail
-	if err := ts.Client.Do("GET", "/api/workspaces/team-f", nil, &detail); err != nil {
-		t.Fatalf("verify auto-detected slug team-f: %v", err)
-	}
-}
-
-// TestRunWorkspaceImport_RejectsMultipleDocuments mirrors
-// TestRunWorkspaceCreate_RejectsMultipleDocuments/
-// TestRunWorkspaceEdit_RejectsMultipleDocuments for the import path: a
-// multi-document import file must be rejected client-side before any daemon
-// call is attempted.
-func TestRunWorkspaceImport_RejectsMultipleDocuments(t *testing.T) {
-	resetWorkspaceExportImportFlags(t)
-	defer resetWorkspaceExportImportFlags(t)
-	dir := t.TempDir()
-	file := filepath.Join(dir, "multi.yaml")
-	if err := os.WriteFile(file, []byte(multiDocWorkspaceYAML), 0o644); err != nil {
-		t.Fatalf("write multi-doc yaml: %v", err)
-	}
-	if err := workspaceImportCmd.Flags().Set("slug", "team-a"); err != nil {
-		t.Fatalf("set --slug: %v", err)
-	}
-	t.Setenv("BOID_SOCKET", filepath.Join(dir, "no-daemon-here.sock"))
-
-	cmd := workspaceImportCmd
-	var out bytes.Buffer
-	cmd.SetOut(&out)
-	err := runWorkspaceImport(cmd, []string{file})
-	if err == nil {
-		t.Fatal("expected an error rejecting the multi-document import file")
-	}
-	if !strings.Contains(err.Error(), "multiple YAML documents") {
-		t.Errorf("expected a multi-document rejection error, got: %v", err)
-	}
-}
-
-// TestRunWorkspaceImport_RejectsInvalidMode pins client-side --mode
-// validation: an unrecognized --mode value must fail before any daemon call.
-func TestRunWorkspaceImport_RejectsInvalidMode(t *testing.T) {
-	resetWorkspaceExportImportFlags(t)
-	defer resetWorkspaceExportImportFlags(t)
-	dir := t.TempDir()
-	file := filepath.Join(dir, "team-a.yaml")
-	if err := os.WriteFile(file, []byte("host_commands: [gh]\n"), 0o644); err != nil {
-		t.Fatalf("write yaml: %v", err)
-	}
-	if err := workspaceImportCmd.Flags().Set("mode", "bogus"); err != nil {
-		t.Fatalf("set --mode: %v", err)
-	}
-	t.Setenv("BOID_SOCKET", filepath.Join(dir, "no-daemon-here.sock"))
-
-	cmd := workspaceImportCmd
-	var out bytes.Buffer
-	cmd.SetOut(&out)
-	err := runWorkspaceImport(cmd, []string{file})
-	if err == nil {
-		t.Fatal("expected an error for an invalid --mode value")
-	}
-	if !strings.Contains(err.Error(), "mode") {
-		t.Errorf("expected the error to mention --mode, got: %v", err)
-	}
-}
-
-// TestRunWorkspaceImport_ForceAndCreateOnlyConflict pins the codex PR5
-// review's minor finding: `--force` is a shorthand for `--mode replace`,
-// but if the caller *also* passes `--mode create-only` explicitly, the two
-// directives disagree. Silently letting --force upgrade an explicit safety
-// declaration into replace is dangerous — surface the conflict as an
-// error instead. --force with default --mode (unset) still translates to
-// replace; --force with an explicit `--mode replace` is redundant-but-OK
-// (same effect, no conflict).
-func TestRunWorkspaceImport_ForceAndCreateOnlyConflict(t *testing.T) {
-	resetWorkspaceExportImportFlags(t)
-	defer resetWorkspaceExportImportFlags(t)
-	dir := t.TempDir()
-	file := filepath.Join(dir, "team-a.yaml")
-	if err := os.WriteFile(file, []byte("host_commands: [gh]\n"), 0o644); err != nil {
-		t.Fatalf("write yaml: %v", err)
-	}
-	if err := workspaceImportCmd.Flags().Set("mode", "create-only"); err != nil {
-		t.Fatalf("set --mode: %v", err)
-	}
-	if err := workspaceImportCmd.Flags().Set("force", "true"); err != nil {
-		t.Fatalf("set --force: %v", err)
-	}
-	t.Setenv("BOID_SOCKET", filepath.Join(dir, "no-daemon-here.sock"))
-
-	cmd := workspaceImportCmd
-	var out bytes.Buffer
-	cmd.SetOut(&out)
-	err := runWorkspaceImport(cmd, []string{file})
-	if err == nil {
-		t.Fatal("expected an error for --force conflicting with --mode create-only")
-	}
-	if !strings.Contains(err.Error(), "--force") || !strings.Contains(err.Error(), "create-only") {
-		t.Errorf("expected the error to mention both --force and create-only, got: %v", err)
+// TestRunWorkspaceImportDeprecated_HiddenFromHelp pins that the retired
+// command no longer clutters `boid workspace --help`'s command list — it is
+// still directly invocable (the test above), just not advertised.
+func TestRunWorkspaceImportDeprecated_HiddenFromHelp(t *testing.T) {
+	if !workspaceImportCmd.Hidden {
+		t.Error("workspaceImportCmd.Hidden = false, want true (deprecated command should not clutter --help)")
 	}
 }
 

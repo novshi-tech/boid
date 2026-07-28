@@ -24,7 +24,6 @@ type fakeWorkspaceService struct {
 	updateFn          func(slug string, meta *orchestrator.WorkspaceMeta, ifMatch string, force bool) (*WorkspaceDetail, error)
 	removeFn          func(slug string) (*WorkspaceRemoval, error)
 	listFn            func() ([]*orchestrator.WorkspaceSummary, error)
-	exportFn          func(slug string) ([]byte, string, error)
 	importFn          func(slug string, meta *orchestrator.WorkspaceMeta, mode string) (*WorkspaceDetail, error)
 	applyFn           func(apply *orchestrator.WorkspaceEnvelopeApply, dryRun bool) (*orchestrator.WorkspaceApplyResult, error)
 	exportEnvelopesFn func(slugs []string) ([]byte, error)
@@ -74,9 +73,6 @@ func (s *fakeWorkspaceService) UpdateWorkspace(slug string, meta *orchestrator.W
 }
 func (s *fakeWorkspaceService) RemoveWorkspace(slug string) (*WorkspaceRemoval, error) {
 	return s.removeFn(slug)
-}
-func (s *fakeWorkspaceService) ExportWorkspace(slug string) ([]byte, string, error) {
-	return s.exportFn(slug)
 }
 func (s *fakeWorkspaceService) ImportWorkspace(slug string, meta *orchestrator.WorkspaceMeta, mode string) (*WorkspaceDetail, error) {
 	return s.importFn(slug, meta, mode)
@@ -556,44 +552,23 @@ func TestWorkspaceHandler_List_StillWorks(t *testing.T) {
 	}
 }
 
-// --- Export (GET /api/workspaces/{slug}/export, PR5 Step A) ---
-
-func TestWorkspaceHandler_Export_Success(t *testing.T) {
-	svc := &fakeWorkspaceService{
-		exportFn: func(slug string) ([]byte, string, error) {
-			if slug != "team-a" {
-				t.Errorf("slug = %q, want team-a", slug)
-			}
-			return []byte("host_commands:\n  - gh\n"), "rev-7", nil
-		},
-	}
+// --- Export (GET /api/workspaces/{slug}/export) retired ---
+//
+// TestWorkspaceHandler_SlugExportRouteRemoved pins that the meta-format
+// single-workspace export endpoint is gone from routing entirely (2026-07-28,
+// unified onto the envelope-format GET /api/workspaces/export — see
+// ExportEnvelope's tests below): its round trip with `boid workspace import`
+// never actually worked (an empty workspace exported as invalid yaml, and a
+// non-empty export's "slug:" key was rejected by the CLI's own client-side
+// decode). A request against the old path must now 404 — chi's router has
+// no route to fall through to, not a handler-level not-found response —
+// regardless of whether "team-a" the URL names actually exists.
+func TestWorkspaceHandler_SlugExportRouteRemoved(t *testing.T) {
+	svc := &fakeWorkspaceService{}
 	h := &WorkspaceHandler{Service: svc}
 	w := doWorkspaceRequest(h.Routes(), http.MethodGet, "/team-a/export", "", nil, nil)
-
-	if w.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200: %s", w.Code, w.Body.String())
-	}
-	if ct := w.Header().Get("Content-Type"); !strings.HasPrefix(ct, "application/yaml") {
-		t.Errorf("Content-Type = %q, want application/yaml", ct)
-	}
-	if got := w.Header().Get("ETag"); got != `"rev-7"` {
-		t.Errorf("ETag = %q, want %q", got, `"rev-7"`)
-	}
-	if w.Body.String() != "host_commands:\n  - gh\n" {
-		t.Errorf("body = %q, want the raw yaml bytes unchanged", w.Body.String())
-	}
-}
-
-func TestWorkspaceHandler_Export_NotFound(t *testing.T) {
-	svc := &fakeWorkspaceService{
-		exportFn: func(slug string) ([]byte, string, error) {
-			return nil, "", &StatusError{Code: http.StatusNotFound, Message: "not found"}
-		},
-	}
-	h := &WorkspaceHandler{Service: svc}
-	w := doWorkspaceRequest(h.Routes(), http.MethodGet, "/ghost/export", "", nil, nil)
 	if w.Code != http.StatusNotFound {
-		t.Fatalf("status = %d, want 404: %s", w.Code, w.Body.String())
+		t.Fatalf("status = %d, want 404 (route removed): %s", w.Code, w.Body.String())
 	}
 }
 

@@ -4,13 +4,11 @@ import (
 	"fmt"
 	"net/http"
 	"os"
-	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/novshi-tech/boid/internal/orchestrator"
-	"gopkg.in/yaml.v3"
 )
 
 // stubWorkspaceStore implements the WorkspaceStore interface (Load / Save /
@@ -1004,91 +1002,15 @@ func TestCreateProject_BlockedByAssign(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Export / Import (docs/plans/workspace-db-consolidation.md PR5)
+// Import (docs/plans/workspace-db-consolidation.md PR5)
+//
+// ExportWorkspace (the GET /api/workspaces/{slug}/export half of this PR)
+// was retired 2026-07-28: its round trip with `boid workspace import` never
+// actually worked (an empty workspace exported as invalid yaml, and a
+// non-empty export's "slug:" key was rejected by the CLI's own client-side
+// decode). ImportWorkspace itself is unaffected — see cmd/workspace.go's
+// runWorkspaceImportDeprecated for what replaced the CLI side.
 // ---------------------------------------------------------------------------
-
-func TestExportWorkspace_ReturnsYAMLBody(t *testing.T) {
-	ws := newStubWorkspaceStore()
-	ws.metas["team-a"] = &orchestrator.WorkspaceMeta{HostCommands: []string{"gh"}}
-	ws.revisions = map[string]string{"team-a": "rev-1"}
-	svc := newWorkspaceTestService(ws, nil, nil)
-
-	data, revision, err := svc.ExportWorkspace("team-a")
-	if err != nil {
-		t.Fatalf("ExportWorkspace: %v", err)
-	}
-	if len(data) == 0 {
-		t.Fatal("expected non-empty yaml body")
-	}
-	if revision != "rev-1" {
-		t.Errorf("revision = %q, want rev-1", revision)
-	}
-	var parsed map[string]any
-	if err := yaml.Unmarshal(data, &parsed); err != nil {
-		t.Fatalf("exported body did not parse as yaml: %v", err)
-	}
-}
-
-// TestExportWorkspace_YAMLBodyMatchesMeta asserts the exported yaml, decoded
-// back through the same strict decoder POST /api/workspaces/import uses,
-// reconstructs the exact same WorkspaceMeta AND carries a top-level "slug:"
-// key matching the URL slug. This is the shape POST /api/workspaces/import
-// (and CreateWorkspace) expects, so an export → import round-trip can pipe
-// the body verbatim without any translation step (codex PR5 review, MAJOR:
-// round-trip 非対称は避ける).
-func TestExportWorkspace_YAMLBodyMatchesMeta(t *testing.T) {
-	ws := newStubWorkspaceStore()
-	original := &orchestrator.WorkspaceMeta{
-		HostCommands:   []string{"gh", "aws"},
-		Env:            map[string]string{"FOO": "bar"},
-		AllowedDomains: []string{"example.com"},
-	}
-	ws.metas["team-a"] = original
-	ws.revisions = map[string]string{"team-a": "rev-2"}
-	svc := newWorkspaceTestService(ws, nil, nil)
-
-	data, _, err := svc.ExportWorkspace("team-a")
-	if err != nil {
-		t.Fatalf("ExportWorkspace: %v", err)
-	}
-	// The body MUST carry a top-level "slug: team-a" line so the exported
-	// yaml is directly usable as an import body (POST /api/workspaces/import
-	// or `boid workspace import`) without stitching the slug in from
-	// outside — that was the round-trip asymmetry codex PR5 review flagged.
-	if !strings.Contains(string(data), "slug: team-a") {
-		t.Errorf("exported body must contain a top-level 'slug: team-a' key: %s", data)
-	}
-	// The meta payload round-trips through the same strict decoder POST
-	// /api/workspaces/import uses.
-	slug, meta, err := orchestrator.DecodeWorkspaceCreateStrict(data)
-	if err != nil {
-		t.Fatalf("re-decode exported body via DecodeWorkspaceCreateStrict: %v", err)
-	}
-	if slug != "team-a" {
-		t.Errorf("decoded slug = %q, want team-a", slug)
-	}
-	if !equalStringSliceForTest(meta.HostCommands, original.HostCommands) {
-		t.Errorf("HostCommands = %v, want %v", meta.HostCommands, original.HostCommands)
-	}
-	if meta.Env["FOO"] != "bar" {
-		t.Errorf("Env[FOO] = %q, want bar", meta.Env["FOO"])
-	}
-	if !equalStringSliceForTest(meta.AllowedDomains, original.AllowedDomains) {
-		t.Errorf("AllowedDomains = %v, want %v", meta.AllowedDomains, original.AllowedDomains)
-	}
-}
-
-func TestExportWorkspace_404OnMissing(t *testing.T) {
-	svc := newWorkspaceTestService(newStubWorkspaceStore(), nil, nil)
-	_, _, err := svc.ExportWorkspace("ghost")
-	if err == nil {
-		t.Fatal("expected not-found error, got nil")
-	}
-	se, ok := err.(*StatusError)
-	if !ok || se.Code != http.StatusNotFound {
-		t.Fatalf("expected 404 StatusError, got %v", err)
-	}
-}
 
 func TestImportWorkspace_CreateOnlyMode_RejectsExisting(t *testing.T) {
 	ws := newStubWorkspaceStore()

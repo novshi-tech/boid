@@ -114,22 +114,6 @@ type ProjectService interface {
 	// the script is not.
 	RemoveWorkspace(slug string) (*WorkspaceRemoval, error)
 
-	// ExportWorkspace returns slug's raw yaml body (the marshaled
-	// WorkspaceMeta with a top-level "slug:" key spliced onto the front) and
-	// its current revision (GET /api/workspaces/{slug}/export,
-	// docs/plans/workspace-db-consolidation.md PR5 Step A).
-	// *StatusError{404} when slug is unknown.
-	//
-	// The slug IS in the body, deliberately — this comment used to say the
-	// opposite (drift, corrected in PR9 of
-	// docs/plans/workspace-home-volume-persistence.md). An earlier iteration
-	// omitted it on the reasoning that the URL already carries it, and the
-	// codex review of PR5 had that reversed: without the key the exported
-	// document is not a valid POST /api/workspaces/import body, so the
-	// export → import round trip needed a translation step that did not
-	// exist. See ProjectAppService.ExportWorkspace for the fix and its
-	// rationale.
-	ExportWorkspace(slug string) (yamlBytes []byte, revision string, err error)
 	// ImportWorkspace inserts (mode="create-only") or upserts
 	// (mode="replace") slug's workspace meta from an import body (POST
 	// /api/workspaces/import?mode=..., PR5 Step B/C). Unlike
@@ -138,6 +122,15 @@ type ProjectService interface {
 	// no If-Match) if present. *StatusError{409} for mode="create-only"
 	// against an existing slug, {400} for an invalid slug, an unrecognized
 	// mode value, or an unknown host_commands reference.
+	//
+	// This body shape's counterpart, GET /api/workspaces/{slug}/export
+	// (ProjectAppService.ExportWorkspace), was retired: its round trip with
+	// `boid workspace import` never worked (an empty workspace exported as
+	// invalid yaml, and a non-empty one's "slug:" key was rejected by the
+	// CLI's own client-side decode) — see cmd/workspace.go's
+	// runWorkspaceImportDeprecated. This endpoint itself is unaffected and
+	// still accepts a hand-authored or programmatically constructed body of
+	// this shape.
 	ImportWorkspace(slug string, meta *orchestrator.WorkspaceMeta, mode string) (*WorkspaceDetail, error)
 
 	// ApplyWorkspace upserts one boid.dev/v1 Workspace envelope document's

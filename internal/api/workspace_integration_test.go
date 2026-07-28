@@ -1,7 +1,6 @@
 package api_test
 
 import (
-	"bytes"
 	"fmt"
 	"net/http"
 	"strings"
@@ -257,44 +256,50 @@ func TestWorkspaceAPI_RemoveDefaultRejected(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Export / Import (docs/plans/workspace-db-consolidation.md PR5)
+// Import (docs/plans/workspace-db-consolidation.md PR5)
+//
+// The export half of this PR, GET /api/workspaces/{slug}/export, was
+// retired 2026-07-28: its round trip with `boid workspace import` never
+// actually worked (an empty workspace exported as invalid yaml, and a
+// non-empty export's "slug:" key was rejected by the CLI's own client-side
+// decode) — see cmd/workspace.go's runWorkspaceImportDeprecated for what
+// replaced the CLI side. POST /api/workspaces/import itself is unaffected;
+// the tests below exercise it directly with a hand-authored body instead of
+// one produced by the now-removed export endpoint.
 // ---------------------------------------------------------------------------
 
-// TestWorkspaceAPI_ExportImportRoundTrip exercises export → import end to
-// end against a real daemon: the exported yaml body already carries a
-// top-level "slug: team-a" line (matching CreateWorkspace's / import's
-// input shape — codex PR5 review, MAJOR: round-trip 非対称は避ける), so
-// re-targeting is done by swapping the slug line rather than stitching one
-// in from outside.
-func TestWorkspaceAPI_ExportImportRoundTrip(t *testing.T) {
+// TestWorkspaceAPI_SlugExportEndpointRemoved_Returns404 pins that a request
+// against the retired GET /api/workspaces/{slug}/export path 404s — chi has
+// no route left to answer it, not a handler-level not-found response —
+// regardless of whether the named workspace exists.
+func TestWorkspaceAPI_SlugExportEndpointRemoved_Returns404(t *testing.T) {
 	ts := testutil.NewTestServer(t)
-	seedHostCommands(t, ts, "gh", "aws")
+	seedHostCommands(t, ts, "gh")
 
-	var created api.WorkspaceDetail
-	createBody := []byte("slug: team-a\nhost_commands:\n  - gh\n  - aws\nenv:\n  FOO: bar\n")
-	if err := ts.Client.DoWithContentType("POST", "/api/workspaces", "application/yaml", createBody, &created); err != nil {
+	createBody := []byte("slug: team-a\nhost_commands:\n  - gh\n")
+	if err := ts.Client.DoWithContentType("POST", "/api/workspaces", "application/yaml", createBody, &api.WorkspaceDetail{}); err != nil {
 		t.Fatalf("create workspace: %v", err)
 	}
 
-	statusCode, exported, err := ts.Client.GetRaw("/api/workspaces/team-a/export")
+	statusCode, body, err := ts.Client.GetRaw("/api/workspaces/team-a/export")
 	if err != nil {
-		t.Fatalf("export workspace: transport error: %v", err)
+		t.Fatalf("transport error: %v", err)
 	}
-	if statusCode != http.StatusOK {
-		t.Fatalf("export workspace: status = %d, want 200: %s", statusCode, exported)
+	if statusCode != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404 (route removed): %s", statusCode, body)
 	}
-	// The exported body MUST carry the top-level slug key so it can be
-	// posted directly to the import endpoint (or, in this test, re-targeted
-	// by rewriting the slug line).
-	if !strings.Contains(string(exported), "slug: team-a") {
-		t.Errorf("exported body must contain 'slug: team-a' at top level: %s", exported)
-	}
+}
 
-	// Re-target: replace the "slug: team-a\n" line with "slug: team-b\n".
-	// This is what a real CLI --slug override would do; the raw body is
-	// otherwise import-ready as-is.
-	importBody := bytes.Replace(exported, []byte("slug: team-a\n"), []byte("slug: team-b\n"), 1)
+// TestWorkspaceAPI_ImportAcceptsAHandAuthoredMultiFieldBody exercises POST
+// /api/workspaces/import directly with a body carrying more than one
+// WorkspaceMeta field — the same multi-field coverage the retired
+// export→import round trip test used to provide, now constructed by hand
+// instead of via the removed export endpoint.
+func TestWorkspaceAPI_ImportAcceptsAHandAuthoredMultiFieldBody(t *testing.T) {
+	ts := testutil.NewTestServer(t)
+	seedHostCommands(t, ts, "gh", "aws")
 
+	importBody := []byte("slug: team-b\nhost_commands:\n  - gh\n  - aws\nenv:\n  FOO: bar\n")
 	var imported api.WorkspaceDetail
 	if err := ts.Client.DoWithContentType("POST", "/api/workspaces/import?mode=create-only", "application/yaml", importBody, &imported); err != nil {
 		t.Fatalf("import workspace: %v", err)

@@ -26,7 +26,7 @@ var initCmd = &cobra.Command{
   2) 必要なら workspace を用意 (default で足りるなら省略可):
      boid workspace create <slug> --from-file <yaml>    (新規作成)
      boid workspace edit   <slug> --from-file <yaml>    (更新)
-     boid workspace import <yaml> [--mode replace]      (yaml から取り込み)
+     boid workspace apply -f <yaml>                     (export した envelope 文書を適用)
      boid workspace assign <project> <slug>             (project に紐付け)
 
 詳細は docs/ja/guide/onboarding.md を参照

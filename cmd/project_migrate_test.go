@@ -1707,3 +1707,25 @@ func TestProjectMigrate_PutFailure_ShadowFileIsMergedComplete(t *testing.T) {
 		t.Errorf("shadow file missing the migrated field on PUT failure: %+v", shadow.Env)
 	}
 }
+
+// TestShadowFileApplyHintBothCases pins the manual-fallback hint text
+// pushMigratedWorkspaceToDaemon prints when it cannot tell whether the
+// target slug already has a DB row (daemon unreachable, or the legacy kit's
+// host_commands could not be synced): it must name BOTH `create --from-file`
+// (brand-new slug) and `edit --from-file` (existing slug) rather than the
+// single `boid workspace import <file> --slug <slug>` recommendation this
+// used to be (retired 2026-07-28 — see cmd/workspace.go's
+// runWorkspaceImportDeprecated), since the caller genuinely does not know
+// which one applies.
+func TestShadowFileApplyHintBothCases(t *testing.T) {
+	got := shadowFileApplyHintBothCases("/tmp/team-a.yaml", "team-a")
+	if !strings.Contains(got, "boid workspace create team-a --from-file /tmp/team-a.yaml") {
+		t.Errorf("hint = %q, want it to mention `create --from-file` for the brand-new-slug case", got)
+	}
+	if !strings.Contains(got, "boid workspace edit team-a --from-file /tmp/team-a.yaml") {
+		t.Errorf("hint = %q, want it to mention `edit --from-file` for the existing-slug case", got)
+	}
+	if strings.Contains(got, "workspace import") {
+		t.Errorf("hint = %q, must not still recommend the retired `workspace import`", got)
+	}
+}
