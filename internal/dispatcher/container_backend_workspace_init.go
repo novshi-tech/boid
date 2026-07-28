@@ -84,6 +84,34 @@ func waitResponseEngineError(res container.WaitResponse) error {
 	return errors.New(res.Error.Message)
 }
 
+// waitChannelError normalizes what arrives on a ContainerWait ERROR channel
+// into a non-nil error.
+//
+// The counterpart of waitResponseEngineError above: that one covers the wait
+// SUCCEEDING with a response that carries no exit status, this one covers the
+// ContainerWait call itself failing. Both mean the same thing — the engine
+// never told us an exit status — and both are the engine's fault rather than
+// the container's own exit, so both callers report them as such.
+//
+// moby/moby/client@v0.5.0 never delivers a nil error on that channel
+// (container_wait.go's errC is never closed, and every send is a real error),
+// so the nil case is unreached in production as of this writing. It exists
+// because every caller holds the dockerAPI INTERFACE, not that concrete
+// client: an implementation or test double that CLOSES its error channel
+// instead of leaving it open makes a receive resolve to nil immediately, and
+// nil then reaches two places that render it uselessly — err.Error() PANICS
+// (in containerSession.waitLoop, the sole ContainerWait owner for a session,
+// running unsupervised in its own goroutine per §決定 7, so the panic takes
+// the whole daemon down rather than failing one job), and `%w` formats as
+// `%!w(<nil>)` (on the workspace-init path, whose error is all an operator
+// gets — the container is already gone).
+func waitChannelError(err error) error {
+	if err != nil {
+		return err
+	}
+	return errors.New("the engine's wait channel closed without an error")
+}
+
 // RunWorkspaceInit prepares one workspace home: it starts a container from the
 // backend's own image with the home mounted at req.HomeTarget, feeds the
 // assembled wrapper to `bash -s` on its stdin, and reports whether it
@@ -644,8 +672,13 @@ func (b *containerBackend) clearWorkspaceInitContainer(ctx context.Context, name
 			}
 		case werr := <-waitRes.Error:
 			if !errdefs.IsNotFound(werr) {
+				// waitChannelError only after the IsNotFound test, so the
+				// "it finished and was collected" outcome below keeps being
+				// recognized on exactly the errors it was before; it is here
+				// for the same nil-rendering reason as the other two wait
+				// error channels (see its doc comment).
 				return fmt.Errorf("wait for the workspace init container %q (id %s) already holding this name: %w",
-					name, incumbent.ID, werr)
+					name, incumbent.ID, waitChannelError(werr))
 			}
 			// It finished and was collected while this call was setting up the
 			// wait. That is the outcome being waited for, not a failure.
@@ -834,7 +867,15 @@ func (b *containerBackend) runWorkspaceHomeContainer(ctx context.Context, id, sl
 	case werr := <-waitRes.Error:
 		hijack.Close()
 		<-outCh
-		return 0, nil, fmt.Errorf("wait: %w", werr)
+		// Same class of fault as the wait-response branch just above, and
+		// described the same way. PR #863 gave the JOB path both of its
+		// engine-fault branches wording that names the engine; this one was
+		// left as a bare `wait: %w`, which reads as an ordinary step failure
+		// and sends an operator to init.sh for something init.sh had no part
+		// in (next-session-container-backend-followups.md #4).
+		return 0, nil, fmt.Errorf(
+			"the engine's wait for the init container failed outright, so the container's exit status is "+
+				"unknown (this is not init.sh failing): %w", waitChannelError(werr))
 	case <-ctx.Done():
 		hijack.Close()
 		<-outCh
