@@ -70,7 +70,7 @@ After this migration, the `workspaces` table is the sole authority; `~/.config/b
 
 The `boid project migrate` conversion logic described above (generating a kit, wiring it into `workspace.yaml`) is unaffected by PR6 — what changed is that there is no longer a CLI to **inspect or remove** the generated `kit.yaml` afterward. Edit or delete `~/.local/share/boid/kits/<name>/kit.yaml` by hand instead.
 
-To set up a workspace's contents from scratch, use `boid workspace create` / `edit` / `import` (yaml, passed directly) instead of the retired `boid workspace configure`. See [Onboarding](../guide/onboarding.md) for details.
+To set up a workspace's contents from scratch, use `boid workspace create` / `edit` / `apply` (yaml, passed directly) instead of the retired `boid workspace configure`. See [Onboarding](../guide/onboarding.md) for details.
 
 ## Final retirement of the kit mechanism (Phase 2.5 PR7)
 

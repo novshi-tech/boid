@@ -30,7 +30,7 @@ A project's **runtime environment**. Not just a classification label — it hold
 
 - `boid workspace list` lists the configured workspaces.
 - `boid workspace show <slug>` shows that workspace's settings (`host_commands`/`env`/`capabilities`, etc.), its assigned projects, and their recent tasks.
-- `boid workspace create <slug>` / `edit <slug>` / `import <yaml>` create or change its contents.
+- `boid workspace create <slug>` / `edit <slug>` / `apply -f <yaml>` create or change its contents.
 - `boid workspace assign <project> <slug>` assigns a project (`boid workspace clear <project>` resets it to `default`). `boid project init/add --workspace <slug>` is get-or-create (an unknown slug is auto-created as an empty workspace before assignment).
 
 `host_commands` is a two-tier structure: a workspace only carries a `[]string` of reference **names** — the actual definitions (`path`/`allow`/`deny`/`env`) live in the daemon-wide `~/.config/boid/host_commands.yaml`. See [Onboarding](onboarding.md) for details.

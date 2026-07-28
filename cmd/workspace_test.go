@@ -1342,9 +1342,22 @@ func TestRunWorkspaceExport_DoesNotWarnOnHomeBoidPath(t *testing.T) {
 // return an error and print guidance pointing at the two commands that
 // actually cover what it used to do (`apply -f` for an envelope document,
 // `create`/`edit --from-file` for a bare meta document) — regardless of
-// whether the named file exists, is valid yaml, or a daemon is even
-// reachable. No daemon socket is configured here at all, pinning that this
-// never attempts one.
+// whether the named file exists or is valid yaml.
+//
+// This calls runWorkspaceImportDeprecated directly, which does NOT exercise
+// rootCmd.PersistentPreRunE (cmd/root.go) — that layer, not this test, is
+// what decides whether a daemon autostart is attempted before RunE runs at
+// all. This test's BOID_SOCKET setenv only avoids leaking a real socket path
+// into the environment; it is not what proves autostart is skipped. That
+// guarantee comes from workspaceImportCmd.Annotations (pinned by
+// TestWorkspaceImportCmd_Annotations below) combined with
+// cmd/root_test.go's TestPersistentPreRunE_ScopeLocal_UnixProfile_Allowed,
+// which proves the scopeLocal + annotationSkipAutostart=skip combination
+// never reaches client.EnsureRunningAt. (An earlier version of this comment
+// claimed this test itself pinned "no daemon is ever attempted" — that was
+// false: this function is a direct RunE call, several layers below
+// PersistentPreRunE, and could not have caught the missing annotation that
+// round 2 review of this PR found by running the real binary.)
 func TestRunWorkspaceImportDeprecated_AlwaysFailsWithGuidance(t *testing.T) {
 	resetWorkspaceExportImportFlags(t)
 	defer resetWorkspaceExportImportFlags(t)
@@ -1375,6 +1388,53 @@ func TestRunWorkspaceImportDeprecated_AlwaysFailsWithGuidance(t *testing.T) {
 func TestRunWorkspaceImportDeprecated_HiddenFromHelp(t *testing.T) {
 	if !workspaceImportCmd.Hidden {
 		t.Error("workspaceImportCmd.Hidden = false, want true (deprecated command should not clutter --help)")
+	}
+}
+
+// TestWorkspaceImportCmd_Annotations pins the Blocker-1 fix from this PR's
+// second review round: workspaceImportCmd must be scopeLocal (NOT
+// scopeRemote — its RunE never makes an HTTP call) and must carry
+// annotationSkipAutostart=skip. Left in the shared scopeRemote loop
+// (init()'s original wiring, matching every other workspace subcommand),
+// rootCmd.PersistentPreRunE would still try to autostart a daemon (or hard-
+// reject a non-unix profile) BEFORE runWorkspaceImportDeprecated ever gets a
+// chance to print its guidance — measured live: `BOID_SOCKET=/nonexistent
+// boid workspace import x` failed with an unrelated "daemon startup
+// failed: ..." error and never showed the deprecation message at all, while
+// against a reachable daemon it had the side effect of spinning one up just
+// to run a command that does nothing on success. Mirrors
+// cmd/login_test.go's TestLoginCmd_Annotations / cmd/web_test.go's
+// TestWebSetURLSkipsAutostart for the same two-annotation idiom; the
+// mechanism itself (this exact annotation combination skipping
+// client.EnsureRunningAt) is proven generically by cmd/root_test.go's
+// TestPersistentPreRunE_ScopeLocal_UnixProfile_Allowed.
+func TestWorkspaceImportCmd_Annotations(t *testing.T) {
+	if workspaceImportCmd.Annotations[scopeAnnotationKey] != scopeLocal {
+		t.Errorf("workspaceImportCmd scope annotation = %q, want %q", workspaceImportCmd.Annotations[scopeAnnotationKey], scopeLocal)
+	}
+	if workspaceImportCmd.Annotations[annotationSkipAutostart] != "skip" {
+		t.Error("workspaceImportCmd must have annotationSkipAutostart=skip")
+	}
+}
+
+// TestWorkspaceImportCmd_NeverAttemptsDaemonAutostart drives the REAL
+// workspaceImportCmd through rootCmd.PersistentPreRunE — the layer that
+// actually decides whether to autostart a daemon (cmd/root.go) — against a
+// unix socket path that names no running daemon. This must return no error
+// at all: if workspaceImportCmd.Annotations were missing or wrong (this
+// PR's first round: no annotationSkipAutostart, scopeRemote instead of
+// scopeLocal), this would instead fail with the same unrelated "daemon
+// startup failed: ..." error round 2 review reproduced against a live
+// binary — exactly the failure mode TestWorkspaceImportCmd_Annotations
+// above and this test together rule out: one pins the annotation values,
+// this one proves those values actually reach PersistentPreRunE on the real,
+// registered command object (not a synthetic stand-in).
+func TestWorkspaceImportCmd_NeverAttemptsDaemonAutostart(t *testing.T) {
+	writeRootTestConfigYAML(t, "")
+	t.Setenv("BOID_SOCKET", filepath.Join(t.TempDir(), "no-daemon-here.sock"))
+
+	if err := rootCmd.PersistentPreRunE(workspaceImportCmd, []string{"whatever.yaml"}); err != nil {
+		t.Fatalf("PersistentPreRunE must not attempt to autostart a daemon for workspaceImportCmd: %v", err)
 	}
 }
 

@@ -146,23 +146,48 @@ var (
 // precedent) rather than removed outright, so a caller relying on old
 // muscle memory or a stale script is told where the functionality moved
 // instead of hitting cobra's generic "unknown command".
+// workspaceImportCmd's Annotations are set separately from the shared
+// scopeRemote loop in init() below (codex review, this PR): unlike every
+// other workspace subcommand, it no longer talks to a daemon at all — its
+// RunE (runWorkspaceImportDeprecated) always fails before making any HTTP
+// call. Left in the scopeRemote loop, PersistentPreRunE (cmd/root.go) would
+// still autostart a daemon (or reject a non-unix profile as if this were a
+// live remote operation) BEFORE RunE ever gets a chance to print the
+// deprecation guidance — measured live: `boid workspace import x` against an
+// unreachable socket fails with an unrelated "daemon startup failed: ..."
+// error and never shows the guidance at all, while against a reachable one
+// it has the side effect of spinning up a daemon just to run a command that
+// does nothing. scopeLocal + annotationSkipAutostart=skip, mirroring the
+// other deprecated stub in this tree (`boid init`, cmd/init.go), makes this
+// exactly as inert as any other command that never reaches the network.
 var workspaceImportCmd = &cobra.Command{
 	Use:    "import <file>",
 	Short:  "(廃止) boid workspace apply -f / create,edit --from-file を使ってください",
 	Hidden: true,
 	Args:   cobra.ArbitraryArgs,
 	RunE:   runWorkspaceImportDeprecated,
+	// The usage block cobra prints after a RunE error would otherwise follow
+	// the deprecation message with a full flag listing that reads like this
+	// command still does something — silence it, matching the message's own
+	// "this command always fails" posture.
+	SilenceUsage: true,
 }
 
 func init() {
 	// Every workspace subcommand talks to the daemon's HTTP API — all
-	// scopeRemote (docs/plans/workspace-db-consolidation.md decision 18).
+	// scopeRemote (docs/plans/workspace-db-consolidation.md decision 18) —
+	// EXCEPT workspaceImportCmd, annotated separately below (see its own
+	// doc comment for why).
 	for _, c := range []*cobra.Command{
 		workspaceListCmd, workspaceShowCmd, workspaceCreateCmd, workspaceEditCmd,
 		workspaceAssignCmd, workspaceClearCmd, workspaceRemoveCmd,
-		workspaceExportCmd, workspaceImportCmd,
+		workspaceExportCmd,
 	} {
 		c.Annotations = map[string]string{scopeAnnotationKey: scopeRemote}
+	}
+	workspaceImportCmd.Annotations = map[string]string{
+		annotationSkipAutostart: "skip",
+		scopeAnnotationKey:      scopeLocal,
 	}
 
 	workspaceCreateCmd.Flags().StringVar(&workspaceCreateFromFile, "from-file", "", "yaml file describing the workspace meta (optional; omit to create a blank workspace)")
@@ -170,9 +195,9 @@ func init() {
 	workspaceEditCmd.Flags().BoolVar(&workspaceEditForce, "force", false, "skip the If-Match revision check (last-write-wins)")
 	workspaceExportCmd.Flags().StringVarP(&workspaceExportOutput, "output", "o", "", "file path to write the exported yaml to (default: stdout)")
 	workspaceExportCmd.Flags().BoolVar(&workspaceExportAll, "all", false, "export every workspace into a single '---'-separated multi-document file, instead of the <slug> positional argument")
-	workspaceImportCmd.Flags().StringVar(&workspaceImportMode, "mode", "create-only", "import mode: create-only (default, 409 on an existing slug) or replace (upsert)")
-	workspaceImportCmd.Flags().BoolVar(&workspaceImportForce, "force", false, "shorthand for --mode replace")
-	workspaceImportCmd.Flags().StringVar(&workspaceImportSlug, "slug", "", "target workspace slug, overriding the one in the file (default: the import file's basename, extension stripped)")
+	workspaceImportCmd.Flags().StringVar(&workspaceImportMode, "mode", "create-only", "(no longer used; accepted only so an existing invocation still parses and reaches the deprecation guidance)")
+	workspaceImportCmd.Flags().BoolVar(&workspaceImportForce, "force", false, "(no longer used; accepted only so an existing invocation still parses and reaches the deprecation guidance)")
+	workspaceImportCmd.Flags().StringVar(&workspaceImportSlug, "slug", "", "(no longer used; accepted only so an existing invocation still parses and reaches the deprecation guidance)")
 	workspaceRemoveCmd.Flags().BoolVar(&workspaceRemoveForce, "force", false, "skip the home volume deletion confirmation prompt")
 	workspaceRemoveCmd.Flags().BoolVar(&workspaceRemoveForce, "yes", false, "alias for --force")
 
@@ -1112,12 +1137,25 @@ func formatWorkspaceHomeVolumeRef(volume string) string {
 // import` did depending on the file's shape: `apply -f` for a boid.dev/v1
 // envelope document, or `create`/`edit --from-file` for a bare workspace-meta
 // document (host_commands:/env:/... at the top level, no apiVersion/kind —
-// e.g. the shadow yaml `boid project migrate` writes). The latter pair
-// already fully covers what `import`'s own real callers needed:
-// cmd/project_migrate.go's own guidance never used --mode replace's blind
-// upsert-regardless-of-existence behavior — it always knew, from its own
-// logic, whether the target slug was brand-new (→ create) or already
-// existed (→ edit).
+// e.g. the shadow yaml `boid project migrate` writes).
+//
+// That pair does NOT losslessly replace `--mode replace`'s one thing: a
+// single command that creates-or-overwrites without the caller needing to
+// know beforehand whether the slug exists (Workspaces.Save is a true
+// upsert). cmd/project_migrate.go's own manual-fallback guidance
+// (shadowFileApplyHintBothCases) has THREE call sites, and two of them are
+// reached specifically because the daemon could not be asked whether the
+// slug exists at all — those two now have to name BOTH `create` and `edit`
+// and let the operator pick (or try one, then the other on failure), where
+// `--mode replace` used to make that a non-question. (The third call site,
+// createMigratedWorkspaceInDaemon, is the one case that already knew the
+// slug was brand-new before this retirement — it always recommended
+// `create` alone, never relied on the blind-upsert behavior, and is
+// unaffected.) This gap is accepted as a minor, guidance-text-only
+// regression — every one of those three sites is printed only when the
+// daemon is being reached OFFLINE by a human reading terminal output, not a
+// codepath anything else depends on — not a reason to keep either retired
+// endpoint alive.
 func runWorkspaceImportDeprecated(cmd *cobra.Command, args []string) error {
 	msg := `boid workspace import は廃止されました (meta 形式の export/import が
 双方向とも壊れていたため、envelope 形式に一本化)。 ファイルの形式に応じて

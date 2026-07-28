@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -24,7 +23,6 @@ type fakeWorkspaceService struct {
 	updateFn          func(slug string, meta *orchestrator.WorkspaceMeta, ifMatch string, force bool) (*WorkspaceDetail, error)
 	removeFn          func(slug string) (*WorkspaceRemoval, error)
 	listFn            func() ([]*orchestrator.WorkspaceSummary, error)
-	importFn          func(slug string, meta *orchestrator.WorkspaceMeta, mode string) (*WorkspaceDetail, error)
 	applyFn           func(apply *orchestrator.WorkspaceEnvelopeApply, dryRun bool) (*orchestrator.WorkspaceApplyResult, error)
 	exportEnvelopesFn func(slugs []string) ([]byte, error)
 	getInitScriptFn   func(slug string) (*WorkspaceInitScript, error)
@@ -73,9 +71,6 @@ func (s *fakeWorkspaceService) UpdateWorkspace(slug string, meta *orchestrator.W
 }
 func (s *fakeWorkspaceService) RemoveWorkspace(slug string) (*WorkspaceRemoval, error) {
 	return s.removeFn(slug)
-}
-func (s *fakeWorkspaceService) ImportWorkspace(slug string, meta *orchestrator.WorkspaceMeta, mode string) (*WorkspaceDetail, error) {
-	return s.importFn(slug, meta, mode)
 }
 func (s *fakeWorkspaceService) ApplyWorkspace(apply *orchestrator.WorkspaceEnvelopeApply, dryRun bool) (*orchestrator.WorkspaceApplyResult, error) {
 	if s.applyFn != nil {
@@ -572,124 +567,36 @@ func TestWorkspaceHandler_SlugExportRouteRemoved(t *testing.T) {
 	}
 }
 
-// --- Import (POST /api/workspaces/import?mode=<create-only|replace>, PR5 Step B) ---
-
-func TestWorkspaceHandler_Import_Success(t *testing.T) {
-	var gotSlug, gotMode string
-	svc := &fakeWorkspaceService{
-		importFn: func(slug string, meta *orchestrator.WorkspaceMeta, mode string) (*WorkspaceDetail, error) {
-			gotSlug, gotMode = slug, mode
-			return &WorkspaceDetail{Slug: slug, Meta: meta, Revision: "rev-1"}, nil
-		},
-	}
-	h := &WorkspaceHandler{Service: svc}
-	body := []byte("slug: team-a\nhost_commands:\n  - gh\n")
-	w := doWorkspaceRequest(h.Routes(), http.MethodPost, "/import?mode=replace", "application/yaml", body, nil)
-
-	if w.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200: %s", w.Code, w.Body.String())
-	}
-	if gotSlug != "team-a" {
-		t.Errorf("slug passed to service = %q, want team-a", gotSlug)
-	}
-	if gotMode != "replace" {
-		t.Errorf("mode passed to service = %q, want replace (from ?mode= query param)", gotMode)
-	}
-	if got := w.Header().Get("ETag"); got != `"rev-1"` {
-		t.Errorf("ETag = %q, want %q", got, `"rev-1"`)
-	}
-}
-
-// TestWorkspaceHandler_Import_DefaultsModeWhenQueryParamOmitted pins the
-// "import mode の default 値" judgment call (docs/plans/
-// workspace-db-consolidation.md leaves this unspecified for PR5; create-only
-// is the safe default per the task brief): omitting ?mode= entirely must
-// still pass a concrete mode value through to the service layer, not an
-// empty string (which ImportWorkspace's own switch would otherwise reject as
-// "unknown mode").
-func TestWorkspaceHandler_Import_DefaultsModeWhenQueryParamOmitted(t *testing.T) {
-	var gotMode string
-	svc := &fakeWorkspaceService{
-		importFn: func(slug string, meta *orchestrator.WorkspaceMeta, mode string) (*WorkspaceDetail, error) {
-			gotMode = mode
-			return &WorkspaceDetail{Slug: slug, Meta: meta}, nil
-		},
-	}
-	h := &WorkspaceHandler{Service: svc}
-	w := doWorkspaceRequest(h.Routes(), http.MethodPost, "/import", "application/yaml", []byte("slug: team-a\n"), nil)
-	if w.Code != http.StatusOK {
-		t.Fatalf("status = %d: %s", w.Code, w.Body.String())
-	}
-	if gotMode != "create-only" {
-		t.Errorf("default mode passed to service = %q, want create-only", gotMode)
-	}
-}
-
-func TestWorkspaceHandler_Import_MissingSlugIs400(t *testing.T) {
+// --- Import (POST /api/workspaces/import) retired ---
+//
+// TestWorkspaceHandler_ImportRouteRemoved pins that POST /api/workspaces/import
+// is gone from routing entirely (2026-07-28, second review round of this PR):
+// it was ImportWorkspace/DecodeWorkspaceCreateStrict's only remaining caller
+// once `boid workspace import` (the CLI side) became a deprecated stub that
+// never issues this request — a duplicate, zero-reference entry point that
+// contradicted the PR's own "one entry point" premise, per the same
+// unification this PR already applies to GET /export above.
+//
+// The expected status is 405, NOT 404, and that is a real routing quirk
+// worth spelling out rather than a mistake: "/import" is a single path
+// segment, same as "/{slug}" (the wildcard route GET/PUT/DELETE-registered
+// just below it in Routes()). With the static "/import" POST registration
+// gone, a request against this path now falls through to "/{slug}" — chi
+// treats "import" as a slug value — which HAS routes, just none for POST,
+// so chi's router answers 405 Method Not Allowed rather than 404 (contrast
+// TestWorkspaceHandler_SlugExportRouteRemoved below: "/{slug}/export" is
+// a TWO-segment path with no other route matching it at all, so THAT one
+// really is a plain 404). GET /api/workspaces/import would, unchanged from
+// before this PR, resolve to Show("import") — same as GET /api/workspaces/export
+// already did pre-PR for the identical reason; this endpoint's static POST
+// registration existing or not was never what protected a workspace
+// literally named "import"/"export" from that method-specific shadowing.
+func TestWorkspaceHandler_ImportRouteRemoved(t *testing.T) {
 	svc := &fakeWorkspaceService{}
 	h := &WorkspaceHandler{Service: svc}
-	w := doWorkspaceRequest(h.Routes(), http.MethodPost, "/import", "application/yaml", []byte("host_commands: [gh]\n"), nil)
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d, want 400: %s", w.Code, w.Body.String())
-	}
-}
-
-func TestWorkspaceHandler_Import_BadYAMLIs400(t *testing.T) {
-	svc := &fakeWorkspaceService{}
-	h := &WorkspaceHandler{Service: svc}
-	w := doWorkspaceRequest(h.Routes(), http.MethodPost, "/import", "application/yaml", []byte("slug: team-a\nhostcommands: [gh]\n"), nil)
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d, want 400 (unknown field): %s", w.Code, w.Body.String())
-	}
-}
-
-// TestWorkspaceHandler_Import_RejectsMultipleDocuments pins that Import
-// reuses DecodeWorkspaceCreateStrict (the same strict decode Create uses),
-// so a hand-authored two-document import body is rejected rather than
-// silently importing only the first document.
-func TestWorkspaceHandler_Import_RejectsMultipleDocuments(t *testing.T) {
-	svc := &fakeWorkspaceService{}
-	h := &WorkspaceHandler{Service: svc}
-	twoDocs := []byte("slug: team-a\nhost_commands: [gh]\n---\nhost_commands: [aws]\n")
-	w := doWorkspaceRequest(h.Routes(), http.MethodPost, "/import", "application/yaml", twoDocs, nil)
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d, want 400 (multiple documents): %s", w.Code, w.Body.String())
-	}
-}
-
-func TestWorkspaceHandler_Import_ConflictPropagates409(t *testing.T) {
-	svc := &fakeWorkspaceService{
-		importFn: func(slug string, meta *orchestrator.WorkspaceMeta, mode string) (*WorkspaceDetail, error) {
-			return nil, &StatusError{Code: http.StatusConflict, Message: "already exists"}
-		},
-	}
-	h := &WorkspaceHandler{Service: svc}
-	w := doWorkspaceRequest(h.Routes(), http.MethodPost, "/import", "application/yaml", []byte("slug: team-a\n"), nil)
-	if w.Code != http.StatusConflict {
-		t.Fatalf("status = %d, want 409: %s", w.Code, w.Body.String())
-	}
-}
-
-func TestWorkspaceHandler_Import_UnknownModePropagates400(t *testing.T) {
-	svc := &fakeWorkspaceService{
-		importFn: func(slug string, meta *orchestrator.WorkspaceMeta, mode string) (*WorkspaceDetail, error) {
-			return nil, &StatusError{Code: http.StatusBadRequest, Message: fmt.Sprintf("unknown import mode %q", mode)}
-		},
-	}
-	h := &WorkspaceHandler{Service: svc}
-	w := doWorkspaceRequest(h.Routes(), http.MethodPost, "/import?mode=bogus", "application/yaml", []byte("slug: team-a\n"), nil)
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d, want 400: %s", w.Code, w.Body.String())
-	}
-}
-
-func TestWorkspaceHandler_Import_BodyTooLargeIs400(t *testing.T) {
-	svc := &fakeWorkspaceService{}
-	h := &WorkspaceHandler{Service: svc}
-	big := []byte("slug: team-a\nenv:\n  FOO: \"" + strings.Repeat("x", 2<<20) + "\"\n")
-	w := doWorkspaceRequest(h.Routes(), http.MethodPost, "/import", "application/yaml", big, nil)
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d, want 400 (body too large): %s", w.Code, w.Body.String())
+	w := doWorkspaceRequest(h.Routes(), http.MethodPost, "/import", "application/yaml", []byte("slug: team-a\nhost_commands:\n  - gh\n"), nil)
+	if w.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("status = %d, want 405 (no POST route left; see doc comment for why not 404): %s", w.Code, w.Body.String())
 	}
 }
 

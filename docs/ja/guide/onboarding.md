@@ -7,7 +7,7 @@ boid の初回セットアップは **2 段** です。`default` workspace で�
 | 順序 | コマンド | 役割 |
 |---|---|---|
 | 1 | `boid project init [dir]` / `boid project add <dir>` | project を daemon に登録（新規なら雛形も作成） |
-| 2 (任意) | `boid workspace create` / `edit` / `import` + `boid workspace assign` | project 専用の workspace を用意（`default` で足りるなら不要） |
+| 2 (任意) | `boid workspace create` / `edit` / `apply` + `boid workspace assign` | project 専用の workspace を用意（`default` で足りるなら不要） |
 
 project を登録すると自動的に `default` workspace に割り当てられます（daemon 起動時に `default` は常に存在が保証される）。`host_commands` / `env` / `capabilities` / `allowed_domains` など実行環境をカスタマイズしたいときだけ、専用の workspace を用意してください。
 
@@ -80,7 +80,7 @@ allowed_domains:
   - example.com
 ```
 
-ここでの `host_commands` は**参照名**のリストであって定義そのものではありません — `gh` を参照する前に何が必要かは後述の [host_commands を定義する](#host_commands-を定義する-daemon-側の集約レジストリ) を参照してください。未定義の名前を参照すると `workspace create`/`edit`/`import` は `400 unknown host_commands reference(s): ...` を返します。
+ここでの `host_commands` は**参照名**のリストであって定義そのものではありません — `gh` を参照する前に何が必要かは後述の [host_commands を定義する](#host_commands-を定義する-daemon-側の集約レジストリ) を参照してください。未定義の名前を参照すると `workspace create`/`edit`/`apply` は `400 unknown host_commands reference(s): ...` を返します。
 
 既存 workspace の中身を確認するには `boid workspace show <slug>`、そのまま yaml として取り出すには `boid workspace export <slug>` を使います。
 

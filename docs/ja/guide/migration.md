@@ -72,7 +72,7 @@ boid project migrate ~/src/myproject --workspace dev --apply --on-collision skip
 
 上の「使い方」節で説明した `boid project migrate` 自体の変換内容 (kit 生成・workspace.yaml への反映) は PR6 の影響を受けていません — 変わったのは生成された `kit.yaml` を後から**閲覧・削除する CLI が無くなった**点です。`~/.local/share/boid/kits/<name>/kit.yaml` は手で編集・削除してください。
 
-workspace の中身を新規に用意する場合は、`boid workspace configure` の代わりに `boid workspace create` / `edit` / `import` (yaml 直接指定) を使います。詳細は [オンボーディング](../guide/onboarding.md) を参照してください。
+workspace の中身を新規に用意する場合は、`boid workspace configure` の代わりに `boid workspace create` / `edit` / `apply` (yaml 直接指定) を使います。詳細は [オンボーディング](../guide/onboarding.md) を参照してください。
 
 ## kit 機構の最終撤去 (Phase 2.5 PR7)
 

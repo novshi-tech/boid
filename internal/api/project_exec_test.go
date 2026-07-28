@@ -65,9 +65,6 @@ func (s *stubProjectServiceForExec) UpdateWorkspace(string, *orchestrator.Worksp
 func (s *stubProjectServiceForExec) RemoveWorkspace(string) (*WorkspaceRemoval, error) {
 	panic("not implemented")
 }
-func (s *stubProjectServiceForExec) ImportWorkspace(string, *orchestrator.WorkspaceMeta, string) (*WorkspaceDetail, error) {
-	panic("not implemented")
-}
 func (s *stubProjectServiceForExec) ApplyWorkspace(*orchestrator.WorkspaceEnvelopeApply, bool) (*orchestrator.WorkspaceApplyResult, error) {
 	panic("not implemented")
 }

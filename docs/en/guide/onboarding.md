@@ -7,7 +7,7 @@ boid's initial setup is **2 steps**. If the `default` workspace is good enough, 
 | Step | Command | Role |
 |---|---|---|
 | 1 | `boid project init [dir]` / `boid project add <dir>` | Register the project with the daemon (scaffolds it too, for a new one) |
-| 2 (optional) | `boid workspace create` / `edit` / `import` + `boid workspace assign` | Set up a dedicated workspace for the project (skip if `default` is enough) |
+| 2 (optional) | `boid workspace create` / `edit` / `apply` + `boid workspace assign` | Set up a dedicated workspace for the project (skip if `default` is enough) |
 
 Registering a project assigns it to the `default` workspace automatically (the daemon guarantees `default` always exists at startup). Only set up a dedicated workspace when you need to customize the runtime environment — `host_commands` / `env` / `capabilities` / `allowed_domains`, etc.
 
@@ -80,7 +80,7 @@ allowed_domains:
   - example.com
 ```
 
-`host_commands` here is a list of **reference names**, not definitions — see [Defining host_commands](#defining-host_commands-the-daemon-wide-registry) below for what has to exist before a workspace can reference `gh`. Referencing an undefined name returns `400 unknown host_commands reference(s): ...` from `workspace create`/`edit`/`import`.
+`host_commands` here is a list of **reference names**, not definitions — see [Defining host_commands](#defining-host_commands-the-daemon-wide-registry) below for what has to exist before a workspace can reference `gh`. Referencing an undefined name returns `400 unknown host_commands reference(s): ...` from `workspace create`/`edit`/`apply`.
 
 Use `boid workspace show <slug>` to inspect a workspace's contents, or `boid workspace export <slug>` to get it back out as yaml.
 

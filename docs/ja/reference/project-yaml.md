@@ -11,7 +11,7 @@
 - 登録: `boid project add <project-root>` で `boid` の DB に取り込まれる
 - 変更後の反映: `boid project reload` で再読み込みする
 
-> **注意:** `project.yaml` はもう実行環境 (kits / `host_commands` / `env` / `secret_namespace` / `capabilities`) を設定しません。 これらの machine-local な設定は代わりに **workspace** に置きます (`boid workspace create/edit/import`)。 何がどこへ移動したかは下記 [トップレベルのフィールド](#トップレベルのフィールド) の表を、 現行のセットアップ手順は [オンボーディング](../guide/onboarding.md) を参照してください。 なお `additional_bindings` は project.yaml でも workspace でも撤去済みで、ツールチェーンの永続化は [workspace home の `init.sh`](../guide/workspace-home.md) に移りました (Phase 4 PR4)。
+> **注意:** `project.yaml` はもう実行環境 (kits / `host_commands` / `env` / `secret_namespace` / `capabilities`) を設定しません。 これらの machine-local な設定は代わりに **workspace** に置きます (`boid workspace create/edit`)。 何がどこへ移動したかは下記 [トップレベルのフィールド](#トップレベルのフィールド) の表を、 現行のセットアップ手順は [オンボーディング](../guide/onboarding.md) を参照してください。 なお `additional_bindings` は project.yaml でも workspace でも撤去済みで、ツールチェーンの永続化は [workspace home の `init.sh`](../guide/workspace-home.md) に移りました (Phase 4 PR4)。
 
 ## 最小例
 
@@ -35,7 +35,7 @@ task_behaviors:
 | `task_behaviors` | map (string → TaskBehavior) | はい | このプロジェクトで作れる「タスクの種類」一覧 |
 | `default_task_behavior` | string | いいえ | `boid task create` で `--behavior` を省略したときに使う behavior の名前。未指定の場合は `task_behaviors` に `supervisor` があれば暗黙で使う (WARN あり)、なければエラー |
 | `kits` | — | **撤去** | ロード時に reject される (`project.yaml: top-level "kits" is no longer supported`)。 kit 機構自体は Phase 2.5 PR6 で退役済み、 *workspace* 側の `kits` フィールド (`WorkspaceMeta.Kits`) も Phase 2.5 PR7 でコードから完全撤去 (`docs/plans/workspace-db-consolidation.md` 参照)。 `host_commands` / `env` を workspace に直接設定すること (`additional_bindings` は Phase 4 PR4 で撤去済み — [workspace home の `init.sh`](../guide/workspace-home.md) を使う)。 詳細は下記 [`KitRef`](#kitref) と [Kit 作者向け概要](../kit-authoring/overview.md) を参照 |
-| `host_commands` | — | **撤去** | ロード時に reject される。 workspace に設定する (`boid workspace create/edit/import`) — ただし *workspace* の `host_commands:` は参照 **名前** のリストであり、 下記 [HostCommands](#hostcommands) で説明するマップ形式ではない点に注意 (そのマップ形式は `kit.yaml` と daemon-wide の `~/.config/boid/host_commands.yaml` レジストリで使われ、 workspace の名前はそのレジストリを参照して解決される)。 [オンボーディング / host_commands を定義する](../guide/onboarding.md#host_commands-を定義する-daemon-側の集約レジストリ) を参照 |
+| `host_commands` | — | **撤去** | ロード時に reject される。 workspace に設定する (`boid workspace create/edit`) — ただし *workspace* の `host_commands:` は参照 **名前** のリストであり、 下記 [HostCommands](#hostcommands) で説明するマップ形式ではない点に注意 (そのマップ形式は `kit.yaml` と daemon-wide の `~/.config/boid/host_commands.yaml` レジストリで使われ、 workspace の名前はそのレジストリを参照して解決される)。 [オンボーディング / host_commands を定義する](../guide/onboarding.md#host_commands-を定義する-daemon-側の集約レジストリ) を参照 |
 | `additional_bindings` | — | **撤去** | `project.yaml` の top-level ではロード時に reject される。 **`workspace.yaml` 側の `additional_bindings` も `docs/plans/home-workspace-volume.md` Phase 4 PR4 で撤去済み** — key 自体はパースされる (エラーにはならない) が値は無視され、 サンドボックスに反映されない。 workspace 側でツールチェーンを永続化したい場合は [workspace home の `init.sh`](../guide/workspace-home.md) を使うこと。 詳細は [BindMount](#bindmount) 参照 |
 | `env` | — | **撤去** | ロード時に reject される。 workspace に設定する (同じ map 形式) |
 | `secret_namespace` | — | **撤去** | ロード時に reject される。 workspace に個別の secret-namespace フィールドはない — secret は workspace 自身の slug をネームスペースとして解決される |
@@ -215,7 +215,7 @@ hook が宣言を持たない behavior では、 `default_instruction` から vi
 
 ### HostCommands
 
-> **`project.yaml` のフィールドではありません。** `project.yaml` にはもう `host_commands` フィールドがありません ([トップレベルのフィールド](#トップレベルのフィールド) 参照)。 このマップ形式は `kit.yaml` と daemon 側の集約レジストリ `~/.config/boid/host_commands.yaml` で使われます。 *workspace* 自身の `host_commands:` フィールド (`workspace.yaml`、 `boid workspace create/edit/import` で設定) はこれとは別物 — このマップ形式ではなく、 レジストリを引く参照 **名前** のプレーンなリストです。 [オンボーディング / host_commands を定義する](../guide/onboarding.md#host_commands-を定義する-daemon-側の集約レジストリ) を参照してください。
+> **`project.yaml` のフィールドではありません。** `project.yaml` にはもう `host_commands` フィールドがありません ([トップレベルのフィールド](#トップレベルのフィールド) 参照)。 このマップ形式は `kit.yaml` と daemon 側の集約レジストリ `~/.config/boid/host_commands.yaml` で使われます。 *workspace* 自身の `host_commands:` フィールド (`workspace.yaml`、 `boid workspace create/edit` で設定) はこれとは別物 — このマップ形式ではなく、 レジストリを引く参照 **名前** のプレーンなリストです。 [オンボーディング / host_commands を定義する](../guide/onboarding.md#host_commands-を定義する-daemon-側の集約レジストリ) を参照してください。
 
 サンドボックスは既定では host のコマンドを呼べません。 `host_commands` で許可リストを宣言した分だけ通します。 リストとマップの 2 種類の書き方があります。
 
@@ -359,7 +359,7 @@ Phase 3-d (2026-06 リリース) で `commands:` map は廃止されました。
 
 ## capabilities
 
-> **`project.yaml` のフィールドではありません。** `capabilities` は現在 **workspace** に設定します (`workspace.yaml`、 `boid workspace create/edit/import` 経由) — `project.yaml` には設定できません ([トップレベルのフィールド](#トップレベルのフィールド) 参照)。 以下の内容自体は変わりません — 同じ `docker: {}` の形、 同じ proxy の挙動で、 workspace 経由になっただけです。
+> **`project.yaml` のフィールドではありません。** `capabilities` は現在 **workspace** に設定します (`workspace.yaml`、 `boid workspace create/edit` 経由) — `project.yaml` には設定できません ([トップレベルのフィールド](#トップレベルのフィールド) 参照)。 以下の内容自体は変わりません — 同じ `docker: {}` の形、 同じ proxy の挙動で、 workspace 経由になっただけです。
 
 サンドボックスのオプション機能を有効化するフィールドです。
 

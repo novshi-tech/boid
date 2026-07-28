@@ -312,34 +312,66 @@ func DecodeWorkspaceEnvelopeDocuments(data []byte) ([]*WorkspaceEnvelopeApply, e
 // neither an envelope's identifying keys nor any recognizable meta field
 // (e.g. a typo of everything) falls through to the original decode error,
 // which is exactly as informative for that case as it always was.
+// bareMetaKnownFieldNames is every yaml key bareMetaSentToTheWrongDoor
+// treats as evidence of a bare workspace-meta document: the yaml tag of
+// every WorkspaceMeta field (workspace_meta.go) — env, capabilities,
+// allowed_domains, extra_repos, host_commands, container_image — plus two
+// keys WorkspaceMeta itself has no field for but that a real bare-meta
+// document can still legitimately carry: "slug" (the wire-only wrapper key
+// workspaceCreateStrict, and the retired GET /api/workspaces/{slug}/export,
+// splice onto the front of a WorkspaceMeta body) and "additional_bindings"
+// (a retired-but-tolerated field, see workspace_meta_strict.go's package doc
+// comment).
+//
+// This is a package-level var, not inlined into bareMetaSentToTheWrongDoor,
+// specifically so TestBareMetaKnownFieldNames_CoversEveryWorkspaceMetaField
+// (workspace_envelope_test.go) can reflect over WorkspaceMeta's real yaml
+// tags and assert every one of them is a key here — a future field added to
+// WorkspaceMeta that is NOT added here would otherwise silently narrow this
+// guard's detection (a document using only the new field would fall through
+// to the raw, unexported-type-name decode error this function exists to
+// avoid) with nothing to catch the omission.
+var bareMetaKnownFieldNames = map[string]bool{
+	"slug":                true,
+	"env":                 true,
+	"capabilities":        true,
+	"allowed_domains":     true,
+	"extra_repos":         true,
+	"host_commands":       true,
+	"container_image":     true,
+	"additional_bindings": true,
+}
+
 func bareMetaSentToTheWrongDoor(data []byte) error {
-	var probe struct {
-		APIVersion         string    `yaml:"apiVersion"`
-		Kind               string    `yaml:"kind"`
-		Slug               yaml.Node `yaml:"slug"`
-		Env                yaml.Node `yaml:"env"`
-		Capabilities       yaml.Node `yaml:"capabilities"`
-		AllowedDomains     yaml.Node `yaml:"allowed_domains"`
-		ExtraRepos         yaml.Node `yaml:"extra_repos"`
-		HostCommands       yaml.Node `yaml:"host_commands"`
-		ContainerImage     yaml.Node `yaml:"container_image"`
-		AdditionalBindings yaml.Node `yaml:"additional_bindings"`
-	}
-	// Loose (no KnownFields): unmarshal only ever reads the FIRST "---"
-	// document, which is fine here — a multi-document apply file where a
-	// LATER document is the malformed one falls through to the original
-	// error below rather than misreporting based on document 1's shape, the
-	// same conservative trade-off envelopeSentToTheWrongDoor's own
-	// single-document probe makes.
-	if err := yaml.Unmarshal(data, &probe); err != nil {
+	// Decoded as a generic map, not a fixed struct: bareMetaKnownFieldNames
+	// above is the single source of truth for which keys count as "looks
+	// like a meta document", so adding a field there (prompted by the drift
+	// test) is enough — no second struct to keep in sync by hand.
+	//
+	// yaml.Unmarshal only ever reads the FIRST "---" document, which is
+	// fine here — a multi-document apply file where a LATER document is the
+	// malformed one falls through to the original error below rather than
+	// misreporting based on document 1's shape, the same conservative
+	// trade-off envelopeSentToTheWrongDoor's own single-document probe
+	// makes.
+	var doc map[string]yaml.Node
+	if err := yaml.Unmarshal(data, &doc); err != nil {
 		return nil
 	}
-	if probe.APIVersion != "" || probe.Kind != "" {
+	if v, ok := doc["apiVersion"]; ok && v.Value != "" {
 		return nil
 	}
-	if probe.Slug.Kind == 0 && probe.Env.Kind == 0 && probe.Capabilities.Kind == 0 &&
-		probe.AllowedDomains.Kind == 0 && probe.ExtraRepos.Kind == 0 && probe.HostCommands.Kind == 0 &&
-		probe.ContainerImage.Kind == 0 && probe.AdditionalBindings.Kind == 0 {
+	if v, ok := doc["kind"]; ok && v.Value != "" {
+		return nil
+	}
+	foundMetaField := false
+	for key := range doc {
+		if bareMetaKnownFieldNames[key] {
+			foundMetaField = true
+			break
+		}
+	}
+	if !foundMetaField {
 		return nil
 	}
 	return errors.New(

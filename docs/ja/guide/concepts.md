@@ -30,7 +30,7 @@
 
 - `boid workspace list` で登録済み workspace 一覧
 - `boid workspace show <slug>` でその workspace の設定内容 (`host_commands`/`env`/`capabilities` 等) と割り当て済みプロジェクト・最近のタスクを表示
-- `boid workspace create <slug>` / `edit <slug>` / `import <yaml>` で中身を作成・変更
+- `boid workspace create <slug>` / `edit <slug>` / `apply -f <yaml>` で中身を作成・変更
 - `boid workspace assign <project> <slug>` で割り当て (`boid workspace clear <project>` で `default` に戻す)。 `boid project init/add --workspace <slug>` は get-or-create (存在しない slug は空の workspace を自動作成してから割り当てる)
 
 `host_commands` は二層構造です — workspace が持つのは参照 **名前** の `[]string` だけで、 実際の定義 (`path`/`allow`/`deny`/`env`) は daemon 側の `~/.config/boid/host_commands.yaml` に集約管理されます。 詳細は [オンボーディング](onboarding.md) を参照してください。

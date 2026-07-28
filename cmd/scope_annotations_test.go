@@ -143,7 +143,6 @@ var expectedScopeAnnotations = map[string]string{
 	"boid workspace create":     scopeRemote,
 	"boid workspace edit":       scopeRemote,
 	"boid workspace export":     scopeRemote,
-	"boid workspace import":     scopeRemote,
 	// import-home reads a LOCAL directory to build its payload and is still
 	// scopeRemote, unlike `project init` / `project reload`, which also read a
 	// local path and are scopeLocal. The axis is whose filesystem the path has
@@ -177,6 +176,16 @@ var expectedScopeAnnotations = map[string]string{
 	"boid init":             scopeLocal,
 	"boid project init":     scopeLocal,
 	"boid project migrate":  scopeLocal,
+	// workspace import is a retired, always-failing stub (2026-07-28) — it no
+	// longer talks to a daemon at all, so it is scopeLocal like `boid init`
+	// (also a deprecated stub pointing elsewhere), NOT scopeRemote. This also
+	// carries annotationSkipAutostart=skip (see workspaceImportCmd's own
+	// Annotations): without it, PersistentPreRunE would still autostart a
+	// daemon before RunE ever gets a chance to print the deprecation
+	// guidance — the whole reason a caller might still be typing this
+	// command is that they are on old muscle memory or a stale script, which
+	// includes the case of a machine with no daemon running yet.
+	"boid workspace import": scopeLocal,
 	"boid project reload":   scopeLocal,
 	"boid reap":             scopeLocal,
 	"boid runner-container": scopeLocal,

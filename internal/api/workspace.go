@@ -36,11 +36,9 @@ func (h *WorkspaceHandler) Routes() chi.Router {
 	r := chi.NewRouter()
 	r.Get("/", h.List)
 	r.Post("/", h.Create)
-	r.Post("/import", h.Import)
 	// "/export" and "/apply" are static path segments at this same router
 	// level as "/{slug}" — chi's radix tree gives a static segment priority
-	// over a wildcard one at the same depth (the same precedent "/import"
-	// above already establishes for POST), so these never collide with a
+	// over a wildcard one at the same depth, so these never collide with a
 	// workspace literally named "export"/"apply".
 	r.Get("/export", h.ExportEnvelope)
 	r.Post("/apply", h.Apply)
@@ -195,54 +193,6 @@ func (h *WorkspaceHandler) Update(w http.ResponseWriter, r *http.Request) {
 	ifMatch := unquoteETag(r.Header.Get("If-Match"))
 
 	detail, err := h.Service.UpdateWorkspace(slug, meta, ifMatch, force)
-	if err != nil {
-		writeServiceError(w, err)
-		return
-	}
-	setWorkspaceETag(w, detail)
-	writeJSON(w, http.StatusOK, detail)
-}
-
-// Import handles POST /api/workspaces/import?mode=<create-only|replace>
-// (docs/plans/workspace-db-consolidation.md PR5 Step B): the body shape
-// mirrors Create's (top-level "slug:" key alongside the meta fields, decoded
-// by the same DecodeWorkspaceCreateStrict).
-//
-// Its counterpart, GET /api/workspaces/{slug}/export, was retired
-// (2026-07-28): the round trip between the two never actually worked (an
-// empty workspace exported as invalid yaml — "slug: default\n{}\n" — and
-// even a non-empty export's "slug:" key, spliced on so the round trip
-// needed no translation, was rejected by `boid workspace import`'s own
-// client-side decode). `boid workspace import` is now a deprecated stub
-// (cmd/workspace.go's runWorkspaceImportDeprecated) pointing at `boid
-// workspace apply -f` (envelope documents) or `create`/`edit --from-file`
-// (bare meta documents) instead. This endpoint itself is unaffected — it
-// still accepts a hand-authored or programmatically constructed body of
-// this shape from any other caller. mode defaults to "create-only"
-// (the safe choice — never overwrites an existing workspace) when the query
-// param is omitted; an unrecognized mode value is rejected by
-// ImportWorkspace itself with 400.
-func (h *WorkspaceHandler) Import(w http.ResponseWriter, r *http.Request) {
-	mode := r.URL.Query().Get("mode")
-	if mode == "" {
-		mode = workspaceImportModeCreateOnly
-	}
-
-	data, ok := readWorkspaceYAMLBody(w, r)
-	if !ok {
-		return
-	}
-	slug, meta, err := orchestrator.DecodeWorkspaceCreateStrict(data)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	if slug == "" {
-		writeError(w, http.StatusBadRequest, "slug is required (top-level \"slug:\" key in the request body)")
-		return
-	}
-
-	detail, err := h.Service.ImportWorkspace(slug, meta, mode)
 	if err != nil {
 		writeServiceError(w, err)
 		return

@@ -17,42 +17,59 @@ boid ネイティブプロキシはこれらの問題を解消します:
 
 ## 移行手順
 
-> **注意:** `capabilities` と `host_commands` はもう `project.yaml` のフィールドではありません。 現行スキーマではどちらもロード時に reject されます — machine-local な実行環境は **workspace** に設定します (`boid workspace create/edit/import`)。 まだ project.yaml がこれらのフィールドを持ったままの旧スキーマの場合は、 先に `boid project migrate <dir> --apply` で workspace へ変換してください ([移行ガイド](migration.md) 参照)。
+> **注意:** `capabilities` と `host_commands` はもう `project.yaml` のフィールドではありません。 現行スキーマではどちらもロード時に reject されます — machine-local な実行環境は **workspace** に設定します (`boid workspace create`/`edit`、 または下記で使う envelope 形式には `boid workspace apply -f`)。 まだ project.yaml がこれらのフィールドを持ったままの旧スキーマの場合は、 先に `boid project migrate <dir> --apply` で workspace へ変換してください ([移行ガイド](migration.md) 参照)。
 
 ### 1. workspace の更新
 
-docker kit への参照を workspace の `kits:` から外し、 `capabilities.docker` を workspace に直接追加します。 まず現在の中身を確認します:
+docker kit への参照を workspace の `kits:` から外し、 `capabilities.docker` を workspace に直接追加します。 まず現在の中身を export します — `boid workspace export` は `apiVersion: boid.dev/v1 / kind: Workspace` の envelope 文書を書き出し (2026-07、docs/plans/volume-only-daemon.md 論点g)、 これは `boid workspace apply -f` が読み込む形式と同じなので、 この file を編集してそのまま適用し直せます (形式変換は不要):
 
 ```bash
 boid workspace export <slug> > ws.yaml
 ```
 
-> **注意 (Phase 2.5 PR7):** `WorkspaceMeta.Kits` フィールドはコードから完全撤去されているため、 `boid workspace export` の出力に `kits:` が含まれることはもう無く (DB backed workspace はそもそも `kits` カラムを持ったことがありません)、 `boid workspace edit --from-file` に `kits:` を含む body を渡すと reject されます。 以下の「変更前」は旧い (未移行の) workspace shadow yaml を手元で編集する場合の例示です — 実際の手順は「変更後」の内容 (`kits:` を含まない) を `--from-file` に渡すだけなので、 この移行ガイド自体の操作手順は PR7 の影響を受けません。
+> **注意 (Phase 2.5 PR7):** `WorkspaceMeta.Kits` フィールドはコードから完全撤去されているため、 `boid workspace export` の出力に `kits:` キーが含まれることはそもそも一切ありません (DB backed workspace はそもそも `kits` カラムを持ったことがありません) — export したファイルから `kits:` を消す作業自体が発生しません。 `kits:` が出てくるのは、 旧い (未移行の) workspace *shadow yaml* を手元で直接編集する場合だけです (下記の export/apply の流れとは別の、 より稀な経路) — それを編集している場合は `boid workspace assign` の auto-create 補助を参照してください。
 
-**変更前 (`ws.yaml`、 docker kit がまだ `kits:` に入っている状態):**
+以下の例は説明用です — 実際の `ws.yaml` は現在の workspace の内容 (`env`、 割り当て済み `projects` など) がそのまま入った状態になります (空ではありません)。 変更するのは `spec.capabilities.docker` を追加する 1 点だけで、 それ以外のフィールド、 特に `spec.projects` は export されたまま手を付けないこと — `apply` の upsert セマンティクスでは `spec.projects` は workspace の project 割り当てを**丸ごと置き換える**ため、 空にしたり手で書き換えたりすると、 実際にこの workspace に割り当て済みの project が全部外れるリスクがあります。
+
+**変更前 (`ws.yaml`、 `boid workspace export` が書き出す形。 `capabilities` は空):**
 
 ```yaml
-kits:
-  - docker   # ← legacy kit 参照。削除する
-
-env:
-  ...
+apiVersion: boid.dev/v1
+kind: Workspace
+metadata:
+  name: <slug>
+spec:
+  host_commands: []
+  env: {}
+  allowed_domains: []
+  extra_repos: []
+  container_image: ""
+  capabilities: {}
+  projects: []
 ```
 
-**変更後:**
+**変更後 (`spec.capabilities.docker` を追加。 それ以外は export されたまま):**
 
 ```yaml
-capabilities:
-  docker: {}   # ← 追加
-
-env:
-  ...
+apiVersion: boid.dev/v1
+kind: Workspace
+metadata:
+  name: <slug>
+spec:
+  host_commands: []
+  env: {}
+  allowed_domains: []
+  extra_repos: []
+  container_image: ""
+  capabilities:
+    docker: {}   # ← 追加
+  projects: []
 ```
 
 反映します:
 
 ```bash
-boid workspace edit <slug> --from-file ws.yaml
+boid workspace apply -f ws.yaml
 ```
 
 | 旧 (`project.yaml`、 撤去済み) | 新 (workspace) |

@@ -114,25 +114,6 @@ type ProjectService interface {
 	// the script is not.
 	RemoveWorkspace(slug string) (*WorkspaceRemoval, error)
 
-	// ImportWorkspace inserts (mode="create-only") or upserts
-	// (mode="replace") slug's workspace meta from an import body (POST
-	// /api/workspaces/import?mode=..., PR5 Step B/C). Unlike
-	// CreateWorkspace/UpdateWorkspace, mode="replace" is a true upsert: it
-	// creates slug if absent and overwrites it wholesale (last-write-wins,
-	// no If-Match) if present. *StatusError{409} for mode="create-only"
-	// against an existing slug, {400} for an invalid slug, an unrecognized
-	// mode value, or an unknown host_commands reference.
-	//
-	// This body shape's counterpart, GET /api/workspaces/{slug}/export
-	// (ProjectAppService.ExportWorkspace), was retired: its round trip with
-	// `boid workspace import` never worked (an empty workspace exported as
-	// invalid yaml, and a non-empty one's "slug:" key was rejected by the
-	// CLI's own client-side decode) — see cmd/workspace.go's
-	// runWorkspaceImportDeprecated. This endpoint itself is unaffected and
-	// still accepts a hand-authored or programmatically constructed body of
-	// this shape.
-	ImportWorkspace(slug string, meta *orchestrator.WorkspaceMeta, mode string) (*WorkspaceDetail, error)
-
 	// ApplyWorkspace upserts one boid.dev/v1 Workspace envelope document's
 	// metadata and (when apply.FieldsPresent["projects"] is true) project
 	// assignments atomically, in a single DB transaction (docs/plans/

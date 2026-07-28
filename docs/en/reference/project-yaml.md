@@ -11,7 +11,7 @@ This page is the schema reference. For the meaning of the underlying terms, see 
 - Registration: `boid project add <project-root>` reads the file into `boid`'s database.
 - Reload: after editing, run `boid project reload`.
 
-> **Note:** `project.yaml` no longer configures the runtime environment (kits / `host_commands` / `env` / `secret_namespace` / `capabilities`). That machine-local configuration lives on a **workspace** instead (`boid workspace create/edit/import`) — see the [Top-level fields](#top-level-fields) table below for what moved where, and [Onboarding](../guide/onboarding.md) for the current setup flow. `additional_bindings` has been retired on both project.yaml and workspace; toolchain persistence moved to the [workspace home `init.sh`](../guide/workspace-home.md) in Phase 4 PR4.
+> **Note:** `project.yaml` no longer configures the runtime environment (kits / `host_commands` / `env` / `secret_namespace` / `capabilities`). That machine-local configuration lives on a **workspace** instead (`boid workspace create/edit`) — see the [Top-level fields](#top-level-fields) table below for what moved where, and [Onboarding](../guide/onboarding.md) for the current setup flow. `additional_bindings` has been retired on both project.yaml and workspace; toolchain persistence moved to the [workspace home `init.sh`](../guide/workspace-home.md) in Phase 4 PR4.
 
 ## Minimal example
 
@@ -35,7 +35,7 @@ task_behaviors:
 | `task_behaviors` | map (string → TaskBehavior) | yes | The kinds of tasks this project can produce. |
 | `default_task_behavior` | string | no | The behavior to use when `boid task create` omits `--behavior`. When unset, the daemon falls back to `supervisor` if that behavior exists (with a deprecation warning); if neither is configured, `boid task create` returns an error. |
 | `kits` | — | **removed** | Rejected at load time (`project.yaml: top-level "kits" is no longer supported`). The kit mechanism itself was retired in Phase 2.5 PR6, and a *workspace's* own `kits:` field (`WorkspaceMeta.Kits`) was removed outright in Phase 2.5 PR7 (`docs/plans/workspace-db-consolidation.md`) — set `host_commands` / `env` directly on a workspace instead (`additional_bindings` was retired in Phase 4 PR4 — use the [workspace home `init.sh`](../guide/workspace-home.md)). See [`KitRef`](#kitref) below and the [kit authoring overview](../kit-authoring/overview.md). |
-| `host_commands` | — | **removed** | Rejected at load time. Set on a workspace instead (`boid workspace create/edit/import`) — but note a *workspace's* `host_commands:` is a list of reference **names**, not the map-of-specs shape documented under [HostCommands](#hostcommands) below (that map shape is still used by `kit.yaml` and by the daemon-wide `~/.config/boid/host_commands.yaml` registry a workspace's names resolve against). See [Onboarding / Defining host_commands](../guide/onboarding.md#defining-host_commands-the-daemon-wide-registry). |
+| `host_commands` | — | **removed** | Rejected at load time. Set on a workspace instead (`boid workspace create/edit`) — but note a *workspace's* `host_commands:` is a list of reference **names**, not the map-of-specs shape documented under [HostCommands](#hostcommands) below (that map shape is still used by `kit.yaml` and by the daemon-wide `~/.config/boid/host_commands.yaml` registry a workspace's names resolve against). See [Onboarding / Defining host_commands](../guide/onboarding.md#defining-host_commands-the-daemon-wide-registry). |
 | `additional_bindings` | — | **removed** | Rejected at load time for `project.yaml`'s own top level. **`workspace.yaml`'s `additional_bindings` was also retired**, in `docs/plans/home-workspace-volume.md` Phase 4 PR4 — the key still parses (no error) but its value is discarded and never reaches the sandbox. To persist a toolchain in a workspace, use [the workspace home `init.sh`](../guide/workspace-home.md) instead. See [BindMount](#bindmount) below for the historical shape. |
 | `env` | — | **removed** | Rejected at load time. Set on a workspace instead (same map shape). |
 | `secret_namespace` | — | **removed** | Rejected at load time. A workspace has no separate secret-namespace field — secrets are resolved under the workspace's own slug as the namespace. |
@@ -164,7 +164,7 @@ Each entry in the legacy `project.yaml`'s `kits` list (relevant only as `boid pr
 
 ### HostCommands
 
-> **Not a `project.yaml` field.** `project.yaml` no longer has a `host_commands` field (see [Top-level fields](#top-level-fields)). This map-of-specs shape is used by `kit.yaml` and by the daemon-wide aggregate registry, `~/.config/boid/host_commands.yaml`. A *workspace's* own `host_commands:` field (`workspace.yaml`, set via `boid workspace create/edit/import`) is different — a plain list of reference **names** into that registry, not this map shape. See [Onboarding / Defining host_commands](../guide/onboarding.md#defining-host_commands-the-daemon-wide-registry).
+> **Not a `project.yaml` field.** `project.yaml` no longer has a `host_commands` field (see [Top-level fields](#top-level-fields)). This map-of-specs shape is used by `kit.yaml` and by the daemon-wide aggregate registry, `~/.config/boid/host_commands.yaml`. A *workspace's* own `host_commands:` field (`workspace.yaml`, set via `boid workspace create/edit`) is different — a plain list of reference **names** into that registry, not this map shape. See [Onboarding / Defining host_commands](../guide/onboarding.md#defining-host_commands-the-daemon-wide-registry).
 
 By default the sandbox cannot invoke commands on the host. `host_commands` declares an allow-list of what to forward. Two forms are supported.
 
@@ -301,7 +301,7 @@ Migration:
 
 ## capabilities
 
-> **Not a `project.yaml` field.** `capabilities` is set on a **workspace** now (`workspace.yaml`, via `boid workspace create/edit/import`), not on `project.yaml` — see [Top-level fields](#top-level-fields). Everything below is otherwise unchanged: it is still the same `docker: {}` shape and the same proxy behavior, just reached through the workspace instead.
+> **Not a `project.yaml` field.** `capabilities` is set on a **workspace** now (`workspace.yaml`, via `boid workspace create/edit`), not on `project.yaml` — see [Top-level fields](#top-level-fields). Everything below is otherwise unchanged: it is still the same `docker: {}` shape and the same proxy behavior, just reached through the workspace instead.
 
 Field for enabling optional sandbox capabilities.
 
