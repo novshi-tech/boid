@@ -87,7 +87,7 @@ func (h *WSAttachHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if !ok || ch == nil {
 		if !finished {
 			// The job is still genuinely running but has no live stream
-			// to offer right now (Opus review of PR #857, B2) — e.g. the
+			// to offer right now (Opus review of PR #864, B2) — e.g. the
 			// container backend's adopt-time attach failed and hasn't
 			// been re-attached yet. Reporting exit 0 here (this
 			// branch's behavior before B2) would be a false positive:

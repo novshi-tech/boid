@@ -2253,7 +2253,7 @@ type containerSession struct {
 	hijack *client.HijackedResponse
 	// stdinCloseOnce guards CloseInput's half-close against the CURRENT
 	// generation's hijack, and is itself replaced with a fresh *sync.Once
-	// every time attach() installs a new one (Opus review of PR #857,
+	// every time attach() installs a new one (Opus review of PR #864,
 	// N6). A single session-lifetime sync.Once here (the pre-fix shape)
 	// would only ever half-close the FIRST generation's connection: once
 	// CloseInput fired for generation 1, its Once.Do would never run its
@@ -2406,7 +2406,7 @@ func (s *containerSession) attach(ctx context.Context, withLogs bool) error {
 	// would permanently no-op CloseInput after the very first call.
 	s.stdinCloseOnce = &sync.Once{}
 	s.connMu.Unlock()
-	// A stale hijack here (Opus review of PR #857, N1) is a PREVIOUS
+	// A stale hijack here (Opus review of PR #864, N1) is a PREVIOUS
 	// generation's connection that reattachIfLost is replacing: its own
 	// readLoop has already exited (attach()/reattachIfLost's gate
 	// guarantees this attach call only runs when attached is currently
@@ -2479,7 +2479,7 @@ func (s *containerSession) reattachIfLost(ctx context.Context) {
 	// reserved s.reattaching above, before releasing s.mu — otherwise a
 	// concurrent appendTranscript (a stray write arriving on some other
 	// path) could flip the answer between the check and the attach call
-	// (Opus review of PR #857, B1 (2nd round)).
+	// (Opus review of PR #864, B1).
 	//
 	// The gate this function reattaches under — running && !attached — is
 	// reached by TWO distinct routes, and they need OPPOSITE Logs
@@ -2669,7 +2669,7 @@ func (s *containerSession) appendTranscript(chunk []byte) {
 // reports ok=false.
 //
 // finished (SandboxSession.Subscribe's own doc comment has the full
-// rationale — Opus review of PR #857, B2 (2nd round)) is what actually lets
+// rationale — Opus review of PR #864, B2) is what actually lets
 // a caller act on that ok=false correctly: it is simply !running, checked
 // under the SAME lock as ok so the two are never observed inconsistently.
 // running==false means the container genuinely exited — ingress should
@@ -2938,7 +2938,7 @@ func (s *containerSession) waitLoop() {
 	// BEFORE ContainerRemove means the file is guaranteed durable before
 	// the container itself (and any `docker logs` fallback) is gone.
 	//
-	// [N3, Opus review of PR #857]: "no further writes can race this" is
+	// [N3, Opus review of PR #864]: "no further writes can race this" is
 	// no longer a PURE structural guarantee of this file's own logic the
 	// way it was before reattachIfLost existed — it now also leans on the
 	// engine's own behavior. s.running only flips false a few lines below

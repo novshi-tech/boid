@@ -230,7 +230,7 @@ type SandboxSession interface {
 	// session has no live stream to offer right now.
 	//
 	// finished is only meaningful when ok is false, and answers a
-	// question ok alone cannot (Opus review of PR #857, B2): WHY is
+	// question ok alone cannot (Opus review of PR #864, B2): WHY is
 	// there no stream? true means the underlying process/container has
 	// actually exited (or the backend has no notion of this session at
 	// all) — safe for a caller to treat as "the job is done". false means

@@ -20,7 +20,7 @@ type fakeRuntimeSubscriber struct {
 	cancelCalled chan struct{}
 	ok           bool
 	// finished mirrors RuntimeSubscriber.Subscribe's own finished return
-	// (Opus review of PR #857, B2). None of this file's ok:false tests
+	// (Opus review of PR #864, B2). None of this file's ok:false tests
 	// reach the code path that reads it (TestJobLogSSEHandler_NonFollow
 	// returns 404 before ever calling Subscribe), so the zero value
 	// (false) is never relied on for those; see
@@ -243,7 +243,7 @@ func TestJobLogSSEHandler_Finished_EndsStreamSilently(t *testing.T) {
 }
 
 // TestJobLogSSEHandler_StillRunningButUnavailable_SendsNamedSSEEvent pins
-// B2 from the Opus review of PR #857: when Subscribe reports ok=false but
+// B2 from the Opus review of PR #864: when Subscribe reports ok=false but
 // finished=false (the job is genuinely still running, it just has no live
 // stream to offer right now), the handler must emit a distinctly-named SSE
 // event rather than silently ending the stream — the same symptom as

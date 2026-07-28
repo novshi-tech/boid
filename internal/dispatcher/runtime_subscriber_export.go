@@ -10,7 +10,7 @@ import (
 // RuntimeSubscriber subscribes to live output of a running job identified by
 // jobID. finished disambiguates ok=false the same way
 // backend.SandboxSession.Subscribe's own finished return does (see its doc
-// comment for the full rationale, Opus review of PR #857, B2): true means
+// comment for the full rationale, Opus review of PR #864, B2): true means
 // the job is actually done (safe to report as such); false means the job is
 // still running but has no live stream to offer right now, which a caller
 // MUST NOT collapse into "done" — see ws_attach.go/job_log_sse.go's own

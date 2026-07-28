@@ -331,7 +331,7 @@ func TestWSAttachHandler_AlreadyFinished_ExitsImmediately(t *testing.T) {
 }
 
 // TestWSAttachHandler_StillRunningButUnavailable_SendsErrorNotExit pins B2
-// from the Opus review of PR #857: when Subscribe reports ok=false but
+// from the Opus review of PR #864: when Subscribe reports ok=false but
 // finished=false — the job is genuinely still running, it just has no live
 // stream to offer right now (e.g. the container backend's adopt-time
 // attach failed and hasn't been re-attached yet) — the handler must NOT

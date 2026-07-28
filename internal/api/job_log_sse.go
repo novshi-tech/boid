@@ -58,7 +58,7 @@ func (h *JobLogSSEHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if !ok || ch == nil {
 		if !finished {
 			// The job is still genuinely running but has no live stream
-			// to offer right now (Opus review of PR #857, B2) — same
+			// to offer right now (Opus review of PR #864, B2) — same
 			// underlying condition as WSAttachHandler's own !finished
 			// branch, see its doc comment for the full rationale. A bare
 			// return here (this branch's entire behavior before B2)

@@ -544,7 +544,7 @@ func TestContainerSession_Subscribe_ReportsNotOkWhenAdoptAttachFailed(t *testing
 	if ch != nil {
 		t.Error("Subscribe returned a non-nil channel alongside ok=false")
 	}
-	// finished must be false here (Opus review of PR #857, B2): the
+	// finished must be false here (Opus review of PR #864, B2): the
 	// container is genuinely still running (ContainerWaitFunc above never
 	// resolves) — only the attach half failed. A caller (ws_attach.go/
 	// job_log_sse.go) that read ok=false as "job finished" regardless of
@@ -710,7 +710,7 @@ func TestContainerBackend_Adopt_ConcurrentCacheHitReattachIsRaceSafe(t *testing.
 	// concurrentAttachers counts how many ContainerAttach calls are
 	// SIMULTANEOUSLY blocked inside the "re-attach" branch below, waiting
 	// on releaseAttach — the deterministic rendezvous a broken dedup would
-	// be caught by (Opus review of PR #857, N5). A naive "just launch n
+	// be caught by (Opus review of PR #864, N5). A naive "just launch n
 	// goroutines and count attachAttempts at the end" version of this test
 	// (this file's own first draft) only caught a missing-dedup mutation
 	// 19/30 runs: without something forcing concurrent callers to actually
@@ -817,7 +817,7 @@ func TestContainerBackend_Adopt_ConcurrentCacheHitReattachIsRaceSafe(t *testing.
 }
 
 // TestContainerBackend_Adopt_ReattachAfterMidStreamDropDoesNotDuplicateTranscript
-// pins B1 from the Opus review of PR #857 (2nd round): reattachIfLost must
+// pins B1 from the Opus review of PR #864: reattachIfLost must
 // NOT unconditionally request Logs:true on re-attach.
 //
 // running&&!attached (reattachIfLost's own gate) is reached by TWO
@@ -909,7 +909,7 @@ func TestContainerBackend_Adopt_ReattachAfterMidStreamDropDoesNotDuplicateTransc
 }
 
 // TestContainerBackend_Adopt_ReattachClosesThePreviousGenerationsConnection
-// pins N1 from the Opus review of PR #857: attach() must explicitly close
+// pins N1 from the Opus review of PR #864: attach() must explicitly close
 // the PREVIOUS generation's hijack connection when reattachIfLost installs
 // a new one, rather than merely overwriting s.hijack and letting the old
 // value become unreachable. A Read() returning an error (the remote engine
@@ -973,7 +973,7 @@ func TestContainerBackend_Adopt_ReattachClosesThePreviousGenerationsConnection(t
 }
 
 // TestContainerSession_CloseInput_WorksAgainAfterReattach pins N6 from the
-// Opus review of PR #857: CloseInput's half-close must still work against
+// Opus review of PR #864: CloseInput's half-close must still work against
 // the SECOND (re-attached) generation's connection. A single session-
 // lifetime sync.Once (the pre-fix shape) would let the first CloseInput
 // call consume the Once forever, silently no-op'ing every later call —
@@ -1538,7 +1538,7 @@ func TestContainerSession_WaitLoop_DrainsAttachBeforeClosingConn(t *testing.T) {
 }
 
 // TestContainerSession_WaitLoop_SkipsDrainSelectWhenNeverAttached is a
-// regression pin requested by the Opus review of PR #857 (N4): a session
+// regression pin requested by the Opus review of PR #864 (N4): a session
 // that was never successfully attached (doAdopt's own best-effort attach
 // failed, and no later cache-hit reattachIfLost fixed it before the
 // container happened to exit) must tear down promptly when the container

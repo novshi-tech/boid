@@ -37,8 +37,18 @@ type engineExitSession struct {
 var _ backend.SandboxSession = (*engineExitSession)(nil)
 
 func (s *engineExitSession) ID() string { return s.id }
-func (s *engineExitSession) Subscribe() ([]byte, <-chan []byte, func(), bool) {
-	return nil, nil, func() {}, false
+
+// Subscribe reports finished=true alongside ok=false: this fake models a
+// session whose waitLoop has ALREADY run to completion (see this type's own
+// doc comment) — a genuinely finished job, not a still-running one that
+// merely lost its stream (the distinction backend.SandboxSession.Subscribe's
+// own doc comment introduced, Opus review of PR #864, B2). Every test in
+// this file drives Wait()/watchRuntime, never Subscribe(), so this value is
+// never actually read by anything today; it is set correctly anyway so this
+// fake keeps meaning what its own doc comment says if a future test in this
+// file ever does exercise Subscribe.
+func (s *engineExitSession) Subscribe() ([]byte, <-chan []byte, func(), bool, bool) {
+	return nil, nil, func() {}, false, true
 }
 func (s *engineExitSession) WriteInput([]byte) error           { return nil }
 func (s *engineExitSession) CloseInput() error                 { return nil }
