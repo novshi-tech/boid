@@ -412,6 +412,20 @@ dry-run: would import /home/nosen/.local/share/boid/homes/khi into workspace "kh
 片方が失敗しても、もう片方だけで再 init に倒れます。移行済みの home に対する
 冪等な `init.sh` の再実行なので、通常は短時間で終わります。
 
+**ただし「走る」ことと「直る」ことは別です。** 焼き込まれた絶対パスを実際に
+書き換えるのは `init.sh` 自身であって、boid ではありません。2026-07-28 の
+dogfood では、走ったのに `node` / `npm` / `npx` / `codex` / `yarn` / `pnpm` が
+sandbox 内で全滅しました — volta が張った shim が旧 HOME の絶対パスを指したまま
+dangling しており、当時のリファレンス実装が持っていた relativize 処理は
+**現** `$HOME` prefix にしか反応しなかったためです。加えて `volta install` は
+既存 shim の中身を検証せず exit 0 を返すので、`init.sh` の再実行では永久に
+直りませんでした。
+
+`docs/examples/workspace-home-init.sh` はこれを踏まえて、dangling した絶対
+symlink を現 `$HOME` 配下の実体へ張り直す `rehome_dangling_symlink` を持ちます。
+自作の `init.sh` を使っている場合は、**移行前の HOME を指す symlink が自力で
+直る作りになっているか**を確認してください。
+
 ## PR8 を経由しない移行 (手動 `docker cp` / backup 復元) — マーカーを手で消す
 
 `boid workspace import-home` を使わずに volume の中身を入れ替えた場合
