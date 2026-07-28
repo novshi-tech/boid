@@ -1712,23 +1712,66 @@ func (r *Runner) CanAttach(ctx context.Context, runtimeID string) bool {
 // that one). docs/plans/phase6-container-backend.md §PR1 lists this as one
 // of the two resize ingress routes that must route through
 // SandboxSession.Resize.
+//
+// sessionControlCallTimeout is layered on the caller's ctx as a FLOOR, the
+// same as CanAttach just above (next-session-container-backend-followups.md
+// #1 — the identical defect, left in this function when PR #862 fixed its
+// neighbour). The caller is job_runtime_routes.go's POST
+// /api/jobs/{id}/resize passing req.Context(), and the daemon's http.Server
+// sets neither ReadTimeout nor WriteTimeout (internal/server/server.go), so
+// without the floor a client that simply stays connected hands this an
+// effectively unbounded ctx. Adopt's in-flight join selects on ctx (Major 1,
+// PR #857), so that never hung this call itself — the cost lands on OTHER
+// callers: an unbounded resize owning the in-flight Adopt attempt for a
+// runtimeID starves every bounded joiner of that same runtimeID
+// (StopJobRuntime, SignalJobRuntime) of its whole sessionControlCallTimeout
+// budget, i.e. `boid task stop` fails every time for as long as the engine
+// stays wedged.
+//
+// Deriving FROM the caller's ctx (rather than replacing it) keeps a shorter
+// caller deadline and a caller cancellation both governing. Shadowing ctx
+// for the rest of the function is safe because SandboxSession.Resize takes
+// no context at all — containerSession.Resize synthesizes its own bounded
+// one from context.Background() — so the deferred cancel cannot cut short
+// the Resize call below.
 func (r *Runner) ResizeRuntimeID(ctx context.Context, runtimeID string, size TerminalSize) error {
 	if runtimeID == "" {
 		return fmt.Errorf("runtime id is required")
 	}
+	ctx, cancel := context.WithTimeout(ctx, sessionControlCallTimeout.Get())
+	defer cancel()
 	session, ok := r.sandboxBackend().Adopt(ctx, runtimeID)
 	if !ok {
 		// [Moderate 4 / Minor 6 follow-up, Opus review of PR #857 (2nd
 		// round)]: without this, a deadline-timed-out Adopt and a
 		// deadline-timed-out Resize produced two unrelated-looking errors
 		// for the same underlying cause (an unresponsive engine) —
-		// ErrRuntimeUnsupported here vs. the wrapped message below. ctx is
-		// the caller's own (the HTTP resize route's request context, or
-		// whatever ResizeRuntimeID's other caller supplied), so ctx.Err()
-		// != nil after Adopt returns ok=false means the deadline fired
-		// before Adopt resolved — same signal StopJobRuntime/
-		// SignalJobRuntime already use.
-		if ctx.Err() != nil {
+		// ErrRuntimeUnsupported here vs. the wrapped message below.
+		//
+		// The two ctx.Err() causes are reported differently, for the reason
+		// CanAttach's doc comment spells out: ctx derives from the CALLER's
+		// ctx, so Canceled (the HTTP client disconnecting mid-request) is at
+		// least as likely here as DeadlineExceeded (the floor above, or the
+		// caller's own deadline, firing). Reporting both as "the engine did
+		// not respond in time" — which is what this branch did before the
+		// split — names the engine for an event the engine had no part in,
+		// and the log level has to differ for the same reason: a wedged
+		// engine is actionable (Warn, the same signal StopJobRuntime's own
+		// Warn carries), an ordinary client disconnect is not (Debug).
+		//
+		// Logging at all, rather than relying on the returned error, is
+		// because that error becomes a plain HTTP 400 body
+		// (job_runtime_routes.go) and never reaches boid.log — an operator
+		// grepping the daemon log for a "resize stopped working" report
+		// would otherwise find nothing.
+		switch {
+		case errors.Is(ctx.Err(), context.Canceled):
+			slog.Debug("resize runtime: adopt did not resolve before the caller's ctx was canceled",
+				"runtime_id", runtimeID, "error", ctx.Err())
+			return fmt.Errorf("resize runtime: the caller went away before the engine answered: %w", ctx.Err())
+		case ctx.Err() != nil:
+			slog.Warn("resize runtime: adopt did not resolve before ctx was done; the container may still be running with a stale terminal size",
+				"runtime_id", runtimeID, "timeout", sessionControlCallTimeout.Get(), "error", ctx.Err())
 			return fmt.Errorf("resize runtime: engine did not respond in time: %w", ctx.Err())
 		}
 		return ErrRuntimeUnsupported
