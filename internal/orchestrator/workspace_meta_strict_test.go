@@ -253,3 +253,81 @@ func TestDecodeWorkspaceCreateStrict_RejectsUnknownField(t *testing.T) {
 		t.Fatal("expected error for unknown field, got nil")
 	}
 }
+
+// exportedEnvelope is what `boid workspace export` writes: the boid.dev/v1
+// document shape, which is NOT what the meta/create decoders accept.
+const exportedEnvelope = `apiVersion: boid.dev/v1
+kind: Workspace
+metadata:
+  name: team-a
+spec:
+  env:
+    FOO: bar
+  host_commands:
+    - gh
+`
+
+// TestDecodeWorkspaceMetaStrict_EnvelopeIsSentToApply pins that handing an
+// EXPORTED document to the meta decoder says where it should have gone.
+//
+// There are two entry points for "here is a workspace as yaml" and only one
+// of them takes the format `boid workspace export` produces: `apply` takes
+// the envelope, `create --from-file` / `edit --from-file` take a bare meta
+// mapping. The obvious move — export a workspace and feed the file to
+// create — failed with `field apiVersion not found in type
+// orchestrator.workspaceMetaStrict`, which names an internal Go type and
+// gives no hint that the right command is one word away. Distributing a
+// standard environment as yaml is the point of this format, so the wrong
+// door has to point at the right one.
+func TestDecodeWorkspaceMetaStrict_EnvelopeIsSentToApply(t *testing.T) {
+	_, err := DecodeWorkspaceMetaStrict([]byte(exportedEnvelope))
+	if err == nil {
+		t.Fatal("DecodeWorkspaceMetaStrict accepted an envelope document; it decodes bare meta mappings only")
+	}
+	if !strings.Contains(err.Error(), "boid workspace apply") {
+		t.Errorf("error = %v\nwant it to name `boid workspace apply`, the command that does accept this document", err)
+	}
+}
+
+func TestDecodeWorkspaceCreateStrict_EnvelopeIsSentToApply(t *testing.T) {
+	_, _, err := DecodeWorkspaceCreateStrict([]byte(exportedEnvelope))
+	if err == nil {
+		t.Fatal("DecodeWorkspaceCreateStrict accepted an envelope document; it decodes bare meta mappings only")
+	}
+	if !strings.Contains(err.Error(), "boid workspace apply") {
+		t.Errorf("error = %v\nwant it to name `boid workspace apply`, the command that does accept this document", err)
+	}
+}
+
+// TestDecodeWorkspaceStrict_OrdinaryTypoIsNotBlamedOnTheEnvelope is the
+// other half: the hint has to be specific to documents that really are
+// envelopes. A plain misspelled field is a different mistake, and sending
+// its author off to `apply` would be worse than saying nothing.
+func TestDecodeWorkspaceStrict_OrdinaryTypoIsNotBlamedOnTheEnvelope(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		err  func() error
+	}{
+		{"meta", func() error {
+			_, err := DecodeWorkspaceMetaStrict([]byte("hostcommands: [gh]\n"))
+			return err
+		}},
+		{"create", func() error {
+			_, _, err := DecodeWorkspaceCreateStrict([]byte("slug: team-a\nhostcommands: [gh]\n"))
+			return err
+		}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.err()
+			if err == nil {
+				t.Fatal("expected an error for an unknown field")
+			}
+			if strings.Contains(err.Error(), "boid workspace apply") {
+				t.Errorf("error = %v\na misspelled field is not an envelope; pointing at apply sends the reader to the wrong fix", err)
+			}
+			if !strings.Contains(err.Error(), "hostcommands") {
+				t.Errorf("error = %v\nwant it to name the offending field", err)
+			}
+		})
+	}
+}

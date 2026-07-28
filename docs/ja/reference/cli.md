@@ -255,8 +255,8 @@ project の実行環境 (`host_commands` / `env` / `capabilities` / `allowed_dom
 |---|---|
 | `boid workspace list` | ワークスペース一覧 |
 | `boid workspace show <slug>` | 定義 (host_commands/env/capabilities) と割り当て済み project を表示 |
-| `boid workspace create <slug> [--from-file <yaml>]` | 新規作成 (`--from-file` 省略時は空の workspace) |
-| `boid workspace edit <slug> --from-file <yaml>` | 既存 workspace を丸ごと置き換え (自動 If-Match、`--force` で last-write-wins) |
+| `boid workspace create <slug> [--from-file <yaml>]` | 新規作成 (`--from-file` 省略時は空の workspace)。`--from-file` が取るのは **meta の平の mapping** (`env:` / `host_commands:` 等が top-level)。 `boid workspace export` が書く envelope 文書 (`apiVersion:` / `kind:` 付き) は受け付けない — そちらは `boid workspace apply -f` を使う |
+| `boid workspace edit <slug> --from-file <yaml>` | 既存 workspace を丸ごと置き換え (自動 If-Match、`--force` で last-write-wins)。`--from-file` の形式は `create` と同じ (envelope は不可) |
 | `boid workspace import <file> [--mode create-only\|replace] [--slug SLUG]` | yaml ファイルから取り込み。`--mode` 省略時は `create-only` (既存 slug には 409) |
 | `boid workspace export <slug>\|--all [-o FILE]` | workspace (+ 割り当て済み project 群の name/url + `spec.init_script` = workspace の `init.sh` 全文) を `apiVersion: boid.dev/v1 / kind: Workspace` の yaml として書き出す (省略時 stdout)。`--all` で全 workspace を 1 file に `---` 区切りでまとめて書き出す — **`boid workspace export --all` が唯一の正式 backup 経路** (DB の生コピーは復元手段として不十分。詳細は [volume-only-daemon.md 論点g](../../plans/volume-only-daemon.md))。 `boid workspace apply` が読めないサイズの文書になる場合は、書き出さずに該当 workspace 名を挙げて失敗する — **成功した export は必ず apply できる**。 同じ理由で、応答の文書が `spec.init_script` を持たない場合 (= daemon が PR9 以前で init.sh を知らない) も、**init.sh の入っていない backup を書かずに失敗する** — daemon を upgrade してから再実行する |
 | `boid workspace apply -f FILE [--dry-run]` | `boid workspace export` が出力した yaml を適用 (upsert: 未知の slug は新規作成、既存 slug はフィールド単位でマージ — 省略フィールドは現状維持、明示的な空値は clear)。`spec.projects[]` は名前が一致する既存 project への割当のみ行う (URL からの新規登録は PR-2 待ち)。`spec.init_script` があれば workspace の `init.sh` も復元する (明示的な空文字列は削除、キー自体が無ければ現状維持 — DB の transaction とは別コミットなので、metadata だけ適用されて init.sh が失敗した場合はその旨をエラーで報告する)。`--dry-run` で書き込みなしのプレビューのみ |
