@@ -3,6 +3,8 @@ package dispatcher
 import (
 	"context"
 	"fmt"
+	"log/slog"
+	"strings"
 	"testing"
 
 	"github.com/moby/moby/client"
@@ -266,6 +268,70 @@ func TestContainerBackend_Launch_SelfConnectFailure_DoesNotFailLaunch(t *testing
 	}
 	if sess == nil {
 		t.Fatal("Launch returned a nil session")
+	}
+}
+
+// TestContainerBackend_Launch_SelfConnectConflict_NoWarn pins the fix for the
+// steady-state WARN this file's own comments already call out as normal: from
+// the SECOND Launch for a workspace onward, the daemon's own container is
+// already connected to that workspace's network (the first Launch's
+// NetworkConnect did it), so every subsequent Launch's self-connect attempt
+// hits docker's "already connected" 409 — real logs showed this firing on
+// every dispatch (`podman logs boid_daemon_1`: "already connected to network
+// boid-ws-2c388079-default: network is already connected"), burying any
+// genuine connect failure in noise. errdefs.IsConflict is the exact
+// classifier ensureWorkspaceNetwork's own NetworkCreate check above already
+// uses for the analogous "network already exists" case, so a conflict here
+// must be tolerated the same way: Launch succeeds AND nothing is logged.
+func TestContainerBackend_Launch_SelfConnectConflict_NoWarn(t *testing.T) {
+	buf := captureLogs(t, slog.LevelWarn)
+	api := &fakeDockerAPI{
+		NetworkConnectFunc: func(ctx context.Context, networkID string, options client.NetworkConnectOptions) (client.NetworkConnectResult, error) {
+			return client.NetworkConnectResult{}, fakeConflictError{}
+		},
+	}
+	be := NewContainerBackend(api, ContainerBackendOptions{SelfContainerID: "daemon-container-id"})
+
+	sess, err := be.Launch(context.Background(), sandbox.Spec{ID: "job-1", Argv: []string{"true"}}, backend.LaunchOptions{JobID: "job-1", Workspace: "ws-a"})
+	if err != nil {
+		t.Fatalf("Launch: %v, want success (an already-connected NetworkConnect error is the normal steady state)", err)
+	}
+	if sess == nil {
+		t.Fatal("Launch returned a nil session")
+	}
+	if got := buf.String(); strings.Contains(got, "connect daemon to workspace network failed") {
+		t.Errorf("Launch logged a WARN for the already-connected steady state; log was:\n%s", got)
+	}
+}
+
+// TestContainerBackend_Launch_SelfConnectNonConflictError_StillWarns is the
+// other half of the same fix: silencing the steady-state "already connected"
+// case must not silence a REAL connect failure (e.g. the engine died, or the
+// network vanished out from under this Launch) — that would leave an
+// operator with no signal at all that jobs on this network cannot reach the
+// git gateway/egress proxy/broker.
+func TestContainerBackend_Launch_SelfConnectNonConflictError_StillWarns(t *testing.T) {
+	buf := captureLogs(t, slog.LevelWarn)
+	wantErr := fmt.Errorf("network boid-ws-a-default not found")
+	api := &fakeDockerAPI{
+		NetworkConnectFunc: func(ctx context.Context, networkID string, options client.NetworkConnectOptions) (client.NetworkConnectResult, error) {
+			return client.NetworkConnectResult{}, wantErr
+		},
+	}
+	be := NewContainerBackend(api, ContainerBackendOptions{SelfContainerID: "daemon-container-id"})
+
+	sess, err := be.Launch(context.Background(), sandbox.Spec{ID: "job-1", Argv: []string{"true"}}, backend.LaunchOptions{JobID: "job-1", Workspace: "ws-a"})
+	if err != nil {
+		t.Fatalf("Launch: %v, want success (self-connect failure still degrades to a warning, not a hard Launch failure)", err)
+	}
+	if sess == nil {
+		t.Fatal("Launch returned a nil session")
+	}
+	if got := buf.String(); !strings.Contains(got, "connect daemon to workspace network failed") {
+		t.Errorf("Launch did not log a WARN for a genuine (non-conflict) NetworkConnect failure; log was:\n%s", got)
+	}
+	if got := buf.String(); !strings.Contains(got, wantErr.Error()) {
+		t.Errorf("WARN log does not include the underlying error %q; log was:\n%s", wantErr.Error(), got)
 	}
 }
 

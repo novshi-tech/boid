@@ -731,6 +731,15 @@ func (b *containerBackend) ensureWorkspaceNetwork(ctx context.Context, workspace
 		// this workspace already connected it) — not a job's isolation
 		// from other workspaces, which the NetworkCreate fail-closed check
 		// above already guarantees regardless of whether this succeeds.
+		//
+		// errdefs.IsConflict below is the SAME classifier NetworkCreate's
+		// own check above uses for "network already exists": every Launch
+		// after the first for a given workspace hits this exact
+		// already-connected 409 (there is no first-call/cache distinction),
+		// so it is not an edge case but the steady state — real logs showed
+		// it firing on every dispatch, burying any genuine connect failure
+		// in per-job noise. Anything else (engine unreachable, network
+		// vanished, ...) still warns.
 		_, cerr := b.api.NetworkConnect(ctx, netName, client.NetworkConnectOptions{
 			Container: b.selfContainerID,
 			EndpointConfig: &network.EndpointSettings{
@@ -758,7 +767,7 @@ func (b *containerBackend) ensureWorkspaceNetwork(ctx context.Context, workspace
 				Aliases: []string{composeGatewayServiceName, composeEgressServiceName, composeBrokerServiceName},
 			},
 		})
-		if cerr != nil {
+		if cerr != nil && !errdefs.IsConflict(cerr) {
 			slog.Warn("container backend: connect daemon to workspace network failed; jobs on this network may be unable to reach the git gateway/egress proxy/broker",
 				"network", netName, "self_container_id", b.selfContainerID, "error", cerr)
 		}
