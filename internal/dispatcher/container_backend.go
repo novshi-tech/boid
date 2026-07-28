@@ -692,6 +692,44 @@ func containerWorkspaceNetworkName(installID, workspace string) string {
 	return dockerres.WorkspaceNetworkName(installID, workspace)
 }
 
+// isAlreadyConnectedNetworkError reports whether err is a NetworkConnect
+// failure caused by this daemon's own container already being a member of
+// the target network — the steady state from the SECOND Launch onward for a
+// given workspace (every Launch attempts the self-connect; there is no
+// first-call/cache distinction), not a genuine connect failure.
+//
+// The two engines this daemon actually runs against map that SAME condition
+// to two DIFFERENT HTTP status codes, discovered by pointing a real
+// client.Client at each engine's live socket and inspecting the resulting
+// error (not by inference from documentation):
+//
+//   - docker (daemon/container_operations.go findAndAttachNetwork) responds
+//     409, which errhttp.ToNative resolves to errdefs.ErrConflict — plain
+//     errdefs.IsConflict is sufficient, and is the SAME classifier
+//     ensureWorkspaceNetwork's own NetworkCreate check above uses for the
+//     analogous "network already exists" condition.
+//   - podman v4.9.3 (pkg/api/handlers/compat/networks.go Connect(), on
+//     define.ErrNetworkConnected) instead responds 403, which resolves to
+//     errdefs.ErrPermissionDenied — a code errdefs.IsConflict never
+//     recognizes. This is NOT symmetric with NetworkCreate: a duplicate
+//     podman NetworkCreate returns 201/nil (no error at all), so that
+//     check's IsConflict branch is docker-only, and this NetworkConnect
+//     check needing an IsPermissionDenied branch is podman-only.
+//
+// errdefs.IsPermissionDenied alone would be too broad — it would also
+// swallow a genuine permission failure (e.g. a plugin denying the connect
+// for a real authorization reason) — so the 403 branch additionally
+// requires the daemon's own "already connected to network" wording podman
+// uses for this condition. docker's 409 message differs ("already attached
+// to network"), which is why that message check is scoped to the
+// permission-denied branch only; the conflict branch does not need it.
+func isAlreadyConnectedNetworkError(err error) bool {
+	if errdefs.IsConflict(err) {
+		return true
+	}
+	return errdefs.IsPermissionDenied(err) && strings.Contains(err.Error(), "already connected to network")
+}
+
 // ensureWorkspaceNetwork idempotently creates (or confirms) the isolated
 // `Internal: true` docker network for workspace, and — when
 // b.selfContainerID is configured — connects this daemon's own container to
@@ -731,6 +769,13 @@ func (b *containerBackend) ensureWorkspaceNetwork(ctx context.Context, workspace
 		// this workspace already connected it) — not a job's isolation
 		// from other workspaces, which the NetworkCreate fail-closed check
 		// above already guarantees regardless of whether this succeeds.
+		//
+		// isAlreadyConnectedNetworkError (below) recognizes that steady
+		// state across BOTH engines this daemon runs against — see its own
+		// doc comment for why a bare errdefs.IsConflict (sufficient for
+		// NetworkCreate's "already exists" check above) is not sufficient
+		// here. Anything else (engine unreachable, network vanished, a
+		// real permission failure, ...) still warns.
 		_, cerr := b.api.NetworkConnect(ctx, netName, client.NetworkConnectOptions{
 			Container: b.selfContainerID,
 			EndpointConfig: &network.EndpointSettings{
@@ -758,7 +803,7 @@ func (b *containerBackend) ensureWorkspaceNetwork(ctx context.Context, workspace
 				Aliases: []string{composeGatewayServiceName, composeEgressServiceName, composeBrokerServiceName},
 			},
 		})
-		if cerr != nil {
+		if cerr != nil && !isAlreadyConnectedNetworkError(cerr) {
 			slog.Warn("container backend: connect daemon to workspace network failed; jobs on this network may be unable to reach the git gateway/egress proxy/broker",
 				"network", netName, "self_container_id", b.selfContainerID, "error", cerr)
 		}

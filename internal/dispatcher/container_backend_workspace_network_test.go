@@ -3,6 +3,10 @@ package dispatcher
 import (
 	"context"
 	"fmt"
+	"log/slog"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/moby/moby/client"
@@ -266,6 +270,188 @@ func TestContainerBackend_Launch_SelfConnectFailure_DoesNotFailLaunch(t *testing
 	}
 	if sess == nil {
 		t.Fatal("Launch returned a nil session")
+	}
+}
+
+// The four tests below (TestContainerBackend_EnsureWorkspaceNetwork_*) pin
+// isAlreadyConnectedNetworkError's engine-status-code handling using a REAL
+// client.Client (the same github.com/moby/moby/client package
+// containerBackend talks to in production) pointed at an httptest.Server —
+// deliberately NOT a hand-rolled fake error type. A first attempt at this fix
+// used fakeConflictError{} (below) to simulate the "already connected" case,
+// which satisfies errdefs.IsConflict via the classifier-interface mechanism
+// — but the REAL error a *client.Client produces is a wholly different
+// shape (an unexported *client.httpError wrapping errdefs.ErrConflict or
+// errdefs.ErrPermissionDenied per HTTP status code via errhttp.ToNative), and
+// a real podman v4.9.3 engine was found (probing its live socket directly)
+// to respond to an already-connected NetworkConnect with 403, not 409 —
+// which resolves to errdefs.ErrPermissionDenied, NOT errdefs.ErrConflict.
+// fakeConflictError{} could never have caught that: it always satisfies
+// IsConflict regardless of what a real engine does. Only round-tripping
+// through a real client against a real (if fake-bodied) HTTP response
+// exercises the actual errdefs classification these tests need to pin.
+//
+// These call ensureWorkspaceNetwork directly rather than the full Launch, to
+// keep the fake engine server's surface to exactly the two endpoints this
+// code path touches (NetworkCreate, NetworkConnect) instead of also having
+// to fake ContainerCreate/Start/Attach/Wait for a real client.
+
+// fakeEngineNetworkConnectResponse configures how the fake engine server's
+// POST .../networks/{id}/connect endpoint responds. Every other request
+// (namely NetworkCreate) gets a canned success, so ensureWorkspaceNetwork's
+// OWN NetworkCreate call never itself becomes part of what is under test.
+type fakeEngineNetworkConnectResponse struct {
+	status int
+	body   string // raw JSON body, e.g. `{"message":"..."}`
+}
+
+// newFakeEngineClient starts an httptest.Server standing in for a docker or
+// podman engine socket and returns a real *client.Client pointed at it. The
+// returned client satisfies containerBackend's dockerAPI interface directly
+// (it is the exact same type production code passes to NewContainerBackend),
+// so no adapter is needed.
+func newFakeEngineClient(t *testing.T, connect fakeEngineNetworkConnectResponse) *client.Client {
+	t.Helper()
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/networks/create"):
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write([]byte(`{"Id":"fake-network-id","Warning":""}`))
+		case r.Method == http.MethodPost && strings.Contains(r.URL.Path, "/networks/") && strings.HasSuffix(r.URL.Path, "/connect"):
+			w.WriteHeader(connect.status)
+			_, _ = w.Write([]byte(connect.body))
+		default:
+			t.Errorf("fake engine server received an unexpected request: %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusInternalServerError)
+		}
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	cli, err := client.New(
+		client.WithHost("tcp://"+srv.Listener.Addr().String()),
+		// Fixes the API version so the client skips its usual /_ping
+		// negotiation round trip, which this fake server does not serve.
+		client.WithAPIVersion("1.51"),
+	)
+	if err != nil {
+		t.Fatalf("client.New: %v", err)
+	}
+	t.Cleanup(func() { _ = cli.Close() })
+	return cli
+}
+
+// TestContainerBackend_EnsureWorkspaceNetwork_PodmanAlreadyConnected403_NoWarn
+// pins the exact bug this fix targets: podman v4.9.3
+// (pkg/api/handlers/compat/networks.go Connect(), on define.ErrNetworkConnected)
+// responds to an already-connected NetworkConnect with HTTP 403 + a message
+// containing "is already connected to network ... : network is already
+// connected" — confirmed by pointing a real client.Client at podman's live
+// socket. 403 resolves to errdefs.ErrPermissionDenied, not ErrConflict, so a
+// plain errdefs.IsConflict check (the first attempt at this fix) never
+// catches it. ensureWorkspaceNetwork must still succeed AND log nothing.
+func TestContainerBackend_EnsureWorkspaceNetwork_PodmanAlreadyConnected403_NoWarn(t *testing.T) {
+	buf := captureLogs(t, slog.LevelWarn)
+	cli := newFakeEngineClient(t, fakeEngineNetworkConnectResponse{
+		status: http.StatusForbidden,
+		body:   `{"message":"container 4e7d99 is already connected to network boid-ws-a-default: network is already connected"}`,
+	})
+	be := NewContainerBackend(cli, ContainerBackendOptions{SelfContainerID: "daemon-container-id"}).(*containerBackend)
+
+	netName, err := be.ensureWorkspaceNetwork(context.Background(), "ws-a")
+	if err != nil {
+		t.Fatalf("ensureWorkspaceNetwork: %v, want success (podman's already-connected 403 is the normal steady state)", err)
+	}
+	if netName == "" {
+		t.Fatal("ensureWorkspaceNetwork returned an empty network name")
+	}
+	if got := buf.String(); strings.Contains(got, "connect daemon to workspace network failed") {
+		t.Errorf("ensureWorkspaceNetwork logged a WARN for podman's already-connected steady state; log was:\n%s", got)
+	}
+}
+
+// TestContainerBackend_EnsureWorkspaceNetwork_DockerAlreadyConnected409_NoWarn
+// is the other engine's shape of the SAME steady state: docker
+// (daemon/container_operations.go findAndAttachNetwork) responds 409 with an
+// "already attached to network" message (different wording from podman's
+// "already connected to network"). 409 resolves to errdefs.ErrConflict, so
+// this is caught by isAlreadyConnectedNetworkError's plain IsConflict branch
+// without needing the message check at all — pinned separately from the
+// podman case so a regression that accidentally scopes the message
+// requirement to BOTH branches (instead of only the permission-denied one)
+// would be caught here.
+func TestContainerBackend_EnsureWorkspaceNetwork_DockerAlreadyConnected409_NoWarn(t *testing.T) {
+	buf := captureLogs(t, slog.LevelWarn)
+	cli := newFakeEngineClient(t, fakeEngineNetworkConnectResponse{
+		status: http.StatusConflict,
+		body:   `{"message":"container 4e7d99 is already attached to network boid-ws-a-default"}`,
+	})
+	be := NewContainerBackend(cli, ContainerBackendOptions{SelfContainerID: "daemon-container-id"}).(*containerBackend)
+
+	netName, err := be.ensureWorkspaceNetwork(context.Background(), "ws-a")
+	if err != nil {
+		t.Fatalf("ensureWorkspaceNetwork: %v, want success (docker's already-attached 409 is the normal steady state)", err)
+	}
+	if netName == "" {
+		t.Fatal("ensureWorkspaceNetwork returned an empty network name")
+	}
+	if got := buf.String(); strings.Contains(got, "connect daemon to workspace network failed") {
+		t.Errorf("ensureWorkspaceNetwork logged a WARN for docker's already-attached steady state; log was:\n%s", got)
+	}
+}
+
+// TestContainerBackend_EnsureWorkspaceNetwork_PermissionDenied403NotAlreadyConnected_StillWarns
+// pins that the 403 branch is scoped by MESSAGE, not just status code: a 403
+// for a genuine reason (e.g. an authorization plugin denying the connect)
+// must still warn. Without the message check, errdefs.IsPermissionDenied
+// alone would silently swallow this too.
+func TestContainerBackend_EnsureWorkspaceNetwork_PermissionDenied403NotAlreadyConnected_StillWarns(t *testing.T) {
+	buf := captureLogs(t, slog.LevelWarn)
+	cli := newFakeEngineClient(t, fakeEngineNetworkConnectResponse{
+		status: http.StatusForbidden,
+		body:   `{"message":"authorization denied by plugin boid-policy: connect not permitted"}`,
+	})
+	be := NewContainerBackend(cli, ContainerBackendOptions{SelfContainerID: "daemon-container-id"}).(*containerBackend)
+
+	netName, err := be.ensureWorkspaceNetwork(context.Background(), "ws-a")
+	if err != nil {
+		t.Fatalf("ensureWorkspaceNetwork: %v, want success (self-connect failure still degrades to a warning, not a hard failure)", err)
+	}
+	if netName == "" {
+		t.Fatal("ensureWorkspaceNetwork returned an empty network name")
+	}
+	if got := buf.String(); !strings.Contains(got, "connect daemon to workspace network failed") {
+		t.Errorf("ensureWorkspaceNetwork did not log a WARN for a genuine 403 that is not an already-connected steady state; log was:\n%s", got)
+	}
+	if got := buf.String(); !strings.Contains(got, "authorization denied by plugin") {
+		t.Errorf("WARN log does not include the underlying error; log was:\n%s", got)
+	}
+}
+
+// TestContainerBackend_EnsureWorkspaceNetwork_EngineUnavailable500_StillWarns
+// pins the other genuine-failure case this fix must not silence: the engine
+// itself failing (500) must still warn — an operator needs SOME signal that
+// jobs on this network may be unable to reach the git gateway/egress
+// proxy/broker.
+func TestContainerBackend_EnsureWorkspaceNetwork_EngineUnavailable500_StillWarns(t *testing.T) {
+	buf := captureLogs(t, slog.LevelWarn)
+	cli := newFakeEngineClient(t, fakeEngineNetworkConnectResponse{
+		status: http.StatusInternalServerError,
+		body:   `{"message":"internal server error"}`,
+	})
+	be := NewContainerBackend(cli, ContainerBackendOptions{SelfContainerID: "daemon-container-id"}).(*containerBackend)
+
+	netName, err := be.ensureWorkspaceNetwork(context.Background(), "ws-a")
+	if err != nil {
+		t.Fatalf("ensureWorkspaceNetwork: %v, want success (self-connect failure still degrades to a warning, not a hard failure)", err)
+	}
+	if netName == "" {
+		t.Fatal("ensureWorkspaceNetwork returned an empty network name")
+	}
+	if got := buf.String(); !strings.Contains(got, "connect daemon to workspace network failed") {
+		t.Errorf("ensureWorkspaceNetwork did not log a WARN for an engine-side 500; log was:\n%s", got)
 	}
 }
 
