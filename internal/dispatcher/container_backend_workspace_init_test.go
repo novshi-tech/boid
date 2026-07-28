@@ -732,6 +732,83 @@ func TestContainerBackend_RunWorkspaceInit_EngineErrorInTheWaitResponseFailsTheR
 	}
 }
 
+// TestContainerBackend_RunWorkspaceInit_ContainerWaitCallFailureIsReportedAsAnEngineFault
+// pins the OTHER engine-fault branch of the same select — the ContainerWait
+// CALL itself failing, as opposed to the call succeeding with an Error in
+// its response body (pinned by
+// TestContainerBackend_RunWorkspaceInit_EngineErrorInTheWaitResponseFailsTheRun
+// above).
+//
+// PR #863 gave the JOB path (containerSession.waitLoop) both of its engine-
+// fault branches a message that names the engine, leaving the init path
+// asymmetric in the opposite direction: its wait-RESPONSE branch is fully
+// described while this one was a bare `wait: %w`
+// (next-session-container-backend-followups.md #4). The distinction is the
+// same one the wait-response branch's own test argues for — an engine that
+// never reported an exit status is not init.sh failing, and an operator sent
+// to init.sh for an engine fault is sent to the wrong place — and the
+// operator sees this string in `boid job log` with the container already
+// gone, so the message is all they get.
+func TestContainerBackend_RunWorkspaceInit_ContainerWaitCallFailureIsReportedAsAnEngineFault(t *testing.T) {
+	// Deliberately does NOT contain the word "engine": the "names the engine"
+	// assertion below has to be satisfied by RunWorkspaceInit's own wording,
+	// not by the message the fake happens to carry through it.
+	const engineMessage = "socket hung up"
+	errCh := make(chan error, 1)
+	errCh <- errors.New(engineMessage)
+	api := &fakeDockerAPI{ContainerWaitFunc: func(context.Context, string, client.ContainerWaitOptions) client.ContainerWaitResult {
+		return client.ContainerWaitResult{Result: make(chan container.WaitResponse), Error: errCh}
+	}}
+	api.ContainerAttachFunc = attachThenEOF(api, "")
+	b := newWorkspaceInitBackend(api)
+
+	err := b.RunWorkspaceInit(context.Background(), testWorkspaceInitRequest())
+	if err == nil {
+		t.Fatal("RunWorkspaceInit returned nil for a ContainerWait call that itself failed")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, engineMessage) {
+		t.Errorf("the error does not carry the engine's own message %q, which is the only description of what went wrong:\n%v", engineMessage, err)
+	}
+	if !strings.Contains(msg, "engine") {
+		t.Errorf("the error does not name the ENGINE as what failed; an operator cannot tell it from init.sh exiting non-zero:\n%v", err)
+	}
+	if strings.Contains(msg, "failed at stage") {
+		t.Errorf("the error is rendered as a stage failure; the engine never reported an exit status for any stage to have produced:\n%v", err)
+	}
+}
+
+// TestContainerBackend_RunWorkspaceInit_WaitErrorChannelClosedWithoutError is
+// the init-path sibling of
+// TestContainerSession_WaitLoop_ContainerWaitErrorChannelClosedWithoutError
+// (container_backend_test.go): a nil error delivered on the wait error
+// channel — what a dockerAPI implementation or test double that CLOSES that
+// channel produces, which the concrete moby client never does today — must
+// still yield a readable failure, not `%!w(<nil>)` and not a silent success
+// that lets resolveWorkspaceHome stamp the completion marker over a home
+// nothing prepared.
+func TestContainerBackend_RunWorkspaceInit_WaitErrorChannelClosedWithoutError(t *testing.T) {
+	errCh := make(chan error)
+	close(errCh)
+	api := &fakeDockerAPI{ContainerWaitFunc: func(context.Context, string, client.ContainerWaitOptions) client.ContainerWaitResult {
+		return client.ContainerWaitResult{Result: make(chan container.WaitResponse), Error: errCh}
+	}}
+	api.ContainerAttachFunc = attachThenEOF(api, "")
+	b := newWorkspaceInitBackend(api)
+
+	err := b.RunWorkspaceInit(context.Background(), testWorkspaceInitRequest())
+	if err == nil {
+		t.Fatal("RunWorkspaceInit returned nil for a wait error channel that closed without ever delivering an error; the workspace home would be marked prepared and never initialized again")
+	}
+	msg := err.Error()
+	if strings.Contains(msg, "%!w") {
+		t.Errorf("the error renders a nil wrap verbatim; nothing in it describes the fault:\n%v", err)
+	}
+	if !strings.Contains(msg, "engine") {
+		t.Errorf("the error does not name the ENGINE as what failed:\n%v", err)
+	}
+}
+
 // TestContainerBackend_RunWorkspaceInit_BoundedOutputKeepsTheTail runs the
 // REAL capture path — attach, demux, bound, classify, render — against an
 // init that printed more than the retention limit before failing.

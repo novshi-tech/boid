@@ -2859,24 +2859,18 @@ func (s *containerSession) waitLoop() {
 			exitCode = int(res.StatusCode)
 		}
 	case err := <-waitRes.Error:
-		slog.Warn("container backend: ContainerWait failed", "container_id", s.id, "error", err)
 		exitCode = 1
-		if err != nil {
-			engineError = err.Error()
-		} else {
-			// moby/moby/client@v0.5.0's own ContainerWait never sends a nil
-			// error on this channel (container_wait.go's errC is never
-			// closed, and every send is a real error), so this branch is
-			// unreached in production as of this writing. It exists because
-			// s.api is the dockerAPI INTERFACE, not that concrete client —
-			// a future implementation/wrapper that closes its error channel
-			// instead of leaving it open would deliver a nil error here, and
-			// err.Error() on a nil error panics this goroutine. waitLoop is
-			// this session's sole ContainerWait owner (§決定 7), running
-			// unsupervised in its own goroutine, so that panic would take
-			// the whole daemon process down, not just fail one job.
-			engineError = "the engine's wait channel closed without an error"
-		}
+		// waitChannelError (container_backend_workspace_init.go) covers the
+		// nil case this branch would otherwise panic on; see its doc comment.
+		//
+		// Resolved BEFORE the Warn, not after: the Warn used to fire above
+		// the nil guard, so the one case the guard exists for was logged as
+		// `error=<nil>` while job.Output and diagnostics.json both got the
+		// fallback wording — the daemon log, which is where an operator looks
+		// first, was the only place that said nothing
+		// (next-session-container-backend-followups.md #3).
+		engineError = waitChannelError(err).Error()
+		slog.Warn("container backend: ContainerWait failed", "container_id", s.id, "error", engineError)
 	}
 
 	// The container process has exited, but its attach stream can still

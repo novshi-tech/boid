@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -1452,7 +1453,15 @@ func TestContainerSession_WaitLoop_ContainerWaitAPICallFailureCarriesEngineError
 // (§決定 7) — an unrecovered panic there does not just fail one job, it
 // takes the whole daemon process down with it. Modelled here by closing
 // errCh with nothing ever sent on it.
+//
+// Also pins next-session-container-backend-followups.md #3: waitLoop's Warn
+// used to fire ABOVE the nil guard, so the one case the guard exists for was
+// logged as `error=<nil>` — the least informative rendering available — even
+// though job.Output and diagnostics.json both got the fallback wording. The
+// daemon log is where an operator looks first, and it was the one place that
+// said nothing.
 func TestContainerSession_WaitLoop_ContainerWaitErrorChannelClosedWithoutError(t *testing.T) {
+	buf := captureLogs(t, slog.LevelDebug)
 	errCh := make(chan error)
 	close(errCh)
 	api := &fakeDockerAPI{
@@ -1472,6 +1481,12 @@ func TestContainerSession_WaitLoop_ContainerWaitErrorChannelClosedWithoutError(t
 	}
 	if exit.EngineError == "" {
 		t.Error("EngineError is empty, want a fallback message describing an unreported engine fault (a nil err must not be silently read as a healthy exit)")
+	}
+	if strings.Contains(buf.String(), "error=<nil>") {
+		t.Errorf("the daemon log renders the fault as error=<nil>; it must carry the same fallback wording the exit does. log was:\n%s", buf.String())
+	}
+	if exit.EngineError != "" && !strings.Contains(buf.String(), exit.EngineError) {
+		t.Errorf("the daemon log does not carry the fallback message %q that reached RuntimeExit.EngineError; log was:\n%s", exit.EngineError, buf.String())
 	}
 }
 
