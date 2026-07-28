@@ -1179,7 +1179,7 @@ func (b *containerBackend) Adopt(ctx context.Context, runtimeID string) (backend
 	}
 	if attempt, inFlight := b.adopting[runtimeID]; inFlight {
 		b.mu.Unlock()
-		// select on ctx too (codex review of this PR, Major 1): a caller that
+		// select on ctx too (Opus review of PR #857, Major 1): a caller that
 		// passed a bounded ctx specifically so it would not hang forever
 		// (StopJobRuntime, SignalJobRuntime, the runtime_subscriber_export.go
 		// ingress points) would otherwise wait on <-attempt.done alone, which
@@ -2415,8 +2415,8 @@ func (s *containerSession) CloseInput() error {
 	return nil
 }
 
-// sessionControlCallTimeout is defined in runner.go (moved there, codex
-// review Nit 7 on this PR: most of its consumers are Runner methods, not
+// sessionControlCallTimeout is defined in runner.go (moved there, Opus
+// review of PR #857, Nit 7: most of its consumers are Runner methods, not
 // containerSession ones) — see its doc comment there for the full
 // rationale. Resize below is the one containerSession-side consumer.
 

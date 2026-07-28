@@ -41,8 +41,8 @@ func (r *Runner) runtimeIDForJob(jobID string) (runtimeID string, found bool) {
 // seam shared by WS attach and the Web UI's SSE follow endpoint, both of
 // which call through this same method).
 //
-// Adopt runs under sessionControlCallTimeout (runner.go — codex review
-// Major 2 on the engine-call-deadline PR), not context.Background(): a
+// Adopt runs under sessionControlCallTimeout (runner.go — Opus review of
+// PR #857, Major 2), not context.Background(): a
 // cache-miss Adopt (fresh daemon restart, before anything has repopulated
 // containerBackend's session cache — exactly the case Adopt's own doc
 // comment names as its reason to exist) does a real `docker inspect`

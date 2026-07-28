@@ -379,6 +379,35 @@ func TestRunner_StopJobRuntime_TimeoutWarnsLoudly(t *testing.T) {
 	}
 }
 
+// TestRunner_StopJobRuntime_AdoptTimeoutWarnsLoudly pins the OTHER half of
+// Moderate 4 — the `!ok` branch, not session.Stop's — which
+// TestRunner_StopJobRuntime_TimeoutWarnsLoudly above cannot reach: that
+// test's hangingControlBackend.Adopt returns a session immediately, so
+// StopJobRuntime always falls through to the session.Stop timeout branch
+// and never touches the `!ok` + ctx.Err() != nil Warn a few lines above it.
+// Deleting that whole block still left every existing test (this file
+// included) green — go test ./internal/dispatcher/... passed unchanged —
+// which is exactly the coverage gap this test closes. It matters more after
+// Major 1/2: an in-flight-join timeout or a cache-miss ContainerInspect
+// timeout now resolve THROUGH Adopt returning ok=false, not through
+// session.Stop, so this is the more commonly hit of the two paths, not a
+// corner case.
+func TestRunner_StopJobRuntime_AdoptTimeoutWarnsLoudly(t *testing.T) {
+	withSessionControlCallTimeout(t, 200*time.Millisecond)
+	buf := captureLogs(t, slog.LevelDebug)
+
+	r := &Runner{Backend: &hangingAdoptBackend{}}
+
+	r.StopJobRuntime("runtime-xyz")
+
+	if !strings.Contains(buf.String(), "level=WARN") {
+		t.Errorf("StopJobRuntime's Adopt timing out logged nothing at WARN; log was:\n%s", buf.String())
+	}
+	if !strings.Contains(buf.String(), "runtime-xyz") {
+		t.Errorf("the warning does not name the runtime_id; log was:\n%s", buf.String())
+	}
+}
+
 // TestRunner_SignalJobRuntime_HangingEngineHitsDeadline is the Signal
 // sibling of the Stop test above: `boid agent stop`'s SIGUSR1 delivery
 // (NotifyTask → SignalJobRuntime) must not hang forever either.
@@ -413,6 +442,27 @@ func TestRunner_SignalJobRuntime_TimeoutWarnsLoudly(t *testing.T) {
 	}
 }
 
+// TestRunner_SignalJobRuntime_AdoptTimeoutWarnsLoudly is
+// TestRunner_StopJobRuntime_AdoptTimeoutWarnsLoudly's Signal sibling — the
+// `!ok` + ctx.Err() != nil Warn branch in SignalJobRuntime, which
+// TestRunner_SignalJobRuntime_TimeoutWarnsLoudly above never reaches for
+// the same reason (its hangingControlBackend.Adopt never times out).
+func TestRunner_SignalJobRuntime_AdoptTimeoutWarnsLoudly(t *testing.T) {
+	withSessionControlCallTimeout(t, 200*time.Millisecond)
+	buf := captureLogs(t, slog.LevelDebug)
+
+	r := &Runner{Backend: &hangingAdoptBackend{}}
+
+	r.SignalJobRuntime("runtime-xyz", syscall.SIGUSR1)
+
+	if !strings.Contains(buf.String(), "level=WARN") {
+		t.Errorf("SignalJobRuntime's Adopt timing out logged nothing at WARN; log was:\n%s", buf.String())
+	}
+	if !strings.Contains(buf.String(), "runtime-xyz") {
+		t.Errorf("the warning does not name the runtime_id; log was:\n%s", buf.String())
+	}
+}
+
 // --- Runner.ResizeRuntimeID's error wrapping (Minor 6) --------------------
 
 // TestRunner_ResizeRuntimeID_DeadlineErrorIsWrapped pins Minor 6: the moby
@@ -436,6 +486,31 @@ func TestRunner_ResizeRuntimeID_DeadlineErrorIsWrapped(t *testing.T) {
 	}
 	if err.Error() == context.DeadlineExceeded.Error() {
 		t.Errorf("error %q is the bare context error, not wrapped with engine-unresponsive context", err)
+	}
+}
+
+// TestRunner_ResizeRuntimeID_AdoptTimeoutIsWrapped pins the Moderate 4 /
+// Minor 6 follow-up (Opus review of PR #857, 2nd round): when Adopt itself
+// — not session.Resize — is the one that hits the deadline, ResizeRuntimeID
+// must not return the generic ErrRuntimeUnsupported (indistinguishable from
+// "this runtimeID legitimately doesn't support attach"); it must say the
+// engine did not respond, the same as the sibling case
+// TestRunner_ResizeRuntimeID_DeadlineErrorIsWrapped pins for session.Resize.
+func TestRunner_ResizeRuntimeID_AdoptTimeoutIsWrapped(t *testing.T) {
+	r := &Runner{Backend: &hangingAdoptBackend{}}
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+
+	err := r.ResizeRuntimeID(ctx, "runtime-xyz", TerminalSize{Rows: 24, Cols: 80})
+
+	if err == nil {
+		t.Fatal("want an error")
+	}
+	if errors.Is(err, ErrRuntimeUnsupported) {
+		t.Errorf("error %v is ErrRuntimeUnsupported; an Adopt timeout must be distinguished from a normal unsupported-runtime result", err)
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("error %v does not wrap context.DeadlineExceeded", err)
 	}
 }
 

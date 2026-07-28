@@ -1487,8 +1487,8 @@ func (r *Runner) cleanupSandboxAfterWait(session backend.SandboxSession, extra o
 // ad-hoc contexts StopJobRuntime/SignalJobRuntime below and
 // runtime_subscriber_export.go's Subscribe/WriteInput/ResizeRuntime/
 // CloseInput synthesize before Adopt (and, for the first two, before
-// Stop/Signal). Living here rather than in container_backend.go (codex
-// review Nit 7 on this PR) because most of its consumers are Runner
+// Stop/Signal). Living here rather than in container_backend.go (Opus
+// review of PR #857, Nit 7) because most of its consumers are Runner
 // methods — containerSession.Resize is the only one that isn't, and same-
 // package visibility makes the file split cost nothing.
 //
@@ -1503,7 +1503,7 @@ func (r *Runner) cleanupSandboxAfterWait(session backend.SandboxSession, extra o
 // already had the shape to report. This includes the case where the
 // runtimeID's Adopt is already in-flight for another caller
 // (containerBackend.Adopt's doc comment): the in-flight join now selects on
-// ctx too (codex review Major 1 on this PR), so a bounded caller here does
+// ctx too (Opus review of PR #857, Major 1), so a bounded caller here does
 // not inherit an unrelated in-flight attempt's own unboundedness.
 //
 // Same value as reapAndCloseDockerProxy's bound just above in this file
@@ -1542,7 +1542,7 @@ func (r *Runner) StopJobRuntime(runtimeID string) {
 	defer cancel()
 	session, ok := r.sandboxBackend().Adopt(ctx, runtimeID)
 	if !ok {
-		// [Moderate 4, codex review]: distinguish "Adopt legitimately found
+		// [Moderate 4, Opus review of PR #857]: distinguish "Adopt legitimately found
 		// nothing" (the common case — the runtime already exited/was
 		// reaped, ctx still has budget left) from "the control-call
 		// deadline fired before Adopt could resolve" (ctx.Err() != nil): the
@@ -1657,10 +1657,23 @@ func (r *Runner) ResizeRuntimeID(ctx context.Context, runtimeID string, size Ter
 	}
 	session, ok := r.sandboxBackend().Adopt(ctx, runtimeID)
 	if !ok {
+		// [Moderate 4 / Minor 6 follow-up, Opus review of PR #857 (2nd
+		// round)]: without this, a deadline-timed-out Adopt and a
+		// deadline-timed-out Resize produced two unrelated-looking errors
+		// for the same underlying cause (an unresponsive engine) —
+		// ErrRuntimeUnsupported here vs. the wrapped message below. ctx is
+		// the caller's own (the HTTP resize route's request context, or
+		// whatever ResizeRuntimeID's other caller supplied), so ctx.Err()
+		// != nil after Adopt returns ok=false means the deadline fired
+		// before Adopt resolved — same signal StopJobRuntime/
+		// SignalJobRuntime already use.
+		if ctx.Err() != nil {
+			return fmt.Errorf("resize runtime: engine did not respond in time: %w", ctx.Err())
+		}
 		return ErrRuntimeUnsupported
 	}
 	if err := session.Resize(size); err != nil {
-		// [Minor 6, codex review]: session.Resize's underlying
+		// [Minor 6, Opus review of PR #857]: session.Resize's underlying
 		// ContainerResize returns a bare context.DeadlineExceeded,
 		// undecorated, once sessionControlCallTimeout fires (moby client
 		// hands context errors back unwrapped) — surfacing that verbatim to
