@@ -25,7 +25,7 @@ func (h *JobLogSSEHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	jobID := chi.URLParam(r, "id")
-	snapshot, ch, cancel, ok := h.Subscriber.Subscribe(jobID)
+	snapshot, ch, cancel, ok, finished := h.Subscriber.Subscribe(jobID)
 	defer cancel()
 
 	w.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
@@ -56,6 +56,25 @@ func (h *JobLogSSEHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	flush() // スナップショットが空でもヘッダーをクライアントに送信
 
 	if !ok || ch == nil {
+		if !finished {
+			// The job is still genuinely running but has no live stream
+			// to offer right now (Opus review of PR #864, B2) — same
+			// underlying condition as WSAttachHandler's own !finished
+			// branch, see its doc comment for the full rationale. A bare
+			// return here (this branch's entire behavior before B2)
+			// silently ends the SSE stream with no signal at all — the
+			// Web UI's EventSource just stops receiving further "message"
+			// events and never learns whether the job actually finished
+			// or the stream merely dropped. A distinctly-named SSE event
+			// (not the default "message" event sendLines' own `data:`
+			// lines use, so this never gets mistaken for ordinary log
+			// output by the existing job-log EventSource listener) lets
+			// the client tell the two apart — web/templates/jobs.templ's
+			// own `boid-stream-unavailable` listener renders a notice
+			// instead of silently going quiet.
+			fmt.Fprintf(w, "event: boid-stream-unavailable\ndata: job is still running but has no live output stream right now\n\n") //nolint:errcheck
+			flush()
+		}
 		return
 	}
 

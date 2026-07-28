@@ -499,6 +499,20 @@ func (c *fakeAttachConn) CloseWrite() error {
 	return nil
 }
 
+// isClosed reports whether Close has been called on c — a race-safe
+// (under c.mu, the same lock Close itself uses) accessor for tests that
+// want to observe whether something explicitly closed this connection,
+// as opposed to merely causing its Read side to error out (e.g. a raw
+// c.outW.CloseWithError from a test simulating a remote hangup, which
+// does NOT set c.closed — see TestContainerBackend_Adopt_
+// ReattachClosesThePreviousGenerationsConnection's own doc comment for
+// why that distinction is exactly the point).
+func (c *fakeAttachConn) isClosed() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.closed
+}
+
 // feedFrame writes one docker multiplexed-stream frame (non-TTY mode):
 // 8-byte header (stream type + big-endian uint32 length) followed by the
 // payload — the same shape demuxDockerFrame parses.

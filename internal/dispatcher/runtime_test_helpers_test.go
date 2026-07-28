@@ -118,8 +118,8 @@ type statefulSession struct {
 var _ backend.SandboxSession = (*statefulSession)(nil)
 
 func (s *statefulSession) ID() string { return s.id }
-func (s *statefulSession) Subscribe() ([]byte, <-chan []byte, func(), bool) {
-	return nil, nil, func() {}, false
+func (s *statefulSession) Subscribe() ([]byte, <-chan []byte, func(), bool, bool) {
+	return nil, nil, func() {}, false, true
 }
 func (s *statefulSession) WriteInput([]byte) error           { return nil }
 func (s *statefulSession) CloseInput() error                 { return nil }

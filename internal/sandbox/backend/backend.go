@@ -227,9 +227,31 @@ type SandboxSession interface {
 	// Subscribe atomically returns the current output snapshot plus a
 	// channel of subsequent chunks — "atomically" so no output is lost
 	// between snapshot and the first live chunk. ok is false when the
-	// session has no live stream to offer (already exited, or the backend
-	// doesn't support streaming for this session).
-	Subscribe() (snapshot []byte, ch <-chan []byte, cancel func(), ok bool)
+	// session has no live stream to offer right now.
+	//
+	// finished is only meaningful when ok is false, and answers a
+	// question ok alone cannot (Opus review of PR #864, B2): WHY is
+	// there no stream? true means the underlying process/container has
+	// actually exited (or the backend has no notion of this session at
+	// all) — safe for a caller to treat as "the job is done". false means
+	// the process/container is still genuinely running but this session
+	// currently has no live attach stream to offer (e.g. the container
+	// backend's doAdopt attach failed against a live container, or a
+	// prior successful attach dropped mid-stream and hasn't been
+	// re-attached yet — see containerSession.reattachIfLost's doc
+	// comment). Before this field existed, both cases collapsed to the
+	// same ok=false, and every caller (WS attach, the Web UI's SSE follow
+	// endpoint) treated ok=false as "job finished" unconditionally — a
+	// caller asking about a job that was very much still running got told
+	// it had exited successfully. That is a false positive, and a worse
+	// diagnostic than the dead-channel hang it replaced (see
+	// containerSession.attach's own doc comment): the original bug at
+	// least left an honest "something is wrong" signal (a silent
+	// terminal); this one actively lies. finished lets ok=false split
+	// back into "done, exit cleanly" (ws_attach.go/job_log_sse.go's
+	// existing behavior, unchanged) and "not done, surface an error"
+	// (their new behavior).
+	Subscribe() (snapshot []byte, ch <-chan []byte, cancel func(), ok bool, finished bool)
 	// WriteInput forwards raw bytes to the session's input (PTY master or
 	// stdin pipe, depending on session type).
 	WriteInput(data []byte) error

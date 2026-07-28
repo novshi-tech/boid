@@ -75,7 +75,7 @@ func (h *WSAttachHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	snapshot, ch, cancel, ok := h.Subscriber.Subscribe(jobID)
+	snapshot, ch, cancel, ok, finished := h.Subscriber.Subscribe(jobID)
 	defer cancel()
 
 	if len(snapshot) > 0 {
@@ -85,6 +85,24 @@ func (h *WSAttachHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if !ok || ch == nil {
+		if !finished {
+			// The job is still genuinely running but has no live stream
+			// to offer right now (Opus review of PR #864, B2) — e.g. the
+			// container backend's adopt-time attach failed and hasn't
+			// been re-attached yet. Reporting exit 0 here (this
+			// branch's behavior before B2) would be a false positive:
+			// the caller would be told a still-running job finished
+			// successfully, which is a worse diagnostic than the
+			// dead-channel hang this whole fix started from — at least
+			// that hang was an honest "something is wrong" signal. An
+			// error frame lets `boid job attach` (internal/client's
+			// attachReadOutput already returns a real error for a
+			// "error"-typed frame) and any other WS caller retry instead
+			// of believing the job is over.
+			h.sendError(ctx, conn, "job is still running but has no live output stream right now; try again")
+			conn.Close(websocket.StatusNormalClosure, "stream unavailable")
+			return
+		}
 		h.sendExit(ctx, conn, 0)
 		conn.Close(websocket.StatusNormalClosure, "done")
 		return

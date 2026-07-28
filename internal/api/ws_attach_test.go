@@ -21,20 +21,27 @@ import (
 	"github.com/novshi-tech/boid/internal/dispatcher"
 )
 
-// stubSubscriber is a fake RuntimeSubscriber for testing.
+// stubSubscriber is a fake RuntimeSubscriber for testing. finished mirrors
+// RuntimeSubscriber.Subscribe's own finished return (Opus review of PR
+// #864, B2) — every pre-existing test literal below that sets ok:false
+// also now sets finished explicitly (true for every one of them: none of
+// this file's pre-B2 tests exercise the "still running, no stream" case),
+// so this file's zero-value default of finished:false is never silently
+// relied on by an existing test.
 type stubSubscriber struct {
 	snapshot []byte
 	ch       chan []byte
 	cancel   func()
 	ok       bool
+	finished bool
 }
 
-func (s *stubSubscriber) Subscribe(_ string) ([]byte, <-chan []byte, func(), bool) {
+func (s *stubSubscriber) Subscribe(_ string) ([]byte, <-chan []byte, func(), bool, bool) {
 	cancelFn := s.cancel
 	if cancelFn == nil {
 		cancelFn = func() {}
 	}
-	return s.snapshot, s.ch, cancelFn, s.ok
+	return s.snapshot, s.ch, cancelFn, s.ok, s.finished
 }
 
 // stubWriter is a fake RuntimeInputWriter for testing.
@@ -303,6 +310,7 @@ func TestWSAttachHandler_AlreadyFinished_ExitsImmediately(t *testing.T) {
 	sub := &stubSubscriber{
 		snapshot: []byte("done output"),
 		ok:       false,
+		finished: true,
 	}
 	h := &WSAttachHandler{Subscriber: sub}
 	srv := newWSTestServer(h)
@@ -319,6 +327,45 @@ func TestWSAttachHandler_AlreadyFinished_ExitsImmediately(t *testing.T) {
 	msg = readWSMsg(t, conn)
 	if msg.Type != "exit" {
 		t.Fatalf("expected exit, got %q", msg.Type)
+	}
+}
+
+// TestWSAttachHandler_StillRunningButUnavailable_SendsErrorNotExit pins B2
+// from the Opus review of PR #864: when Subscribe reports ok=false but
+// finished=false — the job is genuinely still running, it just has no live
+// stream to offer right now (e.g. the container backend's adopt-time
+// attach failed and hasn't been re-attached yet) — the handler must NOT
+// send an "exit" frame. Sending "exit" here would be a false positive: the
+// caller (internal/client's AttachJob, `boid job attach`) would report the
+// still-running job as having finished successfully (exit code 0), which
+// is a worse diagnostic than the dead-channel hang this whole fix started
+// from — that hang at least signaled "something is wrong". This pins the
+// opposite of TestWSAttachHandler_AlreadyFinished_ExitsImmediately just
+// above, which pins the genuinely-finished (finished=true) case still
+// getting "exit" unchanged.
+func TestWSAttachHandler_StillRunningButUnavailable_SendsErrorNotExit(t *testing.T) {
+	sub := &stubSubscriber{
+		snapshot: []byte("partial output"),
+		ok:       false,
+		finished: false,
+	}
+	h := &WSAttachHandler{Subscriber: sub}
+	srv := newWSTestServer(h)
+	defer srv.Close()
+
+	conn := dialWS(t, srv, "job-still-running")
+	defer conn.CloseNow()
+
+	msg := readWSMsg(t, conn)
+	if msg.Type != "output" {
+		t.Fatalf("expected output, got %q", msg.Type)
+	}
+	msg = readWSMsg(t, conn)
+	if msg.Type != "error" {
+		t.Fatalf("expected error (job still running, stream unavailable), got %q (%+v)", msg.Type, msg)
+	}
+	if msg.Message == "" {
+		t.Error("error frame carried no message")
 	}
 }
 

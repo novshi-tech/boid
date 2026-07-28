@@ -36,8 +36,8 @@ type waitableSession struct {
 var _ backend.SandboxSession = (*waitableSession)(nil)
 
 func (s *waitableSession) ID() string { return s.id }
-func (s *waitableSession) Subscribe() ([]byte, <-chan []byte, func(), bool) {
-	return nil, nil, func() {}, false
+func (s *waitableSession) Subscribe() ([]byte, <-chan []byte, func(), bool, bool) {
+	return nil, nil, func() {}, false, true
 }
 func (s *waitableSession) WriteInput([]byte) error           { return ErrRuntimeUnsupported }
 func (s *waitableSession) CloseInput() error                 { return ErrRuntimeUnsupported }

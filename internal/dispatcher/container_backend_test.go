@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -495,6 +496,549 @@ func TestContainerBackend_Adopt_ConcurrentCacheMissSharesOneAttach(t *testing.T)
 	}
 }
 
+// TestContainerSession_Subscribe_ReportsNotOkWhenAdoptAttachFailed pins the
+// first half of the fix for the bug Opus's review of PR #857 found:
+// doAdopt's own best-effort attach (its doc comment) can fail against a
+// genuinely running container (the engine was merely unreachable at
+// adoption time — here, ContainerAttach always returns
+// context.DeadlineExceeded), and pre-fix that left a session with
+// running=true but no live stream at all. Subscribe() checked only
+// running, so it answered ok=true with a channel that would then never
+// receive a single byte — the "connected but the terminal is silent
+// forever" symptom. Requiring attached too (see Subscribe's own doc
+// comment) means this case now honestly reports ok=false instead.
+func TestContainerSession_Subscribe_ReportsNotOkWhenAdoptAttachFailed(t *testing.T) {
+	const runtimeID = "runtime-slow-attach"
+	api := &fakeDockerAPI{
+		ContainerInspectFunc: func(ctx context.Context, containerID string, options client.ContainerInspectOptions) (client.ContainerInspectResult, error) {
+			return client.ContainerInspectResult{
+				Container: container.InspectResponse{
+					State:  &container.State{Running: true},
+					Config: &container.Config{},
+				},
+			}, nil
+		},
+		ContainerAttachFunc: func(ctx context.Context, containerID string, options client.ContainerAttachOptions) (client.ContainerAttachResult, error) {
+			return client.ContainerAttachResult{}, context.DeadlineExceeded
+		},
+		// Block forever: the container is genuinely still running (the
+		// engine answered ContainerInspect fine) — only the attach half is
+		// broken. Without this override the default ContainerWait resolves
+		// immediately and races this test's own Subscribe call against
+		// waitLoop's teardown.
+		ContainerWaitFunc: func(ctx context.Context, containerID string, options client.ContainerWaitOptions) client.ContainerWaitResult {
+			return client.ContainerWaitResult{Result: make(chan container.WaitResponse), Error: make(chan error)}
+		},
+	}
+	be := NewContainerBackend(api, ContainerBackendOptions{})
+
+	sess, ok := be.Adopt(context.Background(), runtimeID)
+	if !ok {
+		t.Fatal("Adopt returned ok=false; want ok=true (a failed attach alone must not fail Adopt itself — signal/stop/wait must still work)")
+	}
+
+	_, ch, _, subOK, finished := sess.Subscribe()
+	if subOK {
+		t.Error("Subscribe returned ok=true for a session whose only attach attempt failed; want ok=false (no live stream to subscribe to)")
+	}
+	if ch != nil {
+		t.Error("Subscribe returned a non-nil channel alongside ok=false")
+	}
+	// finished must be false here (Opus review of PR #864, B2): the
+	// container is genuinely still running (ContainerWaitFunc above never
+	// resolves) — only the attach half failed. A caller (ws_attach.go/
+	// job_log_sse.go) that read ok=false as "job finished" regardless of
+	// this value would tell an operator a still-running job had exited
+	// successfully, which is the false positive B2 found.
+	if finished {
+		t.Error("Subscribe reported finished=true for a session whose container is still genuinely running; want false")
+	}
+}
+
+// TestContainerBackend_Adopt_CacheHitReattachesAfterEngineRecovers pins the
+// second half of the fix (Opus review of PR #857): a cache-HIT Adopt call
+// for a running-but-not-attached session (the shape
+// TestContainerSession_Subscribe_ReportsNotOkWhenAdoptAttachFailed just
+// above pins the symptom of) must best-effort re-attach, so that once the
+// engine recovers the very next Adopt/Subscribe call gets a live stream
+// again — without needing a daemon restart, which was the ONLY recovery
+// path before this fix (doAdopt only ever runs once per runtimeID; nothing
+// ever retried a failed attach on an already-cached session).
+func TestContainerBackend_Adopt_CacheHitReattachesAfterEngineRecovers(t *testing.T) {
+	const runtimeID = "runtime-slow-attach"
+	var attachAttempts int32
+	var connMu sync.Mutex
+	var conn *fakeAttachConn
+	var attachLogsFlags []bool
+
+	api := &fakeDockerAPI{
+		ContainerInspectFunc: func(ctx context.Context, containerID string, options client.ContainerInspectOptions) (client.ContainerInspectResult, error) {
+			return client.ContainerInspectResult{
+				Container: container.InspectResponse{
+					State:  &container.State{Running: true},
+					Config: &container.Config{Tty: false},
+				},
+			}, nil
+		},
+		ContainerAttachFunc: func(ctx context.Context, containerID string, options client.ContainerAttachOptions) (client.ContainerAttachResult, error) {
+			connMu.Lock()
+			attachLogsFlags = append(attachLogsFlags, options.Logs)
+			connMu.Unlock()
+			if atomic.AddInt32(&attachAttempts, 1) == 1 {
+				// The first attach attempt (doAdopt's own) simulates the
+				// engine being unreachable, matching the reviewer's
+				// real-world repro ("context deadline exceeded" against a
+				// fake engine whose inspect succeeds but attach hangs).
+				return client.ContainerAttachResult{}, context.DeadlineExceeded
+			}
+			// Every later attempt (the engine has "recovered") succeeds.
+			connMu.Lock()
+			conn = newFakeAttachConn()
+			c := conn
+			connMu.Unlock()
+			return client.ContainerAttachResult{HijackedResponse: client.NewHijackedResponse(c, "")}, nil
+		},
+		// Block forever: the container stays genuinely running across both
+		// Adopt calls in this test — only the attach half recovers.
+		ContainerWaitFunc: func(ctx context.Context, containerID string, options client.ContainerWaitOptions) client.ContainerWaitResult {
+			return client.ContainerWaitResult{Result: make(chan container.WaitResponse), Error: make(chan error)}
+		},
+	}
+	be := NewContainerBackend(api, ContainerBackendOptions{})
+
+	sess, ok := be.Adopt(context.Background(), runtimeID)
+	if !ok {
+		t.Fatal("first Adopt returned ok=false")
+	}
+	if _, _, _, subOK, _ := sess.Subscribe(); subOK {
+		t.Fatal("Subscribe returned ok=true right after a failed adopt attach; want ok=false")
+	}
+	if got := atomic.LoadInt32(&attachAttempts); got != 1 {
+		t.Fatalf("ContainerAttach calls after first Adopt = %d, want 1", got)
+	}
+
+	// "Engine recovers": a second Adopt for the same runtimeID is a cache
+	// hit (same session, same ID), and must trigger a best-effort
+	// re-attach rather than silently reusing the dead one.
+	sess2, ok := be.Adopt(context.Background(), runtimeID)
+	if !ok || sess2 != sess {
+		t.Fatalf("second Adopt = (%v, %v), want the same cached session with ok=true", sess2, ok)
+	}
+	if got := atomic.LoadInt32(&attachAttempts); got != 2 {
+		t.Fatalf("ContainerAttach calls after second Adopt = %d, want 2 (cache-hit re-attach actually fired)", got)
+	}
+	// This session's transcript is still empty at this point (the FIRST
+	// attach never got far enough to produce anything) — replaying the
+	// container's pre-existing logs is not just safe here, it's the only
+	// way to backfill whatever ran before this daemon ever knew about the
+	// container. See reattachIfLost's own doc comment (Opus review of PR
+	// #864, B1) for why this must NOT also be true for a re-attach whose
+	// transcript already has content (TestContainerBackend_Adopt_ReattachAfterMidStreamDropDoesNotDuplicateTranscript
+	// pins that side).
+	connMu.Lock()
+	gotLogsFlags := append([]bool(nil), attachLogsFlags...)
+	connMu.Unlock()
+	if len(gotLogsFlags) != 2 || !gotLogsFlags[1] {
+		t.Fatalf("attach Logs flags = %v, want [_, true] (empty-transcript reattach must still replay pre-existing container output)", gotLogsFlags)
+	}
+
+	snapshot, ch, cancel, subOK, _ := sess.Subscribe()
+	if !subOK {
+		t.Fatal("Subscribe returned ok=false after a successful re-attach, want ok=true")
+	}
+	defer cancel()
+	_ = snapshot
+
+	connMu.Lock()
+	c := conn
+	connMu.Unlock()
+	c.feedFrame(1, []byte("hello after recovery"))
+
+	want := "hello after recovery"
+	if got := readChunkTimeout(t, ch); string(got) != want {
+		t.Errorf("subscriber chunk after re-attach = %q, want %q", got, want)
+	}
+
+	// Ending the RE-ATTACHED generation's stream must not panic. This is
+	// the implementation trap the fix's own doc comments warn about
+	// (containerSession.readDone / attach's doc comments): a first-draft
+	// fix that re-attaches but keeps a single, session-lifetime readDone
+	// channel would have this second generation's readLoop defer
+	// `close()` a channel the FIRST (failed) attach's error path already
+	// closed — close of an already-closed channel panics, and since
+	// readLoop runs in its own goroutine, that panic crashes the whole
+	// test binary rather than merely failing this one test. Driving the
+	// second generation's connection closed here and waiting for
+	// Subscribe to observe attached go back to false is what forces that
+	// deferred close to actually run inside this test's own lifetime,
+	// rather than asynchronously after it (or some later test) has
+	// already reported PASS.
+	c.Close()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if _, _, _, subOK, _ := sess.Subscribe(); !subOK {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("timed out waiting for the re-attached stream to end after closing its connection")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	// A little extra headroom past readLoop's own attached=false
+	// assignment for its very next statement (close(readDone)) to
+	// actually execute — see readLoop's own doc comment for why these two
+	// are sequenced. There is no assertion to add beyond letting this
+	// statement run and the process still be alive afterward: a
+	// double-close panic here would abort the whole `go test` run, not
+	// just this test.
+	time.Sleep(50 * time.Millisecond)
+}
+
+// TestContainerBackend_Adopt_ConcurrentCacheHitReattachIsRaceSafe pins that
+// reattachIfLost is safe under concurrent invocation (multiple WS ingress
+// racing a cache hit for the same session right as the engine recovers —
+// the concurrency concern flagged in the review alongside the two behavior
+// fixes above). Many concurrent Adopt calls against one running-but-not-
+// attached session must not each fire their own ContainerAttach (which
+// would, among other things, leak attach connections) and must not
+// panic/race (run under `go test -race`, per this repo's own quality bar
+// for this file).
+func TestContainerBackend_Adopt_ConcurrentCacheHitReattachIsRaceSafe(t *testing.T) {
+	const runtimeID = "concurrent-reattach-container"
+	const n = 8
+	var attachAttempts int32
+	// concurrentAttachers counts how many ContainerAttach calls are
+	// SIMULTANEOUSLY blocked inside the "re-attach" branch below, waiting
+	// on releaseAttach — the deterministic rendezvous a broken dedup would
+	// be caught by (Opus review of PR #864, N5). A naive "just launch n
+	// goroutines and count attachAttempts at the end" version of this test
+	// (this file's own first draft) only caught a missing-dedup mutation
+	// 19/30 runs: without something forcing concurrent callers to actually
+	// overlap, whichever goroutine's Adopt call happens to run first can
+	// finish its own attach and flip s.attached=true before a second
+	// goroutine ever reaches the check, in which case even BROKEN dedup
+	// code never gets a chance to double-fire — the test's own scheduling
+	// luck was doing the work, not the assertion. Blocking every re-attach
+	// call here until the test explicitly releases it removes that
+	// dependency on luck: every one of the n goroutines below is
+	// guaranteed to have reached (or been correctly turned away from) this
+	// point before the test inspects concurrentAttachers.
+	var concurrentAttachers int32
+	var maxConcurrentAttachers int32
+	releaseAttach := make(chan struct{})
+
+	api := &fakeDockerAPI{
+		ContainerInspectFunc: func(ctx context.Context, containerID string, options client.ContainerInspectOptions) (client.ContainerInspectResult, error) {
+			return client.ContainerInspectResult{
+				Container: container.InspectResponse{
+					State:  &container.State{Running: true},
+					Config: &container.Config{},
+				},
+			}, nil
+		},
+		ContainerAttachFunc: func(ctx context.Context, containerID string, options client.ContainerAttachOptions) (client.ContainerAttachResult, error) {
+			if atomic.AddInt32(&attachAttempts, 1) == 1 {
+				// The initial doAdopt-equivalent attach: fails, populating
+				// the cache with a running-but-not-attached session — the
+				// state every one of the n concurrent Adopt calls below
+				// will find.
+				return client.ContainerAttachResult{}, errors.New("engine unreachable")
+			}
+			cur := atomic.AddInt32(&concurrentAttachers, 1)
+			for {
+				prevMax := atomic.LoadInt32(&maxConcurrentAttachers)
+				if cur <= prevMax || atomic.CompareAndSwapInt32(&maxConcurrentAttachers, prevMax, cur) {
+					break
+				}
+			}
+			<-releaseAttach
+			atomic.AddInt32(&concurrentAttachers, -1)
+			return client.ContainerAttachResult{HijackedResponse: client.NewHijackedResponse(newFakeAttachConn(), "")}, nil
+		},
+		ContainerWaitFunc: func(ctx context.Context, containerID string, options client.ContainerWaitOptions) client.ContainerWaitResult {
+			return client.ContainerWaitResult{Result: make(chan container.WaitResponse), Error: make(chan error)}
+		},
+	}
+	be := NewContainerBackend(api, ContainerBackendOptions{})
+
+	// Populate the cache with a not-attached-but-running session first —
+	// exactly the state the "engine was down at adoption time" scenario
+	// leaves behind (TestContainerSession_Subscribe_ReportsNotOkWhenAdoptAttachFailed
+	// pins this half on its own).
+	sess, ok := be.Adopt(context.Background(), runtimeID)
+	if !ok {
+		t.Fatal("initial Adopt returned ok=false")
+	}
+	if _, _, _, subOK, _ := sess.Subscribe(); subOK {
+		t.Fatal("Subscribe ok=true before any successful attach")
+	}
+
+	// Now fire many concurrent cache-hit Adopt calls, as several WS ingress
+	// connections racing a reconnect right as the engine recovers would.
+	var wg sync.WaitGroup
+	sessions := make([]backend.SandboxSession, n)
+	oks := make([]bool, n)
+	for i := range n {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			sessions[i], oks[i] = be.Adopt(context.Background(), runtimeID)
+		}(i)
+	}
+
+	// Give every one of the n goroutines above time to actually reach
+	// (or be correctly turned away before reaching) the blocking point in
+	// ContainerAttachFunc — no goroutine does anything else that blocks,
+	// so this is generous rather than a tight race.
+	deadline := time.Now().Add(2 * time.Second)
+	for atomic.LoadInt32(&attachAttempts) < 2 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	time.Sleep(100 * time.Millisecond)
+	close(releaseAttach)
+	wg.Wait()
+
+	for i := range n {
+		if !oks[i] || sessions[i] != sess {
+			t.Errorf("concurrent Adopt %d = (%v, %v), want (sess, true)", i, sessions[i], oks[i])
+		}
+	}
+	if got := atomic.LoadInt32(&maxConcurrentAttachers); got != 1 {
+		t.Errorf("max concurrent re-attach callers inside ContainerAttach = %d, want exactly 1 (dedup broken: more than one of the %d concurrent cache hits fired its own ContainerAttach at once)", got, n)
+	}
+	if got := atomic.LoadInt32(&attachAttempts); got != 2 {
+		t.Errorf("ContainerAttach calls = %d, want exactly 2 (1 initial failure + 1 re-attach deduped across %d concurrent cache hits)", got, n)
+	}
+	if _, _, cancel, subOK, _ := sess.Subscribe(); !subOK {
+		t.Error("Subscribe ok=false after a concurrent re-attach that should have succeeded")
+	} else {
+		cancel()
+	}
+}
+
+// TestContainerBackend_Adopt_ReattachAfterMidStreamDropDoesNotDuplicateTranscript
+// pins B1 from the Opus review of PR #864: reattachIfLost must
+// NOT unconditionally request Logs:true on re-attach.
+//
+// running&&!attached (reattachIfLost's own gate) is reached by TWO
+// different routes, and TestContainerBackend_Adopt_CacheHitReattachesAfterEngineRecovers
+// above already pins the first one (doAdopt's own first attach attempt
+// failed — this session's transcript is still empty, so replaying the
+// container's pre-existing logs via Logs:true is correct). This test pins
+// the SECOND, different route: a previously SUCCESSFUL attach whose
+// readLoop ended while the container kept running (an engine/socket-proxy
+// hiccup, or a live-restore daemon restart) — this session's transcript
+// already holds everything the container produced up to that point.
+// Requesting Logs:true here would make the engine replay that SAME
+// history a second time, landing a literal duplicate in the transcript
+// (and, for a Launched session, the on-disk spool file — the one thing
+// `boid job log` can still read after ContainerRemove). Measured directly
+// against a first-draft version of this fix before the len(s.transcript)
+// check existed: the transcript came back as "EARLY-OUTPUT\nEARLY-OUTPUT\n"
+// after a reattach that should have produced it exactly once.
+func TestContainerBackend_Adopt_ReattachAfterMidStreamDropDoesNotDuplicateTranscript(t *testing.T) {
+	var connMu sync.Mutex
+	var attachConns []*fakeAttachConn
+	var attachLogsFlags []bool
+
+	api := &fakeDockerAPI{
+		ContainerAttachFunc: func(ctx context.Context, containerID string, options client.ContainerAttachOptions) (client.ContainerAttachResult, error) {
+			connMu.Lock()
+			c := newFakeAttachConn()
+			attachConns = append(attachConns, c)
+			attachLogsFlags = append(attachLogsFlags, options.Logs)
+			connMu.Unlock()
+			return client.ContainerAttachResult{HijackedResponse: client.NewHijackedResponse(c, "")}, nil
+		},
+		// Block forever: the container stays genuinely running across the
+		// mid-stream drop and the reattach below — only the attach
+		// connection itself drops and recovers.
+		ContainerWaitFunc: func(ctx context.Context, containerID string, options client.ContainerWaitOptions) client.ContainerWaitResult {
+			return client.ContainerWaitResult{Result: make(chan container.WaitResponse), Error: make(chan error)}
+		},
+	}
+	be := NewContainerBackend(api, ContainerBackendOptions{})
+	sess := mustLaunch(t, be, sandbox.Spec{ID: "job-midstream-drop", Argv: []string{"true"}}, backend.LaunchOptions{JobID: "job-midstream-drop"})
+
+	connMu.Lock()
+	gen1 := attachConns[0]
+	connMu.Unlock()
+	gen1.feedFrame(1, []byte("EARLY-OUTPUT\n"))
+	waitForTranscriptContaining(t, sess, "EARLY-OUTPUT")
+
+	// Mid-stream drop: the attach connection ends (EOF) while the
+	// container is still genuinely running (ContainerWaitFunc above never
+	// resolves).
+	gen1.Close()
+	waitForSubscribeNotOK(t, sess)
+
+	// Cache-hit Adopt must best-effort re-attach.
+	sess2, ok := be.Adopt(context.Background(), sess.ID())
+	if !ok || sess2 != sess {
+		t.Fatalf("Adopt after mid-stream drop = (%v, %v), want the same cached session with ok=true", sess2, ok)
+	}
+
+	connMu.Lock()
+	gotConns := len(attachConns)
+	var logsFlag bool
+	var gen2 *fakeAttachConn
+	if gotConns >= 2 {
+		logsFlag = attachLogsFlags[1]
+		gen2 = attachConns[1]
+	}
+	connMu.Unlock()
+	if gotConns != 2 {
+		t.Fatalf("ContainerAttach calls = %d, want exactly 2 (initial Launch attach + one reattach)", gotConns)
+	}
+
+	if logsFlag {
+		t.Error("re-attach after a mid-stream drop (transcript already non-empty) requested Logs:true; want false to avoid re-replaying already-captured output")
+	}
+
+	gen2.feedFrame(1, []byte("AFTER-RECOVERY\n"))
+	waitForTranscriptContaining(t, sess, "AFTER-RECOVERY")
+
+	snapshot, _, cancel, _, _ := sess.Subscribe()
+	cancel()
+	if n := bytes.Count(snapshot, []byte("EARLY-OUTPUT")); n != 1 {
+		t.Errorf("transcript contains %q %d times, want exactly 1 (must not duplicate on reattach), snapshot = %q", "EARLY-OUTPUT", n, snapshot)
+	}
+	if !bytes.Contains(snapshot, []byte("AFTER-RECOVERY")) {
+		t.Errorf("transcript = %q, want it to also contain the post-recovery output", snapshot)
+	}
+}
+
+// TestContainerBackend_Adopt_ReattachClosesThePreviousGenerationsConnection
+// pins N1 from the Opus review of PR #864: attach() must explicitly close
+// the PREVIOUS generation's hijack connection when reattachIfLost installs
+// a new one, rather than merely overwriting s.hijack and letting the old
+// value become unreachable. A Read() returning an error (the remote engine
+// hanging up) does not itself release the underlying connection/fd on our
+// side — against a real docker engine that is a live TCP/unix socket that
+// stays open until something calls Close() on it — so every mid-stream-
+// drop reattach leaked one connection before this fix. closeConn()
+// (waitLoop's own cleanup) does not cover this case either: it always
+// closes whatever s.hijack CURRENTLY is, and by the time the container
+// actually exits s.hijack already points at the NEW generation, not the
+// abandoned one.
+//
+// The drop is simulated via a raw pipe-side closure (gen1.outW.
+// CloseWithError), deliberately NOT via fakeAttachConn's own Close()
+// wrapper: calling that wrapper would itself set gen1.closed = true,
+// making it impossible to tell "the test's own setup closed this" apart
+// from "attach()'s new N1 fix closed this". A real remote hangup has
+// exactly this shape too — the local Read() errors out on its own, with
+// nothing on the local side having called Close() yet.
+func TestContainerBackend_Adopt_ReattachClosesThePreviousGenerationsConnection(t *testing.T) {
+	var connMu sync.Mutex
+	var attachConns []*fakeAttachConn
+
+	api := &fakeDockerAPI{
+		ContainerAttachFunc: func(ctx context.Context, containerID string, options client.ContainerAttachOptions) (client.ContainerAttachResult, error) {
+			connMu.Lock()
+			c := newFakeAttachConn()
+			attachConns = append(attachConns, c)
+			connMu.Unlock()
+			return client.ContainerAttachResult{HijackedResponse: client.NewHijackedResponse(c, "")}, nil
+		},
+		ContainerWaitFunc: func(ctx context.Context, containerID string, options client.ContainerWaitOptions) client.ContainerWaitResult {
+			return client.ContainerWaitResult{Result: make(chan container.WaitResponse), Error: make(chan error)}
+		},
+	}
+	be := NewContainerBackend(api, ContainerBackendOptions{})
+	sess := mustLaunch(t, be, sandbox.Spec{ID: "job-stale-conn", Argv: []string{"true"}}, backend.LaunchOptions{JobID: "job-stale-conn"})
+
+	connMu.Lock()
+	gen1 := attachConns[0]
+	connMu.Unlock()
+
+	// Raw pipe-side closure: readLoop's Read() errors out and ends, but
+	// gen1 itself is not thereby marked closed — exactly the gap this fix
+	// closes.
+	gen1.outW.CloseWithError(io.ErrClosedPipe) //nolint:errcheck
+	waitForSubscribeNotOK(t, sess)
+
+	if gen1.isClosed() {
+		t.Fatal("test setup bug: gen1 should not be marked closed by the raw pipe-side closure alone")
+	}
+
+	sess2, ok := be.Adopt(context.Background(), sess.ID())
+	if !ok || sess2 != sess {
+		t.Fatalf("Adopt after simulated drop = (%v, %v), want the same cached session with ok=true", sess2, ok)
+	}
+
+	if !gen1.isClosed() {
+		t.Error("the previous generation's connection was never explicitly closed on reattach — this leaks a connection (and, against a real docker engine, its underlying fd) on every mid-stream-drop reattach")
+	}
+}
+
+// TestContainerSession_CloseInput_WorksAgainAfterReattach pins N6 from the
+// Opus review of PR #864: CloseInput's half-close must still work against
+// the SECOND (re-attached) generation's connection. A single session-
+// lifetime sync.Once (the pre-fix shape) would let the first CloseInput
+// call consume the Once forever, silently no-op'ing every later call —
+// including one made after a reattach installed a brand new connection
+// that has never itself been half-closed.
+func TestContainerSession_CloseInput_WorksAgainAfterReattach(t *testing.T) {
+	var connMu sync.Mutex
+	var attachConns []*fakeAttachConn
+
+	api := &fakeDockerAPI{
+		ContainerAttachFunc: func(ctx context.Context, containerID string, options client.ContainerAttachOptions) (client.ContainerAttachResult, error) {
+			connMu.Lock()
+			c := newFakeAttachConn()
+			attachConns = append(attachConns, c)
+			connMu.Unlock()
+			return client.ContainerAttachResult{HijackedResponse: client.NewHijackedResponse(c, "")}, nil
+		},
+		ContainerWaitFunc: func(ctx context.Context, containerID string, options client.ContainerWaitOptions) client.ContainerWaitResult {
+			return client.ContainerWaitResult{Result: make(chan container.WaitResponse), Error: make(chan error)}
+		},
+	}
+	be := NewContainerBackend(api, ContainerBackendOptions{})
+	sess := mustLaunch(t, be, sandbox.Spec{ID: "job-closeinput-reattach", Argv: []string{"true"}}, backend.LaunchOptions{JobID: "job-closeinput-reattach"})
+
+	connMu.Lock()
+	gen1 := attachConns[0]
+	connMu.Unlock()
+
+	if err := sess.CloseInput(); err != nil {
+		t.Fatalf("first CloseInput: %v", err)
+	}
+	if got := atomic.LoadInt32(&gen1.closeWrites); got != 1 {
+		t.Fatalf("gen1 CloseWrite calls = %d, want 1", got)
+	}
+
+	// Mid-stream drop + reattach — see
+	// TestContainerBackend_Adopt_ReattachClosesThePreviousGenerationsConnection's
+	// own doc comment for why a raw pipe-side closure (not gen1.Close())
+	// is used to simulate it.
+	gen1.outW.CloseWithError(io.ErrClosedPipe) //nolint:errcheck
+	waitForSubscribeNotOK(t, sess)
+	sess2, ok := be.Adopt(context.Background(), sess.ID())
+	if !ok || sess2 != sess {
+		t.Fatalf("Adopt after simulated drop = (%v, %v), want the same cached session with ok=true", sess2, ok)
+	}
+
+	connMu.Lock()
+	gotConns := len(attachConns)
+	var gen2 *fakeAttachConn
+	if gotConns >= 2 {
+		gen2 = attachConns[1]
+	}
+	connMu.Unlock()
+	if gotConns != 2 {
+		t.Fatalf("attach calls = %d, want 2 (initial Launch attach + one reattach)", gotConns)
+	}
+
+	if err := sess.CloseInput(); err != nil {
+		t.Fatalf("second CloseInput (after reattach): %v", err)
+	}
+	if got := atomic.LoadInt32(&gen2.closeWrites); got != 1 {
+		t.Errorf("gen2 CloseWrite calls = %d, want 1 (CloseInput must still work against the re-attached generation, not silently no-op forever after the first call)", got)
+	}
+}
+
 func TestContainerBackend_ReapOrphans_LabelBasedDestroy(t *testing.T) {
 	api := &fakeDockerAPI{
 		ContainerListFunc: func(ctx context.Context, options client.ContainerListOptions) (client.ContainerListResult, error) {
@@ -663,8 +1207,8 @@ func TestContainerSession_Subscribe_MultipleSubscribersReceiveSameStream(t *test
 	be := NewContainerBackend(api, ContainerBackendOptions{})
 	sess := mustLaunch(t, be, sandbox.Spec{ID: "job-sub", Argv: []string{"true"}, TTY: false}, backend.LaunchOptions{JobID: "job-sub"})
 
-	_, ch1, cancel1, ok1 := sess.Subscribe()
-	_, ch2, cancel2, ok2 := sess.Subscribe()
+	_, ch1, cancel1, ok1, _ := sess.Subscribe()
+	_, ch2, cancel2, ok2, _ := sess.Subscribe()
 	if !ok1 || !ok2 {
 		t.Fatalf("Subscribe ok = (%v, %v), want (true, true)", ok1, ok2)
 	}
@@ -688,7 +1232,7 @@ func TestContainerSession_Subscribe_MultipleSubscribersReceiveSameStream(t *test
 
 	// A late Subscribe (after the fact) must see the same bytes in its
 	// snapshot.
-	snapshot, _, cancel3, _ := sess.Subscribe()
+	snapshot, _, cancel3, _, _ := sess.Subscribe()
 	cancel3()
 	if !strings.Contains(string(snapshot), want) {
 		t.Errorf("late-subscribe snapshot = %q, want it to contain %q", snapshot, want)
@@ -703,6 +1247,50 @@ func readChunkTimeout(t *testing.T, ch <-chan []byte) []byte {
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for a transcript chunk")
 		return nil
+	}
+}
+
+// waitForTranscriptContaining polls sess.Subscribe's snapshot until it
+// contains want, bounded so a broken readLoop wiring fails the test instead
+// of hanging it. Used by reattach tests that need to be sure readLoop has
+// actually consumed a fed frame into the transcript before moving on to the
+// next phase (closing the connection, re-attaching, ...).
+func waitForTranscriptContaining(t *testing.T, sess backend.SandboxSession, want string) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		snapshot, _, cancel, _, _ := sess.Subscribe()
+		cancel()
+		if bytes.Contains(snapshot, []byte(want)) {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for transcript to contain %q; last snapshot = %q", want, snapshot)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// waitForSubscribeNotOK polls sess.Subscribe until it reports ok=false,
+// bounded the same way waitForTranscriptContaining is. Used to force a
+// just-closed generation's readLoop to actually finish (attached flips to
+// false) before the test moves on to a re-attach — see
+// TestContainerBackend_Adopt_CacheHitReattachesAfterEngineRecovers's own
+// "ending the RE-ATTACHED generation's stream" comment for why this
+// synchronization matters (it forces readLoop's deferred close(readDone)
+// to run inside the test's own lifetime rather than asynchronously after
+// it).
+func waitForSubscribeNotOK(t *testing.T, sess backend.SandboxSession) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if _, _, _, ok, _ := sess.Subscribe(); !ok {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("timed out waiting for Subscribe to report ok=false")
+		}
+		time.Sleep(5 * time.Millisecond)
 	}
 }
 
@@ -932,10 +1520,97 @@ func TestContainerSession_WaitLoop_DrainsAttachBeforeClosingConn(t *testing.T) {
 		t.Errorf("ExitCode = %d, want 0", exit.ExitCode)
 	}
 
-	snapshot, _, cancel, _ := sess.Subscribe()
+	snapshot, _, cancel, subOK, finished := sess.Subscribe()
 	cancel()
 	if !bytes.Contains(snapshot, finalBurst) {
 		t.Errorf("transcript = %q, want it to contain the final burst %q (drained before close)", snapshot, finalBurst)
+	}
+	// Regression pin alongside B1/B2's own new tests (Opus review of PR
+	// #864): a genuinely, cleanly exited container must still report
+	// ok=false, finished=true — the pre-existing "job done" case B2's
+	// finished field must not accidentally flip for.
+	if subOK {
+		t.Error("Subscribe ok=true after the container has genuinely exited; want false")
+	}
+	if !finished {
+		t.Error("Subscribe finished=false after the container has genuinely exited; want true")
+	}
+}
+
+// TestContainerSession_WaitLoop_SkipsDrainSelectWhenNeverAttached is a
+// regression pin requested by the Opus review of PR #864 (N4): a session
+// that was never successfully attached (doAdopt's own best-effort attach
+// failed, and no later cache-hit reattachIfLost fixed it before the
+// container happened to exit) must tear down promptly when the container
+// exits — Wait() must return in well under attachDrainGracePeriod, not
+// incur an artificial ~500ms stall waiting on a reader that was never
+// started.
+//
+// Caveat, checked directly against this file's own code rather than
+// asserted from the outside (worth recording here since it shapes what
+// this test can and cannot prove): mutating waitLoop's `if attached {...}
+// else {...}` split to unconditionally enter the select branch does NOT
+// make this test fail. That is not a gap in this test — it is a
+// consequence (though a slightly less absolute one than an earlier version
+// of this comment claimed — Opus review of PR #864, NB3, 2nd round) of how
+// every attached=false-setting site in this file sequences readDone's
+// close against attached's own publish:
+//
+//   - attach()'s own error path closes its freshly-allocated readDone
+//     BEFORE publishing attached=false (close, then lock+set+unlock) — for
+//     this path the pairing IS unconditional: no goroutine can observe
+//     attached=false without readDone already closed.
+//   - readLoop's deferred cleanup publishes attached=false BEFORE closing
+//     readDone (lock+set+unlock, then close — see readLoop's own doc
+//     comment for why this order was chosen). This leaves a real, if tiny,
+//     window where a concurrent snapshot could observe attached=false with
+//     readDone NOT YET closed.
+//
+// That window is harmless here: the `else` branch never reads readDone at
+// all (it only calls closeConn()), so which side of readLoop's own two
+// deferred statements a racing snapshot happens to land on changes
+// nothing about what the else branch does. And if a future version DID
+// select on readDone unconditionally, landing in this window would block
+// only for the length of the window itself (readLoop's very next
+// statement is the close) — not attachDrainGracePeriod — so this test's
+// actual assertion (elapsed well under attachDrainGracePeriod) still holds
+// either way. The `else` branch remains a clarity/directness simplification
+// over relying on this indirection (see waitLoop's own doc comment) rather
+// than a currently-reachable bug fix — this test pins the property that
+// actually matters (prompt teardown) rather than a mutation this design
+// makes unreachable in practice.
+func TestContainerSession_WaitLoop_SkipsDrainSelectWhenNeverAttached(t *testing.T) {
+	waitCh := make(chan container.WaitResponse, 1)
+	api := &fakeDockerAPI{
+		ContainerInspectFunc: func(ctx context.Context, containerID string, options client.ContainerInspectOptions) (client.ContainerInspectResult, error) {
+			return client.ContainerInspectResult{
+				Container: container.InspectResponse{
+					State:  &container.State{Running: true},
+					Config: &container.Config{},
+				},
+			}, nil
+		},
+		ContainerAttachFunc: func(ctx context.Context, containerID string, options client.ContainerAttachOptions) (client.ContainerAttachResult, error) {
+			return client.ContainerAttachResult{}, errors.New("engine unreachable")
+		},
+		ContainerWaitFunc: func(ctx context.Context, containerID string, options client.ContainerWaitOptions) client.ContainerWaitResult {
+			return client.ContainerWaitResult{Result: waitCh, Error: make(chan error, 1)}
+		},
+	}
+	be := NewContainerBackend(api, ContainerBackendOptions{})
+	sess, ok := be.Adopt(context.Background(), "never-attached-container")
+	if !ok {
+		t.Fatal("Adopt returned ok=false")
+	}
+
+	start := time.Now()
+	waitCh <- container.WaitResponse{StatusCode: 0}
+	if _, err := sess.Wait(context.Background()); err != nil {
+		t.Fatalf("Wait: %v", err)
+	}
+	elapsed := time.Since(start)
+	if elapsed >= attachDrainGracePeriod {
+		t.Errorf("Wait took %v (>= attachDrainGracePeriod %v); a never-attached session's waitLoop should skip the drain-select entirely, not merely fall through it", elapsed, attachDrainGracePeriod)
 	}
 }
 

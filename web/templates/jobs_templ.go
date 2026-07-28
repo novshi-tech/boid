@@ -267,7 +267,7 @@ func JobDetail(job *JobContextView) templ.Component {
 					return templ_7745c5c3_Err
 				}
 				if job.Status == "running" || job.Status == "pending" {
-					templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 15, "<script>\n\t\t\t\t\t\t(function() {\n\t\t\t\t\t\t\tvar pre = document.getElementById('job-log');\n\t\t\t\t\t\t\tvar es = new EventSource('/api/jobs/' + pre.dataset.jobId + '/log?follow=true');\n\t\t\t\t\t\t\tes.onmessage = function(e) {\n\t\t\t\t\t\t\t\tvar span = document.createElement('span');\n\t\t\t\t\t\t\t\tspan.textContent = e.data + '\\n';\n\t\t\t\t\t\t\t\tpre.appendChild(span);\n\t\t\t\t\t\t\t\tpre.scrollTop = pre.scrollHeight;\n\t\t\t\t\t\t\t};\n\t\t\t\t\t\t\tes.onerror = function() { es.close(); };\n\t\t\t\t\t\t})();\n\t\t\t\t\t</script>")
+					templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 15, "<script>\n\t\t\t\t\t\t(function() {\n\t\t\t\t\t\t\tvar pre = document.getElementById('job-log');\n\t\t\t\t\t\t\tvar es = new EventSource('/api/jobs/' + pre.dataset.jobId + '/log?follow=true');\n\t\t\t\t\t\t\tes.onmessage = function(e) {\n\t\t\t\t\t\t\t\tvar span = document.createElement('span');\n\t\t\t\t\t\t\t\tspan.textContent = e.data + '\\n';\n\t\t\t\t\t\t\t\tpre.appendChild(span);\n\t\t\t\t\t\t\t\tpre.scrollTop = pre.scrollHeight;\n\t\t\t\t\t\t\t};\n\t\t\t\t\t\t\t// job_log_sse.go emits this NAMED event (distinct from the\n\t\t\t\t\t\t\t// default \"message\" event onmessage above already handles)\n\t\t\t\t\t\t\t// when the job is still running but has no live stream to\n\t\t\t\t\t\t\t// offer right now (Opus review of PR #864, B2) — e.g. the\n\t\t\t\t\t\t\t// container backend's adopt-time attach failed and has not\n\t\t\t\t\t\t\t// been re-attached yet. Before this existed the SSE stream\n\t\t\t\t\t\t\t// just silently ended in this case, indistinguishable from\n\t\t\t\t\t\t\t// the job having actually finished.\n\t\t\t\t\t\t\tes.addEventListener('boid-stream-unavailable', function(e) {\n\t\t\t\t\t\t\t\tvar note = document.createElement('p');\n\t\t\t\t\t\t\t\tnote.className = 'job-log-note';\n\t\t\t\t\t\t\t\tnote.textContent = 'Live output is temporarily unavailable (' + e.data + '). Reload the page to retry.';\n\t\t\t\t\t\t\t\tpre.parentNode.insertBefore(note, pre);\n\t\t\t\t\t\t\t\tes.close();\n\t\t\t\t\t\t\t});\n\t\t\t\t\t\t\tes.onerror = function() { es.close(); };\n\t\t\t\t\t\t})();\n\t\t\t\t\t</script>")
 					if templ_7745c5c3_Err != nil {
 						return templ_7745c5c3_Err
 					}
@@ -289,7 +289,7 @@ func JobDetail(job *JobContextView) templ.Component {
 				var templ_7745c5c3_Var11 templ.SafeURL
 				templ_7745c5c3_Var11, templ_7745c5c3_Err = templ.JoinURLErrs(templ.SafeURL(hookReplayPath(job.TaskID, job.HookID)))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/jobs.templ`, Line: 175, Col: 87}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/jobs.templ`, Line: 190, Col: 87}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var11))
 				if templ_7745c5c3_Err != nil {

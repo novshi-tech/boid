@@ -4,13 +4,22 @@ package dispatcher
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"fmt"
 	"log/slog"
 )
 
-// RuntimeSubscriber subscribes to live output of a running job identified by jobID.
+// RuntimeSubscriber subscribes to live output of a running job identified by
+// jobID. finished disambiguates ok=false the same way
+// backend.SandboxSession.Subscribe's own finished return does (see its doc
+// comment for the full rationale, Opus review of PR #864, B2): true means
+// the job is actually done (safe to report as such); false means the job is
+// still running but has no live stream to offer right now, which a caller
+// MUST NOT collapse into "done" — see ws_attach.go/job_log_sse.go's own
+// handling for what each ingress does with the distinction.
 type RuntimeSubscriber interface {
-	Subscribe(jobID string) (snapshot []byte, ch <-chan []byte, cancel func(), ok bool)
+	Subscribe(jobID string) (snapshot []byte, ch <-chan []byte, cancel func(), ok bool, finished bool)
 }
 
 // RuntimeInputWriter provides write access to a running job's PTY input.
@@ -36,6 +45,44 @@ func (r *Runner) runtimeIDForJob(jobID string) (runtimeID string, found bool) {
 	return runtimeID, true
 }
 
+// jobFinishedBeforeRuntime reports whether jobID's job row is in a
+// TERMINAL status (completed or failed) or has no row at all — the cases
+// Subscribe's !found branch (below) should report as finished=true. A row
+// that exists with status "running" (CreateJob's own default — store.go)
+// and no runtime_id yet is NOT finished: the job may still be mid-dispatch
+// and about to launch — see Subscribe's own doc comment (Opus review of PR
+// #864, NB2) for the window this covers.
+//
+// Checking status rather than mere row-existence (an earlier version of
+// this fix did the latter, via a since-removed jobRowExists) matters for
+// jobs that fail BEFORE ever reaching Launch: Runner.failJob (8 call
+// sites — spec build / workspace-home resolution / host-command
+// resolution, ...) persists a terminal "failed" status row with
+// runtime_id left empty forever. The row-existence-only version reported
+// finished=false for these — permanently, since no runtime_id will ever
+// arrive — which sent `boid job attach`/the Web UI job page into
+// reporting "still running, try again" forever for a job that will truly
+// never run again (Opus review of PR #864, NB3).
+//
+// A genuine DB error (anything other than a confirmed absent row)
+// deliberately does NOT default to finished=true: unlike "no such row",
+// an error tells us nothing about whether the job might still be about to
+// launch, so defaulting to finished=true here could reintroduce the exact
+// false positive this whole fix removes elsewhere, just from a different
+// cause (a flaky DB read instead of a wedged engine).
+func (r *Runner) jobFinishedBeforeRuntime(jobID string) bool {
+	var status string
+	err := r.DB.QueryRow(`SELECT status FROM jobs WHERE id = ?`, jobID).Scan(&status)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		return true
+	case err != nil:
+		return false
+	default:
+		return JobStatus(status) == JobStatusCompleted || JobStatus(status) == JobStatusFailed
+	}
+}
+
 // Subscribe implements RuntimeSubscriber for Runner. It resolves jobID to a
 // runtimeID via the jobs table, then adopts a SandboxSession for it
 // (docs/plans/phase6-container-backend.md §PR1 — this is the "stream 1 本"
@@ -57,14 +104,53 @@ func (r *Runner) runtimeIDForJob(jobID string) (runtimeID string, found bool) {
 // already-exited job were indistinguishable to an operator reading the
 // logs, both surfacing as silent ok=false, turning a "terminal stayed
 // blank" bug report into a guessing game between "nothing to attach to"
-// and "the engine never answered". Subscribe's signature has no error to
-// carry the distinction into (unlike WriteInput/ResizeRuntime/CloseInput
-// below), so the Warn log is the only place it can surface; ok stays false
-// either way — the caller-visible contract is unchanged.
-func (r *Runner) Subscribe(jobID string) (snapshot []byte, ch <-chan []byte, cancel func(), ok bool) {
+// and "the engine never answered".
+//
+// Both early ok=false returns below also THINK ABOUT finished rather than
+// hardcoding it (Opus review of PR #864, NB2 — a round after the #857
+// Warn-logging fix above: the first version of this method logged the
+// Warn correctly but still left finished hardcoded at true on both
+// branches, which reopened the exact false-positive class B2 had just
+// closed for containerSession.Subscribe, just through two different
+// doors here):
+//
+//   - "no runtime_id yet": CreateJob (Dispatch's very first step) persists
+//     a job row — and fires r.JobEvents.JobCreated so the Web UI can
+//     already show it — well before launchSandbox's own `job.RuntimeID =
+//     handleID; UpdateJob(...)` call sets RuntimeID. Everything between
+//     those two points (BuildSandboxSpec, ResolveHostCommands, workspace-
+//     home resolution/init — PR #861 added a debug log specifically
+//     because that step can be slow) can take real wall-clock time, during
+//     which a job row exists but has no runtime_id yet. A caller landing
+//     here during that window is looking at a job that is ABOUT TO run,
+//     not one that is done — jobFinishedBeforeRuntime (below) reports
+//     finished=false for it. A job that instead failed BEFORE ever
+//     reaching Launch (Runner.failJob, 8 call sites) leaves the same
+//     "row exists, no runtime_id" shape behind, but permanently — the
+//     status column is what actually distinguishes "still might launch"
+//     from "already terminal", not mere row presence (Opus review of PR
+//     #864, NB3 — see jobFinishedBeforeRuntime's own doc comment for the
+//     concrete failure this closes). A jobID with NO row at all (mistyped,
+//     or old enough to have been GC'd) also reports finished=true: nothing
+//     will ever come either way.
+//   - Adopt itself returning ok=false: distinguishes "Adopt legitimately
+//     found nothing" (ctx still had budget left when Adopt returned — the
+//     backend has no notion of this container at all, already exited and
+//     reaped or never existed — finished=true) from "the
+//     sessionControlCallTimeout deadline fired before Adopt could resolve"
+//     (ctx.Err() != nil — the same condition the Warn above already logs —
+//     a wedged engine told us NOTHING about whether the container is still
+//     alive; the job could be very much still running, finished=true here
+//     would be exactly B2's false positive reached through the
+//     Adopt-itself-timed-out door instead of the adopted-session's-own-
+//     Subscribe door). The same ctx.Err() != nil pattern already
+//     distinguishes this in StopJobRuntime/SignalJobRuntime/
+//     ResizeRuntimeID (this file's own sibling methods) — this is that
+//     same pattern applied to the one method that hadn't used it yet.
+func (r *Runner) Subscribe(jobID string) (snapshot []byte, ch <-chan []byte, cancel func(), ok bool, finished bool) {
 	runtimeID, found := r.runtimeIDForJob(jobID)
 	if !found {
-		return nil, nil, func() {}, false
+		return nil, nil, func() {}, false, r.jobFinishedBeforeRuntime(jobID)
 	}
 	ctx, cancelCtx := context.WithTimeout(context.Background(), sessionControlCallTimeout.Get())
 	defer cancelCtx()
@@ -74,7 +160,7 @@ func (r *Runner) Subscribe(jobID string) (snapshot []byte, ch <-chan []byte, can
 			slog.Warn("subscribe: adopt did not resolve before the control-call deadline; the runtime's live output cannot be attached to",
 				"job_id", jobID, "runtime_id", runtimeID, "timeout", sessionControlCallTimeout.Get())
 		}
-		return nil, nil, func() {}, false
+		return nil, nil, func() {}, false, ctx.Err() == nil
 	}
 	return session.Subscribe()
 }

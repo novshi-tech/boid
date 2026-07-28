@@ -145,7 +145,7 @@ var _ backend.SandboxSession = (*localPTYSession)(nil)
 
 func (s *localPTYSession) ID() string { return s.id }
 
-func (s *localPTYSession) Subscribe() (snapshot []byte, ch <-chan []byte, cancel func(), ok bool) {
+func (s *localPTYSession) Subscribe() (snapshot []byte, ch <-chan []byte, cancel func(), ok bool, finished bool) {
 	s.mu.Lock()
 	raw := append([]byte(nil), s.transcript.Bytes()...)
 	running := s.running
@@ -160,9 +160,9 @@ func (s *localPTYSession) Subscribe() (snapshot []byte, ch <-chan []byte, cancel
 	s.mu.Unlock()
 
 	if !running {
-		return raw, nil, func() {}, false
+		return raw, nil, func() {}, false, true
 	}
-	return raw, subCh, func() { s.unsubscribe(subID) }, true
+	return raw, subCh, func() { s.unsubscribe(subID) }, true, false
 }
 
 func (s *localPTYSession) unsubscribe(subID int) {
