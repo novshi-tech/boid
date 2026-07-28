@@ -50,8 +50,8 @@ type capturingLaunchSession struct{ id string }
 var _ backend.SandboxSession = (*capturingLaunchSession)(nil)
 
 func (s *capturingLaunchSession) ID() string { return s.id }
-func (s *capturingLaunchSession) Subscribe() ([]byte, <-chan []byte, func(), bool) {
-	return nil, nil, func() {}, false
+func (s *capturingLaunchSession) Subscribe() ([]byte, <-chan []byte, func(), bool, bool) {
+	return nil, nil, func() {}, false, true
 }
 func (s *capturingLaunchSession) WriteInput([]byte) error { return nil }
 func (s *capturingLaunchSession) CloseInput() error       { return nil }

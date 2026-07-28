@@ -3,6 +3,7 @@ package api
 import (
 	"bufio"
 	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -18,16 +19,25 @@ type fakeRuntimeSubscriber struct {
 	ch           chan []byte
 	cancelCalled chan struct{}
 	ok           bool
+	// finished mirrors RuntimeSubscriber.Subscribe's own finished return
+	// (Opus review of PR #857, B2). None of this file's ok:false tests
+	// reach the code path that reads it (TestJobLogSSEHandler_NonFollow
+	// returns 404 before ever calling Subscribe), so the zero value
+	// (false) is never relied on for those; see
+	// TestJobLogSSEHandler_StillRunningButUnavailable_SendsNamedSSEEvent
+	// and TestJobLogSSEHandler_Finished_EndsStreamSilently for the two
+	// cases that DO exercise it explicitly.
+	finished bool
 }
 
-func (f *fakeRuntimeSubscriber) Subscribe(_ string) ([]byte, <-chan []byte, func(), bool) {
+func (f *fakeRuntimeSubscriber) Subscribe(_ string) ([]byte, <-chan []byte, func(), bool, bool) {
 	cancel := func() {
 		select {
 		case f.cancelCalled <- struct{}{}:
 		default:
 		}
 	}
-	return f.snapshot, f.ch, cancel, f.ok
+	return f.snapshot, f.ch, cancel, f.ok, f.finished
 }
 
 func newSSETestServer(sub *fakeRuntimeSubscriber) *httptest.Server {
@@ -193,6 +203,84 @@ func TestJobLogSSEHandler_RevokeClosesSSE(t *testing.T) {
 		// handler exited after revoke
 	case <-time.After(3 * time.Second):
 		t.Fatal("JobLogSSE handler did not return after RevokeDevice")
+	}
+}
+
+// TestJobLogSSEHandler_Finished_EndsStreamSilently pins the pre-existing,
+// unchanged behavior for a genuinely finished job (ok=false, finished=true)
+// — a regression guard alongside
+// TestJobLogSSEHandler_StillRunningButUnavailable_SendsNamedSSEEvent below,
+// which pins the NEW behavior for the opposite (finished=false) case (Opus
+// review of PR #857, B2). A finished job's SSE stream must still just end
+// after the snapshot, with no named event of any kind.
+func TestJobLogSSEHandler_Finished_EndsStreamSilently(t *testing.T) {
+	sub := &fakeRuntimeSubscriber{
+		snapshot:     []byte("final line\n"),
+		cancelCalled: make(chan struct{}, 1),
+		ok:           false,
+		finished:     true,
+	}
+	srv := newSSETestServer(sub)
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/job-1/log?follow=true")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := string(body)
+	if !strings.Contains(got, "data: final line") {
+		t.Errorf("body = %q, want it to contain the snapshot line", got)
+	}
+	if strings.Contains(got, "event:") {
+		t.Errorf("body = %q, a genuinely finished job must not emit any named SSE event", got)
+	}
+}
+
+// TestJobLogSSEHandler_StillRunningButUnavailable_SendsNamedSSEEvent pins
+// B2 from the Opus review of PR #857: when Subscribe reports ok=false but
+// finished=false (the job is genuinely still running, it just has no live
+// stream to offer right now), the handler must emit a distinctly-named SSE
+// event rather than silently ending the stream — the same symptom as
+// ws_attach.go's exit-vs-error distinction, adapted to SSE's own protocol
+// (there is no single "exit" frame type here; a bare return, this branch's
+// entire behavior before B2, is indistinguishable from a genuinely
+// finished job to any client watching the raw byte stream). The event
+// name is deliberately NOT "message" (the unnamed default sendLines' own
+// `data:` lines use) so an existing EventSource onmessage listener (e.g.
+// web/templates/jobs.templ's job-log follow script) never mistakes it for
+// ordinary log output.
+func TestJobLogSSEHandler_StillRunningButUnavailable_SendsNamedSSEEvent(t *testing.T) {
+	sub := &fakeRuntimeSubscriber{
+		snapshot:     []byte("partial line\n"),
+		cancelCalled: make(chan struct{}, 1),
+		ok:           false,
+		finished:     false,
+	}
+	srv := newSSETestServer(sub)
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/job-1/log?follow=true")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := string(body)
+	if !strings.Contains(got, "data: partial line") {
+		t.Errorf("body = %q, want it to contain the snapshot line", got)
+	}
+	if !strings.Contains(got, "event: boid-stream-unavailable") {
+		t.Errorf("body = %q, want a named boid-stream-unavailable SSE event when the job is still running but has no live stream", got)
 	}
 }
 

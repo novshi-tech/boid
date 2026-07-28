@@ -2249,9 +2249,22 @@ type containerSession struct {
 	transcriptFile *os.File
 	transcriptPath string
 
-	connMu         sync.Mutex
-	hijack         *client.HijackedResponse
-	stdinCloseOnce sync.Once
+	connMu sync.Mutex
+	hijack *client.HijackedResponse
+	// stdinCloseOnce guards CloseInput's half-close against the CURRENT
+	// generation's hijack, and is itself replaced with a fresh *sync.Once
+	// every time attach() installs a new one (Opus review of PR #857,
+	// N6). A single session-lifetime sync.Once here (the pre-fix shape)
+	// would only ever half-close the FIRST generation's connection: once
+	// CloseInput fired for generation 1, its Once.Do would never run its
+	// function body again, so a caller that called CloseInput before a
+	// mid-stream drop — then relies on it again after reattachIfLost
+	// installs generation 2 — would silently get a no-op forever, with no
+	// error to signal it. A pointer field (not a plain sync.Once value)
+	// so CloseInput can snapshot the CURRENT generation's *sync.Once under
+	// connMu and call Do on that local copy outside the lock, exactly the
+	// same pattern this type already uses for hijack itself.
+	stdinCloseOnce *sync.Once
 
 	mu          sync.Mutex
 	transcript  []byte
@@ -2331,7 +2344,14 @@ func newContainerSession(b *containerBackend, id string, tty bool, specPath, doc
 		subscribers:  make(map[int]chan []byte),
 		running:      true,
 		done:         make(chan struct{}),
-		readDone:     make(chan struct{}),
+		// readDone is deliberately NOT initialized here (Opus review of PR
+		// #857, N7): both callers of this constructor (Launch, doAdopt)
+		// always call attach() — which unconditionally sets readDone,
+		// success or failure — before start() ever launches the waitLoop
+		// goroutine that is readDone's only reader. A placeholder channel
+		// here would be dead code (never read before being overwritten),
+		// which is exactly what the pre-fix version of this field was.
+		stdinCloseOnce: &sync.Once{},
 	}
 	if specPath != "" && b.runtimeDir != "" {
 		sess.specDir = filepath.Dir(specPath)
@@ -2379,8 +2399,27 @@ func (s *containerSession) attach(ctx context.Context, withLogs bool) error {
 	}
 	hijack := result.HijackedResponse
 	s.connMu.Lock()
+	staleHijack := s.hijack
 	s.hijack = &hijack
+	// A fresh *sync.Once per generation (N6): see stdinCloseOnce's own
+	// doc comment for why reusing the previous generation's Once here
+	// would permanently no-op CloseInput after the very first call.
+	s.stdinCloseOnce = &sync.Once{}
 	s.connMu.Unlock()
+	// A stale hijack here (Opus review of PR #857, N1) is a PREVIOUS
+	// generation's connection that reattachIfLost is replacing: its own
+	// readLoop has already exited (attach()/reattachIfLost's gate
+	// guarantees this attach call only runs when attached is currently
+	// false), so nothing is still reading from it — closing it is safe
+	// and does not race the new generation this call just installed.
+	// Without this, every mid-stream-drop reattach leaked one fd (and the
+	// moby HijackedResponse's own buffered *bufio.Reader) until process
+	// exit or the Go net.Conn's finalizer happened to run. nil for every
+	// session's FIRST attach (Launch/doAdopt) — closeConn's own nil check
+	// makes that a no-op, not a special case here.
+	if staleHijack != nil {
+		staleHijack.Close()
+	}
 
 	s.mu.Lock()
 	s.readDone = readDone
@@ -2435,9 +2474,59 @@ func (s *containerSession) reattachIfLost(ctx context.Context) {
 	}
 	attempt := make(chan struct{})
 	s.reattaching = attempt
+	// replayLogs decides Logs:true vs Logs:false for the ContainerAttach
+	// call below, and MUST be read in the same locked section that
+	// reserved s.reattaching above, before releasing s.mu — otherwise a
+	// concurrent appendTranscript (a stray write arriving on some other
+	// path) could flip the answer between the check and the attach call
+	// (Opus review of PR #857, B1 (2nd round)).
+	//
+	// The gate this function reattaches under — running && !attached — is
+	// reached by TWO distinct routes, and they need OPPOSITE Logs
+	// behavior:
+	//
+	//  1. doAdopt's own first attach failed (its doc comment): this
+	//     containerSession has never produced a single byte of
+	//     transcript. Logs:true is not just safe here, it is the ONLY way
+	//     to backfill whatever the container already emitted before this
+	//     daemon ever knew about it — exactly what doAdopt's own direct
+	//     attach(ctx, true) call does for the very same reason.
+	//  2. A PREVIOUSLY successful attach's readLoop ended while the
+	//     container kept running (an engine/socket-proxy hiccup, or a
+	//     live-restore daemon restart) — this session's transcript
+	//     already holds everything the container produced up to the
+	//     drop. Logs:true here would make the engine replay that SAME
+	//     history a second time, landing it in the transcript (and, for a
+	//     Launched session, the on-disk spool file — the one thing `boid
+	//     job log` can still read after ContainerRemove) as a literal
+	//     duplicate. This is not hypothetical: it was measured directly
+	//     (a fake engine's Logs:true replay produced "EARLY-OUTPUT" twice
+	//     in the transcript after a reattach) before this check existed.
+	//
+	// Both routes reach this same running&&!attached gate with no other
+	// distinguishing signal available except the transcript itself, so
+	// "is the transcript still empty" is what selects between them. The
+	// trade-off this choice makes (documented so a future change to it is
+	// deliberate, not accidental): replaying zero-content for case 1 is
+	// always safe (there is nothing to duplicate), but choosing Logs:
+	// false for case 2 means whatever the container produced DURING the
+	// disconnect window (between readLoop ending and this re-attach
+	// succeeding) is permanently lost — it is never in the transcript and
+	// Logs:false means the engine never replays it either. The
+	// alternative (always Logs:true) trades that gap for corrupting the
+	// transcript with a duplicated run of everything already captured,
+	// which is worse for `boid job log`'s "this is the literal
+	// transcript" contract than a bounded, one-time gap during a
+	// reconnect window is — a duplicate is confusing and silently wrong
+	// forever, while a gap is at least a clean edge. If a future need
+	// makes that gap unacceptable, the fix is to track exactly how much
+	// of the container's own output this session has already consumed
+	// (a byte offset / `docker logs --since`) and request only the
+	// remainder — not to fall back to blanket replay.
+	replayLogs := len(s.transcript) == 0
 	s.mu.Unlock()
 
-	if err := s.attach(ctx, true); err != nil {
+	if err := s.attach(ctx, replayLogs); err != nil {
 		slog.Warn("container backend: best-effort re-attach to a running session failed; it will keep supporting signal/stop/wait only until the next cache hit finds the engine reachable",
 			"container_id", s.id, "error", err)
 	}
@@ -2577,13 +2666,28 @@ func (s *containerSession) appendTranscript(chunk []byte) {
 // forever" symptom the Web UI/WS ingress hit: the caller had no way to
 // distinguish "attached and just quiet" from "will never speak", so it kept
 // waiting either way. Requiring attached too means that case now honestly
-// reports ok=false — the ingress surfaces an error instead of hanging — and
-// Adopt's cache-hit path (reattachIfLost) gets a chance to fix the
-// underlying cause on a LATER call, without needing a daemon restart.
-func (s *containerSession) Subscribe() ([]byte, <-chan []byte, func(), bool) {
+// reports ok=false.
+//
+// finished (SandboxSession.Subscribe's own doc comment has the full
+// rationale — Opus review of PR #857, B2 (2nd round)) is what actually lets
+// a caller act on that ok=false correctly: it is simply !running, checked
+// under the SAME lock as ok so the two are never observed inconsistently.
+// running==false means the container genuinely exited — ingress should
+// treat this as "job done", the pre-existing behavior. running==true (this
+// is the running-but-not-attached case above) means finished=false — ingress
+// must NOT treat this as "job done"; it should surface an error and let
+// Adopt's cache-hit path (reattachIfLost) get a chance to fix the
+// underlying cause on a LATER call, without needing a daemon restart. The
+// first version of this fix set finished implicitly by leaving ingress's
+// pre-existing "ok=false → job done" branch untouched, which was itself
+// wrong (an unconditional false positive is a worse diagnostic than the
+// dead-channel hang it replaced) — the finished return value is what closes
+// that gap.
+func (s *containerSession) Subscribe() ([]byte, <-chan []byte, func(), bool, bool) {
 	s.mu.Lock()
 	snapshot := append([]byte(nil), s.transcript...)
-	live := s.running && s.attached
+	running := s.running
+	live := running && s.attached
 	var subID int
 	var ch chan []byte
 	if live {
@@ -2594,10 +2698,11 @@ func (s *containerSession) Subscribe() ([]byte, <-chan []byte, func(), bool) {
 	}
 	s.mu.Unlock()
 
+	finished := !running
 	if !live {
-		return snapshot, nil, func() {}, false
+		return snapshot, nil, func() {}, false, finished
 	}
-	return snapshot, ch, func() { s.unsubscribe(subID) }, true
+	return snapshot, ch, func() { s.unsubscribe(subID) }, true, false
 }
 
 func (s *containerSession) unsubscribe(subID int) {
@@ -2634,10 +2739,16 @@ func (s *containerSession) WriteInput(data []byte) error {
 // contract, preserved as-is — same as the userns backend's
 // LocalRuntime.CloseInputRuntime).
 func (s *containerSession) CloseInput() error {
-	s.stdinCloseOnce.Do(func() {
-		s.connMu.Lock()
-		hijack := s.hijack
-		s.connMu.Unlock()
+	// Snapshot the CURRENT generation's hijack AND its own *sync.Once
+	// together under connMu (N6): attach() replaces both atomically in
+	// the same critical section, so this pairing is never observed
+	// half-updated. Calling Do on the local copy outside the lock avoids
+	// holding connMu across the CloseWrite call itself.
+	s.connMu.Lock()
+	once := s.stdinCloseOnce
+	hijack := s.hijack
+	s.connMu.Unlock()
+	once.Do(func() {
 		if hijack == nil {
 			return
 		}
@@ -2794,12 +2905,36 @@ func (s *containerSession) waitLoop() {
 
 	// Close (and flush) the disk transcript spool now: readLoop — the sole
 	// writer via appendTranscript — has already returned (readDone closed
-	// above), so no further writes can race this Close. Doing this BEFORE
-	// finalizing exit state / closing s.done means a diagnostics collector
-	// that reads transcript.log from disk (§決定8's silent-exit
-	// classification) always sees the complete file, and BEFORE
-	// ContainerRemove means the file is guaranteed durable before the
-	// container itself (and any `docker logs` fallback) is gone.
+	// above), so no further writes can race this Close in the common case.
+	// Doing this BEFORE finalizing exit state / closing s.done means a
+	// diagnostics collector that reads transcript.log from disk (§決定8's
+	// silent-exit classification) always sees the complete file, and
+	// BEFORE ContainerRemove means the file is guaranteed durable before
+	// the container itself (and any `docker logs` fallback) is gone.
+	//
+	// [N3, Opus review of PR #857]: "no further writes can race this" is
+	// no longer a PURE structural guarantee of this file's own logic the
+	// way it was before reattachIfLost existed — it now also leans on the
+	// engine's own behavior. s.running only flips false a few lines below
+	// this point, strictly AFTER this drain-select and this Sync/Close —
+	// so a cache-hit Adopt racing exactly this window still sees
+	// running==true and (once the drain-select above has finished)
+	// attached==false, and will fire a best-effort reattachIfLost against
+	// a container that has, in fact, already exited (ContainerWait already
+	// resolved) but has not been ContainerRemove'd yet (that happens even
+	// later in this same function). If that stray ContainerAttach were to
+	// SUCCEED, it would start a brand new readLoop that could then write
+	// to s.transcriptFile concurrently with the Sync()/Close() calls right
+	// below — a real race, not merely a wasted API call. In measured
+	// practice this window is not empty (26-30 out of 30 induced exit-vs-
+	// reattach races land a stray attach attempt in it, each logged as a
+	// WARN) but is harmless BECAUSE both docker and podman refuse to
+	// attach to a non-running container, so the stray attach fails and no
+	// second readLoop ever starts — the invariant holds today because of
+	// that engine behavior, not because this window is provably empty on
+	// this file's own terms. If a future engine (or a mocked/fake one in a
+	// test) ever allowed an attach against an already-exited-but-not-yet-
+	// removed container, this comment's claim would stop being true.
 	//
 	// [Major 9, PR7 codex review]: Sync() runs BEFORE Close(), not just
 	// Close() alone. Close() flushes the process's own userspace buffers to

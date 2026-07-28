@@ -103,8 +103,8 @@ type noopSession struct{}
 var _ backend.SandboxSession = noopSession{}
 
 func (noopSession) ID() string { return "noop-runtime" }
-func (noopSession) Subscribe() ([]byte, <-chan []byte, func(), bool) {
-	return nil, nil, func() {}, false
+func (noopSession) Subscribe() ([]byte, <-chan []byte, func(), bool, bool) {
+	return nil, nil, func() {}, false, true
 }
 func (noopSession) WriteInput([]byte) error           { return dispatcher.ErrRuntimeUnsupported }
 func (noopSession) CloseInput() error                 { return dispatcher.ErrRuntimeUnsupported }

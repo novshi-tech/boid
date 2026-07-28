@@ -235,8 +235,8 @@ type fakeSandboxSession struct{ id string }
 var _ backend.SandboxSession = (*fakeSandboxSession)(nil)
 
 func (s *fakeSandboxSession) ID() string { return s.id }
-func (s *fakeSandboxSession) Subscribe() ([]byte, <-chan []byte, func(), bool) {
-	return nil, nil, func() {}, false
+func (s *fakeSandboxSession) Subscribe() ([]byte, <-chan []byte, func(), bool, bool) {
+	return nil, nil, func() {}, false, true
 }
 func (s *fakeSandboxSession) WriteInput([]byte) error { return dispatcher.ErrRuntimeUnsupported }
 func (s *fakeSandboxSession) CloseInput() error       { return dispatcher.ErrRuntimeUnsupported }

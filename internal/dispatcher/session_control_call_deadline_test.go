@@ -203,7 +203,7 @@ func TestRunner_Subscribe_HangingAdoptHitsDeadline(t *testing.T) {
 	r := &Runner{DB: dbConn, Backend: &hangingAdoptBackend{}}
 
 	start := time.Now()
-	_, _, _, ok := r.Subscribe(jobID)
+	_, _, _, ok, _ := r.Subscribe(jobID)
 	elapsed := time.Since(start)
 
 	if elapsed > 5*time.Second {
@@ -290,8 +290,8 @@ type hangingControlSession struct {
 var _ backend.SandboxSession = (*hangingControlSession)(nil)
 
 func (s *hangingControlSession) ID() string { return s.id }
-func (s *hangingControlSession) Subscribe() ([]byte, <-chan []byte, func(), bool) {
-	return nil, nil, func() {}, false
+func (s *hangingControlSession) Subscribe() ([]byte, <-chan []byte, func(), bool, bool) {
+	return nil, nil, func() {}, false, true
 }
 func (s *hangingControlSession) WriteInput([]byte) error { return ErrRuntimeUnsupported }
 func (s *hangingControlSession) CloseInput() error       { return ErrRuntimeUnsupported }

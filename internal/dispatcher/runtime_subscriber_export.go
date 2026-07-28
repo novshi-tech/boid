@@ -7,9 +7,16 @@ import (
 	"fmt"
 )
 
-// RuntimeSubscriber subscribes to live output of a running job identified by jobID.
+// RuntimeSubscriber subscribes to live output of a running job identified by
+// jobID. finished disambiguates ok=false the same way
+// backend.SandboxSession.Subscribe's own finished return does (see its doc
+// comment for the full rationale, Opus review of PR #857, B2): true means
+// the job is actually done (safe to report as such); false means the job is
+// still running but has no live stream to offer right now, which a caller
+// MUST NOT collapse into "done" — see ws_attach.go/job_log_sse.go's own
+// handling for what each ingress does with the distinction.
 type RuntimeSubscriber interface {
-	Subscribe(jobID string) (snapshot []byte, ch <-chan []byte, cancel func(), ok bool)
+	Subscribe(jobID string) (snapshot []byte, ch <-chan []byte, cancel func(), ok bool, finished bool)
 }
 
 // RuntimeInputWriter provides write access to a running job's PTY input.
@@ -48,16 +55,32 @@ func (r *Runner) runtimeIDForJob(jobID string) (runtimeID string, found bool) {
 // comment names as its reason to exist) does a real `docker inspect`
 // against the engine, and an unbounded context here would hang a WS attach
 // or the Web UI's SSE follow request forever against a wedged engine.
-func (r *Runner) Subscribe(jobID string) (snapshot []byte, ch <-chan []byte, cancel func(), ok bool) {
+//
+// The two early ok=false returns below (no runtime_id yet, or Adopt itself
+// failed) both report finished=true — deliberately unchanged from this
+// method's pre-B2 behavior, and out of this fix's scope (Opus review of PR
+// #857, B2): "no runtime_id" genuinely means no job has ever run under this
+// ID, and "Adopt failed" already meant "the backend has no notion of this
+// container at all" before finished existed (already exited and reaped, or
+// never existed). B2's actual finding was narrower — a session Adopt DID
+// successfully hand back, whose own Subscribe() reports running-but-no-
+// stream — and that is exactly what falls through to session.Subscribe()'s
+// own finished value on the last line. (Adopt itself timing out against a
+// wedged engine for a job that might still be running is a separate,
+// pre-existing ambiguity this method already had — ctx.Err() is available
+// to a caller that wants to distinguish "Adopt found nothing" from "Adopt
+// ran out of time" the way StopJobRuntime/SignalJobRuntime do, but that is
+// not surfaced through this particular return today.)
+func (r *Runner) Subscribe(jobID string) (snapshot []byte, ch <-chan []byte, cancel func(), ok bool, finished bool) {
 	runtimeID, found := r.runtimeIDForJob(jobID)
 	if !found {
-		return nil, nil, func() {}, false
+		return nil, nil, func() {}, false, true
 	}
 	ctx, cancelCtx := context.WithTimeout(context.Background(), sessionControlCallTimeout.Get())
 	defer cancelCtx()
 	session, adopted := r.sandboxBackend().Adopt(ctx, runtimeID)
 	if !adopted {
-		return nil, nil, func() {}, false
+		return nil, nil, func() {}, false, true
 	}
 	return session.Subscribe()
 }

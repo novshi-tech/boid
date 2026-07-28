@@ -163,6 +163,21 @@ templ JobDetail(job *JobContextView) {
 								pre.appendChild(span);
 								pre.scrollTop = pre.scrollHeight;
 							};
+							// job_log_sse.go emits this NAMED event (distinct from the
+							// default "message" event onmessage above already handles)
+							// when the job is still running but has no live stream to
+							// offer right now (Opus review of PR #857, B2) — e.g. the
+							// container backend's adopt-time attach failed and has not
+							// been re-attached yet. Before this existed the SSE stream
+							// just silently ended in this case, indistinguishable from
+							// the job having actually finished.
+							es.addEventListener('boid-stream-unavailable', function(e) {
+								var note = document.createElement('p');
+								note.className = 'job-log-note';
+								note.textContent = 'Live output is temporarily unavailable (' + e.data + '). Reload the page to retry.';
+								pre.parentNode.insertBefore(note, pre);
+								es.close();
+							});
 							es.onerror = function() { es.close(); };
 						})();
 					</script>

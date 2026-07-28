@@ -466,8 +466,8 @@ type gwFakeSession struct{ id string }
 var _ backend.SandboxSession = (*gwFakeSession)(nil)
 
 func (s *gwFakeSession) ID() string { return s.id }
-func (s *gwFakeSession) Subscribe() ([]byte, <-chan []byte, func(), bool) {
-	return nil, nil, func() {}, false
+func (s *gwFakeSession) Subscribe() ([]byte, <-chan []byte, func(), bool, bool) {
+	return nil, nil, func() {}, false, true
 }
 func (s *gwFakeSession) WriteInput([]byte) error           { return ErrRuntimeUnsupported }
 func (s *gwFakeSession) CloseInput() error                 { return ErrRuntimeUnsupported }
