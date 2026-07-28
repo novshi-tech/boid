@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/novshi-tech/boid/internal/api"
@@ -134,20 +135,41 @@ func runJobWatch(cmd *cobra.Command, args []string) error {
 	}
 }
 
+// runJobLog prints a job's transcript, or — when there is none — the
+// daemon's own explanation of why.
+//
+// The 404 body is relayed verbatim rather than replaced with a fixed
+// string. GET /jobs/{id}/log answers 404 for three genuinely different
+// situations (no such job / the job has no runtime / the transcript is gone
+// — see internal/api/job.go's writeJobLogUnavailable), and this command used
+// to print "log not available (runtime cleaned up)" for all of them,
+// discarding the body. Two of the three were therefore reported as an event
+// that never happened, which cost a 2026-07-28 dogfood session real time
+// while diagnosing a hung job. A daemon predating that change sends no body
+// at all, in which case this prints nothing extra rather than inventing a
+// reason it cannot know.
+//
+// Exit status is deliberately unchanged: every 404 still succeeds. Scripts
+// that treat "no log yet" as a non-error (polling a job that has not started
+// writing) keep working, and the operator-facing difference now lives where
+// it is actually read — in the message.
 func runJobLog(cmd *cobra.Command, args []string) error {
 	c := client.FromContext(cmd.Context())
 	statusCode, body, err := c.GetRaw("/api/jobs/" + args[0] + "/log")
 	if err != nil {
 		return fmt.Errorf("get job log: %w", err)
 	}
+	out := cmd.OutOrStdout()
 	if statusCode == 404 {
-		fmt.Fprintln(os.Stdout, "log not available (runtime cleaned up)")
+		if msg := strings.TrimSpace(string(body)); msg != "" {
+			fmt.Fprintln(out, msg)
+		}
 		return nil
 	}
 	if statusCode >= 400 {
 		return fmt.Errorf("server error: HTTP %d: %s", statusCode, string(body))
 	}
-	os.Stdout.Write(body)
+	out.Write(body) //nolint:errcheck
 	return nil
 }
 

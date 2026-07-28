@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"os"
 	"strings"
@@ -116,25 +117,71 @@ type JobDoneRequest struct {
 	Output   string `json:"output,omitempty"`
 }
 
+// writeJobLogUnavailable answers GET /jobs/{id}/log's three distinct 404s
+// with a plain-text body that says which one happened.
+//
+// All three used to share the single string "log not available (runtime
+// cleaned up)", which is only ever true for the third of them. The other two
+// actively mislead: "the id names no job" (passing a TASK id is the common
+// slip — `boid job log <task-id>` looks perfectly plausible and the two ids
+// are both uuids) and "this job has no runtime yet" both got reported as a
+// transcript that existed and was later swept, sending the reader off to
+// look for a directory that was never created. A 2026-07-28 dogfood session
+// burned real time on this while diagnosing a hung job.
+//
+// Plain text, not writeError's JSON envelope, for all three — including the
+// job-not-found case that used to be JSON — because `boid job log` prints
+// this body verbatim to the operator (cmd/job.go's runJobLog), and a raw
+// {"error":...} blob is a worse read than the sentence itself. The status
+// code stays 404 in every case, so no client's success/failure branching
+// changes.
+func writeJobLogUnavailable(w http.ResponseWriter, msg string) {
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.WriteHeader(http.StatusNotFound)
+	w.Write([]byte(msg + "\n")) //nolint:errcheck
+}
+
+// JobLogNoSuchJobMessage, JobLogNoRuntimeMessage and
+// JobLogTranscriptGoneMessage are the three explanations above, exported so
+// the sandbox-side `boid job log` builtin (internal/server's
+// boidBuiltinExecutor) answers with the same words as the REST endpoint.
+// An agent reading a log inside a sandbox and an operator reading one at a
+// terminal are diagnosing the same thing; having the two surfaces drift into
+// separate vocabularies for it is how "log not available" became meaningless
+// in the first place.
+func JobLogNoSuchJobMessage(id string) string {
+	return fmt.Sprintf(
+		"no such job %q — if this is a task id, list that task's jobs first: boid job list --task %s",
+		id, id)
+}
+
+func JobLogNoRuntimeMessage(id string, status JobStatus) string {
+	return fmt.Sprintf(
+		"log not available: job %q has no runtime (status: %s) — its sandbox never started, so nothing was ever recorded",
+		id, status)
+}
+
+func JobLogTranscriptGoneMessage(runtimeID string) string {
+	return fmt.Sprintf(
+		"log not available: runtime %s has no transcript on disk — removed by gc, or lost with the runtimes directory (it lives on tmpfs under the container backend, so a host reboot clears it)",
+		runtimeID)
+}
+
 func (h *JobHandler) Log(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	j, err := h.Jobs.GetJob(id)
 	if err != nil {
-		writeError(w, http.StatusNotFound, err.Error())
+		writeJobLogUnavailable(w, JobLogNoSuchJobMessage(id))
 		return
 	}
 	if j.RuntimeID == "" {
-		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-		w.WriteHeader(http.StatusNotFound)
-		w.Write([]byte("log not available (runtime cleaned up)\n")) //nolint:errcheck
+		writeJobLogUnavailable(w, JobLogNoRuntimeMessage(id, j.Status))
 		return
 	}
 	data, err := h.LogReader.ReadJobLog(j.RuntimeID)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-			w.WriteHeader(http.StatusNotFound)
-			w.Write([]byte("log not available (runtime cleaned up)\n")) //nolint:errcheck
+			writeJobLogUnavailable(w, JobLogTranscriptGoneMessage(j.RuntimeID))
 			return
 		}
 		writeError(w, http.StatusInternalServerError, err.Error())

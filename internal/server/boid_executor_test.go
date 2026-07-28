@@ -1188,6 +1188,12 @@ func TestBoidBuiltinExecutor_JobLog_HappyPath(t *testing.T) {
 	}
 }
 
+// TestBoidBuiltinExecutor_JobLog_NoRuntime pins that the sandbox-side
+// builtin says WHY there is no log, in the same words as the REST endpoint
+// (api.JobLogNoRuntimeMessage). It used to answer a bare "log not
+// available", which reads as "the log was swept" — the wrong conclusion for
+// a job whose sandbox never started, and the reason a hung job's diagnosis
+// went the long way round in a 2026-07-28 dogfood session.
 func TestBoidBuiltinExecutor_JobLog_NoRuntime(t *testing.T) {
 	exec, _, _ := newJobExecutor(t)
 	// job-1 の RuntimeID は空 (newJobExecutor でセットされていない)
@@ -1202,6 +1208,41 @@ func TestBoidBuiltinExecutor_JobLog_NoRuntime(t *testing.T) {
 	}
 	if !strings.Contains(resp.Stdout, "not available") {
 		t.Errorf("stdout = %q, want 'not available'", resp.Stdout)
+	}
+	if !strings.Contains(resp.Stdout, "no runtime") {
+		t.Errorf("stdout = %q, want it to say the job has no runtime", resp.Stdout)
+	}
+}
+
+// TestBoidBuiltinExecutor_JobLog_TranscriptGone is the other half of the
+// pair above: a job that DID get a runtime, whose transcript is no longer on
+// disk, must not read the same as one that never ran.
+func TestBoidBuiltinExecutor_JobLog_TranscriptGone(t *testing.T) {
+	ctx := sandbox.TokenContext{ProjectID: "proj-1", AllowedProjectIDs: []string{"proj-1"}}
+
+	// job-1 as newJobExecutor leaves it: never assigned a runtime.
+	noRuntimeExec, _, _ := newJobExecutor(t)
+	noRuntimeResp := noRuntimeExec.ExecuteBoidBuiltin(context.Background(), ctx, &sandbox.BoidRequest{
+		Op:    sandbox.BoidOpJobLog,
+		JobID: "job-1",
+	})
+
+	// Same job, but it ran and its transcript is no longer readable.
+	exec, _, js := newJobExecutor(t)
+	js.jobs["job-1"].RuntimeID = "rt-gone"
+	exec.logReader = &stubJobLogReader{err: os.ErrNotExist}
+	resp := exec.ExecuteBoidBuiltin(context.Background(), ctx, &sandbox.BoidRequest{
+		Op:    sandbox.BoidOpJobLog,
+		JobID: "job-1",
+	})
+	if resp.ExitCode != 0 {
+		t.Fatalf("exit code = %d, want 0 (a swept transcript is not an error)", resp.ExitCode)
+	}
+	if !strings.Contains(resp.Stdout, "rt-gone") {
+		t.Errorf("stdout = %q, want it to name the runtime whose transcript is missing", resp.Stdout)
+	}
+	if resp.Stdout == noRuntimeResp.Stdout {
+		t.Errorf("a swept transcript and a job that never got a runtime both print %q; they are different situations and must read differently", resp.Stdout)
 	}
 }
 
