@@ -2455,7 +2455,37 @@ func (s *containerSession) waitLoop() {
 	var exitCode int
 	select {
 	case res := <-waitRes.Result:
-		exitCode = int(res.StatusCode)
+		// A response is not the same thing as an exit status: container.WaitResponse
+		// carries two independent facts, and only StatusCode is one. When the engine
+		// could not report an exit status at all (the runtime failed to wait, the
+		// shim died, the container never started), it answers with StatusCode: 0 and
+		// a non-nil Error — the SDK does not distinguish this from an actual "exited
+		// 0" (moby/moby/client@v0.5.0 container_wait.go forwards the body verbatim;
+		// see waitResponseEngineError's doc comment in
+		// container_backend_workspace_init.go).
+		//
+		// This is this layer's own correctness question — exitCode is the value
+		// this session reports as ITS exit status, and an engine that never filled
+		// in StatusCode must not be read as "exited 0" here regardless of what any
+		// caller happens to do with that value afterward. In today's one caller,
+		// Runner.watchRuntime (runner.go) independently coerces a zero exit code to
+		// 1 and unconditionally marks the job JobStatusFailed on this path (a
+		// container exiting without the in-container runner's own "job done"
+		// report), so this fix does not change whether that job ends up failed —
+		// it changes whether the failure is reported honestly (exit_code in the
+		// job's own output stops contradicting job.ExitCode) and whether
+		// NewDefaultDiagnosticsCollector's exit.ExitCode != 0 gate — the collector
+		// that exists specifically for the "container didn't run right" case —
+		// actually fires for this one. Depending on watchRuntime's coercion for the
+		// task-done consequence would be relying on a property of a different layer
+		// that could drift independently of this one; this fix keeps it correct
+		// here on its own terms as well.
+		if eerr := waitResponseEngineError(res); eerr != nil {
+			slog.Warn("container backend: ContainerWait response carried an engine error", "container_id", s.id, "error", eerr)
+			exitCode = 1
+		} else {
+			exitCode = int(res.StatusCode)
+		}
 	case err := <-waitRes.Error:
 		slog.Warn("container backend: ContainerWait failed", "container_id", s.id, "error", err)
 		exitCode = 1
