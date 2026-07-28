@@ -600,19 +600,35 @@ func TestRunner_LaunchSandbox_PersistFailureStopsSessionUnderDeadline(t *testing
 // own sessionControlCallTimeout budget waiting on that unbounded owner
 // instead of ever getting a real answer from the engine — a `boid task
 // stop` that fails every single time, not hangs.
+//
+// [NB-3, Opus independent review of this PR]: runs CanAttach in a goroutine
+// and asserts via select/time.After, the same pattern
+// TestRunner_CanAttach_CallerCancelPropagates below already uses, rather
+// than calling it inline and checking elapsed afterward. Inline, a mutation
+// that drops the floor entirely does not fail this test — it HANGS it: the
+// call below never returns, so t.Fatalf on the elapsed check is never
+// reached, and the whole test binary sits until go test's own (much longer,
+// often CI-default) -timeout kills it with a goroutine dump instead of a
+// clean assertion failure. The select-based form always terminates this
+// test's own goroutine within a bounded wait, pass or fail.
 func TestRunner_CanAttach_UnboundedCallerContextHitsDeadline(t *testing.T) {
 	withSessionControlCallTimeout(t, 200*time.Millisecond)
 	r := &Runner{Backend: &hangingAdoptBackend{}}
 
+	done := make(chan bool, 1)
 	start := time.Now()
-	ok := r.CanAttach(context.Background(), "runtime-xyz")
-	elapsed := time.Since(start)
+	go func() { done <- r.CanAttach(context.Background(), "runtime-xyz") }()
 
-	if elapsed > 5*time.Second {
-		t.Fatalf("CanAttach took %v against an unbounded caller ctx and an Adopt whose engine call never answers", elapsed)
-	}
-	if ok {
-		t.Fatal("want false: Adopt never resolved before the deadline")
+	select {
+	case ok := <-done:
+		if elapsed := time.Since(start); elapsed > 5*time.Second {
+			t.Fatalf("CanAttach took %v against an unbounded caller ctx and an Adopt whose engine call never answers", elapsed)
+		}
+		if ok {
+			t.Fatal("want false: Adopt never resolved before the deadline")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("CanAttach did not return within 5s against an unbounded caller ctx and an Adopt whose engine call never answers; want it bounded by sessionControlCallTimeout")
 	}
 }
 
@@ -670,6 +686,53 @@ func TestRunner_CanAttach_CallerCancelPropagates(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("CanAttach did not return promptly after its caller's ctx was canceled")
+	}
+}
+
+// TestRunner_CanAttach_TimeoutWarnsLoudly pins NB-1 (Opus independent review
+// of this PR): CanAttach was the one caller of Adopt among the five this PR
+// and its predecessor (#857) bound that still logged nothing when its own
+// deadline fired. The caller-visible symptom is a 409 "job runtime does not
+// support attach" from job_runtime_routes.go's resolveAttachableJob — this
+// PR still does not change that response (see the PR description for why),
+// but an operator grepping boid.log for "why did this attach/resize get
+// rejected" must be able to tell "the engine never answered" apart from the
+// routine "no such runtime" result, the same as the four
+// runtime_subscriber_export.go routes above already allow.
+func TestRunner_CanAttach_TimeoutWarnsLoudly(t *testing.T) {
+	withSessionControlCallTimeout(t, 200*time.Millisecond)
+	buf := captureLogs(t, slog.LevelDebug)
+	r := &Runner{Backend: &hangingAdoptBackend{}}
+
+	ok := r.CanAttach(context.Background(), "runtime-xyz")
+
+	if ok {
+		t.Fatal("want false: Adopt never resolved before the deadline")
+	}
+	if !strings.Contains(buf.String(), "level=WARN") {
+		t.Errorf("CanAttach's Adopt timing out logged nothing at WARN; log was:\n%s", buf.String())
+	}
+	if !strings.Contains(buf.String(), "runtime-xyz") {
+		t.Errorf("the warning does not name the runtime_id; log was:\n%s", buf.String())
+	}
+}
+
+// TestRunner_CanAttach_NotFoundDoesNotWarn is
+// TestRunner_CanAttach_TimeoutWarnsLoudly's regression guard, sibling of
+// TestRunner_Subscribe_NotFoundDoesNotWarn below: the ordinary "no such
+// runtime" result (Adopt resolves immediately to ok=false, ctx never
+// expires) must stay silent at WARN.
+func TestRunner_CanAttach_NotFoundDoesNotWarn(t *testing.T) {
+	buf := captureLogs(t, slog.LevelDebug)
+	r := &Runner{Backend: &notAdoptableBackend{}}
+
+	ok := r.CanAttach(context.Background(), "runtime-xyz")
+
+	if ok {
+		t.Fatal("want false")
+	}
+	if strings.Contains(buf.String(), "level=WARN") {
+		t.Errorf("CanAttach logged a WARN for a legitimate not-found Adopt result; log was:\n%s", buf.String())
 	}
 }
 
