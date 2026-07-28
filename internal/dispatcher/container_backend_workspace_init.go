@@ -257,12 +257,13 @@ func (b *containerBackend) RunWorkspaceInit(ctx context.Context, req WorkspaceIn
 	// ApplyLogLevel) now lets an operator turn slog.Debug ON — the level
 	// knob this comment used to say boid had no way to land — but this call
 	// site itself has NOT been switched to Debug: that's a separate,
-	// deliberately deferred decision (see the PR that introduced log.level
-	// for the "why not both at once" rationale), not something this comment
-	// should silently imply is still impossible. Bounded and at info is the
-	// version that actually exists today. The natural follow-up, if that
-	// decision is made, is a debug line carrying output.String() — the full
-	// retained window — with this tail staying as the default-level record.
+	// deliberately deferred decision (see PR #858, which introduced
+	// log.level, for the "why not both at once" rationale), not something
+	// this comment should silently imply is still impossible. Bounded and
+	// at info is the version that actually exists today. The natural
+	// follow-up, if that decision is made, is a debug line carrying
+	// output.String() — the full retained window — with this tail staying
+	// as the default-level record.
 	slog.Info("workspace home init completed",
 		"workspace_slug", req.Slug, "container", name,
 		"retained_output_bytes", output.Len(), "dropped_output_bytes", output.Dropped(),
