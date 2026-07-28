@@ -156,6 +156,18 @@ type Config struct {
 	// non-container-mode caller/test) skips binding the CLIAddr listener
 	// entirely, same as CLIAddr=="" — see Start()'s own bind condition.
 	CLIToken string
+	// LogLevel is config.yaml's log.level (internal/config.LogConfig.Level),
+	// copied here by cmd/start.go's buildStartConfig purely so it can travel
+	// alongside the rest of this struct from the parent's config.Load() call
+	// to runDaemonChild — unlike every other field above, Server itself
+	// never reads LogLevel; runDaemonChild applies it directly
+	// (daemon.ApplyLogLevel(cfg.LogLevel)), before New/Start are even
+	// called, since it is a process-wide slog concern with nothing to do
+	// with the HTTP/dispatch server New builds. Empty (the zero value, and
+	// every pre-this-field caller/test) is a no-op — see
+	// internal/config.LogConfig and internal/daemon.ApplyLogLevel's own doc
+	// comments for the full contract.
+	LogLevel string
 }
 
 type Server struct {

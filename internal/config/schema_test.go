@@ -9,6 +9,7 @@ func TestResolveField_KnownPaths(t *testing.T) {
 	}{
 		{"sandbox.allowed_domains", true},
 		{"sandbox.backend", true},
+		{"log.level", true},
 		{"web.public_url", true},
 		{"notify.command", true},
 		{"gc.enabled", true},
@@ -61,6 +62,7 @@ func TestSchema_ReloadClassification(t *testing.T) {
 		"gateway.forges.github.secret_key": true,
 		"gc.enabled":                       true,
 		"web.http_addr":                    true,
+		"log.level":                        true,
 	}
 	for path := range restartRequired {
 		spec, ok := ResolveField(path)
@@ -86,5 +88,28 @@ func TestSchema_ReloadClassification(t *testing.T) {
 	}
 	if spec.Reload != ReloadRestartRequired {
 		t.Errorf("sandbox.backend: reload class = %v, want ReloadRestartRequired", spec.Reload)
+	}
+}
+
+// TestSchema_LogLevel_IsEnumWithLogLevelNames pins that "log.level"'s schema
+// entry is a KindEnum whose EnumValues is exactly LogLevelNames (internal/
+// config/log_level.go) — so `boid config set log.level <bogus>`'s
+// dotted.go-side validation (coerceValues) can never silently drift out of
+// sync with what ParseLogLevel/Config.UnmarshalYAML actually accept.
+func TestSchema_LogLevel_IsEnumWithLogLevelNames(t *testing.T) {
+	spec, ok := ResolveField("log.level")
+	if !ok {
+		t.Fatal("ResolveField(log.level) not found")
+	}
+	if spec.Kind != KindEnum {
+		t.Errorf("log.level: kind = %v, want KindEnum", spec.Kind)
+	}
+	if len(spec.EnumValues) != len(LogLevelNames) {
+		t.Fatalf("log.level: EnumValues = %v, want %v", spec.EnumValues, LogLevelNames)
+	}
+	for i, v := range LogLevelNames {
+		if spec.EnumValues[i] != v {
+			t.Errorf("log.level: EnumValues[%d] = %q, want %q", i, spec.EnumValues[i], v)
+		}
 	}
 }

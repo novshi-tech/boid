@@ -104,6 +104,15 @@ var Schema = []FieldSpec{
 	{Path: "gc.interval", Kind: KindDuration, Reload: ReloadRestartRequired},
 	{Path: "gc.older_than", Kind: KindDuration, Reload: ReloadRestartRequired},
 
+	// log.level selects slog's minimum emitted level for the whole daemon
+	// process (internal/daemon.ApplyLogLevel, applied once at startup —
+	// LogConfig's own doc comment explains why this never changes boid.log's
+	// line format). EnumValues is LogLevelNames itself (not a re-typed
+	// literal) so this entry can never silently drift out of sync with what
+	// ParseLogLevel/Config.UnmarshalYAML actually accept — see
+	// TestSchema_LogLevel_IsEnumWithLogLevelNames.
+	{Path: "log.level", Kind: KindEnum, Reload: ReloadRestartRequired, EnumValues: LogLevelNames},
+
 	{Path: "web.public_url", Kind: KindString, Reload: ReloadRestartRequired},
 	{Path: "web.http_addr", Kind: KindString, Reload: ReloadRestartRequired},
 
