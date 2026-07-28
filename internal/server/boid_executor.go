@@ -450,8 +450,14 @@ func (e *boidBuiltinExecutor) ExecuteBoidBuiltin(goCtx context.Context, ctx sand
 		if !ctx.AllowsProject(j.ProjectID) {
 			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid job log is restricted to the current workspace"}
 		}
+		// Both "no log" answers name their own reason, in the same words
+		// GET /jobs/{id}/log uses (api.JobLog*Message). A bare "log not
+		// available" reads as "it was swept" for a job whose sandbox never
+		// started, which is a different problem with a different fix — see
+		// api.JobLogNoSuchJobMessage's own doc comment for the dogfood
+		// session that motivated splitting them.
 		if j.RuntimeID == "" {
-			return &sandbox.ExecResponse{Stdout: "log not available\n"}
+			return &sandbox.ExecResponse{Stdout: api.JobLogNoRuntimeMessage(req.JobID, j.Status) + "\n"}
 		}
 		if e.logReader == nil {
 			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid job log unavailable"}
@@ -459,7 +465,7 @@ func (e *boidBuiltinExecutor) ExecuteBoidBuiltin(goCtx context.Context, ctx sand
 		data, err := e.logReader.ReadJobLog(j.RuntimeID)
 		if err != nil {
 			if errors.Is(err, os.ErrNotExist) {
-				return &sandbox.ExecResponse{Stdout: "log not available\n"}
+				return &sandbox.ExecResponse{Stdout: api.JobLogTranscriptGoneMessage(j.RuntimeID) + "\n"}
 			}
 			return &sandbox.ExecResponse{ExitCode: 1, Stderr: err.Error()}
 		}

@@ -70,6 +70,12 @@ func TestJobHandler_Log_OK(t *testing.T) {
 	}
 }
 
+// TestJobHandler_Log_JobNotFound pins that an id that names no job at all
+// says so — the single most common way to reach this endpoint by mistake is
+// passing a TASK id (`boid job log <task-id>`), and the pre-fix body claimed
+// "runtime cleaned up", which describes a completely different situation (a
+// job that really ran, whose transcript was later removed). A 2026-07-28
+// dogfood session lost time to exactly that misreport.
 func TestJobHandler_Log_JobNotFound(t *testing.T) {
 	h := &JobHandler{
 		Jobs:      &stubJobStore{},
@@ -83,6 +89,16 @@ func TestJobHandler_Log_JobNotFound(t *testing.T) {
 
 	if w.Code != http.StatusNotFound {
 		t.Errorf("status = %d, want 404", w.Code)
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, "no such job") {
+		t.Errorf("body %q should say the job does not exist", body)
+	}
+	if !strings.Contains(body, "boid job list --task") {
+		t.Errorf("body %q should point at the task-id mixup", body)
+	}
+	if strings.Contains(body, "cleaned up") {
+		t.Errorf("body %q must not claim a runtime was cleaned up: no job ever existed", body)
 	}
 }
 
@@ -107,8 +123,18 @@ func TestJobHandler_Log_NoRuntimeID(t *testing.T) {
 	if w.Code != http.StatusNotFound {
 		t.Errorf("status = %d, want 404", w.Code)
 	}
-	if !strings.Contains(w.Body.String(), "log not available") {
-		t.Errorf("body %q should contain 'log not available'", w.Body.String())
+	body := w.Body.String()
+	if !strings.Contains(body, "log not available") {
+		t.Errorf("body %q should contain 'log not available'", body)
+	}
+	if !strings.Contains(body, "no runtime") {
+		t.Errorf("body %q should say the job has no runtime yet", body)
+	}
+	if !strings.Contains(body, string(JobStatusCompleted)) {
+		t.Errorf("body %q should carry the job status, which is what tells a reader whether the sandbox is still coming up or already gave up", body)
+	}
+	if strings.Contains(body, "cleaned up") {
+		t.Errorf("body %q must not claim a runtime was cleaned up: none was ever assigned", body)
 	}
 }
 
@@ -133,8 +159,57 @@ func TestJobHandler_Log_RuntimeGCed(t *testing.T) {
 	if w.Code != http.StatusNotFound {
 		t.Errorf("status = %d, want 404", w.Code)
 	}
-	if !strings.Contains(w.Body.String(), "log not available") {
-		t.Errorf("body %q should contain 'log not available'", w.Body.String())
+	body := w.Body.String()
+	if !strings.Contains(body, "log not available") {
+		t.Errorf("body %q should contain 'log not available'", body)
+	}
+	if !strings.Contains(body, "runtime-gone") {
+		t.Errorf("body %q should name the runtime whose transcript is missing, so the reader can go look for it by hand", body)
+	}
+}
+
+// TestJobHandler_Log_404BodiesAreDistinct is the mutation guard for the three
+// tests above: each one on its own would still pass if the handler collapsed
+// back to a single shared "log not available (runtime cleaned up)" string for
+// every 404, as long as that string happened to contain the substrings each
+// test looks for. The whole point of the fix is that a reader can tell the
+// three situations apart, so assert they are pairwise different.
+func TestJobHandler_Log_404BodiesAreDistinct(t *testing.T) {
+	logBody := func(h *JobHandler, id string) string {
+		req := httptest.NewRequest("GET", "/"+id+"/log", nil)
+		w := httptest.NewRecorder()
+		h.Log(w, req.WithContext(newChiContext(map[string]string{"id": id})))
+		if w.Code != http.StatusNotFound {
+			t.Fatalf("status = %d, want 404 for %s", w.Code, id)
+		}
+		return w.Body.String()
+	}
+
+	noJob := logBody(&JobHandler{
+		Jobs:      &stubJobStore{},
+		LogReader: &stubJobLogReader{},
+	}, "missing")
+	noRuntime := logBody(&JobHandler{
+		Jobs:      &stubJobStore{job: &Job{ID: "job-2", RuntimeID: "", Status: JobStatusRunning}},
+		LogReader: &stubJobLogReader{},
+	}, "job-2")
+	gone := logBody(&JobHandler{
+		Jobs:      &stubJobStore{job: &Job{ID: "job-3", RuntimeID: "runtime-gone", Status: JobStatusCompleted}},
+		LogReader: &stubJobLogReader{err: os.ErrNotExist},
+	}, "job-3")
+
+	for _, pair := range []struct {
+		a, b  string
+		aName string
+		bName string
+	}{
+		{noJob, noRuntime, "job-not-found", "no-runtime"},
+		{noJob, gone, "job-not-found", "transcript-gone"},
+		{noRuntime, gone, "no-runtime", "transcript-gone"},
+	} {
+		if pair.a == pair.b {
+			t.Errorf("%s and %s produce the same body %q; they are different situations and must read differently", pair.aName, pair.bName, pair.a)
+		}
 	}
 }
 
