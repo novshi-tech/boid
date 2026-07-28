@@ -887,6 +887,11 @@ func TestReloadProjects_BlockedByRemove(t *testing.T) {
 type createProjectMetaStore struct {
 	meta                *orchestrator.ProjectMeta
 	setWorkspaceIDCalls map[string]string
+	// removed records every Remove call, so a test can assert that a failed
+	// registration did NOT evict an ESTABLISHED project's cached meta
+	// (removeCachedMetaUnlessRegistered — the id comes from project.yaml, so
+	// two registrations of the same repo collide on it).
+	removed []string
 }
 
 func (s *createProjectMetaStore) Load(_ string) (*orchestrator.ProjectMeta, error) {
@@ -899,8 +904,8 @@ func (s *createProjectMetaStore) LoadBareRepoExpectingID(_, _ string) (*orchestr
 	return s.meta, nil
 }
 func (s *createProjectMetaStore) Get(_ string) (*orchestrator.ProjectMeta, bool) { return nil, false }
-func (s *createProjectMetaStore) Remove(_ string)                               {}
-func (s *createProjectMetaStore) LoadAll(_ []*orchestrator.Project) []error     { return nil }
+func (s *createProjectMetaStore) Remove(id string)                               { s.removed = append(s.removed, id) }
+func (s *createProjectMetaStore) LoadAll(_ []*orchestrator.Project) []error      { return nil }
 func (s *createProjectMetaStore) Status(_ string) orchestrator.ProjectStatus {
 	return orchestrator.ProjectStatus{State: orchestrator.StatusReady}
 }
@@ -1220,4 +1225,50 @@ func equalStringSliceForTest(a, b []string) bool {
 		}
 	}
 	return true
+}
+
+// TestCreateProject_InsertConflict_KeepsTheEstablishedProjectsMeta is the
+// legacy dir-registration twin of
+// TestCreateProjectFromGitURL_InsertConflict_KeepsTheEstablishedProjectsMeta
+// (project_git_url_test.go — that one has the full writeup). The CLI no
+// longer offers `boid project add <dir>`, but this path is still reachable
+// through POST /api/projects with a work_dir (internal/api/project.go), and
+// it caches by the same project.yaml `id:`, so it corrupts the same way.
+func TestCreateProject_InsertConflict_KeepsTheEstablishedProjectsMeta(t *testing.T) {
+	established := &orchestrator.Project{ID: "dup-dir", WorkDir: "/already/registered"}
+	repo := &stubProjectRepository{projects: []*orchestrator.Project{established}}
+	repo.createProjectHook = func(*orchestrator.Project) error {
+		return fmt.Errorf("insert project: constraint failed: UNIQUE constraint failed: projects.id (1555)")
+	}
+	// Same id, different directory — what registering an already-registered
+	// project.yaml from a second checkout produces.
+	meta := &createProjectMetaStore{meta: &orchestrator.ProjectMeta{ID: "dup-dir"}}
+	svc := &ProjectAppService{Projects: repo, Meta: meta}
+
+	if _, err := svc.CreateProject("/some/other/work/dir"); err == nil {
+		t.Fatal("expected the duplicate registration to fail")
+	}
+	if len(meta.removed) != 0 {
+		t.Errorf("the established project's cached meta was evicted (Remove called for %v); "+
+			"its `boid project list` name and task_behaviors would read empty until `boid project reload`", meta.removed)
+	}
+}
+
+// TestCreateProject_InsertFails_StillRollsBackItsOwnCacheWrite is the other
+// side: with no row owning the id, the cache entry really is this call's own
+// and must still be rolled back.
+func TestCreateProject_InsertFails_StillRollsBackItsOwnCacheWrite(t *testing.T) {
+	repo := &stubProjectRepository{} // no project owns "fresh-dir"
+	repo.createProjectHook = func(*orchestrator.Project) error {
+		return fmt.Errorf("simulated DB failure unrelated to any id conflict")
+	}
+	meta := &createProjectMetaStore{meta: &orchestrator.ProjectMeta{ID: "fresh-dir"}}
+	svc := &ProjectAppService{Projects: repo, Meta: meta}
+
+	if _, err := svc.CreateProject("/some/work/dir"); err == nil {
+		t.Fatal("expected the registration to fail")
+	}
+	if len(meta.removed) != 1 || meta.removed[0] != "fresh-dir" {
+		t.Errorf("a failed registration did not roll back its own cache write; Remove calls = %v", meta.removed)
+	}
 }
