@@ -1814,6 +1814,19 @@ func (s stubActionStore) ListActionsByTask(taskID string) ([]*orchestrator.Actio
 
 type stubMetaStore struct {
 	meta *orchestrator.ProjectMeta
+	// hydrated, when non-nil, is what GetWithWorkspace returns instead of
+	// meta — lets a test tell apart "the code called bare Get" from "the
+	// code called GetWithWorkspace" (docs/plans/workspace-default-project.md
+	// §PR分割案 PR2), since both would otherwise return the identical value
+	// and a test could not distinguish which path actually ran.
+	hydrated *orchestrator.ProjectMeta
+	// hydrateErr, when non-nil, makes GetWithWorkspace return this error
+	// regardless of meta/hydrated — simulates the two failure modes real
+	// GetWithWorkspace has that bare Get can never produce (a non-ErrNotExist
+	// workspace.yaml load failure, or a host_commands conflict/reject-rule
+	// violation; docs/plans/workspace-default-project.md §PR分割案 PR2's
+	// failure-mode table).
+	hydrateErr error
 }
 
 func (s stubMetaStore) Get(id string) (*orchestrator.ProjectMeta, bool) {
@@ -1824,6 +1837,12 @@ func (s stubMetaStore) Get(id string) (*orchestrator.ProjectMeta, bool) {
 }
 
 func (s stubMetaStore) GetWithWorkspace(_ context.Context, _ string) (*orchestrator.ProjectMeta, error) {
+	if s.hydrateErr != nil {
+		return nil, s.hydrateErr
+	}
+	if s.hydrated != nil {
+		return s.hydrated, nil
+	}
 	if s.meta == nil {
 		return nil, fmt.Errorf("stubMetaStore: meta not loaded")
 	}
