@@ -167,6 +167,23 @@ RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg -o 
     && apt-get install -y --no-install-recommends "gh=${GH_VERSION}" \
     && rm -rf /var/lib/apt/lists/*
 
+# python3 runtime for pip-distributed host_commands (e.g. az CLI, which has
+# no standalone/single-binary distribution — it is a pip package and needs a
+# python3 interpreter to run at all). Unlike gh above, the tool itself is
+# NOT installed here: only the interpreter/pip/venv toolchain, which is a
+# shared-library-shaped dependency in the same sense as the .NET/Playwright
+# native libs earlier in this file. The actual `pip install` (into a venv
+# under $HOME, e.g. ~/host-tools/<name>-venv) happens against the daemon's
+# boid_state volume — the same "runtime stays on the persistent volume,
+# only its native deps are baked" split every other host-provisioned
+# toolchain in this image follows. python3-venv is required rather than
+# relying on `pip install --user`: Debian 12's python3-pip enforces
+# PEP 668 (externally-managed-environment) and refuses a bare pip install,
+# venv is the standard way around that.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends python3 python3-venv python3-pip \
+    && rm -rf /var/lib/apt/lists/*
+
 RUN mkdir -p /opt/boid-host-tools
 
 # The job/daemon uid, matching the host daemon uid (決定 4 — typically
