@@ -82,9 +82,17 @@ func ReadProjectMetaFromBareRepo(bareRepoPath string) (*ProjectMeta, error) {
 // its stdout. Failure covers every reason the blob might not be readable —
 // the bare repo missing/corrupt, HEAD unresolvable (no commits), or relPath
 // simply absent from the tree — all of which docs/plans/volume-only-daemon.md
-// §論点a's auto-prune-retirement invariant treats identically (mark the
-// project degraded, never hard-delete its DB row), so callers do not need a
-// finer-grained classification here.
+// §論点a's auto-prune-retirement invariant treats identically today (mark
+// the project degraded, never hard-delete its DB row).
+//
+// The returned error is a *GitHeadReadError classifying WHICH of those
+// shapes it was (docs/plans/workspace-default-project.md 論点c) — scaffolding
+// for a future PR that will let "relPath absent" fall back to a
+// workspace-level default instead of failing outright, while every other
+// shape keeps failing exactly as it does today. No caller reads
+// GitHeadReadError.Kind yet: they all just check err != nil, and Error()
+// reproduces this function's pre-existing plain-error message byte for
+// byte, so today's behavior is unchanged.
 func gitShowHEAD(bareRepoPath, relPath string) ([]byte, error) {
 	cmd := exec.Command("git", "-C", bareRepoPath, "show", "HEAD:"+relPath)
 	var stdout, stderr bytes.Buffer
@@ -92,12 +100,108 @@ func gitShowHEAD(bareRepoPath, relPath string) ([]byte, error) {
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
 		msg := strings.TrimSpace(stderr.String())
+		var plain error
 		if msg != "" {
-			return nil, fmt.Errorf("%s: git show HEAD:%s: %w: %s", bareRepoPath, relPath, err, msg)
+			plain = fmt.Errorf("%s: git show HEAD:%s: %w: %s", bareRepoPath, relPath, err, msg)
+		} else {
+			plain = fmt.Errorf("%s: git show HEAD:%s: %w", bareRepoPath, relPath, err)
 		}
-		return nil, fmt.Errorf("%s: git show HEAD:%s: %w", bareRepoPath, relPath, err)
+		return nil, &GitHeadReadError{
+			BareRepoPath: bareRepoPath,
+			RelPath:      relPath,
+			Kind:         classifyGitHeadReadFailure(bareRepoPath, relPath),
+			err:          plain,
+		}
 	}
 	return stdout.Bytes(), nil
+}
+
+// GitHeadReadFailureKind classifies why gitShowHEAD failed to read relPath
+// out of a bare repo's HEAD tree (docs/plans/workspace-default-project.md
+// 論点c).
+type GitHeadReadFailureKind int
+
+const (
+	// GitHeadReadFailureOther is the catch-all: HEAD resolves fine (`git
+	// rev-parse --verify HEAD` succeeded) but reading relPath still failed
+	// for some other reason. Rare in practice — HeadUnresolved and
+	// PathAbsent should cover nearly everything gitShowHEAD sees.
+	GitHeadReadFailureOther GitHeadReadFailureKind = iota
+	// GitHeadReadFailureHeadUnresolved means `git rev-parse --verify HEAD`
+	// itself failed: either a bare repo with zero commits yet, or the
+	// directory is not a valid git repository at all. The design doc groups
+	// both under this one kind because both fail registration identically
+	// ("HEAD が解決できない ... repo 自体の異常なので従来通り失敗させる").
+	GitHeadReadFailureHeadUnresolved
+	// GitHeadReadFailurePathAbsent means HEAD resolves fine but relPath is
+	// simply not present in its tree — the "project.yaml was never
+	// committed" case a future PR will treat differently from the other
+	// two kinds (fall back to a workspace default instead of failing).
+	GitHeadReadFailurePathAbsent
+)
+
+// String renders the failure kind for logging/diagnostics.
+func (k GitHeadReadFailureKind) String() string {
+	switch k {
+	case GitHeadReadFailureHeadUnresolved:
+		return "head-unresolved"
+	case GitHeadReadFailurePathAbsent:
+		return "path-absent"
+	default:
+		return "other"
+	}
+}
+
+// GitHeadReadError is the typed error gitShowHEAD wraps its failures in.
+// Callers use errors.As to extract Kind; Error() and Unwrap() preserve
+// gitShowHEAD's pre-existing plain-error message and %w chain exactly, so
+// every current caller (which only checks err != nil) is unaffected — same
+// pattern as ProjectMigrationError (migration_error.go).
+type GitHeadReadError struct {
+	// BareRepoPath and RelPath are the arguments gitShowHEAD was called
+	// with, for callers that want to log/report without re-parsing Error().
+	BareRepoPath string
+	RelPath      string
+	Kind         GitHeadReadFailureKind
+	err          error
+}
+
+func (e *GitHeadReadError) Error() string { return e.err.Error() }
+func (e *GitHeadReadError) Unwrap() error { return e.err }
+
+// classifyGitHeadReadFailure determines why reading relPath out of
+// bareRepoPath's HEAD tree failed, using exit codes and stdout only — never
+// stderr text, since git's stderr messages are gettext-localized and
+// therefore locale/git-version dependent (docs/plans/
+// workspace-default-project.md 論点c, fable review m5). Two git
+// subprocesses, in order:
+//
+//  1. `git rev-parse --verify HEAD` — fails exactly when HEAD does not
+//     resolve to a commit (empty repo, or the bare repo isn't a valid git
+//     repository at all).
+//  2. `git ls-tree HEAD -- <relPath>` — once HEAD resolves, this always
+//     exits 0 (even for an absent path); empty stdout means relPath is not
+//     in the tree, non-empty stdout means it IS present (so whatever made
+//     gitShowHEAD's own `git show` fail was something else entirely).
+//
+// Only called from gitShowHEAD's failure path — the success path never pays
+// for these extra subprocesses.
+func classifyGitHeadReadFailure(bareRepoPath, relPath string) GitHeadReadFailureKind {
+	verify := exec.Command("git", "-C", bareRepoPath, "rev-parse", "--verify", "HEAD")
+	if err := verify.Run(); err != nil {
+		return GitHeadReadFailureHeadUnresolved
+	}
+
+	lsTree := exec.Command("git", "-C", bareRepoPath, "ls-tree", "HEAD", "--", relPath)
+	var lsOut bytes.Buffer
+	lsTree.Stdout = &lsOut
+	if err := lsTree.Run(); err != nil {
+		return GitHeadReadFailureOther
+	}
+	if strings.TrimSpace(lsOut.String()) == "" {
+		return GitHeadReadFailurePathAbsent
+	}
+	return GitHeadReadFailureOther
 }
 
 // DefaultBranch returns a bare repo's default branch — its HEAD symbolic
