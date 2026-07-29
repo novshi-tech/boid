@@ -84,12 +84,13 @@ spec:
 	}
 }
 
-// TestDecodeWorkspaceEnvelopeDocuments_RejectsDuplicateTaskBehaviorAlias is
-// the genuine-ambiguity rejection normalizeWorkspaceDefaultTaskBehaviors's
-// alreadyMayBeMirrored=false path exists for (spec_loader.go): a document
-// defining BOTH a legacy alias name and its canonical name is ambiguous —
-// same contract project.yaml's own parseProjectMetaBytes enforces — and must
-// be rejected here, at first decode, not silently resolved.
+// TestDecodeWorkspaceEnvelopeDocuments_RejectsDuplicateTaskBehaviorAlias
+// pins normalizeWorkspaceDefaultTaskBehaviors's duplicate-detection
+// (spec_loader.go — it never strips alias mirrors, so this check always
+// sees both keys): a document defining BOTH a legacy alias name and its
+// canonical name is ambiguous — same contract project.yaml's own
+// parseProjectMetaBytes enforces — and must be rejected here, at first
+// decode, not silently resolved.
 func TestDecodeWorkspaceEnvelopeDocuments_RejectsDuplicateTaskBehaviorAlias(t *testing.T) {
 	data := []byte(`
 apiVersion: boid.dev/v1
@@ -220,26 +221,45 @@ func TestMergeInto_DefaultProjectFields_PresentClearsOrReplaces(t *testing.T) {
 	}
 }
 
-// TestExportThenApply_TaskBehaviorsWithKnownAliasSurvives is the concrete
-// end-to-end regression codex review caught on PR3 (Major 1): a workspace
-// default whose only task_behaviors entry has a legacy alias (here,
-// "executor" aliases to "dev" — BehaviorAliases, spec_types.go) must
-// export via NewWorkspaceEnvelopeFromMeta/MarshalWorkspaceEnvelope and then
-// re-decode via DecodeWorkspaceEnvelopeDocuments (exactly what `boid
-// workspace export` followed by `boid workspace apply -f` does) WITHOUT
-// error. Before the fix, normalizeWorkspaceDefaultTaskBehaviors added a
-// "dev" mirror at BOTH the DB-save and the envelope-decode entry points, so
-// a value with only "executor" got exported as {"executor", "dev"} — and
-// re-applying that export tripped normalizeBehaviorAliases's own
-// duplicate-definition guard on its own mirror, meaning a workspace's own
-// honest export could never be re-applied.
-func TestExportThenApply_TaskBehaviorsWithKnownAliasSurvives(t *testing.T) {
+// TestSaveExportThenApply_TaskBehaviorsWithKnownAliasSurvives is the
+// concrete end-to-end regression codex review caught on PR3 (Major 1): a
+// workspace default whose only task_behaviors entry has a legacy alias
+// (here, "dev" aliases to "executor" — BehaviorAliases, spec_types.go) must
+// survive the REAL round trip `boid workspace export` followed by `boid
+// workspace apply -f` performs: Save it to the repository, Load it back
+// (this is where the bug actually lived — see below), export via
+// NewWorkspaceEnvelopeFromMeta/MarshalWorkspaceEnvelope, then re-decode via
+// DecodeWorkspaceEnvelopeDocuments, all without error.
+//
+// Going through Save/Load (rather than exporting a hand-built *WorkspaceMeta
+// directly) matters: codex review's first re-verification pass flagged that
+// an earlier version of this test skipped the repository round trip
+// entirely, which meant it could not actually have caught the original bug
+// — NewWorkspaceEnvelopeFromMeta itself never called
+// normalizeWorkspaceDefaultTaskBehaviors either before or after the fix; the
+// mirror only ever got introduced by marshalWorkspaceMetaColumns
+// (workspace_repository.go) at Save time. Before the fix, saving
+// {"executor": ...} persisted {"executor": ..., "dev": ...} (the added
+// mirror); Load then read that mirrored pair straight back; exporting IT
+// produced a document with both keys; and re-applying THAT export tripped
+// normalizeBehaviorAliases's own duplicate-definition guard on its own
+// mirror — a workspace's own honest export could never be re-applied.
+func TestSaveExportThenApply_TaskBehaviorsWithKnownAliasSurvives(t *testing.T) {
+	repo := newTestWorkspaceRepo(t)
 	meta := &WorkspaceMeta{
 		TaskBehaviors: map[string]TaskBehavior{
 			"executor": {Traits: []string{"impl"}},
 		},
 	}
-	envelope := NewWorkspaceEnvelopeFromMeta("team-a", meta, nil, "")
+	if err := repo.Save("ws-export-apply", meta); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	loaded, err := repo.Load("ws-export-apply")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	envelope := NewWorkspaceEnvelopeFromMeta("team-a", loaded, nil, "")
 
 	exported, err := MarshalWorkspaceEnvelope(envelope)
 	if err != nil {

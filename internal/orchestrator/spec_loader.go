@@ -445,10 +445,17 @@ func stripAliasMirrors(behaviors map[string]TaskBehavior) map[string]TaskBehavio
 // hazard, which this comment exists to make sure nobody reintroduces.
 //
 // Because this never adds/strips mirrors, calling it on already-mirrored
-// input is not something a correct caller should ever need to do: both of
-// this PR's entry points only ever see canonical-only input (envelope
-// decode gets fresh user YAML; DB save gets a value that — by the same
-// invariant, transitively — was never persisted with mirrors either).
+// input (a map carrying BOTH an alias key and its canonical counterpart,
+// e.g. from a prior addAliasMirrors pass elsewhere) is not something a
+// correct caller should ever need to do: both of this PR's entry points are
+// invariant-clean of that specific shape. Envelope decode gets fresh user
+// YAML, which may legitimately use an alias-only name (e.g. just "dev", no
+// "executor" — normalizeBehaviorAliases renames it to canonical, no error)
+// but never a mirror PAIR unless the user wrote one on purpose (in which
+// case rejecting it as ambiguous is correct, not a bug). DB save gets a
+// value that — by the same invariant, transitively, since this function is
+// the only path that writes the column — was never persisted with a mirror
+// pair either.
 func normalizeWorkspaceDefaultTaskBehaviors(scope string, behaviors map[string]TaskBehavior) (map[string]TaskBehavior, error) {
 	if len(behaviors) == 0 {
 		return behaviors, nil

@@ -414,11 +414,14 @@ func nowForRevision() time.Time {
 // other of the two mandated entry points, alongside envelope decode in
 // decodeWorkspaceEnvelopeSpec) — this is what makes a WorkspaceMeta written
 // by ANY path (not just the envelope apply path) end up with validated,
-// canonically-normalized-with-mirrors task_behaviors, since this function is
-// the single choke point every write (Create/Save/UpdateIfRevisionMatches)
-// funnels through. Stored as YAML, not JSON, unlike every other column here
-// — see decodeWorkspaceMetaColumns's matching comment for why (TaskBehavior.
-// Hooks is `json:"-"`).
+// canonical-only task_behaviors (alias names renamed to their canonical
+// form, no back-compat mirror entries added — see
+// normalizeWorkspaceDefaultTaskBehaviors's own doc comment for why a mirror
+// must never reach persisted storage), since this function is the single
+// choke point every write (Create/Save/UpdateIfRevisionMatches) funnels
+// through. Stored as YAML, not JSON, unlike every other column here — see
+// decodeWorkspaceMetaColumns's matching comment for why (TaskBehavior.Hooks
+// is `json:"-"`).
 func marshalWorkspaceMetaColumns(slug string, meta *WorkspaceMeta) (hostCommandsJSON, envJSON, allowedDomainsJSON, extraReposJSON, capabilitiesJSON, bindingsJSON string, containerImage any, taskBehaviorsYAML, baseBranch, forkPoint, defaultTaskBehavior string, err error) {
 	hostCommandsJSON, err = marshalJSONOrDefault(meta.HostCommands, len(meta.HostCommands) == 0, "[]")
 	if err != nil {
