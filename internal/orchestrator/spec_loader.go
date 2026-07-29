@@ -115,22 +115,30 @@ func parseProjectMetaBytes(dirLabel string, data []byte) (*ProjectMeta, error) {
 		}
 	}
 
-	if meta.ID == "" {
-		return nil, fmt.Errorf("project.yaml: id is required")
-	}
-	// Reject the URLDerivedProjectIDPrefix on a hand-authored id (Codex
-	// review round 2 Major, docs/plans/workspace-default-project.md 論点e
-	// PR6): every "is this project.yaml-less" check in the codebase
-	// (ApplyAction's hard-error guard, LoadAll/FetchProject's reload
-	// fallback) gates purely on this prefix, on the assumption — stated but
-	// never enforced — that no hand-authored project.yaml `id:` would ever
-	// collide with it. A project.yaml that DID author an "url-..." id would
-	// be misidentified as project.yaml-less everywhere those checks run,
-	// including ApplyAction's PR6 hard-error path, where the consequence is
-	// now a hard dispatch failure rather than a harmless fallback. Rejecting
-	// it at load time closes the collision at its source instead of
-	// threading a second signal through every call site.
-	if IsURLDerivedProjectID(meta.ID) {
+	// docs/plans/workspace-default-project.md 論点h 案1 (PR7): `id:` is
+	// optional. project.yaml declaring one is validated no further here
+	// (the PK-uniqueness / id-drift checks live at the registration/reload
+	// call sites, orchestrator.ProjectStore.LoadBareRepoExpectingID /
+	// LoadExpectingID and internal/api's CreateProjectFromGitURL); omitting
+	// it entirely falls through to the caller's URL-derived id (the exact
+	// same derivation a wholly missing project.yaml already gets — see
+	// internal/api/project_no_yaml.go's deriveProjectIDFromURL). This used
+	// to be a hard requirement ("project.yaml: id is required"); removing
+	// it is safe for the overwhelming majority of existing project.yaml
+	// files, which declare `id:` explicitly and are completely unaffected.
+	//
+	// A NON-empty id is still validated against the URLDerivedProjectIDPrefix
+	// reservation below (Codex review round 2 Major, PR6, 論点e) — PR7 only
+	// widens the empty-id case to "optional, not an error"; it does not
+	// relax PR6's rule that a hand-authored id may never collide with the
+	// prefix reserved for URL-derived ids. This is additional, load-time
+	// defense-in-depth alongside PR7's own provenance verification
+	// (ProjectStore.reconcileExpectedProjectID / isVerifiedURLDerivedID,
+	// which confirm a registered url-derived id actually came from the
+	// project's UpstreamURL rather than trusting the prefix alone) —
+	// belt-and-suspenders against the same hand-authored-`url-`-id class of
+	// bug, enforced at two different points in the system.
+	if meta.ID != "" && IsURLDerivedProjectID(meta.ID) {
 		return nil, fmt.Errorf("project.yaml: id must not start with %q (reserved for project.yaml-less registrations, docs/plans/workspace-default-project.md 決定3)", URLDerivedProjectIDPrefix)
 	}
 	if strings.TrimSpace(meta.Name) == "" {

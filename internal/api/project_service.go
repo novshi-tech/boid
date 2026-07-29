@@ -40,7 +40,7 @@ type ProjectAppService struct {
 		// match, so an id drifted to collide with an unrelated already-
 		// registered project can never clobber (or, on cleanup, delete) that
 		// other project's cache entry.
-		LoadBareRepoExpectingID(bareRepoPath, expectedID string) (*orchestrator.ProjectMeta, error)
+		LoadBareRepoExpectingID(bareRepoPath, expectedID, upstreamURL string) (*orchestrator.ProjectMeta, error)
 		Get(id string) (*orchestrator.ProjectMeta, bool)
 		Remove(id string)
 		LoadAll(projects []*orchestrator.Project) []error
@@ -535,18 +535,20 @@ func (s *ProjectAppService) CreateProjectFromGitURL(ctx context.Context, gitURL,
 	}
 
 	meta, err := s.Meta.LoadBareRepo(bareRepoPath)
-	// noYAMLMeta is non-nil exactly when the fallback below fired — its cache
-	// write is deliberately deferred until AFTER CreateProject succeeds (see
-	// the call site below), unlike the ordinary LoadBareRepo success path
-	// (which writes the cache as a side effect of the read itself, before
-	// CreateProject is even attempted). Writing it here instead would
-	// overwrite an ALREADY-REGISTERED project's cache entry the moment this
-	// call's derived id collides with one (Codex review, PR5 round 1 P1):
-	// removeCachedMetaUnlessRegistered's failure-path check only stops the
-	// entry from being REMOVED afterward, it does not restore whatever this
-	// call clobbered on the way in, and SetSynthesizedMeta additionally
-	// clears any degraded status that established project may have been
-	// carrying.
+	// noYAMLMeta is non-nil exactly when EITHER of the two id-synthesis
+	// fallbacks below fired — the wholly-missing-project.yaml path (PR5,
+	// 論点b/c/d) or the present-but-id-less-project.yaml path (PR7, 論点h
+	// 案1). In both cases its cache write is deliberately deferred until
+	// AFTER CreateProject succeeds (see the call site below), unlike the
+	// ordinary LoadBareRepo success path (which writes the cache as a side
+	// effect of the read itself, before CreateProject is even attempted).
+	// Writing it here instead would overwrite an ALREADY-REGISTERED
+	// project's cache entry the moment this call's derived id collides with
+	// one (Codex review, PR5 round 1 P1): removeCachedMetaUnlessRegistered's
+	// failure-path check only stops the entry from being REMOVED afterward,
+	// it does not restore whatever this call clobbered on the way in, and
+	// SetSynthesizedMeta additionally clears any degraded status that
+	// established project may have been carrying.
 	var noYAMLMeta *orchestrator.ProjectMeta
 	if err != nil {
 		// docs/plans/workspace-default-project.md PR5 (論点b/c/d): a
@@ -580,6 +582,26 @@ func (s *ProjectAppService) CreateProjectFromGitURL(ctx context.Context, gitURL,
 			}
 			return nil, &StatusError{Code: http.StatusBadRequest, Message: fmt.Sprintf("load project.yaml from %s (%s): %v", gitURL, bareRepoPath, err)}
 		}
+	} else if meta.ID == "" {
+		// docs/plans/workspace-default-project.md 論点h 案1 (PR7):
+		// project.yaml IS present and parsed fine, it simply omits `id:`.
+		// Unlike the wholly-missing-project.yaml case above, every other
+		// field the file declared (task_behaviors, etc.) is kept as-is —
+		// only the id is synthesized, via the exact same URL-derivation
+		// deriveProjectIDFromURL already uses for the no-project.yaml path.
+		// s.Meta.LoadBareRepo deliberately left this meta uncached (its own
+		// doc comment) precisely so this id can be assigned before the
+		// cache is ever touched.
+		derivedID, derr := deriveProjectIDFromURL(gitURL)
+		if derr != nil {
+			if rmErr := os.RemoveAll(bareRepoPath); rmErr != nil {
+				slog.Warn("CreateProjectFromGitURL: failed to roll back bare repo after id-less project.yaml derivation failure",
+					"path", bareRepoPath, "error", rmErr)
+			}
+			return nil, &StatusError{Code: http.StatusBadRequest, Message: derr.Error()}
+		}
+		meta.ID = derivedID
+		noYAMLMeta = meta
 	}
 
 	project := &orchestrator.Project{
@@ -605,10 +627,11 @@ func (s *ProjectAppService) CreateProjectFromGitURL(ctx context.Context, gitURL,
 		return nil, &StatusError{Code: http.StatusInternalServerError, Message: err.Error()}
 	}
 
-	// The no-YAML fallback's synthesized meta is cached only now, having just
-	// confirmed via the successful insert above that this id is NOT already
-	// owned by another registered project (see noYAMLMeta's own doc comment
-	// above for the collision this ordering avoids).
+	// Either id-synthesis fallback's meta (no-YAML or id-less-YAML) is
+	// cached only now, having just confirmed via the successful insert
+	// above that this id is NOT already owned by another registered
+	// project (see noYAMLMeta's own doc comment above for the collision
+	// this ordering avoids).
 	if noYAMLMeta != nil {
 		s.Meta.SetSynthesizedMeta(noYAMLMeta.ID, noYAMLMeta)
 	}
@@ -754,7 +777,7 @@ func (s *ProjectAppService) FetchProject(ctx context.Context, id string) (*orche
 	// invoked against); a mismatch below is guaranteed to have left every
 	// existing cache entry, including one already registered under the
 	// drifted id, completely untouched.
-	meta, err := s.Meta.LoadBareRepoExpectingID(project.WorkDir, id)
+	meta, err := s.Meta.LoadBareRepoExpectingID(project.WorkDir, id, project.UpstreamURL)
 	if err != nil {
 		// docs/plans/workspace-default-project.md PR5, §現状の実測5: a
 		// project.yaml that was never committed (GitHeadReadFailurePathAbsent)
@@ -765,15 +788,24 @@ func (s *ProjectAppService) FetchProject(ctx context.Context, id string) (*orche
 		// kind (HeadUnresolved / Other) keeps the existing degrade-on-failure
 		// behavior unchanged.
 		//
-		// Gated on id carrying orchestrator.URLDerivedProjectIDPrefix (Codex
-		// review, PR5 round 2 Major) — see that constant's own doc comment:
-		// without this gate, an ORDINARY project.yaml-bearing project whose
-		// file was deleted upstream by mistake would also match
-		// GitHeadReadFailurePathAbsent and get silently switched to the
-		// workspace default with no degraded signal, instead of degrading as
-		// it always has.
+		// Gated on id being VERIFIED url-derived (Codex review, PR5 round 2
+		// Major, tightened by round-4 Major fix — PR7) — see that constant's
+		// own doc comment: without this gate, an ORDINARY project.yaml-
+		// bearing project whose file was deleted upstream by mistake would
+		// also match GitHeadReadFailurePathAbsent and get silently switched
+		// to the workspace default with no degraded signal, instead of
+		// degrading as it always has. Checking id's PREFIX alone is not
+		// enough either (round-4 finding): a hand-authored `id: url-custom`
+		// that was committed at some point, then had its project.yaml
+		// deleted upstream, would also match a bare prefix check — confirm
+		// id actually equals deriveProjectIDFromURL(project.UpstreamURL),
+		// the same verification orchestrator.ProjectStore applies for a
+		// still-present project.yaml's id: drift (LoadAll/
+		// reconcileExpectedProjectID).
 		var headErr *orchestrator.GitHeadReadError
-		if errors.As(err, &headErr) && headErr.Kind == orchestrator.GitHeadReadFailurePathAbsent && strings.HasPrefix(id, orchestrator.URLDerivedProjectIDPrefix) {
+		derivedID, derivedErr := deriveProjectIDFromURL(project.UpstreamURL)
+		isVerifiedURLDerivedID := strings.HasPrefix(id, orchestrator.URLDerivedProjectIDPrefix) && derivedErr == nil && derivedID == id
+		if errors.As(err, &headErr) && headErr.Kind == orchestrator.GitHeadReadFailurePathAbsent && isVerifiedURLDerivedID {
 			// Recovery order mirrors orchestrator.ProjectStore's
 			// synthesizeMetaForReload (Codex review, PR5 round 1 P1): the
 			// cached Name first, else project.WorkDir's own basename (the

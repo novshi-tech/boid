@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/novshi-tech/boid/internal/api"
 	"github.com/novshi-tech/boid/internal/orchestrator"
 	projectspec "github.com/novshi-tech/boid/internal/orchestrator"
 )
@@ -89,6 +90,35 @@ task_behaviors:
 	}
 	if got.Name != "Loaded Project" {
 		t.Fatalf("expected name 'Loaded Project', got %s", got.Name)
+	}
+}
+
+// TestProjectStore_Load_EmptyID_Rejected pins docs/plans/workspace-default-
+// project.md 論点h 案1 (PR7, Codex round-1 Major): `id:` is optional for the
+// git-URL / bare-repo registration path ONLY, because that path can derive
+// a URL-based fallback id (internal/api's deriveProjectIDFromURL). This is
+// the LEGACY host-filesystem `boid project add <dir>` path (ProjectStore.
+// Load, used by ProjectAppService.CreateProject) — there is no git URL here
+// to derive anything from, so an id-less project.yaml must still be
+// rejected outright, exactly as it was before `id:` became optional.
+// Silently caching under the empty-string key would corrupt the map and
+// let a project register with an empty DB primary key.
+func TestProjectStore_Load_EmptyID_Rejected(t *testing.T) {
+	dir := t.TempDir()
+	boidDir := filepath.Join(dir, ".boid")
+	if err := os.MkdirAll(boidDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(boidDir, "project.yaml"), []byte("name: No ID Legacy Project\n"), 0o644); err != nil {
+		t.Fatalf("write yaml: %v", err)
+	}
+
+	s := orchestrator.NewProjectStore()
+	if _, err := s.Load(dir); err == nil {
+		t.Fatal("expected an error: the legacy host-directory path has no git URL to derive a fallback id from")
+	}
+	if _, ok := s.Get(""); ok {
+		t.Error("expected no cache entry under the empty-string key")
 	}
 }
 
@@ -223,6 +253,156 @@ func TestProjectStore_LoadAll_IDDriftToExistingProject_DoesNotCorruptOtherProjec
 	st := s.Status("proj-a")
 	if st.State != orchestrator.StatusDegraded {
 		t.Errorf("proj-a Status.State = %q, want %q", st.State, orchestrator.StatusDegraded)
+	}
+}
+
+// TestProjectStore_LoadAll_EmptyProjectYAMLIDInheritsRegisteredID pins
+// docs/plans/workspace-default-project.md 論点h 案1 (PR7): a project.yaml
+// that omits `id:` entirely must reload cleanly on every subsequent LoadAll
+// (e.g. daemon restart) under whatever id it is already registered as —
+// not degrade every single time, which is exactly the problem 論点h flags
+// for the pre-PR7 `id: is required` validation once id becomes optional.
+func TestProjectStore_LoadAll_EmptyProjectYAMLIDInheritsRegisteredID(t *testing.T) {
+	// Reconciliation (empty id: inherits the registered id) is deliberately
+	// scoped to the git-URL / bare-repo path only (Codex review, PR7
+	// round-2 Major) — the legacy host-directory path has no URL to derive
+	// a fallback id from and must keep rejecting an id-less project.yaml
+	// outright (see TestProjectStore_Load_EmptyID_Rejected). This test
+	// therefore uses a BARE repo (LoadAll dispatches bare dirs to
+	// LoadBareRepoExpectingID, not LoadExpectingID).
+	dir := setupIDLessBareRepoFixture(t, "No ID Project")
+
+	s := orchestrator.NewProjectStore()
+	// Pre-seed a degraded status (Codex review, PR7 round-1 Minor): without
+	// this, the Status.State == StatusReady assertion below would pass
+	// vacuously on a freshly-constructed store even if the reconciliation
+	// path failed to ever call MarkReady. Seeding StatusDegraded first
+	// forces the assertion to actually discriminate "recovered to ready" vs
+	// "never touched".
+	s.MarkDegraded("url-abc123", "pre-seeded degraded status for this test")
+	projects := []*projectspec.Project{
+		{ID: "url-abc123", WorkDir: dir},
+	}
+	if errs := s.LoadAll(projects); len(errs) != 0 {
+		t.Fatalf("expected no errors, got %v", errs)
+	}
+	got, ok := s.Get("url-abc123")
+	if !ok {
+		t.Fatal("expected url-abc123 to be cached")
+	}
+	if got.ID != "url-abc123" {
+		t.Errorf("got.ID = %q, want %q (inherited from the registered id)", got.ID, "url-abc123")
+	}
+	if got.Name != "No ID Project" {
+		t.Errorf("got.Name = %q, want %q", got.Name, "No ID Project")
+	}
+	st := s.Status("url-abc123")
+	if st.State != orchestrator.StatusReady {
+		t.Errorf("Status.State = %q, want %q (must recover from the pre-seeded degraded status)", st.State, orchestrator.StatusReady)
+	}
+}
+
+// TestProjectStore_LoadAll_URLDerivedProject_ProjectYAMLIDDrift_Ignored pins
+// 論点h 案1's other half: a project registered under a url-derived id whose
+// project.yaml LATER gains an explicit (different) `id:` field must not be
+// treated as drift — the registered url- id wins, silently (a warning is
+// logged, but LoadAll must not degrade or error).
+//
+// The registered id here is a REAL derived id (api.DeriveProjectIDFromURL
+// applied to a real UpstreamURL, wired via SetDeriveProjectIDFunc), not a
+// hand-typed "url-abc123" placeholder — Codex round-3 Major review flagged
+// the prefix-only fixture as unable to exercise the fix's actual
+// verification step (see TestProjectStore_LoadAll_HandAuthoredURLPrefixedID_DriftNotIgnored
+// immediately below for the counter-case this distinction exists to cover).
+func TestProjectStore_LoadAll_URLDerivedProject_ProjectYAMLIDDrift_Ignored(t *testing.T) {
+	// Same bare-repo scoping rationale as
+	// TestProjectStore_LoadAll_EmptyProjectYAMLIDInheritsRegisteredID above
+	// — ignored-drift reconciliation only applies to the git-URL / bare-repo
+	// path (Codex review, PR7 round-2 Major).
+	dir := setupBareRepoFixture(t, "khi", "KHI Project")
+
+	upstreamURL := "https://example-forge.test/org/" + t.Name()
+	expectedID, derr := api.DeriveProjectIDFromURL(upstreamURL)
+	if derr != nil {
+		t.Fatalf("api.DeriveProjectIDFromURL: %v", derr)
+	}
+
+	s := orchestrator.NewProjectStore()
+	s.SetDeriveProjectIDFunc(api.DeriveProjectIDFromURL)
+	// Pre-seed a degraded status (Codex review, PR7 round-2 Minor): without
+	// this, the Status.State == StatusReady assertion below would pass
+	// vacuously even if the ignored-drift path never called MarkReady.
+	s.MarkDegraded(expectedID, "pre-seeded degraded status for this test")
+	projects := []*projectspec.Project{
+		{ID: expectedID, WorkDir: dir, UpstreamURL: upstreamURL},
+	}
+	if errs := s.LoadAll(projects); len(errs) != 0 {
+		t.Fatalf("expected no errors (drift must be ignored, not rejected), got %v", errs)
+	}
+	got, ok := s.Get(expectedID)
+	if !ok {
+		t.Fatal("expected the registered id to still be cached")
+	}
+	if got.ID != expectedID {
+		t.Errorf("got.ID = %q, want %q (the registered url-derived id must never change)", got.ID, expectedID)
+	}
+	if got.Name != "KHI Project" {
+		t.Errorf("got.Name = %q, want %q (project.yaml's other fields still take effect)", got.Name, "KHI Project")
+	}
+	if _, ok := s.Get("khi"); ok {
+		t.Error("expected no cache entry under project.yaml's own declared id")
+	}
+	st := s.Status(expectedID)
+	if st.State != orchestrator.StatusReady {
+		t.Errorf("Status.State = %q, want %q (must recover from the pre-seeded degraded status)", st.State, orchestrator.StatusReady)
+	}
+}
+
+// TestProjectStore_LoadAll_HandAuthoredURLPrefixedID_DriftNotIgnored pins
+// the Codex round-3 Major review fix: a registered id that merely SHARES
+// URLDerivedProjectIDPrefix ("url-") with a genuinely derived id — because
+// someone hand-authored `id: url-custom` in project.yaml at some point in
+// this project's history, not because it was ever actually derived from a
+// git URL — must NOT get the "ignore project.yaml's differing id" treatment.
+// Pre-fix, reconcileExpectedProjectID trusted the prefix alone and would
+// have silently swallowed this as if it were a url-derived project,
+// masking a genuine id change. The fix requires the registered id to
+// actually equal what api.DeriveProjectIDFromURL(upstreamURL) produces
+// before ignoring the drift; "url-custom" against this project's real
+// UpstreamURL never matches, so the mismatch must be rejected exactly like
+// any ordinary (non-url-derived) project's id drift.
+func TestProjectStore_LoadAll_HandAuthoredURLPrefixedID_DriftNotIgnored(t *testing.T) {
+	dir := setupBareRepoFixture(t, "khi", "KHI Project")
+
+	s := orchestrator.NewProjectStore()
+	s.SetDeriveProjectIDFunc(api.DeriveProjectIDFromURL)
+	const handAuthoredID = "url-custom"
+	s.MarkDegraded(handAuthoredID, "pre-seeded degraded status for this test")
+	projects := []*projectspec.Project{
+		{
+			ID:      handAuthoredID,
+			WorkDir: dir,
+			// A real, resolvable UpstreamURL that does NOT derive to
+			// handAuthoredID — the whole point of this test is that a
+			// url- prefix alone must not be trusted.
+			UpstreamURL: "https://example-forge.test/org/" + t.Name(),
+		},
+	}
+
+	errs := s.LoadAll(projects)
+	if len(errs) != 1 {
+		t.Fatalf("expected the id drift to be rejected (1 error), got %d: %v", len(errs), errs)
+	}
+
+	if _, ok := s.Get(handAuthoredID); ok {
+		t.Error("expected the stale cache entry to be dropped, not silently reconciled under the hand-authored url- id")
+	}
+	if _, ok := s.Get("khi"); ok {
+		t.Error("expected no cache entry under project.yaml's own declared id either (a genuine mismatch is rejected outright, not adopted)")
+	}
+	st := s.Status(handAuthoredID)
+	if st.State != orchestrator.StatusDegraded {
+		t.Errorf("Status.State = %q, want %q (a genuine id drift must degrade, not silently recover)", st.State, orchestrator.StatusDegraded)
 	}
 }
 
@@ -435,28 +615,49 @@ func TestProjectStore_LoadAll_MissingProjectYAMLInBareRepo_SurvivesReload(t *tes
 	bare := filepath.Join(root, "repo.git")
 	runGitLocal(t, root, "clone", "-q", "--bare", work, bare)
 
+	// A real, resolvable UpstreamURL (Codex round-4 review, PR7: the
+	// GitHeadReadFailurePathAbsent fallback below now VERIFIES candidate.ID
+	// against api.DeriveProjectIDFromURL(candidate.UpstreamURL), not just
+	// its prefix — a file:// UpstreamURL, as this test previously used
+	// purely for metadata purposes, cannot be derived at all
+	// (RepoSlugFromOriginURL has no file:// case), which would make
+	// verification fail even for this legitimately-registered no-yaml
+	// project. WorkDir itself still points at a real local bare clone
+	// (built via file:// above); UpstreamURL is separate metadata recording
+	// what remote this project was registered from, same as production
+	// (CreateProjectFromGitURL always normalizes to https:// or file://,
+	// and file:// no-yaml registration is rejected outright at creation
+	// time — see deriveProjectIDFromURL's own doc comment — so a real
+	// no-yaml project's UpstreamURL is never file://).
+	upstreamURL := "https://example-forge.test/org/" + t.Name()
+	expectedID, derr := api.DeriveProjectIDFromURL(upstreamURL)
+	if derr != nil {
+		t.Fatalf("api.DeriveProjectIDFromURL: %v", derr)
+	}
+
 	s := orchestrator.NewProjectStore()
+	s.SetDeriveProjectIDFunc(api.DeriveProjectIDFromURL)
 	errs := s.LoadAll([]*projectspec.Project{{
-		ID:          "url-abc123no-yaml",
+		ID:          expectedID,
 		WorkDir:     bare,
 		WorkspaceID: "team-a",
-		UpstreamURL: fileURLForTest(work),
+		UpstreamURL: upstreamURL,
 	}})
 	if len(errs) != 0 {
 		t.Fatalf("expected 0 errors (project.yaml-less project survives reload), got %d: %v", len(errs), errs)
 	}
 
-	st := s.Status("url-abc123no-yaml")
+	st := s.Status(expectedID)
 	if st.State != orchestrator.StatusReady {
 		t.Errorf("Status.State = %q, want %q (not degraded)", st.State, orchestrator.StatusReady)
 	}
 
-	meta, ok := s.Get("url-abc123no-yaml")
+	meta, ok := s.Get(expectedID)
 	if !ok {
 		t.Fatal("expected a synthesized meta to be cached after reload")
 	}
-	if meta.ID != "url-abc123no-yaml" {
-		t.Errorf("meta.ID = %q, want proj-no-yaml", meta.ID)
+	if meta.ID != expectedID {
+		t.Errorf("meta.ID = %q, want %q", meta.ID, expectedID)
 	}
 	// Name is recovered from WorkDir's own basename ("repo", ".git"
 	// stripped) — the priority order ahead of UpstreamURL re-derivation
@@ -500,18 +701,29 @@ func TestProjectStore_LoadAll_MissingProjectYAMLInBareRepo_PreservesExplicitName
 	bare := filepath.Join(root, "custom-name.git")
 	runGitLocal(t, root, "clone", "-q", "--bare", work, bare)
 
+	// See the sibling SurvivesReload test's comment: a real, resolvable
+	// UpstreamURL is required now that the fallback below verifies
+	// candidate.ID against api.DeriveProjectIDFromURL(candidate.UpstreamURL)
+	// (Codex round-4 review, PR7), not just its prefix.
+	upstreamURL := "https://example-forge.test/org/" + t.Name()
+	expectedID, derr := api.DeriveProjectIDFromURL(upstreamURL)
+	if derr != nil {
+		t.Fatalf("api.DeriveProjectIDFromURL: %v", derr)
+	}
+
 	s := orchestrator.NewProjectStore()
+	s.SetDeriveProjectIDFunc(api.DeriveProjectIDFromURL)
 	errs := s.LoadAll([]*projectspec.Project{{
-		ID:          "url-abc123explicitname",
+		ID:          expectedID,
 		WorkDir:     bare,
 		WorkspaceID: "team-a",
-		UpstreamURL: fileURLForTest(work),
+		UpstreamURL: upstreamURL,
 	}})
 	if len(errs) != 0 {
 		t.Fatalf("expected 0 errors, got %d: %v", len(errs), errs)
 	}
 
-	meta, ok := s.Get("url-abc123explicitname")
+	meta, ok := s.Get(expectedID)
 	if !ok {
 		t.Fatal("expected a synthesized meta to be cached after reload")
 	}
@@ -584,6 +796,36 @@ func runGitLocal(t *testing.T, dir string, args ...string) {
 	if err != nil {
 		t.Fatalf("git %v: %v\n%s", args, err, out)
 	}
+}
+
+// setupIDLessBareRepoFixture is setupBareRepoFixture (project_bare_repo_test.go)
+// minus the `id:` line — a bare repo whose HEAD project.yaml omits id
+// entirely (docs/plans/workspace-default-project.md 論点h 案1).
+func setupIDLessBareRepoFixture(t *testing.T, name string) string {
+	t.Helper()
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not found in PATH")
+	}
+
+	root := t.TempDir()
+	work := filepath.Join(root, "work")
+	if err := os.MkdirAll(filepath.Join(work, ".boid"), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	yaml := "name: " + name + "\n"
+	if err := os.WriteFile(filepath.Join(work, ".boid", "project.yaml"), []byte(yaml), 0o644); err != nil {
+		t.Fatalf("write project.yaml: %v", err)
+	}
+
+	runGit(t, work, "init", "-q", "-b", "main")
+	runGit(t, work, "config", "user.email", "test@example.com")
+	runGit(t, work, "config", "user.name", "Test")
+	runGit(t, work, "add", ".")
+	runGit(t, work, "commit", "-q", "-m", "initial")
+
+	barePath := filepath.Join(root, "repo.git")
+	runGit(t, root, "clone", "-q", "--bare", work, barePath)
+	return barePath
 }
 
 func setupProjectDir(t *testing.T, dir, id, name string) {

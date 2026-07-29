@@ -309,15 +309,21 @@ task_behaviors:
 }
 
 func TestReadProjectMeta_Errors(t *testing.T) {
-	t.Run("missing id", func(t *testing.T) {
+	t.Run("missing id is optional (workspace-default-project.md 論点h 案1)", func(t *testing.T) {
 		dir := t.TempDir()
 		boidDir := filepath.Join(dir, ".boid")
 		_ = os.MkdirAll(boidDir, 0o755)
 		_ = os.WriteFile(filepath.Join(boidDir, "project.yaml"), []byte("name: No ID Project\n"), 0o644)
 
-		_, err := projectspec.ReadProjectMeta(dir)
-		if err == nil || !strings.Contains(err.Error(), "id is required") {
-			t.Fatalf("expected id is required, got %v", err)
+		meta, err := projectspec.ReadProjectMeta(dir)
+		if err != nil {
+			t.Fatalf("expected id-less project.yaml to parse, got error: %v", err)
+		}
+		if meta.ID != "" {
+			t.Fatalf("expected empty ID when project.yaml omits id, got %q", meta.ID)
+		}
+		if meta.Name != "No ID Project" {
+			t.Fatalf("expected name to still be parsed, got %q", meta.Name)
 		}
 	})
 

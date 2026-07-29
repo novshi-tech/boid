@@ -73,6 +73,12 @@ func newGitURLTestService(t *testing.T, repo *stubProjectRepository) (*ProjectAp
 	t.Helper()
 	dataDir := t.TempDir()
 	store := orchestrator.NewProjectStore()
+	// Wire the same derive func production code gets from
+	// internal/server/wire.go's buildProjectStore — tests that exercise
+	// url-derived-id drift reconciliation (Codex round-3 Major review, PR7)
+	// need this to actually verify a candidate id against UpstreamURL rather
+	// than merely trusting the URLDerivedProjectIDPrefix.
+	store.SetDeriveProjectIDFunc(DeriveProjectIDFromURL)
 	svc := &ProjectAppService{
 		Projects: repo,
 		Meta:     store,
