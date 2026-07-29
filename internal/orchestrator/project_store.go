@@ -268,16 +268,22 @@ func (s *ProjectStore) Get(id string) (*ProjectMeta, bool) {
 }
 
 // GetWithWorkspace returns a ProjectMeta hydrated with workspace-level
-// capabilities, host_commands, additional_bindings, env, and SecretNamespace
-// injection.
+// capabilities, host_commands, additional_bindings, env, SecretNamespace
+// injection, and — since docs/plans/workspace-default-project.md PR4 — the
+// workspace's default project definition (task_behaviors / base_branch /
+// fork_point / default_task_behavior), which project.yaml's own values
+// override field by field (決定1) and canonical-behavior-name by name
+// (決定4).
 //
 // Hydration rules:
 //   - If the project has no linked workspace, returns the cached meta unchanged.
 //   - If linked: always injects meta.SecretNamespace = workspaceID.
 //   - On workspace.yaml load success: merges Capabilities, host_commands,
-//     additional_bindings, and Env.
+//     additional_bindings, Env, and the workspace default project definition.
 //   - On os.ErrNotExist (degraded window): logs a warning, returns meta with
-//     only SecretNamespace injected (no error).
+//     only SecretNamespace injected (no error) — the workspace default is
+//     NOT applied in this window either, same as every other workspace-level
+//     field.
 //   - On other errors: returns nil and the error.
 //
 // The kit mechanism (ws.Kits resolved via a KitResolver and merged in here)
@@ -336,6 +342,53 @@ func (s *ProjectStore) GetWithWorkspace(_ context.Context, projectID string) (*P
 	// Capabilities: workspace overrides project (e.g. enables docker proxy).
 	if ws.Capabilities.Docker != nil {
 		out.Capabilities = ws.Capabilities
+	}
+
+	// workspace default project definition (docs/plans/
+	// workspace-default-project.md 決定4, 論点j, PR4): a workspace-level
+	// task_behaviors entry fills in any canonical behavior name project.yaml
+	// does not already define. A name project.yaml ALSO defines wins
+	// outright — no per-field merge inside one behavior, decision4's "同名は
+	// project.yaml 側が丸ごと勝つ". ws.TaskBehaviors is always canonical-only
+	// (never carries an alias mirror entry — see
+	// normalizeWorkspaceDefaultTaskBehaviors's own doc comment, spec_loader.go,
+	// for why one is never persisted), so this merge runs in the same
+	// strip→merge→re-mirror shape the host_commands/env blocks below already
+	// use for the identical double-processing reason (論点j).
+	//
+	// The leading stripAliasMirrors is defensive/idiom-matching rather than
+	// independently load-bearing today (codex review on PR4, Minor 1): since
+	// out.TaskBehaviors' own mirror pairs are always self-consistent
+	// (project.yaml's loader already canonicalized+mirrored them before this
+	// function ever runs) and ws.TaskBehaviors' keys are always canonical
+	// (never alias-shaped), the `exists` check below would find the SAME
+	// name present whether or not this line ran first — a project.yaml
+	// entry authored under a legacy alias (e.g. "dev") already has its
+	// canonical counterpart ("executor") present as its own map key by this
+	// point, mirror or no mirror. It is kept for consistency with the
+	// host_commands/env blocks' identical pattern and as a guard against a
+	// future change to either invariant (e.g. if ws.TaskBehaviors ever
+	// stopped being guaranteed canonical-only) reintroducing the double-
+	// processing hazard 論点j describes.
+	//
+	// This MUST run before the host_commands/env blocks below: they iterate
+	// out.TaskBehaviors to inject ws.HostCommands/ws.Env into every
+	// behavior's own HostCommands/Env fields, and a workspace-default-
+	// supplied behavior needs that same per-behavior injection a
+	// project.yaml-defined one gets — running this merge afterward would
+	// leave a workspace-only behavior's HostCommands/Env unpopulated.
+	if len(ws.TaskBehaviors) > 0 {
+		if out.TaskBehaviors == nil {
+			out.TaskBehaviors = make(map[string]TaskBehavior)
+		}
+		out.TaskBehaviors = stripAliasMirrors(out.TaskBehaviors)
+		for name, behavior := range ws.TaskBehaviors {
+			if _, exists := out.TaskBehaviors[name]; exists {
+				continue
+			}
+			out.TaskBehaviors[name] = behavior
+		}
+		out.TaskBehaviors = addAliasMirrors(out.TaskBehaviors)
 	}
 
 	// NOTE (docs/plans/workspace-db-consolidation.md Phase 2.5 PR6): this used
@@ -434,6 +487,24 @@ func (s *ProjectStore) GetWithWorkspace(_ context.Context, projectID string) (*P
 			out.TaskBehaviors[name] = behavior
 		}
 		out.TaskBehaviors = addAliasMirrors(out.TaskBehaviors)
+	}
+
+	// BaseBranch / ForkPoint / DefaultTaskBehavior (決定1, 決定5): empty means
+	// "unspecified" — project.yaml wins whenever it set a non-empty value;
+	// otherwise the workspace default (itself possibly also empty) is
+	// inherited. Assigning ws.X onto an already-non-empty out.X would
+	// clobber project.yaml's own value, so each is gated on out.X being
+	// empty first. There is deliberately no way to explicitly un-set an
+	// inherited value back to empty — see 決定5's own rationale
+	// (spec_types.go's field-presence tracking gap this accepts).
+	if out.BaseBranch == "" {
+		out.BaseBranch = ws.BaseBranch
+	}
+	if out.ForkPoint == "" {
+		out.ForkPoint = ws.ForkPoint
+	}
+	if out.DefaultTaskBehavior == "" {
+		out.DefaultTaskBehavior = ws.DefaultTaskBehavior
 	}
 
 	return out, nil
