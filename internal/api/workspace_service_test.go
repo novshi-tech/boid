@@ -908,6 +908,9 @@ func (s *createProjectMetaStore) Status(_ string) orchestrator.ProjectStatus {
 	return orchestrator.ProjectStatus{State: orchestrator.StatusReady}
 }
 func (s *createProjectMetaStore) MarkDegraded(_, _ string) {}
+func (s *createProjectMetaStore) SetSynthesizedMeta(_ string, meta *orchestrator.ProjectMeta) {
+	s.meta = meta
+}
 func (s *createProjectMetaStore) SetWorkspaceID(projectID, workspaceID string) {
 	if s.setWorkspaceIDCalls == nil {
 		s.setWorkspaceIDCalls = map[string]string{}

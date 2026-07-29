@@ -39,6 +39,9 @@ func (s *upstreamURLMetaStore) Status(_ string) orchestrator.ProjectStatus {
 	return orchestrator.ProjectStatus{State: orchestrator.StatusReady}
 }
 func (s *upstreamURLMetaStore) MarkDegraded(_, _ string) {}
+func (s *upstreamURLMetaStore) SetSynthesizedMeta(_ string, meta *orchestrator.ProjectMeta) {
+	s.meta = meta
+}
 
 // TestProjectAppService_CreateProject_CapturesUpstreamURL verifies that a
 // successful capture is normalized onto the created project (PR2 of

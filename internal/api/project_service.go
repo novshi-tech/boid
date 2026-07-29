@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -53,6 +54,14 @@ type ProjectAppService struct {
 		// invariant instead of ever deleting it.
 		Status(id string) orchestrator.ProjectStatus
 		MarkDegraded(id, message string)
+		// SetSynthesizedMeta caches a meta value synthesized (not read from a
+		// project.yaml) for a project.yaml-less project (docs/plans/
+		// workspace-default-project.md PR5) — used by CreateProjectFromGitURL
+		// (initial registration, GitHeadReadFailurePathAbsent) and FetchProject
+		// (post-fetch reload, same failure kind) in place of LoadBareRepo /
+		// LoadBareRepoExpectingID. Also clears any prior degraded status — see
+		// orchestrator.ProjectStore.SetSynthesizedMeta's own doc comment.
+		SetSynthesizedMeta(id string, meta *orchestrator.ProjectMeta)
 	}
 	// CloneBareRepo clones a git URL as a daemon-managed bare (mirror)
 	// repository at destPath, injecting forge credentials scoped to
@@ -472,6 +481,7 @@ func (s *ProjectAppService) CreateProjectFromGitURL(ctx context.Context, gitURL,
 	}
 
 	name := strings.TrimSpace(nameOverride)
+	nameWasExplicit := name != ""
 	if name == "" {
 		derived, err := orchestrator.DeriveProjectNameFromURL(gitURL)
 		if err != nil {
@@ -521,15 +531,51 @@ func (s *ProjectAppService) CreateProjectFromGitURL(ctx context.Context, gitURL,
 	}
 
 	meta, err := s.Meta.LoadBareRepo(bareRepoPath)
+	// noYAMLMeta is non-nil exactly when the fallback below fired — its cache
+	// write is deliberately deferred until AFTER CreateProject succeeds (see
+	// the call site below), unlike the ordinary LoadBareRepo success path
+	// (which writes the cache as a side effect of the read itself, before
+	// CreateProject is even attempted). Writing it here instead would
+	// overwrite an ALREADY-REGISTERED project's cache entry the moment this
+	// call's derived id collides with one (Codex review, PR5 round 1 P1):
+	// removeCachedMetaUnlessRegistered's failure-path check only stops the
+	// entry from being REMOVED afterward, it does not restore whatever this
+	// call clobbered on the way in, and SetSynthesizedMeta additionally
+	// clears any degraded status that established project may have been
+	// carrying.
+	var noYAMLMeta *orchestrator.ProjectMeta
 	if err != nil {
-		// Synchronous-validation contract (see this method's doc comment):
-		// a project.yaml that fails to load at add time fails the whole
-		// registration, not a half-added degraded row. Roll back the clone.
-		if rmErr := os.RemoveAll(bareRepoPath); rmErr != nil {
-			slog.Warn("CreateProjectFromGitURL: failed to roll back bare repo after project.yaml load failure",
-				"path", bareRepoPath, "error", rmErr)
+		// docs/plans/workspace-default-project.md PR5 (論点b/c/d): a
+		// project.yaml that was simply never committed
+		// (GitHeadReadFailurePathAbsent) falls back to the workspace's
+		// default project definition instead of failing registration — every
+		// OTHER failure kind (HeadUnresolved / Other: HEAD unresolved, a
+		// corrupt repo, or a project.yaml that IS present but fails to
+		// parse/validate) still fails the whole registration exactly as
+		// before, per the synchronous-validation contract in this method's
+		// doc comment.
+		var headErr *orchestrator.GitHeadReadError
+		if errors.As(err, &headErr) && headErr.Kind == orchestrator.GitHeadReadFailurePathAbsent {
+			synthesized, synthErr := s.synthesizeNoYAMLProjectMeta(gitURL, name, workspaceSlug, nameWasExplicit)
+			if synthErr != nil {
+				if rmErr := os.RemoveAll(bareRepoPath); rmErr != nil {
+					slog.Warn("CreateProjectFromGitURL: failed to roll back bare repo after workspace-default fallback rejection",
+						"path", bareRepoPath, "error", rmErr)
+				}
+				return nil, synthErr
+			}
+			noYAMLMeta = synthesized
+			meta = synthesized
+		} else {
+			// Synchronous-validation contract (see this method's doc comment):
+			// a project.yaml that fails to load at add time fails the whole
+			// registration, not a half-added degraded row. Roll back the clone.
+			if rmErr := os.RemoveAll(bareRepoPath); rmErr != nil {
+				slog.Warn("CreateProjectFromGitURL: failed to roll back bare repo after project.yaml load failure",
+					"path", bareRepoPath, "error", rmErr)
+			}
+			return nil, &StatusError{Code: http.StatusBadRequest, Message: fmt.Sprintf("load project.yaml from %s (%s): %v", gitURL, bareRepoPath, err)}
 		}
-		return nil, &StatusError{Code: http.StatusBadRequest, Message: fmt.Sprintf("load project.yaml from %s (%s): %v", gitURL, bareRepoPath, err)}
 	}
 
 	project := &orchestrator.Project{
@@ -553,6 +599,14 @@ func (s *ProjectAppService) CreateProjectFromGitURL(ctx context.Context, gitURL,
 				"path", bareRepoPath, "error", rmErr)
 		}
 		return nil, &StatusError{Code: http.StatusInternalServerError, Message: err.Error()}
+	}
+
+	// The no-YAML fallback's synthesized meta is cached only now, having just
+	// confirmed via the successful insert above that this id is NOT already
+	// owned by another registered project (see noYAMLMeta's own doc comment
+	// above for the collision this ordering avoids).
+	if noYAMLMeta != nil {
+		s.Meta.SetSynthesizedMeta(noYAMLMeta.ID, noYAMLMeta)
 	}
 
 	// MAJOR 1 (codex review round 3, mirrors CreateProject above): this
@@ -698,6 +752,36 @@ func (s *ProjectAppService) FetchProject(ctx context.Context, id string) (*orche
 	// drifted id, completely untouched.
 	meta, err := s.Meta.LoadBareRepoExpectingID(project.WorkDir, id)
 	if err != nil {
+		// docs/plans/workspace-default-project.md PR5, §現状の実測5: a
+		// project.yaml that was never committed (GitHeadReadFailurePathAbsent)
+		// must not degrade a project registered via the no-project.yaml path
+		// — it falls back to a synthesized meta (workspace default is applied
+		// dynamically at GetWithWorkspace hydrate time, same as every other
+		// reload of this kind) instead of MarkDegraded. Every other failure
+		// kind (HeadUnresolved / Other) keeps the existing degrade-on-failure
+		// behavior unchanged.
+		var headErr *orchestrator.GitHeadReadError
+		if errors.As(err, &headErr) && headErr.Kind == orchestrator.GitHeadReadFailurePathAbsent {
+			// Recovery order mirrors orchestrator.ProjectStore's
+			// synthesizeMetaForReload (Codex review, PR5 round 1 P1): the
+			// cached Name first, else project.WorkDir's own basename (the
+			// bare-repo directory name IS the exact name — explicit --name or
+			// derived — CreateProjectFromGitURL used at registration, so this
+			// reproduces an explicit --name a bare UpstreamURL re-derivation
+			// never could), else UpstreamURL re-derivation as a last resort.
+			name := ""
+			if cached, ok := s.Meta.Get(id); ok && cached.Name != "" {
+				name = cached.Name
+			} else if project.WorkDir != "" {
+				name = strings.TrimSuffix(filepath.Base(project.WorkDir), ".git")
+			} else if derived, derr := orchestrator.DeriveProjectNameFromURL(project.UpstreamURL); derr == nil {
+				name = derived
+			}
+			synthesized := &orchestrator.ProjectMeta{ID: id, Name: name}
+			s.Meta.SetSynthesizedMeta(id, synthesized)
+			project.Meta = *synthesized
+			return s.hydrateProjectWithWorkspace(ctx, project), nil
+		}
 		msg := fmt.Sprintf("project.yaml load failed after fetch: %v", err)
 		s.Meta.MarkDegraded(id, msg)
 		return nil, &StatusError{Code: http.StatusBadRequest, Message: msg}

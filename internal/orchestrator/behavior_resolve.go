@@ -90,6 +90,34 @@ func LookupBehaviorWithAlias(meta *ProjectMeta, name string) (TaskBehavior, stri
 	return TaskBehavior{}, "", false
 }
 
+// DefaultBehaviorResolvable reports whether ResolveBehavior would succeed for
+// a task creation request that specifies neither behavior nor behavior_spec,
+// given meta — mirroring the exact resolution order ResolveBehavior's own
+// default-resolution branch below uses (docs/plans/
+// workspace-default-project.md 論点d, fable 2巡目 m2): meta.DefaultTaskBehavior
+// must be both set AND actually resolve via LookupBehaviorWithAlias, else a
+// behavior literally named "supervisor" must exist in meta.TaskBehaviors,
+// else it is not resolvable.
+//
+// Used at project-registration time (CreateProjectFromGitURL's
+// project.yaml-less path) to decide whether the workspace default alone is
+// sufficient before allowing registration to succeed. Deliberately NOT "does
+// a default project definition exist" — a workspace default that defines
+// task_behaviors but sets neither default_task_behavior nor a "supervisor"
+// entry must still be rejected here, exactly as a behavior-unspecified task
+// creation against it would 400 later.
+func DefaultBehaviorResolvable(meta *ProjectMeta) bool {
+	if meta == nil {
+		return false
+	}
+	if meta.DefaultTaskBehavior != "" {
+		_, _, ok := LookupBehaviorWithAlias(meta, meta.DefaultTaskBehavior)
+		return ok
+	}
+	_, ok := meta.TaskBehaviors["supervisor"]
+	return ok
+}
+
 // ResolveBehavior validates and resolves behavior fields from a task creation request.
 // It handles both the named behavior path (meta lookup) and the inline behavior_spec path.
 // When both behavior and behavior_spec are empty, the default is resolved via:

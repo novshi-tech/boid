@@ -48,6 +48,17 @@ func GitOriginURL(dir string) (string, error) {
 //
 // Non-github hosts are kept as-is. Returns an error if the URL cannot be
 // parsed into a host/owner/repo shape.
+// RepoSlugFromOriginURL is the exported form of repoSlugFromOriginURL
+// (docs/plans/workspace-default-project.md 決定3): the same normalization
+// gitgateway.NewRepoKey applies to a request path's host/owner/repo
+// components, used here as the hash input for a project.yaml-less project's
+// derived id — see internal/api's deriveProjectIDFromURL. Exported
+// specifically for that cross-package use; every existing in-package caller
+// still calls the unexported form directly.
+func RepoSlugFromOriginURL(url string) (string, error) {
+	return repoSlugFromOriginURL(url)
+}
+
 func repoSlugFromOriginURL(url string) (string, error) {
 	url = strings.TrimSpace(url)
 	if url == "" {
