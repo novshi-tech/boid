@@ -447,7 +447,7 @@ func marshalWorkspaceMetaColumns(slug string, meta *WorkspaceMeta) (hostCommands
 		containerImage = meta.ContainerImage
 	}
 
-	normalized, err := normalizeWorkspaceDefaultTaskBehaviors(fmt.Sprintf("workspace %q", slug), meta.TaskBehaviors, true)
+	normalized, err := normalizeWorkspaceDefaultTaskBehaviors(fmt.Sprintf("workspace %q", slug), meta.TaskBehaviors)
 	if err != nil {
 		return "", "", "", "", "", "", nil, "", "", "", "", err
 	}

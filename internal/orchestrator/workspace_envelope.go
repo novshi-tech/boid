@@ -336,6 +336,21 @@ func DecodeWorkspaceEnvelopeDocuments(data []byte) ([]*WorkspaceEnvelopeApply, e
 // guard's detection (a document using only the new field would fall through
 // to the raw, unexported-type-name decode error this function exists to
 // avoid) with nothing to catch the omission.
+// KNOWN GAP (codex review on PR3, Minor 1, docs/plans/
+// workspace-default-project.md §PR分割案 PR3): task_behaviors / base_branch /
+// fork_point / default_task_behavior are WorkspaceMeta fields, so they MUST
+// be listed here (the drift test forces it) — but per this PR's deliberate
+// scope boundary, workspaceMetaStrict (workspace_meta_strict.go, what `boid
+// workspace create/edit --from-file` actually decode) does NOT accept these
+// 4 keys yet. A bare document using ONLY one of them still gets routed by
+// bareMetaSentToTheWrongDoor below to create/edit — which will then reject
+// it with "unknown field", a second, less helpful rejection instead of a
+// pointer to `boid workspace apply` (the only entry point that currently
+// accepts these fields). Accepted for now since PR3 doesn't make these
+// fields functionally usable yet either (GetWithWorkspace hydration isn't
+// wired until PR4) — revisit if/when workspaceMetaStrict grows support for
+// them, or split this guidance by field if the gap proves disruptive
+// earlier.
 var bareMetaKnownFieldNames = map[string]bool{
 	"slug":                  true,
 	"env":                   true,
@@ -618,7 +633,7 @@ func decodeWorkspaceEnvelopeSpec(specNode yaml.Node) (spec WorkspaceEnvelopeSpec
 		// 決定4, 論点j) — reject a malformed hook shape at decode time rather
 		// than letting it reach the DB (and, eventually, a dispatch planner)
 		// unvalidated.
-		normalized, err := normalizeWorkspaceDefaultTaskBehaviors("spec.task_behaviors", spec.TaskBehaviors, false)
+		normalized, err := normalizeWorkspaceDefaultTaskBehaviors("spec.task_behaviors", spec.TaskBehaviors)
 		if err != nil {
 			return spec, nil, false, err
 		}

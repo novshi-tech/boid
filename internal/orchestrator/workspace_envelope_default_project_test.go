@@ -47,16 +47,19 @@ spec:
 	if doc.Envelope.Spec.DefaultTaskBehavior != "executor" {
 		t.Errorf("DefaultTaskBehavior = %q, want executor", doc.Envelope.Spec.DefaultTaskBehavior)
 	}
+	// Exactly one entry: normalizeWorkspaceDefaultTaskBehaviors deliberately
+	// does not add an alias mirror here (codex review on PR3, Major 1) — see
+	// its own doc comment (spec_loader.go) for why persisting/exporting a
+	// mirror entry breaks export→apply round trips.
+	if len(doc.Envelope.Spec.TaskBehaviors) != 1 {
+		t.Fatalf("TaskBehaviors = %+v, want exactly one entry (no alias mirror)", doc.Envelope.Spec.TaskBehaviors)
+	}
 	behavior, ok := doc.Envelope.Spec.TaskBehaviors["executor"]
 	if !ok {
 		t.Fatalf("TaskBehaviors = %+v, want an executor entry", doc.Envelope.Spec.TaskBehaviors)
 	}
 	if len(behavior.Hooks) != 1 || behavior.Hooks[0].Command != "echo hi" {
 		t.Errorf("executor.Hooks = %+v, want one hook with command \"echo hi\"", behavior.Hooks)
-	}
-	// addAliasMirrors must have run: "dev" is the legacy alias of "executor".
-	if _, ok := doc.Envelope.Spec.TaskBehaviors["dev"]; !ok {
-		t.Errorf("TaskBehaviors missing the \"dev\" alias mirror — normalizeWorkspaceDefaultTaskBehaviors did not run at decode time")
 	}
 }
 
@@ -214,6 +217,45 @@ func TestMergeInto_DefaultProjectFields_PresentClearsOrReplaces(t *testing.T) {
 	}
 	if merged.DefaultTaskBehavior != "" {
 		t.Errorf("DefaultTaskBehavior = %q, want cleared", merged.DefaultTaskBehavior)
+	}
+}
+
+// TestExportThenApply_TaskBehaviorsWithKnownAliasSurvives is the concrete
+// end-to-end regression codex review caught on PR3 (Major 1): a workspace
+// default whose only task_behaviors entry has a legacy alias (here,
+// "executor" aliases to "dev" — BehaviorAliases, spec_types.go) must
+// export via NewWorkspaceEnvelopeFromMeta/MarshalWorkspaceEnvelope and then
+// re-decode via DecodeWorkspaceEnvelopeDocuments (exactly what `boid
+// workspace export` followed by `boid workspace apply -f` does) WITHOUT
+// error. Before the fix, normalizeWorkspaceDefaultTaskBehaviors added a
+// "dev" mirror at BOTH the DB-save and the envelope-decode entry points, so
+// a value with only "executor" got exported as {"executor", "dev"} — and
+// re-applying that export tripped normalizeBehaviorAliases's own
+// duplicate-definition guard on its own mirror, meaning a workspace's own
+// honest export could never be re-applied.
+func TestExportThenApply_TaskBehaviorsWithKnownAliasSurvives(t *testing.T) {
+	meta := &WorkspaceMeta{
+		TaskBehaviors: map[string]TaskBehavior{
+			"executor": {Traits: []string{"impl"}},
+		},
+	}
+	envelope := NewWorkspaceEnvelopeFromMeta("team-a", meta, nil, "")
+
+	exported, err := MarshalWorkspaceEnvelope(envelope)
+	if err != nil {
+		t.Fatalf("MarshalWorkspaceEnvelope: %v", err)
+	}
+
+	docs, err := DecodeWorkspaceEnvelopeDocuments(exported)
+	if err != nil {
+		t.Fatalf("re-applying the export must not error, got: %v\ndocument:\n%s", err, exported)
+	}
+	got := docs[0].Envelope.Spec.TaskBehaviors
+	if len(got) != 1 {
+		t.Fatalf("TaskBehaviors after re-apply = %+v, want exactly the one \"executor\" entry", got)
+	}
+	if _, ok := got["executor"]; !ok {
+		t.Errorf("TaskBehaviors after re-apply = %+v, want an \"executor\" entry", got)
 	}
 }
 

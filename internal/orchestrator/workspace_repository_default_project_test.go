@@ -11,8 +11,12 @@ import (
 // trip through WorkspaceRepository, and every write path (Create/Save via
 // saveWorkspaceRow/UpdateIfRevisionMatches, all funneling through
 // marshalWorkspaceMetaColumns) runs task_behaviors through the same
-// validation + normalization pipeline project.yaml's own task_behaviors go
-// through (決定4, 論点j).
+// validation project.yaml's own task_behaviors go through (決定4, 論点j).
+//
+// normalizeWorkspaceDefaultTaskBehaviors (spec_loader.go) deliberately does
+// NOT add alias mirrors here — see that function's own doc comment (codex
+// review on PR3, Major 1) for why: persisting a mirror entry would have
+// made a workspace's own honest export unable to be re-applied.
 
 // TestWorkspaceRepository_SaveLoad_RoundTrip_DefaultProjectFields is the
 // doc's own PR3 requirement: "Save → Load → DeepEqual の round-trip テストを
@@ -54,6 +58,9 @@ func TestWorkspaceRepository_SaveLoad_RoundTrip_DefaultProjectFields(t *testing.
 	if got.DefaultTaskBehavior != "executor" {
 		t.Errorf("DefaultTaskBehavior = %q, want executor", got.DefaultTaskBehavior)
 	}
+	if len(got.TaskBehaviors) != 1 {
+		t.Fatalf("TaskBehaviors = %+v, want exactly one entry (no alias mirror should be persisted)", got.TaskBehaviors)
+	}
 	behavior, ok := got.TaskBehaviors["executor"]
 	if !ok {
 		t.Fatalf("TaskBehaviors = %+v, want an \"executor\" entry", got.TaskBehaviors)
@@ -65,12 +72,6 @@ func TestWorkspaceRepository_SaveLoad_RoundTrip_DefaultProjectFields(t *testing.
 		t.Errorf("executor.Hooks = %+v, want one hook {ID: main, Command: echo hi} — "+
 			"if this is empty, task_behaviors is being marshaled with encoding/json "+
 			"instead of yaml.v3 and silently dropping Hooks (json:\"-\")", behavior.Hooks)
-	}
-	// "dev" is the legacy alias of "executor" (BehaviorAliases, spec_types.go)
-	// — addAliasMirrors must have run as part of the save-path normalization
-	// even though this test only ever wrote "executor" by name.
-	if _, ok := got.TaskBehaviors["dev"]; !ok {
-		t.Errorf("TaskBehaviors missing the \"dev\" alias mirror of \"executor\" — normalizeWorkspaceDefaultTaskBehaviors did not run addAliasMirrors on save")
 	}
 }
 
@@ -126,55 +127,43 @@ func TestWorkspaceRepository_Save_RejectsInvalidHookKind(t *testing.T) {
 	}
 }
 
-// TestWorkspaceRepository_Save_ToleratesAlreadyMirroredAliasAndCanonical
-// documents the deliberate DB-save-vs-envelope-decode asymmetry
-// (normalizeWorkspaceDefaultTaskBehaviors's alreadyMayBeMirrored parameter,
-// spec_loader.go): Save strips alias mirrors BEFORE re-normalizing (matching
-// GetWithWorkspace's own re-processing idiom), so — unlike
-// decodeWorkspaceEnvelopeSpec, which is the layer that actually catches a
-// GENUINELY ambiguous fresh document (see
-// TestDecodeWorkspaceEnvelopeDocuments_RejectsDuplicateTaskBehaviorAlias in
-// workspace_envelope_test.go) — a direct repo.Save call with both "dev" and
-// "executor" present does NOT error: "dev" is treated as a (possibly stale)
-// mirror of "executor" and silently dropped in favor of it. This is
-// intentional: Save's job is idempotent re-normalization of a value that may
-// already have been through this exact pipeline once, not first-line
-// ambiguity detection.
-func TestWorkspaceRepository_Save_ToleratesAlreadyMirroredAliasAndCanonical(t *testing.T) {
+// TestWorkspaceRepository_Save_RejectsDuplicateAliasAndCanonical pins the
+// other normalizeBehaviorAliases guard: a workspace default that defines
+// BOTH a legacy alias ("dev") and its canonical name ("executor") is
+// ambiguous and must be rejected at save time, same as project.yaml and
+// same as decodeWorkspaceEnvelopeSpec
+// (TestDecodeWorkspaceEnvelopeDocuments_RejectsDuplicateTaskBehaviorAlias,
+// workspace_envelope_default_project_test.go). Since
+// normalizeWorkspaceDefaultTaskBehaviors never strips alias mirrors (Major 1
+// fix, spec_loader.go), Save provides this same first-line protection for
+// any caller that constructs a WorkspaceMeta directly rather than via
+// envelope apply.
+func TestWorkspaceRepository_Save_RejectsDuplicateAliasAndCanonical(t *testing.T) {
 	t.Parallel()
 	repo := newTestWorkspaceRepo(t)
 
 	meta := &WorkspaceMeta{
 		TaskBehaviors: map[string]TaskBehavior{
-			"dev":      {Traits: []string{"stale-mirror-value"}},
-			"executor": {Traits: []string{"canonical-value"}},
+			"dev":      {},
+			"executor": {},
 		},
 	}
-	if err := repo.Save("ws-dup-alias", meta); err != nil {
-		t.Fatalf("Save: %v (Save's normalization strips alias mirrors before re-checking, so this must not error)", err)
+	err := repo.Save("ws-dup-alias", meta)
+	if err == nil {
+		t.Fatal("expected Save to reject a task_behaviors map with both an alias and its canonical name, got nil error")
 	}
-
-	got, err := repo.Load("ws-dup-alias")
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-	// "dev" was stripped as a mirror candidate (both keys were present) and
-	// then addAliasMirrors re-added it from "executor"'s value — so the
-	// stale "dev" content never survives, only "executor"'s does.
-	if behavior := got.TaskBehaviors["dev"]; len(behavior.Traits) != 1 || behavior.Traits[0] != "canonical-value" {
-		t.Errorf("TaskBehaviors[dev] = %+v, want it to mirror executor's value (canonical-value), not survive as its own stale definition", behavior)
+	if !strings.Contains(err.Error(), "duplicate task behavior definition") {
+		t.Errorf("error = %v, want it to mention the duplicate definition", err)
 	}
 }
 
-// TestWorkspaceRepository_SaveLoadSave_NoDuplicateAliasErrorOnResave is the
-// idempotency regression this PR's normalizeWorkspaceDefaultTaskBehaviors
-// design exists to prevent (論点j): a value that already went through the
-// pipeline once (Save added the "dev" alias mirror of "executor") must
-// tolerate going through it a SECOND time (Load → Save again, e.g. a
-// round trip through `boid workspace export` → `apply`) without tripping
-// the duplicate-alias-and-canonical guard on its own previously-added
-// mirror entry.
-func TestWorkspaceRepository_SaveLoadSave_NoDuplicateAliasErrorOnResave(t *testing.T) {
+// TestWorkspaceRepository_SaveLoadSave_Idempotent is the idempotency
+// regression normalizeWorkspaceDefaultTaskBehaviors's no-mirroring design
+// exists to guarantee: a value read back from Load (which never carries a
+// mirror, since Save never persisted one) must save again cleanly — the
+// ordinary "load it, tweak something unrelated, save it back" cycle every
+// UpdateWorkspace/apply call performs.
+func TestWorkspaceRepository_SaveLoadSave_Idempotent(t *testing.T) {
 	t.Parallel()
 	repo := newTestWorkspaceRepo(t)
 
@@ -191,22 +180,19 @@ func TestWorkspaceRepository_SaveLoadSave_NoDuplicateAliasErrorOnResave(t *testi
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if _, ok := loaded.TaskBehaviors["dev"]; !ok {
-		t.Fatalf("precondition failed: Load did not come back with the \"dev\" alias mirror (got %+v)", loaded.TaskBehaviors)
-	}
 
 	if err := repo.Save("ws-resave", loaded); err != nil {
-		t.Fatalf("second Save (re-saving an already-mirrored map) must not error: %v", err)
+		t.Fatalf("second Save (re-saving a freshly-Loaded value) must not error: %v", err)
 	}
 
 	got, err := repo.Load("ws-resave")
 	if err != nil {
 		t.Fatalf("final Load: %v", err)
 	}
+	if len(got.TaskBehaviors) != 1 {
+		t.Fatalf("TaskBehaviors after resave = %+v, want exactly the one \"executor\" entry (no mirror should ever appear)", got.TaskBehaviors)
+	}
 	if _, ok := got.TaskBehaviors["executor"]; !ok {
 		t.Errorf("TaskBehaviors after resave = %+v, want an \"executor\" entry to survive", got.TaskBehaviors)
-	}
-	if _, ok := got.TaskBehaviors["dev"]; !ok {
-		t.Errorf("TaskBehaviors after resave = %+v, want the \"dev\" alias mirror to survive", got.TaskBehaviors)
 	}
 }

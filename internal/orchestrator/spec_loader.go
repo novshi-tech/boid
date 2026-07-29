@@ -411,63 +411,56 @@ func stripAliasMirrors(behaviors map[string]TaskBehavior) map[string]TaskBehavio
 	return behaviors
 }
 
-// normalizeWorkspaceDefaultTaskBehaviors runs the identical validation +
-// normalization pipeline project.yaml's task_behaviors goes through
+// normalizeWorkspaceDefaultTaskBehaviors runs the validation + canonical-name
+// normalization project.yaml's task_behaviors goes through at load time
 // (parseProjectMetaBytes above: validateHookKind per hook, then
-// normalizeBehaviorAliases + addAliasMirrors) against a workspace's default
-// project definition task_behaviors (docs/plans/workspace-default-project.md
-// 決定4, 論点j). scope identifies the caller for error messages (e.g.
-// "workspace default" or "workspace %q").
+// normalizeBehaviorAliases) against a workspace's default project definition
+// task_behaviors (docs/plans/workspace-default-project.md 決定4, 論点j).
+// scope identifies the caller for error messages (e.g. "workspace default"
+// or "workspace %q").
 //
-// alreadyMayBeMirrored controls whether stripAliasMirrors runs before
-// normalizeBehaviorAliases, and the two call sites this PR wires need
-// OPPOSITE answers:
+// Deliberately does NOT call addAliasMirrors (codex review on PR3, Major 1):
+// an earlier version of this function added back-compat alias mirror
+// entries here, at BOTH of the doc's mandated entry points (envelope decode
+// AND DB save) — which meant a workspace default of {"executor": ...}
+// actually got PERSISTED (and, via NewWorkspaceEnvelopeFromMeta, EXPORTED)
+// as {"executor": ..., "dev": ...} (dev mirroring executor). Re-applying
+// that very export then failed outright: decodeWorkspaceEnvelopeSpec saw
+// BOTH "dev" and "executor" already present in the fresh document and
+// normalizeBehaviorAliases's duplicate-detection (rightly, from its own
+// point of view) rejected it as ambiguous — a workspace's own honest export
+// could never be re-applied. The fix is to never let a mirror artifact
+// reach persisted/exported storage in the first place: this function's
+// output — used both for what gets written to the workspaces.task_behaviors
+// column AND for what NewWorkspaceEnvelopeFromMeta exports — is always
+// canonical-name-only, the same on-disk shape project.yaml's own committed
+// file has (parseProjectMetaBytes adds mirrors AFTER parsing, in memory; it
+// never writes them back to the file). Producing a mirrored, alias-lookup-
+// friendly view is left entirely to whichever future PR wires this into
+// GetWithWorkspace's hydration merge — that merge already has to run its
+// own stripAliasMirrors→merge→addAliasMirrors pass regardless of whether its
+// input happens to carry mirrors already (project_store.go's GetWithWorkspace
+// does exactly this for project.yaml's TaskBehaviors today), so there is no
+// correctness reason for THIS layer to pre-mirror at all — only a round-trip
+// hazard, which this comment exists to make sure nobody reintroduces.
 //
-//   - decodeWorkspaceEnvelopeSpec (false): behaviors is fresh, just-parsed
-//     user YAML — exactly parseProjectMetaBytes's own position for
-//     project.yaml, which also never strips first. A document defining BOTH
-//     an alias ("dev") and its canonical name ("executor") is genuinely
-//     ambiguous and normalizeBehaviorAliases's duplicate-detection must see
-//     both keys to catch it; stripping first would silently discard "dev"
-//     and hide the ambiguity instead of rejecting it.
-//   - marshalWorkspaceMetaColumns (true): behaviors may already have been
-//     through this exact pipeline once (e.g. Load → re-Save, or an envelope
-//     apply's MergeInto output, which is itself already-mirrored) — without
-//     stripping first, addAliasMirrors' own OUTPUT from the earlier pass
-//     (an alias key mirroring its canonical counterpart, identical value)
-//     would trip normalizeBehaviorAliases's duplicate guard on the second
-//     pass. This is the exact double-processing hazard
-//     ReadProjectMetaWithKits' stripAliasMirrors→merge→addAliasMirrors idiom
-//     (project_store.go's GetWithWorkspace) already exists to avoid — DB
-//     save's job is re-normalizing safely, not first-line ambiguity
-//     detection (that already happened once, at whichever envelope decode
-//     originally produced this value).
-//
-// Operates on a clone (cloneTaskBehaviorMap): stripAliasMirrors/
-// addAliasMirrors both mutate their argument map in place, and a
-// *WorkspaceMeta here may be a value a caller still holds a reference to
-// (e.g. cached), so mutating behaviors in place would be a surprising side
-// effect on the caller's own copy.
-func normalizeWorkspaceDefaultTaskBehaviors(scope string, behaviors map[string]TaskBehavior, alreadyMayBeMirrored bool) (map[string]TaskBehavior, error) {
+// Because this never adds/strips mirrors, calling it on already-mirrored
+// input is not something a correct caller should ever need to do: both of
+// this PR's entry points only ever see canonical-only input (envelope
+// decode gets fresh user YAML; DB save gets a value that — by the same
+// invariant, transitively — was never persisted with mirrors either).
+func normalizeWorkspaceDefaultTaskBehaviors(scope string, behaviors map[string]TaskBehavior) (map[string]TaskBehavior, error) {
 	if len(behaviors) == 0 {
 		return behaviors, nil
 	}
-	cloned := cloneTaskBehaviorMap(behaviors)
-	if alreadyMayBeMirrored {
-		cloned = stripAliasMirrors(cloned)
-	}
-	for name, behavior := range cloned {
+	for name, behavior := range behaviors {
 		for i := range behavior.Hooks {
 			if err := validateHookKind(&behavior.Hooks[i]); err != nil {
 				return nil, fmt.Errorf("%s: task_behaviors.%s: %w", scope, name, err)
 			}
 		}
 	}
-	normalized, err := normalizeBehaviorAliases(scope, cloned)
-	if err != nil {
-		return nil, err
-	}
-	return addAliasMirrors(normalized), nil
+	return normalizeBehaviorAliases(scope, behaviors)
 }
 
 // validateHookKind enforces the Hook.Kind / Hook.Agent / Hook.Command
