@@ -29,17 +29,71 @@ func (s *TaskWorkflowService) ApplyAction(ctx context.Context, taskID string, re
 	}
 
 	// Hydrate with workspace.yaml so kit-supplied hooks / env / capabilities
-	// are visible to the dispatch loop. Falls back to bare Get if workspace
-	// hydration fails (degraded window).
+	// — and, since docs/plans/workspace-default-project.md PR4, the
+	// workspace's default project definition (task_behaviors / base_branch /
+	// fork_point / default_task_behavior) — are visible to the dispatch
+	// loop.
+	//
+	// On hydration failure the two registration shapes diverge (論点e, PR6):
+	//
+	//   - a project.yaml-less project (task.ProjectID carries
+	//     orchestrator.URLDerivedProjectIDPrefix, PR5) has NO task_behaviors
+	//     of its own — every one of them comes from the workspace default
+	//     merge this hydrate step performs. Falling back to the bare cached
+	//     meta here would silently proceed with a meta that has ZERO
+	//     behaviors defined, producing a dispatch failure with no visible
+	//     connection to "workspace hydration failed". That is confusing
+	//     enough (and the degraded state is real enough — this project
+	//     genuinely cannot dispatch anything right now) that it is treated
+	//     as a hard error instead of a silent degrade.
+	//   - an ordinary project.yaml-bearing project only loses the
+	//     workspace-supplied extras (kit env / host_commands / the
+	//     workspace-default merge, if any) — its own task_behaviors are
+	//     unaffected, so the existing silent-fallback-to-bare-Get behavior
+	//     is kept, upgraded with a logged warning (there was previously no
+	//     log line here at all) so there is at least a paper trail when
+	//     debugging a dispatch that looks like it's missing kit-level
+	//     config.
+	// isNoYAMLProjectWithNoBehaviors additionally catches the "hydration
+	// technically succeeded but degraded" window (Codex review round 1
+	// Major): GetWithWorkspace returns (meta, nil error) — success — when the
+	// project has no linked workspace, the workspace store is not
+	// configured, or workspace.yaml is simply absent (os.ErrNotExist) — see
+	// GetWithWorkspace's own doc comment. None of those merge the workspace
+	// default in, so a no-YAML project's meta comes back with the same ZERO
+	// task_behaviors its bare cached meta always has (synthesizeNoYAMLProjectMeta
+	// only ever populates ID/Name). A (meta, nil) check alone would have let
+	// that degraded-but-"successful" case silently through to the exact
+	// zero-behavior dispatch this whole guard exists to prevent.
+	isNoYAMLProjectWithNoBehaviors := func(m *orchestrator.ProjectMeta) bool {
+		return orchestrator.IsURLDerivedProjectID(task.ProjectID) && (m == nil || len(m.TaskBehaviors) == 0)
+	}
+
 	var meta *orchestrator.ProjectMeta
-	if hydrated, err := s.Meta.GetWithWorkspace(ctx, task.ProjectID); err == nil && hydrated != nil {
+	hydrated, hydrateErr := s.Meta.GetWithWorkspace(ctx, task.ProjectID)
+	switch {
+	case hydrateErr == nil && hydrated != nil && !isNoYAMLProjectWithNoBehaviors(hydrated):
 		meta = hydrated
-	} else {
+	case orchestrator.IsURLDerivedProjectID(task.ProjectID):
+		detail := hydrateErr
+		if detail == nil {
+			detail = errors.New("workspace hydration reported success but produced no task_behaviors (no workspace linked, workspace store not configured, or workspace.yaml not found)")
+		}
+		return nil, &StatusError{
+			Code: http.StatusInternalServerError,
+			Message: fmt.Sprintf(
+				"project %q has no project.yaml (its task_behaviors come entirely from the workspace default definition) and workspace hydration did not supply any, so dispatch cannot proceed: %v",
+				task.ProjectID, detail,
+			),
+		}
+	default:
 		var ok bool
 		meta, ok = s.Meta.Get(task.ProjectID)
 		if !ok {
 			return nil, &StatusError{Code: http.StatusInternalServerError, Message: "project meta not loaded: " + task.ProjectID}
 		}
+		slog.Warn("workspace hydration failed; dispatching with bare project meta (workspace-supplied env/host_commands/default project definition not applied)",
+			"project_id", task.ProjectID, "task_id", taskID, "error", hydrateErr)
 	}
 
 	sm := orchestrator.DefaultMachine()

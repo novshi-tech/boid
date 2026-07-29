@@ -53,6 +53,7 @@ func (h *ProjectHandler) Routes() chi.Router {
 	r.Post("/{id}/sessions", h.StartSession)
 	r.Post("/{id}/exec", h.StartExec)
 	r.Post("/{id}/fetch", h.Fetch)
+	r.Get("/{id}/explain", h.Explain)
 	r.Get("/{id}", h.Get)
 	r.Delete("/{id}", h.Delete)
 	return r
@@ -163,6 +164,22 @@ func (h *ProjectHandler) Get(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, hydrated)
+}
+
+// Explain handles GET /api/projects/{id}/explain (docs/plans/
+// workspace-default-project.md 論点e, PR6 — `boid project show --explain`).
+func (h *ProjectHandler) Explain(w http.ResponseWriter, r *http.Request) {
+	ref := chi.URLParam(r, "id")
+	project := h.resolveRef(w, ref)
+	if project == nil {
+		return
+	}
+	explain, err := h.Service.ExplainProject(project.ID)
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, explain)
 }
 
 func (h *ProjectHandler) SetWorkspace(w http.ResponseWriter, r *http.Request) {

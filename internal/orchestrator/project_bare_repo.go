@@ -28,6 +28,13 @@ import (
 // degrading exactly as before.
 const URLDerivedProjectIDPrefix = "url-"
 
+// IsURLDerivedProjectID reports whether id was derived from a git URL
+// (project.yaml-less registration, PR5) rather than read from a committed
+// project.yaml's `id:` field.
+func IsURLDerivedProjectID(id string) bool {
+	return strings.HasPrefix(id, URLDerivedProjectIDPrefix)
+}
+
 // This file implements the git-URL project model (docs/plans/
 // volume-only-daemon.md §論点a "project モデル transition (dir → git URL)"
 // and §論点b "daemon 管理 bare repository"): reading a registered project's

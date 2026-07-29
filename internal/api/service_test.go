@@ -2540,6 +2540,13 @@ func (s *stubProjectMetaStore) LoadAll(_ []*orchestrator.Project) []error {
 	return nil
 }
 func (s *stubProjectMetaStore) SetWorkspaceID(_, _ string)                {}
+func (s *stubProjectMetaStore) Explain(id string) (*orchestrator.ProjectExplain, error) {
+	meta, ok := s.Get(id)
+	if !ok {
+		return nil, fmt.Errorf("project %q: meta not loaded", id)
+	}
+	return orchestrator.ComputeProjectExplain(id, "", meta, nil, false), nil
+}
 func (s *stubProjectMetaStore) SetSynthesizedMeta(id string, meta *orchestrator.ProjectMeta) {
 	if s.metas == nil {
 		s.metas = map[string]*orchestrator.ProjectMeta{}

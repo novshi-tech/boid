@@ -88,6 +88,13 @@ type ProjectService interface {
 	// Priority: id exact match > name exact match > name substring match (case-insensitive).
 	// Returns 1 project on unambiguous match, multiple on ambiguous match, StatusError{404} on no match.
 	ResolveProjectRef(ref string) ([]*orchestrator.Project, error)
+	// ExplainProject returns id's field-provenance view (docs/plans/
+	// workspace-default-project.md 論点e, PR6, GET /api/projects/{id}/explain
+	// — `boid project show --explain`): for each of the 4
+	// workspace-default-mergeable fields, whether the effective value came
+	// from project.yaml or the linked workspace's default project
+	// definition. *StatusError{404} for an unknown id.
+	ExplainProject(id string) (*orchestrator.ProjectExplain, error)
 
 	// CreateWorkspace inserts a brand-new workspace (docs/plans/
 	// workspace-db-consolidation.md PR4, POST /api/workspaces). Returns a

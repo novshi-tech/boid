@@ -35,6 +35,9 @@ func (s *upstreamURLMetaStore) Get(_ string) (*orchestrator.ProjectMeta, bool) {
 func (s *upstreamURLMetaStore) Remove(id string)                               { s.removed = append(s.removed, id) }
 func (s *upstreamURLMetaStore) LoadAll(_ []*orchestrator.Project) []error      { return nil }
 func (s *upstreamURLMetaStore) SetWorkspaceID(_, _ string)                     {}
+func (s *upstreamURLMetaStore) Explain(id string) (*orchestrator.ProjectExplain, error) {
+	return orchestrator.ComputeProjectExplain(id, "", s.meta, nil, false), nil
+}
 func (s *upstreamURLMetaStore) Status(_ string) orchestrator.ProjectStatus {
 	return orchestrator.ProjectStatus{State: orchestrator.StatusReady}
 }

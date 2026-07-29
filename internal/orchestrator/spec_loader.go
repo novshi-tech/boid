@@ -126,6 +126,21 @@ func parseProjectMetaBytes(dirLabel string, data []byte) (*ProjectMeta, error) {
 	// to be a hard requirement ("project.yaml: id is required"); removing
 	// it is safe for the overwhelming majority of existing project.yaml
 	// files, which declare `id:` explicitly and are completely unaffected.
+	//
+	// A NON-empty id is still validated against the URLDerivedProjectIDPrefix
+	// reservation below (Codex review round 2 Major, PR6, 論点e) — PR7 only
+	// widens the empty-id case to "optional, not an error"; it does not
+	// relax PR6's rule that a hand-authored id may never collide with the
+	// prefix reserved for URL-derived ids. This is additional, load-time
+	// defense-in-depth alongside PR7's own provenance verification
+	// (ProjectStore.reconcileExpectedProjectID / isVerifiedURLDerivedID,
+	// which confirm a registered url-derived id actually came from the
+	// project's UpstreamURL rather than trusting the prefix alone) —
+	// belt-and-suspenders against the same hand-authored-`url-`-id class of
+	// bug, enforced at two different points in the system.
+	if meta.ID != "" && IsURLDerivedProjectID(meta.ID) {
+		return nil, fmt.Errorf("project.yaml: id must not start with %q (reserved for project.yaml-less registrations, docs/plans/workspace-default-project.md 決定3)", URLDerivedProjectIDPrefix)
+	}
 	if strings.TrimSpace(meta.Name) == "" {
 		// PR-1d codex round-5 Minor: a bare `meta.Name == ""` check let a
 		// whitespace-only name (e.g. `name: "  "`) through project.yaml

@@ -44,6 +44,9 @@ func (s *stubProjectServiceForExec) SetProjectWorkspace(string, string) (*orches
 	panic("not implemented")
 }
 func (s *stubProjectServiceForExec) DeleteProject(string) error { panic("not implemented") }
+func (s *stubProjectServiceForExec) ExplainProject(string) (*orchestrator.ProjectExplain, error) {
+	panic("not implemented")
+}
 func (s *stubProjectServiceForExec) ReloadProjects() (*ProjectReloadResult, error) {
 	panic("not implemented")
 }

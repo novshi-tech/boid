@@ -54,6 +54,9 @@ func (s *fakeWorkspaceService) SetProjectWorkspace(string, string) (*orchestrato
 	panic("not implemented")
 }
 func (s *fakeWorkspaceService) DeleteProject(string) error { panic("not implemented") }
+func (s *fakeWorkspaceService) ExplainProject(string) (*orchestrator.ProjectExplain, error) {
+	panic("not implemented")
+}
 func (s *fakeWorkspaceService) ReloadProjects() (*ProjectReloadResult, error) {
 	panic("not implemented")
 }
