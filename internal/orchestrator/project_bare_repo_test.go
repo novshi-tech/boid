@@ -154,6 +154,42 @@ func TestReadProjectMetaFromBareRepo_EmptyRepo(t *testing.T) {
 	assertGitHeadReadKind(t, err, orchestrator.GitHeadReadFailureHeadUnresolved)
 }
 
+// TestReadProjectMetaFromBareRepo_MissingBlob exercises the third
+// classification bucket (GitHeadReadFailureOther): HEAD resolves fine and
+// the tree entry for .boid/project.yaml is present (so neither
+// HeadUnresolved nor PathAbsent applies), but the blob object itself is
+// gone from the object database — `git show` fails with "bad object" while
+// both `rev-parse --verify HEAD` and `ls-tree HEAD -- <relPath>` still
+// succeed. Simulates local object-store corruption (e.g. a truncated repack
+// or a disk error that dropped one loose object).
+func TestReadProjectMetaFromBareRepo_MissingBlob(t *testing.T) {
+	bare := setupBareRepoFixture(t, "proj-bare", "Bare Project")
+
+	lsTree := exec.Command("git", "-C", bare, "ls-tree", "HEAD", "--", ".boid/project.yaml")
+	out, err := lsTree.Output()
+	if err != nil {
+		t.Fatalf("git ls-tree: %v", err)
+	}
+	fields := strings.Fields(string(out))
+	if len(fields) < 3 {
+		t.Fatalf("unexpected ls-tree output: %q", out)
+	}
+	blobHash := fields[2]
+	objPath := filepath.Join(bare, "objects", blobHash[:2], blobHash[2:])
+	if _, err := os.Stat(objPath); err != nil {
+		t.Skipf("blob %s is not a loose object at %s (repo was packed) — cannot simulate a missing object this way: %v", blobHash, objPath, err)
+	}
+	if err := os.Remove(objPath); err != nil {
+		t.Fatalf("remove blob object: %v", err)
+	}
+
+	_, err = orchestrator.ReadProjectMetaFromBareRepo(bare)
+	if err == nil {
+		t.Fatal("expected error reading project.yaml whose blob object is missing")
+	}
+	assertGitHeadReadKind(t, err, orchestrator.GitHeadReadFailureOther)
+}
+
 // assertGitHeadReadKind unwraps err via errors.As to *orchestrator.
 // GitHeadReadError and checks its Kind — the classification PR1 adds
 // (docs/plans/workspace-default-project.md 論点c). No caller reads Kind yet
