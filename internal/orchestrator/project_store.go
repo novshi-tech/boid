@@ -356,6 +356,21 @@ func (s *ProjectStore) GetWithWorkspace(_ context.Context, projectID string) (*P
 	// strip→merge→re-mirror shape the host_commands/env blocks below already
 	// use for the identical double-processing reason (論点j).
 	//
+	// The leading stripAliasMirrors is defensive/idiom-matching rather than
+	// independently load-bearing today (codex review on PR4, Minor 1): since
+	// out.TaskBehaviors' own mirror pairs are always self-consistent
+	// (project.yaml's loader already canonicalized+mirrored them before this
+	// function ever runs) and ws.TaskBehaviors' keys are always canonical
+	// (never alias-shaped), the `exists` check below would find the SAME
+	// name present whether or not this line ran first — a project.yaml
+	// entry authored under a legacy alias (e.g. "dev") already has its
+	// canonical counterpart ("executor") present as its own map key by this
+	// point, mirror or no mirror. It is kept for consistency with the
+	// host_commands/env blocks' identical pattern and as a guard against a
+	// future change to either invariant (e.g. if ws.TaskBehaviors ever
+	// stopped being guaranteed canonical-only) reintroducing the double-
+	// processing hazard 論点j describes.
+	//
 	// This MUST run before the host_commands/env blocks below: they iterate
 	// out.TaskBehaviors to inject ws.HostCommands/ws.Env into every
 	// behavior's own HostCommands/Env fields, and a workspace-default-

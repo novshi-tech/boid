@@ -160,6 +160,15 @@ task_behaviors:
 // recognized as the SAME name as a workspace default authored under the
 // CANONICAL name ("executor") — project.yaml wins, the workspace's
 // "executor" must not sneak in as if it were a distinct entry.
+//
+// This proves the collision is correctly detected end to end; it does NOT,
+// on its own, isolate GetWithWorkspace's leading stripAliasMirrors call as
+// the specific mechanism (codex review on PR4, Minor 1): project.yaml's
+// loader already canonicalizes+mirrors "dev" to "executor" before
+// GetWithWorkspace ever runs, so out.TaskBehaviors["executor"] is present as
+// a plain map key regardless of whether that stripAliasMirrors call
+// executes — see its own comment (project_store.go) for why it is kept
+// anyway.
 func TestGetWithWorkspace_TaskBehaviors_CanonicalCollisionViaAlias(t *testing.T) {
 	t.Parallel()
 
