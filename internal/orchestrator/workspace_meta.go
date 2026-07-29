@@ -94,6 +94,31 @@ type WorkspaceMeta struct {
 	// sandbox mount. The `workspaces` table keeps the column for now (next
 	// major schema cleanup removes it outright) but every write from this
 	// binary now persists it as an empty JSON array.
+
+	// TaskBehaviors / BaseBranch / ForkPoint / DefaultTaskBehavior are the
+	// workspace's "default project" definition (docs/plans/
+	// workspace-default-project.md — a project.yaml-less or partial
+	// project.yaml inherits these). Mirrors the identically-named ProjectMeta
+	// fields (spec_types.go) field-for-field, both in shape and in the
+	// validation/normalization pipeline they go through
+	// (normalizeWorkspaceDefaultTaskBehaviors, spec_loader.go, 論点j) — but
+	// unlike host_commands/env/capabilities above, these four are NOT yet
+	// consumed by anything: this is PR3 of that doc's PR split (schema +
+	// plumbing only). A future PR wires them into GetWithWorkspace's
+	// hydration merge (決定1: project.yaml wins per-field over these
+	// workspace defaults; 決定4: task_behaviors merges by canonical behavior
+	// name, same-name project.yaml entry wins outright).
+	TaskBehaviors map[string]TaskBehavior `yaml:"task_behaviors,omitempty" json:"task_behaviors,omitempty"`
+	// BaseBranch is the workspace default's base_branch. Empty means
+	// "unspecified" (決定5: there is deliberately no way to explicitly
+	// un-set an inherited value — see that decision's doc comment).
+	BaseBranch string `yaml:"base_branch,omitempty" json:"base_branch,omitempty"`
+	// ForkPoint is the workspace default's fork_point. Same empty-means-
+	// unspecified rule as BaseBranch.
+	ForkPoint string `yaml:"fork_point,omitempty" json:"fork_point,omitempty"`
+	// DefaultTaskBehavior is the workspace default's default_task_behavior.
+	// Same empty-means-unspecified rule as BaseBranch.
+	DefaultTaskBehavior string `yaml:"default_task_behavior,omitempty" json:"default_task_behavior,omitempty"`
 }
 
 // ResolveAllowedDomains returns the effective proxy egress allowlist for a

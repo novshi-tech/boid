@@ -85,6 +85,17 @@ type WorkspaceEnvelopeSpec struct {
 	ContainerImage string                     `yaml:"container_image"`
 	Capabilities   Capabilities               `yaml:"capabilities"`
 	Projects       []WorkspaceEnvelopeProject `yaml:"projects"`
+	// TaskBehaviors / BaseBranch / ForkPoint / DefaultTaskBehavior are the
+	// workspace's default project definition (docs/plans/
+	// workspace-default-project.md §PR分割案 PR3; see WorkspaceMeta's
+	// identically-named fields for the semantics). Same no-omitempty
+	// rationale as every other field here — a document that omits
+	// task_behaviors must leave the workspace's current value untouched, not
+	// silently clear it.
+	TaskBehaviors       map[string]TaskBehavior `yaml:"task_behaviors"`
+	BaseBranch          string                  `yaml:"base_branch"`
+	ForkPoint           string                  `yaml:"fork_point"`
+	DefaultTaskBehavior string                  `yaml:"default_task_behavior"`
 	// InitScript is the workspace's init.sh, verbatim (PR9 of
 	// docs/plans/workspace-home-volume-persistence.md, 論点 d).
 	//
@@ -130,15 +141,19 @@ type WorkspaceEnvelopeProject struct {
 // Anything else is rejected with "unknown field" — the same typo-guard
 // rationale as workspace_meta_strict.go's DecodeWorkspaceMetaStrict.
 var workspaceEnvelopeSpecFields = map[string]bool{
-	"host_commands":       true,
-	"env":                 true,
-	"allowed_domains":     true,
-	"extra_repos":         true,
-	"container_image":     true,
-	"capabilities":        true,
-	"projects":            true,
-	"init_script":         true,
-	"additional_bindings": true,
+	"host_commands":         true,
+	"env":                   true,
+	"allowed_domains":       true,
+	"extra_repos":           true,
+	"container_image":       true,
+	"capabilities":          true,
+	"projects":              true,
+	"init_script":           true,
+	"additional_bindings":   true,
+	"task_behaviors":        true,
+	"base_branch":           true,
+	"fork_point":            true,
+	"default_task_behavior": true,
 }
 
 // WorkspaceEnvelopeApply is the result of decoding one Workspace document
@@ -153,7 +168,8 @@ type WorkspaceEnvelopeApply struct {
 	// FieldsPresent records which spec.* keys were present in the source
 	// document (by their yaml key name: "host_commands", "env",
 	// "allowed_domains", "extra_repos", "container_image", "capabilities",
-	// "projects", "init_script"). A key absent from this map was not present
+	// "projects", "init_script", "task_behaviors", "base_branch",
+	// "fork_point", "default_task_behavior"). A key absent from this map was not present
 	// in the document at all and MergeInto leaves the corresponding
 	// WorkspaceMeta field untouched; a key present (even if its decoded value
 	// is the zero value / an explicit empty list or map) means the document
@@ -193,6 +209,10 @@ func NewWorkspaceEnvelopeFromMeta(name string, meta *WorkspaceMeta, projects []W
 		spec.ExtraRepos = meta.ExtraRepos
 		spec.ContainerImage = meta.ContainerImage
 		spec.Capabilities = meta.Capabilities
+		spec.TaskBehaviors = meta.TaskBehaviors
+		spec.BaseBranch = meta.BaseBranch
+		spec.ForkPoint = meta.ForkPoint
+		spec.DefaultTaskBehavior = meta.DefaultTaskBehavior
 	}
 	return &WorkspaceEnvelope{
 		APIVersion: WorkspaceEnvelopeAPIVersion,
@@ -237,6 +257,18 @@ func (a *WorkspaceEnvelopeApply) MergeInto(current *WorkspaceMeta) *WorkspaceMet
 	}
 	if a.FieldsPresent["capabilities"] {
 		merged.Capabilities = spec.Capabilities
+	}
+	if a.FieldsPresent["task_behaviors"] {
+		merged.TaskBehaviors = spec.TaskBehaviors
+	}
+	if a.FieldsPresent["base_branch"] {
+		merged.BaseBranch = spec.BaseBranch
+	}
+	if a.FieldsPresent["fork_point"] {
+		merged.ForkPoint = spec.ForkPoint
+	}
+	if a.FieldsPresent["default_task_behavior"] {
+		merged.DefaultTaskBehavior = spec.DefaultTaskBehavior
 	}
 	return merged
 }
@@ -304,15 +336,34 @@ func DecodeWorkspaceEnvelopeDocuments(data []byte) ([]*WorkspaceEnvelopeApply, e
 // guard's detection (a document using only the new field would fall through
 // to the raw, unexported-type-name decode error this function exists to
 // avoid) with nothing to catch the omission.
+// KNOWN GAP (codex review on PR3, Minor 1, docs/plans/
+// workspace-default-project.md §PR分割案 PR3): task_behaviors / base_branch /
+// fork_point / default_task_behavior are WorkspaceMeta fields, so they MUST
+// be listed here (the drift test forces it) — but per this PR's deliberate
+// scope boundary, workspaceMetaStrict (workspace_meta_strict.go, what `boid
+// workspace create/edit --from-file` actually decode) does NOT accept these
+// 4 keys yet. A bare document using ONLY one of them still gets routed by
+// bareMetaSentToTheWrongDoor below to create/edit — which will then reject
+// it with "unknown field", a second, less helpful rejection instead of a
+// pointer to `boid workspace apply` (the only entry point that currently
+// accepts these fields). Accepted for now since PR3 doesn't make these
+// fields functionally usable yet either (GetWithWorkspace hydration isn't
+// wired until PR4) — revisit if/when workspaceMetaStrict grows support for
+// them, or split this guidance by field if the gap proves disruptive
+// earlier.
 var bareMetaKnownFieldNames = map[string]bool{
-	"slug":                true,
-	"env":                 true,
-	"capabilities":        true,
-	"allowed_domains":     true,
-	"extra_repos":         true,
-	"host_commands":       true,
-	"container_image":     true,
-	"additional_bindings": true,
+	"slug":                  true,
+	"env":                   true,
+	"capabilities":          true,
+	"allowed_domains":       true,
+	"extra_repos":           true,
+	"host_commands":         true,
+	"container_image":       true,
+	"additional_bindings":   true,
+	"task_behaviors":        true,
+	"base_branch":           true,
+	"fork_point":            true,
+	"default_task_behavior": true,
 }
 
 // bareMetaSentToTheWrongDoor is the reciprocal of workspace_meta_strict.go's
@@ -567,6 +618,43 @@ func decodeWorkspaceEnvelopeSpec(specNode yaml.Node) (spec WorkspaceEnvelopeSpec
 			if strings.TrimSpace(p.Name) == "" {
 				return spec, nil, false, fmt.Errorf("spec.projects[%d]: name is required and must be non-empty", i)
 			}
+		}
+	}
+	if n, ok := raw["task_behaviors"]; ok {
+		fieldsPresent["task_behaviors"] = true
+		// Same KnownFields gap as capabilities/projects above: a typo'd
+		// nested key (e.g. "raedonly: true") would otherwise decode
+		// silently instead of being rejected.
+		if err := decodeStrictNode(n, &spec.TaskBehaviors); err != nil {
+			return spec, nil, false, fmt.Errorf("spec.task_behaviors: %w", err)
+		}
+		// Same validation + normalization pipeline project.yaml's own
+		// task_behaviors go through (docs/plans/workspace-default-project.md
+		// 決定4, 論点j) — reject a malformed hook shape at decode time rather
+		// than letting it reach the DB (and, eventually, a dispatch planner)
+		// unvalidated.
+		normalized, err := normalizeWorkspaceDefaultTaskBehaviors("spec.task_behaviors", spec.TaskBehaviors)
+		if err != nil {
+			return spec, nil, false, err
+		}
+		spec.TaskBehaviors = normalized
+	}
+	if n, ok := raw["base_branch"]; ok {
+		fieldsPresent["base_branch"] = true
+		if err := n.Decode(&spec.BaseBranch); err != nil {
+			return spec, nil, false, fmt.Errorf("spec.base_branch: %w", err)
+		}
+	}
+	if n, ok := raw["fork_point"]; ok {
+		fieldsPresent["fork_point"] = true
+		if err := n.Decode(&spec.ForkPoint); err != nil {
+			return spec, nil, false, fmt.Errorf("spec.fork_point: %w", err)
+		}
+	}
+	if n, ok := raw["default_task_behavior"]; ok {
+		fieldsPresent["default_task_behavior"] = true
+		if err := n.Decode(&spec.DefaultTaskBehavior); err != nil {
+			return spec, nil, false, fmt.Errorf("spec.default_task_behavior: %w", err)
 		}
 	}
 
