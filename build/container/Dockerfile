@@ -109,6 +109,32 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates git curl gpg \
     && rm -rf /var/lib/apt/lists/*
 
+# Native runtime dependencies for workspace-HOME-installed toolchains.
+# Per the header's 決定 2 note, the toolchains themselves stay on the
+# workspace volume and are user-installed into $HOME without root
+# (dotnet-install.sh → ~/.dotnet, `npx playwright install chromium` →
+# ~/.cache/ms-playwright) — but their shared-library dependencies can only
+# come from apt, which jobs (non-root, no sudo) cannot run. Those, and only
+# those, are baked here:
+#   - libicu72 + tzdata: the .NET runtime hard-requires ICU for
+#     globalization and aborts at startup without it. The
+#     DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1 escape hatch is not an
+#     alternative — it breaks ja-JP date/currency formatting.
+#   - libasound2 … libxrandr2: Playwright chromium's Debian 12 shared-lib
+#     set (what `playwright install-deps chromium` would apt-install; that
+#     command itself needs root, so it cannot run inside a job).
+#   - fonts-noto-cjk: CJK glyphs — without them, Japanese pages render as
+#     tofu (□) in screenshots.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        libicu72 tzdata \
+        libasound2 libatk-bridge2.0-0 libatk1.0-0 libatspi2.0-0 \
+        libcairo2 libcups2 libdbus-1-3 libdrm2 libgbm1 libglib2.0-0 \
+        libnspr4 libnss3 libpango-1.0-0 libx11-6 libxcb1 libxcomposite1 \
+        libxdamage1 libxext6 libxfixes3 libxkbcommon0 libxrandr2 \
+        fonts-noto-cjk \
+    && rm -rf /var/lib/apt/lists/*
+
 # broker host-command provisioning (docs/plans/phase6-container-backend.md
 # §PR6, §決定4): once the daemon runs in this image (compose deploy, DooD
 # model), the "host" that host_commands resolve against IS this image — a
