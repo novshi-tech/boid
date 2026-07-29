@@ -1,6 +1,7 @@
 package orchestrator_test
 
 import (
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -101,9 +102,11 @@ func TestReadProjectMetaFromBareRepo_MissingProjectYAML(t *testing.T) {
 	bare := filepath.Join(root, "repo.git")
 	runGit(t, root, "clone", "-q", "--bare", work, bare)
 
-	if _, err := orchestrator.ReadProjectMetaFromBareRepo(bare); err == nil {
+	_, err := orchestrator.ReadProjectMetaFromBareRepo(bare)
+	if err == nil {
 		t.Fatal("expected error for a bare repo with no .boid/project.yaml at HEAD")
 	}
+	assertGitHeadReadKind(t, err, orchestrator.GitHeadReadFailurePathAbsent)
 }
 
 func TestReadProjectMetaFromBareRepo_CorruptRepo(t *testing.T) {
@@ -120,8 +123,66 @@ func TestReadProjectMetaFromBareRepo_CorruptRepo(t *testing.T) {
 	if !orchestrator.IsBareRepoDir(dir) {
 		t.Fatal("expected IsBareRepoDir to report true for a dir with HEAD+objects (even if otherwise corrupt)")
 	}
-	if _, err := orchestrator.ReadProjectMetaFromBareRepo(dir); err == nil {
+	_, err := orchestrator.ReadProjectMetaFromBareRepo(dir)
+	if err == nil {
 		t.Fatal("expected error reading project.yaml from a corrupt bare repo")
+	}
+	// `git rev-parse --verify HEAD` fails the same way for "not a git
+	// repository at all" as it does for "a real repo with zero commits" —
+	// the design doc groups both under HeadUnresolved since both fail
+	// registration identically (docs/plans/workspace-default-project.md
+	// 論点c: "HEAD が解決できない ... repo 自体の異常なので従来通り失敗させる").
+	assertGitHeadReadKind(t, err, orchestrator.GitHeadReadFailureHeadUnresolved)
+}
+
+// TestReadProjectMetaFromBareRepo_EmptyRepo covers the other half of the
+// HeadUnresolved bucket: a real (not faked) bare repo that git itself
+// recognizes fine, just with zero commits yet — `git init --bare` and
+// nothing else. Distinct from TestReadProjectMetaFromBareRepo_CorruptRepo
+// above, which is not a valid git repository at all.
+func TestReadProjectMetaFromBareRepo_EmptyRepo(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not found in PATH")
+	}
+	bare := filepath.Join(t.TempDir(), "empty.git")
+	runGit(t, filepath.Dir(bare), "init", "-q", "--bare", bare)
+
+	_, err := orchestrator.ReadProjectMetaFromBareRepo(bare)
+	if err == nil {
+		t.Fatal("expected error reading project.yaml from a bare repo with zero commits")
+	}
+	assertGitHeadReadKind(t, err, orchestrator.GitHeadReadFailureHeadUnresolved)
+}
+
+// assertGitHeadReadKind unwraps err via errors.As to *orchestrator.
+// GitHeadReadError and checks its Kind — the classification PR1 adds
+// (docs/plans/workspace-default-project.md 論点c). No caller reads Kind yet
+// (that starts in a future PR); these tests pin the classification itself
+// so that future wiring can rely on it.
+func assertGitHeadReadKind(t *testing.T, err error, want orchestrator.GitHeadReadFailureKind) {
+	t.Helper()
+	var headErr *orchestrator.GitHeadReadError
+	if !errors.As(err, &headErr) {
+		t.Fatalf("expected error to be (or wrap) *orchestrator.GitHeadReadError, got %T: %v", err, err)
+	}
+	if headErr.Kind != want {
+		t.Errorf("Kind = %v, want %v", headErr.Kind, want)
+	}
+}
+
+func TestGitHeadReadFailureKind_String(t *testing.T) {
+	cases := []struct {
+		kind orchestrator.GitHeadReadFailureKind
+		want string
+	}{
+		{orchestrator.GitHeadReadFailureOther, "other"},
+		{orchestrator.GitHeadReadFailureHeadUnresolved, "head-unresolved"},
+		{orchestrator.GitHeadReadFailurePathAbsent, "path-absent"},
+	}
+	for _, c := range cases {
+		if got := c.kind.String(); got != c.want {
+			t.Errorf("%v.String() = %q, want %q", c.kind, got, c.want)
+		}
 	}
 }
 
