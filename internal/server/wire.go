@@ -72,6 +72,14 @@ func buildProjectStore(cfg Config, conn *sql.DB, projectRepo *orchestrator.Proje
 	// registration — see ProjectStore.SetReposRoot's own doc comment.
 	store.SetReposRoot(orchestrator.ReposRoot(dataHomeFor(cfg)))
 
+	// docs/plans/workspace-default-project.md 論点h 案1 (PR7 round-3 Major
+	// fix): reconcileExpectedProjectID needs to verify that a url-derived
+	// expectedID was ACTUALLY derived from the project's current
+	// UpstreamURL (not merely sharing URLDerivedProjectIDPrefix with one) —
+	// see ProjectStore.SetDeriveProjectIDFunc's doc comment for why this is
+	// wired in from here rather than called directly.
+	store.SetDeriveProjectIDFunc(api.DeriveProjectIDFromURL)
+
 	// Workspace DB cutover (docs/plans/workspace-db-consolidation.md PR3):
 	// migrate any yaml-authority workspaces (DefaultWorkspaceDir()/*.yaml)
 	// and kit host_commands (cfg.KitsDir) into the `workspaces` table before

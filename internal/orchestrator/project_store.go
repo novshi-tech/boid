@@ -44,6 +44,36 @@ type ProjectStore struct {
 	// invariant-driven behavior (never hard-delete, always mark degraded)
 	// holds regardless of whether this was ever configured.
 	reposRoot string
+	// deriveProjectID, when set via SetDeriveProjectIDFunc, recomputes the
+	// id a git-URL registration would derive from a project's current
+	// UpstreamURL (Codex round-3 Major review, PR7: reconcileExpectedProjectID
+	// must not treat "expectedID carries the url- prefix" alone as proof
+	// that expectedID was actually derived from a URL — a hand-authored
+	// `id: url-custom` in project.yaml carries the same prefix without ever
+	// having been derived). Wired from internal/server/wire.go's
+	// buildProjectStore to internal/api.DeriveProjectIDFromURL.
+	// orchestrator cannot import internal/api directly to call this itself:
+	// internal/dispatcher (which the derivation depends on for URL
+	// normalization/slugging) already imports orchestrator, and
+	// internal/api imports both — importing api from here would cycle.
+	// nil in any ProjectStore built without this wiring (e.g. a test
+	// constructing orchestrator.NewProjectStore() directly without calling
+	// the setter); reconcileExpectedProjectID treats "cannot verify" as
+	// "do not ignore the drift", never as "ignore it anyway" — see that
+	// method's doc comment.
+	deriveProjectID func(upstreamURL string) (string, error)
+}
+
+// SetDeriveProjectIDFunc wires the git-URL-to-project-id derivation used by
+// reconcileExpectedProjectID to verify that a url-derived expectedID (see
+// URLDerivedProjectIDPrefix) was ACTUALLY derived from the project's current
+// UpstreamURL, not merely a hand-authored id: value that happens to share
+// the "url-" prefix. See the deriveProjectID field's doc comment for why
+// this is injected rather than called directly.
+func (s *ProjectStore) SetDeriveProjectIDFunc(fn func(upstreamURL string) (string, error)) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.deriveProjectID = fn
 }
 
 // ProjectStatus is a project's in-memory health snapshot (docs/plans/
@@ -175,6 +205,19 @@ func (s *ProjectStore) Load(workDir string) (*ProjectMeta, error) {
 	if err != nil {
 		return nil, err
 	}
+	if meta.ID == "" {
+		// docs/plans/workspace-default-project.md 論点h 案1 (PR7) only makes
+		// `id:` optional for the git-URL / bare-repo registration path,
+		// which has a URL to derive a fallback id from
+		// (internal/api's deriveProjectIDFromURL). This is the LEGACY
+		// host-filesystem `boid project add <dir>` path (Codex review,
+		// PR7 round 1 Major): there is no URL here to derive anything
+		// from, so an id-less project.yaml must keep failing exactly as it
+		// did before this PR — caching under the empty-string key would
+		// silently corrupt the map and let a project register with an
+		// empty DB primary key.
+		return nil, fmt.Errorf("%s: project.yaml: id is required (this legacy host-directory registration path has no git URL to derive a fallback id from — see docs/plans/workspace-default-project.md 論点h)", workDir)
+	}
 	s.mu.Lock()
 	s.metas[meta.ID] = meta
 	s.mu.Unlock()
@@ -193,11 +236,94 @@ func (s *ProjectStore) LoadBareRepo(bareRepoPath string) (*ProjectMeta, error) {
 	if err != nil {
 		return nil, err
 	}
+	if meta.ID == "" {
+		// docs/plans/workspace-default-project.md 論点h 案1 (PR7):
+		// project.yaml exists but omits `id:`. There is no id to cache
+		// under yet (caching under "" would corrupt the map) — the only
+		// caller of this method, CreateProjectFromGitURL, derives a
+		// URL-based id and caches it itself once that id is confirmed free.
+		return meta, nil
+	}
 	s.mu.Lock()
 	s.metas[meta.ID] = meta
 	s.mu.Unlock()
 	s.MarkReady(meta.ID)
 	return meta, nil
+}
+
+// reconcileExpectedProjectID implements 論点h 案1
+// (docs/plans/workspace-default-project.md, PR7): project.yaml's own `id:`
+// field is optional, and once a project has been registered under an id
+// ACTUALLY derived from its git upstream URL (verified below, not merely
+// carrying URLDerivedProjectIDPrefix — see the Major fix note), that id
+// must never change out from under it — existing tasks reference it
+// directly.
+//
+//   - meta.ID == "": project.yaml never declared an id (or dropped it) —
+//     always adopt expectedID, the id this project is already registered
+//     under. This is the common no-op case on every reload of a
+//     project.yaml that has always omitted `id:`. Unconditional regardless
+//     of expectedID's provenance: an id-less project.yaml has nothing of
+//     its own to prefer over the registered id either way.
+//   - meta.ID != expectedID AND expectedID is verified to have been
+//     DERIVED FROM upstreamURL (via s.deriveProjectID, when wired): a
+//     project.yaml that gained (or kept) an explicit `id:` after this
+//     project was registered via the no-project.yaml path. Ignored (with a
+//     warning), not rejected — switching to project.yaml's id would detach
+//     every existing task from this project.
+//   - meta.ID != expectedID otherwise — including when expectedID merely
+//     LOOKS url-derived (carries URLDerivedProjectIDPrefix) but does not
+//     actually match what s.deriveProjectID(upstreamURL) produces (Codex
+//     round-3 Major review, PR7: a hand-authored `id: url-custom` must not
+//     get this treatment just because it shares the prefix a genuinely
+//     derived id would carry — that would silently swallow a real id
+//     change), or when s.deriveProjectID is unset/errors and there is
+//     nothing to verify against: left untouched. The caller still treats
+//     this as a mismatch and rejects it, unchanged from before this PR.
+func (s *ProjectStore) reconcileExpectedProjectID(meta *ProjectMeta, expectedID, upstreamURL string) {
+	if meta.ID == "" {
+		meta.ID = expectedID
+		return
+	}
+	if meta.ID == expectedID {
+		return
+	}
+	if !s.isVerifiedURLDerivedID(expectedID, upstreamURL) {
+		return
+	}
+	slog.Warn("project.yaml declares an id that differs from this project's url-derived registered id; ignoring project.yaml's id (a url-derived project's id never changes after registration)",
+		"registered_id", expectedID, "project_yaml_id", meta.ID)
+	meta.ID = expectedID
+}
+
+// isVerifiedURLDerivedID reports whether id was ACTUALLY derived from
+// upstreamURL via s.deriveProjectID (Codex round-4 review, PR7: round-3's
+// fix only closed this gap inside reconcileExpectedProjectID itself — the
+// id carrying URLDerivedProjectIDPrefix is not, on its own, proof of
+// provenance. Both call sites that previously trusted the bare prefix
+// (reconcileExpectedProjectID above, for a STILL-PRESENT project.yaml whose
+// id: drifted, and LoadAll's/FetchProject's missing-project.yaml fallback,
+// for a project.yaml that disappeared entirely) share this same check now,
+// so a hand-authored `id: url-custom` that never actually came from a URL
+// derivation gets the ordinary drift/degrade treatment in both places, not
+// just one).
+//
+// Returns false (never ignore) whenever verification cannot be performed —
+// id doesn't even look url-derived, upstreamURL is empty, no derive func is
+// wired, or the derivation itself errors — never when it merely could not
+// be confirmed.
+func (s *ProjectStore) isVerifiedURLDerivedID(id, upstreamURL string) bool {
+	if !strings.HasPrefix(id, URLDerivedProjectIDPrefix) {
+		return false
+	}
+	s.mu.RLock()
+	deriveFn := s.deriveProjectID
+	s.mu.RUnlock()
+	if deriveFn == nil || upstreamURL == "" {
+		return false
+	}
+	derived, err := deriveFn(upstreamURL)
+	return err == nil && derived == id
 }
 
 // LoadBareRepoExpectingID is LoadBareRepo's id-validated counterpart (PR-2a
@@ -225,11 +351,12 @@ func (s *ProjectStore) LoadBareRepo(bareRepoPath string) (*ProjectMeta, error) {
 // error message, same as before this fix — but leaves EVERY existing cache
 // entry, including any prior entry registered under the drifted id itself,
 // completely untouched.
-func (s *ProjectStore) LoadBareRepoExpectingID(bareRepoPath, expectedID string) (*ProjectMeta, error) {
+func (s *ProjectStore) LoadBareRepoExpectingID(bareRepoPath, expectedID, upstreamURL string) (*ProjectMeta, error) {
 	meta, err := ReadProjectMetaFromBareRepo(bareRepoPath)
 	if err != nil {
 		return nil, err
 	}
+	s.reconcileExpectedProjectID(meta, expectedID, upstreamURL)
 	if meta.ID != expectedID {
 		return meta, nil
 	}
@@ -249,6 +376,28 @@ func (s *ProjectStore) LoadExpectingID(workDir, expectedID string) (*ProjectMeta
 	if err != nil {
 		return nil, err
 	}
+	if meta.ID == "" {
+		// Codex round-3 Minor 2 review: byte-for-byte match Load's own
+		// explicit rejection (above) instead of silently falling through to
+		// the meta.ID != expectedID mismatch branch below. Before this
+		// check, an id-less project.yaml on this legacy host-directory path
+		// returned (meta, nil) here — meta.ID == "" is never equal to a
+		// non-empty expectedID, so LoadAll's caller still ended up
+		// rejecting/degrading the project either way, but via a generic
+		// "id %q does not match" message instead of this path's own
+		// specific, actionable error — a return-contract/diagnostic
+		// difference from pre-PR7 behavior, not merely an unchanged outcome.
+		return nil, fmt.Errorf("%s: project.yaml: id is required (this legacy host-directory registration path has no git URL to derive a fallback id from — see docs/plans/workspace-default-project.md 論点h)", workDir)
+	}
+	// Deliberately NOT reconcileExpectedProjectID (Codex review, PR7 round-2
+	// Major): docs/plans/workspace-default-project.md 論点h 案1 only makes
+	// `id:` optional for the git-URL / bare-repo path, which has a URL to
+	// derive a fallback id from — see Load's own doc comment for why this
+	// legacy host-directory path must keep rejecting an id-less
+	// project.yaml outright, on first load AND on every reload alike. An
+	// ordinary legacy project's project.yaml losing its `id:` (or drifting
+	// to a different one) must keep failing exactly as it did before this
+	// PR, not silently inherit expectedID.
 	if meta.ID != expectedID {
 		return meta, nil
 	}
@@ -644,7 +793,7 @@ func (s *ProjectStore) LoadAll(projects []*Project) []error {
 		var meta *ProjectMeta
 		var loadErr error
 		if IsBareRepoDir(candidate.WorkDir) {
-			meta, loadErr = s.LoadBareRepoExpectingID(candidate.WorkDir, candidate.ID)
+			meta, loadErr = s.LoadBareRepoExpectingID(candidate.WorkDir, candidate.ID, candidate.UpstreamURL)
 		} else {
 			meta, loadErr = s.LoadExpectingID(candidate.WorkDir, candidate.ID)
 		}
@@ -674,18 +823,26 @@ func (s *ProjectStore) LoadAll(projects []*Project) []error {
 			// *GitHeadReadError) still falls through to the existing
 			// remove+degrade handling below unchanged.
 			//
-			// Gated on candidate.ID carrying URLDerivedProjectIDPrefix (Codex
-			// review, PR5 round 2 Major): GitHeadReadFailurePathAbsent alone
-			// cannot tell "registered without a project.yaml on purpose" apart
-			// from "an ordinary project.yaml-bearing project whose file was
-			// deleted upstream by mistake" — both read back identically. Only
-			// the former carries this prefix (the only producer is
-			// internal/api's deriveProjectIDFromURL); an ordinary project
+			// Gated on candidate.ID being VERIFIED url-derived (Codex review,
+			// PR5 round 2 Major, tightened by round-4 Major fix — PR7):
+			// GitHeadReadFailurePathAbsent alone cannot tell "registered
+			// without a project.yaml on purpose" apart from "an ordinary
+			// project.yaml-bearing project whose file was deleted upstream
+			// by mistake" — both read back identically. Checking
+			// candidate.ID's PREFIX alone is not enough either: a
+			// hand-authored `id: url-custom` that happened to be committed
+			// at some point, then had its project.yaml deleted upstream,
+			// would also match a bare prefix check and get silently routed
+			// to the workspace-default fallback below instead of degrading
+			// — isVerifiedURLDerivedID additionally confirms candidate.ID
+			// equals what candidate.UpstreamURL actually derives to (the
+			// same verification reconcileExpectedProjectID applies for a
+			// still-present project.yaml's id: drift). An ordinary project
 			// hitting PathAbsent still degrades below exactly as before,
 			// rather than silently swapping its task_behaviors for the
 			// workspace default with no degraded signal at all.
 			var headErr *GitHeadReadError
-			if errors.As(loadErr, &headErr) && headErr.Kind == GitHeadReadFailurePathAbsent && strings.HasPrefix(candidate.ID, URLDerivedProjectIDPrefix) {
+			if errors.As(loadErr, &headErr) && headErr.Kind == GitHeadReadFailurePathAbsent && s.isVerifiedURLDerivedID(candidate.ID, candidate.UpstreamURL) {
 				synthesized := s.synthesizeMetaForReload(candidate)
 				s.mu.Lock()
 				s.metas[candidate.ID] = synthesized

@@ -115,9 +115,17 @@ func parseProjectMetaBytes(dirLabel string, data []byte) (*ProjectMeta, error) {
 		}
 	}
 
-	if meta.ID == "" {
-		return nil, fmt.Errorf("project.yaml: id is required")
-	}
+	// docs/plans/workspace-default-project.md 論点h 案1 (PR7): `id:` is
+	// optional. project.yaml declaring one is validated no further here
+	// (the PK-uniqueness / id-drift checks live at the registration/reload
+	// call sites, orchestrator.ProjectStore.LoadBareRepoExpectingID /
+	// LoadExpectingID and internal/api's CreateProjectFromGitURL); omitting
+	// it entirely falls through to the caller's URL-derived id (the exact
+	// same derivation a wholly missing project.yaml already gets — see
+	// internal/api/project_no_yaml.go's deriveProjectIDFromURL). This used
+	// to be a hard requirement ("project.yaml: id is required"); removing
+	// it is safe for the overwhelming majority of existing project.yaml
+	// files, which declare `id:` explicitly and are completely unaffected.
 	if strings.TrimSpace(meta.Name) == "" {
 		// PR-1d codex round-5 Minor: a bare `meta.Name == ""` check let a
 		// whitespace-only name (e.g. `name: "  "`) through project.yaml

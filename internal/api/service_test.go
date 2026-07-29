@@ -2518,7 +2518,7 @@ func (s *stubProjectMetaStore) Load(workDir string) (*orchestrator.ProjectMeta, 
 func (s *stubProjectMetaStore) LoadBareRepo(bareRepoPath string) (*orchestrator.ProjectMeta, error) {
 	return nil, nil
 }
-func (s *stubProjectMetaStore) LoadBareRepoExpectingID(bareRepoPath, expectedID string) (*orchestrator.ProjectMeta, error) {
+func (s *stubProjectMetaStore) LoadBareRepoExpectingID(bareRepoPath, expectedID, upstreamURL string) (*orchestrator.ProjectMeta, error) {
 	return nil, nil
 }
 func (s *stubProjectMetaStore) Status(id string) orchestrator.ProjectStatus {

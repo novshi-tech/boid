@@ -66,6 +66,21 @@ func deriveProjectIDFromURL(normalizedURL string) (string, error) {
 	return noYAMLProjectIDPrefix + hex.EncodeToString(sum[:])[:16], nil
 }
 
+// DeriveProjectIDFromURL is the exported form of deriveProjectIDFromURL,
+// wired into orchestrator.ProjectStore.SetDeriveProjectIDFunc (see
+// internal/server/wire.go's buildProjectStore) so
+// ProjectStore.reconcileExpectedProjectID (docs/plans/
+// workspace-default-project.md 論点h 案1, PR7 round-3 Major fix) can verify
+// that a url-derived expectedID was ACTUALLY derived from the project's
+// current UpstreamURL, rather than merely sharing URLDerivedProjectIDPrefix
+// with one. orchestrator cannot call deriveProjectIDFromURL directly:
+// internal/dispatcher (which it depends on for URL normalization/slugging)
+// already imports orchestrator, and this package imports both — importing
+// this package from orchestrator would cycle. Hence the injection.
+func DeriveProjectIDFromURL(normalizedURL string) (string, error) {
+	return deriveProjectIDFromURL(normalizedURL)
+}
+
 // synthesizeNoYAMLProjectMeta builds the ProjectMeta for a project.yaml-less
 // registration (docs/plans/workspace-default-project.md PR5, 論点b/c/d).
 // Called by CreateProjectFromGitURL exactly when gitShowHEAD's failure
