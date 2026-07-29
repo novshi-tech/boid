@@ -16,8 +16,16 @@ func (s *TaskWorkflowService) ReplayHook(ctx context.Context, taskID string, req
 		return nil, &StatusError{Code: http.StatusNotFound, Message: err.Error()}
 	}
 
-	meta, ok := s.Meta.Get(task.ProjectID)
-	if !ok {
+	// Hydrate with workspace.yaml so workspace-level task_behaviors are
+	// visible to the replayed hook, matching the dispatch-loop's own meta
+	// (docs/plans/workspace-default-project.md §PR分割案 PR2, §現状の実測4's
+	// "hook replay" row). No fallback to bare Get here (unlike CreateTask):
+	// a bare-Get miss already 500'd before this switch, so GetWithWorkspace
+	// erroring for ANY reason — including the two new failure modes it can
+	// produce that bare Get never could (workspace.yaml corrupt,
+	// host_commands conflict) — keeps landing on the exact same 500.
+	meta, err := s.Meta.GetWithWorkspace(ctx, task.ProjectID)
+	if err != nil {
 		return nil, &StatusError{Code: http.StatusInternalServerError, Message: "project meta not loaded: " + task.ProjectID}
 	}
 
@@ -93,8 +101,9 @@ func (s *TaskWorkflowService) ListHooksForStatus(taskID, status string) ([]orche
 	if err != nil {
 		return nil, &StatusError{Code: http.StatusNotFound, Message: err.Error()}
 	}
-	meta, ok := s.Meta.Get(task.ProjectID)
-	if !ok {
+	// Same switch (and same "no fallback" rationale) as ReplayHook above.
+	meta, err := s.Meta.GetWithWorkspace(context.Background(), task.ProjectID)
+	if err != nil {
 		return nil, &StatusError{Code: http.StatusInternalServerError, Message: "project meta not loaded: " + task.ProjectID}
 	}
 	effectiveStatus := task.Status

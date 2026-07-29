@@ -89,11 +89,31 @@ func (s *WebAppService) ListProjects() ([]*orchestrator.Project, error) {
 		return nil, err
 	}
 	for _, project := range projects {
-		if meta, ok := s.Meta.Get(project.ID); ok {
-			project.Meta = *meta
-		}
+		s.hydrateProjectMeta(project)
 	}
 	return projects, nil
+}
+
+// hydrateProjectMeta populates project.Meta with workspace.yaml merged in
+// (docs/plans/workspace-default-project.md §PR分割案 PR2, §現状の実測4's
+// "Web UI project 一覧"/"Web UI project 単体" rows — fable review M1: this
+// feeds the task-creation form's behavior dropdown, task_form.templ:32,50,
+// not just display). Falls back to bare Get on any hydration failure —
+// same idiom as ProjectAppService.hydrateProjectWithWorkspace
+// (project_service.go) and TaskAppService.CreateTask (task_create.go)
+// already use — reproducing the pre-PR2 "meta not found → leave Meta
+// unset, no error" tolerance for a true cache miss, while degrading to the
+// un-hydrated meta (rather than blanking Meta outright) for the two new
+// failure modes GetWithWorkspace can produce that bare Get never could (a
+// corrupt workspace.yaml, a host_commands conflict).
+func (s *WebAppService) hydrateProjectMeta(project *orchestrator.Project) {
+	if hydrated, err := s.Meta.GetWithWorkspace(context.Background(), project.ID); err == nil && hydrated != nil {
+		project.Meta = *hydrated
+		return
+	}
+	if meta, ok := s.Meta.Get(project.ID); ok {
+		project.Meta = *meta
+	}
 }
 
 // DuplicateTask delegates to the shared TaskService so the Web UI uses the
@@ -219,9 +239,7 @@ func (s *WebAppService) GetProjectByID(id string) (*orchestrator.Project, error)
 	if err != nil {
 		return nil, &StatusError{Code: http.StatusNotFound, Message: err.Error()}
 	}
-	if meta, ok := s.Meta.Get(id); ok {
-		project.Meta = *meta
-	}
+	s.hydrateProjectMeta(project)
 	return project, nil
 }
 

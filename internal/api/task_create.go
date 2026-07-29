@@ -67,7 +67,26 @@ func (s *TaskAppService) validateParentlessExecutorBase(req CreateTaskRequest, b
 func (s *TaskAppService) CreateTask(req CreateTaskRequest) (*orchestrator.Task, error) {
 	var meta *orchestrator.ProjectMeta
 	if s.Meta != nil {
-		if m, ok := s.Meta.Get(req.ProjectID); ok {
+		// Hydrate with workspace.yaml so a workspace-level default project
+		// definition's task_behaviors are visible to ResolveBehavior, not
+		// just project.yaml's own (docs/plans/workspace-default-project.md
+		// §PR分割案 PR2, §現状の実測4's "task 作成" row — this was the one
+		// call site among the 5 mandatory switches that still read bare
+		// Meta.Get). Falls back to bare Get on any hydration failure — same
+		// idiom as ProjectAppService.hydrateProjectWithWorkspace
+		// (project_service.go) and TaskWorkflowService.ApplyAction
+		// (workflow_action.go) already use. This preserves CreateTask's
+		// pre-existing "meta not loaded → nil meta, continue" tolerance
+		// (ResolveBehavior handles a nil meta unconditionally) for the
+		// "meta not loaded" case, and additionally degrades gracefully
+		// — rather than failing task creation outright — for the two NEW
+		// failure modes GetWithWorkspace can produce that bare Get never
+		// could (a corrupt workspace.yaml, a host_commands conflict): the
+		// project's own project.yaml behaviors still work, just without
+		// workspace-level enrichment.
+		if hydrated, err := s.Meta.GetWithWorkspace(context.Background(), req.ProjectID); err == nil && hydrated != nil {
+			meta = hydrated
+		} else if m, ok := s.Meta.Get(req.ProjectID); ok {
 			meta = m
 		}
 	}
