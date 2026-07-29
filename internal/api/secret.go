@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"net/http"
+	"net/url"
 
 	"github.com/go-chi/chi/v5"
 )
@@ -22,8 +23,17 @@ func (h *SecretHandler) Routes() chi.Router {
 	r := chi.NewRouter()
 	r.Get("/", h.List)
 	r.Post("/", h.Set)
-	r.Delete("/{key}", h.Delete)
-	r.Get("/{key}/value", h.GetValue)
+	// {key:.*} rather than the plain {key} chi shorthand: a bare {key}
+	// only ever captures a single path segment, so a key containing "/"
+	// (e.g. atl-cli's "<site-alias>/api-token" shape, the exact form
+	// internal/auth.SaveSite in novshi-tech/atl-cli uses) 404s here no
+	// matter how it is escaped on the way in — Set (JSON body) stores it
+	// fine, but GetValue/Delete can never look it back up. See
+	// TestSecretHandler_KeyWithSlash_GetAndDeleteRoundTrip for the
+	// regression this fixes (found via atl's boid-cli credential backend,
+	// production dogfood 2026-07-29).
+	r.Delete("/{key:.*}", h.Delete)
+	r.Get("/{key:.*}/value", h.GetValue)
 	return r
 }
 
@@ -73,8 +83,28 @@ func (h *SecretHandler) Set(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
+// secretKeyParam extracts and unescapes the "key" path parameter. chi's
+// router matches routes against the request's RAW (still percent-encoded)
+// path — see (*chi.Mux).routeHTTP's RawPath-before-Path fallback — so
+// chi.URLParam hands the handler "verify-test%2Fapi-token" for a key like
+// "verify-test/api-token" (cmd/secret.go's runSecretGet/runSecretDelete
+// always url.PathEscape the key before building the request, precisely so
+// a "/"-containing key — e.g. atl-cli's "<site-alias>/api-token" shape —
+// survives the trip as ONE path segment rather than being split). Passing
+// that escaped form straight to SecretStore looks up a key that was never
+// stored: Set (JSON body, no URL involved) always stores the key
+// unescaped. Unescaping here is what makes Get/Delete find the same row
+// Set wrote. See TestSecretHandler_KeyWithSlash_GetAndDeleteRoundTrip.
+func secretKeyParam(r *http.Request) (string, error) {
+	return url.PathUnescape(chi.URLParam(r, "key"))
+}
+
 func (h *SecretHandler) Delete(w http.ResponseWriter, r *http.Request) {
-	key := chi.URLParam(r, "key")
+	key, err := secretKeyParam(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid key path parameter: "+err.Error())
+		return
+	}
 	if key == "" {
 		writeError(w, http.StatusBadRequest, "key path parameter required")
 		return
@@ -87,7 +117,11 @@ func (h *SecretHandler) Delete(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *SecretHandler) GetValue(w http.ResponseWriter, r *http.Request) {
-	key := chi.URLParam(r, "key")
+	key, err := secretKeyParam(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid key path parameter: "+err.Error())
+		return
+	}
 	if key == "" {
 		writeError(w, http.StatusBadRequest, "key path parameter required")
 		return
