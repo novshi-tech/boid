@@ -510,6 +510,47 @@ func (s *ProjectStore) GetWithWorkspace(_ context.Context, projectID string) (*P
 	return out, nil
 }
 
+// Explain returns the field-provenance view of projectID's effective meta
+// (docs/plans/workspace-default-project.md 論点e, PR6) — for each of the 4
+// workspace-default-mergeable fields, whether the effective value came from
+// project.yaml or the workspace's default project definition. Unlike
+// GetWithWorkspace, this never returns an error for a missing/unreadable
+// workspace: the degraded window (workspace.yaml absent, or no workspace
+// linked / workspace store unconfigured) is reported as "no workspace
+// default applied" (ProvenanceUnset), the same treatment GetWithWorkspace
+// itself gives that window. A real load failure (not os.ErrNotExist) is
+// reported as ProvenanceUnavailable instead — distinct from "unset" because
+// this function genuinely cannot tell whether a workspace default would
+// have supplied a value (Codex review round 1 Major; see
+// ComputeProjectExplain's own doc comment for the classification rule).
+func (s *ProjectStore) Explain(projectID string) (*ProjectExplain, error) {
+	s.mu.RLock()
+	meta, ok := s.metas[projectID]
+	workspaceID := s.workspaceIDs[projectID]
+	s.mu.RUnlock()
+
+	if !ok {
+		return nil, fmt.Errorf("project %q: meta not loaded", projectID)
+	}
+
+	var wsMeta *WorkspaceMeta
+	workspaceUnavailable := false
+	if workspaceID != "" && s.workspaceStore != nil {
+		if loaded, err := s.workspaceStore.Load(workspaceID); err == nil {
+			wsMeta = loaded
+		} else if errors.Is(err, os.ErrNotExist) {
+			slog.Warn("project explain: workspace.yaml not found; reporting as no workspace default applied",
+				"project_id", projectID, "workspace_id", workspaceID)
+		} else {
+			workspaceUnavailable = true
+			slog.Warn("project explain: workspace load failed; reporting affected fields as unavailable rather than unset",
+				"project_id", projectID, "workspace_id", workspaceID, "error", err)
+		}
+	}
+
+	return ComputeProjectExplain(projectID, workspaceID, meta, wsMeta, workspaceUnavailable), nil
+}
+
 // Set stores meta directly.
 func (s *ProjectStore) Set(id string, meta *ProjectMeta) {
 	s.mu.Lock()
@@ -576,18 +617,22 @@ func (s *ProjectStore) synthesizeMetaForReload(candidate *Project) *ProjectMeta 
 	s.mu.RUnlock()
 
 	name := ""
+	nameSource := ""
 	switch {
 	case hadPrev && prev.Name != "":
 		name = prev.Name
+		nameSource = "cached"
 	case candidate.WorkDir != "":
 		base := filepath.Base(candidate.WorkDir)
 		name = strings.TrimSuffix(base, ".git")
+		nameSource = "basename"
 	case candidate.UpstreamURL != "":
 		if derived, err := DeriveProjectNameFromURL(candidate.UpstreamURL); err == nil {
 			name = derived
+			nameSource = "url"
 		}
 	}
-	return &ProjectMeta{ID: candidate.ID, Name: name}
+	return &ProjectMeta{ID: candidate.ID, Name: name, NameSource: nameSource}
 }
 
 // SetWorkspaceID updates the cached workspace association for a project.

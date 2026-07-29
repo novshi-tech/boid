@@ -156,5 +156,14 @@ func (s *ProjectAppService) synthesizeNoYAMLProjectMeta(gitURL, name, workspaceS
 	// empty so GetWithWorkspace's existing dynamic merge (決定2) fills them
 	// in from whatever the workspace's CURRENT default project definition is
 	// at hydrate time, not a snapshot taken here at registration time.
-	return &orchestrator.ProjectMeta{ID: id, Name: name}, nil
+	//
+	// NameSource records how `name` was obtained, for `project show
+	// --explain` (docs/plans/workspace-default-project.md 論点e, PR6):
+	// "explicit" when the caller passed --name, "url" when it was derived
+	// from the git URL (DeriveProjectNameFromURL, the caller's default).
+	nameSource := "url"
+	if nameWasExplicit {
+		nameSource = "explicit"
+	}
+	return &orchestrator.ProjectMeta{ID: id, Name: name, NameSource: nameSource}, nil
 }
