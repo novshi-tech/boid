@@ -62,6 +62,10 @@ type ProjectAppService struct {
 		// LoadBareRepoExpectingID. Also clears any prior degraded status — see
 		// orchestrator.ProjectStore.SetSynthesizedMeta's own doc comment.
 		SetSynthesizedMeta(id string, meta *orchestrator.ProjectMeta)
+		// Explain returns id's field-provenance view (docs/plans/
+		// workspace-default-project.md 論点e, PR6) — see
+		// orchestrator.ProjectStore.Explain's own doc comment.
+		Explain(id string) (*orchestrator.ProjectExplain, error)
 	}
 	// CloneBareRepo clones a git URL as a daemon-managed bare (mirror)
 	// repository at destPath, injecting forge credentials scoped to
@@ -778,14 +782,18 @@ func (s *ProjectAppService) FetchProject(ctx context.Context, id string) (*orche
 			// reproduces an explicit --name a bare UpstreamURL re-derivation
 			// never could), else UpstreamURL re-derivation as a last resort.
 			name := ""
+			nameSource := ""
 			if cached, ok := s.Meta.Get(id); ok && cached.Name != "" {
 				name = cached.Name
+				nameSource = "cached"
 			} else if project.WorkDir != "" {
 				name = strings.TrimSuffix(filepath.Base(project.WorkDir), ".git")
+				nameSource = "basename"
 			} else if derived, derr := orchestrator.DeriveProjectNameFromURL(project.UpstreamURL); derr == nil {
 				name = derived
+				nameSource = "url"
 			}
-			synthesized := &orchestrator.ProjectMeta{ID: id, Name: name}
+			synthesized := &orchestrator.ProjectMeta{ID: id, Name: name, NameSource: nameSource}
 			s.Meta.SetSynthesizedMeta(id, synthesized)
 			project.Meta = *synthesized
 			return s.hydrateProjectWithWorkspace(ctx, project), nil
@@ -929,6 +937,22 @@ func (s *ProjectAppService) GetProject(id string) (*orchestrator.Project, error)
 	// SessionJobInput straight from the returned Meta. Hydrate with
 	// workspace so Capabilities / Env / SecretNamespace are populated.
 	return s.hydrateProjectWithWorkspace(context.Background(), project), nil
+}
+
+// ExplainProject handles GET /api/projects/{id}/explain (`boid project show
+// --explain`, docs/plans/workspace-default-project.md 論点e, PR6). Confirms
+// id is a registered project (same 404 shape as GetProject) before
+// delegating the actual field-provenance computation to
+// orchestrator.ProjectStore.Explain.
+func (s *ProjectAppService) ExplainProject(id string) (*orchestrator.ProjectExplain, error) {
+	if _, err := s.Projects.GetProject(id); err != nil {
+		return nil, &StatusError{Code: http.StatusNotFound, Message: err.Error()}
+	}
+	explain, err := s.Meta.Explain(id)
+	if err != nil {
+		return nil, &StatusError{Code: http.StatusNotFound, Message: err.Error()}
+	}
+	return explain, nil
 }
 
 func (s *ProjectAppService) SetProjectWorkspace(id, workspaceID string) (*orchestrator.Project, error) {

@@ -467,6 +467,17 @@ type ProjectMeta struct {
 	// to "supervisor" if that behavior exists (with a deprecation warning);
 	// if neither is set, CreateTask returns an error.
 	DefaultTaskBehavior string `yaml:"default_task_behavior,omitempty" json:"default_task_behavior,omitempty"`
+	// NameSource records how Name was determined for a project.yaml-less
+	// (URL-derived id, PR5) registration — "explicit" (--name given),
+	// "url" (derived from the git URL), "cached" (recovered from a
+	// previously-cached Name on reload), or "basename" (recovered from the
+	// bare-repo WorkDir's directory name on reload). Runtime-only
+	// (yaml:"-"): never read from project.yaml — a project.yaml-bearing
+	// project always leaves this empty, since Name there has an
+	// unambiguous single source. Surfaced by `project show --explain`
+	// (docs/plans/workspace-default-project.md 論点e, PR6) as a carry-over
+	// from PR5's completion report.
+	NameSource string `yaml:"-" json:"name_source,omitempty"`
 }
 
 type ProjectLocalMeta struct {

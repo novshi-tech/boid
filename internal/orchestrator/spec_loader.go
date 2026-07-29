@@ -118,6 +118,21 @@ func parseProjectMetaBytes(dirLabel string, data []byte) (*ProjectMeta, error) {
 	if meta.ID == "" {
 		return nil, fmt.Errorf("project.yaml: id is required")
 	}
+	// Reject the URLDerivedProjectIDPrefix on a hand-authored id (Codex
+	// review round 2 Major, docs/plans/workspace-default-project.md 論点e
+	// PR6): every "is this project.yaml-less" check in the codebase
+	// (ApplyAction's hard-error guard, LoadAll/FetchProject's reload
+	// fallback) gates purely on this prefix, on the assumption — stated but
+	// never enforced — that no hand-authored project.yaml `id:` would ever
+	// collide with it. A project.yaml that DID author an "url-..." id would
+	// be misidentified as project.yaml-less everywhere those checks run,
+	// including ApplyAction's PR6 hard-error path, where the consequence is
+	// now a hard dispatch failure rather than a harmless fallback. Rejecting
+	// it at load time closes the collision at its source instead of
+	// threading a second signal through every call site.
+	if IsURLDerivedProjectID(meta.ID) {
+		return nil, fmt.Errorf("project.yaml: id must not start with %q (reserved for project.yaml-less registrations, docs/plans/workspace-default-project.md 決定3)", URLDerivedProjectIDPrefix)
+	}
 	if strings.TrimSpace(meta.Name) == "" {
 		// PR-1d codex round-5 Minor: a bare `meta.Name == ""` check let a
 		// whitespace-only name (e.g. `name: "  "`) through project.yaml

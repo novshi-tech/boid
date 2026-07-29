@@ -321,6 +321,24 @@ func TestReadProjectMeta_Errors(t *testing.T) {
 		}
 	})
 
+	// Codex review round 2 Major (docs/plans/workspace-default-project.md
+	// 論点e, PR6): every "is this project.yaml-less" check in the codebase
+	// gates purely on orchestrator.URLDerivedProjectIDPrefix ("url-"), on the
+	// assumption that no hand-authored project.yaml id would ever collide
+	// with it. That assumption was never enforced at load time — reject it
+	// here so the collision can't happen.
+	t.Run("id with reserved url- prefix is rejected", func(t *testing.T) {
+		dir := t.TempDir()
+		boidDir := filepath.Join(dir, ".boid")
+		_ = os.MkdirAll(boidDir, 0o755)
+		_ = os.WriteFile(filepath.Join(boidDir, "project.yaml"), []byte("id: url-deadbeef\nname: Colliding Project\n"), 0o644)
+
+		_, err := projectspec.ReadProjectMeta(dir)
+		if err == nil || !strings.Contains(err.Error(), "url-") {
+			t.Fatalf("expected rejection of a url--prefixed id, got %v", err)
+		}
+	})
+
 	t.Run("missing name", func(t *testing.T) {
 		dir := t.TempDir()
 		boidDir := filepath.Join(dir, ".boid")

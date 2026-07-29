@@ -143,6 +143,14 @@ var projectReloadCmd = &cobra.Command{
 	RunE:        runProjectReload,
 }
 
+// projectShowExplain is the --explain flag for `boid project show`
+// (docs/plans/workspace-default-project.md 論点e, PR6): prints, per field,
+// whether the effective value came from project.yaml, the linked
+// workspace's default project definition, or is unset. Without the flag,
+// `project show` still prints a one-line indicator when the project is
+// affected by the workspace default at all (the doc's stated minimum).
+var projectShowExplain bool
+
 var projectShowCmd = &cobra.Command{
 	Use:               "show <project-ref>",
 	Short:             "Show project details (id or name, partial match supported)",
@@ -179,6 +187,7 @@ func init() {
 	projectAddCmd.Flags().StringVar(&projectAddName, "name", "", "Project name override, git-URL form only (default: derived from the URL's last path component)")
 	projectInitSubCmd.Flags().StringVar(&projectInitWorkspace, "workspace", "", "Assign the project to a workspace after initialization (get-or-create)")
 	projectInitSubCmd.Flags().StringVar(&projectInitAgent, "agent", "", "Harness agent baked into each behavior's default_instruction (default: claude-code)")
+	projectShowCmd.Flags().BoolVar(&projectShowExplain, "explain", false, "Show field-by-field provenance (project.yaml vs workspace default vs unset)")
 
 	// Minor 2 (PR-2a codex round-1 review): the recovery guidance both this
 	// file's own messages and docs/{en,ja}/reference/cli.md give
@@ -473,10 +482,147 @@ func runProjectShow(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("get project: %w", err)
 	}
 
-	return renderOutput(cmd, p, func() error {
+	// Always fetch the explain view (docs/plans/workspace-default-project.md
+	// 論点e, PR6): even without --explain, the doc requires at least a
+	// one-line indicator when the project is affected by the workspace
+	// default at all. Fetch failure here (e.g. talking to a pre-PR6 daemon
+	// that has no /explain route) must not break plain `project show` — it
+	// just means the indicator/--explain output is silently skipped.
+	var explain *projectspec.ProjectExplain
+	if e, eerr := fetchProjectExplain(c, p.ID); eerr == nil {
+		explain = e
+	} else if projectShowExplain {
+		return fmt.Errorf("get project explain: %w", eerr)
+	}
+
+	// Codex review round 1 Major / round 2 Major: structured output (--format
+	// json/yaml) must reflect BOTH tiers plain-text output has — the
+	// always-on one-line-indicator tier (WorkspaceDefaultApplied /
+	// NoYAMLProject, set whenever the fetch above succeeded) and the
+	// --explain full-detail tier (Explain, set ONLY when projectShowExplain
+	// is true — round 2 caught that the first fix always populated Explain
+	// regardless of the flag, so structured output no longer differed with
+	// vs. without --explain). out embeds *projectspec.Project so its fields
+	// are still promoted to the top level for existing `project show -o
+	// json/yaml` consumers.
+	out := &projectShowOutput{Project: p}
+	if explain != nil {
+		out.WorkspaceDefaultApplied = explain.AnyWorkspaceDefaultApplied
+		out.NoYAMLProject = explain.IsNoYAMLProject
+		if projectShowExplain {
+			out.Explain = explain
+		}
+	}
+
+	return renderOutput(cmd, out, func() error {
 		renderProjectDetail(p)
+		if explain != nil {
+			renderProjectExplainSummary(explain)
+			if projectShowExplain {
+				renderProjectExplainDetail(explain)
+			}
+		}
 		return nil
 	})
+}
+
+// projectShowOutput is `project show`'s structured-output (--format
+// json/yaml) shape: the project itself, the two always-on summary
+// indicators (mirroring the plain-text one-liner), and — only with
+// --explain — the full field-provenance view (docs/plans/
+// workspace-default-project.md 論点e, PR6).
+//
+// Project is embedded with `yaml:",inline"` so YAML marshaling promotes its
+// fields to the top level: gopkg.in/yaml.v3, unlike encoding/json, does NOT
+// inline an anonymous struct field by default — omitting this tag was a
+// round 2 Codex review Major (it silently changed `project show -o yaml`'s
+// existing top-level project shape into a nested `project:` key). JSON needs
+// no equivalent tag; encoding/json promotes anonymous struct fields
+// unconditionally.
+type projectShowOutput struct {
+	*projectspec.Project `yaml:",inline"`
+
+	// WorkspaceDefaultApplied / NoYAMLProject mirror
+	// ProjectExplain.AnyWorkspaceDefaultApplied /.IsNoYAMLProject — set
+	// whenever the /explain fetch succeeded, regardless of --explain, so a
+	// scripted caller gets the same minimum signal the plain-text one-liner
+	// conveys without needing --explain.
+	WorkspaceDefaultApplied bool `json:"workspace_default_applied,omitempty" yaml:"workspace_default_applied,omitempty"`
+	NoYAMLProject           bool `json:"no_yaml_project,omitempty" yaml:"no_yaml_project,omitempty"`
+
+	// Explain is the full per-field provenance view — set ONLY when
+	// --explain was passed (round 2 Codex review Major: the original fix set
+	// this unconditionally, so structured output did not actually differ
+	// with vs. without --explain).
+	Explain *projectspec.ProjectExplain `json:"explain,omitempty" yaml:"explain,omitempty"`
+}
+
+func fetchProjectExplain(c *client.Client, projectID string) (*projectspec.ProjectExplain, error) {
+	var explain projectspec.ProjectExplain
+	if err := c.Do("GET", "/api/projects/"+projectID+"/explain", nil, &explain); err != nil {
+		return nil, err
+	}
+	return &explain, nil
+}
+
+// renderProjectExplainSummary prints the doc's required minimum: a single
+// line, shown even without --explain, when the project is affected by the
+// workspace default at all.
+func renderProjectExplainSummary(e *projectspec.ProjectExplain) {
+	if e.AnyWorkspaceDefaultApplied {
+		fmt.Println("Note:        one or more fields are inherited from the workspace default (see `project show --explain`)")
+	}
+	if e.WorkspaceUnavailable {
+		// Codex review round 2 Major: a real workspace-load failure must be
+		// visible even when project.yaml supplies every scalar field itself
+		// (so AnyWorkspaceDefaultApplied is false and none of the per-field
+		// provenance lines would otherwise mention it) — otherwise the
+		// operator sees an apparently-complete, apparently-healthy
+		// explanation despite the daemon having failed to read the
+		// workspace at all.
+		fmt.Println("Note:        the linked workspace's default project definition could not be read (see `project show --explain`)")
+	}
+	if e.IsNoYAMLProject {
+		fmt.Println("Note:        this project has no project.yaml — its id was derived from the git URL, not read from a committed `id:` field")
+		nameSource := e.NameSource
+		if nameSource == "" {
+			nameSource = "(could not be recovered)"
+		}
+		fmt.Printf("Note:        its name source is %q (see `project show --explain` for detail)\n", nameSource)
+	}
+}
+
+// renderProjectExplainDetail prints the full --explain breakdown: per-field
+// provenance (project.yaml / workspace default / unset), the base_branch
+// snapshot-timing caveat, and (for a no-YAML project) the name recovery
+// source.
+func renderProjectExplainDetail(e *projectspec.ProjectExplain) {
+	fmt.Println("\nExplain:")
+	if e.WorkspaceUnavailable {
+		// Codex review round 2 Major: surface this explicitly (not just via
+		// individual field values reading "workspace unavailable" below) so
+		// it can't be missed when project.yaml happens to supply every
+		// scalar field itself.
+		fmt.Println("  WARNING: the linked workspace's default project definition could not be read; any field below reading \"workspace unavailable\" means this function genuinely does not know whether a workspace default would apply — not that none does.")
+	}
+	fmt.Printf("  base_branch:           %s\n", e.BaseBranch)
+	fmt.Printf("  fork_point:            %s\n", e.ForkPoint)
+	fmt.Printf("  default_task_behavior: %s\n", e.DefaultTaskBehavior)
+	if len(e.TaskBehaviors) > 0 {
+		fmt.Println("  task_behaviors:")
+		for _, name := range e.TaskBehaviorNames() {
+			fmt.Printf("    %-20s %s\n", name, e.TaskBehaviors[name])
+		}
+	}
+	if e.IsNoYAMLProject {
+		nameSource := e.NameSource
+		if nameSource == "" {
+			nameSource = "(could not be recovered)"
+		}
+		fmt.Printf("  id source:             derived from git URL (not project.yaml)\n")
+		fmt.Printf("  name source:           %s\n", nameSource)
+	}
+	fmt.Printf("\n  %s\n", e.BaseBranchSnapshotNote)
 }
 
 func runProjectBehaviors(cmd *cobra.Command, args []string) error {

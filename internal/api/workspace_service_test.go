@@ -911,6 +911,9 @@ func (s *createProjectMetaStore) MarkDegraded(_, _ string) {}
 func (s *createProjectMetaStore) SetSynthesizedMeta(_ string, meta *orchestrator.ProjectMeta) {
 	s.meta = meta
 }
+func (s *createProjectMetaStore) Explain(id string) (*orchestrator.ProjectExplain, error) {
+	return orchestrator.ComputeProjectExplain(id, "", s.meta, nil, false), nil
+}
 func (s *createProjectMetaStore) SetWorkspaceID(projectID, workspaceID string) {
 	if s.setWorkspaceIDCalls == nil {
 		s.setWorkspaceIDCalls = map[string]string{}
