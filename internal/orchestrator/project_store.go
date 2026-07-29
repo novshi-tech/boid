@@ -517,6 +517,79 @@ func (s *ProjectStore) Set(id string, meta *ProjectMeta) {
 	s.mu.Unlock()
 }
 
+// SetSynthesizedMeta caches a meta value that was synthesized rather than
+// read from a project.yaml (docs/plans/workspace-default-project.md PR5,
+// §現状の実測5 / 論点d) — the project.yaml-less registration path
+// (CreateProjectFromGitURL) and its reload counterpart (FetchProject). Unlike
+// the bare Set above, this also clears any prior degraded status: a
+// successful synthesis means the project is usable again (the workspace
+// default resolved), so a stale StatusDegraded left over from an earlier
+// failed reload must not linger.
+func (s *ProjectStore) SetSynthesizedMeta(id string, meta *ProjectMeta) {
+	s.mu.Lock()
+	s.metas[id] = meta
+	s.mu.Unlock()
+	s.MarkReady(id)
+}
+
+// synthesizeMetaForReload builds a minimal ProjectMeta for a project.yaml-less
+// project on daemon startup/reload (docs/plans/workspace-default-project.md
+// §現状の実測5) — LoadAll's fallback when gitShowHEAD classifies the failure
+// as GitHeadReadFailurePathAbsent (project.yaml was never committed, not a
+// corrupt repo). Only ID and Name are populated here: TaskBehaviors /
+// BaseBranch / ForkPoint / DefaultTaskBehavior are deliberately left empty so
+// GetWithWorkspace's existing workspace-default merge (決定2: composed
+// dynamically on every hydrate, not snapshotted here) fills them in from
+// whatever the workspace's CURRENT default project definition is — exactly
+// the same as a project.yaml-bearing project whose own fields are empty.
+//
+// Name is recovered in priority order (Codex review, PR5 round 1 P1: a
+// FIRST-EVER reload — a fresh *ProjectStore built at daemon startup, before
+// any candidate has ever been cached — has no "previously-cached Name" to
+// fall back on; re-deriving from UpstreamURL alone would then silently
+// discard an explicit --name given at registration time, since the derived
+// and explicit names can legitimately differ):
+//
+//  1. the project's own previously-cached Name (a reload after the first —
+//     the common case — always has this: it survives unconditionally, both
+//     an explicit --name and a derived one).
+//  2. candidate.WorkDir's own directory basename, ".git" stripped — the bare
+//     repo's path is BareRepoPath(dataDir, workspaceSlug, projectName), i.e.
+//     its last path segment IS the exact name (explicit --name or derived)
+//     CreateProjectFromGitURL used at registration time, whichever it was.
+//     This reproduces the true add-time name on a cold-start first reload
+//     even when it was an explicit --name that DeriveProjectNameFromURL(
+//     candidate.UpstreamURL) alone could never recover.
+//  3. re-derived from the DB-persisted UpstreamURL via
+//     DeriveProjectNameFromURL, only when WorkDir's basename cannot be used
+//     (empty, or a WorkDir that for some reason isn't a bare-repo path — see
+//     IsBareRepoDir's own gate, which is what routed this candidate here in
+//     the first place, so this branch is essentially unreachable in
+//     practice; kept only as a last-resort fallback).
+//  4. empty (still better than removing the project outright — an empty
+//     Name only degrades name-based ref resolution / workspace apply, which
+//     already has its own explicit refusal for that case,
+//     refuseIfAnyRegisteredProjectNameUnavailable).
+func (s *ProjectStore) synthesizeMetaForReload(candidate *Project) *ProjectMeta {
+	s.mu.RLock()
+	prev, hadPrev := s.metas[candidate.ID]
+	s.mu.RUnlock()
+
+	name := ""
+	switch {
+	case hadPrev && prev.Name != "":
+		name = prev.Name
+	case candidate.WorkDir != "":
+		base := filepath.Base(candidate.WorkDir)
+		name = strings.TrimSuffix(base, ".git")
+	case candidate.UpstreamURL != "":
+		if derived, err := DeriveProjectNameFromURL(candidate.UpstreamURL); err == nil {
+			name = derived
+		}
+	}
+	return &ProjectMeta{ID: candidate.ID, Name: name}
+}
+
 // SetWorkspaceID updates the cached workspace association for a project.
 // Empty workspaceID clears the association. Subsequent GetWithWorkspace calls
 // will hydrate using the new value (or return the cached meta unchanged when
@@ -592,6 +665,35 @@ func (s *ProjectStore) LoadAll(projects []*Project) []error {
 			loadErr = fmt.Errorf("project.yaml id %q does not match the registered project id %q; re-register manually", meta.ID, candidate.ID)
 		}
 		if loadErr != nil {
+			// §現状の実測5 / PR5 fallback: a project.yaml that was simply
+			// never committed (GitHeadReadFailurePathAbsent) must NOT
+			// degrade/remove a project registered via the no-project.yaml
+			// path (CreateProjectFromGitURL's own workspace-default
+			// fallback) — every OTHER failure kind (HeadUnresolved / Other,
+			// and the id-mismatch case just above, which is never a
+			// *GitHeadReadError) still falls through to the existing
+			// remove+degrade handling below unchanged.
+			//
+			// Gated on candidate.ID carrying URLDerivedProjectIDPrefix (Codex
+			// review, PR5 round 2 Major): GitHeadReadFailurePathAbsent alone
+			// cannot tell "registered without a project.yaml on purpose" apart
+			// from "an ordinary project.yaml-bearing project whose file was
+			// deleted upstream by mistake" — both read back identically. Only
+			// the former carries this prefix (the only producer is
+			// internal/api's deriveProjectIDFromURL); an ordinary project
+			// hitting PathAbsent still degrades below exactly as before,
+			// rather than silently swapping its task_behaviors for the
+			// workspace default with no degraded signal at all.
+			var headErr *GitHeadReadError
+			if errors.As(loadErr, &headErr) && headErr.Kind == GitHeadReadFailurePathAbsent && strings.HasPrefix(candidate.ID, URLDerivedProjectIDPrefix) {
+				synthesized := s.synthesizeMetaForReload(candidate)
+				s.mu.Lock()
+				s.metas[candidate.ID] = synthesized
+				s.workspaceIDs[candidate.ID] = candidate.WorkspaceID
+				s.mu.Unlock()
+				s.MarkReady(candidate.ID)
+				continue
+			}
 			s.Remove(candidate.ID)
 			wrapped := wrapPerProjectLoadErr(candidate.ID, candidate.WorkDir, loadErr)
 			s.MarkDegraded(candidate.ID, degradedMessageFor(candidate, wrapped, reposRoot))

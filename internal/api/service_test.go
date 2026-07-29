@@ -2540,6 +2540,12 @@ func (s *stubProjectMetaStore) LoadAll(_ []*orchestrator.Project) []error {
 	return nil
 }
 func (s *stubProjectMetaStore) SetWorkspaceID(_, _ string)                {}
+func (s *stubProjectMetaStore) SetSynthesizedMeta(id string, meta *orchestrator.ProjectMeta) {
+	if s.metas == nil {
+		s.metas = map[string]*orchestrator.ProjectMeta{}
+	}
+	s.metas[id] = meta
+}
 
 // TestProjectAppService_ResolveProjectRef tests all resolution priority cases.
 func TestProjectAppService_ResolveProjectRef(t *testing.T) {
