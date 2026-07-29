@@ -113,5 +113,5 @@ CREATE TABLE workspaces (
   additional_bindings TEXT NOT NULL DEFAULT '[]',        -- JSON: []BindMount, Phase 4 で退役
   created_at          DATETIME NOT NULL DEFAULT (datetime('now')),
   updated_at          DATETIME NOT NULL DEFAULT (datetime('now'))
-);
+, task_behaviors TEXT NOT NULL DEFAULT '', base_branch TEXT NOT NULL DEFAULT '', fork_point TEXT NOT NULL DEFAULT '', default_task_behavior TEXT NOT NULL DEFAULT '');
 

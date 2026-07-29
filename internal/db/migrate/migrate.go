@@ -274,6 +274,16 @@ func Apply(conn *sql.DB) error {
 				return columnExists(tx, "web_devices", "token_hash")
 			},
 		},
+		{
+			// docs/plans/workspace-default-project.md §PR分割案 PR3:
+			// workspace 単位のデフォルト project 定義 4 フィールドを
+			// workspaces テーブルに追加。
+			version: "0033_add_workspace_default_project_fields",
+			path:    "migrations/0033_add_workspace_default_project_fields.sql",
+			skip: func(tx *sql.Tx) (bool, error) {
+				return columnExists(tx, "workspaces", "task_behaviors")
+			},
+		},
 	}
 
 	if err := ensureSchemaMigrationsTable(conn); err != nil {

@@ -67,6 +67,21 @@ func envelopeWithProbeEverywhere(probe string) *WorkspaceEnvelope {
 		AllowedDomains: []string{probe},
 		ExtraRepos:     []string{probe},
 		ContainerImage: probe,
+		// TaskBehaviors carries probe inside a Traits value (the map KEY is
+		// fixed as "probe", not the probe content itself — a weird
+		// task_behaviors NAME is not this test's concern, and keeping it
+		// fixed sidesteps normalizeWorkspaceDefaultTaskBehaviors's alias
+		// handling entirely). Also gives this field a non-nil value on the
+		// "want" side so it does not spuriously mismatch the decoded "got"
+		// side's non-nil-but-empty map for the probes that leave every OTHER
+		// field's content trivial — yaml.v3 decodes an empty `{}` mapping
+		// into a non-nil zero-length Go map (verified empirically), so an
+		// unset (nil) TaskBehaviors here would never DeepEqual what comes
+		// back out of a real round trip regardless of probe content.
+		TaskBehaviors:       map[string]TaskBehavior{"probe": {Traits: []string{probe}}},
+		BaseBranch:          probe,
+		ForkPoint:           probe,
+		DefaultTaskBehavior: probe,
 	}
 	projects := []WorkspaceEnvelopeProject{{Name: probe + "p", URL: probe}}
 	return NewWorkspaceEnvelopeFromMeta("team-a", meta, projects, probe)
@@ -193,6 +208,10 @@ spec:
         - name: boid
           url: https://github.com/novshi-tech/boid.git
         - name: no-url
+    task_behaviors: {}
+    base_branch: ""
+    fork_point: ""
+    default_task_behavior: ""
     init_script: |
         #!/bin/sh
         set -eu
