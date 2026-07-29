@@ -19,7 +19,13 @@ import (
 // from a UUID (36 chars) or a short hand-authored project.yaml id, without
 // colliding with either — no existing id scheme in this codebase starts with
 // "url-".
-const noYAMLProjectIDPrefix = "url-"
+//
+// This is an alias for orchestrator.URLDerivedProjectIDPrefix, not an
+// independent value — LoadAll/FetchProject's reload fallback gates on that
+// exact prefix (Codex review, PR5 round 2 Major) to tell a no-project.yaml
+// registration apart from an ordinary project whose project.yaml was
+// deleted upstream by mistake, so this package must never drift from it.
+const noYAMLProjectIDPrefix = orchestrator.URLDerivedProjectIDPrefix
 
 // deriveProjectIDFromURL derives a stable project id for a project.yaml-less
 // registration (docs/plans/workspace-default-project.md 決定3) from

@@ -673,8 +673,19 @@ func (s *ProjectStore) LoadAll(projects []*Project) []error {
 			// and the id-mismatch case just above, which is never a
 			// *GitHeadReadError) still falls through to the existing
 			// remove+degrade handling below unchanged.
+			//
+			// Gated on candidate.ID carrying URLDerivedProjectIDPrefix (Codex
+			// review, PR5 round 2 Major): GitHeadReadFailurePathAbsent alone
+			// cannot tell "registered without a project.yaml on purpose" apart
+			// from "an ordinary project.yaml-bearing project whose file was
+			// deleted upstream by mistake" — both read back identically. Only
+			// the former carries this prefix (the only producer is
+			// internal/api's deriveProjectIDFromURL); an ordinary project
+			// hitting PathAbsent still degrades below exactly as before,
+			// rather than silently swapping its task_behaviors for the
+			// workspace default with no degraded signal at all.
 			var headErr *GitHeadReadError
-			if errors.As(loadErr, &headErr) && headErr.Kind == GitHeadReadFailurePathAbsent {
+			if errors.As(loadErr, &headErr) && headErr.Kind == GitHeadReadFailurePathAbsent && strings.HasPrefix(candidate.ID, URLDerivedProjectIDPrefix) {
 				synthesized := s.synthesizeMetaForReload(candidate)
 				s.mu.Lock()
 				s.metas[candidate.ID] = synthesized

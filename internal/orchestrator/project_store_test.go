@@ -437,7 +437,7 @@ func TestProjectStore_LoadAll_MissingProjectYAMLInBareRepo_SurvivesReload(t *tes
 
 	s := orchestrator.NewProjectStore()
 	errs := s.LoadAll([]*projectspec.Project{{
-		ID:          "proj-no-yaml",
+		ID:          "url-abc123no-yaml",
 		WorkDir:     bare,
 		WorkspaceID: "team-a",
 		UpstreamURL: fileURLForTest(work),
@@ -446,16 +446,16 @@ func TestProjectStore_LoadAll_MissingProjectYAMLInBareRepo_SurvivesReload(t *tes
 		t.Fatalf("expected 0 errors (project.yaml-less project survives reload), got %d: %v", len(errs), errs)
 	}
 
-	st := s.Status("proj-no-yaml")
+	st := s.Status("url-abc123no-yaml")
 	if st.State != orchestrator.StatusReady {
 		t.Errorf("Status.State = %q, want %q (not degraded)", st.State, orchestrator.StatusReady)
 	}
 
-	meta, ok := s.Get("proj-no-yaml")
+	meta, ok := s.Get("url-abc123no-yaml")
 	if !ok {
 		t.Fatal("expected a synthesized meta to be cached after reload")
 	}
-	if meta.ID != "proj-no-yaml" {
+	if meta.ID != "url-abc123no-yaml" {
 		t.Errorf("meta.ID = %q, want proj-no-yaml", meta.ID)
 	}
 	// Name is recovered from WorkDir's own basename ("repo", ".git"
@@ -502,7 +502,7 @@ func TestProjectStore_LoadAll_MissingProjectYAMLInBareRepo_PreservesExplicitName
 
 	s := orchestrator.NewProjectStore()
 	errs := s.LoadAll([]*projectspec.Project{{
-		ID:          "proj-explicit-name",
+		ID:          "url-abc123explicitname",
 		WorkDir:     bare,
 		WorkspaceID: "team-a",
 		UpstreamURL: fileURLForTest(work),
@@ -511,12 +511,63 @@ func TestProjectStore_LoadAll_MissingProjectYAMLInBareRepo_PreservesExplicitName
 		t.Fatalf("expected 0 errors, got %d: %v", len(errs), errs)
 	}
 
-	meta, ok := s.Get("proj-explicit-name")
+	meta, ok := s.Get("url-abc123explicitname")
 	if !ok {
 		t.Fatal("expected a synthesized meta to be cached after reload")
 	}
 	if meta.Name != "custom-name" {
 		t.Errorf("meta.Name = %q, want %q (explicit --name preserved across restart via WorkDir basename)", meta.Name, "custom-name")
+	}
+}
+
+// TestProjectStore_LoadAll_MissingProjectYAMLInBareRepo_OrdinaryProjectStillDegrades
+// pins the Codex review Major fix (PR5 round 2): GitHeadReadFailurePathAbsent
+// alone does NOT distinguish a project registered without a project.yaml on
+// purpose from an ORDINARY project.yaml-bearing project whose file was
+// deleted upstream by mistake. Only an id carrying
+// orchestrator.URLDerivedProjectIDPrefix ("url-...") gets the workspace-
+// default fallback; every other id must keep degrading exactly as before —
+// silently switching to the workspace default here would hide the deletion
+// and swap task_behaviors out from under the project with no degraded
+// signal at all.
+func TestProjectStore_LoadAll_MissingProjectYAMLInBareRepo_OrdinaryProjectStillDegrades(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not found in PATH")
+	}
+	root := t.TempDir()
+	work := filepath.Join(root, "work")
+	if err := os.MkdirAll(work, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(work, "README.md"), []byte("project.yaml deleted upstream"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	runGitLocal(t, work, "init", "-q", "-b", "main")
+	runGitLocal(t, work, "config", "user.email", "test@example.com")
+	runGitLocal(t, work, "config", "user.name", "Test")
+	runGitLocal(t, work, "add", ".")
+	runGitLocal(t, work, "commit", "-q", "-m", "initial")
+	bare := filepath.Join(root, "repo.git")
+	runGitLocal(t, root, "clone", "-q", "--bare", work, bare)
+
+	s := orchestrator.NewProjectStore()
+	// A normal, non-"url-" id — as an ordinary project.yaml-registered
+	// project would have.
+	errs := s.LoadAll([]*projectspec.Project{{
+		ID:          "ordinary-proj",
+		WorkDir:     bare,
+		WorkspaceID: "team-a",
+		UpstreamURL: fileURLForTest(work),
+	}})
+	if len(errs) != 1 {
+		t.Fatalf("expected 1 error (ordinary project must still degrade), got %d: %v", len(errs), errs)
+	}
+	st := s.Status("ordinary-proj")
+	if st.State != orchestrator.StatusDegraded {
+		t.Errorf("Status.State = %q, want %q (ordinary project must degrade, not silently fall back)", st.State, orchestrator.StatusDegraded)
+	}
+	if _, ok := s.Get("ordinary-proj"); ok {
+		t.Error("expected the ordinary project's stale meta to be removed, not replaced with a synthesized one")
 	}
 }
 

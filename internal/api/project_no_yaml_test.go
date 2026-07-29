@@ -349,6 +349,39 @@ func TestCreateProjectFromGitURL_NoYAML_InsertConflict_DoesNotClobberEstablished
 	}
 }
 
+// TestFetchProject_OrdinaryProject_MissingYAML_StillDegrades pins the Codex
+// review Major fix (PR5 round 2): an ORDINARY project (a non-"url-" id, as a
+// project.yaml-registered project would have) whose project.yaml goes
+// missing upstream must still MarkDegraded on fetch — GitHeadReadFailurePathAbsent
+// alone must not trigger the no-YAML fallback for it.
+func TestFetchProject_OrdinaryProject_MissingYAML_StillDegrades(t *testing.T) {
+	src := setupNoYAMLSourceRepo(t)
+	repo := &stubProjectRepository{existingWorkspaces: map[string]bool{"team-a": true}}
+	ws := newStubWorkspaceStore()
+	ws.metas["team-a"] = &orchestrator.WorkspaceMeta{
+		DefaultTaskBehavior: "supervisor",
+		TaskBehaviors: map[string]orchestrator.TaskBehavior{
+			"supervisor": {},
+		},
+	}
+	svc, dataDir := newNoYAMLTestServiceFakeClone(t, repo, ws, src)
+
+	bareRepoPath := orchestrator.BareRepoPath(dataDir, "team-a", "ordinary-name")
+	runGitCmd(t, "", "clone", "-q", "--bare", src, bareRepoPath)
+	ordinary := &orchestrator.Project{ID: "ordinary-proj", WorkDir: bareRepoPath, WorkspaceID: "team-a", UpstreamURL: fakeHTTPSGitURL(t)}
+	repo.projects = append(repo.projects, ordinary)
+	svc.Meta.SetSynthesizedMeta("ordinary-proj", &orchestrator.ProjectMeta{ID: "ordinary-proj", Name: "Ordinary"})
+
+	_, err := svc.FetchProject(context.Background(), "ordinary-proj")
+	if err == nil {
+		t.Fatal("expected an error: ordinary project's missing project.yaml must degrade, not fall back")
+	}
+	st := svc.Meta.Status("ordinary-proj")
+	if st.State != orchestrator.StatusDegraded {
+		t.Errorf("Status.State = %q, want %q", st.State, orchestrator.StatusDegraded)
+	}
+}
+
 // TestFetchProject_NoYAML_SurvivesReload pins §現状の実測5's FetchProject
 // half: `boid project fetch` on a project.yaml-less project must not
 // MarkDegraded when the reason project.yaml can't be read is simply "it was

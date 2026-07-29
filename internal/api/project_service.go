@@ -760,8 +760,16 @@ func (s *ProjectAppService) FetchProject(ctx context.Context, id string) (*orche
 		// reload of this kind) instead of MarkDegraded. Every other failure
 		// kind (HeadUnresolved / Other) keeps the existing degrade-on-failure
 		// behavior unchanged.
+		//
+		// Gated on id carrying orchestrator.URLDerivedProjectIDPrefix (Codex
+		// review, PR5 round 2 Major) — see that constant's own doc comment:
+		// without this gate, an ORDINARY project.yaml-bearing project whose
+		// file was deleted upstream by mistake would also match
+		// GitHeadReadFailurePathAbsent and get silently switched to the
+		// workspace default with no degraded signal, instead of degrading as
+		// it always has.
 		var headErr *orchestrator.GitHeadReadError
-		if errors.As(err, &headErr) && headErr.Kind == orchestrator.GitHeadReadFailurePathAbsent {
+		if errors.As(err, &headErr) && headErr.Kind == orchestrator.GitHeadReadFailurePathAbsent && strings.HasPrefix(id, orchestrator.URLDerivedProjectIDPrefix) {
 			// Recovery order mirrors orchestrator.ProjectStore's
 			// synthesizeMetaForReload (Codex review, PR5 round 1 P1): the
 			// cached Name first, else project.WorkDir's own basename (the

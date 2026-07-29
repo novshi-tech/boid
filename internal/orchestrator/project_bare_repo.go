@@ -9,6 +9,25 @@ import (
 	"strings"
 )
 
+// URLDerivedProjectIDPrefix marks a project id derived from a git URL rather
+// than read from a committed project.yaml's `id:` field (docs/plans/
+// workspace-default-project.md 決定3/論点g — see internal/api's
+// deriveProjectIDFromURL, the only producer of an id with this prefix).
+//
+// Exported so ProjectStore.LoadAll and ProjectAppService.FetchProject (the
+// reload paths) can gate their GitHeadReadFailurePathAbsent fallback on it
+// (Codex review, PR5 round 2 Major): that failure kind alone does not
+// distinguish "this project was registered without a project.yaml on
+// purpose" from "this is an ordinary project.yaml-bearing project whose
+// .boid/project.yaml was deleted upstream by mistake" — both read back
+// identically from gitShowHEAD. Silently switching the latter over to the
+// workspace default on next reload/fetch would hide the deletion and swap
+// its task_behaviors out from under it without any degraded signal.
+// Gating on this prefix limits the fallback to projects this daemon itself
+// registered via the no-project.yaml path; every other project keeps
+// degrading exactly as before.
+const URLDerivedProjectIDPrefix = "url-"
+
 // This file implements the git-URL project model (docs/plans/
 // volume-only-daemon.md §論点a "project モデル transition (dir → git URL)"
 // and §論点b "daemon 管理 bare repository"): reading a registered project's
