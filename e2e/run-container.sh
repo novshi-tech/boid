@@ -56,8 +56,14 @@ set -euo pipefail
 #
 # What this verifies (§決定5's "sibling 疎通 3 要件", the plan doc's own
 # §PR9 requirement):
-#   1. job -> sibling TCP reachable (a job's own dockerproxy-created sibling
-#      container, on the job's workspace network).
+#   1. job -> sibling reachable at the address §決定5 promises — container IP
+#      + container port, dialed DIRECTLY (a job's own dockerproxy-created
+#      sibling container, on the job's workspace network). Reaching it
+#      requires the job's own workspace subnet to be in no_proxy, else curl
+#      hands the request to the egress proxy, which refuses to relay into any
+#      workspace network. The same sibling addressed by its single-label
+#      container NAME must still be refused (1b) — that refusal is what
+#      requirement 2 rests on.
 #   2. job -> a DIFFERENT workspace's sibling is UNREACHABLE (workspace
 #      network isolation actually holds under real docker, not just a fake
 #      HTTP mock).
@@ -565,6 +571,19 @@ create_sibling() {
   printf '%s' "$cid"
 }
 
+sibling_ip() {
+  local cid="$1" resp ip
+  resp="$(docker_req GET "/containers/${cid}/json")"
+  # The inspect body carries an IPAddress at BOTH the legacy top level of
+  # NetworkSettings (empty for a container on a user-defined network — every
+  # sibling here) and inside NetworkSettings.Networks.<name>. Requiring the
+  # value to START with a digit is what skips the empty legacy one; `head -1`
+  # alone would happily return "".
+  ip="$(printf '%s' "$resp" | grep -o '"IPAddress":"[0-9][0-9.]*"' | head -1 | cut -d'"' -f4)"
+  [[ -n "$ip" ]] || fail_with_diag "could not read container IP for sibling ${cid} out of its inspect body"
+  printf '%s' "$ip"
+}
+
 probe_http() {
   local url="$1" max_time="$2"
   local code
@@ -588,27 +607,79 @@ BASH
 {
   printf '#!/usr/bin/env bash\nset -euo pipefail\n\n%s\n\n' "$HOOK_PRELUDE"
   cat <<'BASH'
-create_sibling sib-a >/dev/null
+sib_a_cid="$(create_sibling sib-a)"
+sib_a_ip="$(sibling_ip "$sib_a_cid")"
 
-# Requirement 1: job -> own-workspace sibling must be reachable (Docker
-# embedded DNS resolves "sib-a" only because THIS job container is also on
-# ws-a's workspace network — internal/dispatcher/container_backend.go's
-# ensureWorkspaceNetwork, PR9).
-same_ws_ok=0
+# Requirement 1: job -> own-workspace sibling must be reachable at the
+# address §決定5 actually promises — "container IP + container port の直
+# アクセス". The TCP route exists because THIS job container is also on ws-a's
+# workspace network (internal/dispatcher/container_backend.go's
+# ensureWorkspaceNetwork, PR9), but curl only DIALS that route directly if the
+# address bypasses HTTP_PROXY: the egress proxy lives in the daemon container
+# and deliberately refuses to relay into any workspace network (internal/
+# sandbox/proxy.go's isRefusedDotlessTarget doc comment — relaying there would
+# break requirement 2, since the daemon is joined to every active workspace
+# network at once). That bypass is applyProxyEnv putting the job's OWN
+# workspace subnet in no_proxy, resolved per job via
+# containerBackend.WorkspaceNetworkCIDRs.
+#
+# Note what this loop does NOT accept, and why the previous revision's
+# `[[ "$code" != "000" ]]` was a false pass: the egress proxy answers a
+# proxied request for an unlisted target with 403 (dotted/IP host) or 502
+# (single-label host). Both are non-"000", so the old check reported
+# "reachable" for a request that never left the daemon — and it did exactly
+# that for the entire pre-fix window, since no_proxy carried no workspace
+# subnet at all. 403/502 are therefore hard failures here, not retries that
+# eventually give up.
+same_ws_code=""
 for _ in 1 2 3 4 5 6 7 8 9 10; do
-  code="$(probe_http "http://sib-a:8080/" 2)"
-  if [[ "$code" != "000" ]]; then
-    same_ws_ok=1
-    break
-  fi
+  same_ws_code="$(probe_http "http://${sib_a_ip}:8080/" 2)"
+  # 000 alone is worth retrying: the container is started but busybox httpd
+  # may not have bound its listener yet.
+  [[ "$same_ws_code" == "000" ]] || break
   sleep 0.5
 done
-[[ "$same_ws_ok" == "1" ]] || fail_with_diag "requirement 1 FAILED: sib-a (own workspace) was not reachable"
+case "$same_ws_code" in
+000)
+  fail_with_diag "requirement 1 FAILED: sib-a (own workspace) never answered at ${sib_a_ip}:8080 — no HTTP response at all"
+  ;;
+403 | 502)
+  fail_with_diag "requirement 1 FAILED: the request to sib-a (${sib_a_ip}:8080) was routed through the egress proxy and refused there (http ${same_ws_code}) — this job's own workspace subnet is missing from no_proxy/NO_PROXY"
+  ;;
+esac
+
+# Requirement 1b: the SAME sibling addressed by its single-label container
+# name must still be refused by the egress proxy (502). This is not a
+# limitation being documented — it is the isolation half of requirement 2
+# being pinned from the reachable side: a bare hostname is exactly what a
+# cross-workspace target looks like, the daemon's own aggregated DNS view CAN
+# resolve another workspace's sibling name, and isRefusedDotlessTarget is what
+# stops the relay before the dial. The direct route above is the supported way
+# to reach a sibling; if a future change ever makes sibling NAMES routable
+# (e.g. by giving them a dotted alias plus a no_proxy suffix), this assertion
+# is the one that must be revisited deliberately rather than silently.
+name_code="$(probe_http "http://sib-a:8080/" 4)"
+if [[ "$name_code" != "502" ]]; then
+  fail_with_diag "requirement 1b FAILED: sib-a by container NAME returned http ${name_code}, expected 502 (the egress proxy's dotless refusal). A 200/404 here means single-label targets are being relayed into workspace networks, which is the hole requirement 2 depends on being closed"
+fi
 
 # Requirement 2: job -> a DIFFERENT workspace's sibling must be unreachable
 # — "sib-b" (workspace B's sibling, set up by the concurrently-dispatched
 # setup-sibling task) must not resolve/connect from ws-a's own isolated
 # network at all.
+#
+# The per-workspace subnet no_proxy entry requirement 1 now depends on does
+# not widen this: no_proxy carries THIS job's own workspace subnet only
+# (containerBackend.WorkspaceNetworkCIDRs), so an address on workspace B's
+# network still matches nothing there, still goes to the egress proxy, and is
+# still refused by it. A job also has no way to learn sib-b's IP in the first
+# place — the per-job dockerproxy ledger answers 404 for resource IDs it does
+# not own (internal/sandbox/dockerproxy/server.go's scope check).
+#
+# Note also that "502" below no longer does double duty: before requirement 1
+# was addressed by container IP, the same 502 counted as PROOF OF REACH there
+# and PROOF OF ISOLATION here, so both requirements passed simultaneously on
+# one refusal.
 #
 # Two acceptable outcomes here (§⓪-b in docs/plans/phase6-cutover-followups.md):
 #   * "000" — the direct network layer refused the request outright (DNS

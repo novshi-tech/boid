@@ -48,6 +48,7 @@ type fakeDockerAPI struct {
 	NetworkRemoveFunc    func(ctx context.Context, networkID string, options client.NetworkRemoveOptions) (client.NetworkRemoveResult, error)
 	NetworkCreateFunc    func(ctx context.Context, name string, options client.NetworkCreateOptions) (client.NetworkCreateResult, error)
 	NetworkConnectFunc   func(ctx context.Context, networkID string, options client.NetworkConnectOptions) (client.NetworkConnectResult, error)
+	NetworkInspectFunc   func(ctx context.Context, networkID string, options client.NetworkInspectOptions) (client.NetworkInspectResult, error)
 	VolumeCreateFunc     func(ctx context.Context, options client.VolumeCreateOptions) (client.VolumeCreateResult, error)
 	VolumeListFunc       func(ctx context.Context, options client.VolumeListOptions) (client.VolumeListResult, error)
 	VolumeRemoveFunc     func(ctx context.Context, volumeID string, options client.VolumeRemoveOptions) (client.VolumeRemoveResult, error)
@@ -88,6 +89,7 @@ type fakeDockerAPI struct {
 	networkCreateNames  []string
 	networkConnectCalls []client.NetworkConnectOptions
 	networkConnectIDs   []string
+	networkInspectIDs   []string
 
 	// volumes is the modelled volume store: name -> the labels that volume
 	// actually carries. It exists so VolumeCreate can answer with something
@@ -301,6 +303,22 @@ func (f *fakeDockerAPI) NetworkCreate(ctx context.Context, name string, options 
 		return f.NetworkCreateFunc(ctx, name, options)
 	}
 	return client.NetworkCreateResult{ID: "fake-network-" + name}, nil
+}
+
+// NetworkInspect's nil-Func default answers with a network carrying NO IPAM
+// config at all — the "engine told us nothing about this network's subnets"
+// case. That is deliberately the default rather than a plausible-looking
+// 10.x/16: every pre-existing test in this package asserts NO_PROXY
+// byte-for-byte, so a default that invented a subnet would silently append a
+// CIDR to all of their expectations.
+func (f *fakeDockerAPI) NetworkInspect(ctx context.Context, networkID string, options client.NetworkInspectOptions) (client.NetworkInspectResult, error) {
+	f.mu.Lock()
+	f.networkInspectIDs = append(f.networkInspectIDs, networkID)
+	f.mu.Unlock()
+	if f.NetworkInspectFunc != nil {
+		return f.NetworkInspectFunc(ctx, networkID, options)
+	}
+	return client.NetworkInspectResult{}, nil
 }
 
 func (f *fakeDockerAPI) NetworkConnect(ctx context.Context, networkID string, options client.NetworkConnectOptions) (client.NetworkConnectResult, error) {

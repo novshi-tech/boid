@@ -39,6 +39,20 @@ type SandboxRuntimeInfo struct {
 	// reachable compose-network address instead.
 	ProxyHost string
 
+	// WorkspaceNetworkCIDRs are the subnets of this job's OWN per-workspace
+	// docker network, which applyProxyEnv adds to no_proxy/NO_PROXY so a
+	// sibling container dialed by container IP is reached directly instead of
+	// through the egress proxy — §決定5's "job → sibling の到達は container IP
+	// + container port の直アクセス". Runner.Dispatch fills this in via the
+	// backend's optional workspaceNetworkCIDRResolver; nil (every non-container
+	// backend, and a container backend whose subnet lookup failed) leaves
+	// no_proxy exactly as it was before this field existed.
+	//
+	// Only this workspace's own subnets belong here — see
+	// containerBackend.WorkspaceNetworkCIDRs' doc comment for why widening it
+	// would hand the job a route into other workspaces' networks.
+	WorkspaceNetworkCIDRs []string
+
 	// UsingContainerBackend (PR9, §決定2) is Runner.Dispatch's
 	// IsContainerBackend(r.Backend) — the same signal ProxyHost's own doc
 	// comment describes for the identical "computed once at the Dispatch
@@ -404,7 +418,8 @@ func BuildSandboxSpec(spec *orchestrator.JobSpec, rt SandboxRuntimeInfo) (sandbo
 	env["BOID_HOST_IP"] = hostGatewayIP
 	setIfNonEmpty(env, "BOID_WORKSPACE_SLUG", rt.WorkspaceSlug)
 	if rt.ProxyPort > 0 {
-		applyProxyEnv(env, rt.ProxyHost, rt.ProxyPort, gatewayHostFromURL(rt.GatewayURL))
+		noProxyExtra := append([]string{gatewayHostFromURL(rt.GatewayURL)}, rt.WorkspaceNetworkCIDRs...)
+		applyProxyEnv(env, rt.ProxyHost, rt.ProxyPort, noProxyExtra...)
 	}
 	if rt.ProxySocketPath != "" {
 		applyDockerProxyEnv(env)
@@ -1588,11 +1603,16 @@ const dockerProxySandboxSocket = "/run/boid/docker-proxy.sock"
 // SandboxRuntimeInfo.ProxyHost's own doc comment for who sets a non-empty
 // value and when.
 //
-// extraNoProxyHosts (PR9 e2e-container fix) are additional bare hostnames
-// (no scheme, no port) appended to no_proxy/NO_PROXY alongside host itself
-// — see gatewayHostFromURL's own doc comment for why the git gateway's own
-// host must always be one of them. Empty entries are skipped so a caller
-// can pass a possibly-empty gatewayHostFromURL result unconditionally.
+// extraNoProxyHosts (PR9 e2e-container fix) are additional no_proxy/NO_PROXY
+// entries appended alongside host itself — either a bare hostname (no scheme,
+// no port; see gatewayHostFromURL's own doc comment for why the git gateway's
+// own host must always be one of them) or a CIDR block
+// (SandboxRuntimeInfo.WorkspaceNetworkCIDRs, so a sibling container dialed by
+// container IP bypasses the egress proxy). Empty entries are skipped so a
+// caller can pass a possibly-empty gatewayHostFromURL result unconditionally.
+// Duplicates are dropped: the same value reaching here twice (a gateway host
+// that equals host, a subnet already listed) would otherwise show up twice in
+// an env var several clients parse strictly.
 func applyProxyEnv(env map[string]string, host string, port int, extraNoProxyHosts ...string) {
 	if host == "" {
 		host = hostGatewayIP
@@ -1602,12 +1622,19 @@ func applyProxyEnv(env map[string]string, host string, port int, extraNoProxyHos
 	env["https_proxy"] = proxyURL
 	env["HTTP_PROXY"] = proxyURL
 	env["HTTPS_PROXY"] = proxyURL
-	noProxy := host + ",10.0.2.3,localhost,127.0.0.1"
-	for _, extra := range extraNoProxyHosts {
-		if extra != "" && extra != host {
-			noProxy += "," + extra
-		}
+	entries := []string{host, "10.0.2.3", "localhost", "127.0.0.1"}
+	seen := make(map[string]bool, len(entries)+len(extraNoProxyHosts))
+	for _, e := range entries {
+		seen[e] = true
 	}
+	for _, extra := range extraNoProxyHosts {
+		if extra == "" || seen[extra] {
+			continue
+		}
+		seen[extra] = true
+		entries = append(entries, extra)
+	}
+	noProxy := strings.Join(entries, ",")
 	env["no_proxy"] = noProxy
 	env["NO_PROXY"] = noProxy
 }

@@ -41,6 +41,20 @@ type WorkspaceLookup interface {
 	Load(slug string) (*orchestrator.WorkspaceMeta, error)
 }
 
+// workspaceNetworkCIDRResolver is the optional half of the sandbox backend
+// contract that reports the subnets of a workspace's own isolated network, so
+// Dispatch can put them in the job's no_proxy (see
+// SandboxRuntimeInfo.WorkspaceNetworkCIDRs). Kept OFF backend.SandboxBackend
+// deliberately: per-workspace docker networks are a container-backend
+// concept, and the interface is the abstraction every backend must satisfy —
+// the same reason ProxyHost is resolved by an IsContainerBackend branch at
+// the Dispatch call site rather than by a method every backend has to answer.
+// Satisfied by *containerBackend; a backend that does not implement it simply
+// contributes no CIDR entries.
+type workspaceNetworkCIDRResolver interface {
+	WorkspaceNetworkCIDRs(ctx context.Context, workspace string) ([]string, error)
+}
+
 // ProxyAllocator returns the loopback port of an HTTP(S) egress proxy bound
 // to the given workspace, after applying allowed as its allowlist. The
 // listener is long-lived: subsequent calls for the same workspace reuse the
@@ -824,12 +838,33 @@ func (r *Runner) Dispatch(ctx context.Context, spec *orchestrator.JobSpec, clean
 		proxyHost = composeEgressServiceName
 	}
 
+	// Workspace network subnets for no_proxy (§決定5's sibling connectivity):
+	// resolved here, at the same call site and for the same reason proxyHost
+	// above is — BuildSandboxSpec has no way to reach the backend, and the
+	// value is backend-specific. Fail-open on error: see
+	// TestDispatch_ContainerBackend_NoProxySurvivesWorkspaceNetworkInspectFailure
+	// for why a job that cannot learn its own subnet still dispatches (it
+	// degrades to "siblings only reachable by proxy-ignoring clients"), and
+	// containerBackend.WorkspaceNetworkCIDRs for why the lookup must not be
+	// widened past this one workspace.
+	var workspaceNetworkCIDRs []string
+	if resolver, ok := r.sandboxBackend().(workspaceNetworkCIDRResolver); ok && workspaceID != "" {
+		cidrs, cerr := resolver.WorkspaceNetworkCIDRs(ctx, workspaceID)
+		if cerr != nil {
+			slog.Warn("dispatcher: resolve workspace network CIDRs failed; sibling containers will only be reachable from clients that ignore HTTP_PROXY",
+				"workspace", workspaceID, "job", j.ID, "error", cerr)
+		} else {
+			workspaceNetworkCIDRs = cidrs
+		}
+	}
+
 	rtInfo := SandboxRuntimeInfo{
 		JobID:                      j.ID,
 		BoidBinary:                 r.BoidBinary,
 		ServerSocket:               r.ServerSocket,
 		ProxyPort:                  proxyPort,
 		ProxyHost:                  proxyHost,
+		WorkspaceNetworkCIDRs:      workspaceNetworkCIDRs,
 		UsingContainerBackend:      IsContainerBackend(r.Backend),
 		BrokerSocket:               brokerSocket,
 		BrokerToken:                brokerToken,

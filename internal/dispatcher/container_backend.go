@@ -657,6 +657,10 @@ type dockerAPI interface {
 	// (see ContainerBackendOptions.SelfContainerID's doc comment).
 	NetworkCreate(ctx context.Context, name string, options client.NetworkCreateOptions) (client.NetworkCreateResult, error)
 	NetworkConnect(ctx context.Context, networkID string, options client.NetworkConnectOptions) (client.NetworkConnectResult, error)
+	// NetworkInspect backs WorkspaceNetworkCIDRs: the per-workspace network's
+	// subnets are assigned by the ENGINE (boid passes no IPAM config to
+	// NetworkCreate), so they can only be read back, never computed.
+	NetworkInspect(ctx context.Context, networkID string, options client.NetworkInspectOptions) (client.NetworkInspectResult, error)
 
 	// ServerVersion / Info identify the ENGINE behind the socket, not any
 	// one container: resolveUsernsMode (container_backend_userns.go) needs
@@ -810,6 +814,48 @@ func (b *containerBackend) ensureWorkspaceNetwork(ctx context.Context, workspace
 	}
 
 	return netName, nil
+}
+
+// WorkspaceNetworkCIDRs returns the subnets of workspace's own per-workspace
+// network, in CIDR form ("10.89.9.0/24", "fd00:b01d::/64"), for
+// applyProxyEnv's no_proxy list — see Runner.Dispatch's
+// workspaceNetworkCIDRResolver call site and
+// TestDispatch_ContainerBackend_NoProxyIncludesWorkspaceNetworkCIDRs for the
+// contract these serve (§決定5's "job → sibling の到達は container IP +
+// container port の直アクセス", which every proxy-env-respecting client inside
+// the sandbox loses unless its own workspace subnet bypasses HTTP_PROXY).
+//
+// It goes through ensureWorkspaceNetwork rather than inspecting directly
+// because the subnets are engine-assigned at create time: on the first
+// dispatch for a workspace the network does not exist yet, and a bare inspect
+// would 404 — shipping that job without its own subnet in no_proxy. That call
+// is idempotent (Launch makes the identical one for the same pair moments
+// later), so pulling it forward costs nothing on every subsequent dispatch.
+//
+// Only the job's OWN workspace subnets are returned, never every network
+// boid manages: no_proxy is a bypass of the egress proxy's refusal, and that
+// refusal is exactly what keeps a cross-workspace address unreachable
+// (internal/sandbox/proxy.go's isRefusedDotlessTarget). Widening this to
+// other workspaces' subnets would hand a job a direct route into them.
+func (b *containerBackend) WorkspaceNetworkCIDRs(ctx context.Context, workspace string) ([]string, error) {
+	netName, err := b.ensureWorkspaceNetwork(ctx, workspace)
+	if err != nil {
+		return nil, err
+	}
+	res, err := b.api.NetworkInspect(ctx, netName, client.NetworkInspectOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("inspect workspace network %q: %w", netName, err)
+	}
+	var cidrs []string
+	for _, cfg := range res.Network.IPAM.Config {
+		// An engine can report an IPAM entry with only a Gateway or IPRange
+		// set; a zero Prefix would stringify to "invalid Prefix" and land in
+		// no_proxy as a garbage entry.
+		if cfg.Subnet.IsValid() {
+			cidrs = append(cidrs, cfg.Subnet.String())
+		}
+	}
+	return cidrs, nil
 }
 
 // Launch translates spec into a `docker create` + `docker start` call and
