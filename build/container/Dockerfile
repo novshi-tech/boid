@@ -103,7 +103,12 @@ ARG BOID_GID
 # deliberately (`apt-cache madison gh` against
 # https://cli.github.com/packages, after adding its repo, lists the exact
 # version string apt expects) rather than floating on latest.
-ARG GH_VERSION=2.96.0
+# Note that GitHub's apt repo keeps ONLY the current release — it does not
+# archive older ones. A pin therefore stops building the moment upstream
+# publishes the next version (2.96.0 vanished on 2026-07-31 and broke the
+# image build on every branch, main included), so this needs a deliberate
+# bump on that cadence rather than only when we want a newer gh.
+ARG GH_VERSION=2.97.0
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates git curl gpg \
