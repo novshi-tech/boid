@@ -14,6 +14,32 @@ import (
 // when spawning the daemon child. See daemon.Spawn.
 const statusPipeFD = 3
 
+// statusPipeEnvKey is set by Spawn — and only by Spawn — to declare that fd 3
+// really is the status pipe write-end it wired. Everything that touches fd 3
+// by its hard-coded number must gate on this.
+//
+// BOID_DAEMON_CHILD is NOT usable for that check: build/container/compose.yml
+// sets it too, and runs `boid start` directly (cmd/start.go's --foreground
+// does the same), so runDaemonChild is reached with NOTHING attached to fd 3.
+// In that shape fd 3 is simply the lowest free descriptor, and server.New's
+// db.Open lands the SQLite database on it. Closing or writing to it then
+// destroys an unrelated file: on 2026-07-31 the containerized daemon started
+// cleanly, closed fd 3 as its "startup ok" signal, and every subsequent query
+// failed with SQLITE_IOERR_FSTAT (1802) / SQLITE_CORRUPT (11) because the
+// database's descriptor was gone (fstat(3) = EBADF) while its -wal/-shm
+// descriptors stayed open.
+const statusPipeEnvKey = "BOID_STARTUP_STATUS_PIPE"
+
+// statusPipeFile returns fd 3 as an *os.File only when this process was
+// launched by Spawn with the status pipe wired. Any other launch shape gets
+// nil, leaving fd 3 untouched.
+func statusPipeFile() *os.File {
+	if os.Getenv(statusPipeEnvKey) != "1" {
+		return nil
+	}
+	return os.NewFile(statusPipeFD, "boid-startup-status")
+}
+
 // StartupStatusKind discriminates the payload variants written on fd 3.
 type StartupStatusKind string
 
@@ -63,7 +89,7 @@ func WriteStartupStatusOnFD3(err error) {
 	if err == nil {
 		return
 	}
-	f := os.NewFile(statusPipeFD, "boid-startup-status")
+	f := statusPipeFile()
 	if f == nil {
 		return
 	}
@@ -75,9 +101,10 @@ func WriteStartupStatusOnFD3(err error) {
 }
 
 // CloseStartupFD3 closes fd 3 without writing a payload. The parent
-// observes EOF on its read-end and treats it as success. Best-effort.
+// observes EOF on its read-end and treats it as success. Best-effort, and a
+// no-op unless Spawn actually wired the pipe (see statusPipeEnvKey).
 func CloseStartupFD3() {
-	f := os.NewFile(statusPipeFD, "boid-startup-status")
+	f := statusPipeFile()
 	if f == nil {
 		return
 	}

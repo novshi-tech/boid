@@ -198,7 +198,7 @@ func Spawn(args []string) (int, *os.File, error) {
 		return 0, nil, fmt.Errorf("create status pipe: %w", err)
 	}
 
-	env := append(os.Environ(), daemonEnvKey+"=1")
+	env := spawnEnv(os.Environ())
 
 	// Files index = fd number in the child. fds 0/1/2 inherit from the
 	// parent (RedirectToLogRotating swaps them to the log pipe before the
@@ -223,6 +223,15 @@ func Spawn(args []string) (int, *os.File, error) {
 	// itself closes fd 3 on success).
 	statusW.Close()
 	return pid, statusR, nil
+}
+
+// spawnEnv builds the child's environment: BOID_DAEMON_CHILD marks it as the
+// daemon process, and statusPipeEnvKey separately declares that fd 3 carries
+// the status pipe. The two are deliberately distinct — supervisors that run
+// `boid start` themselves (build/container/compose.yml, or --foreground) set
+// the former but wire nothing onto fd 3, so only Spawn may set the latter.
+func spawnEnv(base []string) []string {
+	return append(append([]string(nil), base...), daemonEnvKey+"=1", statusPipeEnvKey+"=1")
 }
 
 // WaitForSocket polls socketPath using net.Dial until a connection succeeds or
