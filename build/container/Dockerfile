@@ -111,7 +111,7 @@ ARG BOID_GID
 ARG GH_VERSION=2.97.0
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates git curl gpg \
+    && apt-get install -y --no-install-recommends ca-certificates git curl gpg jq \
     && rm -rf /var/lib/apt/lists/*
 
 # Native runtime dependencies for workspace-HOME-installed toolchains.
