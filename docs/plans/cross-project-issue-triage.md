@@ -551,7 +551,7 @@ boid の既存データは「揮発しても再構築可能」を前提にして
    のために新しい credential を workspace に持ち込まない。 顧客 workspace に個人 GitHub の
    secret を置くと、 untrusted input を処理する場 (決定 4) に個人の全 private repo への到達性を
    持ち込むことになるため、 明確に避ける。 具体的には: 顧客 workspace は顧客側 git 上の自分用
-   repo (khi は customer bitbucket の `khi-task-controller`、 登録済み)、 個人 workspace は
+   repo (khi は customer bitbucket の `khi-task-collector`、 登録済み)、 個人 workspace は
    個人 GitHub。 **boid-hosted bare repo は、 どの workspace でも credential ゼロで成立する
    恒久解**として優先度を上げる — ただし daemon volume backup (別トラック) 整備が前提である点
    は変わらず、 それまでは外部 git を耐久性の根拠にする。
@@ -567,7 +567,7 @@ boid の既存データは「揮発しても再構築可能」を前提にして
 
 - workspace は接続が揃っている 1 つから始める (khi 想定: mail / Jira / Slack の credential
   導線が整備済み)。
-- メタプロジェクトは khi では **`khi-task-controller`** (customer bitbucket 上の自分用 repo、
+- メタプロジェクトは khi では **`khi-task-collector`** (customer bitbucket 上の自分用 repo、
   メタプロジェクトの原型として登録済み) をそのまま使う。 upstream の一般原則はストレージ節
   原則 3。 前提が既に揃っているため **Phase 0 は即開始できる**。
 - ingester も既存原型からの改修で始める: host 側に Slack のみを対象とした 4 時間洗い替えの
@@ -622,7 +622,7 @@ exit criteria (2 週間程度): (1) nose が「見に行く」頻度が実際に
 ## 未解決論点
 
 - **論点 a: メタプロジェクトの upstream 置き場** — **workspace の credential 境界内で確保**
-  (ストレージ節 原則 3)。 khi は customer bitbucket 上の `khi-task-controller` で確定済み。
+  (ストレージ節 原則 3)。 khi は customer bitbucket 上の `khi-task-collector` で確定済み。
   boid-hosted bare repo (credential ゼロの恒久解) は優先度を上げ、 daemon volume backup 整備後
   に移行する。
 - **論点 b: 定期起動の機構**。 ingester の形態は使い切り task で決定 (実行場所節)。 残る論点は
@@ -728,5 +728,5 @@ exit criteria (2 週間程度): (1) nose が「見に行く」頻度が実際に
   持ち込みは、 untrusted input の場に個人全 repo への到達性を足すことになるため明確に回避。
   boid-hosted bare repo は credential ゼロの恒久解として優先度を上げた (backup 整備が前提の
   まま)。
-- **Phase 0 は即開始可能**: khi は customer bitbucket の `khi-task-controller` (メタプロジェクト
+- **Phase 0 は即開始可能**: khi は customer bitbucket の `khi-task-collector` (メタプロジェクト
   の原型) が登録済みで、 前提が揃っている。
