@@ -372,6 +372,26 @@ func runProjectInit(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf(".boid/project.yaml already exists in %s; remove it first", projectDir)
 	}
 
+	// Reject projectDir being NESTED inside a DIFFERENT, already-existing
+	// git repository (Major, codex round-15 review): if projectDir has no
+	// .git of its own but sits below some ANCESTOR directory's .git, the
+	// guidance's `git init` would create a brand-new, unrelated repo
+	// nested inside that ancestor — its own commit/push history has
+	// nothing to do with the ancestor repo's, a push to the ancestor's
+	// existing remote either fails outright (non-fast-forward/unrelated
+	// histories) or, on a DIFFERENT remote, ships a repo containing only
+	// the scaffold with none of the ancestor's already-committed source
+	// (the same "no real code for an agent to work on" problem the
+	// step-1 caveat above warns about, but silently self-inflicted
+	// here). Caught before the scaffold is even written.
+	resolvedProjectDir := projectDir
+	if resolved, err := filepath.EvalSymlinks(projectDir); err == nil {
+		resolvedProjectDir = resolved
+	}
+	if enclosingRoot, err := gitTopLevel(projectDir); err == nil && enclosingRoot != resolvedProjectDir {
+		return fmt.Errorf("%s is nested inside an existing git repository rooted at %s; run `boid project init` from that repository's root instead (or a location with no enclosing git repo at all)", projectDir, enclosingRoot)
+	}
+
 	w := &initwizard.Wizard{
 		In:    os.Stdin,
 		Out:   cmd.OutOrStdout(),
@@ -519,30 +539,38 @@ func runProjectInit(cmd *cobra.Command, args []string) error {
 	// correct for a genuinely brand-new, still-empty scaffold (nothing
 	// else exists yet to accidentally leave behind), but silently wrong
 	// for `project init` run inside an existing, not-yet-pushed
-	// codebase: the daemon clones whatever URL step 2 registers, and a
+	// codebase: the daemon clones whatever URL step 3 registers, and a
 	// remote containing only .boid/project.yaml with no actual project
 	// source leaves every agent dispatched against it with nothing to
 	// work on. This can't safely be automated here (a blanket `git add
 	// .` reintroduces exactly the "sweeps in unrelated/sensitive staged
 	// content" problem round 4/9 fixed for the scaffold's own commit),
 	// so it is surfaced as an explicit step instead.
+	// Push to the remote's ACTUAL default branch, not just whatever
+	// branch is checked out locally (Major, codex round-6/round-8/
+	// round-15 review — round-15 corrected a factual error in an earlier
+	// revision's own comment here, which claimed no portable client-side
+	// git command could determine a remote's default branch: `git
+	// ls-remote --symref <url> HEAD` does exactly that, the same
+	// mechanism internal/dispatcher/bare_repo.go already uses
+	// server-side). `DEFAULT_REF=$(...)` extracts the "ref: refs/heads/
+	// <branch>" line's target; when the remote already has one (an
+	// established repo, regardless of which branch is checked out
+	// locally), the subsequent `git push <url> "HEAD:$DEFAULT_REF"`
+	// fast-forwards the scaffold commit onto THAT branch specifically —
+	// verified empirically: cloning an established repo, checking out an
+	// unrelated feature branch, adding the scaffold, and running this
+	// exact line lands the commit on the remote's real default branch,
+	// not a new "feature-branch" ref. When the remote has no resolvable
+	// HEAD yet (a genuinely fresh, empty repository — ls-remote returns
+	// nothing), `${DEFAULT_REF:-refs/heads/$(git symbolic-ref --short
+	// HEAD)}` falls back to pushing under the CURRENT branch's own name,
+	// letting the forge auto-set its default branch from this first push
+	// as before.
 	fmt.Fprintln(out, "\nNext steps:")
 	fmt.Fprintln(out, "  1. Make sure your project's actual source code — not just this scaffold — is already committed and pushed to your remote. The daemon clones whatever URL you register in step 3, and an agent dispatched against it needs real code to work with.")
-	fmt.Fprintln(out, "  2. Commit the scaffold and push it to your remote (safe to run even if some of this is already done):")
-	fmt.Fprintf(out, "       %s{ git init && git add .boid/project.yaml && (git diff --cached --quiet -- .boid/project.yaml || git commit -m 'add boid project scaffold' -- .boid/project.yaml) && git push '<git-url>' HEAD; }\n", cdPrefix)
-	// Explicit default-branch caveat (Blocker, codex round-7 AND round-8
-	// review — round-8 pointed out round-7's wording only covered "a
-	// brand-new empty remote's first push", missing the equally-real
-	// "existing remote, but you're on some other, non-default branch"
-	// case): the daemon registers a project by cloning the remote and
-	// reading .boid/project.yaml off the REMOTE'S OWN default branch
-	// (its HEAD symref) — not "whichever branch this push happened to
-	// land on". Surfacing this as an explicit, unconditional precondition
-	// to verify — not a footnote about one specific scenario — is the
-	// only reliable fix available from the client side (see the one-shot
-	// `git push` note above for why there is no portable client-side git
-	// command that can query or set a remote's default branch instead).
-	fmt.Fprintln(out, "     (IMPORTANT: the daemon reads .boid/project.yaml off your remote's DEFAULT branch specifically, not just whatever branch this just pushed — before running step 3, confirm the branch you just pushed either IS your remote's default branch, or has just BECOME it. For a brand-new empty repository, most forges — GitHub, GitLab, ... — auto-set the default branch from this first push; for an existing repository (or a plain self-hosted bare git server with no such auto-detection), set/verify it explicitly via the forge's settings UI/API, or `git symbolic-ref HEAD refs/heads/<branch>` run directly on the remote)")
+	fmt.Fprintln(out, "  2. Commit the scaffold and push it to your remote's default branch (safe to run even if some of this is already done):")
+	fmt.Fprintf(out, `       %s{ git init && git add .boid/project.yaml && (git diff --cached --quiet -- .boid/project.yaml || git commit -m 'add boid project scaffold' -- .boid/project.yaml) && DEFAULT_REF=$(git ls-remote --symref '<git-url>' HEAD 2>/dev/null | awk '$1=="ref:"{print $2}') && git push '<git-url>' "HEAD:${DEFAULT_REF:-refs/heads/$(git symbolic-ref --short HEAD)}"; }`+"\n", cdPrefix)
 	fmt.Fprintln(out, "  3. Register the pushed URL with the running boid daemon:")
 	fmt.Fprintf(out, "       boid project add '<git-url>' %s\n", workspaceFlag)
 
@@ -556,6 +584,28 @@ func runProjectInit(cmd *cobra.Command, args []string) error {
 // single-quoted string cannot itself contain an unescaped single quote.
 func shellQuoteSingle(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
+// gitTopLevel returns the resolved top-level directory of the git
+// repository dir sits in (which may be dir itself, or an ANCESTOR of it —
+// `git rev-parse --show-toplevel` walks upward same as any other git
+// command run with cwd=dir), or an error if dir is not inside a git
+// repository at all. The result is symlink-resolved, since git always
+// reports a symlink-resolved toplevel — callers comparing this against
+// dir should resolve dir the same way first (e.g. via filepath.
+// EvalSymlinks), or an otherwise-matching dir could spuriously compare
+// unequal to its own toplevel (a /tmp path on a system where /tmp itself
+// is a symlink, for instance).
+func gitTopLevel(dir string) (string, error) {
+	out, err := exec.Command("git", "-C", dir, "rev-parse", "--show-toplevel").Output()
+	if err != nil {
+		return "", fmt.Errorf("not a git repository: %w", err)
+	}
+	topLevel := strings.TrimSpace(string(out))
+	if resolved, err := filepath.EvalSymlinks(topLevel); err == nil {
+		return resolved, nil
+	}
+	return topLevel, nil
 }
 
 func runProjectList(cmd *cobra.Command, args []string) error {

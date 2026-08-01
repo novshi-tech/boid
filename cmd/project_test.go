@@ -285,14 +285,16 @@ func TestProjectInit_NoRemote_GuidesGitInitAddPush(t *testing.T) {
 	if !strings.Contains(got, "boid project add '<git-url>'") {
 		t.Errorf("expected guidance to point at `boid project add '<git-url>'`, got:\n%s", got)
 	}
-	// Default-branch precondition caveat (codex round-7/round-8 review):
+	// Default-branch-aware push (codex round-7/round-8/round-15 review):
 	// the daemon reads .boid/project.yaml off the remote's DEFAULT
-	// branch specifically, which the just-pushed branch is not
-	// guaranteed to be (a fresh empty remote on a non-auto-detecting
-	// host, or an existing remote whose default is simply some other
-	// branch) — this must be called out explicitly, not left implicit.
-	if !strings.Contains(got, "DEFAULT branch") {
-		t.Errorf("expected guidance to explicitly call out the remote's default-branch precondition, got:\n%s", got)
+	// branch specifically, which the just-checked-out local branch is
+	// not guaranteed to be. The guidance resolves the remote's actual
+	// default branch via `git ls-remote --symref` and pushes there
+	// directly, falling back to the current branch's own name only when
+	// the remote has no resolvable default yet (a genuinely fresh, empty
+	// repository).
+	if !strings.Contains(got, "git ls-remote --symref") {
+		t.Errorf("expected guidance to resolve the remote's default branch via git ls-remote --symref, got:\n%s", got)
 	}
 	// "Your actual code, not just the scaffold" caveat (codex round-13
 	// review): the chain only ever commits/pushes .boid/project.yaml
@@ -398,7 +400,7 @@ func TestProjectInit_DirArg_GitCommandsTargetProjectDir(t *testing.T) {
 	// "safe to run even if some of this is already done", and an idempotent
 	// rerun's `git commit` (nothing new to commit) must not stop `git
 	// remote add`/`git push` from still running.
-	wantChain := "cd '" + dir + "' && { git init && git add .boid/project.yaml && (git diff --cached --quiet -- .boid/project.yaml || git commit -m 'add boid project scaffold' -- .boid/project.yaml) && git push '<git-url>' HEAD; }"
+	wantChain := "cd '" + dir + "' && { git init && git add .boid/project.yaml && (git diff --cached --quiet -- .boid/project.yaml || git commit -m 'add boid project scaffold' -- .boid/project.yaml) && DEFAULT_REF=$(git ls-remote --symref '<git-url>' HEAD 2>/dev/null | awk '$1==\"ref:\"{print $2}') && git push '<git-url>' \"HEAD:${DEFAULT_REF:-refs/heads/$(git symbolic-ref --short HEAD)}\"; }"
 	if !strings.Contains(got, wantChain) {
 		t.Errorf("expected guidance to contain the single cd-prefixed chain %q, got:\n%s", wantChain, got)
 	}
@@ -643,6 +645,129 @@ func TestProjectInit_InvalidWorkspaceFlag_RejectsBeforeScaffolding(t *testing.T)
 
 	if _, statErr := os.Stat(filepath.Join(dir, ".boid", "project.yaml")); statErr == nil {
 		t.Error("expected no scaffold to be written when --workspace is rejected up front")
+	}
+}
+
+// TestProjectInit_NestedInExistingRepo_RejectsBeforeScaffolding pins Major
+// (codex round-15 review): scaffolding a NEW subdirectory that has no .git
+// of its own but sits inside an ALREADY-existing, unrelated git repository
+// must be rejected outright — a nested `git init` there would create a
+// brand-new, unrelated repo whose commit/push history has nothing to do
+// with the enclosing repo's, so the printed guidance's push would either
+// fail (non-fast-forward against the enclosing repo's own remote) or, on a
+// different remote, register a project containing only the scaffold with
+// none of the enclosing repo's actual source. Caught before the scaffold
+// is even written.
+func TestProjectInit_NestedInExistingRepo_RejectsBeforeScaffolding(t *testing.T) {
+	parent := t.TempDir()
+	runGitTestCmd(t, parent, "init", "-q", "-b", "main")
+	runGitTestCmd(t, parent, "config", "user.email", "test@example.com")
+	runGitTestCmd(t, parent, "config", "user.name", "Test")
+	runGitTestCmd(t, parent, "commit", "-q", "--allow-empty", "-m", "initial")
+
+	dir := filepath.Join(parent, "my-project")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	withStdin(t, devNullStdin(t))
+
+	var out bytes.Buffer
+	cmd := projectInitSubCmd
+	cmd.SetOut(&out)
+	cmd.SetContext(context.Background())
+
+	err := runProjectInit(cmd, []string{dir})
+	if err == nil {
+		t.Fatal("expected an error for a projectDir nested inside an existing repo")
+	}
+	if !strings.Contains(err.Error(), "nested inside an existing git repository") {
+		t.Errorf("expected a 'nested inside an existing git repository' error, got: %v", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(dir, ".boid", "project.yaml")); statErr == nil {
+		t.Error("expected no scaffold to be written when projectDir is rejected as nested")
+	}
+}
+
+// TestProjectInit_DirIsOwnRepoRoot_DoesNotReject pins the non-regression
+// counterpart of the nested-repo rejection above: projectDir being a git
+// repo's OWN root (not nested inside a DIFFERENT one) must still work
+// exactly as before — this is the "user already ran git init themselves"
+// starter scenario project init's own doc comment describes.
+func TestProjectInit_DirIsOwnRepoRoot_DoesNotReject(t *testing.T) {
+	dir := t.TempDir()
+	runGitTestCmd(t, dir, "init", "-q", "-b", "main")
+	runGitTestCmd(t, dir, "config", "user.email", "test@example.com")
+	runGitTestCmd(t, dir, "config", "user.name", "Test")
+	runGitTestCmd(t, dir, "commit", "-q", "--allow-empty", "-m", "initial")
+
+	withStdin(t, devNullStdin(t))
+	var out bytes.Buffer
+	cmd := projectInitSubCmd
+	cmd.SetOut(&out)
+	cmd.SetContext(context.Background())
+
+	if err := runProjectInit(cmd, []string{dir}); err != nil {
+		t.Fatalf("runProjectInit: %v", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(dir, ".boid", "project.yaml")); statErr != nil {
+		t.Errorf("expected scaffold to be written for a dir that IS its own repo root: %v", statErr)
+	}
+}
+
+// TestProjectInit_PrintedChain_PushesToRemoteDefaultBranch executes the
+// ACTUAL printed guidance chain against a fixture simulating a real forge
+// repo: an established remote with commits already on "main" (its real
+// default branch, confirmed via `git symbolic-ref HEAD` on the bare repo
+// itself), cloned locally and then checked out onto an unrelated
+// "feature-branch" before scaffolding — pinning Major (codex round-15
+// review, correcting a factual error in an earlier revision's own comment
+// claiming no portable client-side git command could determine a remote's
+// default branch): `git ls-remote --symref` does exactly that, and the
+// guidance uses it to push the scaffold commit onto the remote's ACTUAL
+// default branch, not a new ref named after the local feature branch.
+func TestProjectInit_PrintedChain_PushesToRemoteDefaultBranch(t *testing.T) {
+	remote := filepath.Join(t.TempDir(), "remote.git")
+	runGitTestCmd(t, t.TempDir(), "init", "-q", "--bare", remote)
+
+	seed := t.TempDir()
+	runGitTestCmd(t, seed, "init", "-q", "-b", "main")
+	runGitTestCmd(t, seed, "config", "user.email", "test@example.com")
+	runGitTestCmd(t, seed, "config", "user.name", "Test")
+	runGitTestCmd(t, seed, "commit", "-q", "--allow-empty", "-m", "initial project commit")
+	runGitTestCmd(t, seed, "push", "-q", remote, "main")
+	runGitTestCmd(t, t.TempDir(), "--git-dir="+remote, "symbolic-ref", "HEAD", "refs/heads/main")
+
+	clone := t.TempDir()
+	runGitTestCmd(t, t.TempDir(), "clone", "-q", remote, clone)
+	runGitTestCmd(t, clone, "config", "user.email", "test@example.com")
+	runGitTestCmd(t, clone, "config", "user.name", "Test")
+	runGitTestCmd(t, clone, "checkout", "-q", "-b", "feature-branch")
+
+	withStdin(t, devNullStdin(t))
+	var out bytes.Buffer
+	cmd := projectInitSubCmd
+	cmd.SetOut(&out)
+	cmd.SetContext(context.Background())
+	if err := runProjectInit(cmd, []string{clone}); err != nil {
+		t.Fatalf("runProjectInit: %v", err)
+	}
+
+	got := out.String()
+	start := strings.Index(got, "{ git init &&")
+	end := strings.Index(got[start:], "; }") + start + len("; }")
+	if start < 0 || end <= start {
+		t.Fatalf("could not locate the printed chain in guidance:\n%s", got)
+	}
+	chain := strings.ReplaceAll(got[start:end], "'<git-url>'", "'"+remote+"'")
+	runBashCmd(t, clone, chain)
+
+	scaffoldOnMain := runGitTestCmdOutput(t, t.TempDir(), "--git-dir="+remote, "show", "main:.boid/project.yaml")
+	if !strings.Contains(scaffoldOnMain, "id:") {
+		t.Errorf("expected the scaffold to have landed on the remote's actual default branch (main), got:\n%s", scaffoldOnMain)
+	}
+	refs, _ := exec.Command("git", "--git-dir="+remote, "show-ref").CombinedOutput()
+	if strings.Contains(string(refs), "feature-branch") {
+		t.Errorf("did not expect a new 'feature-branch' ref on the remote, show-ref output:\n%s", refs)
 	}
 }
 
