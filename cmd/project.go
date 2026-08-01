@@ -427,17 +427,24 @@ func runProjectInit(cmd *cobra.Command, args []string) error {
 	// NO detection logic to get wrong:
 	//   - `git init`: always safe to re-run ("Reinitialized existing Git
 	//     repository..." if one already exists).
-	//   - `git add .boid && (git diff --cached --quiet -- .boid || git
-	//     commit ... -- .boid)`: the `-- .boid` pathspec (Major, codex
-	//     round-4 review) scopes the commit to exactly the scaffold this
-	//     command just wrote, so it neither sweeps in unrelated
-	//     already-staged changes nor tries to commit when .boid has no
-	//     staged changes at all (the idempotent-rerun case). `git diff
-	//     --cached --quiet -- .boid` is true (no output, exit 0) exactly
-	//     when there is nothing new to commit for .boid — in that case
-	//     the `||`'s right side (the actual commit) is skipped entirely,
-	//     rather than run and rejected. Skipping vs. attempting-and-
-	//     failing matters (Blocker, codex round-6 review): if `git
+	//   - `git add .boid/project.yaml && (git diff --cached --quiet --
+	//     .boid/project.yaml || git commit ... -- .boid/project.yaml)`:
+	//     the pathspec (Major, codex round-4 review, NARROWED to the
+	//     single file in round-9 review — a bare `.boid` pathspec sweeps
+	//     in every OTHER file already under .boid too, and an existing
+	//     repository is not guaranteed to have only scaffold content
+	//     there: this very repository's own .boid/ has files like
+	//     run-e2e-scenario.sh alongside project.yaml) scopes the commit
+	//     to exactly the ONE file this command just wrote, so it neither
+	//     sweeps in unrelated already-staged changes (anywhere in the
+	//     repo, or elsewhere under .boid) nor tries to commit when that
+	//     one file has no staged changes at all (the idempotent-rerun
+	//     case). `git diff --cached --quiet -- .boid/project.yaml` is
+	//     true (no output, exit 0) exactly when there is nothing new to
+	//     commit for that file — in that case the `||`'s right side (the
+	//     actual commit) is skipped entirely, rather than run and
+	//     rejected. Skipping vs. attempting-and-failing matters (Blocker,
+	//     codex round-6 review): if `git
 	//     commit` DOES run and genuinely fails for a real reason (a
 	//     rejecting pre-commit hook, no configured git identity, a
 	//     required GPG signature that can't be produced, ...), that must
@@ -495,7 +502,7 @@ func runProjectInit(cmd *cobra.Command, args []string) error {
 	// literal find-and-replace of the placeholder text with a real URL.
 	fmt.Fprintln(out, "\nNext steps:")
 	fmt.Fprintln(out, "  1. Commit the scaffold and push it to your remote (safe to run even if some of this is already done):")
-	fmt.Fprintf(out, "       %s{ git init; git add .boid && (git diff --cached --quiet -- .boid || git commit -m 'add boid project scaffold' -- .boid) && (git remote add origin '<git-url>' 2>/dev/null || git remote set-url origin '<git-url>') && git push -u origin HEAD; }\n", cdPrefix)
+	fmt.Fprintf(out, "       %s{ git init; git add .boid/project.yaml && (git diff --cached --quiet -- .boid/project.yaml || git commit -m 'add boid project scaffold' -- .boid/project.yaml) && (git remote add origin '<git-url>' 2>/dev/null || git remote set-url origin '<git-url>') && git push -u origin HEAD; }\n", cdPrefix)
 	// Explicit default-branch caveat (Blocker, codex round-7 AND round-8
 	// review — round-8 pointed out round-7's wording only covered "a
 	// brand-new empty remote's first push", missing the equally-real

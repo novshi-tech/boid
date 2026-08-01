@@ -388,10 +388,91 @@ func TestProjectInit_DirArg_GitCommandsTargetProjectDir(t *testing.T) {
 	// "safe to run even if some of this is already done", and an idempotent
 	// rerun's `git commit` (nothing new to commit) must not stop `git
 	// remote add`/`git push` from still running.
-	wantChain := "cd '" + dir + "' && { git init; git add .boid && (git diff --cached --quiet -- .boid || git commit -m 'add boid project scaffold' -- .boid) && (git remote add origin '<git-url>' 2>/dev/null || git remote set-url origin '<git-url>') && git push -u origin HEAD; }"
+	wantChain := "cd '" + dir + "' && { git init; git add .boid/project.yaml && (git diff --cached --quiet -- .boid/project.yaml || git commit -m 'add boid project scaffold' -- .boid/project.yaml) && (git remote add origin '<git-url>' 2>/dev/null || git remote set-url origin '<git-url>') && git push -u origin HEAD; }"
 	if !strings.Contains(got, wantChain) {
 		t.Errorf("expected guidance to contain the single cd-prefixed chain %q, got:\n%s", wantChain, got)
 	}
+}
+
+// TestProjectInit_PrintedChain_OnlyCommitsProjectYAML executes the ACTUAL
+// printed guidance chain (not just checking its text) against a fixture
+// repo that already has an unrelated file under .boid/ (this project's own
+// repo has exactly this shape: .boid/run-e2e-scenario.sh sits alongside
+// .boid/project.yaml) — pinning Major (codex round-9 review): a bare
+// `.boid` pathspec sweeps in every OTHER file already under .boid too, not
+// just the one project.yaml this command wrote. Confirms the new commit
+// touches only .boid/project.yaml.
+func TestProjectInit_PrintedChain_OnlyCommitsProjectYAML(t *testing.T) {
+	dir := t.TempDir()
+	runGitTestCmd(t, dir, "init", "-q", "-b", "main")
+	runGitTestCmd(t, dir, "config", "user.email", "test@example.com")
+	runGitTestCmd(t, dir, "config", "user.name", "Test")
+	if err := os.MkdirAll(filepath.Join(dir, ".boid"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	otherBoidFile := filepath.Join(dir, ".boid", "run-e2e-scenario.sh")
+	if err := os.WriteFile(otherBoidFile, []byte("#!/bin/sh\necho pre-existing\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGitTestCmd(t, dir, "add", ".boid/run-e2e-scenario.sh")
+	runGitTestCmd(t, dir, "commit", "-q", "-m", "pre-existing .boid content")
+	remote := filepath.Join(t.TempDir(), "remote.git")
+	runGitTestCmd(t, t.TempDir(), "init", "-q", "--bare", remote)
+
+	withStdin(t, devNullStdin(t))
+	var out bytes.Buffer
+	cmd := projectInitSubCmd
+	cmd.SetOut(&out)
+	cmd.SetContext(context.Background())
+	if err := runProjectInit(cmd, []string{dir}); err != nil {
+		t.Fatalf("runProjectInit: %v", err)
+	}
+
+	// Extract the printed one-liner and actually run it, substituting the
+	// real remote for the '<git-url>' placeholder — exercising the exact
+	// text a user would paste, not a hand-written equivalent.
+	got := out.String()
+	start := strings.Index(got, "{ git init;")
+	end := strings.Index(got[start:], "; }") + start + len("; }")
+	if start < 0 || end <= start {
+		t.Fatalf("could not locate the printed chain in guidance:\n%s", got)
+	}
+	chain := strings.ReplaceAll(got[start:end], "'<git-url>'", "'"+remote+"'")
+
+	runBashCmd(t, dir, chain)
+
+	newCommitFiles := runGitTestCmdOutput(t, dir, "show", "--stat", "--pretty=format:", "HEAD")
+	if !strings.Contains(newCommitFiles, "project.yaml") {
+		t.Errorf("expected HEAD to include project.yaml, got:\n%s", newCommitFiles)
+	}
+	if strings.Contains(newCommitFiles, "run-e2e-scenario.sh") {
+		t.Errorf("expected HEAD to NOT re-touch the pre-existing run-e2e-scenario.sh, got:\n%s", newCommitFiles)
+	}
+}
+
+// runBashCmd runs script via `bash -c` with dir as cwd, failing the test on
+// a non-zero exit (with combined output attached for diagnosis).
+func runBashCmd(t *testing.T, dir, script string) {
+	t.Helper()
+	c := exec.Command("bash", "-c", script)
+	c.Dir = dir
+	out, err := c.CombinedOutput()
+	if err != nil {
+		t.Fatalf("bash -c %q: %v\n%s", script, err, out)
+	}
+}
+
+// runGitTestCmdOutput runs a git command and returns its stdout, failing
+// the test on a non-zero exit.
+func runGitTestCmdOutput(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	c := exec.Command("git", args...)
+	c.Dir = dir
+	out, err := c.Output()
+	if err != nil {
+		t.Fatalf("git %v: %v", args, err)
+	}
+	return string(out)
 }
 
 // TestProjectInit_GuidanceIsIdempotentRegardlessOfExistingGitState pins the
