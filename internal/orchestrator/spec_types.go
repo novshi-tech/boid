@@ -349,37 +349,25 @@ func (p RawPayload) RawMessage() json.RawMessage {
 	return json.RawMessage(p)
 }
 
-// BehaviorAliases maps legacy behavior names to their canonical counterparts.
-// This is the alias table used during the "task_behavior simplification" rename:
-// project.yaml files written before the rename keep using "plan" / "dev"; on
-// load they are normalized to "supervisor" / "executor" and a deprecation
-// warning is emitted. The map is intentionally not exported as mutable state —
-// callers should go through CanonicalBehaviorName.
-var BehaviorAliases = map[string]string{
-	"plan": "supervisor",
-	"dev":  "executor",
-}
-
-// CanonicalBehaviorName returns the canonical behavior name for the given
-// (possibly aliased) name. If the input is a deprecated alias, the returned
-// canonical name and isAlias=true are returned. Otherwise the input is
-// returned unchanged with isAlias=false.
-func CanonicalBehaviorName(name string) (canonical string, isAlias bool) {
-	if c, ok := BehaviorAliases[name]; ok {
-		return c, true
-	}
-	return name, false
-}
-
-// IsBehaviorAliasKey reports whether the given key is a deprecated alias key.
-// Display code that needs to suppress mirror entries for the migration period
-// (so user-facing output does not show the same behavior twice) can skip keys
-// where IsBehaviorAliasKey returns true and the canonical counterpart is also
-// present in the same map.
-func IsBehaviorAliasKey(key string) bool {
-	_, ok := BehaviorAliases[key]
-	return ok
-}
+// Behavior names carry no built-in meaning to the loader: every key under
+// task_behaviors is an ordinary project-chosen name, compared verbatim.
+//
+// There used to be an alias table here mapping the pre-rename names
+// "plan" / "dev" onto "supervisor" / "executor", plus the mirror-entry
+// machinery that kept both spellings reachable at runtime. It was removed
+// because it reserved two of the most natural work-content behavior names:
+// a project.yaml could not define "plan" as its own behavior at all — written
+// alongside "supervisor" it was rejected as a duplicate definition, and
+// written alone it was silently renamed to "supervisor". That directly
+// contradicts the Track A2 free-naming contract the rest of this file
+// implements. Nothing else replaced it: the daemon does not translate
+// behavior names, in either direction.
+//
+// The only names the daemon still reacts to by spelling are "supervisor" and
+// "executor", and only to emit deprecation warnings (see
+// emitCanonicalBehaviorDeprecation) and to preserve executor's historical
+// readonly=false default (see applyCanonicalBehaviorOverrides). Both are
+// migration aids, not lookups.
 
 type TaskBehavior struct {
 	// Readonly controls whether the sandbox working directory is mounted read-only

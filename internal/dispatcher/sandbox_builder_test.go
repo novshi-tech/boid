@@ -232,33 +232,24 @@ func TestBuildSandboxSpec_WorkspaceSlugEnv(t *testing.T) {
 	})
 }
 
-// behavior は canonical 名 (executor/supervisor) で BOID_INVOKED_BEHAVIOR に渡す。
-// 現在の agent runner は behavior に依らず /boid-task を起動するが、 deprecated 別名
-// (dev/plan) は canonical 化してから渡す慣習を残しているのでテストも維持する。 旧
-// BOID_INVOKED_TYPE は instruction の phase 種別 (常に "execution") を運んでいて
-// behavior と取り違えられていたため廃止する。
-func TestBuildSandboxSpec_InvokedBehaviorIsCanonical(t *testing.T) {
-	cases := []struct {
-		behavior string
-		want     string
-	}{
-		{"executor", "executor"},
-		{"supervisor", "supervisor"},
-		{"dev", "executor"},    // deprecated alias → canonical
-		{"plan", "supervisor"}, // deprecated alias → canonical
-	}
-	for _, tc := range cases {
-		t.Run(tc.behavior, func(t *testing.T) {
+// behavior は task 行にある名前をそのまま BOID_INVOKED_BEHAVIOR に渡す。 別名を
+// 書き換える表は撤去したので、 "dev" / "plan" もほかの自由名と同じくそのまま届く
+// (以前は executor / supervisor に化けていた)。 旧 BOID_INVOKED_TYPE は
+// instruction の phase 種別 (常に "execution") を運んでいて behavior と
+// 取り違えられていたため廃止する。
+func TestBuildSandboxSpec_InvokedBehaviorIsVerbatim(t *testing.T) {
+	for _, behavior := range []string{"executor", "supervisor", "dev", "plan", "implement", "drive"} {
+		t.Run(behavior, func(t *testing.T) {
 			spec := &orchestrator.JobSpec{
 				Instruction: &orchestrator.RoutedInstruction{Agent: "claude-code"},
-				Task:        &orchestrator.TaskSnapshot{Behavior: tc.behavior},
+				Task:        &orchestrator.TaskSnapshot{Behavior: behavior},
 			}
 			result, err := BuildSandboxSpec(spec, SandboxRuntimeInfo{})
 			if err != nil {
 				t.Fatalf("BuildSandboxSpec: %v", err)
 			}
-			if got := result.Env["BOID_INVOKED_BEHAVIOR"]; got != tc.want {
-				t.Errorf("BOID_INVOKED_BEHAVIOR = %q, want %q", got, tc.want)
+			if got := result.Env["BOID_INVOKED_BEHAVIOR"]; got != behavior {
+				t.Errorf("BOID_INVOKED_BEHAVIOR = %q, want %q", got, behavior)
 			}
 			if _, ok := result.Env["BOID_INVOKED_TYPE"]; ok {
 				t.Errorf("BOID_INVOKED_TYPE must be gone (replaced by BOID_INVOKED_BEHAVIOR)")

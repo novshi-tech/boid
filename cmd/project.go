@@ -33,14 +33,6 @@ var projectCmd = &cobra.Command{
 	Short: "Manage projects",
 }
 
-// mustCanonicalBehavior returns the canonical name for a known alias. It is
-// used by display code to dedupe back-compat alias mirror entries — callers
-// should only invoke it after IsBehaviorAliasKey has returned true.
-func mustCanonicalBehavior(alias string) string {
-	canonical, _ := projectspec.CanonicalBehaviorName(alias)
-	return canonical
-}
-
 // projectAddCmd accepts ONLY a git remote URL: PR-4 (docs/plans/
 // volume-only-daemon.md §論点e) removed the legacy host-directory
 // registration form (`boid project add <dir>`) that PR-2a had restored
@@ -667,14 +659,6 @@ func renderProjectDetail(p *projectspec.Project) {
 		fmt.Println("TaskBehaviors:")
 		keys := make([]string, 0, len(m.TaskBehaviors))
 		for k := range m.TaskBehaviors {
-			// Skip back-compat alias mirror entries: a behavior named
-			// "plan" with a canonical "supervisor" entry would otherwise
-			// be listed twice. The canonical entry is the one of record.
-			if projectspec.IsBehaviorAliasKey(k) {
-				if _, hasCanonical := m.TaskBehaviors[mustCanonicalBehavior(k)]; hasCanonical {
-					continue
-				}
-			}
 			keys = append(keys, k)
 		}
 		sort.Strings(keys)
@@ -735,11 +719,6 @@ func renderProjectBehaviors(p *projectspec.Project) {
 
 	keys := make([]string, 0, len(p.Meta.TaskBehaviors))
 	for k := range p.Meta.TaskBehaviors {
-		if projectspec.IsBehaviorAliasKey(k) {
-			if _, hasCanonical := p.Meta.TaskBehaviors[mustCanonicalBehavior(k)]; hasCanonical {
-				continue
-			}
-		}
 		keys = append(keys, k)
 	}
 	sort.Strings(keys)

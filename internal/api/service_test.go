@@ -1344,56 +1344,40 @@ func TestCreateTask_CanonicalExecutor_ForcesNotReadonly(t *testing.T) {
 	}
 }
 
-// TestCreateTask_PlanAlias_ResolvesToSupervisorReadonly verifies that the legacy
-// alias "plan" still works and is forced to readonly=true via the canonical
-// supervisor rule.
-func TestCreateTask_PlanAlias_ResolvesToSupervisorReadonly(t *testing.T) {
-	meta := &orchestrator.ProjectMeta{
-		TaskBehaviors: map[string]orchestrator.TaskBehavior{
-			"supervisor": {},
-		},
+// TestCreateTask_FormerAliasNames_NoLongerRedirect verifies that requesting
+// "plan" / "dev" against a project that defines only the name they used to be
+// aliases of is a plain not-found error. The redirect these names once had is
+// gone, which is what frees them up as ordinary work-content behavior names.
+func TestCreateTask_FormerAliasNames_NoLongerRedirect(t *testing.T) {
+	cases := []struct {
+		defined   string
+		requested string
+	}{
+		{defined: "supervisor", requested: "plan"},
+		{defined: "executor", requested: "dev"},
 	}
-	svc := &TaskAppService{
-		Tasks: &stubTaskStore{},
-		Meta:  stubMetaStore{meta: meta},
-	}
+	for _, tc := range cases {
+		t.Run(tc.requested, func(t *testing.T) {
+			meta := &orchestrator.ProjectMeta{
+				TaskBehaviors: map[string]orchestrator.TaskBehavior{
+					tc.defined: {},
+				},
+			}
+			svc := &TaskAppService{
+				Tasks: &stubTaskStore{},
+				Meta:  stubMetaStore{meta: meta},
+			}
 
-	task, err := svc.CreateTask(CreateTaskRequest{
-		ProjectID: "proj-1",
-		Title:     "plan-aliased task",
-		Behavior:  "plan",
-	})
-	if err != nil {
-		t.Fatalf("CreateTask() error = %v", err)
-	}
-	if !task.Readonly {
-		t.Errorf("Readonly = false, want true (plan alias → supervisor → readonly:true)")
-	}
-}
-
-// TestCreateTask_DevAlias_ResolvesToExecutorWritable verifies that "dev" still
-// works and is forced to readonly=false via the canonical executor rule.
-func TestCreateTask_DevAlias_ResolvesToExecutorWritable(t *testing.T) {
-	meta := &orchestrator.ProjectMeta{
-		TaskBehaviors: map[string]orchestrator.TaskBehavior{
-			"executor": {},
-		},
-	}
-	svc := &TaskAppService{
-		Tasks: &stubTaskStore{},
-		Meta:  stubMetaStore{meta: meta},
-	}
-
-	task, err := svc.CreateTask(CreateTaskRequest{
-		ProjectID: "proj-1",
-		Title:     "dev-aliased task",
-		Behavior:  "dev",
-	})
-	if err != nil {
-		t.Fatalf("CreateTask() error = %v", err)
-	}
-	if task.Readonly {
-		t.Errorf("Readonly = true, want false (dev alias → executor → readonly:false)")
+			_, err := svc.CreateTask(CreateTaskRequest{
+				ProjectID: "proj-1",
+				Title:     "former alias",
+				Behavior:  tc.requested,
+			})
+			if err == nil {
+				t.Fatalf("CreateTask(behavior=%q) against a project defining only %q: expected error, got nil",
+					tc.requested, tc.defined)
+			}
+		})
 	}
 }
 
@@ -3099,31 +3083,28 @@ func TestCreateTask_ChildAndParentMissingRemoteID_Returns400(t *testing.T) {
 	}
 }
 
-// TestTaskAppServiceCreateTask_BehaviorAlias_RequestSideResolution verifies
-// that CreateTask requests with the legacy alias name ("plan" / "dev") are
-// resolved to the canonical name ("supervisor" / "executor") before lookup.
-// This handles older callers (CLI invocations, UI clients, persisted instructions)
-// that pre-date the rename.
-//
-// Under Phase 3-1 the canonical behavior name dictates the readonly value
-// (supervisor → true, executor → false); there is no behavior-level knob to
-// disagree with.
-func TestTaskAppServiceCreateTask_BehaviorAlias_RequestSideResolution(t *testing.T) {
+// TestTaskAppServiceCreateTask_BehaviorNamePersistedVerbatim verifies that the
+// behavior name a request asks for is the name persisted on the task row —
+// including "plan" and "dev", which used to be rewritten to "supervisor" /
+// "executor" before persist. Readonly follows the Track A2 rules for the name
+// as written: fail-safe true, with "executor" keeping its historical false.
+func TestTaskAppServiceCreateTask_BehaviorNamePersistedVerbatim(t *testing.T) {
 	cases := []struct {
 		name             string
-		canonicalKey     string
-		requestedName    string
+		behaviorKey      string
 		expectedReadonly bool
 	}{
-		{name: "plan request hits supervisor", canonicalKey: "supervisor", requestedName: "plan", expectedReadonly: true},
-		{name: "dev request hits executor", canonicalKey: "executor", requestedName: "dev", expectedReadonly: false},
+		{name: "plan is its own behavior", behaviorKey: "plan", expectedReadonly: true},
+		{name: "dev is its own behavior", behaviorKey: "dev", expectedReadonly: true},
+		{name: "supervisor unchanged", behaviorKey: "supervisor", expectedReadonly: true},
+		{name: "executor keeps its writable default", behaviorKey: "executor", expectedReadonly: false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			store := &stubTaskStore{}
 			meta := &orchestrator.ProjectMeta{
 				TaskBehaviors: map[string]orchestrator.TaskBehavior{
-					tc.canonicalKey: {},
+					tc.behaviorKey: {},
 				},
 			}
 			svc := &TaskAppService{
@@ -3132,19 +3113,19 @@ func TestTaskAppServiceCreateTask_BehaviorAlias_RequestSideResolution(t *testing
 			}
 			task, err := svc.CreateTask(CreateTaskRequest{
 				ProjectID: "proj-1",
-				Title:     "via alias",
-				Behavior:  tc.requestedName,
+				Title:     "verbatim name",
+				Behavior:  tc.behaviorKey,
 			})
 			if err != nil {
 				t.Fatalf("CreateTask() error = %v, want nil", err)
 			}
-			if task.Behavior != tc.canonicalKey {
-				t.Errorf("Behavior = %q, want %q (alias must canonicalize before persist)",
-					task.Behavior, tc.canonicalKey)
+			if task.Behavior != tc.behaviorKey {
+				t.Errorf("Behavior = %q, want %q (name must persist verbatim)",
+					task.Behavior, tc.behaviorKey)
 			}
 			if task.Readonly != tc.expectedReadonly {
-				t.Errorf("Readonly = %v, want %v (canonical %q decides readonly)",
-					task.Readonly, tc.expectedReadonly, tc.canonicalKey)
+				t.Errorf("Readonly = %v, want %v for behavior %q",
+					task.Readonly, tc.expectedReadonly, tc.behaviorKey)
 			}
 		})
 	}

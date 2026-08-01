@@ -45,49 +45,19 @@ type BehaviorResolveRequest struct {
 	Instructions json.RawMessage
 }
 
-// LookupBehaviorWithAlias finds a TaskBehavior in meta.TaskBehaviors by name,
-// being tolerant of the plan / dev → supervisor / executor rename. Lookup is
-// tried in this order:
+// LookupBehavior finds a TaskBehavior in meta.TaskBehaviors by name. The name
+// is matched verbatim — there is no alias or canonicalization step, so what a
+// project.yaml (or workspace default) writes is exactly what callers must ask
+// for.
 //
-//  1. exact match against the requested name
-//  2. if the request is a legacy alias, try the canonical name
-//  3. if the request is a canonical name, try the legacy alias (handles
-//     unnormalized in-memory ProjectMeta values that may exist in tests or
-//     transitional code paths)
-//
-// When (2) or (3) hits, a deprecation warning is logged. The returned key
-// is the map key that actually matched; callers may use it for further
-// logging or store the canonical form on the task.
-func LookupBehaviorWithAlias(meta *ProjectMeta, name string) (TaskBehavior, string, bool) {
-	if b, ok := meta.TaskBehaviors[name]; ok {
-		return b, name, true
+// A nil meta reports not-found rather than panicking: ResolveBehavior's
+// nil-meta paths and DefaultBehaviorResolvable both rely on that.
+func LookupBehavior(meta *ProjectMeta, name string) (TaskBehavior, bool) {
+	if meta == nil {
+		return TaskBehavior{}, false
 	}
-	if canonical, isAlias := CanonicalBehaviorName(name); isAlias {
-		if b, ok := meta.TaskBehaviors[canonical]; ok {
-			slog.Warn("task behavior name is deprecated; use canonical name instead",
-				"scope", "CreateTask request",
-				"deprecated", name,
-				"canonical", canonical,
-			)
-			return b, canonical, true
-		}
-	}
-	// Reverse: caller used the new canonical name, but meta still uses the
-	// alias key (legacy in-memory meta, e.g. hand-built test fixtures).
-	for alias, canonical := range BehaviorAliases {
-		if canonical != name {
-			continue
-		}
-		if b, ok := meta.TaskBehaviors[alias]; ok {
-			slog.Warn("project meta uses deprecated behavior name; please regenerate via ReadProjectMetaWithKits",
-				"scope", "CreateTask request",
-				"deprecated", alias,
-				"canonical", name,
-			)
-			return b, alias, true
-		}
-	}
-	return TaskBehavior{}, "", false
+	b, ok := meta.TaskBehaviors[name]
+	return b, ok
 }
 
 // DefaultBehaviorResolvable reports whether ResolveBehavior would succeed for
@@ -95,7 +65,7 @@ func LookupBehaviorWithAlias(meta *ProjectMeta, name string) (TaskBehavior, stri
 // given meta — mirroring the exact resolution order ResolveBehavior's own
 // default-resolution branch below uses (docs/plans/
 // workspace-default-project.md 論点d, fable 2巡目 m2): meta.DefaultTaskBehavior
-// must be both set AND actually resolve via LookupBehaviorWithAlias, else a
+// must be both set AND actually resolve via LookupBehavior, else a
 // behavior literally named "supervisor" must exist in meta.TaskBehaviors,
 // else it is not resolvable.
 //
@@ -111,7 +81,7 @@ func DefaultBehaviorResolvable(meta *ProjectMeta) bool {
 		return false
 	}
 	if meta.DefaultTaskBehavior != "" {
-		_, _, ok := LookupBehaviorWithAlias(meta, meta.DefaultTaskBehavior)
+		_, ok := LookupBehavior(meta, meta.DefaultTaskBehavior)
 		return ok
 	}
 	_, ok := meta.TaskBehaviors["supervisor"]
@@ -170,18 +140,9 @@ func ResolveBehavior(meta *ProjectMeta, req BehaviorResolveRequest) (*BehaviorRe
 	// Named behavior path.
 	res.BehaviorName = req.Behavior
 	if meta != nil {
-		behavior, lookupKey, ok := LookupBehaviorWithAlias(meta, req.Behavior)
+		behavior, ok := LookupBehavior(meta, req.Behavior)
 		if !ok {
 			return nil, fmt.Errorf("behavior %q not found", req.Behavior)
-		}
-		// When alias resolution kicked in (the meta key we matched differs
-		// from what the caller asked for), persist the canonical form on
-		// the task so rows converge regardless of which alias the caller
-		// or the meta used. Exact matches are preserved verbatim to keep
-		// legacy callers / fixtures stable until Phase 5.
-		if lookupKey != req.Behavior {
-			canonical, _ := CanonicalBehaviorName(req.Behavior)
-			res.BehaviorName = canonical
 		}
 		res.Traits = behavior.Traits
 		res.BaseBranch = meta.BaseBranch

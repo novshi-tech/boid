@@ -25,41 +25,78 @@ func TestResolveBehavior_DefaultsToSupervisor(t *testing.T) {
 	}
 }
 
-func TestResolveBehavior_AliasMapping_Plan(t *testing.T) {
-	// "plan" is a legacy alias for "supervisor"
+// TestResolveBehavior_PlanIsAFreeName pins the post-alias-removal contract for
+// "plan": it is an ordinary project-chosen behavior name with no special
+// meaning. It resolves to itself (not to "supervisor") and takes the Track A2
+// fail-safe readonly default, exactly like any other free name.
+func TestResolveBehavior_PlanIsAFreeName(t *testing.T) {
 	meta := &orchestrator.ProjectMeta{
 		TaskBehaviors: map[string]orchestrator.TaskBehavior{
-			"supervisor": {},
+			"plan": {},
 		},
 	}
 	res, err := orchestrator.ResolveBehavior(meta, orchestrator.BehaviorResolveRequest{Behavior: "plan"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if res.BehaviorName != "supervisor" {
-		t.Errorf("BehaviorName = %q, want canonical %q", res.BehaviorName, "supervisor")
+	if res.BehaviorName != "plan" {
+		t.Errorf("BehaviorName = %q, want %q (no alias rewrite)", res.BehaviorName, "plan")
 	}
 	if !res.Readonly {
-		t.Error("Readonly = false, want true")
+		t.Error("Readonly = false, want true (free name takes the fail-safe default)")
 	}
 }
 
-func TestResolveBehavior_AliasMapping_Dev(t *testing.T) {
-	// "dev" is a legacy alias for "executor"
+// TestResolveBehavior_DevIsAFreeName is the "dev" counterpart. Note the
+// readonly flip this removal is responsible for: while "dev" was an alias of
+// "executor" it inherited executor's readonly=false compat exception; as a
+// free name it now takes the fail-safe default (readonly=true) unless the
+// project sets readonly explicitly.
+func TestResolveBehavior_DevIsAFreeName(t *testing.T) {
 	meta := &orchestrator.ProjectMeta{
 		TaskBehaviors: map[string]orchestrator.TaskBehavior{
-			"executor": {},
+			"dev": {},
 		},
 	}
 	res, err := orchestrator.ResolveBehavior(meta, orchestrator.BehaviorResolveRequest{Behavior: "dev"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if res.BehaviorName != "executor" {
-		t.Errorf("BehaviorName = %q, want canonical %q", res.BehaviorName, "executor")
+	if res.BehaviorName != "dev" {
+		t.Errorf("BehaviorName = %q, want %q (no alias rewrite)", res.BehaviorName, "dev")
 	}
-	if res.Readonly {
-		t.Error("Readonly = true, want false (executor is not readonly)")
+	if !res.Readonly {
+		t.Error("Readonly = false, want true (free name takes the fail-safe default)")
+	}
+}
+
+// TestResolveBehavior_LegacyAliasNoLongerResolves verifies that the alias
+// fallback is gone in both directions: asking for "plan" against a project
+// that only defines "supervisor" is now an unknown-behavior error rather than
+// a silent redirect, and vice versa.
+func TestResolveBehavior_LegacyAliasNoLongerResolves(t *testing.T) {
+	cases := []struct {
+		defined   string
+		requested string
+	}{
+		{defined: "supervisor", requested: "plan"},
+		{defined: "plan", requested: "supervisor"},
+		{defined: "executor", requested: "dev"},
+		{defined: "dev", requested: "executor"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.requested+"/"+tc.defined, func(t *testing.T) {
+			meta := &orchestrator.ProjectMeta{
+				TaskBehaviors: map[string]orchestrator.TaskBehavior{
+					tc.defined: {},
+				},
+			}
+			_, err := orchestrator.ResolveBehavior(meta, orchestrator.BehaviorResolveRequest{Behavior: tc.requested})
+			if err == nil {
+				t.Fatalf("requesting %q against a project defining only %q: expected error, got nil",
+					tc.requested, tc.defined)
+			}
+		})
 	}
 }
 
@@ -137,31 +174,37 @@ func TestResolveBehavior_CanonicalOverrides_Executor_NotReadonly(t *testing.T) {
 	}
 }
 
-func TestLookupBehaviorWithAlias_ExactMatch(t *testing.T) {
+func TestLookupBehavior_ExactMatch(t *testing.T) {
 	meta := &orchestrator.ProjectMeta{
 		TaskBehaviors: map[string]orchestrator.TaskBehavior{
 			"supervisor": {Traits: []string{"artifact"}},
 		},
 	}
-	b, key, ok := orchestrator.LookupBehaviorWithAlias(meta, "supervisor")
+	b, ok := orchestrator.LookupBehavior(meta, "supervisor")
 	if !ok {
 		t.Fatal("expected to find supervisor, got not found")
-	}
-	if key != "supervisor" {
-		t.Errorf("key = %q, want %q", key, "supervisor")
 	}
 	if len(b.Traits) != 1 || b.Traits[0] != "artifact" {
 		t.Errorf("traits = %v, want [artifact]", b.Traits)
 	}
 }
 
-func TestLookupBehaviorWithAlias_NotFound(t *testing.T) {
+func TestLookupBehavior_NotFound(t *testing.T) {
 	meta := &orchestrator.ProjectMeta{
 		TaskBehaviors: map[string]orchestrator.TaskBehavior{},
 	}
-	_, _, ok := orchestrator.LookupBehaviorWithAlias(meta, "supervisor")
-	if ok {
+	if _, ok := orchestrator.LookupBehavior(meta, "supervisor"); ok {
 		t.Error("expected not found, got found")
+	}
+}
+
+// TestLookupBehavior_NilMeta pins the nil-safety the helper exists for: the
+// alias-era version dereferenced meta unconditionally, and several callers
+// (ResolveBehavior's nil-meta paths, DefaultBehaviorResolvable) rely on not
+// having to guard separately.
+func TestLookupBehavior_NilMeta(t *testing.T) {
+	if _, ok := orchestrator.LookupBehavior(nil, "supervisor"); ok {
+		t.Error("expected not found for nil meta, got found")
 	}
 }
 

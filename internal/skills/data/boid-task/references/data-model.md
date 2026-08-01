@@ -23,7 +23,7 @@ behavior: "executor"
 readonly: false
 ```
 
-Canonical behavior names are `supervisor` (readonly orchestrator) and `executor` (writable implementer). The legacy keys `plan` / `dev` are accepted as aliases and rewritten by the daemon, so by the time you read this the field is usually already canonical.
+`behavior` is whatever name the project (or its workspace default) chose — it is stored and compared verbatim, and the daemon never rewrites it. `supervisor` (readonly orchestrator) and `executor` (writable implementer) are the historical names still used by many projects, but a project is free to name its behaviors after the work instead (`plan`, `implement`, `review`, `research`, ...). Do not infer what you are supposed to do from the name: read `readonly` and the routed instruction.
 
 | Field | Description |
 |-----------|------|

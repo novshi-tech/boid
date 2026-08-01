@@ -127,33 +127,38 @@ func TestWorkspaceRepository_Save_RejectsInvalidHookKind(t *testing.T) {
 	}
 }
 
-// TestWorkspaceRepository_Save_RejectsDuplicateAliasAndCanonical pins the
-// other normalizeBehaviorAliases guard: a workspace default that defines
-// BOTH a legacy alias ("dev") and its canonical name ("executor") is
-// ambiguous and must be rejected at save time, same as project.yaml and
-// same as decodeWorkspaceEnvelopeSpec
-// (TestDecodeWorkspaceEnvelopeDocuments_RejectsDuplicateTaskBehaviorAlias,
-// workspace_envelope_default_project_test.go). Since
-// normalizeWorkspaceDefaultTaskBehaviors never strips alias mirrors (Major 1
-// fix, spec_loader.go), Save provides this same first-line protection for
-// any caller that constructs a WorkspaceMeta directly rather than via
-// envelope apply.
-func TestWorkspaceRepository_Save_RejectsDuplicateAliasAndCanonical(t *testing.T) {
+// TestWorkspaceRepository_Save_FormerAliasPairRoundTrips is the persistence
+// counterpart of
+// TestDecodeWorkspaceEnvelopeDocuments_FormerAliasPairIsAccepted
+// (workspace_envelope_default_project_test.go): with the alias table gone,
+// "dev"/"executor" and "plan"/"supervisor" are four independent names that
+// save and load back unchanged. Save used to reject this map as ambiguous.
+func TestWorkspaceRepository_Save_FormerAliasPairRoundTrips(t *testing.T) {
 	t.Parallel()
 	repo := newTestWorkspaceRepo(t)
 
 	meta := &WorkspaceMeta{
 		TaskBehaviors: map[string]TaskBehavior{
-			"dev":      {},
-			"executor": {},
+			"dev":        {},
+			"executor":   {},
+			"plan":       {},
+			"supervisor": {},
 		},
 	}
-	err := repo.Save("ws-dup-alias", meta)
-	if err == nil {
-		t.Fatal("expected Save to reject a task_behaviors map with both an alias and its canonical name, got nil error")
+	if err := repo.Save("ws-former-alias", meta); err != nil {
+		t.Fatalf("Save: %v", err)
 	}
-	if !strings.Contains(err.Error(), "duplicate task behavior definition") {
-		t.Errorf("error = %v, want it to mention the duplicate definition", err)
+	loaded, err := repo.Load("ws-former-alias")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(loaded.TaskBehaviors) != 4 {
+		t.Fatalf("TaskBehaviors = %+v, want 4 distinct entries", loaded.TaskBehaviors)
+	}
+	for _, name := range []string{"dev", "executor", "plan", "supervisor"} {
+		if _, ok := loaded.TaskBehaviors[name]; !ok {
+			t.Errorf("TaskBehaviors missing %q after round trip: %+v", name, loaded.TaskBehaviors)
+		}
 	}
 }
 

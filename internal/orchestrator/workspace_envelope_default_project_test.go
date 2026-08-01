@@ -84,14 +84,14 @@ spec:
 	}
 }
 
-// TestDecodeWorkspaceEnvelopeDocuments_RejectsDuplicateTaskBehaviorAlias
-// pins normalizeWorkspaceDefaultTaskBehaviors's duplicate-detection
-// (spec_loader.go — it never strips alias mirrors, so this check always
-// sees both keys): a document defining BOTH a legacy alias name and its
-// canonical name is ambiguous — same contract project.yaml's own
-// parseProjectMetaBytes enforces — and must be rejected here, at first
-// decode, not silently resolved.
-func TestDecodeWorkspaceEnvelopeDocuments_RejectsDuplicateTaskBehaviorAlias(t *testing.T) {
+// TestDecodeWorkspaceEnvelopeDocuments_FormerAliasPairIsAccepted pins the
+// decode-side effect of removing the alias table: a document defining both
+// "dev" and "executor" (or "plan" and "supervisor") is four ordinary names,
+// not two ambiguous pairs, and decodes into four distinct behaviors. This
+// exact document used to be rejected as a duplicate definition, which is what
+// made "plan" unusable as a behavior name for any workspace that also had a
+// "supervisor".
+func TestDecodeWorkspaceEnvelopeDocuments_FormerAliasPairIsAccepted(t *testing.T) {
 	data := []byte(`
 apiVersion: boid.dev/v1
 kind: Workspace
@@ -101,13 +101,24 @@ spec:
   task_behaviors:
     dev: {}
     executor: {}
+    plan: {}
+    supervisor: {}
 `)
-	_, err := DecodeWorkspaceEnvelopeDocuments(data)
-	if err == nil {
-		t.Fatal("expected an error for a document defining both \"dev\" and its canonical \"executor\", got nil")
+	docs, err := DecodeWorkspaceEnvelopeDocuments(data)
+	if err != nil {
+		t.Fatalf("DecodeWorkspaceEnvelopeDocuments: %v", err)
 	}
-	if !strings.Contains(err.Error(), "duplicate task behavior definition") {
-		t.Errorf("error = %v, want it to mention the duplicate definition", err)
+	if len(docs) != 1 {
+		t.Fatalf("len(docs) = %d, want 1", len(docs))
+	}
+	got := docs[0].Envelope.Spec.TaskBehaviors
+	if len(got) != 4 {
+		t.Fatalf("TaskBehaviors = %+v, want 4 distinct entries", got)
+	}
+	for _, name := range []string{"dev", "executor", "plan", "supervisor"} {
+		if _, ok := got[name]; !ok {
+			t.Errorf("TaskBehaviors missing %q: %+v", name, got)
+		}
 	}
 }
 
