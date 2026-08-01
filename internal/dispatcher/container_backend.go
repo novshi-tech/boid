@@ -144,8 +144,10 @@ type ContainerBackendOptions struct {
 	// /etc/passwd at runtime rather than baked per-uid at image build
 	// time). nil means "unset". A custom pair is only honored when BOTH
 	// are provided (non-nil) AND uid resolves to non-zero — anything else
-	// (both unset, only one set, or uid == 0) falls back to 1000:1000 (the
-	// non-root default) rather than silently running the job as root.
+	// (both unset, only one set, or uid == 0) falls back to 1000:0 (the
+	// non-root default — see defaultContainerGID's own doc comment for
+	// why the fallback gid is 0, not 1000) rather than silently running
+	// the job as root.
 	//
 	// gid == 0 is DELIBERATELY allowed through as a real value, not
 	// rejected the way it was before PR2: compose's `user: "<uid>:0"`
