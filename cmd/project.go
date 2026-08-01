@@ -485,11 +485,33 @@ func runProjectInit(cmd *cobra.Command, args []string) error {
 	// `git diff --cached --quiet ||` guard above, which makes the group
 	// exit 0 even when no commit ran), an ACTUAL commit failure must
 	// stop the chain before `git remote add`/`git push` run at all.
+	// '<git-url>' (single-quoted), not a bare <git-url> (Major, codex
+	// round-7 review): this placeholder is meant to be replaced in place
+	// by the user's real URL, but left as-is or replaced carelessly a
+	// bare `<`/`>` is shell redirection syntax, and even a correctly
+	// substituted URL can itself contain `&`, `;`, `#`, or other
+	// characters a shell would otherwise split or reinterpret. Keeping
+	// the quotes in the printed text means they naturally survive a
+	// literal find-and-replace of the placeholder text with a real URL.
 	fmt.Fprintln(out, "\nNext steps:")
 	fmt.Fprintln(out, "  1. Commit the scaffold and push it to your remote (safe to run even if some of this is already done):")
-	fmt.Fprintf(out, "       %s{ git init; git add .boid && (git diff --cached --quiet -- .boid || git commit -m 'add boid project scaffold' -- .boid) && (git remote add origin <git-url> 2>/dev/null || git remote set-url origin <git-url>) && git push -u origin HEAD; }\n", cdPrefix)
+	fmt.Fprintf(out, "       %s{ git init; git add .boid && (git diff --cached --quiet -- .boid || git commit -m 'add boid project scaffold' -- .boid) && (git remote add origin '<git-url>' 2>/dev/null || git remote set-url origin '<git-url>') && git push -u origin HEAD; }\n", cdPrefix)
+	// Explicit default-branch caveat (Blocker, codex round-7 review): the
+	// daemon registers a project by cloning the remote and reading
+	// .boid/project.yaml off the REMOTE'S OWN default branch (its HEAD
+	// symref) — not "whichever branch happened to get pushed". Real
+	// forges (GitHub, GitLab, ...) auto-set that default branch from the
+	// FIRST push to a genuinely empty repository, which covers the
+	// primary "brand new project" flow this guidance targets, but a
+	// plain/self-hosted bare git remote has no such auto-detection and
+	// there is no portable client-side git command that can set a
+	// remote's HEAD symref over the wire — only something running ON
+	// that remote (or the forge's own UI/API) can. Surfacing this as an
+	// explicit instruction, not a silent assumption, is the only
+	// reliable fix available from the client side.
+	fmt.Fprintln(out, "     (if your remote does NOT automatically set its default branch on first push — true of most forges like GitHub/GitLab for a brand-new empty repository, but not of a plain self-hosted bare git server — set it there now before continuing, e.g. via the forge's own settings UI/API or `git symbolic-ref HEAD refs/heads/<branch>` run directly on the remote)")
 	fmt.Fprintln(out, "  2. Register the pushed URL with the running boid daemon:")
-	fmt.Fprintf(out, "       boid project add <git-url> %s\n", workspaceFlag)
+	fmt.Fprintf(out, "       boid project add '<git-url>' %s\n", workspaceFlag)
 
 	return nil
 }
