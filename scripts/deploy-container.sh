@@ -170,7 +170,18 @@ if [[ "$ENGINE" == "podman" ]]; then
 	# running fails with a bare connection-refused/no-such-file — no hint
 	# that the fix is a systemd unit) — checked explicitly here instead,
 	# with the actual remediation printed.
-	if ! systemctl --user is-active podman.socket >/dev/null 2>&1; then
+	#
+	# --down (docs/plans/release-onboarding.md 決定2/PR5, codex round-1
+	# review Major 4): this preflight is a precondition for BRINGING THE
+	# STACK UP (the DooD bind mount `up` is about to create), not for
+	# tearing it down — `compose down`/`podman-compose down` only removes
+	# already-existing containers/networks and does not itself need
+	# podman.socket's docker-API-compatible listener at all. Gating it
+	# unconditionally used to mean `boid stop` (this script's own --down)
+	# could never succeed at recovering from EXACTLY the failure mode this
+	# check exists to catch — a stopped/never-enabled podman.socket — since
+	# the preflight refused before ever reaching the down logic below.
+	if [[ "$DOWN" != "1" ]] && ! systemctl --user is-active podman.socket >/dev/null 2>&1; then
 		echo "error: podman.socket is not active — required for the DooD engine-socket bind (BOID_DOCKER_SOCK_SRC=$BOID_DOCKER_SOCK_SRC)." >&2
 		echo "  fix: systemctl --user enable --now podman.socket" >&2
 		exit 1

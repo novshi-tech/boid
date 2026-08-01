@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -437,5 +438,56 @@ func TestRunComposeDownScript_InvokesDeployScriptWithDown(t *testing.T) {
 	}
 	if strings.TrimSpace(string(logData)) != "ARGS: --down" {
 		t.Errorf("invocation log = %q, want %q", strings.TrimSpace(string(logData)), "ARGS: --down")
+	}
+}
+
+// TestDeployContainerScript_Down_SkipsPodmanSocketPreflight is the codex
+// round-1 review of PR5, Major 4 regression: scripts/deploy-container.sh's
+// own podman.socket active-check preflight used to run unconditionally,
+// even for --down — meaning `boid stop` could never recover from EXACTLY
+// the failure mode that check exists to catch (a stopped/never-enabled
+// podman.socket), since the preflight refused before ever reaching the
+// down logic. Runs the REAL script (not a fake) with fake podman/
+// podman-compose/systemctl on PATH — systemctl always reports inactive —
+// and asserts --down still succeeds while a plain (up) invocation under
+// the identical fake environment still correctly refuses.
+func TestDeployContainerScript_Down_SkipsPodmanSocketPreflight(t *testing.T) {
+	scriptPath, err := filepath.Abs(filepath.Join("..", "scripts", "deploy-container.sh"))
+	if err != nil {
+		t.Fatalf("resolve script path: %v", err)
+	}
+	if _, err := os.Stat(scriptPath); err != nil {
+		t.Fatalf("real deploy-container.sh not found at %s: %v", scriptPath, err)
+	}
+
+	dir := t.TempDir()
+	writeFakeExecutable(t, dir, "systemctl", `exit 3`) // "is-active" always reports inactive
+	writeFakeExecutable(t, dir, "podman", `
+case "$1" in
+  version) exit 0 ;;
+  info) echo "false"; exit 0 ;;
+  *) exit 0 ;;
+esac
+`)
+	writeFakeExecutable(t, dir, "podman-compose", `exit 0`)
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+
+	downCmd := exec.Command(scriptPath, "--down")
+	downOut, downErr := downCmd.CombinedOutput()
+	if downErr != nil {
+		t.Fatalf("scripts/deploy-container.sh --down failed with fake-inactive podman.socket: %v\noutput:\n%s", downErr, downOut)
+	}
+	if strings.Contains(string(downOut), "podman.socket is not active") {
+		t.Errorf("--down must not run the podman.socket preflight at all; output:\n%s", downOut)
+	}
+
+	upCmd := exec.Command(scriptPath)
+	upOut, upErr := upCmd.CombinedOutput()
+	if upErr == nil {
+		t.Fatal("expected a plain (up) invocation to still refuse with an inactive podman.socket")
+	}
+	if !strings.Contains(string(upOut), "podman.socket is not active") {
+		t.Errorf("expected the podman.socket preflight error for a plain (up) invocation; output:\n%s", upOut)
 	}
 }

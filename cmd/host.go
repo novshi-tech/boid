@@ -731,3 +731,32 @@ func resolveHostModeClient(ctx context.Context) (*client.Client, error) {
 	}
 	return c, nil
 }
+
+// resolveHostModeClientNoAutostart is resolveHostModeClient's sibling for
+// a command carrying annotationSkipAutostart=skip (codex round-1 review
+// of PR5, Major 3): builds the exact same client when the compose daemon
+// is ALREADY reachable, but — unlike resolveHostModeClient, which
+// unconditionally calls ensureHostModeDaemon and deploys the stack when
+// it is not — refuses outright instead of autostarting anything when it
+// is unreachable. `boid gc`'s own annotation predates host mode
+// specifically to keep "don't spin up a daemon just to gc it" true
+// regardless of which of the two autostart mechanisms (this one, or the
+// bare-metal client.EnsureRunningAt path further down PersistentPreRunE)
+// would otherwise have fired.
+func resolveHostModeClientNoAutostart(ctx context.Context) (*client.Client, error) {
+	token, err := loadOrCreateCLIToken()
+	if err != nil {
+		return nil, fmt.Errorf("host mode: %w", err)
+	}
+	addr := client.DefaultCLIAddr()
+	if !hostModeHealthy(ctx, addr, token) {
+		return nil, fmt.Errorf(
+			"host mode: daemon container not reachable at %s; not starting it automatically for this command — run `boid start` first",
+			addr)
+	}
+	c, err := client.NewClient("http://"+addr, token)
+	if err != nil {
+		return nil, fmt.Errorf("host mode: build client: %w", err)
+	}
+	return c, nil
+}

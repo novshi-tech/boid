@@ -1,7 +1,6 @@
 package cmd
 
 import (
-	"context"
 	"crypto/sha256"
 	"encoding/json"
 	"errors"
@@ -98,16 +97,24 @@ key already exists in the new namespace (default: refuse and list collisions).`,
 }
 
 var (
-	migrateWorkspace    string
-	migrateApply        bool
-	migrateOnCollision  string
-	migrateDBPath       string
-	migrateKeyFilePath  string
+	migrateWorkspace       string
+	migrateApply           bool
+	migrateLegacyBareMetal bool
+	migrateOnCollision     string
+	migrateDBPath          string
+	migrateKeyFilePath     string
 )
 
 func init() {
 	projectMigrateCmd.Flags().StringVar(&migrateWorkspace, "workspace", "", "Workspace slug to assign (required if no existing project_workspaces entry)")
 	projectMigrateCmd.Flags().BoolVar(&migrateApply, "apply", false, "Actually perform the migration (default: dry-run)")
+	// --legacy-bare-metal (docs/plans/release-onboarding.md「project migrate
+	// → 要注意コマンド」, codex round-1 review of PR5 Major 2): required
+	// alongside --apply. See guardApply's own doc comment for why a
+	// reachability PROBE ("is a compose daemon answering right now") was
+	// rejected in favor of this static, unconditional refusal.
+	projectMigrateCmd.Flags().BoolVar(&migrateLegacyBareMetal, "legacy-bare-metal", false,
+		"Acknowledge this is a legacy bare-metal migration with no compose daemon involved at all; required together with --apply (docs/plans/release-onboarding.md) — --apply's direct-DB-write fallback is refused by default now that compose is the only supported daemon shape")
 	projectMigrateCmd.Flags().StringVar(&migrateOnCollision, "on-collision", "refuse", "How to handle secret key collisions: refuse (default), skip, overwrite")
 	projectMigrateCmd.Flags().StringVar(&migrateDBPath, "db-path", "", "Path to the SQLite database (default: XDG data dir)")
 	projectMigrateCmd.Flags().StringVar(&migrateKeyFilePath, "key-file-path", "", "Path to the secret key file (default: XDG data dir)")
@@ -332,11 +339,7 @@ func runProjectMigrate(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("resolve dir: %w", err)
 	}
 	if migrateApply {
-		// context.Background(), not cmd.Context(): this probe is a
-		// short, self-contained health check independent of whatever
-		// (possibly nil, in a bare non-Execute()'d test cobra.Command)
-		// context this invocation happens to carry.
-		if err := guardApplyAgainstComposeDaemon(context.Background(), cmd.ErrOrStderr()); err != nil {
+		if err := guardApply(cmd.ErrOrStderr(), migrateLegacyBareMetal); err != nil {
 			return err
 		}
 	}
@@ -351,10 +354,10 @@ func runProjectMigrate(cmd *cobra.Command, args []string) error {
 	})
 }
 
-// guardApplyAgainstComposeDaemon implements docs/plans/
-// release-onboarding.md's「project migrate → 要注意コマンド」guidance for
-// `boid project migrate <dir> --apply`: --apply's pushMigratedWorkspaceToDaemon
-// (below) pings client.DefaultSocketPath() and, on a miss, falls back to
+// guardApply implements docs/plans/release-onboarding.md's「project
+// migrate → 要注意コマンド」guidance for `boid project migrate <dir>
+// --apply`: --apply's pushMigratedWorkspaceToDaemon (below) pings
+// client.DefaultSocketPath() and, on a miss, falls back to
 // db.Open(migrateDBPath-or-defaultDBPath()) — a direct read/write against
 // whatever boid.db sits at this HOST's own XDG data dir. That design
 // predates the compose daemon: under it, the real boid.db lives inside the
@@ -363,32 +366,35 @@ func runProjectMigrate(cmd *cobra.Command, args []string) error {
 // installation's stale leftover) and silently fails to apply anything a
 // live compose daemon will ever see.
 //
-// Always prints a deprecation notice (this command predates the compose
-// daemon and its --apply half was never redesigned for it — see the plan
-// doc's own judgment call: deprecate outright rather than redesign, since
-// `boid workspace create/edit --from-file` already covers the same ground
-// through the daemon's own API). When a compose daemon can actually be
-// reached — probed the same way host mode itself does
-// (hostModeHealthy against the authenticated CLI listener, cmd/host.go)
-// — refuses outright instead of silently risking the "半分だけ効く"
-// (half-works) outcome the plan doc calls out.
-func guardApplyAgainstComposeDaemon(ctx context.Context, stderr io.Writer) error {
+// Refuses --apply UNCONDITIONALLY unless legacyBareMetal (--legacy-bare-
+// metal) is also set — codex round-1 review of PR5, Major 2: an earlier
+// revision of this guard only refused when a compose daemon answered a
+// live reachability probe (hostModeHealthy against the authenticated CLI
+// listener) RIGHT NOW, which is exactly the race the plan doc's own
+// "container環境検出" wording invites — a compose stack that is merely
+// stopped at the moment --apply runs (daemon restart, host reboot before
+// `boid start`, ...) is not proof there is no compose deployment at all,
+// yet the probe would report "unreachable" and silently let --apply fall
+// through to the dangerous host-DB write. Since 決定2 makes compose the
+// ONLY supported daemon shape, the safe default is now unconditional: no
+// probe, no race, --apply always requires the explicit
+// --legacy-bare-metal acknowledgment to proceed at all. A genuine
+// pre-compose bare-metal migration (the one case this command's direct-
+// DB-write path is still legitimate for) passes it deliberately; every
+// other caller gets pointed at `boid workspace create/edit --from-file`
+// instead, which goes through the daemon's own API and therefore always
+// lands wherever the daemon (compose or otherwise) actually reads from.
+func guardApply(stderr io.Writer, legacyBareMetal bool) error {
 	fmt.Fprintln(stderr, "warning: `boid project migrate --apply` is a legacy migration path pre-dating the compose daemon (docs/plans/release-onboarding.md); prefer `boid workspace create/edit <slug> --from-file <file>` against the reviewable yaml this dry-run writes.")
 
-	token, err := loadOrCreateCLIToken()
-	if err != nil {
-		// Token machinery failing is not itself evidence of a reachable
-		// compose daemon either way — do not block --apply on it.
+	if legacyBareMetal {
 		return nil
 	}
-	if hostModeHealthy(ctx, client.DefaultCLIAddr(), token) {
-		return fmt.Errorf(
-			"boid project migrate --apply refused: a compose daemon is reachable at %s, and --apply's fallback path writes directly to this host's own boid.db, which that daemon does not read (its real database lives inside the boid_state volume). "+
-				"Re-run without --apply (this still rewrites project.yaml and prints a reviewable workspace yaml), then apply the workspace content through the daemon's own API instead: "+
-				"`boid workspace create <slug> --from-file <file>` (new slug) or `boid workspace edit <slug> --from-file <file>` (existing slug)",
-			client.DefaultCLIAddr())
-	}
-	return nil
+	return fmt.Errorf(
+		"boid project migrate --apply is refused by default now that compose is the only supported daemon shape (docs/plans/release-onboarding.md 決定2): its fallback path can write directly to this host's own boid.db, which a compose daemon never reads (its real database lives inside the boid_state volume) — and this cannot be safely detected by probing whether a compose daemon merely happens to answer right now. " +
+			"Re-run without --apply (this still rewrites project.yaml and prints a reviewable workspace yaml), then apply the workspace content through the daemon's own API instead: " +
+			"`boid workspace create <slug> --from-file <file>` (new slug) or `boid workspace edit <slug> --from-file <file>` (existing slug). " +
+			"If this genuinely is a pre-compose, bare-metal-only migration with no compose daemon involved at all, pass --legacy-bare-metal together with --apply to proceed.")
 }
 
 // errProjectNotFound is a helper to detect "not found" errors from GetProject.

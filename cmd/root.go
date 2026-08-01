@@ -131,11 +131,58 @@ var rootCmd = &cobra.Command{
 			// Mirrors the sibling client.EnsureRunningAt call further
 			// down this same function, which already uses
 			// context.Background() for the identical reason.
-			c, err := resolveHostModeClient(context.Background())
+			ctx := context.Background()
+			var (
+				c   *client.Client
+				err error
+			)
+			if hasSkipAutostartAnnotation(cmd) {
+				// codex round-1 review of PR5, Major 3: `boid gc` carries
+				// annotationSkipAutostart=skip specifically so a bare
+				// invocation does not spin up a daemon just to
+				// immediately garbage-collect it (gc.go's own doc
+				// comment) — a contract that predates host mode and
+				// applies identically to it. resolveHostModeClient
+				// unconditionally calls ensureHostModeDaemon, which
+				// deploys the compose stack when unreachable; that must
+				// not happen here.
+				c, err = resolveHostModeClientNoAutostart(ctx)
+			} else {
+				c, err = resolveHostModeClient(ctx)
+			}
 			if err != nil {
 				return err
 			}
 			cmd.SetContext(client.WithClient(cmd.Context(), c))
+			return nil
+		}
+		// scope=local commands (start/stop/check/project migrate/...) are,
+		// since 決定2/PR5, host-mode-adjacent local machinery — the SAME
+		// "only an EXPLICIT --profile flag routes through
+		// profiles.Resolve at all" rule Fable M4 established for
+		// scope=remote above must also apply here (codex round-1 review
+		// of PR5, Major 1). Before this fix, an AMBIENT default_profile
+		// or BOID_PROFILE naming a remote https daemon — set for
+		// unrelated scope=remote commands, long before host mode existed
+		// — would resolve here too and hit the scope=local hard-reject
+		// below (decision 6: "'%s' はローカル専用コマンドだよ"), meaning a
+		// plain `boid start`/`stop` with NO --profile at all could no
+		// longer bring the compose stack up/down. Skipping resolution
+		// entirely here (rather than only skipping the reject check) is
+		// deliberate: it also skips resolveClient's token-load/origin-
+		// bind round trip against that same ambient remote profile,
+		// which could independently fail (missing/corrupt token, network
+		// blip) and block start/stop for a reason that has nothing to do
+		// with them. RunE for every scope=local command below either
+		// never touches client.FromContext at all, or (cmd/check.go) is
+		// fine with its fallback: FromContext's own doc comment says an
+		// uninjected context degrades to NewUnixClient(DefaultSocketPath())
+		// — bit-for-bit the same client an unset profile would have
+		// resolved to anyway. Every scope=local command annotates
+		// annotationSkipAutostart=skip, so the autostart check just below
+		// this branch's own `return nil` is never reached for them
+		// either way.
+		if isLocalScope(cmd) && !profileExplicitlyRequested(cmd) {
 			return nil
 		}
 		// Two-phase resolution (docs/plans/cli-remote-connection.md
@@ -210,16 +257,36 @@ var rootCmd = &cobra.Command{
 		if isCompletionQuery(cmd) {
 			return nil
 		}
-		for anc := cmd; anc != nil; anc = anc.Parent() {
-			if anc.Annotations[annotationSkipAutostart] == "skip" {
-				return nil
-			}
+		if hasSkipAutostartAnnotation(cmd) {
+			return nil
 		}
 		if !c.IsUnix() {
 			return nil
 		}
 		return client.EnsureRunningAt(context.Background(), c.SocketPath())
 	},
+}
+
+// hasSkipAutostartAnnotation walks cmd's ancestor chain looking for
+// annotationSkipAutostart=skip — shared by both the bare-metal-profile
+// autostart check at the bottom of PersistentPreRunE (above) and host
+// mode's own branch (below): a command opting out of "launch a daemon
+// just for this" must mean it regardless of which of the two autostart
+// mechanisms (client.EnsureRunningAt for a bare-metal unix profile,
+// resolveHostModeClient's ensureHostModeDaemon for host mode) would
+// otherwise have fired (codex round-1 review of PR5, Major 3 — host
+// mode's branch used to ignore this annotation entirely, so `boid gc`
+// — annotated skip specifically so a bare invocation of it does not spin
+// up a daemon just to immediately garbage-collect it — silently lost
+// that contract the moment it was reclassified to scope=remote and
+// started going through host mode by default).
+func hasSkipAutostartAnnotation(cmd *cobra.Command) bool {
+	for anc := cmd; anc != nil; anc = anc.Parent() {
+		if anc.Annotations[annotationSkipAutostart] == "skip" {
+			return true
+		}
+	}
+	return false
 }
 
 // isNeutralScope reports whether cmd is annotated boid.scope=neutral
