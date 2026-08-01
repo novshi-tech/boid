@@ -403,9 +403,16 @@ func TestProjectInit_DirArg_GitCommandsTargetProjectDir(t *testing.T) {
 	}
 
 	got := out.String()
-	wantCd := "cd '" + dir + "' && git init"
-	if !strings.Contains(got, wantCd) {
-		t.Errorf("expected guidance to contain %q, got:\n%s", wantCd, got)
+	// The whole chain — init through the final push — must be ONE
+	// cd-prefixed line (codex round-3 review, Blocker follow-up): a `cd`
+	// on its own printed line only carries over to a LATER printed line
+	// if the user happens to paste both into the same still-open shell;
+	// copied separately, re-run individually, or run from a fresh
+	// terminal, a bare `git remote add origin`/`git push` on its own line
+	// would silently target the wrong (or no) directory.
+	wantChain := "cd '" + dir + "' && git init && git add . && git commit -m 'initial commit' && git remote add origin <git-url> && git push -u origin HEAD"
+	if !strings.Contains(got, wantChain) {
+		t.Errorf("expected guidance to contain the single cd-prefixed chain %q, got:\n%s", wantChain, got)
 	}
 }
 

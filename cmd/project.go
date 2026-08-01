@@ -429,8 +429,18 @@ func runProjectInit(cmd *cobra.Command, args []string) error {
 		fmt.Fprintf(out, "       boid project add %s %s\n", shellQuoteSingle(originURL), workspaceFlag)
 	} else {
 		fmt.Fprintln(out, "  1. Initialize git and push this project to a remote (skip what's already done):")
-		fmt.Fprintf(out, "       %sgit init && git add . && git commit -m 'initial commit'\n", cdPrefix)
-		fmt.Fprintln(out, "       git remote add origin <git-url> && git push -u origin HEAD")
+		// One single cd-prefixed chain, not two separately printed lines
+		// (Blocker, codex round-3 review of this PR): a `cd` on its own
+		// printed line only persists for LATER lines pasted into the SAME
+		// still-open shell — copy the two lines separately, run them from
+		// a fresh terminal, or re-run just the second line after the
+		// first failed, and `git remote add origin`/`git push` silently
+		// target whatever the shell's cwd happens to be instead of
+		// projectDir. Folding everything into one line removes that
+		// footgun entirely: the `cd` and every git command that must run
+		// in projectDir now travel together no matter how the line is
+		// copied or re-run.
+		fmt.Fprintf(out, "       %sgit init && git add . && git commit -m 'initial commit' && git remote add origin <git-url> && git push -u origin HEAD\n", cdPrefix)
 		fmt.Fprintln(out, "  2. Register the pushed URL with the running boid daemon:")
 		fmt.Fprintf(out, "       boid project add <git-url> %s\n", workspaceFlag)
 	}

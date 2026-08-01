@@ -49,6 +49,30 @@ const (
 	// explicit port publish and the job-isolated boid_internal network,
 	// so "all interfaces inside the container" is not "all interfaces on
 	// the host".
+	//
+	// Detection caveat (Major, codex round-3 review of this PR):
+	// daemon.ShouldLogToStdout (BOID_LOG_STDOUT=1) is a "does a supervisor
+	// already own my stdout/session lifecycle" flag, not a dedicated
+	// "am I in a container" one — its own doc comment and this exact
+	// same reuse for the CLIToken warning below both already describe it
+	// as "the compose/container daemon" signal, but nothing stops a
+	// *bare host* systemd unit from setting BOID_LOG_STDOUT=1 too (for
+	// the same journald-captures-stdout reason compose does), which
+	// would flip this fallback to 0.0.0.0 outside a container. Accepted
+	// deliberately rather than inventing a second, redundant env var:
+	// this file already established BOID_LOG_STDOUT as the "container
+	// execution" signal for the CLIToken warning, a real dedicated
+	// container-only signal does not exist anywhere in this codebase
+	// today (a prior codex review, internal/dispatcher/
+	// daemon_state_volume.go's "Why this replaced the 'am I in a
+	// container?' test" section, found even a real sentinel-file probe
+	// unreliable across runtimes for a DIFFERENT, security-relevant
+	// decision), and a host operator opting into BOID_LOG_STDOUT=1
+	// without also running under compose is a narrow, self-inflicted
+	// edge case for which `boid config set web.http_addr` (or `boid web
+	// set-addr`) remains the documented override either way. Revisit if
+	// PR5's host-mode/scope-cutover work introduces a real dedicated
+	// signal.
 	defaultContainerStartHTTPAddr = "0.0.0.0:8080"
 
 	daemonSocketTimeout = 10 * time.Second
