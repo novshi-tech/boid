@@ -240,10 +240,14 @@ if [[ "${DEPLOY_CONTAINER_SKIP_BUILD:-0}" == "1" ]]; then
 else
 	IMAGE_TAG="boid:$(git -C "$ROOT_DIR" rev-parse HEAD)"
 
+	# No --build-arg BOID_UID/BOID_GID here (removed, PR2): the image is
+	# arbitrary-uid as of docs/plans/release-onboarding.md 決定1 — it no
+	# longer takes a per-uid build arg at all (build/container/Dockerfile
+	# dropped both ARGs along with the useradd that consumed them), so a
+	# single built image works for any operator uid via compose.yml's
+	# `user: "${BOID_UID}:0"` at RUN time instead.
 	echo "deploy-container: building $IMAGE_TAG from $DOCKERFILE"
 	"${BUILD_CMD[@]}" \
-		--build-arg "BOID_UID=$BOID_UID" \
-		--build-arg "BOID_GID=$BOID_GID" \
 		-t "$IMAGE_TAG" \
 		-t boid-runner:latest \
 		-f "$DOCKERFILE" \
@@ -286,9 +290,12 @@ fi
 # daemon itself owns and no longer need host pre-provisioning): compose/
 # docker/podman auto-create a missing bind-mount host path, but as root
 # (or whichever uid runs the engine daemon) — the non-root daemon process
-# (user: ${BOID_UID}:${BOID_GID} in compose.yml) would then be unable to
-# even see a live socket under BOID_RUNTIME_DIR on a genuinely first-ever
-# run against a fresh layout. chown is best-effort (a warning, not
+# (user: ${BOID_UID}:0 in compose.yml, arbitrary-uid as of docs/plans/
+# release-onboarding.md 決定1/PR2 — the HOST bind-mount target below still
+# needs a real BOID_UID:BOID_GID chown, independent of the container's own
+# gid-0 convention) would then be unable to even see a live socket under
+# BOID_RUNTIME_DIR on a genuinely first-ever run against a fresh layout.
+# chown is best-effort (a warning, not
 # fatal): it fails harmlessly when this script is not running as the
 # target uid/gid and lacks permission to chown to it (e.g. BOID_UID
 # overridden to something other than the invoking user) — in that case

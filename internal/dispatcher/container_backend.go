@@ -139,19 +139,32 @@ type ContainerBackendOptions struct {
 	// is ImagePullIfNotPresent.
 	PullPolicy ImagePullPolicy
 	// UID/GID select the `--user <uid>:<gid>` job containers run as (§決定
-	// 4 — non-root, matching the image's baked /etc/passwd entry, PR2's
-	// Dockerfile). nil means "unset". A custom pair is only honored when
-	// BOTH are provided (non-nil) AND both resolve to non-zero — anything
-	// else (both unset, only one set, or either resolving to 0) falls back
-	// to 1000:1000 (the PR2 image's default BOID_UID/BOID_GID build args)
-	// rather than silently running the job as root. This is nullable
-	// (*int, not int) specifically so "unset" and "explicitly 0" are
-	// distinguishable: an int-typed field couldn't tell `UID: 0` (meant as
-	// "use the default") apart from a caller who actually passed 0, which
-	// let a partial override like `UID: 0, GID: 1000` slip through as a
-	// root container (fixed — see the PR5 review's Major 1). A real UID 0
-	// override is never a use case this backend supports (決定 4 requires
-	// non-root).
+	// 4 — non-root; docs/plans/release-onboarding.md 決定1/PR2 — arbitrary-
+	// uid, gid 0 + `g=u` group permissions, self-registered into
+	// /etc/passwd at runtime rather than baked per-uid at image build
+	// time). nil means "unset". A custom pair is only honored when BOTH
+	// are provided (non-nil) AND uid resolves to non-zero — anything else
+	// (both unset, only one set, or uid == 0) falls back to 1000:1000 (the
+	// non-root default) rather than silently running the job as root.
+	//
+	// gid == 0 is DELIBERATELY allowed through as a real value, not
+	// rejected the way it was before PR2: compose's `user: "<uid>:0"`
+	// (build/container/compose.yml) is the whole point of the gid-0
+	// arbitrary-uid design, and internal/server/wire.go's
+	// sandboxBackendForConfig passes the DAEMON's own os.Getuid()/
+	// os.Getgid() straight through here — under that compose config
+	// os.Getgid() legitimately IS 0. Only uid == 0 remains a hard reject
+	// (決定 4 still requires non-root job containers; gid 0 is a *group*,
+	// not "running as root").
+	//
+	// This is nullable (*int, not int) specifically so "unset" and
+	// "explicitly 0" are distinguishable: an int-typed field couldn't
+	// tell `UID: 0` (meant as "use the default") apart from a caller who
+	// actually passed 0, which let a partial override like `UID: 0, GID:
+	// 1000` slip through as a root container (fixed — see the PR5
+	// review's Major 1). A real UID 0 override is never a use case this
+	// backend supports (決定 4 requires non-root); GID 0 is (この doc
+	// comment 自身、PR2 で「both resolve to non-zero」から更新).
 	UID, GID *int
 	// InstallID is the value stamped on every container's boid.install_id
 	// label (§決定 6). Empty is valid — install_id generation lands in PR6
@@ -494,14 +507,19 @@ func NewContainerBackend(api dockerAPI, opts ContainerBackendOptions) backend.Sa
 	}
 	b.uid, b.gid = defaultContainerUID, defaultContainerGID
 	switch {
-	case opts.UID != nil && opts.GID != nil && *opts.UID != 0 && *opts.GID != 0:
+	// uid == 0 remains a hard reject (決定 4: job containers must be
+	// non-root); gid == 0 is a real, honored value as of PR2 (docs/plans/
+	// release-onboarding.md 決定1) — see ContainerBackendOptions.UID's doc
+	// comment for why the gid-0 case is not "running as root".
+	case opts.UID != nil && opts.GID != nil && *opts.UID != 0:
 		b.uid, b.gid = *opts.UID, *opts.GID
 	case opts.UID != nil || opts.GID != nil:
-		// A partial override (only one of the two set) or a pair that
-		// resolves to root (either side == 0) is rejected in favor of the
-		// non-root default — see ContainerBackendOptions.UID's doc comment
-		// and the PR5 review's Major 1.
-		slog.Warn("container backend: rejecting partial or root-resolving uid/gid override; using default (§決定 4 requires non-root)",
+		// A partial override (only one of the two set) or a uid that
+		// resolves to root (uid == 0, regardless of gid) is rejected in
+		// favor of the non-root default — see
+		// ContainerBackendOptions.UID's doc comment and the PR5 review's
+		// Major 1.
+		slog.Warn("container backend: rejecting partial or root uid override; using default (§決定 4 requires non-root)",
 			"uid", formatIntPtr(opts.UID), "gid", formatIntPtr(opts.GID),
 			"default_uid", defaultContainerUID, "default_gid", defaultContainerGID)
 	}

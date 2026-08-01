@@ -5,6 +5,7 @@ import (
 	"os"
 
 	"github.com/novshi-tech/boid/internal/sandbox/runner"
+	"github.com/novshi-tech/boid/internal/selfuser"
 	"github.com/spf13/cobra"
 )
 
@@ -44,6 +45,15 @@ func init() {
 			if specPath == "" {
 				return fmt.Errorf("runner-container: --spec is required")
 			}
+			// Arbitrary-uid self-registration (docs/plans/
+			// release-onboarding.md 決定1, PR2): the image no longer
+			// bakes a fixed /etc/passwd entry for whatever uid `--user
+			// <uid>:<gid>` starts this container as, so a passwd/id
+			// lookup inside the job (ssh, git credential helpers) fails
+			// unless this container registers itself first. Both calls
+			// are best-effort/non-fatal — see their own doc comments.
+			selfuser.EnsureRuntimeUserRegistered()
+			selfuser.ApplyGroupWritableUmask()
 			code, err := runner.RunContainer(specPath, statePath)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "[boid] runner-container: %v\n", err)

@@ -396,7 +396,8 @@ DEPLOY_CONTAINER_BUILD_ONLY=1 e2e_run bash "$REPO_ROOT/scripts/deploy-container.
 # mount) no longer reaches the container at all. `docker compose run` with
 # an overridden entrypoint creates a ONE-OFF container from the exact same
 # service definition (same image, same boid_state volume mount, same
-# BOID_UID:BOID_GID `user:`) purely to write the file, then exits — the
+# `user: "${BOID_UID}:0"` — arbitrary-uid, docs/plans/
+# release-onboarding.md 決定1/PR2) purely to write the file, then exits — the
 # subsequent `up` (scripts/deploy-container.sh, below) starts the real,
 # long-running daemon against that now-seeded volume. (The image itself is
 # already guaranteed to exist by the build step immediately above.)

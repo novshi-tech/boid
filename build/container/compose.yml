@@ -57,8 +57,9 @@
 # Persistence (docs/plans/volume-only-daemon.md §論点 d — supersedes §決定4
 # above): BOID_DATA_DIR and BOID_CONFIG_DIR are now a single daemon-owned
 # NAMED VOLUME (`boid_state`, declared at the bottom of this file), mounted
-# at /home/boid — the `boid` user's own $HOME, per build/container/
-# Dockerfile's `useradd --home-dir /home/boid` — not a host path at all.
+# at /home/boid — $HOME per build/container/Dockerfile's `ENV
+# HOME=/home/boid` (arbitrary-uid, docs/plans/release-onboarding.md 決定1
+# — no baked useradd/passwd entry as of PR2) — not a host path at all.
 # XDG_DATA_HOME/XDG_CONFIG_HOME (this service's own `environment:` block
 # below) point at /home/boid/.local/share and /home/boid/.config, ordinary
 # subdirectories the single volume covers without a separate mount for
@@ -279,8 +280,9 @@ services:
       # VOLUME below is mounted (/home/boid; both env vars end in a literal
       # `/boid` segment the helpers append themselves). This is also, not
       # coincidentally, the
-      # image's own baked-in $HOME (build/container/Dockerfile's `useradd
-      # --home-dir /home/boid`) — unlike the retracted host-bind-mount
+      # image's own baked-in $HOME (build/container/Dockerfile's `ENV
+      # HOME=/home/boid`, arbitrary-uid as of docs/plans/
+      # release-onboarding.md 決定1/PR2) — unlike the retracted host-bind-mount
       # design, there is no host XDG layout these need to track anymore,
       # so a fixed literal is correct rather than a gap.
       XDG_DATA_HOME: "/home/boid/.local/share"
@@ -402,15 +404,21 @@ services:
     # HostConfig.Init (docker-init/tini as PID 1, owning zombie reap — §決定3)
     # — compose's `init:` maps directly onto it.
     init: true
-    # Matches the host daemon uid so bind-mounted host paths (below) keep
-    # their existing ownership, and so job containers this daemon creates
-    # (also `--user <uid>:<gid>`, internal/dispatcher/container_backend.go)
-    # land on the same uid convention throughout (§決定4). Override via
-    # BOID_UID/BOID_GID if the operator's actual host uid is not 1000 — must
-    # match the BOID_UID/BOID_GID build args the image was built with
-    # (build/container/Dockerfile) or the daemon lands on an unknown uid
-    # with no matching image passwd entry.
-    user: "${BOID_UID:-1000}:${BOID_GID:-1000}"
+    # Arbitrary-uid (docs/plans/release-onboarding.md 決定1, PR2): gid is
+    # hardcoded to 0, not `${BOID_GID}` — the image's own gid-0 + `g=u`
+    # permissions (build/container/Dockerfile) are what let ANY uid in
+    # group 0 read/write the daemon's directories, so the operator's real
+    # host uid only needs to go in the uid slot. BOID_UID still matches
+    # the host uid so bind-mounted host paths (below) keep their existing
+    # ownership, and so job containers this daemon creates (also `--user
+    # <uid>:0` — internal/dispatcher/container_backend.go's gid-0-aware
+    # guard, internal/server/wire.go's os.Getuid()/os.Getgid() wiring)
+    # land on the same convention throughout (§決定4). Unlike the
+    # pre-arbitrary-uid image, there is no build-time BOID_UID/BOID_GID
+    # build arg this has to match anymore — the passwd entry for whatever
+    # uid ends up here is self-registered at runtime instead
+    # (internal/selfuser, cmd/start.go).
+    user: "${BOID_UID:-1000}:0"
     # group_add: the non-root daemon process (user: above) needs
     # supplementary membership in whatever group owns
     # /var/run/docker.sock on THIS host (typically `docker`, mode 0660 —
@@ -512,8 +520,9 @@ services:
       # workspace/project definitions, so an operator relying on volume
       # snapshotting for the rest necessarily snapshots ONE volume, not a
       # pair they could accidentally desync). Mounted at /home/boid — the
-      # image's own baked-in $HOME (build/container/Dockerfile's `useradd
-      # --home-dir /home/boid`) — which covers both
+      # image's own baked-in $HOME (build/container/Dockerfile's `ENV
+      # HOME=/home/boid`, arbitrary-uid as of docs/plans/
+      # release-onboarding.md 決定1/PR2) — which covers both
       # XDG_DATA_HOME=/home/boid/.local/share and
       # XDG_CONFIG_HOME=/home/boid/.config (this service's own
       # `environment:` block above) as ordinary subdirectories; no separate

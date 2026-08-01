@@ -14,6 +14,7 @@ import (
 	"github.com/novshi-tech/boid/internal/client"
 	"github.com/novshi-tech/boid/internal/config"
 	"github.com/novshi-tech/boid/internal/daemon"
+	"github.com/novshi-tech/boid/internal/selfuser"
 	"github.com/novshi-tech/boid/internal/server"
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
@@ -205,6 +206,19 @@ func buildStartConfig(opts startConfigOptions) (server.Config, error) {
 }
 
 func runStart(cmd *cobra.Command, args []string) error {
+	// Arbitrary-uid self-registration + group-writable umask (docs/plans/
+	// release-onboarding.md 決定1, PR2): under the compose daemon service
+	// this process's uid may have no /etc/passwd entry at all (the image
+	// no longer bakes one — build/container/Dockerfile), and runtime-
+	// generated files (secret.key, boid.db, ...) need the group-write bit
+	// so a later run under a DIFFERENT uid (still group 0) stays working
+	// (§決定1 実装形2, 未決6's "uid is fixed per install" contract). Both
+	// calls are best-effort/non-fatal and equally harmless on a bare-host
+	// `boid start`, where the running uid almost always already has a
+	// real passwd entry (a no-op) — see their own doc comments.
+	selfuser.EnsureRuntimeUserRegistered()
+	selfuser.ApplyGroupWritableUmask()
+
 	cfg, err := buildStartConfig(startConfigOptions{
 		DBPath:      startDBPath,
 		SocketPath:  startSocketPath,
