@@ -7,6 +7,7 @@ import (
 	"github.com/moby/moby/client"
 	"github.com/novshi-tech/boid/internal/dispatcher"
 	"github.com/novshi-tech/boid/internal/mtls"
+	"github.com/novshi-tech/boid/internal/version"
 )
 
 // This file pins sandboxBackendForConfig — the backend construction wiring
@@ -74,6 +75,49 @@ func TestSandboxBackendForConfig_WiresDaemonUIDGID(t *testing.T) {
 	}
 	if gotUID != wantUID || gotGID != wantGID {
 		t.Errorf("containerBackend uid:gid = %d:%d, want the daemon's own os.Getuid()/os.Getgid() = %d:%d", gotUID, gotGID, wantUID, wantGID)
+	}
+}
+
+// TestSandboxBackendForConfig_WiresBOIDImageEnv pins docs/plans/
+// release-onboarding.md 穴4/PR4's codex review Blocker: a daemon running
+// under compose can successfully pull its OWN image (build/container/
+// compose.yml's `image:` line resolves BOID_IMAGE, e.g. a GHCR ref) while
+// every job it dispatches still falls back to re-deriving a DIFFERENT
+// default from version.DefaultContainerImage() evaluated inside the daemon
+// process — which, for any non-exact-release build (the common case: a
+// GHCR ":latest" pull, not a tagged release), is the bare, registry-less
+// "boid-runner:latest" the whole of 穴4 exists to stop defaulting to.
+// sandboxBackendForConfig must thread BOID_IMAGE straight through to
+// ContainerBackendOptions.DefaultImage so the daemon and its own job
+// containers always agree on the same ref.
+func TestSandboxBackendForConfig_WiresBOIDImageEnv(t *testing.T) {
+	t.Setenv("BOID_IMAGE", "ghcr.io/novshi-tech/boid-runner:v9.9.9")
+
+	be := sandboxBackendForConfig(dockerClientForTest(t), "install-1", t.TempDir(), nil, nil)
+	got, ok := dispatcher.ContainerBackendDefaultImage(be)
+	if !ok {
+		t.Fatal("ContainerBackendDefaultImage: be is not a containerBackend")
+	}
+	if want := "ghcr.io/novshi-tech/boid-runner:v9.9.9"; got != want {
+		t.Errorf("containerBackend default image = %q, want %q (BOID_IMAGE passed through)", got, want)
+	}
+}
+
+// TestSandboxBackendForConfig_NoBOIDImageEnv_FallsBackToVersionDefault pins
+// the other half: outside compose (bare `boid start`, or any deploy that
+// hasn't set BOID_IMAGE) sandboxBackendForConfig must leave DefaultImage
+// empty so NewContainerBackend's own version.DefaultContainerImage()
+// fallback stays in charge, unchanged from before this fix.
+func TestSandboxBackendForConfig_NoBOIDImageEnv_FallsBackToVersionDefault(t *testing.T) {
+	t.Setenv("BOID_IMAGE", "")
+
+	be := sandboxBackendForConfig(dockerClientForTest(t), "install-1", t.TempDir(), nil, nil)
+	got, ok := dispatcher.ContainerBackendDefaultImage(be)
+	if !ok {
+		t.Fatal("ContainerBackendDefaultImage: be is not a containerBackend")
+	}
+	if want := version.DefaultContainerImage(); got != want {
+		t.Errorf("containerBackend default image = %q, want version.DefaultContainerImage() = %q", got, want)
 	}
 }
 

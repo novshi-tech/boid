@@ -10,7 +10,6 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
-	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -101,6 +100,18 @@ type containerBackend struct {
 	// has no context to probe with and must not do I/O.
 	usernsOnce sync.Once
 	usernsMode container.UsernsMode
+
+	// infoOnce/info cache the engine /info probe itself (container_backend_
+	// userns.go's resolveEngineInfo), shared by resolveUsernsMode (rootless
+	// detection) AND resolveHostArch (the arch mismatch fail-fast in
+	// resolveImage needs the engine's own reported host architecture, not
+	// this Go binary's build architecture — see resolveImage's own comment
+	// for why those differ under emulation) so two independent features
+	// consuming the same engine identity pay for exactly one round trip,
+	// not one each. Resolved lazily on the first Launch, same rationale as
+	// usernsOnce/usernsMode above.
+	infoOnce sync.Once
+	info     client.SystemInfoResult
 
 	mu       sync.Mutex
 	sessions map[string]*containerSession
@@ -593,6 +604,27 @@ func ContainerBackendUIDGID(be backend.SandboxBackend) (uid, gid int, ok bool) {
 		return 0, 0, false
 	}
 	return cb.uid, cb.gid, true
+}
+
+// ContainerBackendDefaultImage returns the effective default image a
+// containerBackend launches job containers from when a spec carries no
+// ContainerImage override (after NewContainerBackend's own
+// empty-falls-back-to-version.DefaultContainerImage() resolution has
+// already run), and false if be is not a *containerBackend. Same
+// external-package introspection rationale as IsContainerBackend's own doc
+// comment — used by internal/server/wire_backend_test.go to pin that
+// sandboxBackendForConfig threads BOID_IMAGE through (docs/plans/
+// release-onboarding.md 穴4/PR4 codex review: the daemon and the job
+// containers it launches must agree on the same image ref, or a daemon
+// that pulled its own GHCR image successfully can still fail every job
+// dispatch trying to pull an unrelated, unqualified "boid-runner:latest"
+// from docker.io).
+func ContainerBackendDefaultImage(be backend.SandboxBackend) (string, bool) {
+	cb, isContainer := be.(*containerBackend)
+	if !isContainer {
+		return "", false
+	}
+	return cb.defaultImage, true
 }
 
 // ContainerBackendBrokerTLS returns whether be is a *containerBackend
@@ -1663,16 +1695,34 @@ func (b *containerBackend) resolveImage(ctx context.Context, override string) (s
 	// published): a host with binfmt/qemu registered silently runs a
 	// foreign-arch image under emulation instead of refusing it outright
 	// — no error, just extreme slowness and unexplained crashes that look
-	// nothing like an architecture problem. insp.Architecture is only
-	// checked when non-empty (the fakeDockerAPI test default, and any real
+	// nothing like an architecture problem.
+	//
+	// [Blocker, PR4 codex review]: this must compare against the ENGINE's
+	// own reported host architecture (b.resolveHostArch, docker/podman
+	// /info), never runtime.GOARCH — GOARCH names the architecture THIS
+	// GO BINARY was compiled for, which is meaningless as a "real machine"
+	// signal from inside a container that is itself already running under
+	// emulation (an amd64-compiled daemon binary, baked into an amd64
+	// image, still reports GOARCH=="amd64" when QEMU is emulating that
+	// entire image on genuinely arm64 hardware — comparing against GOARCH
+	// would silently pass exactly the case this check exists to catch, and
+	// would ALSO wrongly reject a host-native arm64 override image on that
+	// same emulated host). dockerd/podman itself always runs natively on
+	// the real host — only individual containers may be emulated — so its
+	// own /info response is the one honest source for "what architecture
+	// is this machine actually".
+	//
+	// insp.Architecture / hostArch are only compared when BOTH are
+	// non-empty (the fakeDockerAPI test default for either, and any real
 	// engine's honest answer for an image whose manifest genuinely lacks
-	// platform metadata) so this cannot misfire against a legitimately
-	// arch-agnostic answer — it only fires when the image POSITIVELY
-	// claims a platform that doesn't match this host's.
-	if insp.Architecture != "" && insp.Architecture != runtime.GOARCH {
+	// platform metadata, or an Info() probe that failed) so this cannot
+	// misfire against a legitimately unknown answer — it only fires when
+	// the image POSITIVELY claims a platform that doesn't match a
+	// POSITIVELY known host arch.
+	if hostArch := b.resolveHostArch(ctx); insp.Architecture != "" && hostArch != "" && insp.Architecture != hostArch {
 		return "", fmt.Errorf(
 			"container image %q is built for arch %q, but this host is %q — refusing to run it under binfmt/qemu emulation (silently works but is extremely slow and can crash in ways that look nothing like an architecture problem); use an image built for %[3]s",
-			image, insp.Architecture, runtime.GOARCH)
+			image, insp.Architecture, hostArch)
 	}
 
 	if override != "" {

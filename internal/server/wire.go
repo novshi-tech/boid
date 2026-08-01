@@ -471,10 +471,32 @@ func sandboxBackendForConfig(dockerClient *client.Client, installID, runtimeDir 
 	// only a uid of 0 is still rejected.
 	uid, gid := os.Getuid(), os.Getgid()
 	return dispatcher.NewContainerBackend(dockerClient, dispatcher.ContainerBackendOptions{
-		InstallID:            installID,
-		RuntimeDir:           runtimeDir,
-		UID:                  &uid,
-		GID:                  &gid,
+		InstallID:  installID,
+		RuntimeDir: runtimeDir,
+		UID:        &uid,
+		GID:        &gid,
+		// DefaultImage (docs/plans/release-onboarding.md 穴4/PR4 codex
+		// review, Blocker): BOID_IMAGE, when set, names the EXACT image ref
+		// this daemon process itself was launched from — build/container/
+		// compose.yml's daemon service now maps that same compose-level
+		// variable into the container's own environment (its own comment
+		// there explains why), so a compose deploy's daemon always sees it.
+		// Without this, job containers would fall back to
+		// version.DefaultContainerImage() evaluated INSIDE the daemon
+		// process — for any non-exact-release build (the common case: a
+		// GHCR ":latest" pull from main, not a tagged release) that
+		// evaluates to the bare, registry-less "boid-runner:latest", the
+		// exact 穴4 bug this PR exists to fix. A daemon that successfully
+		// pulled its own ghcr.io/.../boid-runner:latest image would then
+		// have every job dispatch try to pull an unrelated, nonexistent
+		// docker.io/library/boid-runner:latest instead — "the daemon's pull
+		// succeeds but the job runner still uses the old ref" is exactly
+		// the inconsistency 穴4's table warns about, just one hop later
+		// (daemon-vs-job instead of fallback-vs-primary). Empty (bare
+		// `boid start` outside compose, or any deploy that hasn't set it)
+		// leaves NewContainerBackend's own version.DefaultContainerImage()
+		// fallback in charge, unchanged from before this fix.
+		DefaultImage:         os.Getenv("BOID_IMAGE"),
 		DiagnosticsCollector: dispatcher.NewDefaultDiagnosticsCollector(dockerClient, runtimeDir),
 		// SelfContainerID (PR9, §決定5): $HOSTNAME is docker's own default
 		// container hostname (the short container ID) unless a service

@@ -16,6 +16,7 @@ import (
 	"github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/api/types/image"
 	"github.com/moby/moby/api/types/jsonstream"
+	"github.com/moby/moby/api/types/system"
 	"github.com/moby/moby/api/types/volume"
 	"github.com/moby/moby/client"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
@@ -574,4 +575,14 @@ func imageInspectResultWithArch(arch string) client.ImageInspectResult {
 		Architecture: arch,
 		Config:       &dockerspec.DockerOCIImageConfig{},
 	}}
+}
+
+// systemInfoResultWithArch builds a client.SystemInfoResult carrying the
+// given /info Architecture — used by resolveHostArch's own tests
+// (docs/plans/release-onboarding.md 決定5's arm64 論点). Callers typically
+// pass a real uname(1)-style string ("x86_64", "aarch64") to match what
+// docker/podman actually report, exercising normalizeArch's translation
+// rather than assuming it away.
+func systemInfoResultWithArch(arch string) client.SystemInfoResult {
+	return client.SystemInfoResult{Info: system.Info{Architecture: arch}}
 }
