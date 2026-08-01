@@ -250,16 +250,20 @@ jobs:
         # VISIBILITY CAVEAT (codex review of this PR, Blocker — corrects an
         # earlier assumption in this comment): GITHUB_TOKEN's packages:write
         # is enough to publish, but a brand-new GHCR package defaults to
-        # PRIVATE regardless of the source repo's visibility, and changing
-        # that requires admin:packages scope that GITHUB_TOKEN does not
-        # carry (a PAT or manual UI action is the only way). Decision 4's
-        # public requirement therefore is NOT fully automated by this job —
-        # the first time this pushes `ghcr.io/novshi-tech/boid-runner`, an
-        # org owner must flip that package's visibility to Public once via
+        # PRIVATE regardless of the source repo's visibility, and there is
+        # no workflow-token / REST API path to flip that — changing a
+        # package's visibility requires admin permission ON THE PACKAGE
+        # itself, which only a human with that role can grant via the
+        # GitHub UI (GITHUB_TOKEN and the write:packages PAT scope do not
+        # carry it; there is no equivalent "admin:packages" token scope).
+        # Decision 4's public requirement therefore is NOT fully automated
+        # by this job — the first time this pushes
+        # `ghcr.io/novshi-tech/boid-runner`, an org owner must flip that
+        # package's visibility to Public once via Package settings:
         # https://github.com/orgs/novshi-tech/packages/container/boid-runner/settings
-        # (or `gh api` with a PAT that has admin:packages). Every subsequent
-        # push keeps the visibility as-is, so this is a one-time step, not a
-        # recurring one — but it must happen before PR4 makes anonymous pull
+        # Every subsequent push keeps the visibility as-is, so this is a
+        # one-time step, not a recurring one — but it must happen before
+        # PR4 makes anonymous pull
         # the default path, or that pull will 403/401.
         if: github.event_name == 'push'
         run: |
