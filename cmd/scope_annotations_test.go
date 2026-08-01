@@ -202,14 +202,17 @@ var expectedScopeAnnotations = map[string]string{
 	"boid logout": scopeNeutral,
 	// docs/plans/release-onboarding.md PR1 (codex review round 1 of this
 	// PR): reads internal/version only (ldflags override or
-	// debug.ReadBuildInfo()), never the daemon's HTTP API and never a
-	// profile at all. scopeLocal was the first attempt, but scopeLocal is
-	// rejected by root's PersistentPreRunE whenever an https profile is
-	// selected (isLocalScope, decision 6 of cli-remote-connection.md) —
-	// "what version of the CLI am I running" has nothing to do with which
-	// daemon --profile points at, so it belongs in this group instead, same
-	// as login/logout above. annotationSkipAutostart=skip still applies —
-	// see cmd/version.go's own annotation comment.
+	// debug.ReadBuildInfo()), never the daemon's HTTP API, and its result
+	// must not depend on profile resolution having gone well. scopeLocal was
+	// the first attempt, but scopeLocal is rejected by root's
+	// PersistentPreRunE whenever an https profile is selected (isLocalScope,
+	// decision 6 of cli-remote-connection.md) — "what version of the CLI am
+	// I running" has nothing to do with which daemon --profile points at, so
+	// it belongs in this group instead, same as login/logout above (whose
+	// own PersistentPreRunE still resolves the profile on the happy path;
+	// scopeNeutral only means that failing to do so is swallowed rather than
+	// fatal — see cmd/version.go's own annotation comment).
+	// annotationSkipAutostart=skip still applies.
 	"boid version": scopeNeutral,
 }
 

@@ -146,9 +146,18 @@ jobs:
         # local build (see the Dockerfile's ARG BOID_VERSION doc comment).
         # PR3 adds the tag-push trigger that makes this non-empty for a real
         # release build.
+        #
+        # `--exact-match` only proves some tag sits on HEAD, not that it has
+        # the "vMAJOR.MINOR.PATCH" shape IsExactRelease() actually requires
+        # (codex review of this PR) — a "nightly" or "v0.0.14-rc1" tag would
+        # otherwise pass straight through as a build-arg. Re-validate the
+        # shape here and discard anything that doesn't match.
         run: |
           set -euo pipefail
           BOID_VERSION="$(git describe --tags --exact-match 2>/dev/null || true)"
+          if ! [[ "$BOID_VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            BOID_VERSION=""
+          fi
           echo "BOID_VERSION=${BOID_VERSION:-<none>}"
           docker build \
             --build-arg "BOID_VERSION=${BOID_VERSION}" \

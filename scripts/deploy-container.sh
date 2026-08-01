@@ -249,7 +249,20 @@ else
 	# build (internal/version.Version() with no ldflags override falls back to
 	# debug.ReadBuildInfo(), which is "(devel)"-shaped for this build path
 	# regardless, since .dockerignore excludes .git/ from the build context).
+	#
+	# `git describe --tags --exact-match` only proves SOME tag sits on HEAD —
+	# it says nothing about that tag's shape (codex review of this PR): a
+	# "nightly" tag, a "v0.0.14-rc1" pre-release tag, or (with multiple tags
+	# on the same commit) an arbitrary pick among them would all pass through
+	# unchecked and get baked in as if they were the release identity
+	# internal/version.IsExactRelease() actually gates on. Re-validate against
+	# the exact same "vMAJOR.MINOR.PATCH" shape here and discard anything that
+	# doesn't match, so Version() on the built image agrees with what
+	# IsExactRelease() would decide from the tag alone.
 	BOID_VERSION="$(git -C "$ROOT_DIR" describe --tags --exact-match 2>/dev/null || true)"
+	if ! [[ "$BOID_VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+		BOID_VERSION=""
+	fi
 
 	echo "deploy-container: building $IMAGE_TAG from $DOCKERFILE (BOID_VERSION=${BOID_VERSION:-<none>})"
 	"${BUILD_CMD[@]}" \

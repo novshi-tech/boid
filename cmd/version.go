@@ -8,10 +8,10 @@ import (
 )
 
 // versionCmd prints the running boid binary's version identity
-// (docs/plans/release-onboarding.md 穴2). It never talks to the daemon and
-// never resolves a profile at all — the identity comes entirely from
-// internal/version, which itself resolves either an image-build ldflags
-// override or `go install`'s debug.ReadBuildInfo() module version.
+// (docs/plans/release-onboarding.md 穴2). It never talks to the daemon —
+// the identity comes entirely from internal/version, which itself resolves
+// either an image-build ldflags override or `go install`'s
+// debug.ReadBuildInfo() module version.
 //
 // scopeNeutral, not scopeLocal (codex review of this PR): scopeLocal is
 // rejected by root's PersistentPreRunE whenever an https profile is
@@ -19,10 +19,16 @@ import (
 // docs/plans/cli-remote-connection.md) — appropriate for a command whose
 // result would be silently wrong against the wrong host, but wrong here.
 // "What version of the CLI am I running" has nothing to do with which
-// daemon --profile happens to point at, and should equally survive a
-// broken or unresolvable profile — exactly scopeNeutral's contract (see
-// cmd/login.go and root.go's scopeNeutral doc comment). autostart is still
-// skipped: a version print must not spin up a daemon.
+// daemon --profile happens to point at, and its result should not depend
+// on profile resolution having gone well: scopeNeutral means a profile
+// resolution failure never blocks the command (see PersistentPreRunE's
+// isNeutralScope branches), not that no resolution is attempted at all —
+// on the happy path the same PersistentPreRunE that every command shares
+// still resolves the active profile (and, for an https one, its token)
+// before RunE runs; this command's RunE simply never looks at any of that
+// (see cmd/login.go and root.go's scopeNeutral doc comment for the same
+// contract applied to login/logout). autostart is still skipped: a version
+// print must not spin up a daemon.
 var versionCmd = &cobra.Command{
 	Use:   "version",
 	Short: "Print the boid version",
