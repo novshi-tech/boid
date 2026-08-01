@@ -170,12 +170,12 @@ var expectedScopeAnnotations = map[string]string{
 	// local — daemon lifecycle machinery itself, sandbox-launch plumbing,
 	// commands that never talk to a daemon, or (see the doc comment above)
 	// a deliberate judgment call reconciling mechanism against the plan doc.
-	"boid check":            scopeLocal,
-	"boid fetch":            scopeLocal,
-	"boid gc":               scopeLocal,
-	"boid init":             scopeLocal,
-	"boid project init":     scopeLocal,
-	"boid project migrate":  scopeLocal,
+	"boid check":           scopeLocal,
+	"boid fetch":           scopeLocal,
+	"boid gc":              scopeLocal,
+	"boid init":            scopeLocal,
+	"boid project init":    scopeLocal,
+	"boid project migrate": scopeLocal,
 	// workspace import is a retired, always-failing stub (2026-07-28) — it no
 	// longer talks to a daemon at all, so it is scopeLocal like `boid init`
 	// (also a deprecated stub pointing elsewhere), NOT scopeRemote. This also
@@ -191,8 +191,14 @@ var expectedScopeAnnotations = map[string]string{
 	"boid runner-container": scopeLocal,
 	"boid start":            scopeLocal,
 	"boid stop":             scopeLocal,
-	"boid web set-addr":     scopeLocal,
-	"boid web set-url":      scopeLocal,
+	// docs/plans/release-onboarding.md PR1: reads internal/version only
+	// (ldflags override or debug.ReadBuildInfo()), never the daemon's HTTP
+	// API — scopeLocal + annotationSkipAutostart=skip, same grouping as
+	// `boid fetch`/`boid init` above, not the daemon-lifecycle judgment call
+	// start/stop/gc make.
+	"boid version":      scopeLocal,
+	"boid web set-addr": scopeLocal,
+	"boid web set-url":  scopeLocal,
 
 	// neutral — requires no profile precondition at all (docs/plans/
 	// cli-remote-connection.md PR2): these are how a profile comes to

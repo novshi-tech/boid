@@ -16,6 +16,7 @@ import (
 
 	"github.com/novshi-tech/boid/internal/dockerres"
 	"github.com/novshi-tech/boid/internal/orchestrator"
+	"github.com/novshi-tech/boid/internal/version"
 )
 
 // workspaceHomeMarker is the on-disk completion marker for a workspace home
@@ -486,7 +487,7 @@ func (r *Runner) resolveWorkspaceHome(ctx context.Context, workspaceID string) (
 		// this marker vouches for the run that just happened, in the
 		// environment this build runs inits in.
 		InitGeneration: workspaceHomeInitGeneration,
-		BoidVersion:    boidVersion,
+		BoidVersion:    version.Version(),
 		CompletedAt:    time.Now().UTC(),
 	}
 	if err := writeWorkspaceHomeMarker(markerPath, marker); err != nil {
@@ -643,12 +644,6 @@ func newWorkspaceHomeID() (string, error) {
 	}
 	return hex.EncodeToString(buf), nil
 }
-
-// boidVersion is embedded into every completion marker's boid_version field.
-// No build-time version stamping (ldflags -X) exists in this repo yet, so
-// this stays empty for now — a later PR can wire it up without touching the
-// marker format (see the plan doc's BoidVersion note).
-const boidVersion = ""
 
 // normalizeWorkspaceSlug maps a JobSpec/Project WorkspaceID to the slug used
 // to key a workspace home directory. An empty WorkspaceID (a project not

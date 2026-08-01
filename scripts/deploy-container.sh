@@ -240,10 +240,22 @@ if [[ "${DEPLOY_CONTAINER_SKIP_BUILD:-0}" == "1" ]]; then
 else
 	IMAGE_TAG="boid:$(git -C "$ROOT_DIR" rev-parse HEAD)"
 
-	echo "deploy-container: building $IMAGE_TAG from $DOCKERFILE"
+	# BOID_VERSION (docs/plans/release-onboarding.md 穴2, PR1): only an EXACT
+	# release tag counts as a version identity worth baking in — see
+	# internal/version.IsExactRelease's doc comment for why the rule is this
+	# narrow. A dev checkout that is not sitting exactly on a tag (the common
+	# case) leaves this empty, and the Dockerfile's ARG BOID_VERSION="" default
+	# takes over, producing a binary that honestly reports itself as a local
+	# build (internal/version.Version() with no ldflags override falls back to
+	# debug.ReadBuildInfo(), which is "(devel)"-shaped for this build path
+	# regardless, since .dockerignore excludes .git/ from the build context).
+	BOID_VERSION="$(git -C "$ROOT_DIR" describe --tags --exact-match 2>/dev/null || true)"
+
+	echo "deploy-container: building $IMAGE_TAG from $DOCKERFILE (BOID_VERSION=${BOID_VERSION:-<none>})"
 	"${BUILD_CMD[@]}" \
 		--build-arg "BOID_UID=$BOID_UID" \
 		--build-arg "BOID_GID=$BOID_GID" \
+		--build-arg "BOID_VERSION=$BOID_VERSION" \
 		-t "$IMAGE_TAG" \
 		-t boid-runner:latest \
 		-f "$DOCKERFILE" \
