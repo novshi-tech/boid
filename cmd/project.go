@@ -508,8 +508,24 @@ func runProjectInit(cmd *cobra.Command, args []string) error {
 	// characters a shell would otherwise split or reinterpret. Keeping
 	// the quotes in the printed text means they naturally survive a
 	// literal find-and-replace of the placeholder text with a real URL.
+	// Explicit "your actual code, not just the scaffold" caveat (Major,
+	// codex round-13 review): the chain below deliberately commits ONLY
+	// .boid/project.yaml (the file-scoped pathspec fix from round-9,
+	// still load-bearing to avoid sweeping in unrelated staged changes)
+	// — it does NOT `git add .` the rest of the project. That is
+	// correct for a genuinely brand-new, still-empty scaffold (nothing
+	// else exists yet to accidentally leave behind), but silently wrong
+	// for `project init` run inside an existing, not-yet-pushed
+	// codebase: the daemon clones whatever URL step 2 registers, and a
+	// remote containing only .boid/project.yaml with no actual project
+	// source leaves every agent dispatched against it with nothing to
+	// work on. This can't safely be automated here (a blanket `git add
+	// .` reintroduces exactly the "sweeps in unrelated/sensitive staged
+	// content" problem round 4/9 fixed for the scaffold's own commit),
+	// so it is surfaced as an explicit step instead.
 	fmt.Fprintln(out, "\nNext steps:")
-	fmt.Fprintln(out, "  1. Commit the scaffold and push it to your remote (safe to run even if some of this is already done):")
+	fmt.Fprintln(out, "  1. Make sure your project's actual source code — not just this scaffold — is already committed and pushed to your remote. The daemon clones whatever URL you register in step 3, and an agent dispatched against it needs real code to work with.")
+	fmt.Fprintln(out, "  2. Commit the scaffold and push it to your remote (safe to run even if some of this is already done):")
 	fmt.Fprintf(out, "       %s{ git init && git add .boid/project.yaml && (git diff --cached --quiet -- .boid/project.yaml || git commit -m 'add boid project scaffold' -- .boid/project.yaml) && git push '<git-url>' HEAD; }\n", cdPrefix)
 	// Explicit default-branch caveat (Blocker, codex round-7 AND round-8
 	// review — round-8 pointed out round-7's wording only covered "a
@@ -523,8 +539,8 @@ func runProjectInit(cmd *cobra.Command, args []string) error {
 	// only reliable fix available from the client side (see the one-shot
 	// `git push` note above for why there is no portable client-side git
 	// command that can query or set a remote's default branch instead).
-	fmt.Fprintln(out, "     (IMPORTANT: the daemon reads .boid/project.yaml off your remote's DEFAULT branch specifically, not just whatever branch this just pushed — before running step 2, confirm the branch you just pushed either IS your remote's default branch, or has just BECOME it. For a brand-new empty repository, most forges — GitHub, GitLab, ... — auto-set the default branch from this first push; for an existing repository (or a plain self-hosted bare git server with no such auto-detection), set/verify it explicitly via the forge's settings UI/API, or `git symbolic-ref HEAD refs/heads/<branch>` run directly on the remote)")
-	fmt.Fprintln(out, "  2. Register the pushed URL with the running boid daemon:")
+	fmt.Fprintln(out, "     (IMPORTANT: the daemon reads .boid/project.yaml off your remote's DEFAULT branch specifically, not just whatever branch this just pushed — before running step 3, confirm the branch you just pushed either IS your remote's default branch, or has just BECOME it. For a brand-new empty repository, most forges — GitHub, GitLab, ... — auto-set the default branch from this first push; for an existing repository (or a plain self-hosted bare git server with no such auto-detection), set/verify it explicitly via the forge's settings UI/API, or `git symbolic-ref HEAD refs/heads/<branch>` run directly on the remote)")
+	fmt.Fprintln(out, "  3. Register the pushed URL with the running boid daemon:")
 	fmt.Fprintf(out, "       boid project add '<git-url>' %s\n", workspaceFlag)
 
 

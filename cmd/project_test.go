@@ -294,6 +294,16 @@ func TestProjectInit_NoRemote_GuidesGitInitAddPush(t *testing.T) {
 	if !strings.Contains(got, "DEFAULT branch") {
 		t.Errorf("expected guidance to explicitly call out the remote's default-branch precondition, got:\n%s", got)
 	}
+	// "Your actual code, not just the scaffold" caveat (codex round-13
+	// review): the chain only ever commits/pushes .boid/project.yaml
+	// (deliberately, to avoid sweeping in unrelated staged changes —
+	// round-4/round-9 review) — for a codebase that already exists but
+	// isn't pushed yet, that alone would register a project with no
+	// real source for an agent to work on. Must be called out
+	// explicitly, not left implicit.
+	if !strings.Contains(got, "actual source code") {
+		t.Errorf("expected guidance to explicitly call out committing/pushing the project's actual source code (not just the scaffold), got:\n%s", got)
+	}
 
 	if _, err := os.Stat(filepath.Join(dir, ".boid", "project.yaml")); err != nil {
 		t.Errorf("expected scaffold to still be written: %v", err)
