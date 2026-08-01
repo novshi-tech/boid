@@ -109,8 +109,19 @@ Example:
 	// it only scaffolds locally and prints git-URL registration guidance),
 	// so it only makes sense resolved against whatever host this CLI
 	// process itself is running on.
+	//
+	// annotationSkipAutostart=skip (Blocker, codex round-16 review): this
+	// command's whole job used to require a running daemon (the
+	// POST /api/projects registration call this PR removed), which is
+	// exactly why cmd/root.go's PersistentPreRunE autostarts a bare-host
+	// daemon for scopeLocal commands lacking this annotation by default —
+	// but runProjectInit no longer talks to the daemon in ANY way. Left
+	// unset, a user with no daemon running yet (or BOID_NO_AUTOSTART=1,
+	// or a non-default socket) would have `project init` fail or spin up
+	// an unwanted bare-host daemon before ever reaching the wizard, for a
+	// command that no longer needs one at all.
 	Args:        cobra.MaximumNArgs(1),
-	Annotations: map[string]string{scopeAnnotationKey: scopeLocal},
+	Annotations: map[string]string{scopeAnnotationKey: scopeLocal, annotationSkipAutostart: "skip"},
 	RunE:        runProjectInit,
 }
 
@@ -384,12 +395,8 @@ func runProjectInit(cmd *cobra.Command, args []string) error {
 	// (the same "no real code for an agent to work on" problem the
 	// step-1 caveat above warns about, but silently self-inflicted
 	// here). Caught before the scaffold is even written.
-	resolvedProjectDir := projectDir
-	if resolved, err := filepath.EvalSymlinks(projectDir); err == nil {
-		resolvedProjectDir = resolved
-	}
-	if enclosingRoot, err := gitTopLevel(projectDir); err == nil && enclosingRoot != resolvedProjectDir {
-		return fmt.Errorf("%s is nested inside an existing git repository rooted at %s; run `boid project init` from that repository's root instead (or a location with no enclosing git repo at all)", projectDir, enclosingRoot)
+	if err := rejectIfNestedInExistingRepo(projectDir); err != nil {
+		return err
 	}
 
 	w := &initwizard.Wizard{
@@ -546,40 +553,42 @@ func runProjectInit(cmd *cobra.Command, args []string) error {
 	// .` reintroduces exactly the "sweeps in unrelated/sensitive staged
 	// content" problem round 4/9 fixed for the scaffold's own commit),
 	// so it is surfaced as an explicit step instead.
-	// Push to the remote's ACTUAL default branch, not just whatever
-	// branch is checked out locally (Major, codex round-6/round-8/
-	// round-15 review — round-15 corrected a factual error in an earlier
-	// revision's own comment here, which claimed no portable client-side
-	// git command could determine a remote's default branch: `git
-	// ls-remote --symref <url> HEAD` does exactly that, the same
-	// mechanism internal/dispatcher/bare_repo.go already uses
-	// server-side). `DEFAULT_REF=$(...)` extracts the "ref: refs/heads/
-	// <branch>" line's target; when the remote already has one (an
-	// established repo, regardless of which branch is checked out
-	// locally), the subsequent `git push <url> "HEAD:$DEFAULT_REF"`
-	// fast-forwards the scaffold commit onto THAT branch specifically —
-	// verified empirically: cloning an established repo, checking out an
-	// unrelated feature branch, adding the scaffold, and running this
-	// exact line lands the commit on the remote's real default branch,
-	// not a new "feature-branch" ref. When the remote has no resolvable
-	// HEAD yet (a genuinely fresh, empty repository — ls-remote returns
-	// nothing), `${DEFAULT_REF:-refs/heads/$(git symbolic-ref --short
-	// HEAD)}` falls back to pushing under the CURRENT branch's own name,
-	// letting the forge auto-set its default branch from this first push
-	// as before.
+	// Push the CURRENT branch under its own name — NEVER force content
+	// onto the remote's default branch directly (Blocker, codex
+	// round-16 review of an earlier revision that pushed `HEAD:
+	// $DEFAULT_REF` unconditionally): on an established repository with
+	// branch protection, that either gets rejected outright, or — worse,
+	// if it succeeds — ships every commit on the current feature branch
+	// (not just the scaffold) straight onto the protected default
+	// branch, bypassing PR review entirely. Landing the scaffold on the
+	// actual default branch is the USER's call (a PR/merge, exactly like
+	// any other change), not something this command should force
+	// unilaterally.
+	//
+	// What this CAN safely do is tell the user whether they need to take
+	// that extra step at all: `git ls-remote --symref <url> HEAD`
+	// determines the remote's actual default branch (round-15 review
+	// corrected an earlier claim that no portable client-side git
+	// command could do this — this is the same mechanism internal/
+	// dispatcher/bare_repo.go already uses server-side) purely to WARN,
+	// after the push, if the branch just pushed differs from it — never
+	// to redirect the push itself. Verified empirically: a brand-new
+	// empty remote (no resolvable HEAD yet) prints no warning at all; an
+	// established repo with the local checkout on a different feature
+	// branch prints the warning while leaving the remote's actual
+	// default branch completely untouched.
 	fmt.Fprintln(out, "\nNext steps:")
 	fmt.Fprintln(out, "  1. Make sure your project's actual source code — not just this scaffold — is already committed and pushed to your remote. The daemon clones whatever URL you register in step 3, and an agent dispatched against it needs real code to work with.")
-	fmt.Fprintln(out, "  2. Commit the scaffold and push it to your remote's default branch (safe to run even if some of this is already done):")
-	fmt.Fprintf(out, `       %s{ git init && git add .boid/project.yaml && (git diff --cached --quiet -- .boid/project.yaml || git commit -m 'add boid project scaffold' -- .boid/project.yaml) && DEFAULT_REF=$(git ls-remote --symref '<git-url>' HEAD 2>/dev/null | awk '$1=="ref:"{print $2}') && git push '<git-url>' "HEAD:${DEFAULT_REF:-refs/heads/$(git symbolic-ref --short HEAD)}"; }`+"\n", cdPrefix)
+	fmt.Fprintln(out, "  2. Commit the scaffold and push it to your remote (safe to run even if some of this is already done):")
+	fmt.Fprintf(out, `       %s{ git init && git add .boid/project.yaml && (git diff --cached --quiet -- .boid/project.yaml || git commit -m 'add boid project scaffold' -- .boid/project.yaml) && git push '<git-url>' HEAD && { DEFAULT_REF=$(git ls-remote --symref '<git-url>' HEAD 2>/dev/null | awk '$1=="ref:"{print $2}'); CURRENT_REF="refs/heads/$(git symbolic-ref --short HEAD)"; if [ -n "$DEFAULT_REF" ] && [ "$DEFAULT_REF" != "$CURRENT_REF" ]; then echo "WARNING: pushed to $CURRENT_REF, but this remote's default branch is $DEFAULT_REF -- merge/PR it there before running step 3, or the daemon will not see .boid/project.yaml" >&2; fi; }; }`+"\n", cdPrefix)
 	fmt.Fprintln(out, "  3. Register the pushed URL with the running boid daemon:")
 	fmt.Fprintf(out, "       boid project add '<git-url>' %s\n", workspaceFlag)
-
 
 	return nil
 }
 
 // shellQuoteSingle wraps s in single quotes for safe use in a POSIX shell
-// command line, escaping any embedded single quote as '\'' (close quote,
+// command line, escaping any embedded single quote as '\” (close quote,
 // escaped literal quote, reopen quote) — the standard technique, since a
 // single-quoted string cannot itself contain an unescaped single quote.
 func shellQuoteSingle(s string) string {
@@ -606,6 +615,59 @@ func gitTopLevel(dir string) (string, error) {
 		return resolved, nil
 	}
 	return topLevel, nil
+}
+
+// rejectIfNestedInExistingRepo returns an error if projectDir sits inside
+// an existing, DIFFERENT git repository — see its only caller's own doc
+// comment (runProjectInit) for why that matters.
+//
+// Handles projectDir NOT EXISTING YET (Major, codex round-16 review of an
+// earlier revision): `git -C projectDir rev-parse --show-toplevel` simply
+// errors when projectDir doesn't exist — indistinguishable from "not
+// nested in any repo" — so `boid project init ./brand-new-subdir` inside
+// an existing repo sailed through this check uncaught (Wizard.Run creates
+// the directory itself via MkdirAll, after this check already passed).
+// Fixed by walking UP to the nearest ALREADY-EXISTING ancestor and running
+// the git check there instead: if that ancestor turns out to already be
+// inside a repo, then creating projectDir underneath it necessarily nests
+// inside that same repo too, regardless of how many not-yet-existing path
+// segments sit in between.
+func rejectIfNestedInExistingRepo(projectDir string) error {
+	existingAncestor := projectDir
+	for {
+		if _, err := os.Stat(existingAncestor); err == nil {
+			break
+		}
+		parent := filepath.Dir(existingAncestor)
+		if parent == existingAncestor {
+			break // reached the filesystem root without finding an existing dir
+		}
+		existingAncestor = parent
+	}
+
+	if existingAncestor == projectDir {
+		// projectDir itself already exists: the one EXCEPTION is
+		// projectDir being a git repo's own root (the "user already ran
+		// git init themselves" starter scenario) — only a DIFFERENT,
+		// enclosing repo is rejected.
+		resolvedProjectDir := projectDir
+		if resolved, err := filepath.EvalSymlinks(projectDir); err == nil {
+			resolvedProjectDir = resolved
+		}
+		if enclosingRoot, err := gitTopLevel(projectDir); err == nil && enclosingRoot != resolvedProjectDir {
+			return fmt.Errorf("%s is nested inside an existing git repository rooted at %s; run `boid project init` from that repository's root instead (or a location with no enclosing git repo at all)", projectDir, enclosingRoot)
+		}
+		return nil
+	}
+
+	// projectDir does not exist yet: it cannot possibly be a repo's own
+	// root (nothing there to have a .git of its own), so ANY enclosing
+	// repo found from its nearest existing ancestor means creating it
+	// would nest inside that repo.
+	if enclosingRoot, err := gitTopLevel(existingAncestor); err == nil {
+		return fmt.Errorf("%s does not exist yet and would be nested inside an existing git repository rooted at %s; run `boid project init` from that repository's root instead (or a location with no enclosing git repo at all)", projectDir, enclosingRoot)
+	}
+	return nil
 }
 
 func runProjectList(cmd *cobra.Command, args []string) error {
