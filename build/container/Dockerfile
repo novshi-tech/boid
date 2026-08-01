@@ -52,6 +52,21 @@ ARG GO_VERSION=1.24.2
 ARG BOID_UID=1000
 ARG BOID_GID=1000
 
+# BOID_VERSION (docs/plans/release-onboarding.md 穴2, PR1): this image's
+# build context is `COPY . .` below, and .dockerignore excludes .git/, so a
+# plain `go build` in the builder stage below has no VCS info to stamp and
+# reports "(devel)" via debug.ReadBuildInfo() — internal/version.Version()'s
+# go-install fallback path has nothing to fall back TO here. The caller
+# (scripts/deploy-container.sh, .github/workflows/blackbox-e2e.yml) passes
+# the real version as a build-arg instead, and it gets baked in below via
+# -ldflags -X rather than relying on VCS stamping. Left unset (empty
+# string), the ldflags -X below sets buildVersion to "" — internal/version.
+# Version() treats that identically to no override at all, i.e. the
+# "(devel)"-shaped fallback, so an unversioned image build (a bare
+# `docker build` with no --build-arg) still produces a working binary that
+# honestly reports itself as a local build rather than silently mis-tagging.
+ARG BOID_VERSION=""
+
 # ---- builder ------------------------------------------------------------
 FROM docker.io/library/golang:${GO_VERSION}-bookworm AS builder
 WORKDIR /src
@@ -63,11 +78,15 @@ RUN go mod download
 
 COPY . .
 
+ARG BOID_VERSION
+
 # CGO_ENABLED=0: boid's only cgo-shaped dependency (modernc.org/sqlite) is a
 # pure-Go/transpiled sqlite implementation, so a static binary is possible —
 # preferred for a slim runtime stage since it needs no libc ABI matching
 # against the runtime base image's glibc.
-RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -o /out/boid .
+RUN CGO_ENABLED=0 GOOS=linux go build -trimpath \
+    -ldflags "-X github.com/novshi-tech/boid/internal/version.buildVersion=${BOID_VERSION}" \
+    -o /out/boid .
 
 # ---- runtime --------------------------------------------------------------
 FROM docker.io/library/debian:bookworm-slim

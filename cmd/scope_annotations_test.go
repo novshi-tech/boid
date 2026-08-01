@@ -170,12 +170,12 @@ var expectedScopeAnnotations = map[string]string{
 	// local — daemon lifecycle machinery itself, sandbox-launch plumbing,
 	// commands that never talk to a daemon, or (see the doc comment above)
 	// a deliberate judgment call reconciling mechanism against the plan doc.
-	"boid check":            scopeLocal,
-	"boid fetch":            scopeLocal,
-	"boid gc":               scopeLocal,
-	"boid init":             scopeLocal,
-	"boid project init":     scopeLocal,
-	"boid project migrate":  scopeLocal,
+	"boid check":           scopeLocal,
+	"boid fetch":           scopeLocal,
+	"boid gc":              scopeLocal,
+	"boid init":            scopeLocal,
+	"boid project init":    scopeLocal,
+	"boid project migrate": scopeLocal,
 	// workspace import is a retired, always-failing stub (2026-07-28) — it no
 	// longer talks to a daemon at all, so it is scopeLocal like `boid init`
 	// (also a deprecated stub pointing elsewhere), NOT scopeRemote. This also
@@ -200,6 +200,20 @@ var expectedScopeAnnotations = map[string]string{
 	// when profile resolution itself would otherwise fail.
 	"boid login":  scopeNeutral,
 	"boid logout": scopeNeutral,
+	// docs/plans/release-onboarding.md PR1 (codex review round 1 of this
+	// PR): reads internal/version only (ldflags override or
+	// debug.ReadBuildInfo()), never the daemon's HTTP API, and its result
+	// must not depend on profile resolution having gone well. scopeLocal was
+	// the first attempt, but scopeLocal is rejected by root's
+	// PersistentPreRunE whenever an https profile is selected (isLocalScope,
+	// decision 6 of cli-remote-connection.md) — "what version of the CLI am
+	// I running" has nothing to do with which daemon --profile points at, so
+	// it belongs in this group instead, same as login/logout above (whose
+	// own PersistentPreRunE still resolves the profile on the happy path;
+	// scopeNeutral only means that failing to do so is swallowed rather than
+	// fatal — see cmd/version.go's own annotation comment).
+	// annotationSkipAutostart=skip still applies.
+	"boid version": scopeNeutral,
 }
 
 // liveLeafCommands walks rootCmd and returns every leaf command's full path
