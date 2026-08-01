@@ -411,7 +411,11 @@ func runProjectInit(cmd *cobra.Command, args []string) error {
 	// leaving the user stuck mid-chain with a scaffold commit already
 	// made but nowhere to push it to.
 	if isDetachedHead(projectDir) {
-		return fmt.Errorf("%s is a git repository in detached HEAD state; check out (or create) a branch first — e.g. `git -C %s checkout -b <branch-name>` — then run `boid project init` again", projectDir, projectDir)
+		// shellQuoteSingle(projectDir) (Minor, codex round-19 review): a
+		// projectDir containing spaces or shell metacharacters would
+		// otherwise break the suggested recovery command if copy-pasted
+		// verbatim.
+		return fmt.Errorf("%s is a git repository in detached HEAD state; check out (or create) a branch first — e.g. `git -C %s checkout -b <branch-name>` — then run `boid project init` again", projectDir, shellQuoteSingle(projectDir))
 	}
 
 	w := &initwizard.Wizard{
@@ -553,6 +557,18 @@ func runProjectInit(cmd *cobra.Command, args []string) error {
 	// characters a shell would otherwise split or reinterpret. Keeping
 	// the quotes in the printed text means they naturally survive a
 	// literal find-and-replace of the placeholder text with a real URL.
+	//
+	// Known residual limitation (Major, codex round-19 review): a URL
+	// that itself contains a literal single quote could still break out
+	// of these quotes when substituted in by hand — shellQuoteSingle
+	// can't help here since it's a STATIC template the USER edits after
+	// printing, not code-generated output this function controls at
+	// print time. Accepted rather than redesigning this into an
+	// interactive `read`-based prompt: no real git forge (GitHub,
+	// GitLab, a bare git server's path, ...) produces a URL containing
+	// `'` in practice, so this is a theoretical self-inflicted edge case
+	// (a user manually crafting a URL with a quote in it), not something
+	// a legitimate git remote URL would ever trigger by accident.
 	// Explicit "your actual code, not just the scaffold" caveat (Major,
 	// codex round-13 review): the chain below deliberately commits ONLY
 	// .boid/project.yaml (the file-scoped pathspec fix from round-9,
