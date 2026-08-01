@@ -25,8 +25,33 @@ const (
 	// but binding to loopback keeps it off other interfaces by default; expose
 	// it deliberately with `boid web set-addr`. Cloudflare Tunnel connects to
 	// 127.0.0.1 so the documented tunnel flow is unaffected.
+	//
+	// This is the bare-host default only — see defaultContainerStartHTTPAddr
+	// below for why the compose daemon needs a different one (穴 8,
+	// docs/plans/release-onboarding.md).
 	defaultStartHTTPAddr = "127.0.0.1:8080"
-	daemonSocketTimeout  = 10 * time.Second
+
+	// defaultContainerStartHTTPAddr is the fallback used instead of
+	// defaultStartHTTPAddr when running under build/container/compose.yml
+	// (穴 8 (a), docs/plans/release-onboarding.md). A fresh boid_state
+	// volume has no web.http_addr in config.yaml, so a bare `boid start`
+	// fell back to defaultStartHTTPAddr's 127.0.0.1 — binding the
+	// CONTAINER's own loopback, which compose.yml's port publish
+	// (`"${BOID_WEB_PORT:-8080}:8080"`) cannot make reachable from the
+	// host: port publish only forwards to a bound INTERFACE inside the
+	// container, and 127.0.0.1 there is not one. The result was a fresh
+	// install's `http://localhost:8080` hanging with nothing listening on
+	// the host-visible side at all. Binding all interfaces inside the
+	// container is safe here the same way it already is for the CLIAddr
+	// listener (BOID_CLI_TOKEN-gated) and the data/control API
+	// (auth.NewTCPAPIAuthMiddleware): the container's own network
+	// namespace is not directly host-reachable except through compose's
+	// explicit port publish and the job-isolated boid_internal network,
+	// so "all interfaces inside the container" is not "all interfaces on
+	// the host".
+	defaultContainerStartHTTPAddr = "0.0.0.0:8080"
+
+	daemonSocketTimeout = 10 * time.Second
 )
 
 var startCmd = &cobra.Command{
@@ -196,7 +221,16 @@ func buildStartConfig(opts startConfigOptions) (server.Config, error) {
 	}
 	cfg.HTTPAddr = appCfg.Web.HTTPAddr
 	if cfg.HTTPAddr == "" {
-		cfg.HTTPAddr = defaultStartHTTPAddr
+		// 穴 8 (a): daemon.ShouldLogToStdout (BOID_LOG_STDOUT=1) is the
+		// container-execution signal build/container/compose.yml already
+		// sets and nothing else does (see its own doc comment) — reuse it
+		// here rather than a new env var, per defaultContainerStartHTTPAddr's
+		// doc comment above.
+		if daemon.ShouldLogToStdout() {
+			cfg.HTTPAddr = defaultContainerStartHTTPAddr
+		} else {
+			cfg.HTTPAddr = defaultStartHTTPAddr
+		}
 	}
 	cfg.AllowedDomains = append(cfg.AllowedDomains, appCfg.Sandbox.AllowedDomains...)
 	cfg.LogLevel = appCfg.Log.Level

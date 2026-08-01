@@ -106,6 +106,57 @@ func TestBuildStartConfig_LogLevelUnset_Empty(t *testing.T) {
 	}
 }
 
+// TestBuildStartConfig_ContainerMode_DefaultsHTTPAddrToAllInterfaces pins
+// 穴 8 (a) (docs/plans/release-onboarding.md): under
+// build/container/compose.yml, a fresh boid_state volume has no
+// web.http_addr in config.yaml, so buildStartConfig used to fall back to
+// defaultStartHTTPAddr ("127.0.0.1:8080") — binding the container's own
+// loopback, which compose's port publish cannot make reachable from the
+// host at all. BOID_LOG_STDOUT=1 is the container-execution signal compose
+// already sets (daemon.ShouldLogToStdout, cmd/start.go's
+// shouldRunForeground doc comment) and nothing else does, so it doubles as
+// the "am I running under the compose daemon" check here: the fallback
+// address becomes 0.0.0.0:8080 instead.
+func TestBuildStartConfig_ContainerMode_DefaultsHTTPAddrToAllInterfaces(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("BOID_LOG_STDOUT", "1")
+
+	cfg, err := buildStartConfig(startConfigOptions{})
+	if err != nil {
+		t.Fatalf("buildStartConfig() error = %v", err)
+	}
+	if cfg.HTTPAddr != "0.0.0.0:8080" {
+		t.Fatalf("HTTPAddr = %q, want %q", cfg.HTTPAddr, "0.0.0.0:8080")
+	}
+}
+
+// TestBuildStartConfig_ContainerMode_ConfigYAMLStillWins pins that an
+// explicit web.http_addr in config.yaml (e.g. set via `boid config set` per
+// 穴 8's documented recovery path) still overrides the container-mode
+// fallback — the BOID_LOG_STDOUT branch only ever supplies a different
+// FALLBACK default, it must not shadow a value the user (or a previous
+// `boid web set-addr`/`config set` run) already persisted.
+func TestBuildStartConfig_ContainerMode_ConfigYAMLStillWins(t *testing.T) {
+	configHome := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", configHome)
+	t.Setenv("BOID_LOG_STDOUT", "1")
+	if err := os.MkdirAll(filepath.Join(configHome, "boid"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	configPath := filepath.Join(configHome, "boid", "config.yaml")
+	if err := os.WriteFile(configPath, []byte("web:\n  http_addr: 10.0.0.5:9090\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := buildStartConfig(startConfigOptions{})
+	if err != nil {
+		t.Fatalf("buildStartConfig() error = %v", err)
+	}
+	if cfg.HTTPAddr != "10.0.0.5:9090" {
+		t.Fatalf("HTTPAddr = %q, want %q", cfg.HTTPAddr, "10.0.0.5:9090")
+	}
+}
+
 // TestBuildStartConfig_LogLevelInvalid_Rejected pins that an unrecognized
 // log.level value fails buildStartConfig outright (via config.Load's own
 // Config.UnmarshalYAML validation) — the same "config.Load()'s error is

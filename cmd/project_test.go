@@ -226,6 +226,130 @@ func TestProjectInitSubCmd_HasWorkspaceFlag(t *testing.T) {
 	}
 }
 
+// withStdin temporarily replaces os.Stdin for the duration of the test.
+// runProjectInit's Wizard reads from os.Stdin directly (not
+// cmd.InOrStdin()), so exercising it end-to-end needs the process-global
+// swapped out.
+func withStdin(t *testing.T, r *os.File) {
+	t.Helper()
+	orig := os.Stdin
+	os.Stdin = r
+	t.Cleanup(func() { os.Stdin = orig })
+}
+
+// devNullStdin opens /dev/null so the wizard's name prompt hits EOF
+// immediately and falls back to the directory-basename default — the
+// project name itself is irrelevant to what this file's project-init tests
+// pin (the post-scaffold guidance), so no real interactive input is needed.
+func devNullStdin(t *testing.T) *os.File {
+	t.Helper()
+	f, err := os.Open(os.DevNull)
+	if err != nil {
+		t.Fatalf("open %s: %v", os.DevNull, err)
+	}
+	t.Cleanup(func() { f.Close() })
+	return f
+}
+
+// TestProjectInit_NoRemote_GuidesGitInitAddPush pins 穴 7's fix
+// (docs/plans/release-onboarding.md): `project init` must NOT attempt to
+// register the host-local projectDir with the daemon anymore (the old
+// POST /api/projects work_dir-based call always 400s under a compose
+// daemon, since that directory doesn't exist inside the daemon's
+// container). Instead it scaffolds and then prints the "push it, then
+// register the URL" guidance the plan doc's 目標オンボーディングフロー spells
+// out. No BOID_SOCKET is set at all here — if runProjectInit still tried to
+// talk to a daemon, client.FromContext would either panic or dial a
+// nonexistent socket and error, so a clean, guidance-only exit run without
+// any daemon proves the network call is gone.
+func TestProjectInit_NoRemote_GuidesGitInitAddPush(t *testing.T) {
+	dir := t.TempDir()
+	withStdin(t, devNullStdin(t))
+
+	var out bytes.Buffer
+	cmd := projectInitSubCmd
+	cmd.SetOut(&out)
+	cmd.SetContext(context.Background())
+
+	if err := runProjectInit(cmd, []string{dir}); err != nil {
+		t.Fatalf("runProjectInit: %v", err)
+	}
+
+	got := out.String()
+	if !strings.Contains(got, "git init") {
+		t.Errorf("expected guidance to mention git init, got:\n%s", got)
+	}
+	if !strings.Contains(got, "git push") {
+		t.Errorf("expected guidance to mention git push, got:\n%s", got)
+	}
+	if !strings.Contains(got, "boid project add <git-url>") {
+		t.Errorf("expected guidance to point at `boid project add <git-url>`, got:\n%s", got)
+	}
+
+	if _, err := os.Stat(filepath.Join(dir, ".boid", "project.yaml")); err != nil {
+		t.Errorf("expected scaffold to still be written: %v", err)
+	}
+}
+
+// TestProjectInit_WithWorkspaceFlag_IncludesItInGuidance pins that a
+// --workspace value passed to `project init` flows through into the printed
+// `boid project add` example rather than being silently dropped now that
+// init no longer performs the workspace assignment itself.
+func TestProjectInit_WithWorkspaceFlag_IncludesItInGuidance(t *testing.T) {
+	dir := t.TempDir()
+	withStdin(t, devNullStdin(t))
+	projectInitWorkspace = "my-ws"
+	t.Cleanup(func() { projectInitWorkspace = "" })
+
+	var out bytes.Buffer
+	cmd := projectInitSubCmd
+	cmd.SetOut(&out)
+	cmd.SetContext(context.Background())
+
+	if err := runProjectInit(cmd, []string{dir}); err != nil {
+		t.Fatalf("runProjectInit: %v", err)
+	}
+
+	if !strings.Contains(out.String(), "--workspace=my-ws") {
+		t.Errorf("expected guidance to reference --workspace=my-ws, got:\n%s", out.String())
+	}
+}
+
+// TestProjectInit_ExistingOrigin_GuidesRegisterWithThatURL pins the
+// smarter branch: when projectDir is already a git repo with an `origin`
+// remote configured (e.g. the user ran `git init` themselves before
+// `boid project init`), the guidance should skip the "git init" step and
+// go straight to "commit + push" using the ALREADY-KNOWN URL, rather than
+// printing a generic <git-url> placeholder the user has to fill in by hand.
+func TestProjectInit_ExistingOrigin_GuidesRegisterWithThatURL(t *testing.T) {
+	dir := t.TempDir()
+	runGitTestCmd(t, dir, "init", "-q", "-b", "main")
+	runGitTestCmd(t, dir, "config", "user.email", "test@example.com")
+	runGitTestCmd(t, dir, "config", "user.name", "Test")
+	runGitTestCmd(t, dir, "commit", "-q", "--allow-empty", "-m", "initial")
+	originURL := "https://example.invalid/owner/repo.git"
+	runGitTestCmd(t, dir, "remote", "add", "origin", originURL)
+
+	withStdin(t, devNullStdin(t))
+
+	var out bytes.Buffer
+	cmd := projectInitSubCmd
+	cmd.SetOut(&out)
+	cmd.SetContext(context.Background())
+
+	if err := runProjectInit(cmd, []string{dir}); err != nil {
+		t.Fatalf("runProjectInit: %v", err)
+	}
+
+	got := out.String()
+	if !strings.Contains(got, originURL) {
+		t.Errorf("expected guidance to reference the existing origin URL %q, got:\n%s", originURL, got)
+	}
+	if strings.Contains(got, "git remote add origin") {
+		t.Errorf("did not expect a 'git remote add origin' instruction when origin already exists, got:\n%s", got)
+	}
+}
+
 // withProjectAddWorkspaceFlag sets the package-level --workspace flag value
 // `runProjectAdd` reads (projectAddWorkspace) for the duration of the
 // calling test, restoring it to "" afterward so this global does not leak

@@ -2,7 +2,6 @@ package cmd
 
 import (
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -11,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/novshi-tech/boid/internal/client"
+	"github.com/novshi-tech/boid/internal/dispatcher"
 	"github.com/novshi-tech/boid/internal/initwizard"
 	projectspec "github.com/novshi-tech/boid/internal/orchestrator"
 	"github.com/spf13/cobra"
@@ -83,20 +83,23 @@ var projectInitSubCmd = &cobra.Command{
 	Long: `Initialize a new boid project in the current directory (or [dir]).
 
 Prompts for a project name, then writes .boid/project.yaml with the canonical
-supervisor / executor task_behaviors (agent=claude-code by default) and
-registers the project with the running boid daemon. project.yaml only holds
-id / name / task_behaviors / default_task_behavior — runtime environment
-config (` + "`host_commands`" + ` / ` + "`env`" + ` / ` + "`additional_bindings`" + ` / ` + "`allowed_domains`" + `)
+supervisor / executor task_behaviors (agent=claude-code by default).
+project.yaml only holds id / name / task_behaviors / default_task_behavior —
+runtime environment config (` + "`host_commands`" + ` / ` + "`env`" + ` / ` + "`additional_bindings`" + ` / ` + "`allowed_domains`" + `)
 lives separately in a workspace; set it up with
-` + "`boid workspace create/edit/import`" + ` (see the --workspace flag below).
+` + "`boid workspace create/edit/import`" + `.
 
-Optionally assigns the project to a workspace (get-or-create: creates a DB
-row for the slug even if no workspace.yaml exists yet).
+Does NOT register the project with the daemon — a fresh scaffold has not
+been pushed anywhere yet, and registration only works from a git URL
+(` + "`boid project add <git-url>`" + `, docs/plans/release-onboarding.md 穴 7). After the
+scaffold is written, this command prints the exact next commands to run:
+commit + push, then ` + "`boid project add <url> --workspace=<name>`" + `. --workspace here
+only feeds that printed example command; it is NOT itself an API call.
 
 Example:
   boid project init                              # initialize in current dir
   boid project init ./my-project                 # initialize in ./my-project
-  boid project init . --workspace main           # also assign to workspace "main"
+  boid project init . --workspace main           # bake "--workspace=main" into the printed guidance
   boid project init . --agent codex              # bake a non-default agent
 `,
 	// scopeLocal — same "境界越えで壊れる" rationale as projectAddCmd above:
@@ -177,7 +180,7 @@ var projectFetchCmd = &cobra.Command{
 func init() {
 	projectAddCmd.Flags().StringVar(&projectAddWorkspace, "workspace", "", "Workspace to register the project into (required for a git-URL <git-url>; optional, get-or-create, for a legacy <dir>)")
 	projectAddCmd.Flags().StringVar(&projectAddName, "name", "", "Project name override, git-URL form only (default: derived from the URL's last path component)")
-	projectInitSubCmd.Flags().StringVar(&projectInitWorkspace, "workspace", "", "Assign the project to a workspace after initialization (get-or-create)")
+	projectInitSubCmd.Flags().StringVar(&projectInitWorkspace, "workspace", "", "Workspace name to bake into the printed `boid project add` guidance (no daemon call is made by project init itself)")
 	projectInitSubCmd.Flags().StringVar(&projectInitAgent, "agent", "", "Harness agent baked into each behavior's default_instruction (default: claude-code)")
 	projectShowCmd.Flags().BoolVar(&projectShowExplain, "explain", false, "Show field-by-field provenance (project.yaml vs workspace default vs unset)")
 
@@ -315,7 +318,25 @@ func runProjectFetch(cmd *cobra.Command, args []string) error {
 	})
 }
 
-// runProjectInit runs the interactive init wizard then registers and (optionally) assigns workspace.
+// runProjectInit runs the interactive init wizard to scaffold
+// .boid/project.yaml, then prints the "push it, then register the URL"
+// three-step guidance the plan doc's 目標オンボーディングフロー spells out
+// (docs/plans/release-onboarding.md 穴 7 / PR6).
+//
+// This used to also register the project with the daemon, POSTing the
+// host-local projectDir straight to POST /api/projects (the work_dir-based
+// CreateProject). Under the volume-only compose daemon that directory does
+// not exist inside the daemon's own container, so the call always 400'd —
+// and the error-recovery message it printed on failure ("boid project add
+// .") pointed at a form `project add` no longer even accepts (PR-4 removed
+// host-directory registration entirely). The only registration path left
+// that actually works is POST /api/projects/git
+// (CreateProjectFromGitURLRequest) via `boid project add <git-url>`, and
+// that requires the scaffold to already be pushed to a remote. So
+// scaffolding and registration can no longer be one command: project init's
+// job now ends at "write the scaffold, tell the user exactly what to run
+// next", and registration itself is the separate, explicit `project add`
+// step the user runs after pushing.
 func runProjectInit(cmd *cobra.Command, args []string) error {
 	dir := "."
 	if len(args) > 0 {
@@ -343,56 +364,31 @@ func runProjectInit(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	// Register with daemon.
-	c := client.FromContext(cmd.Context())
-	var p projectspec.Project
-	if err := c.Do("POST", "/api/projects", map[string]string{"work_dir": projectDir}, &p); err != nil {
-		fmt.Fprintf(os.Stderr, "warning: could not register project with boid server: %v\n", err)
-		fmt.Fprintln(os.Stderr, "Run 'boid project add .' once the server is running.")
-		return nil
-	}
+	out := cmd.OutOrStdout()
 
-	// Optionally assign workspace (get-or-create).
+	workspaceFlag := "--workspace=<workspace>"
 	if projectInitWorkspace != "" {
-		if err := assignProjectWorkspace(c, p.ID, projectInitWorkspace, cmd.OutOrStdout()); err != nil {
-			return err
-		}
-		p.WorkspaceID = projectInitWorkspace
+		workspaceFlag = fmt.Sprintf("--workspace=%s", projectInitWorkspace)
 	}
 
-	fmt.Fprintf(cmd.OutOrStdout(), "project registered: %s (%s)\n", p.ID, p.Meta.Name)
-	if p.WorkspaceID != "" {
-		fmt.Fprintf(cmd.OutOrStdout(), "  workspace: %s\n", p.WorkspaceID)
+	// If projectDir is already a git repo with an `origin` remote (the user
+	// ran `git init`/`git remote add` themselves before `project init`),
+	// use that known URL directly instead of a <git-url> placeholder — one
+	// less thing for the user to fill in by hand.
+	fmt.Fprintln(out, "\nNext steps:")
+	if originURL, err := dispatcher.CaptureUpstreamURL(projectDir); err == nil && originURL != "" {
+		fmt.Fprintln(out, "  1. Commit the scaffold and push it to the remote:")
+		fmt.Fprintln(out, "       git add .boid && git commit -m 'add boid project scaffold' && git push")
+		fmt.Fprintln(out, "  2. Register the pushed URL with the running boid daemon:")
+		fmt.Fprintf(out, "       boid project add %s %s\n", originURL, workspaceFlag)
+	} else {
+		fmt.Fprintln(out, "  1. Initialize git and push this project to a remote (skip what's already done):")
+		fmt.Fprintln(out, "       git init && git add . && git commit -m 'initial commit'")
+		fmt.Fprintln(out, "       git remote add origin <git-url> && git push -u origin HEAD")
+		fmt.Fprintln(out, "  2. Register the pushed URL with the running boid daemon:")
+		fmt.Fprintf(out, "       boid project add <git-url> %s\n", workspaceFlag)
 	}
-	return nil
-}
 
-// assignProjectWorkspace sends PUT /api/projects/<id>/workspace to link the
-// project to a workspace. get-or-create semantics: an empty workspace is
-// created for workspaceSlug first if it has no DB row yet
-// (ensureWorkspaceExistsGetOrCreate, MAJOR 4 codex review,
-// docs/plans/workspace-db-consolidation.md) — before that fix, this
-// function only ever called the assign PUT, so an unknown slug 404'd there
-// even though `project add`/`project init` had already registered the
-// project (a partial-success state: project registered, workspace
-// assignment failed).
-//
-// CLI entry-point validation per plan (3-layer defense): a non-empty slug
-// must satisfy ValidWorkspaceSlug. Empty string means "clear" and is allowed
-// to bypass validation (handled at the domain layer).
-func assignProjectWorkspace(c *client.Client, projectID, workspaceSlug string, out io.Writer) error {
-	if workspaceSlug != "" {
-		if err := projectspec.ValidWorkspaceSlug(workspaceSlug); err != nil {
-			return fmt.Errorf("invalid --workspace value: %w", err)
-		}
-		if err := ensureWorkspaceExistsGetOrCreate(c, workspaceSlug, out); err != nil {
-			return fmt.Errorf("get-or-create workspace %q: %w", workspaceSlug, err)
-		}
-	}
-	var result projectspec.Project
-	if err := c.Do("PUT", "/api/projects/"+projectID+"/workspace", map[string]string{"workspace_id": workspaceSlug}, &result); err != nil {
-		return fmt.Errorf("assign workspace %q: %w", workspaceSlug, err)
-	}
 	return nil
 }
 
