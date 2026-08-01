@@ -285,6 +285,15 @@ func TestProjectInit_NoRemote_GuidesGitInitAddPush(t *testing.T) {
 	if !strings.Contains(got, "boid project add '<git-url>'") {
 		t.Errorf("expected guidance to point at `boid project add '<git-url>'`, got:\n%s", got)
 	}
+	// Default-branch precondition caveat (codex round-7/round-8 review):
+	// the daemon reads .boid/project.yaml off the remote's DEFAULT
+	// branch specifically, which the just-pushed branch is not
+	// guaranteed to be (a fresh empty remote on a non-auto-detecting
+	// host, or an existing remote whose default is simply some other
+	// branch) — this must be called out explicitly, not left implicit.
+	if !strings.Contains(got, "DEFAULT branch") {
+		t.Errorf("expected guidance to explicitly call out the remote's default-branch precondition, got:\n%s", got)
+	}
 
 	if _, err := os.Stat(filepath.Join(dir, ".boid", "project.yaml")); err != nil {
 		t.Errorf("expected scaffold to still be written: %v", err)

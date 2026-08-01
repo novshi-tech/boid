@@ -496,20 +496,24 @@ func runProjectInit(cmd *cobra.Command, args []string) error {
 	fmt.Fprintln(out, "\nNext steps:")
 	fmt.Fprintln(out, "  1. Commit the scaffold and push it to your remote (safe to run even if some of this is already done):")
 	fmt.Fprintf(out, "       %s{ git init; git add .boid && (git diff --cached --quiet -- .boid || git commit -m 'add boid project scaffold' -- .boid) && (git remote add origin '<git-url>' 2>/dev/null || git remote set-url origin '<git-url>') && git push -u origin HEAD; }\n", cdPrefix)
-	// Explicit default-branch caveat (Blocker, codex round-7 review): the
-	// daemon registers a project by cloning the remote and reading
-	// .boid/project.yaml off the REMOTE'S OWN default branch (its HEAD
-	// symref) — not "whichever branch happened to get pushed". Real
-	// forges (GitHub, GitLab, ...) auto-set that default branch from the
-	// FIRST push to a genuinely empty repository, which covers the
-	// primary "brand new project" flow this guidance targets, but a
-	// plain/self-hosted bare git remote has no such auto-detection and
-	// there is no portable client-side git command that can set a
-	// remote's HEAD symref over the wire — only something running ON
-	// that remote (or the forge's own UI/API) can. Surfacing this as an
-	// explicit instruction, not a silent assumption, is the only
-	// reliable fix available from the client side.
-	fmt.Fprintln(out, "     (if your remote does NOT automatically set its default branch on first push — true of most forges like GitHub/GitLab for a brand-new empty repository, but not of a plain self-hosted bare git server — set it there now before continuing, e.g. via the forge's own settings UI/API or `git symbolic-ref HEAD refs/heads/<branch>` run directly on the remote)")
+	// Explicit default-branch caveat (Blocker, codex round-7 AND round-8
+	// review — round-8 pointed out round-7's wording only covered "a
+	// brand-new empty remote's first push", missing the equally-real
+	// "existing remote, but you're on some other, non-default branch"
+	// case): the daemon registers a project by cloning the remote and
+	// reading .boid/project.yaml off the REMOTE'S OWN default branch
+	// (its HEAD symref) — not "whichever branch this push happened to
+	// land on", regardless of WHY that branch differs from default (a
+	// fresh remote that never auto-set one, or an established remote
+	// whose default is simply a different branch than the one currently
+	// checked out). There is no portable client-side git command that
+	// can query OR set a remote's default branch/HEAD symref over the
+	// wire in the general case — only something running ON that remote
+	// (a forge's own UI/API, or direct server access) can. Surfacing
+	// this as an explicit, unconditional precondition to verify — not a
+	// footnote about one specific scenario — is the only reliable fix
+	// available from the client side.
+	fmt.Fprintln(out, "     (IMPORTANT: the daemon reads .boid/project.yaml off your remote's DEFAULT branch specifically, not just whatever branch this just pushed — before running step 2, confirm the branch you just pushed either IS your remote's default branch, or has just BECOME it. For a brand-new empty repository, most forges — GitHub, GitLab, ... — auto-set the default branch from this first push; for an existing repository (or a plain self-hosted bare git server with no such auto-detection), set/verify it explicitly via the forge's settings UI/API, or `git symbolic-ref HEAD refs/heads/<branch>` run directly on the remote)")
 	fmt.Fprintln(out, "  2. Register the pushed URL with the running boid daemon:")
 	fmt.Fprintf(out, "       boid project add '<git-url>' %s\n", workspaceFlag)
 
