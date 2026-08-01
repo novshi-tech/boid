@@ -104,25 +104,36 @@ Example:
   boid project init . --workspace main           # bake "--workspace=main" into the printed guidance
   boid project init . --agent codex              # bake a non-default agent
 `,
-	// scopeLocal: [dir] is a local filesystem path the wizard writes
-	// .boid/project.yaml under directly (docs/plans/release-onboarding.md
-	// 穴 7/PR6 — this command no longer sends [dir] to the daemon at all;
-	// it only scaffolds locally and prints git-URL registration guidance),
-	// so it only makes sense resolved against whatever host this CLI
-	// process itself is running on.
+	// scopeNeutral, not scopeLocal (Major, codex round-21 review of an
+	// earlier revision): runProjectInit never calls client.FromContext
+	// or resolves a profile at all — it only reads/writes [dir] on
+	// whatever host this CLI process itself runs on and prints text
+	// (docs/plans/release-onboarding.md 穴 7/PR6 removed its one-time
+	// daemon registration call entirely). scopeLocal's own contract
+	// (root.go's PersistentPreRunE, isLocalScope) is stricter than that:
+	// it hard-rejects the command outright whenever the active profile
+	// is a remote (https-scheme) one, BEFORE RunE ever runs — appropriate
+	// for a command whose job genuinely depends on "this daemon, this
+	// host" (start/stop/gc), but not for one that ignores the profile
+	// entirely. A user whose default/active profile happens to be a
+	// remote one could no longer reach the wizard at all under
+	// scopeLocal, for a command that has no opinion on daemons or
+	// profiles whatsoever. scopeNeutral (the same classification
+	// login/logout use, cmd/login.go) is the correct fit: "requires no
+	// profile resolution at all."
 	//
 	// annotationSkipAutostart=skip (Blocker, codex round-16 review): this
 	// command's whole job used to require a running daemon (the
 	// POST /api/projects registration call this PR removed), which is
-	// exactly why cmd/root.go's PersistentPreRunE autostarts a bare-host
-	// daemon for scopeLocal commands lacking this annotation by default —
-	// but runProjectInit no longer talks to the daemon in ANY way. Left
-	// unset, a user with no daemon running yet (or BOID_NO_AUTOSTART=1,
-	// or a non-default socket) would have `project init` fail or spin up
-	// an unwanted bare-host daemon before ever reaching the wizard, for a
-	// command that no longer needs one at all.
+	// why cmd/root.go's PersistentPreRunE would otherwise autostart a
+	// bare-host daemon by default — but runProjectInit no longer talks
+	// to the daemon in ANY way. Left unset, a user with no daemon running
+	// yet (or BOID_NO_AUTOSTART=1, or a non-default socket) would have
+	// `project init` fail or spin up an unwanted bare-host daemon before
+	// ever reaching the wizard, for a command that no longer needs one
+	// at all.
 	Args:        cobra.MaximumNArgs(1),
-	Annotations: map[string]string{scopeAnnotationKey: scopeLocal, annotationSkipAutostart: "skip"},
+	Annotations: map[string]string{scopeAnnotationKey: scopeNeutral, annotationSkipAutostart: "skip"},
 	RunE:        runProjectInit,
 }
 

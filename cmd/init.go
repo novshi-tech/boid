@@ -18,10 +18,17 @@ var initCmd = &cobra.Command{
 		// setup (yaml 直接 or CLI 経由の create/edit/import)。 workspace
 		// は default が自動生成されるので、 default で足りるなら 1 段目
 		// だけで足りる。
+		// docs/plans/release-onboarding.md 穴 7/PR6 (codex round-21
+		// review): `boid project add <dir>` was removed entirely (git-URL
+		// registration only, PR-4) and no longer exists to guide users
+		// toward — this deprecated command's own migration message must
+		// point at the CURRENT flow instead: scaffold locally, push, then
+		// register the pushed git URL.
 		msg := `boid init は廃止されました。 次の手順で初期化してください:
 
-  1) boid project init [dir]                    (新規プロジェクト雛形)
-     boid project add <dir>                     (既存プロジェクト登録)
+  1) boid project init [dir]                    (新規プロジェクト雛形を生成し、次の手順を案内)
+     git push した URL を                         (既存プロジェクトは自分で push 済みの
+     boid project add <git-url> --workspace=...   git URL を直接登録)
 
   2) 必要なら workspace を用意 (default で足りるなら省略可):
      boid workspace create <slug> --from-file <yaml>    (新規作成)
