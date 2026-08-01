@@ -388,7 +388,7 @@ func TestProjectInit_DirArg_GitCommandsTargetProjectDir(t *testing.T) {
 	// "safe to run even if some of this is already done", and an idempotent
 	// rerun's `git commit` (nothing new to commit) must not stop `git
 	// remote add`/`git push` from still running.
-	wantChain := "cd '" + dir + "' && { git init; git add .boid/project.yaml && (git diff --cached --quiet -- .boid/project.yaml || git commit -m 'add boid project scaffold' -- .boid/project.yaml) && (git remote add origin '<git-url>' 2>/dev/null || git remote set-url origin '<git-url>') && git push -u origin HEAD; }"
+	wantChain := "cd '" + dir + "' && { git init && git add .boid/project.yaml && (git diff --cached --quiet -- .boid/project.yaml || git commit -m 'add boid project scaffold' -- .boid/project.yaml) && (git remote add origin '<git-url>' 2>/dev/null || git remote set-url origin '<git-url>') && git remote set-url --push origin '<git-url>' && git push -u origin HEAD; }"
 	if !strings.Contains(got, wantChain) {
 		t.Errorf("expected guidance to contain the single cd-prefixed chain %q, got:\n%s", wantChain, got)
 	}
@@ -432,7 +432,7 @@ func TestProjectInit_PrintedChain_OnlyCommitsProjectYAML(t *testing.T) {
 	// real remote for the '<git-url>' placeholder — exercising the exact
 	// text a user would paste, not a hand-written equivalent.
 	got := out.String()
-	start := strings.Index(got, "{ git init;")
+	start := strings.Index(got, "{ git init &&")
 	end := strings.Index(got[start:], "; }") + start + len("; }")
 	if start < 0 || end <= start {
 		t.Fatalf("could not locate the printed chain in guidance:\n%s", got)

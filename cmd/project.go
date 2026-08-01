@@ -456,6 +456,15 @@ func runProjectInit(cmd *cobra.Command, args []string) error {
 	//     yet, or repoints it if it does (Major, codex round-4 review of
 	//     the previous "just run add" fix) — either way `origin` ends up
 	//     pointing at exactly the URL the user is about to type in.
+	//     Followed unconditionally by its own `git remote set-url --push
+	//     origin <git-url>` (Blocker, codex round-10 review): `set-url`
+	//     without `--push` only changes the FETCH url — an existing
+	//     repository with a separate `remote.origin.pushurl` override
+	//     configured would still `git push` to that stale push url
+	//     afterward, silently sending the scaffold commit to a DIFFERENT
+	//     remote than the one about to be registered. The explicit
+	//     `--push` call normalizes both to the same URL every time,
+	//     override or not.
 	//   - `git push -u origin HEAD`: pushes and tracks the CURRENT
 	//     branch — not a guess at "the remote's default branch", which
 	//     `project init` has no way to know and no business overriding.
@@ -485,13 +494,21 @@ func runProjectInit(cmd *cobra.Command, args []string) error {
 	// same still-open shell — copied separately, re-run individually, or
 	// run from a fresh terminal, a later `git push` on its own line would
 	// silently target the wrong (or no) directory. Within the block,
-	// `git init` is `;`-separated from the rest (it has nothing to do
-	// with whether committing succeeds), but the add/commit step is
-	// joined to remote-add/push with `&&` (not `;`): unlike the
-	// intentionally-skippable "nothing to commit" case (handled by the
-	// `git diff --cached --quiet ||` guard above, which makes the group
-	// exit 0 even when no commit ran), an ACTUAL commit failure must
-	// stop the chain before `git remote add`/`git push` run at all.
+	// EVERY step is joined with `&&`, not `;` (Blocker, codex round-10
+	// review of an earlier revision that `;`-separated `git init` from
+	// the rest): if `git init` itself fails — projectDir sits inside an
+	// unrelated parent repository and permissions/git config make a
+	// nested repo impossible, say — falling through to `git add` anyway
+	// would let git's own upward repository search silently operate on
+	// that PARENT repo instead, the exact "wrong repo" failure mode
+	// Blocker 1 (round-1 review) already fixed once for the origin-URL
+	// misattribution case. A genuine failure at ANY step here must stop
+	// the whole chain. The one exception remains the intentionally
+	// SKIPPABLE "nothing to commit" case, which is handled by the `git
+	// diff --cached --quiet ||` guard itself making that inner group
+	// exit 0 (not by relaxing the outer `&&` chain) — so an ACTUAL commit
+	// failure (a rejecting hook, no git identity, ...) still stops the
+	// chain before `git remote add`/`git push` ever run.
 	// '<git-url>' (single-quoted), not a bare <git-url> (Major, codex
 	// round-7 review): this placeholder is meant to be replaced in place
 	// by the user's real URL, but left as-is or replaced carelessly a
@@ -502,7 +519,7 @@ func runProjectInit(cmd *cobra.Command, args []string) error {
 	// literal find-and-replace of the placeholder text with a real URL.
 	fmt.Fprintln(out, "\nNext steps:")
 	fmt.Fprintln(out, "  1. Commit the scaffold and push it to your remote (safe to run even if some of this is already done):")
-	fmt.Fprintf(out, "       %s{ git init; git add .boid/project.yaml && (git diff --cached --quiet -- .boid/project.yaml || git commit -m 'add boid project scaffold' -- .boid/project.yaml) && (git remote add origin '<git-url>' 2>/dev/null || git remote set-url origin '<git-url>') && git push -u origin HEAD; }\n", cdPrefix)
+	fmt.Fprintf(out, "       %s{ git init && git add .boid/project.yaml && (git diff --cached --quiet -- .boid/project.yaml || git commit -m 'add boid project scaffold' -- .boid/project.yaml) && (git remote add origin '<git-url>' 2>/dev/null || git remote set-url origin '<git-url>') && git remote set-url --push origin '<git-url>' && git push -u origin HEAD; }\n", cdPrefix)
 	// Explicit default-branch caveat (Blocker, codex round-7 AND round-8
 	// review — round-8 pointed out round-7's wording only covered "a
 	// brand-new empty remote's first push", missing the equally-real
