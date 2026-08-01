@@ -240,10 +240,40 @@ if [[ "${DEPLOY_CONTAINER_SKIP_BUILD:-0}" == "1" ]]; then
 else
 	IMAGE_TAG="boid:$(git -C "$ROOT_DIR" rev-parse HEAD)"
 
-	echo "deploy-container: building $IMAGE_TAG from $DOCKERFILE"
+	# No --build-arg BOID_UID/BOID_GID here (removed, PR2): the image is
+	# arbitrary-uid as of docs/plans/release-onboarding.md 決定1 — it no
+	# longer takes a per-uid build arg at all (build/container/Dockerfile
+	# dropped both ARGs along with the useradd that consumed them), so a
+	# single built image works for any operator uid via compose.yml's
+	# `user: "${BOID_UID}:0"` at RUN time instead.
+	#
+	# BOID_VERSION (docs/plans/release-onboarding.md 穴2, PR1): only an EXACT
+	# release tag counts as a version identity worth baking in — see
+	# internal/version.IsExactRelease's doc comment for why the rule is this
+	# narrow. A dev checkout that is not sitting exactly on a tag (the common
+	# case) leaves this empty, and the Dockerfile's ARG BOID_VERSION="" default
+	# takes over, producing a binary that honestly reports itself as a local
+	# build (internal/version.Version() with no ldflags override falls back to
+	# debug.ReadBuildInfo(), which is "(devel)"-shaped for this build path
+	# regardless, since .dockerignore excludes .git/ from the build context).
+	#
+	# `git describe --tags --exact-match` only proves SOME tag sits on HEAD —
+	# it says nothing about that tag's shape (codex review of this PR): a
+	# "nightly" tag, a "v0.0.14-rc1" pre-release tag, or (with multiple tags
+	# on the same commit) an arbitrary pick among them would all pass through
+	# unchecked and get baked in as if they were the release identity
+	# internal/version.IsExactRelease() actually gates on. Re-validate against
+	# the exact same "vMAJOR.MINOR.PATCH" shape here and discard anything that
+	# doesn't match, so Version() on the built image agrees with what
+	# IsExactRelease() would decide from the tag alone.
+	BOID_VERSION="$(git -C "$ROOT_DIR" describe --tags --exact-match 2>/dev/null || true)"
+	if ! [[ "$BOID_VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+		BOID_VERSION=""
+	fi
+
+	echo "deploy-container: building $IMAGE_TAG from $DOCKERFILE (BOID_VERSION=${BOID_VERSION:-<none>})"
 	"${BUILD_CMD[@]}" \
-		--build-arg "BOID_UID=$BOID_UID" \
-		--build-arg "BOID_GID=$BOID_GID" \
+		--build-arg "BOID_VERSION=$BOID_VERSION" \
 		-t "$IMAGE_TAG" \
 		-t boid-runner:latest \
 		-f "$DOCKERFILE" \
@@ -286,9 +316,12 @@ fi
 # daemon itself owns and no longer need host pre-provisioning): compose/
 # docker/podman auto-create a missing bind-mount host path, but as root
 # (or whichever uid runs the engine daemon) — the non-root daemon process
-# (user: ${BOID_UID}:${BOID_GID} in compose.yml) would then be unable to
-# even see a live socket under BOID_RUNTIME_DIR on a genuinely first-ever
-# run against a fresh layout. chown is best-effort (a warning, not
+# (user: ${BOID_UID}:0 in compose.yml, arbitrary-uid as of docs/plans/
+# release-onboarding.md 決定1/PR2 — the HOST bind-mount target below still
+# needs a real BOID_UID:BOID_GID chown, independent of the container's own
+# gid-0 convention) would then be unable to even see a live socket under
+# BOID_RUNTIME_DIR on a genuinely first-ever run against a fresh layout.
+# chown is best-effort (a warning, not
 # fatal): it fails harmlessly when this script is not running as the
 # target uid/gid and lacks permission to chown to it (e.g. BOID_UID
 # overridden to something other than the invoking user) — in that case

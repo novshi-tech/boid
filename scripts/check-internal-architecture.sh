@@ -28,9 +28,11 @@ current_allowed=(
   qrterm
   reap
   sandbox
+  selfuser
   server
   skills
   timeline
+  version
   yamlutil
 )
 
@@ -56,9 +58,11 @@ target_allowed=(
   qrterm
   reap
   sandbox
+  selfuser
   server
   skills
   timeline
+  version
   yamlutil
 )
 

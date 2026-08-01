@@ -22,15 +22,46 @@
 #     symlink-generation logic. This is not one of the "individual shim
 #     symlinks" decision 2 forbids baking: "boid" is a fixed name, not a
 #     per-project host_commands entry unknown at build time.
-#   - the /run/boid/bin directory itself, owned by the --user uid this
-#     container runs as (BOID_UID/BOID_GID build args, default 1000:1000 —
-#     決定 4's "job container runs `--user <daemon uid>:<gid>`), so the
-#     non-root container entrypoint can write the per-project `<name>` shim
-#     symlinks into it at container start without needing root.
-#   - an /etc/passwd (and /etc/group) entry for that same uid/gid — without
-#     one, os/user-dependent tooling inside the sandbox (ssh, some git
-#     helpers, `id`, etc.) breaks on an unknown-uid lookup (決定 4's PR2
-#     注意点).
+#   - the /run/boid/bin directory itself, made writable by ANY uid running
+#     with supplementary group 0 (決定 4's "job container runs `--user
+#     <daemon uid>:<gid>`", combined with docs/plans/
+#     release-onboarding.md 決定1's arbitrary-uid redesign — see below), so
+#     the non-root container entrypoint can write the per-project `<name>`
+#     shim symlinks into it at container start without needing root,
+#     regardless of which uid the daemon's own host actually runs as.
+#
+# 決定1 (docs/plans/release-onboarding.md, "OpenShift 流 arbitrary-uid",
+# PR2): through PR2's predecessor this image took BOID_UID/BOID_GID build
+# args and useradd'd exactly one fixed uid/gid pair — every operator whose
+# host uid differed from the image's baked-in default had to rebuild the
+# image themselves before `docker run --user <their-uid>:<their-gid>` would
+# even find a passwd entry, let alone own anything. That is incompatible
+# with a single publicly-published image (決定1's whole point — see
+# docs/plans/release-onboarding.md's 背景).
+#
+# The fix is the OpenShift convention: gid 0 ("root group", but NOT root
+# privilege — nothing here grants CAP_* or bypasses DAC, it is an ordinary
+# group like any other) plus `chmod g=u` on every directory the runtime
+# needs to write. Concretely below:
+#   - /etc/passwd and /etc/group get `chmod g=u` so the RUNTIME self-
+#     registration snippet (internal/selfuser package,
+#     cmd/start.go / cmd/runner_container.go / the workspace-init wrapper —
+#     see their own doc comments) can append an entry for whatever uid it
+#     is actually running as, despite that uid not owning either file.
+#     There is no more build-time /etc/passwd entry at all — the uid is
+#     unknown until `docker run --user <uid>:0` supplies it.
+#   - /home/boid, /run/boid/bin, and /workspace are `chgrp -R 0` +
+#     `chmod -R g=u`: any uid started with `--user <uid>:0` gets exactly
+#     the same read/write/execute bits its OWNING uid (1000, the image's
+#     placeholder USER below) would have had, because gid 0 membership now
+#     carries the owning uid's own permission bits.
+#   - USER is `1000:0`, not `1000:1000` — the second number is genuinely
+#     "which group", not "which uid to also pretend to be". A real deploy's
+#     compose `user: "<uid>:0"` (build/container/compose.yml) overrides
+#     this at container-start time to whatever uid the operator's daemon
+#     actually runs as; the baked `1000:0` only matters for `docker run`
+#     invocations that never override --user at all (a standalone image
+#     smoke test, as one of this file's later comments notes).
 #
 # What it deliberately does NOT bake in:
 #   - individual host-command shim symlinks (/run/boid/bin/<name>) — these
@@ -49,8 +80,21 @@
 #     (決定 3).
 
 ARG GO_VERSION=1.24.2
-ARG BOID_UID=1000
-ARG BOID_GID=1000
+
+# BOID_VERSION (docs/plans/release-onboarding.md 穴2, PR1): this image's
+# build context is `COPY . .` below, and .dockerignore excludes .git/, so a
+# plain `go build` in the builder stage below has no VCS info to stamp and
+# reports "(devel)" via debug.ReadBuildInfo() — internal/version.Version()'s
+# go-install fallback path has nothing to fall back TO here. The caller
+# (scripts/deploy-container.sh, .github/workflows/blackbox-e2e.yml) passes
+# the real version as a build-arg instead, and it gets baked in below via
+# -ldflags -X rather than relying on VCS stamping. Left unset (empty
+# string), the ldflags -X below sets buildVersion to "" — internal/version.
+# Version() treats that identically to no override at all, i.e. the
+# "(devel)"-shaped fallback, so an unversioned image build (a bare
+# `docker build` with no --build-arg) still produces a working binary that
+# honestly reports itself as a local build rather than silently mis-tagging.
+ARG BOID_VERSION=""
 
 # ---- builder ------------------------------------------------------------
 FROM docker.io/library/golang:${GO_VERSION}-bookworm AS builder
@@ -63,11 +107,15 @@ RUN go mod download
 
 COPY . .
 
+ARG BOID_VERSION
+
 # CGO_ENABLED=0: boid's only cgo-shaped dependency (modernc.org/sqlite) is a
 # pure-Go/transpiled sqlite implementation, so a static binary is possible —
 # preferred for a slim runtime stage since it needs no libc ABI matching
 # against the runtime base image's glibc.
-RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -o /out/boid .
+RUN CGO_ENABLED=0 GOOS=linux go build -trimpath \
+    -ldflags "-X github.com/novshi-tech/boid/internal/version.buildVersion=${BOID_VERSION}" \
+    -o /out/boid .
 
 # ---- runtime --------------------------------------------------------------
 FROM docker.io/library/debian:bookworm-slim
@@ -94,8 +142,6 @@ FROM docker.io/library/debian:bookworm-slim
 # really carries it.
 LABEL boid.runner_protocol="v1"
 
-ARG BOID_UID
-ARG BOID_GID
 # gh CLI version pin (Minor 14, PR6 codex review): `apt-get install gh`
 # with no version pin picks up whatever GitHub's apt repo currently
 # publishes as `stable`, so two builds of this same Dockerfile on
@@ -191,14 +237,15 @@ RUN apt-get update \
 
 RUN mkdir -p /opt/boid-host-tools
 
-# The job/daemon uid, matching the host daemon uid (決定 4 — typically
-# 1000:1000). Baking the passwd/group entry at image-build time means every
-# container started from this image, regardless of which host uid the
-# operator's daemon runs as, needs the matching BOID_UID/BOID_GID build args
-# — image selection is per-uid, consistent with 決定 2's "boid update = image
-# rebuild" model.
-RUN groupadd --gid "${BOID_GID}" boid \
-    && useradd --uid "${BOID_UID}" --gid "${BOID_GID}" --home-dir /home/boid --shell /bin/bash --create-home boid
+# Arbitrary-uid (docs/plans/release-onboarding.md 決定1): `chmod g=u` on
+# /etc/passwd and /etc/group lets the RUNTIME self-registration snippet
+# (internal/selfuser, invoked from cmd/start.go / cmd/runner_container.go /
+# the workspace-init wrapper) append an entry for whatever uid actually
+# starts the container — despite that uid owning neither file — the same
+# way OpenShift's arbitrary-uid images work. There is no build-time
+# groupadd/useradd anymore: the uid is unknown until `docker run --user
+# <uid>:0` supplies it.
+RUN chmod g=u /etc/passwd /etc/group
 
 COPY --from=builder /out/boid /usr/local/bin/boid
 
@@ -206,33 +253,56 @@ COPY --from=builder /out/boid /usr/local/bin/boid
 # per-project host-command symlinks into at container start (spec.Symlinks
 # — see runner.RunContainer). The "boid" entry itself is baked (relative
 # shim targets resolve against it, see header comment); the per-host-command
-# <name> entries are not (decision 2).
+# <name> entries are not (decision 2). `chgrp 0` + `chmod g=u` (rather than
+# a `chown` to one fixed uid) is what makes this writable by ANY uid the
+# arbitrary-uid image is started as, as long as it keeps supplementary
+# group 0 (決定1).
 RUN mkdir -p /run/boid/bin \
     && ln -s /usr/local/bin/boid /run/boid/bin/boid \
-    && chown -R "${BOID_UID}:${BOID_GID}" /run/boid/bin
+    && chgrp -R 0 /run/boid/bin && chmod -R g=u /run/boid/bin
 
 # /workspace: WORKDIR below would otherwise create this as root even after
-# USER boid (a well-known Dockerfile gotcha — WORKDIR's implicit mkdir does
-# not honor the active USER), which would make it unwritable by the
+# USER 1000:0 (a well-known Dockerfile gotcha — WORKDIR's implicit mkdir
+# does not honor the active USER), which would make it unwritable by the
 # non-root entrypoint on any run that doesn't mount something over it.
 # Production job containers always mount a real workspace volume/bind here
 # (決定 4/10), but the image's own fallback directory should still be usable
 # on its own — e.g. for exactly this kind of standalone image smoke test.
-RUN mkdir -p /workspace && chown "${BOID_UID}:${BOID_GID}" /workspace
+RUN mkdir -p /workspace && chgrp 0 /workspace && chmod g=u /workspace
 
 # /home/boid/.local/share/boid, /home/boid/.config/boid: pre-create the
-# daemon's XDG data/config directories with boid ownership before the compose
-# stack mounts named volumes over them (docs/plans/volume-only-daemon.md
-# §論点 d). Docker's named-volume "copy from image on first mount to an empty
-# volume" behavior includes ownership, so pre-chowning these dirs at build
-# time is what makes the daemon (running as BOID_UID) able to create
-# boid.db + WAL files, secret.key, web_secret, install_id, and tls/ inside
-# those volumes at first boot. Without this, the volumes mount as root:root
-# and the daemon crashes with SQLITE_CANTOPEN before it can log anything.
+# daemon's XDG data/config directories with gid-0/g=u permissions before the
+# compose stack mounts named volumes over them (docs/plans/
+# volume-only-daemon.md §論点 d). Docker's named-volume "copy from image on
+# first mount to an empty volume" behavior includes ownership/mode, so
+# preparing these dirs at build time is what makes the daemon (running as
+# ANY uid with supplementary group 0, per 決定1) able to create boid.db +
+# WAL files, secret.key, web_secret, install_id, and tls/ inside those
+# volumes at first boot. Without this, the volumes mount as root:root
+# 0755 and a non-1000-uid daemon crashes with SQLITE_CANTOPEN before it can
+# log anything — the gid-0/g=u pair is what makes that ownership survive
+# a uid that ISN'T the image's own placeholder 1000 (see USER below).
 RUN mkdir -p /home/boid/.local/share/boid /home/boid/.config/boid \
-    && chown -R "${BOID_UID}:${BOID_GID}" /home/boid/.local /home/boid/.config
+    && chgrp -R 0 /home/boid && chmod -R g=u /home/boid
 
-USER boid
+# HOME is set explicitly rather than left to the container runtime's own
+# "look up /etc/passwd for --user's uid" fallback (which docker/runc do
+# when HOME is unset in the image config): that fallback only works when
+# the uid has a passwd entry, and as of 決定1 this image bakes none — the
+# entry is self-registered at runtime, AFTER the process (and therefore
+# after env resolution) has already started. Without this, a fresh
+# container would start with HOME="/" until self-registration ran, and
+# os.UserHomeDir() (which reads $HOME directly on Linux, never /etc/passwd)
+# would see that stale value for its own first calls.
+ENV HOME=/home/boid
+
+# 1000:0 is a placeholder identity for standalone `docker run` invocations
+# that never override --user (e.g. an image smoke test) — decision 1 means
+# neither number is load-bearing for a real deploy: compose's `user:
+# "<uid>:0"` (build/container/compose.yml) always overrides both at
+# container-start time to whatever uid the operator's daemon actually runs
+# as, keeping gid pinned at 0 so the gid-0/g=u permissions above apply.
+USER 1000:0
 WORKDIR /workspace
 
 # The container entrypoint execs the image-baked boid binary directly by

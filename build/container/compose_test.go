@@ -455,3 +455,29 @@ func TestComposeDaemonUsesBridgeNetworking(t *testing.T) {
 		t.Error(`daemon service is not a member of the "boid_internal" network (bridge networking must be restored)`)
 	}
 }
+
+// TestDockerfileBakesVersionViaLdflags pins docs/plans/release-onboarding.md
+// 穴2/PR1: the image build must thread a BOID_VERSION build-arg into
+// `go build -ldflags -X internal/version.buildVersion=...`, because
+// .dockerignore excludes .git/ from the build context (see this file's own
+// header and Dockerfile's ARG BOID_VERSION comment), so a plain `go build`
+// in the builder stage has no VCS info to fall back to and would otherwise
+// bake every image with a "(devel)"-shaped version regardless of what tag
+// the image was actually built from. This cannot pin that a BUILT image
+// actually reports the right version — that needs a real `docker build` +
+// running the binary, out of reach for a `go test` in this sandbox — only
+// that the Dockerfile instruction wiring itself is present.
+func TestDockerfileBakesVersionViaLdflags(t *testing.T) {
+	data, err := os.ReadFile("Dockerfile")
+	if err != nil {
+		t.Fatalf("read Dockerfile: %v", err)
+	}
+	content := string(data)
+	if !strings.Contains(content, "ARG BOID_VERSION") {
+		t.Error(`Dockerfile does not declare "ARG BOID_VERSION"`)
+	}
+	want := "-X github.com/novshi-tech/boid/internal/version.buildVersion=${BOID_VERSION}"
+	if !strings.Contains(content, want) {
+		t.Errorf("Dockerfile's go build does not contain %q — the BOID_VERSION build-arg would be a no-op", want)
+	}
+}

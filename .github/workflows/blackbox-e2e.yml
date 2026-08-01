@@ -4,6 +4,15 @@ on:
   push:
     branches:
       - main
+    # docs/plans/release-onboarding.md 穴4 / PR3: a `vMAJOR.MINOR.PATCH` tag
+    # push is how a real release build happens (internal/version.IsExactRelease
+    # gates on this exact shape). This trigger doesn't itself validate the
+    # shape — the container-image job's own BOID_VERSION step re-validates
+    # with the same regex and discards anything that doesn't match — so a
+    # loosely-matching tag like `v0.0.14-rc1` still can't leak through as a
+    # published image tag.
+    tags:
+      - 'v*'
     paths-ignore:
       - '**.md'
       - 'docs/**'
@@ -119,6 +128,17 @@ jobs:
   container-image:
     name: Container image build
     runs-on: ubuntu-24.04
+    # docs/plans/release-onboarding.md 決定4 / PR3: job-scoped, not
+    # workflow-top-level (codex review of this PR, Major) — only this job's
+    # publish steps need packages:write, and top-level would have handed it
+    # to every job (unit/race/lint/e2e-container) including pull_request
+    # runs of this same job. GITHUB_TOKEN's write access covers publishing
+    # to a package this repo already owns; see the "Log in to GHCR" /
+    # "Push image to GHCR" steps' own comments for what it does NOT cover
+    # (initial visibility).
+    permissions:
+      contents: read
+      packages: write
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -138,7 +158,36 @@ jobs:
         # the same version") depends on the image tag identifying an exact
         # boid binary build, once PR5/PR6 start actually resolving an image
         # tag to launch containers from.
-        run: docker build -t "boid-runner:${GITHUB_SHA}" -f build/container/Dockerfile .
+        #
+        # BOID_VERSION (docs/plans/release-onboarding.md 穴2, PR1): only an
+        # exact release tag counts (internal/version.IsExactRelease) — on an
+        # ordinary branch push `git describe --tags --exact-match` fails and
+        # this stays empty, so the built image honestly reports itself as a
+        # local build (see the Dockerfile's ARG BOID_VERSION doc comment).
+        # PR3 adds the tag-push trigger that makes this non-empty for a real
+        # release build.
+        #
+        # `--exact-match` only proves some tag sits on HEAD, not that it has
+        # the "vMAJOR.MINOR.PATCH" shape IsExactRelease() actually requires
+        # (codex review of this PR) — a "nightly" or "v0.0.14-rc1" tag would
+        # otherwise pass straight through as a build-arg. Re-validate the
+        # shape here and discard anything that doesn't match.
+        run: |
+          set -euo pipefail
+          BOID_VERSION="$(git describe --tags --exact-match 2>/dev/null || true)"
+          if ! [[ "$BOID_VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            BOID_VERSION=""
+          fi
+          echo "BOID_VERSION=${BOID_VERSION:-<none>}"
+          # Exported for the GHCR push step below (docs/plans/release-onboarding.md
+          # 決定4 / PR3): a non-empty value there means this run is an exact
+          # release-tag build, so the release tag itself becomes an additional
+          # GHCR ref alongside the SHA tag every push already gets.
+          echo "BOID_VERSION=${BOID_VERSION}" >> "$GITHUB_ENV"
+          docker build \
+            --build-arg "BOID_VERSION=${BOID_VERSION}" \
+            -t "boid-runner:${GITHUB_SHA}" \
+            -f build/container/Dockerfile .
 
       - name: Smoke-test the entrypoint
         # Confirms the default ENTRYPOINT is `boid runner-container` (not
@@ -171,6 +220,62 @@ jobs:
           got="$(docker image inspect -f '{{ index .Config.Labels "boid.runner_protocol" }}' "boid-runner:${GITHUB_SHA}")"
           echo "boid.runner_protocol=${got}"
           test "$got" = "v1"
+
+      - name: Log in to GHCR
+        # docs/plans/release-onboarding.md 決定4 / PR3: only push_events run
+        # this — pull_request runs get a read-only GITHUB_TOKEN for
+        # forked PRs, and same-repo PRs shouldn't publish an unreviewed
+        # image either. GITHUB_TOKEN + the `packages: write` permission
+        # added above is enough; no extra secret is needed.
+        if: github.event_name == 'push'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Push image to GHCR
+        # PR3 scope ends here: publish only. Switching the default pull
+        # ref (container_backend.go / compose.yml / deploy-container.sh /
+        # cmd/host.go / e2e/run-container.sh) to this GHCR ref is PR4
+        # (docs/plans/release-onboarding.md 穴4 table).
+        #
+        # Every push (branch or tag) publishes the `${GITHUB_SHA}` ref,
+        # preserving the existing "tag by commit SHA" identity this job
+        # already relies on. A push that also carries an exact release
+        # tag (BOID_VERSION non-empty, exported by the build step above)
+        # additionally publishes that tag as its own GHCR ref — this is
+        # the ref decision 4 / the PR4 default-pull-ref switch will want.
+        #
+        # VISIBILITY CAVEAT (codex review of this PR, Blocker — corrects an
+        # earlier assumption in this comment): GITHUB_TOKEN's packages:write
+        # is enough to publish, but a brand-new GHCR package defaults to
+        # PRIVATE regardless of the source repo's visibility, and there is
+        # no workflow-token / REST API path to flip that — changing a
+        # package's visibility requires admin permission ON THE PACKAGE
+        # itself, which only a human with that role can grant via the
+        # GitHub UI (GITHUB_TOKEN and the write:packages PAT scope do not
+        # carry it; there is no equivalent "admin:packages" token scope).
+        # Decision 4's public requirement therefore is NOT fully automated
+        # by this job — the first time this pushes
+        # `ghcr.io/novshi-tech/boid-runner`, an org owner must flip that
+        # package's visibility to Public once via Package settings:
+        # https://github.com/orgs/novshi-tech/packages/container/boid-runner/settings
+        # Every subsequent push keeps the visibility as-is, so this is a
+        # one-time step, not a recurring one — but it must happen before
+        # PR4 makes anonymous pull
+        # the default path, or that pull will 403/401.
+        if: github.event_name == 'push'
+        run: |
+          set -euo pipefail
+          sha_ref="ghcr.io/novshi-tech/boid-runner:${GITHUB_SHA}"
+          docker tag "boid-runner:${GITHUB_SHA}" "$sha_ref"
+          docker push "$sha_ref"
+          if [[ -n "${BOID_VERSION:-}" ]]; then
+            release_ref="ghcr.io/novshi-tech/boid-runner:${BOID_VERSION}"
+            docker tag "boid-runner:${GITHUB_SHA}" "$release_ref"
+            docker push "$release_ref"
+          fi
 
   e2e-container:
     name: Container backend E2E (requires-docker)

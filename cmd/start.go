@@ -14,6 +14,7 @@ import (
 	"github.com/novshi-tech/boid/internal/client"
 	"github.com/novshi-tech/boid/internal/config"
 	"github.com/novshi-tech/boid/internal/daemon"
+	"github.com/novshi-tech/boid/internal/selfuser"
 	"github.com/novshi-tech/boid/internal/server"
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
@@ -296,7 +297,52 @@ func buildStartConfig(opts startConfigOptions) (server.Config, error) {
 	return cfg, nil
 }
 
+// refuseRootUID rejects uid 0 (codex review of PR2, Blocker): the
+// arbitrary-uid redesign (docs/plans/release-onboarding.md 決定1) makes
+// gid 0 + `g=u` permissions do the work non-root uids used to need a
+// fixed, baked passwd entry for — but nothing before this check stopped
+// compose's `user: "${BOID_UID:-1000}:0"` from resolving to "0:0" if an
+// operator sets BOID_UID=0, or scripts/deploy-container.sh's
+// `: "${BOID_UID:=$(id -u)}"` from picking up uid 0 when the deploy
+// script itself is run as root. internal/dispatcher.NewContainerBackend's
+// own uid-0 guard (§決定4) only ever protected the JOB containers this
+// daemon creates — a root DAEMON would still pass os.Getuid()==0 through
+// internal/server/wire.go's sandboxBackendForConfig, tripping that
+// guard's "reject and fall back to 1000:0" path and silently mismatching
+// the workspace HOME ownership §決定4's own wire.go comment describes (a
+// HOME the root daemon created is 0700-owned by uid 0, unreadable to a
+// 1000:0 job container). Refusing outright, here, is cheaper and clearer
+// than letting that mismatch surface later as a confusing per-job
+// permission error.
+//
+// Takes the uid as a plain int (rather than calling os.Getuid() itself)
+// so a test can exercise both branches without needing to actually run
+// this process as root.
+func refuseRootUID(uid int) error {
+	if uid != 0 {
+		return nil
+	}
+	return fmt.Errorf("boid start: refusing to run as uid 0 (root) — §決定1/§決定4 (docs/plans/release-onboarding.md) require a non-root uid with supplementary group 0; set BOID_UID to a non-zero uid (build/container/compose.yml's `user: \"${BOID_UID}:0\"`) or invoke this process as a non-root user")
+}
+
 func runStart(cmd *cobra.Command, args []string) error {
+	if err := refuseRootUID(os.Getuid()); err != nil {
+		return err
+	}
+
+	// Arbitrary-uid self-registration + group-writable umask (docs/plans/
+	// release-onboarding.md 決定1, PR2): under the compose daemon service
+	// this process's uid may have no /etc/passwd entry at all (the image
+	// no longer bakes one — build/container/Dockerfile), and runtime-
+	// generated files (secret.key, boid.db, ...) need the group-write bit
+	// so a later run under a DIFFERENT uid (still group 0) stays working
+	// (§決定1 実装形2, 未決6's "uid is fixed per install" contract). Both
+	// calls are best-effort/non-fatal and equally harmless on a bare-host
+	// `boid start`, where the running uid almost always already has a
+	// real passwd entry (a no-op) — see their own doc comments.
+	selfuser.EnsureRuntimeUserRegistered()
+	selfuser.ApplyGroupWritableUmask()
+
 	cfg, err := buildStartConfig(startConfigOptions{
 		DBPath:      startDBPath,
 		SocketPath:  startSocketPath,

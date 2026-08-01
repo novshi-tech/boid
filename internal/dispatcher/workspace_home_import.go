@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/novshi-tech/boid/internal/dockerres"
+	"github.com/novshi-tech/boid/internal/version"
 )
 
 // workspace_home_import.go is the DAEMON-side half of PR8 of
@@ -485,7 +486,7 @@ func (r *Runner) ImportWorkspaceHome(ctx context.Context, workspaceID string, ta
 		Volume:      volumeName,
 		Phase:       workspaceHomeMigrationRecorded,
 		StartedAt:   time.Now().UTC(),
-		BoidVersion: boidVersion,
+		BoidVersion: version.Version(),
 	}
 	if err := writeWorkspaceHomeMigrationRecord(recordPath, rec); err != nil {
 		// Whatever the failed write did manage to leave behind goes with it, on

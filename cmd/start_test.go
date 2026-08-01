@@ -19,6 +19,24 @@ func TestDefaultAllowedDomains_IncludeCodexDomains(t *testing.T) {
 	}
 }
 
+// TestRefuseRootUID pins the codex-review Blocker fix for PR2
+// (docs/plans/release-onboarding.md 決定1): `boid start` must refuse to
+// run as uid 0 regardless of how it got there (BOID_UID=0 in compose.yml,
+// deploy-container.sh run as root, ...) — a root daemon would otherwise
+// pass os.Getuid()==0 straight through internal/server/wire.go into
+// dispatcher.NewContainerBackend's own uid-0 guard, silently falling back
+// to a uid that does not own the workspace HOME a root daemon created.
+func TestRefuseRootUID(t *testing.T) {
+	if err := refuseRootUID(0); err == nil {
+		t.Error("refuseRootUID(0) = nil, want an error rejecting uid 0")
+	}
+	for _, uid := range []int{1, 1000, 65534} {
+		if err := refuseRootUID(uid); err != nil {
+			t.Errorf("refuseRootUID(%d) = %v, want nil (non-root uid must be accepted)", uid, err)
+		}
+	}
+}
+
 func TestBuildStartConfig_UsesDefaults(t *testing.T) {
 	dataHome := t.TempDir()
 	socketPath := filepath.Join(t.TempDir(), "boid.sock")

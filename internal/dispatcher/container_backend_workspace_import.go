@@ -207,6 +207,16 @@ func (b *containerBackend) RemoveWorkspaceHomeVolume(ctx context.Context, volume
 // § UsernsMode — the same cached keep-id probe every other container here uses.
 // Without it, on rootless podman, everything this run creates lands owned by a
 // subuid and the workspace home becomes unwritable by the harness.
+//
+// § passwd self-registration (docs/plans/release-onboarding.md 決定1, PR2)
+// — deliberately NOT done here, unlike the init.sh wrapper
+// (container_backend_workspace_init.go / workspace_init.go's
+// PasswdSelfRegisterShellSnippet). This container's entrypoint is `tar`
+// itself (workspaceHomeImportArgv), not a shell running arbitrary
+// toolchain installers — `tar -x --no-same-owner` never does an
+// id/passwd/ssh lookup, it only reads uid/gid integers off the archive
+// header and discards them (that is what --no-same-owner means). Verified
+// by reading GNU tar's extraction path, not assumed.
 func (b *containerBackend) ImportWorkspaceHome(ctx context.Context, req WorkspaceHomeImportRequest) error {
 	homeMount, err := workspaceHomeVolumeMount(req.Slug, req.HomeSource, req.HomeTarget)
 	if err != nil {

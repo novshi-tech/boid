@@ -855,20 +855,24 @@ const (
 	// gateway's server certificate.
 	//
 	// Deliberately under /run/boid/bin, not /run/boid itself: the shared
-	// image (build/container/Dockerfile) only `chown -R
-	// ${BOID_UID}:${BOID_GID}` on /run/boid/bin — /run/boid, its parent,
-	// stays root-owned (mode 0755 from the preceding `mkdir -p
-	// /run/boid/bin`, which creates both in one step but the chown only
-	// covers the child). writeFileAt's own os.MkdirAll(filepath.Dir(path))
-	// is a no-op whenever the target directory already exists (regardless
-	// of its ownership), so a path directly under /run/boid — the first
-	// version of this fix used exactly that — creates the file's *parent*
+	// image (build/container/Dockerfile) only `chgrp -R 0` + `chmod -R
+	// g=u` on /run/boid/bin (arbitrary-uid, docs/plans/
+	// release-onboarding.md 決定1/PR2 — pre-PR2 this was a `chown -R
+	// ${BOID_UID}:${BOID_GID}` to one fixed uid; same effect for whichever
+	// single uid the image was built for, now generalized to any uid in
+	// group 0) — /run/boid, its parent, stays root-owned (mode 0755 from
+	// the preceding `mkdir -p /run/boid/bin`, which creates both in one
+	// step but the permission fix-up only covers the child).
+	// writeFileAt's own os.MkdirAll(filepath.Dir(path)) is a no-op
+	// whenever the target directory already exists (regardless of its
+	// ownership), so a path directly under /run/boid — the first version
+	// of this fix used exactly that — creates the file's *parent*
 	// successfully (already present) but then fails the actual
 	// os.WriteFile with EACCES: the non-root job container (--user
 	// b.uid:b.gid) cannot create a new directory entry in a root-owned,
 	// group/other-non-writable directory. /run/boid/bin has no such
 	// problem — it is the one directory under /run/boid this image
-	// deliberately chowns to the job uid specifically so the non-root
+	// deliberately makes group-0-writable specifically so the non-root
 	// entrypoint can write into it (see the Dockerfile's own comment on
 	// that RUN step) — reusing it here for a second kind of per-container
 	// artifact (a CA cert alongside the host-command shim symlinks) is a
