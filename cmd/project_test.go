@@ -300,14 +300,15 @@ func TestProjectInit_NoRemote_GuidesGitInitAddPush(t *testing.T) {
 	if !strings.Contains(got, "boid project add '<git-url>'") {
 		t.Errorf("expected guidance to point at `boid project add '<git-url>'`, got:\n%s", got)
 	}
-	// Default-branch-aware push (codex round-7/round-8/round-15 review):
-	// the daemon reads .boid/project.yaml off the remote's DEFAULT
-	// branch specifically, which the just-checked-out local branch is
-	// not guaranteed to be. The guidance resolves the remote's actual
-	// default branch via `git ls-remote --symref` and pushes there
-	// directly, falling back to the current branch's own name only when
-	// the remote has no resolvable default yet (a genuinely fresh, empty
-	// repository).
+	// Default-branch awareness (codex round-7/round-8/round-15/round-16
+	// review): the daemon reads .boid/project.yaml off the remote's
+	// DEFAULT branch specifically, which the just-checked-out local
+	// branch is not guaranteed to be. The guidance always pushes the
+	// CURRENT branch under its own name (round-16 review: force-pushing
+	// onto the remote's default branch directly would bypass branch
+	// protection/PR review), and separately resolves the remote's actual
+	// default branch via `git ls-remote --symref` purely to WARN — never
+	// to redirect the push — when the two differ.
 	if !strings.Contains(got, "git ls-remote --symref") {
 		t.Errorf("expected guidance to resolve the remote's default branch via git ls-remote --symref, got:\n%s", got)
 	}

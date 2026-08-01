@@ -475,8 +475,14 @@ services:
     # → boid.nosen.dev, docs/ja/guide/web-ui.md), so a stack without this
     # entry takes the entire Web UI (and every paired device behind that
     # tunnel) offline at cutover. Same loopback-only publish rationale as
-    # 8442 above: the tunnel connects from this host, and `boid web set-addr`
-    # remains the deliberate opt-in for anything wider.
+    # 8442 above: the tunnel connects from this host, so this port mapping
+    # itself deliberately stays loopback-only. Widening it to a LAN/other
+    # host requires editing this `ports:` mapping (e.g. to `"0.0.0.0:8080:8080"`)
+    # — `boid web set-addr`/`config set web.http_addr` only controls the
+    # bind address INSIDE the container (see the NOTE below, docs/plans/
+    # release-onboarding.md 穴 8 (a)/PR6), which is already 0.0.0.0 by
+    # default under this compose service; it has no effect on how far this
+    # host-side publish mapping itself reaches.
     #
     # NOTE: publishing the port is necessary but NOT sufficient — the daemon
     # must also bind 0.0.0.0 INSIDE the container for the published port to
