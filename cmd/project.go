@@ -79,7 +79,7 @@ this command.
 
 var projectInitSubCmd = &cobra.Command{
 	Use:   "init [dir]",
-	Short: "Initialize a new boid project interactively and register it",
+	Short: "Scaffold a new boid project and print the push-and-register next steps",
 	Long: `Initialize a new boid project in the current directory (or [dir]).
 
 Prompts for a project name, then writes .boid/project.yaml with the canonical
@@ -94,7 +94,9 @@ been pushed anywhere yet, and registration only works from a git URL
 (` + "`boid project add <git-url>`" + `, docs/plans/release-onboarding.md 穴 7). After the
 scaffold is written, this command prints the exact next commands to run:
 commit + push, then ` + "`boid project add <url> --workspace=<name>`" + `. --workspace here
-only feeds that printed example command; it is NOT itself an API call.
+only feeds that printed example command (defaulting to "default" when
+omitted, so the printed command is directly runnable); it is NOT itself an
+API call.
 
 Example:
   boid project init                              # initialize in current dir
@@ -366,30 +368,97 @@ func runProjectInit(cmd *cobra.Command, args []string) error {
 
 	out := cmd.OutOrStdout()
 
-	workspaceFlag := "--workspace=<workspace>"
+	// The 目標オンボーディングフロー step 5 example registers into the
+	// "default" workspace; do the same here when --workspace was not
+	// given so the printed command is directly runnable (Major, codex
+	// round-1 review of this PR: a placeholder like "--workspace=<workspace>"
+	// is not "the exact next command" the help text promises, since
+	// --workspace is a required flag on `project add`).
+	workspaceSlug := "default"
 	if projectInitWorkspace != "" {
-		workspaceFlag = fmt.Sprintf("--workspace=%s", projectInitWorkspace)
+		workspaceSlug = projectInitWorkspace
 	}
+	workspaceFlag := fmt.Sprintf("--workspace=%s", workspaceSlug)
 
-	// If projectDir is already a git repo with an `origin` remote (the user
-	// ran `git init`/`git remote add` themselves before `project init`),
-	// use that known URL directly instead of a <git-url> placeholder — one
-	// less thing for the user to fill in by hand.
+	// cdPrefix makes every printed git command target projectDir
+	// explicitly, regardless of the shell's own cwd when the user pastes
+	// the guidance in (Blocker 1, codex round-1 review: `[dir]` being a
+	// path other than "." meant the printed `git init`/`git add`/`git
+	// commit` silently ran against the shell's cwd, not projectDir).
+	cdPrefix := fmt.Sprintf("cd %s && ", shellQuoteSingle(projectDir))
+
+	// If projectDir is already a git repo ROOT (not merely nested inside
+	// an unrelated outer repo — see originURLForExactDir's own doc
+	// comment, Blocker 1 continued) with an `origin` remote already
+	// configured (the user ran `git init`/`git remote add` themselves
+	// before `project init`), use that known URL directly instead of a
+	// <git-url> placeholder — one less thing for the user to fill in by
+	// hand.
 	fmt.Fprintln(out, "\nNext steps:")
-	if originURL, err := dispatcher.CaptureUpstreamURL(projectDir); err == nil && originURL != "" {
+	if originURL, err := originURLForExactDir(projectDir); err == nil && originURL != "" {
 		fmt.Fprintln(out, "  1. Commit the scaffold and push it to the remote:")
-		fmt.Fprintln(out, "       git add .boid && git commit -m 'add boid project scaffold' && git push")
+		// -u origin HEAD (not a bare `git push`) even though origin
+		// already exists: `git init && git remote add origin <url>` alone
+		// leaves the current branch with no upstream configured, and a
+		// bare `git push` there fails with "no upstream branch" (Blocker
+		// 2, codex round-1 review). -u is a harmless no-op re-set when an
+		// upstream is already tracked.
+		fmt.Fprintf(out, "       %sgit add .boid && git commit -m 'add boid project scaffold' && git push -u origin HEAD\n", cdPrefix)
 		fmt.Fprintln(out, "  2. Register the pushed URL with the running boid daemon:")
 		fmt.Fprintf(out, "       boid project add %s %s\n", originURL, workspaceFlag)
 	} else {
 		fmt.Fprintln(out, "  1. Initialize git and push this project to a remote (skip what's already done):")
-		fmt.Fprintln(out, "       git init && git add . && git commit -m 'initial commit'")
+		fmt.Fprintf(out, "       %sgit init && git add . && git commit -m 'initial commit'\n", cdPrefix)
 		fmt.Fprintln(out, "       git remote add origin <git-url> && git push -u origin HEAD")
 		fmt.Fprintln(out, "  2. Register the pushed URL with the running boid daemon:")
 		fmt.Fprintf(out, "       boid project add <git-url> %s\n", workspaceFlag)
 	}
 
 	return nil
+}
+
+// originURLForExactDir returns projectDir's `origin` remote URL, but ONLY
+// when projectDir is itself a git repository's top-level directory —
+// unlike a bare `git config --get remote.origin.url` (what
+// dispatcher.CaptureUpstreamURL uses), which runs with cwd=projectDir and
+// so happily walks UP to a parent .git if projectDir has none of its own.
+// That upward search misattributes a surrounding repo's origin to
+// projectDir whenever `boid project init <newdir>` scaffolds a directory
+// nested inside an existing, unrelated checkout — the printed guidance
+// would then send the user to commit and push the OUTER repo, while the
+// freshly written <newdir>/.boid/project.yaml never leaves the untracked
+// state (Blocker 1 continued, codex round-1 review of this PR).
+func originURLForExactDir(projectDir string) (string, error) {
+	out, err := exec.Command("git", "-C", projectDir, "rev-parse", "--show-toplevel").Output()
+	if err != nil {
+		return "", fmt.Errorf("not a git repository: %w", err)
+	}
+	topLevel := strings.TrimSpace(string(out))
+
+	// Resolve symlinks before comparing: git always reports a
+	// symlink-resolved toplevel, but projectDir may not be (e.g. a /tmp
+	// path on a system where /tmp itself is a symlink).
+	wantDir, err := filepath.EvalSymlinks(projectDir)
+	if err != nil {
+		wantDir = projectDir
+	}
+	gotDir, err := filepath.EvalSymlinks(topLevel)
+	if err != nil {
+		gotDir = topLevel
+	}
+	if gotDir != wantDir {
+		return "", fmt.Errorf("projectDir %s is nested inside a different git repository rooted at %s", projectDir, topLevel)
+	}
+
+	return dispatcher.CaptureUpstreamURL(projectDir)
+}
+
+// shellQuoteSingle wraps s in single quotes for safe use in a POSIX shell
+// command line, escaping any embedded single quote as '\'' (close quote,
+// escaped literal quote, reopen quote) — the standard technique, since a
+// single-quoted string cannot itself contain an unescaped single quote.
+func shellQuoteSingle(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
 func runProjectList(cmd *cobra.Command, args []string) error {

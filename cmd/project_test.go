@@ -350,6 +350,137 @@ func TestProjectInit_ExistingOrigin_GuidesRegisterWithThatURL(t *testing.T) {
 	}
 }
 
+// TestProjectInit_NoWorkspaceFlag_DefaultsToDefaultWorkspace pins the fix
+// for codex round-1 Major review of this PR: with --workspace omitted, the
+// printed `boid project add` example used to show the literal placeholder
+// "--workspace=<workspace>" — not runnable as-is, contradicting the help
+// text's "exact next commands" promise (--workspace is a required flag on
+// `project add`). It must default to "--workspace=default", matching the
+// 目標オンボーディングフロー step 5 example in docs/plans/release-onboarding.md.
+func TestProjectInit_NoWorkspaceFlag_DefaultsToDefaultWorkspace(t *testing.T) {
+	dir := t.TempDir()
+	withStdin(t, devNullStdin(t))
+
+	var out bytes.Buffer
+	cmd := projectInitSubCmd
+	cmd.SetOut(&out)
+	cmd.SetContext(context.Background())
+
+	if err := runProjectInit(cmd, []string{dir}); err != nil {
+		t.Fatalf("runProjectInit: %v", err)
+	}
+
+	if !strings.Contains(out.String(), "--workspace=default") {
+		t.Errorf("expected guidance to default to --workspace=default, got:\n%s", out.String())
+	}
+	if strings.Contains(out.String(), "<workspace>") {
+		t.Errorf("expected no unfilled <workspace> placeholder, got:\n%s", out.String())
+	}
+}
+
+// TestProjectInit_DirArg_GitCommandsTargetProjectDir pins Blocker 1 (codex
+// round-1 review of this PR): when [dir] is a path other than ".", every
+// printed git command must explicitly target that directory (`cd
+// <projectDir> && ...`) rather than relying on the invoking shell's own
+// cwd — otherwise pasting the guidance verbatim silently git-inits/commits
+// whatever directory the terminal happened to be in, not the freshly
+// scaffolded one.
+func TestProjectInit_DirArg_GitCommandsTargetProjectDir(t *testing.T) {
+	parent := t.TempDir()
+	dir := filepath.Join(parent, "my-project")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	withStdin(t, devNullStdin(t))
+
+	var out bytes.Buffer
+	cmd := projectInitSubCmd
+	cmd.SetOut(&out)
+	cmd.SetContext(context.Background())
+
+	if err := runProjectInit(cmd, []string{dir}); err != nil {
+		t.Fatalf("runProjectInit: %v", err)
+	}
+
+	got := out.String()
+	wantCd := "cd '" + dir + "' && git init"
+	if !strings.Contains(got, wantCd) {
+		t.Errorf("expected guidance to contain %q, got:\n%s", wantCd, got)
+	}
+}
+
+// TestProjectInit_ExistingOrigin_PushUsesUpstreamFlag pins Blocker 2 (codex
+// round-1 review of this PR): a repo whose only git setup so far is `git
+// init` + `git remote add origin <url>` (project init's own documented
+// "skip what's already done" scenario) has NO upstream tracking branch
+// yet, so a bare `git push` fails with "no upstream branch configured".
+// The guidance must use `git push -u origin HEAD` instead.
+func TestProjectInit_ExistingOrigin_PushUsesUpstreamFlag(t *testing.T) {
+	dir := t.TempDir()
+	runGitTestCmd(t, dir, "init", "-q", "-b", "main")
+	runGitTestCmd(t, dir, "config", "user.email", "test@example.com")
+	runGitTestCmd(t, dir, "config", "user.name", "Test")
+	runGitTestCmd(t, dir, "commit", "-q", "--allow-empty", "-m", "initial")
+	runGitTestCmd(t, dir, "remote", "add", "origin", "https://example.invalid/owner/repo.git")
+
+	withStdin(t, devNullStdin(t))
+
+	var out bytes.Buffer
+	cmd := projectInitSubCmd
+	cmd.SetOut(&out)
+	cmd.SetContext(context.Background())
+
+	if err := runProjectInit(cmd, []string{dir}); err != nil {
+		t.Fatalf("runProjectInit: %v", err)
+	}
+
+	if !strings.Contains(out.String(), "git push -u origin HEAD") {
+		t.Errorf("expected guidance to use 'git push -u origin HEAD', got:\n%s", out.String())
+	}
+}
+
+// TestProjectInit_NestedInDifferentRepo_DoesNotMisattributeParentOrigin
+// pins Blocker 1's second half (codex round-1 review of this PR): scaffold
+// a NEW subdirectory (with no .git of its own) inside an ALREADY-git-init'd
+// parent that has its own, unrelated origin. A bare `git config --get
+// remote.origin.url` run with cwd=subdir walks UP to the parent's .git and
+// reports the parent's origin — misattributing it to the freshly scaffolded
+// subdirectory, which is not what got pushed at all. The guidance must
+// fall back to the "no origin" branch (git init/remote add) instead of
+// printing the parent's URL.
+func TestProjectInit_NestedInDifferentRepo_DoesNotMisattributeParentOrigin(t *testing.T) {
+	parent := t.TempDir()
+	runGitTestCmd(t, parent, "init", "-q", "-b", "main")
+	runGitTestCmd(t, parent, "config", "user.email", "test@example.com")
+	runGitTestCmd(t, parent, "config", "user.name", "Test")
+	runGitTestCmd(t, parent, "commit", "-q", "--allow-empty", "-m", "initial")
+	parentOriginURL := "https://example.invalid/owner/unrelated-parent-repo.git"
+	runGitTestCmd(t, parent, "remote", "add", "origin", parentOriginURL)
+
+	dir := filepath.Join(parent, "my-project")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	withStdin(t, devNullStdin(t))
+
+	var out bytes.Buffer
+	cmd := projectInitSubCmd
+	cmd.SetOut(&out)
+	cmd.SetContext(context.Background())
+
+	if err := runProjectInit(cmd, []string{dir}); err != nil {
+		t.Fatalf("runProjectInit: %v", err)
+	}
+
+	got := out.String()
+	if strings.Contains(got, parentOriginURL) {
+		t.Errorf("must not attribute the parent repo's origin %q to the nested scaffold dir, got:\n%s", parentOriginURL, got)
+	}
+	if !strings.Contains(got, "git remote add origin") {
+		t.Errorf("expected the no-origin branch (git remote add origin) for a dir with no .git of its own, got:\n%s", got)
+	}
+}
+
 // withProjectAddWorkspaceFlag sets the package-level --workspace flag value
 // `runProjectAdd` reads (projectAddWorkspace) for the duration of the
 // calling test, restoring it to "" afterward so this global does not leak
