@@ -400,31 +400,35 @@ func runProjectInit(cmd *cobra.Command, args []string) error {
 	// commit` silently ran against the shell's cwd, not projectDir).
 	cdPrefix := fmt.Sprintf("cd %s && ", shellQuoteSingle(projectDir))
 
-	// A single, idempotent, "works regardless of prior state" chain —
-	// NOT a branch on whether projectDir already has a repo/origin.
+	// A single, idempotent, one-shot chain — NOT a branch on whether
+	// projectDir already has a repo/origin, and NOT touching the user's
+	// `origin` remote configuration at all.
 	//
-	// An earlier revision of this guidance tried to be clever: detect an
-	// existing `origin` and print its URL back, skip `git init`/`git
-	// remote add` if already done, etc. Across four rounds of review that
-	// approach kept growing new correctness holes chasing each other —
-	// an unquoted origin URL enabling shell injection, `git config`'s
-	// upward repo search misattributing a PARENT repo's origin to a
-	// freshly scaffolded subdirectory, a bare `git commit` sweeping in
-	// unrelated already-staged changes, a `file://` origin (harmless to
-	// `git`, but invisible to the compose daemon's own container — the
-	// exact 穴 7 problem this command exists to close) printed back as if
-	// it were a real remote, and finally a `git remote add origin`
-	// unconditionally failing with "remote origin already exists" for
-	// the one case (`file://` origin) the previous fix rerouted into it.
-	// Every one of those bugs came from the SAME root cause: guessing at
-	// git/remote state that could be anything.
+	// Two earlier revisions of this guidance tried progressively more
+	// clever things with git remote state: first detecting an existing
+	// `origin` and printing its URL back (four rounds of review found
+	// shell-injection, parent-repo misattribution, and file://-as-a-
+	// real-remote bugs in that), then unconditionally creating/repointing
+	// `origin` itself via `git remote add`/`set-url` plus normalizing
+	// `remote.origin.pushurl` (two MORE rounds found a stale separate
+	// push URL, then multiple stale push URLs, still reaching the wrong
+	// remote). Every one of those bugs came from the same root cause:
+	// mutating or depending on `origin`, a piece of PERSISTENT repo state
+	// this command has no business assuming anything about, let alone
+	// overwriting — an existing repository may deliberately have an HTTPS
+	// fetch / SSH push split, multiple push mirrors, or simply an
+	// `origin` the user does not want repointed just because they ran
+	// `project init` (Major, codex round-12 review of the remote-
+	// mutating design).
 	//
-	// Each step below is written to be a safe no-op (idempotent) if that
-	// step already happened, so the exact same one-liner works whether
-	// projectDir is a brand-new directory, an already-`git init`'d repo,
-	// or a repo that already has `origin` configured (the two starter
-	// scenarios `boid project init`'s own doc comment describes) — with
-	// NO detection logic to get wrong:
+	// The actual job here is narrower than "reconcile the user's git
+	// remote setup": push the scaffold to a URL, then tell the user to
+	// register that URL. A one-shot `git push <url> HEAD` does exactly
+	// that without creating, reading, or modifying any named remote at
+	// all — verified empirically to work identically whether `origin` is
+	// unset, already points elsewhere, or has any pushurl overrides,
+	// since none of that is even consulted.
+	//
 	//   - `git init`: always safe to re-run ("Reinitialized existing Git
 	//     repository..." if one already exists).
 	//   - `git add .boid/project.yaml && (git diff --cached --quiet --
@@ -444,54 +448,34 @@ func runProjectInit(cmd *cobra.Command, args []string) error {
 	//     commit for that file — in that case the `||`'s right side (the
 	//     actual commit) is skipped entirely, rather than run and
 	//     rejected. Skipping vs. attempting-and-failing matters (Blocker,
-	//     codex round-6 review): if `git
-	//     commit` DOES run and genuinely fails for a real reason (a
-	//     rejecting pre-commit hook, no configured git identity, a
-	//     required GPG signature that can't be produced, ...), that must
-	//     stop the whole chain — pushing whatever HEAD already was would
-	//     silently register a project missing the scaffold this command
-	//     just wrote. See the `&&`-vs-`;` note below for how that's wired.
-	//   - `git remote add origin <git-url> 2>/dev/null || git remote
-	//     set-url origin <git-url>`: adds the remote if it doesn't exist
-	//     yet, or repoints it if it does (Major, codex round-4 review of
-	//     the previous "just run add" fix) — either way `origin` ends up
-	//     pointing at exactly the URL the user is about to type in.
-	//     Followed unconditionally by its own `git config --local
-	//     --replace-all remote.origin.pushurl <git-url>`: `git remote
-	//     set-url` without `--push` only changes the FETCH url — an
-	//     existing repository with a separate `remote.origin.pushurl`
-	//     override configured would still `git push` to that stale push
-	//     url afterward, silently sending the scaffold commit to a
-	//     DIFFERENT remote than the one about to be registered (Blocker,
-	//     codex round-10 review). `git remote set-url --push` alone is
-	//     not quite enough either (Blocker, codex round-11 review of
-	//     that first fix): git allows MULTIPLE `remote.origin.pushurl`
-	//     entries (every push then goes to ALL of them), and `set-url
-	//     --push` without `--add` only overwrites the FIRST one, leaving
-	//     any additional stale entries intact. `git config --replace-all`
-	//     collapses however many pre-existing entries there are (zero,
-	//     one, or many) down to exactly the one given — verified
-	//     empirically for all three counts.
-	//   - `git push -u origin HEAD`: pushes and tracks the CURRENT
-	//     branch — not a guess at "the remote's default branch", which
+	//     codex round-6 review): if `git commit` DOES run and genuinely
+	//     fails for a real reason (a rejecting pre-commit hook, no
+	//     configured git identity, a required GPG signature that can't
+	//     be produced, ...), that must stop the whole chain — pushing
+	//     whatever HEAD already was would silently register a project
+	//     missing the scaffold this command just wrote. See the
+	//     all-`&&` note below for how that's wired.
+	//   - `git push '<git-url>' HEAD`: a one-shot push straight to the
+	//     URL, no `-u`/tracking, no named remote involved at all (Major,
+	//     codex round-12 review, replacing the previous origin-mutating
+	//     design described above). Pushes the CURRENT branch under its
+	//     own name — not a guess at "the remote's default branch", which
 	//     `project init` has no way to know and no business overriding.
-	//     Scope boundary (Blocker, codex round-6 review): if that branch
-	//     is not what the remote treats as default, the daemon's own
-	//     clone-and-read-project.yaml step (dispatcher.CloneBareRepo,
+	//     Scope boundary (Blocker, codex round-6/round-8 review): if that
+	//     branch is not what the remote treats as default, the daemon's
+	//     own clone-and-read-project.yaml step (dispatcher.CloneBareRepo,
 	//     project_bare_repo.go) reads .boid/project.yaml off the
 	//     REMOTE'S default branch, not this one, and registration will
-	//     miss the scaffold. Deliberately unhandled here: this guidance
-	//     targets the 目標オンボーディングフロー scenario this command's own
-	//     doc comment describes — a BRAND NEW project being pushed to a
-	//     FRESH, still-empty remote for the first time, where every real
-	//     forge (GitHub, GitLab, ...) sets its own default branch FROM
-	//     that first push, so there is no pre-existing default branch to
-	//     miss. Retrofitting a scaffold onto an ALREADY-established repo
-	//     on a non-default feature branch is a materially different,
-	//     out-of-scope operation — the same ordinary "make sure this
-	//     lands on the right branch" question it would be for any other
-	//     push, not something `project init` can resolve for the user
-	//     without also knowing which branch that repo treats as default.
+	//     miss the scaffold — regardless of WHY that branch differs from
+	//     default (a fresh remote that never auto-set one, or an
+	//     established remote whose default is simply a different branch
+	//     than the one currently checked out). There is no portable
+	//     client-side git command that can query OR set a remote's
+	//     default branch/HEAD symref over the wire in the general case —
+	//     only something running ON that remote (a forge's own UI/API,
+	//     or direct server access) can, so this is surfaced as an
+	//     explicit precondition to verify (see the printed caveat below)
+	//     rather than something silently handled here.
 	//
 	// Everything below `cd <dir> &&` is grouped in one `{ ...; }` block on
 	// a SINGLE line, not multiple printed lines each expected to run in
@@ -515,7 +499,7 @@ func runProjectInit(cmd *cobra.Command, args []string) error {
 	// diff --cached --quiet ||` guard itself making that inner group
 	// exit 0 (not by relaxing the outer `&&` chain) — so an ACTUAL commit
 	// failure (a rejecting hook, no git identity, ...) still stops the
-	// chain before `git remote add`/`git push` ever run.
+	// chain before `git push` ever runs.
 	// '<git-url>' (single-quoted), not a bare <git-url> (Major, codex
 	// round-7 review): this placeholder is meant to be replaced in place
 	// by the user's real URL, but left as-is or replaced carelessly a
@@ -526,7 +510,7 @@ func runProjectInit(cmd *cobra.Command, args []string) error {
 	// literal find-and-replace of the placeholder text with a real URL.
 	fmt.Fprintln(out, "\nNext steps:")
 	fmt.Fprintln(out, "  1. Commit the scaffold and push it to your remote (safe to run even if some of this is already done):")
-	fmt.Fprintf(out, "       %s{ git init && git add .boid/project.yaml && (git diff --cached --quiet -- .boid/project.yaml || git commit -m 'add boid project scaffold' -- .boid/project.yaml) && (git remote add origin '<git-url>' 2>/dev/null || git remote set-url origin '<git-url>') && git config --local --replace-all remote.origin.pushurl '<git-url>' && git push -u origin HEAD; }\n", cdPrefix)
+	fmt.Fprintf(out, "       %s{ git init && git add .boid/project.yaml && (git diff --cached --quiet -- .boid/project.yaml || git commit -m 'add boid project scaffold' -- .boid/project.yaml) && git push '<git-url>' HEAD; }\n", cdPrefix)
 	// Explicit default-branch caveat (Blocker, codex round-7 AND round-8
 	// review — round-8 pointed out round-7's wording only covered "a
 	// brand-new empty remote's first push", missing the equally-real
@@ -534,19 +518,15 @@ func runProjectInit(cmd *cobra.Command, args []string) error {
 	// case): the daemon registers a project by cloning the remote and
 	// reading .boid/project.yaml off the REMOTE'S OWN default branch
 	// (its HEAD symref) — not "whichever branch this push happened to
-	// land on", regardless of WHY that branch differs from default (a
-	// fresh remote that never auto-set one, or an established remote
-	// whose default is simply a different branch than the one currently
-	// checked out). There is no portable client-side git command that
-	// can query OR set a remote's default branch/HEAD symref over the
-	// wire in the general case — only something running ON that remote
-	// (a forge's own UI/API, or direct server access) can. Surfacing
-	// this as an explicit, unconditional precondition to verify — not a
-	// footnote about one specific scenario — is the only reliable fix
-	// available from the client side.
+	// land on". Surfacing this as an explicit, unconditional precondition
+	// to verify — not a footnote about one specific scenario — is the
+	// only reliable fix available from the client side (see the one-shot
+	// `git push` note above for why there is no portable client-side git
+	// command that can query or set a remote's default branch instead).
 	fmt.Fprintln(out, "     (IMPORTANT: the daemon reads .boid/project.yaml off your remote's DEFAULT branch specifically, not just whatever branch this just pushed — before running step 2, confirm the branch you just pushed either IS your remote's default branch, or has just BECOME it. For a brand-new empty repository, most forges — GitHub, GitLab, ... — auto-set the default branch from this first push; for an existing repository (or a plain self-hosted bare git server with no such auto-detection), set/verify it explicitly via the forge's settings UI/API, or `git symbolic-ref HEAD refs/heads/<branch>` run directly on the remote)")
 	fmt.Fprintln(out, "  2. Register the pushed URL with the running boid daemon:")
 	fmt.Fprintf(out, "       boid project add '<git-url>' %s\n", workspaceFlag)
+
 
 	return nil
 }
