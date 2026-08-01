@@ -80,7 +80,7 @@ CLI listener のアドレスは `127.0.0.1:8442` 固定（override 不可）。`
 | `boid project remove <ref>` (alias: `rm`) | プロジェクトを登録解除。project の DB row を削除する唯一の入口 — `boid` は filesystem / remote の観測結果を根拠に自動削除しない (下記 `project fetch` 参照)。git-URL 登録した project の場合は daemon 管理下の bare repository も削除するため、同じ URL/名前で再度 add しても成功する。 |
 | `boid project reload` | すべてのプロジェクトの `project.yaml` を再読み込み |
 | `boid project fetch <ref>` | git-URL 登録した project の bare repository で `git fetch --all` を実行し project.yaml を再読み込みする。fetch/reload に失敗しても削除はせず `degraded` 状態にする (`project list`/`show` で確認可能) — 復旧は remote に再度到達可能になってから `boid project rm` + `boid project add` |
-| `boid project behaviors <ref>` | そのプロジェクトの task_behaviors 一覧 |
+| `boid project behaviors <ref>` | そのプロジェクトの task_behaviors 一覧。サンドボックス内の boid shim からも同名で呼べる (`boid project behaviors <ref>`) — 出力は JSON 固定、`ref` は同一 workspace 内のプロジェクトのみ解決可能 (`AllowedProjectIDs` でスコープされる) |
 
 ### `project local` — 廃止
 

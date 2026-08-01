@@ -1561,3 +1561,83 @@ func TestBoidBuiltinExecutor_TaskAsk_ContextCancelKeepsAwaiting(t *testing.T) {
 		t.Errorf("task status = %q, want awaiting after disconnect (re-ask recovers)", got.Status)
 	}
 }
+
+// --- project_behaviors executor tests ---
+
+// stubProjectLookup is a minimal projectLookup fake: it maps project IDs to
+// pre-built *orchestrator.Project values, without pulling in the full
+// api.ProjectAppService (and its much larger Meta-store interface).
+type stubProjectLookup struct {
+	projects map[string]*orchestrator.Project
+	err      error
+}
+
+func (s *stubProjectLookup) GetProject(id string) (*orchestrator.Project, error) {
+	if s.err != nil {
+		return nil, s.err
+	}
+	p, ok := s.projects[id]
+	if !ok {
+		return nil, fmt.Errorf("project not found: %s", id)
+	}
+	return p, nil
+}
+
+func TestBoidBuiltinExecutor_ProjectBehaviors_HappyPath(t *testing.T) {
+	exec := &boidBuiltinExecutor{
+		projects: &stubProjectLookup{
+			projects: map[string]*orchestrator.Project{
+				"proj-2": {
+					ID: "proj-2",
+					Meta: orchestrator.ProjectMeta{
+						TaskBehaviors: map[string]orchestrator.TaskBehavior{
+							"executor": {Traits: []string{"produces_diff"}},
+						},
+					},
+				},
+			},
+		},
+	}
+	ctx := sandbox.TokenContext{ProjectID: "proj-1", AllowedProjectIDs: []string{"proj-1", "proj-2"}}
+
+	resp := exec.ExecuteBoidBuiltin(context.Background(), ctx, &sandbox.BoidRequest{
+		Op:        sandbox.BoidOpProjectBehaviors,
+		ProjectID: "proj-2",
+	})
+	if resp.ExitCode != 0 {
+		t.Fatalf("exit code = %d, stderr: %s", resp.ExitCode, resp.Stderr)
+	}
+	if !strings.Contains(resp.Stdout, "executor") || !strings.Contains(resp.Stdout, "produces_diff") {
+		t.Errorf("stdout = %q, want it to mention the executor behavior and its traits", resp.Stdout)
+	}
+	var decoded map[string]orchestrator.TaskBehavior
+	if err := json.Unmarshal([]byte(resp.Stdout), &decoded); err != nil {
+		t.Fatalf("stdout is not valid JSON: %v (stdout=%q)", err, resp.Stdout)
+	}
+}
+
+func TestBoidBuiltinExecutor_ProjectBehaviors_NotFound(t *testing.T) {
+	exec := &boidBuiltinExecutor{projects: &stubProjectLookup{projects: map[string]*orchestrator.Project{}}}
+	ctx := sandbox.TokenContext{ProjectID: "proj-1", AllowedProjectIDs: []string{"proj-1"}}
+
+	resp := exec.ExecuteBoidBuiltin(context.Background(), ctx, &sandbox.BoidRequest{
+		Op:        sandbox.BoidOpProjectBehaviors,
+		ProjectID: "proj-1",
+	})
+	if resp.ExitCode != 1 || !strings.Contains(resp.Stderr, "not found") {
+		t.Fatalf("expected not-found error, got exit=%d stderr=%q", resp.ExitCode, resp.Stderr)
+	}
+}
+
+func TestBoidBuiltinExecutor_ProjectBehaviors_Unavailable(t *testing.T) {
+	exec := &boidBuiltinExecutor{}
+	ctx := sandbox.TokenContext{ProjectID: "proj-1"}
+
+	resp := exec.ExecuteBoidBuiltin(context.Background(), ctx, &sandbox.BoidRequest{
+		Op:        sandbox.BoidOpProjectBehaviors,
+		ProjectID: "proj-1",
+	})
+	if resp.ExitCode != 1 || !strings.Contains(resp.Stderr, "unavailable") {
+		t.Fatalf("expected unavailable error, got exit=%d stderr=%q", resp.ExitCode, resp.Stderr)
+	}
+}

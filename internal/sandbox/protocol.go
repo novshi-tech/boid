@@ -113,6 +113,18 @@ const (
 	// wiring-seams.md #13's PR6 update) is untouched by this op and remains
 	// available as a secondary path — full retirement is deferred to Phase 6.
 	BoidOpTaskUpdatePayloadPatch BoidOp = "task_update_payload_patch"
+
+	// BoidOpProjectBehaviors backs `boid project behaviors <project-ref>` from
+	// inside the sandbox — added so a "meta project" task (one whose job is
+	// to look across multiple projects, e.g. cross-project issue triage) can
+	// discover another project's task_behaviors without a host-only `boid
+	// project` CLI invocation. Scoped like BoidOpTaskList/BoidOpTaskCreate:
+	// the broker resolves BoidRequest.ProjectID (UUID, exact name, or partial
+	// name) via ProjectResolver and then enforces
+	// TokenContext.AllowsProject, so a caller can only ever see behaviors for
+	// projects within its own token's workspace scope — never an arbitrary
+	// project on the daemon.
+	BoidOpProjectBehaviors BoidOp = "project_behaviors"
 )
 
 // PayloadPatchMaxBytes caps the size of a single BoidOpTaskUpdatePayloadPatch

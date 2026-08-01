@@ -1996,6 +1996,88 @@ func TestBroker_BoidTaskList_WorkspaceIDMismatch(t *testing.T) {
 	}
 }
 
+// --- BoidOpProjectBehaviors tests ---
+
+func TestBroker_BoidProjectBehaviors_ProjectIDAllowed(t *testing.T) {
+	// project ref が同 workspace (AllowedProjectIDs に含まれる) → OK、
+	// resolver 解決後の UUID で executor が呼ばれる。
+	ctx := sandbox.TokenContext{
+		JobID:             "j1",
+		TaskID:            "t1",
+		ProjectID:         "proj-1",
+		WorkspaceID:       "ws-1",
+		AllowedProjectIDs: []string{"proj-1", "proj-2"},
+		Role:              testRoleGate,
+	}
+	broker, exec := newBrokerForListTest(t)
+	policies := map[string]sandbox.BuiltinPolicy{
+		"boid": {
+			AllowedOps:      map[string]struct{}{string(sandbox.BoidOpProjectBehaviors): {}},
+			AllowedCwdRoots: []string{"/tmp"},
+		},
+	}
+	token := broker.Register(map[string]sandbox.CommandDef{}, policies, ctx)
+
+	resp := broker.Handle(&sandbox.ExecRequest{
+		Command: "boid",
+		Cwd:     "/tmp",
+		Token:   token,
+		Boid: &sandbox.BoidRequest{
+			Op:        sandbox.BoidOpProjectBehaviors,
+			ProjectID: "proj-2",
+		},
+	})
+	if resp.ExitCode != 0 {
+		t.Fatalf("same-workspace project should be allowed, got exit=%d stderr=%q", resp.ExitCode, resp.Stderr)
+	}
+	if len(exec.calls) != 1 || exec.calls[0].ProjectID != "proj-2" {
+		t.Fatalf("executor should be called with ProjectID=proj-2, calls=%+v", exec.calls)
+	}
+}
+
+func TestBroker_BoidProjectBehaviors_ProjectIDDenied(t *testing.T) {
+	// project ref が異 workspace → エラー、executor は呼ばれない。
+	ctx := sandbox.TokenContext{
+		JobID:             "j1",
+		TaskID:            "t1",
+		ProjectID:         "proj-1",
+		WorkspaceID:       "ws-1",
+		AllowedProjectIDs: []string{"proj-1"},
+		Role:              testRoleGate,
+	}
+	broker, exec := newBrokerForListTest(t)
+	policies := map[string]sandbox.BuiltinPolicy{
+		"boid": {
+			AllowedOps:      map[string]struct{}{string(sandbox.BoidOpProjectBehaviors): {}},
+			AllowedCwdRoots: []string{"/tmp"},
+		},
+	}
+	token := broker.Register(map[string]sandbox.CommandDef{}, policies, ctx)
+
+	resp := broker.Handle(&sandbox.ExecRequest{
+		Command: "boid",
+		Cwd:     "/tmp",
+		Token:   token,
+		Boid: &sandbox.BoidRequest{
+			Op:        sandbox.BoidOpProjectBehaviors,
+			ProjectID: "other-proj",
+		},
+	})
+	if resp.ExitCode == 0 {
+		t.Fatal("cross-workspace project ref should be denied")
+	}
+	if !strings.Contains(resp.Stderr, "workspace") {
+		t.Errorf("error should mention workspace, got %q", resp.Stderr)
+	}
+	if len(exec.calls) != 0 {
+		t.Fatal("executor should not be called on denied request")
+	}
+}
+
+func TestBroker_BoidProjectBehaviors_PolicyReject(t *testing.T) {
+	assertBoidOpRejectedByPolicy(t, &sandbox.BoidRequest{Op: sandbox.BoidOpProjectBehaviors, ProjectID: "proj-1"})
+}
+
 func TestBroker_BoidTaskList_AutoInjectWorkspaceID(t *testing.T) {
 	// 両方未指定 + entry.WorkspaceID 非空 → WorkspaceID を自動 inject
 	ctx := sandbox.TokenContext{

@@ -37,5 +37,9 @@ const (
 	// (docs/plans/phase5-shim-and-task-context.md).
 	OpBoidTaskUpdatePayloadPatch = "task_update_payload_patch"
 
+	// OpBoidProjectBehaviors backs `boid project behaviors` from inside the
+	// sandbox (docs/plans/workspace-default-project.md follow-up).
+	OpBoidProjectBehaviors = "project_behaviors"
+
 	OpFetchGet = "get"
 )
