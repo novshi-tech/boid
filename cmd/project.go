@@ -103,9 +103,12 @@ Example:
   boid project init . --workspace main           # bake "--workspace=main" into the printed guidance
   boid project init . --agent codex              # bake a non-default agent
 `,
-	// scopeLocal — same "境界越えで壊れる" rationale as projectAddCmd above:
-	// [dir] is a local filesystem path the daemon resolves against its own
-	// host.
+	// scopeLocal: [dir] is a local filesystem path the wizard writes
+	// .boid/project.yaml under directly (docs/plans/release-onboarding.md
+	// 穴 7/PR6 — this command no longer sends [dir] to the daemon at all;
+	// it only scaffolds locally and prints git-URL registration guidance),
+	// so it only makes sense resolved against whatever host this CLI
+	// process itself is running on.
 	Args:        cobra.MaximumNArgs(1),
 	Annotations: map[string]string{scopeAnnotationKey: scopeLocal},
 	RunE:        runProjectInit,

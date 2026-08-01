@@ -805,10 +805,14 @@ func extractLegacyWorkspaceKitRefs(raw []byte) (kitRefs []string, rest []byte, e
 // rather than an error — the caller's own follow-up assign call is what
 // actually needs slug to exist, and will surface a sharp error if it still
 // does not. Shared by ensureWorkspaceExistsForAssign (`boid workspace
-// assign`) and ensureWorkspaceExistsGetOrCreate (`boid project add/init
-// --workspace`, MAJOR 4 codex review) — the two differ only in what
-// metaYAML (if any) they create from and how they describe the source in
-// the printed note.
+// assign`) and ensureWorkspaceExistsGetOrCreate (`boid project add
+// --workspace`, MAJOR 4 codex review — `project init --workspace` no
+// longer calls this at all as of docs/plans/release-onboarding.md 穴 7/PR6;
+// its --workspace flag only feeds the `boid project add` command it prints
+// as guidance, so the actual get-or-create happens later, inside that real
+// `project add` invocation) — the two differ only in what metaYAML (if
+// any) they create from and how they describe the source in the printed
+// note.
 func postWorkspaceCreateBestEffort(c *client.Client, slug string, metaYAML []byte, out io.Writer, sourceDescription string) {
 	body, err := buildWorkspaceCreateBody(slug, metaYAML)
 	if err != nil {
