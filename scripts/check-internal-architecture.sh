@@ -32,6 +32,7 @@ current_allowed=(
   server
   skills
   timeline
+  version
   yamlutil
 )
 
@@ -61,6 +62,7 @@ target_allowed=(
   server
   skills
   timeline
+  version
   yamlutil
 )
 

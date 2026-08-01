@@ -253,8 +253,10 @@ type workspaceHomeMigrationRecord struct {
 	// its mind.
 	StartedAt time.Time `json:"started_at"`
 
-	// BoidVersion mirrors workspaceHomeMarker.BoidVersion and is empty for the
-	// same reason (no build-time version stamping exists in this repo yet).
+	// BoidVersion mirrors workspaceHomeMarker.BoidVersion: internal/version.
+	// Version() of the daemon that wrote this record — an image-build ldflags
+	// override, a go-install module version, or "" for a build with neither
+	// (docs/plans/release-onboarding.md 穴2).
 	BoidVersion string `json:"boid_version,omitempty"`
 }
 
