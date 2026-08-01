@@ -69,10 +69,28 @@ func TestAllCommandsHaveScopeAnnotation(t *testing.T) {
 //   - `check`: pinned to scopeLocal — its exec.LookPath/unshare probes
 //     inspect the machine the CLI process runs on, which only coincides
 //     with the daemon's host under today's UNIX-socket-only transport.
-//   - `project init` / `project reload`: pinned to scopeLocal per the plan
-//     doc's "境界越えで壊れる" row — each resolves a local filesystem path (or
-//     a project's stored WorkDir) against the daemon's own host, which only
-//     works because there is no remote daemon transport yet.
+//   - `project reload`: pinned to scopeLocal per the plan doc's "境界越えで
+//     壊れる" row — it re-reads every registered project's .boid/
+//     project.yaml from its stored WorkDir and re-captures each one's git
+//     origin remote, both of which only resolve correctly against the
+//     daemon's own host filesystem.
+//   - `project init`: RECLASSIFIED to scopeNeutral by docs/plans/
+//     release-onboarding.md 穴 7/PR6 (codex round-21 review) — it used to
+//     be scopeLocal for the identical "resolves [dir] against the
+//     daemon's own host" reason as `project reload` above, back when it
+//     also registered the scaffolded project with the daemon
+//     (POST /api/projects, work_dir-based). That registration call is
+//     gone: `project init` now only scaffolds [dir] locally (on whatever
+//     host the CLI process itself runs on) and prints git-URL
+//     registration guidance — it never calls client.FromContext or
+//     resolves a profile at all. scopeLocal's contract is stricter than
+//     that: root.go's PersistentPreRunE hard-rejects the command
+//     outright whenever the active profile is a remote (https-scheme)
+//     one, appropriate for genuine "this daemon, this host" commands
+//     (start/stop/gc) but wrong for one that has no opinion on daemons or
+//     profiles at all — a user on a remote profile could no longer reach
+//     the wizard under scopeLocal. scopeNeutral (same as login/logout,
+//     cmd/login.go) is the correct fit now.
 //   - `project add`: RECLASSIFIED to scopeRemote by docs/plans/
 //     volume-only-daemon.md §論点a — this is the exact cutover the comment
 //     above used to predict ("Phase 6 is expected to move this to
@@ -144,13 +162,17 @@ var expectedScopeAnnotations = map[string]string{
 	"boid workspace edit":       scopeRemote,
 	"boid workspace export":     scopeRemote,
 	// import-home reads a LOCAL directory to build its payload and is still
-	// scopeRemote, unlike `project init` / `project reload`, which also read a
-	// local path and are scopeLocal. The axis is whose filesystem the path has
-	// to be on: those two hand the DAEMON a path it opens itself (so they only
-	// work while CLI and daemon share a host), while import-home opens it in
-	// this process and streams the BYTES — which is exactly why PR8's payload
-	// is a tar stream rather than a bind mount (docs/plans/
-	// workspace-home-volume-persistence.md 論点 f).
+	// scopeRemote, unlike `project reload`, which also reads a local path
+	// (a project's stored WorkDir) and is scopeLocal. The axis is whose
+	// filesystem the path has to be on: `project reload` hands the DAEMON
+	// a path it opens itself (so it only works while CLI and daemon share
+	// a host), while import-home opens it in this process and streams the
+	// BYTES — which is exactly why PR8's payload is a tar stream rather
+	// than a bind mount (docs/plans/workspace-home-volume-persistence.md
+	// 論点 f). (`project init` used to be the scopeLocal comparison point
+	// here too, but docs/plans/release-onboarding.md 穴 7/PR6 reclassified
+	// it to scopeNeutral — see cmd/project.go's own annotation comment —
+	// since it no longer hands the daemon anything at all.)
 	"boid workspace import-home": scopeRemote,
 	// The init-script quartet (PR9 of
 	// docs/plans/workspace-home-volume-persistence.md, 論点 d). scopeRemote on
@@ -174,7 +196,6 @@ var expectedScopeAnnotations = map[string]string{
 	"boid fetch":           scopeLocal,
 	"boid gc":              scopeLocal,
 	"boid init":            scopeLocal,
-	"boid project init":    scopeLocal,
 	"boid project migrate": scopeLocal,
 	// workspace import is a retired, always-failing stub (2026-07-28) — it no
 	// longer talks to a daemon at all, so it is scopeLocal like `boid init`
@@ -200,6 +221,13 @@ var expectedScopeAnnotations = map[string]string{
 	// when profile resolution itself would otherwise fail.
 	"boid login":  scopeNeutral,
 	"boid logout": scopeNeutral,
+	// `project init` (docs/plans/release-onboarding.md 穴 7/PR6, codex
+	// round-21 review): reclassified from scopeLocal — see cmd/project.go's
+	// own annotation comment and this file's "境界越えで壊れる" section
+	// above for the full reasoning. It never calls client.FromContext or
+	// resolves a profile, so it must work regardless of which profile
+	// (including a remote https one) happens to be active.
+	"boid project init": scopeNeutral,
 	// docs/plans/release-onboarding.md PR1 (codex review round 1 of this
 	// PR): reads internal/version only (ldflags override or
 	// debug.ReadBuildInfo()), never the daemon's HTTP API, and its result

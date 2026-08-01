@@ -26,9 +26,93 @@ const (
 	// but binding to loopback keeps it off other interfaces by default; expose
 	// it deliberately with `boid web set-addr`. Cloudflare Tunnel connects to
 	// 127.0.0.1 so the documented tunnel flow is unaffected.
+	//
+	// This is the bare-host default only — see defaultContainerStartHTTPAddr
+	// below for why the compose daemon needs a different one (穴 8,
+	// docs/plans/release-onboarding.md).
 	defaultStartHTTPAddr = "127.0.0.1:8080"
-	daemonSocketTimeout  = 10 * time.Second
+
+	// defaultContainerStartHTTPAddr is the fallback used instead of
+	// defaultStartHTTPAddr when running under build/container/compose.yml
+	// (穴 8 (a), docs/plans/release-onboarding.md). A fresh boid_state
+	// volume has no web.http_addr in config.yaml, so a bare `boid start`
+	// fell back to defaultStartHTTPAddr's 127.0.0.1 — binding the
+	// CONTAINER's own loopback, which compose.yml's port publish
+	// (`"${BOID_WEB_PORT:-8080}:8080"`) cannot make reachable from the
+	// host: port publish only forwards to a bound INTERFACE inside the
+	// container, and 127.0.0.1 there is not one. The result was a fresh
+	// install's `http://localhost:8080` hanging with nothing listening on
+	// the host-visible side at all. Binding all interfaces inside the
+	// container is safe here the same way it already is for the CLIAddr
+	// listener (BOID_CLI_TOKEN-gated) and the data/control API
+	// (auth.NewTCPAPIAuthMiddleware): the container's own network
+	// namespace is not directly host-reachable except through compose's
+	// explicit port publish and the job-isolated boid_internal network,
+	// so "all interfaces inside the container" is not "all interfaces on
+	// the host". Selected only when runningUnderComposeContainer() is
+	// true — see that function's own doc comment for the detection
+	// story (Blocker, codex round-6 review: BOID_LOG_STDOUT alone is not
+	// a safe container marker on its own).
+	defaultContainerStartHTTPAddr = "0.0.0.0:8080"
+
+	daemonSocketTimeout = 10 * time.Second
 )
+
+// containerSentinelPaths are files a container RUNTIME itself creates
+// inside the container's filesystem — /.dockerenv for Docker,
+// /run/.containerenv for Podman (build/container/compose.yml's daemon
+// service can run under either) — as opposed to anything an operator's
+// own environment/config could set. Presence of either is treated as
+// "this process's root filesystem really is a container", independent of
+// what any env var claims.
+var containerSentinelPaths = []string{"/.dockerenv", "/run/.containerenv"}
+
+// runningUnderComposeContainer reports whether this process is very
+// likely the build/container/compose.yml daemon service specifically —
+// used ONLY to pick buildStartConfig's HTTP bind fallback (穴 8 (a),
+// docs/plans/release-onboarding.md), never for anything security-gating.
+//
+// Requires BOTH signals, not just one (Blocker, codex round-6 review of
+// an earlier revision that used BOID_LOG_STDOUT alone):
+//   - daemon.ShouldLogToStdout() (BOID_LOG_STDOUT=1): compose sets this,
+//     but so could a bare-host systemd unit wanting the same "a
+//     supervisor already owns my stdout/session lifecycle" behavior
+//     (that flag's own doc comment) for reasons having nothing to do
+//     with containers — on its own it is not a safe "flip the default
+//     bind address to 0.0.0.0" trigger, since a host operator setting it
+//     would unexpectedly expose a previously loopback-only listener to
+//     every host interface.
+//   - a container-runtime sentinel file (containerSentinelPaths): unlike
+//     an env var, a bare-host process cannot set this — it is created by
+//     the container runtime itself inside the container's OWN root
+//     filesystem. (A prior codex review, internal/dispatcher/
+//     daemon_state_volume.go's "Why this replaced the 'am I in a
+//     container?' test" section, found a sentinel-file check alone
+//     unreliable across runtimes for a DIFFERENT, security-relevant
+//     decision — containerd/CRI and Kubernetes ship no such sentinel, so
+//     a FALSE NEGATIVE there silently disabled a security protection.
+//     The risk shape here is the opposite and much smaller: a false
+//     negative just leaves this fallback at today's existing
+//     loopback-only default, exactly the pre-PR6 status quo the
+//     documented `boid config set web.http_addr` override already
+//     handles — not a new failure mode.)
+//
+// Requiring both collapses the false-positive risk to needing an
+// operator who is BOTH running under a real container runtime AND has
+// manually exported BOID_LOG_STDOUT=1 for an unrelated reason — a
+// combination compose's own daemon service already satisfies, but a bare
+// host essentially cannot reach by accident.
+func runningUnderComposeContainer() bool {
+	if !daemon.ShouldLogToStdout() {
+		return false
+	}
+	for _, p := range containerSentinelPaths {
+		if _, err := os.Stat(p); err == nil {
+			return true
+		}
+	}
+	return false
+}
 
 var startCmd = &cobra.Command{
 	Use:   "start",
@@ -197,7 +281,15 @@ func buildStartConfig(opts startConfigOptions) (server.Config, error) {
 	}
 	cfg.HTTPAddr = appCfg.Web.HTTPAddr
 	if cfg.HTTPAddr == "" {
-		cfg.HTTPAddr = defaultStartHTTPAddr
+		// 穴 8 (a): default to 0.0.0.0 only under compose's OWN container,
+		// never on a bare host — see runningUnderComposeContainer's own
+		// doc comment for why a single env var was not enough (Blocker,
+		// codex round-6 review).
+		if runningUnderComposeContainer() {
+			cfg.HTTPAddr = defaultContainerStartHTTPAddr
+		} else {
+			cfg.HTTPAddr = defaultStartHTTPAddr
+		}
 	}
 	cfg.AllowedDomains = append(cfg.AllowedDomains, appCfg.Sandbox.AllowedDomains...)
 	cfg.LogLevel = appCfg.Log.Level

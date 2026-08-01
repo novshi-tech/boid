@@ -421,12 +421,15 @@ func (s *ProjectAppService) CreateProject(workDir string) (*orchestrator.Project
 // CreateProjectFromGitURL registers a project from a git remote URL
 // (docs/plans/volume-only-daemon.md §論点a: `boid project add <git-url>
 // --workspace=<name> [--name=<project-name>]`, the CLI form's server-side
-// counterpart). Unlike CreateProject (still used by `boid project init`'s
-// dir-based flow — see cmd/project.go's own doc comment on why that path is
-// left alone for this PR), workspaceSlug is REQUIRED, not eagerly defaulted:
-// there is no host-filesystem project.yaml sitting around to "just register
-// as-is" here, so an unassigned bare clone would be an orphaned volume
-// directory with no way back to it.
+// counterpart). Unlike CreateProject (the legacy work_dir-based endpoint —
+// `boid project init` no longer calls it at all as of docs/plans/
+// release-onboarding.md 穴 7/PR6; it only scaffolds locally and prints
+// guidance pointing back at THIS git-URL flow. CreateProject itself is kept
+// around as a lightweight test-fixture registration primitive, per
+// cmd/project.go's own doc comment on projectAddCmd), workspaceSlug is
+// REQUIRED, not eagerly defaulted: there is no host-filesystem project.yaml
+// sitting around to "just register as-is" here, so an unassigned bare clone
+// would be an orphaned volume directory with no way back to it.
 //
 // This follows the plan doc's §論点a unresolved-point recommendation
 // ("Failure means the register itself fails, no half-added project"):
@@ -472,7 +475,7 @@ func (s *ProjectAppService) CreateProjectFromGitURL(ctx context.Context, gitURL,
 	}
 	gitURL = normalizedURL
 	if strings.TrimSpace(workspaceSlug) == "" {
-		return nil, &StatusError{Code: http.StatusBadRequest, Message: "workspace is required (git-URL registration has no host directory to eagerly default into the default workspace the way `boid project init` does)"}
+		return nil, &StatusError{Code: http.StatusBadRequest, Message: "workspace is required (git-URL registration has no host directory to eagerly default a workspace assignment from — unlike the now-removed legacy dir-based CreateProject; `boid project init` itself no longer registers a project at all, docs/plans/release-onboarding.md 穴 7)"}
 	}
 	if err := orchestrator.ValidWorkspaceSlug(workspaceSlug); err != nil {
 		return nil, &StatusError{Code: http.StatusBadRequest, Message: err.Error()}

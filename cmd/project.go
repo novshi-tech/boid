@@ -1,8 +1,8 @@
 package cmd
 
 import (
+	"errors"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -79,31 +79,61 @@ this command.
 
 var projectInitSubCmd = &cobra.Command{
 	Use:   "init [dir]",
-	Short: "Initialize a new boid project interactively and register it",
+	Short: "Scaffold a new boid project and print the push-and-register next steps",
 	Long: `Initialize a new boid project in the current directory (or [dir]).
 
 Prompts for a project name, then writes .boid/project.yaml with the canonical
-supervisor / executor task_behaviors (agent=claude-code by default) and
-registers the project with the running boid daemon. project.yaml only holds
-id / name / task_behaviors / default_task_behavior — runtime environment
-config (` + "`host_commands`" + ` / ` + "`env`" + ` / ` + "`additional_bindings`" + ` / ` + "`allowed_domains`" + `)
+supervisor / executor task_behaviors (agent=claude-code by default).
+project.yaml only holds id / name / task_behaviors / default_task_behavior —
+runtime environment config (` + "`host_commands`" + ` / ` + "`env`" + ` / ` + "`additional_bindings`" + ` / ` + "`allowed_domains`" + `)
 lives separately in a workspace; set it up with
-` + "`boid workspace create/edit/import`" + ` (see the --workspace flag below).
+` + "`boid workspace create/edit/import`" + `.
 
-Optionally assigns the project to a workspace (get-or-create: creates a DB
-row for the slug even if no workspace.yaml exists yet).
+Does NOT register the project with the daemon — a fresh scaffold has not
+been pushed anywhere yet, and registration only works from a git URL
+(` + "`boid project add <git-url>`" + `, docs/plans/release-onboarding.md 穴 7). After the
+scaffold is written, this command prints the exact next commands to run:
+commit + push, then ` + "`boid project add <url> --workspace=<name>`" + `. --workspace here
+only feeds that printed example command (defaulting to "default" when
+omitted, so the printed command is directly runnable); it is NOT itself an
+API call.
 
 Example:
   boid project init                              # initialize in current dir
   boid project init ./my-project                 # initialize in ./my-project
-  boid project init . --workspace main           # also assign to workspace "main"
+  boid project init . --workspace main           # bake "--workspace=main" into the printed guidance
   boid project init . --agent codex              # bake a non-default agent
 `,
-	// scopeLocal — same "境界越えで壊れる" rationale as projectAddCmd above:
-	// [dir] is a local filesystem path the daemon resolves against its own
-	// host.
+	// scopeNeutral, not scopeLocal (Major, codex round-21 review of an
+	// earlier revision): runProjectInit never calls client.FromContext
+	// or resolves a profile at all — it only reads/writes [dir] on
+	// whatever host this CLI process itself runs on and prints text
+	// (docs/plans/release-onboarding.md 穴 7/PR6 removed its one-time
+	// daemon registration call entirely). scopeLocal's own contract
+	// (root.go's PersistentPreRunE, isLocalScope) is stricter than that:
+	// it hard-rejects the command outright whenever the active profile
+	// is a remote (https-scheme) one, BEFORE RunE ever runs — appropriate
+	// for a command whose job genuinely depends on "this daemon, this
+	// host" (start/stop/gc), but not for one that ignores the profile
+	// entirely. A user whose default/active profile happens to be a
+	// remote one could no longer reach the wizard at all under
+	// scopeLocal, for a command that has no opinion on daemons or
+	// profiles whatsoever. scopeNeutral (the same classification
+	// login/logout use, cmd/login.go) is the correct fit: "requires no
+	// profile resolution at all."
+	//
+	// annotationSkipAutostart=skip (Blocker, codex round-16 review): this
+	// command's whole job used to require a running daemon (the
+	// POST /api/projects registration call this PR removed), which is
+	// why cmd/root.go's PersistentPreRunE would otherwise autostart a
+	// bare-host daemon by default — but runProjectInit no longer talks
+	// to the daemon in ANY way. Left unset, a user with no daemon running
+	// yet (or BOID_NO_AUTOSTART=1, or a non-default socket) would have
+	// `project init` fail or spin up an unwanted bare-host daemon before
+	// ever reaching the wizard, for a command that no longer needs one
+	// at all.
 	Args:        cobra.MaximumNArgs(1),
-	Annotations: map[string]string{scopeAnnotationKey: scopeLocal},
+	Annotations: map[string]string{scopeAnnotationKey: scopeNeutral, annotationSkipAutostart: "skip"},
 	RunE:        runProjectInit,
 }
 
@@ -177,7 +207,7 @@ var projectFetchCmd = &cobra.Command{
 func init() {
 	projectAddCmd.Flags().StringVar(&projectAddWorkspace, "workspace", "", "Workspace to register the project into (required for a git-URL <git-url>; optional, get-or-create, for a legacy <dir>)")
 	projectAddCmd.Flags().StringVar(&projectAddName, "name", "", "Project name override, git-URL form only (default: derived from the URL's last path component)")
-	projectInitSubCmd.Flags().StringVar(&projectInitWorkspace, "workspace", "", "Assign the project to a workspace after initialization (get-or-create)")
+	projectInitSubCmd.Flags().StringVar(&projectInitWorkspace, "workspace", "", "Workspace name to bake into the printed `boid project add` guidance (no daemon call is made by project init itself)")
 	projectInitSubCmd.Flags().StringVar(&projectInitAgent, "agent", "", "Harness agent baked into each behavior's default_instruction (default: claude-code)")
 	projectShowCmd.Flags().BoolVar(&projectShowExplain, "explain", false, "Show field-by-field provenance (project.yaml vs workspace default vs unset)")
 
@@ -315,7 +345,25 @@ func runProjectFetch(cmd *cobra.Command, args []string) error {
 	})
 }
 
-// runProjectInit runs the interactive init wizard then registers and (optionally) assigns workspace.
+// runProjectInit runs the interactive init wizard to scaffold
+// .boid/project.yaml, then prints the "push it, then register the URL"
+// three-step guidance the plan doc's 目標オンボーディングフロー spells out
+// (docs/plans/release-onboarding.md 穴 7 / PR6).
+//
+// This used to also register the project with the daemon, POSTing the
+// host-local projectDir straight to POST /api/projects (the work_dir-based
+// CreateProject). Under the volume-only compose daemon that directory does
+// not exist inside the daemon's own container, so the call always 400'd —
+// and the error-recovery message it printed on failure ("boid project add
+// .") pointed at a form `project add` no longer even accepts (PR-4 removed
+// host-directory registration entirely). The only registration path left
+// that actually works is POST /api/projects/git
+// (CreateProjectFromGitURLRequest) via `boid project add <git-url>`, and
+// that requires the scaffold to already be pushed to a remote. So
+// scaffolding and registration can no longer be one command: project init's
+// job now ends at "write the scaffold, tell the user exactly what to run
+// next", and registration itself is the separate, explicit `project add`
+// step the user runs after pushing.
 func runProjectInit(cmd *cobra.Command, args []string) error {
 	dir := "."
 	if len(args) > 0 {
@@ -327,10 +375,58 @@ func runProjectInit(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	// Validate --workspace BEFORE any side effect (scaffold write) below
+	// (Major, codex round-2 review of this PR): the printed guidance's
+	// `boid project add <url> --workspace=<slug>` target itself requires
+	// ValidWorkspaceSlug (runProjectAddGitURL, cmd/project.go's own
+	// --workspace validation) — an invalid slug like "Team_A" would let
+	// `project init` succeed and write the scaffold, only for the exact
+	// command it just printed to unconditionally fail. Fail fast here
+	// instead, before touching the filesystem at all.
+	if projectInitWorkspace != "" {
+		if err := projectspec.ValidWorkspaceSlug(projectInitWorkspace); err != nil {
+			return fmt.Errorf("invalid --workspace value: %w", err)
+		}
+	}
+
 	// Abort if project.yaml already exists.
 	projectYAMLPath := filepath.Join(projectDir, ".boid", "project.yaml")
 	if _, err := os.Stat(projectYAMLPath); err == nil {
 		return fmt.Errorf(".boid/project.yaml already exists in %s; remove it first", projectDir)
+	}
+
+	// Reject projectDir being NESTED inside a DIFFERENT, already-existing
+	// git repository (Major, codex round-15 review): if projectDir has no
+	// .git of its own but sits below some ANCESTOR directory's .git, the
+	// guidance's `git init` would create a brand-new, unrelated repo
+	// nested inside that ancestor — its own commit/push history has
+	// nothing to do with the ancestor repo's, a push to the ancestor's
+	// existing remote either fails outright (non-fast-forward/unrelated
+	// histories) or, on a DIFFERENT remote, ships a repo containing only
+	// the scaffold with none of the ancestor's already-committed source
+	// (the same "no real code for an agent to work on" problem the
+	// step-1 caveat above warns about, but silently self-inflicted
+	// here). Caught before the scaffold is even written.
+	if err := rejectIfNestedInExistingRepo(projectDir); err != nil {
+		return err
+	}
+
+	// Reject an already-existing repo currently in DETACHED HEAD state
+	// (Major, codex round-18 review): the printed guidance's `git push
+	// '<git-url>' HEAD` has no branch name to infer a destination from
+	// when HEAD is detached — git itself refuses ("You are not currently
+	// on a branch... push has no configured refspec"), and the earlier
+	// `git init` in that same chain does not check out a branch either
+	// (it is a safe no-op on an already-initialized repo, not a
+	// checkout). Caught here, before the scaffold commit, rather than
+	// leaving the user stuck mid-chain with a scaffold commit already
+	// made but nowhere to push it to.
+	if isDetachedHead(projectDir) {
+		// shellQuoteSingle(projectDir) (Minor, codex round-19 review): a
+		// projectDir containing spaces or shell metacharacters would
+		// otherwise break the suggested recovery command if copy-pasted
+		// verbatim.
+		return fmt.Errorf("%s is a git repository in detached HEAD state; check out (or create) a branch first — e.g. `git -C %s checkout -b <branch-name>` — then run `boid project init` again", projectDir, shellQuoteSingle(projectDir))
 	}
 
 	w := &initwizard.Wizard{
@@ -343,57 +439,314 @@ func runProjectInit(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	// Register with daemon.
-	c := client.FromContext(cmd.Context())
-	var p projectspec.Project
-	if err := c.Do("POST", "/api/projects", map[string]string{"work_dir": projectDir}, &p); err != nil {
-		fmt.Fprintf(os.Stderr, "warning: could not register project with boid server: %v\n", err)
-		fmt.Fprintln(os.Stderr, "Run 'boid project add .' once the server is running.")
+	out := cmd.OutOrStdout()
+
+	// The 目標オンボーディングフロー step 5 example registers into the
+	// "default" workspace; do the same here when --workspace was not
+	// given so the printed command is directly runnable (Major, codex
+	// round-1 review of this PR: a placeholder like "--workspace=<workspace>"
+	// is not "the exact next command" the help text promises, since
+	// --workspace is a required flag on `project add`).
+	workspaceSlug := "default"
+	if projectInitWorkspace != "" {
+		workspaceSlug = projectInitWorkspace
+	}
+	workspaceFlag := fmt.Sprintf("--workspace=%s", workspaceSlug)
+
+	// cdPrefix makes every printed git command target projectDir
+	// explicitly, regardless of the shell's own cwd when the user pastes
+	// the guidance in (Blocker, codex round-1 review: `[dir]` being a
+	// path other than "." meant the printed `git init`/`git add`/`git
+	// commit` silently ran against the shell's cwd, not projectDir).
+	cdPrefix := fmt.Sprintf("cd %s && ", shellQuoteSingle(projectDir))
+
+	// A single, idempotent, one-shot chain — NOT a branch on whether
+	// projectDir already has a repo/origin, and NOT touching the user's
+	// `origin` remote configuration at all.
+	//
+	// Two earlier revisions of this guidance tried progressively more
+	// clever things with git remote state: first detecting an existing
+	// `origin` and printing its URL back (four rounds of review found
+	// shell-injection, parent-repo misattribution, and file://-as-a-
+	// real-remote bugs in that), then unconditionally creating/repointing
+	// `origin` itself via `git remote add`/`set-url` plus normalizing
+	// `remote.origin.pushurl` (two MORE rounds found a stale separate
+	// push URL, then multiple stale push URLs, still reaching the wrong
+	// remote). Every one of those bugs came from the same root cause:
+	// mutating or depending on `origin`, a piece of PERSISTENT repo state
+	// this command has no business assuming anything about, let alone
+	// overwriting — an existing repository may deliberately have an HTTPS
+	// fetch / SSH push split, multiple push mirrors, or simply an
+	// `origin` the user does not want repointed just because they ran
+	// `project init` (Major, codex round-12 review of the remote-
+	// mutating design).
+	//
+	// The actual job here is narrower than "reconcile the user's git
+	// remote setup": push the scaffold to a URL, then tell the user to
+	// register that URL. A one-shot `git push <url> HEAD` does exactly
+	// that without creating, reading, or modifying any named remote at
+	// all — verified empirically to work identically whether `origin` is
+	// unset, already points elsewhere, or has any pushurl overrides,
+	// since none of that is even consulted.
+	//
+	//   - `git init`: always safe to re-run ("Reinitialized existing Git
+	//     repository..." if one already exists).
+	//   - `git add .boid/project.yaml && (git diff --cached --quiet --
+	//     .boid/project.yaml || git commit ... -- .boid/project.yaml)`:
+	//     the pathspec (Major, codex round-4 review, NARROWED to the
+	//     single file in round-9 review — a bare `.boid` pathspec sweeps
+	//     in every OTHER file already under .boid too, and an existing
+	//     repository is not guaranteed to have only scaffold content
+	//     there: this very repository's own .boid/ has files like
+	//     run-e2e-scenario.sh alongside project.yaml) scopes the commit
+	//     to exactly the ONE file this command just wrote, so it neither
+	//     sweeps in unrelated already-staged changes (anywhere in the
+	//     repo, or elsewhere under .boid) nor tries to commit when that
+	//     one file has no staged changes at all (the idempotent-rerun
+	//     case). `git diff --cached --quiet -- .boid/project.yaml` is
+	//     true (no output, exit 0) exactly when there is nothing new to
+	//     commit for that file — in that case the `||`'s right side (the
+	//     actual commit) is skipped entirely, rather than run and
+	//     rejected. Skipping vs. attempting-and-failing matters (Blocker,
+	//     codex round-6 review): if `git commit` DOES run and genuinely
+	//     fails for a real reason (a rejecting pre-commit hook, no
+	//     configured git identity, a required GPG signature that can't
+	//     be produced, ...), that must stop the whole chain — pushing
+	//     whatever HEAD already was would silently register a project
+	//     missing the scaffold this command just wrote. See the
+	//     all-`&&` note below for how that's wired.
+	//   - `git push '<git-url>' HEAD`: a one-shot push straight to the
+	//     URL, no `-u`/tracking, no named remote involved at all (Major,
+	//     codex round-12 review, replacing the previous origin-mutating
+	//     design described above). Pushes the CURRENT branch under its
+	//     own name — not a guess at "the remote's default branch", which
+	//     `project init` has no way to know and no business overriding.
+	//     Scope boundary (Blocker, codex round-6/round-8 review): if that
+	//     branch is not what the remote treats as default, the daemon's
+	//     own clone-and-read-project.yaml step (dispatcher.CloneBareRepo,
+	//     project_bare_repo.go) reads .boid/project.yaml off the
+	//     REMOTE'S default branch, not this one, and registration will
+	//     miss the scaffold — regardless of WHY that branch differs from
+	//     default (a fresh remote that never auto-set one, or an
+	//     established remote whose default is simply a different branch
+	//     than the one currently checked out). There is no portable
+	//     client-side git command that can query OR set a remote's
+	//     default branch/HEAD symref over the wire in the general case —
+	//     only something running ON that remote (a forge's own UI/API,
+	//     or direct server access) can, so this is surfaced as an
+	//     explicit precondition to verify (see the printed caveat below)
+	//     rather than something silently handled here.
+	//
+	// Everything below `cd <dir> &&` is grouped in one `{ ...; }` block on
+	// a SINGLE line, not multiple printed lines each expected to run in
+	// projectDir (Blocker, codex round-3 review of an earlier revision):
+	// a bare `cd` on its own printed line only carries over to LATER
+	// printed lines if the user happens to paste every line into the
+	// same still-open shell — copied separately, re-run individually, or
+	// run from a fresh terminal, a later `git push` on its own line would
+	// silently target the wrong (or no) directory. Within the block,
+	// EVERY step is joined with `&&`, not `;` (Blocker, codex round-10
+	// review of an earlier revision that `;`-separated `git init` from
+	// the rest): if `git init` itself fails — projectDir sits inside an
+	// unrelated parent repository and permissions/git config make a
+	// nested repo impossible, say — falling through to `git add` anyway
+	// would let git's own upward repository search silently operate on
+	// that PARENT repo instead, the exact "wrong repo" failure mode
+	// Blocker 1 (round-1 review) already fixed once for the origin-URL
+	// misattribution case. A genuine failure at ANY step here must stop
+	// the whole chain. The one exception remains the intentionally
+	// SKIPPABLE "nothing to commit" case, which is handled by the `git
+	// diff --cached --quiet ||` guard itself making that inner group
+	// exit 0 (not by relaxing the outer `&&` chain) — so an ACTUAL commit
+	// failure (a rejecting hook, no git identity, ...) still stops the
+	// chain before `git push` ever runs.
+	// '<git-url>' (single-quoted), not a bare <git-url> (Major, codex
+	// round-7 review): this placeholder is meant to be replaced in place
+	// by the user's real URL, but left as-is or replaced carelessly a
+	// bare `<`/`>` is shell redirection syntax, and even a correctly
+	// substituted URL can itself contain `&`, `;`, `#`, or other
+	// characters a shell would otherwise split or reinterpret. Keeping
+	// the quotes in the printed text means they naturally survive a
+	// literal find-and-replace of the placeholder text with a real URL.
+	//
+	// Known residual limitation (Major, codex round-19 review): a URL
+	// that itself contains a literal single quote could still break out
+	// of these quotes when substituted in by hand — shellQuoteSingle
+	// can't help here since it's a STATIC template the USER edits after
+	// printing, not code-generated output this function controls at
+	// print time. Accepted rather than redesigning this into an
+	// interactive `read`-based prompt: no real git forge (GitHub,
+	// GitLab, a bare git server's path, ...) produces a URL containing
+	// `'` in practice, so this is a theoretical self-inflicted edge case
+	// (a user manually crafting a URL with a quote in it), not something
+	// a legitimate git remote URL would ever trigger by accident.
+	// Explicit "your actual code, not just the scaffold" caveat (Major,
+	// codex round-13 review): the chain below deliberately commits ONLY
+	// .boid/project.yaml (the file-scoped pathspec fix from round-9,
+	// still load-bearing to avoid sweeping in unrelated staged changes)
+	// — it does NOT `git add .` the rest of the project. That is
+	// correct for a genuinely brand-new, still-empty scaffold (nothing
+	// else exists yet to accidentally leave behind), but silently wrong
+	// for `project init` run inside an existing, not-yet-pushed
+	// codebase: the daemon clones whatever URL step 3 registers, and a
+	// remote containing only .boid/project.yaml with no actual project
+	// source leaves every agent dispatched against it with nothing to
+	// work on. This can't safely be automated here (a blanket `git add
+	// .` reintroduces exactly the "sweeps in unrelated/sensitive staged
+	// content" problem round 4/9 fixed for the scaffold's own commit),
+	// so it is surfaced as an explicit step instead.
+	// Push the CURRENT branch under its own name — NEVER force content
+	// onto the remote's default branch directly (Blocker, codex
+	// round-16 review of an earlier revision that pushed `HEAD:
+	// $DEFAULT_REF` unconditionally): on an established repository with
+	// branch protection, that either gets rejected outright, or — worse,
+	// if it succeeds — ships every commit on the current feature branch
+	// (not just the scaffold) straight onto the protected default
+	// branch, bypassing PR review entirely. Landing the scaffold on the
+	// actual default branch is the USER's call (a PR/merge, exactly like
+	// any other change), not something this command should force
+	// unilaterally.
+	//
+	// What this CAN safely do is tell the user whether they need to take
+	// that extra step at all: `git ls-remote --symref <url> HEAD`
+	// determines the remote's actual default branch (round-15 review
+	// corrected an earlier claim that no portable client-side git
+	// command could do this — this is the same mechanism internal/
+	// dispatcher/bare_repo.go already uses server-side) purely to WARN,
+	// after the push, if the branch just pushed differs from it — never
+	// to redirect the push itself.
+	//
+	// Checked AFTER the push, not before (Blocker, codex round-17
+	// review): a genuinely fresh, empty repository on a REAL forge
+	// (GitHub, GitLab, ...) has its default branch auto-set by the
+	// forge's own server-side logic essentially immediately once the
+	// first push lands — so re-querying ls-remote AFTER pushing, not
+	// just once beforehand, is what lets a real forge's freshly-set
+	// default resolve at all. That same re-query is also what catches
+	// the DIFFERENT failure mode round-17 found: a plain self-hosted
+	// bare git server (`git init --bare` with no forge layered on top)
+	// never auto-sets its HEAD symref from a push — verified
+	// empirically, pushing "main" to one whose HEAD still points at the
+	// never-created "master" leaves HEAD dangling even after a
+	// successful push. An EMPTY $DEFAULT_REF after the push (as opposed
+	// to a MISMATCHED one) means exactly this: not "a fresh repo that
+	// will sort itself out", but a remote with no resolvable default at
+	// all, which registration would otherwise silently fail against.
+	fmt.Fprintln(out, "\nNext steps:")
+	fmt.Fprintln(out, "  1. Make sure your project's actual source code — not just this scaffold — is already committed and pushed to your remote. The daemon clones whatever URL you register in step 3, and an agent dispatched against it needs real code to work with.")
+	fmt.Fprintln(out, "  2. Commit the scaffold and push it to your remote (safe to run even if some of this is already done):")
+	fmt.Fprintf(out, `       %s{ git init && git add .boid/project.yaml && (git diff --cached --quiet -- .boid/project.yaml || git commit -m 'add boid project scaffold' -- .boid/project.yaml) && git push '<git-url>' HEAD && { DEFAULT_REF=$(git ls-remote --symref '<git-url>' HEAD 2>/dev/null | awk '$1=="ref:"{print $2}'); CURRENT_REF="refs/heads/$(git symbolic-ref --short HEAD)"; if [ -z "$DEFAULT_REF" ]; then echo "WARNING: this remote has no resolvable default branch (HEAD) even after this push -- a real forge (GitHub/GitLab/...) auto-sets one from a first push to an empty repository, but a plain self-hosted bare git server does not. Set it there (e.g. git symbolic-ref HEAD refs/heads/<branch> run directly on the remote, or the forge's settings UI/API) before running step 3, or registration will fail." >&2; elif [ "$DEFAULT_REF" != "$CURRENT_REF" ]; then echo "WARNING: pushed to $CURRENT_REF, but this remote's default branch is $DEFAULT_REF -- merge/PR it there before running step 3, or the daemon will not see .boid/project.yaml" >&2; fi; }; }`+"\n", cdPrefix)
+	fmt.Fprintln(out, "  3. Register the pushed URL with the running boid daemon:")
+	fmt.Fprintf(out, "       boid project add '<git-url>' %s\n", workspaceFlag)
+
+	return nil
+}
+
+// shellQuoteSingle wraps s in single quotes for safe use in a POSIX shell
+// command line, escaping any embedded single quote as '\” (close quote,
+// escaped literal quote, reopen quote) — the standard technique, since a
+// single-quoted string cannot itself contain an unescaped single quote.
+func shellQuoteSingle(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
+// gitTopLevel returns the resolved top-level directory of the git
+// repository dir sits in (which may be dir itself, or an ANCESTOR of it —
+// `git rev-parse --show-toplevel` walks upward same as any other git
+// command run with cwd=dir), or an error if dir is not inside a git
+// repository at all. The result is symlink-resolved, since git always
+// reports a symlink-resolved toplevel — callers comparing this against
+// dir should resolve dir the same way first (e.g. via filepath.
+// EvalSymlinks), or an otherwise-matching dir could spuriously compare
+// unequal to its own toplevel (a /tmp path on a system where /tmp itself
+// is a symlink, for instance).
+func gitTopLevel(dir string) (string, error) {
+	out, err := exec.Command("git", "-C", dir, "rev-parse", "--show-toplevel").Output()
+	if err != nil {
+		return "", fmt.Errorf("not a git repository: %w", err)
+	}
+	topLevel := strings.TrimSpace(string(out))
+	if resolved, err := filepath.EvalSymlinks(topLevel); err == nil {
+		return resolved, nil
+	}
+	return topLevel, nil
+}
+
+// rejectIfNestedInExistingRepo returns an error if projectDir sits inside
+// an existing, DIFFERENT git repository — see its only caller's own doc
+// comment (runProjectInit) for why that matters.
+//
+// Handles projectDir NOT EXISTING YET (Major, codex round-16 review of an
+// earlier revision): `git -C projectDir rev-parse --show-toplevel` simply
+// errors when projectDir doesn't exist — indistinguishable from "not
+// nested in any repo" — so `boid project init ./brand-new-subdir` inside
+// an existing repo sailed through this check uncaught (Wizard.Run creates
+// the directory itself via MkdirAll, after this check already passed).
+// Fixed by walking UP to the nearest ALREADY-EXISTING ancestor and running
+// the git check there instead: if that ancestor turns out to already be
+// inside a repo, then creating projectDir underneath it necessarily nests
+// inside that same repo too, regardless of how many not-yet-existing path
+// segments sit in between.
+func rejectIfNestedInExistingRepo(projectDir string) error {
+	existingAncestor := projectDir
+	for {
+		if _, err := os.Stat(existingAncestor); err == nil {
+			break
+		}
+		parent := filepath.Dir(existingAncestor)
+		if parent == existingAncestor {
+			break // reached the filesystem root without finding an existing dir
+		}
+		existingAncestor = parent
+	}
+
+	if existingAncestor == projectDir {
+		// projectDir itself already exists: the one EXCEPTION is
+		// projectDir being a git repo's own root (the "user already ran
+		// git init themselves" starter scenario) — only a DIFFERENT,
+		// enclosing repo is rejected.
+		resolvedProjectDir := projectDir
+		if resolved, err := filepath.EvalSymlinks(projectDir); err == nil {
+			resolvedProjectDir = resolved
+		}
+		if enclosingRoot, err := gitTopLevel(projectDir); err == nil && enclosingRoot != resolvedProjectDir {
+			return fmt.Errorf("%s is nested inside an existing git repository rooted at %s; run `boid project init` from that repository's root instead (or a location with no enclosing git repo at all)", projectDir, enclosingRoot)
+		}
 		return nil
 	}
 
-	// Optionally assign workspace (get-or-create).
-	if projectInitWorkspace != "" {
-		if err := assignProjectWorkspace(c, p.ID, projectInitWorkspace, cmd.OutOrStdout()); err != nil {
-			return err
-		}
-		p.WorkspaceID = projectInitWorkspace
-	}
-
-	fmt.Fprintf(cmd.OutOrStdout(), "project registered: %s (%s)\n", p.ID, p.Meta.Name)
-	if p.WorkspaceID != "" {
-		fmt.Fprintf(cmd.OutOrStdout(), "  workspace: %s\n", p.WorkspaceID)
+	// projectDir does not exist yet: it cannot possibly be a repo's own
+	// root (nothing there to have a .git of its own), so ANY enclosing
+	// repo found from its nearest existing ancestor means creating it
+	// would nest inside that repo.
+	if enclosingRoot, err := gitTopLevel(existingAncestor); err == nil {
+		return fmt.Errorf("%s does not exist yet and would be nested inside an existing git repository rooted at %s; run `boid project init` from that repository's root instead (or a location with no enclosing git repo at all)", projectDir, enclosingRoot)
 	}
 	return nil
 }
 
-// assignProjectWorkspace sends PUT /api/projects/<id>/workspace to link the
-// project to a workspace. get-or-create semantics: an empty workspace is
-// created for workspaceSlug first if it has no DB row yet
-// (ensureWorkspaceExistsGetOrCreate, MAJOR 4 codex review,
-// docs/plans/workspace-db-consolidation.md) — before that fix, this
-// function only ever called the assign PUT, so an unknown slug 404'd there
-// even though `project add`/`project init` had already registered the
-// project (a partial-success state: project registered, workspace
-// assignment failed).
-//
-// CLI entry-point validation per plan (3-layer defense): a non-empty slug
-// must satisfy ValidWorkspaceSlug. Empty string means "clear" and is allowed
-// to bypass validation (handled at the domain layer).
-func assignProjectWorkspace(c *client.Client, projectID, workspaceSlug string, out io.Writer) error {
-	if workspaceSlug != "" {
-		if err := projectspec.ValidWorkspaceSlug(workspaceSlug); err != nil {
-			return fmt.Errorf("invalid --workspace value: %w", err)
-		}
-		if err := ensureWorkspaceExistsGetOrCreate(c, workspaceSlug, out); err != nil {
-			return fmt.Errorf("get-or-create workspace %q: %w", workspaceSlug, err)
-		}
+// isDetachedHead reports whether dir is a git repository currently
+// checked out in detached HEAD state (HEAD points directly at a commit,
+// not a branch ref) — see its only caller's own doc comment
+// (runProjectInit) for why that matters. Returns false for anything else,
+// including dir not being a git repository at all (that's the
+// not-yet-`git init`'d starter scenario, an entirely different — and
+// harmless — case).
+func isDetachedHead(dir string) bool {
+	err := exec.Command("git", "-C", dir, "symbolic-ref", "-q", "HEAD").Run()
+	if err == nil {
+		return false // HEAD resolves to a branch ref: not detached.
 	}
-	var result projectspec.Project
-	if err := c.Do("PUT", "/api/projects/"+projectID+"/workspace", map[string]string{"workspace_id": workspaceSlug}, &result); err != nil {
-		return fmt.Errorf("assign workspace %q: %w", workspaceSlug, err)
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
+		// `git symbolic-ref -q` exits 1 specifically when HEAD is NOT a
+		// symbolic ref (detached) — any other error (not a repo, git not
+		// found, ...) is a different situation entirely and reported as
+		// "not detached" here since detecting it is not this function's
+		// job.
+		return true
 	}
-	return nil
+	return false
 }
 
 func runProjectList(cmd *cobra.Command, args []string) error {

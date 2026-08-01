@@ -805,10 +805,14 @@ func extractLegacyWorkspaceKitRefs(raw []byte) (kitRefs []string, rest []byte, e
 // rather than an error — the caller's own follow-up assign call is what
 // actually needs slug to exist, and will surface a sharp error if it still
 // does not. Shared by ensureWorkspaceExistsForAssign (`boid workspace
-// assign`) and ensureWorkspaceExistsGetOrCreate (`boid project add/init
-// --workspace`, MAJOR 4 codex review) — the two differ only in what
-// metaYAML (if any) they create from and how they describe the source in
-// the printed note.
+// assign`) and ensureWorkspaceExistsGetOrCreate (`boid project add
+// --workspace`, MAJOR 4 codex review — `project init --workspace` no
+// longer calls this at all as of docs/plans/release-onboarding.md 穴 7/PR6;
+// its --workspace flag only feeds the `boid project add` command it prints
+// as guidance, so the actual get-or-create happens later, inside that real
+// `project add` invocation) — the two differ only in what metaYAML (if
+// any) they create from and how they describe the source in the printed
+// note.
 func postWorkspaceCreateBestEffort(c *client.Client, slug string, metaYAML []byte, out io.Writer, sourceDescription string) {
 	body, err := buildWorkspaceCreateBody(slug, metaYAML)
 	if err != nil {
@@ -822,18 +826,24 @@ func postWorkspaceCreateBestEffort(c *client.Client, slug string, metaYAML []byt
 	fmt.Fprintf(out, "workspace %q auto-created %s\n", slug, sourceDescription)
 }
 
-// ensureWorkspaceExistsGetOrCreate implements `boid project add/init
-// --workspace`'s get-or-create contract (MAJOR 4, codex review,
+// ensureWorkspaceExistsGetOrCreate implements `boid project add --workspace`'s
+// get-or-create contract (MAJOR 4, codex review,
 // docs/plans/workspace-db-consolidation.md): an empty workspace is created
 // unconditionally when slug has no DB row yet — unlike `boid workspace
 // assign`'s auto-create (ensureWorkspaceExistsForAssign), which only fires
 // for a slug with a pre-existing legacy workspace.yaml and otherwise
-// silently no-ops so a genuinely unknown slug still 404s on assign. `project
-// add`/`project init`'s own long-standing docstring already promised this
+// silently no-ops so a genuinely unknown slug still 404s on assign.
+// `project add`'s own long-standing docstring already promised this
 // get-or-create behavior ("DB row is created even for unknown slug"), but
-// it had never actually been implemented — the caller (assignProjectWorkspace)
-// only ever called the assign PUT, so an unknown slug 404'd there instead,
-// leaving `project add` itself already-succeeded (partial success).
+// it had never actually been implemented until this function landed.
+//
+// `project init --workspace` used to share this same get-or-create call
+// path (via the now-removed assignProjectWorkspace) but no longer does:
+// docs/plans/release-onboarding.md 穴 7 (PR6) removed project init's daemon
+// registration entirely — its --workspace flag now only feeds the
+// `boid project add <url> --workspace=<name>` command it prints as
+// guidance, so the actual get-or-create happens later, inside a real
+// `project add` invocation, through this same function.
 func ensureWorkspaceExistsGetOrCreate(c *client.Client, slug string, out io.Writer) error {
 	if err := c.Do("GET", "/api/workspaces/"+slug, nil, &api.WorkspaceDetail{}); err == nil {
 		return nil // already exists.

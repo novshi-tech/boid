@@ -114,12 +114,17 @@ already-populated home.
 
 func init() {
 	// scopeRemote: the work happens through the daemon's HTTP API. It reads a
-	// local directory to build the payload, which is what `project init` is
-	// classified scopeLocal for — but the difference is which HOST the path has
-	// to exist on. `project init` resolves a path the DAEMON then opens, so it
-	// only works when the two share a filesystem; this one resolves a path
-	// THIS process opens and sends the bytes, which is exactly why the payload
-	// is a tar stream. Against a remote daemon it does the right thing.
+	// local directory to build the payload — but unlike `project reload`
+	// (scopeLocal: resolves a project's stored WorkDir path that the DAEMON
+	// then opens, so it only works when the two share a filesystem), this
+	// one resolves a path THIS process opens and sends the bytes, which is
+	// exactly why the payload is a tar stream. Against a remote daemon it
+	// does the right thing. (`project init` used to be the scopeLocal
+	// comparison point here too, back when it resolved [dir] against the
+	// daemon's own host for a POST /api/projects registration call —
+	// docs/plans/release-onboarding.md 穴 7/PR6 removed that call
+	// entirely, so it is scopeNeutral now, see cmd/project.go's own
+	// annotation comment.)
 	workspaceImportHomeCmd.Annotations = map[string]string{scopeAnnotationKey: scopeRemote}
 
 	workspaceImportHomeCmd.Flags().StringVar(&workspaceImportHomeFrom, "from", "",
