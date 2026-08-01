@@ -456,15 +456,22 @@ func runProjectInit(cmd *cobra.Command, args []string) error {
 	//     yet, or repoints it if it does (Major, codex round-4 review of
 	//     the previous "just run add" fix) — either way `origin` ends up
 	//     pointing at exactly the URL the user is about to type in.
-	//     Followed unconditionally by its own `git remote set-url --push
-	//     origin <git-url>` (Blocker, codex round-10 review): `set-url`
-	//     without `--push` only changes the FETCH url — an existing
-	//     repository with a separate `remote.origin.pushurl` override
-	//     configured would still `git push` to that stale push url
-	//     afterward, silently sending the scaffold commit to a DIFFERENT
-	//     remote than the one about to be registered. The explicit
-	//     `--push` call normalizes both to the same URL every time,
-	//     override or not.
+	//     Followed unconditionally by its own `git config --local
+	//     --replace-all remote.origin.pushurl <git-url>`: `git remote
+	//     set-url` without `--push` only changes the FETCH url — an
+	//     existing repository with a separate `remote.origin.pushurl`
+	//     override configured would still `git push` to that stale push
+	//     url afterward, silently sending the scaffold commit to a
+	//     DIFFERENT remote than the one about to be registered (Blocker,
+	//     codex round-10 review). `git remote set-url --push` alone is
+	//     not quite enough either (Blocker, codex round-11 review of
+	//     that first fix): git allows MULTIPLE `remote.origin.pushurl`
+	//     entries (every push then goes to ALL of them), and `set-url
+	//     --push` without `--add` only overwrites the FIRST one, leaving
+	//     any additional stale entries intact. `git config --replace-all`
+	//     collapses however many pre-existing entries there are (zero,
+	//     one, or many) down to exactly the one given — verified
+	//     empirically for all three counts.
 	//   - `git push -u origin HEAD`: pushes and tracks the CURRENT
 	//     branch — not a guess at "the remote's default branch", which
 	//     `project init` has no way to know and no business overriding.
@@ -519,7 +526,7 @@ func runProjectInit(cmd *cobra.Command, args []string) error {
 	// literal find-and-replace of the placeholder text with a real URL.
 	fmt.Fprintln(out, "\nNext steps:")
 	fmt.Fprintln(out, "  1. Commit the scaffold and push it to your remote (safe to run even if some of this is already done):")
-	fmt.Fprintf(out, "       %s{ git init && git add .boid/project.yaml && (git diff --cached --quiet -- .boid/project.yaml || git commit -m 'add boid project scaffold' -- .boid/project.yaml) && (git remote add origin '<git-url>' 2>/dev/null || git remote set-url origin '<git-url>') && git remote set-url --push origin '<git-url>' && git push -u origin HEAD; }\n", cdPrefix)
+	fmt.Fprintf(out, "       %s{ git init && git add .boid/project.yaml && (git diff --cached --quiet -- .boid/project.yaml || git commit -m 'add boid project scaffold' -- .boid/project.yaml) && (git remote add origin '<git-url>' 2>/dev/null || git remote set-url origin '<git-url>') && git config --local --replace-all remote.origin.pushurl '<git-url>' && git push -u origin HEAD; }\n", cdPrefix)
 	// Explicit default-branch caveat (Blocker, codex round-7 AND round-8
 	// review — round-8 pointed out round-7's wording only covered "a
 	// brand-new empty remote's first push", missing the equally-real

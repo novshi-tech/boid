@@ -388,7 +388,7 @@ func TestProjectInit_DirArg_GitCommandsTargetProjectDir(t *testing.T) {
 	// "safe to run even if some of this is already done", and an idempotent
 	// rerun's `git commit` (nothing new to commit) must not stop `git
 	// remote add`/`git push` from still running.
-	wantChain := "cd '" + dir + "' && { git init && git add .boid/project.yaml && (git diff --cached --quiet -- .boid/project.yaml || git commit -m 'add boid project scaffold' -- .boid/project.yaml) && (git remote add origin '<git-url>' 2>/dev/null || git remote set-url origin '<git-url>') && git remote set-url --push origin '<git-url>' && git push -u origin HEAD; }"
+	wantChain := "cd '" + dir + "' && { git init && git add .boid/project.yaml && (git diff --cached --quiet -- .boid/project.yaml || git commit -m 'add boid project scaffold' -- .boid/project.yaml) && (git remote add origin '<git-url>' 2>/dev/null || git remote set-url origin '<git-url>') && git config --local --replace-all remote.origin.pushurl '<git-url>' && git push -u origin HEAD; }"
 	if !strings.Contains(got, wantChain) {
 		t.Errorf("expected guidance to contain the single cd-prefixed chain %q, got:\n%s", wantChain, got)
 	}
@@ -473,6 +473,69 @@ func runGitTestCmdOutput(t *testing.T, dir string, args ...string) string {
 		t.Fatalf("git %v: %v", args, err)
 	}
 	return string(out)
+}
+
+// TestProjectInit_PrintedChain_ClearsStalePushurls executes the ACTUAL
+// printed guidance chain against a fixture repo with THREE pre-existing
+// `remote.origin.pushurl` overrides pointing at unrelated remotes (git
+// allows multiple; every `git push` goes to ALL of them) — pinning Blocker
+// (codex round-11 review): `git remote set-url --push` alone only
+// overwrites the FIRST such entry, leaving the rest stale, so `git push`
+// would still send the scaffold commit to old remotes too. The fix uses
+// `git config --replace-all remote.origin.pushurl` instead, which collapses
+// any number of pre-existing entries down to exactly one. Confirms the
+// scaffold lands ONLY in the intended remote and none of the stale ones.
+func TestProjectInit_PrintedChain_ClearsStalePushurls(t *testing.T) {
+	dir := t.TempDir()
+	runGitTestCmd(t, dir, "init", "-q", "-b", "main")
+	runGitTestCmd(t, dir, "config", "user.email", "test@example.com")
+	runGitTestCmd(t, dir, "config", "user.name", "Test")
+	runGitTestCmd(t, dir, "commit", "-q", "--allow-empty", "-m", "initial")
+
+	stalePushRemote1 := filepath.Join(t.TempDir(), "stale1.git")
+	stalePushRemote2 := filepath.Join(t.TempDir(), "stale2.git")
+	realRemote := filepath.Join(t.TempDir(), "real.git")
+	for _, r := range []string{stalePushRemote1, stalePushRemote2, realRemote} {
+		runGitTestCmd(t, t.TempDir(), "init", "-q", "--bare", r)
+	}
+	runGitTestCmd(t, dir, "remote", "add", "origin", stalePushRemote1)
+	runGitTestCmd(t, dir, "config", "--local", "--add", "remote.origin.pushurl", stalePushRemote1)
+	runGitTestCmd(t, dir, "config", "--local", "--add", "remote.origin.pushurl", stalePushRemote2)
+
+	withStdin(t, devNullStdin(t))
+	var out bytes.Buffer
+	cmd := projectInitSubCmd
+	cmd.SetOut(&out)
+	cmd.SetContext(context.Background())
+	if err := runProjectInit(cmd, []string{dir}); err != nil {
+		t.Fatalf("runProjectInit: %v", err)
+	}
+
+	got := out.String()
+	start := strings.Index(got, "{ git init &&")
+	end := strings.Index(got[start:], "; }") + start + len("; }")
+	if start < 0 || end <= start {
+		t.Fatalf("could not locate the printed chain in guidance:\n%s", got)
+	}
+	chain := strings.ReplaceAll(got[start:end], "'<git-url>'", "'"+realRemote+"'")
+	runBashCmd(t, dir, chain)
+
+	pushURLs := runGitTestCmdOutput(t, dir, "config", "--local", "--get-all", "remote.origin.pushurl")
+	if strings.TrimSpace(pushURLs) != realRemote {
+		t.Errorf("expected remote.origin.pushurl to collapse to exactly %q, got:\n%s", realRemote, pushURLs)
+	}
+
+	realRemoteRefs, _ := exec.Command("git", "--git-dir="+realRemote, "show-ref").CombinedOutput()
+	if !strings.Contains(string(realRemoteRefs), "refs/heads/main") {
+		t.Errorf("expected the scaffold to have been pushed to the real remote %s, show-ref output:\n%s", realRemote, realRemoteRefs)
+	}
+	for _, stale := range []string{stalePushRemote1, stalePushRemote2} {
+		showRef := exec.Command("git", "--git-dir="+stale, "show-ref")
+		showRefOut, _ := showRef.CombinedOutput()
+		if strings.Contains(string(showRefOut), "refs/heads/main") {
+			t.Errorf("did not expect the scaffold to have been pushed to the stale remote %s, but show-ref shows:\n%s", stale, showRefOut)
+		}
+	}
 }
 
 // TestProjectInit_GuidanceIsIdempotentRegardlessOfExistingGitState pins the
