@@ -1641,3 +1641,96 @@ func TestBoidBuiltinExecutor_ProjectBehaviors_Unavailable(t *testing.T) {
 		t.Fatalf("expected unavailable error, got exit=%d stderr=%q", resp.ExitCode, resp.Stderr)
 	}
 }
+
+// --- project_list executor tests ---
+
+func TestBoidBuiltinExecutor_ProjectList_HappyPath_ScopedToAllowedProjectIDs(t *testing.T) {
+	exec := &boidBuiltinExecutor{
+		projects: &stubProjectLookup{
+			projects: map[string]*orchestrator.Project{
+				"proj-1": {ID: "proj-1", Meta: orchestrator.ProjectMeta{Name: "alpha"}, UpstreamURL: "https://example.com/alpha.git"},
+				"proj-2": {ID: "proj-2", Meta: orchestrator.ProjectMeta{Name: "beta"}},
+				// proj-3 exists in the lookup but is deliberately NOT in
+				// AllowedProjectIDs below — it must never appear in the result,
+				// pinning that the op is scoped by the token, not by whatever
+				// the backing store happens to know about.
+				"proj-3": {ID: "proj-3", Meta: orchestrator.ProjectMeta{Name: "gamma"}},
+			},
+		},
+	}
+	ctx := sandbox.TokenContext{ProjectID: "proj-1", AllowedProjectIDs: []string{"proj-1", "proj-2"}}
+
+	resp := exec.ExecuteBoidBuiltin(context.Background(), ctx, &sandbox.BoidRequest{Op: sandbox.BoidOpProjectList})
+	if resp.ExitCode != 0 {
+		t.Fatalf("exit code = %d, stderr: %s", resp.ExitCode, resp.Stderr)
+	}
+
+	var got []projectSummary
+	if err := json.Unmarshal([]byte(resp.Stdout), &got); err != nil {
+		t.Fatalf("stdout is not valid JSON: %v (stdout=%q)", err, resp.Stdout)
+	}
+	if len(got) != 2 {
+		t.Fatalf("got %d projects, want 2: %+v", len(got), got)
+	}
+	byID := map[string]projectSummary{got[0].ID: got[0], got[1].ID: got[1]}
+	if byID["proj-1"].Name != "alpha" || byID["proj-1"].UpstreamURL != "https://example.com/alpha.git" {
+		t.Errorf("proj-1 summary = %+v", byID["proj-1"])
+	}
+	if byID["proj-2"].Name != "beta" {
+		t.Errorf("proj-2 summary = %+v", byID["proj-2"])
+	}
+	if _, ok := byID["proj-3"]; ok {
+		t.Error("proj-3 must not appear — it is outside AllowedProjectIDs")
+	}
+}
+
+func TestBoidBuiltinExecutor_ProjectList_FallsBackToSelfWhenNoWorkspaceScope(t *testing.T) {
+	exec := &boidBuiltinExecutor{
+		projects: &stubProjectLookup{
+			projects: map[string]*orchestrator.Project{
+				"proj-1": {ID: "proj-1", Meta: orchestrator.ProjectMeta{Name: "solo"}},
+			},
+		},
+	}
+	// No AllowedProjectIDs at all (token has no workspace) — must fall back
+	// to the caller's own ProjectID, mirroring BoidOpTaskList's fallback.
+	ctx := sandbox.TokenContext{ProjectID: "proj-1"}
+
+	resp := exec.ExecuteBoidBuiltin(context.Background(), ctx, &sandbox.BoidRequest{Op: sandbox.BoidOpProjectList})
+	if resp.ExitCode != 0 {
+		t.Fatalf("exit code = %d, stderr: %s", resp.ExitCode, resp.Stderr)
+	}
+	var got []projectSummary
+	if err := json.Unmarshal([]byte(resp.Stdout), &got); err != nil {
+		t.Fatalf("stdout is not valid JSON: %v (stdout=%q)", err, resp.Stdout)
+	}
+	if len(got) != 1 || got[0].ID != "proj-1" {
+		t.Fatalf("got %+v, want exactly [proj-1]", got)
+	}
+}
+
+func TestBoidBuiltinExecutor_ProjectList_PropagatesLookupError(t *testing.T) {
+	exec := &boidBuiltinExecutor{
+		projects: &stubProjectLookup{projects: map[string]*orchestrator.Project{
+			"proj-1": {ID: "proj-1", Meta: orchestrator.ProjectMeta{Name: "alpha"}},
+		}},
+	}
+	// proj-stale is in AllowedProjectIDs (a workspace-peer snapshot taken at
+	// dispatch time) but no longer resolvable — e.g. removed after dispatch.
+	ctx := sandbox.TokenContext{ProjectID: "proj-1", AllowedProjectIDs: []string{"proj-1", "proj-stale"}}
+
+	resp := exec.ExecuteBoidBuiltin(context.Background(), ctx, &sandbox.BoidRequest{Op: sandbox.BoidOpProjectList})
+	if resp.ExitCode != 1 || !strings.Contains(resp.Stderr, "not found") {
+		t.Fatalf("expected not-found error, got exit=%d stderr=%q", resp.ExitCode, resp.Stderr)
+	}
+}
+
+func TestBoidBuiltinExecutor_ProjectList_Unavailable(t *testing.T) {
+	exec := &boidBuiltinExecutor{}
+	ctx := sandbox.TokenContext{ProjectID: "proj-1"}
+
+	resp := exec.ExecuteBoidBuiltin(context.Background(), ctx, &sandbox.BoidRequest{Op: sandbox.BoidOpProjectList})
+	if resp.ExitCode != 1 || !strings.Contains(resp.Stderr, "unavailable") {
+		t.Fatalf("expected unavailable error, got exit=%d stderr=%q", resp.ExitCode, resp.Stderr)
+	}
+}

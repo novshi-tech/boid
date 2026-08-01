@@ -42,6 +42,7 @@ func TestDefaultBuiltinPolicies_HookBoidOps(t *testing.T) {
 		OpBoidTaskAttachmentsGet,
 		OpBoidTaskUpdatePayloadPatch,
 		OpBoidProjectBehaviors,
+		OpBoidProjectList,
 	}
 	if !opsEqual(boidP.AllowedOps, wantOps) {
 		t.Errorf("hook×boid AllowedOps = %v, want %v", boidP.AllowedOps, wantOps)

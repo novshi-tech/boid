@@ -21,7 +21,7 @@ Commands:
   job      Manage jobs (done, list, show, log)
   action   Send actions (send)
   agent    Manage agent (stop)
-  project  Inspect projects (behaviors)
+  project  Inspect projects (list, behaviors)
 
 Run "boid <command> --help" for subcommand usage.
 `
@@ -183,10 +183,14 @@ func parseBoidRequest(args []string) (*BoidRequest, error) {
 		if len(args) < 2 {
 			return nil, fmt.Errorf("boid shim: missing boid project subcommand")
 		}
-		if args[1] != "behaviors" {
+		switch args[1] {
+		case "behaviors":
+			return parseBoidProjectBehaviors(args[2:])
+		case "list":
+			return parseBoidProjectList(args[2:])
+		default:
 			return nil, fmt.Errorf("boid shim: unsupported boid project subcommand %q", args[1])
 		}
-		return parseBoidProjectBehaviors(args[2:])
 	default:
 		return nil, fmt.Errorf("boid shim: unsupported boid subcommand %q", args[0])
 	}
@@ -207,6 +211,18 @@ func parseBoidProjectBehaviors(args []string) (*BoidRequest, error) {
 		return nil, fmt.Errorf("boid shim: unexpected argument %q for boid project behaviors", args[1])
 	}
 	return &BoidRequest{Op: BoidOpProjectBehaviors, ProjectID: args[0]}, nil
+}
+
+// parseBoidProjectList builds the BoidRequest for `boid project list`
+// (no arguments — the result is always scoped to the caller's own workspace
+// via TokenContext.AllowedProjectIDs, so there is nothing for the caller to
+// parameterize; a workspace-wide daemon listing like the host-only `boid
+// project list` is intentionally not offered here).
+func parseBoidProjectList(args []string) (*BoidRequest, error) {
+	if len(args) > 0 {
+		return nil, fmt.Errorf("boid shim: unexpected argument %q for boid project list", args[0])
+	}
+	return &BoidRequest{Op: BoidOpProjectList}, nil
 }
 
 // parseBoidAgentStop builds the BoidRequest for `boid agent stop <job-id>`.

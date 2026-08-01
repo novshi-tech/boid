@@ -1376,6 +1376,63 @@ func TestRunBoidShim_ProjectBehaviors_RejectsExtraArgs(t *testing.T) {
 	}
 }
 
+// --- project list ---
+
+func TestRunBoidShim_ProjectList_ParseSuccess(t *testing.T) {
+	dir := t.TempDir()
+	sockPath := filepath.Join(dir, "broker.sock")
+	ln, err := net.Listen("unix", sockPath)
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	t.Cleanup(func() { ln.Close(); os.Remove(sockPath) })
+
+	reqCh := make(chan sandbox.ExecRequest, 1)
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		var req sandbox.ExecRequest
+		if err := json.NewDecoder(conn).Decode(&req); err != nil {
+			return
+		}
+		reqCh <- req
+		_ = json.NewEncoder(conn).Encode(&sandbox.ExecResponse{ExitCode: 0})
+	}()
+
+	t.Setenv("BOID_BROKER_SOCKET", sockPath)
+	t.Setenv("BOID_BROKER_TOKEN", "tok-plist")
+
+	resp, err := sandbox.RunBoidShim([]string{"project", "list"})
+	if err != nil {
+		t.Fatalf("RunBoidShim: %v", err)
+	}
+	if resp.ExitCode != 0 {
+		t.Fatalf("exit code = %d, want 0", resp.ExitCode)
+	}
+
+	req := <-reqCh
+	if req.Boid == nil {
+		t.Fatal("expected typed boid request")
+	}
+	if req.Boid.Op != sandbox.BoidOpProjectList {
+		t.Fatalf("op = %q, want project_list", req.Boid.Op)
+	}
+	if req.Boid.ProjectID != "" {
+		t.Errorf("project_id = %q, want empty (project list takes no ref)", req.Boid.ProjectID)
+	}
+}
+
+func TestRunBoidShim_ProjectList_RejectsExtraArgs(t *testing.T) {
+	t.Setenv("BOID_BROKER_SOCKET", "/tmp/does-not-matter")
+	_, err := sandbox.RunBoidShim([]string{"project", "list", "extra"})
+	if err == nil || !strings.Contains(err.Error(), "unexpected argument") {
+		t.Fatalf("expected unexpected argument error, got: %v", err)
+	}
+}
+
 func TestRunBoidShim_ProjectUnknownSubcommand(t *testing.T) {
 	t.Setenv("BOID_BROKER_SOCKET", "/tmp/does-not-matter")
 	_, err := sandbox.RunBoidShim([]string{"project", "show", "proj-1"})

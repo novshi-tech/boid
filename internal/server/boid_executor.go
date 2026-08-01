@@ -28,12 +28,22 @@ type jobContextProvider interface {
 }
 
 // projectLookup is narrowed from *api.ProjectAppService (which satisfies it
-// structurally) down to the single method BoidOpProjectBehaviors needs,
-// mirroring jobContextProvider's narrowing of *dispatcher.Runner — keeps
-// boid_executor's dependency surface minimal and its tests free of the full
-// ProjectAppService's Meta-store interface.
+// structurally) down to the single method BoidOpProjectBehaviors and
+// BoidOpProjectList need, mirroring jobContextProvider's narrowing of
+// *dispatcher.Runner — keeps boid_executor's dependency surface minimal and
+// its tests free of the full ProjectAppService's Meta-store interface.
 type projectLookup interface {
 	GetProject(id string) (*orchestrator.Project, error)
+}
+
+// projectSummary is BoidOpProjectList's per-project JSON shape — deliberately
+// leaner than BoidOpProjectBehaviors' output (no task_behaviors): the list op
+// is for discovery ("what projects can I even ask about"), and a caller that
+// needs a given project's behaviors calls BoidOpProjectBehaviors on it by id.
+type projectSummary struct {
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	UpstreamURL string `json:"upstream_url,omitempty"`
 }
 
 type boidBuiltinExecutor struct {
@@ -362,6 +372,40 @@ func (e *boidBuiltinExecutor) ExecuteBoidBuiltin(goCtx context.Context, ctx sand
 			return &sandbox.ExecResponse{ExitCode: 1, Stderr: err.Error()}
 		}
 		out, err := json.MarshalIndent(proj.Meta.TaskBehaviors, "", "  ")
+		if err != nil {
+			return &sandbox.ExecResponse{ExitCode: 1, Stderr: err.Error()}
+		}
+		return &sandbox.ExecResponse{Stdout: string(out) + "\n"}
+	case sandbox.BoidOpProjectList:
+		if e.projects == nil {
+			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid project list unavailable"}
+		}
+		// No caller-supplied scope: ctx.AllowedProjectIDs is the token's
+		// stamped-at-dispatch workspace peer set (dispatcher.allowedProjectIDs),
+		// so enumerating it can never surface a project outside the caller's
+		// own workspace. Falls back to the caller's own ProjectID, mirroring
+		// BoidOpTaskList's no-project/no-workspace branch, for a token with no
+		// workspace assigned at all (a single-project scope of one).
+		projectIDs := ctx.AllowedProjectIDs
+		if len(projectIDs) == 0 {
+			projectIDs = []string{ctx.ProjectID}
+		}
+		summaries := make([]projectSummary, 0, len(projectIDs))
+		for _, pid := range projectIDs {
+			if pid == "" {
+				continue
+			}
+			proj, err := e.projects.GetProject(pid)
+			if err != nil {
+				return &sandbox.ExecResponse{ExitCode: 1, Stderr: err.Error()}
+			}
+			summaries = append(summaries, projectSummary{
+				ID:          proj.ID,
+				Name:        proj.Meta.Name,
+				UpstreamURL: proj.UpstreamURL,
+			})
+		}
+		out, err := json.MarshalIndent(summaries, "", "  ")
 		if err != nil {
 			return &sandbox.ExecResponse{ExitCode: 1, Stderr: err.Error()}
 		}

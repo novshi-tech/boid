@@ -75,7 +75,7 @@ CLI listener のアドレスは `127.0.0.1:8442` 固定（override 不可）。`
 | コマンド | 役割 |
 |---|---|
 | `boid project add <git-url> --workspace=<name> [--name=<project-name>]` | git remote URL を登録し、daemon が bare repository として clone する (docs/plans/volume-only-daemon.md §論点a/b)。`--workspace` は必須、`--name` を省略すると URL の最後のパス要素から project 名を derive する。旧来のホストディレクトリ登録フォーム (`boid project add <dir>`) は PR-4 で撤去済み — git URL の形 (明示スキームまたは scp-like `user@host:path`) に一致しない引数はクライアント側で拒否される。 |
-| `boid project list` | 登録済みプロジェクト一覧 (status `ready`/`degraded` も表示 — `project fetch` 参照) |
+| `boid project list` | 登録済みプロジェクト一覧 (status `ready`/`degraded` も表示 — `project fetch` 参照)。サンドボックス内の boid shim からも同名で呼べるが、こちらは daemon 全体ではなく**同一 workspace 内**のプロジェクトのみ (id/name/upstream_url の JSON) を返す — スコープは呼び出し元トークンの `AllowedProjectIDs` で決まり、指定はできない |
 | `boid project show <ref>` | プロジェクト詳細 (id 完全一致 / 名前部分一致のいずれも可)。workspace default (task_behaviors / base_branch / fork_point / default_task_behavior) が 1 つでも適用されている場合は 1 行インジケータを表示する。project.yaml 無し project (`url-` 由来 id) では id/name の由来も表示する。`--explain` を付けるとフィールド単位の由来 (project.yaml / workspace default / unset) を表示する (docs/plans/workspace-default-project.md 論点e) |
 | `boid project remove <ref>` (alias: `rm`) | プロジェクトを登録解除。project の DB row を削除する唯一の入口 — `boid` は filesystem / remote の観測結果を根拠に自動削除しない (下記 `project fetch` 参照)。git-URL 登録した project の場合は daemon 管理下の bare repository も削除するため、同じ URL/名前で再度 add しても成功する。 |
 | `boid project reload` | すべてのプロジェクトの `project.yaml` を再読み込み |

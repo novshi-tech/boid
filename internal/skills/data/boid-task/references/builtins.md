@@ -20,6 +20,7 @@ These `boid` subcommands are available inside the supervisor's sandbox via the s
 - [boid job list](#boid-job-list)
 - [boid job show](#boid-job-show)
 - [boid job log](#boid-job-log)
+- [boid project list](#boid-project-list)
 - [boid project behaviors](#boid-project-behaviors)
 
 ## boid task create
@@ -235,6 +236,14 @@ boid job log <job-id>
 ```
 
 Streams the runtime transcript for a job. Prints `log not available (runtime cleaned up)` once the daemon GC has removed the runtime (24h cycle, 30-day retention).
+
+## boid project list
+
+```bash
+boid project list
+```
+
+Prints, as a JSON array, every project (`{"id", "name", "upstream_url"}`) within the caller's own workspace — the same scope `boid task list` falls back to when called with no `--project`/`--workspace`. Takes no arguments: there is no way to widen this to every project on the daemon (that's the host-only `boid project list`, a different scope). Use this to discover which project refs exist before calling `boid project behaviors <ref>` on each one — e.g. a supervisor that coordinates work across multiple projects in the same workspace.
 
 ## boid project behaviors
 

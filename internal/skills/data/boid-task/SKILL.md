@@ -669,7 +669,7 @@ nothing).
 
 ## References
 
-- [references/builtins.md](references/builtins.md) — flags and fields for `boid task` / `boid job` / `boid action` (supervisor mode).
+- [references/builtins.md](references/builtins.md) — flags and fields for `boid task` / `boid job` / `boid action` / `boid project` (supervisor mode).
 - [references/state-machine.md](references/state-machine.md) — child task statuses, transitions, and supervisor reactions.
 - [docs/plans/lifecycle-accountability.md](../../../docs/plans/lifecycle-accountability.md) — full lifecycle contract.
 - [docs/plans/agent-aware-boid.md](../../../docs/plans/agent-aware-boid.md) — Track B design decisions.

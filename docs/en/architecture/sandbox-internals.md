@@ -275,6 +275,7 @@ All roles (hook) share the same allowed op set — there is no role branching.
 | `task_attachments_list` | `boid task attachments list` | List this task's attachment filenames |
 | `task_attachments_get` | `boid task attachments get <name>` | Fetch one attachment's bytes |
 | `project_behaviors` | `boid project behaviors <project-ref>` | Fetch a project's task_behaviors as JSON (`ref` only resolves to a project within the caller's own workspace) |
+| `project_list` | `boid project list` | List projects (id/name/upstream_url) within the caller's own workspace, as JSON. Takes no arguments; scope is fixed to the token's `AllowedProjectIDs` |
 
 > **Note:** `task.reopen` uses a `.` separator for historical reasons; all other ops use `_`. `task_current`/`task_attachments_list`/`task_attachments_get` are TaskID-scoped; `task_instructions`/`task_env`/`task_payload` are JobID-scoped (see [Hook script protocol](../reference/hook-contract.md)).
 
