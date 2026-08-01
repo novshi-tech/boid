@@ -10,7 +10,6 @@ import (
 	"strings"
 
 	"github.com/novshi-tech/boid/internal/client"
-	"github.com/novshi-tech/boid/internal/dispatcher"
 	"github.com/novshi-tech/boid/internal/initwizard"
 	projectspec "github.com/novshi-tech/boid/internal/orchestrator"
 	"github.com/spf13/cobra"
@@ -396,113 +395,74 @@ func runProjectInit(cmd *cobra.Command, args []string) error {
 
 	// cdPrefix makes every printed git command target projectDir
 	// explicitly, regardless of the shell's own cwd when the user pastes
-	// the guidance in (Blocker 1, codex round-1 review: `[dir]` being a
+	// the guidance in (Blocker, codex round-1 review: `[dir]` being a
 	// path other than "." meant the printed `git init`/`git add`/`git
 	// commit` silently ran against the shell's cwd, not projectDir).
 	cdPrefix := fmt.Sprintf("cd %s && ", shellQuoteSingle(projectDir))
 
-	// If projectDir is already a git repo ROOT (not merely nested inside
-	// an unrelated outer repo — see originURLForExactDir's own doc
-	// comment, Blocker 1 continued) with an `origin` remote already
-	// configured (the user ran `git init`/`git remote add` themselves
-	// before `project init`), use that known URL directly instead of a
-	// <git-url> placeholder — one less thing for the user to fill in by
-	// hand. EXCEPT when that origin is a file:// URL (Major 3, codex
-	// round-4 review): dispatcher.NormalizeOriginURL passes file:// URLs
-	// through unchanged (its own doc comment — meant for daemon-side
-	// testing against a local fixture repo, or a genuine NFS-shared bare
-	// mirror), but under the default compose deployment that host-local
-	// path is not visible inside the daemon's own container — printing it
-	// as a ready-to-register URL would reproduce exactly the "host
-	// filesystem boundary" failure 穴 7 exists to close. Treat it like no
-	// origin at all: fall through to the git-URL-placeholder guidance.
-	originURL, originErr := originURLForExactDir(projectDir)
-	haveUsableOrigin := originErr == nil && originURL != "" && !strings.HasPrefix(originURL, "file://")
-
+	// A single, idempotent, "works regardless of prior state" chain —
+	// NOT a branch on whether projectDir already has a repo/origin.
+	//
+	// An earlier revision of this guidance tried to be clever: detect an
+	// existing `origin` and print its URL back, skip `git init`/`git
+	// remote add` if already done, etc. Across four rounds of review that
+	// approach kept growing new correctness holes chasing each other —
+	// an unquoted origin URL enabling shell injection, `git config`'s
+	// upward repo search misattributing a PARENT repo's origin to a
+	// freshly scaffolded subdirectory, a bare `git commit` sweeping in
+	// unrelated already-staged changes, a `file://` origin (harmless to
+	// `git`, but invisible to the compose daemon's own container — the
+	// exact 穴 7 problem this command exists to close) printed back as if
+	// it were a real remote, and finally a `git remote add origin`
+	// unconditionally failing with "remote origin already exists" for
+	// the one case (`file://` origin) the previous fix rerouted into it.
+	// Every one of those bugs came from the SAME root cause: guessing at
+	// git/remote state that could be anything.
+	//
+	// Each step below is written to be a safe no-op (idempotent) if that
+	// step already happened, so the exact same one-liner works whether
+	// projectDir is a brand-new directory, an already-`git init`'d repo,
+	// or a repo that already has `origin` configured (the two starter
+	// scenarios `boid project init`'s own doc comment describes) — with
+	// NO detection logic to get wrong:
+	//   - `git init`: always safe to re-run ("Reinitialized existing Git
+	//     repository..." if one already exists).
+	//   - `git add .boid && git commit ... -- .boid`: the `-- .boid`
+	//     pathspec (Major, codex round-4 review) scopes the commit to
+	//     exactly the scaffold this command just wrote, so it neither
+	//     sweeps in unrelated already-staged changes nor fails just
+	//     because .boid happens to be the only thing that changed.
+	//   - `git remote add origin <git-url> 2>/dev/null || git remote
+	//     set-url origin <git-url>`: adds the remote if it doesn't exist
+	//     yet, or repoints it if it does (Major, codex round-4 review of
+	//     the previous "just run add" fix) — either way `origin` ends up
+	//     pointing at exactly the URL the user is about to type in.
+	//   - `git push -u origin HEAD`: pushes and tracks the CURRENT
+	//     branch — not a guess at "the remote's default branch", which
+	//     `project init` has no way to know and no business overriding.
+	//     If that branch is not what the remote treats as default, that
+	//     is the same ordinary git branch-management question it would
+	//     be for any other push, not something specific to boid.
+	// Everything below `cd <dir> &&` is grouped in one `{ ...; }` block on
+	// a SINGLE line, not multiple printed lines each expected to run in
+	// projectDir (Blocker, codex round-3 review of an earlier revision):
+	// a bare `cd` on its own printed line only carries over to LATER
+	// printed lines if the user happens to paste every line into the
+	// same still-open shell — copied separately, re-run individually, or
+	// run from a fresh terminal, a later `git push` on its own line would
+	// silently target the wrong (or no) directory. One line removes that
+	// footgun outright, and `;` (not `&&`) between the inner steps is
+	// deliberate too: a `git commit` with nothing new to commit (the
+	// idempotent-rerun case this guidance explicitly promises to
+	// support) exits non-zero, and `&&` there would stop the chain
+	// before `git remote add`/`git push` ever ran.
 	fmt.Fprintln(out, "\nNext steps:")
-	if haveUsableOrigin {
-		fmt.Fprintln(out, "  1. Commit the scaffold and push it to the remote:")
-		// -u origin HEAD (not a bare `git push`) even though origin
-		// already exists: `git init && git remote add origin <url>` alone
-		// leaves the current branch with no upstream configured, and a
-		// bare `git push` there fails with "no upstream branch" (Blocker
-		// 2, codex round-1 review). -u is a harmless no-op re-set when an
-		// upstream is already tracked.
-		//
-		// `git commit ... -- .boid` (not a bare `git commit`, Major 2,
-		// codex round-4 review): a plain `git commit` after `git add
-		// .boid` commits the WHOLE INDEX, not just .boid — if this
-		// already-existing repository had unrelated changes staged
-		// before `project init` ran (including anything sensitive), a
-		// bare commit would sweep them in and `git push` would publish
-		// them right along with the scaffold. The `-- .boid` pathspec
-		// restricts the commit to exactly the scaffold this command
-		// itself just wrote, regardless of what else is staged.
-		fmt.Fprintf(out, "       %sgit add .boid && git commit -m 'add boid project scaffold' -- .boid && git push -u origin HEAD\n", cdPrefix)
-		fmt.Fprintln(out, "  2. Register the pushed URL with the running boid daemon:")
-		// shellQuoteSingle the URL (Blocker, codex round-2 review of this
-		// PR): originURL comes straight from `git config
-		// remote.origin.url` (via CaptureUpstreamURL) with no shell-safety
-		// guarantee — an origin URL containing `;`, `&&`, `$(...)`, or
-		// even just a `?query&param` executes/mangles arbitrarily when
-		// pasted unquoted into a shell, and this printed line is meant to
-		// be pasted verbatim.
-		fmt.Fprintf(out, "       boid project add %s %s\n", shellQuoteSingle(originURL), workspaceFlag)
-	} else {
-		fmt.Fprintln(out, "  1. Initialize git and push this project to a remote (skip what's already done):")
-		// One single cd-prefixed chain, not two separately printed lines
-		// (Blocker, codex round-3 review of this PR): a `cd` on its own
-		// printed line only persists for LATER lines pasted into the SAME
-		// still-open shell — copy the two lines separately, run them from
-		// a fresh terminal, or re-run just the second line after the
-		// first failed, and `git remote add origin`/`git push` silently
-		// target whatever the shell's cwd happens to be instead of
-		// projectDir. Folding everything into one line removes that
-		// footgun entirely: the `cd` and every git command that must run
-		// in projectDir now travel together no matter how the line is
-		// copied or re-run.
-		fmt.Fprintf(out, "       %sgit init && git add . && git commit -m 'initial commit' && git remote add origin <git-url> && git push -u origin HEAD\n", cdPrefix)
-		fmt.Fprintln(out, "  2. Register the pushed URL with the running boid daemon:")
-		fmt.Fprintf(out, "       boid project add <git-url> %s\n", workspaceFlag)
-	}
+	fmt.Fprintln(out, "  1. Commit the scaffold and push it to your remote (safe to run even if some of this is already done):")
+	fmt.Fprintf(out, "       %s{ git init; git add .boid && git commit -m 'add boid project scaffold' -- .boid; git remote add origin <git-url> 2>/dev/null || git remote set-url origin <git-url>; git push -u origin HEAD; }\n", cdPrefix)
+	fmt.Fprintln(out, "  2. Register the pushed URL with the running boid daemon:")
+	fmt.Fprintf(out, "       boid project add <git-url> %s\n", workspaceFlag)
 
 	return nil
-}
-
-// originURLForExactDir returns projectDir's `origin` remote URL, but ONLY
-// when projectDir is itself a git repository's top-level directory —
-// unlike a bare `git config --get remote.origin.url` (what
-// dispatcher.CaptureUpstreamURL uses), which runs with cwd=projectDir and
-// so happily walks UP to a parent .git if projectDir has none of its own.
-// That upward search misattributes a surrounding repo's origin to
-// projectDir whenever `boid project init <newdir>` scaffolds a directory
-// nested inside an existing, unrelated checkout — the printed guidance
-// would then send the user to commit and push the OUTER repo, while the
-// freshly written <newdir>/.boid/project.yaml never leaves the untracked
-// state (Blocker 1 continued, codex round-1 review of this PR).
-func originURLForExactDir(projectDir string) (string, error) {
-	out, err := exec.Command("git", "-C", projectDir, "rev-parse", "--show-toplevel").Output()
-	if err != nil {
-		return "", fmt.Errorf("not a git repository: %w", err)
-	}
-	topLevel := strings.TrimSpace(string(out))
-
-	// Resolve symlinks before comparing: git always reports a
-	// symlink-resolved toplevel, but projectDir may not be (e.g. a /tmp
-	// path on a system where /tmp itself is a symlink).
-	wantDir, err := filepath.EvalSymlinks(projectDir)
-	if err != nil {
-		wantDir = projectDir
-	}
-	gotDir, err := filepath.EvalSymlinks(topLevel)
-	if err != nil {
-		gotDir = topLevel
-	}
-	if gotDir != wantDir {
-		return "", fmt.Errorf("projectDir %s is nested inside a different git repository rooted at %s", projectDir, topLevel)
-	}
-
-	return dispatcher.CaptureUpstreamURL(projectDir)
 }
 
 // shellQuoteSingle wraps s in single quotes for safe use in a POSIX shell

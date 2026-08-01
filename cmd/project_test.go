@@ -315,41 +315,6 @@ func TestProjectInit_WithWorkspaceFlag_IncludesItInGuidance(t *testing.T) {
 	}
 }
 
-// TestProjectInit_ExistingOrigin_GuidesRegisterWithThatURL pins the
-// smarter branch: when projectDir is already a git repo with an `origin`
-// remote configured (e.g. the user ran `git init` themselves before
-// `boid project init`), the guidance should skip the "git init" step and
-// go straight to "commit + push" using the ALREADY-KNOWN URL, rather than
-// printing a generic <git-url> placeholder the user has to fill in by hand.
-func TestProjectInit_ExistingOrigin_GuidesRegisterWithThatURL(t *testing.T) {
-	dir := t.TempDir()
-	runGitTestCmd(t, dir, "init", "-q", "-b", "main")
-	runGitTestCmd(t, dir, "config", "user.email", "test@example.com")
-	runGitTestCmd(t, dir, "config", "user.name", "Test")
-	runGitTestCmd(t, dir, "commit", "-q", "--allow-empty", "-m", "initial")
-	originURL := "https://example.invalid/owner/repo.git"
-	runGitTestCmd(t, dir, "remote", "add", "origin", originURL)
-
-	withStdin(t, devNullStdin(t))
-
-	var out bytes.Buffer
-	cmd := projectInitSubCmd
-	cmd.SetOut(&out)
-	cmd.SetContext(context.Background())
-
-	if err := runProjectInit(cmd, []string{dir}); err != nil {
-		t.Fatalf("runProjectInit: %v", err)
-	}
-
-	got := out.String()
-	if !strings.Contains(got, originURL) {
-		t.Errorf("expected guidance to reference the existing origin URL %q, got:\n%s", originURL, got)
-	}
-	if strings.Contains(got, "git remote add origin") {
-		t.Errorf("did not expect a 'git remote add origin' instruction when origin already exists, got:\n%s", got)
-	}
-}
-
 // TestProjectInit_NoWorkspaceFlag_DefaultsToDefaultWorkspace pins the fix
 // for codex round-1 Major review of this PR: with --workspace omitted, the
 // printed `boid project add` example used to show the literal placeholder
@@ -403,200 +368,79 @@ func TestProjectInit_DirArg_GitCommandsTargetProjectDir(t *testing.T) {
 	}
 
 	got := out.String()
-	// The whole chain — init through the final push — must be ONE
-	// cd-prefixed line (codex round-3 review, Blocker follow-up): a `cd`
-	// on its own printed line only carries over to a LATER printed line
-	// if the user happens to paste both into the same still-open shell;
-	// copied separately, re-run individually, or run from a fresh
-	// terminal, a bare `git remote add origin`/`git push` on its own line
-	// would silently target the wrong (or no) directory.
-	wantChain := "cd '" + dir + "' && git init && git add . && git commit -m 'initial commit' && git remote add origin <git-url> && git push -u origin HEAD"
+	// The whole chain must be ONE cd-prefixed, brace-grouped line (codex
+	// round-3 and round-5 review, Blocker follow-ups): a `cd` on its own
+	// printed line only carries over to a LATER printed line if the user
+	// happens to paste both into the same still-open shell — copied
+	// separately, re-run individually, or run from a fresh terminal, a
+	// bare `git remote add origin`/`git push` on its own line would
+	// silently target the wrong (or no) directory. `;` (not `&&`) between
+	// the inner steps matters too: this exact guidance is documented as
+	// "safe to run even if some of this is already done", and an idempotent
+	// rerun's `git commit` (nothing new to commit) must not stop `git
+	// remote add`/`git push` from still running.
+	wantChain := "cd '" + dir + "' && { git init; git add .boid && git commit -m 'add boid project scaffold' -- .boid; git remote add origin <git-url> 2>/dev/null || git remote set-url origin <git-url>; git push -u origin HEAD; }"
 	if !strings.Contains(got, wantChain) {
 		t.Errorf("expected guidance to contain the single cd-prefixed chain %q, got:\n%s", wantChain, got)
 	}
 }
 
-// TestProjectInit_ExistingOrigin_PushUsesUpstreamFlag pins Blocker 2 (codex
-// round-1 review of this PR): a repo whose only git setup so far is `git
-// init` + `git remote add origin <url>` (project init's own documented
-// "skip what's already done" scenario) has NO upstream tracking branch
-// yet, so a bare `git push` fails with "no upstream branch configured".
-// The guidance must use `git push -u origin HEAD` instead.
-func TestProjectInit_ExistingOrigin_PushUsesUpstreamFlag(t *testing.T) {
-	dir := t.TempDir()
-	runGitTestCmd(t, dir, "init", "-q", "-b", "main")
-	runGitTestCmd(t, dir, "config", "user.email", "test@example.com")
-	runGitTestCmd(t, dir, "config", "user.name", "Test")
-	runGitTestCmd(t, dir, "commit", "-q", "--allow-empty", "-m", "initial")
-	runGitTestCmd(t, dir, "remote", "add", "origin", "https://example.invalid/owner/repo.git")
+// TestProjectInit_GuidanceIsIdempotentRegardlessOfExistingGitState pins the
+// design this revision settled on after four rounds of review kept finding
+// new correctness holes in an earlier "detect existing origin and print its
+// URL back" version (unquoted shell injection, `git config`'s upward
+// search misattributing a PARENT repo's origin, a bare `git commit`
+// sweeping in unrelated staged changes, a file:// origin printed as if
+// registerable, and finally a `git remote add` unconditionally failing
+// once origin already exists): the SAME guidance text is printed
+// regardless of whether projectDir has no repo yet, already has a repo,
+// or already has `origin` configured — and every step in it is written to
+// be a safe no-op if that step already happened. This test pins that
+// property directly: running against an ALREADY-existing repo with an
+// ALREADY-configured origin produces byte-identical guidance to a bare
+// empty directory (aside from the `cd` path itself).
+func TestProjectInit_GuidanceIsIdempotentRegardlessOfExistingGitState(t *testing.T) {
+	freshDir := t.TempDir()
+	existingDir := t.TempDir()
+	runGitTestCmd(t, existingDir, "init", "-q", "-b", "main")
+	runGitTestCmd(t, existingDir, "config", "user.email", "test@example.com")
+	runGitTestCmd(t, existingDir, "config", "user.name", "Test")
+	runGitTestCmd(t, existingDir, "commit", "-q", "--allow-empty", "-m", "initial")
+	runGitTestCmd(t, existingDir, "remote", "add", "origin", "https://example.invalid/owner/repo.git")
 
 	withStdin(t, devNullStdin(t))
-
-	var out bytes.Buffer
+	var freshOut bytes.Buffer
 	cmd := projectInitSubCmd
-	cmd.SetOut(&out)
+	cmd.SetOut(&freshOut)
 	cmd.SetContext(context.Background())
-
-	if err := runProjectInit(cmd, []string{dir}); err != nil {
-		t.Fatalf("runProjectInit: %v", err)
+	if err := runProjectInit(cmd, []string{freshDir}); err != nil {
+		t.Fatalf("runProjectInit (fresh): %v", err)
 	}
-
-	if !strings.Contains(out.String(), "git push -u origin HEAD") {
-		t.Errorf("expected guidance to use 'git push -u origin HEAD', got:\n%s", out.String())
-	}
-}
-
-// TestProjectInit_ExistingOrigin_CommitScopedToBoidDir pins Major 2 (codex
-// round-4 review of this PR): a bare `git commit` after `git add .boid`
-// commits the WHOLE INDEX, not just .boid — an already-existing repository
-// (the exact scenario this branch targets: origin already configured
-// before `project init` ran) may have unrelated, even sensitive, changes
-// already staged, and a bare commit would sweep them into the same commit
-// the guidance then tells the user to push. The guidance must scope the
-// commit to `.boid` with a pathspec.
-func TestProjectInit_ExistingOrigin_CommitScopedToBoidDir(t *testing.T) {
-	dir := t.TempDir()
-	runGitTestCmd(t, dir, "init", "-q", "-b", "main")
-	runGitTestCmd(t, dir, "config", "user.email", "test@example.com")
-	runGitTestCmd(t, dir, "config", "user.name", "Test")
-	runGitTestCmd(t, dir, "commit", "-q", "--allow-empty", "-m", "initial")
-	runGitTestCmd(t, dir, "remote", "add", "origin", "https://example.invalid/owner/repo.git")
 
 	withStdin(t, devNullStdin(t))
-
-	var out bytes.Buffer
-	cmd := projectInitSubCmd
-	cmd.SetOut(&out)
-	cmd.SetContext(context.Background())
-
-	if err := runProjectInit(cmd, []string{dir}); err != nil {
-		t.Fatalf("runProjectInit: %v", err)
+	var existingOut bytes.Buffer
+	cmd2 := projectInitSubCmd
+	cmd2.SetOut(&existingOut)
+	cmd2.SetContext(context.Background())
+	if err := runProjectInit(cmd2, []string{existingDir}); err != nil {
+		t.Fatalf("runProjectInit (existing): %v", err)
 	}
 
-	if !strings.Contains(out.String(), "git commit -m 'add boid project scaffold' -- .boid") {
-		t.Errorf("expected the commit to be scoped to .boid via a pathspec, got:\n%s", out.String())
+	// Compare only the "Next steps:" section onward: the wizard's own
+	// "Project name [<dir-basename>]:" prompt line and "Created <DIR>"
+	// line legitimately differ (different t.TempDir() basenames), but
+	// nothing about the printed git/registration guidance should.
+	freshGuidance := freshOut.String()[strings.Index(freshOut.String(), "Next steps:"):]
+	existingGuidance := existingOut.String()[strings.Index(existingOut.String(), "Next steps:"):]
+	freshGuidance = strings.ReplaceAll(freshGuidance, freshDir, "<DIR>")
+	existingGuidance = strings.ReplaceAll(existingGuidance, existingDir, "<DIR>")
+	if freshGuidance != existingGuidance {
+		t.Errorf("expected identical guidance modulo the cd path, got:\nfresh:\n%s\nexisting:\n%s", freshGuidance, existingGuidance)
 	}
-}
-
-// TestProjectInit_FileOrigin_TreatedAsNoUsableOrigin pins Major 3 (codex
-// round-4 review of this PR): dispatcher.NormalizeOriginURL passes file://
-// origins through unchanged, but under the default compose deployment a
-// host-local path is not visible inside the daemon's own container —
-// printing it as a ready-to-register URL would reproduce exactly the "host
-// filesystem boundary" failure 穴 7 (docs/plans/release-onboarding.md)
-// exists to close. A file:// origin must fall through to the
-// git-URL-placeholder guidance, same as no origin at all.
-func TestProjectInit_FileOrigin_TreatedAsNoUsableOrigin(t *testing.T) {
-	dir := t.TempDir()
-	runGitTestCmd(t, dir, "init", "-q", "-b", "main")
-	runGitTestCmd(t, dir, "config", "user.email", "test@example.com")
-	runGitTestCmd(t, dir, "config", "user.name", "Test")
-	runGitTestCmd(t, dir, "commit", "-q", "--allow-empty", "-m", "initial")
-	fileOrigin := "file:///some/host/only/path.git"
-	runGitTestCmd(t, dir, "remote", "add", "origin", fileOrigin)
-
-	withStdin(t, devNullStdin(t))
-
-	var out bytes.Buffer
-	cmd := projectInitSubCmd
-	cmd.SetOut(&out)
-	cmd.SetContext(context.Background())
-
-	if err := runProjectInit(cmd, []string{dir}); err != nil {
-		t.Fatalf("runProjectInit: %v", err)
-	}
-
-	got := out.String()
-	if strings.Contains(got, fileOrigin) {
-		t.Errorf("must not print a file:// origin as a ready-to-register URL, got:\n%s", got)
-	}
-	if !strings.Contains(got, "git remote add origin <git-url>") {
-		t.Errorf("expected the no-usable-origin branch for a file:// origin, got:\n%s", got)
-	}
-}
-
-// TestProjectInit_NestedInDifferentRepo_DoesNotMisattributeParentOrigin
-// pins Blocker 1's second half (codex round-1 review of this PR): scaffold
-// a NEW subdirectory (with no .git of its own) inside an ALREADY-git-init'd
-// parent that has its own, unrelated origin. A bare `git config --get
-// remote.origin.url` run with cwd=subdir walks UP to the parent's .git and
-// reports the parent's origin — misattributing it to the freshly scaffolded
-// subdirectory, which is not what got pushed at all. The guidance must
-// fall back to the "no origin" branch (git init/remote add) instead of
-// printing the parent's URL.
-func TestProjectInit_NestedInDifferentRepo_DoesNotMisattributeParentOrigin(t *testing.T) {
-	parent := t.TempDir()
-	runGitTestCmd(t, parent, "init", "-q", "-b", "main")
-	runGitTestCmd(t, parent, "config", "user.email", "test@example.com")
-	runGitTestCmd(t, parent, "config", "user.name", "Test")
-	runGitTestCmd(t, parent, "commit", "-q", "--allow-empty", "-m", "initial")
-	parentOriginURL := "https://example.invalid/owner/unrelated-parent-repo.git"
-	runGitTestCmd(t, parent, "remote", "add", "origin", parentOriginURL)
-
-	dir := filepath.Join(parent, "my-project")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	withStdin(t, devNullStdin(t))
-
-	var out bytes.Buffer
-	cmd := projectInitSubCmd
-	cmd.SetOut(&out)
-	cmd.SetContext(context.Background())
-
-	if err := runProjectInit(cmd, []string{dir}); err != nil {
-		t.Fatalf("runProjectInit: %v", err)
-	}
-
-	got := out.String()
-	if strings.Contains(got, parentOriginURL) {
-		t.Errorf("must not attribute the parent repo's origin %q to the nested scaffold dir, got:\n%s", parentOriginURL, got)
-	}
-	if !strings.Contains(got, "git remote add origin") {
-		t.Errorf("expected the no-origin branch (git remote add origin) for a dir with no .git of its own, got:\n%s", got)
-	}
-}
-
-// TestProjectInit_ExistingOrigin_QuotesURLInGuidance pins Blocker (codex
-// round-2 review of this PR): originURL is read straight off `git config
-// remote.origin.url` with no shell-safety guarantee, and the printed
-// `boid project add <url> ...` line is meant to be pasted verbatim into a
-// shell — an unquoted URL containing shell metacharacters (here, `;` to
-// simulate a hostile/malformed origin) must not be spliced in raw.
-func TestProjectInit_ExistingOrigin_QuotesURLInGuidance(t *testing.T) {
-	dir := t.TempDir()
-	runGitTestCmd(t, dir, "init", "-q", "-b", "main")
-	runGitTestCmd(t, dir, "config", "user.email", "test@example.com")
-	runGitTestCmd(t, dir, "config", "user.name", "Test")
-	runGitTestCmd(t, dir, "commit", "-q", "--allow-empty", "-m", "initial")
-	// https:// URLs are passed through unchanged by NormalizeOriginURL
-	// (its own doc comment's "already an HTTPS URL ならそのまま" case) with
-	// no character-level validation, so an https origin can carry shell
-	// metacharacters straight through — a realistic "not shell-safe
-	// as-is" origin without needing a real hostile remote. (A file://
-	// origin, the OTHER passthrough case, is deliberately excluded from
-	// this "usable origin" branch entirely by Major 3's fix below, so it
-	// cannot exercise this quoting path — hence https:// here instead.)
-	maliciousOrigin := "https://example.invalid/owner/repo.git; touch /tmp/pwned"
-	runGitTestCmd(t, dir, "remote", "add", "origin", maliciousOrigin)
-
-	withStdin(t, devNullStdin(t))
-
-	var out bytes.Buffer
-	cmd := projectInitSubCmd
-	cmd.SetOut(&out)
-	cmd.SetContext(context.Background())
-
-	if err := runProjectInit(cmd, []string{dir}); err != nil {
-		t.Fatalf("runProjectInit: %v", err)
-	}
-
-	got := out.String()
-	if !strings.Contains(got, shellQuoteSingle(maliciousOrigin)) {
-		t.Errorf("expected the origin URL to be single-quoted in the printed guidance, got:\n%s", got)
-	}
-	if strings.Contains(got, "boid project add "+maliciousOrigin) {
-		t.Errorf("origin URL must not appear unquoted in the printed guidance, got:\n%s", got)
+	// And that the pre-existing origin URL never leaks into the output at
+	// all (it is deliberately never inspected or printed anymore).
+	if strings.Contains(existingOut.String(), "example.invalid") {
+		t.Errorf("did not expect the pre-existing origin URL to appear in guidance, got:\n%s", existingOut.String())
 	}
 }
 
