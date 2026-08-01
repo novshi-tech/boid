@@ -27,6 +27,15 @@ type jobContextProvider interface {
 	JobContext(jobID string) (dispatcher.JobContextSnapshot, bool)
 }
 
+// projectLookup is narrowed from *api.ProjectAppService (which satisfies it
+// structurally) down to the single method BoidOpProjectBehaviors needs,
+// mirroring jobContextProvider's narrowing of *dispatcher.Runner — keeps
+// boid_executor's dependency surface minimal and its tests free of the full
+// ProjectAppService's Meta-store interface.
+type projectLookup interface {
+	GetProject(id string) (*orchestrator.Project, error)
+}
+
 type boidBuiltinExecutor struct {
 	workflow    api.WorkflowService
 	tasks       *api.TaskAppService
@@ -42,9 +51,14 @@ type boidBuiltinExecutor struct {
 	// the upload path writes. Empty disables the two ops with an
 	// "unavailable" error rather than panicking.
 	attachmentsRoot string
+	// projects backs BoidOpProjectBehaviors (`boid project behaviors` from
+	// inside the sandbox). nil disables the op with an "unavailable" error
+	// rather than panicking, same convention as every other optional
+	// dependency here.
+	projects projectLookup
 }
 
-func newBoidBuiltinExecutor(workflow api.WorkflowService, tasks *api.TaskAppService, jobs api.JobStore, logReader api.JobLogReader, jobContexts jobContextProvider, attachmentsRoot string) sandbox.BoidExecutor {
+func newBoidBuiltinExecutor(workflow api.WorkflowService, tasks *api.TaskAppService, jobs api.JobStore, logReader api.JobLogReader, jobContexts jobContextProvider, attachmentsRoot string, projects projectLookup) sandbox.BoidExecutor {
 	if workflow == nil && tasks == nil {
 		return nil
 	}
@@ -55,6 +69,7 @@ func newBoidBuiltinExecutor(workflow api.WorkflowService, tasks *api.TaskAppServ
 		logReader:       logReader,
 		jobContexts:     jobContexts,
 		attachmentsRoot: attachmentsRoot,
+		projects:        projects,
 	}
 }
 
@@ -338,6 +353,19 @@ func (e *boidBuiltinExecutor) ExecuteBoidBuiltin(goCtx context.Context, ctx sand
 			fmt.Fprintf(&stderrBuf, "error line %d (remote_id=%s): %s\n", importErr.Line, importErr.RemoteID, importErr.Error)
 		}
 		return &sandbox.ExecResponse{Stdout: stdout, Stderr: stderrBuf.String()}
+	case sandbox.BoidOpProjectBehaviors:
+		if e.projects == nil {
+			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid project behaviors unavailable"}
+		}
+		proj, err := e.projects.GetProject(req.ProjectID)
+		if err != nil {
+			return &sandbox.ExecResponse{ExitCode: 1, Stderr: err.Error()}
+		}
+		out, err := json.MarshalIndent(proj.Meta.TaskBehaviors, "", "  ")
+		if err != nil {
+			return &sandbox.ExecResponse{ExitCode: 1, Stderr: err.Error()}
+		}
+		return &sandbox.ExecResponse{Stdout: string(out) + "\n"}
 	case sandbox.BoidOpActionSend:
 		if req.TaskID == "" {
 			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid action send requires a task id"}

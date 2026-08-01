@@ -444,6 +444,18 @@ func (b *Broker) handleBoidBuiltin(ctx context.Context, req *ExecRequest, entry 
 				boidReq.WorkspaceID = entry.Context.WorkspaceID
 			}
 		}
+	case BoidOpProjectBehaviors:
+		if boidReq.ProjectID == "" {
+			boidReq.ProjectID = entry.Context.ProjectID
+		}
+		resolved, err := b.resolveProjectRef(boidReq.ProjectID)
+		if err != nil {
+			return &ExecResponse{ExitCode: 1, Stderr: fmt.Sprintf("boid project behaviors: resolve project %q: %s", boidReq.ProjectID, err)}
+		}
+		boidReq.ProjectID = resolved
+		if !entry.Context.AllowsProject(boidReq.ProjectID) {
+			return &ExecResponse{ExitCode: 1, Stderr: "boid project behaviors: project is outside the current workspace"}
+		}
 	case BoidOpActionSend:
 		if boidReq.TaskID == "" {
 			return &ExecResponse{ExitCode: 1, Stderr: "boid action send requires a task id"}

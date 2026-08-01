@@ -1462,7 +1462,7 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 		// argument above) actually writes to, or `boid job log`/`boid task
 		// env`-adjacent broker RPCs would read from the wrong directory.
 		// See hostVisibleRuntimesDirFor's own doc comment.
-		srv.broker.BoidExecutor = newBoidBuiltinExecutor(workflow, taskSvc, jobStore, transcriptLogReader{rootDir: runtimesRoot}, runner, dataHomeFor(cfg))
+		srv.broker.BoidExecutor = newBoidBuiltinExecutor(workflow, taskSvc, jobStore, transcriptLogReader{rootDir: runtimesRoot}, runner, dataHomeFor(cfg), projectSvc)
 		srv.broker.ProjectResolver = projectResolverFor(projectSvc)
 	}
 	globalJobSvc := &globalJobStore{

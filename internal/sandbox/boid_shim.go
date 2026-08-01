@@ -16,11 +16,12 @@ import (
 const boidShimUsage = `Usage: boid <command> [subcommand] [flags]
 
 Commands:
-  task    Manage tasks (create, show, update, list, notify, answer, ask, delete, import, reopen,
-          current, instructions, env, payload, attachments list, attachments get)
-  job     Manage jobs (done, list, show, log)
-  action  Send actions (send)
-  agent   Manage agent (stop)
+  task     Manage tasks (create, show, update, list, notify, answer, ask, delete, import, reopen,
+           current, instructions, env, payload, attachments list, attachments get)
+  job      Manage jobs (done, list, show, log)
+  action   Send actions (send)
+  agent    Manage agent (stop)
+  project  Inspect projects (behaviors)
 
 Run "boid <command> --help" for subcommand usage.
 `
@@ -178,9 +179,34 @@ func parseBoidRequest(args []string) (*BoidRequest, error) {
 		default:
 			return nil, fmt.Errorf("boid shim: unsupported boid task subcommand %q", args[1])
 		}
+	case "project":
+		if len(args) < 2 {
+			return nil, fmt.Errorf("boid shim: missing boid project subcommand")
+		}
+		if args[1] != "behaviors" {
+			return nil, fmt.Errorf("boid shim: unsupported boid project subcommand %q", args[1])
+		}
+		return parseBoidProjectBehaviors(args[2:])
 	default:
 		return nil, fmt.Errorf("boid shim: unsupported boid subcommand %q", args[0])
 	}
+}
+
+// parseBoidProjectBehaviors builds the BoidRequest for `boid project
+// behaviors <project-ref>` (docs/plans/workspace-default-project.md follow-up:
+// giving sandbox-side callers the same task_behaviors visibility
+// `boid project behaviors` already gives host-side callers). The ref is
+// forwarded as-is (UUID, exact name, or partial name) — the broker resolves
+// it via ProjectResolver and enforces AllowsProject, mirroring `boid task
+// create`/`boid task list`'s project_id handling.
+func parseBoidProjectBehaviors(args []string) (*BoidRequest, error) {
+	if len(args) == 0 {
+		return nil, fmt.Errorf("boid shim: project behaviors requires a project ref")
+	}
+	if len(args) > 1 {
+		return nil, fmt.Errorf("boid shim: unexpected argument %q for boid project behaviors", args[1])
+	}
+	return &BoidRequest{Op: BoidOpProjectBehaviors, ProjectID: args[0]}, nil
 }
 
 // parseBoidAgentStop builds the BoidRequest for `boid agent stop <job-id>`.

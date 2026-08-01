@@ -53,7 +53,7 @@ Manage projects ([`project.yaml` reference](project-yaml.md)).
 | `boid project remove <ref>` (alias: `rm`) | Unregister a project. The only entry point that deletes a project's row — `boid` never auto-deletes one based on what it observes on disk or over the network (see `project fetch` below). For a git-URL registered project, also removes the daemon-managed bare repository, so re-adding the same URL/name afterward succeeds. |
 | `boid project reload` | Re-read every registered project's `project.yaml`. |
 | `boid project fetch <ref>` | Run `git fetch --all` inside a git-URL registered project's bare repository and reload `project.yaml`. A fetch or reload failure marks the project `degraded` (visible in `project list`/`show`) instead of deleting it — recovery is `boid project rm` + `boid project add` once the remote is reachable again. |
-| `boid project behaviors <ref>` | List `task_behaviors` defined in the project. |
+| `boid project behaviors <ref>` | List `task_behaviors` defined in the project. Also callable from inside the sandbox via the boid shim (`boid project behaviors <ref>`) — output is fixed JSON, and `ref` only resolves to a project within the caller's own workspace (scoped by `AllowedProjectIDs`). |
 
 ### `project local` — Deprecated
 

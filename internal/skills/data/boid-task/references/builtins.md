@@ -20,6 +20,7 @@ These `boid` subcommands are available inside the supervisor's sandbox via the s
 - [boid job list](#boid-job-list)
 - [boid job show](#boid-job-show)
 - [boid job log](#boid-job-log)
+- [boid project behaviors](#boid-project-behaviors)
 
 ## boid task create
 
@@ -234,3 +235,11 @@ boid job log <job-id>
 ```
 
 Streams the runtime transcript for a job. Prints `log not available (runtime cleaned up)` once the daemon GC has removed the runtime (24h cycle, 30-day retention).
+
+## boid project behaviors
+
+```bash
+boid project behaviors <project-ref>
+```
+
+Prints the target project's `task_behaviors` as JSON (`readonly`/`traits`/`default_instruction` per behavior name; `hooks` and the runtime-overlay fields `env`/`host_commands`/`additional_bindings` are never included). `<project-ref>` is a UUID, exact name, or partial name — it only resolves to a project within the caller's own workspace (a cross-workspace ref fails the same way a nonexistent one would). Use this when a task needs to inspect another project's behaviors before delegating work to it (e.g. a supervisor spanning multiple projects), instead of shelling out to the host-only `boid project show`.

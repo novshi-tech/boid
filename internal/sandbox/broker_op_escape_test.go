@@ -167,6 +167,13 @@ var opEscapeCoverage = map[string]opCoverage{
 	// covered separately by broker_task_update_payload_patch_test.go; this
 	// closes the policy-gate manifest.
 	"BoidOpTaskUpdatePayloadPatch": {escapeTest: "TestBroker_BoidTaskUpdatePayloadPatch_PolicyReject"},
+
+	// BoidOpProjectBehaviors (`boid project behaviors` from inside the
+	// sandbox): workspace-scope enforcement is covered by
+	// TestBroker_BoidProjectBehaviors_ProjectIDDenied (mirrors
+	// BoidOpTaskList's project_id handling); the plain policy-gate manifest
+	// entry point is TestBroker_BoidProjectBehaviors_PolicyReject.
+	"BoidOpProjectBehaviors": {escapeTest: "TestBroker_BoidProjectBehaviors_ProjectIDDenied"},
 }
 
 // TestOpEscapeCoverage_ManifestComplete asserts opEscapeCoverage covers exactly
