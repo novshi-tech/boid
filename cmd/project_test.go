@@ -415,9 +415,9 @@ func TestProjectInit_DirArg_GitCommandsTargetProjectDir(t *testing.T) {
 	// "safe to run even if some of this is already done", and an idempotent
 	// rerun's `git commit` (nothing new to commit) must not stop `git
 	// remote add`/`git push` from still running.
-	wantChain := "cd '" + dir + "' && { git init && git add .boid/project.yaml && (git diff --cached --quiet -- .boid/project.yaml || git commit -m 'add boid project scaffold' -- .boid/project.yaml) && git push '<git-url>' HEAD && { DEFAULT_REF=$(git ls-remote --symref '<git-url>' HEAD 2>/dev/null | awk '$1==\"ref:\"{print $2}'); CURRENT_REF=\"refs/heads/$(git symbolic-ref --short HEAD)\"; if [ -n \"$DEFAULT_REF\" ] && [ \"$DEFAULT_REF\" != \"$CURRENT_REF\" ]; then echo \"WARNING: pushed to $CURRENT_REF, but this remote's default branch is $DEFAULT_REF -- merge/PR it there before running step 3, or the daemon will not see .boid/project.yaml\" >&2; fi; }; }"
-	if !strings.Contains(got, wantChain) {
-		t.Errorf("expected guidance to contain the single cd-prefixed chain %q, got:\n%s", wantChain, got)
+	wantCdPrefix := "cd '" + dir + "' && { git init && git add .boid/project.yaml"
+	if !strings.Contains(got, wantCdPrefix) {
+		t.Errorf("expected guidance to contain the cd-prefixed chain start %q, got:\n%s", wantCdPrefix, got)
 	}
 }
 
@@ -765,17 +765,22 @@ func TestProjectInit_DirIsOwnRepoRoot_DoesNotReject(t *testing.T) {
 	}
 }
 
-// TestProjectInit_PrintedChain_PushesToRemoteDefaultBranch executes the
-// ACTUAL printed guidance chain against a fixture simulating a real forge
-// repo: an established remote with commits already on "main" (its real
-// default branch, confirmed via `git symbolic-ref HEAD` on the bare repo
-// itself), cloned locally and then checked out onto an unrelated
-// "feature-branch" before scaffolding — pinning Major (codex round-15
-// review, correcting a factual error in an earlier revision's own comment
-// claiming no portable client-side git command could determine a remote's
-// default branch): `git ls-remote --symref` does exactly that, and the
-// guidance uses it to push the scaffold commit onto the remote's ACTUAL
-// default branch, not a new ref named after the local feature branch.
+// TestProjectInit_PrintedChain_WarnsWithoutForcingOntoDefaultBranch
+// executes the ACTUAL printed guidance chain against a fixture simulating
+// a real forge repo: an established remote with commits already on "main"
+// (its real default branch, confirmed via `git symbolic-ref HEAD` on the
+// bare repo itself), cloned locally and then checked out onto an unrelated
+// "feature-branch" before scaffolding. Pins two things together: (1) codex
+// round-15 review correcting a factual error in an earlier revision's own
+// comment claiming no portable client-side git command could determine a
+// remote's default branch (`git ls-remote --symref` does exactly that),
+// and (2) codex round-16 review's correction of round-15's OWN fix, which
+// had used that information to force-push `HEAD:$DEFAULT_REF` straight
+// onto the remote's default branch — bypassing branch protection/PR
+// review by shipping the whole feature branch's history there directly.
+// The current design pushes the current branch under its own name only,
+// and merely WARNS (via that same `ls-remote --symref` check) when it
+// differs from the remote's actual default branch.
 func TestProjectInit_PrintedChain_WarnsWithoutForcingOntoDefaultBranch(t *testing.T) {
 	remote := filepath.Join(t.TempDir(), "remote.git")
 	runGitTestCmd(t, t.TempDir(), "init", "-q", "--bare", remote)
@@ -835,6 +840,80 @@ func TestProjectInit_PrintedChain_WarnsWithoutForcingOntoDefaultBranch(t *testin
 	refs, _ := exec.Command("git", "--git-dir="+remote, "show-ref").CombinedOutput()
 	if !strings.Contains(string(refs), "refs/heads/feature-branch") {
 		t.Errorf("expected the scaffold to have been pushed as an ordinary 'feature-branch' ref, show-ref output:\n%s", refs)
+	}
+}
+
+// TestProjectInit_PrintedChain_WarnsOnUnresolvedRemoteHEAD executes the
+// ACTUAL printed guidance chain against a plain `git init --bare` remote —
+// pinning Blocker (codex round-17 review): `git init --bare` leaves the
+// bare repo's own HEAD symref pointing at whatever init.defaultBranch was
+// (typically "master") REGARDLESS of what branch actually gets pushed to
+// it — verified empirically that pushing "main" (or any other branch name)
+// there leaves HEAD dangling even after the push succeeds. A real forge
+// (GitHub/GitLab/...) auto-sets its default branch from a first push to an
+// empty repo almost immediately, so re-checking `git ls-remote --symref`
+// AFTER the push (not just once beforehand) is what lets that real-forge
+// case resolve at all — but it also means a plain self-hosted bare git
+// server with no such auto-detection is caught here too: an EMPTY
+// $DEFAULT_REF after the push (as opposed to a MISMATCHED one) must warn,
+// or the daemon's later clone-and-read-HEAD registration step would fail
+// with no advance warning at all.
+func TestProjectInit_PrintedChain_WarnsOnUnresolvedRemoteHEAD(t *testing.T) {
+	dir := t.TempDir()
+	// -b main (not the system default, whatever that happens to be):
+	// forces a MISMATCH against the bare remote's own default branch
+	// name below, so this test reliably reproduces the dangling-HEAD
+	// scenario regardless of the test host's own git init.defaultBranch
+	// configuration.
+	runGitTestCmd(t, dir, "init", "-q", "-b", "main")
+	runGitTestCmd(t, dir, "config", "user.email", "test@example.com")
+	runGitTestCmd(t, dir, "config", "user.name", "Test")
+	remote := filepath.Join(t.TempDir(), "remote.git")
+	// -b master (deliberately the OPPOSITE of the local repo's -b main
+	// above, regardless of what this test host's own
+	// git init.defaultBranch happens to be): guarantees the bare
+	// remote's dangling HEAD symref target can never accidentally match
+	// the branch this test pushes, which is what actually reproduces
+	// "dangling even after a successful push" reliably.
+	runGitTestCmd(t, t.TempDir(), "init", "-q", "--bare", "-b", "master", remote)
+
+	withStdin(t, devNullStdin(t))
+	var out bytes.Buffer
+	cmd := projectInitSubCmd
+	cmd.SetOut(&out)
+	cmd.SetContext(context.Background())
+	if err := runProjectInit(cmd, []string{dir}); err != nil {
+		t.Fatalf("runProjectInit: %v", err)
+	}
+
+	got := out.String()
+	start := strings.Index(got, "{ git init &&")
+	end := strings.LastIndex(got[start:], "; }") + start + len("; }")
+	if start < 0 || end <= start {
+		t.Fatalf("could not locate the printed chain in guidance:\n%s", got)
+	}
+	chain := strings.ReplaceAll(got[start:end], "'<git-url>'", "'"+remote+"'")
+	c := exec.Command("bash", "-c", chain)
+	c.Dir = dir
+	chainOut, err := c.CombinedOutput()
+	if err != nil {
+		t.Fatalf("bash -c %q: %v\n%s", chain, err, chainOut)
+	}
+
+	if !strings.Contains(string(chainOut), "WARNING") || !strings.Contains(string(chainOut), "no resolvable default branch") {
+		t.Errorf("expected a WARNING about the remote having no resolvable default branch, got:\n%s", chainOut)
+	}
+
+	// Sanity: confirm the premise this test relies on — the bare repo's
+	// own HEAD really is left dangling by a plain `git init --bare`,
+	// even now that our push landed a commit on some branch.
+	headSymref, symrefErr := exec.Command("git", "--git-dir="+remote, "symbolic-ref", "HEAD").CombinedOutput()
+	if symrefErr != nil {
+		t.Fatalf("git symbolic-ref HEAD: %v\n%s", symrefErr, headSymref)
+	}
+	danglingRef := strings.TrimSpace(string(headSymref))
+	if _, err := exec.Command("git", "--git-dir="+remote, "rev-parse", "--verify", danglingRef).CombinedOutput(); err == nil {
+		t.Fatalf("expected the bare remote's HEAD (%s) to still be dangling (pointing at a ref that doesn't exist) after the push — otherwise this test's premise no longer holds", danglingRef)
 	}
 }
 

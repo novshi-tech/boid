@@ -572,15 +572,28 @@ func runProjectInit(cmd *cobra.Command, args []string) error {
 	// command could do this — this is the same mechanism internal/
 	// dispatcher/bare_repo.go already uses server-side) purely to WARN,
 	// after the push, if the branch just pushed differs from it — never
-	// to redirect the push itself. Verified empirically: a brand-new
-	// empty remote (no resolvable HEAD yet) prints no warning at all; an
-	// established repo with the local checkout on a different feature
-	// branch prints the warning while leaving the remote's actual
-	// default branch completely untouched.
+	// to redirect the push itself.
+	//
+	// Checked AFTER the push, not before (Blocker, codex round-17
+	// review): a genuinely fresh, empty repository on a REAL forge
+	// (GitHub, GitLab, ...) has its default branch auto-set by the
+	// forge's own server-side logic essentially immediately once the
+	// first push lands — so re-querying ls-remote AFTER pushing, not
+	// just once beforehand, is what lets a real forge's freshly-set
+	// default resolve at all. That same re-query is also what catches
+	// the DIFFERENT failure mode round-17 found: a plain self-hosted
+	// bare git server (`git init --bare` with no forge layered on top)
+	// never auto-sets its HEAD symref from a push — verified
+	// empirically, pushing "main" to one whose HEAD still points at the
+	// never-created "master" leaves HEAD dangling even after a
+	// successful push. An EMPTY $DEFAULT_REF after the push (as opposed
+	// to a MISMATCHED one) means exactly this: not "a fresh repo that
+	// will sort itself out", but a remote with no resolvable default at
+	// all, which registration would otherwise silently fail against.
 	fmt.Fprintln(out, "\nNext steps:")
 	fmt.Fprintln(out, "  1. Make sure your project's actual source code — not just this scaffold — is already committed and pushed to your remote. The daemon clones whatever URL you register in step 3, and an agent dispatched against it needs real code to work with.")
 	fmt.Fprintln(out, "  2. Commit the scaffold and push it to your remote (safe to run even if some of this is already done):")
-	fmt.Fprintf(out, `       %s{ git init && git add .boid/project.yaml && (git diff --cached --quiet -- .boid/project.yaml || git commit -m 'add boid project scaffold' -- .boid/project.yaml) && git push '<git-url>' HEAD && { DEFAULT_REF=$(git ls-remote --symref '<git-url>' HEAD 2>/dev/null | awk '$1=="ref:"{print $2}'); CURRENT_REF="refs/heads/$(git symbolic-ref --short HEAD)"; if [ -n "$DEFAULT_REF" ] && [ "$DEFAULT_REF" != "$CURRENT_REF" ]; then echo "WARNING: pushed to $CURRENT_REF, but this remote's default branch is $DEFAULT_REF -- merge/PR it there before running step 3, or the daemon will not see .boid/project.yaml" >&2; fi; }; }`+"\n", cdPrefix)
+	fmt.Fprintf(out, `       %s{ git init && git add .boid/project.yaml && (git diff --cached --quiet -- .boid/project.yaml || git commit -m 'add boid project scaffold' -- .boid/project.yaml) && git push '<git-url>' HEAD && { DEFAULT_REF=$(git ls-remote --symref '<git-url>' HEAD 2>/dev/null | awk '$1=="ref:"{print $2}'); CURRENT_REF="refs/heads/$(git symbolic-ref --short HEAD)"; if [ -z "$DEFAULT_REF" ]; then echo "WARNING: this remote has no resolvable default branch (HEAD) even after this push -- a real forge (GitHub/GitLab/...) auto-sets one from a first push to an empty repository, but a plain self-hosted bare git server does not. Set it there (e.g. git symbolic-ref HEAD refs/heads/<branch> run directly on the remote, or the forge's settings UI/API) before running step 3, or registration will fail." >&2; elif [ "$DEFAULT_REF" != "$CURRENT_REF" ]; then echo "WARNING: pushed to $CURRENT_REF, but this remote's default branch is $DEFAULT_REF -- merge/PR it there before running step 3, or the daemon will not see .boid/project.yaml" >&2; fi; }; }`+"\n", cdPrefix)
 	fmt.Fprintln(out, "  3. Register the pushed URL with the running boid daemon:")
 	fmt.Fprintf(out, "       boid project add '<git-url>' %s\n", workspaceFlag)
 
