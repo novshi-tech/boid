@@ -51,6 +51,32 @@
 # mount sources under it, and a DooD sibling's bind source must resolve
 # against the HOST engine — a named volume's interior is invisible there.
 # See compose.yml's own "Persistence" header comment for the full rationale.
+# INTERACTION WITH ARBITRARY-UID (docs/plans/release-onboarding.md 決定1,
+# PR2) — UNVERIFIED ON REAL PODMAN, flagged rather than silently assumed
+# safe: compose.yml's `user:` moved from `${BOID_UID}:${BOID_GID}` to
+# `${BOID_UID}:0` (gid pinned to 0, the OpenShift-style arbitrary-uid
+# convention) in the same change that predates this comment. keep-id's own
+# docs describe it as remapping the CONTAINER's uid to the invoking host
+# user, which is the uid slot only — it should be orthogonal to which gid
+# `user:` requests, but "should be" is not "confirmed": no docker/podman
+# engine is reachable from inside the sandbox this PR's code review ran in
+# (CLAUDE.md's サンドボックス実行バックエンド note), so this has only been
+# checked by reading keep-id's implementation notes, not by starting a real
+# rootless-podman compose stack with `user: "<uid>:0"` and inspecting it.
+# Three things to confirm on a real rootless-podman host before trusting
+# this combination in production (docs/plans/release-onboarding.md's own
+# 決定1 実装形3 list):
+#   (a) the container's EFFECTIVE uid/gid — `id` inside the running
+#       container should show the host-mapped uid and gid 0, not a
+#       keep-id-remapped gid;
+#   (b) the `boid_state` named volume's on-disk owner after first mount —
+#       should end up gid-0-writable per the image's `chgrp -R 0` +
+#       `chmod -R g=u` (build/container/Dockerfile), not silently
+#       re-owned by keep-id to something g=u doesn't cover;
+#   (c) docker.sock (actually podman.sock under this override) reachability
+#       — whether `group_add: [DOCKER_GID]` (compose.yml) still grants
+#       socket access when the primary gid is forced to 0 instead of
+#       whatever keep-id would otherwise have picked.
 services:
   daemon:
     userns_mode: keep-id

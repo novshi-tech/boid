@@ -204,32 +204,39 @@ func TestContainerBackend_Launch_UserFlagAndPasswdEntry(t *testing.T) {
 	if len(api.createCalls) != 1 {
 		t.Fatalf("ContainerCreate calls = %d, want 1", len(api.createCalls))
 	}
-	// §決定 4: job containers run --user <uid>:<gid> (non-root), matching
-	// the /etc/passwd entry build/container/Dockerfile bakes for that same
-	// uid/gid at image-build time (verified by the image build, not this
-	// unit test — this test pins the --user flag format only).
+	// §決定 4: job containers run --user <uid>:<gid> (non-root). As of
+	// PR2 (docs/plans/release-onboarding.md 決定1) the matching
+	// /etc/passwd entry is no longer baked per-uid at image build time —
+	// internal/selfuser registers it at runtime instead (verified by
+	// internal/selfuser's own tests and cmd/runner_container.go's wiring,
+	// not this unit test — this test pins the --user flag format only).
 	if got, want := api.createCalls[0].Config.User, "1000:1000"; got != want {
 		t.Errorf("Config.User = %q, want %q", got, want)
 	}
 }
 
 // TestContainerBackend_Launch_RejectsPartialOrRootUIDGID pins Major 1 from
-// the PR5 review: a partial uid/gid override (only one of the two set) or
-// one that resolves to root (either side == 0, e.g. `UID: 0, GID: 1000`)
-// must not reach `--user`; both must fall back to the non-root default
-// (§決定 4). Only a fully-specified, fully-non-zero pair is honored as-is.
+// the PR5 review, as re-scoped by docs/plans/release-onboarding.md 決定1/PR2
+// (arbitrary-uid): a partial uid/gid override (only one of the two set) or
+// one where UID resolves to root (uid == 0) must not reach `--user`; both
+// must fall back to the non-root default (§決定 4). GID == 0 is no longer
+// rejected — compose's `user: "<uid>:0"` (build/container/compose.yml) is
+// the gid-0 arbitrary-uid design's whole point, and
+// ContainerBackendOptions.UID's doc comment documents why gid 0 is not
+// "running as root". Only uid == 0 (with or without a gid) still falls
+// back.
 func TestContainerBackend_Launch_RejectsPartialOrRootUIDGID(t *testing.T) {
 	tests := []struct {
 		name     string
 		uid, gid *int
 		wantUser string
 	}{
-		{name: "both unset falls back to default", uid: nil, gid: nil, wantUser: "1000:1000"},
-		{name: "uid=0 with nonzero gid falls back to default", uid: intPtr(0), gid: intPtr(1000), wantUser: "1000:1000"},
-		{name: "gid=0 with nonzero uid falls back to default", uid: intPtr(1000), gid: intPtr(0), wantUser: "1000:1000"},
-		{name: "uid=0 gid=0 falls back to default", uid: intPtr(0), gid: intPtr(0), wantUser: "1000:1000"},
-		{name: "only uid set falls back to default", uid: intPtr(2000), gid: nil, wantUser: "1000:1000"},
-		{name: "only gid set falls back to default", uid: nil, gid: intPtr(2000), wantUser: "1000:1000"},
+		{name: "both unset falls back to default", uid: nil, gid: nil, wantUser: "1000:0"},
+		{name: "uid=0 with nonzero gid falls back to default", uid: intPtr(0), gid: intPtr(1000), wantUser: "1000:0"},
+		{name: "gid=0 with nonzero uid is honored (arbitrary-uid, §決定1)", uid: intPtr(1000), gid: intPtr(0), wantUser: "1000:0"},
+		{name: "uid=0 gid=0 falls back to default (uid 0 still rejected)", uid: intPtr(0), gid: intPtr(0), wantUser: "1000:0"},
+		{name: "only uid set falls back to default", uid: intPtr(2000), gid: nil, wantUser: "1000:0"},
+		{name: "only gid set falls back to default", uid: nil, gid: intPtr(2000), wantUser: "1000:0"},
 		{name: "fully specified nonzero pair is honored", uid: intPtr(2000), gid: intPtr(2001), wantUser: "2000:2001"},
 	}
 	for _, tt := range tests {

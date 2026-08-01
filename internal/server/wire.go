@@ -444,22 +444,31 @@ func sandboxBackendForConfig(dockerClient *client.Client, installID, runtimeDir 
 	// UID/GID (PR9, §決定4 — "job container は `--user <daemon uid>:<gid>`
 	// で非 root 起動"): os.Getuid()/os.Getgid() are the DAEMON's own actual
 	// runtime uid/gid — under compose these are whatever `user:
-	// ${BOID_UID}:${BOID_GID}` set them to (build/container/compose.yml),
-	// not necessarily ContainerBackendOptions' own 1000:1000 default.
-	// Before this fix, sandboxBackendForConfig never populated UID/GID at
-	// all, so every job container silently ran as 1000:1000 regardless of
-	// the daemon's actual uid — harmless only when an operator's host uid
-	// happens to also be 1000. Real impact found via docs/plans/
-	// phase6-cutover-followups.md's e2e-container job debugging trail: the
-	// workspace home directory (host-created by the daemon process, mode
-	// 0700, owned by the daemon's real uid) became unreadable ("permission
-	// denied") to a job container running under a DIFFERENT uid whenever
-	// the two diverged (e.g. GH Actions runners default to uid 1001, not
-	// 1000). Using the daemon's own os.Getuid()/os.Getgid() here — rather
-	// than yet another config knob — keeps this correct by construction:
-	// whatever uid the daemon container actually runs as is exactly the
-	// uid its own bind-mounted files (workspace homes included) are owned
-	// by, and now exactly the uid job containers run as too.
+	// "${BOID_UID}:0"` set them to (build/container/compose.yml, gid
+	// hardcoded to 0 as of docs/plans/release-onboarding.md 決定1/PR2's
+	// arbitrary-uid redesign), not necessarily ContainerBackendOptions'
+	// own 1000:1000 default. Before this fix, sandboxBackendForConfig
+	// never populated UID/GID at all, so every job container silently ran
+	// as 1000:1000 regardless of the daemon's actual uid — harmless only
+	// when an operator's host uid happens to also be 1000. Real impact
+	// found via docs/plans/phase6-cutover-followups.md's e2e-container job
+	// debugging trail: the workspace home directory (host-created by the
+	// daemon process, mode 0700, owned by the daemon's real uid) became
+	// unreadable ("permission denied") to a job container running under a
+	// DIFFERENT uid whenever the two diverged (e.g. GH Actions runners
+	// default to uid 1001, not 1000). Using the daemon's own
+	// os.Getuid()/os.Getgid() here — rather than yet another config knob —
+	// keeps this correct by construction: whatever uid the daemon
+	// container actually runs as is exactly the uid its own bind-mounted
+	// files (workspace homes included) are owned by, and now exactly the
+	// uid job containers run as too.
+	//
+	// os.Getgid() legitimately resolves to 0 under the arbitrary-uid
+	// compose config above — dispatcher.NewContainerBackend's gid-0-aware
+	// guard (docs/plans/release-onboarding.md 決定1, PR2) accepts that
+	// straight through rather than rejecting it as a root-resolving pair
+	// the way it used to (see ContainerBackendOptions.UID's doc comment);
+	// only a uid of 0 is still rejected.
 	uid, gid := os.Getuid(), os.Getgid()
 	return dispatcher.NewContainerBackend(dockerClient, dispatcher.ContainerBackendOptions{
 		InstallID:            installID,

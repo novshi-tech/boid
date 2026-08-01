@@ -28,6 +28,7 @@ current_allowed=(
   qrterm
   reap
   sandbox
+  selfuser
   server
   skills
   timeline
@@ -57,6 +58,7 @@ target_allowed=(
   qrterm
   reap
   sandbox
+  selfuser
   server
   skills
   timeline
