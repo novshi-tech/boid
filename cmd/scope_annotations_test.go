@@ -162,13 +162,17 @@ var expectedScopeAnnotations = map[string]string{
 	"boid workspace edit":       scopeRemote,
 	"boid workspace export":     scopeRemote,
 	// import-home reads a LOCAL directory to build its payload and is still
-	// scopeRemote, unlike `project init` / `project reload`, which also read a
-	// local path and are scopeLocal. The axis is whose filesystem the path has
-	// to be on: those two hand the DAEMON a path it opens itself (so they only
-	// work while CLI and daemon share a host), while import-home opens it in
-	// this process and streams the BYTES — which is exactly why PR8's payload
-	// is a tar stream rather than a bind mount (docs/plans/
-	// workspace-home-volume-persistence.md 論点 f).
+	// scopeRemote, unlike `project reload`, which also reads a local path
+	// (a project's stored WorkDir) and is scopeLocal. The axis is whose
+	// filesystem the path has to be on: `project reload` hands the DAEMON
+	// a path it opens itself (so it only works while CLI and daemon share
+	// a host), while import-home opens it in this process and streams the
+	// BYTES — which is exactly why PR8's payload is a tar stream rather
+	// than a bind mount (docs/plans/workspace-home-volume-persistence.md
+	// 論点 f). (`project init` used to be the scopeLocal comparison point
+	// here too, but docs/plans/release-onboarding.md 穴 7/PR6 reclassified
+	// it to scopeNeutral — see cmd/project.go's own annotation comment —
+	// since it no longer hands the daemon anything at all.)
 	"boid workspace import-home": scopeRemote,
 	// The init-script quartet (PR9 of
 	// docs/plans/workspace-home-volume-persistence.md, 論点 d). scopeRemote on
