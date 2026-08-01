@@ -481,6 +481,76 @@ func TestProjectInit_NestedInDifferentRepo_DoesNotMisattributeParentOrigin(t *te
 	}
 }
 
+// TestProjectInit_ExistingOrigin_QuotesURLInGuidance pins Blocker (codex
+// round-2 review of this PR): originURL is read straight off `git config
+// remote.origin.url` with no shell-safety guarantee, and the printed
+// `boid project add <url> ...` line is meant to be pasted verbatim into a
+// shell — an unquoted URL containing shell metacharacters (here, `;` to
+// simulate a hostile/malformed origin) must not be spliced in raw.
+func TestProjectInit_ExistingOrigin_QuotesURLInGuidance(t *testing.T) {
+	dir := t.TempDir()
+	runGitTestCmd(t, dir, "init", "-q", "-b", "main")
+	runGitTestCmd(t, dir, "config", "user.email", "test@example.com")
+	runGitTestCmd(t, dir, "config", "user.name", "Test")
+	runGitTestCmd(t, dir, "commit", "-q", "--allow-empty", "-m", "initial")
+	// file:// URLs are passed through unchanged by NormalizeOriginURL
+	// (dispatcher.NormalizeOriginURL's own doc comment), so this is a
+	// realistic "not shell-safe as-is" origin without needing a real
+	// hostile remote.
+	maliciousOrigin := "file:///tmp/repo; touch /tmp/pwned"
+	runGitTestCmd(t, dir, "remote", "add", "origin", maliciousOrigin)
+
+	withStdin(t, devNullStdin(t))
+
+	var out bytes.Buffer
+	cmd := projectInitSubCmd
+	cmd.SetOut(&out)
+	cmd.SetContext(context.Background())
+
+	if err := runProjectInit(cmd, []string{dir}); err != nil {
+		t.Fatalf("runProjectInit: %v", err)
+	}
+
+	got := out.String()
+	if !strings.Contains(got, shellQuoteSingle(maliciousOrigin)) {
+		t.Errorf("expected the origin URL to be single-quoted in the printed guidance, got:\n%s", got)
+	}
+	if strings.Contains(got, "boid project add "+maliciousOrigin) {
+		t.Errorf("origin URL must not appear unquoted in the printed guidance, got:\n%s", got)
+	}
+}
+
+// TestProjectInit_InvalidWorkspaceFlag_RejectsBeforeScaffolding pins Major
+// (codex round-2 review of this PR): `boid project add` (the command
+// project init's own guidance prints) requires a valid workspace slug
+// (ValidWorkspaceSlug, runProjectAddGitURL) — an invalid --workspace value
+// passed to `project init` must be rejected up front, before the scaffold
+// is written, rather than succeeding and printing a `project add` command
+// that is guaranteed to fail.
+func TestProjectInit_InvalidWorkspaceFlag_RejectsBeforeScaffolding(t *testing.T) {
+	dir := t.TempDir()
+	withStdin(t, devNullStdin(t))
+	projectInitWorkspace = "Team_A" // uppercase/underscore: not a valid slug
+	t.Cleanup(func() { projectInitWorkspace = "" })
+
+	var out bytes.Buffer
+	cmd := projectInitSubCmd
+	cmd.SetOut(&out)
+	cmd.SetContext(context.Background())
+
+	err := runProjectInit(cmd, []string{dir})
+	if err == nil {
+		t.Fatal("expected an error for an invalid --workspace slug")
+	}
+	if !strings.Contains(err.Error(), "invalid --workspace value") {
+		t.Errorf("expected an 'invalid --workspace value' error, got: %v", err)
+	}
+
+	if _, statErr := os.Stat(filepath.Join(dir, ".boid", "project.yaml")); statErr == nil {
+		t.Error("expected no scaffold to be written when --workspace is rejected up front")
+	}
+}
+
 // withProjectAddWorkspaceFlag sets the package-level --workspace flag value
 // `runProjectAdd` reads (projectAddWorkspace) for the duration of the
 // calling test, restoring it to "" afterward so this global does not leak

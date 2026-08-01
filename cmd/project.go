@@ -350,6 +350,20 @@ func runProjectInit(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	// Validate --workspace BEFORE any side effect (scaffold write) below
+	// (Major, codex round-2 review of this PR): the printed guidance's
+	// `boid project add <url> --workspace=<slug>` target itself requires
+	// ValidWorkspaceSlug (runProjectAddGitURL, cmd/project.go's own
+	// --workspace validation) — an invalid slug like "Team_A" would let
+	// `project init` succeed and write the scaffold, only for the exact
+	// command it just printed to unconditionally fail. Fail fast here
+	// instead, before touching the filesystem at all.
+	if projectInitWorkspace != "" {
+		if err := projectspec.ValidWorkspaceSlug(projectInitWorkspace); err != nil {
+			return fmt.Errorf("invalid --workspace value: %w", err)
+		}
+	}
+
 	// Abort if project.yaml already exists.
 	projectYAMLPath := filepath.Join(projectDir, ".boid", "project.yaml")
 	if _, err := os.Stat(projectYAMLPath); err == nil {
@@ -405,7 +419,14 @@ func runProjectInit(cmd *cobra.Command, args []string) error {
 		// upstream is already tracked.
 		fmt.Fprintf(out, "       %sgit add .boid && git commit -m 'add boid project scaffold' && git push -u origin HEAD\n", cdPrefix)
 		fmt.Fprintln(out, "  2. Register the pushed URL with the running boid daemon:")
-		fmt.Fprintf(out, "       boid project add %s %s\n", originURL, workspaceFlag)
+		// shellQuoteSingle the URL (Blocker, codex round-2 review of this
+		// PR): originURL comes straight from `git config
+		// remote.origin.url` (via CaptureUpstreamURL) with no shell-safety
+		// guarantee — an origin URL containing `;`, `&&`, `$(...)`, or
+		// even just a `?query&param` executes/mangles arbitrarily when
+		// pasted unquoted into a shell, and this printed line is meant to
+		// be pasted verbatim.
+		fmt.Fprintf(out, "       boid project add %s %s\n", shellQuoteSingle(originURL), workspaceFlag)
 	} else {
 		fmt.Fprintln(out, "  1. Initialize git and push this project to a remote (skip what's already done):")
 		fmt.Fprintf(out, "       %sgit init && git add . && git commit -m 'initial commit'\n", cdPrefix)
