@@ -765,6 +765,39 @@ func TestProjectInit_DirIsOwnRepoRoot_DoesNotReject(t *testing.T) {
 	}
 }
 
+// TestProjectInit_DetachedHead_RejectsBeforeScaffolding pins Major (codex
+// round-18 review): the printed guidance's `git push '<git-url>' HEAD` has
+// no branch name to infer a push destination from when HEAD is detached —
+// git itself refuses with "You are not currently on a branch". Rather
+// than let the user hit that mid-chain (after the scaffold commit already
+// landed), this is caught up front, before the scaffold is even written.
+func TestProjectInit_DetachedHead_RejectsBeforeScaffolding(t *testing.T) {
+	dir := t.TempDir()
+	runGitTestCmd(t, dir, "init", "-q", "-b", "main")
+	runGitTestCmd(t, dir, "config", "user.email", "test@example.com")
+	runGitTestCmd(t, dir, "config", "user.name", "Test")
+	runGitTestCmd(t, dir, "commit", "-q", "--allow-empty", "-m", "c1")
+	runGitTestCmd(t, dir, "commit", "-q", "--allow-empty", "-m", "c2")
+	runGitTestCmd(t, dir, "checkout", "-q", "HEAD~1")
+
+	withStdin(t, devNullStdin(t))
+	var out bytes.Buffer
+	cmd := projectInitSubCmd
+	cmd.SetOut(&out)
+	cmd.SetContext(context.Background())
+
+	err := runProjectInit(cmd, []string{dir})
+	if err == nil {
+		t.Fatal("expected an error for a projectDir in detached HEAD state")
+	}
+	if !strings.Contains(err.Error(), "detached HEAD") {
+		t.Errorf("expected a 'detached HEAD' error, got: %v", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(dir, ".boid", "project.yaml")); statErr == nil {
+		t.Error("expected no scaffold to be written when projectDir is rejected as detached HEAD")
+	}
+}
+
 // TestProjectInit_PrintedChain_WarnsWithoutForcingOntoDefaultBranch
 // executes the ACTUAL printed guidance chain against a fixture simulating
 // a real forge repo: an established remote with commits already on "main"

@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -399,6 +400,20 @@ func runProjectInit(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	// Reject an already-existing repo currently in DETACHED HEAD state
+	// (Major, codex round-18 review): the printed guidance's `git push
+	// '<git-url>' HEAD` has no branch name to infer a destination from
+	// when HEAD is detached — git itself refuses ("You are not currently
+	// on a branch... push has no configured refspec"), and the earlier
+	// `git init` in that same chain does not check out a branch either
+	// (it is a safe no-op on an already-initialized repo, not a
+	// checkout). Caught here, before the scaffold commit, rather than
+	// leaving the user stuck mid-chain with a scaffold commit already
+	// made but nowhere to push it to.
+	if isDetachedHead(projectDir) {
+		return fmt.Errorf("%s is a git repository in detached HEAD state; check out (or create) a branch first — e.g. `git -C %s checkout -b <branch-name>` — then run `boid project init` again", projectDir, projectDir)
+	}
+
 	w := &initwizard.Wizard{
 		In:    os.Stdin,
 		Out:   cmd.OutOrStdout(),
@@ -681,6 +696,30 @@ func rejectIfNestedInExistingRepo(projectDir string) error {
 		return fmt.Errorf("%s does not exist yet and would be nested inside an existing git repository rooted at %s; run `boid project init` from that repository's root instead (or a location with no enclosing git repo at all)", projectDir, enclosingRoot)
 	}
 	return nil
+}
+
+// isDetachedHead reports whether dir is a git repository currently
+// checked out in detached HEAD state (HEAD points directly at a commit,
+// not a branch ref) — see its only caller's own doc comment
+// (runProjectInit) for why that matters. Returns false for anything else,
+// including dir not being a git repository at all (that's the
+// not-yet-`git init`'d starter scenario, an entirely different — and
+// harmless — case).
+func isDetachedHead(dir string) bool {
+	err := exec.Command("git", "-C", dir, "symbolic-ref", "-q", "HEAD").Run()
+	if err == nil {
+		return false // HEAD resolves to a branch ref: not detached.
+	}
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
+		// `git symbolic-ref -q` exits 1 specifically when HEAD is NOT a
+		// symbolic ref (detached) — any other error (not a repo, git not
+		// found, ...) is a different situation entirely and reported as
+		// "not detached" here since detecting it is not this function's
+		// job.
+		return true
+	}
+	return false
 }
 
 func runProjectList(cmd *cobra.Command, args []string) error {
