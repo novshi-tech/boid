@@ -472,7 +472,7 @@ func (s *ProjectAppService) CreateProjectFromGitURL(ctx context.Context, gitURL,
 	}
 	gitURL = normalizedURL
 	if strings.TrimSpace(workspaceSlug) == "" {
-		return nil, &StatusError{Code: http.StatusBadRequest, Message: "workspace is required (git-URL registration has no host directory to eagerly default into the default workspace the way `boid project init` does)"}
+		return nil, &StatusError{Code: http.StatusBadRequest, Message: "workspace is required (git-URL registration has no host directory to eagerly default a workspace assignment from — unlike the now-removed legacy dir-based CreateProject; `boid project init` itself no longer registers a project at all, docs/plans/release-onboarding.md 穴 7)"}
 	}
 	if err := orchestrator.ValidWorkspaceSlug(workspaceSlug); err != nil {
 		return nil, &StatusError{Code: http.StatusBadRequest, Message: err.Error()}

@@ -446,6 +446,75 @@ func TestProjectInit_ExistingOrigin_PushUsesUpstreamFlag(t *testing.T) {
 	}
 }
 
+// TestProjectInit_ExistingOrigin_CommitScopedToBoidDir pins Major 2 (codex
+// round-4 review of this PR): a bare `git commit` after `git add .boid`
+// commits the WHOLE INDEX, not just .boid — an already-existing repository
+// (the exact scenario this branch targets: origin already configured
+// before `project init` ran) may have unrelated, even sensitive, changes
+// already staged, and a bare commit would sweep them into the same commit
+// the guidance then tells the user to push. The guidance must scope the
+// commit to `.boid` with a pathspec.
+func TestProjectInit_ExistingOrigin_CommitScopedToBoidDir(t *testing.T) {
+	dir := t.TempDir()
+	runGitTestCmd(t, dir, "init", "-q", "-b", "main")
+	runGitTestCmd(t, dir, "config", "user.email", "test@example.com")
+	runGitTestCmd(t, dir, "config", "user.name", "Test")
+	runGitTestCmd(t, dir, "commit", "-q", "--allow-empty", "-m", "initial")
+	runGitTestCmd(t, dir, "remote", "add", "origin", "https://example.invalid/owner/repo.git")
+
+	withStdin(t, devNullStdin(t))
+
+	var out bytes.Buffer
+	cmd := projectInitSubCmd
+	cmd.SetOut(&out)
+	cmd.SetContext(context.Background())
+
+	if err := runProjectInit(cmd, []string{dir}); err != nil {
+		t.Fatalf("runProjectInit: %v", err)
+	}
+
+	if !strings.Contains(out.String(), "git commit -m 'add boid project scaffold' -- .boid") {
+		t.Errorf("expected the commit to be scoped to .boid via a pathspec, got:\n%s", out.String())
+	}
+}
+
+// TestProjectInit_FileOrigin_TreatedAsNoUsableOrigin pins Major 3 (codex
+// round-4 review of this PR): dispatcher.NormalizeOriginURL passes file://
+// origins through unchanged, but under the default compose deployment a
+// host-local path is not visible inside the daemon's own container —
+// printing it as a ready-to-register URL would reproduce exactly the "host
+// filesystem boundary" failure 穴 7 (docs/plans/release-onboarding.md)
+// exists to close. A file:// origin must fall through to the
+// git-URL-placeholder guidance, same as no origin at all.
+func TestProjectInit_FileOrigin_TreatedAsNoUsableOrigin(t *testing.T) {
+	dir := t.TempDir()
+	runGitTestCmd(t, dir, "init", "-q", "-b", "main")
+	runGitTestCmd(t, dir, "config", "user.email", "test@example.com")
+	runGitTestCmd(t, dir, "config", "user.name", "Test")
+	runGitTestCmd(t, dir, "commit", "-q", "--allow-empty", "-m", "initial")
+	fileOrigin := "file:///some/host/only/path.git"
+	runGitTestCmd(t, dir, "remote", "add", "origin", fileOrigin)
+
+	withStdin(t, devNullStdin(t))
+
+	var out bytes.Buffer
+	cmd := projectInitSubCmd
+	cmd.SetOut(&out)
+	cmd.SetContext(context.Background())
+
+	if err := runProjectInit(cmd, []string{dir}); err != nil {
+		t.Fatalf("runProjectInit: %v", err)
+	}
+
+	got := out.String()
+	if strings.Contains(got, fileOrigin) {
+		t.Errorf("must not print a file:// origin as a ready-to-register URL, got:\n%s", got)
+	}
+	if !strings.Contains(got, "git remote add origin <git-url>") {
+		t.Errorf("expected the no-usable-origin branch for a file:// origin, got:\n%s", got)
+	}
+}
+
 // TestProjectInit_NestedInDifferentRepo_DoesNotMisattributeParentOrigin
 // pins Blocker 1's second half (codex round-1 review of this PR): scaffold
 // a NEW subdirectory (with no .git of its own) inside an ALREADY-git-init'd
@@ -500,11 +569,15 @@ func TestProjectInit_ExistingOrigin_QuotesURLInGuidance(t *testing.T) {
 	runGitTestCmd(t, dir, "config", "user.email", "test@example.com")
 	runGitTestCmd(t, dir, "config", "user.name", "Test")
 	runGitTestCmd(t, dir, "commit", "-q", "--allow-empty", "-m", "initial")
-	// file:// URLs are passed through unchanged by NormalizeOriginURL
-	// (dispatcher.NormalizeOriginURL's own doc comment), so this is a
-	// realistic "not shell-safe as-is" origin without needing a real
-	// hostile remote.
-	maliciousOrigin := "file:///tmp/repo; touch /tmp/pwned"
+	// https:// URLs are passed through unchanged by NormalizeOriginURL
+	// (its own doc comment's "already an HTTPS URL ならそのまま" case) with
+	// no character-level validation, so an https origin can carry shell
+	// metacharacters straight through — a realistic "not shell-safe
+	// as-is" origin without needing a real hostile remote. (A file://
+	// origin, the OTHER passthrough case, is deliberately excluded from
+	// this "usable origin" branch entirely by Major 3's fix below, so it
+	// cannot exercise this quoting path — hence https:// here instead.)
+	maliciousOrigin := "https://example.invalid/owner/repo.git; touch /tmp/pwned"
 	runGitTestCmd(t, dir, "remote", "add", "origin", maliciousOrigin)
 
 	withStdin(t, devNullStdin(t))

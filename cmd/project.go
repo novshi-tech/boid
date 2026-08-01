@@ -407,9 +407,20 @@ func runProjectInit(cmd *cobra.Command, args []string) error {
 	// configured (the user ran `git init`/`git remote add` themselves
 	// before `project init`), use that known URL directly instead of a
 	// <git-url> placeholder — one less thing for the user to fill in by
-	// hand.
+	// hand. EXCEPT when that origin is a file:// URL (Major 3, codex
+	// round-4 review): dispatcher.NormalizeOriginURL passes file:// URLs
+	// through unchanged (its own doc comment — meant for daemon-side
+	// testing against a local fixture repo, or a genuine NFS-shared bare
+	// mirror), but under the default compose deployment that host-local
+	// path is not visible inside the daemon's own container — printing it
+	// as a ready-to-register URL would reproduce exactly the "host
+	// filesystem boundary" failure 穴 7 exists to close. Treat it like no
+	// origin at all: fall through to the git-URL-placeholder guidance.
+	originURL, originErr := originURLForExactDir(projectDir)
+	haveUsableOrigin := originErr == nil && originURL != "" && !strings.HasPrefix(originURL, "file://")
+
 	fmt.Fprintln(out, "\nNext steps:")
-	if originURL, err := originURLForExactDir(projectDir); err == nil && originURL != "" {
+	if haveUsableOrigin {
 		fmt.Fprintln(out, "  1. Commit the scaffold and push it to the remote:")
 		// -u origin HEAD (not a bare `git push`) even though origin
 		// already exists: `git init && git remote add origin <url>` alone
@@ -417,7 +428,17 @@ func runProjectInit(cmd *cobra.Command, args []string) error {
 		// bare `git push` there fails with "no upstream branch" (Blocker
 		// 2, codex round-1 review). -u is a harmless no-op re-set when an
 		// upstream is already tracked.
-		fmt.Fprintf(out, "       %sgit add .boid && git commit -m 'add boid project scaffold' && git push -u origin HEAD\n", cdPrefix)
+		//
+		// `git commit ... -- .boid` (not a bare `git commit`, Major 2,
+		// codex round-4 review): a plain `git commit` after `git add
+		// .boid` commits the WHOLE INDEX, not just .boid — if this
+		// already-existing repository had unrelated changes staged
+		// before `project init` ran (including anything sensitive), a
+		// bare commit would sweep them in and `git push` would publish
+		// them right along with the scaffold. The `-- .boid` pathspec
+		// restricts the commit to exactly the scaffold this command
+		// itself just wrote, regardless of what else is staged.
+		fmt.Fprintf(out, "       %sgit add .boid && git commit -m 'add boid project scaffold' -- .boid && git push -u origin HEAD\n", cdPrefix)
 		fmt.Fprintln(out, "  2. Register the pushed URL with the running boid daemon:")
 		// shellQuoteSingle the URL (Blocker, codex round-2 review of this
 		// PR): originURL comes straight from `git config
