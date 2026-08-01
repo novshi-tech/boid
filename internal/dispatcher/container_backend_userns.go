@@ -185,12 +185,14 @@ func normalizeArch(arch string) string {
 // always run natively on the real host, so their own /info response is the
 // one honest source.
 //
-// Returns "" when the engine reported no architecture (including a failed
-// probe, which resolveEngineInfo already caches as a zero value) —
-// resolveImage's own mismatch check only fires when both sides are
-// non-empty, so this degrades to "arch check skipped" rather than blocking
-// every launch on a transient /info failure, the same graceful-degradation
-// posture resolveUsernsMode already takes for its own probe failures.
+// Returns "" when the engine reported no architecture, including a failed
+// probe — resolveEngineInfo deliberately does NOT cache a failure (see its
+// own doc comment), so this is retried on the next call rather than
+// permanently disabled. resolveImage's own mismatch check only fires when
+// both sides are non-empty, so a "" here degrades that one call to "arch
+// check skipped" rather than blocking launch on a transient /info failure —
+// the same graceful-degradation posture resolveUsernsMode already takes
+// for its own probe failures, just not cached forever the way that one is.
 func (b *containerBackend) resolveHostArch(ctx context.Context) string {
 	info := b.resolveEngineInfo(ctx)
 	if info.Info.Architecture == "" {

@@ -1941,11 +1941,18 @@ func TestContainerBackend_ResolveImage_UnknownHostArch_SkipsCheck(t *testing.T) 
 // and permanently disable the arch mismatch fail-fast for the rest of this
 // backend's lifetime after just one transient failure, contradicting
 // docs/plans/release-onboarding.md 決定5's "must" fail-fast requirement.
-// The first Launch here hits a failing probe (mismatch check skipped, per
-// TestContainerBackend_ResolveImage_UnknownHostArch_SkipsCheck's own
-// established posture) but the SECOND Launch's own fresh probe attempt
-// must succeed and catch the same image/host mismatch the first one could
-// not see — proving the failure was retried, not cached.
+//
+// Launch calls resolveImage (→ resolveHostArch) BEFORE resolveUsernsMode,
+// so the two Info() calls this test's InfoFunc actually sees both land
+// inside the FIRST Launch: resolveHostArch's own call fails first (mismatch
+// check skipped for job 1, matching TestContainerBackend_ResolveImage_
+// UnknownHostArch_SkipsCheck's own established posture), then
+// resolveUsernsMode's own later call within that same Launch succeeds and
+// gets cached. The SECOND Launch makes no new Info() call at all — it
+// reuses that now-cached successful result and catches the mismatch job 1
+// could not see. infoCalls == 2 (not 1, and not 3) is exactly what proves
+// the failure was retried within Launch 1 rather than cached, and that the
+// resulting success was then reused (not re-probed) by Launch 2.
 func TestContainerBackend_ResolveImage_ArchProbeRetriesAfterFailure(t *testing.T) {
 	var infoCalls int
 	api := &fakeDockerAPI{
