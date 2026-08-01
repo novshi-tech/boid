@@ -54,18 +54,31 @@ set -euo pipefail
 # this flip. DEPLOY_CONTAINER_BUILD_ONLY=1 (below) also implies it: that
 # knob's entire purpose is building an image, so it must build regardless
 # of whether the caller separately passed --build.
+#
+# --down (docs/plans/release-onboarding.md 決定2/PR5): `boid stop`'s
+# re-definition (cmd/stop.go) — tear the compose stack down instead of
+# bringing it up. Mutually exclusive with --build (there is nothing to
+# build on the way down); checked once both flags are parsed, below.
 BUILD=0
+DOWN=0
 for arg in "$@"; do
 	case "$arg" in
 	--build)
 		BUILD=1
 		;;
+	--down)
+		DOWN=1
+		;;
 	*)
-		echo "error: unknown argument: $arg (only --build is accepted)" >&2
+		echo "error: unknown argument: $arg (only --build/--down are accepted)" >&2
 		exit 1
 		;;
 	esac
 done
+if [[ "$BUILD" == "1" && "$DOWN" == "1" ]]; then
+	echo "error: --build and --down are mutually exclusive" >&2
+	exit 1
+fi
 if [[ "${DEPLOY_CONTAINER_BUILD_ONLY:-0}" == "1" ]]; then
 	BUILD=1
 fi
@@ -244,6 +257,31 @@ fi
 : "${DOCKER_GID:=$(getent group docker 2>/dev/null | cut -d: -f3)}"
 : "${DOCKER_GID:=999}"
 export BOID_RUNTIME_DIR BOID_UID BOID_GID DOCKER_GID
+
+# --- --down: tear the stack down and exit, before any build/pull/up step ---
+# `boid stop` (cmd/stop.go, docs/plans/release-onboarding.md 決定2/PR5)
+# invokes this script with --down instead of driving `docker/podman
+# compose down` directly — same single-source-of-truth rationale as
+# --build/up (this file's own header comment): engine detection, the
+# podman keep-id overlay, and BOID_IMAGE all have to agree with whatever
+# `up` last used, or compose could resolve a different project/volume
+# identity for the down call than the one actually running.
+if [[ "$DOWN" == "1" ]]; then
+	if [[ ${#COMPOSE_CMD[@]} -eq 0 ]]; then
+		echo "error: podman-compose is required to bring the compose stack down; install podman-compose" >&2
+		exit 1
+	fi
+	# BOID_IMAGE is unset here (deliberately no build/pull step ran) —
+	# `compose down` never resolves `image:`, only service/network/volume
+	# names, so this is safe; export a placeholder so compose does not warn
+	# about an unset interpolation variable.
+	: "${BOID_IMAGE:=unused}"
+	export BOID_IMAGE
+	echo "deploy-container: --down — stopping the compose stack"
+	"${COMPOSE_CMD[@]}" down
+	echo "deploy-container: done. compose stack is down."
+	exit 0
+fi
 
 # --- build (--build/DEPLOY_CONTAINER_BUILD_ONLY) or pull (default) --------
 # docs/plans/release-onboarding.md 穴4/PR4: BUILD was computed above from

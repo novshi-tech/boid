@@ -153,15 +153,27 @@ var projectRemoveCmd = &cobra.Command{
 	RunE:              runProjectRemove,
 }
 
-// projectReloadCmd is scopeLocal, grouped with add/init in the plan doc's
-// "境界越えで壊れる" row even though reload itself takes no path argument —
-// runProjectReload re-reads every registered project's .boid/project.yaml
-// from its stored WorkDir and re-captures each one's git origin remote, both
-// of which only resolve correctly against the daemon's own host filesystem.
+// projectReloadCmd used to be scopeLocal, grouped with add/init in the
+// plan doc's "境界越えで壊れる" row even though reload itself takes no path
+// argument — runProjectReload re-reads every registered project's
+// .boid/project.yaml from its stored WorkDir and re-captures each one's
+// git origin remote, both of which only resolve correctly against the
+// daemon's own host filesystem.
+//
+// docs/plans/release-onboarding.md 決定2/scope 再分類表 (PR5) reclassifies
+// this to scopeRemote: it was ALREADY a pure POST /api/projects/reload
+// call (client.FromContext below, unchanged) — the scopeLocal pin only
+// ever encoded "the daemon-side filesystem work only makes sense on the
+// daemon's own host", not "the CLI does any of that work itself". Now
+// that host mode (cmd/host.go) is the CLI's default resolution path for
+// every scope=remote command, this goes through the same explicit,
+// authenticated CLI listener as every other daemon API call instead of
+// the implicit runtime-dir-bind unix socket path scopeLocal used to fall
+// through to.
 var projectReloadCmd = &cobra.Command{
 	Use:         "reload",
 	Short:       "Reload project.yaml for all registered projects",
-	Annotations: map[string]string{scopeAnnotationKey: scopeLocal},
+	Annotations: map[string]string{scopeAnnotationKey: scopeRemote},
 	RunE:        runProjectReload,
 }
 

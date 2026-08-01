@@ -21,21 +21,25 @@ var gcCmd = &cobra.Command{
 func init() {
 	gcCmd.Annotations = map[string]string{
 		annotationSkipAutostart: "skip",
-		// scopeLocal (codex review round 2, docs/plans/cli-remote-connection.md
-		// classification table: "local | gc | ローカル runtime dir 削除").
-		// gc was scopeRemote until this fix, on the reasoning that its
-		// actual work (POST /api/gc) is entirely dispatched through the
-		// daemon's HTTP API — that reasoning is not wrong mechanically (gc
-		// would in fact work correctly against a remote daemon too, since
-		// everything it deletes lives on whichever host the daemon itself
-		// runs on), but this pins gc to the plan doc's classification for
-		// consistency with the rest of the "daemon lifecycle machinery"
-		// grouping (start/stop/gc/init) rather than re-litigating the doc's
-		// own call here — see the codex review round 2 report for the full
-		// discussion of this judgment call. annotationSkipAutostart=skip
-		// only means "don't launch one just for this" — a different axis,
-		// see scopeAnnotationKey's doc comment in root.go.
-		scopeAnnotationKey: scopeLocal,
+		// scopeRemote (docs/plans/release-onboarding.md 決定2/scope 再分類
+		// 表, PR5): gc's own work (POST /api/gc) is dispatched entirely
+		// through the daemon's HTTP API, and pre-PR5 it only reached the
+		// compose container daemon via an IMPLICIT channel — the
+		// runtime-dir bind that happens to make the same unix socket path
+		// resolve on both sides of the bind mount (§決定4's mutual-
+		// exclusion contract). That implicit path was never guaranteed to
+		// keep working (the plan doc's own words: "bind をいつか撤去したら
+		// 壊れる"). Now that host mode (cmd/host.go) is the CLI's default
+		// resolution path for every scope=remote command, gc goes through
+		// the same explicit, authenticated CLI listener as everything
+		// else instead of relying on that coincidence.
+		// annotationSkipAutostart=skip still means "don't spin up a
+		// daemon just to gc it" for the --profile-explicit fallback path
+		// (a resolved unix profile skips EnsureRunningAt) — a different
+		// axis from scopeAnnotationKey, see its own doc comment in
+		// root.go. Host mode's own branch in root.go does not consult
+		// this annotation (same as every other scopeRemote command).
+		scopeAnnotationKey: scopeRemote,
 	}
 	gcCmd.Flags().Duration("older-than", 30*24*time.Hour, "Delete tasks older than this duration")
 	gcCmd.Flags().Bool("dry-run", false, "Show what would be deleted without actually deleting")

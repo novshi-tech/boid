@@ -1,9 +1,16 @@
 package cmd
 
 import (
+	"context"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+
+	"github.com/novshi-tech/boid/internal/client"
 )
 
 func TestDefaultAllowedDomains_IncludeCodexDomains(t *testing.T) {
@@ -331,5 +338,104 @@ func TestBuildStartConfig_UsesOverrides(t *testing.T) {
 	}
 	if cfg.KeyFilePath != "/tmp/boid.key" {
 		t.Fatalf("KeyFilePath = %q, want %q", cfg.KeyFilePath, "/tmp/boid.key")
+	}
+}
+
+// TestRunComposeUp_NoCheckout_IgnoresNoAutostart_StartsComposeStack pins
+// docs/plans/release-onboarding.md 決定2/PR5's redefinition of `boid
+// start`: runComposeUp must run the deploy script's up cycle
+// UNCONDITIONALLY, even with BOID_NO_AUTOSTART=1 set — that knob exists to
+// stop an UNRELATED scope=remote command (e.g. `boid task list`) from
+// silently autostarting a daemon as a side effect (cmd/host.go's
+// ensureHostModeDaemon), not to make an EXPLICIT `boid start` itself a
+// no-op. Uses the same fake-docker-on-PATH + real-embedded-script
+// technique as cmd/host_test.go's
+// TestDeployFromEmbeddedAssets_RunsUnifiedScript_StartsComposeStack (no
+// real checkout on the fake PATH/cwd, so this exercises the
+// no-checkout/embedded-assets branch of runComposeUp's own
+// findComposeRoot-or-embedded dispatch).
+func TestRunComposeUp_NoCheckout_IgnoresNoAutostart_StartsComposeStack(t *testing.T) {
+	t.Setenv(client.NoAutostartEnv, "1")
+
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "docker-invocations.log")
+	writeFakeExecutable(t, dir, "docker", fmt.Sprintf(`
+{
+  echo "ARGS: $*"
+} >> %q
+exit 0
+`, logPath))
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	// No real checkout reachable: pin BOID_COMPOSE_ROOT empty and run from
+	// a bare temp dir, so findComposeRoot fails and runComposeUp falls
+	// through to deployFromEmbeddedAssets — same setup as
+	// TestEnsureHostModeDaemon_NoAutostart_FailsFastWithoutDeploying in
+	// cmd/host_test.go.
+	t.Setenv("BOID_COMPOSE_ROOT", "")
+	cwd := t.TempDir()
+	origWD, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(origWD) })
+	if err := os.Chdir(cwd); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/cli-token-check" {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer ts.Close()
+
+	if err := runComposeUp(context.Background(), ts.Listener.Addr().String()); err != nil {
+		t.Fatalf("runComposeUp: %v (BOID_NO_AUTOSTART=1 must not block an explicit `boid start`)", err)
+	}
+
+	logData, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("read invocation log: %v", err)
+	}
+	if !strings.Contains(string(logData), "up -d") {
+		t.Errorf("expected a `compose up -d` invocation despite BOID_NO_AUTOSTART=1; log:\n%s", string(logData))
+	}
+}
+
+// TestRunComposeDownScript_InvokesDeployScriptWithDown pins `boid stop`'s
+// redefinition (cmd/stop.go, docs/plans/release-onboarding.md 決定2/PR5):
+// it must invoke scripts/deploy-container.sh with exactly `--down`, not
+// reimplement `compose down` directly — a fake deploy-container.sh here
+// (not the real embedded one; --down's own engine-detection/podman-overlay
+// logic is exercised at the shell-script level, not from Go) just records
+// its own argv to prove the wiring.
+func TestRunComposeDownScript_InvokesDeployScriptWithDown(t *testing.T) {
+	root := t.TempDir()
+	scriptsDir := filepath.Join(root, "scripts")
+	if err := os.MkdirAll(scriptsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	logPath := filepath.Join(root, "invocation.log")
+	script := fmt.Sprintf("#!/bin/sh\necho \"ARGS: $*\" >> %q\nexit 0\n", logPath)
+	scriptPath := filepath.Join(scriptsDir, "deploy-container.sh")
+	if err := os.WriteFile(scriptPath, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := runComposeDownScript(context.Background(), root); err != nil {
+		t.Fatalf("runComposeDownScript: %v", err)
+	}
+
+	logData, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("read invocation log: %v", err)
+	}
+	if strings.TrimSpace(string(logData)) != "ARGS: --down" {
+		t.Errorf("invocation log = %q, want %q", strings.TrimSpace(string(logData)), "ARGS: --down")
 	}
 }

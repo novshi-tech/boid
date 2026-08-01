@@ -8,11 +8,15 @@ package cmd
 // autostart, client.EnsureRunningAt) but for a `docker/podman compose`
 // stack instead of a single host process.
 //
-// Opt-in via BOID_MODE=container (checked by hostModeEnabled) — the
-// default remains today's profile-based resolution (bare-metal unix
-// socket, or a named remote https:// profile), completely untouched by
-// anything in this file. Nose configures BOID_MODE once per shell
-// environment rather than the CLI trying to auto-detect it.
+// Unconditional since docs/plans/release-onboarding.md 決定2/PR5 —
+// hostModeEnabled() always reports true now. It used to be opt-in via
+// BOID_MODE=container (nose configuring it once per shell environment);
+// that env var is gone. profiles.Resolve-based resolution (a genuine
+// remote https:// profile, or the pre-compose unix socket default) still
+// exists and now serves exactly one purpose: an EXPLICIT `--profile` flag
+// bypasses host mode outright (cmd/root.go's PersistentPreRunE) — see
+// profileExplicitlyRequested's own doc comment for why (docs/plans/
+// release-onboarding.md「profiles との優先順位」, Fable M4).
 //
 // On every scope=remote invocation (isRemoteScope — the commands that
 // actually talk to the daemon's HTTP API; scope=local/neutral commands
@@ -103,15 +107,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// boidModeEnv / boidModeContainer: BOID_MODE=container opts a shell
-// environment into host mode for every subsequent `boid` invocation. Any
-// other value (including unset, the default) leaves the ordinary
-// profiles.Resolve-based path in cmd/root.go completely unaffected.
-const (
-	boidModeEnv       = "BOID_MODE"
-	boidModeContainer = "container"
-)
-
 // cliTokenFileName names the persistent shared-secret file under
 // hostModeConfigDir() (~/.config/boid — profiles.ConfigPath()'s
 // os.UserConfigDir()-based "boid" subdirectory). cliLockFileName names the
@@ -147,8 +142,15 @@ const hostModeHealthPollInterval = 500 * time.Millisecond
 // check quickly rather than stalling every single `boid` invocation.
 const hostModeProbeTimeout = 1500 * time.Millisecond
 
+// hostModeEnabled reports whether host mode (this file) is this
+// invocation's resolution path. Unconditionally true since docs/plans/
+// release-onboarding.md 決定2/PR5 — BOID_MODE is gone, and the compose
+// daemon is the only daemon shape boid supports now. Kept as a named
+// function (rather than inlining `true` at its one call site in
+// cmd/root.go) so the seam stays easy to find/grep and easy to read at
+// the call site.
 func hostModeEnabled() bool {
-	return os.Getenv(boidModeEnv) == boidModeContainer
+	return true
 }
 
 // isRemoteScope reports whether cmd is annotated boid.scope=remote — the

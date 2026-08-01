@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/json"
 	"errors"
@@ -330,6 +331,15 @@ func runProjectMigrate(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("resolve dir: %w", err)
 	}
+	if migrateApply {
+		// context.Background(), not cmd.Context(): this probe is a
+		// short, self-contained health check independent of whatever
+		// (possibly nil, in a bare non-Execute()'d test cobra.Command)
+		// context this invocation happens to carry.
+		if err := guardApplyAgainstComposeDaemon(context.Background(), cmd.ErrOrStderr()); err != nil {
+			return err
+		}
+	}
 	return MigrateProject(MigrateProjectOptions{
 		Dir:         dir,
 		Workspace:   migrateWorkspace,
@@ -339,6 +349,46 @@ func runProjectMigrate(cmd *cobra.Command, args []string) error {
 		KeyFilePath: migrateKeyFilePath,
 		Out:         cmd.OutOrStdout(),
 	})
+}
+
+// guardApplyAgainstComposeDaemon implements docs/plans/
+// release-onboarding.md's「project migrate → 要注意コマンド」guidance for
+// `boid project migrate <dir> --apply`: --apply's pushMigratedWorkspaceToDaemon
+// (below) pings client.DefaultSocketPath() and, on a miss, falls back to
+// db.Open(migrateDBPath-or-defaultDBPath()) — a direct read/write against
+// whatever boid.db sits at this HOST's own XDG data dir. That design
+// predates the compose daemon: under it, the real boid.db lives inside the
+// boid_state NAMED VOLUME, invisible from this process, so a fallback write
+// lands in a separate, daemon-unread database (a fresh one, or a bare-metal
+// installation's stale leftover) and silently fails to apply anything a
+// live compose daemon will ever see.
+//
+// Always prints a deprecation notice (this command predates the compose
+// daemon and its --apply half was never redesigned for it — see the plan
+// doc's own judgment call: deprecate outright rather than redesign, since
+// `boid workspace create/edit --from-file` already covers the same ground
+// through the daemon's own API). When a compose daemon can actually be
+// reached — probed the same way host mode itself does
+// (hostModeHealthy against the authenticated CLI listener, cmd/host.go)
+// — refuses outright instead of silently risking the "半分だけ効く"
+// (half-works) outcome the plan doc calls out.
+func guardApplyAgainstComposeDaemon(ctx context.Context, stderr io.Writer) error {
+	fmt.Fprintln(stderr, "warning: `boid project migrate --apply` is a legacy migration path pre-dating the compose daemon (docs/plans/release-onboarding.md); prefer `boid workspace create/edit <slug> --from-file <file>` against the reviewable yaml this dry-run writes.")
+
+	token, err := loadOrCreateCLIToken()
+	if err != nil {
+		// Token machinery failing is not itself evidence of a reachable
+		// compose daemon either way — do not block --apply on it.
+		return nil
+	}
+	if hostModeHealthy(ctx, client.DefaultCLIAddr(), token) {
+		return fmt.Errorf(
+			"boid project migrate --apply refused: a compose daemon is reachable at %s, and --apply's fallback path writes directly to this host's own boid.db, which that daemon does not read (its real database lives inside the boid_state volume). "+
+				"Re-run without --apply (this still rewrites project.yaml and prints a reviewable workspace yaml), then apply the workspace content through the daemon's own API instead: "+
+				"`boid workspace create <slug> --from-file <file>` (new slug) or `boid workspace edit <slug> --from-file <file>` (existing slug)",
+			client.DefaultCLIAddr())
+	}
+	return nil
 }
 
 // errProjectNotFound is a helper to detect "not found" errors from GetProject.

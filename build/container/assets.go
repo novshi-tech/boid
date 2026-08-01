@@ -1,5 +1,6 @@
 // Package container also embeds compose.yml and Dockerfile (this file) so
-// `boid`'s host-mode orchestration (cmd/host.go, BOID_MODE=container — PR-3
+// `boid`'s host-mode orchestration (cmd/host.go — now the unconditional
+// default, docs/plans/release-onboarding.md 決定2/PR5; originally the PR-3
 // Option 4 host-mode redesign, docs/plans/volume-only-daemon.md §論点c) can
 // extract them to a stable filesystem path and locate them even when
 // invoked as a standalone-installed binary with no adjacent boid repo

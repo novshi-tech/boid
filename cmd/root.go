@@ -104,22 +104,34 @@ var rootCmd = &cobra.Command{
 			return nil
 		}
 		// Host mode (PR-3 Option 4 redesign, docs/plans/
-		// volume-only-daemon.md §論点c, nose directive 2026-07-25):
-		// BOID_MODE=container opts a shell environment into `boid` itself
-		// managing the container-backend daemon's lifecycle (cmd/host.go)
-		// instead of the profiles.Resolve chain below. Only intercepts
-		// scope=remote commands — scope=local (start/stop/gc/...) and
-		// scope=neutral (login/logout) fall through unchanged, since
-		// host.go has no opinion about bare-metal daemon lifecycle or
-		// profile-less commands. TAB-completion queries degrade silently
-		// (same posture as a broken profile below) rather than
-		// potentially blocking a shell TAB press on a multi-minute
-		// container build.
-		if hostModeEnabled() && isRemoteScope(cmd) {
+		// volume-only-daemon.md §論点c; unconditional since docs/plans/
+		// release-onboarding.md 決定2/PR5 — BOID_MODE is gone, `boid`
+		// itself always manages the compose daemon's lifecycle
+		// (cmd/host.go) for scope=remote commands unless the caller
+		// opted out with an explicit --profile (see
+		// profileExplicitlyRequested's own doc comment for why that one
+		// flag wins over host mode, Fable M4). scope=local
+		// (start/stop/gc/...) and scope=neutral (login/logout) fall
+		// through unchanged, since host.go has no opinion about compose
+		// daemon lifecycle machinery itself or profile-less commands.
+		// TAB-completion queries degrade silently (same posture as a
+		// broken profile below) rather than potentially blocking a shell
+		// TAB press on a multi-minute container build.
+		if hostModeEnabled() && isRemoteScope(cmd) && !profileExplicitlyRequested(cmd) {
 			if isCompletionQuery(cmd) {
 				return nil
 			}
-			c, err := resolveHostModeClient(cmd.Context())
+			// context.Background(), not cmd.Context(): Cobra only ever
+			// replaces a nil Command.Context() with context.Background()
+			// inside Execute()/ExecuteC — a real `boid` invocation always
+			// goes through one of those, but a unit test driving
+			// PersistentPreRunE directly against a bare, non-Execute()'d
+			// *cobra.Command (as several in cmd/root_test.go do) has a nil
+			// one, which context.WithTimeout (probeHostMode) panics on.
+			// Mirrors the sibling client.EnsureRunningAt call further
+			// down this same function, which already uses
+			// context.Background() for the identical reason.
+			c, err := resolveHostModeClient(context.Background())
 			if err != nil {
 				return err
 			}
@@ -229,6 +241,25 @@ func isNeutralScope(cmd *cobra.Command) bool {
 // being invoked, which is what PersistentPreRunE receives as cmd.
 func isLocalScope(cmd *cobra.Command) bool {
 	return cmd.Annotations[scopeAnnotationKey] == scopeLocal
+}
+
+// profileExplicitlyRequested reports whether the invocation named an
+// explicit --profile (docs/plans/release-onboarding.md「profiles との
+// 優先順位が未定義」, Fable M4): host mode becoming the unconditional
+// default for scope=remote commands (決定2/PR5) would otherwise make
+// `--profile <https-profile>` and a genuine unix profile alike
+// unreachable — cmd/root.go's host-mode branch used to run
+// unconditionally ahead of profiles.Resolve for every scope=remote
+// command. The agreed coexistence rule: an explicit --profile flag wins
+// outright and routes through the ordinary profiles.Resolve chain
+// instead, exactly like before host mode existed. BOID_PROFILE / a
+// config.yaml default_profile do NOT trigger this bypass — those are
+// ambient defaults a user may have set for unrelated (pre-compose)
+// reasons, whereas typing --profile on THIS invocation is an
+// unambiguous, one-shot statement of intent.
+func profileExplicitlyRequested(cmd *cobra.Command) bool {
+	f := cmd.Flags().Lookup(profiles.ProfileFlagName)
+	return f != nil && f.Changed
 }
 
 // resolveClient resolves cmd's connection profile (profiles.Resolve) and

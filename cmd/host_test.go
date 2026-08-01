@@ -16,21 +16,13 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// TestHostModeEnabled pins docs/plans/release-onboarding.md 決定2/PR5:
+// host mode is unconditional now — BOID_MODE is gone, so there is no
+// env-driven case matrix left to exercise here, just the always-true
+// contract.
 func TestHostModeEnabled(t *testing.T) {
-	cases := []struct {
-		env  string
-		want bool
-	}{
-		{"", false},
-		{"container", true},
-		{"unix-socket", false},
-		{"CONTAINER", false}, // case-sensitive, deliberately not tolerant
-	}
-	for _, c := range cases {
-		t.Setenv(boidModeEnv, c.env)
-		if got := hostModeEnabled(); got != c.want {
-			t.Errorf("BOID_MODE=%q: hostModeEnabled() = %v, want %v", c.env, got, c.want)
-		}
+	if !hostModeEnabled() {
+		t.Error("hostModeEnabled() = false, want true (unconditional since PR5)")
 	}
 }
 

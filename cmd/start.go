@@ -325,39 +325,58 @@ func refuseRootUID(uid int) error {
 	return fmt.Errorf("boid start: refusing to run as uid 0 (root) — §決定1/§決定4 (docs/plans/release-onboarding.md) require a non-root uid with supplementary group 0; set BOID_UID to a non-zero uid (build/container/compose.yml's `user: \"${BOID_UID}:0\"`) or invoke this process as a non-root user")
 }
 
+// runStart implements `boid start`. docs/plans/release-onboarding.md
+// 決定2/PR5 redefines the ordinary invocation (an operator typing
+// `boid start` on their own host) to mean "bring the compose daemon stack
+// up" — compose is the only daemon shape boid supports now, so there is
+// no bare-metal daemon left for a plain `boid start` to spawn directly.
+//
+// The foreground/daemon-child carve-out (shouldRunForeground) is the one
+// path this redefinition must NOT touch (docs/plans/
+// release-onboarding.md「決定 2 の事前確認」, PR5's stated must-have):
+// build/container/compose.yml's OWN daemon service entrypoint is
+// `["/usr/local/bin/boid"]` + `command: ["start"]` with
+// BOID_DAEMON_CHILD=1 set — that invocation, running INSIDE the
+// container, must become the real daemon process (runDaemonChild)
+// exactly as before. If it instead fell into the compose-up branch
+// below, the compose daemon's own `boid start` would recurse into
+// trying to `compose up` itself from inside its own already-running
+// container.
 func runStart(cmd *cobra.Command, args []string) error {
-	if err := refuseRootUID(os.Getuid()); err != nil {
-		return err
-	}
-
-	// Arbitrary-uid self-registration + group-writable umask (docs/plans/
-	// release-onboarding.md 決定1, PR2): under the compose daemon service
-	// this process's uid may have no /etc/passwd entry at all (the image
-	// no longer bakes one — build/container/Dockerfile), and runtime-
-	// generated files (secret.key, boid.db, ...) need the group-write bit
-	// so a later run under a DIFFERENT uid (still group 0) stays working
-	// (§決定1 実装形2, 未決6's "uid is fixed per install" contract). Both
-	// calls are best-effort/non-fatal and equally harmless on a bare-host
-	// `boid start`, where the running uid almost always already has a
-	// real passwd entry (a no-op) — see their own doc comments.
-	selfuser.EnsureRuntimeUserRegistered()
-	selfuser.ApplyGroupWritableUmask()
-
-	cfg, err := buildStartConfig(startConfigOptions{
-		DBPath:      startDBPath,
-		SocketPath:  startSocketPath,
-		KitsDir:     startKitsDir,
-		KeyFilePath: startKeyFilePath,
-		CLIAddr:     startCLIAddr,
-	})
-	if err != nil {
-		return err
-	}
-
 	if shouldRunForeground(startForeground) {
+		if err := refuseRootUID(os.Getuid()); err != nil {
+			return err
+		}
+
+		// Arbitrary-uid self-registration + group-writable umask
+		// (docs/plans/release-onboarding.md 決定1, PR2): under the
+		// compose daemon service this process's uid may have no
+		// /etc/passwd entry at all (the image no longer bakes one —
+		// build/container/Dockerfile), and runtime-generated files
+		// (secret.key, boid.db, ...) need the group-write bit so a
+		// later run under a DIFFERENT uid (still group 0) stays working
+		// (§決定1 実装形2, 未決6's "uid is fixed per install" contract).
+		// Both calls are best-effort/non-fatal and equally harmless for
+		// a --foreground supervisor on bare metal, where the running
+		// uid almost always already has a real passwd entry (a no-op)
+		// — see their own doc comments.
+		selfuser.EnsureRuntimeUserRegistered()
+		selfuser.ApplyGroupWritableUmask()
+
+		cfg, err := buildStartConfig(startConfigOptions{
+			DBPath:      startDBPath,
+			SocketPath:  startSocketPath,
+			KitsDir:     startKitsDir,
+			KeyFilePath: startKeyFilePath,
+			CLIAddr:     startCLIAddr,
+		})
+		if err != nil {
+			return err
+		}
 		return runDaemonChild(cfg)
 	}
-	return runDaemonParent(cfg)
+
+	return runComposeUp(cmd.Context(), client.DefaultCLIAddr())
 }
 
 // shouldRunForeground reports whether runStart should skip the
@@ -380,6 +399,62 @@ func shouldRunForeground(foregroundFlag bool) bool {
 	return foregroundFlag || daemon.IsChild()
 }
 
+// runComposeUp is `boid start`'s non-foreground path (docs/plans/
+// release-onboarding.md 決定2/PR5): bring the compose daemon stack up.
+// Shares cmd/host.go's on-demand daemon-lifecycle machinery
+// (loadOrCreateCLIToken, findComposeRoot/deployFromCheckout/
+// deployFromEmbeddedAssets, withHostModeLock) rather than reimplementing
+// it — a scope=remote command that happens to need the daemon running
+// (e.g. `boid task list`) and an explicit `boid start` both ultimately
+// need "the compose stack is up, at this addr, authenticated with this
+// token" and should agree on exactly how that gets accomplished.
+//
+// Deliberately unconditional, unlike host mode's ensureHostModeDaemon
+// (which short-circuits when the stack already answers healthy, since it
+// is a lazy autostart hook riding along on an unrelated command): `boid
+// start` is itself the explicit "make sure this is running" request, so
+// it always runs the deploy script's own down+up cycle — a no-op-ish
+// `compose up -d` against an already-current stack, or a real rebuild/
+// restart when local code or BOID_IMAGE moved on. It also does not
+// consult client.NoAutostartEnv (BOID_NO_AUTOSTART) — that knob exists to
+// stop an UNRELATED command from silently spinning up a daemon as a
+// side effect, not to make `boid start` itself a no-op.
+//
+// addr takes the CLI listener address as a parameter (production always
+// passes client.DefaultCLIAddr(), the fixed "127.0.0.1:8442" — see that
+// function's own doc comment for why it isn't independently configurable)
+// rather than calling client.DefaultCLIAddr() internally, mirroring
+// ensureHostModeDaemon's identical parameterization in cmd/host.go: a test
+// can point it at an httptest server instead of the real fixed port.
+func runComposeUp(ctx context.Context, addr string) error {
+	token, err := loadOrCreateCLIToken()
+	if err != nil {
+		return fmt.Errorf("boid start: %w", err)
+	}
+
+	err = withHostModeLock(func() error {
+		if root, ferr := findComposeRoot(); ferr == nil {
+			return deployFromCheckout(ctx, root, token, addr)
+		}
+		return deployFromEmbeddedAssets(ctx, token, addr)
+	})
+	if err != nil {
+		return fmt.Errorf("boid start: %w", err)
+	}
+	fmt.Printf("boid server started (compose, cli: http://%s)\n", addr)
+	return nil
+}
+
+// runDaemonParent's own bare-metal double-fork daemon spawn is no longer
+// reachable from runStart as of docs/plans/release-onboarding.md 決定2/PR5
+// (compose is the only daemon shape now; runStart's non-foreground branch
+// calls runComposeUp instead). Left in place — along with
+// spawnAndWaitForStartup/handleMigrationFailure/formatNonMigrationFailure
+// below, which still have direct unit coverage — as the bare-metal
+// spawn/migration-retry implementation, in case a future PR wants it back
+// (e.g. a `boid start --bare-metal` escape hatch) rather than deleting and
+// re-deriving it; out of scope for PR5 to excise.
+//
 // runDaemonParent spawns the daemon child and waits on three concurrent
 // signals via a select loop:
 //

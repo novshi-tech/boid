@@ -1729,3 +1729,75 @@ func TestShadowFileApplyHintBothCases(t *testing.T) {
 		t.Errorf("hint = %q, must not still recommend the retired `workspace import`", got)
 	}
 }
+
+// --- guardApplyAgainstComposeDaemon (docs/plans/release-onboarding.md
+// 「project migrate → 要注意コマンド」, PR5) ---
+
+// TestGuardApplyAgainstComposeDaemon_NoDaemonReachable_WarnsOnlyProceeds
+// pins the common case: no compose daemon is reachable at
+// client.DefaultCLIAddr() at all (nothing is listening on the isolated
+// XDG_CONFIG_HOME's cli-token addr in this test), so --apply must still
+// proceed after printing its deprecation notice — refusing here would
+// break the still-legitimate legacy bare-metal migration path.
+func TestGuardApplyAgainstComposeDaemon_NoDaemonReachable_WarnsOnlyProceeds(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+
+	var stderr bytes.Buffer
+	if err := guardApplyAgainstComposeDaemon(context.Background(), &stderr); err != nil {
+		t.Fatalf("expected no error when no compose daemon is reachable, got: %v", err)
+	}
+	if !strings.Contains(stderr.String(), "legacy migration path") {
+		t.Errorf("expected a deprecation notice on stderr, got: %q", stderr.String())
+	}
+}
+
+// TestGuardApplyAgainstComposeDaemon_DaemonReachable_Refuses pins the
+// guard's actual job: when a compose daemon answers the SAME authenticated
+// CLI listener host mode itself probes (hostModeHealthy against
+// client.DefaultCLIAddr()), --apply must refuse outright rather than risk
+// silently writing to this host's own (daemon-unread) boid.db.
+// client.DefaultCLIAddr() is a fixed "127.0.0.1:8442" (not independently
+// configurable — see its own doc comment), so this test binds an
+// httptest-backed listener directly on that port; skipped if something
+// else already owns it (e.g. a real host-mode daemon on the machine
+// running the test suite).
+func TestGuardApplyAgainstComposeDaemon_DaemonReachable_Refuses(t *testing.T) {
+	ln, err := net.Listen("tcp", client.DefaultCLIAddr())
+	if err != nil {
+		t.Skipf("cannot bind %s in this environment (already in use?): %v", client.DefaultCLIAddr(), err)
+	}
+
+	configDir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", configDir)
+	token, err := loadOrCreateCLIToken()
+	if err != nil {
+		ln.Close()
+		t.Fatalf("loadOrCreateCLIToken: %v", err)
+	}
+
+	srv := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/cli-token-check" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		if r.Header.Get("Authorization") != "Bearer "+token {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	})}
+	go srv.Serve(ln) //nolint:errcheck // best-effort; Close below ends Serve's loop
+	defer srv.Close()
+
+	var stderr bytes.Buffer
+	err = guardApplyAgainstComposeDaemon(context.Background(), &stderr)
+	if err == nil {
+		t.Fatal("expected an error when a compose daemon is reachable")
+	}
+	if !strings.Contains(err.Error(), "compose daemon is reachable") {
+		t.Errorf("error = %q, want it to explain a compose daemon is reachable", err.Error())
+	}
+	if !strings.Contains(stderr.String(), "legacy migration path") {
+		t.Errorf("expected the deprecation notice to still print before refusing, got: %q", stderr.String())
+	}
+}
