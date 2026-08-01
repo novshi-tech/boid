@@ -4,6 +4,10 @@
 
 > **Phase 2 note (v0.0.12)**: 本ドキュメント中の yaml 例に含まれる `worktree: true` は branch-policy-simplification Phase 2 で撤去済みです。 既存 `worktree:` 行は BC のため silent ignore されます。 詳細は [Concepts / worktree](../guide/concepts.md#worktree) を参照。
 
+> **alias 表撤去 note**: 以前は `plan` が `supervisor` の、 `dev` が `executor` の alias として登録されていて、 ロード時に canonical 名へ書き戻されていました。 そのため本ドキュメントの改名例 (`supervisor` → `plan`、 `executor` → `dev`) は実際には成立せず、 `plan:` と書いても `supervisor:` に戻された上で「`supervisor` は deprecated なので project 固有の名前に改名してください」と warn が出る、 という循環した状態になっていました。 alias 表は撤去済みで、 `plan` / `dev` も他と変わらない自由名として使えます。 以下の例はそのまま動きます。
+>
+> 1 点だけ挙動が変わります: `dev` は alias だった頃 `executor` の `readonly: false` を引き継いでいましたが、 自由名になった今は fail-safe 既定の `readonly: true` です。 下の例のように `readonly: false` を明示してください (この明示は Track A2 の時点で既に必須とされていたものです)。
+
 ## 概要
 
 従来は `task_behaviors` のキー名として `supervisor` と `executor` の 2 つのみが

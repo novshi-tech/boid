@@ -495,30 +495,10 @@ func (s *ProjectStore) GetWithWorkspace(_ context.Context, projectID string) (*P
 
 	// workspace default project definition (docs/plans/
 	// workspace-default-project.md 決定4, 論点j, PR4): a workspace-level
-	// task_behaviors entry fills in any canonical behavior name project.yaml
-	// does not already define. A name project.yaml ALSO defines wins
-	// outright — no per-field merge inside one behavior, decision4's "同名は
-	// project.yaml 側が丸ごと勝つ". ws.TaskBehaviors is always canonical-only
-	// (never carries an alias mirror entry — see
-	// normalizeWorkspaceDefaultTaskBehaviors's own doc comment, spec_loader.go,
-	// for why one is never persisted), so this merge runs in the same
-	// strip→merge→re-mirror shape the host_commands/env blocks below already
-	// use for the identical double-processing reason (論点j).
-	//
-	// The leading stripAliasMirrors is defensive/idiom-matching rather than
-	// independently load-bearing today (codex review on PR4, Minor 1): since
-	// out.TaskBehaviors' own mirror pairs are always self-consistent
-	// (project.yaml's loader already canonicalized+mirrored them before this
-	// function ever runs) and ws.TaskBehaviors' keys are always canonical
-	// (never alias-shaped), the `exists` check below would find the SAME
-	// name present whether or not this line ran first — a project.yaml
-	// entry authored under a legacy alias (e.g. "dev") already has its
-	// canonical counterpart ("executor") present as its own map key by this
-	// point, mirror or no mirror. It is kept for consistency with the
-	// host_commands/env blocks' identical pattern and as a guard against a
-	// future change to either invariant (e.g. if ws.TaskBehaviors ever
-	// stopped being guaranteed canonical-only) reintroducing the double-
-	// processing hazard 論点j describes.
+	// task_behaviors entry fills in any behavior name project.yaml does not
+	// already define. A name project.yaml ALSO defines wins outright — no
+	// per-field merge inside one behavior, decision4's "同名は project.yaml 側が
+	// 丸ごと勝つ". Names are compared verbatim on both sides.
 	//
 	// This MUST run before the host_commands/env blocks below: they iterate
 	// out.TaskBehaviors to inject ws.HostCommands/ws.Env into every
@@ -530,14 +510,12 @@ func (s *ProjectStore) GetWithWorkspace(_ context.Context, projectID string) (*P
 		if out.TaskBehaviors == nil {
 			out.TaskBehaviors = make(map[string]TaskBehavior)
 		}
-		out.TaskBehaviors = stripAliasMirrors(out.TaskBehaviors)
 		for name, behavior := range ws.TaskBehaviors {
 			if _, exists := out.TaskBehaviors[name]; exists {
 				continue
 			}
 			out.TaskBehaviors[name] = behavior
 		}
-		out.TaskBehaviors = addAliasMirrors(out.TaskBehaviors)
 	}
 
 	// NOTE (docs/plans/workspace-db-consolidation.md Phase 2.5 PR6): this used
@@ -613,12 +591,10 @@ func (s *ProjectStore) GetWithWorkspace(_ context.Context, projectID string) (*P
 			if out.TaskBehaviors == nil {
 				out.TaskBehaviors = make(map[string]TaskBehavior)
 			}
-			out.TaskBehaviors = stripAliasMirrors(out.TaskBehaviors)
 			for name, behavior := range out.TaskBehaviors {
 				behavior.HostCommands = mergeHostCommands(resolved, behavior.HostCommands)
 				out.TaskBehaviors[name] = behavior
 			}
-			out.TaskBehaviors = addAliasMirrors(out.TaskBehaviors)
 		}
 	}
 
@@ -630,12 +606,10 @@ func (s *ProjectStore) GetWithWorkspace(_ context.Context, projectID string) (*P
 		out.Env = mergeStringMaps(ws.Env, out.Env)
 		// Workspace env must also reach each behavior's Env so the planner's
 		// PlanHook (which only reads behavior.Env, not meta.Env) picks it up.
-		out.TaskBehaviors = stripAliasMirrors(out.TaskBehaviors)
 		for name, behavior := range out.TaskBehaviors {
 			behavior.Env = mergeStringMaps(ws.Env, behavior.Env)
 			out.TaskBehaviors[name] = behavior
 		}
-		out.TaskBehaviors = addAliasMirrors(out.TaskBehaviors)
 	}
 
 	// BaseBranch / ForkPoint / DefaultTaskBehavior (決定1, 決定5): empty means

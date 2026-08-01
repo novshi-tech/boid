@@ -365,8 +365,7 @@ func BuildSandboxSpec(spec *orchestrator.JobSpec, rt SandboxRuntimeInfo) (sandbo
 		// carried the instruction phase — always "execution" — which the runner
 		// mistook for a behavior name.)
 		if spec.Task != nil {
-			canonical, _ := orchestrator.CanonicalBehaviorName(spec.Task.Behavior)
-			env["BOID_INVOKED_BEHAVIOR"] = canonical
+			env["BOID_INVOKED_BEHAVIOR"] = spec.Task.Behavior
 		}
 	}
 	if spec.Interactive {

@@ -117,53 +117,46 @@ func TestComputeProjectExplain_NilWorkspaceMetaAllProjectYAMLOrUnset(t *testing.
 	}
 }
 
-func TestComputeProjectExplain_AliasNameCollapsedToCanonical(t *testing.T) {
-	// project.yaml authored under the legacy alias "dev"; addAliasMirrors
-	// would have added a "dev" -> canonical mirror pair by the time this is
-	// cached. The explain must compare in canonical space (決定4, 論点j) so a
-	// workspace default entry for the canonical name is correctly seen as
-	// "already defined by project.yaml", not double-counted as a separate
-	// workspace-default addition.
-	canonical, isAlias := CanonicalBehaviorName("dev")
-	if !isAlias {
-		t.Skip("dev is not a known alias in this build; skipping alias-specific assertion")
-	}
+func TestComputeProjectExplain_FormerAliasNamesAreIndependentEntries(t *testing.T) {
+	// "dev" and "executor" were an alias pair until the alias table was
+	// removed; explain used to collapse them onto one canonical entry. They
+	// are now unrelated names, so a project.yaml "dev" does NOT satisfy a
+	// workspace default's "executor" — the workspace entry is a genuine
+	// addition and must be reported as one.
 	raw := &ProjectMeta{
 		ID: "p1",
 		TaskBehaviors: map[string]TaskBehavior{
-			canonical: {},
-			"dev":     {}, // alias mirror, as addAliasMirrors would produce
+			"dev": {},
 		},
 	}
 	ws := &WorkspaceMeta{
 		TaskBehaviors: map[string]TaskBehavior{
-			canonical: {},
+			"executor": {},
 		},
 	}
 	got := ComputeProjectExplain("p1", "ws1", raw, ws, false)
 
-	if got.TaskBehaviors[canonical] != ProvenanceProjectYAML {
-		t.Errorf("%s = %v, want project.yaml", canonical, got.TaskBehaviors[canonical])
+	if got.TaskBehaviors["dev"] != ProvenanceProjectYAML {
+		t.Errorf("dev = %v, want project.yaml", got.TaskBehaviors["dev"])
 	}
-	if _, ok := got.TaskBehaviors["dev"]; ok {
-		t.Error(`"dev" alias mirror key should not appear as its own explain entry`)
+	if got.TaskBehaviors["executor"] != ProvenanceWorkspaceDefault {
+		t.Errorf("executor = %v, want workspace default", got.TaskBehaviors["executor"])
 	}
-	if got.AnyWorkspaceDefaultApplied {
-		t.Error("AnyWorkspaceDefaultApplied = true, want false (canonical name already defined by project.yaml)")
+	if !got.AnyWorkspaceDefaultApplied {
+		t.Error("AnyWorkspaceDefaultApplied = false, want true (executor came from the workspace)")
 	}
 
-	// Codex review round 1 Major: stripAliasMirrors mutates its argument by
-	// deleting alias keys in place. ComputeProjectExplain must operate on a
-	// copy — the caller's rawMeta.TaskBehaviors (which, via
-	// ProjectStore.Explain, is the SHARED cached map every concurrent
-	// dispatch/hydrate also reads) must still contain the alias mirror entry
-	// after this call, and a second call must produce an identical result.
-	if _, ok := raw.TaskBehaviors["dev"]; !ok {
-		t.Error(`raw.TaskBehaviors["dev"] was deleted by ComputeProjectExplain — it must not mutate its input`)
+	// Codex review round 1 Major: ComputeProjectExplain must never mutate its
+	// input — rawMeta.TaskBehaviors is, via ProjectStore.Explain, the SHARED
+	// cached map every concurrent dispatch/hydrate also reads. The earlier
+	// implementation deleted keys from it in place on every read-only call.
+	if len(raw.TaskBehaviors) != 1 {
+		t.Errorf("raw.TaskBehaviors was mutated: %v", raw.TaskBehaviors)
 	}
 	got2 := ComputeProjectExplain("p1", "ws1", raw, ws, false)
-	if got2.TaskBehaviors[canonical] != got.TaskBehaviors[canonical] {
-		t.Errorf("second call = %v, first call = %v — result must be stable across repeated calls", got2.TaskBehaviors[canonical], got.TaskBehaviors[canonical])
+	if got2.TaskBehaviors["dev"] != got.TaskBehaviors["dev"] {
+		t.Errorf("second call = %v, first call = %v — result must be stable across repeated calls",
+			got2.TaskBehaviors["dev"], got.TaskBehaviors["dev"])
 	}
 }
 

@@ -118,17 +118,11 @@ func (e *ProjectExplain) TaskBehaviorNames() []string {
 // cannot back up when the workspace side could not even be read (Codex
 // review round 1 Major).
 //
-// The task_behaviors comparison is done in the canonical name space (決定4,
-// 論点j): rawMeta.TaskBehaviors is copied and stripped of alias mirror
-// entries before comparison (stripAliasMirrors mutates its argument in
-// place by deleting alias keys — Codex review round 1 Major: the original
-// implementation passed the shared cached map straight in, permanently
-// deleting its alias mirror entries on every read-only /explain call and
-// racing any concurrent hydrate/dispatch touching the same map). A
-// legacy-alias-authored project.yaml entry is compared under its canonical
-// name exactly like GetWithWorkspace's own merge does. wsMeta.TaskBehaviors
-// is always canonical-only already (normalizeWorkspaceDefaultTaskBehaviors's
-// invariant) and is only ever read, never mutated, here.
+// The task_behaviors comparison is done on names as written (決定4, 論点j),
+// the same way GetWithWorkspace's own merge compares them. Neither input map
+// is mutated: rawMeta.TaskBehaviors is a shared cached map that concurrent
+// hydrate/dispatch calls may be reading (Codex review round 1 Major — an
+// earlier version mutated it in place on every read-only /explain call).
 func ComputeProjectExplain(projectID, workspaceID string, rawMeta *ProjectMeta, wsMeta *WorkspaceMeta, workspaceUnavailable bool) *ProjectExplain {
 	out := &ProjectExplain{
 		ProjectID:              projectID,
@@ -144,11 +138,7 @@ func ComputeProjectExplain(projectID, workspaceID string, rawMeta *ProjectMeta, 
 
 	var rawBehaviors map[string]TaskBehavior
 	if rawMeta != nil && len(rawMeta.TaskBehaviors) > 0 {
-		cloned := make(map[string]TaskBehavior, len(rawMeta.TaskBehaviors))
-		for k, v := range rawMeta.TaskBehaviors {
-			cloned[k] = v
-		}
-		rawBehaviors = stripAliasMirrors(cloned)
+		rawBehaviors = rawMeta.TaskBehaviors
 	}
 	var wsBehaviors map[string]TaskBehavior
 	if wsMeta != nil {

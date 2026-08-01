@@ -61,7 +61,9 @@ map のキーが behavior の識別子で、 タスク作成時に `behavior:` �
 | `supervisor` | readonly な統括役。 要求を triage し、 child executor task を作り、 監視する。 ファイル編集はしない |
 | `executor` | 書き込み可能な実装役。 単一の集中したタスクを受けて成果物 (commit / PR / payload trait) を作る |
 
-canonical 以外の任意のキー名も使用できます (Track A2 以降、`readonly` の既定値は `true` (fail-safe) です。writable にするには `readonly: false` を明示してください)。 レガシーキー `plan` (`supervisor` の alias) と `dev` (`executor` の alias) はマイグレーション期間中は引き続き受け付けますが、 deprecated です。
+canonical 以外の任意のキー名も使用できます (Track A2 以降、`readonly` の既定値は `true` (fail-safe) です。writable にするには `readonly: false` を明示してください)。
+
+behavior 名は完全一致で照合され、daemon が読み替えることはありません。 かつて `plan` は `supervisor` の、 `dev` は `executor` の alias として扱われ、 ロード時に canonical 名へ書き換えられていましたが、 この alias 表は撤去済みです。 `plan` / `dev` も他の名前と同様、 単なる project 固有の behavior 名として使えます (`supervisor` / `executor` と同じファイルに併記しても構いません)。 なお `dev` は alias だった頃 `executor` の `readonly: false` を引き継いでいましたが、 自由名になった今は fail-safe 既定の `readonly: true` になるため、 writable にしたい場合は明示してください。
 
 各 behavior エントリの設定項目:
 

@@ -409,14 +409,14 @@ func nowForRevision() time.Time {
 // removes it outright); see decodeWorkspaceMetaColumns for the read side.
 //
 // taskBehaviorsYAML runs meta.TaskBehaviors through
-// normalizeWorkspaceDefaultTaskBehaviors before encoding (docs/plans/
+// validateWorkspaceDefaultTaskBehaviors before encoding (docs/plans/
 // workspace-default-project.md 決定4, 論点j's "DB save" entry point — the
 // other of the two mandated entry points, alongside envelope decode in
 // decodeWorkspaceEnvelopeSpec) — this is what makes a WorkspaceMeta written
 // by ANY path (not just the envelope apply path) end up with validated,
 // canonical-only task_behaviors (alias names renamed to their canonical
 // form, no back-compat mirror entries added — see
-// normalizeWorkspaceDefaultTaskBehaviors's own doc comment for why a mirror
+// validateWorkspaceDefaultTaskBehaviors's own doc comment for why a mirror
 // must never reach persisted storage), since this function is the single
 // choke point every write (Create/Save/UpdateIfRevisionMatches) funnels
 // through. Stored as YAML, not JSON, unlike every other column here — see
@@ -450,7 +450,7 @@ func marshalWorkspaceMetaColumns(slug string, meta *WorkspaceMeta) (hostCommands
 		containerImage = meta.ContainerImage
 	}
 
-	normalized, err := normalizeWorkspaceDefaultTaskBehaviors(fmt.Sprintf("workspace %q", slug), meta.TaskBehaviors)
+	normalized, err := validateWorkspaceDefaultTaskBehaviors(fmt.Sprintf("workspace %q", slug), meta.TaskBehaviors)
 	if err != nil {
 		return "", "", "", "", "", "", nil, "", "", "", "", err
 	}

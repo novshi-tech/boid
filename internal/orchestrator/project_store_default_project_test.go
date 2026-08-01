@@ -61,8 +61,8 @@ task_behaviors:
 	if meta.DefaultTaskBehavior != "" {
 		t.Errorf("DefaultTaskBehavior = %q, want empty", meta.DefaultTaskBehavior)
 	}
-	if len(meta.TaskBehaviors) != 2 { // "executor" + its "dev" alias mirror, same as pre-PR4
-		t.Fatalf("TaskBehaviors = %+v, want exactly executor+dev (project.yaml's own, unaffected by an empty workspace default)", meta.TaskBehaviors)
+	if len(meta.TaskBehaviors) != 1 {
+		t.Fatalf("TaskBehaviors = %+v, want exactly the project.yaml-defined executor, unaffected by an empty workspace default", meta.TaskBehaviors)
 	}
 	if _, ok := meta.TaskBehaviors["executor"]; !ok {
 		t.Errorf("TaskBehaviors missing executor: %+v", meta.TaskBehaviors)
@@ -153,23 +153,14 @@ task_behaviors:
 	}
 }
 
-// TestGetWithWorkspace_TaskBehaviors_CanonicalCollisionViaAlias pins 決定4's
-// "マージは canonical 名前空間で行う" (論点j): project.yaml authoring its
-// behavior under the LEGACY ALIAS name ("dev", which canonicalizes+mirrors
-// to "executor" at project.yaml load time — spec_loader.go) must still be
-// recognized as the SAME name as a workspace default authored under the
-// CANONICAL name ("executor") — project.yaml wins, the workspace's
-// "executor" must not sneak in as if it were a distinct entry.
-//
-// This proves the collision is correctly detected end to end; it does NOT,
-// on its own, isolate GetWithWorkspace's leading stripAliasMirrors call as
-// the specific mechanism (codex review on PR4, Minor 1): project.yaml's
-// loader already canonicalizes+mirrors "dev" to "executor" before
-// GetWithWorkspace ever runs, so out.TaskBehaviors["executor"] is present as
-// a plain map key regardless of whether that stripAliasMirrors call
-// executes — see its own comment (project_store.go) for why it is kept
-// anyway.
-func TestGetWithWorkspace_TaskBehaviors_CanonicalCollisionViaAlias(t *testing.T) {
+// TestGetWithWorkspace_TaskBehaviors_FormerAliasNamesDoNotCollide pins the
+// merge-side consequence of removing the alias table. 決定4 says the merge
+// compares behavior names, and those names are now compared verbatim: a
+// project.yaml "dev" and a workspace default "executor" are two different
+// behaviors, so both survive the merge. While the alias table existed the
+// project's "dev" canonicalized onto "executor" and swallowed the workspace
+// entry — the workspace's behavior was silently unreachable.
+func TestGetWithWorkspace_TaskBehaviors_FormerAliasNamesDoNotCollide(t *testing.T) {
 	t.Parallel()
 
 	projectDir := t.TempDir()
@@ -196,48 +187,57 @@ task_behaviors:
 	if err != nil {
 		t.Fatalf("GetWithWorkspace: %v", err)
 	}
-	if len(meta.TaskBehaviors) != 2 { // executor + its dev mirror — no third/distinct entry
-		t.Fatalf("TaskBehaviors = %+v, want exactly 2 entries (executor + dev mirror), not a separate workspace-supplied executor", meta.TaskBehaviors)
+	if len(meta.TaskBehaviors) != 2 {
+		t.Fatalf("TaskBehaviors = %+v, want exactly 2 distinct entries (project's dev + workspace's executor)", meta.TaskBehaviors)
 	}
-	for _, name := range []string{"executor", "dev"} {
+	want := map[string]string{"dev": "project-value", "executor": "workspace-value"}
+	for name, wantTrait := range want {
 		behavior, ok := meta.TaskBehaviors[name]
 		if !ok {
 			t.Fatalf("TaskBehaviors missing %q: %+v", name, meta.TaskBehaviors)
 		}
-		if len(behavior.Traits) != 1 || behavior.Traits[0] != "project-value" {
-			t.Errorf("TaskBehaviors[%q].Traits = %v, want [project-value] (project.yaml's dev-authored entry must win, canonical-namespace-aware)", name, behavior.Traits)
+		if len(behavior.Traits) != 1 || behavior.Traits[0] != wantTrait {
+			t.Errorf("TaskBehaviors[%q].Traits = %v, want [%s]", name, behavior.Traits, wantTrait)
 		}
 	}
 }
 
-// TestGetWithWorkspace_TaskBehaviors_WorkspaceSuppliedBehaviorGetsAliasMirror
-// confirms a workspace-default-only canonical behavior still gets its
-// legacy alias mirror added (addAliasMirrors runs on the FULL merged map,
-// not just project.yaml's own entries).
-func TestGetWithWorkspace_TaskBehaviors_WorkspaceSuppliedBehaviorGetsAliasMirror(t *testing.T) {
+// TestGetWithWorkspace_TaskBehaviors_SameNameProjectYAMLWins pins 決定4's
+// "同名は project.yaml 側が丸ごと勝つ" for the case that still collides: an
+// identical name on both sides.
+func TestGetWithWorkspace_TaskBehaviors_SameNameProjectYAMLWins(t *testing.T) {
 	t.Parallel()
 
 	projectDir := t.TempDir()
-	writeProjectYAML(t, projectDir, "id: proj-mirror\nname: Mirror Project\n")
+	writeProjectYAML(t, projectDir, `id: proj-samename
+name: Same Name Project
+task_behaviors:
+  executor:
+    traits: [project-value]
+`)
 
 	wsDir := t.TempDir()
-	setupWorkspaceDir(t, wsDir, "mirror-ws", `task_behaviors:
+	setupWorkspaceDir(t, wsDir, "samename-ws", `task_behaviors:
   executor:
-    traits: [impl]
+    traits: [workspace-value]
 `)
 
 	s := orchestrator.NewProjectStore()
 	s.SetWorkspaceStore(orchestrator.NewWorkspaceStore(wsDir))
 	loadProjectIntoStore(t, s, []*orchestrator.Project{
-		{ID: "proj-mirror", WorkDir: projectDir, WorkspaceID: "mirror-ws"},
+		{ID: "proj-samename", WorkDir: projectDir, WorkspaceID: "samename-ws"},
 	})
 
-	meta, err := s.GetWithWorkspace(context.Background(), "proj-mirror")
+	meta, err := s.GetWithWorkspace(context.Background(), "proj-samename")
 	if err != nil {
 		t.Fatalf("GetWithWorkspace: %v", err)
 	}
-	if _, ok := meta.TaskBehaviors["dev"]; !ok {
-		t.Errorf("TaskBehaviors = %+v, want the \"dev\" alias mirror of the workspace-supplied \"executor\"", meta.TaskBehaviors)
+	if len(meta.TaskBehaviors) != 1 {
+		t.Fatalf("TaskBehaviors = %+v, want exactly 1 entry", meta.TaskBehaviors)
+	}
+	got := meta.TaskBehaviors["executor"].Traits
+	if len(got) != 1 || got[0] != "project-value" {
+		t.Errorf("TaskBehaviors[executor].Traits = %v, want [project-value] (project.yaml wins outright)", got)
 	}
 }
 

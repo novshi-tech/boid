@@ -61,7 +61,9 @@ The map key is the behavior's identifier and is what `boid task create` referenc
 | `supervisor` | Readonly orchestrator. Reads the request, triages it, creates child executor tasks, monitors them. Never edits files. |
 | `executor` | Writable implementer. Receives a single focused task and produces an artifact (commit / PR / payload trait). |
 
-Any other map key is also accepted (Track A2 and later: `readonly` defaults to `true` as a fail-safe for non-canonical names; set `readonly: false` explicitly for writable behaviors). The legacy keys `plan` (alias for `supervisor`) and `dev` (alias for `executor`) are still accepted during the migration period but are deprecated.
+Any other map key is also accepted (Track A2 and later: `readonly` defaults to `true` as a fail-safe for non-canonical names; set `readonly: false` explicitly for writable behaviors).
+
+Behavior names are matched verbatim; the daemon never translates them. `plan` used to be an alias for `supervisor` and `dev` an alias for `executor`, rewritten to the canonical name at load time, but that alias table has been removed. `plan` and `dev` are now ordinary project-chosen names like any other, and may appear in the same file as `supervisor` / `executor`. Note that `dev` inherited executor's `readonly: false` while it was an alias; as a free name it takes the fail-safe `readonly: true` default, so set it explicitly if you want it writable.
 
 Each behavior entry's fields:
 

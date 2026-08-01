@@ -58,17 +58,12 @@ func taskNewBehaviorsByProjectJSON(projects []*orchestrator.Project) string {
 	return string(b)
 }
 
-// visibleBehaviorNames returns the canonical (non-mirror) keys of a behavior
-// map. Alias keys are kept only when no canonical counterpart exists.
+// visibleBehaviorNames returns the keys of a behavior map. Every key is shown:
+// behavior names carry no built-in meaning, so there are no synthetic mirror
+// entries to filter out.
 func visibleBehaviorNames(behaviors map[string]orchestrator.TaskBehavior) []string {
 	out := make([]string, 0, len(behaviors))
 	for name := range behaviors {
-		if orchestrator.IsBehaviorAliasKey(name) {
-			canonical, _ := orchestrator.CanonicalBehaviorName(name)
-			if _, hasCanonical := behaviors[canonical]; hasCanonical {
-				continue
-			}
-		}
 		out = append(out, name)
 	}
 	return out

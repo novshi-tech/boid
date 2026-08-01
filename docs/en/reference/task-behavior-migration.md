@@ -4,6 +4,10 @@
 
 > **Phase 2 note (v0.0.12)**: The `worktree: true` shown in the yaml examples below has been retired in branch-policy-simplification Phase 2. Existing `worktree:` lines are silently ignored for BC. See [Concepts / Worktree](../guide/concepts.md#worktree) for the current model.
 
+> **Alias-table removal note**: `plan` used to be registered as an alias of `supervisor`, and `dev` of `executor`, and both were rewritten back to the canonical name at load time. That made this guide's own rename example (`supervisor` → `plan`, `executor` → `dev`) impossible to actually carry out: writing `plan:` got you `supervisor:` back, and then a warning saying `supervisor` is deprecated and should be renamed to a project-specific name — a closed loop. The alias table has been removed; `plan` and `dev` are ordinary free names like any other, and the examples below now work as written.
+>
+> One behaviour does change: while `dev` was an alias it inherited executor's `readonly: false`. As a free name it takes the fail-safe `readonly: true` default, so set `readonly: false` explicitly as the examples below do (Track A2 already required this to be explicit).
+
 ## Overview
 
 Previously, only two map keys — `supervisor` and `executor` — were recognised as

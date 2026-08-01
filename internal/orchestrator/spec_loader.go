@@ -157,19 +157,6 @@ func parseProjectMetaBytes(dirLabel string, data []byte) (*ProjectMeta, error) {
 		return nil, fmt.Errorf("project.yaml: name is required")
 	}
 
-	normalized, err := normalizeBehaviorAliases("project.yaml", meta.TaskBehaviors)
-	if err != nil {
-		return nil, err
-	}
-	meta.TaskBehaviors = normalized
-
-	// Add back-compat alias mirror entries so legacy lookups
-	// (meta.TaskBehaviors["dev"]) continue to find the canonical entry.
-	// Callers iterating the map should use the canonical entries as the
-	// source of truth; ReadProjectMetaWithKits explicitly strips and re-adds
-	// mirrors to avoid double-processing during kit merging.
-	meta.TaskBehaviors = addAliasMirrors(meta.TaskBehaviors)
-
 	return &meta, nil
 }
 
@@ -339,147 +326,25 @@ func rejectRemovedBehaviorFields(scope string, raw map[string]any) error {
 	return nil
 }
 
-// normalizeBehaviorAliases rewrites the task_behaviors map so that any
-// deprecated alias key (see BehaviorAliases) is renamed to its canonical
-// counterpart. A deprecation warning is emitted for each alias seen. If both
-// the alias and its canonical counterpart are present in the same map, an
-// error is returned — authors must pick exactly one form per behavior.
-//
-// scope identifies the source ("project.yaml" or "kit.yaml ...") for logs and
-// error messages.
-//
-// To keep the rename non-breaking for callers that look up behaviors by the
-// legacy name, addAliasMirrors must be called on the FINAL fully-resolved map
-// (after kit merging, etc.) to add back-compat mirror entries. See
-// ReadProjectMetaWithKits.
-func normalizeBehaviorAliases(scope string, behaviors map[string]TaskBehavior) (map[string]TaskBehavior, error) {
-	if len(behaviors) == 0 {
-		return behaviors, nil
-	}
-	// Detect duplicates first (alias and canonical both present): fail fast.
-	for alias, canonical := range BehaviorAliases {
-		if _, hasAlias := behaviors[alias]; !hasAlias {
-			continue
-		}
-		if _, hasCanonical := behaviors[canonical]; hasCanonical {
-			return nil, fmt.Errorf("%s: duplicate task behavior definition: %q is an alias of %q; remove one", scope, alias, canonical)
-		}
-	}
-	result := make(map[string]TaskBehavior, len(behaviors))
-	for key, behavior := range behaviors {
-		canonical, isAlias := CanonicalBehaviorName(key)
-		if isAlias {
-			slog.Warn("task behavior name is deprecated; use canonical name instead",
-				"scope", scope,
-				"deprecated", key,
-				"canonical", canonical,
-			)
-			result[canonical] = behavior
-			continue
-		}
-		result[key] = behavior
-	}
-	return result, nil
-}
-
-// addAliasMirrors adds back-compat alias key mirror entries to a fully
-// processed task_behaviors map. For every canonical behavior present whose
-// name has a known alias, the alias key is set to the same TaskBehavior
-// value. Existing alias entries are never overwritten.
-//
-// This is the migration-period back-compat: callers that look up by the
-// legacy name (e.g. existing tests, persisted task.Behavior rows that still
-// carry "dev") continue to find their behavior, while new callers can use
-// the canonical name. Phase 5 will drop the mirroring step entirely.
-func addAliasMirrors(behaviors map[string]TaskBehavior) map[string]TaskBehavior {
-	if len(behaviors) == 0 {
-		return behaviors
-	}
-	for alias, canonical := range BehaviorAliases {
-		if _, exists := behaviors[alias]; exists {
-			continue
-		}
-		entry, ok := behaviors[canonical]
-		if !ok {
-			continue
-		}
-		behaviors[alias] = entry
-	}
-	return behaviors
-}
-
-// stripAliasMirrors removes any back-compat alias key entries that have a
-// matching canonical entry. It is the inverse of addAliasMirrors and is used
-// before re-processing a meta map (e.g. in ReadProjectMetaWithKits, which
-// iterates over the map to merge kits — alias entries would cause every
-// behavior to be processed twice).
-//
-// Only the canonical-resolvable aliases are stripped; if the map happens to
-// contain an alias key WITHOUT its canonical counterpart, the entry is left
-// alone (it represents a legitimate user-authored alias-only definition that
-// has not yet been canonicalized).
-func stripAliasMirrors(behaviors map[string]TaskBehavior) map[string]TaskBehavior {
-	if len(behaviors) == 0 {
-		return behaviors
-	}
-	for alias, canonical := range BehaviorAliases {
-		if _, hasAlias := behaviors[alias]; !hasAlias {
-			continue
-		}
-		if _, hasCanonical := behaviors[canonical]; !hasCanonical {
-			continue
-		}
-		delete(behaviors, alias)
-	}
-	return behaviors
-}
-
-// normalizeWorkspaceDefaultTaskBehaviors runs the validation + canonical-name
-// normalization project.yaml's task_behaviors goes through at load time
-// (parseProjectMetaBytes above: validateHookKind per hook, then
-// normalizeBehaviorAliases) against a workspace's default project definition
+// validateWorkspaceDefaultTaskBehaviors runs the load-time validation
+// project.yaml's task_behaviors goes through (parseProjectMetaBytes above:
+// validateHookKind per hook) against a workspace's default project definition
 // task_behaviors (docs/plans/workspace-default-project.md 決定4, 論点j).
 // scope identifies the caller for error messages (e.g. "workspace default"
 // or "workspace %q").
 //
-// Deliberately does NOT call addAliasMirrors (codex review on PR3, Major 1):
-// an earlier version of this function added back-compat alias mirror
-// entries here, at BOTH of the doc's mandated entry points (envelope decode
-// AND DB save) — which meant a workspace default of {"executor": ...}
-// actually got PERSISTED (and, via NewWorkspaceEnvelopeFromMeta, EXPORTED)
-// as {"executor": ..., "dev": ...} (dev mirroring executor). Re-applying
-// that very export then failed outright: decodeWorkspaceEnvelopeSpec saw
-// BOTH "dev" and "executor" already present in the fresh document and
-// normalizeBehaviorAliases's duplicate-detection (rightly, from its own
-// point of view) rejected it as ambiguous — a workspace's own honest export
-// could never be re-applied. The fix is to never let a mirror artifact
-// reach persisted/exported storage in the first place: this function's
-// output — used both for what gets written to the workspaces.task_behaviors
-// column AND for what NewWorkspaceEnvelopeFromMeta exports — is always
-// canonical-name-only, the same on-disk shape project.yaml's own committed
-// file has (parseProjectMetaBytes adds mirrors AFTER parsing, in memory; it
-// never writes them back to the file). Producing a mirrored, alias-lookup-
-// friendly view is left entirely to whichever future PR wires this into
-// GetWithWorkspace's hydration merge — that merge already has to run its
-// own stripAliasMirrors→merge→addAliasMirrors pass regardless of whether its
-// input happens to carry mirrors already (project_store.go's GetWithWorkspace
-// does exactly this for project.yaml's TaskBehaviors today), so there is no
-// correctness reason for THIS layer to pre-mirror at all — only a round-trip
-// hazard, which this comment exists to make sure nobody reintroduces.
-//
-// Because this never adds/strips mirrors, calling it on already-mirrored
-// input (a map carrying BOTH an alias key and its canonical counterpart,
-// e.g. from a prior addAliasMirrors pass elsewhere) is not something a
-// correct caller should ever need to do: both of this PR's entry points are
-// invariant-clean of that specific shape. Envelope decode gets fresh user
-// YAML, which may legitimately use an alias-only name (e.g. just "dev", no
-// "executor" — normalizeBehaviorAliases renames it to canonical, no error)
-// but never a mirror PAIR unless the user wrote one on purpose (in which
-// case rejecting it as ambiguous is correct, not a bug). DB save gets a
-// value that — by the same invariant, transitively, since this function is
-// the only path that writes the column — was never persisted with a mirror
-// pair either.
-func normalizeWorkspaceDefaultTaskBehaviors(scope string, behaviors map[string]TaskBehavior) (map[string]TaskBehavior, error) {
+// The map is returned unchanged: behavior names are compared verbatim
+// everywhere, so there is nothing to normalize. This function used to also
+// run alias canonicalization, and its two call sites (envelope decode AND DB
+// save) are the reason the alias machinery had to be kept out of persisted
+// and exported storage — a mirror entry written to the workspaces
+// .task_behaviors column made the workspace's own export un-re-appliable,
+// because decode then saw both spellings and rejected the pair as ambiguous.
+// With the alias table gone that hazard no longer exists in any form, but the
+// invariant it forced is worth keeping on purpose: what this function returns
+// is exactly what the user wrote, and exactly what gets persisted and
+// re-exported.
+func validateWorkspaceDefaultTaskBehaviors(scope string, behaviors map[string]TaskBehavior) (map[string]TaskBehavior, error) {
 	if len(behaviors) == 0 {
 		return behaviors, nil
 	}
@@ -490,7 +355,7 @@ func normalizeWorkspaceDefaultTaskBehaviors(scope string, behaviors map[string]T
 			}
 		}
 	}
-	return normalizeBehaviorAliases(scope, behaviors)
+	return behaviors, nil
 }
 
 // validateHookKind enforces the Hook.Kind / Hook.Agent / Hook.Command
@@ -571,11 +436,6 @@ func ReadProjectMetaWithKits(dir string) (*ProjectMeta, error) {
 
 	meta = cloneProjectMeta(meta)
 
-	// Drop alias mirror entries added by ReadProjectMeta so that the
-	// behavior-merge loop below iterates each behavior only once. Mirrors are
-	// re-added at the end of this function.
-	meta.TaskBehaviors = stripAliasMirrors(meta.TaskBehaviors)
-
 	if meta.TaskBehaviors == nil {
 		meta.TaskBehaviors = make(map[string]TaskBehavior)
 	}
@@ -595,12 +455,6 @@ func ReadProjectMetaWithKits(dir string) (*ProjectMeta, error) {
 
 		meta.TaskBehaviors[name] = behavior
 	}
-
-	// Re-add the back-compat alias mirror entries that were stripped at the
-	// top of this function. After overlays, the canonical entries are fully
-	// populated; mirrors must reflect the resolved state so legacy lookups
-	// (e.g. meta.TaskBehaviors["dev"]) see the same data.
-	meta.TaskBehaviors = addAliasMirrors(meta.TaskBehaviors)
 
 	emitCanonicalBehaviorDeprecation(dir, meta)
 
@@ -628,9 +482,6 @@ func emitCanonicalBehaviorDeprecation(dir string, meta *ProjectMeta) {
 		return
 	}
 	for name, behavior := range meta.TaskBehaviors {
-		if IsBehaviorAliasKey(name) {
-			continue // skip back-compat mirror entries
-		}
 		switch name {
 		case "supervisor":
 			slog.Warn("task behavior name 'supervisor' is deprecated; rename to a project-specific name and set default_task_behavior. See docs/ja/reference/task-behavior-migration.md",

@@ -633,7 +633,7 @@ func decodeWorkspaceEnvelopeSpec(specNode yaml.Node) (spec WorkspaceEnvelopeSpec
 		// 決定4, 論点j) — reject a malformed hook shape at decode time rather
 		// than letting it reach the DB (and, eventually, a dispatch planner)
 		// unvalidated.
-		normalized, err := normalizeWorkspaceDefaultTaskBehaviors("spec.task_behaviors", spec.TaskBehaviors)
+		normalized, err := validateWorkspaceDefaultTaskBehaviors("spec.task_behaviors", spec.TaskBehaviors)
 		if err != nil {
 			return spec, nil, false, err
 		}
