@@ -112,27 +112,37 @@ func (b *containerBackend) resolveUsernsMode(ctx context.Context) container.User
 	return b.usernsMode
 }
 
-// resolveEngineInfo probes the engine's /info exactly once per backend,
-// then caches — shared by resolveUsernsMode (rootless detection) and
+// resolveEngineInfo probes the engine's /info, caching only a SUCCESSFUL
+// result — shared by resolveUsernsMode (rootless detection) and
 // resolveHostArch (arch mismatch fail-fast) below, both of which need the
 // engine's own self-reported identity but have no reason to each pay for
-// their own round trip to the same endpoint (TestContainerBackend_Launch_
-// EngineProbeOncePerBackend pins the combined "exactly one Info call per
-// backend, however many independent features consume it" contract this
-// sharing exists to keep true). A failed probe is logged once, here, and
-// cached as a zero-value SystemInfoResult{} — both consumers already treat
-// their own zero-value/empty-field inputs as "unknown, degrade gracefully"
-// (usernsModeForEngine's own doc comment; resolveHostArch's empty-string
-// return), so no separate failure signal is needed downstream.
+// their own round trip to the same endpoint once one has already succeeded
+// (TestContainerBackend_Launch_EngineProbeOncePerBackend pins the combined
+// "exactly one Info call per backend once a probe has succeeded, however
+// many independent features consume it" contract this sharing exists to
+// keep true).
+//
+// [Blocker, PR4 codex review round 2]: a failed probe is logged and
+// deliberately NOT cached (infoOK stays false) — see the containerBackend
+// struct's own infoMu/infoOK/info doc comment for why caching a failure
+// exactly like a success would silently and permanently disable
+// resolveHostArch's arch mismatch fail-fast after one transient /info
+// hiccup, which docs/plans/release-onboarding.md 決定5 requires as a
+// "must", not a best-effort check. Every call after a failure retries the
+// probe fresh until one succeeds.
 func (b *containerBackend) resolveEngineInfo(ctx context.Context) client.SystemInfoResult {
-	b.infoOnce.Do(func() {
-		info, err := b.api.Info(ctx, client.InfoOptions{})
-		if err != nil {
-			slog.Warn("container backend: engine info probe failed", "error", err)
-			return
-		}
-		b.info = info
-	})
+	b.infoMu.Lock()
+	defer b.infoMu.Unlock()
+	if b.infoOK {
+		return b.info
+	}
+	info, err := b.api.Info(ctx, client.InfoOptions{})
+	if err != nil {
+		slog.Warn("container backend: engine info probe failed", "error", err)
+		return client.SystemInfoResult{}
+	}
+	b.info = info
+	b.infoOK = true
 	return b.info
 }
 

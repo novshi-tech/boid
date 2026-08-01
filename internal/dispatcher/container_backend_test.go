@@ -1935,6 +1935,53 @@ func TestContainerBackend_ResolveImage_UnknownHostArch_SkipsCheck(t *testing.T) 
 	}
 }
 
+// TestContainerBackend_ResolveImage_ArchProbeRetriesAfterFailure pins
+// [Blocker, PR4 codex review round 2]: a failed engine /info probe must
+// NOT be cached as a permanent "unknown host arch" — that would silently
+// and permanently disable the arch mismatch fail-fast for the rest of this
+// backend's lifetime after just one transient failure, contradicting
+// docs/plans/release-onboarding.md 決定5's "must" fail-fast requirement.
+// The first Launch here hits a failing probe (mismatch check skipped, per
+// TestContainerBackend_ResolveImage_UnknownHostArch_SkipsCheck's own
+// established posture) but the SECOND Launch's own fresh probe attempt
+// must succeed and catch the same image/host mismatch the first one could
+// not see — proving the failure was retried, not cached.
+func TestContainerBackend_ResolveImage_ArchProbeRetriesAfterFailure(t *testing.T) {
+	var infoCalls int
+	api := &fakeDockerAPI{
+		ImageInspectFunc: func(ctx context.Context, imageRef string, opts ...client.ImageInspectOption) (client.ImageInspectResult, error) {
+			return imageInspectResultWithArch("amd64"), nil
+		},
+		InfoFunc: func(ctx context.Context, options client.InfoOptions) (client.SystemInfoResult, error) {
+			infoCalls++
+			if infoCalls == 1 {
+				return client.SystemInfoResult{}, errors.New("engine temporarily unreachable")
+			}
+			return systemInfoResultWithArch("aarch64"), nil
+		},
+	}
+	be := NewContainerBackend(api, ContainerBackendOptions{DefaultImage: "boid-runner:v9"})
+
+	mustLaunch(t, be, sandbox.Spec{ID: "job-arch-retry-1", Argv: []string{"true"}}, backend.LaunchOptions{JobID: "job-arch-retry-1"})
+	if len(api.createCalls) != 1 {
+		t.Fatalf("first Launch: ContainerCreate calls = %d, want 1 (probe failure must not block launch)", len(api.createCalls))
+	}
+
+	_, err := be.Launch(context.Background(), sandbox.Spec{ID: "job-arch-retry-2", Argv: []string{"true"}}, backend.LaunchOptions{JobID: "job-arch-retry-2"})
+	if err == nil {
+		t.Fatal("second Launch succeeded despite a now-detectable arch mismatch — the failed first probe was wrongly cached as permanent")
+	}
+	if !strings.Contains(err.Error(), "amd64") || !strings.Contains(err.Error(), "arm64") {
+		t.Errorf("second Launch error = %q, want it to mention %q (image) and %q (normalized aarch64 host)", err.Error(), "amd64", "arm64")
+	}
+	if len(api.createCalls) != 1 {
+		t.Errorf("ContainerCreate was called %d times total, want still 1 (second Launch rejected before create)", len(api.createCalls))
+	}
+	if infoCalls != 2 {
+		t.Errorf("Info calls = %d, want 2 (retried after the first failure, not cached)", infoCalls)
+	}
+}
+
 // TestRunner_Backend_DrivesContainerBackendThroughSignalSeam is the
 // container-backend sibling of runner_backend_wiring_test.go's
 // TestRunner_SignalJobRuntime_RoutesThroughBackendAdoptToSessionSignal (PR1):

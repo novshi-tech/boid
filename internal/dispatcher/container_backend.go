@@ -101,16 +101,32 @@ type containerBackend struct {
 	usernsOnce sync.Once
 	usernsMode container.UsernsMode
 
-	// infoOnce/info cache the engine /info probe itself (container_backend_
-	// userns.go's resolveEngineInfo), shared by resolveUsernsMode (rootless
-	// detection) AND resolveHostArch (the arch mismatch fail-fast in
-	// resolveImage needs the engine's own reported host architecture, not
-	// this Go binary's build architecture — see resolveImage's own comment
-	// for why those differ under emulation) so two independent features
-	// consuming the same engine identity pay for exactly one round trip,
-	// not one each. Resolved lazily on the first Launch, same rationale as
-	// usernsOnce/usernsMode above.
-	infoOnce sync.Once
+	// infoMu/infoOK/info cache the engine /info probe itself
+	// (container_backend_userns.go's resolveEngineInfo), shared by
+	// resolveUsernsMode (rootless detection) AND resolveHostArch (the arch
+	// mismatch fail-fast in resolveImage needs the engine's own reported
+	// host architecture, not this Go binary's build architecture — see
+	// resolveImage's own comment for why those differ under emulation) so
+	// two independent features consuming the same engine identity pay for
+	// exactly one round trip, not one each, ONCE a probe has actually
+	// succeeded.
+	//
+	// [Blocker, PR4 codex review round 2]: a plain sync.Once (this field's
+	// pre-fix shape) would cache a FAILED probe just as permanently as a
+	// successful one — silently disabling resolveHostArch's arch mismatch
+	// fail-fast for the rest of this backend's lifetime after one
+	// transient /info hiccup, directly contradicting docs/plans/
+	// release-onboarding.md 決定5's "must" fail-fast requirement. infoOK
+	// only flips true on success, so a failed probe is retried on every
+	// subsequent resolveImage/resolveUsernsMode call instead of being
+	// cached as a permanent "unknown" — resolveUsernsMode's own posture
+	// (a failure there is fine to degrade forever, per its own doc
+	// comment) is unaffected: it still only ever calls resolveEngineInfo
+	// once via usernsOnce above, so a later successful retry (triggered by
+	// a DIFFERENT job's resolveHostArch call) never revisits an
+	// already-decided usernsMode.
+	infoMu   sync.Mutex
+	infoOK   bool
 	info     client.SystemInfoResult
 
 	mu       sync.Mutex
