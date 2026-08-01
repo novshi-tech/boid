@@ -67,21 +67,23 @@ generates a workspace.yaml update and optionally a legacy kit.yaml, and rewrites
 project.yaml to remove the fields that have moved.
 
 By default the command runs in dry-run mode: it prints what it would do without
-writing anything. Pass --apply to actually perform the migration.
+writing anything. Pass --apply to actually perform the migration — this
+rewrites project.yaml and writes a reviewable workspace shadow yaml file,
+regardless of any daemon's state (pure, local file I/O).
 
-The daemon does not need to be running for project.yaml, the legacy kit, or
-secrets to migrate. The workspace's content is always applied to the
-workspaces DB table: if the daemon is reachable, --apply applies it there
-over HTTP — a brand-new workspace slug is created (POST /api/workspaces),
-and a slug that already exists has its current content merged with the
-migrated fields and updated in place (existing content is preserved;
-migration-sourced values win on a key collision). If the daemon isn't
-running (e.g. boid start --auto-migrate, which runs this after the daemon
-has already failed to start), the same merge is applied directly to the
-database instead. Either way, a reviewable yaml file is also written, and
-can still be applied by hand if wanted:
+By default, --apply does NOT push the migrated workspace content to any
+daemon — compose is the only supported daemon shape now (docs/plans/
+release-onboarding.md), and a direct database write only ever made sense
+for a bare-metal daemon sharing this host's filesystem. Apply the printed
+shadow file yourself instead, through the daemon's own API:
   boid workspace create <slug> --from-file <file>  (brand-new slug)
   boid workspace edit <slug> --from-file <file>    (slug already exists)
+
+Pass --legacy-bare-metal together with --apply for a genuine pre-compose,
+bare-metal-only migration with no compose daemon involved at all: this
+additionally pushes the workspace content directly — over HTTP if a
+(bare-metal) daemon answers client.DefaultSocketPath(), or straight into
+its boid.db otherwise.
 
 Secret migration copies secrets from the old namespace (secret_namespace field)
 to the workspace namespace. Use --on-collision to control behaviour when a
@@ -109,12 +111,18 @@ func init() {
 	projectMigrateCmd.Flags().StringVar(&migrateWorkspace, "workspace", "", "Workspace slug to assign (required if no existing project_workspaces entry)")
 	projectMigrateCmd.Flags().BoolVar(&migrateApply, "apply", false, "Actually perform the migration (default: dry-run)")
 	// --legacy-bare-metal (docs/plans/release-onboarding.md「project migrate
-	// → 要注意コマンド」, codex round-1 review of PR5 Major 2): required
-	// alongside --apply. See guardApply's own doc comment for why a
-	// reachability PROBE ("is a compose daemon answering right now") was
-	// rejected in favor of this static, unconditional refusal.
+	// → 要注意コマンド」, codex round-1/round-3 review of PR5): gates
+	// MigrateProjectOptions.SkipDaemonPush — see its own doc comment and
+	// printApplyModeNote's. --apply itself is ALWAYS allowed (round-3
+	// review Blocker: refusing it outright broke the compose-safe
+	// migration path entirely, since dry-run never writes anything); this
+	// flag only controls whether --apply additionally attempts to push
+	// the migrated workspace straight to a daemon (a reachability probe,
+	// then — on a miss — a direct write to whatever boid.db sits at this
+	// HOST's own XDG data dir, which only ever made sense for a
+	// bare-metal daemon sharing this host's filesystem).
 	projectMigrateCmd.Flags().BoolVar(&migrateLegacyBareMetal, "legacy-bare-metal", false,
-		"Acknowledge this is a legacy bare-metal migration with no compose daemon involved at all; required together with --apply (docs/plans/release-onboarding.md) — --apply's direct-DB-write fallback is refused by default now that compose is the only supported daemon shape")
+		"Acknowledge this is a legacy bare-metal migration with no compose daemon involved at all; together with --apply, also pushes the migrated workspace directly to a daemon (socket ping, falling back to a direct boid.db write) instead of skipping that step by default (docs/plans/release-onboarding.md)")
 	projectMigrateCmd.Flags().StringVar(&migrateOnCollision, "on-collision", "refuse", "How to handle secret key collisions: refuse (default), skip, overwrite")
 	projectMigrateCmd.Flags().StringVar(&migrateDBPath, "db-path", "", "Path to the SQLite database (default: XDG data dir)")
 	projectMigrateCmd.Flags().StringVar(&migrateKeyFilePath, "key-file-path", "", "Path to the secret key file (default: XDG data dir)")
@@ -210,6 +218,23 @@ type MigrateProjectOptions struct {
 	// the defaults so production callers can pass zero-value options.
 	DBPath      string
 	KeyFilePath string
+	// SkipDaemonPush (docs/plans/release-onboarding.md 決定2/PR5, codex
+	// round-3 review Blocker): when true, Apply still performs every
+	// LOCAL, deterministic write (project.yaml rewrite, the workspace
+	// shadow yaml, the legacy kit.yaml) but skips
+	// pushMigratedWorkspaceToDaemon entirely — no db.Open, no socket
+	// ping, no HTTP call to any daemon at all. That is the one step
+	// whose "reach a daemon, or fall back to opening a boid.db directly
+	// on this host" shape only ever made sense for a bare-metal daemon
+	// sharing this host's filesystem (codex round-1 review Major 2's
+	// concern: probing reachability first is a race, and even a correct
+	// probe cannot tell "no daemon at all" apart from "a compose
+	// daemon's real DB is a volume I cannot see"). runProjectMigrate
+	// (the CLI entry point) sets this to true by default and false only
+	// when --legacy-bare-metal is passed alongside --apply; direct Go
+	// callers (tests) get the zero value (false = push, today's
+	// pre-existing behavior) unless they opt in explicitly.
+	SkipDaemonPush bool
 	// Out receives the dry-run / progress text. nil → io.Discard.
 	Out io.Writer
 }
@@ -322,7 +347,7 @@ func MigrateProject(opts MigrateProjectOptions) error {
 		return nil
 	}
 
-	if err := applyMigratePlan(plan, boidDB, opts.KeyFilePath, onCollision, out); err != nil {
+	if err := applyMigratePlan(plan, boidDB, opts.KeyFilePath, onCollision, opts.SkipDaemonPush, out); err != nil {
 		return fmt.Errorf("migrate: apply: %w", err)
 	}
 
@@ -339,62 +364,49 @@ func runProjectMigrate(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("resolve dir: %w", err)
 	}
 	if migrateApply {
-		if err := guardApply(cmd.ErrOrStderr(), migrateLegacyBareMetal); err != nil {
-			return err
-		}
+		printApplyModeNote(cmd.ErrOrStderr(), migrateLegacyBareMetal)
 	}
 	return MigrateProject(MigrateProjectOptions{
-		Dir:         dir,
-		Workspace:   migrateWorkspace,
-		Apply:       migrateApply,
-		OnCollision: migrateOnCollision,
-		DBPath:      migrateDBPath,
-		KeyFilePath: migrateKeyFilePath,
-		Out:         cmd.OutOrStdout(),
+		Dir:            dir,
+		Workspace:      migrateWorkspace,
+		Apply:          migrateApply,
+		OnCollision:    migrateOnCollision,
+		DBPath:         migrateDBPath,
+		KeyFilePath:    migrateKeyFilePath,
+		SkipDaemonPush: !migrateLegacyBareMetal,
+		Out:            cmd.OutOrStdout(),
 	})
 }
 
-// guardApply implements docs/plans/release-onboarding.md's「project
-// migrate → 要注意コマンド」guidance for `boid project migrate <dir>
-// --apply`: --apply's pushMigratedWorkspaceToDaemon (below) pings
-// client.DefaultSocketPath() and, on a miss, falls back to
-// db.Open(migrateDBPath-or-defaultDBPath()) — a direct read/write against
-// whatever boid.db sits at this HOST's own XDG data dir. That design
-// predates the compose daemon: under it, the real boid.db lives inside the
-// boid_state NAMED VOLUME, invisible from this process, so a fallback write
-// lands in a separate, daemon-unread database (a fresh one, or a bare-metal
-// installation's stale leftover) and silently fails to apply anything a
-// live compose daemon will ever see.
+// printApplyModeNote implements docs/plans/release-onboarding.md's
+// 「project migrate → 要注意コマンド」 guidance for `boid project migrate
+// <dir> --apply` (codex round-1/round-3 review, PR5): announces which of
+// the two apply modes this invocation is about to run, so the behavior
+// difference (daemon push skipped vs. attempted) is never a silent
+// surprise.
 //
-// Refuses --apply UNCONDITIONALLY unless legacyBareMetal (--legacy-bare-
-// metal) is also set — codex round-1 review of PR5, Major 2: an earlier
-// revision of this guard only refused when a compose daemon answered a
-// live reachability probe (hostModeHealthy against the authenticated CLI
-// listener) RIGHT NOW, which is exactly the race the plan doc's own
-// "container環境検出" wording invites — a compose stack that is merely
-// stopped at the moment --apply runs (daemon restart, host reboot before
-// `boid start`, ...) is not proof there is no compose deployment at all,
-// yet the probe would report "unreachable" and silently let --apply fall
-// through to the dangerous host-DB write. Since 決定2 makes compose the
-// ONLY supported daemon shape, the safe default is now unconditional: no
-// probe, no race, --apply always requires the explicit
-// --legacy-bare-metal acknowledgment to proceed at all. A genuine
-// pre-compose bare-metal migration (the one case this command's direct-
-// DB-write path is still legitimate for) passes it deliberately; every
-// other caller gets pointed at `boid workspace create/edit --from-file`
-// instead, which goes through the daemon's own API and therefore always
-// lands wherever the daemon (compose or otherwise) actually reads from.
-func guardApply(stderr io.Writer, legacyBareMetal bool) error {
-	fmt.Fprintln(stderr, "warning: `boid project migrate --apply` is a legacy migration path pre-dating the compose daemon (docs/plans/release-onboarding.md); prefer `boid workspace create/edit <slug> --from-file <file>` against the reviewable yaml this dry-run writes.")
-
+// docs/plans/release-onboarding.md history: an earlier revision of this
+// function (guardApply) REFUSED --apply outright unless --legacy-bare-
+// metal was also passed — codex round-3 review Blocker found that broke
+// the ENTIRE compose-safe recovery path documented in
+// internal/orchestrator/spec_loader.go's migrationGuidance: dry-run
+// (no --apply) never writes project.yaml or a shadow file at all
+// (runProjectMigrate below returns before Phase 4 without --apply), so
+// there was no way left to produce the `--from-file <file>` the guidance
+// pointed users at without ALSO tripping the refusal. The fix keeps
+// --apply always allowed — it still only ever performs local,
+// deterministic file writes (project.yaml, the workspace shadow yaml,
+// the legacy kit.yaml) regardless of this flag — and narrows what
+// --legacy-bare-metal actually gates to MigrateProjectOptions.
+// SkipDaemonPush: whether the ONE genuinely daemon-topology-dependent
+// step (pushMigratedWorkspaceToDaemon's reachability-probe-then-
+// direct-DB-write) also runs.
+func printApplyModeNote(stderr io.Writer, legacyBareMetal bool) {
 	if legacyBareMetal {
-		return nil
+		fmt.Fprintln(stderr, "note: --legacy-bare-metal set — this will also attempt to push the migrated workspace directly to a daemon (socket ping, falling back to opening boid.db on this host if unreachable). Only pass this for a genuine pre-compose, bare-metal-only migration with no compose daemon involved at all.")
+		return
 	}
-	return fmt.Errorf(
-		"boid project migrate --apply is refused by default now that compose is the only supported daemon shape (docs/plans/release-onboarding.md 決定2): its fallback path can write directly to this host's own boid.db, which a compose daemon never reads (its real database lives inside the boid_state volume) — and this cannot be safely detected by probing whether a compose daemon merely happens to answer right now. " +
-			"Re-run without --apply (this still rewrites project.yaml and prints a reviewable workspace yaml), then apply the workspace content through the daemon's own API instead: " +
-			"`boid workspace create <slug> --from-file <file>` (new slug) or `boid workspace edit <slug> --from-file <file>` (existing slug). " +
-			"If this genuinely is a pre-compose, bare-metal-only migration with no compose daemon involved at all, pass --legacy-bare-metal together with --apply to proceed.")
+	fmt.Fprintln(stderr, "note: `boid project migrate --apply` rewrites project.yaml and writes a reviewable workspace shadow yaml, but does NOT push to any daemon by default now that compose is the only supported daemon shape (docs/plans/release-onboarding.md) — apply the printed shadow file yourself via `boid workspace create/edit --from-file`, or pass --legacy-bare-metal to push directly to a bare-metal daemon's DB/socket instead.")
 }
 
 // errProjectNotFound is a helper to detect "not found" errors from GetProject.
@@ -821,7 +833,7 @@ func printMigratePlan(out io.Writer, plan *migratePlan, apply bool) {
 // applyMigratePlan executes the migration plan: writes workspace.yaml, legacy
 // kit.yaml, updates project.yaml, and copies secrets. onCollision and out
 // are forwarded to migrateSecrets when a secret namespace move is needed.
-func applyMigratePlan(plan *migratePlan, boidDB *db.DB, keyFilePath, onCollision string, out io.Writer) error {
+func applyMigratePlan(plan *migratePlan, boidDB *db.DB, keyFilePath, onCollision string, skipDaemonPush bool, out io.Writer) error {
 	wsStore := orchestrator.NewWorkspaceStore("")
 
 	// 1. Write legacy kit.yaml *before* touching the daemon at all (step 2
@@ -867,6 +879,23 @@ func applyMigratePlan(plan *migratePlan, boidDB *db.DB, keyFilePath, onCollision
 	}
 	if shadowPath, err := workspaceShadowPath(plan.workspaceSlug); err != nil {
 		fmt.Fprintf(out, "warning: could not resolve workspace shadow path: %v\n", err)
+	} else if skipDaemonPush {
+		// docs/plans/release-onboarding.md 決定2/PR5, codex round-3 review
+		// Blocker: pushMigratedWorkspaceToDaemon is the one step whose
+		// "reach a daemon, or fall back to opening a boid.db directly on
+		// this host" shape only made sense for a bare-metal daemon
+		// sharing this host's filesystem — under the compose daemon the
+		// fallback silently targets a database the running daemon does
+		// not read. Skipped entirely by default (runProjectMigrate sets
+		// SkipDaemonPush unless --legacy-bare-metal is passed); the
+		// shadow file written just above is the safe, deterministic
+		// hand-off artifact instead. Every OTHER local write (legacy
+		// kit.yaml above, project.yaml below) still happens — those are
+		// pure host-local file I/O with no daemon topology dependency at
+		// all, so there is nothing racy or dangerous about doing them
+		// unconditionally.
+		fmt.Fprintf(out, "\nworkspace %q written to the (daemon-unread) shadow file only — daemon push skipped by default now that compose is the only supported daemon shape:\n", plan.workspaceSlug)
+		fmt.Fprint(out, shadowFileApplyHintBothCases(shadowPath, plan.workspaceSlug))
 	} else if err := pushMigratedWorkspaceToDaemon(plan, boidDB, shadowPath, out); err != nil {
 		// MAJOR 2 (codex review, docs/plans/workspace-db-consolidation.md):
 		// a host_commands definition conflict is not a best-effort

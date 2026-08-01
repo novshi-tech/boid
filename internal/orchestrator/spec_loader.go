@@ -219,23 +219,35 @@ var removedTopLevelKeys = []string{
 }
 
 // migrationGuidance returns the multi-line guidance block for removed-key
-// errors. docs/plans/release-onboarding.md 決定2/PR5 (codex round-2 review
-// Major 1): step 2 used to say "re-run with --apply" — that instruction
-// broke the moment `boid project migrate --apply` started refusing by
-// default (guardApply, cmd/project_migrate.go) now that compose is the
-// only supported daemon shape and --apply's direct-DB-write fallback can
-// silently miss it. The guidance now matches guardApply's own escape
-// hatch: apply the printed workspace yaml through the daemon's own API
-// (`boid workspace create/edit --from-file`), same as any other
-// scope=remote command, with --apply/--legacy-bare-metal called out only
-// as the legacy, pre-compose fallback.
+// errors. docs/plans/release-onboarding.md 決定2/PR5:
+//
+//   - codex round-2 review Major 1: step 2 used to say "re-run with
+//     --apply" — broken the moment `boid project migrate --apply` started
+//     refusing outright by default.
+//   - codex round-3 review Blocker: the fix for THAT (an earlier revision
+//     of this guidance) said step 1 was a plain dry-run (no --apply) that
+//     "rewrites project.yaml, prints a workspace yaml" — but dry-run
+//     (runProjectMigrate/MigrateProject, cmd/project_migrate.go) never
+//     writes anything at all; only --apply does. Following the guidance
+//     literally left no file on disk for step 2's `--from-file <file>` to
+//     point at.
+//
+// The guidance below matches what --apply ACTUALLY does now
+// (cmd/project_migrate.go's applyMigratePlan +
+// MigrateProjectOptions.SkipDaemonPush): step 1 uses --apply itself —
+// safe to run unconditionally, since without --legacy-bare-metal it only
+// ever performs local, deterministic file writes (project.yaml, the
+// workspace shadow yaml, the legacy kit.yaml) and skips the one
+// daemon-topology-dependent step (pushMigratedWorkspaceToDaemon)
+// entirely. Step 2 then applies that real, on-disk shadow file through
+// the daemon's own API, same as any other scope=remote command.
 func migrationGuidance(dir string) string {
 	return "Migration:\n" +
-		"  1) Run: boid project migrate " + dir + "           (dry-run; rewrites project.yaml, prints a workspace yaml)\n" +
-		"  2) Apply the printed workspace yaml through the daemon's own API:\n" +
+		"  1) Run: boid project migrate " + dir + " --apply           (rewrites project.yaml; writes a reviewable workspace shadow yaml — does NOT push to any daemon by default)\n" +
+		"  2) Apply the shadow yaml (path printed by step 1) through the daemon's own API:\n" +
 		"       boid workspace create <slug> --from-file <file>   (new slug)\n" +
 		"       boid workspace edit   <slug> --from-file <file>   (existing slug)\n" +
-		"     (legacy bare-metal only, no compose daemon involved at all: re-run step 1 with --apply --legacy-bare-metal)\n" +
+		"     (legacy bare-metal only, no compose daemon involved at all: also pass --legacy-bare-metal to step 1, to push directly instead)\n" +
 		"See docs/ja/guide/migration.md for details."
 }
 

@@ -20,14 +20,14 @@ func TestProjectMigrationError_SingleIssueByteIdentical(t *testing.T) {
 			`project.yaml: top-level "host_commands" is no longer supported.`,
 		},
 	}
-want := `project.yaml: top-level "kits" is no longer supported.
+	want := `project.yaml: top-level "kits" is no longer supported.
 project.yaml: top-level "host_commands" is no longer supported.
 Migration:
-  1) Run: boid project migrate ` + dir + `           (dry-run; rewrites project.yaml, prints a workspace yaml)
-  2) Apply the printed workspace yaml through the daemon's own API:
+  1) Run: boid project migrate ` + dir + ` --apply           (rewrites project.yaml; writes a reviewable workspace shadow yaml — does NOT push to any daemon by default)
+  2) Apply the shadow yaml (path printed by step 1) through the daemon's own API:
        boid workspace create <slug> --from-file <file>   (new slug)
        boid workspace edit   <slug> --from-file <file>   (existing slug)
-     (legacy bare-metal only, no compose daemon involved at all: re-run step 1 with --apply --legacy-bare-metal)
+     (legacy bare-metal only, no compose daemon involved at all: also pass --legacy-bare-metal to step 1, to push directly instead)
 See docs/ja/guide/migration.md for details.`
 
 	got := FormatMigrationIssue(issue)

@@ -95,11 +95,13 @@ func invokeMigrate(t *testing.T, dir string, opts migrateOpts) error {
 	// Set global flag vars.
 	migrateWorkspace = opts.workspace
 	migrateApply = opts.apply
-	// guardApply (codex round-1 review of PR5, Major 2) refuses --apply
-	// unconditionally unless --legacy-bare-metal is also set. These tests
-	// exercise MigrateProject's actual apply/DB-merge machinery, not the
-	// guard itself (TestGuardApply_* above cover that directly), so opt
-	// into the escape hatch whenever the test asked for --apply at all.
+	// runProjectMigrate wires SkipDaemonPush to !migrateLegacyBareMetal
+	// (docs/plans/release-onboarding.md 決定2/PR5, codex round-1/round-3
+	// review): without --legacy-bare-metal, --apply skips
+	// pushMigratedWorkspaceToDaemon entirely. These tests exercise that
+	// push/DB-merge machinery itself (TestApplyModeNote_* below cover the
+	// note-printing/flag-plumbing behavior directly), so opt into the
+	// escape hatch whenever the test asked for --apply at all.
 	migrateLegacyBareMetal = opts.apply
 	migrateOnCollision = "refuse"
 	if opts.onCollision != "" {
@@ -1738,39 +1740,96 @@ func TestShadowFileApplyHintBothCases(t *testing.T) {
 	}
 }
 
-// --- guardApply (docs/plans/release-onboarding.md「project migrate →
-// 要注意コマンド」, PR5; codex round-1 review Major 2 rewrote this from a
-// live compose-daemon reachability PROBE to an unconditional refusal —
-// see guardApply's own doc comment for why the probe was a race) ---
+// --- printApplyModeNote / SkipDaemonPush (docs/plans/
+// release-onboarding.md「project migrate → 要注意コマンド」, PR5; codex
+// round-3 review Blocker rewrote an earlier revision's unconditional
+// --apply REFUSAL — which broke migrationGuidance's own recovery
+// instructions entirely, since dry-run never writes project.yaml or a
+// shadow file at all — into this: --apply is always allowed and always
+// performs its local, deterministic writes; --legacy-bare-metal only
+// gates the one genuinely daemon-topology-dependent step,
+// pushMigratedWorkspaceToDaemon) ---
 
-// TestGuardApply_WithoutLegacyBareMetal_RefusesUnconditionally pins the
-// safe default: --apply without --legacy-bare-metal is refused
-// regardless of whether a compose daemon happens to be reachable right
-// now — no probe, no race (Major 2's whole point).
-func TestGuardApply_WithoutLegacyBareMetal_RefusesUnconditionally(t *testing.T) {
+// TestApplyModeNote_WithoutLegacyBareMetal_ExplainsSkip pins the safe
+// default note text: --apply without --legacy-bare-metal proceeds (never
+// an error) but is told the daemon push will be skipped.
+func TestApplyModeNote_WithoutLegacyBareMetal_ExplainsSkip(t *testing.T) {
 	var stderr bytes.Buffer
-	err := guardApply(&stderr, false)
-	if err == nil {
-		t.Fatal("expected --apply to be refused without --legacy-bare-metal")
+	printApplyModeNote(&stderr, false)
+	if !strings.Contains(stderr.String(), "does NOT push to any daemon by default") {
+		t.Errorf("expected the skip-daemon-push note, got: %q", stderr.String())
 	}
-	if !strings.Contains(err.Error(), "--legacy-bare-metal") {
-		t.Errorf("error = %q, want it to mention the --legacy-bare-metal escape hatch", err.Error())
-	}
-	if !strings.Contains(stderr.String(), "legacy migration path") {
-		t.Errorf("expected the deprecation notice to still print before refusing, got: %q", stderr.String())
+	if !strings.Contains(stderr.String(), "--legacy-bare-metal") {
+		t.Errorf("expected the note to mention the --legacy-bare-metal escape hatch, got: %q", stderr.String())
 	}
 }
 
-// TestGuardApply_WithLegacyBareMetal_Proceeds pins the escape hatch: an
-// operator who explicitly acknowledges this is a pre-compose, bare-metal-
-// only migration (no compose daemon involved at all) can still opt back
-// into --apply's direct-DB-write path.
-func TestGuardApply_WithLegacyBareMetal_Proceeds(t *testing.T) {
+// TestApplyModeNote_WithLegacyBareMetal_ExplainsPush pins the escape
+// hatch's note text: --apply --legacy-bare-metal is told the daemon push
+// WILL be attempted.
+func TestApplyModeNote_WithLegacyBareMetal_ExplainsPush(t *testing.T) {
 	var stderr bytes.Buffer
-	if err := guardApply(&stderr, true); err != nil {
-		t.Fatalf("expected --apply --legacy-bare-metal to proceed, got: %v", err)
+	printApplyModeNote(&stderr, true)
+	if !strings.Contains(stderr.String(), "will also attempt to push") {
+		t.Errorf("expected the will-push note, got: %q", stderr.String())
 	}
-	if !strings.Contains(stderr.String(), "legacy migration path") {
-		t.Errorf("expected the deprecation notice to still print, got: %q", stderr.String())
+}
+
+// TestApplyMigratePlan_SkipDaemonPush_WritesShadowFileButNoPush is the
+// codex round-3 review Blocker regression test at the applyMigratePlan
+// level: with SkipDaemonPush=true (MigrateProject's own default posture
+// via runProjectMigrate, absent --legacy-bare-metal), --apply must still
+// rewrite project.yaml AND write the workspace shadow yaml FILE to disk —
+// migrationGuidance's own recovery instructions (`boid workspace create/
+// edit --from-file <file>`) are meaningless if that file never gets
+// written — while never touching a daemon/DB at all.
+func TestApplyMigratePlan_SkipDaemonPush_WritesShadowFileButNoPush(t *testing.T) {
+	dir := setupMigrateProject(t, testLegacyProjectYAML)
+	dbFile := setupMigrateDBFile(t)
+	cfgDir := t.TempDir()
+	dataDir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", cfgDir)
+	t.Setenv("XDG_DATA_HOME", dataDir)
+	// Pinned to an isolated, guaranteed-empty socket — SkipDaemonPush must
+	// mean pushMigratedWorkspaceToDaemon never even dials this, but pin it
+	// anyway so a bug here cannot silently touch the machine's real daemon.
+	t.Setenv("BOID_SOCKET", filepath.Join(t.TempDir(), "no-daemon-here.sock"))
+
+	var out bytes.Buffer
+	err := MigrateProject(MigrateProjectOptions{
+		Dir:            dir,
+		Workspace:      "skip-push-ws",
+		Apply:          true,
+		SkipDaemonPush: true,
+		DBPath:         dbFile,
+		Out:            &out,
+	})
+	if err != nil {
+		t.Fatalf("MigrateProject with SkipDaemonPush: %v", err)
+	}
+	if !strings.Contains(out.String(), "daemon push skipped") {
+		t.Errorf("expected the skip-daemon-push notice in Out, got:\n%s", out.String())
+	}
+	if strings.Contains(out.String(), "created directly in the database") ||
+		strings.Contains(out.String(), "created via daemon API") ||
+		strings.Contains(out.String(), "updated directly in the database") {
+		t.Errorf("expected NO daemon/DB push outcome text (pushMigratedWorkspaceToDaemon must never have run), got:\n%s", out.String())
+	}
+
+	// project.yaml must actually have been rewritten (removedTopLevelKeys
+	// stripped) — this is the "step 1" migrationGuidance now promises.
+	rewrittenYAML, err := os.ReadFile(filepath.Join(dir, ".boid", "project.yaml"))
+	if err != nil {
+		t.Fatalf("read rewritten project.yaml: %v", err)
+	}
+	if strings.Contains(string(rewrittenYAML), "env:") {
+		t.Errorf("expected project.yaml's legacy 'env' key to have been removed, got:\n%s", rewrittenYAML)
+	}
+
+	// The shadow workspace yaml FILE must exist on disk at the path
+	// migrationGuidance's `--from-file <file>` instruction depends on.
+	shadowPath := filepath.Join(cfgDir, "boid", "workspaces", "skip-push-ws.yaml")
+	if _, err := os.Stat(shadowPath); err != nil {
+		t.Errorf("expected the workspace shadow yaml to exist at %s: %v", shadowPath, err)
 	}
 }

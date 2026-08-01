@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/novshi-tech/boid/internal/client"
+	"github.com/spf13/cobra"
 )
 
 func TestDefaultAllowedDomains_IncludeCodexDomains(t *testing.T) {
@@ -405,6 +406,78 @@ exit 0
 	}
 	if !strings.Contains(string(logData), "up -d") {
 		t.Errorf("expected a `compose up -d` invocation despite BOID_NO_AUTOSTART=1; log:\n%s", string(logData))
+	}
+}
+
+// TestRefuseDaemonConfigFlagsWithoutForeground is the codex round-3 review
+// of PR5, Major 2 regression: --db-path/--socket-path/--kits-dir/
+// --key-file-path/--cli-addr only ever configure the actual daemon
+// process (buildStartConfig, read only on the --foreground/daemon-child
+// branch) — a plain, non-foreground `boid start` silently ignored them
+// after being redefined to "just run compose up", which could make a
+// script think it pointed the daemon at a specific --db-path when it
+// silently operated on the compose stack's own DB instead. Every such
+// flag must be named in the resulting error.
+func TestRefuseDaemonConfigFlagsWithoutForeground(t *testing.T) {
+	cmd := &cobra.Command{Use: "start"}
+	var dbPath, socketPath, kitsDir, keyFilePath, cliAddr string
+	cmd.Flags().StringVar(&dbPath, "db-path", "", "")
+	cmd.Flags().StringVar(&socketPath, "socket-path", "", "")
+	cmd.Flags().StringVar(&kitsDir, "kits-dir", "", "")
+	cmd.Flags().StringVar(&keyFilePath, "key-file-path", "", "")
+	cmd.Flags().StringVar(&cliAddr, "cli-addr", "", "")
+
+	if err := refuseDaemonConfigFlagsWithoutForeground(cmd); err != nil {
+		t.Fatalf("expected no error when no flags are set, got: %v", err)
+	}
+
+	if err := cmd.Flags().Set("db-path", "/tmp/custom.db"); err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Flags().Set("cli-addr", "127.0.0.1:9999"); err != nil {
+		t.Fatal(err)
+	}
+	err := refuseDaemonConfigFlagsWithoutForeground(cmd)
+	if err == nil {
+		t.Fatal("expected an error when --db-path/--cli-addr are set without --foreground")
+	}
+	for _, want := range []string{"--db-path", "--cli-addr", "--foreground"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error should mention %q, got %q", want, err.Error())
+		}
+	}
+	if strings.Contains(err.Error(), "--socket-path") {
+		t.Errorf("error should not mention an unset flag, got %q", err.Error())
+	}
+}
+
+// TestRunStart_NonForeground_DBPathFlag_RefusesBeforeComposeUp pins the
+// same regression at runStart's own call site: setting --db-path on a
+// plain (non-foreground) `boid start` invocation must refuse BEFORE ever
+// reaching runComposeUp (no PATH fakes are set up here, so an attempt to
+// actually deploy would either hang trying real docker/podman or fail
+// with an unrelated error — neither of which this test's assertion would
+// accept).
+func TestRunStart_NonForeground_DBPathFlag_RefusesBeforeComposeUp(t *testing.T) {
+	t.Setenv("BOID_DAEMON_CHILD", "")
+	startForeground = false
+	t.Cleanup(func() { startForeground = false })
+
+	origDBPath := startDBPath
+	t.Cleanup(func() {
+		startDBPath = origDBPath
+		_ = startCmd.Flags().Set("db-path", origDBPath)
+	})
+	if err := startCmd.Flags().Set("db-path", "/tmp/custom.db"); err != nil {
+		t.Fatal(err)
+	}
+
+	err := runStart(startCmd, nil)
+	if err == nil {
+		t.Fatal("expected an error: --db-path set without --foreground on a non-foreground boid start")
+	}
+	if !strings.Contains(err.Error(), "--db-path") {
+		t.Errorf("expected the error to mention --db-path, got %v", err)
 	}
 }
 

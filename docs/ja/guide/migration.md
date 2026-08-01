@@ -32,9 +32,11 @@ boid project migrate ~/src/myproject --workspace dev --apply --on-collision skip
 6. `secret_namespace` が設定されていれば、 旧 namespace の secret を新 namespace (= workspace の slug そのもの) へコピーする。 **`secret_namespace` という別フィールドが workspace に生えるわけではない** — workspace は元々 slug 自体を secret のネームスペースとして使う設計であり、 移行が行うのは値のコピーだけ
 7. `project.yaml` を新スキーマで書き直す (dry-run のときは何も書き換えない)
 
-### workspace への反映 (daemon が動いている場合)
+### workspace への反映
 
-`--apply` は上記の変換結果をローカルの shadow yaml (`~/.config/boid/workspaces/<slug>.yaml`、 daemon が二度と読まない reviewable なアーティファクト) に書くだけでなく、 **動いている daemon の DB にも反映を試みます** (`pushMigratedWorkspaceToDaemon`):
+**2026-08 (release-onboarding PR5) 以降、 `--apply` は既定では daemon への反映を試みません。** compose が唯一の daemon 形態になったため (`docs/plans/release-onboarding.md` 決定2)、 `--apply` は project.yaml の書き換えと shadow yaml (`~/.config/boid/workspaces/<slug>.yaml`) の書き出しのみを行い、 反映は下記の手動手順 (`boid workspace create/edit --from-file`) に委ねられます。
+
+bare-metal daemon (compose を使わない旧来の単体プロセス) を直接操作している場合に限り、 `--apply --legacy-bare-metal` を指定すると以下の daemon 反映 (`pushMigratedWorkspaceToDaemon`) が有効になります:
 
 - workspace slug が daemon にまだ無い場合: `POST /api/workspaces` で新規作成する
 - 既存 slug の場合: 現在の内容を `GET /api/workspaces/<slug>` で取得し、 今回の migration が生成したフィールドとマージした上で `PUT /api/workspaces/<slug>` (`If-Match: <revision>`) で書き戻す (`mergeLegacyFieldsIntoWorkspace`)。 **マージの優先順位は「migration 側 (project.yaml から生成された値) が優先」** — `env` は同一キーなら migration 側の新値で上書き、 `capabilities.docker` は project.yaml 側が設定していれば上書きする。 legacy kit が生成された場合の `host_commands` (参照名) は union (既存の値を消さない)、 `additional_bindings` は Source が一致すれば migration 側が上書きする。 それ以外の既存フィールドはそのまま保持される

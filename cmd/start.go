@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 
 	"github.com/novshi-tech/boid/internal/client"
@@ -381,7 +382,42 @@ func runStart(cmd *cobra.Command, args []string) error {
 		return runDaemonChild(cfg)
 	}
 
+	// codex round-3 review of PR5, Major 2: --db-path/--socket-path/
+	// --kits-dir/--key-file-path/--cli-addr only ever configure the
+	// ACTUAL daemon process (buildStartConfig, read above only on the
+	// --foreground/daemon-child branch) — the compose stack's own
+	// daemon config comes from build/container/compose.yml's own env
+	// wiring instead, which this non-foreground "just run compose up"
+	// path has no way to forward these flags into at all. Silently
+	// accepting and ignoring them would be actively misleading: a script
+	// that used to pass e.g. --db-path against a bare-metal `boid start`
+	// would now appear to succeed while operating on a compose stack
+	// that never saw that flag, silently touching the WRONG database.
+	// Fail loudly instead.
+	if err := refuseDaemonConfigFlagsWithoutForeground(cmd); err != nil {
+		return err
+	}
+
 	return runComposeUp(cmd.Context(), client.DefaultCLIAddr())
+}
+
+// refuseDaemonConfigFlagsWithoutForeground reports an error naming every
+// explicitly-set daemon-process-config flag when startForeground is
+// false — see runStart's own call site for the full rationale (codex
+// round-3 review of PR5, Major 2).
+func refuseDaemonConfigFlagsWithoutForeground(cmd *cobra.Command) error {
+	var set []string
+	for _, name := range []string{"db-path", "socket-path", "kits-dir", "key-file-path", "cli-addr"} {
+		if f := cmd.Flags().Lookup(name); f != nil && f.Changed {
+			set = append(set, "--"+name)
+		}
+	}
+	if len(set) == 0 {
+		return nil
+	}
+	return fmt.Errorf(
+		"boid start: %s only configure the actual daemon process (compose.yml's own env wiring does that for the compose stack) and have no effect on a plain `boid start` (which now just runs compose up) — pass --foreground (or set BOID_DAEMON_CHILD=1) if you are directly supervising the daemon process yourself, or drop %s and rely on compose.yml's config instead",
+		strings.Join(set, ", "), strings.Join(set, ", "))
 }
 
 // shouldRunForeground reports whether runStart should skip the
