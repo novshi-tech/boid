@@ -947,10 +947,12 @@ func shadowFileApplyHintBothCases(shadowPath, slug string) string {
 // single liveness check (daemon.IsSocketAlive against
 // client.DefaultSocketPath()) up front — MAJOR 1 (codex review,
 // docs/plans/workspace-db-consolidation.md). This matters because `boid
-// start --auto-migrate` (cmd/start.go's runDaemonParent ->
-// handleMigrationFailure -> runAutoMigrate) calls MigrateProject in-process
-// specifically because the daemon it just tried to start FAILED to start —
-// so for that caller the daemon is *never* reachable, and before this fix
+// start --auto-migrate` (cmd/start_automigrate.go's handleMigrationFailure
+// -> runAutoMigrate — historically invoked from the now-removed bare-metal
+// runDaemonParent respawn loop, docs/plans/release-onboarding.md 決定2/PR5)
+// calls MigrateProject in-process specifically because the daemon it just
+// tried to start FAILED to start — so for that caller the daemon is
+// *never* reachable, and before this fix
 // the HTTP-only push always took the "could not reach the boid daemon"
 // warning branch there, silently no-op'ing the one thing (the `workspaces`
 // row) --apply is supposed to guarantee gets applied.

@@ -2,14 +2,12 @@ package cmd
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
 	"os"
 	"os/signal"
 	"path/filepath"
 	"syscall"
-	"time"
 
 	"github.com/novshi-tech/boid/internal/client"
 	"github.com/novshi-tech/boid/internal/config"
@@ -17,7 +15,6 @@ import (
 	"github.com/novshi-tech/boid/internal/selfuser"
 	"github.com/novshi-tech/boid/internal/server"
 	"github.com/spf13/cobra"
-	"golang.org/x/term"
 )
 
 const (
@@ -54,8 +51,6 @@ const (
 	// story (Blocker, codex round-6 review: BOID_LOG_STDOUT alone is not
 	// a safe container marker on its own).
 	defaultContainerStartHTTPAddr = "0.0.0.0:8080"
-
-	daemonSocketTimeout = 10 * time.Second
 )
 
 // containerSentinelPaths are files a container RUNTIME itself creates
@@ -445,209 +440,18 @@ func runComposeUp(ctx context.Context, addr string) error {
 	return nil
 }
 
-// runDaemonParent's own bare-metal double-fork daemon spawn is no longer
-// reachable from runStart as of docs/plans/release-onboarding.md 決定2/PR5
-// (compose is the only daemon shape now; runStart's non-foreground branch
-// calls runComposeUp instead). Left in place — along with
-// spawnAndWaitForStartup/handleMigrationFailure/formatNonMigrationFailure
-// below, which still have direct unit coverage — as the bare-metal
-// spawn/migration-retry implementation, in case a future PR wants it back
-// (e.g. a `boid start --bare-metal` escape hatch) rather than deleting and
-// re-deriving it; out of scope for PR5 to excise.
-//
-// runDaemonParent spawns the daemon child and waits on three concurrent
-// signals via a select loop:
-//
-//  1. socket up         — daemon listening, startup succeeded
-//  2. fd 3 status pipe  — EOF (= success) or structured JSON (= failure)
-//  3. child liveness    — child exited without writing fd 3 (crash)
-//
-// On structured migration failure, the parent invokes
-// handleMigrationFailure which (subject to --auto-migrate or TTY prompt)
-// runs `boid project migrate <dir> --apply` in-process for each project
-// and respawns the daemon at most once. On any other failure (or if
-// migrate auto-resolution declines or fails), the cause is surfaced
-// directly to the user — no boid.log grep needed.
-func runDaemonParent(cfg server.Config) error {
-	// 既存サーバが生きていれば二重起動を拒否する。socket ファイルが残って
-	// いるだけ (ECONNREFUSED) の場合は stale とみなし、子プロセスに clean up
-	// を任せる。
-	if daemon.IsSocketAlive(cfg.SocketPath, 500*time.Millisecond) {
-		return fmt.Errorf("boid server already running (socket: %s)", cfg.SocketPath)
-	}
-
-	logPath := daemon.LogFilePath()
-	retries := 0
-	for {
-		result, err := spawnAndWaitForStartup(cfg, logPath)
-		if err != nil {
-			return err
-		}
-		if result.success {
-			fmt.Printf("boid server started (pid: %d, socket: %s, http: %s)\n",
-				result.pid, cfg.SocketPath, cfg.HTTPAddr)
-			return nil
-		}
-		// userErr non-nil = no structured status; report and exit.
-		if result.userErr != nil {
-			return result.userErr
-		}
-		// Structured failure; branch on kind.
-		if result.status.Kind != daemon.StartupKindMigration {
-			return formatNonMigrationFailure(result.status, logPath)
-		}
-		// Migration failure → try to auto-resolve.
-		retry, herr := handleMigrationFailure(
-			os.Stderr,
-			os.Stdin,
-			result.status,
-			logPath,
-			startAutoMigrate,
-			term.IsTerminal(int(os.Stdin.Fd())),
-			defaultMigratePrompter,
-			MigrateProject,
-		)
-		if !retry {
-			return herr
-		}
-		if retries >= 1 {
-			return fmt.Errorf("daemon still failing after auto-migrate; check logs at %s", logPath)
-		}
-		retries++
-		// Loop back to respawn.
-	}
-}
-
-// startupResult is the outcome of one spawn → wait cycle.
-type startupResult struct {
-	success bool
-	pid     int
-	status  *daemon.StartupStatus // non-nil when the child wrote fd 3
-	userErr error                 // non-nil for environment-level failures (timeout, crash without status)
-}
-
-// spawnAndWaitForStartup spawns the daemon child and runs the four-way
-// select on socket / status / liveness / outer-timeout. Returns once one
-// of the wait paths resolves; cleans up its goroutines via the deferred
-// context cancel and statusR close.
-func spawnAndWaitForStartup(cfg server.Config, logPath string) (*startupResult, error) {
-	pid, statusR, err := daemon.Spawn(os.Args)
-	if err != nil {
-		return nil, fmt.Errorf("spawn daemon: %w", err)
-	}
-	defer statusR.Close()
-
-	// Channel for socket-readiness polling.
-	socketCh := make(chan error, 1)
-	go func() {
-		socketCh <- daemon.WaitForSocket(cfg.SocketPath, daemonSocketTimeout)
-	}()
-
-	// Channel for the structured startup status (fd 3 pipe).
-	type statusResult struct {
-		status *daemon.StartupStatus
-		err    error
-	}
-	resCh := make(chan statusResult, 1)
-	go func() {
-		s, err := daemon.ReadStartupStatus(statusR)
-		switch {
-		case errors.Is(err, daemon.ErrStartupOK):
-			resCh <- statusResult{}
-		case err != nil:
-			resCh <- statusResult{err: err}
-		default:
-			resCh <- statusResult{status: s}
-		}
-	}()
-
-	// Liveness probe: kill(pid, 0) returns ESRCH once the child exits.
-	livenessCtx, livenessCancel := context.WithCancel(context.Background())
-	defer livenessCancel()
-	deadCh := make(chan struct{}, 1)
-	go func() {
-		t := time.NewTicker(200 * time.Millisecond)
-		defer t.Stop()
-		for {
-			select {
-			case <-livenessCtx.Done():
-				return
-			case <-t.C:
-				proc, err := os.FindProcess(pid)
-				if err != nil {
-					deadCh <- struct{}{}
-					return
-				}
-				if err := proc.Signal(syscall.Signal(0)); err != nil {
-					deadCh <- struct{}{}
-					return
-				}
-			}
-		}
-	}()
-
-	// Outer timeout — backstop in case all three signals stall.
-	timeoutCh := time.After(daemonSocketTimeout + 5*time.Second)
-
-	for socketCh != nil || resCh != nil {
-		select {
-		case err := <-socketCh:
-			socketCh = nil
-			if err == nil {
-				return &startupResult{success: true, pid: pid}, nil
-			}
-			// socket polling timed out; wait for status/dead to give a
-			// more specific cause.
-		case res := <-resCh:
-			resCh = nil
-			if res.err != nil {
-				return &startupResult{
-					pid: pid,
-					userErr: fmt.Errorf("daemon startup status decode failed: %w (logs: %s)",
-						res.err, logPath),
-				}, nil
-			}
-			if res.status != nil {
-				return &startupResult{pid: pid, status: res.status}, nil
-			}
-			// EOF without payload → success; keep waiting on socket.
-		case <-deadCh:
-			return &startupResult{
-				pid: pid,
-				userErr: fmt.Errorf("daemon process exited unexpectedly (pid: %d); check logs at %s",
-					pid, logPath),
-			}, nil
-		case <-timeoutCh:
-			return &startupResult{
-				pid: pid,
-				userErr: fmt.Errorf("daemon did not start within %s (pid: %d); check logs at %s",
-					daemonSocketTimeout+5*time.Second, pid, logPath),
-			}, nil
-		}
-	}
-
-	return &startupResult{
-		pid: pid,
-		userErr: fmt.Errorf("daemon startup completed but socket %s never became reachable; check logs at %s",
-			cfg.SocketPath, logPath),
-	}, nil
-}
-
-// formatNonMigrationFailure renders a user-facing message for structured
-// startup failures that are NOT migration-related. Migration failures go
-// through handleMigrationFailure instead.
-func formatNonMigrationFailure(s *daemon.StartupStatus, logPath string) error {
-	switch s.Kind {
-	case daemon.StartupKindOther:
-		if s.Message == "" {
-			return fmt.Errorf("daemon startup failed (no detail); check logs at %s", logPath)
-		}
-		return fmt.Errorf("daemon startup failed: %s\nFull log: %s", s.Message, logPath)
-	default:
-		return fmt.Errorf("daemon reported unknown startup status kind %q; check logs at %s",
-			s.Kind, logPath)
-	}
-}
+// The bare-metal double-fork daemon spawn (parent/child fd3-status-pipe
+// protocol, migration-retry-on-respawn loop) that used to live here —
+// runDaemonParent/spawnAndWaitForStartup/formatNonMigrationFailure — is
+// removed as of docs/plans/release-onboarding.md 決定2/PR5: compose is the
+// only daemon shape now, and runStart's non-foreground branch calls
+// runComposeUp instead. handleMigrationFailure (cmd/start_automigrate.go)
+// and its own helpers survive this removal — they still have direct unit
+// coverage and remain the shared "run MigrateProject for every affected
+// project, subject to --auto-migrate/TTY prompt" implementation; only
+// their bare-metal RESPAWN caller is gone. If a future PR wants a
+// `boid start --bare-metal` escape hatch back, git history has the
+// removed implementation (this same file, pre-PR5).
 
 // runDaemonChild is executed by the daemon child process (BOID_DAEMON_CHILD=1).
 // It redirects stdin/stdout/stderr to the log file and detaches from the

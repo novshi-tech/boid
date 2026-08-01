@@ -1286,8 +1286,10 @@ additional_bindings:
 
 // ---------------------------------------------------------------------------
 // MAJOR 1 (codex review, 4th pass, docs/plans/workspace-db-consolidation.md):
-// `boid start --auto-migrate` (cmd/start.go's runDaemonParent ->
-// handleMigrationFailure -> runAutoMigrate) calls MigrateProject in-process
+// `boid start --auto-migrate` (cmd/start_automigrate.go's
+// handleMigrationFailure -> runAutoMigrate — historically invoked from the
+// now-removed bare-metal runDaemonParent respawn loop, docs/plans/
+// release-onboarding.md 決定2/PR5) calls MigrateProject in-process
 // specifically because the daemon it just tried to start FAILED to start —
 // so the daemon push is never reachable at that call site. Before this fix,
 // pushMigratedWorkspaceToDaemon's HTTP-only push always took the "could not
