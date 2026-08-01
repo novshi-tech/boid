@@ -27,11 +27,6 @@ on:
 
 permissions:
   contents: read
-  # docs/plans/release-onboarding.md 決定4 / PR3: needed for the
-  # container-image job's GHCR push. GITHUB_TOKEN's packages:write is
-  # sufficient for a public repo's first publish (the package inherits the
-  # repository's public visibility) — no extra secret is required.
-  packages: write
 
 jobs:
   unit:
@@ -133,6 +128,17 @@ jobs:
   container-image:
     name: Container image build
     runs-on: ubuntu-24.04
+    # docs/plans/release-onboarding.md 決定4 / PR3: job-scoped, not
+    # workflow-top-level (codex review of this PR, Major) — only this job's
+    # publish steps need packages:write, and top-level would have handed it
+    # to every job (unit/race/lint/e2e-container) including pull_request
+    # runs of this same job. GITHUB_TOKEN's write access covers publishing
+    # to a package this repo already owns; see the "Log in to GHCR" /
+    # "Push image to GHCR" steps' own comments for what it does NOT cover
+    # (initial visibility).
+    permissions:
+      contents: read
+      packages: write
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -241,10 +247,20 @@ jobs:
         # additionally publishes that tag as its own GHCR ref — this is
         # the ref decision 4 / the PR4 default-pull-ref switch will want.
         #
-        # The first publish of a package from a public repository via
-        # GITHUB_TOKEN inherits that repository's public visibility
-        # (decision 4's basis for not needing a manual "make public"
-        # step or a PAT with admin:packages scope).
+        # VISIBILITY CAVEAT (codex review of this PR, Blocker — corrects an
+        # earlier assumption in this comment): GITHUB_TOKEN's packages:write
+        # is enough to publish, but a brand-new GHCR package defaults to
+        # PRIVATE regardless of the source repo's visibility, and changing
+        # that requires admin:packages scope that GITHUB_TOKEN does not
+        # carry (a PAT or manual UI action is the only way). Decision 4's
+        # public requirement therefore is NOT fully automated by this job —
+        # the first time this pushes `ghcr.io/novshi-tech/boid-runner`, an
+        # org owner must flip that package's visibility to Public once via
+        # https://github.com/orgs/novshi-tech/packages/container/boid-runner/settings
+        # (or `gh api` with a PAT that has admin:packages). Every subsequent
+        # push keeps the visibility as-is, so this is a one-time step, not a
+        # recurring one — but it must happen before PR4 makes anonymous pull
+        # the default path, or that pull will 403/401.
         if: github.event_name == 'push'
         run: |
           set -euo pipefail
