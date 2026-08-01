@@ -129,7 +129,6 @@ var (
 	startKitsDir     string
 	startKeyFilePath string
 	startCLIAddr     string
-	startAutoMigrate bool
 	startForeground  bool
 )
 
@@ -143,8 +142,19 @@ func init() {
 	startCmd.Flags().StringVar(&startKitsDir, "kits-dir", "", "Base directory for installed kits")
 	startCmd.Flags().StringVar(&startKeyFilePath, "key-file-path", "", "Path to the secret encryption key file")
 	startCmd.Flags().StringVar(&startCLIAddr, "cli-addr", "", "host:port for the dedicated CLI TCP listener (docs/plans/volume-only-daemon.md §論点c; only bound when BOID_CLI_TOKEN is also set; default: client.DefaultCLIAddr(), \"127.0.0.1:8442\")")
-	startCmd.Flags().BoolVar(&startAutoMigrate, "auto-migrate", false,
-		"When project.yaml schema migration is needed, run `boid project migrate <dir> --apply` for each affected project automatically and respawn the daemon (skips the confirmation prompt on TTY too)")
+	// --auto-migrate (bare-metal double-fork respawn-after-migrate) is
+	// removed as of docs/plans/release-onboarding.md 決定2/PR5 (codex
+	// round-2 review Major 1): its only implementation, cmd/start_
+	// automigrate.go's handleMigrationFailure, was driven exclusively by
+	// the bare-metal parent/child fd3-status-pipe protocol
+	// (runDaemonParent, removed in this same PR) — a mechanism with no
+	// compose equivalent (a detached `compose up -d` container has no fd3
+	// pipe back to this CLI process to read a structured startup failure
+	// from at all), so there was no way to keep the flag wired to
+	// anything. Silently accepting and ignoring it would have been worse
+	// than removing it outright: an operator who typed --auto-migrate
+	// expecting the old auto-respawn behavior deserves a clear "no such
+	// flag" from cobra, not silent no-op behavior.
 	startCmd.Flags().BoolVar(&startForeground, "foreground", false,
 		"Run the daemon directly in this process, skipping the double-fork self-respawn — for a process supervisor (systemd Type=simple, a container entrypoint, ...) that already owns respawn/liveness. Equivalent to (and takes precedence over) setting BOID_DAEMON_CHILD=1, which remains supported for existing supervisor configs (build/container/compose.yml) that set the env var instead of passing this flag")
 	rootCmd.AddCommand(startCmd)
@@ -445,11 +455,18 @@ func runComposeUp(ctx context.Context, addr string) error {
 // runDaemonParent/spawnAndWaitForStartup/formatNonMigrationFailure — is
 // removed as of docs/plans/release-onboarding.md 決定2/PR5: compose is the
 // only daemon shape now, and runStart's non-foreground branch calls
-// runComposeUp instead. handleMigrationFailure (cmd/start_automigrate.go)
-// and its own helpers survive this removal — they still have direct unit
-// coverage and remain the shared "run MigrateProject for every affected
-// project, subject to --auto-migrate/TTY prompt" implementation; only
-// their bare-metal RESPAWN caller is gone. If a future PR wants a
+// runComposeUp instead. cmd/start_automigrate.go (handleMigrationFailure
+// and its helpers) is removed in the SAME PR (codex round-2 review Major
+// 1) rather than left behind as unreachable dead code with a broken
+// guidance string: its entire mechanism depended on reading a structured
+// startup-failure status back from a bare-metal-forked child over fd3 — a
+// pipe a detached `compose up -d` container has no equivalent of at all,
+// so there was no way to keep it wired to anything once runDaemonParent
+// (its sole caller) was gone. `boid project migrate <dir>` (no --apply)
+// followed by `boid workspace create/edit <slug> --from-file <file>`
+// remains the supported migration path for a schema issue a compose
+// daemon reports at startup (internal/orchestrator/spec_loader.go's
+// migrationGuidance, updated in the same commit). If a future PR wants a
 // `boid start --bare-metal` escape hatch back, git history has the
 // removed implementation (this same file, pre-PR5).
 

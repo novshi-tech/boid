@@ -218,11 +218,24 @@ var removedTopLevelKeys = []string{
 	"capabilities",
 }
 
-// migrationGuidance returns the multi-line guidance block for removed-key errors.
+// migrationGuidance returns the multi-line guidance block for removed-key
+// errors. docs/plans/release-onboarding.md 決定2/PR5 (codex round-2 review
+// Major 1): step 2 used to say "re-run with --apply" — that instruction
+// broke the moment `boid project migrate --apply` started refusing by
+// default (guardApply, cmd/project_migrate.go) now that compose is the
+// only supported daemon shape and --apply's direct-DB-write fallback can
+// silently miss it. The guidance now matches guardApply's own escape
+// hatch: apply the printed workspace yaml through the daemon's own API
+// (`boid workspace create/edit --from-file`), same as any other
+// scope=remote command, with --apply/--legacy-bare-metal called out only
+// as the legacy, pre-compose fallback.
 func migrationGuidance(dir string) string {
 	return "Migration:\n" +
-		"  1) Run: boid project migrate " + dir + "           (dry-run)\n" +
-		"  2) Confirm the plan, then re-run with --apply\n" +
+		"  1) Run: boid project migrate " + dir + "           (dry-run; rewrites project.yaml, prints a workspace yaml)\n" +
+		"  2) Apply the printed workspace yaml through the daemon's own API:\n" +
+		"       boid workspace create <slug> --from-file <file>   (new slug)\n" +
+		"       boid workspace edit   <slug> --from-file <file>   (existing slug)\n" +
+		"     (legacy bare-metal only, no compose daemon involved at all: re-run step 1 with --apply --legacy-bare-metal)\n" +
 		"See docs/ja/guide/migration.md for details."
 }
 

@@ -882,14 +882,11 @@ var workspaceRemoveForce bool
 
 // workspaceRemoveConfirmPrompt reads the y/N answer to `workspace remove`'s
 // home-directory deletion confirmation. A package-level var (rather than a
-// direct call) so tests can stub it without a real TTY — mirrors
-// cmd/start_automigrate.go's autoMigratePrompter injection for the same
-// reason.
+// direct call) so tests can stub it without a real TTY.
 var workspaceRemoveConfirmPrompt = defaultWorkspaceRemoveConfirmPrompt
 
 // defaultWorkspaceRemoveConfirmPrompt reads a y/N answer from in. Anything
-// other than "y"/"yes" (case-insensitive) is treated as decline, mirroring
-// cmd/start_automigrate.go's defaultMigratePrompter convention.
+// other than "y"/"yes" (case-insensitive) is treated as decline.
 func defaultWorkspaceRemoveConfirmPrompt(in io.Reader) (bool, error) {
 	sc := bufio.NewScanner(in)
 	if !sc.Scan() {
