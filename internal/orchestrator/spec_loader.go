@@ -224,30 +224,38 @@ var removedTopLevelKeys = []string{
 //   - codex round-2 review Major 1: step 2 used to say "re-run with
 //     --apply" — broken the moment `boid project migrate --apply` started
 //     refusing outright by default.
-//   - codex round-3 review Blocker: the fix for THAT (an earlier revision
-//     of this guidance) said step 1 was a plain dry-run (no --apply) that
-//     "rewrites project.yaml, prints a workspace yaml" — but dry-run
-//     (runProjectMigrate/MigrateProject, cmd/project_migrate.go) never
-//     writes anything at all; only --apply does. Following the guidance
-//     literally left no file on disk for step 2's `--from-file <file>` to
-//     point at.
+//   - codex round-3 review Blocker: the fix for THAT said step 1 was a
+//     plain dry-run (no --apply) that "rewrites project.yaml, prints a
+//     workspace yaml" — but dry-run never writes anything at all; only
+//     --apply does. Following the guidance literally left no file on
+//     disk for step 2's `--from-file <file>` to point at.
+//   - codex round-4 review Blocker: the fix for THAT recommended
+//     `boid workspace create/edit --from-file <shadow-yaml>` as the
+//     manual step-2 fallback — but `workspace edit --from-file` on an
+//     EXISTING slug is a full REPLACE (cmd/workspace.go), and the shadow
+//     yaml only knows the migration's OWN delta, not fields the daemon
+//     might already have set (container_image, allowed_domains, ...).
+//     Following that guidance for an existing workspace could silently
+//     drop them.
 //
 // The guidance below matches what --apply ACTUALLY does now
-// (cmd/project_migrate.go's applyMigratePlan +
-// MigrateProjectOptions.SkipDaemonPush): step 1 uses --apply itself —
-// safe to run unconditionally, since without --legacy-bare-metal it only
-// ever performs local, deterministic file writes (project.yaml, the
-// workspace shadow yaml, the legacy kit.yaml) and skips the one
-// daemon-topology-dependent step (pushMigratedWorkspaceToDaemon)
-// entirely. Step 2 then applies that real, on-disk shadow file through
-// the daemon's own API, same as any other scope=remote command.
+// (cmd/project_migrate.go's applyMigratePlan + pushMigratedWorkspaceToDaemon):
+// when a daemon is reachable (true whenever a compose daemon is actually
+// up — client.DefaultSocketPath() is the same host-visible bind mount
+// pre-PR5 gc/project-reload relied on), --apply automatically performs the
+// SAFE merge (GET current content → merge → PUT) over the daemon's own
+// API — no separate manual step needed at all in the common case. The
+// manual `--from-file` step is now presented ONLY as the fallback for
+// when no daemon could be reached, with an explicit warning about its
+// full-replace semantics on an existing slug.
 func migrationGuidance(dir string) string {
 	return "Migration:\n" +
-		"  1) Run: boid project migrate " + dir + " --apply           (rewrites project.yaml; writes a reviewable workspace shadow yaml — does NOT push to any daemon by default)\n" +
-		"  2) Apply the shadow yaml (path printed by step 1) through the daemon's own API:\n" +
-		"       boid workspace create <slug> --from-file <file>   (new slug)\n" +
-		"       boid workspace edit   <slug> --from-file <file>   (existing slug)\n" +
-		"     (legacy bare-metal only, no compose daemon involved at all: also pass --legacy-bare-metal to step 1, to push directly instead)\n" +
+		"  1) Make sure the compose daemon is up: boid start\n" +
+		"  2) Run: boid project migrate " + dir + " --apply\n" +
+		"     - project.yaml is rewritten and a reviewable workspace shadow yaml is written\n" +
+		"     - if the daemon answers (the normal case once step 1 succeeded), the workspace is ALSO merged into it automatically — existing fields are preserved, not replaced\n" +
+		"  3) Only if step 2 reports the daemon was unreachable: review the printed shadow yaml and apply it by hand — `boid workspace create <slug> --from-file <file>` for a brand-new slug is safe, but `boid workspace edit <slug> --from-file <file>` on an EXISTING slug REPLACES its content wholesale (may drop fields the shadow yaml does not know about); prefer editing the daemon's config by hand (or re-running step 2 once the daemon is reachable) for an existing slug instead\n" +
+		"     (legacy bare-metal only, no compose daemon involved at all: also pass --legacy-bare-metal to step 2, to push project-workspace-assignment/secrets directly too)\n" +
 		"See docs/ja/guide/migration.md for details."
 }
 

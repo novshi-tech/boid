@@ -120,13 +120,39 @@ docker_compose_usable() {
 	command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1
 }
 
+# DOWN_ALT_COMPOSE_CMD (docs/plans/release-onboarding.md 決定2/PR5, codex
+# round-4 review Major): --down below only tears down COMPOSE_CMD's own
+# engine — the SAME preference-ordered selection this block always runs,
+# docker-if-usable-else-podman, independent of which engine actually
+# brought the stack up. If the environment changed between the `up` that
+# started it and the `boid stop` (--down) that is supposed to stop it
+# (docker newly installed, podman.socket newly enabled, ...), --down could
+# silently down an EMPTY docker-side compose project while the real
+# podman-side stack (or vice versa) keeps running, yet still report
+# success. When --down is requested and BOTH engines are usable, this is
+# populated with the non-primary engine's compose invocation so the DOWN
+# block (below) can tear down both — whichever one actually has the live
+# stack gets stopped either way, at the cost of a harmless no-op `down` on
+# the other.
+DOWN_ALT_COMPOSE_CMD=()
+
 if usable docker && docker_compose_usable; then
 	ENGINE=docker
 	BUILD_CMD=(docker build)
 	COMPOSE_CMD=(docker compose -f "$COMPOSE_FILE")
+	if [[ "$DOWN" == "1" ]] && usable podman && command -v podman-compose >/dev/null 2>&1; then
+		DOWN_ALT_COMPOSE_CMD=(podman-compose -f "$COMPOSE_FILE")
+	fi
 elif usable podman; then
 	ENGINE=podman
 	BUILD_CMD=(podman build)
+	# No DOWN_ALT_COMPOSE_CMD computation here: reaching this branch at
+	# all already means "usable docker && docker_compose_usable" (the
+	# prior branch's condition) evaluated false a few lines up, in this
+	# SAME invocation — re-checking it again here cannot yield a
+	# different answer, so there is no drift to guard against within one
+	# script run. Only the docker-primary branch above needs the
+	# alt-engine check.
 	if command -v podman-compose >/dev/null 2>&1; then
 		COMPOSE_CMD=(podman-compose -f "$COMPOSE_FILE")
 	else
@@ -288,8 +314,20 @@ if [[ "$DOWN" == "1" ]]; then
 	# about an unset interpolation variable.
 	: "${BOID_IMAGE:=unused}"
 	export BOID_IMAGE
-	echo "deploy-container: --down — stopping the compose stack"
+	echo "deploy-container: --down — stopping the compose stack (engine=$ENGINE)"
 	"${COMPOSE_CMD[@]}" down
+	# DOWN_ALT_COMPOSE_CMD (codex round-4 review Major, this file's own
+	# header comment on the variable): best-effort teardown of the OTHER
+	# engine too, in case the stack was actually brought up under it
+	# (docker/podman availability drifted between `up` and this `down`).
+	# `|| true`: an empty/never-created compose project on the alt engine
+	# is expected to no-op or error harmlessly here — that is not a
+	# reason to fail this invocation when the PRIMARY engine's own down
+	# (just above) already succeeded.
+	if [[ ${#DOWN_ALT_COMPOSE_CMD[@]} -gt 0 ]]; then
+		echo "deploy-container: --down — also stopping via the alternate engine, in case the stack was started under it"
+		"${DOWN_ALT_COMPOSE_CMD[@]}" down || true
+	fi
 	echo "deploy-container: done. compose stack is down."
 	exit 0
 fi

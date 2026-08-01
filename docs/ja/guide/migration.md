@@ -34,14 +34,15 @@ boid project migrate ~/src/myproject --workspace dev --apply --on-collision skip
 
 ### workspace への反映
 
-**2026-08 (release-onboarding PR5) 以降、 `--apply` は既定では daemon への反映を試みません。** compose が唯一の daemon 形態になったため (`docs/plans/release-onboarding.md` 決定2)、 `--apply` は project.yaml の書き換えと shadow yaml (`~/.config/boid/workspaces/<slug>.yaml`) の書き出しのみを行い、 反映は下記の手動手順 (`boid workspace create/edit --from-file`) に委ねられます。
-
-bare-metal daemon (compose を使わない旧来の単体プロセス) を直接操作している場合に限り、 `--apply --legacy-bare-metal` を指定すると以下の daemon 反映 (`pushMigratedWorkspaceToDaemon`) が有効になります:
+**`--apply` は daemon (`client.DefaultSocketPath()`) が到達可能なら常に自動反映を試みます。** compose daemon が起動していれば、 このソケットは gc / project reload が PR5 以前から使っていたのと同じ host 可視な bind mount 経由で届くため、 「compose daemon が動いている」場合は特別な操作は不要です:
 
 - workspace slug が daemon にまだ無い場合: `POST /api/workspaces` で新規作成する
-- 既存 slug の場合: 現在の内容を `GET /api/workspaces/<slug>` で取得し、 今回の migration が生成したフィールドとマージした上で `PUT /api/workspaces/<slug>` (`If-Match: <revision>`) で書き戻す (`mergeLegacyFieldsIntoWorkspace`)。 **マージの優先順位は「migration 側 (project.yaml から生成された値) が優先」** — `env` は同一キーなら migration 側の新値で上書き、 `capabilities.docker` は project.yaml 側が設定していれば上書きする。 legacy kit が生成された場合の `host_commands` (参照名) は union (既存の値を消さない)、 `additional_bindings` は Source が一致すれば migration 側が上書きする。 それ以外の既存フィールドはそのまま保持される
+- 既存 slug の場合: 現在の内容を `GET /api/workspaces/<slug>` で取得し、 今回の migration が生成したフィールドとマージした上で `PUT /api/workspaces/<slug>` (`If-Match: <revision>`) で書き戻す (`mergeLegacyFieldsIntoWorkspace`)。 **マージの優先順位は「migration 側 (project.yaml から生成された値) が優先」** — `env` は同一キーなら migration 側の新値で上書き、 `capabilities.docker` は project.yaml 側が設定していれば上書きする。 legacy kit が生成された場合の `host_commands` (参照名) は union (既存の値を消さない)、 `additional_bindings` は Source が一致すれば migration 側が上書きする。 それ以外の既存フィールドはそのまま保持される (**既存フィールドを丸ごと消さない安全な merge**)
 - `412 Precondition Failed` (revision 不一致 = 同時編集) を受けた場合は再取得してマージからやり直し、 最大 3 回リトライする
-- daemon に到達できない場合、 または 3 回リトライしても解決しない場合は、 反映は shadow yaml にしか行われない。 コマンド出力に手動反映の手順 (workspace が未作成なら `boid workspace create <slug> --from-file <file>`、 既存なら `boid workspace edit <slug> --from-file <file>`。 `boid workspace import` は 2026-07-28 に廃止済み) が案内されるので、 その通りに実行すること — **`project.yaml` 自体の書き換えはこの反映結果とは無関係にすでに実行済み** であることに注意 (dry-run ではない限り)
+
+**daemon に全く到達できない場合、 `--apply` は既定では host 側の `boid.db` への直接書き込みにフォールバックしません** (2026-08 release-onboarding PR5、 `docs/plans/release-onboarding.md` 決定2)。 compose が唯一の daemon 形態になったため、 host 側 `boid.db` は compose daemon が読まない別データベースになり得るからです。 このケースでは project.yaml の書き換えと shadow yaml (`~/.config/boid/workspaces/<slug>.yaml`) の書き出しのみが行われ、 出力に案内が表示されます — **推奨は daemon を起動してから `--apply` を再実行すること** (再実行すれば上記の安全な自動 merge が効く)。 既存 slug に対して `boid workspace edit <slug> --from-file <file>` を代替として使うのは避けてください — これは全置換 (full replace) であり、 shadow yaml が知らない既存フィールド (`container_image` / `allowed_domains` など) を落とす可能性があります。
+
+`--apply --legacy-bare-metal` を指定した場合に限り、 daemon 未到達時でも host 側 `boid.db` への直接書き込みにフォールバックします (bare-metal daemon を直接操作している、 compose を一切使わない場合の専用経路)。 併せて project の workspace 割り当て (`project_workspaces`) と secret のコピーも、 daemon 側の API が存在しないため常にこのフラグでのみ実行されます (daemon に到達できていても)。
 
 ## `project.local.yaml` の廃止
 

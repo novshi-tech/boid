@@ -1046,6 +1046,58 @@ env:
 	}
 }
 
+// TestProjectMigrate_SkipDaemonPush_DaemonReachable_StillPushesOnline is
+// the codex round-4 review Blocker 2/3 regression test: SkipDaemonPush
+// (runProjectMigrate's default posture absent --legacy-bare-metal) must
+// gate ONLY pushMigratedWorkspaceToDaemon's offline (direct-boid.db)
+// fallback — when a daemon IS reachable (the common case: compose is
+// actually up, and its socket is host-visible via the same bind mount gc/
+// project-reload relied on pre-PR5), the ONLINE push (GET-merge-PUT over
+// the daemon's own HTTP API, including host_commands definition sync)
+// must still happen exactly as it did before SkipDaemonPush existed — an
+// earlier revision of this fix (round-3) instead skipped the push
+// entirely regardless of reachability, silently discarding the safe
+// merge-not-replace semantics and the host_commands sync/reload for the
+// overwhelmingly common "compose is up" case.
+func TestProjectMigrate_SkipDaemonPush_DaemonReachable_StillPushesOnline(t *testing.T) {
+	minimalYAML := `id: proj-skip-push-online
+name: Skip Push Online
+env:
+  FOO: bar
+`
+	dir := setupMigrateProject(t, minimalYAML)
+	dbFile := setupMigrateDBFile(t)
+	cfgDir := t.TempDir()
+
+	ts := testutil.NewTestServer(t)
+	t.Setenv("BOID_SOCKET", ts.Server.SocketPath())
+	t.Setenv("XDG_CONFIG_HOME", cfgDir)
+
+	var out bytes.Buffer
+	err := MigrateProject(MigrateProjectOptions{
+		Dir:            dir,
+		Workspace:      "skip-push-online-ws",
+		Apply:          true,
+		SkipDaemonPush: true,
+		DBPath:         dbFile,
+		Out:            &out,
+	})
+	if err != nil {
+		t.Fatalf("migrate apply with SkipDaemonPush against a reachable daemon: unexpected error: %v", err)
+	}
+
+	var detail api.WorkspaceDetail
+	if err := ts.Client.Do("GET", "/api/workspaces/skip-push-online-ws", nil, &detail); err != nil {
+		t.Fatalf("workspace should have been created in the live daemon despite SkipDaemonPush (only the OFFLINE fallback is gated): %v", err)
+	}
+	if detail.Meta == nil || detail.Meta.Env["FOO"] != "bar" {
+		t.Errorf("workspace env = %+v, want FOO=bar", detail.Meta)
+	}
+	if strings.Contains(out.String(), "push skipped") {
+		t.Errorf("expected no push-skipped notice when a daemon is reachable, got: %s", out.String())
+	}
+}
+
 // TestProjectMigrate_Apply_ExistingLiveWorkspace_MergesAndUpdates verifies
 // that when the workspace slug already has a DB row in the live daemon,
 // --apply merges the migrated fields into it (GET current content, merge,
@@ -1742,21 +1794,20 @@ func TestShadowFileApplyHintBothCases(t *testing.T) {
 
 // --- printApplyModeNote / SkipDaemonPush (docs/plans/
 // release-onboarding.md「project migrate → 要注意コマンド」, PR5; codex
-// round-3 review Blocker rewrote an earlier revision's unconditional
-// --apply REFUSAL — which broke migrationGuidance's own recovery
-// instructions entirely, since dry-run never writes project.yaml or a
-// shadow file at all — into this: --apply is always allowed and always
-// performs its local, deterministic writes; --legacy-bare-metal only
-// gates the one genuinely daemon-topology-dependent step,
-// pushMigratedWorkspaceToDaemon) ---
+// round-1/round-3/round-4 review history — see printApplyModeNote's own
+// doc comment for the full story: --apply is always allowed and always
+// performs its local writes AND its online daemon push (when a daemon is
+// reachable); --legacy-bare-metal only gates the two genuinely host-DB-
+// writing operations, pushMigratedWorkspaceToDaemon's offline fallback
+// and SetProjectWorkspace/migrateSecrets) ---
 
 // TestApplyModeNote_WithoutLegacyBareMetal_ExplainsSkip pins the safe
 // default note text: --apply without --legacy-bare-metal proceeds (never
-// an error) but is told the daemon push will be skipped.
+// an error) but is told what will be skipped absent a reachable daemon.
 func TestApplyModeNote_WithoutLegacyBareMetal_ExplainsSkip(t *testing.T) {
 	var stderr bytes.Buffer
 	printApplyModeNote(&stderr, false)
-	if !strings.Contains(stderr.String(), "does NOT push to any daemon by default") {
+	if !strings.Contains(stderr.String(), "skipped by default") {
 		t.Errorf("expected the skip-daemon-push note, got: %q", stderr.String())
 	}
 	if !strings.Contains(stderr.String(), "--legacy-bare-metal") {
@@ -1770,29 +1821,33 @@ func TestApplyModeNote_WithoutLegacyBareMetal_ExplainsSkip(t *testing.T) {
 func TestApplyModeNote_WithLegacyBareMetal_ExplainsPush(t *testing.T) {
 	var stderr bytes.Buffer
 	printApplyModeNote(&stderr, true)
-	if !strings.Contains(stderr.String(), "will also attempt to push") {
+	if !strings.Contains(stderr.String(), "will also push") {
 		t.Errorf("expected the will-push note, got: %q", stderr.String())
 	}
 }
 
-// TestApplyMigratePlan_SkipDaemonPush_WritesShadowFileButNoPush is the
-// codex round-3 review Blocker regression test at the applyMigratePlan
-// level: with SkipDaemonPush=true (MigrateProject's own default posture
-// via runProjectMigrate, absent --legacy-bare-metal), --apply must still
-// rewrite project.yaml AND write the workspace shadow yaml FILE to disk —
-// migrationGuidance's own recovery instructions (`boid workspace create/
-// edit --from-file <file>`) are meaningless if that file never gets
-// written — while never touching a daemon/DB at all.
-func TestApplyMigratePlan_SkipDaemonPush_WritesShadowFileButNoPush(t *testing.T) {
+// TestApplyMigratePlan_SkipDaemonPush_NoDaemon_WritesShadowFileButNoPush is
+// the codex round-3 review Blocker regression test at the applyMigratePlan
+// level, refined by round-4: with SkipDaemonPush=true (MigrateProject's
+// own default posture via runProjectMigrate, absent --legacy-bare-metal)
+// and NO daemon reachable, --apply must still rewrite project.yaml AND
+// write the workspace shadow yaml FILE to disk — migrationGuidance's own
+// recovery instructions (`boid workspace create/edit --from-file <file>`)
+// are meaningless if that file never gets written — while never touching
+// a host boid.db, and while explicitly skipping the two OTHER host-DB
+// writes (project_workspaces assignment, secret copy) that round-4 review
+// found this same fix had missed.
+func TestApplyMigratePlan_SkipDaemonPush_NoDaemon_WritesShadowFileButNoPush(t *testing.T) {
 	dir := setupMigrateProject(t, testLegacyProjectYAML)
 	dbFile := setupMigrateDBFile(t)
 	cfgDir := t.TempDir()
 	dataDir := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", cfgDir)
 	t.Setenv("XDG_DATA_HOME", dataDir)
-	// Pinned to an isolated, guaranteed-empty socket — SkipDaemonPush must
-	// mean pushMigratedWorkspaceToDaemon never even dials this, but pin it
-	// anyway so a bug here cannot silently touch the machine's real daemon.
+	// Pinned to an isolated, guaranteed-empty socket — with no daemon
+	// listening there, pushMigratedWorkspaceToDaemon's offline branch
+	// must be skipped (allowOfflineFallback=false) rather than opening
+	// boidDB directly.
 	t.Setenv("BOID_SOCKET", filepath.Join(t.TempDir(), "no-daemon-here.sock"))
 
 	var out bytes.Buffer
@@ -1807,13 +1862,16 @@ func TestApplyMigratePlan_SkipDaemonPush_WritesShadowFileButNoPush(t *testing.T)
 	if err != nil {
 		t.Fatalf("MigrateProject with SkipDaemonPush: %v", err)
 	}
-	if !strings.Contains(out.String(), "daemon push skipped") {
+	if !strings.Contains(out.String(), "push skipped") {
 		t.Errorf("expected the skip-daemon-push notice in Out, got:\n%s", out.String())
+	}
+	if !strings.Contains(out.String(), "project_workspaces assignment and secret copy skipped") {
+		t.Errorf("expected the skip-project-workspace/secret notice in Out, got:\n%s", out.String())
 	}
 	if strings.Contains(out.String(), "created directly in the database") ||
 		strings.Contains(out.String(), "created via daemon API") ||
 		strings.Contains(out.String(), "updated directly in the database") {
-		t.Errorf("expected NO daemon/DB push outcome text (pushMigratedWorkspaceToDaemon must never have run), got:\n%s", out.String())
+		t.Errorf("expected NO daemon/DB push outcome text (applyMigratedWorkspaceOffline must never have run), got:\n%s", out.String())
 	}
 
 	// project.yaml must actually have been rewritten (removedTopLevelKeys

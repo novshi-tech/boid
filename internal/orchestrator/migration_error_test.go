@@ -23,11 +23,12 @@ func TestProjectMigrationError_SingleIssueByteIdentical(t *testing.T) {
 	want := `project.yaml: top-level "kits" is no longer supported.
 project.yaml: top-level "host_commands" is no longer supported.
 Migration:
-  1) Run: boid project migrate ` + dir + ` --apply           (rewrites project.yaml; writes a reviewable workspace shadow yaml — does NOT push to any daemon by default)
-  2) Apply the shadow yaml (path printed by step 1) through the daemon's own API:
-       boid workspace create <slug> --from-file <file>   (new slug)
-       boid workspace edit   <slug> --from-file <file>   (existing slug)
-     (legacy bare-metal only, no compose daemon involved at all: also pass --legacy-bare-metal to step 1, to push directly instead)
+  1) Make sure the compose daemon is up: boid start
+  2) Run: boid project migrate ` + dir + ` --apply
+     - project.yaml is rewritten and a reviewable workspace shadow yaml is written
+     - if the daemon answers (the normal case once step 1 succeeded), the workspace is ALSO merged into it automatically — existing fields are preserved, not replaced
+  3) Only if step 2 reports the daemon was unreachable: review the printed shadow yaml and apply it by hand — ` + "`boid workspace create <slug> --from-file <file>`" + ` for a brand-new slug is safe, but ` + "`boid workspace edit <slug> --from-file <file>`" + ` on an EXISTING slug REPLACES its content wholesale (may drop fields the shadow yaml does not know about); prefer editing the daemon's config by hand (or re-running step 2 once the daemon is reachable) for an existing slug instead
+     (legacy bare-metal only, no compose daemon involved at all: also pass --legacy-bare-metal to step 2, to push project-workspace-assignment/secrets directly too)
 See docs/ja/guide/migration.md for details.`
 
 	got := FormatMigrationIssue(issue)
@@ -62,7 +63,8 @@ func TestProjectMigrationError_WithProjectID(t *testing.T) {
 	if !strings.Contains(got, `top-level "kits" is no longer supported.`) {
 		t.Fatalf("missing field message: %s", got)
 	}
-	if !strings.Contains(got, "Migration:\n  1) Run: boid project migrate "+dir) {
+	if !strings.Contains(got, "Migration:\n  1) Make sure the compose daemon is up") ||
+		!strings.Contains(got, "boid project migrate "+dir+" --apply") {
 		t.Fatalf("missing migration guidance: %s", got)
 	}
 }
