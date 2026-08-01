@@ -231,12 +231,12 @@ func TestContainerBackend_Launch_RejectsPartialOrRootUIDGID(t *testing.T) {
 		uid, gid *int
 		wantUser string
 	}{
-		{name: "both unset falls back to default", uid: nil, gid: nil, wantUser: "1000:1000"},
-		{name: "uid=0 with nonzero gid falls back to default", uid: intPtr(0), gid: intPtr(1000), wantUser: "1000:1000"},
+		{name: "both unset falls back to default", uid: nil, gid: nil, wantUser: "1000:0"},
+		{name: "uid=0 with nonzero gid falls back to default", uid: intPtr(0), gid: intPtr(1000), wantUser: "1000:0"},
 		{name: "gid=0 with nonzero uid is honored (arbitrary-uid, §決定1)", uid: intPtr(1000), gid: intPtr(0), wantUser: "1000:0"},
-		{name: "uid=0 gid=0 falls back to default (uid 0 still rejected)", uid: intPtr(0), gid: intPtr(0), wantUser: "1000:1000"},
-		{name: "only uid set falls back to default", uid: intPtr(2000), gid: nil, wantUser: "1000:1000"},
-		{name: "only gid set falls back to default", uid: nil, gid: intPtr(2000), wantUser: "1000:1000"},
+		{name: "uid=0 gid=0 falls back to default (uid 0 still rejected)", uid: intPtr(0), gid: intPtr(0), wantUser: "1000:0"},
+		{name: "only uid set falls back to default", uid: intPtr(2000), gid: nil, wantUser: "1000:0"},
+		{name: "only gid set falls back to default", uid: nil, gid: intPtr(2000), wantUser: "1000:0"},
 		{name: "fully specified nonzero pair is honored", uid: intPtr(2000), gid: intPtr(2001), wantUser: "2000:2001"},
 	}
 	for _, tt := range tests {

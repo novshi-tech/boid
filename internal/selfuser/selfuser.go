@@ -165,7 +165,7 @@ func passwdHasUID(passwdPath string, uid int) (bool, error) {
 // ApplyGroupWritableUmask sets the process umask to 002 (docs/plans/
 // release-onboarding.md §決定1 実装形2's recommended fix for
 // runtime-generated files): `chmod g=u` at image-build time only reaches
-// directories that exist at build time, but secret.key/boid.db/the
+// directories that exist at build time, but boid.db/its WAL files/the
 // job-container TLS material under BOID_RUNTIME_DIR are all created at
 // RUNTIME, under whatever umask the process that creates them is running
 // with. The default umask (022) clears the group-write bit, so a file one
@@ -174,10 +174,18 @@ func passwdHasUID(passwdPath string, uid int) (bool, error) {
 // uid assumption gid-0 arbitrary-uid was supposed to remove. 002 keeps
 // owner permissions exactly as before (it only ever CLEARS bits, never
 // sets them) and additionally clears the group-write-deny bit, so a
-// 0600-requesting caller (secret.key) is unaffected either way and a
 // default-mode (0644/0755) caller picks up group-write.
 //
-// This makes "uid is fixed per install" (docs/plans/
+// This does NOT cover everything, and callers should not read it as
+// "any uid change is now safe": secret.key and the internal mTLS CA
+// key/cert (internal/dispatcher/secret_keyfile.go, internal/mtls/ca.go)
+// are written 0600 — OWNER-ONLY, with no group bits requested in the
+// first place — so umask 002 has nothing to preserve there; a umask can
+// only CLEAR bits a request already has, never add ones it doesn't
+// (build/container/.env.example's BOID_UID comment documents this
+// explicitly as the "fixed per install" contract's one real exception).
+//
+// For everything else, this makes "uid is fixed per install" (docs/plans/
 // release-onboarding.md's 未決6) a real contract rather than an
 // accidental one: a SECOND uid, still in group 0, can still write files
 // the first uid created, but only because of this umask — a process that

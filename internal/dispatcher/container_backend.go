@@ -302,7 +302,18 @@ type ContainerBackendOptions struct {
 const (
 	defaultContainerImage = "boid-runner:latest"
 	defaultContainerUID   = 1000
-	defaultContainerGID   = 1000
+	// defaultContainerGID is 0, not 1000 (codex review of PR2, Major 2):
+	// the arbitrary-uid image (build/container/Dockerfile, docs/plans/
+	// release-onboarding.md 決定1) only makes /run/boid/bin, /workspace,
+	// and /home/boid group-0-writable (`chgrp -R 0` + `chmod -R g=u`) —
+	// it does NOT chown them to uid 1000 specifically anymore. A fallback
+	// of 1000:1000 would put a job container in NO group with write access
+	// to any of those directories (group 1000 owns nothing there), so the
+	// "safe default" this constant exists to provide would itself be
+	// broken the moment it was ever used. 1000:0 is the pairing that
+	// actually works against this image regardless of which uid 1000
+	// happens to belong to.
+	defaultContainerGID = 0
 	// defaultPidsLimit is the fork-bomb-safety default the scope note
 	// allows as an "implementation-time optional" item (docs/plans/
 	// phase6-container-backend.md スコープ節 — full cgroup vocabulary is
