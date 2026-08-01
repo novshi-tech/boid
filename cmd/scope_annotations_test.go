@@ -191,14 +191,8 @@ var expectedScopeAnnotations = map[string]string{
 	"boid runner-container": scopeLocal,
 	"boid start":            scopeLocal,
 	"boid stop":             scopeLocal,
-	// docs/plans/release-onboarding.md PR1: reads internal/version only
-	// (ldflags override or debug.ReadBuildInfo()), never the daemon's HTTP
-	// API — scopeLocal + annotationSkipAutostart=skip, same grouping as
-	// `boid fetch`/`boid init` above, not the daemon-lifecycle judgment call
-	// start/stop/gc make.
-	"boid version":      scopeLocal,
-	"boid web set-addr": scopeLocal,
-	"boid web set-url":  scopeLocal,
+	"boid web set-addr":     scopeLocal,
+	"boid web set-url":      scopeLocal,
 
 	// neutral — requires no profile precondition at all (docs/plans/
 	// cli-remote-connection.md PR2): these are how a profile comes to
@@ -206,6 +200,17 @@ var expectedScopeAnnotations = map[string]string{
 	// when profile resolution itself would otherwise fail.
 	"boid login":  scopeNeutral,
 	"boid logout": scopeNeutral,
+	// docs/plans/release-onboarding.md PR1 (codex review round 1 of this
+	// PR): reads internal/version only (ldflags override or
+	// debug.ReadBuildInfo()), never the daemon's HTTP API and never a
+	// profile at all. scopeLocal was the first attempt, but scopeLocal is
+	// rejected by root's PersistentPreRunE whenever an https profile is
+	// selected (isLocalScope, decision 6 of cli-remote-connection.md) —
+	// "what version of the CLI am I running" has nothing to do with which
+	// daemon --profile points at, so it belongs in this group instead, same
+	// as login/logout above. annotationSkipAutostart=skip still applies —
+	// see cmd/version.go's own annotation comment.
+	"boid version": scopeNeutral,
 }
 
 // liveLeafCommands walks rootCmd and returns every leaf command's full path
