@@ -16,6 +16,7 @@ import (
 	"github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/api/types/image"
 	"github.com/moby/moby/api/types/jsonstream"
+	"github.com/moby/moby/api/types/system"
 	"github.com/moby/moby/api/types/volume"
 	"github.com/moby/moby/client"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
@@ -562,4 +563,26 @@ func imageInspectResultWithLabel(labelValue string) client.ImageInspectResult {
 		cfg.ImageConfig = ocispec.ImageConfig{Labels: map[string]string{boidRunnerProtocolLabel: labelValue}}
 	}
 	return client.ImageInspectResult{InspectResponse: image.InspectResponse{Config: cfg}}
+}
+
+// imageInspectResultWithArch builds a client.ImageInspectResult carrying
+// the given Architecture (docker/OCI's own image-manifest platform field) —
+// used by the resolveImage arch-mismatch fail-fast tests (docs/plans/
+// release-onboarding.md §論点: arm64). An empty arch omits it, matching
+// imageInspectResultWithLabel's own "" convention.
+func imageInspectResultWithArch(arch string) client.ImageInspectResult {
+	return client.ImageInspectResult{InspectResponse: image.InspectResponse{
+		Architecture: arch,
+		Config:       &dockerspec.DockerOCIImageConfig{},
+	}}
+}
+
+// systemInfoResultWithArch builds a client.SystemInfoResult carrying the
+// given /info Architecture — used by resolveHostArch's own tests
+// (docs/plans/release-onboarding.md 決定5's arm64 論点). Callers typically
+// pass a real uname(1)-style string ("x86_64", "aarch64") to match what
+// docker/podman actually report, exercising normalizeArch's translation
+// rather than assuming it away.
+func systemInfoResultWithArch(arch string) client.SystemInfoResult {
+	return client.SystemInfoResult{Info: system.Info{Architecture: arch}}
 }

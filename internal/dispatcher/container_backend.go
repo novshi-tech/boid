@@ -30,6 +30,7 @@ import (
 	"github.com/novshi-tech/boid/internal/sandbox"
 	"github.com/novshi-tech/boid/internal/sandbox/backend"
 	"github.com/novshi-tech/boid/internal/sandbox/realization"
+	"github.com/novshi-tech/boid/internal/version"
 )
 
 // containerBackend implements backend.SandboxBackend by translating a
@@ -100,6 +101,34 @@ type containerBackend struct {
 	usernsOnce sync.Once
 	usernsMode container.UsernsMode
 
+	// infoMu/infoOK/info cache the engine /info probe itself
+	// (container_backend_userns.go's resolveEngineInfo), shared by
+	// resolveUsernsMode (rootless detection) AND resolveHostArch (the arch
+	// mismatch fail-fast in resolveImage needs the engine's own reported
+	// host architecture, not this Go binary's build architecture — see
+	// resolveImage's own comment for why those differ under emulation) so
+	// two independent features consuming the same engine identity pay for
+	// exactly one round trip, not one each, ONCE a probe has actually
+	// succeeded.
+	//
+	// [Blocker, PR4 codex review round 2]: a plain sync.Once (this field's
+	// pre-fix shape) would cache a FAILED probe just as permanently as a
+	// successful one — silently disabling resolveHostArch's arch mismatch
+	// fail-fast for the rest of this backend's lifetime after one
+	// transient /info hiccup, directly contradicting docs/plans/
+	// release-onboarding.md 決定5's "must" fail-fast requirement. infoOK
+	// only flips true on success, so a failed probe is retried on every
+	// subsequent resolveImage/resolveUsernsMode call instead of being
+	// cached as a permanent "unknown" — resolveUsernsMode's own posture
+	// (a failure there is fine to degrade forever, per its own doc
+	// comment) is unaffected: it still only ever calls resolveEngineInfo
+	// once via usernsOnce above, so a later successful retry (triggered by
+	// a DIFFERENT job's resolveHostArch call) never revisits an
+	// already-decided usernsMode.
+	infoMu   sync.Mutex
+	infoOK   bool
+	info     client.SystemInfoResult
+
 	mu       sync.Mutex
 	sessions map[string]*containerSession
 	// adopting tracks in-flight Adopt cache-miss resolutions, keyed by
@@ -133,7 +162,8 @@ const (
 // (if minimal) configuration for tests.
 type ContainerBackendOptions struct {
 	// DefaultImage is used when a spec carries no ContainerImage override.
-	// Empty falls back to defaultContainerImage.
+	// Empty falls back to version.DefaultContainerImage() — see
+	// NewContainerBackend's own assignment for why.
 	DefaultImage string
 	// PullPolicy controls image pulling (see ImagePullPolicy). Zero value
 	// is ImagePullIfNotPresent.
@@ -302,8 +332,7 @@ type ContainerBackendOptions struct {
 }
 
 const (
-	defaultContainerImage = "boid-runner:latest"
-	defaultContainerUID   = 1000
+	defaultContainerUID = 1000
 	// defaultContainerGID is 0, not 1000 (codex review of PR2, Major 2):
 	// the arbitrary-uid image (build/container/Dockerfile, docs/plans/
 	// release-onboarding.md 決定1) only makes /run/boid/bin, /workspace,
@@ -516,7 +545,12 @@ func NewContainerBackend(api dockerAPI, opts ContainerBackendOptions) backend.Sa
 		sessions:             make(map[string]*containerSession),
 	}
 	if b.defaultImage == "" {
-		b.defaultImage = defaultContainerImage
+		// docs/plans/release-onboarding.md 穴4: the fallback image ref is
+		// no longer a bare, registry-less "boid-runner:latest" (which a
+		// pull would send to docker.io, not GHCR, and fail) — it now
+		// tracks this binary's own version identity, so a released daemon
+		// pulls its own matching job-container image by default.
+		b.defaultImage = version.DefaultContainerImage()
 	}
 	b.uid, b.gid = defaultContainerUID, defaultContainerGID
 	switch {
@@ -586,6 +620,27 @@ func ContainerBackendUIDGID(be backend.SandboxBackend) (uid, gid int, ok bool) {
 		return 0, 0, false
 	}
 	return cb.uid, cb.gid, true
+}
+
+// ContainerBackendDefaultImage returns the effective default image a
+// containerBackend launches job containers from when a spec carries no
+// ContainerImage override (after NewContainerBackend's own
+// empty-falls-back-to-version.DefaultContainerImage() resolution has
+// already run), and false if be is not a *containerBackend. Same
+// external-package introspection rationale as IsContainerBackend's own doc
+// comment — used by internal/server/wire_backend_test.go to pin that
+// sandboxBackendForConfig threads BOID_IMAGE through (docs/plans/
+// release-onboarding.md 穴4/PR4 codex review: the daemon and the job
+// containers it launches must agree on the same image ref, or a daemon
+// that pulled its own GHCR image successfully can still fail every job
+// dispatch trying to pull an unrelated, unqualified "boid-runner:latest"
+// from docker.io).
+func ContainerBackendDefaultImage(be backend.SandboxBackend) (string, bool) {
+	cb, isContainer := be.(*containerBackend)
+	if !isContainer {
+		return "", false
+	}
+	return cb.defaultImage, true
 }
 
 // ContainerBackendBrokerTLS returns whether be is a *containerBackend
@@ -1649,6 +1704,41 @@ func (b *containerBackend) resolveImage(ctx context.Context, override string) (s
 		if err != nil {
 			return "", fmt.Errorf("inspect container image %q after pull: %w", image, err)
 		}
+	}
+
+	// Arch mismatch fail-fast (docs/plans/release-onboarding.md 決定5's
+	// arm64 論点, required regardless of whether an arm64 image is ever
+	// published): a host with binfmt/qemu registered silently runs a
+	// foreign-arch image under emulation instead of refusing it outright
+	// — no error, just extreme slowness and unexplained crashes that look
+	// nothing like an architecture problem.
+	//
+	// [Blocker, PR4 codex review]: this must compare against the ENGINE's
+	// own reported host architecture (b.resolveHostArch, docker/podman
+	// /info), never runtime.GOARCH — GOARCH names the architecture THIS
+	// GO BINARY was compiled for, which is meaningless as a "real machine"
+	// signal from inside a container that is itself already running under
+	// emulation (an amd64-compiled daemon binary, baked into an amd64
+	// image, still reports GOARCH=="amd64" when QEMU is emulating that
+	// entire image on genuinely arm64 hardware — comparing against GOARCH
+	// would silently pass exactly the case this check exists to catch, and
+	// would ALSO wrongly reject a host-native arm64 override image on that
+	// same emulated host). dockerd/podman itself always runs natively on
+	// the real host — only individual containers may be emulated — so its
+	// own /info response is the one honest source for "what architecture
+	// is this machine actually".
+	//
+	// insp.Architecture / hostArch are only compared when BOTH are
+	// non-empty (the fakeDockerAPI test default for either, and any real
+	// engine's honest answer for an image whose manifest genuinely lacks
+	// platform metadata, or an Info() probe that failed) so this cannot
+	// misfire against a legitimately unknown answer — it only fires when
+	// the image POSITIVELY claims a platform that doesn't match a
+	// POSITIVELY known host arch.
+	if hostArch := b.resolveHostArch(ctx); insp.Architecture != "" && hostArch != "" && insp.Architecture != hostArch {
+		return "", fmt.Errorf(
+			"container image %q is built for arch %q, but this host is %q — refusing to run it under binfmt/qemu emulation (silently works but is extremely slow and can crash in ways that look nothing like an architecture problem); use an image built for %[3]s",
+			image, insp.Architecture, hostArch)
 	}
 
 	if override != "" {

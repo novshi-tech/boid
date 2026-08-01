@@ -47,13 +47,15 @@ package cmd
 // override, or walking up from cwd looking for scripts/deploy-container.sh
 // — nose's actual dev workflow always runs `boid` from within, or below,
 // this checkout): host mode invokes deploy-container.sh directly out of
-// that checkout (deployFromCheckout), letting it build a fresh image when
-// needed. build/container/Dockerfile's build context is `COPY . .` — the
-// ENTIRE go source tree — so this path is the only one that can ever BUILD
-// a fresh image; there is no way around needing a real checkout for that
-// (embedding what an image build needs into the very binary being built
-// from that same source would mean embedding a full second copy of the
-// repository inside itself — impractical and circular).
+// that checkout (deployFromCheckout) with its `--build` dev-backdoor flag
+// (docs/plans/release-onboarding.md 穴4/PR4), so a dev checkout keeps
+// picking up local code changes exactly like before PR4's pull-first
+// default flip. build/container/Dockerfile's build context is `COPY . .` —
+// the ENTIRE go source tree — so this path is the only one that can ever
+// BUILD a fresh image; there is no way around needing a real checkout for
+// that (embedding what an image build needs into the very binary being
+// built from that same source would mean embedding a full second copy of
+// the repository inside itself — impractical and circular).
 //
 // FALLBACK path (round-2 codex review Major 1 — "host mode cannot autostart
 // from an installed standalone CLI"; no checkout discoverable, e.g.
@@ -66,19 +68,19 @@ package cmd
 // into a directory tree that mirrors this repo's own layout (so the
 // script's own `ROOT_DIR="$(dirname "${BASH_SOURCE[0]}")/.."`-relative
 // path computation resolves exactly as it would from a real checkout), then
-// runs that extracted script with DEPLOY_CONTAINER_SKIP_BUILD=1 — which
-// requires a "boid-runner:latest" image to already exist locally (built at
-// some earlier point from within a real checkout — the common case for
-// repeat invocations from an installed CLI on a host that has run host mode
-// at least once before from a checkout) rather than attempting to build one
-// (Dockerfile's `COPY . .` context is not present in an extracted asset
-// directory — see above). No image and no checkout is a genuine dead end
-// (nothing to build from, nothing to run) and fails with a clear, specific
-// message before ever invoking the script, rather than either the old
-// "could not locate scripts/deploy-container.sh" error (which fired even
-// when a perfectly usable pre-built image already existed) or a confusing
-// `docker build`/`git rev-parse` failure against a source-less extracted
-// context.
+// runs that extracted script WITHOUT `--build` — the script's own default
+// as of PR4 is to pull rather than build (there is no source tree here to
+// build from regardless — Dockerfile's `COPY . .` context is not present
+// in an extracted asset directory). deployFromEmbeddedAssets exports
+// BOID_IMAGE=version.DefaultContainerImage() first so the pull targets this
+// exact CLI binary's own version identity (internal/version), rather than
+// leaving the script to guess from a git checkout that does not exist
+// here. There is no local-image precondition to check up front any more
+// (pre-PR4 this path required an already-built boid-runner:latest image,
+// since the script always built by default and this path could never
+// build) — a fresh install has never had that image, and now doesn't need
+// it: `compose up -d`'s own pull surfaces a clear failure on its own (no
+// network, GHCR still private, etc.) without a redundant preflight here.
 
 import (
 	"context"
@@ -96,6 +98,7 @@ import (
 	boidcontainer "github.com/novshi-tech/boid/build/container"
 	"github.com/novshi-tech/boid/internal/atomicfile"
 	"github.com/novshi-tech/boid/internal/client"
+	"github.com/novshi-tech/boid/internal/version"
 	boidscripts "github.com/novshi-tech/boid/scripts"
 	"github.com/spf13/cobra"
 )
@@ -329,16 +332,6 @@ func findComposeRoot() (string, error) {
 			"run `boid` from within the boid repo checkout, or set BOID_COMPOSE_ROOT to its root")
 }
 
-// composeImageTag is the sole tag build/container/compose.yml's `daemon`
-// service references (it has no `build:` section of its own — see that
-// file's own header comment) and the STABLE second tag
-// scripts/deploy-container.sh's own `docker build ... -t "$IMAGE_TAG" -t
-// boid-runner:latest` step always applies, regardless of which git commit
-// built the image. deployFromEmbeddedAssets checks for this exact tag to
-// decide whether the "compose up an already-built image, no checkout
-// needed" fallback is even possible.
-const composeImageTag = "boid-runner:latest"
-
 // hostModeAssetsDir returns (creating if necessary) the stable directory
 // deployFromEmbeddedAssets extracts its embedded assets into —
 // $XDG_STATE_HOME/boid/compose (or ~/.local/state/boid/compose), mirroring
@@ -497,29 +490,28 @@ func detectComposeEngine(ctx context.Context) (engine string, composeCmd []strin
 	return "", nil, fmt.Errorf("no usable docker+compose or podman+podman-compose engine found on PATH")
 }
 
-// imageExists reports whether composeImageTag is already present in the
-// given engine's local image store — the precondition
-// deployFromEmbeddedAssets requires before invoking the deploy script at
-// all, since the embedded-assets fallback can never build a fresh image
-// (this file's own header comment).
-func imageExists(ctx context.Context, engine, tag string) bool {
-	checkCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-	return exec.CommandContext(checkCtx, engine, "image", "inspect", tag).Run() == nil
-}
-
 // runDeployScript invokes <root>/scripts/deploy-container.sh — the single
 // implementation both deployFromCheckout and deployFromEmbeddedAssets
 // share (round-3 codex review: no more separate, narrower reimplementation
-// of the embedded path). skipBuild, when true, sets
-// DEPLOY_CONTAINER_SKIP_BUILD=1 in the child's environment — the embedded
-// path's root has none of the go source Dockerfile's `COPY . .` build
-// context needs, so it must never attempt a build (this file's own header
-// comment); the checkout path always leaves it false, letting the script
-// build a fresh image exactly as it always has.
-func runDeployScript(ctx context.Context, root, token, addr string, skipBuild bool) error {
+// of the embedded path). build, when true, passes the script's `--build`
+// dev-backdoor flag (docs/plans/release-onboarding.md 穴4/PR4: the
+// script's own default flipped to pull-first, so a caller that still wants
+// a fresh local build — deployFromCheckout, preserving the pre-PR4 dev
+// workflow — must opt in explicitly). The embedded path's root has none of
+// the go source Dockerfile's `COPY . .` build context needs, so it always
+// leaves this false and lets the script's pull-first default handle it
+// (this file's own header comment). extraEnv carries additional
+// "KEY=VALUE" pairs into the child's environment on top of BOID_CLI_TOKEN —
+// deployFromEmbeddedAssets uses this for BOID_IMAGE rather than mutating
+// this process's own environment via os.Setenv, which would otherwise leak
+// across every subsequent call in the same process (tests included).
+func runDeployScript(ctx context.Context, root, token, addr string, build bool, extraEnv ...string) error {
 	scriptPath := filepath.Join(root, "scripts", "deploy-container.sh")
-	deployCmd := exec.CommandContext(ctx, scriptPath) //nolint:gosec // scriptPath is built from a fixed, repo-relative suffix under either a located checkout root or this process's own extraction dir — not attacker-controlled input
+	args := []string{}
+	if build {
+		args = append(args, "--build")
+	}
+	deployCmd := exec.CommandContext(ctx, scriptPath, args...) //nolint:gosec // scriptPath is built from a fixed, repo-relative suffix under either a located checkout root or this process's own extraction dir — not attacker-controlled input
 	deployCmd.Dir = root
 	// Filter out any inherited BOID_CLI_TOKEN before appending ours: a
 	// naive append(os.Environ(), "BOID_CLI_TOKEN="+token) would leave TWO
@@ -527,11 +519,18 @@ func runDeployScript(ctx context.Context, root, token, addr string, skipBuild bo
 	// stale/different value from a previous manual `docker compose` run)
 	// — which one the child process sees for a duplicate key is
 	// libc-dependent, not guaranteed to be "last wins". Filtering first
-	// makes token's value unambiguous.
-	env := append(filterEnv(os.Environ(), "BOID_CLI_TOKEN"), "BOID_CLI_TOKEN="+token)
-	if skipBuild {
-		env = append(env, "DEPLOY_CONTAINER_SKIP_BUILD=1")
+	// makes token's value unambiguous. Every extraEnv key gets the same
+	// treatment (e.g. deployFromEmbeddedAssets's BOID_IMAGE) — an inherited
+	// shell value for the same key would otherwise be similarly ambiguous.
+	env := os.Environ()
+	env = filterEnv(env, "BOID_CLI_TOKEN")
+	for _, kv := range extraEnv {
+		if key, _, ok := strings.Cut(kv, "="); ok {
+			env = filterEnv(env, key)
+		}
 	}
+	env = append(env, "BOID_CLI_TOKEN="+token)
+	env = append(env, extraEnv...)
 	deployCmd.Env = env
 	// Progress goes to stderr, keeping stdout clean for the eventual
 	// subcommand's own output (e.g. `boid task list -o json`).
@@ -548,23 +547,19 @@ func runDeployScript(ctx context.Context, root, token, addr string, skipBuild bo
 // locate a real boid repo checkout (see this file's own header comment for
 // the two-path design). Extracts the embedded assets to an emulated
 // checkout root (extractComposeAssets) and runs that root's own
-// scripts/deploy-container.sh with DEPLOY_CONTAINER_SKIP_BUILD=1 — never
-// attempting a `docker build`, which only ever works when composeImageTag
-// already exists locally (checked explicitly up front, so the failure mode
-// for a genuinely fresh host with neither a checkout nor a pre-built image
-// is one clear, specific error rather than a confusing docker-build/
-// git-rev-parse failure against a source-less extracted context).
+// scripts/deploy-container.sh WITHOUT `--build` — the script's own
+// pull-first default (docs/plans/release-onboarding.md 穴4/PR4) — since
+// this path can never build a fresh image regardless (Dockerfile's
+// `COPY . .` context is not present in an extracted asset directory).
+// BOID_IMAGE is set to version.DefaultContainerImage() before invoking the
+// script so the pull targets this exact running CLI binary's own version
+// identity (internal/version) rather than the script's own git-based guess
+// (which has nothing to work from here — no .git in an extracted asset
+// directory).
 func deployFromEmbeddedAssets(ctx context.Context, token, addr string) error {
-	engine, _, err := detectComposeEngine(ctx)
-	if err != nil {
+	if _, _, err := detectComposeEngine(ctx); err != nil {
 		return fmt.Errorf(
 			"no boid repo checkout found (set BOID_COMPOSE_ROOT, or run `boid` from within one) to build a fresh image, and %w", err)
-	}
-	if !imageExists(ctx, engine, composeImageTag) {
-		return fmt.Errorf(
-			"no boid repo checkout found (set BOID_COMPOSE_ROOT, or run `boid` from within one) to build a fresh image, "+
-				"and no existing %q image found locally either — build it once from within a boid repo checkout "+
-				"(scripts/deploy-container.sh) or pre-provision the image out of band", composeImageTag)
 	}
 
 	root, err := extractComposeAssets()
@@ -572,9 +567,10 @@ func deployFromEmbeddedAssets(ctx context.Context, token, addr string) error {
 		return fmt.Errorf("extract embedded compose assets: %w", err)
 	}
 
-	fmt.Fprintln(os.Stderr, "boid: daemon container not reachable; no boid repo checkout found, starting the existing "+composeImageTag+" image via the embedded scripts/deploy-container.sh...")
+	image := version.DefaultContainerImage()
+	fmt.Fprintln(os.Stderr, "boid: daemon container not reachable; no boid repo checkout found, pulling "+image+" via the embedded scripts/deploy-container.sh...")
 
-	return runDeployScript(ctx, root, token, addr, true)
+	return runDeployScript(ctx, root, token, addr, false, "BOID_IMAGE="+image)
 }
 
 // waitForHealthy polls probeHostMode until it reports healthy, reports a
@@ -593,7 +589,7 @@ func waitForHealthy(ctx context.Context, addr, token string) error {
 			return fmt.Errorf(
 				"daemon container at %s is reachable but does not expose /api/cli-token-check (404) — "+
 					"this looks like a stale boid-runner image that predates the CLI listener; the boid-runner image needs an update "+
-					"(rebuild it from within a boid repo checkout via scripts/deploy-container.sh, or pre-provision a newer boid-runner:latest) "+
+					"(rebuild it from within a boid repo checkout via `scripts/deploy-container.sh --build`, or pull a newer one — see BOID_IMAGE in build/container/compose.yml) "+
 					"rather than waiting out the full startup timeout for a condition that cannot resolve on its own", addr)
 		}
 		time.Sleep(hostModeHealthPollInterval)
@@ -604,10 +600,15 @@ func waitForHealthy(ctx context.Context, addr, token string) error {
 // deployFromCheckout is ensureHostModeDaemon's PRIMARY path: invokes
 // scripts/deploy-container.sh from a real, located boid repo checkout root
 // — see this file's own header comment for why this is the only path that
-// can ever build a fresh image.
+// can ever build a fresh image. Passes `--build` (docs/plans/
+// release-onboarding.md 穴4/PR4): a dev checkout should keep picking up
+// local code changes on every `boid start`, exactly like before the
+// script's own default flipped to pull-first — a checkout is the one
+// place that opt-in actually makes sense (it is also the only place it is
+// even possible, per this file's own header comment).
 func deployFromCheckout(ctx context.Context, root, token, addr string) error {
 	fmt.Fprintln(os.Stderr, "boid: daemon container not reachable; starting it now (this can take a while on first run)...")
-	return runDeployScript(ctx, root, token, addr, false)
+	return runDeployScript(ctx, root, token, addr, true)
 }
 
 // withHostModeLock serializes concurrent daemon-start attempts (multiple

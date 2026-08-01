@@ -85,3 +85,26 @@ func TestIsReleaseBuild(t *testing.T) {
 		t.Errorf("IsReleaseBuild() = true, want false for dirty build %q", buildVersion)
 	}
 }
+
+// TestDefaultContainerImage pins docs/plans/release-onboarding.md 穴4's
+// pull-default rule: an exact release build names its own GHCR ref (the
+// same ref the CI publish step pushes for that tag), and every other build
+// shape falls back to the bare local tag scripts/deploy-container.sh's own
+// local build step produces — never a registry-qualified ref that build
+// was never published under.
+func TestDefaultContainerImage(t *testing.T) {
+	orig := buildVersion
+	defer func() { buildVersion = orig }()
+
+	buildVersion = "v0.0.13"
+	if got, want := DefaultContainerImage(), "ghcr.io/novshi-tech/boid-runner:v0.0.13"; got != want {
+		t.Errorf("DefaultContainerImage() = %q, want %q", got, want)
+	}
+
+	for _, v := range []string{"", "(devel)", "v0.0.13+dirty", "v0.0.13-0.20260801120000-abcdef123456"} {
+		buildVersion = v
+		if got, want := DefaultContainerImage(), LocalBuildImage; got != want {
+			t.Errorf("DefaultContainerImage() with buildVersion=%q = %q, want %q", v, got, want)
+		}
+	}
+}

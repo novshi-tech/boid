@@ -214,7 +214,17 @@ name: boid
 
 services:
   daemon:
-    image: boid-runner:latest
+    # docs/plans/release-onboarding.md 穴4: no longer a bare, registry-less
+    # "boid-runner:latest" (which a pull sends to docker.io, not GHCR, and
+    # 404s). BOID_IMAGE, when set, always wins — scripts/deploy-container.sh
+    # (both its default pull-first path and its `--build` dev-backdoor path)
+    # and e2e/run-container.sh's own direct `compose -f` calls all export it
+    # before invoking compose, so this literal default is only ever reached
+    # by an unwrapped, manual `docker compose -f build/container/compose.yml
+    # up` with no BOID_IMAGE in the environment — a real GHCR ref rather
+    # than the pre-穴4 local-only tag, so at least that manual invocation
+    # pulls something resolvable instead of failing against docker.io.
+    image: ${BOID_IMAGE:-ghcr.io/novshi-tech/boid-runner:latest}
     # build/container/Dockerfile's own ENTRYPOINT runs `boid
     # runner-container` (the job/entrypoint command) — overridden here to
     # run the daemon instead, from the exact same shared image (§決定2: "daemon
@@ -270,6 +280,22 @@ services:
       # daemon.ShouldLogToStdout's doc comment (internal/daemon/daemon.go)
       # for the full rationale.
       BOID_LOG_STDOUT: "1"
+      # BOID_IMAGE (docs/plans/release-onboarding.md 穴4/PR4 codex review,
+      # Blocker): mirrors this service's own `image:` line above so the
+      # RUNNING daemon PROCESS can read back the exact ref it was launched
+      # from (internal/server/wire.go's sandboxBackendForConfig reads this
+      # to set ContainerBackendOptions.DefaultImage) — a compose-file-level
+      # `${VAR}` substitution like the `image:` line's is resolved by the
+      # `docker compose` CLI on the HOST and never reaches the container's
+      # own environment on its own; without this explicit mapping the
+      # daemon binary has no way to know its own image ref, and
+      # internal/dispatcher falls back to re-deriving one from
+      # version.DefaultContainerImage() — which disagrees with whatever
+      # this line actually resolved to for any non-exact-release build
+      # (the common case), so job containers would try to pull a
+      # different, likely-nonexistent ref than the one that got the daemon
+      # itself running.
+      BOID_IMAGE: ${BOID_IMAGE:-ghcr.io/novshi-tech/boid-runner:latest}
       # XDG_DATA_HOME / XDG_CONFIG_HOME (docs/plans/volume-only-daemon.md
       # §論点 d — replaces the Major 10/PR6 host-path-derived version):
       # fixed literals, not interpolated from the launching shell. Make

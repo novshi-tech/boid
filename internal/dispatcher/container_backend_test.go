@@ -1821,6 +1821,174 @@ func TestContainerBackend_ImageSelection_UsesSpecContainerImageOrDefault(t *test
 	})
 }
 
+// TestContainerBackend_ResolveImage_ArchMismatchFailsFast pins docs/plans/
+// release-onboarding.md 決定5's arm64 論点 requirement: an image whose own
+// manifest architecture disagrees with the ENGINE's own reported host
+// architecture must be refused outright rather than silently launched
+// under binfmt/qemu emulation (extremely slow and prone to crashes that
+// look nothing like an architecture problem).
+//
+// [Blocker, PR4 codex review]: the comparison must be against the engine's
+// /info Architecture (docker/podman's own honest answer for the REAL
+// machine), never runtime.GOARCH — see resolveImage's own comment and
+// TestContainerBackend_ResolveImage_ArchMismatch_EmulatedDaemonStillDetected
+// below for why comparing against this test binary's own build
+// architecture would silently pass exactly the case this check exists to
+// catch.
+func TestContainerBackend_ResolveImage_ArchMismatchFailsFast(t *testing.T) {
+	api := &fakeDockerAPI{
+		ImageInspectFunc: func(ctx context.Context, imageRef string, opts ...client.ImageInspectOption) (client.ImageInspectResult, error) {
+			return imageInspectResultWithArch("arm64"), nil
+		},
+		InfoFunc: func(ctx context.Context, options client.InfoOptions) (client.SystemInfoResult, error) {
+			return systemInfoResultWithArch("x86_64"), nil // uname(1)-style, as real docker/podman report it
+		},
+	}
+	be := NewContainerBackend(api, ContainerBackendOptions{DefaultImage: "boid-runner:v9"})
+
+	_, err := be.Launch(context.Background(), sandbox.Spec{ID: "job-arch-mismatch", Argv: []string{"true"}}, backend.LaunchOptions{JobID: "job-arch-mismatch"})
+	if err == nil {
+		t.Fatal("Launch succeeded despite an architecture mismatch, want an error")
+	}
+	if !strings.Contains(err.Error(), "arm64") || !strings.Contains(err.Error(), "amd64") {
+		t.Errorf("Launch error = %q, want it to mention both %q (image arch) and %q (normalized host arch)", err.Error(), "arm64", "amd64")
+	}
+	if len(api.createCalls) != 0 {
+		t.Errorf("ContainerCreate was called %d times, want 0 (rejected before create)", len(api.createCalls))
+	}
+}
+
+// TestContainerBackend_ResolveImage_ArchMismatch_EmulatedDaemonStillDetected
+// pins the exact false-negative the codex review Blocker identified: if the
+// mismatch check compared against runtime.GOARCH (this Go binary's OWN
+// build architecture) instead of the engine's /info answer, an amd64-built
+// daemon binary — running, via binfmt/qemu, inside an amd64 image on
+// genuinely arm64 hardware — would report runtime.GOARCH=="amd64" from
+// INSIDE that emulation, matching an amd64 job image and never firing.
+// Simulating that exact scenario (image arch "amd64", engine-reported host
+// arch "aarch64") must still fail — proving the check is engine-arch-based,
+// not runtime.GOARCH-based, regardless of what this test binary itself
+// happens to be compiled for.
+func TestContainerBackend_ResolveImage_ArchMismatch_EmulatedDaemonStillDetected(t *testing.T) {
+	api := &fakeDockerAPI{
+		ImageInspectFunc: func(ctx context.Context, imageRef string, opts ...client.ImageInspectOption) (client.ImageInspectResult, error) {
+			return imageInspectResultWithArch("amd64"), nil
+		},
+		InfoFunc: func(ctx context.Context, options client.InfoOptions) (client.SystemInfoResult, error) {
+			return systemInfoResultWithArch("aarch64"), nil
+		},
+	}
+	be := NewContainerBackend(api, ContainerBackendOptions{DefaultImage: "boid-runner:v9"})
+
+	_, err := be.Launch(context.Background(), sandbox.Spec{ID: "job-arch-emulated-daemon", Argv: []string{"true"}}, backend.LaunchOptions{JobID: "job-arch-emulated-daemon"})
+	if err == nil {
+		t.Fatal("Launch succeeded despite an amd64 image on an aarch64-reporting engine, want an error (this is the exact emulation scenario the fail-fast exists for)")
+	}
+	if !strings.Contains(err.Error(), "amd64") || !strings.Contains(err.Error(), "arm64") {
+		t.Errorf("Launch error = %q, want it to mention %q (image) and %q (normalized aarch64 host)", err.Error(), "amd64", "arm64")
+	}
+}
+
+// TestContainerBackend_ResolveImage_MatchingArchSucceeds is the positive
+// counterpart: an image whose Architecture matches the engine's own
+// (normalized) reported host arch must launch normally — the mismatch
+// check must not misfire against a legitimate match, including when the
+// engine reports its answer in uname(1) style ("x86_64") rather than the
+// image manifest's Go/OCI style ("amd64").
+func TestContainerBackend_ResolveImage_MatchingArchSucceeds(t *testing.T) {
+	api := &fakeDockerAPI{
+		ImageInspectFunc: func(ctx context.Context, imageRef string, opts ...client.ImageInspectOption) (client.ImageInspectResult, error) {
+			return imageInspectResultWithArch("amd64"), nil
+		},
+		InfoFunc: func(ctx context.Context, options client.InfoOptions) (client.SystemInfoResult, error) {
+			return systemInfoResultWithArch("x86_64"), nil
+		},
+	}
+	be := NewContainerBackend(api, ContainerBackendOptions{DefaultImage: "boid-runner:v9"})
+	mustLaunch(t, be, sandbox.Spec{ID: "job-arch-match", Argv: []string{"true"}}, backend.LaunchOptions{JobID: "job-arch-match"})
+
+	if len(api.createCalls) != 1 {
+		t.Fatalf("ContainerCreate calls = %d, want 1", len(api.createCalls))
+	}
+}
+
+// TestContainerBackend_ResolveImage_UnknownHostArch_SkipsCheck pins the
+// graceful-degradation half: when the engine's own /info probe fails or
+// reports no architecture at all (both represented here by the
+// fakeDockerAPI's zero-value InfoFunc default), the mismatch check must not
+// block launch — an unknown host arch is not a known mismatch, and this
+// matches resolveUsernsMode's own established "probe failure degrades,
+// never blocks" posture in this same file.
+func TestContainerBackend_ResolveImage_UnknownHostArch_SkipsCheck(t *testing.T) {
+	api := &fakeDockerAPI{
+		ImageInspectFunc: func(ctx context.Context, imageRef string, opts ...client.ImageInspectOption) (client.ImageInspectResult, error) {
+			return imageInspectResultWithArch("arm64"), nil
+		},
+		// InfoFunc left nil: fakeDockerAPI's default Info() returns a
+		// zero-value SystemInfoResult{} (Architecture == "").
+	}
+	be := NewContainerBackend(api, ContainerBackendOptions{DefaultImage: "boid-runner:v9"})
+	mustLaunch(t, be, sandbox.Spec{ID: "job-arch-unknown-host", Argv: []string{"true"}}, backend.LaunchOptions{JobID: "job-arch-unknown-host"})
+
+	if len(api.createCalls) != 1 {
+		t.Fatalf("ContainerCreate calls = %d, want 1 (unknown host arch must not block launch)", len(api.createCalls))
+	}
+}
+
+// TestContainerBackend_ResolveImage_ArchProbeRetriesAfterFailure pins
+// [Blocker, PR4 codex review round 2]: a failed engine /info probe must
+// NOT be cached as a permanent "unknown host arch" — that would silently
+// and permanently disable the arch mismatch fail-fast for the rest of this
+// backend's lifetime after just one transient failure, contradicting
+// docs/plans/release-onboarding.md 決定5's "must" fail-fast requirement.
+//
+// Launch calls resolveImage (→ resolveHostArch) BEFORE resolveUsernsMode,
+// so the two Info() calls this test's InfoFunc actually sees both land
+// inside the FIRST Launch: resolveHostArch's own call fails first (mismatch
+// check skipped for job 1, matching TestContainerBackend_ResolveImage_
+// UnknownHostArch_SkipsCheck's own established posture), then
+// resolveUsernsMode's own later call within that same Launch succeeds and
+// gets cached. The SECOND Launch makes no new Info() call at all — it
+// reuses that now-cached successful result and catches the mismatch job 1
+// could not see. infoCalls == 2 (not 1, and not 3) is exactly what proves
+// the failure was retried within Launch 1 rather than cached, and that the
+// resulting success was then reused (not re-probed) by Launch 2.
+func TestContainerBackend_ResolveImage_ArchProbeRetriesAfterFailure(t *testing.T) {
+	var infoCalls int
+	api := &fakeDockerAPI{
+		ImageInspectFunc: func(ctx context.Context, imageRef string, opts ...client.ImageInspectOption) (client.ImageInspectResult, error) {
+			return imageInspectResultWithArch("amd64"), nil
+		},
+		InfoFunc: func(ctx context.Context, options client.InfoOptions) (client.SystemInfoResult, error) {
+			infoCalls++
+			if infoCalls == 1 {
+				return client.SystemInfoResult{}, errors.New("engine temporarily unreachable")
+			}
+			return systemInfoResultWithArch("aarch64"), nil
+		},
+	}
+	be := NewContainerBackend(api, ContainerBackendOptions{DefaultImage: "boid-runner:v9"})
+
+	mustLaunch(t, be, sandbox.Spec{ID: "job-arch-retry-1", Argv: []string{"true"}}, backend.LaunchOptions{JobID: "job-arch-retry-1"})
+	if len(api.createCalls) != 1 {
+		t.Fatalf("first Launch: ContainerCreate calls = %d, want 1 (probe failure must not block launch)", len(api.createCalls))
+	}
+
+	_, err := be.Launch(context.Background(), sandbox.Spec{ID: "job-arch-retry-2", Argv: []string{"true"}}, backend.LaunchOptions{JobID: "job-arch-retry-2"})
+	if err == nil {
+		t.Fatal("second Launch succeeded despite a now-detectable arch mismatch — the failed first probe was wrongly cached as permanent")
+	}
+	if !strings.Contains(err.Error(), "amd64") || !strings.Contains(err.Error(), "arm64") {
+		t.Errorf("second Launch error = %q, want it to mention %q (image) and %q (normalized aarch64 host)", err.Error(), "amd64", "arm64")
+	}
+	if len(api.createCalls) != 1 {
+		t.Errorf("ContainerCreate was called %d times total, want still 1 (second Launch rejected before create)", len(api.createCalls))
+	}
+	if infoCalls != 2 {
+		t.Errorf("Info calls = %d, want 2 (retried after the first failure, not cached)", infoCalls)
+	}
+}
+
 // TestRunner_Backend_DrivesContainerBackendThroughSignalSeam is the
 // container-backend sibling of runner_backend_wiring_test.go's
 // TestRunner_SignalJobRuntime_RoutesThroughBackendAdoptToSessionSignal (PR1):

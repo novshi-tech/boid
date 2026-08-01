@@ -102,11 +102,7 @@ func (b *containerBackend) resolveUsernsMode(ctx context.Context) container.User
 			slog.Warn("container backend: engine version probe failed; job containers will use the default userns mode",
 				"error", versionErr)
 		}
-		info, infoErr := b.api.Info(ctx, client.InfoOptions{})
-		if infoErr != nil {
-			slog.Warn("container backend: engine info probe failed; job containers will use the default userns mode",
-				"error", infoErr)
-		}
+		info := b.resolveEngineInfo(ctx)
 		b.usernsMode = usernsModeForEngine(version, info)
 		if b.usernsMode != "" {
 			slog.Info("container backend: rootless podman detected; job containers will keep the host uid mapping",
@@ -114,4 +110,93 @@ func (b *containerBackend) resolveUsernsMode(ctx context.Context) container.User
 		}
 	})
 	return b.usernsMode
+}
+
+// resolveEngineInfo probes the engine's /info, caching only a SUCCESSFUL
+// result — shared by resolveUsernsMode (rootless detection) and
+// resolveHostArch (arch mismatch fail-fast) below, both of which need the
+// engine's own self-reported identity but have no reason to each pay for
+// their own round trip to the same endpoint once one has already succeeded
+// (TestContainerBackend_Launch_EngineProbeOncePerBackend pins the combined
+// "exactly one Info call per backend once a probe has succeeded, however
+// many independent features consume it" contract this sharing exists to
+// keep true).
+//
+// [Blocker, PR4 codex review round 2]: a failed probe is logged and
+// deliberately NOT cached (infoOK stays false) — see the containerBackend
+// struct's own infoMu/infoOK/info doc comment for why caching a failure
+// exactly like a success would silently and permanently disable
+// resolveHostArch's arch mismatch fail-fast after one transient /info
+// hiccup, which docs/plans/release-onboarding.md 決定5 requires as a
+// "must", not a best-effort check. Every call after a failure retries the
+// probe fresh until one succeeds.
+func (b *containerBackend) resolveEngineInfo(ctx context.Context) client.SystemInfoResult {
+	b.infoMu.Lock()
+	defer b.infoMu.Unlock()
+	if b.infoOK {
+		return b.info
+	}
+	info, err := b.api.Info(ctx, client.InfoOptions{})
+	if err != nil {
+		slog.Warn("container backend: engine info probe failed", "error", err)
+		return client.SystemInfoResult{}
+	}
+	b.info = info
+	b.infoOK = true
+	return b.info
+}
+
+// normalizeArch maps an engine's own uname(1)-style /info architecture
+// string (docker/podman both report "x86_64"/"aarch64" there, per `uname
+// -m` on Linux) onto the Go/OCI-style vocabulary an image manifest's own
+// Architecture field uses ("amd64"/"arm64", the same names runtime.GOARCH
+// itself would report) — resolveImage's arch mismatch check
+// (docs/plans/release-onboarding.md 決定5's arm64 論点) compares one
+// against the other, so without this translation every native amd64 host
+// would falsely mismatch its own images ("x86_64" != "amd64").
+// Unrecognized input passes through lowercased unchanged — resolveImage
+// only acts on a POSITIVE, known mismatch (see its own doc comment), so an
+// unmapped string just means neither side matches and the check quietly
+// no-ops, never a false positive.
+func normalizeArch(arch string) string {
+	switch strings.ToLower(strings.TrimSpace(arch)) {
+	case "x86_64", "amd64":
+		return "amd64"
+	case "aarch64", "arm64":
+		return "arm64"
+	case "armv7l", "armv6l", "arm":
+		return "arm"
+	case "i386", "i686", "386":
+		return "386"
+	default:
+		return strings.ToLower(strings.TrimSpace(arch))
+	}
+}
+
+// resolveHostArch returns the ENGINE's own reported host architecture,
+// normalized to the Go/OCI vocabulary (normalizeArch), reusing
+// resolveEngineInfo's shared, once-per-backend cached probe (same instance
+// resolveUsernsMode consumes — see resolveEngineInfo's own doc comment for
+// why the probe itself is shared rather than each feature paying for its
+// own round trip). This is deliberately NOT runtime.GOARCH: see
+// resolveImage's own comment on why the running Go binary's build
+// architecture is meaningless as a "real machine" signal once that binary
+// might itself be running inside an emulated container. dockerd/podman
+// always run natively on the real host, so their own /info response is the
+// one honest source.
+//
+// Returns "" when the engine reported no architecture, including a failed
+// probe — resolveEngineInfo deliberately does NOT cache a failure (see its
+// own doc comment), so this is retried on the next call rather than
+// permanently disabled. resolveImage's own mismatch check only fires when
+// both sides are non-empty, so a "" here degrades that one call to "arch
+// check skipped" rather than blocking launch on a transient /info failure —
+// the same graceful-degradation posture resolveUsernsMode already takes
+// for its own probe failures, just not cached forever the way that one is.
+func (b *containerBackend) resolveHostArch(ctx context.Context) string {
+	info := b.resolveEngineInfo(ctx)
+	if info.Info.Architecture == "" {
+		return ""
+	}
+	return normalizeArch(info.Info.Architecture)
 }
