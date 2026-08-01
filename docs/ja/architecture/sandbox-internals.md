@@ -278,6 +278,7 @@ role 分岐はなく、全 role で同じ op セットが許可されます。
 | `task_payload` | `boid task payload` | trait フィルタ済みの現在の payload を取得する |
 | `task_attachments_list` | `boid task attachments list` | この task の添付ファイル名一覧を取得する |
 | `task_attachments_get` | `boid task attachments get <name>` | 添付ファイル 1 件の中身を取得する |
+| `project_behaviors` | `boid project behaviors <project-ref>` | project の task_behaviors 一覧を JSON で取得する (`ref` は同一 workspace 内の project のみ解決可能) |
 
 > **注記:** `task.reopen` だけが歴史的事情で `.` 区切りになっています。 他の op は `_` 区切りです。 `task_current` / `task_attachments_list` / `task_attachments_get` は TaskID スコープ、 `task_instructions` / `task_env` / `task_payload` は JobID スコープです ([Hook スクリプトプロトコル](../reference/hook-contract.md) 参照)。
 
