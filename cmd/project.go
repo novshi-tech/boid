@@ -427,11 +427,23 @@ func runProjectInit(cmd *cobra.Command, args []string) error {
 	// NO detection logic to get wrong:
 	//   - `git init`: always safe to re-run ("Reinitialized existing Git
 	//     repository..." if one already exists).
-	//   - `git add .boid && git commit ... -- .boid`: the `-- .boid`
-	//     pathspec (Major, codex round-4 review) scopes the commit to
-	//     exactly the scaffold this command just wrote, so it neither
-	//     sweeps in unrelated already-staged changes nor fails just
-	//     because .boid happens to be the only thing that changed.
+	//   - `git add .boid && (git diff --cached --quiet -- .boid || git
+	//     commit ... -- .boid)`: the `-- .boid` pathspec (Major, codex
+	//     round-4 review) scopes the commit to exactly the scaffold this
+	//     command just wrote, so it neither sweeps in unrelated
+	//     already-staged changes nor tries to commit when .boid has no
+	//     staged changes at all (the idempotent-rerun case). `git diff
+	//     --cached --quiet -- .boid` is true (no output, exit 0) exactly
+	//     when there is nothing new to commit for .boid — in that case
+	//     the `||`'s right side (the actual commit) is skipped entirely,
+	//     rather than run and rejected. Skipping vs. attempting-and-
+	//     failing matters (Blocker, codex round-6 review): if `git
+	//     commit` DOES run and genuinely fails for a real reason (a
+	//     rejecting pre-commit hook, no configured git identity, a
+	//     required GPG signature that can't be produced, ...), that must
+	//     stop the whole chain — pushing whatever HEAD already was would
+	//     silently register a project missing the scaffold this command
+	//     just wrote. See the `&&`-vs-`;` note below for how that's wired.
 	//   - `git remote add origin <git-url> 2>/dev/null || git remote
 	//     set-url origin <git-url>`: adds the remote if it doesn't exist
 	//     yet, or repoints it if it does (Major, codex round-4 review of
@@ -440,9 +452,24 @@ func runProjectInit(cmd *cobra.Command, args []string) error {
 	//   - `git push -u origin HEAD`: pushes and tracks the CURRENT
 	//     branch — not a guess at "the remote's default branch", which
 	//     `project init` has no way to know and no business overriding.
-	//     If that branch is not what the remote treats as default, that
-	//     is the same ordinary git branch-management question it would
-	//     be for any other push, not something specific to boid.
+	//     Scope boundary (Blocker, codex round-6 review): if that branch
+	//     is not what the remote treats as default, the daemon's own
+	//     clone-and-read-project.yaml step (dispatcher.CloneBareRepo,
+	//     project_bare_repo.go) reads .boid/project.yaml off the
+	//     REMOTE'S default branch, not this one, and registration will
+	//     miss the scaffold. Deliberately unhandled here: this guidance
+	//     targets the 目標オンボーディングフロー scenario this command's own
+	//     doc comment describes — a BRAND NEW project being pushed to a
+	//     FRESH, still-empty remote for the first time, where every real
+	//     forge (GitHub, GitLab, ...) sets its own default branch FROM
+	//     that first push, so there is no pre-existing default branch to
+	//     miss. Retrofitting a scaffold onto an ALREADY-established repo
+	//     on a non-default feature branch is a materially different,
+	//     out-of-scope operation — the same ordinary "make sure this
+	//     lands on the right branch" question it would be for any other
+	//     push, not something `project init` can resolve for the user
+	//     without also knowing which branch that repo treats as default.
+	//
 	// Everything below `cd <dir> &&` is grouped in one `{ ...; }` block on
 	// a SINGLE line, not multiple printed lines each expected to run in
 	// projectDir (Blocker, codex round-3 review of an earlier revision):
@@ -450,15 +477,17 @@ func runProjectInit(cmd *cobra.Command, args []string) error {
 	// printed lines if the user happens to paste every line into the
 	// same still-open shell — copied separately, re-run individually, or
 	// run from a fresh terminal, a later `git push` on its own line would
-	// silently target the wrong (or no) directory. One line removes that
-	// footgun outright, and `;` (not `&&`) between the inner steps is
-	// deliberate too: a `git commit` with nothing new to commit (the
-	// idempotent-rerun case this guidance explicitly promises to
-	// support) exits non-zero, and `&&` there would stop the chain
-	// before `git remote add`/`git push` ever ran.
+	// silently target the wrong (or no) directory. Within the block,
+	// `git init` is `;`-separated from the rest (it has nothing to do
+	// with whether committing succeeds), but the add/commit step is
+	// joined to remote-add/push with `&&` (not `;`): unlike the
+	// intentionally-skippable "nothing to commit" case (handled by the
+	// `git diff --cached --quiet ||` guard above, which makes the group
+	// exit 0 even when no commit ran), an ACTUAL commit failure must
+	// stop the chain before `git remote add`/`git push` run at all.
 	fmt.Fprintln(out, "\nNext steps:")
 	fmt.Fprintln(out, "  1. Commit the scaffold and push it to your remote (safe to run even if some of this is already done):")
-	fmt.Fprintf(out, "       %s{ git init; git add .boid && git commit -m 'add boid project scaffold' -- .boid; git remote add origin <git-url> 2>/dev/null || git remote set-url origin <git-url>; git push -u origin HEAD; }\n", cdPrefix)
+	fmt.Fprintf(out, "       %s{ git init; git add .boid && (git diff --cached --quiet -- .boid || git commit -m 'add boid project scaffold' -- .boid) && (git remote add origin <git-url> 2>/dev/null || git remote set-url origin <git-url>) && git push -u origin HEAD; }\n", cdPrefix)
 	fmt.Fprintln(out, "  2. Register the pushed URL with the running boid daemon:")
 	fmt.Fprintf(out, "       boid project add <git-url> %s\n", workspaceFlag)
 

@@ -483,12 +483,15 @@ services:
     # reach it (a container-internal 127.0.0.1 bind is unreachable from the
     # host side of the port mapping). docs/plans/release-onboarding.md 穴 8
     # (a), PR6: cmd/start.go's buildStartConfig now defaults to 0.0.0.0:8080
-    # (defaultContainerStartHTTPAddr) whenever daemon.ShouldLogToStdout()
-    # reports the compose-set BOID_LOG_STDOUT=1 below, so a fresh/empty
-    # config volume no longer needs the `boid web set-addr 0.0.0.0:8080`
-    # manual step this note used to require — an explicit web.http_addr in
-    # config.yaml (e.g. from a prior `boid config set`/`web set-addr` run)
-    # still overrides it either way.
+    # (defaultContainerStartHTTPAddr) whenever runningUnderComposeContainer
+    # reports true — the compose-set BOID_LOG_STDOUT=1 below PLUS a real
+    # container-runtime sentinel file (/.dockerenv or /run/.containerenv;
+    # see that function's own doc comment for why BOID_LOG_STDOUT alone
+    # isn't a safe enough trigger) — so a fresh/empty config volume no
+    # longer needs the `boid web set-addr 0.0.0.0:8080` manual step this
+    # note used to require. An explicit web.http_addr in config.yaml (e.g.
+    # from a prior `boid config set`/`web set-addr` run) still overrides
+    # it either way.
     ports:
       - "127.0.0.1:8442:8442"
       - "127.0.0.1:8080:8080"

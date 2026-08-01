@@ -379,7 +379,7 @@ func TestProjectInit_DirArg_GitCommandsTargetProjectDir(t *testing.T) {
 	// "safe to run even if some of this is already done", and an idempotent
 	// rerun's `git commit` (nothing new to commit) must not stop `git
 	// remote add`/`git push` from still running.
-	wantChain := "cd '" + dir + "' && { git init; git add .boid && git commit -m 'add boid project scaffold' -- .boid; git remote add origin <git-url> 2>/dev/null || git remote set-url origin <git-url>; git push -u origin HEAD; }"
+	wantChain := "cd '" + dir + "' && { git init; git add .boid && (git diff --cached --quiet -- .boid || git commit -m 'add boid project scaffold' -- .boid) && (git remote add origin <git-url> 2>/dev/null || git remote set-url origin <git-url>) && git push -u origin HEAD; }"
 	if !strings.Contains(got, wantChain) {
 		t.Errorf("expected guidance to contain the single cd-prefixed chain %q, got:\n%s", wantChain, got)
 	}

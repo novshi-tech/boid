@@ -106,20 +106,40 @@ func TestBuildStartConfig_LogLevelUnset_Empty(t *testing.T) {
 	}
 }
 
+// withFakeContainerSentinel temporarily points containerSentinelPaths at a
+// single file the test creates (or does not create), standing in for the
+// real /.dockerenv / /run/.containerenv this process cannot fake without
+// root — restores the real paths afterward so this global does not leak
+// across other tests in the same binary.
+func withFakeContainerSentinel(t *testing.T, present bool) {
+	t.Helper()
+	orig := containerSentinelPaths
+	t.Cleanup(func() { containerSentinelPaths = orig })
+
+	sentinel := filepath.Join(t.TempDir(), "dockerenv")
+	if present {
+		if err := os.WriteFile(sentinel, nil, 0o644); err != nil {
+			t.Fatalf("write fake sentinel: %v", err)
+		}
+	}
+	containerSentinelPaths = []string{sentinel}
+}
+
 // TestBuildStartConfig_ContainerMode_DefaultsHTTPAddrToAllInterfaces pins
 // 穴 8 (a) (docs/plans/release-onboarding.md): under
 // build/container/compose.yml, a fresh boid_state volume has no
 // web.http_addr in config.yaml, so buildStartConfig used to fall back to
 // defaultStartHTTPAddr ("127.0.0.1:8080") — binding the container's own
 // loopback, which compose's port publish cannot make reachable from the
-// host at all. BOID_LOG_STDOUT=1 is the container-execution signal compose
-// already sets (daemon.ShouldLogToStdout, cmd/start.go's
-// shouldRunForeground doc comment) and nothing else does, so it doubles as
-// the "am I running under the compose daemon" check here: the fallback
-// address becomes 0.0.0.0:8080 instead.
+// host at all. runningUnderComposeContainer requires BOTH
+// BOID_LOG_STDOUT=1 (compose sets this) AND a real container-runtime
+// sentinel file (see that function's own doc comment for why BOID_LOG_STDOUT
+// alone is not a safe trigger, codex round-6 review): with both signals
+// present, the fallback address becomes 0.0.0.0:8080 instead.
 func TestBuildStartConfig_ContainerMode_DefaultsHTTPAddrToAllInterfaces(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	t.Setenv("BOID_LOG_STDOUT", "1")
+	withFakeContainerSentinel(t, true)
 
 	cfg, err := buildStartConfig(startConfigOptions{})
 	if err != nil {
@@ -130,16 +150,41 @@ func TestBuildStartConfig_ContainerMode_DefaultsHTTPAddrToAllInterfaces(t *testi
 	}
 }
 
+// TestBuildStartConfig_LogStdoutAlone_DoesNotFlipToAllInterfaces pins the
+// Blocker fix (codex round-6 review): an earlier revision used
+// BOID_LOG_STDOUT=1 alone as the "am I in a container" signal, but that
+// flag's own contract (daemon.ShouldLogToStdout's doc comment) is "a
+// supervisor already owns my stdout/session lifecycle" — a BARE HOST
+// systemd unit could set it too, for reasons having nothing to do with
+// containers, and would then unexpectedly flip a previously
+// loopback-only Web UI listener to every host interface. With
+// BOID_LOG_STDOUT=1 set but NO container sentinel file present, the
+// fallback must stay at the loopback-only default.
+func TestBuildStartConfig_LogStdoutAlone_DoesNotFlipToAllInterfaces(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("BOID_LOG_STDOUT", "1")
+	withFakeContainerSentinel(t, false)
+
+	cfg, err := buildStartConfig(startConfigOptions{})
+	if err != nil {
+		t.Fatalf("buildStartConfig() error = %v", err)
+	}
+	if cfg.HTTPAddr != defaultStartHTTPAddr {
+		t.Fatalf("HTTPAddr = %q, want the bare-host default %q", cfg.HTTPAddr, defaultStartHTTPAddr)
+	}
+}
+
 // TestBuildStartConfig_ContainerMode_ConfigYAMLStillWins pins that an
 // explicit web.http_addr in config.yaml (e.g. set via `boid config set` per
 // 穴 8's documented recovery path) still overrides the container-mode
-// fallback — the BOID_LOG_STDOUT branch only ever supplies a different
+// fallback — runningUnderComposeContainer only ever supplies a different
 // FALLBACK default, it must not shadow a value the user (or a previous
 // `boid web set-addr`/`config set` run) already persisted.
 func TestBuildStartConfig_ContainerMode_ConfigYAMLStillWins(t *testing.T) {
 	configHome := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", configHome)
 	t.Setenv("BOID_LOG_STDOUT", "1")
+	withFakeContainerSentinel(t, true)
 	if err := os.MkdirAll(filepath.Join(configHome, "boid"), 0o755); err != nil {
 		t.Fatal(err)
 	}
