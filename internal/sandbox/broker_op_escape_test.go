@@ -86,6 +86,14 @@ func TestBroker_BoidTaskAttachmentsGet_PolicyReject(t *testing.T) {
 	assertBoidOpRejectedByPolicy(t, &sandbox.BoidRequest{Op: sandbox.BoidOpTaskAttachmentsGet, TaskID: "t1", AttachmentName: "shot.png"})
 }
 
+// BoidOpProjectList takes no caller-supplied parameters (its scope comes
+// entirely from TokenContext.AllowedProjectIDs, stamped server-side at
+// dispatch time), so — like BoidOpTaskDelete — the policy gate is its only
+// broker-side guard; there is no per-request field to validate.
+func TestBroker_BoidProjectList_PolicyReject(t *testing.T) {
+	assertBoidOpRejectedByPolicy(t, &sandbox.BoidRequest{Op: sandbox.BoidOpProjectList})
+}
+
 // assertBoidOpRejectedByPolicy registers a boid policy that allows only an
 // unrelated op (job_done), then asserts the given request is rejected by the
 // policy gate — before any op-specific dispatch — and never reaches the
@@ -174,6 +182,11 @@ var opEscapeCoverage = map[string]opCoverage{
 	// BoidOpTaskList's project_id handling); the plain policy-gate manifest
 	// entry point is TestBroker_BoidProjectBehaviors_PolicyReject.
 	"BoidOpProjectBehaviors": {escapeTest: "TestBroker_BoidProjectBehaviors_ProjectIDDenied"},
+
+	// BoidOpProjectList: no per-request field to validate (see
+	// TestBroker_BoidProjectList_PolicyReject's doc comment) — same shape as
+	// BoidOpTaskDelete's manifest entry above.
+	"BoidOpProjectList": {escapeTest: "TestBroker_BoidProjectList_PolicyReject"},
 }
 
 // TestOpEscapeCoverage_ManifestComplete asserts opEscapeCoverage covers exactly

@@ -40,6 +40,10 @@ const (
 	// OpBoidProjectBehaviors backs `boid project behaviors` from inside the
 	// sandbox (docs/plans/workspace-default-project.md follow-up).
 	OpBoidProjectBehaviors = "project_behaviors"
+	// OpBoidProjectList backs `boid project list` from inside the sandbox —
+	// discovery companion to OpBoidProjectBehaviors, scoped to the caller's
+	// own workspace (see sandbox.BoidOpProjectList's doc comment).
+	OpBoidProjectList = "project_list"
 
 	OpFetchGet = "get"
 )

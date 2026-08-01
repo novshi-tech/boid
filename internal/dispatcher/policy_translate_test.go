@@ -33,6 +33,7 @@ func TestOpConstantsMirror(t *testing.T) {
 		{orchestrator.OpBoidTaskAttachmentsGet, string(sandbox.BoidOpTaskAttachmentsGet)},
 		{orchestrator.OpBoidTaskUpdatePayloadPatch, string(sandbox.BoidOpTaskUpdatePayloadPatch)},
 		{orchestrator.OpBoidProjectBehaviors, string(sandbox.BoidOpProjectBehaviors)},
+		{orchestrator.OpBoidProjectList, string(sandbox.BoidOpProjectList)},
 	}
 	for _, p := range pairs {
 		if p.orchestratorConst != p.sandboxConst {

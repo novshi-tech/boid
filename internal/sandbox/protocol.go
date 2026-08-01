@@ -125,6 +125,21 @@ const (
 	// projects within its own token's workspace scope — never an arbitrary
 	// project on the daemon.
 	BoidOpProjectBehaviors BoidOp = "project_behaviors"
+
+	// BoidOpProjectList backs `boid project list` from inside the sandbox —
+	// lets a "meta project" task discover which projects it can even ask
+	// BoidOpProjectBehaviors about, rather than requiring it to already know
+	// every project ref up front. Unlike BoidOpProjectBehaviors there is no
+	// caller-supplied ref to resolve: the executor enumerates
+	// TokenContext.AllowedProjectIDs (falling back to the caller's own
+	// ProjectID when that is empty, same fallback BoidOpTaskList's
+	// no-project/no-workspace branch uses) — a value stamped into the token
+	// at dispatch time from the workspace's peer-project set
+	// (dispatcher.allowedProjectIDs), never something a sandboxed request
+	// can widen. So the result is unconditionally scoped to the caller's own
+	// workspace; there is intentionally no way to list projects daemon-wide
+	// the way the host-only `boid project list` does.
+	BoidOpProjectList BoidOp = "project_list"
 )
 
 // PayloadPatchMaxBytes caps the size of a single BoidOpTaskUpdatePayloadPatch
