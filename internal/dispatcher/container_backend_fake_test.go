@@ -563,3 +563,15 @@ func imageInspectResultWithLabel(labelValue string) client.ImageInspectResult {
 	}
 	return client.ImageInspectResult{InspectResponse: image.InspectResponse{Config: cfg}}
 }
+
+// imageInspectResultWithArch builds a client.ImageInspectResult carrying
+// the given Architecture (docker/OCI's own image-manifest platform field) —
+// used by the resolveImage arch-mismatch fail-fast tests (docs/plans/
+// release-onboarding.md §論点: arm64). An empty arch omits it, matching
+// imageInspectResultWithLabel's own "" convention.
+func imageInspectResultWithArch(arch string) client.ImageInspectResult {
+	return client.ImageInspectResult{InspectResponse: image.InspectResponse{
+		Architecture: arch,
+		Config:       &dockerspec.DockerOCIImageConfig{},
+	}}
+}

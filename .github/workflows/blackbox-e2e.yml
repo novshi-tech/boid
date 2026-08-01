@@ -276,6 +276,18 @@ jobs:
             docker tag "boid-runner:${GITHUB_SHA}" "$release_ref"
             docker push "$release_ref"
           fi
+          # `:latest` (PR4, docs/plans/release-onboarding.md 穴4): the ref
+          # build/container/compose.yml's `image:` line falls back to when
+          # BOID_IMAGE isn't set — pushed only for a main-branch push (not
+          # every branch, and not a tag push, which already gets its own
+          # release-tag ref above) so it tracks "most recent build on
+          # main", the closest available proxy for "the default anyone
+          # not pinning a specific version should run".
+          if [[ "${GITHUB_REF:-}" == "refs/heads/main" ]]; then
+            latest_ref="ghcr.io/novshi-tech/boid-runner:latest"
+            docker tag "boid-runner:${GITHUB_SHA}" "$latest_ref"
+            docker push "$latest_ref"
+          fi
 
   e2e-container:
     name: Container backend E2E (requires-docker)

@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1819,6 +1820,54 @@ func TestContainerBackend_ImageSelection_UsesSpecContainerImageOrDefault(t *test
 			t.Errorf("Config.Image = %q, want %q", got, want)
 		}
 	})
+}
+
+// TestContainerBackend_ResolveImage_ArchMismatchFailsFast pins docs/plans/
+// release-onboarding.md 決定5's arm64 論点 requirement: an image whose own
+// manifest architecture disagrees with this host's must be refused outright
+// rather than silently launched under binfmt/qemu emulation (extremely slow
+// and prone to crashes that look nothing like an architecture problem).
+func TestContainerBackend_ResolveImage_ArchMismatchFailsFast(t *testing.T) {
+	const foreignArch = "not-a-real-goarch"
+	if foreignArch == runtime.GOARCH {
+		t.Fatal("test constant collides with runtime.GOARCH — pick a different placeholder")
+	}
+	api := &fakeDockerAPI{
+		ImageInspectFunc: func(ctx context.Context, imageRef string, opts ...client.ImageInspectOption) (client.ImageInspectResult, error) {
+			return imageInspectResultWithArch(foreignArch), nil
+		},
+	}
+	be := NewContainerBackend(api, ContainerBackendOptions{DefaultImage: "boid-runner:v9"})
+
+	_, err := be.Launch(context.Background(), sandbox.Spec{ID: "job-arch-mismatch", Argv: []string{"true"}}, backend.LaunchOptions{JobID: "job-arch-mismatch"})
+	if err == nil {
+		t.Fatal("Launch succeeded despite an architecture mismatch, want an error")
+	}
+	if !strings.Contains(err.Error(), foreignArch) || !strings.Contains(err.Error(), runtime.GOARCH) {
+		t.Errorf("Launch error = %q, want it to mention both %q and %q", err.Error(), foreignArch, runtime.GOARCH)
+	}
+	if len(api.createCalls) != 0 {
+		t.Errorf("ContainerCreate was called %d times, want 0 (rejected before create)", len(api.createCalls))
+	}
+}
+
+// TestContainerBackend_ResolveImage_MatchingArchSucceeds is the positive
+// counterpart: an image whose Architecture matches this host's (or omits it
+// entirely, e.g. the fakeDockerAPI's own default answer every other
+// resolveImage test relies on) must launch normally — the mismatch check
+// must not misfire against a legitimate match.
+func TestContainerBackend_ResolveImage_MatchingArchSucceeds(t *testing.T) {
+	api := &fakeDockerAPI{
+		ImageInspectFunc: func(ctx context.Context, imageRef string, opts ...client.ImageInspectOption) (client.ImageInspectResult, error) {
+			return imageInspectResultWithArch(runtime.GOARCH), nil
+		},
+	}
+	be := NewContainerBackend(api, ContainerBackendOptions{DefaultImage: "boid-runner:v9"})
+	mustLaunch(t, be, sandbox.Spec{ID: "job-arch-match", Argv: []string{"true"}}, backend.LaunchOptions{JobID: "job-arch-match"})
+
+	if len(api.createCalls) != 1 {
+		t.Fatalf("ContainerCreate calls = %d, want 1", len(api.createCalls))
+	}
 }
 
 // TestRunner_Backend_DrivesContainerBackendThroughSignalSeam is the

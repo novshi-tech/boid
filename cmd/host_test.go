@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/novshi-tech/boid/internal/client"
+	"github.com/novshi-tech/boid/internal/version"
 	"github.com/spf13/cobra"
 )
 
@@ -356,7 +357,7 @@ func TestEnsureHostModeDaemon_NoAutostart_FailsFastWithoutDeploying(t *testing.T
 // on PATH without needing the real engines installed (this sandbox has
 // neither, per CLAUDE.md's "sqlite 依存パッケージは sandbox 内でビルド不可"
 // note and general no-docker constraint — these fakes let the pure
-// decision logic (usableEngine/detectComposeEngine/imageExists) be tested
+// decision logic (usableEngine/detectComposeEngine) be tested
 // without them).
 func writeFakeExecutable(t *testing.T, dir, name, body string) {
 	t.Helper()
@@ -590,26 +591,6 @@ func TestDetectComposeEngine_NoEngineAtAll_Errors(t *testing.T) {
 	}
 }
 
-func TestImageExists_TrueWhenInspectSucceeds(t *testing.T) {
-	dir := t.TempDir()
-	writeFakeExecutable(t, dir, "docker", "exit 0")
-	t.Setenv("PATH", dir)
-
-	if !imageExists(context.Background(), "docker", composeImageTag) {
-		t.Error("expected imageExists == true when `docker image inspect` exits 0")
-	}
-}
-
-func TestImageExists_FalseWhenInspectFails(t *testing.T) {
-	dir := t.TempDir()
-	writeFakeExecutable(t, dir, "docker", "exit 1")
-	t.Setenv("PATH", dir)
-
-	if imageExists(context.Background(), "docker", composeImageTag) {
-		t.Error("expected imageExists == false when `docker image inspect` exits non-zero (no such image)")
-	}
-}
-
 // TestDeployFromEmbeddedAssets_NoEngine_ClearError pins the round-2 codex
 // review Major 1 fallback's dead-end error path: no checkout AND no usable
 // engine at all must fail clearly rather than attempting anything.
@@ -623,40 +604,6 @@ func TestDeployFromEmbeddedAssets_NoEngine_ClearError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "no boid repo checkout found") {
 		t.Errorf("error = %q, want it to mention the missing checkout", err.Error())
-	}
-}
-
-// TestDeployFromEmbeddedAssets_NoImage_ClearError pins the concrete Major 1
-// failure this fallback exists to improve: an engine IS usable, but
-// composeImageTag was never built (no checkout, ever, on this host) — must
-// fail with a specific, actionable message rather than a raw `compose up`
-// error or (pre-fix) the unrelated "could not locate deploy-container.sh"
-// error.
-func TestDeployFromEmbeddedAssets_NoImage_ClearError(t *testing.T) {
-	dir := t.TempDir()
-	writeFakeExecutable(t, dir, "docker", "exit 0") // `docker version` and `docker image inspect` both "succeed" (exit 0)... but see below
-	t.Setenv("PATH", dir)
-	t.Setenv("XDG_STATE_HOME", t.TempDir())
-
-	// Rewrite the fake so `version` and `compose version` succeed but
-	// `image inspect` fails — distinguishing the subcommands the way a
-	// real docker with a working compose plugin but no matching image
-	// locally would.
-	writeFakeExecutable(t, dir, "docker", `
-case "$1" in
-  version) exit 0 ;;
-  compose) exit 0 ;;
-  image) exit 1 ;;
-  *) exit 1 ;;
-esac
-`)
-
-	err := deployFromEmbeddedAssets(context.Background(), "some-token", "127.0.0.1:8442")
-	if err == nil {
-		t.Fatal("expected an error when the image does not exist locally")
-	}
-	if !strings.Contains(err.Error(), composeImageTag) {
-		t.Errorf("error = %q, want it to name the missing image %q", err.Error(), composeImageTag)
 	}
 }
 
@@ -762,21 +709,22 @@ func TestWaitForHealthy_StaleImage404_FailsFastWithClearError(t *testing.T) {
 // Before this fix, deployFromEmbeddedAssets ran a bare `compose up -d`
 // directly instead of invoking scripts/deploy-container.sh at all. This
 // test fakes the `docker` binary on PATH (logging every invocation's argv
-// and the DEPLOY_CONTAINER_SKIP_BUILD env value to a file, always
-// succeeding) and lets the REAL, embedded deploy-container.sh run end to
-// end through deployFromEmbeddedAssets — proving the actual script (not a
-// narrower Go-level reimplementation of it) runs, and that no `docker
-// build` is ever attempted (DEPLOY_CONTAINER_SKIP_BUILD=1 is set for every
-// invocation — the embedded path can never build a fresh image, this
-// file's own header comment).
+// and the BOID_IMAGE env value to a file, always succeeding) and lets the
+// REAL, embedded deploy-container.sh run end to end through
+// deployFromEmbeddedAssets — proving the actual script (not a narrower
+// Go-level reimplementation of it) runs, that no `docker build` is ever
+// attempted (this path never passes `--build` — the embedded path can
+// never build a fresh image, this file's own header comment), and that
+// compose sees the BOID_IMAGE deployFromEmbeddedAssets computed via
+// internal/version (docs/plans/release-onboarding.md 穴4/PR4's pull-first
+// default).
 //
 // PR-4 (docs/plans/volume-only-daemon.md §論点e) removed
 // deploy-container.sh's config-seed + effective-backend-validate
 // `compose run --rm` steps entirely (container is the only sandbox backend
 // now, selected unconditionally, not by a config.yaml key a fresh deploy
-// needed to seed) — this test accordingly no longer asserts on those
-// steps, only on the `compose up -d` invocation and the SKIP_BUILD
-// propagation.
+// needed to seed) — this test accordingly only asserts on the
+// `compose up -d` invocation and the BOID_IMAGE propagation.
 func TestDeployFromEmbeddedAssets_RunsUnifiedScript_StartsComposeStack(t *testing.T) {
 	dir := t.TempDir()
 	logPath := filepath.Join(dir, "docker-invocations.log")
@@ -784,7 +732,7 @@ func TestDeployFromEmbeddedAssets_RunsUnifiedScript_StartsComposeStack(t *testin
 	writeFakeExecutable(t, dir, "docker", fmt.Sprintf(`
 {
   echo "ARGS: $*"
-  echo "SKIP_BUILD=${DEPLOY_CONTAINER_SKIP_BUILD:-unset}"
+  echo "BOID_IMAGE=${BOID_IMAGE:-unset}"
 } >> %q
 exit 0
 `, logPath))
@@ -811,6 +759,8 @@ exit 0
 	defer ts.Close()
 	addr := ts.Listener.Addr().String()
 
+	wantImage := version.DefaultContainerImage()
+
 	if err := deployFromEmbeddedAssets(context.Background(), "good-token", addr); err != nil {
 		t.Fatalf("deployFromEmbeddedAssets: %v", err)
 	}
@@ -827,20 +777,29 @@ exit 0
 	if strings.Contains(log, "ARGS: build") {
 		t.Errorf("expected no `docker build` invocation under the embedded-assets path (no source tree to build from); log:\n%s", log)
 	}
+	if strings.Contains(log, "ARGS: --build") {
+		t.Errorf("expected deployFromEmbeddedAssets to never pass --build to the script; log:\n%s", log)
+	}
 	// Only the actual compose-PROJECT invocations (`compose -f <file>
-	// run/down/up`, both deploy-container.sh's own AND cmd/host.go's own
-	// earlier detectComposeEngine/imageExists probe calls like bare
-	// `compose version` are deliberately excluded via the "-f" match)
-	// spawned from WITHIN deploy-container.sh need to have inherited
-	// DEPLOY_CONTAINER_SKIP_BUILD=1 — deployFromEmbeddedAssets's own
-	// earlier Go-level precondition check (detectComposeEngine +
-	// imageExists) legitimately runs BEFORE runDeployScript ever sets that
-	// env var at all, so its `version`/`compose version`/`image inspect`
-	// probes are expected to show SKIP_BUILD=unset.
+	// run/down/up`, deployFromEmbeddedAssets's own earlier
+	// detectComposeEngine probe calls like bare `compose version` are
+	// deliberately excluded via the "-f" match) spawned from WITHIN
+	// deploy-container.sh need to have inherited BOID_IMAGE — the earlier
+	// detectComposeEngine probe legitimately runs BEFORE runDeployScript
+	// ever sets that env var at all, so its `version`/`compose version`
+	// probes are expected to show BOID_IMAGE=unset.
 	lines := strings.Split(log, "\n")
+	found := false
 	for i := 0; i+1 < len(lines); i++ {
-		if strings.HasPrefix(lines[i], "ARGS: compose -f") && lines[i+1] == "SKIP_BUILD=unset" {
-			t.Errorf("compose invocation %q ran without DEPLOY_CONTAINER_SKIP_BUILD=1; log:\n%s", lines[i], log)
+		if !strings.HasPrefix(lines[i], "ARGS: compose -f") {
+			continue
 		}
+		found = true
+		if want := "BOID_IMAGE=" + wantImage; lines[i+1] != want {
+			t.Errorf("compose invocation %q ran with %q, want %q; log:\n%s", lines[i], lines[i+1], want, log)
+		}
+	}
+	if !found {
+		t.Errorf("expected at least one `compose -f ...` invocation; log:\n%s", log)
 	}
 }

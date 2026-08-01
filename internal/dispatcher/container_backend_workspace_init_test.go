@@ -19,6 +19,7 @@ import (
 
 	"github.com/novshi-tech/boid/internal/dockerres"
 	"github.com/novshi-tech/boid/internal/sandbox/backend"
+	"github.com/novshi-tech/boid/internal/version"
 )
 
 // This file pins what boid asks the ENGINE for when it prepares a workspace
@@ -173,8 +174,8 @@ func TestContainerBackend_RunWorkspaceInit_CreateOptions(t *testing.T) {
 	} else if len(got.Config.Cmd) != 0 {
 		t.Errorf("cmd = %v, want an empty (but non-nil) slice", got.Config.Cmd)
 	}
-	if got.Config.Image != defaultContainerImage {
-		t.Errorf("image = %q, want the backend default %q", got.Config.Image, defaultContainerImage)
+	if want := version.DefaultContainerImage(); got.Config.Image != want {
+		t.Errorf("image = %q, want the backend default %q", got.Config.Image, want)
 	}
 
 	// §D7: the same uid the job containers get, never a literal.

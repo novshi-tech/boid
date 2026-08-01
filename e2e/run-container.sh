@@ -368,22 +368,39 @@ export DOCKER_GID
 DOCKER_GID="$(getent group docker 2>/dev/null | cut -d: -f3)"
 : "${DOCKER_GID:=999}"
 
+# BOID_IMAGE (docs/plans/release-onboarding.md 穴4/PR4): scripts/
+# deploy-container.sh's own default flipped from "always build locally" to
+# "pull-first" — build/container/compose.yml's `image:` line now defaults
+# to a GHCR ref when BOID_IMAGE is unset. This e2e run always exercises
+# LOCAL, possibly-uncommitted code (never a published image), so every
+# `docker compose -f build/container/compose.yml ...` call THIS script
+# makes directly (config-seed run below, diagnostics/teardown in the
+# cleanup trap) — not just the ones routed through deploy-container.sh's
+# own `--build` invocations below — must agree on the SAME local tag
+# scripts/deploy-container.sh's own `--build` step produces
+# (`-t boid-runner:latest`), or they would resolve DIFFERENT images
+# (this script's local build vs. an unrelated GHCR pull) for the same
+# nominal compose project, exactly the failure mode 穴4's table warned
+# "e2e を赤くしない" against.
+export BOID_IMAGE="boid-runner:latest"
+
 # --- build the boid-runner image FIRST (codex round-1, PR834 Blocker 2) -----
 # The config-seed step immediately below runs `docker compose run ... daemon`
 # — and build/container/compose.yml's `daemon` service has no `build:`
-# section, only `image: boid-runner:latest` — so on a fresh runner with no
-# LOCAL boid-runner:latest image yet (true of every CI runner before this
-# script has ever built one), that `run` would try to PULL a nonexistent/
-# private image and fail before configuration (or anything else) ever gets a
-# chance to run. This previously only happened much later, inside
+# section of its own, so on a fresh runner with no LOCAL boid-runner:latest
+# image yet (true of every CI runner before this script has ever built one),
+# that `run` would otherwise resolve BOID_IMAGE (just exported above) with
+# nothing behind it and fail before configuration (or anything else) ever
+# gets a chance to run. This previously only happened much later, inside
 # scripts/deploy-container.sh's own call at the bottom of this script — too
-# late for the config-seed step above it. DEPLOY_CONTAINER_BUILD_ONLY=1 runs
-# just that script's build step, standalone, so the image exists before this
-# script's own FIRST `docker compose` call of any kind; deploy-container.sh's
-# own later, unconditional (full build+seed+up) invocation re-runs the same
+# late for the config-seed step above it. `--build` (DEPLOY_CONTAINER_BUILD_ONLY=1
+# also implies it, kept for explicitness) runs just that script's build
+# step, standalone, so the image exists before this script's own FIRST
+# `docker compose` call of any kind; deploy-container.sh's own later,
+# unconditional (full build+seed+up) `--build` invocation re-runs the same
 # build, cheaply, thanks to docker/podman's own layer cache.
 e2e_log "building the boid-runner image (before config seed, so it has an image to run against)"
-DEPLOY_CONTAINER_BUILD_ONLY=1 e2e_run bash "$REPO_ROOT/scripts/deploy-container.sh"
+DEPLOY_CONTAINER_BUILD_ONLY=1 e2e_run bash "$REPO_ROOT/scripts/deploy-container.sh" --build
 
 # --- seed config.yaml into the (fresh) boid_state volume --------------------
 # web.http_addr must be in place BEFORE the daemon's own first boot
@@ -865,8 +882,15 @@ docker run --rm \
   sh -c "id; ls -ld '${BOID_RUNTIME_DIR}'; mkdir -p '${BOID_RUNTIME_DIR}/boid' && echo MKDIR_OK && touch '${BOID_RUNTIME_DIR}/boid/preflight.log' && echo TOUCH_OK && rm -f '${BOID_RUNTIME_DIR}/boid/preflight.log'"
 
 # --- build image + bring up the compose stack -------------------------------
+# `--build` (docs/plans/release-onboarding.md 穴4/PR4): this script's own
+# default flipped to pull-first — without it, this call would just reuse
+# BOID_IMAGE="boid-runner:latest" (exported above) as-is rather than
+# rebuilding, which happens to be harmless here (the image the earlier
+# DEPLOY_CONTAINER_BUILD_ONLY=1 step already built under that same tag is
+# still current), but --build keeps this call's own behavior explicit and
+# unconditional rather than relying on that coincidence.
 e2e_log "building image and starting compose stack (scripts/deploy-container.sh)"
-e2e_run bash "$REPO_ROOT/scripts/deploy-container.sh"
+e2e_run bash "$REPO_ROOT/scripts/deploy-container.sh" --build
 
 DAEMON_SOCKET="$XDG_RUNTIME_DIR/boid.sock"
 e2e_log "waiting for compose daemon health at $DAEMON_SOCKET"

@@ -75,3 +75,40 @@ func Version() string {
 func IsReleaseBuild() bool {
 	return IsExactRelease(Version())
 }
+
+// BoidRunnerImageRepo is the GHCR repository .github/workflows/
+// blackbox-e2e.yml's container-image job publishes to (docs/plans/
+// release-onboarding.md 決定4/PR3): a tag push building an exact release
+// (BOID_VERSION non-empty there, mirroring IsExactRelease's own rule)
+// additionally publishes "$BoidRunnerImageRepo:<the release tag>" —
+// exactly the ref DefaultContainerImage names for a release build.
+const BoidRunnerImageRepo = "ghcr.io/novshi-tech/boid-runner"
+
+// LocalBuildImage is the bare, unqualified tag scripts/deploy-container.sh's
+// local `docker build` step produces (its own `-t boid-runner:latest`,
+// stacked alongside the git-SHA-derived IMAGE_TAG it also applies) and
+// build/container/compose.yml's daemon service ultimately resolves to
+// whenever a caller hasn't overridden BOID_IMAGE — the local-checkout dev
+// workflow's own default. DefaultContainerImage falls back to this exact
+// string for any non-release build (穴2's broad rule) since there is no
+// GHCR ref to name for a build that was never published.
+const LocalBuildImage = "boid-runner:latest"
+
+// DefaultContainerImage returns the image ref a boid binary should default
+// to launching (job containers) or pulling (the compose daemon service)
+// for its OWN version identity — docs/plans/release-onboarding.md 穴4's
+// "pull の既定 ref にレジストリが無い" fix. For an exact release build
+// (IsReleaseBuild), this is that release's own GHCR tag, matching exactly
+// what the CI publish step (BoidRunnerImageRepo's own doc comment) pushes
+// for the same tag. For every other build shape — dev checkout, pseudo-
+// version, "+dirty", "(devel)" (穴2's rule is deliberately broad here, see
+// exactReleaseTagPattern's doc comment) — there is no corresponding
+// published GHCR ref to name, so this instead names LocalBuildImage, the
+// bare local tag scripts/deploy-container.sh's own local build step
+// produces and e2e/run-container.sh's local-build flow already depends on.
+func DefaultContainerImage() string {
+	if v := Version(); IsExactRelease(v) {
+		return BoidRunnerImageRepo + ":" + v
+	}
+	return LocalBuildImage
+}

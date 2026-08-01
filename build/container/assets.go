@@ -13,12 +13,14 @@
 // embedding a full second copy of the repository inside itself (impractical
 // and circular, see cmd/host.go's own header comment, which predates this
 // file). These embedded assets exist to enable a narrower, still genuinely
-// useful fallback: bringing up the compose stack against an
-// ALREADY-BUILT "boid-runner:latest" image (built at some earlier point
-// from within a real checkout) without needing that checkout to still be
-// around. See cmd/host.go's deployFromEmbeddedAssets for where this is
-// used, and findComposeRoot's own doc comment for the checkout-based
-// primary path this is a fallback FOR.
+// useful fallback: bringing up the compose stack by PULLING this binary's
+// own matching version's GHCR image (docs/plans/release-onboarding.md
+// 穴4/PR4 — internal/version.DefaultContainerImage(), rather than requiring
+// an already-built local image, which was this fallback's pre-PR4 shape)
+// without needing a checkout to be around at all. See cmd/host.go's
+// deployFromEmbeddedAssets for where this is used, and findComposeRoot's
+// own doc comment for the checkout-based primary path this is a fallback
+// FOR.
 package container
 
 import "embed"

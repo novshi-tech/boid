@@ -40,6 +40,36 @@
 
 set -euo pipefail
 
+# --- --build (docs/plans/release-onboarding.md 穴4/PR4) ---------------------
+# The script's own default flipped from "always build locally" to
+# "pull-first" as part of PR4: a bare `go install`-only user has no source
+# tree to build from at all (this is exactly what makes host mode's
+# no-checkout fallback, cmd/host.go's deployFromEmbeddedAssets, viable in
+# the first place), and a plain `boid start` should default to pulling the
+# published, versioned image rather than silently building an unversioned
+# local one. `--build` is the explicit developer backdoor back to the old
+# behavior — cmd/host.go's deployFromCheckout (the "a real checkout was
+# found" path, i.e. nose's own day-to-day dev workflow) always passes it,
+# so that workflow keeps picking up local code changes exactly like before
+# this flip. DEPLOY_CONTAINER_BUILD_ONLY=1 (below) also implies it: that
+# knob's entire purpose is building an image, so it must build regardless
+# of whether the caller separately passed --build.
+BUILD=0
+for arg in "$@"; do
+	case "$arg" in
+	--build)
+		BUILD=1
+		;;
+	*)
+		echo "error: unknown argument: $arg (only --build is accepted)" >&2
+		exit 1
+		;;
+	esac
+done
+if [[ "${DEPLOY_CONTAINER_BUILD_ONLY:-0}" == "1" ]]; then
+	BUILD=1
+fi
+
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DOCKERFILE="$ROOT_DIR/build/container/Dockerfile"
 COMPOSE_FILE="$ROOT_DIR/build/container/compose.yml"
@@ -215,29 +245,15 @@ fi
 : "${DOCKER_GID:=999}"
 export BOID_RUNTIME_DIR BOID_UID BOID_GID DOCKER_GID
 
-# DEPLOY_CONTAINER_SKIP_BUILD (round-3 codex review of #835, PR-3's
-# host-mode fallback): set by cmd/host.go's deployFromEmbeddedAssets when
-# ROOT_DIR is an extracted, repo-root-SHAPED directory (this script itself,
-# plus build/container/{compose.yml,Dockerfile}, all go:embed'd into the
-# `boid` binary and written out to mirror this repo's own directory layout
-# — see scripts/embed.go and build/container/assets.go) rather than a real
-# git checkout. Both `docker build ... "$ROOT_DIR"` (Dockerfile's own build
-# context is `COPY . .`, the ENTIRE go source tree, which an extracted
-# asset directory never has — embedding what a build needs into the very
-# binary being built from that same source would be circular) and
-# `git -C "$ROOT_DIR" rev-parse HEAD` (no `.git` there) would fail in that
-# directory regardless, so this branch skips the whole build step (not
-# just the build call) and instead requires an already-built
-# boid-runner:latest image (built at some earlier point from within a real
-# checkout) to already exist locally.
-if [[ "${DEPLOY_CONTAINER_SKIP_BUILD:-0}" == "1" ]]; then
-	IMAGE_TAG="boid-runner:latest"
-	if ! "$ENGINE" image inspect "$IMAGE_TAG" >/dev/null 2>&1; then
-		echo "error: DEPLOY_CONTAINER_SKIP_BUILD=1 but no local $IMAGE_TAG image found — build it once from within a boid repo checkout (this script, without DEPLOY_CONTAINER_SKIP_BUILD) or pre-provision the image out of band" >&2
-		exit 1
-	fi
-	echo "deploy-container: DEPLOY_CONTAINER_SKIP_BUILD=1 — using existing local $IMAGE_TAG image, skipping image build"
-else
+# --- build (--build/DEPLOY_CONTAINER_BUILD_ONLY) or pull (default) --------
+# docs/plans/release-onboarding.md 穴4/PR4: BUILD was computed above from
+# --build / DEPLOY_CONTAINER_BUILD_ONLY. Building requires a real checkout
+# (`docker build ... "$ROOT_DIR"` needs Dockerfile's `COPY . .` context, and
+# `git -C "$ROOT_DIR" rev-parse HEAD` needs a `.git` — neither exists under
+# cmd/host.go's embedded-assets fallback, which is exactly why that path
+# never passes --build (see this script's own --build comment above) — so
+# only the BUILD branch below ever touches git/BUILD_CMD.
+if [[ "$BUILD" == "1" ]]; then
 	IMAGE_TAG="boid:$(git -C "$ROOT_DIR" rev-parse HEAD)"
 
 	# No --build-arg BOID_UID/BOID_GID here (removed, PR2): the image is
@@ -271,14 +287,48 @@ else
 		BOID_VERSION=""
 	fi
 
-	echo "deploy-container: building $IMAGE_TAG from $DOCKERFILE (BOID_VERSION=${BOID_VERSION:-<none>})"
+	echo "deploy-container: --build — building $IMAGE_TAG from $DOCKERFILE (BOID_VERSION=${BOID_VERSION:-<none>})"
 	"${BUILD_CMD[@]}" \
 		--build-arg "BOID_VERSION=$BOID_VERSION" \
 		-t "$IMAGE_TAG" \
 		-t boid-runner:latest \
 		-f "$DOCKERFILE" \
 		"$ROOT_DIR"
+
+	# The just-built local tag, not whatever BOID_IMAGE this process may
+	# have inherited (e.g. a stale value exported by a previous run) —
+	# --build's whole point is "run what I just built", not silently
+	# pulling something else instead.
+	BOID_IMAGE="boid-runner:latest"
+else
+	IMAGE_TAG="(none — pull-first default, no local build)"
+
+	# Pull-first default: an already-exported BOID_IMAGE wins outright
+	# (cmd/host.go's deployFromEmbeddedAssets computes this via
+	# internal/version.DefaultContainerImage() in Go — the exact version
+	# identity of the running CLI binary, which is strictly better
+	# information than anything this script can derive on its own when
+	# there is no git checkout to inspect). Otherwise, when a real checkout
+	# IS present (e.g. this script invoked directly, with no --build, by a
+	# developer who just wants to run the published image instead of
+	# building) and happens to sit exactly on a release tag, prefer that
+	# release's own GHCR ref — matching internal/version.IsExactRelease's
+	# rule and the same tag .github/workflows/blackbox-e2e.yml's publish
+	# step pushes for it. Falling back all the way to the bare GHCR
+	# "latest" ref otherwise mirrors build/container/compose.yml's own
+	# static default (its `image:` line's `${BOID_IMAGE:-...}` fallback).
+	if [[ -z "${BOID_IMAGE:-}" ]]; then
+		if git -C "$ROOT_DIR" rev-parse --git-dir >/dev/null 2>&1; then
+			checkout_tag="$(git -C "$ROOT_DIR" describe --tags --exact-match 2>/dev/null || true)"
+			if [[ "$checkout_tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+				BOID_IMAGE="ghcr.io/novshi-tech/boid-runner:$checkout_tag"
+			fi
+		fi
+		: "${BOID_IMAGE:=ghcr.io/novshi-tech/boid-runner:latest}"
+	fi
+	echo "deploy-container: pull-first default — compose will pull $BOID_IMAGE (pass --build to build locally instead)"
 fi
+export BOID_IMAGE
 
 # DEPLOY_CONTAINER_BUILD_ONLY (codex round-1, PR834 Blocker 2): lets a
 # caller (e2e/run-container.sh) invoke just this build step, standalone,
@@ -305,7 +355,7 @@ if [[ ${#COMPOSE_CMD[@]} -eq 0 ]]; then
 	# caller owns the rest" exit — reaching here means the caller wanted an
 	# actually-running stack and podman-compose is simply missing, which is
 	# an unmet requirement, not a degraded-but-OK outcome.
-	echo "error: podman-compose is required to bring the compose stack up (image built: $IMAGE_TAG, but compose up was skipped — see warning above); install podman-compose or set DEPLOY_CONTAINER_BUILD_ONLY=1 if you only wanted the image" >&2
+	echo "error: podman-compose is required to bring the compose stack up (image ready: $BOID_IMAGE, but compose up was skipped — see warning above); install podman-compose or set DEPLOY_CONTAINER_BUILD_ONLY=1 if you only wanted the image" >&2
 	exit 1
 fi
 

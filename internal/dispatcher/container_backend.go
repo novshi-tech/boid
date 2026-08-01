@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -30,6 +31,7 @@ import (
 	"github.com/novshi-tech/boid/internal/sandbox"
 	"github.com/novshi-tech/boid/internal/sandbox/backend"
 	"github.com/novshi-tech/boid/internal/sandbox/realization"
+	"github.com/novshi-tech/boid/internal/version"
 )
 
 // containerBackend implements backend.SandboxBackend by translating a
@@ -133,7 +135,8 @@ const (
 // (if minimal) configuration for tests.
 type ContainerBackendOptions struct {
 	// DefaultImage is used when a spec carries no ContainerImage override.
-	// Empty falls back to defaultContainerImage.
+	// Empty falls back to version.DefaultContainerImage() — see
+	// NewContainerBackend's own assignment for why.
 	DefaultImage string
 	// PullPolicy controls image pulling (see ImagePullPolicy). Zero value
 	// is ImagePullIfNotPresent.
@@ -302,8 +305,7 @@ type ContainerBackendOptions struct {
 }
 
 const (
-	defaultContainerImage = "boid-runner:latest"
-	defaultContainerUID   = 1000
+	defaultContainerUID = 1000
 	// defaultContainerGID is 0, not 1000 (codex review of PR2, Major 2):
 	// the arbitrary-uid image (build/container/Dockerfile, docs/plans/
 	// release-onboarding.md 決定1) only makes /run/boid/bin, /workspace,
@@ -516,7 +518,12 @@ func NewContainerBackend(api dockerAPI, opts ContainerBackendOptions) backend.Sa
 		sessions:             make(map[string]*containerSession),
 	}
 	if b.defaultImage == "" {
-		b.defaultImage = defaultContainerImage
+		// docs/plans/release-onboarding.md 穴4: the fallback image ref is
+		// no longer a bare, registry-less "boid-runner:latest" (which a
+		// pull would send to docker.io, not GHCR, and fail) — it now
+		// tracks this binary's own version identity, so a released daemon
+		// pulls its own matching job-container image by default.
+		b.defaultImage = version.DefaultContainerImage()
 	}
 	b.uid, b.gid = defaultContainerUID, defaultContainerGID
 	switch {
@@ -1649,6 +1656,23 @@ func (b *containerBackend) resolveImage(ctx context.Context, override string) (s
 		if err != nil {
 			return "", fmt.Errorf("inspect container image %q after pull: %w", image, err)
 		}
+	}
+
+	// Arch mismatch fail-fast (docs/plans/release-onboarding.md 決定5's
+	// arm64 論点, required regardless of whether an arm64 image is ever
+	// published): a host with binfmt/qemu registered silently runs a
+	// foreign-arch image under emulation instead of refusing it outright
+	// — no error, just extreme slowness and unexplained crashes that look
+	// nothing like an architecture problem. insp.Architecture is only
+	// checked when non-empty (the fakeDockerAPI test default, and any real
+	// engine's honest answer for an image whose manifest genuinely lacks
+	// platform metadata) so this cannot misfire against a legitimately
+	// arch-agnostic answer — it only fires when the image POSITIVELY
+	// claims a platform that doesn't match this host's.
+	if insp.Architecture != "" && insp.Architecture != runtime.GOARCH {
+		return "", fmt.Errorf(
+			"container image %q is built for arch %q, but this host is %q — refusing to run it under binfmt/qemu emulation (silently works but is extremely slow and can crash in ways that look nothing like an architecture problem); use an image built for %[3]s",
+			image, insp.Architecture, runtime.GOARCH)
 	}
 
 	if override != "" {
