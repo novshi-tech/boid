@@ -260,9 +260,19 @@ func migrationGuidance(dir string, isBareRepo bool) string {
 			"  clone of this project's repository instead, then push the fix — see\n" +
 			"  docs/ja/guide/migration.md."
 	}
+	// codex round-9 review of PR5, Minor: "shows exactly what would move"
+	// overstated it after cmd/project_migrate.go's dry-run stopped
+	// touching the daemon's DB at all (round-8 fix) — dry-run now reads
+	// only project.yaml and explicitly SKIPS the workspace-assignment and
+	// secret-collision checks that used to make that claim true, printing
+	// its own "(dry-run) skipping ..." notes when it does. Weakened to
+	// describe what dry-run actually shows: a plan derived from
+	// project.yaml alone.
 	return "Migration:\n" +
 		"  project.yaml uses fields removed in the new schema (listed above).\n" +
-		"  `boid project migrate " + dir + "` (dry-run) shows exactly what would move.\n" +
+		"  `boid project migrate " + dir + "` (dry-run) shows the migration plan derived\n" +
+		"  from project.yaml (it does not check the daemon's DB — see its own output\n" +
+		"  for what it skips as a result).\n" +
 		"  Automated --apply is a legacy, pre-compose, bare-metal-only path (requires\n" +
 		"  --legacy-bare-metal) — see `boid project migrate --help` and\n" +
 		"  docs/ja/guide/migration.md for what it does and does not cover for a\n" +

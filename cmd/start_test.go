@@ -446,6 +446,72 @@ exit 0
 	}
 }
 
+// TestRunStart_NonForeground_BOID_UIDZero_RefusesBeforeComposeUp is the
+// codex round-9 review of PR5, Major regression test: on the compose-up
+// (non-foreground) path, the effective uid that ends up substituted into
+// compose.yml's `user: "${BOID_UID}:0"` is BOID_UID when explicitly set,
+// not this process's own os.Getuid() — the refusal here must inspect
+// effectiveBoidUID(), or a non-root operator setting BOID_UID=0 would
+// silently bring up a root-uid daemon container.
+func TestRunStart_NonForeground_BOID_UIDZero_RefusesBeforeComposeUp(t *testing.T) {
+	t.Setenv("BOID_DAEMON_CHILD", "")
+	t.Setenv("BOID_UID", "0")
+	startForeground = false
+	t.Cleanup(func() { startForeground = false })
+
+	err := runStart(startCmd, nil)
+	if err == nil {
+		t.Fatal("expected an error: BOID_UID=0 on a non-foreground boid start must be refused before compose up")
+	}
+	if !strings.Contains(err.Error(), "uid 0") {
+		t.Errorf("expected the error to mention uid 0, got %v", err)
+	}
+}
+
+// TestRunStart_Foreground_BOID_UIDZero_DoesNotFalselyRefuse is the codex
+// round-9 review of PR5, Major regression test (the other direction of
+// the same bug): on the --foreground/daemon-child path THIS process
+// itself is (or becomes) the daemon — compose.yml's `user:` substitution
+// is never consulted there at all, so BOID_UID has no bearing on what
+// uid this process actually runs as. The refusal on that branch must
+// inspect this process's own os.Getuid(), not effectiveBoidUID() — a
+// non-root operator running `BOID_UID=0 boid start --foreground` must
+// NOT be refused just because BOID_UID happens to be "0" in their
+// environment (this process's real, non-root uid is what will actually
+// run).
+func TestRunStart_Foreground_BOID_UIDZero_DoesNotFalselyRefuse(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("this regression only demonstrates on a non-root test process")
+	}
+	t.Setenv("BOID_UID", "0")
+	startForeground = true
+	t.Cleanup(func() { startForeground = false })
+
+	origDBPath := startDBPath
+	origSocketPath := startSocketPath
+	t.Cleanup(func() {
+		startDBPath = origDBPath
+		startSocketPath = origSocketPath
+	})
+	dir := t.TempDir()
+	startDBPath = filepath.Join(dir, "boid.db")
+	startSocketPath = filepath.Join(dir, "boid.sock")
+
+	// runStart's --foreground branch calls refuseRootUID before doing
+	// anything else expensive (self-registration, buildStartConfig,
+	// runDaemonChild) — this test only needs to observe that the uid
+	// check itself does not fire; it does not need to let the daemon
+	// actually start, so it directly exercises the same check runStart's
+	// foreground branch makes (os.Getuid(), not effectiveBoidUID()) and
+	// confirms it is nil despite BOID_UID=0.
+	if err := refuseRootUID(os.Getuid()); err != nil {
+		t.Fatalf("refuseRootUID(os.Getuid()) unexpectedly refused a non-root test process: %v", err)
+	}
+	if got := effectiveBoidUID(); got != 0 {
+		t.Fatalf("effectiveBoidUID() = %d, want 0 (BOID_UID=0 is set) — sanity check that this test's premise holds", got)
+	}
+}
+
 // TestRefuseDaemonConfigFlagsWithoutForeground is the codex round-3 review
 // of PR5, Major 2 regression: --db-path/--socket-path/--kits-dir/
 // --key-file-path/--cli-addr only ever configure the actual daemon
@@ -599,5 +665,51 @@ esac
 	}
 	if !strings.Contains(string(upOut), "podman.socket is not active") {
 		t.Errorf("expected the podman.socket preflight error for a plain (up) invocation; output:\n%s", upOut)
+	}
+}
+
+// TestDeployContainerScript_MalformedBOID_UID_Refuses is the codex
+// round-9 review of PR5, Major regression test: the script's own uid-0
+// guard (the actual enforcement point compose.yml's
+// `user: "${BOID_UID}:0"` reads from) used to only ever compare BOID_UID
+// against the exact literal string "0" — a value like "00", which
+// docker/podman would still parse as numeric uid 0, sailed straight
+// through uncaught. Runs the REAL script (not a fake) with a fake docker
+// engine (so ENGINE=docker and the podman-only podman.socket preflight
+// never runs, keeping this test isolated to the BOID_UID check) and
+// asserts a malformed-but-zero-meaning value is refused, alongside a
+// genuinely non-numeric value.
+func TestDeployContainerScript_MalformedBOID_UID_Refuses(t *testing.T) {
+	scriptPath, err := filepath.Abs(filepath.Join("..", "scripts", "deploy-container.sh"))
+	if err != nil {
+		t.Fatalf("resolve script path: %v", err)
+	}
+	if _, err := os.Stat(scriptPath); err != nil {
+		t.Fatalf("real deploy-container.sh not found at %s: %v", scriptPath, err)
+	}
+
+	dir := t.TempDir()
+	writeFakeExecutable(t, dir, "docker", `
+case "$1 $2" in
+  "compose version") exit 0 ;;
+  *) exit 0 ;;
+esac
+`)
+	env := append(os.Environ(),
+		"PATH="+dir+string(os.PathListSeparator)+os.Getenv("PATH"),
+	)
+
+	for _, badUID := range []string{"00", "+0", "-1", "not-a-number"} {
+		t.Run(badUID, func(t *testing.T) {
+			cmd := exec.Command(scriptPath)
+			cmd.Env = append(append([]string{}, env...), "BOID_UID="+badUID)
+			out, err := cmd.CombinedOutput()
+			if err == nil {
+				t.Fatalf("expected BOID_UID=%q to be refused; output:\n%s", badUID, out)
+			}
+			if !strings.Contains(string(out), "BOID_UID") {
+				t.Errorf("expected the error to mention BOID_UID for BOID_UID=%q; output:\n%s", badUID, out)
+			}
+		})
 	}
 }

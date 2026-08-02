@@ -24,7 +24,9 @@ func TestProjectMigrationError_SingleIssueByteIdentical(t *testing.T) {
 project.yaml: top-level "host_commands" is no longer supported.
 Migration:
   project.yaml uses fields removed in the new schema (listed above).
-  ` + "`boid project migrate " + dir + "`" + ` (dry-run) shows exactly what would move.
+  ` + "`boid project migrate " + dir + "`" + ` (dry-run) shows the migration plan derived
+  from project.yaml (it does not check the daemon's DB — see its own output
+  for what it skips as a result).
   Automated --apply is a legacy, pre-compose, bare-metal-only path (requires
   --legacy-bare-metal) — see ` + "`boid project migrate --help`" + ` and
   docs/ja/guide/migration.md for what it does and does not cover for a

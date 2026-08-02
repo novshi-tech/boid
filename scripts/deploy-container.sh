@@ -289,9 +289,31 @@ fi
 # bring up a new root-uid container, so there is nothing to protect
 # against here — mirrors the podman.socket preflight above, which is
 # similarly up-only.
-if [[ "$DOWN" != "1" && "$BOID_UID" == "0" ]]; then
-	echo "error: refusing to run the daemon as uid 0 (root) — set BOID_UID to a non-zero uid (docs/plans/release-onboarding.md 決定1/決定4 require a non-root uid with supplementary group 0)" >&2
-	exit 1
+#
+# codex round-9 review of PR5, Major: a plain `[[ "$BOID_UID" == "0" ]]`
+# string comparison only ever caught the exact literal "0" — a value
+# like "00" or "+0" is a different string but the SAME uid once docker/
+# podman parse compose.yml's `user: "${BOID_UID}:0"` numerically, so it
+# sailed straight through here uncaught. Host-mode's on-demand daemon
+# autostart (cmd/host.go) also reaches this script directly, bypassing
+# cmd/start.go's own effectiveBoidUID()-based refusal entirely (that Go
+# check only guards the explicit `boid start` invocation), so this is
+# the only enforcement point some callers ever pass through — it must
+# validate the numeric value itself, not just the literal spelling of
+# zero. Reject anything that is not a plain non-negative decimal integer
+# (Bash's own `((...))` treats a leading-zero string as octal, and a
+# larger int like "010" could sail through with the wrong numeric value
+# entirely — decimal-only regex prevents both a bypass and a silent
+# misinterpretation) as well as any numeric value of zero.
+if [[ "$DOWN" != "1" ]]; then
+	if [[ ! "$BOID_UID" =~ ^(0|[1-9][0-9]*)$ ]]; then
+		echo "error: BOID_UID must be a plain non-negative decimal integer (got \"$BOID_UID\")" >&2
+		exit 1
+	fi
+	if [[ "$BOID_UID" == "0" ]]; then
+		echo "error: refusing to run the daemon as uid 0 (root) — set BOID_UID to a non-zero uid (docs/plans/release-onboarding.md 決定1/決定4 require a non-root uid with supplementary group 0)" >&2
+		exit 1
+	fi
 fi
 # DOCKER_GID (Major 9, PR6 codex review): the host's `docker` group GID,
 # so compose.yml's group_add can grant the non-root daemon process
