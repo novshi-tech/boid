@@ -2,11 +2,11 @@ package cmd
 
 // cmd/check_test.go exercises the PR7 rewrite of `boid check`
 // (docs/plans/release-onboarding.md 穴5) — the pure/fakeable pieces
-// (socket-path resolution, the arch-mismatch comparison) directly, and the
-// engine-dependent pieces (podmanSocketActive) via writeFakeExecutable
-// (cmd/host_test.go), the same PATH-stubbing pattern host_test.go already
-// uses since this sandbox has neither docker nor podman installed
-// (host_test.go's own writeFakeExecutable doc comment).
+// (compose bind-source resolution, the arch-mismatch comparison) directly,
+// and the engine-dependent pieces (podmanSocketActive) via
+// writeFakeExecutable (cmd/host_test.go), the same PATH-stubbing pattern
+// host_test.go already uses since this sandbox has neither docker nor
+// podman installed (host_test.go's own writeFakeExecutable doc comment).
 
 import (
 	"context"
@@ -18,34 +18,44 @@ import (
 
 	"github.com/moby/moby/api/types/image"
 	dockerclient "github.com/moby/moby/client"
+	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 )
 
-func TestResolveDockerSocketPath_DefaultsWhenUnset(t *testing.T) {
-	t.Setenv("DOCKER_HOST", "")
-	if got := resolveDockerSocketPath(); got != dockerclient.DefaultDockerHost {
-		t.Errorf("resolveDockerSocketPath() = %q, want default %q", got, dockerclient.DefaultDockerHost)
-	}
-}
-
-func TestResolveDockerSocketPath_HonorsDockerHostEnv(t *testing.T) {
-	t.Setenv("DOCKER_HOST", "unix:///tmp/custom-docker.sock")
-	if got := resolveDockerSocketPath(); got != "unix:///tmp/custom-docker.sock" {
-		t.Errorf("resolveDockerSocketPath() = %q, want the DOCKER_HOST override", got)
-	}
-}
-
-func TestResolvePodmanSocketPath_DefaultsToXDGRuntimeShape(t *testing.T) {
+func TestResolveComposeBindSource_Docker_DefaultsToBareDockerSocket(t *testing.T) {
 	t.Setenv("BOID_DOCKER_SOCK_SRC", "")
-	want := "unix:///run/user/" + strconv.Itoa(os.Getuid()) + "/podman/podman.sock"
-	if got := resolvePodmanSocketPath(); got != want {
-		t.Errorf("resolvePodmanSocketPath() = %q, want %q (mirrors scripts/deploy-container.sh's BOID_DOCKER_SOCK_SRC default)", got, want)
+	if got := resolveComposeBindSource("docker"); got != "/var/run/docker.sock" {
+		t.Errorf("resolveComposeBindSource(docker) = %q, want /var/run/docker.sock (compose.yml's own bare-docker default)", got)
 	}
 }
 
-func TestResolvePodmanSocketPath_HonorsOverrideEnv(t *testing.T) {
-	t.Setenv("BOID_DOCKER_SOCK_SRC", "unix:///custom/podman.sock")
-	if got := resolvePodmanSocketPath(); got != "unix:///custom/podman.sock" {
-		t.Errorf("resolvePodmanSocketPath() = %q, want the BOID_DOCKER_SOCK_SRC override", got)
+func TestResolveComposeBindSource_Podman_DefaultsToXDGRuntimeShape(t *testing.T) {
+	t.Setenv("BOID_DOCKER_SOCK_SRC", "")
+	want := "/run/user/" + strconv.Itoa(os.Getuid()) + "/podman/podman.sock"
+	if got := resolveComposeBindSource("podman"); got != want {
+		t.Errorf("resolveComposeBindSource(podman) = %q, want %q (mirrors scripts/deploy-container.sh's BOID_DOCKER_SOCK_SRC default)", got, want)
+	}
+}
+
+func TestResolveComposeBindSource_HonorsOverrideEnvForEitherEngine(t *testing.T) {
+	t.Setenv("BOID_DOCKER_SOCK_SRC", "/custom/engine.sock")
+	if got := resolveComposeBindSource("docker"); got != "/custom/engine.sock" {
+		t.Errorf("resolveComposeBindSource(docker) = %q, want the BOID_DOCKER_SOCK_SRC override", got)
+	}
+	if got := resolveComposeBindSource("podman"); got != "/custom/engine.sock" {
+		t.Errorf("resolveComposeBindSource(podman) = %q, want the BOID_DOCKER_SOCK_SRC override", got)
+	}
+}
+
+func TestCheckEngineSocket_MissingBindSource_ReportsFailure(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("BOID_DOCKER_SOCK_SRC", dir+"/does-not-exist.sock")
+
+	var buf strings.Builder
+	if checkEngineSocket(context.Background(), &buf, "docker") {
+		t.Error("checkEngineSocket() = true, want false when the bind source path does not exist")
+	}
+	if !strings.Contains(buf.String(), "MISSING") {
+		t.Errorf("output = %q, want a MISSING line", buf.String())
 	}
 }
 
@@ -81,14 +91,22 @@ func TestPodmanSocketActive_FalseWhenSystemctlMissing(t *testing.T) {
 // fakeArchProbeAPI implements archProbeAPI for probeArchMismatchWithAPI
 // tests, without needing a real docker/podman engine.
 type fakeArchProbeAPI struct {
-	info       dockerclient.SystemInfoResult
-	infoErr    error
+	info    dockerclient.SystemInfoResult
+	infoErr error
+
+	dist    dockerclient.DistributionInspectResult
+	distErr error
+
 	inspect    dockerclient.ImageInspectResult
 	inspectErr error
 }
 
 func (f *fakeArchProbeAPI) Info(ctx context.Context, options dockerclient.InfoOptions) (dockerclient.SystemInfoResult, error) {
 	return f.info, f.infoErr
+}
+
+func (f *fakeArchProbeAPI) DistributionInspect(ctx context.Context, imageRef string, options dockerclient.DistributionInspectOptions) (dockerclient.DistributionInspectResult, error) {
+	return f.dist, f.distErr
 }
 
 func (f *fakeArchProbeAPI) ImageInspect(ctx context.Context, imageRef string, opts ...dockerclient.ImageInspectOption) (dockerclient.ImageInspectResult, error) {
@@ -101,28 +119,41 @@ func newSystemInfoResult(arch string) dockerclient.SystemInfoResult {
 	return r
 }
 
-func TestProbeArchMismatchWithAPI_MatchingArch_NoMismatch(t *testing.T) {
+func newDistributionInspectResult(archs ...string) dockerclient.DistributionInspectResult {
+	var r dockerclient.DistributionInspectResult
+	for _, a := range archs {
+		r.Platforms = append(r.Platforms, ocispec.Platform{Architecture: a})
+	}
+	return r
+}
+
+func TestProbeArchMismatchWithAPI_RemoteManifestMatchingArch_NoMismatch(t *testing.T) {
+	// The primary path (codex round-1 review, Blocker 1): the image has
+	// never been pulled locally (ImageInspect would fail), but the
+	// registry's own manifest — reachable WITHOUT pulling — already
+	// answers the question.
 	api := &fakeArchProbeAPI{
-		info:    newSystemInfoResult("x86_64"),
-		inspect: dockerclient.ImageInspectResult{InspectResponse: image.InspectResponse{Architecture: "amd64"}},
+		info:       newSystemInfoResult("x86_64"),
+		dist:       newDistributionInspectResult("amd64"),
+		inspectErr: errors.New("no such image (never pulled)"),
 	}
 
 	hostArch, imageArch, mismatch, note := probeArchMismatchWithAPI(context.Background(), api, "ghcr.io/novshi-tech/boid-runner:v0.0.1")
 	if note != "" {
-		t.Fatalf("note = %q, want empty (both sides resolved)", note)
+		t.Fatalf("note = %q, want empty (the remote manifest resolved this without ever touching ImageInspect)", note)
 	}
 	if mismatch {
-		t.Error("mismatch = true, want false: x86_64 (docker uname-style) normalizes to the same amd64 as the image reports")
+		t.Error("mismatch = true, want false: x86_64 (uname-style) normalizes to the same amd64 the manifest reports")
 	}
 	if hostArch != "amd64" || imageArch != "amd64" {
 		t.Errorf("hostArch=%q imageArch=%q, want both amd64", hostArch, imageArch)
 	}
 }
 
-func TestProbeArchMismatchWithAPI_MismatchedArch_ReportsMismatch(t *testing.T) {
+func TestProbeArchMismatchWithAPI_RemoteManifestMismatchedArch_ReportsMismatch(t *testing.T) {
 	api := &fakeArchProbeAPI{
-		info:    newSystemInfoResult("aarch64"),
-		inspect: dockerclient.ImageInspectResult{InspectResponse: image.InspectResponse{Architecture: "amd64"}},
+		info: newSystemInfoResult("aarch64"),
+		dist: newDistributionInspectResult("amd64"),
 	}
 
 	hostArch, imageArch, mismatch, note := probeArchMismatchWithAPI(context.Background(), api, "ghcr.io/novshi-tech/boid-runner:v0.0.1")
@@ -130,7 +161,7 @@ func TestProbeArchMismatchWithAPI_MismatchedArch_ReportsMismatch(t *testing.T) {
 		t.Fatalf("note = %q, want empty", note)
 	}
 	if !mismatch {
-		t.Error("mismatch = false, want true: host is arm64 (aarch64), image is amd64")
+		t.Error("mismatch = false, want true: host is arm64 (aarch64), the published manifest is amd64-only")
 	}
 	if hostArch != "arm64" {
 		t.Errorf("hostArch = %q, want normalized arm64", hostArch)
@@ -140,18 +171,53 @@ func TestProbeArchMismatchWithAPI_MismatchedArch_ReportsMismatch(t *testing.T) {
 	}
 }
 
-func TestProbeArchMismatchWithAPI_ImageNotPresentLocally_DegradesToNote(t *testing.T) {
+func TestProbeArchMismatchWithAPI_RemoteManifestList_MatchesOneOfMultiplePlatforms(t *testing.T) {
+	api := &fakeArchProbeAPI{
+		info: newSystemInfoResult("aarch64"),
+		dist: newDistributionInspectResult("amd64", "arm64"),
+	}
+
+	_, _, mismatch, note := probeArchMismatchWithAPI(context.Background(), api, "ghcr.io/novshi-tech/boid-runner:v0.0.1")
+	if note != "" {
+		t.Fatalf("note = %q, want empty", note)
+	}
+	if mismatch {
+		t.Error("mismatch = true, want false: a multi-platform manifest list that includes the host's arm64 must not be flagged")
+	}
+}
+
+func TestProbeArchMismatchWithAPI_DistributionInspectFails_FallsBackToLocalImageInspect(t *testing.T) {
+	api := &fakeArchProbeAPI{
+		info:    newSystemInfoResult("x86_64"),
+		distErr: errors.New("no registry configured for this local tag"),
+		inspect: dockerclient.ImageInspectResult{InspectResponse: image.InspectResponse{Architecture: "amd64"}},
+	}
+
+	hostArch, imageArch, mismatch, note := probeArchMismatchWithAPI(context.Background(), api, "boid-runner:latest")
+	if note != "" {
+		t.Fatalf("note = %q, want empty (local ImageInspect fallback resolved it)", note)
+	}
+	if mismatch {
+		t.Error("mismatch = true, want false")
+	}
+	if hostArch != "amd64" || imageArch != "amd64" {
+		t.Errorf("hostArch=%q imageArch=%q, want both amd64", hostArch, imageArch)
+	}
+}
+
+func TestProbeArchMismatchWithAPI_NeitherManifestNorLocalImageResolve_DegradesToNote(t *testing.T) {
 	api := &fakeArchProbeAPI{
 		info:       newSystemInfoResult("x86_64"),
+		distErr:    errors.New("registry unreachable"),
 		inspectErr: errors.New("no such image"),
 	}
 
 	_, _, mismatch, note := probeArchMismatchWithAPI(context.Background(), api, "ghcr.io/novshi-tech/boid-runner:v0.0.1")
 	if mismatch {
-		t.Error("mismatch = true, want false: an absent local image must never be reported as a positive mismatch")
+		t.Error("mismatch = true, want false: neither source resolving must never be reported as a positive mismatch")
 	}
-	if note == "" || !strings.Contains(note, "not present locally") {
-		t.Errorf("note = %q, want a message explaining the image was not found locally", note)
+	if note == "" {
+		t.Error("note = \"\", want a message explaining neither the manifest nor a local copy could be found")
 	}
 }
 
@@ -167,14 +233,15 @@ func TestProbeArchMismatchWithAPI_InfoProbeFails_DegradesToNote(t *testing.T) {
 	}
 }
 
-func TestProbeArchMismatchWithAPI_UnknownImageArch_NoFalsePositive(t *testing.T) {
-	// An image manifest that genuinely lacks platform metadata reports an
-	// empty Architecture — must never be treated as "definitely a
-	// mismatch" against a known host arch (probeArchMismatchWithAPI's own
-	// doc comment: only fires when BOTH sides are positively known).
+func TestProbeArchMismatchWithAPI_UnknownLocalImageArch_NoFalsePositive(t *testing.T) {
+	// A local image whose manifest genuinely lacks platform metadata
+	// reports an empty Architecture — must never be treated as
+	// "definitely a mismatch" against a known host arch.
 	api := &fakeArchProbeAPI{
-		info:    newSystemInfoResult("x86_64"),
-		inspect: dockerclient.ImageInspectResult{InspectResponse: image.InspectResponse{Architecture: ""}},
+		info:       newSystemInfoResult("x86_64"),
+		distErr:    errors.New("no registry"),
+		inspect:    dockerclient.ImageInspectResult{InspectResponse: image.InspectResponse{Architecture: ""}},
+		inspectErr: nil,
 	}
 
 	_, _, mismatch, note := probeArchMismatchWithAPI(context.Background(), api, "some-custom:tag")
@@ -212,5 +279,28 @@ func TestRunCheck_NoEngineAvailable_DoesNotPanicAndReportsError(t *testing.T) {
 	}
 	if !strings.Contains(out, "ERROR: no usable engine+compose combination found") {
 		t.Errorf("output = %q, want an explicit no-engine error", out)
+	}
+}
+
+// TestRunCheck_RootBoidUID_ReportsErrorEvenWithNoEngine pins the uid
+// section's reuse of cmd/start.go's refuseRootUID/effectiveBoidUID
+// (codex round-1 review, Major 1): `boid check` must fail on
+// `BOID_UID=0 boid check` the same way scripts/deploy-container.sh's own
+// preflight refuses `BOID_UID=0 boid start`, independent of engine
+// availability.
+func TestRunCheck_RootBoidUID_ReportsError(t *testing.T) {
+	t.Setenv("BOID_UID", "0")
+
+	cmd := checkCmd
+	cmd.SetContext(context.Background())
+	var buf strings.Builder
+	cmd.SetOut(&buf)
+
+	err := runCheck(cmd, nil)
+	if err == nil {
+		t.Fatal("expected an error when BOID_UID=0")
+	}
+	if !strings.Contains(buf.String(), "refusing to run as uid 0") {
+		t.Errorf("output = %q, want the root-uid refusal message", buf.String())
 	}
 }
