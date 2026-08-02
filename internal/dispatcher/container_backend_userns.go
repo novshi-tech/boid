@@ -173,6 +173,20 @@ func normalizeArch(arch string) string {
 	}
 }
 
+// NormalizeArch is normalizeArch, exported for cmd/check.go (PR7,
+// docs/plans/release-onboarding.md): `boid check` runs its own host-arch
+// vs. image-arch preflight independently of resolveImage's launch-time
+// fail-fast (both are required per 決定5 — this one is diagnostic, run
+// before a job ever launches; resolveImage's is the actual gate), but
+// needs the exact same docker/podman uname(1)-style-to-OCI-vocabulary
+// translation resolveImage's check applies, or the two would disagree
+// about what counts as a mismatch. Kept as a thin wrapper (rather than
+// renaming the unexported original) so every existing call site inside
+// this package keeps using the plain, private name.
+func NormalizeArch(arch string) string {
+	return normalizeArch(arch)
+}
+
 // resolveHostArch returns the ENGINE's own reported host architecture,
 // normalized to the Go/OCI vocabulary (normalizeArch), reusing
 // resolveEngineInfo's shared, once-per-backend cached probe (same instance
