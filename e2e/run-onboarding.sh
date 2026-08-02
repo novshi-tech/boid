@@ -35,18 +35,27 @@ set -euo pipefail
 # ordinary CI checkout build of this branch is not one (no ldflags, no
 # release tag on HEAD), so this script builds a dedicated test CLI with
 # `-ldflags -X .../internal/version.buildVersion=$SENTINEL_VERSION` to
-# simulate that build shape. SENTINEL_VERSION is a fixed, deliberately
-# out-of-band version (major version 9999 — real releases are at v0.0.13
-# as of this PR and increment the patch component only) rather than the
-# actual latest release tag, for two reasons: (1) it makes this script
-# self-contained — it builds AND pushes its own throwaway image under this
-# tag every run (see "build + push the sentinel image" below), so it does
-# not depend on any real release's image having ever been published under
-# its own vMAJOR.MINOR.PATCH ref (none has: PR3, the GHCR-publish PR, only
-# started tagging pushes with a release ref after v0.0.13 was already cut —
-# see docs/plans/release-onboarding.md's PR分割案 table), and (2) reusing
-# a fixed sentinel tag means every run overwrites the same GHCR tag rather
-# than accumulating a new one per run.
+# simulate that build shape. SENTINEL_VERSION uses a fixed, deliberately
+# out-of-band MAJOR version (9999 — real releases are at v0.0.13 as of
+# this PR and increment the patch component only) rather than the actual
+# latest release tag, so this script is self-contained: it builds AND
+# pushes its own throwaway image under this tag every run (see "build +
+# push the sentinel image" below), so it does not depend on any real
+# release's image having ever been published under its own
+# vMAJOR.MINOR.PATCH ref (none has: PR3, the GHCR-publish PR, only started
+# tagging pushes with a release ref after v0.0.13 was already cut — see
+# docs/plans/release-onboarding.md's PR分割案 table). The minor/patch
+# components fold in GITHUB_RUN_ATTEMPT/GITHUB_RUN_ID (codex round-1
+# review of this PR) so concurrent runs never share a tag — see
+# SENTINEL_VERSION's own assignment below for the full rationale. This
+# means every run pushes a NEW GHCR tag rather than overwriting one fixed
+# tag — a known, accepted accumulation of throwaway `v9999.*` tags in
+# ghcr.io/novshi-tech/boid-runner (codex round-2 review, Minor: an earlier
+# revision of this comment claimed tag reuse, which stopped being true
+# once the per-run-uniqueness fix landed). No automated cleanup exists yet
+# (deleting a GHCR package version needs a PAT with delete:packages scope,
+# which GITHUB_TOKEN does not carry) — left as a manual/follow-up concern,
+# not a blocker for this PR's own scope.
 #
 # GHCR VISIBILITY (docs/plans/release-onboarding.md 決定4/PR3's own
 # "VISIBILITY CAVEAT" in .github/workflows/blackbox-e2e.yml): whether
@@ -288,29 +297,46 @@ if docker image inspect "$SENTINEL_IMAGE" >/dev/null 2>&1; then
 fi
 
 # --- informational: is ghcr.io/novshi-tech/boid-runner pullable
-# ANONYMOUSLY yet? (codex round-1 review of this PR, Blocker; docs/plans/
-# release-onboarding.md 決定4/PR3's own "VISIBILITY CAVEAT") -------------
+# ANONYMOUSLY yet? (codex round-1/round-2 review of this PR, Blocker;
+# docs/plans/release-onboarding.md 決定4/PR3's own "VISIBILITY CAVEAT") --
 # `docker login` above authenticates every pull this script's OWN process
 # makes from here on, which — this script's own header comment already
 # flags — validates the pull -> compose-up -> dispatch MECHANICS
 # regardless of visibility, but does NOT prove the thing a genuinely fresh
 # `go install`-only user (no GHCR credentials at all) actually needs: an
-# ANONYMOUS `docker pull` succeeding. This logs out, attempts exactly that
-# pull as its own explicit check (non-fatal either way — per this PR's own
-# task scope, "GHCR がまだ private でもこの e2e 自体は落とさない, フォール
-# バックする" is the sanctioned outcome, not a hard requirement that
-# visibility already be flipped), and reports the result plainly so it is
-# visible in CI output / this PR's own description rather than silently
-# masked by the authenticated fallback that follows. Re-authenticates
-# afterward unconditionally (whether or not the anonymous attempt
-# succeeded) so `boid start`'s own pull below is guaranteed to work either
-# way, and removes whatever this check itself pulled so `boid start`'s own
-# pull is still the one this script's later checks measure.
-e2e_log "checking whether ${SENTINEL_IMAGE} is pullable ANONYMOUSLY (informational only — GHCR visibility)"
-docker logout ghcr.io >/dev/null 2>&1 || true
+# ANONYMOUS `docker pull` succeeding.
+#
+# This probe's own PASS/FAIL is deliberately NOT a hard gate on this job's
+# overall exit code (unlike the codex round-2 review's own suggestion) —
+# this PR's own task scope note explicitly sanctions exactly this
+# fallback ("GHCR がまだ private でもこの e2e 自体は落とさない;
+# GITHUB_TOKEN での認証付き pull にフォールバックするか、未検証である旨を
+# 正直に報告する" — both are acceptable outcomes, not "visibility must
+# already be flipped"). Making it fatal would turn this CI job red for
+# every run until an org owner's one-time, out-of-band manual step
+# happens (confirmed still pending as of this PR — see this PR's own
+# description) — outside this PR's own control and outside its stated
+# scope to force. What round-2 DID legitimately catch, and this revision
+# fixes, is that the surrounding MECHANICS of the probe itself were not
+# trustworthy: `docker logout` failing silently would have made every
+# later "ANONYMOUS PULL: OK" claim actually just be a normal authenticated
+# pull in disguise, and the round-1 fix's own `docker rmi` fatal-on-
+# failure + inspect-confirm pattern was not applied to the SECOND rmi
+# below (the one after a successful anonymous pull), reopening the exact
+# same "boid start's own pull gets satisfied from stale local cache" hole
+# round-1 closed for the FIRST rmi. Both are fixed here: `docker logout`
+# is now fatal (an unreliable logout makes the whole probe meaningless,
+# not just imprecise), and the post-probe `docker rmi` gets the same
+# fatal + `docker image inspect` confirmation the pre-push one already
+# has.
+e2e_log "checking whether ${SENTINEL_IMAGE} is pullable ANONYMOUSLY (informational only — see this block's own comment for why this is not a hard gate)"
+e2e_run docker logout ghcr.io
 if docker pull "$SENTINEL_IMAGE" >/dev/null 2>&1; then
   e2e_log "GHCR ANONYMOUS PULL: OK — ghcr.io/novshi-tech/boid-runner is publicly pullable"
-  docker rmi "$SENTINEL_IMAGE" >/dev/null 2>&1 || true
+  e2e_run docker rmi "$SENTINEL_IMAGE"
+  if docker image inspect "$SENTINEL_IMAGE" >/dev/null 2>&1; then
+    e2e_fail "docker image inspect ${SENTINEL_IMAGE} still resolves locally after the post-anonymous-probe docker rmi — boid start's own pull below would be satisfied from this stale local copy instead of a genuine network pull"
+  fi
 else
   e2e_log "GHCR ANONYMOUS PULL: FAILED — ghcr.io/novshi-tech/boid-runner still appears private (org-owner one-time visibility flip not done yet, or in progress); falling back to the authenticated pull below for the rest of this run, per this PR's own scope note"
 fi
