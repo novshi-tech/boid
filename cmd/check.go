@@ -94,12 +94,19 @@ func runCheck(cmd *cobra.Command, args []string) error {
 	podmanOK := usableEngine(ctx, "podman")
 	reportAvailability(out, "docker engine reachable (`docker version`)", dockerOK)
 	if dockerOK {
-		reportCheck(out, "docker compose plugin (`docker compose version`)", dockerComposeUsable(ctx))
+		// [codex round 3 review, Minor]: softened to the same
+		// available/unavailable wording as engine reachability itself
+		// (reportAvailability, not reportCheck's OK/MISSING) — docker and
+		// podman are ALTERNATIVES, so a healthy docker-only host with no
+		// podman-compose installed would otherwise print a "MISSING" line
+		// for a tool it will never need, immediately before "All checks
+		// passed."
+		reportAvailability(out, "docker compose plugin (`docker compose version`)", dockerComposeUsable(ctx))
 	}
 	reportAvailability(out, "podman engine reachable (`podman version`)", podmanOK)
 	if podmanOK {
 		_, lookErr := exec.LookPath("podman-compose")
-		reportCheck(out, "podman-compose on PATH", lookErr == nil)
+		reportAvailability(out, "podman-compose on PATH", lookErr == nil)
 	}
 	engine, _, engineErr := detectComposeEngine(ctx)
 	if engineErr != nil {
@@ -145,7 +152,7 @@ func runCheck(cmd *cobra.Command, args []string) error {
 	if engine == "" {
 		fmt.Fprintln(out, "  (skipped: no usable engine)")
 	} else {
-		image := version.DefaultContainerImage()
+		image := resolveCheckImage()
 		hostArch, imageArch, mismatch, note := probeArchMismatch(ctx, engine, image)
 		switch {
 		case note != "":
@@ -229,6 +236,32 @@ func reportAvailability(out io.Writer, label string, ok bool) {
 	} else {
 		fmt.Fprintf(out, "  unavailable: %s\n", label)
 	}
+}
+
+// resolveCheckImage picks the image the arch probe validates —
+// BOID_IMAGE, when set, else version.DefaultContainerImage().
+//
+// [codex round 3 review, Major]: build/container/compose.yml's own image
+// line is `${BOID_IMAGE:-ghcr.io/novshi-tech/boid-runner:latest}` — BOID_IMAGE
+// always wins when set, and every wrapped invocation (scripts/
+// deploy-container.sh's pull-first default AND its `--build` dev path,
+// e2e/run-container.sh) exports it before calling compose. Honoring the
+// same override here means `BOID_IMAGE=<foreign-arch-ref> boid check`
+// reports on the SAME image `boid start` would actually run.
+//
+// Deliberately does NOT replicate deploy-container.sh's checkout+`--build`
+// dev path forcing `boid-runner:latest` (round 3's own example): that
+// path always BUILDS the image locally from source rather than pulling
+// one, and a plain `docker build`/`podman build` with no --platform flag
+// always builds for the host's own architecture — the mismatch decision5
+// exists to catch (a foreign-arch image silently run under binfmt/qemu
+// emulation) cannot occur from a local build by construction, so there is
+// nothing for this diagnostic to usefully catch on that path.
+func resolveCheckImage() string {
+	if v := os.Getenv("BOID_IMAGE"); v != "" {
+		return v
+	}
+	return version.DefaultContainerImage()
 }
 
 // resolveComposeBindSource mirrors scripts/deploy-container.sh's own
@@ -393,6 +426,28 @@ func probeArchMismatchWithAPI(ctx context.Context, api archProbeAPI, image strin
 		return "", "", false, fmt.Sprintf("could not query engine info to verify architecture: %v", err)
 	}
 	hostArch = dispatcher.NormalizeArch(info.Info.Architecture)
+	if hostArch == "" {
+		return "", "", false, "engine reported no host architecture"
+	}
+
+	// [codex round 3 review, Blocker 2]: a LOCAL image is checked FIRST,
+	// ahead of the registry manifest. Compose's default pull_policy
+	// ("missing") never re-pulls a tag that already resolves to a locally
+	// cached image, however stale — so if a wrong-arch image already sits
+	// under this exact tag (e.g. copied in from another host's volume, or
+	// a leftover from a previous arch), THAT is what `boid start` will
+	// actually run, regardless of what the registry currently publishes.
+	// Only when nothing is cached locally does the registry manifest
+	// (queryable WITHOUT pulling — see probeArchMismatchWithAPI's own
+	// header) become the right question to ask, since in that case a
+	// pull is exactly what compose is about to do.
+	if insp, err := api.ImageInspect(checkCtx, image); err == nil {
+		imageArch = insp.Architecture
+		if imageArch == "" {
+			return hostArch, "", false, fmt.Sprintf("image %q is present locally but its manifest reports no architecture", image)
+		}
+		return hostArch, imageArch, hostArch != imageArch, ""
+	}
 
 	if dist, distErr := api.DistributionInspect(checkCtx, image, dockerclient.DistributionInspectOptions{}); distErr == nil && len(dist.Platforms) > 0 {
 		supported := make([]string, 0, len(dist.Platforms))
@@ -400,26 +455,15 @@ func probeArchMismatchWithAPI(ctx context.Context, api archProbeAPI, image strin
 		for _, p := range dist.Platforms {
 			a := dispatcher.NormalizeArch(p.Architecture)
 			supported = append(supported, a)
-			if hostArch != "" && a == hostArch {
+			if a == hostArch {
 				matched = true
 			}
 		}
-		if hostArch != "" {
-			if !matched {
-				return hostArch, strings.Join(supported, ","), true, ""
-			}
-			return hostArch, hostArch, false, ""
+		if !matched {
+			return hostArch, strings.Join(supported, ","), true, ""
 		}
+		return hostArch, hostArch, false, ""
 	}
 
-	insp, err := api.ImageInspect(checkCtx, image)
-	if err != nil {
-		return hostArch, "", false, fmt.Sprintf("could not determine image %q's architecture (not present locally, and its registry manifest could not be queried): %v — it will still be validated at pull/launch time", image, err)
-	}
-	imageArch = insp.Architecture
-
-	if hostArch != "" && imageArch != "" && hostArch != imageArch {
-		mismatch = true
-	}
-	return hostArch, imageArch, mismatch, ""
+	return hostArch, "", false, fmt.Sprintf("could not determine image %q's architecture (not present locally, and its registry manifest could not be queried) — it will still be validated at pull/launch time", image)
 }

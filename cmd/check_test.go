@@ -19,6 +19,8 @@ import (
 	"github.com/moby/moby/api/types/image"
 	dockerclient "github.com/moby/moby/client"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
+
+	"github.com/novshi-tech/boid/internal/version"
 )
 
 func TestResolveComposeBindSource_Docker_DefaultsToBareDockerSocket(t *testing.T) {
@@ -43,6 +45,24 @@ func TestResolveComposeBindSource_HonorsOverrideEnvForEitherEngine(t *testing.T)
 	}
 	if got := resolveComposeBindSource("podman"); got != "/custom/engine.sock" {
 		t.Errorf("resolveComposeBindSource(podman) = %q, want the BOID_DOCKER_SOCK_SRC override", got)
+	}
+}
+
+func TestResolveCheckImage_DefaultsToVersionDefaultContainerImage(t *testing.T) {
+	t.Setenv("BOID_IMAGE", "")
+	if got := resolveCheckImage(); got != version.DefaultContainerImage() {
+		t.Errorf("resolveCheckImage() = %q, want version.DefaultContainerImage() = %q", got, version.DefaultContainerImage())
+	}
+}
+
+func TestResolveCheckImage_HonorsBoidImageEnv(t *testing.T) {
+	// [codex round 3 review, Major]: build/container/compose.yml's own
+	// image line is `${BOID_IMAGE:-...}` — BOID_IMAGE always wins when
+	// set, so `boid check` must validate the SAME image `boid start`
+	// would actually run under that override.
+	t.Setenv("BOID_IMAGE", "ghcr.io/example/custom-runner:v9.9.9")
+	if got := resolveCheckImage(); got != "ghcr.io/example/custom-runner:v9.9.9" {
+		t.Errorf("resolveCheckImage() = %q, want the BOID_IMAGE override", got)
 	}
 }
 
@@ -175,8 +195,9 @@ func TestProbeArchMismatchWithAPI_RemoteManifestMatchingArch_NoMismatch(t *testi
 
 func TestProbeArchMismatchWithAPI_RemoteManifestMismatchedArch_ReportsMismatch(t *testing.T) {
 	api := &fakeArchProbeAPI{
-		info: newSystemInfoResult("aarch64"),
-		dist: newDistributionInspectResult("amd64"),
+		info:       newSystemInfoResult("aarch64"),
+		dist:       newDistributionInspectResult("amd64"),
+		inspectErr: errors.New("no such image (never pulled)"),
 	}
 
 	hostArch, imageArch, mismatch, note := probeArchMismatchWithAPI(context.Background(), api, "ghcr.io/novshi-tech/boid-runner:v0.0.1")
@@ -196,8 +217,9 @@ func TestProbeArchMismatchWithAPI_RemoteManifestMismatchedArch_ReportsMismatch(t
 
 func TestProbeArchMismatchWithAPI_RemoteManifestList_MatchesOneOfMultiplePlatforms(t *testing.T) {
 	api := &fakeArchProbeAPI{
-		info: newSystemInfoResult("aarch64"),
-		dist: newDistributionInspectResult("amd64", "arm64"),
+		info:       newSystemInfoResult("aarch64"),
+		dist:       newDistributionInspectResult("amd64", "arm64"),
+		inspectErr: errors.New("no such image (never pulled)"),
 	}
 
 	_, _, mismatch, note := probeArchMismatchWithAPI(context.Background(), api, "ghcr.io/novshi-tech/boid-runner:v0.0.1")
@@ -256,23 +278,49 @@ func TestProbeArchMismatchWithAPI_InfoProbeFails_DegradesToNote(t *testing.T) {
 	}
 }
 
-func TestProbeArchMismatchWithAPI_UnknownLocalImageArch_NoFalsePositive(t *testing.T) {
+func TestProbeArchMismatchWithAPI_UnknownLocalImageArch_ReportsInconclusive(t *testing.T) {
 	// A local image whose manifest genuinely lacks platform metadata
 	// reports an empty Architecture — must never be treated as
-	// "definitely a mismatch" against a known host arch.
+	// "definitely matches" a known host arch either ([codex round 3
+	// review, Blocker 1]: an unresolved verdict is not a pass).
 	api := &fakeArchProbeAPI{
-		info:       newSystemInfoResult("x86_64"),
-		distErr:    errors.New("no registry"),
-		inspect:    dockerclient.ImageInspectResult{InspectResponse: image.InspectResponse{Architecture: ""}},
-		inspectErr: nil,
+		info:    newSystemInfoResult("x86_64"),
+		distErr: errors.New("no registry"),
+		inspect: dockerclient.ImageInspectResult{InspectResponse: image.InspectResponse{Architecture: ""}},
 	}
 
 	_, _, mismatch, note := probeArchMismatchWithAPI(context.Background(), api, "some-custom:tag")
 	if mismatch {
-		t.Error("mismatch = true, want false when the image reports no architecture at all")
+		t.Error("mismatch = true, want false when the image reports no architecture at all — an unresolved verdict is inconclusive, not a positive mismatch")
 	}
+	if note == "" {
+		t.Error("note = \"\", want a message explaining the local image's architecture could not be determined")
+	}
+}
+
+// TestProbeArchMismatchWithAPI_LocalImageCheckedBeforeRegistry pins [codex
+// round 3 review, Blocker 2]: a locally cached image under the SAME tag
+// must be checked BEFORE the registry manifest, not after. Compose's
+// default pull_policy ("missing") never re-pulls a tag that already
+// resolves to something cached locally, however stale or wrong-arch — so
+// what's cached locally is what `boid start` will actually run, even when
+// the registry currently publishes a different (matching) architecture.
+func TestProbeArchMismatchWithAPI_LocalImageCheckedBeforeRegistry(t *testing.T) {
+	api := &fakeArchProbeAPI{
+		info:    newSystemInfoResult("x86_64"), // host is amd64
+		dist:    newDistributionInspectResult("amd64"),
+		inspect: dockerclient.ImageInspectResult{InspectResponse: image.InspectResponse{Architecture: "arm64"}}, // stale local cache
+	}
+
+	hostArch, imageArch, mismatch, note := probeArchMismatchWithAPI(context.Background(), api, "ghcr.io/novshi-tech/boid-runner:v0.0.1")
 	if note != "" {
-		t.Errorf("note = %q, want empty (this is a legitimate, non-error, no-verdict case)", note)
+		t.Fatalf("note = %q, want empty", note)
+	}
+	if !mismatch {
+		t.Error("mismatch = false, want true: the LOCALLY CACHED image is arm64 even though the registry itself is amd64 — compose runs the cached one")
+	}
+	if hostArch != "amd64" || imageArch != "arm64" {
+		t.Errorf("hostArch=%q imageArch=%q, want amd64/arm64 (from the local cache, not the registry)", hostArch, imageArch)
 	}
 }
 
