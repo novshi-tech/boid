@@ -812,9 +812,16 @@ func TestDeployContainerScript_Down_RecordedEngineNoLongerUsable_Refuses(t *test
 	}
 
 	dir := t.TempDir()
-	// No `docker` on PATH at all (simulates it having become unusable) —
-	// only a usable podman/podman-compose, which must NOT be substituted
-	// in for the recorded (but now-missing) docker engine.
+	// A `docker` that is present on PATH but unusable (`docker version`
+	// fails — simulating a crashed/unreachable daemon), alongside a
+	// usable podman/podman-compose, which must NOT be substituted in for
+	// the recorded (but now-unusable) docker engine. Deliberately a
+	// FAILING docker rather than an absent one: this test must hold even
+	// on a CI runner with a real, working system `docker` later on PATH
+	// (github-hosted ubuntu runners ship one) — an absent fake would let
+	// `command -v docker` fall through to that real, genuinely-usable
+	// docker and pass for the wrong reason.
+	writeFakeExecutable(t, dir, "docker", `exit 1`)
 	writeFakeExecutable(t, dir, "podman", `
 case "$1" in
   version) exit 0 ;;
@@ -827,7 +834,12 @@ esac
 
 	downCmd := exec.Command(scriptPath, "--down")
 	downCmd.Env = []string{
-		"PATH=" + dir + string(os.PathListSeparator) + os.Getenv("PATH"),
+		// Fake dir ONLY — not appending the real PATH — so this cannot
+		// accidentally fall through to a real docker/podman elsewhere on
+		// PATH regardless of host. coreutils (mkdir/cat/dirname/...) the
+		// script also needs come from a fixed, minimal set of directories
+		// instead of the ambient PATH.
+		"PATH=" + dir + ":/usr/bin:/bin",
 		"HOME=" + os.Getenv("HOME"),
 		"XDG_RUNTIME_DIR=" + t.TempDir(),
 	}
