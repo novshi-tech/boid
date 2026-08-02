@@ -508,13 +508,15 @@ func runComposeUp(ctx context.Context, addr string) error {
 // startup-failure status back from a bare-metal-forked child over fd3 — a
 // pipe a detached `compose up -d` container has no equivalent of at all,
 // so there was no way to keep it wired to anything once runDaemonParent
-// (its sole caller) was gone. `boid project migrate <dir>` (no --apply)
-// followed by `boid workspace create/edit <slug> --from-file <file>`
-// remains the supported migration path for a schema issue a compose
-// daemon reports at startup (internal/orchestrator/spec_loader.go's
-// migrationGuidance, updated in the same commit). If a future PR wants a
-// `boid start --bare-metal` escape hatch back, git history has the
-// removed implementation (this same file, pre-PR5).
+// (its sole caller) was gone. There is no fully automated or fully
+// general by-hand recovery path yet for a schema issue a compose daemon
+// reports at startup (internal/orchestrator/spec_loader.go's
+// migrationGuidance and cmd/project_migrate.go's guardApply, both
+// updated across several review rounds of this PR, explain the current,
+// deliberately non-prescriptive guidance and its known limitations — see
+// docs/ja/guide/migration.md). If a future PR wants a `boid start
+// --bare-metal` escape hatch back, git history has the removed
+// implementation (this same file, pre-PR5).
 
 // runDaemonChild is executed by the daemon child process (BOID_DAEMON_CHILD=1).
 // It redirects stdin/stdout/stderr to the log file and detaches from the

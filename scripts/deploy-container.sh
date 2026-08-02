@@ -278,6 +278,21 @@ if [[ -z "${BOID_RUNTIME_DIR:-}" ]]; then
 fi
 : "${BOID_UID:=$(id -u)}"
 : "${BOID_GID:=$(id -g)}"
+# codex round-8 review of PR5, Major: cmd/start.go's refuseRootUID only
+# ever inspects the CLI PROCESS's own uid (os.Getuid()) — an operator
+# running as a non-root user who explicitly exports BOID_UID=0 sails
+# straight through that check, since the check has nothing to do with
+# the value THIS variable ultimately resolves to. This is the actual
+# enforcement point (compose.yml's `user: "${BOID_UID}:0"` uses exactly
+# this value), so the refusal belongs here too, not only in the Go CLI.
+# Skipped for --down: tearing an existing stack down does not itself
+# bring up a new root-uid container, so there is nothing to protect
+# against here — mirrors the podman.socket preflight above, which is
+# similarly up-only.
+if [[ "$DOWN" != "1" && "$BOID_UID" == "0" ]]; then
+	echo "error: refusing to run the daemon as uid 0 (root) — set BOID_UID to a non-zero uid (docs/plans/release-onboarding.md 決定1/決定4 require a non-root uid with supplementary group 0)" >&2
+	exit 1
+fi
 # DOCKER_GID (Major 9, PR6 codex review): the host's `docker` group GID,
 # so compose.yml's group_add can grant the non-root daemon process
 # permission to open the engine socket (DooD). `getent group docker` is
