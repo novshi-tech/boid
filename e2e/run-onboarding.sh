@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
 set -euo pipefail
-trap 'printf "[trace] line %s: %s\n" "$LINENO" "$BASH_COMMAND" >&2' DEBUG
 
 # e2e/run-onboarding.sh
 #
@@ -83,8 +82,12 @@ if ! docker compose version >/dev/null 2>&1; then
   e2e_fail "docker compose (v2 plugin) not found — required by the embedded scripts/deploy-container.sh"
 fi
 
-: "${GITHUB_TOKEN:?GITHUB_TOKEN must be set — this script pushes a throwaway sentinel-tagged image to ghcr.io/novshi-tech/boid-runner so it can pull it back for real (see this script's own header comment); it is CI-only, like e2e/run-container.sh}"
-: "${GITHUB_ACTOR:?GITHUB_ACTOR must be set (paired with GITHUB_TOKEN for docker login ghcr.io)}"
+if [[ -z "${GITHUB_TOKEN:-}" ]]; then
+  e2e_fail "GITHUB_TOKEN must be set: this script pushes a throwaway sentinel-tagged image to ghcr.io/novshi-tech/boid-runner so it can pull it back for real (see this script's own header comment); it is CI-only, like e2e/run-container.sh"
+fi
+if [[ -z "${GITHUB_ACTOR:-}" ]]; then
+  e2e_fail "GITHUB_ACTOR must be set (paired with GITHUB_TOKEN for docker login ghcr.io)"
+fi
 
 # See this script's own header comment for why this is a fixed,
 # out-of-band sentinel rather than the actual latest release tag.
