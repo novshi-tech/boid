@@ -1,46 +1,60 @@
 # オンボーディング
 
-boid の初回セットアップは **2 段** です。`default` workspace で足りる場合は実質 **1 段**で終わります。
+boid の初回セットアップは、daemon 起動後に **雛形生成 → push → git URL 登録** の 3 手 + (任意) workspace 設定です。`default` workspace で足りる場合は workspace 設定は不要です。
 
-## 2 つのステップ
+daemon 自体の起動 (`go install` → `boid check` → `boid start` → `boid web pair`) は [Getting started / 1. インストール](../getting-started/01-install.md) を参照してください。このページは project / workspace 側のセットアップに絞ります。
+
+## project 登録の 3 手
+
+daemon は compose スタックのコンテナ内で動いており、host 側のディレクトリを直接読めません — project を登録できるのは **git remote URL から daemon 自身が clone した場合だけ**です (`docs/plans/release-onboarding.md` 穴 7)。
 
 | 順序 | コマンド | 役割 |
 |---|---|---|
-| 1 | `boid project init [dir]` / `boid project add <dir>` | project を daemon に登録（新規なら雛形も作成） |
-| 2 (任意) | `boid workspace create` / `edit` / `apply` + `boid workspace assign` | project 専用の workspace を用意（`default` で足りるなら不要） |
+| 1 | `boid project init [dir]` | `.boid/project.yaml` の雛形をローカルに書く (daemon への登録はしない) |
+| 2 | push | 雛形 (+ 実コード) を git remote に push する。`project init` が実行後にこの push コマンドの雛形も印字する |
+| 3 | `boid project add <git-url> --workspace=<name>` | push した URL を daemon に登録し、daemon 自身が clone する |
+| 4 (任意) | `boid workspace create` / `edit` / `apply` + `boid workspace assign` | project 専用の workspace を用意（`default` で足りるなら不要） |
 
 project を登録すると自動的に `default` workspace に割り当てられます（daemon 起動時に `default` は常に存在が保証される）。`host_commands` / `env` / `capabilities` / `allowed_domains` など実行環境をカスタマイズしたいときだけ、専用の workspace を用意してください。
 
 ## シナリオ別
 
-### 新規 project、default workspace で十分 (1 段)
+### 新規 project、default workspace で十分
 
 ```bash
-boid project init ~/src/myproject
+mkdir -p ~/src/myproject && cd ~/src/myproject
+boid project init
+# ... 印字された案内どおりに commit + push ...
+boid project add 'https://github.com/you/myproject.git' --workspace=default
 ```
 
-`--workspace` を省略すると `default` workspace に入ります。
+`--workspace` を省略すると `boid project add` は 400 (必須フラグ) で拒否されます — 省略時は `boid project init` の印字例が `--workspace=default` を焼き込むので、そのままコピペすれば `default` workspace に入ります。
 
-### 新規 project + 専用 workspace (2 段)
+### 新規 project + 専用 workspace
 
 ```bash
-boid project init ~/src/myproject --workspace dev
+cd ~/src/myproject
+boid project init --workspace dev
+# ... 印字された案内どおりに commit + push ...
+boid project add 'https://github.com/you/myproject.git' --workspace dev
 ```
 
 `--workspace` は get-or-create です。`dev` workspace が存在しなければ空の workspace を自動作成してから project を紐付けます。中身（`host_commands` / `env` 等）を詰めたい場合は後述の「workspace を作る/編集する」を続けて行ってください。
 
-### 既存 project を登録 (2 段)
+### 既存 project (すでに `.boid/project.yaml` あり) を登録する
+
+push 済みであれば `project init` の手順は不要、`project add` だけで済みます:
 
 ```bash
-boid project add ~/src/myproject --workspace dev
+boid project add 'https://github.com/you/existing-repo.git' --workspace dev
 ```
 
-`boid project init` と同じく `--workspace` は get-or-create です。
+`.boid/project.yaml` がまだ無い既存リポジトリの場合は、そのリポジトリのルートで `boid project init` を実行 → 既存コードごと commit・push → 上記の `project add` という順になります。
 
-### 既存 workspace に project を追加するだけ (1 段)
+### 既存 workspace に project を追加するだけ
 
 ```bash
-boid project add ~/src/another --workspace dev
+boid project add 'https://github.com/you/another.git' --workspace dev
 # dev がすでに存在するので中身はそのまま、project の紐付けだけが変わる
 ```
 
@@ -48,13 +62,16 @@ boid project add ~/src/another --workspace dev
 
 ```bash
 # 1つ目の project (workspace を新規作成しつつ登録)
-boid project init ~/src/myproject --workspace dev
+cd ~/src/myproject
+boid project init --workspace dev
+# ... push ...
+boid project add 'https://github.com/you/myproject.git' --workspace dev
 
 # workspace の中身を整える (host_commands / env などをまとめて書く場合)
 boid workspace edit dev --from-file dev-workspace.yaml
 
 # 2つ目以降の project は同じ workspace に追加するだけ
-boid project add ~/src/another-project --workspace dev
+boid project add 'https://github.com/you/another.git' --workspace dev
 ```
 
 ## workspace を作る/編集する
@@ -84,9 +101,27 @@ allowed_domains:
 
 既存 workspace の中身を確認するには `boid workspace show <slug>`、そのまま yaml として取り出すには `boid workspace export <slug>` を使います。
 
+## ツールチェーンの自動インストールと agent サインイン
+
+workspace は永続的な `$HOME` (workspace home、`boid_state` とは別の named volume) を持ちます。npm / claude CLI / codex CLI などのツールチェーンは `additional_bindings` (撤去済み) ではなく、workspace の `init.sh` に書いて自動インストールします:
+
+```bash
+boid workspace set-init-script dev -f init.sh
+```
+
+`init.sh` は、その workspace への最初の dispatch (最初にタスク/hook/exec が実行されるタイミング) で自動実行されます。詳細は [workspace home ガイド](workspace-home.md) を参照してください。
+
+**`init.sh` が自動化できないのは agent 自身のサインインだけです** — claude / codex の認証は対話が必要なため、一度だけ手動でセッションに入る必要があります:
+
+```bash
+boid agent claude -p <project> [--resume <session-id>]
+```
+
+これは新規ユーザが最も迷いやすい箇所です。workspace ごとに 1 回、対話セッションで `/login` 等を済ませれば、以降の同じ workspace のタスクではこのステップは不要になります (`boid start` 直後にも同じ案内が表示されます)。
+
 ## host_commands を定義する (daemon 側の集約レジストリ)
 
-workspace の `host_commands: [name, ...]` は、その workspace の sandbox が呼べる host command の**名前だけ**を列挙するものであり、コマンドそのものの定義ではありません。実際の定義 (バイナリの `path`、`allow`/`deny`/`reject` ルール、`env`) は全 workspace 共通の 1 ファイル `~/.config/boid/host_commands.yaml` に置かれています。
+workspace の `host_commands: [name, ...]` は、その workspace の sandbox が呼べる host command の**名前だけ**を列挙するものであり、コマンドそのものの定義ではありません。実際の定義 (バイナリの `path`、`allow`/`deny`/`reject` ルール、`env`) は全 workspace 共通の 1 ファイル `~/.config/boid/host_commands.yaml` に置かれています。**注意:** compose daemon では、この `~/.config/boid` は daemon コンテナ内の `boid_state` volume 上のパスです — host 側の同名パスを編集しても daemon には届きません。編集は daemon 上で行うか (`docker exec`/`podman exec`)、`boid host-commands` API 経由の間接編集手段が増えるまでは直接編集する必要があります。
 
 `kit init` が撤去される前は、このファイルは host をスキャンして自動生成されていました。撤去後は手で書き足します:
 
@@ -128,3 +163,5 @@ boid host-commands list
 
 旧スキーマの `project.yaml`（`kits` / `env` / `host_commands` / `capabilities` 等を含む）を持つ場合は
 `boid project migrate <dir>`（`--apply` を付けるまでは dry-run）で自動変換できます。詳細は `docs/ja/guide/migration.md` を参照してください。
+
+**注意:** `boid project migrate <dir> --apply` は host 側の boid.db を直接開く経路を持ちます — compose daemon 下では daemon の実 DB は `boid_state` volume 内にあるため、`--apply` が host 側の別 DB (存在しなければ新規作成) に書き込んで silent に無効化されるおそれがあります。socket 経由 (daemon が起動していて到達可能) であれば正しく daemon 側に適用されるので、`--apply` を使う前に `boid task list` 等で daemon への到達性を確認してください。

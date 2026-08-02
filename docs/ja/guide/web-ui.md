@@ -1,10 +1,12 @@
 # Web UI
 
-`boid` は CLI に加えて Web UI を提供します。既定で有効、`:8080` で listen します。 loopback (127.0.0.1 / ::1) からは認証不要、それ以外 (典型的には Cloudflare Tunnel 経由のスマホ) からはデバイスをペアリングしてからアクセスします。
+`boid` は CLI に加えて Web UI を提供します。既定で有効、`:8080` で listen します。 daemon プロセス自身から見た loopback (127.0.0.1 / ::1) からは認証不要、それ以外 (典型的には Cloudflare Tunnel 経由のスマホ) からはデバイスをペアリングしてからアクセスします。
+
+> **注意 (compose daemon、既定の構成):** daemon は compose スタックのコンテナ内で動きます (`docs/plans/release-onboarding.md` 決定2)。ブラウザから見た `http://localhost:8080` は host の port publish 経由でコンテナに転送されますが、コンテナ自身が受け取るリクエストの送信元は **host の `127.0.0.1` ではなく** docker/podman のネットワークブリッジ経由の IP になるため、loopback 例外は発火しません。したがって compose daemon では **`boid web pair` によるペアリングが必須手順**です (詳細は [Getting started / 1. インストール](../getting-started/01-install.md#web-ui-をペアリングする))。以下の「loopback 例外」節の説明は、daemon プロセス自身から見て本当に loopback から届いたリクエスト (`--foreground` でホスト上に直接立てた daemon 等) にのみ適用されます。
 
 ## ローカルで開く
 
-`boid start` した後、ブラウザで `http://localhost:8080` を開くとタスク一覧が表示されます。
+`boid start` した後、まず [`boid web pair`](../getting-started/01-install.md#web-ui-をペアリングする) でこのブラウザを認証してから、`http://localhost:8080` を開くとタスク一覧が表示されます。
 
 listen アドレスは `boid web set-addr` で変更できます:
 

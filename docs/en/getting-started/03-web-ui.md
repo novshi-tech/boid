@@ -10,13 +10,21 @@ This page assumes you have registered the `demo` project from [2. Initialize a p
 
 ## Open it locally
 
-After `boid start` (from [1. Install](01-install.md)), the daemon is already listening on `:8080`. Open it in a browser:
+After `boid start` (from [1. Install](01-install.md)), the daemon (compose stack) is already listening on `:8080`.
+
+Under the compose daemon, the loopback address (127.0.0.1) the CONTAINER itself sees is not the same thing as `http://localhost:8080` seen from your host, so the old "loopback skips pairing" exception from the bare-host days does not apply. If you have not already run `boid web pair` from [1. Install](01-install.md), do that first:
+
+```bash
+boid web pair
+```
+
+Authenticate from your browser with the printed code / URL / QR, then open the Web UI:
 
 ```
 http://localhost:8080
 ```
 
-You should see the `demo` project from [2. Initialize a project](02-init-project.md) and an empty task list. Requests from the same machine (loopback addresses 127.0.0.1 / ::1) skip pairing.
+You should see the `demo` project from [2. Initialize a project](02-init-project.md) and an empty task list.
 
 When the next chapter creates a task, it is convenient to keep this tab open next to a `boid task watch` terminal.
 
@@ -30,7 +38,7 @@ boid stop
 boid start
 ```
 
-`boid web set-addr` writes to `web.http_addr` in `~/.config/boid/config.yaml`. The change only takes effect after a daemon restart.
+`boid web set-addr` sets `web.http_addr` via `POST /api/config/mutate` — the daemon writes it into its own `config.yaml` inside the `boid_state` volume, not a host-side file. The change only takes effect after a daemon restart.
 
 > **Note:** There is currently no way to disable the Web UI entirely. Passing an empty string still causes the daemon to fall back to `:8080` and keep the TCP listener running.
 
@@ -59,13 +67,13 @@ boid web revoke <device-id>      # revoke one device
 boid web revoke-all              # revoke all
 ```
 
-The rest of this tutorial only needs loopback access, so you can skip the external exposure. Full details live in the [Web UI guide](../guide/web-ui.md).
+The rest of this tutorial only needs the browser you already paired in [1. Install](01-install.md), so you can skip the external exposure. Full details live in the [Web UI guide](../guide/web-ui.md).
 
 ## Recap
 
 What this tutorial introduced:
 
-- Opened the Web UI locally (loopback skips pairing).
+- Paired and opened the Web UI (the compose daemon requires pairing even from loopback).
 - Showed how to change the listen address (`boid web set-addr`; the Web UI cannot be disabled entirely).
 - Outlined how to expose the UI to other devices (`boid web set-url` + `boid web pair`).
 

@@ -1,8 +1,7 @@
 # 2. プロジェクトを初期化する
 
 > **お知らせ**: 旧 `boid init` ウィザードは廃止されました。
-> 新しいセットアップフローは project 登録 + (任意) workspace 設定の **2 段**です。
-> `default` workspace で足りる場合は実質 **1 段**で終わります。
+> 新しいセットアップフローは **雛形生成 → push → git URL 登録** + (任意) workspace 設定です。
 > 詳しくは [オンボーディング](../guide/onboarding.md) を参照してください。
 
 このページでは新しいフローでプロジェクトを立ち上げます。
@@ -10,7 +9,8 @@
 
 ## このページのねらい
 
-- `boid project init` で新規プロジェクトを作成する
+- `boid project init` で `.boid/project.yaml` の雛形を作る
+- push してから `boid project add <git-url>` で daemon に登録する
 - 専用の実行環境が必要な場合に `boid workspace create` / `edit` で workspace を用意する
 
 ## エージェントについて
@@ -21,46 +21,82 @@
 `claude` CLI が PATH にあり、Claude Code としてサインイン済みであることを確認してください
 (Claude Code 側のセットアップ手順は [Claude Code の公式ドキュメント](https://docs.claude.com/en/docs/claude-code/overview) を参照)。
 
-## ステップ 1: 新規プロジェクトを作成する
+## なぜ「雛形生成」と「登録」が別コマンドになったか
+
+daemon は compose スタックのコンテナ内で動いています ([1. インストール](01-install.md))。 コンテナには host 側の `~/boid-demo` のようなディレクトリは存在しないため、host パスを渡す登録方法は成立しません。daemon が project を読み込めるのは **git remote URL から自分で clone した場合だけ**です。そのため `boid project init` は「ローカルに雛形を書いて、push して登録するまでの次の一手を印字する」ところまでしかやりません。実際の登録 (daemon への通知) は、push が終わったあとの `boid project add <git-url>` が行います。
+
+## ステップ 1: 雛形を作る
 
 ```bash
 mkdir -p ~/boid-demo
-boid project init ~/boid-demo
+cd ~/boid-demo
+boid project init
 ```
 
-`--workspace` を省略すると `default` workspace に自動的に割り当てられます (daemon 起動時に `default` は常に存在が保証される)。`host_commands` / `env` / `allowed_domains` などを project 専用にカスタマイズしたい場合だけ、`--workspace` で専用 workspace を指定してください:
+(`boid project init <dir>` のように対象ディレクトリを引数で指定することもできます。) プロジェクト名を対話で尋ねられたあと、`.boid/project.yaml` を書き込みます。この時点では daemon には一切登録されません。
+
+`--workspace` を付けると、次のステップで印字される `boid project add` の例に workspace 名が焼き込まれます (実際の workspace 割当は `project add` の実行時に行われる get-or-create):
 
 ```bash
-boid project init ~/boid-demo --workspace dev
+boid project init --workspace dev
 ```
 
-`--workspace` は get-or-create です。`dev` workspace が存在しなければ空の workspace を自動作成してから project を紐付けます。
+コマンドが終わると、次のような案内が印字されます (実際のコマンドは `<git-url>` を実際の URL に置き換えて実行してください):
 
-既存リポジトリにプロジェクトを作成する場合も同様です:
+```
+Next steps:
+  1. Make sure your project's actual source code -- not just this scaffold -- is already committed and pushed to your remote.
+  2. Commit the scaffold and push it to your remote (safe to run even if some of this is already done):
+       cd ~/boid-demo && { git init && git add .boid/project.yaml && ... && git push '<git-url>' HEAD && ... }
+  3. Register the pushed URL with the running boid daemon:
+       boid project add '<git-url>' --workspace=default
+```
+
+## ステップ 2: push する
+
+案内された通り、まだ push していない実コードがあれば先に commit・push してください。真新しいディレクトリ (このチュートリアルの `~/boid-demo` 等) であれば、案内のコマンドをそのまま実行するだけで `.boid/project.yaml` の commit + push まで完了します:
 
 ```bash
-boid project init ~/src/myrepo --workspace dev
+cd ~/boid-demo && { git init && git add .boid/project.yaml && (git diff --cached --quiet -- .boid/project.yaml || git commit -m 'add boid project scaffold' -- .boid/project.yaml) && git push 'https://github.com/you/boid-demo.git' HEAD; }
 ```
 
-## ステップ 1b: 既存プロジェクトを登録する (既存 project.yaml がある場合)
+このコマンドは既存のリポジトリに対しても安全に再実行できます (`origin` 等の remote 設定には一切触れません — 常に URL を直接指定した一回限りの push です)。 push 後、pushed したブランチがリモートの default branch と異なる場合は警告が表示されます。daemon は登録時にリモートの default branch を読みに行くので、その場合は先に PR/merge してから次のステップに進んでください。
 
-`.boid/project.yaml` が既にある場合は `project add` を使います:
+## ステップ 3: daemon に登録する
 
 ```bash
-boid project add ~/src/myrepo --workspace dev
+boid project add 'https://github.com/you/boid-demo.git' --workspace=default
 ```
 
-`project init` と同じく `--workspace` は get-or-create、省略時は `default` workspace です。
+`--workspace` は必須です。省略はできません (get-or-create — 未知の slug でも空の workspace を自動作成してから project を紐付けます)。`--name` を省略すると URL の最後のパス要素 (`boid-demo`) から project 名が決まります。
 
-## (任意) ステップ 2: workspace の中身を用意する
+daemon が bare repository として clone に成功すると、project の ID とワークスペースが表示されます:
 
-ステップ 1 で `--workspace dev` を指定した場合、`dev` はすでに存在しています (get-or-create で空の workspace が作られ、project も紐付け済み)。 したがって中身を詰めるのは **edit** であって create ではありません:
+```
+project registered: <uuid> (boid-demo)
+  workspace: default
+  bare repo: /home/boid/.local/share/boid/...
+```
+
+## 既存プロジェクトを登録する場合
+
+すでに `.boid/project.yaml` を持つ既存リポジトリであれば、ステップ 1 (`project init`) は不要です。push 済みの URL を直接登録するだけです:
+
+```bash
+boid project add 'https://github.com/you/existing-repo.git' --workspace dev
+```
+
+`.boid/project.yaml` がまだ無い既存リポジトリの場合は、ステップ 1 の `boid project init` をそのリポジトリのルートで実行してから (既存コードと一緒に commit・push して) 同様に登録してください。
+
+## (任意) ステップ 4: workspace の中身を用意する
+
+ステップ 3 で `--workspace dev` のような新規 slug を指定した場合、`dev` はすでに存在しています (get-or-create で空の workspace が作られ、project も紐付け済み)。 したがって中身を詰めるのは **edit** であって create ではありません:
 
 ```bash
 boid workspace edit dev --from-file dev-workspace.yaml
 ```
 
-(`boid workspace create dev --from-file ...` はこの時点では `409` になります — `dev` はすでに DB row を持っているため。`create` が使えるのは、まだ存在しない slug に対してだけです。例えばステップ 1 で `default` に登録して、今から**別の**新規 workspace を用意する場合はこちらを使い、続けて `boid workspace assign boid-demo <slug>` で project を紐付けてください。)
+(`boid workspace create dev --from-file ...` はこの時点では `409` になります — `dev` はすでに DB row を持っているため。`create` が使えるのは、まだ存在しない slug に対してだけです。)
 
 `dev-workspace.yaml` の例:
 
@@ -76,6 +112,8 @@ allowed_domains:
 `host_commands` はここでは **参照名**のリストであって定義そのものではありません — 各名前 (上の例では `gh`) はあらかじめ daemon 側の `~/.config/boid/host_commands.yaml` に定義されている必要があります。未定義の場合は [オンボーディング / host_commands を定義する](../guide/onboarding.md#host_commands-を定義する-daemon-側の集約レジストリ) を参照してください。
 
 中身の確認は `boid workspace show dev`、yaml として取り出すには `boid workspace export dev` を使います。詳細は [オンボーディング / workspace を作る・編集する](../guide/onboarding.md#workspace-を作る編集する) を参照してください。
+
+ツールチェーン (npm / claude CLI / codex CLI 等) のインストールは `additional_bindings` ではなく workspace の `init.sh` で行います。詳細は [workspace home ガイド](../guide/workspace-home.md) と [1. インストール](01-install.md) の「次にやること」の 3 番・4 番を参照してください。
 
 ## 生成された project.yaml を眺める
 
@@ -130,9 +168,10 @@ boid project show boid-demo
 
 このチュートリアルで触れた要素:
 
-- **`boid project init`** で `.boid/project.yaml` を生成 + daemon 登録 (`default` workspace に自動割当)
-- 専用の実行環境が必要なら `--workspace <slug>` (get-or-create) + `boid workspace create` / `edit`
-- 後から yaml を編集した場合は `boid project reload` で反映
+- **`boid project init`** で `.boid/project.yaml` の雛形を生成 (daemon への登録はしない)
+- push してから **`boid project add <git-url> --workspace=<name>`** で daemon に登録 (`--workspace` は必須、get-or-create)
+- 専用の実行環境が必要なら `boid workspace create` / `edit`
+- 後から yaml を編集した場合は `boid project reload` で反映 (push した remote から daemon が再取得するには `boid project fetch <ref>`)
 
 次の章では、ここで初期化したプロジェクトに対して Web UI のセットアップを行います。
 

@@ -10,13 +10,21 @@
 
 ## ローカルで開く
 
-[1. インストール](01-install.md) の `boid start` が済んでいれば daemon は `:8080` で HTTP を受け付けています。ブラウザで開いてください。
+[1. インストール](01-install.md) の `boid start` が済んでいれば daemon (compose スタック) は `:8080` で HTTP を受け付けています。
+
+compose daemon では、コンテナ自身から見た loopback (127.0.0.1) とホストから見た `http://localhost:8080` は別物のため、bare-host 時代にあった「loopback からはペアリング不要」という例外は効きません。まだ [1. インストール](01-install.md) で `boid web pair` を実行していなければ、先にそちらを済ませてください:
+
+```bash
+boid web pair
+```
+
+表示されたコード / URL / QR のいずれかでブラウザから認証したら、Web UI を開きます:
 
 ```
 http://localhost:8080
 ```
 
-[2. プロジェクトを初期化する](02-init-project.md) で登録した `demo` プロジェクトが表示され、 タスク一覧はまだ空のはずです。 同一マシン (loopback アドレス 127.0.0.1 / ::1) からのアクセスはペアリング不要です。
+[2. プロジェクトを初期化する](02-init-project.md) で登録した `demo` プロジェクトが表示され、 タスク一覧はまだ空のはずです。
 
 タスクを起こしていく次章では、 別ターミナルの `boid task watch` と並行してこのブラウザを開いておくのが便利です。
 
@@ -30,7 +38,7 @@ boid stop
 boid start
 ```
 
-`boid web set-addr` は `~/.config/boid/config.yaml` の `web.http_addr` を書き換えます。 daemon を再起動するまで反映されないので注意してください。
+`boid web set-addr` は内部的に `POST /api/config/mutate` で daemon 側 (`boid_state` volume 内) の `config.yaml` を書き換えます — host 側にファイルは作られません。daemon を再起動するまで反映されないので注意してください。
 
 > **注意:** 現状、Web UI を完全に停止する手段はありません。空文字を渡しても daemon は `:8080` にフォールバックし、TCP リスナーは常に起動します。
 
@@ -59,13 +67,13 @@ boid web revoke <device-id>      # 1 デバイスを失効
 boid web revoke-all              # 全部失効
 ```
 
-このチュートリアルでは loopback アクセスだけで十分なので、 外部公開は飛ばして構いません。 詳細は [Web UI ガイド](../guide/web-ui.md) にまとめてあります。
+このチュートリアルでは、 [1. インストール](01-install.md) で発行したペアリング済みブラウザからのアクセスだけで十分なので、 外部公開は飛ばして構いません。 詳細は [Web UI ガイド](../guide/web-ui.md) にまとめてあります。
 
 ## まとめ
 
 このチュートリアルで触れた要素:
 
-- ローカルから Web UI を開いた (loopback はペアリング不要)
+- Web UI をペアリングして開いた (compose daemon では loopback でもペアリング必須)
 - listen アドレスの変更方法 (`boid web set-addr`；Web UI を完全停止することは現状できない)
 - 他デバイスからアクセスする場合の流れ (`boid web set-url` + `boid web pair`)
 

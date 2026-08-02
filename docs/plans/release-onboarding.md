@@ -393,6 +393,54 @@ e2e 修正を最終 PR に置いていたため、PR4〜PR8 の間 CI が赤い�
 
 ---
 
+## PR8 完了時点の全体まとめ (release-onboarding プロジェクト完了、2026-08-02)
+
+PR1〜PR9 が全て main にマージされ、`docs/plans/release-onboarding.md` の
+「目標オンボーディングフロー」節に書いた 6 ステップ (`go install` → `boid check` →
+`boid start` → `boid web pair` → `boid project add <git-url>` →
+`boid workspace set-init-script` + `boid agent claude`) が実際に docs 通り動く状態になった
+(getting-started 4 ページ・`guide/onboarding.md`・`reference/cli.md`・英語版を全面更新、
+`boid start` 直後の「次にやること」誘導文言も実装済み — 本 PR の scope)。
+
+このプロジェクトを通じて意図的に先送り・未対応のまま残っている既知の限界事項を一覧化する
+(いずれも別 issue/PR での対応が要る):
+
+1. **GHCR image の公開範囲は手動設定のまま。** 決定 4 で public にする方針は固まったが、
+   実際に GHCR パッケージの visibility を public に切り替える操作自体は
+   `.github/workflows/blackbox-e2e.yml` の push では自動化されておらず、初回 publish 後に
+   GitHub 側の Package settings から手動で行う必要がある (未検証: 現時点でのリポジトリの
+   実際の visibility 設定)。
+2. **`boid project migrate <dir> --apply` は compose daemon 下で「半分だけ効く」。**
+   穴 4 の表で洗い出した通り、socket 経由で daemon に届けば正しく適用されるが、
+   届かない場合は host 側の別 DB (存在しなければ新規作成) に silent に書き込んでしまう
+   フォールバック経路が残っている。`docs/ja/guide/onboarding.md` / `migration.md` に注意書きを
+   追加したが (本 PR)、コード側の是正 (compose daemon 下での `--apply` の明示的な拒否、または
+   届かない場合のエラー化) は未着手。
+3. **PR5/PR7 で見送った edge case 群。** 上記「`scripts/deploy-container.sh` の
+   engine-state 機構の残エッジケース」(dangling symlink な state dir、`docker context use`
+   による fingerprint 外の context 切り替え、multi-instance 非対応) はいずれも
+   「single-user personal orchestrator の実運用では発生確率が低い」と判断され明示的に
+   先送りされている。round-9〜14 の生ログは PR #892 の会話に残る。
+4. **multi-arch (arm64) は決定 5 により今回出さない。** Mac (Apple Silicon)・安い arm64 VPS
+   向けの需要が実際に顕在化したら「論点: arm64」節の「将来 arm64 を足すときにやること」から
+   再開する。
+5. **CLI/daemon の version skew ハンドリングは未決 1 のまま。** `go install @latest` した
+   CLI と古い image で動いている daemon が食い違う状況を検知して warn/refuse する仕組みは
+   実装されていない (`/api/health` に version フィールドを足すところから)。
+6. **既存 (旧 uid 焼き込みイメージ時代) install の移行手順は未検証。** 未決 5/6 (uid 安定契約)
+   は実データを持つ環境 (khi workspace 等) での実地検証が必要なまま。
+7. **`boid host-commands` の daemon 側ファイルを直接編集する経路が compose daemon 下では
+   host から届かない。** `~/.config/boid/host_commands.yaml` は daemon コンテナの
+   `boid_state` volume 内にあり、`boid host-commands list/reload` の read/reload API はあるが
+   直接書き込む API/CLI コマンドは無い — 現状は `docker exec`/`podman exec` で daemon
+   コンテナに入って編集する運用になる (本 PR で `guide/onboarding.md` に明記)。専用の
+   API/CLI を追加するかは未検討。
+
+これで release-onboarding プロジェクトの PR1〜PR9 は完了。今後のフォローアップは
+上記のいずれか、または新たに見つかった穴を新規の plan doc として起票すること。
+
+---
+
 ## 論点: arm64 を出すか → 決定: 出さない (決定 5、2026-08-01)
 
 初回リリースは amd64 のみ。以下は将来 arm64 を足す判断をするときの材料として残す。
