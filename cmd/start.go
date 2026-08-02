@@ -349,11 +349,21 @@ func refuseRootUID(uid int) error {
 // trying to `compose up` itself from inside its own already-running
 // container.
 func runStart(cmd *cobra.Command, args []string) error {
+	// codex round-7 review of PR5, Major: refuseRootUID must run
+	// UNCONDITIONALLY, not only on the --foreground branch. Even the
+	// non-foreground "just run compose up" path is affected by this
+	// process's own uid: scripts/deploy-container.sh's
+	// `: "${BOID_UID:=$(id -u)}"` defaults BOID_UID to whatever uid ran
+	// `boid start` when it is not set explicitly, and
+	// build/container/compose.yml's daemon service then runs as
+	// `user: "${BOID_UID}:0"` — a `boid start` invoked as root would
+	// therefore silently bring up a root-uid daemon container unless
+	// caught here first, exactly the outcome §決定1/§決定4 exist to rule
+	// out.
+	if err := refuseRootUID(os.Getuid()); err != nil {
+		return err
+	}
 	if shouldRunForeground(startForeground) {
-		if err := refuseRootUID(os.Getuid()); err != nil {
-			return err
-		}
-
 		// Arbitrary-uid self-registration + group-writable umask
 		// (docs/plans/release-onboarding.md 決定1, PR2): under the
 		// compose daemon service this process's uid may have no

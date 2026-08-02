@@ -24,16 +24,11 @@ func TestProjectMigrationError_SingleIssueByteIdentical(t *testing.T) {
 project.yaml: top-level "host_commands" is no longer supported.
 Migration:
   project.yaml uses fields removed in the new schema (listed above).
-  1) Edit project.yaml yourself and remove/relocate those fields — pure local file
-     edit, no daemon needed; this alone unblocks daemon startup / ` + "`boid project reload`" + `.
-  2) Once a daemon is reachable, reconfigure the equivalent workspace behavior
-     yourself at your own pace (see ` + "`boid workspace --help`" + `):
-       - env / host_commands / capabilities.docker: ordinary workspace config
-       - secret_namespace: copy secrets by hand — ` + "`boid secret list -n <old-namespace>`" + `,
-         then ` + "`boid secret set <key> -n <new-namespace>`" + ` for each
-     (legacy bare-metal only, no compose daemon involved at all:
-     ` + "`boid project migrate " + dir + " --apply --legacy-bare-metal`" + ` automates both steps)
-See docs/ja/guide/migration.md for details.`
+  ` + "`boid project migrate " + dir + "`" + ` (dry-run) shows exactly what would move.
+  Automated --apply is a legacy, pre-compose, bare-metal-only path (requires
+  --legacy-bare-metal) — see ` + "`boid project migrate --help`" + ` and
+  docs/ja/guide/migration.md for what it does and does not cover for a
+  project registered with a compose daemon.`
 
 	got := FormatMigrationIssue(issue)
 	if got != want {
@@ -68,7 +63,7 @@ func TestProjectMigrationError_WithProjectID(t *testing.T) {
 		t.Fatalf("missing field message: %s", got)
 	}
 	if !strings.Contains(got, "Migration:\n  project.yaml uses fields removed in the new schema") ||
-		!strings.Contains(got, "boid project migrate "+dir+" --apply --legacy-bare-metal") {
+		!strings.Contains(got, "boid project migrate "+dir+"`") {
 		t.Fatalf("missing migration guidance: %s", got)
 	}
 }

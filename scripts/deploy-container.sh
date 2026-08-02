@@ -335,31 +335,29 @@ if [[ "$DOWN" == "1" ]]; then
 	# header comment on the variable): best-effort teardown of the OTHER
 	# engine too, in case the stack was actually brought up under it
 	# (docker/podman availability drifted between `up` and this `down`).
-	# ALT_ATTEMPTED/ALT_OK (codex round-6 review Major): tracked as TWO
-	# separate flags, not one "ok unless it failed" flag defaulting to
-	# success — the single-engine case (no alternate engine usable at all,
-	# DOWN_ALT_COMPOSE_CMD empty) must NOT count as "the alternate
-	# succeeded" when deciding the overall outcome below, or a primary-
-	# engine failure on an ordinary single-engine host would be silently
-	# reported as success (there is no alternate to have masked it with).
-	ALT_ATTEMPTED=0
 	ALT_OK=1
 	if [[ ${#DOWN_ALT_COMPOSE_CMD[@]} -gt 0 ]]; then
-		ALT_ATTEMPTED=1
 		echo "deploy-container: --down — also stopping via the alternate engine, in case the stack was started under it"
 		if ! "${DOWN_ALT_COMPOSE_CMD[@]}" down; then
 			ALT_OK=0
 			echo "warning: compose down failed for the alternate engine too" >&2
 		fi
 	fi
-	# Report failure whenever primary failed AND either no alternate was
-	# even attempted (the ordinary single-engine case), or the alternate
-	# ALSO failed — an empty/never-created compose project on either
-	# engine is expected to no-op successfully, which is not a failure;
-	# only "every engine actually attempted came back failed" means the
-	# stack might still be running.
-	if [[ $PRIMARY_OK -eq 0 ]] && { [[ $ALT_ATTEMPTED -eq 0 ]] || [[ $ALT_OK -eq 0 ]]; }; then
-		echo "error: compose down failed on every engine attempted; the stack may still be running" >&2
+	# codex round-7 review Major: requiring only ONE of the two attempted
+	# engines to succeed (the previous revision here) can still mask a
+	# real failure — e.g. the stack is genuinely running under podman,
+	# podman's own `down` fails for a real reason (permission, engine
+	# crash, ...), but docker's `down` against an empty/never-created
+	# project trivially no-ops and returns 0, and the OR-based check
+	# would have called that overall success. `compose down` on an
+	# empty/nonexistent project is expected to exit 0 on its own (that is
+	# what makes trying BOTH engines safe in the first place, this file's
+	# own header comment on DOWN_ALT_COMPOSE_CMD) — there is no
+	# legitimate reason for an ATTEMPTED engine's down to fail, so ANY
+	# attempted engine failing is treated as an overall failure now,
+	# rather than requiring every attempted engine to fail.
+	if [[ $PRIMARY_OK -eq 0 ]] || [[ $ALT_OK -eq 0 ]]; then
+		echo "error: compose down failed for at least one engine; the stack may still be running" >&2
 		exit 1
 	fi
 	echo "deploy-container: done. compose stack is down."

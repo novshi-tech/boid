@@ -220,50 +220,30 @@ var removedTopLevelKeys = []string{
 
 // migrationGuidance returns the multi-line guidance block for removed-key
 // errors. docs/plans/release-onboarding.md 決定2/PR5 — this went through
-// SIX rounds of codex review (round-2 through round-6). Every attempt at
-// promising an automated OR a specific manual daemon-side recovery
-// recipe (some shape of "run --apply", or "GET the current workspace and
-// PUT it back") turned out broken on closer inspection — see
-// cmd/project_migrate.go's guardApply for the full history. Round-6
-// found the deepest problem: this error can fire from INSIDE the
-// daemon's own startup path (internal/server, before the daemon binds
-// ANY listener at all — CLI or otherwise), so any guidance that assumes
-// "ask the (compose) daemon something" is circular for exactly the
-// scenario most likely to trigger it — a compose daemon that cannot
-// start BECAUSE of this very error.
+// SEVEN rounds of codex review (round-2 through round-7). Every attempt
+// at a step-by-step recovery recipe (automated via --apply, or a manual
+// command sequence promising to reach the same end state) turned out
+// wrong on closer inspection somewhere — a daemon-topology hole, a
+// format mismatch between two commands, a step that silently loses data,
+// or (round-7) cases this project's own registration model (git-URL
+// bare-repo caching, host_commands definitions with no create/edit API
+// at all) has no fully general answer for yet at all. See
+// cmd/project_migrate.go's guardApply for the detailed history of what
+// was tried and why each attempt was rejected.
 //
-// The fix: split the two concerns this guidance used to conflate.
-//   - Removing the listed fields from project.yaml is PURE LOCAL FILE
-//     I/O — the project.yaml is a file in the user's own checkout, no
-//     daemon involved at all, so this step alone unblocks a daemon
-//     startup failure or `boid project reload` regardless of whether
-//     any daemon is running. This is now the ONLY step described in
-//     specific command-syntax detail.
-//   - Reconfiguring the equivalent WORKSPACE behavior (env/
-//     host_commands/capabilities.docker/secret_namespace) is optional,
-//     can happen anytime later once a daemon is reachable, and is
-//     ordinary day-to-day workspace configuration — this guidance no
-//     longer prescribes a specific command recipe for it (every one
-//     tried so far had a real hole: `workspace edit --from-file` is a
-//     strict-decoded bare WorkspaceMeta while `workspace show -o yaml`
-//     is a wrapper envelope with extra fields; host_commands
-//     DEFINITIONS have no daemon-reachable sync path under compose at
-//     all). `boid workspace --help` / docs/ja/guide/workspace-home.md
-//     are the source of truth for how to do this correctly, not this
-//     string.
+// This function has stopped trying to promise a recipe it cannot
+// guarantee. It states the fact (which fields are invalid) and points
+// at the docs/command that own the actual up-to-date answer, rather than
+// asserting specific steps here that static review keeps finding holes
+// in only after the fact.
 func migrationGuidance(dir string) string {
 	return "Migration:\n" +
 		"  project.yaml uses fields removed in the new schema (listed above).\n" +
-		"  1) Edit project.yaml yourself and remove/relocate those fields — pure local file\n" +
-		"     edit, no daemon needed; this alone unblocks daemon startup / `boid project reload`.\n" +
-		"  2) Once a daemon is reachable, reconfigure the equivalent workspace behavior\n" +
-		"     yourself at your own pace (see `boid workspace --help`):\n" +
-		"       - env / host_commands / capabilities.docker: ordinary workspace config\n" +
-		"       - secret_namespace: copy secrets by hand — `boid secret list -n <old-namespace>`,\n" +
-		"         then `boid secret set <key> -n <new-namespace>` for each\n" +
-		"     (legacy bare-metal only, no compose daemon involved at all:\n" +
-		"     `boid project migrate " + dir + " --apply --legacy-bare-metal` automates both steps)\n" +
-		"See docs/ja/guide/migration.md for details."
+		"  `boid project migrate " + dir + "` (dry-run) shows exactly what would move.\n" +
+		"  Automated --apply is a legacy, pre-compose, bare-metal-only path (requires\n" +
+		"  --legacy-bare-metal) — see `boid project migrate --help` and\n" +
+		"  docs/ja/guide/migration.md for what it does and does not cover for a\n" +
+		"  project registered with a compose daemon."
 }
 
 // rejectRemovedProjectFields scans the raw YAML map for top-level keys and

@@ -24,7 +24,7 @@ boid project migrate ~/src/myproject --workspace dev --apply --legacy-bare-metal
 boid project migrate ~/src/myproject --workspace dev --apply --legacy-bare-metal --on-collision skip
 ```
 
-compose daemon 配下のプロジェクトは、 dry-run の出力を参考にしながら手動で移行してください (下記「workspace への反映」参照)。
+compose daemon 配下のプロジェクトについては、 完全に安全な自動/手動移行手順は **まだ確立されていません** (下記「workspace への反映」参照)。 dry-run の出力を参考にしながら、 状況に応じて判断してください。
 
 ### `boid project migrate` の変換内容
 
@@ -38,20 +38,21 @@ compose daemon 配下のプロジェクトは、 dry-run の出力を参考に�
 
 ### workspace への反映
 
-**`--legacy-bare-metal` 無しの `--apply` は拒否されます** (2026-08 release-onboarding PR5、 `docs/plans/release-onboarding.md` 決定2)。 理由は codex による6ラウンドのレビューで判明した、 compose daemon に対して「部分的に安全な自動反映」や「特定の手動コマンド列」を約束しようとした複数の設計がいずれも穴を抱えていたことによります — 詳細は `cmd/project_migrate.go` の `guardApply` / `internal/orchestrator/spec_loader.go` の `migrationGuidance` のコメントを参照してください。特に重要なのは、 このエラーは **daemon が起動する前** (daemon 自身の起動処理内、 project.yaml のスキーマ検証中) にも発生し得るということです — この場合 daemon は一切のリスナーを bind していないため、 「daemon に問い合わせる」前提の復旧手順はそもそも実行不可能です。
+**`--legacy-bare-metal` 無しの `--apply` は拒否されます** (2026-08 release-onboarding PR5、 `docs/plans/release-onboarding.md` 決定2)。 理由は codex による7ラウンドのレビューで判明した、 compose daemon に対して「部分的に安全な自動反映」や「特定の手動コマンド列」を約束しようとした複数の設計が、 検証のたびに新しい穴を抱えていたことによります — 詳細は `cmd/project_migrate.go` の `guardApply` のコメントを参照してください (何を試して何故だめだったかの履歴)。
 
-**compose daemon 配下のプロジェクトは、 以下の2ステップ (互いに独立) で手動移行してください:**
+**既知の制約 (2026-08 時点、未解決):**
 
-1. **project.yaml を自分で編集する** — 上に列挙されたフィールドを削除・移動する。 これは純粋なローカルファイル編集で daemon は一切不要 — daemon の起動失敗や `boid project reload` の失敗は、 このステップだけで解消します。
-2. **daemon に到達可能になった時点で、 workspace 側の設定を自分のペースで追加する** — `boid workspace --help` (通常の workspace 設定操作) を参照してください:
-   - `env` / `host_commands` / `capabilities.docker`: 通常の workspace 設定として追加する
-   - `secret_namespace`: secret を手動でコピーする — `boid secret list -n <旧namespace>` で一覧し、 各キーについて `boid secret set <key> -n <新namespace>` で新しい namespace (= workspace の slug) にコピーする
+- このエラーは **daemon 自身の起動処理中** (project.yaml のスキーマ検証時) にも発生し得ます。 この場合 daemon は一切のリスナーを bind していないため、 「daemon に問い合わせる」前提の復旧手順は実行不可能です。 project.yaml 自体の編集はローカルファイル操作なので daemon 不要で行えますが、 それだけで daemon が起動時に読む内容が更新されるとは限りません — git URL 登録した project の場合、 daemon は自身が管理する bare repository の cached HEAD を読むため、 ローカル checkout での編集を反映するには push + daemon 側での fetch が必要です。 daemon が起動できない状態では `boid project fetch` にも到達できないため、 このケースの確実な復旧手順は本 PR の時点ではまだありません。
+- workspace 側への反映 (`env` / `host_commands` / `capabilities.docker` / secret) について、 `boid workspace edit --from-file` は全置換 (full replace) であり、 `boid workspace show -o yaml` の出力 (wrapper envelope) をそのまま食わせることはできません。 特に `host_commands` は workspace 側に保存できるのは **参照名のみ** で、 実定義 (`~/.config/boid/host_commands.yaml`) を daemon に追加・編集する CLI コマンドは現状 `list`/`reload` のみで、 新規定義の追加手段がありません。
+- secret のコピーは `boid secret list -n <namespace>` では **キー名のみ** が得られ、 値は含まれません。 値を含めたコピーが必要な場合は `boid secret get -n <旧namespace> <key>` の出力を `boid secret set -n <新namespace> <key>` へ渡す、 のような手順が必要です (提示された1コマンドで完結するわけではありません)。
 
-この2ステップの自動実行は **`--apply --legacy-bare-metal`** でのみ提供されます (bare-metal daemon を直接操作している、 compose を一切使わない場合の専用経路):
+上記の理由により、 **compose daemon 配下のプロジェクトに対する完全に安全な移行手順は、 このドキュメントの時点ではまだ確立されていません**。 状況 (daemon が起動しているか、 git URL 登録かローカル登録か、 host_commands を使っているか等) に応じて個別に判断してください。 これらの制約の解消は将来の別 PR のスコープです。
+
+**`--apply --legacy-bare-metal`** は、 bare-metal daemon (compose を使わない旧来の単体プロセス) を直接操作している場合に限り、 以下を自動実行します:
 
 - workspace slug が daemon にまだ無い場合: `POST /api/workspaces` で新規作成する
 - 既存 slug の場合: 現在の内容を `GET /api/workspaces/<slug>` で取得し、 今回の migration が生成したフィールドとマージした上で `PUT /api/workspaces/<slug>` (`If-Match: <revision>`) で書き戻す (`mergeLegacyFieldsIntoWorkspace`)。 daemon に到達できない場合は host 側の `boid.db` に直接書き込む (`applyMigratedWorkspaceOffline`)
-- project の workspace 割り当て (`project_workspaces`) と secret のコピーも host 側 `boid.db` に直接書き込む (daemon 側の API が存在しないため)
+- project の workspace 割り当て (`project_workspaces`) と secret のコピー (値を含む) も host 側 `boid.db` に直接書き込む (daemon 側の API が存在しないため)
 
 ## `project.local.yaml` の廃止
 

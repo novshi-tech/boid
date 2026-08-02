@@ -84,27 +84,19 @@ project.yaml to remove the fields that have moved.
 By default the command runs in dry-run mode: it prints what it would do without
 writing anything.
 
---apply is a LEGACY, bare-metal-only migration path (docs/plans/
-release-onboarding.md 決定2) and is refused unless --legacy-bare-metal is
-also passed: it writes directly to a host-local boid.db and, when reachable,
-also drives a bare-metal daemon's own socket — neither of which is safe
-against a compose daemon (its real config/DB live inside the boid_state
-volume, invisible from here; a "reload" request only ever affects a daemon
-sharing this host's filesystem).
+--apply is a LEGACY, pre-compose, bare-metal-only migration path
+(docs/plans/release-onboarding.md 決定2) and is refused unless
+--legacy-bare-metal is also passed: it writes directly to a host-local
+boid.db and, when reachable, also drives a bare-metal daemon's own
+socket — neither of which is safe against a compose daemon (its real
+config/DB live inside the boid_state volume, invisible from here).
 
-For a project registered with a compose daemon, migrate BY HAND instead —
-in two INDEPENDENT steps, since this error can fire before any daemon has
-even started (a schema violation blocks daemon startup itself), so a
-recipe that assumes a reachable daemon is circular for that case:
-  1) Edit project.yaml yourself and remove/relocate the listed fields —
-     pure local file I/O, no daemon needed at all. This alone is enough to
-     unblock daemon startup / "boid project reload".
-  2) Once a daemon is reachable, reconfigure the equivalent WORKSPACE
-     behavior yourself, at your own pace, through the daemon's own normal
-     commands (see "boid workspace --help"): env / host_commands /
-     capabilities.docker are ordinary workspace config; secret_namespace
-     means copying secrets by hand ("boid secret list -n <old-namespace>"
-     then "boid secret set <key> -n <new-namespace>" for each).
+For a project registered with a compose daemon there is no fully
+automated recovery yet — see docs/ja/guide/migration.md for the current
+guidance and known limitations (this went through seven rounds of codex
+review; every specific by-hand recipe tried so far turned out to have a
+real hole somewhere — see guardApply's own doc comment in this file for
+the history — so this text deliberately stops short of promising one).
 
 Secret migration (--legacy-bare-metal + --apply only) copies secrets from
 the old namespace (secret_namespace field) to the workspace namespace. Use
@@ -176,10 +168,10 @@ type migratePlan struct {
 	removeKeys []string
 
 	// Secret migration
-	oldNamespace      string
-	newNamespace      string // == workspaceSlug
-	secretKeys        []string
-	secretCollisions  []secretCollision
+	oldNamespace     string
+	newNamespace     string // == workspaceSlug
+	secretKeys       []string
+	secretCollisions []secretCollision
 }
 
 type secretCollision struct {
@@ -391,11 +383,13 @@ func runProjectMigrate(cmd *cobra.Command, args []string) error {
 //     internal/orchestrator/spec_loader.go's migrationGuidance, which
 //     promised a `--from-file <file>` recovery path dry-run never
 //     produces a file for.
+//
 //   - round-4 Blocker (×3): the fix for that skipped the daemon push's
 //     ONLINE branch too broadly, missed that SetProjectWorkspace/
 //     migrateSecrets always write to boidDB regardless of reachability,
 //     and the manual `workspace edit --from-file` fallback it still
 //     pointed users at is a full REPLACE that can drop fields.
+//
 //   - round-5 Blocker: the fix for THAT (gating only the genuinely
 //     host-DB-writing steps, leaving the online HTTP push
 //     unconditional) still could not actually reach a compose daemon
@@ -407,22 +401,44 @@ func runProjectMigrate(cmd *cobra.Command, args []string) error {
 //     complete" would print while the compose daemon silently never saw
 //     the new host_commands definitions.
 //
+//   - round-6 Blocker (×3): the by-hand recipe adopted after round-5
+//     itself assumed a reachable daemon for a scenario (schema violation
+//     blocking the DAEMON'S OWN startup) where none may exist yet, used
+//     `workspace show -o yaml`'s wrapper-envelope output as if it were
+//     the bare WorkspaceMeta `workspace edit --from-file` strict-decodes,
+//     and never actually copied secret VALUES (only listed keys).
+//
+//   - round-7 Blocker (×3): even the narrowed, no-longer-command-specific
+//     guidance still asserted things that do not hold in general — a
+//     git-URL-registered project's daemon-side bare-repo cache does not
+//     auto-update just because the user's own local checkout changed
+//     (`boid project fetch` is itself unreachable while the daemon is
+//     down), host_commands DEFINITIONS have no create/edit surface on
+//     the CLI at all (list/reload only), and `compose up -d` succeeding
+//     does not mean the container didn't immediately crash on this exact
+//     error — the guidance could be buried in `docker compose logs`
+//     nobody is told to check.
+//
 // Conclusion: this command's entire push/apply machinery is
 // bare-metal-shaped and CANNOT be partially safe for a compose daemon
 // without new daemon-side API surface (e.g. a host_commands-definition
-// endpoint) that does not exist yet — out of scope for this PR. --apply
-// therefore refuses OUTRIGHT unless --legacy-bare-metal is also passed;
-// projectMigrateCmd's own --help text is the compose-safe manual
-// alternative (no promise of automation this command cannot deliver on).
+// endpoint, a way to force-refresh a git-URL project's bare-repo cache
+// independent of daemon startup) that does not exist yet — out of scope
+// for this PR. --apply therefore refuses OUTRIGHT unless
+// --legacy-bare-metal is also passed; migrationGuidance
+// (internal/orchestrator/spec_loader.go) and this command's own --help
+// text have both stopped asserting a specific by-hand recovery recipe,
+// after seven rounds of review each finding a new hole in the previous
+// one — see docs/ja/guide/migration.md for the current, deliberately
+// non-prescriptive guidance and its documented known limitations.
 func guardApply(stderr io.Writer, dir string, legacyBareMetal bool) error {
 	if legacyBareMetal {
 		fmt.Fprintln(stderr, "note: --legacy-bare-metal set — this will push the migrated workspace directly to a bare-metal daemon (over HTTP if one answers client.DefaultSocketPath(), otherwise straight into a boid.db on this host), and copy project-workspace-assignment/secrets there too. Only pass this for a genuine pre-compose, bare-metal-only migration with no compose daemon involved at all.")
 		return nil
 	}
 	return fmt.Errorf(
-		"boid project migrate --apply is a legacy, bare-metal-only migration path and is refused without --legacy-bare-metal (docs/plans/release-onboarding.md 決定2): it writes directly to a host boid.db and drives a bare-metal daemon's own socket, neither of which is safe against a compose daemon (its real config/DB live inside the boid_state volume, invisible from here). "+
-			"For a project registered with a compose daemon, migrate BY HAND instead: (1) edit project.yaml %s yourself to remove/relocate the fields named above — pure local file I/O, no daemon needed, unblocks daemon startup on its own; (2) once a daemon is reachable, reconfigure the equivalent workspace behavior yourself via `boid workspace --help`. "+
-			"See `boid project migrate --help` for the full recipe.", dir)
+		"boid project migrate --apply is a legacy, pre-compose, bare-metal-only migration path and is refused without --legacy-bare-metal (docs/plans/release-onboarding.md 決定2): it writes directly to a host boid.db and drives a bare-metal daemon's own socket, neither of which is safe against a compose daemon (its real config/DB live inside the boid_state volume, invisible from here). "+
+			"For a project registered with a compose daemon there is no fully automated recovery yet — dry-run `boid project migrate %s` (no --apply) shows exactly which fields need to move; see docs/ja/guide/migration.md for the current guidance and known limitations.", dir)
 }
 
 // errProjectNotFound is a helper to detect "not found" errors from GetProject.
