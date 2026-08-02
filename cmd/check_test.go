@@ -181,7 +181,7 @@ func TestProbeArchMismatchWithAPI_RemoteManifestMatchingArch_NoMismatch(t *testi
 		inspectErr: errors.New("no such image (never pulled)"),
 	}
 
-	hostArch, imageArch, mismatch, note := probeArchMismatchWithAPI(context.Background(), api, "ghcr.io/novshi-tech/boid-runner:v0.0.1")
+	hostArch, imageArch, mismatch, note := probeArchMismatchWithAPI(context.Background(), api, "docker", "ghcr.io/novshi-tech/boid-runner:v0.0.1")
 	if note != "" {
 		t.Fatalf("note = %q, want empty (the remote manifest resolved this without ever touching ImageInspect)", note)
 	}
@@ -200,7 +200,7 @@ func TestProbeArchMismatchWithAPI_RemoteManifestMismatchedArch_ReportsMismatch(t
 		inspectErr: errors.New("no such image (never pulled)"),
 	}
 
-	hostArch, imageArch, mismatch, note := probeArchMismatchWithAPI(context.Background(), api, "ghcr.io/novshi-tech/boid-runner:v0.0.1")
+	hostArch, imageArch, mismatch, note := probeArchMismatchWithAPI(context.Background(), api, "docker", "ghcr.io/novshi-tech/boid-runner:v0.0.1")
 	if note != "" {
 		t.Fatalf("note = %q, want empty", note)
 	}
@@ -222,7 +222,7 @@ func TestProbeArchMismatchWithAPI_RemoteManifestList_MatchesOneOfMultiplePlatfor
 		inspectErr: errors.New("no such image (never pulled)"),
 	}
 
-	_, _, mismatch, note := probeArchMismatchWithAPI(context.Background(), api, "ghcr.io/novshi-tech/boid-runner:v0.0.1")
+	_, _, mismatch, note := probeArchMismatchWithAPI(context.Background(), api, "docker", "ghcr.io/novshi-tech/boid-runner:v0.0.1")
 	if note != "" {
 		t.Fatalf("note = %q, want empty", note)
 	}
@@ -238,7 +238,7 @@ func TestProbeArchMismatchWithAPI_DistributionInspectFails_FallsBackToLocalImage
 		inspect: dockerclient.ImageInspectResult{InspectResponse: image.InspectResponse{Architecture: "amd64"}},
 	}
 
-	hostArch, imageArch, mismatch, note := probeArchMismatchWithAPI(context.Background(), api, "boid-runner:latest")
+	hostArch, imageArch, mismatch, note := probeArchMismatchWithAPI(context.Background(), api, "docker", "boid-runner:latest")
 	if note != "" {
 		t.Fatalf("note = %q, want empty (local ImageInspect fallback resolved it)", note)
 	}
@@ -257,7 +257,7 @@ func TestProbeArchMismatchWithAPI_NeitherManifestNorLocalImageResolve_DegradesTo
 		inspectErr: errors.New("no such image"),
 	}
 
-	_, _, mismatch, note := probeArchMismatchWithAPI(context.Background(), api, "ghcr.io/novshi-tech/boid-runner:v0.0.1")
+	_, _, mismatch, note := probeArchMismatchWithAPI(context.Background(), api, "docker", "ghcr.io/novshi-tech/boid-runner:v0.0.1")
 	if mismatch {
 		t.Error("mismatch = true, want false: neither source resolving must never be reported as a positive mismatch")
 	}
@@ -269,7 +269,7 @@ func TestProbeArchMismatchWithAPI_NeitherManifestNorLocalImageResolve_DegradesTo
 func TestProbeArchMismatchWithAPI_InfoProbeFails_DegradesToNote(t *testing.T) {
 	api := &fakeArchProbeAPI{infoErr: errors.New("connection refused")}
 
-	_, _, mismatch, note := probeArchMismatchWithAPI(context.Background(), api, "ghcr.io/novshi-tech/boid-runner:v0.0.1")
+	_, _, mismatch, note := probeArchMismatchWithAPI(context.Background(), api, "docker", "ghcr.io/novshi-tech/boid-runner:v0.0.1")
 	if mismatch {
 		t.Error("mismatch = true, want false: a failed engine probe must never be reported as a positive mismatch")
 	}
@@ -289,7 +289,7 @@ func TestProbeArchMismatchWithAPI_UnknownLocalImageArch_ReportsInconclusive(t *t
 		inspect: dockerclient.ImageInspectResult{InspectResponse: image.InspectResponse{Architecture: ""}},
 	}
 
-	_, _, mismatch, note := probeArchMismatchWithAPI(context.Background(), api, "some-custom:tag")
+	_, _, mismatch, note := probeArchMismatchWithAPI(context.Background(), api, "docker", "some-custom:tag")
 	if mismatch {
 		t.Error("mismatch = true, want false when the image reports no architecture at all — an unresolved verdict is inconclusive, not a positive mismatch")
 	}
@@ -312,7 +312,7 @@ func TestProbeArchMismatchWithAPI_LocalImageCheckedBeforeRegistry(t *testing.T) 
 		inspect: dockerclient.ImageInspectResult{InspectResponse: image.InspectResponse{Architecture: "arm64"}}, // stale local cache
 	}
 
-	hostArch, imageArch, mismatch, note := probeArchMismatchWithAPI(context.Background(), api, "ghcr.io/novshi-tech/boid-runner:v0.0.1")
+	hostArch, imageArch, mismatch, note := probeArchMismatchWithAPI(context.Background(), api, "docker", "ghcr.io/novshi-tech/boid-runner:v0.0.1")
 	if note != "" {
 		t.Fatalf("note = %q, want empty", note)
 	}
@@ -427,5 +427,77 @@ func TestRunCheck_ArchProbeInconclusive_ReportsError(t *testing.T) {
 	}
 	if !strings.Contains(buf.String(), "ERROR:") {
 		t.Errorf("output = %q, want an ERROR line for the inconclusive arch probe", buf.String())
+	}
+}
+
+// TestProbeArchMismatchWithAPI_Podman_UsesManifestInspectNotDistributionAPI
+// pins [codex round 4 review, Blocker 1]: Podman's API server does not
+// implement docker's `/distribution/{name}/json` endpoint at all (the one
+// api.DistributionInspect calls) — using it unconditionally would make
+// `boid check` refuse EVERY fresh Podman install that has never pulled the
+// image yet, even though `boid start` itself can pull that same public
+// image just fine. On engine=="podman", the not-yet-pulled path must go
+// through podmanManifestArches (`podman manifest inspect`) instead, never
+// api.DistributionInspect.
+func TestProbeArchMismatchWithAPI_Podman_UsesManifestInspectNotDistributionAPI(t *testing.T) {
+	orig := podmanManifestArches
+	defer func() { podmanManifestArches = orig }()
+
+	var calledWithImage string
+	podmanManifestArches = func(ctx context.Context, image string) ([]string, error) {
+		calledWithImage = image
+		return []string{"amd64"}, nil
+	}
+
+	api := &fakeArchProbeAPI{
+		info:       newSystemInfoResult("x86_64"),
+		inspectErr: errors.New("no such image (never pulled)"),
+		// DistributionInspect would "succeed" here too, deliberately, to
+		// prove the podman branch does NOT consult it at all — only
+		// podmanManifestArches's stubbed result should determine the
+		// verdict.
+		dist: newDistributionInspectResult("arm64"),
+	}
+
+	hostArch, imageArch, mismatch, note := probeArchMismatchWithAPI(context.Background(), api, "podman", "ghcr.io/novshi-tech/boid-runner:v0.0.1")
+	if note != "" {
+		t.Fatalf("note = %q, want empty", note)
+	}
+	if mismatch {
+		t.Error("mismatch = true, want false: podmanManifestArches reported amd64, matching the amd64 host")
+	}
+	if hostArch != "amd64" || imageArch != "amd64" {
+		t.Errorf("hostArch=%q imageArch=%q, want both amd64 (from podmanManifestArches, not the DistributionInspect stub)", hostArch, imageArch)
+	}
+	if calledWithImage != "ghcr.io/novshi-tech/boid-runner:v0.0.1" {
+		t.Errorf("podmanManifestArches called with image=%q, want the probed image", calledWithImage)
+	}
+}
+
+// TestRunCheck_BoidComposeRoot_SkipsArchProbe pins [codex round 4 review,
+// Major]: BOID_COMPOSE_ROOT selects deployFromCheckout's `--build` path
+// (cmd/host.go), which overrides BOID_IMAGE to a locally-BUILT
+// "boid-runner:latest" rather than pulling anything — a plain `docker
+// build`/`podman build` with no --platform flag always builds for the
+// host's own architecture, so this scenario cannot produce the mismatch
+// 決定5 exists to catch. Probing anyway would report a false-negative
+// failure before that local image has ever been built, even though `boid
+// start` would go on to build and run it successfully.
+func TestRunCheck_BoidComposeRoot_SkipsArchProbe(t *testing.T) {
+	dir := t.TempDir()
+	writeFakeExecutable(t, dir, "docker", "if [ \"$1\" = compose ]; then exit 0; fi\nexit 0")
+	t.Setenv("PATH", dir)
+	t.Setenv("BOID_COMPOSE_ROOT", "/some/checkout")
+	t.Setenv("BOID_NO_AUTOSTART", "1")
+
+	cmd := checkCmd
+	cmd.SetContext(context.Background())
+	var buf strings.Builder
+	cmd.SetOut(&buf)
+
+	_ = runCheck(cmd, nil)
+	out := buf.String()
+	if !strings.Contains(out, "skipped: BOID_COMPOSE_ROOT is set") {
+		t.Errorf("output = %q, want the arch probe to report itself skipped for BOID_COMPOSE_ROOT", out)
 	}
 }

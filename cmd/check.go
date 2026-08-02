@@ -29,6 +29,7 @@ package cmd
 // foreign-arch image under emulation instead of refusing it outright).
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -149,9 +150,28 @@ func runCheck(cmd *cobra.Command, args []string) error {
 	}
 
 	fmt.Fprintln(out, "\n=== Host / image architecture ===")
-	if engine == "" {
+	switch {
+	case engine == "":
 		fmt.Fprintln(out, "  (skipped: no usable engine)")
-	} else {
+	case os.Getenv("BOID_COMPOSE_ROOT") != "":
+		// [codex round 4 review, Major]: BOID_COMPOSE_ROOT is exactly the
+		// signal cmd/host.go's own findComposeRoot() uses to pick the
+		// checkout/`--build` deploy path (deployFromCheckout,
+		// cmd/host.go:619's --build) — that path's deploy-container.sh
+		// invocation OVERRIDES BOID_IMAGE to "boid-runner:latest" and
+		// BUILDS it locally from source rather than pulling anything
+		// (resolveCheckImage's own doc comment already covers why the
+		// PR7 arch probe never targeted this path: `docker build`/`podman
+		// build` with no --platform flag always builds for the host's
+		// own architecture, so this scenario cannot produce the mismatch
+		// 決定5 exists to catch). What round 4 caught is the OTHER half:
+		// running `boid check` in that same checkout BEFORE the local
+		// image has ever been built would otherwise report "not present
+		// locally, and no registry/remote manifest resolved anything" as
+		// a failure — a false negative, since `boid start` builds it
+		// fine right there. Skip outright instead of probing.
+		fmt.Fprintln(out, "  (skipped: BOID_COMPOSE_ROOT is set — `boid start` builds a host-native image locally via --build, which cannot mismatch this host's architecture by construction)")
+	default:
 		image := resolveCheckImage()
 		hostArch, imageArch, mismatch, note := probeArchMismatch(ctx, engine, image)
 		switch {
@@ -395,29 +415,43 @@ func probeArchMismatch(ctx context.Context, engine, image string) (hostArch, ima
 		return "", "", false, fmt.Sprintf("could not connect to the %s engine to verify architecture: %v", engine, err)
 	}
 	defer cli.Close()
-	return probeArchMismatchWithAPI(ctx, cli, image)
+	return probeArchMismatchWithAPI(ctx, cli, engine, image)
 }
 
 // probeArchMismatchWithAPI reports the engine's host architecture and the
 // target image's architecture, and whether they mismatch.
 //
-// [codex review round 1, Blocker 1]: the image's architecture is resolved
-// via DistributionInspect FIRST — a registry manifest query that does NOT
-// require the image to be pulled locally, which is the common case for a
-// brand-new install (the whole point of this check is to catch the
-// mismatch BEFORE `boid start` ever pulls/launches anything). Only when
-// that fails (no registry reachable, or the ref is a purely local build
-// tag like version.LocalBuildImage with no registry behind it at all) does
-// this fall back to a local ImageInspect — which still catches the case
-// where an operator already has a mismatched image sitting locally, e.g.
-// from a copied volume.
+// [codex round 3 review, Blocker 2]: a LOCAL image is checked FIRST, ahead
+// of any registry/remote-manifest query. Compose's default pull_policy
+// ("missing") never re-pulls a tag that already resolves to a locally
+// cached image, however stale — so if a wrong-arch image already sits
+// under this exact tag (e.g. copied in from another host's volume, or a
+// leftover from a previous arch), THAT is what `boid start` will actually
+// run, regardless of what the registry currently publishes. Only when
+// nothing is cached locally does querying the manifest WITHOUT pulling
+// (the common brand-new-install case) become the right question, since a
+// pull is exactly what compose is about to do.
+//
+// [codex round 4 review, Blocker 1]: the remote-manifest step is
+// engine-specific, not just a single DistributionInspect call. Docker's
+// `/distribution/{name}/json` (api.DistributionInspect) has no Podman
+// equivalent — Podman's API server does not implement that endpoint at
+// all, so on Podman this would ALWAYS fail for an image that has never
+// been pulled, making `boid check` refuse a fresh Podman install outright
+// even though `boid start` itself can pull the very same public image
+// fine. Podman's own `podman manifest inspect <ref>` CLI subcommand DOES
+// support inspecting a remote reference's manifest without pulling it, so
+// that is used instead — see podmanManifestArches.
 //
 // note carries a human-readable reason no verdict could be reached (engine
-// unreachable, neither the registry nor a local copy resolved anything) —
-// diagnostic only: resolveImage's own launch-time fail-fast
-// (internal/dispatcher/container_backend.go) is the actual gate, so a
-// probe failure here degrades to "skipped", never a false positive.
-func probeArchMismatchWithAPI(ctx context.Context, api archProbeAPI, image string) (hostArch, imageArch string, mismatch bool, note string) {
+// unreachable, neither a remote nor a local copy resolved anything) —
+// [codex round 2/3 review]: this is treated as a FAILURE by the caller
+// (runCheck), not a silent pass — 決定5 requires the fail-fast to be a
+// "must", and resolveImage's own launch-time check
+// (internal/dispatcher/container_backend.go) only ever guards JOB
+// containers, never the compose daemon image itself, so an inconclusive
+// verdict here is the only gate the daemon image gets at all.
+func probeArchMismatchWithAPI(ctx context.Context, api archProbeAPI, engine, image string) (hostArch, imageArch string, mismatch bool, note string) {
 	checkCtx, cancel := context.WithTimeout(ctx, checkEngineTimeout)
 	defer cancel()
 
@@ -430,17 +464,6 @@ func probeArchMismatchWithAPI(ctx context.Context, api archProbeAPI, image strin
 		return "", "", false, "engine reported no host architecture"
 	}
 
-	// [codex round 3 review, Blocker 2]: a LOCAL image is checked FIRST,
-	// ahead of the registry manifest. Compose's default pull_policy
-	// ("missing") never re-pulls a tag that already resolves to a locally
-	// cached image, however stale — so if a wrong-arch image already sits
-	// under this exact tag (e.g. copied in from another host's volume, or
-	// a leftover from a previous arch), THAT is what `boid start` will
-	// actually run, regardless of what the registry currently publishes.
-	// Only when nothing is cached locally does the registry manifest
-	// (queryable WITHOUT pulling — see probeArchMismatchWithAPI's own
-	// header) become the right question to ask, since in that case a
-	// pull is exactly what compose is about to do.
 	if insp, err := api.ImageInspect(checkCtx, image); err == nil {
 		imageArch = insp.Architecture
 		if imageArch == "" {
@@ -449,14 +472,23 @@ func probeArchMismatchWithAPI(ctx context.Context, api archProbeAPI, image strin
 		return hostArch, imageArch, hostArch != imageArch, ""
 	}
 
-	if dist, distErr := api.DistributionInspect(checkCtx, image, dockerclient.DistributionInspectOptions{}); distErr == nil && len(dist.Platforms) > 0 {
-		supported := make([]string, 0, len(dist.Platforms))
-		matched := false
+	var supported []string
+	if engine == "podman" {
+		if archs, err := podmanManifestArches(checkCtx, image); err == nil {
+			supported = archs
+		}
+	} else if dist, distErr := api.DistributionInspect(checkCtx, image, dockerclient.DistributionInspectOptions{}); distErr == nil {
 		for _, p := range dist.Platforms {
-			a := dispatcher.NormalizeArch(p.Architecture)
-			supported = append(supported, a)
+			supported = append(supported, dispatcher.NormalizeArch(p.Architecture))
+		}
+	}
+
+	if len(supported) > 0 {
+		matched := false
+		for _, a := range supported {
 			if a == hostArch {
 				matched = true
+				break
 			}
 		}
 		if !matched {
@@ -465,5 +497,42 @@ func probeArchMismatchWithAPI(ctx context.Context, api archProbeAPI, image strin
 		return hostArch, hostArch, false, ""
 	}
 
-	return hostArch, "", false, fmt.Sprintf("could not determine image %q's architecture (not present locally, and its registry manifest could not be queried) — it will still be validated at pull/launch time", image)
+	return hostArch, "", false, fmt.Sprintf("could not determine image %q's architecture (not present locally, and its registry/remote manifest could not be queried) — it will still be validated at pull/launch time", image)
+}
+
+// podmanManifestArches shells out to `podman manifest inspect <image>` —
+// the one podman CLI operation that can inspect a REMOTE image reference's
+// manifest without pulling it (docs comment on probeArchMismatchWithAPI's
+// [codex round 4 review, Blocker 1]). Understands both a single-platform
+// OCI/Docker image manifest (top-level "architecture") and a manifest
+// list/OCI index (each entry's "platform.architecture").
+var podmanManifestArches = func(ctx context.Context, image string) ([]string, error) {
+	out, err := exec.CommandContext(ctx, "podman", "manifest", "inspect", image).Output()
+	if err != nil {
+		return nil, err
+	}
+	var manifest struct {
+		Architecture string `json:"architecture"`
+		Manifests    []struct {
+			Platform struct {
+				Architecture string `json:"architecture"`
+			} `json:"platform"`
+		} `json:"manifests"`
+	}
+	if err := json.Unmarshal(out, &manifest); err != nil {
+		return nil, err
+	}
+	var archs []string
+	for _, m := range manifest.Manifests {
+		if a := m.Platform.Architecture; a != "" {
+			archs = append(archs, dispatcher.NormalizeArch(a))
+		}
+	}
+	if len(archs) == 0 && manifest.Architecture != "" {
+		archs = append(archs, dispatcher.NormalizeArch(manifest.Architecture))
+	}
+	if len(archs) == 0 {
+		return nil, fmt.Errorf("manifest reported no architecture")
+	}
+	return archs, nil
 }
