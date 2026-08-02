@@ -259,6 +259,50 @@ e2e_run docker push "$SENTINEL_IMAGE"
 e2e_log "removing local image tags so the later pull is a real network pull"
 docker rmi "$LOCAL_SENTINEL_TAG" "$SENTINEL_IMAGE" >/dev/null 2>&1 || true
 
+# --- fixture git upstream (mirrors e2e/run-container.sh's own "fixture git
+# upstream" section — see that script's header comment for why 0.0.0.0 +
+# host.docker.internal, not the shared e2e_setup_fixture_upstream helper's
+# 127.0.0.1 default). Started BEFORE `boid start` below, deliberately: the
+# daemon container only ever reads SSL_CERT_FILE/GIT_SSL_CAINFO once, at
+# container CREATE time (build/container/compose.yml's own passthrough env
+# entries), so both must already be exported in THIS shell's environment
+# before scripts/deploy-container.sh's `compose up` runs — starting the
+# fixture upstream (and exporting these) any later leaves the already-
+# running daemon container with no trust anchor for the fixture's
+# self-signed cert, and its own `git clone` (project registration below;
+# PR-2b, the daemon clones a project's git URL itself) fails with "server
+# certificate verification failed" (exactly what an earlier revision of
+# this script hit — see git history / this PR's own review notes). -------
+UPSTREAM_DIR="$ROOT/upstream-repos"
+UPSTREAM_READY="$ROOT/upstream.addr"
+UPSTREAM_CERT="$XDG_RUNTIME_DIR/upstream-ca.crt"
+mkdir -p "$UPSTREAM_DIR"
+
+e2e_log "starting fixture git upstream (0.0.0.0, host.docker.internal-reachable)"
+"$BUILD_DIR/boid-e2e" upstream-serve \
+  --dir "$UPSTREAM_DIR" \
+  --addr "0.0.0.0:0" \
+  --ready-file "$UPSTREAM_READY" \
+  --cert-file "$UPSTREAM_CERT" \
+  "e2e-fixture/proj-onboarding" \
+  >"$ROOT/upstream.stdout.log" 2>"$ROOT/upstream.stderr.log" &
+UPSTREAM_PID=$!
+
+e2e_wait_for_file "$UPSTREAM_READY" 10
+UPSTREAM_BOUND="$(cat "$UPSTREAM_READY")"
+UPSTREAM_PORT="${UPSTREAM_BOUND##*:}"
+UPSTREAM_HOST="host.docker.internal:${UPSTREAM_PORT}"
+e2e_log "fixture upstream bound on ${UPSTREAM_BOUND}, reachable via ${UPSTREAM_HOST}"
+
+# Exported before `boid start` (below) — see this block's own header
+# comment. UPSTREAM_CERT lives under $XDG_RUNTIME_DIR (-> BOID_RUNTIME_DIR),
+# the one host<->container bind that IS load-bearing here (see this
+# script's own "throwaway XDG layout" section), so the path is valid
+# inside the daemon container too, not just on this runner's own
+# filesystem.
+export SSL_CERT_FILE="$UPSTREAM_CERT"
+export GIT_SSL_CAINFO="$UPSTREAM_CERT"
+
 # --- checkout-less scratch dir -----------------------------------------------
 # The defining condition of "checkout-less": BOID_COMPOSE_ROOT unset (never
 # exported anywhere in this script) AND a cwd with no scripts/
@@ -313,34 +357,6 @@ CLI_TOKEN="$(cat "$XDG_CONFIG_HOME/boid/cli-token")"
 INSTALL_ID="$(docker compose -f "$COMPOSE_ASSETS_ROOT/build/container/compose.yml" exec -T daemon sh -c 'cat "$XDG_DATA_HOME/boid/install_id"' 2>/dev/null | tr -d '\r\n' || true)"
 [[ -n "$INSTALL_ID" ]] || e2e_fail "could not read install_id from inside the daemon container"
 e2e_log "install_id=$INSTALL_ID"
-
-# --- fixture git upstream (mirrors e2e/run-container.sh's own "fixture git
-# upstream" section — see that script's header comment for why 0.0.0.0 +
-# host.docker.internal, not the shared e2e_setup_fixture_upstream helper's
-# 127.0.0.1 default) ----------------------------------------------------
-UPSTREAM_DIR="$ROOT/upstream-repos"
-UPSTREAM_READY="$ROOT/upstream.addr"
-UPSTREAM_CERT="$XDG_RUNTIME_DIR/upstream-ca.crt"
-mkdir -p "$UPSTREAM_DIR"
-
-e2e_log "starting fixture git upstream (0.0.0.0, host.docker.internal-reachable)"
-"$BUILD_DIR/boid-e2e" upstream-serve \
-  --dir "$UPSTREAM_DIR" \
-  --addr "0.0.0.0:0" \
-  --ready-file "$UPSTREAM_READY" \
-  --cert-file "$UPSTREAM_CERT" \
-  "e2e-fixture/proj-onboarding" \
-  >"$ROOT/upstream.stdout.log" 2>"$ROOT/upstream.stderr.log" &
-UPSTREAM_PID=$!
-
-e2e_wait_for_file "$UPSTREAM_READY" 10
-UPSTREAM_BOUND="$(cat "$UPSTREAM_READY")"
-UPSTREAM_PORT="${UPSTREAM_BOUND##*:}"
-UPSTREAM_HOST="host.docker.internal:${UPSTREAM_PORT}"
-e2e_log "fixture upstream bound on ${UPSTREAM_BOUND}, reachable via ${UPSTREAM_HOST}"
-
-export SSL_CERT_FILE="$UPSTREAM_CERT"
-export GIT_SSL_CAINFO="$UPSTREAM_CERT"
 
 # --- fixture project: a single trivial hook, no docker capability needed —
 # this script's job is proving the checkout-less bootstrap + dispatch
