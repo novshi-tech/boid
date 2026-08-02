@@ -12,13 +12,15 @@ This page assumes you have completed [3. Set up the Web UI](03-web-ui.md).
 
 ## Confirm claude is signed in
 
-The claude harness running inside the sandbox does not see your host's `~/.claude` credentials directly — each workspace has its own `$HOME` on its own volume. If you have not opened an interactive session for the workspace your project is assigned to (`default` unless you set `--workspace`), do that once first:
+This assumes you already registered an `init.sh` for the workspace in Step 4 of [2. Initialize a project](02-init-project.md) (skip that and the command below fails with `CLI not found`).
+
+The claude harness running inside the sandbox does not see your host's `~/.claude` credentials directly — each workspace has its own `$HOME` on its own volume. If you have not signed in yet for the workspace your project is assigned to (`default` unless you set `--workspace`), do that once first:
 
 ```bash
 boid agent claude -p boid-demo
 ```
 
-Sign in with `/login` (or however your session prompts) once the interactive session opens, then exit (`Ctrl-D` or end the session). This is the same step as "Next steps" item 4 in [1. Install](01-install.md) — sign in once per workspace, and later tasks against that same workspace skip this step.
+(If this is the workspace's first-ever dispatch, this same command also triggers `init.sh` to install claude before opening the session — it may take a little longer than usual.) Sign in with `/login` (or however your session prompts) once the interactive session opens, then exit (`Ctrl-D` or end the session). This is the same step as "Next steps" item 4 in [1. Install](01-install.md) — sign in once per workspace, and later tasks against that same workspace skip this step.
 
 ## Grab the project ID
 

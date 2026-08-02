@@ -90,8 +90,9 @@ A **session** is an interactive job that is not tied to any task. You start one 
 ```bash
 boid agent claude   -p <project>                        # start a Claude Code session
 boid exec           -p <project> -- bash                # open a shell inside the sandbox
-boid agent claude   -p <project> --resume <session-id> # reattach to an existing session
 ```
+
+Sessions always start fresh — the session-id resume path was removed repo-wide (`cmd/agent_session.go`). Both reopen and Q&A start a brand-new claude process; prior task/instructions/environment context is recovered via broker RPCs through the `/boid-task` skill instead.
 
 ### Sessions vs. tasks
 

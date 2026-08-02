@@ -233,7 +233,7 @@ Manage [Web UI](../guide/web-ui.md) device authentication.
 | `boid web revoke <id>` | Revoke a specific device. |
 | `boid web revoke-all` | Revoke every device. |
 | `boid web set-url <URL>` | Set the public URL (`web.public_url`, used to render magic links). Internally the same `POST /api/config/mutate` call as `boid config set web.public_url <URL>` (穴8 (b), `docs/plans/release-onboarding.md`) — the daemon writes it into `config.yaml` inside its own `boid_state` volume, so there is no host-side file to edit. |
-| `boid web set-addr <ADDR>` | Set the HTTP listen address (`web.http_addr`, e.g. `boid web set-addr :9090`). Same `config set`-equivalent API call. Takes effect after a daemon restart (`boid stop && boid start`). |
+| `boid web set-addr <ADDR>` | Set the HTTP listen address (`web.http_addr`, e.g. `boid web set-addr :9090`). Same `config set`-equivalent API call. Takes effect after a daemon restart (`boid stop && boid start`). **Note:** this is the bind address INSIDE the container — under the standard compose deployment, the port actually published to the host (default 8080) does not change; changing the port number here makes the Web UI unreachable (see [Getting started / 3. Set up the Web UI](../getting-started/03-web-ui.md#change-the-listen-address-optional)) |
 
 ## Secret
 
@@ -291,7 +291,7 @@ Control running agent jobs.
 
 | Command | Role |
 |---|---|
-| `boid agent claude   -p <project> [--resume <session-id>] [--instruction "..."] [--readonly] [--model M] [--name NAME] [--no-attach]` | Start a claude session inside the project sandbox and attach to its PTY. `--resume` resumes an existing session; `--no-attach` prints the job id and exits. |
+| `boid agent claude   -p <project> [--instruction "..."] [--readonly] [--model M] [--name NAME] [--no-attach]` | Start a claude session inside the project sandbox and attach to its PTY. Sessions always start fresh (session-id resume was removed repo-wide, `cmd/agent_session.go`); `--no-attach` prints the job id and exits. |
 | `boid agent codex    -p <project> [same flags]` | **[Experimental]** Start a codex session. Launches the `codex` TUI inside the sandbox when no `--instruction` is given; with `--instruction` falls through to `codex exec` (one-shot smoke). Session persistence, `boid task notify` integration, and usage accounting are not yet implemented (see `docs/plans/multi-harness-production.md`). |
 | `boid agent opencode -p <project> [same flags]` | **[Experimental]** Start an opencode session. Launches the `opencode <project>` TUI inside the sandbox when no `--instruction` is given; with `--instruction` falls through to `opencode run` (one-shot smoke). Session persistence, `boid task notify` integration, and usage accounting are not yet implemented (see `docs/plans/multi-harness-production.md`). |
 | `boid agent stop <job-id>` | Send SIGUSR1 to the agent process, requesting a graceful stop. |

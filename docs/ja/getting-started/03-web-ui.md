@@ -30,15 +30,16 @@ http://localhost:8080
 
 ## listen アドレスを変える (任意)
 
-既定 `:8080` が他のサービスと衝突する場合は変更できます:
+**注意:** 標準の compose デプロイでは `boid web set-addr` だけではポート競合を解消できません。 `build/container/compose.yml` の `ports:` は host `127.0.0.1:8080` → コンテナ `8080` に固定されています。`boid web set-addr` が変更するのは**コンテナ内部**の bind アドレスだけなので、これを `127.0.0.1:5171` のように 8080 以外に変えると、コンテナの 8080 番には何も listen しなくなり、かつ 5171 番は host 側に公開されていないため、**Web UI に到達できなくなります**:
 
 ```bash
-boid web set-addr 127.0.0.1:5171
+# コンテナ内部の bind アドレスだけが変わり、host からは到達不能になる例
+boid web set-addr 127.0.0.1:5171   # NG: このままだと Web UI に到達できなくなる
 boid stop
 boid start
 ```
 
-`boid web set-addr` は内部的に `POST /api/config/mutate` で daemon 側 (`boid_state` volume 内) の `config.yaml` を書き換えます — host 側にファイルは作られません。daemon を再起動するまで反映されないので注意してください。
+host 側から見える port 番号自体 (既定 8080) を変えるには、`build/container/compose.yml` の `ports:` セクション (`"127.0.0.1:8080:8080"` の行) を直接編集する必要があります — これはこのリポジトリのチェックアウトを持つ開発者向けの手順であり、`go install` だけのユーザが素朴に使える手段は今のところありません (チェックアウトが無い場合に埋め込みアセットから展開される `compose.yml` は `boid start` のたびに上書きされるため、手で編集しても永続しません)。 既定の `:8080` が他のサービスと衝突する場合は、代わりに衝突している側のサービスのポートを変えるか、host 側の別ポートから `:8080` へ転送するプロキシを前段に立てることを検討してください。
 
 > **注意:** 現状、Web UI を完全に停止する手段はありません。空文字を渡しても daemon は `:8080` にフォールバックし、TCP リスナーは常に起動します。
 
@@ -74,7 +75,7 @@ boid web revoke-all              # 全部失効
 このチュートリアルで触れた要素:
 
 - Web UI をペアリングして開いた (compose daemon では loopback でもペアリング必須)
-- listen アドレスの変更方法 (`boid web set-addr`；Web UI を完全停止することは現状できない)
+- `boid web set-addr` はコンテナ内部の bind アドレスしか変えない (標準 compose では host 側に見える port 番号自体は変えられない)；Web UI を完全停止することも現状できない
 - 他デバイスからアクセスする場合の流れ (`boid web set-url` + `boid web pair`)
 
 次の章で小さなタスクを 1 本走らせて、 ここで開いた Web UI からライブで観察します。

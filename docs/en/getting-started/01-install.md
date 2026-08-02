@@ -39,7 +39,7 @@ This reports on engine (docker/podman) reachability, the compose plugin, the doc
 boid start
 ```
 
-On first run this pulls the image matching this CLI binary's own version (`ghcr.io/novshi-tech/boid-runner:<version>`, a public GHCR image — no `docker login` required), brings the compose stack up, and waits for the daemon to answer its health check. If you have a checkout on hand and `BOID_COMPOSE_ROOT` set (a developer workflow), it builds locally instead — see [CLI reference / Host mode](../reference/cli.md) for details.
+On first run this pulls the image matching this CLI binary's own version (`ghcr.io/novshi-tech/boid-runner:<version>`), brings the compose stack up, and waits for the daemon to answer its health check. This assumes the GHCR image is published publicly — if it is not yet public, or ends up private for any reason, the pull fails and you need `docker login ghcr.io` first (see the known-limitations note in `docs/plans/release-onboarding.md`). If you have a checkout on hand and `BOID_COMPOSE_ROOT` set (a developer workflow), it builds locally instead — see [CLI reference / Host mode](../reference/cli.md) for details.
 
 Once it is up, you will see onboarding guidance for what to do next:
 
@@ -63,7 +63,7 @@ Under the compose daemon, the loopback address (127.0.0.1) the CONTAINER itself 
 boid web pair
 ```
 
-Authenticate from your browser using the code, URL, or QR shown, then the Web UI is reachable at `http://localhost:8080` (default port; change it with `boid web set-addr <addr>`).
+Authenticate from your browser using the code, URL, or QR shown, then the Web UI is reachable at `http://localhost:8080` (the default compose deployment's host-side port). See [3. Set up the Web UI](03-web-ui.md#change-the-listen-address-optional) for the caveat around changing this port number (`boid web set-addr` alone does not do it).
 
 ## Verify it works
 
@@ -83,7 +83,9 @@ This brings the compose stack down (`docker/podman compose down` equivalent). Al
 
 ## Where data lives
 
-All of the daemon's persistent data (the SQLite database, kits, the secret encryption key, the Web UI signing key, logs, ...) lives inside a single named volume, `boid_state` (`build/container/compose.yml`). **Host-side XDG paths such as `~/.local/share/boid/` are not visible to the daemon** — a named volume is used instead of a bind mount specifically to avoid rootless podman's uid-mapping complications across the host filesystem.
+All of the daemon's persistent data (the SQLite database, kits, the secret encryption key, the Web UI signing key, logs, ...) lives inside a single named volume, `boid_boid_state` (the `boid_state` volume declared in `build/container/compose.yml`, prefixed with the compose project name, `boid`). **Host-side XDG paths such as `~/.local/share/boid/` are not visible to the daemon** — a named volume is used instead of a bind mount specifically to avoid rootless podman's uid-mapping complications across the host filesystem.
+
+Each workspace's own home directory (its toolchain, and the claude/codex CLI's own login credentials) lives in a SEPARATE named volume per workspace, `boid-ws-home-<installID8>-<slug>` — see the [workspace home guide](../guide/workspace-home.md) for details; it is not part of `boid_boid_state`.
 
 The only files actually created on the host (the machine running the `boid` CLI) are small ones needed to manage the compose daemon's lifecycle:
 
@@ -110,12 +112,23 @@ Since bumping the CLI version also changes the image ref `boid start` pulls (`in
 
 ```bash
 boid stop
-docker volume rm boid_state    # or: podman volume rm boid_state
+
+# The daemon's own data (DB, kits, secrets, ...). The volume name is the
+# compose project name (default "boid") plus "_boid_state" -- see the
+# `name: boid` field in build/container/compose.yml.
+docker volume rm boid_boid_state    # or: podman volume rm boid_boid_state
+
+# Each workspace's home (including claude/codex login credentials and
+# installed toolchains) lives in its OWN separate named volume,
+# boid-ws-home-<installID8>-<slug> -- list and remove them too (see the
+# workspace home guide for details).
+docker volume ls --filter name=boid-ws-home- -q | xargs -r docker volume rm
+
 rm -rf ~/.config/boid ~/.local/state/boid/compose
-rm "$(go env GOPATH)/bin/boid"
+rm "$(go env GOBIN 2>/dev/null || echo "$(go env GOPATH)/bin")/boid"
 ```
 
-`docker/podman volume rm boid_state` removes all local data, including tasks, secret values, and installed extension packages. Skip it if you want to preserve data across a reinstall.
+The two `docker volume rm` commands above remove all local data, including tasks, secret values, claude/codex login credentials, and installed extension packages. Skip either one if you want to preserve that data across a reinstall. See the [workspace home guide](../guide/workspace-home.md) for the exact naming/inspection details of the per-workspace volumes.
 
 ---
 

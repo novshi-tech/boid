@@ -233,7 +233,7 @@ hook の実行記録を扱います。
 | `boid web revoke <id>` | 特定デバイスを失効 |
 | `boid web revoke-all` | 全デバイスを失効 |
 | `boid web set-url <URL>` | 公開 URL (`web.public_url`、マジックリンクのレンダリングに使う) を設定。実体は `boid config set web.public_url <URL>` と同じ `POST /api/config/mutate` 呼び出し (穴8 (b)、`docs/plans/release-onboarding.md`) — compose daemon の `boid_state` volume 内の config.yaml に daemon 側が書き込むので、host 側で直接ファイルを編集する必要はない |
-| `boid web set-addr <ADDR>` | HTTP リッスンアドレス (`web.http_addr`) を設定 (例: `boid web set-addr :9090`)。同じく `config set` 相当の API 呼び出し。反映には daemon の再起動 (`boid stop && boid start`) が必要 |
+| `boid web set-addr <ADDR>` | HTTP リッスンアドレス (`web.http_addr`) を設定 (例: `boid web set-addr :9090`)。同じく `config set` 相当の API 呼び出し。反映には daemon の再起動 (`boid stop && boid start`) が必要。**注意:** これはコンテナ**内部**の bind アドレスであり、標準の compose デプロイでは host 側に公開されるポート (既定 8080) 自体は変わらない — ポート番号を変えると Web UI に到達できなくなる (詳細は [Getting started / 3. Web UI をセットアップする](../getting-started/03-web-ui.md#listen-アドレスを変える-任意)) |
 
 ## Secret
 
@@ -301,7 +301,7 @@ daemon が集約する `~/.config/boid/host_commands.yaml` (workspace 群の `ho
 
 | コマンド | 役割 |
 |---|---|
-| `boid agent claude  -p <project> [--resume <session-id>] [--instruction "..."] [--readonly] [--model M] [--name NAME] [--no-attach]` | claude セッションをサンドボックス内で起動し PTY に attach する。 `--resume` で既存セッションを再開、 `--no-attach` で job-id だけ表示して終了 |
+| `boid agent claude  -p <project> [--instruction "..."] [--readonly] [--model M] [--name NAME] [--no-attach]` | claude セッションをサンドボックス内で起動し PTY に attach する。セッションは常に新規プロセス (session-id での再開は撤去済み、`cmd/agent_session.go`)。 `--no-attach` で job-id だけ表示して終了 |
 | `boid agent codex   -p <project> [同上]` | **[実験的]** codex セッションを起動。 `--instruction` なしでは sandbox 内で `codex` TUI を起動、 `--instruction` ありでは `codex exec` (1 ターン smoke) にフォールバック。 セッション永続化・`boid task notify` 連携・usage 計上は未実装 (詳細は `docs/plans/multi-harness-production.md`) |
 | `boid agent opencode -p <project> [同上]` | **[実験的]** opencode セッションを起動。 `--instruction` なしでは sandbox 内で `opencode <project>` TUI を起動、 `--instruction` ありでは `opencode run` (1 ターン smoke) にフォールバック。 セッション永続化・`boid task notify` 連携・usage 計上は未実装 (詳細は `docs/plans/multi-harness-production.md`) |
 | `boid agent stop <job-id>` | エージェントプロセスに SIGUSR1 を送り、正常停止を要求する |

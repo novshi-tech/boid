@@ -11,11 +11,14 @@ This page assumes you have completed [1. Install](01-install.md).
 
 - Scaffolding `.boid/project.yaml` with `boid project init`.
 - Pushing it and registering it with `boid project add <git-url>`.
+- Registering an `init.sh` that installs the claude CLI into the workspace.
 - Setting up a dedicated workspace with `boid workspace create` / `edit`, when the runtime environment needs customizing.
 
 ## A note on agents
 
-`boid`'s architecture is intentionally agent-neutral, but **Claude Code is currently the only agent with production-grade support**. The rest of the tutorial assumes Claude Code is set up locally: the `claude` CLI is on your `PATH` and you have signed in. See [Claude Code's docs](https://docs.claude.com/en/docs/claude-code/overview) for the CLI setup.
+`boid`'s architecture is intentionally agent-neutral, but **Claude Code is currently the only agent with production-grade support**. The rest of the tutorial assumes Claude Code.
+
+**Note:** "Claude Code" here does not mean a `claude` CLI installed on your host. The claude that actually runs inside the sandbox has its own `$HOME` on a volume dedicated to its workspace, and never sees your host's `~/.claude` or a `claude` binary on your host's `PATH`. Whether or not `claude` is installed on your host makes no difference to this tutorial. Step 4 below covers getting claude installed inside the sandbox.
 
 ## Why scaffolding and registration are separate commands
 
@@ -84,7 +87,29 @@ boid project add 'https://github.com/you/existing-repo.git' --workspace dev
 
 If the existing repository does not have `.boid/project.yaml` yet, run Step 1's `boid project init` at its root (committing and pushing the scaffold alongside your existing code), then register as above.
 
-## (Optional) Step 4: Fill in the workspace's contents
+## Step 4: Register claude's auto-install into the workspace
+
+Before running an actual task, the workspace this project got assigned to (`default`, unless you passed `--workspace`) needs an `init.sh` registered. **Skip this and [4. Your first task](04-first-task.md) will fail immediately with `CLI not found`** — claude running inside the sandbox never sees a host-installed `claude` binary, so it has to be installed into the workspace's own volume.
+
+If you only installed `boid` via `go install`, you don't have a checkout of this repository. A minimal `init.sh` can be written on the spot:
+
+```bash
+cat > init.sh <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+if ! command -v claude >/dev/null 2>&1; then
+  curl -fsSL https://claude.ai/install.sh | bash
+fi
+EOF
+
+boid workspace set-init-script default -f init.sh
+```
+
+(Substitute `dev` for `default` if that's the workspace you registered against.)
+
+The registered `init.sh` runs automatically on that workspace's **first** dispatch (the first task/hook/exec/`boid agent` session against it) — it's written idempotently, so `command -v claude` just succeeds on every later dispatch and nothing happens. For a more complete example (installing Go/Node/the codex CLI, relativizing symlinks, ...), see `docs/examples/workspace-home-init.sh` in this repository (no checkout? open the file directly on GitHub and copy it). See the [workspace home guide](../guide/workspace-home.md) for the full contract.
+
+## (Optional) Step 5: Fill in the workspace's contents
 
 If you passed `--workspace dev` in Step 3 and `dev` was newly created, filling in its contents is an **edit**, not a create:
 
@@ -109,7 +134,7 @@ allowed_domains:
 
 Use `boid workspace show dev` to inspect the contents, or `boid workspace export dev` to get it back out as yaml. See [Onboarding / Creating/editing a workspace](../guide/onboarding.md#creatingediting-a-workspace) for details.
 
-Toolchain install (npm / the claude CLI / the codex CLI, ...) goes through the workspace's `init.sh`, not `additional_bindings`. See the [workspace home guide](../guide/workspace-home.md) and steps 3–4 of [1. Install](01-install.md)'s "Next steps".
+Any other toolchain install (Go / Node / the codex CLI, ...) goes through this same `init.sh` (Step 4).
 
 ## Inspect the generated project.yaml
 
@@ -166,6 +191,7 @@ What this tutorial introduced:
 
 - **`boid project init`** to scaffold `.boid/project.yaml` locally (does not register with the daemon).
 - **`boid project add <git-url> --workspace=<name>`** after pushing, to register with the daemon (`--workspace` required, get-or-create).
+- **`boid workspace set-init-script`** to register claude's auto-install into the workspace (skip it and the next chapter's first task fails with `CLI not found`).
 - `boid workspace create` / `edit` when a dedicated runtime environment is needed.
 - Reloading hand edits with `boid project reload` (or re-fetching a pushed remote with `boid project fetch <ref>`).
 

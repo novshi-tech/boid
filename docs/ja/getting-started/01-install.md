@@ -39,7 +39,7 @@ engine (docker/podman) の到達性、compose plugin の有無、docker-out-of-d
 boid start
 ```
 
-初回はこの CLI バイナリのバージョンに対応する image (`ghcr.io/novshi-tech/boid-runner:<version>`、公開 GHCR image なので `docker login` は不要) を pull し、compose スタックを起動し、daemon が health check に応答するまで待ちます。 チェックアウトが手元にあり `BOID_COMPOSE_ROOT` を設定している場合 (開発者向け) は代わりにローカルビルドが走ります — 詳細は [CLI リファレンス / Host mode](../reference/cli.md) を参照してください。
+初回はこの CLI バイナリのバージョンに対応する image (`ghcr.io/novshi-tech/boid-runner:<version>`) を pull し、compose スタックを起動し、daemon が health check に応答するまで待ちます。GHCR image は public 公開が前提です — 公開設定がまだ済んでいない場合や、何らかの理由で private のままの場合は pull が失敗し `docker login ghcr.io` が必要になります (詳細は `docs/plans/release-onboarding.md` の既知の限界事項を参照)。 チェックアウトが手元にあり `BOID_COMPOSE_ROOT` を設定している場合 (開発者向け) は代わりにローカルビルドが走ります — 詳細は [CLI リファレンス / Host mode](../reference/cli.md) を参照してください。
 
 起動が終わると、次にやるべきことのガイダンスが表示されます:
 
@@ -63,7 +63,7 @@ compose daemon では、コンテナ自身から見た loopback (127.0.0.1) と�
 boid web pair
 ```
 
-表示されたコード / URL / QR のいずれかでブラウザから認証すると、`http://localhost:8080` (既定ポート、変更は `boid web set-addr <addr>`) で Web UI にアクセスできるようになります。
+表示されたコード / URL / QR のいずれかでブラウザから認証すると、`http://localhost:8080` (既定 compose デプロイでの host 側 port) で Web UI にアクセスできるようになります。この host 側ポート番号自体の変更については [3. Web UI をセットアップする](03-web-ui.md#listen-アドレスを変える-任意) の注意点を参照してください (`boid web set-addr` だけでは変わりません)。
 
 ## 動作確認
 
@@ -83,7 +83,9 @@ boid stop
 
 ## データの保存先
 
-daemon の永続データ (SQLite DB、kits、secret 鍵、web 署名鍵、ログ等) は、すべて `boid_state` という named volume (`build/container/compose.yml`) の中にあります。**host 側の `~/.local/share/boid/` のような XDG パスは daemon からは見えません** — bind mount ではなく named volume を使っているのは、rootless podman の uid マッピングを host filesystem 越しに扱う複雑さを避けるためです。
+daemon の永続データ (SQLite DB、kits、secret 鍵、web 署名鍵、ログ等) は、すべて `boid_boid_state` という named volume (`build/container/compose.yml` で宣言されている volume 名 `boid_state` に、compose のプロジェクト名 `boid` が接頭辞として付いたもの) の中にあります。**host 側の `~/.local/share/boid/` のような XDG パスは daemon からは見えません** — bind mount ではなく named volume を使っているのは、rootless podman の uid マッピングを host filesystem 越しに扱う複雑さを避けるためです。
+
+各 workspace 自身の home (ツールチェーンと claude/codex CLI 自身のログイン情報) は、`boid_boid_state` とは**別の** workspace ごとの named volume `boid-ws-home-<installID8>-<slug>` にあります — 詳細は [workspace home ガイド](../guide/workspace-home.md) を参照してください。
 
 host 側 (`boid` CLI を実行しているこのマシン) に実際に作られるファイルは、compose daemon のライフサイクル管理用の小さなものだけです:
 
@@ -110,12 +112,22 @@ CLI のバージョンが上がると `boid start` が pull する image ref (`i
 
 ```bash
 boid stop
-docker volume rm boid_state    # podman の場合: podman volume rm boid_state
+
+# daemon 本体のデータ (DB・kits・secret 鍵等)。volume 名は
+# compose のプロジェクト名 (既定 "boid") + "_boid_state" — build/container/compose.yml
+# の name: boid フィールドに由来する
+docker volume rm boid_boid_state    # podman の場合: podman volume rm boid_boid_state
+
+# 各 workspace の home (claude/codex の認証情報・インストール済みツールチェーンを含む)。
+# workspace ごとに boid-ws-home-<installID8>-<slug> という別の named volume を持つため、
+# 一覧してまとめて削除する (詳細は workspace home ガイド参照)
+docker volume ls --filter name=boid-ws-home- -q | xargs -r docker volume rm
+
 rm -rf ~/.config/boid ~/.local/state/boid/compose
-rm "$(go env GOPATH)/bin/boid"
+rm "$(go env GOBIN 2>/dev/null || echo "$(go env GOPATH)/bin")/boid"
 ```
 
-`docker/podman volume rm boid_state` でタスク・機密値・インストール済みの拡張パッケージを含むローカルデータがすべて消えます。再インストール時にデータを残したい場合はこのコマンドを省いてください。
+上記の `docker volume rm` 2 種でタスク・機密値・claude/codex の認証情報・インストール済みの拡張パッケージを含むローカルデータがすべて消えます。再インストール時にデータを残したい場合はそれぞれのコマンドを省いてください。 workspace home volume の詳細な命名規則・確認方法は [workspace home ガイド](../guide/workspace-home.md) を参照してください。
 
 ---
 

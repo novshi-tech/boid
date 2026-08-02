@@ -90,8 +90,9 @@ hook を 1 度実行した記録のこと。 job には独自の status (`runnin
 ```bash
 boid agent claude   -p <project>   # Claude Code セッションを起動
 boid exec           -p <project> -- bash   # サンドボックス内でシェルを開く
-boid agent claude   -p <project> --resume <session-id>   # 既存セッションに再接続
 ```
+
+セッションは常に新規プロセスとして起動します — session-id での再開経路はリポジトリ全体で撤去済みです (`cmd/agent_session.go`)。reopen / Q&A のいずれも新しい claude プロセスを開始し、以前のタスク/instructions/環境コンテキストは `/boid-task` スキル経由の broker RPC で取得します。
 
 ### タスクとセッションの違い
 

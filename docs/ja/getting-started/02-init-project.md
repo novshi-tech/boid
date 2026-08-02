@@ -11,15 +11,16 @@
 
 - `boid project init` で `.boid/project.yaml` の雛形を作る
 - push してから `boid project add <git-url>` で daemon に登録する
+- workspace の `init.sh` に claude CLI の自動インストールを登録する
 - 専用の実行環境が必要な場合に `boid workspace create` / `edit` で workspace を用意する
 
 ## エージェントについて
 
 `boid` のアーキテクチャは特定の AI エージェントに依存しない設計ですが、
 現時点で実用的に動作確認が取れている agent は **Claude Code** のみです。
-このチュートリアル以降は Claude Code が手元にあることを前提に進めます。
-`claude` CLI が PATH にあり、Claude Code としてサインイン済みであることを確認してください
-(Claude Code 側のセットアップ手順は [Claude Code の公式ドキュメント](https://docs.claude.com/en/docs/claude-code/overview) を参照)。
+このチュートリアル以降は Claude Code を前提に進めます。
+
+**注意:** ここで言う Claude Code は、host 側にインストールされた `claude` CLI のことではありません。sandbox 内で実際に動く claude は workspace ごとに独立した volume 上の `$HOME` を持ち、host の `~/.claude` や host の PATH 上の `claude` バイナリを一切見ません。host に `claude` がインストール済みでもされていなくても、このチュートリアルの進行には影響しません。sandbox 内に claude を入れる手順は下記のステップ 4 で扱います。
 
 ## なぜ「雛形生成」と「登録」が別コマンドになったか
 
@@ -88,7 +89,29 @@ boid project add 'https://github.com/you/existing-repo.git' --workspace dev
 
 `.boid/project.yaml` がまだ無い既存リポジトリの場合は、ステップ 1 の `boid project init` をそのリポジトリのルートで実行してから (既存コードと一緒に commit・push して) 同様に登録してください。
 
-## (任意) ステップ 4: workspace の中身を用意する
+## ステップ 4: workspace に claude CLI の自動インストールを登録する
+
+タスクを実際に走らせる前に、この project が割り当てられた workspace (`--workspace` を省略した場合は `default`) に `init.sh` を登録しておく必要があります。**これを飛ばすと [4. 最初のタスク](04-first-task.md) で claude が `CLI not found` エラーで即座に失敗します** — sandbox 内の claude は host 側の `claude` バイナリを一切見ないため、workspace の volume に自分でインストールしなければなりません。
+
+`go install` だけで入れたユーザは、このリポジトリのチェックアウトを持っていません。最小限の `init.sh` はその場で作成できます:
+
+```bash
+cat > init.sh <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+if ! command -v claude >/dev/null 2>&1; then
+  curl -fsSL https://claude.ai/install.sh | bash
+fi
+EOF
+
+boid workspace set-init-script default -f init.sh
+```
+
+(`--workspace dev` で登録した場合は `default` を `dev` に読み替えてください。)
+
+登録した `init.sh` は、その workspace への**最初の** dispatch (最初のタスク/hook/exec/`boid agent` セッション) で自動的に実行されます — 冪等に書いてあるので、以降の dispatch では `command -v claude` が成功し何もしません。より本格的な例 (Go / Node / codex CLI のインストール、symlink の相対化等まで含む) は、このリポジトリの `docs/examples/workspace-home-init.sh` を参照してください (チェックアウトが無い場合は GitHub 上でファイルを直接開いて内容をコピーしても構いません)。詳細な契約は [workspace home ガイド](../guide/workspace-home.md) を参照してください。
+
+## (任意) ステップ 5: workspace の中身を用意する
 
 ステップ 3 で `--workspace dev` のような新規 slug を指定した場合、`dev` はすでに存在しています (get-or-create で空の workspace が作られ、project も紐付け済み)。 したがって中身を詰めるのは **edit** であって create ではありません:
 
@@ -113,7 +136,7 @@ allowed_domains:
 
 中身の確認は `boid workspace show dev`、yaml として取り出すには `boid workspace export dev` を使います。詳細は [オンボーディング / workspace を作る・編集する](../guide/onboarding.md#workspace-を作る編集する) を参照してください。
 
-ツールチェーン (npm / claude CLI / codex CLI 等) のインストールは `additional_bindings` ではなく workspace の `init.sh` で行います。詳細は [workspace home ガイド](../guide/workspace-home.md) と [1. インストール](01-install.md) の「次にやること」の 3 番・4 番を参照してください。
+その他のツールチェーン (Go / Node / codex CLI 等) の追加インストールも同じ `init.sh` 経由です (ステップ 4 参照)。
 
 ## 生成された project.yaml を眺める
 
@@ -170,6 +193,7 @@ boid project show boid-demo
 
 - **`boid project init`** で `.boid/project.yaml` の雛形を生成 (daemon への登録はしない)
 - push してから **`boid project add <git-url> --workspace=<name>`** で daemon に登録 (`--workspace` は必須、get-or-create)
+- **`boid workspace set-init-script`** で claude CLI の自動インストールを workspace に登録 (これをやらないと次章の最初のタスクが `CLI not found` で失敗する)
 - 専用の実行環境が必要なら `boid workspace create` / `edit`
 - 後から yaml を編集した場合は `boid project reload` で反映 (push した remote から daemon が再取得するには `boid project fetch <ref>`)
 

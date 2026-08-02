@@ -30,15 +30,16 @@ When the next chapter creates a task, it is convenient to keep this tab open nex
 
 ## Change the listen address (optional)
 
-If the default `:8080` clashes with something else, change it:
+**Note:** under the standard compose deployment, `boid web set-addr` alone does NOT resolve a port conflict. `build/container/compose.yml`'s `ports:` mapping is fixed at host `127.0.0.1:8080` → container `8080`. `boid web set-addr` only changes the bind address **inside the container** — pointing it at anything other than port 8080 (e.g. `127.0.0.1:5171`) means nothing listens on the container's port 8080 anymore, and port 5171 was never published to the host, so **the Web UI becomes unreachable**:
 
 ```bash
-boid web set-addr 127.0.0.1:5171
+# Only changes the in-container bind address -- becomes unreachable from the host
+boid web set-addr 127.0.0.1:5171   # DON'T: this breaks Web UI reachability as-is
 boid stop
 boid start
 ```
 
-`boid web set-addr` sets `web.http_addr` via `POST /api/config/mutate` — the daemon writes it into its own `config.yaml` inside the `boid_state` volume, not a host-side file. The change only takes effect after a daemon restart.
+To actually change the port visible from the host (default 8080), edit the `ports:` section of `build/container/compose.yml` directly (the `"127.0.0.1:8080:8080"` line) — this is a developer workflow that requires a checkout of this repository; there is currently no equivalent a `go install`-only user can reach for (the embedded `compose.yml` extracted when no checkout is found gets overwritten on every `boid start`, so a hand edit there would not persist either). If the default `:8080` clashes with something else, either free up that port on the conflicting service instead, or put a reverse proxy in front that forwards a different host port to `:8080`.
 
 > **Note:** There is currently no way to disable the Web UI entirely. Passing an empty string still causes the daemon to fall back to `:8080` and keep the TCP listener running.
 
@@ -74,7 +75,7 @@ The rest of this tutorial only needs the browser you already paired in [1. Insta
 What this tutorial introduced:
 
 - Paired and opened the Web UI (the compose daemon requires pairing even from loopback).
-- Showed how to change the listen address (`boid web set-addr`; the Web UI cannot be disabled entirely).
+- `boid web set-addr` only changes the in-container bind address (the standard compose deployment does not let you change the host-visible port that way); the Web UI cannot be disabled entirely either.
 - Outlined how to expose the UI to other devices (`boid web set-url` + `boid web pair`).
 
 In the next chapter you will run a small task and watch it live from this same Web UI.

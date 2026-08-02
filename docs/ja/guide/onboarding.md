@@ -114,14 +114,14 @@ boid workspace set-init-script dev -f init.sh
 **`init.sh` が自動化できないのは agent 自身のサインインだけです** — claude / codex の認証は対話が必要なため、一度だけ手動でセッションに入る必要があります:
 
 ```bash
-boid agent claude -p <project> [--resume <session-id>]
+boid agent claude -p <project>
 ```
 
 これは新規ユーザが最も迷いやすい箇所です。workspace ごとに 1 回、対話セッションで `/login` 等を済ませれば、以降の同じ workspace のタスクではこのステップは不要になります (`boid start` 直後にも同じ案内が表示されます)。
 
 ## host_commands を定義する (daemon 側の集約レジストリ)
 
-workspace の `host_commands: [name, ...]` は、その workspace の sandbox が呼べる host command の**名前だけ**を列挙するものであり、コマンドそのものの定義ではありません。実際の定義 (バイナリの `path`、`allow`/`deny`/`reject` ルール、`env`) は全 workspace 共通の 1 ファイル `~/.config/boid/host_commands.yaml` に置かれています。**注意:** compose daemon では、この `~/.config/boid` は daemon コンテナ内の `boid_state` volume 上のパスです — host 側の同名パスを編集しても daemon には届きません。編集は daemon 上で行うか (`docker exec`/`podman exec`)、`boid host-commands` API 経由の間接編集手段が増えるまでは直接編集する必要があります。
+workspace の `host_commands: [name, ...]` は、その workspace の sandbox が呼べる host command の**名前だけ**を列挙するものであり、コマンドそのものの定義ではありません。実際の定義 (バイナリの `path`、`allow`/`deny`/`reject` ルール、`env`) は全 workspace 共通の 1 ファイル `~/.config/boid/host_commands.yaml` に置かれています。**注意:** compose daemon では、この `~/.config/boid` は daemon コンテナ内の named volume (`build/container/compose.yml` 上の宣言名は `boid_state`、host 側の実際の volume 名は compose プロジェクト名を接頭辞にした `boid_boid_state`) 上のパスです — host 側の同名パスを編集しても daemon には届きません。編集は daemon 上で行うか (`docker exec`/`podman exec`)、`boid host-commands` API 経由の間接編集手段が増えるまでは直接編集する必要があります。
 
 `kit init` が撤去される前は、このファイルは host をスキャンして自動生成されていました。撤去後は手で書き足します:
 
@@ -162,6 +162,6 @@ boid host-commands list
 旧 `boid init` は廃止されました。上記のフローを使ってください。
 
 旧スキーマの `project.yaml`（`kits` / `env` / `host_commands` / `capabilities` 等を含む）を持つ場合は
-`boid project migrate <dir>`（`--apply` を付けるまでは dry-run）で自動変換できます。詳細は `docs/ja/guide/migration.md` を参照してください。
+`boid project migrate <dir>` (`--apply` 無しなら dry-run) で変換内容を確認できます。詳細は `docs/ja/guide/migration.md` を参照してください。
 
-**注意:** `boid project migrate <dir> --apply` は host 側の boid.db を直接開く経路を持ちます — compose daemon 下では daemon の実 DB は `boid_state` volume 内にあるため、`--apply` が host 側の別 DB (存在しなければ新規作成) に書き込んで silent に無効化されるおそれがあります。socket 経由 (daemon が起動していて到達可能) であれば正しく daemon 側に適用されるので、`--apply` を使う前に `boid task list` 等で daemon への到達性を確認してください。
+**注意:** `--apply` 単体は 2026-08 (release-onboarding PR5) 以降 **拒否されます** — `boid project migrate <dir> --apply` は `--legacy-bare-metal` を併用しない限りエラーで終了します (`cmd/project_migrate.go` の `guardApply`)。`--apply --legacy-bare-metal` 自体も compose daemon 向けの安全な自動反映ではなく、**bare-metal daemon (compose を使わない旧来の単体プロセス) を直接操作する場合限定**の移行経路です — host 側の boid.db を直接開く (または `client.DefaultSocketPath()` の bare-metal socket に到達できればそちらへ) ため、compose daemon 環境ではどちらのケースにも該当せず使うべきではありません。compose daemon 下での自動移行手段は現時点でまだ確立していません — 詳細と理由は [移行ガイド](migration.md) を参照してください。

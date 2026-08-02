@@ -8,11 +8,7 @@
 
 `boid start` した後、まず [`boid web pair`](../getting-started/01-install.md#web-ui-をペアリングする) でこのブラウザを認証してから、`http://localhost:8080` を開くとタスク一覧が表示されます。
 
-listen アドレスは `boid web set-addr` で変更できます:
-
-```bash
-boid web set-addr 127.0.0.1:5171
-```
+listen アドレスは `boid web set-addr` で変更できますが、**標準の compose デプロイではこれだけでは host 側から見えるポート番号は変わりません** — `boid web set-addr` が書き換えるのはコンテナ**内部**の bind アドレスであり、`build/container/compose.yml` の `ports:` (`"127.0.0.1:8080:8080"`) は固定です。8080 以外に変更すると、コンテナの 8080 番に何も listen しなくなり、かつ新しいポートは host に公開されていないため、Web UI に到達できなくなります。host 側のポート番号自体を変えるには `build/container/compose.yml` を直接編集する必要があり (チェックアウトが要る開発者向けの手順)、`go install` だけのユーザには現時点で手段がありません。詳細と回避策は [Getting started / 3. Web UI をセットアップする](../getting-started/03-web-ui.md#listen-アドレスを変える-任意) を参照してください。
 
 **Web UI を無効化することはできません。** アドレスを空文字に設定しても HTTP listener の起動は止まらず、 daemon は `:8080` にフォールバックします。 現時点では HTTP listener を完全に停止する手段はありません。
 

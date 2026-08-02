@@ -8,11 +8,7 @@
 
 After `boid start`, [pair this browser](../getting-started/01-install.md#pair-the-web-ui) with `boid web pair` first, then point a browser at `http://localhost:8080`. You should see the task list.
 
-The listen address can be changed with `boid web set-addr`:
-
-```bash
-boid web set-addr 127.0.0.1:5171
-```
+The listen address can be changed with `boid web set-addr`, but **under the standard compose deployment that alone does not change the port visible from the host** — it only rewrites the bind address INSIDE the container, while `build/container/compose.yml`'s `ports:` mapping (`"127.0.0.1:8080:8080"`) is fixed. Pointing it at anything other than port 8080 leaves nothing listening on the container's port 8080 and the new port unpublished, so the Web UI becomes unreachable. Changing the host-visible port requires editing `build/container/compose.yml` directly (a developer workflow needing a checkout) — there is currently no path for a `go install`-only user. See [Getting started / 3. Set up the Web UI](../getting-started/03-web-ui.md#change-the-listen-address-optional) for the full caveat and workarounds.
 
 **The Web UI cannot be disabled.** Setting the address to an empty string (e.g. `boid web set-addr ""`) does not prevent the HTTP listener from starting; the daemon falls back to `:8080`. There is currently no way to stop the HTTP listener entirely.
 
