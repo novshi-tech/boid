@@ -90,8 +90,9 @@ hook を 1 度実行した記録のこと。 job には独自の status (`runnin
 ```bash
 boid agent claude   -p <project>   # Claude Code セッションを起動
 boid exec           -p <project> -- bash   # サンドボックス内でシェルを開く
-boid agent claude   -p <project> --resume <session-id>   # 既存セッションに再接続
 ```
+
+セッションは常に新規プロセスとして起動します — session-id での再開経路はリポジトリ全体で撤去済みです (`cmd/agent_session.go`)。reopen (タスクを `awaiting → executing` に戻して hook を再起動する経路) は新しい claude プロセスを開始し、以前のタスク/instructions/環境コンテキストは `/boid-task` スキル経由の broker RPC で取得します。一方、`boid task ask` によるハーネス非依存の Q&A (`internal/api/task_ask.go`) は既存プロセスを終了させず、agent が RPC 呼び出し内でブロックしたまま人間の回答を待つ — 新しいプロセスは起動されない。
 
 ### タスクとセッションの違い
 

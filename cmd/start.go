@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -471,7 +472,7 @@ func runStart(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	return runComposeUp(cmd.Context(), client.DefaultCLIAddr())
+	return runComposeUp(cmd.Context(), client.DefaultCLIAddr(), cmd.OutOrStdout())
 }
 
 // refuseDaemonConfigFlagsWithoutForeground reports an error naming every
@@ -540,7 +541,11 @@ func shouldRunForeground(foregroundFlag bool) bool {
 // rather than calling client.DefaultCLIAddr() internally, mirroring
 // ensureHostModeDaemon's identical parameterization in cmd/host.go: a test
 // can point it at an httptest server instead of the real fixed port.
-func runComposeUp(ctx context.Context, addr string) error {
+//
+// out takes the success/guidance output writer as a parameter (production
+// passes cmd.OutOrStdout()) for the same reason: a test can capture it
+// instead of asserting against the real os.Stdout.
+func runComposeUp(ctx context.Context, addr string, out io.Writer) error {
 	token, err := loadOrCreateCLIToken()
 	if err != nil {
 		return fmt.Errorf("boid start: %w", err)
@@ -555,8 +560,31 @@ func runComposeUp(ctx context.Context, addr string) error {
 	if err != nil {
 		return fmt.Errorf("boid start: %w", err)
 	}
-	fmt.Printf("boid server started (compose, cli: http://%s)\n", addr)
+	fmt.Fprintf(out, "boid server started (compose, cli: http://%s)\n", addr)
+	printNextStepsGuidance(out)
 	return nil
+}
+
+// printNextStepsGuidance prints the onboarding "what to do next" hint after
+// a successful `boid start` (docs/plans/release-onboarding.md 目標オンボー
+// ディングフロー, "山は6番"): workspace toolchain install (npm/claude
+// CLI/codex CLI, ...) happens automatically via the workspace's init.sh on
+// its first dispatch, but the harness's OWN login (claude/codex) requires
+// an interactive session with a human at the keyboard — nothing else in
+// the CLI's own output prompts a first-time user to go run one, which the
+// plan doc identifies as the single point new users get stuck at most
+// often. Printed unconditionally on every successful `boid start`, not
+// just a detected-fresh install: reliably distinguishing "first ever
+// start" from "the Nth restart of an already-onboarded install" here would
+// need its own round of daemon queries this command has no other reason to
+// make, and a returning user seeing five extra lines they already know is
+// a much smaller cost than a fresh user seeing none.
+func printNextStepsGuidance(out io.Writer) {
+	fmt.Fprintln(out, "\nNext steps:")
+	fmt.Fprintln(out, "  1. boid web pair                                      # pair this browser with the Web UI (required -- the loopback no-pairing exception does not apply inside the compose daemon's own container)")
+	fmt.Fprintln(out, "  2. boid project add <git-url> --workspace=<name>      # register a project (new project? run `boid project init` first -- it scaffolds .boid/project.yaml and prints the push+register commands)")
+	fmt.Fprintln(out, "  3. boid workspace set-init-script <name> -f init.sh   # register an init script so toolchain install (npm/claude/codex CLI, ...) runs automatically on the workspace's first dispatch")
+	fmt.Fprintln(out, "  4. boid agent claude -p <project>                     # open an interactive session and sign in -- claude/codex login needs a human, so this step cannot run unattended")
 }
 
 // The bare-metal double-fork daemon spawn (parent/child fd3-status-pipe

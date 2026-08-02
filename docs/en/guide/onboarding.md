@@ -1,46 +1,60 @@
 # Onboarding
 
-boid's initial setup is **2 steps**. If the `default` workspace is good enough, it's effectively **1 step**.
+Project registration is **3 steps**: scaffold → push → register by git URL, plus an optional workspace step.
 
-## The two steps
+Starting the daemon itself (`go install` → `boid check` → `boid start` → `boid web pair`) is covered in [Getting started / 1. Install](../getting-started/01-install.md). This page focuses on the project/workspace side.
+
+## The 3 steps to register a project
+
+The daemon runs inside the compose stack's own container and cannot read directories on your host — a project can only be registered from a **git remote URL that the daemon clones itself** (`docs/plans/release-onboarding.md` 穴 7).
 
 | Step | Command | Role |
 |---|---|---|
-| 1 | `boid project init [dir]` / `boid project add <dir>` | Register the project with the daemon (scaffolds it too, for a new one) |
-| 2 (optional) | `boid workspace create` / `edit` / `apply` + `boid workspace assign` | Set up a dedicated workspace for the project (skip if `default` is enough) |
+| 1 | `boid project init [dir]` | Scaffold `.boid/project.yaml` locally (does NOT register with the daemon) |
+| 2 | push | Push the scaffold (and your real code) to a git remote. `project init` prints the exact push commands to run after it finishes |
+| 3 | `boid project add <git-url> --workspace=<name>` | Register the pushed URL with the daemon — the daemon clones it itself |
+| 4 (optional) | `boid workspace create` / `edit` / `apply` + `boid workspace assign` | Set up a dedicated workspace for the project (skip if `default` is enough) |
 
 Registering a project assigns it to the `default` workspace automatically (the daemon guarantees `default` always exists at startup). Only set up a dedicated workspace when you need to customize the runtime environment — `host_commands` / `env` / `capabilities` / `allowed_domains`, etc.
 
 ## Scenarios
 
-### New project, `default` workspace is enough (1 step)
+### New project, `default` workspace is enough
 
 ```bash
-boid project init ~/src/myproject
+mkdir -p ~/src/myproject && cd ~/src/myproject
+boid project init
+# ... follow the printed commit + push guidance ...
+boid project add 'https://github.com/you/myproject.git' --workspace=default
 ```
 
-Omitting `--workspace` puts the project in the `default` workspace.
+Omitting `--workspace` on `project init` gets you a printed example command that already has `--workspace=default` baked in, ready to copy-paste. `--workspace` itself is required on `project add` — omitting it there is rejected with a 400.
 
-### New project + dedicated workspace (2 steps)
+### New project + dedicated workspace
 
 ```bash
-boid project init ~/src/myproject --workspace dev
+cd ~/src/myproject
+boid project init --workspace dev
+# ... follow the printed commit + push guidance ...
+boid project add 'https://github.com/you/myproject.git' --workspace dev
 ```
 
 `--workspace` is get-or-create: if `dev` doesn't exist yet, an empty workspace is created automatically before the project is assigned to it. If you want to fill in its contents (`host_commands`, `env`, etc.), continue with "Creating/editing a workspace" below.
 
-### Registering an existing project (2 steps)
+### Registering an existing project (already has `.boid/project.yaml`)
+
+If it is already pushed, skip `project init` entirely:
 
 ```bash
-boid project add ~/src/myproject --workspace dev
+boid project add 'https://github.com/you/existing-repo.git' --workspace dev
 ```
 
-Same get-or-create semantics for `--workspace` as `boid project init`.
+If the existing repository does not have `.boid/project.yaml` yet, run `boid project init` at its root first (committing and pushing the scaffold alongside your existing code), then register as above.
 
-### Adding a project to an existing workspace (1 step)
+### Adding a project to an existing workspace
 
 ```bash
-boid project add ~/src/another --workspace dev
+boid project add 'https://github.com/you/another.git' --workspace dev
 # dev already exists, so its contents are untouched — only the project's assignment changes
 ```
 
@@ -48,13 +62,16 @@ boid project add ~/src/another --workspace dev
 
 ```bash
 # First project (creates the workspace while registering)
-boid project init ~/src/myproject --workspace dev
+cd ~/src/myproject
+boid project init --workspace dev
+# ... push ...
+boid project add 'https://github.com/you/myproject.git' --workspace dev
 
 # Fill in the workspace's contents (host_commands / env, etc., all at once)
 boid workspace edit dev --from-file dev-workspace.yaml
 
 # Additional projects just join the same workspace
-boid project add ~/src/another-project --workspace dev
+boid project add 'https://github.com/you/another.git' --workspace dev
 ```
 
 ## Creating/editing a workspace
@@ -84,9 +101,27 @@ allowed_domains:
 
 Use `boid workspace show <slug>` to inspect a workspace's contents, or `boid workspace export <slug>` to get it back out as yaml.
 
+## Automatic toolchain install and agent sign-in
+
+A workspace has a persistent `$HOME` (workspace home — a separate named volume from `boid_state`). Toolchains (npm, the claude CLI, the codex CLI, ...) are installed via the workspace's `init.sh`, not `additional_bindings` (retired):
+
+```bash
+boid workspace set-init-script dev -f init.sh
+```
+
+`init.sh` runs automatically on that workspace's first dispatch (the first task/hook/exec executed against it). See the [workspace home guide](workspace-home.md) for details.
+
+**The one thing `init.sh` cannot automate is the agent's own sign-in** — claude/codex login requires an interactive session, so you need to open one by hand once:
+
+```bash
+boid agent claude -p <project>
+```
+
+This is the step new users most often get stuck on. Sign in once per workspace (`/login` etc. inside the interactive session), and subsequent tasks against that same workspace won't need it again (`boid start` prints this same reminder right after it comes up).
+
 ## Defining host_commands (the daemon-wide registry)
 
-A workspace's `host_commands: [name, ...]` only lists *which* named host commands that workspace's sandboxes may call — it is not where the command itself is defined. The actual definition (binary `path`, `allow`/`deny`/`reject` rules, `env`) lives in a single machine-wide file shared by every workspace: `~/.config/boid/host_commands.yaml`.
+A workspace's `host_commands: [name, ...]` only lists *which* named host commands that workspace's sandboxes may call — it is not where the command itself is defined. The actual definition (binary `path`, `allow`/`deny`/`reject` rules, `env`) lives in a single machine-wide file shared by every workspace: `~/.config/boid/host_commands.yaml`. **Note:** under the compose daemon, this `~/.config/boid` is a path inside the daemon container's own named volume (declared as `boid_state` in `build/container/compose.yml`; the actual host-side volume name is `boid_boid_state`, prefixed with the compose project name) — editing the same-named path on your host does nothing. Edit it on the daemon itself (`docker exec`/`podman exec`) until a dedicated API-based editing path exists.
 
 Before `kit init` was removed, that file was auto-generated by scanning the host. Now that it's gone, add entries by hand:
 
@@ -127,5 +162,7 @@ Older versions used a 3-step flow: `boid kit init` (generate a machine-wide kit 
 The old `boid init` has been removed. Use the flow above instead.
 
 If your `project.yaml` contains legacy fields (`kits`, `env`, `host_commands`, `capabilities`, etc.),
-run `boid project migrate <dir>` (dry-run by default; pass `--apply` to actually perform it) to convert automatically.
+run `boid project migrate <dir>` (dry-run by default) to see the conversion.
 See `docs/en/guide/migration.md` for details.
+
+**Note:** `--apply` on its own is **refused** as of 2026-08 (release-onboarding PR5) — `boid project migrate <dir> --apply` fails outright unless `--legacy-bare-metal` is also passed (`guardApply` in `cmd/project_migrate.go`). Even `--apply --legacy-bare-metal` is not a safe compose-daemon path — it is exclusively for migrating a genuine **bare-metal daemon (the pre-compose, standalone-process daemon)**: it opens the host-side `boid.db` directly (or, if reachable, the bare-metal daemon's own socket at `client.DefaultSocketPath()`). Neither case applies under a compose daemon, so do not use it there. There is currently no established automatic migration path for the compose daemon — see the [migration guide](migration.md) for the details and rationale.

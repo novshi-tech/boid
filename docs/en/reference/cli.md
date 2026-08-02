@@ -21,7 +21,9 @@ boid <command> --help       # per-command help
 
 ### Auto-start
 
-If the daemon is not running when you invoke any other command, `boid` starts it automatically. The exceptions (commands that skip auto-start) are: `start`, `stop`, `gc`, `check`, `init`, `fetch`, `web set-url`, `web set-addr`, and `project migrate`. You rarely need to call `boid start` by hand.
+If the daemon is not running when you invoke any other command, `boid` starts the compose stack automatically (host mode, below). The exceptions (commands that skip auto-start) are: `start`, `stop`, `gc`, `check`, `init`, `fetch`, `reap`, `project migrate`, `login`, `logout`, and `version`. You rarely need to call `boid start` by hand.
+
+`boid web set-url` / `boid web set-addr` were folded into `boid config set web.public_url|web.http_addr` (穴8, `docs/plans/release-onboarding.md`) and are auto-start targets just like any other scope=`remote` command now — they are no longer the "skip while the daemon is down" exceptions they used to be.
 
 Set `BOID_NO_AUTOSTART=1` to disable auto-start globally.
 
@@ -29,14 +31,38 @@ Set `BOID_NO_AUTOSTART=1` to disable auto-start globally.
 
 Every command is internally classified as `remote` (works purely through the daemon's HTTP API, including a future remote daemon), `local` (depends on daemon lifecycle, or on the filesystem of the host the CLI process itself runs on), or `neutral` (needs no daemon connection at all) — the `boid.scope` cobra annotation, required on every leaf command (an unclassified command fails the build). This classification does not yet gate anything at runtime; it was introduced in Phase 2.5 as groundwork for Phase 3 (CLI remote connection). See `docs/plans/cli-remote-connection.md` for details.
 
+### Host mode (default, for the compose backend)
+
+The daemon has exactly one shape: a compose stack (`scripts/deploy-container.sh`, `build/container/compose.yml` — `docs/plans/release-onboarding.md` decision 2). **`boid` itself manages the daemon container's lifecycle — "host mode" — by default** (`docs/plans/volume-only-daemon.md` §論点c, Option 4 design). The old `BOID_MODE=container` opt-in is gone; there is nothing to configure.
+
+For any `scope=remote` command (things like `task list` that talk to the daemon's HTTP API), `boid` internally:
+
+1. Loads (or generates, on first use) `~/.config/boid/cli-token` (mode 0600)
+2. Confirms `http://127.0.0.1:8442/api/cli-token-check` answers with `Authorization: Bearer <token>` — if it does not (or the token no longer matches the daemon's), it invokes `scripts/deploy-container.sh` (build/pull the image, `compose up -d`) and checks again — hitting an authenticated endpoint, not the public `/api/health`, catches the case where the daemon is running but its token is stale
+3. Dispatches the real command to `http://127.0.0.1:8442` with `Authorization: Bearer <token>`
+
+`boid start`/`stop` and other `scope=local` commands (the compose lifecycle machinery itself), and `scope=neutral` commands like `login`/`logout`, are unaffected by host mode. `gc` is `scope=remote` but carries `annotationSkipAutostart` — it fails fast instead of autostarting the daemon just to garbage-collect it (`resolveHostModeClientNoAutostart`, `cmd/host.go`), the same outcome as passing `BOID_NO_AUTOSTART=1` explicitly.
+
+**Passing `--profile` explicitly bypasses host mode**, falling through to the ordinary `profiles.Resolve` chain (`--profile` > `BOID_PROFILE` > `default_profile` > the unix-socket fallback) to reach a named profile (a remote https daemon, or a different unix socket) — see "profiles との優先順位" in `docs/plans/release-onboarding.md`. `BOID_PROFILE` or `default_profile` alone do not bypass it — only an explicit `--profile` on that invocation does.
+
+Set `BOID_NO_AUTOSTART=1` to fail fast instead of autostarting when the daemon is unreachable.
+
+| Env var | Purpose |
+|---|---|
+| `BOID_COMPOSE_ROOT` | Points at the boid repo checkout containing `scripts/deploy-container.sh` (unset falls through to the embedded-assets fallback below; there is no cwd-walking auto-discovery — that was a drive-by code-execution vector once host mode became unconditional-default, removed in a codex round-10 review). |
+
+If no boid repo checkout can be found (e.g. `/usr/local/bin/boid` installed standalone and invoked from an arbitrary project directory), `boid` extracts the embedded `compose.yml` (`build/container/assets.go`, `go:embed`) into `$XDG_STATE_HOME/boid/compose/`, sets `BOID_IMAGE` to this CLI binary's own version-matched image ref (`internal/version.DefaultContainerImage()`), and runs `compose up -d` — there is no local-image precondition to satisfy beforehand; `compose up -d` pulls it. **`DefaultContainerImage()` actually returns one of two shapes** (`internal/version/version.go`): only when the CLI binary was built at an exact release tag (`vX.Y.Z`) does it return `ghcr.io/novshi-tech/boid-runner:<that tag>`; for every other build shape (pseudo-version, `+dirty`, `(devel)`, ... — most ways of installing this binary other than `go install ...@latest`) it returns the bare local tag `boid-runner:latest`, which has no registry prefix and fails to pull unless an image with that exact local tag already exists. `go install github.com/novshi-tech/boid@latest` normally resolves to a release tag (the first case), but that is not guaranteed. Building a fresh image is only possible from a real checkout (the Dockerfile's build context is `COPY . .`, the entire Go source tree). If the pull itself fails (no network, an arch mismatch, an unresolved local tag as above, ...) you get a clear error.
+
+The CLI listener address is fixed at `127.0.0.1:8442` (not overridable) — both `build/container/compose.yml`'s port publish (`127.0.0.1:8442:8442`) and the daemon's own listener bind would need to change together for an override to do anything, so the host side offers no override knob at all.
+
 ## Server lifecycle
 
 | Command | Role |
 |---|---|
-| `boid start [--db-path PATH] [--socket-path PATH] [--kits-dir DIR] [--key-file-path PATH]` | Start the daemon (it forks itself into a detached child and returns immediately). HTTP address is configured via `web.http_addr` in `config.yaml` or `boid web set-addr`. |
-| `boid stop` | Stop the daemon. Killing by PID can leave a stale socket; prefer this. |
+| `boid start` | Bring the compose stack up (`docker/podman compose up -d` equivalent, `docs/plans/release-onboarding.md` decision 2). Configure the HTTP address with `boid config set web.http_addr <addr>`. Passing `--foreground` (or `BOID_DAEMON_CHILD=1`, set by compose's own daemon service) makes this invocation itself become the daemon process — used by compose's entrypoint, not needed for ordinary interactive use. |
+| `boid stop` | Bring the compose stack down (`docker/podman compose down` equivalent). |
 | `boid gc [--older-than DURATION] [--dry-run]` | Garbage collect old completed/aborted tasks (the daemon also runs this on its own at startup). `--dry-run` prints what would be deleted without removing anything. Output also lists every workspace home's on-disk size (display only, never deletes — see the [workspace home guide](../guide/workspace-home.md#boid-gcs-workspace-home-listing)). |
-| `boid check` | Check host prerequisites and hook dependencies. |
+| `boid check` | Check host prerequisites for the container backend and hook dependencies. |
 | `boid init [DIR]` | **(Deprecated)** Prints a deprecation guide. Use `boid project init\|add` (plus, optionally, `boid workspace create/edit`) instead. See [Onboarding](../guide/onboarding.md). |
 
 See [Getting started / Install](../getting-started/01-install.md) for context.
@@ -206,8 +232,8 @@ Manage [Web UI](../guide/web-ui.md) device authentication.
 | `boid web devices` | List paired devices. |
 | `boid web revoke <id>` | Revoke a specific device. |
 | `boid web revoke-all` | Revoke every device. |
-| `boid web set-url <URL>` | Write the public URL to `config.yaml` (used to render magic links). |
-| `boid web set-addr <ADDR>` | Write the HTTP listen address to `config.yaml` (e.g. `boid web set-addr :9090`). Takes effect on the next daemon start. |
+| `boid web set-url <URL>` | Set the public URL (`web.public_url`, used to render magic links). Internally the same `POST /api/config/mutate` call as `boid config set web.public_url <URL>` (穴8 (b), `docs/plans/release-onboarding.md`) — the daemon writes it into `config.yaml` inside its own `boid_state` volume, so there is no host-side file to edit. |
+| `boid web set-addr <ADDR>` | Set the HTTP listen address (`web.http_addr`, e.g. `boid web set-addr :9090`). Same `config set`-equivalent API call. Takes effect after a daemon restart (`boid stop && boid start`). **Note:** this is the bind address INSIDE the container — under the standard compose deployment, the port actually published to the host (default 8080) does not change; changing the port number here makes the Web UI unreachable (see [Getting started / 3. Set up the Web UI](../getting-started/03-web-ui.md#change-the-listen-address-optional)) |
 
 ## Secret
 
@@ -265,7 +291,7 @@ Control running agent jobs.
 
 | Command | Role |
 |---|---|
-| `boid agent claude   -p <project> [--resume <session-id>] [--instruction "..."] [--readonly] [--model M] [--name NAME] [--no-attach]` | Start a claude session inside the project sandbox and attach to its PTY. `--resume` resumes an existing session; `--no-attach` prints the job id and exits. |
+| `boid agent claude   -p <project> [--instruction "..."] [--readonly] [--model M] [--name NAME] [--no-attach]` | Start a claude session inside the project sandbox and attach to its PTY. Sessions always start fresh (session-id resume was removed repo-wide, `cmd/agent_session.go`); `--no-attach` prints the job id and exits. |
 | `boid agent codex    -p <project> [same flags]` | **[Experimental]** Start a codex session. Launches the `codex` TUI inside the sandbox when no `--instruction` is given; with `--instruction` falls through to `codex exec` (one-shot smoke). Session persistence, `boid task notify` integration, and usage accounting are not yet implemented (see `docs/plans/multi-harness-production.md`). |
 | `boid agent opencode -p <project> [same flags]` | **[Experimental]** Start an opencode session. Launches the `opencode <project>` TUI inside the sandbox when no `--instruction` is given; with `--instruction` falls through to `opencode run` (one-shot smoke). Session persistence, `boid task notify` integration, and usage accounting are not yet implemented (see `docs/plans/multi-harness-production.md`). |
 | `boid agent stop <job-id>` | Send SIGUSR1 to the agent process, requesting a graceful stop. |

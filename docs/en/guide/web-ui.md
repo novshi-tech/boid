@@ -1,16 +1,14 @@
 # Web UI
 
-`boid` ships a Web UI alongside the CLI. It is enabled by default and listens on `:8080`. From the loopback interface no authentication is needed; from anywhere else (typically a phone over Cloudflare Tunnel) you pair a device first.
+`boid` ships a Web UI alongside the CLI. It is enabled by default and listens on `:8080`. From the loopback interface **the daemon process itself sees**, no authentication is needed; from anywhere else (typically a phone over Cloudflare Tunnel) you pair a device first.
+
+> **Note (compose daemon, the default shape):** the daemon runs inside the compose stack's own container (`docs/plans/release-onboarding.md` decision 2). `http://localhost:8080` as seen from your browser reaches the container via the host's port publish, but the request the CONTAINER itself receives comes from the docker/podman network bridge — **not** the host's own `127.0.0.1` — so the loopback exception never fires. That makes **`boid web pair` a required step** under the compose daemon (see [Getting started / 1. Install](../getting-started/01-install.md#pair-the-web-ui)). The "Loopback exception" section below only applies to a daemon genuinely reached from loopback (e.g. one started with `--foreground` directly on the host).
 
 ## Open the UI locally
 
-After `boid start`, point a browser at `http://localhost:8080`. You should see the task list.
+After `boid start`, [pair this browser](../getting-started/01-install.md#pair-the-web-ui) with `boid web pair` first, then point a browser at `http://localhost:8080`. You should see the task list.
 
-The listen address can be changed with `boid web set-addr`:
-
-```bash
-boid web set-addr 127.0.0.1:5171
-```
+The listen address can be changed with `boid web set-addr`, but **under the standard compose deployment that alone does not change the port visible from the host** — it only rewrites the bind address INSIDE the container, while `build/container/compose.yml`'s `ports:` mapping (`"127.0.0.1:8080:8080"`) is fixed. Pointing it at anything other than port 8080 leaves nothing listening on the container's port 8080 and the new port unpublished, so the Web UI becomes unreachable. Changing the host-visible port requires editing `build/container/compose.yml` directly (a developer workflow needing a checkout) — there is currently no path for a `go install`-only user. See [Getting started / 3. Set up the Web UI](../getting-started/03-web-ui.md#change-the-listen-address-optional) for the full caveat and workarounds.
 
 **The Web UI cannot be disabled.** Setting the address to an empty string (e.g. `boid web set-addr ""`) does not prevent the HTTP listener from starting; the daemon falls back to `:8080`. There is currently no way to stop the HTTP listener entirely.
 

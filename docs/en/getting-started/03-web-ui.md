@@ -10,27 +10,36 @@ This page assumes you have registered the `demo` project from [2. Initialize a p
 
 ## Open it locally
 
-After `boid start` (from [1. Install](01-install.md)), the daemon is already listening on `:8080`. Open it in a browser:
+After `boid start` (from [1. Install](01-install.md)), the daemon (compose stack) is already listening on `:8080`.
+
+Under the compose daemon, the loopback address (127.0.0.1) the CONTAINER itself sees is not the same thing as `http://localhost:8080` seen from your host, so the old "loopback skips pairing" exception from the bare-host days does not apply. If you have not already run `boid web pair` from [1. Install](01-install.md), do that first:
+
+```bash
+boid web pair
+```
+
+Authenticate from your browser with the printed code / URL / QR, then open the Web UI:
 
 ```
 http://localhost:8080
 ```
 
-You should see the `demo` project from [2. Initialize a project](02-init-project.md) and an empty task list. Requests from the same machine (loopback addresses 127.0.0.1 / ::1) skip pairing.
+You should see the `demo` project from [2. Initialize a project](02-init-project.md) and an empty task list.
 
 When the next chapter creates a task, it is convenient to keep this tab open next to a `boid task watch` terminal.
 
 ## Change the listen address (optional)
 
-If the default `:8080` clashes with something else, change it:
+**Note:** under the standard compose deployment, `boid web set-addr` alone does NOT resolve a port conflict. `build/container/compose.yml`'s `ports:` mapping is fixed at host `127.0.0.1:8080` → container `8080`. `boid web set-addr` only changes the bind address **inside the container** — pointing it at anything other than port 8080 (e.g. `127.0.0.1:5171`) means nothing listens on the container's port 8080 anymore, and port 5171 was never published to the host, so **the Web UI becomes unreachable**:
 
 ```bash
-boid web set-addr 127.0.0.1:5171
+# Only changes the in-container bind address -- becomes unreachable from the host
+boid web set-addr 127.0.0.1:5171   # DON'T: this breaks Web UI reachability as-is
 boid stop
 boid start
 ```
 
-`boid web set-addr` writes to `web.http_addr` in `~/.config/boid/config.yaml`. The change only takes effect after a daemon restart.
+To actually change the port visible from the host (default 8080), edit the `ports:` section of `build/container/compose.yml` directly (the `"127.0.0.1:8080:8080"` line) — this is a developer workflow that requires a checkout of this repository; there is currently no equivalent a `go install`-only user can reach for (the embedded `compose.yml` extracted when no checkout is found gets overwritten on every `boid start`, so a hand edit there would not persist either). If the default `:8080` clashes with something else, either free up that port on the conflicting service instead, or put a reverse proxy in front that forwards a different host port to `:8080`.
 
 > **Note:** There is currently no way to disable the Web UI entirely. Passing an empty string still causes the daemon to fall back to `:8080` and keep the TCP listener running.
 
@@ -59,14 +68,14 @@ boid web revoke <device-id>      # revoke one device
 boid web revoke-all              # revoke all
 ```
 
-The rest of this tutorial only needs loopback access, so you can skip the external exposure. Full details live in the [Web UI guide](../guide/web-ui.md).
+The rest of this tutorial only needs the browser you already paired in [1. Install](01-install.md), so you can skip the external exposure. Full details live in the [Web UI guide](../guide/web-ui.md).
 
 ## Recap
 
 What this tutorial introduced:
 
-- Opened the Web UI locally (loopback skips pairing).
-- Showed how to change the listen address (`boid web set-addr`; the Web UI cannot be disabled entirely).
+- Paired and opened the Web UI (the compose daemon requires pairing even from loopback).
+- `boid web set-addr` only changes the in-container bind address (the standard compose deployment does not let you change the host-visible port that way); the Web UI cannot be disabled entirely either.
 - Outlined how to expose the UI to other devices (`boid web set-url` + `boid web pair`).
 
 In the next chapter you will run a small task and watch it live from this same Web UI.

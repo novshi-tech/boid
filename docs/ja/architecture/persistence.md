@@ -7,7 +7,7 @@
 ## 概要
 
 - 実装: [`modernc.org/sqlite`](https://gitlab.com/cznic/sqlite) (純 Go の SQLite 実装、 cgo 不要)
-- データベースファイル: `~/.local/share/boid/boid.db` (XDG_DATA_HOME 配下)
+- データベースファイル: `$XDG_DATA_HOME/boid/boid.db`。 daemon は compose スタックのコンテナ内で動くのが既定 (`docs/plans/release-onboarding.md` 決定2) で、その場合の実体は `boid_state` named volume 内 (`/home/boid/.local/share/boid/boid.db`) — host 側の `~/.local/share/boid/` ではない (詳細は [Getting started / 1. インストール](../getting-started/01-install.md#データの保存先))
 - 開閉の責任: `internal/server.New` で開いて daemon の生存期間中保持。 daemon が終了すると閉じる
 - 同時アクセス: `boid` daemon が排他的に持つ。複数 daemon は想定していない (UNIX socket 単一前提)
 
@@ -99,7 +99,7 @@ handler (hook) の 1 回の実行記録です。
 
 ## `secrets`
 
-API トークンなどを暗号化して保存します。鍵は `~/.local/share/boid/secret.key` にあり、 daemon が起動時に読み込みます。
+API トークンなどを暗号化して保存します。鍵は `$XDG_DATA_HOME/boid/secret.key` (compose daemon では `boid_state` volume 内) にあり、 daemon が起動時に読み込みます。
 
 | カラム | 型 | 役割 |
 |---|---|---|

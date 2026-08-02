@@ -433,7 +433,8 @@ exit 0
 	}))
 	defer ts.Close()
 
-	if err := runComposeUp(context.Background(), ts.Listener.Addr().String()); err != nil {
+	var out strings.Builder
+	if err := runComposeUp(context.Background(), ts.Listener.Addr().String(), &out); err != nil {
 		t.Fatalf("runComposeUp: %v (BOID_NO_AUTOSTART=1 must not block an explicit `boid start`)", err)
 	}
 
@@ -443,6 +444,36 @@ exit 0
 	}
 	if !strings.Contains(string(logData), "up -d") {
 		t.Errorf("expected a `compose up -d` invocation despite BOID_NO_AUTOSTART=1; log:\n%s", string(logData))
+	}
+
+	// docs/plans/release-onboarding.md 目標オンボーディングフロー: `boid
+	// start` must print the "next steps" onboarding guidance (pair the Web
+	// UI, register a project, set an init script, sign into the agent) on
+	// success — see printNextStepsGuidance's own doc comment for why this
+	// is the step new users most often get stuck on.
+	for _, want := range []string{"boid web pair", "boid project add", "boid workspace set-init-script", "boid agent claude"} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("runComposeUp output missing next-steps guidance %q; got:\n%s", want, out.String())
+		}
+	}
+}
+
+// TestPrintNextStepsGuidance_MentionsInteractiveAgentLoginIsTheHardPart
+// pins the specific "this is where new users get stuck" framing
+// docs/plans/release-onboarding.md calls out explicitly (「ここは新規ユーザが
+// 最も迷う箇所」): init.sh handles toolchain install automatically on first
+// dispatch, but the harness's OWN login (claude/codex) needs a human in an
+// interactive session, and nothing else in the onboarding flow prompts a
+// first-time user to go run one.
+func TestPrintNextStepsGuidance_MentionsInteractiveAgentLoginIsTheHardPart(t *testing.T) {
+	var out strings.Builder
+	printNextStepsGuidance(&out)
+
+	got := out.String()
+	for _, want := range []string{"boid agent claude", "login"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("printNextStepsGuidance() missing %q; got:\n%s", want, got)
+		}
 	}
 }
 

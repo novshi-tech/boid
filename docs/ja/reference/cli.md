@@ -51,7 +51,7 @@ scope=`remote` なコマンド（`task list` 等、daemon の HTTP API を叩く
 |---|---|
 | `BOID_COMPOSE_ROOT` | `scripts/deploy-container.sh` を含む boid リポジトリのルートを明示（未設定時は下記の埋め込みアセット・フォールバックへ。cwd からの自動探索は行わない — 未信頼な checkout に単に `cd` しただけで、そこにある `scripts/deploy-container.sh` がユーザー権限で実行される drive-by 経路になるため、codex round-10 review で撤去済み） |
 
-boid リポジトリのチェックアウトが見つからない場合（`/usr/local/bin/boid` を単体インストールし、任意の project ディレクトリから起動する等）でも、`boid-runner:latest` image が既にローカルに存在していれば、埋め込み済みの `compose.yml`（`build/container/assets.go`、`go:embed`）を `$XDG_STATE_HOME/boid/compose/` に展開して `compose up -d` を直接実行するフォールバックが働きます（round-2 codex review Major 1）。image を fresh build できるのはチェックアウトがある場合のみ（`Dockerfile` の build context が `COPY . .` = go source tree 全体のため）。image・チェックアウトのどちらも無い場合は明確なエラーで失敗します。
+boid リポジトリのチェックアウトが見つからない場合（`/usr/local/bin/boid` を単体インストールし、任意の project ディレクトリから起動する等）は、埋め込み済みの `compose.yml`（`build/container/assets.go`、`go:embed`）を `$XDG_STATE_HOME/boid/compose/` に展開し、`BOID_IMAGE` にこの CLI バイナリ自身のバージョンに対応する image ref（`internal/version.DefaultContainerImage()`）をセットした上で `compose up -d` を実行するフォールバックが働きます（round-2 codex review Major 1、PR4 でローカル image 前提を撤去 — 事前にローカルへ image が存在している必要はなく、`compose up -d` 自身が pull する）。**`DefaultContainerImage()` が実際に返す値は 2 パターンある** (`internal/version/version.go`): CLI バイナリが exact release tag (`vX.Y.Z` ちょうど) でビルドされている場合のみ `ghcr.io/novshi-tech/boid-runner:<そのタグ>` を返し、それ以外 (pseudo-version・`+dirty`・`(devel)` 等、`go install @latest` 以外の経路で入れた大半のケース) は登録済み GHCR ref を持たないローカルタグ `boid-runner:latest` を返す — 後者はレジストリ prefix を持たないため、ローカルに同名 image が無ければ pull は失敗する。`go install github.com/novshi-tech/boid@latest` は通常リリースタグに解決されるため前者に該当するが、保証ではない。image を fresh build できるのはチェックアウトがある場合のみ（`Dockerfile` の build context が `COPY . .` = go source tree 全体のため）。pull 自体が失敗した場合（ネットワーク不通、arch mismatch、上記のローカルタグ未解決等）は明確なエラーで失敗します。
 
 CLI listener のアドレスは `127.0.0.1:8442` 固定（override 不可）。`build/container/compose.yml` の port publish (`127.0.0.1:8442:8442`) と daemon 自身の listener bind の双方に配線されていない override は実質機能しないため（round-2 codex review Major 2）、host 側は override 手段を持たない。
 
@@ -232,8 +232,8 @@ hook の実行記録を扱います。
 | `boid web devices` | ペアリング済みデバイス一覧 |
 | `boid web revoke <id>` | 特定デバイスを失効 |
 | `boid web revoke-all` | 全デバイスを失効 |
-| `boid web set-url <URL>` | 公開 URL を `config.yaml` に書き込み (マジックリンクのレンダリングに使う) |
-| `boid web set-addr <ADDR>` | HTTP リッスンアドレスを `config.yaml` に書き込む (例: `boid web set-addr :9090`)。次回 daemon 起動時に反映される |
+| `boid web set-url <URL>` | 公開 URL (`web.public_url`、マジックリンクのレンダリングに使う) を設定。実体は `boid config set web.public_url <URL>` と同じ `POST /api/config/mutate` 呼び出し (穴8 (b)、`docs/plans/release-onboarding.md`) — compose daemon の `boid_state` volume 内の config.yaml に daemon 側が書き込むので、host 側で直接ファイルを編集する必要はない |
+| `boid web set-addr <ADDR>` | HTTP リッスンアドレス (`web.http_addr`) を設定 (例: `boid web set-addr :9090`)。同じく `config set` 相当の API 呼び出し。反映には daemon の再起動 (`boid stop && boid start`) が必要。**注意:** これはコンテナ**内部**の bind アドレスであり、標準の compose デプロイでは host 側に公開されるポート (既定 8080) 自体は変わらない — ポート番号を変えると Web UI に到達できなくなる (詳細は [Getting started / 3. Web UI をセットアップする](../getting-started/03-web-ui.md#listen-アドレスを変える-任意)) |
 
 ## Secret
 
@@ -301,7 +301,7 @@ daemon が集約する `~/.config/boid/host_commands.yaml` (workspace 群の `ho
 
 | コマンド | 役割 |
 |---|---|
-| `boid agent claude  -p <project> [--resume <session-id>] [--instruction "..."] [--readonly] [--model M] [--name NAME] [--no-attach]` | claude セッションをサンドボックス内で起動し PTY に attach する。 `--resume` で既存セッションを再開、 `--no-attach` で job-id だけ表示して終了 |
+| `boid agent claude  -p <project> [--instruction "..."] [--readonly] [--model M] [--name NAME] [--no-attach]` | claude セッションをサンドボックス内で起動し PTY に attach する。セッションは常に新規プロセス (session-id での再開は撤去済み、`cmd/agent_session.go`)。 `--no-attach` で job-id だけ表示して終了 |
 | `boid agent codex   -p <project> [同上]` | **[実験的]** codex セッションを起動。 `--instruction` なしでは sandbox 内で `codex` TUI を起動、 `--instruction` ありでは `codex exec` (1 ターン smoke) にフォールバック。 セッション永続化・`boid task notify` 連携・usage 計上は未実装 (詳細は `docs/plans/multi-harness-production.md`) |
 | `boid agent opencode -p <project> [同上]` | **[実験的]** opencode セッションを起動。 `--instruction` なしでは sandbox 内で `opencode <project>` TUI を起動、 `--instruction` ありでは `opencode run` (1 ターン smoke) にフォールバック。 セッション永続化・`boid task notify` 連携・usage 計上は未実装 (詳細は `docs/plans/multi-harness-production.md`) |
 | `boid agent stop <job-id>` | エージェントプロセスに SIGUSR1 を送り、正常停止を要求する |
