@@ -28,3 +28,8 @@ coverage.out
 
 # Phase 6 compose stack local env (host-specific paths; see .env.example)
 /build/container/.env
+
+# scripts/deploy-container.sh's own state: which engine (docker/podman)
+# last brought the compose stack up, read back by --down (codex round-10
+# review of PR5) — regenerated per-checkout, not tracked.
+/.boid-compose-engine

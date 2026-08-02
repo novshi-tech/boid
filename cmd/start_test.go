@@ -713,3 +713,129 @@ esac
 		})
 	}
 }
+
+// fakeDockerAlwaysOK writes a fake `docker` on PATH that reports itself
+// (and its compose plugin) usable, and no-ops every other subcommand
+// (build/compose down/compose up -d/...) successfully — enough to drive
+// scripts/deploy-container.sh's default (no --build) up/down flow without
+// a real engine.
+func fakeDockerAlwaysOK(t *testing.T, dir string) {
+	t.Helper()
+	writeFakeExecutable(t, dir, "docker", `
+if [ "$1" = "compose" ] && [ "$2" = "version" ]; then exit 0; fi
+exit 0
+`)
+}
+
+// composeEngineStateFilePath is scripts/deploy-container.sh's own
+// COMPOSE_ENGINE_STATE_FILE: ROOT_DIR/.boid-compose-engine, where
+// ROOT_DIR is the checkout root the script's own BASH_SOURCE resolves to
+// — the real repo root when exec'ing the real, non-copied script, exactly
+// like COMPOSE_FILE itself.
+func composeEngineStateFilePath(t *testing.T) string {
+	t.Helper()
+	repoRoot, err := filepath.Abs("..")
+	if err != nil {
+		t.Fatalf("resolve repo root: %v", err)
+	}
+	return filepath.Join(repoRoot, ".boid-compose-engine")
+}
+
+// TestDeployContainerScript_Up_RecordsEngineForDown is the codex round-10
+// review of PR5, Major regression test (half 1 of 2): a successful `up`
+// must record which engine it actually used, so a later `--down` can pin
+// to that exact engine instead of re-detecting "whichever engine looks
+// usable right now" (see composeEngineStateFilePath's own doc comment for
+// where). Also exercises the happy path where `--down` reads that record
+// back and still succeeds against the SAME (still-usable) engine.
+func TestDeployContainerScript_Up_RecordsEngineForDown(t *testing.T) {
+	scriptPath, err := filepath.Abs(filepath.Join("..", "scripts", "deploy-container.sh"))
+	if err != nil {
+		t.Fatalf("resolve script path: %v", err)
+	}
+	stateFile := composeEngineStateFilePath(t)
+	t.Cleanup(func() { _ = os.Remove(stateFile) })
+	_ = os.Remove(stateFile) // in case a prior failed run left one behind
+
+	dir := t.TempDir()
+	fakeDockerAlwaysOK(t, dir)
+	env := []string{
+		"PATH=" + dir + string(os.PathListSeparator) + os.Getenv("PATH"),
+		"HOME=" + os.Getenv("HOME"),
+		"BOID_UID=1000",
+		"BOID_GID=1000",
+		"XDG_RUNTIME_DIR=" + t.TempDir(),
+	}
+
+	upCmd := exec.Command(scriptPath)
+	upCmd.Env = env
+	if out, err := upCmd.CombinedOutput(); err != nil {
+		t.Fatalf("deploy-container.sh (up) failed: %v\noutput:\n%s", err, out)
+	}
+
+	got, err := os.ReadFile(stateFile)
+	if err != nil {
+		t.Fatalf("read %s after a successful up: %v", stateFile, err)
+	}
+	if strings.TrimSpace(string(got)) != "docker" {
+		t.Errorf("%s = %q, want %q", stateFile, strings.TrimSpace(string(got)), "docker")
+	}
+
+	downCmd := exec.Command(scriptPath, "--down")
+	downCmd.Env = env
+	if out, err := downCmd.CombinedOutput(); err != nil {
+		t.Fatalf("deploy-container.sh --down failed against the same (still-usable) recorded engine: %v\noutput:\n%s", err, out)
+	}
+}
+
+// TestDeployContainerScript_Down_RecordedEngineNoLongerUsable_Refuses is
+// the codex round-10 review of PR5, Major regression test (half 2 of 2,
+// the actual bug): if the engine `up` recorded is no longer usable by the
+// time `--down` runs (crashed daemon, revoked permission, ...) while some
+// OTHER engine happens to be usable, `--down` must refuse outright rather
+// than silently `down`-ing an empty/never-created project under the OTHER
+// engine and reporting overall success — that would leave the real stack,
+// started under the recorded engine, running untouched while `boid stop`
+// claims it stopped it.
+func TestDeployContainerScript_Down_RecordedEngineNoLongerUsable_Refuses(t *testing.T) {
+	scriptPath, err := filepath.Abs(filepath.Join("..", "scripts", "deploy-container.sh"))
+	if err != nil {
+		t.Fatalf("resolve script path: %v", err)
+	}
+	stateFile := composeEngineStateFilePath(t)
+	t.Cleanup(func() { _ = os.Remove(stateFile) })
+	// Pretend a previous `up` recorded docker, without actually running
+	// one — this test only needs the state file's CONTENT, not a real
+	// prior up.
+	if err := os.WriteFile(stateFile, []byte("docker\n"), 0o644); err != nil {
+		t.Fatalf("seed %s: %v", stateFile, err)
+	}
+
+	dir := t.TempDir()
+	// No `docker` on PATH at all (simulates it having become unusable) —
+	// only a usable podman/podman-compose, which must NOT be substituted
+	// in for the recorded (but now-missing) docker engine.
+	writeFakeExecutable(t, dir, "podman", `
+case "$1" in
+  version) exit 0 ;;
+  info) echo "false"; exit 0 ;;
+  *) exit 0 ;;
+esac
+`)
+	writeFakeExecutable(t, dir, "podman-compose", `exit 0`)
+	writeFakeExecutable(t, dir, "systemctl", `exit 0`) // podman.socket "active" (irrelevant here — --down skips this preflight anyway)
+
+	downCmd := exec.Command(scriptPath, "--down")
+	downCmd.Env = []string{
+		"PATH=" + dir + string(os.PathListSeparator) + os.Getenv("PATH"),
+		"HOME=" + os.Getenv("HOME"),
+		"XDG_RUNTIME_DIR=" + t.TempDir(),
+	}
+	out, err := downCmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("expected --down to refuse when the recorded engine (docker) is no longer usable, even though podman is; output:\n%s", out)
+	}
+	if !strings.Contains(string(out), "docker") {
+		t.Errorf("expected the refusal to name the recorded engine (docker); output:\n%s", out)
+	}
+}

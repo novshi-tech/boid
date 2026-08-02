@@ -90,6 +90,17 @@ COMPOSE_FILE="$ROOT_DIR/build/container/compose.yml"
 # below, and that file's own header comment.
 PODMAN_OVERRIDE_FILE="$ROOT_DIR/build/container/compose.podman.override.yml"
 
+# COMPOSE_ENGINE_STATE_FILE (codex round-10 review of PR5, Major): records
+# which engine (docker/podman) a successful `up` actually used, written
+# right after `compose up -d` below succeeds. `--down` reads this back
+# instead of trusting whichever engine happens to look "usable" at
+# teardown time — see the `--down` block's own comment for why that drift
+# matters. Lives next to compose.yml under ROOT_DIR (stable across
+# invocations for a given checkout/embedded-assets root, exactly like
+# COMPOSE_FILE itself), not under BOID_RUNTIME_DIR, since it needs to
+# survive independently of any one daemon run.
+COMPOSE_ENGINE_STATE_FILE="$ROOT_DIR/.boid-compose-engine"
+
 # --- select an engine -------------------------------------------------------
 # Prefers docker (compose v2 syntax, DOCKER_HOST semantics dockerproxy/
 # containerBackend are written against, and what CI's e2e-container job
@@ -136,38 +147,92 @@ docker_compose_usable() {
 # the other.
 DOWN_ALT_COMPOSE_CMD=()
 
-if usable docker && docker_compose_usable; then
-	ENGINE=docker
-	BUILD_CMD=(docker build)
-	COMPOSE_CMD=(docker compose -f "$COMPOSE_FILE")
-	if [[ "$DOWN" == "1" ]] && usable podman && command -v podman-compose >/dev/null 2>&1; then
-		DOWN_ALT_COMPOSE_CMD=(podman-compose -f "$COMPOSE_FILE")
-	fi
-elif usable podman; then
-	ENGINE=podman
-	BUILD_CMD=(podman build)
-	# No DOWN_ALT_COMPOSE_CMD computation here: reaching this branch at
-	# all already means "usable docker && docker_compose_usable" (the
-	# prior branch's condition) evaluated false a few lines up, in this
-	# SAME invocation — re-checking it again here cannot yield a
-	# different answer, so there is no drift to guard against within one
-	# script run. Only the docker-primary branch above needs the
-	# alt-engine check.
-	if command -v podman-compose >/dev/null 2>&1; then
+# RECORDED_ENGINE (codex round-10 review of PR5, Major): --down used to
+# run the SAME "docker-if-usable-else-podman" preference ladder as `up`,
+# picking whichever engine looks best RIGHT NOW rather than whichever one
+# actually brought the stack up. If the environment drifted since (docker
+# daemon crashed/permission revoked, podman.socket newly enabled, ...),
+# the ladder could silently pick the OTHER engine, `down` an empty/
+# never-created project under it (which trivially succeeds), and report
+# overall success while the real stack — started under the engine that is
+# no longer usable — keeps running untouched. DOWN_ALT_COMPOSE_CMD (below)
+# only ever closed the narrower case where BOTH engines are still usable;
+# it does nothing when the engine that actually matters has become
+# UNusable, which is exactly when a false "stack is down" is worst. Read
+# the engine `up` itself recorded (COMPOSE_ENGINE_STATE_FILE, written
+# right after a successful `compose up -d` further below) and, when
+# present, pin down to it — refusing outright rather than silently
+# reporting success against a different engine — instead of ever
+# re-running the preference ladder for a --down call.
+RECORDED_ENGINE=""
+if [[ "$DOWN" == "1" && -f "$COMPOSE_ENGINE_STATE_FILE" ]]; then
+	RECORDED_ENGINE="$(cat "$COMPOSE_ENGINE_STATE_FILE" 2>/dev/null || true)"
+fi
+
+if [[ -n "$RECORDED_ENGINE" ]]; then
+	case "$RECORDED_ENGINE" in
+	docker)
+		if ! usable docker || ! docker_compose_usable; then
+			echo "error: the compose stack was started under engine=docker (recorded in $COMPOSE_ENGINE_STATE_FILE), but docker is not usable right now — refusing to report the stack as down without actually confirming teardown against the engine that runs it; fix docker (or its compose v2 plugin) and retry" >&2
+			exit 1
+		fi
+		ENGINE=docker
+		BUILD_CMD=(docker build)
+		COMPOSE_CMD=(docker compose -f "$COMPOSE_FILE")
+		;;
+	podman)
+		if ! usable podman || ! command -v podman-compose >/dev/null 2>&1; then
+			echo "error: the compose stack was started under engine=podman (recorded in $COMPOSE_ENGINE_STATE_FILE), but podman/podman-compose is not usable right now — refusing to report the stack as down without actually confirming teardown against the engine that runs it; fix podman/podman-compose and retry" >&2
+			exit 1
+		fi
+		ENGINE=podman
+		BUILD_CMD=(podman build)
 		COMPOSE_CMD=(podman-compose -f "$COMPOSE_FILE")
-	else
-		COMPOSE_CMD=()
-		echo "warning: podman found but no podman-compose; skipping the compose up/down step (image build only)" >&2
+		;;
+	*)
+		echo "warning: $COMPOSE_ENGINE_STATE_FILE contains an unrecognized engine ($RECORDED_ENGINE); ignoring it and falling back to the ordinary engine-detection ladder" >&2
+		RECORDED_ENGINE=""
+		;;
+	esac
+fi
+
+if [[ -z "$RECORDED_ENGINE" ]]; then
+	if [[ "$DOWN" == "1" ]]; then
+		echo "warning: no recorded engine at $COMPOSE_ENGINE_STATE_FILE (never written by a matching \`up\`, or predates this check) — falling back to best-effort detection, which cannot fully rule out downing the wrong engine's empty project while the real stack keeps running" >&2
 	fi
-elif command -v docker >/dev/null 2>&1; then
-	echo "error: docker is on PATH but not usable (either 'docker version' failed — daemon not running/unreachable — or the compose v2 plugin ('docker compose version') is missing), and no usable podman was found either" >&2
-	exit 1
-elif command -v podman >/dev/null 2>&1; then
-	echo "error: podman is on PATH but not usable ('podman version' failed), and no usable docker was found either" >&2
-	exit 1
-else
-	echo "error: neither docker nor podman found on PATH" >&2
-	exit 1
+	if usable docker && docker_compose_usable; then
+		ENGINE=docker
+		BUILD_CMD=(docker build)
+		COMPOSE_CMD=(docker compose -f "$COMPOSE_FILE")
+		if [[ "$DOWN" == "1" ]] && usable podman && command -v podman-compose >/dev/null 2>&1; then
+			DOWN_ALT_COMPOSE_CMD=(podman-compose -f "$COMPOSE_FILE")
+		fi
+	elif usable podman; then
+		ENGINE=podman
+		BUILD_CMD=(podman build)
+		# No DOWN_ALT_COMPOSE_CMD computation here: reaching this branch at
+		# all already means "usable docker && docker_compose_usable" (the
+		# prior branch's condition) evaluated false a few lines up, in this
+		# SAME invocation — re-checking it again here cannot yield a
+		# different answer, so there is no drift to guard against within one
+		# script run. Only the docker-primary branch above needs the
+		# alt-engine check.
+		if command -v podman-compose >/dev/null 2>&1; then
+			COMPOSE_CMD=(podman-compose -f "$COMPOSE_FILE")
+		else
+			COMPOSE_CMD=()
+			echo "warning: podman found but no podman-compose; skipping the compose up/down step (image build only)" >&2
+		fi
+	elif command -v docker >/dev/null 2>&1; then
+		echo "error: docker is on PATH but not usable (either 'docker version' failed — daemon not running/unreachable — or the compose v2 plugin ('docker compose version') is missing), and no usable podman was found either" >&2
+		exit 1
+	elif command -v podman >/dev/null 2>&1; then
+		echo "error: podman is on PATH but not usable ('podman version' failed), and no usable docker was found either" >&2
+		exit 1
+	else
+		echo "error: neither docker nor podman found on PATH" >&2
+		exit 1
+	fi
 fi
 echo "deploy-container: using engine=$ENGINE"
 
@@ -554,5 +619,18 @@ echo "deploy-container: stopping any existing compose stack (explicit down befor
 
 echo "deploy-container: starting the compose stack"
 "${COMPOSE_CMD[@]}" up -d
+
+# Record which engine actually brought the stack up (codex round-10 review
+# of PR5, Major) — see COMPOSE_ENGINE_STATE_FILE's own doc comment and the
+# RECORDED_ENGINE branch above for why `--down` needs this instead of
+# re-detecting "whichever engine looks usable right now". Written only
+# after `up -d` above has already succeeded (set -e would have aborted the
+# script otherwise), and deliberately not treated as fatal if it can't be
+# written (a permissions oddity here must not fail an otherwise-successful
+# `up`) — `--down` degrades to its own best-effort fallback when this is
+# missing, which is a smaller cost than blocking `up` over a diagnostics
+# file.
+echo "$ENGINE" >"$COMPOSE_ENGINE_STATE_FILE" 2>/dev/null || \
+	echo "warning: could not write $COMPOSE_ENGINE_STATE_FILE (continuing — a later \`--down\` will fall back to best-effort engine detection)" >&2
 
 echo "deploy-container: done. compose stack is up (container backend)."

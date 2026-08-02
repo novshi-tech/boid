@@ -365,7 +365,14 @@ func MigrateProject(opts MigrateProjectOptions) error {
 	// ---- Phase 4: Apply (only when --apply is set) --------------------------
 	if !opts.Apply {
 		fmt.Fprintln(out)
-		fmt.Fprintln(out, "(dry-run) Pass --apply to execute the migration.")
+		// codex round-10 review of PR5, Minor: guardApply refuses --apply
+		// outright unless --legacy-bare-metal is ALSO passed (this file's
+		// own guardApply doc comment) — telling a compose-daemon user to
+		// "Pass --apply" alone describes a command that will just be
+		// refused again. Point at --help/the migration guide instead of
+		// asserting a specific flag combination that may not apply to
+		// this project's deployment.
+		fmt.Fprintln(out, "(dry-run) See `boid project migrate --help` and docs/ja/guide/migration.md for how to apply this migration.")
 		return nil
 	}
 

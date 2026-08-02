@@ -304,34 +304,38 @@ func hostModeHealthy(ctx context.Context, addr, token string) bool {
 // findComposeRoot locates the boid repo checkout containing
 // scripts/deploy-container.sh + build/container/{Dockerfile,compose.yml}
 // — see this file's own header comment for why host mode invokes that
-// script rather than embedding its assets. BOID_COMPOSE_ROOT, when set,
-// wins outright (explicit override — e2e/run-container.sh's own host-mode
-// wiring uses this so it never depends on the invoking shell's cwd).
-// Otherwise walks up from the current working directory looking for
-// scripts/deploy-container.sh, mirroring how `git`/similar tools locate a
-// repo root from any subdirectory — nose's actual workflow always runs
-// `boid` from within, or below, this checkout.
+// script rather than embedding its assets. Trusts ONLY an explicit
+// BOID_COMPOSE_ROOT override; returns an error otherwise, so
+// ensureHostModeDaemon's caller falls back to deployFromEmbeddedAssets
+// (the go:embed'd copy this binary ships with, not anything read off the
+// filesystem).
+//
+// codex round-10 review of PR5, Blocker: this used to also walk up from
+// the current working directory looking for scripts/deploy-container.sh
+// when BOID_COMPOSE_ROOT was unset, mirroring how `git`/similar tools
+// locate a repo root from any subdirectory — reasonable back when host
+// mode itself was opt-in (BOID_MODE=container, removed by this same PR),
+// since a user had to deliberately ask for this behavior before it could
+// fire. Once PR5 made host mode the unconditional default for every
+// scope=remote command, that walk became a drive-by code-execution
+// vector with no opt-in gate left in front of it at all: an operator who
+// simply `cd`s into ANY checkout that happens to contain its own
+// scripts/deploy-container.sh (an attacker-controlled repo, not
+// necessarily boid's own) and runs an ordinary `boid` command (even a
+// read-only one — ensureHostModeDaemon fires any time the daemon isn't
+// already reachable) would have that checkout's script executed with
+// their own user privileges, no confirmation asked. Dropping the
+// filesystem walk entirely closes that: the only way to make host mode
+// trust a checkout now is to set BOID_COMPOSE_ROOT explicitly (nose's own
+// dev workflow, and e2e/run-container.sh's host-mode wiring, already do
+// exactly this).
 func findComposeRoot() (string, error) {
 	if v := os.Getenv("BOID_COMPOSE_ROOT"); v != "" {
 		return v, nil
 	}
-	dir, err := os.Getwd()
-	if err != nil {
-		return "", fmt.Errorf("getwd: %w", err)
-	}
-	for {
-		if _, statErr := os.Stat(filepath.Join(dir, "scripts", "deploy-container.sh")); statErr == nil {
-			return dir, nil
-		}
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			break
-		}
-		dir = parent
-	}
 	return "", fmt.Errorf(
-		"host mode: could not locate scripts/deploy-container.sh by walking up from the current directory; " +
-			"run `boid` from within the boid repo checkout, or set BOID_COMPOSE_ROOT to its root")
+		"host mode: BOID_COMPOSE_ROOT is not set; falling back to the embedded deploy assets " +
+			"(set BOID_COMPOSE_ROOT to a boid repo checkout root to build/deploy from source instead)")
 }
 
 // hostModeAssetsDir returns (creating if necessary) the stable directory
