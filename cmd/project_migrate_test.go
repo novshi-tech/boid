@@ -273,6 +273,42 @@ func TestProjectMigrate_DryRun(t *testing.T) {
 	}
 }
 
+// TestProjectMigrate_DryRun_FreshHost_NeverOpensDB is the codex round-9
+// review of PR5, Blocker 2 regression test: a plain dry-run (no --apply)
+// must never call db.Open at all — on a fresh compose-only host with no
+// pre-existing boid.db, db.Open's own PRAGMA journal_mode=WAL
+// (internal/db/db.go) creates the sqlite file (plus -wal/-shm) as a side
+// effect of merely being opened, directly contradicting "dry-run: prints
+// what it would do without writing anything" (this command's own --help
+// text). Unlike TestProjectMigrate_DryRun above, this test deliberately
+// points --db-path at a NON-existent file under a fresh temp dir (no
+// setupMigrateDBFile pre-provisioning) so the assertion actually exercises
+// the "does this create a DB file at all" question.
+func TestProjectMigrate_DryRun_FreshHost_NeverOpensDB(t *testing.T) {
+	dir := setupMigrateProject(t, testLegacyProjectYAML)
+	cfgDir := t.TempDir()
+	dbFile := filepath.Join(t.TempDir(), "boid.db") // deliberately never created
+
+	err := invokeMigrate(t, dir, migrateOpts{
+		workspace:     "my-ws",
+		apply:         false, // dry-run
+		dbPath:        dbFile,
+		xdgConfigHome: cfgDir,
+	})
+	if err != nil {
+		t.Fatalf("dry-run: unexpected error: %v", err)
+	}
+
+	if _, err := os.Stat(dbFile); !os.IsNotExist(err) {
+		t.Errorf("dry-run created a boid.db file at %s (db.Open must not run without --apply)", dbFile)
+	}
+	for _, suffix := range []string{"-wal", "-shm"} {
+		if _, err := os.Stat(dbFile + suffix); !os.IsNotExist(err) {
+			t.Errorf("dry-run created a boid.db%s file (db.Open's own PRAGMA journal_mode=WAL side effect)", suffix)
+		}
+	}
+}
+
 // TestProjectMigrate_Apply_WritesWorkspaceYAML verifies --apply creates workspace.yaml
 // with the migrated fields.
 func TestProjectMigrate_Apply_WritesWorkspaceYAML(t *testing.T) {

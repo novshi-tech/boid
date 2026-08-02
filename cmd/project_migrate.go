@@ -266,16 +266,40 @@ func MigrateProject(opts MigrateProjectOptions) error {
 		return fmt.Errorf("migrate: project.yaml has no 'name' field; cannot proceed")
 	}
 
-	// Open DB (direct, no daemon).
-	dbPath := opts.DBPath
-	if dbPath == "" {
-		dbPath = defaultDBPath()
+	// codex round-9 review of PR5, Blocker 2: db.Open used to run
+	// unconditionally here, even for a plain dry-run (opts.Apply==false).
+	// db.Open's own PRAGMA journal_mode=WAL (internal/db/db.go) creates
+	// the sqlite file (plus -wal/-shm) as a SIDE EFFECT of merely opening
+	// a path that does not exist yet — on a fresh compose-only host with
+	// no host-local boid.db at all, a plain dry-run would silently
+	// materialize one, directly contradicting "dry-run: prints what it
+	// would do without writing anything" (this command's own --help
+	// text). It would then typically fail anyway with "no such table:
+	// projects" (a fresh DB has no schema), but the file-creation side
+	// effect already happened by that point.
+	//
+	// Fixed by opening boidDB ONLY when opts.Apply is set — guardApply
+	// (runProjectMigrate) already refuses --apply outright unless
+	// --legacy-bare-metal is also passed, so by the time this ever runs
+	// with Apply==true, the caller has explicitly opted into exactly the
+	// bare-metal, host-local-DB-dependent behavior this file's DB access
+	// implements. A plain dry-run now never touches boidDB at all: the
+	// project lookup below (existing workspace assignment) is skipped
+	// entirely and reported as such, and computeMigratePlan's own secret
+	// listing/collision check (which also takes boidDB) does the same —
+	// see its own doc comment.
+	var boidDB *db.DB
+	if opts.Apply {
+		dbPath := opts.DBPath
+		if dbPath == "" {
+			dbPath = defaultDBPath()
+		}
+		boidDB, err = db.Open(dbPath)
+		if err != nil {
+			return fmt.Errorf("migrate: open db: %w", err)
+		}
+		defer boidDB.Close()
 	}
-	boidDB, err := db.Open(dbPath)
-	if err != nil {
-		return fmt.Errorf("migrate: open db: %w", err)
-	}
-	defer boidDB.Close()
 
 	// ---- Phase 2: Resolve workspace slug ------------------------------------
 	plan := &migratePlan{
@@ -283,15 +307,23 @@ func MigrateProject(opts MigrateProjectOptions) error {
 		meta: meta,
 	}
 
-	// Look up project in DB to find existing workspace assignment.
-	project, err := orchestrator.GetProject(boidDB.Conn, meta.ID)
-	if err != nil && !errors.Is(err, errProjectNotFound(err)) {
-		// Only hard-fail on unexpected errors. Missing project means it hasn't
-		// been registered yet; we still allow migration.
-		if !strings.Contains(err.Error(), "no rows") {
-			return fmt.Errorf("migrate: query project: %w", err)
+	// Look up project in DB to find existing workspace assignment — only
+	// possible when boidDB was opened above (opts.Apply==true). A plain
+	// dry-run has no DB to check, so this is skipped rather than opening
+	// one just to look; see the boidDB comment above for why.
+	var project *orchestrator.Project
+	if boidDB != nil {
+		project, err = orchestrator.GetProject(boidDB.Conn, meta.ID)
+		if err != nil && !errors.Is(err, errProjectNotFound(err)) {
+			// Only hard-fail on unexpected errors. Missing project means it hasn't
+			// been registered yet; we still allow migration.
+			if !strings.Contains(err.Error(), "no rows") {
+				return fmt.Errorf("migrate: query project: %w", err)
+			}
+			project = nil
 		}
-		project = nil
+	} else {
+		fmt.Fprintln(out, "(dry-run) skipping existing-workspace-assignment lookup (no DB access without --apply --legacy-bare-metal); pass --workspace explicitly if this project already has one.")
 	}
 	plan.project = project
 
@@ -314,7 +346,7 @@ func MigrateProject(opts MigrateProjectOptions) error {
 	plan.workspaceSlug = workspaceSlug
 
 	// ---- Compute what changes will be made -----------------------------------
-	if err := computeMigratePlan(plan, boidDB, opts.KeyFilePath); err != nil {
+	if err := computeMigratePlan(plan, boidDB, opts.KeyFilePath, out); err != nil {
 		return fmt.Errorf("migrate: %w", err)
 	}
 
@@ -449,7 +481,7 @@ func errProjectNotFound(err error) error {
 
 // computeMigratePlan populates the migration plan fields based on the legacy
 // meta and the existing workspace state.
-func computeMigratePlan(plan *migratePlan, boidDB *db.DB, keyFilePath string) error {
+func computeMigratePlan(plan *migratePlan, boidDB *db.DB, keyFilePath string, out io.Writer) error {
 	meta := plan.meta
 	wsStore := orchestrator.NewWorkspaceStore("")
 
@@ -531,6 +563,17 @@ func computeMigratePlan(plan *migratePlan, boidDB *db.DB, keyFilePath string) er
 	plan.newNamespace = plan.workspaceSlug
 
 	if plan.oldNamespace != "" && plan.oldNamespace != plan.newNamespace {
+		// codex round-9 review of PR5, Blocker 2: boidDB is nil for a
+		// plain dry-run (MigrateProject only opens it when opts.Apply is
+		// set — see that function's own comment). Secret listing/
+		// collision detection needs a real DB connection, so it is
+		// skipped (not attempted against a nil boidDB, which would
+		// panic) and reported as such; --apply --legacy-bare-metal is
+		// the only path that can actually see this.
+		if boidDB == nil {
+			fmt.Fprintf(out, "(dry-run) skipping secret collision check for namespace %q -> %q (no DB access without --apply --legacy-bare-metal)\n", plan.oldNamespace, plan.newNamespace)
+			return nil
+		}
 		// Load secret store to enumerate keys.
 		kfPath := keyFilePath
 		if kfPath == "" {

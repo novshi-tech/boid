@@ -36,10 +36,15 @@ func TestBuildProjectLoadStartupError_TextByteIdentical(t *testing.T) {
 	err := buildProjectLoadStartupError([]error{mig1, mig2})
 
 	got := err.Error()
+	// codex round-9 review of PR5, Blocker 1: the trailing generic
+	// "Run `boid project migrate <dir>`" hint line (with a literal
+	// "<dir>" placeholder) is gone — each mig*.Error() above already
+	// embeds its own accurate, per-project migrationGuidance via
+	// FormatMigrationIssue, so the extra line was both redundant and
+	// (for a bare-repo-registered project) actively wrong.
 	want := "daemon startup refused: failed to load project metadata\n" +
 		"  - " + mig1.Error() + "\n" +
-		"  - " + mig2.Error() + "\n" +
-		"Run `boid project migrate <dir>` for each affected project to migrate to the new schema.\n"
+		"  - " + mig2.Error() + "\n"
 	if got != want {
 		t.Fatalf("aggregate text mismatch\nwant:\n%s\n\ngot:\n%s", want, got)
 	}

@@ -26,6 +26,10 @@ boid project migrate ~/src/myproject --workspace dev --apply --legacy-bare-metal
 
 compose daemon 配下のプロジェクトについては、 完全に安全な自動/手動移行手順は **まだ確立されていません** (下記「workspace への反映」参照)。 dry-run の出力を参考にしながら、 状況に応じて判断してください。
 
+**dry-run (`--apply` 無し) は host 側の DB を一切開きません** (2026-08、 `--apply` の場合のみ `db.Open` する設計に変更済み) — fresh な host で `boid.db` が存在しない状態でも、 dry-run がそれを新規作成してしまうことはありません。
+
+**git URL で登録した project の場合、 dry-run の案内する `dir` は daemon 内部の bare repository パスであり、 `boid project migrate` をそのパスに対して実行することはできません** — 自分の手元の clone に対して `boid project migrate` を実行し、 修正を commit/push してください。
+
 ### `boid project migrate` の変換内容
 
 1. `project.yaml` の撤去対象フィールド (`kits` / `env` / `host_commands` / `additional_bindings` / `secret_namespace` / `capabilities`、 および behavior-level の `task_behaviors.<name>.kits`) を検出する

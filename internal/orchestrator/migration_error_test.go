@@ -42,6 +42,35 @@ Migration:
 	}
 }
 
+// TestProjectMigrationError_IsBareRepo_DoesNotAssertDirectlyRunnableCommand
+// is the codex round-9 review of PR5, Blocker 1 regression test:
+// ProjectMigrationIssue.IsBareRepo=true (a git-URL-registered project,
+// whose Dir is the daemon's own internal bare-repository path — not a
+// path the user can run `boid project migrate` against at all) must NOT
+// produce guidance asserting `boid project migrate <dir>` is directly
+// runnable. It must instead say Dir is the daemon's own bare repo and
+// point the user at their own local clone.
+func TestProjectMigrationError_IsBareRepo_DoesNotAssertDirectlyRunnableCommand(t *testing.T) {
+	dir := "/var/lib/boid/bare-repos/abc123"
+	issue := ProjectMigrationIssue{
+		Dir:        dir,
+		IsBareRepo: true,
+		Messages:   []string{`project.yaml: top-level "kits" is no longer supported.`},
+	}
+
+	got := FormatMigrationIssue(issue)
+
+	if strings.Contains(got, "`boid project migrate "+dir+"`") {
+		t.Errorf("must not assert `boid project migrate %s` is directly runnable, got:\n%s", dir, got)
+	}
+	if !strings.Contains(strings.ToLower(got), "own local") {
+		t.Errorf("expected guidance to point at the user's own local clone, got:\n%s", got)
+	}
+	if !strings.Contains(got, dir) {
+		t.Errorf("expected the bare-repo path to still be named (for context), got:\n%s", got)
+	}
+}
+
 // TestProjectMigrationError_WithProjectID checks the `project "ID": ...`
 // wrapping used by project_store.LoadAll when the issue is associated with
 // a registered project.

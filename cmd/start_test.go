@@ -46,6 +46,43 @@ func TestRefuseRootUID(t *testing.T) {
 	}
 }
 
+// TestEffectiveBoidUID_PrefersBOID_UIDEnv is the codex round-9 review of
+// PR5, Major regression test: a non-root CLI process's own os.Getuid()
+// must NOT be what refuseRootUID checks when BOID_UID is explicitly set
+// to something else — compose's `user: "${BOID_UID:-1000}:0"` substitutes
+// BOID_UID at compose-parse time on the HOST (not as a container env
+// var), so a non-root operator exporting BOID_UID=0 changes what uid the
+// CONTAINER runs as without changing this process's own os.Getuid() at
+// all. effectiveBoidUID() must reflect BOID_UID when set, so
+// refuseRootUID(effectiveBoidUID()) actually catches that case.
+func TestEffectiveBoidUID_PrefersBOID_UIDEnv(t *testing.T) {
+	t.Setenv("BOID_UID", "")
+	if got := effectiveBoidUID(); got != os.Getuid() {
+		t.Errorf("effectiveBoidUID() with BOID_UID unset = %d, want os.Getuid() = %d", got, os.Getuid())
+	}
+
+	t.Setenv("BOID_UID", "0")
+	if got := effectiveBoidUID(); got != 0 {
+		t.Errorf("effectiveBoidUID() with BOID_UID=0 = %d, want 0", got)
+	}
+	if err := refuseRootUID(effectiveBoidUID()); err == nil {
+		t.Error("refuseRootUID(effectiveBoidUID()) with BOID_UID=0 must refuse, even though this test process itself is not root")
+	}
+
+	t.Setenv("BOID_UID", "1234")
+	if got := effectiveBoidUID(); got != 1234 {
+		t.Errorf("effectiveBoidUID() with BOID_UID=1234 = %d, want 1234", got)
+	}
+
+	// An unparseable BOID_UID falls back to os.Getuid() rather than
+	// erroring here — compose/docker will surface their own clear error
+	// against the malformed value when they try to use it.
+	t.Setenv("BOID_UID", "not-a-number")
+	if got := effectiveBoidUID(); got != os.Getuid() {
+		t.Errorf("effectiveBoidUID() with unparseable BOID_UID = %d, want os.Getuid() fallback = %d", got, os.Getuid())
+	}
+}
+
 func TestBuildStartConfig_UsesDefaults(t *testing.T) {
 	dataHome := t.TempDir()
 	socketPath := filepath.Join(t.TempDir(), "boid.sock")

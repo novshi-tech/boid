@@ -362,11 +362,17 @@ func buildProjectLoadStartupError(errs []error) error {
 			causes = append(causes, e)
 		}
 	}
-	// migration ヒント行は実際に migration error が混じっているときだけ出す。
-	// schema migration じゃない load 失敗 (parse error 等) に対して
-	// 「Run boid project migrate <dir>」 を表示するのは misleading。
+	// codex round-9 review of PR5, Blocker 1: this used to append one
+	// more generic "Run `boid project migrate <dir>`" hint line here,
+	// with a literal "<dir>" placeholder — redundant with, AND less
+	// accurate than, what is already there: each `e.Error()` written
+	// into msg above (for an `e` that IS a *ProjectMigrationError) is
+	// FormatMigrationIssue's own per-project text, which already embeds
+	// migrationGuidance(p.Dir, p.IsBareRepo) — the real path (or, for a
+	// git-URL-registered project, the correct "this is a bare-repo path,
+	// use your own clone instead" guidance). Nothing more to add here;
+	// only the errors.As wiring (causes) is still needed.
 	if len(migAgg.Projects) > 0 {
-		msg.WriteString("Run `boid project migrate <dir>` for each affected project to migrate to the new schema.\n")
 		// Put migration error first so errors.As walks find it quickly.
 		causes = append([]error{migAgg}, causes...)
 	}

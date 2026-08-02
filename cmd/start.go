@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 
@@ -323,12 +324,55 @@ func buildStartConfig(opts startConfigOptions) (server.Config, error) {
 //
 // Takes the uid as a plain int (rather than calling os.Getuid() itself)
 // so a test can exercise both branches without needing to actually run
-// this process as root.
+// this process as root. Callers must pass effectiveBoidUID(), NOT a bare
+// os.Getuid() — see that function's own doc comment for why (codex
+// round-9 review of PR5, Major).
 func refuseRootUID(uid int) error {
 	if uid != 0 {
 		return nil
 	}
 	return fmt.Errorf("boid start: refusing to run as uid 0 (root) — §決定1/§決定4 (docs/plans/release-onboarding.md) require a non-root uid with supplementary group 0; set BOID_UID to a non-zero uid (build/container/compose.yml's `user: \"${BOID_UID}:0\"`) or invoke this process as a non-root user")
+}
+
+// effectiveBoidUID returns the uid that will actually end up running the
+// daemon: BOID_UID, when set (docs/plans/release-onboarding.md
+// scripts/deploy-container.sh's own `: "${BOID_UID:=$(id -u)}"` default —
+// compose's `user: "${BOID_UID:-1000}:0"` substitutes it at compose-parse
+// time on the HOST, not as a container environment variable, so an
+// operator exporting BOID_UID=0 changes what uid the CONTAINER runs as
+// without changing THIS PROCESS's own os.Getuid() at all), or
+// os.Getuid() otherwise.
+//
+// codex round-9 review of PR5, Major: refuseRootUID(os.Getuid()) alone
+// only ever inspected the CLI process's own uid — a non-root operator
+// running `BOID_UID=0 boid start` sailed straight through it, since the
+// check had nothing to do with the value BOID_UID ultimately resolves
+// to. scripts/deploy-container.sh gained an equivalent guard at the
+// actual enforcement point in an earlier round of this same review; this
+// closes the matching gap on the Go CLI side so the refusal fires as
+// early as possible too, before ever invoking that script.
+//
+// Safe to reuse for the --foreground/daemon-child path too (the actual
+// daemon process running INSIDE the container): build/container/
+// compose.yml's `user:` directive does its substitution at compose-parse
+// time and is never forwarded into the container's own environment (grep
+// "BOID_UID" build/container/compose.yml — the only reference is the
+// `user:` line itself), so BOID_UID is unset inside the container and
+// this falls through to os.Getuid() there — the container's own
+// (already-assigned-by-the-runtime) uid, exactly like before this
+// function existed.
+//
+// An unparseable BOID_UID is not this function's problem to diagnose —
+// it returns os.Getuid() unchanged in that case, and compose/docker will
+// surface their own clear error against the malformed value when they
+// try to use it.
+func effectiveBoidUID() int {
+	if v := os.Getenv("BOID_UID"); v != "" {
+		if uid, err := strconv.Atoi(v); err == nil {
+			return uid
+		}
+	}
+	return os.Getuid()
 }
 
 // runStart implements `boid start`. docs/plans/release-onboarding.md
@@ -360,7 +404,7 @@ func runStart(cmd *cobra.Command, args []string) error {
 	// therefore silently bring up a root-uid daemon container unless
 	// caught here first, exactly the outcome §決定1/§決定4 exist to rule
 	// out.
-	if err := refuseRootUID(os.Getuid()); err != nil {
+	if err := refuseRootUID(effectiveBoidUID()); err != nil {
 		return err
 	}
 	if shouldRunForeground(startForeground) {
