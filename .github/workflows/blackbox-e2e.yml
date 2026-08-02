@@ -385,3 +385,59 @@ jobs:
         # logs) is at least visible in this step's own log even though the
         # runner discards the temp dir itself.
         run: ./e2e/run-container.sh
+
+  e2e-onboarding:
+    name: Checkout-less onboarding E2E (requires-docker)
+    # docs/plans/release-onboarding.md PR9: e2e-container above (via
+    # e2e/run-container.sh) always drives cmd/host.go's deployFromCheckout
+    # path — a real boid repo checkout, BOID_COMPOSE_ROOT exported, local
+    # image build — which is exactly what a `go install`-only user with no
+    # checkout on disk at all can never do. This job instead exercises the
+    # OTHER path, deployFromEmbeddedAssets: `boid start` run from an empty,
+    # checkout-less scratch directory, pulling its own version identity's
+    # GHCR image ref for real (not a locally bind-mounted build), bringing
+    # the compose stack up, and dispatching one real job to completion.
+    # e2e/run-onboarding.sh's own header comment has the full rationale,
+    # including the sentinel-version/self-published-image design (it does
+    # not depend on any real release tag's image having ever been
+    # published) and the GHCR visibility caveat (this job authenticates via
+    # GITHUB_TOKEN, so it validates the pull/compose/dispatch MECHANICS
+    # regardless of whether ghcr.io/novshi-tech/boid-runner's public-
+    # visibility flip has happened yet — see that script's own comment for
+    # exactly what remains unverified either way).
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    # packages: write — this job builds and pushes its own throwaway
+    # sentinel-tagged image (see e2e/run-onboarding.sh's own header
+    # comment for why a self-published tag, not a real release ref) to
+    # ghcr.io/novshi-tech/boid-runner, then pulls it back down through the
+    # embedded-assets fallback path it means to exercise. Same-repo (non-
+    # fork) pull_request runs get this permission as declared; a
+    # fork-originated PR would not (GitHub always downgrades GITHUB_TOKEN
+    # to read-only for those), and this job would fail fast at the `docker
+    # push` step in that case rather than silently skip the check it
+    # exists to run.
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Confirm docker + compose v2 are available
+        run: |
+          set -euxo pipefail
+          docker version
+          docker compose version
+
+      - name: Run checkout-less onboarding E2E (pull -> compose up -> dispatch)
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_ACTOR: ${{ github.actor }}
+        run: ./e2e/run-onboarding.sh
