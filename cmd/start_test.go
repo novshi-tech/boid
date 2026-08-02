@@ -786,8 +786,13 @@ func TestDeployContainerScript_Up_RecordsEngineForDown(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read %s after a successful up: %v", stateFile, err)
 	}
-	if strings.TrimSpace(string(got)) != "docker" {
-		t.Errorf("%s = %q, want %q", stateFile, strings.TrimSpace(string(got)), "docker")
+	// Line 1 is the engine kind; line 2 (codex round-13 review of PR5,
+	// Major) is a DOCKER_CONTEXT/DOCKER_HOST fingerprint `--down` also
+	// validates — see context_fingerprint's own doc comment in the
+	// script. Only line 1 is asserted here.
+	gotLines := strings.SplitN(string(got), "\n", 2)
+	if gotLines[0] != "docker" {
+		t.Errorf("%s line 1 = %q, want %q", stateFile, gotLines[0], "docker")
 	}
 
 	downCmd := exec.Command(scriptPath, "--down")
@@ -943,6 +948,100 @@ esac
 	}
 	if !strings.Contains(string(out), "docker") {
 		t.Errorf("expected the refusal to name the recorded engine (docker); output:\n%s", out)
+	}
+}
+
+// TestDeployContainerScript_Down_ContextDrift_Refuses is the codex
+// round-13 review of PR5, Major regression test: recording the engine
+// KIND (docker/podman) alone cannot tell two DIFFERENT daemons of the
+// SAME kind apart — an operator who switches DOCKER_CONTEXT/DOCKER_HOST
+// between `up` and `down` would still pass the engine-usability check,
+// then `down` an empty `name: boid` project on the NEW daemon while the
+// real stack (on the OLD one) keeps running. `--down` must now also
+// compare context_fingerprint() against what `up` recorded.
+func TestDeployContainerScript_Down_ContextDrift_Refuses(t *testing.T) {
+	scriptPath, err := filepath.Abs(filepath.Join("..", "scripts", "deploy-container.sh"))
+	if err != nil {
+		t.Fatalf("resolve script path: %v", err)
+	}
+	xdgStateHome := t.TempDir()
+
+	dir := t.TempDir()
+	fakeDockerAlwaysOK(t, dir)
+	upCmd := exec.Command(scriptPath)
+	upCmd.Env = []string{
+		"PATH=" + dir + string(os.PathListSeparator) + os.Getenv("PATH"),
+		"HOME=" + os.Getenv("HOME"),
+		"XDG_STATE_HOME=" + xdgStateHome,
+		"DOCKER_CONTEXT=context-a",
+		"BOID_UID=1000",
+		"BOID_GID=1000",
+		"XDG_RUNTIME_DIR=" + t.TempDir(),
+	}
+	if out, err := upCmd.CombinedOutput(); err != nil {
+		t.Fatalf("deploy-container.sh (up) with DOCKER_CONTEXT=context-a failed: %v\noutput:\n%s", err, out)
+	}
+
+	downCmd := exec.Command(scriptPath, "--down")
+	downCmd.Env = []string{
+		"PATH=" + dir + string(os.PathListSeparator) + os.Getenv("PATH"),
+		"HOME=" + os.Getenv("HOME"),
+		"XDG_STATE_HOME=" + xdgStateHome,
+		"DOCKER_CONTEXT=context-b", // drifted since `up`
+		"XDG_RUNTIME_DIR=" + t.TempDir(),
+	}
+	out, err := downCmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("expected --down to refuse when DOCKER_CONTEXT drifted since the recording up (context-a -> context-b); output:\n%s", out)
+	}
+	if !strings.Contains(string(out), "DOCKER_CONTEXT") {
+		t.Errorf("expected the refusal to mention DOCKER_CONTEXT; output:\n%s", out)
+	}
+}
+
+// TestDeployContainerScript_Down_CorruptedEngineWithInternalWhitespace_Refuses
+// is the codex round-13 review of PR5, Major regression test: an earlier
+// revision trimmed the recorded engine value with `tr -d '[:space:]'`,
+// which strips ALL whitespace (not just leading/trailing) — a corrupted
+// value like "pod man" was silently normalized to the valid-looking
+// "podman" instead of being rejected as unrecognized. Only leading/
+// trailing whitespace must be trimmed now.
+func TestDeployContainerScript_Down_CorruptedEngineWithInternalWhitespace_Refuses(t *testing.T) {
+	scriptPath, err := filepath.Abs(filepath.Join("..", "scripts", "deploy-container.sh"))
+	if err != nil {
+		t.Fatalf("resolve script path: %v", err)
+	}
+	xdgStateHome := t.TempDir()
+	stateFile := composeEngineStateFilePath(xdgStateHome)
+	if err := os.MkdirAll(filepath.Dir(stateFile), 0o755); err != nil {
+		t.Fatalf("mkdir %s: %v", filepath.Dir(stateFile), err)
+	}
+	if err := os.WriteFile(stateFile, []byte("pod man\n"), 0o644); err != nil {
+		t.Fatalf("seed %s: %v", stateFile, err)
+	}
+
+	dir := t.TempDir()
+	writeFakeExecutable(t, dir, "podman", `
+case "$1" in
+  version) exit 0 ;;
+  info) echo "false"; exit 0 ;;
+  *) exit 0 ;;
+esac
+`)
+	writeFakeExecutable(t, dir, "podman-compose", `exit 0`)
+	downCmd := exec.Command(scriptPath, "--down")
+	downCmd.Env = []string{
+		"PATH=" + dir + ":/usr/bin:/bin",
+		"HOME=" + os.Getenv("HOME"),
+		"XDG_STATE_HOME=" + xdgStateHome,
+		"XDG_RUNTIME_DIR=" + t.TempDir(),
+	}
+	out, err := downCmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("expected --down to refuse a corrupted \"pod man\" record rather than silently accept it as \"podman\"; output:\n%s", out)
+	}
+	if !strings.Contains(string(out), "unrecognized engine") {
+		t.Errorf("expected the refusal to say the engine is unrecognized; output:\n%s", out)
 	}
 }
 

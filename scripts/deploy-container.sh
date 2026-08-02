@@ -149,6 +149,25 @@ docker_compose_usable() {
 	command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1
 }
 
+# context_fingerprint (codex round-13 review of PR5, Major): the
+# engine-state mechanism below records docker-vs-podman only, which
+# cannot tell two DIFFERENT daemons of the SAME engine kind apart — an
+# operator who switches `DOCKER_CONTEXT`/`DOCKER_HOST` (or podman's
+# `CONTAINER_CONNECTION`/`CONTAINER_HOST`) between `up` and `down` would
+# still pass the engine-kind check, then `down` an empty `name: boid`
+# project on the NEW daemon while the real stack — on the OLD one — keeps
+# running untouched. This fingerprints whichever of those an engine
+# actually consults for daemon selection, so `up`'s recorded value and
+# `down`'s current value can be compared. Empty values are fingerprinted
+# too (as an empty string in that slot) — "unset now, was set before" (or
+# vice versa) is drift just as much as "set to a different value".
+context_fingerprint() {
+	case "$1" in
+	docker) printf 'DOCKER_CONTEXT=%s|DOCKER_HOST=%s' "${DOCKER_CONTEXT:-}" "${DOCKER_HOST:-}" ;;
+	podman) printf 'CONTAINER_CONNECTION=%s|CONTAINER_HOST=%s' "${CONTAINER_CONNECTION:-}" "${CONTAINER_HOST:-}" ;;
+	esac
+}
+
 # DOWN_ALT_COMPOSE_CMD (docs/plans/release-onboarding.md 決定2/PR5, codex
 # round-4 review Major): --down below only tears down COMPOSE_CMD's own
 # engine — the SAME preference-ordered selection this block always runs,
@@ -194,29 +213,50 @@ DOWN_ALT_COMPOSE_CMD=()
 # that does not exist AT ALL falls back to the ladder now; existing but
 # unreadable/empty/unrecognized content is fatal instead.
 #
-# Known, accepted limitation (codex round-12 review of PR5, Major,
-# knowingly not fully closed): this records the ENGINE KIND (docker vs
-# podman) only, not a specific daemon/context/remote-connection identity
-# (DOCKER_HOST/DOCKER_CONTEXT, podman's CONTAINER_HOST/CONTAINER_CONNECTION).
-# An operator who switches docker/podman CONTEXT between `up` and `down`
-# — pointing the SAME engine kind at a genuinely different daemon — could
-# still down an empty `name: boid` project on the new context and report
-# false success while the real stack (on the old context) keeps running.
-# boid's supported container-backend deployment model (CLAUDE.md) is a
-# single local docker/podman engine per host, not multi-context/remote
-# engine switching, so this is treated as out of PR5's scope rather than
-# adding daemon-identity tracking on top of the engine-kind tracking this
-# round already added — but it is a real, deliberately-unclosed gap if
-# that assumption is ever violated.
+# codex round-13 review of PR5, Major (two follow-ups to the round-12 fix
+# above):
+#
+# 1. `[[ -f "$COMPOSE_ENGINE_STATE_FILE" ]]` being false does not only mean
+#    "genuinely never created" — a broken symlink, a path component that
+#    is not a directory, or (the exact failure mode this whole mechanism
+#    exists to guard against) a permission problem walking to it all also
+#    make `-f` report false, and were silently falling into the SAME
+#    "no record, fall back to the ladder" path as a legitimate first-ever
+#    `down`. `stat`'s own exit status/message is used instead to tell
+#    ENOENT (the only case that legitimately means "no record") apart
+#    from everything else (fatal, same as an existing-but-unreadable
+#    file).
+#
+# 2. `tr -d '[:space:]'` stripped ALL whitespace, not just leading/
+#    trailing — a corrupted value like "pod man" was silently normalized
+#    to the valid-looking "podman" instead of being rejected as
+#    unrecognized. Trims only leading/trailing whitespace now (a
+#    standard bash parameter-expansion idiom), preserving internal
+#    whitespace as the corruption evidence it is.
 RECORDED_ENGINE=""
+RECORDED_CONTEXT=""
 STATE_FILE_EXISTS=0
-if [[ "$DOWN" == "1" && -f "$COMPOSE_ENGINE_STATE_FILE" ]]; then
-	STATE_FILE_EXISTS=1
-	if ! RECORDED_ENGINE="$(cat "$COMPOSE_ENGINE_STATE_FILE" 2>/dev/null)"; then
-		echo "error: $COMPOSE_ENGINE_STATE_FILE exists but could not be read (permission issue?) — refusing to guess which engine brought the stack up; fix its permissions and retry, or remove the file only if you are certain no stack is currently running under it" >&2
+if [[ "$DOWN" == "1" ]]; then
+	if stat_err="$(LC_ALL=C stat "$COMPOSE_ENGINE_STATE_FILE" 2>&1 >/dev/null)"; then
+		STATE_FILE_EXISTS=1
+		if [[ ! -f "$COMPOSE_ENGINE_STATE_FILE" ]]; then
+			echo "error: $COMPOSE_ENGINE_STATE_FILE exists but is not a regular file — refusing to guess which engine brought the stack up; inspect/remove it only if you are certain no stack is currently running under it, then retry" >&2
+			exit 1
+		fi
+		if ! state_contents="$(cat "$COMPOSE_ENGINE_STATE_FILE" 2>/dev/null)"; then
+			echo "error: $COMPOSE_ENGINE_STATE_FILE exists but could not be read (permission issue?) — refusing to guess which engine brought the stack up; fix its permissions and retry, or remove the file only if you are certain no stack is currently running under it" >&2
+			exit 1
+		fi
+		RECORDED_ENGINE="$(printf '%s\n' "$state_contents" | sed -n '1p')"
+		RECORDED_CONTEXT="$(printf '%s\n' "$state_contents" | sed -n '2p')"
+		# Trim leading/trailing whitespace ONLY on the engine line — see
+		# this block's own header comment for why NOT tr -d.
+		RECORDED_ENGINE="${RECORDED_ENGINE#"${RECORDED_ENGINE%%[![:space:]]*}"}"
+		RECORDED_ENGINE="${RECORDED_ENGINE%"${RECORDED_ENGINE##*[![:space:]]}"}"
+	elif [[ "$stat_err" != *"No such file or directory"* ]]; then
+		echo "error: could not determine whether $COMPOSE_ENGINE_STATE_FILE exists ($stat_err) — refusing to guess which engine brought the stack up" >&2
 		exit 1
 	fi
-	RECORDED_ENGINE="$(printf '%s' "$RECORDED_ENGINE" | tr -d '[:space:]')"
 fi
 
 if [[ -n "$RECORDED_ENGINE" ]]; then
@@ -226,6 +266,10 @@ if [[ -n "$RECORDED_ENGINE" ]]; then
 			echo "error: the compose stack was started under engine=docker (recorded in $COMPOSE_ENGINE_STATE_FILE), but docker is not usable right now — refusing to report the stack as down without actually confirming teardown against the engine that runs it; fix docker (or its compose v2 plugin) and retry" >&2
 			exit 1
 		fi
+		if [[ "$(context_fingerprint docker)" != "$RECORDED_CONTEXT" ]]; then
+			echo "error: the compose stack was started under engine=docker with a different DOCKER_CONTEXT/DOCKER_HOST than the current one (recorded in $COMPOSE_ENGINE_STATE_FILE) — refusing to report the stack as down without confirming teardown against the SAME daemon it was started under; restore the DOCKER_CONTEXT/DOCKER_HOST in effect at the time of \`up\` and retry" >&2
+			exit 1
+		fi
 		ENGINE=docker
 		BUILD_CMD=(docker build)
 		COMPOSE_CMD=(docker compose -f "$COMPOSE_FILE")
@@ -233,6 +277,10 @@ if [[ -n "$RECORDED_ENGINE" ]]; then
 	podman)
 		if ! usable podman || ! command -v podman-compose >/dev/null 2>&1; then
 			echo "error: the compose stack was started under engine=podman (recorded in $COMPOSE_ENGINE_STATE_FILE), but podman/podman-compose is not usable right now — refusing to report the stack as down without actually confirming teardown against the engine that runs it; fix podman/podman-compose and retry" >&2
+			exit 1
+		fi
+		if [[ "$(context_fingerprint podman)" != "$RECORDED_CONTEXT" ]]; then
+			echo "error: the compose stack was started under engine=podman with a different CONTAINER_CONNECTION/CONTAINER_HOST than the current one (recorded in $COMPOSE_ENGINE_STATE_FILE) — refusing to report the stack as down without confirming teardown against the SAME daemon it was started under; restore the CONTAINER_CONNECTION/CONTAINER_HOST in effect at the time of \`up\` and retry" >&2
 			exit 1
 		fi
 		ENGINE=podman
@@ -694,8 +742,12 @@ echo "deploy-container: starting the compose stack"
 # failure) still leaves the operator with a stack they know is up and a
 # clear, actionable error, instead of a stack that later silently can't
 # be torn down safely.
+# Second line: context_fingerprint($ENGINE) (codex round-13 review of
+# PR5, Major) — see that function's own doc comment for why the engine
+# KIND alone (line 1) is not enough to prove `down` would target the SAME
+# daemon `up` did.
 mkdir -p "$COMPOSE_ENGINE_STATE_DIR"
-if ! echo "$ENGINE" >"$COMPOSE_ENGINE_STATE_FILE"; then
+if ! printf '%s\n%s\n' "$ENGINE" "$(context_fingerprint "$ENGINE")" >"$COMPOSE_ENGINE_STATE_FILE"; then
 	echo "error: compose stack is up (engine=$ENGINE), but could not write $COMPOSE_ENGINE_STATE_FILE — a later \`boid stop\` cannot safely determine which engine to tear down without it; fix $COMPOSE_ENGINE_STATE_DIR's permissions/free space and retry (the running stack itself does not need to be recreated)" >&2
 	exit 1
 fi
