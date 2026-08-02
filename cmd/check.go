@@ -159,18 +159,35 @@ func runCheck(cmd *cobra.Command, args []string) error {
 		// checkout/`--build` deploy path (deployFromCheckout,
 		// cmd/host.go:619's --build) — that path's deploy-container.sh
 		// invocation OVERRIDES BOID_IMAGE to "boid-runner:latest" and
-		// BUILDS it locally from source rather than pulling anything
-		// (resolveCheckImage's own doc comment already covers why the
-		// PR7 arch probe never targeted this path: `docker build`/`podman
-		// build` with no --platform flag always builds for the host's
-		// own architecture, so this scenario cannot produce the mismatch
-		// 決定5 exists to catch). What round 4 caught is the OTHER half:
-		// running `boid check` in that same checkout BEFORE the local
-		// image has ever been built would otherwise report "not present
-		// locally, and no registry/remote manifest resolved anything" as
-		// a failure — a false negative, since `boid start` builds it
-		// fine right there. Skip outright instead of probing.
-		fmt.Fprintln(out, "  (skipped: BOID_COMPOSE_ROOT is set — `boid start` builds a host-native image locally via --build, which cannot mismatch this host's architecture by construction)")
+		// BUILDS it locally from source rather than pulling anything. A
+		// plain `docker build`/`podman build` with no --platform flag (and
+		// no DOCKER_DEFAULT_PLATFORM override — checked below, [codex
+		// round 5 review, Major]) always builds for the host's own
+		// architecture, so this scenario normally cannot produce the
+		// mismatch 決定5 exists to catch. What round 4 caught is the OTHER
+		// half: running `boid check` in that same checkout BEFORE the
+		// local image has ever been built would otherwise report "not
+		// present locally, and no registry/remote manifest resolved
+		// anything" as a failure — a false negative, since `boid start`
+		// builds it fine right there. Skip the probe outright instead —
+		// EXCEPT when DOCKER_DEFAULT_PLATFORM is explicitly set to
+		// something other than this host's own architecture, which is the
+		// one way `docker build`/`podman build` with no --platform flag
+		// CAN still produce a foreign-arch image (deploy-container.sh's
+		// own build invocation passes no --platform of its own — verified
+		// by docs/plans/release-onboarding.md's own arm64 grep sweep
+		// finding zero platform-related hits anywhere in the build
+		// pipeline — so DOCKER_DEFAULT_PLATFORM is the only lever left).
+		if msg, isErr := checkoutBuildPlatformWarning(ctx, engine); msg != "" {
+			if isErr {
+				fmt.Fprintf(out, "  ERROR: %s\n", msg)
+				allOK = false
+			} else {
+				fmt.Fprintf(out, "  %s\n", msg)
+			}
+		} else {
+			fmt.Fprintln(out, "  (skipped: BOID_COMPOSE_ROOT is set — `boid start` builds a host-native image locally via --build, which cannot mismatch this host's architecture by construction)")
+		}
 	default:
 		image := resolveCheckImage()
 		hostArch, imageArch, mismatch, note := probeArchMismatch(ctx, engine, image)
@@ -282,6 +299,49 @@ func resolveCheckImage() string {
 		return v
 	}
 	return version.DefaultContainerImage()
+}
+
+// checkoutBuildPlatformWarning is the BOID_COMPOSE_ROOT branch's own
+// [codex round 5 review, Major] guard: DOCKER_DEFAULT_PLATFORM is the one
+// way a plain `docker build`/`podman build` with no --platform flag (which
+// is exactly what scripts/deploy-container.sh's `--build` path invokes —
+// see the call site's own doc comment) can still target a foreign
+// architecture. Returns ("", false) when it is safe to skip the arch probe
+// entirely (unset, or explicitly set to this host's own architecture);
+// (msg, true) when it is NOT set to something matching this host (an
+// actual foreign-arch build risk — the caller treats this as a failure);
+// (msg, false) is never returned by the "definitely mismatched" branch
+// below, but is reserved for a genuinely unparseable value.
+func checkoutBuildPlatformWarning(ctx context.Context, engine string) (msg string, isErr bool) {
+	platform := os.Getenv("DOCKER_DEFAULT_PLATFORM")
+	if platform == "" {
+		return "", false
+	}
+	_, arch, ok := strings.Cut(platform, "/")
+	if !ok || arch == "" {
+		return fmt.Sprintf("DOCKER_DEFAULT_PLATFORM=%q is set but not in the expected os/arch form — cannot verify the checkout `--build` path's target architecture", platform), true
+	}
+	platformArch := dispatcher.NormalizeArch(arch)
+
+	cli, err := newEngineClient(engine)
+	if err != nil {
+		return fmt.Sprintf("DOCKER_DEFAULT_PLATFORM=%q is set, but the engine could not be reached to verify this host's own architecture: %v", platform, err), true
+	}
+	defer cli.Close()
+	checkCtx, cancel := context.WithTimeout(ctx, checkEngineTimeout)
+	defer cancel()
+	info, err := cli.Info(checkCtx, dockerclient.InfoOptions{})
+	if err != nil {
+		return fmt.Sprintf("DOCKER_DEFAULT_PLATFORM=%q is set, but this host's own architecture could not be queried: %v", platform, err), true
+	}
+	hostArch := dispatcher.NormalizeArch(info.Info.Architecture)
+	if hostArch == "" {
+		return fmt.Sprintf("DOCKER_DEFAULT_PLATFORM=%q is set, but the engine reported no host architecture", platform), true
+	}
+	if platformArch != hostArch {
+		return fmt.Sprintf("DOCKER_DEFAULT_PLATFORM=%q targets arch %q, but this host is %q — the checkout `--build` path would build a foreign-arch image and, under binfmt/qemu, run it via emulation instead of refusing outright", platform, platformArch, hostArch), true
+	}
+	return "", false
 }
 
 // resolveComposeBindSource mirrors scripts/deploy-container.sh's own
@@ -464,26 +524,28 @@ func probeArchMismatchWithAPI(ctx context.Context, api archProbeAPI, engine, ima
 		return "", "", false, "engine reported no host architecture"
 	}
 
-	if insp, err := api.ImageInspect(checkCtx, image); err == nil {
-		imageArch = insp.Architecture
-		if imageArch == "" {
-			return hostArch, "", false, fmt.Sprintf("image %q is present locally but its manifest reports no architecture", image)
+	// [codex round 5 review, Major]: `:latest` (or no tag at all, which
+	// docker treats identically) is compose's own documented exception to
+	// pull_policy "missing" — compose ALWAYS re-pulls a `:latest`-tagged
+	// image even when a local copy already exists, per the compose-file
+	// spec's own pull_policy documentation. Checking the local cache
+	// first for that tag would validate a potentially stale image compose
+	// is about to discard and replace anyway — remote-first is correct
+	// there, with the local cache only as a last-resort fallback (still
+	// better than nothing when the registry cannot be reached at all).
+	tryLocalFirst := !isLatestTag(image)
+
+	if tryLocalFirst {
+		if a, ok := probeLocalImageArch(checkCtx, api, image); ok {
+			imageArch = a
+			if imageArch == "" {
+				return hostArch, "", false, fmt.Sprintf("image %q is present locally but its manifest reports no architecture", image)
+			}
+			return hostArch, imageArch, hostArch != imageArch, ""
 		}
-		return hostArch, imageArch, hostArch != imageArch, ""
 	}
 
-	var supported []string
-	if engine == "podman" {
-		if archs, err := podmanManifestArches(checkCtx, image); err == nil {
-			supported = archs
-		}
-	} else if dist, distErr := api.DistributionInspect(checkCtx, image, dockerclient.DistributionInspectOptions{}); distErr == nil {
-		for _, p := range dist.Platforms {
-			supported = append(supported, dispatcher.NormalizeArch(p.Architecture))
-		}
-	}
-
-	if len(supported) > 0 {
+	if supported := remoteImageArches(checkCtx, api, engine, image); len(supported) > 0 {
 		matched := false
 		for _, a := range supported {
 			if a == hostArch {
@@ -497,23 +559,145 @@ func probeArchMismatchWithAPI(ctx context.Context, api archProbeAPI, engine, ima
 		return hostArch, hostArch, false, ""
 	}
 
+	if !tryLocalFirst {
+		// Remote resolution failed/was inconclusive for a `:latest` image
+		// — fall back to whatever is cached locally rather than giving up
+		// outright. Weaker evidence than the primary (remote) path since
+		// compose will still re-pull regardless of what's cached, but
+		// better than no verdict at all when the registry cannot be
+		// reached.
+		if a, ok := probeLocalImageArch(checkCtx, api, image); ok {
+			imageArch = a
+			if imageArch == "" {
+				return hostArch, "", false, fmt.Sprintf("image %q is present locally but its manifest reports no architecture", image)
+			}
+			return hostArch, imageArch, hostArch != imageArch, ""
+		}
+	}
+
 	return hostArch, "", false, fmt.Sprintf("could not determine image %q's architecture (not present locally, and its registry/remote manifest could not be queried) — it will still be validated at pull/launch time", image)
 }
 
-// podmanManifestArches shells out to `podman manifest inspect <image>` —
-// the one podman CLI operation that can inspect a REMOTE image reference's
-// manifest without pulling it (docs comment on probeArchMismatchWithAPI's
-// [codex round 4 review, Blocker 1]). Understands both a single-platform
-// OCI/Docker image manifest (top-level "architecture") and a manifest
-// list/OCI index (each entry's "platform.architecture").
+// isLatestTag reports whether ref's tag component is (or defaults to,
+// when absent) "latest" — the exact string compose-file's pull_policy spec
+// treats specially. Splits on the LAST "/" first so a registry host with a
+// port (e.g. "localhost:5000/repo") is never mistaken for a tag separator;
+// only a colon appearing AFTER that slash is a tag delimiter.
+func isLatestTag(ref string) bool {
+	rest := ref
+	if i := strings.LastIndex(ref, "/"); i >= 0 {
+		rest = ref[i+1:]
+	}
+	if i := strings.LastIndex(rest, ":"); i >= 0 {
+		return rest[i+1:] == "latest"
+	}
+	return true // no tag at all defaults to "latest"
+}
+
+// probeLocalImageArch inspects image's LOCAL copy via api.ImageInspect,
+// returning (architecture, true) if the image is present locally at all
+// (architecture may still be "" if the local manifest itself lacks
+// platform metadata — that is a distinct, reportable condition from "not
+// present"), or ("", false) if it is not present locally.
+func probeLocalImageArch(ctx context.Context, api archProbeAPI, image string) (string, bool) {
+	insp, err := api.ImageInspect(ctx, image)
+	if err != nil {
+		return "", false
+	}
+	return insp.Architecture, true
+}
+
+// remoteImageArches resolves image's architecture(s) from its
+// registry/remote manifest WITHOUT pulling it — engine-specific (see
+// podmanManifestArches's own doc comment for why podman needs a different
+// technique than docker's DistributionInspect).
+func remoteImageArches(ctx context.Context, api archProbeAPI, engine, image string) []string {
+	if engine == "podman" {
+		archs, err := podmanManifestArches(ctx, image)
+		if err != nil {
+			return nil
+		}
+		return archs
+	}
+	dist, err := api.DistributionInspect(ctx, image, dockerclient.DistributionInspectOptions{})
+	if err != nil {
+		return nil
+	}
+	supported := make([]string, 0, len(dist.Platforms))
+	for _, p := range dist.Platforms {
+		supported = append(supported, dispatcher.NormalizeArch(p.Architecture))
+	}
+	return supported
+}
+
+// podmanManifestArches resolves a REMOTE image reference's architecture(s)
+// without pulling it — the podman-side counterpart of the docker branch's
+// api.DistributionInspect (docs comment on probeArchMismatchWithAPI's
+// [codex round 4 review, Blocker 1]: podman's API server does not
+// implement docker's distribution-inspect REST endpoint at all).
+//
+// [codex round 5 review, Blocker]: a first attempt using ONLY `podman
+// manifest inspect <ref>` was not sufficient for the common case boid
+// actually publishes (決定5: a single-platform, non-manifest-list amd64
+// image, per .github/workflows/blackbox-e2e.yml's own plain `docker
+// build`+push). For a single-platform OCI/Docker image manifest there is
+// no top-level
+// "architecture" field at all — that lives in the referenced CONFIG blob,
+// a separate fetch `podman manifest inspect` does not make; only a
+// manifest LIST/index (multiple platforms) has per-entry
+// "manifests[].platform.architecture", which the original implementation
+// correctly parsed but which never applies to boid's own published image.
+// `skopeo inspect docker://<ref>` resolves the config blob itself and
+// reports a direct top-level "Architecture" field — tried first since
+// skopeo ships alongside podman on essentially every distro packaging of
+// it (same containers/image library). `podman manifest inspect` remains a
+// second attempt for the (currently hypothetical, but decision-5-intended
+// future) manifest-list case. If NEITHER resolves anything, the caller
+// (probeArchMismatchWithAPI) reports this as inconclusive — a genuine "no
+// way to verify without pulling" case now that both known techniques have
+// been tried, not a shortcut.
 var podmanManifestArches = func(ctx context.Context, image string) ([]string, error) {
+	if archs, err := skopeoInspectArches(ctx, image); err == nil {
+		return archs, nil
+	}
+	return podmanManifestListArches(ctx, image)
+}
+
+// skopeoInspectArches shells out to `skopeo inspect docker://<image>`,
+// which resolves the image's config blob and reports its architecture
+// directly — the one remote-manifest technique that works for a
+// single-platform image (see podmanManifestArches's own doc comment).
+func skopeoInspectArches(ctx context.Context, image string) ([]string, error) {
+	if _, err := exec.LookPath("skopeo"); err != nil {
+		return nil, err
+	}
+	out, err := exec.CommandContext(ctx, "skopeo", "inspect", "docker://"+image).Output()
+	if err != nil {
+		return nil, err
+	}
+	var result struct {
+		Architecture string `json:"Architecture"`
+	}
+	if err := json.Unmarshal(out, &result); err != nil {
+		return nil, err
+	}
+	if result.Architecture == "" {
+		return nil, fmt.Errorf("skopeo inspect reported no architecture")
+	}
+	return []string{dispatcher.NormalizeArch(result.Architecture)}, nil
+}
+
+// podmanManifestListArches shells out to `podman manifest inspect <ref>` —
+// only useful for a manifest LIST/OCI index (multiple platforms); a
+// single-platform manifest has no top-level architecture field at all (see
+// podmanManifestArches's own doc comment).
+func podmanManifestListArches(ctx context.Context, image string) ([]string, error) {
 	out, err := exec.CommandContext(ctx, "podman", "manifest", "inspect", image).Output()
 	if err != nil {
 		return nil, err
 	}
 	var manifest struct {
-		Architecture string `json:"architecture"`
-		Manifests    []struct {
+		Manifests []struct {
 			Platform struct {
 				Architecture string `json:"architecture"`
 			} `json:"platform"`
@@ -528,11 +712,8 @@ var podmanManifestArches = func(ctx context.Context, image string) ([]string, er
 			archs = append(archs, dispatcher.NormalizeArch(a))
 		}
 	}
-	if len(archs) == 0 && manifest.Architecture != "" {
-		archs = append(archs, dispatcher.NormalizeArch(manifest.Architecture))
-	}
 	if len(archs) == 0 {
-		return nil, fmt.Errorf("manifest reported no architecture")
+		return nil, fmt.Errorf("manifest reported no architecture (not a manifest list, or a single-platform manifest with no per-entry platform info)")
 	}
 	return archs, nil
 }

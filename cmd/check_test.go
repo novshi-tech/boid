@@ -488,6 +488,7 @@ func TestRunCheck_BoidComposeRoot_SkipsArchProbe(t *testing.T) {
 	writeFakeExecutable(t, dir, "docker", "if [ \"$1\" = compose ]; then exit 0; fi\nexit 0")
 	t.Setenv("PATH", dir)
 	t.Setenv("BOID_COMPOSE_ROOT", "/some/checkout")
+	t.Setenv("DOCKER_DEFAULT_PLATFORM", "")
 	t.Setenv("BOID_NO_AUTOSTART", "1")
 
 	cmd := checkCmd
@@ -499,5 +500,181 @@ func TestRunCheck_BoidComposeRoot_SkipsArchProbe(t *testing.T) {
 	out := buf.String()
 	if !strings.Contains(out, "skipped: BOID_COMPOSE_ROOT is set") {
 		t.Errorf("output = %q, want the arch probe to report itself skipped for BOID_COMPOSE_ROOT", out)
+	}
+}
+
+// TestRunCheck_BoidComposeRoot_DockerDefaultPlatformMismatch_ReportsError
+// pins [codex round 5 review, Major]: DOCKER_DEFAULT_PLATFORM is the one
+// way a plain `docker build` (no --platform flag, exactly what
+// scripts/deploy-container.sh's --build path invokes) can still target a
+// foreign architecture — the checkout-skip must not blindly assume
+// host-native in that case.
+func TestRunCheck_BoidComposeRoot_DockerDefaultPlatformMismatch_ReportsError(t *testing.T) {
+	dir := t.TempDir()
+	writeFakeExecutable(t, dir, "docker", "if [ \"$1\" = compose ]; then exit 0; fi\nexit 0")
+	t.Setenv("PATH", dir)
+	t.Setenv("BOID_COMPOSE_ROOT", "/some/checkout")
+	// The bind source has no real engine behind it, so the Info() probe
+	// inside checkoutBuildPlatformWarning will fail — which this test
+	// asserts is ALSO reported as an error (isErr=true branch), not a
+	// silent skip, since "cannot verify" must never be conflated with
+	// "verified safe".
+	t.Setenv("BOID_DOCKER_SOCK_SRC", dir+"/no-engine-here.sock")
+	t.Setenv("DOCKER_DEFAULT_PLATFORM", "linux/arm64")
+	t.Setenv("BOID_NO_AUTOSTART", "1")
+
+	cmd := checkCmd
+	cmd.SetContext(context.Background())
+	var buf strings.Builder
+	cmd.SetOut(&buf)
+
+	err := runCheck(cmd, nil)
+	if err == nil {
+		t.Fatal("expected an error when DOCKER_DEFAULT_PLATFORM is set but this host's architecture cannot be verified")
+	}
+	out := buf.String()
+	if !strings.Contains(out, "DOCKER_DEFAULT_PLATFORM") {
+		t.Errorf("output = %q, want it to mention DOCKER_DEFAULT_PLATFORM", out)
+	}
+	if strings.Contains(out, "skipped: BOID_COMPOSE_ROOT is set") {
+		t.Errorf("output = %q, must NOT silently skip when DOCKER_DEFAULT_PLATFORM is set", out)
+	}
+}
+
+func TestCheckoutBuildPlatformWarning_Unset_Skips(t *testing.T) {
+	t.Setenv("DOCKER_DEFAULT_PLATFORM", "")
+
+	msg, isErr := checkoutBuildPlatformWarning(context.Background(), "docker")
+	if msg != "" || isErr {
+		t.Errorf("checkoutBuildPlatformWarning() = (%q, %v), want (\"\", false) when DOCKER_DEFAULT_PLATFORM is unset", msg, isErr)
+	}
+}
+
+func TestCheckoutBuildPlatformWarning_MalformedValue_ReportsError(t *testing.T) {
+	t.Setenv("DOCKER_DEFAULT_PLATFORM", "not-a-platform")
+
+	msg, isErr := checkoutBuildPlatformWarning(context.Background(), "docker")
+	if !isErr || msg == "" {
+		t.Errorf("checkoutBuildPlatformWarning() = (%q, %v), want an error for a malformed (no os/arch slash) value", msg, isErr)
+	}
+}
+
+func TestIsLatestTag(t *testing.T) {
+	cases := []struct {
+		ref  string
+		want bool
+	}{
+		{"ghcr.io/novshi-tech/boid-runner:latest", true},
+		{"boid-runner:latest", true},
+		{"boid-runner", true},                     // no tag at all defaults to latest
+		{"ghcr.io/novshi-tech/boid-runner", true}, // no tag, registry host present
+		{"ghcr.io/novshi-tech/boid-runner:v0.0.1", false},
+		{"localhost:5000/boid-runner:v1", false}, // port in host, not a tag
+		{"localhost:5000/boid-runner", true},     // port in host, no tag -> latest
+		{"localhost:5000/boid-runner:latest", true},
+	}
+	for _, c := range cases {
+		if got := isLatestTag(c.ref); got != c.want {
+			t.Errorf("isLatestTag(%q) = %v, want %v", c.ref, got, c.want)
+		}
+	}
+}
+
+// TestProbeArchMismatchWithAPI_LatestTag_PrefersRemoteOverStaleLocalCache
+// pins [codex round 5 review, Major]: compose's pull_policy "missing"
+// exception for `:latest` means a stale local cache under that tag is NOT
+// what `boid start` will actually run — the registry/remote manifest is
+// authoritative for `:latest`, unlike every other tag (where local-first
+// is correct, per TestProbeArchMismatchWithAPI_LocalImageCheckedBeforeRegistry).
+func TestProbeArchMismatchWithAPI_LatestTag_PrefersRemoteOverStaleLocalCache(t *testing.T) {
+	api := &fakeArchProbeAPI{
+		info:    newSystemInfoResult("x86_64"), // host is amd64
+		dist:    newDistributionInspectResult("amd64"),
+		inspect: dockerclient.ImageInspectResult{InspectResponse: image.InspectResponse{Architecture: "arm64"}}, // stale local :latest
+	}
+
+	hostArch, imageArch, mismatch, note := probeArchMismatchWithAPI(context.Background(), api, "docker", "ghcr.io/novshi-tech/boid-runner:latest")
+	if note != "" {
+		t.Fatalf("note = %q, want empty", note)
+	}
+	if mismatch {
+		t.Error("mismatch = true, want false: compose ALWAYS re-pulls :latest, so the registry's amd64 (not the stale local arm64 cache) is what actually runs")
+	}
+	if hostArch != "amd64" || imageArch != "amd64" {
+		t.Errorf("hostArch=%q imageArch=%q, want both amd64 (from the registry, not the stale local cache)", hostArch, imageArch)
+	}
+}
+
+// TestProbeArchMismatchWithAPI_LatestTag_FallsBackToLocalWhenRemoteFails
+// pins the degrade path: if the registry cannot be reached at all for a
+// `:latest` image, a local cache (even though compose would still try to
+// re-pull) is still better evidence than an outright "cannot verify"
+// failure.
+func TestProbeArchMismatchWithAPI_LatestTag_FallsBackToLocalWhenRemoteFails(t *testing.T) {
+	api := &fakeArchProbeAPI{
+		info:    newSystemInfoResult("x86_64"),
+		distErr: errors.New("registry unreachable"),
+		inspect: dockerclient.ImageInspectResult{InspectResponse: image.InspectResponse{Architecture: "amd64"}},
+	}
+
+	hostArch, imageArch, mismatch, note := probeArchMismatchWithAPI(context.Background(), api, "docker", "boid-runner:latest")
+	if note != "" {
+		t.Fatalf("note = %q, want empty (local fallback resolved it)", note)
+	}
+	if mismatch {
+		t.Error("mismatch = true, want false")
+	}
+	if hostArch != "amd64" || imageArch != "amd64" {
+		t.Errorf("hostArch=%q imageArch=%q, want both amd64", hostArch, imageArch)
+	}
+}
+
+// TestPodmanManifestArches_FallsBackFromSkopeoToManifestInspect pins
+// [codex round 5 review, Blocker]: for boid's own published shape (a
+// single-platform, non-manifest-list image), `podman manifest inspect`
+// alone reports no architecture at all (no top-level field, no per-entry
+// platform list) — skopeo (tried first) is what actually resolves it via
+// the image's config blob. This test fakes both CLIs on PATH to pin the
+// preference order and the JSON shapes each is expected to emit.
+func TestPodmanManifestArches_PrefersSkopeoOverManifestInspect(t *testing.T) {
+	dir := t.TempDir()
+	writeFakeExecutable(t, dir, "skopeo", `echo '{"Architecture":"amd64"}'`)
+	writeFakeExecutable(t, dir, "podman", `echo 'this should never run'; exit 1`)
+	t.Setenv("PATH", dir)
+
+	archs, err := podmanManifestArches(context.Background(), "ghcr.io/novshi-tech/boid-runner:v0.0.1")
+	if err != nil {
+		t.Fatalf("podmanManifestArches: %v", err)
+	}
+	if len(archs) != 1 || archs[0] != "amd64" {
+		t.Errorf("archs = %v, want [amd64] from skopeo, not podman manifest inspect", archs)
+	}
+}
+
+func TestPodmanManifestArches_FallsBackToManifestListWhenSkopeoUnavailable(t *testing.T) {
+	dir := t.TempDir()
+	writeFakeExecutable(t, dir, "podman", `echo '{"manifests":[{"platform":{"architecture":"amd64"}},{"platform":{"architecture":"arm64"}}]}'`)
+	t.Setenv("PATH", dir)
+
+	archs, err := podmanManifestArches(context.Background(), "ghcr.io/novshi-tech/boid-runner:v0.0.1")
+	if err != nil {
+		t.Fatalf("podmanManifestArches: %v", err)
+	}
+	want := map[string]bool{"amd64": true, "arm64": true}
+	if len(archs) != 2 || !want[archs[0]] || !want[archs[1]] {
+		t.Errorf("archs = %v, want [amd64 arm64] (order-independent) from the manifest-list fallback", archs)
+	}
+}
+
+func TestPodmanManifestArches_SinglePlatformManifest_NeitherSourceResolves(t *testing.T) {
+	// The realistic failure mode round 5 caught: neither skopeo (absent)
+	// nor `podman manifest inspect` (a single-platform manifest has no
+	// top-level architecture field) can resolve anything.
+	dir := t.TempDir()
+	writeFakeExecutable(t, dir, "podman", `echo '{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json","config":{"digest":"sha256:abc"},"layers":[]}'`)
+	t.Setenv("PATH", dir)
+
+	if _, err := podmanManifestArches(context.Background(), "ghcr.io/novshi-tech/boid-runner:v0.0.1"); err == nil {
+		t.Error("podmanManifestArches() = nil error, want an error when a single-platform manifest has no architecture info to extract")
 	}
 }
