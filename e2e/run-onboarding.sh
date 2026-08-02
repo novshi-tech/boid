@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+trap 'printf "[trace] line %s: %s\n" "$LINENO" "$BASH_COMMAND" >&2' DEBUG
 
 # e2e/run-onboarding.sh
 #
