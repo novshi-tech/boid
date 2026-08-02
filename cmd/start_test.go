@@ -945,3 +945,103 @@ esac
 		t.Errorf("expected the refusal to name the recorded engine (docker); output:\n%s", out)
 	}
 }
+
+// TestDeployContainerScript_Up_StateFileWriteFailure_FailsUp is the codex
+// round-12 review of PR5, Major regression test: an earlier revision
+// treated a failure to WRITE the engine-state file as non-fatal for `up`
+// ("continuing — --down degrades to best-effort detection") — but a
+// missing-because-unwritable state file behaves identically, to a later
+// `--down`, as one that legitimately never existed, silently reopening
+// the exact false-success window rounds 10/11 exist to close. `up` must
+// fail loudly instead when it cannot persist which engine it used.
+// Simulated by making $XDG_STATE_HOME/boid unwritable (0000) before it
+// exists, so the script's own `mkdir -p`/write both fail.
+func TestDeployContainerScript_Up_StateFileWriteFailure_FailsUp(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("root ignores directory permission bits, so this regression cannot demonstrate as root")
+	}
+	scriptPath, err := filepath.Abs(filepath.Join("..", "scripts", "deploy-container.sh"))
+	if err != nil {
+		t.Fatalf("resolve script path: %v", err)
+	}
+
+	xdgStateHome := t.TempDir()
+	// Pre-create $XDG_STATE_HOME/boid as a directory the script cannot
+	// write into (and cannot recreate, since it already exists) —
+	// simulates a permissions oddity there without needing to run as a
+	// different uid.
+	unwritable := filepath.Join(xdgStateHome, "boid")
+	if err := os.MkdirAll(unwritable, 0o555); err != nil {
+		t.Fatalf("mkdir %s: %v", unwritable, err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(unwritable, 0o755) }) // let t.TempDir() clean up
+
+	dir := t.TempDir()
+	fakeDockerAlwaysOK(t, dir)
+	upCmd := exec.Command(scriptPath)
+	upCmd.Env = []string{
+		"PATH=" + dir + string(os.PathListSeparator) + os.Getenv("PATH"),
+		"HOME=" + os.Getenv("HOME"),
+		"XDG_STATE_HOME=" + xdgStateHome,
+		"BOID_UID=1000",
+		"BOID_GID=1000",
+		"XDG_RUNTIME_DIR=" + t.TempDir(),
+	}
+	out, err := upCmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("expected up to fail when it cannot write the engine-state file; output:\n%s", out)
+	}
+	if !strings.Contains(string(out), "compose-engine") {
+		t.Errorf("expected the failure to mention the engine-state file; output:\n%s", out)
+	}
+}
+
+// TestDeployContainerScript_Down_CorruptStateFile_RefusesRatherThanFallsBack
+// is the codex round-12 review of PR5, Major regression test: an earlier
+// revision treated an EXISTING-but-bad-content state file (unreadable,
+// empty, or an unrecognized engine name) as equivalent to no state file
+// at all — warn, then fall back to the ordinary engine-detection ladder.
+// But a state file that EXISTS proves an `up` DID run and DID try to
+// record something; guessing again on top of that is the same
+// false-success window rounds 10/11 exist to close, just moved one step
+// earlier. `--down` must refuse outright instead when the file exists but
+// its content cannot be trusted.
+func TestDeployContainerScript_Down_CorruptStateFile_RefusesRatherThanFallsBack(t *testing.T) {
+	scriptPath, err := filepath.Abs(filepath.Join("..", "scripts", "deploy-container.sh"))
+	if err != nil {
+		t.Fatalf("resolve script path: %v", err)
+	}
+
+	for name, content := range map[string]string{
+		"empty":        "",
+		"unrecognized": "hyper-v\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			xdgStateHome := t.TempDir()
+			stateFile := composeEngineStateFilePath(xdgStateHome)
+			if err := os.MkdirAll(filepath.Dir(stateFile), 0o755); err != nil {
+				t.Fatalf("mkdir %s: %v", filepath.Dir(stateFile), err)
+			}
+			if err := os.WriteFile(stateFile, []byte(content), 0o644); err != nil {
+				t.Fatalf("seed %s: %v", stateFile, err)
+			}
+
+			dir := t.TempDir()
+			fakeDockerAlwaysOK(t, dir) // usable, so a fall-back-to-ladder bug would silently "succeed" here
+			downCmd := exec.Command(scriptPath, "--down")
+			downCmd.Env = []string{
+				"PATH=" + dir + string(os.PathListSeparator) + os.Getenv("PATH"),
+				"HOME=" + os.Getenv("HOME"),
+				"XDG_STATE_HOME=" + xdgStateHome,
+				"XDG_RUNTIME_DIR=" + t.TempDir(),
+			}
+			out, err := downCmd.CombinedOutput()
+			if err == nil {
+				t.Fatalf("expected --down to refuse rather than fall back when %s; output:\n%s", stateFile, out)
+			}
+			if !strings.Contains(string(out), "compose-engine") {
+				t.Errorf("expected the refusal to mention the state file; output:\n%s", out)
+			}
+		})
+	}
+}

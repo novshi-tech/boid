@@ -182,9 +182,41 @@ DOWN_ALT_COMPOSE_CMD=()
 # present, pin down to it — refusing outright rather than silently
 # reporting success against a different engine — instead of ever
 # re-running the preference ladder for a --down call.
+#
+# codex round-12 review of PR5, Major: an earlier revision treated
+# CONTENT problems (unrecognized engine name) as a warn-and-fall-back —
+# indistinguishable, to an operator watching the output, from the
+# legitimate "no `up` ever recorded anything here" case the fallback
+# ladder exists for. But a state file that EXISTS with bad content proves
+# an `up` DID run and DID try to record something — silently ignoring
+# that and guessing again is exactly the false-success window rounds
+# 10/11 exist to close, just moved one step earlier. Only a state file
+# that does not exist AT ALL falls back to the ladder now; existing but
+# unreadable/empty/unrecognized content is fatal instead.
+#
+# Known, accepted limitation (codex round-12 review of PR5, Major,
+# knowingly not fully closed): this records the ENGINE KIND (docker vs
+# podman) only, not a specific daemon/context/remote-connection identity
+# (DOCKER_HOST/DOCKER_CONTEXT, podman's CONTAINER_HOST/CONTAINER_CONNECTION).
+# An operator who switches docker/podman CONTEXT between `up` and `down`
+# — pointing the SAME engine kind at a genuinely different daemon — could
+# still down an empty `name: boid` project on the new context and report
+# false success while the real stack (on the old context) keeps running.
+# boid's supported container-backend deployment model (CLAUDE.md) is a
+# single local docker/podman engine per host, not multi-context/remote
+# engine switching, so this is treated as out of PR5's scope rather than
+# adding daemon-identity tracking on top of the engine-kind tracking this
+# round already added — but it is a real, deliberately-unclosed gap if
+# that assumption is ever violated.
 RECORDED_ENGINE=""
+STATE_FILE_EXISTS=0
 if [[ "$DOWN" == "1" && -f "$COMPOSE_ENGINE_STATE_FILE" ]]; then
-	RECORDED_ENGINE="$(cat "$COMPOSE_ENGINE_STATE_FILE" 2>/dev/null || true)"
+	STATE_FILE_EXISTS=1
+	if ! RECORDED_ENGINE="$(cat "$COMPOSE_ENGINE_STATE_FILE" 2>/dev/null)"; then
+		echo "error: $COMPOSE_ENGINE_STATE_FILE exists but could not be read (permission issue?) — refusing to guess which engine brought the stack up; fix its permissions and retry, or remove the file only if you are certain no stack is currently running under it" >&2
+		exit 1
+	fi
+	RECORDED_ENGINE="$(printf '%s' "$RECORDED_ENGINE" | tr -d '[:space:]')"
 fi
 
 if [[ -n "$RECORDED_ENGINE" ]]; then
@@ -208,10 +240,13 @@ if [[ -n "$RECORDED_ENGINE" ]]; then
 		COMPOSE_CMD=(podman-compose -f "$COMPOSE_FILE")
 		;;
 	*)
-		echo "warning: $COMPOSE_ENGINE_STATE_FILE contains an unrecognized engine ($RECORDED_ENGINE); ignoring it and falling back to the ordinary engine-detection ladder" >&2
-		RECORDED_ENGINE=""
+		echo "error: $COMPOSE_ENGINE_STATE_FILE contains an unrecognized engine ($RECORDED_ENGINE) — refusing to guess which engine brought the stack up; inspect/remove the file only if you are certain no stack is currently running under it, then retry" >&2
+		exit 1
 		;;
 	esac
+elif [[ "$STATE_FILE_EXISTS" -eq 1 ]]; then
+	echo "error: $COMPOSE_ENGINE_STATE_FILE exists but is empty — refusing to guess which engine brought the stack up; inspect/remove the file only if you are certain no stack is currently running under it, then retry" >&2
+	exit 1
 fi
 
 if [[ -z "$RECORDED_ENGINE" ]]; then
@@ -643,12 +678,26 @@ echo "deploy-container: starting the compose stack"
 # RECORDED_ENGINE branch above for why `--down` needs this instead of
 # re-detecting "whichever engine looks usable right now". Written only
 # after `up -d` above has already succeeded (set -e would have aborted the
-# script otherwise), and deliberately not treated as fatal if it can't be
-# written (a permissions oddity here must not fail an otherwise-successful
-# `up`) — `--down` degrades to its own best-effort fallback when this is
-# missing, which is a smaller cost than blocking `up` over a diagnostics
-# file.
-echo "$ENGINE" >"$COMPOSE_ENGINE_STATE_FILE" 2>/dev/null || \
-	echo "warning: could not write $COMPOSE_ENGINE_STATE_FILE (continuing — a later \`--down\` will fall back to best-effort engine detection)" >&2
+# script otherwise).
+#
+# codex round-12 review of PR5, Major: an earlier revision treated a
+# write failure here as non-fatal ("continuing — --down degrades to
+# best-effort detection") — but that is exactly the false-success window
+# rounds 10/11 exist to close, not a harmless degradation: a `--down` that
+# can't find this file behaves IDENTICALLY whether it is genuinely
+# missing (no prior `up`, or one that predates this mechanism) or just
+# failed to write (read-only $XDG_STATE_HOME, disk full, ownership
+# mismatch, ...) — in the second case `up` actually ran and this file's
+# whole job was to prevent exactly the failure mode a write failure would
+# now silently reopen. Fatal here instead: the compose stack IS running
+# at this point, so failing loudly (rather than reporting overall `up`
+# failure) still leaves the operator with a stack they know is up and a
+# clear, actionable error, instead of a stack that later silently can't
+# be torn down safely.
+mkdir -p "$COMPOSE_ENGINE_STATE_DIR"
+if ! echo "$ENGINE" >"$COMPOSE_ENGINE_STATE_FILE"; then
+	echo "error: compose stack is up (engine=$ENGINE), but could not write $COMPOSE_ENGINE_STATE_FILE — a later \`boid stop\` cannot safely determine which engine to tear down without it; fix $COMPOSE_ENGINE_STATE_DIR's permissions/free space and retry (the running stack itself does not need to be recreated)" >&2
+	exit 1
+fi
 
 echo "deploy-container: done. compose stack is up (container backend)."

@@ -36,19 +36,32 @@ func init() {
 // down stack inconsistent with `boid start` now meaning "compose up") to
 // an actual `compose down`, mirroring runComposeUp's own
 // findComposeRoot-or-embedded-assets shape (cmd/host.go, cmd/start.go).
+//
+// codex round-12 review of PR5, Major: this used to run entirely without
+// withHostModeLock (cmd/host.go) — the SAME flock ensureHostModeDaemon's
+// own autostart path holds while bringing the compose stack up. Without
+// it, a `boid stop` racing a concurrent autostart (another `boid`
+// invocation noticing the daemon unreachable at the same moment) could
+// read scripts/deploy-container.sh's engine-state file, run its own
+// `compose down`, and finish AFTER the autostart's `compose up`
+// completes — reporting "stack stopped" while a stack it just raced past
+// keeps running. Sharing the one lock ensureHostModeDaemon already uses
+// serializes stop against every autostart/explicit-start path instead.
 func runStop(cmd *cobra.Command, args []string) error {
-	root, err := findComposeRoot()
-	if err != nil {
-		root, err = extractComposeAssets()
+	return withHostModeLock(func() error {
+		root, err := findComposeRoot()
 		if err != nil {
+			root, err = extractComposeAssets()
+			if err != nil {
+				return fmt.Errorf("boid stop: %w", err)
+			}
+		}
+		if err := runComposeDownScript(cmd.Context(), root); err != nil {
 			return fmt.Errorf("boid stop: %w", err)
 		}
-	}
-	if err := runComposeDownScript(cmd.Context(), root); err != nil {
-		return fmt.Errorf("boid stop: %w", err)
-	}
-	fmt.Println("compose stack stopped")
-	return nil
+		fmt.Println("compose stack stopped")
+		return nil
+	})
 }
 
 // runComposeDownScript invokes <root>/scripts/deploy-container.sh --down

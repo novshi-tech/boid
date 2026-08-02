@@ -41,7 +41,7 @@ scope=`remote` なコマンド（`task list` 等、daemon の HTTP API を叩く
 2. `http://127.0.0.1:8442/api/cli-token-check` に `Authorization: Bearer <token>` 付きで届くか確認し（届かない、または token が daemon 側と不一致なら）`scripts/deploy-container.sh` を起動（image build + `compose up -d`）してから再確認 — 認証済みの endpoint を叩くのは、daemon が起動していても token が古い（`~/.config/boid/cli-token` を消して作り直した等）ケースを見逃さないため（`/api/health` は無認証なので token 不一致を検知できない）
 3. `Authorization: Bearer <token>` を付けて `http://127.0.0.1:8442` へ実コマンドを dispatch
 
-を行います。`boid start`/`stop`/`gc` などの scope=`local` コマンド（compose lifecycle 機構そのもの）、`login`/`logout` などの scope=`neutral` コマンドは host mode の影響を受けません。
+を行います。`boid start`/`stop` などの scope=`local` コマンド（compose lifecycle 機構そのもの）、`login`/`logout` などの scope=`neutral` コマンドは host mode の影響を受けません。`gc` は scope=`remote` ですが `annotationSkipAutostart` が付いており、daemon が unreachable でも自動起動せず即座にエラーで失敗します（`resolveHostModeClientNoAutostart`、`cmd/host.go`）——「daemon を gc するためだけに daemon を起動する」を避けるための挙動で、`BOID_NO_AUTOSTART=1` を明示指定した場合と同じ結果になります。
 
 **`--profile` を明示的に指定した場合は host mode を迂回**し、従来どおり `profiles.Resolve` チェーン（`--profile` > `BOID_PROFILE` > `default_profile` > unix フォールバック）で名前付き profile（リモート https daemon や別の unix socket）に接続します（`docs/plans/release-onboarding.md`「profiles との優先順位」）。`BOID_PROFILE` 環境変数や `default_profile` だけでは迂回しません — その場のコマンドに `--profile` を明示的に付けたときだけが対象です。
 
