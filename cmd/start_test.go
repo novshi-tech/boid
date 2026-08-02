@@ -1,9 +1,18 @@
 package cmd
 
 import (
+	"context"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
+
+	"github.com/novshi-tech/boid/internal/client"
+	"github.com/spf13/cobra"
 )
 
 func TestDefaultAllowedDomains_IncludeCodexDomains(t *testing.T) {
@@ -34,6 +43,43 @@ func TestRefuseRootUID(t *testing.T) {
 		if err := refuseRootUID(uid); err != nil {
 			t.Errorf("refuseRootUID(%d) = %v, want nil (non-root uid must be accepted)", uid, err)
 		}
+	}
+}
+
+// TestEffectiveBoidUID_PrefersBOID_UIDEnv is the codex round-9 review of
+// PR5, Major regression test: a non-root CLI process's own os.Getuid()
+// must NOT be what refuseRootUID checks when BOID_UID is explicitly set
+// to something else — compose's `user: "${BOID_UID:-1000}:0"` substitutes
+// BOID_UID at compose-parse time on the HOST (not as a container env
+// var), so a non-root operator exporting BOID_UID=0 changes what uid the
+// CONTAINER runs as without changing this process's own os.Getuid() at
+// all. effectiveBoidUID() must reflect BOID_UID when set, so
+// refuseRootUID(effectiveBoidUID()) actually catches that case.
+func TestEffectiveBoidUID_PrefersBOID_UIDEnv(t *testing.T) {
+	t.Setenv("BOID_UID", "")
+	if got := effectiveBoidUID(); got != os.Getuid() {
+		t.Errorf("effectiveBoidUID() with BOID_UID unset = %d, want os.Getuid() = %d", got, os.Getuid())
+	}
+
+	t.Setenv("BOID_UID", "0")
+	if got := effectiveBoidUID(); got != 0 {
+		t.Errorf("effectiveBoidUID() with BOID_UID=0 = %d, want 0", got)
+	}
+	if err := refuseRootUID(effectiveBoidUID()); err == nil {
+		t.Error("refuseRootUID(effectiveBoidUID()) with BOID_UID=0 must refuse, even though this test process itself is not root")
+	}
+
+	t.Setenv("BOID_UID", "1234")
+	if got := effectiveBoidUID(); got != 1234 {
+		t.Errorf("effectiveBoidUID() with BOID_UID=1234 = %d, want 1234", got)
+	}
+
+	// An unparseable BOID_UID falls back to os.Getuid() rather than
+	// erroring here — compose/docker will surface their own clear error
+	// against the malformed value when they try to use it.
+	t.Setenv("BOID_UID", "not-a-number")
+	if got := effectiveBoidUID(); got != os.Getuid() {
+		t.Errorf("effectiveBoidUID() with unparseable BOID_UID = %d, want os.Getuid() fallback = %d", got, os.Getuid())
 	}
 }
 
@@ -331,5 +377,770 @@ func TestBuildStartConfig_UsesOverrides(t *testing.T) {
 	}
 	if cfg.KeyFilePath != "/tmp/boid.key" {
 		t.Fatalf("KeyFilePath = %q, want %q", cfg.KeyFilePath, "/tmp/boid.key")
+	}
+}
+
+// TestRunComposeUp_NoCheckout_IgnoresNoAutostart_StartsComposeStack pins
+// docs/plans/release-onboarding.md 決定2/PR5's redefinition of `boid
+// start`: runComposeUp must run the deploy script's up cycle
+// UNCONDITIONALLY, even with BOID_NO_AUTOSTART=1 set — that knob exists to
+// stop an UNRELATED scope=remote command (e.g. `boid task list`) from
+// silently autostarting a daemon as a side effect (cmd/host.go's
+// ensureHostModeDaemon), not to make an EXPLICIT `boid start` itself a
+// no-op. Uses the same fake-docker-on-PATH + real-embedded-script
+// technique as cmd/host_test.go's
+// TestDeployFromEmbeddedAssets_RunsUnifiedScript_StartsComposeStack (no
+// real checkout on the fake PATH/cwd, so this exercises the
+// no-checkout/embedded-assets branch of runComposeUp's own
+// findComposeRoot-or-embedded dispatch).
+func TestRunComposeUp_NoCheckout_IgnoresNoAutostart_StartsComposeStack(t *testing.T) {
+	t.Setenv(client.NoAutostartEnv, "1")
+
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "docker-invocations.log")
+	writeFakeExecutable(t, dir, "docker", fmt.Sprintf(`
+{
+  echo "ARGS: $*"
+} >> %q
+exit 0
+`, logPath))
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	// No real checkout reachable: pin BOID_COMPOSE_ROOT empty and run from
+	// a bare temp dir, so findComposeRoot fails and runComposeUp falls
+	// through to deployFromEmbeddedAssets — same setup as
+	// TestEnsureHostModeDaemon_NoAutostart_FailsFastWithoutDeploying in
+	// cmd/host_test.go.
+	t.Setenv("BOID_COMPOSE_ROOT", "")
+	cwd := t.TempDir()
+	origWD, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(origWD) })
+	if err := os.Chdir(cwd); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/cli-token-check" {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer ts.Close()
+
+	if err := runComposeUp(context.Background(), ts.Listener.Addr().String()); err != nil {
+		t.Fatalf("runComposeUp: %v (BOID_NO_AUTOSTART=1 must not block an explicit `boid start`)", err)
+	}
+
+	logData, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("read invocation log: %v", err)
+	}
+	if !strings.Contains(string(logData), "up -d") {
+		t.Errorf("expected a `compose up -d` invocation despite BOID_NO_AUTOSTART=1; log:\n%s", string(logData))
+	}
+}
+
+// TestRunStart_NonForeground_BOID_UIDZero_RefusesBeforeComposeUp is the
+// codex round-9 review of PR5, Major regression test: on the compose-up
+// (non-foreground) path, the effective uid that ends up substituted into
+// compose.yml's `user: "${BOID_UID}:0"` is BOID_UID when explicitly set,
+// not this process's own os.Getuid() — the refusal here must inspect
+// effectiveBoidUID(), or a non-root operator setting BOID_UID=0 would
+// silently bring up a root-uid daemon container.
+func TestRunStart_NonForeground_BOID_UIDZero_RefusesBeforeComposeUp(t *testing.T) {
+	t.Setenv("BOID_DAEMON_CHILD", "")
+	t.Setenv("BOID_UID", "0")
+	startForeground = false
+	t.Cleanup(func() { startForeground = false })
+
+	err := runStart(startCmd, nil)
+	if err == nil {
+		t.Fatal("expected an error: BOID_UID=0 on a non-foreground boid start must be refused before compose up")
+	}
+	if !strings.Contains(err.Error(), "uid 0") {
+		t.Errorf("expected the error to mention uid 0, got %v", err)
+	}
+}
+
+// TestRunStart_Foreground_BOID_UIDZero_DoesNotFalselyRefuse is the codex
+// round-9 review of PR5, Major regression test (the other direction of
+// the same bug): on the --foreground/daemon-child path THIS process
+// itself is (or becomes) the daemon — compose.yml's `user:` substitution
+// is never consulted there at all, so BOID_UID has no bearing on what
+// uid this process actually runs as. The refusal on that branch must
+// inspect this process's own os.Getuid(), not effectiveBoidUID() — a
+// non-root operator running `BOID_UID=0 boid start --foreground` must
+// NOT be refused just because BOID_UID happens to be "0" in their
+// environment (this process's real, non-root uid is what will actually
+// run).
+func TestRunStart_Foreground_BOID_UIDZero_DoesNotFalselyRefuse(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("this regression only demonstrates on a non-root test process")
+	}
+	t.Setenv("BOID_UID", "0")
+	startForeground = true
+	t.Cleanup(func() { startForeground = false })
+
+	origDBPath := startDBPath
+	origSocketPath := startSocketPath
+	t.Cleanup(func() {
+		startDBPath = origDBPath
+		startSocketPath = origSocketPath
+	})
+	dir := t.TempDir()
+	startDBPath = filepath.Join(dir, "boid.db")
+	startSocketPath = filepath.Join(dir, "boid.sock")
+
+	// runStart's --foreground branch calls refuseRootUID before doing
+	// anything else expensive (self-registration, buildStartConfig,
+	// runDaemonChild) — this test only needs to observe that the uid
+	// check itself does not fire; it does not need to let the daemon
+	// actually start, so it directly exercises the same check runStart's
+	// foreground branch makes (os.Getuid(), not effectiveBoidUID()) and
+	// confirms it is nil despite BOID_UID=0.
+	if err := refuseRootUID(os.Getuid()); err != nil {
+		t.Fatalf("refuseRootUID(os.Getuid()) unexpectedly refused a non-root test process: %v", err)
+	}
+	if got := effectiveBoidUID(); got != 0 {
+		t.Fatalf("effectiveBoidUID() = %d, want 0 (BOID_UID=0 is set) — sanity check that this test's premise holds", got)
+	}
+}
+
+// TestRefuseDaemonConfigFlagsWithoutForeground is the codex round-3 review
+// of PR5, Major 2 regression: --db-path/--socket-path/--kits-dir/
+// --key-file-path/--cli-addr only ever configure the actual daemon
+// process (buildStartConfig, read only on the --foreground/daemon-child
+// branch) — a plain, non-foreground `boid start` silently ignored them
+// after being redefined to "just run compose up", which could make a
+// script think it pointed the daemon at a specific --db-path when it
+// silently operated on the compose stack's own DB instead. Every such
+// flag must be named in the resulting error.
+func TestRefuseDaemonConfigFlagsWithoutForeground(t *testing.T) {
+	cmd := &cobra.Command{Use: "start"}
+	var dbPath, socketPath, kitsDir, keyFilePath, cliAddr string
+	cmd.Flags().StringVar(&dbPath, "db-path", "", "")
+	cmd.Flags().StringVar(&socketPath, "socket-path", "", "")
+	cmd.Flags().StringVar(&kitsDir, "kits-dir", "", "")
+	cmd.Flags().StringVar(&keyFilePath, "key-file-path", "", "")
+	cmd.Flags().StringVar(&cliAddr, "cli-addr", "", "")
+
+	if err := refuseDaemonConfigFlagsWithoutForeground(cmd); err != nil {
+		t.Fatalf("expected no error when no flags are set, got: %v", err)
+	}
+
+	if err := cmd.Flags().Set("db-path", "/tmp/custom.db"); err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Flags().Set("cli-addr", "127.0.0.1:9999"); err != nil {
+		t.Fatal(err)
+	}
+	err := refuseDaemonConfigFlagsWithoutForeground(cmd)
+	if err == nil {
+		t.Fatal("expected an error when --db-path/--cli-addr are set without --foreground")
+	}
+	for _, want := range []string{"--db-path", "--cli-addr", "--foreground"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error should mention %q, got %q", want, err.Error())
+		}
+	}
+	if strings.Contains(err.Error(), "--socket-path") {
+		t.Errorf("error should not mention an unset flag, got %q", err.Error())
+	}
+}
+
+// TestRunStart_NonForeground_DBPathFlag_RefusesBeforeComposeUp pins the
+// same regression at runStart's own call site: setting --db-path on a
+// plain (non-foreground) `boid start` invocation must refuse BEFORE ever
+// reaching runComposeUp (no PATH fakes are set up here, so an attempt to
+// actually deploy would either hang trying real docker/podman or fail
+// with an unrelated error — neither of which this test's assertion would
+// accept).
+func TestRunStart_NonForeground_DBPathFlag_RefusesBeforeComposeUp(t *testing.T) {
+	t.Setenv("BOID_DAEMON_CHILD", "")
+	startForeground = false
+	t.Cleanup(func() { startForeground = false })
+
+	origDBPath := startDBPath
+	t.Cleanup(func() {
+		startDBPath = origDBPath
+		_ = startCmd.Flags().Set("db-path", origDBPath)
+	})
+	if err := startCmd.Flags().Set("db-path", "/tmp/custom.db"); err != nil {
+		t.Fatal(err)
+	}
+
+	err := runStart(startCmd, nil)
+	if err == nil {
+		t.Fatal("expected an error: --db-path set without --foreground on a non-foreground boid start")
+	}
+	if !strings.Contains(err.Error(), "--db-path") {
+		t.Errorf("expected the error to mention --db-path, got %v", err)
+	}
+}
+
+// TestRunComposeDownScript_InvokesDeployScriptWithDown pins `boid stop`'s
+// redefinition (cmd/stop.go, docs/plans/release-onboarding.md 決定2/PR5):
+// it must invoke scripts/deploy-container.sh with exactly `--down`, not
+// reimplement `compose down` directly — a fake deploy-container.sh here
+// (not the real embedded one; --down's own engine-detection/podman-overlay
+// logic is exercised at the shell-script level, not from Go) just records
+// its own argv to prove the wiring.
+func TestRunComposeDownScript_InvokesDeployScriptWithDown(t *testing.T) {
+	root := t.TempDir()
+	scriptsDir := filepath.Join(root, "scripts")
+	if err := os.MkdirAll(scriptsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	logPath := filepath.Join(root, "invocation.log")
+	script := fmt.Sprintf("#!/bin/sh\necho \"ARGS: $*\" >> %q\nexit 0\n", logPath)
+	scriptPath := filepath.Join(scriptsDir, "deploy-container.sh")
+	if err := os.WriteFile(scriptPath, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := runComposeDownScript(context.Background(), root); err != nil {
+		t.Fatalf("runComposeDownScript: %v", err)
+	}
+
+	logData, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("read invocation log: %v", err)
+	}
+	if strings.TrimSpace(string(logData)) != "ARGS: --down" {
+		t.Errorf("invocation log = %q, want %q", strings.TrimSpace(string(logData)), "ARGS: --down")
+	}
+}
+
+// TestDeployContainerScript_Down_SkipsPodmanSocketPreflight is the codex
+// round-1 review of PR5, Major 4 regression: scripts/deploy-container.sh's
+// own podman.socket active-check preflight used to run unconditionally,
+// even for --down — meaning `boid stop` could never recover from EXACTLY
+// the failure mode that check exists to catch (a stopped/never-enabled
+// podman.socket), since the preflight refused before ever reaching the
+// down logic. Runs the REAL script (not a fake) with fake podman/
+// podman-compose/systemctl on PATH — systemctl always reports inactive —
+// and asserts --down still succeeds while a plain (up) invocation under
+// the identical fake environment still correctly refuses.
+func TestDeployContainerScript_Down_SkipsPodmanSocketPreflight(t *testing.T) {
+	scriptPath, err := filepath.Abs(filepath.Join("..", "scripts", "deploy-container.sh"))
+	if err != nil {
+		t.Fatalf("resolve script path: %v", err)
+	}
+	if _, err := os.Stat(scriptPath); err != nil {
+		t.Fatalf("real deploy-container.sh not found at %s: %v", scriptPath, err)
+	}
+
+	dir := t.TempDir()
+	writeFakeExecutable(t, dir, "systemctl", `exit 3`) // "is-active" always reports inactive
+	writeFakeExecutable(t, dir, "podman", `
+case "$1" in
+  version) exit 0 ;;
+  info) echo "false"; exit 0 ;;
+  *) exit 0 ;;
+esac
+`)
+	writeFakeExecutable(t, dir, "podman-compose", `exit 0`)
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+
+	downCmd := exec.Command(scriptPath, "--down")
+	downOut, downErr := downCmd.CombinedOutput()
+	if downErr != nil {
+		t.Fatalf("scripts/deploy-container.sh --down failed with fake-inactive podman.socket: %v\noutput:\n%s", downErr, downOut)
+	}
+	if strings.Contains(string(downOut), "podman.socket is not active") {
+		t.Errorf("--down must not run the podman.socket preflight at all; output:\n%s", downOut)
+	}
+
+	upCmd := exec.Command(scriptPath)
+	upOut, upErr := upCmd.CombinedOutput()
+	if upErr == nil {
+		t.Fatal("expected a plain (up) invocation to still refuse with an inactive podman.socket")
+	}
+	if !strings.Contains(string(upOut), "podman.socket is not active") {
+		t.Errorf("expected the podman.socket preflight error for a plain (up) invocation; output:\n%s", upOut)
+	}
+}
+
+// TestDeployContainerScript_MalformedBOID_UID_Refuses is the codex
+// round-9 review of PR5, Major regression test: the script's own uid-0
+// guard (the actual enforcement point compose.yml's
+// `user: "${BOID_UID}:0"` reads from) used to only ever compare BOID_UID
+// against the exact literal string "0" — a value like "00", which
+// docker/podman would still parse as numeric uid 0, sailed straight
+// through uncaught. Runs the REAL script (not a fake) with a fake docker
+// engine (so ENGINE=docker and the podman-only podman.socket preflight
+// never runs, keeping this test isolated to the BOID_UID check) and
+// asserts a malformed-but-zero-meaning value is refused, alongside a
+// genuinely non-numeric value.
+func TestDeployContainerScript_MalformedBOID_UID_Refuses(t *testing.T) {
+	scriptPath, err := filepath.Abs(filepath.Join("..", "scripts", "deploy-container.sh"))
+	if err != nil {
+		t.Fatalf("resolve script path: %v", err)
+	}
+	if _, err := os.Stat(scriptPath); err != nil {
+		t.Fatalf("real deploy-container.sh not found at %s: %v", scriptPath, err)
+	}
+
+	dir := t.TempDir()
+	writeFakeExecutable(t, dir, "docker", `
+case "$1 $2" in
+  "compose version") exit 0 ;;
+  *) exit 0 ;;
+esac
+`)
+	env := append(os.Environ(),
+		"PATH="+dir+string(os.PathListSeparator)+os.Getenv("PATH"),
+	)
+
+	for _, badUID := range []string{"00", "+0", "-1", "not-a-number"} {
+		t.Run(badUID, func(t *testing.T) {
+			cmd := exec.Command(scriptPath)
+			cmd.Env = append(append([]string{}, env...), "BOID_UID="+badUID)
+			out, err := cmd.CombinedOutput()
+			if err == nil {
+				t.Fatalf("expected BOID_UID=%q to be refused; output:\n%s", badUID, out)
+			}
+			if !strings.Contains(string(out), "BOID_UID") {
+				t.Errorf("expected the error to mention BOID_UID for BOID_UID=%q; output:\n%s", badUID, out)
+			}
+		})
+	}
+}
+
+// fakeDockerAlwaysOK writes a fake `docker` on PATH that reports itself
+// (and its compose plugin) usable, and no-ops every other subcommand
+// (build/compose down/compose up -d/...) successfully — enough to drive
+// scripts/deploy-container.sh's default (no --build) up/down flow without
+// a real engine.
+func fakeDockerAlwaysOK(t *testing.T, dir string) {
+	t.Helper()
+	writeFakeExecutable(t, dir, "docker", `
+if [ "$1" = "compose" ] && [ "$2" = "version" ]; then exit 0; fi
+exit 0
+`)
+}
+
+// composeEngineStateFilePath is scripts/deploy-container.sh's own
+// COMPOSE_ENGINE_STATE_FILE: $XDG_STATE_HOME/boid/compose-engine.
+//
+// codex round-11 review of PR5, Major: this used to live under ROOT_DIR
+// (the checkout/embedded-assets root the script's own BASH_SOURCE
+// resolves to), which reintroduced the exact false-success bug the state
+// file exists to close — compose.yml's `name: boid` makes the compose
+// PROJECT identity independent of which ROOT_DIR a given invocation
+// resolves to (cmd/host.go's findComposeRoot-or-deployFromEmbeddedAssets
+// choice can legitimately differ between the `up` that started the stack
+// and a LATER `boid stop`), so a ROOT_DIR-scoped file could easily not
+// exist — or belong to the WRONG root — by the time `--down` looked for
+// it, silently falling through to the no-record fallback path. Fixed to a
+// location that tracks the one compose PROJECT a host can run at a time
+// instead, mirroring cmd/host.go's own hostModeAssetsDir() convention.
+func composeEngineStateFilePath(xdgStateHome string) string {
+	return filepath.Join(xdgStateHome, "boid", "compose-engine")
+}
+
+// TestDeployContainerScript_Up_RecordsEngineForDown is the codex round-10
+// review of PR5, Major regression test (half 1 of 2): a successful `up`
+// must record which engine it actually used, so a later `--down` can pin
+// to that exact engine instead of re-detecting "whichever engine looks
+// usable right now" (see composeEngineStateFilePath's own doc comment for
+// where). Also exercises the happy path where `--down` reads that record
+// back and still succeeds against the SAME (still-usable) engine — and,
+// per the round-11 fix, still finds that record from a DIFFERENT working
+// directory / ROOT_DIR (this test runs `up` and `down` from the SAME real
+// checkout root since that is exec'd, but the fixed
+// $XDG_STATE_HOME-based location no longer depends on that at all).
+func TestDeployContainerScript_Up_RecordsEngineForDown(t *testing.T) {
+	scriptPath, err := filepath.Abs(filepath.Join("..", "scripts", "deploy-container.sh"))
+	if err != nil {
+		t.Fatalf("resolve script path: %v", err)
+	}
+	xdgStateHome := t.TempDir()
+	stateFile := composeEngineStateFilePath(xdgStateHome)
+
+	dir := t.TempDir()
+	fakeDockerAlwaysOK(t, dir)
+	env := []string{
+		"PATH=" + dir + string(os.PathListSeparator) + os.Getenv("PATH"),
+		"HOME=" + os.Getenv("HOME"),
+		"XDG_STATE_HOME=" + xdgStateHome,
+		"BOID_UID=1000",
+		"BOID_GID=1000",
+		"XDG_RUNTIME_DIR=" + t.TempDir(),
+	}
+
+	upCmd := exec.Command(scriptPath)
+	upCmd.Env = env
+	if out, err := upCmd.CombinedOutput(); err != nil {
+		t.Fatalf("deploy-container.sh (up) failed: %v\noutput:\n%s", err, out)
+	}
+
+	got, err := os.ReadFile(stateFile)
+	if err != nil {
+		t.Fatalf("read %s after a successful up: %v", stateFile, err)
+	}
+	// Line 1 is the engine kind; line 2 (codex round-13 review of PR5,
+	// Major) is a DOCKER_CONTEXT/DOCKER_HOST fingerprint `--down` also
+	// validates — see context_fingerprint's own doc comment in the
+	// script. Only line 1 is asserted here.
+	gotLines := strings.SplitN(string(got), "\n", 2)
+	if gotLines[0] != "docker" {
+		t.Errorf("%s line 1 = %q, want %q", stateFile, gotLines[0], "docker")
+	}
+
+	downCmd := exec.Command(scriptPath, "--down")
+	downCmd.Env = env
+	if out, err := downCmd.CombinedOutput(); err != nil {
+		t.Fatalf("deploy-container.sh --down failed against the same (still-usable) recorded engine: %v\noutput:\n%s", err, out)
+	}
+}
+
+// TestDeployContainerScript_Down_FindsRecordedEngineFromDifferentRoot is
+// the codex round-11 review of PR5, Major regression test: the state file
+// must be readable by a `--down` invocation running the script out of a
+// DIFFERENT ROOT_DIR than the `up` that wrote it — exactly what happens
+// when `up` ran with `BOID_COMPOSE_ROOT` exported (or from within a real
+// checkout, cmd/host.go's deployFromCheckout) but a later `boid stop`
+// resolves cmd/host.go's OTHER root (deployFromEmbeddedAssets), or vice
+// versa; compose.yml's own `name: boid` makes both invocations manage the
+// SAME compose project regardless. Copies the real script + the compose
+// files it needs into a second, independent root tree (simulating that
+// root drift) and confirms `--down` there still finds and pins to the
+// engine `up` recorded from the FIRST root, rather than silently falling
+// back to auto-detection.
+func TestDeployContainerScript_Down_FindsRecordedEngineFromDifferentRoot(t *testing.T) {
+	scriptPath, err := filepath.Abs(filepath.Join("..", "scripts", "deploy-container.sh"))
+	if err != nil {
+		t.Fatalf("resolve script path: %v", err)
+	}
+	xdgStateHome := t.TempDir()
+
+	dir := t.TempDir()
+	fakeDockerAlwaysOK(t, dir)
+	upEnv := []string{
+		"PATH=" + dir + string(os.PathListSeparator) + os.Getenv("PATH"),
+		"HOME=" + os.Getenv("HOME"),
+		"XDG_STATE_HOME=" + xdgStateHome,
+		"BOID_UID=1000",
+		"BOID_GID=1000",
+		"XDG_RUNTIME_DIR=" + t.TempDir(),
+	}
+	upCmd := exec.Command(scriptPath)
+	upCmd.Env = upEnv
+	if out, err := upCmd.CombinedOutput(); err != nil {
+		t.Fatalf("deploy-container.sh (up), root 1: %v\noutput:\n%s", err, out)
+	}
+
+	// Build a second, independent ROOT_DIR: the script only needs itself
+	// plus build/container/compose.yml (compose -f target) to run --down —
+	// Dockerfile/podman override are only touched by the up/build paths.
+	root2 := t.TempDir()
+	copyFileForTest(t, scriptPath, filepath.Join(root2, "scripts", "deploy-container.sh"), 0o755)
+	repoRoot, err := filepath.Abs("..")
+	if err != nil {
+		t.Fatalf("resolve repo root: %v", err)
+	}
+	copyFileForTest(t,
+		filepath.Join(repoRoot, "build", "container", "compose.yml"),
+		filepath.Join(root2, "build", "container", "compose.yml"), 0o644)
+
+	downCmd := exec.Command(filepath.Join(root2, "scripts", "deploy-container.sh"), "--down")
+	downCmd.Env = []string{
+		"PATH=" + dir + string(os.PathListSeparator) + os.Getenv("PATH"),
+		"HOME=" + os.Getenv("HOME"),
+		"XDG_STATE_HOME=" + xdgStateHome,
+		"XDG_RUNTIME_DIR=" + t.TempDir(),
+	}
+	out, err := downCmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("deploy-container.sh --down from a DIFFERENT root failed to find the engine recorded by root 1's up: %v\noutput:\n%s", err, out)
+	}
+	if !strings.Contains(string(out), "engine=docker") {
+		t.Errorf("expected --down (root 2) to pin to the engine recorded by root 1's up (docker), not re-detect; output:\n%s", out)
+	}
+}
+
+// copyFileForTest copies src to dst (creating dst's parent directories),
+// preserving nothing but the requested mode.
+func copyFileForTest(t *testing.T, src, dst string, mode os.FileMode) {
+	t.Helper()
+	data, err := os.ReadFile(src)
+	if err != nil {
+		t.Fatalf("read %s: %v", src, err)
+	}
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		t.Fatalf("mkdir %s: %v", filepath.Dir(dst), err)
+	}
+	if err := os.WriteFile(dst, data, mode); err != nil {
+		t.Fatalf("write %s: %v", dst, err)
+	}
+}
+
+// TestDeployContainerScript_Down_RecordedEngineNoLongerUsable_Refuses is
+// the codex round-10 review of PR5, Major regression test (half 2 of 2,
+// the actual bug): if the engine `up` recorded is no longer usable by the
+// time `--down` runs (crashed daemon, revoked permission, ...) while some
+// OTHER engine happens to be usable, `--down` must refuse outright rather
+// than silently `down`-ing an empty/never-created project under the OTHER
+// engine and reporting overall success — that would leave the real stack,
+// started under the recorded engine, running untouched while `boid stop`
+// claims it stopped it.
+func TestDeployContainerScript_Down_RecordedEngineNoLongerUsable_Refuses(t *testing.T) {
+	scriptPath, err := filepath.Abs(filepath.Join("..", "scripts", "deploy-container.sh"))
+	if err != nil {
+		t.Fatalf("resolve script path: %v", err)
+	}
+	xdgStateHome := t.TempDir()
+	stateFile := composeEngineStateFilePath(xdgStateHome)
+	// Pretend a previous `up` recorded docker, without actually running
+	// one — this test only needs the state file's CONTENT, not a real
+	// prior up.
+	if err := os.MkdirAll(filepath.Dir(stateFile), 0o755); err != nil {
+		t.Fatalf("mkdir %s: %v", filepath.Dir(stateFile), err)
+	}
+	if err := os.WriteFile(stateFile, []byte("docker\n"), 0o644); err != nil {
+		t.Fatalf("seed %s: %v", stateFile, err)
+	}
+
+	dir := t.TempDir()
+	// A `docker` that is present on PATH but unusable (`docker version`
+	// fails — simulating a crashed/unreachable daemon), alongside a
+	// usable podman/podman-compose, which must NOT be substituted in for
+	// the recorded (but now-unusable) docker engine. Deliberately a
+	// FAILING docker rather than an absent one: this test must hold even
+	// on a CI runner with a real, working system `docker` later on PATH
+	// (github-hosted ubuntu runners ship one) — an absent fake would let
+	// `command -v docker` fall through to that real, genuinely-usable
+	// docker and pass for the wrong reason.
+	writeFakeExecutable(t, dir, "docker", `exit 1`)
+	writeFakeExecutable(t, dir, "podman", `
+case "$1" in
+  version) exit 0 ;;
+  info) echo "false"; exit 0 ;;
+  *) exit 0 ;;
+esac
+`)
+	writeFakeExecutable(t, dir, "podman-compose", `exit 0`)
+	writeFakeExecutable(t, dir, "systemctl", `exit 0`) // podman.socket "active" (irrelevant here — --down skips this preflight anyway)
+
+	downCmd := exec.Command(scriptPath, "--down")
+	downCmd.Env = []string{
+		// Fake dir ONLY — not appending the real PATH — so this cannot
+		// accidentally fall through to a real docker/podman elsewhere on
+		// PATH regardless of host. coreutils (mkdir/cat/dirname/...) the
+		// script also needs come from a fixed, minimal set of directories
+		// instead of the ambient PATH.
+		"PATH=" + dir + ":/usr/bin:/bin",
+		"HOME=" + os.Getenv("HOME"),
+		"XDG_STATE_HOME=" + xdgStateHome,
+		"XDG_RUNTIME_DIR=" + t.TempDir(),
+	}
+	out, err := downCmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("expected --down to refuse when the recorded engine (docker) is no longer usable, even though podman is; output:\n%s", out)
+	}
+	if !strings.Contains(string(out), "docker") {
+		t.Errorf("expected the refusal to name the recorded engine (docker); output:\n%s", out)
+	}
+}
+
+// TestDeployContainerScript_Down_ContextDrift_Refuses is the codex
+// round-13 review of PR5, Major regression test: recording the engine
+// KIND (docker/podman) alone cannot tell two DIFFERENT daemons of the
+// SAME kind apart — an operator who switches DOCKER_CONTEXT/DOCKER_HOST
+// between `up` and `down` would still pass the engine-usability check,
+// then `down` an empty `name: boid` project on the NEW daemon while the
+// real stack (on the OLD one) keeps running. `--down` must now also
+// compare context_fingerprint() against what `up` recorded.
+func TestDeployContainerScript_Down_ContextDrift_Refuses(t *testing.T) {
+	scriptPath, err := filepath.Abs(filepath.Join("..", "scripts", "deploy-container.sh"))
+	if err != nil {
+		t.Fatalf("resolve script path: %v", err)
+	}
+	xdgStateHome := t.TempDir()
+
+	dir := t.TempDir()
+	fakeDockerAlwaysOK(t, dir)
+	upCmd := exec.Command(scriptPath)
+	upCmd.Env = []string{
+		"PATH=" + dir + string(os.PathListSeparator) + os.Getenv("PATH"),
+		"HOME=" + os.Getenv("HOME"),
+		"XDG_STATE_HOME=" + xdgStateHome,
+		"DOCKER_CONTEXT=context-a",
+		"BOID_UID=1000",
+		"BOID_GID=1000",
+		"XDG_RUNTIME_DIR=" + t.TempDir(),
+	}
+	if out, err := upCmd.CombinedOutput(); err != nil {
+		t.Fatalf("deploy-container.sh (up) with DOCKER_CONTEXT=context-a failed: %v\noutput:\n%s", err, out)
+	}
+
+	downCmd := exec.Command(scriptPath, "--down")
+	downCmd.Env = []string{
+		"PATH=" + dir + string(os.PathListSeparator) + os.Getenv("PATH"),
+		"HOME=" + os.Getenv("HOME"),
+		"XDG_STATE_HOME=" + xdgStateHome,
+		"DOCKER_CONTEXT=context-b", // drifted since `up`
+		"XDG_RUNTIME_DIR=" + t.TempDir(),
+	}
+	out, err := downCmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("expected --down to refuse when DOCKER_CONTEXT drifted since the recording up (context-a -> context-b); output:\n%s", out)
+	}
+	if !strings.Contains(string(out), "DOCKER_CONTEXT") {
+		t.Errorf("expected the refusal to mention DOCKER_CONTEXT; output:\n%s", out)
+	}
+}
+
+// TestDeployContainerScript_Down_CorruptedEngineWithInternalWhitespace_Refuses
+// is the codex round-13 review of PR5, Major regression test: an earlier
+// revision trimmed the recorded engine value with `tr -d '[:space:]'`,
+// which strips ALL whitespace (not just leading/trailing) — a corrupted
+// value like "pod man" was silently normalized to the valid-looking
+// "podman" instead of being rejected as unrecognized. Only leading/
+// trailing whitespace must be trimmed now.
+func TestDeployContainerScript_Down_CorruptedEngineWithInternalWhitespace_Refuses(t *testing.T) {
+	scriptPath, err := filepath.Abs(filepath.Join("..", "scripts", "deploy-container.sh"))
+	if err != nil {
+		t.Fatalf("resolve script path: %v", err)
+	}
+	xdgStateHome := t.TempDir()
+	stateFile := composeEngineStateFilePath(xdgStateHome)
+	if err := os.MkdirAll(filepath.Dir(stateFile), 0o755); err != nil {
+		t.Fatalf("mkdir %s: %v", filepath.Dir(stateFile), err)
+	}
+	if err := os.WriteFile(stateFile, []byte("pod man\n"), 0o644); err != nil {
+		t.Fatalf("seed %s: %v", stateFile, err)
+	}
+
+	dir := t.TempDir()
+	writeFakeExecutable(t, dir, "podman", `
+case "$1" in
+  version) exit 0 ;;
+  info) echo "false"; exit 0 ;;
+  *) exit 0 ;;
+esac
+`)
+	writeFakeExecutable(t, dir, "podman-compose", `exit 0`)
+	downCmd := exec.Command(scriptPath, "--down")
+	downCmd.Env = []string{
+		"PATH=" + dir + ":/usr/bin:/bin",
+		"HOME=" + os.Getenv("HOME"),
+		"XDG_STATE_HOME=" + xdgStateHome,
+		"XDG_RUNTIME_DIR=" + t.TempDir(),
+	}
+	out, err := downCmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("expected --down to refuse a corrupted \"pod man\" record rather than silently accept it as \"podman\"; output:\n%s", out)
+	}
+	if !strings.Contains(string(out), "unrecognized engine") {
+		t.Errorf("expected the refusal to say the engine is unrecognized; output:\n%s", out)
+	}
+}
+
+// TestDeployContainerScript_Up_StateFileWriteFailure_FailsUp is the codex
+// round-12 review of PR5, Major regression test: an earlier revision
+// treated a failure to WRITE the engine-state file as non-fatal for `up`
+// ("continuing — --down degrades to best-effort detection") — but a
+// missing-because-unwritable state file behaves identically, to a later
+// `--down`, as one that legitimately never existed, silently reopening
+// the exact false-success window rounds 10/11 exist to close. `up` must
+// fail loudly instead when it cannot persist which engine it used.
+// Simulated by making $XDG_STATE_HOME/boid unwritable (0000) before it
+// exists, so the script's own `mkdir -p`/write both fail.
+func TestDeployContainerScript_Up_StateFileWriteFailure_FailsUp(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("root ignores directory permission bits, so this regression cannot demonstrate as root")
+	}
+	scriptPath, err := filepath.Abs(filepath.Join("..", "scripts", "deploy-container.sh"))
+	if err != nil {
+		t.Fatalf("resolve script path: %v", err)
+	}
+
+	xdgStateHome := t.TempDir()
+	// Pre-create $XDG_STATE_HOME/boid as a directory the script cannot
+	// write into (and cannot recreate, since it already exists) —
+	// simulates a permissions oddity there without needing to run as a
+	// different uid.
+	unwritable := filepath.Join(xdgStateHome, "boid")
+	if err := os.MkdirAll(unwritable, 0o555); err != nil {
+		t.Fatalf("mkdir %s: %v", unwritable, err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(unwritable, 0o755) }) // let t.TempDir() clean up
+
+	dir := t.TempDir()
+	fakeDockerAlwaysOK(t, dir)
+	upCmd := exec.Command(scriptPath)
+	upCmd.Env = []string{
+		"PATH=" + dir + string(os.PathListSeparator) + os.Getenv("PATH"),
+		"HOME=" + os.Getenv("HOME"),
+		"XDG_STATE_HOME=" + xdgStateHome,
+		"BOID_UID=1000",
+		"BOID_GID=1000",
+		"XDG_RUNTIME_DIR=" + t.TempDir(),
+	}
+	out, err := upCmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("expected up to fail when it cannot write the engine-state file; output:\n%s", out)
+	}
+	if !strings.Contains(string(out), "compose-engine") {
+		t.Errorf("expected the failure to mention the engine-state file; output:\n%s", out)
+	}
+}
+
+// TestDeployContainerScript_Down_CorruptStateFile_RefusesRatherThanFallsBack
+// is the codex round-12 review of PR5, Major regression test: an earlier
+// revision treated an EXISTING-but-bad-content state file (unreadable,
+// empty, or an unrecognized engine name) as equivalent to no state file
+// at all — warn, then fall back to the ordinary engine-detection ladder.
+// But a state file that EXISTS proves an `up` DID run and DID try to
+// record something; guessing again on top of that is the same
+// false-success window rounds 10/11 exist to close, just moved one step
+// earlier. `--down` must refuse outright instead when the file exists but
+// its content cannot be trusted.
+func TestDeployContainerScript_Down_CorruptStateFile_RefusesRatherThanFallsBack(t *testing.T) {
+	scriptPath, err := filepath.Abs(filepath.Join("..", "scripts", "deploy-container.sh"))
+	if err != nil {
+		t.Fatalf("resolve script path: %v", err)
+	}
+
+	for name, content := range map[string]string{
+		"empty":        "",
+		"unrecognized": "hyper-v\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			xdgStateHome := t.TempDir()
+			stateFile := composeEngineStateFilePath(xdgStateHome)
+			if err := os.MkdirAll(filepath.Dir(stateFile), 0o755); err != nil {
+				t.Fatalf("mkdir %s: %v", filepath.Dir(stateFile), err)
+			}
+			if err := os.WriteFile(stateFile, []byte(content), 0o644); err != nil {
+				t.Fatalf("seed %s: %v", stateFile, err)
+			}
+
+			dir := t.TempDir()
+			fakeDockerAlwaysOK(t, dir) // usable, so a fall-back-to-ladder bug would silently "succeed" here
+			downCmd := exec.Command(scriptPath, "--down")
+			downCmd.Env = []string{
+				"PATH=" + dir + string(os.PathListSeparator) + os.Getenv("PATH"),
+				"HOME=" + os.Getenv("HOME"),
+				"XDG_STATE_HOME=" + xdgStateHome,
+				"XDG_RUNTIME_DIR=" + t.TempDir(),
+			}
+			out, err := downCmd.CombinedOutput()
+			if err == nil {
+				t.Fatalf("expected --down to refuse rather than fall back when %s; output:\n%s", stateFile, out)
+			}
+			if !strings.Contains(string(out), "compose-engine") {
+				t.Errorf("expected the refusal to mention the state file; output:\n%s", out)
+			}
+		})
 	}
 }

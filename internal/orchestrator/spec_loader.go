@@ -36,7 +36,7 @@ func ReadProjectMeta(dir string) (*ProjectMeta, error) {
 		return nil, fmt.Errorf("%s: read: %w", yamlPath, err)
 	}
 
-	meta, err := parseProjectMetaBytes(dir, data)
+	meta, err := parseProjectMetaBytes(dir, false, data)
 	if err != nil {
 		return nil, err
 	}
@@ -53,19 +53,24 @@ func ReadProjectMeta(dir string) (*ProjectMeta, error) {
 // the daemon-managed bare-repo loader (ReadProjectMetaFromBareRepo,
 // project_bare_repo.go — docs/plans/volume-only-daemon.md §論点a: "project.yaml
 // は bare repo の HEAD (default branch) から `git show HEAD:.boid/project.yaml`
-// で読む"). dirLabel is used only for error text and
-// ProjectMigrationIssue.Dir (rejectRemovedProjectFields) — a real filesystem
-// directory for the former caller, the bare repo path for the latter; the
-// "boid project migrate <dir>" guidance those messages point at is not
-// literally actionable against a bare repo path the same way, but keeping
-// the message shape uniform is simpler than forking it.
+// で読む"). dirLabel is used for error text and ProjectMigrationIssue.Dir
+// (rejectRemovedProjectFields) either way, but isBareRepo (codex round-9
+// review of PR5, Blocker 1) tells rejectRemovedProjectFields/
+// migrationGuidance which of the two callers this is: a real filesystem
+// directory the caller can `boid project migrate` directly (isBareRepo
+// false), or the DAEMON's own internal bare-repository path for a git-URL-
+// registered project (isBareRepo true) — nothing the CLI can run
+// `boid project migrate` against directly at all (it reads
+// <dir>/.boid/project.yaml off a real filesystem, cmd/project_migrate.go),
+// so the guidance for that case must say so instead of asserting a command
+// against a path the user cannot use.
 //
 // Deliberately excluded: resolveProjectHostCommandPaths, which resolves a
 // relative host_commands.path against an on-disk project directory —
 // filesystem callers run it themselves afterward (they have a real
 // directory); the bare-repo caller has none and rejects relative paths
 // outright instead (see ReadProjectMetaFromBareRepo).
-func parseProjectMetaBytes(dirLabel string, data []byte) (*ProjectMeta, error) {
+func parseProjectMetaBytes(dirLabel string, isBareRepo bool, data []byte) (*ProjectMeta, error) {
 	var raw map[string]any
 	if err := yaml.Unmarshal(data, &raw); err != nil {
 		return nil, fmt.Errorf("%s: parse: %w", dirLabel, err)
@@ -79,7 +84,7 @@ func parseProjectMetaBytes(dirLabel string, data []byte) (*ProjectMeta, error) {
 		}
 	}
 
-	if migErr := rejectRemovedProjectFields(dirLabel, raw); migErr != nil {
+	if migErr := rejectRemovedProjectFields(dirLabel, isBareRepo, raw); migErr != nil {
 		return nil, migErr
 	}
 
@@ -218,12 +223,60 @@ var removedTopLevelKeys = []string{
 	"capabilities",
 }
 
-// migrationGuidance returns the multi-line guidance block for removed-key errors.
-func migrationGuidance(dir string) string {
+// migrationGuidance returns the multi-line guidance block for removed-key
+// errors. docs/plans/release-onboarding.md 決定2/PR5 — this went through
+// SEVEN rounds of codex review (round-2 through round-7). Every attempt
+// at a step-by-step recovery recipe (automated via --apply, or a manual
+// command sequence promising to reach the same end state) turned out
+// wrong on closer inspection somewhere — a daemon-topology hole, a
+// format mismatch between two commands, a step that silently loses data,
+// or (round-7) cases this project's own registration model (git-URL
+// bare-repo caching, host_commands definitions with no create/edit API
+// at all) has no fully general answer for yet at all. See
+// cmd/project_migrate.go's guardApply for the detailed history of what
+// was tried and why each attempt was rejected.
+//
+// This function has stopped trying to promise a recipe it cannot
+// guarantee. It states the fact (which fields are invalid) and points
+// at the docs/command that own the actual up-to-date answer, rather than
+// asserting specific steps here that static review keeps finding holes
+// in only after the fact.
+func migrationGuidance(dir string, isBareRepo bool) string {
+	if isBareRepo {
+		// codex round-9 review of PR5, Blocker 1: dir here is the
+		// DAEMON's own internal bare-repository path for a git-URL-
+		// registered project (project_bare_repo.go's
+		// ReadProjectMetaFromBareRepo) — not a path the user has
+		// filesystem access to, and not something `boid project migrate`
+		// (which reads <dir>/.boid/project.yaml off a real, user-owned
+		// filesystem directory) can be run against at all. Telling the
+		// user to run it against dir would be flatly wrong, not just
+		// "less convenient" — point at their OWN clone instead.
+		return "Migration:\n" +
+			"  project.yaml uses fields removed in the new schema (listed above).\n" +
+			"  This project is registered via a git URL; the daemon reads project.yaml\n" +
+			"  from its own managed bare repository (" + dir + "), which is NOT a path\n" +
+			"  you can run `boid project migrate` against. Run it against YOUR OWN local\n" +
+			"  clone of this project's repository instead, then push the fix — see\n" +
+			"  docs/ja/guide/migration.md."
+	}
+	// codex round-9 review of PR5, Minor: "shows exactly what would move"
+	// overstated it after cmd/project_migrate.go's dry-run stopped
+	// touching the daemon's DB at all (round-8 fix) — dry-run now reads
+	// only project.yaml and explicitly SKIPS the workspace-assignment and
+	// secret-collision checks that used to make that claim true, printing
+	// its own "(dry-run) skipping ..." notes when it does. Weakened to
+	// describe what dry-run actually shows: a plan derived from
+	// project.yaml alone.
 	return "Migration:\n" +
-		"  1) Run: boid project migrate " + dir + "           (dry-run)\n" +
-		"  2) Confirm the plan, then re-run with --apply\n" +
-		"See docs/ja/guide/migration.md for details."
+		"  project.yaml uses fields removed in the new schema (listed above).\n" +
+		"  `boid project migrate " + dir + "` (dry-run) shows the migration plan derived\n" +
+		"  from project.yaml (it does not check the daemon's DB — see its own output\n" +
+		"  for what it skips as a result).\n" +
+		"  Automated --apply is a legacy, pre-compose, bare-metal-only path (requires\n" +
+		"  --legacy-bare-metal) — see `boid project migrate --help` and\n" +
+		"  docs/ja/guide/migration.md for what it does and does not cover for a\n" +
+		"  project registered with a compose daemon."
 }
 
 // rejectRemovedProjectFields scans the raw YAML map for top-level keys and
@@ -235,7 +288,7 @@ func migrationGuidance(dir string) string {
 // The Error() output of the returned value is byte-identical to the legacy
 // string-error form so existing tests that check via strings.Contains pass
 // unchanged.
-func rejectRemovedProjectFields(dir string, raw map[string]any) *ProjectMigrationError {
+func rejectRemovedProjectFields(dir string, isBareRepo bool, raw map[string]any) *ProjectMigrationError {
 	var msgs []string
 
 	// Check top-level removed keys.
@@ -268,8 +321,9 @@ func rejectRemovedProjectFields(dir string, raw map[string]any) *ProjectMigratio
 	}
 	return &ProjectMigrationError{
 		Projects: []ProjectMigrationIssue{{
-			Dir:      dir,
-			Messages: msgs,
+			Dir:        dir,
+			IsBareRepo: isBareRepo,
+			Messages:   msgs,
 		}},
 	}
 }

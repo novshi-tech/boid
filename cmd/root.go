@@ -104,26 +104,85 @@ var rootCmd = &cobra.Command{
 			return nil
 		}
 		// Host mode (PR-3 Option 4 redesign, docs/plans/
-		// volume-only-daemon.md §論点c, nose directive 2026-07-25):
-		// BOID_MODE=container opts a shell environment into `boid` itself
-		// managing the container-backend daemon's lifecycle (cmd/host.go)
-		// instead of the profiles.Resolve chain below. Only intercepts
-		// scope=remote commands — scope=local (start/stop/gc/...) and
-		// scope=neutral (login/logout) fall through unchanged, since
-		// host.go has no opinion about bare-metal daemon lifecycle or
-		// profile-less commands. TAB-completion queries degrade silently
-		// (same posture as a broken profile below) rather than
-		// potentially blocking a shell TAB press on a multi-minute
-		// container build.
-		if hostModeEnabled() && isRemoteScope(cmd) {
+		// volume-only-daemon.md §論点c; unconditional since docs/plans/
+		// release-onboarding.md 決定2/PR5 — BOID_MODE is gone, `boid`
+		// itself always manages the compose daemon's lifecycle
+		// (cmd/host.go) for scope=remote commands unless the caller
+		// opted out with an explicit --profile (see
+		// profileExplicitlyRequested's own doc comment for why that one
+		// flag wins over host mode, Fable M4). scope=local
+		// (start/stop/gc/...) and scope=neutral (login/logout) fall
+		// through unchanged, since host.go has no opinion about compose
+		// daemon lifecycle machinery itself or profile-less commands.
+		// TAB-completion queries degrade silently (same posture as a
+		// broken profile below) rather than potentially blocking a shell
+		// TAB press on a multi-minute container build.
+		if hostModeEnabled() && isRemoteScope(cmd) && !profileExplicitlyRequested(cmd) {
 			if isCompletionQuery(cmd) {
 				return nil
 			}
-			c, err := resolveHostModeClient(cmd.Context())
+			// context.Background(), not cmd.Context(): Cobra only ever
+			// replaces a nil Command.Context() with context.Background()
+			// inside Execute()/ExecuteC — a real `boid` invocation always
+			// goes through one of those, but a unit test driving
+			// PersistentPreRunE directly against a bare, non-Execute()'d
+			// *cobra.Command (as several in cmd/root_test.go do) has a nil
+			// one, which context.WithTimeout (probeHostMode) panics on.
+			// Mirrors the sibling client.EnsureRunningAt call further
+			// down this same function, which already uses
+			// context.Background() for the identical reason.
+			ctx := context.Background()
+			var (
+				c   *client.Client
+				err error
+			)
+			if hasSkipAutostartAnnotation(cmd) {
+				// codex round-1 review of PR5, Major 3: `boid gc` carries
+				// annotationSkipAutostart=skip specifically so a bare
+				// invocation does not spin up a daemon just to
+				// immediately garbage-collect it (gc.go's own doc
+				// comment) — a contract that predates host mode and
+				// applies identically to it. resolveHostModeClient
+				// unconditionally calls ensureHostModeDaemon, which
+				// deploys the compose stack when unreachable; that must
+				// not happen here.
+				c, err = resolveHostModeClientNoAutostart(ctx)
+			} else {
+				c, err = resolveHostModeClient(ctx)
+			}
 			if err != nil {
 				return err
 			}
 			cmd.SetContext(client.WithClient(cmd.Context(), c))
+			return nil
+		}
+		// scope=local commands (start/stop/check/project migrate/...) are,
+		// since 決定2/PR5, host-mode-adjacent local machinery — the SAME
+		// "only an EXPLICIT --profile flag routes through
+		// profiles.Resolve at all" rule Fable M4 established for
+		// scope=remote above must also apply here (codex round-1 review
+		// of PR5, Major 1). Before this fix, an AMBIENT default_profile
+		// or BOID_PROFILE naming a remote https daemon — set for
+		// unrelated scope=remote commands, long before host mode existed
+		// — would resolve here too and hit the scope=local hard-reject
+		// below (decision 6: "'%s' はローカル専用コマンドだよ"), meaning a
+		// plain `boid start`/`stop` with NO --profile at all could no
+		// longer bring the compose stack up/down. Skipping resolution
+		// entirely here (rather than only skipping the reject check) is
+		// deliberate: it also skips resolveClient's token-load/origin-
+		// bind round trip against that same ambient remote profile,
+		// which could independently fail (missing/corrupt token, network
+		// blip) and block start/stop for a reason that has nothing to do
+		// with them. RunE for every scope=local command below either
+		// never touches client.FromContext at all, or (cmd/check.go) is
+		// fine with its fallback: FromContext's own doc comment says an
+		// uninjected context degrades to NewUnixClient(DefaultSocketPath())
+		// — bit-for-bit the same client an unset profile would have
+		// resolved to anyway. Every scope=local command annotates
+		// annotationSkipAutostart=skip, so the autostart check just below
+		// this branch's own `return nil` is never reached for them
+		// either way.
+		if isLocalScope(cmd) && !profileExplicitlyRequested(cmd) {
 			return nil
 		}
 		// Two-phase resolution (docs/plans/cli-remote-connection.md
@@ -198,16 +257,36 @@ var rootCmd = &cobra.Command{
 		if isCompletionQuery(cmd) {
 			return nil
 		}
-		for anc := cmd; anc != nil; anc = anc.Parent() {
-			if anc.Annotations[annotationSkipAutostart] == "skip" {
-				return nil
-			}
+		if hasSkipAutostartAnnotation(cmd) {
+			return nil
 		}
 		if !c.IsUnix() {
 			return nil
 		}
 		return client.EnsureRunningAt(context.Background(), c.SocketPath())
 	},
+}
+
+// hasSkipAutostartAnnotation walks cmd's ancestor chain looking for
+// annotationSkipAutostart=skip — shared by both the bare-metal-profile
+// autostart check at the bottom of PersistentPreRunE (above) and host
+// mode's own branch (below): a command opting out of "launch a daemon
+// just for this" must mean it regardless of which of the two autostart
+// mechanisms (client.EnsureRunningAt for a bare-metal unix profile,
+// resolveHostModeClient's ensureHostModeDaemon for host mode) would
+// otherwise have fired (codex round-1 review of PR5, Major 3 — host
+// mode's branch used to ignore this annotation entirely, so `boid gc`
+// — annotated skip specifically so a bare invocation of it does not spin
+// up a daemon just to immediately garbage-collect it — silently lost
+// that contract the moment it was reclassified to scope=remote and
+// started going through host mode by default).
+func hasSkipAutostartAnnotation(cmd *cobra.Command) bool {
+	for anc := cmd; anc != nil; anc = anc.Parent() {
+		if anc.Annotations[annotationSkipAutostart] == "skip" {
+			return true
+		}
+	}
+	return false
 }
 
 // isNeutralScope reports whether cmd is annotated boid.scope=neutral
@@ -229,6 +308,25 @@ func isNeutralScope(cmd *cobra.Command) bool {
 // being invoked, which is what PersistentPreRunE receives as cmd.
 func isLocalScope(cmd *cobra.Command) bool {
 	return cmd.Annotations[scopeAnnotationKey] == scopeLocal
+}
+
+// profileExplicitlyRequested reports whether the invocation named an
+// explicit --profile (docs/plans/release-onboarding.md「profiles との
+// 優先順位が未定義」, Fable M4): host mode becoming the unconditional
+// default for scope=remote commands (決定2/PR5) would otherwise make
+// `--profile <https-profile>` and a genuine unix profile alike
+// unreachable — cmd/root.go's host-mode branch used to run
+// unconditionally ahead of profiles.Resolve for every scope=remote
+// command. The agreed coexistence rule: an explicit --profile flag wins
+// outright and routes through the ordinary profiles.Resolve chain
+// instead, exactly like before host mode existed. BOID_PROFILE / a
+// config.yaml default_profile do NOT trigger this bypass — those are
+// ambient defaults a user may have set for unrelated (pre-compose)
+// reasons, whereas typing --profile on THIS invocation is an
+// unambiguous, one-shot statement of intent.
+func profileExplicitlyRequested(cmd *cobra.Command) bool {
+	f := cmd.Flags().Lookup(profiles.ProfileFlagName)
+	return f != nil && f.Changed
 }
 
 // resolveClient resolves cmd's connection profile (profiles.Resolve) and

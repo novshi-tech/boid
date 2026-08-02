@@ -3,18 +3,16 @@ package cmd
 import (
 	"fmt"
 	"math"
-	"os"
-	"path/filepath"
+	"net/http"
 	"strings"
 	"text/tabwriter"
 	"time"
 
+	"github.com/novshi-tech/boid/internal/api"
 	webauth "github.com/novshi-tech/boid/internal/api/auth"
 	"github.com/novshi-tech/boid/internal/client"
-	"github.com/novshi-tech/boid/internal/profiles"
 	"github.com/novshi-tech/boid/internal/qrterm"
 	"github.com/spf13/cobra"
-	"gopkg.in/yaml.v3"
 )
 
 var webCmd = &cobra.Command{
@@ -51,31 +49,34 @@ var webRevokeAllCmd = &cobra.Command{
 	RunE:        runWebRevokeAll,
 }
 
-// webSetURLCmd / webSetAddrCmd are scopeLocal (docs/plans/
-// workspace-db-consolidation.md decision 6): both edit config.yaml and
-// require a daemon restart to take effect, so even once Phase 3 lets the
-// CLI target a remote daemon, these two could never complete against one —
-// restarting a remote daemon isn't something the CLI can drive either way.
+// webSetURLCmd / webSetAddrCmd used to be scopeLocal, editing
+// ~/.config/boid/config.yaml on THIS host directly (docs/plans/
+// workspace-db-consolidation.md decision 6) — that only ever worked
+// because the CLI and the (bare-metal) daemon happened to run on the same
+// host with the same $XDG_CONFIG_HOME. Under the compose daemon
+// (docs/plans/release-onboarding.md 決定2/穴8) config.yaml lives inside the
+// boid_state named volume, unreachable from a host-side file write at all.
+//
+// PR5 (release-onboarding.md 穴8 (b)) folds both into the existing
+// scopeRemote `boid config set` machinery (POST /api/config/mutate,
+// cmd/config.go) instead of inventing a second config-mutation path — the
+// daemon performs the read-modify-write atomically and the change reaches
+// whichever host actually runs the daemon, host mode or a genuine remote
+// --profile alike.
 var webSetURLCmd = &cobra.Command{
-	Use:   "set-url <URL>",
-	Short: "Set the public URL in config.yaml",
-	Args:  cobra.ExactArgs(1),
-	Annotations: map[string]string{
-		annotationSkipAutostart: "skip",
-		scopeAnnotationKey:      scopeLocal,
-	},
-	RunE: runWebSetURL,
+	Use:         "set-url <URL>",
+	Short:       "Set the public URL in config.yaml (web.public_url, via `config set`)",
+	Args:        cobra.ExactArgs(1),
+	Annotations: map[string]string{scopeAnnotationKey: scopeRemote},
+	RunE:        runWebSetURL,
 }
 
 var webSetAddrCmd = &cobra.Command{
-	Use:   "set-addr <addr>",
-	Short: "Set the HTTP listen address in config.yaml",
-	Args:  cobra.ExactArgs(1),
-	Annotations: map[string]string{
-		annotationSkipAutostart: "skip",
-		scopeAnnotationKey:      scopeLocal,
-	},
-	RunE: runWebSetAddr,
+	Use:         "set-addr <addr>",
+	Short:       "Set the HTTP listen address in config.yaml (web.http_addr, via `config set`)",
+	Args:        cobra.ExactArgs(1),
+	Annotations: map[string]string{scopeAnnotationKey: scopeRemote},
+	RunE:        runWebSetAddr,
 }
 
 var webPairLabel string
@@ -198,109 +199,33 @@ func runWebRevokeAll(cmd *cobra.Command, args []string) error {
 }
 
 func runWebSetURL(cmd *cobra.Command, args []string) error {
-	url := args[0]
-
-	configDir, err := os.UserConfigDir()
-	if err != nil {
-		return fmt.Errorf("get config dir: %w", err)
-	}
-	configPath := filepath.Join(configDir, "boid", "config.yaml")
-
-	// Serialize the read-modify-write under the shared config.yaml flock
-	// (profiles.LockConfigMutation) so a concurrent `boid login`
-	// (profiles.MutateConfig) or another `boid web set-...` cannot lose
-	// this write's changes. codex PR2 review round 2.
-	release, err := profiles.LockConfigMutation(configPath)
-	if err != nil {
-		return err
-	}
-	defer release()
-
-	var root map[string]any
-	data, err := os.ReadFile(configPath)
-	if err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("read config: %w", err)
-	}
-	if err == nil {
-		if unmarshalErr := yaml.Unmarshal(data, &root); unmarshalErr != nil {
-			return fmt.Errorf("parse config: %w", unmarshalErr)
-		}
-	}
-	if root == nil {
-		root = make(map[string]any)
-	}
-
-	web, _ := root["web"].(map[string]any)
-	if web == nil {
-		web = make(map[string]any)
-	}
-	web["public_url"] = url
-	root["web"] = web
-
-	out, err := yaml.Marshal(root)
-	if err != nil {
-		return fmt.Errorf("marshal config: %w", err)
-	}
-	if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
-		return fmt.Errorf("create config dir: %w", err)
-	}
-	if err := os.WriteFile(configPath, out, 0o600); err != nil {
-		return fmt.Errorf("write config: %w", err)
-	}
-
-	fmt.Fprintf(cmd.OutOrStdout(), "web.public_url = %s\n", url)
-	return nil
+	return webConfigMutateSet(cmd, "web.public_url", args[0])
 }
 
 func runWebSetAddr(cmd *cobra.Command, args []string) error {
-	addr := args[0]
+	return webConfigMutateSet(cmd, "web.http_addr", args[0])
+}
 
-	configDir, err := os.UserConfigDir()
-	if err != nil {
-		return fmt.Errorf("get config dir: %w", err)
-	}
-	configPath := filepath.Join(configDir, "boid", "config.yaml")
-
-	// See runWebSetURL: serialize under the shared config lock so no other
-	// writer's changes are lost by our read-modify-write.
-	release, err := profiles.LockConfigMutation(configPath)
-	if err != nil {
-		return err
-	}
-	defer release()
-
-	var root map[string]any
-	data, err := os.ReadFile(configPath)
-	if err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("read config: %w", err)
-	}
-	if err == nil {
-		if unmarshalErr := yaml.Unmarshal(data, &root); unmarshalErr != nil {
-			return fmt.Errorf("parse config: %w", unmarshalErr)
-		}
-	}
-	if root == nil {
-		root = make(map[string]any)
+// webConfigMutateSet is `boid web set-url`/`set-addr`'s shared
+// implementation (docs/plans/release-onboarding.md 穴8 (b)): a single POST
+// /api/config/mutate call, identical in shape to cmd/config.go's
+// runConfigSet — the daemon performs the read-modify-write atomically, so
+// this never needs to see config.yaml's full document at all.
+func webConfigMutateSet(cmd *cobra.Command, key, value string) error {
+	c := client.FromContext(cmd.Context())
+	var result api.ConfigMutateResult
+	if err := c.Do(http.MethodPost, "/api/config/mutate", api.ConfigMutateRequest{
+		Op:    api.ConfigMutateSet,
+		Key:   key,
+		Value: []string{value},
+	}, &result); err != nil {
+		return fmt.Errorf("set %s: %w", key, err)
 	}
 
-	web, _ := root["web"].(map[string]any)
-	if web == nil {
-		web = make(map[string]any)
+	out := cmd.OutOrStdout()
+	fmt.Fprintf(out, "%s = %s\n", key, value)
+	for _, w := range result.Warnings {
+		fmt.Fprintln(out, w)
 	}
-	web["http_addr"] = addr
-	root["web"] = web
-
-	out, err := yaml.Marshal(root)
-	if err != nil {
-		return fmt.Errorf("marshal config: %w", err)
-	}
-	if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
-		return fmt.Errorf("create config dir: %w", err)
-	}
-	if err := os.WriteFile(configPath, out, 0o600); err != nil {
-		return fmt.Errorf("write config: %w", err)
-	}
-
-	fmt.Fprintf(cmd.OutOrStdout(), "web.http_addr = %s\n", addr)
 	return nil
 }

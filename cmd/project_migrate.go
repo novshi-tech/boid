@@ -59,6 +59,21 @@ import (
 // closes the gap identified in codex review MAJOR 4 (docs/plans/
 // workspace-db-consolidation.md): before that fix, --apply always looked
 // like it succeeded but never touched what a live daemon uses at all.
+//
+// docs/plans/release-onboarding.md 決定2/PR5 (codex round-1 through
+// round-5 review): everything above describes a bare-metal daemon sharing
+// this host's filesystem/socket — that shape is the ONLY one --apply
+// (and this whole file's push/offline-DB machinery) still targets.
+// Compose is now the only SUPPORTED daemon shape, and this command has no
+// safe way to reach it: its real config/DB live inside the boid_state
+// volume (invisible from here), and even the "daemon reachable, push over
+// HTTP" branch above cannot sync host_commands definitions into a compose
+// daemon's config (ensureLegacyKitHostCommandsKnownToDaemon only ever
+// writes ~/.config/boid/host_commands.yaml on THIS host and asks the
+// daemon to reload — a request a compose daemon has no reason to act on
+// for a file it cannot see). --apply is therefore refused entirely unless
+// --legacy-bare-metal is also passed (runProjectMigrate below) — see the
+// command's own --help text for the compose-safe, by-hand alternative.
 var projectMigrateCmd = &cobra.Command{
 	Use:   "migrate <dir>",
 	Short: "Migrate a project from the old project.yaml schema to the new workspace+kit schema (no daemon required)",
@@ -67,25 +82,26 @@ generates a workspace.yaml update and optionally a legacy kit.yaml, and rewrites
 project.yaml to remove the fields that have moved.
 
 By default the command runs in dry-run mode: it prints what it would do without
-writing anything. Pass --apply to actually perform the migration.
+writing anything.
 
-The daemon does not need to be running for project.yaml, the legacy kit, or
-secrets to migrate. The workspace's content is always applied to the
-workspaces DB table: if the daemon is reachable, --apply applies it there
-over HTTP — a brand-new workspace slug is created (POST /api/workspaces),
-and a slug that already exists has its current content merged with the
-migrated fields and updated in place (existing content is preserved;
-migration-sourced values win on a key collision). If the daemon isn't
-running (e.g. boid start --auto-migrate, which runs this after the daemon
-has already failed to start), the same merge is applied directly to the
-database instead. Either way, a reviewable yaml file is also written, and
-can still be applied by hand if wanted:
-  boid workspace create <slug> --from-file <file>  (brand-new slug)
-  boid workspace edit <slug> --from-file <file>    (slug already exists)
+--apply is a LEGACY, pre-compose, bare-metal-only migration path
+(docs/plans/release-onboarding.md 決定2) and is refused unless
+--legacy-bare-metal is also passed: it writes directly to a host-local
+boid.db and, when reachable, also drives a bare-metal daemon's own
+socket — neither of which is safe against a compose daemon (its real
+config/DB live inside the boid_state volume, invisible from here).
 
-Secret migration copies secrets from the old namespace (secret_namespace field)
-to the workspace namespace. Use --on-collision to control behaviour when a
-key already exists in the new namespace (default: refuse and list collisions).`,
+For a project registered with a compose daemon there is no fully
+automated recovery yet — see docs/ja/guide/migration.md for the current
+guidance and known limitations (this went through seven rounds of codex
+review; every specific by-hand recipe tried so far turned out to have a
+real hole somewhere — see guardApply's own doc comment in this file for
+the history — so this text deliberately stops short of promising one).
+
+Secret migration (--legacy-bare-metal + --apply only) copies secrets from
+the old namespace (secret_namespace field) to the workspace namespace. Use
+--on-collision to control behaviour when a key already exists in the new
+namespace (default: refuse and list collisions).`,
 	Args: cobra.ExactArgs(1),
 	Annotations: map[string]string{
 		annotationSkipAutostart: "skip",
@@ -97,16 +113,23 @@ key already exists in the new namespace (default: refuse and list collisions).`,
 }
 
 var (
-	migrateWorkspace    string
-	migrateApply        bool
-	migrateOnCollision  string
-	migrateDBPath       string
-	migrateKeyFilePath  string
+	migrateWorkspace       string
+	migrateApply           bool
+	migrateLegacyBareMetal bool
+	migrateOnCollision     string
+	migrateDBPath          string
+	migrateKeyFilePath     string
 )
 
 func init() {
 	projectMigrateCmd.Flags().StringVar(&migrateWorkspace, "workspace", "", "Workspace slug to assign (required if no existing project_workspaces entry)")
 	projectMigrateCmd.Flags().BoolVar(&migrateApply, "apply", false, "Actually perform the migration (default: dry-run)")
+	// --legacy-bare-metal (docs/plans/release-onboarding.md「project migrate
+	// → 要注意コマンド」, codex round-1 through round-5 review of PR5):
+	// required together with --apply — see guardApply's own doc comment
+	// for the full history of why --apply is refused outright without it.
+	projectMigrateCmd.Flags().BoolVar(&migrateLegacyBareMetal, "legacy-bare-metal", false,
+		"Acknowledge this is a legacy, pre-compose, bare-metal-only migration with no compose daemon involved at all; required together with --apply (docs/plans/release-onboarding.md)")
 	projectMigrateCmd.Flags().StringVar(&migrateOnCollision, "on-collision", "refuse", "How to handle secret key collisions: refuse (default), skip, overwrite")
 	projectMigrateCmd.Flags().StringVar(&migrateDBPath, "db-path", "", "Path to the SQLite database (default: XDG data dir)")
 	projectMigrateCmd.Flags().StringVar(&migrateKeyFilePath, "key-file-path", "", "Path to the secret key file (default: XDG data dir)")
@@ -145,10 +168,10 @@ type migratePlan struct {
 	removeKeys []string
 
 	// Secret migration
-	oldNamespace      string
-	newNamespace      string // == workspaceSlug
-	secretKeys        []string
-	secretCollisions  []secretCollision
+	oldNamespace     string
+	newNamespace     string // == workspaceSlug
+	secretKeys       []string
+	secretCollisions []secretCollision
 }
 
 type secretCollision struct {
@@ -243,16 +266,40 @@ func MigrateProject(opts MigrateProjectOptions) error {
 		return fmt.Errorf("migrate: project.yaml has no 'name' field; cannot proceed")
 	}
 
-	// Open DB (direct, no daemon).
-	dbPath := opts.DBPath
-	if dbPath == "" {
-		dbPath = defaultDBPath()
+	// codex round-9 review of PR5, Blocker 2: db.Open used to run
+	// unconditionally here, even for a plain dry-run (opts.Apply==false).
+	// db.Open's own PRAGMA journal_mode=WAL (internal/db/db.go) creates
+	// the sqlite file (plus -wal/-shm) as a SIDE EFFECT of merely opening
+	// a path that does not exist yet — on a fresh compose-only host with
+	// no host-local boid.db at all, a plain dry-run would silently
+	// materialize one, directly contradicting "dry-run: prints what it
+	// would do without writing anything" (this command's own --help
+	// text). It would then typically fail anyway with "no such table:
+	// projects" (a fresh DB has no schema), but the file-creation side
+	// effect already happened by that point.
+	//
+	// Fixed by opening boidDB ONLY when opts.Apply is set — guardApply
+	// (runProjectMigrate) already refuses --apply outright unless
+	// --legacy-bare-metal is also passed, so by the time this ever runs
+	// with Apply==true, the caller has explicitly opted into exactly the
+	// bare-metal, host-local-DB-dependent behavior this file's DB access
+	// implements. A plain dry-run now never touches boidDB at all: the
+	// project lookup below (existing workspace assignment) is skipped
+	// entirely and reported as such, and computeMigratePlan's own secret
+	// listing/collision check (which also takes boidDB) does the same —
+	// see its own doc comment.
+	var boidDB *db.DB
+	if opts.Apply {
+		dbPath := opts.DBPath
+		if dbPath == "" {
+			dbPath = defaultDBPath()
+		}
+		boidDB, err = db.Open(dbPath)
+		if err != nil {
+			return fmt.Errorf("migrate: open db: %w", err)
+		}
+		defer boidDB.Close()
 	}
-	boidDB, err := db.Open(dbPath)
-	if err != nil {
-		return fmt.Errorf("migrate: open db: %w", err)
-	}
-	defer boidDB.Close()
 
 	// ---- Phase 2: Resolve workspace slug ------------------------------------
 	plan := &migratePlan{
@@ -260,15 +307,23 @@ func MigrateProject(opts MigrateProjectOptions) error {
 		meta: meta,
 	}
 
-	// Look up project in DB to find existing workspace assignment.
-	project, err := orchestrator.GetProject(boidDB.Conn, meta.ID)
-	if err != nil && !errors.Is(err, errProjectNotFound(err)) {
-		// Only hard-fail on unexpected errors. Missing project means it hasn't
-		// been registered yet; we still allow migration.
-		if !strings.Contains(err.Error(), "no rows") {
-			return fmt.Errorf("migrate: query project: %w", err)
+	// Look up project in DB to find existing workspace assignment — only
+	// possible when boidDB was opened above (opts.Apply==true). A plain
+	// dry-run has no DB to check, so this is skipped rather than opening
+	// one just to look; see the boidDB comment above for why.
+	var project *orchestrator.Project
+	if boidDB != nil {
+		project, err = orchestrator.GetProject(boidDB.Conn, meta.ID)
+		if err != nil && !errors.Is(err, errProjectNotFound(err)) {
+			// Only hard-fail on unexpected errors. Missing project means it hasn't
+			// been registered yet; we still allow migration.
+			if !strings.Contains(err.Error(), "no rows") {
+				return fmt.Errorf("migrate: query project: %w", err)
+			}
+			project = nil
 		}
-		project = nil
+	} else {
+		fmt.Fprintln(out, "(dry-run) skipping existing-workspace-assignment lookup (no DB access without --apply --legacy-bare-metal); pass --workspace explicitly if this project already has one.")
 	}
 	plan.project = project
 
@@ -291,7 +346,7 @@ func MigrateProject(opts MigrateProjectOptions) error {
 	plan.workspaceSlug = workspaceSlug
 
 	// ---- Compute what changes will be made -----------------------------------
-	if err := computeMigratePlan(plan, boidDB, opts.KeyFilePath); err != nil {
+	if err := computeMigratePlan(plan, boidDB, opts.KeyFilePath, out); err != nil {
 		return fmt.Errorf("migrate: %w", err)
 	}
 
@@ -310,7 +365,14 @@ func MigrateProject(opts MigrateProjectOptions) error {
 	// ---- Phase 4: Apply (only when --apply is set) --------------------------
 	if !opts.Apply {
 		fmt.Fprintln(out)
-		fmt.Fprintln(out, "(dry-run) Pass --apply to execute the migration.")
+		// codex round-10 review of PR5, Minor: guardApply refuses --apply
+		// outright unless --legacy-bare-metal is ALSO passed (this file's
+		// own guardApply doc comment) — telling a compose-daemon user to
+		// "Pass --apply" alone describes a command that will just be
+		// refused again. Point at --help/the migration guide instead of
+		// asserting a specific flag combination that may not apply to
+		// this project's deployment.
+		fmt.Fprintln(out, "(dry-run) See `boid project migrate --help` and docs/ja/guide/migration.md for how to apply this migration.")
 		return nil
 	}
 
@@ -330,6 +392,11 @@ func runProjectMigrate(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("resolve dir: %w", err)
 	}
+	if migrateApply {
+		if err := guardApply(cmd.ErrOrStderr(), dir, migrateLegacyBareMetal); err != nil {
+			return err
+		}
+	}
 	return MigrateProject(MigrateProjectOptions{
 		Dir:         dir,
 		Workspace:   migrateWorkspace,
@@ -341,6 +408,78 @@ func runProjectMigrate(cmd *cobra.Command, args []string) error {
 	})
 }
 
+// guardApply implements docs/plans/release-onboarding.md's「project
+// migrate → 要注意コマンド」guidance for `boid project migrate <dir>
+// --apply`.
+//
+// docs/plans/release-onboarding.md history (codex round-1 through
+// round-5 review of PR5) — TWO attempts at a "safe partial apply" design
+// (letting --apply always run its LOCAL writes, and/or its ONLINE daemon
+// push, while only gating the OFFLINE/host-DB-writing parts behind
+// --legacy-bare-metal) were each found broken on closer static review:
+//
+//   - round-3 Blocker: refusing --apply outright broke
+//     internal/orchestrator/spec_loader.go's migrationGuidance, which
+//     promised a `--from-file <file>` recovery path dry-run never
+//     produces a file for.
+//
+//   - round-4 Blocker (×3): the fix for that skipped the daemon push's
+//     ONLINE branch too broadly, missed that SetProjectWorkspace/
+//     migrateSecrets always write to boidDB regardless of reachability,
+//     and the manual `workspace edit --from-file` fallback it still
+//     pointed users at is a full REPLACE that can drop fields.
+//
+//   - round-5 Blocker: the fix for THAT (gating only the genuinely
+//     host-DB-writing steps, leaving the online HTTP push
+//     unconditional) still could not actually reach a compose daemon
+//     correctly for a project needing host_commands migration —
+//     ensureLegacyKitHostCommandsKnownToDaemon only ever writes
+//     ~/.config/boid/host_commands.yaml on THIS host and asks the
+//     daemon to reload; a compose daemon's config lives inside the
+//     boid_state volume and has no reason to notice. "Migration
+//     complete" would print while the compose daemon silently never saw
+//     the new host_commands definitions.
+//
+//   - round-6 Blocker (×3): the by-hand recipe adopted after round-5
+//     itself assumed a reachable daemon for a scenario (schema violation
+//     blocking the DAEMON'S OWN startup) where none may exist yet, used
+//     `workspace show -o yaml`'s wrapper-envelope output as if it were
+//     the bare WorkspaceMeta `workspace edit --from-file` strict-decodes,
+//     and never actually copied secret VALUES (only listed keys).
+//
+//   - round-7 Blocker (×3): even the narrowed, no-longer-command-specific
+//     guidance still asserted things that do not hold in general — a
+//     git-URL-registered project's daemon-side bare-repo cache does not
+//     auto-update just because the user's own local checkout changed
+//     (`boid project fetch` is itself unreachable while the daemon is
+//     down), host_commands DEFINITIONS have no create/edit surface on
+//     the CLI at all (list/reload only), and `compose up -d` succeeding
+//     does not mean the container didn't immediately crash on this exact
+//     error — the guidance could be buried in `docker compose logs`
+//     nobody is told to check.
+//
+// Conclusion: this command's entire push/apply machinery is
+// bare-metal-shaped and CANNOT be partially safe for a compose daemon
+// without new daemon-side API surface (e.g. a host_commands-definition
+// endpoint, a way to force-refresh a git-URL project's bare-repo cache
+// independent of daemon startup) that does not exist yet — out of scope
+// for this PR. --apply therefore refuses OUTRIGHT unless
+// --legacy-bare-metal is also passed; migrationGuidance
+// (internal/orchestrator/spec_loader.go) and this command's own --help
+// text have both stopped asserting a specific by-hand recovery recipe,
+// after seven rounds of review each finding a new hole in the previous
+// one — see docs/ja/guide/migration.md for the current, deliberately
+// non-prescriptive guidance and its documented known limitations.
+func guardApply(stderr io.Writer, dir string, legacyBareMetal bool) error {
+	if legacyBareMetal {
+		fmt.Fprintln(stderr, "note: --legacy-bare-metal set — this will push the migrated workspace directly to a bare-metal daemon (over HTTP if one answers client.DefaultSocketPath(), otherwise straight into a boid.db on this host), and copy project-workspace-assignment/secrets there too. Only pass this for a genuine pre-compose, bare-metal-only migration with no compose daemon involved at all.")
+		return nil
+	}
+	return fmt.Errorf(
+		"boid project migrate --apply is a legacy, pre-compose, bare-metal-only migration path and is refused without --legacy-bare-metal (docs/plans/release-onboarding.md 決定2): it writes directly to a host boid.db and drives a bare-metal daemon's own socket, neither of which is safe against a compose daemon (its real config/DB live inside the boid_state volume, invisible from here). "+
+			"For a project registered with a compose daemon there is no fully automated recovery yet — dry-run `boid project migrate %s` (no --apply) shows exactly which fields need to move; see docs/ja/guide/migration.md for the current guidance and known limitations.", dir)
+}
+
 // errProjectNotFound is a helper to detect "not found" errors from GetProject.
 // GetProject returns sql.ErrNoRows wrapped in a message, so we match the string.
 func errProjectNotFound(err error) error {
@@ -349,7 +488,7 @@ func errProjectNotFound(err error) error {
 
 // computeMigratePlan populates the migration plan fields based on the legacy
 // meta and the existing workspace state.
-func computeMigratePlan(plan *migratePlan, boidDB *db.DB, keyFilePath string) error {
+func computeMigratePlan(plan *migratePlan, boidDB *db.DB, keyFilePath string, out io.Writer) error {
 	meta := plan.meta
 	wsStore := orchestrator.NewWorkspaceStore("")
 
@@ -431,6 +570,17 @@ func computeMigratePlan(plan *migratePlan, boidDB *db.DB, keyFilePath string) er
 	plan.newNamespace = plan.workspaceSlug
 
 	if plan.oldNamespace != "" && plan.oldNamespace != plan.newNamespace {
+		// codex round-9 review of PR5, Blocker 2: boidDB is nil for a
+		// plain dry-run (MigrateProject only opens it when opts.Apply is
+		// set — see that function's own comment). Secret listing/
+		// collision detection needs a real DB connection, so it is
+		// skipped (not attempted against a nil boidDB, which would
+		// panic) and reported as such; --apply --legacy-bare-metal is
+		// the only path that can actually see this.
+		if boidDB == nil {
+			fmt.Fprintf(out, "(dry-run) skipping secret collision check for namespace %q -> %q (no DB access without --apply --legacy-bare-metal)\n", plan.oldNamespace, plan.newNamespace)
+			return nil
+		}
 		// Load secret store to enumerate keys.
 		kfPath := keyFilePath
 		if kfPath == "" {
@@ -809,6 +959,18 @@ func applyMigratePlan(plan *migratePlan, boidDB *db.DB, keyFilePath, onCollision
 	if err := wsStore.Save(plan.workspaceSlug, plan.workspaceMeta); err != nil {
 		return fmt.Errorf("save workspace.yaml: %w", err)
 	}
+	// docs/plans/release-onboarding.md 決定2/PR5 (codex round-1 through
+	// round-5 review): every attempt at partially gating this push behind
+	// --legacy-bare-metal (rather than the whole --apply command,
+	// guardApply's own job) turned out to have a daemon-topology-unsafe
+	// hole somewhere — see guardApply's own doc comment for the full
+	// three-round history. applyMigratePlan itself is therefore back to
+	// its original, unconditional (pre-PR5) shape: everything below
+	// this point — including pushMigratedWorkspaceToDaemon's online/
+	// offline branching, SetProjectWorkspace, and migrateSecrets — only
+	// ever runs at all when runProjectMigrate's guardApply has already
+	// confirmed --legacy-bare-metal was passed (or a direct Go caller,
+	// e.g. a test, opted in by calling Apply:true itself).
 	if shadowPath, err := workspaceShadowPath(plan.workspaceSlug); err != nil {
 		fmt.Fprintf(out, "warning: could not resolve workspace shadow path: %v\n", err)
 	} else if err := pushMigratedWorkspaceToDaemon(plan, boidDB, shadowPath, out); err != nil {
@@ -897,10 +1059,12 @@ func shadowFileApplyHintBothCases(shadowPath, slug string) string {
 // single liveness check (daemon.IsSocketAlive against
 // client.DefaultSocketPath()) up front — MAJOR 1 (codex review,
 // docs/plans/workspace-db-consolidation.md). This matters because `boid
-// start --auto-migrate` (cmd/start.go's runDaemonParent ->
-// handleMigrationFailure -> runAutoMigrate) calls MigrateProject in-process
-// specifically because the daemon it just tried to start FAILED to start —
-// so for that caller the daemon is *never* reachable, and before this fix
+// start --auto-migrate` (cmd/start_automigrate.go's handleMigrationFailure
+// -> runAutoMigrate — historically invoked from the now-removed bare-metal
+// runDaemonParent respawn loop, docs/plans/release-onboarding.md 決定2/PR5)
+// calls MigrateProject in-process specifically because the daemon it just
+// tried to start FAILED to start — so for that caller the daemon is
+// *never* reachable, and before this fix
 // the HTTP-only push always took the "could not reach the boid daemon"
 // warning branch there, silently no-op'ing the one thing (the `workspaces`
 // row) --apply is supposed to guarantee gets applied.

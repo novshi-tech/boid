@@ -16,21 +16,13 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// TestHostModeEnabled pins docs/plans/release-onboarding.md 決定2/PR5:
+// host mode is unconditional now — BOID_MODE is gone, so there is no
+// env-driven case matrix left to exercise here, just the always-true
+// contract.
 func TestHostModeEnabled(t *testing.T) {
-	cases := []struct {
-		env  string
-		want bool
-	}{
-		{"", false},
-		{"container", true},
-		{"unix-socket", false},
-		{"CONTAINER", false}, // case-sensitive, deliberately not tolerant
-	}
-	for _, c := range cases {
-		t.Setenv(boidModeEnv, c.env)
-		if got := hostModeEnabled(); got != c.want {
-			t.Errorf("BOID_MODE=%q: hostModeEnabled() = %v, want %v", c.env, got, c.want)
-		}
+	if !hostModeEnabled() {
+		t.Error("hostModeEnabled() = false, want true (unconditional since PR5)")
 	}
 }
 
@@ -184,7 +176,19 @@ func TestFindComposeRoot_EnvOverride(t *testing.T) {
 	}
 }
 
-func TestFindComposeRoot_WalksUpFromCwd(t *testing.T) {
+// TestFindComposeRoot_DoesNotWalkUpFromCwd is the codex round-10 review of
+// PR5, Blocker regression test: findComposeRoot used to walk up from cwd
+// looking for scripts/deploy-container.sh, which became a drive-by
+// code-execution vector once PR5 made host mode (and therefore this
+// lookup) the unconditional default for every scope=remote command — a
+// checkout an attacker controls, not necessarily boid's own, could plant
+// its own scripts/deploy-container.sh and have it executed with the
+// invoking user's own privileges the moment `boid` ran from inside (or
+// below) it with the daemon not yet reachable. BOID_COMPOSE_ROOT must be
+// the ONLY way to make this trust a checkout now; a real
+// scripts/deploy-container.sh sitting in an ancestor directory must be
+// ignored when it is unset.
+func TestFindComposeRoot_DoesNotWalkUpFromCwd(t *testing.T) {
 	t.Setenv("BOID_COMPOSE_ROOT", "")
 
 	repoRoot := t.TempDir()
@@ -208,16 +212,8 @@ func TestFindComposeRoot_WalksUpFromCwd(t *testing.T) {
 		t.Fatalf("chdir: %v", err)
 	}
 
-	root, err := findComposeRoot()
-	if err != nil {
-		t.Fatalf("findComposeRoot: %v", err)
-	}
-	// Resolve symlinks (e.g. macOS /tmp -> /private/tmp; harmless on
-	// Linux too) before comparing, since os.Getwd can return either form.
-	wantRoot, _ := filepath.EvalSymlinks(repoRoot)
-	gotRoot, _ := filepath.EvalSymlinks(root)
-	if gotRoot != wantRoot {
-		t.Errorf("root = %q, want %q", gotRoot, wantRoot)
+	if root, err := findComposeRoot(); err == nil {
+		t.Fatalf("findComposeRoot() = %q, nil; want an error — BOID_COMPOSE_ROOT is unset, so an ancestor directory's own scripts/deploy-container.sh must NOT be trusted", root)
 	}
 }
 

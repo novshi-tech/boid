@@ -23,9 +23,14 @@ func TestProjectMigrationError_SingleIssueByteIdentical(t *testing.T) {
 	want := `project.yaml: top-level "kits" is no longer supported.
 project.yaml: top-level "host_commands" is no longer supported.
 Migration:
-  1) Run: boid project migrate ` + dir + `           (dry-run)
-  2) Confirm the plan, then re-run with --apply
-See docs/ja/guide/migration.md for details.`
+  project.yaml uses fields removed in the new schema (listed above).
+  ` + "`boid project migrate " + dir + "`" + ` (dry-run) shows the migration plan derived
+  from project.yaml (it does not check the daemon's DB — see its own output
+  for what it skips as a result).
+  Automated --apply is a legacy, pre-compose, bare-metal-only path (requires
+  --legacy-bare-metal) — see ` + "`boid project migrate --help`" + ` and
+  docs/ja/guide/migration.md for what it does and does not cover for a
+  project registered with a compose daemon.`
 
 	got := FormatMigrationIssue(issue)
 	if got != want {
@@ -36,6 +41,35 @@ See docs/ja/guide/migration.md for details.`
 	wrapped := &ProjectMigrationError{Projects: []ProjectMigrationIssue{issue}}
 	if wrapped.Error() != want {
 		t.Fatalf("ProjectMigrationError.Error() mismatch\nwant:\n%s\n\ngot:\n%s", want, wrapped.Error())
+	}
+}
+
+// TestProjectMigrationError_IsBareRepo_DoesNotAssertDirectlyRunnableCommand
+// is the codex round-9 review of PR5, Blocker 1 regression test:
+// ProjectMigrationIssue.IsBareRepo=true (a git-URL-registered project,
+// whose Dir is the daemon's own internal bare-repository path — not a
+// path the user can run `boid project migrate` against at all) must NOT
+// produce guidance asserting `boid project migrate <dir>` is directly
+// runnable. It must instead say Dir is the daemon's own bare repo and
+// point the user at their own local clone.
+func TestProjectMigrationError_IsBareRepo_DoesNotAssertDirectlyRunnableCommand(t *testing.T) {
+	dir := "/var/lib/boid/bare-repos/abc123"
+	issue := ProjectMigrationIssue{
+		Dir:        dir,
+		IsBareRepo: true,
+		Messages:   []string{`project.yaml: top-level "kits" is no longer supported.`},
+	}
+
+	got := FormatMigrationIssue(issue)
+
+	if strings.Contains(got, "`boid project migrate "+dir+"`") {
+		t.Errorf("must not assert `boid project migrate %s` is directly runnable, got:\n%s", dir, got)
+	}
+	if !strings.Contains(strings.ToLower(got), "own local") {
+		t.Errorf("expected guidance to point at the user's own local clone, got:\n%s", got)
+	}
+	if !strings.Contains(got, dir) {
+		t.Errorf("expected the bare-repo path to still be named (for context), got:\n%s", got)
 	}
 }
 
@@ -59,7 +93,8 @@ func TestProjectMigrationError_WithProjectID(t *testing.T) {
 	if !strings.Contains(got, `top-level "kits" is no longer supported.`) {
 		t.Fatalf("missing field message: %s", got)
 	}
-	if !strings.Contains(got, "Migration:\n  1) Run: boid project migrate "+dir) {
+	if !strings.Contains(got, "Migration:\n  project.yaml uses fields removed in the new schema") ||
+		!strings.Contains(got, "boid project migrate "+dir+"`") {
 		t.Fatalf("missing migration guidance: %s", got)
 	}
 }

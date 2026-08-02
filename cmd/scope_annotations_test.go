@@ -62,18 +62,21 @@ func TestAllCommandsHaveScopeAnnotation(t *testing.T) {
 //
 // A few entries deliberately diverge from what the mechanism alone would
 // suggest, reconciled against the plan doc during codex review round 2:
-//   - `gc`: pinned to scopeLocal per the plan doc's "daemon lifecycle
-//     machinery" grouping (start/stop/gc/init), even though gc's own work
-//     (POST /api/gc) is dispatched entirely through the daemon's HTTP API
-//     and would function correctly against a remote daemon too.
+//   - `gc` / `project reload`: RECLASSIFIED to scopeRemote by
+//     docs/plans/release-onboarding.md 決定2/scope 再分類表 (PR5). Both were
+//     scopeLocal ("daemon lifecycle machinery" / "境界越えで壊れる"
+//     groupings) even though their actual work (POST /api/gc,
+//     POST /api/projects/reload) was always dispatched entirely through
+//     the daemon's HTTP API — under the bare-metal daemon this reached it
+//     via an implicit channel (the runtime-dir bind happens to make the
+//     same unix socket path resolve on both sides). Now that host mode
+//     (cmd/host.go) is the CLI's unconditional default resolution path
+//     for scope=remote commands, both go through the same explicit,
+//     authenticated CLI listener as every other daemon API call instead
+//     of relying on that bind-mount coincidence.
 //   - `check`: pinned to scopeLocal — its exec.LookPath/unshare probes
 //     inspect the machine the CLI process runs on, which only coincides
 //     with the daemon's host under today's UNIX-socket-only transport.
-//   - `project reload`: pinned to scopeLocal per the plan doc's "境界越えで
-//     壊れる" row — it re-reads every registered project's .boid/
-//     project.yaml from its stored WorkDir and re-captures each one's git
-//     origin remote, both of which only resolve correctly against the
-//     daemon's own host filesystem.
 //   - `project init`: RECLASSIFIED to scopeNeutral by docs/plans/
 //     release-onboarding.md 穴 7/PR6 (codex round-21 review) — it used to
 //     be scopeLocal for the identical "resolves [dir] against the
@@ -118,6 +121,7 @@ var expectedScopeAnnotations = map[string]string{
 	"boid config set":           scopeRemote,
 	"boid config unset":         scopeRemote,
 	"boid exec":                 scopeRemote,
+	"boid gc":                   scopeRemote,
 	"boid host-commands list":   scopeRemote,
 	"boid host-commands reload": scopeRemote,
 	"boid job done":             scopeRemote,
@@ -129,6 +133,7 @@ var expectedScopeAnnotations = map[string]string{
 	"boid project behaviors":    scopeRemote,
 	"boid project fetch":        scopeRemote,
 	"boid project list":         scopeRemote,
+	"boid project reload":       scopeRemote,
 	"boid project remove":       scopeRemote,
 	"boid project show":         scopeRemote,
 	"boid secret delete":        scopeRemote,
@@ -155,6 +160,8 @@ var expectedScopeAnnotations = map[string]string{
 	"boid web pair":             scopeRemote,
 	"boid web revoke":           scopeRemote,
 	"boid web revoke-all":       scopeRemote,
+	"boid web set-addr":         scopeRemote,
+	"boid web set-url":          scopeRemote,
 	"boid workspace apply":      scopeRemote,
 	"boid workspace assign":     scopeRemote,
 	"boid workspace clear":      scopeRemote,
@@ -194,7 +201,6 @@ var expectedScopeAnnotations = map[string]string{
 	// a deliberate judgment call reconciling mechanism against the plan doc.
 	"boid check":           scopeLocal,
 	"boid fetch":           scopeLocal,
-	"boid gc":              scopeLocal,
 	"boid init":            scopeLocal,
 	"boid project migrate": scopeLocal,
 	// workspace import is a retired, always-failing stub (2026-07-28) — it no
@@ -207,13 +213,10 @@ var expectedScopeAnnotations = map[string]string{
 	// command is that they are on old muscle memory or a stale script, which
 	// includes the case of a machine with no daemon running yet.
 	"boid workspace import": scopeLocal,
-	"boid project reload":   scopeLocal,
 	"boid reap":             scopeLocal,
 	"boid runner-container": scopeLocal,
 	"boid start":            scopeLocal,
 	"boid stop":             scopeLocal,
-	"boid web set-addr":     scopeLocal,
-	"boid web set-url":      scopeLocal,
 
 	// neutral — requires no profile precondition at all (docs/plans/
 	// cli-remote-connection.md PR2): these are how a profile comes to

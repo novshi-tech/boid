@@ -1,6 +1,7 @@
 // Package scripts embeds deploy-container.sh (this directory's own
-// deployment script) so `boid`'s host-mode orchestration (cmd/host.go,
-// BOID_MODE=container — PR-3 Option 4 host-mode redesign of #835,
+// deployment script) so `boid`'s host-mode orchestration (cmd/host.go —
+// now the unconditional default, docs/plans/release-onboarding.md
+// 決定2/PR5; originally the PR-3 Option 4 host-mode redesign of #835,
 // docs/plans/volume-only-daemon.md §論点c) can extract and invoke it even
 // when running as a standalone-installed binary with no adjacent boid repo
 // checkout (round-2 codex review Major 1: "host mode cannot autostart from

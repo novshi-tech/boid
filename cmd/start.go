@@ -2,14 +2,14 @@ package cmd
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"syscall"
-	"time"
 
 	"github.com/novshi-tech/boid/internal/client"
 	"github.com/novshi-tech/boid/internal/config"
@@ -17,7 +17,6 @@ import (
 	"github.com/novshi-tech/boid/internal/selfuser"
 	"github.com/novshi-tech/boid/internal/server"
 	"github.com/spf13/cobra"
-	"golang.org/x/term"
 )
 
 const (
@@ -54,8 +53,6 @@ const (
 	// story (Blocker, codex round-6 review: BOID_LOG_STDOUT alone is not
 	// a safe container marker on its own).
 	defaultContainerStartHTTPAddr = "0.0.0.0:8080"
-
-	daemonSocketTimeout = 10 * time.Second
 )
 
 // containerSentinelPaths are files a container RUNTIME itself creates
@@ -134,7 +131,6 @@ var (
 	startKitsDir     string
 	startKeyFilePath string
 	startCLIAddr     string
-	startAutoMigrate bool
 	startForeground  bool
 )
 
@@ -148,8 +144,19 @@ func init() {
 	startCmd.Flags().StringVar(&startKitsDir, "kits-dir", "", "Base directory for installed kits")
 	startCmd.Flags().StringVar(&startKeyFilePath, "key-file-path", "", "Path to the secret encryption key file")
 	startCmd.Flags().StringVar(&startCLIAddr, "cli-addr", "", "host:port for the dedicated CLI TCP listener (docs/plans/volume-only-daemon.md §論点c; only bound when BOID_CLI_TOKEN is also set; default: client.DefaultCLIAddr(), \"127.0.0.1:8442\")")
-	startCmd.Flags().BoolVar(&startAutoMigrate, "auto-migrate", false,
-		"When project.yaml schema migration is needed, run `boid project migrate <dir> --apply` for each affected project automatically and respawn the daemon (skips the confirmation prompt on TTY too)")
+	// --auto-migrate (bare-metal double-fork respawn-after-migrate) is
+	// removed as of docs/plans/release-onboarding.md 決定2/PR5 (codex
+	// round-2 review Major 1): its only implementation, cmd/start_
+	// automigrate.go's handleMigrationFailure, was driven exclusively by
+	// the bare-metal parent/child fd3-status-pipe protocol
+	// (runDaemonParent, removed in this same PR) — a mechanism with no
+	// compose equivalent (a detached `compose up -d` container has no fd3
+	// pipe back to this CLI process to read a structured startup failure
+	// from at all), so there was no way to keep the flag wired to
+	// anything. Silently accepting and ignoring it would have been worse
+	// than removing it outright: an operator who typed --auto-migrate
+	// expecting the old auto-respawn behavior deserves a clear "no such
+	// flag" from cobra, not silent no-op behavior.
 	startCmd.Flags().BoolVar(&startForeground, "foreground", false,
 		"Run the daemon directly in this process, skipping the double-fork self-respawn — for a process supervisor (systemd Type=simple, a container entrypoint, ...) that already owns respawn/liveness. Equivalent to (and takes precedence over) setting BOID_DAEMON_CHILD=1, which remains supported for existing supervisor configs (build/container/compose.yml) that set the env var instead of passing this flag")
 	rootCmd.AddCommand(startCmd)
@@ -317,7 +324,16 @@ func buildStartConfig(opts startConfigOptions) (server.Config, error) {
 //
 // Takes the uid as a plain int (rather than calling os.Getuid() itself)
 // so a test can exercise both branches without needing to actually run
-// this process as root.
+// this process as root, and because which uid is "the one that matters"
+// differs by call site (codex round-9 review of PR5, Major): on the
+// --foreground/daemon-child path THIS process is (or becomes) the
+// daemon, so callers must pass os.Getuid() — BOID_UID has no bearing on
+// what uid this process runs as there, since compose.yml's `user:`
+// substitution is never consulted on that branch at all. On the
+// non-foreground "just run compose up" path, callers must pass
+// effectiveBoidUID() instead, since BOID_UID (when set) is what actually
+// ends up substituted into compose.yml's `user: "${BOID_UID}:0"`. See
+// runStart's own call sites for exactly where each applies.
 func refuseRootUID(uid int) error {
 	if uid != 0 {
 		return nil
@@ -325,39 +341,156 @@ func refuseRootUID(uid int) error {
 	return fmt.Errorf("boid start: refusing to run as uid 0 (root) — §決定1/§決定4 (docs/plans/release-onboarding.md) require a non-root uid with supplementary group 0; set BOID_UID to a non-zero uid (build/container/compose.yml's `user: \"${BOID_UID}:0\"`) or invoke this process as a non-root user")
 }
 
+// effectiveBoidUID returns the uid that will actually end up running the
+// compose daemon CONTAINER on the non-foreground "just run compose up"
+// path: BOID_UID, when set (docs/plans/release-onboarding.md — scripts/
+// deploy-container.sh's own `: "${BOID_UID:=$(id -u)}"` default —
+// compose's `user: "${BOID_UID:-1000}:0"` substitutes it at compose-parse
+// time on the HOST, not as a container environment variable, so an
+// operator exporting BOID_UID=0 changes what uid the CONTAINER runs as
+// without changing THIS PROCESS's own os.Getuid() at all), or
+// os.Getuid() otherwise.
+//
+// codex round-7 review of PR5, Major: refuseRootUID(os.Getuid()) alone
+// only ever inspected the CLI process's own uid — a non-root operator
+// running `BOID_UID=0 boid start` sailed straight through it, since the
+// check had nothing to do with the value BOID_UID ultimately resolves
+// to. scripts/deploy-container.sh gained an equivalent guard at the
+// actual enforcement point in an earlier round of this same review; this
+// closes the matching gap on the Go CLI side so the refusal fires as
+// early as possible too, before ever invoking that script.
+//
+// NOT safe to reuse for the --foreground/daemon-child path (codex
+// round-9 review of PR5, Major, reverting an earlier round's claim to
+// the contrary): that path's caller must pass refuseRootUID(os.Getuid())
+// directly instead, because there THIS process itself is (or becomes)
+// the daemon and compose.yml is never consulted at all — checking
+// effectiveBoidUID() there let a root operator bypass the refusal
+// entirely via `BOID_UID=1000 boid start --foreground`, since BOID_UID
+// has no bearing on what uid this process actually runs as on that
+// branch. See refuseRootUID's own doc comment and runStart's call sites.
+//
+// An unparseable BOID_UID is not this function's problem to diagnose —
+// it returns os.Getuid() unchanged in that case, and compose/docker will
+// surface their own clear error against the malformed value when they
+// try to use it.
+func effectiveBoidUID() int {
+	if v := os.Getenv("BOID_UID"); v != "" {
+		if uid, err := strconv.Atoi(v); err == nil {
+			return uid
+		}
+	}
+	return os.Getuid()
+}
+
+// runStart implements `boid start`. docs/plans/release-onboarding.md
+// 決定2/PR5 redefines the ordinary invocation (an operator typing
+// `boid start` on their own host) to mean "bring the compose daemon stack
+// up" — compose is the only daemon shape boid supports now, so there is
+// no bare-metal daemon left for a plain `boid start` to spawn directly.
+//
+// The foreground/daemon-child carve-out (shouldRunForeground) is the one
+// path this redefinition must NOT touch (docs/plans/
+// release-onboarding.md「決定 2 の事前確認」, PR5's stated must-have):
+// build/container/compose.yml's OWN daemon service entrypoint is
+// `["/usr/local/bin/boid"]` + `command: ["start"]` with
+// BOID_DAEMON_CHILD=1 set — that invocation, running INSIDE the
+// container, must become the real daemon process (runDaemonChild)
+// exactly as before. If it instead fell into the compose-up branch
+// below, the compose daemon's own `boid start` would recurse into
+// trying to `compose up` itself from inside its own already-running
+// container.
 func runStart(cmd *cobra.Command, args []string) error {
-	if err := refuseRootUID(os.Getuid()); err != nil {
-		return err
-	}
-
-	// Arbitrary-uid self-registration + group-writable umask (docs/plans/
-	// release-onboarding.md 決定1, PR2): under the compose daemon service
-	// this process's uid may have no /etc/passwd entry at all (the image
-	// no longer bakes one — build/container/Dockerfile), and runtime-
-	// generated files (secret.key, boid.db, ...) need the group-write bit
-	// so a later run under a DIFFERENT uid (still group 0) stays working
-	// (§決定1 実装形2, 未決6's "uid is fixed per install" contract). Both
-	// calls are best-effort/non-fatal and equally harmless on a bare-host
-	// `boid start`, where the running uid almost always already has a
-	// real passwd entry (a no-op) — see their own doc comments.
-	selfuser.EnsureRuntimeUserRegistered()
-	selfuser.ApplyGroupWritableUmask()
-
-	cfg, err := buildStartConfig(startConfigOptions{
-		DBPath:      startDBPath,
-		SocketPath:  startSocketPath,
-		KitsDir:     startKitsDir,
-		KeyFilePath: startKeyFilePath,
-		CLIAddr:     startCLIAddr,
-	})
-	if err != nil {
-		return err
-	}
-
+	// codex round-9 review of PR5, Major: on the --foreground/daemon-child
+	// path this process itself IS (or becomes) the daemon — no compose
+	// substitution happens, so the uid that actually matters is THIS
+	// process's own os.Getuid(), not effectiveBoidUID(). Checking
+	// effectiveBoidUID() here let a root operator bypass the refusal with
+	// `BOID_UID=1000 boid start --foreground`: BOID_UID has no bearing on
+	// what uid this process runs as outside of compose's own `user:`
+	// substitution (compose.yml is never consulted on this branch at
+	// all), so the check would pass while the daemon kept running as root.
 	if shouldRunForeground(startForeground) {
+		if err := refuseRootUID(os.Getuid()); err != nil {
+			return err
+		}
+		// Arbitrary-uid self-registration + group-writable umask
+		// (docs/plans/release-onboarding.md 決定1, PR2): under the
+		// compose daemon service this process's uid may have no
+		// /etc/passwd entry at all (the image no longer bakes one —
+		// build/container/Dockerfile), and runtime-generated files
+		// (secret.key, boid.db, ...) need the group-write bit so a
+		// later run under a DIFFERENT uid (still group 0) stays working
+		// (§決定1 実装形2, 未決6's "uid is fixed per install" contract).
+		// Both calls are best-effort/non-fatal and equally harmless for
+		// a --foreground supervisor on bare metal, where the running
+		// uid almost always already has a real passwd entry (a no-op)
+		// — see their own doc comments.
+		selfuser.EnsureRuntimeUserRegistered()
+		selfuser.ApplyGroupWritableUmask()
+
+		cfg, err := buildStartConfig(startConfigOptions{
+			DBPath:      startDBPath,
+			SocketPath:  startSocketPath,
+			KitsDir:     startKitsDir,
+			KeyFilePath: startKeyFilePath,
+			CLIAddr:     startCLIAddr,
+		})
+		if err != nil {
+			return err
+		}
 		return runDaemonChild(cfg)
 	}
-	return runDaemonParent(cfg)
+
+	// codex round-3 review of PR5, Major 2: --db-path/--socket-path/
+	// --kits-dir/--key-file-path/--cli-addr only ever configure the
+	// ACTUAL daemon process (buildStartConfig, read above only on the
+	// --foreground/daemon-child branch) — the compose stack's own
+	// daemon config comes from build/container/compose.yml's own env
+	// wiring instead, which this non-foreground "just run compose up"
+	// path has no way to forward these flags into at all. Silently
+	// accepting and ignoring them would be actively misleading: a script
+	// that used to pass e.g. --db-path against a bare-metal `boid start`
+	// would now appear to succeed while operating on a compose stack
+	// that never saw that flag, silently touching the WRONG database.
+	// Fail loudly instead.
+	if err := refuseDaemonConfigFlagsWithoutForeground(cmd); err != nil {
+		return err
+	}
+
+	// codex round-7 review of PR5, Major (re-scoped by round-9): on this
+	// non-foreground "just run compose up" path, scripts/
+	// deploy-container.sh's `: "${BOID_UID:=$(id -u)}"` defaults BOID_UID
+	// to whatever uid ran `boid start` when it is not set explicitly, but
+	// an operator MAY set BOID_UID explicitly to something other than
+	// their own uid — effectiveBoidUID() (not os.Getuid()) is the value
+	// that actually ends up substituted into compose.yml's
+	// `user: "${BOID_UID}:0"`, so it is the one this check must inspect
+	// on this branch to rule out §決定1/§決定4's root-daemon outcome.
+	if err := refuseRootUID(effectiveBoidUID()); err != nil {
+		return err
+	}
+
+	return runComposeUp(cmd.Context(), client.DefaultCLIAddr())
+}
+
+// refuseDaemonConfigFlagsWithoutForeground reports an error naming every
+// explicitly-set daemon-process-config flag when startForeground is
+// false — see runStart's own call site for the full rationale (codex
+// round-3 review of PR5, Major 2).
+func refuseDaemonConfigFlagsWithoutForeground(cmd *cobra.Command) error {
+	var set []string
+	for _, name := range []string{"db-path", "socket-path", "kits-dir", "key-file-path", "cli-addr"} {
+		if f := cmd.Flags().Lookup(name); f != nil && f.Changed {
+			set = append(set, "--"+name)
+		}
+	}
+	if len(set) == 0 {
+		return nil
+	}
+	return fmt.Errorf(
+		"boid start: %s only configure the actual daemon process (compose.yml's own env wiring does that for the compose stack) and have no effect on a plain `boid start` (which now just runs compose up) — pass --foreground (or set BOID_DAEMON_CHILD=1) if you are directly supervising the daemon process yourself, or drop %s and rely on compose.yml's config instead",
+		strings.Join(set, ", "), strings.Join(set, ", "))
 }
 
 // shouldRunForeground reports whether runStart should skip the
@@ -380,199 +513,73 @@ func shouldRunForeground(foregroundFlag bool) bool {
 	return foregroundFlag || daemon.IsChild()
 }
 
-// runDaemonParent spawns the daemon child and waits on three concurrent
-// signals via a select loop:
+// runComposeUp is `boid start`'s non-foreground path (docs/plans/
+// release-onboarding.md 決定2/PR5): bring the compose daemon stack up.
+// Shares cmd/host.go's on-demand daemon-lifecycle machinery
+// (loadOrCreateCLIToken, findComposeRoot/deployFromCheckout/
+// deployFromEmbeddedAssets, withHostModeLock) rather than reimplementing
+// it — a scope=remote command that happens to need the daemon running
+// (e.g. `boid task list`) and an explicit `boid start` both ultimately
+// need "the compose stack is up, at this addr, authenticated with this
+// token" and should agree on exactly how that gets accomplished.
 //
-//  1. socket up         — daemon listening, startup succeeded
-//  2. fd 3 status pipe  — EOF (= success) or structured JSON (= failure)
-//  3. child liveness    — child exited without writing fd 3 (crash)
+// Deliberately unconditional, unlike host mode's ensureHostModeDaemon
+// (which short-circuits when the stack already answers healthy, since it
+// is a lazy autostart hook riding along on an unrelated command): `boid
+// start` is itself the explicit "make sure this is running" request, so
+// it always runs the deploy script's own down+up cycle — a no-op-ish
+// `compose up -d` against an already-current stack, or a real rebuild/
+// restart when local code or BOID_IMAGE moved on. It also does not
+// consult client.NoAutostartEnv (BOID_NO_AUTOSTART) — that knob exists to
+// stop an UNRELATED command from silently spinning up a daemon as a
+// side effect, not to make `boid start` itself a no-op.
 //
-// On structured migration failure, the parent invokes
-// handleMigrationFailure which (subject to --auto-migrate or TTY prompt)
-// runs `boid project migrate <dir> --apply` in-process for each project
-// and respawns the daemon at most once. On any other failure (or if
-// migrate auto-resolution declines or fails), the cause is surfaced
-// directly to the user — no boid.log grep needed.
-func runDaemonParent(cfg server.Config) error {
-	// 既存サーバが生きていれば二重起動を拒否する。socket ファイルが残って
-	// いるだけ (ECONNREFUSED) の場合は stale とみなし、子プロセスに clean up
-	// を任せる。
-	if daemon.IsSocketAlive(cfg.SocketPath, 500*time.Millisecond) {
-		return fmt.Errorf("boid server already running (socket: %s)", cfg.SocketPath)
-	}
-
-	logPath := daemon.LogFilePath()
-	retries := 0
-	for {
-		result, err := spawnAndWaitForStartup(cfg, logPath)
-		if err != nil {
-			return err
-		}
-		if result.success {
-			fmt.Printf("boid server started (pid: %d, socket: %s, http: %s)\n",
-				result.pid, cfg.SocketPath, cfg.HTTPAddr)
-			return nil
-		}
-		// userErr non-nil = no structured status; report and exit.
-		if result.userErr != nil {
-			return result.userErr
-		}
-		// Structured failure; branch on kind.
-		if result.status.Kind != daemon.StartupKindMigration {
-			return formatNonMigrationFailure(result.status, logPath)
-		}
-		// Migration failure → try to auto-resolve.
-		retry, herr := handleMigrationFailure(
-			os.Stderr,
-			os.Stdin,
-			result.status,
-			logPath,
-			startAutoMigrate,
-			term.IsTerminal(int(os.Stdin.Fd())),
-			defaultMigratePrompter,
-			MigrateProject,
-		)
-		if !retry {
-			return herr
-		}
-		if retries >= 1 {
-			return fmt.Errorf("daemon still failing after auto-migrate; check logs at %s", logPath)
-		}
-		retries++
-		// Loop back to respawn.
-	}
-}
-
-// startupResult is the outcome of one spawn → wait cycle.
-type startupResult struct {
-	success bool
-	pid     int
-	status  *daemon.StartupStatus // non-nil when the child wrote fd 3
-	userErr error                 // non-nil for environment-level failures (timeout, crash without status)
-}
-
-// spawnAndWaitForStartup spawns the daemon child and runs the four-way
-// select on socket / status / liveness / outer-timeout. Returns once one
-// of the wait paths resolves; cleans up its goroutines via the deferred
-// context cancel and statusR close.
-func spawnAndWaitForStartup(cfg server.Config, logPath string) (*startupResult, error) {
-	pid, statusR, err := daemon.Spawn(os.Args)
+// addr takes the CLI listener address as a parameter (production always
+// passes client.DefaultCLIAddr(), the fixed "127.0.0.1:8442" — see that
+// function's own doc comment for why it isn't independently configurable)
+// rather than calling client.DefaultCLIAddr() internally, mirroring
+// ensureHostModeDaemon's identical parameterization in cmd/host.go: a test
+// can point it at an httptest server instead of the real fixed port.
+func runComposeUp(ctx context.Context, addr string) error {
+	token, err := loadOrCreateCLIToken()
 	if err != nil {
-		return nil, fmt.Errorf("spawn daemon: %w", err)
-	}
-	defer statusR.Close()
-
-	// Channel for socket-readiness polling.
-	socketCh := make(chan error, 1)
-	go func() {
-		socketCh <- daemon.WaitForSocket(cfg.SocketPath, daemonSocketTimeout)
-	}()
-
-	// Channel for the structured startup status (fd 3 pipe).
-	type statusResult struct {
-		status *daemon.StartupStatus
-		err    error
-	}
-	resCh := make(chan statusResult, 1)
-	go func() {
-		s, err := daemon.ReadStartupStatus(statusR)
-		switch {
-		case errors.Is(err, daemon.ErrStartupOK):
-			resCh <- statusResult{}
-		case err != nil:
-			resCh <- statusResult{err: err}
-		default:
-			resCh <- statusResult{status: s}
-		}
-	}()
-
-	// Liveness probe: kill(pid, 0) returns ESRCH once the child exits.
-	livenessCtx, livenessCancel := context.WithCancel(context.Background())
-	defer livenessCancel()
-	deadCh := make(chan struct{}, 1)
-	go func() {
-		t := time.NewTicker(200 * time.Millisecond)
-		defer t.Stop()
-		for {
-			select {
-			case <-livenessCtx.Done():
-				return
-			case <-t.C:
-				proc, err := os.FindProcess(pid)
-				if err != nil {
-					deadCh <- struct{}{}
-					return
-				}
-				if err := proc.Signal(syscall.Signal(0)); err != nil {
-					deadCh <- struct{}{}
-					return
-				}
-			}
-		}
-	}()
-
-	// Outer timeout — backstop in case all three signals stall.
-	timeoutCh := time.After(daemonSocketTimeout + 5*time.Second)
-
-	for socketCh != nil || resCh != nil {
-		select {
-		case err := <-socketCh:
-			socketCh = nil
-			if err == nil {
-				return &startupResult{success: true, pid: pid}, nil
-			}
-			// socket polling timed out; wait for status/dead to give a
-			// more specific cause.
-		case res := <-resCh:
-			resCh = nil
-			if res.err != nil {
-				return &startupResult{
-					pid: pid,
-					userErr: fmt.Errorf("daemon startup status decode failed: %w (logs: %s)",
-						res.err, logPath),
-				}, nil
-			}
-			if res.status != nil {
-				return &startupResult{pid: pid, status: res.status}, nil
-			}
-			// EOF without payload → success; keep waiting on socket.
-		case <-deadCh:
-			return &startupResult{
-				pid: pid,
-				userErr: fmt.Errorf("daemon process exited unexpectedly (pid: %d); check logs at %s",
-					pid, logPath),
-			}, nil
-		case <-timeoutCh:
-			return &startupResult{
-				pid: pid,
-				userErr: fmt.Errorf("daemon did not start within %s (pid: %d); check logs at %s",
-					daemonSocketTimeout+5*time.Second, pid, logPath),
-			}, nil
-		}
+		return fmt.Errorf("boid start: %w", err)
 	}
 
-	return &startupResult{
-		pid: pid,
-		userErr: fmt.Errorf("daemon startup completed but socket %s never became reachable; check logs at %s",
-			cfg.SocketPath, logPath),
-	}, nil
+	err = withHostModeLock(func() error {
+		if root, ferr := findComposeRoot(); ferr == nil {
+			return deployFromCheckout(ctx, root, token, addr)
+		}
+		return deployFromEmbeddedAssets(ctx, token, addr)
+	})
+	if err != nil {
+		return fmt.Errorf("boid start: %w", err)
+	}
+	fmt.Printf("boid server started (compose, cli: http://%s)\n", addr)
+	return nil
 }
 
-// formatNonMigrationFailure renders a user-facing message for structured
-// startup failures that are NOT migration-related. Migration failures go
-// through handleMigrationFailure instead.
-func formatNonMigrationFailure(s *daemon.StartupStatus, logPath string) error {
-	switch s.Kind {
-	case daemon.StartupKindOther:
-		if s.Message == "" {
-			return fmt.Errorf("daemon startup failed (no detail); check logs at %s", logPath)
-		}
-		return fmt.Errorf("daemon startup failed: %s\nFull log: %s", s.Message, logPath)
-	default:
-		return fmt.Errorf("daemon reported unknown startup status kind %q; check logs at %s",
-			s.Kind, logPath)
-	}
-}
+// The bare-metal double-fork daemon spawn (parent/child fd3-status-pipe
+// protocol, migration-retry-on-respawn loop) that used to live here —
+// runDaemonParent/spawnAndWaitForStartup/formatNonMigrationFailure — is
+// removed as of docs/plans/release-onboarding.md 決定2/PR5: compose is the
+// only daemon shape now, and runStart's non-foreground branch calls
+// runComposeUp instead. cmd/start_automigrate.go (handleMigrationFailure
+// and its helpers) is removed in the SAME PR (codex round-2 review Major
+// 1) rather than left behind as unreachable dead code with a broken
+// guidance string: its entire mechanism depended on reading a structured
+// startup-failure status back from a bare-metal-forked child over fd3 — a
+// pipe a detached `compose up -d` container has no equivalent of at all,
+// so there was no way to keep it wired to anything once runDaemonParent
+// (its sole caller) was gone. There is no fully automated or fully
+// general by-hand recovery path yet for a schema issue a compose daemon
+// reports at startup (internal/orchestrator/spec_loader.go's
+// migrationGuidance and cmd/project_migrate.go's guardApply, both
+// updated across several review rounds of this PR, explain the current,
+// deliberately non-prescriptive guidance and its known limitations — see
+// docs/ja/guide/migration.md). If a future PR wants a `boid start
+// --bare-metal` escape hatch back, git history has the removed
+// implementation (this same file, pre-PR5).
 
 // runDaemonChild is executed by the daemon child process (BOID_DAEMON_CHILD=1).
 // It redirects stdin/stdout/stderr to the log file and detaches from the

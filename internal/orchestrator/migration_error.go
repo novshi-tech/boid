@@ -14,8 +14,23 @@ type ProjectMigrationIssue struct {
 	// issue surfaces from a loader path that does not yet have a DB lookup
 	// (e.g. ReadProjectMeta called directly with a path).
 	ProjectID string
-	// Dir is the absolute path to the project root (parent of .boid/).
+	// Dir is the absolute path to the project root (parent of .boid/) for
+	// a filesystem-loaded project, OR the daemon's own internal bare-
+	// repository path for a git-URL-registered project (IsBareRepo true
+	// — see its own doc comment). Always populated either way, since it
+	// remains useful for error text / logs, but only actionable as a
+	// `boid project migrate <dir>` argument when IsBareRepo is false.
 	Dir string
+	// IsBareRepo (codex round-9 review of PR5, Blocker 1) reports whether
+	// Dir is the daemon-managed bare repository path for a git-URL-
+	// registered project (internal/orchestrator/project_bare_repo.go's
+	// ReadProjectMetaFromBareRepo) rather than a real, user-accessible
+	// filesystem directory (ReadProjectMeta). `boid project migrate`
+	// (cmd/project_migrate.go) reads <dir>/.boid/project.yaml off a real
+	// filesystem directory — it cannot be run against a bare-repo path at
+	// all, so FormatMigrationIssue/migrationGuidance must not tell the
+	// user to do so when this is true.
+	IsBareRepo bool
 	// Messages are the per-field violation messages in the same order as
 	// the old single-string error produced by rejectRemovedProjectFields.
 	Messages []string
@@ -53,7 +68,7 @@ func (e *ProjectMigrationError) Error() string {
 // boid start parent) can reuse the same canonical format for each issue.
 func FormatMigrationIssue(p ProjectMigrationIssue) string {
 	combined := strings.Join(p.Messages, "\n")
-	guidance := migrationGuidance(p.Dir)
+	guidance := migrationGuidance(p.Dir, p.IsBareRepo)
 	body := combined + "\n" + guidance
 	if p.ProjectID != "" {
 		return fmt.Sprintf("project %q: %s", p.ProjectID, body)

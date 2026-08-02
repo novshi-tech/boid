@@ -380,6 +380,36 @@ func TestPersistentPreRunE_ScopeLocal_UnixProfile_Allowed(t *testing.T) {
 	}
 }
 
+// TestPersistentPreRunE_ScopeLocal_AmbientRemoteDefaultProfile_NotRejected
+// is the codex round-1 review of PR5, Major 1 regression: an AMBIENT
+// default_profile (config.yaml, set for unrelated scope=remote commands
+// long before host mode existed) naming a remote https daemon used to
+// hit decision 6's scope=local hard-reject even with NO --profile flag
+// at all on this invocation — meaning a user with a remote default_profile
+// configured could no longer bring the compose stack up/down via a plain
+// `boid start`/`stop`. Only an EXPLICIT --profile should ever trigger
+// that rejection now (the same rule Fable M4 established for scope=remote
+// bypassing host mode) — pinned here via BOID_NO_AUTOSTART=1 having no
+// effect either (proving this returns via the new early bypass, not by
+// coincidentally reaching a scope=local-allowed unix path).
+func TestPersistentPreRunE_ScopeLocal_AmbientRemoteDefaultProfile_NotRejected(t *testing.T) {
+	writeRootTestConfigYAML(t, "default_profile: work\nprofiles:\n  work:\n    url: https://work.example.com\n")
+	// Deliberately no token file for "work" — if this ever reached
+	// resolveClient (or even ResolveWithoutToken's slug/URL validation),
+	// it would surface as an error unrelated to scope=local; the fix
+	// under test must never get that far when --profile was not typed.
+	t.Setenv(client.NoAutostartEnv, "1")
+	cmd := newProfileTestCmd(t, "", map[string]string{scopeAnnotationKey: scopeLocal})
+	cmd.Use = "start"
+
+	if err := rootCmd.PersistentPreRunE(cmd, nil); err != nil {
+		t.Fatalf("an ambient (non-explicit) remote default_profile must not block a scope=local command: %v", err)
+	}
+	if c := client.FromContextOrNil(cmd.Context()); c != nil {
+		t.Errorf("expected no client injected (ambient profile resolution skipped entirely); got %+v", c)
+	}
+}
+
 // TestPersistentPreRunE_ScopeRemote_HTTPSProfile_Allowed pins that
 // scope=remote commands are exactly the ones decision 6's rejection does
 // NOT apply to — an https profile is the whole point of Phase 3 for them.
@@ -421,5 +451,118 @@ func TestPersistentPreRunE_ScopeNeutral_HTTPSProfile_Allowed(t *testing.T) {
 	}
 	if c.IsUnix() {
 		t.Error("expected an https-scheme client to have been injected")
+	}
+}
+
+// --- host mode is unconditional (docs/plans/release-onboarding.md 決定2/
+// PR5) / explicit --profile bypass (Fable M4) ---
+
+// TestProfileExplicitlyRequested pins profileExplicitlyRequested's exact
+// contract: only an EXPLICITLY SET --profile flag counts, not merely the
+// flag existing (unset) on the command.
+func TestProfileExplicitlyRequested(t *testing.T) {
+	unset := newProfileTestCmd(t, "", nil)
+	if profileExplicitlyRequested(unset) {
+		t.Error("an unset --profile flag must not count as explicitly requested")
+	}
+
+	set := newProfileTestCmd(t, "work", nil)
+	if !profileExplicitlyRequested(set) {
+		t.Error("an explicitly set --profile flag must count as explicitly requested")
+	}
+
+	noFlag := &cobra.Command{Use: "leaf"}
+	if profileExplicitlyRequested(noFlag) {
+		t.Error("a command with no --profile flag registered at all must not panic or report true")
+	}
+}
+
+// TestPersistentPreRunE_ScopeRemote_NoProfile_UsesHostMode pins that a
+// scope=remote command with NO explicit --profile goes through host mode
+// (cmd/host.go) rather than the ordinary profiles.Resolve chain — host
+// mode is the unconditional default now (決定2/PR5), so this is the
+// overwhelmingly common case. BOID_NO_AUTOSTART=1 makes
+// ensureHostModeDaemon fail fast with a host-mode-specific error instead
+// of actually invoking scripts/deploy-container.sh (which would try real
+// docker/podman commands here) — the error text alone is enough to prove
+// which branch ran, without needing a real compose daemon.
+func TestPersistentPreRunE_ScopeRemote_NoProfile_UsesHostMode(t *testing.T) {
+	writeRootTestConfigYAML(t, "")
+	t.Setenv(client.NoAutostartEnv, "1")
+	cmd := newProfileTestCmd(t, "", map[string]string{scopeAnnotationKey: scopeRemote})
+
+	err := rootCmd.PersistentPreRunE(cmd, nil)
+	if err == nil {
+		t.Fatal("expected an error: host mode's daemon is unreachable and BOID_NO_AUTOSTART=1 is set")
+	}
+	if !strings.Contains(err.Error(), "daemon container not reachable") {
+		t.Errorf("expected host mode's own ensureHostModeDaemon error, got %v", err)
+	}
+}
+
+// TestPersistentPreRunE_ScopeRemote_SkipAutostart_HostMode_DoesNotDeploy
+// is the codex round-1 review of PR5, Major 3 regression: `boid gc`
+// carries annotationSkipAutostart=skip (gc.go's own doc comment —
+// "don't spin up a daemon just to gc it") which used to be honored only
+// by the bare-metal client.EnsureRunningAt path at the bottom of
+// PersistentPreRunE. Once gc was reclassified to scope=remote (決定2/PR5)
+// it started going through host mode's unconditional resolveHostModeClient
+// instead, which ignored the annotation entirely and would autostart the
+// compose stack just to gc it. Deliberately does NOT set
+// BOID_NO_AUTOSTART=1 here — proving the refusal comes from the
+// annotation itself (resolveHostModeClientNoAutostart), not from that
+// separate global opt-out; findComposeRoot/deployFromCheckout must never
+// even be attempted (this test has no BOID_COMPOSE_ROOT and no
+// scripts/deploy-container.sh reachable from its cwd, so an attempt would
+// either try a real deploy or fail with an unrelated "could not locate"
+// error — neither of which this test's assertion would accept).
+func TestPersistentPreRunE_ScopeRemote_SkipAutostart_HostMode_DoesNotDeploy(t *testing.T) {
+	writeRootTestConfigYAML(t, "")
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	cmd := newProfileTestCmd(t, "", map[string]string{
+		scopeAnnotationKey:      scopeRemote,
+		annotationSkipAutostart: "skip",
+	})
+
+	err := rootCmd.PersistentPreRunE(cmd, nil)
+	if err == nil {
+		t.Fatal("expected an error: daemon unreachable and annotationSkipAutostart=skip must refuse without deploying")
+	}
+	if !strings.Contains(err.Error(), "not starting it automatically") {
+		t.Errorf("expected resolveHostModeClientNoAutostart's own refusal message, got %v", err)
+	}
+	if strings.Contains(err.Error(), "could not locate") {
+		t.Errorf("must never have attempted findComposeRoot at all, got %v", err)
+	}
+}
+
+// TestPersistentPreRunE_ScopeRemote_ExplicitProfile_BypassesHostMode pins
+// the coexistence rule itself (docs/plans/release-onboarding.md「profiles
+// との優先順位」, Fable M4): an EXPLICIT --profile flag routes a
+// scope=remote command through the ordinary profiles.Resolve chain
+// instead of host mode, even though host mode would otherwise intercept
+// every scope=remote command unconditionally. Proven here by BOID_NO_
+// AUTOSTART=1 having NO effect (host mode's own client.NoAutostartEnv
+// check in ensureHostModeDaemon is never reached) and the resolved
+// client being the unix profile actually named by --profile, not
+// anything host-mode-flavored.
+func TestPersistentPreRunE_ScopeRemote_ExplicitProfile_BypassesHostMode(t *testing.T) {
+	pinnedSocket := filepath.Join(t.TempDir(), "pinned-for-test.sock")
+	writeRootTestConfigYAML(t, "profiles:\n  local:\n    url: unix://"+pinnedSocket+"\n")
+	t.Setenv(client.NoAutostartEnv, "1")
+	cmd := newProfileTestCmd(t, "local", map[string]string{
+		scopeAnnotationKey:      scopeRemote,
+		annotationSkipAutostart: "skip",
+	})
+
+	if err := rootCmd.PersistentPreRunE(cmd, nil); err != nil {
+		t.Fatalf("an explicit --profile must bypass host mode entirely: %v", err)
+	}
+	c := client.FromContext(cmd.Context())
+	if c == nil {
+		t.Fatal("expected a client to have been injected")
+	}
+	if !c.IsUnix() {
+		t.Error("expected the unix client named by --profile local, not a host-mode client")
 	}
 }

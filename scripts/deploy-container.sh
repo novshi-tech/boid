@@ -54,18 +54,31 @@ set -euo pipefail
 # this flip. DEPLOY_CONTAINER_BUILD_ONLY=1 (below) also implies it: that
 # knob's entire purpose is building an image, so it must build regardless
 # of whether the caller separately passed --build.
+#
+# --down (docs/plans/release-onboarding.md 決定2/PR5): `boid stop`'s
+# re-definition (cmd/stop.go) — tear the compose stack down instead of
+# bringing it up. Mutually exclusive with --build (there is nothing to
+# build on the way down); checked once both flags are parsed, below.
 BUILD=0
+DOWN=0
 for arg in "$@"; do
 	case "$arg" in
 	--build)
 		BUILD=1
 		;;
+	--down)
+		DOWN=1
+		;;
 	*)
-		echo "error: unknown argument: $arg (only --build is accepted)" >&2
+		echo "error: unknown argument: $arg (only --build/--down are accepted)" >&2
 		exit 1
 		;;
 	esac
 done
+if [[ "$BUILD" == "1" && "$DOWN" == "1" ]]; then
+	echo "error: --build and --down are mutually exclusive" >&2
+	exit 1
+fi
 if [[ "${DEPLOY_CONTAINER_BUILD_ONLY:-0}" == "1" ]]; then
 	BUILD=1
 fi
@@ -76,6 +89,35 @@ COMPOSE_FILE="$ROOT_DIR/build/container/compose.yml"
 # Stacked on COMPOSE_FILE for rootless podman only — see the podman branch
 # below, and that file's own header comment.
 PODMAN_OVERRIDE_FILE="$ROOT_DIR/build/container/compose.podman.override.yml"
+
+# COMPOSE_ENGINE_STATE_FILE (codex round-10 review of PR5, Major; location
+# fixed in round-11 after the round-10 fix's own bug was caught by a
+# round-11 review): records which engine (docker/podman) a successful `up`
+# actually used, written right after `compose up -d` below succeeds.
+# `--down` reads this back instead of trusting whichever engine happens to
+# look "usable" at teardown time — see the `--down` block's own comment
+# for why that drift matters.
+#
+# codex round-11 review of PR5, Major: the round-10 fix stored this under
+# ROOT_DIR, which reintroduced the exact bug it was meant to close —
+# compose.yml's own `name: boid` makes the compose PROJECT identity
+# independent of which ROOT_DIR a given invocation resolves to (cmd/
+# host.go's own findComposeRoot-or-deployFromEmbeddedAssets choice can
+# legitimately differ between the `up` that started the stack and a LATER
+# `boid stop`, e.g. `BOID_COMPOSE_ROOT` was exported for the `up` but not
+# for the following `stop`), so a ROOT_DIR-scoped state file could easily
+# not exist (or belong to the WRONG root) by the time `--down` looked for
+# it — silently falling through to this file's own no-record fallback
+# path and reopening the false-success window entirely. Stored instead
+# under a fixed, ROOT_DIR-independent location that tracks the one
+# compose PROJECT ("boid") a host can run at a time — mirroring cmd/
+# host.go's own hostModeAssetsDir() convention ($XDG_STATE_HOME/boid/...,
+# ~/.local/state/boid/... fallback) exactly, just a sibling file rather
+# than a directory of extracted assets.
+: "${XDG_STATE_HOME:=${HOME:-/tmp}/.local/state}"
+COMPOSE_ENGINE_STATE_DIR="$XDG_STATE_HOME/boid"
+COMPOSE_ENGINE_STATE_FILE="$COMPOSE_ENGINE_STATE_DIR/compose-engine"
+mkdir -p "$COMPOSE_ENGINE_STATE_DIR" 2>/dev/null || true
 
 # --- select an engine -------------------------------------------------------
 # Prefers docker (compose v2 syntax, DOCKER_HOST semantics dockerproxy/
@@ -107,28 +149,191 @@ docker_compose_usable() {
 	command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1
 }
 
-if usable docker && docker_compose_usable; then
-	ENGINE=docker
-	BUILD_CMD=(docker build)
-	COMPOSE_CMD=(docker compose -f "$COMPOSE_FILE")
-elif usable podman; then
-	ENGINE=podman
-	BUILD_CMD=(podman build)
-	if command -v podman-compose >/dev/null 2>&1; then
-		COMPOSE_CMD=(podman-compose -f "$COMPOSE_FILE")
-	else
-		COMPOSE_CMD=()
-		echo "warning: podman found but no podman-compose; skipping the compose up/down step (image build only)" >&2
+# context_fingerprint (codex round-13 review of PR5, Major): the
+# engine-state mechanism below records docker-vs-podman only, which
+# cannot tell two DIFFERENT daemons of the SAME engine kind apart — an
+# operator who switches `DOCKER_CONTEXT`/`DOCKER_HOST` (or podman's
+# `CONTAINER_CONNECTION`/`CONTAINER_HOST`) between `up` and `down` would
+# still pass the engine-kind check, then `down` an empty `name: boid`
+# project on the NEW daemon while the real stack — on the OLD one — keeps
+# running untouched. This fingerprints whichever of those an engine
+# actually consults for daemon selection, so `up`'s recorded value and
+# `down`'s current value can be compared. Empty values are fingerprinted
+# too (as an empty string in that slot) — "unset now, was set before" (or
+# vice versa) is drift just as much as "set to a different value".
+context_fingerprint() {
+	case "$1" in
+	docker) printf 'DOCKER_CONTEXT=%s|DOCKER_HOST=%s' "${DOCKER_CONTEXT:-}" "${DOCKER_HOST:-}" ;;
+	podman) printf 'CONTAINER_CONNECTION=%s|CONTAINER_HOST=%s' "${CONTAINER_CONNECTION:-}" "${CONTAINER_HOST:-}" ;;
+	esac
+}
+
+# DOWN_ALT_COMPOSE_CMD (docs/plans/release-onboarding.md 決定2/PR5, codex
+# round-4 review Major): --down below only tears down COMPOSE_CMD's own
+# engine — the SAME preference-ordered selection this block always runs,
+# docker-if-usable-else-podman, independent of which engine actually
+# brought the stack up. If the environment changed between the `up` that
+# started it and the `boid stop` (--down) that is supposed to stop it
+# (docker newly installed, podman.socket newly enabled, ...), --down could
+# silently down an EMPTY docker-side compose project while the real
+# podman-side stack (or vice versa) keeps running, yet still report
+# success. When --down is requested and BOTH engines are usable, this is
+# populated with the non-primary engine's compose invocation so the DOWN
+# block (below) can tear down both — whichever one actually has the live
+# stack gets stopped either way, at the cost of a harmless no-op `down` on
+# the other.
+DOWN_ALT_COMPOSE_CMD=()
+
+# RECORDED_ENGINE (codex round-10 review of PR5, Major): --down used to
+# run the SAME "docker-if-usable-else-podman" preference ladder as `up`,
+# picking whichever engine looks best RIGHT NOW rather than whichever one
+# actually brought the stack up. If the environment drifted since (docker
+# daemon crashed/permission revoked, podman.socket newly enabled, ...),
+# the ladder could silently pick the OTHER engine, `down` an empty/
+# never-created project under it (which trivially succeeds), and report
+# overall success while the real stack — started under the engine that is
+# no longer usable — keeps running untouched. DOWN_ALT_COMPOSE_CMD (below)
+# only ever closed the narrower case where BOTH engines are still usable;
+# it does nothing when the engine that actually matters has become
+# UNusable, which is exactly when a false "stack is down" is worst. Read
+# the engine `up` itself recorded (COMPOSE_ENGINE_STATE_FILE, written
+# right after a successful `compose up -d` further below) and, when
+# present, pin down to it — refusing outright rather than silently
+# reporting success against a different engine — instead of ever
+# re-running the preference ladder for a --down call.
+#
+# codex round-12 review of PR5, Major: an earlier revision treated
+# CONTENT problems (unrecognized engine name) as a warn-and-fall-back —
+# indistinguishable, to an operator watching the output, from the
+# legitimate "no `up` ever recorded anything here" case the fallback
+# ladder exists for. But a state file that EXISTS with bad content proves
+# an `up` DID run and DID try to record something — silently ignoring
+# that and guessing again is exactly the false-success window rounds
+# 10/11 exist to close, just moved one step earlier. Only a state file
+# that does not exist AT ALL falls back to the ladder now; existing but
+# unreadable/empty/unrecognized content is fatal instead.
+#
+# codex round-13 review of PR5, Major (two follow-ups to the round-12 fix
+# above):
+#
+# 1. `[[ -f "$COMPOSE_ENGINE_STATE_FILE" ]]` being false does not only mean
+#    "genuinely never created" — a broken symlink, a path component that
+#    is not a directory, or (the exact failure mode this whole mechanism
+#    exists to guard against) a permission problem walking to it all also
+#    make `-f` report false, and were silently falling into the SAME
+#    "no record, fall back to the ladder" path as a legitimate first-ever
+#    `down`. `stat`'s own exit status/message is used instead to tell
+#    ENOENT (the only case that legitimately means "no record") apart
+#    from everything else (fatal, same as an existing-but-unreadable
+#    file).
+#
+# 2. `tr -d '[:space:]'` stripped ALL whitespace, not just leading/
+#    trailing — a corrupted value like "pod man" was silently normalized
+#    to the valid-looking "podman" instead of being rejected as
+#    unrecognized. Trims only leading/trailing whitespace now (a
+#    standard bash parameter-expansion idiom), preserving internal
+#    whitespace as the corruption evidence it is.
+RECORDED_ENGINE=""
+RECORDED_CONTEXT=""
+STATE_FILE_EXISTS=0
+if [[ "$DOWN" == "1" ]]; then
+	if stat_err="$(LC_ALL=C stat "$COMPOSE_ENGINE_STATE_FILE" 2>&1 >/dev/null)"; then
+		STATE_FILE_EXISTS=1
+		if [[ ! -f "$COMPOSE_ENGINE_STATE_FILE" ]]; then
+			echo "error: $COMPOSE_ENGINE_STATE_FILE exists but is not a regular file — refusing to guess which engine brought the stack up; inspect/remove it only if you are certain no stack is currently running under it, then retry" >&2
+			exit 1
+		fi
+		if ! state_contents="$(cat "$COMPOSE_ENGINE_STATE_FILE" 2>/dev/null)"; then
+			echo "error: $COMPOSE_ENGINE_STATE_FILE exists but could not be read (permission issue?) — refusing to guess which engine brought the stack up; fix its permissions and retry, or remove the file only if you are certain no stack is currently running under it" >&2
+			exit 1
+		fi
+		RECORDED_ENGINE="$(printf '%s\n' "$state_contents" | sed -n '1p')"
+		RECORDED_CONTEXT="$(printf '%s\n' "$state_contents" | sed -n '2p')"
+		# Trim leading/trailing whitespace ONLY on the engine line — see
+		# this block's own header comment for why NOT tr -d.
+		RECORDED_ENGINE="${RECORDED_ENGINE#"${RECORDED_ENGINE%%[![:space:]]*}"}"
+		RECORDED_ENGINE="${RECORDED_ENGINE%"${RECORDED_ENGINE##*[![:space:]]}"}"
+	elif [[ "$stat_err" != *"No such file or directory"* ]]; then
+		echo "error: could not determine whether $COMPOSE_ENGINE_STATE_FILE exists ($stat_err) — refusing to guess which engine brought the stack up" >&2
+		exit 1
 	fi
-elif command -v docker >/dev/null 2>&1; then
-	echo "error: docker is on PATH but not usable (either 'docker version' failed — daemon not running/unreachable — or the compose v2 plugin ('docker compose version') is missing), and no usable podman was found either" >&2
+fi
+
+if [[ -n "$RECORDED_ENGINE" ]]; then
+	case "$RECORDED_ENGINE" in
+	docker)
+		if ! usable docker || ! docker_compose_usable; then
+			echo "error: the compose stack was started under engine=docker (recorded in $COMPOSE_ENGINE_STATE_FILE), but docker is not usable right now — refusing to report the stack as down without actually confirming teardown against the engine that runs it; fix docker (or its compose v2 plugin) and retry" >&2
+			exit 1
+		fi
+		if [[ "$(context_fingerprint docker)" != "$RECORDED_CONTEXT" ]]; then
+			echo "error: the compose stack was started under engine=docker with a different DOCKER_CONTEXT/DOCKER_HOST than the current one (recorded in $COMPOSE_ENGINE_STATE_FILE) — refusing to report the stack as down without confirming teardown against the SAME daemon it was started under; restore the DOCKER_CONTEXT/DOCKER_HOST in effect at the time of \`up\` and retry" >&2
+			exit 1
+		fi
+		ENGINE=docker
+		BUILD_CMD=(docker build)
+		COMPOSE_CMD=(docker compose -f "$COMPOSE_FILE")
+		;;
+	podman)
+		if ! usable podman || ! command -v podman-compose >/dev/null 2>&1; then
+			echo "error: the compose stack was started under engine=podman (recorded in $COMPOSE_ENGINE_STATE_FILE), but podman/podman-compose is not usable right now — refusing to report the stack as down without actually confirming teardown against the engine that runs it; fix podman/podman-compose and retry" >&2
+			exit 1
+		fi
+		if [[ "$(context_fingerprint podman)" != "$RECORDED_CONTEXT" ]]; then
+			echo "error: the compose stack was started under engine=podman with a different CONTAINER_CONNECTION/CONTAINER_HOST than the current one (recorded in $COMPOSE_ENGINE_STATE_FILE) — refusing to report the stack as down without confirming teardown against the SAME daemon it was started under; restore the CONTAINER_CONNECTION/CONTAINER_HOST in effect at the time of \`up\` and retry" >&2
+			exit 1
+		fi
+		ENGINE=podman
+		BUILD_CMD=(podman build)
+		COMPOSE_CMD=(podman-compose -f "$COMPOSE_FILE")
+		;;
+	*)
+		echo "error: $COMPOSE_ENGINE_STATE_FILE contains an unrecognized engine ($RECORDED_ENGINE) — refusing to guess which engine brought the stack up; inspect/remove the file only if you are certain no stack is currently running under it, then retry" >&2
+		exit 1
+		;;
+	esac
+elif [[ "$STATE_FILE_EXISTS" -eq 1 ]]; then
+	echo "error: $COMPOSE_ENGINE_STATE_FILE exists but is empty — refusing to guess which engine brought the stack up; inspect/remove the file only if you are certain no stack is currently running under it, then retry" >&2
 	exit 1
-elif command -v podman >/dev/null 2>&1; then
-	echo "error: podman is on PATH but not usable ('podman version' failed), and no usable docker was found either" >&2
-	exit 1
-else
-	echo "error: neither docker nor podman found on PATH" >&2
-	exit 1
+fi
+
+if [[ -z "$RECORDED_ENGINE" ]]; then
+	if [[ "$DOWN" == "1" ]]; then
+		echo "warning: no recorded engine at $COMPOSE_ENGINE_STATE_FILE (never written by a matching \`up\`, or predates this check) — falling back to best-effort detection, which cannot fully rule out downing the wrong engine's empty project while the real stack keeps running" >&2
+	fi
+	if usable docker && docker_compose_usable; then
+		ENGINE=docker
+		BUILD_CMD=(docker build)
+		COMPOSE_CMD=(docker compose -f "$COMPOSE_FILE")
+		if [[ "$DOWN" == "1" ]] && usable podman && command -v podman-compose >/dev/null 2>&1; then
+			DOWN_ALT_COMPOSE_CMD=(podman-compose -f "$COMPOSE_FILE")
+		fi
+	elif usable podman; then
+		ENGINE=podman
+		BUILD_CMD=(podman build)
+		# No DOWN_ALT_COMPOSE_CMD computation here: reaching this branch at
+		# all already means "usable docker && docker_compose_usable" (the
+		# prior branch's condition) evaluated false a few lines up, in this
+		# SAME invocation — re-checking it again here cannot yield a
+		# different answer, so there is no drift to guard against within one
+		# script run. Only the docker-primary branch above needs the
+		# alt-engine check.
+		if command -v podman-compose >/dev/null 2>&1; then
+			COMPOSE_CMD=(podman-compose -f "$COMPOSE_FILE")
+		else
+			COMPOSE_CMD=()
+			echo "warning: podman found but no podman-compose; skipping the compose up/down step (image build only)" >&2
+		fi
+	elif command -v docker >/dev/null 2>&1; then
+		echo "error: docker is on PATH but not usable (either 'docker version' failed — daemon not running/unreachable — or the compose v2 plugin ('docker compose version') is missing), and no usable podman was found either" >&2
+		exit 1
+	elif command -v podman >/dev/null 2>&1; then
+		echo "error: podman is on PATH but not usable ('podman version' failed), and no usable docker was found either" >&2
+		exit 1
+	else
+		echo "error: neither docker nor podman found on PATH" >&2
+		exit 1
+	fi
 fi
 echo "deploy-container: using engine=$ENGINE"
 
@@ -157,7 +362,18 @@ if [[ "$ENGINE" == "podman" ]]; then
 	# running fails with a bare connection-refused/no-such-file — no hint
 	# that the fix is a systemd unit) — checked explicitly here instead,
 	# with the actual remediation printed.
-	if ! systemctl --user is-active podman.socket >/dev/null 2>&1; then
+	#
+	# --down (docs/plans/release-onboarding.md 決定2/PR5, codex round-1
+	# review Major 4): this preflight is a precondition for BRINGING THE
+	# STACK UP (the DooD bind mount `up` is about to create), not for
+	# tearing it down — `compose down`/`podman-compose down` only removes
+	# already-existing containers/networks and does not itself need
+	# podman.socket's docker-API-compatible listener at all. Gating it
+	# unconditionally used to mean `boid stop` (this script's own --down)
+	# could never succeed at recovering from EXACTLY the failure mode this
+	# check exists to catch — a stopped/never-enabled podman.socket — since
+	# the preflight refused before ever reaching the down logic below.
+	if [[ "$DOWN" != "1" ]] && ! systemctl --user is-active podman.socket >/dev/null 2>&1; then
 		echo "error: podman.socket is not active — required for the DooD engine-socket bind (BOID_DOCKER_SOCK_SRC=$BOID_DOCKER_SOCK_SRC)." >&2
 		echo "  fix: systemctl --user enable --now podman.socket" >&2
 		exit 1
@@ -228,6 +444,43 @@ if [[ -z "${BOID_RUNTIME_DIR:-}" ]]; then
 fi
 : "${BOID_UID:=$(id -u)}"
 : "${BOID_GID:=$(id -g)}"
+# codex round-8 review of PR5, Major: cmd/start.go's refuseRootUID only
+# ever inspects the CLI PROCESS's own uid (os.Getuid()) — an operator
+# running as a non-root user who explicitly exports BOID_UID=0 sails
+# straight through that check, since the check has nothing to do with
+# the value THIS variable ultimately resolves to. This is the actual
+# enforcement point (compose.yml's `user: "${BOID_UID}:0"` uses exactly
+# this value), so the refusal belongs here too, not only in the Go CLI.
+# Skipped for --down: tearing an existing stack down does not itself
+# bring up a new root-uid container, so there is nothing to protect
+# against here — mirrors the podman.socket preflight above, which is
+# similarly up-only.
+#
+# codex round-9 review of PR5, Major: a plain `[[ "$BOID_UID" == "0" ]]`
+# string comparison only ever caught the exact literal "0" — a value
+# like "00" or "+0" is a different string but the SAME uid once docker/
+# podman parse compose.yml's `user: "${BOID_UID}:0"` numerically, so it
+# sailed straight through here uncaught. Host-mode's on-demand daemon
+# autostart (cmd/host.go) also reaches this script directly, bypassing
+# cmd/start.go's own effectiveBoidUID()-based refusal entirely (that Go
+# check only guards the explicit `boid start` invocation), so this is
+# the only enforcement point some callers ever pass through — it must
+# validate the numeric value itself, not just the literal spelling of
+# zero. Reject anything that is not a plain non-negative decimal integer
+# (Bash's own `((...))` treats a leading-zero string as octal, and a
+# larger int like "010" could sail through with the wrong numeric value
+# entirely — decimal-only regex prevents both a bypass and a silent
+# misinterpretation) as well as any numeric value of zero.
+if [[ "$DOWN" != "1" ]]; then
+	if [[ ! "$BOID_UID" =~ ^(0|[1-9][0-9]*)$ ]]; then
+		echo "error: BOID_UID must be a plain non-negative decimal integer (got \"$BOID_UID\")" >&2
+		exit 1
+	fi
+	if [[ "$BOID_UID" == "0" ]]; then
+		echo "error: refusing to run the daemon as uid 0 (root) — set BOID_UID to a non-zero uid (docs/plans/release-onboarding.md 決定1/決定4 require a non-root uid with supplementary group 0)" >&2
+		exit 1
+	fi
+fi
 # DOCKER_GID (Major 9, PR6 codex review): the host's `docker` group GID,
 # so compose.yml's group_add can grant the non-root daemon process
 # permission to open the engine socket (DooD). `getent group docker` is
@@ -244,6 +497,75 @@ fi
 : "${DOCKER_GID:=$(getent group docker 2>/dev/null | cut -d: -f3)}"
 : "${DOCKER_GID:=999}"
 export BOID_RUNTIME_DIR BOID_UID BOID_GID DOCKER_GID
+
+# --- --down: tear the stack down and exit, before any build/pull/up step ---
+# `boid stop` (cmd/stop.go, docs/plans/release-onboarding.md 決定2/PR5)
+# invokes this script with --down instead of driving `docker/podman
+# compose down` directly — same single-source-of-truth rationale as
+# --build/up (this file's own header comment): engine detection, the
+# podman keep-id overlay, and BOID_IMAGE all have to agree with whatever
+# `up` last used, or compose could resolve a different project/volume
+# identity for the down call than the one actually running.
+if [[ "$DOWN" == "1" ]]; then
+	if [[ ${#COMPOSE_CMD[@]} -eq 0 ]]; then
+		echo "error: podman-compose is required to bring the compose stack down; install podman-compose" >&2
+		exit 1
+	fi
+	# BOID_IMAGE is unset here (deliberately no build/pull step ran) —
+	# `compose down` never resolves `image:`, only service/network/volume
+	# names, so this is safe; export a placeholder so compose does not warn
+	# about an unset interpolation variable.
+	: "${BOID_IMAGE:=unused}"
+	export BOID_IMAGE
+	# codex round-4/round-5 review Major: under `set -e`, a bare
+	# `"${COMPOSE_CMD[@]}" down` that FAILS aborts the script immediately
+	# — the DOWN_ALT_COMPOSE_CMD attempt below would never even run, so a
+	# primary-engine down failure could never be masked by a successful
+	# alternate-engine down (the exact scenario DOWN_ALT_COMPOSE_CMD
+	# exists for: the stack was actually started under the OTHER engine).
+	# Guarding each attempt with `if ! ...; then` (rather than a bare
+	# command) keeps `set -e` from firing on either one individually, so
+	# both always get a chance to run; PRIMARY_OK/ALT_OK below then decide
+	# the overall outcome explicitly instead of silently reporting success
+	# on a down that never happened.
+	echo "deploy-container: --down — stopping the compose stack (engine=$ENGINE)"
+	PRIMARY_OK=1
+	if ! "${COMPOSE_CMD[@]}" down; then
+		PRIMARY_OK=0
+		echo "warning: compose down failed for engine=$ENGINE" >&2
+	fi
+	# DOWN_ALT_COMPOSE_CMD (codex round-4 review Major, this file's own
+	# header comment on the variable): best-effort teardown of the OTHER
+	# engine too, in case the stack was actually brought up under it
+	# (docker/podman availability drifted between `up` and this `down`).
+	ALT_OK=1
+	if [[ ${#DOWN_ALT_COMPOSE_CMD[@]} -gt 0 ]]; then
+		echo "deploy-container: --down — also stopping via the alternate engine, in case the stack was started under it"
+		if ! "${DOWN_ALT_COMPOSE_CMD[@]}" down; then
+			ALT_OK=0
+			echo "warning: compose down failed for the alternate engine too" >&2
+		fi
+	fi
+	# codex round-7 review Major: requiring only ONE of the two attempted
+	# engines to succeed (the previous revision here) can still mask a
+	# real failure — e.g. the stack is genuinely running under podman,
+	# podman's own `down` fails for a real reason (permission, engine
+	# crash, ...), but docker's `down` against an empty/never-created
+	# project trivially no-ops and returns 0, and the OR-based check
+	# would have called that overall success. `compose down` on an
+	# empty/nonexistent project is expected to exit 0 on its own (that is
+	# what makes trying BOTH engines safe in the first place, this file's
+	# own header comment on DOWN_ALT_COMPOSE_CMD) — there is no
+	# legitimate reason for an ATTEMPTED engine's down to fail, so ANY
+	# attempted engine failing is treated as an overall failure now,
+	# rather than requiring every attempted engine to fail.
+	if [[ $PRIMARY_OK -eq 0 ]] || [[ $ALT_OK -eq 0 ]]; then
+		echo "error: compose down failed for at least one engine; the stack may still be running" >&2
+		exit 1
+	fi
+	echo "deploy-container: done. compose stack is down."
+	exit 0
+fi
 
 # --- build (--build/DEPLOY_CONTAINER_BUILD_ONLY) or pull (default) --------
 # docs/plans/release-onboarding.md 穴4/PR4: BUILD was computed above from
@@ -398,5 +720,36 @@ echo "deploy-container: stopping any existing compose stack (explicit down befor
 
 echo "deploy-container: starting the compose stack"
 "${COMPOSE_CMD[@]}" up -d
+
+# Record which engine actually brought the stack up (codex round-10 review
+# of PR5, Major) — see COMPOSE_ENGINE_STATE_FILE's own doc comment and the
+# RECORDED_ENGINE branch above for why `--down` needs this instead of
+# re-detecting "whichever engine looks usable right now". Written only
+# after `up -d` above has already succeeded (set -e would have aborted the
+# script otherwise).
+#
+# codex round-12 review of PR5, Major: an earlier revision treated a
+# write failure here as non-fatal ("continuing — --down degrades to
+# best-effort detection") — but that is exactly the false-success window
+# rounds 10/11 exist to close, not a harmless degradation: a `--down` that
+# can't find this file behaves IDENTICALLY whether it is genuinely
+# missing (no prior `up`, or one that predates this mechanism) or just
+# failed to write (read-only $XDG_STATE_HOME, disk full, ownership
+# mismatch, ...) — in the second case `up` actually ran and this file's
+# whole job was to prevent exactly the failure mode a write failure would
+# now silently reopen. Fatal here instead: the compose stack IS running
+# at this point, so failing loudly (rather than reporting overall `up`
+# failure) still leaves the operator with a stack they know is up and a
+# clear, actionable error, instead of a stack that later silently can't
+# be torn down safely.
+# Second line: context_fingerprint($ENGINE) (codex round-13 review of
+# PR5, Major) — see that function's own doc comment for why the engine
+# KIND alone (line 1) is not enough to prove `down` would target the SAME
+# daemon `up` did.
+mkdir -p "$COMPOSE_ENGINE_STATE_DIR"
+if ! printf '%s\n%s\n' "$ENGINE" "$(context_fingerprint "$ENGINE")" >"$COMPOSE_ENGINE_STATE_FILE"; then
+	echo "error: compose stack is up (engine=$ENGINE), but could not write $COMPOSE_ENGINE_STATE_FILE — a later \`boid stop\` cannot safely determine which engine to tear down without it; fix $COMPOSE_ENGINE_STATE_DIR's permissions/free space and retry (the running stack itself does not need to be recreated)" >&2
+	exit 1
+fi
 
 echo "deploy-container: done. compose stack is up (container backend)."

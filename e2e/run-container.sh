@@ -332,8 +332,10 @@ mkdir -p "$XDG_DATA_HOME/boid" "$XDG_CONFIG_HOME/boid" "$XDG_RUNTIME_DIR"
 # --- BOID_CLI_TOKEN (PR-3 Option 4 host-mode redesign, docs/plans/
 # volume-only-daemon.md §論点c, nose directive 2026-07-25) -------------------
 # Pre-seeded into $XDG_CONFIG_HOME/boid/cli-token BEFORE the daemon ever
-# boots (below) so a LATER `BOID_MODE=container "$BUILD_DIR/boid" ...`
-# invocation's own loadOrCreateCLIToken (cmd/host.go) reads back this exact
+# boots (below) so a LATER `"$BUILD_DIR/boid" ...` invocation — host mode
+# is the unconditional default as of docs/plans/release-onboarding.md
+# 決定2/PR5, no BOID_MODE opt-in needed any more — its own
+# loadOrCreateCLIToken (cmd/host.go) reads back this exact
 # value (atomicfile.PublishIfAbsent: an existing file is read back, not
 # regenerated) instead of racing its own fresh one — the two sides
 # (this script's `export BOID_CLI_TOKEN=...` below, consumed by
@@ -897,15 +899,21 @@ e2e_log "waiting for compose daemon health at $DAEMON_SOCKET"
 e2e_run "$BUILD_DIR/boid-e2e" wait-health --timeout 30s --interval 200ms "$DAEMON_SOCKET"
 
 # --- host-mode CLI verification (PR-3 Option 4 redesign, docs/plans/
-# volume-only-daemon.md §論点c) ----------------------------------------------
+# volume-only-daemon.md §論点c; host mode is now the CLI's UNCONDITIONAL
+# default for scope=remote commands as of docs/plans/
+# release-onboarding.md 決定2/PR5 — BOID_MODE is gone) ----------------------
 # The daemon this script already brought up (via scripts/deploy-container.sh
 # above, with BOID_CLI_TOKEN in its env — see this script's own "BOID_CLI_
-# TOKEN" section) is the SAME daemon a real BOID_MODE=container CLI
-# invocation would talk to; this section proves the dedicated CLI listener
+# TOKEN" section) is the SAME daemon every `"$BUILD_DIR/boid" ...`
+# scope=remote invocation in the rest of this script now talks to by
+# default; this section proves the dedicated CLI listener
 # (internal/server.Config.CLIAddr/CLIToken) and cmd/host.go's own client
 # path both work end to end, without a second, redundant compose deploy —
 # ensureHostModeDaemon's own health probe finds the daemon already up and
-# skips straight to dispatch.
+# skips straight to dispatch. $XDG_CONFIG_HOME/boid/cli-token was
+# pre-seeded with $CLI_TOKEN before the daemon ever booted (this script's
+# own "BOID_CLI_TOKEN" section above), so cmd/host.go's loadOrCreateCLIToken
+# reads back that exact value instead of racing a fresh one.
 CLI_ADDR="127.0.0.1:8442"
 e2e_log "verifying the dedicated CLI listener at $CLI_ADDR"
 
@@ -943,9 +951,9 @@ right_code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 -H "Authorizat
 [[ "$right_code" == "200" ]] || e2e_fail "GET http://${CLI_ADDR}/api/tasks with the correct Bearer token = ${right_code:-<no response>}, want 200"
 e2e_log "CLI listener token auth OK (health public, wrong token 401, correct token 200)"
 
-e2e_log "verifying BOID_MODE=container CLI dispatch (cmd/host.go)"
-host_mode_out="$(BOID_MODE=container BOID_COMPOSE_ROOT="$REPO_ROOT" "$BUILD_DIR/boid" task list -o json 2>&1)" || \
-  e2e_fail "BOID_MODE=container 'boid task list' failed: $host_mode_out"
+e2e_log "verifying host-mode CLI dispatch (cmd/host.go, now the unconditional default)"
+host_mode_out="$("$BUILD_DIR/boid" task list -o json 2>&1)" || \
+  e2e_fail "'boid task list' (host mode) failed: $host_mode_out"
 e2e_log "host-mode CLI dispatch OK"
 
 # install_id (PR-2b): read from INSIDE the running daemon container, not a

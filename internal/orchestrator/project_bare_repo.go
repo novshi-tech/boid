@@ -90,7 +90,7 @@ func ReadProjectMetaFromBareRepo(bareRepoPath string) (*ProjectMeta, error) {
 		return nil, err
 	}
 
-	meta, err := parseProjectMetaBytes(bareRepoPath, data)
+	meta, err := parseProjectMetaBytes(bareRepoPath, true, data)
 	if err != nil {
 		return nil, err
 	}

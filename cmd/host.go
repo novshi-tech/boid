@@ -8,11 +8,15 @@ package cmd
 // autostart, client.EnsureRunningAt) but for a `docker/podman compose`
 // stack instead of a single host process.
 //
-// Opt-in via BOID_MODE=container (checked by hostModeEnabled) — the
-// default remains today's profile-based resolution (bare-metal unix
-// socket, or a named remote https:// profile), completely untouched by
-// anything in this file. Nose configures BOID_MODE once per shell
-// environment rather than the CLI trying to auto-detect it.
+// Unconditional since docs/plans/release-onboarding.md 決定2/PR5 —
+// hostModeEnabled() always reports true now. It used to be opt-in via
+// BOID_MODE=container (nose configuring it once per shell environment);
+// that env var is gone. profiles.Resolve-based resolution (a genuine
+// remote https:// profile, or the pre-compose unix socket default) still
+// exists and now serves exactly one purpose: an EXPLICIT `--profile` flag
+// bypasses host mode outright (cmd/root.go's PersistentPreRunE) — see
+// profileExplicitlyRequested's own doc comment for why (docs/plans/
+// release-onboarding.md「profiles との優先順位」, Fable M4).
 //
 // On every scope=remote invocation (isRemoteScope — the commands that
 // actually talk to the daemon's HTTP API; scope=local/neutral commands
@@ -44,9 +48,13 @@ package cmd
 // allowed to BUILD a fresh image from it.
 //
 // PRIMARY path (findComposeRoot found a checkout — BOID_COMPOSE_ROOT env
-// override, or walking up from cwd looking for scripts/deploy-container.sh
-// — nose's actual dev workflow always runs `boid` from within, or below,
-// this checkout): host mode invokes deploy-container.sh directly out of
+// override ONLY, codex round-10 review of PR5: an earlier revision also
+// walked up from cwd looking for scripts/deploy-container.sh, which
+// became a drive-by code-execution vector once host mode turned
+// unconditional-default in this same PR — see findComposeRoot's own doc
+// comment. Nose's dev workflow now exports BOID_COMPOSE_ROOT once per
+// shell rather than relying on cwd): host mode invokes deploy-container.sh
+// directly out of
 // that checkout (deployFromCheckout) with its `--build` dev-backdoor flag
 // (docs/plans/release-onboarding.md 穴4/PR4), so a dev checkout keeps
 // picking up local code changes exactly like before PR4's pull-first
@@ -103,15 +111,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// boidModeEnv / boidModeContainer: BOID_MODE=container opts a shell
-// environment into host mode for every subsequent `boid` invocation. Any
-// other value (including unset, the default) leaves the ordinary
-// profiles.Resolve-based path in cmd/root.go completely unaffected.
-const (
-	boidModeEnv       = "BOID_MODE"
-	boidModeContainer = "container"
-)
-
 // cliTokenFileName names the persistent shared-secret file under
 // hostModeConfigDir() (~/.config/boid — profiles.ConfigPath()'s
 // os.UserConfigDir()-based "boid" subdirectory). cliLockFileName names the
@@ -147,8 +146,15 @@ const hostModeHealthPollInterval = 500 * time.Millisecond
 // check quickly rather than stalling every single `boid` invocation.
 const hostModeProbeTimeout = 1500 * time.Millisecond
 
+// hostModeEnabled reports whether host mode (this file) is this
+// invocation's resolution path. Unconditionally true since docs/plans/
+// release-onboarding.md 決定2/PR5 — BOID_MODE is gone, and the compose
+// daemon is the only daemon shape boid supports now. Kept as a named
+// function (rather than inlining `true` at its one call site in
+// cmd/root.go) so the seam stays easy to find/grep and easy to read at
+// the call site.
 func hostModeEnabled() bool {
-	return os.Getenv(boidModeEnv) == boidModeContainer
+	return true
 }
 
 // isRemoteScope reports whether cmd is annotated boid.scope=remote — the
@@ -302,34 +308,38 @@ func hostModeHealthy(ctx context.Context, addr, token string) bool {
 // findComposeRoot locates the boid repo checkout containing
 // scripts/deploy-container.sh + build/container/{Dockerfile,compose.yml}
 // — see this file's own header comment for why host mode invokes that
-// script rather than embedding its assets. BOID_COMPOSE_ROOT, when set,
-// wins outright (explicit override — e2e/run-container.sh's own host-mode
-// wiring uses this so it never depends on the invoking shell's cwd).
-// Otherwise walks up from the current working directory looking for
-// scripts/deploy-container.sh, mirroring how `git`/similar tools locate a
-// repo root from any subdirectory — nose's actual workflow always runs
-// `boid` from within, or below, this checkout.
+// script rather than embedding its assets. Trusts ONLY an explicit
+// BOID_COMPOSE_ROOT override; returns an error otherwise, so
+// ensureHostModeDaemon's caller falls back to deployFromEmbeddedAssets
+// (the go:embed'd copy this binary ships with, not anything read off the
+// filesystem).
+//
+// codex round-10 review of PR5, Blocker: this used to also walk up from
+// the current working directory looking for scripts/deploy-container.sh
+// when BOID_COMPOSE_ROOT was unset, mirroring how `git`/similar tools
+// locate a repo root from any subdirectory — reasonable back when host
+// mode itself was opt-in (BOID_MODE=container, removed by this same PR),
+// since a user had to deliberately ask for this behavior before it could
+// fire. Once PR5 made host mode the unconditional default for every
+// scope=remote command, that walk became a drive-by code-execution
+// vector with no opt-in gate left in front of it at all: an operator who
+// simply `cd`s into ANY checkout that happens to contain its own
+// scripts/deploy-container.sh (an attacker-controlled repo, not
+// necessarily boid's own) and runs an ordinary `boid` command (even a
+// read-only one — ensureHostModeDaemon fires any time the daemon isn't
+// already reachable) would have that checkout's script executed with
+// their own user privileges, no confirmation asked. Dropping the
+// filesystem walk entirely closes that: the only way to make host mode
+// trust a checkout now is to set BOID_COMPOSE_ROOT explicitly (nose's own
+// dev workflow, and e2e/run-container.sh's host-mode wiring, already do
+// exactly this).
 func findComposeRoot() (string, error) {
 	if v := os.Getenv("BOID_COMPOSE_ROOT"); v != "" {
 		return v, nil
 	}
-	dir, err := os.Getwd()
-	if err != nil {
-		return "", fmt.Errorf("getwd: %w", err)
-	}
-	for {
-		if _, statErr := os.Stat(filepath.Join(dir, "scripts", "deploy-container.sh")); statErr == nil {
-			return dir, nil
-		}
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			break
-		}
-		dir = parent
-	}
 	return "", fmt.Errorf(
-		"host mode: could not locate scripts/deploy-container.sh by walking up from the current directory; " +
-			"run `boid` from within the boid repo checkout, or set BOID_COMPOSE_ROOT to its root")
+		"host mode: BOID_COMPOSE_ROOT is not set; falling back to the embedded deploy assets " +
+			"(set BOID_COMPOSE_ROOT to a boid repo checkout root to build/deploy from source instead)")
 }
 
 // hostModeAssetsDir returns (creating if necessary) the stable directory
@@ -559,7 +569,7 @@ func runDeployScript(ctx context.Context, root, token, addr string, build bool, 
 func deployFromEmbeddedAssets(ctx context.Context, token, addr string) error {
 	if _, _, err := detectComposeEngine(ctx); err != nil {
 		return fmt.Errorf(
-			"no boid repo checkout found (set BOID_COMPOSE_ROOT, or run `boid` from within one) to build a fresh image, and %w", err)
+			"no boid repo checkout found (set BOID_COMPOSE_ROOT to one — findComposeRoot no longer auto-discovers a checkout by walking up from cwd, codex round-10 review of PR5) to build a fresh image, and %w", err)
 	}
 
 	root, err := extractComposeAssets()
@@ -722,6 +732,35 @@ func resolveHostModeClient(ctx context.Context) (*client.Client, error) {
 	addr := client.DefaultCLIAddr()
 	if err := ensureHostModeDaemon(ctx, addr, token); err != nil {
 		return nil, fmt.Errorf("host mode: %w", err)
+	}
+	c, err := client.NewClient("http://"+addr, token)
+	if err != nil {
+		return nil, fmt.Errorf("host mode: build client: %w", err)
+	}
+	return c, nil
+}
+
+// resolveHostModeClientNoAutostart is resolveHostModeClient's sibling for
+// a command carrying annotationSkipAutostart=skip (codex round-1 review
+// of PR5, Major 3): builds the exact same client when the compose daemon
+// is ALREADY reachable, but — unlike resolveHostModeClient, which
+// unconditionally calls ensureHostModeDaemon and deploys the stack when
+// it is not — refuses outright instead of autostarting anything when it
+// is unreachable. `boid gc`'s own annotation predates host mode
+// specifically to keep "don't spin up a daemon just to gc it" true
+// regardless of which of the two autostart mechanisms (this one, or the
+// bare-metal client.EnsureRunningAt path further down PersistentPreRunE)
+// would otherwise have fired.
+func resolveHostModeClientNoAutostart(ctx context.Context) (*client.Client, error) {
+	token, err := loadOrCreateCLIToken()
+	if err != nil {
+		return nil, fmt.Errorf("host mode: %w", err)
+	}
+	addr := client.DefaultCLIAddr()
+	if !hostModeHealthy(ctx, addr, token) {
+		return nil, fmt.Errorf(
+			"host mode: daemon container not reachable at %s; not starting it automatically for this command — run `boid start` first",
+			addr)
 	}
 	c, err := client.NewClient("http://"+addr, token)
 	if err != nil {

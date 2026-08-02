@@ -268,7 +268,10 @@ func buildProjectStore(cfg Config, conn *sql.DB, projectRepo *orchestrator.Proje
 	// and the DB row is left completely untouched. Nothing below this
 	// point deletes anything. The one remaining fail-fast case is a schema
 	// migration requirement (*ProjectMigrationError, resolved via
-	// `boid start --auto-migrate`): unlike the conditions above, that
+	// `boid project migrate <dir>` + `boid workspace create/edit
+	// --from-file` — docs/plans/release-onboarding.md 決定2/PR5 removed the
+	// bare-metal-only `boid start --auto-migrate` respawn path):
+	// unlike the conditions above, that
 	// signals a config SHAPE the daemon has no safe default interpretation
 	// for, not an observational/transient failure, so refusing to start is
 	// still the right call.
@@ -359,12 +362,17 @@ func buildProjectLoadStartupError(errs []error) error {
 			causes = append(causes, e)
 		}
 	}
-	// migration ヒント行は実際に migration error が混じっているときだけ出す。
-	// schema migration じゃない load 失敗 (parse error 等) に対して
-	// 「Run boid project migrate <dir>」 を表示するのは misleading で、
-	// --auto-migrate も migration error 以外には効かない。
+	// codex round-9 review of PR5, Blocker 1: this used to append one
+	// more generic "Run `boid project migrate <dir>`" hint line here,
+	// with a literal "<dir>" placeholder — redundant with, AND less
+	// accurate than, what is already there: each `e.Error()` written
+	// into msg above (for an `e` that IS a *ProjectMigrationError) is
+	// FormatMigrationIssue's own per-project text, which already embeds
+	// migrationGuidance(p.Dir, p.IsBareRepo) — the real path (or, for a
+	// git-URL-registered project, the correct "this is a bare-repo path,
+	// use your own clone instead" guidance). Nothing more to add here;
+	// only the errors.As wiring (causes) is still needed.
 	if len(migAgg.Projects) > 0 {
-		msg.WriteString("Run `boid project migrate <dir>` for each affected project to migrate to the new schema.\n")
 		// Put migration error first so errors.As walks find it quickly.
 		causes = append([]error{migAgg}, causes...)
 	}

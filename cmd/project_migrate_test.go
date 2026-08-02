@@ -95,6 +95,19 @@ func invokeMigrate(t *testing.T, dir string, opts migrateOpts) error {
 	// Set global flag vars.
 	migrateWorkspace = opts.workspace
 	migrateApply = opts.apply
+	// guardApply (docs/plans/release-onboarding.md 決定2/PR5, codex
+	// round-1 through round-5 review) refuses --apply outright unless
+	// --legacy-bare-metal is also set. These tests exercise
+	// MigrateProject's actual apply/DB-merge machinery, not guardApply
+	// itself (TestGuardApply_* cover that directly), so opt into the
+	// escape hatch whenever the test asked for --apply at all — unless
+	// opts.legacyBareMetalOverride explicitly says otherwise (used by the
+	// refusal regression test, which wants --apply WITHOUT the escape
+	// hatch).
+	migrateLegacyBareMetal = opts.apply
+	if opts.legacyBareMetalOverride != nil {
+		migrateLegacyBareMetal = *opts.legacyBareMetalOverride
+	}
 	migrateOnCollision = "refuse"
 	if opts.onCollision != "" {
 		migrateOnCollision = opts.onCollision
@@ -148,6 +161,11 @@ type migrateOpts struct {
 	// path so the daemon-push added for MAJOR 4 deterministically takes the
 	// "daemon unreachable" branch.
 	socketPath string
+	// legacyBareMetalOverride, when non-nil, overrides invokeMigrate's
+	// default "--legacy-bare-metal follows --apply" wiring — used by the
+	// guardApply refusal regression test, which wants apply:true with
+	// --legacy-bare-metal explicitly NOT set.
+	legacyBareMetalOverride *bool
 }
 
 // readProjectYAMLContent reads .boid/project.yaml as a string.
@@ -252,6 +270,42 @@ func TestProjectMigrate_DryRun(t *testing.T) {
 	wsPath := filepath.Join(cfgDir, "boid", "workspaces", "my-ws.yaml")
 	if _, err := os.Stat(wsPath); !os.IsNotExist(err) {
 		t.Errorf("dry-run created workspace.yaml unexpectedly")
+	}
+}
+
+// TestProjectMigrate_DryRun_FreshHost_NeverOpensDB is the codex round-9
+// review of PR5, Blocker 2 regression test: a plain dry-run (no --apply)
+// must never call db.Open at all — on a fresh compose-only host with no
+// pre-existing boid.db, db.Open's own PRAGMA journal_mode=WAL
+// (internal/db/db.go) creates the sqlite file (plus -wal/-shm) as a side
+// effect of merely being opened, directly contradicting "dry-run: prints
+// what it would do without writing anything" (this command's own --help
+// text). Unlike TestProjectMigrate_DryRun above, this test deliberately
+// points --db-path at a NON-existent file under a fresh temp dir (no
+// setupMigrateDBFile pre-provisioning) so the assertion actually exercises
+// the "does this create a DB file at all" question.
+func TestProjectMigrate_DryRun_FreshHost_NeverOpensDB(t *testing.T) {
+	dir := setupMigrateProject(t, testLegacyProjectYAML)
+	cfgDir := t.TempDir()
+	dbFile := filepath.Join(t.TempDir(), "boid.db") // deliberately never created
+
+	err := invokeMigrate(t, dir, migrateOpts{
+		workspace:     "my-ws",
+		apply:         false, // dry-run
+		dbPath:        dbFile,
+		xdgConfigHome: cfgDir,
+	})
+	if err != nil {
+		t.Fatalf("dry-run: unexpected error: %v", err)
+	}
+
+	if _, err := os.Stat(dbFile); !os.IsNotExist(err) {
+		t.Errorf("dry-run created a boid.db file at %s (db.Open must not run without --apply)", dbFile)
+	}
+	for _, suffix := range []string{"-wal", "-shm"} {
+		if _, err := os.Stat(dbFile + suffix); !os.IsNotExist(err) {
+			t.Errorf("dry-run created a boid.db%s file (db.Open's own PRAGMA journal_mode=WAL side effect)", suffix)
+		}
 	}
 }
 
@@ -1286,8 +1340,10 @@ additional_bindings:
 
 // ---------------------------------------------------------------------------
 // MAJOR 1 (codex review, 4th pass, docs/plans/workspace-db-consolidation.md):
-// `boid start --auto-migrate` (cmd/start.go's runDaemonParent ->
-// handleMigrationFailure -> runAutoMigrate) calls MigrateProject in-process
+// `boid start --auto-migrate` (cmd/start_automigrate.go's
+// handleMigrationFailure -> runAutoMigrate — historically invoked from the
+// now-removed bare-metal runDaemonParent respawn loop, docs/plans/
+// release-onboarding.md 決定2/PR5) calls MigrateProject in-process
 // specifically because the daemon it just tried to start FAILED to start —
 // so the daemon push is never reachable at that call site. Before this fix,
 // pushMigratedWorkspaceToDaemon's HTTP-only push always took the "could not
@@ -1727,5 +1783,78 @@ func TestShadowFileApplyHintBothCases(t *testing.T) {
 	}
 	if strings.Contains(got, "workspace import") {
 		t.Errorf("hint = %q, must not still recommend the retired `workspace import`", got)
+	}
+}
+
+// --- guardApply (docs/plans/release-onboarding.md「project migrate →
+// 要注意コマンド」, PR5; codex round-1 through round-5 review history —
+// see guardApply's own doc comment for the full story: --apply is a
+// legacy, bare-metal-only migration path and is refused outright unless
+// --legacy-bare-metal is also passed) ---
+
+// TestGuardApply_WithoutLegacyBareMetal_Refuses pins the safe default:
+// --apply without --legacy-bare-metal is refused unconditionally, no
+// matter what (no reachability probe, no partial-write carve-out — see
+// guardApply's own doc comment for why every attempt at one turned out
+// unsafe).
+func TestGuardApply_WithoutLegacyBareMetal_Refuses(t *testing.T) {
+	var stderr bytes.Buffer
+	err := guardApply(&stderr, "/tmp/some/project", false)
+	if err == nil {
+		t.Fatal("expected --apply to be refused without --legacy-bare-metal")
+	}
+	if !strings.Contains(err.Error(), "--legacy-bare-metal") {
+		t.Errorf("error = %q, want it to mention the --legacy-bare-metal escape hatch", err.Error())
+	}
+	if !strings.Contains(err.Error(), "/tmp/some/project") {
+		t.Errorf("error = %q, want it to name the project dir in the by-hand recipe", err.Error())
+	}
+}
+
+// TestGuardApply_WithLegacyBareMetal_Proceeds pins the escape hatch: an
+// operator who explicitly acknowledges this is a pre-compose, bare-metal-
+// only migration (no compose daemon involved at all) can proceed.
+func TestGuardApply_WithLegacyBareMetal_Proceeds(t *testing.T) {
+	var stderr bytes.Buffer
+	if err := guardApply(&stderr, "/tmp/some/project", true); err != nil {
+		t.Fatalf("expected --apply --legacy-bare-metal to proceed, got: %v", err)
+	}
+	if !strings.Contains(stderr.String(), "--legacy-bare-metal") {
+		t.Errorf("expected a note acknowledging --legacy-bare-metal, got: %q", stderr.String())
+	}
+}
+
+// TestRunProjectMigrate_ApplyWithoutLegacyBareMetal_RefusesBeforeAnyWrite
+// pins guardApply's wiring into runProjectMigrate: --apply without
+// --legacy-bare-metal must refuse BEFORE MigrateProject ever runs, so
+// project.yaml is left completely untouched (unlike the round-3/round-4
+// designs, which let --apply always rewrite project.yaml regardless).
+func TestRunProjectMigrate_ApplyWithoutLegacyBareMetal_RefusesBeforeAnyWrite(t *testing.T) {
+	dir := setupMigrateProject(t, testLegacyProjectYAML)
+	origYAML, err := os.ReadFile(filepath.Join(dir, ".boid", "project.yaml"))
+	if err != nil {
+		t.Fatalf("read original project.yaml: %v", err)
+	}
+
+	noLegacyBareMetal := false
+	err = invokeMigrate(t, dir, migrateOpts{
+		apply:                   true,
+		legacyBareMetalOverride: &noLegacyBareMetal,
+		xdgConfigHome:           t.TempDir(),
+		xdgDataHome:             t.TempDir(),
+	})
+	if err == nil {
+		t.Fatal("expected an error: --apply without --legacy-bare-metal")
+	}
+	if !strings.Contains(err.Error(), "--legacy-bare-metal") {
+		t.Errorf("error = %q, want it to mention --legacy-bare-metal", err.Error())
+	}
+
+	gotYAML, err := os.ReadFile(filepath.Join(dir, ".boid", "project.yaml"))
+	if err != nil {
+		t.Fatalf("read project.yaml after refused apply: %v", err)
+	}
+	if string(gotYAML) != string(origYAML) {
+		t.Errorf("project.yaml was modified despite --apply being refused:\nwant:\n%s\ngot:\n%s", origYAML, gotYAML)
 	}
 }
