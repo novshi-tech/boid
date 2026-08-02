@@ -357,6 +357,39 @@ e2e 修正を最終 PR に置いていたため、PR4〜PR8 の間 CI が赤い�
 6. **新イメージ運用下で uid を安定させる契約。** 論点 5 は旧→新の移行だが、
    新イメージ運用中に uid が変わった場合 (実行ユーザ変更、別ホストへの volume 移送) も
    同じ問題を起こす。決定 1 の実装形 2 番目とセットで決める。
+7. **`scripts/deploy-container.sh` の engine-state 機構 (PR5, codex round-9〜14 由来) の
+   残エッジケース。** PR5 で `boid stop` (`--down`) が「up 時に実際に使った engine を
+   記録し、down 時に pin して検証する」設計 (`COMPOSE_ENGINE_STATE_FILE`,
+   `$XDG_STATE_HOME/boid/compose-engine`) に落ち着くまで 14 round のレビューを要し、
+   round-1〜13 で見つかった Blocker/Major は全て対応済み — ただし round-13/14 で
+   以下が「single-user personal orchestrator である boid の実運用では発生確率が低い
+   エッジケース」と判断され、対応を先送りにしたまま残っている:
+   - **state directory 自体が dangling symlink の場合の fail-open。**
+     `$XDG_STATE_HOME` または `$XDG_STATE_HOME/boid` が dangling symlink だと
+     `mkdir -p` が失敗し、続く `stat` は ENOENT を返すため best-effort な
+     engine 自動検出へフォールバックしてしまう (`scripts/deploy-container.sh` の
+     state directory 作成箇所と `stat` 判定箇所)。round-13 で入れた
+     ENOENT-vs-その他 の切り分けだけでは閉じない。
+   - **`DOCKER_CONTEXT`/`DOCKER_HOST` が両方 unset でも `docker context use` で
+     実効 context が変わり得る。** round-13 で入れた fingerprint は環境変数の値
+     しか見ておらず、両方 unset のまま `docker context use` で active context を
+     切り替えられると fingerprint が変化せず検出できない
+     (`scripts/deploy-container.sh` の `context_fingerprint()`)。podman の
+     default connection 切り替えも同型。
+   - **通常の `boid start` が既存 identity を検証せず上書きする。**
+     engine/context の記録・照合は `--down` 専用で、`up` 側は現在選択された
+     engine/context でそのまま up し、記録を無条件に上書きする
+     (`scripts/deploy-container.sh` の up 成功後の state 書き込み箇所)。
+     context=A で起動後、context=B に切り替えて再度 `boid start` すると
+     A を確認せず B を起動して記録を B で上書きし、以後 `boid stop` は B だけを
+     正常終了させ A は管理不能なまま残る。
+   - **root-uid 検査は本人の実行環境の `BOID_UID`/uid のみを見る。** 別ホスト/
+     別 uid からの多重起動や、multi-instance の並行運用は元々サポート対象外
+     (単一ホスト・単一 daemon が前提) — この前提が崩れた場合の防御は未実装。
+
+   対応する codex round-9〜14 の生ログは PR #892 の会話に残る。boid の想定運用
+   (単一ホスト・単一ローカル docker/podman engine・単一 context) の前提が崩れる
+   ケースが実際に発生したら、上記を re-open して対応する。
 
 ---
 
