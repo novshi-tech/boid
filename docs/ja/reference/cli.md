@@ -49,7 +49,7 @@ scope=`remote` なコマンド（`task list` 等、daemon の HTTP API を叩く
 
 | 環境変数 | 用途 |
 |---|---|
-| `BOID_COMPOSE_ROOT` | `scripts/deploy-container.sh` を含む boid リポジトリのルートを明示（既定は cwd から歩いて上る自動検出） |
+| `BOID_COMPOSE_ROOT` | `scripts/deploy-container.sh` を含む boid リポジトリのルートを明示（未設定時は下記の埋め込みアセット・フォールバックへ。cwd からの自動探索は行わない — 未信頼な checkout に単に `cd` しただけで、そこにある `scripts/deploy-container.sh` がユーザー権限で実行される drive-by 経路になるため、codex round-10 review で撤去済み） |
 
 boid リポジトリのチェックアウトが見つからない場合（`/usr/local/bin/boid` を単体インストールし、任意の project ディレクトリから起動する等）でも、`boid-runner:latest` image が既にローカルに存在していれば、埋め込み済みの `compose.yml`（`build/container/assets.go`、`go:embed`）を `$XDG_STATE_HOME/boid/compose/` に展開して `compose up -d` を直接実行するフォールバックが働きます（round-2 codex review Major 1）。image を fresh build できるのはチェックアウトがある場合のみ（`Dockerfile` の build context が `COPY . .` = go source tree 全体のため）。image・チェックアウトのどちらも無い場合は明確なエラーで失敗します。
 

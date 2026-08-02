@@ -90,16 +90,34 @@ COMPOSE_FILE="$ROOT_DIR/build/container/compose.yml"
 # below, and that file's own header comment.
 PODMAN_OVERRIDE_FILE="$ROOT_DIR/build/container/compose.podman.override.yml"
 
-# COMPOSE_ENGINE_STATE_FILE (codex round-10 review of PR5, Major): records
-# which engine (docker/podman) a successful `up` actually used, written
-# right after `compose up -d` below succeeds. `--down` reads this back
-# instead of trusting whichever engine happens to look "usable" at
-# teardown time — see the `--down` block's own comment for why that drift
-# matters. Lives next to compose.yml under ROOT_DIR (stable across
-# invocations for a given checkout/embedded-assets root, exactly like
-# COMPOSE_FILE itself), not under BOID_RUNTIME_DIR, since it needs to
-# survive independently of any one daemon run.
-COMPOSE_ENGINE_STATE_FILE="$ROOT_DIR/.boid-compose-engine"
+# COMPOSE_ENGINE_STATE_FILE (codex round-10 review of PR5, Major; location
+# fixed in round-11 after the round-10 fix's own bug was caught by a
+# round-11 review): records which engine (docker/podman) a successful `up`
+# actually used, written right after `compose up -d` below succeeds.
+# `--down` reads this back instead of trusting whichever engine happens to
+# look "usable" at teardown time — see the `--down` block's own comment
+# for why that drift matters.
+#
+# codex round-11 review of PR5, Major: the round-10 fix stored this under
+# ROOT_DIR, which reintroduced the exact bug it was meant to close —
+# compose.yml's own `name: boid` makes the compose PROJECT identity
+# independent of which ROOT_DIR a given invocation resolves to (cmd/
+# host.go's own findComposeRoot-or-deployFromEmbeddedAssets choice can
+# legitimately differ between the `up` that started the stack and a LATER
+# `boid stop`, e.g. `BOID_COMPOSE_ROOT` was exported for the `up` but not
+# for the following `stop`), so a ROOT_DIR-scoped state file could easily
+# not exist (or belong to the WRONG root) by the time `--down` looked for
+# it — silently falling through to this file's own no-record fallback
+# path and reopening the false-success window entirely. Stored instead
+# under a fixed, ROOT_DIR-independent location that tracks the one
+# compose PROJECT ("boid") a host can run at a time — mirroring cmd/
+# host.go's own hostModeAssetsDir() convention ($XDG_STATE_HOME/boid/...,
+# ~/.local/state/boid/... fallback) exactly, just a sibling file rather
+# than a directory of extracted assets.
+: "${XDG_STATE_HOME:=${HOME:-/tmp}/.local/state}"
+COMPOSE_ENGINE_STATE_DIR="$XDG_STATE_HOME/boid"
+COMPOSE_ENGINE_STATE_FILE="$COMPOSE_ENGINE_STATE_DIR/compose-engine"
+mkdir -p "$COMPOSE_ENGINE_STATE_DIR" 2>/dev/null || true
 
 # --- select an engine -------------------------------------------------------
 # Prefers docker (compose v2 syntax, DOCKER_HOST semantics dockerproxy/

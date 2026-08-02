@@ -48,9 +48,13 @@ package cmd
 // allowed to BUILD a fresh image from it.
 //
 // PRIMARY path (findComposeRoot found a checkout — BOID_COMPOSE_ROOT env
-// override, or walking up from cwd looking for scripts/deploy-container.sh
-// — nose's actual dev workflow always runs `boid` from within, or below,
-// this checkout): host mode invokes deploy-container.sh directly out of
+// override ONLY, codex round-10 review of PR5: an earlier revision also
+// walked up from cwd looking for scripts/deploy-container.sh, which
+// became a drive-by code-execution vector once host mode turned
+// unconditional-default in this same PR — see findComposeRoot's own doc
+// comment. Nose's dev workflow now exports BOID_COMPOSE_ROOT once per
+// shell rather than relying on cwd): host mode invokes deploy-container.sh
+// directly out of
 // that checkout (deployFromCheckout) with its `--build` dev-backdoor flag
 // (docs/plans/release-onboarding.md 穴4/PR4), so a dev checkout keeps
 // picking up local code changes exactly like before PR4's pull-first
@@ -565,7 +569,7 @@ func runDeployScript(ctx context.Context, root, token, addr string, build bool, 
 func deployFromEmbeddedAssets(ctx context.Context, token, addr string) error {
 	if _, _, err := detectComposeEngine(ctx); err != nil {
 		return fmt.Errorf(
-			"no boid repo checkout found (set BOID_COMPOSE_ROOT, or run `boid` from within one) to build a fresh image, and %w", err)
+			"no boid repo checkout found (set BOID_COMPOSE_ROOT to one — findComposeRoot no longer auto-discovers a checkout by walking up from cwd, codex round-10 review of PR5) to build a fresh image, and %w", err)
 	}
 
 	root, err := extractComposeAssets()

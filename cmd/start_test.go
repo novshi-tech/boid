@@ -728,17 +728,22 @@ exit 0
 }
 
 // composeEngineStateFilePath is scripts/deploy-container.sh's own
-// COMPOSE_ENGINE_STATE_FILE: ROOT_DIR/.boid-compose-engine, where
-// ROOT_DIR is the checkout root the script's own BASH_SOURCE resolves to
-// — the real repo root when exec'ing the real, non-copied script, exactly
-// like COMPOSE_FILE itself.
-func composeEngineStateFilePath(t *testing.T) string {
-	t.Helper()
-	repoRoot, err := filepath.Abs("..")
-	if err != nil {
-		t.Fatalf("resolve repo root: %v", err)
-	}
-	return filepath.Join(repoRoot, ".boid-compose-engine")
+// COMPOSE_ENGINE_STATE_FILE: $XDG_STATE_HOME/boid/compose-engine.
+//
+// codex round-11 review of PR5, Major: this used to live under ROOT_DIR
+// (the checkout/embedded-assets root the script's own BASH_SOURCE
+// resolves to), which reintroduced the exact false-success bug the state
+// file exists to close — compose.yml's `name: boid` makes the compose
+// PROJECT identity independent of which ROOT_DIR a given invocation
+// resolves to (cmd/host.go's findComposeRoot-or-deployFromEmbeddedAssets
+// choice can legitimately differ between the `up` that started the stack
+// and a LATER `boid stop`), so a ROOT_DIR-scoped file could easily not
+// exist — or belong to the WRONG root — by the time `--down` looked for
+// it, silently falling through to the no-record fallback path. Fixed to a
+// location that tracks the one compose PROJECT a host can run at a time
+// instead, mirroring cmd/host.go's own hostModeAssetsDir() convention.
+func composeEngineStateFilePath(xdgStateHome string) string {
+	return filepath.Join(xdgStateHome, "boid", "compose-engine")
 }
 
 // TestDeployContainerScript_Up_RecordsEngineForDown is the codex round-10
@@ -747,21 +752,25 @@ func composeEngineStateFilePath(t *testing.T) string {
 // to that exact engine instead of re-detecting "whichever engine looks
 // usable right now" (see composeEngineStateFilePath's own doc comment for
 // where). Also exercises the happy path where `--down` reads that record
-// back and still succeeds against the SAME (still-usable) engine.
+// back and still succeeds against the SAME (still-usable) engine — and,
+// per the round-11 fix, still finds that record from a DIFFERENT working
+// directory / ROOT_DIR (this test runs `up` and `down` from the SAME real
+// checkout root since that is exec'd, but the fixed
+// $XDG_STATE_HOME-based location no longer depends on that at all).
 func TestDeployContainerScript_Up_RecordsEngineForDown(t *testing.T) {
 	scriptPath, err := filepath.Abs(filepath.Join("..", "scripts", "deploy-container.sh"))
 	if err != nil {
 		t.Fatalf("resolve script path: %v", err)
 	}
-	stateFile := composeEngineStateFilePath(t)
-	t.Cleanup(func() { _ = os.Remove(stateFile) })
-	_ = os.Remove(stateFile) // in case a prior failed run left one behind
+	xdgStateHome := t.TempDir()
+	stateFile := composeEngineStateFilePath(xdgStateHome)
 
 	dir := t.TempDir()
 	fakeDockerAlwaysOK(t, dir)
 	env := []string{
 		"PATH=" + dir + string(os.PathListSeparator) + os.Getenv("PATH"),
 		"HOME=" + os.Getenv("HOME"),
+		"XDG_STATE_HOME=" + xdgStateHome,
 		"BOID_UID=1000",
 		"BOID_GID=1000",
 		"XDG_RUNTIME_DIR=" + t.TempDir(),
@@ -788,6 +797,87 @@ func TestDeployContainerScript_Up_RecordsEngineForDown(t *testing.T) {
 	}
 }
 
+// TestDeployContainerScript_Down_FindsRecordedEngineFromDifferentRoot is
+// the codex round-11 review of PR5, Major regression test: the state file
+// must be readable by a `--down` invocation running the script out of a
+// DIFFERENT ROOT_DIR than the `up` that wrote it — exactly what happens
+// when `up` ran with `BOID_COMPOSE_ROOT` exported (or from within a real
+// checkout, cmd/host.go's deployFromCheckout) but a later `boid stop`
+// resolves cmd/host.go's OTHER root (deployFromEmbeddedAssets), or vice
+// versa; compose.yml's own `name: boid` makes both invocations manage the
+// SAME compose project regardless. Copies the real script + the compose
+// files it needs into a second, independent root tree (simulating that
+// root drift) and confirms `--down` there still finds and pins to the
+// engine `up` recorded from the FIRST root, rather than silently falling
+// back to auto-detection.
+func TestDeployContainerScript_Down_FindsRecordedEngineFromDifferentRoot(t *testing.T) {
+	scriptPath, err := filepath.Abs(filepath.Join("..", "scripts", "deploy-container.sh"))
+	if err != nil {
+		t.Fatalf("resolve script path: %v", err)
+	}
+	xdgStateHome := t.TempDir()
+
+	dir := t.TempDir()
+	fakeDockerAlwaysOK(t, dir)
+	upEnv := []string{
+		"PATH=" + dir + string(os.PathListSeparator) + os.Getenv("PATH"),
+		"HOME=" + os.Getenv("HOME"),
+		"XDG_STATE_HOME=" + xdgStateHome,
+		"BOID_UID=1000",
+		"BOID_GID=1000",
+		"XDG_RUNTIME_DIR=" + t.TempDir(),
+	}
+	upCmd := exec.Command(scriptPath)
+	upCmd.Env = upEnv
+	if out, err := upCmd.CombinedOutput(); err != nil {
+		t.Fatalf("deploy-container.sh (up), root 1: %v\noutput:\n%s", err, out)
+	}
+
+	// Build a second, independent ROOT_DIR: the script only needs itself
+	// plus build/container/compose.yml (compose -f target) to run --down —
+	// Dockerfile/podman override are only touched by the up/build paths.
+	root2 := t.TempDir()
+	copyFileForTest(t, scriptPath, filepath.Join(root2, "scripts", "deploy-container.sh"), 0o755)
+	repoRoot, err := filepath.Abs("..")
+	if err != nil {
+		t.Fatalf("resolve repo root: %v", err)
+	}
+	copyFileForTest(t,
+		filepath.Join(repoRoot, "build", "container", "compose.yml"),
+		filepath.Join(root2, "build", "container", "compose.yml"), 0o644)
+
+	downCmd := exec.Command(filepath.Join(root2, "scripts", "deploy-container.sh"), "--down")
+	downCmd.Env = []string{
+		"PATH=" + dir + string(os.PathListSeparator) + os.Getenv("PATH"),
+		"HOME=" + os.Getenv("HOME"),
+		"XDG_STATE_HOME=" + xdgStateHome,
+		"XDG_RUNTIME_DIR=" + t.TempDir(),
+	}
+	out, err := downCmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("deploy-container.sh --down from a DIFFERENT root failed to find the engine recorded by root 1's up: %v\noutput:\n%s", err, out)
+	}
+	if !strings.Contains(string(out), "engine=docker") {
+		t.Errorf("expected --down (root 2) to pin to the engine recorded by root 1's up (docker), not re-detect; output:\n%s", out)
+	}
+}
+
+// copyFileForTest copies src to dst (creating dst's parent directories),
+// preserving nothing but the requested mode.
+func copyFileForTest(t *testing.T, src, dst string, mode os.FileMode) {
+	t.Helper()
+	data, err := os.ReadFile(src)
+	if err != nil {
+		t.Fatalf("read %s: %v", src, err)
+	}
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		t.Fatalf("mkdir %s: %v", filepath.Dir(dst), err)
+	}
+	if err := os.WriteFile(dst, data, mode); err != nil {
+		t.Fatalf("write %s: %v", dst, err)
+	}
+}
+
 // TestDeployContainerScript_Down_RecordedEngineNoLongerUsable_Refuses is
 // the codex round-10 review of PR5, Major regression test (half 2 of 2,
 // the actual bug): if the engine `up` recorded is no longer usable by the
@@ -802,11 +892,14 @@ func TestDeployContainerScript_Down_RecordedEngineNoLongerUsable_Refuses(t *test
 	if err != nil {
 		t.Fatalf("resolve script path: %v", err)
 	}
-	stateFile := composeEngineStateFilePath(t)
-	t.Cleanup(func() { _ = os.Remove(stateFile) })
+	xdgStateHome := t.TempDir()
+	stateFile := composeEngineStateFilePath(xdgStateHome)
 	// Pretend a previous `up` recorded docker, without actually running
 	// one — this test only needs the state file's CONTENT, not a real
 	// prior up.
+	if err := os.MkdirAll(filepath.Dir(stateFile), 0o755); err != nil {
+		t.Fatalf("mkdir %s: %v", filepath.Dir(stateFile), err)
+	}
 	if err := os.WriteFile(stateFile, []byte("docker\n"), 0o644); err != nil {
 		t.Fatalf("seed %s: %v", stateFile, err)
 	}
@@ -841,6 +934,7 @@ esac
 		// instead of the ambient PATH.
 		"PATH=" + dir + ":/usr/bin:/bin",
 		"HOME=" + os.Getenv("HOME"),
+		"XDG_STATE_HOME=" + xdgStateHome,
 		"XDG_RUNTIME_DIR=" + t.TempDir(),
 	}
 	out, err := downCmd.CombinedOutput()
