@@ -314,19 +314,43 @@ if [[ "$DOWN" == "1" ]]; then
 	# about an unset interpolation variable.
 	: "${BOID_IMAGE:=unused}"
 	export BOID_IMAGE
+	# codex round-4/round-5 review Major: under `set -e`, a bare
+	# `"${COMPOSE_CMD[@]}" down` that FAILS aborts the script immediately
+	# — the DOWN_ALT_COMPOSE_CMD attempt below would never even run, so a
+	# primary-engine down failure could never be masked by a successful
+	# alternate-engine down (the exact scenario DOWN_ALT_COMPOSE_CMD
+	# exists for: the stack was actually started under the OTHER engine).
+	# Guarding each attempt with `if ! ...; then` (rather than a bare
+	# command) keeps `set -e` from firing on either one individually, so
+	# both always get a chance to run; PRIMARY_OK/ALT_OK below then decide
+	# the overall outcome explicitly instead of silently reporting success
+	# on a down that never happened.
 	echo "deploy-container: --down — stopping the compose stack (engine=$ENGINE)"
-	"${COMPOSE_CMD[@]}" down
+	PRIMARY_OK=1
+	if ! "${COMPOSE_CMD[@]}" down; then
+		PRIMARY_OK=0
+		echo "warning: compose down failed for engine=$ENGINE" >&2
+	fi
 	# DOWN_ALT_COMPOSE_CMD (codex round-4 review Major, this file's own
 	# header comment on the variable): best-effort teardown of the OTHER
 	# engine too, in case the stack was actually brought up under it
 	# (docker/podman availability drifted between `up` and this `down`).
-	# `|| true`: an empty/never-created compose project on the alt engine
-	# is expected to no-op or error harmlessly here — that is not a
-	# reason to fail this invocation when the PRIMARY engine's own down
-	# (just above) already succeeded.
+	ALT_OK=1
 	if [[ ${#DOWN_ALT_COMPOSE_CMD[@]} -gt 0 ]]; then
 		echo "deploy-container: --down — also stopping via the alternate engine, in case the stack was started under it"
-		"${DOWN_ALT_COMPOSE_CMD[@]}" down || true
+		if ! "${DOWN_ALT_COMPOSE_CMD[@]}" down; then
+			ALT_OK=0
+			echo "warning: compose down failed for the alternate engine too" >&2
+		fi
+	fi
+	# Report failure only if EVERY engine attempted (primary, plus the
+	# alternate when one was attempted) failed to come down — an empty/
+	# never-created compose project on either engine is expected to no-op
+	# successfully here, which is not a failure; only both attempts
+	# actively failing means the stack might still be running.
+	if [[ $PRIMARY_OK -eq 0 && $ALT_OK -eq 0 ]]; then
+		echo "error: compose down failed on every engine attempted; the stack may still be running" >&2
+		exit 1
 	fi
 	echo "deploy-container: done. compose stack is down."
 	exit 0

@@ -219,43 +219,33 @@ var removedTopLevelKeys = []string{
 }
 
 // migrationGuidance returns the multi-line guidance block for removed-key
-// errors. docs/plans/release-onboarding.md 決定2/PR5:
-//
-//   - codex round-2 review Major 1: step 2 used to say "re-run with
-//     --apply" — broken the moment `boid project migrate --apply` started
-//     refusing outright by default.
-//   - codex round-3 review Blocker: the fix for THAT said step 1 was a
-//     plain dry-run (no --apply) that "rewrites project.yaml, prints a
-//     workspace yaml" — but dry-run never writes anything at all; only
-//     --apply does. Following the guidance literally left no file on
-//     disk for step 2's `--from-file <file>` to point at.
-//   - codex round-4 review Blocker: the fix for THAT recommended
-//     `boid workspace create/edit --from-file <shadow-yaml>` as the
-//     manual step-2 fallback — but `workspace edit --from-file` on an
-//     EXISTING slug is a full REPLACE (cmd/workspace.go), and the shadow
-//     yaml only knows the migration's OWN delta, not fields the daemon
-//     might already have set (container_image, allowed_domains, ...).
-//     Following that guidance for an existing workspace could silently
-//     drop them.
-//
-// The guidance below matches what --apply ACTUALLY does now
-// (cmd/project_migrate.go's applyMigratePlan + pushMigratedWorkspaceToDaemon):
-// when a daemon is reachable (true whenever a compose daemon is actually
-// up — client.DefaultSocketPath() is the same host-visible bind mount
-// pre-PR5 gc/project-reload relied on), --apply automatically performs the
-// SAFE merge (GET current content → merge → PUT) over the daemon's own
-// API — no separate manual step needed at all in the common case. The
-// manual `--from-file` step is now presented ONLY as the fallback for
-// when no daemon could be reached, with an explicit warning about its
-// full-replace semantics on an existing slug.
+// errors. docs/plans/release-onboarding.md 決定2/PR5 — this went through
+// FIVE rounds of codex review (round-2 through round-5), each finding the
+// previous revision's promised automated recovery path (some shape of
+// "run --apply, it'll reach the daemon safely") had a daemon-topology
+// hole somewhere: an ambient-remote-profile race, a full-replace
+// destroying existing fields, a host-DB write with no compose-daemon
+// equivalent, and finally (round-5) host_commands definitions that
+// --apply's "online" daemon push cannot actually sync into a compose
+// daemon's config AT ALL (ensureLegacyKitHostCommandsKnownToDaemon,
+// cmd/project_migrate.go, only ever writes a file on THIS host and asks
+// the daemon to reload it — meaningless to a daemon whose config lives
+// in a volume it cannot see). Conclusion: this command cannot safely
+// automate anything against a compose daemon without new daemon-side API
+// surface that does not exist yet (out of scope for this PR) — see
+// cmd/project_migrate.go's guardApply for the full history and the
+// current --apply/--legacy-bare-metal refusal design. The guidance below
+// stops promising automation it cannot deliver and gives the honest,
+// manual recipe instead.
 func migrationGuidance(dir string) string {
 	return "Migration:\n" +
-		"  1) Make sure the compose daemon is up: boid start\n" +
-		"  2) Run: boid project migrate " + dir + " --apply\n" +
-		"     - project.yaml is rewritten and a reviewable workspace shadow yaml is written\n" +
-		"     - if the daemon answers (the normal case once step 1 succeeded), the workspace is ALSO merged into it automatically — existing fields are preserved, not replaced\n" +
-		"  3) Only if step 2 reports the daemon was unreachable: review the printed shadow yaml and apply it by hand — `boid workspace create <slug> --from-file <file>` for a brand-new slug is safe, but `boid workspace edit <slug> --from-file <file>` on an EXISTING slug REPLACES its content wholesale (may drop fields the shadow yaml does not know about); prefer editing the daemon's config by hand (or re-running step 2 once the daemon is reachable) for an existing slug instead\n" +
-		"     (legacy bare-metal only, no compose daemon involved at all: also pass --legacy-bare-metal to step 2, to push project-workspace-assignment/secrets directly too)\n" +
+		"  For a project registered with a compose daemon, migrate BY HAND:\n" +
+		"  1) Run: boid project migrate " + dir + "           (dry-run; lists exactly which fields need to move)\n" +
+		"  2) boid workspace show <slug> -o yaml           (see the workspace's CURRENT content)\n" +
+		"  3) Merge the fields listed by step 1 into that yaml yourself, then:\n" +
+		"       boid workspace edit <slug> --from-file <merged-file>   (full replace — merge BY HAND first, or you will drop fields the daemon already has)\n" +
+		"  4) Remove the migrated fields from project.yaml yourself\n" +
+		"     (legacy bare-metal only, no compose daemon involved at all: `boid project migrate " + dir + " --apply --legacy-bare-metal` automates all of the above)\n" +
 		"See docs/ja/guide/migration.md for details."
 }
 
