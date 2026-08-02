@@ -91,7 +91,24 @@ fi
 
 # See this script's own header comment for why this is a fixed,
 # out-of-band sentinel rather than the actual latest release tag.
-SENTINEL_VERSION="v9999.0.0"
+# major=9999 keeps this in a range no real release will ever reach
+# (patch-only increments, currently at v0.0.13); minor/patch fold in
+# GITHUB_RUN_ATTEMPT/GITHUB_RUN_ID (codex round-1 review of this PR,
+# Blocker) so that two DIFFERENT workflow runs — e.g. this job running
+# concurrently for two different PRs/pushes — never share the same GHCR
+# tag. Without this, run A could push its own image, then run B pushes
+# a DIFFERENT image (different diff, different digest) to the SAME
+# mutable tag before A gets around to pulling it back — A would then
+# silently verify B's image instead of its own, both internal/version.
+# IsExactRelease's regex (vMAJOR.MINOR.PATCH, all-numeric components
+# only — no run-id-suffixed form like "v9999.0.0-run123" would parse as
+# an exact release at all) and the later tag-string comparison
+# (SENTINEL_IMAGE == running_image) are satisfied either way, so nothing
+# downstream would catch the mix-up. GITHUB_RUN_ATTEMPT/GITHUB_RUN_ID are
+# both always-set, purely numeric GitHub Actions env vars; ":-0" fallback
+# only matters for a local (non-CI) invocation, which this script does
+# not otherwise support (see this script's own header comment: CI-only).
+SENTINEL_VERSION="v9999.${GITHUB_RUN_ATTEMPT:-0}.${GITHUB_RUN_ID:-0}"
 SENTINEL_IMAGE="ghcr.io/novshi-tech/boid-runner:${SENTINEL_VERSION}"
 
 ROOT="$(mktemp -d "${TMPDIR:-/tmp}/boid-e2e-onboarding-XXXXXX")"
@@ -256,8 +273,49 @@ e2e_run docker push "$SENTINEL_IMAGE"
 # pull only if absent locally) would silently satisfy the pull from this
 # process's own local build instead of actually reaching GHCR over the
 # network, which is the entire thing this script exists to verify.
+# Fatal on failure (codex round-1 review of this PR, Major): a swallowed
+# `docker rmi` failure would leave the local copy in place, and every
+# later check in this script (image ref string, digest never compared)
+# would still report success against that stale local copy instead of a
+# genuine network pull. `docker image inspect` afterward independently
+# confirms the engine's own image store, not just that `docker rmi`
+# returned 0 (belt and suspenders against e.g. a second, differently-named
+# local tag/alias this script does not know about).
 e2e_log "removing local image tags so the later pull is a real network pull"
-docker rmi "$LOCAL_SENTINEL_TAG" "$SENTINEL_IMAGE" >/dev/null 2>&1 || true
+e2e_run docker rmi "$LOCAL_SENTINEL_TAG" "$SENTINEL_IMAGE"
+if docker image inspect "$SENTINEL_IMAGE" >/dev/null 2>&1; then
+  e2e_fail "docker image inspect ${SENTINEL_IMAGE} still resolves locally after docker rmi — the later pull would be satisfied from local cache, not a genuine network pull"
+fi
+
+# --- informational: is ghcr.io/novshi-tech/boid-runner pullable
+# ANONYMOUSLY yet? (codex round-1 review of this PR, Blocker; docs/plans/
+# release-onboarding.md 決定4/PR3's own "VISIBILITY CAVEAT") -------------
+# `docker login` above authenticates every pull this script's OWN process
+# makes from here on, which — this script's own header comment already
+# flags — validates the pull -> compose-up -> dispatch MECHANICS
+# regardless of visibility, but does NOT prove the thing a genuinely fresh
+# `go install`-only user (no GHCR credentials at all) actually needs: an
+# ANONYMOUS `docker pull` succeeding. This logs out, attempts exactly that
+# pull as its own explicit check (non-fatal either way — per this PR's own
+# task scope, "GHCR がまだ private でもこの e2e 自体は落とさない, フォール
+# バックする" is the sanctioned outcome, not a hard requirement that
+# visibility already be flipped), and reports the result plainly so it is
+# visible in CI output / this PR's own description rather than silently
+# masked by the authenticated fallback that follows. Re-authenticates
+# afterward unconditionally (whether or not the anonymous attempt
+# succeeded) so `boid start`'s own pull below is guaranteed to work either
+# way, and removes whatever this check itself pulled so `boid start`'s own
+# pull is still the one this script's later checks measure.
+e2e_log "checking whether ${SENTINEL_IMAGE} is pullable ANONYMOUSLY (informational only — GHCR visibility)"
+docker logout ghcr.io >/dev/null 2>&1 || true
+if docker pull "$SENTINEL_IMAGE" >/dev/null 2>&1; then
+  e2e_log "GHCR ANONYMOUS PULL: OK — ghcr.io/novshi-tech/boid-runner is publicly pullable"
+  docker rmi "$SENTINEL_IMAGE" >/dev/null 2>&1 || true
+else
+  e2e_log "GHCR ANONYMOUS PULL: FAILED — ghcr.io/novshi-tech/boid-runner still appears private (org-owner one-time visibility flip not done yet, or in progress); falling back to the authenticated pull below for the rest of this run, per this PR's own scope note"
+fi
+e2e_log "re-authenticating to ghcr.io (guarantees boid start's own pull below succeeds regardless of the anonymous-pull result above)"
+echo "$GITHUB_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
 
 # --- fixture git upstream (mirrors e2e/run-container.sh's own "fixture git
 # upstream" section — see that script's header comment for why 0.0.0.0 +
