@@ -335,20 +335,30 @@ if [[ "$DOWN" == "1" ]]; then
 	# header comment on the variable): best-effort teardown of the OTHER
 	# engine too, in case the stack was actually brought up under it
 	# (docker/podman availability drifted between `up` and this `down`).
+	# ALT_ATTEMPTED/ALT_OK (codex round-6 review Major): tracked as TWO
+	# separate flags, not one "ok unless it failed" flag defaulting to
+	# success — the single-engine case (no alternate engine usable at all,
+	# DOWN_ALT_COMPOSE_CMD empty) must NOT count as "the alternate
+	# succeeded" when deciding the overall outcome below, or a primary-
+	# engine failure on an ordinary single-engine host would be silently
+	# reported as success (there is no alternate to have masked it with).
+	ALT_ATTEMPTED=0
 	ALT_OK=1
 	if [[ ${#DOWN_ALT_COMPOSE_CMD[@]} -gt 0 ]]; then
+		ALT_ATTEMPTED=1
 		echo "deploy-container: --down — also stopping via the alternate engine, in case the stack was started under it"
 		if ! "${DOWN_ALT_COMPOSE_CMD[@]}" down; then
 			ALT_OK=0
 			echo "warning: compose down failed for the alternate engine too" >&2
 		fi
 	fi
-	# Report failure only if EVERY engine attempted (primary, plus the
-	# alternate when one was attempted) failed to come down — an empty/
-	# never-created compose project on either engine is expected to no-op
-	# successfully here, which is not a failure; only both attempts
-	# actively failing means the stack might still be running.
-	if [[ $PRIMARY_OK -eq 0 && $ALT_OK -eq 0 ]]; then
+	# Report failure whenever primary failed AND either no alternate was
+	# even attempted (the ordinary single-engine case), or the alternate
+	# ALSO failed — an empty/never-created compose project on either
+	# engine is expected to no-op successfully, which is not a failure;
+	# only "every engine actually attempted came back failed" means the
+	# stack might still be running.
+	if [[ $PRIMARY_OK -eq 0 ]] && { [[ $ALT_ATTEMPTED -eq 0 ]] || [[ $ALT_OK -eq 0 ]]; }; then
 		echo "error: compose down failed on every engine attempted; the stack may still be running" >&2
 		exit 1
 	fi

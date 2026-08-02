@@ -220,32 +220,49 @@ var removedTopLevelKeys = []string{
 
 // migrationGuidance returns the multi-line guidance block for removed-key
 // errors. docs/plans/release-onboarding.md 決定2/PR5 — this went through
-// FIVE rounds of codex review (round-2 through round-5), each finding the
-// previous revision's promised automated recovery path (some shape of
-// "run --apply, it'll reach the daemon safely") had a daemon-topology
-// hole somewhere: an ambient-remote-profile race, a full-replace
-// destroying existing fields, a host-DB write with no compose-daemon
-// equivalent, and finally (round-5) host_commands definitions that
-// --apply's "online" daemon push cannot actually sync into a compose
-// daemon's config AT ALL (ensureLegacyKitHostCommandsKnownToDaemon,
-// cmd/project_migrate.go, only ever writes a file on THIS host and asks
-// the daemon to reload it — meaningless to a daemon whose config lives
-// in a volume it cannot see). Conclusion: this command cannot safely
-// automate anything against a compose daemon without new daemon-side API
-// surface that does not exist yet (out of scope for this PR) — see
-// cmd/project_migrate.go's guardApply for the full history and the
-// current --apply/--legacy-bare-metal refusal design. The guidance below
-// stops promising automation it cannot deliver and gives the honest,
-// manual recipe instead.
+// SIX rounds of codex review (round-2 through round-6). Every attempt at
+// promising an automated OR a specific manual daemon-side recovery
+// recipe (some shape of "run --apply", or "GET the current workspace and
+// PUT it back") turned out broken on closer inspection — see
+// cmd/project_migrate.go's guardApply for the full history. Round-6
+// found the deepest problem: this error can fire from INSIDE the
+// daemon's own startup path (internal/server, before the daemon binds
+// ANY listener at all — CLI or otherwise), so any guidance that assumes
+// "ask the (compose) daemon something" is circular for exactly the
+// scenario most likely to trigger it — a compose daemon that cannot
+// start BECAUSE of this very error.
+//
+// The fix: split the two concerns this guidance used to conflate.
+//   - Removing the listed fields from project.yaml is PURE LOCAL FILE
+//     I/O — the project.yaml is a file in the user's own checkout, no
+//     daemon involved at all, so this step alone unblocks a daemon
+//     startup failure or `boid project reload` regardless of whether
+//     any daemon is running. This is now the ONLY step described in
+//     specific command-syntax detail.
+//   - Reconfiguring the equivalent WORKSPACE behavior (env/
+//     host_commands/capabilities.docker/secret_namespace) is optional,
+//     can happen anytime later once a daemon is reachable, and is
+//     ordinary day-to-day workspace configuration — this guidance no
+//     longer prescribes a specific command recipe for it (every one
+//     tried so far had a real hole: `workspace edit --from-file` is a
+//     strict-decoded bare WorkspaceMeta while `workspace show -o yaml`
+//     is a wrapper envelope with extra fields; host_commands
+//     DEFINITIONS have no daemon-reachable sync path under compose at
+//     all). `boid workspace --help` / docs/ja/guide/workspace-home.md
+//     are the source of truth for how to do this correctly, not this
+//     string.
 func migrationGuidance(dir string) string {
 	return "Migration:\n" +
-		"  For a project registered with a compose daemon, migrate BY HAND:\n" +
-		"  1) Run: boid project migrate " + dir + "           (dry-run; lists exactly which fields need to move)\n" +
-		"  2) boid workspace show <slug> -o yaml           (see the workspace's CURRENT content)\n" +
-		"  3) Merge the fields listed by step 1 into that yaml yourself, then:\n" +
-		"       boid workspace edit <slug> --from-file <merged-file>   (full replace — merge BY HAND first, or you will drop fields the daemon already has)\n" +
-		"  4) Remove the migrated fields from project.yaml yourself\n" +
-		"     (legacy bare-metal only, no compose daemon involved at all: `boid project migrate " + dir + " --apply --legacy-bare-metal` automates all of the above)\n" +
+		"  project.yaml uses fields removed in the new schema (listed above).\n" +
+		"  1) Edit project.yaml yourself and remove/relocate those fields — pure local file\n" +
+		"     edit, no daemon needed; this alone unblocks daemon startup / `boid project reload`.\n" +
+		"  2) Once a daemon is reachable, reconfigure the equivalent workspace behavior\n" +
+		"     yourself at your own pace (see `boid workspace --help`):\n" +
+		"       - env / host_commands / capabilities.docker: ordinary workspace config\n" +
+		"       - secret_namespace: copy secrets by hand — `boid secret list -n <old-namespace>`,\n" +
+		"         then `boid secret set <key> -n <new-namespace>` for each\n" +
+		"     (legacy bare-metal only, no compose daemon involved at all:\n" +
+		"     `boid project migrate " + dir + " --apply --legacy-bare-metal` automates both steps)\n" +
 		"See docs/ja/guide/migration.md for details."
 }
 

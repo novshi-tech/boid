@@ -90,19 +90,26 @@ also passed: it writes directly to a host-local boid.db and, when reachable,
 also drives a bare-metal daemon's own socket — neither of which is safe
 against a compose daemon (its real config/DB live inside the boid_state
 volume, invisible from here; a "reload" request only ever affects a daemon
-sharing this host's filesystem). For a project registered with a compose
-daemon, migrate BY HAND instead:
-  1) Read the messages above for which fields need to move (env /
-     host_commands / capabilities.docker / secret_namespace / ...)
-  2) boid workspace show <slug> -o yaml       (see the workspace's current content)
-  3) Merge the equivalent fields into that yaml yourself, then:
-       boid workspace edit <slug> --from-file <merged-file>   (full replace — merge BY HAND first, or you will drop fields the daemon already has)
-  4) Remove the migrated fields from project.yaml yourself
+sharing this host's filesystem).
 
-Secret migration copies secrets from the old namespace (secret_namespace field)
-to the workspace namespace. Use --on-collision to control behaviour when a
-key already exists in the new namespace (default: refuse and list collisions,
---legacy-bare-metal + --apply only).`,
+For a project registered with a compose daemon, migrate BY HAND instead —
+in two INDEPENDENT steps, since this error can fire before any daemon has
+even started (a schema violation blocks daemon startup itself), so a
+recipe that assumes a reachable daemon is circular for that case:
+  1) Edit project.yaml yourself and remove/relocate the listed fields —
+     pure local file I/O, no daemon needed at all. This alone is enough to
+     unblock daemon startup / "boid project reload".
+  2) Once a daemon is reachable, reconfigure the equivalent WORKSPACE
+     behavior yourself, at your own pace, through the daemon's own normal
+     commands (see "boid workspace --help"): env / host_commands /
+     capabilities.docker are ordinary workspace config; secret_namespace
+     means copying secrets by hand ("boid secret list -n <old-namespace>"
+     then "boid secret set <key> -n <new-namespace>" for each).
+
+Secret migration (--legacy-bare-metal + --apply only) copies secrets from
+the old namespace (secret_namespace field) to the workspace namespace. Use
+--on-collision to control behaviour when a key already exists in the new
+namespace (default: refuse and list collisions).`,
 	Args: cobra.ExactArgs(1),
 	Annotations: map[string]string{
 		annotationSkipAutostart: "skip",
@@ -414,8 +421,8 @@ func guardApply(stderr io.Writer, dir string, legacyBareMetal bool) error {
 	}
 	return fmt.Errorf(
 		"boid project migrate --apply is a legacy, bare-metal-only migration path and is refused without --legacy-bare-metal (docs/plans/release-onboarding.md 決定2): it writes directly to a host boid.db and drives a bare-metal daemon's own socket, neither of which is safe against a compose daemon (its real config/DB live inside the boid_state volume, invisible from here). "+
-			"For a project registered with a compose daemon, migrate BY HAND instead — run `boid project migrate %s` (no --apply) to see which fields need to move, then `boid workspace show <slug> -o yaml`, merge the equivalent fields in yourself, and `boid workspace edit <slug> --from-file <merged-file>`. "+
-			"See `boid project migrate --help` for the full by-hand recipe.", dir)
+			"For a project registered with a compose daemon, migrate BY HAND instead: (1) edit project.yaml %s yourself to remove/relocate the fields named above — pure local file I/O, no daemon needed, unblocks daemon startup on its own; (2) once a daemon is reachable, reconfigure the equivalent workspace behavior yourself via `boid workspace --help`. "+
+			"See `boid project migrate --help` for the full recipe.", dir)
 }
 
 // errProjectNotFound is a helper to detect "not found" errors from GetProject.

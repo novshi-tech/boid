@@ -23,13 +23,16 @@ func TestProjectMigrationError_SingleIssueByteIdentical(t *testing.T) {
 	want := `project.yaml: top-level "kits" is no longer supported.
 project.yaml: top-level "host_commands" is no longer supported.
 Migration:
-  For a project registered with a compose daemon, migrate BY HAND:
-  1) Run: boid project migrate ` + dir + `           (dry-run; lists exactly which fields need to move)
-  2) boid workspace show <slug> -o yaml           (see the workspace's CURRENT content)
-  3) Merge the fields listed by step 1 into that yaml yourself, then:
-       boid workspace edit <slug> --from-file <merged-file>   (full replace — merge BY HAND first, or you will drop fields the daemon already has)
-  4) Remove the migrated fields from project.yaml yourself
-     (legacy bare-metal only, no compose daemon involved at all: ` + "`boid project migrate " + dir + " --apply --legacy-bare-metal`" + ` automates all of the above)
+  project.yaml uses fields removed in the new schema (listed above).
+  1) Edit project.yaml yourself and remove/relocate those fields — pure local file
+     edit, no daemon needed; this alone unblocks daemon startup / ` + "`boid project reload`" + `.
+  2) Once a daemon is reachable, reconfigure the equivalent workspace behavior
+     yourself at your own pace (see ` + "`boid workspace --help`" + `):
+       - env / host_commands / capabilities.docker: ordinary workspace config
+       - secret_namespace: copy secrets by hand — ` + "`boid secret list -n <old-namespace>`" + `,
+         then ` + "`boid secret set <key> -n <new-namespace>`" + ` for each
+     (legacy bare-metal only, no compose daemon involved at all:
+     ` + "`boid project migrate " + dir + " --apply --legacy-bare-metal`" + ` automates both steps)
 See docs/ja/guide/migration.md for details.`
 
 	got := FormatMigrationIssue(issue)
@@ -64,8 +67,8 @@ func TestProjectMigrationError_WithProjectID(t *testing.T) {
 	if !strings.Contains(got, `top-level "kits" is no longer supported.`) {
 		t.Fatalf("missing field message: %s", got)
 	}
-	if !strings.Contains(got, "Migration:\n  For a project registered with a compose daemon") ||
-		!strings.Contains(got, "boid project migrate "+dir+"           (dry-run") {
+	if !strings.Contains(got, "Migration:\n  project.yaml uses fields removed in the new schema") ||
+		!strings.Contains(got, "boid project migrate "+dir+" --apply --legacy-bare-metal") {
 		t.Fatalf("missing migration guidance: %s", got)
 	}
 }

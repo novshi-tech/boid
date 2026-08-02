@@ -38,16 +38,16 @@ compose daemon 配下のプロジェクトは、 dry-run の出力を参考に�
 
 ### workspace への反映
 
-**`--legacy-bare-metal` 無しの `--apply` は拒否されます** (2026-08 release-onboarding PR5、 `docs/plans/release-onboarding.md` 決定2)。 理由は codex による5ラウンドのレビューで判明した、 compose daemon に対して「部分的に安全な自動反映」を実現しようとした複数の設計がいずれも穴を抱えていたことによります — 詳細は `cmd/project_migrate.go` の `guardApply` のコメントを参照してください。最終的に判明したのは、 `--apply` の反映経路 (host 側 `boid.db` への直接書き込み、 および `~/.config/boid/host_commands.yaml` 経由の host_commands 定義同期) が **compose daemon の設定 (`boid_state` volume 内) に一切到達できない** ということです — daemon への reload 指示すら、 daemon がそのファイルを読めない以上意味を持ちません。
+**`--legacy-bare-metal` 無しの `--apply` は拒否されます** (2026-08 release-onboarding PR5、 `docs/plans/release-onboarding.md` 決定2)。 理由は codex による6ラウンドのレビューで判明した、 compose daemon に対して「部分的に安全な自動反映」や「特定の手動コマンド列」を約束しようとした複数の設計がいずれも穴を抱えていたことによります — 詳細は `cmd/project_migrate.go` の `guardApply` / `internal/orchestrator/spec_loader.go` の `migrationGuidance` のコメントを参照してください。特に重要なのは、 このエラーは **daemon が起動する前** (daemon 自身の起動処理内、 project.yaml のスキーマ検証中) にも発生し得るということです — この場合 daemon は一切のリスナーを bind していないため、 「daemon に問い合わせる」前提の復旧手順はそもそも実行不可能です。
 
-**compose daemon 配下のプロジェクトは、 以下の手順で手動移行してください:**
+**compose daemon 配下のプロジェクトは、 以下の2ステップ (互いに独立) で手動移行してください:**
 
-1. `boid project migrate <dir>` (dry-run) を実行し、 どのフィールドを移す必要があるか確認する
-2. `boid workspace show <slug> -o yaml` で workspace の **現在の内容** を確認する
-3. dry-run の出力を見ながら、 該当フィールド (`env` / `host_commands` / `capabilities.docker` など) を手元の yaml に **手で** マージし、 `boid workspace edit <slug> --from-file <merged-file>` で反映する。 `edit --from-file` は **全置換 (full replace)** なので、 既存フィールド (`container_image` / `allowed_domains` など) を消さないよう必ず現在の内容をベースにマージすること
-4. `project.yaml` から移行済みフィールドを手で削除する
+1. **project.yaml を自分で編集する** — 上に列挙されたフィールドを削除・移動する。 これは純粋なローカルファイル編集で daemon は一切不要 — daemon の起動失敗や `boid project reload` の失敗は、 このステップだけで解消します。
+2. **daemon に到達可能になった時点で、 workspace 側の設定を自分のペースで追加する** — `boid workspace --help` (通常の workspace 設定操作) を参照してください:
+   - `env` / `host_commands` / `capabilities.docker`: 通常の workspace 設定として追加する
+   - `secret_namespace`: secret を手動でコピーする — `boid secret list -n <旧namespace>` で一覧し、 各キーについて `boid secret set <key> -n <新namespace>` で新しい namespace (= workspace の slug) にコピーする
 
-**`--apply --legacy-bare-metal`** を指定した場合に限り、 上記 1〜4 相当を自動実行します (bare-metal daemon を直接操作している、 compose を一切使わない場合の専用経路):
+この2ステップの自動実行は **`--apply --legacy-bare-metal`** でのみ提供されます (bare-metal daemon を直接操作している、 compose を一切使わない場合の専用経路):
 
 - workspace slug が daemon にまだ無い場合: `POST /api/workspaces` で新規作成する
 - 既存 slug の場合: 現在の内容を `GET /api/workspaces/<slug>` で取得し、 今回の migration が生成したフィールドとマージした上で `PUT /api/workspaces/<slug>` (`If-Match: <revision>`) で書き戻す (`mergeLegacyFieldsIntoWorkspace`)。 daemon に到達できない場合は host 側の `boid.db` に直接書き込む (`applyMigratedWorkspaceOffline`)
