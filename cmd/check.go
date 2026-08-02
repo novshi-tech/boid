@@ -33,6 +33,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"regexp"
 	"strings"
 	"time"
 
@@ -118,7 +119,22 @@ func runCheck(cmd *cobra.Command, args []string) error {
 	fmt.Fprintln(out, "\n=== uid ===")
 	uid := effectiveBoidUID()
 	fmt.Fprintf(out, "  effective BOID_UID for `boid start`: %d\n", uid)
-	if err := refuseRootUID(uid); err != nil {
+	if err := validateRawBoidUIDEnv(); err != nil {
+		// [codex round 2 review, Major]: effectiveBoidUID() deliberately
+		// leaves a malformed BOID_UID's validation to whatever eventually
+		// consumes it (its own doc comment) — for the CLI-side
+		// refuseRootUID(effectiveBoidUID()) path that's fine, since
+		// strconv.Atoi failing just falls back to os.Getuid(). But
+		// scripts/deploy-container.sh is the ACTUAL enforcement point for
+		// `boid start`, and it validates the RAW string against a
+		// stricter "non-negative decimal integer" regex before ever
+		// calling strconv — a value like "abc"/"-1"/"01" fails there but
+		// sails through effectiveBoidUID()'s silent-fallback here. Check
+		// the raw env var the same way deploy-container.sh does so this
+		// preflight actually predicts what `boid start` will do.
+		fmt.Fprintf(out, "  ERROR: %v\n", err)
+		allOK = false
+	} else if err := refuseRootUID(uid); err != nil {
 		fmt.Fprintf(out, "  ERROR: %v\n", err)
 		allOK = false
 	} else {
@@ -133,7 +149,17 @@ func runCheck(cmd *cobra.Command, args []string) error {
 		hostArch, imageArch, mismatch, note := probeArchMismatch(ctx, engine, image)
 		switch {
 		case note != "":
-			fmt.Fprintf(out, "  %s\n", note)
+			// [codex round 2 review, Blocker 1]: an inconclusive probe is
+			// NOT a pass. docs/plans/release-onboarding.md 決定5 requires
+			// this fail-fast to be a "must", and resolveImage's own
+			// launch-time check (internal/dispatcher/container_backend.go)
+			// only guards JOB containers, not the compose daemon container
+			// itself -- this is the only gate the daemon image ever gets,
+			// so "could not verify" has to fail loudly rather than let
+			// `boid check` exit 0 on a host/image combination that was
+			// never actually confirmed compatible.
+			fmt.Fprintf(out, "  ERROR: %s\n", note)
+			allOK = false
 		case mismatch:
 			fmt.Fprintf(out, "  ERROR: image %q is built for arch %q, but this host is %q — running it would silently fall back to slow, crash-prone binfmt/qemu emulation instead of refusing outright; use an image built for %[3]s\n", image, imageArch, hostArch)
 			allOK = false
@@ -245,7 +271,17 @@ func checkEngineSocket(ctx context.Context, out io.Writer, engine string) bool {
 		fmt.Fprintf(out, "  MISSING: %s (this is the exact path `boid start` bind-mounts into the daemon container as /var/run/docker.sock — %v)\n", bindSource, statErr)
 		ok = false
 	case info.Mode()&os.ModeSocket == 0:
-		fmt.Fprintf(out, "  WARNING: %s exists but is not a unix socket (mode %s)\n", bindSource, info.Mode())
+		// [codex round 2 review, Blocker 2]: not a soft warning — a
+		// bindSource that exists but is not actually a unix socket (a
+		// stray plain file, a stale path left behind by something else)
+		// bind-mounts into the daemon container exactly the same as a
+		// real one; `docker version`'s earlier success says nothing about
+		// THIS path, since the CLI may have resolved a completely
+		// different socket via DOCKER_HOST/DOCKER_CONTEXT. `boid start`
+		// would come up "successfully" and then fail every single
+		// docker-API call the daemon makes from inside its container.
+		fmt.Fprintf(out, "  MISSING: %s exists but is not a unix socket (mode %s)\n", bindSource, info.Mode())
+		ok = false
 	default:
 		fmt.Fprintln(out, "  OK: bind source exists and is a unix socket")
 	}
@@ -259,6 +295,28 @@ func checkEngineSocket(ctx context.Context, out io.Writer, engine string) bool {
 		}
 	}
 	return ok
+}
+
+// rawBoidUIDPattern mirrors scripts/deploy-container.sh's own BOID_UID
+// validation regex verbatim (`^(0|[1-9][0-9]*)$`) — a plain non-negative
+// decimal integer, no leading zeros (Bash's `((...))` treats a leading
+// zero as octal, and a larger value like "010" could silently mean the
+// wrong uid) and no sign.
+var rawBoidUIDPattern = regexp.MustCompile(`^(0|[1-9][0-9]*)$`)
+
+// validateRawBoidUIDEnv checks BOID_UID's RAW string value the same way
+// scripts/deploy-container.sh does, before compose ever substitutes it into
+// `user: "${BOID_UID}:0"` — see this function's own call site for why this
+// is a separate check from refuseRootUID(effectiveBoidUID()).
+func validateRawBoidUIDEnv() error {
+	v := os.Getenv("BOID_UID")
+	if v == "" {
+		return nil
+	}
+	if !rawBoidUIDPattern.MatchString(v) {
+		return fmt.Errorf("BOID_UID must be a plain non-negative decimal integer (got %q)", v)
+	}
+	return nil
 }
 
 // podmanSocketActive mirrors scripts/deploy-container.sh's own preflight

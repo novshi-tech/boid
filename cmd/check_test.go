@@ -59,6 +59,29 @@ func TestCheckEngineSocket_MissingBindSource_ReportsFailure(t *testing.T) {
 	}
 }
 
+// TestCheckEngineSocket_NotAUnixSocket_ReportsFailure pins [codex round 2
+// review, Blocker 2]: a bind source that exists but is a plain file (not a
+// unix socket) must fail the check, not just print a WARNING — `boid
+// start` would bind-mount it into the daemon container exactly the same as
+// a real socket, and every docker-API call the daemon makes would then
+// fail.
+func TestCheckEngineSocket_NotAUnixSocket_ReportsFailure(t *testing.T) {
+	dir := t.TempDir()
+	plainFile := dir + "/not-a-socket"
+	if err := os.WriteFile(plainFile, []byte("not a socket"), 0o644); err != nil {
+		t.Fatalf("write plain file: %v", err)
+	}
+	t.Setenv("BOID_DOCKER_SOCK_SRC", plainFile)
+
+	var buf strings.Builder
+	if checkEngineSocket(context.Background(), &buf, "docker") {
+		t.Error("checkEngineSocket() = true, want false when the bind source exists but is not a unix socket")
+	}
+	if !strings.Contains(buf.String(), "MISSING") {
+		t.Errorf("output = %q, want a MISSING line (not a soft WARNING)", buf.String())
+	}
+}
+
 func TestPodmanSocketActive_TrueWhenSystemctlExitsZero(t *testing.T) {
 	dir := t.TempDir()
 	writeFakeExecutable(t, dir, "systemctl", "exit 0")
@@ -302,5 +325,59 @@ func TestRunCheck_RootBoidUID_ReportsError(t *testing.T) {
 	}
 	if !strings.Contains(buf.String(), "refusing to run as uid 0") {
 		t.Errorf("output = %q, want the root-uid refusal message", buf.String())
+	}
+}
+
+// TestRunCheck_MalformedBoidUIDEnv_ReportsError pins [codex round 2
+// review, Major]: effectiveBoidUID() alone silently falls back to
+// os.Getuid() on a malformed BOID_UID (its own doc comment says this is
+// deliberate — it leaves validation to whoever consumes it), but
+// scripts/deploy-container.sh — the actual `boid start` enforcement point
+// — rejects a malformed raw value outright. `boid check` must predict
+// that rejection, not just check the parsed/fallback uid.
+func TestRunCheck_MalformedBoidUIDEnv_ReportsError(t *testing.T) {
+	t.Setenv("BOID_UID", "01")
+
+	cmd := checkCmd
+	cmd.SetContext(context.Background())
+	var buf strings.Builder
+	cmd.SetOut(&buf)
+
+	err := runCheck(cmd, nil)
+	if err == nil {
+		t.Fatal("expected an error when BOID_UID is malformed (\"01\", a leading-zero non-canonical decimal)")
+	}
+	if !strings.Contains(buf.String(), "BOID_UID must be a plain non-negative decimal integer") {
+		t.Errorf("output = %q, want the raw-BOID_UID validation message", buf.String())
+	}
+}
+
+// TestRunCheck_ArchProbeInconclusive_ReportsError pins [codex round 2
+// review, Blocker 1]: when a usable engine is found but the arch probe
+// cannot reach it at the resolved compose bind source (e.g. no engine
+// actually listening there), `boid check` must fail rather than silently
+// pass — an inconclusive host/image arch verdict is not evidence of
+// compatibility.
+func TestRunCheck_ArchProbeInconclusive_ReportsError(t *testing.T) {
+	dir := t.TempDir()
+	writeFakeExecutable(t, dir, "docker", "if [ \"$1\" = compose ]; then exit 0; fi\nexit 0")
+	t.Setenv("PATH", dir)
+	t.Setenv("BOID_DOCKER_SOCK_SRC", dir+"/no-engine-here.sock")
+	t.Setenv("BOID_NO_AUTOSTART", "1")
+
+	cmd := checkCmd
+	cmd.SetContext(context.Background())
+	var buf strings.Builder
+	cmd.SetOut(&buf)
+
+	err := runCheck(cmd, nil)
+	if err == nil {
+		t.Fatal("expected an error when the arch probe cannot reach the resolved engine socket")
+	}
+	if !strings.Contains(buf.String(), "Host / image architecture") {
+		t.Errorf("output = %q, want the architecture section", buf.String())
+	}
+	if !strings.Contains(buf.String(), "ERROR:") {
+		t.Errorf("output = %q, want an ERROR line for the inconclusive arch probe", buf.String())
 	}
 }
