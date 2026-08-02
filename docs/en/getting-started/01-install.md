@@ -39,7 +39,7 @@ This reports on engine (docker/podman) reachability, the compose plugin, the doc
 boid start
 ```
 
-On first run this pulls the image matching this CLI binary's own version (`ghcr.io/novshi-tech/boid-runner:<version>`), brings the compose stack up, and waits for the daemon to answer its health check. This assumes the GHCR image is published publicly — if it is not yet public, or ends up private for any reason, the pull fails and you need `docker login ghcr.io` first (see the known-limitations note in `docs/plans/release-onboarding.md`). If you have a checkout on hand and `BOID_COMPOSE_ROOT` set (a developer workflow), it builds locally instead — see [CLI reference / Host mode](../reference/cli.md) for details.
+On first run this pulls the image matching this CLI binary's own version (usually `ghcr.io/novshi-tech/boid-runner:<version>` — `go install ...@latest` normally resolves to a release tag; see [CLI reference / Host mode](../reference/cli.md) for the exact rule and what happens for other build shapes), brings the compose stack up, and waits for the daemon to answer its health check. This assumes the GHCR image is published publicly — if it is not yet public, or ends up private for any reason, the pull fails and you need `docker login ghcr.io` first (see the known-limitations note in `docs/plans/release-onboarding.md`). If you have a checkout on hand and `BOID_COMPOSE_ROOT` set (a developer workflow), it builds locally instead — see [CLI reference / Host mode](../reference/cli.md) for details.
 
 Once it is up, you will see onboarding guidance for what to do next:
 
@@ -106,29 +106,41 @@ boid stop
 boid start
 ```
 
-Since bumping the CLI version also changes the image ref `boid start` pulls (`internal/version.DefaultContainerImage()`), a plain `boid stop && boid start` keeps the CLI and the daemon's image in sync. If a DB migration is needed between versions, startup guidance explains what to do (see the [migration guide](../guide/migration.md)).
+Since bumping the CLI version also changes the image ref `boid start` pulls (`internal/version.DefaultContainerImage()`), a plain `boid stop && boid start` keeps the CLI and the daemon's image in sync. If a DB migration is needed between versions, `boid start` blocks until its health check times out (up to 5 minutes), then returns only a generic "daemon container did not become healthy" error — no structured migration guidance surfaces over the compose path (the bare-metal-era fd3 startup-status channel was removed along with compose-ification). Check `docker logs`/`podman logs` for the daemon container to see the actual failure. There is currently no established safe automatic migration path under the compose daemon — see the [migration guide](../guide/migration.md) for details.
 
 ## Uninstall
 
+**Note:** if you have installed/rebuilt boid more than once on the same docker/podman engine, workspace home volumes are scoped per install by name — `boid-ws-home-<installID8>-<slug>` (`internal/dockerres.WorkspaceHomeVolumeName`). **A naive prefix match like `name=boid-ws-home-` deletes every other install's workspace homes too (their login credentials and toolchains included)** — always scope the deletion to your own install ID.
+
 ```bash
+# ENGINE=docker or podman (reused below)
+ENGINE=docker
+
+# Read this install's install_id -- it lives inside the boid_boid_state
+# volume, so a throwaway container can read it whether the daemon is
+# running or not (no need to do this before `boid stop` specifically).
+INSTALL_ID=$("$ENGINE" run --rm -v boid_boid_state:/state docker.io/library/debian:bookworm-slim \
+  cat /state/.local/share/boid/install_id 2>/dev/null | cut -c1-8)
+: "${INSTALL_ID:=noinst}"   # workspace homes created before install_id existed use the "noinst" suffix
+
 boid stop
 
 # The daemon's own data (DB, kits, secrets, ...). The volume name is the
 # compose project name (default "boid") plus "_boid_state" -- see the
 # `name: boid` field in build/container/compose.yml.
-docker volume rm boid_boid_state    # or: podman volume rm boid_boid_state
+"$ENGINE" volume rm boid_boid_state
 
 # Each workspace's home (including claude/codex login credentials and
-# installed toolchains) lives in its OWN separate named volume,
-# boid-ws-home-<installID8>-<slug> -- list and remove them too (see the
-# workspace home guide for details).
-docker volume ls --filter name=boid-ws-home- -q | xargs -r docker volume rm
+# installed toolchains). Scoping by INSTALL_ID (read above) limits this to
+# only this install's volumes.
+"$ENGINE" volume ls --filter "name=boid-ws-home-${INSTALL_ID}-" -q | xargs -r "$ENGINE" volume rm
 
 rm -rf ~/.config/boid ~/.local/state/boid/compose
-rm "$(go env GOBIN 2>/dev/null || echo "$(go env GOPATH)/bin")/boid"
+GOBIN="$(go env GOBIN)"
+rm "${GOBIN:-$(go env GOPATH)/bin}/boid"
 ```
 
-The two `docker volume rm` commands above remove all local data, including tasks, secret values, claude/codex login credentials, and installed extension packages. Skip either one if you want to preserve that data across a reinstall. See the [workspace home guide](../guide/workspace-home.md) for the exact naming/inspection details of the per-workspace volumes.
+The two `volume rm` commands above remove all local data, including tasks, secret values, claude/codex login credentials, and installed extension packages. Skip either one if you want to preserve that data across a reinstall. See the [workspace home guide](../guide/workspace-home.md) for the exact naming/inspection details of the per-workspace volumes (e.g. eyeballing them with `docker volume ls`).
 
 ---
 

@@ -69,7 +69,7 @@ boid task watch <task-id>
 boid task show <task-id>
 ```
 
-`payload.artifact.answer` に回答が入っていれば成功です。
+`payload.artifact.report.summary` に作業内容の要約が入っていれば成功です (`--field payload.artifact.report` で report オブジェクト全体を抜き出せます)。
 
 ジョブのログ (claude の出力) は次で見られます。
 

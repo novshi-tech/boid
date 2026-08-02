@@ -39,7 +39,7 @@ engine (docker/podman) の到達性、compose plugin の有無、docker-out-of-d
 boid start
 ```
 
-初回はこの CLI バイナリのバージョンに対応する image (`ghcr.io/novshi-tech/boid-runner:<version>`) を pull し、compose スタックを起動し、daemon が health check に応答するまで待ちます。GHCR image は public 公開が前提です — 公開設定がまだ済んでいない場合や、何らかの理由で private のままの場合は pull が失敗し `docker login ghcr.io` が必要になります (詳細は `docs/plans/release-onboarding.md` の既知の限界事項を参照)。 チェックアウトが手元にあり `BOID_COMPOSE_ROOT` を設定している場合 (開発者向け) は代わりにローカルビルドが走ります — 詳細は [CLI リファレンス / Host mode](../reference/cli.md) を参照してください。
+初回はこの CLI バイナリのバージョンに対応する image (通常は `ghcr.io/novshi-tech/boid-runner:<version>` — `go install ...@latest` はリリースタグに解決されるのが通常のケース。それ以外のビルド形状での挙動は [CLI リファレンス / Host mode](../reference/cli.md) を参照) を pull し、compose スタックを起動し、daemon が health check に応答するまで待ちます。GHCR image は public 公開が前提です — 公開設定がまだ済んでいない場合や、何らかの理由で private のままの場合は pull が失敗し `docker login ghcr.io` が必要になります (詳細は `docs/plans/release-onboarding.md` の既知の限界事項を参照)。 チェックアウトが手元にあり `BOID_COMPOSE_ROOT` を設定している場合 (開発者向け) は代わりにローカルビルドが走ります — 詳細は [CLI リファレンス / Host mode](../reference/cli.md) を参照してください。
 
 起動が終わると、次にやるべきことのガイダンスが表示されます:
 
@@ -106,28 +106,40 @@ boid stop
 boid start
 ```
 
-CLI のバージョンが上がると `boid start` が pull する image ref (`internal/version.DefaultContainerImage()`) も追従して変わるので、`boid stop && boid start` だけで CLI と daemon の image が揃った状態に更新されます。 バージョン間で DB マイグレーションが必要な場合は起動時にガイダンスが表示されます (詳細は [移行ガイド](../guide/migration.md))。
+CLI のバージョンが上がると `boid start` が pull する image ref (`internal/version.DefaultContainerImage()`) も追従して変わるので、`boid stop && boid start` だけで CLI と daemon の image が揃った状態に更新されます。 バージョン間で DB マイグレーションが必要な場合、`boid start` は health check がタイムアウトする (最大 5 分) までブロックし、その後は汎用的な「daemon container did not become healthy」エラーだけを返します — 起動時にマイグレーション内容を説明する構造化ガイダンスは compose 経路では出ません (bare-metal 時代にあった fd3 経由の起動ステータス通知は compose 化で撤去済み)。実際の失敗理由は `docker logs`/`podman logs` で daemon コンテナのログを確認してください。 compose daemon 配下での安全な自動移行手順は現時点でまだ確立されていません — 詳細は [移行ガイド](../guide/migration.md) を参照してください。
 
 ## アンインストール
 
+**注意:** 同じ docker/podman engine 上で boid を複数回インストール・再構築したことがある場合、workspace home volume は install ごとに `boid-ws-home-<installID8>-<slug>` という名前で分離されています (`internal/dockerres.WorkspaceHomeVolumeName`)。**単純な `name=boid-ws-home-` のようなプレフィックス一致で一括削除すると、別 install の workspace home (認証情報・ツールチェーン) まで巻き込んで削除してしまいます** — 必ず自分の install ID で絞り込んでください。
+
 ```bash
+# ENGINE=docker または podman (以下同じ変数を使う)
+ENGINE=docker
+
+# このインストールの install_id を、まだ動いている daemon 停止前に読み取っておく
+# (`boid_boid_state` volume 内のファイルなので、daemon が動いていなくても
+# 使い捨て container から読める)
+INSTALL_ID=$("$ENGINE" run --rm -v boid_boid_state:/state docker.io/library/debian:bookworm-slim \
+  cat /state/.local/share/boid/install_id 2>/dev/null | cut -c1-8)
+: "${INSTALL_ID:=noinst}"   # install_id 導入以前に作られた workspace home は "noinst" 接尾辞
+
 boid stop
 
 # daemon 本体のデータ (DB・kits・secret 鍵等)。volume 名は
 # compose のプロジェクト名 (既定 "boid") + "_boid_state" — build/container/compose.yml
 # の name: boid フィールドに由来する
-docker volume rm boid_boid_state    # podman の場合: podman volume rm boid_boid_state
+"$ENGINE" volume rm boid_boid_state
 
 # 各 workspace の home (claude/codex の認証情報・インストール済みツールチェーンを含む)。
-# workspace ごとに boid-ws-home-<installID8>-<slug> という別の named volume を持つため、
-# 一覧してまとめて削除する (詳細は workspace home ガイド参照)
-docker volume ls --filter name=boid-ws-home- -q | xargs -r docker volume rm
+# 上で読み取った INSTALL_ID で絞り込むことで、この install の分だけを削除する
+"$ENGINE" volume ls --filter "name=boid-ws-home-${INSTALL_ID}-" -q | xargs -r "$ENGINE" volume rm
 
 rm -rf ~/.config/boid ~/.local/state/boid/compose
-rm "$(go env GOBIN 2>/dev/null || echo "$(go env GOPATH)/bin")/boid"
+GOBIN="$(go env GOBIN)"
+rm "${GOBIN:-$(go env GOPATH)/bin}/boid"
 ```
 
-上記の `docker volume rm` 2 種でタスク・機密値・claude/codex の認証情報・インストール済みの拡張パッケージを含むローカルデータがすべて消えます。再インストール時にデータを残したい場合はそれぞれのコマンドを省いてください。 workspace home volume の詳細な命名規則・確認方法は [workspace home ガイド](../guide/workspace-home.md) を参照してください。
+上記の `volume rm` 2 種でタスク・機密値・claude/codex の認証情報・インストール済みの拡張パッケージを含むローカルデータがすべて消えます。再インストール時にデータを残したい場合はそれぞれのコマンドを省いてください。 workspace home volume の詳細な命名規則・確認方法 (`docker volume ls` での目視確認等) は [workspace home ガイド](../guide/workspace-home.md) を参照してください。
 
 ---
 

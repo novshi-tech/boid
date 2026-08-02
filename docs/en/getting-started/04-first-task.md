@@ -69,7 +69,7 @@ When the task reaches `done`, look at the final state:
 boid task show <task-id>
 ```
 
-If `payload.artifact.answer` holds the answer, it worked.
+If `payload.artifact.report.summary` holds a summary of what was done, it worked (`--field payload.artifact.report` extracts the whole report object).
 
 To inspect what the hook actually printed:
 

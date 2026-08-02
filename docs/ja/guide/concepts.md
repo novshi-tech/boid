@@ -92,7 +92,7 @@ boid agent claude   -p <project>   # Claude Code セッションを起動
 boid exec           -p <project> -- bash   # サンドボックス内でシェルを開く
 ```
 
-セッションは常に新規プロセスとして起動します — session-id での再開経路はリポジトリ全体で撤去済みです (`cmd/agent_session.go`)。reopen / Q&A のいずれも新しい claude プロセスを開始し、以前のタスク/instructions/環境コンテキストは `/boid-task` スキル経由の broker RPC で取得します。
+セッションは常に新規プロセスとして起動します — session-id での再開経路はリポジトリ全体で撤去済みです (`cmd/agent_session.go`)。reopen (タスクを `awaiting → executing` に戻して hook を再起動する経路) は新しい claude プロセスを開始し、以前のタスク/instructions/環境コンテキストは `/boid-task` スキル経由の broker RPC で取得します。一方、`boid task ask` によるハーネス非依存の Q&A (`internal/api/task_ask.go`) は既存プロセスを終了させず、agent が RPC 呼び出し内でブロックしたまま人間の回答を待つ — 新しいプロセスは起動されない。
 
 ### タスクとセッションの違い
 
