@@ -32,6 +32,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"regexp"
@@ -541,15 +543,27 @@ func probeArchMismatchWithAPI(ctx context.Context, api archProbeAPI, engine, ima
 	}
 
 	// [codex round 5 review, Major]: `:latest` (or no tag at all, which
-	// docker treats identically) is compose's own documented exception to
-	// pull_policy "missing" — compose ALWAYS re-pulls a `:latest`-tagged
-	// image even when a local copy already exists, per the compose-file
-	// spec's own pull_policy documentation. Checking the local cache
-	// first for that tag would validate a potentially stale image compose
-	// is about to discard and replace anyway — remote-first is correct
-	// there, with the local cache only as a last-resort fallback (still
-	// better than nothing when the registry cannot be reached at all).
-	tryLocalFirst := !isLatestTag(image)
+	// docker treats identically) is compose-file's OWN documented
+	// exception to pull_policy "missing" — the docker compose PLUGIN
+	// ALWAYS re-pulls a `:latest`-tagged image even when a local copy
+	// already exists. Checking the local cache first for that tag would
+	// validate a potentially stale image compose is about to discard and
+	// replace anyway — remote-first is correct there, with the local
+	// cache only as a last-resort fallback.
+	//
+	// [codex round 7 review, Blocker 1]: that exception is DOCKER
+	// COMPOSE-specific, not shared by podman-compose — podman-compose
+	// implements a plain "pull only if missing locally" policy with no
+	// `:latest`-always-repulls carve-out (podman itself documents its
+	// own PullPolicy=missing identically: "pull the image if it is not
+	// present locally", no tag-name special case). Applying the docker
+	// exception to podman too would make `boid check` validate the
+	// REGISTRY's arch for a `:latest` tag while `boid start` on podman
+	// actually runs whatever is cached locally under that same tag — the
+	// exact silent-emulation gap 決定5 exists to catch. So podman is
+	// ALWAYS local-first, regardless of tag; only docker gets the
+	// `:latest` remote-first treatment.
+	tryLocalFirst := engine == "podman" || !isLatestTag(image)
 
 	if tryLocalFirst {
 		if a, ok := probeLocalImageArch(checkCtx, api, image); ok {
@@ -688,11 +702,300 @@ func remoteImageArches(ctx context.Context, api archProbeAPI, engine, image stri
 // (probeArchMismatchWithAPI) reports this as inconclusive — a genuine "no
 // way to verify without pulling" case now that both known techniques have
 // been tried, not a shortcut.
+//
+// [codex round 7 review, Blocker 2]: skopeo (tried second, below) is NOT
+// declared anywhere as a prerequisite — detectComposeEngine/cmd/host.go
+// intentionally require only podman+podman-compose, matching the plan
+// doc's own stated goal (穴5) of NOT re-introducing a hidden new
+// dependency the way the old `passt` requirement was. Without skopeo,
+// EVERY fresh podman install that has never pulled the image would hit
+// the "cannot verify" inconclusive-failure path, which round 6 flagged as
+// a hard blocker but round 6's own fix only made the resulting message
+// actionable — it did not remove the dependency. registryManifestArches
+// (tried FIRST, below) closes that gap for real: a small, dependency-free
+// Go client that talks the OCI/Docker Distribution v2 registry API
+// directly over HTTPS (anonymous bearer-token flow — works out of the box
+// against boid's own public GHCR publish target, 決定4) with no
+// docker/podman/skopeo binary involved at all. skopeo and `podman
+// manifest inspect` remain as later-resort fallbacks for registries this
+// minimal client cannot reach (a private registry needing real
+// credentials, a registry with a non-standard auth flow) — see each
+// helper's own doc comment.
 var podmanManifestArches = func(ctx context.Context, image string) ([]string, error) {
+	if archs, err := registryManifestArches(image); err == nil {
+		return archs, nil
+	}
 	if archs, err := skopeoInspectArches(ctx, image); err == nil {
 		return archs, nil
 	}
 	return podmanManifestListArches(ctx, image)
+}
+
+// registryHTTPTimeout bounds registryManifestArches's own HTTP round
+// trips — deliberately independent of checkEngineTimeout (which bounds
+// fast, local docker/podman engine calls): a real anonymous-token-plus-
+// manifest fetch against an internet registry is a multi-request round
+// trip (ping → token → manifest → possibly a config blob), for which 3s
+// is an unreasonably tight budget. Uses its own context.Background()-
+// rooted deadline (see registryManifestArches's own doc comment) rather
+// than deriving from whatever ctx the caller happened to already have
+// truncated to checkEngineTimeout.
+const registryHTTPTimeout = 8 * time.Second
+
+var registryHTTPClient = &http.Client{Timeout: registryHTTPTimeout}
+
+const (
+	mediaTypeDockerManifest     = "application/vnd.docker.distribution.manifest.v2+json"
+	mediaTypeDockerManifestList = "application/vnd.docker.distribution.manifest.list.v2+json"
+	mediaTypeOCIManifest        = "application/vnd.oci.image.manifest.v1+json"
+	mediaTypeOCIIndex           = "application/vnd.oci.image.index.v1+json"
+)
+
+// registryManifestArches resolves image's architecture(s) directly from
+// its OCI/Docker Distribution v2 registry API — no docker/podman/skopeo
+// CLI or engine socket involved at all, so it works identically for
+// either engine and needs nothing beyond outbound HTTPS (see
+// podmanManifestArches's own doc comment for why this exists: closing the
+// undeclared-skopeo-dependency gap [codex round 7 review, Blocker 2]).
+// Deliberately its own context.Background()-rooted timeout (see
+// registryHTTPTimeout) rather than accepting a caller ctx, so a
+// short-lived local-operation deadline elsewhere in this file can never
+// truncate it.
+//
+// Handles both shapes a manifest response can take: a manifest
+// list/OCI index (architecture available directly per platform entry), or
+// a single-platform image manifest (boid's own actual published shape,
+// per 決定5 — architecture lives in the referenced CONFIG blob, a
+// separate fetch this function makes automatically).
+func registryManifestArches(image string) ([]string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), registryHTTPTimeout)
+	defer cancel()
+
+	registryHost, repo, tag := parseImageRef(image)
+	token, _ := registryAnonymousToken(ctx, registryHost, repo) // best-effort; "" tried regardless
+
+	body, mediaType, err := fetchRegistryManifest(ctx, registryHost, repo, tag, token)
+	if err != nil {
+		return nil, err
+	}
+
+	switch mediaType {
+	case mediaTypeDockerManifestList, mediaTypeOCIIndex:
+		var list struct {
+			Manifests []struct {
+				Platform struct {
+					Architecture string `json:"architecture"`
+				} `json:"platform"`
+			} `json:"manifests"`
+		}
+		if err := json.Unmarshal(body, &list); err != nil {
+			return nil, err
+		}
+		var archs []string
+		for _, m := range list.Manifests {
+			if a := m.Platform.Architecture; a != "" {
+				archs = append(archs, dispatcher.NormalizeArch(a))
+			}
+		}
+		if len(archs) == 0 {
+			return nil, fmt.Errorf("manifest list reported no architectures")
+		}
+		return archs, nil
+	default:
+		var m struct {
+			Config struct {
+				Digest string `json:"digest"`
+			} `json:"config"`
+		}
+		if err := json.Unmarshal(body, &m); err != nil {
+			return nil, err
+		}
+		if m.Config.Digest == "" {
+			return nil, fmt.Errorf("manifest has no config digest to resolve architecture from")
+		}
+		configBody, err := fetchRegistryBlob(ctx, registryHost, repo, m.Config.Digest, token)
+		if err != nil {
+			return nil, err
+		}
+		var cfg struct {
+			Architecture string `json:"architecture"`
+		}
+		if err := json.Unmarshal(configBody, &cfg); err != nil {
+			return nil, err
+		}
+		if cfg.Architecture == "" {
+			return nil, fmt.Errorf("image config reported no architecture")
+		}
+		return []string{dispatcher.NormalizeArch(cfg.Architecture)}, nil
+	}
+}
+
+// parseImageRef splits image into (registryHost, repository, tag),
+// applying the same "does the first path component look like a host"
+// heuristic docker's own reference parser uses: a first component
+// containing "." or ":", or the literal "localhost", is a registry host;
+// otherwise the whole thing is treated as docker.io-hosted (with the
+// implicit "library/" namespace for an unqualified name, matching
+// `docker pull <name>`'s own behavior). Tag defaults to "latest" when
+// absent, mirroring isLatestTag's own no-tag handling.
+func parseImageRef(image string) (registryHost, repo, tag string) {
+	name := image
+	tag = "latest"
+
+	slashIdx := strings.LastIndex(image, "/")
+	tagSearchStart := 0
+	if slashIdx >= 0 {
+		tagSearchStart = slashIdx + 1
+	}
+	if colonIdx := strings.LastIndex(image[tagSearchStart:], ":"); colonIdx >= 0 {
+		tag = image[tagSearchStart+colonIdx+1:]
+		name = image[:tagSearchStart+colonIdx]
+	}
+
+	firstSlash := strings.Index(name, "/")
+	if firstSlash < 0 {
+		return "docker.io", "library/" + name, tag
+	}
+	firstComponent := name[:firstSlash]
+	if strings.ContainsAny(firstComponent, ".:") || firstComponent == "localhost" {
+		return firstComponent, name[firstSlash+1:], tag
+	}
+	return "docker.io", name, tag
+}
+
+// registryAnonymousToken performs the standard Docker Distribution v2
+// "ping then bearer-challenge" auth flow: GET /v2/ unauthenticated: a 200
+// means no auth is required at all (empty token); a 401 with a
+// `WWW-Authenticate: Bearer realm=...,service=...` challenge means a token
+// must be fetched from that realm with a pull-only scope for repo — the
+// exact flow a public GHCR image (決定4: GHCR is public specifically so
+// anonymous pulls need no docker login) satisfies with no credentials at
+// all. Any other failure degrades to an empty token, tried anyway — some
+// registries answer a plain unauthenticated GET on /v2/<repo>/manifests/
+// even without one.
+func registryAnonymousToken(ctx context.Context, registryHost, repo string) (string, error) {
+	pingReq, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://"+registryHost+"/v2/", nil)
+	if err != nil {
+		return "", err
+	}
+	pingResp, err := registryHTTPClient.Do(pingReq)
+	if err != nil {
+		return "", err
+	}
+	defer pingResp.Body.Close()
+	if pingResp.StatusCode == http.StatusOK {
+		return "", nil
+	}
+	if pingResp.StatusCode != http.StatusUnauthorized {
+		return "", nil
+	}
+
+	realm, service, ok := parseBearerChallenge(pingResp.Header.Get("WWW-Authenticate"))
+	if !ok {
+		return "", nil
+	}
+	tokenURL := realm + "?service=" + url.QueryEscape(service) + "&scope=" + url.QueryEscape("repository:"+repo+":pull")
+	tokenReq, err := http.NewRequestWithContext(ctx, http.MethodGet, tokenURL, nil)
+	if err != nil {
+		return "", err
+	}
+	tokenResp, err := registryHTTPClient.Do(tokenReq)
+	if err != nil {
+		return "", err
+	}
+	defer tokenResp.Body.Close()
+	if tokenResp.StatusCode != http.StatusOK {
+		return "", nil
+	}
+	var result struct {
+		Token       string `json:"token"`
+		AccessToken string `json:"access_token"`
+	}
+	if err := json.NewDecoder(tokenResp.Body).Decode(&result); err != nil {
+		return "", nil
+	}
+	if result.Token != "" {
+		return result.Token, nil
+	}
+	return result.AccessToken, nil
+}
+
+// parseBearerChallenge extracts realm/service from a WWW-Authenticate
+// header of the form `Bearer realm="...",service="...",scope="..."`.
+func parseBearerChallenge(header string) (realm, service string, ok bool) {
+	const prefix = "Bearer "
+	if !strings.HasPrefix(header, prefix) {
+		return "", "", false
+	}
+	for _, part := range strings.Split(header[len(prefix):], ",") {
+		key, val, found := strings.Cut(strings.TrimSpace(part), "=")
+		if !found {
+			continue
+		}
+		val = strings.Trim(val, `"`)
+		switch key {
+		case "realm":
+			realm = val
+		case "service":
+			service = val
+		}
+	}
+	return realm, service, realm != ""
+}
+
+// fetchRegistryManifest GETs the manifest for repo:tag, requesting both
+// docker- and OCI-flavored manifest/manifest-list media types, and
+// returns the raw body alongside the server-reported Content-Type (which
+// registryManifestArches switches on to know whether it got a manifest
+// list or a single-platform manifest).
+func fetchRegistryManifest(ctx context.Context, registryHost, repo, tag, token string) (body []byte, mediaType string, err error) {
+	u := "https://" + registryHost + "/v2/" + repo + "/manifests/" + tag
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return nil, "", err
+	}
+	req.Header.Set("Accept", strings.Join([]string{
+		mediaTypeDockerManifest, mediaTypeDockerManifestList,
+		mediaTypeOCIManifest, mediaTypeOCIIndex,
+	}, ", "))
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	resp, err := registryHTTPClient.Do(req)
+	if err != nil {
+		return nil, "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, "", fmt.Errorf("registry returned HTTP %d for %s/%s:%s manifest", resp.StatusCode, registryHost, repo, tag)
+	}
+	body, err = io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, "", err
+	}
+	return body, resp.Header.Get("Content-Type"), nil
+}
+
+// fetchRegistryBlob GETs a content-addressed blob (here, always an image
+// config JSON document) by digest.
+func fetchRegistryBlob(ctx context.Context, registryHost, repo, digest, token string) ([]byte, error) {
+	u := "https://" + registryHost + "/v2/" + repo + "/blobs/" + digest
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return nil, err
+	}
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	resp, err := registryHTTPClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("registry returned HTTP %d for blob %s", resp.StatusCode, digest)
+	}
+	return io.ReadAll(resp.Body)
 }
 
 // skopeoInspectArches shells out to `skopeo inspect docker://<image>`,

@@ -11,6 +11,8 @@ package cmd
 import (
 	"context"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"strconv"
 	"strings"
@@ -604,6 +606,147 @@ func TestIsLatestTag(t *testing.T) {
 		if got := isLatestTag(c.ref); got != c.want {
 			t.Errorf("isLatestTag(%q) = %v, want %v", c.ref, got, c.want)
 		}
+	}
+}
+
+func TestParseImageRef(t *testing.T) {
+	cases := []struct {
+		ref                         string
+		wantHost, wantRepo, wantTag string
+	}{
+		{"ghcr.io/novshi-tech/boid-runner:v0.0.1", "ghcr.io", "novshi-tech/boid-runner", "v0.0.1"},
+		{"ghcr.io/novshi-tech/boid-runner:latest", "ghcr.io", "novshi-tech/boid-runner", "latest"},
+		{"ghcr.io/novshi-tech/boid-runner", "ghcr.io", "novshi-tech/boid-runner", "latest"},
+		{"boid-runner:latest", "docker.io", "library/boid-runner", "latest"},
+		{"boid-runner", "docker.io", "library/boid-runner", "latest"},
+		{"localhost:5000/boid-runner:v1", "localhost:5000", "boid-runner", "v1"},
+		{"novshi-tech/boid-runner:v1", "docker.io", "novshi-tech/boid-runner", "v1"},
+	}
+	for _, c := range cases {
+		host, repo, tag := parseImageRef(c.ref)
+		if host != c.wantHost || repo != c.wantRepo || tag != c.wantTag {
+			t.Errorf("parseImageRef(%q) = (%q, %q, %q), want (%q, %q, %q)", c.ref, host, repo, tag, c.wantHost, c.wantRepo, c.wantTag)
+		}
+	}
+}
+
+// TestProbeArchMismatchWithAPI_Podman_LatestTag_StillLocalFirst pins
+// [codex round 7 review, Blocker 1]: unlike docker compose, podman-compose
+// has no `:latest`-always-repulls exception (podman's own PullPolicy
+// documentation: "missing" only pulls when nothing is cached locally,
+// regardless of tag name) — so on podman, even a `:latest`-tagged image
+// must still be checked local-first, exactly like every other tag. A
+// stale local `:latest` cache is what `boid start` (via podman-compose)
+// will actually run.
+func TestProbeArchMismatchWithAPI_Podman_LatestTag_StillLocalFirst(t *testing.T) {
+	api := &fakeArchProbeAPI{
+		info:    newSystemInfoResult("x86_64"), // host is amd64
+		inspect: dockerclient.ImageInspectResult{InspectResponse: image.InspectResponse{Architecture: "arm64"}},
+	}
+
+	hostArch, imageArch, mismatch, note := probeArchMismatchWithAPI(context.Background(), api, "podman", "ghcr.io/novshi-tech/boid-runner:latest")
+	if note != "" {
+		t.Fatalf("note = %q, want empty", note)
+	}
+	if !mismatch {
+		t.Error("mismatch = false, want true: the locally cached arm64 :latest is what podman-compose will actually run, unlike docker compose's :latest exception")
+	}
+	if hostArch != "amd64" || imageArch != "arm64" {
+		t.Errorf("hostArch=%q imageArch=%q, want amd64/arm64 (from the local cache)", hostArch, imageArch)
+	}
+}
+
+// httptest-backed fake OCI/Docker Distribution v2 registry, used to
+// exercise registryManifestArches end-to-end without any real network
+// access — mirrors the exact request sequence a real anonymous-pull
+// GHCR-style registry answers: 401 challenge on /v2/, a token endpoint,
+// then the manifest (and, for a single-platform manifest, a config blob).
+func newFakeRegistry(t *testing.T, manifestBody, mediaType string, includeConfigBlob bool, configArch string) *httptest.Server {
+	t.Helper()
+	mux := http.NewServeMux()
+	var registryURL string
+	mux.HandleFunc("/v2/", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v2/" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("WWW-Authenticate", `Bearer realm="`+registryURL+`/token",service="fake-registry"`)
+		w.WriteHeader(http.StatusUnauthorized)
+	})
+	mux.HandleFunc("/token", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"token":"fake-token"}`))
+	})
+	mux.HandleFunc("/v2/novshi-tech/boid-runner/manifests/", func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer fake-token" {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		w.Header().Set("Content-Type", mediaType)
+		_, _ = w.Write([]byte(manifestBody))
+	})
+	if includeConfigBlob {
+		mux.HandleFunc("/v2/novshi-tech/boid-runner/blobs/sha256:configdigest", func(w http.ResponseWriter, r *http.Request) {
+			if r.Header.Get("Authorization") != "Bearer fake-token" {
+				w.WriteHeader(http.StatusUnauthorized)
+				return
+			}
+			_, _ = w.Write([]byte(`{"architecture":"` + configArch + `"}`))
+		})
+	}
+	// TLS, not plain HTTP: registryManifestArches hardcodes "https://" —
+	// matching real registries, all of which require TLS — so the fake
+	// must too. registryHTTPClient is swapped for the test server's own
+	// client (trusts its self-signed cert) and restored on cleanup.
+	srv := httptest.NewTLSServer(mux)
+	registryURL = srv.URL
+	origClient := registryHTTPClient
+	registryHTTPClient = srv.Client()
+	t.Cleanup(func() {
+		srv.Close()
+		registryHTTPClient = origClient
+	})
+	return srv
+}
+
+func TestRegistryManifestArches_SinglePlatformManifest_ResolvesViaConfigBlob(t *testing.T) {
+	srv := newFakeRegistry(t, `{"schemaVersion":2,"config":{"digest":"sha256:configdigest"}}`, mediaTypeOCIManifest, true, "amd64")
+	host := strings.TrimPrefix(srv.URL, "https://")
+
+	archs, err := registryManifestArches(host + "/novshi-tech/boid-runner:v0.0.1")
+	if err != nil {
+		t.Fatalf("registryManifestArches: %v", err)
+	}
+	if len(archs) != 1 || archs[0] != "amd64" {
+		t.Errorf("archs = %v, want [amd64]", archs)
+	}
+}
+
+func TestRegistryManifestArches_ManifestList_ResolvesDirectly(t *testing.T) {
+	body := `{"manifests":[{"platform":{"architecture":"amd64"}},{"platform":{"architecture":"arm64"}}]}`
+	srv := newFakeRegistry(t, body, mediaTypeOCIIndex, false, "")
+	host := strings.TrimPrefix(srv.URL, "https://")
+
+	archs, err := registryManifestArches(host + "/novshi-tech/boid-runner:v0.0.1")
+	if err != nil {
+		t.Fatalf("registryManifestArches: %v", err)
+	}
+	want := map[string]bool{"amd64": true, "arm64": true}
+	if len(archs) != 2 || !want[archs[0]] || !want[archs[1]] {
+		t.Errorf("archs = %v, want [amd64 arm64]", archs)
+	}
+}
+
+func TestParseBearerChallenge(t *testing.T) {
+	realm, service, ok := parseBearerChallenge(`Bearer realm="https://ghcr.io/token",service="ghcr.io",scope="repository:foo:pull"`)
+	if !ok {
+		t.Fatal("ok = false, want true")
+	}
+	if realm != "https://ghcr.io/token" || service != "ghcr.io" {
+		t.Errorf("realm=%q service=%q, want https://ghcr.io/token / ghcr.io", realm, service)
+	}
+	if _, _, ok := parseBearerChallenge("Basic realm=whatever"); ok {
+		t.Error("ok = true for a non-Bearer challenge, want false")
 	}
 }
 
