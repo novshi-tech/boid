@@ -48,21 +48,24 @@ func TestResolveComposeBindSource_HonorsOverrideEnvForEitherEngine(t *testing.T)
 	}
 }
 
-func TestResolveCheckImage_DefaultsToVersionDefaultContainerImage(t *testing.T) {
-	t.Setenv("BOID_IMAGE", "")
+func TestResolveCheckImage_AlwaysVersionDefaultContainerImage(t *testing.T) {
 	if got := resolveCheckImage(); got != version.DefaultContainerImage() {
 		t.Errorf("resolveCheckImage() = %q, want version.DefaultContainerImage() = %q", got, version.DefaultContainerImage())
 	}
 }
 
-func TestResolveCheckImage_HonorsBoidImageEnv(t *testing.T) {
-	// [codex round 3 review, Major]: build/container/compose.yml's own
-	// image line is `${BOID_IMAGE:-...}` — BOID_IMAGE always wins when
-	// set, so `boid check` must validate the SAME image `boid start`
-	// would actually run under that override.
+// TestResolveCheckImage_IgnoresBoidImageEnv pins [codex round 6 review,
+// Blocker]: cmd/host.go's own two `boid start` deploy paths each compute
+// BOID_IMAGE themselves and pass it EXPLICITLY to
+// scripts/deploy-container.sh, never reading any pre-existing BOID_IMAGE
+// from this process's environment — so an ambient BOID_IMAGE has no effect
+// on what `boid start` actually runs, and honoring it here (round 3's
+// original, since-reverted fix) would validate an image `boid start` was
+// never going to use.
+func TestResolveCheckImage_IgnoresBoidImageEnv(t *testing.T) {
 	t.Setenv("BOID_IMAGE", "ghcr.io/example/custom-runner:v9.9.9")
-	if got := resolveCheckImage(); got != "ghcr.io/example/custom-runner:v9.9.9" {
-		t.Errorf("resolveCheckImage() = %q, want the BOID_IMAGE override", got)
+	if got := resolveCheckImage(); got != version.DefaultContainerImage() {
+		t.Errorf("resolveCheckImage() = %q, want version.DefaultContainerImage() = %q (BOID_IMAGE must be ignored)", got, version.DefaultContainerImage())
 	}
 }
 
@@ -559,6 +562,30 @@ func TestCheckoutBuildPlatformWarning_MalformedValue_ReportsError(t *testing.T) 
 	}
 }
 
+// TestCheckoutBuildPlatformWarning_VariantSuffix_NotTreatedAsMalformed
+// pins [codex round 6 review, Major]: "linux/amd64/v3" (an os/arch/variant
+// triple) is a legitimate DOCKER_DEFAULT_PLATFORM value, not a malformed
+// one — splitting on only the FIRST "/" would take "amd64/v3" as the
+// "arch", which then fails to normalize/match ANY real host arch and
+// falsely rejects an otherwise-safe host-native build. This sandbox has
+// no real engine, so the request fails at the engine-connection step
+// instead (a DIFFERENT error) — this test's job is only to confirm that
+// failure is NOT the "not in the expected os/arch[/variant] form" parse
+// error, proving the 3-part value parsed successfully.
+func TestCheckoutBuildPlatformWarning_VariantSuffix_NotTreatedAsMalformed(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("DOCKER_DEFAULT_PLATFORM", "linux/amd64/v3")
+	t.Setenv("BOID_DOCKER_SOCK_SRC", dir+"/no-engine-here.sock")
+
+	msg, isErr := checkoutBuildPlatformWarning(context.Background(), "docker")
+	if !isErr {
+		t.Fatalf("checkoutBuildPlatformWarning() isErr = false, want true (no real engine to verify against in this sandbox)")
+	}
+	if strings.Contains(msg, "not in the expected os/arch") {
+		t.Errorf("msg = %q, must not be the malformed-value error for a legitimate os/arch/variant value", msg)
+	}
+}
+
 func TestIsLatestTag(t *testing.T) {
 	cases := []struct {
 		ref  string
@@ -676,5 +703,33 @@ func TestPodmanManifestArches_SinglePlatformManifest_NeitherSourceResolves(t *te
 
 	if _, err := podmanManifestArches(context.Background(), "ghcr.io/novshi-tech/boid-runner:v0.0.1"); err == nil {
 		t.Error("podmanManifestArches() = nil error, want an error when a single-platform manifest has no architecture info to extract")
+	}
+}
+
+// TestProbeArchMismatchWithAPI_Podman_InconclusiveNote_MentionsSkopeo pins
+// [codex round 6 review, Blocker]: when podman's remote-manifest path
+// resolves nothing at all (skopeo absent AND podman manifest inspect
+// insufficient for a single-platform image — the realistic fresh-install
+// failure mode), the resulting note must name the actual remediation
+// (installing skopeo, or pre-pulling once) rather than a generic dead end
+// — doc's own "エラーメッセージは人間に分かる言葉で報告する" requirement.
+func TestProbeArchMismatchWithAPI_Podman_InconclusiveNote_MentionsSkopeo(t *testing.T) {
+	orig := podmanManifestArches
+	defer func() { podmanManifestArches = orig }()
+	podmanManifestArches = func(ctx context.Context, image string) ([]string, error) {
+		return nil, errors.New("neither skopeo nor podman manifest inspect resolved anything")
+	}
+
+	api := &fakeArchProbeAPI{
+		info:       newSystemInfoResult("x86_64"),
+		inspectErr: errors.New("no such image (never pulled)"),
+	}
+
+	_, _, mismatch, note := probeArchMismatchWithAPI(context.Background(), api, "podman", "ghcr.io/novshi-tech/boid-runner:v0.0.1")
+	if mismatch {
+		t.Error("mismatch = true, want false")
+	}
+	if !strings.Contains(note, "skopeo") {
+		t.Errorf("note = %q, want it to mention skopeo as the actionable remediation", note)
 	}
 }

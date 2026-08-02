@@ -275,29 +275,38 @@ func reportAvailability(out io.Writer, label string, ok bool) {
 	}
 }
 
-// resolveCheckImage picks the image the arch probe validates —
-// BOID_IMAGE, when set, else version.DefaultContainerImage().
+// resolveCheckImage picks the image the arch probe validates:
+// version.DefaultContainerImage(), unconditionally.
 //
-// [codex round 3 review, Major]: build/container/compose.yml's own image
-// line is `${BOID_IMAGE:-ghcr.io/novshi-tech/boid-runner:latest}` — BOID_IMAGE
-// always wins when set, and every wrapped invocation (scripts/
-// deploy-container.sh's pull-first default AND its `--build` dev path,
-// e2e/run-container.sh) exports it before calling compose. Honoring the
-// same override here means `BOID_IMAGE=<foreign-arch-ref> boid check`
-// reports on the SAME image `boid start` would actually run.
+// [codex round 3 review, Major] originally had this honor an ambient
+// BOID_IMAGE env var, reasoning that build/container/compose.yml's own
+// image line (`${BOID_IMAGE:-...}`) always prefers it. That is true for
+// compose.yml in isolation, but [codex round 6 review, Blocker] caught
+// that it does NOT describe what `boid start` (the thing this diagnostic
+// exists to predict) actually does: cmd/host.go's own two deploy paths
+// each compute BOID_IMAGE themselves and pass it to
+// scripts/deploy-container.sh EXPLICITLY, regardless of whatever the
+// invoking shell already had set —
+//   - deployFromCheckout (BOID_COMPOSE_ROOT set, `--build`):
+//     deploy-container.sh's own `--build` branch overrides BOID_IMAGE to
+//     "boid-runner:latest" outright (this function's own BOID_COMPOSE_ROOT
+//     skip in runCheck already accounts for that path separately).
+//   - deployFromEmbeddedAssets (the checkout-less "go install" path this
+//     function actually targets): cmd/host.go sets
+//     `image := version.DefaultContainerImage()` and passes
+//     "BOID_IMAGE="+image as runDeployScript's extraEnv — never reading
+//     any pre-existing BOID_IMAGE from this process's own environment at
+//     all.
 //
-// Deliberately does NOT replicate deploy-container.sh's checkout+`--build`
-// dev path forcing `boid-runner:latest` (round 3's own example): that
-// path always BUILDS the image locally from source rather than pulling
-// one, and a plain `docker build`/`podman build` with no --platform flag
-// always builds for the host's own architecture — the mismatch decision5
-// exists to catch (a foreign-arch image silently run under binfmt/qemu
-// emulation) cannot occur from a local build by construction, so there is
-// nothing for this diagnostic to usefully catch on that path.
+// So on neither path does an operator's ambient `BOID_IMAGE=...boid check`
+// have any effect on what `boid start` actually runs — honoring it here
+// would validate an image `boid start` was never going to use, exactly
+// the false-confidence gap round 6 flagged. (An operator invoking
+// `docker compose -f build/container/compose.yml up` directly, bypassing
+// `boid start`/cmd/host.go entirely, is a different, unwrapped scenario
+// this diagnostic does not attempt to predict — see this PR's own
+// follow-up notes.)
 func resolveCheckImage() string {
-	if v := os.Getenv("BOID_IMAGE"); v != "" {
-		return v
-	}
 	return version.DefaultContainerImage()
 }
 
@@ -317,11 +326,18 @@ func checkoutBuildPlatformWarning(ctx context.Context, engine string) (msg strin
 	if platform == "" {
 		return "", false
 	}
-	_, arch, ok := strings.Cut(platform, "/")
-	if !ok || arch == "" {
-		return fmt.Sprintf("DOCKER_DEFAULT_PLATFORM=%q is set but not in the expected os/arch form — cannot verify the checkout `--build` path's target architecture", platform), true
+	// [codex round 6 review, Major]: split on EVERY "/", not just the
+	// first — the platform string form is "os/arch[/variant]" (e.g.
+	// "linux/amd64/v3" is a legitimate value, not malformed), and only
+	// the SECOND field is the arch component. A naive strings.Cut on the
+	// first "/" alone would take "amd64/v3" as the "arch" for that input,
+	// which then fails to normalize/match against a genuinely-matching
+	// host and falsely rejects a perfectly safe host-native build.
+	parts := strings.Split(platform, "/")
+	if len(parts) < 2 || parts[1] == "" {
+		return fmt.Sprintf("DOCKER_DEFAULT_PLATFORM=%q is set but not in the expected os/arch[/variant] form — cannot verify the checkout `--build` path's target architecture", platform), true
 	}
-	platformArch := dispatcher.NormalizeArch(arch)
+	platformArch := dispatcher.NormalizeArch(parts[1])
 
 	cli, err := newEngineClient(engine)
 	if err != nil {
@@ -575,6 +591,22 @@ func probeArchMismatchWithAPI(ctx context.Context, api archProbeAPI, engine, ima
 		}
 	}
 
+	// [codex round 6 review, Blocker]: podman's remote-manifest path
+	// depends on skopeo (podmanManifestArches's own doc comment) — an
+	// undeclared, easy-to-miss dependency compared to `podman
+	// manifest inspect` alone (which resolves nothing for boid's own
+	// single-platform published image). Naming the actual remediation
+	// here, specifically for podman, keeps this failure a "human can act
+	// on it" message rather than a generic dead end (doc's own "エラー
+	// メッセージは人間に分かる言葉で報告する" requirement) — without
+	// making skopeo a new HARD requirement gating engine detection itself
+	// (detectComposeEngine/cmd/host.go intentionally still only require
+	// podman+podman-compose; this diagnostic degrading to "can't verify"
+	// without skopeo is the deliberately weaker posture, consistent with
+	// every other inconclusive-probe case in this file).
+	if engine == "podman" {
+		return hostArch, "", false, fmt.Sprintf("could not determine image %q's architecture (not present locally; its remote manifest could not be queried — install skopeo for pre-pull architecture verification on podman, e.g. `apt install skopeo` / `dnf install skopeo`, or run `podman pull %[1]s` once so the local copy can be inspected instead) — it will still be validated at pull/launch time", image)
+	}
 	return hostArch, "", false, fmt.Sprintf("could not determine image %q's architecture (not present locally, and its registry/remote manifest could not be queried) — it will still be validated at pull/launch time", image)
 }
 
