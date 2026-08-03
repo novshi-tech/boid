@@ -3,9 +3,11 @@ package apigateway
 import (
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -264,6 +266,51 @@ func TestServer_UnconfiguredServiceReturnsBadGateway(t *testing.T) {
 
 	if w.Code != http.StatusBadGateway {
 		t.Fatalf("status = %d, want 502", w.Code)
+	}
+}
+
+// TestServer_TransportErrorDoesNotLeakUpstreamHostToSandbox pins a codex
+// review finding (round 6): docs/plans/api-gateway.md §1's design principle
+// is "upstream の実 URL は sandbox からは見えない (見せる必要もない)" — but a
+// genuine transport failure (DNS lookup, connection refused, TLS handshake)
+// from Go's net/http typically embeds the target host:port verbatim in its
+// error string, and ErrorHandler used to echo that string straight into the
+// sandbox-facing response body. This closes an unreachable upstream
+// connection (connection refused, deterministic and network-independent —
+// no DNS lookup involved) and asserts the target host:port never appears in
+// what the sandbox sees, even though it is still logged server-side.
+func TestServer_TransportErrorDoesNotLeakUpstreamHostToSandbox(t *testing.T) {
+	// Bind a listener, capture its address, then close it immediately: the
+	// OS will refuse connections to that exact address deterministically
+	// (no DNS involved, no dependency on external network reachability).
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	closedAddr := ln.Addr().String()
+	ln.Close()
+
+	registry := NewRegistry()
+	token := registry.Register([]string{"myapp"}, "ws-a", "task-1", false)
+	creds := NewCredentialProvider([]ServiceConfig{
+		{Name: "myapp", BaseURL: "http://" + closedAddr, Auth: ServiceAuth{Kind: AuthBearer, SecretKey: "k"}},
+	}, stubResolver(map[string]string{"ws-a/k": "v"}))
+	srv := NewServer(registry, creds, nil, nil)
+
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", "/api/"+token+"/myapp/v1/users", nil)
+	srv.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d, want 502", w.Code)
+	}
+	body := w.Body.String()
+	if strings.Contains(body, closedAddr) {
+		t.Errorf("response body leaks the upstream host:port %q: %q", closedAddr, body)
+	}
+	host, _, _ := net.SplitHostPort(closedAddr)
+	if host != "" && strings.Contains(body, host) {
+		t.Errorf("response body leaks the upstream host %q: %q", host, body)
 	}
 }
 

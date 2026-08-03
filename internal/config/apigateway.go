@@ -153,6 +153,17 @@ func validateServiceConfig(name string, sc ServiceConfig) error {
 				"set \"allow_insecure: true\" on this service if that is intentional (e.g. an internal test/staging API with no TLS yet)",
 			name, u.Scheme)
 	}
+	// allow_insecure only ever bought a plaintext-HTTP escape hatch — never
+	// license for an arbitrary scheme (codex review round 6 finding): the
+	// gateway's outbound Transport is a fixed *http.Transport (server.go's
+	// NewServer), which only ever speaks http/https regardless of this flag,
+	// so "ftp"/"ws"/anything else would validate cleanly here yet fail every
+	// single request at 502 once dispatched. Rejecting it at config-load
+	// time turns that into an immediate, actionable `boid start` error
+	// instead of a request-time surprise.
+	if u.Scheme != "https" && u.Scheme != "http" {
+		return fmt.Errorf("services[%q]: \"base_url\" scheme %q is not supported — the gateway only ever speaks http or https to the upstream, regardless of \"allow_insecure\"", name, u.Scheme)
+	}
 	if u.Scheme != "https" {
 		slog.Warn("services: base_url does not use https — this service's injected credential will cross the network to the upstream in cleartext",
 			"service", name, "base_url", sc.BaseURL, "scheme", u.Scheme)
@@ -168,6 +179,19 @@ func validateServiceConfig(name string, sc ServiceConfig) error {
 	case apigateway.AuthBasic:
 		if sc.Auth.Username == "" {
 			return fmt.Errorf("services[%q]: auth.kind basic requires \"username\"", name)
+		}
+		// RFC 7617 §2: the userid (username) component of a Basic
+		// credential must not contain a colon — the credential is built as
+		// "userid:password" and the FIRST colon is what separates the two,
+		// so a username containing one changes what the upstream actually
+		// parses as the username vs. the password (codex review round 6
+		// finding). CredentialProvider.Inject's req.SetBasicAuth(username,
+		// secret) has no validation of its own (net/http's SetBasicAuth
+		// just base64-encodes "username:password" verbatim), so this would
+		// otherwise pass config-load cleanly and only surface as a
+		// confusing upstream 401 at request time.
+		if strings.Contains(sc.Auth.Username, ":") {
+			return fmt.Errorf("services[%q]: auth.username %q must not contain \":\" (RFC 7617 §2 — the Basic credential is built as \"username:secret\", so a colon in the username changes what the upstream parses as each half)", name, sc.Auth.Username)
 		}
 		if sc.Auth.SecretKey == "" {
 			return fmt.Errorf("services[%q]: auth.kind basic requires \"secret_key\"", name)

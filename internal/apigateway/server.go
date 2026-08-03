@@ -162,7 +162,19 @@ func NewServer(registry *Registry, credentials *CredentialProvider, notifier Ups
 			info, _ := r.Context().Value(routeInfoKey{}).(routeInfo)
 			slog.Warn("apigateway: upstream request failed", "service", info.service, "err", err)
 			s.recorder(info.taskID, info.method, info.service, info.path, http.StatusBadGateway)
-			http.Error(w, "bad gateway: "+err.Error(), http.StatusBadGateway)
+			// The response body sent to the SANDBOX never includes err's own
+			// text (codex review round 6 finding): a genuine transport
+			// failure (DNS lookup, connection refused, TLS handshake) from
+			// Go's net/http typically embeds the target host:port verbatim
+			// in its error string (e.g. `dial tcp: lookup
+			// myapp-internal.example.com: no such host`) — echoing that back
+			// would leak base_url's real hostname to the sandbox, directly
+			// contradicting docs/plans/api-gateway.md §1's "upstream の実
+			// URL は sandbox からは見えない (見せる必要もない)" design
+			// principle. The full error (including hostname) is still
+			// logged server-side via slog.Warn above for operator
+			// diagnosis — only the sandbox-facing response is generic.
+			http.Error(w, "bad gateway: upstream request failed for service "+info.service, http.StatusBadGateway)
 		},
 	}
 	return s

@@ -205,6 +205,26 @@ services:
 	}
 }
 
+// TestLoadFromPath_Services_BasicUsernameWithColonRejected pins a codex
+// review finding (round 6): RFC 7617 §2 builds a Basic credential as
+// "username:password" and splits on the FIRST colon, so a username itself
+// containing one changes what the upstream parses as each half.
+// net/http.Request.SetBasicAuth (what CredentialProvider.Inject calls) does
+// not validate this on its own — it just base64-encodes verbatim — so this
+// must be caught at config-load time instead of surfacing as a confusing
+// upstream 401.
+func TestLoadFromPath_Services_BasicUsernameWithColonRejected(t *testing.T) {
+	content := `
+services:
+  myapp:
+    base_url: https://myapp.example.com
+    auth: { kind: basic, username: "a:b", secret_key: k }
+`
+	if err := writeAndLoad(t, filepath.Join(t.TempDir(), "config.yaml"), content); err == nil {
+		t.Fatal("want error for a basic-auth username containing \":\", got nil")
+	}
+}
+
 func TestLoadFromPath_Services_HeaderMissingHeaderNameRejected(t *testing.T) {
 	content := `
 services:
@@ -369,6 +389,23 @@ services:
 	}
 	if !strings.Contains(buf.String(), "myapp") || !strings.Contains(buf.String(), "cleartext") {
 		t.Errorf("expected a warning naming the service and the cleartext risk, log = %q", buf.String())
+	}
+}
+
+// TestLoadFromPath_Services_AllowInsecureDoesNotPermitArbitraryScheme pins a
+// codex review finding (round 6): allow_insecure was meant as a plaintext-
+// HTTP escape hatch only, but the scheme check it participated in accepted
+// ANY non-https scheme once set — "ftp"/"ws"/anything else validated
+// cleanly yet the gateway's fixed *http.Transport (server.go's NewServer)
+// only ever speaks http/https, so every such request would fail at 502
+// regardless. This must be a config-load error, not a request-time surprise.
+func TestLoadFromPath_Services_AllowInsecureDoesNotPermitArbitraryScheme(t *testing.T) {
+	cases := []string{"ftp", "ws", "wss", "gopher"}
+	for _, scheme := range cases {
+		content := "services:\n  myapp:\n    base_url: " + scheme + "://myapp-internal.example.com\n    allow_insecure: true\n    auth: { kind: bearer, secret_key: k }\n"
+		if err := writeAndLoad(t, filepath.Join(t.TempDir(), "config.yaml"), content); err == nil {
+			t.Errorf("scheme %q: want error even with allow_insecure: true (gateway only speaks http/https), got nil", scheme)
+		}
 	}
 }
 
