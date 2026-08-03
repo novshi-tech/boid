@@ -376,11 +376,10 @@ refresh token をローテーションする provider (freee が代表) では�
 - **同時リクエストの集約**: 同じ (workspace namespace, provider) への同時アクセスは 1 回の token endpoint 呼び出しに集約されます (singleflight)。
 - **永続化順序**: token endpoint から応答を受けたら、まず (ローテーションされていれば新しい) `refresh_token` を secret store に書き込み、その書き込みが成功して初めて `access_token` を使用・キャッシュします。ローテーション型 provider は古い `refresh_token` を新しいものへの交換と同時に無効化するため、新しい値の永続化に失敗した状態でそのまま使うと grant 自体を失います。
 
-secret store に保持される値は namespace ごと (workspace ごと) に以下の 3 キーです (`internal/apigateway.OAuthSecretKey` の命名規約、直接 `boid secret get/set` で参照可能):
+secret store に保持される値は namespace ごと (workspace ごと) に以下の 2 キーです (`internal/apigateway.OAuthSecretKey` の命名規約、直接 `boid secret get/set` で参照可能):
 
 - `oauth2:<provider>:refresh_token`
-- `oauth2:<provider>:access_token` (リフレッシュ結果のキャッシュ)
-- `oauth2:<provider>:expires_at` (Unix 秒、リフレッシュ結果のキャッシュ)
+- `oauth2:<provider>:access_token_cache` (リフレッシュ結果のキャッシュ、`{"access_token":"...","expires_at":<Unix秒>}` の JSON。access_token と expires_at を1キーにまとめているのは、2キーに分けると片方だけの書き込み失敗で不整合な組が残るのを防ぐため — codexレビューで指摘)
 
 ### 初回 grant の手動投入 (PR3 の login flow を待たずに動作確認する)
 

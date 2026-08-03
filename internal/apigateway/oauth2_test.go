@@ -6,7 +6,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -75,6 +74,35 @@ func (m *memSecretStore) writer() SecretWriter {
 	}
 }
 
+// seedAccessTokenCache/getAccessTokenCache seed and read
+// oauthFieldAccessTokenCache's JSON blob directly — access_token and
+// expires_at are persisted together under one key (codex review round 3,
+// Major finding: see oauthFieldAccessTokenCache's own doc comment for why),
+// so tests exercise that combined shape rather than two independent keys.
+func seedAccessTokenCache(m *memSecretStore, namespace, provider, accessToken string, expiresAt time.Time) {
+	m.seed(namespace, OAuthSecretKey(provider, oauthFieldAccessTokenCache), mustMarshalAccessTokenCache(accessToken, expiresAt))
+}
+
+func mustMarshalAccessTokenCache(accessToken string, expiresAt time.Time) string {
+	b, err := json.Marshal(oauthAccessTokenCache{AccessToken: accessToken, ExpiresAt: expiresAt.Unix()})
+	if err != nil {
+		panic(err)
+	}
+	return string(b)
+}
+
+func getAccessTokenCache(m *memSecretStore, namespace, provider string) (oauthAccessTokenCache, error) {
+	raw, err := m.get(namespace, OAuthSecretKey(provider, oauthFieldAccessTokenCache))
+	if err != nil {
+		return oauthAccessTokenCache{}, err
+	}
+	var c oauthAccessTokenCache
+	if err := json.Unmarshal([]byte(raw), &c); err != nil {
+		return oauthAccessTokenCache{}, err
+	}
+	return c, nil
+}
+
 // tokenEndpointStub is a small httptest-backed fake OAuth2 token endpoint
 // that counts requests and lets each test script the exact response (or
 // error) to return, keyed only by call order (tests here never need more
@@ -128,8 +156,7 @@ func tokenJSON(accessToken, refreshToken string, expiresIn int) string {
 func TestOAuth2TokenSource_CacheHit_NoRefreshCall(t *testing.T) {
 	store := newMemSecretStore()
 	ref := time.Now()
-	store.seed("ws-a", OAuthSecretKey("freee", oauthFieldAccessToken), "cached-token")
-	store.seed("ws-a", OAuthSecretKey("freee", oauthFieldExpiresAt), strconv.FormatInt(ref.Add(1*time.Hour).Unix(), 10))
+	seedAccessTokenCache(store, "ws-a", "freee", "cached-token", ref.Add(1*time.Hour))
 
 	stub := newTokenEndpointStub(t, http.StatusOK, tokenJSON("should-not-be-used", "", 3600))
 	ts := NewOAuth2TokenSource([]OAuthProviderConfig{{Name: "freee", TokenEndpoint: stub.srv.URL, ClientID: "cid"}}, store.resolver(), store.writer())
@@ -169,12 +196,16 @@ func TestOAuth2TokenSource_NoCachedAccessToken_RefreshesUsingRefreshTokenOnly(t 
 	if v, _ := store.get("ws-a", OAuthSecretKey("freee", oauthFieldRefreshToken)); v != "RT2" {
 		t.Errorf("persisted refresh_token = %q, want %q", v, "RT2")
 	}
-	if v, _ := store.get("ws-a", OAuthSecretKey("freee", oauthFieldAccessToken)); v != "AT1" {
-		t.Errorf("persisted access_token = %q, want %q", v, "AT1")
+	cache, err := getAccessTokenCache(store, "ws-a", "freee")
+	if err != nil {
+		t.Fatalf("getAccessTokenCache: %v", err)
 	}
-	wantExpiry := strconv.FormatInt(ref.Add(3600*time.Second).Unix(), 10)
-	if v, _ := store.get("ws-a", OAuthSecretKey("freee", oauthFieldExpiresAt)); v != wantExpiry {
-		t.Errorf("persisted expires_at = %q, want %q", v, wantExpiry)
+	if cache.AccessToken != "AT1" {
+		t.Errorf("persisted access_token = %q, want %q", cache.AccessToken, "AT1")
+	}
+	wantExpiry := ref.Add(3600 * time.Second).Unix()
+	if cache.ExpiresAt != wantExpiry {
+		t.Errorf("persisted expires_at = %d, want %d", cache.ExpiresAt, wantExpiry)
 	}
 }
 
@@ -182,10 +213,9 @@ func TestOAuth2TokenSource_WithinMargin_Refreshes(t *testing.T) {
 	store := newMemSecretStore()
 	ref := time.Now()
 	store.seed("ws-a", OAuthSecretKey("freee", oauthFieldRefreshToken), "RT-initial")
-	store.seed("ws-a", OAuthSecretKey("freee", oauthFieldAccessToken), "stale-token")
 	// Within the default 5-minute margin (expires in 2 minutes) — must
 	// refresh proactively rather than returning the stale cached token.
-	store.seed("ws-a", OAuthSecretKey("freee", oauthFieldExpiresAt), strconv.FormatInt(ref.Add(2*time.Minute).Unix(), 10))
+	seedAccessTokenCache(store, "ws-a", "freee", "stale-token", ref.Add(2*time.Minute))
 
 	stub := newTokenEndpointStub(t, http.StatusOK, tokenJSON("fresh-token", "", 3600))
 	ts := NewOAuth2TokenSource([]OAuthProviderConfig{{Name: "freee", TokenEndpoint: stub.srv.URL}}, store.resolver(), store.writer())
@@ -261,13 +291,10 @@ func TestOAuth2TokenSource_PersistenceOrder_RefreshTokenWriteFailureAborts(t *te
 	if v, _ := store.get("ws-a", OAuthSecretKey("freee", oauthFieldRefreshToken)); v != "RT-old" {
 		t.Errorf("refresh_token = %q after a failed persist, want unchanged %q", v, "RT-old")
 	}
-	// access_token/expires_at must NEVER have been written — Phase 2 must
-	// not run when Phase 1 fails.
-	if _, err := store.get("ws-a", OAuthSecretKey("freee", oauthFieldAccessToken)); err == nil {
-		t.Error("access_token was persisted despite a failed refresh_token persist — persistence order violated")
-	}
-	if _, err := store.get("ws-a", OAuthSecretKey("freee", oauthFieldExpiresAt)); err == nil {
-		t.Error("expires_at was persisted despite a failed refresh_token persist — persistence order violated")
+	// access_token/expires_at (one combined key) must NEVER have been
+	// written — Phase 2 must not run when Phase 1 fails.
+	if _, err := getAccessTokenCache(store, "ws-a", "freee"); err == nil {
+		t.Error("access_token cache was persisted despite a failed refresh_token persist — persistence order violated")
 	}
 }
 
@@ -278,7 +305,7 @@ func TestOAuth2TokenSource_PersistenceOrder_RefreshTokenWriteFailureAborts(t *te
 func TestOAuth2TokenSource_AccessTokenPersistFailureIsNotFatal(t *testing.T) {
 	store := newMemSecretStore()
 	store.seed("ws-a", OAuthSecretKey("freee", oauthFieldRefreshToken), "RT-old")
-	store.failWritesTo(OAuthSecretKey("freee", oauthFieldAccessToken))
+	store.failWritesTo(OAuthSecretKey("freee", oauthFieldAccessTokenCache))
 
 	stub := newTokenEndpointStub(t, http.StatusOK, tokenJSON("AT-fresh", "RT-new", 3600))
 	ts := NewOAuth2TokenSource([]OAuthProviderConfig{{Name: "freee", TokenEndpoint: stub.srv.URL}}, store.resolver(), store.writer())
@@ -292,6 +319,52 @@ func TestOAuth2TokenSource_AccessTokenPersistFailureIsNotFatal(t *testing.T) {
 	}
 	if v, _ := store.get("ws-a", OAuthSecretKey("freee", oauthFieldRefreshToken)); v != "RT-new" {
 		t.Errorf("refresh_token = %q, want rotated %q", v, "RT-new")
+	}
+}
+
+// TestOAuth2TokenSource_NonRotatingProvider_RefreshTokenWriteFailureIsNotFatal
+// pins the codex review round-3 Major fix: a NON-rotating provider (no
+// refresh_token in the response, e.g. Google) must not have its unchanged
+// refresh_token re-persisted at all — so a write failure injected on that
+// key must never fail the call, since the write is never even attempted.
+// Before this fix, the same (unchanged) value was unconditionally
+// re-written every refresh and a failure there was fatal, discarding a
+// perfectly good access token the token endpoint had just returned.
+func TestOAuth2TokenSource_NonRotatingProvider_RefreshTokenWriteFailureIsNotFatal(t *testing.T) {
+	store := newMemSecretStore()
+	store.seed("ws-a", OAuthSecretKey("freee", oauthFieldRefreshToken), "RT-stable")
+	store.failWritesTo(OAuthSecretKey("freee", oauthFieldRefreshToken))
+
+	// No refresh_token in the response at all (non-rotating provider).
+	stub := newTokenEndpointStub(t, http.StatusOK, tokenJSON("AT-fresh", "", 3600))
+	ts := NewOAuth2TokenSource([]OAuthProviderConfig{{Name: "freee", TokenEndpoint: stub.srv.URL}}, store.resolver(), store.writer())
+
+	got, err := ts.AccessToken("ws-a", "freee")
+	if err != nil {
+		t.Fatalf("AccessToken: want no error (refresh_token was never rotated, so the failing write is never attempted), got %v", err)
+	}
+	if got != "AT-fresh" {
+		t.Errorf("AccessToken = %q, want %q", got, "AT-fresh")
+	}
+	if v, _ := store.get("ws-a", OAuthSecretKey("freee", oauthFieldRefreshToken)); v != "RT-stable" {
+		t.Errorf("refresh_token = %q, want unchanged %q", v, "RT-stable")
+	}
+}
+
+// TestOAuth2TokenSource_RotatingProvider_ExplicitlySameValue_SkipsWrite pins
+// that "not rotated" also covers a provider that echoes back the exact same
+// refresh_token value (rather than omitting the field) — both are "no
+// actual change", so both skip the redundant write the same way.
+func TestOAuth2TokenSource_RotatingProvider_ExplicitlySameValue_SkipsWrite(t *testing.T) {
+	store := newMemSecretStore()
+	store.seed("ws-a", OAuthSecretKey("freee", oauthFieldRefreshToken), "RT-stable")
+	store.failWritesTo(OAuthSecretKey("freee", oauthFieldRefreshToken))
+
+	stub := newTokenEndpointStub(t, http.StatusOK, tokenJSON("AT-fresh", "RT-stable", 3600))
+	ts := NewOAuth2TokenSource([]OAuthProviderConfig{{Name: "freee", TokenEndpoint: stub.srv.URL}}, store.resolver(), store.writer())
+
+	if _, err := ts.AccessToken("ws-a", "freee"); err != nil {
+		t.Fatalf("AccessToken: want no error (refresh_token value unchanged), got %v", err)
 	}
 }
 
@@ -414,9 +487,13 @@ func TestOAuth2TokenSource_ExpiresInMissing_FallsBackConservatively(t *testing.T
 	if _, err := ts.AccessToken("ws-a", "freee"); err != nil {
 		t.Fatalf("AccessToken: %v", err)
 	}
-	wantExpiry := strconv.FormatInt(ref.Add(fallbackAccessTokenLifetime).Unix(), 10)
-	if v, _ := store.get("ws-a", OAuthSecretKey("freee", oauthFieldExpiresAt)); v != wantExpiry {
-		t.Errorf("persisted expires_at = %q, want fallback %q", v, wantExpiry)
+	wantExpiry := ref.Add(fallbackAccessTokenLifetime).Unix()
+	cache, err := getAccessTokenCache(store, "ws-a", "freee")
+	if err != nil {
+		t.Fatalf("getAccessTokenCache: %v", err)
+	}
+	if cache.ExpiresAt != wantExpiry {
+		t.Errorf("persisted expires_at = %d, want fallback %d", cache.ExpiresAt, wantExpiry)
 	}
 }
 
@@ -474,7 +551,7 @@ func TestOAuth2TokenSource_NoClientSecretKey_OmitsClientSecretParam(t *testing.T
 func TestOAuth2TokenSource_MemCache_AvoidsRedundantRefreshAfterAccessTokenPersistFailure(t *testing.T) {
 	store := newMemSecretStore()
 	store.seed("ws-a", OAuthSecretKey("freee", oauthFieldRefreshToken), "RT-initial")
-	store.failWritesTo(OAuthSecretKey("freee", oauthFieldAccessToken))
+	store.failWritesTo(OAuthSecretKey("freee", oauthFieldAccessTokenCache))
 
 	stub := newTokenEndpointStub(t, http.StatusOK, tokenJSON("AT-fresh", "RT-new", 3600))
 	ts := NewOAuth2TokenSource([]OAuthProviderConfig{{Name: "freee", TokenEndpoint: stub.srv.URL}}, store.resolver(), store.writer())

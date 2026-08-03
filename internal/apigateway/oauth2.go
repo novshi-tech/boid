@@ -63,16 +63,37 @@ type OAuth2AccessTokenSource interface {
 	AccessToken(namespace, provider string) (string, error)
 }
 
-// oauthSecretField names the three pieces of per-(namespace, provider) OAuth2
+// oauthSecretField names the two pieces of per-(namespace, provider) OAuth2
 // grant state an OAuth2TokenSource reads/writes through the secret store —
 // never a plaintext config.yaml value (docs/plans/api-gateway.md §6:
 // "SecretStore (workspace namespace 付き) に保持するもの: refresh_token、
 // access_token、expires_at").
+//
+// access_token and expires_at are stored TOGETHER under one key
+// (oauthFieldAccessTokenCache, a small JSON blob — see
+// oauthAccessTokenCache) rather than as two independent secret-store keys
+// (codex review round 3, Major finding): with two keys, a refresh that
+// successfully persists access_token but then fails to persist expires_at
+// (or vice versa) leaves a MISMATCHED pair durably on disk — a stale
+// expires_at is silently believed to describe a brand-new access_token (or
+// a stale access_token silently inherits a brand-new expires_at, the worse
+// direction: it can make an already-invalid token look fresh for
+// meaningfully longer than it actually is). A single key means the
+// SecretStore's own per-key UPSERT is the only write involved, so this pair
+// can never land partially — it is either the OLD (access_token, expires_at)
+// pair, byte for byte, or the NEW one, never a hybrid of the two.
 const (
-	oauthFieldRefreshToken = "refresh_token"
-	oauthFieldAccessToken  = "access_token"
-	oauthFieldExpiresAt    = "expires_at"
+	oauthFieldRefreshToken     = "refresh_token"
+	oauthFieldAccessTokenCache = "access_token_cache"
 )
+
+// oauthAccessTokenCache is the JSON shape persisted under
+// oauthFieldAccessTokenCache — see that constant's own doc comment for why
+// access_token and expires_at are one key, not two.
+type oauthAccessTokenCache struct {
+	AccessToken string `json:"access_token"`
+	ExpiresAt   int64  `json:"expires_at"` // Unix seconds
+}
 
 // OAuthSecretKey returns the secret-store key an OAuth2TokenSource reads or
 // writes for one (provider, field) pair. Exported so an operator's `boid
@@ -106,7 +127,20 @@ const DefaultOAuth2RefreshMargin = 5 * time.Minute
 // unnecessary refreshes (harmless — refresh_token grants have no
 // single-use restriction) for never hammering the endpoint on every single
 // gateway request.
-const fallbackAccessTokenLifetime = 55 * time.Minute
+//
+// Deliberately SHORT (codex review round 3, Major finding), not a
+// generous "typical OAuth2 token lifetime" guess like 55 minutes: PR2 has
+// no reactive refresh-on-401 path at all (docs/plans/api-gateway.md §6:
+// out of scope until buffered-retry is designed), so an assumed lifetime
+// that overshoots a provider's REAL (but unstated) token lifetime means
+// every request in that gap gets a genuinely-expired access token and a
+// guaranteed upstream 401 — for as long as the wrong assumption holds. A
+// short fallback bounds that window tightly at the cost of occasional
+// extra (harmless) refreshes if the real, unstated lifetime happens to be
+// long; combined with effectiveMargin's own halving-clamp (refresh's own
+// doc comment), a token cached under this fallback re-checks itself well
+// before this constant's own duration elapses, not after.
+const fallbackAccessTokenLifetime = 10 * time.Minute
 
 // OAuth2TokenSource is the daemon's single OAuth2 refresher (docs/plans/
 // api-gateway.md §6 "daemon 単一リフレッシャの原則"): every oauth2-kind
@@ -341,8 +375,8 @@ func (t *OAuth2TokenSource) httpClient() *http.Client {
 //
 // margin is t.margin() (the plain configured value) for a value read from
 // the secret store — this fallback path has no way to know the token's
-// original declared lifetime (the secret store only ever persists
-// access_token/expires_at, never expires_in itself), so it cannot apply
+// original declared lifetime (the persisted cache holds access_token/
+// expires_at, never expires_in itself), so it cannot apply
 // oauthMemCacheEntry.margin's clamp; this only affects the FIRST check
 // after a daemon restart for a genuinely short-lived-token provider (a
 // narrow, self-correcting gap — see refresh's own doc comment on where the
@@ -355,19 +389,15 @@ func (t *OAuth2TokenSource) cachedAccessToken(namespace, provider string) (acces
 		return entry.accessToken, entry.expiresAt, entry.margin, true
 	}
 
-	accessToken, err := t.resolver(namespace, OAuthSecretKey(provider, oauthFieldAccessToken))
-	if err != nil || accessToken == "" {
+	raw, err := t.resolver(namespace, OAuthSecretKey(provider, oauthFieldAccessTokenCache))
+	if err != nil || raw == "" {
 		return "", time.Time{}, 0, false
 	}
-	expiresAtStr, err := t.resolver(namespace, OAuthSecretKey(provider, oauthFieldExpiresAt))
-	if err != nil {
+	var cache oauthAccessTokenCache
+	if err := json.Unmarshal([]byte(raw), &cache); err != nil || cache.AccessToken == "" {
 		return "", time.Time{}, 0, false
 	}
-	unixSeconds, err := strconv.ParseInt(strings.TrimSpace(expiresAtStr), 10, 64)
-	if err != nil {
-		return "", time.Time{}, 0, false
-	}
-	return accessToken, time.Unix(unixSeconds, 0), t.margin(), true
+	return cache.AccessToken, time.Unix(cache.ExpiresAt, 0), t.margin(), true
 }
 
 // refresh performs exactly one refresh_token grant round trip for
@@ -413,27 +443,33 @@ func (t *OAuth2TokenSource) refresh(namespace string, cfg OAuthProviderConfig) (
 		return "", fmt.Errorf("apigateway: oauth2 provider %q: refresh_token grant: %w", cfg.Name, err)
 	}
 
-	newRefreshToken := resp.RefreshToken
-	if newRefreshToken == "" {
-		// Not every provider rotates refresh_token on refresh (Google never
-		// does; freee always does) — RFC 6749 §5.1 makes the response field
-		// OPTIONAL specifically so a client can tell "unchanged" from
-		// "rotated" apart. Re-persisting the SAME existing value below
-		// (rather than special-casing "no-op, skip the write") keeps this
-		// function's control flow uniform regardless of which behavior the
-		// configured provider has.
-		newRefreshToken = refreshToken
-	}
-
 	// Phase 1 (see doc comment above): refresh_token first, and fatal if it
 	// fails — even though the new access_token is sitting right here in
 	// `resp`, using (or persisting) it would mean handing out a token this
 	// function could never reconstruct again after a crash, for a grant
 	// whose recovery now depends entirely on this one write.
-	if err := t.writer(namespace, OAuthSecretKey(cfg.Name, oauthFieldRefreshToken), newRefreshToken); err != nil {
-		slog.Error("apigateway: oauth2 refresh_token persist failed after a successful token-endpoint round trip — the grant may now be UNRECOVERABLE if the provider rotates refresh_token on use; re-run login/`boid secret set` if subsequent refreshes fail",
-			"provider", cfg.Name, "namespace", namespace, "error", err)
-		return "", fmt.Errorf("apigateway: oauth2 provider %q: persist refreshed refresh_token: %w", cfg.Name, err)
+	//
+	// Only actually WRITE when the provider genuinely rotated (resp.
+	// RefreshToken non-empty AND different from what we already have) —
+	// codex review round 3, Major finding: not every provider rotates
+	// refresh_token on refresh (Google never does; freee always does — RFC
+	// 6749 §5.1 makes the response field OPTIONAL specifically so a client
+	// can tell "unchanged" from "rotated" apart), and an EARLIER version of
+	// this function re-persisted the same, unchanged value unconditionally
+	// on every refresh, treating THAT redundant write's failure as fatal
+	// too. For a non-rotating provider, the value already durably stored is
+	// still perfectly valid upstream — nothing about the grant is at risk —
+	// so failing to re-persist an UNCHANGED value must never discard an
+	// otherwise-successful refresh (a real access token in hand) and 502 the
+	// request. Skipping the write entirely when unrotated also removes an
+	// unnecessary secret-store write on every single refresh for the common
+	// (non-rotating) case.
+	if resp.RefreshToken != "" && resp.RefreshToken != refreshToken {
+		if err := t.writer(namespace, OAuthSecretKey(cfg.Name, oauthFieldRefreshToken), resp.RefreshToken); err != nil {
+			slog.Error("apigateway: oauth2 refresh_token persist failed after a successful token-endpoint round trip — the grant may now be UNRECOVERABLE if the provider rotates refresh_token on use; re-run login/`boid secret set` if subsequent refreshes fail",
+				"provider", cfg.Name, "namespace", namespace, "error", err)
+			return "", fmt.Errorf("apigateway: oauth2 provider %q: persist refreshed refresh_token: %w", cfg.Name, err)
+		}
 	}
 
 	// Phase 2: access_token/expires_at are a cache, not the source of
@@ -495,11 +531,19 @@ func (t *OAuth2TokenSource) refresh(namespace string, cfg OAuthProviderConfig) (
 	t.memCache[namespace+"\x00"+cfg.Name] = oauthMemCacheEntry{accessToken: resp.AccessToken, expiresAt: expiresAt, margin: effectiveMargin}
 	t.memMu.Unlock()
 
-	if err := t.writer(namespace, OAuthSecretKey(cfg.Name, oauthFieldAccessToken), resp.AccessToken); err != nil {
-		slog.Warn("apigateway: oauth2 access_token cache persist failed (refresh_token already safely persisted; not fatal — an in-process cache still has the fresh token)",
+	// Single write, single key (oauthFieldAccessTokenCache's own doc
+	// comment): access_token and expires_at can never land partially —
+	// either this whole JSON blob is persisted, or the previous one (still
+	// internally consistent) is left untouched.
+	cacheJSON, err := json.Marshal(oauthAccessTokenCache{AccessToken: resp.AccessToken, ExpiresAt: expiresAt.Unix()})
+	if err != nil {
+		// Unreachable in practice (marshaling two plain fields never fails)
+		// — defensive only, matching this package's other "should never
+		// happen" fallbacks.
+		slog.Warn("apigateway: oauth2 access_token cache marshal failed (refresh_token already safely persisted; not fatal — an in-process cache still has the fresh token)",
 			"provider", cfg.Name, "namespace", namespace, "error", err)
-	} else if err := t.writer(namespace, OAuthSecretKey(cfg.Name, oauthFieldExpiresAt), strconv.FormatInt(expiresAt.Unix(), 10)); err != nil {
-		slog.Warn("apigateway: oauth2 expires_at cache persist failed (refresh_token already safely persisted; not fatal — an in-process cache still has the fresh token)",
+	} else if err := t.writer(namespace, OAuthSecretKey(cfg.Name, oauthFieldAccessTokenCache), string(cacheJSON)); err != nil {
+		slog.Warn("apigateway: oauth2 access_token cache persist failed (refresh_token already safely persisted; not fatal — an in-process cache still has the fresh token)",
 			"provider", cfg.Name, "namespace", namespace, "error", err)
 	}
 
