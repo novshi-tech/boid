@@ -191,6 +191,48 @@ services:
 	}
 }
 
+func TestLoadFromPath_Services_HeaderInvalidNameRejected(t *testing.T) {
+	cases := []string{
+		"X Api Key",  // whitespace
+		"X-Api-Key:", // colon
+	}
+	for _, header := range cases {
+		content := "services:\n  myapp:\n    base_url: https://myapp.example.com\n    auth:\n      kind: header\n      header: \"" + header + "\"\n      secret_key: k\n"
+		if err := writeAndLoad(t, filepath.Join(t.TempDir(), "config.yaml"), content); err == nil {
+			t.Errorf("header %q: want error for invalid HTTP header field name, got nil", header)
+		}
+	}
+}
+
+func TestIsValidHTTPHeaderFieldName(t *testing.T) {
+	cases := []struct {
+		name string
+		want bool
+	}{
+		{"X-Api-Key", true},
+		{"Authorization", true},
+		{"x-api-key123", true},
+		{"X_Api.Key!~", true},
+		{"", false},
+		{"X Api Key", false},
+		{"X-Api-Key:", false},
+		{"X-Api-Key\r\n", false},
+		{"X-Api-Key\x00", false},
+	}
+	for _, c := range cases {
+		if got := isValidHTTPHeaderFieldName(c.name); got != c.want {
+			t.Errorf("isValidHTTPHeaderFieldName(%q) = %v, want %v", c.name, got, c.want)
+		}
+	}
+}
+
+func TestLoadFromPath_Services_HeaderValidNameAccepted(t *testing.T) {
+	content := "services:\n  myapp:\n    base_url: https://myapp.example.com\n    auth: { kind: header, header: X-Api-Key, secret_key: k }\n"
+	if err := writeAndLoad(t, filepath.Join(t.TempDir(), "config.yaml"), content); err != nil {
+		t.Fatalf("unexpected error for a valid header name: %v", err)
+	}
+}
+
 func TestLoadFromPath_Services_OAuth2MissingProviderRejected(t *testing.T) {
 	content := `
 services:
@@ -217,6 +259,46 @@ services:
 	if err := writeAndLoad(t, filepath.Join(t.TempDir(), "config.yaml"), content); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
+}
+
+// TestLoadFromPath_Services_HTTPBaseURLWarnsButDoesNotFail pins a codex
+// review finding: a plain-http base_url means the injected credential
+// crosses the network to the upstream in cleartext, which is worth warning
+// about — but must NOT be a hard config-load error, since PR1's own primary
+// stated use case (internal test/ops APIs) often has no TLS yet in a
+// staging environment. See validateServiceConfig's own doc comment for the
+// full reasoning.
+func TestLoadFromPath_Services_HTTPBaseURLWarnsButDoesNotFail(t *testing.T) {
+	buf := captureSlog(t)
+	content := `
+services:
+  myapp:
+    base_url: http://myapp-internal.example.com
+    auth: { kind: bearer, secret_key: k }
+`
+	cfg, err := loadFromPath(writeConfigFile(t, content))
+	if err != nil {
+		t.Fatalf("unexpected error (http base_url must be accepted, only warned about): %v", err)
+	}
+	if cfg.Services["myapp"].BaseURL != "http://myapp-internal.example.com" {
+		t.Errorf("Services[myapp].BaseURL = %q", cfg.Services["myapp"].BaseURL)
+	}
+	if !strings.Contains(buf.String(), "myapp") || !strings.Contains(buf.String(), "cleartext") {
+		t.Errorf("expected a warning naming the service and the cleartext risk, log = %q", buf.String())
+	}
+}
+
+// writeConfigFile writes content to a fresh config.yaml under a new temp
+// dir and returns its path — a one-line version of the write half of
+// writeAndLoad, for tests (like the one above) that need the *Config
+// loadFromPath returns rather than just its error.
+func writeConfigFile(t *testing.T, content string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return path
 }
 
 func TestAPIGatewayServices_SortedByName(t *testing.T) {

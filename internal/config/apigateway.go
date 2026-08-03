@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"log/slog"
 	"net/url"
 	"sort"
 
@@ -75,8 +76,27 @@ func validateServiceConfig(name string, sc ServiceConfig) error {
 	// loudly (the same posture gateway.forges.*.host gets), not silently
 	// vanish from the gateway's service registry with only a log warning
 	// once the daemon is already running.
-	if u, err := url.Parse(sc.BaseURL); err != nil || u.Scheme == "" || u.Host == "" {
+	u, err := url.Parse(sc.BaseURL)
+	if err != nil || u.Scheme == "" || u.Host == "" {
 		return fmt.Errorf("services[%q]: \"base_url\" must be an absolute URL with a scheme and host (got %q)", name, sc.BaseURL)
+	}
+	// docs/plans/api-gateway.md §1 states the gateway's own outbound leg as
+	// "gateway → upstream は daemon 発の HTTPS" — a plain-http base_url means
+	// this service's injected bearer/basic/header/query credential crosses
+	// the network to the upstream in cleartext. Warned, not rejected: PR1's
+	// own stated primary use case ("自社開発アプリのテスト・運用API") often
+	// means an internal test/staging environment that legitimately has no
+	// TLS yet, and hard-rejecting http:// here would make the gateway
+	// unusable for exactly that case. A visible warning (surfaced at
+	// daemon-startup load time, and again wherever ValidateYAML runs — i.e.
+	// on every `boid config apply`/`edit` too) is the proportionate
+	// response: it does not block a real use case, but it does make an
+	// operator's typo'd or copy-pasted-from-an-insecure-example "http"
+	// scheme visible instead of silently shipping a credential in
+	// plaintext.
+	if u.Scheme != "https" {
+		slog.Warn("services: base_url does not use https — this service's injected credential will cross the network to the upstream in cleartext",
+			"service", name, "base_url", sc.BaseURL, "scheme", u.Scheme)
 	}
 	if !validServiceAuthKinds[sc.Auth.Kind] {
 		return fmt.Errorf("services[%q]: auth.kind: unrecognized %q (want one of bearer, basic, header, query, oauth2)", name, sc.Auth.Kind)
@@ -96,6 +116,16 @@ func validateServiceConfig(name string, sc ServiceConfig) error {
 	case apigateway.AuthHeader:
 		if sc.Auth.Header == "" {
 			return fmt.Errorf("services[%q]: auth.kind header requires \"header\" (the header name to set)", name)
+		}
+		// isValidHTTPHeaderFieldName (RFC 7230 §3.2's "token" grammar) —
+		// codex review finding: without this, a typo'd or otherwise-invalid
+		// header name (whitespace, a stray ":", a control character, ...)
+		// passed config-load validation cleanly and only surfaced as a
+		// request-time failure — worth catching at `boid start`/`config
+		// apply` time instead, the same "fail loud with the offending
+		// name" posture every other leaf here gets.
+		if !isValidHTTPHeaderFieldName(sc.Auth.Header) {
+			return fmt.Errorf("services[%q]: auth.header %q is not a valid HTTP header field name", name, sc.Auth.Header)
 		}
 		if sc.Auth.SecretKey == "" {
 			return fmt.Errorf("services[%q]: auth.kind header requires \"secret_key\"", name)
@@ -149,4 +179,31 @@ func (c Config) APIGatewayServices() []apigateway.ServiceConfig {
 		})
 	}
 	return out
+}
+
+// isValidHTTPHeaderFieldName reports whether name is a valid HTTP header
+// field name — RFC 7230 §3.2/§3.2.6's "token" grammar: one or more
+// characters from a fixed set (letters, digits, and
+// "!#$%&'*+-.^_`|~"), nothing else (no whitespace, no ":", no control
+// characters). Hand-rolled rather than importing
+// golang.org/x/net/http/httpguts.ValidHeaderFieldName (which does exactly
+// this): that package transitively pulls in golang.org/x/text (a dependency
+// this module's go.sum does not otherwise need) for a check simple enough
+// to reimplement directly, matching CLAUDE.md's "外部ライブラリは最小限"
+// rule.
+func isValidHTTPHeaderFieldName(name string) bool {
+	if name == "" {
+		return false
+	}
+	for _, r := range name {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+		case r == '!' || r == '#' || r == '$' || r == '%' || r == '&' || r == '\'' ||
+			r == '*' || r == '+' || r == '-' || r == '.' || r == '^' || r == '_' ||
+			r == '`' || r == '|' || r == '~':
+		default:
+			return false
+		}
+	}
+	return true
 }

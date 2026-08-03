@@ -153,6 +153,29 @@ var Schema = []FieldSpec{
 	// Hosts into Forges before the daemon ever compares old vs new.
 	{Path: "gateway.hosts", Kind: KindOpaque, Reload: ReloadRestartRequired,
 		Note: "migrate to gateway.forges.<id>.* instead (see docs/ja/reference/config-yaml.md)"},
+
+	// services.* (docs/plans/api-gateway.md §2/PR1): the API gateway's
+	// service registry, one wildcard entry per service name — same
+	// wildcard-map shape as gateway.forges.* just above. auth.kind is a
+	// KindEnum whose EnumValues mirrors apigateway.AuthKind's initial set
+	// (bearer/basic/header/query/oauth2 — oauth2 reserved, PR2); the other
+	// auth.* leaves are plain strings since which ones are actually
+	// required depends on kind (validateServiceConfig in apigateway.go
+	// enforces that at document-decode time, not here — Schema only
+	// governs which KEYS exist, not their kind-conditional requiredness).
+	{Path: "services.*.base_url", Kind: KindString, Reload: ReloadRestartRequired},
+	{Path: "services.*.auth.kind", Kind: KindEnum, Reload: ReloadRestartRequired,
+		EnumValues: []string{"bearer", "basic", "header", "query", "oauth2"}},
+	{Path: "services.*.auth.secret_key", Kind: KindString, Reload: ReloadRestartRequired},
+	{Path: "services.*.auth.username", Kind: KindString, Reload: ReloadRestartRequired},
+	{Path: "services.*.auth.header", Kind: KindString, Reload: ReloadRestartRequired},
+	{Path: "services.*.auth.query", Kind: KindString, Reload: ReloadRestartRequired},
+	{Path: "services.*.auth.provider", Kind: KindString, Reload: ReloadRestartRequired},
+
+	// services_floor (docs/plans/api-gateway.md §3): the daemon-wide
+	// enabled-service floor, mirroring sandbox.allowed_domains' own
+	// KindStringArray/ReloadRestartRequired shape exactly.
+	{Path: "services_floor", Kind: KindStringArray, Reload: ReloadRestartRequired},
 }
 
 // segments splits a dotted path into its components. Exported for reuse by

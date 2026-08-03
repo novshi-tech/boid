@@ -1,6 +1,7 @@
 package apigateway
 
 import (
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -328,5 +329,158 @@ func TestServer_QueryAuthInjectionPreservesExistingParams(t *testing.T) {
 	}
 	if gotQuery != "api_key=qsecret&foo=bar" {
 		t.Errorf("upstream saw query = %q, want %q", gotQuery, "api_key=qsecret&foo=bar")
+	}
+}
+
+// flakyOnceResolver succeeds on every call except the Nth (1-indexed),
+// which fails — used to simulate the narrow race between ServeHTTP's own
+// fail-fast Resolve pre-check (the 1st call) and Rewrite's Inject
+// (the 2nd call re-resolving the same secret), e.g. a concurrent
+// `boid secret delete` landing in between.
+func flakyOnceResolver(value string, failOnCall int) SecretResolver {
+	var n int
+	var mu sync.Mutex
+	return func(namespace, key string) (string, error) {
+		mu.Lock()
+		n++
+		callNum := n
+		mu.Unlock()
+		if callNum == failOnCall {
+			return "", errFlakyResolver
+		}
+		return value, nil
+	}
+}
+
+var errFlakyResolver = fmt.Errorf("apigateway test: simulated secret-store failure")
+
+// TestServer_RewriteInjectionRaceFailsFastWithoutContactingUpstream pins the
+// fix for a race codex review flagged: if credential resolution succeeds at
+// ServeHTTP's own pre-check but then FAILS on Rewrite's own re-resolve (the
+// narrow window between the two — e.g. a concurrent `boid secret delete`),
+// the request must be aborted (502) rather than forwarded to the upstream
+// without the Authorization header. Unlike internal/gitgateway (whose
+// upstream forge always 401s an unauthenticated smart-HTTP request safely),
+// an arbitrary REST API's behavior on missing auth is unknowable, so
+// "forward anyway" is not an acceptable fallback here — see
+// failFastTransport's own doc comment.
+func TestServer_RewriteInjectionRaceFailsFastWithoutContactingUpstream(t *testing.T) {
+	contacted := false
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		contacted = true
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	registry := NewRegistry()
+	token := registry.Register([]string{"myapp"}, "ws-a", "", false)
+	// Call 1 (ServeHTTP's Resolve pre-check) succeeds; call 2 (Rewrite's
+	// Inject) fails — simulating the secret vanishing in between.
+	creds := NewCredentialProvider([]ServiceConfig{
+		{Name: "myapp", BaseURL: upstream.URL, Auth: ServiceAuth{Kind: AuthBearer, SecretKey: "myapp-token"}},
+	}, flakyOnceResolver("sekret", 2))
+
+	var notifiedService string
+	notifier := NotifierFuncs{CredentialError: func(service string, err error) { notifiedService = service }}
+	srv := NewServer(registry, creds, notifier, nil)
+
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", "/api/"+token+"/myapp/v1/users", nil)
+	srv.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d, want 502 (fail-fast on Rewrite-time injection failure)", w.Code)
+	}
+	if contacted {
+		t.Error("upstream was contacted despite a Rewrite-time credential injection failure — must abort before any network I/O")
+	}
+	if notifiedService != "myapp" {
+		t.Errorf("NotifyCredentialError not called for the Rewrite-time failure: got service=%q", notifiedService)
+	}
+}
+
+// TestServer_PercentEncodedSlashWithinSegmentReachesUpstreamUnchanged pins
+// the fix for a codex-flagged bug: a "%2F"-encoded slash inside a single
+// request-tail segment (common for REST APIs whose resource keys contain
+// "/", e.g. object storage / registry APIs) must reach the upstream
+// unchanged, not be silently decoded into an extra path separator.
+func TestServer_PercentEncodedSlashWithinSegmentReachesUpstreamUnchanged(t *testing.T) {
+	var gotRawPath string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotRawPath = r.URL.EscapedPath()
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	registry := NewRegistry()
+	token := registry.Register([]string{"myapp"}, "ws-a", "", false)
+	creds := NewCredentialProvider([]ServiceConfig{
+		{Name: "myapp", BaseURL: upstream.URL, Auth: ServiceAuth{Kind: AuthBearer, SecretKey: "k"}},
+	}, stubResolver(map[string]string{"ws-a/k": "v"}))
+	srv := NewServer(registry, creds, nil, nil)
+
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", "/api/"+token+"/myapp/objects/a%2Fb", nil)
+	srv.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body %q)", w.Code, w.Body.String())
+	}
+	if gotRawPath != "/objects/a%2Fb" {
+		t.Errorf("upstream saw escaped path = %q, want %q (the %%2F must survive as one segment)", gotRawPath, "/objects/a%2Fb")
+	}
+}
+
+// TestServer_TrailingSlashReachesUpstreamUnchanged pins the fix for the
+// other codex-flagged path-fidelity bug: a request tail's trailing slash
+// must reach the upstream unchanged (some REST APIs distinguish "/hooks/"
+// from "/hooks" as different routes).
+func TestServer_TrailingSlashReachesUpstreamUnchanged(t *testing.T) {
+	var gotPath string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	registry := NewRegistry()
+	token := registry.Register([]string{"myapp"}, "ws-a", "", false)
+	creds := NewCredentialProvider([]ServiceConfig{
+		{Name: "myapp", BaseURL: upstream.URL, Auth: ServiceAuth{Kind: AuthBearer, SecretKey: "k"}},
+	}, stubResolver(map[string]string{"ws-a/k": "v"}))
+	srv := NewServer(registry, creds, nil, nil)
+
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", "/api/"+token+"/myapp/hooks/", nil)
+	srv.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body %q)", w.Code, w.Body.String())
+	}
+	if gotPath != "/hooks/" {
+		t.Errorf("upstream saw path = %q, want %q (trailing slash must be preserved)", gotPath, "/hooks/")
+	}
+}
+
+// TestIsSafeMethod_CaseSensitive pins the fix for a codex-flagged bug: HTTP
+// method tokens are case-sensitive (RFC 7230 §3.1.1), so a lowercase "get"
+// is a DIFFERENT, non-standard method — it must not be treated as
+// equivalent to "GET" for the read-only gate.
+func TestIsSafeMethod_CaseSensitive(t *testing.T) {
+	cases := []struct {
+		method string
+		want   bool
+	}{
+		{http.MethodGet, true},
+		{http.MethodHead, true},
+		{"get", false},
+		{"head", false},
+		{"Get", false},
+		{http.MethodPost, false},
+	}
+	for _, c := range cases {
+		if got := isSafeMethod(c.method); got != c.want {
+			t.Errorf("isSafeMethod(%q) = %v, want %v", c.method, got, c.want)
+		}
 	}
 }

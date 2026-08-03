@@ -2,6 +2,7 @@ package apigateway
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httputil"
@@ -36,6 +37,51 @@ type routeInfo struct {
 	method    string
 	path      string
 	baseURL   *url.URL
+	// upstreamPath/upstreamRawPath are the decoded/escaped forms of the
+	// full upstream path (base_url's own path prefix + the request tail),
+	// pre-computed once in ServeHTTP via url.Parse rather than reconstructed
+	// inside Rewrite — see their computation's own comment for why both
+	// forms must be set together on the outbound URL.
+	upstreamPath    string
+	upstreamRawPath string
+}
+
+// injectionErrorKey is the context key Rewrite uses to signal a credential-
+// injection failure to the custom Transport below, when that failure is
+// detected AFTER ServeHTTP's own fail-fast pre-check already succeeded — a
+// narrow but real race (e.g. a concurrent `boid secret delete` lands between
+// the two resolves). See failFastTransport's own doc comment for why this
+// must abort the request rather than forward it unauthenticated.
+type injectionErrorKey struct{}
+
+// failFastTransport wraps a real http.RoundTripper so a credential-injection
+// failure recorded on the outbound request's context (injectionErrorKey)
+// aborts the request BEFORE any network I/O, instead of
+// httputil.ReverseProxy's default behavior of proceeding to RoundTrip with
+// whatever Rewrite left the request as.
+//
+// This is a deliberate departure from internal/gitgateway.Server's own
+// Rewrite, which logs+notifies and then forwards unauthenticated on the
+// exact same race. That fail-open choice is safe for git specifically
+// because every upstream forge reliably answers an unauthenticated
+// smart-HTTP request with 401 — the sandbox's own git client just sees an
+// ordinary auth failure. It is NOT safe here: base_url points at an
+// arbitrary, operator-configured REST API whose behavior with no
+// Authorization header is unknowable in general — some route might not
+// require auth at all and answer with a public/anonymous-tier response the
+// caller was never meant to reach unauthenticated, or take an unintended
+// anonymous action. Fail-fast (abort, 502) is the only safe default for a
+// gateway whose entire purpose is "this request is authenticated, or it
+// does not go out."
+type failFastTransport struct {
+	base http.RoundTripper
+}
+
+func (t failFastTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if err, failed := req.Context().Value(injectionErrorKey{}).(error); failed {
+		return nil, err
+	}
+	return t.base.RoundTrip(req)
 }
 
 // NewServer builds a Server. notifier may be nil (defaults to NoopNotifier);
@@ -58,10 +104,11 @@ func NewServer(registry *Registry, credentials *CredentialProvider, notifier Ups
 		// ExpectContinueTimeout mirrors internal/gitgateway.Server's own
 		// Transport: all other fields stay at http.Transport's zero values
 		// (== streaming semantics, no request body buffering — docs/plans/
-		// api-gateway.md §5 "無バッファストリーミング転送").
-		Transport: &http.Transport{
+		// api-gateway.md §5 "無バッファストリーミング転送"). Wrapped in
+		// failFastTransport — see that type's own doc comment.
+		Transport: failFastTransport{base: &http.Transport{
 			ExpectContinueTimeout: 5 * time.Second,
-		},
+		}},
 		// FlushInterval < 0 flushes immediately after every write instead
 		// of batching on a timer — required for SSE (Server-Sent Events)
 		// upstreams to stream incrementally rather than arriving in bursts
@@ -71,7 +118,13 @@ func NewServer(registry *Registry, credentials *CredentialProvider, notifier Ups
 			info, _ := pr.In.Context().Value(routeInfoKey{}).(routeInfo)
 			pr.Out.URL.Scheme = info.baseURL.Scheme
 			pr.Out.URL.Host = info.baseURL.Host
-			pr.Out.URL.Path = pr.In.URL.Path // set by ServeHTTP before proxying
+			// Path/RawPath are both set explicitly (not derived from
+			// pr.In.URL.Path) — see routeInfo.upstreamPath's own comment:
+			// this is what keeps a "%2F" inside a single request-tail
+			// segment byte-preserved on the wire instead of being decoded
+			// into an extra path separator.
+			pr.Out.URL.Path = info.upstreamPath
+			pr.Out.URL.RawPath = info.upstreamRawPath
 			pr.Out.URL.RawQuery = pr.In.URL.RawQuery
 			pr.Out.Host = info.baseURL.Host
 
@@ -87,9 +140,11 @@ func NewServer(registry *Registry, credentials *CredentialProvider, notifier Ups
 
 			if s.credentials != nil {
 				if err := s.credentials.Inject(pr.Out, info.service, info.namespace); err != nil {
-					slog.Warn("apigateway: credential injection failed; forwarding without auth",
+					slog.Warn("apigateway: credential injection failed; aborting request (fail-fast, not forwarding unauthenticated)",
 						"service", info.service, "err", err)
 					s.notifier.NotifyCredentialError(info.service, err)
+					injectErr := fmt.Errorf("apigateway: credential injection failed for service %q: %w", info.service, err)
+					pr.Out = pr.Out.WithContext(context.WithValue(pr.Out.Context(), injectionErrorKey{}, injectErr))
 				}
 			}
 		},
@@ -120,7 +175,10 @@ func NewServer(registry *Registry, credentials *CredentialProvider, notifier Ups
 // requests get 403; a read-only token attempting a non-GET/HEAD method gets
 // 403; an unconfigured (or credential-broken) service gets 502/503.
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	rt, err := parsePath(r.URL.Path)
+	// EscapedPath, not r.URL.Path — see parsePath's own doc comment: net/http
+	// decodes %2F into a literal "/" in .Path before a handler ever sees it,
+	// which would silently merge two logically-distinct path segments.
+	rt, err := parsePath(r.URL.EscapedPath())
 	if err != nil {
 		http.NotFound(w, r)
 		return
@@ -172,7 +230,10 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// broken secret returns 502 instead of forwarding the request
 	// unauthenticated (or not at all, for kinds that have no unauthenticated
 	// fallback) and inheriting whatever confusing failure the upstream would
-	// otherwise produce.
+	// otherwise produce. Rewrite's own Inject call re-resolves and, on a
+	// failure THERE (the narrow race window between this check and the
+	// actual round trip), aborts via failFastTransport rather than
+	// forwarding unauthenticated — see that type's own doc comment.
 	if err := s.credentials.Resolve(rt.service, entry.Namespace); err != nil {
 		slog.Warn("apigateway: credential resolution failed; refusing to forward (fail-fast)",
 			"service", rt.service, "namespace", entry.Namespace, "err", err)
@@ -184,31 +245,50 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Rewrite the request path in place to the upstream's own path
-	// (service base_url's own path prefix, if any, joined with the cleaned
-	// request tail); Rewrite reads it back off pr.In.URL.Path.
-	basePath := strings.TrimSuffix(baseURL.Path, "/")
-	r.URL.Path = basePath + rt.path
+	// Compute the full upstream path (base_url's own path prefix + the
+	// request tail) ONCE here via url.Parse, rather than string-concatenating
+	// pr.In.URL.Path inside Rewrite: url.Parse resolves the combined string
+	// into a consistent (Path, RawPath) pair, which is what lets Rewrite set
+	// BOTH fields on the outbound request and have Go's own EscapedPath()
+	// logic recognize RawPath as a valid encoding of Path (see
+	// net/url.URL.EscapedPath's own validity rule) instead of silently
+	// re-escaping (and thereby double-encoding, or dropping the distinction
+	// entirely) at request-send time.
+	basePath := strings.TrimSuffix(baseURL.EscapedPath(), "/")
+	upstreamURL, err := url.Parse(basePath + rt.path)
+	if err != nil {
+		// Defensive: rt.path was already validated by parsePath to contain
+		// no malformed percent-encoding, and basePath comes from a
+		// config.yaml base_url that internal/config already validated as a
+		// parseable absolute URL — this should be unreachable in practice.
+		s.recorder(entry.TaskID, r.Method, rt.service, rt.path, http.StatusBadGateway)
+		http.Error(w, "bad gateway: could not construct upstream path: "+err.Error(), http.StatusBadGateway)
+		return
+	}
 
 	ctx := context.WithValue(r.Context(), routeInfoKey{}, routeInfo{
-		service:   rt.service,
-		namespace: entry.Namespace,
-		taskID:    entry.TaskID,
-		method:    r.Method,
-		path:      rt.path,
-		baseURL:   baseURL,
+		service:         rt.service,
+		namespace:       entry.Namespace,
+		taskID:          entry.TaskID,
+		method:          r.Method,
+		path:            rt.path,
+		baseURL:         baseURL,
+		upstreamPath:    upstreamURL.Path,
+		upstreamRawPath: upstreamURL.RawPath,
 	})
 	s.proxy.ServeHTTP(w, r.WithContext(ctx))
 }
 
-// isSafeMethod reports whether method is GET or HEAD — the only methods a
-// read-only job token may use (docs/plans/api-gateway.md 前提となる決定事項:
-// "task.readonly を HTTP メソッドに写像する").
+// isSafeMethod reports whether method is exactly "GET" or "HEAD" — the only
+// methods a read-only job token may use (docs/plans/api-gateway.md 前提と
+// なる決定事項: "task.readonly を HTTP メソッドに写像する"). Deliberately an
+// exact, case-SENSITIVE comparison, not a case-folded one: HTTP method
+// tokens are case-sensitive (RFC 7230 §3.1.1 defines the method as a
+// case-sensitive token, and net/http never normalizes r.Method), so a
+// lowercase "get" is a different, non-standard method — accepting it here
+// as equivalent to "GET" would let a request using it bypass the read-only
+// gate on the (unverifiable) assumption that the upstream treats it
+// identically to "GET" too.
 func isSafeMethod(method string) bool {
-	switch strings.ToUpper(method) {
-	case http.MethodGet, http.MethodHead:
-		return true
-	default:
-		return false
-	}
+	return method == http.MethodGet || method == http.MethodHead
 }

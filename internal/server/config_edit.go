@@ -345,6 +345,15 @@ func (s *Server) applyDynamicConfigLocked(oldCfg, newCfg *config.Config) []strin
 		warnings = append(warnings, restartWarning("gateway.forges."+leaf))
 	}
 
+	// services.* (docs/plans/api-gateway.md §2/PR1) — same restart-required,
+	// per-leaf-diff treatment as gateway.forges.* just above (a mid-flight
+	// service registry change would need the API gateway's own
+	// CredentialProvider rebuilt, which — like the git gateway's TLS cert
+	// re-issuance — is safer left to a restart than attempted live).
+	for _, leaf := range changedServiceLeaves(oldCfgSafe.Services, newCfg.Services) {
+		warnings = append(warnings, restartWarning("services."+leaf))
+	}
+
 	// Every other ReloadRestartRequired schema leaf (gc.*, web.http_addr,
 	// task_ask.disconnect_grace, ...) — MAJOR 2, codex review round 1: the
 	// pre-fix version of this function hand-listed only gateway.forges.*
@@ -438,6 +447,7 @@ var restartFieldExtractors = map[string]func(*config.Config) string{
 	"task_ask.disconnect_grace": func(c *config.Config) string { return c.TaskAsk.DisconnectGrace.String() },
 	"notify.command":            func(c *config.Config) string { return strings.Join(c.Notify.Command, "\x00") },
 	"sandbox.allowed_domains":   func(c *config.Config) string { return strings.Join(c.Sandbox.AllowedDomains, "\x00") },
+	"services_floor":            func(c *config.Config) string { return strings.Join(c.ServicesFloor, "\x00") },
 }
 
 // restartFieldExtractorExemptions documents every ReloadRestartRequired
@@ -473,6 +483,19 @@ var restartFieldExtractorExemptions = map[string]string{
 	// restart-required-warning loop above, which would otherwise have no
 	// entry to satisfy verifyRestartExtractorCoverage with.
 	"sandbox.backend": "removed in PR-4; Config retains no Backend field to extract — the key is parsed-and-ignored with a load-time warning instead (see config.Config.UnmarshalYAML)",
+
+	// services.* (docs/plans/api-gateway.md §2/PR1) — same reasoning as the
+	// gateway.forges.* trio above: changedServiceLeaves' per-id, per-field
+	// diff (called separately, just above the generic loop) already gives
+	// finer-grained warnings than comparing a single wildcard schema entry
+	// ever could.
+	"services.*.base_url":        "covered by changedServiceLeaves' per-id, per-field diff (finer-grained than a wildcard comparison)",
+	"services.*.auth.kind":       "covered by changedServiceLeaves' per-id, per-field diff (finer-grained than a wildcard comparison)",
+	"services.*.auth.secret_key": "covered by changedServiceLeaves' per-id, per-field diff (finer-grained than a wildcard comparison)",
+	"services.*.auth.username":   "covered by changedServiceLeaves' per-id, per-field diff (finer-grained than a wildcard comparison)",
+	"services.*.auth.header":     "covered by changedServiceLeaves' per-id, per-field diff (finer-grained than a wildcard comparison)",
+	"services.*.auth.query":      "covered by changedServiceLeaves' per-id, per-field diff (finer-grained than a wildcard comparison)",
+	"services.*.auth.provider":   "covered by changedServiceLeaves' per-id, per-field diff (finer-grained than a wildcard comparison)",
 }
 
 // verifyRestartExtractorCoverage panics if any config.Schema leaf classified
@@ -536,6 +559,58 @@ func changedForgeLeaves(oldForges, newForges map[string]config.ForgeConfig) []st
 			}
 			if o.SecretKey != n.SecretKey {
 				changed = append(changed, id+".secret_key")
+			}
+		}
+	}
+	sort.Strings(changed)
+	return changed
+}
+
+// changedServiceLeaves is changedForgeLeaves' counterpart for
+// services.* (docs/plans/api-gateway.md §2/PR1): returns the sorted set of
+// dotted "<name>.<leaf>" strings for every services.<name> leaf that
+// actually differs between oldServices and newServices. A service name
+// added or removed wholesale reports just "<name>" (no single leaf is more
+// "the" changed one than another when the whole entry appeared/vanished) —
+// same convention as changedForgeLeaves.
+func changedServiceLeaves(oldServices, newServices map[string]config.ServiceConfig) []string {
+	names := make(map[string]struct{}, len(oldServices)+len(newServices))
+	for name := range oldServices {
+		names[name] = struct{}{}
+	}
+	for name := range newServices {
+		names[name] = struct{}{}
+	}
+	var changed []string
+	for name := range names {
+		o, oOK := oldServices[name]
+		n, nOK := newServices[name]
+		switch {
+		case !oOK || !nOK:
+			if oOK != nOK {
+				changed = append(changed, name)
+			}
+		default:
+			if o.BaseURL != n.BaseURL {
+				changed = append(changed, name+".base_url")
+			}
+			if o.Auth.Kind != n.Auth.Kind {
+				changed = append(changed, name+".auth.kind")
+			}
+			if o.Auth.SecretKey != n.Auth.SecretKey {
+				changed = append(changed, name+".auth.secret_key")
+			}
+			if o.Auth.Username != n.Auth.Username {
+				changed = append(changed, name+".auth.username")
+			}
+			if o.Auth.Header != n.Auth.Header {
+				changed = append(changed, name+".auth.header")
+			}
+			if o.Auth.Query != n.Auth.Query {
+				changed = append(changed, name+".auth.query")
+			}
+			if o.Auth.Provider != n.Auth.Provider {
+				changed = append(changed, name+".auth.provider")
 			}
 		}
 	}

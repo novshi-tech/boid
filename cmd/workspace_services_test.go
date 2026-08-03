@@ -88,6 +88,36 @@ func TestRunWorkspaceServices_AddListRemove_FullCycle(t *testing.T) {
 	}
 }
 
+// TestAddServiceNames_TrimsWhitespace / TestRemoveServiceNames_TrimsWhitespace
+// pin a codex review finding: orchestrator.ResolveEnabledServices trims
+// whitespace from each stored entry at dispatch-resolution time, so a
+// stored " foo " entry effectively enabled "foo" — but this CLI's own
+// add/remove previously compared raw, untrimmed strings, so `services
+// remove foo` could never match a " foo " entry (it would silently no-op,
+// leaving the untrimmed entry in place forever). Both functions now trim
+// before comparing/storing, so a value this CLI ever WRITES is already
+// normalized.
+func TestAddServiceNames_TrimsWhitespace(t *testing.T) {
+	got := addServiceNames([]string{" foo "}, []string{"bar"})
+	want := []string{"foo", "bar"}
+	if len(got) != len(want) {
+		t.Fatalf("addServiceNames = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("addServiceNames = %v, want %v", got, want)
+		}
+	}
+}
+
+func TestRemoveServiceNames_TrimsWhitespace(t *testing.T) {
+	got := removeServiceNames([]string{" foo ", "bar"}, []string{"foo"})
+	want := []string{"bar"}
+	if len(got) != len(want) || got[0] != want[0] {
+		t.Errorf("removeServiceNames([\" foo \", \"bar\"], [\"foo\"]) = %v, want %v (untrimmed stored entry must still be removable by its trimmed name)", got, want)
+	}
+}
+
 func TestRunWorkspaceServices_Add_InvalidSlugRejected(t *testing.T) {
 	if err := runWorkspaceServicesAdd(workspaceServicesAddCmd, []string{"Not A Slug", "myapp"}); err == nil {
 		t.Fatal("want error for invalid slug, got nil")

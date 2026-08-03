@@ -22,6 +22,12 @@ func TestResolveField_KnownPaths(t *testing.T) {
 		{"gateway.hosts", true},          // MAJOR 1: recognized (KindOpaque), read-only legacy migration bridge
 		{"default_harness", false},       // removed in Phase 2.5 PR7 — deliberately absent
 		{"sandbox.alowed_domains", false},
+		// docs/plans/api-gateway.md §2/§3.
+		{"services.myapp.base_url", true},
+		{"services.myapp.auth.kind", true},
+		{"services.myapp.auth.secret_key", true},
+		{"services.myapp", false}, // whole entry, not a Set/Get leaf — same as gateway.forges.github
+		{"services_floor", true},
 	}
 	for _, tc := range cases {
 		_, ok := ResolveField(tc.path)
@@ -63,6 +69,8 @@ func TestSchema_ReloadClassification(t *testing.T) {
 		"gc.enabled":                       true,
 		"web.http_addr":                    true,
 		"log.level":                        true,
+		"services.myapp.base_url":          true,
+		"services_floor":                   true,
 	}
 	for path := range restartRequired {
 		spec, ok := ResolveField(path)

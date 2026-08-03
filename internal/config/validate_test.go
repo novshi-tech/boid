@@ -79,6 +79,60 @@ func TestValidateYAML_SandboxBackend_AcceptedButIgnored(t *testing.T) {
 	}
 }
 
+// TestValidateYAML_Services_Accepted pins a regression (found by codex
+// review of docs/plans/api-gateway.md PR1): `services:`/`services_floor:`
+// parse fine at daemon-startup load (config.Load/loadFromPath) but, without
+// a matching internal/config/schema.go entry, `boid config apply -f`/`edit`
+// (which validates through ValidateYAML -> ValidateKnownKeys) rejected any
+// document containing them as an "unknown config key" — a config.yaml a
+// live daemon happily starts with could not be round-tripped through the
+// "safe" editing CLI at all.
+func TestValidateYAML_Services_Accepted(t *testing.T) {
+	data := []byte(`
+services:
+  myapp:
+    base_url: https://myapp.example.com
+    auth: { kind: bearer, secret_key: myapp-token }
+  legacy:
+    base_url: https://legacy.example.com
+    auth: { kind: query, query: api_key, secret_key: legacy-key }
+services_floor:
+  - myapp
+`)
+	cfg, err := ValidateYAML(data)
+	if err != nil {
+		t.Fatalf("ValidateYAML: %v", err)
+	}
+	if len(cfg.Services) != 2 {
+		t.Errorf("Services = %v, want 2 entries", cfg.Services)
+	}
+	if len(cfg.ServicesFloor) != 1 || cfg.ServicesFloor[0] != "myapp" {
+		t.Errorf("ServicesFloor = %v, want [myapp]", cfg.ServicesFloor)
+	}
+}
+
+func TestValidateYAML_UnknownServiceField(t *testing.T) {
+	data := []byte("services:\n  myapp:\n    bsae_url: https://myapp.example.com\n")
+	_, err := ValidateYAML(data)
+	if err == nil {
+		t.Fatal("expected error for unknown services field")
+	}
+	if !strings.Contains(err.Error(), "services.myapp.bsae_url") {
+		t.Errorf("expected error to name the full path, got: %v", err)
+	}
+}
+
+func TestValidateYAML_UnknownServiceAuthField(t *testing.T) {
+	data := []byte("services:\n  myapp:\n    base_url: https://myapp.example.com\n    auth: { knid: bearer }\n")
+	_, err := ValidateYAML(data)
+	if err == nil {
+		t.Fatal("expected error for unknown services auth field")
+	}
+	if !strings.Contains(err.Error(), "services.myapp.auth.knid") {
+		t.Errorf("expected error to name the full path, got: %v", err)
+	}
+}
+
 func TestValidateYAML_IncompleteCustomForge(t *testing.T) {
 	// A custom forge id with no host is rejected by the existing
 	// resolveForgeConfig invariant (config.go), exercised here through

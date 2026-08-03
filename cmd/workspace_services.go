@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 
 	"github.com/novshi-tech/boid/internal/api"
 	"github.com/novshi-tech/boid/internal/client"
@@ -106,36 +107,48 @@ func runWorkspaceServicesList(cmd *cobra.Command, args []string) error {
 // see orchestrator.ResolveEnabledServices's own doc comment for the same
 // distinction at resolution time). Order is preserved: existing entries
 // first, then newly-added ones in the order given.
+//
+// Every name (both current's own entries and the newly-added ones) is
+// whitespace-trimmed before comparison/storage — matching
+// orchestrator.ResolveEnabledServices's own trim at dispatch-resolution
+// time (codex review finding: a stored " foo " entry effectively enabled
+// "foo" at dispatch time via that trim, but `services remove foo` — a raw,
+// untrimmed comparison — could never match it, so the entry was
+// unremovable through this CLI). Trimming here means every value this
+// command ever WRITES is already normalized, so a subsequent add/remove/
+// dispatch-resolution all agree on the same string.
 func addServiceNames(current, names []string) []string {
 	seen := make(map[string]bool, len(current)+len(names))
 	out := make([]string, 0, len(current)+len(names))
-	for _, s := range current {
+	add := func(s string) {
+		s = strings.TrimSpace(s)
 		if s == "" || seen[s] {
-			continue
+			return
 		}
 		seen[s] = true
 		out = append(out, s)
 	}
+	for _, s := range current {
+		add(s)
+	}
 	for _, s := range names {
-		if s == "" || seen[s] {
-			continue
-		}
-		seen[s] = true
-		out = append(out, s)
+		add(s)
 	}
 	return out
 }
 
 // removeServiceNames returns current with every entry in names dropped,
-// preserving the relative order of what remains.
+// preserving the relative order of what remains. Both current's own entries
+// and names are whitespace-trimmed before comparison — see addServiceNames'
+// own doc comment for why.
 func removeServiceNames(current, names []string) []string {
 	remove := make(map[string]bool, len(names))
 	for _, s := range names {
-		remove[s] = true
+		remove[strings.TrimSpace(s)] = true
 	}
 	out := make([]string, 0, len(current))
 	for _, s := range current {
-		if !remove[s] {
+		if !remove[strings.TrimSpace(s)] {
 			out = append(out, s)
 		}
 	}
