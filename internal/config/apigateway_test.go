@@ -82,6 +82,24 @@ services:
 	}
 }
 
+// TestLoadFromPath_Services_WhitespacePaddedNameRejected pins a codex review
+// finding: orchestrator.ResolveEnabledServices trims every service name it
+// resolves, but the service registry built from this config is keyed
+// verbatim by the services.<name> map key — a whitespace-padded name would
+// validate cleanly yet never resolve for any workspace (KnowsService always
+// 502s), a silent, hard-to-diagnose misconfiguration. Reject it outright at
+// config-load time instead.
+func TestLoadFromPath_Services_WhitespacePaddedNameRejected(t *testing.T) {
+	content := "services:\n  \" myapp\":\n    base_url: https://myapp.example.com\n    auth: { kind: bearer, secret_key: k }\n"
+	_, err := loadFromPath(writeConfigFile(t, content))
+	if err == nil {
+		t.Fatal("want error for a whitespace-padded service name, got nil")
+	}
+	if !strings.Contains(err.Error(), "whitespace") {
+		t.Errorf("error should mention whitespace, got: %v", err)
+	}
+}
+
 func TestLoadFromPath_Services_MissingBaseURLRejected(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")

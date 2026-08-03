@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"net/url"
 	"sort"
+	"strings"
 
 	"github.com/novshi-tech/boid/internal/apigateway"
 )
@@ -75,6 +76,23 @@ var validServiceAuthKinds = map[string]bool{
 // the same "fail loud with the offending name" posture
 // resolveForgeConfig/GatewayConfig's validation uses.
 func validateServiceConfig(name string, sc ServiceConfig) error {
+	// codex review finding: orchestrator.ResolveEnabledServices trims every
+	// service NAME it resolves (floor entries and workspace Services list
+	// entries alike) before matching, but the service REGISTRY built from
+	// this config (apigateway.CredentialProvider's internal map, keyed
+	// verbatim by this services.<name> map key) never did — so a service
+	// declared as `services: {" myapp": ...}` (a quoted YAML key carrying
+	// whitespace) would validate cleanly here yet never resolve for any
+	// workspace, since ResolveEnabledServices's resolved name ("myapp",
+	// trimmed) never matches the registry's untrimmed key (" myapp").
+	// Rejecting a whitespace-padded name outright at config-load time is
+	// simpler and more honest than trying to trim it silently (a silently
+	// renamed service key is its own kind of surprise for `boid config get`/
+	// `services_floor` cross-references) — an operator's `services:` map key
+	// should already be name.
+	if trimmed := strings.TrimSpace(name); trimmed != name {
+		return fmt.Errorf("services[%q]: service name must not have leading/trailing whitespace (did you mean %q?)", name, trimmed)
+	}
 	if sc.BaseURL == "" {
 		return fmt.Errorf("services[%q]: missing required \"base_url\" field", name)
 	}
