@@ -881,9 +881,11 @@ func TestBuildSandboxSpec_APIGatewayToken_SetsBOIDAPIBaseAndCAFile(t *testing.T)
 	}
 	// NODE_EXTRA_CA_CERTS (codex review finding): Node.js documents this as
 	// additive to its own built-in root store, unlike SSL_CERT_FILE/
-	// CURL_CA_BUNDLE, so it is safe to set unconditionally alongside
-	// BOID_API_CA_FILE — a Node SDK gets flagless TLS trust for
-	// BOID_API_BASE without losing trust for any other https host.
+	// CURL_CA_BUNDLE, so it is safe to set (when not already claimed by the
+	// caller — see TestBuildSandboxSpec_APIGatewayToken_PreservesExistingNodeExtraCACerts
+	// for that case) alongside BOID_API_CA_FILE — a Node SDK gets flagless
+	// TLS trust for BOID_API_BASE without losing trust for any other https
+	// host.
 	if got, want := out.Env["NODE_EXTRA_CA_CERTS"], containerGitGatewayCAPath; got != want {
 		t.Errorf("Env[NODE_EXTRA_CA_CERTS] = %q, want %q", got, want)
 	}
@@ -905,6 +907,39 @@ func TestBuildSandboxSpec_APIGatewayToken_SetsBOIDAPIBaseAndCAFile(t *testing.T)
 	}
 	if !found {
 		t.Errorf("no spec.Files entry at %q, want the gateway CA cert written there", containerGitGatewayCAPath)
+	}
+}
+
+// TestBuildSandboxSpec_APIGatewayToken_PreservesExistingNodeExtraCACerts
+// pins the fix for a codex-flagged bug (round 5): an earlier version set
+// env["NODE_EXTRA_CA_CERTS"] unconditionally, silently clobbering a value
+// the project/workspace had already declared (via project.yaml/workspace
+// `env:`, merged into spec.Env before BuildSandboxSpec runs) for its own,
+// unrelated CA trust needs (e.g. a corporate proxy or internal registry
+// Node itself talks to). BOID_API_CA_FILE remains set regardless — it is a
+// name this PR invents, so nothing could have set it before.
+func TestBuildSandboxSpec_APIGatewayToken_PreservesExistingNodeExtraCACerts(t *testing.T) {
+	spec := &orchestrator.JobSpec{
+		ProjectID: "proj-1",
+		Argv:      []string{"/bin/true"},
+		Env:       map[string]string{"NODE_EXTRA_CA_CERTS": "/etc/project-own-ca.pem"},
+	}
+	rt := SandboxRuntimeInfo{
+		JobID:                 "job-1",
+		UsingContainerBackend: true,
+		GatewayCAPEM:          []byte("-----BEGIN CERTIFICATE-----\nfake\n-----END CERTIFICATE-----\n"),
+		APIGatewayBaseURL:     "https://boid-gateway:9443",
+		APIGatewayJobToken:    "abc123",
+	}
+	out, err := BuildSandboxSpec(spec, rt)
+	if err != nil {
+		t.Fatalf("BuildSandboxSpec: %v", err)
+	}
+	if got, want := out.Env["NODE_EXTRA_CA_CERTS"], "/etc/project-own-ca.pem"; got != want {
+		t.Errorf("Env[NODE_EXTRA_CA_CERTS] = %q, want %q (must not clobber the project's own value)", got, want)
+	}
+	if got, want := out.Env["BOID_API_CA_FILE"], containerGitGatewayCAPath; got != want {
+		t.Errorf("Env[BOID_API_CA_FILE] = %q, want %q (still set — this name is new, nothing could have claimed it)", got, want)
 	}
 }
 

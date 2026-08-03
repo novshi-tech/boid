@@ -242,6 +242,26 @@ func TestLoadFromPath_Services_HeaderInvalidNameRejected(t *testing.T) {
 	}
 }
 
+// TestLoadFromPath_Services_ReservedHeaderNameRejected pins a codex review
+// finding (round 5): "Host" is a syntactically valid HTTP header field name
+// (passes isValidHTTPHeaderFieldName's RFC 7230 token check) but Go's
+// net/http never sends an outgoing request's Header["Host"] entry on the
+// wire — the actual Host header comes from Request.Host/Request.URL.Host
+// instead. auth.kind: header with header: Host would therefore have
+// CredentialProvider.Inject report success while the secret reaches the
+// upstream on no channel at all: a silent, reported-success auth bypass.
+// The other names here are net/http's hop-by-hop set plus Content-Length,
+// all managed by the Transport itself for an outgoing request.
+func TestLoadFromPath_Services_ReservedHeaderNameRejected(t *testing.T) {
+	cases := []string{"Host", "host", "Content-Length", "Transfer-Encoding", "Connection", "Upgrade"}
+	for _, header := range cases {
+		content := "services:\n  myapp:\n    base_url: https://myapp.example.com\n    auth:\n      kind: header\n      header: \"" + header + "\"\n      secret_key: k\n"
+		if err := writeAndLoad(t, filepath.Join(t.TempDir(), "config.yaml"), content); err == nil {
+			t.Errorf("header %q: want error for reserved/transport header name, got nil", header)
+		}
+	}
+}
+
 func TestIsValidHTTPHeaderFieldName(t *testing.T) {
 	cases := []struct {
 		name string

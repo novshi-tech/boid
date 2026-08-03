@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"log/slog"
+	"net/http"
 	"net/url"
 	"sort"
 	"strings"
@@ -185,6 +186,29 @@ func validateServiceConfig(name string, sc ServiceConfig) error {
 		if !isValidHTTPHeaderFieldName(sc.Auth.Header) {
 			return fmt.Errorf("services[%q]: auth.header %q is not a valid HTTP header field name", name, sc.Auth.Header)
 		}
+		// codex review finding (round 5): "Host" is a syntactically valid
+		// header field name (passes the RFC 7230 token check above) but Go's
+		// net/http treats it specially for an OUTGOING request — the
+		// Host header actually sent on the wire comes from Request.Host (or
+		// Request.URL.Host if that's empty), never from Header["Host"].
+		// apigateway.CredentialProvider.Inject's `req.Header.Set(rs.auth.Header,
+		// secret)` for auth.kind: header would therefore silently do nothing
+		// useful: Inject reports success, Server.ServeHTTP proceeds believing
+		// the request is authenticated, and the secret never reaches the
+		// upstream on any channel — exactly the "gateway forwards an
+		// unauthenticated request while believing it succeeded" failure the
+		// whole gateway (failFastTransport's own doc comment: "this request
+		// is authenticated, or it does not go out") exists to prevent. The
+		// other names here are RFC 7230 §6.1's hop-by-hop set plus
+		// Content-Length: net/http's Transport computes/manages all of them
+		// itself for an outgoing request, so setting any of them via Header
+		// is unreliable at best (silently overridden) and protocol-breaking
+		// at worst (a body whose real length doesn't match a forged
+		// Content-Length) — none of them is a legitimate place to carry a
+		// custom credential regardless.
+		if reservedHeaderNames[http.CanonicalHeaderKey(sc.Auth.Header)] {
+			return fmt.Errorf("services[%q]: auth.header %q is a reserved/transport header that net/http manages itself for an outgoing request — it cannot carry a credential (the secret would silently never reach the upstream)", name, sc.Auth.Header)
+		}
 		if sc.Auth.SecretKey == "" {
 			return fmt.Errorf("services[%q]: auth.kind header requires \"secret_key\"", name)
 		}
@@ -264,4 +288,34 @@ func isValidHTTPHeaderFieldName(name string) bool {
 		}
 	}
 	return true
+}
+
+// reservedHeaderNames is the set of header field names (canonicalized via
+// http.CanonicalHeaderKey, so lookups are case-insensitive) that
+// auth.kind: header must not use (codex review round 5 finding): net/http's
+// Transport computes or manages every one of these itself for an outgoing
+// request, so setting it via Header.Set is either silently ineffective
+// ("Host" — Go never reads Header["Host"] when writing the request line; it
+// always uses Request.Host/Request.URL.Host instead, so
+// CredentialProvider.Inject's req.Header.Set("Host", secret) would report
+// success while the secret reaches the upstream on no channel at all — the
+// exact "gateway forwards an unauthenticated request while believing it
+// succeeded" failure this whole package exists to prevent) or
+// protocol-breaking (the RFC 7230 §6.1 hop-by-hop set, plus
+// Content-Length — a forged length that doesn't match the real body would
+// produce a malformed request, and Transfer-Encoding/Connection/etc. are
+// entirely re-derived by the transport regardless of what a handler sets).
+// None of these is ever a legitimate place to carry a custom credential.
+var reservedHeaderNames = map[string]bool{
+	http.CanonicalHeaderKey("Host"):                true,
+	http.CanonicalHeaderKey("Content-Length"):      true,
+	http.CanonicalHeaderKey("Connection"):          true,
+	http.CanonicalHeaderKey("Proxy-Connection"):    true,
+	http.CanonicalHeaderKey("Keep-Alive"):          true,
+	http.CanonicalHeaderKey("Proxy-Authenticate"):  true,
+	http.CanonicalHeaderKey("Proxy-Authorization"): true,
+	http.CanonicalHeaderKey("TE"):                  true,
+	http.CanonicalHeaderKey("Trailer"):             true,
+	http.CanonicalHeaderKey("Transfer-Encoding"):   true,
+	http.CanonicalHeaderKey("Upgrade"):             true,
 }

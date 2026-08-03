@@ -601,14 +601,29 @@ func BuildSandboxSpec(spec *orchestrator.JobSpec, rt SandboxRuntimeInfo) (sandbo
 			// for pypi.org/github.com/etc. from that tool's perspective),
 			// Node.js documents this variable as ADDITIVE: "the well known
 			// 'root' CAs... will be extended with the extra certificates in
-			// file" (Node.js CLI docs on NODE_EXTRA_CA_CERTS). Setting it is
-			// therefore safe to do unconditionally alongside BOID_API_CA_FILE
-			// — a Node-based SDK/script gets genuine flagless
-			// "curl-equivalent" TLS trust for BOID_API_BASE, with no loss of
-			// trust for any other host Node talks to. curl/Python/other
-			// openssl-backed tools have no equivalent safe (additive) env
-			// var, so they remain on the explicit BOID_API_CA_FILE opt-in.
-			env["NODE_EXTRA_CA_CERTS"] = containerGitGatewayCAPath
+			// file" (Node.js CLI docs on NODE_EXTRA_CA_CERTS). A Node-based
+			// SDK/script therefore gets genuine flagless "curl-equivalent"
+			// TLS trust for BOID_API_BASE, with no loss of trust for any
+			// other host Node talks to — PROVIDED this doesn't clobber a
+			// value the project/workspace already declared for its OWN
+			// reasons (codex review round 5 finding): unlike BOID_API_CA_FILE
+			// (a name this PR invents — nothing could have set it before),
+			// NODE_EXTRA_CA_CERTS is a real, pre-existing Node.js variable a
+			// project.yaml/workspace `env:` block may already point at a
+			// DIFFERENT CA bundle (e.g. a corporate proxy or internal
+			// registry Node itself talks to, unrelated to this gateway).
+			// Env already carries spec.Env's fully-merged value by this point
+			// (env := cloneStringMap(spec.Env) at BuildSandboxSpec's top), so
+			// only set this when the caller hasn't already claimed it — a
+			// caller who already needs it for something else keeps their own
+			// value and simply doesn't get the automatic Node trust
+			// (BOID_API_CA_FILE remains available for them to combine by
+			// hand). curl/Python/other openssl-backed tools have no
+			// equivalent safe (additive) env var, so they remain on the
+			// explicit BOID_API_CA_FILE opt-in unconditionally.
+			if _, alreadySet := env["NODE_EXTRA_CA_CERTS"]; !alreadySet {
+				env["NODE_EXTRA_CA_CERTS"] = containerGitGatewayCAPath
+			}
 		}
 	}
 
