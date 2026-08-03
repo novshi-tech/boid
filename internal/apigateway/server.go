@@ -184,18 +184,39 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	allowed, tokenValid := s.registry.Authorize(rt.token, rt.service)
+	// A SINGLE Lookup — not Authorize (which does its own internal Lookup)
+	// followed by a second, independent Lookup for the fields Authorize's
+	// bool-returning signature doesn't expose (Namespace/TaskID/ReadOnly).
+	// The two-call shape had a real (if narrow) race: Unregister — called
+	// from Runner.UnregisterJob at job completion — could land in the
+	// window between the two lookups, so the second one would silently
+	// return a zero-value Entry (ReadOnly=false, Namespace="") instead of
+	// erroring, while `allowed` had already been computed as true from the
+	// FIRST (pre-race) lookup. That combination let a since-unregistered
+	// token's request proceed using the STALE `allowed=true` verdict
+	// together with a zeroed Entry: the read-only gate below
+	// (`entry.ReadOnly && ...`) would silently evaluate to false — a
+	// request that should have been rejected as a write from a read-only
+	// token would instead reach the upstream — and credential resolution
+	// would silently fall back to the "default" secret namespace instead
+	// of the job's actual workspace-scoped one (codex review finding).
+	//
+	// Unlike internal/gitgateway.Server.ServeHTTP's own analogous two-Lookup
+	// shape (whose doc comment argues the equivalent ABA race there degrades
+	// SAFELY to default-namespace credentials — gitgateway's read/write
+	// permission is entirely decided inside the single Authorize call, with
+	// no separate boolean re-read afterward), this package added a genuinely
+	// NEW post-lookup security gate (ReadOnly) that the race could bypass
+	// outright, not merely mis-scope. A single Lookup, with allowed derived
+	// from THIS SAME entry snapshot, closes the window entirely: Entry is
+	// either the one live snapshot both decisions are made from, or the
+	// token is correctly reported invalid.
+	entry, tokenValid := s.registry.Lookup(rt.token)
 	if !tokenValid {
 		http.Error(w, "unauthorized: invalid or expired job token", http.StatusUnauthorized)
 		return
 	}
-
-	// entry is guaranteed present: Authorize already did a successful
-	// Lookup to determine tokenValid==true. This second Lookup recovers the
-	// fields Authorize's bool-returning signature doesn't expose
-	// (Namespace/TaskID/ReadOnly) — the same pattern
-	// internal/gitgateway.Server.ServeHTTP uses for Entry.Namespace.
-	entry, _ := s.registry.Lookup(rt.token)
+	allowed := entry.Services[rt.service]
 
 	if !allowed {
 		s.recorder(entry.TaskID, r.Method, rt.service, rt.path, http.StatusForbidden)

@@ -164,6 +164,10 @@ var Schema = []FieldSpec{
 	// enforces that at document-decode time, not here — Schema only
 	// governs which KEYS exist, not their kind-conditional requiredness).
 	{Path: "services.*.base_url", Kind: KindString, Reload: ReloadRestartRequired},
+	// services.*.allow_insecure (codex review round 4 finding): required —
+	// not merely a suggestion — for base_url to use a non-https scheme. See
+	// validateServiceConfig's own doc comment in apigateway.go.
+	{Path: "services.*.allow_insecure", Kind: KindBool, Reload: ReloadRestartRequired},
 	{Path: "services.*.auth.kind", Kind: KindEnum, Reload: ReloadRestartRequired,
 		EnumValues: []string{"bearer", "basic", "header", "query", "oauth2"}},
 	{Path: "services.*.auth.secret_key", Kind: KindString, Reload: ReloadRestartRequired},

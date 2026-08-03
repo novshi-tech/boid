@@ -24,6 +24,7 @@ func TestResolveField_KnownPaths(t *testing.T) {
 		{"sandbox.alowed_domains", false},
 		// docs/plans/api-gateway.md §2/§3.
 		{"services.myapp.base_url", true},
+		{"services.myapp.allow_insecure", true},
 		{"services.myapp.auth.kind", true},
 		{"services.myapp.auth.secret_key", true},
 		{"services.myapp", false}, // whole entry, not a Set/Get leaf — same as gateway.forges.github

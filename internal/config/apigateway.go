@@ -46,6 +46,16 @@ type ServiceConfig struct {
 	// in the route path is (docs/plans/api-gateway.md §1).
 	BaseURL string            `yaml:"base_url"`
 	Auth    ServiceAuthConfig `yaml:"auth"`
+	// AllowInsecure must be explicitly set to true for BaseURL to use any
+	// scheme other than "https" (codex review finding, round 4: a bare
+	// warning-only posture is not fail-closed — an operator who never reads
+	// boid.log has no signal that a credential is crossing the network in
+	// cleartext). Required, not merely warned-about, so choosing a plaintext
+	// upstream is always a conscious, config-visible decision — see
+	// validateServiceConfig's own doc comment for why plaintext is still
+	// SUPPORTED at all (PR1's stated primary use case: an internal test/ops
+	// API that legitimately has no TLS yet).
+	AllowInsecure bool `yaml:"allow_insecure,omitempty"`
 }
 
 // validServiceAuthKinds is the initial AuthKind set docs/plans/api-gateway.md
@@ -99,17 +109,31 @@ func validateServiceConfig(name string, sc ServiceConfig) error {
 	// docs/plans/api-gateway.md §1 states the gateway's own outbound leg as
 	// "gateway → upstream は daemon 発の HTTPS" — a plain-http base_url means
 	// this service's injected bearer/basic/header/query credential crosses
-	// the network to the upstream in cleartext. Warned, not rejected: PR1's
+	// the network to the upstream in cleartext. Not rejected outright: PR1's
 	// own stated primary use case ("自社開発アプリのテスト・運用API") often
 	// means an internal test/staging environment that legitimately has no
-	// TLS yet, and hard-rejecting http:// here would make the gateway
-	// unusable for exactly that case. A visible warning (surfaced at
-	// daemon-startup load time, and again wherever ValidateYAML runs — i.e.
-	// on every `boid config apply`/`edit` too) is the proportionate
-	// response: it does not block a real use case, but it does make an
-	// operator's typo'd or copy-pasted-from-an-insecure-example "http"
-	// scheme visible instead of silently shipping a credential in
-	// plaintext.
+	// TLS yet, and hard-rejecting http:// unconditionally would make the
+	// gateway unusable for exactly that case.
+	//
+	// AllowInsecure IS required, though (codex review round 4 finding,
+	// escalated from a round-2 warn-only version of this check): a bare log
+	// warning is not fail-closed — an operator who never greps boid.log
+	// (or whose daemon logs are quietly discarded/rotated away) has NO
+	// signal that a credential is crossing the network in cleartext, and a
+	// copy-pasted-from-an-insecure-example or typo'd "http" scheme would
+	// otherwise ship silently. Requiring `allow_insecure: true` in the same
+	// services.<name> block moves the acknowledgment into the config
+	// document itself — visible in `boid config get`, in code review of a
+	// config.yaml change, and in `boid config apply`'s diff — rather than a
+	// log line that may never be read. This still does not block the real
+	// use case: it becomes a one-line, explicit, self-documenting opt-in
+	// instead of an unconditional accept.
+	if u.Scheme != "https" && !sc.AllowInsecure {
+		return fmt.Errorf(
+			"services[%q]: \"base_url\" scheme %q is not https, so this service's injected credential would cross the network in cleartext — "+
+				"set \"allow_insecure: true\" on this service if that is intentional (e.g. an internal test/staging API with no TLS yet)",
+			name, u.Scheme)
+	}
 	if u.Scheme != "https" {
 		slog.Warn("services: base_url does not use https — this service's injected credential will cross the network to the upstream in cleartext",
 			"service", name, "base_url", sc.BaseURL, "scheme", u.Scheme)

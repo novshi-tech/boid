@@ -490,6 +490,7 @@ var restartFieldExtractorExemptions = map[string]string{
 	// finer-grained warnings than comparing a single wildcard schema entry
 	// ever could.
 	"services.*.base_url":        "covered by changedServiceLeaves' per-id, per-field diff (finer-grained than a wildcard comparison)",
+	"services.*.allow_insecure":  "covered by changedServiceLeaves' per-id, per-field diff (finer-grained than a wildcard comparison)",
 	"services.*.auth.kind":       "covered by changedServiceLeaves' per-id, per-field diff (finer-grained than a wildcard comparison)",
 	"services.*.auth.secret_key": "covered by changedServiceLeaves' per-id, per-field diff (finer-grained than a wildcard comparison)",
 	"services.*.auth.username":   "covered by changedServiceLeaves' per-id, per-field diff (finer-grained than a wildcard comparison)",
@@ -593,6 +594,9 @@ func changedServiceLeaves(oldServices, newServices map[string]config.ServiceConf
 		default:
 			if o.BaseURL != n.BaseURL {
 				changed = append(changed, name+".base_url")
+			}
+			if o.AllowInsecure != n.AllowInsecure {
+				changed = append(changed, name+".allow_insecure")
 			}
 			if o.Auth.Kind != n.Auth.Kind {
 				changed = append(changed, name+".auth.kind")

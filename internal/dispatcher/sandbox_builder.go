@@ -572,21 +572,43 @@ func BuildSandboxSpec(spec *orchestrator.JobSpec, rt SandboxRuntimeInfo) (sandbo
 	// Runner.registerAPIGatewayToken. Empty (both fields) when the API
 	// gateway isn't wired (r.APIGateway == nil) or this job's Runner.Dispatch
 	// call didn't register a token for some other reason.
+	//
+	// TLS trust caveat (codex review finding): under the container backend,
+	// BOID_API_BASE is an https:// URL secured by the daemon's own internal
+	// CA, which no client trusts by default — a bare `curl "$BOID_API_BASE/..."`
+	// (the plan doc's own headline example) fails TLS verification unless
+	// the caller ALSO passes the CA explicitly. The env vars below narrow
+	// this gap as far as it safely can be narrowed without either requiring
+	// every caller to know a boid-specific flag or silently breaking TLS
+	// trust for every OTHER https host this sandbox talks to — see each
+	// var's own comment for why it is or isn't included.
 	if rt.APIGatewayJobToken != "" && rt.APIGatewayBaseURL != "" {
 		env["BOID_API_BASE"] = rt.APIGatewayBaseURL + apigateway.PathPrefix + rt.APIGatewayJobToken
 		if needsGatewayCA {
 			// BOID_API_CA_FILE: an explicit, OPT-IN CA path for tools that
 			// accept one directly (curl --cacert "$BOID_API_CA_FILE", Python
 			// requests(..., verify=os.environ["BOID_API_CA_FILE"]), etc.).
-			// Deliberately NOT a blanket SSL_CERT_FILE / CURL_CA_BUNDLE /
-			// NODE_EXTRA_CA_CERTS override: those replace (not append to) a
-			// tool's default trust store, which would silently break TLS
-			// verification for every OTHER https host this sandbox talks to
-			// (pypi.org, github.com, ...) that this internal daemon CA does
-			// not sign for. GIT_SSL_CAINFO above gets away with the same
-			// narrow-scope trick only because a clone-mode job's sole git
-			// remote IS the gateway itself.
+			// This remains the ONLY mechanism for such tools — a bare `curl
+			// "$BOID_API_BASE/..."` with no flag still fails TLS verification
+			// for them; the plan doc and BOID_API_BASE's own advertised
+			// contract are corrected to say so explicitly (docs/plans/
+			// api-gateway.md §1) rather than overclaiming a truly flagless
+			// "any SDK, base URL swap only" experience.
 			env["BOID_API_CA_FILE"] = containerGitGatewayCAPath
+			// NODE_EXTRA_CA_CERTS: unlike SSL_CERT_FILE / CURL_CA_BUNDLE
+			// (both REPLACE a tool's default trust store when set — setting
+			// either to just this CA would silently break TLS verification
+			// for pypi.org/github.com/etc. from that tool's perspective),
+			// Node.js documents this variable as ADDITIVE: "the well known
+			// 'root' CAs... will be extended with the extra certificates in
+			// file" (Node.js CLI docs on NODE_EXTRA_CA_CERTS). Setting it is
+			// therefore safe to do unconditionally alongside BOID_API_CA_FILE
+			// — a Node-based SDK/script gets genuine flagless
+			// "curl-equivalent" TLS trust for BOID_API_BASE, with no loss of
+			// trust for any other host Node talks to. curl/Python/other
+			// openssl-backed tools have no equivalent safe (additive) env
+			// var, so they remain on the explicit BOID_API_CA_FILE opt-in.
+			env["NODE_EXTRA_CA_CERTS"] = containerGitGatewayCAPath
 		}
 	}
 

@@ -281,27 +281,53 @@ services:
 	}
 }
 
-// TestLoadFromPath_Services_HTTPBaseURLWarnsButDoesNotFail pins a codex
-// review finding: a plain-http base_url means the injected credential
-// crosses the network to the upstream in cleartext, which is worth warning
-// about — but must NOT be a hard config-load error, since PR1's own primary
-// stated use case (internal test/ops APIs) often has no TLS yet in a
-// staging environment. See validateServiceConfig's own doc comment for the
-// full reasoning.
-func TestLoadFromPath_Services_HTTPBaseURLWarnsButDoesNotFail(t *testing.T) {
-	buf := captureSlog(t)
+// TestLoadFromPath_Services_HTTPBaseURLWithoutAllowInsecureRejected pins a
+// codex review finding (round 4, escalated from a round-2 warn-only
+// version of this check): a plain-http base_url means the injected
+// credential crosses the network to the upstream in cleartext, and a bare
+// log warning is not fail-closed — an operator who never reads boid.log has
+// no signal at all. Without an explicit `allow_insecure: true` on the
+// service, this must be a hard config-load error.
+func TestLoadFromPath_Services_HTTPBaseURLWithoutAllowInsecureRejected(t *testing.T) {
 	content := `
 services:
   myapp:
     base_url: http://myapp-internal.example.com
     auth: { kind: bearer, secret_key: k }
 `
+	_, err := loadFromPath(writeConfigFile(t, content))
+	if err == nil {
+		t.Fatal("want error for http base_url without allow_insecure, got nil")
+	}
+	if !strings.Contains(err.Error(), "allow_insecure") {
+		t.Errorf("error should mention allow_insecure as the remedy, got: %v", err)
+	}
+}
+
+// TestLoadFromPath_Services_HTTPBaseURLWithAllowInsecureWarnsButDoesNotFail
+// is the companion positive case: PR1's own primary stated use case
+// (internal test/ops APIs) often has no TLS yet in a staging environment,
+// so plaintext must still be SUPPORTED — just as an explicit, config-visible
+// opt-in rather than a silently-accepted default. See
+// validateServiceConfig's own doc comment for the full reasoning.
+func TestLoadFromPath_Services_HTTPBaseURLWithAllowInsecureWarnsButDoesNotFail(t *testing.T) {
+	buf := captureSlog(t)
+	content := `
+services:
+  myapp:
+    base_url: http://myapp-internal.example.com
+    allow_insecure: true
+    auth: { kind: bearer, secret_key: k }
+`
 	cfg, err := loadFromPath(writeConfigFile(t, content))
 	if err != nil {
-		t.Fatalf("unexpected error (http base_url must be accepted, only warned about): %v", err)
+		t.Fatalf("unexpected error (http base_url with allow_insecure: true must be accepted, only warned about): %v", err)
 	}
 	if cfg.Services["myapp"].BaseURL != "http://myapp-internal.example.com" {
 		t.Errorf("Services[myapp].BaseURL = %q", cfg.Services["myapp"].BaseURL)
+	}
+	if !cfg.Services["myapp"].AllowInsecure {
+		t.Error("Services[myapp].AllowInsecure = false, want true")
 	}
 	if !strings.Contains(buf.String(), "myapp") || !strings.Contains(buf.String(), "cleartext") {
 		t.Errorf("expected a warning naming the service and the cleartext risk, log = %q", buf.String())

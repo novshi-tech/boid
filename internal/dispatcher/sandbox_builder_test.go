@@ -879,6 +879,14 @@ func TestBuildSandboxSpec_APIGatewayToken_SetsBOIDAPIBaseAndCAFile(t *testing.T)
 	if got, want := out.Env["BOID_API_CA_FILE"], containerGitGatewayCAPath; got != want {
 		t.Errorf("Env[BOID_API_CA_FILE] = %q, want %q", got, want)
 	}
+	// NODE_EXTRA_CA_CERTS (codex review finding): Node.js documents this as
+	// additive to its own built-in root store, unlike SSL_CERT_FILE/
+	// CURL_CA_BUNDLE, so it is safe to set unconditionally alongside
+	// BOID_API_CA_FILE — a Node SDK gets flagless TLS trust for
+	// BOID_API_BASE without losing trust for any other https host.
+	if got, want := out.Env["NODE_EXTRA_CA_CERTS"], containerGitGatewayCAPath; got != want {
+		t.Errorf("Env[NODE_EXTRA_CA_CERTS] = %q, want %q", got, want)
+	}
 	// This job declares no clone at all — GIT_SSL_CAINFO must stay unset,
 	// or every OTHER git remote this job's own git might talk to would be
 	// forced to verify against the gateway's (non-signing) CA instead of
@@ -924,6 +932,9 @@ func TestBuildSandboxSpec_APIGatewayToken_UsernsBackendOmitsCAFile(t *testing.T)
 	}
 	if _, ok := out.Env["BOID_API_CA_FILE"]; ok {
 		t.Errorf("Env[BOID_API_CA_FILE] = %q, want unset (no TLS on the userns/plaintext listener)", out.Env["BOID_API_CA_FILE"])
+	}
+	if _, ok := out.Env["NODE_EXTRA_CA_CERTS"]; ok {
+		t.Errorf("Env[NODE_EXTRA_CA_CERTS] = %q, want unset (no TLS on the userns/plaintext listener)", out.Env["NODE_EXTRA_CA_CERTS"])
 	}
 	for _, f := range out.Files {
 		if f.Path == containerGitGatewayCAPath {

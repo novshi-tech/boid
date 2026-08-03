@@ -306,6 +306,10 @@ services:
   legacy:
     base_url: https://legacy.example.com
     auth: { kind: query, query: api_key, secret_key: legacy_key }
+  internal-staging:
+    base_url: http://internal-staging.example.com   # TLS 未対応の内部環境
+    allow_insecure: true                             # 明示的な opt-in が無いと config load エラー
+    auth: { kind: bearer, secret_key: staging_token }
 
 services_floor:
   - myapp   # 全 workspace で有効になる service (allowed_domains の floor と同じ位置づけ)
@@ -315,7 +319,8 @@ services_floor:
 
 | キー | 型 | デフォルト | 説明 |
 |---|---|---|---|
-| `services.<name>.base_url` | string | (必須) | upstream の base URL。sandbox からは見えない — sandbox が見るのは論理名 `<name>` だけ |
+| `services.<name>.base_url` | string | (必須) | upstream の base URL。sandbox からは見えない — sandbox が見るのは論理名 `<name>` だけ。`https` 以外のスキームは `allow_insecure: true` が無いと config load 自体が失敗する |
+| `services.<name>.allow_insecure` | bool | `false` | `base_url` に `https` 以外のスキームを許可する明示的な opt-in。無いまま `http://` 等を指定すると config load エラー (内部テスト API 等 TLS が無い環境向けの意図的な抜け道であり、黙って許可はしない) |
 | `services.<name>.auth.kind` | string | (必須) | `bearer` / `basic` / `header` / `query` / `oauth2` のいずれか |
 | `services.<name>.auth.secret_key` | string | kind により必須 | secret store 参照キー (`bearer`/`basic`/`header`/`query` で必須。`oauth2` では未使用) |
 | `services.<name>.auth.username` | string | `basic` のみ必須 | Basic 認証の username |
@@ -327,6 +332,8 @@ services_floor:
 **平文の token / API key をここに書いてはいけません**。実値は `boid secret set <key> <value>` で secret store に登録し、`secret_key` はそこへの参照名に過ぎません（`gateway.forges.*.secret_key` と同じ規約）。
 
 sandbox からは `BOID_API_BASE` 環境変数 (`https://<gateway>/api/<job-token>`) が渡され、`$BOID_API_BASE/<service>/<path...>` の形で叩けます — base URL 差し替えだけで curl でも任意の SDK でも動くのが host command 方式に対する利点です。`task.readonly` (または `command.readonly`) な job には GET/HEAD 以外のメソッドが 403 になります。
+
+**TLS trust の注意**: container backend (現行唯一の backend) では gateway listener が daemon 内蔵 CA で TLS を張るため、標準的な curl/Python 等はこの CA を自動では信用しません。`BOID_API_CA_FILE` (CA の PEM path) が env 注入されるので、`curl --cacert "$BOID_API_CA_FILE" "$BOID_API_BASE/..."` のように明示的に渡す必要があります。Node.js のみ `NODE_EXTRA_CA_CERTS` (Node が「既存の root CA に追加される」と保証する加算的な変数) が併せて注入されるため flag なしで動きます。詳細は `docs/plans/api-gateway.md` §1 参照。
 
 workspace 単位の有効化は `services_floor` (daemon 全体) + workspace 自身の `Services` リスト (`boid workspace services add/remove/list`、[CLI リファレンス](./cli.md#workspace) 参照) の additive union です。`services_floor` に書いた名前が `services` に存在しない場合は起動時に warning が出ますが、config load 自体は失敗しません。
 
