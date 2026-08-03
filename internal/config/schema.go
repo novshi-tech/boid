@@ -153,6 +153,33 @@ var Schema = []FieldSpec{
 	// Hosts into Forges before the daemon ever compares old vs new.
 	{Path: "gateway.hosts", Kind: KindOpaque, Reload: ReloadRestartRequired,
 		Note: "migrate to gateway.forges.<id>.* instead (see docs/ja/reference/config-yaml.md)"},
+
+	// services.* (docs/plans/api-gateway.md §2/PR1): the API gateway's
+	// service registry, one wildcard entry per service name — same
+	// wildcard-map shape as gateway.forges.* just above. auth.kind is a
+	// KindEnum whose EnumValues mirrors apigateway.AuthKind's initial set
+	// (bearer/basic/header/query/oauth2 — oauth2 reserved, PR2); the other
+	// auth.* leaves are plain strings since which ones are actually
+	// required depends on kind (validateServiceConfig in apigateway.go
+	// enforces that at document-decode time, not here — Schema only
+	// governs which KEYS exist, not their kind-conditional requiredness).
+	{Path: "services.*.base_url", Kind: KindString, Reload: ReloadRestartRequired},
+	// services.*.allow_insecure (codex review round 4 finding): required —
+	// not merely a suggestion — for base_url to use a non-https scheme. See
+	// validateServiceConfig's own doc comment in apigateway.go.
+	{Path: "services.*.allow_insecure", Kind: KindBool, Reload: ReloadRestartRequired},
+	{Path: "services.*.auth.kind", Kind: KindEnum, Reload: ReloadRestartRequired,
+		EnumValues: []string{"bearer", "basic", "header", "query", "oauth2"}},
+	{Path: "services.*.auth.secret_key", Kind: KindString, Reload: ReloadRestartRequired},
+	{Path: "services.*.auth.username", Kind: KindString, Reload: ReloadRestartRequired},
+	{Path: "services.*.auth.header", Kind: KindString, Reload: ReloadRestartRequired},
+	{Path: "services.*.auth.query", Kind: KindString, Reload: ReloadRestartRequired},
+	{Path: "services.*.auth.provider", Kind: KindString, Reload: ReloadRestartRequired},
+
+	// services_floor (docs/plans/api-gateway.md §3): the daemon-wide
+	// enabled-service floor, mirroring sandbox.allowed_domains' own
+	// KindStringArray/ReloadRestartRequired shape exactly.
+	{Path: "services_floor", Kind: KindStringArray, Reload: ReloadRestartRequired},
 }
 
 // segments splits a dotted path into its components. Exported for reuse by
@@ -216,4 +243,28 @@ func IsForgeEntryPath(path string) (id string, ok bool) {
 		return "", false
 	}
 	return segs[2], true
+}
+
+// IsServiceEntryPath reports whether path names a whole services.<name>
+// entry (exactly "services.<name>", no further segment) — the API
+// gateway's counterpart to IsForgeEntryPath above, given the identical
+// "removing a map entry removes the whole entry" treatment `boid config
+// unset` gives gateway.forges.<id> (docs/plans/volume-only-daemon.md
+// §論点 f). Without this, "boid config unset services.myapp" fell through
+// to the ordinary ResolveField path — which correctly reports it as not a
+// Set/Get leaf (schema_test.go's own `{"services.myapp", false}` case,
+// annotated "same as gateway.forges.github") — but Unset had no matching
+// special case to actually act on that "same as" comment, so the whole-
+// entry removal gateway.forges.<id> gets was silently absent for
+// services.<name> despite the parity the test comment implied. name is
+// returned when ok is true.
+func IsServiceEntryPath(path string) (name string, ok bool) {
+	segs := segments(path)
+	if len(segs) != 2 || segs[0] != "services" {
+		return "", false
+	}
+	if segs[1] == "" {
+		return "", false
+	}
+	return segs[1], true
 }

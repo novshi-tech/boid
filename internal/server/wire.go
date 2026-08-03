@@ -19,6 +19,7 @@ import (
 	"github.com/novshi-tech/boid/internal/adapters/claude"
 	"github.com/novshi-tech/boid/internal/api"
 	"github.com/novshi-tech/boid/internal/api/auth"
+	"github.com/novshi-tech/boid/internal/apigateway"
 	"github.com/novshi-tech/boid/internal/config"
 	"github.com/novshi-tech/boid/internal/dispatcher"
 	"github.com/novshi-tech/boid/internal/gitgateway"
@@ -1032,6 +1033,12 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 	// needs boidCfg + notifySvc, built further down) shares this same
 	// Registry — see the gitgateway.NewServer(...) call below.
 	srv.gatewayRegistry = gitgateway.NewRegistry()
+	// API gateway registry (docs/plans/api-gateway.md PR1): same role and
+	// same "built early, shared with the runner" timing as gatewayRegistry
+	// above — the two gateways are otherwise fully independent, right down
+	// to their own Registry types, and only share a listener (§論点1) at
+	// the very end of this function.
+	srv.apiGatewayRegistry = apigateway.NewRegistry()
 
 	// THE docker client — singular, and that is the point [round 2 Major 2,
 	// codex review 2026-07-26]. Two consumers need one: the container backend
@@ -1127,10 +1134,12 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 		// with a warning if detection failed; never fatal, and bounded by
 		// dispatcher's selfInspectTimeout so a wedged engine socket cannot
 		// stall startup here.
-		ReservedVolumeNames: reservedDaemonStateVolumes(context.Background(), selfInspector, dataHomeFor(cfg)),
-		GitGateway:          srv.gatewayRegistry,
-		GatewayURL:          &srv.gatewayURL,
-		GatewayCAPEM:        &srv.gatewayCAPEM,
+		ReservedVolumeNames:     reservedDaemonStateVolumes(context.Background(), selfInspector, dataHomeFor(cfg)),
+		GitGateway:              srv.gatewayRegistry,
+		GatewayURL:              &srv.gatewayURL,
+		GatewayCAPEM:            &srv.gatewayCAPEM,
+		APIGateway:              srv.apiGatewayRegistry,
+		APIGatewayServicesFloor: cfg.ServicesFloor,
 	})
 
 	// Sandbox backend construction (docs/plans/volume-only-daemon.md
@@ -1405,11 +1414,34 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 	}
 	gwCreds := gitgateway.NewCredentialProvider(boidCfg.Gateway.HostConfigs(), gwResolver)
 	gwHandler := gitgateway.NewServer(srv.gatewayRegistry, gwCreds, gatewayNotifier{notify: notifySvc})
-	srv.gatewayHTTPServer = &http.Server{Handler: gwHandler}
-	// Kept alongside gatewayHTTPServer so Start can additionally bind the
-	// TCP(mTLS) listener via gatewayHandler.ListenTLS
-	// (docs/plans/phase6-container-backend.md §PR4).
-	srv.gatewayHandler = gwHandler
+
+	// API gateway HTTP handler (docs/plans/api-gateway.md PR1) — the same
+	// resolver-nil-means-unconfigured convention as gwResolver above (its
+	// own comment applies here verbatim, substituting "API gateway" for
+	// "git gateway"). apiGwCreds' service registry comes from boidCfg.
+	// Services (config.yaml `services:`), validated at config load time —
+	// see config.Config.APIGatewayServices' own "already validated"
+	// invariant note.
+	var apiGwResolver apigateway.SecretResolver
+	if secretStore != nil {
+		apiGwResolver = func(namespace, key string) (string, error) {
+			return secretStore.Get(namespace, key)
+		}
+	}
+	apiGwCreds := apigateway.NewCredentialProvider(boidCfg.APIGatewayServices(), apiGwResolver)
+	apiGwHandler := apigateway.NewServer(srv.apiGatewayRegistry, apiGwCreds, apiGatewayNotifier{notify: notifySvc}, newAPIGatewayRecorder(taskRepo))
+
+	// Shared listener (docs/plans/api-gateway.md 論点1: "同居 — path prefix
+	// /j/ と /api/ で分岐"): combinedGatewayHandler dispatches by path
+	// prefix to whichever gateway a request targets. gatewayHTTPServer
+	// (the plaintext loopback listener, bound in Start) is served this
+	// combined handler directly; Start's TLS block reads
+	// srv.combinedGatewayHandler again to build the TCP(mTLS) listener's
+	// own *http.Server, since neither gateway's ListenTLS-style helper can
+	// serve a handler it didn't construct itself.
+	combined := &combinedGatewayHandler{git: gwHandler, api: apiGwHandler}
+	srv.gatewayHTTPServer = &http.Server{Handler: combined}
+	srv.combinedGatewayHandler = combined
 
 	// docs/plans/volume-only-daemon.md §論点a/b: `boid project add <git-url>`
 	// / `boid project fetch <id>` need an authenticated bare clone/fetch —

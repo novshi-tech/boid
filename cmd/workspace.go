@@ -307,6 +307,7 @@ func runWorkspaceShow(cmd *cobra.Command, args []string) error {
 
 		if meta := view.Meta; meta != nil {
 			fmt.Fprintf(out, "host_commands: %s\n", formatStringSlice(meta.HostCommands))
+			fmt.Fprintf(out, "services: %s\n", formatStringSlice(meta.Services))
 			if len(meta.Env) > 0 {
 				envKeys := make([]string, 0, len(meta.Env))
 				for k := range meta.Env {

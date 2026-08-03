@@ -22,6 +22,13 @@ func TestResolveField_KnownPaths(t *testing.T) {
 		{"gateway.hosts", true},          // MAJOR 1: recognized (KindOpaque), read-only legacy migration bridge
 		{"default_harness", false},       // removed in Phase 2.5 PR7 — deliberately absent
 		{"sandbox.alowed_domains", false},
+		// docs/plans/api-gateway.md §2/§3.
+		{"services.myapp.base_url", true},
+		{"services.myapp.allow_insecure", true},
+		{"services.myapp.auth.kind", true},
+		{"services.myapp.auth.secret_key", true},
+		{"services.myapp", false}, // whole entry, not a Set/Get leaf — same as gateway.forges.github
+		{"services_floor", true},
 	}
 	for _, tc := range cases {
 		_, ok := ResolveField(tc.path)
@@ -47,6 +54,27 @@ func TestIsForgeEntryPath(t *testing.T) {
 	}
 }
 
+// TestIsServiceEntryPath mirrors TestIsForgeEntryPath for
+// services.<name> (docs/plans/api-gateway.md §2).
+func TestIsServiceEntryPath(t *testing.T) {
+	name, ok := IsServiceEntryPath("services.myapp")
+	if !ok || name != "myapp" {
+		t.Errorf("IsServiceEntryPath(services.myapp) = (%q, %v), want (myapp, true)", name, ok)
+	}
+	if _, ok := IsServiceEntryPath("services.myapp.base_url"); ok {
+		t.Errorf("IsServiceEntryPath(services.myapp.base_url) should be false (leaf, not entry)")
+	}
+	if _, ok := IsServiceEntryPath("services"); ok {
+		t.Errorf("IsServiceEntryPath(services) should be false (no name segment)")
+	}
+	if _, ok := IsServiceEntryPath("sandbox.allowed_domains"); ok {
+		t.Errorf("IsServiceEntryPath(sandbox.allowed_domains) should be false")
+	}
+	if _, ok := IsServiceEntryPath("gateway.forges.github"); ok {
+		t.Errorf("IsServiceEntryPath(gateway.forges.github) should be false")
+	}
+}
+
 // TestSchema_ReloadClassification pins the PR #830 round-4 simplification
 // (nose directive): every leaf that used to be ReloadDynamic
 // (sandbox.allowed_domains, notify.command, web.public_url) is now
@@ -63,6 +91,8 @@ func TestSchema_ReloadClassification(t *testing.T) {
 		"gc.enabled":                       true,
 		"web.http_addr":                    true,
 		"log.level":                        true,
+		"services.myapp.base_url":          true,
+		"services_floor":                   true,
 	}
 	for path := range restartRequired {
 		spec, ok := ResolveField(path)

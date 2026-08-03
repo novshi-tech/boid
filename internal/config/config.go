@@ -21,6 +21,22 @@ type Config struct {
 	Sandbox SandboxConfig `yaml:"sandbox"`
 	TaskAsk TaskAskConfig `yaml:"task_ask"`
 	Gateway GatewayConfig `yaml:"gateway"`
+	// Services declares the API gateway's service registry (docs/plans/
+	// api-gateway.md §2) — a top-level key, deliberately NOT nested under
+	// Gateway (which is git-gateway-specific: per-forge Basic-auth
+	// credential config). See ServiceConfig's own doc comment.
+	Services map[string]ServiceConfig `yaml:"services,omitempty"`
+	// ServicesFloor is the daemon-wide set of service names enabled for
+	// EVERY workspace, mirroring sandbox.allowed_domains' own floor role
+	// (docs/plans/api-gateway.md §3: "allowed_domains の floor + workspace
+	// 加算方式を鏡写しにする"). A workspace's own
+	// WorkspaceMeta.Services list adds to this floor — see
+	// orchestrator.ResolveEnabledServices. An entry naming a service not
+	// declared under Services is not a load error (see UnmarshalYAML's
+	// handling below) — it just never resolves to anything at dispatch
+	// time, the same lenient-string-list posture allowed_domains' floor has
+	// always had.
+	ServicesFloor []string `yaml:"services_floor,omitempty"`
 }
 
 // LogConfig holds daemon logging settings.
@@ -393,6 +409,8 @@ func (c *Config) UnmarshalYAML(value *yaml.Node) error {
 			// Deprecated: use Forges.
 			Hosts []gitgateway.HostForgeConfig `yaml:"hosts"`
 		} `yaml:"gateway"`
+		Services      map[string]ServiceConfig `yaml:"services"`
+		ServicesFloor []string                 `yaml:"services_floor"`
 	}
 	if err := value.Decode(&raw); err != nil {
 		return err
@@ -535,6 +553,37 @@ func (c *Config) UnmarshalYAML(value *yaml.Node) error {
 		}
 	}
 	c.Gateway = GatewayConfig{Forges: forges}
+
+	// services: (docs/plans/api-gateway.md §2). Every entry is validated
+	// eagerly here — the same "fail config.yaml load, not just skip the
+	// service" posture gateway.forges entries get — since
+	// APIGatewayServices' own "already validated" invariant depends on it.
+	if len(raw.Services) > 0 {
+		for name, sc := range raw.Services {
+			if err := validateServiceConfig(name, sc); err != nil {
+				return err
+			}
+		}
+		c.Services = raw.Services
+	}
+
+	// services_floor: (docs/plans/api-gateway.md §3). Deliberately NOT
+	// validated against c.Services the way gateway.forges entries are
+	// validated against known forge kinds — mirrors sandbox.
+	// allowed_domains' floor, which has never validated its entries against
+	// anything either. An entry naming an undeclared service is warned
+	// about (a likely typo) but does not fail config load: the floor is
+	// still a plain string list at this layer, and dispatch-time resolution
+	// (orchestrator.ResolveEnabledServices) simply produces a service name
+	// CredentialProvider.KnowsService will 502 on, same as any other
+	// unconfigured-service request.
+	c.ServicesFloor = raw.ServicesFloor
+	for _, name := range raw.ServicesFloor {
+		if _, ok := c.Services[name]; !ok {
+			slog.Warn("services_floor names a service that is not declared under services:; it will never resolve to anything at dispatch time",
+				"service", name)
+		}
+	}
 
 	return nil
 }

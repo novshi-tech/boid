@@ -101,7 +101,7 @@ var configSetCmd = &cobra.Command{
 
 var configUnsetCmd = &cobra.Command{
 	Use:   "unset <dotted.key>",
-	Short: "Remove a key (gateway.forges.<id> with no further segment removes the whole entry)",
+	Short: "Remove a key (gateway.forges.<id> or services.<name> with no further segment removes the whole entry)",
 	Args:  cobra.ExactArgs(1),
 	RunE:  runConfigUnset,
 }

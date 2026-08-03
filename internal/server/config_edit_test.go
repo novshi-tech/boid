@@ -210,6 +210,50 @@ func TestApplyConfigYAML_GatewayForges_RestartRequiredWarning(t *testing.T) {
 	}
 }
 
+// TestApplyConfigYAML_Services_RestartRequiredWarning pins the
+// docs/plans/api-gateway.md §2/PR1 counterpart of
+// TestApplyConfigYAML_GatewayForges_RestartRequiredWarning: a services.<name>
+// leaf change produces exactly one restart-required warning naming the
+// specific leaf that changed (via changedServiceLeaves), not a generic
+// "something under services changed" message.
+func TestApplyConfigYAML_Services_RestartRequiredWarning(t *testing.T) {
+	srv, _ := newConfigTestServer(t)
+
+	// First apply creates the entry wholesale — changedServiceLeaves reports
+	// just the service name for a brand-new entry (same convention as
+	// changedForgeLeaves: "no single leaf is more 'the' changed one than
+	// another when the whole entry appeared"), not a per-field breakdown.
+	if _, err := srv.ApplyConfigYAML([]byte(
+		"services:\n  myapp:\n    base_url: https://myapp.example.com\n    auth: { kind: bearer, secret_key: myapp-token }\n"),
+		"", true); err != nil {
+		t.Fatalf("ApplyConfigYAML (create): %v", err)
+	}
+
+	// Second apply changes base_url, auth.kind, and auth.secret_key on the
+	// already-existing entry — this is where per-leaf granularity shows up.
+	result, err := srv.ApplyConfigYAML([]byte(
+		"services:\n  myapp:\n    base_url: https://myapp-v2.example.com\n    auth: { kind: header, header: X-Api-Key, secret_key: myapp-token-v2 }\n"),
+		"", true)
+	if err != nil {
+		t.Fatalf("ApplyConfigYAML (change): %v", err)
+	}
+	var gotBaseURL, gotKind, gotSecretKey bool
+	for _, w := range result.Warnings {
+		if strings.Contains(w, "services.myapp.base_url requires") {
+			gotBaseURL = true
+		}
+		if strings.Contains(w, "services.myapp.auth.kind requires") {
+			gotKind = true
+		}
+		if strings.Contains(w, "services.myapp.auth.secret_key requires") {
+			gotSecretKey = true
+		}
+	}
+	if !gotBaseURL || !gotKind || !gotSecretKey {
+		t.Errorf("Warnings = %v, want base_url + auth.kind + auth.secret_key leaf warnings", result.Warnings)
+	}
+}
+
 // TestApplyConfigYAML_GatewayForges_MultipleLeafChanges pins MINOR 2: two
 // leaves changing on the SAME forge id in one apply produce two separate,
 // individually-named warnings.
@@ -260,6 +304,8 @@ func TestApplyConfigYAML_RestartRequiredFields_AllWarn(t *testing.T) {
 		{"sandbox.allowed_domains", "sandbox:\n  allowed_domains:\n    - .example.com\n", "sandbox.allowed_domains"},
 		{"notify.command", "notify:\n  command: [\"/bin/true\"]\n", "notify.command"},
 		{"web.public_url", "web:\n  public_url: https://boid.example.com\n", "web.public_url"},
+		// docs/plans/api-gateway.md §3.
+		{"services_floor", "services_floor:\n  - myapp\n", "services_floor"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

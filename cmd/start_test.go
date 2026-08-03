@@ -154,6 +154,56 @@ func TestBuildStartConfig_LogLevelFromConfig(t *testing.T) {
 	}
 }
 
+// TestBuildStartConfig_ServicesFloorFromConfig pins that config.yaml's
+// `services_floor` flows through to server.Config.ServicesFloor unchanged —
+// the same "captured once at daemon startup, ReloadRestartRequired" pattern
+// AllowedDomains already has (docs/plans/api-gateway.md §3, mirroring
+// sandbox.allowed_domains' own floor). This is the one hop in the config.yaml
+// services_floor -> Config.ServicesFloor -> dispatcher.WireConfig.
+// APIGatewayServicesFloor -> Runner.APIGatewayServicesFloor chain that isn't
+// already covered by internal/config's own parse tests or
+// internal/dispatcher's resolveEnabledAPIServices tests.
+func TestBuildStartConfig_ServicesFloorFromConfig(t *testing.T) {
+	configHome := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", configHome)
+	if err := os.MkdirAll(filepath.Join(configHome, "boid"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	configPath := filepath.Join(configHome, "boid", "config.yaml")
+	if err := os.WriteFile(configPath, []byte("services_floor:\n  - myapp\n  - bitbucket-api\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := buildStartConfig(startConfigOptions{})
+	if err != nil {
+		t.Fatalf("buildStartConfig() error = %v", err)
+	}
+	want := []string{"myapp", "bitbucket-api"}
+	if len(cfg.ServicesFloor) != len(want) {
+		t.Fatalf("ServicesFloor = %v, want %v", cfg.ServicesFloor, want)
+	}
+	for i, v := range want {
+		if cfg.ServicesFloor[i] != v {
+			t.Fatalf("ServicesFloor = %v, want %v", cfg.ServicesFloor, want)
+		}
+	}
+}
+
+// TestBuildStartConfig_ServicesFloorUnset_Empty pins the default: no
+// `services_floor:` key in config.yaml leaves cfg.ServicesFloor empty rather
+// than nil-panicking or defaulting to something surprising.
+func TestBuildStartConfig_ServicesFloorUnset_Empty(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+
+	cfg, err := buildStartConfig(startConfigOptions{})
+	if err != nil {
+		t.Fatalf("buildStartConfig() error = %v", err)
+	}
+	if len(cfg.ServicesFloor) != 0 {
+		t.Fatalf("ServicesFloor = %v, want empty", cfg.ServicesFloor)
+	}
+}
+
 // TestBuildStartConfig_LogLevelUnset_Empty pins the default: no `log:` block
 // in config.yaml (the common case, and every pre-log.level config.yaml)
 // leaves cfg.LogLevel empty, the no-op internal/daemon.ApplyLogLevel treats

@@ -34,6 +34,9 @@ has the same shape:
 17. [payload_patch direct-pass merge parity, persistence, and concurrency](#17-payload_patch-direct-pass-merge-parity-persistence-and-concurrency)
 18. [engine wait response → RuntimeExit → job status/diagnostics](#18-engine-wait-response--runtimeexit--job-statusdiagnostics)
 19. [config schema seam (schema leaf → Config field → extractor → buildStartConfig → consumer)](#19-config-schema-seam)
+20. [WorkspaceMeta write-path field coverage (strict PUT vs envelope apply)](#20-workspacemeta-write-path-field-coverage)
+21. [apigateway SecretResolver namespace threading (sibling of #11)](#21-apigateway-secretresolver-namespace-threading)
+22. [orchestrator.Action → timeline.Build renderability](#22-orchestratoraction--timelinebuild-renderability)
 
 ---
 
@@ -1005,3 +1008,173 @@ first four links are self-defending; the last two are not.
   test asserting that copy, the same way `TestBuildStartConfig_LogLevelFromConfig` does. Don't
   stop at "the schema/extractor tests pass" — that only proves the key round-trips through
   config.yaml, not that anything reads it.
+
+## 20. WorkspaceMeta write-path field coverage
+
+Whether a `WorkspaceMeta` field a caller reads back after a write actually survived that
+*specific* write path — `WorkspaceMeta` has **two independently-maintained write paths that
+do not cover the same field set**, and nothing enforces they agree.
+
+- **End A (strict PUT)**: `POST /api/workspaces` (create) and `PUT /api/workspaces/{slug}`
+  (edit) decode the request body through `workspaceMetaStrict`
+  (`internal/orchestrator/workspace_meta_strict.go`), then hand the result straight to
+  `WorkspaceRepository.Create`/`UpdateIfRevisionMatches` — an **unconditional whole-row
+  column write** from whatever that strict type decoded. `workspaceMetaStrict` does **not**
+  declare `TaskBehaviors`/`BaseBranch`/`ForkPoint`/`DefaultTaskBehavior` at all (its own doc
+  comment calls this out as a deliberate "PR3 scope boundary" that was never revisited), so a
+  document decoded through this path always resolves those four fields to their Go zero value.
+- **End B (envelope apply)**: `POST /api/workspaces/apply` decodes through
+  `decodeWorkspaceEnvelopeSpec` into a `WorkspaceEnvelopeApply`, whose `FieldsPresent` map
+  gates `MergeInto` per spec.* key — a key **absent** from the submitted document leaves the
+  workspace's current value for that field completely untouched. This path *does* support all
+  four fields End A is missing.
+- **Invariant**: a caller that wants to change **one** `WorkspaceMeta` field while leaving
+  every other field (in particular task_behaviors/base_branch/fork_point/
+  default_task_behavior) untouched **must** go through End B with a minimal document (spec
+  carrying only the key(s) it means to touch — built as a bare `map[string]any`, never by
+  marshaling a `WorkspaceEnvelopeSpec` struct literal, since that type deliberately has no
+  `omitempty` and would emit every other field as an explicit empty value, clearing them). A
+  GET-full-meta-then-PUT-whole-meta-back round trip through End A will either 400 (if the
+  fetched meta happens to carry a value in one of the four missing fields — the strict decoder
+  rejects an unrecognized key under `KnownFields(true)`) or, were the decoder ever loosened to
+  tolerate them, silently wipe those four fields on every such write.
+- **Past break**: caught in review (not yet shipped) for `boid workspace services add/remove`
+  (docs/plans/api-gateway.md PR1, `cmd/workspace_services.go`): the first cut fetched the full
+  meta via GET, mutated only `Services`, and PUT the whole thing back through End A — confirmed
+  empirically to 400 with `field task_behaviors not found in type
+  orchestrator.workspaceMetaStrict` against a workspace that had `task_behaviors` set. Fixed by
+  switching to End B with a `{"spec": {"services": [...]}}`-only document.
+- **Guard**: `TestRunWorkspaceServices_Add_PreservesTaskBehaviorsAndBaseBranch`
+  (`cmd/workspace_services_test.go`) pins the fix end-to-end. There is otherwise no generic
+  test asserting End A and End B agree on field coverage — `workspaceMetaStrict`'s own
+  "keep in sync with WorkspaceMeta" doc comment is aspirational prose, not an enforced
+  invariant (contrast with `bareMetaKnownFieldNames`, which a **reflective** test,
+  `TestBareMetaKnownFieldNames_CoversEveryWorkspaceMetaField`, does keep honest — that test
+  only proves envelope detection recognizes the key, not that `workspaceMetaStrict` can carry
+  its value).
+- **When you touch it**: if you add a new CLI/API surface that reads a `WorkspaceMeta` field
+  back and writes a single field in isolation, use End B (the envelope apply path) with a
+  minimal spec document, not a GET-then-PUT round trip through End A — and if you add a new
+  field to `WorkspaceMeta` itself, decide up front whether `workspaceMetaStrict` needs it too
+  (most fields should be added to **both** decoders; the four PR3-era fields are the one
+  known, deliberate exception, not a precedent to extend casually).
+
+## 21. apigateway SecretResolver namespace threading
+
+Sibling of seam #11, for `internal/apigateway` (docs/plans/api-gateway.md PR1). Same
+concern, different gateway: whether a workspace-scoped secret namespace, chosen at
+dispatch time, actually reaches the `SecretResolver` call that resolves the upstream
+credential for a proxied request — namespace propagation across register → store →
+recover → resolve, where any hop that drops the namespace silently collapses every
+workspace back onto the `"default"` secret namespace.
+
+- **End A (register)**: `Runner.registerAPIGatewayToken` in
+  `internal/dispatcher/apigateway_wire.go` calls `r.APIGateway.Register(services,
+  spec.SecretNamespace, spec.TaskID, readOnly)`.
+- **End B (store)**: `apigateway.Registry.Register`/`RegisterToken`
+  (`internal/apigateway/registry.go`) persist the namespace on `Entry.Namespace`.
+- **End C (recover)**: `Server.ServeHTTP` (`internal/apigateway/server.go`) — a SINGLE
+  `Registry.Lookup(rt.token)` call recovers the whole `Entry` (token validity, `Services`
+  membership, `ReadOnly`, `Namespace`, `TaskID`) in one snapshot, which is stashed on the
+  request-scoped `routeInfo` and read back by both the fail-fast `credentials.Resolve`
+  pre-check and the `ReverseProxy.Rewrite` hook's `credentials.Inject` call. This is
+  deliberately NOT `Registry.Authorize` (whose own internal `Lookup`) followed by a second,
+  independent `Lookup` for the fields `Authorize`'s bool return doesn't expose — that
+  two-call shape was PR1's original code and had a real TOCTOU: `Unregister` (job
+  completion) landing in the window between the two calls handed the second `Lookup` a
+  zero-value `Entry` (`ReadOnly=false`, `Namespace=""`) while `allowed` had already been
+  computed `true` from the first, pre-race call — silently bypassing the read-only gate for
+  a since-completed job's in-flight request AND mis-scoping credential resolution to the
+  `"default"` namespace instead of erroring. Caught in review (codex, round 4) and fixed by
+  collapsing to the single-Lookup shape above; `Registry.Authorize` itself is unchanged and
+  still independently tested (`registry_test.go`) — it is simply no longer `Server.ServeHTTP`'s
+  own call path.
+- **End D (resolve)**: `apigateway.SecretResolver` (`func(namespace, key string) (string,
+  error)`, `internal/apigateway/credentials.go`) — the closure built in
+  `internal/server/wire.go` (`apiGwResolver`) passes `namespace` straight through to
+  `secretStore.Get(namespace, key)`, which normalizes `""` to `"default"`
+  (`dispatcher.SecretStore.normalizeNamespace`).
+- **Invariant**: identical to seam #11's — the namespace a token was registered with
+  (End A/B) is exactly the namespace `Resolve`/`Inject` resolve credentials against for
+  every request authorized under that token (End C/D). No hop may substitute, drop, or
+  hardcode a different namespace.
+- **Past gap**: PR1 shipped with End D tested in isolation
+  (`TestCredentialProvider_MultiNamespaceIsolation`, `internal/apigateway/
+  credentials_test.go`) but no test proving End A→B (`spec.SecretNamespace` reaching
+  `Entry.Namespace` through a real `Dispatch`) or End B→C→D (two tokens, two namespaces,
+  routed to two different secrets through a real `Registry` + `Server`) — the exact two
+  tests seam #11 already has for the sibling gateway. Caught in review (boid-review
+  self-check before PR1's first push) by cross-referencing this catalog entry against the
+  diff; fixed by adding both.
+- **Guard**: `TestDispatch_RegistersAPIGatewayTokenWithSecretNamespace`
+  (`internal/dispatcher/apigateway_wire_test.go`, End A→B) and
+  `TestServer_RoutesCredentialsByTokenNamespace` (`internal/apigateway/server_test.go`,
+  End B→C→D).
+- **When you touch it**: if you touch `registerAPIGatewayToken`,
+  `apigateway.Registry.Register`/`RegisterToken`, `Server.ServeHTTP`'s post-`Authorize`
+  block, or the `apiGwResolver` closure in `internal/server/wire.go`, verify a token
+  registered under namespace X still resolves credentials under namespace X — and keep this
+  entry and #11 in sync if either gateway's namespace-threading shape changes (e.g. PR2's
+  oauth2 TokenSource will need the same namespace to key its own token-cache lookup).
+
+## 22. orchestrator.Action → timeline.Build renderability
+
+Whether an `orchestrator.Action` a caller writes (via `TaskRepository.CreateAction`) is
+actually visible anywhere a human looks — `timeline.Build` (`internal/timeline/timeline.go`)
+is the **sole** function that turns `[]*Action` into what the Web UI's task-detail page
+renders (`internal/api/web.go`'s `GET /tasks/{id}` route; the TUI that used to be the other
+consumer was retired outright, `internal/tui` no longer exists), and its per-item filter is
+narrower than "every Action row that exists":
+
+```go
+if !IsStateTransition(a) && !IsProgressAction(a) && !IsAPIGatewayRequestAction(a) {
+    continue  // silently dropped — never becomes an Event in any StatusGroup
+}
+```
+
+- **End A (writer)**: any `TaskRepository.CreateAction` call site that means for the row to
+  show up in the timeline — `api.TaskAppService.NotifyTask`'s progress-mode branch
+  (`internal/api/task_notify.go`), `internal/server`'s `newAPIGatewayRecorder`
+  (`apigateway_notify.go`), and any future one.
+- **End B (renderer)**: `timeline.Build`'s filter + `BuildActionLabel`
+  (`internal/timeline/timeline.go`) — a `Type` this file doesn't recognize as a state
+  transition, `"progress"`, or one of its own named non-transitioning kinds
+  (`IsAPIGatewayRequestAction`, ...) never reaches an `Event`, no matter what its payload
+  contains.
+- **Invariant**: a **non-transitioning** Action (no real `FromStatus`→`ToStatus` state
+  change — an FYI/audit row, not a lifecycle event) must set `FromStatus == ToStatus ==` the
+  task's CURRENT status at write time (fetch it first if the caller doesn't already have it
+  — `task.Status` right before `CreateAction`), AND its `Type` must be one `IsProgressAction`
+  or an equivalent `Is*Action` predicate in `internal/timeline` recognizes. Missing either
+  half breaks visibility a different way: a recognized `Type` with `FromStatus`/`ToStatus`
+  left at their zero value opens a spurious empty-status `StatusGroup` nothing ever renders
+  into or navigates to (group placement reads `a.FromStatus` unconditionally for every
+  non-job item); an unrecognized `Type` (even with FromStatus/ToStatus correctly set) is
+  filtered out before group placement ever runs.
+- **Past break**: caught in review (not yet shipped) for the API gateway's request-timeline
+  recording (docs/plans/api-gateway.md §論点3, `internal/server/apigateway_notify.go`): the
+  first cut wrote `Action{TaskID, Type: "api_gateway_request", Payload}` with
+  `FromStatus`/`ToStatus` left at their zero value. The row landed in the DB and every test
+  that only asserted `ListActionsByTask` passed, but the feature the plan doc claims
+  ("method + service + path + status を timeline に") was invisible on the actual Web UI
+  page — confirmed empirically by feeding the exact Action `newAPIGatewayRecorder` produced
+  through a real `timeline.Build` call and observing it in no `StatusGroup`'s `Events`.
+  Fixed by (a) fetching the task and setting `FromStatus = ToStatus = task.Status` before
+  `CreateAction`, and (b) adding `timeline.IsAPIGatewayRequestAction` +
+  `timeline.ActionTypeAPIGatewayRequest` (exported so the writer and the two readers share
+  one string, not two hand-copied literals) and wiring it into `Build`'s filter and
+  `BuildActionLabel`.
+- **Guard**: `TestNewAPIGatewayRecorder_ActionIsVisibleInTimeline`
+  (`internal/server/apigateway_notify_test.go`) round-trips a recorded Action through a real
+  `timeline.Build` and asserts it appears with the expected label — the class of test this
+  seam needs (not merely "the DB row has the right Type/Payload", which the same file's
+  other tests already covered and which would NOT have caught this).
+- **When you touch it**: if you add a new kind of non-transitioning `Action` meant to show up
+  in a task's timeline, (1) give it its own exported `ActionType*` constant + `Is*Action`
+  predicate in `internal/timeline` (don't just reuse `"progress"` if the payload shape
+  differs — `buildProgressLabel` expects a `message` key and silently degrades to a bare
+  "進捗" for anything else), (2) wire the predicate into `Build`'s filter AND
+  `BuildActionLabel`, and (3) set `FromStatus`/`ToStatus` to the task's current status at
+  write time. Write a test that calls `timeline.Build` on the real Action your writer
+  produces and asserts it surfaces as an `Event` — a test that only inspects
+  `ListActionsByTask`'s return value proves the DB write, not the feature.

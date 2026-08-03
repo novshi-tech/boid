@@ -195,6 +195,77 @@ func TestResolveAllowedDomains(t *testing.T) {
 	})
 }
 
+func TestResolveEnabledServices(t *testing.T) {
+	t.Parallel()
+
+	floor := []string{"myapp", "bitbucket-api"}
+
+	t.Run("nil workspace returns floor", func(t *testing.T) {
+		got := ResolveEnabledServices(floor, nil)
+		if !equalStringSlice(got, floor) {
+			t.Errorf("got %v, want %v", got, floor)
+		}
+	})
+
+	t.Run("empty workspace returns floor", func(t *testing.T) {
+		got := ResolveEnabledServices(floor, &WorkspaceMeta{})
+		if !equalStringSlice(got, floor) {
+			t.Errorf("got %v, want %v", got, floor)
+		}
+	})
+
+	t.Run("workspace adds entries on top of floor", func(t *testing.T) {
+		ws := &WorkspaceMeta{Services: []string{"myapp-ops", "legacy"}}
+		got := ResolveEnabledServices(floor, ws)
+		want := []string{"myapp", "bitbucket-api", "myapp-ops", "legacy"}
+		if !equalStringSlice(got, want) {
+			t.Errorf("got %v, want %v", got, want)
+		}
+	})
+
+	t.Run("workspace duplicates of floor are dropped", func(t *testing.T) {
+		ws := &WorkspaceMeta{Services: []string{"myapp", "myapp-ops"}}
+		got := ResolveEnabledServices(floor, ws)
+		want := []string{"myapp", "bitbucket-api", "myapp-ops"}
+		if !equalStringSlice(got, want) {
+			t.Errorf("got %v, want %v", got, want)
+		}
+	})
+
+	t.Run("matching is case-sensitive, unlike domains", func(t *testing.T) {
+		ws := &WorkspaceMeta{Services: []string{"MYAPP"}}
+		got := ResolveEnabledServices(floor, ws)
+		want := []string{"myapp", "bitbucket-api", "MYAPP"}
+		if !equalStringSlice(got, want) {
+			t.Errorf("got %v, want %v (service names are identifiers, not domains — no case folding)", got, want)
+		}
+	})
+
+	t.Run("workspace cannot remove floor entries", func(t *testing.T) {
+		ws := &WorkspaceMeta{Services: nil}
+		got := ResolveEnabledServices(floor, ws)
+		if !equalStringSlice(got, floor) {
+			t.Errorf("got %v, want %v (floor preserved)", got, floor)
+		}
+	})
+
+	t.Run("blank and whitespace entries are skipped", func(t *testing.T) {
+		ws := &WorkspaceMeta{Services: []string{"", "  ", "myapp-ops"}}
+		got := ResolveEnabledServices(nil, ws)
+		want := []string{"myapp-ops"}
+		if !equalStringSlice(got, want) {
+			t.Errorf("got %v, want %v", got, want)
+		}
+	})
+
+	t.Run("nil floor and nil workspace returns empty", func(t *testing.T) {
+		got := ResolveEnabledServices(nil, nil)
+		if len(got) != 0 {
+			t.Errorf("got %v, want empty", got)
+		}
+	})
+}
+
 func equalStringSlice(a, b []string) bool {
 	if len(a) != len(b) {
 		return false

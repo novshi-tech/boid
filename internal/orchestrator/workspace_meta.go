@@ -58,6 +58,22 @@ type WorkspaceMeta struct {
 	// here, fetch-only by construction.
 	ExtraRepos []string `yaml:"extra_repos,omitempty" json:"extra_repos,omitempty"`
 
+	// Services is the workspace-scoped list of API gateway logical service
+	// names ENABLED for this workspace, on top of config.yaml's
+	// services_floor (docs/plans/api-gateway.md §3: "workspace 単位の
+	// service 有効化 — allowed_domains の floor + workspace 加算方式を鏡写し
+	// にする"). Same additive, floor-cannot-shrink relationship to the
+	// daemon-wide floor as AllowedDomains has to sandbox.allowed_domains —
+	// a workspace can only ADD services on top of the floor, never remove a
+	// floor entry. An entry naming a service config.yaml's `services:` map
+	// does not actually declare is not rejected here (WorkspaceMeta has no
+	// visibility into the daemon's service registry) — it simply never
+	// resolves to anything reachable at dispatch time; see
+	// ResolveEnabledServices and internal/apigateway.CredentialProvider.
+	// KnowsService, which is the layer that actually enforces "is this
+	// service configured at all".
+	Services []string `yaml:"services,omitempty" json:"services,omitempty"`
+
 	// HostCommands is the reference-name list into the aggregated
 	// host_commands config assembled at daemon startup (see
 	// host_commands_config.go's LoadHostCommandsFromKits /
@@ -194,6 +210,43 @@ func ResolveAllowedDomains(globalFloor []string, workspace *WorkspaceMeta) []str
 	if workspace != nil {
 		for _, d := range workspace.AllowedDomains {
 			add(d)
+		}
+	}
+	return out
+}
+
+// ResolveEnabledServices returns the effective API gateway service allowlist
+// for a job dispatched under workspace: the additive union of the
+// daemon-wide floor (config.yaml services_floor) and the workspace's own
+// Services list (docs/plans/api-gateway.md §3). The workspace cannot remove
+// entries from the floor.
+//
+// Unlike ResolveAllowedDomains, matching is case-SENSITIVE: a service name
+// is an arbitrary config.yaml map key (an identifier), not a domain name, so
+// there is no DNS-style case-insensitivity convention to honor here.
+// Duplicate entries are de-duplicated while preserving first-seen order,
+// same as ResolveAllowedDomains. workspace may be nil (no workspace
+// overrides).
+func ResolveEnabledServices(floor []string, workspace *WorkspaceMeta) []string {
+	seen := make(map[string]struct{}, len(floor))
+	out := make([]string, 0, len(floor))
+	add := func(s string) {
+		s = strings.TrimSpace(s)
+		if s == "" {
+			return
+		}
+		if _, ok := seen[s]; ok {
+			return
+		}
+		seen[s] = struct{}{}
+		out = append(out, s)
+	}
+	for _, s := range floor {
+		add(s)
+	}
+	if workspace != nil {
+		for _, s := range workspace.Services {
+			add(s)
 		}
 	}
 	return out

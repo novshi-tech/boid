@@ -300,6 +300,7 @@ func buildStartConfig(opts startConfigOptions) (server.Config, error) {
 		}
 	}
 	cfg.AllowedDomains = append(cfg.AllowedDomains, appCfg.Sandbox.AllowedDomains...)
+	cfg.ServicesFloor = appCfg.ServicesFloor
 	cfg.LogLevel = appCfg.Log.Level
 
 	return cfg, nil

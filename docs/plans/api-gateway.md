@@ -1,6 +1,6 @@
 # 汎用 API gateway (認証注入リバースプロキシ) + OAuth2 対応 計画
 
-ステータス: 設計ドラフト (2026-08-03 nose レビュー 1 巡目反映済み、実装未着手)
+ステータス: PR1 (gateway 本体、static 注入のみ) 実装完了・レビュー中 (2026-08-03)。PR2 (OAuth2 TokenSource) / PR3 (login flow) は未着手。
 作成日: 2026-08-03
 親ドキュメント: [git-gateway-cutover.md](git-gateway-cutover.md) — 本計画は git gateway の認証注入モデルを git 以外の HTTP API へ汎用化する。認証情報一元管理の観点では [host-command-contract.md](host-command-contract.md) の後継でもある。
 
@@ -95,11 +95,25 @@ route namespace を切る:
 curl "$BOID_API_BASE/myapp/v1/users"
 ```
 
-- job への配布形態は `BOID_API_BASE=http://boid-gateway:<port>/api/<job-token>` の
+- job への配布形態は `BOID_API_BASE=https://boid-gateway:<port>/api/<job-token>` の
   env 注入、または `boid job env` 的な sandbox 内 introspection コマンド (論点 2、
   半確定)。token 埋め込み URL 方式自体は git gateway の clone URL と同じ前例。
   curl でも SDK でも base URL 差し替えだけで動くことが host command 方式に対する
-  本質的な利点。
+  本質的な利点 — **ただし container backend では TLS 証明書の trust に一段注意が要る**
+  (実装時の codex レビューで判明、下記注記参照)。
+- **TLS trust の注記 (PR1 実装時に判明)**: container backend では gateway listener
+  (git gateway と共有) が daemon 内蔵 CA で署名された TLS を使うため、標準的な
+  curl/Python 等は `BOID_API_BASE` に素の `curl` を投げるだけでは証明書検証に失敗する。
+  `BOID_API_CA_FILE` (daemon CA の PEM path) を env 注入するので
+  `curl --cacert "$BOID_API_CA_FILE" "$BOID_API_BASE/..."` や
+  `requests.get(url, verify=os.environ["BOID_API_CA_FILE"])` のように明示的に渡す
+  必要がある。Node.js のみ `NODE_EXTRA_CA_CERTS` (Node 公式ドキュメントで「既存の
+  root CA 群に追加される」と明記された加算的な変数) を注入しているため
+  flag 無しで動く。`SSL_CERT_FILE`/`CURL_CA_BUNDLE` 等の一括置換系変数は
+  他の https 通信 (pypi.org 等) の trust を壊すため意図的に使わない。
+  「base URL 差し替えだけで動く」は http (TLS 無し) の service、または Node SDK
+  に限っては文字通り成立するが、curl/Python 等 + TLS service の組み合わせは
+  1 flag の追加が必要、という限定付きの利点として理解すること。
 - `boid-gateway` は egress proxy の dotless 許可リスト
   (`internal/sandbox/proxy.go` `isRefusedDotlessTarget`) に既に載っている
   boid インフラ名で、no_proxy 配線も既存のものをそのまま使う。

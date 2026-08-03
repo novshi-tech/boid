@@ -277,6 +277,9 @@ project の実行環境 (`host_commands` / `env` / `capabilities` / `allowed_dom
 | `boid workspace edit-init-script <slug> [--force]` | `init.sh` を `$EDITOR` (既定 vi) で編集し、保存時に適用。 未設定なら空バッファで始まる。 適用に失敗した場合は編集内容を temp file に残してその path を報告する |
 | `boid workspace unset-init-script <slug> [--force]` | workspace の `init.sh` を削除し、script 実行なしの状態に戻す。 HOME volume とその中身には触れない |
 | `boid workspace remove <slug> [--force\|--yes]` (alias: `delete`) | ワークスペースを削除 (割り当て済み project は `default` へ再割当。`default` 自体は削除不可)。home volume と **workspace の `init.sh`** も削除する (どちらも best-effort — 失敗しても remove 自体は成功し、warning で報告する)。home のサイズ表示付き確認プロンプトが出る (`--force`/`--yes` でスキップ)。詳細は [workspace home ガイド](../guide/workspace-home.md#workspace-の削除) |
+| `boid workspace services add <slug> <service> [service...]` | workspace 単位で API gateway service を有効化 (docs/plans/api-gateway.md §3)。GET で現在の `Services` を取得 → 追記 (重複は無視) → `spec.services` のみを持つ最小 envelope を `POST /api/workspaces/apply` — `task_behaviors`/`host_commands` など他フィールドは一切触らない (`edit` の PUT 経路は `workspaceMetaStrict` に `task_behaviors` 等の field が無いため使えない — 使うと 400 になるか、対応していたとしても他フィールドを空に巻き戻してしまう) |
+| `boid workspace services remove <slug> <service> [service...]` | 有効化済み API gateway service を無効化。存在しない名前を指定してもエラーにならない (no-op) |
+| `boid workspace services list <slug>` | workspace 自身が追加した API gateway service 一覧を表示 (config.yaml `services_floor` 側は含まない — `allowed_domains` の `show` が floor を表示しないのと同じ設計) |
 
 ## Host Commands
 

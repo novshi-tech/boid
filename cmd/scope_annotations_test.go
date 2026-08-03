@@ -195,6 +195,12 @@ var expectedScopeAnnotations = map[string]string{
 	"boid workspace list":              scopeRemote,
 	"boid workspace remove":            scopeRemote,
 	"boid workspace show":              scopeRemote,
+	// docs/plans/api-gateway.md §論点5: the add/remove/list trio is a
+	// GET-then-PUT round trip against the daemon's HTTP API, same axis as
+	// every other workspace subcommand above.
+	"boid workspace services add":    scopeRemote,
+	"boid workspace services remove": scopeRemote,
+	"boid workspace services list":   scopeRemote,
 
 	// local — daemon lifecycle machinery itself, sandbox-launch plumbing,
 	// commands that never talk to a daemon, or (see the doc comment above)

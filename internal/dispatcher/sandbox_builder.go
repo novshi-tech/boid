@@ -13,6 +13,7 @@ import (
 
 	"github.com/novshi-tech/boid/internal/adapters"
 	"github.com/novshi-tech/boid/internal/adapters/registry"
+	"github.com/novshi-tech/boid/internal/apigateway"
 	"github.com/novshi-tech/boid/internal/orchestrator"
 	"github.com/novshi-tech/boid/internal/sandbox"
 	"github.com/novshi-tech/boid/internal/skills"
@@ -171,6 +172,25 @@ type SandboxRuntimeInfo struct {
 	// nothing would consume it. BuildSandboxSpec only reads this when
 	// spec.Visibility.Clone != nil.
 	GatewayCloneURL string
+
+	// APIGatewayBaseURL is the shared gateway listener's sandbox-facing base
+	// URL (docs/plans/api-gateway.md 論点1: "同居 — path prefix /j/ と /api/
+	// で分岐"). Byte-identical to GatewayURL above in every real deployment
+	// — both gateways share the exact same TCP(mTLS) listener — but resolved
+	// independently by Runner.registerAPIGatewayToken (which reads r.GatewayURL
+	// directly rather than reusing GatewayURL's own local variable) so the
+	// API gateway's env-var advertise does not depend on the git gateway
+	// having registered anything for this job. Empty when the API gateway
+	// isn't wired (r.APIGateway == nil).
+	APIGatewayBaseURL string
+	// APIGatewayJobToken is this job's API gateway token, registered against
+	// apigateway.Registry at dispatch time (docs/plans/api-gateway.md §3:
+	// floor ∪ workspace enabled-service set, task.readonly → Entry.ReadOnly)
+	// and unregistered when the job completes (Runner.registerAPIGatewayToken
+	// / Runner.UnregisterJob). Empty when the API gateway isn't wired.
+	// BuildSandboxSpec combines this with APIGatewayBaseURL to set
+	// BOID_API_BASE.
+	APIGatewayJobToken string
 
 	// WorkspacePeerAdvertise is the {name, clone URL, reference path} view of
 	// WorkspacePeers, built by Runner.buildPeerAdvertise and keyed by peer
@@ -524,21 +544,87 @@ func BuildSandboxSpec(spec *orchestrator.JobSpec, rt SandboxRuntimeInfo) (sandbo
 	// worktree/project mount layout above is completely unaffected.
 	mounts = append(mounts, cloneMounts(spec, rt)...)
 
-	// Git gateway TLS trust (PR9 e2e-container fix): only the container
-	// backend's gateway URL is TLS-secured (see
-	// SandboxRuntimeInfo.GatewayCAPEM's own doc comment) — the userns
-	// backend's plain-HTTP gateway needs nothing here, and neither does a
-	// job with no clone declared at all (it never talks to the gateway).
-	// Written as a plain sandbox file (not a mount): the CA cert is
-	// non-secret, daemon-lifetime-static content, exactly like other
-	// spec.Files entries, not a per-job artifact that needs its own
-	// mount/cleanup lifecycle.
-	if spec.Visibility.Clone != nil && rt.UsingContainerBackend && len(rt.GatewayCAPEM) > 0 {
+	// Git gateway / API gateway TLS trust (PR9 e2e-container fix, extended by
+	// docs/plans/api-gateway.md PR1): only the container backend's gateway
+	// URL is TLS-secured (see SandboxRuntimeInfo.GatewayCAPEM's own doc
+	// comment) — the userns backend's plain-HTTP gateway needs nothing
+	// here, and neither does a job with no clone declared AND no API
+	// gateway token (it never talks to the gateway at all). Written as a
+	// plain sandbox file (not a mount): the CA cert is non-secret,
+	// daemon-lifetime-static content, exactly like other spec.Files
+	// entries, not a per-job artifact that needs its own mount/cleanup
+	// lifecycle.
+	needsGatewayCA := rt.UsingContainerBackend && len(rt.GatewayCAPEM) > 0 &&
+		(spec.Visibility.Clone != nil || rt.APIGatewayJobToken != "")
+	if needsGatewayCA {
 		files = append(files, sandbox.FileWrite{
 			Path:    containerGitGatewayCAPath,
 			Content: string(rt.GatewayCAPEM),
 		})
+	}
+	if spec.Visibility.Clone != nil && rt.UsingContainerBackend && len(rt.GatewayCAPEM) > 0 {
 		env["GIT_SSL_CAINFO"] = containerGitGatewayCAPath
+	}
+
+	// BOID_API_BASE (docs/plans/api-gateway.md §1/PR1): the base URL a job
+	// prefixes onto a service-relative path to reach the API gateway
+	// (`curl "$BOID_API_BASE/myapp/v1/users"`) — job-token-scoped, minted by
+	// Runner.registerAPIGatewayToken. Empty (both fields) when the API
+	// gateway isn't wired (r.APIGateway == nil) or this job's Runner.Dispatch
+	// call didn't register a token for some other reason.
+	//
+	// TLS trust caveat (codex review finding): under the container backend,
+	// BOID_API_BASE is an https:// URL secured by the daemon's own internal
+	// CA, which no client trusts by default — a bare `curl "$BOID_API_BASE/..."`
+	// (the plan doc's own headline example) fails TLS verification unless
+	// the caller ALSO passes the CA explicitly. The env vars below narrow
+	// this gap as far as it safely can be narrowed without either requiring
+	// every caller to know a boid-specific flag or silently breaking TLS
+	// trust for every OTHER https host this sandbox talks to — see each
+	// var's own comment for why it is or isn't included.
+	if rt.APIGatewayJobToken != "" && rt.APIGatewayBaseURL != "" {
+		env["BOID_API_BASE"] = rt.APIGatewayBaseURL + apigateway.PathPrefix + rt.APIGatewayJobToken
+		if needsGatewayCA {
+			// BOID_API_CA_FILE: an explicit, OPT-IN CA path for tools that
+			// accept one directly (curl --cacert "$BOID_API_CA_FILE", Python
+			// requests(..., verify=os.environ["BOID_API_CA_FILE"]), etc.).
+			// This remains the ONLY mechanism for such tools — a bare `curl
+			// "$BOID_API_BASE/..."` with no flag still fails TLS verification
+			// for them; the plan doc and BOID_API_BASE's own advertised
+			// contract are corrected to say so explicitly (docs/plans/
+			// api-gateway.md §1) rather than overclaiming a truly flagless
+			// "any SDK, base URL swap only" experience.
+			env["BOID_API_CA_FILE"] = containerGitGatewayCAPath
+			// NODE_EXTRA_CA_CERTS: unlike SSL_CERT_FILE / CURL_CA_BUNDLE
+			// (both REPLACE a tool's default trust store when set — setting
+			// either to just this CA would silently break TLS verification
+			// for pypi.org/github.com/etc. from that tool's perspective),
+			// Node.js documents this variable as ADDITIVE: "the well known
+			// 'root' CAs... will be extended with the extra certificates in
+			// file" (Node.js CLI docs on NODE_EXTRA_CA_CERTS). A Node-based
+			// SDK/script therefore gets genuine flagless "curl-equivalent"
+			// TLS trust for BOID_API_BASE, with no loss of trust for any
+			// other host Node talks to — PROVIDED this doesn't clobber a
+			// value the project/workspace already declared for its OWN
+			// reasons (codex review round 5 finding): unlike BOID_API_CA_FILE
+			// (a name this PR invents — nothing could have set it before),
+			// NODE_EXTRA_CA_CERTS is a real, pre-existing Node.js variable a
+			// project.yaml/workspace `env:` block may already point at a
+			// DIFFERENT CA bundle (e.g. a corporate proxy or internal
+			// registry Node itself talks to, unrelated to this gateway).
+			// Env already carries spec.Env's fully-merged value by this point
+			// (env := cloneStringMap(spec.Env) at BuildSandboxSpec's top), so
+			// only set this when the caller hasn't already claimed it — a
+			// caller who already needs it for something else keeps their own
+			// value and simply doesn't get the automatic Node trust
+			// (BOID_API_CA_FILE remains available for them to combine by
+			// hand). curl/Python/other openssl-backed tools have no
+			// equivalent safe (additive) env var, so they remain on the
+			// explicit BOID_API_CA_FILE opt-in unconditionally.
+			if _, alreadySet := env["NODE_EXTRA_CA_CERTS"]; !alreadySet {
+				env["NODE_EXTRA_CA_CERTS"] = containerGitGatewayCAPath
+			}
+		}
 	}
 
 	// Additional bindings:
@@ -846,13 +932,17 @@ const (
 	// this only makes the mounts constructible, per PR5's scope.
 	sandboxClonePeerReferenceDirFmt = "/mnt/refs/peers/%s.git"
 
-	// containerGitGatewayCAPath (PR9 e2e-container fix) is the fixed
-	// sandbox-internal path SandboxRuntimeInfo.GatewayCAPEM is written to
-	// (as a plain spec.Files entry, container backend + clone-visibility
-	// jobs only) and what GIT_SSL_CAINFO is pointed at, so the
-	// sandbox-internal `git clone` against the container backend's
-	// TLS-secured gateway (https://boid-gateway:<port>) can verify the
-	// gateway's server certificate.
+	// containerGitGatewayCAPath (PR9 e2e-container fix; extended by
+	// docs/plans/api-gateway.md PR1 to the API gateway too — both share the
+	// exact same TCP(mTLS) listener and daemon CA, docs/plans/api-gateway.md
+	// 論点1) is the fixed sandbox-internal path SandboxRuntimeInfo.GatewayCAPEM
+	// is written to (as a plain spec.Files entry, container backend +
+	// clone-visibility-or-API-gateway-token jobs only) and what
+	// GIT_SSL_CAINFO / BOID_API_CA_FILE point at, so the sandbox-internal
+	// `git clone` (or an arbitrary curl/SDK call against BOID_API_BASE)
+	// against the container backend's TLS-secured gateway
+	// (https://boid-gateway:<port>) can verify the gateway's server
+	// certificate.
 	//
 	// Deliberately under /run/boid/bin, not /run/boid itself: the shared
 	// image (build/container/Dockerfile) only `chgrp -R 0` + `chmod -R

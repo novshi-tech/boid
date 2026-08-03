@@ -125,6 +125,13 @@ func Get(tree Tree, path string) (any, error) {
 		}
 		return v, nil
 	}
+	if _, isService := IsServiceEntryPath(path); isService {
+		v, ok := GetPath(tree, path)
+		if !ok {
+			return nil, fmt.Errorf("key not found: %s", path)
+		}
+		return v, nil
+	}
 	if _, ok := ResolveField(path); !ok {
 		return nil, unknownKeyError(path)
 	}
@@ -157,11 +164,14 @@ func Set(tree Tree, path string, values []string) (ReloadClass, error) {
 }
 
 // Unset validates and applies `boid config unset <key>` against tree,
-// returning the ReloadClass the caller should report. Two shapes:
+// returning the ReloadClass the caller should report. Three shapes:
 //
 //   - a whole gateway.forges.<id> entry ("gateway.forges.github") removes
 //     the entire map entry — the unilateral decision documented on
 //     IsForgeEntryPath.
+//   - a whole services.<name> entry ("services.myapp") removes the entire
+//     map entry too — IsServiceEntryPath's identical treatment, docs/plans/
+//     api-gateway.md §2.
 //   - any other recognized scalar/array leaf removes just that key.
 //
 // Fails with "key not found" when the path is unrecognized OR is
@@ -186,6 +196,15 @@ func Unset(tree Tree, path string) (ReloadClass, error) {
 		}
 		// A whole forge entry always carries restart-required fields
 		// (host/forge/secret_key); removing it is classified the same way.
+		return ReloadRestartRequired, nil
+	}
+	if name, isService := IsServiceEntryPath(path); isService {
+		_ = name
+		if !deletePathRaw(tree, path) {
+			return 0, fmt.Errorf("key not found: %s", path)
+		}
+		// A whole services entry always carries restart-required fields
+		// (base_url/auth.*); removing it is classified the same way.
 		return ReloadRestartRequired, nil
 	}
 	spec, ok := ResolveField(path)

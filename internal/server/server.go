@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"crypto/tls"
 	"database/sql"
 	"fmt"
 	"log/slog"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/novshi-tech/boid/internal/api"
+	"github.com/novshi-tech/boid/internal/apigateway"
 	"github.com/novshi-tech/boid/internal/config"
 	"github.com/novshi-tech/boid/internal/db"
 	"github.com/novshi-tech/boid/internal/db/migrate"
@@ -85,6 +87,14 @@ type Config struct {
 	KitsDir        string   // base dir for installed kit repos
 	KeyFilePath    string   // path to secret encryption key file
 	AllowedDomains []string // proxy allowed domains
+	// ServicesFloor is the daemon-wide API gateway service allowlist floor
+	// (config.yaml services_floor — docs/plans/api-gateway.md §3), captured
+	// once here exactly like AllowedDomains is for the proxy egress
+	// allowlist: cmd/start.go's buildStartConfig reads it from its own
+	// config.Load() call and passes it in, so a later `boid config set
+	// services_floor ...` only takes effect on the next daemon restart, same
+	// ReloadRestartRequired posture as sandbox.allowed_domains.
+	ServicesFloor []string
 	// Backend, when non-nil, overrides buildRuntime's default construction
 	// of a real containerBackend (sandboxBackendForConfig) — a test/DI seam
 	// (the successor to the pre-PR-4 JobRuntime field, which let tests
@@ -230,35 +240,62 @@ type Server struct {
 	//
 	// gatewayRegistry is constructed early in New() (buildRuntime) and shared
 	// with dispatcher.Runner so Dispatch/UnregisterJob can
-	// Register/Unregister job tokens; gatewayHTTPServer wraps the
-	// gitgateway.Server handler (built once config + notify are available)
-	// and is only bound to a listener in Start().
+	// Register/Unregister job tokens; gatewayHTTPServer wraps
+	// combinedGatewayHandler (built once config + notify are available) and
+	// is only bound to a listener in Start().
 	gatewayRegistry   *gitgateway.Registry
 	gatewayHTTPServer *http.Server
 	gatewayLn         net.Listener
-	// gatewayHandler is the same *gitgateway.Server wrapped by
-	// gatewayHTTPServer.Handler, kept as its own field (rather than a
-	// type assertion at Start time) so Start can additionally bind the
-	// TCP(mTLS) listener via gatewayHandler.ListenTLS
-	// (docs/plans/phase6-container-backend.md §PR4). nil until wire.go
-	// constructs it (mirrors gatewayHTTPServer's construction timing).
-	gatewayHandler *gitgateway.Server
-	// gatewayTLSLn is the git gateway's TCP(mTLS) listener, bound in
+	// apiGatewayRegistry is the API gateway's job-token registry
+	// (docs/plans/api-gateway.md PR1) — the exact same role gatewayRegistry
+	// plays for the git gateway, shared with dispatcher.Runner so Dispatch/
+	// UnregisterJob can Register/Unregister API gateway tokens too.
+	apiGatewayRegistry *apigateway.Registry
+	// combinedGatewayHandler dispatches a single shared listener's requests
+	// to either the git gateway or the API gateway by path prefix
+	// (docs/plans/api-gateway.md 論点1: "同居 — path prefix /j/ と /api/ で
+	// 分岐"). Built by wire.go once both underlying Server handlers exist;
+	// gatewayHTTPServer.Handler is set to it directly (the plaintext
+	// loopback listener needs no further wiring here), and Start reads this
+	// field again to build the TLS(mTLS) listener's own *http.Server — see
+	// gatewayTLSHTTPServer's own doc comment for why that can't reuse
+	// gitgateway.Server.ListenTLS the way a git-gateway-only daemon did
+	// pre-PR1 (that method hardcodes its OWN ServeHTTP as the Handler, not
+	// this combined one). nil until wire.go constructs it.
+	combinedGatewayHandler *combinedGatewayHandler
+	// gatewayTLSLn is the git/API gateway shared TCP(mTLS) listener, bound in
 	// Start only when cfg.TLSDir is set. nil otherwise.
 	gatewayTLSLn net.Listener
+	// gatewayTLSHTTPServer is the *http.Server serving gatewayTLSLn with
+	// combinedGatewayHandler (docs/plans/api-gateway.md PR1). Pre-PR1, this
+	// listener was served by gitgateway.Server.ListenTLS's own internally-
+	// constructed *http.Server (Handler: the gitgateway.Server itself) —
+	// that no longer works once a second gateway shares the listener, since
+	// ListenTLS has no way to accept an external Handler. Start instead
+	// calls tls.Listen directly and constructs this *http.Server itself,
+	// with combinedGatewayHandler as its Handler; Stop calls Shutdown on it
+	// (graceful — closes idle keep-alives too, matching the CloseTLS
+	// behavior this replaces; codex review [Minor 4] on docs/plans/
+	// phase6-container-backend.md §PR4, the ORIGINAL reason CloseTLS
+	// existed instead of a bare listener Close). nil until Start binds it
+	// (cfg.TLSDir unset, or Start hasn't run).
+	gatewayTLSHTTPServer *http.Server
 	// gatewayURL is the sandbox-facing base URL (http://10.0.2.2:<port>),
 	// populated by Start() once the listener is bound. Empty before Start
 	// completes. Runner holds a pointer to this string (WireConfig.GatewayURL)
 	// so SandboxRuntimeInfo.GatewayURL reflects it at dispatch time — the
-	// same late-binding-via-pointer trick as proxyPort.
+	// same late-binding-via-pointer trick as proxyPort. Shared verbatim by
+	// the API gateway (docs/plans/api-gateway.md 論点1: same listener, same
+	// URL) — dispatcher.WireConfig.GatewayURL is the single pointer both
+	// gateways' env-var advertise reads.
 	gatewayURL string
 	// gatewayCAPEM is the daemon's internal CA's own certificate
 	// (mtls.CA.CertPEM), PEM-encoded, populated by Start() alongside
 	// daemonCA whenever cfg.TLSDir is set. Empty when TLS isn't configured
 	// (every pre-PR9-fix caller/test). This is the client-side half of
-	// the git gateway TLS listener's trust: a container-backend sandbox
+	// the shared gateway TLS listener's trust: a container-backend sandbox
 	// needs this CA's public cert to verify the gateway's server
-	// certificate (gatewayHandler.ListenTLS's tlsCfg, below) — non-secret,
+	// certificate (the tlsCfg Start's TLS block builds, below) — non-secret,
 	// so no per-job materialization/rotation is needed, unlike a client
 	// certificate would be. Runner holds a pointer to this slice
 	// (WireConfig.GatewayCAPEM), the same late-binding-via-pointer pattern
@@ -787,7 +824,7 @@ func (s *Server) Start(ctx context.Context) error {
 		// address, is what scopes reachability). userns deployments are
 		// byte-for-byte unaffected: gatewayBindHost(false) returns
 		// "127.0.0.1", identical to the pre-fix hardcoded literal.
-		if daemonCA != nil && s.gatewayHandler != nil {
+		if daemonCA != nil && s.combinedGatewayHandler != nil {
 			bindHost := gatewayBindHost(s.usingContainerBackend)
 			// ServerOnlyTLSConfig (PR9 e2e-container fix), not
 			// ServerTLSConfig: the git gateway's own per-job Registry
@@ -801,16 +838,28 @@ func (s *Server) Start(ctx context.Context) error {
 			// by any real sandbox: PR9's real-docker e2e-container CI
 			// job's every sandbox-internal clone attempt failed the TLS
 			// handshake outright ("tls: client didn't provide a
-			// certificate").
+			// certificate"). The API gateway's own per-job Registry token
+			// (docs/plans/api-gateway.md PR1) is authorized the identical
+			// way, so this reasoning covers both gateways sharing this
+			// listener unchanged.
 			tlsCfg, err := daemonCA.ServerOnlyTLSConfig("127.0.0.1", "localhost", composeGatewayServiceName)
 			if err != nil {
 				return fmt.Errorf("git gateway tls config: %w", err)
 			}
-			gwTLSLn, err := s.gatewayHandler.ListenTLS(bindHost+":0", tlsCfg)
+			// docs/plans/api-gateway.md 論点1 ("同居"): tls.Listen +
+			// s.combinedGatewayHandler directly, rather than
+			// gitgateway.Server.ListenTLS (which hardcodes its OWN
+			// ServeHTTP as the *http.Server's Handler — see
+			// gatewayTLSHTTPServer's own doc comment for why that no
+			// longer fits once the API gateway shares this listener).
+			gwTLSLn, err := tls.Listen("tcp", bindHost+":0", tlsCfg)
 			if err != nil {
 				return fmt.Errorf("listen git gateway tls: %w", err)
 			}
 			s.gatewayTLSLn = gwTLSLn
+			tlsSrv := &http.Server{Handler: s.combinedGatewayHandler}
+			s.gatewayTLSHTTPServer = tlsSrv
+			go func() { _ = tlsSrv.Serve(gwTLSLn) }() // returns ErrServerClosed on Stop
 			slog.Info("git gateway tls listener started", "addr", gwTLSLn.Addr().String())
 
 			// [Blocker 2, PR7 codex review]: once the container backend is
@@ -833,15 +882,16 @@ func (s *Server) Start(ctx context.Context) error {
 		} else if s.usingContainerBackend {
 			// The container backend REQUIRES the mTLS listener (it never
 			// reaches the plaintext loopback listener at all — see above);
-			// without cfg.TLSDir configured (daemonCA nil) or gatewayHandler
-			// unset, gatewayURL is left at the useless plaintext-loopback
-			// value computed above, which no job container could ever
-			// dial. Surfaced loudly so an operator running
-			// sandbox.backend: container without cfg.TLSDir set (cmd/
-			// start.go's default IS to set it, but any custom wiring that
-			// doesn't would land here) finds out from the log rather than
-			// from every job's git clone timing out.
-			slog.Error("sandbox.backend: container is selected but no TLS CA is configured (cfg.TLSDir unset) or the git gateway handler is missing; job containers will not be able to reach the git gateway at all (docs/plans/phase6-container-backend.md §決定5)")
+			// without cfg.TLSDir configured (daemonCA nil) or the combined
+			// gateway handler unset, gatewayURL is left at the useless
+			// plaintext-loopback value computed above, which no job
+			// container could ever dial. Surfaced loudly so an operator
+			// running sandbox.backend: container without cfg.TLSDir set
+			// (cmd/start.go's default IS to set it, but any custom wiring
+			// that doesn't would land here) finds out from the log rather
+			// than from every job's git clone (or API gateway request)
+			// timing out.
+			slog.Error("sandbox.backend: container is selected but no TLS CA is configured (cfg.TLSDir unset) or the gateway handler is missing; job containers will not be able to reach the git/API gateway at all (docs/plans/phase6-container-backend.md §決定5)")
 		}
 	}
 
@@ -947,16 +997,18 @@ func (s *Server) Stop() error {
 			errs = append(errs, err)
 		}
 	}
-	if s.gatewayTLSLn != nil {
-		// gatewayHandler.CloseTLS (rather than s.gatewayTLSLn.Close()) also
-		// closes idle keep-alive connections already accepted on the TLS
-		// listener — a bare listener Close only stops new connections
+	if s.gatewayTLSHTTPServer != nil {
+		// gatewayTLSHTTPServer.Shutdown (rather than s.gatewayTLSLn.Close())
+		// also closes idle keep-alive connections already accepted on the
+		// TLS listener — a bare listener Close only stops new connections
 		// from being accepted (codex review [Minor 4] on
-		// docs/plans/phase6-container-backend.md §PR4). gatewayHandler is
-		// always non-nil here: gatewayTLSLn is only ever set inside the
-		// `s.gatewayHandler != nil` guard in Start.
+		// docs/plans/phase6-container-backend.md §PR4, the original reason
+		// this graceful-shutdown path exists). gatewayTLSHTTPServer is
+		// always non-nil here whenever gatewayTLSLn is: both are set
+		// together inside the `s.combinedGatewayHandler != nil` guard in
+		// Start.
 		ctx, cancel := context.WithTimeout(context.Background(), gatewayTLSShutdownTimeout)
-		if err := s.gatewayHandler.CloseTLS(ctx); err != nil {
+		if err := s.gatewayTLSHTTPServer.Shutdown(ctx); err != nil {
 			errs = append(errs, err)
 		}
 		cancel()
