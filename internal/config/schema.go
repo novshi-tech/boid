@@ -191,6 +191,28 @@ var Schema = []FieldSpec{
 	{Path: "oauth_providers.*.client_id", Kind: KindString, Reload: ReloadRestartRequired},
 	{Path: "oauth_providers.*.client_secret_key", Kind: KindString, Reload: ReloadRestartRequired},
 	{Path: "oauth_providers.*.scopes", Kind: KindStringArray, Reload: ReloadRestartRequired},
+	// oauth_providers.*.flow/authorization_endpoint/device_authorization_endpoint
+	// (docs/plans/api-gateway.md §7, PR3): the login-flow selector and its
+	// two flow-conditional endpoints. flow is a KindEnum whose EnumValues
+	// mirrors apigateway.ValidLoginFlows exactly (device/loopback/manual).
+	{Path: "oauth_providers.*.flow", Kind: KindEnum, Reload: ReloadRestartRequired,
+		EnumValues: []string{"device", "loopback", "manual"}},
+	{Path: "oauth_providers.*.authorization_endpoint", Kind: KindString, Reload: ReloadRestartRequired},
+	{Path: "oauth_providers.*.device_authorization_endpoint", Kind: KindString, Reload: ReloadRestartRequired},
+	// oauth_providers.*.authorize_params.* — a SECOND wildcard segment for
+	// the arbitrary provider-specific key names AuthorizeParams holds
+	// (docs/plans/api-gateway.md §7's Google access_type/prompt example).
+	// pathMatches (below) already treats each "*" segment independently by
+	// position, so this needs no special-casing beyond the entry itself:
+	// `boid config set oauth_providers.google.authorize_params.access_type
+	// offline` resolves through the ordinary Schema/dotted.go machinery
+	// exactly like gateway.forges.*.host does for its own single wildcard.
+	// Also required so ValidateKnownKeys' unknown-key trie walk (validate.go)
+	// does not reject a `boid config apply -f`/`edit` document that sets
+	// authorize_params at all — without a matching trie child, EVERY key
+	// under it would 404 as "unknown config key" the same way gateway.hosts
+	// would have without its own (KindOpaque) entry.
+	{Path: "oauth_providers.*.authorize_params.*", Kind: KindString, Reload: ReloadRestartRequired},
 }
 
 // segments splits a dotted path into its components. Exported for reuse by

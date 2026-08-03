@@ -169,6 +169,194 @@ services:
 	}
 }
 
+// TestLoadFromPath_OAuthProviders_FlowOptional pins that an existing
+// PR2-era config.yaml — token_endpoint/client_id/client_secret_key/scopes
+// only, no flow at all — keeps loading unmodified once PR3 ships (docs/plans/
+// api-gateway.md §7): Flow is deliberately optional, not a required field
+// retroactively imposed on every entry.
+func TestLoadFromPath_OAuthProviders_FlowOptional(t *testing.T) {
+	content := `
+oauth_providers:
+  freee:
+    token_endpoint: https://accounts.secure.freee.co.jp/public_api/token
+    client_id: freee-client-id
+`
+	cfg, err := loadFromPath(writeConfigFile(t, content))
+	if err != nil {
+		t.Fatalf("unexpected error (flow must be optional): %v", err)
+	}
+	if cfg.OAuthProviders["freee"].Flow != "" {
+		t.Errorf("Flow = %q, want empty", cfg.OAuthProviders["freee"].Flow)
+	}
+}
+
+// TestLoadFromPath_OAuthProviders_DeviceFlow pins the device-flow shape
+// (docs/plans/api-gateway.md §7 flow table: Microsoft/GitHub).
+func TestLoadFromPath_OAuthProviders_DeviceFlow(t *testing.T) {
+	content := `
+oauth_providers:
+  github:
+    token_endpoint: https://github.com/login/oauth/access_token
+    client_id: gh-client-id
+    flow: device
+    device_authorization_endpoint: https://github.com/login/device/code
+`
+	cfg, err := loadFromPath(writeConfigFile(t, content))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	gh := cfg.OAuthProviders["github"]
+	if gh.Flow != "device" {
+		t.Errorf("Flow = %q, want device", gh.Flow)
+	}
+	if gh.DeviceAuthorizationEndpoint != "https://github.com/login/device/code" {
+		t.Errorf("DeviceAuthorizationEndpoint = %q", gh.DeviceAuthorizationEndpoint)
+	}
+}
+
+func TestLoadFromPath_OAuthProviders_DeviceFlow_MissingDeviceAuthorizationEndpointRejected(t *testing.T) {
+	content := `
+oauth_providers:
+  github:
+    token_endpoint: https://github.com/login/oauth/access_token
+    client_id: gh-client-id
+    flow: device
+`
+	_, err := loadFromPath(writeConfigFile(t, content))
+	if err == nil {
+		t.Fatal("want error for a device flow with no device_authorization_endpoint, got nil")
+	}
+	if !strings.Contains(err.Error(), "device_authorization_endpoint") {
+		t.Errorf("error %q does not mention device_authorization_endpoint", err.Error())
+	}
+}
+
+// TestLoadFromPath_OAuthProviders_LoopbackFlow pins the loopback-flow shape
+// (docs/plans/api-gateway.md §7 flow table: Google/Atlassian), including
+// authorize_params (the Google access_type/prompt quirk).
+func TestLoadFromPath_OAuthProviders_LoopbackFlow(t *testing.T) {
+	content := `
+oauth_providers:
+  google:
+    token_endpoint: https://oauth2.googleapis.com/token
+    client_id: google-client-id
+    flow: loopback
+    authorization_endpoint: https://accounts.google.com/o/oauth2/v2/auth
+    authorize_params:
+      access_type: offline
+      prompt: consent
+`
+	cfg, err := loadFromPath(writeConfigFile(t, content))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	g := cfg.OAuthProviders["google"]
+	if g.Flow != "loopback" {
+		t.Errorf("Flow = %q, want loopback", g.Flow)
+	}
+	if g.AuthorizationEndpoint != "https://accounts.google.com/o/oauth2/v2/auth" {
+		t.Errorf("AuthorizationEndpoint = %q", g.AuthorizationEndpoint)
+	}
+	if g.AuthorizeParams["access_type"] != "offline" || g.AuthorizeParams["prompt"] != "consent" {
+		t.Errorf("AuthorizeParams = %v, want access_type=offline, prompt=consent", g.AuthorizeParams)
+	}
+}
+
+func TestLoadFromPath_OAuthProviders_LoopbackFlow_MissingAuthorizationEndpointRejected(t *testing.T) {
+	content := `
+oauth_providers:
+  google:
+    token_endpoint: https://oauth2.googleapis.com/token
+    client_id: google-client-id
+    flow: loopback
+`
+	_, err := loadFromPath(writeConfigFile(t, content))
+	if err == nil {
+		t.Fatal("want error for a loopback flow with no authorization_endpoint, got nil")
+	}
+	if !strings.Contains(err.Error(), "authorization_endpoint") {
+		t.Errorf("error %q does not mention authorization_endpoint", err.Error())
+	}
+}
+
+func TestLoadFromPath_OAuthProviders_ManualFlow(t *testing.T) {
+	content := `
+oauth_providers:
+  freee:
+    token_endpoint: https://accounts.secure.freee.co.jp/public_api/token
+    client_id: freee-client-id
+    client_secret_key: freee-oauth-client-secret
+    flow: manual
+    authorization_endpoint: https://accounts.secure.freee.co.jp/public_api/authorize
+`
+	cfg, err := loadFromPath(writeConfigFile(t, content))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.OAuthProviders["freee"].Flow != "manual" {
+		t.Errorf("Flow = %q, want manual", cfg.OAuthProviders["freee"].Flow)
+	}
+}
+
+func TestLoadFromPath_OAuthProviders_UnrecognizedFlowRejected(t *testing.T) {
+	content := `
+oauth_providers:
+  freee:
+    token_endpoint: https://accounts.secure.freee.co.jp/public_api/token
+    client_id: cid
+    flow: telepathy
+`
+	_, err := loadFromPath(writeConfigFile(t, content))
+	if err == nil {
+		t.Fatal("want error for an unrecognized flow, got nil")
+	}
+	if !strings.Contains(err.Error(), "unrecognized") {
+		t.Errorf("error %q does not mention 'unrecognized'", err.Error())
+	}
+}
+
+func TestLoadFromPath_OAuthProviders_AuthorizationEndpointMustBeHTTPS(t *testing.T) {
+	content := `
+oauth_providers:
+  google:
+    token_endpoint: https://oauth2.googleapis.com/token
+    client_id: cid
+    flow: loopback
+    authorization_endpoint: http://accounts.google.com/o/oauth2/v2/auth
+`
+	_, err := loadFromPath(writeConfigFile(t, content))
+	if err == nil {
+		t.Fatal("want error for a non-https authorization_endpoint, got nil")
+	}
+	if !strings.Contains(err.Error(), "https") {
+		t.Errorf("error %q does not mention https", err.Error())
+	}
+}
+
+// TestLoadFromPath_OAuthProviders_AuthorizeParamsReservedKeyRejected pins
+// that an operator cannot use authorize_params to override a
+// protocol-reserved parameter the login flow's own construction already
+// sets (e.g. redirect_uri, state, client_id).
+func TestLoadFromPath_OAuthProviders_AuthorizeParamsReservedKeyRejected(t *testing.T) {
+	content := `
+oauth_providers:
+  google:
+    token_endpoint: https://oauth2.googleapis.com/token
+    client_id: cid
+    flow: loopback
+    authorization_endpoint: https://accounts.google.com/o/oauth2/v2/auth
+    authorize_params:
+      redirect_uri: https://evil.example.com/callback
+`
+	_, err := loadFromPath(writeConfigFile(t, content))
+	if err == nil {
+		t.Fatal("want error for authorize_params overriding redirect_uri, got nil")
+	}
+	if !strings.Contains(err.Error(), "redirect_uri") {
+		t.Errorf("error %q does not mention redirect_uri", err.Error())
+	}
+}
+
 func TestAPIGatewayOAuthProviders_SortedByName(t *testing.T) {
 	cfg := &Config{OAuthProviders: map[string]OAuthProviderConfig{
 		"zeta":  {TokenEndpoint: "https://zeta.example.com/token", ClientID: "z"},
@@ -192,10 +380,14 @@ func TestAPIGatewayOAuthProviders_SortedByName(t *testing.T) {
 func TestAPIGatewayOAuthProviders_FieldMapping(t *testing.T) {
 	cfg := &Config{OAuthProviders: map[string]OAuthProviderConfig{
 		"freee": {
-			TokenEndpoint:   "https://accounts.secure.freee.co.jp/public_api/token",
-			ClientID:        "freee-client-id",
-			ClientSecretKey: "freee-oauth-client-secret",
-			Scopes:          []string{"read", "write"},
+			TokenEndpoint:               "https://accounts.secure.freee.co.jp/public_api/token",
+			ClientID:                    "freee-client-id",
+			ClientSecretKey:             "freee-oauth-client-secret",
+			Scopes:                      []string{"read", "write"},
+			Flow:                        "manual",
+			AuthorizationEndpoint:       "https://accounts.secure.freee.co.jp/public_api/authorize",
+			DeviceAuthorizationEndpoint: "",
+			AuthorizeParams:             map[string]string{"foo": "bar"},
 		},
 	}}
 	providers := cfg.APIGatewayOAuthProviders()
@@ -217,5 +409,14 @@ func TestAPIGatewayOAuthProviders_FieldMapping(t *testing.T) {
 	}
 	if len(p.Scopes) != 2 || p.Scopes[0] != "read" || p.Scopes[1] != "write" {
 		t.Errorf("Scopes = %v, want [read write]", p.Scopes)
+	}
+	if string(p.Flow) != "manual" {
+		t.Errorf("Flow = %q, want manual", p.Flow)
+	}
+	if p.AuthorizationEndpoint != "https://accounts.secure.freee.co.jp/public_api/authorize" {
+		t.Errorf("AuthorizationEndpoint = %q", p.AuthorizationEndpoint)
+	}
+	if p.AuthorizeParams["foo"] != "bar" {
+		t.Errorf("AuthorizeParams = %v, want foo=bar", p.AuthorizeParams)
 	}
 }

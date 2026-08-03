@@ -349,7 +349,23 @@ oauth_providers:
     token_endpoint: https://accounts.secure.freee.co.jp/public_api/token
     client_id: <freee アプリの client_id>
     client_secret_key: freee_oauth_client_secret   # secret store 参照 (confidential client のみ)
-    scopes: [read, write]                          # 現状未使用。PR3 (login flow) の認可URL構築用に予約
+    scopes: [read, write]
+    flow: manual                                   # OOB — freee は PKCE 非対応
+    authorization_endpoint: https://accounts.secure.freee.co.jp/public_api/authorize
+  google:
+    token_endpoint: https://oauth2.googleapis.com/token
+    client_id: <Google OAuth client の client_id>
+    scopes: [https://www.googleapis.com/auth/calendar.readonly]
+    flow: loopback
+    authorization_endpoint: https://accounts.google.com/o/oauth2/v2/auth
+    authorize_params:
+      access_type: offline   # refresh_token を発行させるために必須 (Google 固有)
+      prompt: consent        # 2 回目以降のログインでも refresh_token を再発行させる
+  github:
+    token_endpoint: https://github.com/login/oauth/access_token
+    client_id: <GitHub OAuth App の client_id>
+    flow: device
+    device_authorization_endpoint: https://github.com/login/device/code
 
 services:
   freee:
@@ -364,7 +380,11 @@ services:
 | `oauth_providers.<name>.token_endpoint` | string | (必須) | provider の OAuth2 token endpoint (RFC 6749 §3.2)。スキームは常に `https` 必須 — `services.*.base_url` と異なり `allow_insecure` のような抜け道は無い (token endpoint は常に実在の外部 OAuth2 provider 宛であり、TLS 無し内部テスト API のようなユースケースが無いため) |
 | `oauth_providers.<name>.client_id` | string | (必須) | OAuth2 client_id。RFC 6749 §2.2 の分類上 secret ではないため平文で書く |
 | `oauth_providers.<name>.client_secret_key` | string | 省略可 | confidential client の client_secret を指す secret store 参照キー。public client (PKCE、client_secret 無し) では省略する |
-| `oauth_providers.<name>.scopes` | []string | `[]` | 現状 PR2 のリフレッシュ処理では未使用 (送信しない)。PR3 の認可 URL 構築用に予約されたフィールド |
+| `oauth_providers.<name>.scopes` | []string | `[]` | 認可 URL (loopback/manual) / device authorization request (device) に送る scope。リフレッシュでは送らない |
+| `oauth_providers.<name>.flow` | string (enum) | 省略可 (`""`) | `boid secret oauth login <service>` (PR3、下記) が使う初回認証フロー: `device` / `loopback` / `manual`。未設定の場合 `boid secret oauth login` はエラーになるが、`boid secret set` での refresh_token 手動投入は引き続き可能 — 既存の PR2 時点の config.yaml がこのフィールド無しでも壊れず動き続けるための互換性 |
+| `oauth_providers.<name>.authorization_endpoint` | string | `flow: loopback`/`manual` で必須 | provider の OAuth2 authorization endpoint (RFC 6749 §3.1)。`https` 必須 |
+| `oauth_providers.<name>.device_authorization_endpoint` | string | `flow: device` で必須 | provider の RFC 8628 §3.1 device authorization endpoint。`https` 必須 |
+| `oauth_providers.<name>.authorize_params` | map[string]string | 省略可 | 認可リクエストに追加するパラメータ (loopback/manual は authorize URL のクエリ、device は device authorization request の form field)。`client_id`/`redirect_uri`/`state`/`code_challenge` 等プロトコル予約名は使用不可 (config load 時にエラー)。Google の `access_type`/`prompt` が代表例 — 上記参照 |
 
 **平文の client_secret をここに書いてはいけません**。`client_secret_key` は secret store への参照名に過ぎず、実値は `boid secret set <key> <value>` で登録します。
 
@@ -381,9 +401,25 @@ secret store に保持される値は namespace ごと (workspace ごと) に以
 - `oauth2:<provider>:refresh_token`
 - `oauth2:<provider>:access_token_cache` (リフレッシュ結果のキャッシュ、`{"access_token":"...","expires_at":<Unix秒>}` の JSON。access_token と expires_at を1キーにまとめているのは、2キーに分けると片方だけの書き込み失敗で不整合な組が残るのを防ぐため — codexレビューで指摘)
 
-### 初回 grant の手動投入 (PR3 の login flow を待たずに動作確認する)
+### `boid secret oauth login <service>` — 初回認証 (PR3)
 
-`boid secret oauth login <service>` (PR3、未実装) を待たずに、`boid secret set` で `refresh_token` を直接投入することで PR2 の時点から動作確認・dogfood ができます:
+`oauth_providers.<name>.flow` を設定した provider は `boid secret oauth login <service>` (`<service>` は `services.<name>` の名前、`oauth_providers` の provider 名ではない点に注意) で初回の refresh_token grant を取得できます。役割分担は「CLI = ブラウザ側、daemon = Web サーバ側」(docs/plans/api-gateway.md §7): PKCE verifier / state / device_code は daemon 側 (`internal/apigateway/login.go` の `LoginManager`) のみが保持し、デスクトップ機 (CLI を実行する側) には平文トークンも client_secret も一度も渡りません。
+
+flow は 3 種類、`oauth_providers.<name>.flow` の値でどれが動くか決まります:
+
+- **`device`** (Microsoft/GitHub 等): `boid secret oauth login <service>` が user_code と verification URI (+ QR) を表示するだけで、実際の token endpoint ポーリングは daemon が裏で行います。表示された URL を別の端末・スマホで開いて code を入力すれば、CLI 側は自動的に完了を検知します。
+- **`loopback`** (Google/Atlassian 等): CLI がローカルの動的ポート (`127.0.0.1:0`, RFC 8252 §7.3) で listen し、表示された authorize URL をブラウザで開いて同意すると、そのブラウザからの redirect が CLI のローカル listener に着地して自動完結します。ブラウザが開ける環境で CLI を実行する必要があります。
+- **`manual`** (freee 等、OOB のみのプロバイダ): 表示された authorize URL をブラウザで開いて同意すると、画面に code が直接表示されるので、それを CLI のプロンプトに貼り付けます。
+
+```bash
+boid secret oauth login freee --namespace <workspace-namespace>
+```
+
+`--namespace` (既定 `default`) は `boid secret set/get` と同じ workspace namespace の指定です。`--timeout` (既定 5 分) は「ユーザーがブラウザ/別端末での認証を完了するまで CLI がどれだけ待つか」で、daemon 側のセッション有効期限 (loopback/manual は 10 分、device は provider が申告した `expires_in`) とは独立です。
+
+### 初回 grant の手動投入 (login flow を使わない場合)
+
+`boid secret oauth login` を使わず、`boid secret set` で `refresh_token` を直接投入することでも動作確認・dogfood ができます (`flow` が未設定の provider ではこちらが唯一の経路です):
 
 ```bash
 boid secret set -n <workspace-namespace> oauth2:freee:refresh_token

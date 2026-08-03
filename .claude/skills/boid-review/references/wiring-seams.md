@@ -38,6 +38,7 @@ has the same shape:
 21. [apigateway SecretResolver namespace threading (sibling of #11)](#21-apigateway-secretresolver-namespace-threading)
 22. [orchestrator.Action → timeline.Build renderability](#22-orchestratoraction--timelinebuild-renderability)
 23. [oauth_providers config↔apigateway wiring (type mirror + CredentialProvider.oauth)](#23-oauth_providers-configapigateway-wiring)
+24. [OAuthLoginHandler ↔ apiGatewayLoginAdapter ↔ apigateway.LoginManager](#24-oauthloginhandler--apigatewayloginadapter--apigatewayloginmanager)
 
 ---
 
@@ -1278,3 +1279,100 @@ resolver closures) chained together, spanning `internal/config` → `internal/se
   services still fail loud (not nil-deref) when unconfigured, and still resolve when
   configured — `TestCredentialProvider_Inject_OAuth2NoTokenSourceConfigured` and
   `TestServer_ProxiesWithOAuth2Injection` are the two ends of that check today.
+- **PR3 extension (login flow, docs/plans/api-gateway.md §7)**: four more fields joined this
+  same mirror — `Flow`/`AuthorizationEndpoint`/`DeviceAuthorizationEndpoint`/`AuthorizeParams`
+  — on both `config.OAuthProviderConfig` and `apigateway.OAuthProviderConfig`, copied by the
+  same `APIGatewayOAuthProviders`, and `TestAPIGatewayOAuthProviders_FieldMapping` was extended
+  to cover all four. Unlike the PR2 quartet, `Flow` is **optional** (`""` is valid — an existing
+  PR2-era config.yaml with no `flow` at all must keep loading unmodified;
+  `TestLoadFromPath_OAuthProviders_FlowOptional` pins this), so this seam's End A validation
+  (`validateOAuthProviderConfig`) only enforces the flow-conditional endpoint fields when `Flow`
+  is actually set. See seam #24 below for the NEW three-tier wiring PR3 added on top of this one
+  (the login-session HTTP surface) — that is a distinct seam from this type-mirror, not an
+  extension of it.
+
+## 24. OAuthLoginHandler ↔ apiGatewayLoginAdapter ↔ apigateway.LoginManager
+
+Whether `boid secret oauth login <service>` (docs/plans/api-gateway.md §7, PR3) actually
+reaches a live `apigateway.LoginManager` session and whether that session's user-facing
+fields survive translation across THREE packages: `internal/apigateway` (the real
+device/loopback/manual logic) → `internal/server` (a translation adapter) →
+`internal/api` (the wire-facing DTOs and chi routes) → `cmd` (the CLI's own duplicated wire
+DTOs, per the `cmd/login.go` precedent of not importing server-internal unexported types).
+
+- **End A (real logic)**: `apigateway.LoginManager` (`internal/apigateway/login.go`) —
+  `StartLogin`/`CompleteLogin`/`Status`, returning `*apigateway.LoginStart` /
+  `apigateway.LoginStatus`.
+- **End B (translation adapter)**: `apiGatewayLoginAdapter`
+  (`internal/server/apigateway_login.go`) — a HAND-WRITTEN field-by-field copy from
+  `apigateway.LoginStart` into `api.OAuthLoginStart` (internal/api's OWN DTO, not an import
+  of the apigateway type — internal/api must not import internal/apigateway's login surface
+  as a wire contract, mirroring the `internal/client` "type import ok, behavior import not"
+  discipline applied one layer earlier). A field added to `apigateway.LoginStart` without a
+  matching field on `api.OAuthLoginStart` AND a copy line in `apiGatewayLoginAdapter.StartLogin`
+  silently drops that field from the CLI's response the moment it's used at runtime — the
+  identical failure shape as seam #23's End A→B.
+- **End C (HTTP handler)**: `api.OAuthLoginHandler` (`internal/api/oauth_login.go`) — mounts
+  `POST/GET /api/oauth/login*` onto `api.OAuthLoginService` (the interface `apiGatewayLoginAdapter`
+  implements), JSON-(de)serializing `oauthLoginStartRequest`/`oauthLoginStartResponse`/
+  `oauthLoginStatusResponse`/`oauthLoginCompleteRequest`.
+- **End D (wiring gate)**: `internal/server/wire.go`'s `buildRuntime` — `oauthLoginSvc` (and
+  therefore the whole `/api/oauth` mount in `mountRoutes`) is non-nil ONLY when
+  `oauthTokenSource != nil` (i.e. `secretStore` configured), mirroring seam #23 End C's exact
+  same `secretStore != nil` gating convention — a request against `/api/oauth/*` 404s at the
+  router level (route never mounted) rather than reaching a nil-deref when unconfigured.
+- **End E (CLI wire DTOs)**: `cmd/secret_oauth.go`'s `oauthLoginStartRequest`/
+  `oauthLoginStartResponse`/`oauthLoginStatusResponse`/`oauthLoginCompleteRequest` — DUPLICATED
+  (not imported) from `internal/api/oauth_login.go`'s identically-named-but-unexported request/
+  response structs, the same `cmd/login.go` `deviceAuthRequest`/`deviceAuthResponse` precedent
+  (that file's own doc comment gives the full rationale: the server-side types are deliberately
+  unexported, since that handler is server-internal, not a shared client/server contract
+  package). A JSON field renamed on the End C struct without the identical rename on this one
+  silently breaks the CLI (a field either vanishes on decode, or double-decodes as its zero
+  value) with NO compiler error on either side — struct tags are strings, not types.
+- **Invariant**: every field that must reach the CLI (`SessionID`/`Flow`/`AuthorizeURL`/
+  `UserCode`/`VerificationURI`/`VerificationURIComplete`/`IntervalSeconds`/`ExpiresInSeconds`)
+  must be present, correctly JSON-tagged, and correctly copied at EVERY one of the five ends
+  above — a `SortedByName`/`Name`-only-style test at any single hop would not catch a dropped
+  field the same way seam #23's own past break didn't.
+- **Past break**: caught in review (boid-review self-check before PR3's first push): End B
+  (`apiGatewayLoginAdapter`) shipped with ZERO test coverage at all — `internal/api/
+  oauth_login_test.go` only exercises End C against a HAND-ROLLED FAKE `OAuthLoginService`
+  (never the real adapter), so a translation bug in `apiGatewayLoginAdapter.StartLogin` (e.g. a
+  dropped or swapped field) would have passed every existing test in the tree. Fixed by adding
+  `internal/server/apigateway_login_test.go`, which builds a REAL
+  `apigateway.CredentialProvider` + `apigateway.LoginManager` (with a fake token endpoint) and
+  drives the adapter directly — `TestAPIGatewayLoginAdapter_StartLogin_FieldMapping` in
+  particular, mirroring `TestAPIGatewayOAuthProviders_FieldMapping`'s own "field-by-field, not
+  just Name/ordering" lesson at this new hop.
+- **Guard**: `internal/apigateway/login_test.go` (End A in isolation), `internal/server/
+  apigateway_login_test.go` (End A→B, the hop none of `internal/apigateway`'s own tests can
+  reach — same rationale as `apigateway_notify_test.go`'s `TestNewAPIGatewayRecorder_...`),
+  `internal/api/oauth_login_test.go` (End C against a fake `OAuthLoginService` — request
+  validation, status-code mapping, NOT the real adapter), `cmd/secret_oauth_test.go` (End C→E,
+  the CLI's three flow branches against a fake HTTP daemon).
+- **A second, narrower hazard found in the SAME review pass**: `apigateway.LoginManager.
+  StartLogin`'s device-flow arm (`startDevice`) unconditionally spawns a background
+  `pollDeviceGrant` goroutine that keeps polling `TokenEndpoint` until the grant
+  succeeds/fails/expires — ENTIRELY independent of whether the calling test (or a real CLI
+  invocation) ever observes that outcome. A test that calls `StartLogin` for a device-flow
+  provider and returns without waiting for a terminal `Status` leaves that goroutine running
+  against whatever `TokenEndpoint` string the test configured for the rest of the test binary's
+  process lifetime — caught concretely when a first draft of
+  `TestLoginManager_StartDevice_SendsScopesClientIDAndAuthorizeParams` used the literal
+  `"https://example.com/token"` as a lazy placeholder never expected to be dialed: the leaked
+  goroutine actually reached the real (live, third-party) example.com host and logged a stray,
+  test-run-polluting 405 minutes into an unrelated later test's `-v` output, from unlucky
+  timing between the goroutine's unbuffered `slog` write and the `testing` package's own
+  per-test output flushing (not a logical association with whichever test happened to be
+  printing at that moment). No assertion ever failed — this is a "silent hazard", not a broken
+  test.
+- **When you touch it**: (1) if you add a field to `apigateway.LoginStart`, update
+  `api.OAuthLoginStart`, `apiGatewayLoginAdapter.StartLogin`'s copy, `oauthLoginStartResponse`
+  in BOTH `internal/api/oauth_login.go` and `cmd/secret_oauth.go`, and
+  `TestAPIGatewayLoginAdapter_StartLogin_FieldMapping` — five places, not two. (2) any test that
+  calls `LoginManager.StartLogin` for a device-flow provider must either wait for a terminal
+  `Status` (`waitForStatus` in `login_test.go`) before returning, or use an
+  `ExpiresInSeconds`/ticker `interval` short enough that the goroutine self-terminates almost
+  immediately — never leave one running against a placeholder that could resolve to a REAL
+  host on the network.

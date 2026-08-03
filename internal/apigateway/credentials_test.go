@@ -194,6 +194,30 @@ func TestCredentialProvider_Inject_OAuth2_DifferentServicesSameProvider(t *testi
 	}
 }
 
+// TestCredentialProvider_OAuth2ProviderFor pins the service->provider
+// lookup `boid secret oauth login <service>` (PR3) needs — see
+// OAuth2ProviderFor's own doc comment.
+func TestCredentialProvider_OAuth2ProviderFor(t *testing.T) {
+	c := NewCredentialProvider([]ServiceConfig{
+		{Name: "freee", BaseURL: "https://api.freee.co.jp", Auth: ServiceAuth{Kind: AuthOAuth2, Provider: "freee-provider"}},
+		{Name: "myapp", BaseURL: "https://myapp.example.com", Auth: ServiceAuth{Kind: AuthBearer, SecretKey: "myapp-token"}},
+	}, nil)
+
+	if provider, ok := c.OAuth2ProviderFor("freee"); !ok || provider != "freee-provider" {
+		t.Errorf("OAuth2ProviderFor(freee) = (%q, %v), want (freee-provider, true)", provider, ok)
+	}
+	if _, ok := c.OAuth2ProviderFor("myapp"); ok {
+		t.Error("OAuth2ProviderFor(myapp) should be false — myapp is auth.kind bearer, not oauth2")
+	}
+	if _, ok := c.OAuth2ProviderFor("nonexistent"); ok {
+		t.Error("OAuth2ProviderFor(nonexistent) should be false — unknown service")
+	}
+	var nilProvider *CredentialProvider
+	if _, ok := nilProvider.OAuth2ProviderFor("freee"); ok {
+		t.Error("OAuth2ProviderFor on a nil CredentialProvider should be false (fail-closed)")
+	}
+}
+
 func TestCredentialProvider_Inject_Bearer(t *testing.T) {
 	c := NewCredentialProvider([]ServiceConfig{
 		{Name: "myapp", BaseURL: "https://myapp.example.com", Auth: ServiceAuth{Kind: AuthBearer, SecretKey: "myapp-token"}},

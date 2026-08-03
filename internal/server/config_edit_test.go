@@ -290,6 +290,49 @@ func TestApplyConfigYAML_OAuthProviders_RestartRequiredWarning(t *testing.T) {
 	}
 }
 
+// TestApplyConfigYAML_OAuthProviders_LoginFlowFields_RestartRequiredWarning
+// extends the test above to the PR3 (login flow) leaves: flow,
+// authorization_endpoint, device_authorization_endpoint, and the
+// authorize_params map (docs/plans/api-gateway.md §7).
+func TestApplyConfigYAML_OAuthProviders_LoginFlowFields_RestartRequiredWarning(t *testing.T) {
+	srv, _ := newConfigTestServer(t)
+
+	if _, err := srv.ApplyConfigYAML([]byte(
+		"oauth_providers:\n  google:\n    token_endpoint: https://oauth2.googleapis.com/token\n    client_id: cid\n"),
+		"", true); err != nil {
+		t.Fatalf("ApplyConfigYAML (create): %v", err)
+	}
+
+	result, err := srv.ApplyConfigYAML([]byte(
+		"oauth_providers:\n"+
+			"  google:\n"+
+			"    token_endpoint: https://oauth2.googleapis.com/token\n"+
+			"    client_id: cid\n"+
+			"    flow: loopback\n"+
+			"    authorization_endpoint: https://accounts.google.com/o/oauth2/v2/auth\n"+
+			"    authorize_params:\n"+
+			"      access_type: offline\n"),
+		"", true)
+	if err != nil {
+		t.Fatalf("ApplyConfigYAML (change): %v", err)
+	}
+	var gotFlow, gotAuthEndpoint, gotAuthorizeParams bool
+	for _, w := range result.Warnings {
+		if strings.Contains(w, "oauth_providers.google.flow requires") {
+			gotFlow = true
+		}
+		if strings.Contains(w, "oauth_providers.google.authorization_endpoint requires") {
+			gotAuthEndpoint = true
+		}
+		if strings.Contains(w, "oauth_providers.google.authorize_params requires") {
+			gotAuthorizeParams = true
+		}
+	}
+	if !gotFlow || !gotAuthEndpoint || !gotAuthorizeParams {
+		t.Errorf("Warnings = %v, want flow + authorization_endpoint + authorize_params leaf warnings", result.Warnings)
+	}
+}
+
 // TestApplyConfigYAML_GatewayForges_MultipleLeafChanges pins MINOR 2: two
 // leaves changing on the SAME forge id in one apply produce two separate,
 // individually-named warnings.

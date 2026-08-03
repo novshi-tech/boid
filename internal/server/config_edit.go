@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -517,6 +518,12 @@ var restartFieldExtractorExemptions = map[string]string{
 	"oauth_providers.*.client_id":         "covered by changedOAuthProviderLeaves' per-id, per-field diff (finer-grained than a wildcard comparison)",
 	"oauth_providers.*.client_secret_key": "covered by changedOAuthProviderLeaves' per-id, per-field diff (finer-grained than a wildcard comparison)",
 	"oauth_providers.*.scopes":            "covered by changedOAuthProviderLeaves' per-id, per-field diff (finer-grained than a wildcard comparison)",
+	// docs/plans/api-gateway.md §7, PR3 (login flow) additions — same
+	// reasoning as the quartet above.
+	"oauth_providers.*.flow":                          "covered by changedOAuthProviderLeaves' per-id, per-field diff (finer-grained than a wildcard comparison)",
+	"oauth_providers.*.authorization_endpoint":        "covered by changedOAuthProviderLeaves' per-id, per-field diff (finer-grained than a wildcard comparison)",
+	"oauth_providers.*.device_authorization_endpoint": "covered by changedOAuthProviderLeaves' per-id, per-field diff (finer-grained than a wildcard comparison)",
+	"oauth_providers.*.authorize_params.*":            "covered by changedOAuthProviderLeaves' per-id, whole-map diff (finer-grained than a wildcard comparison)",
 }
 
 // verifyRestartExtractorCoverage panics if any config.Schema leaf classified
@@ -677,6 +684,22 @@ func changedOAuthProviderLeaves(oldProviders, newProviders map[string]config.OAu
 			}
 			if !slices.Equal(o.Scopes, n.Scopes) {
 				changed = append(changed, name+".scopes")
+			}
+			// docs/plans/api-gateway.md §7, PR3 (login flow) additions —
+			// same "safer left to a restart" reasoning as every other leaf
+			// here (a mid-flight Flow/endpoint change would need
+			// LoginManager's provider registry rebuilt).
+			if o.Flow != n.Flow {
+				changed = append(changed, name+".flow")
+			}
+			if o.AuthorizationEndpoint != n.AuthorizationEndpoint {
+				changed = append(changed, name+".authorization_endpoint")
+			}
+			if o.DeviceAuthorizationEndpoint != n.DeviceAuthorizationEndpoint {
+				changed = append(changed, name+".device_authorization_endpoint")
+			}
+			if !maps.Equal(o.AuthorizeParams, n.AuthorizeParams) {
+				changed = append(changed, name+".authorize_params")
 			}
 		}
 	}

@@ -245,6 +245,7 @@ API トークン等を暗号化して保存します。鍵は `~/.local/share/bo
 | `boid secret get <key> [-n NAMESPACE \| --namespace NAMESPACE]` | 値を取得 |
 | `boid secret list [-n NAMESPACE \| --namespace NAMESPACE]` | キー一覧 |
 | `boid secret delete <key> [-n NAMESPACE \| --namespace NAMESPACE]` | 削除 |
+| `boid secret oauth login <service> [-n NAMESPACE] [--timeout DURATION]` | API gateway の OAuth2 サービスに対して初回認証を行う (device/loopback/manual、`docs/plans/api-gateway.md` §7 参照)。`<service>` は `config.yaml` の `services.<name>` エントリ名 (`oauth_providers` の provider 名ではない) |
 
 ## Workspace
 

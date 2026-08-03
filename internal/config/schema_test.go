@@ -35,6 +35,11 @@ func TestResolveField_KnownPaths(t *testing.T) {
 		{"oauth_providers.freee.client_secret_key", true},
 		{"oauth_providers.freee.scopes", true},
 		{"oauth_providers.freee", false}, // whole entry, not a Set/Get leaf — same as services.myapp
+		// docs/plans/api-gateway.md §7, PR3 (login flow).
+		{"oauth_providers.freee.flow", true},
+		{"oauth_providers.freee.authorization_endpoint", true},
+		{"oauth_providers.freee.device_authorization_endpoint", true},
+		{"oauth_providers.google.authorize_params.access_type", true},
 	}
 	for _, tc := range cases {
 		_, ok := ResolveField(tc.path)
@@ -146,6 +151,28 @@ func TestSchema_ReloadClassification(t *testing.T) {
 	}
 	if spec.Reload != ReloadRestartRequired {
 		t.Errorf("sandbox.backend: reload class = %v, want ReloadRestartRequired", spec.Reload)
+	}
+}
+
+// TestSchema_OAuthProvidersFlow_IsEnumWithThreeValues pins
+// oauth_providers.*.flow's EnumValues against apigateway.ValidLoginFlows —
+// docs/plans/api-gateway.md §7, PR3.
+func TestSchema_OAuthProvidersFlow_IsEnumWithThreeValues(t *testing.T) {
+	spec, ok := ResolveField("oauth_providers.freee.flow")
+	if !ok {
+		t.Fatal("ResolveField(oauth_providers.freee.flow) not found")
+	}
+	if spec.Kind != KindEnum {
+		t.Errorf("kind = %v, want KindEnum", spec.Kind)
+	}
+	want := map[string]bool{"device": true, "loopback": true, "manual": true}
+	if len(spec.EnumValues) != len(want) {
+		t.Fatalf("EnumValues = %v, want exactly %v", spec.EnumValues, want)
+	}
+	for _, v := range spec.EnumValues {
+		if !want[v] {
+			t.Errorf("unexpected EnumValues entry %q", v)
+		}
 	}
 }
 
