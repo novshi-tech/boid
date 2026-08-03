@@ -254,8 +254,25 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// net/url.URL.EscapedPath's own validity rule) instead of silently
 	// re-escaping (and thereby double-encoding, or dropping the distinction
 	// entirely) at request-send time.
+	//
+	// The string handed to url.Parse is prefixed with baseURL's own
+	// "<scheme>://<host>" (codex review finding), not just basePath+rt.path
+	// on their own: RFC 3986 treats a string beginning "//" as a
+	// network-path reference — everything up to the next "/" becomes the
+	// AUTHORITY, not path content. rt.path can legitimately begin with "//"
+	// (e.g. a service configured with no base_url path suffix, requested as
+	// ".../myapp//tenant/resource" — parsePath's traversal guard has no
+	// opinion on a doubled leading slash, only on "."/".." segments), and
+	// bare basePath+rt.path concatenation for such a service (basePath =="")
+	// would parse "//tenant/resource" as Host="tenant", Path="/resource" —
+	// silently swallowing the "tenant" segment entirely, since only
+	// upstreamURL.Path/RawPath are read below (Scheme/Host on the outbound
+	// request are set from info.baseURL directly, never from this parse).
+	// Prefixing with the real scheme+host first means a leading "//" in
+	// rt.path is never the first two characters of the string url.Parse
+	// sees, so it can only ever land inside .Path/.RawPath.
 	basePath := strings.TrimSuffix(baseURL.EscapedPath(), "/")
-	upstreamURL, err := url.Parse(basePath + rt.path)
+	upstreamURL, err := url.Parse(baseURL.Scheme + "://" + baseURL.Host + basePath + rt.path)
 	if err != nil {
 		// Defensive: rt.path was already validated by parsePath to contain
 		// no malformed percent-encoding, and basePath comes from a

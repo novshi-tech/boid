@@ -516,6 +516,51 @@ func TestServer_TrailingSlashReachesUpstreamUnchanged(t *testing.T) {
 	}
 }
 
+// TestServer_DoubleSlashTailWithPathlessBaseURLIsNotSwallowed pins the fix
+// for a codex-flagged bug: a service configured with a pathless base_url
+// (BaseURL == "https://host", no path suffix) combined with a request tail
+// that itself begins with "//" (e.g. ".../myapp//tenant/resource" — nothing
+// in parsePath's traversal guard rejects a doubled leading slash, only "."/
+// ".." segments) used to be string-concatenated as basePath+rt.path (""+
+// "//tenant/resource" = "//tenant/resource") and handed to url.Parse
+// directly. RFC 3986 treats a string BEGINNING "//" as a network-path
+// reference: everything up to the next "/" becomes the parsed URL's
+// AUTHORITY, not path content — so url.Parse("//tenant/resource") produced
+// Host="tenant", Path="/resource", and since only .Path/.RawPath are read
+// back out (Scheme/Host on the real outbound request come from info.baseURL
+// directly), "tenant" was silently swallowed entirely rather than reaching
+// the upstream as part of the path. Fixed by prefixing the string handed to
+// url.Parse with baseURL's own "<scheme>://<host>" first, so a leading "//"
+// in rt.path is never the first two characters url.Parse sees.
+func TestServer_DoubleSlashTailWithPathlessBaseURLIsNotSwallowed(t *testing.T) {
+	var gotPath string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	registry := NewRegistry()
+	token := registry.Register([]string{"myapp"}, "ws-a", "", false)
+	creds := NewCredentialProvider([]ServiceConfig{
+		// upstream.URL is pathless (e.g. "http://127.0.0.1:PORT", no
+		// trailing path segment) — the exact shape that triggered the bug.
+		{Name: "myapp", BaseURL: upstream.URL, Auth: ServiceAuth{Kind: AuthBearer, SecretKey: "k"}},
+	}, stubResolver(map[string]string{"ws-a/k": "v"}))
+	srv := NewServer(registry, creds, nil, nil)
+
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", "/api/"+token+"/myapp//tenant/resource", nil)
+	srv.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body %q)", w.Code, w.Body.String())
+	}
+	if gotPath != "//tenant/resource" {
+		t.Errorf("upstream saw path = %q, want %q (the \"tenant\" segment must not be swallowed as a parsed authority)", gotPath, "//tenant/resource")
+	}
+}
+
 // TestIsSafeMethod_CaseSensitive pins the fix for a codex-flagged bug: HTTP
 // method tokens are case-sensitive (RFC 7230 §3.1.1), so a lowercase "get"
 // is a DIFFERENT, non-standard method — it must not be treated as
