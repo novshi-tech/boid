@@ -541,6 +541,46 @@ func TestOAuth2TokenSource_ExpiresInMissing_FallsBackConservatively(t *testing.T
 	}
 }
 
+// TestOAuth2TokenSource_ExplicitNonPositiveExpiresIn_TreatedAsAlreadyExpired
+// pins the codex review round-6 Major fix: an explicit expires_in: 0 (the
+// token endpoint itself declaring the access token already invalid) must be
+// treated as already-expired, NOT given fallbackAccessTokenLifetime's
+// generous benefit of the doubt the way a genuinely OMITTED expires_in is —
+// the two are indistinguishable through a plain (non-pointer) flexibleInt
+// field, which was the bug.
+func TestOAuth2TokenSource_ExplicitNonPositiveExpiresIn_TreatedAsAlreadyExpired(t *testing.T) {
+	store := newMemSecretStore()
+	store.seed("ws-a", OAuthSecretKey("freee", oauthFieldRefreshToken), "RT-initial")
+	stub := newTokenEndpointStub(t, http.StatusOK, `{"access_token":"AT-questionable","expires_in":0}`)
+	ref := time.Now()
+	ts := NewOAuth2TokenSource([]OAuthProviderConfig{{Name: "freee", TokenEndpoint: stub.srv.URL}}, store.resolver(), store.writer())
+	ts.Now = func() time.Time { return ref }
+
+	// The first call still gets the token the endpoint actually returned —
+	// this isn't rejected outright as an error.
+	got, err := ts.AccessToken("ws-a", "freee")
+	if err != nil {
+		t.Fatalf("AccessToken: %v", err)
+	}
+	if got != "AT-questionable" {
+		t.Errorf("AccessToken = %q, want %q", got, "AT-questionable")
+	}
+	if n := stub.callCount(); n != 1 {
+		t.Fatalf("after first call: token endpoint called %d times, want 1", n)
+	}
+
+	// A SECOND call, at the exact same instant (no time has passed), must
+	// refresh again rather than treating this token as valid for
+	// fallbackAccessTokenLifetime — proving expires_in:0 did not fall into
+	// the same branch as a genuinely omitted expires_in.
+	if _, err := ts.AccessToken("ws-a", "freee"); err != nil {
+		t.Fatalf("second AccessToken: %v", err)
+	}
+	if n := stub.callCount(); n != 2 {
+		t.Errorf("after second call (same instant): token endpoint called %d times, want 2 (expires_in:0 must not be cached as fresh)", n)
+	}
+}
+
 func TestOAuth2TokenSource_ClientSecretResolvedAndSent(t *testing.T) {
 	store := newMemSecretStore()
 	store.seed("ws-a", OAuthSecretKey("freee", oauthFieldRefreshToken), "RT-initial")

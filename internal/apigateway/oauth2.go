@@ -513,11 +513,29 @@ func (t *OAuth2TokenSource) refresh(namespace string, cfg OAuthProviderConfig) (
 	// returns the freshly obtained access token for THIS caller's immediate
 	// use, and the next AccessToken() call simply finds no (or a stale)
 	// cached access_token and refreshes again.
-	expiresIn := time.Duration(resp.ExpiresIn) * time.Second
-	if resp.ExpiresIn <= 0 {
+	var expiresIn time.Duration
+	switch {
+	case resp.ExpiresIn == nil:
+		// Field genuinely absent from the response — the fallback case
+		// this constant/comment has always described.
 		slog.Warn("apigateway: oauth2 token endpoint response omitted expires_in; falling back to a conservative default lifetime",
 			"provider", cfg.Name, "namespace", namespace, "fallback", fallbackAccessTokenLifetime)
 		expiresIn = fallbackAccessTokenLifetime
+	case *resp.ExpiresIn <= 0:
+		// Field explicitly present with a non-positive value (codex review
+		// round 6, Major finding): treat the access token as ALREADY
+		// expired rather than granting it fallbackAccessTokenLifetime's
+		// generous benefit of the doubt. expiresIn stays 0, so expiresAt
+		// below computes to exactly t.now() — this call still returns the
+		// access token once (the token endpoint DID return a 200 with one),
+		// but memCache's entry for it can never pass freshEnough on any
+		// SUBSEQUENT call, forcing an immediate re-refresh rather than
+		// treating a provider-declared-invalid token as good for up to
+		// fallbackAccessTokenLifetime.
+		slog.Warn("apigateway: oauth2 token endpoint response has an explicit non-positive expires_in; treating the access token as already expired",
+			"provider", cfg.Name, "namespace", namespace, "expires_in", int64(*resp.ExpiresIn))
+	default:
+		expiresIn = time.Duration(*resp.ExpiresIn) * time.Second
 	}
 	expiresAt := t.now().Add(expiresIn)
 
@@ -607,11 +625,24 @@ func (f *flexibleInt) UnmarshalJSON(data []byte) error {
 }
 
 // oauthTokenResponse is the RFC 6749 §5.1 successful token response shape,
-// restricted to the fields this package actually reads.
+// restricted to the fields this package actually reads. ExpiresIn is a
+// POINTER (codex review round 6, Major finding) so refresh can tell
+// "the field was absent" (nil — every provider docs/plans/api-gateway.md
+// targets always sends it in practice; the fallback path exists only for
+// the rare one that doesn't) apart from "the field was explicitly present
+// with a non-positive value" (non-nil, <= 0 — RFC 6749 gives this no
+// defined meaning, but the most sensible reading is "this token endpoint
+// is telling us the access_token it just issued is already expired/
+// invalid"). A plain (non-pointer) flexibleInt could not distinguish these
+// — both decode to the Go zero value 0 — so BOTH cases fell into the same
+// branch and an explicitly-non-positive expires_in got the same generous
+// fallback lifetime as a merely-omitted one, letting an access token the
+// provider itself declared invalid be treated as valid for
+// fallbackAccessTokenLifetime instead of being refreshed again immediately.
 type oauthTokenResponse struct {
-	AccessToken  string      `json:"access_token"`
-	RefreshToken string      `json:"refresh_token,omitempty"`
-	ExpiresIn    flexibleInt `json:"expires_in"`
+	AccessToken  string       `json:"access_token"`
+	RefreshToken string       `json:"refresh_token,omitempty"`
+	ExpiresIn    *flexibleInt `json:"expires_in"`
 	TokenType    string      `json:"token_type,omitempty"`
 }
 
