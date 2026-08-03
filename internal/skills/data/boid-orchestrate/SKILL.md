@@ -4,7 +4,7 @@ description: >
   CLI (`boid exec`) またはタスク詳細の Commands ボタンから起動される汎用エントリポイント。
   起動コンテキストを自動検出し、タスクコンテキストがある場合は対話的なタスク管理モード
   （description / instructions 更新、notify --ask への回答）で動作し、コンテキストがない
-  場合は外部から supervisor タスクを作成・追跡する外部オーケストレーションモードで動作する。
+  場合は外部から root タスクを作成・追跡する外部オーケストレーションモードで動作する。
   CLI / Web UI Commands ボタン両対応の統合 entry point。
 ---
 
@@ -33,7 +33,7 @@ fi
 | 条件 | モード |
 |---|---|
 | `$BOID_TASK_ID` が設定され、かつ `boid task current` が成功する | **タスク管理モード** — 対象タスクを対話的に更新する |
-| それ以外（`$BOID_TASK_ID` 未設定、または `boid task current` が失敗する） | **外部オーケストレーションモード** — supervisor タスクを作成・追跡する |
+| それ以外（`$BOID_TASK_ID` 未設定、または `boid task current` が失敗する） | **外部オーケストレーションモード** — root タスクを作成・追跡する |
 
 ---
 
@@ -126,7 +126,7 @@ PTY が閉じることで exec job が完了する。
 ## 外部オーケストレーションモード（CLI / boid exec から起動）
 
 `$BOID_TASK_ID` が未設定、または `boid task current` が失敗する場合はこのモードで動作する。
-外部セッション（`BOID_TASK_ID` がない状態）から supervisor タスクを作成し、完了まで追跡する。
+外部セッション（`BOID_TASK_ID` がない状態）から root タスクを作成し、完了まで追跡する。
 
 > **このスキルは `/boid-task` と何が違うか**
 >
@@ -146,6 +146,8 @@ PTY が閉じることで exec job が完了する。
 - `boid task list` — 利用可
 - `boid task answer --task <id> --question-id <id> --answer <text>` — 利用可
 - `boid task delete <id> --force` — 利用可
+- `boid project list` — 利用可（同一 workspace 内のプロジェクト一覧、JSON）
+- `boid project behaviors <project-ref>` — 利用可（`task_behaviors` を JSON で返す。`<project-ref>` は必須）
 - `boid task watch` — **利用不可**（"unsupported boid task subcommand" エラー）。Monitor ツールでポーリングすること
 
 ### ワークフロー
@@ -157,22 +159,46 @@ PTY が閉じることで exec job が完了する。
 フィールドに指定する。
 
 ```bash
-# 現在のプロジェクトを確認
-boid project show 2>/dev/null || echo "no active project"
+# 委譲できるプロジェクトを確認（同一 workspace 内のみ見える）
+boid project list
 ```
 
-#### 2. タイトルと description を整える
+#### 2. 使える behavior を `boid project behaviors` で確認する
+
+**behavior 名は project.yaml の `task_behaviors` で自由に定義される** ので、
+`supervisor` / `executor` のような固定名を決め打ちしてはいけない。委譲先プロジェクトに
+実在する behavior を必ず問い合わせてから選ぶ。
+
+```bash
+PROJECT=<project-id-または名前の部分一致>
+boid project behaviors "$PROJECT"
+```
+
+サンドボックス内では `task_behaviors` が JSON で返る（`traits` / `readonly` /
+`default_instruction` を含む）。オーケストレーション（分解して子タスクを回す）を任せたい
+なら `readonly: true` の behavior を、実装そのものを任せたいなら `readonly: false` の
+behavior を選ぶ。判断材料は名前ではなく `readonly` と `traits`。
+
+```bash
+# 例: readonly な behavior 名だけ拾う
+boid project behaviors "$PROJECT" | jq -r 'to_entries[] | select(.value.readonly) | .key'
+```
+
+behavior を省略した場合はプロジェクトの `default_task_behavior` が使われる。迷ったら
+省略してデフォルトに任せるのが安全。
+
+#### 3. タイトルと description を整える
 
 委譲する作業の title と description を決める。description には実装の詳細・期待する
-成果物・参照すべきファイルなどを含める。大きなタスクは事前に `/boid-task` の Supervisor
-Mode 相当の分解計画を立ててから description に落とすとよい。
+成果物・参照すべきファイルなどを含める。大きなタスクは事前に分解計画を立ててから
+description に落とすとよい。
 
-#### 3. supervisor タスクを作成する
+#### 4. root タスクを作成する
 
 ```bash
 TASK_ID=$(boid task create <<YAML | awk '{print $3}'
 title: <タスクのタイトル>
-behavior: supervisor
+behavior: <手順2で確認した behavior 名>
 auto_start: true
 ref: <kebab-case-の安定したref>
 description: |
@@ -185,11 +211,11 @@ echo "created: $TASK_ID"
 **`ref` は必須。** 毎回異なるランダム値は使わず、作業内容を表す安定した slug を使う
 （例: `migrate-db-schema`, `add-feature-x`, `fix-bug-y`）。
 
-`project_id` を指定したい場合:
+`project_id` を指定したい場合（手順2で behaviors を確認したプロジェクトと必ず揃える）:
 ```bash
 TASK_ID=$(boid task create <<YAML | awk '{print $3}'
 title: <タイトル>
-behavior: supervisor
+behavior: <そのプロジェクトに実在する behavior 名>
 auto_start: true
 ref: <ref>
 project_id: <project-id>
@@ -199,7 +225,7 @@ YAML
 )
 ```
 
-#### 4. タスクを追跡する
+#### 5. タスクを追跡する
 
 `boid task watch` はサンドボックスで使えないため、**Monitor ツール**でポーリングする。
 Monitor のスクリプト内では `sleep` が使える（フォアグラウンド `sleep` はブロックされるが
@@ -227,10 +253,10 @@ Monitor({
 
 Monitor を起動したら **生成を止めて待つ**。ステータス変化があると通知が届く。
 
-#### 5. awaiting になった場合: ユーザへの質問を中継する
+#### 6. awaiting になった場合: ユーザへの質問を中継する
 
-タスクが `awaiting` になったら子タスク（supervisor 内の executor など）の質問ではなく、
-root supervisor がユーザに対して質問を出している。読み取って中継する。
+タスクが `awaiting` になったら子タスクの質問ではなく、root タスク自身がユーザに対して
+質問を出している。読み取って中継する。
 
 ```bash
 TASK="<task-id>"
@@ -248,7 +274,7 @@ boid task answer --task "$TASK" --question-id "$question_id" --answer "<ユー�
 
 その後、Monitor は自動的に次のステータス変化を通知する（Monitor の再起動は不要）。
 
-#### 6. done になった場合: 結果を取得して提示する
+#### 7. done になった場合: 結果を取得して提示する
 
 ```bash
 TASK="<task-id>"
@@ -258,7 +284,7 @@ boid task show "$TASK" --field payload.artifact.report
 `payload.artifact.report` に structured report が含まれる（`summary`, `evidence`,
 `verification`, `caveats` など）。内容をユーザに分かりやすく要約して提示する。
 
-#### 7. aborted になった場合: 失敗内容を取得して提示する
+#### 8. aborted になった場合: 失敗内容を取得して提示する
 
 ```bash
 TASK="<task-id>"
@@ -270,16 +296,20 @@ boid task show "$TASK" --field lifecycle.abort.message
 
 失敗内容を提示し、再試行するかどうかをユーザに確認する。
 
-再試行（reopen）は supervisor タスクに対してはできない（aborted 遷移は終端）ため、
-必要なら新しいタスクを作成する。
+再試行（reopen）は aborted 遷移が終端のためできない。必要なら新しいタスクを作成する。
 
 ### 完全な例
 
 ```bash
-# 1. タスクを作成して追跡
+# 1. 委譲先プロジェクトと、そこに実在する behavior を確認
+boid project list
+boid project behaviors sample-project
+
+# 2. 確認した behavior 名でタスクを作成して追跡
 TASK_ID=$(boid task create <<YAML | awk '{print $3}'
 title: サンプル機能の実装
-behavior: supervisor
+# behavior は手順1の boid project behaviors 出力に実在した名前を使う（省略時は default_task_behavior）
+behavior: dev
 auto_start: true
 ref: implement-sample-feature
 description: |
@@ -293,13 +323,16 @@ YAML
 )
 echo "タスク作成: $TASK_ID"
 
-# 2. Monitor でステータス変化を待つ（Monitor ツール呼び出し）
+# 3. Monitor でステータス変化を待つ（Monitor ツール呼び出し）
 #    → 通知が届いたらステータスに応じて処理
 ```
 
 ### 注意事項
 
 - **`ref` は必須かつ安定させること。** 同じ `ref` で再作成すると既存タスクが返る（冪等）。
+- **behavior 名を決め打ちしないこと。** `supervisor` / `executor` のような固定名はもう前提にできない。
+  必ず `boid project behaviors <project-ref>` で実在する名前を確認するか、省略して
+  `default_task_behavior` に任せる。
 - **ポーリングはフォアグラウンドで行わないこと。** Monitor ツール内の `sleep` は OK。
 - タスク完了後のクリーンアップ（不要なタスクの削除）は `boid task delete <id>` で行える。
 - サンドボックス制約により一部コマンドが使えない場合は、制約を明示してユーザに代替案を提示する。
