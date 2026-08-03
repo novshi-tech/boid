@@ -190,6 +190,64 @@ func TestDispatch_APIGatewayToken_ReadOnlyFromVisibility(t *testing.T) {
 	}
 }
 
+// TestDispatch_RegistersAPIGatewayTokenWithSecretNamespace mirrors
+// TestDispatch_RegistersGatewayTokenWithSecretNamespace (git gateway,
+// gitgateway_wire_test.go) for the API gateway — the same wiring-seams.md
+// #11-shaped concern applied to the sibling gateway: it proves
+// registerAPIGatewayToken passes spec.SecretNamespace through to
+// apigateway.Registry.Register (internal/dispatcher/apigateway_wire.go's
+// r.APIGateway.Register(services, spec.SecretNamespace, spec.TaskID,
+// readOnly) call), so the real Registry entry a live Dispatch creates
+// carries the namespace Server.ServeHTTP will later read back out via
+// Lookup to scope credential resolution (see
+// TestServer_RoutesCredentialsByTokenNamespace, internal/apigateway/
+// server_test.go, for the remaining End B→C→D hop through a real Server).
+func TestDispatch_RegistersAPIGatewayTokenWithSecretNamespace(t *testing.T) {
+	d := newGatewayTestDB(t)
+	if err := orchestrator.CreateProject(d.Conn, &orchestrator.Project{
+		ID: "proj-1", WorkDir: "/tmp",
+	}); err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+
+	gwURL := "https://boid-gateway:9443"
+	registry := apigateway.NewRegistry()
+	r := &Runner{
+		DB:         d.Conn,
+		Projects:   orchestrator.DBProjectCatalog{DB: d.Conn},
+		Backend:    &gwFakeBackend{},
+		BoidBinary: "/boid",
+		APIGateway: registry,
+		GatewayURL: &gwURL,
+	}
+
+	spec := &orchestrator.JobSpec{
+		ProjectID:       "proj-1",
+		Argv:            []string{"echo", "hi"},
+		Kind:            orchestrator.JobKindHook,
+		Visibility:      orchestrator.Visibility{Writable: true},
+		SecretNamespace: "ws-scoped-secret",
+	}
+
+	jobID, err := r.Dispatch(context.Background(), spec, nil)
+	if err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+
+	token, ok := r.apiGatewayTokens[jobID]
+	if !ok || token == "" {
+		t.Fatalf("apiGatewayTokens[%q] not registered", jobID)
+	}
+
+	entry, valid := registry.Lookup(token)
+	if !valid {
+		t.Fatal("registry.Lookup: token registered by Dispatch was not found in the real Registry")
+	}
+	if entry.Namespace != "ws-scoped-secret" {
+		t.Errorf("entry.Namespace = %q, want %q (spec.SecretNamespace should have been threaded through Register)", entry.Namespace, "ws-scoped-secret")
+	}
+}
+
 // TestDispatch_APIGatewayUnwired_NoTokenNoPanic verifies the nil-APIGateway
 // path (test wiring / a daemon build without the API gateway constructed)
 // leaves SandboxRuntimeInfo's API gateway fields empty and Dispatch/

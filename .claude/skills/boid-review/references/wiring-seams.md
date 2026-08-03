@@ -35,6 +35,8 @@ has the same shape:
 18. [engine wait response → RuntimeExit → job status/diagnostics](#18-engine-wait-response--runtimeexit--job-statusdiagnostics)
 19. [config schema seam (schema leaf → Config field → extractor → buildStartConfig → consumer)](#19-config-schema-seam)
 20. [WorkspaceMeta write-path field coverage (strict PUT vs envelope apply)](#20-workspacemeta-write-path-field-coverage)
+21. [apigateway SecretResolver namespace threading (sibling of #11)](#21-apigateway-secretresolver-namespace-threading)
+22. [orchestrator.Action → timeline.Build renderability](#22-orchestratoraction--timelinebuild-renderability)
 
 ---
 
@@ -1056,3 +1058,112 @@ do not cover the same field set**, and nothing enforces they agree.
   field to `WorkspaceMeta` itself, decide up front whether `workspaceMetaStrict` needs it too
   (most fields should be added to **both** decoders; the four PR3-era fields are the one
   known, deliberate exception, not a precedent to extend casually).
+
+## 21. apigateway SecretResolver namespace threading
+
+Sibling of seam #11, for `internal/apigateway` (docs/plans/api-gateway.md PR1). Same
+concern, different gateway: whether a workspace-scoped secret namespace, chosen at
+dispatch time, actually reaches the `SecretResolver` call that resolves the upstream
+credential for a proxied request — namespace propagation across register → store →
+recover → resolve, where any hop that drops the namespace silently collapses every
+workspace back onto the `"default"` secret namespace.
+
+- **End A (register)**: `Runner.registerAPIGatewayToken` in
+  `internal/dispatcher/apigateway_wire.go` calls `r.APIGateway.Register(services,
+  spec.SecretNamespace, spec.TaskID, readOnly)`.
+- **End B (store)**: `apigateway.Registry.Register`/`RegisterToken`
+  (`internal/apigateway/registry.go`) persist the namespace on `Entry.Namespace`.
+- **End C (recover)**: `Server.ServeHTTP` (`internal/apigateway/server.go`) — after
+  `Registry.Authorize` confirms the token, a second `Registry.Lookup(rt.token)` recovers
+  `Entry.Namespace` and stashes it on the request-scoped `routeInfo`, read back by both the
+  fail-fast `credentials.Resolve` pre-check and the `ReverseProxy.Rewrite` hook's
+  `credentials.Inject` call.
+- **End D (resolve)**: `apigateway.SecretResolver` (`func(namespace, key string) (string,
+  error)`, `internal/apigateway/credentials.go`) — the closure built in
+  `internal/server/wire.go` (`apiGwResolver`) passes `namespace` straight through to
+  `secretStore.Get(namespace, key)`, which normalizes `""` to `"default"`
+  (`dispatcher.SecretStore.normalizeNamespace`).
+- **Invariant**: identical to seam #11's — the namespace a token was registered with
+  (End A/B) is exactly the namespace `Resolve`/`Inject` resolve credentials against for
+  every request authorized under that token (End C/D). No hop may substitute, drop, or
+  hardcode a different namespace.
+- **Past gap**: PR1 shipped with End D tested in isolation
+  (`TestCredentialProvider_MultiNamespaceIsolation`, `internal/apigateway/
+  credentials_test.go`) but no test proving End A→B (`spec.SecretNamespace` reaching
+  `Entry.Namespace` through a real `Dispatch`) or End B→C→D (two tokens, two namespaces,
+  routed to two different secrets through a real `Registry` + `Server`) — the exact two
+  tests seam #11 already has for the sibling gateway. Caught in review (boid-review
+  self-check before PR1's first push) by cross-referencing this catalog entry against the
+  diff; fixed by adding both.
+- **Guard**: `TestDispatch_RegistersAPIGatewayTokenWithSecretNamespace`
+  (`internal/dispatcher/apigateway_wire_test.go`, End A→B) and
+  `TestServer_RoutesCredentialsByTokenNamespace` (`internal/apigateway/server_test.go`,
+  End B→C→D).
+- **When you touch it**: if you touch `registerAPIGatewayToken`,
+  `apigateway.Registry.Register`/`RegisterToken`, `Server.ServeHTTP`'s post-`Authorize`
+  block, or the `apiGwResolver` closure in `internal/server/wire.go`, verify a token
+  registered under namespace X still resolves credentials under namespace X — and keep this
+  entry and #11 in sync if either gateway's namespace-threading shape changes (e.g. PR2's
+  oauth2 TokenSource will need the same namespace to key its own token-cache lookup).
+
+## 22. orchestrator.Action → timeline.Build renderability
+
+Whether an `orchestrator.Action` a caller writes (via `TaskRepository.CreateAction`) is
+actually visible anywhere a human looks — `timeline.Build` (`internal/timeline/timeline.go`)
+is the **sole** function that turns `[]*Action` into what the Web UI's task-detail page
+renders (`internal/api/web.go`'s `GET /tasks/{id}` route; the TUI that used to be the other
+consumer was retired outright, `internal/tui` no longer exists), and its per-item filter is
+narrower than "every Action row that exists":
+
+```go
+if !IsStateTransition(a) && !IsProgressAction(a) && !IsAPIGatewayRequestAction(a) {
+    continue  // silently dropped — never becomes an Event in any StatusGroup
+}
+```
+
+- **End A (writer)**: any `TaskRepository.CreateAction` call site that means for the row to
+  show up in the timeline — `api.TaskAppService.NotifyTask`'s progress-mode branch
+  (`internal/api/task_notify.go`), `internal/server`'s `newAPIGatewayRecorder`
+  (`apigateway_notify.go`), and any future one.
+- **End B (renderer)**: `timeline.Build`'s filter + `BuildActionLabel`
+  (`internal/timeline/timeline.go`) — a `Type` this file doesn't recognize as a state
+  transition, `"progress"`, or one of its own named non-transitioning kinds
+  (`IsAPIGatewayRequestAction`, ...) never reaches an `Event`, no matter what its payload
+  contains.
+- **Invariant**: a **non-transitioning** Action (no real `FromStatus`→`ToStatus` state
+  change — an FYI/audit row, not a lifecycle event) must set `FromStatus == ToStatus ==` the
+  task's CURRENT status at write time (fetch it first if the caller doesn't already have it
+  — `task.Status` right before `CreateAction`), AND its `Type` must be one `IsProgressAction`
+  or an equivalent `Is*Action` predicate in `internal/timeline` recognizes. Missing either
+  half breaks visibility a different way: a recognized `Type` with `FromStatus`/`ToStatus`
+  left at their zero value opens a spurious empty-status `StatusGroup` nothing ever renders
+  into or navigates to (group placement reads `a.FromStatus` unconditionally for every
+  non-job item); an unrecognized `Type` (even with FromStatus/ToStatus correctly set) is
+  filtered out before group placement ever runs.
+- **Past break**: caught in review (not yet shipped) for the API gateway's request-timeline
+  recording (docs/plans/api-gateway.md §論点3, `internal/server/apigateway_notify.go`): the
+  first cut wrote `Action{TaskID, Type: "api_gateway_request", Payload}` with
+  `FromStatus`/`ToStatus` left at their zero value. The row landed in the DB and every test
+  that only asserted `ListActionsByTask` passed, but the feature the plan doc claims
+  ("method + service + path + status を timeline に") was invisible on the actual Web UI
+  page — confirmed empirically by feeding the exact Action `newAPIGatewayRecorder` produced
+  through a real `timeline.Build` call and observing it in no `StatusGroup`'s `Events`.
+  Fixed by (a) fetching the task and setting `FromStatus = ToStatus = task.Status` before
+  `CreateAction`, and (b) adding `timeline.IsAPIGatewayRequestAction` +
+  `timeline.ActionTypeAPIGatewayRequest` (exported so the writer and the two readers share
+  one string, not two hand-copied literals) and wiring it into `Build`'s filter and
+  `BuildActionLabel`.
+- **Guard**: `TestNewAPIGatewayRecorder_ActionIsVisibleInTimeline`
+  (`internal/server/apigateway_notify_test.go`) round-trips a recorded Action through a real
+  `timeline.Build` and asserts it appears with the expected label — the class of test this
+  seam needs (not merely "the DB row has the right Type/Payload", which the same file's
+  other tests already covered and which would NOT have caught this).
+- **When you touch it**: if you add a new kind of non-transitioning `Action` meant to show up
+  in a task's timeline, (1) give it its own exported `ActionType*` constant + `Is*Action`
+  predicate in `internal/timeline` (don't just reuse `"progress"` if the payload shape
+  differs — `buildProgressLabel` expects a `message` key and silently degrades to a bare
+  "進捗" for anything else), (2) wire the predicate into `Build`'s filter AND
+  `BuildActionLabel`, and (3) set `FromStatus`/`ToStatus` to the task's current status at
+  write time. Write a test that calls `timeline.Build` on the real Action your writer
+  produces and asserts it surfaces as an `Event` — a test that only inspects
+  `ListActionsByTask`'s return value proves the DB write, not the feature.

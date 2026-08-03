@@ -2,10 +2,13 @@ package apigateway
 
 import (
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"sync"
 	"testing"
+	"time"
 )
 
 // recordedCall captures one RequestRecorder invocation for assertions.
@@ -84,6 +87,57 @@ func TestServer_ProxiesWithBearerInjection(t *testing.T) {
 	call := rec.last()
 	if call.taskID != "task-1" || call.method != "GET" || call.service != "myapp" || call.path != "/v1/users" || call.status != http.StatusOK {
 		t.Errorf("recorder call = %+v, want {task-1 GET myapp /v1/users 200}", call)
+	}
+}
+
+// TestServer_RoutesCredentialsByTokenNamespace mirrors
+// internal/gitgateway's TestServeHTTP_RoutesCredentialsByTokenNamespace
+// (wiring-seams.md #11's own guard for the sibling gateway): a single
+// Server, with one shared ServiceConfig/SecretResolver, must route two
+// different job tokens — registered under two different Registry
+// namespaces — to two different upstream secrets. This is the shape a real
+// daemon reaches once two workspaces each set their own
+// `boid secret set --namespace <ws> myapp-token <value>`: same service
+// config, different secret per workspace, selected purely by which job
+// token made the request. TestCredentialProvider_MultiNamespaceIsolation
+// (credentials_test.go) already proves CredentialProvider itself resolves
+// per-namespace correctly in isolation; this test closes the remaining hop
+// — Server.ServeHTTP's post-Authorize Lookup recovering Entry.Namespace and
+// threading it into Resolve/Inject — through a real Registry + Server.
+func TestServer_RoutesCredentialsByTokenNamespace(t *testing.T) {
+	var gotAuth string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	secretsByNamespace := map[string]string{
+		"ws-a/myapp-token": "secret-for-ws-a",
+		"ws-b/myapp-token": "secret-for-ws-b",
+	}
+	creds := NewCredentialProvider([]ServiceConfig{
+		{Name: "myapp", BaseURL: upstream.URL, Auth: ServiceAuth{Kind: AuthBearer, SecretKey: "myapp-token"}},
+	}, stubResolver(secretsByNamespace))
+
+	registry := NewRegistry()
+	tokenA := registry.Register([]string{"myapp"}, "ws-a", "task-a", false)
+	tokenB := registry.Register([]string{"myapp"}, "ws-b", "task-b", false)
+
+	srv := NewServer(registry, creds, nil, nil)
+
+	for token, wantSecret := range map[string]string{tokenA: "secret-for-ws-a", tokenB: "secret-for-ws-b"} {
+		w := httptest.NewRecorder()
+		req := httptest.NewRequest("GET", "/api/"+token+"/myapp/v1/users", nil)
+		srv.ServeHTTP(w, req)
+
+		if w.Code != http.StatusOK {
+			t.Fatalf("token %s: status = %d, want 200 (body %q)", token, w.Code, w.Body.String())
+		}
+		wantAuth := "Bearer " + wantSecret
+		if gotAuth != wantAuth {
+			t.Errorf("token %s: upstream saw Authorization = %q, want %q", token, gotAuth, wantAuth)
+		}
 	}
 }
 
@@ -482,5 +536,200 @@ func TestIsSafeMethod_CaseSensitive(t *testing.T) {
 		if got := isSafeMethod(c.method); got != c.want {
 			t.Errorf("isSafeMethod(%q) = %v, want %v", c.method, got, c.want)
 		}
+	}
+}
+
+// TestServer_SSEResponseStreamsIncrementally proves docs/plans/api-gateway.md
+// §5's "SSE 対応" claim as a USER-VISIBLE property: an upstream Server-Sent
+// Events response streams through the gateway incrementally rather than
+// being buffered until the connection closes.
+//
+// Note on what this test does and does not isolate: Go's own
+// httputil.ReverseProxy already special-cases a "text/event-stream"
+// Content-Type (and any response with ContentLength == -1, i.e. chunked/
+// unknown-length) to flush immediately REGARDLESS of the configured
+// FlushInterval (see reverseproxy.go's flushInterval method) — real SSE
+// traffic always takes this shape (no upstream can know an SSE stream's
+// final length in advance), so this test's real-world value is confirming
+// nothing in this package's own code (an accidental io.ReadAll on the
+// response body, a misconfigured Transport, ...) defeats that stdlib
+// behavior — not that server.go's own `FlushInterval: -1` field is what
+// causes it. TestServer_FlushIntervalNegative_FlushesKnownLengthResponse
+// below isolates that field specifically, using a response shape that
+// bypasses both of ReverseProxy's own auto-override conditions.
+//
+// Unlike every other test in this file, this one cannot use
+// httptest.NewRecorder() + a direct ServeHTTP call: ResponseRecorder has no
+// real network connection for a client to observe partial data over while
+// the handler is still running — ServeHTTP simply runs to completion
+// synchronously and the test only ever sees the final, fully-buffered
+// result, which would pass even if streaming were silently broken. A REAL
+// httptest.NewServer(srv) — mirroring internal/gitgateway's own streaming
+// proof, TestServeHTTP_StreamsRequestBodyWithoutBuffering — is required to
+// observe the ordering property this test is actually about.
+//
+// The proof: the upstream writes and flushes a first chunk, then blocks
+// (holding the connection open) before writing a second chunk and closing.
+// If the gateway buffered the response instead of streaming it, the client
+// would see nothing until the upstream finally closes — which never happens
+// while the upstream is paused — so the test would time out instead of
+// observing the first chunk arrive on its own.
+func TestServer_SSEResponseStreamsIncrementally(t *testing.T) {
+	proceed := make(chan struct{})
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			t.Fatal("upstream ResponseWriter does not implement http.Flusher")
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprint(w, "data: first\n\n")
+		flusher.Flush()
+		<-proceed
+		fmt.Fprint(w, "data: second\n\n")
+	}))
+	defer upstream.Close()
+
+	registry := NewRegistry()
+	token := registry.Register([]string{"myapp"}, "ws-a", "task-1", false)
+	creds := NewCredentialProvider([]ServiceConfig{
+		{Name: "myapp", BaseURL: upstream.URL, Auth: ServiceAuth{Kind: AuthBearer, SecretKey: "k"}},
+	}, stubResolver(map[string]string{"ws-a/k": "sekret"}))
+
+	gwSrv := httptest.NewServer(NewServer(registry, creds, nil, nil))
+	defer gwSrv.Close()
+
+	resp, err := http.Get(gwSrv.URL + "/api/" + token + "/myapp/stream")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+
+	// Read exactly the first chunk's bytes off the still-open connection.
+	firstChunk := make([]byte, len("data: first\n\n"))
+	readDone := make(chan error, 1)
+	go func() {
+		_, err := io.ReadFull(resp.Body, firstChunk)
+		readDone <- err
+	}()
+
+	select {
+	case err := <-readDone:
+		if err != nil {
+			t.Fatalf("read first chunk: %v", err)
+		}
+		if string(firstChunk) != "data: first\n\n" {
+			t.Fatalf("first chunk = %q, want %q", firstChunk, "data: first\n\n")
+		}
+		// Observed the first chunk while the upstream is still paused before
+		// writing the second one — proves the gateway flushed it through
+		// rather than buffering until the response completed.
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for the first SSE chunk; response appears to be buffered rather than streamed")
+	}
+
+	close(proceed)
+
+	rest, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read rest of body: %v", err)
+	}
+	if string(rest) != "data: second\n\n" {
+		t.Fatalf("rest of body = %q, want %q", rest, "data: second\n\n")
+	}
+}
+
+// TestServer_FlushIntervalNegative_FlushesKnownLengthResponse isolates
+// server.go's own `FlushInterval: -1` config value, the specific gap
+// TestServer_SSEResponseStreamsIncrementally's doc comment flags: that test's
+// upstream response takes a shape (text/event-stream, unknown length) that
+// httputil.ReverseProxy special-cases to flush immediately ON ITS OWN,
+// regardless of FlushInterval, so it would pass even if this package never
+// set that field at all.
+//
+// This test avoids BOTH of ReverseProxy's auto-override conditions
+// (reverseproxy.go's flushInterval method): the upstream response declares
+// an ordinary Content-Type (not "text/event-stream") AND a real, known
+// Content-Length set before any bytes are written (so the proxy's client
+// Transport reports resp.ContentLength as that real value, not -1). With
+// both auto-overrides bypassed, the only way the gateway flushes the first
+// chunk to the client before the upstream releases the second one is if
+// server.go's own configured FlushInterval is honored.
+func TestServer_FlushIntervalNegative_FlushesKnownLengthResponse(t *testing.T) {
+	const chunk1, chunk2 = "first-chunk-", "second-chunk"
+	proceed := make(chan struct{})
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			t.Fatal("upstream ResponseWriter does not implement http.Flusher")
+		}
+		w.Header().Set("Content-Type", "text/plain") // deliberately NOT text/event-stream
+		w.Header().Set("Content-Length", strconv.Itoa(len(chunk1)+len(chunk2)))
+		w.WriteHeader(http.StatusOK)
+		io.WriteString(w, chunk1)
+		flusher.Flush()
+		<-proceed
+		io.WriteString(w, chunk2)
+	}))
+	defer upstream.Close()
+
+	registry := NewRegistry()
+	token := registry.Register([]string{"myapp"}, "ws-a", "task-1", false)
+	creds := NewCredentialProvider([]ServiceConfig{
+		{Name: "myapp", BaseURL: upstream.URL, Auth: ServiceAuth{Kind: AuthBearer, SecretKey: "k"}},
+	}, stubResolver(map[string]string{"ws-a/k": "sekret"}))
+
+	gwSrv := httptest.NewServer(NewServer(registry, creds, nil, nil))
+	defer gwSrv.Close()
+
+	resp, err := http.Get(gwSrv.URL + "/api/" + token + "/myapp/plain")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	// Sanity check that this response really does bypass both of
+	// ReverseProxy's own auto-flush triggers — a positive ContentLength
+	// (not -1) and a non-SSE Content-Type — so a pass here can only be
+	// attributed to server.go's own FlushInterval.
+	if resp.ContentLength != int64(len(chunk1)+len(chunk2)) {
+		t.Fatalf("resp.ContentLength = %d, want %d (test setup invalid: proxy did not see a known length)", resp.ContentLength, len(chunk1)+len(chunk2))
+	}
+	if ct := resp.Header.Get("Content-Type"); ct == "text/event-stream" {
+		t.Fatal("test setup invalid: Content-Type is text/event-stream, which would trigger ReverseProxy's own unconditional auto-flush")
+	}
+
+	firstChunk := make([]byte, len(chunk1))
+	readDone := make(chan error, 1)
+	go func() {
+		_, err := io.ReadFull(resp.Body, firstChunk)
+		readDone <- err
+	}()
+
+	select {
+	case err := <-readDone:
+		if err != nil {
+			t.Fatalf("read first chunk: %v", err)
+		}
+		if string(firstChunk) != chunk1 {
+			t.Fatalf("first chunk = %q, want %q", firstChunk, chunk1)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for the first chunk; a known-Content-Length, non-SSE response is not being flushed immediately — FlushInterval may have been dropped")
+	}
+
+	close(proceed)
+
+	rest, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read rest of body: %v", err)
+	}
+	if string(rest) != chunk2 {
+		t.Fatalf("rest of body = %q, want %q", rest, chunk2)
 	}
 }
