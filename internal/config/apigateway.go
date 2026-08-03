@@ -94,6 +94,18 @@ func validateServiceConfig(name string, sc ServiceConfig) error {
 	if trimmed := strings.TrimSpace(name); trimmed != name {
 		return fmt.Errorf("services[%q]: service name must not have leading/trailing whitespace (did you mean %q?)", name, trimmed)
 	}
+	// codex review round 7 finding: an empty service name (`services: {"":
+	// ...}`) passed every check above (TrimSpace("") == "", so the
+	// whitespace check doesn't catch it) yet apigateway.parsePath's route
+	// segment for a service name can never be empty (it requires a
+	// non-empty "/"-delimited path segment) — a service declared this way
+	// would validate cleanly at config-load time but be permanently
+	// unreachable from any sandbox request. Reject it explicitly instead of
+	// relying on the whitespace check's coincidental (and confusing, if it
+	// ever changed) side effect.
+	if name == "" {
+		return fmt.Errorf("services: a service name must not be empty")
+	}
 	if sc.BaseURL == "" {
 		return fmt.Errorf("services[%q]: missing required \"base_url\" field", name)
 	}

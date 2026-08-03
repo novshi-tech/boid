@@ -100,6 +100,20 @@ func TestLoadFromPath_Services_WhitespacePaddedNameRejected(t *testing.T) {
 	}
 }
 
+// TestLoadFromPath_Services_EmptyNameRejected pins a codex review finding
+// (round 7): an empty service name (`services: {"": ...}`) passes
+// TrimSpace's whitespace check (TrimSpace("") == "") and every other check,
+// yet apigateway.parsePath's route segment for a service name can never be
+// empty — a service declared this way would validate cleanly at
+// config-load time but be permanently unreachable from any sandbox request.
+func TestLoadFromPath_Services_EmptyNameRejected(t *testing.T) {
+	content := "services:\n  \"\":\n    base_url: https://myapp.example.com\n    auth: { kind: bearer, secret_key: k }\n"
+	_, err := loadFromPath(writeConfigFile(t, content))
+	if err == nil {
+		t.Fatal("want error for an empty service name, got nil")
+	}
+}
+
 func TestLoadFromPath_Services_MissingBaseURLRejected(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")
