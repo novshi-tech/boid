@@ -3,6 +3,7 @@ package dispatcher
 import (
 	"database/sql"
 
+	"github.com/novshi-tech/boid/internal/apigateway"
 	"github.com/novshi-tech/boid/internal/gitgateway"
 	"github.com/novshi-tech/boid/internal/orchestrator"
 )
@@ -94,27 +95,38 @@ type WireConfig struct {
 	// disables CA propagation — the plaintext gateway URL of the (now
 	// removed, PR-4) userns backend never needed it either way.
 	GatewayCAPEM *[]byte
+	// APIGateway is the API gateway's job-token registry (docs/plans/
+	// api-gateway.md PR1). nil disables gateway token registration
+	// entirely.
+	APIGateway *apigateway.Registry
+	// APIGatewayServicesFloor is the daemon-wide set of API gateway service
+	// names enabled for every workspace (config.yaml services_floor),
+	// captured once when Wire builds the Runner — see Runner.
+	// APIGatewayServicesFloor's own doc comment.
+	APIGatewayServicesFloor []string
 }
 
 func Wire(cfg WireConfig) *Runner {
 	return &Runner{
-		DB:                   cfg.DB,
-		Broker:               cfg.Broker,
-		SecretStore:          cfg.SecretStore,
-		Projects:             cfg.Projects,
-		Hydrator:             cfg.Hydrator,
-		Workspaces:           cfg.Workspaces,
-		ProxyAllocator:       cfg.ProxyAllocator,
-		BoidBinary:           cfg.BoidBinary,
-		ServerSocket:         cfg.ServerSocket,
-		ProxyPort:            cfg.ProxyPort,
-		NoWorkspaceProxyPort: cfg.NoWorkspaceProxyPort,
-		AllowedDomains:       cfg.AllowedDomains,
-		RuntimesDir:          cfg.RuntimesDir,
-		DataHomeDir:          cfg.DataHomeDir,
-		ReservedVolumeNames:  cfg.ReservedVolumeNames,
-		GitGateway:           cfg.GitGateway,
-		GatewayURL:           cfg.GatewayURL,
-		GatewayCAPEM:         cfg.GatewayCAPEM,
+		DB:                      cfg.DB,
+		Broker:                  cfg.Broker,
+		SecretStore:             cfg.SecretStore,
+		Projects:                cfg.Projects,
+		Hydrator:                cfg.Hydrator,
+		Workspaces:              cfg.Workspaces,
+		ProxyAllocator:          cfg.ProxyAllocator,
+		BoidBinary:              cfg.BoidBinary,
+		ServerSocket:            cfg.ServerSocket,
+		ProxyPort:               cfg.ProxyPort,
+		NoWorkspaceProxyPort:    cfg.NoWorkspaceProxyPort,
+		AllowedDomains:          cfg.AllowedDomains,
+		RuntimesDir:             cfg.RuntimesDir,
+		DataHomeDir:             cfg.DataHomeDir,
+		ReservedVolumeNames:     cfg.ReservedVolumeNames,
+		GitGateway:              cfg.GitGateway,
+		GatewayURL:              cfg.GatewayURL,
+		GatewayCAPEM:            cfg.GatewayCAPEM,
+		APIGateway:              cfg.APIGateway,
+		APIGatewayServicesFloor: cfg.APIGatewayServicesFloor,
 	}
 }

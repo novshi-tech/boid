@@ -17,6 +17,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/novshi-tech/boid/internal/apigateway"
 	"github.com/novshi-tech/boid/internal/gitgateway"
 	"github.com/novshi-tech/boid/internal/orchestrator"
 	"github.com/novshi-tech/boid/internal/sandbox"
@@ -261,6 +262,19 @@ type Runner struct {
 	// simply be public.
 	GatewayCredentials *gitgateway.CredentialProvider
 
+	// APIGateway is the API gateway's job-token registry (docs/plans/
+	// api-gateway.md PR1). nil disables API gateway token registration
+	// entirely — Dispatch and UnregisterJob treat that as a no-op rather
+	// than panicking, mirroring GitGateway's own nil-disables convention.
+	APIGateway *apigateway.Registry
+	// APIGatewayServicesFloor is the daemon-wide set of API gateway service
+	// names enabled for every workspace (config.yaml services_floor —
+	// docs/plans/api-gateway.md §3), captured once when this Runner is
+	// built, exactly like AllowedDomains is for the proxy egress allowlist.
+	// A workspace's own WorkspaceMeta.Services list adds to this floor at
+	// dispatch time via orchestrator.ResolveEnabledServices.
+	APIGatewayServicesFloor []string
+
 	// WithProjectLock, when set, runs a function while holding the daemon's
 	// project lifecycle mutex — api.ProjectAppService.projectMu, via that
 	// service's own exported WithProjectLock method — the same lock
@@ -323,21 +337,23 @@ type Runner struct {
 	// so what is lost is only the re-check under the registration.
 	ConfirmWorkspaceExists func(slug string) error
 
-	tokenMu       sync.Mutex
-	jobTokens     map[string]string
-	waiterMu      sync.Mutex
-	jobWaiters    map[string]chan JobCompletionResult
-	completedJobs map[string]JobCompletionResult
-	runtimeMu     sync.Mutex
-	taskRuntimes  map[string]map[string]struct{}
-	dockerMu      sync.Mutex
-	dockerStates  map[string]*dockerProxyState // keyed by runtimeID
-	gatewayMu     sync.Mutex
-	gatewayTokens map[string]string // jobID -> git gateway job token
-	jobContextMu  sync.Mutex
-	jobContexts   map[string]JobContextSnapshot // jobID -> Phase 5b PR1 task-context RPC data
-	checkoutMu    sync.Mutex
-	checkoutDirs  map[string]string // jobID -> per-job clone staging dir (docs/plans/volume-only-daemon.md §論点b, PR-2b)
+	tokenMu          sync.Mutex
+	jobTokens        map[string]string
+	waiterMu         sync.Mutex
+	jobWaiters       map[string]chan JobCompletionResult
+	completedJobs    map[string]JobCompletionResult
+	runtimeMu        sync.Mutex
+	taskRuntimes     map[string]map[string]struct{}
+	dockerMu         sync.Mutex
+	dockerStates     map[string]*dockerProxyState // keyed by runtimeID
+	gatewayMu        sync.Mutex
+	gatewayTokens    map[string]string // jobID -> git gateway job token
+	apiGatewayMu     sync.Mutex
+	apiGatewayTokens map[string]string // jobID -> API gateway job token (docs/plans/api-gateway.md PR1)
+	jobContextMu     sync.Mutex
+	jobContexts      map[string]JobContextSnapshot // jobID -> Phase 5b PR1 task-context RPC data
+	checkoutMu       sync.Mutex
+	checkoutDirs     map[string]string // jobID -> per-job clone staging dir (docs/plans/volume-only-daemon.md §論点b, PR-2b)
 	// homeInFlight excludes a workspace HOME volume's destructive replacement
 	// (ImportWorkspaceHome) against the dispatches that are about to mount it,
 	// for the interval between resolveWorkspaceHome's fast path and
@@ -620,6 +636,14 @@ func (r *Runner) Dispatch(ctx context.Context, spec *orchestrator.JobSpec, clean
 		gatewayCAPEM = *r.GatewayCAPEM
 	}
 
+	// API gateway token registration (docs/plans/api-gateway.md PR1). Unlike
+	// registerGatewayToken (git), this needs no project-registry data at all
+	// — just the workspace's effective enabled-service set and this job's
+	// SecretNamespace/readonly flag — so it runs here, outside the
+	// project-registry-guarded section below, exactly like allowedDomains/
+	// gatewayCAPEM above.
+	apiGatewayBaseURL, apiGatewayToken := r.registerAPIGatewayToken(j.ID, spec, workspaceID)
+
 	// Phase 5b PR1 (docs/plans/phase5-shim-and-task-context.md): track this
 	// job's routed instruction + reduced environment view + trait-filtered
 	// payload so the `boid task instructions` / `boid task env` / `boid
@@ -876,6 +900,8 @@ func (r *Runner) Dispatch(ctx context.Context, spec *orchestrator.JobSpec, clean
 		GatewayCAPEM:               gatewayCAPEM,
 		GatewayJobToken:            gatewayToken,
 		GatewayCloneURL:            gatewayCloneURL,
+		APIGatewayBaseURL:          apiGatewayBaseURL,
+		APIGatewayJobToken:         apiGatewayToken,
 		CloneWorkspaceDir:          cloneWorkspaceDir,
 		CloneHostBacked:            cloneHostBacked,
 		WorkspaceHomeVolume:        workspaceHomeVolume,
@@ -1857,8 +1883,8 @@ func (r *Runner) WaitForJobCtx(ctx context.Context, jobID string) (JobCompletion
 	}
 }
 
-// UnregisterJob removes the broker token and the git gateway job token
-// associated with the given job.
+// UnregisterJob removes the broker token, the git gateway job token, and the
+// API gateway job token associated with the given job.
 func (r *Runner) UnregisterJob(jobID string) {
 	r.tokenMu.Lock()
 	token, ok := r.jobTokens[jobID]
@@ -1882,6 +1908,18 @@ func (r *Runner) UnregisterJob(jobID string) {
 	if gwOK && r.GitGateway != nil {
 		r.GitGateway.Unregister(gwToken)
 		slog.Info("unregistered git gateway token", "job_id", jobID)
+	}
+
+	r.apiGatewayMu.Lock()
+	apiToken, apiOK := r.apiGatewayTokens[jobID]
+	if apiOK {
+		delete(r.apiGatewayTokens, jobID)
+	}
+	r.apiGatewayMu.Unlock()
+
+	if apiOK && r.APIGateway != nil {
+		r.APIGateway.Unregister(apiToken)
+		slog.Info("unregistered API gateway token", "job_id", jobID)
 	}
 
 	r.untrackJobContext(jobID)

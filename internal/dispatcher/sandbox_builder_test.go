@@ -850,6 +850,119 @@ func TestBuildSandboxSpec_UsernsBackendClone_OmitsGatewayCA(t *testing.T) {
 	}
 }
 
+// TestBuildSandboxSpec_APIGatewayToken_SetsBOIDAPIBaseAndCAFile pins
+// docs/plans/api-gateway.md PR1's env-var advertise: a job with an API
+// gateway token registered (regardless of whether it also declares a git
+// clone) gets BOID_API_BASE built from APIGatewayBaseURL + apigateway.
+// PathPrefix + APIGatewayJobToken, and — under the container backend, where
+// the shared listener is TLS — an explicit, opt-in BOID_API_CA_FILE
+// pointing at the same CA cert file GIT_SSL_CAINFO uses.
+func TestBuildSandboxSpec_APIGatewayToken_SetsBOIDAPIBaseAndCAFile(t *testing.T) {
+	spec := &orchestrator.JobSpec{
+		ProjectID: "proj-1",
+		Argv:      []string{"/bin/true"},
+	}
+	rt := SandboxRuntimeInfo{
+		JobID:                 "job-1",
+		UsingContainerBackend: true,
+		GatewayCAPEM:          []byte("-----BEGIN CERTIFICATE-----\nfake\n-----END CERTIFICATE-----\n"),
+		APIGatewayBaseURL:     "https://boid-gateway:9443",
+		APIGatewayJobToken:    "abc123",
+	}
+	out, err := BuildSandboxSpec(spec, rt)
+	if err != nil {
+		t.Fatalf("BuildSandboxSpec: %v", err)
+	}
+	if got, want := out.Env["BOID_API_BASE"], "https://boid-gateway:9443/api/abc123"; got != want {
+		t.Errorf("Env[BOID_API_BASE] = %q, want %q", got, want)
+	}
+	if got, want := out.Env["BOID_API_CA_FILE"], containerGitGatewayCAPath; got != want {
+		t.Errorf("Env[BOID_API_CA_FILE] = %q, want %q", got, want)
+	}
+	// This job declares no clone at all — GIT_SSL_CAINFO must stay unset,
+	// or every OTHER git remote this job's own git might talk to would be
+	// forced to verify against the gateway's (non-signing) CA instead of
+	// the system trust store.
+	if _, ok := out.Env["GIT_SSL_CAINFO"]; ok {
+		t.Errorf("Env[GIT_SSL_CAINFO] = %q, want unset (no clone declared)", out.Env["GIT_SSL_CAINFO"])
+	}
+	var found bool
+	for _, f := range out.Files {
+		if f.Path == containerGitGatewayCAPath {
+			found = true
+			if f.Content != string(rt.GatewayCAPEM) {
+				t.Errorf("gateway CA file content = %q, want %q", f.Content, string(rt.GatewayCAPEM))
+			}
+		}
+	}
+	if !found {
+		t.Errorf("no spec.Files entry at %q, want the gateway CA cert written there", containerGitGatewayCAPath)
+	}
+}
+
+// TestBuildSandboxSpec_APIGatewayToken_UsernsBackendOmitsCAFile is the
+// companion non-regression pin: without the container backend (no TLS on
+// the shared listener), BOID_API_BASE is still set but BOID_API_CA_FILE and
+// the CA file write are both omitted — there is no certificate to trust.
+func TestBuildSandboxSpec_APIGatewayToken_UsernsBackendOmitsCAFile(t *testing.T) {
+	spec := &orchestrator.JobSpec{
+		ProjectID: "proj-1",
+		Argv:      []string{"/bin/true"},
+	}
+	rt := SandboxRuntimeInfo{
+		JobID:                 "job-1",
+		UsingContainerBackend: false,
+		APIGatewayBaseURL:     "http://10.0.2.2:9443",
+		APIGatewayJobToken:    "abc123",
+	}
+	out, err := BuildSandboxSpec(spec, rt)
+	if err != nil {
+		t.Fatalf("BuildSandboxSpec: %v", err)
+	}
+	if got, want := out.Env["BOID_API_BASE"], "http://10.0.2.2:9443/api/abc123"; got != want {
+		t.Errorf("Env[BOID_API_BASE] = %q, want %q", got, want)
+	}
+	if _, ok := out.Env["BOID_API_CA_FILE"]; ok {
+		t.Errorf("Env[BOID_API_CA_FILE] = %q, want unset (no TLS on the userns/plaintext listener)", out.Env["BOID_API_CA_FILE"])
+	}
+	for _, f := range out.Files {
+		if f.Path == containerGitGatewayCAPath {
+			t.Errorf("unexpected gateway CA file present without the container backend: %+v", f)
+		}
+	}
+}
+
+// TestBuildSandboxSpec_NoAPIGatewayToken_NoBOIDAPIBase is the "gateway not
+// wired for this job" non-regression: every pre-PR1 caller/test leaves both
+// APIGatewayBaseURL/APIGatewayJobToken empty, and BuildSandboxSpec must not
+// set BOID_API_BASE (or write a CA file on their account) in that case.
+func TestBuildSandboxSpec_NoAPIGatewayToken_NoBOIDAPIBase(t *testing.T) {
+	spec := &orchestrator.JobSpec{
+		ProjectID: "proj-1",
+		Argv:      []string{"/bin/true"},
+	}
+	rt := SandboxRuntimeInfo{
+		JobID:                 "job-1",
+		UsingContainerBackend: true,
+		GatewayCAPEM:          []byte("-----BEGIN CERTIFICATE-----\nfake\n-----END CERTIFICATE-----\n"),
+	}
+	out, err := BuildSandboxSpec(spec, rt)
+	if err != nil {
+		t.Fatalf("BuildSandboxSpec: %v", err)
+	}
+	if _, ok := out.Env["BOID_API_BASE"]; ok {
+		t.Errorf("Env[BOID_API_BASE] = %q, want unset", out.Env["BOID_API_BASE"])
+	}
+	if _, ok := out.Env["BOID_API_CA_FILE"]; ok {
+		t.Errorf("Env[BOID_API_CA_FILE] = %q, want unset", out.Env["BOID_API_CA_FILE"])
+	}
+	for _, f := range out.Files {
+		if f.Path == containerGitGatewayCAPath {
+			t.Errorf("unexpected gateway CA file present with no API gateway token and no clone: %+v", f)
+		}
+	}
+}
+
 // --- workspace 親化リファクタリング helpers (nose 2026-07-13 decision) ---
 
 func TestProjectDirName_PrefersExplicitName(t *testing.T) {

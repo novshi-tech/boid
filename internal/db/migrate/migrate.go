@@ -284,6 +284,15 @@ func Apply(conn *sql.DB) error {
 				return columnExists(tx, "workspaces", "task_behaviors")
 			},
 		},
+		{
+			// docs/plans/api-gateway.md §3: workspace 単位の API gateway
+			// service 有効化フィールドを workspaces テーブルに追加。
+			version: "0034_add_workspaces_services",
+			path:    "migrations/0034_add_workspaces_services.sql",
+			skip: func(tx *sql.Tx) (bool, error) {
+				return columnExists(tx, "workspaces", "services")
+			},
+		},
 	}
 
 	if err := ensureSchemaMigrationsTable(conn); err != nil {

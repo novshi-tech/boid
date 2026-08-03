@@ -78,10 +78,14 @@ type WorkspaceEnvelopeMetadata struct {
 // dropping the tag is a pure presence-fidelity fix with no representation
 // change for the non-empty case.
 type WorkspaceEnvelopeSpec struct {
-	HostCommands   []string                   `yaml:"host_commands"`
-	Env            map[string]string          `yaml:"env"`
-	AllowedDomains []string                   `yaml:"allowed_domains"`
-	ExtraRepos     []string                   `yaml:"extra_repos"`
+	HostCommands   []string          `yaml:"host_commands"`
+	Env            map[string]string `yaml:"env"`
+	AllowedDomains []string          `yaml:"allowed_domains"`
+	ExtraRepos     []string          `yaml:"extra_repos"`
+	// Services is the workspace-scoped API gateway service allowlist
+	// (docs/plans/api-gateway.md §3; WorkspaceMeta.Services). Same
+	// no-omitempty / missing-vs-empty rationale as every other field here.
+	Services       []string                   `yaml:"services"`
 	ContainerImage string                     `yaml:"container_image"`
 	Capabilities   Capabilities               `yaml:"capabilities"`
 	Projects       []WorkspaceEnvelopeProject `yaml:"projects"`
@@ -145,6 +149,7 @@ var workspaceEnvelopeSpecFields = map[string]bool{
 	"env":                   true,
 	"allowed_domains":       true,
 	"extra_repos":           true,
+	"services":              true,
 	"container_image":       true,
 	"capabilities":          true,
 	"projects":              true,
@@ -167,9 +172,9 @@ type WorkspaceEnvelopeApply struct {
 	Envelope *WorkspaceEnvelope
 	// FieldsPresent records which spec.* keys were present in the source
 	// document (by their yaml key name: "host_commands", "env",
-	// "allowed_domains", "extra_repos", "container_image", "capabilities",
-	// "projects", "init_script", "task_behaviors", "base_branch",
-	// "fork_point", "default_task_behavior"). A key absent from this map was not present
+	// "allowed_domains", "extra_repos", "services", "container_image",
+	// "capabilities", "projects", "init_script", "task_behaviors",
+	// "base_branch", "fork_point", "default_task_behavior"). A key absent from this map was not present
 	// in the document at all and MergeInto leaves the corresponding
 	// WorkspaceMeta field untouched; a key present (even if its decoded value
 	// is the zero value / an explicit empty list or map) means the document
@@ -207,6 +212,7 @@ func NewWorkspaceEnvelopeFromMeta(name string, meta *WorkspaceMeta, projects []W
 		spec.Env = meta.Env
 		spec.AllowedDomains = meta.AllowedDomains
 		spec.ExtraRepos = meta.ExtraRepos
+		spec.Services = meta.Services
 		spec.ContainerImage = meta.ContainerImage
 		spec.Capabilities = meta.Capabilities
 		spec.TaskBehaviors = meta.TaskBehaviors
@@ -251,6 +257,9 @@ func (a *WorkspaceEnvelopeApply) MergeInto(current *WorkspaceMeta) *WorkspaceMet
 	}
 	if a.FieldsPresent["extra_repos"] {
 		merged.ExtraRepos = spec.ExtraRepos
+	}
+	if a.FieldsPresent["services"] {
+		merged.Services = spec.Services
 	}
 	if a.FieldsPresent["container_image"] {
 		merged.ContainerImage = spec.ContainerImage
@@ -357,6 +366,7 @@ var bareMetaKnownFieldNames = map[string]bool{
 	"capabilities":          true,
 	"allowed_domains":       true,
 	"extra_repos":           true,
+	"services":              true,
 	"host_commands":         true,
 	"container_image":       true,
 	"additional_bindings":   true,
@@ -572,6 +582,12 @@ func decodeWorkspaceEnvelopeSpec(specNode yaml.Node) (spec WorkspaceEnvelopeSpec
 		fieldsPresent["extra_repos"] = true
 		if err := n.Decode(&spec.ExtraRepos); err != nil {
 			return spec, nil, false, fmt.Errorf("spec.extra_repos: %w", err)
+		}
+	}
+	if n, ok := raw["services"]; ok {
+		fieldsPresent["services"] = true
+		if err := n.Decode(&spec.Services); err != nil {
+			return spec, nil, false, fmt.Errorf("spec.services: %w", err)
 		}
 	}
 	if n, ok := raw["container_image"]; ok {

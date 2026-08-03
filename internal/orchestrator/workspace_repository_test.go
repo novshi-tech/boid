@@ -51,6 +51,7 @@ func TestWorkspaceRepository_SaveLoad_RoundTrip(t *testing.T) {
 		Env:            map[string]string{"FOO": "bar"},
 		AllowedDomains: []string{"example.com"},
 		ExtraRepos:     []string{"https://github.com/example/lib.git"},
+		Services:       []string{"myapp", "bitbucket-api"},
 		Capabilities:   Capabilities{Docker: &DockerCapability{}},
 		ContainerImage: "ghcr.io/example/image:latest",
 	}
@@ -73,6 +74,9 @@ func TestWorkspaceRepository_SaveLoad_RoundTrip(t *testing.T) {
 	}
 	if !equalStringSlice(got.ExtraRepos, meta.ExtraRepos) {
 		t.Errorf("ExtraRepos: got %v, want %v", got.ExtraRepos, meta.ExtraRepos)
+	}
+	if !equalStringSlice(got.Services, meta.Services) {
+		t.Errorf("Services: got %v, want %v", got.Services, meta.Services)
 	}
 	if got.Capabilities.Docker == nil {
 		t.Error("Capabilities.Docker: got nil, want non-nil")
@@ -155,6 +159,9 @@ func TestWorkspaceRepository_Save_EmptyMetaRoundTripsToEmptyJSONColumns(t *testi
 	}
 	if len(got.ExtraRepos) != 0 {
 		t.Errorf("ExtraRepos: got %v, want empty", got.ExtraRepos)
+	}
+	if len(got.Services) != 0 {
+		t.Errorf("Services: got %v, want empty", got.Services)
 	}
 	if got.Capabilities.Docker != nil {
 		t.Errorf("Capabilities.Docker: got %v, want nil", got.Capabilities.Docker)
@@ -329,7 +336,7 @@ func TestWorkspaceRepository_Create_InsertsNewRow(t *testing.T) {
 	t.Parallel()
 	repo := newTestWorkspaceRepo(t)
 
-	meta := &WorkspaceMeta{HostCommands: []string{"gh"}, Env: map[string]string{"FOO": "bar"}}
+	meta := &WorkspaceMeta{HostCommands: []string{"gh"}, Env: map[string]string{"FOO": "bar"}, Services: []string{"myapp"}}
 	if err := repo.Create("new-ws", meta); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -343,6 +350,9 @@ func TestWorkspaceRepository_Create_InsertsNewRow(t *testing.T) {
 	}
 	if got.Env["FOO"] != "bar" {
 		t.Errorf("Env[FOO]: got %q, want %q", got.Env["FOO"], "bar")
+	}
+	if !equalStringSlice(got.Services, []string{"myapp"}) {
+		t.Errorf("Services: got %v, want [myapp]", got.Services)
 	}
 }
 

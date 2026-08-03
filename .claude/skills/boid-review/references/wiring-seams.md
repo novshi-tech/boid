@@ -34,6 +34,7 @@ has the same shape:
 17. [payload_patch direct-pass merge parity, persistence, and concurrency](#17-payload_patch-direct-pass-merge-parity-persistence-and-concurrency)
 18. [engine wait response → RuntimeExit → job status/diagnostics](#18-engine-wait-response--runtimeexit--job-statusdiagnostics)
 19. [config schema seam (schema leaf → Config field → extractor → buildStartConfig → consumer)](#19-config-schema-seam)
+20. [WorkspaceMeta write-path field coverage (strict PUT vs envelope apply)](#20-workspacemeta-write-path-field-coverage)
 
 ---
 
@@ -1005,3 +1006,53 @@ first four links are self-defending; the last two are not.
   test asserting that copy, the same way `TestBuildStartConfig_LogLevelFromConfig` does. Don't
   stop at "the schema/extractor tests pass" — that only proves the key round-trips through
   config.yaml, not that anything reads it.
+
+## 20. WorkspaceMeta write-path field coverage
+
+Whether a `WorkspaceMeta` field a caller reads back after a write actually survived that
+*specific* write path — `WorkspaceMeta` has **two independently-maintained write paths that
+do not cover the same field set**, and nothing enforces they agree.
+
+- **End A (strict PUT)**: `POST /api/workspaces` (create) and `PUT /api/workspaces/{slug}`
+  (edit) decode the request body through `workspaceMetaStrict`
+  (`internal/orchestrator/workspace_meta_strict.go`), then hand the result straight to
+  `WorkspaceRepository.Create`/`UpdateIfRevisionMatches` — an **unconditional whole-row
+  column write** from whatever that strict type decoded. `workspaceMetaStrict` does **not**
+  declare `TaskBehaviors`/`BaseBranch`/`ForkPoint`/`DefaultTaskBehavior` at all (its own doc
+  comment calls this out as a deliberate "PR3 scope boundary" that was never revisited), so a
+  document decoded through this path always resolves those four fields to their Go zero value.
+- **End B (envelope apply)**: `POST /api/workspaces/apply` decodes through
+  `decodeWorkspaceEnvelopeSpec` into a `WorkspaceEnvelopeApply`, whose `FieldsPresent` map
+  gates `MergeInto` per spec.* key — a key **absent** from the submitted document leaves the
+  workspace's current value for that field completely untouched. This path *does* support all
+  four fields End A is missing.
+- **Invariant**: a caller that wants to change **one** `WorkspaceMeta` field while leaving
+  every other field (in particular task_behaviors/base_branch/fork_point/
+  default_task_behavior) untouched **must** go through End B with a minimal document (spec
+  carrying only the key(s) it means to touch — built as a bare `map[string]any`, never by
+  marshaling a `WorkspaceEnvelopeSpec` struct literal, since that type deliberately has no
+  `omitempty` and would emit every other field as an explicit empty value, clearing them). A
+  GET-full-meta-then-PUT-whole-meta-back round trip through End A will either 400 (if the
+  fetched meta happens to carry a value in one of the four missing fields — the strict decoder
+  rejects an unrecognized key under `KnownFields(true)`) or, were the decoder ever loosened to
+  tolerate them, silently wipe those four fields on every such write.
+- **Past break**: caught in review (not yet shipped) for `boid workspace services add/remove`
+  (docs/plans/api-gateway.md PR1, `cmd/workspace_services.go`): the first cut fetched the full
+  meta via GET, mutated only `Services`, and PUT the whole thing back through End A — confirmed
+  empirically to 400 with `field task_behaviors not found in type
+  orchestrator.workspaceMetaStrict` against a workspace that had `task_behaviors` set. Fixed by
+  switching to End B with a `{"spec": {"services": [...]}}`-only document.
+- **Guard**: `TestRunWorkspaceServices_Add_PreservesTaskBehaviorsAndBaseBranch`
+  (`cmd/workspace_services_test.go`) pins the fix end-to-end. There is otherwise no generic
+  test asserting End A and End B agree on field coverage — `workspaceMetaStrict`'s own
+  "keep in sync with WorkspaceMeta" doc comment is aspirational prose, not an enforced
+  invariant (contrast with `bareMetaKnownFieldNames`, which a **reflective** test,
+  `TestBareMetaKnownFieldNames_CoversEveryWorkspaceMetaField`, does keep honest — that test
+  only proves envelope detection recognizes the key, not that `workspaceMetaStrict` can carry
+  its value).
+- **When you touch it**: if you add a new CLI/API surface that reads a `WorkspaceMeta` field
+  back and writes a single field in isolation, use End B (the envelope apply path) with a
+  minimal spec document, not a GET-then-PUT round trip through End A — and if you add a new
+  field to `WorkspaceMeta` itself, decide up front whether `workspaceMetaStrict` needs it too
+  (most fields should be added to **both** decoders; the four PR3-era fields are the one
+  known, deliberate exception, not a precedent to extend casually).

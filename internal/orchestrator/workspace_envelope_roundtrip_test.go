@@ -66,6 +66,7 @@ func envelopeWithProbeEverywhere(probe string) *WorkspaceEnvelope {
 		Env:            map[string]string{"PROBE": probe, probe: "probe-key"},
 		AllowedDomains: []string{probe},
 		ExtraRepos:     []string{probe},
+		Services:       []string{probe},
 		ContainerImage: probe,
 		// TaskBehaviors carries probe inside a Traits value (the map KEY is
 		// fixed as "probe", not the probe content itself — a weird
@@ -201,6 +202,7 @@ spec:
         - .cosmos.azure.com
     extra_repos:
         - https://github.com/novshi-tech/boid-kits.git
+    services: []
     container_image: ghcr.io/novshi-tech/boid:latest
     capabilities:
         docker: {}
