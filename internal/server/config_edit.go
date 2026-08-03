@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -354,6 +355,15 @@ func (s *Server) applyDynamicConfigLocked(oldCfg, newCfg *config.Config) []strin
 		warnings = append(warnings, restartWarning("services."+leaf))
 	}
 
+	// oauth_providers.* (docs/plans/api-gateway.md §6/§論点4, PR2) — same
+	// restart-required, per-leaf-diff treatment as services.*/gateway.forges.*
+	// above (a mid-flight OAuth2 provider change would need the API
+	// gateway's OAuth2TokenSource rebuilt, same "safer left to a restart"
+	// reasoning).
+	for _, leaf := range changedOAuthProviderLeaves(oldCfgSafe.OAuthProviders, newCfg.OAuthProviders) {
+		warnings = append(warnings, restartWarning("oauth_providers."+leaf))
+	}
+
 	// Every other ReloadRestartRequired schema leaf (gc.*, web.http_addr,
 	// task_ask.disconnect_grace, ...) — MAJOR 2, codex review round 1: the
 	// pre-fix version of this function hand-listed only gateway.forges.*
@@ -497,6 +507,16 @@ var restartFieldExtractorExemptions = map[string]string{
 	"services.*.auth.header":     "covered by changedServiceLeaves' per-id, per-field diff (finer-grained than a wildcard comparison)",
 	"services.*.auth.query":      "covered by changedServiceLeaves' per-id, per-field diff (finer-grained than a wildcard comparison)",
 	"services.*.auth.provider":   "covered by changedServiceLeaves' per-id, per-field diff (finer-grained than a wildcard comparison)",
+
+	// oauth_providers.* (docs/plans/api-gateway.md §6/§論点4, PR2) — same
+	// reasoning as the services.* septet above: changedOAuthProviderLeaves'
+	// per-id, per-field diff (called separately, just above the generic
+	// loop) already gives finer-grained warnings than comparing a single
+	// wildcard schema entry ever could.
+	"oauth_providers.*.token_endpoint":    "covered by changedOAuthProviderLeaves' per-id, per-field diff (finer-grained than a wildcard comparison)",
+	"oauth_providers.*.client_id":         "covered by changedOAuthProviderLeaves' per-id, per-field diff (finer-grained than a wildcard comparison)",
+	"oauth_providers.*.client_secret_key": "covered by changedOAuthProviderLeaves' per-id, per-field diff (finer-grained than a wildcard comparison)",
+	"oauth_providers.*.scopes":            "covered by changedOAuthProviderLeaves' per-id, per-field diff (finer-grained than a wildcard comparison)",
 }
 
 // verifyRestartExtractorCoverage panics if any config.Schema leaf classified
@@ -615,6 +635,48 @@ func changedServiceLeaves(oldServices, newServices map[string]config.ServiceConf
 			}
 			if o.Auth.Provider != n.Auth.Provider {
 				changed = append(changed, name+".auth.provider")
+			}
+		}
+	}
+	sort.Strings(changed)
+	return changed
+}
+
+// changedOAuthProviderLeaves is changedServiceLeaves' counterpart for
+// oauth_providers.* (docs/plans/api-gateway.md §6/§論点4, PR2): returns the
+// sorted set of dotted "<name>.<leaf>" strings for every oauth_providers.
+// <name> leaf that actually differs between oldProviders and newProviders. A
+// provider name added or removed wholesale reports just "<name>" — same
+// convention as changedServiceLeaves/changedForgeLeaves.
+func changedOAuthProviderLeaves(oldProviders, newProviders map[string]config.OAuthProviderConfig) []string {
+	names := make(map[string]struct{}, len(oldProviders)+len(newProviders))
+	for name := range oldProviders {
+		names[name] = struct{}{}
+	}
+	for name := range newProviders {
+		names[name] = struct{}{}
+	}
+	var changed []string
+	for name := range names {
+		o, oOK := oldProviders[name]
+		n, nOK := newProviders[name]
+		switch {
+		case !oOK || !nOK:
+			if oOK != nOK {
+				changed = append(changed, name)
+			}
+		default:
+			if o.TokenEndpoint != n.TokenEndpoint {
+				changed = append(changed, name+".token_endpoint")
+			}
+			if o.ClientID != n.ClientID {
+				changed = append(changed, name+".client_id")
+			}
+			if o.ClientSecretKey != n.ClientSecretKey {
+				changed = append(changed, name+".client_secret_key")
+			}
+			if !slices.Equal(o.Scopes, n.Scopes) {
+				changed = append(changed, name+".scopes")
 			}
 		}
 	}

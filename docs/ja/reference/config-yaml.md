@@ -40,6 +40,7 @@ boid config set gateway.forges.github-enterprise.host git.example.com  # map は
 boid config unset web.public_url                 # キー削除（存在しない場合エラー）
 boid config unset gateway.forges.github          # forge エントリ丸ごと削除
 boid config unset services.myapp                 # service エントリ丸ごと削除 (同じ扱い)
+boid config unset oauth_providers.freee          # oauth provider エントリ丸ごと削除 (同じ扱い)
 
 boid config apply -f config.yaml                 # ファイルから全体 apply（デフォルトは If-Match 必須）
 boid config apply -f config.yaml --force         # 現在の revision チェックをスキップして上書き
@@ -92,9 +93,10 @@ boid config edit                                 # $EDITOR（未設定なら vi�
   `gateway.forges.<forge>.secret_key` はあくまで secret store への参照名で、
   そこが指す実際のトークン値（env var / secret store の中身）は編集しません
   — 値は引き続き `boid secret set <key> <value>` で設定してください。
-- **制限**: `.` を含む forge id（例: カスタム id `"github.corp"`）は
+- **制限**: `.` を含む forge id（例: カスタム id `"github.corp"`）、service 名
+  （`services.<name>`）、oauth provider 名（`oauth_providers.<name>`）は
   `get`/`set`/`unset` の dotted-path 構文では指定できません（`.` がパス区切り
-  と区別できないため）。そのような id を扱う場合は `boid config apply -f` /
+  と区別できないため）。そのような id/名前を扱う場合は `boid config apply -f` /
   `edit` を使ってください。
 
 ---
@@ -326,7 +328,7 @@ services_floor:
 | `services.<name>.auth.username` | string | `basic` のみ必須 | Basic 認証の username |
 | `services.<name>.auth.header` | string | `header` のみ必須 | 注入するヘッダ名 |
 | `services.<name>.auth.query` | string | `query` のみ必須 | 注入するクエリパラメータ名 |
-| `services.<name>.auth.provider` | string | `oauth2` のみ必須 | OAuth2 provider 名 (**予約のみ、PR2 で実装** — `kind: oauth2` は schema として受理されるが、実際のリクエストは 502 で拒否される) |
+| `services.<name>.auth.provider` | string | `oauth2` のみ必須 | `oauth_providers.<name>` を参照する OAuth2 provider 名 (下記)。config load 時に参照先の存在はクロスチェックしない — 未宣言の provider を指すと request 時に 502 (`apigateway: oauth2 provider "..." is not configured`) になる |
 | `services_floor` | []string | `[]` | 全 workspace に共通で有効化する service 名のリスト (`sandbox.allowed_domains` の floor と同じ additive 方式) |
 
 **平文の token / API key をここに書いてはいけません**。実値は `boid secret set <key> <value>` で secret store に登録し、`secret_key` はそこへの参照名に過ぎません（`gateway.forges.*.secret_key` と同じ規約）。
@@ -336,6 +338,63 @@ sandbox からは `BOID_API_BASE` 環境変数 (`https://<gateway>/api/<job-toke
 **TLS trust の注意**: container backend (現行唯一の backend) では gateway listener が daemon 内蔵 CA で TLS を張るため、標準的な curl/Python 等はこの CA を自動では信用しません。`BOID_API_CA_FILE` (CA の PEM path) が env 注入されるので、`curl --cacert "$BOID_API_CA_FILE" "$BOID_API_BASE/..."` のように明示的に渡す必要があります。Node.js のみ `NODE_EXTRA_CA_CERTS` (Node が「既存の root CA に追加される」と保証する加算的な変数) が併せて注入されるため flag なしで動きます。詳細は `docs/plans/api-gateway.md` §1 参照。
 
 workspace 単位の有効化は `services_floor` (daemon 全体) + workspace 自身の `Services` リスト (`boid workspace services add/remove/list`、[CLI リファレンス](./cli.md#workspace) 参照) の additive union です。`services_floor` に書いた名前が `services` に存在しない場合は起動時に warning が出ますが、config load 自体は失敗しません。
+
+---
+
+## oauth_providers — API gateway の OAuth2 provider 定義
+
+```yaml
+oauth_providers:
+  freee:
+    token_endpoint: https://accounts.secure.freee.co.jp/public_api/token
+    client_id: <freee アプリの client_id>
+    client_secret_key: freee_oauth_client_secret   # secret store 参照 (confidential client のみ)
+    scopes: [read, write]                          # 現状未使用。PR3 (login flow) の認可URL構築用に予約
+
+services:
+  freee:
+    base_url: https://api.freee.co.jp
+    auth: { kind: oauth2, provider: freee }
+```
+
+`oauth_providers` は `services.*.auth.kind: oauth2` が参照する OAuth2 provider 定義です (docs/plans/api-gateway.md §6/§論点4)。1 provider が複数 service から共有されうる (例: freee 会計 API と freee 人事労務 API が同じ OAuth2 grant を使う場合、両方の service の `auth.provider` に同じ provider 名を書けば、トークンは 1 つの refresh_token グラントに集約される)。
+
+| キー | 型 | デフォルト | 説明 |
+|---|---|---|---|
+| `oauth_providers.<name>.token_endpoint` | string | (必須) | provider の OAuth2 token endpoint (RFC 6749 §3.2)。スキームは常に `https` 必須 — `services.*.base_url` と異なり `allow_insecure` のような抜け道は無い (token endpoint は常に実在の外部 OAuth2 provider 宛であり、TLS 無し内部テスト API のようなユースケースが無いため) |
+| `oauth_providers.<name>.client_id` | string | (必須) | OAuth2 client_id。RFC 6749 §2.2 の分類上 secret ではないため平文で書く |
+| `oauth_providers.<name>.client_secret_key` | string | 省略可 | confidential client の client_secret を指す secret store 参照キー。public client (PKCE、client_secret 無し) では省略する |
+| `oauth_providers.<name>.scopes` | []string | `[]` | 現状 PR2 のリフレッシュ処理では未使用 (送信しない)。PR3 の認可 URL 構築用に予約されたフィールド |
+
+**平文の client_secret をここに書いてはいけません**。`client_secret_key` は secret store への参照名に過ぎず、実値は `boid secret set <key> <value>` で登録します。
+
+### daemon 単一リフレッシャ + 先回りリフレッシュ
+
+refresh token をローテーションする provider (freee が代表) では、複数クライアントが独立に refresh すると古い token を握った側が失敗するレースがあります。API gateway はこのレースを構造的に避けるため、daemon 内の単一の `OAuth2TokenSource` (`internal/apigateway/oauth2.go`) だけが token endpoint を叩きます:
+
+- **先回りリフレッシュ**: `expires_at` の 5 分手前 (既定値、`OAuth2TokenSource.RefreshMargin`) になったら次回アクセス時に自動でリフレッシュします。upstream からの 401 を見てからリアクティブにリフレッシュ・リトライする経路は PR2 のスコープ外です (無バッファストリーミング転送では body を再送できないため)。
+- **同時リクエストの集約**: 同じ (workspace namespace, provider) への同時アクセスは 1 回の token endpoint 呼び出しに集約されます (singleflight)。
+- **永続化順序**: token endpoint から応答を受けたら、まず (ローテーションされていれば新しい) `refresh_token` を secret store に書き込み、その書き込みが成功して初めて `access_token` を使用・キャッシュします。ローテーション型 provider は古い `refresh_token` を新しいものへの交換と同時に無効化するため、新しい値の永続化に失敗した状態でそのまま使うと grant 自体を失います。
+
+secret store に保持される値は namespace ごと (workspace ごと) に以下の 2 キーです (`internal/apigateway.OAuthSecretKey` の命名規約、直接 `boid secret get/set` で参照可能):
+
+- `oauth2:<provider>:refresh_token`
+- `oauth2:<provider>:access_token_cache` (リフレッシュ結果のキャッシュ、`{"access_token":"...","expires_at":<Unix秒>}` の JSON。access_token と expires_at を1キーにまとめているのは、2キーに分けると片方だけの書き込み失敗で不整合な組が残るのを防ぐため — codexレビューで指摘)
+
+### 初回 grant の手動投入 (PR3 の login flow を待たずに動作確認する)
+
+`boid secret oauth login <service>` (PR3、未実装) を待たずに、`boid secret set` で `refresh_token` を直接投入することで PR2 の時点から動作確認・dogfood ができます:
+
+```bash
+boid secret set -n <workspace-namespace> oauth2:freee:refresh_token
+# プロンプトで refresh_token の値を貼り付け
+```
+
+`access_token`/`expires_at` は未設定のままで構いません — 最初のリクエストで `OAuth2TokenSource` が自動的にリフレッシュして埋めます。`client_secret_key` を設定した場合は、それも別途 `boid secret set` で登録してください。
+
+### workspace 単位・命名の考え方
+
+`oauth_providers` は daemon 全体で共有される provider 定義 (token endpoint / client_id / client_secret_key の参照) です。secret store 側の実値 (`refresh_token`/`access_token`/`expires_at`) は git gateway/services と同じ workspace namespace 機構でスコープされるため、同じ provider 定義を複数 workspace で共有しつつ、workspace ごとに別アカウントの refresh_token を持たせることができます (マルチアカウントの基盤)。
 
 ---
 

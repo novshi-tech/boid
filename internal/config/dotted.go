@@ -132,6 +132,13 @@ func Get(tree Tree, path string) (any, error) {
 		}
 		return v, nil
 	}
+	if _, isOAuthProvider := IsOAuthProviderEntryPath(path); isOAuthProvider {
+		v, ok := GetPath(tree, path)
+		if !ok {
+			return nil, fmt.Errorf("key not found: %s", path)
+		}
+		return v, nil
+	}
 	if _, ok := ResolveField(path); !ok {
 		return nil, unknownKeyError(path)
 	}
@@ -205,6 +212,16 @@ func Unset(tree Tree, path string) (ReloadClass, error) {
 		}
 		// A whole services entry always carries restart-required fields
 		// (base_url/auth.*); removing it is classified the same way.
+		return ReloadRestartRequired, nil
+	}
+	if name, isOAuthProvider := IsOAuthProviderEntryPath(path); isOAuthProvider {
+		_ = name
+		if !deletePathRaw(tree, path) {
+			return 0, fmt.Errorf("key not found: %s", path)
+		}
+		// A whole oauth_providers entry always carries restart-required
+		// fields (token_endpoint/client_id/...); removing it is classified
+		// the same way.
 		return ReloadRestartRequired, nil
 	}
 	spec, ok := ResolveField(path)

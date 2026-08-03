@@ -180,6 +180,17 @@ var Schema = []FieldSpec{
 	// enabled-service floor, mirroring sandbox.allowed_domains' own
 	// KindStringArray/ReloadRestartRequired shape exactly.
 	{Path: "services_floor", Kind: KindStringArray, Reload: ReloadRestartRequired},
+
+	// oauth_providers.* (docs/plans/api-gateway.md §6/§論点4, PR2): the API
+	// gateway's OAuth2 provider registry, one wildcard entry per provider
+	// name — same wildcard-map shape as services.* above. A
+	// services.*.auth.provider entry references a provider name declared
+	// here; see config.OAuthProviderConfig's own doc comment for why that
+	// reference is NOT cross-validated at config-load time.
+	{Path: "oauth_providers.*.token_endpoint", Kind: KindString, Reload: ReloadRestartRequired},
+	{Path: "oauth_providers.*.client_id", Kind: KindString, Reload: ReloadRestartRequired},
+	{Path: "oauth_providers.*.client_secret_key", Kind: KindString, Reload: ReloadRestartRequired},
+	{Path: "oauth_providers.*.scopes", Kind: KindStringArray, Reload: ReloadRestartRequired},
 }
 
 // segments splits a dotted path into its components. Exported for reuse by
@@ -261,6 +272,24 @@ func IsForgeEntryPath(path string) (id string, ok bool) {
 func IsServiceEntryPath(path string) (name string, ok bool) {
 	segs := segments(path)
 	if len(segs) != 2 || segs[0] != "services" {
+		return "", false
+	}
+	if segs[1] == "" {
+		return "", false
+	}
+	return segs[1], true
+}
+
+// IsOAuthProviderEntryPath reports whether path names a whole
+// oauth_providers.<name> entry (exactly "oauth_providers.<name>", no
+// further segment) — IsServiceEntryPath's counterpart for the OAuth2
+// provider registry (docs/plans/api-gateway.md §6/§論点4, PR2), given the
+// same "removing a map entry removes the whole entry" treatment `boid
+// config unset` gives gateway.forges.<id> and services.<name>. name is
+// returned when ok is true.
+func IsOAuthProviderEntryPath(path string) (name string, ok bool) {
+	segs := segments(path)
+	if len(segs) != 2 || segs[0] != "oauth_providers" {
 		return "", false
 	}
 	if segs[1] == "" {

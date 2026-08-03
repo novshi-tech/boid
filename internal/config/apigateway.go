@@ -257,8 +257,15 @@ func validateServiceConfig(name string, sc ServiceConfig) error {
 		}
 	case apigateway.AuthOAuth2:
 		if sc.Auth.Provider == "" {
-			return fmt.Errorf("services[%q]: auth.kind oauth2 requires \"provider\" (reserved for PR2 — docs/plans/api-gateway.md §論点4)", name)
+			return fmt.Errorf("services[%q]: auth.kind oauth2 requires \"provider\" (docs/plans/api-gateway.md §論点4 — names an oauth_providers.<name> entry)", name)
 		}
+		// Provider is deliberately NOT cross-validated against
+		// oauth_providers here — see
+		// TestLoadFromPath_Services_OAuth2ProviderReferenceNotCrossValidated's
+		// own doc comment (oauth_providers_test.go) for the full reasoning:
+		// this mirrors every other secret-store-shaped reference in this
+		// file (auth.secret_key included), none of which is validated
+		// against its actual target at config-load time either.
 	}
 	return nil
 }
@@ -294,6 +301,105 @@ func (c Config) APIGatewayServices() []apigateway.ServiceConfig {
 				Query:     sc.Auth.Query,
 				Provider:  sc.Auth.Provider,
 			},
+		})
+	}
+	return out
+}
+
+// OAuthProviderConfig declares one config.yaml oauth_providers.<name> entry
+// — the OAuth2 token-endpoint identity a services.*.auth.kind: oauth2
+// entry's `provider` field references (docs/plans/api-gateway.md §6/§論点4:
+// "config.yaml の oauth_providers: ブロック。client_secret のみ SecretStore
+// 参照"). PR2 only ever performs a refresh_token grant against
+// TokenEndpoint — an authorization-endpoint field for PR3's login flow is
+// intentionally absent; it will be added alongside that PR.
+type OAuthProviderConfig struct {
+	// TokenEndpoint is the provider's OAuth2 token endpoint (RFC 6749
+	// §3.2), e.g. https://accounts.secure.freee.co.jp/public_api/token.
+	// Always https — see validateOAuthProviderConfig's own doc comment for
+	// why there is no allow_insecure-style escape hatch here.
+	TokenEndpoint string `yaml:"token_endpoint"`
+	// ClientID is the OAuth2 client_id. Not a secret by RFC 6749 §2.2's own
+	// classification (a public identifier), so — unlike ClientSecretKey —
+	// it is written directly here rather than referenced through the
+	// secret store.
+	ClientID string `yaml:"client_id"`
+	// ClientSecretKey is a secret-store key reference (never a plaintext
+	// value) for a confidential client's client_secret (docs/plans/
+	// api-gateway.md §7: "confidential client の client_secret を daemon 側
+	// にのみ置く"). Empty for a public client (PKCE, no client_secret) —
+	// apigateway.OAuth2TokenSource simply omits client_secret from the
+	// token request when this is empty.
+	ClientSecretKey string `yaml:"client_secret_key,omitempty"`
+	// Scopes is reserved for PR3's authorization-URL construction
+	// (docs/plans/api-gateway.md §7 "flow の三段構え"). Parsed and stored
+	// only — PR2's refresh_token grant never sends a scope parameter; see
+	// apigateway.OAuth2TokenSource.callTokenEndpoint's own doc comment for
+	// why.
+	Scopes []string `yaml:"scopes,omitempty"`
+}
+
+// validateOAuthProviderConfig validates one oauth_providers.<name> entry,
+// mirroring validateServiceConfig's "fail loud with the offending name"
+// posture.
+func validateOAuthProviderConfig(name string, pc OAuthProviderConfig) error {
+	if trimmed := strings.TrimSpace(name); trimmed != name {
+		return fmt.Errorf("oauth_providers[%q]: provider name must not have leading/trailing whitespace (did you mean %q?)", name, trimmed)
+	}
+	if name == "" {
+		return fmt.Errorf("oauth_providers: a provider name must not be empty")
+	}
+	if pc.TokenEndpoint == "" {
+		return fmt.Errorf("oauth_providers[%q]: missing required \"token_endpoint\" field", name)
+	}
+	u, err := url.Parse(pc.TokenEndpoint)
+	if err != nil || u.Scheme == "" || u.Host == "" {
+		return fmt.Errorf("oauth_providers[%q]: \"token_endpoint\" must be an absolute URL with a scheme and host (got %q)", name, pc.TokenEndpoint)
+	}
+	// Unlike services.*.base_url, there is deliberately no allow_insecure
+	// escape hatch here: token_endpoint is always a daemon-to-real-OAuth2-
+	// provider call (docs/plans/api-gateway.md's targeted providers —
+	// freee, Google, GitHub, Microsoft, Atlassian — all require https over
+	// the public internet), never a sandbox-facing or internal-test-API
+	// endpoint the way services.*.base_url can legitimately be. There is no
+	// PR1-style plaintext-internal-service use case to support here, so
+	// this is a hard requirement rather than an opt-out-able one.
+	if u.Scheme != "https" {
+		return fmt.Errorf("oauth_providers[%q]: \"token_endpoint\" scheme must be https (got %q) — an OAuth2 token endpoint always requires TLS", name, u.Scheme)
+	}
+	if pc.ClientID == "" {
+		return fmt.Errorf("oauth_providers[%q]: missing required \"client_id\" field", name)
+	}
+	return nil
+}
+
+// APIGatewayOAuthProviders resolves c.OAuthProviders into the flat
+// []apigateway.OAuthProviderConfig list apigateway.NewOAuth2TokenSource
+// consumes (internal/server/wire.go), sorted by name for determinism.
+// Mirrors APIGatewayServices' own shape and "already validated by
+// Config.UnmarshalYAML" invariant — an entry that fails
+// validateOAuthProviderConfig here (a hand-built Config that skipped
+// validation) is skipped silently rather than surfaced as an error, since
+// this method has no error return and never should have one under that
+// invariant.
+func (c Config) APIGatewayOAuthProviders() []apigateway.OAuthProviderConfig {
+	names := make([]string, 0, len(c.OAuthProviders))
+	for name := range c.OAuthProviders {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	out := make([]apigateway.OAuthProviderConfig, 0, len(names))
+	for _, name := range names {
+		pc := c.OAuthProviders[name]
+		if err := validateOAuthProviderConfig(name, pc); err != nil {
+			continue
+		}
+		out = append(out, apigateway.OAuthProviderConfig{
+			Name:            name,
+			TokenEndpoint:   pc.TokenEndpoint,
+			ClientID:        pc.ClientID,
+			ClientSecretKey: pc.ClientSecretKey,
+			Scopes:          append([]string(nil), pc.Scopes...),
 		})
 	}
 	return out

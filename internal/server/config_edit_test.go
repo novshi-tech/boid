@@ -254,6 +254,42 @@ func TestApplyConfigYAML_Services_RestartRequiredWarning(t *testing.T) {
 	}
 }
 
+// TestApplyConfigYAML_OAuthProviders_RestartRequiredWarning mirrors
+// TestApplyConfigYAML_Services_RestartRequiredWarning for
+// oauth_providers.<name> (docs/plans/api-gateway.md §6/§論点4, PR2,
+// changedOAuthProviderLeaves).
+func TestApplyConfigYAML_OAuthProviders_RestartRequiredWarning(t *testing.T) {
+	srv, _ := newConfigTestServer(t)
+
+	if _, err := srv.ApplyConfigYAML([]byte(
+		"oauth_providers:\n  freee:\n    token_endpoint: https://accounts.secure.freee.co.jp/public_api/token\n    client_id: cid-1\n"),
+		"", true); err != nil {
+		t.Fatalf("ApplyConfigYAML (create): %v", err)
+	}
+
+	result, err := srv.ApplyConfigYAML([]byte(
+		"oauth_providers:\n  freee:\n    token_endpoint: https://accounts.secure.freee.co.jp/v2/token\n    client_id: cid-2\n    client_secret_key: freee-secret\n"),
+		"", true)
+	if err != nil {
+		t.Fatalf("ApplyConfigYAML (change): %v", err)
+	}
+	var gotTokenEndpoint, gotClientID, gotClientSecretKey bool
+	for _, w := range result.Warnings {
+		if strings.Contains(w, "oauth_providers.freee.token_endpoint requires") {
+			gotTokenEndpoint = true
+		}
+		if strings.Contains(w, "oauth_providers.freee.client_id requires") {
+			gotClientID = true
+		}
+		if strings.Contains(w, "oauth_providers.freee.client_secret_key requires") {
+			gotClientSecretKey = true
+		}
+	}
+	if !gotTokenEndpoint || !gotClientID || !gotClientSecretKey {
+		t.Errorf("Warnings = %v, want token_endpoint + client_id + client_secret_key leaf warnings", result.Warnings)
+	}
+}
+
 // TestApplyConfigYAML_GatewayForges_MultipleLeafChanges pins MINOR 2: two
 // leaves changing on the SAME forge id in one apply produce two separate,
 // individually-named warnings.

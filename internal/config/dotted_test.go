@@ -270,6 +270,58 @@ func TestGet_WholeServiceEntry(t *testing.T) {
 	}
 }
 
+// TestUnset_WholeOAuthProviderEntry mirrors TestUnset_WholeServiceEntry for
+// oauth_providers.<name> (docs/plans/api-gateway.md §6/§論点4, PR2,
+// IsOAuthProviderEntryPath).
+func TestUnset_WholeOAuthProviderEntry(t *testing.T) {
+	tree := Tree{}
+	if _, err := Set(tree, "oauth_providers.freee.token_endpoint", []string{"https://accounts.secure.freee.co.jp/public_api/token"}); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	if _, err := Set(tree, "oauth_providers.freee.client_id", []string{"cid"}); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	reload, err := Unset(tree, "oauth_providers.freee")
+	if err != nil {
+		t.Fatalf("Unset whole entry: %v", err)
+	}
+	if reload != ReloadRestartRequired {
+		t.Errorf("reload = %v, want ReloadRestartRequired", reload)
+	}
+	if _, ok := GetPath(tree, "oauth_providers.freee"); ok {
+		t.Error("whole oauth_providers entry still present after unset")
+	}
+	if _, ok := GetPath(tree, "oauth_providers"); ok {
+		t.Error("oauth_providers map itself should be pruned once empty")
+	}
+}
+
+func TestUnset_WholeOAuthProviderEntry_NotFound(t *testing.T) {
+	tree := Tree{}
+	if _, err := Unset(tree, "oauth_providers.nonexistent"); err == nil {
+		t.Fatal("expected error: key not found")
+	}
+}
+
+// TestGet_WholeOAuthProviderEntry mirrors TestGet_WholeServiceEntry.
+func TestGet_WholeOAuthProviderEntry(t *testing.T) {
+	tree := Tree{}
+	if _, err := Set(tree, "oauth_providers.freee.client_id", []string{"cid"}); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	v, err := Get(tree, "oauth_providers.freee")
+	if err != nil {
+		t.Fatalf("Get whole entry: %v", err)
+	}
+	m, ok := v.(Tree)
+	if !ok {
+		t.Fatalf("Get whole entry: got %T, want Tree", v)
+	}
+	if m["client_id"] != "cid" {
+		t.Errorf("client_id = %v, want cid", m["client_id"])
+	}
+}
+
 // TestUnset_KindOpaque_Rejected pins MINOR 1 (codex review round 2):
 // gateway.hosts (the only KindOpaque leaf today) is documented as
 // non-settable AND non-unsettable — Set already rejected it via

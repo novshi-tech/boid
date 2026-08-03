@@ -88,12 +88,109 @@ func TestCredentialProvider_Resolve_SecretMiss(t *testing.T) {
 	}
 }
 
-func TestCredentialProvider_Resolve_OAuth2NotImplemented(t *testing.T) {
+// TestCredentialProvider_Resolve_OAuth2NoTokenSourceConfigured pins the
+// still-relevant slice of PR1's contract: a CredentialProvider that never
+// had SetOAuth2TokenSource called on it (every construction site before
+// PR2, and any test that doesn't opt in) must still fail an oauth2-kind
+// Resolve loudly rather than nil-deref-panic or silently bypass.
+func TestCredentialProvider_Resolve_OAuth2NoTokenSourceConfigured(t *testing.T) {
 	c := NewCredentialProvider([]ServiceConfig{
 		{Name: "freee", BaseURL: "https://api.freee.co.jp", Auth: ServiceAuth{Kind: AuthOAuth2, Provider: "freee"}},
 	}, stubResolver(nil))
 	if err := c.Resolve("freee", "ws-a"); err == nil {
-		t.Error("Resolve for an oauth2-kind service (PR1 scope, unimplemented): want error, got nil")
+		t.Error("Resolve for an oauth2-kind service with no TokenSource wired: want error, got nil")
+	}
+}
+
+// stubOAuth2TokenSource is a minimal OAuth2AccessTokenSource fake for
+// CredentialProvider's own Resolve/Inject tests — the real refresh/
+// singleflight/persistence-order behavior is exercised directly against
+// *OAuth2TokenSource in oauth2_test.go; these tests only need to prove
+// CredentialProvider calls through to whatever OAuth2AccessTokenSource it
+// was given, and injects its result as a Bearer header.
+type stubOAuth2TokenSource struct {
+	tokens map[string]string // "namespace/provider" -> access token
+	err    error
+	calls  []string // "namespace/provider" call log
+}
+
+func (s *stubOAuth2TokenSource) AccessToken(namespace, provider string) (string, error) {
+	s.calls = append(s.calls, namespace+"/"+provider)
+	if s.err != nil {
+		return "", s.err
+	}
+	tok, ok := s.tokens[namespace+"/"+provider]
+	if !ok {
+		return "", errors.New("stubOAuth2TokenSource: no token for " + namespace + "/" + provider)
+	}
+	return tok, nil
+}
+
+func TestCredentialProvider_Resolve_OAuth2_DelegatesToTokenSource(t *testing.T) {
+	c := NewCredentialProvider([]ServiceConfig{
+		{Name: "freee", BaseURL: "https://api.freee.co.jp", Auth: ServiceAuth{Kind: AuthOAuth2, Provider: "freee"}},
+	}, nil)
+	stub := &stubOAuth2TokenSource{tokens: map[string]string{"ws-a/freee": "at-123"}}
+	c.SetOAuth2TokenSource(stub)
+
+	if err := c.Resolve("freee", "ws-a"); err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if len(stub.calls) != 1 || stub.calls[0] != "ws-a/freee" {
+		t.Errorf("AccessToken calls = %v, want exactly [\"ws-a/freee\"]", stub.calls)
+	}
+}
+
+func TestCredentialProvider_Resolve_OAuth2_TokenSourceError(t *testing.T) {
+	c := NewCredentialProvider([]ServiceConfig{
+		{Name: "freee", BaseURL: "https://api.freee.co.jp", Auth: ServiceAuth{Kind: AuthOAuth2, Provider: "freee"}},
+	}, nil)
+	c.SetOAuth2TokenSource(&stubOAuth2TokenSource{err: errors.New("refresh failed")})
+
+	if err := c.Resolve("freee", "ws-a"); err == nil {
+		t.Error("Resolve when the TokenSource errors: want error, got nil")
+	}
+}
+
+func TestCredentialProvider_Inject_OAuth2_SetsBearerHeader(t *testing.T) {
+	c := NewCredentialProvider([]ServiceConfig{
+		{Name: "freee", BaseURL: "https://api.freee.co.jp", Auth: ServiceAuth{Kind: AuthOAuth2, Provider: "freee"}},
+	}, nil)
+	c.SetOAuth2TokenSource(&stubOAuth2TokenSource{tokens: map[string]string{"ws-a/freee": "at-456"}})
+
+	req, _ := http.NewRequest("GET", "https://api.freee.co.jp/api/1/companies", nil)
+	if err := c.Inject(req, "freee", "ws-a"); err != nil {
+		t.Fatalf("Inject: %v", err)
+	}
+	if got := req.Header.Get("Authorization"); got != "Bearer at-456" {
+		t.Errorf("Authorization header = %q, want %q", got, "Bearer at-456")
+	}
+}
+
+// TestCredentialProvider_Inject_OAuth2_DifferentServicesSameProvider pins
+// that two services sharing one oauth_providers entry (auth.provider) each
+// resolve independently through Provider, not Name — CredentialProvider's
+// map key is the service name, but the token lookup key it hands to
+// OAuth2AccessTokenSource is auth.Provider.
+func TestCredentialProvider_Inject_OAuth2_DifferentServicesSameProvider(t *testing.T) {
+	c := NewCredentialProvider([]ServiceConfig{
+		{Name: "freee-accounting", BaseURL: "https://api.freee.co.jp/api/1", Auth: ServiceAuth{Kind: AuthOAuth2, Provider: "freee"}},
+		{Name: "freee-hr", BaseURL: "https://api.freee.co.jp/hr/api/1", Auth: ServiceAuth{Kind: AuthOAuth2, Provider: "freee"}},
+	}, nil)
+	stub := &stubOAuth2TokenSource{tokens: map[string]string{"ws-a/freee": "shared-token"}}
+	c.SetOAuth2TokenSource(stub)
+
+	for _, svc := range []string{"freee-accounting", "freee-hr"} {
+		req, _ := http.NewRequest("GET", "https://api.freee.co.jp/x", nil)
+		if err := c.Inject(req, svc, "ws-a"); err != nil {
+			t.Fatalf("Inject(%s): %v", svc, err)
+		}
+		if got := req.Header.Get("Authorization"); got != "Bearer shared-token" {
+			t.Errorf("Inject(%s): Authorization = %q, want %q", svc, got, "Bearer shared-token")
+		}
+	}
+	if len(stub.calls) != 2 || stub.calls[0] != "ws-a/freee" || stub.calls[1] != "ws-a/freee" {
+		t.Errorf("AccessToken calls = %v, want two calls to ws-a/freee", stub.calls)
 	}
 }
 
@@ -161,13 +258,15 @@ func TestCredentialProvider_Inject_Query(t *testing.T) {
 	}
 }
 
-func TestCredentialProvider_Inject_OAuth2NotImplemented(t *testing.T) {
+// TestCredentialProvider_Inject_OAuth2NoTokenSourceConfigured mirrors
+// TestCredentialProvider_Resolve_OAuth2NoTokenSourceConfigured for Inject.
+func TestCredentialProvider_Inject_OAuth2NoTokenSourceConfigured(t *testing.T) {
 	c := NewCredentialProvider([]ServiceConfig{
 		{Name: "freee", BaseURL: "https://api.freee.co.jp", Auth: ServiceAuth{Kind: AuthOAuth2, Provider: "freee"}},
 	}, stubResolver(nil))
 	req, _ := http.NewRequest("GET", "https://api.freee.co.jp/api/1/companies", nil)
 	if err := c.Inject(req, "freee", "ws-a"); err == nil {
-		t.Fatal("Inject for an oauth2-kind service: want error, got nil")
+		t.Fatal("Inject for an oauth2-kind service with no TokenSource wired: want error, got nil")
 	}
 	if req.Header.Get("Authorization") != "" {
 		t.Error("Inject must leave req unmodified when it errors")

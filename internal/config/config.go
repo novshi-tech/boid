@@ -37,6 +37,18 @@ type Config struct {
 	// time, the same lenient-string-list posture allowed_domains' floor has
 	// always had.
 	ServicesFloor []string `yaml:"services_floor,omitempty"`
+	// OAuthProviders declares the API gateway's OAuth2 provider registry
+	// (docs/plans/api-gateway.md §6/§論点4, PR2: "config.yaml の
+	// oauth_providers: ブロック。client_secret のみ SecretStore 参照"), keyed
+	// by provider name — the same name a services.<name>.auth.provider
+	// entry references. A provider reference naming an entry not declared
+	// here is not a config-load error — see
+	// TestLoadFromPath_Services_OAuth2ProviderReferenceNotCrossValidated's
+	// doc comment (oauth_providers_test.go) for why: it fails at request
+	// time instead, with a clear error, the same "unresolvable reference
+	// surfaces at request time, not load time" contract every other
+	// secret-store-shaped reference in this file already has.
+	OAuthProviders map[string]OAuthProviderConfig `yaml:"oauth_providers,omitempty"`
 }
 
 // LogConfig holds daemon logging settings.
@@ -409,8 +421,9 @@ func (c *Config) UnmarshalYAML(value *yaml.Node) error {
 			// Deprecated: use Forges.
 			Hosts []gitgateway.HostForgeConfig `yaml:"hosts"`
 		} `yaml:"gateway"`
-		Services      map[string]ServiceConfig `yaml:"services"`
-		ServicesFloor []string                 `yaml:"services_floor"`
+		Services       map[string]ServiceConfig       `yaml:"services"`
+		ServicesFloor  []string                       `yaml:"services_floor"`
+		OAuthProviders map[string]OAuthProviderConfig `yaml:"oauth_providers"`
 	}
 	if err := value.Decode(&raw); err != nil {
 		return err
@@ -583,6 +596,19 @@ func (c *Config) UnmarshalYAML(value *yaml.Node) error {
 			slog.Warn("services_floor names a service that is not declared under services:; it will never resolve to anything at dispatch time",
 				"service", name)
 		}
+	}
+
+	// oauth_providers: (docs/plans/api-gateway.md §6/§論点4, PR2). Same
+	// eager, fail-config-load posture as services: above — every entry is
+	// validated here since APIGatewayOAuthProviders' own "already
+	// validated" invariant depends on it.
+	if len(raw.OAuthProviders) > 0 {
+		for name, pc := range raw.OAuthProviders {
+			if err := validateOAuthProviderConfig(name, pc); err != nil {
+				return err
+			}
+		}
+		c.OAuthProviders = raw.OAuthProviders
 	}
 
 	return nil

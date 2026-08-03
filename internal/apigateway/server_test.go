@@ -92,6 +92,58 @@ func TestServer_ProxiesWithBearerInjection(t *testing.T) {
 	}
 }
 
+// TestServer_ProxiesWithOAuth2Injection is TestServer_ProxiesWithBearerInjection's
+// oauth2-kind counterpart: a real Registry + Server + CredentialProvider,
+// wired to a real *OAuth2TokenSource (SetOAuth2TokenSource) fronting a fake
+// token endpoint, seeded with only a refresh_token — the exact PR2 dogfood
+// starting state (`boid secret set` a refresh_token, nothing else). This
+// closes the remaining hop oauth2_test.go/credentials_test.go's own oauth2
+// tests don't individually cover: ServeHTTP -> CredentialProvider.Resolve
+// (fail-fast pre-check) -> CredentialProvider.Inject (Rewrite) both calling
+// through to the SAME OAuth2TokenSource, ending in the upstream actually
+// seeing a Bearer access token it never held any static secret for.
+func TestServer_ProxiesWithOAuth2Injection(t *testing.T) {
+	var gotAuth string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer upstream.Close()
+
+	tokenEndpoint := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"access_token":"live-access-token","expires_in":3600}`))
+	}))
+	defer tokenEndpoint.Close()
+
+	store := newMemSecretStore()
+	store.seed("ws-a", OAuthSecretKey("freee", oauthFieldRefreshToken), "refresh-from-boid-secret-set")
+
+	registry := NewRegistry()
+	token := registry.Register([]string{"freee"}, "ws-a", "task-1", false)
+
+	creds := NewCredentialProvider([]ServiceConfig{
+		{Name: "freee", BaseURL: upstream.URL, Auth: ServiceAuth{Kind: AuthOAuth2, Provider: "freee"}},
+	}, store.resolver())
+	creds.SetOAuth2TokenSource(NewOAuth2TokenSource(
+		[]OAuthProviderConfig{{Name: "freee", TokenEndpoint: tokenEndpoint.URL, ClientID: "cid"}},
+		store.resolver(), store.writer(),
+	))
+
+	srv := NewServer(registry, creds, nil, nil)
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", "/api/"+token+"/freee/api/1/companies", nil)
+	srv.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body %q)", w.Code, w.Body.String())
+	}
+	if gotAuth != "Bearer live-access-token" {
+		t.Errorf("upstream saw Authorization = %q, want %q", gotAuth, "Bearer live-access-token")
+	}
+}
+
 // TestServer_RoutesCredentialsByTokenNamespace mirrors
 // internal/gitgateway's TestServeHTTP_RoutesCredentialsByTokenNamespace
 // (wiring-seams.md #11's own guard for the sibling gateway): a single

@@ -1,6 +1,6 @@
 # 汎用 API gateway (認証注入リバースプロキシ) + OAuth2 対応 計画
 
-ステータス: PR1 (gateway 本体、static 注入のみ) 実装完了・レビュー中 (2026-08-03)。PR2 (OAuth2 TokenSource) / PR3 (login flow) は未着手。
+ステータス: PR1 (gateway 本体、static 注入のみ) マージ済み (2026-08-03、#898)。PR2 (OAuth2 TokenSource) 実装完了・レビュー中 (2026-08-03)。PR3 (login flow) は未着手。
 作成日: 2026-08-03
 親ドキュメント: [git-gateway-cutover.md](git-gateway-cutover.md) — 本計画は git gateway の認証注入モデルを git 以外の HTTP API へ汎用化する。認証情報一元管理の観点では [host-command-contract.md](host-command-contract.md) の後継でもある。
 

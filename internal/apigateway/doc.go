@@ -4,11 +4,14 @@
 // git smart HTTP alone to any HTTP API, per docs/plans/api-gateway.md
 // ("汎用 API gateway (認証注入リバースプロキシ) + OAuth2 対応 計画").
 //
-// This is PR1 of that plan: static credential injection only (bearer /
-// basic / header / query auth kinds). The oauth2 AuthKind is parsed and
-// validated by config schema (internal/config) but Resolve/Inject both
-// return an explicit "not implemented yet" error for it — PR2 adds the
-// actual TokenSource.
+// PR1 added static credential injection (bearer / basic / header / query
+// auth kinds). PR2 (this state) adds the oauth2 AuthKind's actual
+// TokenSource (oauth2.go, OAuth2TokenSource): a daemon-single-refresher,
+// proactively-refreshing (margin-before-expiry), singleflight-coalesced
+// access-token supplier, wired into a CredentialProvider via
+// SetOAuth2TokenSource. PR3 adds the `boid secret oauth login` flow that
+// performs the initial grant; PR2's own dogfood path is a manually
+// `boid secret set` refresh_token.
 //
 // Like internal/gitgateway, this package is self-contained: it does not
 // import internal/dispatcher, internal/db, internal/api, internal/server,
