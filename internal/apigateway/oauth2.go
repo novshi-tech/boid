@@ -601,6 +601,29 @@ type oauthErrorResponse struct {
 // (freee has no scope concept on refresh at all). cfg.Scopes is
 // parsed-and-stored for PR3's authorization-URL construction only — see
 // OAuthProviderConfig.Scopes' own doc comment.
+//
+// Every error path below is deliberately SANITIZED before it is returned
+// (codex review round 4, Major finding): a raw Go net/http transport error
+// (from httpClient().Do failing — DNS lookup, connection refused, TLS
+// handshake, ...) typically embeds cfg.TokenEndpoint's real host:port
+// verbatim in its error string, and this function's caller chain
+// (refresh -> AccessToken -> CredentialProvider.Resolve/Inject) is exactly
+// what Server.ServeHTTP's pre-existing fail-fast precheck echoes into the
+// SANDBOX-facing 502 response body (`"bad gateway: ...: " + err.Error()`,
+// internal/apigateway/server.go — a path PR1 already hardened against this
+// exact leak for its own ReverseProxy.ErrorHandler, see
+// TestServer_TransportErrorDoesNotLeakUpstreamHostToSandbox's own doc
+// comment, but did not need to harden here since no static auth kind's
+// Resolve error had ever contained an upstream hostname before oauth2
+// existed). Directly contradicts docs/plans/api-gateway.md §1's "upstream
+// の実 URL は sandbox からは見えない (見せる必要もない)" design principle.
+// Every branch therefore logs the FULL raw detail via slog.Warn (server-side
+// diagnosis only) and returns a generic, hostname-free message upward — the
+// one exception is oerr.Error (RFC 6749 §5.2's fixed, non-secret error-code
+// enum: invalid_grant, invalid_client, ...), kept in the returned message
+// since it is genuinely useful to the caller and never contains a hostname
+// or credential; oerr.ErrorDescription (a provider-authored free-text field
+// with no such guarantee) is logged but never returned.
 func (t *OAuth2TokenSource) callTokenEndpoint(cfg OAuthProviderConfig, refreshToken, clientSecret string) (oauthTokenResponse, error) {
 	form := url.Values{}
 	form.Set("grant_type", "refresh_token")
@@ -614,33 +637,41 @@ func (t *OAuth2TokenSource) callTokenEndpoint(cfg OAuthProviderConfig, refreshTo
 
 	req, err := http.NewRequest(http.MethodPost, cfg.TokenEndpoint, strings.NewReader(form.Encode()))
 	if err != nil {
-		return oauthTokenResponse{}, fmt.Errorf("build token request: %w", err)
+		slog.Warn("apigateway: oauth2 failed to build token endpoint request", "provider", cfg.Name, "error", err)
+		return oauthTokenResponse{}, fmt.Errorf("build token request failed (see daemon log for details)")
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Accept", "application/json")
 
 	resp, err := t.httpClient().Do(req)
 	if err != nil {
-		return oauthTokenResponse{}, fmt.Errorf("token endpoint request: %w", err)
+		slog.Warn("apigateway: oauth2 token endpoint request failed", "provider", cfg.Name, "error", err)
+		return oauthTokenResponse{}, fmt.Errorf("token endpoint request failed (see daemon log for details)")
 	}
 	defer resp.Body.Close()
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil {
-		return oauthTokenResponse{}, fmt.Errorf("read token endpoint response: %w", err)
+		slog.Warn("apigateway: oauth2 failed to read token endpoint response", "provider", cfg.Name, "error", err)
+		return oauthTokenResponse{}, fmt.Errorf("read token endpoint response failed (see daemon log for details)")
 	}
 
 	if resp.StatusCode != http.StatusOK {
 		var oerr oauthErrorResponse
 		if jsonErr := json.Unmarshal(body, &oerr); jsonErr == nil && oerr.Error != "" {
-			return oauthTokenResponse{}, fmt.Errorf("token endpoint returned %d: %s (%s)", resp.StatusCode, oerr.Error, oerr.ErrorDescription)
+			slog.Warn("apigateway: oauth2 token endpoint returned an error response",
+				"provider", cfg.Name, "status", resp.StatusCode, "error", oerr.Error, "error_description", oerr.ErrorDescription)
+			return oauthTokenResponse{}, fmt.Errorf("token endpoint returned %d: %s", resp.StatusCode, oerr.Error)
 		}
+		slog.Warn("apigateway: oauth2 token endpoint returned a non-200 status with no parseable error body",
+			"provider", cfg.Name, "status", resp.StatusCode)
 		return oauthTokenResponse{}, fmt.Errorf("token endpoint returned %d", resp.StatusCode)
 	}
 
 	var tokResp oauthTokenResponse
 	if err := json.Unmarshal(body, &tokResp); err != nil {
-		return oauthTokenResponse{}, fmt.Errorf("decode token endpoint response: %w", err)
+		slog.Warn("apigateway: oauth2 failed to decode token endpoint response", "provider", cfg.Name, "error", err)
+		return oauthTokenResponse{}, fmt.Errorf("decode token endpoint response failed (see daemon log for details)")
 	}
 	if tokResp.AccessToken == "" {
 		return oauthTokenResponse{}, fmt.Errorf("token endpoint response has no access_token")

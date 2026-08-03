@@ -3,6 +3,7 @@ package apigateway
 import (
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -460,10 +461,18 @@ func TestOAuth2TokenSource_NoRefreshTokenConfigured_Error(t *testing.T) {
 	}
 }
 
+// TestOAuth2TokenSource_TokenEndpointErrorResponse_Surfaces pins the codex
+// review round-4 fix alongside its original intent: the RFC 6749 §5.2 error
+// CODE (a fixed, non-secret enum — invalid_grant, invalid_client, ...) is
+// still surfaced to the caller, but error_description (a provider-authored
+// free-text field with no such guarantee) must NOT be — it must only be
+// logged server-side, never returned in an error a sandbox-facing 502 could
+// echo (Server.ServeHTTP's existing fail-fast precheck response does
+// exactly that for a Resolve failure).
 func TestOAuth2TokenSource_TokenEndpointErrorResponse_Surfaces(t *testing.T) {
 	store := newMemSecretStore()
 	store.seed("ws-a", OAuthSecretKey("freee", oauthFieldRefreshToken), "RT-revoked")
-	body, _ := json.Marshal(oauthErrorResponse{Error: "invalid_grant", ErrorDescription: "Token has been revoked"})
+	body, _ := json.Marshal(oauthErrorResponse{Error: "invalid_grant", ErrorDescription: "Token has been revoked for account nose@example.com"})
 	stub := newTokenEndpointStub(t, http.StatusBadRequest, string(body))
 	ts := NewOAuth2TokenSource([]OAuthProviderConfig{{Name: "freee", TokenEndpoint: stub.srv.URL}}, store.resolver(), store.writer())
 
@@ -471,8 +480,43 @@ func TestOAuth2TokenSource_TokenEndpointErrorResponse_Surfaces(t *testing.T) {
 	if err == nil {
 		t.Fatal("AccessToken: want error for a token-endpoint error response, got nil")
 	}
-	if !strings.Contains(err.Error(), "invalid_grant") || !strings.Contains(err.Error(), "revoked") {
-		t.Errorf("error %q does not surface the provider's error/error_description", err.Error())
+	if !strings.Contains(err.Error(), "invalid_grant") {
+		t.Errorf("error %q does not surface the provider's error code", err.Error())
+	}
+	if strings.Contains(err.Error(), "revoked") || strings.Contains(err.Error(), "nose@example.com") {
+		t.Errorf("error %q leaks error_description (provider-authored free text) to the caller — it must be logged server-side only", err.Error())
+	}
+}
+
+// TestOAuth2TokenSource_TransportErrorDoesNotLeakTokenEndpointHost pins the
+// codex review round-4 Major finding directly: a raw transport failure
+// (connection refused here) must never surface the token endpoint's real
+// host in the error AccessToken returns — that error is exactly what
+// Server.ServeHTTP's Resolve fail-fast precheck echoes into the SANDBOX-
+// facing 502 response body (internal/apigateway/server.go), and
+// cfg.TokenEndpoint's real hostname is upstream infrastructure detail the
+// gateway's whole design principle (docs/plans/api-gateway.md §1) says must
+// never reach the sandbox.
+func TestOAuth2TokenSource_TransportErrorDoesNotLeakTokenEndpointHost(t *testing.T) {
+	store := newMemSecretStore()
+	store.seed("ws-a", OAuthSecretKey("freee", oauthFieldRefreshToken), "RT-initial")
+	// A closed listener: dialing it fails with a transport error whose
+	// message embeds this exact host:port.
+	closedListener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("net.Listen: %v", err)
+	}
+	deadTokenEndpoint := "http://" + closedListener.Addr().String() + "/token"
+	closedListener.Close()
+
+	ts := NewOAuth2TokenSource([]OAuthProviderConfig{{Name: "freee", TokenEndpoint: deadTokenEndpoint}}, store.resolver(), store.writer())
+	_, gotErr := ts.AccessToken("ws-a", "freee")
+	if gotErr == nil {
+		t.Fatal("AccessToken: want error for a transport failure, got nil")
+	}
+	host := closedListener.Addr().String()
+	if strings.Contains(gotErr.Error(), host) {
+		t.Errorf("error %q leaks the token endpoint's real host %q to the caller", gotErr.Error(), host)
 	}
 }
 
