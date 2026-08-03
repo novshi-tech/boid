@@ -1,6 +1,6 @@
 # 汎用 API gateway (認証注入リバースプロキシ) + OAuth2 対応 計画
 
-ステータス: PR1 (gateway 本体、static 注入のみ) マージ済み (2026-08-03、#898)。PR2 (OAuth2 TokenSource) 実装完了・レビュー中 (2026-08-03)。PR3 (login flow) は未着手。
+ステータス: PR1 (gateway 本体、static 注入のみ) マージ済み (2026-08-03、#898)。PR2 (OAuth2 TokenSource) マージ済み (2026-08-03、#899)。PR3 (login flow) 実装完了・レビュー中 (2026-08-03)。
 作成日: 2026-08-03
 親ドキュメント: [git-gateway-cutover.md](git-gateway-cutover.md) — 本計画は git gateway の認証注入モデルを git 以外の HTTP API へ汎用化する。認証情報一元管理の観点では [host-command-contract.md](host-command-contract.md) の後継でもある。
 
@@ -268,6 +268,44 @@ CLI リモート接続 ([cli-remote-connection.md](cli-remote-connection.md)) �
 - 避けられない一回きりの手作業: プロバイダごとの OAuth アプリ登録
   (client_id 取得)。public client + PKCE で client_secret 不要なプロバイダは
   それを優先する。
+
+#### PR3 実装時の追加決定事項 (2026-08-03)
+
+計画時点で「実装時に最終化」としていた点、および実装中に判明した追加の設計判断:
+
+- **config.yaml スキーマ**: `oauth_providers.<name>.flow` (enum: device/
+  loopback/manual) + flow ごとに必須の `authorization_endpoint`
+  (loopback/manual) / `device_authorization_endpoint` (device)。**`flow` は
+  任意項目** — PR2 時点の config.yaml (token_endpoint/client_id/
+  client_secret_key のみ、refresh_token は `boid secret set` で手動投入)
+  はこのフィールド無しでも変更なく動き続ける。login flow を使うプロバイダ
+  だけ明示的に追加する。
+- **`authorize_params` (map[string]string)**: 認可リクエストに追加する
+  provider 固有パラメータの汎用エスケープハッチ。動機は Google:
+  `access_type=offline` を付けないと refresh_token がそもそも発行されず、
+  かつ一度同意済みだと `prompt=consent` を付けない限り 2 回目以降の
+  ログインで refresh_token が再発行されない。Google 固有の挙動を
+  gateway 本体にハードコードせず config 側の宣言に押し出した。
+  `client_id`/`redirect_uri`/`state`/`code_challenge` 等プロトコル予約名は
+  config load 時に拒否 (PKCE/state の機構を上書きされる事故を防止)。
+- **CLI は毎回ローカル listener を開いてから daemon に問い合わせる**:
+  `boid secret oauth login <service>` はどの flow になるか事前に分からない
+  ため、まず `127.0.0.1:0` で listen してから `redirect_uri` 込みで
+  daemon に開始リクエストを送る (device/manual では単に使われず即座に
+  close される)。往復を 1 回に抑えるための簡略化。
+- **refresh_token 未取得は login 失敗として扱う**: token endpoint の応答に
+  `refresh_token` が無く、かつ該当 (namespace, provider) に既存の
+  refresh_token も無い場合、access_token 単体の取得は
+  「daemon が二度とリフレッシュできない grant」を意味するため
+  `boid secret oauth login` 自体を失敗として報告する (access_token
+  自体は取得できているにもかかわらず)。Google の「2 回目以降は
+  refresh_token を返さない」挙動を `authorize_params` で回避できなかった
+  場合に、原因不明のまま数十分後に静かに失敗する事故を防ぐための
+  フェイルファスト。
+- **daemon 単一 `LoginManager` は既存の `OAuth2TokenSource` インスタンスを
+  再利用**: login で得た grant の永続化 (`persistGrant`) はリフレッシュと
+  完全に同じ経路・同じ memCache を共有する — login 直後の最初のリクエスト
+  が別プロセス内状態の不整合で無駄な再リフレッシュを起こさない。
 
 ### 8. CLI 整理への波及 (退役方針)
 

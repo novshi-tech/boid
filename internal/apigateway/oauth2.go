@@ -38,11 +38,96 @@ type OAuthProviderConfig struct {
 	// callTokenEndpoint simply omits client_secret from the token request
 	// when this resolves to "".
 	ClientSecretKey string
-	// Scopes is reserved for PR3's authorization-URL construction
-	// (docs/plans/api-gateway.md §7 "flow の三段構え"). Never consumed by
-	// this file's refresh_token grant — see callTokenEndpoint's own doc
-	// comment for why.
+	// Scopes is consumed by login.go's authorization-URL construction
+	// (loopback/manual flows) and device-authorization request (device
+	// flow) — docs/plans/api-gateway.md §7 "flow の三段構え", PR3. Never
+	// consumed by this file's refresh_token grant — see
+	// callTokenEndpoint's own doc comment for why.
 	Scopes []string
+
+	// Flow selects which of the three RFC-defined initial-grant flows
+	// (docs/plans/api-gateway.md §7 "flow の三段構え", PR3) `boid secret
+	// oauth login <service>` uses for this provider: LoginFlowDevice (RFC
+	// 8628 device authorization grant), LoginFlowLoopback (RFC 6749
+	// authorization code grant + PKCE, RFC 8252 loopback redirect), or
+	// LoginFlowManual (authorization code grant via the OOB
+	// urn:ietf:wg:oauth:2.0:oob redirect URI, no PKCE — freee's shape).
+	// Empty ("") means this provider has no login flow configured at all —
+	// AccessToken's refresh_token grant (this file) works regardless (an
+	// operator can always seed refresh_token via `boid secret set`, PR2's
+	// own documented fallback), but login.go's LoginManager.StartLogin
+	// rejects it with a clear "no flow configured" error rather than
+	// guessing.
+	Flow LoginFlow
+
+	// AuthorizationEndpoint is the provider's OAuth2 authorization endpoint
+	// (RFC 6749 §3.1) — required (and only meaningful) when Flow is
+	// LoginFlowLoopback or LoginFlowManual.
+	AuthorizationEndpoint string
+
+	// DeviceAuthorizationEndpoint is the provider's RFC 8628 §3.1 device
+	// authorization endpoint — required (and only meaningful) when Flow is
+	// LoginFlowDevice.
+	DeviceAuthorizationEndpoint string
+
+	// AuthorizeParams is a fixed set of extra parameters appended verbatim
+	// to the authorization request (loopback/manual: query parameters on
+	// AuthorizationEndpoint; device: form fields on
+	// DeviceAuthorizationEndpoint) — an escape hatch for provider-specific
+	// extensions RFC 6749/8628 don't standardize but real providers need,
+	// e.g. Google's `access_type=offline`/`prompt=consent` (without which
+	// Google does not reissue a refresh_token on a repeat login once the
+	// user has already granted consent once — docs/plans/api-gateway.md's
+	// own "Google の device flow は認可可能な scope がかなり絞られている"
+	// note is the same class of Google-specific quirk). Deliberately a
+	// per-provider config map rather than hardcoded Google-specific
+	// behavior in this leaf package, matching this config's existing
+	// declarative style. internal/config.validateOAuthProviderConfig
+	// rejects any key here that collides with a protocol-reserved
+	// parameter (client_id, redirect_uri, response_type, scope, state,
+	// code_challenge, code_challenge_method, device_code, grant_type) —
+	// this package's own login.go trusts that check and never re-validates
+	// it at request time.
+	AuthorizeParams map[string]string
+}
+
+// LoginFlow selects which of the three RFC-defined initial-grant flows
+// docs/plans/api-gateway.md §7 describes a provider uses for `boid secret
+// oauth login <service>` (PR3).
+type LoginFlow string
+
+const (
+	// LoginFlowDevice is RFC 8628's device authorization grant: no browser
+	// redirect at all, the CLI displays a short user_code + verification
+	// URI and the daemon polls DeviceAuthorizationEndpoint/TokenEndpoint in
+	// the background until the user completes the grant elsewhere
+	// (docs/plans/api-gateway.md §7 flow table: Microsoft/GitHub).
+	LoginFlowDevice LoginFlow = "device"
+	// LoginFlowLoopback is RFC 6749's authorization code grant with RFC
+	// 7636 PKCE, using an RFC 8252 §7.3 loopback redirect_uri the CLI binds
+	// dynamically (docs/plans/api-gateway.md §7 flow table: Google/
+	// Atlassian).
+	LoginFlowLoopback LoginFlow = "loopback"
+	// LoginFlowManual is RFC 6749's authorization code grant via the
+	// urn:ietf:wg:oauth:2.0:oob redirect URI — the provider displays the
+	// code directly in the browser instead of redirecting anywhere, and
+	// the user pastes it into the CLI by hand. No PKCE (docs/plans/
+	// api-gateway.md §7: "PKCE 非対応プロバイダ (freee) では...confidential
+	// client の client_secret を daemon 側にのみ置くことで同等の性質を担保
+	// する" — ClientSecretKey, not a code_verifier, is what keeps the code
+	// alone unusable off the daemon for this flow).
+	LoginFlowManual LoginFlow = "manual"
+)
+
+// ValidLoginFlows is the fixed set of Flow values internal/config's
+// validateOAuthProviderConfig accepts — exported so that validation and
+// login.go's own flow switch can never silently drift apart (a new LoginFlow
+// constant added to one without the other would otherwise be a config-load
+// acceptance / request-time-rejection mismatch, or vice versa).
+var ValidLoginFlows = map[LoginFlow]bool{
+	LoginFlowDevice:   true,
+	LoginFlowLoopback: true,
+	LoginFlowManual:   true,
 }
 
 // SecretWriter persists a plaintext secret-store value scoped to namespace
@@ -100,11 +185,17 @@ type oauthAccessTokenCache struct {
 // duplicated here — not imported — to keep this leaf package free of
 // internal/dispatcher (this package's own established pattern; see
 // token.go's GenerateToken and singleflight.go's own doc comment for the
-// identical rationale). AccessToken is the ONLY call site: see its own doc
+// identical rationale). AccessToken (this file) and LoginManager.StartLogin
+// (login.go, PR3) are the only two call sites — see each one's own doc
 // comment for why applying this exactly once, at that single entry point,
-// is what keeps every downstream key (singleflight, memCache) and every
-// resolver/writer call consistent with what the SecretStore itself treats
-// as the same row.
+// is what keeps every downstream key (singleflight, memCache, and login.go's
+// own pendingLogin.namespace) consistent with what the SecretStore itself
+// treats as the same row. Every other function in this package that takes a
+// namespace parameter (refresh, persistGrant, exchangeAndPersist,
+// pollDeviceGrant, CompleteLogin, Status, ...) receives it ALREADY
+// normalized, from one of these two entry points — never re-normalize
+// partway through a call chain, and never add a third entry point without
+// updating this comment.
 func normalizeNamespace(ns string) string {
 	if ns == "" {
 		return "default"
@@ -443,26 +534,10 @@ func (t *OAuth2TokenSource) cachedAccessToken(namespace, provider string) (acces
 // api-gateway.md §6's singleflight requirement in full: this function has
 // no locking of its own, because by the time it runs it is already the only
 // in-flight refresh for this key.
-//
-// PERSISTENCE ORDER (docs/plans/api-gateway.md §6, load-bearing — do not
-// reorder): once the token endpoint responds, the (possibly rotated)
-// refresh_token is written to the secret store FIRST, and only once that
-// write has succeeded does this function persist access_token/expires_at
-// and return the access token for use. A provider that rotates
-// refresh_token on every use (freee) invalidates the OLD refresh_token the
-// instant it issues the new one — if the daemon crashed (or this write
-// failed) between receiving the response and persisting the new
-// refresh_token, the grant would be unrecoverable (the old value in the
-// secret store no longer works upstream, and the new one was never saved)
-// short of a full re-login. Persisting it first — and treating a failure to
-// do so as fatal to this refresh attempt, even though the access token sits
-// right there in the response — is what keeps that window as small as a
-// single synchronous secret-store write, instead of spanning the network
-// round trip AND every subsequent step of this function.
 func (t *OAuth2TokenSource) refresh(namespace string, cfg OAuthProviderConfig) (string, error) {
 	refreshToken, err := t.resolver(namespace, OAuthSecretKey(cfg.Name, oauthFieldRefreshToken))
 	if err != nil || refreshToken == "" {
-		return "", fmt.Errorf("apigateway: oauth2 provider %q: no refresh_token configured for namespace %q — run `boid secret set` (docs/plans/api-gateway.md PR2: manual grant) or complete login (PR3)", cfg.Name, namespace)
+		return "", fmt.Errorf("apigateway: oauth2 provider %q: no refresh_token configured for namespace %q — run `boid secret set` (docs/plans/api-gateway.md PR2: manual grant) or complete login (PR3, `boid secret oauth login %s`)", cfg.Name, namespace, cfg.Name)
 	}
 
 	var clientSecret string
@@ -478,6 +553,39 @@ func (t *OAuth2TokenSource) refresh(namespace string, cfg OAuthProviderConfig) (
 		return "", fmt.Errorf("apigateway: oauth2 provider %q: refresh_token grant: %w", cfg.Name, err)
 	}
 
+	return t.persistGrant(namespace, cfg, resp, refreshToken)
+}
+
+// persistGrant durably persists a successful token-endpoint response —
+// shared by refresh (refresh_token grant, above) and login.go's
+// CompleteLogin/pollDeviceGrant (authorization_code / device_code grant,
+// PR3): every one of these needs the IDENTICAL persistence-order guarantee
+// (docs/plans/api-gateway.md §6) and memCache population regardless of
+// which grant type actually produced resp.
+//
+// priorRefreshToken is whatever refresh_token value the caller already had
+// on hand BEFORE this grant (refresh's own current value for a refresh;
+// whatever the secret store happened to hold — often "", for a first-ever
+// login — for CompleteLogin/pollDeviceGrant), used only to decide whether
+// resp.RefreshToken represents an actual rotation worth writing — see the
+// comment on that check below.
+//
+// PERSISTENCE ORDER (docs/plans/api-gateway.md §6, load-bearing — do not
+// reorder): once the token endpoint responds, the (possibly rotated)
+// refresh_token is written to the secret store FIRST, and only once that
+// write has succeeded does this function persist access_token/expires_at
+// and return the access token for use. A provider that rotates
+// refresh_token on every use (freee) invalidates the OLD refresh_token the
+// instant it issues the new one — if the daemon crashed (or this write
+// failed) between receiving the response and persisting the new
+// refresh_token, the grant would be unrecoverable (the old value in the
+// secret store no longer works upstream, and the new one was never saved)
+// short of a full re-login. Persisting it first — and treating a failure to
+// do so as fatal to this call, even though the access token sits right
+// there in the response — is what keeps that window as small as a single
+// synchronous secret-store write, instead of spanning the network round
+// trip AND every subsequent step of this function.
+func (t *OAuth2TokenSource) persistGrant(namespace string, cfg OAuthProviderConfig, resp oauthTokenResponse, priorRefreshToken string) (string, error) {
 	// Phase 1 (see doc comment above): refresh_token first, and fatal if it
 	// fails — even though the new access_token is sitting right here in
 	// `resp`, using (or persisting) it would mean handing out a token this
@@ -485,21 +593,25 @@ func (t *OAuth2TokenSource) refresh(namespace string, cfg OAuthProviderConfig) (
 	// whose recovery now depends entirely on this one write.
 	//
 	// Only actually WRITE when the provider genuinely rotated (resp.
-	// RefreshToken non-empty AND different from what we already have) —
-	// codex review round 3, Major finding: not every provider rotates
-	// refresh_token on refresh (Google never does; freee always does — RFC
-	// 6749 §5.1 makes the response field OPTIONAL specifically so a client
-	// can tell "unchanged" from "rotated" apart), and an EARLIER version of
-	// this function re-persisted the same, unchanged value unconditionally
-	// on every refresh, treating THAT redundant write's failure as fatal
-	// too. For a non-rotating provider, the value already durably stored is
-	// still perfectly valid upstream — nothing about the grant is at risk —
-	// so failing to re-persist an UNCHANGED value must never discard an
-	// otherwise-successful refresh (a real access token in hand) and 502 the
-	// request. Skipping the write entirely when unrotated also removes an
-	// unnecessary secret-store write on every single refresh for the common
-	// (non-rotating) case.
-	if resp.RefreshToken != "" && resp.RefreshToken != refreshToken {
+	// RefreshToken non-empty AND different from what the caller already
+	// had) — codex review round 3, Major finding: not every provider
+	// rotates refresh_token on refresh (Google never does; freee always
+	// does — RFC 6749 §5.1 makes the response field OPTIONAL specifically
+	// so a client can tell "unchanged" from "rotated" apart), and an
+	// EARLIER version of this function re-persisted the same, unchanged
+	// value unconditionally on every refresh, treating THAT redundant
+	// write's failure as fatal too. For a non-rotating provider, the value
+	// already durably stored is still perfectly valid upstream — nothing
+	// about the grant is at risk — so failing to re-persist an UNCHANGED
+	// value must never discard an otherwise-successful grant (a real
+	// access token in hand) and fail the call. Skipping the write entirely
+	// when unrotated also removes an unnecessary secret-store write on
+	// every single refresh for the common (non-rotating) case. For a
+	// first-ever login (priorRefreshToken == "", the common case
+	// CompleteLogin/pollDeviceGrant call this with), any non-empty
+	// resp.RefreshToken is by definition "different from what we already
+	// had" and is always written — there is nothing to skip yet.
+	if resp.RefreshToken != "" && resp.RefreshToken != priorRefreshToken {
 		if err := t.writer(namespace, OAuthSecretKey(cfg.Name, oauthFieldRefreshToken), resp.RefreshToken); err != nil {
 			slog.Error("apigateway: oauth2 refresh_token persist failed after a successful token-endpoint round trip — the grant may now be UNRECOVERABLE if the provider rotates refresh_token on use; re-run login/`boid secret set` if subsequent refreshes fail",
 				"provider", cfg.Name, "namespace", namespace, "error", err)
@@ -643,7 +755,7 @@ type oauthTokenResponse struct {
 	AccessToken  string       `json:"access_token"`
 	RefreshToken string       `json:"refresh_token,omitempty"`
 	ExpiresIn    *flexibleInt `json:"expires_in"`
-	TokenType    string      `json:"token_type,omitempty"`
+	TokenType    string       `json:"token_type,omitempty"`
 }
 
 // oauthErrorResponse is the RFC 6749 §5.2 error response shape.
@@ -653,18 +765,20 @@ type oauthErrorResponse struct {
 }
 
 // rfc6749TokenErrorCodes is RFC 6749 §5.2's complete, fixed "error" enum for
-// a token endpoint error response. callTokenEndpoint only ever echoes
-// oerr.Error back to its caller (and, from there, potentially into
-// Server.ServeHTTP's sandbox-facing 502 body — see callTokenEndpoint's own
-// doc comment) when the value is a MEMBER of this exact set (codex review
-// round 5, Major finding): oerr.Error is otherwise an arbitrary,
-// unvalidated string straight from the response body — a non-compliant or
-// compromised token endpoint (an external threat surface even in boid's
-// single-user threat model: the attacker here is the remote OAuth2
-// provider or an on-path party, never another local process) could stuff
-// it with a hostname, PII, or anything else, and round 4's fix (dropping
-// ErrorDescription) alone would not have caught THAT field carrying the
-// same risk.
+// a token endpoint error response — the refresh_token AND authorization_code
+// grants (callTokenEndpoint below; login.go's exchangeAuthorizationCode)
+// share this exact set. postFormToTokenEndpoint only ever echoes oerr.Error
+// back to its caller (and, from there, potentially into Server.ServeHTTP's
+// sandbox-facing 502 body — see postFormToTokenEndpoint's own doc comment)
+// when the value is a MEMBER of the recognizedErrorCodes set the caller
+// passes it (codex review round 5, Major finding): oerr.Error is otherwise
+// an arbitrary, unvalidated string straight from the response body — a
+// non-compliant or compromised token endpoint (an external threat surface
+// even in boid's single-user threat model: the attacker here is the remote
+// OAuth2 provider or an on-path party, never another local process) could
+// stuff it with a hostname, PII, or anything else, and round 4's fix
+// (dropping ErrorDescription) alone would not have caught THAT field
+// carrying the same risk.
 var rfc6749TokenErrorCodes = map[string]bool{
 	"invalid_request":        true,
 	"invalid_client":         true,
@@ -672,6 +786,28 @@ var rfc6749TokenErrorCodes = map[string]bool{
 	"unauthorized_client":    true,
 	"unsupported_grant_type": true,
 	"invalid_scope":          true,
+}
+
+// rfc8628DeviceTokenErrorCodes is RFC 8628 §3.5's error enum for the device
+// authorization grant's token-endpoint poll (login.go's pollDeviceGrant):
+// the standard RFC 6749 §5.2 set above, PLUS the four device-flow-specific
+// codes ("authorization_pending"/"slow_down" mean "keep polling", not a
+// failure; "expired_token"/"access_denied" are terminal). Kept as an
+// independent literal rather than built from rfc6749TokenErrorCodes at
+// init time — a map is a reference type, and copying one by iterating
+// (rather than a literal) is easy to get subtly wrong (e.g. accidentally
+// sharing rather than cloning) for a net savings of a few lines.
+var rfc8628DeviceTokenErrorCodes = map[string]bool{
+	"invalid_request":        true,
+	"invalid_client":         true,
+	"invalid_grant":          true,
+	"unauthorized_client":    true,
+	"unsupported_grant_type": true,
+	"invalid_scope":          true,
+	"authorization_pending":  true,
+	"slow_down":              true,
+	"expired_token":          true,
+	"access_denied":          true,
 }
 
 // callTokenEndpoint performs the RFC 6749 §6 refresh_token grant: a POST to
@@ -686,32 +822,9 @@ var rfc6749TokenErrorCodes = map[string]bool{
 // Deliberately never sends `scope`: RFC 6749 §6 allows a refresh request to
 // narrow an already-granted scope, but doing so correctly is
 // provider-specific territory neither of PR2's targeted providers needs
-// (freee has no scope concept on refresh at all). cfg.Scopes is
-// parsed-and-stored for PR3's authorization-URL construction only — see
-// OAuthProviderConfig.Scopes' own doc comment.
-//
-// Every error path below is deliberately SANITIZED before it is returned
-// (codex review round 4, Major finding): a raw Go net/http transport error
-// (from httpClient().Do failing — DNS lookup, connection refused, TLS
-// handshake, ...) typically embeds cfg.TokenEndpoint's real host:port
-// verbatim in its error string, and this function's caller chain
-// (refresh -> AccessToken -> CredentialProvider.Resolve/Inject) is exactly
-// what Server.ServeHTTP's pre-existing fail-fast precheck echoes into the
-// SANDBOX-facing 502 response body (`"bad gateway: ...: " + err.Error()`,
-// internal/apigateway/server.go — a path PR1 already hardened against this
-// exact leak for its own ReverseProxy.ErrorHandler, see
-// TestServer_TransportErrorDoesNotLeakUpstreamHostToSandbox's own doc
-// comment, but did not need to harden here since no static auth kind's
-// Resolve error had ever contained an upstream hostname before oauth2
-// existed). Directly contradicts docs/plans/api-gateway.md §1's "upstream
-// の実 URL は sandbox からは見えない (見せる必要もない)" design principle.
-// Every branch therefore logs the FULL raw detail via slog.Warn (server-side
-// diagnosis only) and returns a generic, hostname-free message upward — the
-// one exception is oerr.Error (RFC 6749 §5.2's fixed, non-secret error-code
-// enum: invalid_grant, invalid_client, ...), kept in the returned message
-// since it is genuinely useful to the caller and never contains a hostname
-// or credential; oerr.ErrorDescription (a provider-authored free-text field
-// with no such guarantee) is logged but never returned.
+// (freee has no scope concept on refresh at all). cfg.Scopes IS sent by
+// login.go's exchangeAuthorizationCode/pollDeviceGrant (the initial grant,
+// not a refresh) — see OAuthProviderConfig.Scopes' own doc comment.
 func (t *OAuth2TokenSource) callTokenEndpoint(cfg OAuthProviderConfig, refreshToken, clientSecret string) (oauthTokenResponse, error) {
 	form := url.Values{}
 	form.Set("grant_type", "refresh_token")
@@ -722,56 +835,103 @@ func (t *OAuth2TokenSource) callTokenEndpoint(cfg OAuthProviderConfig, refreshTo
 	if clientSecret != "" {
 		form.Set("client_secret", clientSecret)
 	}
+	resp, _, err := t.postFormToTokenEndpoint(cfg.TokenEndpoint, form, cfg.Name, rfc6749TokenErrorCodes)
+	return resp, err
+}
 
-	req, err := http.NewRequest(http.MethodPost, cfg.TokenEndpoint, strings.NewReader(form.Encode()))
-	if err != nil {
-		slog.Warn("apigateway: oauth2 failed to build token endpoint request", "provider", cfg.Name, "error", err)
-		return oauthTokenResponse{}, fmt.Errorf("build token request failed (see daemon log for details)")
+// postFormToTokenEndpoint POSTs form (application/x-www-form-urlencoded) to
+// endpoint and parses an RFC 6749 §5.1/§5.2 (or RFC 8628 §3.5, an identical
+// JSON shape) token-endpoint response — the one low-level HTTP+parse
+// routine every grant type this package performs shares: refresh_token
+// (callTokenEndpoint above), authorization_code (login.go's
+// exchangeAuthorizationCode), and device_code polling (login.go's
+// pollDeviceGrant).
+//
+// errCode is the RFC-defined "error" field from a non-200 response body,
+// returned ALONGSIDE the sanitized err (rather than folded into its text)
+// so a device-flow poller can distinguish "authorization_pending"/
+// "slow_down" (keep polling) from every other error code (stop) without
+// re-parsing anything itself; errCode is "" whenever the body didn't parse,
+// carried no "error" field, or (success) resp.StatusCode == 200 — a caller
+// with no such distinction to make (callTokenEndpoint, exchangeAuthorization
+// Code) simply ignores it. recognizedErrorCodes bounds which "error" values
+// are ever echoed into errCode/err at all (rfc6749TokenErrorCodes for the
+// refresh_token/authorization_code grants, rfc8628DeviceTokenErrorCodes for
+// the device_code poll) — see either var's own doc comment for why an
+// unrecognized value is never surfaced verbatim.
+//
+// Every error path below is deliberately SANITIZED before it is returned
+// (codex review round 4, Major finding): a raw Go net/http transport error
+// (from httpClient().Do failing — DNS lookup, connection refused, TLS
+// handshake, ...) typically embeds endpoint's real host:port verbatim in
+// its error string, and this function's caller chain (refresh -> AccessToken
+// -> CredentialProvider.Resolve/Inject, or login.go's CompleteLogin/
+// pollDeviceGrant reached the same way from an HTTP handler) is exactly what
+// Server.ServeHTTP's pre-existing fail-fast precheck echoes into the
+// SANDBOX-facing 502 response body (`"bad gateway: ...: " + err.Error()`,
+// internal/apigateway/server.go — a path PR1 already hardened against this
+// exact leak for its own ReverseProxy.ErrorHandler, see
+// TestServer_TransportErrorDoesNotLeakUpstreamHostToSandbox's own doc
+// comment, but did not need to harden here since no static auth kind's
+// Resolve error had ever contained an upstream hostname before oauth2
+// existed). Directly contradicts docs/plans/api-gateway.md §1's "upstream
+// の実 URL は sandbox からは見えない (見せる必要もない)" design principle.
+// Every branch therefore logs the FULL raw detail via slog.Warn (server-side
+// diagnosis only) and returns a generic, hostname-free message upward — the
+// one exception is oerr.Error when it is a recognized code, kept in the
+// returned message since it is genuinely useful to the caller and never
+// contains a hostname or credential; oerr.ErrorDescription (a
+// provider-authored free-text field with no such guarantee) is logged but
+// never returned.
+func (t *OAuth2TokenSource) postFormToTokenEndpoint(endpoint string, form url.Values, providerName string, recognizedErrorCodes map[string]bool) (result oauthTokenResponse, errCode string, err error) {
+	req, buildErr := http.NewRequest(http.MethodPost, endpoint, strings.NewReader(form.Encode()))
+	if buildErr != nil {
+		slog.Warn("apigateway: oauth2 failed to build token endpoint request", "provider", providerName, "error", buildErr)
+		return oauthTokenResponse{}, "", fmt.Errorf("build token request failed (see daemon log for details)")
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Accept", "application/json")
 
-	resp, err := t.httpClient().Do(req)
-	if err != nil {
-		slog.Warn("apigateway: oauth2 token endpoint request failed", "provider", cfg.Name, "error", err)
-		return oauthTokenResponse{}, fmt.Errorf("token endpoint request failed (see daemon log for details)")
+	resp, doErr := t.httpClient().Do(req)
+	if doErr != nil {
+		slog.Warn("apigateway: oauth2 token endpoint request failed", "provider", providerName, "error", doErr)
+		return oauthTokenResponse{}, "", fmt.Errorf("token endpoint request failed (see daemon log for details)")
 	}
 	defer resp.Body.Close()
 
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	if err != nil {
-		slog.Warn("apigateway: oauth2 failed to read token endpoint response", "provider", cfg.Name, "error", err)
-		return oauthTokenResponse{}, fmt.Errorf("read token endpoint response failed (see daemon log for details)")
+	body, readErr := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if readErr != nil {
+		slog.Warn("apigateway: oauth2 failed to read token endpoint response", "provider", providerName, "error", readErr)
+		return oauthTokenResponse{}, "", fmt.Errorf("read token endpoint response failed (see daemon log for details)")
 	}
 
 	if resp.StatusCode != http.StatusOK {
 		var oerr oauthErrorResponse
 		if jsonErr := json.Unmarshal(body, &oerr); jsonErr == nil && oerr.Error != "" {
 			slog.Warn("apigateway: oauth2 token endpoint returned an error response",
-				"provider", cfg.Name, "status", resp.StatusCode, "error", oerr.Error, "error_description", oerr.ErrorDescription)
-			// Only echo oerr.Error upward when it is a genuine RFC 6749
-			// §5.2 enum member (rfc6749TokenErrorCodes' own doc comment) —
-			// anything else (a non-compliant/compromised endpoint's
-			// arbitrary string) falls through to the same generic message
-			// the "no parseable error body" case gets, exactly as if this
-			// field had been empty.
-			if rfc6749TokenErrorCodes[oerr.Error] {
-				return oauthTokenResponse{}, fmt.Errorf("token endpoint returned %d: %s", resp.StatusCode, oerr.Error)
+				"provider", providerName, "status", resp.StatusCode, "error", oerr.Error, "error_description", oerr.ErrorDescription)
+			// Only echo oerr.Error upward when it is a genuine member of
+			// recognizedErrorCodes — anything else (a non-compliant/
+			// compromised endpoint's arbitrary string) falls through to the
+			// same generic message the "no parseable error body" case gets,
+			// exactly as if this field had been empty.
+			if recognizedErrorCodes[oerr.Error] {
+				return oauthTokenResponse{}, oerr.Error, fmt.Errorf("token endpoint returned %d: %s", resp.StatusCode, oerr.Error)
 			}
-			return oauthTokenResponse{}, fmt.Errorf("token endpoint returned %d", resp.StatusCode)
+			return oauthTokenResponse{}, "", fmt.Errorf("token endpoint returned %d", resp.StatusCode)
 		}
 		slog.Warn("apigateway: oauth2 token endpoint returned a non-200 status with no parseable error body",
-			"provider", cfg.Name, "status", resp.StatusCode)
-		return oauthTokenResponse{}, fmt.Errorf("token endpoint returned %d", resp.StatusCode)
+			"provider", providerName, "status", resp.StatusCode)
+		return oauthTokenResponse{}, "", fmt.Errorf("token endpoint returned %d", resp.StatusCode)
 	}
 
 	var tokResp oauthTokenResponse
 	if err := json.Unmarshal(body, &tokResp); err != nil {
-		slog.Warn("apigateway: oauth2 failed to decode token endpoint response", "provider", cfg.Name, "error", err)
-		return oauthTokenResponse{}, fmt.Errorf("decode token endpoint response failed (see daemon log for details)")
+		slog.Warn("apigateway: oauth2 failed to decode token endpoint response", "provider", providerName, "error", err)
+		return oauthTokenResponse{}, "", fmt.Errorf("decode token endpoint response failed (see daemon log for details)")
 	}
 	if tokResp.AccessToken == "" {
-		return oauthTokenResponse{}, fmt.Errorf("token endpoint response has no access_token")
+		return oauthTokenResponse{}, "", fmt.Errorf("token endpoint response has no access_token")
 	}
-	return tokResp, nil
+	return tokResp, "", nil
 }

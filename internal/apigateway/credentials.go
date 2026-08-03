@@ -148,6 +148,26 @@ func (c *CredentialProvider) KnowsService(name string) bool {
 	return ok
 }
 
+// OAuth2ProviderFor resolves service to the oauth_providers.<name> its
+// auth.kind: oauth2 config references — the service->provider lookup `boid
+// secret oauth login <service>` (PR3, docs/plans/api-gateway.md §7) needs
+// to hand LoginManager.StartLogin the provider name it actually operates on
+// (login.go's own methods take a provider, never a service — see
+// LoginManager's own doc comment). ok is false when service is unknown OR
+// is configured with any auth.kind OTHER than oauth2 — `boid secret oauth
+// login` has nothing useful to do for a bearer/basic/header/query service
+// (there is no OAuth2 grant to obtain).
+func (c *CredentialProvider) OAuth2ProviderFor(service string) (provider string, ok bool) {
+	if c == nil {
+		return "", false
+	}
+	rs, ok := c.services[service]
+	if !ok || rs.auth.Kind != AuthOAuth2 {
+		return "", false
+	}
+	return rs.auth.Provider, true
+}
+
 // BaseURLFor returns the parsed upstream base URL for name, or ok=false when
 // name is unknown (or c is nil).
 func (c *CredentialProvider) BaseURLFor(name string) (u *url.URL, ok bool) {

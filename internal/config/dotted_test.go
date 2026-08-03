@@ -322,6 +322,44 @@ func TestGet_WholeOAuthProviderEntry(t *testing.T) {
 	}
 }
 
+// TestSetGetUnset_OAuthProvidersFlowAndAuthorizeParams pins the PR3 (login
+// flow) leaves' dotted-path round trip: oauth_providers.<name>.flow (a plain
+// KindEnum leaf) and oauth_providers.<name>.authorize_params.<key> (the
+// double-wildcard leaf schema.go added for the arbitrary provider-specific
+// parameter map — docs/plans/api-gateway.md §7).
+func TestSetGetUnset_OAuthProvidersFlowAndAuthorizeParams(t *testing.T) {
+	tree := Tree{}
+	if _, err := Set(tree, "oauth_providers.google.flow", []string{"loopback"}); err != nil {
+		t.Fatalf("Set flow: %v", err)
+	}
+	if _, err := Set(tree, "oauth_providers.google.authorize_params.access_type", []string{"offline"}); err != nil {
+		t.Fatalf("Set authorize_params.access_type: %v", err)
+	}
+	if v, err := Get(tree, "oauth_providers.google.flow"); err != nil || v != "loopback" {
+		t.Errorf("Get flow = (%v, %v), want (loopback, nil)", v, err)
+	}
+	if v, err := Get(tree, "oauth_providers.google.authorize_params.access_type"); err != nil || v != "offline" {
+		t.Errorf("Get authorize_params.access_type = (%v, %v), want (offline, nil)", v, err)
+	}
+	if _, err := Unset(tree, "oauth_providers.google.authorize_params.access_type"); err != nil {
+		t.Fatalf("Unset authorize_params.access_type: %v", err)
+	}
+	if _, ok := GetPath(tree, "oauth_providers.google.authorize_params.access_type"); ok {
+		t.Error("authorize_params.access_type still present after unset")
+	}
+	// flow itself must survive the sibling's removal.
+	if v, err := Get(tree, "oauth_providers.google.flow"); err != nil || v != "loopback" {
+		t.Errorf("Get flow after sibling unset = (%v, %v), want (loopback, nil)", v, err)
+	}
+}
+
+func TestSet_OAuthProvidersFlow_UnrecognizedValueRejected(t *testing.T) {
+	tree := Tree{}
+	if _, err := Set(tree, "oauth_providers.google.flow", []string{"telepathy"}); err == nil {
+		t.Fatal("want error for an unrecognized flow enum value, got nil")
+	}
+}
+
 // TestUnset_KindOpaque_Rejected pins MINOR 1 (codex review round 2):
 // gateway.hosts (the only KindOpaque leaf today) is documented as
 // non-settable AND non-unsettable — Set already rejected it via

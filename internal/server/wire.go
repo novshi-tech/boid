@@ -55,6 +55,13 @@ type appRuntime struct {
 	// switch: see api.WorkspaceHomeStore's doc comment for why the engine
 	// handle replaced the old RuntimesDir gate.
 	workspaceHomes api.WorkspaceHomeStore
+	// oauthLogin backs `boid secret oauth login <service>` (docs/plans/
+	// api-gateway.md §7, PR3) — nil exactly when the API gateway's OAuth2
+	// TokenSource itself is unwired (no secretStore configured), the same
+	// "feature's off switch is an absent dependency" convention
+	// workspaceHomes above already follows. mountRoutes only mounts the
+	// route when this is non-nil.
+	oauthLogin api.OAuthLoginService
 }
 
 func buildProjectStore(cfg Config, conn *sql.DB, projectRepo *orchestrator.ProjectRepository) (*orchestrator.ProjectStore, map[string]orchestrator.HostCommandSpec, error) {
@@ -1441,14 +1448,35 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 	// apiGwResolver/gwResolver above already follow — Resolve/Inject then
 	// surface a clear "no OAuth2 TokenSource configured" error for any
 	// oauth2-kind service instead of ever reaching a nil-deref.
+	// oauthTokenSource is kept as its own named variable (rather than only
+	// living inline inside SetOAuth2TokenSource's argument, as PR2 left it)
+	// so runtime.oauthLogin below can share the EXACT SAME instance —
+	// docs/plans/api-gateway.md §7, PR3: a login-obtained grant should be
+	// immediately usable by the very next gateway request through this same
+	// process's memCache/singleflight, not just eventually consistent via
+	// the secret store once something else triggers a fresh refresh.
+	var oauthTokenSource *apigateway.OAuth2TokenSource
 	if secretStore != nil {
 		apiGwWriter := func(namespace, key, value string) error {
 			return secretStore.Set(namespace, key, value)
 		}
-		apiGwCreds.SetOAuth2TokenSource(apigateway.NewOAuth2TokenSource(boidCfg.APIGatewayOAuthProviders(), apiGwResolver, apiGwWriter))
+		oauthTokenSource = apigateway.NewOAuth2TokenSource(boidCfg.APIGatewayOAuthProviders(), apiGwResolver, apiGwWriter)
+		apiGwCreds.SetOAuth2TokenSource(oauthTokenSource)
 	}
 
 	apiGwHandler := apigateway.NewServer(srv.apiGatewayRegistry, apiGwCreds, apiGatewayNotifier{notify: notifySvc}, newAPIGatewayRecorder(taskRepo))
+
+	// `boid secret oauth login <service>` (docs/plans/api-gateway.md §7,
+	// PR3): apiGatewayLoginAdapter (apigateway_login.go) is api.
+	// OAuthLoginHandler's OAuthLoginService, built only when oauthTokenSource
+	// itself was (secretStore configured) — mountRoutes leaves the route
+	// unmounted otherwise, the same "feature's off switch is an absent
+	// dependency, not a nil-checked handler" convention gwCreds/apiGwCreds
+	// above already follow for their own oauth2 wiring.
+	var oauthLoginSvc api.OAuthLoginService
+	if oauthTokenSource != nil {
+		oauthLoginSvc = &apiGatewayLoginAdapter{creds: apiGwCreds, logins: apigateway.NewLoginManager(oauthTokenSource)}
+	}
 
 	// Shared listener (docs/plans/api-gateway.md 論点1: "同居 — path prefix
 	// /j/ と /api/ で分岐"): combinedGatewayHandler dispatches by path
@@ -1610,6 +1638,7 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 		// interface would be non-nil as an interface and turn the feature
 		// silently ON against a client that panics on first use.
 		workspaceHomes: workspaceHomeStore(dockerClient, srv.installID),
+		oauthLogin:     oauthLoginSvc,
 	}, nil
 }
 
@@ -1882,6 +1911,16 @@ func mountRoutes(srv *Server, runtime *appRuntime) error {
 	if srv.secretStore != nil {
 		secretHandler := &api.SecretHandler{Store: srv.secretStore}
 		r.Mount("/api/secrets", secretHandler.Routes())
+	}
+
+	// `boid secret oauth login <service>` (docs/plans/api-gateway.md §7,
+	// PR3) — mounted only when runtime.oauthLogin is wired (buildRuntime's
+	// own "feature's off switch is an absent dependency" note on that
+	// field). A request against /api/oauth/* while this is unmounted 404s
+	// at the router level, same as any other absent route.
+	if runtime.oauthLogin != nil {
+		oauthLoginHandler := &api.OAuthLoginHandler{Service: runtime.oauthLogin}
+		r.Mount("/api/oauth", oauthLoginHandler.Routes())
 	}
 
 	sessionAdapter := &sessionDispatcherAdapter{service: runtime.projectSvc, runner: runtime.runner}

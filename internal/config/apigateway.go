@@ -310,9 +310,10 @@ func (c Config) APIGatewayServices() []apigateway.ServiceConfig {
 // — the OAuth2 token-endpoint identity a services.*.auth.kind: oauth2
 // entry's `provider` field references (docs/plans/api-gateway.md §6/§論点4:
 // "config.yaml の oauth_providers: ブロック。client_secret のみ SecretStore
-// 参照"). PR2 only ever performs a refresh_token grant against
-// TokenEndpoint — an authorization-endpoint field for PR3's login flow is
-// intentionally absent; it will be added alongside that PR.
+// 参照"). PR2 only ever performed a refresh_token grant against
+// TokenEndpoint; PR3 adds Flow/AuthorizationEndpoint/
+// DeviceAuthorizationEndpoint/AuthorizeParams for `boid secret oauth login
+// <service>` (docs/plans/api-gateway.md §7 "初回認証").
 type OAuthProviderConfig struct {
 	// TokenEndpoint is the provider's OAuth2 token endpoint (RFC 6749
 	// §3.2), e.g. https://accounts.secure.freee.co.jp/public_api/token.
@@ -331,12 +332,75 @@ type OAuthProviderConfig struct {
 	// apigateway.OAuth2TokenSource simply omits client_secret from the
 	// token request when this is empty.
 	ClientSecretKey string `yaml:"client_secret_key,omitempty"`
-	// Scopes is reserved for PR3's authorization-URL construction
-	// (docs/plans/api-gateway.md §7 "flow の三段構え"). Parsed and stored
-	// only — PR2's refresh_token grant never sends a scope parameter; see
-	// apigateway.OAuth2TokenSource.callTokenEndpoint's own doc comment for
-	// why.
+	// Scopes is consumed by `boid secret oauth login`'s authorization-URL
+	// construction (loopback/manual) and device-authorization request
+	// (device) — docs/plans/api-gateway.md §7, PR3. Never sent on a plain
+	// refresh; see apigateway.OAuth2TokenSource.callTokenEndpoint's own doc
+	// comment for why.
 	Scopes []string `yaml:"scopes,omitempty"`
+
+	// Flow selects which of the three initial-grant flows (docs/plans/
+	// api-gateway.md §7 "flow の三段構え", PR3) `boid secret oauth login
+	// <service>` uses for this provider: "device" / "loopback" / "manual".
+	// Empty ("") means this provider has no login flow configured — an
+	// operator can still seed refresh_token by hand via `boid secret set`
+	// (PR2's own documented fallback), but `boid secret oauth login` for it
+	// fails with a clear "no flow configured" error rather than guessing.
+	// Deliberately OPTIONAL (not required on every entry): an existing
+	// config.yaml written against PR2 alone — token_endpoint/client_id/
+	// client_secret_key only, refresh_token seeded by hand — must keep
+	// loading without modification once PR3 ships.
+	Flow string `yaml:"flow,omitempty"`
+	// AuthorizationEndpoint is the provider's OAuth2 authorization endpoint
+	// (RFC 6749 §3.1) — required (and only meaningful) when Flow is
+	// "loopback" or "manual".
+	AuthorizationEndpoint string `yaml:"authorization_endpoint,omitempty"`
+	// DeviceAuthorizationEndpoint is the provider's RFC 8628 §3.1 device
+	// authorization endpoint — required (and only meaningful) when Flow is
+	// "device".
+	DeviceAuthorizationEndpoint string `yaml:"device_authorization_endpoint,omitempty"`
+	// AuthorizeParams is a fixed set of extra parameters appended verbatim
+	// to the authorization request (loopback/manual: query parameters;
+	// device: form fields on the device authorization request) — see
+	// apigateway.OAuthProviderConfig.AuthorizeParams' own doc comment for
+	// the motivating example (Google's access_type/prompt). Keys colliding
+	// with a protocol-reserved parameter are rejected below.
+	AuthorizeParams map[string]string `yaml:"authorize_params,omitempty"`
+}
+
+// reservedAuthorizeParamNames is every query/form parameter this package's
+// own login-flow construction (apigateway/login.go's buildAuthorizeURL /
+// postDeviceAuthorizationRequest) sets itself — an operator-supplied
+// authorize_params entry using one of these keys would silently either be
+// overwritten by (loopback/manual: url.Values.Set in buildAuthorizeURL
+// applies AuthorizeParams AFTER the protocol fields, so an operator's
+// value would actually WIN, corrupting the PKCE/state/redirect_uri
+// machinery those functions depend on) or collide unpredictably with the
+// protocol machinery itself, so config-load rejects it outright instead —
+// the same "fail loud with the offending name" posture every other leaf in
+// this file has.
+var reservedAuthorizeParamNames = map[string]bool{
+	"response_type":         true,
+	"client_id":             true,
+	"client_secret":         true,
+	"redirect_uri":          true,
+	"scope":                 true,
+	"state":                 true,
+	"code_challenge":        true,
+	"code_challenge_method": true,
+	"code":                  true,
+	"code_verifier":         true,
+	"grant_type":            true,
+	"device_code":           true,
+}
+
+// validLoginFlows mirrors apigateway.ValidLoginFlows exactly (Flow is a
+// plain string here, an apigateway.LoginFlow there — see that type's own
+// doc comment for why the two must never silently drift apart).
+var validLoginFlows = map[string]bool{
+	string(apigateway.LoginFlowDevice):   true,
+	string(apigateway.LoginFlowLoopback): true,
+	string(apigateway.LoginFlowManual):   true,
 }
 
 // validateOAuthProviderConfig validates one oauth_providers.<name> entry,
@@ -370,6 +434,46 @@ func validateOAuthProviderConfig(name string, pc OAuthProviderConfig) error {
 	if pc.ClientID == "" {
 		return fmt.Errorf("oauth_providers[%q]: missing required \"client_id\" field", name)
 	}
+
+	if pc.Flow != "" {
+		if !validLoginFlows[pc.Flow] {
+			return fmt.Errorf("oauth_providers[%q]: \"flow\": unrecognized %q (want one of device, loopback, manual)", name, pc.Flow)
+		}
+		switch apigateway.LoginFlow(pc.Flow) {
+		case apigateway.LoginFlowDevice:
+			if err := validateOAuthEndpointURL(name, "device_authorization_endpoint", pc.DeviceAuthorizationEndpoint); err != nil {
+				return err
+			}
+		case apigateway.LoginFlowLoopback, apigateway.LoginFlowManual:
+			if err := validateOAuthEndpointURL(name, "authorization_endpoint", pc.AuthorizationEndpoint); err != nil {
+				return err
+			}
+		}
+	}
+	for k := range pc.AuthorizeParams {
+		if reservedAuthorizeParamNames[k] {
+			return fmt.Errorf("oauth_providers[%q]: \"authorize_params\" must not set %q — it is a protocol-reserved parameter this package's login flow already sets itself", name, k)
+		}
+	}
+	return nil
+}
+
+// validateOAuthEndpointURL validates one flow-conditional endpoint field
+// (authorization_endpoint or device_authorization_endpoint), required and
+// https-only for the same reason token_endpoint above is: both are always a
+// daemon-to-real-OAuth2-provider call, never an internal test/staging
+// service.
+func validateOAuthEndpointURL(providerName, field, value string) error {
+	if value == "" {
+		return fmt.Errorf("oauth_providers[%q]: \"flow\" requires %q to be set", providerName, field)
+	}
+	u, err := url.Parse(value)
+	if err != nil || u.Scheme == "" || u.Host == "" {
+		return fmt.Errorf("oauth_providers[%q]: %q must be an absolute URL with a scheme and host (got %q)", providerName, field, value)
+	}
+	if u.Scheme != "https" {
+		return fmt.Errorf("oauth_providers[%q]: %q scheme must be https (got %q)", providerName, field, u.Scheme)
+	}
 	return nil
 }
 
@@ -394,12 +498,23 @@ func (c Config) APIGatewayOAuthProviders() []apigateway.OAuthProviderConfig {
 		if err := validateOAuthProviderConfig(name, pc); err != nil {
 			continue
 		}
+		var authorizeParams map[string]string
+		if len(pc.AuthorizeParams) > 0 {
+			authorizeParams = make(map[string]string, len(pc.AuthorizeParams))
+			for k, v := range pc.AuthorizeParams {
+				authorizeParams[k] = v
+			}
+		}
 		out = append(out, apigateway.OAuthProviderConfig{
-			Name:            name,
-			TokenEndpoint:   pc.TokenEndpoint,
-			ClientID:        pc.ClientID,
-			ClientSecretKey: pc.ClientSecretKey,
-			Scopes:          append([]string(nil), pc.Scopes...),
+			Name:                        name,
+			TokenEndpoint:               pc.TokenEndpoint,
+			ClientID:                    pc.ClientID,
+			ClientSecretKey:             pc.ClientSecretKey,
+			Scopes:                      append([]string(nil), pc.Scopes...),
+			Flow:                        apigateway.LoginFlow(pc.Flow),
+			AuthorizationEndpoint:       pc.AuthorizationEndpoint,
+			DeviceAuthorizationEndpoint: pc.DeviceAuthorizationEndpoint,
+			AuthorizeParams:             authorizeParams,
 		})
 	}
 	return out
