@@ -95,6 +95,23 @@ type oauthAccessTokenCache struct {
 	ExpiresAt   int64  `json:"expires_at"` // Unix seconds
 }
 
+// normalizeNamespace mirrors internal/dispatcher.SecretStore's own private
+// normalizeNamespace exactly (an empty namespace means "default"),
+// duplicated here — not imported — to keep this leaf package free of
+// internal/dispatcher (this package's own established pattern; see
+// token.go's GenerateToken and singleflight.go's own doc comment for the
+// identical rationale). AccessToken is the ONLY call site: see its own doc
+// comment for why applying this exactly once, at that single entry point,
+// is what keeps every downstream key (singleflight, memCache) and every
+// resolver/writer call consistent with what the SecretStore itself treats
+// as the same row.
+func normalizeNamespace(ns string) string {
+	if ns == "" {
+		return "default"
+	}
+	return ns
+}
+
 // OAuthSecretKey returns the secret-store key an OAuth2TokenSource reads or
 // writes for one (provider, field) pair. Exported so an operator's `boid
 // secret set` invocation (docs/plans/api-gateway.md PR2 scope note: "初回
@@ -302,6 +319,24 @@ func (t *OAuth2TokenSource) AccessToken(namespace, provider string) (string, err
 	if t.resolver == nil {
 		return "", fmt.Errorf("apigateway: oauth2 provider %q: no secret resolver configured", provider)
 	}
+
+	// Normalized ONCE, here, at the sole entry point every other method in
+	// this file receives namespace from (codex review round 5, Major
+	// finding): internal/dispatcher.SecretStore.normalizeNamespace treats ""
+	// and "default" as the exact same underlying row, but this package's own
+	// singleflight/memCache keys (namespace+"\x00"+provider) did not apply
+	// that same normalization — so a caller passing "" (Registry.Entry.
+	// Namespace's own documented shape for a workspace-unlinked project) and
+	// a caller passing "default" (an explicit default-workspace-linked
+	// project) were treated as two DIFFERENT keys despite reading/writing
+	// the identical secret-store row, letting both trigger independent
+	// concurrent refreshes against the same refresh_token — precisely the
+	// rotation race the whole singleflight design exists to prevent.
+	// Normalizing here means cachedAccessToken/refreshWithRecheck/refresh/
+	// the singleflight key below, and the resolver/writer calls threaded
+	// through them, all agree with the SecretStore's own notion of which
+	// row they're touching.
+	namespace = normalizeNamespace(namespace)
 
 	if accessToken, expiresAt, margin, ok := t.cachedAccessToken(namespace, provider); ok {
 		if freshEnough(t.now(), expiresAt, margin) {
@@ -586,6 +621,28 @@ type oauthErrorResponse struct {
 	ErrorDescription string `json:"error_description"`
 }
 
+// rfc6749TokenErrorCodes is RFC 6749 §5.2's complete, fixed "error" enum for
+// a token endpoint error response. callTokenEndpoint only ever echoes
+// oerr.Error back to its caller (and, from there, potentially into
+// Server.ServeHTTP's sandbox-facing 502 body — see callTokenEndpoint's own
+// doc comment) when the value is a MEMBER of this exact set (codex review
+// round 5, Major finding): oerr.Error is otherwise an arbitrary,
+// unvalidated string straight from the response body — a non-compliant or
+// compromised token endpoint (an external threat surface even in boid's
+// single-user threat model: the attacker here is the remote OAuth2
+// provider or an on-path party, never another local process) could stuff
+// it with a hostname, PII, or anything else, and round 4's fix (dropping
+// ErrorDescription) alone would not have caught THAT field carrying the
+// same risk.
+var rfc6749TokenErrorCodes = map[string]bool{
+	"invalid_request":        true,
+	"invalid_client":         true,
+	"invalid_grant":          true,
+	"unauthorized_client":    true,
+	"unsupported_grant_type": true,
+	"invalid_scope":          true,
+}
+
 // callTokenEndpoint performs the RFC 6749 §6 refresh_token grant: a POST to
 // cfg.TokenEndpoint with an application/x-www-form-urlencoded body carrying
 // grant_type=refresh_token, refresh_token, client_id, and (when configured)
@@ -661,7 +718,16 @@ func (t *OAuth2TokenSource) callTokenEndpoint(cfg OAuthProviderConfig, refreshTo
 		if jsonErr := json.Unmarshal(body, &oerr); jsonErr == nil && oerr.Error != "" {
 			slog.Warn("apigateway: oauth2 token endpoint returned an error response",
 				"provider", cfg.Name, "status", resp.StatusCode, "error", oerr.Error, "error_description", oerr.ErrorDescription)
-			return oauthTokenResponse{}, fmt.Errorf("token endpoint returned %d: %s", resp.StatusCode, oerr.Error)
+			// Only echo oerr.Error upward when it is a genuine RFC 6749
+			// §5.2 enum member (rfc6749TokenErrorCodes' own doc comment) —
+			// anything else (a non-compliant/compromised endpoint's
+			// arbitrary string) falls through to the same generic message
+			// the "no parseable error body" case gets, exactly as if this
+			// field had been empty.
+			if rfc6749TokenErrorCodes[oerr.Error] {
+				return oauthTokenResponse{}, fmt.Errorf("token endpoint returned %d: %s", resp.StatusCode, oerr.Error)
+			}
+			return oauthTokenResponse{}, fmt.Errorf("token endpoint returned %d", resp.StatusCode)
 		}
 		slog.Warn("apigateway: oauth2 token endpoint returned a non-200 status with no parseable error body",
 			"provider", cfg.Name, "status", resp.StatusCode)

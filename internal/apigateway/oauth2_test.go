@@ -839,6 +839,73 @@ func TestOAuth2TokenSource_SingleflightRecheck_AvoidsRefreshWhenAnotherGoroutine
 	}
 }
 
+// TestOAuth2TokenSource_EmptyAndDefaultNamespace_ShareSingleflightAndMemCache
+// pins the codex review round-5 Major fix: internal/dispatcher.SecretStore
+// treats namespace "" and "default" as the exact same row
+// (normalizeNamespace), so this package's own singleflight/memCache keys
+// must agree — a caller passing "" and a caller passing "default" for the
+// same provider must be coalesced onto ONE refresh, never two independent
+// ones racing against the same refresh_token.
+func TestOAuth2TokenSource_EmptyAndDefaultNamespace_ShareSingleflightAndMemCache(t *testing.T) {
+	store := newMemSecretStore()
+	// Seeded under "default" — the resolver/writer below always normalize
+	// "" to "default" too (mirroring the real SecretStore), so this is the
+	// one row either namespace argument actually reads/writes.
+	store.seed("default", OAuthSecretKey("freee", oauthFieldRefreshToken), "RT-initial")
+	stub := newTokenEndpointStub(t, http.StatusOK, tokenJSON("AT-fresh", "", 3600))
+
+	normalizingResolver := func(namespace, key string) (string, error) {
+		return store.get(normalizeNamespace(namespace), key)
+	}
+	normalizingWriter := func(namespace, key, value string) error {
+		return store.writer()(normalizeNamespace(namespace), key, value)
+	}
+	ts := NewOAuth2TokenSource([]OAuthProviderConfig{{Name: "freee", TokenEndpoint: stub.srv.URL}}, normalizingResolver, normalizingWriter)
+
+	if _, err := ts.AccessToken("", "freee"); err != nil {
+		t.Fatalf("AccessToken(\"\"): %v", err)
+	}
+	if n := stub.callCount(); n != 1 {
+		t.Fatalf("after AccessToken(\"\"): token endpoint called %d times, want 1", n)
+	}
+
+	// A second call under the EXPLICIT "default" namespace must reuse the
+	// same cached token — it is, per SecretStore's own normalization, the
+	// identical row "" just populated.
+	got, err := ts.AccessToken("default", "freee")
+	if err != nil {
+		t.Fatalf("AccessToken(\"default\"): %v", err)
+	}
+	if got != "AT-fresh" {
+		t.Errorf("AccessToken(\"default\") = %q, want %q", got, "AT-fresh")
+	}
+	if n := stub.callCount(); n != 1 {
+		t.Errorf("after AccessToken(\"default\"): token endpoint called %d times, want still 1 (\"\" and \"default\" must share one cache/singleflight key)", n)
+	}
+}
+
+// TestOAuth2TokenSource_TokenEndpointErrorResponse_UnrecognizedCodeNotEchoed
+// pins the codex review round-5 Major fix: an "error" value that is not a
+// genuine RFC 6749 §5.2 enum member (a non-compliant or compromised token
+// endpoint could put anything there — a hostname, PII, ...) must never be
+// echoed into the error AccessToken returns, even though the round-4 fix
+// already stopped echoing error_description.
+func TestOAuth2TokenSource_TokenEndpointErrorResponse_UnrecognizedCodeNotEchoed(t *testing.T) {
+	store := newMemSecretStore()
+	store.seed("ws-a", OAuthSecretKey("freee", oauthFieldRefreshToken), "RT-initial")
+	body, _ := json.Marshal(oauthErrorResponse{Error: "internal-host-leak.example.com: connection details", ErrorDescription: "irrelevant"})
+	stub := newTokenEndpointStub(t, http.StatusBadRequest, string(body))
+	ts := NewOAuth2TokenSource([]OAuthProviderConfig{{Name: "freee", TokenEndpoint: stub.srv.URL}}, store.resolver(), store.writer())
+
+	_, err := ts.AccessToken("ws-a", "freee")
+	if err == nil {
+		t.Fatal("AccessToken: want error, got nil")
+	}
+	if strings.Contains(err.Error(), "internal-host-leak.example.com") {
+		t.Errorf("error %q echoes an unrecognized, unvalidated error code to the caller", err.Error())
+	}
+}
+
 func TestOAuth2TokenSource_NilReceiver_ReturnsError(t *testing.T) {
 	var ts *OAuth2TokenSource
 	if _, err := ts.AccessToken("ws-a", "freee"); err == nil {
