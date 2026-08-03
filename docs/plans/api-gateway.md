@@ -1,6 +1,6 @@
 # 汎用 API gateway (認証注入リバースプロキシ) + OAuth2 対応 計画
 
-ステータス: 設計ドラフト (未着手)
+ステータス: 設計ドラフト (2026-08-03 nose レビュー 1 巡目反映済み、実装未着手)
 作成日: 2026-08-03
 親ドキュメント: [git-gateway-cutover.md](git-gateway-cutover.md) — 本計画は git gateway の認証注入モデルを git 以外の HTTP API へ汎用化する。認証情報一元管理の観点では [host-command-contract.md](host-command-contract.md) の後継でもある。
 
@@ -43,8 +43,10 @@ config 1 ブロック + secret 1 個で済む。
   §初回認証)。
 - **`boid fetch` builtin の拡張 (`boid api <service> <path>`)**: broker 経由なので
   配線は最安だが、boid CLI 経由でしか叩けず curl / SDK / テストコードから
-  透過的に使えない。テスト・運用 API 用途と合わないため主案にしない
-  (gateway 稼働後に薄い糖衣として追加するのは妨げない)。
+  透過的に使えない。そもそも `boid fetch` は sandbox 内で無効化されている
+  WebFetch ツールの代替 (web ページ読み取り、`docs/plans/sandbox-web-access.md`)
+  であり、API 呼び出しとは目的が別物 — 拡張・統合の対象にしない。
+  糖衣 `boid api` 自体も作らない (論点 6 で確定)。
 
 ---
 
@@ -93,9 +95,11 @@ route namespace を切る:
 curl "$BOID_API_BASE/myapp/v1/users"
 ```
 
-- job env に `BOID_API_BASE=http://boid-gateway:<port>/api/<job-token>` を注入する
-  (token 埋め込み方式は git gateway の clone URL と同じ前例)。curl でも SDK でも
-  base URL 差し替えだけで動くことが host command 方式に対する本質的な利点。
+- job への配布形態は `BOID_API_BASE=http://boid-gateway:<port>/api/<job-token>` の
+  env 注入、または `boid job env` 的な sandbox 内 introspection コマンド (論点 2、
+  半確定)。token 埋め込み URL 方式自体は git gateway の clone URL と同じ前例。
+  curl でも SDK でも base URL 差し替えだけで動くことが host command 方式に対する
+  本質的な利点。
 - `boid-gateway` は egress proxy の dotless 許可リスト
   (`internal/sandbox/proxy.go` `isRefusedDotlessTarget`) に既に載っている
   boid インフラ名で、no_proxy 配線も既存のものをそのまま使う。
@@ -231,10 +235,19 @@ CLI リモート接続 ([cli-remote-connection.md](cli-remote-connection.md)) �
 | GitHub | あり | device | 同上 |
 | Google | あり (**scope 制限が厳しい**) | **loopback** | nose 実体験: 必要 scope が device flow で認可不能でハマった |
 | Atlassian (3LO) | なし | loopback | |
-| freee | なし | loopback | ローテーション型 refresh token の代表格 |
+| freee | なし | **manual (OOB)** | **PKCE 非対応・loopback redirect 非対応** (2026-08-03 nose レビュー)。`urn:ietf:wg:oauth:2.0:oob` を redirect URI に登録すると認可後にブラウザへ code を直接表示する仕様のみ。ローテーション型 refresh token の代表格 |
 
-- manual paste は最後の保険: 認可 URL を表示し、ユーザがリダイレクト先 URL
-  (または code) を手で貼り付ける。loopback すら塞がる環境向け。
+- manual paste は最後の保険であると同時に、**freee のような OOB
+  (`urn:ietf:wg:oauth:2.0:oob`) しか持たないプロバイダの正規経路**でもある:
+  認可 URL を表示 → プロバイダが認可後の画面に code を直接表示 → ユーザが
+  CLI に貼り付け → CLI が daemon に転送、以降は loopback 経路と同じ
+  (daemon が code 交換 + 永続化)。redirect が発生しないため state 検証と
+  loopback listener の機構は使わない。
+- **PKCE 非対応プロバイダ (freee) では「daemon が verifier を握るので code
+  単体は無価値」という §役割分担 の防護が成立しない**。代わりに confidential
+  client の client_secret を daemon 側にのみ置くことで同等の性質 (code を
+  見てもデスクトップ側では交換不能) を担保する。公開クライアント + PKCE
+  優先の原則は対応プロバイダに限る。
 - device flow の polling は daemon 側で行う (token endpoint を叩くのは常に
   daemon、の原則に揃える)。CLI は user_code / verification URL の表示のみ
   (`internal/qrterm` で QR 表示も可)。
@@ -251,7 +264,7 @@ CLI リモート接続 ([cli-remote-connection.md](cli-remote-connection.md)) �
 | aws / az / gh | **host command 存続** | 署名系 (SigV4) / 独自認証エコシステム。gateway では原理的に代行不能 |
 | google / atlassian コマンド | **MCP へ退役** | workspace 単位 $HOME 分離によりマルチアカウント認証が MCP で成立するようになった |
 | bitbucket | **API gateway 直叩き** | MCP なし。git gateway が SecretStore に持つ API token は REST でも Basic auth で使える見込み — service エントリ 1 個で済む可能性が高い |
-| freee / board | **API リファレンスのエージェントスキル + gateway** | コマンド実装よりスキルの保守がはるかに軽い。freee は daemon リフレッシャの恩恵を最も受ける |
+| freee / board | **API リファレンスのエージェントスキル + gateway** | コマンド実装よりスキルの保守がはるかに軽い。freee は daemon リフレッシャの恩恵を最も受ける。スキルは boid 非依存の一般スキルとして書き、gateway 情報との統合解釈は実験で確かめる (論点 7) |
 | 自社開発アプリ | **gateway (本計画の主目的)** | config 1 ブロック + secret 1 個で追加完了 |
 
 **MCP 経路の留意点** (退役判断の軸として明記): MCP の認証トークンは workspace
@@ -291,13 +304,16 @@ HOME 内、つまり**サンドボックスから読める場所**に置かれ�
 
 ---
 
-## 論点表 (未決)
+## 論点表
 
-| # | 論点 | 現時点の傾き |
+2026-08-03 nose レビューで 1 / 3 / 4 / 5 / 6 は確定。2 は方向のみ確定、7 は実験項目として追加。
+
+| # | 論点 | 結論 |
 |---|---|---|
-| 1 | listener を git gateway と同居させるか別ポートか | 同居 (path prefix `/j/` と `/api/` で分岐) が配線最小。mTLS listener も流用可 |
-| 2 | service 一覧・使い方をエージェントにどう提示するか | job env (`BOID_API_BASE` + 有効 service 名リスト) + 必要ならスキル化。instruction 側で案内する運用から始める |
-| 3 | audit log / timeline 記録の粒度 | 最低限 method + service + path + status を timeline に。body は記録しない |
-| 4 | OAuth provider 定義 (token endpoint / client_id / scopes) の置き場 | config.yaml の `oauth_providers:` ブロック。client_secret のみ SecretStore 参照 |
-| 5 | 有効化設定の CLI 語彙 | `boid workspace services add/remove/list <ws> <service>` 系。allowed_domains の既存語彙に揃える |
-| 6 | `boid api <service> <path>` 糖衣 builtin を足すか | PR1 稼働後の様子見。curl で足りるなら足さない (外部ライブラリ最小の方針とも整合) |
+| 1 | listener を git gateway と同居させるか別ポートか | **確定: 同居** (path prefix `/j/` と `/api/` で分岐)。mTLS listener も流用 |
+| 2 | service 一覧・使い方 (と `BOID_API_BASE`) をエージェントにどう提示するか | **半確定: `boid job env` 的な job スコープ introspection コマンドの方向** — URL に job token が入る以上コマンドが自然 (nose)。ただし**環境情報が複数のコマンドに分散する懸念**があり、既存 introspection 語彙 (`boid project behaviors` 系) への統合、または env 注入 (`BOID_API_BASE` を job プロセス環境へ、新語彙ゼロ) との併用を実装時に最終化。#7 の実験結果と合わせて決める |
+| 3 | audit log / timeline 記録の粒度 | **確定**: method + service + path + status を timeline に。body は記録しない |
+| 4 | OAuth provider 定義 (token endpoint / client_id / scopes) の置き場 | **確定**: config.yaml の `oauth_providers:` ブロック。client_secret のみ SecretStore 参照 |
+| 5 | 有効化設定の CLI 語彙 | **確定**: `boid workspace services add/remove/list <ws> <service>` 系。allowed_domains の既存語彙に揃える |
+| 6 | `boid api <service> <path>` 糖衣 builtin を足すか | **確定: 作らない**。`boid fetch` は WebFetch 代替 (web 読み取り) で目的が別物、拡張・統合の対象にもしない |
+| 7 | (実験) サービスカタログのスキル統合 | boid 非依存の一般スキル (例: freee API リファレンス) に boid の gateway 情報 (base URL 差し替え + service 名) を追加で渡したとき、エージェントが両者を統合解釈できるかは**やってみないと分からない** (2026-08-03 nose)。PR1 稼働後に実験して #2 と併せて決める。最悪 project ローカルの CLAUDE.md に統合方法を書けば成立する見込み |
