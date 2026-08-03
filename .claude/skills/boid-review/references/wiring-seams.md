@@ -1073,11 +1073,22 @@ workspace back onto the `"default"` secret namespace.
   spec.SecretNamespace, spec.TaskID, readOnly)`.
 - **End B (store)**: `apigateway.Registry.Register`/`RegisterToken`
   (`internal/apigateway/registry.go`) persist the namespace on `Entry.Namespace`.
-- **End C (recover)**: `Server.ServeHTTP` (`internal/apigateway/server.go`) — after
-  `Registry.Authorize` confirms the token, a second `Registry.Lookup(rt.token)` recovers
-  `Entry.Namespace` and stashes it on the request-scoped `routeInfo`, read back by both the
-  fail-fast `credentials.Resolve` pre-check and the `ReverseProxy.Rewrite` hook's
-  `credentials.Inject` call.
+- **End C (recover)**: `Server.ServeHTTP` (`internal/apigateway/server.go`) — a SINGLE
+  `Registry.Lookup(rt.token)` call recovers the whole `Entry` (token validity, `Services`
+  membership, `ReadOnly`, `Namespace`, `TaskID`) in one snapshot, which is stashed on the
+  request-scoped `routeInfo` and read back by both the fail-fast `credentials.Resolve`
+  pre-check and the `ReverseProxy.Rewrite` hook's `credentials.Inject` call. This is
+  deliberately NOT `Registry.Authorize` (whose own internal `Lookup`) followed by a second,
+  independent `Lookup` for the fields `Authorize`'s bool return doesn't expose — that
+  two-call shape was PR1's original code and had a real TOCTOU: `Unregister` (job
+  completion) landing in the window between the two calls handed the second `Lookup` a
+  zero-value `Entry` (`ReadOnly=false`, `Namespace=""`) while `allowed` had already been
+  computed `true` from the first, pre-race call — silently bypassing the read-only gate for
+  a since-completed job's in-flight request AND mis-scoping credential resolution to the
+  `"default"` namespace instead of erroring. Caught in review (codex, round 4) and fixed by
+  collapsing to the single-Lookup shape above; `Registry.Authorize` itself is unchanged and
+  still independently tested (`registry_test.go`) — it is simply no longer `Server.ServeHTTP`'s
+  own call path.
 - **End D (resolve)**: `apigateway.SecretResolver` (`func(namespace, key string) (string,
   error)`, `internal/apigateway/credentials.go`) — the closure built in
   `internal/server/wire.go` (`apiGwResolver`) passes `namespace` straight through to
