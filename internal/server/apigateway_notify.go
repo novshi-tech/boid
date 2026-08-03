@@ -9,6 +9,7 @@ import (
 	"github.com/novshi-tech/boid/internal/apigateway"
 	"github.com/novshi-tech/boid/internal/notify"
 	"github.com/novshi-tech/boid/internal/orchestrator"
+	"github.com/novshi-tech/boid/internal/timeline"
 )
 
 // apiGatewayNotifier adapts internal/notify.Service to
@@ -63,12 +64,6 @@ type apiGatewayActionPayload struct {
 	Status  int    `json:"status"`
 }
 
-// apiGatewayActionType is the orchestrator.Action.Type recorded for every
-// API gateway request — a new, dedicated type (distinct from "progress" or
-// any state-transition type) so timeline.BuildActionLabel renders it as its
-// own row rather than folding into an existing action category.
-const apiGatewayActionType = "api_gateway_request"
-
 // newAPIGatewayRecorder adapts orchestrator.TaskRepository.CreateAction to
 // apigateway.RequestRecorder, so every gateway request past a well-formed-
 // route 404 gets appended to its originating task's action log (and,
@@ -79,9 +74,28 @@ const apiGatewayActionType = "api_gateway_request"
 // like gatewayNotifier's own "never abort serving other requests" posture —
 // since a lost audit-log row is not a reason to fail (or even slow down) the
 // gateway request it describes.
+//
+// FromStatus/ToStatus are both set to the task's CURRENT status (one extra
+// GetTask read per request), mirroring api.TaskAppService.NotifyTask's own
+// progress-mode Action exactly (internal/api/task_notify.go). This is not
+// cosmetic: timeline.Build's per-item group-placement logic reads FromStatus
+// unconditionally for every non-job item to decide which StatusGroup an
+// action belongs in — leaving it at its zero value (as an earlier version of
+// this function did) opens a spurious empty-status group instead of placing
+// the row in the task's actual current group, silently hiding every
+// recorded request from the rendered timeline despite the row existing in
+// the DB (caught by TestNewAPIGatewayRecorder_ActionIsVisibleInTimeline). A
+// GetTask failure (task deleted mid-request, a transient DB error) is
+// logged and the row is skipped entirely, rather than written with an empty
+// status and reintroducing the same visibility gap.
 func newAPIGatewayRecorder(tasks *orchestrator.TaskRepository) apigateway.RequestRecorder {
 	return func(taskID, method, service, path string, status int) {
 		if taskID == "" || tasks == nil {
+			return
+		}
+		task, err := tasks.GetTask(taskID)
+		if err != nil {
+			slog.Warn("api gateway: could not resolve task for timeline recording; skipping", "task_id", taskID, "error", err)
 			return
 		}
 		payload, err := json.Marshal(apiGatewayActionPayload{
@@ -95,9 +109,11 @@ func newAPIGatewayRecorder(tasks *orchestrator.TaskRepository) apigateway.Reques
 			return
 		}
 		action := &orchestrator.Action{
-			TaskID:  taskID,
-			Type:    apiGatewayActionType,
-			Payload: payload,
+			TaskID:     taskID,
+			Type:       timeline.ActionTypeAPIGatewayRequest,
+			FromStatus: task.Status,
+			ToStatus:   task.Status,
+			Payload:    payload,
 		}
 		if err := tasks.CreateAction(action); err != nil {
 			slog.Warn("api gateway: record timeline action failed", "task_id", taskID, "error", err)

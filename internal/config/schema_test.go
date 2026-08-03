@@ -53,6 +53,27 @@ func TestIsForgeEntryPath(t *testing.T) {
 	}
 }
 
+// TestIsServiceEntryPath mirrors TestIsForgeEntryPath for
+// services.<name> (docs/plans/api-gateway.md §2).
+func TestIsServiceEntryPath(t *testing.T) {
+	name, ok := IsServiceEntryPath("services.myapp")
+	if !ok || name != "myapp" {
+		t.Errorf("IsServiceEntryPath(services.myapp) = (%q, %v), want (myapp, true)", name, ok)
+	}
+	if _, ok := IsServiceEntryPath("services.myapp.base_url"); ok {
+		t.Errorf("IsServiceEntryPath(services.myapp.base_url) should be false (leaf, not entry)")
+	}
+	if _, ok := IsServiceEntryPath("services"); ok {
+		t.Errorf("IsServiceEntryPath(services) should be false (no name segment)")
+	}
+	if _, ok := IsServiceEntryPath("sandbox.allowed_domains"); ok {
+		t.Errorf("IsServiceEntryPath(sandbox.allowed_domains) should be false")
+	}
+	if _, ok := IsServiceEntryPath("gateway.forges.github"); ok {
+		t.Errorf("IsServiceEntryPath(gateway.forges.github) should be false")
+	}
+}
+
 // TestSchema_ReloadClassification pins the PR #830 round-4 simplification
 // (nose directive): every leaf that used to be ReloadDynamic
 // (sandbox.allowed_domains, notify.command, web.public_url) is now

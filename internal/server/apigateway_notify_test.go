@@ -7,6 +7,7 @@ import (
 	"github.com/novshi-tech/boid/internal/db"
 	"github.com/novshi-tech/boid/internal/db/migrate"
 	"github.com/novshi-tech/boid/internal/orchestrator"
+	"github.com/novshi-tech/boid/internal/timeline"
 )
 
 // newAPIGatewayNotifyTestDB mirrors newSecretTestDB (api_store_test.go):
@@ -52,8 +53,18 @@ func TestNewAPIGatewayRecorder_RecordsActionWithExpectedPayload(t *testing.T) {
 		t.Fatalf("len(actions) = %d, want 1", len(actions))
 	}
 	a := actions[0]
-	if a.Type != apiGatewayActionType {
-		t.Errorf("action.Type = %q, want %q", a.Type, apiGatewayActionType)
+	if a.Type != timeline.ActionTypeAPIGatewayRequest {
+		t.Errorf("action.Type = %q, want %q", a.Type, timeline.ActionTypeAPIGatewayRequest)
+	}
+	// FromStatus/ToStatus must both be set to the task's current status
+	// (task_notify.go's progress-mode Action precedent) — NOT left at their
+	// zero value — or timeline.Build opens a spurious empty-status group
+	// instead of placing this action in the task's real current group,
+	// silently hiding it from the rendered timeline. See
+	// TestNewAPIGatewayRecorder_ActionIsVisibleInTimeline for the
+	// end-to-end proof.
+	if a.FromStatus != task.Status || a.ToStatus != task.Status {
+		t.Errorf("action.FromStatus/ToStatus = %q/%q, want both %q", a.FromStatus, a.ToStatus, task.Status)
 	}
 	var payload apiGatewayActionPayload
 	if err := json.Unmarshal(a.Payload, &payload); err != nil {
@@ -99,4 +110,79 @@ func TestNewAPIGatewayRecorder_SkipsWhenTaskIDEmpty(t *testing.T) {
 func TestNewAPIGatewayRecorder_NilTaskRepositoryIsNoop(t *testing.T) {
 	recorder := newAPIGatewayRecorder(nil)
 	recorder("some-task-id", "GET", "myapp", "/v1/users", 200)
+}
+
+// TestNewAPIGatewayRecorder_UnknownTaskIDSkipsWithoutPanicking covers a
+// taskID that does not resolve to any row (a stale/forged value; should not
+// happen in production since Registry.Entry.TaskID always comes from a real
+// dispatch, but defensive nonetheless): GetTask fails, and the recorder must
+// skip rather than write an Action with an empty FromStatus/ToStatus (which
+// would silently reintroduce the timeline-visibility gap this file's other
+// tests guard against).
+func TestNewAPIGatewayRecorder_UnknownTaskIDSkipsWithoutPanicking(t *testing.T) {
+	d := newAPIGatewayNotifyTestDB(t)
+	tasks := orchestrator.NewTaskRepository(d.Conn)
+	recorder := newAPIGatewayRecorder(tasks)
+
+	recorder("no-such-task-id", "GET", "myapp", "/v1/users", 200)
+
+	actions, err := tasks.ListActionsByTask("no-such-task-id")
+	if err != nil {
+		t.Fatalf("ListActionsByTask: %v", err)
+	}
+	if len(actions) != 0 {
+		t.Errorf("len(actions) = %d, want 0 (recording should have been skipped)", len(actions))
+	}
+}
+
+// TestNewAPIGatewayRecorder_ActionIsVisibleInTimeline is the end-to-end
+// proof for docs/plans/api-gateway.md §論点3's actual user-visible claim:
+// not merely that a row lands in the actions table (the other tests in this
+// file), but that timeline.Build — the sole function that turns
+// []*orchestrator.Action into what the Web UI's task-detail page renders
+// (internal/api/web.go) — actually includes it. An earlier version of
+// newAPIGatewayRecorder left FromStatus/ToStatus at their zero value, which
+// timeline.Build's per-item group-placement logic (it reads a.FromStatus
+// unconditionally for every non-job item) interpreted as "this action
+// belongs to an empty-string status group" — a group nothing else ever
+// renders into or navigates to. The row existed in the DB and every other
+// test in this file passed, but the feature this PR describes ("recorded to
+// the timeline") was invisible to an actual viewer. This test would have
+// failed against that version and is the regression guard for it.
+func TestNewAPIGatewayRecorder_ActionIsVisibleInTimeline(t *testing.T) {
+	d := newAPIGatewayNotifyTestDB(t)
+	if err := orchestrator.CreateProject(d.Conn, &orchestrator.Project{ID: "proj-1", WorkDir: "/tmp"}); err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	task := &orchestrator.Task{ProjectID: "proj-1", Title: "Task", Behavior: "dev"}
+	if err := orchestrator.CreateTask(d.Conn, task); err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+
+	tasks := orchestrator.NewTaskRepository(d.Conn)
+	recorder := newAPIGatewayRecorder(tasks)
+	recorder(task.ID, "GET", "myapp", "/v1/users", 200)
+
+	actions, err := tasks.ListActionsByTask(task.ID)
+	if err != nil {
+		t.Fatalf("ListActionsByTask: %v", err)
+	}
+
+	groups := timeline.Build(task, actions, nil)
+	var found *timeline.Event
+	for i := range groups {
+		for j := range groups[i].Events {
+			ev := &groups[i].Events[j]
+			if ev.Kind == timeline.KindAction && ev.Action != nil && ev.Action.Type == timeline.ActionTypeAPIGatewayRequest {
+				found = ev
+			}
+		}
+	}
+	if found == nil {
+		t.Fatalf("api gateway request action was not present in any rendered timeline group (groups=%+v)", groups)
+	}
+	wantLabel := "api: GET myapp/v1/users → 200"
+	if found.Label != wantLabel {
+		t.Errorf("timeline label = %q, want %q", found.Label, wantLabel)
+	}
 }

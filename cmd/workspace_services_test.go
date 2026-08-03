@@ -118,6 +118,20 @@ func TestRemoveServiceNames_TrimsWhitespace(t *testing.T) {
 	}
 }
 
+// TestRemoveServiceNames_RetainedEntriesAreNormalized pins a codex review
+// round-2 finding: an earlier version compared trimmed but wrote back the
+// ORIGINAL untrimmed string for every entry it retained, so removing "foo"
+// from [" foo ", " bar "] correctly dropped " foo " but wrote " bar " back
+// unchanged — only the entry a given call happened to touch got
+// normalized. Every retained entry must come out trimmed too.
+func TestRemoveServiceNames_RetainedEntriesAreNormalized(t *testing.T) {
+	got := removeServiceNames([]string{" foo ", " bar "}, []string{"foo"})
+	want := []string{"bar"}
+	if len(got) != len(want) || got[0] != want[0] {
+		t.Errorf("removeServiceNames([\" foo \", \" bar \"], [\"foo\"]) = %v, want %v (retained entry must be trimmed, not left as \" bar \")", got, want)
+	}
+}
+
 func TestRunWorkspaceServices_Add_InvalidSlugRejected(t *testing.T) {
 	if err := runWorkspaceServicesAdd(workspaceServicesAddCmd, []string{"Not A Slug", "myapp"}); err == nil {
 		t.Fatal("want error for invalid slug, got nil")

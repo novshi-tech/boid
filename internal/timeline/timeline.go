@@ -89,15 +89,41 @@ func IsProgressAction(a *orchestrator.Action) bool {
 	return a.Type == "progress"
 }
 
+// ActionTypeAPIGatewayRequest is the orchestrator.Action.Type recorded for
+// one API gateway request (docs/plans/api-gateway.md §論点3: "確定: method +
+// service + path + status を timeline に。body は記録しない"). Exported so
+// internal/server's apigateway.RequestRecorder adapter
+// (apigateway_notify.go) can tag every Action it writes with this exact
+// value — a single source of truth shared by the writer (internal/server)
+// and the two readers here (IsAPIGatewayRequestAction/BuildActionLabel),
+// rather than two packages each hard-coding the same magic string and
+// risking drift.
+const ActionTypeAPIGatewayRequest = "api_gateway_request"
+
+// IsAPIGatewayRequestAction reports whether an action records one API
+// gateway request. Like IsProgressAction, this is a non-transitioning
+// action kind: Build's caller (internal/server's recorder) sets
+// FromStatus == ToStatus == the task's status at record time, exactly the
+// way NotifyTask's progress-mode branch does, so the action lands inside
+// the CURRENT status group rather than opening a spurious empty-status one
+// (see Build's own per-item group-placement logic just below).
+func IsAPIGatewayRequestAction(a *orchestrator.Action) bool {
+	return a.Type == ActionTypeAPIGatewayRequest
+}
+
 // BuildActionLabel returns the display label for a timeline action.
 // State transitions: "<type> → <to_status>".
 // Progress actions: "進捗: <message>" (extracted from JSON payload).
+// API gateway request actions: "api: <method> <service><path> → <status>".
 func BuildActionLabel(a *orchestrator.Action) string {
 	if IsStateTransition(a) {
 		return a.Type + " → " + string(a.ToStatus)
 	}
 	if IsProgressAction(a) {
 		return buildProgressLabel(a)
+	}
+	if IsAPIGatewayRequestAction(a) {
+		return buildAPIGatewayRequestLabel(a)
 	}
 	return a.Type
 }
@@ -113,6 +139,26 @@ func buildProgressLabel(a *orchestrator.Action) string {
 		}
 	}
 	return "進捗"
+}
+
+// buildAPIGatewayRequestLabel extracts method/service/path/status from an
+// API gateway request Action's JSON payload (the shape
+// internal/server.apiGatewayActionPayload marshals). A payload that fails to
+// decode (should not happen — the writer controls this shape) falls back to
+// a generic label rather than panicking or rendering nothing.
+func buildAPIGatewayRequestLabel(a *orchestrator.Action) string {
+	if len(a.Payload) > 0 {
+		var p struct {
+			Method  string `json:"method"`
+			Service string `json:"service"`
+			Path    string `json:"path"`
+			Status  int    `json:"status"`
+		}
+		if err := json.Unmarshal(a.Payload, &p); err == nil && p.Method != "" {
+			return fmt.Sprintf("api: %s %s%s → %d", p.Method, p.Service, p.Path, p.Status)
+		}
+	}
+	return "api: request"
 }
 
 // BuildJobLabel returns the display label for a job.
@@ -216,7 +262,7 @@ func Build(task *orchestrator.Task, actions []*orchestrator.Action, jobs []*JobI
 
 	var items []rawItem
 	for _, a := range actions {
-		if !IsStateTransition(a) && !IsProgressAction(a) {
+		if !IsStateTransition(a) && !IsProgressAction(a) && !IsAPIGatewayRequestAction(a) {
 			continue
 		}
 		items = append(items, rawItem{t: a.CreatedAt, hasTime: !a.CreatedAt.IsZero(), action: a})

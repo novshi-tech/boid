@@ -126,6 +126,14 @@ func TestParsePath_TraversalCannotEscapeServiceRoot(t *testing.T) {
 		// escape the root, but there is no legitimate reason a caller needs
 		// it, and treating it identically to ".." keeps the guard simple).
 		"/api/tok123/myapp/./secret",
+		// codex review round 2 finding: "%2e%2e%2fadmin" has no LITERAL "/"
+		// in it, so the outer split (on literal "/") treats it as one raw
+		// segment — but it decodes to "../admin", which itself contains a
+		// "/" and hides a ".." sub-segment. Some upstreams decode "%2F"
+		// themselves before routing, so forwarding this intact could still
+		// resolve to a real traversal on the upstream side.
+		"/api/tok123/myapp/%2e%2e%2fadmin",
+		"/api/tok123/myapp/v1/%2e%2e%2f%2e%2e%2fadmin",
 	}
 	for _, p := range cases {
 		t.Run(p, func(t *testing.T) {

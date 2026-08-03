@@ -140,7 +140,13 @@ func addServiceNames(current, names []string) []string {
 // removeServiceNames returns current with every entry in names dropped,
 // preserving the relative order of what remains. Both current's own entries
 // and names are whitespace-trimmed before comparison — see addServiceNames'
-// own doc comment for why.
+// own doc comment for why. A retained entry is written back TRIMMED too
+// (codex review round 2 finding: an earlier version compared trimmed but
+// appended the original, untrimmed `s` — so removing "foo" from
+// [" foo ", " bar "] correctly dropped " foo " but wrote back " bar "
+// unchanged instead of finishing the normalize-on-storage this whole fix is
+// for; every value this command writes should end up trimmed, not just the
+// one entry a given call happens to touch).
 func removeServiceNames(current, names []string) []string {
 	remove := make(map[string]bool, len(names))
 	for _, s := range names {
@@ -148,9 +154,11 @@ func removeServiceNames(current, names []string) []string {
 	}
 	out := make([]string, 0, len(current))
 	for _, s := range current {
-		if !remove[strings.TrimSpace(s)] {
-			out = append(out, s)
+		trimmed := strings.TrimSpace(s)
+		if trimmed == "" || remove[trimmed] {
+			continue
 		}
+		out = append(out, trimmed)
 	}
 	return out
 }

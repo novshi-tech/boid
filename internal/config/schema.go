@@ -240,3 +240,27 @@ func IsForgeEntryPath(path string) (id string, ok bool) {
 	}
 	return segs[2], true
 }
+
+// IsServiceEntryPath reports whether path names a whole services.<name>
+// entry (exactly "services.<name>", no further segment) — the API
+// gateway's counterpart to IsForgeEntryPath above, given the identical
+// "removing a map entry removes the whole entry" treatment `boid config
+// unset` gives gateway.forges.<id> (docs/plans/volume-only-daemon.md
+// §論点 f). Without this, "boid config unset services.myapp" fell through
+// to the ordinary ResolveField path — which correctly reports it as not a
+// Set/Get leaf (schema_test.go's own `{"services.myapp", false}` case,
+// annotated "same as gateway.forges.github") — but Unset had no matching
+// special case to actually act on that "same as" comment, so the whole-
+// entry removal gateway.forges.<id> gets was silently absent for
+// services.<name> despite the parity the test comment implied. name is
+// returned when ok is true.
+func IsServiceEntryPath(path string) (name string, ok bool) {
+	segs := segments(path)
+	if len(segs) != 2 || segs[0] != "services" {
+		return "", false
+	}
+	if segs[1] == "" {
+		return "", false
+	}
+	return segs[1], true
+}

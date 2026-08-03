@@ -97,22 +97,44 @@ func parsePath(reqPath string) (route, error) {
 }
 
 // checkForTraversal rejects tail outright if any "/"-delimited segment
-// decodes (via url.PathUnescape) to ".." or ".". tail is expected to
-// already be absolute (leading "/"). Unlike gitgateway's sibling guard,
-// this does NOT attempt to resolve/clean the path (path.Clean-style
-// collapsing of ".."/"." — see route.path's own doc comment for why that
-// would itself change what gets forwarded); it only ever accepts a tail
-// unchanged or rejects it outright, so a legitimate path is always
-// byte-identical on the way out. A malformed percent-encoding in any
-// segment is rejected the same way, rather than silently passed through.
+// decodes (via url.PathUnescape) to ".." or ".", INCLUDING when that ".."
+// or "." only appears after decoding an ENCODED slash ("%2f"/"%2F") inside
+// what checkForTraversal itself treats as a single raw segment — e.g. the
+// raw segment "%2e%2e%2fadmin" (no literal "/" in it, so it is one segment
+// by the outer split) decodes to "../admin", which itself contains a "/"
+// and must be split and checked again (codex review round 2 finding: a
+// naive whole-segment `decoded == ".."` equality check does not catch this,
+// since the fully-decoded string is "../admin", not "..").
+//
+// This is why the check below re-splits DECODED content and inspects every
+// resulting sub-segment, not just the outer (still largely raw) one: some
+// upstreams DO decode "%2F" themselves before routing (reverse proxies,
+// web frameworks, CDNs), so a request this gateway forwards with an intact
+// "%2e%2e%2fadmin" segment (never treated as a separator on THIS side,
+// which is what makes the earlier "%2F must be preserved as one segment"
+// feature correct) could still resolve to a genuine ".." traversal once
+// the UPSTREAM'S OWN decoding runs on it. Rejecting outright here is what
+// keeps the "cannot escape the service root" guarantee airtight for both
+// interpretations at once.
+//
+// tail is expected to already be absolute (leading "/"). Unlike gitgateway's
+// sibling guard, this does NOT attempt to resolve/clean the path
+// (path.Clean-style collapsing of ".."/"." — see route.path's own doc
+// comment for why that would itself change what gets forwarded); it only
+// ever accepts a tail unchanged or rejects it outright, so a legitimate
+// path is always byte-identical on the way out. A malformed
+// percent-encoding in any segment is rejected the same way, rather than
+// silently passed through.
 func checkForTraversal(tail string) error {
 	for _, seg := range strings.Split(tail, "/") {
 		decoded, err := url.PathUnescape(seg)
 		if err != nil {
 			return fmt.Errorf("malformed percent-encoding in path segment %q", seg)
 		}
-		if decoded == ".." || decoded == "." {
-			return fmt.Errorf("path segment %q attempts to escape the service root", seg)
+		for _, subSeg := range strings.Split(decoded, "/") {
+			if subSeg == ".." || subSeg == "." {
+				return fmt.Errorf("path segment %q (decodes to %q) attempts to escape the service root", seg, decoded)
+			}
 		}
 	}
 	return nil

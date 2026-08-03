@@ -39,6 +39,7 @@ boid config set gateway.forges.github-enterprise.host git.example.com  # map は
 
 boid config unset web.public_url                 # キー削除（存在しない場合エラー）
 boid config unset gateway.forges.github          # forge エントリ丸ごと削除
+boid config unset services.myapp                 # service エントリ丸ごと削除 (同じ扱い)
 
 boid config apply -f config.yaml                 # ファイルから全体 apply（デフォルトは If-Match 必須）
 boid config apply -f config.yaml --force         # 現在の revision チェックをスキップして上書き

@@ -80,6 +80,22 @@ func validateServiceConfig(name string, sc ServiceConfig) error {
 	if err != nil || u.Scheme == "" || u.Host == "" {
 		return fmt.Errorf("services[%q]: \"base_url\" must be an absolute URL with a scheme and host (got %q)", name, sc.BaseURL)
 	}
+	// A query string or fragment on base_url is rejected outright (codex
+	// review round 2 finding), rather than silently ignored: apigateway.
+	// Server always forwards the INBOUND request's own RawQuery verbatim
+	// (docs/plans/api-gateway.md §5 — the sandbox's own query string must
+	// reach the upstream unchanged) and never merges it with anything from
+	// base_url, and a URL fragment is never sent to an HTTP server at all
+	// (RFC 3986 §3.5 — it is a client-side-only construct). An operator
+	// writing `base_url: https://host/api?tenant=x` expecting "?tenant=x"
+	// to always be appended would otherwise see it silently vanish on
+	// every single request with no indication why — failing the config
+	// load instead directs them to the one place that DOES support a
+	// fixed, always-injected value: the query AuthKind (a fixed query
+	// parameter set from the secret store, not encoded into base_url).
+	if u.RawQuery != "" || u.Fragment != "" {
+		return fmt.Errorf("services[%q]: \"base_url\" must not include a query string or fragment (got %q) — the sandbox's own query string is always forwarded as-is; use auth.kind: query for a fixed, injected query parameter instead", name, sc.BaseURL)
+	}
 	// docs/plans/api-gateway.md §1 states the gateway's own outbound leg as
 	// "gateway → upstream は daemon 発の HTTPS" — a plain-http base_url means
 	// this service's injected bearer/basic/header/query credential crosses

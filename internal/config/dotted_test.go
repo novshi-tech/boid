@@ -203,6 +203,73 @@ func TestUnset_WholeForgeEntry_NotFound(t *testing.T) {
 	}
 }
 
+// TestUnset_WholeServiceEntry mirrors TestUnset_WholeForgeEntry for
+// services.<name> (docs/plans/api-gateway.md §2, IsServiceEntryPath): a
+// whole service entry removes the entire map entry, not just one leaf under
+// it — the same "same as gateway.forges.github" parity
+// schema_test.go's `{"services.myapp", false}` case comment claims for
+// ResolveField, actually exercised here for Unset.
+func TestUnset_WholeServiceEntry(t *testing.T) {
+	tree := Tree{}
+	if _, err := Set(tree, "services.myapp.base_url", []string{"https://myapp.example.com"}); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	if _, err := Set(tree, "services.myapp.auth.kind", []string{"bearer"}); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	if _, err := Set(tree, "services.myapp.auth.secret_key", []string{"myapp-token"}); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	reload, err := Unset(tree, "services.myapp")
+	if err != nil {
+		t.Fatalf("Unset whole entry: %v", err)
+	}
+	if reload != ReloadRestartRequired {
+		t.Errorf("reload = %v, want ReloadRestartRequired", reload)
+	}
+	if _, ok := GetPath(tree, "services.myapp"); ok {
+		t.Error("whole service entry still present after unset")
+	}
+	if _, ok := GetPath(tree, "services.myapp.base_url"); ok {
+		t.Error("service entry field still present after whole-entry unset")
+	}
+	// The services map itself should also be pruned once its last entry is
+	// gone — deletePathRaw's own "prune now-empty intermediate maps" rule
+	// (dotted.go doc comment), the same behavior gateway.forges gets.
+	if _, ok := GetPath(tree, "services"); ok {
+		t.Error("services map itself should be pruned once empty")
+	}
+}
+
+func TestUnset_WholeServiceEntry_NotFound(t *testing.T) {
+	tree := Tree{}
+	if _, err := Unset(tree, "services.nonexistent"); err == nil {
+		t.Fatal("expected error: key not found")
+	}
+}
+
+// TestGet_WholeServiceEntry mirrors Get's whole-forge-entry support
+// (dotted.go's Get already special-cases IsForgeEntryPath so `boid config
+// get gateway.forges.github` works despite that path not being a
+// ResolveField leaf) for services.<name>.
+func TestGet_WholeServiceEntry(t *testing.T) {
+	tree := Tree{}
+	if _, err := Set(tree, "services.myapp.base_url", []string{"https://myapp.example.com"}); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	v, err := Get(tree, "services.myapp")
+	if err != nil {
+		t.Fatalf("Get whole entry: %v", err)
+	}
+	m, ok := v.(Tree)
+	if !ok {
+		t.Fatalf("Get whole entry: got %T, want Tree", v)
+	}
+	if m["base_url"] != "https://myapp.example.com" {
+		t.Errorf("base_url = %v, want https://myapp.example.com", m["base_url"])
+	}
+}
+
 // TestUnset_KindOpaque_Rejected pins MINOR 1 (codex review round 2):
 // gateway.hosts (the only KindOpaque leaf today) is documented as
 // non-settable AND non-unsettable — Set already rejected it via

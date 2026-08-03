@@ -114,6 +114,26 @@ services:
 	}
 }
 
+// TestLoadFromPath_Services_BaseURLWithQueryOrFragmentRejected pins a codex
+// review round-2 finding: apigateway.Server always forwards the inbound
+// request's own RawQuery, never merging in anything from base_url, so a
+// base_url with a query string (or fragment, which HTTP never sends at
+// all) would have silently vanished on every request with no indication
+// why. Reject it outright at config-load time instead.
+func TestLoadFromPath_Services_BaseURLWithQueryOrFragmentRejected(t *testing.T) {
+	cases := []string{
+		"https://myapp.example.com/api?tenant=x",
+		"https://myapp.example.com/api#section",
+	}
+	for _, baseURL := range cases {
+		content := "services:\n  myapp:\n    base_url: " + baseURL + "\n    auth: { kind: bearer, secret_key: k }\n"
+		err := writeAndLoad(t, filepath.Join(t.TempDir(), "config.yaml"), content)
+		if err == nil {
+			t.Errorf("base_url %q: want error for query string/fragment, got nil", baseURL)
+		}
+	}
+}
+
 func TestLoadFromPath_Services_BaseURLWithoutSchemeRejected(t *testing.T) {
 	content := `
 services:
