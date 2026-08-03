@@ -577,6 +577,147 @@ func TestOAuth2TokenSource_TokenEndpointRedirect_Refused(t *testing.T) {
 	}
 }
 
+// TestOAuth2TokenSource_ShortLivedToken_ConsideredFreshImmediatelyAfterRefresh
+// pins the codex review round-2 Major fix: a provider whose access token
+// lifetime (expires_in) is shorter than (or comparable to) RefreshMargin
+// must still be considered fresh immediately after being obtained — not
+// judged "already needs refresh" the instant it's minted, which would
+// otherwise force every single AccessToken call (including the very next
+// one, e.g. Inject's call right after Resolve triggered this refresh) to
+// refresh again.
+func TestOAuth2TokenSource_ShortLivedToken_ConsideredFreshImmediatelyAfterRefresh(t *testing.T) {
+	store := newMemSecretStore()
+	store.seed("ws-a", OAuthSecretKey("freee", oauthFieldRefreshToken), "RT-initial")
+	const expiresInSeconds = 60 // shorter than DefaultOAuth2RefreshMargin (5m)
+	stub := newTokenEndpointStub(t, http.StatusOK, tokenJSON("AT-short-lived", "", expiresInSeconds))
+	ref := time.Now()
+	ts := NewOAuth2TokenSource([]OAuthProviderConfig{{Name: "freee", TokenEndpoint: stub.srv.URL}}, store.resolver(), store.writer())
+	ts.Now = func() time.Time { return ref }
+
+	got1, err := ts.AccessToken("ws-a", "freee")
+	if err != nil {
+		t.Fatalf("first AccessToken: %v", err)
+	}
+	if got1 != "AT-short-lived" {
+		t.Fatalf("first AccessToken = %q, want %q", got1, "AT-short-lived")
+	}
+	if n := stub.callCount(); n != 1 {
+		t.Fatalf("after first call: token endpoint called %d times, want 1", n)
+	}
+
+	// Immediately after (same instant — ts.Now is frozen at ref): a
+	// secret-store-only cache (margin unclamped) would already consider
+	// this token "within the 5-minute margin of expiring" (since it only
+	// lives 60s total) and refresh again. The effective (clamped) margin
+	// computed at refresh time must prevent that.
+	got2, err := ts.AccessToken("ws-a", "freee")
+	if err != nil {
+		t.Fatalf("second AccessToken: %v", err)
+	}
+	if got2 != "AT-short-lived" {
+		t.Errorf("second AccessToken = %q, want %q (must reuse the just-obtained token)", got2, "AT-short-lived")
+	}
+	if n := stub.callCount(); n != 1 {
+		t.Errorf("after second call: token endpoint called %d times, want still 1 (short-lived token must not trigger an immediate re-refresh)", n)
+	}
+
+	// Once genuinely close to ITS OWN expiry (not the original 5-minute
+	// margin), it must still refresh — proving this isn't just "never
+	// refresh a short-lived token again".
+	ts.Now = func() time.Time { return ref.Add(55 * time.Second) } // 5s remaining
+	if _, err := ts.AccessToken("ws-a", "freee"); err != nil {
+		t.Fatalf("third AccessToken: %v", err)
+	}
+	if n := stub.callCount(); n != 2 {
+		t.Errorf("after third call (near actual expiry): token endpoint called %d times, want 2", n)
+	}
+}
+
+// TestOAuth2TokenSource_NormalLifetimeToken_MarginUnaffectedByShortLivedClamp
+// pins that the clamp added for short-lived tokens is a no-op for a normal
+// (long-lived) provider — the regression
+// TestOAuth2TokenSource_WithinMargin_Refreshes already covers this for a
+// secret-store-only (unclamped) cache read; this test covers the SAME
+// invariant for a token that went through a real refresh (memCache path,
+// where the clamp computation actually runs).
+func TestOAuth2TokenSource_NormalLifetimeToken_MarginUnaffectedByShortLivedClamp(t *testing.T) {
+	store := newMemSecretStore()
+	store.seed("ws-a", OAuthSecretKey("freee", oauthFieldRefreshToken), "RT-initial")
+	stub := newTokenEndpointStub(t, http.StatusOK, tokenJSON("AT1", "", 3600)) // 1h, comfortably above the 5m margin
+	ref := time.Now()
+	ts := NewOAuth2TokenSource([]OAuthProviderConfig{{Name: "freee", TokenEndpoint: stub.srv.URL}}, store.resolver(), store.writer())
+	ts.Now = func() time.Time { return ref }
+
+	if _, err := ts.AccessToken("ws-a", "freee"); err != nil {
+		t.Fatalf("first AccessToken: %v", err)
+	}
+
+	// 10 minutes remaining (outside the 5-minute margin) — must still be
+	// considered fresh.
+	ts.Now = func() time.Time { return ref.Add(50 * time.Minute) }
+	if _, err := ts.AccessToken("ws-a", "freee"); err != nil {
+		t.Fatalf("second AccessToken: %v", err)
+	}
+	if n := stub.callCount(); n != 1 {
+		t.Errorf("with 10m remaining (outside margin): token endpoint called %d times, want still 1", n)
+	}
+
+	// 2 minutes remaining (inside the 5-minute margin) — must refresh, same
+	// as the plain (unclamped) case: expiresIn(3600s)/2 = 1800s, comfortably
+	// larger than the 5-minute margin, so the clamp never engages here.
+	ts.Now = func() time.Time { return ref.Add(58 * time.Minute) }
+	if _, err := ts.AccessToken("ws-a", "freee"); err != nil {
+		t.Fatalf("third AccessToken: %v", err)
+	}
+	if n := stub.callCount(); n != 2 {
+		t.Errorf("with 2m remaining (inside margin): token endpoint called %d times, want 2 (must still refresh)", n)
+	}
+}
+
+// TestOAuth2TokenSource_SingleflightRecheck_AvoidsRefreshWhenAnotherGoroutineAlreadyRefreshed
+// pins the codex review round-2 Major fix directly at the singleflight
+// boundary: a goroutine that decides "needs refresh" from a stale read, then
+// enters t.sf.Do AFTER a different goroutine's refresh for the same key has
+// ALREADY completed and released the singleflight slot (so it does NOT get
+// coalesced — singleflight only coalesces overlapping calls), must still
+// avoid a redundant network round trip by re-checking the (now fresh)
+// cache inside the closure before calling refresh.
+func TestOAuth2TokenSource_SingleflightRecheck_AvoidsRefreshWhenAnotherGoroutineAlreadyRefreshed(t *testing.T) {
+	store := newMemSecretStore()
+	store.seed("ws-a", OAuthSecretKey("freee", oauthFieldRefreshToken), "RT-initial")
+	stub := newTokenEndpointStub(t, http.StatusOK, tokenJSON("AT-fresh", "", 3600))
+	ts := NewOAuth2TokenSource([]OAuthProviderConfig{{Name: "freee", TokenEndpoint: stub.srv.URL}}, store.resolver(), store.writer())
+
+	// Goroutine A's refresh runs to completion (and releases the
+	// singleflight slot) BEFORE we simulate goroutine B's late arrival by
+	// directly invoking Do with the same key — the shape AccessToken itself
+	// would produce for a caller that stalled between its own cache check
+	// and entering t.sf.Do.
+	if _, err := ts.AccessToken("ws-a", "freee"); err != nil {
+		t.Fatalf("goroutine A's AccessToken: %v", err)
+	}
+	if n := stub.callCount(); n != 1 {
+		t.Fatalf("after A: token endpoint called %d times, want 1", n)
+	}
+
+	// refreshWithRecheck is EXACTLY what AccessToken's t.sf.Do closure runs
+	// — calling it directly here (bypassing t.sf.Do itself, whose map entry
+	// for this key is already gone since A's call completed) simulates a
+	// caller that would have "won" a brand-new singleflight slot (since
+	// there is no in-flight call to join) but must still re-check the
+	// cache before actually refreshing.
+	got, err := ts.refreshWithRecheck("ws-a", OAuthProviderConfig{Name: "freee", TokenEndpoint: stub.srv.URL})
+	if err != nil {
+		t.Fatalf("refreshWithRecheck: %v", err)
+	}
+	if got != "AT-fresh" {
+		t.Errorf("refreshWithRecheck = %q, want %q (A's cached token, not a fresh one)", got, "AT-fresh")
+	}
+	if n := stub.callCount(); n != 1 {
+		t.Errorf("token endpoint called %d times, want still 1 (B must reuse A's freshly cached token via the recheck)", n)
+	}
+}
+
 func TestOAuth2TokenSource_NilReceiver_ReturnsError(t *testing.T) {
 	var ts *OAuth2TokenSource
 	if _, err := ts.AccessToken("ws-a", "freee"); err == nil {

@@ -172,10 +172,17 @@ type OAuth2TokenSource struct {
 	memCache map[string]oauthMemCacheEntry
 }
 
-// oauthMemCacheEntry is one OAuth2TokenSource.memCache entry.
+// oauthMemCacheEntry is one OAuth2TokenSource.memCache entry. margin is the
+// EFFECTIVE refresh margin for this specific token, computed once by
+// refresh (at the moment expiresAt itself was computed) rather than
+// re-derived from however much of the token's life happens to remain at
+// whatever later moment cachedAccessToken is called — see refresh's own
+// comment on why it must be computed that way, not derived from decaying
+// "remaining time" at check time.
 type oauthMemCacheEntry struct {
 	accessToken string
 	expiresAt   time.Time
+	margin      time.Duration
 }
 
 // NewOAuth2TokenSource builds an OAuth2TokenSource from the daemon's
@@ -237,7 +244,19 @@ func NewOAuth2TokenSource(providers []OAuthProviderConfig, resolver SecretResolv
 // Concurrent callers for the SAME (namespace, provider) that all decide a
 // refresh is needed are coalesced into a single token-endpoint round trip
 // via t.sf — see refresh's own doc comment for why only one of them actually
-// performs it.
+// performs it. The cache is re-checked a SECOND time once inside t.sf.Do,
+// immediately before calling refresh (codex review round 2, Major finding):
+// a caller can decide "needs refresh" from its OWN cache read, then stall
+// (goroutine scheduling) long enough for a DIFFERENT caller's refresh for
+// the same key to complete and release the singleflight slot entirely —
+// singleflightGroup, like golang.org/x/sync/singleflight, only coalesces
+// calls that overlap in time, never calls arriving strictly after a prior
+// one already finished. Re-checking right before the network call closes
+// that window down to the ordinary, industry-standard residual TOCTOU any
+// check-then-act pattern has (not a new one this package introduces), and
+// in particular avoids the double-refresh-within-one-request shape entirely
+// for the common case: Resolve's own refresh already left a fresh entry in
+// memCache by the time Inject's call reaches this same recheck.
 func (t *OAuth2TokenSource) AccessToken(namespace, provider string) (string, error) {
 	if t == nil {
 		return "", fmt.Errorf("apigateway: no OAuth2 token source configured")
@@ -250,16 +269,31 @@ func (t *OAuth2TokenSource) AccessToken(namespace, provider string) (string, err
 		return "", fmt.Errorf("apigateway: oauth2 provider %q: no secret resolver configured", provider)
 	}
 
-	if accessToken, expiresAt, ok := t.cachedAccessToken(namespace, provider); ok {
-		if t.now().Add(t.margin()).Before(expiresAt) {
+	if accessToken, expiresAt, margin, ok := t.cachedAccessToken(namespace, provider); ok {
+		if freshEnough(t.now(), expiresAt, margin) {
 			return accessToken, nil
 		}
 	}
 
 	key := namespace + "\x00" + provider
 	return t.sf.Do(key, func() (string, error) {
-		return t.refresh(namespace, cfg)
+		return t.refreshWithRecheck(namespace, cfg)
 	})
+}
+
+// refreshWithRecheck is the body of AccessToken's t.sf.Do closure, factored
+// out so it can be exercised directly by a test that simulates "another
+// goroutine's refresh already completed and released the singleflight slot
+// before this call ever entered it" without needing to fabricate a genuine
+// goroutine-scheduling race. Re-checks the cache (see AccessToken's own doc
+// comment for why) and only calls refresh if it's still actually needed.
+func (t *OAuth2TokenSource) refreshWithRecheck(namespace string, cfg OAuthProviderConfig) (string, error) {
+	if accessToken, expiresAt, margin, ok := t.cachedAccessToken(namespace, cfg.Name); ok {
+		if freshEnough(t.now(), expiresAt, margin) {
+			return accessToken, nil
+		}
+	}
+	return t.refresh(namespace, cfg)
 }
 
 func (t *OAuth2TokenSource) now() time.Time {
@@ -276,6 +310,16 @@ func (t *OAuth2TokenSource) margin() time.Duration {
 	return DefaultOAuth2RefreshMargin
 }
 
+// freshEnough reports whether a token expiring at expiresAt should still be
+// treated as valid, given margin (this token's EFFECTIVE refresh margin —
+// see oauthMemCacheEntry.margin's own doc comment for why the caller
+// supplies this per-entry rather than freshEnough always using
+// t.margin() directly). A pure function (no receiver) so it is trivially
+// unit-testable on its own.
+func freshEnough(now, expiresAt time.Time, margin time.Duration) bool {
+	return now.Add(margin).Before(expiresAt)
+}
+
 func (t *OAuth2TokenSource) httpClient() *http.Client {
 	if t.HTTPClient != nil {
 		return t.HTTPClient
@@ -283,36 +327,47 @@ func (t *OAuth2TokenSource) httpClient() *http.Client {
 	return http.DefaultClient
 }
 
-// cachedAccessToken returns a currently-cached access_token/expires_at for
-// (namespace, provider), checking the in-process memCache first (populated
-// by refresh on every successful token-endpoint round trip, regardless of
-// whether the secret-store persist below succeeded — see memCache's own doc
-// comment) and falling back to the secret store (the cross-process-restart
-// source of truth) when memCache has no entry. ok is false whenever neither
-// source has a usable value or expires_at fails to parse as a Unix-seconds
-// integer — both cases mean "treat as expired, refresh now" to AccessToken's
-// caller, never a hard error.
-func (t *OAuth2TokenSource) cachedAccessToken(namespace, provider string) (accessToken string, expiresAt time.Time, ok bool) {
+// cachedAccessToken returns a currently-cached access_token/expires_at (and
+// the margin to check it against — see the returned value's own doc
+// comment below) for (namespace, provider), checking the in-process
+// memCache first (populated by refresh on every successful token-endpoint
+// round trip, regardless of whether the secret-store persist below
+// succeeded — see memCache's own doc comment) and falling back to the
+// secret store (the cross-process-restart source of truth) when memCache
+// has no entry. ok is false whenever neither source has a usable value or
+// expires_at fails to parse as a Unix-seconds integer — both cases mean
+// "treat as expired, refresh now" to AccessToken's caller, never a hard
+// error.
+//
+// margin is t.margin() (the plain configured value) for a value read from
+// the secret store — this fallback path has no way to know the token's
+// original declared lifetime (the secret store only ever persists
+// access_token/expires_at, never expires_in itself), so it cannot apply
+// oauthMemCacheEntry.margin's clamp; this only affects the FIRST check
+// after a daemon restart for a genuinely short-lived-token provider (a
+// narrow, self-correcting gap — see refresh's own doc comment on where the
+// clamped margin actually gets computed and cached going forward).
+func (t *OAuth2TokenSource) cachedAccessToken(namespace, provider string) (accessToken string, expiresAt time.Time, margin time.Duration, ok bool) {
 	t.memMu.Lock()
 	entry, found := t.memCache[namespace+"\x00"+provider]
 	t.memMu.Unlock()
 	if found {
-		return entry.accessToken, entry.expiresAt, true
+		return entry.accessToken, entry.expiresAt, entry.margin, true
 	}
 
 	accessToken, err := t.resolver(namespace, OAuthSecretKey(provider, oauthFieldAccessToken))
 	if err != nil || accessToken == "" {
-		return "", time.Time{}, false
+		return "", time.Time{}, 0, false
 	}
 	expiresAtStr, err := t.resolver(namespace, OAuthSecretKey(provider, oauthFieldExpiresAt))
 	if err != nil {
-		return "", time.Time{}, false
+		return "", time.Time{}, 0, false
 	}
 	unixSeconds, err := strconv.ParseInt(strings.TrimSpace(expiresAtStr), 10, 64)
 	if err != nil {
-		return "", time.Time{}, false
+		return "", time.Time{}, 0, false
 	}
-	return accessToken, time.Unix(unixSeconds, 0), true
+	return accessToken, time.Unix(unixSeconds, 0), t.margin(), true
 }
 
 // refresh performs exactly one refresh_token grant round trip for
@@ -395,6 +450,33 @@ func (t *OAuth2TokenSource) refresh(namespace string, cfg OAuthProviderConfig) (
 	}
 	expiresAt := t.now().Add(expiresIn)
 
+	// effectiveMargin (codex review round 2, Major finding): t.margin()
+	// clamped to at most half of THIS token's own declared lifetime
+	// (expiresIn), computed exactly once, here, at the moment expiresIn is
+	// known — never re-derived later from however much of that lifetime
+	// happens to remain at some future check (that alternative was tried
+	// and reverted: it broke the ordinary case, since a NORMAL long-lived
+	// token that has simply decayed down near t.margin() would then also
+	// get its margin shrunk, defeating proactive refresh entirely — see
+	// TestOAuth2TokenSource_WithinMargin_Refreshes). Computed once here,
+	// this only ever shrinks the margin for a provider whose access-token
+	// lifetime is itself shorter than (or comparable to) t.margin() (5
+	// minutes by default — none of PR2's targeted providers are actually
+	// this short-lived: freee is ~6h, Google/GitHub/Microsoft ~1h), so a
+	// freshly-obtained such token is immediately usable rather than being
+	// judged "already needs refresh" the instant it's minted — which would
+	// otherwise force every single AccessToken call to refresh again (a
+	// live-lock), and reproduce the same-request double-refresh shape
+	// (Resolve then Inject, docs/plans/api-gateway.md §6) for exactly the
+	// tokens short-lived enough to trigger it. For every normal-lifetime
+	// token, expiresIn/2 is comfortably larger than t.margin(), so this is
+	// a no-op and effectiveMargin == t.margin(), unchanged from before this
+	// fix.
+	effectiveMargin := t.margin()
+	if halfLife := expiresIn / 2; halfLife < effectiveMargin {
+		effectiveMargin = halfLife
+	}
+
 	// memCache is populated UNCONDITIONALLY here — before either
 	// secret-store write below is even attempted, and regardless of whether
 	// they succeed — so a Phase-2 persist failure never forces a same-
@@ -410,7 +492,7 @@ func (t *OAuth2TokenSource) refresh(namespace string, cfg OAuthProviderConfig) (
 	if t.memCache == nil {
 		t.memCache = make(map[string]oauthMemCacheEntry)
 	}
-	t.memCache[namespace+"\x00"+cfg.Name] = oauthMemCacheEntry{accessToken: resp.AccessToken, expiresAt: expiresAt}
+	t.memCache[namespace+"\x00"+cfg.Name] = oauthMemCacheEntry{accessToken: resp.AccessToken, expiresAt: expiresAt, margin: effectiveMargin}
 	t.memMu.Unlock()
 
 	if err := t.writer(namespace, OAuthSecretKey(cfg.Name, oauthFieldAccessToken), resp.AccessToken); err != nil {
