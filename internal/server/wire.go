@@ -1429,6 +1429,25 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 		}
 	}
 	apiGwCreds := apigateway.NewCredentialProvider(boidCfg.APIGatewayServices(), apiGwResolver)
+
+	// OAuth2 TokenSource (docs/plans/api-gateway.md §6, PR2): wired with the
+	// same resolver as apiGwResolver above, plus a writer closure so a
+	// refresh can persist the (possibly rotated) refresh_token/access_token/
+	// expires_at back to the secret store — see
+	// apigateway.OAuth2TokenSource's own doc comment for the load-bearing
+	// persistence-order contract that writer participates in. Left unwired
+	// (apiGwCreds keeps oauth == nil) when secretStore itself is
+	// unconfigured, the same "resolver nil means unconfigured" convention
+	// apiGwResolver/gwResolver above already follow — Resolve/Inject then
+	// surface a clear "no OAuth2 TokenSource configured" error for any
+	// oauth2-kind service instead of ever reaching a nil-deref.
+	if secretStore != nil {
+		apiGwWriter := func(namespace, key, value string) error {
+			return secretStore.Set(namespace, key, value)
+		}
+		apiGwCreds.SetOAuth2TokenSource(apigateway.NewOAuth2TokenSource(boidCfg.APIGatewayOAuthProviders(), apiGwResolver, apiGwWriter))
+	}
+
 	apiGwHandler := apigateway.NewServer(srv.apiGatewayRegistry, apiGwCreds, apiGatewayNotifier{notify: notifySvc}, newAPIGatewayRecorder(taskRepo))
 
 	// Shared listener (docs/plans/api-gateway.md 論点1: "同居 — path prefix

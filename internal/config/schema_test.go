@@ -29,6 +29,12 @@ func TestResolveField_KnownPaths(t *testing.T) {
 		{"services.myapp.auth.secret_key", true},
 		{"services.myapp", false}, // whole entry, not a Set/Get leaf — same as gateway.forges.github
 		{"services_floor", true},
+		// docs/plans/api-gateway.md §6/§論点4, PR2.
+		{"oauth_providers.freee.token_endpoint", true},
+		{"oauth_providers.freee.client_id", true},
+		{"oauth_providers.freee.client_secret_key", true},
+		{"oauth_providers.freee.scopes", true},
+		{"oauth_providers.freee", false}, // whole entry, not a Set/Get leaf — same as services.myapp
 	}
 	for _, tc := range cases {
 		_, ok := ResolveField(tc.path)
@@ -75,6 +81,27 @@ func TestIsServiceEntryPath(t *testing.T) {
 	}
 }
 
+// TestIsOAuthProviderEntryPath mirrors TestIsServiceEntryPath for
+// oauth_providers.<name> (docs/plans/api-gateway.md §6/§論点4, PR2).
+func TestIsOAuthProviderEntryPath(t *testing.T) {
+	name, ok := IsOAuthProviderEntryPath("oauth_providers.freee")
+	if !ok || name != "freee" {
+		t.Errorf("IsOAuthProviderEntryPath(oauth_providers.freee) = (%q, %v), want (freee, true)", name, ok)
+	}
+	if _, ok := IsOAuthProviderEntryPath("oauth_providers.freee.token_endpoint"); ok {
+		t.Errorf("IsOAuthProviderEntryPath(oauth_providers.freee.token_endpoint) should be false (leaf, not entry)")
+	}
+	if _, ok := IsOAuthProviderEntryPath("oauth_providers"); ok {
+		t.Errorf("IsOAuthProviderEntryPath(oauth_providers) should be false (no name segment)")
+	}
+	if _, ok := IsOAuthProviderEntryPath("sandbox.allowed_domains"); ok {
+		t.Errorf("IsOAuthProviderEntryPath(sandbox.allowed_domains) should be false")
+	}
+	if _, ok := IsOAuthProviderEntryPath("services.myapp"); ok {
+		t.Errorf("IsOAuthProviderEntryPath(services.myapp) should be false")
+	}
+}
+
 // TestSchema_ReloadClassification pins the PR #830 round-4 simplification
 // (nose directive): every leaf that used to be ReloadDynamic
 // (sandbox.allowed_domains, notify.command, web.public_url) is now
@@ -82,17 +109,18 @@ func TestIsServiceEntryPath(t *testing.T) {
 // doc comment for why. No Schema leaf is ReloadDynamic today.
 func TestSchema_ReloadClassification(t *testing.T) {
 	restartRequired := map[string]bool{
-		"sandbox.allowed_domains":          true,
-		"notify.command":                   true,
-		"web.public_url":                   true,
-		"gateway.forges.github.host":       true,
-		"gateway.forges.github.forge":      true,
-		"gateway.forges.github.secret_key": true,
-		"gc.enabled":                       true,
-		"web.http_addr":                    true,
-		"log.level":                        true,
-		"services.myapp.base_url":          true,
-		"services_floor":                   true,
+		"sandbox.allowed_domains":              true,
+		"notify.command":                       true,
+		"web.public_url":                       true,
+		"gateway.forges.github.host":           true,
+		"gateway.forges.github.forge":          true,
+		"gateway.forges.github.secret_key":     true,
+		"gc.enabled":                           true,
+		"web.http_addr":                        true,
+		"log.level":                            true,
+		"services.myapp.base_url":              true,
+		"services_floor":                       true,
+		"oauth_providers.freee.token_endpoint": true,
 	}
 	for path := range restartRequired {
 		spec, ok := ResolveField(path)

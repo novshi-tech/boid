@@ -10,8 +10,9 @@ import (
 // AuthKind selects how the gateway injects credentials into a proxied
 // request. docs/plans/api-gateway.md §4 ("credential 注入: CredentialProvider
 // → TokenSource 一般化"): bearer/basic/header/query are static SecretStore
-// wrappers implemented in this PR; oauth2 is reserved (config schema only —
-// PR2 wires the actual TokenSource, docs/plans/api-gateway.md PR 分割案 PR2).
+// wrappers implemented in PR1; oauth2 (PR2) resolves its access token
+// through an OAuth2AccessTokenSource (oauth2.go) instead of the static
+// resolver — see CredentialProvider.SetOAuth2TokenSource.
 type AuthKind string
 
 const (
@@ -19,13 +20,16 @@ const (
 	AuthBasic  AuthKind = "basic"
 	AuthHeader AuthKind = "header"
 	AuthQuery  AuthKind = "query"
-	// AuthOAuth2 is parsed and validated (config schema reservation only —
-	// docs/plans/api-gateway.md PR1 scope note: "oauth2 kindはPR2で足すので
-	// 今回はconfig schemaにoauth2を予約する程度でよい"). Resolve/Inject both
-	// return a clear "not implemented yet" error for it rather than
-	// panicking or silently no-op'ing, so a service misconfigured with
-	// kind: oauth2 today fails a request with a 502 (see Server.ServeHTTP),
-	// not a build/startup error and not a silent bypass.
+	// AuthOAuth2 injects `Authorization: Bearer <access_token>`, where
+	// access_token is supplied by the CredentialProvider's
+	// OAuth2AccessTokenSource (docs/plans/api-gateway.md §6/PR2). A
+	// CredentialProvider constructed without SetOAuth2TokenSource ever
+	// being called (every call site before PR2, and any test that doesn't
+	// opt in) has no TokenSource wired, and Resolve/Inject both return a
+	// clear "no OAuth2 TokenSource configured" error for it rather than
+	// panicking or silently no-op'ing — a service misconfigured with kind:
+	// oauth2 in that state fails a request with a 502 (see
+	// Server.ServeHTTP), not a build/startup error and not a silent bypass.
 	AuthOAuth2 AuthKind = "oauth2"
 )
 
@@ -35,7 +39,8 @@ const (
 //   - basic:  Username, SecretKey
 //   - header: Header, SecretKey
 //   - query:  Query, SecretKey
-//   - oauth2: Provider (reserved; SecretKey/Username/Header/Query unused)
+//   - oauth2: Provider (names a CredentialProvider's wired OAuth2AccessTokenSource
+//     provider entry; SecretKey/Username/Header/Query unused)
 type ServiceAuth struct {
 	Kind      AuthKind
 	SecretKey string
@@ -74,11 +79,13 @@ type resolvedService struct {
 // CredentialProvider knows which services the gateway can reach (name →
 // base_url + auth config) and how to resolve each one's secret. Mirrors
 // internal/gitgateway.CredentialProvider's role, generalized from a single
-// Basic-auth shape to the four static AuthKind variants (plus the reserved
-// oauth2 kind) — docs/plans/api-gateway.md §4.
+// Basic-auth shape to the four static AuthKind variants plus oauth2
+// (docs/plans/api-gateway.md §4/§6, PR2) — the static kinds resolve through
+// resolver; oauth2 resolves through oauth (SetOAuth2TokenSource).
 type CredentialProvider struct {
 	services map[string]resolvedService
 	resolver SecretResolver
+	oauth    OAuth2AccessTokenSource
 }
 
 // NewCredentialProvider builds a CredentialProvider from the daemon's
@@ -101,6 +108,25 @@ func NewCredentialProvider(services []ServiceConfig, resolver SecretResolver) *C
 		m[s.Name] = resolvedService{auth: s.Auth, baseURL: u}
 	}
 	return &CredentialProvider{services: m, resolver: resolver}
+}
+
+// SetOAuth2TokenSource wires the OAuth2 access-token supplier oauth2-kind
+// services resolve through (docs/plans/api-gateway.md §6, PR2). A
+// CredentialProvider built via NewCredentialProvider alone — every call
+// site before this PR, and any test that doesn't opt in — has oauth == nil,
+// which keeps the pre-PR2 CONTRACT (not the exact error text — that changed
+// to name SetOAuth2TokenSource explicitly): Resolve/Inject still always
+// return a non-nil error for oauth2 in that state, never silently bypass or
+// panic on a nil deref. A separate setter (rather than a new
+// NewCredentialProvider parameter) avoids touching every existing call
+// site: production wiring (internal/server/wire.go) calls this once, right
+// after construction, and every apigateway/server test that doesn't care
+// about oauth2 is unaffected.
+func (c *CredentialProvider) SetOAuth2TokenSource(oauth OAuth2AccessTokenSource) {
+	if c == nil {
+		return
+	}
+	c.oauth = oauth
 }
 
 // Configured reports whether c has any secret resolver wired at all —
@@ -153,7 +179,13 @@ func (c *CredentialProvider) Resolve(name, namespace string) error {
 	}
 	switch rs.auth.Kind {
 	case AuthOAuth2:
-		return fmt.Errorf("apigateway: service %q uses auth kind %q, which is not implemented yet (docs/plans/api-gateway.md PR2)", name, AuthOAuth2)
+		if c.oauth == nil {
+			return fmt.Errorf("apigateway: service %q uses auth kind %q, but no OAuth2 TokenSource is configured (docs/plans/api-gateway.md PR2 — SetOAuth2TokenSource)", name, AuthOAuth2)
+		}
+		if _, err := c.oauth.AccessToken(namespace, rs.auth.Provider); err != nil {
+			return fmt.Errorf("apigateway: oauth2 access token for service %q (provider %q, namespace %q): %w", name, rs.auth.Provider, namespace, err)
+		}
+		return nil
 	case AuthBearer, AuthBasic, AuthHeader, AuthQuery:
 		if c.resolver == nil {
 			return fmt.Errorf("apigateway: no secret resolver configured for service %q", name)
@@ -186,7 +218,15 @@ func (c *CredentialProvider) Inject(req *http.Request, name, namespace string) e
 	}
 	switch rs.auth.Kind {
 	case AuthOAuth2:
-		return fmt.Errorf("apigateway: service %q uses auth kind %q, which is not implemented yet (docs/plans/api-gateway.md PR2)", name, AuthOAuth2)
+		if c.oauth == nil {
+			return fmt.Errorf("apigateway: service %q uses auth kind %q, but no OAuth2 TokenSource is configured (docs/plans/api-gateway.md PR2 — SetOAuth2TokenSource)", name, AuthOAuth2)
+		}
+		token, err := c.oauth.AccessToken(namespace, rs.auth.Provider)
+		if err != nil {
+			return fmt.Errorf("apigateway: oauth2 access token for service %q (provider %q, namespace %q): %w", name, rs.auth.Provider, namespace, err)
+		}
+		req.Header.Set("Authorization", "Bearer "+token)
+		return nil
 	case AuthBearer, AuthBasic, AuthHeader, AuthQuery:
 	default:
 		return fmt.Errorf("apigateway: service %q has unrecognized auth kind %q", name, rs.auth.Kind)

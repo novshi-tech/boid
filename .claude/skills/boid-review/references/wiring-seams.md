@@ -37,6 +37,7 @@ has the same shape:
 20. [WorkspaceMeta write-path field coverage (strict PUT vs envelope apply)](#20-workspacemeta-write-path-field-coverage)
 21. [apigateway SecretResolver namespace threading (sibling of #11)](#21-apigateway-secretresolver-namespace-threading)
 22. [orchestrator.Action → timeline.Build renderability](#22-orchestratoraction--timelinebuild-renderability)
+23. [oauth_providers config↔apigateway wiring (type mirror + CredentialProvider.oauth)](#23-oauth_providers-configapigateway-wiring)
 
 ---
 
@@ -1008,6 +1009,22 @@ first four links are self-defending; the last two are not.
   test asserting that copy, the same way `TestBuildStartConfig_LogLevelFromConfig` does. Don't
   stop at "the schema/extractor tests pass" — that only proves the key round-trips through
   config.yaml, not that anything reads it.
+- **Carve-out, confirmed while adding `oauth_providers` (PR2, docs/plans/api-gateway.md §6)**:
+  not every `ReloadRestartRequired` key needs End B's `buildStartConfig`/`server.Config` copy
+  at all — `gateway.forges`, `services`, and (as of PR2) `oauth_providers` are read straight
+  off a SECOND, independent `*config.Config` (`internal/server/wire.go`'s own `boidCfg,
+  err := config.Load()`, called well inside `buildRuntime` itself) at the exact point they're
+  consumed (`gwCreds`/`apiGwCreds`/`apiGwCreds.SetOAuth2TokenSource`'s construction) — never
+  through `cmd/start.go`'s `server.Config` at all. `services_floor` is the key that DOES need
+  the End B copy (`cmd/start.go`: `cfg.ServicesFloor = appCfg.ServicesFloor`), because its
+  actual consumer (`dispatcher.Runner.APIGatewayServicesFloor`, read by
+  `resolveEnabledAPIServices` at dispatch time) is constructed earlier in `buildRuntime` from
+  the `server.Config cfg` parameter, not from `boidCfg`. The distinguishing question when
+  adding a new key: does its consumer already have direct access to a freshly-loaded
+  `*config.Config` at the point it's built (no End B needed — verify by finding that
+  construction site and confirming it reads `boidCfg.<YourField>` directly), or does it need
+  to reach a component (`dispatcher.Runner`, `cmd/start.go`'s own `server.Config` return value)
+  that was built from `cfg`/`appCfg` before `boidCfg` was loaded (End B needed)?
 
 ## 20. WorkspaceMeta write-path field coverage
 
@@ -1116,6 +1133,20 @@ workspace back onto the `"default"` secret namespace.
   registered under namespace X still resolves credentials under namespace X — and keep this
   entry and #11 in sync if either gateway's namespace-threading shape changes (e.g. PR2's
   oauth2 TokenSource will need the same namespace to key its own token-cache lookup).
+- **PR2 update (2026-08-03)**: confirmed — `CredentialProvider.Resolve`/`Inject`'s `AuthOAuth2`
+  branch passes the SAME `namespace` parameter straight through to
+  `c.oauth.AccessToken(namespace, rs.auth.Provider)` (`internal/apigateway/credentials.go`),
+  and `OAuth2TokenSource.AccessToken`/`refresh` (`internal/apigateway/oauth2.go`) use that
+  namespace, unmodified, both as half of every secret-store key it reads/writes
+  (`OAuthSecretKey` is provider-only; the actual `resolver`/`writer` calls are
+  `t.resolver(namespace, OAuthSecretKey(...))` / `t.writer(namespace, ...)`) and as half of
+  the singleflight coalescing key (`namespace + "\x00" + provider`). Two workspaces sharing
+  one `oauth_providers` entry therefore get fully independent refresh_token/access_token
+  state and independent refresh coalescing — see
+  `TestCredentialProvider_MultiNamespaceIsolation`-style coverage for the static kinds and
+  `TestServer_ProxiesWithOAuth2Injection` (`internal/apigateway/server_test.go`) for the
+  oauth2 kind's own End C/D round trip. See seam #23 for the surrounding config↔apigateway
+  wiring PR2 also added.
 
 ## 22. orchestrator.Action → timeline.Build renderability
 
@@ -1178,3 +1209,72 @@ if !IsStateTransition(a) && !IsProgressAction(a) && !IsAPIGatewayRequestAction(a
   write time. Write a test that calls `timeline.Build` on the real Action your writer
   produces and asserts it surfaces as an `Event` — a test that only inspects
   `ListActionsByTask`'s return value proves the DB write, not the feature.
+
+## 23. oauth_providers config↔apigateway wiring
+
+Whether `config.yaml`'s `oauth_providers:` block (docs/plans/api-gateway.md §6/§論点4, PR2)
+actually reaches a live `OAuth2TokenSource` a `CredentialProvider` will call — a **type
+mirror** (like seam #7's `CommandDef`) plus a **conditional wiring step** (like seam #21's
+resolver closures) chained together, spanning `internal/config` → `internal/server/wire.go` →
+`internal/apigateway`.
+
+- **End A (config schema)**: `config.OAuthProviderConfig` (`internal/config/apigateway.go`,
+  yaml-tagged fields `token_endpoint`/`client_id`/`client_secret_key`/`scopes`), validated by
+  `validateOAuthProviderConfig` and parsed into `Config.OAuthProviders` by
+  `Config.UnmarshalYAML`. Mirrored by `schema.go`'s four `oauth_providers.*.*` `Schema`
+  entries + `IsOAuthProviderEntryPath` (wired into `dotted.go`'s `Get`/`Unset`) + `internal/
+  server/config_edit.go`'s `changedOAuthProviderLeaves` and the matching
+  `restartFieldExtractorExemptions` quartet — this half is seam #19's "End A", already
+  self-defending via `verifyRestartExtractorCoverage`/`TestRestartFieldExtractors_
+  ExhaustiveCoverage`, and does NOT need seam #19's End B (`buildStartConfig`/`server.Config`)
+  — see #19's PR2 carve-out note for why.
+- **End B (type mirror)**: `Config.APIGatewayOAuthProviders()` converts the config-package
+  shape into `apigateway.OAuthProviderConfig` (`internal/apigateway/oauth2.go`, same four
+  fields plus `Name`) — a hand-written field-by-field copy with no compiler check that every
+  field actually made the trip. A field added to one struct's yaml/CredentialProvider surface
+  without a matching field (and a matching copy line in `APIGatewayOAuthProviders`) on the
+  other silently drops that field's config value the moment it's used at runtime.
+- **End C (construction + conditional wiring)**: `internal/server/wire.go`'s `buildRuntime` —
+  `apigateway.NewOAuth2TokenSource(boidCfg.APIGatewayOAuthProviders(), apiGwResolver,
+  apiGwWriter)`, called (and `apiGwCreds.SetOAuth2TokenSource` invoked) only `if secretStore !=
+  nil`, mirroring the exact `apiGwResolver`/`gwResolver` "nil resolver means unconfigured, not
+  a build-time absence" convention seam #21 already established — a `CredentialProvider` never
+  reaches this call at all when `secretStore == nil`, and `SetOAuth2TokenSource`'s own doc
+  comment (`internal/apigateway/credentials.go`) is explicit that a never-called setter leaves
+  `oauth == nil`, which `Resolve`/`Inject` treat as a normal (loud, non-panicking) error case,
+  not a nil-deref crash.
+- **End D (consumer)**: `CredentialProvider.Resolve`/`Inject`'s `AuthOAuth2` branch
+  (`internal/apigateway/credentials.go`) calls `c.oauth.AccessToken(namespace,
+  rs.auth.Provider)` — `rs.auth.Provider` (from `services.<name>.auth.provider`) is looked up
+  against `OAuth2TokenSource.providers`, itself keyed by `OAuthProviderConfig.Name` from End B/C.
+  A `provider` string that doesn't match any `oauth_providers.<name>` key produces a clear
+  "oauth2 provider %q is not configured" error (`oauth2.go`'s `AccessToken`) — deliberately NOT
+  a config-load failure (see `TestLoadFromPath_Services_OAuth2ProviderReferenceNotCrossValidated`,
+  `internal/config/oauth_providers_test.go`, for why that cross-reference is left
+  request-time-only, matching every other secret-store-shaped reference in that package).
+- **Invariant**: every field of `config.OAuthProviderConfig` that has runtime meaning must
+  (1) have a corresponding field on `apigateway.OAuthProviderConfig`, (2) be copied by
+  `APIGatewayOAuthProviders`, and (3) actually be read by `OAuth2TokenSource` where relevant —
+  and a `CredentialProvider`'s `oauth` field must be non-nil in every runtime configuration
+  where `secretStore` is configured (i.e. wherever the static `bearer`/`basic`/`header`/`query`
+  kinds already work), never just in the code paths a test happens to exercise.
+- **Past break**: caught in review (boid-review self-check before PR2's first push): the
+  initial `TestAPIGatewayOAuthProviders_SortedByName`-style test for End B only asserted on
+  `Name`/ordering (mirroring `TestAPIGatewayServices_SortedByName`'s identical, pre-existing
+  scope for the sibling `services` conversion) — which would not have caught a dropped or
+  swapped `TokenEndpoint`/`ClientID`/`ClientSecretKey`/`Scopes` field. Fixed by adding
+  `TestAPIGatewayOAuthProviders_FieldMapping`, which asserts every field individually.
+- **Guard**: `TestAPIGatewayOAuthProviders_FieldMapping` (End A→B field-by-field),
+  `TestServer_ProxiesWithOAuth2Injection` (`internal/apigateway/server_test.go`, End B→C→D
+  through a real `Server`+`Registry`+`CredentialProvider`+`OAuth2TokenSource`+fake token
+  endpoint, proving the upstream actually receives a Bearer token the test never gave it
+  directly), and the `oauth2.go`-focused unit tests in `oauth2_test.go` (End D's
+  `AccessToken`/refresh/persistence-order behavior in isolation).
+- **When you touch it**: if you add a field to `config.OAuthProviderConfig` or
+  `apigateway.OAuthProviderConfig`, add the matching field to the other struct AND a copy line
+  in `APIGatewayOAuthProviders`, then extend `TestAPIGatewayOAuthProviders_FieldMapping` to
+  cover it — don't rely on a `SortedByName`-style test to catch a dropped field. If you change
+  the `secretStore != nil` gating in `wire.go`, verify (with a test) that `oauth2`-kind
+  services still fail loud (not nil-deref) when unconfigured, and still resolve when
+  configured — `TestCredentialProvider_Inject_OAuth2NoTokenSourceConfigured` and
+  `TestServer_ProxiesWithOAuth2Injection` are the two ends of that check today.
