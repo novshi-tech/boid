@@ -463,6 +463,120 @@ func TestOAuth2TokenSource_NoClientSecretKey_OmitsClientSecretParam(t *testing.T
 	}
 }
 
+// TestOAuth2TokenSource_MemCache_AvoidsRedundantRefreshAfterAccessTokenPersistFailure
+// pins the codex review round-1 Major fix: when the access_token/expires_at
+// secret-store persist (Phase 2) fails, a SUBSEQUENT AccessToken call for the
+// same (namespace, provider) — e.g. Inject's own call, right after Resolve's
+// precheck triggered this very refresh (docs/plans/api-gateway.md §6,
+// internal/apigateway/credentials.go's Resolve/Inject shape) — must NOT
+// trigger a second token-endpoint round trip. Before this fix it would: with
+// no access_token persisted, cachedAccessToken had nothing to fall back on.
+func TestOAuth2TokenSource_MemCache_AvoidsRedundantRefreshAfterAccessTokenPersistFailure(t *testing.T) {
+	store := newMemSecretStore()
+	store.seed("ws-a", OAuthSecretKey("freee", oauthFieldRefreshToken), "RT-initial")
+	store.failWritesTo(OAuthSecretKey("freee", oauthFieldAccessToken))
+
+	stub := newTokenEndpointStub(t, http.StatusOK, tokenJSON("AT-fresh", "RT-new", 3600))
+	ts := NewOAuth2TokenSource([]OAuthProviderConfig{{Name: "freee", TokenEndpoint: stub.srv.URL}}, store.resolver(), store.writer())
+
+	got1, err := ts.AccessToken("ws-a", "freee")
+	if err != nil {
+		t.Fatalf("first AccessToken: %v", err)
+	}
+	if got1 != "AT-fresh" {
+		t.Fatalf("first AccessToken = %q, want %q", got1, "AT-fresh")
+	}
+	if n := stub.callCount(); n != 1 {
+		t.Fatalf("after first call: token endpoint called %d times, want 1", n)
+	}
+
+	// access_token was never actually persisted (write failure injected
+	// above) — a secret-store-only cache would find nothing here and
+	// refresh again. memCache must short-circuit that.
+	got2, err := ts.AccessToken("ws-a", "freee")
+	if err != nil {
+		t.Fatalf("second AccessToken: %v", err)
+	}
+	if got2 != "AT-fresh" {
+		t.Errorf("second AccessToken = %q, want %q (from memCache)", got2, "AT-fresh")
+	}
+	if n := stub.callCount(); n != 1 {
+		t.Errorf("after second call: token endpoint called %d times, want still 1 (memCache must avoid a redundant refresh)", n)
+	}
+}
+
+// TestOAuth2TokenSource_MemCache_AvoidsRedundantRefreshAfterSingleflightWindowCloses
+// pins the codex review round-1 Major fix for the OTHER gap the same
+// memCache addition closes: a caller arriving strictly AFTER another
+// goroutine's refresh for the same (namespace, provider) already completed
+// (and therefore outside singleflightGroup's in-flight coalescing window —
+// singleflight, by design, only coalesces OVERLAPPING calls) must still find
+// the just-refreshed token via memCache instead of unconditionally
+// refreshing again.
+func TestOAuth2TokenSource_MemCache_AvoidsRedundantRefreshAfterSingleflightWindowCloses(t *testing.T) {
+	store := newMemSecretStore()
+	store.seed("ws-a", OAuthSecretKey("freee", oauthFieldRefreshToken), "RT-initial")
+	stub := newTokenEndpointStub(t, http.StatusOK, tokenJSON("AT-fresh", "RT-new", 3600))
+	ts := NewOAuth2TokenSource([]OAuthProviderConfig{{Name: "freee", TokenEndpoint: stub.srv.URL}}, store.resolver(), store.writer())
+
+	if _, err := ts.AccessToken("ws-a", "freee"); err != nil {
+		t.Fatalf("first AccessToken: %v", err)
+	}
+	if n := stub.callCount(); n != 1 {
+		t.Fatalf("after first call: token endpoint called %d times, want 1", n)
+	}
+
+	// The singleflight map entry for this key is already gone (Do deletes
+	// it once fn returns) — a second call here exercises a completely fresh
+	// AccessToken -> cachedAccessToken path, not a coalesced wait.
+	got, err := ts.AccessToken("ws-a", "freee")
+	if err != nil {
+		t.Fatalf("second AccessToken: %v", err)
+	}
+	if got != "AT-fresh" {
+		t.Errorf("second AccessToken = %q, want %q", got, "AT-fresh")
+	}
+	if n := stub.callCount(); n != 1 {
+		t.Errorf("after second call: token endpoint called %d times, want still 1", n)
+	}
+}
+
+// TestOAuth2TokenSource_TokenEndpointRedirect_Refused pins the codex review
+// round-1 Major (security) fix: the token endpoint responding with a 307/308
+// redirect must NOT be followed — Go's default http.Client redirect policy
+// preserves method+body across 307/308 (RFC 7538), which would repost
+// refresh_token (and client_secret, for a confidential client) to WHATEVER
+// URL the Location header names, including an http:// (plaintext) one,
+// silently defeating config-load's "token_endpoint must be https"
+// guarantee. The redirect TARGET server below must never be contacted.
+func TestOAuth2TokenSource_TokenEndpointRedirect_Refused(t *testing.T) {
+	var redirectTargetHits int32
+	redirectTarget := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&redirectTargetHits, 1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"access_token":"should-never-be-used","expires_in":3600}`))
+	}))
+	defer redirectTarget.Close()
+
+	tokenEndpoint := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Location", redirectTarget.URL)
+		w.WriteHeader(http.StatusTemporaryRedirect)
+	}))
+	defer tokenEndpoint.Close()
+
+	store := newMemSecretStore()
+	store.seed("ws-a", OAuthSecretKey("freee", oauthFieldRefreshToken), "RT-initial")
+	ts := NewOAuth2TokenSource([]OAuthProviderConfig{{Name: "freee", TokenEndpoint: tokenEndpoint.URL}}, store.resolver(), store.writer())
+
+	_, err := ts.AccessToken("ws-a", "freee")
+	if err == nil {
+		t.Fatal("AccessToken: want error when the token endpoint redirects, got nil")
+	}
+	if n := atomic.LoadInt32(&redirectTargetHits); n != 0 {
+		t.Errorf("redirect target was contacted %d times, want 0 (the client must refuse to follow the redirect)", n)
+	}
+}
+
 func TestOAuth2TokenSource_NilReceiver_ReturnsError(t *testing.T) {
 	var ts *OAuth2TokenSource
 	if _, err := ts.AccessToken("ws-a", "freee"); err == nil {

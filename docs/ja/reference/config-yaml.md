@@ -93,9 +93,10 @@ boid config edit                                 # $EDITOR（未設定なら vi�
   `gateway.forges.<forge>.secret_key` はあくまで secret store への参照名で、
   そこが指す実際のトークン値（env var / secret store の中身）は編集しません
   — 値は引き続き `boid secret set <key> <value>` で設定してください。
-- **制限**: `.` を含む forge id（例: カスタム id `"github.corp"`）は
+- **制限**: `.` を含む forge id（例: カスタム id `"github.corp"`）、service 名
+  （`services.<name>`）、oauth provider 名（`oauth_providers.<name>`）は
   `get`/`set`/`unset` の dotted-path 構文では指定できません（`.` がパス区切り
-  と区別できないため）。そのような id を扱う場合は `boid config apply -f` /
+  と区別できないため）。そのような id/名前を扱う場合は `boid config apply -f` /
   `edit` を使ってください。
 
 ---

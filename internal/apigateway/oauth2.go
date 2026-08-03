@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -134,6 +135,47 @@ type OAuth2TokenSource struct {
 	HTTPClient    *http.Client
 
 	sf singleflightGroup[string]
+
+	// memCache is a same-process, best-effort cache of the access token a
+	// refresh most recently obtained, keyed by "namespace\x00provider" —
+	// populated unconditionally on every successful refresh (codex review
+	// round 1, Major finding), independent of whether the secret-store
+	// access_token/expires_at persist (refresh's own "Phase 2") succeeded.
+	// It exists to close two narrow-but-real gaps a secret-store-only cache
+	// has:
+	//
+	//  1. Resolve/Inject (credentials.go) each call AccessToken
+	//     independently for the SAME request (Resolve's own doc comment:
+	//     "Inject re-resolves... cheap in the common case" — true for the
+	//     static auth kinds' plain secret-store read, but NOT necessarily
+	//     true here: if a refresh Resolve triggered hit Phase 2's cache-
+	//     write failure, Inject's own subsequent AccessToken call would find
+	//     no persisted access_token and would trigger a SECOND network round
+	//     trip to the token endpoint — which, if it also fails, 502s a
+	//     request despite a perfectly valid access token having just been
+	//     obtained. memCache means Inject's call finds the freshly-obtained
+	//     token without ever needing Phase 2's persist to have succeeded.
+	//  2. A caller that arrives strictly AFTER another goroutine's refresh
+	//     for the same (namespace, provider) already completed (and
+	//     therefore missed singleflight's in-flight coalescing window
+	//     entirely — singleflightGroup only coalesces OVERLAPPING calls, by
+	//     design, the same as golang.org/x/sync/singleflight) still hits
+	//     this cache instead of unconditionally re-refreshing, since the
+	//     memCache entry and the just-computed expiresAt are already valid.
+	//
+	// Never treated as authoritative across a process restart (memCache
+	// starts empty every time the daemon starts; cachedAccessToken falls
+	// back to the secret store, which IS the cross-restart source of
+	// truth) — this is purely a same-process optimization layered on top of
+	// the persisted cache, never a substitute for it.
+	memMu    sync.Mutex
+	memCache map[string]oauthMemCacheEntry
+}
+
+// oauthMemCacheEntry is one OAuth2TokenSource.memCache entry.
+type oauthMemCacheEntry struct {
+	accessToken string
+	expiresAt   time.Time
 }
 
 // NewOAuth2TokenSource builds an OAuth2TokenSource from the daemon's
@@ -153,7 +195,33 @@ func NewOAuth2TokenSource(providers []OAuthProviderConfig, resolver SecretResolv
 		writer:        writer,
 		RefreshMargin: DefaultOAuth2RefreshMargin,
 		Now:           time.Now,
-		HTTPClient:    &http.Client{Timeout: 20 * time.Second},
+		memCache:      make(map[string]oauthMemCacheEntry),
+		HTTPClient: &http.Client{
+			Timeout: 20 * time.Second,
+			// codex review round 1, Major finding: without an explicit
+			// CheckRedirect, Go's default http.Client redirect policy
+			// follows a 307/308 response (preserving method AND body, per
+			// RFC 7538/7231) to WHATEVER scheme the Location header names —
+			// including a downgrade from the config-validated https
+			// token_endpoint to a plain-http URL. That would repost this
+			// request's body (containing refresh_token and, for a
+			// confidential client, client_secret) in cleartext to wherever
+			// the redirect points, silently defeating
+			// validateOAuthProviderConfig's own "token_endpoint must be
+			// https" config-load guarantee (internal/config/apigateway.go)
+			// the moment the token endpoint itself (or an on-path attacker
+			// between this daemon and it) issues a redirect. Refusing every
+			// redirect outright — an OAuth2 token endpoint has no
+			// legitimate reason to redirect a POST at all — closes this
+			// off entirely rather than trying to allow-list "same-scheme"
+			// redirects. http.ErrUseLastResponse makes the Client return
+			// the 3xx response itself as the final answer (no request ever
+			// sent to the Location target), which callTokenEndpoint's
+			// ordinary non-200 handling below already treats as a failure.
+			CheckRedirect: func(req *http.Request, via []*http.Request) error {
+				return http.ErrUseLastResponse
+			},
+		},
 	}
 }
 
@@ -215,12 +283,23 @@ func (t *OAuth2TokenSource) httpClient() *http.Client {
 	return http.DefaultClient
 }
 
-// cachedAccessToken reads the last-persisted access_token/expires_at for
-// (namespace, provider) from the secret store. ok is false whenever either
-// is missing or expires_at fails to parse as a Unix-seconds integer — both
-// cases mean "treat as expired, refresh now" to AccessToken's caller, never
-// a hard error.
+// cachedAccessToken returns a currently-cached access_token/expires_at for
+// (namespace, provider), checking the in-process memCache first (populated
+// by refresh on every successful token-endpoint round trip, regardless of
+// whether the secret-store persist below succeeded — see memCache's own doc
+// comment) and falling back to the secret store (the cross-process-restart
+// source of truth) when memCache has no entry. ok is false whenever neither
+// source has a usable value or expires_at fails to parse as a Unix-seconds
+// integer — both cases mean "treat as expired, refresh now" to AccessToken's
+// caller, never a hard error.
 func (t *OAuth2TokenSource) cachedAccessToken(namespace, provider string) (accessToken string, expiresAt time.Time, ok bool) {
+	t.memMu.Lock()
+	entry, found := t.memCache[namespace+"\x00"+provider]
+	t.memMu.Unlock()
+	if found {
+		return entry.accessToken, entry.expiresAt, true
+	}
+
 	accessToken, err := t.resolver(namespace, OAuthSecretKey(provider, oauthFieldAccessToken))
 	if err != nil || accessToken == "" {
 		return "", time.Time{}, false
@@ -315,11 +394,30 @@ func (t *OAuth2TokenSource) refresh(namespace string, cfg OAuthProviderConfig) (
 		expiresIn = fallbackAccessTokenLifetime
 	}
 	expiresAt := t.now().Add(expiresIn)
+
+	// memCache is populated UNCONDITIONALLY here — before either
+	// secret-store write below is even attempted, and regardless of whether
+	// they succeed — so a Phase-2 persist failure never forces a same-
+	// process caller (e.g. this same request's own Inject call, right after
+	// Resolve's precheck triggered this very refresh) into a second,
+	// possibly-failing network round trip for a token this process already
+	// has in hand. See memCache's own doc comment (codex review round 1,
+	// Major finding) for the full rationale; this is purely a same-process
+	// optimization layered on top of the secret-store persistence below,
+	// never a substitute for it — Phase 1 (refresh_token) above is still
+	// what makes the grant itself durably safe.
+	t.memMu.Lock()
+	if t.memCache == nil {
+		t.memCache = make(map[string]oauthMemCacheEntry)
+	}
+	t.memCache[namespace+"\x00"+cfg.Name] = oauthMemCacheEntry{accessToken: resp.AccessToken, expiresAt: expiresAt}
+	t.memMu.Unlock()
+
 	if err := t.writer(namespace, OAuthSecretKey(cfg.Name, oauthFieldAccessToken), resp.AccessToken); err != nil {
-		slog.Warn("apigateway: oauth2 access_token cache persist failed (refresh_token already safely persisted; not fatal)",
+		slog.Warn("apigateway: oauth2 access_token cache persist failed (refresh_token already safely persisted; not fatal — an in-process cache still has the fresh token)",
 			"provider", cfg.Name, "namespace", namespace, "error", err)
 	} else if err := t.writer(namespace, OAuthSecretKey(cfg.Name, oauthFieldExpiresAt), strconv.FormatInt(expiresAt.Unix(), 10)); err != nil {
-		slog.Warn("apigateway: oauth2 expires_at cache persist failed (refresh_token already safely persisted; not fatal)",
+		slog.Warn("apigateway: oauth2 expires_at cache persist failed (refresh_token already safely persisted; not fatal — an in-process cache still has the fresh token)",
 			"provider", cfg.Name, "namespace", namespace, "error", err)
 	}
 
