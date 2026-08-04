@@ -314,7 +314,8 @@ CLI リモート接続 ([cli-remote-connection.md](cli-remote-connection.md)) �
 | 対象 | 行き先 | 理由 |
 |---|---|---|
 | aws / az / gh | **host command 存続** | 署名系 (SigV4) / 独自認証エコシステム。gateway では原理的に代行不能 |
-| google / atlassian コマンド | **MCP へ退役** | workspace 単位 $HOME 分離によりマルチアカウント認証が MCP で成立するようになった |
+| atlassian コマンド | **MCP へ退役** | workspace 単位 $HOME 分離によりマルチアカウント認証が MCP で成立するようになった (Jira は workspace 単位 MCP で実現済み、詳細は運用メモ参照) |
+| google コマンド (Gmail 等) | **MCP 不可・gateway (google-cli) 維持** | 当初「workspace 単位 $HOME 分離で MCP でもマルチアカウント成立」と見込んだが前提が誤りだった。claude.ai 経由の MCP Connector はアカウント単位のグローバル紐付けであり、boid workspace の $HOME 分離とは無関係 — workspace ごとに別 Google アカウントを繋ぐことはできない。ワークスペース別アカウントが要件の Gmail 等は gateway (google-cli 経由、SecretStore 管理) を維持する。gateway 化自体は本 repo 外の API スキル開発プロジェクトで行う |
 | bitbucket | **API gateway 直叩き** | MCP なし。git gateway が SecretStore に持つ API token は REST でも Basic auth で使える見込み — service エントリ 1 個で済む可能性が高い |
 | freee / board | **API リファレンスのエージェントスキル + gateway** | コマンド実装よりスキルの保守がはるかに軽い。freee は daemon リフレッシャの恩恵を最も受ける。スキルは boid 非依存の一般スキルとして書き、gateway 情報との統合解釈は実験で確かめる (論点 7) |
 | 自社開発アプリ | **gateway (本計画の主目的)** | config 1 ブロック + secret 1 個で追加完了 |
