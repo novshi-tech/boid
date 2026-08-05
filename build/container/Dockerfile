@@ -249,6 +249,19 @@ RUN chmod g=u /etc/passwd /etc/group
 
 COPY --from=builder /out/boid /usr/local/bin/boid
 
+# notify.command scripts (docs/plans/ の container 移行に伴う notify 断絶の
+# 修正): container backend への移行で daemon プロセス自身がコンテナ内で
+# exec するようになった結果、notify.command がホスト専用パス
+# (~/.local/bin/ntfy.sh 等) を指す旧設定は container のファイルシステムに
+# その実行ファイルが存在せず無言で失敗するようになった。ntfy.sh 通知
+# スクリプト (build/container/ntfy.sh) を image に焼き込み、operator は
+# config.yaml の notify.command を /usr/local/bin/ntfy.sh に向け直すだけで
+# 復旧できるようにする。トピック URL などの秘匿寄りの値はここに焼き込まず
+# notify.command 自体の引数 (config.yaml 側、boid_state named volume に
+# 永続化) として渡す設計 — 詳細は ntfy.sh 自身のコメント参照。
+COPY build/container/ntfy.sh /usr/local/bin/ntfy.sh
+RUN chmod +x /usr/local/bin/ntfy.sh
+
 # /run/boid/bin: the shim directory the container entrypoint writes
 # per-project host-command symlinks into at container start (spec.Symlinks
 # — see runner.RunContainer). The "boid" entry itself is baked (relative
