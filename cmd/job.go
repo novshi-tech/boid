@@ -49,8 +49,26 @@ var jobWatchCmd = &cobra.Command{
 }
 
 var jobLogCmd = &cobra.Command{
-	Use:         "log <job-id>",
-	Short:       "Show transcript log for a job",
+	Use:   "log <job-id>",
+	Short: "Show transcript log for a job",
+	Long: `Prints the job's raw attach-stream transcript (stdout/stderr, and for
+interactive jobs the raw PTY bytes including ANSI/cursor control codes) —
+this is diagnostic/liveness material, not meant for reading. It's what
+"transcript_idle_seconds" (boid job show) watches for stuck-child detection,
+and it can be noisy to the point of uselessness for agent harnesses that
+render a TUI.
+
+For an agent:claude-code hook job, the actually-readable record of what the
+agent did is Claude Code's own structured session log, which boid never
+copies — it only records a pointer to it (task payload
+artifact.claude_code.sessions[].id). That jsonl already lives durably on the
+workspace's HOME volume (it survives daemon/host restarts, unlike this
+transcript). To read it:
+
+  boid exec -p <project> -- cat ~/.claude/projects/-workspace-<project-name>-*/<session-id>.jsonl
+
+(project-name comes from the job's project; session-id from
+artifact.claude_code.sessions[].id in "boid task show <task-id>".)`,
 	Args:        cobra.ExactArgs(1),
 	Annotations: map[string]string{scopeAnnotationKey: scopeRemote},
 	RunE:        runJobLog,

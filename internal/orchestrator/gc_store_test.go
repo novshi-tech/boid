@@ -817,3 +817,105 @@ func TestGC_AttachmentsCleanup_OlderThanFilter(t *testing.T) {
 		t.Errorf("fresh task attachments must survive, err=%v", err)
 	}
 }
+
+// TestGC_TranscriptsDirCleanup_IndependentOfRuntimesDir pins that
+// WithTranscriptsDir alone (no WithRuntimesDir) is enough to enable
+// cleanRuntimes — the persistent transcript root (internal/server's
+// transcriptsDirFor) is a separate tree from the tmpfs runtimesDir, keyed by
+// the same runtime_id, and must be GC'd on its own even when a deploy has
+// no host-visible runtimesDir configured (e.g. the DI/test wiring some
+// call sites use). Before WithTranscriptsDir existed, this artifact class
+// had no cleanup path at all once it stopped being colocated with
+// runtimesDir — this test guards against that regressing into an unbounded
+// leak (the "占有" risk transcriptsDirFor's own doc comment names).
+func TestGC_TranscriptsDirCleanup_IndependentOfRuntimesDir(t *testing.T) {
+	d := testutil.NewTestDB(t)
+	transcriptsDir := t.TempDir()
+
+	if err := orchestrator.CreateProject(d.Conn, &orchestrator.Project{ID: "proj-1", WorkDir: "/tmp"}); err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	doneTask := &orchestrator.Task{ProjectID: "proj-1", Title: "Done Task", Behavior: "dev", Status: orchestrator.TaskStatusDone}
+	if err := orchestrator.CreateTask(d.Conn, doneTask); err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+
+	const runtimeID = "runtime-transcripts-only"
+	job := &dispatcher.Job{
+		TaskID:    doneTask.ID,
+		ProjectID: "proj-1",
+		HandlerID: "test-handler",
+		RuntimeID: runtimeID,
+		Status:    dispatcher.JobStatusCompleted,
+	}
+	if err := dispatcher.CreateJob(d.Conn, job); err != nil {
+		t.Fatalf("create job: %v", err)
+	}
+
+	transcriptDir := makeRuntimeDir(t, transcriptsDir, runtimeID)
+
+	gcStore := orchestrator.NewTaskGCStore(d.Conn).WithTranscriptsDir(transcriptsDir)
+	result, err := gcStore.GC(0, false)
+	if err != nil {
+		t.Fatalf("gc: %v", err)
+	}
+	if result.Runtimes != 1 {
+		t.Fatalf("expected 1 transcript dir deleted, got %d", result.Runtimes)
+	}
+	if _, err := os.Stat(transcriptDir); !os.IsNotExist(err) {
+		t.Errorf("transcript dir should be removed after GC, err: %v", err)
+	}
+}
+
+// TestGC_TranscriptsDirCleanup_BothRootsCleanedTogether pins that
+// WithRuntimesDir and WithTranscriptsDir are two independent trees, both
+// keyed by the same runtime_id, and a single GC pass removes the matching
+// subdir from EACH root — not just whichever one happens to be checked
+// first — mirroring the real deploy shape (dispatcher.
+// ContainerBackendOptions.RuntimeDir for spec.json/state.json/TLS material,
+// TranscriptDir for transcript.log/diagnostics.json; see both doc comments).
+func TestGC_TranscriptsDirCleanup_BothRootsCleanedTogether(t *testing.T) {
+	d := testutil.NewTestDB(t)
+	runtimesDir := t.TempDir()
+	transcriptsDir := t.TempDir()
+
+	if err := orchestrator.CreateProject(d.Conn, &orchestrator.Project{ID: "proj-1", WorkDir: "/tmp"}); err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	doneTask := &orchestrator.Task{ProjectID: "proj-1", Title: "Done Task", Behavior: "dev", Status: orchestrator.TaskStatusDone}
+	if err := orchestrator.CreateTask(d.Conn, doneTask); err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+
+	const runtimeID = "runtime-both-roots"
+	job := &dispatcher.Job{
+		TaskID:    doneTask.ID,
+		ProjectID: "proj-1",
+		HandlerID: "test-handler",
+		RuntimeID: runtimeID,
+		Status:    dispatcher.JobStatusCompleted,
+	}
+	if err := dispatcher.CreateJob(d.Conn, job); err != nil {
+		t.Fatalf("create job: %v", err)
+	}
+
+	runtimeDir := makeRuntimeDir(t, runtimesDir, runtimeID)
+	transcriptDir := makeRuntimeDir(t, transcriptsDir, runtimeID)
+
+	gcStore := orchestrator.NewTaskGCStore(d.Conn).
+		WithRuntimesDir(runtimesDir).
+		WithTranscriptsDir(transcriptsDir)
+	result, err := gcStore.GC(0, false)
+	if err != nil {
+		t.Fatalf("gc: %v", err)
+	}
+	if result.Runtimes != 2 {
+		t.Fatalf("expected 2 dirs deleted (one per root), got %d", result.Runtimes)
+	}
+	if _, err := os.Stat(runtimeDir); !os.IsNotExist(err) {
+		t.Errorf("runtimesDir subdir should be removed after GC, err: %v", err)
+	}
+	if _, err := os.Stat(transcriptDir); !os.IsNotExist(err) {
+		t.Errorf("transcriptsDir subdir should be removed after GC, err: %v", err)
+	}
+}

@@ -11,7 +11,6 @@ import (
 	"github.com/novshi-tech/boid/internal/db"
 )
 
-
 type TaskRepository struct {
 	db db.DBTX
 }
@@ -148,9 +147,10 @@ func (r *ProjectRepository) AssignDefaultWorkspaceToUnlinked(workspaceID string)
 
 // TaskGCStore handles GC of tasks and their related data.
 type TaskGCStore struct {
-	conn          *sql.DB
-	runtimesDir   string
-	sandboxTmpDir string
+	conn           *sql.DB
+	runtimesDir    string
+	transcriptsDir string
+	sandboxTmpDir  string
 	// attachmentsRoot, when non-empty, is the data-home directory under which
 	// per-task attachments live at `<root>/tasks/<id>/attachments`. GC
 	// removes the per-task directory for tasks that have been in a terminal
@@ -173,6 +173,20 @@ func NewTaskGCStore(conn *sql.DB) *TaskGCStore {
 // cleanup.
 func (s *TaskGCStore) WithRuntimesDir(dir string) *TaskGCStore {
 	s.runtimesDir = dir
+	return s
+}
+
+// WithTranscriptsDir enables disk-level cleanup of the persistent
+// transcript/diagnostics root (`<dir>/<runtime_id>`, holding transcript.log
+// and diagnostics.json — see internal/server's transcriptsDirFor) for GC
+// target jobs, keyed by the same runtime_id as WithRuntimesDir but a
+// separate directory tree (dispatcher.ContainerBackendOptions.TranscriptDir's
+// doc comment explains why the two are no longer colocated: this one is a
+// persistent volume, not the host tmpfs runtimesDir sits on). Empty disables
+// this cleanup — the transcript/diagnostics files then simply accumulate
+// forever, which is exactly the "占有" risk this option exists to prevent.
+func (s *TaskGCStore) WithTranscriptsDir(dir string) *TaskGCStore {
+	s.transcriptsDir = dir
 	return s
 }
 
@@ -203,7 +217,7 @@ func (s *TaskGCStore) WithAttachmentsRoot(dir string) *TaskGCStore {
 
 func (s *TaskGCStore) GC(olderThan time.Duration, dryRun bool) (*GCResult, error) {
 	runtimesDeleted := 0
-	if s.runtimesDir != "" && !dryRun {
+	if (s.runtimesDir != "" || s.transcriptsDir != "") && !dryRun {
 		runtimesDeleted = s.cleanRuntimes(olderThan)
 	}
 	sandboxTmpDeleted := 0
@@ -230,19 +244,24 @@ func (s *TaskGCStore) GC(olderThan time.Duration, dryRun bool) (*GCResult, error
 	return result, nil
 }
 
-// cleanRuntimes deletes runtime directories for GC target jobs: both the
-// runtime_id-keyed sandbox scaffolding dir (`<RuntimesDir>/<runtime_id>`)
-// and the job.id-keyed git-gateway clone workspace dir
-// (`<RuntimesDir>/<job.id>/workspace`, see dispatcher.Runner.Dispatch's
-// clone-mode path — the two use different directory naming schemes, so both
-// must be checked). Covers task-bound jobs (GC'd via the owning task's
-// terminal status, as before) and task-less jobs — ad-hoc `boid agent
-// claude -p`/`boid exec` sessions with no task_id, which the previous INNER
-// JOIN on tasks silently excluded forever regardless of the job's own
-// status or age. Task-less jobs are instead GC'd by their own terminal
-// status (completed/failed) and updated_at.
+// cleanRuntimes deletes runtime directories for GC target jobs: the
+// runtime_id-keyed sandbox scaffolding dir (`<RuntimesDir>/<runtime_id>`),
+// its sibling in the persistent transcript root
+// (`<TranscriptsDir>/<runtime_id>`, holding transcript.log/diagnostics.json
+// — see WithTranscriptsDir), and the job.id-keyed git-gateway clone
+// workspace dir (`<RuntimesDir>/<job.id>/workspace`, see
+// dispatcher.Runner.Dispatch's clone-mode path — the two use different
+// directory naming schemes, so both must be checked). Covers task-bound
+// jobs (GC'd via the owning task's terminal status, as before) and
+// task-less jobs — ad-hoc `boid agent claude -p`/`boid exec` sessions with
+// no task_id, which the previous INNER JOIN on tasks silently excluded
+// forever regardless of the job's own status or age. Task-less jobs are
+// instead GC'd by their own terminal status (completed/failed) and
+// updated_at.
 // Errors are logged as warnings; failures do not block subsequent DB deletion.
-// Returns the number of runtime directories successfully deleted.
+// Returns the number of directories successfully deleted (runtimesDir and
+// transcriptsDir entries counted together, matching GCResult.Runtimes'
+// single counter).
 func (s *TaskGCStore) cleanRuntimes(olderThan time.Duration) int {
 	query := `
 		SELECT j.id, j.runtime_id
@@ -313,12 +332,24 @@ func (s *TaskGCStore) cleanRuntimes(olderThan time.Duration) int {
 
 	for _, j := range jobs {
 		if j.runtimeID != "" {
-			remove(filepath.Join(s.runtimesDir, j.runtimeID), true)
+			if s.runtimesDir != "" {
+				remove(filepath.Join(s.runtimesDir, j.runtimeID), true)
+			}
+			// Persistent transcript-root sibling: never holds docker state
+			// (transcript.log/diagnostics.json are files the daemon itself
+			// wrote, not per-job sandbox scaffolding), so reap=false.
+			if s.transcriptsDir != "" {
+				remove(filepath.Join(s.transcriptsDir, j.runtimeID), false)
+			}
 		}
 		// job.id-keyed dir: houses the git-gateway clone workspace. Not
 		// every job creates one (only clone-mode dispatch does), so this is
-		// a no-op when absent.
-		remove(filepath.Join(s.runtimesDir, j.id), false)
+		// a no-op when absent. Only ever under runtimesDir — the clone
+		// staging area is ephemeral scaffolding, never migrated to
+		// transcriptsDir.
+		if s.runtimesDir != "" {
+			remove(filepath.Join(s.runtimesDir, j.id), false)
+		}
 	}
 	return count
 }
@@ -380,4 +411,3 @@ func (s *TaskGCStore) cleanTaskAttachments(olderThan time.Duration) {
 		slog.Info("gc attachments removed", "task_id", id)
 	}
 }
-

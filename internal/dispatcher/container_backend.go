@@ -79,6 +79,11 @@ type containerBackend struct {
 	// (not os.MkdirTemp's container-private default) is required for a
 	// real compose deploy.
 	runtimeDir string
+	// transcriptDir, when non-empty, overrides runtimeDir as the spool root
+	// for transcript.log (openTranscriptSpool) — see
+	// ContainerBackendOptions.TranscriptDir's doc comment. Empty falls back
+	// to runtimeDir, same as every pre-this-field caller.
+	transcriptDir string
 	// diagnosticsCollector, when non-nil, is invoked once a container has
 	// exited — after Wait's fan-out has resolved and the attach stream has
 	// fully drained (Major 3) — but strictly before the container is
@@ -125,9 +130,9 @@ type containerBackend struct {
 	// once via usernsOnce above, so a later successful retry (triggered by
 	// a DIFFERENT job's resolveHostArch call) never revisits an
 	// already-decided usernsMode.
-	infoMu   sync.Mutex
-	infoOK   bool
-	info     client.SystemInfoResult
+	infoMu sync.Mutex
+	infoOK bool
+	info   client.SystemInfoResult
 
 	mu       sync.Mutex
 	sessions map[string]*containerSession
@@ -258,6 +263,24 @@ type ContainerBackendOptions struct {
 	// mounted (e.g. every existing unit test, which shares a real host
 	// /tmp with its own test process either way).
 	RuntimeDir string
+
+	// TranscriptDir, when non-empty, is where openTranscriptSpool spools
+	// transcript.log (and NewDefaultDiagnosticsCollector writes
+	// diagnostics.json) INSTEAD of RuntimeDir — <TranscriptDir>/<containerID>/.
+	// Unlike RuntimeDir, this directory does NOT need to be host-visible for
+	// DooD: both files are written exclusively by the daemon process itself,
+	// reading its own `docker attach`/`docker inspect`/`docker logs` calls —
+	// never bind-mounted into a job container the way spec.json/state.json
+	// are (writeContainerSpec's containerSpecPath/containerStatePath, which
+	// DO require RuntimeDir's host-visibility). So TranscriptDir can point at
+	// a real persistent volume (e.g. the daemon's own boid_state-backed data
+	// home) instead of RuntimeDir's typical host tmpfs
+	// (BOID_RUNTIME_DIR/XDG_RUNTIME_DIR) — fixing the "every job transcript
+	// is lost on host reboot" gap hostVisibleRuntimesDirFor's own doc comment
+	// (internal/server/wire.go) flags. Empty (every pre-this-field caller)
+	// falls back to RuntimeDir, unchanged from before this field existed —
+	// see openTranscriptSpool's own fallback.
+	TranscriptDir string
 
 	// SelfContainerID, when non-empty, is this daemon's OWN docker container
 	// ID (or name) — typically `os.Getenv("HOSTNAME")`, which docker sets to
@@ -541,6 +564,7 @@ func NewContainerBackend(api dockerAPI, opts ContainerBackendOptions) backend.Sa
 		brokerTLSCA:          opts.BrokerTLSCA,
 		brokerTLSAddr:        opts.BrokerTLSAddr,
 		runtimeDir:           opts.RuntimeDir,
+		transcriptDir:        opts.TranscriptDir,
 		selfContainerID:      opts.SelfContainerID,
 		sessions:             make(map[string]*containerSession),
 	}
@@ -2252,10 +2276,17 @@ func (b *containerBackend) brokerTLSCertDir(jobID string) (string, error) {
 // a documented gap for PR9 (docs/plans/phase6-container-backend.md's own
 // "実装残余" territory) rather than risking log corruption to close it now.
 func (b *containerBackend) openTranscriptSpool(containerID string) (f *os.File, path string, err error) {
-	if b.runtimeDir == "" {
+	// transcriptDir, when set, is a persistent root distinct from runtimeDir
+	// (see ContainerBackendOptions.TranscriptDir's doc comment) — falls back
+	// to runtimeDir when unset, unchanged from before this field existed.
+	spoolRoot := b.transcriptDir
+	if spoolRoot == "" {
+		spoolRoot = b.runtimeDir
+	}
+	if spoolRoot == "" {
 		return nil, "", nil
 	}
-	dir := filepath.Join(b.runtimeDir, containerID)
+	dir := filepath.Join(spoolRoot, containerID)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, "", fmt.Errorf("create runtime dir for transcript spool: %w", err)
 	}
