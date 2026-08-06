@@ -104,19 +104,24 @@ boid web pair      → POST /api/web/pair
 boid web pair      → POST /api/web/pair
                   ←  マジックリンク URL
                                                     GET /auth?token=<token>
+                  ← 確認ページ (コードは未消費)
+                                                    「このデバイスを登録」押下
+                                                    POST /auth  (フォーム送信)
                   ← session cookie + 302 /
 ```
 
+マジックリンク / QR の `GET /auth` は**コードを消費しません**。 消費するのは確認ボタンが送る `POST /auth` だけです。 GET で消費していた頃は、 ブラウザのプリロード・ QR スキャナのリンクプレビュー・ アプリ内ブラウザのプリフェッチ・ 単なるリロードのいずれもが単回コードを焼いてしまい、 本人のアクセスが `/login?error=invalid_code` に落ちていました。
+
 ### コード発行 (`Issue`)
 
-1. `crypto/rand` で英数 8 文字をランダム生成、 中央にハイフンを入れて `WX7K-4QJP` 形式に
+1. `crypto/rand` で英数 8 文字をランダム生成、 中央にハイフンを入れて `WX7K-4QJP` 形式に (端末画面から手入力される前提なので、 字形が紛らわしい `O` `0` `I` `1` は生成文字集合から除外)
 2. `SHA-256` でハッシュ化、 `web_pairing_codes(code_hash, label, created_at, expires_at)` に挿入
 3. `expires_at = now() + 5 minutes`、 単回使用 (consumed_at が non-NULL になると以後使えない)
 
 ### コード引き換え (`Redeem`)
 
-1. 入力されたコードを `SHA-256` でハッシュ化
-2. `web_pairing_codes` を検索、 expires_at < now() または consumed_at != NULL なら拒否
+1. 入力されたコードを `NormalizeCode` で正規化 (大文字化 + 英数字以外を除去) してから `SHA-256` でハッシュ化。 発行側も同じ正規化を通るので、 ハイフンの有無・大文字小文字・前後や途中の空白・全角文字はすべて同じコードとして引き換えられる
+2. `web_pairing_codes` を検索、 expires_at < now() なら `ErrCodeExpired`、 consumed_at != NULL なら `ErrCodeConsumed`、 行が無ければ `ErrCodeNotFound` (ログイン画面はこの 3 つを別々の文言で表示する)
 3. 行を `consumed_at = now()` で更新 (atomic に取得 + 更新)
 4. 新しい device row を `web_devices` に作成
 5. その deviceID で `SessionSigner.Issue` を呼んで cookie を発行

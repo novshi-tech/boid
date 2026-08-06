@@ -2107,7 +2107,11 @@ func mountRoutes(srv *Server, runtime *appRuntime) error {
 	}
 	r.Get("/login", loginHandler.GetLogin)
 	r.Post("/login", loginHandler.PostLogin)
+	// GET /auth only renders the confirmation page; POST /auth is what
+	// spends the one-time pairing code (see LoginHandler.GetAuth for why the
+	// redemption had to move off the GET).
 	r.Get("/auth", loginHandler.GetAuth)
+	r.Post("/auth", loginHandler.PostAuth)
 
 	// Bearer device-auth routes (docs/plans/cli-remote-connection.md Phase 3
 	// PR0): POST /api/auth/device is public (see apiAuthRequired's exemption
