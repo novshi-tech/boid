@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"log/slog"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"sort"
@@ -348,6 +349,14 @@ func (s *globalJobStore) ListJobsWithContext(filter api.JobListFilter) ([]api.Jo
 // the file is still sitting right there. Empty fallbackRootDir (every
 // pre-this-field caller) disables the fallback entirely — unchanged
 // single-root behavior.
+//
+// [codex review round 2, PR #904]: the fallback is only attempted when the
+// primary lookup fails with os.IsNotExist — never for any other error (a
+// permission problem, disk I/O failure, or misconfiguration on the
+// persistent root). A non-not-exist primary error is a real problem the
+// caller needs to see; silently falling through to whatever the OLD tmpfs
+// root happens to hold for the same runtimeID would mask that error behind
+// what looks like a successful (but stale, or simply unrelated) read.
 type transcriptLogReader struct {
 	rootDir         string
 	fallbackRootDir string
@@ -358,7 +367,7 @@ func (r transcriptLogReader) ReadJobLog(runtimeID string) ([]byte, error) {
 	if err == nil {
 		return data, nil
 	}
-	if r.fallbackRootDir != "" {
+	if r.fallbackRootDir != "" && os.IsNotExist(err) {
 		if fbData, fbErr := dispatcher.ReadTranscript(r.fallbackRootDir, runtimeID); fbErr == nil {
 			return fbData, nil
 		}
@@ -371,7 +380,7 @@ func (r transcriptLogReader) StatJobLog(runtimeID string) (int64, time.Time, err
 	if err == nil {
 		return fi.Size(), fi.ModTime(), nil
 	}
-	if r.fallbackRootDir != "" {
+	if r.fallbackRootDir != "" && os.IsNotExist(err) {
 		if fbFi, fbErr := dispatcher.StatTranscript(r.fallbackRootDir, runtimeID); fbErr == nil {
 			return fbFi.Size(), fbFi.ModTime(), nil
 		}

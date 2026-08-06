@@ -414,6 +414,51 @@ func TestTranscriptLogReader_PrimaryWinsOverFallback(t *testing.T) {
 	}
 }
 
+// TestTranscriptLogReader_NonNotExistPrimaryError_DoesNotFallThrough pins
+// [codex review round 2, PR #904]: a primary-root failure that is NOT
+// os.ErrNotExist (a real problem — permission, I/O, misconfiguration) must
+// propagate as-is, even when the SAME runtimeID happens to have an entry in
+// fallbackRootDir. Falling through in that case would silently mask a real
+// primary-side error behind what looks like a successful (but stale or
+// simply unrelated) read. Simulated here the same way
+// container_backend_transcript_spool_failure_test.go simulates an
+// unwritable spool dir: occupy the path a directory is expected at with a
+// plain FILE, so the lookup fails with ENOTDIR (which os.IsNotExist
+// reports as false) rather than ENOENT.
+func TestTranscriptLogReader_NonNotExistPrimaryError_DoesNotFallThrough(t *testing.T) {
+	primaryRoot := t.TempDir()
+	fallbackRoot := t.TempDir()
+	runtimeID := "rt-non-notexist"
+
+	// Occupy <primaryRoot>/<runtimeID> (normally a directory) with a file,
+	// so joining ".../transcript.log" under it fails with ENOTDIR, not ENOENT.
+	if err := os.WriteFile(filepath.Join(primaryRoot, runtimeID), []byte("occupied"), 0o644); err != nil {
+		t.Fatalf("seed blocking file: %v", err)
+	}
+
+	fbDir := filepath.Join(fallbackRoot, runtimeID)
+	if err := os.MkdirAll(fbDir, 0o755); err != nil {
+		t.Fatalf("mkdir fallback dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(fbDir, "transcript.log"), []byte("stale fallback data"), 0o644); err != nil {
+		t.Fatalf("write fallback transcript: %v", err)
+	}
+
+	r := transcriptLogReader{rootDir: primaryRoot, fallbackRootDir: fallbackRoot}
+
+	if _, err := r.ReadJobLog(runtimeID); err == nil {
+		t.Error("ReadJobLog() = nil error, want the primary ENOTDIR error to propagate (not silently fall through to fallback)")
+	} else if os.IsNotExist(err) {
+		t.Errorf("ReadJobLog() error = %v, want a non-not-exist error (test setup should produce ENOTDIR)", err)
+	}
+
+	if _, _, err := r.StatJobLog(runtimeID); err == nil {
+		t.Error("StatJobLog() = nil error, want the primary ENOTDIR error to propagate (not silently fall through to fallback)")
+	} else if os.IsNotExist(err) {
+		t.Errorf("StatJobLog() error = %v, want a non-not-exist error (test setup should produce ENOTDIR)", err)
+	}
+}
+
 // TestTranscriptLogReader_NotFoundInEitherRoot pins that a runtimeID absent
 // from both roots still returns the original (primary-root) not-exist
 // error, not a fallback-derived one, and that fallbackRootDir empty (every
