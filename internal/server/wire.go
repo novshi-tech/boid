@@ -456,7 +456,7 @@ func buildProjectLoadStartupError(errs []error) error {
 // existing "feature disabled" contract (see its own doc comment), so this
 // is a pure additive parameter, not a behavior change for anyone who leaves
 // it nil.
-func sandboxBackendForConfig(dockerClient *client.Client, installID, runtimeDir string, brokerTLSCA *mtls.CA, brokerTLSAddr *string) backend.SandboxBackend {
+func sandboxBackendForConfig(dockerClient *client.Client, installID, runtimeDir, transcriptDir string, brokerTLSCA *mtls.CA, brokerTLSAddr *string) backend.SandboxBackend {
 	// UID/GID (PR9, §決定4 — "job container は `--user <daemon uid>:<gid>`
 	// で非 root 起動"): os.Getuid()/os.Getgid() are the DAEMON's own actual
 	// runtime uid/gid — under compose these are whatever `user:
@@ -487,10 +487,11 @@ func sandboxBackendForConfig(dockerClient *client.Client, installID, runtimeDir 
 	// only a uid of 0 is still rejected.
 	uid, gid := os.Getuid(), os.Getgid()
 	return dispatcher.NewContainerBackend(dockerClient, dispatcher.ContainerBackendOptions{
-		InstallID:  installID,
-		RuntimeDir: runtimeDir,
-		UID:        &uid,
-		GID:        &gid,
+		InstallID:     installID,
+		RuntimeDir:    runtimeDir,
+		TranscriptDir: transcriptDir,
+		UID:           &uid,
+		GID:           &gid,
 		// DefaultImage (docs/plans/release-onboarding.md 穴4/PR4 codex
 		// review, Blocker): BOID_IMAGE, when set, names the EXACT image ref
 		// this daemon process itself was launched from — build/container/
@@ -512,8 +513,13 @@ func sandboxBackendForConfig(dockerClient *client.Client, installID, runtimeDir 
 		// `boid start` outside compose, or any deploy that hasn't set it)
 		// leaves NewContainerBackend's own version.DefaultContainerImage()
 		// fallback in charge, unchanged from before this fix.
-		DefaultImage:         os.Getenv("BOID_IMAGE"),
-		DiagnosticsCollector: dispatcher.NewDefaultDiagnosticsCollector(dockerClient, runtimeDir),
+		DefaultImage: os.Getenv("BOID_IMAGE"),
+		// diagnostics.json follows the same TranscriptDir-else-RuntimeDir
+		// fallback openTranscriptSpool applies internally (see
+		// ContainerBackendOptions.TranscriptDir's doc comment) — computed
+		// here rather than inside NewDefaultDiagnosticsCollector since that
+		// free function only takes one directory string.
+		DiagnosticsCollector: dispatcher.NewDefaultDiagnosticsCollector(dockerClient, firstNonEmpty(transcriptDir, runtimeDir)),
 		// SelfContainerID (PR9, §決定5): $HOSTNAME is docker's own default
 		// container hostname (the short container ID) unless a service
 		// overrides it — build/container/compose.yml's `daemon` service
@@ -843,6 +849,50 @@ func dataHomeFor(cfg Config) string {
 	return ""
 }
 
+// transcriptsDirFor returns the persistent root for daemon-authored,
+// per-job diagnostic artifacts (transcript.log, diagnostics.json) under a
+// container-backend deploy: <dataHomeFor(cfg)>/runtime-transcripts, a
+// sibling of boid.db under the boid_state named volume.
+//
+// This is distinct from hostVisibleRuntimesDirFor, which MUST resolve to a
+// host-visible tmpfs path because a DooD sibling container's own bind
+// mounts (spec.json/state.json/TLS material — writeContainerSpec) are
+// sourced from it. transcript.log/diagnostics.json carry no such
+// requirement: containerBackend writes both itself, from its own
+// docker-attach/inspect/logs calls, never via a bind mount into the job
+// container (see ContainerBackendOptions.TranscriptDir's doc comment) — so
+// they can live on a real persistent volume instead of the host tmpfs that
+// hostVisibleRuntimesDirFor resolves to, which is wiped on every host
+// reboot (that function's own doc comment). Parking them here means a
+// completed job's `boid job log` output and post-mortem diagnostics survive
+// a reboot exactly like boid.db already does.
+//
+// Deliberately a NEW path, not a reuse of runtimesDirFor's existing value
+// (which happens to compute the same parent directory when DBPath is set):
+// runtimesDirFor is pinned by TestRuntimesDirFor_UnaffectedByHostVisibleVariant
+// as the historical (pre-PR-4, now-removed userns backend) LocalRuntime
+// root — reusing it here for an unrelated, container-backend-only purpose
+// would conflate two different meanings under one function/directory.
+//
+// Empty when dataHomeFor(cfg) is empty (the same exotic-config case
+// dataHomeFor itself documents) — every call site treats "" as "disable
+// this persistence layer, fall back to RuntimeDir", not a hard error.
+func transcriptsDirFor(cfg Config) string {
+	home := dataHomeFor(cfg)
+	if home == "" {
+		return ""
+	}
+	return filepath.Join(home, "runtime-transcripts")
+}
+
+// firstNonEmpty returns a, or b if a is empty.
+func firstNonEmpty(a, b string) string {
+	if a != "" {
+		return a
+	}
+	return b
+}
+
 // webSecretPathFor returns the path for the web session signing key.
 func webSecretPathFor(cfg Config) string {
 	if cfg.DBPath != "" && cfg.DBPath != ":memory:" {
@@ -991,9 +1041,20 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 	// container backend, so this is no longer choosing between two roots.
 	runtimesRoot := hostVisibleRuntimesDirFor(cfg)
 
+	// Persistent transcript/diagnostics root (transcriptsDirFor's own doc
+	// comment) — daemon-authored artifacts that don't need runtimesRoot's
+	// DooD host-visibility, so they're parked on the same persistent volume
+	// as boid.db instead of the tmpfs runtimesRoot loses on host reboot.
+	transcriptsRoot := transcriptsDirFor(cfg)
+
 	// Clean up runtime dirs that have no corresponding job rows (must run before
 	// MarkStaleJobsFailed so we only remove truly orphaned dirs).
 	cleanOrphanRuntimes(runtimesRoot, srv.db)
+	// Same orphan sweep for the transcripts root: a job row deleted by some
+	// path other than GC (GC itself removes both roots together, see
+	// TaskGCStore.cleanRuntimes) would otherwise leak a transcript dir
+	// forever now that it survives reboots.
+	cleanOrphanRuntimes(transcriptsRoot, srv.db)
 
 	// Clean up jobs left in running state from a previous crash or restart.
 	if err := dispatcher.MarkStaleJobsFailed(srv.db); err != nil {
@@ -1162,7 +1223,7 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 	// cfg.Backend is nil, which is exactly this branch.
 	sandboxBackend := cfg.Backend
 	if sandboxBackend == nil {
-		sandboxBackend = sandboxBackendForConfig(dockerClient, srv.installID, runtimesRoot, srv.daemonCA, &srv.brokerTLSSandboxAddr)
+		sandboxBackend = sandboxBackendForConfig(dockerClient, srv.installID, runtimesRoot, transcriptsRoot, srv.daemonCA, &srv.brokerTLSSandboxAddr)
 	}
 	runner.Backend = sandboxBackend
 	// InstallID (PR9, §決定5): threaded onto Runner too, alongside
@@ -1573,14 +1634,17 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 		// api.WebHandler.AttachmentsRoot (below) — the Phase 5b PR2 attachments
 		// RPCs (`boid task attachments list|get`) must read from the identical
 		// directory the upload path writes to (wiring-seams.md #15).
-		// transcriptLogReader.rootDir uses runtimesRoot (not a fresh
-		// runtimesDirFor(cfg)) — under container backend this must be the
-		// SAME host-visible root containerBackend's own transcript spool
-		// (openTranscriptSpool, sandboxBackendForConfig's runtimeDir
-		// argument above) actually writes to, or `boid job log`/`boid task
-		// env`-adjacent broker RPCs would read from the wrong directory.
-		// See hostVisibleRuntimesDirFor's own doc comment.
-		srv.broker.BoidExecutor = newBoidBuiltinExecutor(workflow, taskSvc, jobStore, transcriptLogReader{rootDir: runtimesRoot}, runner, dataHomeFor(cfg), projectSvc)
+		// transcriptLogReader.rootDir uses transcriptsRoot (not runtimesRoot)
+		// — under container backend this must be the SAME persistent root
+		// containerBackend's own transcript spool actually writes to now
+		// (openTranscriptSpool, sandboxBackendForConfig's transcriptDir
+		// argument above — see transcriptsDirFor's own doc comment), or
+		// `boid job log`/`boid task env`-adjacent broker RPCs would read
+		// from the wrong directory. fallbackRootDir: runtimesRoot covers
+		// jobs whose transcript was written under the pre-migration tmpfs
+		// root by a daemon build that predates this PR (codex review round
+		// 1 — see transcriptLogReader's own doc comment).
+		srv.broker.BoidExecutor = newBoidBuiltinExecutor(workflow, taskSvc, jobStore, transcriptLogReader{rootDir: transcriptsRoot, fallbackRootDir: runtimesRoot}, runner, dataHomeFor(cfg), projectSvc)
 		srv.broker.ProjectResolver = projectResolverFor(projectSvc)
 	}
 	globalJobSvc := &globalJobStore{
@@ -1834,6 +1898,12 @@ func mountRoutes(srv *Server, runtime *appRuntime) error {
 	if usingContainerBackend {
 		runtimesRoot = hostVisibleRuntimesDirFor(srv.cfg)
 	}
+	// Persistent transcript/diagnostics root — must agree with buildRuntime's
+	// own transcriptsRoot (sandboxBackendForConfig's transcriptDir argument),
+	// same reasoning as runtimesRoot above. A pure function of srv.cfg, so
+	// recomputing here (rather than threading it through appRuntime) cannot
+	// drift from buildRuntime's value.
+	transcriptsRoot := transcriptsDirFor(srv.cfg)
 
 	// CSRF middleware must be registered before any routes (chi requirement).
 	// The middleware exempts /api/* and /auth paths, so existing API routes are unaffected.
@@ -1986,6 +2056,7 @@ func mountRoutes(srv *Server, runtime *appRuntime) error {
 
 	gcStore := orchestrator.NewTaskGCStore(srv.db).
 		WithRuntimesDir(runtimesRoot).
+		WithTranscriptsDir(transcriptsRoot).
 		WithSandboxTmpDir(os.TempDir()).
 		WithRuntimeReaper(makeDockerRuntimeReaper()).
 		WithAttachmentsRoot(dataHomeFor(srv.cfg))
@@ -2024,10 +2095,12 @@ func mountRoutes(srv *Server, runtime *appRuntime) error {
 	})
 
 	jobHandler := &api.JobHandler{
-		Jobs:      runtime.jobStore,
-		Global:    runtime.globalJobStore,
-		Service:   runtime.workflow,
-		LogReader: transcriptLogReader{rootDir: runtimesRoot},
+		Jobs:    runtime.jobStore,
+		Global:  runtime.globalJobStore,
+		Service: runtime.workflow,
+		// fallbackRootDir: runtimesRoot — see the boid_executor wiring's
+		// identical comment above (codex review round 1).
+		LogReader: transcriptLogReader{rootDir: transcriptsRoot, fallbackRootDir: runtimesRoot},
 		SSEHandler: &api.JobLogSSEHandler{
 			Subscriber: runtime.runner,
 			Registry:   runtime.connRegistry,

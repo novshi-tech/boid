@@ -30,7 +30,7 @@ import (
 // production path: sandboxBackendForConfig always produces a real
 // containerBackend now.
 func TestSandboxBackendForConfig_ReturnsContainerBackend(t *testing.T) {
-	be := sandboxBackendForConfig(dockerClientForTest(t), "install-1", t.TempDir(), nil, nil)
+	be := sandboxBackendForConfig(dockerClientForTest(t), "install-1", t.TempDir(), t.TempDir(), nil, nil)
 	if be == nil {
 		t.Fatal("backend = nil, want a non-nil containerBackend")
 	}
@@ -47,7 +47,7 @@ func TestSandboxBackendForConfig_ReturnsContainerBackend(t *testing.T) {
 // consumer yet)"), so an OOM-killed or setup-failure job container was
 // removed with no diagnostic capture at all.
 func TestSandboxBackendForConfig_WiresDiagnosticsCollector(t *testing.T) {
-	be := sandboxBackendForConfig(dockerClientForTest(t), "install-1", t.TempDir(), nil, nil)
+	be := sandboxBackendForConfig(dockerClientForTest(t), "install-1", t.TempDir(), t.TempDir(), nil, nil)
 	if !dispatcher.ContainerBackendHasDiagnosticsCollector(be) {
 		t.Error("containerBackend was constructed without a DiagnosticsCollector, want NewDefaultDiagnosticsCollector wired")
 	}
@@ -64,7 +64,7 @@ func TestSandboxBackendForConfig_WiresDiagnosticsCollector(t *testing.T) {
 // uid is a proxy for "the daemon's own uid" (os.Getuid() is deterministic
 // per-process, exactly what sandboxBackendForConfig itself calls).
 func TestSandboxBackendForConfig_WiresDaemonUIDGID(t *testing.T) {
-	be := sandboxBackendForConfig(dockerClientForTest(t), "install-1", t.TempDir(), nil, nil)
+	be := sandboxBackendForConfig(dockerClientForTest(t), "install-1", t.TempDir(), t.TempDir(), nil, nil)
 	gotUID, gotGID, ok := dispatcher.ContainerBackendUIDGID(be)
 	if !ok {
 		t.Fatal("ContainerBackendUIDGID: be is not a containerBackend")
@@ -93,7 +93,7 @@ func TestSandboxBackendForConfig_WiresDaemonUIDGID(t *testing.T) {
 func TestSandboxBackendForConfig_WiresBOIDImageEnv(t *testing.T) {
 	t.Setenv("BOID_IMAGE", "ghcr.io/novshi-tech/boid-runner:v9.9.9")
 
-	be := sandboxBackendForConfig(dockerClientForTest(t), "install-1", t.TempDir(), nil, nil)
+	be := sandboxBackendForConfig(dockerClientForTest(t), "install-1", t.TempDir(), t.TempDir(), nil, nil)
 	got, ok := dispatcher.ContainerBackendDefaultImage(be)
 	if !ok {
 		t.Fatal("ContainerBackendDefaultImage: be is not a containerBackend")
@@ -111,7 +111,7 @@ func TestSandboxBackendForConfig_WiresBOIDImageEnv(t *testing.T) {
 func TestSandboxBackendForConfig_NoBOIDImageEnv_FallsBackToVersionDefault(t *testing.T) {
 	t.Setenv("BOID_IMAGE", "")
 
-	be := sandboxBackendForConfig(dockerClientForTest(t), "install-1", t.TempDir(), nil, nil)
+	be := sandboxBackendForConfig(dockerClientForTest(t), "install-1", t.TempDir(), t.TempDir(), nil, nil)
 	got, ok := dispatcher.ContainerBackendDefaultImage(be)
 	if !ok {
 		t.Fatal("ContainerBackendDefaultImage: be is not a containerBackend")
@@ -140,7 +140,7 @@ func TestSandboxBackendForConfig_WiresBrokerTLS(t *testing.T) {
 	}
 	var addr string
 
-	be := sandboxBackendForConfig(dockerClientForTest(t), "install-1", t.TempDir(), ca, &addr)
+	be := sandboxBackendForConfig(dockerClientForTest(t), "install-1", t.TempDir(), t.TempDir(), ca, &addr)
 
 	gotAddr, hasCA, ok := dispatcher.ContainerBackendBrokerTLS(be)
 	if !ok {

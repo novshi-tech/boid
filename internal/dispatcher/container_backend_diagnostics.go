@@ -15,7 +15,7 @@ import (
 )
 
 // diagnosticsFileName is the fixed filename NewDefaultDiagnosticsCollector
-// writes under <runtimeDir>/<containerID>/ — the sibling of
+// writes under <dir>/<containerID>/ — the sibling of
 // localRuntimeTranscriptFile ("transcript.log") under the same per-job
 // directory.
 const diagnosticsFileName = "diagnostics.json"
@@ -29,7 +29,7 @@ const diagnosticsFileName = "diagnostics.json"
 const diagnosticsMaxLogBytes = 256 * 1024
 
 // containerDiagnostics is the JSON shape NewDefaultDiagnosticsCollector
-// writes to <runtimeDir>/<containerID>/diagnostics.json. Every field is
+// writes to <dir>/<containerID>/diagnostics.json. Every field is
 // best-effort: an inspect or logs-fetch failure degrades gracefully (see
 // the collector's own doc comment) rather than skipping the whole file.
 type containerDiagnostics struct {
@@ -97,22 +97,26 @@ type containerDiagnostics struct {
 // a SIGKILL'd container, but dockerd's own buffer isn't), and exit.EngineError
 // verbatim when the exit was an engine fault rather than the job's own
 // command failing (containerDiagnostics.EngineError's own doc comment) —
-// and writes all of it to <runtimeDir>/<containerID>/diagnostics.json — the
-// sibling of transcript.log under the same per-job directory. Every step is
-// best-effort: an inspect or logs failure is recorded in the
-// diagnostics.json itself (CollectorError) rather than losing the whole
-// artifact, and the collector NEVER returns an error to its caller
-// (waitLoop's own contract — see ContainerBackendOptions.DiagnosticsCollector's
-// doc comment: this runs strictly before ContainerRemove, so it must not
-// block or fail container teardown).
+// and writes all of it to <dir>/<containerID>/diagnostics.json — the
+// sibling of transcript.log under the same per-job directory (callers pass
+// the same root as ContainerBackendOptions.TranscriptDir when set, else
+// RuntimeDir — see TranscriptDir's own doc comment for why diagnostics.json,
+// like transcript.log, does not need RuntimeDir's DooD host-visibility and
+// can live on a persistent volume instead). Every step is best-effort: an
+// inspect or logs failure is recorded in the diagnostics.json itself
+// (CollectorError) rather than losing the whole artifact, and the collector
+// NEVER returns an error to its caller (waitLoop's own contract — see
+// ContainerBackendOptions.DiagnosticsCollector's doc comment: this runs
+// strictly before ContainerRemove, so it must not block or fail container
+// teardown).
 //
-// runtimeDir empty (every pre-Major-7 test/caller, or a deploy that hasn't
-// wired ContainerBackendOptions.RuntimeDir) makes the returned collector a
-// no-op — there is no host-visible directory to write into (mirrors
-// openTranscriptSpool's identical empty-runtimeDir degrade).
-func NewDefaultDiagnosticsCollector(api dockerAPI, runtimeDir string) func(ctx context.Context, containerID string, exit backend.RuntimeExit) {
+// dir empty (every pre-Major-7 test/caller, or a deploy that hasn't wired a
+// transcript/runtime dir) makes the returned collector a no-op — there is no
+// directory to write into (mirrors openTranscriptSpool's identical
+// empty-dir degrade).
+func NewDefaultDiagnosticsCollector(api dockerAPI, dir string) func(ctx context.Context, containerID string, exit backend.RuntimeExit) {
 	return func(ctx context.Context, containerID string, exit backend.RuntimeExit) {
-		if runtimeDir == "" || exit.ExitCode == 0 {
+		if dir == "" || exit.ExitCode == 0 {
 			return
 		}
 		diag := containerDiagnostics{
@@ -142,9 +146,9 @@ func NewDefaultDiagnosticsCollector(api dockerAPI, runtimeDir string) func(ctx c
 			diag.DockerLogsTail = tail
 		}
 
-		dir := filepath.Join(runtimeDir, containerID)
-		if err := os.MkdirAll(dir, 0o755); err != nil {
-			slog.Warn("container backend: diagnostics collector: create runtime dir failed", "container_id", containerID, "dir", dir, "error", err)
+		outDir := filepath.Join(dir, containerID)
+		if err := os.MkdirAll(outDir, 0o755); err != nil {
+			slog.Warn("container backend: diagnostics collector: create runtime dir failed", "container_id", containerID, "dir", outDir, "error", err)
 			return
 		}
 		data, err := json.MarshalIndent(diag, "", "  ")
@@ -152,7 +156,7 @@ func NewDefaultDiagnosticsCollector(api dockerAPI, runtimeDir string) func(ctx c
 			slog.Warn("container backend: diagnostics collector: marshal failed", "container_id", containerID, "error", err)
 			return
 		}
-		path := filepath.Join(dir, diagnosticsFileName)
+		path := filepath.Join(outDir, diagnosticsFileName)
 		if err := os.WriteFile(path, data, 0o644); err != nil {
 			slog.Warn("container backend: diagnostics collector: write failed", "container_id", containerID, "path", path, "error", err)
 		}

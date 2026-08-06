@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"log/slog"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"sort"
@@ -335,21 +336,56 @@ func (s *globalJobStore) ListJobsWithContext(filter api.JobListFilter) ([]api.Jo
 	return result, nil
 }
 
-// transcriptLogReader implements api.JobLogReader by reading transcript files from disk.
+// transcriptLogReader implements api.JobLogReader by reading transcript
+// files from disk. rootDir is the primary root (transcriptsDirFor's
+// persistent boid_state-backed dir as of 2026-08-06 — see
+// ContainerBackendOptions.TranscriptDir's doc comment). fallbackRootDir,
+// when non-empty, is tried when rootDir has no entry for a runtimeID — this
+// covers jobs whose transcript was written under the OLD tmpfs
+// runtimesRoot by a daemon build that predates the TranscriptDir migration
+// (in-place upgrade without an intervening restart that would have wiped
+// tmpfs anyway): without this, `boid job log` would regress from "works"
+// to "not found" for those jobs the moment this binary starts, even though
+// the file is still sitting right there. Empty fallbackRootDir (every
+// pre-this-field caller) disables the fallback entirely — unchanged
+// single-root behavior.
+//
+// [codex review round 2, PR #904]: the fallback is only attempted when the
+// primary lookup fails with os.IsNotExist — never for any other error (a
+// permission problem, disk I/O failure, or misconfiguration on the
+// persistent root). A non-not-exist primary error is a real problem the
+// caller needs to see; silently falling through to whatever the OLD tmpfs
+// root happens to hold for the same runtimeID would mask that error behind
+// what looks like a successful (but stale, or simply unrelated) read.
 type transcriptLogReader struct {
-	rootDir string
+	rootDir         string
+	fallbackRootDir string
 }
 
 func (r transcriptLogReader) ReadJobLog(runtimeID string) ([]byte, error) {
-	return dispatcher.ReadTranscript(r.rootDir, runtimeID)
+	data, err := dispatcher.ReadTranscript(r.rootDir, runtimeID)
+	if err == nil {
+		return data, nil
+	}
+	if r.fallbackRootDir != "" && os.IsNotExist(err) {
+		if fbData, fbErr := dispatcher.ReadTranscript(r.fallbackRootDir, runtimeID); fbErr == nil {
+			return fbData, nil
+		}
+	}
+	return data, err
 }
 
 func (r transcriptLogReader) StatJobLog(runtimeID string) (int64, time.Time, error) {
 	fi, err := dispatcher.StatTranscript(r.rootDir, runtimeID)
-	if err != nil {
-		return 0, time.Time{}, err
+	if err == nil {
+		return fi.Size(), fi.ModTime(), nil
 	}
-	return fi.Size(), fi.ModTime(), nil
+	if r.fallbackRootDir != "" && os.IsNotExist(err) {
+		if fbFi, fbErr := dispatcher.StatTranscript(r.fallbackRootDir, runtimeID); fbErr == nil {
+			return fbFi.Size(), fbFi.ModTime(), nil
+		}
+	}
+	return 0, time.Time{}, err
 }
 
 type jobLifecycleAdapter struct {

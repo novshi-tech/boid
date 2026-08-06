@@ -44,18 +44,21 @@ E2E テスト（`e2e/run-container.sh`、real docker/podman engine が必要）�
 
 boid が管理するディスクデータは2種類ある:
 
-| ディレクトリ | 管理主体 | GC 対象 |
-|---|---|---|
-| `~/.local/share/boid/runtimes/<runtime_id>/` | boid | daemon が自動削除（24h 毎）|
-| `~/.claude/projects/-workspace-<project-name>-.../`（project ごと） | Claude Code | **boid 管轄外**・手動管理が必要 |
+| ディレクトリ | 管理主体 | 永続性 | GC 対象 |
+|---|---|---|---|
+| `$BOID_RUNTIME_DIR/runtimes/<runtime_id>/`（container backend の host tmpfs、`spec.json`/`state.json`/TLS 等） | boid | **host reboot で消える**（tmpfs。daemon container 再起動では消えない） | daemon が自動削除（24h 毎）|
+| `<data-home>/runtime-transcripts/<runtime_id>/`（`transcript.log`/`diagnostics.json`。2026-08-06〜） | boid | `boid_state` 永続 volume 配下・reboot を生き延びる | daemon が自動削除（24h 毎、`runtimes/<runtime_id>/` と同じ 30 日ルール）|
+| `~/.claude/projects/-workspace-<project-name>-.../`（project ごと） | Claude Code | `boid_state` と同じ永続 workspace HOME volume | **boid 管轄外**・手動管理が必要 |
 
 `~/.claude/projects/` 配下の `*.jsonl` は Claude Code 本体が書き込むセッションログであり、boid が手を出すのは越権行為となる。
 git gateway cutover (2026-07) 後はジョブの cwd が sandbox 内の `/workspace/<project-name>`（project 名ベース、task ID を含まない）になったため、同一 project の複数タスクが同じログディレクトリに集約される。手動で削除する場合は実際に一度 dispatch した上で `~/.claude/projects/` 配下の該当ディレクトリを確認し、他プロジェクトのログを巻き込まないよう注意して削除すること。
 
+`boid job log` が読む transcript.log は 2026-08-06 に `runtimes/<runtime_id>/`（tmpfs）から `runtime-transcripts/<runtime_id>/`（永続 volume）へ書き先を変更した — `dispatcher.ContainerBackendOptions.TranscriptDir`（`internal/server/wire.go` の `transcriptsDirFor`）。理由: `spec.json`/`state.json` は DooD (docker-out-of-docker) bind mount のソースとして host から見える必要があるので tmpfs のままだが、`transcript.log`/`diagnostics.json` は daemon プロセス自身が書く（job container への bind mount ではない）ので host-visibility の制約を受けず、永続 volume に置ける。`transcript_idle_seconds`（stuck 検出）・`boid job log`・post-mortem 診断は host reboot でも失われなくなった。中身のフォーマット自体（raw attach stream、ANSI 込み）は変更していない — 「読みにくい」問題は `boid job log --help` で agent:claude-code hook の場合の代替（session jsonl を `boid exec` で読む）を案内する形で対応済み。
+
 ### 自動 GC
 
 boid daemon 起動時に GC goroutine が立ち上がり、起動 **10 秒後**に初回実行、以降 **24 時間ごと**に **30 日より古いデータ**を自動削除する。
-削除対象は `runtimes/<runtime_id>/` ディレクトリに加え、終端状態の tasks/actions/jobs（DB レコード）・`/tmp/boid-*` ・失効済みデバイスも含む。
+削除対象は `runtimes/<runtime_id>/` ディレクトリと `runtime-transcripts/<runtime_id>/` ディレクトリに加え、終端状態の tasks/actions/jobs（DB レコード）・`/tmp/boid-*` ・失効済みデバイスも含む。
 手動実行は引き続き `boid gc` で可能。設定は `docs/ja/reference/config-yaml.md` を参照。
 
 ## Web UI

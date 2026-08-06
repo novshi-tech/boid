@@ -126,7 +126,7 @@ func TestBrokerRegistry_RegisterBrokerCommands_ResolvesWorkspaceScope(t *testing
 		}},
 	}
 
-	resp, err := registry.RegisterBrokerCommands(nil, nil,"proj-1")
+	resp, err := registry.RegisterBrokerCommands(nil, nil, "proj-1")
 	if err != nil {
 		t.Fatalf("RegisterBrokerCommands: %v", err)
 	}
@@ -241,7 +241,7 @@ func TestBrokerRegistry_RegisterBrokerCommands_UnassignedWorkspaceDefaultsToSelf
 		}},
 	}
 
-	resp, err := registry.RegisterBrokerCommands(nil, nil,"proj-4")
+	resp, err := registry.RegisterBrokerCommands(nil, nil, "proj-4")
 	if err != nil {
 		t.Fatalf("RegisterBrokerCommands: %v", err)
 	}
@@ -338,5 +338,140 @@ func TestTranscriptLogReader_StatJobLog_NotFound(t *testing.T) {
 	_, _, err := r.StatJobLog("nonexistent-rt")
 	if !os.IsNotExist(err) {
 		t.Errorf("error = %v, want os.ErrNotExist", err)
+	}
+}
+
+// TestTranscriptLogReader_FallbackRootDir_UsedWhenPrimaryMisses pins [codex
+// review round 1, PR #904]: a runtimeID absent from the primary root (the
+// post-2026-08-06 persistent transcriptsRoot) but present in
+// fallbackRootDir (the pre-migration tmpfs runtimesRoot) must still resolve
+// — otherwise `boid job log` regresses to "not found" for every job whose
+// transcript was written by a daemon build that predates the TranscriptDir
+// migration, the instant a newer binary starts.
+func TestTranscriptLogReader_FallbackRootDir_UsedWhenPrimaryMisses(t *testing.T) {
+	primaryRoot := t.TempDir()
+	fallbackRoot := t.TempDir()
+	runtimeID := "rt-fallback"
+	oldDir := filepath.Join(fallbackRoot, runtimeID)
+	if err := os.MkdirAll(oldDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	content := "pre-migration transcript\n"
+	if err := os.WriteFile(filepath.Join(oldDir, "transcript.log"), []byte(content), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	r := transcriptLogReader{rootDir: primaryRoot, fallbackRootDir: fallbackRoot}
+
+	data, err := r.ReadJobLog(runtimeID)
+	if err != nil {
+		t.Fatalf("ReadJobLog() error = %v, want fallback to succeed", err)
+	}
+	if string(data) != content {
+		t.Errorf("ReadJobLog() = %q, want %q", data, content)
+	}
+
+	size, mtime, err := r.StatJobLog(runtimeID)
+	if err != nil {
+		t.Fatalf("StatJobLog() error = %v, want fallback to succeed", err)
+	}
+	if size != int64(len(content)) {
+		t.Errorf("size = %d, want %d", size, len(content))
+	}
+	if mtime.IsZero() {
+		t.Error("mtime should not be zero")
+	}
+}
+
+// TestTranscriptLogReader_PrimaryWinsOverFallback pins that a runtimeID
+// present in BOTH roots reads from the primary (current) root, not the
+// fallback — the fallback is strictly for entries the primary is missing,
+// never a stale-data shadowing risk for entries that do exist in both.
+func TestTranscriptLogReader_PrimaryWinsOverFallback(t *testing.T) {
+	primaryRoot := t.TempDir()
+	fallbackRoot := t.TempDir()
+	runtimeID := "rt-both"
+	for root, content := range map[string]string{
+		primaryRoot:  "current transcript\n",
+		fallbackRoot: "stale transcript\n",
+	} {
+		dir := filepath.Join(root, runtimeID)
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("mkdir: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "transcript.log"), []byte(content), 0o644); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+	}
+
+	r := transcriptLogReader{rootDir: primaryRoot, fallbackRootDir: fallbackRoot}
+	data, err := r.ReadJobLog(runtimeID)
+	if err != nil {
+		t.Fatalf("ReadJobLog() error = %v", err)
+	}
+	if want := "current transcript\n"; string(data) != want {
+		t.Errorf("ReadJobLog() = %q, want %q (primary root)", data, want)
+	}
+}
+
+// TestTranscriptLogReader_NonNotExistPrimaryError_DoesNotFallThrough pins
+// [codex review round 2, PR #904]: a primary-root failure that is NOT
+// os.ErrNotExist (a real problem — permission, I/O, misconfiguration) must
+// propagate as-is, even when the SAME runtimeID happens to have an entry in
+// fallbackRootDir. Falling through in that case would silently mask a real
+// primary-side error behind what looks like a successful (but stale or
+// simply unrelated) read. Simulated here the same way
+// container_backend_transcript_spool_failure_test.go simulates an
+// unwritable spool dir: occupy the path a directory is expected at with a
+// plain FILE, so the lookup fails with ENOTDIR (which os.IsNotExist
+// reports as false) rather than ENOENT.
+func TestTranscriptLogReader_NonNotExistPrimaryError_DoesNotFallThrough(t *testing.T) {
+	primaryRoot := t.TempDir()
+	fallbackRoot := t.TempDir()
+	runtimeID := "rt-non-notexist"
+
+	// Occupy <primaryRoot>/<runtimeID> (normally a directory) with a file,
+	// so joining ".../transcript.log" under it fails with ENOTDIR, not ENOENT.
+	if err := os.WriteFile(filepath.Join(primaryRoot, runtimeID), []byte("occupied"), 0o644); err != nil {
+		t.Fatalf("seed blocking file: %v", err)
+	}
+
+	fbDir := filepath.Join(fallbackRoot, runtimeID)
+	if err := os.MkdirAll(fbDir, 0o755); err != nil {
+		t.Fatalf("mkdir fallback dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(fbDir, "transcript.log"), []byte("stale fallback data"), 0o644); err != nil {
+		t.Fatalf("write fallback transcript: %v", err)
+	}
+
+	r := transcriptLogReader{rootDir: primaryRoot, fallbackRootDir: fallbackRoot}
+
+	if _, err := r.ReadJobLog(runtimeID); err == nil {
+		t.Error("ReadJobLog() = nil error, want the primary ENOTDIR error to propagate (not silently fall through to fallback)")
+	} else if os.IsNotExist(err) {
+		t.Errorf("ReadJobLog() error = %v, want a non-not-exist error (test setup should produce ENOTDIR)", err)
+	}
+
+	if _, _, err := r.StatJobLog(runtimeID); err == nil {
+		t.Error("StatJobLog() = nil error, want the primary ENOTDIR error to propagate (not silently fall through to fallback)")
+	} else if os.IsNotExist(err) {
+		t.Errorf("StatJobLog() error = %v, want a non-not-exist error (test setup should produce ENOTDIR)", err)
+	}
+}
+
+// TestTranscriptLogReader_NotFoundInEitherRoot pins that a runtimeID absent
+// from both roots still returns the original (primary-root) not-exist
+// error, not a fallback-derived one, and that fallbackRootDir empty (every
+// pre-this-field caller/test above) behaves exactly as before this field
+// existed.
+func TestTranscriptLogReader_NotFoundInEitherRoot(t *testing.T) {
+	primaryRoot := t.TempDir()
+	fallbackRoot := t.TempDir()
+	r := transcriptLogReader{rootDir: primaryRoot, fallbackRootDir: fallbackRoot}
+	if _, err := r.ReadJobLog("nonexistent-rt"); !os.IsNotExist(err) {
+		t.Errorf("ReadJobLog() error = %v, want os.ErrNotExist", err)
+	}
+	if _, _, err := r.StatJobLog("nonexistent-rt"); !os.IsNotExist(err) {
+		t.Errorf("StatJobLog() error = %v, want os.ErrNotExist", err)
 	}
 }
