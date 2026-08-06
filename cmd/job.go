@@ -61,13 +61,14 @@ render a TUI.
 For an agent:claude-code hook job, the actually-readable record of what the
 agent did is Claude Code's own structured session log, which boid never
 copies — it only records a pointer to it (task payload
-artifact.claude_code.sessions[].id). That jsonl already lives durably on the
-workspace's HOME volume (it survives daemon/host restarts, unlike this
-transcript). To read it:
+artifact.claude_code.sessions[].id). That jsonl lives on the workspace's
+HOME volume, which also survives daemon/host restarts. To read it — note
+"boid exec" runs argv directly (no shell), so "~" and "*" need an explicit
+shell to expand:
 
-  boid exec -p <project> -- cat ~/.claude/projects/-workspace-<project-name>-*/<session-id>.jsonl
+  boid exec -p <project> -- sh -lc 'cat ~/.claude/projects/-workspace-<project-name>-*/<session-id>.jsonl'
 
-(project-name comes from the job's project; session-id from
+(substitute the actual project-name and session-id; session-id comes from
 artifact.claude_code.sessions[].id in "boid task show <task-id>".)`,
 	Args:        cobra.ExactArgs(1),
 	Annotations: map[string]string{scopeAnnotationKey: scopeRemote},

@@ -335,21 +335,48 @@ func (s *globalJobStore) ListJobsWithContext(filter api.JobListFilter) ([]api.Jo
 	return result, nil
 }
 
-// transcriptLogReader implements api.JobLogReader by reading transcript files from disk.
+// transcriptLogReader implements api.JobLogReader by reading transcript
+// files from disk. rootDir is the primary root (transcriptsDirFor's
+// persistent boid_state-backed dir as of 2026-08-06 — see
+// ContainerBackendOptions.TranscriptDir's doc comment). fallbackRootDir,
+// when non-empty, is tried when rootDir has no entry for a runtimeID — this
+// covers jobs whose transcript was written under the OLD tmpfs
+// runtimesRoot by a daemon build that predates the TranscriptDir migration
+// (in-place upgrade without an intervening restart that would have wiped
+// tmpfs anyway): without this, `boid job log` would regress from "works"
+// to "not found" for those jobs the moment this binary starts, even though
+// the file is still sitting right there. Empty fallbackRootDir (every
+// pre-this-field caller) disables the fallback entirely — unchanged
+// single-root behavior.
 type transcriptLogReader struct {
-	rootDir string
+	rootDir         string
+	fallbackRootDir string
 }
 
 func (r transcriptLogReader) ReadJobLog(runtimeID string) ([]byte, error) {
-	return dispatcher.ReadTranscript(r.rootDir, runtimeID)
+	data, err := dispatcher.ReadTranscript(r.rootDir, runtimeID)
+	if err == nil {
+		return data, nil
+	}
+	if r.fallbackRootDir != "" {
+		if fbData, fbErr := dispatcher.ReadTranscript(r.fallbackRootDir, runtimeID); fbErr == nil {
+			return fbData, nil
+		}
+	}
+	return data, err
 }
 
 func (r transcriptLogReader) StatJobLog(runtimeID string) (int64, time.Time, error) {
 	fi, err := dispatcher.StatTranscript(r.rootDir, runtimeID)
-	if err != nil {
-		return 0, time.Time{}, err
+	if err == nil {
+		return fi.Size(), fi.ModTime(), nil
 	}
-	return fi.Size(), fi.ModTime(), nil
+	if r.fallbackRootDir != "" {
+		if fbFi, fbErr := dispatcher.StatTranscript(r.fallbackRootDir, runtimeID); fbErr == nil {
+			return fbFi.Size(), fbFi.ModTime(), nil
+		}
+	}
+	return 0, time.Time{}, err
 }
 
 type jobLifecycleAdapter struct {

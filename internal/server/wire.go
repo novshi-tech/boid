@@ -1640,8 +1640,11 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 		// (openTranscriptSpool, sandboxBackendForConfig's transcriptDir
 		// argument above — see transcriptsDirFor's own doc comment), or
 		// `boid job log`/`boid task env`-adjacent broker RPCs would read
-		// from the wrong directory.
-		srv.broker.BoidExecutor = newBoidBuiltinExecutor(workflow, taskSvc, jobStore, transcriptLogReader{rootDir: transcriptsRoot}, runner, dataHomeFor(cfg), projectSvc)
+		// from the wrong directory. fallbackRootDir: runtimesRoot covers
+		// jobs whose transcript was written under the pre-migration tmpfs
+		// root by a daemon build that predates this PR (codex review round
+		// 1 — see transcriptLogReader's own doc comment).
+		srv.broker.BoidExecutor = newBoidBuiltinExecutor(workflow, taskSvc, jobStore, transcriptLogReader{rootDir: transcriptsRoot, fallbackRootDir: runtimesRoot}, runner, dataHomeFor(cfg), projectSvc)
 		srv.broker.ProjectResolver = projectResolverFor(projectSvc)
 	}
 	globalJobSvc := &globalJobStore{
@@ -2092,10 +2095,12 @@ func mountRoutes(srv *Server, runtime *appRuntime) error {
 	})
 
 	jobHandler := &api.JobHandler{
-		Jobs:      runtime.jobStore,
-		Global:    runtime.globalJobStore,
-		Service:   runtime.workflow,
-		LogReader: transcriptLogReader{rootDir: transcriptsRoot},
+		Jobs:    runtime.jobStore,
+		Global:  runtime.globalJobStore,
+		Service: runtime.workflow,
+		// fallbackRootDir: runtimesRoot — see the boid_executor wiring's
+		// identical comment above (codex review round 1).
+		LogReader: transcriptLogReader{rootDir: transcriptsRoot, fallbackRootDir: runtimesRoot},
 		SSEHandler: &api.JobLogSSEHandler{
 			Subscriber: runtime.runner,
 			Registry:   runtime.connRegistry,
