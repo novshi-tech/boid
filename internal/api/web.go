@@ -939,9 +939,57 @@ type LoginHandler struct {
 	Limiter loginRateLimiter
 }
 
+// redeemErrorKey maps a Pairing.Redeem failure onto a short, stable key that
+// travels in the ?error= query param and is turned back into prose by
+// loginErrorMessage. The three redeem sentinels have genuinely different
+// remedies (wait for a new code / re-issue / retype), and collapsing them into
+// one message is what made the 2026-08-06 login failure undiagnosable from the
+// screen alone.
+func redeemErrorKey(err error) string {
+	switch {
+	case errors.Is(err, auth.ErrCodeExpired):
+		return "expired"
+	case errors.Is(err, auth.ErrCodeConsumed):
+		return "used"
+	case errors.Is(err, auth.ErrCodeNotFound):
+		return "invalid"
+	default:
+		return "error"
+	}
+}
+
+// isRedeemClientFault reports whether the failure is the caller's fault (a
+// wrong/stale code) rather than ours (DB/IO). Only the former may draw down
+// the brute-force rate limit — mirroring DeviceAuthHandler.PostDevice, where
+// double-punishing a server-side failure with a 15-minute IP lock would turn a
+// transient SQLite hiccup into a lockout.
+func isRedeemClientFault(err error) bool {
+	return errors.Is(err, auth.ErrCodeExpired) ||
+		errors.Is(err, auth.ErrCodeConsumed) ||
+		errors.Is(err, auth.ErrCodeNotFound)
+}
+
+// loginErrorMessage turns an ?error= key into the sentence shown on the login
+// page. Unknown keys collapse to a generic message on purpose: the value is
+// caller-controlled, and echoing it back would put arbitrary text on the page.
+func loginErrorMessage(key string) string {
+	switch key {
+	case "":
+		return ""
+	case "expired":
+		return "ペアリングコードの有効期限 (5分) が切れています。`boid web pair` で新しいコードを発行してください。"
+	case "used":
+		return "このペアリングコードは使用済みです。コードは1回しか使えません。`boid web pair` で新しいコードを発行してください。"
+	case "invalid":
+		return "ペアリングコードが見つかりません。ハイフンを含めて入力してください (大文字・小文字は問いません)。"
+	default:
+		return "ログインできませんでした。`boid web pair` で新しいコードを発行してやり直してください。"
+	}
+}
+
 func (h *LoginHandler) GetLogin(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	templates.Login(r.URL.Query().Get("error")).Render(r.Context(), w)
+	templates.Login(loginErrorMessage(r.URL.Query().Get("error"))).Render(r.Context(), w)
 }
 
 func (h *LoginHandler) PostLogin(w http.ResponseWriter, r *http.Request) {
@@ -950,38 +998,64 @@ func (h *LoginHandler) PostLogin(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Too Many Requests", http.StatusTooManyRequests)
 		return
 	}
+	// The code is NOT normalized here: auth.HashCode does it on both the
+	// issue and the redeem side, so every caller of Redeem gets the same
+	// tolerance for case, hyphenation and stray whitespace.
 	code := r.FormValue("code")
 	label, err := h.Pairing.Redeem(r.Context(), code)
 	if err != nil {
-		h.Limiter.RecordFailure(ip)
+		if isRedeemClientFault(err) {
+			h.Limiter.RecordFailure(ip)
+		}
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		templates.Login("無効なペアリングコードです").Render(r.Context(), w)
+		templates.Login(loginErrorMessage(redeemErrorKey(err))).Render(r.Context(), w)
 		return
 	}
 	if err := h.issueSession(w, r, label); err != nil {
-		h.Limiter.RecordFailure(ip)
 		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 		return
 	}
 	http.Redirect(w, r, "/", http.StatusFound)
 }
 
+// GetAuth renders the confirmation page for a magic link / QR scan. It is
+// deliberately side-effect free — it does NOT redeem the token.
+//
+// The previous version redeemed on GET, which made the single-use code
+// unusable in practice on a phone: browser preloading, QR-scanner link
+// previews, in-app-browser prefetching and even a plain reload all issue a GET
+// of their own, burning the code before (or instead of) the human's real
+// navigation. The human then landed on /login?error=invalid_code holding a
+// code that had just been spent by a robot. Consuming a one-time credential is
+// a state change, so it belongs behind the POST that PostAuth serves.
 func (h *LoginHandler) GetAuth(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	// Nothing is validated yet — an expired or bogus token still renders the
+	// page and fails on submit. That is intentional: validating here would
+	// hand an unauthenticated prefetcher a code-probing oracle and let it
+	// drain the rate limiter.
+	templates.AuthConfirm(r.URL.Query().Get("token")).Render(r.Context(), w)
+}
+
+// PostAuth redeems the token carried by the confirmation page's form. This is
+// the only path that spends a pairing code from the browser flow.
+func (h *LoginHandler) PostAuth(w http.ResponseWriter, r *http.Request) {
 	ip := remoteIP(r)
 	if !h.Limiter.Allowed(ip) {
 		http.Error(w, "Too Many Requests", http.StatusTooManyRequests)
 		return
 	}
-	token := r.URL.Query().Get("token")
+	token := r.FormValue("token")
 	label, err := h.Pairing.Redeem(r.Context(), token)
 	if err != nil {
-		h.Limiter.RecordFailure(ip)
-		http.Redirect(w, r, "/login?error=invalid_code", http.StatusFound)
+		if isRedeemClientFault(err) {
+			h.Limiter.RecordFailure(ip)
+		}
+		http.Redirect(w, r, "/login?error="+url.QueryEscape(redeemErrorKey(err)), http.StatusFound)
 		return
 	}
 	if err := h.issueSession(w, r, label); err != nil {
-		h.Limiter.RecordFailure(ip)
-		http.Redirect(w, r, "/login?error=invalid_code", http.StatusFound)
+		http.Redirect(w, r, "/login?error=error", http.StatusFound)
 		return
 	}
 	http.Redirect(w, r, "/", http.StatusFound)
