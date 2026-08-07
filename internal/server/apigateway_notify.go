@@ -66,28 +66,30 @@ type apiGatewayActionPayload struct {
 
 // newAPIGatewayRecorder adapts orchestrator.TaskRepository.CreateAction to
 // apigateway.RequestRecorder, so every gateway request past a well-formed-
-// route 404 gets appended to its originating task's action log (and,
-// through the existing timeline builder, its task-detail timeline) —
-// docs/plans/api-gateway.md §論点3. taskID == "" (a taskless job, e.g. `boid
-// exec`) skips recording entirely: there is no task action log to attach it
-// to. A CreateAction failure is logged and otherwise swallowed — exactly
-// like gatewayNotifier's own "never abort serving other requests" posture —
-// since a lost audit-log row is not a reason to fail (or even slow down) the
-// gateway request it describes.
+// route 404 gets appended to its originating task's action log as an
+// audit-trail row — docs/plans/api-gateway.md §論点3. taskID == "" (a
+// taskless job, e.g. `boid exec`) skips recording entirely: there is no
+// task action log to attach it to. A CreateAction failure is logged and
+// otherwise swallowed — exactly like gatewayNotifier's own "never abort
+// serving other requests" posture — since a lost audit-log row is not a
+// reason to fail (or even slow down) the gateway request it describes.
 //
-// FromStatus/ToStatus are both set to the task's CURRENT status (one extra
-// GetTask read per request), mirroring api.TaskAppService.NotifyTask's own
-// progress-mode Action exactly (internal/api/task_notify.go). This is not
-// cosmetic: timeline.Build's per-item group-placement logic reads FromStatus
-// unconditionally for every non-job item to decide which StatusGroup an
-// action belongs in — leaving it at its zero value (as an earlier version of
-// this function did) opens a spurious empty-status group instead of placing
-// the row in the task's actual current group, silently hiding every
-// recorded request from the rendered timeline despite the row existing in
-// the DB (caught by TestNewAPIGatewayRecorder_ActionIsVisibleInTimeline). A
-// GetTask failure (task deleted mid-request, a transient DB error) is
-// logged and the row is skipped entirely, rather than written with an empty
-// status and reintroducing the same visibility gap.
+// NOTE (2026-08-07, user feedback): these rows are audit-only — deliberately
+// EXCLUDED from the rendered task-detail timeline by timeline.Build (see
+// ActionTypeAPIGatewayRequest's doc comment in internal/timeline/timeline.go)
+// because a task that fans out into a paginated search or a status-polling
+// loop was drowning the timeline in one meaningless "api: GET ... → 200"
+// row per request. They remain queryable via ListActionsByTask for anyone
+// building an audit view.
+//
+// FromStatus/ToStatus are still both set to the task's CURRENT status (one
+// extra GetTask read per request), mirroring api.TaskAppService.NotifyTask's
+// own progress-mode Action shape (internal/api/task_notify.go) for
+// consistency with other Action rows — even though timeline.Build no longer
+// reads it for these rows, it is still meaningful audit context (which
+// status the task was in when the request happened). A GetTask failure
+// (task deleted mid-request, a transient DB error) is logged and the row is
+// skipped entirely rather than written with an empty status.
 func newAPIGatewayRecorder(tasks *orchestrator.TaskRepository) apigateway.RequestRecorder {
 	return func(taskID, method, service, path string, status int) {
 		if taskID == "" || tasks == nil {
