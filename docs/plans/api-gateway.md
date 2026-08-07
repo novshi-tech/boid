@@ -1,6 +1,6 @@
 # 汎用 API gateway (認証注入リバースプロキシ) + OAuth2 対応 計画
 
-ステータス: PR1 (gateway 本体、static 注入のみ) マージ済み (2026-08-03、#898)。PR2 (OAuth2 TokenSource) マージ済み (2026-08-03、#899)。PR3 (login flow) 実装完了・レビュー中 (2026-08-03)。
+ステータス: PR1 (gateway 本体、static 注入のみ) マージ済み (2026-08-03、#898)。PR2 (OAuth2 TokenSource) マージ済み (2026-08-03、#899)。PR3 (login flow) マージ済み (2026-08-04)。PR4 (client_credentials grant、§6-補) は設計中・未着手 (2026-08-08)。
 作成日: 2026-08-03
 親ドキュメント: [git-gateway-cutover.md](git-gateway-cutover.md) — 本計画は git gateway の認証注入モデルを git 以外の HTTP API へ汎用化する。認証情報一元管理の観点では [host-command-contract.md](host-command-contract.md) の後継でもある。
 
@@ -213,6 +213,132 @@ refresh token をローテーションするプロバイダ (freee が代表) �
 - **upstream 401 での reactive refresh + リトライは初期スコープ外**:
   無バッファストリーミングでは body を再送できない。先回りリフレッシュのみで
   運用開始し、必要になったら「小 body に限り buffer してリトライ」を別途検討。
+- 上記は全て authorization_code grant (delegated) 前提の記述。client_credentials
+  grant (Service Principal / app-only) は refresh_token を持たないため永続化順序
+  制約が発生せず、SecretStore に保持するのは access_token/expires_at のみになる
+  — 詳細は §6-補。
+
+### 6-補. client_credentials grant (Service Principal / app-only 認証) 対応
+
+**未実装 (2026-08-08 論点追加)**。az の REST 移行 ([[host-commands-shrink-to-gh-decision]]) で
+Azure DevOps / Application Insights / Storage を叩く際、**ユーザ本人の Entra ID 権限を
+そのままエージェントに渡すのは権限が大きすぎる**ため、エージェント専用の Service
+Principal (client credentials grant, RFC 6749 §4.4) を用意する方針 (2026-08-08 nose)。
+
+現行の §6/§7 実装は **3-legged (delegated) 前提で一本化されている**: `OAuth2TokenSource`
+の `refresh()` は `grant_type=refresh_token` のみを送り (`internal/apigateway/oauth2.go`
+`callTokenEndpoint`)、`LoginManager` の3フロー (device/loopback/manual) はいずれも
+「ユーザに一度認可させて refresh_token を発行させる」ための手段でしかない。
+client_credentials は **ユーザ認可のステップ自体が無い** 2-legged 認証で、構造が別物:
+
+- token endpoint に `grant_type=client_credentials` + `client_id` + `client_secret`
+  (confidential client 必須) + `scope` を直接 POST するだけ。認可 code も
+  redirect_uri も PKCE も関与しない
+- `refresh_token` という概念が無い。access_token の有効期限が切れたら同じリクエストを
+  投げ直すだけ — ローテーション型 refresh_token 特有の「書き込み順序厳守」制約
+  (§6 永続化順序) がそもそも発生しない
+- したがって `boid secret oauth login <service>` の出番が無い。必要な入力は
+  `client_secret` の投入のみで、これは既存の `boid secret set` (namespace 付き) で
+  そのまま足りる。**tenant は新フィールドでも secret でもなく、既存の
+  `token_endpoint` の URL に含める** (`https://login.microsoftonline.com/<tenant-id>/
+  oauth2/v2.0/token`) — Entra ID の client_credentials は `common`/`organizations`
+  テナントを受け付けないため、tenant ID か検証済みドメインでの固定が必須になる
+  (§Entra ID 特有の注意点、後述)
+
+**設計方針 (Opus レビュー 2026-08-08 反映済み、実装時に最終化)**:
+
+- `oauth_providers.<name>` に新フィールド `grant` (enum: `authorization_code`
+  [既定・現状の3フロー全てが該当] / `client_credentials`) を追加。既存の `flow`
+  フィールド (初回認可の**手段**: device/loopback/manual) とは直交する軸として
+  **分離のまま保つ** (`flow` の4つ目の値にする案は採らない — `ValidLoginFlows`
+  (`oauth2.go:122-131`) は「config 受理と `StartLogin` の switch が絶対に drift
+  しない」ための仕組みであり、`client_credentials` を flow 値に混ぜると「config
+  load では受理されるが `StartLogin` が必ず reject する値」が生まれてこの前提を
+  壊す。型の消費者も別: `LoginFlow` は `LoginManager` 専用、`grant` は
+  `OAuth2TokenSource.refresh()` というランタイム経路が読む)
+- **`grant` と `flow` の排他は `StartLogin` 時点ではなく config load 時
+  (`validateOAuthProviderConfig`) に拒否する**。既存の flow-conditional な必須
+  チェック (`authorization_endpoint` 等) は全て config load 時にやっており、
+  そこに揃える。`StartLogin` 側には defensive なガードを残すが、既存の default
+  分岐が出す「flow を device/loopback/manual に設定しろ」というメッセージを
+  そのまま client_credentials provider に出すと有害な誤誘導になるため、専用の
+  エラーメッセージにする
+- `grant: client_credentials` の場合 `client_secret_key` は必須 (public client では
+  client_credentials grant 自体が成立しない — RFC 6749 §4.4.2)。**空文字が
+  "設定されている" ケースは config load 時に fail-fast する** (未設定キーは
+  `SecretStore.Get` が `sql.ErrNoRows` を返すので `refresh()` の `err != nil` で
+  既に弾かれるが、空値だけは素通りして分かりにくい 502 になる)
+- **分岐箇所は `AccessToken()` ではなく `refresh()`** (refresh_token の解決と
+  エラー文言は `refresh()` 冒頭にある、`oauth2.go:537-557`)。client_credentials
+  では refresh_token の存在チェックをスキップし `callTokenEndpoint` の POST body
+  を `grant_type=client_credentials` に切り替える。先回りリフレッシュ・
+  singleflight・access_token キャッシュの key 設計 (`namespace + provider`) は
+  grant 非依存でそのまま使える。**ただし変更は「POST body 構築と persist の
+  2箇所」には閉じない** — 少なくとも以下も伴う:
+  - `callTokenEndpoint` には「scope は絶対に送らない」という明示的な設計判断が
+    ある (`oauth2.go:822-827`、根拠は「PR2 の対象 provider が誰も scope を
+    必要としない」)。Azure の client_credentials は `scope=.../.default` が
+    **必須**なので、この判断ごと更新する
+  - `persistGrant` に「refresh_token を書かない」を明示的に伝える経路を足す
+    (現状は応答に refresh_token が無ければ自然にスキップされるが、RFC 6749
+    §4.4.3 に反して refresh_token を返す IdP や provider 切り替え時の残留を
+    考えると明示フラグが要る)
+  - config 層一式: `internal/config/schema.go` の `oauth_providers.*.grant`
+    (KindEnum + EnumValues)、`OAuthProviderConfig` の yaml フィールド、
+    `validateOAuthProviderConfig`、`APIGatewayOAuthProviders` へのコピー、
+    `ValidGrants` 相当の drift 防止ミラー変数、
+    `docs/ja/reference/config-yaml.md` の provider 表 (380-387 行) と
+    「リフレッシュでは scope を送らない」記述の更新
+  - singleflight の存在理由が変わる点を明記する: §6 では「ローテーション型
+    refresh_token のレース根絶」という**正しさ**の要件だが、client_credentials
+    では refresh_token 自体が無いのでレースが起きようがなく、単なる効率最適化
+    (token endpoint への重複リクエスト削減) に降格する
+- **未決の運用論点 (論点表 #8 参照)**: `client_secret_key` は既存設計上
+  namespace (workspace) 付きの SecretStore 解決 (`t.resolver(namespace,
+  cfg.ClientSecretKey)`) — **暫定結論: 案A (namespace 付きのまま、複数 workspace
+  で共有する SP は workspace ごとに同じ値を `boid secret set` する) を採る**。
+  理由は論点表 #8 参照。access_token キャッシュも同じ namespace 分離に従う
+  (共有 SP でも workspace 数だけ token endpoint を叩き、同一の app-only
+  access_token が workspace 数だけ複製される — 案A を採る以上これは一貫した
+  挙動として許容する)
+
+#### Entra ID (Azure AD) 特有の注意点
+
+- **tenant は `token_endpoint` の URL 自体に含まれる** (新フィールド不要)。
+  `common`/`organizations` テナントは client_credentials で拒否されるため、
+  tenant ID か検証済みドメインでの固定が必須
+- **`scopes` は `https://<resource>/.default` 形式を 1 リソースにつき 1 個
+  だけ**指定できる (v2 エンドポイントの client_credentials は複数リソースの
+  scope を混在できない)。対象 API (Application Insights
+  `https://api.applicationinsights.io/.default` 等) ごとに `oauth_providers`
+  エントリを分ける必要がある点は §OAuth2 対応の他プロバイダと同型
+- **Application permission にはテナント管理者の同意が必須**。§7 の
+  「避けられない一回きりの手作業 (OAuth アプリ登録)」と同種の手作業が
+  Service Principal 側にもあり、nose 自身がテナント管理者権限を持っているか
+  が前提になる
+- **client_secret には有効期限がある** (最大24ヶ月、既定はもっと短い)。切れた
+  瞬間に対象 provider の全 job が 502 になる。§5 の「upstream 401 の notify」
+  は upstream からの 401 専用の通知経路であり、token endpoint 側の
+  `invalid_client` (client_secret 失効) はこれとは別経路 —
+  `postFormToTokenEndpoint` は Azure の実診断情報 (`AADSTS*` コード, IdP の
+  `error_description`) をサンドボックス側には返さずログにしか出さない設計
+  (漏洩防止として正しい) ので、**運用手順として「daemon ログで `AADSTS*` を
+  見る」ことを明記する** — SP の client_secret ローテーション手順は別途整備が要る
+- provider の identity (tenant/client_id) を差し替えたら、memCache は config
+  変更時の daemon 再起動 (`ReloadRestartRequired`) で消えるが、**secret store
+  側の access_token キャッシュは残る**ので `boid secret unset` で明示的に消す
+- 証明書ベースの client assertion (RFC 7523) や workload identity federation
+  への対応は明示的にスコープ外とする (client_secret のみを初期スコープとし、
+  必要になったら別途検討)
+- Azure DevOps は PAT (Basic auth、既存 kind で対応可) でも SP トークン
+  (`scope: 499b84ac-1321-427f-aa17-267ca6975798/.default`) でも叩けるが、
+  **PAT はユーザ本人の権限で発行されるものなので「本人権限を渡さない」という
+  本節の動機とは両立しない**。Azure DevOps も SP トークンに統一するか、
+  PAT を使う範囲を「SP で代替不能な操作に限る」と明示的に切り分ける
+  (§8 CLI整理表の az 行を参照、要更新)
+- SP には最小権限 (readonly な app role) のみ付与を推奨。§3 の readonly 写像
+  (task.readonly → GET/HEAD) はメソッドしか止めないため、権限最小化は
+  Azure 側の role assignment でも二重にかけておく
 
 ### 7. 初回認証 (`boid secret oauth login <service>`)
 
@@ -240,6 +366,10 @@ CLI リモート接続 ([cli-remote-connection.md](cli-remote-connection.md)) �
 - 初回取得とリフレッシュの token endpoint 呼び出しが daemon 側で一本化される。
 
 #### flow の三段構え
+
+**この節・下表は authorization_code grant (delegated) 限定**。client_credentials
+grant (Entra ID Service Principal 等) には login flow という概念自体が無い —
+§6-補参照。
 
 優先順位: **device flow → loopback リモート CLI → manual paste**。
 
@@ -313,7 +443,8 @@ CLI リモート接続 ([cli-remote-connection.md](cli-remote-connection.md)) �
 
 | 対象 | 行き先 | 理由 |
 |---|---|---|
-| aws / az / gh | **host command 存続** | 署名系 (SigV4) / 独自認証エコシステム。gateway では原理的に代行不能 |
+| aws / gh | **host command 存続** | 署名系 (SigV4) / 独自認証エコシステム。gateway では原理的に代行不能 |
+| az | **API gateway (client_credentials)** ([[host-commands-shrink-to-gh-decision]]) | ARM には踏み込まない。対象は Azure DevOps / Application Insights KQL / Azure Storage 分析。ユーザ本人の Entra ID 権限ではなくエージェント専用 Service Principal (client_credentials grant) を使う方針のため、§6-補の対応が前提 (2026-08-08 nose、未実装)。**Azure DevOps の PAT は使わない** — PAT はユーザ本人の権限で発行されるため「本人権限を渡さない」という動機と矛盾する。SP トークン (`scope: 499b84ac-1321-427f-aa17-267ca6975798/.default`) に統一する |
 | atlassian コマンド | **MCP へ退役** | workspace 単位 $HOME 分離によりマルチアカウント認証が MCP で成立するようになった (Jira は workspace 単位 MCP で実現済み、詳細は運用メモ参照) |
 | google コマンド (Gmail 等) | **MCP 不可・gateway (google-cli) 維持** | 当初「workspace 単位 $HOME 分離で MCP でもマルチアカウント成立」と見込んだが前提が誤りだった。claude.ai 経由の MCP Connector はアカウント単位のグローバル紐付けであり、boid workspace の $HOME 分離とは無関係 — workspace ごとに別 Google アカウントを繋ぐことはできない。ワークスペース別アカウントが要件の Gmail 等は gateway (google-cli 経由、SecretStore 管理) を維持する。gateway 化自体は本 repo 外の API スキル開発プロジェクトで行う |
 | bitbucket | **API gateway 直叩き** | MCP なし。git gateway が SecretStore に持つ API token は REST でも Basic auth で使える見込み — service エントリ 1 個で済む可能性が高い |
@@ -341,6 +472,10 @@ HOME 内、つまり**サンドボックスから読める場所**に置かれ�
   待たずに freee 等の dogfood が始められる)。
 - **PR3: login flow** — `boid secret oauth login <service>`、device / loopback /
   manual の三段、pending session 管理、state / PKCE。
+- **PR4 (未着手、2026-08-08 追加): client_credentials grant** — §6-補。
+  `oauth_providers.*.grant` フィールド、`AccessToken()` の grant 分岐、
+  `LoginManager` のガード (client_credentials プロバイダへの login flow 拒否)。
+  az (Service Principal) の REST 移行がこの PR に依存する。
 
 ---
 
@@ -370,3 +505,4 @@ HOME 内、つまり**サンドボックスから読める場所**に置かれ�
 | 5 | 有効化設定の CLI 語彙 | **確定**: `boid workspace services add/remove/list <ws> <service>` 系。allowed_domains の既存語彙に揃える |
 | 6 | `boid api <service> <path>` 糖衣 builtin を足すか | **確定: 作らない**。`boid fetch` は WebFetch 代替 (web 読み取り) で目的が別物、拡張・統合の対象にもしない |
 | 7 | (実験) サービスカタログのスキル統合 | boid 非依存の一般スキル (例: freee API リファレンス) に boid の gateway 情報 (base URL 差し替え + service 名) を追加で渡したとき、エージェントが両者を統合解釈できるかは**やってみないと分からない** (2026-08-03 nose)。PR1 稼働後に実験して #2 と併せて決める。最悪 project ローカルの CLAUDE.md に統合方法を書けば成立する見込み |
+| 8 | client_credentials の `client_secret_key` を namespace (workspace) 付きで解決するか、provider 単位グローバルにするか | **暫定結論 (2026-08-08、Opus レビュー反映): 案A** — namespace 付きのまま、複数 workspace で共有する SP は workspace ごとに同じ値を `boid secret set` する。global 自動 fallback (案B) は採らない: 同じ fallback が static な `secret_key` にも波及すると「未設定 workspace が黙って別 workspace のトークンを使う」というマルチアカウント設計 (config-yaml.md が明記する意図) の真逆になる。namespace 分離自体は client_credentials では実効的なセキュリティ境界ではない (共有 SP はどの workspace から取っても同じテナント権限のトークン) が、silent fallback を汎用機構として入れるコストの方が大きいため案A を優先。将来重複が実運用で痛くなったら**案C: `client_secret_namespace` を config に明示指定できるようにする** (暗黙 fallback ではなく明示参照) を検討。access_token キャッシュも同じ namespace 分離に従わせる (workspace 数だけ複製される想定) |
