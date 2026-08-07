@@ -58,11 +58,9 @@ func TestNewAPIGatewayRecorder_RecordsActionWithExpectedPayload(t *testing.T) {
 	}
 	// FromStatus/ToStatus must both be set to the task's current status
 	// (task_notify.go's progress-mode Action precedent) — NOT left at their
-	// zero value — or timeline.Build opens a spurious empty-status group
-	// instead of placing this action in the task's real current group,
-	// silently hiding it from the rendered timeline. See
-	// TestNewAPIGatewayRecorder_ActionIsVisibleInTimeline for the
-	// end-to-end proof.
+	// zero value. timeline.Build no longer surfaces these rows at all (see
+	// ActionTypeAPIGatewayRequest's doc comment), but the status is still
+	// meaningful audit context, so the recorder keeps stamping it.
 	if a.FromStatus != task.Status || a.ToStatus != task.Status {
 		t.Errorf("action.FromStatus/ToStatus = %q/%q, want both %q", a.FromStatus, a.ToStatus, task.Status)
 	}
@@ -135,21 +133,18 @@ func TestNewAPIGatewayRecorder_UnknownTaskIDSkipsWithoutPanicking(t *testing.T) 
 	}
 }
 
-// TestNewAPIGatewayRecorder_ActionIsVisibleInTimeline is the end-to-end
-// proof for docs/plans/api-gateway.md §論点3's actual user-visible claim:
-// not merely that a row lands in the actions table (the other tests in this
-// file), but that timeline.Build — the sole function that turns
-// []*orchestrator.Action into what the Web UI's task-detail page renders
-// (internal/api/web.go) — actually includes it. An earlier version of
-// newAPIGatewayRecorder left FromStatus/ToStatus at their zero value, which
-// timeline.Build's per-item group-placement logic (it reads a.FromStatus
-// unconditionally for every non-job item) interpreted as "this action
-// belongs to an empty-string status group" — a group nothing else ever
-// renders into or navigates to. The row existed in the DB and every other
-// test in this file passed, but the feature this PR describes ("recorded to
-// the timeline") was invisible to an actual viewer. This test would have
-// failed against that version and is the regression guard for it.
-func TestNewAPIGatewayRecorder_ActionIsVisibleInTimeline(t *testing.T) {
+// TestNewAPIGatewayRecorder_ActionRecordedButExcludedFromTimeline pins the
+// revised contract (per user feedback 2026-08-07: gateway requests belong in
+// the audit trail, not the noisy per-task timeline — a task that fans out
+// into a paginated Jira search or a status-polling loop was drowning its
+// timeline in dozens of meaningless "api: GET ... → 200" rows). The row must
+// still land in the actions table via ListActionsByTask (the audit trail
+// survives untouched), but timeline.Build — the sole function that turns
+// []*orchestrator.Action into what the Web UI/TUI task-detail page renders
+// — must NOT surface it as an Event. See timeline.go's Build/
+// IsAPIGatewayRequestAction doc comments for the display-vs-storage split
+// this test guards.
+func TestNewAPIGatewayRecorder_ActionRecordedButExcludedFromTimeline(t *testing.T) {
 	d := newAPIGatewayNotifyTestDB(t)
 	if err := orchestrator.CreateProject(d.Conn, &orchestrator.Project{ID: "proj-1", WorkDir: "/tmp"}); err != nil {
 		t.Fatalf("create project: %v", err)
@@ -163,26 +158,61 @@ func TestNewAPIGatewayRecorder_ActionIsVisibleInTimeline(t *testing.T) {
 	recorder := newAPIGatewayRecorder(tasks)
 	recorder(task.ID, "GET", "myapp", "/v1/users", 200)
 
+	// Positive control: record an ordinary progress Action too, so this test
+	// proves the exclusion is *selective* (only api_gateway_request rows
+	// drop out) rather than passing vacuously if Build() dropped every
+	// Action. Without this, a regression that made Build() discard all
+	// actions would still pass the assertions below.
+	if err := tasks.CreateAction(&orchestrator.Action{
+		TaskID:     task.ID,
+		Type:       "progress",
+		Payload:    []byte(`{"message":"control row"}`),
+		FromStatus: task.Status,
+		ToStatus:   task.Status,
+	}); err != nil {
+		t.Fatalf("create control progress action: %v", err)
+	}
+
+	// Audit trail: both rows must still exist in the actions table.
 	actions, err := tasks.ListActionsByTask(task.ID)
 	if err != nil {
 		t.Fatalf("ListActionsByTask: %v", err)
 	}
+	if len(actions) != 2 {
+		t.Fatalf("len(actions) = %d, want 2 (audit trail must be preserved for both rows)", len(actions))
+	}
+	var gatewayRow *orchestrator.Action
+	for _, a := range actions {
+		if a.Type == timeline.ActionTypeAPIGatewayRequest {
+			gatewayRow = a
+		}
+	}
+	if gatewayRow == nil {
+		t.Fatalf("no action with Type = %q found among recorded actions (actions=%+v)", timeline.ActionTypeAPIGatewayRequest, actions)
+	}
 
+	// Timeline display: the gateway row must NOT appear as a rendered
+	// Event, but the control progress row must.
 	groups := timeline.Build(task, actions, nil)
-	var found *timeline.Event
+	var sawGateway, sawControl bool
 	for i := range groups {
 		for j := range groups[i].Events {
 			ev := &groups[i].Events[j]
-			if ev.Kind == timeline.KindAction && ev.Action != nil && ev.Action.Type == timeline.ActionTypeAPIGatewayRequest {
-				found = ev
+			if ev.Kind != timeline.KindAction || ev.Action == nil {
+				continue
+			}
+			switch ev.Action.Type {
+			case timeline.ActionTypeAPIGatewayRequest:
+				sawGateway = true
+			case "progress":
+				sawControl = true
 			}
 		}
 	}
-	if found == nil {
-		t.Fatalf("api gateway request action was not present in any rendered timeline group (groups=%+v)", groups)
+	if sawGateway {
+		t.Errorf("api gateway request action leaked into rendered timeline — it must stay audit-only")
 	}
-	wantLabel := "api: GET myapp/v1/users → 200"
-	if found.Label != wantLabel {
-		t.Errorf("timeline label = %q, want %q", found.Label, wantLabel)
+	if !sawControl {
+		t.Errorf("control progress action was excluded too — Build() must only drop api_gateway_request rows, not all actions")
 	}
 }
