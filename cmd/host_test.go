@@ -799,3 +799,73 @@ exit 0
 		t.Errorf("expected at least one `compose -f ...` invocation; log:\n%s", log)
 	}
 }
+
+// TestResolveEmbeddedDeployImage covers the two onboarding-dogfood findings
+// (2026-08-07) on the checkout-less deploy path.
+//
+// The first is that a non-release binary announced "pulling boid-runner:
+// latest" and then failed to pull it, with nothing in the message connecting
+// that bare tag to the fact that this binary has no published image at all —
+// the operator had no way to reach the cause. The second is that the same
+// path overwrote an explicitly-set BOID_IMAGE, so the obvious workaround
+// (name an image you do have) silently did nothing.
+func TestResolveEmbeddedDeployImage(t *testing.T) {
+	const pseudo = "v0.1.1-0.20260807120000-abcdef123456"
+
+	t.Run("explicit BOID_IMAGE wins over a release build's own ref", func(t *testing.T) {
+		image, notice := resolveEmbeddedDeployImage("my.registry/boid-runner:custom", "v0.1.0")
+		if image != "my.registry/boid-runner:custom" {
+			t.Errorf("image = %q, want the caller's BOID_IMAGE", image)
+		}
+		if notice != "" {
+			t.Errorf("notice = %q, want none when the caller named an image", notice)
+		}
+	})
+
+	t.Run("explicit BOID_IMAGE wins for a non-release build too", func(t *testing.T) {
+		image, notice := resolveEmbeddedDeployImage("my.registry/boid-runner:custom", pseudo)
+		if image != "my.registry/boid-runner:custom" {
+			t.Errorf("image = %q, want the caller's BOID_IMAGE — it is the documented escape hatch for exactly this build shape", image)
+		}
+		if notice != "" {
+			t.Errorf("notice = %q, want none when the caller named an image", notice)
+		}
+	})
+
+	t.Run("release build pulls its own GHCR tag", func(t *testing.T) {
+		image, notice := resolveEmbeddedDeployImage("", "v0.1.0")
+		if want := version.BoidRunnerImageRepo + ":v0.1.0"; image != want {
+			t.Errorf("image = %q, want %q", image, want)
+		}
+		if notice != "" {
+			t.Errorf("notice = %q, want none for a release build (nothing surprising happens)", notice)
+		}
+	})
+
+	t.Run("non-release build explains the local-only fallback", func(t *testing.T) {
+		image, notice := resolveEmbeddedDeployImage("", pseudo)
+		if image != version.LocalBuildImage {
+			t.Errorf("image = %q, want %q", image, version.LocalBuildImage)
+		}
+		if notice == "" {
+			t.Fatal("notice = \"\", want an explanation that this build has no published image")
+		}
+		// The operator needs all three of: what this binary is, why the ref
+		// looks the way it does, and what to do about it.
+		for _, want := range []string{pseudo, version.LocalBuildImage, "BOID_IMAGE", "go install"} {
+			if !strings.Contains(notice, want) {
+				t.Errorf("notice = %q, want it to mention %q", notice, want)
+			}
+		}
+	})
+
+	t.Run("unknown version is treated as a non-release build", func(t *testing.T) {
+		image, notice := resolveEmbeddedDeployImage("", "")
+		if image != version.LocalBuildImage {
+			t.Errorf("image = %q, want %q", image, version.LocalBuildImage)
+		}
+		if notice == "" {
+			t.Error("notice = \"\", want the same explanation an unresolvable version deserves")
+		}
+	})
+}
