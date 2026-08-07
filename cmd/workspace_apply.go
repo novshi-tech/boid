@@ -103,7 +103,7 @@ func runWorkspaceApply(cmd *cobra.Command, args []string) error {
 			slog.Warn("workspace apply: spec.additional_bindings is no longer supported and was dropped", "workspace", slug)
 			fmt.Fprintf(stderr, "warning: workspace %q: spec.additional_bindings is no longer supported (retired) — dropped\n", slug)
 		}
-		if err := applyOneWorkspaceDocument(c, out, stderr, slug, rawDocs[i], workspaceApplyDryRun); err != nil {
+		if err := applyOneWorkspaceDocument(c, out, stderr, slug, rawDocs[i], doc.Envelope.Spec.Projects, workspaceApplyDryRun); err != nil {
 			return fmt.Errorf("apply workspace %q: %w", slug, err)
 		}
 	}
@@ -117,7 +117,7 @@ func runWorkspaceApply(cmd *cobra.Command, args []string) error {
 // volume-only-daemon.md PR-1d codex round-1 Blocker 2). Prints the same
 // dry-run diff / created-or-updated / project attach-detach / missing-
 // project warning output the pre-atomic client-side implementation did.
-func applyOneWorkspaceDocument(c *client.Client, out, stderr io.Writer, slug string, raw []byte, dryRun bool) error {
+func applyOneWorkspaceDocument(c *client.Client, out, stderr io.Writer, slug string, raw []byte, projects []orchestrator.WorkspaceEnvelopeProject, dryRun bool) error {
 	path := "/api/workspaces/apply"
 	if dryRun {
 		path += "?dry_run=true"
@@ -150,10 +150,43 @@ func applyOneWorkspaceDocument(c *client.Client, out, stderr io.Writer, slug str
 	// endpoint directly, precisely because this command already emits the
 	// same notices client-side — printing both would double every one of
 	// them.
-	for _, name := range result.MissingProjects {
-		fmt.Fprintf(stderr, "warning: project '%s' referenced in workspace '%s' does not exist yet. Register it separately (or via PR-2's boid project add <url>) then re-apply.\n", name, slug)
-	}
+	printWorkspaceApplyMissingProjects(stderr, slug, result.MissingProjects, projects)
 	return nil
+}
+
+// printWorkspaceApplyMissingProjects reports the spec.projects[] entries that
+// did not resolve to a registered project.
+//
+// Through 2026-08-07 this only described what to do in prose ("Register it
+// separately ... then re-apply"), which the onboarding dogfood found to be
+// the expensive half of a restore: the document being applied ALREADY carries
+// each project's git URL, so every one of those registrations was a command
+// the reader had to reconstruct by hand — thirteen times, in that run. The
+// URL is right here, so hand back the exact line to run instead.
+//
+// A project whose entry carries no url gets prose still, deliberately: a
+// command line with a `<git-url>` placeholder in it looks pasteable and is
+// not, and `boid project add` would fail on it. Saying that the document has
+// no url is both true and the actual next step (find the URL).
+//
+// missing is authoritative for WHICH projects are unresolved — it comes from
+// the daemon's own name resolution (ProjectAppService.resolveWorkspaceApply
+// ProjectNames) — while projects is only the lookup table for their URLs, so
+// an entry missing from the table degrades to the no-url wording rather than
+// being dropped from the report.
+func printWorkspaceApplyMissingProjects(stderr io.Writer, slug string, missing []string, projects []orchestrator.WorkspaceEnvelopeProject) {
+	urlByName := make(map[string]string, len(projects))
+	for _, p := range projects {
+		urlByName[p.Name] = p.URL
+	}
+	for _, name := range missing {
+		url := urlByName[name]
+		if url == "" {
+			fmt.Fprintf(stderr, "warning: project '%s' referenced in workspace '%s' is not registered yet, and this document carries no url for it — find its git URL, register it with `boid project add <git-url> --workspace=%s --name=%s`, then re-apply.\n", name, slug, slug, name)
+			continue
+		}
+		fmt.Fprintf(stderr, "warning: project '%s' referenced in workspace '%s' is not registered yet. Register it and re-apply:\n    boid project add %s --workspace=%s --name=%s\n", name, slug, shellQuoteSingle(url), slug, name)
+	}
 }
 
 // printWorkspaceApplyProjectChanges prints the project-assignment side

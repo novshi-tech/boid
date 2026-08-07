@@ -300,7 +300,7 @@ spec:
 		t.Fatalf("runWorkspaceApply: %v", err)
 	}
 
-	want := "warning: project 'ghost-project' referenced in workspace 'team-f' does not exist yet. Register it separately (or via PR-2's boid project add <url>) then re-apply."
+	want := "warning: project 'ghost-project' referenced in workspace 'team-f' is not registered yet"
 	if !strings.Contains(errOut.String(), want) {
 		t.Errorf("stderr = %q, want it to contain %q", errOut.String(), want)
 	}
@@ -308,6 +308,104 @@ spec:
 	// team-f itself must still have been created despite the missing project.
 	if err := ts.Client.Do("GET", "/api/workspaces/team-f", nil, &api.WorkspaceDetail{}); err != nil {
 		t.Errorf("expected team-f to be created despite the missing project warning: %v", err)
+	}
+}
+
+// TestRunWorkspaceApply_MissingProjectWarningPrintsRunnableCommand covers the
+// onboarding-dogfood finding (2026-08-07) that restoring a backup left every
+// missing project to be re-registered by hand: the document already carries
+// the git URL, so the warning can hand back the exact `boid project add` line
+// to run instead of describing it in prose.
+func TestRunWorkspaceApply_MissingProjectWarningPrintsRunnableCommand(t *testing.T) {
+	ts := testutil.NewTestServer(t)
+	t.Setenv("BOID_SOCKET", ts.Server.SocketPath())
+	resetWorkspaceApplyFlags(t)
+	defer resetWorkspaceApplyFlags(t)
+
+	file := writeApplyFile(t, `
+apiVersion: boid.dev/v1
+kind: Workspace
+metadata:
+  name: team-g
+spec:
+  projects:
+    - name: alpha
+      url: https://example.com/org/alpha.git
+    - name: beta
+`)
+	if err := workspaceApplyCmd.Flags().Set("file", file); err != nil {
+		t.Fatalf("set -f: %v", err)
+	}
+
+	var out, errOut bytes.Buffer
+	cmd := workspaceApplyCmd
+	cmd.SetOut(&out)
+	cmd.SetErr(&errOut)
+	if err := runWorkspaceApply(cmd, nil); err != nil {
+		t.Fatalf("runWorkspaceApply: %v", err)
+	}
+
+	got := errOut.String()
+	// A project whose document carries a url gets a line that can be pasted
+	// into a shell verbatim.
+	wantCmd := "boid project add 'https://example.com/org/alpha.git' --workspace=team-g --name=alpha"
+	if !strings.Contains(got, wantCmd) {
+		t.Errorf("stderr = %q, want it to contain the runnable command %q", got, wantCmd)
+	}
+	// One without a url cannot produce a runnable line, so it must say so
+	// rather than emitting a command that would fail on a placeholder.
+	if !strings.Contains(got, "beta") || !strings.Contains(got, "carries no url") {
+		t.Errorf("stderr = %q, want it to name 'beta' as having no url in the document", got)
+	}
+	// beta's guidance must keep the `<git-url>` placeholder visible rather
+	// than reading as a pasteable line — a command that looks runnable but
+	// fails on a placeholder is worse than prose.
+	if !strings.Contains(got, "boid project add <git-url> --workspace=team-g --name=beta") {
+		t.Errorf("stderr = %q, want beta's guidance to carry a visible <git-url> placeholder", got)
+	}
+	// The runnable form is reserved for entries that actually have a url:
+	// beta must never appear on a line that starts one.
+	for _, line := range strings.Split(got, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), "boid project add ") && strings.Contains(line, "--name=beta") {
+			t.Errorf("line %q emits a runnable command for a project with no url", line)
+		}
+	}
+}
+
+// TestRunWorkspaceApply_MissingProjectWarningQuotesURL pins that the emitted
+// command is shell-safe: a URL is interpolated into a copy-pasteable command
+// line, so an embedded quote must not be able to break out of it.
+func TestRunWorkspaceApply_MissingProjectWarningQuotesURL(t *testing.T) {
+	ts := testutil.NewTestServer(t)
+	t.Setenv("BOID_SOCKET", ts.Server.SocketPath())
+	resetWorkspaceApplyFlags(t)
+	defer resetWorkspaceApplyFlags(t)
+
+	file := writeApplyFile(t, `
+apiVersion: boid.dev/v1
+kind: Workspace
+metadata:
+  name: team-h
+spec:
+  projects:
+    - name: quoted
+      url: "https://example.com/o'w/r.git"
+`)
+	if err := workspaceApplyCmd.Flags().Set("file", file); err != nil {
+		t.Fatalf("set -f: %v", err)
+	}
+
+	var out, errOut bytes.Buffer
+	cmd := workspaceApplyCmd
+	cmd.SetOut(&out)
+	cmd.SetErr(&errOut)
+	if err := runWorkspaceApply(cmd, nil); err != nil {
+		t.Fatalf("runWorkspaceApply: %v", err)
+	}
+
+	want := `boid project add 'https://example.com/o'\''w/r.git' --workspace=team-h --name=quoted`
+	if !strings.Contains(errOut.String(), want) {
+		t.Errorf("stderr = %q, want it to contain the shell-quoted command %q", errOut.String(), want)
 	}
 }
 
