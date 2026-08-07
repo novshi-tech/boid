@@ -3,6 +3,7 @@ package cmd
 import (
 	"bufio"
 	"fmt"
+	"io"
 	"net/url"
 	"os"
 	"strings"
@@ -51,32 +52,73 @@ func init() {
 	for _, c := range []*cobra.Command{secretSetCmd, secretGetCmd, secretListCmd, secretDeleteCmd} {
 		c.Flags().StringP("namespace", "n", "default", "Secret namespace")
 	}
+	secretSetCmd.Flags().Bool("raw", false, "Store stdin verbatim, keeping the trailing newline (default strips one)")
 	secretCmd.AddCommand(secretSetCmd, secretGetCmd, secretListCmd, secretDeleteCmd)
 	rootCmd.AddCommand(secretCmd)
+}
+
+// secretStdinIsInteractive reports whether stdin is a terminal, and so
+// whether `boid secret set` should prompt rather than read the stream.
+//
+// The test is "is stdin a character device", not "is stdin a pipe". Through
+// 2026-08-07 this asked os.ModeNamedPipe instead, which recognised
+// `printf ... | boid secret set K` but NOT `boid secret set K < file` — a
+// redirected regular file matches neither ModeNamedPipe nor ModeCharDevice,
+// so the redirect fell through to the interactive branch and the command sat
+// waiting for a human that a restore script does not have. Asking about
+// ModeCharDevice inverts the question so that every non-terminal stdin
+// (pipe, regular file, /dev/null, a closed fd) is read as a stream, which is
+// what a caller who redirected anything at all meant.
+func secretStdinIsInteractive(stat os.FileInfo) bool {
+	return stat.Mode()&os.ModeCharDevice != 0
+}
+
+// readPipedSecretValue reads all of r as a secret value.
+//
+// Unless raw is set, exactly ONE trailing newline is stripped — the one a
+// shell here-string, `echo`, or a text file's final line terminator adds,
+// which is never part of the value the caller meant. Everything else is
+// preserved byte for byte. The pre-2026-08-07 implementation read through a
+// bufio.Scanner and rejoined the lines with "\n", which could not represent
+// a value whose trailing newlines were significant (they were all dropped)
+// and quietly rewrote any \r\n input; reading the stream whole avoids both.
+func readPipedSecretValue(r io.Reader, raw bool) (string, error) {
+	b, err := io.ReadAll(r)
+	if err != nil {
+		return "", err
+	}
+	value := string(b)
+	if !raw {
+		value = strings.TrimSuffix(value, "\n")
+	}
+	return value, nil
 }
 
 func runSecretSet(cmd *cobra.Command, args []string) error {
 	key := args[0]
 	namespace, _ := cmd.Flags().GetString("namespace")
+	raw, _ := cmd.Flags().GetBool("raw")
 
 	// Read value from stdin
 	var value string
-	stat, _ := os.Stdin.Stat()
-	if stat.Mode()&os.ModeNamedPipe != 0 {
-		// Piped input
-		scanner := bufio.NewScanner(os.Stdin)
-		var lines []string
-		for scanner.Scan() {
-			lines = append(lines, scanner.Text())
+	stat, statErr := os.Stdin.Stat()
+	// A stdin that cannot even be stat'd is not a terminal to prompt at, so
+	// treat it as a stream and let the read below report the real problem.
+	if statErr == nil && secretStdinIsInteractive(stat) {
+		if raw {
+			return fmt.Errorf("--raw needs a value on stdin (pipe or redirect one in); it cannot be combined with the interactive prompt")
 		}
-		value = strings.Join(lines, "\n")
-	} else {
-		// Interactive prompt
 		fmt.Fprintf(os.Stderr, "Enter value for %q: ", key)
 		scanner := bufio.NewScanner(os.Stdin)
 		if scanner.Scan() {
 			value = scanner.Text()
 		}
+	} else {
+		v, err := readPipedSecretValue(os.Stdin, raw)
+		if err != nil {
+			return fmt.Errorf("read value from stdin: %w", err)
+		}
+		value = v
 	}
 
 	if value == "" {
