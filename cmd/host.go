@@ -79,11 +79,11 @@ package cmd
 // runs that extracted script WITHOUT `--build` — the script's own default
 // as of PR4 is to pull rather than build (there is no source tree here to
 // build from regardless — Dockerfile's `COPY . .` context is not present
-// in an extracted asset directory). deployFromEmbeddedAssets exports
-// BOID_IMAGE=version.DefaultContainerImage() first so the pull targets this
-// exact CLI binary's own version identity (internal/version), rather than
-// leaving the script to guess from a git checkout that does not exist
-// here. There is no local-image precondition to check up front any more
+// in an extracted asset directory). deployFromEmbeddedAssets exports a
+// BOID_IMAGE first (resolveEmbeddedDeployImage — the caller's own setting
+// if there is one, else this exact CLI binary's version identity per
+// internal/version) so the pull targets a known ref rather than leaving the
+// script to guess from a git checkout that does not exist here. There is no local-image precondition to check up front any more
 // (pre-PR4 this path required an already-built boid-runner:latest image,
 // since the script always built by default and this path could never
 // build) — a fresh install has never had that image, and now doesn't need
@@ -577,10 +577,60 @@ func deployFromEmbeddedAssets(ctx context.Context, token, addr string) error {
 		return fmt.Errorf("extract embedded compose assets: %w", err)
 	}
 
-	image := version.DefaultContainerImage()
+	image, notice := resolveEmbeddedDeployImage(os.Getenv("BOID_IMAGE"), version.Version())
+	if notice != "" {
+		fmt.Fprintln(os.Stderr, notice)
+	}
 	fmt.Fprintln(os.Stderr, "boid: daemon container not reachable; no boid repo checkout found, pulling "+image+" via the embedded scripts/deploy-container.sh...")
 
 	return runDeployScript(ctx, root, token, addr, false, "BOID_IMAGE="+image)
+}
+
+// resolveEmbeddedDeployImage picks the image ref the checkout-less deploy
+// path hands to scripts/deploy-container.sh as BOID_IMAGE, and returns
+// alongside it a notice to print first when that ref needs explaining.
+//
+// envImage is the caller's own BOID_IMAGE (empty when unset) and selfVersion
+// is this binary's version.Version().
+//
+// Two things this fixes, both found by the 2026-08-07 onboarding dogfood:
+//
+//   - An explicitly-set BOID_IMAGE used to be discarded here. This path
+//     passes BOID_IMAGE as an extraEnv to runDeployScript, which filters the
+//     inherited value of every extraEnv key before appending its own (see the
+//     comment there for why) — so a caller who named an image got the
+//     computed default anyway, with no indication that their setting had been
+//     dropped. Since a non-release build is precisely the shape that NEEDS an
+//     operator-supplied ref, silently ignoring it removed the only workaround.
+//     The caller's value now wins outright.
+//
+//   - A non-release build (pseudo-version, "(devel)", a pre-release tag —
+//     version.IsExactRelease's rule) has no published GHCR ref, so
+//     DefaultContainerImage names the bare local tag "boid-runner:latest"
+//     instead. On a fresh machine that image does not exist and cannot be
+//     pulled from anywhere, but the only thing printed was "pulling
+//     boid-runner:latest", which reads as an ordinary registry pull and led
+//     the operator to look for network and registry faults rather than at the
+//     binary's own identity. The fallback still happens — a machine that DOES
+//     have a locally-built image is a real case, and compose will use it —
+//     but it now says what is going on and how to get out of it.
+func resolveEmbeddedDeployImage(envImage, selfVersion string) (image, notice string) {
+	if envImage != "" {
+		return envImage, ""
+	}
+	if version.IsExactRelease(selfVersion) {
+		return version.BoidRunnerImageRepo + ":" + selfVersion, ""
+	}
+	shownVersion := selfVersion
+	if shownVersion == "" {
+		shownVersion = "unknown"
+	}
+	return version.LocalBuildImage, fmt.Sprintf(
+		"boid: this binary is not a release build (version: %s), so there is no published image matching it.\n"+
+			"boid: falling back to the local image %q, which only exists on a machine that built it — if it is absent this deploy will fail.\n"+
+			"boid:   to pull a published image instead: go install github.com/novshi-tech/boid@<release-tag>\n"+
+			"boid:   to use an image you already have:  BOID_IMAGE=<ref> boid start",
+		shownVersion, version.LocalBuildImage)
 }
 
 // waitForHealthy polls probeHostMode until it reports healthy, reports a
