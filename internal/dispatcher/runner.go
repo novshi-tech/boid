@@ -825,7 +825,14 @@ func (r *Runner) Dispatch(ctx context.Context, spec *orchestrator.JobSpec, clean
 			// notify-on-401) instead of a meaningless daemon-local bare
 			// repo path — see PrepareJobCheckout's own doc comment.
 			cd := spec.Visibility.Clone
-			if err := PrepareJobCheckout(ctx, selfProject.WorkDir, cd.Branch, cd.BaseBranch, cd.BaseBranchForkPoint, gatewayCloneURL, cloneWorkspaceDir); err != nil {
+			if err := PrepareJobCheckout(ctx, PrepareJobCheckoutInput{
+				BareRepoPath:        selfProject.WorkDir,
+				Branch:              cd.Branch,
+				BaseBranch:          cd.BaseBranch,
+				BaseBranchForkPoint: cd.BaseBranchForkPoint,
+				RemoteURL:           gatewayCloneURL,
+				StagingDir:          cloneWorkspaceDir,
+			}); err != nil {
 				return fmt.Errorf("per-job clone: %w", err)
 			}
 			r.trackCheckoutDir(j.ID, cloneWorkspaceDir)
