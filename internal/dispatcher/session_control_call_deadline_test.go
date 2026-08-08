@@ -939,7 +939,10 @@ func TestRunner_LaunchSandbox_PersistFailureStopsSessionUnderDeadline(t *testing
 	job := &Job{ID: "job-1", TaskID: "task-1", ProjectID: "proj-1", HandlerID: "h", Role: string(orchestrator.JobKindHook)}
 
 	start := time.Now()
-	_, err := r.launchSandbox(context.Background(), job, sandbox.Spec{ID: "job-1", Argv: []string{"true"}}, nil, "", "", "", "", false)
+	_, err := r.launchSandbox(context.Background(), launchSandboxInput{
+		Job:  job,
+		Spec: sandbox.Spec{ID: "job-1", Argv: []string{"true"}},
+	})
 	elapsed := time.Since(start)
 
 	if elapsed > 5*time.Second {

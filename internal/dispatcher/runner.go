@@ -965,7 +965,16 @@ func (r *Runner) Dispatch(ctx context.Context, spec *orchestrator.JobSpec, clean
 		}
 		return "", err
 	}
-	return r.launchSandbox(ctx, j, sbSpec, cleanup, desiredRuntimeID, workspaceID, workspaceSlug, workspaceHomeID, spec.Visibility.DockerEnabled)
+	return r.launchSandbox(ctx, launchSandboxInput{
+		Job:              j,
+		Spec:             sbSpec,
+		Cleanup:          cleanup,
+		DesiredRuntimeID: desiredRuntimeID,
+		Workspace:        workspaceID,
+		WorkspaceSlug:    workspaceSlug,
+		WorkspaceHomeID:  workspaceHomeID,
+		DockerEnabled:    spec.Visibility.DockerEnabled,
+	})
 }
 
 // resolveProjectRuntime resolves projectID to its (WorkspaceID, WorkDir).
@@ -1386,10 +1395,11 @@ func (r *Runner) sandboxBackend() backend.SandboxBackend {
 // launchSandbox launches a sandbox for job via the configured
 // SandboxBackend and persists the resulting runtime metadata.
 //
-// workspace, workspaceSlug, workspaceHomeID and dockerEnabled are threaded
-// through explicitly from Dispatch's own already-resolved workspaceID /
-// resolveWorkspaceHome's slug and identity / spec.Visibility.DockerEnabled.
-// workspace and workspaceSlug are BOTH passed, unnormalized and normalized,
+// launchSandboxInput.Workspace/WorkspaceSlug/WorkspaceHomeID/DockerEnabled
+// are threaded through explicitly from Dispatch's own already-resolved
+// workspaceID / resolveWorkspaceHome's slug and identity /
+// spec.Visibility.DockerEnabled. Workspace and WorkspaceSlug are BOTH
+// passed, unnormalized and normalized,
 // because backend.LaunchOptions uses them for different things — see that
 // struct's WorkspaceSlug doc comment (PR6 論点 D5) for why normalizing the one
 // field would have changed network isolation as a side effect. workspaceHomeID
@@ -1405,7 +1415,29 @@ func (r *Runner) sandboxBackend() backend.SandboxBackend {
 // docker-capability delivery and workspace network isolation for the
 // container backend specifically — the userns backend never read either
 // field, so nothing exercised the gap before PR9).
-func (r *Runner) launchSandbox(ctx context.Context, job *Job, spec sandbox.Spec, cleanup orchestrator.CleanupFunc, desiredRuntimeID string, workspace, workspaceSlug, workspaceHomeID string, dockerEnabled bool) (string, error) {
+// launchSandboxInput bundles launchSandbox's parameters
+// (docs/plans/refactoring-backlog.md N9): DesiredRuntimeID, Workspace,
+// WorkspaceSlug, and WorkspaceHomeID were four adjacent, same-typed
+// (string) positional arguments, easy to transpose without the compiler
+// noticing — see launchSandbox's own doc comment for why each of Workspace/
+// WorkspaceSlug/WorkspaceHomeID must NOT be collapsed into one another
+// despite carrying related values.
+type launchSandboxInput struct {
+	Job              *Job
+	Spec             sandbox.Spec
+	Cleanup          orchestrator.CleanupFunc
+	DesiredRuntimeID string
+	Workspace        string
+	WorkspaceSlug    string
+	WorkspaceHomeID  string
+	DockerEnabled    bool
+}
+
+func (r *Runner) launchSandbox(ctx context.Context, in launchSandboxInput) (string, error) {
+	job := in.Job
+	spec := in.Spec
+	cleanup := in.Cleanup
+	desiredRuntimeID := in.DesiredRuntimeID
 	if job == nil {
 		return "", fmt.Errorf("job is required")
 	}
@@ -1423,10 +1455,10 @@ func (r *Runner) launchSandbox(ctx context.Context, job *Job, spec sandbox.Spec,
 		HandlerID: job.HandlerID,
 		Role:      job.Role,
 
-		Workspace:       workspace,
-		WorkspaceSlug:   workspaceSlug,
-		WorkspaceHomeID: workspaceHomeID,
-		DockerEnabled:   dockerEnabled,
+		Workspace:       in.Workspace,
+		WorkspaceSlug:   in.WorkspaceSlug,
+		WorkspaceHomeID: in.WorkspaceHomeID,
+		DockerEnabled:   in.DockerEnabled,
 
 		Interactive: spec.TTY,
 		TTY:         spec.TTY,
