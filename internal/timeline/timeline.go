@@ -426,13 +426,3 @@ func Build(task *orchestrator.Task, actions []*orchestrator.Action, jobs []*JobI
 
 	return groups
 }
-
-// SelectableEvents returns the flat event list from all groups in order.
-// Used by TUI for cursor clamping and enter-key drilldown.
-func SelectableEvents(groups []StatusGroup) []Event {
-	var events []Event
-	for _, g := range groups {
-		events = append(events, g.Events...)
-	}
-	return events
-}

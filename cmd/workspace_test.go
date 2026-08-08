@@ -1443,7 +1443,7 @@ func TestWorkspaceImportCmd_Annotations(t *testing.T) {
 // path, and PersistentPreRunE passes context.Background() to EnsureRunningAt
 // (no deadline) — not something worth exercising for real in this test. With
 // NoAutostartEnv=1, a missing/wrong annotation instead surfaces as
-// EnsureRunning's own "boid server is not running" error, an ordinary
+// EnsureRunningAt's own "boid server is not running" error, an ordinary
 // t.Fatalf, nothing spawned.
 func TestWorkspaceImportCmd_NeverAttemptsDaemonAutostart(t *testing.T) {
 	writeRootTestConfigYAML(t, "")

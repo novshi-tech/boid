@@ -11,7 +11,7 @@ import (
 
 // annotationSkipAutostart is the cobra annotation key used to opt a command
 // out of automatic server startup. Set the value to "skip" on commands that
-// must not trigger EnsureRunning (e.g. start, stop, gc).
+// must not trigger EnsureRunningAt (e.g. start, stop, gc).
 const annotationSkipAutostart = "boid.autostart"
 
 // scopeAnnotationKey is the cobra annotation key every leaf command must

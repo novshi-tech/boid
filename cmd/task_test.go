@@ -146,9 +146,8 @@ description: figure out what to do
 	}
 }
 
-// Phase 3-1: behavior_spec.default_payload was removed; the
-// orchestrator.RawPayload type lingers (used elsewhere by hooks) but
-// the unmarshal contract is no longer exercised through BehaviorSpec.
+// Phase 3-1: behavior_spec.default_payload was removed, and with it the
+// orchestrator.RawPayload type it used (removed as dead code).
 
 func TestParseTaskCreateSpec_RejectsUnknownField(t *testing.T) {
 	// typo した field 名は弾かれる。

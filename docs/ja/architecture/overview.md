@@ -39,7 +39,7 @@ cmd/                  - cobra ベースの CLI (boid task, boid project, ...)
 main.go               - エントリポイント。 cmd/Execute() を呼ぶだけ
 internal/
   client/             - daemon との UNIX socket HTTP クライアント、 autostart
-  daemon/             - daemon 化 (Spawn / WaitForSocket / RedirectToLog)
+  daemon/             - daemon 化 (Spawn / RedirectToLog)
   config/             - ~/.config/boid/config.yaml の読み込み
   db/                 - SQLite ハンドル + マイグレーション
   server/             - HTTP / UNIX socket リスナと chi ルータの組み立て

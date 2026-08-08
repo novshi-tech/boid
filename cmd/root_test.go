@@ -253,7 +253,7 @@ func TestPersistentPreRunE_NeutralScope_BrokenDefaultProfileToken_Swallowed(t *t
 // only applies to a unix-scheme profile): with BOID_NO_AUTOSTART=1 and no
 // daemon listening on the pinned socket, a unix-profile invocation (no
 // boid.autostart=skip annotation) must still reach — and fail through —
-// client.EnsureRunning's own no-autostart error path, proving the
+// client.EnsureRunningAt's own no-autostart error path, proving the
 // autostart check actually ran.
 func TestPersistentPreRunE_UnixProfile_RunsAutostartCheck(t *testing.T) {
 	writeRootTestConfigYAML(t, "")
@@ -266,13 +266,13 @@ func TestPersistentPreRunE_UnixProfile_RunsAutostartCheck(t *testing.T) {
 		t.Fatal("expected an error: BOID_NO_AUTOSTART=1 and no daemon listening on a unix profile")
 	}
 	if !strings.Contains(err.Error(), "boid server is not running") {
-		t.Errorf("expected EnsureRunning's no-autostart error, got %v", err)
+		t.Errorf("expected EnsureRunningAt's no-autostart error, got %v", err)
 	}
 }
 
 // TestPersistentPreRunE_HTTPSProfile_SkipsAutostartCheck pins the "after"
 // half of decision 6: an https-scheme profile must never even ask
-// client.EnsureRunning — BOID_NO_AUTOSTART is irrelevant here precisely
+// client.EnsureRunningAt — BOID_NO_AUTOSTART is irrelevant here precisely
 // because the check is skipped outright, not merely made to no-op.
 func TestPersistentPreRunE_HTTPSProfile_SkipsAutostartCheck(t *testing.T) {
 	writeRootTestConfigYAML(t, "profiles:\n  work:\n    url: https://work.example.com\n")
