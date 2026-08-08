@@ -41,10 +41,6 @@ func ReadProjectMeta(dir string) (*ProjectMeta, error) {
 		return nil, err
 	}
 
-	if err := resolveProjectHostCommandPaths(dir, meta.HostCommands); err != nil {
-		return nil, err
-	}
-
 	return meta, nil
 }
 
@@ -64,12 +60,6 @@ func ReadProjectMeta(dir string) (*ProjectMeta, error) {
 // <dir>/.boid/project.yaml off a real filesystem, cmd/project_migrate.go),
 // so the guidance for that case must say so instead of asserting a command
 // against a path the user cannot use.
-//
-// Deliberately excluded: resolveProjectHostCommandPaths, which resolves a
-// relative host_commands.path against an on-disk project directory —
-// filesystem callers run it themselves afterward (they have a real
-// directory); the bare-repo caller has none and rejects relative paths
-// outright instead (see ReadProjectMetaFromBareRepo).
 func parseProjectMetaBytes(dirLabel string, isBareRepo bool, data []byte) (*ProjectMeta, error) {
 	var raw map[string]any
 	if err := yaml.Unmarshal(data, &raw); err != nil {
@@ -441,33 +431,6 @@ func validateHookKind(h *Hook) error {
 	return nil
 }
 
-// resolveProjectHostCommandPaths resolves relative paths in host_commands
-// against the project root directory. It rejects paths that escape the project
-// directory via traversal (e.g. "../../etc/passwd") or symlinks.
-func resolveProjectHostCommandPaths(projectDir string, cmds HostCommands) error {
-	for name, spec := range cmds {
-		if spec.Path == "" || filepath.IsAbs(spec.Path) {
-			continue
-		}
-		joined := filepath.Join(projectDir, spec.Path)
-		resolved, err := filepath.EvalSymlinks(filepath.Dir(joined))
-		if err != nil {
-			// If the directory doesn't exist we can still detect traversal
-			// via a lexical clean.
-			resolved = filepath.Clean(joined)
-		} else {
-			resolved = filepath.Join(resolved, filepath.Base(joined))
-		}
-		absProject, _ := filepath.Abs(projectDir)
-		if !strings.HasPrefix(resolved, absProject+string(filepath.Separator)) && resolved != absProject {
-			return fmt.Errorf("project.yaml: host_commands.%s.path %q resolves outside project directory", name, spec.Path)
-		}
-		spec.Path = joined
-		cmds[name] = spec
-	}
-	return nil
-}
-
 // ReadProjectMetaWithKits reads project.yaml and merges project-level overlays
 // into each behavior.
 // Returns a ProjectMeta whose TaskBehaviors have their resolved Hooks/etc.
@@ -551,47 +514,6 @@ func emitCanonicalBehaviorDeprecation(dir string, meta *ProjectMeta) {
 	}
 }
 
-func ReadProjectLocalMeta(dir string) (*ProjectLocalMeta, error) {
-	yamlPath := filepath.Join(dir, ".boid", projectLocalFilename)
-	data, err := os.ReadFile(yamlPath)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("read %s: %w", projectLocalFilename, err)
-	}
-
-	var raw map[string]any
-	if err := yaml.Unmarshal(data, &raw); err != nil {
-		return nil, fmt.Errorf("parse %s: %w", projectLocalFilename, err)
-	}
-	if err := validateProjectLocalFields(raw); err != nil {
-		return nil, err
-	}
-
-	var meta ProjectLocalMeta
-	if err := yaml.Unmarshal(data, &meta); err != nil {
-		return nil, fmt.Errorf("parse %s: %w", projectLocalFilename, err)
-	}
-	if meta.Version == 0 {
-		meta.Version = 1
-	}
-	if meta.Version != 1 {
-		return nil, fmt.Errorf("%s: unsupported version %d", projectLocalFilename, meta.Version)
-	}
-
-	interpolateBindMounts(meta.AdditionalBindings)
-	interpolateHostCommands(meta.HostCommands)
-	interpolateEnvMap(meta.Env)
-
-	warnDeprecatedStdin(projectLocalFilename+" ("+dir+")", dir, meta.HostCommands)
-
-	if err := validateProjectLocalMeta(&meta); err != nil {
-		return nil, err
-	}
-	return &meta, nil
-}
-
 func mergeBindMounts(base, overlay []BindMount) []BindMount {
 	if len(overlay) == 0 {
 		return cloneBindMounts(base)
@@ -668,43 +590,6 @@ func interpolateHostCommandEnvMap(m map[string]string) {
 			return os.Getenv(name)
 		})
 	}
-}
-
-func validateProjectLocalFields(raw map[string]any) error {
-	allowed := map[string]bool{
-		"version":             true,
-		"env":                 true,
-		"host_commands":       true,
-		"additional_bindings": true,
-		"secret_namespace":    true,
-	}
-	for key := range raw {
-		if !allowed[key] {
-			return fmt.Errorf("%s: unsupported field %q", projectLocalFilename, key)
-		}
-	}
-	return nil
-}
-
-func validateProjectLocalMeta(meta *ProjectLocalMeta) error {
-	for _, binding := range meta.AdditionalBindings {
-		if binding.Source == "" {
-			return fmt.Errorf("%s: additional_bindings.source is required", projectLocalFilename)
-		}
-		if !filepath.IsAbs(binding.Source) {
-			return fmt.Errorf("%s: additional_bindings source %q must be an absolute path", projectLocalFilename, binding.Source)
-		}
-		if binding.Mode != "ro" && binding.Mode != "rw" {
-			return fmt.Errorf("%s: additional_bindings source %q has invalid mode %q", projectLocalFilename, binding.Source, binding.Mode)
-		}
-	}
-
-	for name, spec := range meta.HostCommands {
-		if spec.Path != "" && !filepath.IsAbs(spec.Path) {
-			return fmt.Errorf("%s: host_commands.%s.path %q must be an absolute path", projectLocalFilename, name, spec.Path)
-		}
-	}
-	return nil
 }
 
 func cloneProjectMeta(meta *ProjectMeta) *ProjectMeta {
@@ -827,26 +712,3 @@ func validateRejectRules(hostCommands HostCommands) error {
 	return nil
 }
 
-// stdinDeprecationWarned tracks which (dir, command) pairs have already
-// received the stdin deprecation warning this daemon run. Resets on daemon
-// restart. Same idiom as commandsDeprecationWarned above.
-var stdinDeprecationWarned sync.Map
-
-// warnDeprecatedStdin emits a deprecation warning for host_commands entries
-// that still declare stdin: true. The field is still parsed but has no
-// effect: the broker never wires caller stdin into a host command (see
-// gateHostCommand in internal/sandbox/broker.go). dir is the deduplication key
-// so the same file does not re-emit on every reload.
-func warnDeprecatedStdin(scope, dir string, hostCommands HostCommands) {
-	for name, spec := range hostCommands {
-		if !spec.Stdin {
-			continue
-		}
-		key := dir + "@" + name
-		if _, loaded := stdinDeprecationWarned.LoadOrStore(key, true); loaded {
-			continue
-		}
-		slog.Warn(fmt.Sprintf("host_commands.%s: stdin: true is deprecated and has no effect; host commands never receive caller stdin", name),
-			"location", scope)
-	}
-}

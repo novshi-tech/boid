@@ -124,6 +124,46 @@ func TestHostCommands_UnmarshalYAML_ListFormStillWorks(t *testing.T) {
 	}
 }
 
+// TestHostCommandSpec_ToCommandDef_AllowSplitDenyEnvName verifies the
+// Allow→(AllowedSubcommands, AllowedPatterns) split (bare tokens go to
+// subcommands, anything containing a space/*/? goes to patterns) plus
+// Deny/Env/Name passthrough — the same conversion coverage a deleted
+// project.local.yaml-backed test (TestHostCommands_NewDSL/map form with
+// policy, removed as dead code alongside project.local.yaml itself) used to
+// provide via ReadProjectLocalMeta. Constructing the HostCommandSpec
+// directly here keeps the coverage without resurrecting that dead loader.
+func TestHostCommandSpec_ToCommandDef_AllowSplitDenyEnvName(t *testing.T) {
+	gh := projectspec.HostCommandSpec{
+		Allow: []string{"pr", "issue", "run"},
+		Deny:  []string{"repo delete *"},
+		Env:   map[string]string{"GH_TOKEN": "test-token"},
+	}
+	ghDef := gh.ToCommandDef("gh")
+	if ghDef.Name != "gh" {
+		t.Fatalf("expected name %q, got %q", "gh", ghDef.Name)
+	}
+	if len(ghDef.AllowedSubcommands) != 3 || ghDef.AllowedSubcommands[0] != "pr" {
+		t.Fatalf("unexpected subcommands: %+v", ghDef.AllowedSubcommands)
+	}
+	if len(ghDef.DeniedPatterns) != 1 || ghDef.DeniedPatterns[0] != "repo delete *" {
+		t.Fatalf("unexpected denied patterns: %+v", ghDef.DeniedPatterns)
+	}
+	if ghDef.Env["GH_TOKEN"] != "test-token" {
+		t.Fatalf("unexpected env: %+v", ghDef.Env)
+	}
+
+	aws := projectspec.HostCommandSpec{
+		Allow: []string{"s3", "ecr get-login *"},
+	}
+	awsDef := aws.ToCommandDef("aws")
+	if len(awsDef.AllowedSubcommands) != 1 || awsDef.AllowedSubcommands[0] != "s3" {
+		t.Fatalf("unexpected aws subcommands: %+v", awsDef.AllowedSubcommands)
+	}
+	if len(awsDef.AllowedPatterns) != 1 || awsDef.AllowedPatterns[0] != "ecr get-login *" {
+		t.Fatalf("unexpected aws patterns: %+v", awsDef.AllowedPatterns)
+	}
+}
+
 // TestHostCommandSpec_ToCommandDef_RejectPassthrough verifies that reject
 // rules survive the HostCommandSpec → CommandDef conversion.
 func TestHostCommandSpec_ToCommandDef_RejectPassthrough(t *testing.T) {
