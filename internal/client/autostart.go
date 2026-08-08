@@ -18,13 +18,6 @@ const (
 	socketProbeTimeout = 200 * time.Millisecond
 )
 
-// EnsureRunning ensures the boid server is running at DefaultSocketPath(),
-// starting it automatically if it is not. Kept for backward compatibility
-// with pre-Phase-3 callers that never had a per-profile socket to name.
-func EnsureRunning(ctx context.Context) error {
-	return EnsureRunningAt(ctx, DefaultSocketPath())
-}
-
 // EnsureRunningAt ensures the boid server reachable at socketPath is running.
 // This is the Phase 3 profile-aware entry point (docs/plans/cli-remote-connection.md
 // PR1): root's PersistentPreRunE, once it resolves the invocation's

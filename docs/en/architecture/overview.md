@@ -39,7 +39,7 @@ cmd/                  - cobra-based CLI commands (boid task, boid project, ...)
 main.go               - entry point; calls cmd.Execute()
 internal/
   client/             - UNIX-socket HTTP client for the daemon, plus autostart
-  daemon/             - daemonization (Spawn / WaitForSocket / RedirectToLog)
+  daemon/             - daemonization (Spawn / RedirectToLog)
   config/             - reads ~/.config/boid/config.yaml
   db/                 - SQLite handle + migrations
   server/             - HTTP / UNIX listeners and chi router wiring

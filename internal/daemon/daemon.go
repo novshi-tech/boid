@@ -233,18 +233,3 @@ func Spawn(args []string) (int, *os.File, error) {
 func spawnEnv(base []string) []string {
 	return append(append([]string(nil), base...), daemonEnvKey+"=1", statusPipeEnvKey+"=1")
 }
-
-// WaitForSocket polls socketPath using net.Dial until a connection succeeds or
-// timeout elapses.  It returns nil on success, or a descriptive error on timeout.
-func WaitForSocket(socketPath string, timeout time.Duration) error {
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		conn, err := net.DialTimeout("unix", socketPath, 200*time.Millisecond)
-		if err == nil {
-			conn.Close()
-			return nil
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
-	return fmt.Errorf("timeout waiting for socket %s", socketPath)
-}

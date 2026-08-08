@@ -54,10 +54,9 @@ func TestEnsureRunningAt_NonDefaultSocket_NoAutostart(t *testing.T) {
 
 // TestEnsureRunningAt_DefaultSocket_LiveReturnsNil pins that hitting the
 // default socket when a daemon is actually listening still returns nil
-// without invoking spawnServer (regression coverage that
-// EnsureRunning → EnsureRunningAt(DefaultSocketPath()) short-circuits
-// as before). Uses a temp XDG_RUNTIME_DIR so DefaultSocketPath() lands
-// under the test-owned temp dir instead of the developer's real one.
+// without invoking spawnServer. Uses a temp XDG_RUNTIME_DIR so
+// DefaultSocketPath() lands under the test-owned temp dir instead of the
+// developer's real one.
 func TestEnsureRunningAt_DefaultSocket_LiveReturnsNil(t *testing.T) {
 	tmpDir := t.TempDir()
 	t.Setenv("XDG_RUNTIME_DIR", tmpDir)
