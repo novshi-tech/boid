@@ -1579,6 +1579,96 @@ func (r *Runner) cleanupSandboxAfterWait(session backend.SandboxSession, extra o
 // e.g. selfInspectTimeout).
 var sessionControlCallTimeout = newAtomicDuration(30 * time.Second)
 
+// withAdoptedSession is the single implementation of the "resolve a bounded
+// ctx → sandboxBackend().Adopt(ctx, runtimeID) → classify a !ok result by
+// ctx.Err()" sequence that used to be copy-pasted, with only the log
+// message text and post-adopt handling differing, at all 8 call sites this
+// consolidates: Subscribe/WriteInput/ResizeRuntime/CloseInput
+// (runtime_subscriber_export.go) and StopJobRuntime/SignalJobRuntime/
+// CanAttach/ResizeRuntimeID (this file). docs/plans/refactoring-backlog.md
+// N5A: PR #857 / #862 / eccd476e each fixed this same ctx.Err() classification
+// bug in one call site while the others silently drifted out of sync, three
+// times — see e.g. this file's own (now-removed) copies of the "Moderate 4"
+// comment on StopJobRuntime and the "next-session-container-backend-
+// followups.md #1/#2" comments CanAttach/ResizeRuntimeID used to carry
+// separately for the same fix landing late in two places.
+//
+// parentCtx is the base to layer sessionControlCallTimeout onto: either
+// context.Background() for callers with no caller-supplied ctx to inherit a
+// deadline from (Subscribe/WriteInput/ResizeRuntime/CloseInput,
+// StopJobRuntime/SignalJobRuntime), or the caller's own ctx used as a FLOOR
+// (CanAttach/ResizeRuntimeID) — see sessionControlCallTimeout's doc comment
+// just above for why the distinction matters. Deriving from
+// context.Background() means ctx.Err() can only ever become
+// context.DeadlineExceeded once the timeout fires (nothing else can cancel
+// it before this function's own deferred cancel runs); deriving from a
+// caller ctx means it can also become context.Canceled (e.g. an HTTP client
+// disconnecting mid-request), which must not be reported with the same
+// "the engine may be wedged" weight as an actual deadline.
+//
+// If Adopt succeeds, fn runs against the resolved session under the same
+// bounded ctx and its error is returned as fnErr; adopted is true. Each
+// caller keeps its own post-fn handling (e.g. StopJobRuntime/
+// SignalJobRuntime's separate errors.Is(err, context.DeadlineExceeded)
+// Warn-vs-Debug split on fn's own result, ResizeRuntimeID's DeadlineExceeded
+// wrapping) — that part isn't copy-pasted across sites the same way the
+// Adopt sequence is, so it stays inline.
+//
+// If Adopt fails to resolve a session at all, fn does not run and adopted is
+// false. Which (if either) callback runs depends on WHY, matching what every
+// call site already branched on before this helper existed:
+//
+//   - ctx.Err() == nil: Adopt legitimately found nothing (the common case —
+//     the runtime already exited/was reaped, ctx still had budget left).
+//     Neither callback runs; this is the routine result and must stay
+//     unlogged (every *_NotFoundDoesNotWarn test in
+//     session_control_call_deadline_test.go pins this).
+//   - errors.Is(ctx.Err(), context.Canceled): only reachable when parentCtx
+//     is a caller ctx, never context.Background() (see above) — the
+//     caller's own ctx was canceled before Adopt could resolve. Not
+//     evidence the engine is wedged. onCanceled runs, if non-nil.
+//   - any other non-nil ctx.Err() (context.DeadlineExceeded, from either
+//     sessionControlCallTimeout's own floor or a shorter caller deadline):
+//     the engine did not answer before the deadline. onDeadlineExceeded
+//     runs, if non-nil.
+//
+// Deliberately NOT centralized: the actual slog.Warn/Debug calls and their
+// message text/fields (job_id vs signal vs nothing extra) stay in each call
+// site's callback — those differ by design per operation (N5A calls this out
+// explicitly: "ログ文言だけ差し替えてコピペ"), only the mechanical ctx
+// creation + Adopt + WHEN/WHICH-to-log decision is what was actually
+// duplicated (and drifted) 8 times.
+func (r *Runner) withAdoptedSession(
+	parentCtx context.Context,
+	runtimeID string,
+	onDeadlineExceeded func(ctx context.Context),
+	onCanceled func(ctx context.Context),
+	fn func(ctx context.Context, session backend.SandboxSession) error,
+) (adopted bool, ctxErr error, fnErr error) {
+	ctx, cancel := context.WithTimeout(parentCtx, sessionControlCallTimeout.Get())
+	defer cancel()
+	session, ok := r.sandboxBackend().Adopt(ctx, runtimeID)
+	if !ok {
+		switch {
+		case ctx.Err() == nil:
+			// Legitimate miss with ctx still healthy — nothing to log.
+		case errors.Is(ctx.Err(), context.Canceled):
+			if onCanceled != nil {
+				onCanceled(ctx)
+			}
+		default:
+			if onDeadlineExceeded != nil {
+				onDeadlineExceeded(ctx)
+			}
+		}
+		return false, ctx.Err(), nil
+	}
+	if fn == nil {
+		return true, nil, nil
+	}
+	return true, nil, fn(ctx, session)
+}
+
 // StopJobRuntime stops the runtime identified by runtimeID.
 // It is a best-effort operation: errors are logged at debug level only,
 // EXCEPT when the control-call deadline itself was hit (see below), which
@@ -1599,10 +1689,7 @@ func (r *Runner) StopJobRuntime(runtimeID string) {
 	// context.Background() — see sessionControlCallTimeout's doc comment for
 	// why: a `boid task stop`/task-abort caller blocked here against a
 	// wedged engine would otherwise never get its error back.
-	ctx, cancel := context.WithTimeout(context.Background(), sessionControlCallTimeout.Get())
-	defer cancel()
-	session, ok := r.sandboxBackend().Adopt(ctx, runtimeID)
-	if !ok {
+	adopted, _, err := r.withAdoptedSession(context.Background(), runtimeID,
 		// [Moderate 4, Opus review of PR #857]: distinguish "Adopt legitimately found
 		// nothing" (the common case — the runtime already exited/was
 		// reaped, ctx still has budget left) from "the control-call
@@ -1613,13 +1700,19 @@ func (r *Runner) StopJobRuntime(runtimeID string) {
 		// be left running with nothing left to reap it until the next
 		// daemon restart's orphan sweep. Warn, not Debug, so an operator
 		// grepping boid.log sees it.
-		if ctx.Err() != nil {
+		func(ctx context.Context) {
 			slog.Warn("stop job runtime: adopt did not resolve before the control-call deadline; the container may still be running",
 				"runtime_id", runtimeID, "timeout", sessionControlCallTimeout.Get())
-		}
+		},
+		nil, // unreachable: parentCtx is context.Background(), so ctx.Err() is never Canceled here.
+		func(ctx context.Context, session backend.SandboxSession) error {
+			return session.Stop(ctx)
+		},
+	)
+	if !adopted {
 		return
 	}
-	if err := session.Stop(ctx); err != nil {
+	if err != nil {
 		if errors.Is(err, context.DeadlineExceeded) {
 			slog.Warn("stop job runtime: engine did not respond before the control-call deadline; the container may still be running",
 				"runtime_id", runtimeID, "timeout", sessionControlCallTimeout.Get(), "error", err)
@@ -1648,17 +1741,20 @@ func (r *Runner) SignalJobRuntime(runtimeID string, sig syscall.Signal) {
 	// One shared deadline for the whole call (Adopt + Signal) — same
 	// reasoning as StopJobRuntime just above: `boid agent stop`'s SIGUSR1
 	// delivery must not hang forever against a wedged engine.
-	ctx, cancel := context.WithTimeout(context.Background(), sessionControlCallTimeout.Get())
-	defer cancel()
-	session, ok := r.sandboxBackend().Adopt(ctx, runtimeID)
-	if !ok {
-		if ctx.Err() != nil {
+	adopted, _, err := r.withAdoptedSession(context.Background(), runtimeID,
+		func(ctx context.Context) {
 			slog.Warn("signal job runtime: adopt did not resolve before the control-call deadline; the agent may not have received the signal",
 				"runtime_id", runtimeID, "signal", sig, "timeout", sessionControlCallTimeout.Get())
-		}
+		},
+		nil, // unreachable: parentCtx is context.Background(), so ctx.Err() is never Canceled here.
+		func(ctx context.Context, session backend.SandboxSession) error {
+			return session.Signal(ctx, sig)
+		},
+	)
+	if !adopted {
 		return
 	}
-	if err := session.Signal(ctx, sig); err != nil {
+	if err != nil {
 		if errors.Is(err, context.DeadlineExceeded) {
 			slog.Warn("signal job runtime: engine did not respond before the control-call deadline; the agent may not have received the signal",
 				"runtime_id", runtimeID, "signal", sig, "timeout", sessionControlCallTimeout.Get(), "error", err)
@@ -1748,20 +1844,18 @@ func (r *Runner) CanAttach(ctx context.Context, runtimeID string) bool {
 	if runtimeID == "" {
 		return false
 	}
-	ctx, cancel := context.WithTimeout(ctx, sessionControlCallTimeout.Get())
-	defer cancel()
-	_, ok := r.sandboxBackend().Adopt(ctx, runtimeID)
-	if !ok {
-		switch {
-		case errors.Is(ctx.Err(), context.Canceled):
-			slog.Debug("can attach: adopt did not resolve before the caller's ctx was canceled; the caller's resulting 409 is indistinguishable from a legitimate not-found result",
-				"runtime_id", runtimeID, "error", ctx.Err())
-		case ctx.Err() != nil:
+	adopted, _, _ := r.withAdoptedSession(ctx, runtimeID,
+		func(ctx context.Context) {
 			slog.Warn("can attach: adopt did not resolve before ctx was done; the caller's resulting 409 is indistinguishable from a legitimate not-found result",
 				"runtime_id", runtimeID, "timeout", sessionControlCallTimeout.Get(), "error", ctx.Err())
-		}
-	}
-	return ok
+		},
+		func(ctx context.Context) {
+			slog.Debug("can attach: adopt did not resolve before the caller's ctx was canceled; the caller's resulting 409 is indistinguishable from a legitimate not-found result",
+				"runtime_id", runtimeID, "error", ctx.Err())
+		},
+		nil,
+	)
+	return adopted
 }
 
 // ResizeRuntimeID resizes a sandbox session's terminal via the configured
@@ -1799,45 +1893,51 @@ func (r *Runner) ResizeRuntimeID(ctx context.Context, runtimeID string, size Ter
 	if runtimeID == "" {
 		return fmt.Errorf("runtime id is required")
 	}
-	ctx, cancel := context.WithTimeout(ctx, sessionControlCallTimeout.Get())
-	defer cancel()
-	session, ok := r.sandboxBackend().Adopt(ctx, runtimeID)
-	if !ok {
-		// [Moderate 4 / Minor 6 follow-up, Opus review of PR #857 (2nd
-		// round)]: without this, a deadline-timed-out Adopt and a
-		// deadline-timed-out Resize produced two unrelated-looking errors
-		// for the same underlying cause (an unresponsive engine) —
-		// ErrRuntimeUnsupported here vs. the wrapped message below.
-		//
-		// The two ctx.Err() causes are reported differently, for the reason
-		// CanAttach's doc comment spells out: ctx derives from the CALLER's
-		// ctx, so Canceled (the HTTP client disconnecting mid-request) is at
-		// least as likely here as DeadlineExceeded (the floor above, or the
-		// caller's own deadline, firing). Reporting both as "the engine did
-		// not respond in time" — which is what this branch did before the
-		// split — names the engine for an event the engine had no part in,
-		// and the log level has to differ for the same reason: a wedged
-		// engine is actionable (Warn, the same signal StopJobRuntime's own
-		// Warn carries), an ordinary client disconnect is not (Debug).
-		//
-		// Logging at all, rather than relying on the returned error, is
-		// because that error becomes a plain HTTP 400 body
-		// (job_runtime_routes.go) and never reaches boid.log — an operator
-		// grepping the daemon log for a "resize stopped working" report
-		// would otherwise find nothing.
-		switch {
-		case errors.Is(ctx.Err(), context.Canceled):
-			slog.Debug("resize runtime: adopt did not resolve before the caller's ctx was canceled",
-				"runtime_id", runtimeID, "error", ctx.Err())
-			return fmt.Errorf("resize runtime: the caller went away before the engine answered: %w", ctx.Err())
-		case ctx.Err() != nil:
+	// [Moderate 4 / Minor 6 follow-up, Opus review of PR #857 (2nd
+	// round)]: without this, a deadline-timed-out Adopt and a
+	// deadline-timed-out Resize produced two unrelated-looking errors
+	// for the same underlying cause (an unresponsive engine) —
+	// ErrRuntimeUnsupported here vs. the wrapped message below.
+	//
+	// The two ctx.Err() causes are reported differently, for the reason
+	// CanAttach's doc comment spells out: ctx derives from the CALLER's
+	// ctx, so Canceled (the HTTP client disconnecting mid-request) is at
+	// least as likely here as DeadlineExceeded (the floor above, or the
+	// caller's own deadline, firing). Reporting both as "the engine did
+	// not respond in time" — which is what this branch did before the
+	// split — names the engine for an event the engine had no part in,
+	// and the log level has to differ for the same reason: a wedged
+	// engine is actionable (Warn, the same signal StopJobRuntime's own
+	// Warn carries), an ordinary client disconnect is not (Debug).
+	//
+	// Logging at all, rather than relying on the returned error, is
+	// because that error becomes a plain HTTP 400 body
+	// (job_runtime_routes.go) and never reaches boid.log — an operator
+	// grepping the daemon log for a "resize stopped working" report
+	// would otherwise find nothing.
+	adopted, ctxErr, fnErr := r.withAdoptedSession(ctx, runtimeID,
+		func(ctx context.Context) {
 			slog.Warn("resize runtime: adopt did not resolve before ctx was done; the container may still be running with a stale terminal size",
 				"runtime_id", runtimeID, "timeout", sessionControlCallTimeout.Get(), "error", ctx.Err())
-			return fmt.Errorf("resize runtime: engine did not respond in time: %w", ctx.Err())
+		},
+		func(ctx context.Context) {
+			slog.Debug("resize runtime: adopt did not resolve before the caller's ctx was canceled",
+				"runtime_id", runtimeID, "error", ctx.Err())
+		},
+		func(ctx context.Context, session backend.SandboxSession) error {
+			return session.Resize(size)
+		},
+	)
+	if !adopted {
+		switch {
+		case errors.Is(ctxErr, context.Canceled):
+			return fmt.Errorf("resize runtime: the caller went away before the engine answered: %w", ctxErr)
+		case ctxErr != nil:
+			return fmt.Errorf("resize runtime: engine did not respond in time: %w", ctxErr)
 		}
 		return ErrRuntimeUnsupported
 	}
-	if err := session.Resize(size); err != nil {
+	if fnErr != nil {
 		// [Minor 6, Opus review of PR #857]: session.Resize's underlying
 		// ContainerResize returns a bare context.DeadlineExceeded,
 		// undecorated, once sessionControlCallTimeout fires (moby client
@@ -1845,10 +1945,10 @@ func (r *Runner) ResizeRuntimeID(ctx context.Context, runtimeID string, size Ter
 		// the HTTP resize route's caller would read as
 		// `Get ".../resize": context deadline exceeded`, which says nothing
 		// about an unresponsive engine being the cause. Wrap it so it does.
-		if errors.Is(err, context.DeadlineExceeded) {
-			return fmt.Errorf("resize runtime: engine did not respond in time: %w", err)
+		if errors.Is(fnErr, context.DeadlineExceeded) {
+			return fmt.Errorf("resize runtime: engine did not respond in time: %w", fnErr)
 		}
-		return err
+		return fnErr
 	}
 	return nil
 }
