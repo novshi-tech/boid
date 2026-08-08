@@ -191,6 +191,16 @@ var Schema = []FieldSpec{
 	{Path: "oauth_providers.*.client_id", Kind: KindString, Reload: ReloadRestartRequired},
 	{Path: "oauth_providers.*.client_secret_key", Kind: KindString, Reload: ReloadRestartRequired},
 	{Path: "oauth_providers.*.scopes", Kind: KindStringArray, Reload: ReloadRestartRequired},
+	// oauth_providers.*.grant (docs/plans/api-gateway.md §6-補, PR4): which
+	// RFC 6749 grant apigateway.OAuth2TokenSource.refresh performs for this
+	// provider. A KindEnum whose EnumValues mirrors apigateway.
+	// ValidOAuthGrants exactly (authorization_code/client_credentials) —
+	// same drift-prevention pattern as oauth_providers.*.flow just below.
+	// Deliberately a separate leaf from flow, not folded into it — grant
+	// and flow are orthogonal axes (apigateway.OAuthProviderConfig.Grant's
+	// own doc comment).
+	{Path: "oauth_providers.*.grant", Kind: KindEnum, Reload: ReloadRestartRequired,
+		EnumValues: []string{"authorization_code", "client_credentials"}},
 	// oauth_providers.*.flow/authorization_endpoint/device_authorization_endpoint
 	// (docs/plans/api-gateway.md §7, PR3): the login-flow selector and its
 	// two flow-conditional endpoints. flow is a KindEnum whose EnumValues

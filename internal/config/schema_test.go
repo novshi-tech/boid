@@ -176,6 +176,28 @@ func TestSchema_OAuthProvidersFlow_IsEnumWithThreeValues(t *testing.T) {
 	}
 }
 
+// TestSchema_OAuthProvidersGrant_IsEnumWithTwoValues pins
+// oauth_providers.*.grant's EnumValues against apigateway.ValidOAuthGrants —
+// docs/plans/api-gateway.md §6-補, PR4.
+func TestSchema_OAuthProvidersGrant_IsEnumWithTwoValues(t *testing.T) {
+	spec, ok := ResolveField("oauth_providers.az.grant")
+	if !ok {
+		t.Fatal("ResolveField(oauth_providers.az.grant) not found")
+	}
+	if spec.Kind != KindEnum {
+		t.Errorf("kind = %v, want KindEnum", spec.Kind)
+	}
+	want := map[string]bool{"authorization_code": true, "client_credentials": true}
+	if len(spec.EnumValues) != len(want) {
+		t.Fatalf("EnumValues = %v, want exactly %v", spec.EnumValues, want)
+	}
+	for _, v := range spec.EnumValues {
+		if !want[v] {
+			t.Errorf("unexpected EnumValues entry %q", v)
+		}
+	}
+}
+
 // TestSchema_LogLevel_IsEnumWithLogLevelNames pins that "log.level"'s schema
 // entry is a KindEnum whose EnumValues is exactly LogLevelNames (internal/
 // config/log_level.go) — so `boid config set log.level <bogus>`'s

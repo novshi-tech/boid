@@ -946,6 +946,129 @@ func TestOAuth2TokenSource_TokenEndpointErrorResponse_UnrecognizedCodeNotEchoed(
 	}
 }
 
+// --- client_credentials grant (docs/plans/api-gateway.md §6-補, PR4) ---
+
+// TestOAuth2TokenSource_ClientCredentials_PostsGrantTypeAndScope pins the
+// §6-補 shape: grant_type=client_credentials, client_id, client_secret, and
+// — unlike the refresh_token grant (callRefreshTokenEndpoint never sends
+// scope) — scope IS sent whenever cfg.Scopes is configured, since Azure
+// AD's client_credentials grant requires `scope=https://<resource>/.default`.
+func TestOAuth2TokenSource_ClientCredentials_PostsGrantTypeAndScope(t *testing.T) {
+	store := newMemSecretStore()
+	store.seed("ws-a", "sp-client-secret", "shh-its-a-secret")
+	stub := newTokenEndpointStub(t, http.StatusOK, tokenJSON("AT1", "", 3600))
+	ts := NewOAuth2TokenSource([]OAuthProviderConfig{{
+		Name: "az", TokenEndpoint: stub.srv.URL, ClientID: "sp-client-id", ClientSecretKey: "sp-client-secret",
+		Grant:  GrantClientCredentials,
+		Scopes: []string{"https://api.example.com/.default"},
+	}}, store.resolver(), store.writer())
+
+	got, err := ts.AccessToken("ws-a", "az")
+	if err != nil {
+		t.Fatalf("AccessToken: %v", err)
+	}
+	if got != "AT1" {
+		t.Errorf("AccessToken = %q, want %q", got, "AT1")
+	}
+	if v := stub.lastForm.Get("grant_type"); v != "client_credentials" {
+		t.Errorf("form grant_type = %q, want %q", v, "client_credentials")
+	}
+	if v := stub.lastForm.Get("client_id"); v != "sp-client-id" {
+		t.Errorf("form client_id = %q, want %q", v, "sp-client-id")
+	}
+	if v := stub.lastForm.Get("client_secret"); v != "shh-its-a-secret" {
+		t.Errorf("form client_secret = %q, want %q", v, "shh-its-a-secret")
+	}
+	if v := stub.lastForm.Get("scope"); v != "https://api.example.com/.default" {
+		t.Errorf("form scope = %q, want %q", v, "https://api.example.com/.default")
+	}
+	if stub.lastForm.Has("refresh_token") {
+		t.Error("client_credentials form must not include refresh_token — this grant has no such concept")
+	}
+}
+
+// TestOAuth2TokenSource_ClientCredentials_NoRefreshTokenNeeded pins §6-補's
+// core structural claim: a client_credentials provider's AccessToken
+// succeeds even when the secret store has NO refresh_token seeded at all
+// (unlike the default authorization_code/refresh_token grant, which fails
+// with "no refresh_token configured" — see
+// TestOAuth2TokenSource_NoRefreshTokenConfigured_Error above).
+func TestOAuth2TokenSource_ClientCredentials_NoRefreshTokenNeeded(t *testing.T) {
+	store := newMemSecretStore()
+	store.seed("ws-a", "sp-client-secret", "shh-its-a-secret")
+	// Deliberately no seed for OAuthSecretKey("az", oauthFieldRefreshToken).
+	stub := newTokenEndpointStub(t, http.StatusOK, tokenJSON("AT1", "", 3600))
+	ts := NewOAuth2TokenSource([]OAuthProviderConfig{{
+		Name: "az", TokenEndpoint: stub.srv.URL, ClientID: "sp-client-id", ClientSecretKey: "sp-client-secret",
+		Grant: GrantClientCredentials,
+	}}, store.resolver(), store.writer())
+
+	got, err := ts.AccessToken("ws-a", "az")
+	if err != nil {
+		t.Fatalf("AccessToken: %v (client_credentials must not require a pre-seeded refresh_token)", err)
+	}
+	if got != "AT1" {
+		t.Errorf("AccessToken = %q, want %q", got, "AT1")
+	}
+}
+
+// TestOAuth2TokenSource_ClientCredentials_EmptyResolvedSecret_Errors pins
+// docs/plans/api-gateway.md §6-補's "空値だけは素通りして分かりにくい 502に
+// なる" fix: a client_secret_key that resolves to an EMPTY string (as
+// opposed to an unset key, which the resolver already errors on) must be
+// rejected explicitly rather than silently omitting client_secret from the
+// token request.
+func TestOAuth2TokenSource_ClientCredentials_EmptyResolvedSecret_Errors(t *testing.T) {
+	store := newMemSecretStore()
+	store.seed("ws-a", "sp-client-secret", "") // key IS set, value is empty
+	stub := newTokenEndpointStub(t, http.StatusOK, tokenJSON("AT1", "", 3600))
+	ts := NewOAuth2TokenSource([]OAuthProviderConfig{{
+		Name: "az", TokenEndpoint: stub.srv.URL, ClientID: "sp-client-id", ClientSecretKey: "sp-client-secret",
+		Grant: GrantClientCredentials,
+	}}, store.resolver(), store.writer())
+
+	if _, err := ts.AccessToken("ws-a", "az"); err == nil {
+		t.Fatal("AccessToken with an empty resolved client_secret: want error, got nil")
+	} else if !strings.Contains(err.Error(), "client_secret") {
+		t.Errorf("error %q does not mention client_secret", err.Error())
+	}
+	if n := stub.callCount(); n != 0 {
+		t.Errorf("token endpoint called %d times, want 0 (must fail before ever contacting the endpoint)", n)
+	}
+}
+
+// TestOAuth2TokenSource_ClientCredentials_DoesNotPersistRefreshToken pins
+// docs/plans/api-gateway.md §6-補's "persistGrant は refresh_token を書か
+// ない" requirement — even when the token endpoint response includes a
+// (non-compliant, RFC 6749 §4.4.3 does not send one in the documented
+// example) refresh_token field, the client_credentials path must never
+// write it to the secret store.
+func TestOAuth2TokenSource_ClientCredentials_DoesNotPersistRefreshToken(t *testing.T) {
+	store := newMemSecretStore()
+	store.seed("ws-a", "sp-client-secret", "shh-its-a-secret")
+	// A non-compliant IdP response that includes refresh_token anyway.
+	stub := newTokenEndpointStub(t, http.StatusOK, tokenJSON("AT1", "RT-should-not-be-persisted", 3600))
+	ts := NewOAuth2TokenSource([]OAuthProviderConfig{{
+		Name: "az", TokenEndpoint: stub.srv.URL, ClientID: "sp-client-id", ClientSecretKey: "sp-client-secret",
+		Grant: GrantClientCredentials,
+	}}, store.resolver(), store.writer())
+
+	if _, err := ts.AccessToken("ws-a", "az"); err != nil {
+		t.Fatalf("AccessToken: %v", err)
+	}
+	if v, err := store.get("ws-a", OAuthSecretKey("az", oauthFieldRefreshToken)); err == nil {
+		t.Errorf("refresh_token was persisted as %q — client_credentials must never persist a refresh_token", v)
+	}
+	// access_token cache IS still persisted — grant-independent, per §6-補.
+	cache, err := getAccessTokenCache(store, "ws-a", "az")
+	if err != nil {
+		t.Fatalf("getAccessTokenCache: %v", err)
+	}
+	if cache.AccessToken != "AT1" {
+		t.Errorf("persisted access_token = %q, want %q", cache.AccessToken, "AT1")
+	}
+}
+
 func TestOAuth2TokenSource_NilReceiver_ReturnsError(t *testing.T) {
 	var ts *OAuth2TokenSource
 	if _, err := ts.AccessToken("ws-a", "freee"); err == nil {

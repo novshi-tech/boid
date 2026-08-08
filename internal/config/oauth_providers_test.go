@@ -388,6 +388,7 @@ func TestAPIGatewayOAuthProviders_FieldMapping(t *testing.T) {
 			AuthorizationEndpoint:       "https://accounts.secure.freee.co.jp/public_api/authorize",
 			DeviceAuthorizationEndpoint: "",
 			AuthorizeParams:             map[string]string{"foo": "bar"},
+			Grant:                       "authorization_code",
 		},
 	}}
 	providers := cfg.APIGatewayOAuthProviders()
@@ -418,5 +419,123 @@ func TestAPIGatewayOAuthProviders_FieldMapping(t *testing.T) {
 	}
 	if p.AuthorizeParams["foo"] != "bar" {
 		t.Errorf("AuthorizeParams = %v, want foo=bar", p.AuthorizeParams)
+	}
+	if string(p.Grant) != "authorization_code" {
+		t.Errorf("Grant = %q, want authorization_code", p.Grant)
+	}
+}
+
+// --- grant: client_credentials (docs/plans/api-gateway.md §6-補, PR4) ---
+
+// TestLoadFromPath_OAuthProviders_GrantOptional pins that an existing
+// pre-§6-補 config.yaml (no grant field at all) keeps loading unmodified,
+// and is treated as authorization_code — the same backward-compatibility
+// posture Flow's own optionality already has (TestLoadFromPath_
+// OAuthProviders_FlowOptional, above).
+func TestLoadFromPath_OAuthProviders_GrantOptional(t *testing.T) {
+	content := `
+oauth_providers:
+  freee:
+    token_endpoint: https://accounts.secure.freee.co.jp/public_api/token
+    client_id: freee-client-id
+`
+	cfg, err := loadFromPath(writeConfigFile(t, content))
+	if err != nil {
+		t.Fatalf("unexpected error (grant must be optional): %v", err)
+	}
+	if cfg.OAuthProviders["freee"].Grant != "" {
+		t.Errorf("Grant = %q, want empty", cfg.OAuthProviders["freee"].Grant)
+	}
+}
+
+// TestLoadFromPath_OAuthProviders_ClientCredentials_Valid pins the
+// client_credentials config shape (docs/plans/api-gateway.md §6-補): no
+// flow, no authorization_endpoint — just token_endpoint/client_id/
+// client_secret_key/scopes/grant.
+func TestLoadFromPath_OAuthProviders_ClientCredentials_Valid(t *testing.T) {
+	content := `
+oauth_providers:
+  az:
+    token_endpoint: https://login.microsoftonline.com/some-tenant-id/oauth2/v2.0/token
+    client_id: sp-client-id
+    client_secret_key: az-sp-client-secret
+    scopes: [https://api.example.com/.default]
+    grant: client_credentials
+`
+	cfg, err := loadFromPath(writeConfigFile(t, content))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	az := cfg.OAuthProviders["az"]
+	if az.Grant != "client_credentials" {
+		t.Errorf("Grant = %q, want client_credentials", az.Grant)
+	}
+	if az.ClientSecretKey != "az-sp-client-secret" {
+		t.Errorf("ClientSecretKey = %q", az.ClientSecretKey)
+	}
+}
+
+func TestLoadFromPath_OAuthProviders_UnrecognizedGrantRejected(t *testing.T) {
+	content := `
+oauth_providers:
+  az:
+    token_endpoint: https://login.microsoftonline.com/some-tenant-id/oauth2/v2.0/token
+    client_id: sp-client-id
+    client_secret_key: az-sp-client-secret
+    grant: implicit
+`
+	_, err := loadFromPath(writeConfigFile(t, content))
+	if err == nil {
+		t.Fatal("want error for an unrecognized grant, got nil")
+	}
+	if !strings.Contains(err.Error(), "grant") {
+		t.Errorf("error %q does not mention grant", err.Error())
+	}
+}
+
+// TestLoadFromPath_OAuthProviders_ClientCredentials_MissingClientSecretKeyRejected
+// pins docs/plans/api-gateway.md §6-補 / RFC 6749 §4.4.2: client_credentials
+// requires a confidential client, so client_secret_key is required — unlike
+// the default authorization_code grant, where it is optional (PKCE public
+// clients).
+func TestLoadFromPath_OAuthProviders_ClientCredentials_MissingClientSecretKeyRejected(t *testing.T) {
+	content := `
+oauth_providers:
+  az:
+    token_endpoint: https://login.microsoftonline.com/some-tenant-id/oauth2/v2.0/token
+    client_id: sp-client-id
+    grant: client_credentials
+`
+	_, err := loadFromPath(writeConfigFile(t, content))
+	if err == nil {
+		t.Fatal("want error for client_credentials with no client_secret_key, got nil")
+	}
+	if !strings.Contains(err.Error(), "client_secret_key") {
+		t.Errorf("error %q does not mention client_secret_key", err.Error())
+	}
+}
+
+// TestLoadFromPath_OAuthProviders_ClientCredentials_FlowRejected pins
+// docs/plans/api-gateway.md §6-補's "grant と flow の排他は config load 時
+// に拒否する" decision: grant and flow are orthogonal axes, but
+// client_credentials has no login flow at all, so setting both must fail
+// config load rather than being silently accepted and only failing later
+// at `boid secret oauth login` time.
+func TestLoadFromPath_OAuthProviders_ClientCredentials_FlowRejected(t *testing.T) {
+	content := `
+oauth_providers:
+  az:
+    token_endpoint: https://login.microsoftonline.com/some-tenant-id/oauth2/v2.0/token
+    client_id: sp-client-id
+    client_secret_key: az-sp-client-secret
+    grant: client_credentials
+    flow: manual
+`
+	_, err := loadFromPath(writeConfigFile(t, content))
+	if err == nil {
+		t.Fatal("want error for client_credentials with a flow set, got nil")
+	}
+	if !strings.Contains(err.Error(), "flow") {
+		t.Errorf("error %q does not mention flow", err.Error())
 	}
 }

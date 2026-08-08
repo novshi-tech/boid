@@ -334,9 +334,11 @@ type OAuthProviderConfig struct {
 	ClientSecretKey string `yaml:"client_secret_key,omitempty"`
 	// Scopes is consumed by `boid secret oauth login`'s authorization-URL
 	// construction (loopback/manual) and device-authorization request
-	// (device) — docs/plans/api-gateway.md §7, PR3. Never sent on a plain
-	// refresh; see apigateway.OAuth2TokenSource.callTokenEndpoint's own doc
-	// comment for why.
+	// (device) — docs/plans/api-gateway.md §7, PR3. Never sent on an
+	// authorization_code refresh_token grant; see
+	// apigateway.OAuth2TokenSource.callRefreshTokenEndpoint's own doc comment
+	// for why. A client_credentials grant (§6-補, PR4) DOES send Scopes on
+	// every token request — see callClientCredentialsTokenEndpoint instead.
 	Scopes []string `yaml:"scopes,omitempty"`
 
 	// Flow selects which of the three initial-grant flows (docs/plans/
@@ -366,6 +368,18 @@ type OAuthProviderConfig struct {
 	// the motivating example (Google's access_type/prompt). Keys colliding
 	// with a protocol-reserved parameter are rejected below.
 	AuthorizeParams map[string]string `yaml:"authorize_params,omitempty"`
+
+	// Grant selects which RFC 6749 grant apigateway.OAuth2TokenSource.
+	// refresh performs for this provider (docs/plans/api-gateway.md §6-補):
+	// "authorization_code" (the default — every 3-legged/delegated flow
+	// this package supported before §6-補) or "client_credentials" (RFC
+	// 6749 §4.4, 2-legged / app-only, Service Principal). Deliberately
+	// OPTIONAL and a SEPARATE field from Flow, not a fourth Flow value —
+	// see apigateway.OAuthProviderConfig.Grant's own doc comment for why.
+	// Empty ("") means "authorization_code", so an existing PR2/PR3
+	// config.yaml (written before this field existed) keeps loading
+	// unmodified.
+	Grant string `yaml:"grant,omitempty"`
 }
 
 // reservedAuthorizeParamNames is every query/form parameter this package's
@@ -403,6 +417,14 @@ var validLoginFlows = map[string]bool{
 	string(apigateway.LoginFlowManual):   true,
 }
 
+// validOAuthGrants mirrors apigateway.ValidOAuthGrants exactly (Grant is a
+// plain string here, an apigateway.OAuthGrant there — see that type's own
+// doc comment for why the two must never silently drift apart).
+var validOAuthGrants = map[string]bool{
+	string(apigateway.GrantAuthorizationCode): true,
+	string(apigateway.GrantClientCredentials): true,
+}
+
 // validateOAuthProviderConfig validates one oauth_providers.<name> entry,
 // mirroring validateServiceConfig's "fail loud with the offending name"
 // posture.
@@ -433,6 +455,33 @@ func validateOAuthProviderConfig(name string, pc OAuthProviderConfig) error {
 	}
 	if pc.ClientID == "" {
 		return fmt.Errorf("oauth_providers[%q]: missing required \"client_id\" field", name)
+	}
+
+	if pc.Grant != "" && !validOAuthGrants[pc.Grant] {
+		return fmt.Errorf("oauth_providers[%q]: \"grant\": unrecognized %q (want one of authorization_code, client_credentials)", name, pc.Grant)
+	}
+	// client_credentials-specific requirements (docs/plans/api-gateway.md
+	// §6-補, "設計方針"): checked here, eagerly, at config load, the same
+	// "fail loud with the offending name" posture every other
+	// flow/grant-conditional requirement in this function already has.
+	if apigateway.OAuthGrant(pc.Grant) == apigateway.GrantClientCredentials {
+		// RFC 6749 §4.4.2: client_credentials requires a confidential
+		// client. This catches an UNSET client_secret_key; a client_secret_
+		// key that IS set but resolves to an empty secret-store VALUE
+		// cannot be caught here (config load has no secret-store access at
+		// all) — apigateway.OAuth2TokenSource.refreshClientCredentials
+		// catches that half at refresh time instead (see its own doc
+		// comment for why).
+		if pc.ClientSecretKey == "" {
+			return fmt.Errorf("oauth_providers[%q]: \"client_secret_key\" is required when \"grant\" is client_credentials (RFC 6749 §4.4.2 requires a confidential client)", name)
+		}
+		// grant and flow are a deliberately separate axis (apigateway.
+		// OAuthProviderConfig.Grant's own doc comment) — client_credentials
+		// has no login flow at all (no user authorization step exists to
+		// select a flow for), so the two must never be set together.
+		if pc.Flow != "" {
+			return fmt.Errorf("oauth_providers[%q]: \"flow\" must not be set when \"grant\" is client_credentials — client_credentials (RFC 6749 §4.4) has no login flow at all", name)
+		}
 	}
 
 	if pc.Flow != "" {
@@ -515,6 +564,7 @@ func (c Config) APIGatewayOAuthProviders() []apigateway.OAuthProviderConfig {
 			AuthorizationEndpoint:       pc.AuthorizationEndpoint,
 			DeviceAuthorizationEndpoint: pc.DeviceAuthorizationEndpoint,
 			AuthorizeParams:             authorizeParams,
+			Grant:                       apigateway.OAuthGrant(pc.Grant),
 		})
 	}
 	return out

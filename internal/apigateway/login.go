@@ -213,6 +213,21 @@ func (m *LoginManager) StartLogin(namespace, provider, redirectURI string) (*Log
 	if !ok {
 		return nil, fmt.Errorf("apigateway: oauth2 provider %q is not configured (oauth_providers: in config.yaml)", provider)
 	}
+	// Defensive guard (docs/plans/api-gateway.md §6-補): internal/config.
+	// validateOAuthProviderConfig already rejects a config.yaml entry that
+	// sets grant: client_credentials together with a flow at load time, so
+	// cfg.Flow should always be "" here for a client_credentials provider —
+	// this exists only to give a hand-built OAuthProviderConfig (a test, or
+	// any future caller that skips config-load validation) a clear,
+	// grant-specific error instead of either silently falling through to
+	// the generic "no flow configured" message below (misleading — it
+	// implies setting a flow would fix it, but client_credentials has no
+	// flow concept at all to set) or, worse, StartLogin picking one of the
+	// three login-flow branches by accident if cfg.Flow happened to be
+	// non-empty despite the grant.
+	if cfg.Grant == GrantClientCredentials {
+		return nil, fmt.Errorf("apigateway: oauth2 provider %q uses the client_credentials grant (RFC 6749 §4.4) — this is a direct client_id/client_secret token-endpoint request with no user authorization step, so there is no login flow to start; seed or rotate client_secret via `boid secret set` instead", provider)
+	}
 	switch cfg.Flow {
 	case LoginFlowDevice:
 		return m.startDevice(namespace, cfg)
@@ -432,7 +447,7 @@ func (m *LoginManager) exchangeAndPersist(p *pendingLogin, cfg OAuthProviderConf
 	// to collide byte-for-byte with a stale unreadable value gets an
 	// extra, harmless re-write.
 	priorRefreshToken, _ := m.tokens.resolver(p.namespace, OAuthSecretKey(cfg.Name, oauthFieldRefreshToken))
-	if _, err := m.tokens.persistGrant(p.namespace, cfg, resp, priorRefreshToken); err != nil {
+	if _, err := m.tokens.persistGrant(p.namespace, cfg, resp, priorRefreshToken, true); err != nil {
 		return err
 	}
 	return requireRefreshToken(cfg.Name, resp.RefreshToken, priorRefreshToken)
@@ -590,7 +605,7 @@ func (m *LoginManager) pollDeviceGrant(ctx context.Context, cancel context.Cance
 		switch {
 		case err == nil:
 			priorRefreshToken, _ := m.tokens.resolver(p.namespace, OAuthSecretKey(cfg.Name, oauthFieldRefreshToken))
-			if _, persistErr := m.tokens.persistGrant(p.namespace, cfg, resp, priorRefreshToken); persistErr != nil {
+			if _, persistErr := m.tokens.persistGrant(p.namespace, cfg, resp, priorRefreshToken, true); persistErr != nil {
 				slog.Error("apigateway: oauth2 device login grant obtained but persistence failed — the grant is lost; re-run `boid secret oauth login`",
 					"provider", cfg.Name, "namespace", p.namespace, "error", persistErr)
 				p.setResult(LoginStatusFailed, persistErr.Error())
