@@ -256,9 +256,9 @@ daemon 側の対 (追補 N2 `ExecuteBoidBuiltin`) と同時に設計すると二
 
 #### N3. `containerBackend.Launch` (332 行) + N7 手動巻き戻し
 
-- `internal/dispatcher/container_backend.go:982-1313`。TLS materialize / spec 書き出し /
+- `internal/dispatcher/container_backend.go:977-1308`。TLS materialize / spec 書き出し /
   mount 実体化 / network 解決 / env 加工 / ContainerCreate〜start / transcript spool が同居。
-- N7: 同関数の 4 エラーパス (1254-1310) が transcriptFile Close + removeHalfBuiltContainer +
+- N7: 同関数の 4 エラーパス (1249-1302) が transcriptFile Close + removeHalfBuiltContainer +
   cleanupFiles を毎回手書き。**過去に fd leak を 2 箇所やった記録がコメントに残っている**。
   L4 と同型なので同一 PR 系列へ。
 - 規模: 大 / リスク: 中〜高。先に N7 (巻き戻しの defer 化) を片付けてから分割が安全。
@@ -351,7 +351,7 @@ daemon 側の対 (追補 N2 `ExecuteBoidBuiltin`) と同時に設計すると二
   ヘルパ / 直書き / **分岐なし (workspace edit は generic に落ちる非対称)** と割れている。
   `ifMatchWrite(...)` 共通経路へ、文言はコールバック注入。規模: 中 / リスク: 中。
 - **N6. docker TLS / broker TLS の 4 関数平行実装**: `internal/dispatcher/container_backend.go`
-  の `materializeDockerClientCert` (2115-2144) / `materializeBrokerClientCert` (2190-2226)、
+  の `materializeDockerClientCert` (2110-2140) / `materializeBrokerClientCert` (2185-2214)、
   `dockerTLSCertDir` / `brokerTLSCertDir`、`withDockerTLSEnv` / `withBrokerTLSEnv` が
   CN・validity・ディレクトリ名以外同一。3 系統目が生えたら破綻。
   `perJobCertMaterial{...}` を受ける 1 関数へ。テスト網は双方厚い。パス生成結果の pin を確認。
