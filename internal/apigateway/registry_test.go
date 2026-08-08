@@ -4,7 +4,7 @@ import "testing"
 
 func TestRegistry_RegisterAndAuthorize(t *testing.T) {
 	r := NewRegistry()
-	token := r.Register([]string{"myapp", "ops"}, "ws-a", "task-1", false)
+	token := r.Register(RegisterInput{Services: []string{"myapp", "ops"}, Namespace: "ws-a", TaskID: "task-1", ReadOnly: false})
 
 	allowed, valid := r.Authorize(token, "myapp")
 	if !valid || !allowed {
@@ -30,7 +30,7 @@ func TestRegistry_UnknownToken(t *testing.T) {
 
 func TestRegistry_Unregister(t *testing.T) {
 	r := NewRegistry()
-	token := r.Register([]string{"myapp"}, "ws-a", "task-1", false)
+	token := r.Register(RegisterInput{Services: []string{"myapp"}, Namespace: "ws-a", TaskID: "task-1", ReadOnly: false})
 	r.Unregister(token)
 
 	_, valid := r.Authorize(token, "myapp")
@@ -46,7 +46,7 @@ func TestRegistry_UnregisterUnknownTokenIsNoop(t *testing.T) {
 
 func TestRegistry_Lookup(t *testing.T) {
 	r := NewRegistry()
-	token := r.RegisterToken("fixed-token", []string{"myapp"}, "ws-a", "task-1", true)
+	token := r.RegisterToken("fixed-token", RegisterInput{Services: []string{"myapp"}, Namespace: "ws-a", TaskID: "task-1", ReadOnly: true})
 	if token != "fixed-token" {
 		t.Fatalf("RegisterToken returned %q, want %q", token, "fixed-token")
 	}
@@ -86,7 +86,7 @@ func TestRegistry_NilRegistryFailsClosed(t *testing.T) {
 
 func TestRegistry_DuplicateServiceNamesDeduped(t *testing.T) {
 	r := NewRegistry()
-	token := r.Register([]string{"myapp", "myapp", "ops"}, "ws-a", "", false)
+	token := r.Register(RegisterInput{Services: []string{"myapp", "myapp", "ops"}, Namespace: "ws-a", TaskID: "", ReadOnly: false})
 	entry, ok := r.Lookup(token)
 	if !ok {
 		t.Fatal("Lookup: not found")

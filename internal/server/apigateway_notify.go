@@ -91,7 +91,8 @@ type apiGatewayActionPayload struct {
 // (task deleted mid-request, a transient DB error) is logged and the row is
 // skipped entirely rather than written with an empty status.
 func newAPIGatewayRecorder(tasks *orchestrator.TaskRepository) apigateway.RequestRecorder {
-	return func(taskID, method, service, path string, status int) {
+	return func(req apigateway.RecordedRequest) {
+		taskID := req.TaskID
 		if taskID == "" || tasks == nil {
 			return
 		}
@@ -101,10 +102,10 @@ func newAPIGatewayRecorder(tasks *orchestrator.TaskRepository) apigateway.Reques
 			return
 		}
 		payload, err := json.Marshal(apiGatewayActionPayload{
-			Method:  method,
-			Service: service,
-			Path:    path,
-			Status:  status,
+			Method:  req.Method,
+			Service: req.Service,
+			Path:    req.Path,
+			Status:  req.Status,
 		})
 		if err != nil {
 			slog.Warn("api gateway: encode timeline action payload failed", "task_id", taskID, "error", err)

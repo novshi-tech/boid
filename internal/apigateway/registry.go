@@ -43,20 +43,33 @@ func NewRegistry() *Registry {
 	return &Registry{entries: make(map[string]*Entry)}
 }
 
+// RegisterInput bundles Register/RegisterToken's parameters
+// (docs/plans/refactoring-backlog.md N11): Namespace and TaskID were
+// adjacent, same-typed (string) positional arguments in the pre-struct
+// signature, so a swap between them type-checked silently and would resolve
+// credentials/audit records against the wrong scope. Naming each field
+// makes that swap a compile error instead.
+type RegisterInput struct {
+	Services  []string
+	Namespace string
+	TaskID    string
+	ReadOnly  bool
+}
+
 // Register creates a new entry with a freshly generated token, scoped to
-// namespace and taskID, and returns the token.
-func (r *Registry) Register(services []string, namespace, taskID string, readOnly bool) string {
+// in.Namespace and in.TaskID, and returns the token.
+func (r *Registry) Register(in RegisterInput) string {
 	token := GenerateToken()
-	r.RegisterToken(token, services, namespace, taskID, readOnly)
+	r.RegisterToken(token, in)
 	return token
 }
 
 // RegisterToken creates (or replaces) an entry under an explicit token. This
 // is useful for callers (and tests) that already have a token value to
 // correlate with.
-func (r *Registry) RegisterToken(token string, services []string, namespace, taskID string, readOnly bool) string {
-	set := make(map[string]bool, len(services))
-	for _, s := range services {
+func (r *Registry) RegisterToken(token string, in RegisterInput) string {
+	set := make(map[string]bool, len(in.Services))
+	for _, s := range in.Services {
 		if s == "" {
 			continue
 		}
@@ -67,7 +80,7 @@ func (r *Registry) RegisterToken(token string, services []string, namespace, tas
 	if r.entries == nil {
 		r.entries = make(map[string]*Entry)
 	}
-	r.entries[token] = &Entry{Token: token, Namespace: namespace, TaskID: taskID, ReadOnly: readOnly, Services: set}
+	r.entries[token] = &Entry{Token: token, Namespace: in.Namespace, TaskID: in.TaskID, ReadOnly: in.ReadOnly, Services: set}
 	return token
 }
 
