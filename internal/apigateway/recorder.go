@@ -8,12 +8,25 @@ package apigateway
 // — deliberately narrow: no headers, no query string, no request/response
 // body, ever.
 //
-// taskID is the originating task (Registry Entry.TaskID); empty for a
+// RecordedRequest is the payload passed to a RequestRecorder on each call
+// (docs/plans/refactoring-backlog.md N11): TaskID, Method, Service, and Path
+// were four adjacent same-typed (string) positional parameters, easy to
+// transpose without the compiler noticing.
+//
+// TaskID is the originating task (Registry Entry.TaskID); empty for a
 // taskless job, in which case a real recorder is expected to skip recording
 // rather than attribute the request to no task (there is nothing in a task
 // timeline to attach it to).
-type RequestRecorder func(taskID, method, service, path string, status int)
+type RecordedRequest struct {
+	TaskID  string
+	Method  string
+	Service string
+	Path    string
+	Status  int
+}
+
+type RequestRecorder func(RecordedRequest)
 
 // noopRecorder discards every call. Used as NewServer's default when
 // recorder is nil, so Server never needs a nil check at each call site.
-func noopRecorder(string, string, string, string, int) {}
+func noopRecorder(RecordedRequest) {}

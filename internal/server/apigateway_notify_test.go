@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"testing"
 
+	"github.com/novshi-tech/boid/internal/apigateway"
 	"github.com/novshi-tech/boid/internal/db"
 	"github.com/novshi-tech/boid/internal/db/migrate"
 	"github.com/novshi-tech/boid/internal/orchestrator"
@@ -43,7 +44,7 @@ func TestNewAPIGatewayRecorder_RecordsActionWithExpectedPayload(t *testing.T) {
 
 	tasks := orchestrator.NewTaskRepository(d.Conn)
 	recorder := newAPIGatewayRecorder(tasks)
-	recorder(task.ID, "GET", "myapp", "/v1/users", 200)
+	recorder(apigateway.RecordedRequest{TaskID: task.ID, Method: "GET", Service: "myapp", Path: "/v1/users", Status: 200})
 
 	actions, err := tasks.ListActionsByTask(task.ID)
 	if err != nil {
@@ -99,7 +100,7 @@ func TestNewAPIGatewayRecorder_SkipsWhenTaskIDEmpty(t *testing.T) {
 	// Must not panic and must not attempt an insert with an empty task_id
 	// (which would either violate the FK constraint or silently attach to
 	// nothing) — this call is the whole assertion.
-	recorder("", "GET", "myapp", "/v1/users", 200)
+	recorder(apigateway.RecordedRequest{TaskID: "", Method: "GET", Service: "myapp", Path: "/v1/users", Status: 200})
 }
 
 // TestNewAPIGatewayRecorder_NilTaskRepositoryIsNoop guards the construction
@@ -107,7 +108,7 @@ func TestNewAPIGatewayRecorder_SkipsWhenTaskIDEmpty(t *testing.T) {
 // wire.go always passes the real taskRepo) must not panic either.
 func TestNewAPIGatewayRecorder_NilTaskRepositoryIsNoop(t *testing.T) {
 	recorder := newAPIGatewayRecorder(nil)
-	recorder("some-task-id", "GET", "myapp", "/v1/users", 200)
+	recorder(apigateway.RecordedRequest{TaskID: "some-task-id", Method: "GET", Service: "myapp", Path: "/v1/users", Status: 200})
 }
 
 // TestNewAPIGatewayRecorder_UnknownTaskIDSkipsWithoutPanicking covers a
@@ -122,7 +123,7 @@ func TestNewAPIGatewayRecorder_UnknownTaskIDSkipsWithoutPanicking(t *testing.T) 
 	tasks := orchestrator.NewTaskRepository(d.Conn)
 	recorder := newAPIGatewayRecorder(tasks)
 
-	recorder("no-such-task-id", "GET", "myapp", "/v1/users", 200)
+	recorder(apigateway.RecordedRequest{TaskID: "no-such-task-id", Method: "GET", Service: "myapp", Path: "/v1/users", Status: 200})
 
 	actions, err := tasks.ListActionsByTask("no-such-task-id")
 	if err != nil {
@@ -156,7 +157,7 @@ func TestNewAPIGatewayRecorder_ActionRecordedButExcludedFromTimeline(t *testing.
 
 	tasks := orchestrator.NewTaskRepository(d.Conn)
 	recorder := newAPIGatewayRecorder(tasks)
-	recorder(task.ID, "GET", "myapp", "/v1/users", 200)
+	recorder(apigateway.RecordedRequest{TaskID: task.ID, Method: "GET", Service: "myapp", Path: "/v1/users", Status: 200})
 
 	// Positive control: record an ordinary progress Action too, so this test
 	// proves the exclusion is *selective* (only api_gateway_request rows

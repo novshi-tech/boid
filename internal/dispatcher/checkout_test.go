@@ -49,7 +49,7 @@ func TestPrepareJobCheckout_ClonesAndChecksOutBranch(t *testing.T) {
 	bareRepoPath := setupBareRepoFixture(t)
 	stagingDir := filepath.Join(t.TempDir(), "staging", "job-1", "proj")
 
-	if err := dispatcher.PrepareJobCheckout(context.Background(), bareRepoPath, "main", "main", "", "", stagingDir); err != nil {
+	if err := dispatcher.PrepareJobCheckout(context.Background(), dispatcher.PrepareJobCheckoutInput{BareRepoPath: bareRepoPath, Branch: "main", BaseBranch: "main", BaseBranchForkPoint: "", RemoteURL: "", StagingDir: stagingDir}); err != nil {
 		t.Fatalf("PrepareJobCheckout: %v", err)
 	}
 
@@ -69,7 +69,7 @@ func TestPrepareJobCheckout_ChecksOutNonDefaultBranch(t *testing.T) {
 	bareRepoPath := setupBareRepoFixture(t)
 	stagingDir := filepath.Join(t.TempDir(), "staging", "job-2", "proj")
 
-	if err := dispatcher.PrepareJobCheckout(context.Background(), bareRepoPath, "feature", "feature", "", "", stagingDir); err != nil {
+	if err := dispatcher.PrepareJobCheckout(context.Background(), dispatcher.PrepareJobCheckoutInput{BareRepoPath: bareRepoPath, Branch: "feature", BaseBranch: "feature", BaseBranchForkPoint: "", RemoteURL: "", StagingDir: stagingDir}); err != nil {
 		t.Fatalf("PrepareJobCheckout: %v", err)
 	}
 
@@ -94,7 +94,7 @@ func TestPrepareJobCheckout_OriginPrefixedBaseBranchStripped(t *testing.T) {
 	bareRepoPath := setupBareRepoFixture(t)
 	stagingDir := filepath.Join(t.TempDir(), "staging", "job-origin-prefix", "proj")
 
-	if err := dispatcher.PrepareJobCheckout(context.Background(), bareRepoPath, "origin/main", "origin/main", "", "", stagingDir); err != nil {
+	if err := dispatcher.PrepareJobCheckout(context.Background(), dispatcher.PrepareJobCheckoutInput{BareRepoPath: bareRepoPath, Branch: "origin/main", BaseBranch: "origin/main", BaseBranchForkPoint: "", RemoteURL: "", StagingDir: stagingDir}); err != nil {
 		t.Fatalf("PrepareJobCheckout: %v", err)
 	}
 
@@ -120,7 +120,7 @@ func TestPrepareJobCheckout_MissingBaseBranchCreatedFromForkPoint(t *testing.T) 
 	bareRepoPath := setupBareRepoFixture(t)
 	stagingDir := filepath.Join(t.TempDir(), "staging", "job-fork-point", "proj")
 
-	if err := dispatcher.PrepareJobCheckout(context.Background(), bareRepoPath, "release/1.0", "release/1.0", "main", "", stagingDir); err != nil {
+	if err := dispatcher.PrepareJobCheckout(context.Background(), dispatcher.PrepareJobCheckoutInput{BareRepoPath: bareRepoPath, Branch: "release/1.0", BaseBranch: "release/1.0", BaseBranchForkPoint: "main", RemoteURL: "", StagingDir: stagingDir}); err != nil {
 		t.Fatalf("PrepareJobCheckout: %v", err)
 	}
 
@@ -150,7 +150,7 @@ func TestPrepareJobCheckout_MissingBaseBranchFallsBackToOriginHEAD(t *testing.T)
 	bareRepoPath := setupBareRepoFixture(t)
 	stagingDir := filepath.Join(t.TempDir(), "staging", "job-origin-head-fallback", "proj")
 
-	if err := dispatcher.PrepareJobCheckout(context.Background(), bareRepoPath, "release/2.0", "release/2.0", "", "", stagingDir); err != nil {
+	if err := dispatcher.PrepareJobCheckout(context.Background(), dispatcher.PrepareJobCheckoutInput{BareRepoPath: bareRepoPath, Branch: "release/2.0", BaseBranch: "release/2.0", BaseBranchForkPoint: "", RemoteURL: "", StagingDir: stagingDir}); err != nil {
 		t.Fatalf("PrepareJobCheckout: %v", err)
 	}
 
@@ -185,7 +185,7 @@ func TestPrepareJobCheckout_NoAlternatesDependency(t *testing.T) {
 	bareRepoPath := setupBareRepoFixture(t)
 	stagingDir := filepath.Join(t.TempDir(), "staging", "job-3", "proj")
 
-	if err := dispatcher.PrepareJobCheckout(context.Background(), bareRepoPath, "main", "main", "", "", stagingDir); err != nil {
+	if err := dispatcher.PrepareJobCheckout(context.Background(), dispatcher.PrepareJobCheckoutInput{BareRepoPath: bareRepoPath, Branch: "main", BaseBranch: "main", BaseBranchForkPoint: "", RemoteURL: "", StagingDir: stagingDir}); err != nil {
 		t.Fatalf("PrepareJobCheckout: %v", err)
 	}
 
@@ -207,7 +207,7 @@ func TestPrepareJobCheckout_ReopenWipesStaleContent(t *testing.T) {
 	bareRepoPath := setupBareRepoFixture(t)
 	stagingDir := filepath.Join(t.TempDir(), "staging", "job-4", "proj")
 
-	if err := dispatcher.PrepareJobCheckout(context.Background(), bareRepoPath, "main", "main", "", "", stagingDir); err != nil {
+	if err := dispatcher.PrepareJobCheckout(context.Background(), dispatcher.PrepareJobCheckoutInput{BareRepoPath: bareRepoPath, Branch: "main", BaseBranch: "main", BaseBranchForkPoint: "", RemoteURL: "", StagingDir: stagingDir}); err != nil {
 		t.Fatalf("PrepareJobCheckout (first): %v", err)
 	}
 	stray := filepath.Join(stagingDir, "stray-agent-output.txt")
@@ -217,7 +217,7 @@ func TestPrepareJobCheckout_ReopenWipesStaleContent(t *testing.T) {
 
 	// Reopen: idempotent by re-clone, mirroring the in-sandbox clone
 	// sequence's own reopen contract.
-	if err := dispatcher.PrepareJobCheckout(context.Background(), bareRepoPath, "main", "main", "", "", stagingDir); err != nil {
+	if err := dispatcher.PrepareJobCheckout(context.Background(), dispatcher.PrepareJobCheckoutInput{BareRepoPath: bareRepoPath, Branch: "main", BaseBranch: "main", BaseBranchForkPoint: "", RemoteURL: "", StagingDir: stagingDir}); err != nil {
 		t.Fatalf("PrepareJobCheckout (reopen): %v", err)
 	}
 
@@ -231,7 +231,7 @@ func TestPrepareJobCheckout_SetsRemoteURLWhenProvided(t *testing.T) {
 	stagingDir := filepath.Join(t.TempDir(), "staging", "job-5", "proj")
 	const gatewayURL = "http://10.0.2.2:12345/j/some-job-token/example.com/owner/repo.git"
 
-	if err := dispatcher.PrepareJobCheckout(context.Background(), bareRepoPath, "main", "main", "", gatewayURL, stagingDir); err != nil {
+	if err := dispatcher.PrepareJobCheckout(context.Background(), dispatcher.PrepareJobCheckoutInput{BareRepoPath: bareRepoPath, Branch: "main", BaseBranch: "main", BaseBranchForkPoint: "", RemoteURL: gatewayURL, StagingDir: stagingDir}); err != nil {
 		t.Fatalf("PrepareJobCheckout: %v", err)
 	}
 
@@ -245,7 +245,7 @@ func TestPrepareJobCheckout_NoRemoteURLLeavesOriginAtBareRepo(t *testing.T) {
 	bareRepoPath := setupBareRepoFixture(t)
 	stagingDir := filepath.Join(t.TempDir(), "staging", "job-6", "proj")
 
-	if err := dispatcher.PrepareJobCheckout(context.Background(), bareRepoPath, "main", "main", "", "", stagingDir); err != nil {
+	if err := dispatcher.PrepareJobCheckout(context.Background(), dispatcher.PrepareJobCheckoutInput{BareRepoPath: bareRepoPath, Branch: "main", BaseBranch: "main", BaseBranchForkPoint: "", RemoteURL: "", StagingDir: stagingDir}); err != nil {
 		t.Fatalf("PrepareJobCheckout: %v", err)
 	}
 
@@ -277,7 +277,7 @@ func TestPrepareJobCheckout_MissingArgsError(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			err := dispatcher.PrepareJobCheckout(context.Background(), tc.bareRepoPath, tc.branch, tc.baseBranch, "", "", tc.stagingDir)
+			err := dispatcher.PrepareJobCheckout(context.Background(), dispatcher.PrepareJobCheckoutInput{BareRepoPath: tc.bareRepoPath, Branch: tc.branch, BaseBranch: tc.baseBranch, BaseBranchForkPoint: "", RemoteURL: "", StagingDir: tc.stagingDir})
 			if err == nil {
 				t.Fatal("expected an error for missing required argument, got nil")
 			}
@@ -299,7 +299,7 @@ func TestPrepareJobCheckout_CloneFailureCleansUpStagingDir(t *testing.T) {
 	bareRepoPath := filepath.Join(t.TempDir(), "does-not-exist.git")
 	stagingDir := filepath.Join(t.TempDir(), "staging", "job-9", "proj")
 
-	err := dispatcher.PrepareJobCheckout(context.Background(), bareRepoPath, "main", "main", "", "", stagingDir)
+	err := dispatcher.PrepareJobCheckout(context.Background(), dispatcher.PrepareJobCheckoutInput{BareRepoPath: bareRepoPath, Branch: "main", BaseBranch: "main", BaseBranchForkPoint: "", RemoteURL: "", StagingDir: stagingDir})
 	if err == nil {
 		t.Fatal("expected an error cloning from a nonexistent bare repo path")
 	}
@@ -322,7 +322,7 @@ func TestPrepareJobCheckout_InvalidForkPointCleansUpStagingDir(t *testing.T) {
 	bareRepoPath := setupBareRepoFixture(t)
 	stagingDir := filepath.Join(t.TempDir(), "staging", "job-7", "proj")
 
-	err := dispatcher.PrepareJobCheckout(context.Background(), bareRepoPath, "does-not-exist-branch", "does-not-exist-branch", "does-not-exist-fork-point", "", stagingDir)
+	err := dispatcher.PrepareJobCheckout(context.Background(), dispatcher.PrepareJobCheckoutInput{BareRepoPath: bareRepoPath, Branch: "does-not-exist-branch", BaseBranch: "does-not-exist-branch", BaseBranchForkPoint: "does-not-exist-fork-point", RemoteURL: "", StagingDir: stagingDir})
 	if err == nil {
 		t.Fatal("expected an error for a base branch whose fork_point does not resolve in the clone")
 	}

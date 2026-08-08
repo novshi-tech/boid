@@ -114,7 +114,29 @@ import (
 // including clone failure, so a caller — runner.go's own trackCheckoutDir,
 // which only starts tracking stagingDir on full success — can never be
 // left responsible for cleaning up a staging dir it never learned about).
-func PrepareJobCheckout(ctx context.Context, bareRepoPath, branch, baseBranch, baseBranchForkPoint, remoteURL, stagingDir string) (err error) {
+// PrepareJobCheckoutInput bundles PrepareJobCheckout's parameters
+// (docs/plans/refactoring-backlog.md N10): the pre-struct signature had six
+// consecutive string arguments, with RemoteURL (a per-job gateway URL
+// carrying a live credential token) directly adjacent to
+// BaseBranchForkPoint — a transposition there would silently feed the
+// credentialed URL to git as a fork-point ref, and vice versa, with no
+// compiler error to catch it.
+type PrepareJobCheckoutInput struct {
+	BareRepoPath        string
+	Branch              string
+	BaseBranch          string
+	BaseBranchForkPoint string
+	RemoteURL           string
+	StagingDir          string
+}
+
+func PrepareJobCheckout(ctx context.Context, in PrepareJobCheckoutInput) (err error) {
+	bareRepoPath := in.BareRepoPath
+	branch := in.Branch
+	baseBranch := in.BaseBranch
+	baseBranchForkPoint := in.BaseBranchForkPoint
+	remoteURL := in.RemoteURL
+	stagingDir := in.StagingDir
 	if bareRepoPath == "" || branch == "" || baseBranch == "" || stagingDir == "" {
 		return fmt.Errorf("prepare job checkout: bare_repo_path/branch/base_branch/staging_dir must all be set (bare_repo_path=%q branch=%q base_branch=%q staging_dir=%q)",
 			bareRepoPath, branch, baseBranch, stagingDir)
