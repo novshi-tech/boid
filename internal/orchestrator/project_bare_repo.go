@@ -81,9 +81,9 @@ func IsBareRepoDir(dir string) bool {
 // (spec_loader.go).
 //
 // Unlike ReadProjectMeta, there is no project directory on disk to resolve
-// a relative host_commands.path against (resolveProjectHostCommandPaths is
-// filesystem-only) — a host_commands entry with a non-absolute Path is
-// rejected here instead of silently resolved against nothing.
+// a relative host_commands.path against — a host_commands entry with a
+// non-absolute Path is rejected here instead of silently resolved against
+// nothing.
 func ReadProjectMetaFromBareRepo(bareRepoPath string) (*ProjectMeta, error) {
 	data, err := gitShowHEAD(bareRepoPath, ".boid/project.yaml")
 	if err != nil {

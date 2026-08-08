@@ -468,14 +468,6 @@ type ProjectMeta struct {
 	NameSource string `yaml:"-" json:"name_source,omitempty"`
 }
 
-type ProjectLocalMeta struct {
-	Version            int               `yaml:"version"`
-	HostCommands       HostCommands      `yaml:"host_commands,omitempty"`
-	AdditionalBindings []BindMount       `yaml:"additional_bindings,omitempty"`
-	Env                map[string]string `yaml:"env,omitempty"`
-	SecretNamespace    string            `yaml:"secret_namespace,omitempty"`
-}
-
 type Project struct {
 	ID          string      `json:"id"`
 	WorkspaceID string      `json:"workspace_id"`

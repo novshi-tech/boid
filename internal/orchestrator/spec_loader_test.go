@@ -437,106 +437,6 @@ func TestReadProjectMeta_DeferredWorktreeTokens(t *testing.T) {
 	}
 }
 
-func TestReadProjectLocalMeta(t *testing.T) {
-	t.Run("missing file", func(t *testing.T) {
-		meta, err := projectspec.ReadProjectLocalMeta(t.TempDir())
-		if err != nil {
-			t.Fatalf("ReadProjectLocalMeta: %v", err)
-		}
-		if meta != nil {
-			t.Fatalf("expected nil meta for missing file, got %+v", meta)
-		}
-	})
-
-	t.Run("valid", func(t *testing.T) {
-		dir := t.TempDir()
-		boidDir := filepath.Join(dir, ".boid")
-		if err := os.MkdirAll(boidDir, 0o755); err != nil {
-			t.Fatalf("mkdir: %v", err)
-		}
-		t.Setenv("TEST_BOID_HOME", "/home/testuser")
-		content := `
-version: 1
-env:
-  GOPATH: ${TEST_BOID_HOME}/go
-host_commands:
-  uv:
-    path: ${TEST_BOID_HOME}/.local/bin/uv
-additional_bindings:
-  - source: ${TEST_BOID_HOME}/src/repro-kit
-    mode: rw
-`
-		if err := os.WriteFile(filepath.Join(boidDir, "project.local.yaml"), []byte(content), 0o644); err != nil {
-			t.Fatalf("write project.local.yaml: %v", err)
-		}
-
-		meta, err := projectspec.ReadProjectLocalMeta(dir)
-		if err != nil {
-			t.Fatalf("ReadProjectLocalMeta: %v", err)
-		}
-		if meta.Version != 1 {
-			t.Fatalf("version = %d, want 1", meta.Version)
-		}
-		if meta.Env["GOPATH"] != "/home/testuser/go" {
-			t.Fatalf("unexpected env: %+v", meta.Env)
-		}
-		if meta.HostCommands["uv"].Path != "/home/testuser/.local/bin/uv" {
-			t.Fatalf("unexpected host command path: %+v", meta.HostCommands["uv"])
-		}
-		if len(meta.AdditionalBindings) != 1 || meta.AdditionalBindings[0].Source != "/home/testuser/src/repro-kit" || meta.AdditionalBindings[0].Mode != "rw" {
-			t.Fatalf("unexpected additional_bindings: %+v", meta.AdditionalBindings)
-		}
-	})
-
-	t.Run("rejects kits field", func(t *testing.T) {
-		dir := t.TempDir()
-		boidDir := filepath.Join(dir, ".boid")
-		_ = os.MkdirAll(boidDir, 0o755)
-		_ = os.WriteFile(filepath.Join(boidDir, "project.local.yaml"), []byte("kits:\n  add: [foo]\n"), 0o644)
-
-		_, err := projectspec.ReadProjectLocalMeta(dir)
-		if err == nil || !strings.Contains(err.Error(), "unsupported field") {
-			t.Fatalf("expected unsupported field error for kits, got %v", err)
-		}
-	})
-
-	t.Run("unsupported field", func(t *testing.T) {
-		dir := t.TempDir()
-		boidDir := filepath.Join(dir, ".boid")
-		_ = os.MkdirAll(boidDir, 0o755)
-		_ = os.WriteFile(filepath.Join(boidDir, "project.local.yaml"), []byte("hooks: []\n"), 0o644)
-
-		_, err := projectspec.ReadProjectLocalMeta(dir)
-		if err == nil || !strings.Contains(err.Error(), "unsupported field") {
-			t.Fatalf("expected unsupported field error, got %v", err)
-		}
-	})
-
-	t.Run("invalid host command path", func(t *testing.T) {
-		dir := t.TempDir()
-		boidDir := filepath.Join(dir, ".boid")
-		_ = os.MkdirAll(boidDir, 0o755)
-		_ = os.WriteFile(filepath.Join(boidDir, "project.local.yaml"), []byte("host_commands:\n  uv:\n    path: relative/uv\n"), 0o644)
-
-		_, err := projectspec.ReadProjectLocalMeta(dir)
-		if err == nil || !strings.Contains(err.Error(), "must be an absolute path") {
-			t.Fatalf("expected absolute path error, got %v", err)
-		}
-	})
-
-	t.Run("rejects builtin_commands", func(t *testing.T) {
-		dir := t.TempDir()
-		boidDir := filepath.Join(dir, ".boid")
-		_ = os.MkdirAll(boidDir, 0o755)
-		_ = os.WriteFile(filepath.Join(boidDir, "project.local.yaml"), []byte("builtin_commands:\n  - boid\n"), 0o644)
-
-		_, err := projectspec.ReadProjectLocalMeta(dir)
-		if err == nil || !strings.Contains(err.Error(), "unsupported field") {
-			t.Fatalf("expected unsupported field error, got %v", err)
-		}
-	})
-}
-
 // TestReadProjectMetaWithKits_LocalKits verifies that behavior-level kits in
 // project.yaml now produce a removal error (kits moved to workspace.yaml).
 func TestReadProjectMetaWithKits_LocalKits(t *testing.T) {
@@ -564,59 +464,42 @@ func TestReadProjectMetaWithKits_LocalKits(t *testing.T) {
 	}
 }
 
-// TestReadProjectMetaWithKits_ProjectLocalOverlayIgnored verifies that a
-// project.local.yaml file (now deprecated) is silently ignored during
-// ReadProjectMetaWithKits; its env/host_commands/additional_bindings are NOT
-// merged into behaviors. Users should move these settings to workspace.yaml.
-func TestReadProjectMetaWithKits_ProjectLocalOverlayIgnored(t *testing.T) {
-	baseDir := t.TempDir()
-	boidDir := filepath.Join(baseDir, ".boid")
-	if err := os.MkdirAll(boidDir, 0o755); err != nil {
-		t.Fatalf("mkdir boid dir: %v", err)
-	}
+// TestReadProjectMetaWithKits_ProjectLocalYAMLIgnored verifies that a stray
+// .boid/project.local.yaml (the file format this package no longer reads —
+// its loader/writer were removed as dead code, git gateway cutover having
+// made it unreachable in production) does not leak env/host_commands/
+// additional_bindings into ReadProjectMetaWithKits' output, at either the
+// top level or behavior level. This doesn't call any of the removed
+// project.local.yaml APIs directly — it exercises the same silent-ignore
+// guarantee the deleted TestReadProjectMetaWithKits_ProjectLocalOverlayIgnored
+// used to, but through the one entry point that could still plausibly regress
+// (a future re-introduction of project.local.yaml reading inside
+// ReadProjectMetaWithKits itself).
+func TestReadProjectMetaWithKits_ProjectLocalYAMLIgnored(t *testing.T) {
+	dir := t.TempDir()
+	boidDir := filepath.Join(dir, ".boid")
+	_ = os.MkdirAll(boidDir, 0o755)
+	projectYAML := "id: test-proj\nname: Test Project\ntask_behaviors:\n  dev: {}\n"
+	_ = os.WriteFile(filepath.Join(boidDir, "project.yaml"), []byte(projectYAML), 0o644)
+	localYAML := "version: 1\nhost_commands: [gh, aws]\nenv:\n  LOCAL_ONLY: leaked\nadditional_bindings:\n  - source: /tmp/local-only\n    target: /tmp/local-only\n"
+	_ = os.WriteFile(filepath.Join(boidDir, "project.local.yaml"), []byte(localYAML), 0o644)
 
-	projectYAML := `
-id: test-proj
-name: Test Project
-task_behaviors:
-  dev:
-    name: dev
-`
-	if err := os.WriteFile(filepath.Join(boidDir, "project.yaml"), []byte(projectYAML), 0o644); err != nil {
-		t.Fatalf("write project.yaml: %v", err)
-	}
-
-	// project.local.yaml is deprecated; its contents must NOT be applied.
-	projectLocalYAML := `
-version: 1
-env:
-  FROM_PROJECT: local
-  LOCAL_ONLY: enabled
-host_commands:
-  uv:
-    path: /custom/bin/uv
-additional_bindings:
-  - source: /opt/local-kit
-    mode: rw
-`
-	if err := os.WriteFile(filepath.Join(boidDir, "project.local.yaml"), []byte(projectLocalYAML), 0o644); err != nil {
-		t.Fatalf("write project.local.yaml: %v", err)
-	}
-
-	meta, err := projectspec.ReadProjectMetaWithKits(baseDir)
+	meta, err := projectspec.ReadProjectMetaWithKits(dir)
 	if err != nil {
 		t.Fatalf("ReadProjectMetaWithKits: %v", err)
 	}
-	b := meta.TaskBehaviors["dev"]
-	// project.local.yaml is deprecated and must not be merged.
-	if len(b.Env) != 0 {
-		t.Fatalf("expected no env from deprecated project.local.yaml, got %+v", b.Env)
+	if len(meta.HostCommands) != 0 {
+		t.Fatalf("expected project.local.yaml host_commands to be ignored, got %+v", meta.HostCommands)
 	}
-	if len(b.HostCommands) != 0 {
-		t.Fatalf("expected no host_commands from deprecated project.local.yaml, got %+v", b.HostCommands)
+	if _, ok := meta.Env["LOCAL_ONLY"]; ok {
+		t.Fatalf("expected project.local.yaml env to be ignored, got %+v", meta.Env)
 	}
-	if len(b.AdditionalBindings) != 0 {
-		t.Fatalf("expected no additional_bindings from deprecated project.local.yaml, got %+v", b.AdditionalBindings)
+	if len(meta.AdditionalBindings) != 0 {
+		t.Fatalf("expected project.local.yaml additional_bindings to be ignored, got %+v", meta.AdditionalBindings)
+	}
+	dev := meta.TaskBehaviors["dev"]
+	if len(dev.HostCommands) != 0 {
+		t.Fatalf("expected project.local.yaml host_commands to be ignored at behavior level, got %+v", dev.HostCommands)
 	}
 }
 
@@ -641,70 +524,11 @@ func TestReadProjectMetaWithKits_BehaviorLevelKitsRejected(t *testing.T) {
 
 func TestHostCommands_NewDSL(t *testing.T) {
 	// host_commands in project.yaml is now a removed key; these DSL tests
-	// verify the behavior via project.local.yaml (which still supports it)
-	// and kit.yaml.
-	t.Run("map form with policy", func(t *testing.T) {
-		dir := t.TempDir()
-		boidDir := filepath.Join(dir, ".boid")
-		_ = os.MkdirAll(boidDir, 0o755)
-		_ = os.WriteFile(filepath.Join(boidDir, "project.yaml"), []byte("id: test-proj\nname: Test Project\n"), 0o644)
-		// host_commands moved to project.local.yaml
-		localYAML := `
-version: 1
-host_commands:
-  gh:
-    allow: [pr, issue, run]
-    deny: ["repo delete *"]
-    stdin: true
-    env:
-      GH_TOKEN: test-token
-  aws:
-    allow: [s3, "ecr get-login *"]
-`
-		_ = os.WriteFile(filepath.Join(boidDir, "project.local.yaml"), []byte(localYAML), 0o644)
-
-		meta, err := projectspec.ReadProjectLocalMeta(dir)
-		if err != nil {
-			t.Fatalf("ReadProjectLocalMeta: %v", err)
-		}
-		if len(meta.HostCommands) != 2 {
-			t.Fatalf("expected 2 host commands, got %d", len(meta.HostCommands))
-		}
-		gh := meta.HostCommands["gh"]
-		if len(gh.Allow) != 3 || gh.Allow[0] != "pr" {
-			t.Fatalf("unexpected gh allow: %+v", gh.Allow)
-		}
-		if len(gh.Deny) != 1 || gh.Deny[0] != "repo delete *" {
-			t.Fatalf("unexpected gh deny: %+v", gh.Deny)
-		}
-		if !gh.Stdin {
-			t.Fatal("expected gh stdin=true")
-		}
-		if gh.Env["GH_TOKEN"] != "test-token" {
-			t.Fatalf("unexpected gh env: %+v", gh.Env)
-		}
-
-		defs := meta.HostCommands.ToCommandDefs()
-		ghDef := defs["gh"]
-		if ghDef.Name != "gh" {
-			t.Fatalf("expected name 'gh', got %q", ghDef.Name)
-		}
-		if len(ghDef.AllowedSubcommands) != 3 || ghDef.AllowedSubcommands[0] != "pr" {
-			t.Fatalf("unexpected subcommands: %+v", ghDef.AllowedSubcommands)
-		}
-		if len(ghDef.DeniedPatterns) != 1 {
-			t.Fatalf("unexpected denied patterns: %+v", ghDef.DeniedPatterns)
-		}
-
-		awsDef := defs["aws"]
-		if len(awsDef.AllowedSubcommands) != 1 || awsDef.AllowedSubcommands[0] != "s3" {
-			t.Fatalf("unexpected aws subcommands: %+v", awsDef.AllowedSubcommands)
-		}
-		if len(awsDef.AllowedPatterns) != 1 || awsDef.AllowedPatterns[0] != "ecr get-login *" {
-			t.Fatalf("unexpected aws patterns: %+v", awsDef.AllowedPatterns)
-		}
-	})
-
+	// verify the rejection behavior. project.local.yaml (which used to carry
+	// the map-form/policy DSL coverage) was removed entirely as dead code
+	// (git gateway cutover made it unreachable in production); its DSL
+	// parsing coverage lives on via kit.yaml / workspace host_commands
+	// (internal/dispatcher/host_commands_test.go).
 	t.Run("list form", func(t *testing.T) {
 		// project.yaml host_commands now rejected; verify error message.
 		dir := t.TempDir()
@@ -739,43 +563,11 @@ host_commands:
 		}
 	})
 
-	t.Run("project.local.yaml optional path", func(t *testing.T) {
-		dir := t.TempDir()
-		boidDir := filepath.Join(dir, ".boid")
-		_ = os.MkdirAll(boidDir, 0o755)
-		content := `
-version: 1
-host_commands:
-  gh:
-    allow: [pr, issue]
-`
-		_ = os.WriteFile(filepath.Join(boidDir, "project.local.yaml"), []byte(content), 0o644)
-
-		meta, err := projectspec.ReadProjectLocalMeta(dir)
-		if err != nil {
-			t.Fatalf("ReadProjectLocalMeta: %v", err)
-		}
-		if len(meta.HostCommands) != 1 || len(meta.HostCommands["gh"].Allow) != 2 {
-			t.Fatalf("unexpected host commands: %+v", meta.HostCommands)
-		}
-	})
-
-	t.Run("project.local.yaml rejects relative path", func(t *testing.T) {
-		dir := t.TempDir()
-		boidDir := filepath.Join(dir, ".boid")
-		_ = os.MkdirAll(boidDir, 0o755)
-		_ = os.WriteFile(filepath.Join(boidDir, "project.local.yaml"), []byte("host_commands:\n  gh:\n    path: relative/gh\n"), 0o644)
-
-		_, err := projectspec.ReadProjectLocalMeta(dir)
-		if err == nil || !strings.Contains(err.Error(), "must be an absolute path") {
-			t.Fatalf("expected absolute path error, got %v", err)
-		}
-	})
 }
 
 func TestReadProjectMeta_HostCommandRelativePath(t *testing.T) {
-	// host_commands in project.yaml is a removed key; all sub-tests now verify
-	// that the key is rejected, or test path handling via project.local.yaml.
+	// host_commands in project.yaml is a removed key; sub-tests verify
+	// that the key is rejected.
 
 	t.Run("relative path in project.yaml rejected", func(t *testing.T) {
 		// project.yaml no longer accepts host_commands.
@@ -791,44 +583,6 @@ func TestReadProjectMeta_HostCommandRelativePath(t *testing.T) {
 			t.Fatal("expected error for host_commands in project.yaml, got nil")
 		}
 		if !strings.Contains(err.Error(), `top-level "host_commands" is no longer supported`) {
-			t.Fatalf("unexpected error: %v", err)
-		}
-	})
-
-	t.Run("absolute path in project.local.yaml accepted", func(t *testing.T) {
-		// project.local.yaml only allows absolute paths for host_commands.path.
-		dir := t.TempDir()
-		boidDir := filepath.Join(dir, ".boid")
-		_ = os.MkdirAll(boidDir, 0o755)
-		_ = os.WriteFile(filepath.Join(boidDir, "project.yaml"), []byte("id: test-proj\nname: Test Project\n"), 0o644)
-
-		localYAML := "version: 1\nhost_commands:\n  my-cmd:\n    path: /usr/bin/some-cmd\n"
-		_ = os.WriteFile(filepath.Join(boidDir, "project.local.yaml"), []byte(localYAML), 0o644)
-
-		local, err := projectspec.ReadProjectLocalMeta(dir)
-		if err != nil {
-			t.Fatalf("ReadProjectLocalMeta: %v", err)
-		}
-		spec := local.HostCommands["my-cmd"]
-		if spec.Path != "/usr/bin/some-cmd" {
-			t.Fatalf("expected path /usr/bin/some-cmd, got %q", spec.Path)
-		}
-	})
-
-	t.Run("relative path in project.local.yaml rejected", func(t *testing.T) {
-		// project.local.yaml requires absolute paths.
-		dir := t.TempDir()
-		boidDir := filepath.Join(dir, ".boid")
-		_ = os.MkdirAll(boidDir, 0o755)
-
-		localYAML := "version: 1\nhost_commands:\n  my-cmd:\n    path: scripts/run.sh\n"
-		_ = os.WriteFile(filepath.Join(boidDir, "project.local.yaml"), []byte(localYAML), 0o644)
-
-		_, err := projectspec.ReadProjectLocalMeta(dir)
-		if err == nil {
-			t.Fatal("expected error for relative path in project.local.yaml, got nil")
-		}
-		if !strings.Contains(err.Error(), "must be an absolute path") {
 			t.Fatalf("unexpected error: %v", err)
 		}
 	})
@@ -868,25 +622,6 @@ func TestReadProjectMeta_HostCommandRelativePath(t *testing.T) {
 		}
 	})
 
-	t.Run("empty path in project.local.yaml accepted", func(t *testing.T) {
-		// host_commands with no path (empty) is valid in project.local.yaml.
-		dir := t.TempDir()
-		boidDir := filepath.Join(dir, ".boid")
-		_ = os.MkdirAll(boidDir, 0o755)
-		_ = os.WriteFile(filepath.Join(boidDir, "project.yaml"), []byte("id: test-proj\nname: Test Project\n"), 0o644)
-
-		localYAML := "version: 1\nhost_commands:\n  gh:\n    allow: [pr]\n"
-		_ = os.WriteFile(filepath.Join(boidDir, "project.local.yaml"), []byte(localYAML), 0o644)
-
-		local, err := projectspec.ReadProjectLocalMeta(dir)
-		if err != nil {
-			t.Fatalf("ReadProjectLocalMeta: %v", err)
-		}
-		spec := local.HostCommands["gh"]
-		if spec.Path != "" {
-			t.Fatalf("expected empty path, got %q", spec.Path)
-		}
-	})
 }
 
 // ---------------------------------------------------------------------------
