@@ -317,7 +317,7 @@ func TestBuildSandboxSpec_BoidBinaryBoundAtShimBinDir(t *testing.T) {
 // これにより sandbox 内プロセスが .git/config 等を直接書き換えられない。
 func TestProjectVisibilityMounts_GitROBind_Writable(t *testing.T) {
 	const effectiveDir = "/home/user/project"
-	mounts := projectVisibilityMounts(effectiveDir, effectiveDir, "/home/user", "", "", true, nil)
+	mounts := projectVisibilityMounts(projectVisibilityMountsInput{OrigProjectDir: effectiveDir, EffectiveDir: effectiveDir, HomeDir: "/home/user", WorkspaceHomeVolume: "", SkillsSourceDir: "", Writable: true, Peers: nil})
 
 	var gitMount *sandbox.Mount
 	for i := range mounts {
@@ -349,7 +349,7 @@ func TestProjectVisibilityMounts_GitROBind_Writable(t *testing.T) {
 // read-only project では .git の ro re-bind は追加しない（既に親が read-only）。
 func TestProjectVisibilityMounts_GitROBind_ReadOnly(t *testing.T) {
 	const effectiveDir = "/home/user/project"
-	mounts := projectVisibilityMounts(effectiveDir, effectiveDir, "/home/user", "", "", false, nil)
+	mounts := projectVisibilityMounts(projectVisibilityMountsInput{OrigProjectDir: effectiveDir, EffectiveDir: effectiveDir, HomeDir: "/home/user", WorkspaceHomeVolume: "", SkillsSourceDir: "", Writable: false, Peers: nil})
 
 	for _, m := range mounts {
 		if m.Target == effectiveDir+"/.git" && m.ReadOnly && m.DetectType {
@@ -373,7 +373,7 @@ func TestProjectVisibilityMounts_BoidBind(t *testing.T) {
 	}
 
 	// writable タスク: .boid は origProjectDir から bind され書き込み可。
-	wMounts := projectVisibilityMounts(origProject, origProject, "/home/user", "", "", true, nil)
+	wMounts := projectVisibilityMounts(projectVisibilityMountsInput{OrigProjectDir: origProject, EffectiveDir: origProject, HomeDir: "/home/user", WorkspaceHomeVolume: "", SkillsSourceDir: "", Writable: true, Peers: nil})
 	w := findBoid(wMounts)
 	if w == nil {
 		t.Fatal(".boid bind not found in writable project mounts")
@@ -392,7 +392,7 @@ func TestProjectVisibilityMounts_BoidBind(t *testing.T) {
 	}
 
 	// readonly タスク: .boid は依然 bind されるが ro。
-	roMounts := projectVisibilityMounts(origProject, origProject, "/home/user", "", "", false, nil)
+	roMounts := projectVisibilityMounts(projectVisibilityMountsInput{OrigProjectDir: origProject, EffectiveDir: origProject, HomeDir: "/home/user", WorkspaceHomeVolume: "", SkillsSourceDir: "", Writable: false, Peers: nil})
 	ro := findBoid(roMounts)
 	if ro == nil {
 		t.Fatal(".boid bind not found in read-only project mounts")
@@ -2501,7 +2501,7 @@ func TestProjectVisibilityMounts_WorkspaceHomeBind_Order(t *testing.T) {
 	const wsHome = "boid-ws-home-01234567-default"
 	const skillsSrc = "/run/user/1000/runtimes/skills"
 	skillCount := len(skills.EmbeddedSkillNames())
-	mounts := projectVisibilityMounts(effectiveDir, effectiveDir, homeDir, wsHome, skillsSrc, true, map[string]string{"peer": "/home/user/peer"})
+	mounts := projectVisibilityMounts(projectVisibilityMountsInput{OrigProjectDir: effectiveDir, EffectiveDir: effectiveDir, HomeDir: homeDir, WorkspaceHomeVolume: wsHome, SkillsSourceDir: skillsSrc, Writable: true, Peers: map[string]string{"peer": "/home/user/peer"}})
 
 	effIdx := mountTargetIndex(mounts, effectiveDir)
 	homeIdx := mountTargetIndex(mounts, homeDir)
@@ -2556,7 +2556,7 @@ func TestProjectVisibilityMounts_WorkspaceHomeBind_Order(t *testing.T) {
 func TestProjectVisibilityMounts_NoWorkspaceHome_FallsBackToTmpfs(t *testing.T) {
 	const effectiveDir = "/home/user/project"
 	const homeDir = "/home/user"
-	mounts := projectVisibilityMounts(effectiveDir, effectiveDir, homeDir, "", "", true, nil)
+	mounts := projectVisibilityMounts(projectVisibilityMountsInput{OrigProjectDir: effectiveDir, EffectiveDir: effectiveDir, HomeDir: homeDir, WorkspaceHomeVolume: "", SkillsSourceDir: "", Writable: true, Peers: nil})
 
 	var found *sandbox.Mount
 	for i := range mounts {

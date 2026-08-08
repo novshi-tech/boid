@@ -520,15 +520,15 @@ func BuildSandboxSpec(spec *orchestrator.JobSpec, rt SandboxRuntimeInfo) (sandbo
 		// like the "no project visible" case below.
 		mounts = append(mounts, homeMounts(homeDir, rt.WorkspaceHomeVolume, rt.SkillsSourceDir)...)
 	case projectDir != "":
-		mounts = append(mounts, projectVisibilityMounts(
-			projectDir,
-			projectDir,
-			homeDir,
-			rt.WorkspaceHomeVolume,
-			rt.SkillsSourceDir,
-			spec.Visibility.Writable,
-			rt.WorkspacePeers,
-		)...)
+		mounts = append(mounts, projectVisibilityMounts(projectVisibilityMountsInput{
+			OrigProjectDir:      projectDir,
+			EffectiveDir:        projectDir,
+			HomeDir:             homeDir,
+			WorkspaceHomeVolume: rt.WorkspaceHomeVolume,
+			SkillsSourceDir:     rt.SkillsSourceDir,
+			Writable:            spec.Visibility.Writable,
+			Peers:               rt.WorkspacePeers,
+		})...)
 	default:
 		// No project visible: HOME gets the workspace home bind (+ the
 		// embedded-skill binds) or a fresh tmpfs fallback, same as the Clone
@@ -1294,15 +1294,35 @@ func homeMounts(homeDir, workspaceHomeVolume, skillsSourceDir string) []sandbox.
 	return mounts
 }
 
+// projectVisibilityMountsInput bundles projectVisibilityMounts's parameters
+// (docs/plans/refactoring-backlog.md L1's "同時に拾う小物"): the pre-struct
+// signature had grown to five consecutive strings plus a bool and a map, all
+// positional — easy to transpose (e.g. OrigProjectDir/EffectiveDir, or
+// HomeDir/WorkspaceHomeVolume/SkillsSourceDir, are all plain strings with no
+// compiler-checked distinction) without any error until runtime.
+type projectVisibilityMountsInput struct {
+	OrigProjectDir      string
+	EffectiveDir        string
+	HomeDir             string
+	WorkspaceHomeVolume string
+	SkillsSourceDir     string
+	Writable            bool
+	Peers               map[string]string
+}
+
 // projectVisibilityMounts returns the canonical mount layout that lets the
 // sandbox see the project and workspace peers, under a HOME mount (workspace
 // home bind, or a tmpfs fallback — see homeMounts) that shadows host files
 // but re-mounts the project on top.
-func projectVisibilityMounts(
-	origProjectDir, effectiveDir, homeDir, workspaceHomeVolume, skillsSourceDir string,
-	writable bool,
-	peers map[string]string,
-) []sandbox.Mount {
+func projectVisibilityMounts(in projectVisibilityMountsInput) []sandbox.Mount {
+	origProjectDir := in.OrigProjectDir
+	effectiveDir := in.EffectiveDir
+	homeDir := in.HomeDir
+	workspaceHomeVolume := in.WorkspaceHomeVolume
+	skillsSourceDir := in.SkillsSourceDir
+	writable := in.Writable
+	peers := in.Peers
+
 	var out []sandbox.Mount
 
 	// 1) bind the effective dir (= project or worktree)
