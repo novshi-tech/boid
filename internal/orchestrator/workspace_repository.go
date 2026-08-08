@@ -53,24 +53,11 @@ func loadWorkspaceMeta(dbtx db.DBTX, slug string) (*WorkspaceMeta, error) {
 		       task_behaviors, base_branch, fork_point, default_task_behavior
 		FROM workspaces WHERE slug = ?`, slug)
 
-	var (
-		containerImage      sql.NullString
-		hostCommandsJSON    string
-		envJSON             string
-		allowedDomainsJSON  string
-		extraReposJSON      string
-		servicesJSON        string
-		capabilitiesJSON    string
-		bindingsJSON        string
-		taskBehaviorsYAML   string
-		baseBranch          string
-		forkPoint           string
-		defaultTaskBehavior string
-	)
+	var cols workspaceMetaColumns
 	if err := row.Scan(
-		&slug, &containerImage, &hostCommandsJSON, &envJSON,
-		&allowedDomainsJSON, &extraReposJSON, &servicesJSON, &capabilitiesJSON, &bindingsJSON,
-		&taskBehaviorsYAML, &baseBranch, &forkPoint, &defaultTaskBehavior,
+		&slug, &cols.ContainerImage, &cols.HostCommandsJSON, &cols.EnvJSON,
+		&cols.AllowedDomainsJSON, &cols.ExtraReposJSON, &cols.ServicesJSON, &cols.CapabilitiesJSON, &cols.BindingsJSON,
+		&cols.TaskBehaviorsYAML, &cols.BaseBranch, &cols.ForkPoint, &cols.DefaultTaskBehavior,
 	); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, fmt.Errorf("workspace %q: %w", slug, os.ErrNotExist)
@@ -78,7 +65,7 @@ func loadWorkspaceMeta(dbtx db.DBTX, slug string) (*WorkspaceMeta, error) {
 		return nil, fmt.Errorf("workspace %q: query: %w", slug, err)
 	}
 
-	return decodeWorkspaceMetaColumns(slug, containerImage, hostCommandsJSON, envJSON, allowedDomainsJSON, extraReposJSON, servicesJSON, capabilitiesJSON, bindingsJSON, taskBehaviorsYAML, baseBranch, forkPoint, defaultTaskBehavior)
+	return decodeWorkspaceMetaColumns(slug, cols)
 }
 
 // LoadWithRevision reads meta and its revision (updated_at, formatted the
@@ -111,24 +98,13 @@ func loadWorkspaceMetaWithRevision(dbtx db.DBTX, slug string) (*WorkspaceMeta, s
 		FROM workspaces WHERE slug = ?`, slug)
 
 	var (
-		containerImage      sql.NullString
-		hostCommandsJSON    string
-		envJSON             string
-		allowedDomainsJSON  string
-		extraReposJSON      string
-		servicesJSON        string
-		capabilitiesJSON    string
-		bindingsJSON        string
-		taskBehaviorsYAML   string
-		baseBranch          string
-		forkPoint           string
-		defaultTaskBehavior string
-		updatedAt           time.Time
+		cols      workspaceMetaColumns
+		updatedAt time.Time
 	)
 	if err := row.Scan(
-		&containerImage, &hostCommandsJSON, &envJSON,
-		&allowedDomainsJSON, &extraReposJSON, &servicesJSON, &capabilitiesJSON, &bindingsJSON,
-		&taskBehaviorsYAML, &baseBranch, &forkPoint, &defaultTaskBehavior,
+		&cols.ContainerImage, &cols.HostCommandsJSON, &cols.EnvJSON,
+		&cols.AllowedDomainsJSON, &cols.ExtraReposJSON, &cols.ServicesJSON, &cols.CapabilitiesJSON, &cols.BindingsJSON,
+		&cols.TaskBehaviorsYAML, &cols.BaseBranch, &cols.ForkPoint, &cols.DefaultTaskBehavior,
 		&updatedAt,
 	); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -137,7 +113,7 @@ func loadWorkspaceMetaWithRevision(dbtx db.DBTX, slug string) (*WorkspaceMeta, s
 		return nil, "", fmt.Errorf("workspace %q: query: %w", slug, err)
 	}
 
-	meta, err := decodeWorkspaceMetaColumns(slug, containerImage, hostCommandsJSON, envJSON, allowedDomainsJSON, extraReposJSON, servicesJSON, capabilitiesJSON, bindingsJSON, taskBehaviorsYAML, baseBranch, forkPoint, defaultTaskBehavior)
+	meta, err := decodeWorkspaceMetaColumns(slug, cols)
 	if err != nil {
 		return nil, "", err
 	}
@@ -182,7 +158,7 @@ func (r *WorkspaceRepository) UpdateIfRevisionMatches(slug string, expectedRevis
 		return "", false, nil
 	}
 
-	hostCommandsJSON, envJSON, allowedDomainsJSON, extraReposJSON, servicesJSON, capabilitiesJSON, bindingsJSON, containerImage, taskBehaviorsYAML, baseBranch, forkPoint, defaultTaskBehavior, err := marshalWorkspaceMetaColumns(slug, meta)
+	cols, err := marshalWorkspaceMetaColumns(slug, meta)
 	if err != nil {
 		return "", false, err
 	}
@@ -196,9 +172,9 @@ func (r *WorkspaceRepository) UpdateIfRevisionMatches(slug string, expectedRevis
 			updated_at = ?
 		WHERE slug = ? AND updated_at = ?
 	`,
-		containerImage, hostCommandsJSON, envJSON, allowedDomainsJSON,
-		extraReposJSON, servicesJSON, capabilitiesJSON, bindingsJSON,
-		taskBehaviorsYAML, baseBranch, forkPoint, defaultTaskBehavior,
+		cols.ContainerImage, cols.HostCommandsJSON, cols.EnvJSON, cols.AllowedDomainsJSON,
+		cols.ExtraReposJSON, cols.ServicesJSON, cols.CapabilitiesJSON, cols.BindingsJSON,
+		cols.TaskBehaviorsYAML, cols.BaseBranch, cols.ForkPoint, cols.DefaultTaskBehavior,
 		newUpdatedAt,
 		slug, expected,
 	)
@@ -221,12 +197,43 @@ func formatRevision(t time.Time) string {
 	return t.UTC().Format(time.RFC3339Nano)
 }
 
+// workspaceMetaColumns bundles the `workspaces` table's column values shared
+// by decodeWorkspaceMetaColumns/marshalWorkspaceMetaColumns
+// (docs/plans/refactoring-backlog.md N10A): the pre-struct signatures were
+// 13 positional arguments (decode) / 13 positional return values (marshal),
+// all-but-one an unnamed string, with the error-path `return "", "", ...,
+// err` boilerplate repeated 8 times across marshal's early-return branches.
+// A single named struct removes both the transposition risk and the
+// boilerplate.
+//
+// ContainerImage is sql.NullString (not a plain string) on both the decode
+// and marshal sides: sql.NullString implements driver.Valuer, so
+// marshalWorkspaceMetaColumns's result can be passed directly as an Exec/
+// QueryRow argument (NULL when meta.ContainerImage is empty, the string
+// itself otherwise) without a separate `any` conversion step — see
+// marshalWorkspaceMetaColumns's own doc comment for why this mirrors the
+// original tuple-returning signature's containerImage any exactly.
+type workspaceMetaColumns struct {
+	ContainerImage      sql.NullString
+	HostCommandsJSON    string
+	EnvJSON             string
+	AllowedDomainsJSON  string
+	ExtraReposJSON      string
+	ServicesJSON        string
+	CapabilitiesJSON    string
+	BindingsJSON        string
+	TaskBehaviorsYAML   string
+	BaseBranch          string
+	ForkPoint           string
+	DefaultTaskBehavior string
+}
+
 // decodeWorkspaceMetaColumns decodes the JSON column values shared by Load
 // and LoadWithRevision into a *WorkspaceMeta, so the two share identical
 // decode logic rather than letting it drift out of sync.
 //
-// bindingsJSON (the `workspaces.additional_bindings` column) is decoded and
-// discarded rather than mapped onto the result: WorkspaceMeta.AdditionalBindings
+// cols.BindingsJSON (the `workspaces.additional_bindings` column) is decoded
+// and discarded rather than mapped onto the result: WorkspaceMeta.AdditionalBindings
 // was retired outright in docs/plans/home-workspace-volume.md Phase 4 PR4
 // (see that struct's own doc comment). The column itself is not dropped by
 // this PR's migration — a future major schema cleanup removes it — so a row
@@ -235,31 +242,31 @@ func formatRevision(t time.Time) string {
 // well-formed JSON and lets this function warn when it is non-trivial, so an
 // operator inspecting logs after an upgrade understands why a previously
 // working workspace-scoped bind mount stopped applying.
-func decodeWorkspaceMetaColumns(slug string, containerImage sql.NullString, hostCommandsJSON, envJSON, allowedDomainsJSON, extraReposJSON, servicesJSON, capabilitiesJSON, bindingsJSON, taskBehaviorsYAML, baseBranch, forkPoint, defaultTaskBehavior string) (*WorkspaceMeta, error) {
+func decodeWorkspaceMetaColumns(slug string, cols workspaceMetaColumns) (*WorkspaceMeta, error) {
 	meta := &WorkspaceMeta{}
-	if containerImage.Valid {
-		meta.ContainerImage = containerImage.String
+	if cols.ContainerImage.Valid {
+		meta.ContainerImage = cols.ContainerImage.String
 	}
-	if err := json.Unmarshal([]byte(hostCommandsJSON), &meta.HostCommands); err != nil {
+	if err := json.Unmarshal([]byte(cols.HostCommandsJSON), &meta.HostCommands); err != nil {
 		return nil, fmt.Errorf("workspace %q: decode host_commands: %w", slug, err)
 	}
-	if err := json.Unmarshal([]byte(envJSON), &meta.Env); err != nil {
+	if err := json.Unmarshal([]byte(cols.EnvJSON), &meta.Env); err != nil {
 		return nil, fmt.Errorf("workspace %q: decode env: %w", slug, err)
 	}
-	if err := json.Unmarshal([]byte(allowedDomainsJSON), &meta.AllowedDomains); err != nil {
+	if err := json.Unmarshal([]byte(cols.AllowedDomainsJSON), &meta.AllowedDomains); err != nil {
 		return nil, fmt.Errorf("workspace %q: decode allowed_domains: %w", slug, err)
 	}
-	if err := json.Unmarshal([]byte(extraReposJSON), &meta.ExtraRepos); err != nil {
+	if err := json.Unmarshal([]byte(cols.ExtraReposJSON), &meta.ExtraRepos); err != nil {
 		return nil, fmt.Errorf("workspace %q: decode extra_repos: %w", slug, err)
 	}
-	if err := json.Unmarshal([]byte(servicesJSON), &meta.Services); err != nil {
+	if err := json.Unmarshal([]byte(cols.ServicesJSON), &meta.Services); err != nil {
 		return nil, fmt.Errorf("workspace %q: decode services: %w", slug, err)
 	}
-	if err := json.Unmarshal([]byte(capabilitiesJSON), &meta.Capabilities); err != nil {
+	if err := json.Unmarshal([]byte(cols.CapabilitiesJSON), &meta.Capabilities); err != nil {
 		return nil, fmt.Errorf("workspace %q: decode capabilities: %w", slug, err)
 	}
 	var discardedBindings []BindMount
-	if err := json.Unmarshal([]byte(bindingsJSON), &discardedBindings); err != nil {
+	if err := json.Unmarshal([]byte(cols.BindingsJSON), &discardedBindings); err != nil {
 		return nil, fmt.Errorf("workspace %q: decode additional_bindings: %w", slug, err)
 	}
 	if len(discardedBindings) > 0 {
@@ -272,16 +279,16 @@ func decodeWorkspaceMetaColumns(slug string, containerImage sql.NullString, host
 	// JSON API response shape), so encoding/json would silently drop hook
 	// definitions on every round trip. yaml.v3 has a proper
 	// `yaml:"hooks,omitempty"` tag on that same field.
-	if strings.TrimSpace(taskBehaviorsYAML) != "" {
+	if strings.TrimSpace(cols.TaskBehaviorsYAML) != "" {
 		var behaviors map[string]TaskBehavior
-		if err := yaml.Unmarshal([]byte(taskBehaviorsYAML), &behaviors); err != nil {
+		if err := yaml.Unmarshal([]byte(cols.TaskBehaviorsYAML), &behaviors); err != nil {
 			return nil, fmt.Errorf("workspace %q: decode task_behaviors: %w", slug, err)
 		}
 		meta.TaskBehaviors = behaviors
 	}
-	meta.BaseBranch = baseBranch
-	meta.ForkPoint = forkPoint
-	meta.DefaultTaskBehavior = defaultTaskBehavior
+	meta.BaseBranch = cols.BaseBranch
+	meta.ForkPoint = cols.ForkPoint
+	meta.DefaultTaskBehavior = cols.DefaultTaskBehavior
 	return meta, nil
 }
 
@@ -308,7 +315,7 @@ func (r *WorkspaceRepository) Create(slug string, meta *WorkspaceMeta) error {
 		meta = &WorkspaceMeta{}
 	}
 
-	hostCommandsJSON, envJSON, allowedDomainsJSON, extraReposJSON, servicesJSON, capabilitiesJSON, bindingsJSON, containerImage, taskBehaviorsYAML, baseBranch, forkPoint, defaultTaskBehavior, err := marshalWorkspaceMetaColumns(slug, meta)
+	cols, err := marshalWorkspaceMetaColumns(slug, meta)
 	if err != nil {
 		return err
 	}
@@ -321,9 +328,9 @@ func (r *WorkspaceRepository) Create(slug string, meta *WorkspaceMeta) error {
 			updated_at
 		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`,
-		slug, containerImage, hostCommandsJSON, envJSON, allowedDomainsJSON,
-		extraReposJSON, servicesJSON, capabilitiesJSON, bindingsJSON,
-		taskBehaviorsYAML, baseBranch, forkPoint, defaultTaskBehavior,
+		slug, cols.ContainerImage, cols.HostCommandsJSON, cols.EnvJSON, cols.AllowedDomainsJSON,
+		cols.ExtraReposJSON, cols.ServicesJSON, cols.CapabilitiesJSON, cols.BindingsJSON,
+		cols.TaskBehaviorsYAML, cols.BaseBranch, cols.ForkPoint, cols.DefaultTaskBehavior,
 		nowForRevision(),
 	); err != nil {
 		if strings.Contains(err.Error(), "UNIQUE constraint failed") {
@@ -347,7 +354,7 @@ func saveWorkspaceRow(dbtx db.DBTX, slug string, meta *WorkspaceMeta) error {
 		meta = &WorkspaceMeta{}
 	}
 
-	hostCommandsJSON, envJSON, allowedDomainsJSON, extraReposJSON, servicesJSON, capabilitiesJSON, bindingsJSON, containerImage, taskBehaviorsYAML, baseBranch, forkPoint, defaultTaskBehavior, err := marshalWorkspaceMetaColumns(slug, meta)
+	cols, err := marshalWorkspaceMetaColumns(slug, meta)
 	if err != nil {
 		return err
 	}
@@ -375,9 +382,9 @@ func saveWorkspaceRow(dbtx db.DBTX, slug string, meta *WorkspaceMeta) error {
 			default_task_behavior = excluded.default_task_behavior,
 			updated_at            = excluded.updated_at
 	`,
-		slug, containerImage, hostCommandsJSON, envJSON, allowedDomainsJSON,
-		extraReposJSON, servicesJSON, capabilitiesJSON, bindingsJSON,
-		taskBehaviorsYAML, baseBranch, forkPoint, defaultTaskBehavior,
+		slug, cols.ContainerImage, cols.HostCommandsJSON, cols.EnvJSON, cols.AllowedDomainsJSON,
+		cols.ExtraReposJSON, cols.ServicesJSON, cols.CapabilitiesJSON, cols.BindingsJSON,
+		cols.TaskBehaviorsYAML, cols.BaseBranch, cols.ForkPoint, cols.DefaultTaskBehavior,
 		updatedAt,
 	); err != nil {
 		return fmt.Errorf("workspace %q: save: %w", slug, err)
@@ -402,19 +409,20 @@ func nowForRevision() time.Time {
 // marshalWorkspaceMetaColumns encodes meta's fields into the column values
 // shared by saveWorkspaceRow's upsert and WorkspaceRepository.Create's
 // insert-only path, so the two statements can never drift out of sync on how
-// a given field is serialized. containerImage is returned as `any` so it can
-// be passed straight to Exec: nil (SQL NULL) when meta.ContainerImage is
-// empty, or the string itself otherwise.
+// a given field is serialized. The returned workspaceMetaColumns.ContainerImage
+// is sql.NullString (a driver.Valuer) so it can be passed straight to Exec:
+// NULL when meta.ContainerImage is empty, or the string itself otherwise —
+// see workspaceMetaColumns's own doc comment.
 //
-// bindingsJSON (the `workspaces.additional_bindings` column) is always
-// written as the empty-array literal: WorkspaceMeta has no AdditionalBindings
+// The returned BindingsJSON (the `workspaces.additional_bindings` column) is
+// always the empty-array literal: WorkspaceMeta has no AdditionalBindings
 // field any more (Phase 4 PR4, docs/plans/home-workspace-volume.md — see that
 // struct's doc comment) to source a value from, so every Save/Create/Update
 // from this binary zeroes out whatever a previous binary may have stored
 // there. The column itself is kept for now (a future major schema cleanup
 // removes it outright); see decodeWorkspaceMetaColumns for the read side.
 //
-// taskBehaviorsYAML runs meta.TaskBehaviors through
+// The returned TaskBehaviorsYAML runs meta.TaskBehaviors through
 // validateWorkspaceDefaultTaskBehaviors before encoding (docs/plans/
 // workspace-default-project.md 決定4, 論点j's "DB save" entry point — the
 // other of the two mandated entry points, alongside envelope decode in
@@ -428,54 +436,57 @@ func nowForRevision() time.Time {
 // through. Stored as YAML, not JSON, unlike every other column here — see
 // decodeWorkspaceMetaColumns's matching comment for why (TaskBehavior.Hooks
 // is `json:"-"`).
-func marshalWorkspaceMetaColumns(slug string, meta *WorkspaceMeta) (hostCommandsJSON, envJSON, allowedDomainsJSON, extraReposJSON, servicesJSON, capabilitiesJSON, bindingsJSON string, containerImage any, taskBehaviorsYAML, baseBranch, forkPoint, defaultTaskBehavior string, err error) {
-	hostCommandsJSON, err = marshalJSONOrDefault(meta.HostCommands, len(meta.HostCommands) == 0, "[]")
+func marshalWorkspaceMetaColumns(slug string, meta *WorkspaceMeta) (workspaceMetaColumns, error) {
+	var cols workspaceMetaColumns
+	var err error
+
+	cols.HostCommandsJSON, err = marshalJSONOrDefault(meta.HostCommands, len(meta.HostCommands) == 0, "[]")
 	if err != nil {
-		return "", "", "", "", "", "", "", nil, "", "", "", "", fmt.Errorf("workspace %q: encode host_commands: %w", slug, err)
+		return workspaceMetaColumns{}, fmt.Errorf("workspace %q: encode host_commands: %w", slug, err)
 	}
-	envJSON, err = marshalJSONOrDefault(meta.Env, len(meta.Env) == 0, "{}")
+	cols.EnvJSON, err = marshalJSONOrDefault(meta.Env, len(meta.Env) == 0, "{}")
 	if err != nil {
-		return "", "", "", "", "", "", "", nil, "", "", "", "", fmt.Errorf("workspace %q: encode env: %w", slug, err)
+		return workspaceMetaColumns{}, fmt.Errorf("workspace %q: encode env: %w", slug, err)
 	}
-	allowedDomainsJSON, err = marshalJSONOrDefault(meta.AllowedDomains, len(meta.AllowedDomains) == 0, "[]")
+	cols.AllowedDomainsJSON, err = marshalJSONOrDefault(meta.AllowedDomains, len(meta.AllowedDomains) == 0, "[]")
 	if err != nil {
-		return "", "", "", "", "", "", "", nil, "", "", "", "", fmt.Errorf("workspace %q: encode allowed_domains: %w", slug, err)
+		return workspaceMetaColumns{}, fmt.Errorf("workspace %q: encode allowed_domains: %w", slug, err)
 	}
-	extraReposJSON, err = marshalJSONOrDefault(meta.ExtraRepos, len(meta.ExtraRepos) == 0, "[]")
+	cols.ExtraReposJSON, err = marshalJSONOrDefault(meta.ExtraRepos, len(meta.ExtraRepos) == 0, "[]")
 	if err != nil {
-		return "", "", "", "", "", "", "", nil, "", "", "", "", fmt.Errorf("workspace %q: encode extra_repos: %w", slug, err)
+		return workspaceMetaColumns{}, fmt.Errorf("workspace %q: encode extra_repos: %w", slug, err)
 	}
-	servicesJSON, err = marshalJSONOrDefault(meta.Services, len(meta.Services) == 0, "[]")
+	cols.ServicesJSON, err = marshalJSONOrDefault(meta.Services, len(meta.Services) == 0, "[]")
 	if err != nil {
-		return "", "", "", "", "", "", "", nil, "", "", "", "", fmt.Errorf("workspace %q: encode services: %w", slug, err)
+		return workspaceMetaColumns{}, fmt.Errorf("workspace %q: encode services: %w", slug, err)
 	}
-	bindingsJSON = "[]"
+	cols.BindingsJSON = "[]"
 	capabilitiesBytes, err := json.Marshal(meta.Capabilities)
 	if err != nil {
-		return "", "", "", "", "", "", "", nil, "", "", "", "", fmt.Errorf("workspace %q: encode capabilities: %w", slug, err)
+		return workspaceMetaColumns{}, fmt.Errorf("workspace %q: encode capabilities: %w", slug, err)
 	}
-	capabilitiesJSON = string(capabilitiesBytes)
+	cols.CapabilitiesJSON = string(capabilitiesBytes)
 
 	if meta.ContainerImage != "" {
-		containerImage = meta.ContainerImage
+		cols.ContainerImage = sql.NullString{String: meta.ContainerImage, Valid: true}
 	}
 
 	normalized, err := validateWorkspaceDefaultTaskBehaviors(fmt.Sprintf("workspace %q", slug), meta.TaskBehaviors)
 	if err != nil {
-		return "", "", "", "", "", "", "", nil, "", "", "", "", err
+		return workspaceMetaColumns{}, err
 	}
 	if len(normalized) > 0 {
 		behaviorsBytes, err := yaml.Marshal(normalized)
 		if err != nil {
-			return "", "", "", "", "", "", "", nil, "", "", "", "", fmt.Errorf("workspace %q: encode task_behaviors: %w", slug, err)
+			return workspaceMetaColumns{}, fmt.Errorf("workspace %q: encode task_behaviors: %w", slug, err)
 		}
-		taskBehaviorsYAML = string(behaviorsBytes)
+		cols.TaskBehaviorsYAML = string(behaviorsBytes)
 	}
-	baseBranch = meta.BaseBranch
-	forkPoint = meta.ForkPoint
-	defaultTaskBehavior = meta.DefaultTaskBehavior
+	cols.BaseBranch = meta.BaseBranch
+	cols.ForkPoint = meta.ForkPoint
+	cols.DefaultTaskBehavior = meta.DefaultTaskBehavior
 
-	return hostCommandsJSON, envJSON, allowedDomainsJSON, extraReposJSON, servicesJSON, capabilitiesJSON, bindingsJSON, containerImage, taskBehaviorsYAML, baseBranch, forkPoint, defaultTaskBehavior, nil
+	return cols, nil
 }
 
 // Remove deletes the workspace row for slug. The reserved DefaultWorkspaceSlug
