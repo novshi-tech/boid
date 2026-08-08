@@ -1,6 +1,6 @@
 # 汎用 API gateway (認証注入リバースプロキシ) + OAuth2 対応 計画
 
-ステータス: PR1 (gateway 本体、static 注入のみ) マージ済み (2026-08-03、#898)。PR2 (OAuth2 TokenSource) マージ済み (2026-08-03、#899)。PR3 (login flow) マージ済み (2026-08-04)。PR4 (client_credentials grant、§6-補) は設計中・未着手 (2026-08-08)。
+ステータス: PR1 (gateway 本体、static 注入のみ) マージ済み (2026-08-03、#898)。PR2 (OAuth2 TokenSource) マージ済み (2026-08-03、#899)。PR3 (login flow) マージ済み (2026-08-04)。PR4 (client_credentials grant、§6-補) は実装完了・レビュー中 (2026-08-08)。
 作成日: 2026-08-03
 親ドキュメント: [git-gateway-cutover.md](git-gateway-cutover.md) — 本計画は git gateway の認証注入モデルを git 以外の HTTP API へ汎用化する。認証情報一元管理の観点では [host-command-contract.md](host-command-contract.md) の後継でもある。
 
@@ -220,12 +220,12 @@ refresh token をローテーションするプロバイダ (freee が代表) �
 
 ### 6-補. client_credentials grant (Service Principal / app-only 認証) 対応
 
-**未実装 (2026-08-08 論点追加)**。az の REST 移行 ([[host-commands-shrink-to-gh-decision]]) で
+**実装完了・レビュー中 (2026-08-08、PR4)**。az の REST 移行 ([[host-commands-shrink-to-gh-decision]]) で
 Azure DevOps / Application Insights / Storage を叩く際、**ユーザ本人の Entra ID 権限を
 そのままエージェントに渡すのは権限が大きすぎる**ため、エージェント専用の Service
 Principal (client credentials grant, RFC 6749 §4.4) を用意する方針 (2026-08-08 nose)。
 
-現行の §6/§7 実装は **3-legged (delegated) 前提で一本化されている**: `OAuth2TokenSource`
+PR4 実装前の §6/§7 は **3-legged (delegated) 前提で一本化されていた**: `OAuth2TokenSource`
 の `refresh()` は `grant_type=refresh_token` のみを送り (`internal/apigateway/oauth2.go`
 `callTokenEndpoint`)、`LoginManager` の3フロー (device/loopback/manual) はいずれも
 「ユーザに一度認可させて refresh_token を発行させる」ための手段でしかない。
@@ -444,7 +444,7 @@ grant (Entra ID Service Principal 等) には login flow という概念自体�
 | 対象 | 行き先 | 理由 |
 |---|---|---|
 | aws / gh | **host command 存続** | 署名系 (SigV4) / 独自認証エコシステム。gateway では原理的に代行不能 |
-| az | **API gateway (client_credentials)** ([[host-commands-shrink-to-gh-decision]]) | ARM には踏み込まない。対象は Azure DevOps / Application Insights KQL / Azure Storage 分析。ユーザ本人の Entra ID 権限ではなくエージェント専用 Service Principal (client_credentials grant) を使う方針のため、§6-補の対応が前提 (2026-08-08 nose、未実装)。**Azure DevOps の PAT は使わない** — PAT はユーザ本人の権限で発行されるため「本人権限を渡さない」という動機と矛盾する。SP トークン (`scope: 499b84ac-1321-427f-aa17-267ca6975798/.default`) に統一する |
+| az | **API gateway (client_credentials)** ([[host-commands-shrink-to-gh-decision]]) | ARM には踏み込まない。対象は Azure DevOps / Application Insights KQL / Azure Storage 分析。ユーザ本人の Entra ID 権限ではなくエージェント専用 Service Principal (client_credentials grant) を使う方針で、§6-補の gateway 側対応は PR4 で実装完了 (2026-08-08)。az 向け `oauth_providers` エントリの実運用設定はこの PR のスコープ外、別途対応。**Azure DevOps の PAT は使わない** — PAT はユーザ本人の権限で発行されるため「本人権限を渡さない」という動機と矛盾する。SP トークン (`scope: 499b84ac-1321-427f-aa17-267ca6975798/.default`) に統一する |
 | atlassian コマンド | **MCP へ退役** | workspace 単位 $HOME 分離によりマルチアカウント認証が MCP で成立するようになった (Jira は workspace 単位 MCP で実現済み、詳細は運用メモ参照) |
 | google コマンド (Gmail 等) | **MCP 不可・gateway (google-cli) 維持** | 当初「workspace 単位 $HOME 分離で MCP でもマルチアカウント成立」と見込んだが前提が誤りだった。claude.ai 経由の MCP Connector はアカウント単位のグローバル紐付けであり、boid workspace の $HOME 分離とは無関係 — workspace ごとに別 Google アカウントを繋ぐことはできない。ワークスペース別アカウントが要件の Gmail 等は gateway (google-cli 経由、SecretStore 管理) を維持する。gateway 化自体は本 repo 外の API スキル開発プロジェクトで行う |
 | bitbucket | **API gateway 直叩き** | MCP なし。git gateway が SecretStore に持つ API token は REST でも Basic auth で使える見込み — service エントリ 1 個で済む可能性が高い |
@@ -472,9 +472,13 @@ HOME 内、つまり**サンドボックスから読める場所**に置かれ�
   待たずに freee 等の dogfood が始められる)。
 - **PR3: login flow** — `boid secret oauth login <service>`、device / loopback /
   manual の三段、pending session 管理、state / PKCE。
-- **PR4 (未着手、2026-08-08 追加): client_credentials grant** — §6-補。
-  `oauth_providers.*.grant` フィールド、`AccessToken()` の grant 分岐、
-  `LoginManager` のガード (client_credentials プロバイダへの login flow 拒否)。
+- **PR4 (実装完了・レビュー中、2026-08-08): client_credentials grant** — §6-補。
+  `oauth_providers.*.grant` フィールド、`refresh()` の grant 分岐
+  (`refreshClientCredentials` + `callClientCredentialsTokenEndpoint`、scope 送信込み)、
+  `persistGrant` への `persistRefreshToken` 明示フラグ、config load 時の
+  `client_secret_key` 必須化 + `flow` 併用禁止、`LoginManager.StartLogin` の
+  専用エラーガード、config schema 一式 (`internal/config/apigateway.go`/
+  `schema.go`/`internal/server/config_edit.go` の restart-required 配線)。
   az (Service Principal) の REST 移行がこの PR に依存する。
 
 ---

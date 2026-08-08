@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -248,6 +249,33 @@ func TestLoginManager_StartLogin_NoFlowConfigured(t *testing.T) {
 	lm := NewLoginManager(ts)
 	if _, err := lm.StartLogin("ws-a", "freee", ""); err == nil {
 		t.Fatal("want error when the provider has no Flow configured, got nil")
+	}
+}
+
+// TestLoginManager_StartLogin_ClientCredentials_RejectedWithDedicatedMessage
+// pins docs/plans/api-gateway.md §6-補's requirement that a
+// client_credentials provider gets a DEDICATED error from StartLogin — not
+// the generic "no flow configured" message every other flow-less provider
+// gets (TestLoginManager_StartLogin_NoFlowConfigured, above), which would
+// misleadingly suggest setting a flow is the fix.
+func TestLoginManager_StartLogin_ClientCredentials_RejectedWithDedicatedMessage(t *testing.T) {
+	store := newMemSecretStore()
+	store.seed("ws-a", "sp-client-secret", "shh-its-a-secret")
+	ts := NewOAuth2TokenSource([]OAuthProviderConfig{{
+		Name: "az", TokenEndpoint: "https://example.com/token", ClientID: "sp-client-id", ClientSecretKey: "sp-client-secret",
+		Grant: GrantClientCredentials,
+	}}, store.resolver(), store.writer())
+	lm := NewLoginManager(ts)
+
+	_, err := lm.StartLogin("ws-a", "az", "")
+	if err == nil {
+		t.Fatal("StartLogin against a client_credentials provider: want error, got nil")
+	}
+	if strings.Contains(err.Error(), "device/loopback/manual") {
+		t.Errorf("error %q reuses the generic flow-selection message instead of a client_credentials-specific one", err.Error())
+	}
+	if !strings.Contains(err.Error(), "client_credentials") {
+		t.Errorf("error %q does not mention client_credentials", err.Error())
 	}
 }
 

@@ -524,6 +524,9 @@ var restartFieldExtractorExemptions = map[string]string{
 	"oauth_providers.*.authorization_endpoint":        "covered by changedOAuthProviderLeaves' per-id, per-field diff (finer-grained than a wildcard comparison)",
 	"oauth_providers.*.device_authorization_endpoint": "covered by changedOAuthProviderLeaves' per-id, per-field diff (finer-grained than a wildcard comparison)",
 	"oauth_providers.*.authorize_params.*":            "covered by changedOAuthProviderLeaves' per-id, whole-map diff (finer-grained than a wildcard comparison)",
+	// docs/plans/api-gateway.md §6-補, PR4 (client_credentials grant)
+	// addition — same reasoning as the rest of this block.
+	"oauth_providers.*.grant": "covered by changedOAuthProviderLeaves' per-id, per-field diff (finer-grained than a wildcard comparison)",
 }
 
 // verifyRestartExtractorCoverage panics if any config.Schema leaf classified
@@ -700,6 +703,13 @@ func changedOAuthProviderLeaves(oldProviders, newProviders map[string]config.OAu
 			}
 			if !maps.Equal(o.AuthorizeParams, n.AuthorizeParams) {
 				changed = append(changed, name+".authorize_params")
+			}
+			// docs/plans/api-gateway.md §6-補, PR4 addition — same "safer
+			// left to a restart" reasoning as every other leaf here (a
+			// mid-flight Grant change would need OAuth2TokenSource's
+			// provider registry rebuilt).
+			if o.Grant != n.Grant {
+				changed = append(changed, name+".grant")
 			}
 		}
 	}

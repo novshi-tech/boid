@@ -333,6 +333,40 @@ func TestApplyConfigYAML_OAuthProviders_LoginFlowFields_RestartRequiredWarning(t
 	}
 }
 
+// TestApplyConfigYAML_OAuthProviders_Grant_RestartRequiredWarning extends
+// the tests above to the PR4 (client_credentials grant) leaf: grant
+// (docs/plans/api-gateway.md §6-補).
+func TestApplyConfigYAML_OAuthProviders_Grant_RestartRequiredWarning(t *testing.T) {
+	srv, _ := newConfigTestServer(t)
+
+	if _, err := srv.ApplyConfigYAML([]byte(
+		"oauth_providers:\n  az:\n    token_endpoint: https://login.microsoftonline.com/tenant/oauth2/v2.0/token\n    client_id: cid\n    client_secret_key: az-secret\n"),
+		"", true); err != nil {
+		t.Fatalf("ApplyConfigYAML (create): %v", err)
+	}
+
+	result, err := srv.ApplyConfigYAML([]byte(
+		"oauth_providers:\n"+
+			"  az:\n"+
+			"    token_endpoint: https://login.microsoftonline.com/tenant/oauth2/v2.0/token\n"+
+			"    client_id: cid\n"+
+			"    client_secret_key: az-secret\n"+
+			"    grant: client_credentials\n"),
+		"", true)
+	if err != nil {
+		t.Fatalf("ApplyConfigYAML (change): %v", err)
+	}
+	var gotGrant bool
+	for _, w := range result.Warnings {
+		if strings.Contains(w, "oauth_providers.az.grant requires") {
+			gotGrant = true
+		}
+	}
+	if !gotGrant {
+		t.Errorf("Warnings = %v, want a grant leaf warning", result.Warnings)
+	}
+}
+
 // TestApplyConfigYAML_GatewayForges_MultipleLeafChanges pins MINOR 2: two
 // leaves changing on the SAME forge id in one apply produce two separate,
 // individually-named warnings.

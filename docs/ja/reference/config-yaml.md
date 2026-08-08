@@ -366,6 +366,15 @@ oauth_providers:
     client_id: <GitHub OAuth App の client_id>
     flow: device
     device_authorization_endpoint: https://github.com/login/device/code
+  az:
+    # client_credentials grant (Service Principal / app-only 認証) の例。
+    # tenant は token_endpoint の URL 自体に含める (common/organizations は
+    # client_credentials で拒否されるため、tenant ID か検証済みドメイン固定が必須)。
+    token_endpoint: https://login.microsoftonline.com/<tenant-id>/oauth2/v2.0/token
+    client_id: <Service Principal の client_id>
+    client_secret_key: az_sp_client_secret   # secret store 参照 (client_credentials では必須)
+    scopes: [https://api.example.com/.default]  # v2 エンドポイントは 1 リソース 1 scope のみ
+    grant: client_credentials                # flow とは併用不可 (login flow という概念が無い)
 
 services:
   freee:
@@ -380,13 +389,26 @@ services:
 | `oauth_providers.<name>.token_endpoint` | string | (必須) | provider の OAuth2 token endpoint (RFC 6749 §3.2)。スキームは常に `https` 必須 — `services.*.base_url` と異なり `allow_insecure` のような抜け道は無い (token endpoint は常に実在の外部 OAuth2 provider 宛であり、TLS 無し内部テスト API のようなユースケースが無いため) |
 | `oauth_providers.<name>.client_id` | string | (必須) | OAuth2 client_id。RFC 6749 §2.2 の分類上 secret ではないため平文で書く |
 | `oauth_providers.<name>.client_secret_key` | string | 省略可 | confidential client の client_secret を指す secret store 参照キー。public client (PKCE、client_secret 無し) では省略する |
-| `oauth_providers.<name>.scopes` | []string | `[]` | 認可 URL (loopback/manual) / device authorization request (device) に送る scope。リフレッシュでは送らない |
+| `oauth_providers.<name>.scopes` | []string | `[]` | 認可 URL (loopback/manual) / device authorization request (device) に送る scope。`grant: authorization_code` (既定) のリフレッシュ (`grant_type=refresh_token`) では送らない — 一方 `grant: client_credentials` の場合は毎回のリクエストに送る (Azure AD 等が必須とするため。下記参照) |
 | `oauth_providers.<name>.flow` | string (enum) | 省略可 (`""`) | `boid secret oauth login <service>` (PR3、下記) が使う初回認証フロー: `device` / `loopback` / `manual`。未設定の場合 `boid secret oauth login` はエラーになるが、`boid secret set` での refresh_token 手動投入は引き続き可能 — 既存の PR2 時点の config.yaml がこのフィールド無しでも壊れず動き続けるための互換性 |
 | `oauth_providers.<name>.authorization_endpoint` | string | `flow: loopback`/`manual` で必須 | provider の OAuth2 authorization endpoint (RFC 6749 §3.1)。`https` 必須 |
 | `oauth_providers.<name>.device_authorization_endpoint` | string | `flow: device` で必須 | provider の RFC 8628 §3.1 device authorization endpoint。`https` 必須 |
 | `oauth_providers.<name>.authorize_params` | map[string]string | 省略可 | 認可リクエストに追加するパラメータ (loopback/manual は authorize URL のクエリ、device は device authorization request の form field)。`client_id`/`redirect_uri`/`state`/`code_challenge` 等プロトコル予約名は使用不可 (config load 時にエラー)。Google の `access_type`/`prompt` が代表例 — 上記参照 |
+| `oauth_providers.<name>.grant` | string (enum) | `authorization_code` | このプロバイダが使う RFC 6749 grant: `authorization_code` (既定、3-legged/delegated — 上記 `flow` 三段のいずれかで取得した refresh_token を使い続ける) / `client_credentials` (RFC 6749 §4.4、2-legged/app-only、Service Principal 向け)。`client_credentials` を指定した場合、`client_secret_key` は必須 (confidential client 必須、RFC 6749 §4.4.2) かつ `flow` は設定不可 (client_credentials に login flow という概念は無い) — いずれの違反も config load 時にエラーになる |
 
 **平文の client_secret をここに書いてはいけません**。`client_secret_key` は secret store への参照名に過ぎず、実値は `boid secret set <key> <value>` で登録します。
+
+### `grant: client_credentials` (Service Principal / app-only 認証)
+
+`grant: client_credentials` を指定した provider は、`flow` の3段構え (device/loopback/manual) を一切使いません — ユーザ認可のステップ自体が無い2-legged認証だからです。`refresh()` は token endpoint に `grant_type=client_credentials` + `client_id` + `client_secret` (`client_secret_key` から解決) + `scope` を直接 POST するだけで、`refresh_token` という概念も無いため `boid secret oauth login` の対象にもなりません (`LoginManager.StartLogin` を呼ぶと専用のエラーで即座に失敗します)。
+
+必要な secret store への投入は `client_secret_key` の実値のみです:
+
+```bash
+boid secret set -n <workspace-namespace> az_sp_client_secret
+```
+
+Azure AD (Entra ID) の client_credentials では `scope` に `https://<resource>/.default` 形式を指定する必要があります (v2 エンドポイントは1リソースにつき1つの scope しか受け付けないため、対象 API ごとに `oauth_providers` エントリを分けます)。`client_secret` には有効期限があるため、失効時は token endpoint 側の `invalid_client` (`AADSTS*` コード) がデーモンログにのみ出力されます — サンドボックス側には upstream の実 URL やエラー詳細は返しません。
 
 ### daemon 単一リフレッシャ + 先回りリフレッシュ
 
