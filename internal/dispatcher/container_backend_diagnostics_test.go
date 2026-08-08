@@ -167,7 +167,7 @@ func TestNewDefaultDiagnosticsCollector_InspectFails_StillWritesLogsAndError(t *
 // pins that the collector, which now receives a RuntimeExit that already
 // carries the only surviving description of an ENGINE fault
 // (RuntimeExit.EngineError — see containerSession.waitLoop's doc comment in
-// container_backend.go), does not discard it. Before this fix, an
+// container_session.go), does not discard it. Before this fix, an
 // engine-fault exit (ContainerWait itself failing, or its response carrying
 // an engine-side Error) produced a diagnostics.json with nothing but
 // ExitCode: 1 and whatever ContainerInspect/ContainerLogs could still scrape

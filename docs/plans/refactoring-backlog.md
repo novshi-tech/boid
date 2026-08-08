@@ -215,22 +215,24 @@ daemon 側の対 (追補 N2 `ExecuteBoidBuiltin`) と同時に設計すると二
   deadline の起点が `context.Background()` 系と呼び出し元 ctx 派生の 2 種ある点は引数で明示。
 - 規模: 中 / リスク: 低〜中 (ログ文言変更のみ宣言が要る)。
 
-#### N12A. `container_session.go` の分離 (移動のみ)
+#### N12A. `container_session.go` の分離 (移動のみ) — **完了 (2026-08-08, PR #914)**
 
 - `internal/dispatcher/container_backend.go` (3,247 行) に `containerBackend` (555-2372) と
-  `containerSession` (2373-3247) という責務も生存期間も違う 2 型が同居。
+  `containerSession` (2373-3247) という責務も生存期間も違う 2 型が同居していた。
   既に `container_backend_workspace_init.go` 等へ切り出す慣習があるのにセッション層だけ残り。
-- 方向性: 2373-3247 を `container_session.go` へそのまま移動 (同一パッケージ内、宣言移動のみ)。
-  テストも `container_backend_test.go` (2,191 行) から session 系を分離可。
-- 規模: 小 / リスク: 極小。ただし 2026-07 以降 59 コミット集中の最ホットファイルなので、
-  他の dispatcher 作業と衝突しないタイミングで一気に。N1/N3 分割の下地になる。
+- 対応: 2373-3247 を `container_session.go` へそのまま移動 (同一パッケージ内、宣言移動のみ)。
+  内容の完全一致は AST 単位の diff (旧/新の宣言集合比較) で確認済み。テストファイル
+  (`container_backend_test.go` → `container_session_test.go`) の分離は見送り (Adopt 系と
+  session 系のテストが交互に並んでおり分離コストが高いため、リスク最小優先)。
+- N1/N3 分割の下地になる。
 
-#### N14A. `internal/api/store.go` の ports 分割 (移動のみ)
+#### N14A. `internal/api/store.go` の ports 分割 (移動のみ) — **完了 (2026-08-08, PR #914)**
 
 - `internal/api/store.go` (504 行) は "store" という名前に反して 35 超の interface と DTO の
-  雑多置き場。`ports_task.go` / `ports_workspace.go` / `ports_session.go` 等へ機械的分割
-  (同一パッケージ内なので参照修正ゼロ)。
-- 規模: 小 / リスク: 極小。
+  雑多置き場だった。
+- 対応: `ports_workspace.go` (project/workspace 関連) / `ports_task.go` (task/job 関連) /
+  `ports_session.go` (session/exec 関連) へ機械的分割 (同一パッケージ内なので参照修正ゼロ)。
+  `store.go` 自体は全内容移動後に削除。内容の完全一致は AST 単位の diff で確認済み。
 
 ### 巨大関数 (独立プラン級の新顔)
 
@@ -254,20 +256,21 @@ daemon 側の対 (追補 N2 `ExecuteBoidBuiltin`) と同時に設計すると二
 
 #### N3. `containerBackend.Launch` (332 行) + N7 手動巻き戻し
 
-- `internal/dispatcher/container_backend.go:982-1313`。TLS materialize / spec 書き出し /
+- `internal/dispatcher/container_backend.go:977-1308`。TLS materialize / spec 書き出し /
   mount 実体化 / network 解決 / env 加工 / ContainerCreate〜start / transcript spool が同居。
-- N7: 同関数の 4 エラーパス (1254-1310) が transcriptFile Close + removeHalfBuiltContainer +
+- N7: 同関数の 4 エラーパス (1249-1302) が transcriptFile Close + removeHalfBuiltContainer +
   cleanupFiles を毎回手書き。**過去に fd leak を 2 箇所やった記録がコメントに残っている**。
   L4 と同型なので同一 PR 系列へ。
 - 規模: 大 / リスク: 中〜高。先に N7 (巻き戻しの defer 化) を片付けてから分割が安全。
 
 #### N4. `containerSession.waitLoop` (214 行)
 
-- `internal/dispatcher/container_backend.go:3011-3224`。exit 分類 / transcript flush /
-  subscriber close / diagnostics / ContainerRemove / artifact 削除が 1 goroutine 本体に直列。
-  末尾の artifact 削除 (3210-3224) は Launch 側 `cleanupFiles` とほぼ同内容の二重管理。
+- N12A (2026-08-08) で `internal/dispatcher/container_session.go:661-874` へ移動済み
+  (旧 `container_backend.go:3011-3224`)。exit 分類 / transcript flush / subscriber close /
+  diagnostics / ContainerRemove / artifact 削除が 1 goroutine 本体に直列。
+  末尾の artifact 削除は Launch 側 `cleanupFiles` とほぼ同内容の二重管理。
 - 方向性: `classifyExit` → `flushTranscript` → `publishExit` → `teardownArtifacts` の 4 段抽出。
-- 規模: 中 / リスク: 中。N12A (ファイル分離) の後にやる。
+- 規模: 中 / リスク: 中。
 
 #### N2A. `Runner.ImportWorkspaceHome` (330 行)
 
@@ -348,7 +351,7 @@ daemon 側の対 (追補 N2 `ExecuteBoidBuiltin`) と同時に設計すると二
   ヘルパ / 直書き / **分岐なし (workspace edit は generic に落ちる非対称)** と割れている。
   `ifMatchWrite(...)` 共通経路へ、文言はコールバック注入。規模: 中 / リスク: 中。
 - **N6. docker TLS / broker TLS の 4 関数平行実装**: `internal/dispatcher/container_backend.go`
-  の `materializeDockerClientCert` (2115-2144) / `materializeBrokerClientCert` (2190-2226)、
+  の `materializeDockerClientCert` (2110-2140) / `materializeBrokerClientCert` (2185-2214)、
   `dockerTLSCertDir` / `brokerTLSCertDir`、`withDockerTLSEnv` / `withBrokerTLSEnv` が
   CN・validity・ディレクトリ名以外同一。3 系統目が生えたら破綻。
   `perJobCertMaterial{...}` を受ける 1 関数へ。テスト網は双方厚い。パス生成結果の pin を確認。

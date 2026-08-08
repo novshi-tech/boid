@@ -38,7 +38,7 @@ When the daemon starts a hook, `internal/dispatcher`'s `containerBackend.Launch`
 +-------------------------------------------------------------+
 ```
 
-The five-level process chain the former userns backend used (`runner-outer → pasta → runner-inner → runner-inner-child`; `cmd/runner.go`'s `runner-outer`/`runner-inner` subcommands, `internal/sandbox/runner/runner_linux.go`'s `clone(CLONE_NEWUSER|CLONE_NEWNS)` + `pivot_root` path) was removed entirely in PR-4 (`docs/plans/volume-only-daemon.md`, the 2026-07 cutover). The implementation is now split between the host-side [`internal/dispatcher/container_backend.go`](https://github.com/novshi-tech/boid/blob/main/internal/dispatcher/container_backend.go) (launch / attach / resize / signal / reap, exposed via the `backend.SandboxBackend` interface) and [`internal/sandbox/runner/runner_container_linux.go`](https://github.com/novshi-tech/boid/blob/main/internal/sandbox/runner/runner_container_linux.go)'s `RunContainer`, which runs inside the container as the `boid runner-container` entry point.
+The five-level process chain the former userns backend used (`runner-outer → pasta → runner-inner → runner-inner-child`; `cmd/runner.go`'s `runner-outer`/`runner-inner` subcommands, `internal/sandbox/runner/runner_linux.go`'s `clone(CLONE_NEWUSER|CLONE_NEWNS)` + `pivot_root` path) was removed entirely in PR-4 (`docs/plans/volume-only-daemon.md`, the 2026-07 cutover). The implementation is now split between the host-side [`internal/dispatcher/container_backend.go`](https://github.com/novshi-tech/boid/blob/main/internal/dispatcher/container_backend.go) (launch / reap, exposed via the `backend.SandboxBackend` interface), [`internal/dispatcher/container_session.go`](https://github.com/novshi-tech/boid/blob/main/internal/dispatcher/container_session.go) (attach / resize / signal, exposed via `backend.SandboxSession`), and [`internal/sandbox/runner/runner_container_linux.go`](https://github.com/novshi-tech/boid/blob/main/internal/sandbox/runner/runner_container_linux.go)'s `RunContainer`, which runs inside the container as the `boid runner-container` entry point.
 
 ### Container launch parameters (`containerBackend.Launch`)
 
@@ -232,7 +232,7 @@ Host commands run daemon-side in a neutral directory (`os.TempDir()`), never any
 
 Cleanup reduces to **stopping and removing the job container**. Because the container runtime itself owns creating and tearing down the mount/network/user namespaces, the former userns backend's concerns — "let the kernel reclaim the mount namespace", "remove `$ROOT` from the own-namespace vs. cross-namespace side" — no longer apply.
 
-When a job container exits, `containerBackend` ([`internal/dispatcher/container_backend.go`](https://github.com/novshi-tech/boid/blob/main/internal/dispatcher/container_backend.go)):
+When a job container exits, `containerSession.waitLoop` ([`internal/dispatcher/container_session.go`](https://github.com/novshi-tech/boid/blob/main/internal/dispatcher/container_session.go)):
 
 1. Calls `ContainerRemove` (`RemoveVolumes: true`) to remove the container itself and any anonymous volume created for it (retrying with `Force: true` on failure).
 2. Removes the `spec.json` / `state.json` (and any per-job TLS cert scratch directory) it wrote host-side — `spec.json` is always removed regardless of exit code, since it carries the broker token and other secrets.

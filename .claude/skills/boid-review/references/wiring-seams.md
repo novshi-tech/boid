@@ -923,7 +923,7 @@ losing one does not (today) cause a false job success — which is exactly the s
 later "the other end already covers it" edit removes the wrong one.
 
 - **End A (produce — exit-code honesty)**: `containerSession.waitLoop`
-  (`internal/dispatcher/container_backend.go`) and `containerBackend.RunWorkspaceInit`'s incumbent-
+  (`internal/dispatcher/container_session.go`) and `containerBackend.RunWorkspaceInit`'s incumbent-
   wait path (`internal/dispatcher/container_backend_workspace_init.go`) both call the shared
   `waitResponseEngineError(res)` helper before trusting `res.StatusCode`. This is what keeps THIS
   layer's own `backend.RuntimeExit.ExitCode` honest, and what `NewDefaultDiagnosticsCollector`'s

@@ -201,7 +201,7 @@ func (r *Runner) WriteInput(jobID string, data []byte) error {
 // It resolves jobID to a runtimeID via the jobs table, then adopts a
 // SandboxSession and resizes through it. Adopt is bounded — see Subscribe's
 // doc comment above for why (session.Resize itself is separately bounded,
-// container_backend.go, since its interface signature takes no context to
+// container_session.go, since its interface signature takes no context to
 // inherit one from), including the ctx.Err()-gated Warn + wrapped error
 // below, matching WriteInput's just above (next-session-container-backend-
 // followups.md #3, Opus review of PR #857).
