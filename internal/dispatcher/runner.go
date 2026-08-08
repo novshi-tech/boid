@@ -1543,12 +1543,12 @@ func (r *Runner) cleanupSandboxAfterWait(session backend.SandboxSession, extra o
 
 // sessionControlCallTimeout bounds every foreground SandboxSession control
 // call that has no caller-supplied context to inherit a deadline from:
-// containerSession.Resize (container_backend.go — whose
+// containerSession.Resize (container_session.go — whose
 // backend.SandboxSession interface method takes no context at all) and the
 // ad-hoc contexts StopJobRuntime/SignalJobRuntime below and
 // runtime_subscriber_export.go's Subscribe/WriteInput/ResizeRuntime/
 // CloseInput synthesize before Adopt (and, for the first two, before
-// Stop/Signal). Living here rather than in container_backend.go (Opus
+// Stop/Signal). Living here rather than in container_session.go (Opus
 // review of PR #857, Nit 7) because most of its consumers are Runner
 // methods — containerSession.Resize is the only one that isn't, and same-
 // package visibility makes the file split cost nothing.

@@ -75,7 +75,7 @@ func withSessionControlCallTimeout(t *testing.T, d time.Duration) {
 // --- containerSession.Resize --------------------------------------------
 
 // TestContainerSession_Resize_HangingEngineHitsDeadline pins the
-// container_backend.go Resize fix: Resize's backend.SandboxSession
+// container_session.go Resize fix: Resize's backend.SandboxSession
 // interface method takes no context to inherit a deadline from, so it must
 // synthesize its own bounded one rather than calling ContainerResize under
 // a bare context.Background().

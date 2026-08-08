@@ -232,7 +232,7 @@ Host commands run daemon-side in a neutral directory (`os.TempDir()`), never any
 
 Cleanup reduces to **stopping and removing the job container**. Because the container runtime itself owns creating and tearing down the mount/network/user namespaces, the former userns backend's concerns — "let the kernel reclaim the mount namespace", "remove `$ROOT` from the own-namespace vs. cross-namespace side" — no longer apply.
 
-When a job container exits, `containerBackend` ([`internal/dispatcher/container_backend.go`](https://github.com/novshi-tech/boid/blob/main/internal/dispatcher/container_backend.go)):
+When a job container exits, `containerSession.waitLoop` ([`internal/dispatcher/container_session.go`](https://github.com/novshi-tech/boid/blob/main/internal/dispatcher/container_session.go)):
 
 1. Calls `ContainerRemove` (`RemoveVolumes: true`) to remove the container itself and any anonymous volume created for it (retrying with `Force: true` on failure).
 2. Removes the `spec.json` / `state.json` (and any per-job TLS cert scratch directory) it wrote host-side — `spec.json` is always removed regardless of exit code, since it carries the broker token and other secrets.

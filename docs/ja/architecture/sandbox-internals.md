@@ -232,7 +232,7 @@ host command は daemon 側で project の checkout ディレクトリではな�
 
 後片付けは job container の **停止・削除** に集約されます。 mount/network/user namespace の生成・破棄をコンテナランタイム自身が担うため、旧 userns backend にあった「mount namespace の破棄をカーネルに任せる」「`$ROOT` を own ns / cross ns のどちらから消すか」といった作り込みは不要になりました。
 
-job container が終了すると `containerBackend` ([`internal/dispatcher/container_backend.go`](https://github.com/novshi-tech/boid/blob/main/internal/dispatcher/container_backend.go)) が:
+job container が終了すると `containerSession.waitLoop` ([`internal/dispatcher/container_session.go`](https://github.com/novshi-tech/boid/blob/main/internal/dispatcher/container_session.go)) が:
 
 1. `ContainerRemove` (`RemoveVolumes: true`) でコンテナ本体と、そのコンテナ専用の匿名 volume を削除する (失敗時は `Force: true` で再試行する)
 2. host 側に書き出した `spec.json` / `state.json` (および per-job TLS cert 用の一時ディレクトリ) を削除する — `spec.json` は broker token 等の secrets を含むため終了コードに関わらず必ず削除する
