@@ -200,7 +200,14 @@ daemon 側の対 (追補 N2 `ExecuteBoidBuiltin`) と同時に設計すると二
 
 ### 優先着手推奨 (実害実績あり・低リスク高効果)
 
-#### N5A. bounded Adopt + `ctx.Err()` 分岐の 8 箇所コピペ集約 ★最優先
+#### N5A. bounded Adopt + `ctx.Err()` 分岐の 8 箇所コピペ集約 ★最優先 【2026-08-08: 着手済み】
+
+`Runner.withAdoptedSession(parentCtx, runtimeID, onDeadlineExceeded, onCanceled, fn)`
+(`internal/dispatcher/runner.go`) へ 8 箇所すべて移行済み。ctx 生成・Adopt 呼び出し・
+`ctx.Err()` の 3 分岐 (legitimate miss / Canceled / DeadlineExceeded) をヘルパへ集約し、
+各呼び出し元固有のログ文言・エラーラップ・fn 実行後の後処理はコールバック / 戻り値経由で
+各呼び出し元に残した (ログ文言は無変更)。単体テストは
+`internal/dispatcher/with_adopted_session_test.go`。
 
 - `internal/dispatcher/runtime_subscriber_export.go:151-250` (Subscribe / WriteInput /
   ResizeRuntime / CloseInput) と `internal/dispatcher/runner.go:1594-1862` (StopJobRuntime /

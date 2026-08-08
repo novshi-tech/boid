@@ -8,6 +8,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+
+	"github.com/novshi-tech/boid/internal/sandbox/backend"
 )
 
 // RuntimeSubscriber subscribes to live output of a running job identified by
@@ -152,17 +154,28 @@ func (r *Runner) Subscribe(jobID string) (snapshot []byte, ch <-chan []byte, can
 	if !found {
 		return nil, nil, func() {}, false, r.jobFinishedBeforeRuntime(jobID)
 	}
-	ctx, cancelCtx := context.WithTimeout(context.Background(), sessionControlCallTimeout.Get())
-	defer cancelCtx()
-	session, adopted := r.sandboxBackend().Adopt(ctx, runtimeID)
-	if !adopted {
-		if ctx.Err() != nil {
+	var result struct {
+		snapshot []byte
+		ch       <-chan []byte
+		cancel   func()
+		ok       bool
+		finished bool
+	}
+	adopted, ctxErr, _ := r.withAdoptedSession(context.Background(), runtimeID,
+		func(ctx context.Context) {
 			slog.Warn("subscribe: adopt did not resolve before the control-call deadline; the runtime's live output cannot be attached to",
 				"job_id", jobID, "runtime_id", runtimeID, "timeout", sessionControlCallTimeout.Get())
-		}
-		return nil, nil, func() {}, false, ctx.Err() == nil
+		},
+		nil, // unreachable: parentCtx is context.Background(), so ctx.Err() is never Canceled here.
+		func(ctx context.Context, session backend.SandboxSession) error {
+			result.snapshot, result.ch, result.cancel, result.ok, result.finished = session.Subscribe()
+			return nil
+		},
+	)
+	if !adopted {
+		return nil, nil, func() {}, false, ctxErr == nil
 	}
-	return session.Subscribe()
+	return result.snapshot, result.ch, result.cancel, result.ok, result.finished
 }
 
 // WriteInput implements RuntimeInputWriter for Runner. It resolves jobID to
@@ -181,18 +194,23 @@ func (r *Runner) WriteInput(jobID string, data []byte) error {
 	if !found {
 		return fmt.Errorf("runtime not found for job %s", jobID)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), sessionControlCallTimeout.Get())
-	defer cancel()
-	session, adopted := r.sandboxBackend().Adopt(ctx, runtimeID)
-	if !adopted {
-		if ctx.Err() != nil {
+	adopted, ctxErr, fnErr := r.withAdoptedSession(context.Background(), runtimeID,
+		func(ctx context.Context) {
 			slog.Warn("write input: adopt did not resolve before the control-call deadline; input was not delivered",
 				"job_id", jobID, "runtime_id", runtimeID, "timeout", sessionControlCallTimeout.Get())
-			return fmt.Errorf("write input: engine did not respond in time: %w", ctx.Err())
+		},
+		nil, // unreachable: parentCtx is context.Background(), so ctx.Err() is never Canceled here.
+		func(ctx context.Context, session backend.SandboxSession) error {
+			return session.WriteInput(data)
+		},
+	)
+	if !adopted {
+		if ctxErr != nil {
+			return fmt.Errorf("write input: engine did not respond in time: %w", ctxErr)
 		}
 		return ErrRuntimeUnsupported
 	}
-	return session.WriteInput(data)
+	return fnErr
 }
 
 // ResizeRuntime implements RuntimeInputWriter for Runner — the WS attach
@@ -210,18 +228,23 @@ func (r *Runner) ResizeRuntime(jobID string, size TerminalSize) error {
 	if !found {
 		return fmt.Errorf("runtime not found for job %s", jobID)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), sessionControlCallTimeout.Get())
-	defer cancel()
-	session, adopted := r.sandboxBackend().Adopt(ctx, runtimeID)
-	if !adopted {
-		if ctx.Err() != nil {
+	adopted, ctxErr, fnErr := r.withAdoptedSession(context.Background(), runtimeID,
+		func(ctx context.Context) {
 			slog.Warn("resize runtime: adopt did not resolve before the control-call deadline; the terminal was not resized",
 				"job_id", jobID, "runtime_id", runtimeID, "timeout", sessionControlCallTimeout.Get())
-			return fmt.Errorf("resize runtime: engine did not respond in time: %w", ctx.Err())
+		},
+		nil, // unreachable: parentCtx is context.Background(), so ctx.Err() is never Canceled here.
+		func(ctx context.Context, session backend.SandboxSession) error {
+			return session.Resize(size)
+		},
+	)
+	if !adopted {
+		if ctxErr != nil {
+			return fmt.Errorf("resize runtime: engine did not respond in time: %w", ctxErr)
 		}
 		return ErrRuntimeUnsupported
 	}
-	return session.Resize(size)
+	return fnErr
 }
 
 // CloseInput implements RuntimeInputWriter for Runner. It resolves jobID to
@@ -235,16 +258,21 @@ func (r *Runner) CloseInput(jobID string) error {
 	if !found {
 		return fmt.Errorf("runtime not found for job %s", jobID)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), sessionControlCallTimeout.Get())
-	defer cancel()
-	session, adopted := r.sandboxBackend().Adopt(ctx, runtimeID)
-	if !adopted {
-		if ctx.Err() != nil {
+	adopted, ctxErr, fnErr := r.withAdoptedSession(context.Background(), runtimeID,
+		func(ctx context.Context) {
 			slog.Warn("close input: adopt did not resolve before the control-call deadline; input was not closed",
 				"job_id", jobID, "runtime_id", runtimeID, "timeout", sessionControlCallTimeout.Get())
-			return fmt.Errorf("close input: engine did not respond in time: %w", ctx.Err())
+		},
+		nil, // unreachable: parentCtx is context.Background(), so ctx.Err() is never Canceled here.
+		func(ctx context.Context, session backend.SandboxSession) error {
+			return session.CloseInput()
+		},
+	)
+	if !adopted {
+		if ctxErr != nil {
+			return fmt.Errorf("close input: engine did not respond in time: %w", ctxErr)
 		}
 		return ErrRuntimeUnsupported
 	}
-	return session.CloseInput()
+	return fnErr
 }
