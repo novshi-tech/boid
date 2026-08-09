@@ -76,9 +76,21 @@ Linux 専用なのは正当な理由がある。`internal/skills/safe_deploy.go`
 - **未検証**: 実際の Windows 機での実行。`LockFileEx` によるロックと attach のリサイズポーリングは、クロスコンパイルが通ることしか確認できていない。初回の Windows dogfood で確かめること。
 - Windows のトークンファイル権限: `internal/profiles/token_write.go` の 0600/0700 契約は POSIX のものであり、Windows では Go が read-only 属性しか設定しない (ACL は触らない)。daemon の Bearer token が同一マシンの他ローカルアカウントから読める。正しく絞るには明示的な DACL が要る — 未実装。契約コメントに注記済み。
 
+## リリース配布
+
+`v*` タグを push すると CI の `release-binaries` ジョブが windows/amd64 ・ darwin/arm64 ・ darwin/amd64 のバイナリと `SHA256SUMS` を GitHub Release に添付する。バージョンは `-ldflags` で `internal/version.buildVersion` に焼き込む (コンテナイメージと同じ仕組み)。
+
+タグの形は `internal/version.IsExactRelease` と同じ正規表現でジョブ側でも再検証する。ワークフローの tags フィルタは `v*` と緩く、`v0.0.14-rc1` のような形も届くため — 厳密な `vMAJOR.MINOR.PATCH` でなければ配布物は出さない。
+
+**Linux バイナリは生では配らない。** 理由は 2 つ:
+
+1. Linux ビルドの `main.go` は argv[0] の basename が `boid` でない場合を host-command shim の呼び出しとして扱う。`boid_v1.2.3_linux_amd64` のような名前で置くと、実行しただけで `boid shim: neither BOID_BROKER_SOCKET nor ...` で死ぬ (実測済み)。windows/darwin は `main_other.go` を使い shim 経路を持たないので、リネームしたまま安全に動く。
+2. Linux 側は `go install` と GHCR のコンテナイメージという既存の配布経路があり、そちらが daemon ごと面倒を見ている。
+
+リリースノート本文は、生成 changelog に「これはクライアント専用ビルド」という前置きを足して組み立てる。`--generate-notes` と `--notes-file` の同時指定は gh のバージョンで優先順位が変わるため意図的に避け、`repos/.../releases/generate-notes` API から本文を取得して連結している。
+
 ## 残件
 
 - Windows 実機での dogfood (上記「未検証」)。
 - `boid install-skills` の Windows 対応 (= `internal/skills` の deploy 経路の移植)。
 - トークンファイルの Windows ACL 対応。
-- リリースワークフローへの windows/darwin バイナリの追加は未着手 — 今は「ビルドが通る」ことの担保まで。配布物に含めるかは別判断。
