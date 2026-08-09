@@ -462,3 +462,129 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_ACTOR: ${{ github.actor }}
         run: ./e2e/run-onboarding.sh
+
+  release-binaries:
+    name: Release binaries (portable client)
+    # 実リリースタグの push でだけ走る。ワークフローの tags フィルタは 'v*'
+    # と緩いので (v0.0.14-rc1 のような形も届く)、container-image ジョブと
+    # 同じく「厳密な vMAJOR.MINOR.PATCH か」をこのジョブ側でも再検証する
+    # (下の Resolve release version ステップ)。ここでの if は「タグ push
+    # かどうか」の粗いふるいでしかない。
+    if: startsWith(github.ref, 'refs/tags/v')
+    # 壊れたものをリリースに出さないための直列化。e2e 系はコンテナ環境の
+    # 都合で落ちうるので入れていない — 配布物の正しさに直接効くのは
+    # ユニット/レース/lint の 3 つ。
+    needs: [unit, race, lint]
+    runs-on: ubuntu-24.04
+    permissions:
+      # container-image ジョブと同じ理由で job-scoped にする: リリース
+      # アセットを書くのはこのジョブだけで、top-level に置くと
+      # pull_request 実行を含む全ジョブに書き込み権限が渡ってしまう。
+      contents: write
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Resolve release version
+        id: ver
+        # internal/version.IsExactRelease と同じ正規表現。ここを通らない
+        # タグ (pre-release / build metadata 付き) では release_version を
+        # 空にし、以降のステップを丸ごと skip する — 中途半端なタグで
+        # 配布物だけが出る事故を防ぐ。
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          if [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "release_version=$tag" >> "$GITHUB_OUTPUT"
+            echo "release version: $tag"
+          else
+            echo "release_version=" >> "$GITHUB_OUTPUT"
+            echo "::notice::$tag は厳密な vMAJOR.MINOR.PATCH ではないため、バイナリは公開しない"
+          fi
+
+      - name: Build portable client binaries
+        if: steps.ver.outputs.release_version != ''
+        # 配布するのは windows / darwin の**クライアント専用**ビルドだけ
+        # (docs/plans/windows-client-build.md)。Linux バイナリを生では
+        # 配らない理由は 2 つある:
+        #
+        #  1. Linux ビルドの main.go は argv[0] の basename が "boid" で
+        #     ない場合を host-command shim の呼び出しとして扱う。つまり
+        #     boid_v1.2.3_linux_amd64 のような名前で置くと、実行しただけで
+        #     "boid shim: neither BOID_BROKER_SOCKET nor ..." で死ぬ。
+        #     windows/darwin は main_other.go を使い shim 経路を持たないので
+        #     リネームしたまま安全に動く。
+        #  2. Linux 側は go install と GHCR のコンテナイメージという既存の
+        #     配布経路がすでにあり、そちらが daemon ごと面倒を見ている。
+        #
+        # -ldflags でのバージョン焼き込みは build/container/Dockerfile と
+        # 同じ仕組み (internal/version.buildVersion)。go install 経路と違い
+        # ここでは正確なタグを渡せる。
+        env:
+          RELEASE_VERSION: ${{ steps.ver.outputs.release_version }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          ldflags="-X github.com/novshi-tech/boid/internal/version.buildVersion=${RELEASE_VERSION}"
+          for target in windows/amd64 darwin/arm64 darwin/amd64; do
+            goos="${target%%/*}"
+            goarch="${target##*/}"
+            out="dist/boid_${RELEASE_VERSION}_${goos}_${goarch}"
+            if [[ "$goos" == "windows" ]]; then
+              out="${out}.exe"
+            fi
+            echo "building $out"
+            GOOS="$goos" GOARCH="$goarch" CGO_ENABLED=0 \
+              go build -trimpath -ldflags "$ldflags" -o "$out" .
+          done
+          # glob は明示的に boid_* に限る。素の * だと、dist が残った状態で
+          # 再実行したとき SHA256SUMS が自分自身を含んでしまう。
+          ( cd dist && sha256sum boid_* > SHA256SUMS )
+          ls -l dist
+
+      - name: Publish release
+        if: steps.ver.outputs.release_version != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_VERSION: ${{ steps.ver.outputs.release_version }}
+        # 自動生成の changelog だけだと「これはクライアント専用ビルドで
+        # daemon は入っていない」という一番誤解されやすい点が本文に出て
+        # こないので、生成ノートを API から取得して前置きを足した本文を
+        # 作る。--generate-notes と --notes-file の同時指定は gh の
+        # バージョンによって優先順位が変わるため、意図的に使わない。
+        run: |
+          set -euo pipefail
+          generated="$(gh api \
+            --method POST \
+            "repos/${GITHUB_REPOSITORY}/releases/generate-notes" \
+            -f tag_name="${RELEASE_VERSION}" \
+            --jq '.body')"
+
+          {
+            echo "## 配布物について"
+            echo
+            echo "添付されているのは **Windows / macOS 向けのクライアント専用ビルド**。boid の daemon は Linux 専用なので、これらのバイナリは \`boid login <url>\` でリモート daemon に接続して使う (\`boid start\` などの daemon ライフサイクル系コマンドは含まれない)。"
+            echo
+            echo "Linux では従来どおり \`go install github.com/novshi-tech/boid@${RELEASE_VERSION}\` かコンテナイメージ \`ghcr.io/novshi-tech/boid-runner:${RELEASE_VERSION}\` を使うこと。"
+            echo
+            echo "\`SHA256SUMS\` で検証できる。"
+            echo
+            echo "---"
+            echo
+            echo "$generated"
+          } > release-notes.md
+
+          if gh release view "${RELEASE_VERSION}" >/dev/null 2>&1; then
+            gh release edit "${RELEASE_VERSION}" --notes-file release-notes.md
+          else
+            gh release create "${RELEASE_VERSION}" \
+              --title "${RELEASE_VERSION}" \
+              --notes-file release-notes.md
+          fi
+          gh release upload "${RELEASE_VERSION}" dist/* --clobber
