@@ -103,8 +103,10 @@ func TestNoAccidentallyLinuxOnlyRemoteCommands(t *testing.T) {
 // removes a command from the portable build just as effectively as the
 // spelling the test happened to look for.
 //
-// "Portable" here is evaluated as GOOS=windows — the platform this split
-// exists for. A file excluded there is excluded from the client build.
+// "Portable" is every target CI cross-builds: windows/amd64 AND
+// darwin/arm64. Excluded from EITHER counts as excluded — evaluating only
+// windows would let `//go:build !darwin` through, silently dropping a
+// command on macOS alone.
 func excludedFromPortableBuild(src []byte) bool {
 	line, ok := buildConstraintLine(src)
 	if !ok {
@@ -114,15 +116,39 @@ func excludedFromPortableBuild(src []byte) bool {
 	if err != nil {
 		return false // not a constraint we understand; go/build would have rejected it
 	}
-	return !expr.Eval(func(tag string) bool {
-		// Only the tags a GOOS=windows/amd64 build satisfies. Everything
-		// else — linux, unix, darwin, custom tags — is false.
+	for _, target := range portableTargets {
+		if !expr.Eval(target.satisfies) {
+			return true
+		}
+	}
+	return false
+}
+
+// portableTargets mirrors the GOOS/GOARCH pairs the CI cross-build step
+// compiles (.github/workflows/blackbox-e2e.yml). Keep the two in step: a
+// target CI builds but this test does not evaluate is a target whose
+// command surface nothing guards.
+var portableTargets = []struct {
+	name      string
+	satisfies func(tag string) bool
+}{
+	{"windows/amd64", func(tag string) bool {
 		switch tag {
 		case "windows", "amd64", "gc":
 			return true
 		}
 		return false
-	})
+	}},
+	{"darwin/arm64", func(tag string) bool {
+		// "unix" is satisfied on darwin (go/build treats darwin as a unix
+		// GOOS), so a `//go:build unix` file IS present in the macOS build
+		// — unlike the windows one above.
+		switch tag {
+		case "darwin", "arm64", "unix", "gc":
+			return true
+		}
+		return false
+	}},
 }
 
 // buildConstraintLine returns the file's //go:build line, searching the

@@ -12,6 +12,26 @@ package cmd
 // Pure local filesystem operation (skills.DeployHostSkills), never talks to
 // the daemon — same axis as `boid check`/`boid fetch`, hence
 // annotationSkipAutostart=skip + scopeLocal.
+//
+// # Why this is //go:build linux, and why that is a known wart
+//
+// This is the one dropped command whose absence is genuinely awkward
+// (docs/plans/windows-client-build.md). The scenario it serves — a Claude
+// Code session on the machine where you run the boid CLI, as opposed to
+// inside a job sandbox — is EXACTLY the Windows/macOS laptop the portable
+// build exists for. You can now run `boid` there but cannot install the
+// skills that teach Claude Code to drive it.
+//
+// It is Linux-only for a real reason, not an oversight:
+// internal/skills/safe_deploy.go hardens the deploy against TOCTOU with
+// openat-style primitives (unix.Open with O_DIRECTORY|O_CLOEXEC,
+// unix.Fstat), which have no portable equivalent — making this command
+// portable means writing a second, Windows-safe deploy path, not moving a
+// build tag.
+//
+// Note that TestNoAccidentallyLinuxOnlyRemoteCommands does NOT flag this:
+// the command is scope=local, and that gate only guards scope=remote. The
+// reason lives here instead, so the next person to wonder finds it.
 
 import (
 	"fmt"
