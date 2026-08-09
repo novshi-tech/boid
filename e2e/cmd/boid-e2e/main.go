@@ -367,6 +367,10 @@ func runWSJobOutput(args []string) error {
 		return fmt.Errorf("dial %s: %w", wsURL, err)
 	}
 	defer conn.CloseNow()
+	// Same reason as internal/client's AttachJob: the replayed transcript
+	// is unbounded, so the stock 32768-byte read limit turns a talkative
+	// job into a spurious "message too big" failure.
+	conn.SetReadLimit(-1)
 
 	var buf []byte
 	for {
