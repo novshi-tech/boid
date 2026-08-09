@@ -80,16 +80,21 @@ var secretOAuthCmd = &cobra.Command{
 }
 
 var secretOAuthLoginCmd = &cobra.Command{
-	Use:   "login <service>",
-	Short: "Obtain an initial OAuth2 grant for a service (device/loopback/manual)",
-	Long: "Starts `boid secret oauth login <service>`'s three-flow initial grant\n" +
+	Use:   "login <service|provider>",
+	Short: "Obtain an initial OAuth2 grant (device/loopback/manual)",
+	Long: "Starts `boid secret oauth login <service|provider>`'s three-flow initial grant\n" +
 		"(docs/plans/api-gateway.md §7): device (Microsoft/GitHub — displays a\n" +
 		"user_code, the daemon polls in the background), loopback (Google/\n" +
 		"Atlassian — opens a local listener and waits for the browser redirect),\n" +
 		"or manual (freee and other OOB-only providers — paste the code shown\n" +
 		"after authorizing). Which flow runs is decided entirely by the\n" +
 		"service's oauth_providers.<name>.flow config; this command adapts to\n" +
-		"whichever one the daemon reports.",
+		"whichever one the daemon reports.\n\n" +
+		"The argument names either a services.<name> entry (auth.kind: oauth2)\n" +
+		"or an oauth_providers.<name> entry directly. The grant belongs to the\n" +
+		"PROVIDER, so one login covers every service pointing at it — with six\n" +
+		"google-backed services configured, `login google` and `login gmail-api`\n" +
+		"do exactly the same thing and both unlock all six.",
 	Args:        cobra.ExactArgs(1),
 	Annotations: map[string]string{scopeAnnotationKey: scopeRemote},
 	RunE:        runSecretOAuthLogin,
@@ -155,12 +160,29 @@ func runSecretOAuthLogin(cmd *cobra.Command, args []string) error {
 }
 
 // printAuthorizeURL prints an authorize/verification URL for the user to
-// open, plus a terminal QR code of it (internal/qrterm, the same helper
-// `boid web pair` uses) so a phone can scan it instead of retyping — a QR
-// encode failure is swallowed (the URL text alone is still fully usable)
-// rather than aborting the login.
-func printAuthorizeURL(cmd *cobra.Command, label, rawURL string) {
+// open. withQR additionally renders a terminal QR code of it
+// (internal/qrterm, the same helper `boid web pair` uses) so a phone can
+// scan it instead of retyping — a QR encode failure is swallowed (the URL
+// text alone is still fully usable) rather than aborting the login.
+//
+// withQR is a parameter rather than always-on because a QR code is an
+// invitation to finish the flow ON ANOTHER DEVICE, and that is only true
+// for two of the three flows:
+//
+//   - device: the URL is the provider's own verification page; the whole
+//     point is that the browser can live anywhere. QR is ideal.
+//   - manual/OOB: the provider displays a code to copy by hand, so a phone
+//     works fine — read the code off it and type it here.
+//   - loopback: the authorize URL redirects to http://127.0.0.1:<port>,
+//     a port THIS process is listening on. Scanning it sends the phone's
+//     browser to the PHONE's own localhost, where nothing is listening.
+//     The QR cannot work, and offering it invites a failure that looks
+//     like the provider rejecting the login.
+func printAuthorizeURL(cmd *cobra.Command, label, rawURL string, withQR bool) {
 	fmt.Fprintf(cmd.ErrOrStderr(), "%s:\n\n  %s\n\n", label, rawURL)
+	if !withQR {
+		return
+	}
 	if qr, err := qrterm.Encode(rawURL, false); err == nil {
 		fmt.Fprint(cmd.ErrOrStderr(), qr)
 	}
@@ -187,7 +209,9 @@ func completeOAuthLogin(cmd *cobra.Command, c *client.Client, sessionID, code, s
 // in the browser after consent; there is no redirect for this CLI to
 // intercept, so the user copies it by hand.
 func runOAuthManualFlow(cmd *cobra.Command, c *client.Client, start oauthLoginStartResponse) error {
-	printAuthorizeURL(cmd, "Open this URL in a browser to authorize", start.AuthorizeURL)
+	// withQR=true: the code comes back on screen, so authorizing on a phone
+	// and typing the code here works.
+	printAuthorizeURL(cmd, "Open this URL in a browser to authorize", start.AuthorizeURL, true)
 	fmt.Fprint(cmd.ErrOrStderr(), "Paste the code shown after authorizing: ")
 	code, err := readLine(cmd.InOrStdin())
 	if err != nil {
@@ -216,7 +240,10 @@ type oauthCallbackResult struct {
 // actually checks state against the PKCE session it holds (this function
 // never sees the verifier at all).
 func runOAuthLoopbackFlow(cmd *cobra.Command, c *client.Client, ln net.Listener, start oauthLoginStartResponse, timeout time.Duration) error {
-	printAuthorizeURL(cmd, "Open this URL in a browser to authorize", start.AuthorizeURL)
+	// withQR=false: the callback lands on this machine's own 127.0.0.1
+	// listener, so the browser MUST be on this machine — see
+	// printAuthorizeURL's doc comment.
+	printAuthorizeURL(cmd, "Open this URL in a browser on THIS machine to authorize", start.AuthorizeURL, false)
 
 	resultCh := make(chan oauthCallbackResult, 1)
 	mux := http.NewServeMux()

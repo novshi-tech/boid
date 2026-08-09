@@ -28,6 +28,12 @@ type OAuthLoginService interface {
 	// other than oauth2 (mirrors apigateway.CredentialProvider.
 	// OAuth2ProviderFor exactly — the adapter just forwards to it).
 	ProviderForService(service string) (provider string, ok bool)
+	// KnowsProvider reports whether name is itself a configured
+	// oauth_providers.<name> entry. Start uses it as a fallback when the
+	// argument does not name a service — see its own doc comment for why
+	// naming the provider directly is legitimate rather than a typo to
+	// reject.
+	KnowsProvider(name string) bool
 	// StartLogin begins a new login session — see
 	// apigateway.LoginManager.StartLogin's own doc comment for the full
 	// per-flow contract (redirectURI is only meaningful for the loopback
@@ -129,8 +135,29 @@ func (h *OAuthLoginHandler) Start(w http.ResponseWriter, r *http.Request) {
 	}
 	provider, ok := h.Service.ProviderForService(req.Service)
 	if !ok {
-		writeError(w, http.StatusNotFound, "service "+req.Service+" is not configured with auth.kind: oauth2")
-		return
+		// Fall back to reading the argument as an oauth_providers.<name>.
+		//
+		// The grant this flow obtains belongs to a PROVIDER, not a service:
+		// StartLogin below takes a provider and never learns which service
+		// the caller typed (apigateway.LoginManager's own doc comment), and
+		// every service pointing at that provider starts working at once.
+		// So a service name is only ever an indirect way to spell a
+		// provider — and for a config with six google-backed services
+		// (gmail-api, drive-api, sheets-api, calendar-api, tasks-api,
+		// chat-api), `boid secret oauth login google` is the spelling that
+		// actually matches what is being authorized. Rejecting it forced
+		// the user to know both that a service must be named and that
+		// picking any ONE of the six unlocks all of them.
+		//
+		// Service names are resolved FIRST, so a config that happens to use
+		// the same name for a service and a provider keeps its existing
+		// meaning; this fallback only adds a name that used to be an error.
+		if !h.Service.KnowsProvider(req.Service) {
+			writeError(w, http.StatusNotFound, "no oauth2 service or provider named "+req.Service+
+				" (a service needs auth.kind: oauth2; see services: and oauth_providers: in config.yaml)")
+			return
+		}
+		provider = req.Service
 	}
 	start, err := h.Service.StartLogin(req.Namespace, provider, req.RedirectURI)
 	if err != nil {

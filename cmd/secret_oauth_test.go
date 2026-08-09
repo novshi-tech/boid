@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/novshi-tech/boid/internal/client"
+	"github.com/novshi-tech/boid/internal/qrterm"
 )
 
 // setupSecretOAuthLoginCmd points the package-level secretOAuthLoginCmd at
@@ -106,6 +107,39 @@ func TestSecretOAuthLogin_ManualFlow_Success(t *testing.T) {
 	}
 }
 
+// TestSecretOAuthLogin_ManualFlow_PrintsQRCode pins the other side of the
+// rule the loopback test above pins: the manual/OOB flow SHOULD offer a QR
+// code. There is no redirect to intercept — the provider displays a code on
+// screen — so authorizing on a phone and typing that code here works.
+func TestSecretOAuthLogin_ManualFlow_PrintsQRCode(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == "POST" && r.URL.Path == "/api/oauth/login":
+			writeJSONResponse(t, w, oauthLoginStartResponse{
+				SessionID: "sess-1", Flow: "manual", AuthorizeURL: "https://accounts.secure.freee.co.jp/public_api/authorize",
+			})
+		case r.Method == "POST" && r.URL.Path == "/api/oauth/login/sess-1/complete":
+			writeJSONResponse(t, w, map[string]string{"status": "complete"})
+		default:
+			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusInternalServerError)
+		}
+	}))
+	defer srv.Close()
+
+	out := setupSecretOAuthLoginCmd(t, srv, time.Second, "PASTED-CODE\n")
+	if err := runSecretOAuthLogin(secretOAuthLoginCmd, []string{"freee"}); err != nil {
+		t.Fatalf("runSecretOAuthLogin: %v", err)
+	}
+	qr, err := qrterm.Encode("https://accounts.secure.freee.co.jp/public_api/authorize", false)
+	if err != nil {
+		t.Fatalf("qrterm.Encode: %v", err)
+	}
+	if !strings.Contains(out.String(), qr) {
+		t.Error("manual flow omitted the QR code; finishing on another device is valid for this flow")
+	}
+}
+
 func TestSecretOAuthLogin_ManualFlow_EmptyCodeRejected(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/api/oauth/login" {
@@ -167,6 +201,16 @@ func TestSecretOAuthLogin_LoopbackFlow_Success(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "Login complete.") {
 		t.Errorf("output = %q, want it to mention Login complete.", out.String())
+	}
+	// The loopback flow must NOT offer a QR code. The authorize URL
+	// redirects to http://127.0.0.1:<port>, a port only THIS process is
+	// listening on — scanning it sends a phone to its own localhost, where
+	// nothing answers, and the resulting failure looks like the provider
+	// rejecting the login. See printAuthorizeURL's doc comment.
+	if qr, err := qrterm.Encode("https://accounts.google.com/o/oauth2/v2/auth?state=xyz", false); err == nil {
+		if strings.Contains(out.String(), qr) {
+			t.Error("loopback flow printed a QR code; the callback is only reachable on this machine")
+		}
 	}
 }
 

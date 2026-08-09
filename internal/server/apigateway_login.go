@@ -24,6 +24,11 @@ func (a *apiGatewayLoginAdapter) ProviderForService(service string) (string, boo
 	return a.creds.OAuth2ProviderFor(service)
 }
 
+// KnowsProvider implements api.OAuthLoginService.
+func (a *apiGatewayLoginAdapter) KnowsProvider(name string) bool {
+	return a.logins.KnowsProvider(name)
+}
+
 // StartLogin implements api.OAuthLoginService, translating
 // apigateway.LoginStart into api.OAuthLoginStart's own (identically shaped,
 // independently typed) DTO.

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/go-chi/chi/v5"
@@ -15,7 +16,8 @@ import (
 // for exercising OAuthLoginHandler without a real apigateway.LoginManager or
 // secret store.
 type fakeOAuthLoginService struct {
-	providers map[string]string // service -> provider
+	providers      map[string]string // service -> provider
+	knownProviders map[string]bool   // oauth_providers.<name> that exist
 
 	startResult                               *OAuthLoginStart
 	startErr                                  error
@@ -32,6 +34,10 @@ type fakeOAuthLoginService struct {
 func (f *fakeOAuthLoginService) ProviderForService(service string) (string, bool) {
 	p, ok := f.providers[service]
 	return p, ok
+}
+
+func (f *fakeOAuthLoginService) KnowsProvider(name string) bool {
+	return f.knownProviders[name]
 }
 
 func (f *fakeOAuthLoginService) StartLogin(namespace, provider, redirectURI string) (*OAuthLoginStart, error) {
@@ -253,5 +259,91 @@ func TestOAuthLoginHandler_Complete_ErrorReturns400(t *testing.T) {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Errorf("status = %d, want 400", resp.StatusCode)
+	}
+}
+
+// TestOAuthLoginHandler_Start_AcceptsProviderName pins that the login
+// argument may name an oauth_providers.<name> directly, not only a
+// services.<name> entry.
+//
+// The grant this whole flow obtains is stored PER PROVIDER — StartLogin
+// takes a provider and never sees a service (apigateway.LoginManager's own
+// doc comment) — so a service name is nothing but an indirect way to spell
+// one. Requiring it made `boid secret oauth login google` fail for a
+// config with six google-backed services (gmail-api, drive-api, ...) even
+// though "google" is the exact thing being authorized, and the user has to
+// know that picking any ONE of the six is what unlocks all of them.
+func TestOAuthLoginHandler_Start_AcceptsProviderName(t *testing.T) {
+	svc := &fakeOAuthLoginService{
+		providers:      map[string]string{"gmail-api": "google"},
+		knownProviders: map[string]bool{"google": true},
+		startResult:    &OAuthLoginStart{SessionID: "s1", Flow: "loopback", AuthorizeURL: "https://example.com/auth"},
+	}
+	srv := newOAuthLoginTestServer(svc)
+	defer srv.Close()
+
+	body := `{"service":"google","namespace":"default","redirect_uri":"http://127.0.0.1:1/callback"}`
+	resp, err := http.Post(srv.URL+"/api/oauth/login", "application/json", strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	if svc.gotProvider != "google" {
+		t.Errorf("StartLogin provider = %q, want %q", svc.gotProvider, "google")
+	}
+}
+
+// TestOAuthLoginHandler_Start_ServiceNameWinsOverProviderName pins the
+// resolution order: services.<name> is tried first. A config with both a
+// service and a provider called "x" must keep resolving "x" the way it
+// always did — the provider fallback is additive, never an override.
+func TestOAuthLoginHandler_Start_ServiceNameWinsOverProviderName(t *testing.T) {
+	svc := &fakeOAuthLoginService{
+		providers:      map[string]string{"collide": "service-side-provider"},
+		knownProviders: map[string]bool{"collide": true},
+		startResult:    &OAuthLoginStart{SessionID: "s1", Flow: "loopback", AuthorizeURL: "https://example.com/auth"},
+	}
+	srv := newOAuthLoginTestServer(svc)
+	defer srv.Close()
+
+	body := `{"service":"collide","namespace":"default","redirect_uri":"http://127.0.0.1:1/callback"}`
+	resp, err := http.Post(srv.URL+"/api/oauth/login", "application/json", strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if svc.gotProvider != "service-side-provider" {
+		t.Errorf("StartLogin provider = %q, want the service-resolved one", svc.gotProvider)
+	}
+}
+
+// TestOAuthLoginHandler_Start_UnknownNameIs404 pins that a name matching
+// neither a service nor a provider is still rejected — the provider
+// fallback must not turn a typo into an attempted login.
+func TestOAuthLoginHandler_Start_UnknownNameIs404(t *testing.T) {
+	svc := &fakeOAuthLoginService{
+		providers:      map[string]string{"gmail-api": "google"},
+		knownProviders: map[string]bool{"google": true},
+	}
+	srv := newOAuthLoginTestServer(svc)
+	defer srv.Close()
+
+	body := `{"service":"google-api","namespace":"default"}`
+	resp, err := http.Post(srv.URL+"/api/oauth/login", "application/json", strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", resp.StatusCode)
+	}
+	if svc.gotProvider != "" {
+		t.Errorf("StartLogin was called with provider %q; an unknown name must not start a login", svc.gotProvider)
 	}
 }
