@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
+	"os/exec"
 	"slices"
 	"strings"
 	"syscall"
@@ -14,30 +16,135 @@ import (
 	"github.com/novshi-tech/boid/internal/orchestrator"
 )
 
-// fd3Guard installs f at the exact descriptor number the status-pipe helpers
-// hard-code (statusPipeFD), so a test can observe whether those helpers close
-// it. It returns a restore func that puts the previous fd 3 back.
-func fd3Guard(t *testing.T, f *os.File) func() {
-	t.Helper()
-	saved, dupErr := syscall.Dup(statusPipeFD)
-	hadFD3 := dupErr == nil
-	if err := syscall.Dup3(int(f.Fd()), statusPipeFD, 0); err != nil {
-		t.Fatalf("dup3 onto fd %d: %v", statusPipeFD, err)
+// The fd-3 tests below run the code under test in a SUBPROCESS, with a real
+// pipe wired at descriptor 3 through ProcAttr.Files — the exact shape Spawn
+// produces in production (see Spawn's own "Files index = fd number in the
+// child" comment).
+//
+// They used to do it in-process, with a fd3Guard helper that did
+// `syscall.Dup(3)` then `syscall.Dup3(pipe, 3, 0)` to install a pipe at
+// descriptor 3 and put the original back afterwards. That was the cause of
+// the long-standing "Unit tests" CI flake, and of the same crash locally at
+// roughly 1 run in 4:
+//
+//	runtime: epollwait on fd 3 failed with 9
+//	fatal error: runtime: netpoll failed
+//
+// In a Go test binary descriptor 3 is normally the RUNTIME'S OWN epoll
+// instance. Dup3 atomically closes whatever occupies the target descriptor
+// before installing the new one, so the guard destroyed the scheduler's
+// netpoll descriptor for the whole window until it restored it. Any
+// goroutine scheduling or timer tick inside that window called epollwait on
+// a descriptor that was now a pipe (EINVAL, errno 22) or, after
+// CloseStartupFD3 ran, closed (EBADF, errno 9) — both errnos were observed
+// in CI. Nothing about the production code was wrong; the test's fd
+// manipulation was.
+//
+// A subprocess has no such problem: the child gets descriptor 3 wired by the
+// parent before it starts, exactly like a Spawn'd daemon, and its runtime
+// puts its epoll instance somewhere else.
+
+// fd3HelperEnvKey selects which helper the re-executed test binary should
+// run. Empty (the normal case) makes TestFD3HelperProcess skip itself.
+const fd3HelperEnvKey = "BOID_TEST_FD3_MODE"
+
+// Exit codes the helper reports fd 3's final state with. Deliberately not
+// 0/1, so an ordinary test-binary success or failure cannot be mistaken for
+// a verdict.
+const (
+	fd3ExitStillOpen = 3
+	fd3ExitClosed    = 4
+)
+
+// TestFD3HelperProcess is not a test. It is the child half of the fd-3 tests
+// below: re-executed with fd3HelperEnvKey set and a pipe on descriptor 3, it
+// runs one status-pipe helper and reports whether descriptor 3 survived via
+// its exit code.
+func TestFD3HelperProcess(t *testing.T) {
+	mode := os.Getenv(fd3HelperEnvKey)
+	if mode == "" {
+		t.Skip("helper process; only runs when re-executed by an fd-3 test")
 	}
-	return func() {
-		if hadFD3 {
-			_ = syscall.Dup3(saved, statusPipeFD, 0)
-			_ = syscall.Close(saved)
-			return
-		}
-		_ = syscall.Close(statusPipeFD)
+
+	switch mode {
+	case "close":
+		CloseStartupFD3()
+	case "write":
+		WriteStartupStatusOnFD3(errors.New("boom"))
+	default:
+		fmt.Fprintf(os.Stderr, "unknown %s=%q\n", fd3HelperEnvKey, mode)
+		os.Exit(1)
 	}
+
+	var st syscall.Stat_t
+	if syscall.Fstat(statusPipeFD, &st) == nil {
+		os.Exit(fd3ExitStillOpen)
+	}
+	os.Exit(fd3ExitClosed)
 }
 
-// fd3Open reports whether statusPipeFD is still a valid descriptor.
-func fd3Open() bool {
-	var st syscall.Stat_t
-	return syscall.Fstat(statusPipeFD, &st) == nil
+// runFD3Helper re-executes this test binary running only
+// TestFD3HelperProcess, with a fresh pipe on descriptor 3.
+//
+// It returns whether the child left descriptor 3 open, plus whatever the
+// child wrote into the pipe. spawnEnvSet mirrors what Spawn declares: true
+// means "fd 3 really is the status pipe".
+func runFD3Helper(t *testing.T, mode string, spawnEnvSet bool) (fd3StillOpen bool, written []byte) {
+	t.Helper()
+
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("pipe: %v", err)
+	}
+	defer r.Close()
+
+	cmd := exec.Command(os.Args[0], "-test.run=^TestFD3HelperProcess$")
+	// ExtraFiles[0] is the child's descriptor 3 — the same position
+	// Spawn gives statusW in its ProcAttr.Files.
+	cmd.ExtraFiles = []*os.File{w}
+	env := append(os.Environ(), fd3HelperEnvKey+"="+mode)
+	if spawnEnvSet {
+		env = append(env, statusPipeEnvKey+"=1")
+	} else {
+		// os.Environ() may carry it in from an outer run; make the
+		// "not launched by Spawn" case unambiguous.
+		env = append(env, statusPipeEnvKey+"=")
+	}
+	cmd.Env = env
+
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Start(); err != nil {
+		w.Close()
+		t.Fatalf("start helper: %v", err)
+	}
+	// Drop the parent's copy so reading r sees EOF once the child is done.
+	w.Close()
+
+	payload, readErr := io.ReadAll(r)
+	if readErr != nil {
+		t.Fatalf("read status pipe: %v", readErr)
+	}
+
+	err = cmd.Wait()
+	code := 0
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) {
+		code = exitErr.ExitCode()
+	} else if err != nil {
+		t.Fatalf("wait helper: %v (stderr: %s)", err, stderr.String())
+	}
+
+	switch code {
+	case fd3ExitStillOpen:
+		return true, payload
+	case fd3ExitClosed:
+		return false, payload
+	default:
+		t.Fatalf("helper exited %d, want %d or %d (stderr: %s)",
+			code, fd3ExitStillOpen, fd3ExitClosed, stderr.String())
+		return false, nil
+	}
 }
 
 // TestCloseStartupFD3_WithoutSpawnEnv_LeavesFD3Open pins the fix for the
@@ -49,23 +156,9 @@ func fd3Open() bool {
 // startup succeeded — every later query failed with SQLITE_IOERR_FSTAT /
 // SQLITE_CORRUPT against a descriptor that was already EBADF.
 func TestCloseStartupFD3_WithoutSpawnEnv_LeavesFD3Open(t *testing.T) {
-	t.Setenv(statusPipeEnvKey, "")
-	os.Unsetenv(statusPipeEnvKey)
-
-	r, w, err := os.Pipe()
-	if err != nil {
-		t.Fatalf("pipe: %v", err)
-	}
-	defer r.Close()
-	defer w.Close()
-
-	restore := fd3Guard(t, w)
-	defer restore()
-
-	CloseStartupFD3()
-
-	if !fd3Open() {
-		t.Fatal("CloseStartupFD3 closed fd 3 although this process was not launched by Spawn; an unrelated file (e.g. the SQLite DB) landing on fd 3 would be destroyed")
+	stillOpen, _ := runFD3Helper(t, "close", false)
+	if !stillOpen {
+		t.Fatal("CloseStartupFD3 closed fd 3 although the process was not launched by Spawn; an unrelated file (e.g. the SQLite DB) landing on fd 3 would be destroyed")
 	}
 }
 
@@ -73,22 +166,12 @@ func TestCloseStartupFD3_WithoutSpawnEnv_LeavesFD3Open(t *testing.T) {
 // intact for the Spawn path: the parent's read-end must observe EOF, which
 // only happens if the child really closes its write-end.
 func TestCloseStartupFD3_WithSpawnEnv_ClosesFD3(t *testing.T) {
-	t.Setenv(statusPipeEnvKey, "1")
-
-	r, w, err := os.Pipe()
-	if err != nil {
-		t.Fatalf("pipe: %v", err)
-	}
-	defer r.Close()
-	defer w.Close()
-
-	restore := fd3Guard(t, w)
-	defer restore()
-
-	CloseStartupFD3()
-
-	if fd3Open() {
+	stillOpen, payload := runFD3Helper(t, "close", true)
+	if stillOpen {
 		t.Fatal("CloseStartupFD3 left fd 3 open under the Spawn env; the parent would block instead of seeing EOF")
+	}
+	if len(payload) != 0 {
+		t.Errorf("status pipe carried %q; a plain close must signal success as EOF, with no payload", payload)
 	}
 }
 
@@ -96,23 +179,31 @@ func TestCloseStartupFD3_WithSpawnEnv_ClosesFD3(t *testing.T) {
 // failure-path twin of the above: the error reporter must not write into —
 // or close — a descriptor that is not the status pipe.
 func TestWriteStartupStatusOnFD3_WithoutSpawnEnv_LeavesFD3Open(t *testing.T) {
-	t.Setenv(statusPipeEnvKey, "")
-	os.Unsetenv(statusPipeEnvKey)
-
-	r, w, err := os.Pipe()
-	if err != nil {
-		t.Fatalf("pipe: %v", err)
+	stillOpen, payload := runFD3Helper(t, "write", false)
+	if !stillOpen {
+		t.Fatal("WriteStartupStatusOnFD3 closed fd 3 although the process was not launched by Spawn")
 	}
-	defer r.Close()
-	defer w.Close()
+	if len(payload) != 0 {
+		t.Errorf("WriteStartupStatusOnFD3 wrote %q into a descriptor that is not the status pipe", payload)
+	}
+}
 
-	restore := fd3Guard(t, w)
-	defer restore()
-
-	WriteStartupStatusOnFD3(errors.New("boom"))
-
-	if !fd3Open() {
-		t.Fatal("WriteStartupStatusOnFD3 closed fd 3 although this process was not launched by Spawn")
+// TestWriteStartupStatusOnFD3_WithSpawnEnv_WritesPayload is new with the
+// subprocess rewrite: the in-process version could not assert this, because
+// reading the pipe needed the child to have exited first. It closes the loop
+// on the happy path — under the Spawn env the error really does reach the
+// parent as a decodable StartupStatus.
+func TestWriteStartupStatusOnFD3_WithSpawnEnv_WritesPayload(t *testing.T) {
+	stillOpen, payload := runFD3Helper(t, "write", true)
+	if stillOpen {
+		t.Error("WriteStartupStatusOnFD3 left fd 3 open; the parent would block waiting for EOF")
+	}
+	status, err := ReadStartupStatus(bytes.NewReader(payload))
+	if err != nil {
+		t.Fatalf("ReadStartupStatus(%q): %v", payload, err)
+	}
+	if status.Kind != StartupKindOther || !strings.Contains(status.Message, "boom") {
+		t.Errorf("status = %+v, want Kind=%s carrying \"boom\"", status, StartupKindOther)
 	}
 }
 
