@@ -1,3 +1,5 @@
+//go:build linux
+
 package cmd
 
 // cmd/install_skills.go implements `boid install-skills`: materializes the

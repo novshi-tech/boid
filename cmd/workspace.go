@@ -14,7 +14,7 @@ import (
 	"strings"
 	"text/tabwriter"
 
-	"github.com/novshi-tech/boid/internal/api"
+	"github.com/novshi-tech/boid/internal/apiwire"
 	"github.com/novshi-tech/boid/internal/client"
 	"github.com/novshi-tech/boid/internal/dockerres"
 	"github.com/novshi-tech/boid/internal/humanize"
@@ -256,8 +256,8 @@ type workspaceShowView struct {
 	// (docs/plans/home-workspace-volume.md Phase 4 PR5, engine-backed since
 	// 論点 a-2 / PR7 of docs/plans/workspace-home-volume-persistence.md),
 	// mirrored straight from the GET /api/workspaces/{slug} response.
-	Home     *api.WorkspaceHomeSize  `json:"home,omitempty"`
-	Projects []*orchestrator.Project `json:"projects"`
+	Home     *apiwire.WorkspaceHomeSize `json:"home,omitempty"`
+	Projects []*orchestrator.Project    `json:"projects"`
 }
 
 // runWorkspaceShow shows a workspace's definition (GET /api/workspaces/{slug})
@@ -277,7 +277,7 @@ func runWorkspaceShow(cmd *cobra.Command, args []string) error {
 
 	c := client.FromContext(cmd.Context())
 
-	var detail api.WorkspaceDetail
+	var detail apiwire.WorkspaceDetail
 	if err := c.Do("GET", "/api/workspaces/"+slug, nil, &detail); err != nil {
 		return fmt.Errorf("show workspace: %w", err)
 	}
@@ -379,7 +379,7 @@ func runWorkspaceCreate(cmd *cobra.Command, args []string) error {
 	}
 
 	c := client.FromContext(cmd.Context())
-	var detail api.WorkspaceDetail
+	var detail apiwire.WorkspaceDetail
 	if err := c.DoWithContentType("POST", "/api/workspaces", "application/yaml", body, &detail); err != nil {
 		return fmt.Errorf("create workspace: %w", err)
 	}
@@ -458,7 +458,7 @@ func runWorkspaceEdit(cmd *cobra.Command, args []string) error {
 
 	var ifMatch string
 	if !workspaceEditForce {
-		var current api.WorkspaceDetail
+		var current apiwire.WorkspaceDetail
 		if err := c.Do("GET", "/api/workspaces/"+slug, nil, &current); err != nil {
 			return fmt.Errorf("fetch current revision: %w", err)
 		}
@@ -477,7 +477,7 @@ func runWorkspaceEdit(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("edit workspace: %s", formatWorkspaceAPIError(statusCode, body))
 	}
 
-	var detail api.WorkspaceDetail
+	var detail apiwire.WorkspaceDetail
 	if err := json.Unmarshal(body, &detail); err != nil {
 		return fmt.Errorf("decode response: %w", err)
 	}
@@ -641,7 +641,7 @@ var localWorkspaceYAMLReadFile = os.ReadFile
 // decodes — no separate loose parse is needed at all) from that single
 // snapshot makes both failure modes impossible.
 func ensureWorkspaceExistsForAssign(c *client.Client, slug string, out io.Writer) error {
-	if err := c.Do("GET", "/api/workspaces/"+slug, nil, &api.WorkspaceDetail{}); err == nil {
+	if err := c.Do("GET", "/api/workspaces/"+slug, nil, &apiwire.WorkspaceDetail{}); err == nil {
 		return nil // already has a DB row.
 	}
 
@@ -820,7 +820,7 @@ func postWorkspaceCreateBestEffort(c *client.Client, slug string, metaYAML []byt
 		fmt.Fprintf(out, "note: build auto-create request for workspace %q failed: %v\n", slug, err)
 		return
 	}
-	if err := c.DoWithContentType("POST", "/api/workspaces", "application/yaml", body, &api.WorkspaceDetail{}); err != nil {
+	if err := c.DoWithContentType("POST", "/api/workspaces", "application/yaml", body, &apiwire.WorkspaceDetail{}); err != nil {
 		fmt.Fprintf(out, "note: auto-create workspace %q %s failed: %v\n", slug, sourceDescription, err)
 		return
 	}
@@ -846,7 +846,7 @@ func postWorkspaceCreateBestEffort(c *client.Client, slug string, metaYAML []byt
 // guidance, so the actual get-or-create happens later, inside a real
 // `project add` invocation, through this same function.
 func ensureWorkspaceExistsGetOrCreate(c *client.Client, slug string, out io.Writer) error {
-	if err := c.Do("GET", "/api/workspaces/"+slug, nil, &api.WorkspaceDetail{}); err == nil {
+	if err := c.Do("GET", "/api/workspaces/"+slug, nil, &apiwire.WorkspaceDetail{}); err == nil {
 		return nil // already exists.
 	}
 	postWorkspaceCreateBestEffort(c, slug, nil, out, "(empty, get-or-create)")
@@ -940,7 +940,7 @@ func runWorkspaceRemove(cmd *cobra.Command, args []string) error {
 	out := cmd.OutOrStdout()
 
 	if !workspaceRemoveForce {
-		var detail api.WorkspaceDetail
+		var detail apiwire.WorkspaceDetail
 		if err := c.Do("GET", "/api/workspaces/"+slug, nil, &detail); err != nil {
 			return fmt.Errorf("fetch workspace before remove: %w", err)
 		}
@@ -958,7 +958,7 @@ func runWorkspaceRemove(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	var resp api.WorkspaceRemoveResponse
+	var resp apiwire.WorkspaceRemoveResponse
 	if err := c.Do("DELETE", "/api/workspaces/"+slug, nil, &resp); err != nil {
 		return fmt.Errorf("remove workspace: %w", err)
 	}
@@ -1017,7 +1017,7 @@ func runWorkspaceRemove(cmd *cobra.Command, args []string) error {
 // (論点 a-2 D7 — the name is sanitized and not invertible, the label is not),
 // so a label filter on it finds the workspace's home volume without the CLI
 // needing to know the daemon's install id.
-func formatWorkspaceRemoveResult(slug string, resp api.WorkspaceRemoveResponse) string {
+func formatWorkspaceRemoveResult(slug string, resp apiwire.WorkspaceRemoveResponse) string {
 	return formatWorkspaceRemoveHomeResult(slug, resp) + formatWorkspaceRemoveInitScriptResult(resp)
 }
 
@@ -1038,7 +1038,7 @@ func formatWorkspaceRemoveResult(slug string, resp api.WorkspaceRemoveResponse) 
 // cleanup: `boid workspace unset-init-script` 404s on the missing row. The
 // daemon puts its own path in the error, and the message says what the
 // leftover will do rather than only that a file could not be removed.
-func formatWorkspaceRemoveInitScriptResult(resp api.WorkspaceRemoveResponse) string {
+func formatWorkspaceRemoveInitScriptResult(resp apiwire.WorkspaceRemoveResponse) string {
 	if resp.InitScriptDeleteError == "" {
 		return ""
 	}
@@ -1050,7 +1050,7 @@ func formatWorkspaceRemoveInitScriptResult(resp api.WorkspaceRemoveResponse) str
 }
 
 // formatWorkspaceRemoveHomeResult renders the HOME volume half of the summary.
-func formatWorkspaceRemoveHomeResult(slug string, resp api.WorkspaceRemoveResponse) string {
+func formatWorkspaceRemoveHomeResult(slug string, resp apiwire.WorkspaceRemoveResponse) string {
 	where := formatWorkspaceHomeVolumeRef(resp.HomeVolume)
 	switch {
 	// FIRST, ahead of every success case [codex review round 2, Blocker]. An
@@ -1189,7 +1189,7 @@ func formatStringSlice(ss []string) string {
 	return strings.Join(ss, ", ")
 }
 
-// formatWorkspaceHomeSize renders a *api.WorkspaceHomeSize as a single
+// formatWorkspaceHomeSize renders a *apiwire.WorkspaceHomeSize as a single
 // human-readable line for `boid workspace show` (docs/plans/
 // home-workspace-volume.md Phase 4 PR5's three display cases): a normal
 // size + the home's docker volume name, "0 B (未作成: ...)" for a workspace
@@ -1200,7 +1200,7 @@ func formatStringSlice(ss []string) string {
 // The identifier switched from a host directory path to the volume name in
 // PR7 (論点 a-2, D4); formatWorkspaceHomeVolumeRef explains what an empty one
 // means and why it is rendered as an omission rather than as "()".
-func formatWorkspaceHomeSize(h *api.WorkspaceHomeSize) string {
+func formatWorkspaceHomeSize(h *apiwire.WorkspaceHomeSize) string {
 	switch {
 	case h.SizeError != "":
 		return fmt.Sprintf("home size: ?%s", formatWorkspaceHomeVolumeRef(h.Volume))

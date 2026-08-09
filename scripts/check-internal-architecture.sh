@@ -10,6 +10,7 @@ current_allowed=(
   adapters
   api
   apigateway
+  apiwire
   atomicfile
   client
   config
@@ -41,6 +42,7 @@ target_allowed=(
   adapters
   api
   apigateway
+  apiwire
   atomicfile
   client
   config
@@ -273,10 +275,18 @@ check_forbidden_imports() {
         #     関数/挙動をローカルで呼んではならない。
         # import グラフでは「型 import」と「振る舞い呼び出し」を区別できないため、
         # ここでは振る舞いのみを持つ backend 層 (server/db/dispatcher/sandbox) の
-        # import を hard ban する (これらは client が要する型を持たない)。api /
+        # import を hard ban する (これらは client が要する型を持たない)。
         # orchestrator 内の振る舞い関数の呼び出し禁止は識別子単位の静的解析が要り、
         # 本スクリプトの粒度では担保できない (レビュー/規約で補完)。
-        for forbidden in server db dispatcher sandbox; do
+        #
+        # api も hard ban に追加した (docs/plans/windows-client-build.md)。
+        # 「型の共有は許可」という上の原則自体は変わらないが、共有先が
+        # internal/api から internal/apiwire に移った — api は daemon の
+        # handler パッケージなので、DTO 1 個のために import すると
+        # dispatcher / db / sandbox / skills / web/templates までクライアントの
+        # コンパイル経路に載り、GOOS=windows / darwin のビルドが壊れる。
+        # これが実際に起きていた状態であり、この 1 行がその再発ゲート。
+        for forbidden in server db dispatcher sandbox api; do
           if import_present "$forbidden" "$imports"; then
             echo "forbidden import: internal/client -> internal/$forbidden" >&2
             failed=1

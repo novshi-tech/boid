@@ -8,8 +8,8 @@ import (
 	"text/tabwriter"
 	"time"
 
-	"github.com/novshi-tech/boid/internal/api"
 	webauth "github.com/novshi-tech/boid/internal/api/auth"
+	"github.com/novshi-tech/boid/internal/apiwire"
 	"github.com/novshi-tech/boid/internal/client"
 	"github.com/novshi-tech/boid/internal/qrterm"
 	"github.com/spf13/cobra"
@@ -213,9 +213,9 @@ func runWebSetAddr(cmd *cobra.Command, args []string) error {
 // this never needs to see config.yaml's full document at all.
 func webConfigMutateSet(cmd *cobra.Command, key, value string) error {
 	c := client.FromContext(cmd.Context())
-	var result api.ConfigMutateResult
-	if err := c.Do(http.MethodPost, "/api/config/mutate", api.ConfigMutateRequest{
-		Op:    api.ConfigMutateSet,
+	var result apiwire.ConfigMutateResult
+	if err := c.Do(http.MethodPost, "/api/config/mutate", apiwire.ConfigMutateRequest{
+		Op:    apiwire.ConfigMutateSet,
 		Key:   key,
 		Value: []string{value},
 	}, &result); err != nil {

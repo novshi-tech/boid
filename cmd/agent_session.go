@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/novshi-tech/boid/internal/api"
+	"github.com/novshi-tech/boid/internal/apiwire"
 	"github.com/novshi-tech/boid/internal/client"
 	"github.com/spf13/cobra"
 )
@@ -92,7 +92,7 @@ func runAgentSession(ctx context.Context, harness string, flags *agentSessionFla
 	}
 	projectID := project.ID
 
-	req := api.StartSessionRequest{
+	req := apiwire.StartSessionRequest{
 		ProjectID:   projectID,
 		HarnessType: harness,
 		Instruction: flags.instruction,
@@ -100,7 +100,7 @@ func runAgentSession(ctx context.Context, harness string, flags *agentSessionFla
 		Model:       flags.model,
 		DisplayName: flags.displayName,
 	}
-	var result api.StartSessionResult
+	var result apiwire.StartSessionResult
 	if err := c.Do("POST", fmt.Sprintf("/api/projects/%s/sessions", projectID), req, &result); err != nil {
 		return fmt.Errorf("start %s session: %w", harness, err)
 	}

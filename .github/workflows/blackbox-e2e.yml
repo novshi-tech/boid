@@ -45,6 +45,27 @@ jobs:
       - name: go vet
         run: go vet ./...
 
+      - name: Cross-build the portable CLI client (windows/darwin)
+        # docs/plans/windows-client-build.md: boid の daemon は Linux 専用の
+        # ままだが、CLI クライアント経路 (scope=remote コマンド + login) は
+        # 移植可能に保つ。Linux 上の go build ./... はこの不変条件を一切
+        # 検査しないので、ここが唯一のゲートになる。
+        #
+        # 壊れ方はいつも同じ: クライアント側のファイルが daemon 側の
+        # パッケージ (典型は DTO 目当ての internal/api) を掴み、その裏に
+        # dispatcher / db / sandbox / skills が丸ごとぶら下がる。上の
+        # architecture check が import グラフで、これが実コンパイルで捕まえる。
+        #
+        # go vet ではなく go build なのは、vet が必ずテストファイルまで
+        # コンパイルするため。cmd のテストは testutil (daemon を実際に立てる
+        # ヘルパ = internal/db 依存) を使うので Linux でしかビルドできず、
+        # テストが Linux でしか走らない以上それは正しい。ここで検査したいのは
+        # 出荷されるバイナリの依存グラフであって、テストの依存ではない。
+        run: |
+          GOOS=windows GOARCH=amd64 go build -o /dev/null .
+          GOOS=darwin GOARCH=arm64 go build -o /dev/null .
+          GOOS=windows GOARCH=amd64 go vet ./internal/client/... ./internal/apiwire/... ./internal/profiles/...
+
       - name: Check internal architecture (forbidden imports)
         # ドキュメント上の規律だった禁止 import グラフ検査を CI enforcement に接続。
         run: bash scripts/check-internal-architecture.sh

@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/novshi-tech/boid/internal/api"
+	"github.com/novshi-tech/boid/internal/apiwire"
 	"github.com/novshi-tech/boid/internal/orchestrator"
 )
 
@@ -26,7 +26,7 @@ func TestApplyAction(t *testing.T) {
 	wantTaskID := "task-123"
 	wantType := "start"
 
-	app := api.ActionApplication{
+	app := apiwire.ActionApplication{
 		Task:   &orchestrator.Task{ID: wantTaskID, Status: orchestrator.TaskStatusExecuting},
 		Action: &orchestrator.Action{Type: wantType},
 	}
@@ -40,7 +40,7 @@ func TestApplyAction(t *testing.T) {
 		if req.Method != http.MethodPost {
 			t.Errorf("method: want POST, got %s", req.Method)
 		}
-		var body api.ApplyActionRequest
+		var body apiwire.ApplyActionRequest
 		json.NewDecoder(req.Body).Decode(&body)
 		if body.Type != wantType {
 			t.Errorf("action type: want %q, got %q", wantType, body.Type)
@@ -53,7 +53,7 @@ func TestApplyAction(t *testing.T) {
 	})
 
 	c := newTestClient(transport)
-	result, err := c.ApplyAction(wantTaskID, api.ApplyActionRequest{Type: wantType})
+	result, err := c.ApplyAction(wantTaskID, apiwire.ApplyActionRequest{Type: wantType})
 	if err != nil {
 		t.Fatalf("ApplyAction error: %v", err)
 	}
@@ -79,7 +79,7 @@ func TestApplyAction_ServerError(t *testing.T) {
 	})
 
 	c := newTestClient(transport)
-	_, err := c.ApplyAction("no-such", api.ApplyActionRequest{Type: "start"})
+	_, err := c.ApplyAction("no-such", apiwire.ApplyActionRequest{Type: "start"})
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -185,7 +185,7 @@ func TestAnswerTask(t *testing.T) {
 		if req.Method != http.MethodPost {
 			t.Errorf("method: want POST, got %s", req.Method)
 		}
-		var body api.AnswerTaskRequest
+		var body apiwire.AnswerTaskRequest
 		json.NewDecoder(req.Body).Decode(&body)
 		if body.QuestionID != wantQuestionID {
 			t.Errorf("question_id: want %q, got %q", wantQuestionID, body.QuestionID)

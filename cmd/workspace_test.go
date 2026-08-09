@@ -11,7 +11,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/novshi-tech/boid/internal/api"
+	"github.com/novshi-tech/boid/internal/apiwire"
 	"github.com/novshi-tech/boid/internal/client"
 	"github.com/novshi-tech/boid/internal/dockerres"
 	"github.com/novshi-tech/boid/internal/orchestrator"
@@ -273,7 +273,7 @@ func TestRunWorkspaceCreateShowEditRemove_FullCycle(t *testing.T) {
 		t.Errorf("edit output = %q", editOut.String())
 	}
 
-	var detail api.WorkspaceDetail
+	var detail apiwire.WorkspaceDetail
 	if err := ts.Client.Do("GET", "/api/workspaces/team-a", nil, &detail); err != nil {
 		t.Fatalf("verify edit: %v", err)
 	}
@@ -298,7 +298,7 @@ func TestRunWorkspaceCreateShowEditRemove_FullCycle(t *testing.T) {
 		t.Fatalf("runWorkspaceRemove: %v", err)
 	}
 
-	if err := ts.Client.Do("GET", "/api/workspaces/team-a", nil, &api.WorkspaceDetail{}); err == nil {
+	if err := ts.Client.Do("GET", "/api/workspaces/team-a", nil, &apiwire.WorkspaceDetail{}); err == nil {
 		t.Fatal("expected team-a to be gone after remove")
 	}
 }
@@ -323,7 +323,7 @@ func TestRunWorkspaceAssign_AutoCreatesFromLocalYAML(t *testing.T) {
 	}
 
 	// No DB row yet.
-	if err := ts.Client.Do("GET", "/api/workspaces/legacy-ws", nil, &api.WorkspaceDetail{}); err == nil {
+	if err := ts.Client.Do("GET", "/api/workspaces/legacy-ws", nil, &apiwire.WorkspaceDetail{}); err == nil {
 		t.Fatal("expected legacy-ws to have no DB row before assign")
 	}
 
@@ -349,7 +349,7 @@ func TestRunWorkspaceAssign_AutoCreatesFromLocalYAML(t *testing.T) {
 	}
 
 	// The DB row now exists, carrying the legacy yaml's content.
-	var detail api.WorkspaceDetail
+	var detail apiwire.WorkspaceDetail
 	if err := ts.Client.Do("GET", "/api/workspaces/legacy-ws", nil, &detail); err != nil {
 		t.Fatalf("expected legacy-ws to now have a DB row: %v", err)
 	}
@@ -692,7 +692,7 @@ func TestRunWorkspaceAssign_AutoCreate_FailsOnUnresolvedKit(t *testing.T) {
 	}
 
 	// The workspace must not have been created at all.
-	if err := c.Do("GET", "/api/workspaces/ghost-ws", nil, &api.WorkspaceDetail{}); err == nil {
+	if err := c.Do("GET", "/api/workspaces/ghost-ws", nil, &apiwire.WorkspaceDetail{}); err == nil {
 		t.Error("expected ghost-ws to have no DB row after the unresolved-kit assign failure")
 	}
 }
@@ -782,7 +782,7 @@ func TestRunWorkspaceAssign_AutoCreate_HonorsCustomKitsDir(t *testing.T) {
 		t.Fatalf("runWorkspaceAssign: %v (want success — the kit should resolve via the daemon's actual --kits-dir)", err)
 	}
 
-	var detail api.WorkspaceDetail
+	var detail apiwire.WorkspaceDetail
 	if err := c.Do("GET", "/api/workspaces/custom-kits-ws", nil, &detail); err != nil {
 		t.Fatalf("verify auto-created workspace: %v", err)
 	}
@@ -903,7 +903,7 @@ func TestRunWorkspaceExport_OutputFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("buildWorkspaceCreateBody: %v", err)
 	}
-	if err := ts.Client.DoWithContentType("POST", "/api/workspaces", "application/yaml", createBody, &api.WorkspaceDetail{}); err != nil {
+	if err := ts.Client.DoWithContentType("POST", "/api/workspaces", "application/yaml", createBody, &apiwire.WorkspaceDetail{}); err != nil {
 		t.Fatalf("seed create: %v", err)
 	}
 
@@ -1545,7 +1545,7 @@ func TestRunWorkspaceRemove_PromptsAndReportsHomeOutcome(t *testing.T) {
 	if promptCalls != 1 {
 		t.Errorf("prompt called %d times, want 1 (--force not set)", promptCalls)
 	}
-	if err := ts.Client.Do("GET", "/api/workspaces/team-c", nil, &api.WorkspaceDetail{}); err == nil {
+	if err := ts.Client.Do("GET", "/api/workspaces/team-c", nil, &apiwire.WorkspaceDetail{}); err == nil {
 		t.Error("expected team-c to be gone after remove")
 	}
 	// The engine is unreachable here, so the home deletion fails — which must
@@ -1580,7 +1580,7 @@ func TestRunWorkspaceRemove_PromptDeclined_AbortsWithoutDeleting(t *testing.T) {
 	if !strings.Contains(out.String(), "aborted") {
 		t.Errorf("expected an abort message, got: %s", out.String())
 	}
-	if err := ts.Client.Do("GET", "/api/workspaces/team-d", nil, &api.WorkspaceDetail{}); err != nil {
+	if err := ts.Client.Do("GET", "/api/workspaces/team-d", nil, &apiwire.WorkspaceDetail{}); err != nil {
 		t.Errorf("expected team-d to still exist after a declined prompt: %v", err)
 	}
 }
@@ -1610,7 +1610,7 @@ func TestRunWorkspaceRemove_ForceSkipsPrompt(t *testing.T) {
 	if promptCalls != 0 {
 		t.Errorf("prompt called %d times, want 0 (--force must skip it)", promptCalls)
 	}
-	if err := ts.Client.Do("GET", "/api/workspaces/team-e", nil, &api.WorkspaceDetail{}); err == nil {
+	if err := ts.Client.Do("GET", "/api/workspaces/team-e", nil, &apiwire.WorkspaceDetail{}); err == nil {
 		t.Error("expected team-e to be gone after a --force remove")
 	}
 }
@@ -1644,7 +1644,7 @@ func TestRunWorkspaceRemove_NoHome_StillPrompts(t *testing.T) {
 	if promptCalls != 1 {
 		t.Errorf("prompt called %d times, want 1 (prompt is now unconditional, even with no home)", promptCalls)
 	}
-	if err := ts.Client.Do("GET", "/api/workspaces/team-f", nil, &api.WorkspaceDetail{}); err == nil {
+	if err := ts.Client.Do("GET", "/api/workspaces/team-f", nil, &apiwire.WorkspaceDetail{}); err == nil {
 		t.Error("expected team-f to be gone after remove (prompt was approved)")
 	}
 }
@@ -1672,7 +1672,7 @@ func TestRunWorkspaceRemove_NoHome_PromptDeclined_AbortsWithoutRemoving(t *testi
 	if !strings.Contains(out.String(), "aborted") {
 		t.Errorf("expected an abort message, got: %s", out.String())
 	}
-	if err := ts.Client.Do("GET", "/api/workspaces/team-g", nil, &api.WorkspaceDetail{}); err != nil {
+	if err := ts.Client.Do("GET", "/api/workspaces/team-g", nil, &apiwire.WorkspaceDetail{}); err != nil {
 		t.Errorf("expected team-g to still exist after a declined prompt: %v", err)
 	}
 }
@@ -1705,35 +1705,35 @@ func TestRunWorkspaceRemove_NoHome_PromptDeclined_AbortsWithoutRemoving(t *testi
 // defect: a CLI/daemon skew is reachable (Phase 3 made the CLI able to drive a
 // remote daemon), and this repo has no API version handshake to catch it.
 //
-// Exercised as a pure unit test against api.WorkspaceRemoveResponse values
+// Exercised as a pure unit test against apiwire.WorkspaceRemoveResponse values
 // rather than a live daemon, since a real failure would trip several fields
 // together and could not isolate each case (mirrors internal/api's
 // TestDeleteWorkspaceHome_SizeErrorDoesNotBlockDeletion for the same reason).
 func TestFormatWorkspaceRemoveResult_EveryOutcome(t *testing.T) {
 	cases := []struct {
 		name string
-		resp api.WorkspaceRemoveResponse
+		resp apiwire.WorkspaceRemoveResponse
 		want []string // substrings that must all appear.
 		none bool     // true: expect an empty string (nothing to report).
 	}{
 		{
 			name: "success",
-			resp: api.WorkspaceRemoveResponse{HomeVolume: "boid-ws-home-abcd1234-team-a", HomeBytes: 1000, HomeDeleted: true},
+			resp: apiwire.WorkspaceRemoveResponse{HomeVolume: "boid-ws-home-abcd1234-team-a", HomeBytes: 1000, HomeDeleted: true},
 			want: []string{"home volume deleted", "boid-ws-home-abcd1234-team-a", "1.00 KB"},
 		},
 		{
 			name: "size error only, delete still succeeded",
-			resp: api.WorkspaceRemoveResponse{HomeVolume: "boid-ws-home-abcd1234-team-b", HomeDeleted: true, HomeSizeError: "engine busy"},
+			resp: apiwire.WorkspaceRemoveResponse{HomeVolume: "boid-ws-home-abcd1234-team-b", HomeDeleted: true, HomeSizeError: "engine busy"},
 			want: []string{"home volume deleted", "boid-ws-home-abcd1234-team-b", "size unknown", "engine busy"},
 		},
 		{
 			name: "delete error only",
-			resp: api.WorkspaceRemoveResponse{HomeVolume: "boid-ws-home-abcd1234-team-d", HomeDeleted: false, HomeDeleteError: "volume is being used by the following container(s): abc123"},
+			resp: apiwire.WorkspaceRemoveResponse{HomeVolume: "boid-ws-home-abcd1234-team-d", HomeDeleted: false, HomeDeleteError: "volume is being used by the following container(s): abc123"},
 			want: []string{"warning", "boid-ws-home-abcd1234-team-d", "delete failed", "being used"},
 		},
 		{
 			name: "both size and delete errors",
-			resp: api.WorkspaceRemoveResponse{HomeVolume: "boid-ws-home-abcd1234-team-e", HomeDeleted: false, HomeSizeError: "engine busy", HomeDeleteError: "409 conflict"},
+			resp: apiwire.WorkspaceRemoveResponse{HomeVolume: "boid-ws-home-abcd1234-team-e", HomeDeleted: false, HomeSizeError: "engine busy", HomeDeleteError: "409 conflict"},
 			want: []string{"warning", "boid-ws-home-abcd1234-team-e", "size unknown", "delete failed", "engine busy", "409 conflict"},
 		},
 		{
@@ -1741,7 +1741,7 @@ func TestFormatWorkspaceRemoveResult_EveryOutcome(t *testing.T) {
 			// into has no home volume, and saying so on every remove would
 			// train operators to ignore the line that matters.
 			name: "no home volume existed, and the daemon says so by naming the one it looked for",
-			resp: api.WorkspaceRemoveResponse{HomeVolume: "boid-ws-home-abcd1234-team-f"},
+			resp: apiwire.WorkspaceRemoveResponse{HomeVolume: "boid-ws-home-abcd1234-team-f"},
 			none: true,
 		},
 		{
@@ -1750,7 +1750,7 @@ func TestFormatWorkspaceRemoveResult_EveryOutcome(t *testing.T) {
 			// no error, and describes it with a `home_path` key this CLI does
 			// not read. The volume survives, credentials and all.
 			name: "daemon reported no volume identifier at all (version skew, or no engine wired)",
-			resp: api.WorkspaceRemoveResponse{Status: "removed"},
+			resp: apiwire.WorkspaceRemoveResponse{Status: "removed"},
 			want: []string{
 				"could not confirm",
 				"docker volume ls",
@@ -1764,7 +1764,7 @@ func TestFormatWorkspaceRemoveResult_EveryOutcome(t *testing.T) {
 			// called this "size unknown", which understates it — the size is
 			// the least of what is unknown.
 			name: "existence never established, so a clean deletion proves nothing",
-			resp: api.WorkspaceRemoveResponse{HomeVolume: "boid-ws-home-abcd1234-team-c", HomeDeleted: false, HomeSizeError: "inspect workspace home volume: engine busy"},
+			resp: apiwire.WorkspaceRemoveResponse{HomeVolume: "boid-ws-home-abcd1234-team-c", HomeDeleted: false, HomeSizeError: "inspect workspace home volume: engine busy"},
 			want: []string{
 				"could not confirm",
 				"boid-ws-home-abcd1234-team-c",
@@ -1805,7 +1805,7 @@ func TestFormatWorkspaceRemoveResult_EveryOutcome(t *testing.T) {
 // "there was nothing to delete" case: it is the expected outcome of the
 // command that was just run.
 func TestFormatWorkspaceRemoveResult_ReportsAFailedInitScriptDeletion(t *testing.T) {
-	failed := formatWorkspaceRemoveResult("team-x", api.WorkspaceRemoveResponse{
+	failed := formatWorkspaceRemoveResult("team-x", apiwire.WorkspaceRemoveResponse{
 		HomeVolume:            "boid-ws-home-abcd1234-team-x",
 		HomeDeleted:           true,
 		InitScriptDeleteError: "remove /home/boid/.config/boid/workspaces/team-x/init.sh: permission denied",
@@ -1821,7 +1821,7 @@ func TestFormatWorkspaceRemoveResult_ReportsAFailedInitScriptDeletion(t *testing
 		}
 	}
 
-	quiet := formatWorkspaceRemoveResult("team-x", api.WorkspaceRemoveResponse{
+	quiet := formatWorkspaceRemoveResult("team-x", apiwire.WorkspaceRemoveResponse{
 		HomeVolume: "boid-ws-home-abcd1234-team-x", HomeDeleted: true, InitScriptDeleted: true,
 	})
 	if strings.Contains(quiet, "init.sh") {
@@ -1835,22 +1835,22 @@ func TestFormatWorkspaceRemoveResult_ReportsAFailedInitScriptDeletion(t *testing
 func TestFormatWorkspaceHomeSize_RendersTheVolumeName(t *testing.T) {
 	cases := []struct {
 		name string
-		home api.WorkspaceHomeSize
+		home apiwire.WorkspaceHomeSize
 		want []string
 	}{
 		{
 			name: "existing",
-			home: api.WorkspaceHomeSize{Volume: "boid-ws-home-abcd1234-team-a", Exists: true, Bytes: 1000},
+			home: apiwire.WorkspaceHomeSize{Volume: "boid-ws-home-abcd1234-team-a", Exists: true, Bytes: 1000},
 			want: []string{"home size: 1.00 KB", "boid-ws-home-abcd1234-team-a"},
 		},
 		{
 			name: "never dispatched into",
-			home: api.WorkspaceHomeSize{Volume: "boid-ws-home-abcd1234-team-a"},
+			home: apiwire.WorkspaceHomeSize{Volume: "boid-ws-home-abcd1234-team-a"},
 			want: []string{"home size: 0 B", "未作成", "boid-ws-home-abcd1234-team-a"},
 		},
 		{
 			name: "size unknown",
-			home: api.WorkspaceHomeSize{Volume: "boid-ws-home-abcd1234-team-a", Exists: true, SizeError: "engine busy"},
+			home: apiwire.WorkspaceHomeSize{Volume: "boid-ws-home-abcd1234-team-a", Exists: true, SizeError: "engine busy"},
 			want: []string{"home size: ?", "boid-ws-home-abcd1234-team-a"},
 		},
 	}
@@ -1873,7 +1873,7 @@ func TestFormatWorkspaceHomeSize_RendersTheVolumeName(t *testing.T) {
 // identifier — not as an empty "()" that reads like a bug — in both the
 // `workspace show` line and the `workspace remove` summary.
 func TestFormatWorkspaceHome_OldDaemonOmitsTheIdentifier(t *testing.T) {
-	showed := formatWorkspaceHomeSize(&api.WorkspaceHomeSize{Exists: true, Bytes: 1000})
+	showed := formatWorkspaceHomeSize(&apiwire.WorkspaceHomeSize{Exists: true, Bytes: 1000})
 	if !strings.Contains(showed, "1.00 KB") {
 		t.Errorf("workspace show line = %q, want the size to still render", showed)
 	}
@@ -1889,7 +1889,7 @@ func TestFormatWorkspaceHome_OldDaemonOmitsTheIdentifier(t *testing.T) {
 	// answers home_deleted=true after removing a leftover pre-PR6 host home
 	// DIRECTORY, while the named volume holding the credentials survives. So
 	// this case must warn, whatever HomeDeleted says.
-	removed := formatWorkspaceRemoveResult("team-x", api.WorkspaceRemoveResponse{HomeBytes: 1000, HomeDeleted: true})
+	removed := formatWorkspaceRemoveResult("team-x", apiwire.WorkspaceRemoveResponse{HomeBytes: 1000, HomeDeleted: true})
 	if !strings.Contains(removed, "could not confirm") {
 		t.Errorf("workspace remove summary = %q, want a warning: an empty home_volume means the daemon reported on something other than the volume, so home_deleted=true cannot be relayed as the volume being gone", removed)
 	}

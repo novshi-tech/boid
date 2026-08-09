@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/novshi-tech/boid/internal/api"
+	"github.com/novshi-tech/boid/internal/apiwire"
 	"github.com/novshi-tech/boid/internal/orchestrator"
 )
 
@@ -37,7 +37,7 @@ func captureStdout(t *testing.T, fn func()) string {
 
 func TestRenderTaskDetail(t *testing.T) {
 	payload := json.RawMessage(`{"instructions":{"main":{"type":"execution"}}}`)
-	detail := &api.TaskDetailView{
+	detail := &apiwire.TaskDetailView{
 		Task: &orchestrator.Task{
 			ID:          "task-abc",
 			ProjectID:   "proj-1",
@@ -57,19 +57,19 @@ func TestRenderTaskDetail(t *testing.T) {
 				CreatedAt: time.Unix(0, 0).UTC(),
 			},
 		},
-		Jobs: []*api.Job{
+		Jobs: []*apiwire.Job{
 			{
 				ID:        "job-1",
 				HandlerID: "handler-a",
 				Role:      "main",
-				Status:    api.JobStatusRunning,
+				Status:    apiwire.JobStatusRunning,
 				UpdatedAt: time.Unix(0, 0).UTC(),
 			},
 			{
 				ID:        "job-2",
 				HandlerID: "handler-b",
 				Role:      "hook",
-				Status:    api.JobStatusCompleted,
+				Status:    apiwire.JobStatusCompleted,
 				ExitCode:  0,
 				Output:    "done",
 				UpdatedAt: time.Unix(0, 0).UTC(),
@@ -111,7 +111,7 @@ func TestRenderTaskDetail(t *testing.T) {
 }
 
 func TestRenderJobShowsAttachability(t *testing.T) {
-	job := &api.Job{
+	job := &apiwire.Job{
 		ID:          "job-1",
 		TaskID:      "task-1",
 		ProjectID:   "proj-1",
@@ -120,7 +120,7 @@ func TestRenderJobShowsAttachability(t *testing.T) {
 		RuntimeID:   "runtime-1",
 		Interactive: true,
 		TTY:         true,
-		Status:      api.JobStatusRunning,
+		Status:      apiwire.JobStatusRunning,
 		CreatedAt:   time.Unix(0, 0).UTC(),
 		UpdatedAt:   time.Unix(0, 0).UTC(),
 	}

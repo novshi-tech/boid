@@ -6,7 +6,6 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"syscall"
 
 	"github.com/novshi-tech/boid/internal/config"
 	"gopkg.in/yaml.v3"
@@ -48,12 +47,13 @@ func LockConfigMutation(cfgPath string) (release func(), err error) {
 	if err != nil {
 		return nil, fmt.Errorf("profiles: open config lock %q: %w", lockPath, err)
 	}
-	if err := syscall.Flock(int(lockFile.Fd()), syscall.LOCK_EX); err != nil {
+	unlock, err := lockFileExclusive(lockFile)
+	if err != nil {
 		_ = lockFile.Close()
 		return nil, fmt.Errorf("profiles: acquire config lock: %w", err)
 	}
 	return func() {
-		_ = syscall.Flock(int(lockFile.Fd()), syscall.LOCK_UN)
+		unlock()
 		_ = lockFile.Close()
 	}, nil
 }

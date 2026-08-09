@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/novshi-tech/boid/internal/api"
+	"github.com/novshi-tech/boid/internal/apiwire"
 	"github.com/novshi-tech/boid/internal/orchestrator"
 	"gopkg.in/yaml.v3"
 )
@@ -16,8 +16,8 @@ func isTerminalTaskStatus(status orchestrator.TaskStatus) bool {
 	return status == orchestrator.TaskStatusDone || status == orchestrator.TaskStatusAborted
 }
 
-func isTerminalJobStatus(status api.JobStatus) bool {
-	return status == api.JobStatusCompleted || status == api.JobStatusFailed
+func isTerminalJobStatus(status apiwire.JobStatus) bool {
+	return status == apiwire.JobStatusCompleted || status == apiwire.JobStatusFailed
 }
 
 func jsonToYAMLIndented(raw json.RawMessage, indent string) (string, error) {
@@ -43,7 +43,7 @@ func hasPayload(raw json.RawMessage) bool {
 	return len(raw) > 0 && s != "{}" && s != "null"
 }
 
-func renderTaskDetail(detail *api.TaskDetailView) error {
+func renderTaskDetail(detail *apiwire.TaskDetailView) error {
 	task := detail.Task
 	fmt.Printf("ID:          %s\n", task.ID)
 	fmt.Printf("Project:     %s\n", task.ProjectID)
@@ -93,7 +93,7 @@ func renderTaskDetail(detail *api.TaskDetailView) error {
 	return nil
 }
 
-func renderJob(job *api.Job) {
+func renderJob(job *apiwire.Job) {
 	fmt.Printf("ID:         %s\n", job.ID)
 	fmt.Printf("Task:       %s\n", job.TaskID)
 	fmt.Printf("Project:    %s\n", job.ProjectID)
@@ -116,7 +116,7 @@ func renderJob(job *api.Job) {
 	}
 }
 
-func renderJobList(jobs []*api.Job) {
+func renderJobList(jobs []*apiwire.Job) {
 	fmt.Printf("%-36s %-24s %-8s %-10s %-4s %-19s\n", "ID", "HANDLER", "ROLE", "STATUS", "EXIT", "UPDATED")
 	for _, job := range jobs {
 		fmt.Printf("%-36s %-24s %-8s %-10s %-4s %-19s\n",
@@ -214,7 +214,7 @@ func formatIdleSeconds(s int64) string {
 	return fmt.Sprintf("%ds", sec)
 }
 
-func formatExitCode(status api.JobStatus, code int) string {
+func formatExitCode(status apiwire.JobStatus, code int) string {
 	if !isTerminalJobStatus(status) {
 		return "-"
 	}

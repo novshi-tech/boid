@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/novshi-tech/boid/internal/api"
+	"github.com/novshi-tech/boid/internal/apiwire"
 )
 
 // TestPollExecExitCode_GivesUpWithSentinelWhenJobNeverReachesTerminalStatus
@@ -14,8 +14,8 @@ import (
 // exit 0 — that would be a false success. It must report the explicit
 // execExitCodeUnknown sentinel instead (fail-safe: unknown ⇒ failure).
 func TestPollExecExitCode_GivesUpWithSentinelWhenJobNeverReachesTerminalStatus(t *testing.T) {
-	fetch := func() (api.Job, error) {
-		return api.Job{Status: api.JobStatusRunning, ExitCode: 0}, nil
+	fetch := func() (apiwire.Job, error) {
+		return apiwire.Job{Status: apiwire.JobStatusRunning, ExitCode: 0}, nil
 	}
 	var sleeps int
 	sleep := func(time.Duration) { sleeps++ }
@@ -40,12 +40,12 @@ func TestPollExecExitCode_GivesUpWithSentinelWhenJobNeverReachesTerminalStatus(t
 // terminal status mid-poll reports its real (possibly non-zero) ExitCode.
 func TestPollExecExitCode_ReturnsRealExitCodeOnceTerminal(t *testing.T) {
 	calls := 0
-	fetch := func() (api.Job, error) {
+	fetch := func() (apiwire.Job, error) {
 		calls++
 		if calls < 3 {
-			return api.Job{Status: api.JobStatusRunning}, nil
+			return apiwire.Job{Status: apiwire.JobStatusRunning}, nil
 		}
-		return api.Job{Status: api.JobStatusFailed, ExitCode: 42}, nil
+		return apiwire.Job{Status: apiwire.JobStatusFailed, ExitCode: 42}, nil
 	}
 	var sleeps int
 	sleep := func(time.Duration) { sleeps++ }
@@ -67,8 +67,8 @@ func TestPollExecExitCode_ReturnsRealExitCodeOnceTerminal(t *testing.T) {
 // exit_code=0) on the very first poll must return 0 with no error — the
 // give-up sentinel must never shadow a real, promptly-observed success.
 func TestPollExecExitCode_SuccessNotMistakenForGiveUp(t *testing.T) {
-	fetch := func() (api.Job, error) {
-		return api.Job{Status: api.JobStatusCompleted, ExitCode: 0}, nil
+	fetch := func() (apiwire.Job, error) {
+		return apiwire.Job{Status: apiwire.JobStatusCompleted, ExitCode: 0}, nil
 	}
 	code, err := pollExecExitCode("job-1", fetch, func(time.Duration) {
 		t.Fatal("should not sleep when the first poll is already terminal")
@@ -86,7 +86,7 @@ func TestPollExecExitCode_SuccessNotMistakenForGiveUp(t *testing.T) {
 // into the give-up path.
 func TestPollExecExitCode_PropagatesFetchError(t *testing.T) {
 	wantErr := errors.New("boom")
-	fetch := func() (api.Job, error) { return api.Job{}, wantErr }
+	fetch := func() (apiwire.Job, error) { return apiwire.Job{}, wantErr }
 	code, err := pollExecExitCode("job-1", fetch, func(time.Duration) {
 		t.Fatal("should not sleep on a fetch error")
 	})

@@ -44,10 +44,10 @@ func TestRunTaskRerun_SendsInstructionsOverride(t *testing.T) {
 		"behavior":   "dev",
 		"instructions": map[string]any{
 			"main": map[string]any{
-				"type":     "execution",
-				"agent": "claude-code",
-				"model":    "sonnet-4-6",
-				"message":  "initial",
+				"type":    "execution",
+				"agent":   "claude-code",
+				"model":   "sonnet-4-6",
+				"message": "initial",
 			},
 		},
 	}, &task); err != nil {
@@ -114,9 +114,9 @@ func TestRunTaskRerun_NoInstructionsFlagPreservesExisting(t *testing.T) {
 		"behavior":   "dev",
 		"instructions": map[string]any{
 			"main": map[string]any{
-				"type":     "execution",
-				"agent": "claude-code",
-				"message":  "keep me",
+				"type":    "execution",
+				"agent":   "claude-code",
+				"message": "keep me",
 			},
 		},
 	}, &task); err != nil {

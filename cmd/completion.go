@@ -94,4 +94,3 @@ func completeProjectRefs(cmd *cobra.Command, _ []string, _ string) ([]string, co
 	}
 	return out, cobra.ShellCompDirectiveNoFileComp
 }
-

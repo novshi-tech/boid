@@ -1,3 +1,5 @@
+//go:build linux
+
 package cmd
 
 // cmd/check.go implements `boid check`, a host-side preflight for the
