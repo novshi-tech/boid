@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"github.com/novshi-tech/boid/internal/apiwire"
 	"io"
 	"net"
 	"net/http"
@@ -13,6 +12,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 	"github.com/novshi-tech/boid/internal/api/auth"
+	"github.com/novshi-tech/boid/internal/apiwire"
 )
 
 // peerIPForPublicEndpoint returns the TCP peer IP for use as a rate-limit

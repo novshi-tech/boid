@@ -4,6 +4,7 @@ package cmd
 
 import (
 	"os"
+	"sync"
 	"time"
 )
 
@@ -15,33 +16,29 @@ import (
 const resizePollInterval = 250 * time.Millisecond
 
 // watchTerminalResize calls onResize whenever the console's dimensions
-// change, and returns a stop func the caller defers.
+// change, and returns an idempotent stop func the caller defers.
 //
 // Windows has no SIGWINCH (see attach_resize_unix.go for the signal-driven
-// version), and no portable console-event API reachable through
+// version), and no console-resize event is reachable through
 // golang.org/x/term, so this polls. onResize fires only on an ACTUAL
 // change, not on every tick: the remote end would otherwise get four
 // pointless resize RPCs per second for the whole session.
-//
-// The dimensions are read here rather than inside onResize because the
-// watcher needs them to detect the change at all; onResize (attachLive's
-// sendResize) reads them again when it fires. That double read is
-// deliberate — it keeps this function's contract identical to the Unix
-// one, whose callback likewise takes no arguments.
 func watchTerminalResize(onResize func()) (stop func()) {
 	done := make(chan struct{})
 
 	go func() {
-		ticker := time.NewTicker(resizePollInterval)
-		defer ticker.Stop()
-
 		lastRows, lastCols, err := terminalSize(os.Stdout)
-		if err != nil {
-			// Not a console we can measure — nothing to watch. attachLive
-			// has already sent the initial size (or skipped it on the same
-			// error), so exiting here is the correct no-op.
+		// terminalSize reports (0, 0, nil) when stdout is not a terminal at
+		// all, and only returns an error for a real console it could not
+		// query — so "no size to watch" is both of those, not just the
+		// error. attachLive gates its own initial send on the identical
+		// condition (rows > 0 && cols > 0), so exiting here matches it.
+		if err != nil || lastRows == 0 || lastCols == 0 {
 			return
 		}
+
+		ticker := time.NewTicker(resizePollInterval)
+		defer ticker.Stop()
 
 		for {
 			select {
@@ -58,5 +55,8 @@ func watchTerminalResize(onResize func()) (stop func()) {
 		}
 	}()
 
-	return func() { close(done) }
+	var once sync.Once
+	return func() {
+		once.Do(func() { close(done) })
+	}
 }

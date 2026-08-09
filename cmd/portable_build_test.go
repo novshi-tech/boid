@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"go/ast"
+	"go/build/constraint"
 	"go/parser"
 	"go/token"
 	"os"
@@ -60,7 +61,7 @@ func TestNoAccidentallyLinuxOnlyRemoteCommands(t *testing.T) {
 		if err != nil {
 			t.Fatalf("read %s: %v", name, err)
 		}
-		if !strings.HasPrefix(string(src), "//go:build linux\n") {
+		if !excludedFromPortableBuild(src) {
 			continue
 		}
 		sawLinuxOnly = true
@@ -88,6 +89,57 @@ func TestNoAccidentallyLinuxOnlyRemoteCommands(t *testing.T) {
 			"a remote command only talks to the daemon's HTTP API, so it should build for every GOOS. "+
 			"Make it portable, or add it to linuxOnlyRemoteCommandFiles with a reason.", name)
 	}
+}
+
+// excludedFromPortableBuild reports whether src's //go:build constraint
+// keeps the file out of the portable client build.
+//
+// The constraint is PARSED and evaluated, not prefix-matched. A literal
+// `strings.HasPrefix(src, "//go:build linux\n")` was the first cut and it
+// is exactly the kind of gate that reads as protection while quietly
+// letting the real cases through: `//go:build !windows`,
+// `//go:build linux && amd64`, and any file carrying a license or doc
+// comment above its constraint all slip past a prefix test, and each one
+// removes a command from the portable build just as effectively as the
+// spelling the test happened to look for.
+//
+// "Portable" here is evaluated as GOOS=windows — the platform this split
+// exists for. A file excluded there is excluded from the client build.
+func excludedFromPortableBuild(src []byte) bool {
+	line, ok := buildConstraintLine(src)
+	if !ok {
+		return false // no constraint: builds everywhere
+	}
+	expr, err := constraint.Parse(line)
+	if err != nil {
+		return false // not a constraint we understand; go/build would have rejected it
+	}
+	return !expr.Eval(func(tag string) bool {
+		// Only the tags a GOOS=windows/amd64 build satisfies. Everything
+		// else — linux, unix, darwin, custom tags — is false.
+		switch tag {
+		case "windows", "amd64", "gc":
+			return true
+		}
+		return false
+	})
+}
+
+// buildConstraintLine returns the file's //go:build line, searching the
+// comment block that precedes the package clause rather than assuming the
+// constraint is the very first line (go/build allows blank lines and other
+// comments before it).
+func buildConstraintLine(src []byte) (string, bool) {
+	for _, line := range strings.Split(string(src), "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "package ") {
+			return "", false
+		}
+		if constraint.IsGoBuild(trimmed) {
+			return trimmed, true
+		}
+	}
+	return "", false
 }
 
 // declaresRemoteScope reports whether f contains a literal
