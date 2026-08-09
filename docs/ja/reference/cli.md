@@ -21,7 +21,7 @@ boid <command> --help       # 個別ヘルプ
 
 ### 自動起動
 
-daemon が止まっているときに以下のコマンドを呼ぶと、自動で compose スタックが起動します（host mode、下記）。自動起動をスキップする例外コマンドは `start` / `stop` / `gc` / `check` / `init` / `fetch` / `reap` / `project migrate` / `login` / `logout` / `version` です。手動で起動・停止する必要はありません。
+daemon が止まっているときに以下のコマンドを呼ぶと、自動で compose スタックが起動します（host mode、下記）。自動起動をスキップする例外コマンドは `start` / `stop` / `gc` / `check` / `init` / `fetch` / `reap` / `project migrate` / `login` / `logout` / `version` / `install-skills` です。手動で起動・停止する必要はありません。
 
 `boid web set-url` / `boid web set-addr` は `boid config set web.public_url|web.http_addr` に統合され（穴8, `docs/plans/release-onboarding.md`）、他の scope=`remote` コマンドと同様に自動起動の対象です（従来の「daemon 停止中はスキップ」という例外ではなくなりました）。
 
@@ -311,6 +311,14 @@ daemon が集約する `~/.config/boid/host_commands.yaml` (workspace 群の `ho
 | `boid agent stop <job-id>` | エージェントプロセスに SIGUSR1 を送り、正常停止を要求する |
 
 サンドボックス内で対話シェルを開きたい場合は `boid exec -p <project> -- bash` を使う (`boid agent shell` は git gateway cutover 後に退役)。
+
+## Install skills
+
+| コマンド | 役割 |
+|---|---|
+| `boid install-skills [--dir DIR]` | boid CLI 操作用のホスト側 Claude Code スキル (`boid-cli-workspace` / `boid-cli-daemon` / `boid-cli-task`) を `~/.claude/skills/` (既定) または `--dir` 指定先に配置する。冪等 — 内容が変わっていないファイルは書き換えない。daemon には接続しない (`scopeLocal`) |
+
+job サンドボックス内で使う埋め込みスキル (`boid-task`/`boid-orchestrate`/`boid-web`、`internal/skills/data/`) とは別物。こちらはホスト上の通常の Claude Code セッションが boid の workspace/project/daemon/web/task/job を CLI 経由で操作するためのスキル (`internal/skills/hostdata/`)。
 
 ## シェル補完
 
