@@ -165,6 +165,17 @@ func (m *LoginManager) provider(name string) (OAuthProviderConfig, bool) {
 	return cfg, ok
 }
 
+// KnowsProvider reports whether name is a configured oauth_providers.<name>
+// entry. Exported for internal/api's Start handler, which accepts a provider
+// name as an alternative to a service name (see its own doc comment) and
+// needs to tell "names a provider" apart from "names nothing at all" BEFORE
+// calling StartLogin — an unknown name must 404, not begin a login that
+// fails later.
+func (m *LoginManager) KnowsProvider(name string) bool {
+	_, ok := m.provider(name)
+	return ok
+}
+
 func (m *LoginManager) put(p *pendingLogin) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
