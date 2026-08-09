@@ -254,6 +254,13 @@ func runLogin(cmd *cobra.Command, args []string) error {
 	}
 
 	fmt.Fprintf(cmd.ErrOrStderr(), "logged in to %s (%s)\n", profileName, canonicalURL)
+	// Platform caveat about how the token just written is protected, shown
+	// once here rather than on every command that reads it. Empty on POSIX,
+	// where the 0600 bits WriteToken sets are real; non-empty on Windows,
+	// where Go sets no ACL — see profiles.TokenProtectionNote.
+	if note := profiles.TokenProtectionNote(); note != "" {
+		fmt.Fprintln(cmd.ErrOrStderr(), note)
+	}
 	return nil
 }
 

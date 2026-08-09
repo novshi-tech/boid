@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"log/slog"
 	"os"
 	"path/filepath"
 	"time"
@@ -68,7 +67,9 @@ func TokenPath(profileName string) (string, error) {
 // (decision 2: "起動時に権限緩ければ警告") — the token itself is still
 // usable and refusing to read it outright would turn a merely-suspicious
 // filesystem state into an outage; a human fixing `chmod 600` is a
-// perfectly adequate remediation once warned.
+// perfectly adequate remediation once warned. The check is per-GOOS
+// (warnIfTokenPermsLoose): Windows has no POSIX mode bits to inspect, and
+// the Windows file explains what is done instead.
 func LoadToken(profileName string) (*Token, error) {
 	path, err := TokenPath(profileName)
 	if err != nil {
@@ -78,10 +79,7 @@ func LoadToken(profileName string) (*Token, error) {
 	if err != nil {
 		return nil, err
 	}
-	if perm := info.Mode().Perm(); perm&^tokenFilePerm != 0 {
-		slog.Warn("token file has looser permissions than required; run chmod 600",
-			"path", path, "mode", perm.String(), "want", os.FileMode(tokenFilePerm).String())
-	}
+	warnIfTokenPermsLoose(path, info.Mode())
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("profiles: read token %q: %w", path, err)
