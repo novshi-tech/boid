@@ -20,6 +20,7 @@ import (
 	"github.com/novshi-tech/boid/internal/api"
 	"github.com/novshi-tech/boid/internal/api/auth"
 	"github.com/novshi-tech/boid/internal/apigateway"
+	"github.com/novshi-tech/boid/internal/apiwire"
 	"github.com/novshi-tech/boid/internal/config"
 	"github.com/novshi-tech/boid/internal/dispatcher"
 	"github.com/novshi-tech/boid/internal/gitgateway"
@@ -2202,7 +2203,7 @@ func mountRoutes(srv *Server, runtime *appRuntime) error {
 	// silent misbind of every future device token. An unusable value is
 	// downgraded to the empty string so the handler falls back to the
 	// request Host header (still HTTPS-forced by canonicalURL).
-	deviceAuthPublicURL, publicURLErr := api.NormalizePublicURL(gcCfg.Web.PublicURL)
+	deviceAuthPublicURL, publicURLErr := apiwire.NormalizePublicURL(gcCfg.Web.PublicURL)
 	if publicURLErr != nil {
 		slog.Warn("web.public_url is invalid; canonical_url in device auth will fall back to request Host header",
 			"value", gcCfg.Web.PublicURL, "error", publicURLErr)

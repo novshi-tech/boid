@@ -128,4 +128,3 @@ func TestTaskHandler_List_ParentIDFilter_NotPresent(t *testing.T) {
 		t.Errorf("capturedFilter.ParentID = %v, want nil when parent_id not in query", svc.capturedFilter.ParentID)
 	}
 }
-

@@ -1389,8 +1389,8 @@ func TestCreateTask_NonCanonicalBehavior_ReadonlyDefaultTrue(t *testing.T) {
 	falseVal := false
 	meta := &orchestrator.ProjectMeta{
 		TaskBehaviors: map[string]orchestrator.TaskBehavior{
-			"research":  {},          // no explicit readonly → defaults to true
-			"dev-task":  {Readonly: &falseVal}, // explicit false → writable
+			"research": {},                    // no explicit readonly → defaults to true
+			"dev-task": {Readonly: &falseVal}, // explicit false → writable
 		},
 	}
 	svc := &TaskAppService{
@@ -1663,11 +1663,11 @@ type stubTaskStore struct {
 	task        *orchestrator.Task
 	tasks       map[string]*orchestrator.Task // id → task (for multi-task lookups)
 	err         error
-	updateCalls    int
-	deleted        bool
-	remoteTasks    map[string]*orchestrator.Task // remoteID → task
-	refTasks       map[string]*orchestrator.Task // "ref:parentID" → task
-	createdTask    *orchestrator.Task            // captures the last created task
+	updateCalls int
+	deleted     bool
+	remoteTasks map[string]*orchestrator.Task // remoteID → task
+	refTasks    map[string]*orchestrator.Task // "ref:parentID" → task
+	createdTask *orchestrator.Task            // captures the last created task
 }
 
 func (s *stubTaskStore) CreateTask(task *orchestrator.Task) error {
@@ -1888,14 +1888,14 @@ func (l *stubLifecycle) SignaledRuntime() (string, syscall.Signal) {
 
 func TestDuplicateTask_CopiesFields(t *testing.T) {
 	source := &orchestrator.Task{
-		ID:           "src-1",
-		ProjectID:    "proj-1",
-		Title:        "Original Task",
-		Description:  "task description",
-		Behavior:     "dev",
-		Status:       orchestrator.TaskStatusAborted,
-		Payload:      json.RawMessage(`{"old":"data"}`),
-		RemoteID: "PROJ-1",
+		ID:          "src-1",
+		ProjectID:   "proj-1",
+		Title:       "Original Task",
+		Description: "task description",
+		Behavior:    "dev",
+		Status:      orchestrator.TaskStatusAborted,
+		Payload:     json.RawMessage(`{"old":"data"}`),
+		RemoteID:    "PROJ-1",
 	}
 	meta := &orchestrator.ProjectMeta{
 		TaskBehaviors: map[string]orchestrator.TaskBehavior{
@@ -2335,7 +2335,6 @@ func TestGetTaskDetail_JobsIncludeWorkspacePath(t *testing.T) {
 	}
 }
 
-
 // --- stubs for ProjectAppService tests ---
 
 type stubProjectRepository struct {
@@ -2516,14 +2515,14 @@ func (s *stubProjectMetaStore) Get(id string) (*orchestrator.ProjectMeta, bool) 
 	m, ok := s.metas[id]
 	return m, ok
 }
-func (s *stubProjectMetaStore) Remove(id string)                          {}
+func (s *stubProjectMetaStore) Remove(id string) {}
 func (s *stubProjectMetaStore) LoadAll(_ []*orchestrator.Project) []error {
 	if s.loadAllHook != nil {
 		s.loadAllHook()
 	}
 	return nil
 }
-func (s *stubProjectMetaStore) SetWorkspaceID(_, _ string)                {}
+func (s *stubProjectMetaStore) SetWorkspaceID(_, _ string) {}
 func (s *stubProjectMetaStore) Explain(id string) (*orchestrator.ProjectExplain, error) {
 	meta, ok := s.Get(id)
 	if !ok {
@@ -2632,7 +2631,6 @@ func TestProjectAppService_ResolveProjectRef(t *testing.T) {
 		}
 	})
 }
-
 
 // ---- branch variable expansion tests ----
 

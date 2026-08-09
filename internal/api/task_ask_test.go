@@ -199,9 +199,9 @@ func TestGraceAbortCheck_AbortsZombie(t *testing.T) {
 // graceAbortCheck leaves the task alone when the ask recovered or moved on.
 func TestGraceAbortCheck_SkipsRecovered(t *testing.T) {
 	cases := []struct {
-		name    string
-		mutate  func(task *orchestrator.Task, reg *BlockingAskRegistry)
-		checkQ  string
+		name   string
+		mutate func(task *orchestrator.Task, reg *BlockingAskRegistry)
+		checkQ string
 	}{
 		{
 			name:   "answered_moved_to_executing",

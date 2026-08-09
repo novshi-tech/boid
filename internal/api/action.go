@@ -17,11 +17,6 @@ func (h *ActionHandler) Routes() chi.Router {
 	return r
 }
 
-type ApplyActionRequest struct {
-	Type    string          `json:"type"`
-	Payload json.RawMessage `json:"payload,omitempty"`
-}
-
 func (h *ActionHandler) Apply(w http.ResponseWriter, r *http.Request) {
 	taskID := chi.URLParam(r, "taskID")
 

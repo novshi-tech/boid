@@ -7,7 +7,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"syscall"
 	"time"
 )
 
@@ -69,10 +68,11 @@ func ensureRunning(ctx context.Context, socketPath, lockPath string, spawner fun
 	}
 	defer lockFile.Close()
 
-	if err := syscall.Flock(int(lockFile.Fd()), syscall.LOCK_EX); err != nil {
-		return fmt.Errorf("acquire autostart lock: %w", err)
+	unlock, err := lockAutostart(lockFile)
+	if err != nil {
+		return err
 	}
-	defer syscall.Flock(int(lockFile.Fd()), syscall.LOCK_UN) //nolint:errcheck
+	defer unlock()
 
 	// Re-check after acquiring lock: another process may have started the server.
 	if isSocketReady(socketPath) {

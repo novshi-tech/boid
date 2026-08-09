@@ -108,20 +108,6 @@ func (h *TaskHandler) Routes() chi.Router {
 	return r
 }
 
-type NotifyTaskRequest struct {
-	Message    string `json:"message"`
-	Ask        string `json:"ask,omitempty"`
-	QuestionID string `json:"question_id,omitempty"`
-	Progress   string `json:"progress,omitempty"`
-	Done       string `json:"done,omitempty"`
-	Fail       string `json:"fail,omitempty"`
-}
-
-type AnswerTaskRequest struct {
-	QuestionID string `json:"question_id"`
-	Answer     string `json:"answer"`
-}
-
 func (h *TaskHandler) Notify(w http.ResponseWriter, r *http.Request) {
 	var req NotifyTaskRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -148,34 +134,6 @@ func (h *TaskHandler) Answer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
-}
-
-type UpdateTaskRequest struct {
-	Title        string          `json:"title"`
-	Description  string          `json:"description"`
-	ProjectID    string          `json:"project_id,omitempty"`
-	RemoteID     *string         `json:"remote_id,omitempty"`
-	Payload      json.RawMessage `json:"payload,omitempty"`
-	Instructions json.RawMessage `json:"instructions,omitempty"`
-	ParentID     *string         `json:"parent_id,omitempty"`
-	AutoStart    *bool           `json:"auto_start,omitempty"`
-}
-
-type CreateTaskRequest struct {
-	ID           string                     `json:"id,omitempty"`
-	ProjectID    string                     `json:"project_id"`
-	Title        string                     `json:"title"`
-	Description  string                     `json:"description,omitempty"`
-	Behavior     string                     `json:"behavior,omitempty"`
-	BehaviorSpec *orchestrator.BehaviorSpec `json:"behavior_spec,omitempty"`
-	RemoteID     string                     `json:"remote_id,omitempty"`
-	Payload      json.RawMessage            `json:"payload,omitempty"`
-	Instructions json.RawMessage            `json:"instructions,omitempty"`
-	AutoStart    bool                       `json:"auto_start,omitempty"`
-	Traits       []string                   `json:"traits,omitempty"`
-	Ref          string                     `json:"ref,omitempty"`
-	ParentID     string                     `json:"parent_id,omitempty"`
-	Readonly     *bool                      `json:"readonly,omitempty"`
 }
 
 func (h *TaskHandler) Create(w http.ResponseWriter, r *http.Request) {
@@ -349,10 +307,6 @@ func (h *TaskHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-type DuplicateTaskRequest struct {
-	AutoStart bool `json:"auto_start"`
-}
-
 func (h *TaskHandler) Duplicate(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	var req DuplicateTaskRequest
@@ -366,11 +320,6 @@ func (h *TaskHandler) Duplicate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusCreated, task)
-}
-
-type RerunTaskRequest struct {
-	AutoStart            bool            `json:"auto_start,omitempty"`
-	InstructionsOverride json.RawMessage `json:"instructions_override,omitempty"`
 }
 
 func (h *TaskHandler) Rerun(w http.ResponseWriter, r *http.Request) {
@@ -430,4 +379,3 @@ func (h *TaskHandler) ListHooks(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, hooks)
 }
-

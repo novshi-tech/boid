@@ -13,10 +13,10 @@ import (
 )
 
 type fakeAnswerer struct {
-	calledTaskID   string
-	calledQID      string
-	calledAnswer   string
-	err            error
+	calledTaskID string
+	calledQID    string
+	calledAnswer string
+	err          error
 }
 
 func (a *fakeAnswerer) AnswerTask(ctx context.Context, taskID, questionID, answer string) error {

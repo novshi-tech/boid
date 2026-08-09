@@ -17,24 +17,24 @@ import (
 
 // stubWebService is a full implementation of WebService for testing.
 type stubWebService struct {
-	tasks                []*orchestrator.Task
-	taskDetail           *TaskDetailView
-	jobDetail            *JobWithContext
-	projects             []*orchestrator.Project
-	behaviors            []string
-	workspaces           []*orchestrator.WorkspaceSummary
-	capturedFilter       orchestrator.TaskFilter
-	applyActionErr       error
-	applyActionCalls     []applyActionCall
-	duplicateTaskNewID   string
-	duplicateTaskErr     error
-	createTaskResult     *orchestrator.Task
-	createTaskErr        error
-	createTaskCalls      []CreateTaskRequest
-	updateTaskErr        error
-	updateTaskCalls      []UpdateTaskRequest
-	projectByID          *orchestrator.Project
-	projectByIDErr       error
+	tasks              []*orchestrator.Task
+	taskDetail         *TaskDetailView
+	jobDetail          *JobWithContext
+	projects           []*orchestrator.Project
+	behaviors          []string
+	workspaces         []*orchestrator.WorkspaceSummary
+	capturedFilter     orchestrator.TaskFilter
+	applyActionErr     error
+	applyActionCalls   []applyActionCall
+	duplicateTaskNewID string
+	duplicateTaskErr   error
+	createTaskResult   *orchestrator.Task
+	createTaskErr      error
+	createTaskCalls    []CreateTaskRequest
+	updateTaskErr      error
+	updateTaskCalls    []UpdateTaskRequest
+	projectByID        *orchestrator.Project
+	projectByIDErr     error
 }
 
 type applyActionCall struct {
@@ -135,7 +135,7 @@ type stubWorkflowService struct {
 	appliedType    string
 	appliedPayload json.RawMessage
 
-	completedJobs       []completedJobCall
+	completedJobs        []completedJobCall
 	stoppedAgentRuntimes []string
 }
 
@@ -906,9 +906,9 @@ func TestWebHandler_PostTaskCreate_AgentAndModel(t *testing.T) {
 	r := newTestWebHandlerWithTaskCreate(svc)
 
 	body := url.Values{
-		"title":   {"My Task"},
-		"agent":   {"claude-code"},
-		"model":   {"opus"},
+		"title": {"My Task"},
+		"agent": {"claude-code"},
+		"model": {"opus"},
 	}.Encode()
 	req := httptest.NewRequest(http.MethodPost, "/tasks", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -1159,7 +1159,7 @@ func TestTaskDetailFragment_JobLink(t *testing.T) {
 		Jobs: []*Job{
 			{
 				ID: "job-123", Role: "hook", HandlerID: "go-dev/pr-verify",
-				Status: JobStatusCompleted,
+				Status:    JobStatusCompleted,
 				CreatedAt: now.Add(-30 * time.Second), UpdatedAt: now.Add(-10 * time.Second),
 			},
 		},

@@ -16,8 +16,8 @@ type JobHandler struct {
 	Jobs       JobStore
 	Global     GlobalJobStore // optional: enables cross-task listing when task_id is absent
 	Service    WorkflowService
-	LogReader  JobLogReader  // optional: enables static GET /{id}/log
-	SSEHandler http.Handler  // optional: enables SSE streaming for GET /{id}/log?follow=true
+	LogReader  JobLogReader // optional: enables static GET /{id}/log
+	SSEHandler http.Handler // optional: enables SSE streaming for GET /{id}/log?follow=true
 }
 
 func (h *JobHandler) Routes() chi.Router {
