@@ -74,7 +74,7 @@ Linux 専用なのは正当な理由がある。`internal/skills/safe_deploy.go`
 - Linux: `go build ./...` / `go vet ./...` / `go test ./...` / `go test -race` (影響パッケージ) すべて green。
 - クロスビルド: `GOOS=windows GOARCH=amd64` と `GOOS=darwin GOARCH=arm64` で boid バイナリのビルドが通ることを確認。
 - **未検証**: 実際の Windows 機での実行。`LockFileEx` によるロックと attach のリサイズポーリングは、クロスコンパイルが通ることしか確認できていない。初回の Windows dogfood で確かめること。
-- Windows のトークンファイル権限: `internal/profiles/token_write.go` の 0600/0700 契約は POSIX のものであり、Windows では Go が read-only 属性しか設定しない (ACL は触らない)。daemon の Bearer token が同一マシンの他ローカルアカウントから読める。正しく絞るには明示的な DACL が要る — 未実装。契約コメントに注記済み。
+- Windows のトークンファイル権限: `internal/profiles/token_write.go` の 0600/0700 契約は POSIX のものであり、Windows では Go が read-only 属性しか設定しない (ACL は触らない)。daemon の Bearer token が同一マシンの他ローカルアカウントから読める。正しく絞るには明示的な DACL が要る — **未実装**。実機 dogfood で、この契約に基づく権限警告が Windows では毎回出て `chmod 600` という実行不可能な指示を出すことが分かり、警告自体は GOOS 別に分離した (下記)。
 
 ## リリース配布
 
@@ -93,4 +93,15 @@ Linux 専用なのは正当な理由がある。`internal/skills/safe_deploy.go`
 
 - Windows 実機での dogfood (上記「未検証」)。
 - `boid install-skills` の Windows 対応 (= `internal/skills` の deploy 経路の移植)。
-- トークンファイルの Windows ACL 対応。
+- **トークンファイルの Windows ACL 対応。** 現状は「権限を絞れていないことを `boid login` 時に一度だけ伝える」ところまで (`profiles.TokenProtectionNote`)。実際に絞るには作成時に現在ユーザの SID のみを許可する DACL を渡す必要がある。
+
+### 権限警告を GOOS 別にした理由 (実機 dogfood より)
+
+Windows では `os.Stat` が書き込み可能なファイルを常に 0666 と報告するため、POSIX 用の権限チェックが**全コマンド実行のたびに**発火し、しかも `chmod 600` という Windows に存在しないコマンドを案内していた:
+
+```
+WARN token file has looser permissions than required; run chmod 600
+     path=C:\Users\...\boid\tokens\boid.json mode=-rw-rw-rw- want=-rw-------
+```
+
+対処できず消せもしない警告は、無警告より悪い — 読む人に「警告は読み飛ばすもの」と学習させ、本当に効く警告まで巻き添えにする。よって Windows ではこのチェックを no-op にし (`internal/profiles/token_perm_windows.go`)、代わりに `boid login` の成功時に一度だけ実情を伝える。沈黙は「安全になった」という意味ではない点に注意。
