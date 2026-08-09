@@ -229,6 +229,10 @@ var expectedScopeAnnotations = map[string]string{
 	"boid runner-container": scopeLocal,
 	"boid start":            scopeLocal,
 	"boid stop":             scopeLocal,
+	// install-skills only writes SKILL.md files under ~/.claude/skills/ (or
+	// --dir) from the embedded hostdata FS — it never talks to a daemon, same
+	// axis as `boid check`/`boid fetch` above.
+	"boid install-skills": scopeLocal,
 
 	// neutral — requires no profile precondition at all (docs/plans/
 	// cli-remote-connection.md PR2): these are how a profile comes to

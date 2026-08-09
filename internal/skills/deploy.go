@@ -5,6 +5,7 @@ import (
 	"embed"
 	"fmt"
 	"io"
+	"io/fs"
 
 	"golang.org/x/sys/unix"
 )
@@ -43,7 +44,19 @@ var skillsFS embed.FS
 // therefore free to point baseDir at attacker-writable storage again without
 // re-deriving the threat model.
 func DeployAll(baseDir string) error {
-	entries, err := skillsFS.ReadDir("data")
+	return deployAllFrom(skillsFS, "data", baseDir)
+}
+
+// deployAllFrom is DeployAll generalized over its embed source: sourceFS is
+// the embed.FS to read from, root is the top-level directory within it
+// (e.g. "data" for skillsFS, "hostdata" for hostSkillsFS — see
+// deploy_host.go). Kept unexported: callers outside this package always go
+// through a named entry point (DeployAll, DeployHostSkills) that pins its
+// own source, so it's not possible to accidentally mix the sandbox and host
+// skill sets by passing the wrong (sourceFS, root) pair from outside the
+// package.
+func deployAllFrom(sourceFS fs.FS, root, baseDir string) error {
+	entries, err := fs.ReadDir(sourceFS, root)
 	if err != nil {
 		return fmt.Errorf("read skills dir: %w", err)
 	}
@@ -58,7 +71,7 @@ func DeployAll(baseDir string) error {
 		if !e.IsDir() {
 			continue
 		}
-		if err := deploySkill(baseFd, e.Name()); err != nil {
+		if err := deploySkill(sourceFS, root, baseFd, e.Name()); err != nil {
 			return fmt.Errorf("skills の materialize 先 %q: %w", baseDir, err)
 		}
 	}
@@ -79,7 +92,7 @@ func DeployAll(baseDir string) error {
 // delivery back to bind mounts, declared by the dispatcher rather than by an
 // adapter.
 func EmbeddedSkillNames() []string {
-	entries, err := skillsFS.ReadDir("data")
+	entries, err := fs.ReadDir(skillsFS, "data")
 	if err != nil {
 		return nil
 	}
@@ -96,13 +109,13 @@ func EmbeddedSkillNames() []string {
 // into the directory named name directly under baseFd, creating that
 // directory if it doesn't exist yet and refusing if any path component
 // involved turns out to be a symlink (see safe_deploy.go).
-func deploySkill(baseFd int, name string) error {
+func deploySkill(sourceFS fs.FS, root string, baseFd int, name string) error {
 	skillFd, err := openOrCreateDirNoSymlink(baseFd, name)
 	if err != nil {
 		return fmt.Errorf("skill %q: %w", name, err)
 	}
 	defer func() { _ = unix.Close(skillFd) }()
-	return deploySkillDir(skillFd, "data/"+name)
+	return deploySkillDir(sourceFS, skillFd, root+"/"+name)
 }
 
 // deploySkillDir mirrors the embedded directory at embedPath into dirFd,
@@ -112,12 +125,12 @@ func deploySkill(baseFd int, name string) error {
 // Should-fix #1): a daemon killed mid-write (SIGKILL, power loss) leaves a
 // temp file with no deferred cleanup ever running for it, so the *next*
 // deploy pass over the same directory has to sweep it up instead.
-func deploySkillDir(dirFd int, embedPath string) error {
+func deploySkillDir(sourceFS fs.FS, dirFd int, embedPath string) error {
 	if err := cleanupStaleTempFiles(dirFd); err != nil {
 		return fmt.Errorf("clean up stale temp files under %q: %w", embedPath, err)
 	}
 
-	entries, err := skillsFS.ReadDir(embedPath)
+	entries, err := fs.ReadDir(sourceFS, embedPath)
 	if err != nil {
 		return fmt.Errorf("read embedded dir %q: %w", embedPath, err)
 	}
@@ -128,7 +141,7 @@ func deploySkillDir(dirFd int, embedPath string) error {
 			if err != nil {
 				return fmt.Errorf("dir %q: %w", e.Name(), err)
 			}
-			err = deploySkillDir(childFd, childEmbedPath)
+			err = deploySkillDir(sourceFS, childFd, childEmbedPath)
 			_ = unix.Close(childFd)
 			if err != nil {
 				return err
@@ -136,7 +149,7 @@ func deploySkillDir(dirFd int, embedPath string) error {
 			continue
 		}
 
-		embedded, err := skillsFS.ReadFile(childEmbedPath)
+		embedded, err := fs.ReadFile(sourceFS, childEmbedPath)
 		if err != nil {
 			return fmt.Errorf("read embedded %q: %w", childEmbedPath, err)
 		}
