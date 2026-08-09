@@ -68,7 +68,6 @@ func toJobViews(jobs []*Job) []*templates.JobView {
 	return views
 }
 
-
 type WebHandler struct {
 	Service           WebService
 	Hub               *TaskEventHub
@@ -797,7 +796,6 @@ func (h *WebHandler) PostStartSession(w http.ResponseWriter, r *http.Request) {
 	jobURL := "/jobs/" + result.JobID
 	redirectOrHXRedirect(w, r, jobURL)
 }
-
 
 // WebManagementHandler serves the CLI management API at /api/web/*.
 // All routes are accessible only via UNIX socket (CLI control plane).

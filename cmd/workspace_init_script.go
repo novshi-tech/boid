@@ -10,7 +10,7 @@ import (
 	"os/exec"
 	"strings"
 
-	"github.com/novshi-tech/boid/internal/api"
+	"github.com/novshi-tech/boid/internal/apiwire"
 	"github.com/novshi-tech/boid/internal/client"
 	"github.com/novshi-tech/boid/internal/orchestrator"
 	"github.com/spf13/cobra"
@@ -185,7 +185,7 @@ type fetchedWorkspaceInitScript struct {
 	// Exists is false for a workspace in the pass-through class.
 	Exists bool
 	// Revision is the ETag to send back as If-Match — a content hash, or
-	// api.WorkspaceInitScriptAbsentRevision when there is no script. Both are
+	// apiwire.WorkspaceInitScriptAbsentRevision when there is no script. Both are
 	// usable: guarding the CREATION of a workspace's first script is exactly
 	// what the absent sentinel is for.
 	//
@@ -216,7 +216,7 @@ type fetchedWorkspaceInitScript struct {
 // otherwise send an operator hunting for a workspace that is right there.
 func fetchWorkspaceInitScript(c *client.Client, slug string) (fetchedWorkspaceInitScript, error) {
 	statusCode, body, revision, err := c.GetRawWithAcceptAndRevision(
-		workspaceInitScriptPathFor(slug), api.WorkspaceInitScriptContentType)
+		workspaceInitScriptPathFor(slug), apiwire.WorkspaceInitScriptContentType)
 	if err != nil {
 		return fetchedWorkspaceInitScript{}, fmt.Errorf("fetch init.sh: %w", err)
 	}
@@ -374,7 +374,7 @@ func putWorkspaceInitScript(cmd *cobra.Command, c *client.Client, slug string, c
 	if workspaceInitScriptForce {
 		path += "?force=true"
 	}
-	statusCode, body, err := c.PutRawWithIfMatch(path, api.WorkspaceInitScriptContentType, content, ifMatch)
+	statusCode, body, err := c.PutRawWithIfMatch(path, apiwire.WorkspaceInitScriptContentType, content, ifMatch)
 	if err != nil {
 		return initScriptError(fmt.Errorf("write init.sh: %w", err), keptPath)
 	}
@@ -387,7 +387,7 @@ func putWorkspaceInitScript(cmd *cobra.Command, c *client.Client, slug string, c
 		return initScriptError(fmt.Errorf("write init.sh: %s", formatWorkspaceAPIError(statusCode, body)), keptPath)
 	}
 
-	var result api.WorkspaceInitScriptResult
+	var result apiwire.WorkspaceInitScriptResult
 	if err := json.Unmarshal(body, &result); err != nil {
 		return initScriptError(fmt.Errorf("decode response: %w", err), keptPath)
 	}
@@ -410,16 +410,16 @@ func initScriptError(err error, keptPath string) error {
 // themselves and every reason to want to know where it went — and an unlabelled
 // path invites exactly the mistake this PR is fixing in the adapters' "not
 // found" message, where a daemon-side path read as a host one.
-func formatWorkspaceInitScriptResult(slug string, result api.WorkspaceInitScriptResult) string {
+func formatWorkspaceInitScriptResult(slug string, result apiwire.WorkspaceInitScriptResult) string {
 	var b strings.Builder
 	switch result.Action {
-	case api.WorkspaceInitScriptWritten:
+	case apiwire.WorkspaceInitScriptWritten:
 		fmt.Fprintf(&b, "workspace %q init.sh written (%d bytes)\n", slug, result.Bytes)
 		fmt.Fprintf(&b, "  it runs on the next dispatch into this workspace, in a throwaway container\n")
-	case api.WorkspaceInitScriptCleared:
+	case apiwire.WorkspaceInitScriptCleared:
 		fmt.Fprintf(&b, "workspace %q init.sh cleared — the workspace now runs no init script\n", slug)
 		fmt.Fprintf(&b, "  the HOME volume and everything installed in it are untouched\n")
-	case api.WorkspaceInitScriptUnchanged:
+	case apiwire.WorkspaceInitScriptUnchanged:
 		fmt.Fprintf(&b, "workspace %q init.sh unchanged\n", slug)
 	default:
 		fmt.Fprintf(&b, "workspace %q init.sh: %s\n", slug, result.Action)

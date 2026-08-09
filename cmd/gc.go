@@ -6,7 +6,7 @@ import (
 	"text/tabwriter"
 	"time"
 
-	"github.com/novshi-tech/boid/internal/api"
+	"github.com/novshi-tech/boid/internal/apiwire"
 	"github.com/novshi-tech/boid/internal/client"
 	"github.com/novshi-tech/boid/internal/humanize"
 	"github.com/spf13/cobra"
@@ -70,7 +70,7 @@ func runGC(cmd *cobra.Command, args []string) error {
 		// only, GC never deletes a workspace home itself (`workspace remove`
 		// does that). Comes back empty, with WorkspaceHomesListError set,
 		// whenever no trustworthy listing could be produced.
-		WorkspaceHomes []api.WorkspaceHomeSize `json:"workspace_homes,omitempty"`
+		WorkspaceHomes []apiwire.WorkspaceHomeSize `json:"workspace_homes,omitempty"`
 		// WorkspaceHomesListError is non-empty when the daemon could not
 		// produce or trust the listing: the engine's volume enumeration
 		// failed (PR7 round-2 codex review, Major 2), or the workspace lister
@@ -116,7 +116,7 @@ func runGC(cmd *cobra.Command, args []string) error {
 // therefore be untrustworthy (codex PR #791 review, Should-fix #3). Printing
 // nothing in either case would be indistinguishable from a clean install with
 // no homes, which is precisely what hid a wedged engine.
-func printWorkspaceHomes(out io.Writer, homes []api.WorkspaceHomeSize, listErr string) {
+func printWorkspaceHomes(out io.Writer, homes []apiwire.WorkspaceHomeSize, listErr string) {
 	if listErr != "" {
 		fmt.Fprintf(out, "workspace homes: listing unavailable (%s)\n", listErr)
 	}

@@ -1,3 +1,5 @@
+//go:build linux
+
 package cmd
 
 // cmd/check_test.go exercises the PR7 rewrite of `boid check`

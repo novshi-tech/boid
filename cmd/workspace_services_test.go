@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/novshi-tech/boid/internal/api"
+	"github.com/novshi-tech/boid/internal/apiwire"
 	"github.com/novshi-tech/boid/internal/orchestrator"
 	"github.com/novshi-tech/boid/testutil"
 )
@@ -37,7 +37,7 @@ func TestRunWorkspaceServices_AddListRemove_FullCycle(t *testing.T) {
 		t.Errorf("add output = %q, want both service names", addOut.String())
 	}
 
-	var detail api.WorkspaceDetail
+	var detail apiwire.WorkspaceDetail
 	if err := ts.Client.Do("GET", "/api/workspaces/team-a", nil, &detail); err != nil {
 		t.Fatalf("verify add: %v", err)
 	}
@@ -156,7 +156,7 @@ func TestRunWorkspaceServices_List_PreservesOtherMetaFields(t *testing.T) {
 		t.Fatalf("runWorkspaceServicesAdd: %v", err)
 	}
 
-	var detail api.WorkspaceDetail
+	var detail apiwire.WorkspaceDetail
 	if err := ts.Client.Do("GET", "/api/workspaces/team-a", nil, &detail); err != nil {
 		t.Fatalf("verify: %v", err)
 	}

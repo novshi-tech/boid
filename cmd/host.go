@@ -1,3 +1,5 @@
+//go:build linux
+
 package cmd
 
 // cmd/host.go implements "host mode" (nose directive, PR-3 Option 4
@@ -108,7 +110,6 @@ import (
 	"github.com/novshi-tech/boid/internal/client"
 	"github.com/novshi-tech/boid/internal/version"
 	boidscripts "github.com/novshi-tech/boid/scripts"
-	"github.com/spf13/cobra"
 )
 
 // cliTokenFileName names the persistent shared-secret file under
@@ -155,17 +156,6 @@ const hostModeProbeTimeout = 1500 * time.Millisecond
 // the call site.
 func hostModeEnabled() bool {
 	return true
-}
-
-// isRemoteScope reports whether cmd is annotated boid.scope=remote — the
-// commands host mode actually needs to intercept (they talk to the
-// daemon's HTTP API). scope=local (start/stop/gc/...) and scope=neutral
-// (login/logout) commands fall through to the ordinary
-// profiles.Resolve-based path unchanged regardless of BOID_MODE: they
-// either are bare-metal daemon lifecycle machinery this file has no
-// opinion about, or need no daemon connection at all.
-func isRemoteScope(cmd *cobra.Command) bool {
-	return cmd.Annotations[scopeAnnotationKey] == scopeRemote
 }
 
 // hostModeConfigDir returns (creating if necessary) the ~/.config/boid

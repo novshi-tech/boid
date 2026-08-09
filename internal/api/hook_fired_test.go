@@ -169,4 +169,3 @@ func TestRunDispatchLoop_PersistsFiredEventsOnFailedDispatch(t *testing.T) {
 		t.Errorf("dispatch_error actions on failed dispatch = %d, want 1", actionTypes["dispatch_error"])
 	}
 }
-

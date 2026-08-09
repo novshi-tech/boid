@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/novshi-tech/boid/internal/api"
+	"github.com/novshi-tech/boid/internal/apiwire"
 	"github.com/novshi-tech/boid/internal/client"
 	"github.com/spf13/cobra"
 )
@@ -91,7 +91,7 @@ func runJobList(cmd *cobra.Command, args []string) error {
 	}
 
 	c := client.FromContext(cmd.Context())
-	var jobs []*api.Job
+	var jobs []*apiwire.Job
 	if err := c.Do("GET", "/api/jobs?task_id="+taskID, nil, &jobs); err != nil {
 		return fmt.Errorf("list jobs: %w", err)
 	}
@@ -108,7 +108,7 @@ func runJobList(cmd *cobra.Command, args []string) error {
 
 func runJobShow(cmd *cobra.Command, args []string) error {
 	c := client.FromContext(cmd.Context())
-	var job api.Job
+	var job apiwire.Job
 	if err := c.Do("GET", "/api/jobs/"+args[0], nil, &job); err != nil {
 		return fmt.Errorf("get job: %w", err)
 	}
@@ -129,7 +129,7 @@ func runJobWatch(cmd *cobra.Command, args []string) error {
 	var lastFingerprint string
 
 	for {
-		var job api.Job
+		var job apiwire.Job
 		if err := c.Do("GET", "/api/jobs/"+jobID, nil, &job); err != nil {
 			return fmt.Errorf("watch job: %w", err)
 		}

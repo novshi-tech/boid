@@ -10,10 +10,16 @@ import (
 
 // TestClientDoesNotDependOnBehavior は internal/client のアーキ不変条件を機械で守る:
 //
-//   - 型の共有は許可: api の DTO / orchestrator のドメイン型を import して
+//   - 型の共有は許可: apiwire の DTO / orchestrator のドメイン型を import して
 //     リクエスト/レスポンスをマーシャルするのは正当 (バケツリレー回避)。
-//   - 振る舞いへの直接依存は禁止: client は必ず HTTP API を叩く。api/orchestrator の
+//   - 振る舞いへの直接依存は禁止: client は必ず HTTP API を叩く。apiwire/orchestrator の
 //     パッケージレベル関数 (振る舞い) をローカルで呼んではならない。
+//
+// 型の共有先は 2026-08-09 に internal/api から internal/apiwire へ移った
+// (docs/plans/windows-client-build.md)。api は daemon の handler パッケージで、
+// DTO 目当ての import が dispatcher/db/sandbox を丸ごと引き込み、CLI が
+// GOOS=windows/darwin でビルドできなくなっていたため。api の import 自体は
+// scripts/check-internal-architecture.sh が hard ban する。
 //
 // scripts/check-internal-architecture.sh は import グラフしか見えず「型 import」と
 // 「関数呼び出し」を区別できない (backend 層 server/db/dispatcher/sandbox は import
@@ -27,7 +33,7 @@ func TestClientDoesNotDependOnBehavior(t *testing.T) {
 
 	// 型の共有は許可するが、振る舞い関数の呼び出しを禁止するパッケージ。
 	behaviorForbidden := map[string]bool{
-		"github.com/novshi-tech/boid/internal/api":          true,
+		"github.com/novshi-tech/boid/internal/apiwire":      true,
 		"github.com/novshi-tech/boid/internal/orchestrator": true,
 	}
 

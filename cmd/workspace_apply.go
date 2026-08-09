@@ -10,7 +10,7 @@ import (
 	"reflect"
 	"sort"
 
-	"github.com/novshi-tech/boid/internal/api"
+	"github.com/novshi-tech/boid/internal/apiwire"
 	"github.com/novshi-tech/boid/internal/client"
 	"github.com/novshi-tech/boid/internal/orchestrator"
 	"github.com/spf13/cobra"
@@ -236,9 +236,9 @@ func printWorkspaceApplyInitScriptChange(out io.Writer, dryRun bool, slug string
 		return
 	}
 	verb := map[string]string{
-		api.WorkspaceInitScriptWritten:   "written",
-		api.WorkspaceInitScriptCleared:   "cleared (the workspace now runs no init script)",
-		api.WorkspaceInitScriptUnchanged: "unchanged",
+		apiwire.WorkspaceInitScriptWritten:   "written",
+		apiwire.WorkspaceInitScriptCleared:   "cleared (the workspace now runs no init script)",
+		apiwire.WorkspaceInitScriptUnchanged: "unchanged",
 	}[result.InitScriptAction]
 	if verb == "" {
 		verb = result.InitScriptAction

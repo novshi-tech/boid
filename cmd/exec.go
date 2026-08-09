@@ -6,7 +6,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/novshi-tech/boid/internal/api"
+	"github.com/novshi-tech/boid/internal/apiwire"
 	"github.com/novshi-tech/boid/internal/client"
 	"github.com/spf13/cobra"
 )
@@ -108,13 +108,13 @@ func runExec(cobraCmd *cobra.Command, args []string) error {
 	// be a terminal avoids that.
 	interactive := isRealTerminal(os.Stdin) && isRealTerminal(os.Stdout)
 
-	req := api.StartExecRequest{
+	req := apiwire.StartExecRequest{
 		Argv:        args,
 		Readonly:    execReadonly,
 		Interactive: interactive,
 		DisplayName: execName,
 	}
-	var result api.StartExecResult
+	var result apiwire.StartExecResult
 	if err := c.Do("POST", "/api/projects/"+project.ID+"/exec", req, &result); err != nil {
 		return fmt.Errorf("start exec: %w", err)
 	}
@@ -174,8 +174,8 @@ const execExitCodeUnknown = 1
 // synchronously, so this polls briefly rather than trusting a single read.
 func fetchExecExitCode(ctx context.Context, jobID string) (int, error) {
 	c := client.FromContext(ctx)
-	return pollExecExitCode(jobID, func() (api.Job, error) {
-		var job api.Job
+	return pollExecExitCode(jobID, func() (apiwire.Job, error) {
+		var job apiwire.Job
 		err := c.Do("GET", "/api/jobs/"+jobID, nil, &job)
 		return job, err
 	}, time.Sleep)
@@ -184,7 +184,7 @@ func fetchExecExitCode(ctx context.Context, jobID string) (int, error) {
 // pollExecExitCode holds fetchExecExitCode's polling loop with the GET call
 // and the sleep both injected, so the give-up path (see execExitCodeUnknown)
 // is unit-testable without a running daemon or real wall-clock waits.
-func pollExecExitCode(jobID string, fetch func() (api.Job, error), sleep func(time.Duration)) (int, error) {
+func pollExecExitCode(jobID string, fetch func() (apiwire.Job, error), sleep func(time.Duration)) (int, error) {
 	const maxAttempts = 20
 	const pollInterval = 100 * time.Millisecond
 
@@ -193,7 +193,7 @@ func pollExecExitCode(jobID string, fetch func() (api.Job, error), sleep func(ti
 		if err != nil {
 			return 0, err
 		}
-		if job.Status == api.JobStatusCompleted || job.Status == api.JobStatusFailed {
+		if job.Status == apiwire.JobStatusCompleted || job.Status == apiwire.JobStatusFailed {
 			return job.ExitCode, nil
 		}
 		if attempt >= maxAttempts-1 {

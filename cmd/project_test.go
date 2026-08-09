@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/novshi-tech/boid/internal/api"
+	"github.com/novshi-tech/boid/internal/apiwire"
 	"github.com/novshi-tech/boid/internal/client"
 	projectspec "github.com/novshi-tech/boid/internal/orchestrator"
 	"github.com/novshi-tech/boid/testutil"
@@ -1128,7 +1128,7 @@ func TestProjectAdd_WithUnknownWorkspace_CreatesAndAssigns(t *testing.T) {
 		t.Fatalf("runProjectAdd: %v", err)
 	}
 
-	var detail api.WorkspaceDetail
+	var detail apiwire.WorkspaceDetail
 	if err := ts.Client.Do("GET", "/api/workspaces/brand-new-ws", nil, &detail); err != nil {
 		t.Fatalf("expected workspace %q to have been get-or-created: %v", "brand-new-ws", err)
 	}

@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/novshi-tech/boid/internal/api"
+	"github.com/novshi-tech/boid/internal/apiwire"
 	"github.com/novshi-tech/boid/internal/orchestrator"
 	"github.com/novshi-tech/boid/testutil"
 )
@@ -65,7 +65,7 @@ spec:
 		t.Fatalf("runWorkspaceApply: %v", err)
 	}
 
-	var detail api.WorkspaceDetail
+	var detail apiwire.WorkspaceDetail
 	if err := ts.Client.Do("GET", "/api/workspaces/team-a", nil, &detail); err != nil {
 		t.Fatalf("verify apply: %v", err)
 	}
@@ -126,7 +126,7 @@ spec:
 		t.Fatalf("runWorkspaceApply: %v", err)
 	}
 
-	var detail api.WorkspaceDetail
+	var detail apiwire.WorkspaceDetail
 	if err := ts.Client.Do("GET", "/api/workspaces/team-b", nil, &detail); err != nil {
 		t.Fatalf("verify apply: %v", err)
 	}
@@ -174,7 +174,7 @@ func TestRunWorkspaceApply_EmptyEnvClears(t *testing.T) {
 		t.Fatalf("runWorkspaceApply: %v", err)
 	}
 
-	var detail api.WorkspaceDetail
+	var detail apiwire.WorkspaceDetail
 	if err := ts.Client.Do("GET", "/api/workspaces/team-c", nil, &detail); err != nil {
 		t.Fatalf("verify apply: %v", err)
 	}
@@ -214,7 +214,7 @@ spec:
 		t.Fatalf("runWorkspaceApply --dry-run: %v", err)
 	}
 
-	if err := ts.Client.Do("GET", "/api/workspaces/team-d", nil, &api.WorkspaceDetail{}); err == nil {
+	if err := ts.Client.Do("GET", "/api/workspaces/team-d", nil, &apiwire.WorkspaceDetail{}); err == nil {
 		t.Fatal("expected team-d to NOT exist after a --dry-run apply")
 	}
 	if !strings.Contains(out.String(), "team-d") {
@@ -306,7 +306,7 @@ spec:
 	}
 
 	// team-f itself must still have been created despite the missing project.
-	if err := ts.Client.Do("GET", "/api/workspaces/team-f", nil, &api.WorkspaceDetail{}); err != nil {
+	if err := ts.Client.Do("GET", "/api/workspaces/team-f", nil, &apiwire.WorkspaceDetail{}); err != nil {
 		t.Errorf("expected team-f to be created despite the missing project warning: %v", err)
 	}
 }
@@ -441,7 +441,7 @@ spec:
 	if !strings.Contains(errOut.String(), "additional_bindings") {
 		t.Errorf("stderr = %q, want a warning mentioning additional_bindings", errOut.String())
 	}
-	if err := ts.Client.Do("GET", "/api/workspaces/team-g", nil, &api.WorkspaceDetail{}); err != nil {
+	if err := ts.Client.Do("GET", "/api/workspaces/team-g", nil, &apiwire.WorkspaceDetail{}); err != nil {
 		t.Errorf("expected team-g to be created despite the additional_bindings warning: %v", err)
 	}
 }
@@ -477,7 +477,7 @@ metadata:
 	}
 
 	for _, slug := range []string{"team-h", "team-i"} {
-		if err := ts.Client.Do("GET", "/api/workspaces/"+slug, nil, &api.WorkspaceDetail{}); err != nil {
+		if err := ts.Client.Do("GET", "/api/workspaces/"+slug, nil, &apiwire.WorkspaceDetail{}); err != nil {
 			t.Errorf("expected workspace %q to exist: %v", slug, err)
 		}
 	}
@@ -567,7 +567,7 @@ func TestRunWorkspaceExportApply_EmptyFieldsRoundTripClearsAndDetaches(t *testin
 		t.Fatalf("runWorkspaceApply: %v", err)
 	}
 
-	var detail api.WorkspaceDetail
+	var detail apiwire.WorkspaceDetail
 	if err := ts.Client.Do("GET", "/api/workspaces/team-populated", nil, &detail); err != nil {
 		t.Fatalf("verify apply: %v", err)
 	}
@@ -618,7 +618,7 @@ spec:
 		t.Errorf("error = %v, want it to mention the unknown host_commands reference", err)
 	}
 
-	if err := ts.Client.Do("GET", "/api/workspaces/team-dryrun", nil, &api.WorkspaceDetail{}); err == nil {
+	if err := ts.Client.Do("GET", "/api/workspaces/team-dryrun", nil, &apiwire.WorkspaceDetail{}); err == nil {
 		t.Fatal("expected team-dryrun to NOT exist (dry-run must never write)")
 	}
 }

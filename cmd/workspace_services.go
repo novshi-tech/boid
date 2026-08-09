@@ -6,7 +6,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/novshi-tech/boid/internal/api"
+	"github.com/novshi-tech/boid/internal/apiwire"
 	"github.com/novshi-tech/boid/internal/client"
 	"github.com/novshi-tech/boid/internal/orchestrator"
 	"github.com/spf13/cobra"
@@ -80,7 +80,7 @@ func runWorkspaceServicesList(cmd *cobra.Command, args []string) error {
 	}
 
 	c := client.FromContext(cmd.Context())
-	var detail api.WorkspaceDetail
+	var detail apiwire.WorkspaceDetail
 	if err := c.Do("GET", "/api/workspaces/"+slug, nil, &detail); err != nil {
 		return fmt.Errorf("show workspace: %w", err)
 	}
@@ -199,7 +199,7 @@ func mutateWorkspaceServices(cmd *cobra.Command, slug string, names []string, tr
 
 	c := client.FromContext(cmd.Context())
 
-	var current api.WorkspaceDetail
+	var current apiwire.WorkspaceDetail
 	if err := c.Do("GET", "/api/workspaces/"+slug, nil, &current); err != nil {
 		return fmt.Errorf("fetch workspace: %w", err)
 	}

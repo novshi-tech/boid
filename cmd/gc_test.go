@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/novshi-tech/boid/internal/api"
+	"github.com/novshi-tech/boid/internal/apiwire"
 	"github.com/novshi-tech/boid/testutil"
 )
 
@@ -139,7 +139,7 @@ func TestRunGC_DryRun_StillCompletes(t *testing.T) {
 // the total), and the trailing total line.
 func TestPrintWorkspaceHomes_UnitFormatting(t *testing.T) {
 	var out bytes.Buffer
-	printWorkspaceHomes(&out, []api.WorkspaceHomeSize{
+	printWorkspaceHomes(&out, []apiwire.WorkspaceHomeSize{
 		{Slug: "default", Bytes: 1000},
 		{Slug: "orphan-ws", Bytes: 2000, Orphan: true},
 		{Slug: "broken-ws", SizeError: "permission denied"},

@@ -92,7 +92,7 @@ func TestDuplicateTask_CarriesRemoteIDAndInstructions(t *testing.T) {
 // TestDuplicateTask_SourceWithRefDoesNotCollide guards the regression where a
 // duplicate copied the source's ref verbatim. A source carrying a non-empty ref
 // (e.g. a re-duplicated supervisor) sits in the partial unique index
-// idx_tasks_ref_parent(ref, parent_id) WHERE ref != ''. Copying that ref into the
+// idx_tasks_ref_parent(ref, parent_id) WHERE ref != ”. Copying that ref into the
 // duplicate, which shares the source's (root) parent_id, violated the index and
 // failed the duplicate outright. The duplicate must instead get its own ref scope.
 func TestDuplicateTask_SourceWithRefDoesNotCollide(t *testing.T) {

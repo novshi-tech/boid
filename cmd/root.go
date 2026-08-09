@@ -310,6 +310,22 @@ func isLocalScope(cmd *cobra.Command) bool {
 	return cmd.Annotations[scopeAnnotationKey] == scopeLocal
 }
 
+// isRemoteScope reports whether cmd is annotated boid.scope=remote — the
+// commands host mode actually needs to intercept (they talk to the
+// daemon's HTTP API). scope=local (start/stop/gc/...) and scope=neutral
+// (login/logout) commands fall through to the ordinary
+// profiles.Resolve-based path unchanged: they either are bare-metal daemon
+// lifecycle machinery host mode has no opinion about, or need no daemon
+// connection at all.
+//
+// Lives here rather than in host.go (where it was defined until the
+// GOOS=windows client split) because PersistentPreRunE consults it on
+// every platform, while host.go — which manages a LOCAL containerized
+// daemon — is Linux-only.
+func isRemoteScope(cmd *cobra.Command) bool {
+	return cmd.Annotations[scopeAnnotationKey] == scopeRemote
+}
+
 // profileExplicitlyRequested reports whether the invocation named an
 // explicit --profile (docs/plans/release-onboarding.md「profiles との
 // 優先順位が未定義」, Fable M4): host mode becoming the unconditional

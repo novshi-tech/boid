@@ -10,6 +10,7 @@ current_allowed=(
   adapters
   api
   apigateway
+  apiwire
   atomicfile
   client
   config
@@ -41,6 +42,7 @@ target_allowed=(
   adapters
   api
   apigateway
+  apiwire
   atomicfile
   client
   config
@@ -177,6 +179,35 @@ any_internal_import_present() {
   return 1
 }
 
+# check_client_portability_deps は internal/client の api 依存禁止を
+# **推移的に** 検査する。check_forbidden_imports の各ルールは go list の
+# .Imports、すなわち直接 import しか見ていないため、client -> X -> api の
+# 経路が素通りする (レビューで実証済み: internal/humanize 経由の中継を
+# 挟むと script は exit 0 のまま、GOOS=windows のビルドだけが落ちた)。
+#
+# この 1 本だけ推移的にするのは、ここが「ビルドが壊れる境界」そのもの
+# だから (docs/plans/windows-client-build.md)。他のルール (server/db/
+# dispatcher/sandbox) は直接 import 禁止のままで足りる — それらは client
+# が要する型を持たず、経由して型を借りる動機が無い。
+#
+# なお internal/db は現在も client の推移的依存に含まれる (config →
+# gitgateway/apigateway 経由)。windows でビルドできているので移植性の
+# 問題ではなく、ここで db を推移的に禁止することはできない。
+check_client_portability_deps() {
+  local dep
+  for dep in $(go list -deps ./internal/client 2>/dev/null); do
+    if [[ "$dep" == "github.com/novshi-tech/boid/internal/api" ]]; then
+      echo "forbidden transitive dependency: internal/client -> ... -> internal/api" >&2
+      echo "  (go list -deps ./internal/client で経路を確認すること。" >&2
+      echo "   internal/api は daemon の handler パッケージなので、経由 import であっても" >&2
+      echo "   dispatcher/db/sandbox/skills をクライアントのコンパイル経路に載せ、" >&2
+      echo "   GOOS=windows / darwin のビルドを壊す)" >&2
+      return 1
+    fi
+  done
+  return 0
+}
+
 check_forbidden_imports() {
   local failed=0
   local line path imports
@@ -273,10 +304,18 @@ check_forbidden_imports() {
         #     関数/挙動をローカルで呼んではならない。
         # import グラフでは「型 import」と「振る舞い呼び出し」を区別できないため、
         # ここでは振る舞いのみを持つ backend 層 (server/db/dispatcher/sandbox) の
-        # import を hard ban する (これらは client が要する型を持たない)。api /
+        # import を hard ban する (これらは client が要する型を持たない)。
         # orchestrator 内の振る舞い関数の呼び出し禁止は識別子単位の静的解析が要り、
         # 本スクリプトの粒度では担保できない (レビュー/規約で補完)。
-        for forbidden in server db dispatcher sandbox; do
+        #
+        # api も hard ban に追加した (docs/plans/windows-client-build.md)。
+        # 「型の共有は許可」という上の原則自体は変わらないが、共有先が
+        # internal/api から internal/apiwire に移った — api は daemon の
+        # handler パッケージなので、DTO 1 個のために import すると
+        # dispatcher / db / sandbox / skills / web/templates までクライアントの
+        # コンパイル経路に載り、GOOS=windows / darwin のビルドが壊れる。
+        # これが実際に起きていた状態であり、この 1 行がその再発ゲート。
+        for forbidden in server db dispatcher sandbox api; do
           if import_present "$forbidden" "$imports"; then
             echo "forbidden import: internal/client -> internal/$forbidden" >&2
             failed=1
@@ -295,11 +334,13 @@ case "$MODE" in
     check_empty_project_dir
     check_import_graph
     check_forbidden_imports
+    check_client_portability_deps
     ;;
   target)
     check_allowed_set target_allowed
     check_import_graph
     check_forbidden_imports
+    check_client_portability_deps
     ;;
   imports)
     check_import_graph

@@ -1,6 +1,6 @@
 package api
 
-import "github.com/novshi-tech/boid/internal/orchestrator"
+import ()
 
 type StatusError struct {
 	Code    int
@@ -11,20 +11,7 @@ func (e *StatusError) Error() string {
 	return e.Message
 }
 
-type ActionApplication struct {
-	Task         *orchestrator.Task   `json:"task"`
-	Action       *orchestrator.Action `json:"action"`
-	MatchedHooks []string             `json:"matched_hooks,omitempty"`
-}
-
 type ProjectReloadResult struct {
 	Status string   `json:"status"`
 	Errors []string `json:"errors,omitempty"`
-}
-
-type TaskDetailView struct {
-	Task             *orchestrator.Task
-	Actions          []*orchestrator.Action
-	Jobs             []*Job
-	AvailableActions []string `json:"available_actions"`
 }

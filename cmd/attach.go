@@ -7,11 +7,9 @@ import (
 	"io"
 	"os"
 	"os/exec"
-	"os/signal"
 	"strings"
-	"syscall"
 
-	"github.com/novshi-tech/boid/internal/api"
+	"github.com/novshi-tech/boid/internal/apiwire"
 	"github.com/novshi-tech/boid/internal/client"
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
@@ -49,13 +47,13 @@ func runAttach(cmd *cobra.Command, args []string) error {
 func attachToJob(ctx context.Context, jobID string) error {
 	c := client.FromContext(ctx)
 
-	var job api.Job
+	var job apiwire.Job
 	if err := c.Do("GET", "/api/jobs/"+jobID, nil, &job); err != nil {
 		return err
 	}
 
 	// Non-running jobs: show saved output via pager instead of live attach.
-	if job.Status != api.JobStatusRunning {
+	if job.Status != apiwire.JobStatusRunning {
 		return showLogPager(job.Output, os.Stdout, os.Stdin)
 	}
 
@@ -100,16 +98,11 @@ func attachLive(ctx context.Context, jobID string) error {
 	}
 	sendResize()
 
-	var sigCh chan os.Signal
+	// Only watch for resizes when stdin is a real terminal (restore != nil);
+	// a piped invocation has no window to resize.
 	if restore != nil {
-		sigCh = make(chan os.Signal, 1)
-		signal.Notify(sigCh, syscall.SIGWINCH)
-		defer signal.Stop(sigCh)
-		go func() {
-			for range sigCh {
-				sendResize()
-			}
-		}()
+		stopWatchingResize := watchTerminalResize(sendResize)
+		defer stopWatchingResize()
 	}
 
 	return c.AttachJob(jobID, stdin, os.Stdout)

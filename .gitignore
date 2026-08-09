@@ -1,5 +1,9 @@
 # Binary
 /boid
+# クロスビルドの出力 (GOOS=windows go build . は boid.exe を吐く)。
+# 検証時は -o /dev/null を使うこと。
+/boid.exe
+*.exe
 
 # IDE
 .idea/

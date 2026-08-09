@@ -9,7 +9,7 @@ import (
 	"os/exec"
 	"strings"
 
-	"github.com/novshi-tech/boid/internal/api"
+	"github.com/novshi-tech/boid/internal/apiwire"
 	"github.com/novshi-tech/boid/internal/client"
 	"github.com/novshi-tech/boid/internal/config"
 	"github.com/spf13/cobra"
@@ -182,7 +182,7 @@ func isConfigConflictStatus(statusCode int) bool {
 // which warning, see internal/server/config_edit.go's
 // applyDynamicConfigLocked).
 func reportConfigApplyResult(cmd *cobra.Command, body []byte) error {
-	var result api.ConfigApplyResult
+	var result apiwire.ConfigApplyResult
 	if err := json.Unmarshal(body, &result); err != nil {
 		return fmt.Errorf("decode response: %w", err)
 	}
@@ -232,9 +232,9 @@ func runConfigSet(cmd *cobra.Command, args []string) error {
 	values := args[1:]
 
 	c := client.FromContext(cmd.Context())
-	var result api.ConfigMutateResult
-	if err := c.Do(http.MethodPost, "/api/config/mutate", api.ConfigMutateRequest{
-		Op:    api.ConfigMutateSet,
+	var result apiwire.ConfigMutateResult
+	if err := c.Do(http.MethodPost, "/api/config/mutate", apiwire.ConfigMutateRequest{
+		Op:    apiwire.ConfigMutateSet,
 		Key:   path,
 		Value: values,
 	}, &result); err != nil {
@@ -255,9 +255,9 @@ func runConfigUnset(cmd *cobra.Command, args []string) error {
 	path := args[0]
 
 	c := client.FromContext(cmd.Context())
-	var result api.ConfigMutateResult
-	if err := c.Do(http.MethodPost, "/api/config/mutate", api.ConfigMutateRequest{
-		Op:  api.ConfigMutateUnset,
+	var result apiwire.ConfigMutateResult
+	if err := c.Do(http.MethodPost, "/api/config/mutate", apiwire.ConfigMutateRequest{
+		Op:  apiwire.ConfigMutateUnset,
 		Key: path,
 	}, &result); err != nil {
 		return fmt.Errorf("unset %s: %w", path, err)

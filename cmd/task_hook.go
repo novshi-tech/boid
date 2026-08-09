@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"net/url"
 
-	"github.com/novshi-tech/boid/internal/api"
+	"github.com/novshi-tech/boid/internal/apiwire"
 	"github.com/novshi-tech/boid/internal/client"
 	"github.com/novshi-tech/boid/internal/orchestrator"
 	"github.com/spf13/cobra"
@@ -53,7 +53,7 @@ func runTaskHookReplay(cmd *cobra.Command, args []string) error {
 	}
 
 	path := fmt.Sprintf("/api/tasks/%s/hooks/%s/replay", url.PathEscape(taskID), url.PathEscape(hookID))
-	var result api.ReplayHookResult
+	var result apiwire.ReplayHookResult
 	if err := c.Do("POST", path, body, &result); err != nil {
 		return fmt.Errorf("hook replay: %w", err)
 	}

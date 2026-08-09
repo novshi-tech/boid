@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/novshi-tech/boid/internal/api"
+	"github.com/novshi-tech/boid/internal/apiwire"
 	"github.com/novshi-tech/boid/internal/client"
 	"github.com/novshi-tech/boid/internal/orchestrator"
 	"github.com/spf13/cobra"
@@ -167,7 +167,7 @@ func runTaskUpdate(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("at least one of --patch-file, --payload-file, or --instructions-file is required")
 	}
 
-	var req api.UpdateTaskRequest
+	var req apiwire.UpdateTaskRequest
 	if patchFile != "" {
 		data, err := readYAMLAsJSON(cmd, patchFile)
 		if err != nil {
@@ -276,8 +276,8 @@ func runTaskList(cmd *cobra.Command, args []string) error {
 // stripped and a warning is printed) so legacy YAML on disk keeps working.
 var deprecatedTaskRowSpecFields = []string{"worktree", "branch_prefix", "base_branch"}
 
-// parseTaskCreateSpec decodes a YAML/JSON task spec into api.CreateTaskRequest.
-// The intermediate YAML→JSON conversion is what lets api.CreateTaskRequest's
+// parseTaskCreateSpec decodes a YAML/JSON task spec into apiwire.CreateTaskRequest.
+// The intermediate YAML→JSON conversion is what lets apiwire.CreateTaskRequest's
 // json tags drive the schema (yaml tags are intentionally absent there to keep
 // a single source of truth). Unknown fields are rejected to surface typos.
 //
@@ -285,10 +285,10 @@ var deprecatedTaskRowSpecFields = []string{"worktree", "branch_prefix", "base_br
 // base_branch) are silently dropped (with a stderr warning) before strict
 // decoding so legacy specs do not break. readonly was re-enabled in Track A1.1
 // and is now a first-class field on CreateTaskRequest.
-func parseTaskCreateSpec(data []byte) (api.CreateTaskRequest, error) {
+func parseTaskCreateSpec(data []byte) (apiwire.CreateTaskRequest, error) {
 	var raw any
 	if err := yaml.Unmarshal(data, &raw); err != nil {
-		return api.CreateTaskRequest{}, fmt.Errorf("parse YAML: %w", err)
+		return apiwire.CreateTaskRequest{}, fmt.Errorf("parse YAML: %w", err)
 	}
 	// Strip the deprecated task-row override keys from the top-level map.
 	// Only emit a warning when the key actually appears in the spec.
@@ -305,13 +305,13 @@ func parseTaskCreateSpec(data []byte) (api.CreateTaskRequest, error) {
 	}
 	jsonBytes, err := json.Marshal(raw)
 	if err != nil {
-		return api.CreateTaskRequest{}, fmt.Errorf("encode YAML as JSON: %w", err)
+		return apiwire.CreateTaskRequest{}, fmt.Errorf("encode YAML as JSON: %w", err)
 	}
-	var req api.CreateTaskRequest
+	var req apiwire.CreateTaskRequest
 	dec := json.NewDecoder(bytes.NewReader(jsonBytes))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&req); err != nil {
-		return api.CreateTaskRequest{}, fmt.Errorf("decode task spec: %w", err)
+		return apiwire.CreateTaskRequest{}, fmt.Errorf("decode task spec: %w", err)
 	}
 	return req, nil
 }
@@ -389,7 +389,7 @@ func runTaskShow(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
-	var detail api.TaskDetailView
+	var detail apiwire.TaskDetailView
 	if err := c.Do("GET", "/api/tasks/"+args[0]+"/detail", nil, &detail); err != nil {
 		return fmt.Errorf("get task detail: %w", err)
 	}
@@ -410,7 +410,7 @@ func runTaskWatch(cmd *cobra.Command, args []string) error {
 	var lastFingerprint string
 
 	for {
-		var detail api.TaskDetailView
+		var detail apiwire.TaskDetailView
 		if err := c.Do("GET", "/api/tasks/"+taskID+"/detail", nil, &detail); err != nil {
 			return fmt.Errorf("watch task: %w", err)
 		}
@@ -489,7 +489,7 @@ func runTaskImport(cmd *cobra.Command, args []string) error {
 
 	reqs = applyImportFlags(reqs, projectID)
 
-	var result api.ImportResult
+	var result apiwire.ImportResult
 	if err := c.Do("POST", "/api/tasks/import", reqs, &result); err != nil {
 		return err
 	}
@@ -508,7 +508,7 @@ func runTaskReopen(cmd *cobra.Command, args []string) error {
 	c := client.FromContext(cmd.Context())
 	message, _ := cmd.Flags().GetString("message")
 
-	req := api.ApplyActionRequest{Type: "reopen"}
+	req := apiwire.ApplyActionRequest{Type: "reopen"}
 	if message != "" {
 		payload, err := json.Marshal(map[string]any{
 			"instruction": map[string]any{
@@ -555,7 +555,7 @@ func runTaskRerun(cmd *cobra.Command, args []string) error {
 	instructionsFile, _ := cmd.Flags().GetString("instructions-file")
 	c := client.FromContext(cmd.Context())
 
-	req := api.RerunTaskRequest{AutoStart: autoStart}
+	req := apiwire.RerunTaskRequest{AutoStart: autoStart}
 	if instructionsFile != "" {
 		data, err := readYAMLAsJSON(cmd, instructionsFile)
 		if err != nil {
@@ -597,7 +597,7 @@ func runTaskNotify(cmd *cobra.Command, args []string) error {
 	}
 
 	c := client.FromContext(cmd.Context())
-	req := api.NotifyTaskRequest{
+	req := apiwire.NotifyTaskRequest{
 		Message:    message,
 		Ask:        ask,
 		QuestionID: questionID,
@@ -626,7 +626,7 @@ func runTaskAnswer(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("--answer is required")
 	}
 	c := client.FromContext(cmd.Context())
-	req := api.AnswerTaskRequest{QuestionID: questionID, Answer: answer}
+	req := apiwire.AnswerTaskRequest{QuestionID: questionID, Answer: answer}
 	if err := c.Do("POST", "/api/tasks/"+taskID+"/answer", req, nil); err != nil {
 		return fmt.Errorf("answer task: %w", err)
 	}
@@ -634,8 +634,8 @@ func runTaskAnswer(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func parseImportLines(r io.Reader) ([]api.CreateTaskRequest, error) {
-	var reqs []api.CreateTaskRequest
+func parseImportLines(r io.Reader) ([]apiwire.CreateTaskRequest, error) {
+	var reqs []apiwire.CreateTaskRequest
 	scanner := bufio.NewScanner(r)
 	lineNum := 0
 	for scanner.Scan() {
@@ -644,7 +644,7 @@ func parseImportLines(r io.Reader) ([]api.CreateTaskRequest, error) {
 			continue
 		}
 		lineNum++
-		var req api.CreateTaskRequest
+		var req apiwire.CreateTaskRequest
 		if err := json.Unmarshal([]byte(line), &req); err != nil {
 			return nil, fmt.Errorf("line %d: invalid JSON: %w", lineNum, err)
 		}
@@ -656,7 +656,7 @@ func parseImportLines(r io.Reader) ([]api.CreateTaskRequest, error) {
 	return reqs, nil
 }
 
-func applyImportFlags(reqs []api.CreateTaskRequest, projectID string) []api.CreateTaskRequest {
+func applyImportFlags(reqs []apiwire.CreateTaskRequest, projectID string) []apiwire.CreateTaskRequest {
 	for i := range reqs {
 		if projectID != "" {
 			reqs[i].ProjectID = projectID

@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/novshi-tech/boid/internal/api"
+	"github.com/novshi-tech/boid/internal/apiwire"
 	"github.com/novshi-tech/boid/internal/client"
 	"github.com/novshi-tech/boid/internal/profiles"
 	"github.com/spf13/cobra"
@@ -207,14 +207,14 @@ func runLogin(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("login: daemon response missing canonical_url")
 	}
 	// Defense-in-depth: the server-side WriteConfig path already runs
-	// canonical_url through api.NormalizePublicURL at daemon startup, but
+	// canonical_url through apiwire.NormalizePublicURL at daemon startup, but
 	// we validate on this side too because a compromised or misconfigured
 	// daemon that returns a non-HTTPS or path-carrying canonical_url would
 	// otherwise persist that garbage into the caller's config.yaml (and
 	// then all future Bearer requests would go somewhere unexpected).
 	// Rejecting up front keeps the token file and config.yaml in the
 	// well-formed-origin invariant this whole flow depends on.
-	canonicalURL, err := api.NormalizePublicURL(resp.CanonicalURL)
+	canonicalURL, err := apiwire.NormalizePublicURL(resp.CanonicalURL)
 	if err != nil {
 		return fmt.Errorf("login: daemon returned invalid canonical_url %q: %w", resp.CanonicalURL, err)
 	}

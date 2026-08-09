@@ -18,7 +18,7 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
-	"github.com/novshi-tech/boid/internal/api"
+	"github.com/novshi-tech/boid/internal/apiwire"
 	"github.com/novshi-tech/boid/internal/orchestrator"
 )
 
@@ -466,7 +466,7 @@ func (c *Client) DoWithContentType(method, path, contentType string, body []byte
 }
 
 // ListJobs - フィルタ付きで全プロジェクト横断のジョブ一覧を取得
-func (c *Client) ListJobs(filter api.JobListFilter) ([]api.JobWithContext, error) {
+func (c *Client) ListJobs(filter apiwire.JobListFilter) ([]apiwire.JobWithContext, error) {
 	path := "/api/jobs"
 	var params []byte
 	if filter.Status != "" {
@@ -487,7 +487,7 @@ func (c *Client) ListJobs(filter api.JobListFilter) ([]api.JobWithContext, error
 		path += "?" + string(params)
 	}
 
-	var jobs []api.JobWithContext
+	var jobs []apiwire.JobWithContext
 	if err := c.Do("GET", path, nil, &jobs); err != nil {
 		return nil, err
 	}
@@ -807,8 +807,8 @@ func (c *Client) ListWorkspaces() ([]*orchestrator.WorkspaceSummary, error) {
 }
 
 // GetTaskDetail fetches task metadata + actions + jobs for a given task ID.
-func (c *Client) GetTaskDetail(id string) (*api.TaskDetailView, error) {
-	var detail api.TaskDetailView
+func (c *Client) GetTaskDetail(id string) (*apiwire.TaskDetailView, error) {
+	var detail apiwire.TaskDetailView
 	if err := c.Do("GET", "/api/tasks/"+id+"/detail", nil, &detail); err != nil {
 		return nil, err
 	}
@@ -816,7 +816,7 @@ func (c *Client) GetTaskDetail(id string) (*api.TaskDetailView, error) {
 }
 
 // CreateTask creates a new task via POST /api/tasks.
-func (c *Client) CreateTask(req api.CreateTaskRequest) (*orchestrator.Task, error) {
+func (c *Client) CreateTask(req apiwire.CreateTaskRequest) (*orchestrator.Task, error) {
 	var task orchestrator.Task
 	if err := c.Do("POST", "/api/tasks", req, &task); err != nil {
 		return nil, err
@@ -834,7 +834,7 @@ func (c *Client) GetProject(id string) (*orchestrator.Project, error) {
 }
 
 // UpdateTask updates the title and description of a task via PATCH /api/tasks/{id}.
-func (c *Client) UpdateTask(id string, req api.UpdateTaskRequest) (*orchestrator.Task, error) {
+func (c *Client) UpdateTask(id string, req apiwire.UpdateTaskRequest) (*orchestrator.Task, error) {
 	var task orchestrator.Task
 	if err := c.Do("PATCH", "/api/tasks/"+id, req, &task); err != nil {
 		return nil, err
@@ -849,7 +849,7 @@ func (c *Client) DeleteTask(id string) error {
 
 // DuplicateTask duplicates a task via POST /api/tasks/{id}/duplicate.
 func (c *Client) DuplicateTask(id string) (*orchestrator.Task, error) {
-	req := api.DuplicateTaskRequest{AutoStart: false}
+	req := apiwire.DuplicateTaskRequest{AutoStart: false}
 	var task orchestrator.Task
 	if err := c.Do("POST", "/api/tasks/"+id+"/duplicate", req, &task); err != nil {
 		return nil, err
@@ -859,7 +859,7 @@ func (c *Client) DuplicateTask(id string) (*orchestrator.Task, error) {
 
 // RerunTask resets a done/aborted task to pending via POST /api/tasks/{id}/rerun.
 func (c *Client) RerunTask(id string, autoStart bool) (*orchestrator.Task, error) {
-	req := api.RerunTaskRequest{AutoStart: autoStart}
+	req := apiwire.RerunTaskRequest{AutoStart: autoStart}
 	var task orchestrator.Task
 	if err := c.Do("POST", "/api/tasks/"+id+"/rerun", req, &task); err != nil {
 		return nil, err
@@ -869,13 +869,13 @@ func (c *Client) RerunTask(id string, autoStart bool) (*orchestrator.Task, error
 
 // AnswerTask submits an answer for an awaiting task via POST /api/tasks/{id}/answer.
 func (c *Client) AnswerTask(taskID, questionID, answer string) error {
-	req := api.AnswerTaskRequest{QuestionID: questionID, Answer: answer}
+	req := apiwire.AnswerTaskRequest{QuestionID: questionID, Answer: answer}
 	return c.Do("POST", "/api/tasks/"+taskID+"/answer", req, nil)
 }
 
 // ApplyAction sends an action to POST /api/tasks/{taskID}/actions.
-func (c *Client) ApplyAction(taskID string, req api.ApplyActionRequest) (*api.ActionApplication, error) {
-	var result api.ActionApplication
+func (c *Client) ApplyAction(taskID string, req apiwire.ApplyActionRequest) (*apiwire.ActionApplication, error) {
+	var result apiwire.ActionApplication
 	if err := c.Do("POST", "/api/tasks/"+taskID+"/actions", req, &result); err != nil {
 		return nil, err
 	}
@@ -909,7 +909,7 @@ func (c *Client) GetRaw(path string) (statusCode int, body []byte, err error) {
 // `edit` (cmd/config.go) to capture the daemon's current config.yaml
 // revision for a later POST's If-Match. config.yaml's GET response body is
 // raw YAML, not JSON, so unlike `boid workspace edit` (which reads
-// api.WorkspaceDetail.Revision straight out of a JSON body via Do), there is
+// apiwire.WorkspaceDetail.Revision straight out of a JSON body via Do), there is
 // no JSON field to carry the revision — the ETag response header is the
 // only place it exists on the wire.
 //

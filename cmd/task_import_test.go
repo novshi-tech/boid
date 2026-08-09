@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/novshi-tech/boid/internal/api"
+	"github.com/novshi-tech/boid/internal/apiwire"
 	"github.com/novshi-tech/boid/testutil"
 )
 
@@ -75,7 +75,7 @@ func TestParseImportLines_Empty(t *testing.T) {
 // --- applyImportFlags tests ---
 
 func TestApplyImportFlags_OverridesProject(t *testing.T) {
-	reqs := []api.CreateTaskRequest{
+	reqs := []apiwire.CreateTaskRequest{
 		{ProjectID: "old-project", Title: "Task 1", Behavior: "dev"},
 		{ProjectID: "old-project", Title: "Task 2", Behavior: "dev"},
 	}
@@ -89,7 +89,7 @@ func TestApplyImportFlags_OverridesProject(t *testing.T) {
 }
 
 func TestApplyImportFlags_EmptyFlagNoChange(t *testing.T) {
-	reqs := []api.CreateTaskRequest{
+	reqs := []apiwire.CreateTaskRequest{
 		{ProjectID: "proj", Title: "Task 1", Behavior: "dev"},
 	}
 

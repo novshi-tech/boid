@@ -57,10 +57,6 @@ func createTaskWithPayload(t *testing.T, ts *testutil.TestServer, title string, 
 
 // --- boid task findings tests ---
 
-
-
-
-
 // --- boid task artifacts tests ---
 
 func TestRunTaskArtifacts_ShowsYAML(t *testing.T) {
@@ -329,7 +325,6 @@ func setOutputFormat(t *testing.T, format string) {
 		}
 	})
 }
-
 
 func TestRunTaskList_JSONOutput(t *testing.T) {
 	ts := testutil.NewTestServer(t)

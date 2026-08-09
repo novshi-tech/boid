@@ -196,4 +196,3 @@ func makeMultipartCreateBody(t *testing.T, title, description, fileName, content
 	}
 	return buf, mw.FormDataContentType()
 }
-
