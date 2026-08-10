@@ -241,10 +241,34 @@ func (h *WSAttachHandler) allowedOrigins() []string {
 	return patterns
 }
 
+// maxOutputChunkBytes is the largest RAW payload one "output" frame
+// carries. It exists because the transcript this handler replays on
+// connect (dispatcher's containerSession.Subscribe returns the whole
+// accumulated transcript, which is unbounded) used to go out as a single
+// frame — and coder/websocket's DEFAULT read limit on the receiving side is
+// 32768 bytes, so attaching to any job that had printed more than ~24 KB
+// died instantly with "websocket: message too big: read limited at 32769
+// bytes" (reported from `boid attach` on Windows). 16 KiB raw base64-
+// inflates to 21848 bytes, which plus the JSON envelope stays comfortably
+// under 32768 — i.e. an OLD client with the stock read limit can still
+// attach to a NEW daemon. Browsers impose no such limit, which is why the
+// Web UI terminal never hit this.
+const maxOutputChunkBytes = 16 * 1024
+
 func (h *WSAttachHandler) sendOutput(ctx context.Context, conn *websocket.Conn, data []byte) error {
-	msg := wsServerMsg{Type: "output", Data: base64.StdEncoding.EncodeToString(data)}
-	b, _ := json.Marshal(msg)
-	return conn.Write(ctx, websocket.MessageText, b)
+	for len(data) > 0 {
+		chunk := data
+		if len(chunk) > maxOutputChunkBytes {
+			chunk = chunk[:maxOutputChunkBytes]
+		}
+		data = data[len(chunk):]
+		msg := wsServerMsg{Type: "output", Data: base64.StdEncoding.EncodeToString(chunk)}
+		b, _ := json.Marshal(msg)
+		if err := conn.Write(ctx, websocket.MessageText, b); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (h *WSAttachHandler) sendExit(ctx context.Context, conn *websocket.Conn, code int) {

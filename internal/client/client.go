@@ -574,6 +574,20 @@ func (c *Client) AttachJob(jobID string, stdin io.Reader, stdout io.Writer) erro
 	}
 	defer conn.CloseNow()
 
+	// Disable coder/websocket's 32768-byte default read limit. The daemon
+	// replays a job's whole accumulated transcript on connect, and that
+	// transcript is unbounded — with the stock limit, attaching to any job
+	// that had printed more than ~24 KB (the raw size whose base64 payload
+	// fills 32768 bytes) failed outright with "websocket: message too big:
+	// read limited at 32769 bytes" instead of showing output. Newer
+	// daemons chunk their output frames (ws_attach.go's
+	// maxOutputChunkBytes), but a freshly-updated CLI routinely attaches to
+	// an already-running older daemon, so the client must not depend on
+	// that. No cap is substituted for the default: any finite ceiling would
+	// just move the same failure to a longer job, and the peer here is the
+	// user's own daemon.
+	conn.SetReadLimit(-1)
+
 	outputErrCh := make(chan error, 1)
 	go func() {
 		outputErrCh <- attachReadOutput(ctx, conn, stdout)

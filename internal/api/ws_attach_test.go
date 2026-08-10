@@ -3,6 +3,7 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -574,5 +575,48 @@ func TestWSAttachHandler_OriginRejected(t *testing.T) {
 	}
 	if resp != nil && resp.StatusCode == http.StatusSwitchingProtocols {
 		t.Fatal("server should have rejected the origin")
+	}
+}
+
+// TestWSAttachHandler_LargeSnapshotSplitIntoFrames pins the daemon side of
+// the "websocket: message too big: read limited at 32769 bytes" attach
+// failure: a job's replayed transcript is unbounded, and sending it as one
+// frame blew past coder/websocket's 32768-byte DEFAULT read limit on the
+// other end (browsers have no such limit, but every Go client — `boid
+// attach`, `boid exec` — did). sendOutput must split anything oversized
+// into frames that stay under that default, so an old CLI can still attach
+// to a new daemon, while the concatenated payload is byte-identical.
+func TestWSAttachHandler_LargeSnapshotSplitIntoFrames(t *testing.T) {
+	snapshot := make([]byte, 200*1024)
+	for i := range snapshot {
+		snapshot[i] = byte('a' + i%26)
+	}
+	sub := &stubSubscriber{snapshot: snapshot, ch: make(chan []byte, 1), ok: true}
+	h := &WSAttachHandler{Subscriber: sub}
+	srv := newWSTestServer(h)
+	defer srv.Close()
+
+	conn := dialWS(t, srv, "job-1")
+	defer conn.CloseNow()
+
+	var got []byte
+	for len(got) < len(snapshot) {
+		msg := readWSMsg(t, conn)
+		if msg.Type != "output" {
+			t.Fatalf("frame type = %q, want output (got %d of %d bytes so far)", msg.Type, len(got), len(snapshot))
+		}
+		raw, err := base64.StdEncoding.DecodeString(msg.Data)
+		if err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		// The wire frame is the JSON envelope around the base64 payload;
+		// it is what the peer's read limit actually measures.
+		if frameLen := len(msg.Data) + 32; frameLen > 32768 {
+			t.Errorf("frame size ~%d bytes exceeds the 32768-byte default WS read limit", frameLen)
+		}
+		got = append(got, raw...)
+	}
+	if !bytes.Equal(got, snapshot) {
+		t.Errorf("reassembled snapshot differs from the original (%d vs %d bytes)", len(got), len(snapshot))
 	}
 }

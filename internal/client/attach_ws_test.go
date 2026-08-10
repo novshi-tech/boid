@@ -239,3 +239,30 @@ func TestAttachJob_HandshakeRejected_SurfacesServerErrorMessage(t *testing.T) {
 		t.Errorf("error = %q, want it to contain %q", got, "unauthorized")
 	}
 }
+
+// TestAttachJob_LargeOutputFrame_ExceedsDefaultReadLimit pins the fix for
+// the Windows `boid attach` failure "websocket: message too big: read
+// limited at 32769 bytes": WSAttachHandler replays a job's whole
+// accumulated transcript as its first output frame, and that transcript is
+// unbounded — any job that has printed more than ~24 KB (32768 / 4 * 3,
+// the base64 inflation of the frame's payload) produced a frame larger than
+// coder/websocket's 32768-byte default read limit, so the attach died at
+// the very first Read instead of showing output. AttachJob must accept
+// server frames of arbitrary size; the daemon-side chunking added
+// alongside this only bounds NEW daemons' frames, and a new CLI still has
+// to attach to an already-running old daemon.
+func TestAttachJob_LargeOutputFrame_ExceedsDefaultReadLimit(t *testing.T) {
+	payload := bytes.Repeat([]byte("x"), 256*1024)
+	c := newUnixWSServer(t, newWSHandler(t, func(t *testing.T, conn *websocket.Conn, r *http.Request) {
+		writeServerMsg(t, conn, wsAttachServerMsg{Type: "output", Data: base64.StdEncoding.EncodeToString(payload)})
+		writeServerMsg(t, conn, wsAttachServerMsg{Type: "exit", Code: 0})
+	}))
+
+	var stdout bytes.Buffer
+	if err := c.AttachJob("job-1", nil, &stdout); err != nil {
+		t.Fatalf("AttachJob: %v", err)
+	}
+	if got := stdout.Len(); got != len(payload) {
+		t.Errorf("stdout length = %d, want %d", got, len(payload))
+	}
+}
