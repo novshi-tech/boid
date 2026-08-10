@@ -643,7 +643,18 @@ func (c *Client) AttachJob(jobID string, stdin io.Reader, stdout io.Writer, opts
 			attachNotifyf(opts.Notify, "reattach with: boid attach %s", jobID)
 			return err
 		}
-		attachNotifyf(opts.Notify, "connection lost (%v); reconnecting...", err)
+		if !st.notifiedDrop {
+			// Only the first failure of this outage gets a notice — with
+			// backoff up to attachReconnectMaxWait, a stubborn network can
+			// mean several attachOnce failures per outage, and re-flashing
+			// this notice on every one of them (see attachNotifyTransientf's
+			// doc comment for why even one flash isn't free) buys nothing:
+			// the user already knows it's retrying from the first notice.
+			// attachOnce clears the flag again once a connection actually
+			// comes back up, so the NEXT outage still gets its own notice.
+			attachNotifyTransientf(opts.Notify, "connection lost (%v); reconnecting...", err)
+			st.notifiedDrop = true
+		}
 		if st.waitBeforeReconnect(wait) {
 			// stdin ended (EOF or Ctrl-] detach) while we were waiting.
 			return nil
@@ -667,6 +678,11 @@ type attachState struct {
 	// everConnected records that at least one WS handshake succeeded, so
 	// a first-dial failure stays a hard error.
 	everConnected bool
+	// notifiedDrop records that the CURRENT outage already got its
+	// "connection lost; reconnecting" notice, so a stubborn network
+	// retrying under backoff doesn't re-flash it on every attempt.
+	// attachOnce clears this the moment a dial actually succeeds.
+	notifiedDrop bool
 	// stdinClosed records that stdin already hit EOF, so every subsequent
 	// connection re-announces it (the server tracks this per connection).
 	stdinClosed bool
@@ -697,6 +713,30 @@ func attachNotifyf(w io.Writer, format string, args ...any) {
 		return
 	}
 	fmt.Fprintf(w, "\r\n[boid] "+format+"\r\n", args...)
+}
+
+// attachNotifyTransientf is attachNotifyf for a notice that fires WHILE the
+// job may still be producing output on the same terminal (the "connection
+// lost; reconnecting..." notice mid reconnect loop). opts.Notify is usually
+// os.Stderr, kept separate from stdout (the job's PTY stream) specifically
+// so boid's own chatter can't corrupt a TUI harness's screen — but stdout
+// and stderr still share one physical screen when both point at the user's
+// tty, so a plain "\r\n...\r\n" (attachNotifyf's shape) forces two real line
+// feeds that permanently scroll/displace whatever a full-screen program
+// (vim, another agent, ...) has drawn there, independent of which fd wrote
+// them. This variant stays on the current row — \r returns to column 0
+// without advancing a line, \x1b[2K clears stale content from that row
+// first, and \x1b[s/\x1b[u save and restore the cursor so the job's next
+// write still lands exactly where it left off instead of drifting onto our
+// notice. Reserve attachNotifyf's plain form for messages written right
+// before returning control to the shell (nothing else will land on that
+// row afterward, so advancing past it is what makes the final message
+// readable rather than overwritten).
+func attachNotifyTransientf(w io.Writer, format string, args ...any) {
+	if w == nil {
+		return
+	}
+	fmt.Fprintf(w, "\x1b[s\r\x1b[2K[boid] "+format+"\x1b[u", args...)
 }
 
 // stdinPump reads the caller's stdin exactly once for the whole attach,
@@ -777,6 +817,7 @@ func (c *Client) attachOnce(ctx context.Context, st *attachState) (done bool, er
 	}
 	defer conn.CloseNow()
 	st.everConnected = true
+	st.notifiedDrop = false
 
 	// Disable coder/websocket's 32768-byte default read limit. The daemon
 	// replays a job's whole accumulated transcript on connect, and that
