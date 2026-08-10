@@ -3,10 +3,14 @@
 package api
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/json"
+	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -90,10 +94,28 @@ func newWSTestServer(h *WSAttachHandler) *httptest.Server {
 	return httptest.NewServer(r)
 }
 
+// dialWS opens an attach connection and consumes the leading "attach"
+// frame every connection now begins with (WSAttachHandler.sendAttach), so
+// the tests below keep reading the frame they actually care about first.
+// Tests that assert on the attach frame itself use dialWSRaw.
 func dialWS(t *testing.T, srv *httptest.Server, jobID string) *websocket.Conn {
+	t.Helper()
+	conn := dialWSRaw(t, srv, jobID, "")
+	if msg := readWSMsg(t, conn); msg.Type != "attach" {
+		t.Fatalf("first frame type = %q, want %q", msg.Type, "attach")
+	}
+	return conn
+}
+
+// dialWSRaw dials without consuming anything. query, when non-empty, is
+// appended to the URL as-is (e.g. "replay_offset=5").
+func dialWSRaw(t *testing.T, srv *httptest.Server, jobID, query string) *websocket.Conn {
 	t.Helper()
 	ctx := context.Background()
 	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http") + "/api/jobs/" + jobID + "/attach/ws"
+	if query != "" {
+		wsURL += "?" + query
+	}
 	conn, _, err := websocket.Dial(ctx, wsURL, &websocket.DialOptions{
 		HTTPHeader: http.Header{"Origin": []string{srv.URL}},
 	})
@@ -448,6 +470,10 @@ func TestWSAttachHandler_BearerAuth_RegistersWithConnectionRegistry(t *testing.T
 	}
 	defer conn.CloseNow()
 
+	if msg := readWSMsg(t, conn); msg.Type != "attach" {
+		t.Fatalf("first frame type = %q, want %q", msg.Type, "attach")
+	}
+
 	// Give the handler time to register with the registry, then revoke and
 	// confirm the connection is torn down — this is only possible if the
 	// handshake's Bearer token was actually resolved to "dev-ws-bearer" and
@@ -619,4 +645,184 @@ func TestWSAttachHandler_LargeSnapshotSplitIntoFrames(t *testing.T) {
 	if !bytes.Equal(got, snapshot) {
 		t.Errorf("reassembled snapshot differs from the original (%d vs %d bytes)", len(got), len(snapshot))
 	}
+}
+
+// --- reconnect support: replay offset + keepalive ping ---
+
+// TestWSAttachHandler_ReplayOffsetResumesMidTranscript pins the server half
+// of CLI/Web auto-reconnect: a client that already rendered the first N
+// bytes of a job's transcript asks for the rest, and gets exactly the rest —
+// not the whole transcript repainted from the top.
+func TestWSAttachHandler_ReplayOffsetResumesMidTranscript(t *testing.T) {
+	sub := &stubSubscriber{snapshot: []byte("hello snapshot"), ch: make(chan []byte, 1), ok: true}
+	h := &WSAttachHandler{Subscriber: sub}
+	srv := newWSTestServer(h)
+	defer srv.Close()
+
+	conn := dialWSRaw(t, srv, "job-1", "replay_offset=5")
+	defer conn.CloseNow()
+
+	attach := readWSMsg(t, conn)
+	if attach.Type != "attach" {
+		t.Fatalf("first frame type = %q, want attach", attach.Type)
+	}
+	if attach.Offset != 5 {
+		t.Errorf("attach offset = %d, want 5", attach.Offset)
+	}
+
+	out := readWSMsg(t, conn)
+	data, err := base64.StdEncoding.DecodeString(out.Data)
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if string(data) != " snapshot" {
+		t.Errorf("replayed %q, want %q", string(data), " snapshot")
+	}
+}
+
+// TestWSAttachHandler_ReplayOffsetAtEnd_SendsNoReplay covers the common
+// reconnect case: nothing new was printed while the client was away, so the
+// next frame it sees must be live output, not a repaint.
+func TestWSAttachHandler_ReplayOffsetAtEnd_SendsNoReplay(t *testing.T) {
+	ch := make(chan []byte, 1)
+	sub := &stubSubscriber{snapshot: []byte("hello snapshot"), ch: ch, ok: true}
+	h := &WSAttachHandler{Subscriber: sub}
+	srv := newWSTestServer(h)
+	defer srv.Close()
+
+	conn := dialWSRaw(t, srv, "job-1", "replay_offset=14")
+	defer conn.CloseNow()
+
+	if attach := readWSMsg(t, conn); attach.Type != "attach" || attach.Offset != 14 {
+		t.Fatalf("attach frame = %+v, want type=attach offset=14", attach)
+	}
+
+	ch <- []byte("live")
+	out := readWSMsg(t, conn)
+	data, _ := base64.StdEncoding.DecodeString(out.Data)
+	if string(data) != "live" {
+		t.Errorf("next frame payload = %q, want %q (no replay expected)", string(data), "live")
+	}
+}
+
+// TestWSAttachHandler_ReplayOffsetBeyondSnapshot_ReplaysAll covers a daemon
+// that restarted and rebuilt a shorter transcript under the client's feet.
+// Sending nothing would leave the user staring at a blank terminal, so the
+// server replays from the top and says so in the attach frame.
+func TestWSAttachHandler_ReplayOffsetBeyondSnapshot_ReplaysAll(t *testing.T) {
+	sub := &stubSubscriber{snapshot: []byte("short"), ch: make(chan []byte, 1), ok: true}
+	h := &WSAttachHandler{Subscriber: sub}
+	srv := newWSTestServer(h)
+	defer srv.Close()
+
+	conn := dialWSRaw(t, srv, "job-1", "replay_offset=9999")
+	defer conn.CloseNow()
+
+	attach := readWSMsg(t, conn)
+	if attach.Offset != 0 {
+		t.Errorf("attach offset = %d, want 0 (replay from the top)", attach.Offset)
+	}
+	out := readWSMsg(t, conn)
+	data, _ := base64.StdEncoding.DecodeString(out.Data)
+	if string(data) != "short" {
+		t.Errorf("replayed %q, want %q", string(data), "short")
+	}
+}
+
+// TestWSAttachHandler_PingsIdleConnection pins the fix for the original
+// report: an attach left idle from Windows (over a Cloudflare Tunnel) got
+// dropped by the network because boid put no traffic on the wire at all.
+//
+// The assertion is made against a hand-rolled raw WS client rather than a
+// coder/websocket one, because that library answers pings transparently
+// deep inside Read — a normal client conn gives the test no way to observe
+// that a ping ever arrived.
+func TestWSAttachHandler_PingsIdleConnection(t *testing.T) {
+	sub := &stubSubscriber{ch: make(chan []byte), ok: true}
+	h := &WSAttachHandler{Subscriber: sub, KeepalivePeriod: 20 * time.Millisecond}
+	srv := newWSTestServer(h)
+	defer srv.Close()
+
+	conn := dialRawWS(t, srv, "job-idle")
+	defer conn.Close()
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		opcode, _ := readRawWSFrame(t, conn)
+		if opcode == rawWSOpcodePing {
+			return
+		}
+	}
+	t.Fatal("no keepalive ping arrived on an idle attach connection")
+}
+
+const rawWSOpcodePing = 0x9
+
+// dialRawWS performs the WebSocket handshake by hand and returns the naked
+// TCP connection, so a test can inspect the control frames coder/websocket
+// would otherwise consume on its own.
+func dialRawWS(t *testing.T, srv *httptest.Server, jobID string) net.Conn {
+	t.Helper()
+	addr := strings.TrimPrefix(srv.URL, "http://")
+	conn, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatalf("raw dial: %v", err)
+	}
+	t.Cleanup(func() { conn.Close() })
+	req := "GET /api/jobs/" + jobID + "/attach/ws HTTP/1.1\r\n" +
+		"Host: " + addr + "\r\n" +
+		"Upgrade: websocket\r\n" +
+		"Connection: Upgrade\r\n" +
+		"Sec-WebSocket-Version: 13\r\n" +
+		"Sec-WebSocket-Key: AAAAAAAAAAAAAAAAAAAAAA==\r\n" +
+		"Origin: " + srv.URL + "\r\n\r\n"
+	if _, err := conn.Write([]byte(req)); err != nil {
+		t.Fatalf("raw handshake write: %v", err)
+	}
+	br := bufio.NewReader(conn)
+	resp, err := http.ReadResponse(br, nil)
+	if err != nil {
+		t.Fatalf("raw handshake read: %v", err)
+	}
+	if resp.StatusCode != http.StatusSwitchingProtocols {
+		t.Fatalf("raw handshake status = %d, want 101", resp.StatusCode)
+	}
+	if br.Buffered() > 0 {
+		t.Fatalf("unexpected %d bytes buffered after handshake", br.Buffered())
+	}
+	return conn
+}
+
+// readRawWSFrame reads one server→client frame. Server frames are never
+// masked, so the payload follows the length header directly.
+func readRawWSFrame(t *testing.T, conn net.Conn) (opcode byte, payload []byte) {
+	t.Helper()
+	if err := conn.SetReadDeadline(time.Now().Add(3 * time.Second)); err != nil {
+		t.Fatalf("set read deadline: %v", err)
+	}
+	var head [2]byte
+	if _, err := io.ReadFull(conn, head[:]); err != nil {
+		t.Fatalf("read frame header: %v", err)
+	}
+	opcode = head[0] & 0x0f
+	size := uint64(head[1] & 0x7f)
+	switch size {
+	case 126:
+		var ext [2]byte
+		if _, err := io.ReadFull(conn, ext[:]); err != nil {
+			t.Fatalf("read 16-bit length: %v", err)
+		}
+		size = uint64(binary.BigEndian.Uint16(ext[:]))
+	case 127:
+		var ext [8]byte
+		if _, err := io.ReadFull(conn, ext[:]); err != nil {
+			t.Fatalf("read 64-bit length: %v", err)
+		}
+		size = binary.BigEndian.Uint64(ext[:])
+	}
+	payload = make([]byte, size)
+	if _, err := io.ReadFull(conn, payload); err != nil {
+		t.Fatalf("read frame payload: %v", err)
+	}
+	return opcode, payload
 }

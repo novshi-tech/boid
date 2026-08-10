@@ -296,7 +296,7 @@ daemon が集約する `~/.config/boid/host_commands.yaml` (workspace 群の `ho
 | コマンド | 役割 |
 |---|---|
 | `boid exec -p <project-ref> [--name NAME] [--readonly] -- <argv...>` | サンドボックス内で任意の argv を実行。 project の `host_commands` / `env` を継承する (`additional_bindings` は Phase 4 PR4 で撤去済み、workspace home に依存)。 `--` 以降が sandbox 内の argv (旧 `commands:` 名前指定は Phase 3-d で廃止)。 `--name` でジョブの表示名、 `--readonly` でワークスペースを read-only に |
-| `boid attach <job-id>` | 実行中のジョブの runtime に attach (interactive ジョブ向け) |
+| `boid attach <job-id>` | 実行中のジョブの runtime に attach (interactive ジョブ向け)。 Ctrl-] で detach。 通信が切れた場合は自動で再接続する ([接続断と再接続](#接続断と再接続)) |
 | `boid fetch <url>` | URL のコンテンツをホスト側で取得して出力する (直接 HTTP アクセスが制限されているサンドボックス内から使用可) |
 
 ## エージェント
@@ -309,6 +309,25 @@ daemon が集約する `~/.config/boid/host_commands.yaml` (workspace 群の `ho
 | `boid agent codex   -p <project> [同上]` | **[実験的]** codex セッションを起動。 `--instruction` なしでは sandbox 内で `codex` TUI を起動、 `--instruction` ありでは `codex exec` (1 ターン smoke) にフォールバック。 セッション永続化・`boid task notify` 連携・usage 計上は未実装 (詳細は `docs/plans/multi-harness-production.md`) |
 | `boid agent opencode -p <project> [同上]` | **[実験的]** opencode セッションを起動。 `--instruction` なしでは sandbox 内で `opencode <project>` TUI を起動、 `--instruction` ありでは `opencode run` (1 ターン smoke) にフォールバック。 セッション永続化・`boid task notify` 連携・usage 計上は未実装 (詳細は `docs/plans/multi-harness-production.md`) |
 | `boid agent stop <job-id>` | エージェントプロセスに SIGUSR1 を送り、正常停止を要求する |
+
+### 接続断と再接続
+
+attach は WebSocket 1 本で PTY をつないでいます。 boid 自身は attach にタイムアウトを一切設けていませんが、
+経路上の中継 (Cloudflare Tunnel、 NAT、 モバイル回線) は無通信のコネクションを一定時間で切ります。
+エージェントが入力待ちで放置されているときは PTY に 1 バイトも流れないので、これに引っかかります。
+
+対策は 2 段構えです。
+
+- **keepalive**: daemon と CLI の双方が 30 秒ごとに WebSocket ping を送るので、無通信状態そのものが発生しません
+- **自動再接続**: それでも切れた場合、 CLI は最大 3 分間 (0.5 秒から 5 秒までの指数バックオフ) 再接続を試みます。
+  再接続時は `?replay_offset=` で「すでに受け取ったバイト数」を伝えるため、画面は途中から続きが流れます (全画面の再描画にはなりません)
+
+再接続の状況は stderr に `[boid] ...` の形で出ます。 3 分以内に復帰しなかった場合は
+`boid attach <job-id>` で入り直すための job-id を表示して終了します
+(`boid agent claude` は attach 時に job-id を表示しないため、この案内が唯一の復帰手段になります)。
+
+Web UI のターミナルも同じ仕組みで自動再接続します。 加えて、 スマホでタブをバックグラウンドに
+送って戻ってきたときは、 タブが可視になった時点で即座に再接続を試みます。
 
 サンドボックス内で対話シェルを開きたい場合は `boid exec -p <project> -- bash` を使う (`boid agent shell` は git gateway cutover 後に退役)。
 
