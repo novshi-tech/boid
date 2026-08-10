@@ -44,6 +44,7 @@ export function initBoidTerminal(rootEl, { jobId, wsUrl }) {
   const statusDot   = rootEl.querySelector('.boid-terminal-status');
   const disconnectOverlay = rootEl.querySelector('.boid-terminal-disconnect-overlay');
   const reconnectBtn      = rootEl.querySelector('.boid-terminal-reconnect');
+  const disconnectMsg     = rootEl.querySelector('.boid-terminal-disconnect-msg');
   const ctrlBtn      = rootEl.querySelector('.boid-terminal-keybar-ctrl');
 
   const term = new window.Terminal({
@@ -67,6 +68,22 @@ export function initBoidTerminal(rootEl, { jobId, wsUrl }) {
   let ws = null;
   let ctrlActive = false;
   let exitReceived = false;
+  // Transcript bytes already painted. Handed back as ?replay_offset= on the
+  // next connect so a reconnect resumes mid-stream instead of repainting the
+  // whole session from the top.
+  let replayOffset = 0;
+  let reconnectAttempt = 0;
+  let reconnectTimer = null;
+  // Set by disconnect(): a deliberate teardown must not trigger a retry.
+  let closedByUser = false;
+
+  // Auto-reconnect pacing. An idle PTY produces no traffic, and every
+  // intermediary (Cloudflare Tunnel, mobile NAT, a phone suspending the tab)
+  // eventually reaps such a connection — so a drop is far more often the
+  // network than the job ending, and the terminal should heal itself.
+  const RECONNECT_MAX_ATTEMPTS = 8;
+  const RECONNECT_BASE_MS = 1000;
+  const RECONNECT_MAX_MS = 15000;
 
   // --- status indicator ---
   const STATUS_TITLES = {
@@ -127,22 +144,27 @@ export function initBoidTerminal(rootEl, { jobId, wsUrl }) {
   }
 
   // --- connect / reconnect ---
+  function showOverlay(message) {
+    if (disconnectMsg) disconnectMsg.textContent = message;
+    disconnectOverlay.hidden = false;
+  }
+
   function connect() {
+    if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
     exitReceived = false;
+    closedByUser = false;
     setStatus('connecting');
     disconnectOverlay.hidden = true;
 
-    const url = wsUrl.startsWith('ws') ? wsUrl : wsUrlFromPath(wsUrl);
+    let url = wsUrl.startsWith('ws') ? wsUrl : wsUrlFromPath(wsUrl);
+    if (replayOffset > 0) {
+      url += (url.indexOf('?') === -1 ? '?' : '&') + 'replay_offset=' + replayOffset;
+    }
     ws = new WebSocket(url);
 
     ws.onopen = function () {
       setStatus('connected');
-      // The server's first output message is a freshly-rendered screen grid
-      // (see runtime_local_linux.go subscribe / renderTerminalSnapshot), not a
-      // replay of the whole transcript. It's a full-screen paint, so wipe the
-      // terminal first — on reconnect this clears the previous session's frame
-      // so the snapshot lands on a clean screen.
-      term.reset();
+      reconnectAttempt = 0;
       const dims = fitAddon.proposeDimensions();
       if (dims) sendResize(dims.cols, dims.rows);
     };
@@ -150,9 +172,18 @@ export function initBoidTerminal(rootEl, { jobId, wsUrl }) {
     ws.onmessage = function (e) {
       let msg;
       try { msg = JSON.parse(e.data); } catch (_) { return; }
-      if (msg.type === 'output') {
+      if (msg.type === 'attach') {
+        // The server states where the replay that follows starts. offset 0
+        // means it is repainting the whole transcript (a first connect, or a
+        // daemon that rebuilt a shorter one), so wipe the screen first;
+        // anything else splices onto what is already on screen.
+        const offset = msg.offset || 0;
+        if (offset === 0) term.reset();
+        replayOffset = offset;
+      } else if (msg.type === 'output') {
         const bytes = Uint8Array.from(atob(msg.data), c => c.charCodeAt(0));
         term.write(bytes);
+        replayOffset += bytes.length;
       } else if (msg.type === 'exit') {
         exitReceived = true;
         term.write('\r\n\x1b[90m[プロセス終了: ' + msg.code + ']\x1b[0m\r\n');
@@ -164,15 +195,41 @@ export function initBoidTerminal(rootEl, { jobId, wsUrl }) {
 
     ws.onclose = function () {
       setStatus('disconnected');
-      if (!exitReceived) {
-        disconnectOverlay.hidden = false;
+      if (exitReceived || closedByUser) {
+        if (!exitReceived) showOverlay('接続が切断されました');
+        return;
       }
+      scheduleReconnect();
     };
 
     ws.onerror = function () {
       setStatus('disconnected');
     };
   }
+
+  function scheduleReconnect() {
+    if (reconnectAttempt >= RECONNECT_MAX_ATTEMPTS) {
+      showOverlay('接続が切断されました');
+      return;
+    }
+    const wait = Math.min(RECONNECT_BASE_MS * Math.pow(2, reconnectAttempt), RECONNECT_MAX_MS);
+    reconnectAttempt++;
+    showOverlay('接続が切れました。再接続中... (' + reconnectAttempt + '/' + RECONNECT_MAX_ATTEMPTS + ')');
+    setStatus('connecting');
+    reconnectTimer = setTimeout(connect, wait);
+  }
+
+  // Coming back to a backgrounded tab is the single most common way this
+  // terminal is found disconnected on a phone: the OS suspends the tab, the
+  // socket dies unnoticed, and the backoff has long since given up by the
+  // time the user looks again. Treat regaining visibility as a fresh start.
+  document.addEventListener('visibilitychange', function () {
+    if (document.visibilityState !== 'visible') return;
+    if (exitReceived || closedByUser) return;
+    if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return;
+    reconnectAttempt = 0;
+    connect();
+  });
 
   // --- xterm input → WS ---
   term.onData(function (data) {
@@ -344,6 +401,7 @@ export function initBoidTerminal(rootEl, { jobId, wsUrl }) {
 
   // --- reconnect button ---
   reconnectBtn.addEventListener('click', function () {
+    reconnectAttempt = 0;
     connect();
   });
 
@@ -374,6 +432,10 @@ export function initBoidTerminal(rootEl, { jobId, wsUrl }) {
 
   return {
     term,
-    disconnect: function () { if (ws) ws.close(); },
+    disconnect: function () {
+      closedByUser = true;
+      if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
+      if (ws) ws.close();
+    },
   };
 }

@@ -82,7 +82,7 @@ func TestServerJobRuntimeAttachAndResize(t *testing.T) {
 	}
 
 	var out bytes.Buffer
-	if err := c.AttachJob(job.ID, nil, &out); err != nil {
+	if err := c.AttachJob(job.ID, nil, &out, client.AttachOptions{}); err != nil {
 		t.Fatalf("AttachJob: %v", err)
 	}
 

@@ -105,7 +105,10 @@ func attachLive(ctx context.Context, jobID string) error {
 		defer stopWatchingResize()
 	}
 
-	return c.AttachJob(jobID, stdin, os.Stdout)
+	// Reconnect notices go to stderr, not stdout: stdout is the job's PTY
+	// stream, and splicing boid's own chatter into it would corrupt a TUI
+	// harness's screen state.
+	return c.AttachJob(jobID, stdin, os.Stdout, client.AttachOptions{Notify: os.Stderr})
 }
 
 func makeRawInput(f *os.File) (func(), error) {

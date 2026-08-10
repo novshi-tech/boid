@@ -9,7 +9,9 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -130,7 +132,7 @@ func TestAttachJob_UnixSocket_FullFraming(t *testing.T) {
 	var stdout bytes.Buffer
 	stdin := bytes.NewBufferString("hello server")
 
-	if err := c.AttachJob("job-1", stdin, &stdout); err != nil {
+	if err := c.AttachJob("job-1", stdin, &stdout, AttachOptions{}); err != nil {
 		t.Fatalf("AttachJob: %v", err)
 	}
 	if stdout.String() != "hello client" {
@@ -155,7 +157,7 @@ func TestAttachJob_HTTPS_SendsBearerHeaderOnHandshake(t *testing.T) {
 
 	c, _ := newTestTLSHTTPSClient(t, handler, "tk_attach_bearer")
 
-	if err := c.AttachJob("job-1", nil, nil); err != nil {
+	if err := c.AttachJob("job-1", nil, nil, AttachOptions{}); err != nil {
 		t.Fatalf("AttachJob: %v", err)
 	}
 	if gotAuth != "Bearer tk_attach_bearer" {
@@ -171,7 +173,7 @@ func TestAttachJob_ServerErrorFrame_ReturnsError(t *testing.T) {
 		writeServerMsg(t, conn, wsAttachServerMsg{Type: "error", Message: "boom: subscriber not configured"})
 	}))
 
-	err := c.AttachJob("job-1", nil, nil)
+	err := c.AttachJob("job-1", nil, nil, AttachOptions{})
 	if err == nil {
 		t.Fatal("expected an error")
 	}
@@ -198,7 +200,7 @@ func TestAttachJob_DetachKey_ReturnsNilPromptly(t *testing.T) {
 
 	stdin := detachingReader{}
 	done := make(chan error, 1)
-	go func() { done <- c.AttachJob("job-1", stdin, nil) }()
+	go func() { done <- c.AttachJob("job-1", stdin, nil, AttachOptions{}) }()
 
 	select {
 	case err := <-done:
@@ -231,7 +233,7 @@ func TestAttachJob_HandshakeRejected_SurfacesServerErrorMessage(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(map[string]string{"error": "unauthorized"})
 	}))
 
-	err := c.AttachJob("job-1", nil, nil)
+	err := c.AttachJob("job-1", nil, nil, AttachOptions{})
 	if err == nil {
 		t.Fatal("expected an error")
 	}
@@ -259,10 +261,186 @@ func TestAttachJob_LargeOutputFrame_ExceedsDefaultReadLimit(t *testing.T) {
 	}))
 
 	var stdout bytes.Buffer
-	if err := c.AttachJob("job-1", nil, &stdout); err != nil {
+	if err := c.AttachJob("job-1", nil, &stdout, AttachOptions{}); err != nil {
 		t.Fatalf("AttachJob: %v", err)
 	}
 	if got := stdout.Len(); got != len(payload) {
 		t.Errorf("stdout length = %d, want %d", got, len(payload))
+	}
+}
+
+// --- reconnect (2026-08-10) ---
+
+// shortenAttachReconnectWaits makes the backoff schedule test-speed and
+// restores it afterwards.
+func shortenAttachReconnectWaits(t *testing.T) {
+	t.Helper()
+	origInitial, origMax := attachReconnectInitialWait, attachReconnectMaxWait
+	attachReconnectInitialWait = time.Millisecond
+	attachReconnectMaxWait = 2 * time.Millisecond
+	t.Cleanup(func() {
+		attachReconnectInitialWait, attachReconnectMaxWait = origInitial, origMax
+	})
+}
+
+// TestAttachJob_ReconnectsAfterAbnormalDrop is the CLI half of the original
+// report: an idle attach from Windows over a Cloudflare Tunnel got reaped by
+// the network, which the client used to report as a finished job. It must
+// instead redial, tell the server how much transcript it already has, and
+// splice the rest onto the same stdout.
+func TestAttachJob_ReconnectsAfterAbnormalDrop(t *testing.T) {
+	shortenAttachReconnectWaits(t)
+
+	var mu sync.Mutex
+	var seenOffsets []string
+	attempt := 0
+
+	c := newUnixWSServer(t, newWSHandler(t, func(t *testing.T, conn *websocket.Conn, r *http.Request) {
+		mu.Lock()
+		n := attempt
+		attempt++
+		seenOffsets = append(seenOffsets, r.URL.Query().Get("replay_offset"))
+		mu.Unlock()
+
+		offset, _ := strconv.ParseInt(r.URL.Query().Get("replay_offset"), 10, 64)
+		writeServerMsg(t, conn, wsAttachServerMsg{Type: "attach", Offset: offset})
+		if n == 0 {
+			writeServerMsg(t, conn, wsAttachServerMsg{Type: "output", Data: base64.StdEncoding.EncodeToString([]byte("hello"))})
+			// Vanish without a close frame — exactly what an intermediary
+			// reaping an idle connection looks like from here.
+			conn.CloseNow()
+			return
+		}
+		writeServerMsg(t, conn, wsAttachServerMsg{Type: "output", Data: base64.StdEncoding.EncodeToString([]byte(" world"))})
+		writeServerMsg(t, conn, wsAttachServerMsg{Type: "exit", Code: 0})
+	}))
+
+	var stdout, notices bytes.Buffer
+	if err := c.AttachJob("job-reconnect", nil, &stdout, AttachOptions{Notify: &notices}); err != nil {
+		t.Fatalf("AttachJobWithOptions: %v", err)
+	}
+
+	if stdout.String() != "hello world" {
+		t.Errorf("stdout = %q, want %q", stdout.String(), "hello world")
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(seenOffsets) != 2 {
+		t.Fatalf("server saw %d connections, want 2 (%v)", len(seenOffsets), seenOffsets)
+	}
+	if seenOffsets[0] != "" {
+		t.Errorf("first connection sent replay_offset=%q, want it absent", seenOffsets[0])
+	}
+	if seenOffsets[1] != "5" {
+		t.Errorf("reconnect sent replay_offset=%q, want %q", seenOffsets[1], "5")
+	}
+	if !strings.Contains(notices.String(), "reconnecting") {
+		t.Errorf("notices = %q, want a reconnect notice", notices.String())
+	}
+}
+
+// TestAttachJob_ExitFrameDoesNotReconnect guards the other side of the
+// split: a job that genuinely ended must not be redialed.
+func TestAttachJob_ExitFrameDoesNotReconnect(t *testing.T) {
+	shortenAttachReconnectWaits(t)
+
+	var mu sync.Mutex
+	connections := 0
+	c := newUnixWSServer(t, newWSHandler(t, func(t *testing.T, conn *websocket.Conn, _ *http.Request) {
+		mu.Lock()
+		connections++
+		mu.Unlock()
+		writeServerMsg(t, conn, wsAttachServerMsg{Type: "exit", Code: 0})
+	}))
+
+	var stdout bytes.Buffer
+	if err := c.AttachJob("job-exit", nil, &stdout, AttachOptions{}); err != nil {
+		t.Fatalf("AttachJobWithOptions: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if connections != 1 {
+		t.Errorf("server saw %d connections, want 1", connections)
+	}
+}
+
+// TestAttachJob_ReconnectGivesUpAndPointsAtReattach pins what the user sees
+// when the network never comes back: a real error, plus the job id they need
+// to get back in by hand (`boid agent claude` never prints it otherwise).
+func TestAttachJob_ReconnectGivesUpAndPointsAtReattach(t *testing.T) {
+	shortenAttachReconnectWaits(t)
+
+	c := newUnixWSServer(t, newWSHandler(t, func(t *testing.T, conn *websocket.Conn, _ *http.Request) {
+		writeServerMsg(t, conn, wsAttachServerMsg{Type: "attach"})
+		conn.CloseNow()
+	}))
+
+	var stdout, notices bytes.Buffer
+	err := c.AttachJob("job-gone", nil, &stdout, AttachOptions{
+		Notify:          &notices,
+		ReconnectWindow: 30 * time.Millisecond,
+	})
+	if err == nil {
+		t.Fatal("expected an error once the reconnect window elapsed")
+	}
+	if !strings.Contains(notices.String(), "boid attach job-gone") {
+		t.Errorf("notices = %q, want a `boid attach job-gone` hint", notices.String())
+	}
+}
+
+// TestAttachJob_ReconnectDisabled keeps the pre-reconnect contract available
+// for callers that want a drop reported immediately.
+func TestAttachJob_ReconnectDisabled(t *testing.T) {
+	var mu sync.Mutex
+	connections := 0
+	c := newUnixWSServer(t, newWSHandler(t, func(t *testing.T, conn *websocket.Conn, _ *http.Request) {
+		mu.Lock()
+		connections++
+		mu.Unlock()
+		writeServerMsg(t, conn, wsAttachServerMsg{Type: "attach"})
+		conn.CloseNow()
+	}))
+
+	var stdout bytes.Buffer
+	err := c.AttachJob("job-nodial", nil, &stdout, AttachOptions{ReconnectWindow: -1})
+	if err == nil {
+		t.Fatal("expected the drop to be reported as an error")
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if connections != 1 {
+		t.Errorf("server saw %d connections, want 1 (reconnect disabled)", connections)
+	}
+}
+
+// TestAttachJob_FirstDialFailureIsNotRetried keeps a bad job id / down
+// daemon a fast, honest error instead of a timeout.
+func TestAttachJob_FirstDialFailureIsNotRetried(t *testing.T) {
+	shortenAttachReconnectWaits(t)
+
+	var mu sync.Mutex
+	requests := 0
+	c := newUnixWSServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		mu.Lock()
+		requests++
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotFound)
+		w.Write([]byte(`{"error":"no such job"}`)) //nolint:errcheck
+	}))
+
+	var stdout bytes.Buffer
+	err := c.AttachJob("job-missing", nil, &stdout, AttachOptions{})
+	if err == nil || !strings.Contains(err.Error(), "no such job") {
+		t.Fatalf("error = %v, want the server's own message", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if requests != 1 {
+		t.Errorf("server saw %d handshake attempts, want 1", requests)
 	}
 }
