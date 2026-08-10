@@ -1,7 +1,7 @@
 # プロジェクト横断の課題トリアージ (メタプロジェクト + daemon inbox)
 
-ステータス: **draft (第 5 版 2026-07-31 — 棚卸し watchdog・upstream の credential 境界原則・
-Phase 0 前倒し。 初版 2026-07-30)**。 未実装・未レビュー。
+ステータス: **draft (第 6 版 2026-08-10 — Phase 1 実測チェックリスト完了・決定 7 を task 統合で
+確定・「card」の固有名を廃止。 初版 2026-07-30)**。 Phase 0 dogfood 稼働中・Phase 1 未実装。
 発端: nose の構想メモ (音声書き起こし、 2026-07-30) と同日の設計ディスカッション。
 関連: [workspace-default-project.md](workspace-default-project.md) (workspace デフォルト project 定義)、
 [volume-only-daemon.md](volume-only-daemon.md) §論点a/b (project の git URL 化・ bare repo・
@@ -9,8 +9,13 @@ workspace export/import)、 [home-workspace-volume.md](home-workspace-volume.md)
 volume)、 [web-sessions.md](web-sessions.md) (Web UI セッション)。
 
 用語注: 設計討議中は境界を越える最小単位を「封筒 (envelope)」と呼んでいたが、 コード上
-`WorkspaceEnvelopeSpec` (workspace export YAML) が既に envelope の名を使っているため、 本 doc では
-**card** と改称する。 意味は同じ (「外側だけ見える。 中身は現地」)。
+`WorkspaceEnvelopeSpec` (workspace export YAML) が既に envelope の名を使っているため、 第 2〜5 版
+では **card** と呼んでいた。 第 6 版で決定 7 が task 統合で確定したのに伴い、 card という固有名は
+**廃止**する (一般的すぎる語であり、 内容でなく入れ物を指す語でもあるため — nose 指摘)。 以後は
+**triage 段階の task** (短く triage task) と呼び、 固有フィールドの sidecar テーブル名は
+`task_triage` とする。 第 5 版以前から残る本文中の「card」は「triage 段階の task」と読み替える。
+なお代替候補だった issue は「Jira issue を ingest する」という本システムの文脈と確実に衝突する
+ため不採用。
 
 ---
 
@@ -90,7 +95,7 @@ AI コーディングエージェントにより 1 プロジェクト内の生�
 
 | 用語 | 意味 |
 |---|---|
-| card | 境界を越える最小単位。 見出し・緊急度・出所ポインタ・状態のみで、 本文を含まない。 暫定名 — 決定 7 (改) で task 統合なら固有名は不要になり、 別モデルに倒れる場合は issue / concern に改名する |
+| triage 段階の task (旧称 card) | 境界を越える最小単位。 見出し・緊急度・出所ポインタ・状態のみで、 本文を含まない。 第 6 版で task 統合が確定し固有名を廃止 — 実体はメタプロジェクト所属の task が pre-execution 状態にあるもの。 固有フィールドは sidecar テーブル `task_triage` に持つ (実測 c) |
 | daemon inbox | daemon 側の card store と状態遷移の管理主体。 queue とは区別する (決定 9) |
 | queue | inbox の上の提示 view。 優先度と再浮上条件から「今応えるべき card」だけを並べたもの。 nose が応答する対象 |
 | 後回し (park) | 応答の一種。 card を queue から外し、 再浮上条件 (日時 / 事象 / someday) 付きで store に留める |
@@ -210,19 +215,21 @@ v3 の 3 論拠はこの形でこう変わる: (1) project_id 必須 → メタ�
 (3) 終端 GC 30 日 → 「耐久は git・ DB は運用」の原則 (ストレージ節) で許容。 (2) 状態機械の
 consumer 監査 → **唯一残る実測課題** (安易に状態を混ぜない、 という警戒自体は維持)。
 
-Phase 1 設計時の実測チェックリスト (workspace-default-project.md の「現状の実測」の流儀):
+Phase 1 設計時の実測チェックリスト — **2026-08-10 に (a)(b)(c) すべて完了** (結果の詳細は
+「Phase 1 実測結果」節):
 
-- (a) task 状態の全 consumer (dispatcher / supervisor / hook 評価 / GC / Web UI) が
-  pre-execution 状態を安全に無視できるか。
-- (b) sandbox からの task read 系 op の workspace scoping (一方通行原則、 決定 2 が task API
-  上でも成立するか)。
-- (c) 追加フィールド (urgency / wake / summary / task_spec) の置き場 (tasks 列 or sidecar)。
+- (a) task 状態の全 consumer が pre-execution 状態を安全に無視できるか → **概ね Yes**。
+  panic 経路ゼロ、 hook 評価・自動遷移・dispatcher sweep は executing 明示ガードで安全。
+  要対処は「SQL の `NOT IN ('done','aborted')` 誤包含」と「pending 限定ガードの機能不全」の
+  2 系統 11 箇所に集約 (実測結果節のチェックリスト)。
+- (b) sandbox からの task read 系 op の workspace scoping → **成立** (broker + executor の
+  二重検査)。 欠落していた `task_get` / `task.reopen` の 2 op は **PR #927 で修正済み
+  (2026-08-10 merged)**。
+- (c) 追加フィールドの置き場 → **sidecar テーブル `task_triage`** で確定。 tasks への列追加は
+  `orchestrator.Task` が DTO を兼ねるため全 API / CLI / Web の JSON に自動露出してしまう。
 
-判断時期は Phase 1 設計時。 Phase 0 は daemon store を持たないため、 この決定に依存しない。
-
-命名: task 統合なら「card」は"トリアージ段階の task"の通称に格下げされ、 固有モデル名は不要に
-なる。 実測の結果、 別モデルに倒れる場合は媒体でなく中身の名 (**issue** / **concern**) に
-改名する。
+判定: **task モデル統合で確定**。 命名は固有モデル名を置かず「triage 段階の task」で通す
+(用語注参照)。
 
 ### 決定 8: スコープは workspace 単位から、 横断は card メタデータのレベル
 
@@ -340,11 +347,12 @@ captured ──▶ triaged ──▶ shaping ──▶ ready ──▶ dispatche
 - kind が theme の card は常駐で、 この lifecycle に乗らずテーマセッションの起動単位になる
   (状態でなく kind で分ける)。
 
-### card スキーマ案
+### triage task スキーマ案 (旧 card スキーマ案)
 
 以下は**確定スキーマではなく Phase 0 で洗うフィールド候補**。 frontmatter の位置づけは
 ストレージ節の原則 2 (git 側に残す耐久写し + Phase 0 の検証場) であり、 モデリングの本体は
-Phase 0 の運用で安定させてから決定 7 (改) の形に落とす。
+Phase 0 の運用で安定させてから決定 7 (改) の形 (tasks + `task_triage` sidecar、 実測 c) に
+落とす。
 
 ```yaml
 id: card_xxxxxxxx
@@ -558,6 +566,97 @@ boid の既存データは「揮発しても再構築可能」を前提にして
 
 ---
 
+## Phase 1 実測結果 (2026-08-10)
+
+決定 7 の実測チェックリスト (a)(b)(c) をコードベース全域の調査で実施した結果。 ファイル:行は
+実施時点 (main = PR #927 merge 後) のもの。
+
+### (a) task 状態機械への pre-execution 状態追加 — 行けるが対処リストは実在する
+
+安全側の事実: `TaskStatus` は素の文字列派生 (`internal/orchestrator/model.go:8-16`) で、 DB は
+TEXT・CHECK 制約なし・exhaustive switch なし。 **未知状態で panic する箇所はゼロ**。 hook 評価
+(`evaluator.go:37`)・自動遷移 (`machine.go:53-70`)・dispatcher の起動時 sweep
+(`dispatcher/store.go:188,198`)・planner (`planner.go:258`) はいずれも対象状態の明示ガードで、
+pre-execution 状態を勝手に触らない。 また status を直接セットする API は存在せず
+(`apiwire/task.go` の Create/Update に Status フィールドが無い)、 新状態に入る経路は
+**state machine への action 追加のみ** — これは決定 13 (イベントソーシング) と整合する制約。
+
+要対処は 2 系統 11 箇所:
+
+**誤包含系 (`NOT IN ('done','aborted')` パターン)**
+
+1. `status=open` フィルタ (`internal/orchestrator/store.go:155-163`) が pre-execution task を
+   全部拾い、 Web UI デフォルト画面 (`internal/api/web.go:275-276`) が someday で埋まる。
+   **最大のブロッカー**。 open / closed に第 3 のカテゴリ (pre-execution) を足す。
+2. `open_child_count` (`store.go:64`) が pre-execution な子を数え、 親の `notify --done` を
+   `verifyDoneClaim` (`internal/api/task_notify.go:310-318`) が永久 409 にする。
+3. 30 日 GC (`internal/orchestrator/repository.go:233`) は done/aborted のみ対象で、
+   parked / someday は**永久保持**になる。 これは意図的仕様として明示する (課題を GC で silent
+   drop しない、 fail-open と同方向)。 DB 肥大の増加源になる点だけ監視。
+
+**pending 限定ガード系 (機能不全)**
+
+4. title / project 編集 (`internal/api/task_service.go:86-99`) と instructions 編集
+   (`:158-162`、 `lifecycle.go:137-140`) が pending 限定。 **triaged / ready の task を整形
+   セッション (UC-3) で書き換えられない**。 pre-execution 状態を編集可能集合に加える。
+5. `start` の FromStatus が pending 固定 (`machine.go:166`)。 Go (= ready → dispatched) の
+   遷移ルール追加が必須。
+
+**その他**
+
+6. `.badge-parked` CSS が既に job 表示用シノニムとして存在 (`web/static/style.css:249-252`、
+   task awaiting 中の running job を "parked" と表示)。 task status に parked を足すと意味の
+   異なる 2 概念が同名クラスになる。 どちらかを改名。
+7. 新状態のバッジ色・行ストライプ色が無く無地表示になる (`style.css:239-248, 372-377`)。
+   なお 0022 で消えた verifying / reworking の CSS が残存しており、 CSS は状態増減に追従して
+   いない既往がある。
+8. `boid task watch` が pre-execution を非終端とみなし無限待ちする (`cmd/observe.go:15-17`)。
+9. Web UI の status タブが open / closed の 2 択ハードコード
+   (`web/templates/components/filters.templ:38-47`)。 queue view 用の面が要る。
+10. brokered `boid task list --status` が未検証の status 値を素通しする
+    (`internal/server/boid_executor.go:326-344`)。 workspace scoping は効いているので読める
+    のは自 workspace 分のみだが、 決定 2 の「read 系 op 不許可」を task 統合後にどう解釈する
+    かを Phase 1 で明文化する (自 workspace の triage task が job から列挙できること自体は
+    決定 2 の自 workspace 手渡しと同等で、 露出は増えない)。
+11. `AvailableActions` (`machine.go:87-108`) は未知状態で `["abort"]` のみ返す。 新遷移に
+    `Manual: true` を付ければ Web UI のボタンに自動で出る — UI 配線はここに乗せる。
+
+### (b) workspace scoping — 成立。 欠落 2 op は修正済み
+
+broker (`internal/sandbox/broker.go` の TokenContext 検証) + executor
+(`internal/server/boid_executor.go` の `ctx.AllowsProject` 再検査) の二重層で、 task_list /
+project_list / project_behaviors / job 系 / task_create の cross-project 経路まで scoping が
+成立していることを確認。 分離の要は「broker token を持つ job に daemon API socket を渡さない」
+strip (`internal/dispatcher/runner.go:922-929`)。
+
+欠落していたのは `task_get` (cross-workspace read) と `task.reopen` (write) の 2 op のみで、
+**PR #927 で executor 側に `AllowsProject` 検査を追加し merge 済み**。 これを放置したまま
+task 統合すると、 triage task の ID がメール・Jira 経由で workspace 外に出回る値になった時点で
+「他 workspace の課題見出しが読める」経路に昇格するところだった。
+
+軽微な残課題: project ref の曖昧解決エラーが daemon 全域の一致件数を返し、 cross-workspace の
+project 存在オラクルになる (論点 i)。
+
+### (c) フィールド置き場 — sidecar `task_triage` + queue 述語だけ実列
+
+- tasks への列追加は不採用: `orchestrator.Task` が DTO を兼ねており (変換層なし、
+  `internal/api/store.go:217-275`)、 列を足すと全 API レスポンス・CLI・Web の JSON に自動露出
+  する。 前例実測でフィールド 1 個 = 7〜17 ファイル。
+- sidecar `task_triage` (task_id PK/FK): 生きた 1:1 sidecar の前例あり (`project_workspaces`)。
+  先置き migration は 3 ファイル 41 行で挙動不変に切れる前例 (`02589114`) があり、 撤退も
+  `DROP TABLE` 1 行で最安。
+- 列の内訳: **urgency / wake_at は実列** (+index) — queue の決定論評価 (決定 12) の SQL 述語に
+  なるため。 summary / task_spec / source / content_ref は述語にならないので **JSON 1 列**に
+  まとめる (`tasks.payload` 流の `json.RawMessage` パターン)。 `tasks.payload` への相乗りは
+  trait 名前空間 (`payload_merge.go:19-35`) と衝突するため不採用。
+- 決定 13 の実測: `actions.type` は自由文字列で、 外部サブシステムが独自 kind を後付けした
+  前例あり (`api_gateway_request`)。 全遷移が action 行として append 済みなので、 park / wake /
+  promote を type にして payload に理由を載せるだけ — **追加スキーマゼロで使える**。 現在
+  state は `tasks.status` 列が正であり action からの導出 cache にはなっていないが、 決定 13 の
+  「徹底」はこの範囲 (event 追記を正とし、 遷移はすべて action を経由する) で満たすものとする。
+
+---
+
 ## 段階導入
 
 ### Phase 0: 機構追加なしの dogfood (最初の検証)
@@ -585,8 +684,14 @@ exit criteria (2 週間程度): (1) nose が「見に行く」頻度が実際に
 
 ### Phase 1: daemon inbox + Web UI queue
 
-- storage は決定 7 (改) の実測結果に従う: task モデル拡張 (第一候補) または専用テーブル。
-  いずれでも一方通行と workspace scoping (決定 2) を保つ。
+- storage は確定 (実測 a/b/c): **task モデル統合 + sidecar `task_triage`** (urgency / wake_at
+  は実列 + index、 summary / task_spec / source / content_ref は JSON 1 列)。 前提だった
+  scoping 欠落 (`task_get` / `task.reopen`) は PR #927 で修正済み。
+- pre-execution 状態 (captured / triaged / parked / ready) を state machine への action 追加で
+  導入し、 実測結果節 (a) の対処チェックリスト 11 項目を潰す。 特に: open フィルタの第 3
+  カテゴリ化 (項 1、 メタプロジェクト既定除外 filter と統合して設計)、 pending 限定ガードの
+  緩和 (項 4)、 Go 遷移ルール (項 5)。
+- 状態遷移はすべて action 経由で記録する (決定 13、 実測 c — 追加スキーマ不要)。
 - queue を「queue の決定論的評価」節のルールで実装。
 - Web UI: queue 表示、 Go (= task create)、 破棄、 task 一覧のメタプロジェクト既定除外
   filter。 notify 連携。
@@ -642,6 +747,9 @@ exit criteria (2 週間程度): (1) nose が「見に行く」頻度が実際に
 - **論点 h: source 既読化の詳細**。 label 併用の要否、 archive まで踏み込むか、 nose 自身の
   既読との意味論衝突 (自分で先に読んだメールの扱い)、 誤ノイズ判定時の復旧 (triage log からの
   再起票)、 Slack / Jira の cursor 保存場所。
+- **論点 i: project ref 解決の存在オラクル**。 ambiguous project ref のエラーが daemon 全域の
+  一致件数を返すため、 sandbox から cross-workspace の project 存在が推測できる (実測 b)。
+  軽微だが、 Phase 1 で triage task の流量が増える前に握りつぶすか判断する。
 
 ---
 
@@ -730,3 +838,17 @@ exit criteria (2 週間程度): (1) nose が「見に行く」頻度が実際に
   まま)。
 - **Phase 0 は即開始可能**: khi は customer bitbucket の `khi-task-collector` (メタプロジェクト
   の原型) が登録済みで、 前提が揃っている。
+
+### 第 6 版 (2026-08-10、 Phase 1 実測) での変更
+
+- **決定 7 の実測チェックリスト (a)(b)(c) を完了し、 task モデル統合で確定**。 結果の全文は
+  「Phase 1 実測結果」節 (新設)。 要旨: (a) 未知状態で panic する経路はゼロで、 リスクは
+  「`NOT IN ('done','aborted')` の誤包含」と「pending 限定ガード」の 2 系統 11 箇所に集約。
+  (b) brokered op の workspace scoping は成立、 欠落していた `task_get` / `task.reopen` は
+  **PR #927 で修正・merge 済み**。 (c) フィールド置き場は sidecar `task_triage` + queue 述語
+  (urgency / wake_at) のみ実列で確定。
+- **「card」の固有名を廃止し「triage 段階の task」に統一** (nose 指摘: card は一般的すぎ、
+  内容でなく入れ物を指す語)。 決定 7 (改) が予告していた「統合なら固有名不要」の実行。 代替
+  候補 issue は Jira issue の ingest 文脈と衝突するため不採用。 sidecar テーブル名は
+  `task_triage` (機能で名付け、 状態 triaged とも揃う)。
+- 論点 i (project ref 曖昧解決の存在オラクル) を追加。 Phase 1 節を実測結果で具体化。
