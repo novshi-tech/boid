@@ -743,12 +743,12 @@ func TestWSAttachHandler_PingsIdleConnection(t *testing.T) {
 	srv := newWSTestServer(h)
 	defer srv.Close()
 
-	conn := dialRawWS(t, srv, "job-idle")
+	conn, br := dialRawWS(t, srv, "job-idle")
 	defer conn.Close()
 
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
-		opcode, _ := readRawWSFrame(t, conn)
+		opcode, _ := readRawWSFrame(t, conn, br)
 		if opcode == rawWSOpcodePing {
 			return
 		}
@@ -760,8 +760,11 @@ const rawWSOpcodePing = 0x9
 
 // dialRawWS performs the WebSocket handshake by hand and returns the naked
 // TCP connection, so a test can inspect the control frames coder/websocket
-// would otherwise consume on its own.
-func dialRawWS(t *testing.T, srv *httptest.Server, jobID string) net.Conn {
+// would otherwise consume on its own. The bufio.Reader that read the
+// handshake response is returned with it and MUST be used for every
+// subsequent frame read: the server writes its first frames immediately
+// after the 101, so that reader has usually already buffered some of them.
+func dialRawWS(t *testing.T, srv *httptest.Server, jobID string) (net.Conn, *bufio.Reader) {
 	t.Helper()
 	addr := strings.TrimPrefix(srv.URL, "http://")
 	conn, err := net.Dial("tcp", addr)
@@ -787,21 +790,18 @@ func dialRawWS(t *testing.T, srv *httptest.Server, jobID string) net.Conn {
 	if resp.StatusCode != http.StatusSwitchingProtocols {
 		t.Fatalf("raw handshake status = %d, want 101", resp.StatusCode)
 	}
-	if br.Buffered() > 0 {
-		t.Fatalf("unexpected %d bytes buffered after handshake", br.Buffered())
-	}
-	return conn
+	return conn, br
 }
 
 // readRawWSFrame reads one server→client frame. Server frames are never
 // masked, so the payload follows the length header directly.
-func readRawWSFrame(t *testing.T, conn net.Conn) (opcode byte, payload []byte) {
+func readRawWSFrame(t *testing.T, conn net.Conn, br *bufio.Reader) (opcode byte, payload []byte) {
 	t.Helper()
 	if err := conn.SetReadDeadline(time.Now().Add(3 * time.Second)); err != nil {
 		t.Fatalf("set read deadline: %v", err)
 	}
 	var head [2]byte
-	if _, err := io.ReadFull(conn, head[:]); err != nil {
+	if _, err := io.ReadFull(br, head[:]); err != nil {
 		t.Fatalf("read frame header: %v", err)
 	}
 	opcode = head[0] & 0x0f
@@ -809,19 +809,19 @@ func readRawWSFrame(t *testing.T, conn net.Conn) (opcode byte, payload []byte) {
 	switch size {
 	case 126:
 		var ext [2]byte
-		if _, err := io.ReadFull(conn, ext[:]); err != nil {
+		if _, err := io.ReadFull(br, ext[:]); err != nil {
 			t.Fatalf("read 16-bit length: %v", err)
 		}
 		size = uint64(binary.BigEndian.Uint16(ext[:]))
 	case 127:
 		var ext [8]byte
-		if _, err := io.ReadFull(conn, ext[:]); err != nil {
+		if _, err := io.ReadFull(br, ext[:]); err != nil {
 			t.Fatalf("read 64-bit length: %v", err)
 		}
 		size = binary.BigEndian.Uint64(ext[:])
 	}
 	payload = make([]byte, size)
-	if _, err := io.ReadFull(conn, payload); err != nil {
+	if _, err := io.ReadFull(br, payload); err != nil {
 		t.Fatalf("read frame payload: %v", err)
 	}
 	return opcode, payload
