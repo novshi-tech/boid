@@ -103,8 +103,8 @@ AI コーディングエージェントにより 1 プロジェクト内の生�
 | ingestion | workspace 内で定期実行される情報収集 job。 mail / Jira / Slack を読み、 workspace 内 triage を経て起票分だけ card を起こし、 source 側を処理済み化する (決定 10/11) |
 | 整形セッション | card を「Go 可能」まで持っていく対話セッション。 対象 workspace 内で走る |
 | テーマセッション | ふわっとした課題感・ テーマを前進させる定期のインタビュー形式セッション |
-| Go | nose による実行承認。 card → task create の唯一の遷移点 |
-| Go 可能 (ready) | 実行仕様が完結していて、 Go 一発で task create できる状態 |
+| Go | nose による実行承認 = triage task を **ready にする判断** (逆輸入 2)。 task 化そのものは ready からの機械処理であり、 Go を経ずに自動発生しない点は不変 |
+| ready | Go 済み・dispatch 待ち。 specced な子の spec から機械的に task を起こしてよい状態。 到着時点で ready のこともある (UC-1) |
 
 ---
 
@@ -325,25 +325,29 @@ daemon 集中と同レベルであり、 device pairing + web_secret の既存�
 
 ## データモデル (draft — Phase 0 で荒れる前提)
 
-### 状態機械
+### 状態機械 (第 6 版で Phase 0 実運用に追従 — 逆輸入 2)
 
 ```
-captured ──▶ triaged ──▶ shaping ──▶ ready ──▶ dispatched ──▶ done
-              │   ▲                               (task 側の完了を反映)
-              ▼   │ 再浮上条件 (日時 / 事象 / someday)
+captured ──▶ triaged ──▶ shaping ──▶ ready ──▶ working ──▶ done
+              │   ▲         (Go)       │  ▲    (全子終端 ∧ source 終了で自動)
+              ▼   │                    └──┘ 残課題を子に起こして再 Go
             parked
 ```
 
 - captured: capture 直後、 triage 前。 主に head-capture 経由 (mail / Jira / Slack 経路は
-  workspace 内 triage を通るため triaged で到着する、 決定 10)。
+  workspace 内 triage を通るため triaged で到着する、 決定 10)。 Phase 0 では未使用。
 - triaged: 課題として受理。 優先度・ hint 付与済み。 queue の対象。
 - parked: 後回し中。 queue に出ない。 再浮上条件を満たすと戻る。 遷移元は queue に出る状態
   (triaged / ready)、 復帰は元の状態へ。
-- shaping: 整形セッション進行中。
-- ready: Go 可能。 実行仕様 (task_spec) が完結。 triage が実行仕様まで書ければ到着時点で
-  ready のこともある (UC-1)。
-- dispatched: Go により task create 済み。 `task_ref` あり。
-- dropped: 破棄。 captured / triaged / shaping / parked から抜けられる。
+- shaping: 整形セッション進行中 (Phase 2)。 Phase 0 では未使用。
+- ready: **Go 済み・dispatch 待ち** (Go = ready にする判断、 逆輸入 2)。 specced な子の spec
+  から機械的に task を起こしてよい。 ready に滞留しないのは正常で、 滞留は dispatch 機構の
+  不調のサイン。
+- working (旧 dispatched): 着手中。 boid task 進行中 (dispatched な子あり) と、 nose が手動
+  対応中 (Jira 操作・返信など、 子は open のみ) の両方を含む。
+- done: 全子 closed ∧ source 終了で**自動で落ちる** (承認不要)。 dropped と区別する —
+  「応えるだけで進むか」は終わった件と捨てた件を区別できないと測れない。
+- dropped: 破棄。 必ず nose の判断でしか入らない。 どの状態からも入れる。
 - kind が theme の card は常駐で、 この lifecycle に乗らずテーマセッションの起動単位になる
   (状態でなく kind で分ける)。
 
@@ -358,7 +362,7 @@ Phase 0 の運用で安定させてから決定 7 (改) の形 (tasks + `task_tr
 id: card_xxxxxxxx
 workspace: khi            # daemon 押印。 push 側の自己申告は無視
 kind: signal | issue | theme
-state: captured | triaged | shaping | parked | ready | dispatched | done | dropped
+state: captured | triaged | shaping | parked | ready | working | done | dropped
 title: "..."              # 開示ポリシーに従った粒度
 summary: "..."            # triage が書く 2〜4 文の判断用要約 (開示ポリシー適用、 原文は含まない)
 urgency: now | today | week | someday   # 語彙は論点 d
@@ -366,13 +370,25 @@ wake: ""                  # parked 時のみ: 再浮上条件 (日時 / 事象 /
 source:
   type: mail | jira | slack | head | agent
   ref: "message-id / issue-key / permalink など。 本文は含まない"
+related_jira_issues: []   # source.type をまたぐ同一案件の束ねキー (逆輸入 3。 論点 g の実解)
 content_ref: "issues/2026-07-30-xxx.md"  # メタプロジェクト内の本文ファイル (相対 path)
 project_hint: "..."       # 任意。 確定は整形セッション (決定 5)
-task_spec:                # ready の必須要件: これだけで task create できる実行仕様
-  project: "..."          #   確定 project
-  behavior: "..."         #   task_behavior
-  instruction: "..."      #   task への指示文
-task_ref: ""              # Go 後に埋まる (由来 link)
+suggestion:               # エージェントの推奨 1 つ。 一次情報からの導出フィールド (逆輸入 3)
+  verb: go | shape | manual | park | drop | wake   #   nose の応答語彙と同じ
+  action: "..."           #   次の一手を 1 文で
+  reason: "..."
+  basis: "..."            #   導出の根拠にした一次情報
+observed:                 # 機械観測の射影 (子 task の生死・Jira status)。 evaluate だけが書く
+  at: ...
+children:                 # 派生した子のリスト。 旧 task_spec / task_ref / open_items を統合 (逆輸入 1)
+  - id: ch_00
+    title: "..."
+    status: open | specced | dispatched | closed
+    spec:                 #   specced 以降で必須: これだけで task create できる実行仕様
+      project: "..."
+      behavior: "..."
+      instruction: "..."
+    task_ref: ""          #   dispatched 以降: 起こした boid task の id
 created_at: ...
 updated_at: ...
 ```
@@ -599,8 +615,8 @@ pre-execution 状態を勝手に触らない。 また status を直接セット
 4. title / project 編集 (`internal/api/task_service.go:86-99`) と instructions 編集
    (`:158-162`、 `lifecycle.go:137-140`) が pending 限定。 **triaged / ready の task を整形
    セッション (UC-3) で書き換えられない**。 pre-execution 状態を編集可能集合に加える。
-5. `start` の FromStatus が pending 固定 (`machine.go:166`)。 Go (= ready → dispatched) の
-   遷移ルール追加が必須。
+5. `start` の FromStatus が pending 固定 (`machine.go:166`)。 ready からの機械 dispatch
+   (ready → working、 逆輸入 2) に対応する遷移ルール追加が必須。
 
 **その他**
 
@@ -657,6 +673,68 @@ project 存在オラクルになる (論点 i)。
 
 ---
 
+## Phase 0 実運用からの逆輸入 (2026-08-10)
+
+第 6 版の実測は boid 本体側だったが、 khi-task-collector (Phase 0 のメタプロジェクト) の運用は
+本 doc 第 5 版時点の設計より先に進んでいる。 仕様の正は同 repo の `docs/card-format.md` /
+`docs/card-events.md` (2026-08-10 時点の main を突合)。 本節はそこから doc 本体へ取り込む差分。
+
+### 逆輸入 1: 子は複数 — task_spec / task_ref / open_items は children に統合された
+
+Phase 0 の実測で「**1 つの triage task が複数の boid task に紐づくのが普通**」と分かり、 旧
+task_spec (card に 1 つ) / task_ref (代表 1 個) / open_items (残課題) は子のリスト
+**children** (open → specced → dispatched → closed) 1 本に統合された。 残課題つき完了を
+正常系とし、 残課題を新しい子として還流させて次の Go につなぐ (フィードバックループ前提)。
+
+決定 7 の「Go = 子 task 生成 (単数)」はこの形に読み替える。 task 統合との相性はむしろ良く、
+dispatched な子はそのまま boid の親子 task 構造に落ちる。 Phase 1 の設計論点は「open /
+specced な子 (まだ boid task でない残課題・実行仕様)」の置き場 — 子を最初から pre-execution
+状態の task にするか、 `task_triage` 側の JSON に留めて dispatch 時に task 化するか。 後者なら
+実測 (a) 項 2 (open_child_count が親の done を塞ぐ) を構造的に回避できるため、 現時点の
+第一候補は後者。
+
+### 逆輸入 2: dispatched → working、 Go は「ready にする判断」
+
+- 状態 dispatched は **working** に再定義された (2026-08-06)。 boid task 進行中に加え、
+  nose が手動対応中 (Jira 操作・返信など task を起こすまでもない作業) も含む。
+- **Go とは「triage task を ready にする判断」**であり、 task を起こす行為そのものではない。
+  ready → working (specced な子の spec からの task create) は決定論の機械処理でよい。
+  決定 12 と整合する再定義で、 daemon 実装では「Go 操作 = ready 遷移 + 機械 dispatch」の
+  2 段で実装する。 ready に滞留しないのは正常、 滞留は dispatch 機構の不調のサイン。
+- done は「全子終端 ∧ source 終了」で**自動で落とす** (承認不要)。 dropped は必ず nose の
+  判断 — 終わった件と捨てた件の区別が成功の定義の計測に必要なため。
+- **state と suggestion は直交する**: state は「今動けるか・誰のコートにあるか」、
+  suggestion は「動くとしたら何をするか」。
+
+### 逆輸入 3: suggestion / observed / related_jira_issues
+
+- **suggestion**: エージェントの推奨 1 つ (verb: go / shape / manual / park / drop / wake +
+  action / reason / basis)。 verb は nose の応答語彙と揃えてあり、 queue の問いに対する
+  「記入済みの答え」になる — Phase 1 の Web UI queue はボタンを選択済みで見せられ、 verb で
+  並び分けできる。 daemon は verb をフィールドとして読むだけなので決定 12 に反しない。
+  保存された記録ではなく**一次情報からの導出 (派生) フィールド**で、 巡回のたびに組み立て
+  直される — 鮮度が価値。 state を動かす提案 (park / drop / wake) は証拠つきで card-suggest
+  だけが書き、 採用は nose。 却下履歴は (card, verb, basis) で照合され同じ根拠の再提案は
+  機械的に捨てられる。
+- **observed**: 機械観測の射影 (子 task の生死・Jira status)。 evaluate だけが書く。
+  gone (task が DB から消えた事実) と done (完了) を区別する。
+- **related_jira_issues**: source.type をまたいで同一案件を束ねる補助キー。 論点 g (dedup)
+  の実解が既にある形。
+- **wake の構造化が Phase 1 の宿題**: Phase 0 の wake は自由記述であり、 queue 節 1 の
+  決定論評価 (wake_at 実列) に載せるには日付 / 事象 (task 終端参照) への構造化が要る。
+
+### 整合の確認: claims / decisions 二層は決定 12 / 13 の設計図
+
+Phase 0 のイベント機構 — claims (source 方言・workspace 内・増やしてよい) / decisions
+(共通語・card ごと・型を増やさない)、 evaluate (時計を持つ規則) / project (時計を持たない
+純粋関数) の分離 — は決定 12 / 13 とそのまま整合する。 decisions の語彙 (captured / triaged /
+attrs_set / child_* / parked / woken / done / dropped) は `actions.type` (自由文字列、 実測 c)
+にそのまま流し込める。 **Phase 1 の daemon 側実装は greenfield ではなく、 この機構の移植と
+して設計する** (observe → daemon の時計 + task DB 参照、 evaluate → queue の決定論的評価、
+project → daemon 側の state 導出)。
+
+---
+
 ## 段階導入
 
 ### Phase 0: 機構追加なしの dogfood (最初の検証)
@@ -692,6 +770,11 @@ exit criteria (2 週間程度): (1) nose が「見に行く」頻度が実際に
   カテゴリ化 (項 1、 メタプロジェクト既定除外 filter と統合して設計)、 pending 限定ガードの
   緩和 (項 4)、 Go 遷移ルール (項 5)。
 - 状態遷移はすべて action 経由で記録する (決定 13、 実測 c — 追加スキーマ不要)。
+- 子 (children) の扱い: dispatched な子は boid の親子 task 構造にそのまま落とす。 open /
+  specced な子は `task_triage` 側 JSON に留めて dispatch 時に task 化する (逆輸入 1 の
+  第一候補 — 実測 (a) 項 2 の回避)。
+- queue 表示は suggestion.verb を「記入済みの答え」として使う (逆輸入 3)。 wake の構造化
+  (日付 / 事象) もここで行う。
 - queue を「queue の決定論的評価」節のルールで実装。
 - Web UI: queue 表示、 Go (= task create)、 破棄、 task 一覧のメタプロジェクト既定除外
   filter。 notify 連携。
@@ -852,3 +935,9 @@ exit criteria (2 週間程度): (1) nose が「見に行く」頻度が実際に
   候補 issue は Jira issue の ingest 文脈と衝突するため不採用。 sidecar テーブル名は
   `task_triage` (機能で名付け、 状態 triaged とも揃う)。
 - 論点 i (project ref 曖昧解決の存在オラクル) を追加。 Phase 1 節を実測結果で具体化。
+- **Phase 0 実運用からの逆輸入を追記** (同日 2 巡目): khi-task-collector の
+  `docs/card-format.md` / `docs/card-events.md` (2026-08-10 の main) を突合し、 children 統合
+  (1 card = 複数 task)・working / Go 再定義・suggestion / observed / related_jira_issues を
+  取り込んだ (「Phase 0 実運用からの逆輸入」節)。 状態機械とスキーマ案も追従。 claims /
+  decisions 二層が決定 12 / 13 の設計図になっていることを確認し、 Phase 1 は同機構の移植と
+  して設計する方針にした。
