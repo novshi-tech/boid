@@ -193,6 +193,22 @@ func (e *boidBuiltinExecutor) ExecuteBoidBuiltin(goCtx context.Context, ctx sand
 		if e.tasks == nil {
 			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid task show unavailable"}
 		}
+		// broker only defaults an *empty* TaskID from the token context
+		// (BoidOpTaskGet's own case in broker.go) and otherwise passes an
+		// explicit caller-supplied one through untouched — unlike task_update
+		// / task_notify / task_answer / task_delete, which all look the
+		// target task up here before touching it, this op used to skip that
+		// check entirely, letting a caller read another workspace's task
+		// fields (title/description/status/payload/...) as long as it knew
+		// the task UUID. Look the task up and enforce the same
+		// AllowsProject gate the other task-scoped ops use.
+		existing, err := e.tasks.GetTask(req.TaskID)
+		if err != nil {
+			return &sandbox.ExecResponse{ExitCode: 1, Stderr: err.Error()}
+		}
+		if !ctx.AllowsProject(existing.ProjectID) {
+			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid task show is restricted to the current workspace"}
+		}
 		value, err := e.tasks.GetTaskField(req.TaskID, req.TaskField)
 		if err != nil {
 			return &sandbox.ExecResponse{ExitCode: 1, Stderr: err.Error()}
@@ -231,6 +247,22 @@ func (e *boidBuiltinExecutor) ExecuteBoidBuiltin(goCtx context.Context, ctx sand
 		}
 		if req.TaskID == "" {
 			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid task reopen requires a task id"}
+		}
+		if e.tasks == nil {
+			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid task reopen unavailable"}
+		}
+		// Same authorization gap as BoidOpTaskGet above: this op used to call
+		// ApplyAction directly with no lookup of the target task's
+		// project_id, letting a caller reopen (and thereby dispatch) another
+		// workspace's task as long as it knew the task UUID. Look the task up
+		// and enforce the same AllowsProject gate task_update / task_notify /
+		// task_answer / task_delete already use.
+		existing, err := e.tasks.GetTask(req.TaskID)
+		if err != nil {
+			return &sandbox.ExecResponse{ExitCode: 1, Stderr: err.Error()}
+		}
+		if !ctx.AllowsProject(existing.ProjectID) {
+			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid task reopen is restricted to the current workspace"}
 		}
 		applyReq := api.ApplyActionRequest{Type: "reopen"}
 		if req.Message != "" {
