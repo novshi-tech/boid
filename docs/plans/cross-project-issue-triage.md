@@ -370,7 +370,6 @@ wake: ""                  # parked 時のみ: 再浮上条件 (日時 / 事象 /
 source:
   type: mail | jira | slack | head | agent
   ref: "message-id / issue-key / permalink など。 本文は含まない"
-related_jira_issues: []   # source.type をまたぐ同一案件の束ねキー (逆輸入 3。 論点 g の実解)
 content_ref: "issues/2026-07-30-xxx.md"  # メタプロジェクト内の本文ファイル (相対 path)
 project_hint: "..."       # 任意。 確定は整形セッション (決定 5)
 suggestion:               # エージェントの推奨 1 つ。 一次情報からの導出フィールド (逆輸入 3)
@@ -706,7 +705,7 @@ specced な子 (まだ boid task でない残課題・実行仕様)」の置き�
 - **state と suggestion は直交する**: state は「今動けるか・誰のコートにあるか」、
   suggestion は「動くとしたら何をするか」。
 
-### 逆輸入 3: suggestion / observed / related_jira_issues
+### 逆輸入 3: suggestion / observed — ただしチャネル固有の知識は境界の内側に留める
 
 - **suggestion**: エージェントの推奨 1 つ (verb: go / shape / manual / park / drop / wake +
   action / reason / basis)。 verb は nose の応答語彙と揃えてあり、 queue の問いに対する
@@ -716,10 +715,17 @@ specced な子 (まだ boid task でない残課題・実行仕様)」の置き�
   直される — 鮮度が価値。 state を動かす提案 (park / drop / wake) は証拠つきで card-suggest
   だけが書き、 採用は nose。 却下履歴は (card, verb, basis) で照合され同じ根拠の再提案は
   機械的に捨てられる。
-- **observed**: 機械観測の射影 (子 task の生死・Jira status)。 evaluate だけが書く。
-  gone (task が DB から消えた事実) と done (完了) を区別する。
-- **related_jira_issues**: source.type をまたいで同一案件を束ねる補助キー。 論点 g (dedup)
-  の実解が既にある形。
+- **observed**: 機械観測の射影 (子 task の生死・source 側の終了状態)。 evaluate だけが書く。
+  gone (task が DB から消えた事実) と done (完了) を区別する。 daemon 側スキーマに載せる値は
+  共通語化されたもの (「source は終了しているか」等) に限り、 チャネル固有の生の表現は
+  workspace 側に留める (下記の境界原則)。
+- **チャネル固有の探索キー (related_jira_issues 等) は取り込まない**: Phase 0 は claims
+  (source 方言・workspace 内) → decisions (共通語・daemon と共有する契約) の二段抽象に
+  なっており、 **daemon は個別のコミュニケーションチャネルの知識を持たない**。 同一案件の
+  束ね (thread_ts / issue_key / related_jira_issues による card 照合) はチャネルの知識その
+  ものなので workspace 側 evaluate の管轄であり、 daemon の語彙には上げない。 論点 g (dedup)
+  のうち「同一案件の束ね」は workspace 側で解決済みとし、 daemon 側の dedup は「同一 triage
+  task への再 push は update 扱い」の水準に留める。
 - **wake の構造化が Phase 1 の宿題**: Phase 0 の wake は自由記述であり、 queue 節 1 の
   決定論評価 (wake_at 実列) に載せるには日付 / 事象 (task 終端参照) への構造化が要る。
 
@@ -937,7 +943,9 @@ exit criteria (2 週間程度): (1) nose が「見に行く」頻度が実際に
 - 論点 i (project ref 曖昧解決の存在オラクル) を追加。 Phase 1 節を実測結果で具体化。
 - **Phase 0 実運用からの逆輸入を追記** (同日 2 巡目): khi-task-collector の
   `docs/card-format.md` / `docs/card-events.md` (2026-08-10 の main) を突合し、 children 統合
-  (1 card = 複数 task)・working / Go 再定義・suggestion / observed / related_jira_issues を
-  取り込んだ (「Phase 0 実運用からの逆輸入」節)。 状態機械とスキーマ案も追従。 claims /
-  decisions 二層が決定 12 / 13 の設計図になっていることを確認し、 Phase 1 は同機構の移植と
-  して設計する方針にした。
+  (1 card = 複数 task)・working / Go 再定義・suggestion / observed を取り込んだ
+  (「Phase 0 実運用からの逆輸入」節)。 状態機械とスキーマ案も追従。 claims / decisions 二層が
+  決定 12 / 13 の設計図になっていることを確認し、 Phase 1 は同機構の移植として設計する方針に
+  した。 なお related_jira_issues 等のチャネル固有の探索キーは、 一度取り込みかけて **nose の
+  指摘で撤回** — claims (方言) / decisions (共通語) の二段抽象を守り、 daemon はチャネルの
+  知識を持たない (逆輸入 3 の境界原則)。
