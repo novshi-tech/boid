@@ -940,6 +940,56 @@ func newJobExecutor(t *testing.T) (*boidBuiltinExecutor, *capturingTaskStore, *s
 	return exec, ts, js
 }
 
+// --- task_get executor tests ---
+
+// TestBoidBuiltinExecutor_TaskGet_EnforcesWorkspaceScope reproduces the
+// authorization gap where BoidOpTaskGet resolved req.TaskField via
+// GetTaskField with no lookup of the target task's project_id first, letting
+// a caller read title/description/status/payload of a task belonging to
+// another workspace as long as it knew the task's UUID. broker.go only
+// defaults an *empty* TaskID from the token context and otherwise passes an
+// explicit one through untouched, so this check has to live in the
+// executor, mirroring task_update / task_notify / task_answer / task_delete.
+func TestBoidBuiltinExecutor_TaskGet_EnforcesWorkspaceScope(t *testing.T) {
+	store := &capturingTaskStore{
+		created: []*orchestrator.Task{
+			{ID: "target-1", ProjectID: "proj-1", Title: "same workspace"},
+			{ID: "foreign-1", ProjectID: "proj-3", Title: "secret from another workspace"},
+		},
+	}
+	meta := executorMetaStub{meta: &orchestrator.ProjectMeta{}}
+	exec := &boidBuiltinExecutor{
+		tasks: &api.TaskAppService{Tasks: store, Meta: meta},
+	}
+	ctx := sandbox.TokenContext{ProjectID: "proj-1", AllowedProjectIDs: []string{"proj-1", "proj-2"}}
+
+	// 自プロジェクトの task は読める
+	resp := exec.ExecuteBoidBuiltin(context.Background(), ctx, &sandbox.BoidRequest{
+		Op:        sandbox.BoidOpTaskGet,
+		TaskID:    "target-1",
+		TaskField: "title",
+	})
+	if resp.ExitCode != 0 {
+		t.Fatalf("self project task_get exit code = %d, stderr: %s", resp.ExitCode, resp.Stderr)
+	}
+	if resp.Stdout != "same workspace" {
+		t.Fatalf("task_get stdout = %q, want title", resp.Stdout)
+	}
+
+	// workspace 外の task は拒否される (存在有無を漏らさない)
+	resp = exec.ExecuteBoidBuiltin(context.Background(), ctx, &sandbox.BoidRequest{
+		Op:        sandbox.BoidOpTaskGet,
+		TaskID:    "foreign-1",
+		TaskField: "title",
+	})
+	if resp.ExitCode != 1 || !strings.Contains(resp.Stderr, "restricted to the current workspace") {
+		t.Fatalf("cross-workspace task_get should be rejected, got exit=%d stderr=%q", resp.ExitCode, resp.Stderr)
+	}
+	if strings.Contains(resp.Stdout, "secret") {
+		t.Fatalf("cross-workspace task_get leaked field value: stdout=%q", resp.Stdout)
+	}
+}
+
 // --- action_send executor tests ---
 
 func TestBoidBuiltinExecutor_ActionSend_WorkspaceIsolation(t *testing.T) {
@@ -988,7 +1038,14 @@ func TestBoidBuiltinExecutor_ActionSend_Unavailable(t *testing.T) {
 
 func TestBoidBuiltinExecutor_TaskReopen_NoMessage_EmptyPayload(t *testing.T) {
 	wf := &recordingWorkflow{}
-	exec := &boidBuiltinExecutor{workflow: wf}
+	store := &capturingTaskStore{
+		created: []*orchestrator.Task{{ID: "task-1", ProjectID: "proj-1"}},
+	}
+	meta := executorMetaStub{meta: &orchestrator.ProjectMeta{}}
+	exec := &boidBuiltinExecutor{
+		workflow: wf,
+		tasks:    &api.TaskAppService{Tasks: store, Meta: meta},
+	}
 	ctx := sandbox.TokenContext{TaskID: "task-1", ProjectID: "proj-1"}
 
 	resp := exec.ExecuteBoidBuiltin(context.Background(), ctx, &sandbox.BoidRequest{
@@ -1014,7 +1071,14 @@ func TestBoidBuiltinExecutor_TaskReopen_NoMessage_EmptyPayload(t *testing.T) {
 
 func TestBoidBuiltinExecutor_TaskReopen_WithMessage_BuildsInstructionPayload(t *testing.T) {
 	wf := &recordingWorkflow{}
-	exec := &boidBuiltinExecutor{workflow: wf}
+	store := &capturingTaskStore{
+		created: []*orchestrator.Task{{ID: "task-1", ProjectID: "proj-1"}},
+	}
+	meta := executorMetaStub{meta: &orchestrator.ProjectMeta{}}
+	exec := &boidBuiltinExecutor{
+		workflow: wf,
+		tasks:    &api.TaskAppService{Tasks: store, Meta: meta},
+	}
 	ctx := sandbox.TokenContext{TaskID: "task-1", ProjectID: "proj-1"}
 
 	resp := exec.ExecuteBoidBuiltin(context.Background(), ctx, &sandbox.BoidRequest{
@@ -1074,6 +1138,38 @@ func TestBoidBuiltinExecutor_TaskReopen_RequiresTaskID(t *testing.T) {
 	}
 	if wf.applyCallCount != 0 {
 		t.Errorf("ApplyAction should not be called when task id is missing (got %d calls)", wf.applyCallCount)
+	}
+}
+
+// TestBoidBuiltinExecutor_TaskReopen_EnforcesWorkspaceScope reproduces the
+// authorization gap where BoidOpTaskReopen called ApplyAction directly with
+// no lookup of the target task's project_id, letting a caller reopen (and
+// thereby dispatch) a task belonging to another workspace as long as it knew
+// the task's UUID. Every other task-mutating op (task_update / task_notify /
+// task_answer / task_delete) already looks the task up via e.tasks.GetTask
+// and checks ctx.AllowsProject(existing.ProjectID) before touching it; this
+// op must do the same.
+func TestBoidBuiltinExecutor_TaskReopen_EnforcesWorkspaceScope(t *testing.T) {
+	wf := &recordingWorkflow{}
+	store := &capturingTaskStore{
+		created: []*orchestrator.Task{{ID: "foreign-1", ProjectID: "proj-3"}},
+	}
+	meta := executorMetaStub{meta: &orchestrator.ProjectMeta{}}
+	exec := &boidBuiltinExecutor{
+		workflow: wf,
+		tasks:    &api.TaskAppService{Tasks: store, Meta: meta},
+	}
+	ctx := sandbox.TokenContext{ProjectID: "proj-1", AllowedProjectIDs: []string{"proj-1", "proj-2"}}
+
+	resp := exec.ExecuteBoidBuiltin(context.Background(), ctx, &sandbox.BoidRequest{
+		Op:     sandbox.BoidOpTaskReopen,
+		TaskID: "foreign-1",
+	})
+	if resp.ExitCode != 1 || !strings.Contains(resp.Stderr, "restricted to the current workspace") {
+		t.Fatalf("cross-workspace reopen should be rejected, got exit=%d stderr=%q", resp.ExitCode, resp.Stderr)
+	}
+	if wf.applyCallCount != 0 {
+		t.Errorf("ApplyAction should not be called for a cross-workspace task (got %d calls)", wf.applyCallCount)
 	}
 }
 
