@@ -6,7 +6,9 @@ import (
 	"testing"
 
 	"github.com/novshi-tech/boid/internal/dispatcher"
+	"github.com/novshi-tech/boid/internal/gitgateway"
 	"github.com/novshi-tech/boid/internal/orchestrator"
+	"github.com/novshi-tech/boid/testutil"
 )
 
 // Phase 5b PR1 (docs/plans/phase5-shim-and-task-context.md): Runner tracks a
@@ -246,5 +248,177 @@ func TestJobContext_UnknownJobID_ReturnsFalse(t *testing.T) {
 	r := &dispatcher.Runner{}
 	if _, ok := r.JobContext("no-such-job"); ok {
 		t.Error("expected ok=false for an untracked job id")
+	}
+}
+
+// TestDispatch_TracksJobContext_WorkspacePeerAdvertise pins the `boid
+// project list` peer-discovery feature: a clone-mode job dispatched with a
+// workspace peer present must have that peer's PeerAdvertise (clone URL,
+// reference path, clone dir — the same value fed into
+// SandboxRuntimeInfo.WorkspacePeerAdvertise via Runner.buildPeerAdvertise)
+// show up in JobContextSnapshot.WorkspacePeerAdvertise, keyed by peer
+// project ID. This is the seam BoidOpProjectList reads from
+// (internal/server/boid_executor.go) to answer `boid project list` with
+// peer clone info.
+func TestDispatch_TracksJobContext_WorkspacePeerAdvertise(t *testing.T) {
+	d := testutil.NewTestDB(t)
+	if err := orchestrator.CreateProject(d.Conn, &orchestrator.Project{
+		ID: "proj-1", WorkDir: "/host/self", UpstreamURL: "https://github.com/owner/self.git",
+	}); err != nil {
+		t.Fatalf("create self project: %v", err)
+	}
+	if err := orchestrator.CreateProject(d.Conn, &orchestrator.Project{
+		ID: "peer-1", WorkDir: "/host/peer", UpstreamURL: "https://github.com/owner/peer.git",
+	}); err != nil {
+		t.Fatalf("create peer project: %v", err)
+	}
+	// WorkspaceID lives in the separate project_workspaces join table
+	// (project_catalog.go's CreateProject never writes it, even when set on
+	// the *Project struct passed in — see GetProject's own LEFT JOIN).
+	if err := orchestrator.SetProjectWorkspace(d.Conn, "proj-1", "ws-1"); err != nil {
+		t.Fatalf("set self project workspace: %v", err)
+	}
+	if err := orchestrator.SetProjectWorkspace(d.Conn, "peer-1", "ws-1"); err != nil {
+		t.Fatalf("set peer project workspace: %v", err)
+	}
+
+	gwURL := "http://10.0.2.2:9"
+	r := &dispatcher.Runner{
+		DB:          d.Conn,
+		Projects:    orchestrator.DBProjectCatalog{DB: d.Conn},
+		Backend:     &capturingSandboxBackend{},
+		BoidBinary:  "/boid",
+		GitGateway:  gitgateway.NewRegistry(),
+		GatewayURL:  &gwURL,
+		RuntimesDir: t.TempDir(),
+	}
+
+	spec := &orchestrator.JobSpec{
+		ProjectID: "proj-1",
+		Argv:      []string{"echo", "hi"},
+		Kind:      orchestrator.JobKindHook,
+		Visibility: orchestrator.Visibility{
+			ProjectDir: "/host/self",
+			Clone:      &orchestrator.CloneDeclaration{Branch: "main", BaseBranch: "main", CheckoutOnly: true},
+		},
+	}
+
+	jobID, err := r.Dispatch(context.Background(), spec, nil)
+	if err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+
+	snap, ok := r.JobContext(jobID)
+	if !ok {
+		t.Fatalf("JobContext(%q) not found after successful Dispatch", jobID)
+	}
+	adv, ok := snap.WorkspacePeerAdvertise["peer-1"]
+	if !ok {
+		t.Fatalf("WorkspacePeerAdvertise = %#v, want an entry for peer-1", snap.WorkspacePeerAdvertise)
+	}
+	if adv.CloneURL == "" {
+		t.Error("peer advertise CloneURL is empty, want a gateway clone URL")
+	}
+	if adv.Name != "peer" {
+		t.Errorf("peer advertise Name = %q, want %q", adv.Name, "peer")
+	}
+}
+
+// TestDispatch_TracksJobContext_WorkspacePeerAdvertise_NilWhenNotCloneMode
+// pins the non-clone-mode degrade: buildPeerAdvertise is only computed
+// inside the clone-mode branch of dispatchProjectSection
+// (gitgateway_wire.go), so a job with Visibility.Clone == nil must leave
+// WorkspacePeerAdvertise nil even though a workspace peer exists and the
+// gateway is wired — mirrors GatewayCloneURL's own non-clone-mode empty
+// behavior.
+func TestDispatch_TracksJobContext_WorkspacePeerAdvertise_NilWhenNotCloneMode(t *testing.T) {
+	d := testutil.NewTestDB(t)
+	if err := orchestrator.CreateProject(d.Conn, &orchestrator.Project{
+		ID: "proj-1", WorkDir: "/host/self", UpstreamURL: "https://github.com/owner/self.git",
+	}); err != nil {
+		t.Fatalf("create self project: %v", err)
+	}
+	if err := orchestrator.CreateProject(d.Conn, &orchestrator.Project{
+		ID: "peer-1", WorkDir: "/host/peer", UpstreamURL: "https://github.com/owner/peer.git",
+	}); err != nil {
+		t.Fatalf("create peer project: %v", err)
+	}
+	if err := orchestrator.SetProjectWorkspace(d.Conn, "proj-1", "ws-1"); err != nil {
+		t.Fatalf("set self project workspace: %v", err)
+	}
+	if err := orchestrator.SetProjectWorkspace(d.Conn, "peer-1", "ws-1"); err != nil {
+		t.Fatalf("set peer project workspace: %v", err)
+	}
+
+	gwURL := "http://10.0.2.2:9"
+	r := &dispatcher.Runner{
+		DB:         d.Conn,
+		Projects:   orchestrator.DBProjectCatalog{DB: d.Conn},
+		Backend:    newStatefulBackend(),
+		BoidBinary: "/boid",
+		GitGateway: gitgateway.NewRegistry(),
+		GatewayURL: &gwURL,
+	}
+
+	spec := &orchestrator.JobSpec{
+		ProjectID: "proj-1",
+		Argv:      []string{"echo", "hi"},
+		Kind:      orchestrator.JobKindHook,
+		// Visibility.Clone deliberately left nil.
+	}
+
+	jobID, err := r.Dispatch(context.Background(), spec, nil)
+	if err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+
+	snap, ok := r.JobContext(jobID)
+	if !ok {
+		t.Fatalf("JobContext(%q) not found after successful Dispatch", jobID)
+	}
+	if snap.WorkspacePeerAdvertise != nil {
+		t.Errorf("WorkspacePeerAdvertise = %#v, want nil for a non-clone-mode job", snap.WorkspacePeerAdvertise)
+	}
+}
+
+// TestDispatch_CloneMode_MissingUpstreamURL_NoJobContextTracked pins the
+// ordering guarantee the peer-advertise wiring depends on: moving
+// trackJobContext to after the project-registry-guarded section
+// (dispatchProjectSection) means a job that fails inside that section (e.g.
+// missing upstream_url, TestDispatch_CloneMode_MissingUpstreamURL_FailsLoud
+// in gitgateway_wire_test.go) must never have a JobContextSnapshot tracked
+// at all — Dispatch returns an error before trackJobContext runs.
+func TestDispatch_CloneMode_MissingUpstreamURL_NoJobContextTracked(t *testing.T) {
+	d := testutil.NewTestDB(t)
+	if err := orchestrator.CreateProject(d.Conn, &orchestrator.Project{ID: "proj-1", WorkDir: "/tmp"}); err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	r := &dispatcher.Runner{
+		DB:         d.Conn,
+		Projects:   orchestrator.DBProjectCatalog{DB: d.Conn},
+		Backend:    newStatefulBackend(),
+		BoidBinary: "/boid",
+	}
+	spec := &orchestrator.JobSpec{
+		ProjectID: "proj-1",
+		Argv:      []string{"echo", "hi"},
+		Kind:      orchestrator.JobKindHook,
+		Visibility: orchestrator.Visibility{
+			Clone: &orchestrator.CloneDeclaration{Branch: "main", BaseBranch: "main", CheckoutOnly: true},
+		},
+	}
+
+	if _, err := r.Dispatch(context.Background(), spec, nil); err == nil {
+		t.Fatal("Dispatch: expected error when the project has no captured upstream_url")
+	}
+
+	// Dispatch returns "" as its job id on this failure path, so recover the
+	// real (DB-assigned) job id directly to check nothing was tracked for it.
+	var realJobID string
+	if err := d.Conn.QueryRow(`SELECT id FROM jobs WHERE project_id = ?`, "proj-1").Scan(&realJobID); err != nil {
+		t.Fatalf("look up the failed job's id: %v", err)
+	}
+	if _, ok := r.JobContext(realJobID); ok {
+		t.Errorf("JobContext(%q) should not be tracked when Dispatch fails inside the project-registry-guarded section", realJobID)
 	}
 }

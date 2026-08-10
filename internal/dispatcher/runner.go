@@ -644,42 +644,6 @@ func (r *Runner) Dispatch(ctx context.Context, spec *orchestrator.JobSpec, clean
 	// gatewayCAPEM above.
 	apiGatewayBaseURL, apiGatewayToken := r.registerAPIGatewayToken(j.ID, spec, workspaceID)
 
-	// Phase 5b PR1 (docs/plans/phase5-shim-and-task-context.md): track this
-	// job's routed instruction + reduced environment view + trait-filtered
-	// payload so the `boid task instructions` / `boid task env` / `boid
-	// task payload` broker RPCs can serve back this exact job's data — the
-	// sole source for it since the Phase 5b PR6 cutover retired the
-	// parallel dispatch-time context-file materialization
-	// (contextFiles/buildEnvironmentYAML in sandbox_builder.go) this used to
-	// also feed.
-	//
-	//   - Instructions comes straight from spec.Instruction (this job's own
-	//     JobSpec field, resolved once by DispatchPlanner.PlanHook's
-	//     selectInstruction) — NOT re-derived from the task row. Two
-	//     agent-kind hooks for different agents can be dispatched from the
-	//     same task in the same evaluation round (orchestrator.Evaluator
-	//     matches any agent appearing anywhere in the instruction history,
-	//     not just the most recent entry); only the hook whose agent matches
-	//     the *last* history entry gets a non-nil Instruction. Deriving
-	//     "current instructions" from the task row here would silently hand
-	//     one job's agent's instruction to the other job's RPC caller — see
-	//     JobContextSnapshot's own doc comment and wiring-seams.md #13.
-	//   - Env uses spec.HostCommands (short-name keyed as authored in
-	//     project.yaml) — the identical key space to
-	//     resolvedHostCommandsByName below, no absolute-path detour after
-	//     the 5a-3 cutover.
-	//
-	// `boid task current` does NOT need this: it re-derives live from the
-	// task row (orchestrator.SnapshotTask), which carries no job-scoped
-	// routing ambiguity the way instructions does. No project-registry
-	// dependency either, so this also runs outside the locked section below.
-	r.trackJobContext(j.ID, JobContextSnapshot{
-		Instructions:              routedInstructionSlice(spec.Instruction),
-		Env:                       BuildWorkspaceEnvView(allowedDomains, spec.HostCommands),
-		Payload:                   spec.PrimaryInput,
-		PayloadPatchAllowedTraits: spec.HookTraitsProduces,
-	})
-
 	// --- project-registry-guarded dispatch section (PR834 PR-2b round-3
 	// codex review Major 1) -------------------------------------------------
 	// Round-2's fix only wrapped the final fetch+clone call
@@ -851,6 +815,53 @@ func (r *Runner) Dispatch(ctx context.Context, spec *orchestrator.JobSpec, clean
 		}
 		return "", projectSectionErr
 	}
+
+	// Phase 5b PR1 (docs/plans/phase5-shim-and-task-context.md): track this
+	// job's routed instruction + reduced environment view + trait-filtered
+	// payload + workspace peer advertise so the `boid task instructions` /
+	// `boid task env` / `boid task payload` / `boid project list` broker
+	// RPCs can serve back this exact job's data — the sole source for it
+	// since the Phase 5b PR6 cutover retired the parallel dispatch-time
+	// context-file materialization (contextFiles/buildEnvironmentYAML in
+	// sandbox_builder.go) this used to also feed.
+	//
+	//   - Instructions comes straight from spec.Instruction (this job's own
+	//     JobSpec field, resolved once by DispatchPlanner.PlanHook's
+	//     selectInstruction) — NOT re-derived from the task row. Two
+	//     agent-kind hooks for different agents can be dispatched from the
+	//     same task in the same evaluation round (orchestrator.Evaluator
+	//     matches any agent appearing anywhere in the instruction history,
+	//     not just the most recent entry); only the hook whose agent matches
+	//     the *last* history entry gets a non-nil Instruction. Deriving
+	//     "current instructions" from the task row here would silently hand
+	//     one job's agent's instruction to the other job's RPC caller — see
+	//     JobContextSnapshot's own doc comment and wiring-seams.md #13.
+	//   - Env uses spec.HostCommands (short-name keyed as authored in
+	//     project.yaml) — the identical key space to
+	//     resolvedHostCommandsByName below, no absolute-path detour after
+	//     the 5a-3 cutover.
+	//   - WorkspacePeerAdvertise is deliberately tracked HERE, after the
+	//     project-registry-guarded section above, rather than at this
+	//     function's earlier context-tracking point (pre-PR peer-advertise
+	//     feature): peerAdvertise itself is only computed inside
+	//     dispatchProjectSection (guarded by r.WithProjectLock), so tracking
+	//     any earlier would either race an unpopulated closure variable or
+	//     require a second trackJobContext call. Tracking after
+	//     projectSectionErr's early-return also means a job that fails
+	//     inside the project section (e.g. missing upstream_url) never gets
+	//     a JobContextSnapshot at all — nothing to leak, nothing to untrack.
+	//
+	// `boid task current` does NOT need this: it re-derives live from the
+	// task row (orchestrator.SnapshotTask), which carries no job-scoped
+	// routing ambiguity the way instructions does. No project-registry
+	// dependency either, so this also runs outside the locked section below.
+	r.trackJobContext(j.ID, JobContextSnapshot{
+		Instructions:              routedInstructionSlice(spec.Instruction),
+		Env:                       BuildWorkspaceEnvView(allowedDomains, spec.HostCommands),
+		Payload:                   spec.PrimaryInput,
+		PayloadPatchAllowedTraits: spec.HookTraitsProduces,
+		WorkspacePeerAdvertise:    peerAdvertise,
+	})
 
 	// [Blocker 2, PR7 codex review]: proxyHost stays "" (applyProxyEnv's own
 	// hostGatewayIP fallback) for the userns backend — byte-for-byte

@@ -245,6 +245,23 @@ boid project list
 
 Prints, as a JSON array, every project (`{"id", "name", "upstream_url"}`) within the caller's own workspace — the same scope `boid task list` falls back to when called with no `--project`/`--workspace`. Takes no arguments: there is no way to widen this to every project on the daemon (that's the host-only `boid project list`, a different scope). Use this to discover which project refs exist before calling `boid project behaviors <ref>` on each one — e.g. a supervisor that coordinates work across multiple projects in the same workspace.
 
+For a workspace peer (any entry that isn't the calling job's own project), the entry may also carry `clone_url`, `reference_path`, and `clone_dir` — enough to actually fetch the peer, not just discover its id:
+
+```json
+{"id": "peer-1", "name": "bm-next", "upstream_url": "https://github.com/owner/bm-next.git",
+ "clone_url": "http://10.0.2.2:9/j/<token>/github.com/owner/bm-next.git",
+ "reference_path": "/mnt/refs/peers/peer-1.git",
+ "clone_dir": "/workspace/bm-next"}
+```
+
+These three fields are **best-effort and may be absent** — the calling job wasn't dispatched in clone mode, the gateway isn't wired, or the peer has no resolvable `upstream_url`. When present:
+
+- `clone_url` is a fetch-only URL scoped to this job's own gateway token (writing to a peer isn't supported — open a cross-project child task instead). Use it directly: `git clone <clone_url> <clone_dir>`.
+- `reference_path`, if you want a faster `git clone --reference <reference_path> <clone_url> <clone_dir>`, **may not actually exist** (git-URL-registered peers can be a bare repo with no local `.git` to mount) — check with `test -d <reference_path>` first; don't use `--reference` unconditionally.
+- `clone_dir` is only a suggestion and can collide with another peer's or your own directory name — pick a different target if it's already in use.
+
+Peers are always fetch-only, regardless of `readonly`/writable state on either side.
+
 ## boid project behaviors
 
 ```bash

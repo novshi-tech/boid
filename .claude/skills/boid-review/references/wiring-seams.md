@@ -534,12 +534,21 @@ their source data is job-scoped, not task-scoped.
   outright — 5b PR7 did NOT do this (its own scope keeps the fallback alive); that retirement is
   deferred to a later phase (Phase 6 backend-swap era). `SandboxRuntimeInfo.WorkspacePeerAdvertise`
   and `Runner.buildPeerAdvertise` (`gitgateway_wire.go`) — the data the file's now-gone
-  `workspace_projects` section used to carry — are kept as-is, still computed, still unconsumed by
-  `BuildSandboxSpec`: PR6 made a deliberate call to continue the "carried but inert across a PR
-  boundary" pattern rather than invent a new consumer, pending a future `boid workspace
-  peers`-style RPC (tracked as an open item in the plan doc). `e2e/scenarios/git-gateway-peer-fetch`
-  still carries its `skip` marker for the same reason (own file has the full, updated reason); do
-  not remove it without wiring an actual replacement first.
+  `workspace_projects` section used to carry — were kept as-is, still computed, still unconsumed by
+  `BuildSandboxSpec`, for several PRs: a deliberate call to continue the "carried but inert across a
+  PR boundary" pattern rather than invent a new consumer, pending a future `boid workspace
+  peers`-style RPC (tracked as an open item in the plan doc). **2026-08 update**: that RPC landed,
+  but not as an independent `boid workspace peers` command — `boid project list` was extended
+  instead (`clone_url`/`reference_path`/`clone_dir` on peer entries), reading
+  `Runner.buildPeerAdvertise`'s output through a *different* carrier
+  (`JobContextSnapshot.WorkspacePeerAdvertise`, `internal/dispatcher/job_context.go`, tracked by
+  `Runner.Dispatch`). `SandboxRuntimeInfo.WorkspacePeerAdvertise` itself stays exactly as inert as
+  before — it was never the thing wired up — so this is a genuine dead-code cleanup candidate now,
+  not a "future consumer pending" placeholder. `e2e/scenarios/git-gateway-peer-fetch` no longer
+  exists at all: PR-4's userns/dir-based black-box harness removal
+  (`docs/plans/volume-only-daemon.md` §論点e) deleted the whole `e2e/scenarios/` tree it lived in,
+  so the "don't remove the skip without a replacement" caution above is moot — there is no scenario
+  left to un-skip.
 
 ## 14. shim command-name resolution
 

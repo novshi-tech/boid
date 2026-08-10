@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/novshi-tech/boid/internal/api"
+	"github.com/novshi-tech/boid/internal/dispatcher"
 	"github.com/novshi-tech/boid/internal/orchestrator"
 	"github.com/novshi-tech/boid/internal/sandbox"
 )
@@ -1732,5 +1733,129 @@ func TestBoidBuiltinExecutor_ProjectList_Unavailable(t *testing.T) {
 	resp := exec.ExecuteBoidBuiltin(context.Background(), ctx, &sandbox.BoidRequest{Op: sandbox.BoidOpProjectList})
 	if resp.ExitCode != 1 || !strings.Contains(resp.Stderr, "unavailable") {
 		t.Fatalf("expected unavailable error, got exit=%d stderr=%q", resp.ExitCode, resp.Stderr)
+	}
+}
+
+// --- project_list peer clone-info merge (peer-project-discovery feature) ---
+
+// TestBoidBuiltinExecutor_ProjectList_MergesPeerCloneInfo pins the core of
+// the peer-discovery feature: a job's JobContextSnapshot.WorkspacePeerAdvertise
+// (dispatcher.PeerAdvertise, tracked by Runner.Dispatch) is merged into the
+// peer's projectSummary entry — but never into the caller's own (self)
+// entry, since PeerAdvertise.Name (upstream_url basename) has a different
+// meaning than projectSummary.Name (proj.Meta.Name) and must not overwrite
+// it.
+func TestBoidBuiltinExecutor_ProjectList_MergesPeerCloneInfo(t *testing.T) {
+	exec := &boidBuiltinExecutor{
+		projects: &stubProjectLookup{
+			projects: map[string]*orchestrator.Project{
+				"proj-1": {ID: "proj-1", Meta: orchestrator.ProjectMeta{Name: "self-name"}},
+				"peer-1": {ID: "peer-1", Meta: orchestrator.ProjectMeta{Name: "peer-name"}, UpstreamURL: "https://example.com/peer.git"},
+			},
+		},
+		jobContexts: &stubJobContextProvider{contexts: map[string]dispatcher.JobContextSnapshot{
+			"job-1": {WorkspacePeerAdvertise: map[string]dispatcher.PeerAdvertise{
+				"peer-1": {
+					Name:          "peer", // deliberately different from proj.Meta.Name, to prove it does NOT overwrite Name
+					CloneURL:      "http://10.0.2.2:9/j/tok/example.com/owner/peer.git",
+					ReferencePath: "/mnt/refs/peers/peer-1.git",
+					CloneDir:      "/workspace/peer-name",
+				},
+			}},
+		}},
+	}
+	ctx := sandbox.TokenContext{JobID: "job-1", ProjectID: "proj-1", AllowedProjectIDs: []string{"proj-1", "peer-1"}}
+
+	resp := exec.ExecuteBoidBuiltin(context.Background(), ctx, &sandbox.BoidRequest{Op: sandbox.BoidOpProjectList, JobID: "job-1"})
+	if resp.ExitCode != 0 {
+		t.Fatalf("exit code = %d, stderr: %s", resp.ExitCode, resp.Stderr)
+	}
+	var got []projectSummary
+	if err := json.Unmarshal([]byte(resp.Stdout), &got); err != nil {
+		t.Fatalf("stdout is not valid JSON: %v (stdout=%q)", err, resp.Stdout)
+	}
+	byID := map[string]projectSummary{}
+	for _, s := range got {
+		byID[s.ID] = s
+	}
+
+	peer := byID["peer-1"]
+	if peer.Name != "peer-name" {
+		t.Errorf("peer-1 Name = %q, want proj.Meta.Name %q (PeerAdvertise.Name must not overwrite it)", peer.Name, "peer-name")
+	}
+	if peer.CloneURL != "http://10.0.2.2:9/j/tok/example.com/owner/peer.git" {
+		t.Errorf("peer-1 CloneURL = %q, want the advertised clone URL", peer.CloneURL)
+	}
+	if peer.ReferencePath != "/mnt/refs/peers/peer-1.git" {
+		t.Errorf("peer-1 ReferencePath = %q", peer.ReferencePath)
+	}
+	if peer.CloneDir != "/workspace/peer-name" {
+		t.Errorf("peer-1 CloneDir = %q", peer.CloneDir)
+	}
+
+	self := byID["proj-1"]
+	if self.CloneURL != "" || self.ReferencePath != "" || self.CloneDir != "" {
+		t.Errorf("self entry must not carry any peer clone fields, got %+v", self)
+	}
+}
+
+// TestBoidBuiltinExecutor_ProjectList_NoJobContext_ListStillSucceeds pins
+// the fail-soft contract: an unknown/empty JobID (no tracked
+// JobContextSnapshot — e.g. a host-side caller, or a token whose job
+// already completed) must not error the whole list, just omit clone info.
+func TestBoidBuiltinExecutor_ProjectList_NoJobContext_ListStillSucceeds(t *testing.T) {
+	exec := &boidBuiltinExecutor{
+		projects: &stubProjectLookup{
+			projects: map[string]*orchestrator.Project{
+				"proj-1": {ID: "proj-1", Meta: orchestrator.ProjectMeta{Name: "solo"}},
+			},
+		},
+		jobContexts: &stubJobContextProvider{},
+	}
+	ctx := sandbox.TokenContext{ProjectID: "proj-1"}
+
+	resp := exec.ExecuteBoidBuiltin(context.Background(), ctx, &sandbox.BoidRequest{Op: sandbox.BoidOpProjectList})
+	if resp.ExitCode != 0 {
+		t.Fatalf("exit code = %d, stderr: %s", resp.ExitCode, resp.Stderr)
+	}
+	var got []projectSummary
+	if err := json.Unmarshal([]byte(resp.Stdout), &got); err != nil {
+		t.Fatalf("stdout is not valid JSON: %v (stdout=%q)", err, resp.Stdout)
+	}
+	if len(got) != 1 || got[0].CloneURL != "" {
+		t.Fatalf("got %+v, want [proj-1] with no clone info", got)
+	}
+}
+
+// TestBoidBuiltinExecutor_ProjectList_PeerMissingFromAdvertise_NoCloneInfo
+// covers a peer that's in AllowedProjectIDs but absent from
+// WorkspacePeerAdvertise (buildPeerAdvertise skips peers with no resolvable
+// upstream_url) — must not error, just leave that peer's clone fields empty.
+func TestBoidBuiltinExecutor_ProjectList_PeerMissingFromAdvertise_NoCloneInfo(t *testing.T) {
+	exec := &boidBuiltinExecutor{
+		projects: &stubProjectLookup{
+			projects: map[string]*orchestrator.Project{
+				"proj-1": {ID: "proj-1", Meta: orchestrator.ProjectMeta{Name: "self-name"}},
+				"peer-1": {ID: "peer-1", Meta: orchestrator.ProjectMeta{Name: "peer-name"}},
+			},
+		},
+		jobContexts: &stubJobContextProvider{contexts: map[string]dispatcher.JobContextSnapshot{
+			"job-1": {WorkspacePeerAdvertise: map[string]dispatcher.PeerAdvertise{}},
+		}},
+	}
+	ctx := sandbox.TokenContext{JobID: "job-1", ProjectID: "proj-1", AllowedProjectIDs: []string{"proj-1", "peer-1"}}
+
+	resp := exec.ExecuteBoidBuiltin(context.Background(), ctx, &sandbox.BoidRequest{Op: sandbox.BoidOpProjectList, JobID: "job-1"})
+	if resp.ExitCode != 0 {
+		t.Fatalf("exit code = %d, stderr: %s", resp.ExitCode, resp.Stderr)
+	}
+	var got []projectSummary
+	if err := json.Unmarshal([]byte(resp.Stdout), &got); err != nil {
+		t.Fatalf("stdout is not valid JSON: %v (stdout=%q)", err, resp.Stdout)
+	}
+	for _, s := range got {
+		if s.ID == "peer-1" && s.CloneURL != "" {
+			t.Errorf("peer-1 should have no clone info (absent from WorkspacePeerAdvertise), got %+v", s)
+		}
 	}
 }

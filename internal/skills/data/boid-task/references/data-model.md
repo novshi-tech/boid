@@ -118,7 +118,7 @@ whether this job may push — see that command's `readonly` field above. The
 active-run harness name and the list of generally-available commands are
 likewise not part of this schema — they are either fixed per adapter (not
 per-job data worth a round trip) or discoverable by simply trying the
-command. Workspace peer projects (other projects in the same workspace,
-advertised for cross-project fetch/clone) are also not part of this
-command's schema yet — that is a known open item in the Phase 5b plan, not
-something this command currently exposes.
+command. Workspace peer projects (other projects in the same workspace) are
+discovered via `boid project list` (see `builtins.md`), not this command —
+its entries carry `clone_url`/`reference_path`/`clone_dir` for peers when
+available.

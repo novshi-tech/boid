@@ -91,8 +91,10 @@ strangler の並走は残すが、**config フラグのホットフリップで�
 - **workspace HOME の named volume 化** (nose 決定 2026-07-22) — Phase 6 は host bind 維持 (決定 4)。
   named volume 化と owner 調整 (root one-shot init container での chown。driver opt では disk volume の
   owner 指定不可) は Phase 7 の k8s/別ホスト論点。
-- **`boid workspace peers` (Phase 5b 宿題 3)** (nose 決定 2026-07-22) — backend swap と独立のため Phase 6
-  から切り離し独立 backlog へ。peer advertise データは dispatch 時計算済みで inert (詳細は phase5 doc)。
+- ~~**`boid workspace peers` (Phase 5b 宿題 3)** (nose 決定 2026-07-22) — backend swap と独立のため Phase 6
+  から切り離し独立 backlog へ。peer advertise データは dispatch 時計算済みで inert (詳細は phase5 doc)。~~
+  **2026-08 closed**: 独立 CLI ではなく `boid project list` の出力拡張 (`clone_url`/`reference_path`/
+  `clone_dir`) として実装済み。詳細は `docs/plans/phase5-shim-and-task-context.md` の 2026-08 追記を参照。
 
 一気とはいえ実装は単一ホスト docker に限る。interface とネットワーク契約は k8s (Phase 7) を後から
 足せる形で切るが、k8s 実装自体はしない。
