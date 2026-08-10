@@ -199,14 +199,18 @@ type SandboxRuntimeInfo struct {
 	// nil when the gateway isn't wired or no peer has a resolvable
 	// upstream_url.
 	//
-	// Currently unused by BuildSandboxSpec: environment.yaml's
+	// Still unused by BuildSandboxSpec: environment.yaml's
 	// `workspace_projects` section (its sole consumer) was removed by the
 	// environment.yaml 縮退 (docs/plans/phase5-shim-and-task-context.md 決定
-	// 事項 4, Phase 5b PR5) — peer advertise has no CLI replacement yet,
-	// tracked as a later 5b item / separate phase. Kept here — the same
-	// "carried but inert across a PR boundary" pattern as GatewayURL /
-	// GatewayJobToken above — as the ready-made input for that future
-	// `boid workspace peers`-style RPC.
+	// 事項 4, Phase 5b PR5). The CLI replacement this field was originally
+	// kept for landed as `boid project list`'s clone_url/reference_path/
+	// clone_dir fields (2026-08), but that path reads the SAME
+	// buildPeerAdvertise output through a different carrier —
+	// JobContextSnapshot.WorkspacePeerAdvertise (job_context.go), tracked by
+	// Runner.Dispatch — not through this SandboxRuntimeInfo field. This
+	// field remains genuinely dead; a future cleanup could remove it
+	// entirely rather than keep two independent holders of the same
+	// buildPeerAdvertise result.
 	WorkspacePeerAdvertise map[string]PeerAdvertise
 
 	// CloneWorkspaceDir is the host-side runtime dir path
@@ -1793,11 +1797,16 @@ func applyDockerProxyEnv(env map[string]string) {
 // (ReferencePath) and the gateway clone URL an agent would `git clone` from
 // if it wants to see the peer's working tree.
 //
-// Currently unexposed to the agent: this used to be advertised via
+// Exposed to the agent via `boid project list`'s clone_url/reference_path/
+// clone_dir fields (2026-08): this used to be advertised via
 // environment.yaml's `workspace_projects` section, removed by the
 // environment.yaml 縮退 (docs/plans/phase5-shim-and-task-context.md 決定事項
-// 4, Phase 5b PR5) — see SandboxRuntimeInfo.WorkspacePeerAdvertise's doc
-// comment for the current (inert, pending a future RPC) status.
+// 4, Phase 5b PR5). The replacement RPC carries this same struct through
+// JobContextSnapshot.WorkspacePeerAdvertise (job_context.go), tracked by
+// Runner.Dispatch and read by BoidOpProjectList
+// (internal/server/boid_executor.go) — NOT through
+// SandboxRuntimeInfo.WorkspacePeerAdvertise, which stays unused; see that
+// field's own doc comment.
 type PeerAdvertise struct {
 	// Name is the peer's repo name (the last segment of its upstream_url's
 	// host/owner/repo form), used purely for display/discoverability.

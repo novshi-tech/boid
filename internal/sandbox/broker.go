@@ -456,6 +456,27 @@ func (b *Broker) handleBoidBuiltin(ctx context.Context, req *ExecRequest, entry 
 		if !entry.Context.AllowsProject(boidReq.ProjectID) {
 			return &ExecResponse{ExitCode: 1, Stderr: "boid project behaviors: project is outside the current workspace"}
 		}
+	case BoidOpProjectList:
+		// JobID-scoped like BoidOpTaskInstructions/Env/Payload, but
+		// asymmetrically: `parseBoidProjectList` never gives a caller a way
+		// to set JobID (no CLI flag), so a legitimate request always arrives
+		// empty and gets defaulted here — unlike those ops, an empty JobID
+		// is NOT an error. A caller-supplied JobID that doesn't match the
+		// token's own is still rejected: BoidOpProjectList's response can
+		// embed a peer's git gateway clone URL, which carries the target
+		// job's own gateway token (e.g. PermFetchPush for a writable self
+		// project) — without this check, a readonly job could name a
+		// writable job's JobID and read its push-capable token back out
+		// through the response, a readonly-to-writable escalation. Same
+		// defense-in-depth rationale as BoidOpTaskInstructions/Env/Payload's
+		// own equality check (a shim never emits a cross-job id, but a
+		// handwritten request bypassing the shim could).
+		if boidReq.JobID == "" {
+			boidReq.JobID = entry.Context.JobID
+		}
+		if boidReq.JobID != entry.Context.JobID {
+			return &ExecResponse{ExitCode: 1, Stderr: "boid project list is restricted to the current job"}
+		}
 	case BoidOpActionSend:
 		if boidReq.TaskID == "" {
 			return &ExecResponse{ExitCode: 1, Stderr: "boid action send requires a task id"}

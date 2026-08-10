@@ -458,6 +458,20 @@ env 経路 (併存): `BOID_TASK_ID` / `BOID_JOB_ID` / `BOID_MODEL` / `BOID_INVOK
   完了後、 または Phase 6 検討時) に送る** — skip ファイル自体は既に十分詳細な
   理由を記録済みのため、 解除条件 (replacement RPC 実装 + シナリオ書き換え)
   のみ本ファイルで再確認した
+  **2026-08 での撤回**: 5b-6 の「独立 CLI (`boid workspace peers`) 路線を
+  維持」という判断を撤回し、 `boid project list` の出力拡張として実装した
+  (`clone_url`/`reference_path`/`clone_dir` フィールドを peer エントリに追加)。
+  理由: `boid project list` は既に「workspace 内 peer の列挙 +
+  `ctx.AllowedProjectIDs` スコープ判定」を持っており、 別コマンドを新設する
+  と同じスコープ判定ロジックが 2 箇所に重複してしまう。
+  `SandboxRuntimeInfo.WorkspacePeerAdvertise` は引き続き未使用のまま (別の
+  経路 — `JobContextSnapshot.WorkspacePeerAdvertise`
+  (`internal/dispatcher/job_context.go`) — で `Runner.buildPeerAdvertise`
+  の結果を運ぶため) — 完全に dead になったので将来のクリーンアップ候補。
+  `e2e/scenarios/git-gateway-peer-fetch` は PR-4 の userns/dir-based
+  black-box harness 撤去 (`docs/plans/volume-only-daemon.md` §論点e) で
+  シナリオごと既に消滅済み — 「replacement RPC が無いので skip」という
+  当時の根拠は、 シナリオ自体が無くなったことで別の意味で無効化されている
 - **`BOID_INSTRUCTIONS` env の廃止判定**: **解決済み (5b-6 codex review Minor 1
   対応、 2026-07-21)**。 リポジトリ全体 (production Go code / skill data /
   e2e fixture / kit) を棚卸しした結果アクティブな reader はゼロだったため

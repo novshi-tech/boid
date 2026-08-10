@@ -151,6 +151,65 @@ func TestBroker_BoidBuiltinTaskEnv_DefaultsAndRestrictsJobID(t *testing.T) {
 	}
 }
 
+// TestBroker_BoidBuiltinProjectList_DefaultsAndRestrictsJobID is the
+// regression pin for a Blocker found in Opus's review of the peer-advertise
+// design (docs/plans virtual-painting-moler.md): BoidOpProjectList's
+// response can embed a peer's git gateway clone URL, which carries the
+// *calling job's own* gateway token (scoped to that job's permissions —
+// e.g. PermFetchPush for a writable self project). Without this JobID
+// equality check, a readonly job could supply another (writable) job's
+// JobID and have the broker/executor answer using that job's
+// JobContextSnapshot, leaking a push-capable token through `boid project
+// list`'s clone_url field — a readonly-to-writable privilege escalation.
+// Same guard shape as BoidOpTaskEnv (empty JobID defaults from the token's
+// own context; a mismatched explicit JobID is rejected before the
+// executor).
+func TestBroker_BoidBuiltinProjectList_DefaultsAndRestrictsJobID(t *testing.T) {
+	exec := &fakeBoidExecutor{}
+	broker := &sandbox.Broker{BoidExecutor: exec}
+	projectDir := t.TempDir()
+	ctx := sandbox.TokenContext{
+		JobID:      "job-keep",
+		TaskID:     "task-keep",
+		ProjectID:  "proj-keep",
+		Role:       testRoleHook,
+		ProjectDir: projectDir,
+	}
+	policies := map[string]sandbox.BuiltinPolicy{
+		"boid": {AllowedOps: map[string]struct{}{string(sandbox.BoidOpProjectList): {}}},
+	}
+	token := broker.Register(map[string]sandbox.CommandDef{}, policies, ctx)
+
+	// Empty JobID defaults from the token context and reaches the executor.
+	resp := broker.Handle(&sandbox.ExecRequest{
+		Command: "boid",
+		Cwd:     projectDir,
+		Token:   token,
+		Boid:    &sandbox.BoidRequest{Op: sandbox.BoidOpProjectList},
+	})
+	if resp.ExitCode != 0 {
+		t.Fatalf("exit code = %d, stderr: %s", resp.ExitCode, resp.Stderr)
+	}
+	if len(exec.calls) != 1 || exec.calls[0].JobID != "job-keep" {
+		t.Fatalf("expected executor call with job-keep, got %+v", exec.calls)
+	}
+
+	// A mismatched explicit JobID (impersonating another job to read its
+	// peer-advertise/gateway-token data) is rejected before the executor.
+	resp = broker.Handle(&sandbox.ExecRequest{
+		Command: "boid",
+		Cwd:     projectDir,
+		Token:   token,
+		Boid:    &sandbox.BoidRequest{Op: sandbox.BoidOpProjectList, JobID: "other-job"},
+	})
+	if resp.ExitCode != 1 || !strings.Contains(resp.Stderr, "restricted to the current job") {
+		t.Fatalf("expected job id rejection, got exit=%d stderr=%q", resp.ExitCode, resp.Stderr)
+	}
+	if len(exec.calls) != 1 {
+		t.Fatalf("executor should not receive the cross-job request, calls=%d", len(exec.calls))
+	}
+}
+
 func TestBroker_BoidBuiltinTaskPayload_SameGuard(t *testing.T) {
 	exec := &fakeBoidExecutor{}
 	broker := &sandbox.Broker{BoidExecutor: exec}

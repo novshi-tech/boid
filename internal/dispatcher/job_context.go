@@ -44,6 +44,19 @@ import (
 //     since-edited) project meta, which is a TOCTOU staleness bug (codex
 //     review, wiring-seams.md #17's Major 1). nil means unrestricted (see
 //     JobSpec.HookTraitsProduces's own doc comment for when that applies).
+//   - WorkspacePeerAdvertise: the {name, clone URL, reference path, clone
+//     dir} view of this job's workspace peers, keyed by peer project ID
+//     (Runner.buildPeerAdvertise, gitgateway_wire.go — the same value fed
+//     into SandboxRuntimeInfo.WorkspacePeerAdvertise). nil when the gateway
+//     isn't wired, the job isn't in clone mode (spec.Visibility.Clone ==
+//     nil), or no peer has a resolvable upstream_url. Feeds `boid project
+//     list`'s BoidOpProjectList response (internal/server/boid_executor.go)
+//     — the CLI replacement docs/plans/phase5-shim-and-task-context.md
+//     決定事項4 left as a future item. Contains a raw git gateway token
+//     (embedded in CloneURL) scoped to THIS job's own permissions; the
+//     broker's BoidOpProjectList case MUST reject a request whose JobID
+//     doesn't match the calling token's own JobID, or a readonly job could
+//     read another job's writable-token clone URL and escalate.
 //
 // Runner.Dispatch populates one per job; UnregisterJob discards it,
 // mirroring the broker token's own lifecycle so nothing outlives the job it
@@ -53,6 +66,7 @@ type JobContextSnapshot struct {
 	Env                       WorkspaceEnvView
 	Payload                   json.RawMessage
 	PayloadPatchAllowedTraits []orchestrator.TraitType
+	WorkspacePeerAdvertise    map[string]PeerAdvertise
 }
 
 // trackJobContext records snap for jobID, overwriting any previous entry.

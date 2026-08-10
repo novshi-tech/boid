@@ -50,7 +50,7 @@ project が可視なジョブ (hook / セッション / `boid exec` を問わず
 - `readonly: true` の behavior では clone 自体はローカルに書き込めるが、 push が gateway 側で拒否される (fetch はできる)。 「何も書けない」ではなく「境界を越えられない」という読み書き対称な適用に変わった
 - reopen は「再 clone + branch checkout」として実行される。 保証されるのは commit (+ push) 済みの内容のみ
 - 同一 project・同一 HEAD branch を対象とする複数タスクも、 それぞれ独立した clone を持つため **並行して dispatch される** (以前あった branch 単位の直列ロックは廃止済み)。 同時に push すると通常の git のとおり non-fast-forward で reject されるので、 fetch + merge/rebase して再 push する
-- workspace peer project は fetch-only でサンドボックス内から clone・reference 可能。 書き込みが必要な場合は peer への cross-project child task を作る
+- workspace peer project は fetch-only でサンドボックス内から clone・reference 可能。 書き込みが必要な場合は peer への cross-project child task を作る。 peer の存在と clone URL / reference path は `boid project list` で発見できる (`internal/skills/data/boid-task/references/builtins.md` 参照)
 
 ## `task_behaviors.<name>`
 
