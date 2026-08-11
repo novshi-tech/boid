@@ -216,9 +216,35 @@ sandbox:
 | キー | 型 | デフォルト | 説明 |
 |---|---|---|---|
 | `allowed_domains` | []string | `[]` | デフォルトの許可リストに追加するドメイン |
+| `egress_proxy_port_low` | int | `0`（= 30000） | egress プロキシのポート採番帯の下限 |
+| `egress_proxy_port_high` | int | `0`（= 32767） | egress プロキシのポート採番帯の上限 |
 
 起動時に `defaultAllowedDomains`（Anthropic/OpenAI API・各言語パッケージレジストリ等）へ追記されます。
 プロキシ許可リストの詳細は [サンドボックス内部](../architecture/sandbox-internals.md) を参照してください。
+
+### egress プロキシのポートは workspace ごとに固定される
+
+egress プロキシは workspace ごとに別ポートで listen しており、そのポート番号は
+**daemon を再起動しても変わりません**（`docs/plans/egress-proxy-stable-port.md`）。
+割り当てた番号は DB に永続化され、次回起動時に同じ番号で bind し直します。
+
+これは、プロキシ URL を設定ファイルに焼くツールを壊さないための仕様です。
+env の `HTTPS_PROXY` を読むツール（curl / git など）はポートが変わっても追随
+しますが、たとえば `~/.npmrc` に `proxy=http://boid-egress:38865` と書かれて
+いると、ポートが変わった瞬間に npm / pnpm だけが `ECONNREFUSED` を長いバック
+オフでリトライし続け、「エラー」ではなく「ハング」として現れます。
+
+`egress_proxy_port_low` / `egress_proxy_port_high` は、その採番帯を上書きしたい
+場合にだけ設定します。**両方セットで指定**してください（片方だけはエラー）。
+既定の 30000–32767 はカーネルのエフェメラルポート帯（通常 32768–60999、
+`net.ipv4.ip_local_port_range`）より下に置いてあります。エフェメラル帯から固定
+ポートを選ぶと、その番号がたまたま外向き接続の送信元ポートとして使われている
+最中の再起動で bind に失敗するためです。`ip_local_port_range` を既定より下げて
+いる環境では、重ならない帯へ移してください。
+
+帯が埋まっている場合はエフェメラルポートにフォールバックし、警告を出した上で
+起動は続行します（ポート固定は利便性の機能であり、egress の分離は許可リストと
+workspace ごとの listener 分離が担っているため）。
 
 > **`backend` キーは撤去済み（PR-4、2026-07-25）:** container backend
 > （Phase 6 `docs/plans/phase6-container-backend.md`）が唯一の sandbox

@@ -351,6 +351,15 @@ func Apply(conn *sql.DB) error {
 				return columnExists(tx, "actions", "actor")
 			},
 		},
+		{
+			// docs/plans/egress-proxy-stable-port.md: egress プロキシの
+			// ポートを daemon 再起動をまたいで不変にするための永続化先。
+			version: "0039_add_workspace_egress_port",
+			path:    "migrations/0039_add_workspace_egress_port.sql",
+			skip: func(tx *sql.Tx) (bool, error) {
+				return tableExists(tx, "workspace_egress_port")
+			},
+		},
 	}
 
 	if err := ensureSchemaMigrationsTable(conn); err != nil {

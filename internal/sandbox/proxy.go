@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 )
@@ -28,6 +29,14 @@ type Proxy struct {
 	// be set before Start is called; changing it afterward has no effect on
 	// an already-bound listener.
 	BindHost string
+
+	// DesiredPort, when non-zero, is the port Start binds to instead of
+	// letting the kernel pick an ephemeral one (`:0`). Start returns the
+	// bind error unchanged when the port is unavailable — deciding whether
+	// that is fatal or worth retrying on another port belongs to the
+	// caller, not here (ProxyManager treats it as retryable; see
+	// docs/plans/egress-proxy-stable-port.md). Must be set before Start.
+	DesiredPort int
 
 	listener net.Listener
 	server   *http.Server
@@ -67,7 +76,7 @@ func (p *Proxy) Start(ctx context.Context) (int, error) {
 	if host == "" {
 		host = "127.0.0.1"
 	}
-	ln, err := net.Listen("tcp", host+":0")
+	ln, err := net.Listen("tcp", net.JoinHostPort(host, strconv.Itoa(p.DesiredPort)))
 	if err != nil {
 		return 0, fmt.Errorf("listen: %w", err)
 	}
@@ -86,11 +95,31 @@ func (p *Proxy) Start(ctx context.Context) (int, error) {
 	return ln.Addr().(*net.TCPAddr).Port, nil
 }
 
+// Stop closes the listener and every connection served through it.
+//
+// Both the server AND the listener are closed, which looks redundant but is
+// not: Start hands the listener to http.Server.Serve on a NEW GOROUTINE, and
+// if Stop's Close lands before that goroutine gets scheduled, Serve's own
+// trackListener call sees the already-shutting-down server, returns
+// ErrServerClosed immediately, and never closes the listener it was handed.
+// The socket then stays bound for the life of the process.
+//
+// Harmless while ports were ephemeral — nothing ever asked for that number
+// again. Not harmless now that a port is meant to be reused across restarts:
+// found by TestProxyManager_ReusesPersistedPort failing on CI (a loaded
+// machine loses that race far more often than a developer's), where the
+// leaked listener kept the port and the "restarted" manager had to
+// reallocate — i.e. exactly the port drift this feature exists to prevent.
 func (p *Proxy) Stop() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.server != nil {
 		p.server.Close()
+	}
+	if p.listener != nil {
+		// No-op (returns an already-closed error we ignore) in the normal
+		// case where Serve did close it.
+		_ = p.listener.Close()
 	}
 }
 

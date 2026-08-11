@@ -505,6 +505,17 @@ func (r *WorkspaceRepository) Remove(slug string) error {
 		return fmt.Errorf("workspace %q: reassign projects to default: %w", slug, err)
 	}
 
+	// Release the workspace's egress proxy port reservation
+	// (docs/plans/egress-proxy-stable-port.md). workspace_egress_port
+	// deliberately has no FK to workspaces(slug) — its key space includes
+	// the reserved non-slug "__no_workspace__" — so ON DELETE CASCADE is
+	// not available and the row has to be dropped explicitly. Left behind,
+	// it would permanently hold a slot in a band the allocator now honours
+	// as reserved.
+	if _, err := tx.Exec(`DELETE FROM workspace_egress_port WHERE proxy_key = ?`, slug); err != nil {
+		return fmt.Errorf("workspace %q: release egress proxy port: %w", slug, err)
+	}
+
 	res, err := tx.Exec(`DELETE FROM workspaces WHERE slug = ?`, slug)
 	if err != nil {
 		return fmt.Errorf("workspace %q: delete: %w", slug, err)

@@ -105,6 +105,18 @@ type TaskAskConfig struct {
 // just parsed-and-ignored, with a warning logged.
 type SandboxConfig struct {
 	AllowedDomains []string `yaml:"allowed_domains"`
+	// EgressProxyPortLow/High bound the port band the egress proxy
+	// allocates each workspace's stable listener port from, inclusive
+	// (docs/plans/egress-proxy-stable-port.md).
+	//
+	// Both zero (the default, and every config.yaml written before these
+	// keys existed) means "use internal/sandbox's own default band", which
+	// sits below the kernel's ephemeral port range on purpose — see
+	// sandbox.DefaultProxyPortRangeLow's doc comment. Override only when
+	// that assumption does not hold locally, e.g. an operator who has
+	// lowered net.ipv4.ip_local_port_range so the default band overlaps it.
+	EgressProxyPortLow  int `yaml:"egress_proxy_port_low,omitempty"`
+	EgressProxyPortHigh int `yaml:"egress_proxy_port_high,omitempty"`
 }
 
 // ForgeConfig configures the git gateway's credential injection for a
@@ -383,6 +395,20 @@ func loadFromPath(path string) (*Config, error) {
 	if err := yaml.Unmarshal(data, cfg); err != nil {
 		return nil, err
 	}
+	// The egress proxy port band is checked HERE, not only in ValidateYAML,
+	// because ValidateYAML runs on the `boid config set/edit/apply` paths
+	// while this is the path `boid start` itself takes. A hand-edited or
+	// deploy-seeded config.yaml would otherwise reach the runtime
+	// unvalidated, where a half-set or malformed band degrades silently
+	// back to ephemeral ports — the exact "no sign that config.yaml caused
+	// it" failure the band exists to prevent
+	// (docs/plans/egress-proxy-stable-port.md). Deliberately scoped to this
+	// one key rather than turning loadFromPath into a general validator:
+	// widening that would change the failure behaviour of every existing
+	// config surface at once, which is a separate decision.
+	if err := validateEgressProxyPortRange(cfg.Sandbox.EgressProxyPortLow, cfg.Sandbox.EgressProxyPortHigh); err != nil {
+		return nil, err
+	}
 	return cfg, nil
 }
 
@@ -409,8 +435,10 @@ func (c *Config) UnmarshalYAML(value *yaml.Node) error {
 			Command []string `yaml:"command"`
 		} `yaml:"notify"`
 		Sandbox struct {
-			AllowedDomains []string `yaml:"allowed_domains"`
-			Backend        string   `yaml:"backend"`
+			AllowedDomains      []string `yaml:"allowed_domains"`
+			EgressProxyPortLow  int      `yaml:"egress_proxy_port_low"`
+			EgressProxyPortHigh int      `yaml:"egress_proxy_port_high"`
+			Backend             string   `yaml:"backend"`
 		} `yaml:"sandbox"`
 		TaskAsk struct {
 			DisconnectGrace string `yaml:"disconnect_grace"`
@@ -469,6 +497,8 @@ func (c *Config) UnmarshalYAML(value *yaml.Node) error {
 	c.Notify.Command = raw.Notify.Command
 
 	c.Sandbox.AllowedDomains = raw.Sandbox.AllowedDomains
+	c.Sandbox.EgressProxyPortLow = raw.Sandbox.EgressProxyPortLow
+	c.Sandbox.EgressProxyPortHigh = raw.Sandbox.EgressProxyPortHigh
 
 	// sandbox.backend: removed in PR-4 (docs/plans/volume-only-daemon.md
 	// §論点e) — container is the only sandbox backend now, so the key

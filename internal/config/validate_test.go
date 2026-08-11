@@ -1,6 +1,8 @@
 package config
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -289,5 +291,53 @@ func TestValidateYAML_MapShapeError(t *testing.T) {
 	_, err := ValidateYAML(data)
 	if err == nil {
 		t.Fatal("expected error for sandbox: <scalar>")
+	}
+}
+
+// TestValidateEgressProxyPortRange covers the band rules the reference doc
+// promises (docs/ja/reference/config-yaml.md: 両方セットで指定してください).
+// Exercised through ValidateYAML rather than the unexported helper so the
+// test also pins that the rule is actually reachable from a real config
+// document.
+func TestValidateEgressProxyPortRange(t *testing.T) {
+	for name, tc := range map[string]struct {
+		yaml    string
+		wantErr bool
+	}{
+		"unset":          {"sandbox:\n  allowed_domains: []\n", false},
+		"both set":       {"sandbox:\n  egress_proxy_port_low: 20000\n  egress_proxy_port_high: 20999\n", false},
+		"equal ends":     {"sandbox:\n  egress_proxy_port_low: 20000\n  egress_proxy_port_high: 20000\n", false},
+		"only low":       {"sandbox:\n  egress_proxy_port_low: 20000\n", true},
+		"only high":      {"sandbox:\n  egress_proxy_port_high: 20999\n", true},
+		"inverted":       {"sandbox:\n  egress_proxy_port_low: 20999\n  egress_proxy_port_high: 20000\n", true},
+		"above max port": {"sandbox:\n  egress_proxy_port_low: 70000\n  egress_proxy_port_high: 70999\n", true},
+		"negative":       {"sandbox:\n  egress_proxy_port_low: -1\n  egress_proxy_port_high: 20999\n", true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := ValidateYAML([]byte(tc.yaml))
+			if tc.wantErr && err == nil {
+				t.Errorf("ValidateYAML(%q) = nil, want an error", tc.yaml)
+			}
+			if !tc.wantErr && err != nil {
+				t.Errorf("ValidateYAML(%q) = %v, want nil", tc.yaml, err)
+			}
+		})
+	}
+}
+
+// TestLoadFromPath_RejectsBadEgressProxyPortRange pins that the band is
+// validated on the path `boid start` actually takes. ValidateYAML alone is
+// not enough: it only runs for `boid config set/edit/apply`, so a
+// hand-edited config.yaml would otherwise start the daemon with a band that
+// silently degrades to ephemeral ports.
+func TestLoadFromPath_RejectsBadEgressProxyPortRange(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(path, []byte("sandbox:\n  egress_proxy_port_low: 20000\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := LoadFromPath(path); err == nil {
+		t.Error("LoadFromPath with only one end of the band set = nil, want an error")
 	}
 }

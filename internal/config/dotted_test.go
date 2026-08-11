@@ -432,3 +432,46 @@ func TestLevenshtein(t *testing.T) {
 		}
 	}
 }
+
+// TestSet_KindInt covers the KindInt coercion path added for the egress
+// proxy port band — the only KindInt leaves in the schema today.
+//
+// Worth pinning explicitly because these two keys are unusual: the band's
+// paired-values rule means a single `boid config set
+// sandbox.egress_proxy_port_low ...` against a config that has neither key
+// set is rejected by validation downstream, so this coercion is mostly
+// reached via `boid config edit`/`apply`. That makes it exactly the kind of
+// code path that rots unnoticed.
+func TestSet_KindInt(t *testing.T) {
+	tree := Tree{}
+	reload, err := Set(tree, "sandbox.egress_proxy_port_low", []string{"20000"})
+	if err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	if reload != ReloadRestartRequired {
+		t.Errorf("reload = %v, want ReloadRestartRequired", reload)
+	}
+	got, ok := GetPath(tree, "sandbox.egress_proxy_port_low")
+	if !ok {
+		t.Fatal("GetPath: key absent after Set")
+	}
+	// Stored as an int, not the raw string: a string would round-trip into
+	// config.yaml quoted and then fail the int decode on the next load.
+	if n, isInt := got.(int); !isInt || n != 20000 {
+		t.Errorf("GetPath = %#v, want int 20000", got)
+	}
+}
+
+func TestSet_KindInt_RejectsNonInteger(t *testing.T) {
+	tree := Tree{}
+	if _, err := Set(tree, "sandbox.egress_proxy_port_low", []string{"not-a-number"}); err == nil {
+		t.Error("Set with a non-integer value = nil, want an error")
+	}
+}
+
+func TestSet_KindInt_RejectsMultipleValues(t *testing.T) {
+	tree := Tree{}
+	if _, err := Set(tree, "sandbox.egress_proxy_port_low", []string{"20000", "20999"}); err == nil {
+		t.Error("Set with two values for a scalar int = nil, want an error")
+	}
+}

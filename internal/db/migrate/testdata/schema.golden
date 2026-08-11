@@ -115,6 +115,13 @@ CREATE TABLE web_pairing_codes (
   consumed_at TIMESTAMP
 );
 
+-- table: workspace_egress_port
+CREATE TABLE workspace_egress_port (
+    proxy_key   TEXT PRIMARY KEY,
+    port        INTEGER NOT NULL UNIQUE,
+    updated_at  DATETIME NOT NULL
+);
+
 -- table: workspace_watchdog
 CREATE TABLE workspace_watchdog (
     workspace_id            TEXT PRIMARY KEY REFERENCES workspaces(slug) ON DELETE CASCADE,

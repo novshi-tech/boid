@@ -87,6 +87,15 @@ type Config struct {
 	KitsDir        string   // base dir for installed kit repos
 	KeyFilePath    string   // path to secret encryption key file
 	AllowedDomains []string // proxy allowed domains
+	// EgressProxyPortLow/High bound the band the egress proxy allocates
+	// stable per-workspace ports from (config.yaml
+	// sandbox.egress_proxy_port_low/high — docs/plans/egress-proxy-stable-port.md).
+	// Zero means "use sandbox.DefaultProxyPortRange{Low,High}"; the default
+	// literal deliberately lives in internal/sandbox only. Captured once at
+	// startup, ReloadRestartRequired, exactly like AllowedDomains — a
+	// listener cannot move to a different band without rebinding anyway.
+	EgressProxyPortLow  int
+	EgressProxyPortHigh int
 	// ServicesFloor is the daemon-wide API gateway service allowlist floor
 	// (config.yaml services_floor — docs/plans/api-gateway.md §3), captured
 	// once here exactly like AllowedDomains is for the proxy egress
@@ -546,6 +555,16 @@ func New(cfg Config) (*Server, error) {
 	srv.usingContainerBackend = dispatcher.IsContainerBackend(runtime.runner.Backend)
 	if srv.usingContainerBackend && srv.proxyManager != nil {
 		srv.proxyManager.BindHost = composeBindHost
+	}
+	if srv.proxyManager != nil {
+		// Make each egress proxy listener come back on the same port after
+		// a daemon restart (docs/plans/egress-proxy-stable-port.md). Wired
+		// regardless of backend: nothing about port stability is
+		// container-specific, and a job-side config baking a proxy URL is
+		// just as stale-able either way.
+		srv.proxyManager.PortStore = orchestrator.NewEgressPortStore(conn)
+		srv.proxyManager.PortRangeLow = cfg.EgressProxyPortLow
+		srv.proxyManager.PortRangeHigh = cfg.EgressProxyPortHigh
 	}
 	if err := mountRoutes(srv, runtime); err != nil {
 		conn.Close()

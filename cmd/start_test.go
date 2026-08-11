@@ -1245,3 +1245,44 @@ func TestDeployContainerScript_Down_CorruptStateFile_RefusesRatherThanFallsBack(
 		})
 	}
 }
+
+// TestBuildStartConfig_EgressProxyPortRangeFromConfig pins the
+// config.yaml -> server.Config hop for the egress proxy's allocation band
+// (docs/plans/egress-proxy-stable-port.md). Same
+// "captured once at daemon startup, ReloadRestartRequired" posture
+// AllowedDomains has.
+func TestBuildStartConfig_EgressProxyPortRangeFromConfig(t *testing.T) {
+	configHome := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", configHome)
+	if err := os.MkdirAll(filepath.Join(configHome, "boid"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	configPath := filepath.Join(configHome, "boid", "config.yaml")
+	if err := os.WriteFile(configPath, []byte("sandbox:\n  egress_proxy_port_low: 20000\n  egress_proxy_port_high: 20999\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := buildStartConfig(startConfigOptions{})
+	if err != nil {
+		t.Fatalf("buildStartConfig() error = %v", err)
+	}
+	if cfg.EgressProxyPortLow != 20000 || cfg.EgressProxyPortHigh != 20999 {
+		t.Errorf("EgressProxyPort range = [%d, %d], want [20000, 20999]", cfg.EgressProxyPortLow, cfg.EgressProxyPortHigh)
+	}
+}
+
+// TestBuildStartConfig_EgressProxyPortRangeUnset_Zero pins the default:
+// unset leaves both ends zero, which internal/sandbox reads as "use
+// DefaultProxyPortRange{Low,High}". The default band deliberately does not
+// appear here, so there is exactly one place that literal lives.
+func TestBuildStartConfig_EgressProxyPortRangeUnset_Zero(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+
+	cfg, err := buildStartConfig(startConfigOptions{})
+	if err != nil {
+		t.Fatalf("buildStartConfig() error = %v", err)
+	}
+	if cfg.EgressProxyPortLow != 0 || cfg.EgressProxyPortHigh != 0 {
+		t.Errorf("EgressProxyPort range = [%d, %d], want [0, 0]", cfg.EgressProxyPortLow, cfg.EgressProxyPortHigh)
+	}
+}
