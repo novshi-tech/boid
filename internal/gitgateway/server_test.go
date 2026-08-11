@@ -648,3 +648,29 @@ func TestServeHTTP_RoutesCredentialsByTokenNamespace(t *testing.T) {
 		}
 	}
 }
+
+// TestServer_UpstreamTransportHasConnectionLivenessTimeouts is the git
+// gateway's half of the 2026-08-11 incident guard — see
+// internal/apigateway's identically-named test and internal/gwtransport's
+// package doc comment. The wedge was only ever observed on the API
+// gateway, but this Server's outbound Transport was constructed from the
+// same zero-value literal against the same class of upstream, so it had
+// the same hole.
+func TestServer_UpstreamTransportHasConnectionLivenessTimeouts(t *testing.T) {
+	s := NewServer(NewRegistry(), nil, nil)
+
+	tr, ok := s.proxy.Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("proxy.Transport is %T, want *http.Transport", s.proxy.Transport)
+	}
+
+	if tr.IdleConnTimeout == 0 {
+		t.Error("IdleConnTimeout is 0: a pooled connection whose peer silently vanished never expires (use gwtransport.New)")
+	}
+	if tr.HTTP2 == nil || tr.HTTP2.SendPingTimeout == 0 {
+		t.Error("no HTTP/2 keep-alive ping configured: HTTP/2 is negotiated implicitly, and a zero SendPingTimeout means net/http never health-checks a half-dead connection (use gwtransport.New)")
+	}
+	if tr.ExpectContinueTimeout == 0 {
+		t.Error("ExpectContinueTimeout is 0: the client's Expect: 100-continue would be silently ignored")
+	}
+}
