@@ -23,6 +23,15 @@ type recordingTxStore struct {
 
 func (s *recordingTxStore) CreateTask(task *orchestrator.Task) error { return nil }
 func (s *recordingTxStore) GetTask(id string) (*orchestrator.Task, error) {
+	// Prefer the most recently committed update (if any) over the original
+	// snapshot, so a second WithinTx call within the same test (e.g. PR-2's
+	// ApplyAction("ready") auto-chaining into Dispatch, which opens its own
+	// separate transaction right after "ready"'s commits) observes the prior
+	// transaction's write — mirroring production, where Tx and any later
+	// GetTask both read the same underlying DB.
+	if s.updatedTask != nil && s.updatedTask.ID == id {
+		return s.updatedTask, nil
+	}
 	if s.task == nil || s.task.ID != id {
 		return nil, fmt.Errorf("task not found: %s", id)
 	}

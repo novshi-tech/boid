@@ -675,7 +675,7 @@ func TestDefaultMachine_Reopen_StillWorksForDoneAndAborted(t *testing.T) {
 func TestDefaultMachine_IsManualAction(t *testing.T) {
 	sm := orchestrator.DefaultMachine()
 	manual := []string{"start", "done", "fail", "reopen", "ask", "answer", "abort", "triage", "ready", "park", "drop"}
-	nonManual := []string{"job_failed", "progress", "done_request", "fail_request", "wake_triaged", "wake_ready", "garbage"}
+	nonManual := []string{"job_failed", "progress", "done_request", "fail_request", "wake_triaged", "wake_ready", "dispatch", "garbage"}
 	for _, a := range manual {
 		if !sm.IsManualAction(a) {
 			t.Errorf("IsManualAction(%q) = false, want true", a)
@@ -685,5 +685,53 @@ func TestDefaultMachine_IsManualAction(t *testing.T) {
 		if sm.IsManualAction(a) {
 			t.Errorf("IsManualAction(%q) = true, want false", a)
 		}
+	}
+}
+
+// ---- Phase 1 PR-2: ready → working (逆輸入2: dispatch) ----
+
+func TestDefaultMachine_Dispatch_ReadyToWorking(t *testing.T) {
+	sm := orchestrator.DefaultMachine()
+	task := &orchestrator.Task{Status: orchestrator.TaskStatusReady}
+	next, err := sm.Apply(task, &orchestrator.Action{Type: "dispatch"})
+	if err != nil {
+		t.Fatalf("dispatch: %v", err)
+	}
+	if next.Status != orchestrator.TaskStatusWorking {
+		t.Fatalf("dispatch: expected working, got %s", next.Status)
+	}
+}
+
+// dispatch is machine-internal (Manual:false, mirrors wake_triaged/wake_ready):
+// it must never appear as a button in AvailableActions(ready), and any
+// non-ready FromStatus must be rejected the same way an unknown action is.
+func TestDefaultMachine_Dispatch_NotManualNotFromOtherStatuses(t *testing.T) {
+	sm := orchestrator.DefaultMachine()
+	if sm.IsManualAction("dispatch") {
+		t.Fatal("dispatch must not be a Manual action")
+	}
+	for _, from := range []orchestrator.TaskStatus{
+		orchestrator.TaskStatusPending,
+		orchestrator.TaskStatusCaptured,
+		orchestrator.TaskStatusTriaged,
+		orchestrator.TaskStatusParked,
+		orchestrator.TaskStatusWorking,
+		orchestrator.TaskStatusDone,
+	} {
+		task := &orchestrator.Task{Status: from}
+		if _, err := sm.Apply(task, &orchestrator.Action{Type: "dispatch"}); err == nil {
+			t.Errorf("dispatch from %s: expected error, got none", from)
+		}
+	}
+}
+
+// working has no exit rule yet (see machine.go's NewMachine doc comment,
+// "PR-2's scope stops at ready → working"). This pins that intentional gap
+// down so a future change that quietly adds an exit doesn't go unnoticed.
+func TestDefaultMachine_AvailableActions_Working_IsEmpty(t *testing.T) {
+	sm := orchestrator.DefaultMachine()
+	actions := sm.AvailableActions(orchestrator.TaskStatusWorking)
+	if len(actions) != 0 {
+		t.Fatalf("AvailableActions(working) = %v, want empty (known PR-3 gap)", actions)
 	}
 }

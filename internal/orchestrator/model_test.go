@@ -15,6 +15,7 @@ func TestKnownTaskStatuses(t *testing.T) {
 		TaskStatusParked,
 		TaskStatusReady,
 		TaskStatusDropped,
+		TaskStatusWorking,
 	}
 	if len(known) != len(want) {
 		t.Fatalf("KnownTaskStatuses() = %v, want %v", known, want)
@@ -63,6 +64,7 @@ func TestIsTerminalStatus(t *testing.T) {
 	nonTerminal := []TaskStatus{
 		TaskStatusPending, TaskStatusExecuting, TaskStatusAwaiting,
 		TaskStatusCaptured, TaskStatusTriaged, TaskStatusParked, TaskStatusReady,
+		TaskStatusWorking,
 	}
 	for _, s := range terminal {
 		if !IsTerminalStatus(s) {
@@ -81,6 +83,7 @@ func TestIsPreExecutionStatus(t *testing.T) {
 	notPre := []TaskStatus{
 		TaskStatusPending, TaskStatusExecuting, TaskStatusAwaiting,
 		TaskStatusDone, TaskStatusAborted, TaskStatusDropped,
+		TaskStatusWorking,
 	}
 	for _, s := range pre {
 		if !IsPreExecutionStatus(s) {

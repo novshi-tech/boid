@@ -18,6 +18,19 @@ type TaskWorkflowService struct {
 	Coordinator DispatchCoordinator
 	Lifecycle   JobLifecycle
 	Hub         *TaskEventHub
+	// TaskTriage provides non-transactional (pre-tx-open) read access to the
+	// task_triage sidecar for TaskWorkflowService.Dispatch's pre-check /
+	// children read (docs/plans/cross-project-issue-triage.md Phase 1 PR-2).
+	// TxStore already embeds TaskTriageStore for the in-transaction writes
+	// Dispatch and applyParkSideEffect need — this field is only for the read
+	// that has to happen BEFORE opening a transaction (see Dispatch's own doc
+	// comment for why child-task creation can't run nested inside one). Nil
+	// is tolerated (treated as "no children"); wire.go always sets this.
+	TaskTriage TaskTriageStore
+	// TaskCreator creates the real boid tasks Dispatch task-ifies specced
+	// children into. Nil is tolerated as long as there are no specced
+	// children to dispatch — see Dispatch's own doc comment.
+	TaskCreator TaskCreator
 	// Adapter is the harness adapter used to query post-run usage. Phase 3-b
 	// dropped the StopAgent role: graceful stop is delivered as a SIGUSR1
 	// directly via Lifecycle.SignalJobRuntime, which claude.Adapter.Run()'s

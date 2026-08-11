@@ -1261,6 +1261,14 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 		Lifecycle:   lifecycle,
 		Hub:         hub,
 		Adapter:     claudeAdapter,
+		// TaskTriage: taskRepo already implements TaskTriageStore (see
+		// internal/orchestrator/repository.go) — same object as Tasks above,
+		// viewed through a narrower interface for TaskWorkflowService.Dispatch's
+		// pre-tx children read (docs/plans/cross-project-issue-triage.md Phase
+		// 1 PR-2).
+		TaskTriage: taskRepo,
+		// TaskCreator is wired below, once taskSvc (*api.TaskAppService) is
+		// constructed — see the comment there for why this can't be set here.
 	}
 	workflow.InitDispatch(context.Background())
 
@@ -1627,6 +1635,14 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 		BlockingAsk:        api.NewBlockingAskRegistry(),
 		AskDisconnectGrace: boidCfg.TaskAsk.DisconnectGrace,
 	}
+	// Late-bind workflow.TaskCreator to taskSvc now that taskSvc exists
+	// (docs/plans/cross-project-issue-triage.md Phase 1 PR-2): workflow is
+	// constructed before taskSvc (taskSvc.Workflow needs workflow to already
+	// exist), so this is the same late-binding idiom as workflow.InitDispatch
+	// above, just for a field instead of a method call. See
+	// api.TaskCreator's own doc comment for why this can't be a literal
+	// struct-construction cycle instead.
+	workflow.TaskCreator = taskSvc
 	if srv.broker != nil {
 		// runner (*dispatcher.Runner) satisfies jobContextProvider structurally
 		// (its JobContext method backs the Phase 5b PR1 `boid task env` /

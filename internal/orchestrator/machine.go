@@ -173,6 +173,30 @@ func DefaultMachine() *StateMachine {
 // action on every ordinary (pending/executing/...) task in the system, and it means a
 // dropped task never had a runtime to clean up (drop can't fire mid-execution).
 //
+// Phase 1 PR-2 (docs/plans/cross-project-issue-triage.md, 逆輸入2):
+//
+//	dispatch : ready → working  (Manual:false — machine-internal, see below)
+//
+// dispatch is the second of the two stages 逆輸入2 describes ("Go 操作 = ready
+// 遷移 + 機械 dispatch の 2 段"): the manual "ready" action IS Go (nose's
+// judgment); "dispatch" is the purely mechanical follow-up (task-ify any
+// `specced` entries in task_triage.detail.children, then flip the status) that
+// requires no further human judgment (決定12) and so must never be reachable
+// directly through the public ApplyAction endpoint — same rationale, and same
+// IsManualAction gate, as wake_triaged/wake_ready above. The single caller is
+// TaskWorkflowService.Dispatch, invoked automatically by ApplyAction right
+// after a "ready" action commits (see workflow_action.go and
+// workflow_triage.go's Dispatch doc comment for the child-task-creation
+// details this rule alone doesn't capture).
+//
+// working deliberately has NO exit rule yet (not even abort/drop). PR-2's
+// scope stops at "ready → working exists and is stable for filtering
+// purposes" (see TaskStatusWorking's doc comment in model.go); the queue's
+// decision of when/how a working task's done-ness gets evaluated (逆輸入2:
+// 「全子終端 ∧ source 終了で自動」) is explicitly PR-3 territory (queue の
+// 決定論的評価). Until PR-3 lands, a task that reaches working is a dead end in
+// the state machine — this is a known, intentional gap, not an oversight.
+//
 // Event-driven transitions:
 //
 //	job_failed : * → aborted
@@ -240,6 +264,9 @@ func NewMachine() *StateMachine {
 			{Action: "drop", FromStatus: "parked", ToStatus: "dropped", Manual: true},
 			{Action: "drop", FromStatus: "ready", ToStatus: "dropped", Manual: true},
 			{Action: "reopen", FromStatus: "dropped", ToStatus: "triaged", Manual: true},
+
+			// Phase 1 PR-2: dispatch is Manual:false — see doc comment above NewMachine.
+			{Action: "dispatch", FromStatus: "ready", ToStatus: "working"},
 
 			// Event-driven (non-manual)
 			{Action: "job_failed", FromStatus: "*", ToStatus: "aborted"},

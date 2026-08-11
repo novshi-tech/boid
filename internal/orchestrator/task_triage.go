@@ -119,3 +119,81 @@ func nullableTime(t *time.Time) any {
 	}
 	return *t
 }
+
+// Child status vocabulary for task_triage.detail.children (逆輸入1:
+// task_spec/task_ref/open_items were unified into this single list). Status
+// progresses open → specced → dispatched → closed; PR-2 only acts on
+// "specced" (task-ifying it into "dispatched" — see TaskWorkflowService.Dispatch).
+const (
+	TaskTriageChildStatusOpen       = "open"
+	TaskTriageChildStatusSpecced    = "specced"
+	TaskTriageChildStatusDispatched = "dispatched"
+	TaskTriageChildStatusClosed     = "closed"
+)
+
+// TaskTriageChildSpec is the execution recipe a child needs before it can be
+// task-ified (docs/plans/cross-project-issue-triage.md データモデル節). Project
+// is assumed to already be a resolved boid project ID by the time a child
+// reaches "specced" — PR-2 does not do project-ref fuzzy resolution (決定5's
+// routing confirmation is a 整形セッション / Phase 2 concern); an unresolvable
+// Project surfaces as a plain "project not found" error from CreateTask.
+type TaskTriageChildSpec struct {
+	Project     string `json:"project"`
+	Behavior    string `json:"behavior,omitempty"`
+	Instruction string `json:"instruction,omitempty"`
+}
+
+// TaskTriageChild is one entry of task_triage.detail.children.
+type TaskTriageChild struct {
+	ID    string `json:"id"`
+	Title string `json:"title,omitempty"`
+	// Status is one of the TaskTriageChildStatus* constants above.
+	Status string `json:"status"`
+	// Spec is required from "specced" onward (this + the child's Title is
+	// everything task-ification needs).
+	Spec *TaskTriageChildSpec `json:"spec,omitempty"`
+	// TaskRef is set once the child has been task-ified ("dispatched" onward):
+	// the id of the real boid task TaskWorkflowService.Dispatch created for it.
+	TaskRef string `json:"task_ref,omitempty"`
+}
+
+// DetailChildren unmarshals the "children" array out of a task_triage.Detail
+// blob. Returns (nil, nil) for an empty/absent detail or a detail with no
+// "children" key — both mean "no children yet", not an error.
+func DetailChildren(detail json.RawMessage) ([]TaskTriageChild, error) {
+	if len(detail) == 0 || string(detail) == "null" {
+		return nil, nil
+	}
+	var wrapper struct {
+		Children []TaskTriageChild `json:"children"`
+	}
+	if err := json.Unmarshal(detail, &wrapper); err != nil {
+		return nil, fmt.Errorf("parse task_triage detail children: %w", err)
+	}
+	return wrapper.Children, nil
+}
+
+// SetDetailChildren returns a new detail blob with the "children" key
+// replaced by children, leaving every other top-level key of detail
+// untouched (summary/source/content_ref/suggestion/observed etc — 逆輸入1/3).
+// detail's shape is a schema-light JSON blob by design (実測c), so this
+// round-trips through a map rather than a fixed Go struct to avoid silently
+// dropping fields PR-2's code doesn't know about.
+func SetDetailChildren(detail json.RawMessage, children []TaskTriageChild) (json.RawMessage, error) {
+	m := map[string]json.RawMessage{}
+	if len(detail) > 0 && string(detail) != "null" {
+		if err := json.Unmarshal(detail, &m); err != nil {
+			return nil, fmt.Errorf("parse task_triage detail: %w", err)
+		}
+	}
+	childrenJSON, err := json.Marshal(children)
+	if err != nil {
+		return nil, fmt.Errorf("marshal task_triage detail children: %w", err)
+	}
+	m["children"] = childrenJSON
+	out, err := json.Marshal(m)
+	if err != nil {
+		return nil, fmt.Errorf("marshal task_triage detail: %w", err)
+	}
+	return out, nil
+}
