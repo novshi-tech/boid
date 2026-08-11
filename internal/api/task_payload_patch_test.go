@@ -247,7 +247,7 @@ func (s *barrierTaskStore) DeleteTask(id string) error { return nil }
 func (s *barrierTaskStore) FindTaskByRemote(remoteID string) (*orchestrator.Task, error) {
 	return nil, nil
 }
-func (s *barrierTaskStore) FindTaskByRef(ref, parentID string) (*orchestrator.Task, error) {
+func (s *barrierTaskStore) FindTaskByRef(ref, parentID, projectID string) (*orchestrator.Task, error) {
 	return nil, nil
 }
 func (s *barrierTaskStore) ListChildren(parentID string) ([]*orchestrator.Task, error) {

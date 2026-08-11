@@ -173,6 +173,20 @@ func DetailChildren(detail json.RawMessage) ([]TaskTriageChild, error) {
 	return wrapper.Children, nil
 }
 
+// parseDetailMap round-trips a task_triage.Detail blob through a
+// map[string]json.RawMessage so callers can replace a single top-level key
+// (children, attrs, ...) without disturbing keys they don't know about
+// (実測c: detail is a schema-light JSON blob by design).
+func parseDetailMap(detail json.RawMessage) (map[string]json.RawMessage, error) {
+	m := map[string]json.RawMessage{}
+	if len(detail) > 0 && string(detail) != "null" {
+		if err := json.Unmarshal(detail, &m); err != nil {
+			return nil, fmt.Errorf("parse task_triage detail: %w", err)
+		}
+	}
+	return m, nil
+}
+
 // SetDetailChildren returns a new detail blob with the "children" key
 // replaced by children, leaving every other top-level key of detail
 // untouched (summary/source/content_ref/suggestion/observed etc — 逆輸入1/3).
@@ -180,11 +194,9 @@ func DetailChildren(detail json.RawMessage) ([]TaskTriageChild, error) {
 // round-trips through a map rather than a fixed Go struct to avoid silently
 // dropping fields PR-2's code doesn't know about.
 func SetDetailChildren(detail json.RawMessage, children []TaskTriageChild) (json.RawMessage, error) {
-	m := map[string]json.RawMessage{}
-	if len(detail) > 0 && string(detail) != "null" {
-		if err := json.Unmarshal(detail, &m); err != nil {
-			return nil, fmt.Errorf("parse task_triage detail: %w", err)
-		}
+	m, err := parseDetailMap(detail)
+	if err != nil {
+		return nil, err
 	}
 	childrenJSON, err := json.Marshal(children)
 	if err != nil {
@@ -196,4 +208,138 @@ func SetDetailChildren(detail json.RawMessage, children []TaskTriageChild) (json
 		return nil, fmt.Errorf("marshal task_triage detail: %w", err)
 	}
 	return out, nil
+}
+
+// FoldDetailAttrs merges patch into detail's top-level "attrs" object,
+// last-write-wins per key, leaving every other top-level key (children,
+// summary, ...) untouched. This backs the "attrs_set" action vocabulary
+// entry (docs/plans/cross-project-issue-triage.md PR-4 設計メモ 論点4/6).
+//
+// Deliberately a PURE fold with zero policy: it does not know or care what
+// keys mean (urgency, summary, ...) and does not enforce monotonicity or any
+// other invariant on a key's value across writes. That kind of policy (e.g.
+// "urgency only ever increases") is khi's responsibility on the evaluate
+// side, per 論点6's closing note — encoding it here would be a boundary
+// violation the same way `applyParkSideEffect` does not decide whether a
+// wake_at is "reasonable".
+func FoldDetailAttrs(detail json.RawMessage, patch map[string]json.RawMessage) (json.RawMessage, error) {
+	m, err := parseDetailMap(detail)
+	if err != nil {
+		return nil, err
+	}
+	attrs := map[string]json.RawMessage{}
+	if raw, ok := m["attrs"]; ok && len(raw) > 0 && string(raw) != "null" {
+		if err := json.Unmarshal(raw, &attrs); err != nil {
+			return nil, fmt.Errorf("parse task_triage detail attrs: %w", err)
+		}
+	}
+	for k, v := range patch {
+		attrs[k] = v
+	}
+	attrsJSON, err := json.Marshal(attrs)
+	if err != nil {
+		return nil, fmt.Errorf("marshal task_triage detail attrs: %w", err)
+	}
+	m["attrs"] = attrsJSON
+	out, err := json.Marshal(m)
+	if err != nil {
+		return nil, fmt.Errorf("marshal task_triage detail: %w", err)
+	}
+	return out, nil
+}
+
+// AddDetailChild appends child to detail's "children" list, defaulting
+// Status to TaskTriageChildStatusOpen when unset. Idempotent by ID: if a
+// child with the same ID already exists, detail is returned unchanged (a
+// resend after a crash between khi recording the push and receiving the ack
+// must not duplicate the child entry — same dedup posture as the Ref-based
+// task-create get-or-create, 論点7).
+func AddDetailChild(detail json.RawMessage, child TaskTriageChild) (json.RawMessage, error) {
+	children, err := DetailChildren(detail)
+	if err != nil {
+		return nil, err
+	}
+	for _, c := range children {
+		if c.ID == child.ID {
+			return detail, nil
+		}
+	}
+	if child.Status == "" {
+		child.Status = TaskTriageChildStatusOpen
+	}
+	children = append(children, child)
+	return SetDetailChildren(detail, children)
+}
+
+// SpecDetailChild finds the child with the given id and sets its Spec/Title,
+// advancing its status to TaskTriageChildStatusSpecced. Returns an error if
+// no child with that id exists — unlike AddDetailChild this is not
+// create-or-update: "specced" only ever applies to a child khi already
+// announced via child_added (or one seeded directly in the child's own
+// detail at task-create time).
+//
+// If the child has already progressed past "specced" — i.e. it is
+// dispatched or closed — this is an idempotent no-op (detail returned
+// unchanged, found=true, no error): those two statuses are daemon-recorded
+// MECHANICAL FACTS (child_dispatched/child_closed, 論点9), and a khi resend
+// of child_specced after an uncertain ack (crash/timeout before receiving
+// the response) must never regress one of them back to "specced" — that
+// would let a stale duplicate action send erase "this child already ran and
+// finished" (codex review Major fix). Re-specc'ing a child that is still
+// "open" or already "specced" (re-editing the spec before Go) both apply
+// normally.
+func SpecDetailChild(detail json.RawMessage, id string, spec TaskTriageChildSpec, title string) (json.RawMessage, error) {
+	children, err := DetailChildren(detail)
+	if err != nil {
+		return nil, err
+	}
+	found := false
+	for i := range children {
+		if children[i].ID == id {
+			found = true
+			switch children[i].Status {
+			case TaskTriageChildStatusDispatched, TaskTriageChildStatusClosed:
+				// Idempotent no-op: do not regress a daemon-recorded
+				// mechanical fact.
+				return detail, nil
+			}
+			specCopy := spec
+			children[i].Spec = &specCopy
+			if title != "" {
+				children[i].Title = title
+			}
+			children[i].Status = TaskTriageChildStatusSpecced
+			break
+		}
+	}
+	if !found {
+		return nil, fmt.Errorf("child %q not found in task_triage detail", id)
+	}
+	return SetDetailChildren(detail, children)
+}
+
+// MarkDetailChildClosed marks the child entry whose TaskRef equals
+// childTaskID as closed. This is the daemon's own self-record of the
+// "child_closed" vocabulary entry (論点9) — khi never calls this; the
+// TaskWorkflowService hooks it directly into the child task's own
+// done/aborted finalization path. changed=false means no matching,
+// not-already-closed child was found (already closed by an earlier call, or
+// this task was never linked via TaskRef) — callers use this to skip
+// appending a duplicate action.
+func MarkDetailChildClosed(detail json.RawMessage, childTaskID string) (out json.RawMessage, changed bool, err error) {
+	children, err := DetailChildren(detail)
+	if err != nil {
+		return nil, false, err
+	}
+	for i := range children {
+		if children[i].TaskRef == childTaskID && children[i].Status != TaskTriageChildStatusClosed {
+			children[i].Status = TaskTriageChildStatusClosed
+			newDetail, serr := SetDetailChildren(detail, children)
+			if serr != nil {
+				return nil, false, serr
+			}
+			return newDetail, true, nil
+		}
+	}
+	return detail, false, nil
 }

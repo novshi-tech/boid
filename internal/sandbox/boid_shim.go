@@ -176,6 +176,8 @@ func parseBoidRequest(args []string) (*BoidRequest, error) {
 			return parseBoidTaskAsk(args[2:])
 		case "delete":
 			return parseBoidTaskDelete(args[2:])
+		case "wake":
+			return parseBoidTaskWake(args[2:])
 		default:
 			return nil, fmt.Errorf("boid shim: unsupported boid task subcommand %q", args[1])
 		}
@@ -695,6 +697,24 @@ func parseBoidTaskReopen(args []string) (*BoidRequest, error) {
 		}
 	}
 	return req, nil
+}
+
+// parseBoidTaskWake builds the BoidRequest for `boid task wake <task-id>`
+// (docs/plans/cross-project-issue-triage.md Phase 1 PR-4, 論点10). No flags —
+// the only input is which parked task to revive; Wake itself resolves
+// triaged vs ready via ParkedFrom, so there is nothing else for the caller to
+// specify.
+func parseBoidTaskWake(args []string) (*BoidRequest, error) {
+	if len(args) == 0 {
+		return nil, fmt.Errorf("boid shim: task wake requires a task id")
+	}
+	if strings.HasPrefix(args[0], "-") {
+		return nil, fmt.Errorf("boid shim: unsupported flag %q for boid task wake", args[0])
+	}
+	if len(args) > 1 {
+		return nil, fmt.Errorf("boid shim: unexpected argument %q for boid task wake", args[1])
+	}
+	return &BoidRequest{Op: BoidOpTaskWake, TaskID: args[0]}, nil
 }
 
 func parseBoidTaskNotify(args []string) (*BoidRequest, error) {

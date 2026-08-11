@@ -56,8 +56,8 @@ func (s apiTxStore) FindTaskByRemote(remoteID string) (*orchestrator.Task, error
 	return s.tasks.FindTaskByRemote(remoteID)
 }
 
-func (s apiTxStore) FindTaskByRef(ref, parentID string) (*orchestrator.Task, error) {
-	return s.tasks.FindTaskByRef(ref, parentID)
+func (s apiTxStore) FindTaskByRef(ref, parentID, projectID string) (*orchestrator.Task, error) {
+	return s.tasks.FindTaskByRef(ref, parentID, projectID)
 }
 
 func (s apiTxStore) ListChildren(parentID string) ([]*orchestrator.Task, error) {

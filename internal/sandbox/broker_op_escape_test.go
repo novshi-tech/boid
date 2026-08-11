@@ -94,6 +94,13 @@ func TestBroker_BoidProjectList_PolicyReject(t *testing.T) {
 	assertBoidOpRejectedByPolicy(t, &sandbox.BoidRequest{Op: sandbox.BoidOpProjectList})
 }
 
+// BoidOpTaskWake (Phase 1 PR-4, 論点10): workspace-scope enforcement
+// (AllowsProject) lives in boid_executor, same as BoidOpActionSend — this
+// closes the plain policy-gate manifest entry point.
+func TestBroker_BoidTaskWake_PolicyReject(t *testing.T) {
+	assertBoidOpRejectedByPolicy(t, &sandbox.BoidRequest{Op: sandbox.BoidOpTaskWake, TaskID: "t1"})
+}
+
 // assertBoidOpRejectedByPolicy registers a boid policy that allows only an
 // unrelated op (job_done), then asserts the given request is rejected by the
 // policy gate — before any op-specific dispatch — and never reaches the
@@ -187,6 +194,13 @@ var opEscapeCoverage = map[string]opCoverage{
 	// TestBroker_BoidProjectList_PolicyReject's doc comment) — same shape as
 	// BoidOpTaskDelete's manifest entry above.
 	"BoidOpProjectList": {escapeTest: "TestBroker_BoidProjectList_PolicyReject"},
+
+	// BoidOpTaskWake (Phase 1 PR-4, docs/plans/cross-project-issue-triage.md
+	// 論点10): workspace-scope enforcement is exercised end-to-end by
+	// internal/server's boid_executor tests
+	// (TestBoidBuiltinExecutor_TaskWake_*); the plain policy-gate manifest
+	// entry point is TestBroker_BoidTaskWake_PolicyReject.
+	"BoidOpTaskWake": {escapeTest: "TestBroker_BoidTaskWake_PolicyReject"},
 }
 
 // TestOpEscapeCoverage_ManifestComplete asserts opEscapeCoverage covers exactly

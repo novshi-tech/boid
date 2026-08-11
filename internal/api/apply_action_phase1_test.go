@@ -19,6 +19,10 @@ type recordingTxStore struct {
 	triage           map[string]*orchestrator.TaskTriage
 	parkedFromFn     func(taskID string) (orchestrator.TaskStatus, error)
 	getTaskTriageErr error // when set, GetTaskTriage returns this instead of the usual not-found
+	// tasks backs multi-task scenarios (e.g. recordChildClosedOnParent, which
+	// looks up the PARENT task by id while the primary `task`/`updatedTask`
+	// fields track the child under test). Checked before task/updatedTask.
+	tasks map[string]*orchestrator.Task
 }
 
 func (s *recordingTxStore) CreateTask(task *orchestrator.Task) error { return nil }
@@ -31,6 +35,11 @@ func (s *recordingTxStore) GetTask(id string) (*orchestrator.Task, error) {
 	// GetTask both read the same underlying DB.
 	if s.updatedTask != nil && s.updatedTask.ID == id {
 		return s.updatedTask, nil
+	}
+	if s.tasks != nil {
+		if t, ok := s.tasks[id]; ok {
+			return t, nil
+		}
 	}
 	if s.task == nil || s.task.ID != id {
 		return nil, fmt.Errorf("task not found: %s", id)
@@ -48,7 +57,7 @@ func (s *recordingTxStore) DeleteTask(id string) error { return nil }
 func (s *recordingTxStore) FindTaskByRemote(remoteID string) (*orchestrator.Task, error) {
 	return nil, nil
 }
-func (s *recordingTxStore) FindTaskByRef(ref, parentID string) (*orchestrator.Task, error) {
+func (s *recordingTxStore) FindTaskByRef(ref, parentID, projectID string) (*orchestrator.Task, error) {
 	return nil, nil
 }
 func (s *recordingTxStore) ListChildren(parentID string) ([]*orchestrator.Task, error) {

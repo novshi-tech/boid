@@ -485,6 +485,11 @@ func (b *Broker) handleBoidBuiltin(ctx context.Context, req *ExecRequest, entry 
 			return &ExecResponse{ExitCode: 1, Stderr: "boid action send requires a type"}
 		}
 		// project 検証は boid_executor 側で行う (task_notify と同じパターン)
+	case BoidOpTaskWake:
+		if boidReq.TaskID == "" {
+			return &ExecResponse{ExitCode: 1, Stderr: "boid task wake requires a task id"}
+		}
+		// project 検証は boid_executor 側で行う (action_send と同じパターン)
 	case BoidOpJobList:
 		if boidReq.TaskID == "" {
 			return &ExecResponse{ExitCode: 1, Stderr: "boid job list requires a task id"}
