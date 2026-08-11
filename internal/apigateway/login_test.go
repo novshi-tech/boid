@@ -689,8 +689,13 @@ func TestLoginManager_CompleteLogin_Manual_Success(t *testing.T) {
 	if _, present := form["code_verifier"]; present {
 		t.Error("manual flow must never send code_verifier (freee does not support PKCE)")
 	}
-	if _, present := form["redirect_uri"]; present {
-		t.Error("manual flow must never repeat redirect_uri at token-exchange time")
+	// RFC 6749 §4.1.3: redirect_uri must be repeated at token-exchange
+	// time if it was present in the authorization request — and manual/
+	// OOB's authorization request always includes it (the fixed OOB
+	// sentinel, oobRedirectURI). Omitting it here is what caused freee's
+	// token endpoint to reject the exchange with invalid_client (#936).
+	if got := form.Get("redirect_uri"); got != oobRedirectURI {
+		t.Errorf("redirect_uri = %q, want %q (RFC 6749 §4.1.3 requires repeating it)", got, oobRedirectURI)
 	}
 	if v, _ := store.get("ws-a", OAuthSecretKey("freee", oauthFieldRefreshToken)); v != "RT1" {
 		t.Errorf("persisted refresh_token = %q, want RT1", v)
