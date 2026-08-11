@@ -72,6 +72,22 @@ func (s apiTxStore) ListActionsByTask(taskID string) ([]*orchestrator.Action, er
 	return s.actions.ListActionsByTask(taskID)
 }
 
+func (s apiTxStore) UpsertTaskTriage(tt *orchestrator.TaskTriage) error {
+	return s.tasks.UpsertTaskTriage(tt)
+}
+
+func (s apiTxStore) GetTaskTriage(taskID string) (*orchestrator.TaskTriage, error) {
+	return s.tasks.GetTaskTriage(taskID)
+}
+
+func (s apiTxStore) DeleteTaskTriage(taskID string) error {
+	return s.tasks.DeleteTaskTriage(taskID)
+}
+
+func (s apiTxStore) ParkedFrom(taskID string) (orchestrator.TaskStatus, error) {
+	return s.tasks.ParkedFrom(taskID)
+}
+
 func (s apiTxStore) GetJob(id string) (*api.Job, error) {
 	job, err := s.jobs.GetJob(id)
 	if err != nil {

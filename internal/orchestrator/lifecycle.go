@@ -133,10 +133,14 @@ func failReportFromPayload(payload json.RawMessage) *FailReport {
 }
 
 // IsInstructionsEditable reports whether a task's instructions can be edited
-// in the given status. Editing is only allowed while the task is pending to
-// avoid racing with in-flight handlers and to prevent post-execution mutations.
+// in the given status. Editing is allowed while pending (avoiding races with
+// in-flight handlers / post-execution mutations) and, since
+// docs/plans/cross-project-issue-triage.md Phase 1 PR-1, while a triage task
+// sits in captured/triaged/ready — a 整形セッション (UC-3) needs to be able to
+// edit these before dispatch. parked is excluded (see
+// IsPreDispatchEditableStatus's doc comment).
 func IsInstructionsEditable(status TaskStatus) bool {
-	return status == TaskStatusPending
+	return IsPreDispatchEditableStatus(status)
 }
 
 func abortReasonFromPayload(payload json.RawMessage) *AbortReason {

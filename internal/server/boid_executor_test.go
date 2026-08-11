@@ -370,6 +370,37 @@ func TestBoidBuiltinExecutor_TaskCreate_DropsDeprecatedBaseBranch(t *testing.T) 
 	}
 }
 
+// TestBoidBuiltinExecutor_TaskCreate_RejectsInitialStatus verifies the
+// brokered task_create op refuses a non-empty initial_status
+// (docs/plans/cross-project-issue-triage.md Phase 1 PR-1, Opus指摘#9): the
+// ingestion capability (workspace jobs creating captured/triaged tasks
+// directly) is deliberately closed until PR-4 wires up daemon-side workspace
+// stamping/dedup around it.
+func TestBoidBuiltinExecutor_TaskCreate_RejectsInitialStatus(t *testing.T) {
+	store := &capturingTaskStore{}
+	meta := executorMetaStub{meta: &orchestrator.ProjectMeta{
+		TaskBehaviors: map[string]orchestrator.TaskBehavior{"dev": {}},
+	}}
+	exec := &boidBuiltinExecutor{
+		tasks: &api.TaskAppService{Tasks: store, Meta: meta},
+	}
+	ctx := sandbox.TokenContext{ProjectID: "proj-1", AllowedProjectIDs: []string{"proj-1"}}
+
+	resp := exec.ExecuteBoidBuiltin(context.Background(), ctx, &sandbox.BoidRequest{
+		Op:          sandbox.BoidOpTaskCreate,
+		CreatePatch: json.RawMessage(`{"title":"sneaky","behavior":"dev","initial_status":"captured"}`),
+	})
+	if resp.ExitCode != 1 {
+		t.Fatalf("initial_status via create_patch: exit code = %d, want 1 (stderr=%q)", resp.ExitCode, resp.Stderr)
+	}
+	if !strings.Contains(resp.Stderr, "initial_status") {
+		t.Fatalf("stderr = %q, want mention of initial_status", resp.Stderr)
+	}
+	if len(store.created) != 0 {
+		t.Fatalf("created tasks = %d, want 0 (rejected before CreateTask)", len(store.created))
+	}
+}
+
 func TestBoidBuiltinExecutor_TaskCreate_BaseBranchInheritsFromProject(t *testing.T) {
 	store := &capturingTaskStore{}
 	meta := executorMetaStub{meta: &orchestrator.ProjectMeta{
@@ -987,6 +1018,49 @@ func TestBoidBuiltinExecutor_TaskGet_EnforcesWorkspaceScope(t *testing.T) {
 	}
 	if strings.Contains(resp.Stdout, "secret") {
 		t.Fatalf("cross-workspace task_get leaked field value: stdout=%q", resp.Stdout)
+	}
+}
+
+// --- task_list executor tests (cross-project-issue-triage Phase 1 PR-1, Opus指摘#9 応用) ---
+
+func TestBoidBuiltinExecutor_TaskList_RejectsUnknownStatus(t *testing.T) {
+	store := &capturingTaskStore{}
+	meta := executorMetaStub{meta: &orchestrator.ProjectMeta{}}
+	exec := &boidBuiltinExecutor{
+		tasks: &api.TaskAppService{Tasks: store, Meta: meta},
+	}
+	ctx := sandbox.TokenContext{ProjectID: "proj-1"}
+
+	resp := exec.ExecuteBoidBuiltin(context.Background(), ctx, &sandbox.BoidRequest{
+		Op:        sandbox.BoidOpTaskList,
+		ProjectID: "proj-1",
+		Status:    "garbage",
+	})
+	if resp.ExitCode != 1 {
+		t.Fatalf("unknown status: exit code = %d, want 1 (stderr=%q)", resp.ExitCode, resp.Stderr)
+	}
+	if !strings.Contains(resp.Stderr, "unknown status") {
+		t.Fatalf("stderr = %q, want mention of unknown status", resp.Stderr)
+	}
+}
+
+func TestBoidBuiltinExecutor_TaskList_AcceptsKnownStatusesAndKeywords(t *testing.T) {
+	store := &capturingTaskStore{}
+	meta := executorMetaStub{meta: &orchestrator.ProjectMeta{}}
+	exec := &boidBuiltinExecutor{
+		tasks: &api.TaskAppService{Tasks: store, Meta: meta},
+	}
+	ctx := sandbox.TokenContext{ProjectID: "proj-1"}
+
+	for _, status := range []string{"", "open", "closed", "queue", "triaged", "pending", "dropped"} {
+		resp := exec.ExecuteBoidBuiltin(context.Background(), ctx, &sandbox.BoidRequest{
+			Op:        sandbox.BoidOpTaskList,
+			ProjectID: "proj-1",
+			Status:    status,
+		})
+		if resp.ExitCode != 0 {
+			t.Errorf("status %q: exit code = %d, want 0 (stderr=%q)", status, resp.ExitCode, resp.Stderr)
+		}
 	}
 }
 

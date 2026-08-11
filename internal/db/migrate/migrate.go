@@ -293,6 +293,15 @@ func Apply(conn *sql.DB) error {
 				return columnExists(tx, "workspaces", "services")
 			},
 		},
+		{
+			// docs/plans/cross-project-issue-triage.md Phase 1 PR-1: task_triage
+			// sidecar テーブル追加 (project_workspaces と同型の 1:1 sidecar)。
+			version: "0035_add_task_triage",
+			path:    "migrations/0035_add_task_triage.sql",
+			skip: func(tx *sql.Tx) (bool, error) {
+				return tableExists(tx, "task_triage")
+			},
+		},
 	}
 
 	if err := ensureSchemaMigrationsTable(conn); err != nil {

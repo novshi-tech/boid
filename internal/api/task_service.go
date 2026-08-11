@@ -83,19 +83,19 @@ func (s *TaskAppService) UpdateTask(id string, req UpdateTaskRequest) (*orchestr
 		return nil, &StatusError{Code: http.StatusNotFound, Message: err.Error()}
 	}
 	if req.Title != "" {
-		if task.Status != orchestrator.TaskStatusPending {
+		if !orchestrator.IsPreDispatchEditableStatus(task.Status) {
 			return nil, &StatusError{
 				Code:    http.StatusConflict,
-				Message: fmt.Sprintf("cannot edit title while task is not pending (status: %s)", task.Status),
+				Message: fmt.Sprintf("cannot edit title while task is not pending/pre-dispatch (status: %s)", task.Status),
 			}
 		}
 		task.Title = req.Title
 	}
 	if req.ProjectID != "" {
-		if task.Status != orchestrator.TaskStatusPending {
+		if !orchestrator.IsPreDispatchEditableStatus(task.Status) {
 			return nil, &StatusError{
 				Code:    http.StatusConflict,
-				Message: fmt.Sprintf("cannot edit project while task is not pending (status: %s)", task.Status),
+				Message: fmt.Sprintf("cannot edit project while task is not pending/pre-dispatch (status: %s)", task.Status),
 			}
 		}
 		if s.Projects != nil {

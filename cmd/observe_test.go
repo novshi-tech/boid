@@ -154,3 +154,30 @@ func TestRenderJobShowsAttachability(t *testing.T) {
 		t.Fatalf("renderJob output missing tty flag: %q", got)
 	}
 }
+
+func TestIsTerminalTaskStatus(t *testing.T) {
+	terminal := []orchestrator.TaskStatus{
+		orchestrator.TaskStatusDone,
+		orchestrator.TaskStatusAborted,
+		orchestrator.TaskStatusDropped,
+	}
+	nonTerminal := []orchestrator.TaskStatus{
+		orchestrator.TaskStatusPending,
+		orchestrator.TaskStatusExecuting,
+		orchestrator.TaskStatusAwaiting,
+		orchestrator.TaskStatusCaptured,
+		orchestrator.TaskStatusTriaged,
+		orchestrator.TaskStatusParked,
+		orchestrator.TaskStatusReady,
+	}
+	for _, s := range terminal {
+		if !isTerminalTaskStatus(s) {
+			t.Errorf("isTerminalTaskStatus(%q) = false, want true", s)
+		}
+	}
+	for _, s := range nonTerminal {
+		if isTerminalTaskStatus(s) {
+			t.Errorf("isTerminalTaskStatus(%q) = true, want false", s)
+		}
+	}
+}

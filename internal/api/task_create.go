@@ -64,7 +64,46 @@ func (s *TaskAppService) validateParentlessExecutorBase(req CreateTaskRequest, b
 	return nil
 }
 
+// allowedCreateInitialStatuses is the allowlist for CreateTaskRequest.InitialStatus
+// (docs/plans/cross-project-issue-triage.md Phase 1 PR-1). Deliberately does
+// NOT include every orchestrator.TaskStatus value — a caller must not be able
+// to fabricate a task that's already "done"/"executing"/etc; only the two
+// entry points a triage task can legitimately start from are allowed.
+var allowedCreateInitialStatuses = map[string]orchestrator.TaskStatus{
+	"":         orchestrator.TaskStatusPending, // unchanged default
+	"pending":  orchestrator.TaskStatusPending,
+	"captured": orchestrator.TaskStatusCaptured,
+	"triaged":  orchestrator.TaskStatusTriaged,
+}
+
+// resolveInitialStatus validates req.InitialStatus and returns the
+// orchestrator.TaskStatus to create the task with (never "" — callers pass
+// this straight to orchestrator.Task.Status; store.go's own `if t.Status ==
+// ""` fallback to pending is never relied on here, keeping this the single
+// place that decides a new task's starting status).
+func resolveInitialStatus(req CreateTaskRequest) (orchestrator.TaskStatus, error) {
+	status, ok := allowedCreateInitialStatuses[req.InitialStatus]
+	if !ok {
+		return "", &StatusError{
+			Code:    http.StatusBadRequest,
+			Message: fmt.Sprintf("initial_status: unknown value %q (allowed: pending, captured, triaged)", req.InitialStatus),
+		}
+	}
+	if req.AutoStart && status != orchestrator.TaskStatusPending {
+		return "", &StatusError{
+			Code:    http.StatusBadRequest,
+			Message: fmt.Sprintf("auto_start cannot be combined with initial_status %q (task would never reach pending)", req.InitialStatus),
+		}
+	}
+	return status, nil
+}
+
 func (s *TaskAppService) CreateTask(req CreateTaskRequest) (*orchestrator.Task, error) {
+	initialStatus, err := resolveInitialStatus(req)
+	if err != nil {
+		return nil, err
+	}
+
 	var meta *orchestrator.ProjectMeta
 	if s.Meta != nil {
 		// Hydrate with workspace.yaml so a workspace-level default project
@@ -220,6 +259,7 @@ func (s *TaskAppService) CreateTask(req CreateTaskRequest) (*orchestrator.Task, 
 		ProjectID:    req.ProjectID,
 		Title:        req.Title,
 		Description:  req.Description,
+		Status:       initialStatus,
 		Behavior:     res.BehaviorName,
 		Traits:       traits,
 		Readonly:     readonly,

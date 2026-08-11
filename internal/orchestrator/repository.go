@@ -65,6 +65,22 @@ func (r *TaskRepository) ListActionsByTask(taskID string) ([]*Action, error) {
 	return ListActionsByTask(r.db, taskID)
 }
 
+func (r *TaskRepository) UpsertTaskTriage(tt *TaskTriage) error {
+	return UpsertTaskTriage(r.db, tt)
+}
+
+func (r *TaskRepository) GetTaskTriage(taskID string) (*TaskTriage, error) {
+	return GetTaskTriage(r.db, taskID)
+}
+
+func (r *TaskRepository) DeleteTaskTriage(taskID string) error {
+	return DeleteTaskTriage(r.db, taskID)
+}
+
+func (r *TaskRepository) ParkedFrom(taskID string) (TaskStatus, error) {
+	return ParkedFrom(r.db, taskID)
+}
+
 type ProjectRepository struct {
 	db db.DBTX
 }
@@ -230,7 +246,7 @@ func (s *TaskGCStore) GC(olderThan time.Duration, dryRun bool) (*GCResult, error
 
 	var result *GCResult
 	err := db.InTxDB(s.conn, func(dbtx db.DBTX) error {
-		r, err := GCTasks(dbtx, []string{"done", "aborted"}, olderThan, dryRun)
+		r, err := GCTasks(dbtx, terminalTaskStatusStrings(), olderThan, dryRun)
 		result = r
 		return err
 	})
@@ -263,12 +279,19 @@ func (s *TaskGCStore) GC(olderThan time.Duration, dryRun bool) (*GCResult, error
 // transcriptsDir entries counted together, matching GCResult.Runtimes'
 // single counter).
 func (s *TaskGCStore) cleanRuntimes(olderThan time.Duration) int {
+	// t.status IN (...) uses the same terminal set as GCTasks below (dropped
+	// included alongside done/aborted, terminalStatusSQLList — model.go's
+	// IsTerminalStatus). A dropped pre-execution task normally never has a
+	// job/runtime (drop can't fire mid-execution), but this keeps the
+	// invariant "GC'd task row ⇒ GC'd runtime dir" true for any future path
+	// that does attach a job before drop, instead of relying on that
+	// assumption never changing.
 	query := `
 		SELECT j.id, j.runtime_id
 		FROM jobs j
 		LEFT JOIN tasks t ON t.id = j.task_id
 		WHERE (
-		  (j.task_id IS NOT NULL AND t.status IN ('done', 'aborted'))
+		  (j.task_id IS NOT NULL AND t.status IN (` + terminalStatusSQLList + `))
 		  OR
 		  (j.task_id IS NULL AND j.status IN ('completed', 'failed'))
 		)`
@@ -371,7 +394,7 @@ func (s *TaskGCStore) cleanTaskAttachments(olderThan time.Duration) {
 	query := `
 		SELECT t.id
 		FROM tasks t
-		WHERE t.status IN ('done', 'aborted')`
+		WHERE t.status IN (` + terminalStatusSQLList + `)`
 	var args []any
 	if olderThan > 0 {
 		query += ` AND t.updated_at < ?`

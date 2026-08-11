@@ -49,3 +49,30 @@ func TestParseTaskCreateSpec_ReadonlyOmitted(t *testing.T) {
 		t.Errorf("Readonly = %v, want nil (omitted readonly must not set a value)", *req.Readonly)
 	}
 }
+
+// TestParseTaskCreateSpec_InitialStatus verifies initial_status (cross-project-
+// issue-triage Phase 1 PR-1) round-trips through the YAML→JSON strict-decode
+// path the same way readonly does — no CLI-side wiring needed for a brokered
+// build-team YAML spec, since parseTaskCreateSpec uses DisallowUnknownFields
+// against apiwire.CreateTaskRequest's JSON tags directly.
+func TestParseTaskCreateSpec_InitialStatus(t *testing.T) {
+	input := "project_id: p\ntitle: t\nbehavior: triage\ninitial_status: captured\n"
+	req, err := parseTaskCreateSpec([]byte(input))
+	if err != nil {
+		t.Fatalf("parseTaskCreateSpec() error = %v", err)
+	}
+	if req.InitialStatus != "captured" {
+		t.Errorf("InitialStatus = %q, want %q", req.InitialStatus, "captured")
+	}
+}
+
+func TestParseTaskCreateSpec_InitialStatusOmitted(t *testing.T) {
+	input := "project_id: p\ntitle: t\nbehavior: triage\n"
+	req, err := parseTaskCreateSpec([]byte(input))
+	if err != nil {
+		t.Fatalf("parseTaskCreateSpec() error = %v", err)
+	}
+	if req.InitialStatus != "" {
+		t.Errorf("InitialStatus = %q, want empty", req.InitialStatus)
+	}
+}

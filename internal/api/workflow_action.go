@@ -23,6 +23,29 @@ func isShutdownErr(ctx context.Context, err error) bool {
 }
 
 func (s *TaskWorkflowService) ApplyAction(ctx context.Context, taskID string, req ApplyActionRequest) (*ActionApplication, error) {
+	// Only Manual:true rules are reachable through this public entry point
+	// (HTTP API / brokered action_send / `boid action send` CLI all funnel
+	// through ApplyAction). Manual:false rules — job_failed (event-driven,
+	// applied directly by CompleteJob), progress/done_request/fail_request
+	// (non-transitioning records NotifyTask writes directly), and
+	// wake_triaged/wake_ready (resolved internally by Wake via ParkedFrom) —
+	// must never be settable by an external caller.
+	//
+	// This used to be a hand-maintained blocklist naming wake_triaged/
+	// wake_ready specifically; codex review round 2 found it had missed
+	// job_failed, which (now that pre-execution statuses exist) opened
+	// triaged →(job_failed)→aborted →(reopen)→executing as a way to bypass
+	// the ready-gate (決定9/逆輸入2) entirely without ever calling "ready" or
+	// Go. Checking the machine's own Manual flag instead of a separate list
+	// means a future non-manual rule can't be forgotten the same way.
+	sm := orchestrator.DefaultMachine()
+	if !sm.IsManualAction(req.Type) {
+		return nil, &StatusError{
+			Code:    http.StatusBadRequest,
+			Message: fmt.Sprintf("action %q is not available through this endpoint", req.Type),
+		}
+	}
+
 	task, err := s.Tasks.GetTask(taskID)
 	if err != nil {
 		return nil, &StatusError{Code: http.StatusNotFound, Message: err.Error()}
@@ -96,8 +119,6 @@ func (s *TaskWorkflowService) ApplyAction(ctx context.Context, taskID string, re
 			"project_id", task.ProjectID, "task_id", taskID, "error", hydrateErr)
 	}
 
-	sm := orchestrator.DefaultMachine()
-
 	fromStatus := task.Status
 	action := &orchestrator.Action{
 		TaskID:  task.ID,
@@ -142,12 +163,36 @@ func (s *TaskWorkflowService) ApplyAction(ctx context.Context, taskID string, re
 		newTask.Payload = merged
 	}
 
+	// park carries an optional wake_at/wake_task_id payload that must be
+	// upserted into the task_triage sidecar as part of the same transaction
+	// that records the action (docs/plans/cross-project-issue-triage.md
+	// Phase 1 PR-1). Validate before opening the transaction so a malformed
+	// payload surfaces as 400, not the generic 500 below.
+	var parkPayloadParsed *parkPayload
+	if req.Type == "park" {
+		var perr error
+		parkPayloadParsed, perr = parseParkPayload(req.Payload)
+		if perr != nil {
+			return nil, perr
+		}
+	}
+
 	if err := s.Tx.WithinTx(func(tx TxStore) error {
 		if err := tx.UpdateTask(newTask); err != nil {
 			return err
 		}
-		return tx.CreateAction(action)
+		if err := tx.CreateAction(action); err != nil {
+			return err
+		}
+		if req.Type == "park" {
+			return applyParkSideEffect(tx, newTask.ID, parkPayloadParsed)
+		}
+		return nil
 	}); err != nil {
+		var statusErr *StatusError
+		if errors.As(err, &statusErr) {
+			return nil, statusErr
+		}
 		return nil, &StatusError{Code: http.StatusInternalServerError, Message: err.Error()}
 	}
 

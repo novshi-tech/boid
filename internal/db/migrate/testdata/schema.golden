@@ -2,6 +2,10 @@
 CREATE INDEX idx_project_workspaces_workspace_id
     ON project_workspaces(workspace_id);
 
+-- index: idx_task_triage_wake_at
+CREATE INDEX idx_task_triage_wake_at
+    ON task_triage(wake_at) WHERE wake_at IS NOT NULL;
+
 -- index: idx_tasks_ref_parent
 CREATE UNIQUE INDEX idx_tasks_ref_parent ON tasks(ref, parent_id) WHERE ref != '';
 
@@ -64,6 +68,16 @@ CREATE TABLE "secrets" (
     created_at      DATETIME NOT NULL DEFAULT (datetime('now')),
     updated_at      DATETIME NOT NULL DEFAULT (datetime('now')),
     UNIQUE(namespace, key)
+);
+
+-- table: task_triage
+CREATE TABLE task_triage (
+    task_id      TEXT PRIMARY KEY REFERENCES tasks(id) ON DELETE CASCADE,
+    kind         TEXT NOT NULL DEFAULT '',   -- signal|issue|theme (theme はlifecycleに乗らない)
+    urgency      TEXT NOT NULL DEFAULT '',   -- now|today|week|someday (queue述語, 決定12)
+    wake_at      DATETIME,                   -- parked復帰の日時条件。NULL = 日時wakeなし
+    wake_task_id TEXT NOT NULL DEFAULT '',   -- 事象wake: このtaskが終端に達したら復帰
+    detail       TEXT NOT NULL DEFAULT '{}'  -- summary/source/content_ref/children/suggestion/observed
 );
 
 -- table: tasks

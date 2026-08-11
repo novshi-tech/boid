@@ -19,6 +19,58 @@ import (
 
 var uuidPattern = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
 
+// sqlStatusInList renders a SQL "'a','b','c'" fragment from TaskStatus values.
+// Values are drawn only from KnownTaskStatuses() (a fixed enum), never from
+// user input, so string concatenation here is safe.
+func sqlStatusInList(statuses []TaskStatus) string {
+	parts := make([]string, len(statuses))
+	for i, s := range statuses {
+		parts[i] = "'" + string(s) + "'"
+	}
+	return strings.Join(parts, ",")
+}
+
+// terminalStatusSQLList / preExecutionStatusSQLList are derived once from
+// IsTerminalStatus / IsPreExecutionStatus (model.go) rather than hardcoded a
+// second time here, so the open/closed/queue filter SQL below can never drift
+// from those helpers as new statuses are added (Opus指摘#9 応用: one source of
+// truth).
+var (
+	terminalStatusSQLList     = sqlStatusInList(filterTaskStatuses(IsTerminalStatus))
+	preExecutionStatusSQLList = sqlStatusInList(filterTaskStatuses(IsPreExecutionStatus))
+	// notOpenSelfStatusSQLList = terminal ∪ pre-execution — used by the
+	// self-clause of the "open" filter (項1, sqlOpenSelf): pre-execution
+	// tasks must not pollute the default open view on their own, distinct
+	// from the child-rescue/descendant clauses which keep pre-execution
+	// visible when they have live (executing) children.
+	notOpenSelfStatusSQLList = sqlStatusInList(append(
+		append([]TaskStatus{}, filterTaskStatuses(IsTerminalStatus)...),
+		filterTaskStatuses(IsPreExecutionStatus)...,
+	))
+)
+
+func filterTaskStatuses(pred func(TaskStatus) bool) []TaskStatus {
+	var out []TaskStatus
+	for _, s := range KnownTaskStatuses() {
+		if pred(s) {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+// terminalTaskStatusStrings returns the terminal status set (done/aborted/
+// dropped, via IsTerminalStatus) as []string for GCTasks, which takes raw
+// status strings rather than TaskStatus.
+func terminalTaskStatusStrings() []string {
+	statuses := filterTaskStatuses(IsTerminalStatus)
+	out := make([]string, len(statuses))
+	for i, s := range statuses {
+		out[i] = string(s)
+	}
+	return out
+}
+
 // ErrTaskNotFound is returned by scanTask (and propagated by GetTask,
 // FindTaskByRemote, FindTaskByRef) when no matching task row exists. Callers
 // should check for it with errors.Is rather than matching on error strings.
@@ -57,11 +109,18 @@ const taskSelectCols = `t.id, t.project_id, t.remote_id, t.title, t.description,
 	` t.ref, t.parent_id, t.created_at, t.updated_at`
 
 // taskChildCountCols は子タスク数を集計するサブクエリカラム群（テーブル別名 t を前提）。
-const taskChildCountCols = `` +
+//
+// open_child_count (最後の1本) は pre-execution な子を引き続きカウントする —
+// 逆輸入1で「open/specced な子は task_triage.detail.children の JSON に留め、
+// dispatch 時にのみ task 化する」設計になったため、pre-execution な子タスクが
+// 実在して親の done 主張を塞ぐケースはそもそも発生しない。ここを緩めると
+// verifyDoneClaim の詐称防止ガードを無意味に弱めるだけになる (Opus指摘#6)。
+// terminal (done/aborted/dropped) だけを除外する。
+var taskChildCountCols = `` +
 	`(SELECT COUNT(*) FROM tasks c WHERE c.parent_id = t.id),` +
 	`(SELECT COUNT(*) FROM tasks c WHERE c.parent_id = t.id AND c.status = 'done'),` +
 	`(SELECT COUNT(*) FROM tasks c WHERE c.parent_id = t.id AND c.status = 'aborted'),` +
-	`(SELECT COUNT(*) FROM tasks c WHERE c.parent_id = t.id AND c.status NOT IN ('done', 'aborted'))`
+	`(SELECT COUNT(*) FROM tasks c WHERE c.parent_id = t.id AND c.status NOT IN (` + terminalStatusSQLList + `))`
 
 func CreateTask(dbtx db.DBTX, t *Task) error {
 	// Get-or-create: when ref and parent are both set, return the existing task
@@ -152,17 +211,40 @@ func ListTasks(dbtx db.DBTX, filter TaskFilter) ([]*Task, error) {
 	var ctePrefix string
 
 	// "open" は特殊フィルタ: 自身が open 状態 OR open な子を持つ（ヘッダー救済）OR open な祖先を持つ（子孫救済）
+	//
+	// 3箇所の NOT IN は役割が異なるため同じ集合を使わない (Opus指摘#7):
+	//   - CTE seed / 子孫救済 と 子救済 (sqlNotTerminal 相当) は「terminal でなければ open」
+	//     — pre-execution な子・子孫を含めたまま。進行中の triage task (executing な子を
+	//     持つ triaged 親など) を隠さないため。
+	//   - 自身が open かの self clause だけは「terminal でも pre-execution でもなければ open」
+	//     — pre-execution な task 単体は従来の open ビューを汚さない (項1 本来の目的)。
 	if filter.Status == "open" {
+		// open_descendants は「非 terminal な祖先を持つ子孫」だけを表す —
+		// base case を「非 terminal な task 自身」ではなく「非 terminal な
+		// task の直接の子」にすることで、自分自身が seed に紛れ込まない形に
+		// している。当初は自分自身を seed にしていたため、親を持つ
+		// pre-execution task が (親の状態に関係なく) 常に自己マッチして
+		// self clause の pre-execution 除外をすり抜けるバグがあった —
+		// done な親を持つ childless triaged task が open に漏れるケースで
+		// 発覚 (codex レビューで指摘、実装時の parent_id != '' ガードだけでは
+		// 不十分だった)。この形なら「祖先救済」の意味そのまま: 自分の親
+		// (またはその先祖) が非 terminal である場合にのみ子孫としてマッチする。
 		ctePrefix = `WITH RECURSIVE open_descendants(id) AS (` +
-			`SELECT id FROM tasks WHERE status NOT IN ('done','aborted') ` +
+			`SELECT c.id FROM tasks c JOIN tasks p ON c.parent_id = p.id ` +
+			`WHERE p.status NOT IN (` + terminalStatusSQLList + `) ` +
 			`UNION ` +
 			`SELECT c.id FROM tasks c JOIN open_descendants od ON c.parent_id = od.id` +
 			`) `
-		conditions = append(conditions, `(t.status NOT IN ('done', 'aborted') OR `+
-			`(SELECT COUNT(*) FROM tasks c WHERE c.parent_id = t.id AND c.status NOT IN ('done', 'aborted')) > 0 OR `+
+		conditions = append(conditions, `(t.status NOT IN (`+notOpenSelfStatusSQLList+`) OR `+
+			`(SELECT COUNT(*) FROM tasks c WHERE c.parent_id = t.id AND c.status NOT IN (`+terminalStatusSQLList+`)) > 0 OR `+
 			`t.id IN (SELECT id FROM open_descendants))`)
 	} else if filter.Status == "closed" {
-		conditions = append(conditions, "t.status IN ('done', 'aborted')")
+		conditions = append(conditions, "t.status IN ("+terminalStatusSQLList+")")
+	} else if filter.Status == "queue" {
+		// PR-3 の Web UI queue タブが束ねる予定の集合を backend に先出し
+		// (Opus指摘#8): PR-1〜PR-3 の間も `?status=queue` で pre-execution
+		// な triage task が見えるようにする安価な保険。
+		conditions = append(conditions, "t.status IN ("+preExecutionStatusSQLList+")")
 	} else if filter.Status != "" {
 		conditions = append(conditions, "t.status = ?")
 		args = append(args, filter.Status)
@@ -656,4 +738,3 @@ func randomAlpha(rng *rand.Rand, n int) string {
 	}
 	return string(b)
 }
-
