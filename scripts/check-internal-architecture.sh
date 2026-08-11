@@ -19,6 +19,7 @@ current_allowed=(
   dispatcher
   dockerres
   gitgateway
+  gwtransport
   humanize
   initwizard
   install
@@ -51,6 +52,7 @@ target_allowed=(
   dispatcher
   dockerres
   gitgateway
+  gwtransport
   humanize
   initwizard
   install
@@ -295,6 +297,19 @@ check_forbidden_imports() {
             failed=1
           fi
         done
+        ;;
+      github.com/novshi-tech/boid/internal/gwtransport)
+        # gwtransport は gitgateway / apigateway が共有する outbound
+        # http.Transport の単一出典 (fix: 半死 upstream 接続の使い回し)。
+        # leaf であることが機能要件そのもの: 上の gitgateway / apigateway
+        # ルールは go list の .Imports、つまり **直接 import しか見ていない**
+        # ため、gwtransport が internal/db 等を引くと両 gateway の
+        # 「sandbox でビルド・テストできる (= sqlite に依存しない)」契約が
+        # 推移経路で素通りに壊れる。ここを leaf に固定することがその再発ゲート。
+        if any_internal_import_present "$imports"; then
+          echo "forbidden import: internal/gwtransport must stay a leaf (no other internal packages)" >&2
+          failed=1
+        fi
         ;;
       github.com/novshi-tech/boid/internal/client)
         # client は daemon の HTTP API を叩く薄いフロント。不変条件は:
