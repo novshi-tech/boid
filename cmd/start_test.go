@@ -30,6 +30,24 @@ func TestDefaultAllowedDomains_IncludeCodexDomains(t *testing.T) {
 	}
 }
 
+// TestDefaultAllowedDomains_IncludeNodeDistribution pins the fix for the
+// 2026-08-11 dogfood failure: a repo pinning a node version via volta
+// (package.json's "volta": {"node": "..."}) or via .nvmrc cannot run any
+// node/npm/pnpm command at all when the pinned version differs from the
+// one baked into the runner image — volta downloads the missing toolchain
+// from nodejs.org, and the egress proxy answered CONNECT with 403 because
+// the floor carried registry.npmjs.org but not the distribution host.
+func TestDefaultAllowedDomains_IncludeNodeDistribution(t *testing.T) {
+	got := make(map[string]struct{})
+	for _, domain := range defaultAllowedDomains() {
+		got[domain] = struct{}{}
+	}
+
+	if _, ok := got["nodejs.org"]; !ok {
+		t.Errorf("defaultAllowedDomains() missing %q — volta/nvm cannot fetch a pinned node toolchain without it", "nodejs.org")
+	}
+}
+
 // TestRefuseRootUID pins the codex-review Blocker fix for PR2
 // (docs/plans/release-onboarding.md 決定1): `boid start` must refuse to
 // run as uid 0 regardless of how it got there (BOID_UID=0 in compose.yml,

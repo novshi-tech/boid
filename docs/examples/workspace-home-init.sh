@@ -258,6 +258,14 @@ repair_volta_shims() {
 # `$HOME/.local/bin` で、 `$HOME/.volta/bin` は入っていない。 shim は
 # argv[0] の basename で呼び出し先を決めるので、 同じ名前で `.local/bin` に
 # 張れば PATH 経由でそのまま動く (2026-07-28 dogfood で実測)。
+#
+# pnpm / yarn も張る (2026-08-11 dogfood): pnpm を使う repo で
+# `sh: pnpm: not found` になっていた — shim は `$VOLTA_HOME/bin/pnpm` に
+# 存在するのに、 `.local/bin` へ張っていたのが node / npm / npx だけだった。
+# なお volta 2.x の pnpm サポートは experimental なので、 job 側で実際に
+# 使うには workspace の env に `VOLTA_FEATURE_PNPM=1` も要る (無いと shim が
+# `Could not find executable "pnpm"` で落ちる)。 shim を張るのはここ、
+# env を配るのは workspace meta 側と、 責務が 2 箇所に分かれている点に注意。
 _link_volta_bins() {
     export VOLTA_HOME="$HOME/.volta"
     mkdir -p "$HOME/.local/bin"
@@ -278,7 +286,7 @@ install_node() {
     export VOLTA_HOME="$HOME/.volta"
     if [ -x "$VOLTA_HOME/bin/node" ] && "$VOLTA_HOME/bin/node" --version >/dev/null 2>&1; then
         log "node $("$VOLTA_HOME/bin/node" --version 2>/dev/null || echo unknown) already installed via volta"
-        _link_volta_bins node npm npx
+        _link_volta_bins node npm npx pnpm yarn
         return 0
     fi
     log "installing node ${NODE_VERSION} via volta"
@@ -290,7 +298,7 @@ install_node() {
         log "error: node is still not runnable after 'volta install node@${NODE_VERSION}'"
         exit 1
     fi
-    _link_volta_bins node npm npx
+    _link_volta_bins node npm npx pnpm yarn
 }
 
 # ---- Claude Code ------------------------------------------------------------

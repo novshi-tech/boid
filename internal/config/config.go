@@ -282,6 +282,11 @@ func DefaultAllowedDomains() []string {
 		"sum.golang.org",
 		// Node
 		"registry.npmjs.org",
+		// The toolchain itself, not just the package registry: volta (and
+		// nvm) fetch a version-pinned node tarball from here, so a repo
+		// pinning a node version the runner image does not carry cannot
+		// run node/npm/pnpm at all without it (2026-08-11 dogfood).
+		"nodejs.org",
 		// .NET
 		"api.nuget.org",
 		// Python

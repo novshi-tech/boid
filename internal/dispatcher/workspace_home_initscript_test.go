@@ -234,6 +234,44 @@ func TestInitScript_RepairVoltaShims_FixesEveryShimInOneGo(t *testing.T) {
 	}
 }
 
+// TestInitScript_InstallNode_LinksPackageManagerShims は 2026-08-11 dogfood の
+// 回帰テスト: pnpm を使う repo の job が `sh: pnpm: not found` で何もできなかった。
+// shim は `$HOME/.volta/bin/pnpm` に**存在していた**のに、 install_node が
+// `.local/bin` へ張っていたのが node / npm / npx の 3 つだけで、 PATH に居るのは
+// `.local/bin` の方だったのが原因。 helper (_link_volta_bins) を直接叩く下の
+// テストではなく **呼び出し側の引数リスト**を pin する必要があるので、
+// install_node 本体を通す。
+func TestInitScript_InstallNode_LinksPackageManagerShims(t *testing.T) {
+	home := t.TempDir()
+	mustFile(t, filepath.Join(home, ".volta/bin/volta-shim"))
+	// install_node の早期 return 分岐 (`node --version` が exit 0) に入れるため、
+	// node だけは実際に走る実体にする。
+	nodeBin := filepath.Join(home, ".volta/bin/node")
+	if err := os.WriteFile(nodeBin, []byte("#!/bin/sh\necho v24.18.0\n"), 0o755); err != nil {
+		t.Fatalf("write fake node: %v", err)
+	}
+	for _, name := range []string{"npm", "npx", "pnpm", "yarn"} {
+		mustSymlink(t, "volta-shim", filepath.Join(home, ".volta/bin", name))
+	}
+
+	runInitScriptHelper(t, home, "install_node")
+
+	for _, name := range []string{"node", "npm", "npx", "pnpm", "yarn"} {
+		link := filepath.Join(home, ".local/bin", name)
+		got, err := os.Readlink(link)
+		if err != nil {
+			t.Errorf("%s was not linked into .local/bin (it is not on PATH otherwise): %v", name, err)
+			continue
+		}
+		if filepath.IsAbs(got) {
+			t.Errorf("%s -> %q is absolute; it must be relative to survive the next home move", name, got)
+		}
+		if _, err := os.Stat(link); err != nil {
+			t.Errorf("shim %s does not resolve: %v", name, err)
+		}
+	}
+}
+
 // TestInitScript_LinkVoltaBins_ExposesShimsOnPath: shim を直しても
 // $HOME/.volta/bin は PATH に無い (PATH は image の値 + $HOME/.local/bin)。
 // .local/bin に同名で張ることで初めて `node` が PATH から引ける。
