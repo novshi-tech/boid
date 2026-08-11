@@ -151,7 +151,7 @@ func (s *WebAppService) ApplyAction(taskID string, actionType string) error {
 	if s.Workflow == nil {
 		return &StatusError{Code: http.StatusInternalServerError, Message: "workflow service not configured"}
 	}
-	_, err := s.Workflow.ApplyAction(context.Background(), taskID, ApplyActionRequest{Type: actionType})
+	_, err := s.Workflow.ApplyAction(orchestrator.WithActor(context.Background(), orchestrator.ActorHuman), taskID, ApplyActionRequest{Type: actionType})
 	return err
 }
 
@@ -162,7 +162,7 @@ func (s *WebAppService) Wake(taskID string) error {
 	if s.Workflow == nil {
 		return &StatusError{Code: http.StatusInternalServerError, Message: "workflow service not configured"}
 	}
-	_, err := s.Workflow.Wake(context.Background(), taskID)
+	_, err := s.Workflow.Wake(orchestrator.WithActor(context.Background(), orchestrator.ActorHuman), taskID)
 	return err
 }
 
@@ -227,7 +227,7 @@ func (s *WebAppService) ReopenTask(id string, req ReopenTaskRequest) error {
 		}
 		payload = b
 	}
-	_, err := s.Workflow.ApplyAction(context.Background(), id, ApplyActionRequest{Type: "reopen", Payload: payload})
+	_, err := s.Workflow.ApplyAction(orchestrator.WithActor(context.Background(), orchestrator.ActorHuman), id, ApplyActionRequest{Type: "reopen", Payload: payload})
 	return err
 }
 

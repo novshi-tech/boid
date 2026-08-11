@@ -146,7 +146,7 @@ func (s *TaskWorkflowService) Wake(ctx context.Context, taskID string) (*ActionA
 			return &StatusError{Code: http.StatusInternalServerError, Message: fmt.Sprintf("wake: unexpected park origin %q", from)}
 		}
 
-		action = &orchestrator.Action{TaskID: taskID, Type: resolvedType}
+		action = &orchestrator.Action{TaskID: taskID, Type: resolvedType, Actor: orchestrator.ActorFromContext(ctx)}
 		newTask, err = sm.Apply(fresh, action)
 		if err != nil {
 			return &StatusError{Code: http.StatusConflict, Message: err.Error()}
@@ -364,7 +364,7 @@ func (s *TaskWorkflowService) Dispatch(ctx context.Context, taskID string) (*Act
 	}
 
 	sm := orchestrator.DefaultMachine()
-	action := &orchestrator.Action{TaskID: taskID, Type: "dispatch"}
+	action := &orchestrator.Action{TaskID: taskID, Type: "dispatch", Actor: orchestrator.ActorFromContext(ctx)}
 	var newTask *orchestrator.Task
 
 	if err := s.Tx.WithinTx(func(tx TxStore) error {

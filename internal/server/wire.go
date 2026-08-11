@@ -1354,7 +1354,7 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 					"task_id", id)
 				continue
 			}
-			if _, err := workflow.ApplyAction(context.Background(), id, api.ApplyActionRequest{Type: "reopen"}); err != nil {
+			if _, err := workflow.ApplyAction(orchestrator.WithActor(context.Background(), orchestrator.ActorDaemon), id, api.ApplyActionRequest{Type: "reopen"}); err != nil {
 				slog.Warn("auto-reopen on startup failed", "task_id", id, "error", err)
 				continue
 			}

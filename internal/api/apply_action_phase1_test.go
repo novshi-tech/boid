@@ -209,6 +209,42 @@ func TestTaskWorkflowServiceApplyAction_Triage_CapturedToTriaged(t *testing.T) {
 	}
 }
 
+// TestTaskWorkflowServiceApplyAction_StampsActorFromContext verifies
+// ApplyAction reads orchestrator.ActorFromContext(ctx) and stamps it onto the
+// recorded Action — the propagation path 論点11「代行タスク」 depends on: the
+// HTTP/Web/CLI human path wraps ctx with ActorHuman (action.go, web_service.go),
+// the brokered sandbox path (boid_executor.go, task_notify.go) wraps it with
+// ActorTask(callingTaskID). A caller that forgets to wrap ctx gets "" — no
+// actor is silently fabricated.
+func TestTaskWorkflowServiceApplyAction_StampsActorFromContext(t *testing.T) {
+	task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusCaptured, Behavior: "dev", Payload: []byte(`{}`)}
+
+	cases := []struct {
+		name string
+		ctx  context.Context
+		want string
+	}{
+		{"human", orchestrator.WithActor(context.Background(), orchestrator.ActorHuman), orchestrator.ActorHuman},
+		{"task", orchestrator.WithActor(context.Background(), orchestrator.ActorTask("proxy-task-1")), orchestrator.ActorTask("proxy-task-1")},
+		{"unset", context.Background(), ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			txStore := &recordingTxStore{task: task}
+			svc := newTriageWorkflowService(task, txStore)
+			if _, err := svc.ApplyAction(tc.ctx, task.ID, ApplyActionRequest{Type: "triage"}); err != nil {
+				t.Fatalf("ApplyAction(triage): %v", err)
+			}
+			if len(txStore.actions) != 1 {
+				t.Fatalf("expected 1 recorded action, got %d", len(txStore.actions))
+			}
+			if got := txStore.actions[0].Actor; got != tc.want {
+				t.Fatalf("actor = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 // TestTaskWorkflowServiceApplyAction_Park_UpsertsWakeCondition verifies the
 // park-specific post-processing writes wake_at/wake_task_id into task_triage,
 // preserving any existing kind/urgency/detail on the sidecar row (Opus指摘

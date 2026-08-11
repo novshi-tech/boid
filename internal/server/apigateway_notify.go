@@ -116,6 +116,7 @@ func newAPIGatewayRecorder(tasks *orchestrator.TaskRepository) apigateway.Reques
 			FromStatus: task.Status,
 			ToStatus:   task.Status,
 			Payload:    payload,
+			Actor:      orchestrator.ActorTask(taskID),
 		}
 		if err := tasks.CreateAction(action); err != nil {
 			slog.Warn("api gateway: record timeline action failed", "task_id", taskID, "error", err)

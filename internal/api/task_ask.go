@@ -103,7 +103,7 @@ func (s *TaskAppService) AskTaskBlocking(ctx context.Context, taskID, question s
 	if err != nil {
 		return "", &StatusError{Code: http.StatusInternalServerError, Message: "encode action payload: " + err.Error()}
 	}
-	if _, err := s.Workflow.ApplyAction(ctx, taskID, ApplyActionRequest{Type: "ask", Payload: askPayload}); err != nil {
+	if _, err := s.Workflow.ApplyAction(orchestrator.WithActor(ctx, orchestrator.ActorTask(taskID)), taskID, ApplyActionRequest{Type: "ask", Payload: askPayload}); err != nil {
 		return "", err
 	}
 
@@ -204,6 +204,7 @@ func (s *TaskAppService) recordAnswerAction(taskID string, fromStatus orchestrat
 		Type:       "answer",
 		FromStatus: fromStatus,
 		ToStatus:   orchestrator.TaskStatusExecuting,
+		Actor:      orchestrator.ActorHuman,
 	}); err != nil {
 		slog.Warn("blocking answer: record answer action failed", "task_id", taskID, "error", err)
 	}
@@ -293,7 +294,7 @@ func (s *TaskAppService) abortDanglingAsk(taskID string, cause error) {
 		"code":    "ask_canceled",
 		"message": "blocking ask was canceled (daemon shutdown or agent disconnect): " + cause.Error(),
 	})
-	if _, err := s.Workflow.ApplyAction(context.Background(), taskID, ApplyActionRequest{
+	if _, err := s.Workflow.ApplyAction(orchestrator.WithActor(context.Background(), orchestrator.ActorDaemon), taskID, ApplyActionRequest{
 		Type:    "abort",
 		Payload: payload,
 	}); err != nil {

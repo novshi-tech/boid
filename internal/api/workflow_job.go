@@ -93,7 +93,7 @@ func (s *TaskWorkflowService) CompleteJob(_ context.Context, jobID string, req J
 	sm := orchestrator.DefaultMachine()
 
 	jobFailedFrom := task.Status
-	action := &orchestrator.Action{TaskID: task.ID, Type: "job_failed"}
+	action := &orchestrator.Action{TaskID: task.ID, Type: "job_failed", Actor: orchestrator.ActorTask(task.ID)}
 	newTask, err := sm.Apply(task, action)
 	if err != nil {
 		slog.Warn("job done: job_failed transition not applicable", "error", err)

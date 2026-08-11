@@ -68,6 +68,7 @@ func (s *TaskAppService) NotifyTask(ctx context.Context, taskID, message, ask, q
 			FromStatus: task.Status,
 			ToStatus:   task.Status,
 			Payload:    payload,
+			Actor:      orchestrator.ActorTask(taskID),
 		}
 		if err := s.Actions.CreateAction(action); err != nil {
 			return &StatusError{Code: http.StatusInternalServerError, Message: err.Error()}
@@ -188,7 +189,7 @@ func (s *TaskAppService) NotifyTask(ctx context.Context, taskID, message, ask, q
 		if err != nil {
 			return &StatusError{Code: http.StatusInternalServerError, Message: "encode action payload: " + err.Error()}
 		}
-		if _, err := s.Workflow.ApplyAction(ctx, taskID, ApplyActionRequest{
+		if _, err := s.Workflow.ApplyAction(orchestrator.WithActor(ctx, orchestrator.ActorTask(taskID)), taskID, ApplyActionRequest{
 			Type:    "ask",
 			Payload: askPayload,
 		}); err != nil {
@@ -226,6 +227,7 @@ func (s *TaskAppService) NotifyTask(ctx context.Context, taskID, message, ask, q
 			FromStatus: task.Status,
 			ToStatus:   task.Status,
 			Payload:    payload,
+			Actor:      orchestrator.ActorTask(taskID),
 		}
 		if err := s.Actions.CreateAction(action); err != nil {
 			return &StatusError{Code: http.StatusInternalServerError, Message: err.Error()}

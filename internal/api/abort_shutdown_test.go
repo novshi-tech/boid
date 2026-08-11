@@ -55,6 +55,12 @@ func TestAbortOnDispatchError_CtxCanceled_UsesDaemonShutdownCode(t *testing.T) {
 	if dispatchErrCount != 0 {
 		t.Errorf("expected no dispatch_error action when ctx canceled, got %d", dispatchErrCount)
 	}
+	// daemon-internal bookkeeping — never a human/task actor, even though the
+	// canceled ctx here carries no orchestrator.WithActor wrapping at all
+	// (this path is not reachable from a human/task-originated ctx).
+	if abortAction.Actor != orchestrator.ActorDaemon {
+		t.Errorf("expected actor %q, got %q", orchestrator.ActorDaemon, abortAction.Actor)
+	}
 }
 
 // When the dispatch context is live but the error wraps context.Canceled

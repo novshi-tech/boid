@@ -279,7 +279,7 @@ func (s *TaskAppService) CreateTask(req CreateTaskRequest) (*orchestrator.Task, 
 	// at the store level returns an existing task (e.g. concurrent create race),
 	// the task may already be executing or terminal.
 	if req.AutoStart && s.Workflow != nil && task.Status == orchestrator.TaskStatusPending {
-		result, err := s.Workflow.ApplyAction(context.Background(), task.ID, ApplyActionRequest{Type: "start"})
+		result, err := s.Workflow.ApplyAction(orchestrator.WithActor(context.Background(), orchestrator.ActorHuman), task.ID, ApplyActionRequest{Type: "start"})
 		if err != nil {
 			slog.Error("auto_start: failed to apply start action", "task_id", task.ID, "error", err)
 		} else {
