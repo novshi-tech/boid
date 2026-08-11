@@ -455,3 +455,235 @@ func TestJobCompletedNotAnAction(t *testing.T) {
 		t.Errorf("job_completed should not transition (got no error)")
 	}
 }
+
+// ---- Pre-execution states (cross-project-issue-triage Phase 1) ----
+
+func TestDefaultMachine_Captured_Triage_ToTriaged(t *testing.T) {
+	sm := orchestrator.DefaultMachine()
+	task := &orchestrator.Task{Status: orchestrator.TaskStatusCaptured}
+	next, err := sm.Apply(task, &orchestrator.Action{Type: "triage"})
+	if err != nil {
+		t.Fatalf("triage: %v", err)
+	}
+	if next.Status != orchestrator.TaskStatusTriaged {
+		t.Fatalf("expected triaged, got %s", next.Status)
+	}
+}
+
+func TestDefaultMachine_Triaged_Ready_ToReady(t *testing.T) {
+	sm := orchestrator.DefaultMachine()
+	task := &orchestrator.Task{Status: orchestrator.TaskStatusTriaged}
+	next, err := sm.Apply(task, &orchestrator.Action{Type: "ready"})
+	if err != nil {
+		t.Fatalf("ready: %v", err)
+	}
+	if next.Status != orchestrator.TaskStatusReady {
+		t.Fatalf("expected ready, got %s", next.Status)
+	}
+}
+
+func TestDefaultMachine_Park_FromTriagedAndReady(t *testing.T) {
+	sm := orchestrator.DefaultMachine()
+	for _, from := range []orchestrator.TaskStatus{orchestrator.TaskStatusTriaged, orchestrator.TaskStatusReady} {
+		task := &orchestrator.Task{Status: from}
+		next, err := sm.Apply(task, &orchestrator.Action{Type: "park"})
+		if err != nil {
+			t.Fatalf("park from %s: %v", from, err)
+		}
+		if next.Status != orchestrator.TaskStatusParked {
+			t.Fatalf("park from %s: expected parked, got %s", from, next.Status)
+		}
+	}
+}
+
+func TestDefaultMachine_Park_InvalidFromPending(t *testing.T) {
+	sm := orchestrator.DefaultMachine()
+	task := &orchestrator.Task{Status: orchestrator.TaskStatusPending}
+	if _, err := sm.Apply(task, &orchestrator.Action{Type: "park"}); err == nil {
+		t.Fatal("expected error: pending tasks (execution lifecycle) must not be parkable")
+	}
+}
+
+func TestDefaultMachine_WakeTriagedAndWakeReady(t *testing.T) {
+	sm := orchestrator.DefaultMachine()
+
+	task := &orchestrator.Task{Status: orchestrator.TaskStatusParked}
+	next, err := sm.Apply(task, &orchestrator.Action{Type: "wake_triaged"})
+	if err != nil {
+		t.Fatalf("wake_triaged: %v", err)
+	}
+	if next.Status != orchestrator.TaskStatusTriaged {
+		t.Fatalf("wake_triaged: expected triaged, got %s", next.Status)
+	}
+
+	task = &orchestrator.Task{Status: orchestrator.TaskStatusParked}
+	next, err = sm.Apply(task, &orchestrator.Action{Type: "wake_ready"})
+	if err != nil {
+		t.Fatalf("wake_ready: %v", err)
+	}
+	if next.Status != orchestrator.TaskStatusReady {
+		t.Fatalf("wake_ready: expected ready, got %s", next.Status)
+	}
+}
+
+// wake_triaged/wake_ready は Manual:false — 機構内部専用（TaskWorkflowService.Wake が
+// ParkedFrom を見てどちらを送るか選ぶ）。誤操作で「起点と違う方に wake する」事故を
+// AvailableActions に出さないことで構造的に防ぐ。
+func TestDefaultMachine_AvailableActions_Parked_ExcludesWakeActions(t *testing.T) {
+	sm := orchestrator.DefaultMachine()
+	actions := sm.AvailableActions(orchestrator.TaskStatusParked)
+	for _, a := range actions {
+		if a == "wake_triaged" || a == "wake_ready" {
+			t.Errorf("wake_triaged/wake_ready must not appear in AvailableActions(parked), got %v", actions)
+		}
+	}
+	want := map[string]bool{"drop": true}
+	if len(actions) != len(want) {
+		t.Fatalf("AvailableActions(parked) = %v, want %v", actions, want)
+	}
+	for _, a := range actions {
+		if !want[a] {
+			t.Errorf("unexpected action %q in AvailableActions(parked)", a)
+		}
+	}
+}
+
+func TestDefaultMachine_AvailableActions_Captured(t *testing.T) {
+	sm := orchestrator.DefaultMachine()
+	actions := sm.AvailableActions(orchestrator.TaskStatusCaptured)
+	want := map[string]bool{"triage": true, "drop": true}
+	if len(actions) != len(want) {
+		t.Fatalf("AvailableActions(captured) = %v, want %v", actions, want)
+	}
+	for _, a := range actions {
+		if !want[a] {
+			t.Errorf("unexpected action %q in AvailableActions(captured)", a)
+		}
+	}
+}
+
+func TestDefaultMachine_AvailableActions_Triaged(t *testing.T) {
+	sm := orchestrator.DefaultMachine()
+	actions := sm.AvailableActions(orchestrator.TaskStatusTriaged)
+	want := map[string]bool{"ready": true, "park": true, "drop": true}
+	if len(actions) != len(want) {
+		t.Fatalf("AvailableActions(triaged) = %v, want %v", actions, want)
+	}
+	for _, a := range actions {
+		if !want[a] {
+			t.Errorf("unexpected action %q in AvailableActions(triaged)", a)
+		}
+	}
+}
+
+func TestDefaultMachine_AvailableActions_Ready(t *testing.T) {
+	sm := orchestrator.DefaultMachine()
+	actions := sm.AvailableActions(orchestrator.TaskStatusReady)
+	want := map[string]bool{"park": true, "drop": true}
+	if len(actions) != len(want) {
+		t.Fatalf("AvailableActions(ready) = %v, want %v", actions, want)
+	}
+	for _, a := range actions {
+		if !want[a] {
+			t.Errorf("unexpected action %q in AvailableActions(ready)", a)
+		}
+	}
+}
+
+// drop は wildcard (*→dropped) にしない — pending/executing 等の実行中タスクに
+// 破壊的ボタンが生えるのを避ける (Opus レビュー指摘)。pre-execution 4状態限定。
+func TestDefaultMachine_Drop_OnlyFromPreExecutionStates(t *testing.T) {
+	sm := orchestrator.DefaultMachine()
+	for _, from := range []orchestrator.TaskStatus{
+		orchestrator.TaskStatusCaptured,
+		orchestrator.TaskStatusTriaged,
+		orchestrator.TaskStatusParked,
+		orchestrator.TaskStatusReady,
+	} {
+		task := &orchestrator.Task{Status: from}
+		next, err := sm.Apply(task, &orchestrator.Action{Type: "drop"})
+		if err != nil {
+			t.Fatalf("drop from %s: %v", from, err)
+		}
+		if next.Status != orchestrator.TaskStatusDropped {
+			t.Fatalf("drop from %s: expected dropped, got %s", from, next.Status)
+		}
+	}
+	for _, from := range []orchestrator.TaskStatus{
+		orchestrator.TaskStatusPending,
+		orchestrator.TaskStatusExecuting,
+		orchestrator.TaskStatusAwaiting,
+		orchestrator.TaskStatusDone,
+		orchestrator.TaskStatusAborted,
+	} {
+		task := &orchestrator.Task{Status: from}
+		if _, err := sm.Apply(task, &orchestrator.Action{Type: "drop"}); err == nil {
+			t.Fatalf("drop from %s: expected error, drop must not apply to execution-lifecycle statuses", from)
+		}
+	}
+}
+
+func TestDefaultMachine_Reopen_DroppedToTriaged(t *testing.T) {
+	sm := orchestrator.DefaultMachine()
+	task := &orchestrator.Task{Status: orchestrator.TaskStatusDropped}
+	next, err := sm.Apply(task, &orchestrator.Action{Type: "reopen"})
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	if next.Status != orchestrator.TaskStatusTriaged {
+		t.Fatalf("expected triaged, got %s", next.Status)
+	}
+}
+
+func TestDefaultMachine_AvailableActions_Dropped(t *testing.T) {
+	sm := orchestrator.DefaultMachine()
+	actions := sm.AvailableActions(orchestrator.TaskStatusDropped)
+	want := map[string]bool{"reopen": true}
+	if len(actions) != len(want) {
+		t.Fatalf("AvailableActions(dropped) = %v, want %v", actions, want)
+	}
+	for _, a := range actions {
+		if !want[a] {
+			t.Errorf("unexpected action %q in AvailableActions(dropped)", a)
+		}
+	}
+}
+
+// 既存 reopen (done/aborted → executing) に第3の FromStatus (dropped → triaged) が
+// 増えても既存の遷移は壊れないことを確認する。
+func TestDefaultMachine_Reopen_StillWorksForDoneAndAborted(t *testing.T) {
+	sm := orchestrator.DefaultMachine()
+	for _, from := range []orchestrator.TaskStatus{orchestrator.TaskStatusDone, orchestrator.TaskStatusAborted} {
+		task := &orchestrator.Task{Status: from}
+		next, err := sm.Apply(task, &orchestrator.Action{Type: "reopen"})
+		if err != nil {
+			t.Fatalf("reopen from %s: %v", from, err)
+		}
+		if next.Status != orchestrator.TaskStatusExecuting {
+			t.Fatalf("reopen from %s: expected executing, got %s", from, next.Status)
+		}
+	}
+}
+
+// IsManualAction は「公開 ApplyAction から呼んでよい action か」を機械側から
+// 判定する唯一の情報源 (codex review round 2 Blocker: internal/api 側の
+// ハードコードされた拒否リストは job_failed を登録し忘れていた —
+// triaged →(job_failed)→ aborted →(reopen)→ executing で ready 昇格の
+// Go-gate を丸ごと迂回できた)。Manual:false の action 名は全部 false を
+// 返すべきで、新しい internal-only rule を追加するたびに別リストの更新を
+// 覚えている必要が無い設計にする。
+func TestDefaultMachine_IsManualAction(t *testing.T) {
+	sm := orchestrator.DefaultMachine()
+	manual := []string{"start", "done", "fail", "reopen", "ask", "answer", "abort", "triage", "ready", "park", "drop"}
+	nonManual := []string{"job_failed", "progress", "done_request", "fail_request", "wake_triaged", "wake_ready", "garbage"}
+	for _, a := range manual {
+		if !sm.IsManualAction(a) {
+			t.Errorf("IsManualAction(%q) = false, want true", a)
+		}
+	}
+	for _, a := range nonManual {
+		if sm.IsManualAction(a) {
+			t.Errorf("IsManualAction(%q) = true, want false", a)
+		}
+	}
+}

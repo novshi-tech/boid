@@ -13,7 +13,7 @@ import (
 )
 
 func isTerminalTaskStatus(status orchestrator.TaskStatus) bool {
-	return status == orchestrator.TaskStatusDone || status == orchestrator.TaskStatusAborted
+	return orchestrator.IsTerminalStatus(status)
 }
 
 func isTerminalJobStatus(status apiwire.JobStatus) bool {

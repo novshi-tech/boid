@@ -12,8 +12,8 @@ type Rule struct {
 	Action          string // manual transition trigger (mutually exclusive with Condition)
 	FromStatus      string // "*" matches any
 	ToStatus        string
-	Condition       TransitionCondition                    // auto transition trigger (mutually exclusive with Action)
-	Manual          bool                                   // true if the action is user-initiated (shown in available_actions)
+	Condition       TransitionCondition                   // auto transition trigger (mutually exclusive with Action)
+	Manual          bool                                  // true if the action is user-initiated (shown in available_actions)
 	ActionPayloadFn func(json.RawMessage) json.RawMessage // optional; generates action.Payload when the rule fires
 }
 
@@ -107,6 +107,28 @@ func (sm *StateMachine) AvailableActions(status TaskStatus) []string {
 	return actions
 }
 
+// IsManualAction reports whether actionType has at least one Manual:true
+// rule anywhere in the machine, regardless of the task's current status.
+// This is the single source of truth for "is this action name allowed
+// through the public ApplyAction endpoint" (internal/api's HTTP handler /
+// brokered action_send / `boid action send` CLI all funnel through
+// ApplyAction). Event-driven rules (job_failed) and internal-only manual
+// transitions a different method resolves and applies on the caller's
+// behalf (wake_triaged/wake_ready) must return false here — codex review
+// round 2 found job_failed missing from a hand-maintained blocklist in
+// internal/api, which let triaged→(job_failed)→aborted→(reopen)→executing
+// bypass the ready-gate entirely. A per-name blocklist requires remembering
+// to update it every time a new non-manual rule is added; checking the
+// Rule's own Manual flag here removes that whole class of omission.
+func (sm *StateMachine) IsManualAction(actionType string) bool {
+	for _, r := range sm.Rules {
+		if r.Action == actionType && r.Manual {
+			return true
+		}
+	}
+	return false
+}
+
 // DefaultMachine returns the unified state machine used by all tasks.
 func DefaultMachine() *StateMachine {
 	return NewMachine()
@@ -124,7 +146,32 @@ func DefaultMachine() *StateMachine {
 //	reopen : aborted → executing  (recover from failure via fix)
 //	ask    : executing → awaiting
 //	answer : awaiting → executing
-//	abort  : * → aborted
+//	abort  : pending/executing/awaiting/done/aborted → aborted (execution lifecycle only)
+//
+// Pre-execution transitions (cross-project-issue-triage Phase 1, captured/triaged/
+// parked/ready/dropped — docs/plans/cross-project-issue-triage.md):
+//
+//	triage       : captured → triaged
+//	ready        : triaged → ready
+//	park         : triaged → parked
+//	park         : ready → parked
+//	wake_triaged : parked → triaged  (Manual:false — machine-internal, see below)
+//	wake_ready   : parked → ready    (Manual:false — machine-internal, see below)
+//	drop         : captured/triaged/parked/ready → dropped
+//	reopen       : dropped → triaged (recovery from a mistaken drop)
+//
+// wake_triaged/wake_ready are deliberately non-manual so they never appear in
+// AvailableActions. A parked task's "起点" (which status it was parked from) decides
+// which one is correct, and getting it wrong would silently promote a task past Go
+// (triaged → ready) without nose's judgment — the one thing 決定9/逆輸入2 protect. The
+// single user-facing verb is TaskWorkflowService.Wake, which looks up the origin via
+// ParkedFrom (derived from the actions log, not a duplicated column — 決定13) and calls
+// sm.Apply with the correct action name.
+//
+// drop is intentionally NOT a "*" wildcard like abort: scoping it to the four
+// pre-execution statuses keeps it from becoming a second, overlapping destructive
+// action on every ordinary (pending/executing/...) task in the system, and it means a
+// dropped task never had a runtime to clean up (drop can't fire mid-execution).
 //
 // Event-driven transitions:
 //
@@ -163,22 +210,43 @@ func NewMachine() *StateMachine {
 		Name: "default",
 		Rules: []Rule{
 			// Manual actions
-			{Action: "start",  FromStatus: "pending",   ToStatus: "executing", Manual: true},
-			{Action: "done",   FromStatus: "executing", ToStatus: "done",      Manual: true},
-			{Action: "done",   FromStatus: "awaiting",  ToStatus: "done",      Manual: true},
-			{Action: "fail",   FromStatus: "executing", ToStatus: "aborted",   Manual: true},
-			{Action: "reopen", FromStatus: "done",      ToStatus: "executing", Manual: true},
-			{Action: "reopen", FromStatus: "aborted",   ToStatus: "executing", Manual: true},
-			{Action: "ask",    FromStatus: "executing", ToStatus: "awaiting",  Manual: true},
-			{Action: "answer", FromStatus: "awaiting",  ToStatus: "executing", Manual: true},
-			{Action: "abort",  FromStatus: "*",         ToStatus: "aborted",   Manual: true},
+			{Action: "start", FromStatus: "pending", ToStatus: "executing", Manual: true},
+			{Action: "done", FromStatus: "executing", ToStatus: "done", Manual: true},
+			{Action: "done", FromStatus: "awaiting", ToStatus: "done", Manual: true},
+			{Action: "fail", FromStatus: "executing", ToStatus: "aborted", Manual: true},
+			{Action: "reopen", FromStatus: "done", ToStatus: "executing", Manual: true},
+			{Action: "reopen", FromStatus: "aborted", ToStatus: "executing", Manual: true},
+			{Action: "ask", FromStatus: "executing", ToStatus: "awaiting", Manual: true},
+			{Action: "answer", FromStatus: "awaiting", ToStatus: "executing", Manual: true},
+			// abort is scoped to the execution-lifecycle statuses only (not a "*"
+			// wildcard) so it doesn't overlap with drop's coverage of the
+			// pre-execution statuses below.
+			{Action: "abort", FromStatus: "pending", ToStatus: "aborted", Manual: true},
+			{Action: "abort", FromStatus: "executing", ToStatus: "aborted", Manual: true},
+			{Action: "abort", FromStatus: "awaiting", ToStatus: "aborted", Manual: true},
+			{Action: "abort", FromStatus: "done", ToStatus: "aborted", Manual: true},
+			{Action: "abort", FromStatus: "aborted", ToStatus: "aborted", Manual: true},
+
+			// Pre-execution actions (cross-project-issue-triage Phase 1)
+			{Action: "triage", FromStatus: "captured", ToStatus: "triaged", Manual: true},
+			{Action: "ready", FromStatus: "triaged", ToStatus: "ready", Manual: true},
+			{Action: "park", FromStatus: "triaged", ToStatus: "parked", Manual: true},
+			{Action: "park", FromStatus: "ready", ToStatus: "parked", Manual: true},
+			// wake_triaged/wake_ready: Manual:false — see doc comment above NewMachine.
+			{Action: "wake_triaged", FromStatus: "parked", ToStatus: "triaged"},
+			{Action: "wake_ready", FromStatus: "parked", ToStatus: "ready"},
+			{Action: "drop", FromStatus: "captured", ToStatus: "dropped", Manual: true},
+			{Action: "drop", FromStatus: "triaged", ToStatus: "dropped", Manual: true},
+			{Action: "drop", FromStatus: "parked", ToStatus: "dropped", Manual: true},
+			{Action: "drop", FromStatus: "ready", ToStatus: "dropped", Manual: true},
+			{Action: "reopen", FromStatus: "dropped", ToStatus: "triaged", Manual: true},
 
 			// Event-driven (non-manual)
 			{Action: "job_failed", FromStatus: "*", ToStatus: "aborted"},
 
 			// Non-transitioning records (created directly by NotifyTask). Registered
 			// for completeness; Apply() will accept these actions as valid noops.
-			{Action: "progress",     FromStatus: "*"},
+			{Action: "progress", FromStatus: "*"},
 			{Action: "done_request", FromStatus: "*"},
 			{Action: "fail_request", FromStatus: "*"},
 

@@ -280,6 +280,20 @@ type ActionStore interface {
 	ListActionsByTask(taskID string) ([]*orchestrator.Action, error)
 }
 
+// TaskTriageStore provides access to the cross-project-issue-triage Phase 1
+// sidecar (docs/plans/cross-project-issue-triage.md 実測c). Deliberately
+// separate from TaskStore: TaskStore's orchestrator.Task is the API DTO
+// (marshaled to JSON with no conversion layer), so keeping triage-specific
+// fields out of it means they don't auto-expose in every task API response.
+type TaskTriageStore interface {
+	UpsertTaskTriage(tt *orchestrator.TaskTriage) error
+	GetTaskTriage(taskID string) (*orchestrator.TaskTriage, error)
+	DeleteTaskTriage(taskID string) error
+	// ParkedFrom derives which status (triaged/ready) a parked task was
+	// parked from, from the actions log (not a stored column — 決定13).
+	ParkedFrom(taskID string) (orchestrator.TaskStatus, error)
+}
+
 type ProjectRepository interface {
 	CreateProject(project *orchestrator.Project) error
 	GetProject(id string) (*orchestrator.Project, error)
@@ -331,6 +345,7 @@ type GlobalJobStore interface {
 type TxStore interface {
 	TaskStore
 	ActionStore
+	TaskTriageStore
 	JobStore
 }
 

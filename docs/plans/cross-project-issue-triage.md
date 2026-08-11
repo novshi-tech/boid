@@ -1,7 +1,7 @@
 # プロジェクト横断の課題トリアージ (メタプロジェクト + daemon inbox)
 
-ステータス: **draft (第 6 版 2026-08-10 — Phase 1 実測チェックリスト完了・決定 7 を task 統合で
-確定・「card」の固有名を廃止。 初版 2026-07-30)**。 Phase 0 dogfood 稼働中・Phase 1 未実装。
+ステータス: **draft (第 7 版 2026-08-11 — Phase 1 実装着手前に論点 f/g/h を決着、 論点 i は
+明示的に後回し。 初版 2026-07-30)**。 Phase 0 dogfood 稼働中・Phase 1 未実装。
 発端: nose の構想メモ (音声書き起こし、 2026-07-30) と同日の設計ディスカッション。
 関連: [workspace-default-project.md](workspace-default-project.md) (workspace デフォルト project 定義)、
 [volume-only-daemon.md](volume-only-daemon.md) §論点a/b (project の git URL 化・ bare repo・
@@ -829,16 +829,23 @@ exit criteria (2 週間程度): (1) nose が「見に行く」頻度が実際に
   決める。
 - **論点 e: 開示ポリシーの語彙**。 workspace ごとに「件名まで出す / 相手ドメインのみ」等。
   デフォルトは保守的に。
-- **論点 f: export 除外**。 workspace export/apply (volume-only-daemon.md) にメタプロジェクトを
-  乗せない印の付け方。
-- **論点 g: card の洪水対策**。 dedup (同一 source ref の再 push は update 扱い)、 TTL、
-  queue 側の既読 / 未読表示。 Phase 1 の設計時に決める。
-- **論点 h: source 既読化の詳細**。 label 併用の要否、 archive まで踏み込むか、 nose 自身の
-  既読との意味論衝突 (自分で先に読んだメールの扱い)、 誤ノイズ判定時の復旧 (triage log からの
-  再起票)、 Slack / Jira の cursor 保存場所。
-- **論点 i: project ref 解決の存在オラクル**。 ambiguous project ref のエラーが daemon 全域の
-  一致件数を返すため、 sandbox から cross-workspace の project 存在が推測できる (実測 b)。
-  軽微だが、 Phase 1 で triage task の流量が増える前に握りつぶすか判断する。
+- **論点 f (2026-08-11 決着): export 除外**。 `project.yaml` に明示フラグ (例:
+  `meta_project: true`) を持たせ、 workspace export/apply がこれを見てスキップする。 運用ルール
+  頼みにせず仕組みで強制する。
+- **論点 g (2026-08-11 決着): card の洪水対策**。 Phase 1 は最小限に留める: dedup は
+  同一 source ref (mail message-id / jira key / slack ts) の再 push を update 扱いにするのみ。
+  TTL・ queue 側の既読 / 未読表示は Phase 1 では入れない。 queue の安定を最優先し、 必要になった
+  ら足す。
+- **論点 h (2026-08-11 決着): source 既読化の詳細**。 既読化は **daemon 側の責務にせず、
+  メタプロジェクト側 (workspace 内の ingestion task) の責務**とする — 決定 11 で既に
+  workspace credential 内で行うとしていた線をそのまま踏襲。 深さは read 化のみに留め、
+  label 併用・ archive までは Phase 1 では踏み込まない。 誤ノイズ判定時の復旧は UC-6 の
+  triage log からの手動再起票で対応する。 Slack / Jira の cursor 保存場所は決定11通り
+  $HOME workspace volume。
+- **論点 i (2026-08-11 明示的に後回し): project ref 解決の存在オラクル**。 ambiguous project ref
+  のエラーが daemon 全域の一致件数を返すため、 sandbox から cross-workspace の project 存在が
+  推測できる (実測 b)。 リークは軽微なので Phase 1 着手前には塞がない。 triage task の流量が
+  実際に増えて問題が顕在化した時点で優先度を上げる。
 
 ---
 
@@ -927,6 +934,21 @@ exit criteria (2 週間程度): (1) nose が「見に行く」頻度が実際に
   まま)。
 - **Phase 0 は即開始可能**: khi は customer bitbucket の `khi-task-collector` (メタプロジェクト
   の原型) が登録済みで、 前提が揃っている。
+
+### 第 7 版 (2026-08-11、 Phase 1 実装可否の確認 + 未解決論点の決着) での変更
+
+- **Phase 1 実装可否をコードベース実測で再確認**。 第 6 版の「Phase 1 実測結果」節の主張
+  (TaskStatus は素の string 型で panic 経路ゼロ・ `store.go` の `NOT IN ('done','aborted')`
+  誤包含・ `machine.go` の `start` FromStatus 固定・ `task_service.go` の pending 限定編集
+  ガード・ `project_workspaces` sidecar 前例) を該当ファイルの現状と突合し、 いずれもズレが
+  無いことを確認した。 `task_triage` テーブルは未着手のまま (migration は `0034` まで)。
+  ブロッカー無し、 着手可能と判定。
+- **論点 f/g/h を決着、 論点 i は明示的に後回しと決定** (詳細は各論点の記述)。 要旨:
+  export 除外は `project.yaml` の明示フラグ、 洪水対策は Phase 1 では dedup のみの最小限、
+  既読化は daemon でなくメタプロジェクト側 (ingestion task) の責務で read 化のみ、
+  project ref 解決オラクルは軽微リークとして Phase 1 着手前には塞がない。
+- 論点 a〜e は Phase 1 実装を直接ブロックしないため今回は据え置き (a は既に決着済み、
+  b/c/d/e は Phase 0 観察後 or Phase 2 以降の判断で足りる)。
 
 ### 第 6 版 (2026-08-10、 Phase 1 実測) での変更
 

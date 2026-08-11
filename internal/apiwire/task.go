@@ -46,6 +46,12 @@ type CreateTaskRequest struct {
 	Ref          string                     `json:"ref,omitempty"`
 	ParentID     string                     `json:"parent_id,omitempty"`
 	Readonly     *bool                      `json:"readonly,omitempty"`
+	// InitialStatus lets a caller create a task directly in a pre-execution
+	// status (docs/plans/cross-project-issue-triage.md Phase 1 PR-1) instead
+	// of the default "pending". Empty means "pending" (unchanged behavior).
+	// Only "", "pending", "captured", "triaged" are accepted — validated in
+	// internal/api/task_create.go, not here (apiwire is a pure wire struct).
+	InitialStatus string `json:"initial_status,omitempty"`
 }
 
 type DuplicateTaskRequest struct {

@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -577,6 +578,44 @@ func TestTaskAppServiceUpdateTask(t *testing.T) {
 			if !ok || se.Code != http.StatusConflict {
 				t.Fatalf("status=%s: expected StatusConflict, got %v", status, err)
 			}
+		}
+	})
+
+	// cross-project-issue-triage Phase 1 PR-1: captured/triaged/ready を編集
+	// 可能に広げたが parked は除外 (整形セッション UC-3 のため触れるが、
+	// 後回し中は編集対象外)。
+	t.Run("title update allowed for pre-execution statuses", func(t *testing.T) {
+		for _, status := range []orchestrator.TaskStatus{
+			orchestrator.TaskStatusCaptured,
+			orchestrator.TaskStatusTriaged,
+			orchestrator.TaskStatusReady,
+		} {
+			task := &orchestrator.Task{ID: "task-x", Title: "old", Status: status}
+			store := &stubTaskStore{task: task}
+			svc := &TaskAppService{Tasks: store}
+
+			got, err := svc.UpdateTask("task-x", UpdateTaskRequest{Title: "new"})
+			if err != nil {
+				t.Fatalf("status=%s: UpdateTask() error = %v", status, err)
+			}
+			if got.Title != "new" {
+				t.Fatalf("status=%s: Title = %q, want %q", status, got.Title, "new")
+			}
+		}
+	})
+
+	t.Run("title update rejected for parked", func(t *testing.T) {
+		task := &orchestrator.Task{ID: "task-x", Title: "old", Status: orchestrator.TaskStatusParked}
+		store := &stubTaskStore{task: task}
+		svc := &TaskAppService{Tasks: store}
+
+		_, err := svc.UpdateTask("task-x", UpdateTaskRequest{Title: "new"})
+		if err == nil {
+			t.Fatal("expected conflict error for parked task, got nil")
+		}
+		se, ok := err.(*StatusError)
+		if !ok || se.Code != http.StatusConflict {
+			t.Fatalf("expected StatusConflict, got %v", err)
 		}
 	})
 
@@ -1753,10 +1792,18 @@ func (s *stubTx) CreateAction(action *orchestrator.Action) error {
 	return nil
 }
 func (s *stubTx) ListActionsByTask(taskID string) ([]*orchestrator.Action, error) { return nil, nil }
-func (s *stubTx) GetJob(id string) (*Job, error)                                  { return nil, fmt.Errorf("not found") }
-func (s *stubTx) ListJobsByTask(taskID string) ([]*Job, error)                    { return nil, nil }
-func (s *stubTx) UpdateJob(job *Job) error                                        { return nil }
-func (s *stubTx) WithinTx(fn func(TxStore) error) error                           { return fn(s) }
+func (s *stubTx) UpsertTaskTriage(tt *orchestrator.TaskTriage) error              { return nil }
+func (s *stubTx) GetTaskTriage(taskID string) (*orchestrator.TaskTriage, error) {
+	return nil, fmt.Errorf("not found: %w", sql.ErrNoRows)
+}
+func (s *stubTx) DeleteTaskTriage(taskID string) error { return nil }
+func (s *stubTx) ParkedFrom(taskID string) (orchestrator.TaskStatus, error) {
+	return "", fmt.Errorf("not found")
+}
+func (s *stubTx) GetJob(id string) (*Job, error)               { return nil, fmt.Errorf("not found") }
+func (s *stubTx) ListJobsByTask(taskID string) ([]*Job, error) { return nil, nil }
+func (s *stubTx) UpdateJob(job *Job) error                     { return nil }
+func (s *stubTx) WithinTx(fn func(TxStore) error) error        { return fn(s) }
 
 type stubJobStore struct {
 	job         *Job

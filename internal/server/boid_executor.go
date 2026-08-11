@@ -101,6 +101,21 @@ func newBoidBuiltinExecutor(workflow api.WorkflowService, tasks *api.TaskAppServ
 	}
 }
 
+// validateTaskListStatus rejects status values ListTasks doesn't understand
+// before they reach the DB layer, where they were previously passed through
+// unvalidated (docs/plans/cross-project-issue-triage.md Phase 1 実測結果 項10).
+// Empty (no filter), the special keywords ("open"/"closed"/"queue"), and any
+// exact orchestrator.TaskStatus value are accepted.
+func validateTaskListStatus(status string) error {
+	if status == "" || status == "open" || status == "closed" || status == "queue" {
+		return nil
+	}
+	if _, ok := orchestrator.ParseTaskStatus(status); ok {
+		return nil
+	}
+	return fmt.Errorf("boid task list: unknown status %q", status)
+}
+
 func (e *boidBuiltinExecutor) ExecuteBoidBuiltin(goCtx context.Context, ctx sandbox.TokenContext, req *sandbox.BoidRequest) *sandbox.ExecResponse {
 	if req == nil {
 		return &sandbox.ExecResponse{ExitCode: 1, Stderr: "missing boid request"}
@@ -160,6 +175,16 @@ func (e *boidBuiltinExecutor) ExecuteBoidBuiltin(goCtx context.Context, ctx sand
 			if err := json.Unmarshal(req.CreatePatch, &createReq); err != nil {
 				return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid task create: invalid create_patch: " + err.Error()}
 			}
+		}
+		// InitialStatus (docs/plans/cross-project-issue-triage.md Phase 1
+		// PR-1) is deliberately NOT allowed through the brokered path yet.
+		// Letting a sandboxed job set it here would open the ingestion
+		// capability (any workspace job could plant captured/triaged tasks)
+		// before PR-4 wires up the daemon-side workspace stamping and dedup
+		// that decision2 requires around it. CLI/direct-API creation is
+		// unaffected — this only closes the sandbox → broker → executor path.
+		if createReq.InitialStatus != "" {
+			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid task create: initial_status is not available from a sandboxed job yet"}
 		}
 		// broker が req.ProjectID を UUID に解決済みの場合は必ず優先する。
 		// CreatePatch.project_id は元の名前のまま (未上書き) のため使用しない。
@@ -352,6 +377,9 @@ func (e *boidBuiltinExecutor) ExecuteBoidBuiltin(goCtx context.Context, ctx sand
 	case sandbox.BoidOpTaskList:
 		if e.tasks == nil {
 			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid task list unavailable"}
+		}
+		if err := validateTaskListStatus(req.Status); err != nil {
+			return &sandbox.ExecResponse{ExitCode: 1, Stderr: err.Error()}
 		}
 		var tasks []*orchestrator.Task
 		if req.ProjectID != "" {
