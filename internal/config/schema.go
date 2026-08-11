@@ -31,6 +31,8 @@ const (
 	KindBool
 	// KindDuration is a single scalar Go duration string (e.g. "24h").
 	KindDuration
+	// KindInt is a single scalar integer (e.g. a TCP port).
+	KindInt
 	// KindStringArray is zero or more scalar strings (`boid config set` multi-arg).
 	KindStringArray
 	// KindEnum is a single scalar string constrained to EnumValues.
@@ -119,6 +121,11 @@ var Schema = []FieldSpec{
 	{Path: "notify.command", Kind: KindStringArray, Reload: ReloadRestartRequired},
 
 	{Path: "sandbox.allowed_domains", Kind: KindStringArray, Reload: ReloadRestartRequired},
+	// docs/plans/egress-proxy-stable-port.md. ReloadRestartRequired
+	// because a listener cannot change bands without rebinding, and
+	// rebinding is exactly the port change this feature exists to avoid.
+	{Path: "sandbox.egress_proxy_port_low", Kind: KindInt, Reload: ReloadRestartRequired},
+	{Path: "sandbox.egress_proxy_port_high", Kind: KindInt, Reload: ReloadRestartRequired},
 	// sandbox.backend: removed in PR-4 (docs/plans/volume-only-daemon.md
 	// §論点e) — container is the only sandbox backend now, so the key has
 	// nothing left to select. KindOpaque (not deleted from Schema outright)

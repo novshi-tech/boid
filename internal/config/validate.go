@@ -56,8 +56,41 @@ func ValidateYAML(data []byte) (*Config, error) {
 	if err := validateAllowedDomains(cfg.Sandbox.AllowedDomains); err != nil {
 		return nil, err
 	}
+	if err := validateEgressProxyPortRange(cfg.Sandbox.EgressProxyPortLow, cfg.Sandbox.EgressProxyPortHigh); err != nil {
+		return nil, err
+	}
 
 	return cfg, nil
+}
+
+// validateEgressProxyPortRange rejects a band the proxy manager could never
+// allocate from (docs/plans/egress-proxy-stable-port.md). A misconfigured
+// band would otherwise surface only as a runtime warning and a silent
+// degradation back to ephemeral ports — i.e. as the exact bug the feature
+// exists to prevent, with no sign that config.yaml caused it.
+//
+// Both ends zero is the default ("use internal/sandbox's own band") and is
+// explicitly allowed; setting only one end is not, since the other end
+// would silently come from a different source than the operator wrote.
+func validateEgressProxyPortRange(low, high int) error {
+	if low == 0 && high == 0 {
+		return nil
+	}
+	if low == 0 || high == 0 {
+		return fmt.Errorf("sandbox.egress_proxy_port_low and sandbox.egress_proxy_port_high must be set together (got low=%d high=%d)", low, high)
+	}
+	for name, port := range map[string]int{
+		"sandbox.egress_proxy_port_low":  low,
+		"sandbox.egress_proxy_port_high": high,
+	} {
+		if port < 1 || port > 65535 {
+			return fmt.Errorf("%s must be a valid TCP port (1-65535), got %d", name, port)
+		}
+	}
+	if high < low {
+		return fmt.Errorf("sandbox.egress_proxy_port_high (%d) must not be below sandbox.egress_proxy_port_low (%d)", high, low)
+	}
+	return nil
 }
 
 // schemaNode is one node of the trie ValidateKnownKeys walks a decoded tree

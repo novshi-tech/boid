@@ -302,6 +302,8 @@ func buildStartConfig(opts startConfigOptions) (server.Config, error) {
 		}
 	}
 	cfg.AllowedDomains = append(cfg.AllowedDomains, appCfg.Sandbox.AllowedDomains...)
+	cfg.EgressProxyPortLow = appCfg.Sandbox.EgressProxyPortLow
+	cfg.EgressProxyPortHigh = appCfg.Sandbox.EgressProxyPortHigh
 	cfg.ServicesFloor = appCfg.ServicesFloor
 	cfg.LogLevel = appCfg.Log.Level
 

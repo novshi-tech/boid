@@ -270,6 +270,15 @@ func coerceValues(spec FieldSpec, values []string) (any, error) {
 			return nil, fmt.Errorf("invalid duration %q: %w", values[0], err)
 		}
 		return values[0], nil
+	case KindInt:
+		if len(values) != 1 {
+			return nil, fmt.Errorf("expected exactly 1 value, got %d", len(values))
+		}
+		n, err := strconv.Atoi(values[0])
+		if err != nil {
+			return nil, fmt.Errorf("invalid integer %q", values[0])
+		}
+		return n, nil
 	case KindEnum:
 		if len(values) != 1 {
 			return nil, fmt.Errorf("expected exactly 1 value, got %d", len(values))

@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 )
@@ -28,6 +29,14 @@ type Proxy struct {
 	// be set before Start is called; changing it afterward has no effect on
 	// an already-bound listener.
 	BindHost string
+
+	// DesiredPort, when non-zero, is the port Start binds to instead of
+	// letting the kernel pick an ephemeral one (`:0`). Start returns the
+	// bind error unchanged when the port is unavailable — deciding whether
+	// that is fatal or worth retrying on another port belongs to the
+	// caller, not here (ProxyManager treats it as retryable; see
+	// docs/plans/egress-proxy-stable-port.md). Must be set before Start.
+	DesiredPort int
 
 	listener net.Listener
 	server   *http.Server
@@ -67,7 +76,7 @@ func (p *Proxy) Start(ctx context.Context) (int, error) {
 	if host == "" {
 		host = "127.0.0.1"
 	}
-	ln, err := net.Listen("tcp", host+":0")
+	ln, err := net.Listen("tcp", net.JoinHostPort(host, strconv.Itoa(p.DesiredPort)))
 	if err != nil {
 		return 0, fmt.Errorf("listen: %w", err)
 	}

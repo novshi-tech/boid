@@ -458,7 +458,13 @@ var restartFieldExtractors = map[string]func(*config.Config) string{
 	"task_ask.disconnect_grace": func(c *config.Config) string { return c.TaskAsk.DisconnectGrace.String() },
 	"notify.command":            func(c *config.Config) string { return strings.Join(c.Notify.Command, "\x00") },
 	"sandbox.allowed_domains":   func(c *config.Config) string { return strings.Join(c.Sandbox.AllowedDomains, "\x00") },
-	"services_floor":            func(c *config.Config) string { return strings.Join(c.ServicesFloor, "\x00") },
+	"sandbox.egress_proxy_port_low": func(c *config.Config) string {
+		return strconv.Itoa(c.Sandbox.EgressProxyPortLow)
+	},
+	"sandbox.egress_proxy_port_high": func(c *config.Config) string {
+		return strconv.Itoa(c.Sandbox.EgressProxyPortHigh)
+	},
+	"services_floor": func(c *config.Config) string { return strings.Join(c.ServicesFloor, "\x00") },
 }
 
 // restartFieldExtractorExemptions documents every ReloadRestartRequired
