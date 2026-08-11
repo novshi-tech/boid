@@ -32,6 +32,14 @@ import (
 // grant to (docs/plans/api-gateway.md §7: "デスクトップ機には平文トークンも
 // client_secret も一度も存在しない").
 
+// oobRedirectURI is the fixed "out-of-band" redirect_uri RFC 8252 §7 (and
+// providers like freee that model themselves on it) use for flows with no
+// browser redirect to receive the code on: the provider displays the code
+// directly and the user copies it by hand. Manual/OOB flow sends this both
+// at authorize time (startManual) and, per RFC 6749 §4.1.3, must repeat the
+// identical value at token-exchange time (exchangeAndPersist) — see #936.
+const oobRedirectURI = "urn:ietf:wg:oauth:2.0:oob"
+
 // pendingLoginTTL bounds how long a loopback/manual pendingLogin survives
 // before Status/CompleteLogin treat it as expired — these two flows have no
 // provider-declared expiry the way device flow's own expires_in gives
@@ -297,7 +305,7 @@ func (m *LoginManager) startLoopback(namespace string, cfg OAuthProviderConfig, 
 // the code directly in the browser and the user copies it by hand), the
 // OOB redirect_uri urn:ietf:wg:oauth:2.0:oob.
 func (m *LoginManager) startManual(namespace string, cfg OAuthProviderConfig) (*LoginStart, error) {
-	authURL, err := buildAuthorizeURL(cfg, "urn:ietf:wg:oauth:2.0:oob", "", "")
+	authURL, err := buildAuthorizeURL(cfg, oobRedirectURI, "", "")
 	if err != nil {
 		return nil, err
 	}
@@ -430,16 +438,22 @@ func (m *LoginManager) exchangeAndPersist(p *pendingLogin, cfg OAuthProviderConf
 	if clientSecret != "" {
 		form.Set("client_secret", clientSecret)
 	}
-	// redirect_uri/code_verifier only apply to the loopback flow (RFC 6749
-	// §4.1.3 requires redirect_uri to be repeated here IF it was present in
-	// the authorization request, which it always is for loopback; RFC 7636
-	// §4.5 requires code_verifier for a PKCE-using request). The manual/OOB
-	// flow sent neither at authorize time (startManual), so neither is
-	// repeated here — see LoginFlowManual's own doc comment for why PKCE
-	// does not apply to it at all.
-	if p.flow == LoginFlowLoopback {
+	// redirect_uri: RFC 6749 §4.1.3 requires it to be repeated here IF it
+	// was present in the authorization request. Loopback always sends one
+	// (p.redirectURI, the local callback). Manual/OOB also sends one —
+	// startManual's buildAuthorizeURL call passes oobRedirectURI as
+	// redirect_uri — so it must be repeated too (freee's token endpoint
+	// rejects the exchange with invalid_client otherwise; see #936).
+	// code_verifier (RFC 7636 §4.5, PKCE) only applies to loopback —
+	// manual/OOB never sends a code_challenge at authorize time (see
+	// LoginFlowManual's own doc comment for why PKCE does not apply to it
+	// at all), so there is no verifier to repeat.
+	switch p.flow {
+	case LoginFlowLoopback:
 		form.Set("redirect_uri", p.redirectURI)
 		form.Set("code_verifier", p.codeVerifier)
+	case LoginFlowManual:
+		form.Set("redirect_uri", oobRedirectURI)
 	}
 
 	resp, _, err := m.tokens.postFormToTokenEndpoint(cfg.TokenEndpoint, form, cfg.Name, rfc6749TokenErrorCodes)
