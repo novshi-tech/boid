@@ -260,6 +260,18 @@ type WorkflowService interface {
 	StopAgent(runtimeID string)
 }
 
+// TaskCreator is the slice of TaskAppService that TaskWorkflowService.Dispatch
+// needs to task-ify a triage task's specced children (docs/plans/
+// cross-project-issue-triage.md Phase 1 PR-2, 逆輸入1). Implemented by
+// TaskAppService and wired in after TaskAppService itself is constructed
+// (wire.go creates TaskWorkflowService first, TaskAppService second, so this
+// mirrors the same late-binding idiom the reverse direction already uses —
+// see WorkflowService/TaskAppService.Workflow above) to avoid a literal
+// struct-construction cycle between the two services.
+type TaskCreator interface {
+	CreateTask(req CreateTaskRequest) (*orchestrator.Task, error)
+}
+
 type TaskStore interface {
 	CreateTask(task *orchestrator.Task) error
 	GetTask(id string) (*orchestrator.Task, error)

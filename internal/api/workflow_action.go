@@ -206,6 +206,27 @@ func (s *TaskWorkflowService) ApplyAction(ctx context.Context, taskID string, re
 		})
 	}
 
+	// Phase 1 PR-2 (docs/plans/cross-project-issue-triage.md, 逆輸入2): "Go 操作
+	// = ready 遷移 + 機械 dispatch の 2 段で実装する". The "ready" action above IS
+	// Go (nose's judgment, Manual:true); immediately chaining into Dispatch
+	// here is the mechanical second stage, requiring no further judgment
+	// (決定12) — same idiom as CreateTask's auto_start chaining directly into
+	// ApplyAction("start"). A Dispatch failure (e.g. a malformed child spec,
+	// or a project that no longer exists) is logged, not surfaced as this
+	// call's error: the "ready" transition itself already committed
+	// successfully, and per the state machine's own doc comment "working
+	// deliberately has NO exit rule yet" a task stuck in ready is the
+	// intended, visible failure mode (機構の不調のサイン) rather than a lost
+	// Go.
+	if req.Type == "ready" && newTask.Status == orchestrator.TaskStatusReady {
+		dispatched, dispatchErr := s.Dispatch(ctx, newTask.ID)
+		if dispatchErr != nil {
+			slog.Error("ready: machine dispatch (ready->working) failed", "task_id", newTask.ID, "error", dispatchErr)
+		} else if dispatched != nil {
+			newTask = dispatched.Task
+		}
+	}
+
 	if s.Coordinator != nil {
 		dispatchCtx := s.dispatchCtx
 		if dispatchCtx == nil {

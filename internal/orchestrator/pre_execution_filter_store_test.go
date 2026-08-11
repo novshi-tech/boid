@@ -271,3 +271,58 @@ func TestListTasks_Open_AllTerminalAncestors_NoRescue(t *testing.T) {
 		}
 	}
 }
+
+// TestListTasks_Open_IncludesWorking / TestListTasks_Queue_ExcludesWorking
+// pin down PR-2's deliberate classification of TaskStatusWorking as
+// execution-like rather than pre-execution (see TaskStatusWorking's own doc
+// comment in model.go): a childless working task must behave exactly like a
+// childless executing task for filtering purposes — visible in "open"
+// (unlike triaged/ready/etc, which need a live child to be rescued),
+// invisible in "queue" (queue is for things nose still needs to respond to;
+// working has already been Go'd).
+func TestListTasks_Open_IncludesWorking(t *testing.T) {
+	d := createTestProject(t)
+	working := &orchestrator.Task{ProjectID: "proj-1", Title: "Working, no children", Behavior: "dev", Status: orchestrator.TaskStatusWorking}
+	if err := orchestrator.CreateTask(d.Conn, working); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	got, err := orchestrator.ListTasks(d.Conn, orchestrator.TaskFilter{Status: "open"})
+	if err != nil {
+		t.Fatalf("ListTasks: %v", err)
+	}
+	ids := map[string]bool{}
+	for _, tk := range got {
+		ids[tk.ID] = true
+	}
+	if !ids[working.ID] {
+		t.Errorf("open view must include a childless working task, same as an executing task")
+	}
+}
+
+func TestListTasks_Queue_ExcludesWorking(t *testing.T) {
+	d := createTestProject(t)
+	working := &orchestrator.Task{ProjectID: "proj-1", Title: "Working", Behavior: "dev", Status: orchestrator.TaskStatusWorking}
+	if err := orchestrator.CreateTask(d.Conn, working); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	ready := &orchestrator.Task{ProjectID: "proj-1", Title: "Ready", Behavior: "dev", Status: orchestrator.TaskStatusReady}
+	if err := orchestrator.CreateTask(d.Conn, ready); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	got, err := orchestrator.ListTasks(d.Conn, orchestrator.TaskFilter{Status: "queue"})
+	if err != nil {
+		t.Fatalf("ListTasks: %v", err)
+	}
+	ids := map[string]bool{}
+	for _, tk := range got {
+		ids[tk.ID] = true
+	}
+	if ids[working.ID] {
+		t.Errorf("queue view must not include a working task — it has already been Go'd")
+	}
+	if !ids[ready.ID] {
+		t.Errorf("queue view must still include a ready (pre-execution) task")
+	}
+}

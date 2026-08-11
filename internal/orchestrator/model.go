@@ -23,6 +23,32 @@ const (
 	TaskStatusParked   TaskStatus = "parked"
 	TaskStatusReady    TaskStatus = "ready"
 	TaskStatusDropped  TaskStatus = "dropped"
+
+	// TaskStatusWorking is Phase 1 PR-2's addition (逆輸入2: dispatched は
+	// working に再定義された). Deliberately NOT classified as pre-execution
+	// (see IsPreExecutionStatus below): unlike captured/triaged/parked/ready,
+	// a working triage task has already been through Go — it is closer in
+	// kind to executing/awaiting (something is actively happening, whether
+	// that's a dispatched child task or nose working the item by hand) than
+	// to the "not yet actionable" pre-execution states. Concretely this means
+	// working:
+	//   - is NOT excluded from the default "open" task-list filter the way
+	//     pre-execution statuses are (store.go's notOpenSelfStatusSQLList) —
+	//     an in-progress triage task belongs in the open view, same as an
+	//     executing task.
+	//   - does NOT appear in the "queue" filter (preExecutionStatusSQLList) —
+	//     queue is for things nose still needs to respond to (決定9); a
+	//     working task has already been responded to (Go'd).
+	//   - is NOT GC'd via the pre-execution "keep forever" carve-out; it
+	//     follows the same non-terminal "never auto-GC'd" rule executing/
+	//     awaiting already get, which is the correct default until PR-3's
+	//     queue evaluation defines what "stuck in working" watchdog behavior
+	//     (if any) should look like.
+	// PR-2 gives working exactly one entry (ready→working, machine-driven,
+	// see machine.go's "dispatch" rule) and deliberately NO exit yet — see
+	// that rule's own doc comment for why this is left as a known PR-3 gap
+	// rather than guessed at here.
+	TaskStatusWorking TaskStatus = "working"
 )
 
 // KnownTaskStatuses は boid が認識する全 TaskStatus 値を返す。バリデーションを行う全箇所
@@ -40,6 +66,7 @@ func KnownTaskStatuses() []TaskStatus {
 		TaskStatusParked,
 		TaskStatusReady,
 		TaskStatusDropped,
+		TaskStatusWorking,
 	}
 }
 
