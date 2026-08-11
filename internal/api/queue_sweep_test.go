@@ -56,7 +56,7 @@ func (s *sweepFakeStore) DeleteTask(id string) error { delete(s.tasks, id); retu
 func (s *sweepFakeStore) FindTaskByRemote(remoteID string) (*orchestrator.Task, error) {
 	return nil, nil
 }
-func (s *sweepFakeStore) FindTaskByRef(ref, parentID string) (*orchestrator.Task, error) {
+func (s *sweepFakeStore) FindTaskByRef(ref, parentID, projectID string) (*orchestrator.Task, error) {
 	return nil, nil
 }
 func (s *sweepFakeStore) ListChildren(parentID string) ([]*orchestrator.Task, error) {

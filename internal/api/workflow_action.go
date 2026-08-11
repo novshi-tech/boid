@@ -156,7 +156,25 @@ func (s *TaskWorkflowService) ApplyAction(ctx context.Context, taskID string, re
 		}
 	}
 
-	if !reopenPayloadConsumed {
+	// park / attrs_set / child_added / child_specced all feed their payload
+	// exclusively into a task_triage.detail side-effect (below) and the
+	// actions table's own audit-trail row — never into task.Payload. This is
+	// the same "consumed" treatment reopen already gets, extended per Phase 1
+	// PR-4 (docs/plans/cross-project-issue-triage.md 論点6-2): a large
+	// attrs_set payload polluting task.Payload (which the CLI/Web UI surface
+	// wholesale) would be a real regression, and park had the exact same bug
+	// pre-PR-4 (its wake_at/wake_task_id payload was ALSO being merged into
+	// task.Payload alongside the task_triage upsert — confirmed while
+	// implementing this PR, per 論点6-2's "ついでに確認する" instruction) even
+	// though nothing downstream reads it from there.
+	sideEffectConsumesPayload := map[string]bool{
+		"park":          true,
+		"attrs_set":     true,
+		"child_added":   true,
+		"child_specced": true,
+	}
+
+	if !reopenPayloadConsumed && !sideEffectConsumesPayload[req.Type] {
 		merged, err := orchestrator.MergePayload(task.Payload, action.Payload)
 		if err != nil {
 			return nil, &StatusError{Code: http.StatusInternalServerError, Message: "payload merge: " + err.Error()}
@@ -164,29 +182,104 @@ func (s *TaskWorkflowService) ApplyAction(ctx context.Context, taskID string, re
 		newTask.Payload = merged
 	}
 
-	// park carries an optional wake_at/wake_task_id payload that must be
-	// upserted into the task_triage sidecar as part of the same transaction
-	// that records the action (docs/plans/cross-project-issue-triage.md
-	// Phase 1 PR-1). Validate before opening the transaction so a malformed
-	// payload surfaces as 400, not the generic 500 below.
+	// park / attrs_set / child_added / child_specced each validate their
+	// payload BEFORE the transaction opens, so a malformed payload surfaces
+	// as 400 rather than being swallowed into WithinTx's generic 500 wrapping
+	// (park's established pattern, extended per 論点6-4 to the three new
+	// triage-vocabulary actions — docs/plans/cross-project-issue-triage.md
+	// PR-4 設計メモ 論点4/6).
 	var parkPayloadParsed *parkPayload
-	if req.Type == "park" {
+	var attrsSetPatch map[string]json.RawMessage
+	var childAddedParsed *childAddedPayload
+	var childSpeccedParsed *childSpeccedPayload
+	switch req.Type {
+	case "park":
 		var perr error
 		parkPayloadParsed, perr = parseParkPayload(req.Payload)
 		if perr != nil {
 			return nil, perr
 		}
+	case "attrs_set":
+		var perr error
+		attrsSetPatch, perr = parseAttrsSetPayload(req.Payload)
+		if perr != nil {
+			return nil, perr
+		}
+	case "child_added":
+		var perr error
+		childAddedParsed, perr = parseChildAddedPayload(req.Payload)
+		if perr != nil {
+			return nil, perr
+		}
+	case "child_specced":
+		var perr error
+		childSpeccedParsed, perr = parseChildSpeccedPayload(req.Payload)
+		if perr != nil {
+			return nil, perr
+		}
 	}
 
+	// attrs_set/child_added/child_specced are non-transitioning (ToStatus==""
+	// in the matched rule, machine.go) AND their payload is fully consumed by
+	// the side-effect above (never merged into task.Payload either) — so the
+	// task row genuinely has nothing new to persist. Skipping tx.UpdateTask
+	// for exactly these three closes a race codex review flagged (Major): a
+	// caller read `task` before opening this Tx, so `newTask` is built from
+	// that stale snapshot; if a REAL transition (e.g. working→parked)
+	// committed concurrently in between, an unconditional UpdateTask(newTask)
+	// here would silently stomp the fresh status back to the stale one the
+	// non-transitioning action happened to read, even though its own
+	// side-effect (the sidecar RMW) correctly read-modified-wrote inside this
+	// same Tx. park is NOT in this set — it genuinely transitions status, so
+	// it still needs the write.
+	skipTaskUpdate := req.Type == "attrs_set" || req.Type == "child_added" || req.Type == "child_specced"
+
 	if err := s.Tx.WithinTx(func(tx TxStore) error {
-		if err := tx.UpdateTask(newTask); err != nil {
-			return err
+		if skipTaskUpdate {
+			// Re-validate against a FRESH in-Tx read rather than the
+			// pre-Tx snapshot `task`/`newTask` were built from (codex
+			// review round 2 Major fix): without this, a concurrent REAL
+			// transition (e.g. working→parked, or drop) committed between
+			// the pre-Tx read and this Tx opening would leave the
+			// side-effect (task_triage.detail fold) correctly applied
+			// against fresh state, while the action's own FromStatus/
+			// ToStatus audit fields, the Hub broadcast, and the
+			// ActionApplication returned to the caller would all still
+			// report the STALE pre-race status — and worse, an action that
+			// is no longer legal from the task's actual current status
+			// (e.g. attrs_set after a concurrent drop moved it to
+			// "dropped", which is not in attrs_set's FromStatus
+			// enumeration) would still be recorded as if it succeeded
+			// cleanly. Mirrors Wake's own "resolve everything from inside
+			// the same transaction" pattern (workflow_triage.go).
+			fresh, ferr := tx.GetTask(taskID)
+			if ferr != nil {
+				return statusErrorForGetTaskErr(ferr)
+			}
+			freshApplied, aerr := sm.Apply(fresh, action)
+			if aerr != nil {
+				return &StatusError{Code: http.StatusConflict, Message: aerr.Error()}
+			}
+			action.FromStatus = fresh.Status
+			action.ToStatus = freshApplied.Status
+			newTask = freshApplied
+		} else {
+			if err := tx.UpdateTask(newTask); err != nil {
+				return err
+			}
 		}
 		if err := tx.CreateAction(action); err != nil {
 			return err
 		}
-		if req.Type == "park" {
+		switch req.Type {
+		case "park":
 			return applyParkSideEffect(tx, newTask.ID, parkPayloadParsed)
+		case "attrs_set":
+			return applyAttrsSetSideEffect(tx, newTask.ID, attrsSetPatch)
+		case "child_added":
+			return applyChildAddedSideEffect(tx, newTask.ID, childAddedParsed)
+		case "child_specced":
+			return applyChildSpeccedSideEffect(tx, newTask.ID, childSpeccedParsed)
 		}
 		return nil
 	}); err != nil {
@@ -552,4 +645,10 @@ func (s *TaskWorkflowService) finalizeTerminal(ctx context.Context, task *orches
 	if s.Lifecycle != nil {
 		s.Lifecycle.CleanupTaskWindow(task.ID)
 	}
+	// Phase 1 PR-4 (docs/plans/cross-project-issue-triage.md 論点9): a
+	// terminal task that is a dispatched triage child self-records
+	// child_closed on its parent here — see recordChildClosedOnParent's own
+	// doc comment (workflow_triage.go) for why finalizeTerminal is the right
+	// funnel.
+	s.recordChildClosedOnParent(task)
 }

@@ -140,6 +140,23 @@ const (
 	// workspace; there is intentionally no way to list projects daemon-wide
 	// the way the host-only `boid project list` does.
 	BoidOpProjectList BoidOp = "project_list"
+
+	// BoidOpTaskWake backs `boid task wake <task-id>` from inside the sandbox
+	// (docs/plans/cross-project-issue-triage.md Phase 1 PR-4, 論点10: the
+	// third wake category — "source event", e.g. "Jira moved" — is a
+	// workspace judgment call (khi's collector/evaluate loop, nose-approved),
+	// but had no execution口 before this op; wake_at and wake_task_id-based
+	// wakes are daemon-internal and already handled by QueueSweepLoop). This
+	// is a thin wrapper around the SAME api.WorkflowService.Wake the HTTP
+	// API / Web UI already call — NOT a new capability, and NOT a bypass of
+	// the wake_triaged/wake_ready IsManualAction guard: a direct `boid
+	// action send --type wake_ready` is still rejected (StateMachine.
+	// IsManualAction returns false for both), because Wake resolves the
+	// correct target status itself via ParkedFrom rather than trusting a
+	// caller-supplied action type. Scoped like BoidOpActionSend: the broker
+	// only validates TaskID is present; the executor enforces
+	// TokenContext.AllowsProject before calling Wake.
+	BoidOpTaskWake BoidOp = "task_wake"
 )
 
 // PayloadPatchMaxBytes caps the size of a single BoidOpTaskUpdatePayloadPatch

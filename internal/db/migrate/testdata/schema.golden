@@ -6,8 +6,8 @@ CREATE INDEX idx_project_workspaces_workspace_id
 CREATE INDEX idx_task_triage_wake_at
     ON task_triage(wake_at) WHERE wake_at IS NOT NULL;
 
--- index: idx_tasks_ref_parent
-CREATE UNIQUE INDEX idx_tasks_ref_parent ON tasks(ref, parent_id) WHERE ref != '';
+-- index: idx_tasks_ref_parent_project
+CREATE UNIQUE INDEX idx_tasks_ref_parent_project ON tasks(ref, parent_id, project_id) WHERE ref != '';
 
 -- index: idx_web_devices_token_hash
 CREATE UNIQUE INDEX idx_web_devices_token_hash ON web_devices(token_hash) WHERE token_hash IS NOT NULL;

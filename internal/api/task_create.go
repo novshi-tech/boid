@@ -238,12 +238,26 @@ func (s *TaskAppService) CreateTask(req CreateTaskRequest) (*orchestrator.Task, 
 		return nil, err
 	}
 
-	// Get-or-create: when ref and parent are both present, check for an existing
-	// child before building and inserting a new task. This is the service-level
-	// dedup guard; the store has an identical check for the concurrent-create
-	// race. Returning early here avoids a redundant INSERT round-trip.
-	if req.Ref != "" && req.ParentID != "" {
-		existing, err := s.Tasks.FindTaskByRef(req.Ref, req.ParentID)
+	// Get-or-create: when ref is present, check for an existing task (scoped
+	// by parent_id, which is "" for a root task) before building and
+	// inserting a new one. This is the service-level dedup guard; the store
+	// has an identical check for the concurrent-create race. Returning early
+	// here avoids a redundant INSERT round-trip.
+	//
+	// Phase 1 PR-4 (docs/plans/cross-project-issue-triage.md 論点7): this used
+	// to require ParentID != "" (child-only dedup, PR-2's per-child Ref idiom
+	// — see Dispatch's Ref: children[i].ID call). Opening it to root tasks
+	// too is what makes ingestion push idempotent: khi creates a card with
+	// Ref=<source_ref> (jira issue_key / slack thread_ts / mail message-id),
+	// and a resend after a crash between the create response and khi
+	// recording the returned task_id returns the SAME existing task instead
+	// of a duplicate card. idx_tasks_ref_parent (migration 0010) already
+	// covers parent_id="" rows uniquely: parent_id is `NOT NULL DEFAULT ''`
+	// (never SQL NULL), so the unique index on (ref, parent_id) treats every
+	// root task's ref as unique among root tasks the same way it already did
+	// for a given parent's children — no migration was needed to open this.
+	if req.Ref != "" {
+		existing, err := s.Tasks.FindTaskByRef(req.Ref, req.ParentID, req.ProjectID)
 		if err != nil {
 			return nil, &StatusError{Code: http.StatusInternalServerError, Message: err.Error()}
 		}

@@ -1247,6 +1247,64 @@ exit criteria (2 週間程度): (1) nose が「見に行く」頻度が実際に
 - **Phase 0 は即開始可能**: khi は customer bitbucket の `khi-task-collector` (メタプロジェクト
   の原型) が登録済みで、 前提が揃っている。
 
+### 第 10 版 (2026-08-11、 PR-4 実装完了) での変更
+
+PR-4 (ingestion push 開通 + action 語彙拡張 + working 出口 3 本 + child_closed 自己記録 +
+brokered wake op) を単一 PR として実装・merge した (PR #933、 boid リポジトリ)。 論点 6〜10 の
+実装状況は以下の通り (今後のセッションが diff から再導出しなくて済むよう記録):
+
+- **論点 6 (実装注意 4 点)**: 全て反映。 `AvailableActions` は `ToStatus == ""` の非遷移
+  ルールを skip するよう修正 (6-1)。 `attrs_set`/`child_added`/`child_specced` の payload は
+  `task.Payload` へ merge せず side-effect にのみ流す「consumed」扱いにし、 ついでに確認した
+  `park` の同種バグ (wake_at/wake_task_id payload が task.Payload にも漏れていた) も同時に
+  修正 (6-2)。 `FromStatus` は `captured`/`triaged`/`parked`/`ready`/`working` の明示列挙、
+  `"*"` は使っていない (6-3)。 side-effect は `applyParkSideEffect` に倣い、 payload 検証は
+  Tx 前・ `task_triage.detail` の read-modify-write は Tx 内 `GetTaskTriage` から行う (6-4)。
+- **論点 7 (dedup)**: `FindTaskByRef` の `ParentID != ""` 限定を撤廃し root task にも開放。
+  ただし実装レビュー (codex round 1) で **「daemon-global で workspace 非スコープ」という
+  Blocker が発覚** — 全 workspace の root task が `parent_id=""` を共有するため、 別
+  workspace が同じ source_ref を使うと衝突し、 後発の create が先発 workspace の task を
+  誤って受け取ってしまう欠陥があった。 修正として `FindTaskByRef`/`CreateTask` の get-or-create
+  を **project_id もスコープに含める**よう変更し、 migration 0037 で unique index を
+  `idx_tasks_ref_parent(ref, parent_id)` → `idx_tasks_ref_parent_project(ref, parent_id,
+  project_id)` に置換した (旧 index は同 migration 内で DROP)。 併せて UUID 形の
+  source_ref (id 直接一致にフォールバックする既存の後方互換分岐) が resend で非冪等になる
+  Major も codex round 2 で発覚・修正 (id 一致が scope 外/not-found の場合は ref カラムの
+  scoped query にフォールバックするよう変更)。
+- **論点 8 (working からの出口 3 本、最重要)**: 実装済み。 `ready`/`triage`/`park` の 3 verb を
+  `working` からの Manual 遷移として追加 (既存 pre-execution 語彙を再利用、 新規 verb は
+  追加していない)。 `ready` action の Dispatch 自動連鎖は fromStatus に関わらず
+  `newTask.Status == ready` だけを見ているため working→ready でも自動的に効く。
+- **論点 9 (child_dispatched/child_closed の書き手分離)**: `child_dispatched` は
+  `Dispatch()` が (元々の想定通り) 自己記録していたが、 実装時の調査で **実際には action row を
+  書いていなかった** ことが判明したため、 `Dispatch()` の既存 Tx 内で `child_dispatched`
+  action を追加するようにした。 `child_closed` は新規実装: `TaskWorkflowService.
+  finalizeTerminal` (全終端遷移経路の単一合流点) にフックし、 子タスクが done/aborted に
+  なった際、 親の `task_triage.detail.children` を照合して該当 child を closed にマークし、
+  親側に `child_closed` action を追記する。 両 action とも machine.go に `Manual:false` の
+  ダミー rule のみ登録し (`sm.Apply` からは呼ばない、 直接 `tx.CreateAction`)、
+  `IsManualAction` が false を返すため `ApplyAction`/`BoidOpActionSend` 経由での khi push は
+  自動的に reject される。 実装レビューで **child の生成/auto-start が Dispatch の Tx commit
+  より先に走るため、 極端に速く終端した子の child_closed が永久に取りこぼされ得る** という
+  Major が発覚し、 `Dispatch()` の Tx commit 直後に `newlyDispatched` を再照合し、 既に
+  終端していれば `recordChildClosedOnParent` を直接呼ぶ補完ステップを追加して解消した。
+- **論点 10 (brokered wake op)**: `BoidOpTaskWake` (`boid task wake <task-id>`) を新設。
+  `api.WorkflowService.Wake` の薄いラッパーで、 workspace scoping は `BoidOpActionSend` と
+  同じ `ctx.AllowsProject` パターン。 `wake_triaged`/`wake_ready` の直接 action send は
+  `IsManualAction` ガードにより引き続き reject される (bypass ではない)。
+
+**スコープ外 (計画通り、着手せず)**: 論点 5 (khi 側 `card-promote-headless` 移行、
+khi-task-collector リポジトリの作業)、 論点 11 (代行 Go タスク — actor 記録が前提条件で
+PR-4 必須ではないと明記済み)、 論点 12 (大型機能マッピング、 Notion gateway 宿題)、
+`meta_project` フラグ (2026-08-11 nose 決定で別件扱い)。
+
+**PR 分割判断**: 単一 PR (PR #933) として完走。 スコープが大きかったが、 codex レビュー
+3 巡 (round 1: Blocker 2 件・ Major 3 件・ Minor 1 件、 round 2: Major 2 件・ Minor 1 件、
+round 3: 0 件で「Ready to merge」) を経て収束したため分割は不要と判断した。 round 1 の
+Blocker はいずれも「daemon 側の権限/スコープ検査漏れ」系 (child_specced の project field が
+workspace 認可を経ずに Dispatch へ流れる経路、 root task dedup の workspace 非スコープ) —
+実装時に見落としやすいクラスとして次回以降の類似実装時に注意する。
+
 ### 第 9 版 (2026-08-11、 Fable レビュー + 机上シナリオ検証) での変更
 
 - **「Fable レビュー結果」節を新設** (条件付き GO)。 論点 1〜3 はコード実物で裏取り済み

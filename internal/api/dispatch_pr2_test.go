@@ -248,6 +248,68 @@ func TestTaskWorkflowService_Dispatch_ChildAutoStartFails_TreatedAsDispatchFailu
 	}
 }
 
+// TestTaskWorkflowService_Dispatch_ChildFinishesBeforeCommit_ReconciledAsClosed
+// is the regression test for codex review's Major finding: child creation +
+// auto-start happens BEFORE the Tx that persists the child's TaskRef into
+// task_triage.detail.children (see Dispatch's own doc comment on why child
+// creation cannot run nested inside that Tx). If the child is fast enough to
+// reach "done" in that window, its own finalizeTerminal call (fired from
+// TaskCreator.CreateTask's synchronous auto_start path, in this test
+// simulated directly) would find no matching TaskRef yet and silently no-op
+// — permanently missing the child_closed record. Dispatch must reconcile
+// this itself right after its own Tx commits.
+func TestTaskWorkflowService_Dispatch_ChildFinishesBeforeCommit_ReconciledAsClosed(t *testing.T) {
+	task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusReady, Behavior: "dev", Payload: []byte(`{}`)}
+	detail := []byte(`{"children": [{"id": "ch_00", "title": "quick", "status": "specced", "spec": {"project": "p2", "behavior": "impl"}}]}`)
+	txStore := &recordingTxStore{
+		task:   task,
+		triage: map[string]*orchestrator.TaskTriage{"t1": {TaskID: "t1", Detail: detail}},
+		tasks:  map[string]*orchestrator.Task{},
+	}
+	creator := &fakeTaskCreator{createFn: func(req CreateTaskRequest) (*orchestrator.Task, error) {
+		// Simulate the child racing all the way to "done" before Dispatch's
+		// own Tx (which persists its TaskRef into the parent's detail) has
+		// committed.
+		child := &orchestrator.Task{ID: "child-1", ProjectID: req.ProjectID, ParentID: "t1", Status: orchestrator.TaskStatusDone}
+		txStore.tasks["child-1"] = child
+		return child, nil
+	}}
+	svc := &TaskWorkflowService{
+		Tasks:      syncedTaskStore{tx: txStore},
+		Tx:         recordingTransactor{store: txStore},
+		TaskTriage: txStore,
+		TaskCreator: func() TaskCreator {
+			return creator
+		}(),
+	}
+
+	if _, err := svc.Dispatch(context.Background(), task.ID); err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+
+	tt := txStore.triage["t1"]
+	if tt == nil {
+		t.Fatal("expected task_triage row to exist")
+	}
+	children, err := orchestrator.DetailChildren(tt.Detail)
+	if err != nil {
+		t.Fatalf("DetailChildren: %v", err)
+	}
+	if len(children) != 1 || children[0].Status != orchestrator.TaskTriageChildStatusClosed {
+		t.Fatalf("children = %+v, want the race-finished child reconciled to closed", children)
+	}
+
+	found := false
+	for _, a := range txStore.actions {
+		if a.Type == "child_closed" && a.TaskID == "t1" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected a child_closed action recorded against the parent, got actions=%+v", txStore.actions)
+	}
+}
+
 // TestTaskWorkflowService_Dispatch_RetryAfterPartialFailure_DoesNotDuplicateEarlierChild
 // is the regression test for codex review round 2's Major: with two specced
 // children, if the first is created (and started) successfully but the
@@ -356,8 +418,8 @@ func (s syncedTaskStore) DeleteTask(id string) error               { return s.tx
 func (s syncedTaskStore) FindTaskByRemote(remoteID string) (*orchestrator.Task, error) {
 	return s.tx.FindTaskByRemote(remoteID)
 }
-func (s syncedTaskStore) FindTaskByRef(ref, parentID string) (*orchestrator.Task, error) {
-	return s.tx.FindTaskByRef(ref, parentID)
+func (s syncedTaskStore) FindTaskByRef(ref, parentID, projectID string) (*orchestrator.Task, error) {
+	return s.tx.FindTaskByRef(ref, parentID, projectID)
 }
 func (s syncedTaskStore) ListChildren(parentID string) ([]*orchestrator.Task, error) {
 	return s.tx.ListChildren(parentID)

@@ -34,6 +34,7 @@ func TestOpConstantsMirror(t *testing.T) {
 		{orchestrator.OpBoidTaskUpdatePayloadPatch, string(sandbox.BoidOpTaskUpdatePayloadPatch)},
 		{orchestrator.OpBoidProjectBehaviors, string(sandbox.BoidOpProjectBehaviors)},
 		{orchestrator.OpBoidProjectList, string(sandbox.BoidOpProjectList)},
+		{orchestrator.OpBoidTaskWake, string(sandbox.BoidOpTaskWake)},
 	}
 	for _, p := range pairs {
 		if p.orchestratorConst != p.sandboxConst {

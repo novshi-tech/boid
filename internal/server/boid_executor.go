@@ -179,15 +179,28 @@ func (e *boidBuiltinExecutor) ExecuteBoidBuiltin(goCtx context.Context, ctx sand
 			}
 		}
 		// InitialStatus (docs/plans/cross-project-issue-triage.md Phase 1
-		// PR-1) is deliberately NOT allowed through the brokered path yet.
-		// Letting a sandboxed job set it here would open the ingestion
-		// capability (any workspace job could plant captured/triaged tasks)
-		// before PR-4 wires up the daemon-side workspace stamping and dedup
-		// that decision2 requires around it. CLI/direct-API creation is
-		// unaffected — this only closes the sandbox → broker → executor path.
-		if createReq.InitialStatus != "" {
-			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid task create: initial_status is not available from a sandboxed job yet"}
-		}
+		// PR-1) was deliberately NOT allowed through the brokered path until
+		// PR-4 (論点1/4/7, Fable レビュー第9版): this is the "ingestion push
+		// opens up" change. What makes it safe now:
+		//
+		//   - resolveInitialStatus's allowlist (task_create.go) still limits
+		//     the reachable statuses to captured/triaged/pending — a
+		//     sandboxed job can never fabricate a task that's already
+		//     ready/working/done/etc.
+		//   - createReq.ProjectID is resolved to a UUID above (from the
+		//     broker's own resolution or ctx.ProjectID — never trusted
+		//     verbatim from the sandboxed caller's create_patch), and the
+		//     ctx.AllowsProject check right below still gates against the
+		//     token's own workspace scope. A sandboxed job cannot claim
+		//     "create a triaged task in a project outside my workspace" any
+		//     more than it could before this PR — AllowsProject is the same
+		//     workspace-scoping check task_get/task_update/action_send etc.
+		//     already use, so ingestion push does not trust any self-declared
+		//     workspace claim from the create_patch payload.
+		//   - dedup (論点7): CreateTask's Ref get-or-create (task_create.go),
+		//     now open to root tasks too, makes a crash-and-resend from khi
+		//     idempotent instead of planting a duplicate card.
+		//
 		// broker が req.ProjectID を UUID に解決済みの場合は必ず優先する。
 		// CreatePatch.project_id は元の名前のまま (未上書き) のため使用しない。
 		if req.ProjectID != "" {
@@ -522,6 +535,34 @@ func (e *boidBuiltinExecutor) ExecuteBoidBuiltin(goCtx context.Context, ctx sand
 				return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid action send is restricted to the current workspace"}
 			}
 		}
+		// child_specced (docs/plans/cross-project-issue-triage.md Phase 1
+		// PR-4, codex review Blocker fix): the ONLY workspace scoping check
+		// above verifies the parent card's own project — it says nothing
+		// about the "project" field the child_specced payload itself
+		// carries, which is where TaskWorkflowService.Dispatch later
+		// creates and auto-starts the real child task
+		// (orchestrator.TaskTriageChildSpec.Project). Without this check a
+		// job in workspace A could specc a child aimed at ANY project the
+		// daemon knows about, and Dispatch (triggered later by anyone,
+		// including nose clicking Go) would create and run work there with
+		// no further authorization check — a workspace-scope bypass. The
+		// payload's project must already be a resolved UUID (see
+		// TaskTriageChildSpec's own doc comment: PR-2 does not do
+		// project-ref fuzzy resolution for children), so an exact
+		// AllowsProject membership check is the correct (and only) gate
+		// here — no broker-side name resolution to lean on, unlike
+		// BoidOpTaskCreate/BoidOpProjectBehaviors.
+		if req.ActionType == "child_specced" {
+			var childPayload struct {
+				Project string `json:"project"`
+			}
+			if err := json.Unmarshal(req.Payload, &childPayload); err != nil {
+				return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid action send: invalid child_specced payload: " + err.Error()}
+			}
+			if childPayload.Project == "" || !ctx.AllowsProject(childPayload.Project) {
+				return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid action send: child_specced project is restricted to the current workspace"}
+			}
+		}
 		if e.workflow == nil {
 			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid action send unavailable"}
 		}
@@ -533,6 +574,31 @@ func (e *boidBuiltinExecutor) ExecuteBoidBuiltin(goCtx context.Context, ctx sand
 		}
 		return &sandbox.ExecResponse{
 			Stdout: fmt.Sprintf("action applied: %s\n", req.ActionType),
+		}
+	case sandbox.BoidOpTaskWake:
+		// docs/plans/cross-project-issue-triage.md Phase 1 PR-4, 論点10: thin
+		// brokered wrapper around api.WorkflowService.Wake (see
+		// sandbox.BoidOpTaskWake's own doc comment for why this is not a
+		// bypass of the wake_triaged/wake_ready IsManualAction guard).
+		if req.TaskID == "" {
+			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid task wake requires a task id"}
+		}
+		if e.tasks == nil || e.workflow == nil {
+			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid task wake unavailable"}
+		}
+		existing, err := e.tasks.GetTask(req.TaskID)
+		if err != nil {
+			return &sandbox.ExecResponse{ExitCode: 1, Stderr: err.Error()}
+		}
+		if !ctx.AllowsProject(existing.ProjectID) {
+			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid task wake is restricted to the current workspace"}
+		}
+		app, err := e.workflow.Wake(context.Background(), req.TaskID)
+		if err != nil {
+			return &sandbox.ExecResponse{ExitCode: 1, Stderr: err.Error()}
+		}
+		return &sandbox.ExecResponse{
+			Stdout: fmt.Sprintf("task woken: %s (%s)\n", app.Task.ID, app.Task.Status),
 		}
 	case sandbox.BoidOpJobList:
 		if e.jobs == nil {

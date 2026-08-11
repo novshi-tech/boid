@@ -3,6 +3,7 @@ package orchestrator_test
 import (
 	"testing"
 
+	"github.com/google/uuid"
 	"github.com/novshi-tech/boid/internal/orchestrator"
 )
 
@@ -82,6 +83,135 @@ func TestCreateTask_SameRefSameParent_GetOrCreate(t *testing.T) {
 	}
 }
 
+// TestCreateTask_SameRef_RootTasks_GetOrCreate pins Phase 1 PR-4 論点7: the
+// get-or-create dedup, previously limited to ParentID != "" (children only),
+// now also applies to root tasks (ParentID == ""). This is what makes an
+// ingestion push (`task_create --initial-status triaged --ref BGO-214`)
+// idempotent across a khi crash between the create response and khi
+// recording the returned task_id — a resend with the same ref must return
+// the SAME task, not a duplicate card.
+func TestCreateTask_SameRef_RootTasks_GetOrCreate(t *testing.T) {
+	d := createTestProject(t)
+
+	t1 := &orchestrator.Task{
+		ProjectID: "proj-1",
+		Title:     "BGO-214: fix the thing",
+		Behavior:  "dev",
+		Ref:       "BGO-214",
+		// ParentID intentionally empty: root task (a card).
+	}
+	if err := orchestrator.CreateTask(d.Conn, t1); err != nil {
+		t.Fatalf("first CreateTask: %v", err)
+	}
+
+	t2 := &orchestrator.Task{
+		ProjectID: "proj-1",
+		Title:     "BGO-214: fix the thing (resend)",
+		Behavior:  "dev",
+		Ref:       "BGO-214",
+	}
+	if err := orchestrator.CreateTask(d.Conn, t2); err != nil {
+		t.Fatalf("second (resend) CreateTask with same ref: %v (want get-or-create, not error)", err)
+	}
+	if t2.ID != t1.ID {
+		t.Errorf("resend CreateTask returned id=%q, want existing id=%q", t2.ID, t1.ID)
+	}
+
+	// A different ref must still create a distinct root task.
+	t3 := &orchestrator.Task{
+		ProjectID: "proj-1",
+		Title:     "BGO-215: a different card",
+		Behavior:  "dev",
+		Ref:       "BGO-215",
+	}
+	if err := orchestrator.CreateTask(d.Conn, t3); err != nil {
+		t.Fatalf("third CreateTask (different ref): %v", err)
+	}
+	if t3.ID == t1.ID {
+		t.Errorf("different ref unexpectedly returned the same task id %q", t3.ID)
+	}
+}
+
+// TestCreateTask_SameRef_UUIDShaped_RootTask_GetOrCreate pins the codex
+// review round 2 Major fix: an external source_ref that happens to BE
+// UUID-shaped must still dedup idempotently on resend. Before the fix,
+// FindTaskByRef's UUID branch treated the ref exclusively as a task-ID
+// lookup, which always misses (the created task's own auto-generated ID is
+// a DIFFERENT uuid than the string stored in its `ref` column) — a resend
+// would hit the unique index on re-insert and then STILL miss on the
+// error-fallback re-lookup, surfacing as a hard error instead of returning
+// the existing task.
+func TestCreateTask_SameRef_UUIDShaped_RootTask_GetOrCreate(t *testing.T) {
+	d := createTestProject(t)
+	uuidRef := uuid.New().String()
+
+	t1 := &orchestrator.Task{
+		ProjectID: "proj-1",
+		Title:     "card with a UUID-shaped source ref",
+		Behavior:  "dev",
+		Ref:       uuidRef,
+	}
+	if err := orchestrator.CreateTask(d.Conn, t1); err != nil {
+		t.Fatalf("first CreateTask: %v", err)
+	}
+	if t1.ID == uuidRef {
+		t.Fatalf("test fixture invariant broken: task's own auto-generated ID coincidentally equals its ref %q", uuidRef)
+	}
+
+	t2 := &orchestrator.Task{
+		ProjectID: "proj-1",
+		Title:     "resend after a crash",
+		Behavior:  "dev",
+		Ref:       uuidRef,
+	}
+	if err := orchestrator.CreateTask(d.Conn, t2); err != nil {
+		t.Fatalf("resend CreateTask with the same UUID-shaped ref: %v (want get-or-create, not error)", err)
+	}
+	if t2.ID != t1.ID {
+		t.Fatalf("resend CreateTask returned id=%q, want existing id=%q", t2.ID, t1.ID)
+	}
+}
+
+// TestCreateTask_SameRef_DifferentProject_RootTasks_NoCollision pins Phase 1
+// PR-4's codex review Blocker fix: two root tasks in DIFFERENT projects using
+// the SAME source ref (parent_id="" for both) must NOT collide — before
+// migration 0037 scoped idx_tasks_ref_parent_project by project_id too, the
+// second project's create would silently return the FIRST project's task
+// (a cross-workspace leak), since every workspace's root tasks previously
+// shared the bare (ref, parent_id="") key.
+func TestCreateTask_SameRef_DifferentProject_RootTasks_NoCollision(t *testing.T) {
+	d := createTestProject(t)
+	if err := orchestrator.CreateProject(d.Conn, &orchestrator.Project{ID: "proj-2", WorkDir: "/tmp/proj2"}); err != nil {
+		t.Fatalf("create second project: %v", err)
+	}
+
+	t1 := &orchestrator.Task{
+		ProjectID: "proj-1",
+		Title:     "workspace A's BGO-214",
+		Behavior:  "dev",
+		Ref:       "BGO-214",
+	}
+	if err := orchestrator.CreateTask(d.Conn, t1); err != nil {
+		t.Fatalf("first CreateTask: %v", err)
+	}
+
+	t2 := &orchestrator.Task{
+		ProjectID: "proj-2",
+		Title:     "workspace B's unrelated BGO-214",
+		Behavior:  "dev",
+		Ref:       "BGO-214",
+	}
+	if err := orchestrator.CreateTask(d.Conn, t2); err != nil {
+		t.Fatalf("second CreateTask (different project, same ref): %v (must not collide)", err)
+	}
+	if t2.ID == t1.ID {
+		t.Fatalf("cross-project ref collision: project proj-2's create returned proj-1's task %q", t1.ID)
+	}
+	if t2.ProjectID != "proj-2" {
+		t.Fatalf("t2.ProjectID = %q, want proj-2", t2.ProjectID)
+	}
+}
+
 func TestCreateTask_SameRefDifferentParent_OK(t *testing.T) {
 	d := createTestProject(t)
 
@@ -151,7 +281,7 @@ func TestFindTaskByRef_Found(t *testing.T) {
 		t.Fatalf("CreateTask: %v", err)
 	}
 
-	got, err := orchestrator.FindTaskByRef(d.Conn, "step-2", "parent-xyz")
+	got, err := orchestrator.FindTaskByRef(d.Conn, "step-2", "parent-xyz", "proj-1")
 	if err != nil {
 		t.Fatalf("FindTaskByRef: %v", err)
 	}
@@ -169,7 +299,7 @@ func TestFindTaskByRef_Found(t *testing.T) {
 func TestFindTaskByRef_NotFound_ReturnsNil(t *testing.T) {
 	d := createTestProject(t)
 
-	got, err := orchestrator.FindTaskByRef(d.Conn, "nonexistent", "parent-xyz")
+	got, err := orchestrator.FindTaskByRef(d.Conn, "nonexistent", "parent-xyz", "proj-1")
 	if err != nil {
 		t.Fatalf("FindTaskByRef: %v", err)
 	}
@@ -192,7 +322,7 @@ func TestFindTaskByRef_UUID_LooksUpByID(t *testing.T) {
 	}
 
 	// Look up by the task's UUID (not by ref name)
-	got, err := orchestrator.FindTaskByRef(d.Conn, task.ID, "")
+	got, err := orchestrator.FindTaskByRef(d.Conn, task.ID, "", "proj-1")
 	if err != nil {
 		t.Fatalf("FindTaskByRef(uuid): %v", err)
 	}
@@ -208,12 +338,38 @@ func TestFindTaskByRef_UUID_NotFound_ReturnsNil(t *testing.T) {
 	d := createTestProject(t)
 
 	// Non-existent UUID
-	got, err := orchestrator.FindTaskByRef(d.Conn, "00000000-0000-0000-0000-000000000000", "")
+	got, err := orchestrator.FindTaskByRef(d.Conn, "00000000-0000-0000-0000-000000000000", "", "proj-1")
 	if err != nil {
 		t.Fatalf("FindTaskByRef(nonexistent uuid): %v", err)
 	}
 	if got != nil {
 		t.Fatalf("FindTaskByRef returned %+v, want nil for nonexistent UUID", got)
+	}
+}
+
+// TestFindTaskByRef_UUID_WrongProject_ReturnsNil pins Phase 1 PR-4's codex
+// review Blocker fix: the UUID-ref lookup branch used to ignore project
+// scoping entirely, so a caller in a DIFFERENT project than the target task
+// could fetch it just by knowing (or guessing) its UUID. Scope mismatch must
+// now behave exactly like "not found".
+func TestFindTaskByRef_UUID_WrongProject_ReturnsNil(t *testing.T) {
+	d := createTestProject(t)
+
+	task := &orchestrator.Task{
+		ProjectID: "proj-1",
+		Title:     "Task without ref",
+		Behavior:  "dev",
+	}
+	if err := orchestrator.CreateTask(d.Conn, task); err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+
+	got, err := orchestrator.FindTaskByRef(d.Conn, task.ID, "", "proj-outside")
+	if err != nil {
+		t.Fatalf("FindTaskByRef(uuid, wrong project): %v", err)
+	}
+	if got != nil {
+		t.Fatalf("FindTaskByRef returned task for wrong project, want nil")
 	}
 }
 
@@ -231,7 +387,7 @@ func TestFindTaskByRef_WrongParent_ReturnsNil(t *testing.T) {
 		t.Fatalf("CreateTask: %v", err)
 	}
 
-	got, err := orchestrator.FindTaskByRef(d.Conn, "step-3", "parent-wrong")
+	got, err := orchestrator.FindTaskByRef(d.Conn, "step-3", "parent-wrong", "proj-1")
 	if err != nil {
 		t.Fatalf("FindTaskByRef: %v", err)
 	}

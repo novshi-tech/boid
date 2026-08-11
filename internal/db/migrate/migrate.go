@@ -313,11 +313,40 @@ func Apply(conn *sql.DB) error {
 			},
 		},
 		{
+			// docs/plans/cross-project-issue-triage.md Phase 1 PR-4 (codex
+			// review Blocker fix): scope the Ref get-or-create dedup
+			// uniqueness by project_id too, closing a cross-workspace root
+			// task collision now that root tasks (parent_id='') are
+			// dedup-eligible.
+			version: "0037_scope_task_ref_dedup_by_project",
+			path:    "migrations/0037_scope_task_ref_dedup_by_project.sql",
+			skip: func(tx *sql.Tx) (bool, error) {
+				// Skip ONLY when the new index exists AND the legacy one is
+				// gone (codex review round 2 Minor fix): skipping just
+				// because the new index exists would leave a stale
+				// idx_tasks_ref_parent(ref,parent_id) sitting alongside it in
+				// a schema-drift/bootstrap scenario, and that OLDER, STRICTER
+				// uniqueness constraint would keep rejecting the very
+				// cross-project inserts this migration exists to allow — the
+				// new index existing is not sufficient proof the old one's
+				// effect is gone.
+				newIndexAbsent, err := indexNotExists(tx, "idx_tasks_ref_parent_project")
+				if err != nil {
+					return false, err
+				}
+				oldIndexAbsent, err := indexNotExists(tx, "idx_tasks_ref_parent")
+				if err != nil {
+					return false, err
+				}
+				return !newIndexAbsent && oldIndexAbsent, nil
+			},
+		},
+		{
 			// docs/plans/cross-project-issue-triage.md 論点11「代行Goタスク」の
 			// 前提条件: nose (人間操作) と代行タスク/workspace push が押した action を
 			// actions ログ上で区別できるようにする actor 列。
-			version: "0037_add_actions_actor",
-			path:    "migrations/0037_add_actions_actor.sql",
+			version: "0038_add_actions_actor",
+			path:    "migrations/0038_add_actions_actor.sql",
 			skip: func(tx *sql.Tx) (bool, error) {
 				return columnExists(tx, "actions", "actor")
 			},
