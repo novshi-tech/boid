@@ -300,6 +300,7 @@ func (s *TaskWorkflowService) recordChildClosedOnParent(task *orchestrator.Task)
 			FromStatus: parentTask.Status,
 			ToStatus:   parentTask.Status,
 			Payload:    payload,
+			Actor:      orchestrator.ActorDaemon,
 		}
 		return tx.CreateAction(action)
 	}); err != nil {
@@ -628,6 +629,7 @@ func (s *TaskWorkflowService) Dispatch(ctx context.Context, taskID string) (*Act
 				FromStatus: newTask.Status,
 				ToStatus:   newTask.Status,
 				Payload:    payload,
+				Actor:      orchestrator.ActorFromContext(ctx),
 			}
 			if err := tx.CreateAction(childAction); err != nil {
 				return fmt.Errorf("dispatch: record child_dispatched for %q: %w", c.ID, err)

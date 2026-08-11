@@ -43,6 +43,62 @@ func TestBoidBuiltinExecutor_TaskWake_CallsWorkflowWake(t *testing.T) {
 	}
 }
 
+// TestBoidBuiltinExecutor_TaskWake_StampsActorTask verifies 論点11's brokered
+// wake path — the代行タスク path this field exists for — records
+// orchestrator.ActorTask(ctx.TaskID), the CALLING task, not an empty actor.
+func TestBoidBuiltinExecutor_TaskWake_StampsActorTask(t *testing.T) {
+	store := &capturingTaskStore{created: []*orchestrator.Task{
+		{ID: "t1", ProjectID: "proj-1", Status: orchestrator.TaskStatusParked},
+	}}
+	workflow := &recordingWorkflow{}
+	exec := &boidBuiltinExecutor{
+		tasks:    &api.TaskAppService{Tasks: store},
+		workflow: workflow,
+	}
+	ctx := sandbox.TokenContext{TaskID: "proxy-go-task", ProjectID: "proj-1", AllowedProjectIDs: []string{"proj-1"}}
+
+	resp := exec.ExecuteBoidBuiltin(context.Background(), ctx, &sandbox.BoidRequest{
+		Op:     sandbox.BoidOpTaskWake,
+		TaskID: "t1",
+	})
+	if resp.ExitCode != 0 {
+		t.Fatalf("exit code = %d, want 0 (stderr=%q)", resp.ExitCode, resp.Stderr)
+	}
+	want := orchestrator.ActorTask("proxy-go-task")
+	if workflow.appliedActor != want {
+		t.Fatalf("actor = %q, want %q", workflow.appliedActor, want)
+	}
+}
+
+// TestBoidBuiltinExecutor_ActionSend_StampsActorTask verifies `boid action
+// send` (brokered) always stamps the calling task's own actor — this is the
+// primitive both khi-style workspace push and any future proxy-Go task use
+// to act on another task's behalf; an empty actor here would defeat 論点11.
+func TestBoidBuiltinExecutor_ActionSend_StampsActorTask(t *testing.T) {
+	store := &capturingTaskStore{created: []*orchestrator.Task{
+		{ID: "t1", ProjectID: "proj-1", Status: orchestrator.TaskStatusReady},
+	}}
+	workflow := &recordingWorkflow{}
+	exec := &boidBuiltinExecutor{
+		tasks:    &api.TaskAppService{Tasks: store},
+		workflow: workflow,
+	}
+	ctx := sandbox.TokenContext{TaskID: "caller-task", ProjectID: "proj-1", AllowedProjectIDs: []string{"proj-1"}}
+
+	resp := exec.ExecuteBoidBuiltin(context.Background(), ctx, &sandbox.BoidRequest{
+		Op:         sandbox.BoidOpActionSend,
+		TaskID:     "t1",
+		ActionType: "reopen",
+	})
+	if resp.ExitCode != 0 {
+		t.Fatalf("exit code = %d, want 0 (stderr=%q)", resp.ExitCode, resp.Stderr)
+	}
+	want := orchestrator.ActorTask("caller-task")
+	if workflow.appliedActor != want {
+		t.Fatalf("actor = %q, want %q", workflow.appliedActor, want)
+	}
+}
+
 // TestBoidBuiltinExecutor_TaskWake_RejectsOutsideWorkspace confirms the
 // brokered wake op is scoped by AllowsProject the same way action_send is —
 // a sandboxed caller cannot wake a task belonging to a project outside its

@@ -68,7 +68,7 @@ func TestClearPendingAnswer_RemovesAnswerKeepsRest(t *testing.T) {
 
 func TestSetPendingAnswer_WritesAnswerKeepsQuestion(t *testing.T) {
 	payload := json.RawMessage(`{"awaiting":{"question":"q","question_id":"qid-1"}}`)
-	got := orchestrator.SetPendingAnswer(payload, "do it")
+	got := orchestrator.SetPendingAnswer(payload, "do it", orchestrator.ActorHuman)
 
 	ap := orchestrator.GetAwaitingPayload(got)
 	if ap.PendingAnswer != "do it" {
@@ -80,12 +80,18 @@ func TestSetPendingAnswer_WritesAnswerKeepsQuestion(t *testing.T) {
 	if ap.Question != "q" {
 		t.Errorf("question = %q, want q", ap.Question)
 	}
+	// 論点11: the answerer's actor must survive the durable park so
+	// consumePendingAnswer can attribute the eventual "answer" Action to
+	// whoever actually answered, not to the agent's later re-ask call.
+	if ap.PendingAnswerActor != orchestrator.ActorHuman {
+		t.Errorf("pending_answer_actor = %q, want %q", ap.PendingAnswerActor, orchestrator.ActorHuman)
+	}
 }
 
 // SetPendingAnswer must leave sibling traits (e.g. artifact) untouched.
 func TestSetPendingAnswer_PreservesSiblingTraits(t *testing.T) {
 	payload := json.RawMessage(`{"awaiting":{"question":"q","question_id":"qid-1"},"artifact":{"url":"y"}}`)
-	got := orchestrator.SetPendingAnswer(payload, "yes")
+	got := orchestrator.SetPendingAnswer(payload, "yes", orchestrator.ActorHuman)
 
 	var top map[string]json.RawMessage
 	if err := json.Unmarshal(got, &top); err != nil {
@@ -102,7 +108,7 @@ func TestSetPendingAnswer_PreservesSiblingTraits(t *testing.T) {
 // Setting the answer on a payload without an awaiting trait creates one so the
 // answer is never silently dropped.
 func TestSetPendingAnswer_CreatesTraitWhenAbsent(t *testing.T) {
-	got := orchestrator.SetPendingAnswer(json.RawMessage(`{}`), "answer")
+	got := orchestrator.SetPendingAnswer(json.RawMessage(`{}`), "answer", orchestrator.ActorHuman)
 	if orchestrator.GetAwaitingPayload(got).PendingAnswer != "answer" {
 		t.Errorf("pending_answer not set on empty payload, got %s", got)
 	}

@@ -177,6 +177,10 @@ func (s *TaskAppService) UpdateTask(id string, req UpdateTaskRequest) (*orchestr
 	if instructionsBefore != nil {
 		s.auditInstructionsChange(task.ID, instructionsBefore, task.Instructions)
 	}
+	// Actor caveat (論点11): UpdateTask has no ctx, so this always stamps
+	// ActorHuman even though it's also reachable from a sandbox
+	// (OpBoidTaskUpdate). See CreateTask's matching comment (task_create.go)
+	// — threading ctx through is a follow-up.
 	if req.AutoStart != nil && *req.AutoStart && task.Status == orchestrator.TaskStatusPending && s.Workflow != nil {
 		result, err := s.Workflow.ApplyAction(orchestrator.WithActor(context.Background(), orchestrator.ActorHuman), task.ID, ApplyActionRequest{Type: "start"})
 		if err != nil {

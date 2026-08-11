@@ -24,15 +24,17 @@ type recordingWorkflow struct {
 	mu             sync.Mutex
 	appliedTaskID  string
 	appliedReq     api.ApplyActionRequest
+	appliedActor   string
 	applyCallCount int
 	applyErr       error
 }
 
-func (w *recordingWorkflow) ApplyAction(_ context.Context, taskID string, req api.ApplyActionRequest) (*api.ActionApplication, error) {
+func (w *recordingWorkflow) ApplyAction(ctx context.Context, taskID string, req api.ApplyActionRequest) (*api.ActionApplication, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	w.appliedTaskID = taskID
 	w.appliedReq = req
+	w.appliedActor = orchestrator.ActorFromContext(ctx)
 	w.applyCallCount++
 	if w.applyErr != nil {
 		return nil, w.applyErr

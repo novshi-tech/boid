@@ -129,7 +129,7 @@ func (h *TaskHandler) Answer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	taskID := chi.URLParam(r, "id")
-	if err := h.Answerer.AnswerTask(r.Context(), taskID, req.QuestionID, req.Answer); err != nil {
+	if err := h.Answerer.AnswerTask(orchestrator.WithActor(r.Context(), orchestrator.ActorHuman), taskID, req.QuestionID, req.Answer); err != nil {
 		writeServiceError(w, err)
 		return
 	}

@@ -729,7 +729,7 @@ func (h *WebHandler) PostAnswer(w http.ResponseWriter, r *http.Request) {
 	}
 
 	target := "/tasks/" + id
-	if err := h.Service.AnswerTask(r.Context(), id, questionID, answer); err != nil {
+	if err := h.Service.AnswerTask(orchestrator.WithActor(r.Context(), orchestrator.ActorHuman), id, questionID, answer); err != nil {
 		target = "/tasks/" + id + "?error=" + url.QueryEscape(err.Error())
 	}
 	redirectOrHXRedirect(w, r, target)

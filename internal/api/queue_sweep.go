@@ -26,6 +26,10 @@ func (s *TaskWorkflowService) SweepWake(ctx context.Context, now time.Time) (wok
 	if s.Tasks == nil || s.TaskTriage == nil {
 		return nil, nil
 	}
+	// 論点11: this is the machine-driven wake sweep (決定12, no human in the
+	// loop) — must never be confused with a human pressing Wake
+	// (web_service.go's WebAppService.Wake stamps ActorHuman).
+	ctx = orchestrator.WithActor(ctx, orchestrator.ActorDaemon)
 	parked, err := s.Tasks.ListTasks(orchestrator.TaskFilter{Status: string(orchestrator.TaskStatusParked)})
 	if err != nil {
 		return nil, fmt.Errorf("sweep wake: list parked tasks: %w", err)
