@@ -290,7 +290,11 @@ type TaskStore interface {
 	UpdateTask(task *orchestrator.Task) error
 	DeleteTask(id string) error
 	FindTaskByRemote(remoteID string) (*orchestrator.Task, error)
-	FindTaskByRef(ref, parentID string) (*orchestrator.Task, error)
+	// FindTaskByRef looks up an existing task by ref, scoped to BOTH
+	// parentID ("" for a root task) and projectID (Phase 1 PR-4, codex review
+	// Blocker fix — see orchestrator.FindTaskByRef's doc comment for why
+	// projectID scoping is required, not optional).
+	FindTaskByRef(ref, parentID, projectID string) (*orchestrator.Task, error)
 	// ListChildren returns direct children (one level only) of the given parent
 	// task, ordered by created_at ASC. Returns an empty slice (not nil) when the
 	// task has no children. Used by finalizeTerminal to sweep boid/<id8> branches

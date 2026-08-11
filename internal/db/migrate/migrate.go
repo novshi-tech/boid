@@ -312,6 +312,35 @@ func Apply(conn *sql.DB) error {
 				return tableExists(tx, "workspace_watchdog")
 			},
 		},
+		{
+			// docs/plans/cross-project-issue-triage.md Phase 1 PR-4 (codex
+			// review Blocker fix): scope the Ref get-or-create dedup
+			// uniqueness by project_id too, closing a cross-workspace root
+			// task collision now that root tasks (parent_id='') are
+			// dedup-eligible.
+			version: "0037_scope_task_ref_dedup_by_project",
+			path:    "migrations/0037_scope_task_ref_dedup_by_project.sql",
+			skip: func(tx *sql.Tx) (bool, error) {
+				// Skip ONLY when the new index exists AND the legacy one is
+				// gone (codex review round 2 Minor fix): skipping just
+				// because the new index exists would leave a stale
+				// idx_tasks_ref_parent(ref,parent_id) sitting alongside it in
+				// a schema-drift/bootstrap scenario, and that OLDER, STRICTER
+				// uniqueness constraint would keep rejecting the very
+				// cross-project inserts this migration exists to allow — the
+				// new index existing is not sufficient proof the old one's
+				// effect is gone.
+				newIndexAbsent, err := indexNotExists(tx, "idx_tasks_ref_parent_project")
+				if err != nil {
+					return false, err
+				}
+				oldIndexAbsent, err := indexNotExists(tx, "idx_tasks_ref_parent")
+				if err != nil {
+					return false, err
+				}
+				return !newIndexAbsent && oldIndexAbsent, nil
+			},
+		},
 	}
 
 	if err := ensureSchemaMigrationsTable(conn); err != nil {

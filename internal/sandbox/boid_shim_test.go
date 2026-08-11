@@ -868,6 +868,76 @@ func TestRunBoidShim_TaskReopen_RequiresTaskID(t *testing.T) {
 	}
 }
 
+// TestRunBoidShim_TaskWake_SendsTypedRequest pins Phase 1 PR-4's brokered
+// wake op (docs/plans/cross-project-issue-triage.md 論点10): `boid task wake
+// <task-id>` must produce a BoidOpTaskWake request with TaskID set — no
+// flags, since Wake resolves triaged-vs-ready itself via ParkedFrom.
+func TestRunBoidShim_TaskWake_SendsTypedRequest(t *testing.T) {
+	dir := t.TempDir()
+	sockPath := filepath.Join(dir, "broker.sock")
+	ln, err := net.Listen("unix", sockPath)
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	t.Cleanup(func() {
+		ln.Close()
+		os.Remove(sockPath)
+	})
+
+	reqCh := make(chan sandbox.ExecRequest, 1)
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		var req sandbox.ExecRequest
+		if err := json.NewDecoder(conn).Decode(&req); err != nil {
+			return
+		}
+		reqCh <- req
+		_ = json.NewEncoder(conn).Encode(&sandbox.ExecResponse{ExitCode: 0})
+	}()
+
+	t.Setenv("BOID_BROKER_SOCKET", sockPath)
+	t.Setenv("BOID_BROKER_TOKEN", "token-wake")
+
+	resp, err := sandbox.RunBoidShim([]string{"task", "wake", "task-abc"})
+	if err != nil {
+		t.Fatalf("RunBoidShim: %v", err)
+	}
+	if resp.ExitCode != 0 {
+		t.Fatalf("exit code = %d, want 0", resp.ExitCode)
+	}
+
+	req := <-reqCh
+	if req.Boid == nil {
+		t.Fatal("expected typed boid request")
+	}
+	if req.Boid.Op != sandbox.BoidOpTaskWake {
+		t.Fatalf("op = %q, want %q", req.Boid.Op, sandbox.BoidOpTaskWake)
+	}
+	if req.Boid.TaskID != "task-abc" {
+		t.Fatalf("task id = %q, want task-abc", req.Boid.TaskID)
+	}
+}
+
+func TestRunBoidShim_TaskWake_RequiresTaskID(t *testing.T) {
+	t.Setenv("BOID_BROKER_SOCKET", "/tmp/does-not-matter")
+
+	if _, err := sandbox.RunBoidShim([]string{"task", "wake"}); err == nil {
+		t.Fatal("expected error when task id is missing")
+	}
+}
+
+func TestRunBoidShim_TaskWake_RejectsFlags(t *testing.T) {
+	t.Setenv("BOID_BROKER_SOCKET", "/tmp/does-not-matter")
+
+	if _, err := sandbox.RunBoidShim([]string{"task", "wake", "--task", "task-abc"}); err == nil {
+		t.Fatal("expected error for unsupported flag")
+	}
+}
+
 func TestRunBoidShim_TaskReopen_WithMessage(t *testing.T) {
 	sockPath, reqCh := newFakeBrokerSingle(t)
 	t.Setenv("BOID_BROKER_SOCKET", sockPath)

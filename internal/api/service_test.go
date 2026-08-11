@@ -1750,7 +1750,7 @@ func (s *stubTaskStore) FindTaskByRemote(remoteID string) (*orchestrator.Task, e
 	}
 	return nil, nil
 }
-func (s *stubTaskStore) FindTaskByRef(ref, parentID string) (*orchestrator.Task, error) {
+func (s *stubTaskStore) FindTaskByRef(ref, parentID, projectID string) (*orchestrator.Task, error) {
 	if s.refTasks != nil {
 		key := ref + ":" + parentID
 		return s.refTasks[key], nil
@@ -1781,7 +1781,7 @@ func (s *stubTx) DeleteTask(id string) error { return nil }
 func (s *stubTx) FindTaskByRemote(remoteID string) (*orchestrator.Task, error) {
 	return nil, nil
 }
-func (s *stubTx) FindTaskByRef(ref, parentID string) (*orchestrator.Task, error) {
+func (s *stubTx) FindTaskByRef(ref, parentID, projectID string) (*orchestrator.Task, error) {
 	return nil, nil
 }
 func (s *stubTx) ListChildren(parentID string) ([]*orchestrator.Task, error) {

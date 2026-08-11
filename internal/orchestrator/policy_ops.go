@@ -45,5 +45,9 @@ const (
 	// own workspace (see sandbox.BoidOpProjectList's doc comment).
 	OpBoidProjectList = "project_list"
 
+	// OpBoidTaskWake backs `boid task wake` from inside the sandbox
+	// (docs/plans/cross-project-issue-triage.md Phase 1 PR-4 論点10).
+	OpBoidTaskWake = "task_wake"
+
 	OpFetchGet = "get"
 )

@@ -674,8 +674,13 @@ func TestDefaultMachine_Reopen_StillWorksForDoneAndAborted(t *testing.T) {
 // 覚えている必要が無い設計にする。
 func TestDefaultMachine_IsManualAction(t *testing.T) {
 	sm := orchestrator.DefaultMachine()
-	manual := []string{"start", "done", "fail", "reopen", "ask", "answer", "abort", "triage", "ready", "park", "drop"}
-	nonManual := []string{"job_failed", "progress", "done_request", "fail_request", "wake_triaged", "wake_ready", "dispatch", "garbage"}
+	manual := []string{"start", "done", "fail", "reopen", "ask", "answer", "abort", "triage", "ready", "park", "drop", "attrs_set", "child_added", "child_specced"}
+	// child_dispatched/child_closed are Phase 1 PR-4's daemon-self-record-only
+	// actions (論点9): they must stay non-manual so ApplyAction/
+	// BoidOpActionSend reject any khi-pushed attempt to send them directly —
+	// see TestApplyAction_ChildDispatchedAndChildClosed_RejectedWhenPushed
+	// in internal/api for the end-to-end version of this guarantee.
+	nonManual := []string{"job_failed", "progress", "done_request", "fail_request", "wake_triaged", "wake_ready", "dispatch", "child_dispatched", "child_closed", "garbage"}
 	for _, a := range manual {
 		if !sm.IsManualAction(a) {
 			t.Errorf("IsManualAction(%q) = false, want true", a)
@@ -684,6 +689,82 @@ func TestDefaultMachine_IsManualAction(t *testing.T) {
 	for _, a := range nonManual {
 		if sm.IsManualAction(a) {
 			t.Errorf("IsManualAction(%q) = true, want false", a)
+		}
+	}
+}
+
+// ---- Phase 1 PR-4: working からの出口3本 (論点8) ----
+
+func TestDefaultMachine_Working_ThreeExits(t *testing.T) {
+	sm := orchestrator.DefaultMachine()
+	cases := []struct {
+		action string
+		want   orchestrator.TaskStatus
+	}{
+		{"ready", orchestrator.TaskStatusReady},
+		{"triage", orchestrator.TaskStatusTriaged},
+		{"park", orchestrator.TaskStatusParked},
+	}
+	for _, c := range cases {
+		task := &orchestrator.Task{Status: orchestrator.TaskStatusWorking}
+		next, err := sm.Apply(task, &orchestrator.Action{Type: c.action})
+		if err != nil {
+			t.Fatalf("%s from working: %v", c.action, err)
+		}
+		if next.Status != c.want {
+			t.Fatalf("%s from working: got %s, want %s", c.action, next.Status, c.want)
+		}
+	}
+}
+
+// ---- Phase 1 PR-4: attrs_set/child_added/child_specced FromStatus is an
+// explicit enumeration, never "*" (論点6-3) ----
+
+func TestDefaultMachine_TriageVocabulary_FromStatusEnumerated_NotWildcard(t *testing.T) {
+	sm := orchestrator.DefaultMachine()
+	allowed := []orchestrator.TaskStatus{
+		orchestrator.TaskStatusCaptured,
+		orchestrator.TaskStatusTriaged,
+		orchestrator.TaskStatusParked,
+		orchestrator.TaskStatusReady,
+		orchestrator.TaskStatusWorking,
+	}
+	disallowed := []orchestrator.TaskStatus{
+		orchestrator.TaskStatusPending,
+		orchestrator.TaskStatusExecuting,
+		orchestrator.TaskStatusAwaiting,
+		orchestrator.TaskStatusDone,
+		orchestrator.TaskStatusAborted,
+		orchestrator.TaskStatusDropped,
+	}
+	for _, actionType := range []string{"attrs_set", "child_added", "child_specced"} {
+		for _, status := range allowed {
+			task := &orchestrator.Task{Status: status}
+			if _, err := sm.Apply(task, &orchestrator.Action{Type: actionType}); err != nil {
+				t.Errorf("%s from %s: unexpected error: %v", actionType, status, err)
+			}
+		}
+		for _, status := range disallowed {
+			task := &orchestrator.Task{Status: status}
+			if _, err := sm.Apply(task, &orchestrator.Action{Type: actionType}); err == nil {
+				t.Errorf("%s from %s: expected error (must not fire on non-triage/ordinary-lifecycle statuses), got none", actionType, status)
+			}
+		}
+	}
+}
+
+// attrs_set/child_added/child_specced are non-transitioning (ToStatus==""):
+// applying them must leave task.Status unchanged.
+func TestDefaultMachine_TriageVocabulary_NonTransitioning(t *testing.T) {
+	sm := orchestrator.DefaultMachine()
+	for _, actionType := range []string{"attrs_set", "child_added", "child_specced"} {
+		task := &orchestrator.Task{Status: orchestrator.TaskStatusWorking}
+		next, err := sm.Apply(task, &orchestrator.Action{Type: actionType})
+		if err != nil {
+			t.Fatalf("%s: %v", actionType, err)
+		}
+		if next.Status != orchestrator.TaskStatusWorking {
+			t.Fatalf("%s: status changed to %s, want unchanged (working)", actionType, next.Status)
 		}
 	}
 }
@@ -725,13 +806,24 @@ func TestDefaultMachine_Dispatch_NotManualNotFromOtherStatuses(t *testing.T) {
 	}
 }
 
-// working has no exit rule yet (see machine.go's NewMachine doc comment,
-// "PR-2's scope stops at ready → working"). This pins that intentional gap
-// down so a future change that quietly adds an exit doesn't go unnoticed.
-func TestDefaultMachine_AvailableActions_Working_IsEmpty(t *testing.T) {
+// TestDefaultMachine_AvailableActions_Working_HasThreeExits pins Phase 1
+// PR-4's 論点8 fix: working now has three manual exits (ready/triage/park),
+// reusing the pre-execution verbs. This replaces the former "known PR-3 gap"
+// assertion (working had zero exits) that PR-4 explicitly closes. attrs_set/
+// child_added/child_specced/child_dispatched/child_closed must NOT appear
+// here even though attrs_set/child_added/child_specced are Manual:true from
+// working — they are non-transitioning (ToStatus=="") and AvailableActions
+// filters those out (論点6-1).
+func TestDefaultMachine_AvailableActions_Working_HasThreeExits(t *testing.T) {
 	sm := orchestrator.DefaultMachine()
 	actions := sm.AvailableActions(orchestrator.TaskStatusWorking)
-	if len(actions) != 0 {
-		t.Fatalf("AvailableActions(working) = %v, want empty (known PR-3 gap)", actions)
+	want := map[string]bool{"ready": true, "triage": true, "park": true}
+	if len(actions) != len(want) {
+		t.Fatalf("AvailableActions(working) = %v, want exactly %v", actions, want)
+	}
+	for _, a := range actions {
+		if !want[a] {
+			t.Fatalf("AvailableActions(working) contains unexpected action %q (full list: %v)", a, actions)
+		}
 	}
 }

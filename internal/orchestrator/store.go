@@ -123,11 +123,20 @@ var taskChildCountCols = `` +
 	`(SELECT COUNT(*) FROM tasks c WHERE c.parent_id = t.id AND c.status NOT IN (` + terminalStatusSQLList + `))`
 
 func CreateTask(dbtx db.DBTX, t *Task) error {
-	// Get-or-create: when ref and parent are both set, return the existing task
-	// instead of inserting a duplicate. This makes create idempotent across
-	// supervisor resume cycles, where the same child-create call may be replayed.
-	if t.Ref != "" && t.ParentID != "" {
-		existing, err := FindTaskByRef(dbtx, t.Ref, t.ParentID)
+	// Get-or-create: when ref is set, return the existing task (scoped by
+	// ParentID, "" for a root task, AND ProjectID) instead of inserting a
+	// duplicate. This makes create idempotent across supervisor resume
+	// cycles (child-create replay) AND, since Phase 1 PR-4 (docs/plans/
+	// cross-project-issue-triage.md 論点7), across a root-level ingestion
+	// push replay. ProjectID scoping was added by migration 0037 (codex
+	// review Blocker fix): idx_tasks_ref_parent (migration 0010) alone was
+	// unique on (ref, parent_id) only, so once root tasks (parent_id = "" for
+	// every workspace) became dedup-eligible, two different workspaces using
+	// the same source ref would collide and the second one would silently
+	// receive the FIRST workspace's task back — see FindTaskByRef's doc
+	// comment for the full story.
+	if t.Ref != "" {
+		existing, err := FindTaskByRef(dbtx, t.Ref, t.ParentID, t.ProjectID)
 		if err != nil {
 			return fmt.Errorf("find existing ref: %w", err)
 		}
@@ -174,8 +183,8 @@ func CreateTask(dbtx db.DBTX, t *Task) error {
 	if err != nil {
 		// Concurrent create: if another goroutine just inserted the same (ref, parent_id),
 		// fall back to the existing task rather than returning an error.
-		if t.Ref != "" && t.ParentID != "" && strings.Contains(err.Error(), "UNIQUE constraint failed") {
-			existing, findErr := FindTaskByRef(dbtx, t.Ref, t.ParentID)
+		if t.Ref != "" && strings.Contains(err.Error(), "UNIQUE constraint failed") {
+			existing, findErr := FindTaskByRef(dbtx, t.Ref, t.ParentID, t.ProjectID)
 			if findErr == nil && existing != nil {
 				*t = *existing
 				return nil
@@ -543,27 +552,54 @@ func FindTaskByRemote(dbtx db.DBTX, remoteID string) (*Task, error) {
 	return t, nil
 }
 
-// FindTaskByRef returns the task matching the given ref within the given parent scope,
-// or nil if no matching task is found.
-// If ref is a UUID, the task is looked up by id directly (backward compatibility).
-func FindTaskByRef(dbtx db.DBTX, ref, parentID string) (*Task, error) {
+// FindTaskByRef returns the task matching the given ref within the given
+// (parentID, projectID) scope, or nil if no matching task is found.
+// If ref is a UUID, the task is looked up by id directly (backward
+// compatibility), but the result is still validated against BOTH parentID
+// and projectID before being returned — treating a scope mismatch the same
+// as "not found" (nil, nil), not an error.
+//
+// projectID scoping was added in Phase 1 PR-4 (docs/plans/
+// cross-project-issue-triage.md 論点7, codex review Blocker fix): once
+// root tasks (parentID == "") became dedup-eligible, EVERY workspace's root
+// tasks share parent_id = "", so scoping by parent_id alone let a caller in
+// workspace B silently receive workspace A's task back just by reusing the
+// same source ref string (or, for the UUID branch, by supplying any task ID
+// it happened to know) — a cross-workspace task leak. Callers MUST pass the
+// project they are creating/looking within; there is no "unscoped" call left
+// (idx_tasks_ref_parent_project, migration 0037, enforces the same scope at
+// the DB level for the ref+parent_id uniqueness itself).
+func FindTaskByRef(dbtx db.DBTX, ref, parentID, projectID string) (*Task, error) {
 	if ref == "" {
 		return nil, nil
 	}
-	// UUID refs are looked up by task id for backward compatibility.
+	// UUID refs are looked up by task id first, for backward compatibility
+	// (some callers pass a real task ID as Ref, expecting an id-based
+	// fetch). If that doesn't yield an in-scope match, fall through to the
+	// ordinary ref-column scoped lookup below (codex review round 2 Major
+	// fix): an external source_ref can coincidentally BE UUID-shaped (Phase
+	// 1 PR-4 ingestion, 論点7 — plausible for some ticketing systems' issue
+	// ids), in which case it was never meant as a task-ID lookup at all. The
+	// id-based branch alone made resending such a ref non-idempotent: a
+	// created task's own (fresh, auto-generated) ID is a DIFFERENT UUID than
+	// the string stored in its `ref` column, so a retry's id-lookup would
+	// always miss, hit the unique index on re-insert, and then miss AGAIN on
+	// the error-fallback retry — surfacing as a hard error instead of
+	// returning the existing task.
 	if isUUID(ref) {
 		t, err := GetTask(dbtx, ref)
-		if err != nil {
-			if errors.Is(err, ErrTaskNotFound) {
-				return nil, nil
-			}
+		if err != nil && !errors.Is(err, ErrTaskNotFound) {
 			return nil, err
 		}
-		return t, nil
+		if err == nil && t.ParentID == parentID && t.ProjectID == projectID {
+			return t, nil
+		}
+		// Not found by id, or found but out of scope — fall through to the
+		// ref-column query below rather than returning nil here.
 	}
 	row := dbtx.QueryRow(
-		`SELECT `+taskSelectCols+`, `+taskChildCountCols+` FROM tasks t WHERE t.ref = ? AND t.parent_id = ?`,
-		ref, parentID,
+		`SELECT `+taskSelectCols+`, `+taskChildCountCols+` FROM tasks t WHERE t.ref = ? AND t.parent_id = ? AND t.project_id = ?`,
+		ref, parentID, projectID,
 	)
 	t, err := scanTask(row)
 	if err != nil {

@@ -155,7 +155,7 @@ func (s *capturingTaskStore) FindTaskByRemote(remoteID string) (*orchestrator.Ta
 	}
 	return nil, nil
 }
-func (s *capturingTaskStore) FindTaskByRef(ref, parentID string) (*orchestrator.Task, error) {
+func (s *capturingTaskStore) FindTaskByRef(ref, parentID, projectID string) (*orchestrator.Task, error) {
 	for _, t := range s.created {
 		if t.Ref == ref && t.ParentID == parentID {
 			return t, nil
@@ -374,13 +374,14 @@ func TestBoidBuiltinExecutor_TaskCreate_DropsDeprecatedBaseBranch(t *testing.T) 
 	}
 }
 
-// TestBoidBuiltinExecutor_TaskCreate_RejectsInitialStatus verifies the
-// brokered task_create op refuses a non-empty initial_status
-// (docs/plans/cross-project-issue-triage.md Phase 1 PR-1, Opus指摘#9): the
-// ingestion capability (workspace jobs creating captured/triaged tasks
-// directly) is deliberately closed until PR-4 wires up daemon-side workspace
-// stamping/dedup around it.
-func TestBoidBuiltinExecutor_TaskCreate_RejectsInitialStatus(t *testing.T) {
+// TestBoidBuiltinExecutor_TaskCreate_AllowsInitialStatusWithinWorkspace pins
+// Phase 1 PR-4's "ingestion push opens up" (docs/plans/cross-project-issue-triage.md
+// 論点1/4/7): a sandboxed job MAY now set initial_status, as long as the
+// target project is within the token's own workspace scope (AllowsProject) —
+// the same check every other project-scoped brokered op already enforces.
+// This replaces the former TestBoidBuiltinExecutor_TaskCreate_RejectsInitialStatus,
+// which pinned PR-1's temporary hard block.
+func TestBoidBuiltinExecutor_TaskCreate_AllowsInitialStatusWithinWorkspace(t *testing.T) {
 	store := &capturingTaskStore{}
 	meta := executorMetaStub{meta: &orchestrator.ProjectMeta{
 		TaskBehaviors: map[string]orchestrator.TaskBehavior{"dev": {}},
@@ -392,13 +393,46 @@ func TestBoidBuiltinExecutor_TaskCreate_RejectsInitialStatus(t *testing.T) {
 
 	resp := exec.ExecuteBoidBuiltin(context.Background(), ctx, &sandbox.BoidRequest{
 		Op:          sandbox.BoidOpTaskCreate,
-		CreatePatch: json.RawMessage(`{"title":"sneaky","behavior":"dev","initial_status":"captured"}`),
+		CreatePatch: json.RawMessage(`{"title":"BGO-214","behavior":"dev","initial_status":"triaged","ref":"BGO-214"}`),
+	})
+	if resp.ExitCode != 0 {
+		t.Fatalf("initial_status within own workspace: exit code = %d, want 0 (stderr=%q)", resp.ExitCode, resp.Stderr)
+	}
+	if len(store.created) != 1 {
+		t.Fatalf("created tasks = %d, want 1", len(store.created))
+	}
+	// capturingTaskStore.CreateTask always stamps Status=pending (it doesn't
+	// replicate resolveInitialStatus's real DB-layer status assignment) — the
+	// resolved initial_status itself is pinned at the api.TaskAppService
+	// layer by TestCreateTask_InitialStatus_CapturedAndTriaged
+	// (internal/api). What this test pins is that the brokered executor path
+	// no longer rejects initial_status outright for an in-workspace project.
+}
+
+// TestBoidBuiltinExecutor_TaskCreate_InitialStatus_StillRejectsOutsideWorkspace
+// confirms the ingestion open-up did not weaken workspace scoping: a
+// sandboxed job cannot use initial_status to plant a task in a project
+// outside its own token's AllowedProjectIDs — same guard, same error, as an
+// ordinary (no initial_status) cross-workspace create attempt would hit.
+func TestBoidBuiltinExecutor_TaskCreate_InitialStatus_StillRejectsOutsideWorkspace(t *testing.T) {
+	store := &capturingTaskStore{}
+	meta := executorMetaStub{meta: &orchestrator.ProjectMeta{
+		TaskBehaviors: map[string]orchestrator.TaskBehavior{"dev": {}},
+	}}
+	exec := &boidBuiltinExecutor{
+		tasks: &api.TaskAppService{Tasks: store, Meta: meta},
+	}
+	ctx := sandbox.TokenContext{ProjectID: "proj-1", AllowedProjectIDs: []string{"proj-1"}}
+
+	resp := exec.ExecuteBoidBuiltin(context.Background(), ctx, &sandbox.BoidRequest{
+		Op:          sandbox.BoidOpTaskCreate,
+		CreatePatch: json.RawMessage(`{"project_id":"proj-outside","title":"sneaky","behavior":"dev","initial_status":"triaged","ref":"BGO-214"}`),
 	})
 	if resp.ExitCode != 1 {
-		t.Fatalf("initial_status via create_patch: exit code = %d, want 1 (stderr=%q)", resp.ExitCode, resp.Stderr)
+		t.Fatalf("initial_status targeting a project outside the workspace: exit code = %d, want 1 (stderr=%q)", resp.ExitCode, resp.Stderr)
 	}
-	if !strings.Contains(resp.Stderr, "initial_status") {
-		t.Fatalf("stderr = %q, want mention of initial_status", resp.Stderr)
+	if !strings.Contains(resp.Stderr, "workspace") {
+		t.Fatalf("stderr = %q, want mention of workspace scoping", resp.Stderr)
 	}
 	if len(store.created) != 0 {
 		t.Fatalf("created tasks = %d, want 0 (rejected before CreateTask)", len(store.created))

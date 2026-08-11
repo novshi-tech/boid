@@ -49,8 +49,8 @@ func (r *TaskRepository) FindTaskByRemote(remoteID string) (*Task, error) {
 	return FindTaskByRemote(r.db, remoteID)
 }
 
-func (r *TaskRepository) FindTaskByRef(ref, parentID string) (*Task, error) {
-	return FindTaskByRef(r.db, ref, parentID)
+func (r *TaskRepository) FindTaskByRef(ref, parentID, projectID string) (*Task, error) {
+	return FindTaskByRef(r.db, ref, parentID, projectID)
 }
 
 func (r *TaskRepository) ListChildren(parentID string) ([]*Task, error) {

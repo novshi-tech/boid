@@ -94,6 +94,16 @@ func (sm *StateMachine) AvailableActions(status TaskStatus) []string {
 		if r.FromStatus != "*" && r.FromStatus != string(status) {
 			continue
 		}
+		// Skip non-transitioning rules (ToStatus == "", e.g. attrs_set /
+		// child_added / child_specced — Phase 1 PR-4). These are Manual:true
+		// so IsManualAction lets them through ApplyAction, but they must
+		// never appear as a Web UI button/available action: unlike a normal
+		// manual transition there is no "and then the status changes" story
+		// to show the user, and khi sends them itself via `boid action
+		// send`, not a button click (論点6-1, Fable レビュー第9版).
+		if r.ToStatus == "" {
+			continue
+		}
 		// Skip self-loops (e.g. abort: * → aborted when status=aborted).
 		// A user-actionable transition must change state.
 		if r.ToStatus == string(status) {
@@ -189,13 +199,66 @@ func DefaultMachine() *StateMachine {
 // workflow_triage.go's Dispatch doc comment for the child-task-creation
 // details this rule alone doesn't capture).
 //
-// working deliberately has NO exit rule yet (not even abort/drop). PR-2's
-// scope stops at "ready → working exists and is stable for filtering
-// purposes" (see TaskStatusWorking's doc comment in model.go); the queue's
-// decision of when/how a working task's done-ness gets evaluated (逆輸入2:
-// 「全子終端 ∧ source 終了で自動」) is explicitly PR-3 territory (queue の
-// 決定論的評価). Until PR-3 lands, a task that reaches working is a dead end in
-// the state machine — this is a known, intentional gap, not an oversight.
+// Phase 1 PR-4 (docs/plans/cross-project-issue-triage.md, 論点8 — 「working
+// からの出口3本」): a card that reached working (a child was dispatched, or
+// nose is manually handling it) can be re-surfaced without ever going
+// through done/aborted, because more work on the SAME card routinely shows
+// up while its first child is still executing (a PR review comment, the next
+// PR in a sequential series). Three Manual exits, reusing the SAME verbs the
+// pre-execution statuses already use (so khi/nose only ever have to know
+// "ready"/"triage"/"park", not a working-specific vocabulary):
+//
+//	ready  : working → ready    (next child is already specced — Go is one click away)
+//	triage : working → triaged  (next child is still open — needs shaping first)
+//	park   : working → parked   (Go-time park with wake_task_id=<dispatched child>;
+//	                              QueueSweepLoop's existing wake-on-child-termination
+//	                              re-surfaces the card once that child finishes — this
+//	                              is the "sequential PR consumption" pattern expressed
+//	                              via park+wake, not a new mechanism)
+//
+// ApplyAction's "ready"→Dispatch chaining (workflow_action.go) already
+// triggers on newTask.Status == ready regardless of fromStatus, so
+// working→ready gets the same automatic Dispatch follow-up as triaged→ready
+// for free. Dispatch() itself is UNCHANGED: it still task-ifies every
+// `specced` child in one call — the discipline that only one child should be
+// specced at a time in a sequential PR series is a caller/khi-side
+// convention (決定12 の外側), not something the machine enforces.
+//
+// working deliberately still has NO exit into done/aborted (not even
+// abort/drop). The queue's decision of when/how a working task's done-ness
+// gets evaluated (逆輸入2: 「全子終端 ∧ source 終了で自動」) remains explicit
+// future territory (論点9's "未決" note) — this PR only adds the three
+// re-surfacing exits above, not a terminal one.
+//
+// Phase 1 PR-4 action vocabulary for khi/agent-driven card updates (論点4/6):
+// attrs_set / child_added / child_specced are non-transitioning (ToStatus
+// "") Manual:true actions — reachable through ApplyAction/`boid action send`
+// exactly like park, but they never change task.Status and (per the
+// AvailableActions ToStatus=="" skip above) never show up as a Web UI
+// button. FromStatus is an explicit enumerated list per 論点6-3 — NOT "*" —
+// so these can't be pushed against an ordinary (non-triage) task sitting in
+// executing/done/etc; they only make sense on a card that's somewhere in the
+// captured→triaged→parked→ready→working lifecycle. Side-effects (folding the
+// action payload into task_triage.detail) live in
+// internal/api/workflow_triage.go, following applyParkSideEffect's
+// established pattern (payload validated before the Tx, read-modify-write on
+// task_triage.detail inside the Tx via GetTaskTriage).
+//
+// child_dispatched / child_closed are DELIBERATELY ABSENT from Manual:true
+// here (論点9: 語彙の役割分担 — khi sends attrs_set/child_added/child_specced;
+// the daemon self-records child_dispatched/child_closed as machine facts it
+// already knows first-hand). They get a Manual:false, FromStatus:"*"
+// registration below purely so sm.Apply/AvailableActions treat the action
+// name as "known" the same way progress/done_request do — the actual
+// self-recording writers (TaskWorkflowService.Dispatch for child_dispatched,
+// TaskWorkflowService.finalizeTerminal's recordChildClosedOnParent for
+// child_closed) call tx.CreateAction directly, the same way
+// persistFiredEvents/recordDispatchError do, rather than routing through
+// sm.Apply. Because these rules are Manual:false, IsManualAction returns
+// false for both names, so ApplyAction/BoidOpActionSend automatically reject
+// any khi-pushed attempt to send them directly — no separate blocklist
+// needed (same mechanism that already protects wake_triaged/wake_ready/
+// dispatch above).
 //
 // Event-driven transitions:
 //
@@ -230,84 +293,117 @@ func DefaultMachine() *StateMachine {
 // Hook failures surface as job_failed via the dispatcher path, which routes
 // the task to aborted.
 func NewMachine() *StateMachine {
-	return &StateMachine{
-		Name: "default",
-		Rules: []Rule{
-			// Manual actions
-			{Action: "start", FromStatus: "pending", ToStatus: "executing", Manual: true},
-			{Action: "done", FromStatus: "executing", ToStatus: "done", Manual: true},
-			{Action: "done", FromStatus: "awaiting", ToStatus: "done", Manual: true},
-			{Action: "fail", FromStatus: "executing", ToStatus: "aborted", Manual: true},
-			{Action: "reopen", FromStatus: "done", ToStatus: "executing", Manual: true},
-			{Action: "reopen", FromStatus: "aborted", ToStatus: "executing", Manual: true},
-			{Action: "ask", FromStatus: "executing", ToStatus: "awaiting", Manual: true},
-			{Action: "answer", FromStatus: "awaiting", ToStatus: "executing", Manual: true},
-			// abort is scoped to the execution-lifecycle statuses only (not a "*"
-			// wildcard) so it doesn't overlap with drop's coverage of the
-			// pre-execution statuses below.
-			{Action: "abort", FromStatus: "pending", ToStatus: "aborted", Manual: true},
-			{Action: "abort", FromStatus: "executing", ToStatus: "aborted", Manual: true},
-			{Action: "abort", FromStatus: "awaiting", ToStatus: "aborted", Manual: true},
-			{Action: "abort", FromStatus: "done", ToStatus: "aborted", Manual: true},
-			{Action: "abort", FromStatus: "aborted", ToStatus: "aborted", Manual: true},
+	rules := []Rule{
+		// Manual actions
+		{Action: "start", FromStatus: "pending", ToStatus: "executing", Manual: true},
+		{Action: "done", FromStatus: "executing", ToStatus: "done", Manual: true},
+		{Action: "done", FromStatus: "awaiting", ToStatus: "done", Manual: true},
+		{Action: "fail", FromStatus: "executing", ToStatus: "aborted", Manual: true},
+		{Action: "reopen", FromStatus: "done", ToStatus: "executing", Manual: true},
+		{Action: "reopen", FromStatus: "aborted", ToStatus: "executing", Manual: true},
+		{Action: "ask", FromStatus: "executing", ToStatus: "awaiting", Manual: true},
+		{Action: "answer", FromStatus: "awaiting", ToStatus: "executing", Manual: true},
+		// abort is scoped to the execution-lifecycle statuses only (not a "*"
+		// wildcard) so it doesn't overlap with drop's coverage of the
+		// pre-execution statuses below.
+		{Action: "abort", FromStatus: "pending", ToStatus: "aborted", Manual: true},
+		{Action: "abort", FromStatus: "executing", ToStatus: "aborted", Manual: true},
+		{Action: "abort", FromStatus: "awaiting", ToStatus: "aborted", Manual: true},
+		{Action: "abort", FromStatus: "done", ToStatus: "aborted", Manual: true},
+		{Action: "abort", FromStatus: "aborted", ToStatus: "aborted", Manual: true},
 
-			// Pre-execution actions (cross-project-issue-triage Phase 1)
-			{Action: "triage", FromStatus: "captured", ToStatus: "triaged", Manual: true},
-			{Action: "ready", FromStatus: "triaged", ToStatus: "ready", Manual: true},
-			{Action: "park", FromStatus: "triaged", ToStatus: "parked", Manual: true},
-			{Action: "park", FromStatus: "ready", ToStatus: "parked", Manual: true},
-			// wake_triaged/wake_ready: Manual:false — see doc comment above NewMachine.
-			{Action: "wake_triaged", FromStatus: "parked", ToStatus: "triaged"},
-			{Action: "wake_ready", FromStatus: "parked", ToStatus: "ready"},
-			{Action: "drop", FromStatus: "captured", ToStatus: "dropped", Manual: true},
-			{Action: "drop", FromStatus: "triaged", ToStatus: "dropped", Manual: true},
-			{Action: "drop", FromStatus: "parked", ToStatus: "dropped", Manual: true},
-			{Action: "drop", FromStatus: "ready", ToStatus: "dropped", Manual: true},
-			{Action: "reopen", FromStatus: "dropped", ToStatus: "triaged", Manual: true},
+		// Pre-execution actions (cross-project-issue-triage Phase 1)
+		{Action: "triage", FromStatus: "captured", ToStatus: "triaged", Manual: true},
+		{Action: "ready", FromStatus: "triaged", ToStatus: "ready", Manual: true},
+		{Action: "park", FromStatus: "triaged", ToStatus: "parked", Manual: true},
+		{Action: "park", FromStatus: "ready", ToStatus: "parked", Manual: true},
+		// wake_triaged/wake_ready: Manual:false — see doc comment above NewMachine.
+		{Action: "wake_triaged", FromStatus: "parked", ToStatus: "triaged"},
+		{Action: "wake_ready", FromStatus: "parked", ToStatus: "ready"},
+		{Action: "drop", FromStatus: "captured", ToStatus: "dropped", Manual: true},
+		{Action: "drop", FromStatus: "triaged", ToStatus: "dropped", Manual: true},
+		{Action: "drop", FromStatus: "parked", ToStatus: "dropped", Manual: true},
+		{Action: "drop", FromStatus: "ready", ToStatus: "dropped", Manual: true},
+		{Action: "reopen", FromStatus: "dropped", ToStatus: "triaged", Manual: true},
 
-			// Phase 1 PR-2: dispatch is Manual:false — see doc comment above NewMachine.
-			{Action: "dispatch", FromStatus: "ready", ToStatus: "working"},
+		// Phase 1 PR-2: dispatch is Manual:false — see doc comment above NewMachine.
+		{Action: "dispatch", FromStatus: "ready", ToStatus: "working"},
 
-			// Event-driven (non-manual)
-			{Action: "job_failed", FromStatus: "*", ToStatus: "aborted"},
+		// Phase 1 PR-4 (論点8): the three "working からの出口" exits — see doc
+		// comment above NewMachine. Verbs are reused from the pre-execution
+		// vocabulary above; only the FromStatus is new.
+		{Action: "ready", FromStatus: "working", ToStatus: "ready", Manual: true},
+		{Action: "triage", FromStatus: "working", ToStatus: "triaged", Manual: true},
+		{Action: "park", FromStatus: "working", ToStatus: "parked", Manual: true},
 
-			// Non-transitioning records (created directly by NotifyTask). Registered
-			// for completeness; Apply() will accept these actions as valid noops.
-			{Action: "progress", FromStatus: "*"},
-			{Action: "done_request", FromStatus: "*"},
-			{Action: "fail_request", FromStatus: "*"},
+		// Phase 1 PR-4 (論点4/6): khi-pushed non-transitioning card-update
+		// actions — see doc comment above NewMachine for why FromStatus is an
+		// explicit enumeration rather than "*".
+		{Action: "child_dispatched", FromStatus: "*"},
+		{Action: "child_closed", FromStatus: "*"},
 
-			// Auto: lifecycle.fail wins, then lifecycle.done, then bare executed.
-			// The fail / done variants carry the agent's report message into the
-			// auto_advance action via ActionPayloadFn so the timeline preserves it.
-			{
-				FromStatus: "executing", ToStatus: "aborted",
-				Condition: func(p json.RawMessage) bool {
-					return TraitBool(p, "lifecycle.executed") && TraitExists(p, "lifecycle.fail")
-				},
-				ActionPayloadFn: func(p json.RawMessage) json.RawMessage {
-					msg, _ := TraitGetString(p, "lifecycle.fail.message")
-					b, _ := json.Marshal(map[string]string{"message": msg})
-					return b
-				},
+		// Event-driven (non-manual)
+		{Action: "job_failed", FromStatus: "*", ToStatus: "aborted"},
+
+		// Non-transitioning records (created directly by NotifyTask). Registered
+		// for completeness; Apply() will accept these actions as valid noops.
+		{Action: "progress", FromStatus: "*"},
+		{Action: "done_request", FromStatus: "*"},
+		{Action: "fail_request", FromStatus: "*"},
+
+		// Auto: lifecycle.fail wins, then lifecycle.done, then bare executed.
+		// The fail / done variants carry the agent's report message into the
+		// auto_advance action via ActionPayloadFn so the timeline preserves it.
+		{
+			FromStatus: "executing", ToStatus: "aborted",
+			Condition: func(p json.RawMessage) bool {
+				return TraitBool(p, "lifecycle.executed") && TraitExists(p, "lifecycle.fail")
 			},
-			{
-				FromStatus: "executing", ToStatus: "done",
-				Condition: func(p json.RawMessage) bool {
-					return TraitBool(p, "lifecycle.executed") && TraitExists(p, "lifecycle.done")
-				},
-				ActionPayloadFn: func(p json.RawMessage) json.RawMessage {
-					msg, _ := TraitGetString(p, "lifecycle.done.message")
-					b, _ := json.Marshal(map[string]string{"message": msg})
-					return b
-				},
+			ActionPayloadFn: func(p json.RawMessage) json.RawMessage {
+				msg, _ := TraitGetString(p, "lifecycle.fail.message")
+				b, _ := json.Marshal(map[string]string{"message": msg})
+				return b
 			},
-			// Bare auto rule: legacy path for non-agent hooks (scripts that just
-			// exit 0 without notify). Keep last so the message-bearing rules above
-			// take precedence when the agent reported via done_request/fail_request.
-			{FromStatus: "executing", ToStatus: "done", Condition: func(p json.RawMessage) bool {
-				return TraitBool(p, "lifecycle.executed")
-			}},
 		},
+		{
+			FromStatus: "executing", ToStatus: "done",
+			Condition: func(p json.RawMessage) bool {
+				return TraitBool(p, "lifecycle.executed") && TraitExists(p, "lifecycle.done")
+			},
+			ActionPayloadFn: func(p json.RawMessage) json.RawMessage {
+				msg, _ := TraitGetString(p, "lifecycle.done.message")
+				b, _ := json.Marshal(map[string]string{"message": msg})
+				return b
+			},
+		},
+		// Bare auto rule: legacy path for non-agent hooks (scripts that just
+		// exit 0 without notify). Keep last so the message-bearing rules above
+		// take precedence when the agent reported via done_request/fail_request.
+		{FromStatus: "executing", ToStatus: "done", Condition: func(p json.RawMessage) bool {
+			return TraitBool(p, "lifecycle.executed")
+		}},
+	}
+
+	// Phase 1 PR-4 (論点4/6): attrs_set / child_added / child_specced, one
+	// rule per status in preExecutionStatuses (explicit enumeration, not
+	// "*" — see doc comment above). Generated rather than hand-listed 3x5
+	// times to keep the FromStatus set for all three actions mechanically
+	// identical (a hand-copied list risks the three verbs silently drifting
+	// out of sync with each other).
+	for _, action := range []string{"attrs_set", "child_added", "child_specced"} {
+		for _, status := range preExecutionStatuses {
+			rules = append(rules, Rule{Action: action, FromStatus: status, Manual: true})
+		}
+	}
+
+	return &StateMachine{
+		Name:  "default",
+		Rules: rules,
 	}
 }
+
+// preExecutionStatuses is the explicit FromStatus enumeration Phase 1 PR-4's
+// attrs_set/child_added/child_specced rules use (論点6-3: never "*" — that
+// would let these fire against executing/done/etc on an ordinary
+// non-triage task too).
+var preExecutionStatuses = []string{"captured", "triaged", "parked", "ready", "working"}
