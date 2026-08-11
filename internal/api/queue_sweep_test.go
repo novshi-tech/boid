@@ -118,6 +118,37 @@ func TestSweepWake_DateCondition_WakesToOrigin(t *testing.T) {
 	}
 }
 
+// TestSweepWake_StampsActorDaemon verifies the machine-driven wake sweep
+// (決定12, no human in the loop) records ActorDaemon on the resulting
+// wake_triaged/wake_ready action — this is the automatic counterpart to a
+// human pressing Wake (web_service.go, ActorHuman), and 論点11 depends on the
+// two never being confused.
+func TestSweepWake_StampsActorDaemon(t *testing.T) {
+	store := newSweepFakeStore()
+	now := time.Date(2026, 8, 11, 12, 0, 0, 0, time.UTC)
+	past := now.Add(-time.Hour)
+
+	store.tasks["t1"] = &orchestrator.Task{ID: "t1", Status: orchestrator.TaskStatusParked}
+	store.triage["t1"] = &orchestrator.TaskTriage{TaskID: "t1", WakeAt: &past}
+	store.parkedFroms["t1"] = orchestrator.TaskStatusTriaged
+
+	svc := &TaskWorkflowService{Tasks: store, TaskTriage: store, Tx: store}
+	woken, err := svc.SweepWake(context.Background(), now)
+	if err != nil {
+		t.Fatalf("SweepWake: %v", err)
+	}
+	if len(woken) != 1 {
+		t.Fatalf("woken = %v, want 1 task", woken)
+	}
+	actions := store.actions["t1"]
+	if len(actions) != 1 {
+		t.Fatalf("expected 1 recorded action, got %d", len(actions))
+	}
+	if actions[0].Actor != orchestrator.ActorDaemon {
+		t.Errorf("actor = %q, want %q", actions[0].Actor, orchestrator.ActorDaemon)
+	}
+}
+
 func TestSweepWake_TaskCondition_WakesWhenReferencedTaskTerminal(t *testing.T) {
 	store := newSweepFakeStore()
 	now := time.Now()

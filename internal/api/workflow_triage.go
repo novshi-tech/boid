@@ -300,6 +300,7 @@ func (s *TaskWorkflowService) recordChildClosedOnParent(task *orchestrator.Task)
 			FromStatus: parentTask.Status,
 			ToStatus:   parentTask.Status,
 			Payload:    payload,
+			Actor:      orchestrator.ActorDaemon,
 		}
 		return tx.CreateAction(action)
 	}); err != nil {
@@ -359,7 +360,7 @@ func (s *TaskWorkflowService) Wake(ctx context.Context, taskID string) (*ActionA
 			return &StatusError{Code: http.StatusInternalServerError, Message: fmt.Sprintf("wake: unexpected park origin %q", from)}
 		}
 
-		action = &orchestrator.Action{TaskID: taskID, Type: resolvedType}
+		action = &orchestrator.Action{TaskID: taskID, Type: resolvedType, Actor: orchestrator.ActorFromContext(ctx)}
 		newTask, err = sm.Apply(fresh, action)
 		if err != nil {
 			return &StatusError{Code: http.StatusConflict, Message: err.Error()}
@@ -583,7 +584,7 @@ func (s *TaskWorkflowService) Dispatch(ctx context.Context, taskID string) (*Act
 	}
 
 	sm := orchestrator.DefaultMachine()
-	action := &orchestrator.Action{TaskID: taskID, Type: "dispatch"}
+	action := &orchestrator.Action{TaskID: taskID, Type: "dispatch", Actor: orchestrator.ActorFromContext(ctx)}
 	var newTask *orchestrator.Task
 
 	if err := s.Tx.WithinTx(func(tx TxStore) error {
@@ -628,6 +629,7 @@ func (s *TaskWorkflowService) Dispatch(ctx context.Context, taskID string) (*Act
 				FromStatus: newTask.Status,
 				ToStatus:   newTask.Status,
 				Payload:    payload,
+				Actor:      orchestrator.ActorFromContext(ctx),
 			}
 			if err := tx.CreateAction(childAction); err != nil {
 				return fmt.Errorf("dispatch: record child_dispatched for %q: %w", c.ID, err)

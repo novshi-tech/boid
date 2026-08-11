@@ -1385,3 +1385,66 @@ DTOs, per the `cmd/login.go` precedent of not importing server-internal unexport
   `ExpiresInSeconds`/ticker `interval` short enough that the goroutine self-terminates almost
   immediately — never leave one running against a placeholder that could resolve to a REAL
   host on the network.
+
+## 25. orchestrator.Action.Actor ctx propagation
+
+Whether an `Action` write correctly attributes WHO/WHAT drove it — `orchestrator.ActorHuman` /
+`ActorDaemon` / `ActorTask(taskID)` — depends on a ctx-carried value that has NO compiler link
+between where it's set and where it's read, the same shape of hazard as seam #22 but one level
+upstream (this seam is about `Action.Actor` being *correct*; #22 is about the write being
+*visible* once made).
+
+- **End A (origin, sets ctx)**: every entry point that can determine who/what is really behind
+  a call — `internal/api/action.go`'s `Apply` (HTTP), `internal/api/web_service.go`'s
+  `ApplyAction`/`Wake`/`ReopenTask` (Web UI), `internal/api/task.go`'s `Answer` /
+  `internal/api/web.go`'s `PostAnswer`-equivalent (both `ActorHuman`), and every
+  `internal/server/boid_executor.go` op that calls into `ApplyAction`/`Wake`/`AnswerTask`
+  (`ActorTask(ctx.TaskID)` — `ctx` here is `sandbox.TokenContext`, the CALLING task, not
+  necessarily the task the write lands on). Daemon-internal callers with no real ctx to carry
+  (`workflow_action.go`'s `auto_advance`/`dispatch_error`/`abort`/`persistFiredEvents`,
+  `queue_sweep.go`'s `SweepWake`, `dispatcher/store.go`'s `markStaleTasksAborted`,
+  `workflow_triage.go`'s `recordChildClosedOnParent`) hardcode `orchestrator.ActorDaemon`
+  directly instead of relying on an (absent) wrapped ctx.
+- **End B (construction, reads ctx)**: every `&orchestrator.Action{...}` literal deep in a
+  shared call chain — `ApplyAction` (`workflow_action.go`), `Wake`/`Dispatch`
+  (`workflow_triage.go`) — reads `orchestrator.ActorFromContext(ctx)`. A ctx that flows through
+  `ApplyAction`/`Wake`/`Dispatch` WITHOUT ever passing through `orchestrator.WithActor` at any
+  End A silently produces `Actor: ""` — not a compile error, not even a test failure unless a
+  test specifically asserts the actor.
+- **Invariant**: every NEW brokered `boid_executor.go` op or NEW `TaskAppService`/
+  `TaskWorkflowService` method that can be reached from more than one kind of caller (human
+  HTTP/Web/CLI vs. brokered sandbox vs. daemon-internal loop) must either accept `ctx` and wrap
+  it with the correct `WithActor` at every one of ITS OWN origins, or hardcode the one actor
+  value that's actually always true for every path that reaches it — never leave a shared
+  ctx-accepting function silently defaulting to `""`.
+- **Past break**: caught in review (Opus, before merge) on the PR that introduced this seam
+  (`feat/action-actor-field`, PR #935): `boid_executor.go`'s `BoidOpTaskWake` case called
+  `e.workflow.Wake(context.Background(), ...)` with a bare, unwrapped ctx — its two sibling
+  cases in the same switch (`BoidOpActionSend`, `BoidOpTaskReopen`) DID wrap
+  `ActorTask(ctx.TaskID)`, so the omission wasn't visible by pattern-matching the file, only by
+  checking every case individually. Two more of the same shape: `queue_sweep.go`'s `SweepWake`
+  (the periodic machine-driven wake — the one path this field most needs to distinguish from a
+  human pressing Wake — passed its bare loop ctx straight into `Wake`), and
+  `workflow_triage.go`'s `recordChildClosedOnParent`/the `child_dispatched` write inside
+  `Dispatch` (one used no Actor at all, the other diverged from the sibling `"dispatch"` Action
+  written in the SAME transaction). A fourth class: `task_ask.go`'s `recordAnswerAction`
+  hardcoded `ActorHuman` even though `AnswerTask` is reachable from `boid_executor.go`'s
+  `BoidOpTaskAnswer` (a supervisor task answering its own child) — fixed by threading `ctx`
+  through `answerBlocking` and, for the durable-park slow path, adding
+  `AwaitingPayload.PendingAnswerActor` so the actor survives the disconnect gap and
+  `consumePendingAnswer` attributes the eventual action to the ORIGINAL answerer, not to the
+  agent's later re-ask call.
+- **Guard**: `TestTaskWorkflowServiceApplyAction_StampsActorFromContext`
+  (`internal/api/apply_action_phase1_test.go`, human/task/unset), `TestBoidBuiltinExecutor_
+  TaskWake_StampsActorTask` / `TestBoidBuiltinExecutor_ActionSend_StampsActorTask`
+  (`internal/server/boid_executor_task_wake_test.go`), `TestSweepWake_StampsActorDaemon`
+  (`internal/api/queue_sweep_test.go`), `TestFinalizeTerminal_ChildClosed_SelfRecordsOnParent`'s
+  actor assertion (`internal/api/apply_action_pr4_test.go`), and
+  `TestAnswerTask_StampsActorFromContext` (`internal/api/task_ask_test.go`) — each drives the
+  REAL op/method end-to-end and asserts the recorded `Action.Actor`, not just that ctx-wrapping
+  code exists somewhere.
+- **When you touch it**: adding a new `boid_executor.go` op, a new `TaskAppService`/
+  `TaskWorkflowService` entry point, or a new daemon-internal periodic loop that writes an
+  `Action` — grep every existing case in the same switch/file for its `WithActor`/`ActorDaemon`
+  pattern before assuming yours doesn't need one, and add a test asserting the actor, not just
+  the action `Type`/status transition.

@@ -10,6 +10,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/novshi-tech/boid/internal/db"
+	"github.com/novshi-tech/boid/internal/orchestrator"
 )
 
 type jobScanner interface {
@@ -225,8 +226,8 @@ func markStaleTasksAborted(conn *sql.DB, fromStatus string) (int, error) {
 		now := time.Now().UTC()
 		for _, id := range ids {
 			if _, err := tx.Exec(
-				`INSERT INTO actions (id, task_id, type, payload, from_status, to_status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-				uuid.New().String(), id, "abort", abortPayload, fromStatus, "aborted", now,
+				`INSERT INTO actions (id, task_id, type, payload, from_status, to_status, created_at, actor) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+				uuid.New().String(), id, "abort", abortPayload, fromStatus, "aborted", now, orchestrator.ActorDaemon,
 			); err != nil {
 				return fmt.Errorf("insert abort action for task %s: %w", id, err)
 			}

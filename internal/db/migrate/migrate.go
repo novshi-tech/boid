@@ -341,6 +341,16 @@ func Apply(conn *sql.DB) error {
 				return !newIndexAbsent && oldIndexAbsent, nil
 			},
 		},
+		{
+			// docs/plans/cross-project-issue-triage.md 論点11「代行Goタスク」の
+			// 前提条件: nose (人間操作) と代行タスク/workspace push が押した action を
+			// actions ログ上で区別できるようにする actor 列。
+			version: "0038_add_actions_actor",
+			path:    "migrations/0038_add_actions_actor.sql",
+			skip: func(tx *sql.Tx) (bool, error) {
+				return columnExists(tx, "actions", "actor")
+			},
+		},
 	}
 
 	if err := ensureSchemaMigrationsTable(conn); err != nil {

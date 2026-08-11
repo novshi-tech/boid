@@ -292,8 +292,18 @@ func (s *TaskAppService) CreateTask(req CreateTaskRequest) (*orchestrator.Task, 
 	// Guard: only fire auto_start for a freshly pending task. When get-or-create
 	// at the store level returns an existing task (e.g. concurrent create race),
 	// the task may already be executing or terminal.
+	//
+	// Actor caveat (論点11): CreateTask(req CreateTaskRequest) has no ctx
+	// parameter, so this always stamps ActorHuman even though this call also
+	// backs `boid task create` from inside a sandbox (internal/server/
+	// boid_executor.go's BoidOpTaskCreate) and Dispatch's child-task
+	// creation (workflow_triage.go), both of which should really carry the
+	// creating task's own actor. Threading ctx through CreateTask/UpdateTask/
+	// RerunTask (this whole family predates ctx) is a follow-up, not done
+	// here to keep this PR's blast radius to the ctx seams that already
+	// exist.
 	if req.AutoStart && s.Workflow != nil && task.Status == orchestrator.TaskStatusPending {
-		result, err := s.Workflow.ApplyAction(context.Background(), task.ID, ApplyActionRequest{Type: "start"})
+		result, err := s.Workflow.ApplyAction(orchestrator.WithActor(context.Background(), orchestrator.ActorHuman), task.ID, ApplyActionRequest{Type: "start"})
 		if err != nil {
 			slog.Error("auto_start: failed to apply start action", "task_id", task.ID, "error", err)
 		} else {

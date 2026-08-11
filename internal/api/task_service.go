@@ -177,8 +177,12 @@ func (s *TaskAppService) UpdateTask(id string, req UpdateTaskRequest) (*orchestr
 	if instructionsBefore != nil {
 		s.auditInstructionsChange(task.ID, instructionsBefore, task.Instructions)
 	}
+	// Actor caveat (論点11): UpdateTask has no ctx, so this always stamps
+	// ActorHuman even though it's also reachable from a sandbox
+	// (OpBoidTaskUpdate). See CreateTask's matching comment (task_create.go)
+	// — threading ctx through is a follow-up.
 	if req.AutoStart != nil && *req.AutoStart && task.Status == orchestrator.TaskStatusPending && s.Workflow != nil {
-		result, err := s.Workflow.ApplyAction(context.Background(), task.ID, ApplyActionRequest{Type: "start"})
+		result, err := s.Workflow.ApplyAction(orchestrator.WithActor(context.Background(), orchestrator.ActorHuman), task.ID, ApplyActionRequest{Type: "start"})
 		if err != nil {
 			slog.Error("auto_start: update: failed to apply start action", "task_id", task.ID, "error", err)
 		} else {
@@ -347,7 +351,7 @@ func (s *TaskAppService) RerunTask(id string, req RerunTaskRequest) (*orchestrat
 	}
 
 	if req.AutoStart && s.Workflow != nil {
-		result, err := s.Workflow.ApplyAction(context.Background(), task.ID, ApplyActionRequest{Type: "start"})
+		result, err := s.Workflow.ApplyAction(orchestrator.WithActor(context.Background(), orchestrator.ActorHuman), task.ID, ApplyActionRequest{Type: "start"})
 		if err != nil {
 			slog.Error("rerun auto_start: failed to apply start action", "task_id", task.ID, "error", err)
 		} else {
@@ -385,6 +389,7 @@ func (s *TaskAppService) auditInstructionsChange(taskID string, before, after or
 		TaskID:  taskID,
 		Type:    "update_instructions",
 		Payload: payload,
+		Actor:   orchestrator.ActorHuman,
 	}
 	if err := s.Actions.CreateAction(action); err != nil {
 		slog.Error("audit instructions change: create action", "task_id", taskID, "error", err)

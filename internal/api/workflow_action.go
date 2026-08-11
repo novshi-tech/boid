@@ -124,6 +124,7 @@ func (s *TaskWorkflowService) ApplyAction(ctx context.Context, taskID string, re
 		TaskID:  task.ID,
 		Type:    req.Type,
 		Payload: req.Payload,
+		Actor:   orchestrator.ActorFromContext(ctx),
 	}
 	newTask, err := sm.Apply(task, action)
 	if err != nil {
@@ -482,6 +483,7 @@ func (s *TaskWorkflowService) runDispatchLoop(ctx context.Context, task *orchest
 			FromStatus: prevStatus,
 			ToStatus:   result.NewStatus,
 			Payload:    result.ActionPayload,
+			Actor:      orchestrator.ActorDaemon,
 		}
 		current.Status = result.NewStatus
 		if err := s.Tx.WithinTx(func(tx TxStore) error {
@@ -523,6 +525,7 @@ func (s *TaskWorkflowService) recordDispatchError(taskID string, taskStatus orch
 		Payload:    payload,
 		FromStatus: taskStatus,
 		ToStatus:   taskStatus,
+		Actor:      orchestrator.ActorDaemon,
 	}
 	if txErr := s.Tx.WithinTx(func(tx TxStore) error {
 		return tx.CreateAction(action)
@@ -563,6 +566,7 @@ func (s *TaskWorkflowService) abortOnDispatchError(ctx context.Context, task *or
 		FromStatus: task.Status,
 		ToStatus:   orchestrator.TaskStatusAborted,
 		Payload:    abortPayload,
+		Actor:      orchestrator.ActorDaemon,
 	}
 	task.Status = orchestrator.TaskStatusAborted
 	if txErr := s.Tx.WithinTx(func(tx TxStore) error {
@@ -597,6 +601,7 @@ func (s *TaskWorkflowService) persistFiredEvents(taskID string, status orchestra
 				Payload:    payload,
 				FromStatus: status,
 				ToStatus:   status,
+				Actor:      orchestrator.ActorDaemon,
 			}
 			if err := tx.CreateAction(action); err != nil {
 				return err

@@ -691,6 +691,35 @@ func TestCreateAction_DefaultPayload(t *testing.T) {
 	}
 }
 
+func TestCreateAction_PersistsActor(t *testing.T) {
+	d := createTestProject(t)
+
+	task := &orchestrator.Task{ProjectID: "proj-1", Title: "Task", Behavior: "dev"}
+	if err := orchestrator.CreateTask(d.Conn, task); err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+
+	action := &orchestrator.Action{
+		TaskID: task.ID,
+		Type:   "ready",
+		Actor:  orchestrator.ActorHuman,
+	}
+	if err := orchestrator.CreateAction(d.Conn, action); err != nil {
+		t.Fatalf("create action: %v", err)
+	}
+
+	actions, err := orchestrator.ListActionsByTask(d.Conn, task.ID)
+	if err != nil {
+		t.Fatalf("list actions: %v", err)
+	}
+	if len(actions) != 1 {
+		t.Fatalf("expected 1 action, got %d", len(actions))
+	}
+	if actions[0].Actor != orchestrator.ActorHuman {
+		t.Fatalf("expected actor %q, got %q", orchestrator.ActorHuman, actions[0].Actor)
+	}
+}
+
 func TestListActionsByTask(t *testing.T) {
 	d := createTestProject(t)
 
@@ -1125,5 +1154,3 @@ func TestFindTaskByRemote_MultipleMatches_ReturnsLatest(t *testing.T) {
 		t.Fatalf("ID = %q, want latest %q", got.ID, task2.ID)
 	}
 }
-
-

@@ -19,7 +19,7 @@ CREATE TABLE actions (
     type       TEXT NOT NULL,
     payload    TEXT NOT NULL DEFAULT '{}',
     created_at DATETIME NOT NULL DEFAULT (datetime('now'))
-, from_status TEXT NOT NULL DEFAULT '', to_status   TEXT NOT NULL DEFAULT '');
+, from_status TEXT NOT NULL DEFAULT '', to_status   TEXT NOT NULL DEFAULT '', actor TEXT NOT NULL DEFAULT '');
 
 -- table: jobs
 CREATE TABLE "jobs" (

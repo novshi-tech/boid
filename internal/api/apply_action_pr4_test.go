@@ -254,7 +254,7 @@ func TestApplyAction_Working_ThreeExits(t *testing.T) {
 }
 
 // TestApplyAction_Working_Park_DoesNotPollutePayload is the extra "ついでに
-//確認する" check 論点6-2 calls out: park's own payload (wake_at/
+// 確認する" check 論点6-2 calls out: park's own payload (wake_at/
 // wake_task_id) must ALSO be excluded from task.Payload, not just the three
 // new triage-vocabulary actions.
 func TestApplyAction_Working_Park_DoesNotPollutePayload(t *testing.T) {
@@ -336,6 +336,9 @@ func TestFinalizeTerminal_ChildClosed_SelfRecordsOnParent(t *testing.T) {
 	for _, a := range txStore.actions {
 		if a.Type == "child_closed" && a.TaskID == "parent-1" {
 			found = true
+			if a.Actor != orchestrator.ActorDaemon {
+				t.Errorf("child_closed actor = %q, want %q (this is the daemon's own self-record, not a human/task-triggered write)", a.Actor, orchestrator.ActorDaemon)
+			}
 		}
 	}
 	if !found {

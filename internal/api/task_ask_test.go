@@ -84,6 +84,46 @@ func TestAnswerTask_BlockingMode_DeliversWithoutDispatch(t *testing.T) {
 	}
 }
 
+// TestAnswerTask_StampsActorFromContext verifies AnswerTask's fast path
+// (internal/api/task_ask.go's answerBlocking) reads
+// orchestrator.ActorFromContext(ctx) rather than hardcoding ActorHuman — a
+// supervisor task answering its own child's `boid task ask` question
+// (reachable via internal/server/boid_executor.go's BoidOpTaskAnswer) must
+// not be mislabeled as a human operator (論点11).
+func TestAnswerTask_StampsActorFromContext(t *testing.T) {
+	reg := NewBlockingAskRegistry()
+	if err := reg.Register("t1", "q-1"); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	go func() { _, _ = reg.Wait(context.Background(), "q-1") }()
+
+	task := &orchestrator.Task{
+		ID:        "t1",
+		ProjectID: "proj-1",
+		Status:    orchestrator.TaskStatusAwaiting,
+		Payload:   blockingAwaitingPayload(t, "q-1"),
+	}
+	actions := &capturingActionStore{}
+	svc := &TaskAppService{
+		Tasks:       &stubTaskStore{task: task},
+		Actions:     actions,
+		Workflow:    &stubWorkflowService{},
+		BlockingAsk: reg,
+	}
+
+	wantActor := orchestrator.ActorTask("supervisor-1")
+	ctx := orchestrator.WithActor(context.Background(), wantActor)
+	if err := svc.AnswerTask(ctx, "t1", "q-1", "the answer"); err != nil {
+		t.Fatalf("AnswerTask: %v", err)
+	}
+	if actions.createdAction == nil || actions.createdAction.Type != "answer" {
+		t.Fatalf("expected an 'answer' audit action, got %+v", actions.createdAction)
+	}
+	if actions.createdAction.Actor != wantActor {
+		t.Errorf("actor = %q, want %q", actions.createdAction.Actor, wantActor)
+	}
+}
+
 // If no agent is parked (its `boid task ask` was killed by a harness
 // command-timeout), the answer is persisted durably to PendingAnswer and the
 // task stays awaiting. The agent picks the answer up on its next ask. This is
@@ -211,7 +251,7 @@ func TestGraceAbortCheck_SkipsRecovered(t *testing.T) {
 		{
 			name: "answer_parked",
 			mutate: func(task *orchestrator.Task, _ *BlockingAskRegistry) {
-				task.Payload = orchestrator.SetPendingAnswer(task.Payload, "parked")
+				task.Payload = orchestrator.SetPendingAnswer(task.Payload, "parked", orchestrator.ActorHuman)
 			},
 			checkQ: "q-1",
 		},

@@ -31,6 +31,15 @@ import (
 // dispatch when the user replies. The session-id resume path was removed
 // (every dispatch is a fresh agent process); only `boid task ask` (the
 // blocking RPC) can deliver an answer back to a live agent.
+//
+// Actor note (論点11): every Action this writes is stamped
+// orchestrator.ActorTask(taskID) — treated as the task's own self-report.
+// This call is reachable both from inside a sandbox (`boid task notify`,
+// the common case) and from the host-side HTTP route, so a human operator
+// calling `boid task notify --done` from outside a task also gets logged as
+// `task:<id>` rather than `human`. Defensible under "this call always means
+// the task itself is signalling its own progress/outcome", but worth this
+// note for anyone auditing the actions log.
 func (s *TaskAppService) NotifyTask(ctx context.Context, taskID, message, ask, questionID, progress, done, fail string) error {
 	// ask / progress / done / fail are mutually exclusive: each represents a
 	// distinct lifecycle signal (Q&A pause, FYI-only progress, success
@@ -68,6 +77,7 @@ func (s *TaskAppService) NotifyTask(ctx context.Context, taskID, message, ask, q
 			FromStatus: task.Status,
 			ToStatus:   task.Status,
 			Payload:    payload,
+			Actor:      orchestrator.ActorTask(taskID),
 		}
 		if err := s.Actions.CreateAction(action); err != nil {
 			return &StatusError{Code: http.StatusInternalServerError, Message: err.Error()}
@@ -188,7 +198,7 @@ func (s *TaskAppService) NotifyTask(ctx context.Context, taskID, message, ask, q
 		if err != nil {
 			return &StatusError{Code: http.StatusInternalServerError, Message: "encode action payload: " + err.Error()}
 		}
-		if _, err := s.Workflow.ApplyAction(ctx, taskID, ApplyActionRequest{
+		if _, err := s.Workflow.ApplyAction(orchestrator.WithActor(ctx, orchestrator.ActorTask(taskID)), taskID, ApplyActionRequest{
 			Type:    "ask",
 			Payload: askPayload,
 		}); err != nil {
@@ -226,6 +236,7 @@ func (s *TaskAppService) NotifyTask(ctx context.Context, taskID, message, ask, q
 			FromStatus: task.Status,
 			ToStatus:   task.Status,
 			Payload:    payload,
+			Actor:      orchestrator.ActorTask(taskID),
 		}
 		if err := s.Actions.CreateAction(action); err != nil {
 			return &StatusError{Code: http.StatusInternalServerError, Message: err.Error()}
@@ -463,7 +474,7 @@ func (s *TaskAppService) AnswerTask(ctx context.Context, taskID, questionID, ans
 	// resume hook, so an answer there has nowhere to land — reject with a clear
 	// error rather than silently flipping the task back to executing with no
 	// live agent behind it.
-	return s.answerBlocking(task, answer)
+	return s.answerBlocking(ctx, task, answer)
 }
 
 // newQuestionID generates a random hex identifier for a Q&A turn.

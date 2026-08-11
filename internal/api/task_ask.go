@@ -65,7 +65,9 @@ func (s *TaskAppService) AskTaskBlocking(ctx context.Context, taskID, question s
 		}
 		if ap.PendingAnswer != "" {
 			// An answer arrived while the agent was disconnected. Deliver it now.
-			return s.consumePendingAnswer(task, ap.PendingAnswer)
+			// The recorded "answer" action is attributed to ap.PendingAnswerActor
+			// (whoever originally called AnswerTask), not to this re-ask's own ctx.
+			return s.consumePendingAnswer(task, ap.PendingAnswer, ap.PendingAnswerActor)
 		}
 		// Re-attach to the existing question and block again (no fresh ask).
 		if err := s.BlockingAsk.Register(taskID, ap.QuestionID); err != nil {
@@ -103,7 +105,7 @@ func (s *TaskAppService) AskTaskBlocking(ctx context.Context, taskID, question s
 	if err != nil {
 		return "", &StatusError{Code: http.StatusInternalServerError, Message: "encode action payload: " + err.Error()}
 	}
-	if _, err := s.Workflow.ApplyAction(ctx, taskID, ApplyActionRequest{Type: "ask", Payload: askPayload}); err != nil {
+	if _, err := s.Workflow.ApplyAction(orchestrator.WithActor(ctx, orchestrator.ActorTask(taskID)), taskID, ApplyActionRequest{Type: "ask", Payload: askPayload}); err != nil {
 		return "", err
 	}
 
@@ -182,20 +184,20 @@ func (s *TaskAppService) graceAbortCheck(taskID, qid string) {
 // flips the task awaiting → executing, strips the awaiting trait (removing the
 // parked answer), records the audit action, and returns the answer. Used when an
 // answer arrived while the agent was disconnected and the agent has re-asked.
-func (s *TaskAppService) consumePendingAnswer(task *orchestrator.Task, answer string) (string, error) {
+func (s *TaskAppService) consumePendingAnswer(task *orchestrator.Task, answer, actor string) (string, error) {
 	fromStatus := task.Status
 	task.Status = orchestrator.TaskStatusExecuting
 	task.Payload = orchestrator.StripAwaitingTrait(task.Payload)
 	if err := s.Tasks.UpdateTask(task); err != nil {
 		return "", &StatusError{Code: http.StatusInternalServerError, Message: err.Error()}
 	}
-	s.recordAnswerAction(task.ID, fromStatus)
+	s.recordAnswerAction(task.ID, fromStatus, actor)
 	return answer, nil
 }
 
 // recordAnswerAction writes the awaiting → executing "answer" audit action.
 // Best-effort: a failure is logged, never returned.
-func (s *TaskAppService) recordAnswerAction(taskID string, fromStatus orchestrator.TaskStatus) {
+func (s *TaskAppService) recordAnswerAction(taskID string, fromStatus orchestrator.TaskStatus, actor string) {
 	if s.Actions == nil {
 		return
 	}
@@ -204,6 +206,7 @@ func (s *TaskAppService) recordAnswerAction(taskID string, fromStatus orchestrat
 		Type:       "answer",
 		FromStatus: fromStatus,
 		ToStatus:   orchestrator.TaskStatusExecuting,
+		Actor:      actor,
 	}); err != nil {
 		slog.Warn("blocking answer: record answer action failed", "task_id", taskID, "error", err)
 	}
@@ -225,11 +228,12 @@ func (s *TaskAppService) recordAnswerAction(taskID string, fromStatus orchestrat
 //
 // The task pointer is the one returned by GetTask; mutating + UpdateTask
 // persists it.
-func (s *TaskAppService) answerBlocking(task *orchestrator.Task, answer string) error {
+func (s *TaskAppService) answerBlocking(ctx context.Context, task *orchestrator.Task, answer string) error {
 	if s.BlockingAsk == nil {
 		return &StatusError{Code: http.StatusInternalServerError, Message: "blocking ask is not configured"}
 	}
 	qid := orchestrator.GetAwaitingPayload(task.Payload).QuestionID
+	actor := orchestrator.ActorFromContext(ctx)
 
 	if s.BlockingAsk.Notify(qid, answer) {
 		// Fast path: a live agent received the answer in-memory.
@@ -239,13 +243,14 @@ func (s *TaskAppService) answerBlocking(task *orchestrator.Task, answer string) 
 		if err := s.Tasks.UpdateTask(task); err != nil {
 			return &StatusError{Code: http.StatusInternalServerError, Message: err.Error()}
 		}
-		s.recordAnswerAction(task.ID, fromStatus)
+		s.recordAnswerAction(task.ID, fromStatus, actor)
 		return nil
 	}
 
-	// Slow path: no live waiter. Park the answer durably; the agent collects it
-	// on its next ask. The task stays awaiting until then.
-	task.Payload = orchestrator.SetPendingAnswer(task.Payload, answer)
+	// Slow path: no live waiter. Park the answer (and who gave it) durably;
+	// the agent collects both on its next ask. The task stays awaiting until
+	// then.
+	task.Payload = orchestrator.SetPendingAnswer(task.Payload, answer, actor)
 	if err := s.Tasks.UpdateTask(task); err != nil {
 		return &StatusError{Code: http.StatusInternalServerError, Message: err.Error()}
 	}
@@ -293,7 +298,7 @@ func (s *TaskAppService) abortDanglingAsk(taskID string, cause error) {
 		"code":    "ask_canceled",
 		"message": "blocking ask was canceled (daemon shutdown or agent disconnect): " + cause.Error(),
 	})
-	if _, err := s.Workflow.ApplyAction(context.Background(), taskID, ApplyActionRequest{
+	if _, err := s.Workflow.ApplyAction(orchestrator.WithActor(context.Background(), orchestrator.ActorDaemon), taskID, ApplyActionRequest{
 		Type:    "abort",
 		Payload: payload,
 	}); err != nil {

@@ -154,4 +154,8 @@ type Action struct {
 	FromStatus TaskStatus      `json:"from_status,omitempty"`
 	ToStatus   TaskStatus      `json:"to_status,omitempty"`
 	CreatedAt  time.Time       `json:"created_at"`
+	// Actor は誰/何がこの action を押したか (ActorHuman / ActorDaemon /
+	// ActorTask(taskID) のいずれか)。旧レコードは空文字 (移行前データ、または
+	// 書き込み側が未対応)。docs/plans/cross-project-issue-triage.md 論点11。
+	Actor string `json:"actor,omitempty"`
 }

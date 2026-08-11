@@ -5,6 +5,8 @@ import (
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
+
+	"github.com/novshi-tech/boid/internal/orchestrator"
 )
 
 type ActionHandler struct {
@@ -30,7 +32,7 @@ func (h *ActionHandler) Apply(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	result, err := h.Service.ApplyAction(r.Context(), taskID, req)
+	result, err := h.Service.ApplyAction(orchestrator.WithActor(r.Context(), orchestrator.ActorHuman), taskID, req)
 	if err != nil {
 		writeServiceError(w, err)
 		return

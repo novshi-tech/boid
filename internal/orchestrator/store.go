@@ -365,9 +365,9 @@ func CreateAction(dbtx db.DBTX, a *Action) error {
 	}
 
 	_, err := dbtx.Exec(
-		`INSERT INTO actions (id, task_id, type, payload, from_status, to_status, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		a.ID, a.TaskID, a.Type, string(a.Payload), string(a.FromStatus), string(a.ToStatus), a.CreatedAt,
+		`INSERT INTO actions (id, task_id, type, payload, from_status, to_status, created_at, actor)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		a.ID, a.TaskID, a.Type, string(a.Payload), string(a.FromStatus), string(a.ToStatus), a.CreatedAt, a.Actor,
 	)
 	if err != nil {
 		return fmt.Errorf("insert action: %w", err)
@@ -377,7 +377,7 @@ func CreateAction(dbtx db.DBTX, a *Action) error {
 
 func ListActionsByTask(dbtx db.DBTX, taskID string) ([]*Action, error) {
 	rows, err := dbtx.Query(
-		`SELECT id, task_id, type, payload, from_status, to_status, created_at FROM actions WHERE task_id = ? ORDER BY created_at`, taskID,
+		`SELECT id, task_id, type, payload, from_status, to_status, created_at, actor FROM actions WHERE task_id = ? ORDER BY created_at`, taskID,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("list actions: %w", err)
@@ -388,7 +388,7 @@ func ListActionsByTask(dbtx db.DBTX, taskID string) ([]*Action, error) {
 	for rows.Next() {
 		var a Action
 		var payload, fromStatus, toStatus string
-		if err := rows.Scan(&a.ID, &a.TaskID, &a.Type, &payload, &fromStatus, &toStatus, &a.CreatedAt); err != nil {
+		if err := rows.Scan(&a.ID, &a.TaskID, &a.Type, &payload, &fromStatus, &toStatus, &a.CreatedAt, &a.Actor); err != nil {
 			return nil, fmt.Errorf("scan action: %w", err)
 		}
 		a.Payload = json.RawMessage(payload)

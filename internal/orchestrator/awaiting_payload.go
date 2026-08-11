@@ -27,6 +27,13 @@ type AwaitingPayload struct {
 	Question      string `json:"question,omitempty"`
 	QuestionID    string `json:"question_id,omitempty"`
 	PendingAnswer string `json:"pending_answer,omitempty"`
+	// PendingAnswerActor carries the Actor (see actor.go) of whoever called
+	// AnswerTask when the answer had to be parked durably (no live agent
+	// waiting) — the slow path in api.TaskAppService.answerBlocking.
+	// consumePendingAnswer reads this back so the "answer" Action it records
+	// on delivery is attributed to the original answerer, not to the agent's
+	// re-ask call that happens to be the one consuming it.
+	PendingAnswerActor string `json:"pending_answer_actor,omitempty"`
 }
 
 // ClearPendingAnswer removes the pending_answer field from the awaiting trait
@@ -53,6 +60,7 @@ func ClearPendingAnswer(payload json.RawMessage) json.RawMessage {
 		return payload
 	}
 	ap.PendingAnswer = ""
+	ap.PendingAnswerActor = ""
 	apJSON, err := json.Marshal(ap)
 	if err != nil {
 		return payload
@@ -72,7 +80,7 @@ func ClearPendingAnswer(payload json.RawMessage) json.RawMessage {
 // killed by a harness command-timeout), the answer is parked here so the agent
 // picks it up on its next ask. If the awaiting trait is absent, one is created
 // holding just the answer so it is never silently dropped.
-func SetPendingAnswer(payload json.RawMessage, answer string) json.RawMessage {
+func SetPendingAnswer(payload json.RawMessage, answer, actor string) json.RawMessage {
 	top := map[string]json.RawMessage{}
 	if len(payload) > 0 {
 		if err := json.Unmarshal(payload, &top); err != nil {
@@ -84,6 +92,7 @@ func SetPendingAnswer(payload json.RawMessage, answer string) json.RawMessage {
 		_ = json.Unmarshal(raw, &ap)
 	}
 	ap.PendingAnswer = answer
+	ap.PendingAnswerActor = actor
 	apJSON, err := json.Marshal(ap)
 	if err != nil {
 		return payload

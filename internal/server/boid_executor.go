@@ -316,7 +316,7 @@ func (e *boidBuiltinExecutor) ExecuteBoidBuiltin(goCtx context.Context, ctx sand
 			}
 			applyReq.Payload = payload
 		}
-		if _, err := e.workflow.ApplyAction(context.Background(), req.TaskID, applyReq); err != nil {
+		if _, err := e.workflow.ApplyAction(orchestrator.WithActor(context.Background(), orchestrator.ActorTask(ctx.TaskID)), req.TaskID, applyReq); err != nil {
 			return &sandbox.ExecResponse{ExitCode: 1, Stderr: err.Error()}
 		}
 		return &sandbox.ExecResponse{
@@ -356,7 +356,7 @@ func (e *boidBuiltinExecutor) ExecuteBoidBuiltin(goCtx context.Context, ctx sand
 		if !ctx.AllowsProject(existing.ProjectID) {
 			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid task answer is restricted to the current workspace"}
 		}
-		if err := e.tasks.AnswerTask(context.Background(), req.TaskID, req.QuestionID, req.Answer); err != nil {
+		if err := e.tasks.AnswerTask(orchestrator.WithActor(context.Background(), orchestrator.ActorTask(ctx.TaskID)), req.TaskID, req.QuestionID, req.Answer); err != nil {
 			return &sandbox.ExecResponse{ExitCode: 1, Stderr: err.Error()}
 		}
 		return &sandbox.ExecResponse{
@@ -566,7 +566,7 @@ func (e *boidBuiltinExecutor) ExecuteBoidBuiltin(goCtx context.Context, ctx sand
 		if e.workflow == nil {
 			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid action send unavailable"}
 		}
-		if _, err := e.workflow.ApplyAction(context.Background(), req.TaskID, api.ApplyActionRequest{
+		if _, err := e.workflow.ApplyAction(orchestrator.WithActor(context.Background(), orchestrator.ActorTask(ctx.TaskID)), req.TaskID, api.ApplyActionRequest{
 			Type:    req.ActionType,
 			Payload: req.Payload,
 		}); err != nil {
@@ -593,7 +593,7 @@ func (e *boidBuiltinExecutor) ExecuteBoidBuiltin(goCtx context.Context, ctx sand
 		if !ctx.AllowsProject(existing.ProjectID) {
 			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid task wake is restricted to the current workspace"}
 		}
-		app, err := e.workflow.Wake(context.Background(), req.TaskID)
+		app, err := e.workflow.Wake(orchestrator.WithActor(context.Background(), orchestrator.ActorTask(ctx.TaskID)), req.TaskID)
 		if err != nil {
 			return &sandbox.ExecResponse{ExitCode: 1, Stderr: err.Error()}
 		}
