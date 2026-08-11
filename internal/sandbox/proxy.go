@@ -95,11 +95,31 @@ func (p *Proxy) Start(ctx context.Context) (int, error) {
 	return ln.Addr().(*net.TCPAddr).Port, nil
 }
 
+// Stop closes the listener and every connection served through it.
+//
+// Both the server AND the listener are closed, which looks redundant but is
+// not: Start hands the listener to http.Server.Serve on a NEW GOROUTINE, and
+// if Stop's Close lands before that goroutine gets scheduled, Serve's own
+// trackListener call sees the already-shutting-down server, returns
+// ErrServerClosed immediately, and never closes the listener it was handed.
+// The socket then stays bound for the life of the process.
+//
+// Harmless while ports were ephemeral — nothing ever asked for that number
+// again. Not harmless now that a port is meant to be reused across restarts:
+// found by TestProxyManager_ReusesPersistedPort failing on CI (a loaded
+// machine loses that race far more often than a developer's), where the
+// leaked listener kept the port and the "restarted" manager had to
+// reallocate — i.e. exactly the port drift this feature exists to prevent.
 func (p *Proxy) Stop() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.server != nil {
 		p.server.Close()
+	}
+	if p.listener != nil {
+		// No-op (returns an already-closed error we ignore) in the normal
+		// case where Serve did close it.
+		_ = p.listener.Close()
 	}
 }
 

@@ -570,3 +570,44 @@ func TestProxyManager_ReservedPortsErrorIsNonFatal(t *testing.T) {
 		t.Errorf("GetOrCreate with a failing ReservedPorts = %v, want nil", err)
 	}
 }
+
+// TestProxyManager_StopReleasesPortImmediately is the regression test for the
+// listener leak CI found (TestProxyManager_ReusesPersistedPort failed there
+// while passing locally).
+//
+// Proxy.Start hands the listener to http.Server.Serve on a NEW GOROUTINE. If
+// Stop's Close lands before that goroutine is scheduled, Serve sees an
+// already-shutting-down server, returns ErrServerClosed immediately, and
+// never closes the listener it was handed — leaving the port bound for the
+// life of the process. A loaded machine loses that race often; a developer's
+// laptop almost never does.
+//
+// Stopping and immediately re-binding the same port is the tightest way to
+// pin it, and the loop makes the scheduling race actually show up.
+func TestProxyManager_StopReleasesPortImmediately(t *testing.T) {
+	for i := 0; i < 50; i++ {
+		ctx, cancel := context.WithCancel(context.Background())
+
+		store := newFakePortStore()
+		m := sandbox.NewProxyManager()
+		m.PortStore = store
+		m.BindHost = "127.0.0.1"
+		m.Start(ctx)
+
+		port, err := m.GetOrCreate("ws-a", nil)
+		if err != nil {
+			cancel()
+			t.Fatalf("iteration %d: GetOrCreate: %v", i, err)
+		}
+		// Deliberately no delay: StopAll may well run before the Serve
+		// goroutine has been scheduled at all. That is the case under test.
+		m.StopAll()
+		cancel()
+
+		ln, err := net.Listen("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(port)))
+		if err != nil {
+			t.Fatalf("iteration %d: port %d still bound after StopAll: %v — a leaked listener means the next daemon lifetime cannot reuse this workspace's port", i, port, err)
+		}
+		ln.Close()
+	}
+}
