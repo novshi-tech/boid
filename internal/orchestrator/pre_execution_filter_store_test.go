@@ -2,6 +2,7 @@ package orchestrator_test
 
 import (
 	"testing"
+	"time"
 
 	"github.com/novshi-tech/boid/internal/orchestrator"
 )
@@ -324,5 +325,66 @@ func TestListTasks_Queue_ExcludesWorking(t *testing.T) {
 	}
 	if !ids[ready.ID] {
 		t.Errorf("queue view must still include a ready (pre-execution) task")
+	}
+}
+
+// TestListTasks_QueueNext_MembershipAndOrdering pins down PR-3's queue の決定論的評価
+// rules 2/3: state ∈ {ready, triaged} かつ urgency ∈ {now, today, week}
+// (someday/empty excluded), ordered by urgency (now>today>week) then state
+// (ready before triaged) then created_at ascending then id. This is
+// deliberately a NEW filter value ("queue_next"), distinct from the existing
+// "queue" keyword (PR-1's preExecutionStatusSQLList-based broader superset,
+// pinned by TestListTasks_Queue_ReturnsExactlyPreExecutionSet above) — see
+// docs/plans/cross-project-issue-triage.md PR-3 scoping notes for why "queue"
+// itself is left unchanged.
+func TestListTasks_QueueNext_MembershipAndOrdering(t *testing.T) {
+	d := createTestProject(t)
+
+	mk := func(title string, status orchestrator.TaskStatus, urgency string) *orchestrator.Task {
+		task := &orchestrator.Task{ProjectID: "proj-1", Title: title, Behavior: "dev", Status: status}
+		if err := orchestrator.CreateTask(d.Conn, task); err != nil {
+			t.Fatalf("create %s: %v", title, err)
+		}
+		if urgency != "" {
+			if err := orchestrator.UpsertTaskTriage(d.Conn, &orchestrator.TaskTriage{TaskID: task.ID, Urgency: urgency}); err != nil {
+				t.Fatalf("upsert task_triage %s: %v", title, err)
+			}
+		}
+		time.Sleep(2 * time.Millisecond) // force distinct created_at for ordering
+		return task
+	}
+
+	// Created oldest-first as triaged, then ready, then today, then week — so
+	// the assertions below only pass if state-rank (ready before triaged)
+	// wins over created_at, and urgency-rank wins over both.
+	triagedNowOlder := mk("triaged-now-older", orchestrator.TaskStatusTriaged, orchestrator.UrgencyNow)
+	readyNow := mk("ready-now", orchestrator.TaskStatusReady, orchestrator.UrgencyNow)
+	triagedToday := mk("triaged-today", orchestrator.TaskStatusTriaged, orchestrator.UrgencyToday)
+	readyWeek := mk("ready-week", orchestrator.TaskStatusReady, orchestrator.UrgencyWeek)
+	_ = mk("triaged-someday", orchestrator.TaskStatusTriaged, orchestrator.UrgencySomeday)
+	_ = mk("ready-no-urgency", orchestrator.TaskStatusReady, "")
+	_ = mk("parked-now", orchestrator.TaskStatusParked, orchestrator.UrgencyNow)
+	_ = mk("captured-now", orchestrator.TaskStatusCaptured, orchestrator.UrgencyNow)
+	_ = mk("working-now", orchestrator.TaskStatusWorking, orchestrator.UrgencyNow)
+	_ = mk("done-now", orchestrator.TaskStatusDone, orchestrator.UrgencyNow)
+
+	got, err := orchestrator.ListTasks(d.Conn, orchestrator.TaskFilter{Status: "queue_next"})
+	if err != nil {
+		t.Fatalf("ListTasks: %v", err)
+	}
+
+	var gotIDs []string
+	for _, tk := range got {
+		gotIDs = append(gotIDs, tk.ID)
+	}
+	// Ordering: now (ready first, then triaged, oldest first) > today > week.
+	want := []string{readyNow.ID, triagedNowOlder.ID, triagedToday.ID, readyWeek.ID}
+	if len(gotIDs) != len(want) {
+		t.Fatalf("queue_next returned %d tasks, want %d: got %v", len(gotIDs), len(want), gotIDs)
+	}
+	for i := range want {
+		if gotIDs[i] != want[i] {
+			t.Errorf("position %d: got task id %s, want %s (order: %v)", i, gotIDs[i], want[i], gotIDs)
+		}
 	}
 }

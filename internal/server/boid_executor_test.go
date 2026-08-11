@@ -40,6 +40,10 @@ func (w *recordingWorkflow) ApplyAction(_ context.Context, taskID string, req ap
 	return &api.ActionApplication{Task: &orchestrator.Task{ID: taskID, Status: orchestrator.TaskStatusExecuting}}, nil
 }
 
+func (w *recordingWorkflow) Wake(ctx context.Context, taskID string) (*api.ActionApplication, error) {
+	return w.ApplyAction(ctx, taskID, api.ApplyActionRequest{Type: "wake"})
+}
+
 func (w *recordingWorkflow) CompleteJob(_ context.Context, _ string, _ api.JobDoneRequest) (*api.Job, error) {
 	return &api.Job{}, nil
 }
@@ -1547,6 +1551,10 @@ func (w *askWorkflowStub) ApplyAction(_ context.Context, taskID string, req api.
 		}
 	}
 	return &api.ActionApplication{Task: &orchestrator.Task{ID: taskID}}, nil
+}
+
+func (w *askWorkflowStub) Wake(ctx context.Context, taskID string) (*api.ActionApplication, error) {
+	return w.ApplyAction(ctx, taskID, api.ApplyActionRequest{Type: "wake"})
 }
 
 func (w *askWorkflowStub) CompleteJob(_ context.Context, _ string, _ api.JobDoneRequest) (*api.Job, error) {

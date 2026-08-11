@@ -115,6 +115,14 @@ CREATE TABLE web_pairing_codes (
   consumed_at TIMESTAMP
 );
 
+-- table: workspace_watchdog
+CREATE TABLE workspace_watchdog (
+    workspace_id            TEXT PRIMARY KEY REFERENCES workspaces(slug) ON DELETE CASCADE,
+    last_ingest_success_at  DATETIME,
+    last_triage_review_at   DATETIME,
+    updated_at              DATETIME NOT NULL
+);
+
 -- table: workspaces
 CREATE TABLE workspaces (
   slug                TEXT PRIMARY KEY,

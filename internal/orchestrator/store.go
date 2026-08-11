@@ -244,7 +244,21 @@ func ListTasks(dbtx db.DBTX, filter TaskFilter) ([]*Task, error) {
 		// PR-3 の Web UI queue タブが束ねる予定の集合を backend に先出し
 		// (Opus指摘#8): PR-1〜PR-3 の間も `?status=queue` で pre-execution
 		// な triage task が見えるようにする安価な保険。
+		//
+		// PR-3 では意図的にこの意味を変えない (TestListTasks_Queue_
+		// ReturnsExactlyPreExecutionSet がこの広い superset を pin 済み)。
+		// 実際の Web UI queue タブ・queue の決定論的評価 (決定12) の対象は
+		// 下の "queue_next" — urgency を伴う狭い述語 (queue 節 rule 2/3) —
+		// を新設して使う。
 		conditions = append(conditions, "t.status IN ("+preExecutionStatusSQLList+")")
+	} else if filter.Status == "queue_next" {
+		// queue の決定論的評価 節 rule 2 (queue 所属): state ∈ {ready, triaged}
+		// かつ urgency ∈ {now, today, week}。captured は UC-4 の専用確認
+		// セクション行き (QueueEligible の doc comment参照)、someday/空 urgency
+		// は棚卸し (UC-5) でのみ動く (決定9)。INNER JOIN なので task_triage
+		// 行が無い ready/triaged task (urgency 未設定) は自然に除外される。
+		joins = append(joins, "INNER JOIN task_triage tt ON tt.task_id = t.id")
+		conditions = append(conditions, "t.status IN ('ready','triaged') AND tt.urgency IN ('now','today','week')")
 	} else if filter.Status != "" {
 		conditions = append(conditions, "t.status = ?")
 		args = append(args, filter.Status)
@@ -278,6 +292,16 @@ func ListTasks(dbtx db.DBTX, filter TaskFilter) ([]*Task, error) {
 	}
 	if filter.Status == "closed" {
 		query += " ORDER BY t.updated_at DESC"
+	} else if filter.Status == "queue_next" {
+		// queue の決定論的評価 節 rule 3 (並び順、全順序): urgency (now > today
+		// > week) → state (ready が先) → created_at 昇順 (古いものを腐らせない)
+		// → id。 orchestrator.UrgencyRank / StateRank express the same rule as
+		// pure Go functions (queue.go) for unit testing; this CASE expression
+		// must stay in lockstep with them.
+		query += " ORDER BY " +
+			"CASE tt.urgency WHEN 'now' THEN 0 WHEN 'today' THEN 1 WHEN 'week' THEN 2 ELSE 3 END, " +
+			"CASE t.status WHEN 'ready' THEN 0 ELSE 1 END, " +
+			"t.created_at ASC, t.id ASC"
 	} else {
 		query += " ORDER BY t.created_at DESC"
 	}

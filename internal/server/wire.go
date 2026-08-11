@@ -1449,6 +1449,20 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 	// already an exotic (effectively Linux-only-with-no-$HOME) situation.
 	srv.liveConfig = boidCfg
 	srv.notifySvc = notifySvc
+	// queue の決定論的評価 節 rule 4 (notify) — PR-3 wires the SAME notifySvc
+	// instance workflow already shares with TaskAppService.Notify (see the
+	// comment above) into TaskWorkflowService.Notifier, so `notify.command`
+	// hot-reload (ApplyConfigYAML -> notifySvc.Update) also covers queue
+	// entry notifications with no extra wiring.
+	workflow.Notifier = notifySvc
+	// queue の決定論的評価 節 rule 1 (wake 評価) — periodic sweep, mirroring the
+	// GC loop's shape below. 1 分間隔は PR-3 の初期値 (config 化はしない —
+	// GC 同様 config.yaml に足す価値は運用実績を見てから判断)。
+	srv.queueSweepLoop = &api.QueueSweepLoop{
+		Store:        workflow,
+		Interval:     1 * time.Minute,
+		InitialDelay: 20 * time.Second,
+	}
 	// No revision counter to seed here (BLOCKER, codex review round 2):
 	// GET /api/config's ETag is now derived from config.yaml's own bytes
 	// (internal/server/config_edit.go's computeRevision), computed fresh on
@@ -2249,6 +2263,10 @@ func mountRoutes(srv *Server, runtime *appRuntime) error {
 			// configHandler above uses), mirroring configHandler's own
 			// `Service: srv` wiring just above.
 			ConfigService: srv,
+			// queue_next view enrichment (cross-project-issue-triage Phase 1
+			// PR-3) — same taskRepo instance already wired as
+			// TaskWorkflowService.TaskTriage above.
+			TaskTriage: runtime.taskRepo,
 		}
 		r.Get("/api/tasks/{id}/events", webHandler.TaskEvents)
 		r.Mount("/", webHandler.Routes())

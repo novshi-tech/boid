@@ -214,11 +214,12 @@ type Server struct {
 	// NewTCPAPIAuthMiddleware — a single shared-secret Bearer token, no
 	// TLS, no cookie/loopback-trust fallback. nil whenever the listener
 	// was never bound.
-	cliLn      net.Listener
-	cliServer  *http.Server
-	cliHandler http.Handler
-	gcLoop     *orchestrator.GCLoop // nil if GC is disabled
-	workflow   *api.TaskWorkflowService
+	cliLn          net.Listener
+	cliServer      *http.Server
+	cliHandler     http.Handler
+	gcLoop         *orchestrator.GCLoop // nil if GC is disabled
+	queueSweepLoop *api.QueueSweepLoop  // cross-project-issue-triage Phase 1 PR-3: queue の決定論的評価 rule 1 (wake 評価)
+	workflow       *api.TaskWorkflowService
 
 	// hostCommands is the aggregated host_commands config assembled by
 	// buildProjectStore's preflight (docs/plans/workspace-db-consolidation.md
@@ -665,6 +666,12 @@ func (s *Server) Start(ctx context.Context) error {
 	// Start GC loop goroutine if configured.
 	if s.gcLoop != nil {
 		go s.gcLoop.Run(ctx)
+	}
+
+	// Start the queue wake-evaluation sweep loop (cross-project-issue-triage
+	// Phase 1 PR-3, queue の決定論的評価 節 rule 1).
+	if s.queueSweepLoop != nil {
+		go s.queueSweepLoop.Run(ctx)
 	}
 
 	// Per-daemon internal CA (docs/plans/phase6-container-backend.md

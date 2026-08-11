@@ -104,10 +104,12 @@ func newBoidBuiltinExecutor(workflow api.WorkflowService, tasks *api.TaskAppServ
 // validateTaskListStatus rejects status values ListTasks doesn't understand
 // before they reach the DB layer, where they were previously passed through
 // unvalidated (docs/plans/cross-project-issue-triage.md Phase 1 実測結果 項10).
-// Empty (no filter), the special keywords ("open"/"closed"/"queue"), and any
-// exact orchestrator.TaskStatus value are accepted.
+// Empty (no filter), the special keywords ("open"/"closed"/"queue"/
+// "queue_next" — PR-3's narrower urgency-aware queue membership predicate,
+// see store.go's ListTasks), and any exact orchestrator.TaskStatus value are
+// accepted.
 func validateTaskListStatus(status string) error {
-	if status == "" || status == "open" || status == "closed" || status == "queue" {
+	if status == "" || status == "open" || status == "closed" || status == "queue" || status == "queue_next" {
 		return nil
 	}
 	if _, ok := orchestrator.ParseTaskStatus(status); ok {

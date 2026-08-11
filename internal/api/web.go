@@ -85,6 +85,12 @@ type WebHandler struct {
 	// docs/plans/volume-only-daemon.md §論点 f) — nil in any test/wiring
 	// that never registers the /settings route.
 	ConfigService SettingsConfigService
+
+	// TaskTriage backs the queue_next view's 文脈同梱 enrichment (urgency +
+	// summary per row, docs/plans/cross-project-issue-triage.md Phase 1
+	// PR-3) — nil-safe: when unset, queue_next tasks render with no
+	// urgency/summary badge instead of failing the whole list.
+	TaskTriage TaskTriageStore
 }
 
 func (h *WebHandler) Routes() chi.Router {
@@ -97,6 +103,7 @@ func (h *WebHandler) Routes() chi.Router {
 	r.Get("/tasks/{id}/edit", h.GetTaskEdit)
 	r.Post("/tasks/{id}/edit", h.PostEdit)
 	r.Post("/tasks/{id}/action", h.PostAction)
+	r.Post("/tasks/{id}/wake", h.PostWake)
 	r.Post("/tasks/{id}/duplicate", h.PostDuplicate)
 	r.Post("/tasks/{id}/rerun", h.PostRerun)
 	r.Get("/tasks/{id}/reopen", h.ReopenForm)
@@ -262,6 +269,28 @@ func taskFormAttachments(r *http.Request) []*multipart.FileHeader {
 	return r.MultipartForm.File["attachments"]
 }
 
+// queueTriageByTaskID batch-fetches task_triage rows for the queue_next
+// view's enrichment (BuildQueueItems). A single task's lookup failing is
+// logged and skipped rather than aborting the whole page — same "don't let
+// one bad row sink the list" posture as BuildQueueItems/triageSummary
+// themselves. h.TaskTriage == nil degrades to no enrichment (empty map),
+// not an error — queue_next still lists tasks correctly, just without
+// urgency/summary badges.
+func (h *WebHandler) queueTriageByTaskID(tasks []*orchestrator.Task) map[string]*orchestrator.TaskTriage {
+	out := map[string]*orchestrator.TaskTriage{}
+	if h.TaskTriage == nil {
+		return out
+	}
+	for _, t := range tasks {
+		tt, err := h.TaskTriage.GetTaskTriage(t.ID)
+		if err != nil {
+			continue
+		}
+		out[t.ID] = tt
+	}
+	return out
+}
+
 func (h *WebHandler) TaskList(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	filter := orchestrator.TaskFilter{
@@ -291,9 +320,17 @@ func (h *WebHandler) TaskList(w http.ResponseWriter, r *http.Request) {
 
 	projectNames := projectNameMap(projects)
 	var items []components.TreeItem
-	if filter.Status == "closed" {
+	switch {
+	case filter.Status == "queue_next":
+		// queue_next (cross-project-issue-triage Phase 1 PR-3) is a flat,
+		// deterministically-ordered list — 文脈同梱: 1項目 = 1判断 (成功の定義)
+		// reads better as a flat priority list than a parent/child tree, and
+		// its SQL ordering (store.go's ListTasks "queue_next" branch) would
+		// be discarded by BuildTreeItems' own grouping/sort anyway.
+		items = BuildQueueItems(tasks, projectNames, h.queueTriageByTaskID(tasks))
+	case filter.Status == "closed":
 		items = BuildFlatItems(tasks, projectNames)
-	} else {
+	default:
 		items = BuildTreeItems(tasks, projectNames)
 	}
 
@@ -464,6 +501,18 @@ func (h *WebHandler) PostAction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := h.Service.ApplyAction(id, actionType); err != nil {
+		redirectTaskErr(w, r, id, err)
+		return
+	}
+	redirectTask(w, r, id)
+}
+
+// PostWake handles the dedicated Wake button (cross-project-issue-triage
+// Phase 1 PR-3) — wake_triaged/wake_ready are Manual:false so they cannot go
+// through PostAction's generic form; see WebService.Wake's doc comment.
+func (h *WebHandler) PostWake(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	if err := h.Service.Wake(id); err != nil {
 		redirectTaskErr(w, r, id, err)
 		return
 	}

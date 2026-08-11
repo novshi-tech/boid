@@ -155,6 +155,17 @@ func (s *WebAppService) ApplyAction(taskID string, actionType string) error {
 	return err
 }
 
+// Wake delegates to TaskWorkflowService.Wake — see WebService.Wake's own
+// doc comment (store.go) for why this is a dedicated method rather than
+// going through ApplyAction.
+func (s *WebAppService) Wake(taskID string) error {
+	if s.Workflow == nil {
+		return &StatusError{Code: http.StatusInternalServerError, Message: "workflow service not configured"}
+	}
+	_, err := s.Workflow.Wake(context.Background(), taskID)
+	return err
+}
+
 func (s *WebAppService) ListJobs(status string) ([]JobWithContext, error) {
 	jobs, err := s.GlobalJobs.ListJobsWithContext(JobListFilter{Status: status})
 	if err != nil {
