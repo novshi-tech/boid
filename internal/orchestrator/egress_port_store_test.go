@@ -100,3 +100,60 @@ func TestEgressPortStore_RejectsEmptyKey(t *testing.T) {
 		t.Error("SavePort with an empty key = nil, want an error")
 	}
 }
+
+// TestEgressPortStore_ReservedPorts covers the lookup the allocator uses to
+// avoid handing one key a port another key is already reserving.
+func TestEgressPortStore_ReservedPorts(t *testing.T) {
+	store := orchestrator.NewEgressPortStore(newTestDB(t))
+
+	if got, err := store.ReservedPorts(); err != nil || len(got) != 0 {
+		t.Fatalf("ReservedPorts on an empty store = (%v, %v), want (empty, nil)", got, err)
+	}
+
+	if err := store.SavePort("ws-a", 30412); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SavePort("__no_workspace__", 30777); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := store.ReservedPorts()
+	if err != nil {
+		t.Fatalf("ReservedPorts: %v", err)
+	}
+	want := map[int]string{30412: "ws-a", 30777: "__no_workspace__"}
+	if len(got) != len(want) {
+		t.Fatalf("ReservedPorts = %v, want %v", got, want)
+	}
+	for port, key := range want {
+		if got[port] != key {
+			t.Errorf("ReservedPorts[%d] = %q, want %q", port, got[port], key)
+		}
+	}
+}
+
+// TestWorkspaceRepository_Remove_ReleasesEgressPort: the reservation table
+// has no FK to workspaces(slug) (its key space includes the non-slug
+// "__no_workspace__"), so nothing cascades. A removed workspace's row left
+// behind would hold a band slot forever, and the allocator now treats
+// reservations as off-limits — orphans would slowly eat the band.
+func TestWorkspaceRepository_Remove_ReleasesEgressPort(t *testing.T) {
+	conn := newTestDB(t)
+	repo := orchestrator.NewWorkspaceRepository(conn)
+	store := orchestrator.NewEgressPortStore(conn)
+
+	if err := repo.Create("doomed", &orchestrator.WorkspaceMeta{}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := store.SavePort("doomed", 30412); err != nil {
+		t.Fatalf("SavePort: %v", err)
+	}
+
+	if err := repo.Remove("doomed"); err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+
+	if _, ok, err := store.LoadPort("doomed"); err != nil || ok {
+		t.Errorf("LoadPort after Remove = (_, %v, %v), want (_, false, nil)", ok, err)
+	}
+}

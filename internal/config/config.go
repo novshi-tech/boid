@@ -390,6 +390,20 @@ func loadFromPath(path string) (*Config, error) {
 	if err := yaml.Unmarshal(data, cfg); err != nil {
 		return nil, err
 	}
+	// The egress proxy port band is checked HERE, not only in ValidateYAML,
+	// because ValidateYAML runs on the `boid config set/edit/apply` paths
+	// while this is the path `boid start` itself takes. A hand-edited or
+	// deploy-seeded config.yaml would otherwise reach the runtime
+	// unvalidated, where a half-set or malformed band degrades silently
+	// back to ephemeral ports — the exact "no sign that config.yaml caused
+	// it" failure the band exists to prevent
+	// (docs/plans/egress-proxy-stable-port.md). Deliberately scoped to this
+	// one key rather than turning loadFromPath into a general validator:
+	// widening that would change the failure behaviour of every existing
+	// config surface at once, which is a separate decision.
+	if err := validateEgressProxyPortRange(cfg.Sandbox.EgressProxyPortLow, cfg.Sandbox.EgressProxyPortHigh); err != nil {
+		return nil, err
+	}
 	return cfg, nil
 }
 

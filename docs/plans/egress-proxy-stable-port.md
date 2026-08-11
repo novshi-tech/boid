@@ -145,16 +145,32 @@ CREATE TABLE IF NOT EXISTS workspace_egress_port (
 
 `GetOrCreate(key, allowed)` の listener 新規作成パスを次にする。
 
-1. 永続化済みの `port` があれば、その番号で bind を試みる
+1. 永続化済みの `port` があり、かつそれが現在の帯の内側なら、その番号で bind を試みる
 2. 成功 → その listener を使う (**ここが本命のパス**)
-3. 失敗、または未割当 → 帯から新しい番号を選んで bind し、結果を永続化
+3. 失敗、未割当、または帯の外 → 帯から新しい番号を選んで bind し、結果を永続化
    (既存レコードがあれば上書き)
+
+**帯の外なら再採番する**のは、帯の変更が効くようにするため。永続ポートを
+無条件に優先すると、`ip_local_port_range` と衝突していて帯を移した operator に
+対して、まさにその移動が必要な workspace だけが古いポートに居座り続ける。
 
 新規採番は `hash(key)` を帯のサイズで割った位置から線形探索する。
 乱数ではなく hash にするのは、DB を失った場合でも同じ workspace が同じポートに
 戻る確率を上げるため (ベストエフォート、保証はしない)。
 
+探索は 2 パスに分ける。**1 パス目は他のキーが予約済みのポートを飛ばす。**
+bind が通るかどうかだけで空きを判定してはいけない — listener は dispatch 時に
+遅延生成されるので、前回起動以降 dispatch されていない workspace は
+「予約はあるが誰も listen していない」状態にある。これは bind プローブでは
+空きポートと区別できず、奪うと**その workspace のポートが黙って変わる**
+(奪った側が相手の行を消すので、相手は次の dispatch で「記録なし」として
+別のポートを取る)。これはこの機能が防ごうとしている事故そのものであり、
+しかも両端どこにもログが出ない。1 パス目で空きが無かった場合だけ、2 パス目で
+予約済みポートを奪い、その旨を犠牲になったキー名込みで warn に出す。
+
 帯が埋まっている場合は **`:0` にフォールバックし、warn を出す**。
+その事実はプロセス内に記憶し、以降の新規キーで同じ全走査を繰り返さない
+(走査は dispatch が取るロックの下で走るため)。
 ポートが不安定になるのは今と同じ状態に戻るだけであり、dispatch 自体を
 失敗させる理由にはならない。fail-closed にしない判断はここが「利便性の最適化で
 あって隔離の仕組みではない」ため — 隔離は allowlist と workspace ごとの
@@ -168,10 +184,14 @@ listener 分離が担っており、ポート番号が固定かどうかは隔�
 焼き込まれた設定が腐る瞬間そのものなので、ログに旧ポートと新ポートの両方を出す。
 
 ```
-WARN egress proxy: persisted port unavailable, reallocated
+WARN egress proxy: the persisted port was unavailable, reallocated
      key=default old_port=30412 new_port=30988
-     hint=job-side configs that baked the old port (e.g. ~/.npmrc) will need updating
+     hint=job-side configs that baked the old port (e.g. ~/.npmrc) need updating to the new one
 ```
+
+この warn は**再採番が終わってから**出す。走査の前に出すと `new_port` が
+まだ存在せず、operator は「`~/.npmrc` が腐った」とだけ告げられて、
+何に書き換えればいいのかを知る手段が無い。
 
 ## 移行
 
@@ -194,9 +214,25 @@ WARN egress proxy: persisted port unavailable, reallocated
   従来どおり `:0` で動くこと
 
 `internal/sandbox` は `internal/db` を import しない。ポートの読み書きは
-`ProxyAllocator` と同じ流儀で **interface を注入**する
-(`PortStore { Load(key string) (int, bool, error); Save(key string, port int) error }`)。
+`ProxyAllocator` と同じ流儀で **interface を注入**する。
+
+```go
+type PortStore interface {
+	LoadPort(key string) (port int, ok bool, err error)
+	SavePort(key string, port int) error
+	ReservedPorts() (map[int]string, error)
+}
+```
+
 nil の場合は現行どおり `:0` — 既存の呼び出し側とテストを一切壊さない。
+
+`ReservedPorts` は「bind できるか」と「予約されているか」が別の問いである
+ために要る (上記 2 パス探索を参照)。
+
+さらに、**config → server → ProxyManager の接続そのもの**にもテストを置く。
+両端 (config.yaml → server.Config、ProxyManager の採番挙動) だけを検証すると、
+接続の 3 行を消しても全テストが緑のまま、全プロキシが黙ってエフェメラルに
+戻る。
 
 ## 影響範囲
 
@@ -204,7 +240,7 @@ nil の場合は現行どおり `:0` — 既存の呼び出し側とテストを
 - `internal/sandbox/proxy_manager.go` — `PortStore` 注入、採番と fallback
 - `internal/db/migrate/migrations/0039_add_workspace_egress_port.sql` — 新テーブル
 - `internal/orchestrator` — `PortStore` の実装 (DB 側)
-- `internal/server/wire.go` — 配線
+- `internal/server/server.go` — 配線 (`New`)
 - `internal/config` — ポート帯の既定値と config キー
 
 ネットワーク構成、bind host、allowlist、workspace 分離のいずれにも変更は無い。

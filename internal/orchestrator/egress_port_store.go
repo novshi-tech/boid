@@ -48,6 +48,37 @@ func (s *EgressPortStore) LoadPort(key string) (int, bool, error) {
 	return port, true, nil
 }
 
+// ReservedPorts returns every recorded reservation as port -> proxy key.
+//
+// Used by the allocator to avoid handing one key a port another key is
+// already reserving. That distinction matters because proxy listeners are
+// created lazily at dispatch time: a workspace that has not been dispatched
+// since the last daemon restart has a row here with no listener behind it,
+// so a bind attempt on its port succeeds and would silently take it.
+func (s *EgressPortStore) ReservedPorts() (map[int]string, error) {
+	rows, err := s.conn.Query(`SELECT port, proxy_key FROM workspace_egress_port`)
+	if err != nil {
+		return nil, fmt.Errorf("egress port store: list reservations: %w", err)
+	}
+	defer rows.Close()
+
+	out := make(map[int]string)
+	for rows.Next() {
+		var (
+			port int
+			key  string
+		)
+		if err := rows.Scan(&port, &key); err != nil {
+			return nil, fmt.Errorf("egress port store: scan reservation: %w", err)
+		}
+		out[port] = key
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("egress port store: list reservations: %w", err)
+	}
+	return out, nil
+}
+
 // SavePort records port as key's allocation.
 //
 // Two collisions have to be handled, and both resolve in favour of the

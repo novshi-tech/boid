@@ -156,6 +156,30 @@ reaches the per-workspace proxy.
   `resolveWorkspaceProxy`, verify the floor is preserved, the composition is additive (not a
   replacement), and dispatch doesn't stall on the fallback path.
 
+### 5b. egress proxy port stability
+
+Whether each workspace's proxy listener comes back on the **same port** after a daemon restart
+(`docs/plans/egress-proxy-stable-port.md`). A drifting port silently breaks any job-side config
+that baked the proxy URL — `~/.npmrc` is the one that has actually bitten — and the job-side
+symptom is a slow retry loop, not an error.
+
+- **End A**: `sandbox.egress_proxy_port_low`/`_high` in config.yaml →
+  `config.SandboxConfig` → `cmd/start.go`'s `buildStartConfig` → `server.Config`.
+- **End B**: `New()` in `internal/server/server.go` assigning
+  `proxyManager.PortStore` / `PortRangeLow` / `PortRangeHigh`, consumed by
+  `startStable`/`walkBand` in `internal/sandbox/proxy_manager.go` and persisted through
+  `orchestrator.EgressPortStore` (`workspace_egress_port`).
+- **Invariant**: a key's port is stable across restarts; the allocator never takes a port
+  another key has **reserved** while any unreserved port remains (listeners are created lazily
+  at dispatch, so a reserved port with nothing listening is normal, not free); every port change
+  is logged with both old and new numbers; exhaustion degrades to ephemeral rather than failing
+  dispatch.
+- **When you touch it**: the classic drift here is testing both ENDS and not the JOIN — delete
+  the three assignments in `New()` and the whole feature silently reverts to ephemeral ports
+  with every test still green. Check `TestNew_WiresEgressProxyPortStore` still covers it. Also
+  check that anything new which deletes a workspace releases its `workspace_egress_port` row
+  (no FK cascade exists — the key space includes the non-slug `__no_workspace__`).
+
 ## 6. embedded-skill bind
 
 Whether the embedded skills appear at `~/.claude/skills/<name>` inside each harness's sandbox.

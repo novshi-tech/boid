@@ -2,6 +2,7 @@ package sandbox
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"hash/fnv"
 	"log/slog"
@@ -71,6 +72,11 @@ type ProxyManager struct {
 	ctx     context.Context
 	proxies map[string]*managedProxy
 	started bool
+	// bandExhausted records that a full walk of the band already came up
+	// empty in this process. The walk runs under mu, which every dispatch
+	// takes, so repeating a doomed scan for every subsequent new key would
+	// stall dispatch across all workspaces.
+	bandExhausted bool
 }
 
 // PortStore persists the port allocated to a proxy key across daemon
@@ -87,6 +93,14 @@ type PortStore interface {
 	// SavePort records port as key's allocation, replacing any previous
 	// record for that key.
 	SavePort(key string, port int) error
+	// ReservedPorts returns every recorded reservation as port -> key.
+	//
+	// The allocator needs this because "is this port free?" and "is this
+	// port spoken for?" are different questions here: listeners are created
+	// lazily at dispatch time, so a workspace that has not run since the
+	// last restart has a reservation with nothing listening on it. Binding
+	// such a port succeeds and would silently steal it.
+	ReservedPorts() (map[int]string, error)
 }
 
 // DefaultProxyPortRangeLow/High bound the default allocation band.
@@ -158,15 +172,20 @@ func (m *ProxyManager) GetOrCreate(workspaceID string, allowed []string) (int, e
 // PortStore is configured, and on a plain ephemeral port when it is not.
 //
 // The order is: persisted port first (the steady-state path, and the whole
-// reason this exists), then a deterministic walk of the band, then `:0`.
-// Every step down that ladder is a degradation in stability, never in
-// isolation — a workspace's egress is confined by its own listener's
-// allowlist, which is unaffected by which port that listener sits on. That
-// is why exhaustion falls back instead of failing dispatch.
+// reason this exists), then a walk of the band skipping ports other keys
+// have reserved, then a walk that is allowed to take a reserved-but-idle
+// port, then `:0`. Every step down that ladder is a degradation in
+// stability, never in isolation — a workspace's egress is confined by its
+// own listener's allowlist, which is unaffected by which port that listener
+// sits on. That is why exhaustion falls back instead of failing dispatch.
+//
+// Callers hold m.mu.
 func (m *ProxyManager) startStable(proxy *Proxy, key string) (int, error) {
 	if m.PortStore == nil {
 		return proxy.Start(m.ctx)
 	}
+
+	low, high := m.portRange()
 
 	persisted, ok, err := m.PortStore.LoadPort(key)
 	if err != nil {
@@ -174,55 +193,151 @@ func (m *ProxyManager) startStable(proxy *Proxy, key string) (int, error) {
 			"key", key, "error", err)
 		ok = false
 	}
+	if ok && (persisted < low || persisted > high) {
+		// The band moved under a key that already had a port (an operator
+		// changed sandbox.egress_proxy_port_low/high). Honouring the old
+		// port would make the config change a no-op for exactly the
+		// workspaces it was written for — the ones sitting on the bad band.
+		slog.Warn("egress proxy: the persisted port is outside the configured range; reallocating",
+			"key", key, "old_port", persisted, "range_low", low, "range_high", high)
+		ok = false
+	}
 	if ok {
 		proxy.DesiredPort = persisted
 		if port, startErr := proxy.Start(m.ctx); startErr == nil {
 			return port, nil
 		}
-		// Deliberately loud, and deliberately naming both numbers: this is
+	} else {
+		persisted = 0
+	}
+
+	port, allocErr := m.walkBand(proxy, key, low, high)
+	if allocErr != nil {
+		// Nothing free in the band. Fall back to the pre-feature behaviour
+		// rather than refusing to dispatch, and persist nothing — recording
+		// an ephemeral port would hand the next restart a number with no
+		// meaning. Remembered so the next new key does not repeat the whole
+		// failed scan (the scan runs under m.mu, which every dispatch takes).
+		m.bandExhausted = true
+		slog.Warn("egress proxy: no free port in the configured range; falling back to an ephemeral port (it will not survive a restart)",
+			"key", key, "range_low", low, "range_high", high)
+		proxy.DesiredPort = 0
+		return proxy.Start(m.ctx)
+	}
+
+	if persisted != 0 {
+		// Deliberately loud, and deliberately naming BOTH numbers: this is
 		// the exact moment a job-side config that baked the old port goes
 		// stale, and the symptom on the job side (a retry loop against a
-		// dead port) gives no hint of what happened.
-		slog.Warn("egress proxy: the persisted port is unavailable, reallocating",
-			"key", key, "old_port", persisted,
-			"hint", "job-side configs that baked the old port (e.g. ~/.npmrc) will need updating")
+		// dead port) gives no hint of what happened. Emitted here rather
+		// than before the walk because the new number does not exist yet
+		// up there — an operator told only the old one has nothing to act on.
+		slog.Warn("egress proxy: the persisted port was unavailable, reallocated",
+			"key", key, "old_port", persisted, "new_port", port,
+			"hint", "job-side configs that baked the old port (e.g. ~/.npmrc) need updating to the new one")
+	} else {
+		slog.Info("egress proxy: allocated a stable port", "key", key, "port", port)
 	}
-
-	low, high := m.portRange()
-	// Start the walk at a position derived from the key so that a store
-	// that was lost (fresh DB, restored backup) still tends to hand each
-	// key back the port it had. Best-effort — the walk below moves on as
-	// soon as a candidate is taken, so nothing depends on this holding.
-	span := high - low + 1
-	start := int(hashKey(key) % uint32(span))
-	for i := 0; i < span; i++ {
-		candidate := low + (start+i)%span
-		proxy.DesiredPort = candidate
-		port, startErr := proxy.Start(m.ctx)
-		if startErr != nil {
-			continue
-		}
-		if saveErr := m.PortStore.SavePort(key, port); saveErr != nil {
-			// The listener is up and usable; only the NEXT restart's
-			// stability is lost. Not worth tearing down a working proxy.
-			slog.Warn("egress proxy: persisting the allocated port failed; it may change on the next restart",
-				"key", key, "port", port, "error", saveErr)
-		}
-		return port, nil
-	}
-
-	// Nothing free in the band. Fall back to the pre-feature behaviour
-	// rather than refusing to dispatch, and persist nothing — recording an
-	// ephemeral port would hand the next restart a number with no meaning.
-	slog.Warn("egress proxy: no free port in the configured range; falling back to an ephemeral port (it will not survive a restart)",
-		"key", key, "range_low", low, "range_high", high)
-	proxy.DesiredPort = 0
-	return proxy.Start(m.ctx)
+	return port, nil
 }
 
+// walkBand finds and binds a free port in [low, high] for key, or returns an
+// error if the band has nothing to give.
+//
+// Two passes. The first skips ports another key has reserved in the store;
+// the second is allowed to take one. The split is what keeps this feature
+// from causing the very incident it exists to prevent: listeners are created
+// lazily at dispatch time, so a workspace that has not been dispatched since
+// the last restart holds a reservation with NOTHING listening on it. A
+// naive "did net.Listen succeed?" test cannot tell that apart from a free
+// port, and taking it would silently move that idle workspace's port —
+// killing any job-side config that baked it, with no log at either end
+// (its own next dispatch would just see "no record" and allocate afresh).
+//
+// Callers hold m.mu.
+func (m *ProxyManager) walkBand(proxy *Proxy, key string, low, high int) (int, error) {
+	if m.bandExhausted {
+		return 0, errBandExhausted
+	}
+
+	reserved := map[int]string{}
+	if r, err := m.PortStore.ReservedPorts(); err != nil {
+		// Degrade to the pre-reservation behaviour rather than refusing to
+		// allocate: a listener nobody can reach is worse than a small risk
+		// of displacing an idle key's port.
+		slog.Warn("egress proxy: reading existing port reservations failed; another workspace's reserved port may be taken",
+			"key", key, "error", err)
+	} else {
+		reserved = r
+	}
+
+	span := high - low + 1
+	// Start the walk at a position derived from the key so that a store that
+	// was lost (fresh DB, restored backup) still tends to hand each key back
+	// the port it had. Best-effort — the walk moves on as soon as a
+	// candidate is taken, so nothing depends on this holding.
+	start := int(hashKey(key) % uint32(span))
+
+	for _, respectReservations := range []bool{true, false} {
+		for i := 0; i < span; i++ {
+			candidate := low + (start+i)%span
+			holder, isReserved := reserved[candidate]
+			if isReserved && holder == key {
+				// Our own stale row (the persisted port that just failed to
+				// bind). Nothing to protect.
+				isReserved = false
+			}
+			if respectReservations && isReserved {
+				continue
+			}
+			proxy.DesiredPort = candidate
+			port, startErr := proxy.Start(m.ctx)
+			if startErr != nil {
+				continue
+			}
+			if isReserved {
+				// Only reachable on the second pass: the band had nothing
+				// unreserved left. SavePort drops the victim's row, so its
+				// next dispatch allocates a fresh port — say so, because
+				// that is another baked-config break and nothing else in
+				// the system will mention it.
+				slog.Warn("egress proxy: no unreserved port left in the range; taking a port reserved by another key",
+					"key", key, "port", port, "previous_key", holder,
+					"hint", "the previous key will get a new port on its next dispatch; widen sandbox.egress_proxy_port_low/high")
+			}
+			if saveErr := m.PortStore.SavePort(key, port); saveErr != nil {
+				// The listener is up and usable; only the NEXT restart's
+				// stability is lost. Not worth tearing down a working proxy.
+				slog.Warn("egress proxy: persisting the allocated port failed; it may change on the next restart",
+					"key", key, "port", port, "error", saveErr)
+			}
+			return port, nil
+		}
+	}
+	return 0, errBandExhausted
+}
+
+var errBandExhausted = errors.New("no free port in the configured range")
+
+// portRange returns the band new ports are allocated from.
+//
+// Anything the runtime cannot actually bind falls back to the default band
+// rather than being honoured: config.ValidateYAML rejects a malformed band,
+// but it only runs on the `boid config set/edit/apply` paths — a hand-edited
+// or deploy-seeded config.yaml reaches here through config.Load, which does
+// not validate. Without this clamp, `egress_proxy_port_high: 70000` (a typo)
+// would send every allocation through a full band of guaranteed-invalid
+// binds and then silently degrade to ephemeral ports, i.e. turn the feature
+// off with no diagnosis. Note the walk's span arithmetic also assumes a
+// bounded band.
 func (m *ProxyManager) portRange() (low, high int) {
 	low, high = m.PortRangeLow, m.PortRangeHigh
-	if low <= 0 || high <= 0 || high < low {
+	if low < 1 || high < 1 || low > 65535 || high > 65535 || high < low {
+		if low != 0 || high != 0 {
+			slog.Warn("egress proxy: sandbox.egress_proxy_port_low/high is not a usable port range; using the built-in range",
+				"configured_low", low, "configured_high", high,
+				"range_low", DefaultProxyPortRangeLow, "range_high", DefaultProxyPortRangeHigh)
+		}
 		return DefaultProxyPortRangeLow, DefaultProxyPortRangeHigh
 	}
 	return low, high

@@ -66,6 +66,34 @@ boid workspace unset-init-script <slug>
 リビジョン (ETag) を確認するので、読んでから書くまでの間に他の経路で内容が変わっていれば
 上書きせずにエラーになります (`--force` で無効化)。
 
+> **`docs/examples/workspace-home-init.sh` を更新しても既存 workspace は変わりません。**
+> あれは**リファレンス実装**であり、daemon が実行するのは登録済みのコピーです。
+> boid 本体で例が改善されても、既に運用している workspace には
+> `boid workspace get-init-script <slug>` で現物を取り出し、差分を当ててから
+> `boid workspace set-init-script <slug> -f <file>` で再登録する必要があります。
+
+### Node / pnpm を使う workspace
+
+リファレンス実装の `install_node` は volta の shim (`node` / `npm` / `npx` /
+`pnpm` / `yarn`) を `$HOME/.local/bin` へ張ります。PATH に入っているのは
+`$HOME/.local/bin` であって `$HOME/.volta/bin` ではないため、この張り替えが無いと
+`sh: pnpm: not found` になります。
+
+pnpm を使う場合は、それに加えて **workspace の env に `VOLTA_FEATURE_PNPM=1`**
+が要ります。volta 2.x の pnpm サポートは experimental で、このフラグが無いと
+shim が `Could not find executable "pnpm"` で落ちます。
+
+```bash
+# workspace の env に足す (export → 編集 → apply)
+boid workspace export <slug> > ws.yaml
+# spec.env に VOLTA_FEATURE_PNPM: "1" を追記してから
+boid workspace apply -f ws.yaml
+```
+
+また、`package.json` の `volta.node` などで image に無いバージョンを pin して
+いる場合、volta は `nodejs.org` からツールチェーンを取得します。このドメインは
+組み込みの allowed_domains floor に含まれています。
+
 `boid workspace export` した yaml には `spec.init_script` として **init.sh の内容も
 含まれます**。 `boid workspace apply -f <file>` で復元でき、これが workspace ごと
 別 install へ移す経路です。 `spec.init_script: ""` (明示的な空文字列) は
