@@ -227,6 +227,14 @@ func (s *TaskWorkflowService) ApplyAction(ctx context.Context, taskID string, re
 		}
 	}
 
+	// queue の決定論的評価 節 rule 4 (notify, PR-3 scoped-down slice — see
+	// queue_notify.go's doc comment). Checked against newTask AFTER the
+	// ready->working auto-dispatch above: if dispatch succeeded, newTask.Status
+	// is "working" (not a queue-member status), so no spurious notify fires
+	// for a task nose already Go'd through to execution — only a task that
+	// genuinely RESTS in triaged/ready notifies.
+	s.notifyQueueEntryIfUrgent(ctx, newTask, fromStatus)
+
 	if s.Coordinator != nil {
 		dispatchCtx := s.dispatchCtx
 		if dispatchCtx == nil {

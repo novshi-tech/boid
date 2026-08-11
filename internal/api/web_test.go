@@ -35,6 +35,8 @@ type stubWebService struct {
 	updateTaskCalls    []UpdateTaskRequest
 	projectByID        *orchestrator.Project
 	projectByIDErr     error
+	wakeErr            error
+	wakeCalls          []string
 }
 
 type applyActionCall struct {
@@ -69,6 +71,11 @@ func (s *stubWebService) ListWorkspaces() ([]*orchestrator.WorkspaceSummary, err
 func (s *stubWebService) ApplyAction(taskID string, actionType string) error {
 	s.applyActionCalls = append(s.applyActionCalls, applyActionCall{taskID: taskID, actionType: actionType})
 	return s.applyActionErr
+}
+
+func (s *stubWebService) Wake(taskID string) error {
+	s.wakeCalls = append(s.wakeCalls, taskID)
+	return s.wakeErr
 }
 
 func (s *stubWebService) DuplicateTask(id string) (string, error) {
@@ -157,6 +164,10 @@ func (s *stubWorkflowService) ApplyAction(ctx context.Context, taskID string, re
 	}, nil
 }
 
+func (s *stubWorkflowService) Wake(ctx context.Context, taskID string) (*ActionApplication, error) {
+	return s.ApplyAction(ctx, taskID, ApplyActionRequest{Type: "wake"})
+}
+
 func (s *stubWorkflowService) CompleteJob(ctx context.Context, jobID string, req JobDoneRequest) (*Job, error) {
 	s.completedJobs = append(s.completedJobs, completedJobCall{JobID: jobID, ExitCode: req.ExitCode})
 	return &Job{ID: jobID, Status: JobStatusCompleted, ExitCode: req.ExitCode}, nil
@@ -216,6 +227,7 @@ func newTestWebHandler(svc WebService) *chi.Mux {
 	r.Get("/tasks/{id}", h.TaskDetail)
 	r.Get("/tasks/{id}/fragment", h.TaskDetailFragment)
 	r.Post("/tasks/{id}/action", h.PostAction)
+	r.Post("/tasks/{id}/wake", h.PostWake)
 	r.Post("/tasks/{id}/duplicate", h.PostDuplicate)
 	return r
 }
@@ -368,6 +380,48 @@ func TestWebHandlerPostAction_ServiceError(t *testing.T) {
 	body := url.Values{"type": {"abort"}}.Encode()
 	req := httptest.NewRequest(http.MethodPost, "/tasks/task-1/action", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	w := httptest.NewRecorder()
+
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusSeeOther {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusSeeOther)
+	}
+	loc := w.Header().Get("Location")
+	if !strings.Contains(loc, "error=") {
+		t.Errorf("Location = %q, want error param", loc)
+	}
+	if !strings.Contains(loc, "/tasks/task-1") {
+		t.Errorf("Location = %q, want redirect to task detail", loc)
+	}
+}
+
+func TestWebHandlerPostWake_Success(t *testing.T) {
+	svc := &stubWebService{}
+	r := newTestWebHandler(svc)
+
+	req := httptest.NewRequest(http.MethodPost, "/tasks/task-1/wake", nil)
+	w := httptest.NewRecorder()
+
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusSeeOther {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusSeeOther)
+	}
+	loc := w.Header().Get("Location")
+	if loc != "/tasks/task-1" {
+		t.Errorf("Location = %q, want /tasks/task-1", loc)
+	}
+	if len(svc.wakeCalls) != 1 || svc.wakeCalls[0] != "task-1" {
+		t.Fatalf("Wake calls = %v, want [task-1]", svc.wakeCalls)
+	}
+}
+
+func TestWebHandlerPostWake_ServiceError(t *testing.T) {
+	svc := &stubWebService{wakeErr: fmt.Errorf("cannot wake task in status %q (must be parked)", "triaged")}
+	r := newTestWebHandler(svc)
+
+	req := httptest.NewRequest(http.MethodPost, "/tasks/task-1/wake", nil)
 	w := httptest.NewRecorder()
 
 	r.ServeHTTP(w, req)

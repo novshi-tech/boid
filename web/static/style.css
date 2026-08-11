@@ -230,12 +230,25 @@ pre {
 
 /* Status palette
    - pending:  slate (calm, waiting; not alarming)
-   - executing/reworking/running: green (active work)
+   - executing/reworking/running/working: green (active work)
    - awaiting: amber/yellow (human attention needed — process paused)
    - verifying: blue (checking — distinct from active)
    - in_review/collecting_feedback: purple (human attention needed)
    - done/completed: neutral gray (finished, inactive)
-   - aborted/failed: red (bad outcome) */
+   - aborted/failed: red (bad outcome)
+   cross-project-issue-triage Phase 1 (docs/plans/cross-project-issue-triage.md)
+   pre-execution statuses — deliberately distinct hues from the above so a
+   triage task in the task list is visually unmistakable from an executing one:
+   - captured:  pale sky blue (just arrived, not yet triaged — lowest commitment)
+   - triaged:   cyan (understood, not yet Go'd)
+   - parked:    violet (set aside on purpose — distinct from awaiting's amber,
+                which means "blocked on someone else"; parked means "nose chose
+                to defer this")
+   - ready:     indigo (Go'd, dispatch pending — the "about to become real work"
+                color, one step brighter/bluer than triaged)
+   - dropped:   warm stone gray (discarded on purpose — distinguishable from
+                done's neutral gray, since 逆輸入2 requires "終わった件と捨てた
+                件を区別できる" at a glance) */
 .badge-pending             { background: #f1f5f9; color: #475569; }
 .badge-executing           { background: #dcfce7; color: #15803d; }
 .badge-awaiting            { background: #fef9c3; color: #854d0e; }
@@ -246,10 +259,20 @@ pre {
 .badge-running             { background: #dcfce7; color: #15803d; }
 .badge-completed           { background: #e5e7eb; color: #6b7280; }
 .badge-failed              { background: #fee2e2; color: #b91c1c; }
-/* `parked` is a WebUI-only synonym for "running while the task is awaiting a
-   user answer" (agent blocked inside `boid task ask`). Same palette as the
-   awaiting badge so the eye groups them as the same waiting-for-human state. */
-.badge-parked              { background: #fef9c3; color: #854d0e; }
+/* `job_parked` is a WebUI-only synonym for "running while the task is
+   awaiting a user answer" (agent blocked inside `boid task ask`). Same
+   palette as the awaiting badge so the eye groups them as the same
+   waiting-for-human state. Named job_parked (not bare "parked") so it does
+   not collide with the real task status "parked" below — see
+   jobDisplayStatus's doc comment in web/templates/tasks.templ (PR-1's Phase 1
+   実測結果 項6). */
+.badge-job_parked          { background: #fef9c3; color: #854d0e; }
+.badge-captured            { background: #e0f2fe; color: #0369a1; }
+.badge-triaged             { background: #cffafe; color: #0e7490; }
+.badge-parked              { background: #ede9fe; color: #6d28d9; }
+.badge-ready               { background: #e0e7ff; color: #4338ca; }
+.badge-working             { background: #dcfce7; color: #15803d; }
+.badge-dropped             { background: #f5f5f4; color: #78716c; }
 
 @media (prefers-color-scheme: dark) {
   .badge-pending             { background: #1e293b; color: #94a3b8; }
@@ -262,7 +285,13 @@ pre {
   .badge-running             { background: #052e16; color: #4ade80; }
   .badge-completed           { background: #1f2937; color: #9ca3af; }
   .badge-failed              { background: #450a0a; color: #f87171; }
-  .badge-parked              { background: #422006; color: #fbbf24; }
+  .badge-job_parked          { background: #422006; color: #fbbf24; }
+  .badge-captured            { background: #0c4a6e; color: #7dd3fc; }
+  .badge-triaged             { background: #164e63; color: #67e8f9; }
+  .badge-parked              { background: #4c1d95; color: #c4b5fd; }
+  .badge-ready               { background: #312e81; color: #a5b4fc; }
+  .badge-working             { background: #052e16; color: #4ade80; }
+  .badge-dropped             { background: #292524; color: #a8a29e; }
 }
 
 /* --- Card --- */
@@ -375,6 +404,15 @@ pre {
 .task-row-status-reworking           { border-left-color: #22c55e; }
 .task-row-status-done                { border-left-color: #9ca3af; }
 .task-row-status-aborted             { border-left-color: var(--danger); }
+/* cross-project-issue-triage Phase 1 pre-execution statuses — mirrors the
+   badge palette above (saturated weight, same convention as every other
+   row-stripe color in this block). */
+.task-row-status-captured            { border-left-color: #0ea5e9; }
+.task-row-status-triaged             { border-left-color: #06b6d4; }
+.task-row-status-parked              { border-left-color: #8b5cf6; }
+.task-row-status-ready               { border-left-color: #6366f1; }
+.task-row-status-working             { border-left-color: #22c55e; }
+.task-row-status-dropped             { border-left-color: #a8a29e; }
 
 /* Blocked pending: dim the whole row to communicate "can't act on this yet".
    Mirrors the TUI behavior where a blocked pending row is rendered dim. */
@@ -473,6 +511,31 @@ pre {
   margin-right: var(--space-2);
   color: var(--muted);
   opacity: 0.5;
+}
+
+/* Queue view (cross-project-issue-triage Phase 1 PR-3, ?status=queue_next):
+   summary line (task_triage.detail の summary — 文脈同梱: 1項目 = 1判断) shown
+   under the title, and an urgency badge (now/today/week) in the meta row.
+   Urgency reuses .task-row-meta .badge's stripped chrome (transparent bg,
+   colored text) like the status badge next to it, but keeps its own hue so
+   the two don't read as the same signal. */
+.task-row-summary {
+  font-size: 0.8125rem;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  margin-top: 2px;
+}
+
+.badge-urgency-now   { color: #b91c1c; }
+.badge-urgency-today { color: #c2410c; }
+.badge-urgency-week  { color: #1d4ed8; }
+
+@media (prefers-color-scheme: dark) {
+  .badge-urgency-now   { color: #f87171; }
+  .badge-urgency-today { color: #fb923c; }
+  .badge-urgency-week  { color: #60a5fa; }
 }
 
 /* --- Sessions list ---

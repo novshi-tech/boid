@@ -428,6 +428,37 @@ func TestTaskWorkflowService_Wake_ErrorsWhenParkedFromUnknown(t *testing.T) {
 	}
 }
 
+// TestTaskWorkflowService_Wake_FromReady_ChainsIntoDispatch is the regression
+// test for codex review round 1's Major finding on PR-3: a task parked FROM
+// ready (i.e. already Go'd once) that gets woken must not be stranded in
+// ready — Wake has to chain into Dispatch exactly like ApplyAction("ready")
+// does, or the task has no forward path at all (no UI button targets ready,
+// and SweepWake only re-evaluates parked tasks). Deliberately uses txStore
+// itself as s.Tasks (not the newTriageWorkflowService helper's separate
+// stubTaskStore, which doesn't observe the transaction's write and so
+// wouldn't actually exercise Dispatch's ready-status precondition check).
+func TestTaskWorkflowService_Wake_FromReady_ChainsIntoDispatch(t *testing.T) {
+	task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusParked, Behavior: "dev", Payload: []byte(`{}`)}
+	txStore := &recordingTxStore{
+		task:         task,
+		parkedFromFn: func(taskID string) (orchestrator.TaskStatus, error) { return orchestrator.TaskStatusReady, nil },
+	}
+	svc := &TaskWorkflowService{
+		Tasks:      txStore,
+		TaskTriage: txStore,
+		Tx:         recordingTransactor{store: txStore},
+		Meta:       stubMetaStore{meta: &orchestrator.ProjectMeta{TaskBehaviors: map[string]orchestrator.TaskBehavior{"dev": {}}}},
+	}
+
+	result, err := svc.Wake(context.Background(), task.ID)
+	if err != nil {
+		t.Fatalf("Wake: %v", err)
+	}
+	if result.Task.Status != orchestrator.TaskStatusWorking {
+		t.Fatalf("status = %q, want working (wake_ready must chain into Dispatch, same as ApplyAction(\"ready\"))", result.Task.Status)
+	}
+}
+
 type fixedDispatchResult struct {
 	result *orchestrator.DispatchResult
 }

@@ -302,6 +302,16 @@ func Apply(conn *sql.DB) error {
 				return tableExists(tx, "task_triage")
 			},
 		},
+		{
+			// docs/plans/cross-project-issue-triage.md Phase 1 PR-3: watchdog
+			// primitive (queue の決定論的評価 節 rule 7) — 「最終 ingestion
+			// 成功」「最終棚卸し実施」を workspace ごとに1行だけ持つ。
+			version: "0036_add_workspace_watchdog",
+			path:    "migrations/0036_add_workspace_watchdog.sql",
+			skip: func(tx *sql.Tx) (bool, error) {
+				return tableExists(tx, "workspace_watchdog")
+			},
+		},
 	}
 
 	if err := ensureSchemaMigrationsTable(conn); err != nil {

@@ -233,6 +233,13 @@ type WebService interface {
 	ListBehaviors() ([]string, error)
 	ListWorkspaces() ([]*orchestrator.WorkspaceSummary, error)
 	ApplyAction(taskID string, actionType string) error
+	// Wake revives a parked triage task (cross-project-issue-triage Phase 1
+	// PR-3, queue の決定論的評価 節 rule 1) — a dedicated entry point rather
+	// than a generic ApplyAction("wake_...") POST because wake_triaged/
+	// wake_ready are Manual:false in the state machine (see
+	// StateMachine.IsManualAction) and TaskWorkflowService.Wake resolves
+	// which of the two applies internally via ParkedFrom.
+	Wake(taskID string) error
 	DuplicateTask(id string) (string, error)
 	DeleteTask(id string, force bool) error
 	ListJobs(status string) ([]JobWithContext, error)
@@ -250,6 +257,10 @@ type WebService interface {
 
 type WorkflowService interface {
 	ApplyAction(ctx context.Context, taskID string, req ApplyActionRequest) (*ActionApplication, error)
+	// Wake is TaskWorkflowService.Wake (workflow_triage.go) — see
+	// WebService.Wake's own doc comment for why this needs a separate method
+	// rather than routing through ApplyAction.
+	Wake(ctx context.Context, taskID string) (*ActionApplication, error)
 	CompleteJob(ctx context.Context, jobID string, req JobDoneRequest) (*Job, error)
 	// StopAgent asks the agent backing runtimeID to terminate gracefully,
 	// without tearing down the surrounding runner-inner-child. The broker's

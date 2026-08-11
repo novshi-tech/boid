@@ -12,6 +12,13 @@ type TreeItem struct {
 	HasChildren bool
 	ParentID    string // visual parent ID; empty for roots
 	ProjectName string // resolved display name; falls back to ProjectID
+	// Urgency / Summary are cross-project-issue-triage Phase 1 PR-3
+	// task_triage sidecar fields (docs/plans/cross-project-issue-triage.md
+	// queue 節 「文脈同梱: 1項目 = 1判断」), populated only for the queue_next
+	// view (internal/api.BuildQueueItems) — empty for every other view, so
+	// the badge/summary line below simply doesn't render there.
+	Urgency string
+	Summary string
 }
 
 func (i TreeItem) ProjectLabel() string {
@@ -120,8 +127,14 @@ templ taskTreeRow(item TreeItem) {
 		}
 		<div class="task-row-body">
 			<div class="task-row-title" title={ item.Task.Title }>{ item.Task.Title }</div>
+			if item.Summary != "" {
+				<div class="task-row-summary">{ item.Summary }</div>
+			}
 			<div class="task-row-meta">
 				<span class={ treeStatusClass(string(item.Task.Status)) }>{ string(item.Task.Status) }</span>
+				if item.Urgency != "" {
+					<span class={ "badge", "badge-urgency-" + item.Urgency }>{ item.Urgency }</span>
+				}
 				if item.Task.Status == orchestrator.TaskStatusAwaiting && item.Task.ParentID == "" {
 					<span class="badge badge-call-to-action">Needs answer</span>
 				}

@@ -182,3 +182,50 @@ func TestBuildTreeItems_MultipleRoots(t *testing.T) {
 		t.Error("both roots should have depth 0")
 	}
 }
+
+func TestBuildQueueItems_PopulatesUrgencyAndSummaryFromTriage(t *testing.T) {
+	t1 := makeTask("t1", "")
+	t2 := makeTask("t2", "")
+	triage := map[string]*orchestrator.TaskTriage{
+		"t1": {TaskID: "t1", Urgency: orchestrator.UrgencyNow, Detail: []byte(`{"summary":"customer wants a quote"}`)},
+		// t2 has no triage row at all.
+	}
+
+	items := BuildQueueItems([]*orchestrator.Task{t1, t2}, nil, triage)
+	if len(items) != 2 {
+		t.Fatalf("got %d items, want 2", len(items))
+	}
+	if items[0].Urgency != "now" {
+		t.Errorf("t1 Urgency = %q, want now", items[0].Urgency)
+	}
+	if items[0].Summary != "customer wants a quote" {
+		t.Errorf("t1 Summary = %q, want %q", items[0].Summary, "customer wants a quote")
+	}
+	if items[1].Urgency != "" || items[1].Summary != "" {
+		t.Errorf("t2 (no triage row) should have empty Urgency/Summary, got %q/%q", items[1].Urgency, items[1].Summary)
+	}
+	// Flat: no tree structure imposed, input order preserved (matches the
+	// SQL ORDER BY from store.go's "queue_next" branch).
+	for _, it := range items {
+		if it.Depth != 0 || it.HasChildren || it.ParentID != "" {
+			t.Errorf("queue items must be flat, got %+v", it)
+		}
+	}
+}
+
+func TestBuildQueueItems_MalformedDetailJSON_LeavesSummaryEmpty(t *testing.T) {
+	t1 := makeTask("t1", "")
+	triage := map[string]*orchestrator.TaskTriage{
+		"t1": {TaskID: "t1", Urgency: orchestrator.UrgencyToday, Detail: []byte(`not json`)},
+	}
+	items := BuildQueueItems([]*orchestrator.Task{t1}, nil, triage)
+	if len(items) != 1 {
+		t.Fatalf("got %d items, want 1", len(items))
+	}
+	if items[0].Urgency != "today" {
+		t.Errorf("Urgency = %q, want today (must still come through despite malformed detail)", items[0].Urgency)
+	}
+	if items[0].Summary != "" {
+		t.Errorf("Summary = %q, want empty (malformed detail must not panic or fabricate a summary)", items[0].Summary)
+	}
+}

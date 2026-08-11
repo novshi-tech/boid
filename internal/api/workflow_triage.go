@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -174,6 +175,37 @@ func (s *TaskWorkflowService) Wake(ctx context.Context, taskID string) (*ActionA
 			},
 		})
 	}
+
+	// A task woken back to ready (parked FROM ready — i.e. it was already
+	// Go'd before being parked) must chain into Dispatch exactly like
+	// ApplyAction("ready") does (workflow_action.go), for the same reason:
+	// ready→working is the mechanical second stage of Go (逆輸入2), and
+	// without this a wake_ready would leave the task stranded in ready with
+	// no forward path — no UI button reaches it (ready has no primary
+	// action, see detailPrimaryAction's doc comment) and SweepWake only
+	// looks at parked tasks, so it would never move again (codex review
+	// round 1, Major). A Dispatch failure here is logged, not surfaced as
+	// this call's error — same posture as ApplyAction("ready"): the wake
+	// transition itself already committed successfully, and a task stuck in
+	// ready is the intended, visible failure mode.
+	if newTask.Status == orchestrator.TaskStatusReady {
+		dispatched, dispatchErr := s.Dispatch(ctx, newTask.ID)
+		if dispatchErr != nil {
+			slog.Error("wake: machine dispatch (ready->working) failed", "task_id", newTask.ID, "error", dispatchErr)
+		} else if dispatched != nil {
+			newTask = dispatched.Task
+		}
+	}
+
+	// queue の決定論的評価 節 rule 4 (notify, PR-3 scoped-down slice — see
+	// queue_notify.go's doc comment). A woken task always transitions FROM
+	// parked (non-member) INTO triaged/ready (member), so this always counts
+	// as a genuine entry — UC-2's "以後は UC-1 の手順 5 以降と同じ" (再浮上後は
+	// 再度 notify) is exactly this. Checked against newTask AFTER the
+	// ready->working chain above, same reasoning as ApplyAction: if dispatch
+	// succeeded, newTask.Status is "working" (not a queue-member status), so
+	// no spurious notify fires for a task that's already back in flight.
+	s.notifyQueueEntryIfUrgent(ctx, newTask, orchestrator.TaskStatusParked)
 
 	return &ActionApplication{Task: newTask, Action: action}, nil
 }
