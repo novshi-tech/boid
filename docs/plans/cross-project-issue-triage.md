@@ -1,7 +1,8 @@
 # プロジェクト横断の課題トリアージ (メタプロジェクト + daemon inbox)
 
-ステータス: **draft (第 7 版 2026-08-11 — Phase 1 実装着手前に論点 f/g/h を決着、 論点 i は
-明示的に後回し。 初版 2026-07-30)**。 Phase 0 dogfood 稼働中・Phase 1 未実装。
+ステータス: **draft (第 9 版 2026-08-11 — Fable レビュー (条件付き GO) と机上シナリオ検証を
+反映、 論点 6〜12 と「検証シナリオ」節を新設。 初版 2026-07-30)**。 Phase 0 dogfood 稼働中・
+Phase 1 PR-1/2/3 merge 済み・PR-4 未着手 (着手条件は「Fable レビュー結果」節)。
 発端: nose の構想メモ (音声書き起こし、 2026-07-30) と同日の設計ディスカッション。
 関連: [workspace-default-project.md](workspace-default-project.md) (workspace デフォルト project 定義)、
 [volume-only-daemon.md](volume-only-daemon.md) §論点a/b (project の git URL 化・ bare repo・
@@ -741,6 +742,317 @@ project → daemon 側の state 導出)。
 
 ---
 
+## PR-4 設計メモ (2026-08-11、 khi 統合レビュー — Fable レビュー済み、 結果は下記「Fable レビュー結果」節)
+
+PR-4 (ingestion push の開通・[[phase1-cross-project-triage-pr1-3-complete]] 参照) 着手前に、
+khi-task-collector 実機 (`~/src/bitbucket.org/Aolani-ondemand/khi-task-collector`、
+`docs/card-format.md` / `docs/card-events.md` / `docs/card-dispatch.md`) と daemon 側実装
+(PR-1/2/3) を突合した。 論点が複数出たため、 **実装着手前に別セッションで Fable にレビュー
+してもらう**。 以下は突合で判明した事実と、 現時点の暫定結論。
+
+### 論点 1: `TaskTriageChildSpec` に `RemoteID` が無い件 — severity 低に格下げ
+
+khi の子 spec (`docs/card-dispatch.md`) は `remote_id` を必須にしている
+(ブランチ命名規約 `feature/${remote_id}` のため)。 daemon 側
+`internal/orchestrator/task_triage.go` の `TaskTriageChildSpec{Project, Behavior,
+Instruction}` には `RemoteID` が無く、 PR-2 の `Dispatch()`
+(`internal/api/workflow_triage.go:343`) が組む `CreateTaskRequest` にも渡らない。
+
+**ただし** `internal/api/task_create.go:170` に既存の汎用ロジックがある:
+
+```go
+// Children inherit remote_id from their parent when they don't supply their own.
+if req.RemoteID == "" && req.ParentID != "" {
+    if parent, ...; parent.RemoteID != "" {
+        req.RemoteID = parent.RemoteID
+    }
+}
+```
+
+triage task (card) 自身の `RemoteID` さえ立っていれば、 `Dispatch()` が作る子はこの既存の
+親→子継承で自動的に受け取る。 なので **`TaskTriageChildSpec.RemoteID` の追加は「子だけ親と
+別の remote_id にしたい (cross-track children)」稀なケース専用に格下げしてよく、 PR-4 の
+必須スコープではない**。 ingestion push が card (triage task) 作成時に、 Jira など自然な
+remote issue key を持つ source なら `CreateTaskRequest.RemoteID` にもその値を積む、 という
+運用で基本ケースは足りる。
+
+### 論点 2: ブランチポリシーと `RemoteID` / `source_ref` の関係
+
+nose 指摘: 「worktree 時代はホスト共有 FS だったので worktree 分離のためのブランチポリシーが
+要った。 container backend では clone が isolation の単位なので、 ローカル分離目的のブランチ
+ポリシーはもう要らないのでは」— 確認したところ**前提は正しく、 既に決着済み**
+(`docs/plans/branch-policy-simplification.md`、 v0.0.11 で landed)。 `boid/<id8>` per-task
+branch と fork-point 概念は完全撤去済み。
+
+ただし `BaseBranch` 自体は消えていない。 役割が「ローカル FS 分離」から「この task の commit
+がどの git ブランチ (＝どの PR) に積み上がるか」という**純粋に git 側の関心**に変わっただけで、
+今も必要 (同 doc: 「並列兄弟が同じ base_branch に push すると衝突するのは executor の責務」
+「真に isolate したいなら子ごとに異なる base_branch を明示指定」)。
+
+`RemoteID` の残る役目は (a) `BaseBranch` テンプレート `${TASK_REMOTE_ID}` の展開元、
+(b) `FindTaskByRemote` の冪等性チェック、(c) 上記の親→子継承。 これは **source_ref
+(triage task の dedup キー、下記論点3) とは役割もスコープも異なる**:
+`RemoteID` は triage と無関係な boid 全体の汎用列 (supervisor/executor 等どの task でも
+使う)。 source_ref は triage 専用の dedup 概念で、 type ごとに形が違う方言
+(thread_ts / issue_key / message-id) を許す。 **field としての統合はしない**が、
+Jira 由来の card では両者が同じ値 (issue key) を指すのが自然、 という関係に留める
+(論点1 の運用がこれを実現する)。
+
+### 論点 3: 複数 source を持つ card (`related_jira_issues`) の束ねは daemon に持ち込まない — 決着済み
+
+khi の card は `source` (単一の主ポインタ) に加えて `related_jira_issues`
+(2026-08-07 追加、 同一案件が Slack と Jira の両方から card 化されるのを束ねる補助キー) を
+持てる。 これは「逆輸入3」の境界原則で**既に daemon に持ち込まないと決着済み**
+(「同一案件の束ねはチャネルの知識そのものなので workspace 側 evaluate の管轄」)。
+2026-08-07 に khi で「LLM に card 照合させたら同じ PR の card が2枚に分裂した」事故があり、
+その反省で決定論の evaluate 側に寄せた経緯があるため、 この境界は堅持する。
+
+### 論点 4: task_triage の更新経路 — `UpdateTaskRequest` PATCH 案は撤回、 action append に統一
+
+当初「`task_triage` を更新する brokered op が無いので `UpdateTaskRequest`
+(`internal/apiwire/task.go:23`) を拡張する」案を検討したが、 **nose 指摘で撤回**:
+workspace → daemon が伝えるべきは決定13 (状態遷移はイベントソーシング) の通り本質的に
+action (event) であり、 「新しい state をまるごと PATCH で上書き」という形は、 khi が
+2026-08-08 に自分で経験して捨てたアンチパターン (frontmatter 直接書き換え → 複数経路が
+競合 → claims/decisions 二層への移行) を daemon 側で再生産する。
+
+代わりに **action append 経路を使う**。 これは既に end-to-end で存在する:
+`BoidOpActionSend` (`internal/server/boid_executor.go:512`) → `TaskWorkflowService.
+ApplyAction` → `sm.Apply()` → `CreateAction` (`actions` テーブル、 `ParkedFrom` が読むのと
+同じイベントログ)。 workspace scoping も既にかかっている。 足りないのは:
+
+1. `internal/orchestrator/machine.go` の `DefaultMachine()` Rules に khi の decisions 語彙
+   (`attrs_set` / `child_added` / `child_specced` / `child_dispatched` / `child_closed`) を
+   非遷移 action (`ToStatus` 空、`Manual: true`) として追加する
+2. 各 action type ごとに `task_triage.detail` を更新する side-effect 関数を書く。 先例は
+   PR-1 の `applyParkSideEffect` (`internal/api/store.go:65`、 park action のコミットと
+   同一トランザクションで `task_triage` を upsert)。 実質、 khi の
+   `scripts/card_model.py` の `fold()` を daemon 側に移植する作業になる
+3. 「create」と「update」を別 API として分けない。 **最初の1件の action が事実上の
+   create** (khi の `imported`/`captured` が decisions.jsonl の1行目なのと同じ形)。
+   `task_create --initial-status` はその task にとっての最初の action を兼ねるだけで、
+   以降は全て `boid action send --task <id> --type attrs_set ...` で押していく。 これに
+   より論点2/3 で懸念した「ref ベースの dedup をどう実装するか」も消える — khi 側が
+   card 作成時に daemon から返る `task_id` を自分の decisions に保持し (khi 側の decisions
+   語彙にこのための新しい型が要る、 現状は未実装)、 以降はその `task_id` へ action を
+   送るだけで済む
+
+### 論点 5: dispatch 時の parent-child モデルの相違 — 未決着
+
+khi の現行 dispatch (`docs/card-dispatch.md`, `card-promote-headless --live`) は
+`parent_id: "-"` で**ルートタスク**として子を作り、 card 本文を丸ごと `description` に
+埋め込んで渡している (「task は card を読めない、 別プロジェクトのサンドボックスで走る」)。
+一方 PR-2 の `Dispatch()` は `ParentID: taskID` を固定で入れ、 **triage task の子**として
+作る (決定7: 親子 link が由来 link を兼ね、 実行 agent が親の content_ref を辿れる)。
+
+PR-2 側の設計は khi が今手作業でやっている「本文まるごと埋め込み」workaround を不要にする
+上位互換だが、 **khi 側のスキル (`card-promote-headless` / `docs/card-dispatch.md`) の
+書き換えが要る**。 boid 本体の PR-4 だけでは閉じない。 このまま ingestion push だけ開通
+させると、 khi が引き続き手動で `boid task create --parent-id -` を叩き続け、 PR-2 の
+自動 dispatch と二重経路になるリスクがある。 **今回のレビューでは方針を決めていない
+(次の課題)**。
+
+### Fable レビュー結果 (2026-08-11、 第 9 版) — 条件付き GO
+
+上記 5 論点を Fable がコード実物と突合してレビューし、 続けて nose との机上シナリオ検証
+(PR コメント合流 / 再 Go ループ / 事象 wake / PR 系列逐次消化) で論点を追加した。 判定は
+**条件付き GO** — action append 方式 (論点 4) の方向は正しく経路の実在も確認できたが、
+着手前に決着すべき事項が以下の通り残る。
+
+**裏取りできた事実** (論点 1〜3 の主張はすべてコードで確認済み):
+
+- 親→子 remote_id 継承は `internal/api/task_create.go` に実在。 shim
+  (`internal/sandbox/boid_shim.go` の `parseBoidTaskCreate`) は task spec YAML を丸ごと
+  forward するため `remote_id` / `initial_status` の配管は既に通っている — PR-4 で開けるのは
+  executor 側の明示 reject (`internal/server/boid_executor.go`) と workspace 検証だけ。
+- `BoidOpActionSend` → `ApplyAction` → `CreateAction` の経路と workspace scoping
+  (`AllowsProject`) は実在。 `sm.Apply` は `ToStatus` 空の非遷移 action と
+  `FromStatus: "*"` を既にサポートする。
+
+#### 論点 6: 論点 4 の実装注意 4 点
+
+1. **AvailableActions 漏れ**: Manual:true + ToStatus:"" の非遷移ルールは self-loop skip
+   (`ToStatus == status`) を素通りし、 attrs_set 等が該当 status の available_actions
+   (= Web UI のボタン) に湧く。 AvailableActions に「ToStatus 空 = 非遷移はボタンにしない」
+   skip を足す。
+2. **payload merge 汚染**: `workflow_action.go` は全 action の payload を task.Payload に
+   merge する。 attrs_set の大きい payload が task.Payload に染み出すため、 reopen 同様の
+   consumed exempt にする (payload は actions テーブルと side-effect の fold にのみ流す)。
+   既存の park も payload が merge されている — ついでに確認する。
+3. **FromStatus は "*" にしない**: 型ごとに列挙する (attrs_set / child_added /
+   child_specced は captured/triaged/parked/ready/working あたり)。 "*" だと通常タスクの
+   executing/done にも押せてしまう。
+4. **side-effect の実装パターン**: park の先例に従う — payload 検証は Tx 前 (400 を出す)、
+   `task_triage.detail` の read-modify-write は Tx 内 `GetTaskTriage` から (`Wake` の
+   doc comment にある race の教訓と同じ)。
+
+なお daemon 側の attrs_set side-effect は **last-write-wins の純粋な畳み込み**にする。
+urgency の単調性 (上げるのみ) は khi 側 evaluate が保証する分担 (fold は方針を持たない) の
+まま — side-effect に policy を書き始めたら境界違反のサイン。
+
+#### 論点 7: dedup は Ref=source_ref で daemon 側に床を作る (論点 4-3 の「dedup 消える」を修正)
+
+「khi が task_id を保持するので dedup は消える」は、 create 応答〜 khi decisions 記録の間の
+クラッシュで重複 card が湧く穴があり、 論点 g の決着 (「dedup 無しでは khi 統合が動かない」)
+を暗黙に上書きしてしまう。 代わりに既存の Ref get-or-create (`task_create.go`、 現状
+`ParentID != ""` 限定) を root task にも開放し、 ingestion create は **Ref=source_ref**
+(jira: issue_key / slack: thread_ts / mail: message-id) で投げる。 既存 card があれば
+**既存 task が返る**ので khi は冪等に再送でき、 クラッシュ窓も閉じ、 `RemoteID` とは独立
+なので論点 2 の「field 統合しない」も守られる。 要確認: `idx_tasks_ref_parent` unique
+index が parent 無し行をカバーするか。
+
+daemon の床は「同じ source ref かどうか」の水準のみ (論点 g の通り)。 slack 起票 card に
+後から同一案件の jira/bitbucket source が現れる cross-source の束ねは
+`related_jira_issues` 索引 = workspace 側の管轄のまま (論点 3)。
+
+#### 論点 8: working からの出口 3 本 (最重要 — PR-4 と同時に修正)
+
+現行機械は `ready` が triaged→ready のみ、 `Dispatch()` も status==ready を要求するため、
+**working の card に再 Go できない**。 これは (a) レビューコメント対応 (PR コメントは
+性質上 working 中に来る — PR がある = 作業中)、 (b) 大型機能の PR 系列逐次消化 (1 周ごとに
+再 Go を踏む) の両方を塞ぐ。 khi の `derive_state` (children 集約から state 導出) に対応する
+出口を 3 本セットで足す:
+
+- **working→ready**: 次の子が specced 済み (Go を押すだけの状態で queue に浮上)
+- **working→triaged**: 次の子は open (spec を書く shape が要る状態で浮上)
+- **working→parked**: Go 時に `wake_task_id` = dispatch した子を積んで park する運用を
+  可能にする。 子の終端で QueueSweepLoop が自動再浮上させる (「前の PR が終わったら次の
+  Go が目の前に出てくる」半自動化)
+
+関連する運用制約: `Dispatch()` は **specced な子を全件一斉に task 化する**。 逐次 PR 系列
+では「specced は次の 1 個だけ、 残りは open」が原則 (全部 specced にすると N 本並列で走り、
+「interface 変更 PR は最後にマージ」の教訓と衝突する)。
+
+#### 論点 9: child_dispatched / child_closed は khi に送らせない (語彙の役割分担)
+
+`child_dispatched` は daemon の `Dispatch()` が既に自分で書く (PR-2)。 `child_closed` も
+親子 link (`TaskRef`) で daemon が子の終端を直接知れるため、 khi が observe → evaluate →
+action send で報告するのは冗長かつ二重書き込みの race になる。 語彙を役割で割る:
+
+- **khi が送る**: 判断系のみ — `attrs_set` / `child_added` / `child_specced`
+- **daemon が自己記録**: 機械的事実 — `child_dispatched` (Dispatch 時) / `child_closed`
+  (子タスクの終端検知時)
+
+done 自動落ちの規則「全子終端 ∧ source 終了」は両側にまたがる (子終端 = daemon の知識、
+source 終了 = workspace の知識)。 素直な形は「khi が source 終了を attrs_set (observed) で
+届け、 daemon が両条件成立で done に落とす条件 rule」だが**未決** (working→done 遷移自体も
+未実装)。 論点 5 の移行順序もここで確定: **khi が children を specced で push し始めるのは
+card-promote-headless 退役後** — それまでは旧経路 (root task 化) を続けてよいが、 specced
+push と手動 promote の併用だけは二重 dispatch になるため禁止。
+
+#### 論点 10: 事象 wake の 3 分類と brokered wake op
+
+wake 条件は 3 種に整理できる:
+
+1. **日時** (`wake_at`) — daemon 実装済み (QueueSweepLoop)
+2. **自タスク終端** (`wake_task_id`) — daemon 実装済み。 `ShouldWake` は参照先タスクの
+   消失も fail-open で起こす
+3. **source 事象** (「Jira が動いたら」等の自由記述) — 決定 12 の線引き (daemon が見るのは
+   時計・task DB・card のフィールドだけ) 上 daemon には構造的に持てず、 workspace 判断
+   (collector/observe → evaluate → card-suggest 提案 → nose 承認) のまま
+
+種類 3 の実行の口が現状無い: brokered op 一覧に wake が無く、 `wake_triaged` /
+`wake_ready` は IsManualAction ガードで reject され (これ自体は正しい)、 `Wake()` は
+HTTP/Web UI 専用。 sandbox 内の khi sweep は nose 承認済みの事象 wake を実行できない。
+**brokered wake op (`Wake()` を呼ぶ薄い口、 workspace scoping は action send と同じ) を
+PR-4 か直後に足す** — 種類 3 が workspace 管轄なのは設計通りなので、 この口は境界を壊さ
+ない。 khi 側の移行の勘所: park 時に「wake_task_id で表現できる条件か」を判定して積めば、
+種類 2 は LLM の巡回から完全に消える。
+
+#### 論点 11: Go の自動化は「代行 Go タスク」で行う (機械に焼かない)
+
+N 個の子タスクの Go を自動化したい場合、 状態機械側に auto-Go を焼くのではなく、 **nose の
+代わりに Go するタスクを定期的に走らせる** (nose 案、 2026-08-11):
+
+- Go は今まで通り `ready` action 1 本 — 委譲の中身は代行タスクの instruction に書かれた
+  ポリシーで、 ポリシーと enforcement の分離に載る。 機械側に追加スコープは不要
+- 入力は `?status=queue_next` (PR-3) — daemon が決定論で「Go 可能なもの」を順位付けし、
+  代行タスクは判断だけ乗せる
+- 「単純な単発タスクで nose の判断が要らなそうなものを代行 Go」に自然に一般化し、
+  論点 8 の wake_task_id 自動再浮上と合成できる。 止めたければ cron タスクを止めるだけ (可逆)
+
+**前提条件**: `orchestrator.Action` に actor (誰が押したか) のフィールドが無い。 khi の
+claims 封筒の `by` が「作話しうる主体と機械の事実の線を消さない」ためにあるのと同じ理由で、
+nose の Go と代行タスクの Go が actions ログ上で区別できない状態で代行を始めてはいけない。
+代行 Go の稼働前に Action への actor 記録 (カラム追加 or payload 規約) を入れる。 PR-4
+必須ではない。
+
+#### 論点 12: 大型機能 (設計 doc → PR 分割 → 実装) のマッピング
+
+- shape (設計) セッションは機械の外のまま。 設計 doc はチームの doc 置き場 (boid = repo の
+  docs/plans、 khi = Notion) に置き、 card はポインタのみ持つ (content_ref と同じ境界)
+- PR 分割 = children。 逐次消化は論点 8 のループで、 判断として残るのは Go と次の spec
+  起こしだけ (どちらも意図的 — 決定 9 の ready-gate)。 接続部 (dispatch / 子終端検知 /
+  再浮上 / queue 評価) はすべて決定論
+- 代替として `behavior: drive` の親 1 本に系列全体を委任する型もある (Go 粒度のトレード
+  オフ — PR ごとに承認するか、 マージ条件を instruction に書き切って一括委任するか)。
+  サブエージェント分割の巨大単発タスクも同型で、 差は進捗の可視性 (children = Web UI で
+  見える索引 / 単発 = セッションを覗く必要がある)
+- **khi の sandbox から Notion に書く経路は未整備** (bitbucket-api と同型の API gateway
+  service 追加が前提インフラ)。 PR-4 と独立の宿題
+
+### 検証シナリオ (机上検証の成果 → 実装テストの仕様)
+
+2026-08-11 の机上検証 4 本を、 実装時のテスト仕様とレビュー時のチェックリストとして固定
+する。 運用規律: **実装 PR では、 daemon 側の決定論 step に pin するテスト名を注記する。
+テストが無い step には「khi 側 / LLM 判断につきテスト不能」等の理由を明示する** (テスト
+無しの出荷に理由を書く — boid-review の観点をこの節に対して適用する)。
+
+#### S1: PR コメントの既存 card への合流
+
+前提: BGO-214 の card が daemon task として存在 (Ref="BGO-214")、 state=working、 子が
+dispatch 済み。
+
+1. khi bitbucket adapter が新規 PR コメントを拾い、 branch 名から issue key を解決、
+   `related_jira_issues` 索引で card に照合する — *khi 側、 テスト対象外*
+2. khi が本文を workspace 側 card に追記する (daemon には流れない) — *khi 側*
+3. khi が保持する task_id へ `boid action send --type attrs_set` — 期待: actions テーブル
+   に追記、 side-effect が task_triage.detail を更新、 **task.Status は working のまま**
+   (非遷移)、 **task.Payload は汚染されない** (論点 6-2)
+4. khi が task_id を失っていた場合、 `task create --initial-status triaged` を
+   Ref="BGO-214" で再送 — 期待: 新規 task は作られず**既存 task が返る** (論点 7)
+5. attrs_set 等の非遷移 action が available_actions / Web UI ボタンに現れない (論点 6-1)
+
+#### S2: レビュー対応タスクの起票と再 Go ループ
+
+前提: S1 の続き。 card は working。
+
+1. sweep で card-suggest が suggestion (verb: go) を導出し attrs_set で daemon に反映 —
+   *khi 側 + S1-3 と同経路*
+2. nose 承認後、 khi が `child_added` → `child_specced` を送る — 期待: detail.children に
+   open → specced で積まれる
+3. **working の card への再 Go**: working→ready 遷移 (論点 8) → `ready` action の
+   Dispatch 自動連鎖 → specced の子だけ task 化 — 期待: 子タスクの remote_id は card から
+   継承され base_branch が `feature/BGO-214` になる (= レビュー対象 PR と同じブランチに
+   push される)
+4. 子タスクの終端を daemon が検知し `child_closed` を自己記録する (論点 9) — 期待: khi
+   からの child_closed 送信は不要
+5. 残課題があれば新しい子を open で積み、 card は working→triaged で浮上する (論点 8)
+
+#### S3: parked card の wake 3 分類
+
+1. **日時**: park payload に wake_at → QueueSweepLoop が起こす (PR-1/3 実装済み、 既存
+   テストの確認のみ)
+2. **自タスク終端**: park payload に wake_task_id → 参照タスクの done/aborted で起こす。
+   参照先が消えていても fail-open で起こす (実装済み)
+3. **source 事象**: khi が判断し nose が承認 → **brokered wake op で起こす** (論点 10、
+   新規実装) — 期待: sandbox 内から `Wake()` 相当が実行でき、 ParkedFrom に従い
+   triaged/ready の正しい側へ復帰する。 `wake_triaged` / `wake_ready` の直接 action send
+   は引き続き reject される
+
+#### S4: PR 系列の逐次消化 (+ 代行 Go)
+
+前提: 設計 doc 済み、 children に PR-1..N (先頭のみ specced)。
+
+1. Go → dispatch — 期待: **specced の 1 個だけ**が task 化される (open の子は触られない)
+2. Go と同時に wake_task_id = 子タスクで park する (論点 8 の working→parked) — 期待:
+   子の終端で自動再浮上して queue に載る
+3. 次の子を specced にして再 Go する (S2-3 と同じ) — 期待: ループが N 周回る
+4. (将来) 代行 Go タスクが queue_next を読んで `ready` action を送る (論点 11) — 期待:
+   actions ログで nose の Go と区別できる (actor 記録が前提条件)
+
+---
+
 ## 段階導入
 
 ### Phase 0: 機構追加なしの dogfood (最初の検証)
@@ -934,6 +1246,34 @@ exit criteria (2 週間程度): (1) nose が「見に行く」頻度が実際に
   まま)。
 - **Phase 0 は即開始可能**: khi は customer bitbucket の `khi-task-collector` (メタプロジェクト
   の原型) が登録済みで、 前提が揃っている。
+
+### 第 9 版 (2026-08-11、 Fable レビュー + 机上シナリオ検証) での変更
+
+- **「Fable レビュー結果」節を新設** (条件付き GO)。 論点 1〜3 はコード実物で裏取り済み
+  (shim の YAML 丸ごと forward により remote_id / initial_status の配管は既存)。 追加論点:
+  論点 4 の実装注意 4 点 (論点 6)、 dedup の Ref=source_ref 案 (論点 7、 「khi の task_id
+  保持で dedup 消える」を修正)、 **working からの出口 3 本** (論点 8、 PR-4 と同時修正 —
+  レビュー対応と PR 系列消化の両方を塞ぐ最重要)、 child_dispatched / child_closed の
+  書き手分離と論点 5 の移行順序 (論点 9)、 事象 wake 3 分類と brokered wake op (論点 10)、
+  代行 Go タスク + Action の actor 記録 (論点 11、 nose 案)、 大型機能のマッピングと
+  Notion gateway 宿題 (論点 12)。
+- **「検証シナリオ」節を新設**。 机上検証 4 本 (S1: PR コメント合流 / S2: 再 Go ループ /
+  S3: wake 3 分類 / S4: PR 系列逐次消化) を実装テストの仕様 + レビュー時チェックリストと
+  して固定。 実装 PR は決定論 step に pin するテスト名を注記し、 テスト無し step は理由を
+  明示する規律を明記。
+
+### 第 8 版 (2026-08-11、 PR-4 着手前レビュー — khi 実運用モデルとの突合) での変更
+
+- **「PR-4 設計メモ」節を新設**。 khi-task-collector 実機 (`docs/card-format.md` /
+  `docs/card-events.md` / `docs/card-dispatch.md`) と daemon 側 PR-1/2/3 実装を突合し、
+  5 つの論点を整理: (1) `TaskTriageChildSpec.RemoteID` 不足は既存の親→子継承で severity 低に
+  格下げ、 (2) ブランチポリシー (worktree 分離目的) は既に撤去済みだが `BaseBranch` 自体は
+  git 側の関心として存続、 `RemoteID` と `source_ref` は field 統合しない、 (3)
+  `related_jira_issues` 的な複数 source 束ねは daemon に持ち込まない方針を再確認、 (4)
+  `UpdateTaskRequest` PATCH 案を撤回し、 既存の `BoidOpActionSend` → `ApplyAction` →
+  `actions` テーブル経路 (action append) に統一する方針に転換、 (5) dispatch 時の
+  parent-child モデル (khi の root task 化 vs PR-2 の子 task 化) は**未決着**として明記。
+- **次アクション**: 別セッションで Fable にこの節をレビューしてもらってから実装着手。
 
 ### 第 7 版 (2026-08-11、 Phase 1 実装可否の確認 + 未解決論点の決着) での変更
 
