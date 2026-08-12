@@ -455,7 +455,7 @@ secret store に保持される値は namespace ごと (workspace ごと) に以
 
 flow は 3 種類、`oauth_providers.<name>.flow` の値でどれが動くか決まります:
 
-- **`device`** (Microsoft/GitHub 等): `boid secret oauth login <service>` が user_code と verification URI (+ QR) を表示するだけで、実際の token endpoint ポーリングは daemon が裏で行います。表示された URL を別の端末・スマホで開いて code を入力すれば、CLI 側は自動的に完了を検知します。
+- **`device`** (Microsoft/GitHub 等): `boid secret oauth login <service>` が user_code と verification URI を表示するだけで、実際の token endpoint ポーリングは daemon が裏で行います。表示された URL を別の端末・スマホで開いて code を入力すれば、CLI 側は自動的に完了を検知します。
 - **`loopback`** (Google/Atlassian 等): CLI がローカルの動的ポート (`127.0.0.1:0`, RFC 8252 §7.3) で listen し、表示された authorize URL をブラウザで開いて同意すると、そのブラウザからの redirect が CLI のローカル listener に着地して自動完結します。ブラウザが開ける環境で CLI を実行する必要があります。
 - **`manual`** (freee 等、OOB のみのプロバイダ): 表示された authorize URL をブラウザで開いて同意すると、画面に code が直接表示されるので、それを CLI のプロンプトに貼り付けます。
 
