@@ -107,11 +107,13 @@ func TestSecretOAuthLogin_ManualFlow_Success(t *testing.T) {
 	}
 }
 
-// TestSecretOAuthLogin_ManualFlow_PrintsQRCode pins the other side of the
-// rule the loopback test above pins: the manual/OOB flow SHOULD offer a QR
-// code. There is no redirect to intercept — the provider displays a code on
-// screen — so authorizing on a phone and typing that code here works.
-func TestSecretOAuthLogin_ManualFlow_PrintsQRCode(t *testing.T) {
+// TestSecretOAuthLogin_ManualFlow_OmitsQRCode pins the rule that now holds
+// for every `boid secret oauth login` flow: no terminal QR code. The person
+// running the command is already sitting at the terminal the authorize URL
+// is printed on, so the QR only adds screens of noise to scroll past — see
+// printAuthorizeURL's doc comment. (`boid web pair` keeps its QR: there the
+// whole point is enrolling a phone.)
+func TestSecretOAuthLogin_ManualFlow_OmitsQRCode(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == "POST" && r.URL.Path == "/api/oauth/login":
@@ -131,12 +133,15 @@ func TestSecretOAuthLogin_ManualFlow_PrintsQRCode(t *testing.T) {
 	if err := runSecretOAuthLogin(secretOAuthLoginCmd, []string{"freee"}); err != nil {
 		t.Fatalf("runSecretOAuthLogin: %v", err)
 	}
+	if !strings.Contains(out.String(), "https://accounts.secure.freee.co.jp/public_api/authorize") {
+		t.Errorf("output = %q, want it to show the authorize URL", out.String())
+	}
 	qr, err := qrterm.Encode("https://accounts.secure.freee.co.jp/public_api/authorize", false)
 	if err != nil {
 		t.Fatalf("qrterm.Encode: %v", err)
 	}
-	if !strings.Contains(out.String(), qr) {
-		t.Error("manual flow omitted the QR code; finishing on another device is valid for this flow")
+	if strings.Contains(out.String(), qr) {
+		t.Error("manual flow printed a QR code; oauth login no longer offers one")
 	}
 }
 
@@ -273,6 +278,46 @@ func TestSecretOAuthLogin_DeviceFlow_Success(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "Login complete.") {
 		t.Errorf("output = %q, want it to mention Login complete.", out.String())
+	}
+}
+
+// TestSecretOAuthLogin_DeviceFlow_OmitsQRCode is the device-flow half of
+// TestSecretOAuthLogin_ManualFlow_OmitsQRCode. The device flow used to render
+// verification_uri_complete as a QR — the one case where scanning it with a
+// phone genuinely worked — but the rule is now uniform across the command:
+// print the URL, never the QR.
+func TestSecretOAuthLogin_DeviceFlow_OmitsQRCode(t *testing.T) {
+	restore := overrideOAuthLoginPollSleep(t)
+	defer restore()
+
+	const complete = "https://github.com/login/device?user_code=USER-CODE"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == "POST" && r.URL.Path == "/api/oauth/login":
+			writeJSONResponse(t, w, oauthLoginStartResponse{
+				SessionID: "sess-1", Flow: "device", UserCode: "USER-CODE",
+				VerificationURI: "https://github.com/login/device", VerificationURIComplete: complete,
+				IntervalSeconds: 1, ExpiresInSeconds: 60,
+			})
+		case r.Method == "GET" && r.URL.Path == "/api/oauth/login/sess-1":
+			writeJSONResponse(t, w, oauthLoginStatusResponse{Status: "complete"})
+		default:
+			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusInternalServerError)
+		}
+	}))
+	defer srv.Close()
+
+	out := setupSecretOAuthLoginCmd(t, srv, 5*time.Second, "")
+	if err := runSecretOAuthLogin(secretOAuthLoginCmd, []string{"github"}); err != nil {
+		t.Fatalf("runSecretOAuthLogin: %v", err)
+	}
+	qr, err := qrterm.Encode(complete, false)
+	if err != nil {
+		t.Fatalf("qrterm.Encode: %v", err)
+	}
+	if strings.Contains(out.String(), qr) {
+		t.Error("device flow printed a QR code; oauth login no longer offers one")
 	}
 }
 
