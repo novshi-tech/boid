@@ -9,7 +9,8 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"strings"
-	"time"
+
+	"github.com/novshi-tech/boid/internal/gwtransport"
 )
 
 // Server is the git gateway's HTTP handler: a thin net/http/httputil.
@@ -67,16 +68,19 @@ func NewServer(registry *Registry, credentials *CredentialProvider, notifier Ups
 	}
 
 	s.proxy = &httputil.ReverseProxy{
-		// ExpectContinueTimeout makes the outbound transport actually wait
-		// for the upstream's 100-continue before streaming the body,
-		// rather than silently ignoring the client's "Expect:
-		// 100-continue" header (docs/plans/git-gateway-cutover.md PR3:
-		// "Expect: 100-continue と chunked encoding の透過的な扱い"). All
-		// other Transport fields are left at http.Transport's zero values
-		// (== streaming semantics, no body buffering).
-		Transport: &http.Transport{
-			ExpectContinueTimeout: 5 * time.Second,
-		},
+		// The outbound transport is shared with internal/apigateway via
+		// gwtransport.New: ExpectContinueTimeout (which makes the outbound
+		// transport actually wait for the upstream's 100-continue before
+		// streaming the body, rather than silently ignoring the client's
+		// "Expect: 100-continue" header — docs/plans/git-gateway-cutover.md
+		// PR3: "Expect: 100-continue と chunked encoding の透過的な扱い")
+		// plus the connection-liveness settings (idle-conn expiry, HTTP/2
+		// keep-alive ping) whose absence wedged the API gateway against a
+		// silently-vanished upstream in production — see that package's own
+		// doc comment. Every body-streaming-relevant field is still left at
+		// http.Transport's zero value (== streaming semantics, no body
+		// buffering).
+		Transport: gwtransport.New(),
 		Rewrite: func(pr *httputil.ProxyRequest) {
 			info, _ := pr.In.Context().Value(routeInfoKey{}).(routeInfo)
 			pr.Out.URL.Scheme = s.credentials.SchemeFor(info.host)

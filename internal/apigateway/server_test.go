@@ -877,3 +877,34 @@ func TestServer_FlushIntervalNegative_FlushesKnownLengthResponse(t *testing.T) {
 		t.Fatalf("rest of body = %q, want %q", rest, chunk2)
 	}
 }
+
+// TestServer_UpstreamTransportHasConnectionLivenessTimeouts pins the
+// 2026-08-11 production incident (internal/gwtransport's own package doc
+// comment): this Server's outbound Transport was an http.Transport literal
+// with every connection-liveness field left at zero, so a pooled HTTP/2
+// connection to an upstream that stopped answering — without closing its
+// TCP connection — was reused forever and every request to that one
+// service hung until its caller gave up, while other services (other
+// upstream hosts, other pools) stayed healthy.
+func TestServer_UpstreamTransportHasConnectionLivenessTimeouts(t *testing.T) {
+	s := NewServer(NewRegistry(), nil, nil, nil)
+
+	ff, ok := s.proxy.Transport.(failFastTransport)
+	if !ok {
+		t.Fatalf("proxy.Transport is %T, want failFastTransport", s.proxy.Transport)
+	}
+	tr, ok := ff.base.(*http.Transport)
+	if !ok {
+		t.Fatalf("failFastTransport.base is %T, want *http.Transport", ff.base)
+	}
+
+	if tr.IdleConnTimeout == 0 {
+		t.Error("IdleConnTimeout is 0: a pooled connection whose peer silently vanished never expires (use gwtransport.New)")
+	}
+	if tr.HTTP2 == nil || tr.HTTP2.SendPingTimeout == 0 {
+		t.Error("no HTTP/2 keep-alive ping configured: HTTP/2 is negotiated implicitly, and a zero SendPingTimeout means net/http never health-checks a half-dead connection (use gwtransport.New)")
+	}
+	if tr.ExpectContinueTimeout == 0 {
+		t.Error("ExpectContinueTimeout is 0: the client's Expect: 100-continue would be silently ignored")
+	}
+}

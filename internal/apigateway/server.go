@@ -8,7 +8,8 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"strings"
-	"time"
+
+	"github.com/novshi-tech/boid/internal/gwtransport"
 )
 
 // Server is the API gateway's HTTP handler: a thin net/http/httputil.
@@ -101,14 +102,17 @@ func NewServer(registry *Registry, credentials *CredentialProvider, notifier Ups
 	}
 
 	s.proxy = &httputil.ReverseProxy{
-		// ExpectContinueTimeout mirrors internal/gitgateway.Server's own
-		// Transport: all other fields stay at http.Transport's zero values
-		// (== streaming semantics, no request body buffering — docs/plans/
-		// api-gateway.md §5 "無バッファストリーミング転送"). Wrapped in
-		// failFastTransport — see that type's own doc comment.
-		Transport: failFastTransport{base: &http.Transport{
-			ExpectContinueTimeout: 5 * time.Second,
-		}},
+		// The outbound transport is shared with internal/gitgateway via
+		// gwtransport.New: ExpectContinueTimeout plus the connection-
+		// liveness settings (idle-conn expiry, HTTP/2 keep-alive ping)
+		// whose absence wedged this gateway against a silently-vanished
+		// upstream in production — see that package's own doc comment.
+		// Every body-streaming-relevant field is still left at
+		// http.Transport's zero value (== streaming semantics, no request
+		// body buffering — docs/plans/api-gateway.md §5 "無バッファ
+		// ストリーミング転送"). Wrapped in failFastTransport — see that
+		// type's own doc comment.
+		Transport: failFastTransport{base: gwtransport.New()},
 		// FlushInterval < 0 flushes immediately after every write instead
 		// of batching on a timer — required for SSE (Server-Sent Events)
 		// upstreams to stream incrementally rather than arriving in bursts
