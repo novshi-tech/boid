@@ -428,6 +428,45 @@ export function initBoidTerminal(rootEl, { jobId, wsUrl }) {
   // xterm.js の .xterm-viewport はネイティブ scroll を使うが、タッチ慣性の
   // 高頻度 pixel delta と相性が悪くスクロールが詰まる。
   // Touch Events で delta を自前計算し term.scrollLines() に変換する。
+  //
+  // なぜ .xterm-viewport ではなく xtermWrap にリスナーを付けるか:
+  // .xterm-viewport と実際に文字が描かれる .xterm-screen は xterm.js の DOM
+  // 構造上「親子」ではなく「兄弟」(どちらも xterm.js の this.element 直下)。
+  // .xterm-screen は position:relative で全面を覆い、.xterm-viewport
+  // (position:absolute; inset:0) の上に乗って hit-test を奪うので、端末の
+  // 文字の上を触るタッチは .xterm-screen (→ .xterm-rows の span) に落ちて
+  // .xterm-viewport には一切バブルしない。かつて .xterm-viewport に付けて
+  // いた実装は、スクロールバーの隙間 (デスクトップで数 px、モバイルの
+  // オーバーレイスクロールバーでは実質 0px) でしか発火しておらず、文字の上
+  // でのスワイプに対しては最初から何もしていなかった。
+  //
+  // xtermWrap (.boid-terminal-xterm-wrap) は .xterm-viewport と .xterm-screen
+  // 両方の共通祖先なので、ここでリスナーを capture フェーズに登録すれば
+  // どちらに落ちたタッチでも確実に拾える。capture にするのは、bubble
+  // フェーズで先に受け取ると xterm.js 自身が .element (=xtermRoot の中の
+  // .xterm) に登録している touchstart/touchmove (vendored xterm.js の
+  // bindMouse() 内) の方が DOM 上は内側なので先に処理が進んでしまうため。
+  //
+  // touchmove で stopPropagation() する理由: xterm.js の touchmove ハンドラ
+  // は coreMouseService.areMouseEventsActive が false のときだけ
+  // viewport.handleTouchStart/handleTouchMove という「xterm 自前のタッチ
+  // スクロール」を動かす。Claude Code のような TUI は DECSET 1000/1002/1003
+  // (マウストラッキング) を有効化するので通常 areMouseEventsActive=true で
+  // xterm 側は素通りしてくれるが、term.reset() でモード状態がリセットされる
+  // 瞬間 (attach 直後・幅変更 resize 直後。上の mouse-tracking mode dedup の
+  // コメント参照) など active=false の窓ができると、xterm 自前のタッチ
+  // スクロールが同じジェスチャーに介入し、互いの scrollLines 呼び出しが競合
+  // する。capture フェーズで stopPropagation すれば、この後どのフェーズの
+  // どのリスナーにもイベントが渡らなくなるので、areMouseEventsActive の状態
+  // に関係なくこのハンドラだけが動く。touchstart/touchend は意図的に
+  // stopPropagation しない: xtermWrap の tap-to-focus (下の attachTapFocus)
+  // が同じ 2 イベントを xtermWrap の bubble フェーズで拾う必要があるため
+  // (capture で止めなければ、対象要素を経由して戻ってくる bubble フェーズの
+  // リスナーには問題なく届く)。xterm 側の touchstart は
+  // Terminal.cancel()/cancelEvents オプションが既定 false のかぎり無害
+  // (viewport.handleTouchStart は _lastTouchY を代入するだけで見た目に影響
+  // しない) だが、対になる touchmove を止めている以上 handleTouchMove は
+  // 呼ばれない。
   (function attachTouchScroll() {
     const viewport = xtermRoot.querySelector('.xterm-viewport');
     if (!viewport) return;
@@ -449,16 +488,28 @@ export function initBoidTerminal(rootEl, { jobId, wsUrl }) {
       return viewport.scrollHeight / totalRows;
     }
 
-    viewport.addEventListener('touchstart', function (e) {
+    // コピートーストや切断オーバーレイは xtermWrap の子だが、これらの上での
+    // タッチはボタン操作 (コピー/閉じる/再接続) 用であって端末スクロール
+    // ジェスチャーではない。ここで拾ってしまうと、ボタンへのタップが
+    // 端末スクロールとして誤処理されうる。
+    function isOnOverlay(e) {
+      return (copyToast && copyToast.contains(e.target)) ||
+        (disconnectOverlay && !disconnectOverlay.hidden && disconnectOverlay.contains(e.target));
+    }
+
+    xtermWrap.addEventListener('touchstart', function (e) {
+      if (isOnOverlay(e)) return;
       if (rafId) { cancelAnimationFrame(rafId); rafId = null; }
       startY = e.touches[0].clientY;
       lastY  = startY;
       lastT  = e.timeStamp;
       velocityY = 0;
       remainder = 0;
-    }, { passive: true });
+      // touchstart 自体は stopPropagation しない (上の説明を参照)。
+    }, { passive: true, capture: true });
 
-    viewport.addEventListener('touchmove', function (e) {
+    xtermWrap.addEventListener('touchmove', function (e) {
+      if (isOnOverlay(e)) return;
       const y  = e.touches[0].clientY;
       const dt = e.timeStamp - lastT || 1;
       const dy = lastY - y;  // 正 = 上スワイプ = 過去へスクロール
@@ -474,9 +525,12 @@ export function initBoidTerminal(rootEl, { jobId, wsUrl }) {
       lastY = y;
       lastT = e.timeStamp;
       e.preventDefault();
-    }, { passive: false });
+      e.stopPropagation();
+    }, { passive: false, capture: true });
 
-    viewport.addEventListener('touchend', function () {
+    xtermWrap.addEventListener('touchend', function (e) {
+      if (isOnOverlay(e)) return;
+      // touchend も stopPropagation しない (上の説明を参照)。
       // 慣性減衰スクロール: velocityY (px/ms) を行数に換算しながら減衰させる
       // remainder は touchmove からの端数を引き継ぐ
       const ch = cellHeight();
@@ -502,7 +556,7 @@ export function initBoidTerminal(rootEl, { jobId, wsUrl }) {
       if (Math.abs(vel) >= MIN_VEL) {
         rafId = requestAnimationFrame(step);
       }
-    }, { passive: true });
+    }, { passive: true, capture: true });
   })();
 
   // --- mobile tap-to-focus (soft keyboard) ---
