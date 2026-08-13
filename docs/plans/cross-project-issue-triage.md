@@ -1,8 +1,9 @@
 # プロジェクト横断の課題トリアージ (メタプロジェクト + daemon inbox)
 
-ステータス: **draft (第 9 版 2026-08-11 — Fable レビュー (条件付き GO) と机上シナリオ検証を
-反映、 論点 6〜12 と「検証シナリオ」節を新設。 初版 2026-07-30)**。 Phase 0 dogfood 稼働中・
-Phase 1 PR-1/2/3 merge 済み・PR-4 未着手 (着手条件は「Fable レビュー結果」節)。
+ステータス: **draft (第 11 版 2026-08-13 — khi 統合の方向を「daemon が state の唯一の正」
+(決定 14) で確定し、 論点 5 を決着。 「PR-5 設計メモ」節を新設。 初版 2026-07-30)**。
+Phase 0 dogfood 稼働中・ Phase 1 PR-1/2/3/4 merge 済み・PR-5 (読み戻し口 + done 自動落ち)
+未着手。
 発端: nose の構想メモ (音声書き起こし、 2026-07-30) と同日の設計ディスカッション。
 関連: [workspace-default-project.md](workspace-default-project.md) (workspace デフォルト project 定義)、
 [volume-only-daemon.md](volume-only-daemon.md) §論点a/b (project の git URL 化・ bare repo・
@@ -17,6 +18,15 @@ volume)、 [web-sessions.md](web-sessions.md) (Web UI セッション)。
 `task_triage` とする。 第 5 版以前から残る本文中の「card」は「triage 段階の task」と読み替える。
 なお代替候補だった issue は「Jira issue を ingest する」という本システムの文脈と確実に衝突する
 ため不採用。
+
+第 11 版で workspace 側に残る**本文ファイル**の呼称を **note** に確定した (khi 実機の
+`issues/<slug>.md` → `notes/<slug>.md`)。 daemon 側の実体名は「triage 段階の task」で既に
+確定しており、 workspace 側にもう 1 つ固有名を立てると同じ二重語彙を再生産するため、
+**固有名ではなく役割語**を置く: note は「その triage task の note」であり、
+`task_triage.detail.content_ref` が指す先そのもの。 card を廃した 2 つの理由 (一般的すぎる /
+内容でなく入れ物を指す) のうち後者にも該当しない — note は中身そのものを指す語である。
+対抗候補だった dossier (append-only で経緯が積まれる実体としては最も正確だが口頭で重い) と
+docket (queue との相性は良いが初見で意味が取れない) は不採用。
 
 ---
 
@@ -304,6 +314,72 @@ boid には actions / timeline の既存機構があるため、 greenfield の�
 設計する (Phase 1 実測: 現行の遷移記録がどこまで event log として使えるか)。 task 統合
 (決定 7 改) と併せると、 card の遷移 event は task の action 履歴に自然に合流する。
 
+### 決定 14 (第 11 版): state の正は daemon 側ただ 1 つ — workspace 側の fold は退役する
+
+Phase 0 の khi は自己完結した event sourcing を持つ (claims → `evaluate.py` → decisions →
+`card_model.fold()` → frontmatter)。 daemon 統合にあたり、 この decisions / fold を daemon の
+actions / `task_triage` と**並走させない**。 workspace 側の fold を退役させ、 **state の正は
+daemon 側ただ 1 つ**にする。
+
+検討した 2 案:
+
+- **案 A (khi が正、 daemon は射影先)**: khi は今まで通り decisions を畳み、 ついでに daemon へ
+  action を push する。 PR-4 が暗黙に想定していた形で、 追加実装がほぼ要らない。
+- **案 B (daemon が正、 khi は claims と本文だけ)**: khi の decisions / fold を退役し、
+  workspace 側は claims (source 方言) と note (本文) と evaluate の翻訳・照合規則だけを持つ。
+
+**案 B を採用** (nose 判断、 2026-08-13)。 理由は「二重 fold は、 両者のロジックがズレたときに
+**誰も気づかない**」こと。 案 A は khi 側 fold の読み手が (queue の提示面が daemon に移るため)
+実質いなくなるにもかかわらず書き続ける形になり、 ズレの検知手段が無いまま乖離が進む。 これは
+決定 13 の「event 追記を正・ state は導出」を 2 箇所で別々に行うことであり、 決定 13 の趣旨
+そのものに反する。
+
+この決定で card-events.md の二層 (claims = source 方言・ workspace 内 / decisions = 共通語・
+daemon と共有する契約) はむしろ元の意図に近づく — **decisions が daemon の actions に置き換わる**
+だけで、 層の切れ目は動かない。
+
+帰結:
+
+- **workspace 側から退役するもの**: `decisions/*.jsonl`、 `card_model.fold()`、
+  `bootstrap_events.py` / `verify_roundtrip.py` (移行済みの遺物)、 `observe.py` の
+  `boid_task_observed` (子の生死は daemon が `child_closed` を自己記録する、 論点 9)、
+  `evaluate.py` の wake 日付評価と done 自動落ち (daemon の QueueSweepLoop と決定 15 へ移譲)。
+- **workspace 側に残るもの**: claims、 note (本文、 append-only)、 `evaluate.py` の照合・
+  方言→共通語の翻訳・却下履歴 (`(slug, verb, basis)`)・ urgency 単調性・ 呼び直し抑止。
+  `project_card.py` は「decisions を畳んで frontmatter 生成」から「**daemon から読んで note を
+  render**」へ役割が変わる。
+- **note は残す** (nose 判断): 本文は daemon 側に載らない (決定 3) ため、 card-suggest の判断
+  根拠として現地に render された 1 枚が必要。 card-events.md の「人間も LLM も読むのは生成
+  された note だけ」の原則は維持する — LLM に daemon の生 JSON を読ませると、 そこで fold させる
+  ことになり本決定を骨抜きにする。
+- **daemon 側に不足が 2 つ生じる**: 読み戻し口 (下記 PR-5 設計メモ) と working→done (決定 15)。
+  案 A ではどちらも khi 側が代替していたため顕在化していなかった。
+
+受容する代償: **daemon 障害中は workspace 側が state を確定できない**。 claims は書けるので
+入力は失われず、 復旧後の再評価で追いつく (fail-forward)。 また Python 側 fold のテスト資産は
+破棄する。
+
+### 決定 15 (第 11 版): done の自動落ちは daemon の決定論 rule で行う
+
+決定 14 で khi から done 判定が消えるため、 daemon 側に置く。 承認は要らない (逆輸入 2 で
+既に「自動で落ちる」と決めていた線をそのまま実装する):
+
+```
+全子 closed  ∧  observed.source_closed  ⇒  working → done
+```
+
+- **全子 closed**: daemon が第一次情報として持つ (`task_triage.detail.children`、 `child_closed`
+  は daemon の自己記録、 論点 9)。
+- **source 終了**: workspace 側の知識なので、 khi が `attrs_set` の `observed` で共通語化して
+  届ける (「source は終了しているか」の水準まで。 Jira の statusCategory 等のチャネル固有表現は
+  workspace に留める — 逆輸入 3 の境界原則)。
+- 評価は決定論のみで、 daemon が見るのは children と card のフィールドだけ (決定 12 を満たす)。
+  評価契機は既存の QueueSweepLoop と `child_closed` 記録直後の 2 点。
+
+**自動の範囲を広げていくこと自体が目標**である (nose、 2026-08-13): 「終わった」の判定が人間に
+戻ってくると、 queue への信頼 (成功の定義) がその分だけ落ちる。 dropped だけは引き続き nose の
+判断でしか入らない (終わった件と捨てた件の区別が計測に必要、 状態機械節)。
+
 ---
 
 ## 信頼境界
@@ -555,7 +631,7 @@ boid の既存データは「揮発しても再構築可能」を前提にして
 
 | データ | 置き場所 | 耐久性の根拠 | 消失時の影響 |
 |---|---|---|---|
-| 課題・ テーマ本文 (`issues/` `themes/`) | メタプロジェクト repo (git) | job 終了ごとに upstream へ push | 直近セッション分のみ |
+| 課題・ テーマ本文 (note、 `notes/` `themes/`) | **$HOME workspace volume** (第 11 版で実態に修正、 下記) | volume backup (restic、 2026-07-31〜) | backup 間隔分 |
 | triage ルール・ 指示・ project.yaml | 同上 | 同上 | 同上 |
 | 日次 digest (会計サマリ) | 同上 (小さく意味のある diff) | 同上 | 監査履歴のみ |
 | card の運用 state (parked / wake / queue) | daemon DB | daemon volume | 全 card が再浮上する (fail-open、 silent loss にならない) |
@@ -565,12 +641,29 @@ boid の既存データは「揮発しても再構築可能」を前提にして
 
 原則:
 
-1. **失って困る唯一の写しを volume・ daemon DB に置かない。** 一次情報は「再取得可能な
-   source」か「git」のどちらかに必ず載る。
-2. **daemon 側 state の消失は「再浮上」に退行する** (fail-open)。 隠していた card が出てくる
-   方向にしか壊れない。 本文ファイルの frontmatter に card フィールドの写しを持たせ、 daemon
-   側は workspace からの再 push で再構築可能に保つ。 frontmatter の役割は「モデリングの本体」
-   ではなく**この耐久写し** (+ Phase 0 の検証場)。
+1. **失って困る唯一の写しを、 backup されていない場所に置かない。** 一次情報は「再取得可能な
+   source」「git」「backup 対象の volume」のいずれかに必ず載る。
+
+   第 11 版で「volume・daemon DB に置かない」から上記へ緩和した。 khi 実機は note (本文) を
+   git repo ではなく **$HOME workspace volume** に置いており (`$HOME/.local/state/
+   boid-ingest/`)、 これは事故ではなく意図的な選択である (nose、 2026-08-13):
+   (a) note は巡回のたびに追記されるため毎回の commit & push が想像以上に煩雑、
+   (b) メタプロジェクト repo は**顧客 bitbucket 上にありチームと共有される** — タスク処理
+   ワークフロー (スクリプト・ スキル・ 指示) をチームで共有できることを重く見た一方、 個人宛
+   signal である note 本体は共有する性質のデータではない。 耐久性の根拠は restic による
+   volume backup (2026-07-31〜稼働) に置き換わる。
+
+   したがって repo (git) に載るのは **ワークフローそのもの** (scripts / skills / docs /
+   project.yaml) であり、 **note と claims は volume** という切り分けになる。 原則 3 の
+   credential 境界の議論は前者にのみ適用される。
+2. **daemon 側 state の消失時の退行**。 第 11 版 (決定 14) で daemon が state の唯一の正に
+   なったため、 「frontmatter に耐久写しを持ち workspace からの再 push で再構築する」という
+   第 4 版以来の fail-open は**成立しなくなった** — 再 push すれば workspace 側 fold が復活し、
+   決定 14 が消そうとした二重 fold そのものになる。 代わりの担保は 2 段:
+   (a) daemon volume の backup からの復元が一次手段、
+   (b) render 済みの note が volume に残るため、 復元できなくても**課題そのものは失われない**
+   (state だけが失われ、 人手で triage し直す)。 「隠していた項目が出てくる方向にしか壊れない」
+   という fail-open の向き自体は (b) で保たれる。
 3. **upstream は「その workspace が既に持つ credential 境界」の内側に置く。** メタプロジェクト
    のために新しい credential を workspace に持ち込まない。 顧客 workspace に個人 GitHub の
    secret を置くと、 untrusted input を処理する場 (決定 4) に個人の全 private repo への到達性を
@@ -837,7 +930,7 @@ ApplyAction` → `sm.Apply()` → `CreateAction` (`actions` テーブル、 `Par
    語彙にこのための新しい型が要る、 現状は未実装)、 以降はその `task_id` へ action を
    送るだけで済む
 
-### 論点 5: dispatch 時の parent-child モデルの相違 — 未決着
+### 論点 5: dispatch 時の parent-child モデルの相違 — **第 11 版で決着** (PR-2 側に寄せる)
 
 khi の現行 dispatch (`docs/card-dispatch.md`, `card-promote-headless --live`) は
 `parent_id: "-"` で**ルートタスク**として子を作り、 card 本文を丸ごと `description` に
@@ -849,8 +942,13 @@ PR-2 側の設計は khi が今手作業でやっている「本文まるごと�
 上位互換だが、 **khi 側のスキル (`card-promote-headless` / `docs/card-dispatch.md`) の
 書き換えが要る**。 boid 本体の PR-4 だけでは閉じない。 このまま ingestion push だけ開通
 させると、 khi が引き続き手動で `boid task create --parent-id -` を叩き続け、 PR-2 の
-自動 dispatch と二重経路になるリスクがある。 **今回のレビューでは方針を決めていない
-(次の課題)**。
+自動 dispatch と二重経路になるリスクがある。
+
+**第 11 版の決着**: PR-2 側 (triage task の子として作る) に寄せ、 `card-promote-headless` を
+退役する。 決定 14 で state の正が daemon になる以上、 dispatch も daemon の `Dispatch()` が
+唯一の経路でなければ children の status を二重に書くことになるため、 選択の余地は実質ない。
+移行順序は論点 9 の制約がそのまま効く — **specced な子の push と手動 promote の併用は二重
+dispatch になるため禁止**。 具体的な順序は「PR-5 設計メモ」節の移行手順を参照。
 
 ### Fable レビュー結果 (2026-08-11、 第 9 版) — 条件付き GO
 
@@ -1053,6 +1151,108 @@ dispatch 済み。
 
 ---
 
+## PR-5 設計メモ (2026-08-13、 khi 統合の実装計画)
+
+決定 14 / 15 と論点 5 の決着を受けた実装計画。 PR-4 までで daemon 側の**受け口**は揃って
+いるが、 決定 14 (daemon が state の唯一の正) を成立させるには **読み口** と **done の自動
+落ち**が足りない。 khi 側は現時点で daemon と 1 本も繋がっていない (dispatch はすべて
+`card-promote-headless --live` の `parent_id: "-"` によるルートタスク化)。
+
+### 実測: PR-4 時点で揃っているもの / 足りないもの
+
+**揃っている** (2026-08-13 に main で確認):
+
+| 用途 | 口 |
+|---|---|
+| triage task の起票 | `boid task create` の `initial_status` / `ref` (`internal/apiwire/task.go:46,54`)。 shim は task spec YAML を丸ごと forward する |
+| 判断系の push | `BoidOpActionSend` で `attrs_set` / `child_added` / `child_specced` (`machine.go:393`)、 `park` / `ready` / `triage` / `drop` |
+| Go と dispatch | `ready` action → `Dispatch()` 自動連鎖 (specced な子のみ task 化) |
+| 機械的事実の自己記録 | `child_dispatched` (Dispatch 時) / `child_closed` (`finalizeTerminal` フック) — khi からの push は `IsManualAction` で reject される (論点 9) |
+| 事象 wake | `BoidOpTaskWake` (`protocol.go:159`) |
+| queue の列挙 | brokered `boid task list --status queue_next` (`boid_executor.go:108` の validate で許可済み) |
+
+**足りない (PR-5 のスコープ)**:
+
+1. **`task_triage` の読み口がゼロ**。 HTTP API にも brokered op にも存在せず、 唯一の読み手は
+   Web UI 内部の enrichment (`internal/api/web.go:279` の `queueTriageByTaskID`)。
+   `BoidOpTaskGet` は `GetTaskField` 経由で **Task DTO のフィールドしか返さない**
+   (`internal/server/boid_executor.go:252`) ため、 sidecar は sandbox から一切見えない。
+   決定 14 では workspace 側が state を持たなくなるので、 **読めないと巡回が成立しない**。
+2. **`working → done` の遷移が存在しない**。 `machine.go` の working からの出口は
+   ready / triaged / parked の 3 本だけ (論点 8) で、 done への道が無い。 案 A なら khi の
+   `evaluate.py` が done を判定していたが、 決定 14 でそれが消えるため、 **card が永久に
+   working に溜まる**。 決定 15 の rule として daemon 側に実装する。
+
+### PR-5 (boid 本体): 読み戻し口 + done 自動落ち
+
+**読み戻し口の要件** — 「機能の完全性として読み戻しが完全でないのはおかしい。 まして action
+から導出するフィールドが取れないのは余計おかしい」(nose、 2026-08-13)。 返すのは
+task + sidecar + **action 導出分**を 1 つにまとめた形:
+
+- `tasks.status` (state)
+- `task_triage` の実列 (kind / urgency / wake_at / wake_task_id)
+- `detail` (attrs / children / summary / source / content_ref / suggestion / observed)
+- **`parked_from`** — `ParkedFrom()` (`task_triage.go`) が actions を舐めて導出する値。 現状は
+  `Wake()` の内部でしか使われておらず、 外に出る口が無い。 決定 13 の「state は導出」を read
+  API 側でも守るなら、 導出フィールドは読み口の一部でなければならない
+
+粒度は**単発と一覧の両方**。 khi の sweep は全 note を舐めるため、 一覧が無いと N 回叩くことに
+なる。 一覧は project スコープ (メタプロジェクト内の triage task 全件) を基本とし、
+`queue_next` との関係は既存の `task_list` に揃える。 workspace scoping は
+`BoidOpActionSend` / `BoidOpTaskGet` と同じ `ctx.AllowsProject` パターンを踏襲する
+(triage task の見出しは workspace 境界を越えてはならない — 決定 2)。
+
+**done 自動落ち** は決定 15 の rule。 評価契機は QueueSweepLoop と `child_closed` 記録直後の
+2 点。 `observed.source_closed` が未設定の card は落ちない (source を持たない head-capture
+由来の扱いは実装時に確認 — 子が全部 closed なら落としてよいはず)。
+
+### khi 側の改修
+
+1. **note への改名** (用語注): `issues/` → `notes/`、 `CARD_ISSUES_DIR` 相当の env、 スキル名
+   (`card-inbox` / `card-suggest` / `card-promote*`)、 docs (`card-format.md` /
+   `card-events.md` / `card-dispatch.md`)。
+2. **起票を daemon 経由にする**: note を起こすときに
+   `boid task create --ref <source_ref> --initial-status triaged` を叩き、 返る task_id を
+   claims 側に記録する。 `ref` の get-or-create (論点 7、 project スコープ込み) があるため、
+   task_id を失っても冪等に再送できる。
+3. **判断系の push**: `attrs_set` / `child_added` / `child_specced` を `boid action send` で。
+   `evaluate.py` の出力先が decisions から daemon の actions に変わる。
+4. **fold の退役**: `card_model.fold()` / `decisions/*.jsonl` / `bootstrap_events.py` /
+   `verify_roundtrip.py`。 `project_card.py` は「daemon から読んで note を render」へ。
+5. **observe の縮退**: `boid_task_observed` を削除 (子の生死は daemon の `child_closed`)。
+   source 側の観測 (Jira statusCategory 等) は残り、 決定 15 のために
+   `observed.source_closed` を共通語化して `attrs_set` で届ける役割が加わる。
+6. **dispatch の退役**: `card-promote-headless --live` を削除し、 Go = daemon の `ready`
+   action に一本化 (論点 5)。 sweep の `boid task ask` による承認 UX はそのまま使える。
+
+### 移行手順 (順序に制約あり)
+
+論点 9 の「specced push と手動 promote の併用禁止」が効くため、 順序を固定する:
+
+1. note への改名 (単独で完結、 daemon 非依存)
+2. PR-5 (boid 本体) を先に出す — 読み口が無いと 4 以降が書けない
+3. 起票を daemon 経由にする + `attrs_set` の push を開通。 **この段階では
+   `card-promote-headless` をそのまま使う** (children はまだ khi 側が持つ)
+4. `card-promote-headless` を退役し、 同時に `child_added` / `child_specced` の push と
+   fold の退役を行う — **3 と 4 の間に「specced を push しつつ手動 promote も残す」状態を
+   作らない**
+5. 使い捨ての移行スクリプトで既存 note (25 枚超) を daemon task に流し込む。
+   `bootstrap_events.py` の逆版 — decisions を読んで `task create --ref` + `attrs_set` +
+   `child_added` / `child_specced` を再生する。 一度きりなので repo に残さない
+
+### 検証シナリオへの追加
+
+「検証シナリオ」節の S1〜S4 に加え、 PR-5 では以下を pin する:
+
+- **S5: 読み戻しの完全性** — park した triage task を読み口から取得したとき、
+  `parked_from` が actions から導出されて返ること。 `attrs_set` で書いた任意のキーが
+  `detail.attrs` として往復すること。 他 workspace の triage task は取得できないこと
+  (`AllowsProject` gate)
+- **S6: done の自動落ち** — 全子 closed かつ `observed.source_closed` で working→done。
+  片方だけでは落ちないこと。 落ちた事実が action として記録されること
+
+---
+
 ## 段階導入
 
 ### Phase 0: 機構追加なしの dogfood (最初の検証)
@@ -1097,6 +1297,11 @@ exit criteria (2 週間程度): (1) nose が「見に行く」頻度が実際に
 - Web UI: queue 表示、 Go (= task create)、 破棄、 task 一覧のメタプロジェクト既定除外
   filter。 notify 連携。
 - Phase 0 の digest ファイル運用を inbox に置換する。
+- **khi 統合** (第 11 版で追加、 PR-5): 決定 14 (state の正は daemon) / 決定 15 (done 自動
+  落ち) の実装と、 khi 側の fold 退役・ 起票と判断の push 経路・ `card-promote-headless`
+  退役・ note への改名・ 既存 note の移行。 詳細と順序制約は「PR-5 設計メモ」節。
+  **これが完了した時点で Phase 1 の当初目的 (Phase 0 の digest 運用の置換) が実際に達成される**
+  — PR-1〜4 は daemon 側の受け口を用意しただけで、 khi はまだ 1 本も繋がっていない。
 
 ### Phase 2: 整形・テーマセッション
 
@@ -1246,6 +1451,37 @@ exit criteria (2 週間程度): (1) nose が「見に行く」頻度が実際に
   まま)。
 - **Phase 0 は即開始可能**: khi は customer bitbucket の `khi-task-collector` (メタプロジェクト
   の原型) が登録済みで、 前提が揃っている。
+
+### 第 11 版 (2026-08-13、 khi 統合の方向決定) での変更
+
+PR-4 完了後、 khi-task-collector 実機 (`~/src/bitbucket.org/Aolani-ondemand/khi-task-collector`)
+と daemon 側 main を再突合し、 「khi を daemon へのタスク集約フローに統合する」方向を確定した。
+
+- **決定 14 を新設**: state の正は daemon 側ただ 1 つ。 案 A (khi が正・daemon は射影先、
+  PR-4 の暗黙の想定) と案 B (daemon が正・khi は claims と本文だけ) を比較し、 **案 B を採用**
+  (nose 判断)。 決め手は「二重 fold は両者のロジックがズレたときに誰も気づかない」こと、 および
+  案 A では khi 側 fold の読み手が実質いなくなること。 khi の decisions / `card_model.fold()` /
+  `observe.py` の `boid_task_observed` / wake 日付評価は退役し、 claims と note と翻訳規則だけが
+  残る。 代償 (daemon 障害中は state を確定できない) は受容。
+- **決定 15 を新設**: done の自動落ち (全子 closed ∧ `observed.source_closed`) を daemon の
+  決定論 rule で行う。 決定 14 で khi から done 判定が消えるため必須。 「自動の範囲を広げて
+  いくこと自体が目標」(nose) — 終わった判定が人間に戻ると queue への信頼がその分落ちる。
+- **論点 5 を決着**: PR-2 側 (triage task の子として作る) に寄せ、 `card-promote-headless` を
+  退役する。 決定 14 の下では dispatch 経路も 1 本でないと children を二重に書くことになる。
+- **用語: workspace 側の本文を note に確定**。 daemon 側は「triage 段階の task」で確定済みの
+  ため、 workspace 側には固有名を立てず役割語を置く (`notes/<slug>.md` =
+  `task_triage.detail.content_ref` の指す先)。 対抗候補 dossier / docket は不採用。
+- **ストレージ節を実態に合わせて修正**。 note は git repo ではなく **$HOME workspace volume**
+  に置かれており、 これは意図的な選択 (毎回の commit & push が煩雑 / メタプロジェクト repo は
+  顧客 bitbucket 上でチーム共有されるため、 ワークフローは共有するが個人宛 signal の本文は
+  共有しない)。 原則 1 を「backup されていない場所に置かない」に緩和し、 耐久性の根拠を restic
+  volume backup に置いた。 原則 2 の「frontmatter を耐久写しにして再 push で再構築」は決定 14 と
+  両立しないため撤回し、 daemon volume backup + render 済み note の 2 段に置き換えた。
+- **「PR-5 設計メモ」節を新設**。 実測で daemon 側の不足 2 点を特定: (1) `task_triage` の読み口が
+  HTTP / brokered ともにゼロ (`BoidOpTaskGet` は Task DTO のフィールドしか返さない)、
+  (2) `working → done` の遷移が存在しない。 いずれも案 A なら khi 側が代替していたため
+  顕在化していなかった。 併せて khi 側改修 6 項目・ 移行手順 (specced push と手動 promote の
+  併用禁止に由来する順序制約)・ 検証シナリオ S5/S6 を記載。
 
 ### 第 10 版 (2026-08-11、 PR-4 実装完了) での変更
 
