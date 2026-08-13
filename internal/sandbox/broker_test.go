@@ -36,16 +36,17 @@ func testGateBoidPolicies() map[string]sandbox.BuiltinPolicy {
 	return map[string]sandbox.BuiltinPolicy{
 		"boid": {
 			AllowedOps: map[string]struct{}{
-				string(sandbox.BoidOpJobDone):    {},
-				string(sandbox.BoidOpJobList):    {},
-				string(sandbox.BoidOpJobShow):    {},
-				string(sandbox.BoidOpJobLog):     {},
-				string(sandbox.BoidOpActionSend): {},
-				string(sandbox.BoidOpTaskCreate): {},
-				string(sandbox.BoidOpTaskUpdate): {},
-				string(sandbox.BoidOpTaskImport): {},
-				string(sandbox.BoidOpTaskReopen): {},
-				string(sandbox.BoidOpTaskList):   {},
+				string(sandbox.BoidOpJobDone):        {},
+				string(sandbox.BoidOpJobList):        {},
+				string(sandbox.BoidOpJobShow):        {},
+				string(sandbox.BoidOpJobLog):         {},
+				string(sandbox.BoidOpActionSend):     {},
+				string(sandbox.BoidOpTaskCreate):     {},
+				string(sandbox.BoidOpTaskTriageList): {},
+				string(sandbox.BoidOpTaskUpdate):     {},
+				string(sandbox.BoidOpTaskImport):     {},
+				string(sandbox.BoidOpTaskReopen):     {},
+				string(sandbox.BoidOpTaskList):       {},
 			},
 			AllowedCwdRoots: []string{"/tmp"},
 		},
@@ -2484,5 +2485,100 @@ func TestBroker_BoidJobLog_PolicyReject(t *testing.T) {
 	}
 	if len(exec.calls) != 0 {
 		t.Fatalf("executor should not be called")
+	}
+}
+
+// --- BoidOpTaskTriageList scoping (Phase 1 PR-5a, Opus review High) ---
+//
+// The triage listing's filters must be scoped in the BROKER, exactly like
+// BoidOpTaskList's: that is where task_list's own scoping lives, and
+// ListTasks implements the WorkspaceID filter as an INNER JOIN on
+// project_workspaces — i.e. it genuinely crosses the compartment 決定2 exists
+// to keep. An unchecked workspace_id here hands a sandboxed agent every other
+// workspace's card titles, summaries and detail blobs.
+
+func TestBroker_BoidTaskTriageList_WorkspaceIDMismatchDenied(t *testing.T) {
+	ctx := sandbox.TokenContext{
+		JobID:       "j1",
+		TaskID:      "t1",
+		ProjectID:   "proj-1",
+		WorkspaceID: "ws-1",
+		Role:        testRoleGate,
+	}
+	broker, exec := newBrokerForListTest(t)
+	token := broker.Register(map[string]sandbox.CommandDef{}, testGateBoidPolicies(), ctx)
+
+	resp := broker.Handle(&sandbox.ExecRequest{
+		Command: "boid",
+		Cwd:     "/tmp",
+		Token:   token,
+		Boid: &sandbox.BoidRequest{
+			Op:          sandbox.BoidOpTaskTriageList,
+			WorkspaceID: "ws-other",
+		},
+	})
+	if resp.ExitCode == 0 {
+		t.Fatalf("cross-workspace triage listing was allowed: %+v", exec.calls)
+	}
+	if len(exec.calls) != 0 {
+		t.Fatalf("executor was reached for a denied workspace: %+v", exec.calls)
+	}
+}
+
+func TestBroker_BoidTaskTriageList_ProjectIDOutsideWorkspaceDenied(t *testing.T) {
+	ctx := sandbox.TokenContext{
+		JobID:             "j1",
+		TaskID:            "t1",
+		ProjectID:         "proj-1",
+		WorkspaceID:       "ws-1",
+		AllowedProjectIDs: []string{"proj-1"},
+		Role:              testRoleGate,
+	}
+	broker, exec := newBrokerForListTest(t)
+	token := broker.Register(map[string]sandbox.CommandDef{}, testGateBoidPolicies(), ctx)
+
+	resp := broker.Handle(&sandbox.ExecRequest{
+		Command: "boid",
+		Cwd:     "/tmp",
+		Token:   token,
+		Boid: &sandbox.BoidRequest{
+			Op:        sandbox.BoidOpTaskTriageList,
+			ProjectID: "proj-elsewhere",
+		},
+	})
+	if resp.ExitCode == 0 {
+		t.Fatalf("out-of-workspace project was allowed: %+v", exec.calls)
+	}
+	if len(exec.calls) != 0 {
+		t.Fatalf("executor was reached for a denied project: %+v", exec.calls)
+	}
+}
+
+// TestBroker_BoidTaskTriageList_UnfilteredInjectsOwnWorkspace pins the other
+// half of the mirror: with no filter the broker injects the caller's own
+// workspace, so the listing is scoped even when the caller asked for
+// everything.
+func TestBroker_BoidTaskTriageList_UnfilteredInjectsOwnWorkspace(t *testing.T) {
+	ctx := sandbox.TokenContext{
+		JobID:       "j1",
+		TaskID:      "t1",
+		ProjectID:   "proj-1",
+		WorkspaceID: "ws-1",
+		Role:        testRoleGate,
+	}
+	broker, exec := newBrokerForListTest(t)
+	token := broker.Register(map[string]sandbox.CommandDef{}, testGateBoidPolicies(), ctx)
+
+	resp := broker.Handle(&sandbox.ExecRequest{
+		Command: "boid",
+		Cwd:     "/tmp",
+		Token:   token,
+		Boid:    &sandbox.BoidRequest{Op: sandbox.BoidOpTaskTriageList},
+	})
+	if resp.ExitCode != 0 {
+		t.Fatalf("unfiltered listing should succeed: exit=%d stderr=%q", resp.ExitCode, resp.Stderr)
+	}
+	if len(exec.calls) != 1 || exec.calls[0].WorkspaceID != "ws-1" {
+		t.Fatalf("broker should inject the caller's own workspace, calls=%+v", exec.calls)
 	}
 }

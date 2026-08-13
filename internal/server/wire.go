@@ -1632,6 +1632,11 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 		Meta:     store,
 		Workflow: workflow,
 		Projects: projectRepo,
+		// Seeds the task_triage sidecar row for pre-execution creates
+		// (docs/plans/cross-project-issue-triage.md Phase 1 PR-5a) — the
+		// invariant ListTriage's "has a row = is a triage task" predicate
+		// rests on. Same repo the workflow service already uses.
+		TaskTriage: taskRepo,
 		// runtimesRoot (not a fresh runtimesDirFor(cfg) — codex round-1,
 		// PR834 Minor 1): must agree with runner's own RuntimesDir and
 		// transcriptLogReader.rootDir just below, both already using
@@ -2119,6 +2124,11 @@ func mountRoutes(srv *Server, runtime *appRuntime) error {
 			InitialDelay: 10 * time.Second,
 		}
 	}
+
+	// task_triage read surface (docs/plans/cross-project-issue-triage.md Phase
+	// 1 PR-5a). Mounted at its own root rather than under /api/tasks — see
+	// api.TriageHandler's doc comment.
+	r.Mount("/api/triage", (&api.TriageHandler{Service: runtime.workflow}).Routes())
 
 	actionHandler := &api.ActionHandler{Service: runtime.workflow}
 	r.Route("/api/tasks/{taskID}/actions", func(r chi.Router) {

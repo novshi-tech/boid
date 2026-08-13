@@ -157,6 +157,28 @@ const (
 	// only validates TaskID is present; the executor enforces
 	// TokenContext.AllowsProject before calling Wake.
 	BoidOpTaskWake BoidOp = "task_wake"
+
+	// BoidOpTaskTriageGet / BoidOpTaskTriageList back `boid task triage
+	// <task-id>` and `boid task triage --list [--status S] [--project P]`
+	// from inside the sandbox (docs/plans/cross-project-issue-triage.md Phase
+	// 1 PR-5a).
+	//
+	// 決定14 makes the daemon the SOLE source of truth for a triage task's
+	// state — khi retires its own decisions log and fold, keeping only claims
+	// and the note body. That only works if the workspace side can read the
+	// state back, and before PR-5a there was no read path at all: the sidecar
+	// was reachable only from inside the daemon (Web UI enrichment), and
+	// BoidOpTaskGet returns orchestrator.Task's own columns, which
+	// deliberately exclude everything triage-specific.
+	//
+	// These are strictly READ ops over data the calling workspace already
+	// owns, so they do not widen 決定2's boundary (the same reasoning that
+	// already allows brokered task_list of the caller's own workspace —
+	// 実測結果 項10). Scoping matches BoidOpActionSend/BoidOpTaskWake: the
+	// broker only checks shape, the executor enforces
+	// TokenContext.AllowsProject before returning anything.
+	BoidOpTaskTriageGet  BoidOp = "task_triage_get"
+	BoidOpTaskTriageList BoidOp = "task_triage_list"
 )
 
 // PayloadPatchMaxBytes caps the size of a single BoidOpTaskUpdatePayloadPatch

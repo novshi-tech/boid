@@ -199,12 +199,102 @@ func applyChildSpeccedSideEffect(tx TxStore, taskID string, p *childSpeccedPaylo
 	return nil
 }
 
+// promotedAttrVocabulary lists the two attrs_set keys the daemon promotes out
+// of the opaque detail blob into real task_triage columns, together with the
+// closed vocabulary each accepts (docs/plans/cross-project-issue-triage.md
+// Phase 1 PR-5a).
+//
+// Why these two are not opaque like every other attrs key: urgency IS a queue
+// predicate. ListTasks("queue_next") INNER JOINs task_triage and filters/orders
+// on tt.urgency (store.go), and notifyQueueEntryIfUrgent reads it for rule 4 —
+// so a value that only ever reaches detail.attrs can never affect the queue.
+// Before PR-5a nothing wrote the column at all, which left the queue view
+// permanently empty and notify unable to fire. kind rides along because it is
+// the same shape (a real column, daemon vocabulary, no channel knowledge).
+//
+// Validating the vocabulary here is NOT the policy 逆輸入3/論点6 keep out of the
+// daemon (that is "should urgency only ever increase", which stays khi's
+// evaluate-side call). This is the daemon defending its own SQL predicate: a
+// typo'd urgency silently drops the card out of the queue forever with no
+// error surfaced anywhere, which is exactly the class of silent failure the
+// queue's trust story cannot afford.
+var promotedAttrVocabulary = map[string][]string{
+	"urgency": {"now", "today", "week", "someday"},
+	"kind":    {"signal", "issue", "theme"},
+}
+
+// attrsSetPatch is the parsed attrs_set payload, split into the opaque keys
+// that fold into detail.attrs and the promoted keys that become columns.
+type attrsSetPatch struct {
+	// Attrs are the opaque keys, folded verbatim (may be empty when the
+	// payload carried only promoted keys).
+	Attrs map[string]json.RawMessage
+	// Urgency/Kind are set when the payload carried that key; the bool
+	// distinguishes "absent" (leave the column alone) from "explicit null"
+	// (clear it).
+	Urgency    string
+	HasUrgency bool
+	Kind       string
+	HasKind    bool
+}
+
+// parsePromotedAttr validates one promoted key's value: a string from the
+// closed vocabulary, or JSON null meaning "clear the column".
+func parsePromotedAttr(key string, raw json.RawMessage) (string, error) {
+	if string(raw) == "null" {
+		return "", nil
+	}
+	var value string
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return "", &StatusError{
+			Code:    http.StatusBadRequest,
+			Message: fmt.Sprintf("invalid attrs_set payload: %s must be a string or null", key),
+		}
+	}
+	for _, allowed := range promotedAttrVocabulary[key] {
+		if value == allowed {
+			return value, nil
+		}
+	}
+	return "", &StatusError{
+		Code:    http.StatusBadRequest,
+		Message: fmt.Sprintf("invalid attrs_set payload: unknown %s %q (allowed: %v)", key, value, promotedAttrVocabulary[key]),
+	}
+}
+
 // parseAttrsSetPayload validates that the "attrs_set" action's payload is a
 // non-empty JSON object BEFORE the transaction opens (same 400-before-Tx
-// posture as parseParkPayload). The object's keys/values are opaque to the
-// daemon — see orchestrator.FoldDetailAttrs's doc comment for why this is
-// deliberately a policy-free pass-through.
-func parseAttrsSetPayload(payload json.RawMessage) (map[string]json.RawMessage, error) {
+// posture as parseParkPayload) and splits off the promoted keys. Every other
+// key's value is opaque to the daemon — see orchestrator.FoldDetailAttrs's doc
+// comment for why that part is deliberately a policy-free pass-through.
+func parseAttrsSetPayload(payload json.RawMessage) (*attrsSetPatch, error) {
+	raw, err := parseAttrsSetObject(payload)
+	if err != nil {
+		return nil, err
+	}
+	patch := &attrsSetPatch{Attrs: map[string]json.RawMessage{}}
+	for k, v := range raw {
+		switch k {
+		case "urgency":
+			value, perr := parsePromotedAttr(k, v)
+			if perr != nil {
+				return nil, perr
+			}
+			patch.Urgency, patch.HasUrgency = value, true
+		case "kind":
+			value, perr := parsePromotedAttr(k, v)
+			if perr != nil {
+				return nil, perr
+			}
+			patch.Kind, patch.HasKind = value, true
+		default:
+			patch.Attrs[k] = v
+		}
+	}
+	return patch, nil
+}
+
+func parseAttrsSetObject(payload json.RawMessage) (map[string]json.RawMessage, error) {
 	if len(payload) == 0 {
 		return nil, &StatusError{Code: http.StatusBadRequest, Message: "attrs_set requires a non-empty JSON object payload"}
 	}
@@ -222,10 +312,15 @@ func parseAttrsSetPayload(payload json.RawMessage) (map[string]json.RawMessage, 
 	return m, nil
 }
 
-// applyAttrsSetSideEffect folds patch into task_triage.detail.attrs
-// (last-write-wins, see orchestrator.FoldDetailAttrs). Follows
-// applyParkSideEffect's established pattern.
-func applyAttrsSetSideEffect(tx TxStore, taskID string, patch map[string]json.RawMessage) error {
+// applyAttrsSetSideEffect folds the opaque keys into task_triage.detail.attrs
+// (last-write-wins, see orchestrator.FoldDetailAttrs) and writes the promoted
+// keys to their real columns. Follows applyParkSideEffect's established
+// pattern.
+//
+// A promoted key is written to its column and NOT also folded into the blob:
+// two copies of the same value could drift, and the column is the one the
+// queue SQL actually reads.
+func applyAttrsSetSideEffect(tx TxStore, taskID string, patch *attrsSetPatch) error {
 	tt, err := tx.GetTaskTriage(taskID)
 	if err != nil {
 		if !errors.Is(err, sql.ErrNoRows) {
@@ -233,11 +328,30 @@ func applyAttrsSetSideEffect(tx TxStore, taskID string, patch map[string]json.Ra
 		}
 		tt = &orchestrator.TaskTriage{TaskID: taskID}
 	}
-	newDetail, ferr := orchestrator.FoldDetailAttrs(tt.Detail, patch)
-	if ferr != nil {
-		return fmt.Errorf("attrs_set: fold detail attrs: %w", ferr)
+	if len(patch.Attrs) > 0 {
+		newDetail, ferr := orchestrator.FoldDetailAttrs(tt.Detail, patch.Attrs)
+		if ferr != nil {
+			return fmt.Errorf("attrs_set: fold detail attrs: %w", ferr)
+		}
+		tt.Detail = newDetail
 	}
-	tt.Detail = newDetail
+	// Strip any stale blob copy of the promoted keys (Opus review, Medium): a
+	// card written before PR-5a can still carry detail.attrs.urgency, which
+	// would keep reporting the OLD value to every blob reader while the column
+	// the queue SQL reads moves on. Migration 0040 converges the table; doing
+	// it here too means the invariant holds for any row that reaches this path
+	// regardless.
+	stripped, sErr := orchestrator.StripDetailAttrs(tt.Detail, "urgency", "kind")
+	if sErr != nil {
+		return fmt.Errorf("attrs_set: strip promoted attrs: %w", sErr)
+	}
+	tt.Detail = stripped
+	if patch.HasUrgency {
+		tt.Urgency = patch.Urgency
+	}
+	if patch.HasKind {
+		tt.Kind = patch.Kind
+	}
 	if err := tx.UpsertTaskTriage(tt); err != nil {
 		return fmt.Errorf("attrs_set: upsert task_triage: %w", err)
 	}
@@ -268,6 +382,12 @@ func (s *TaskWorkflowService) recordChildClosedOnParent(task *orchestrator.Task)
 	if task == nil || task.ParentID == "" || s.Tx == nil {
 		return
 	}
+	// recordedChildClose distinguishes "the parent really is a triage card and
+	// one of its children just closed" from the overwhelmingly common case of
+	// an ordinary supervisor/executor pair (no sidecar row) — without it the
+	// 決定15 hook below would open a pointless extra transaction after EVERY
+	// ordinary child completion in the daemon (Opus review, Low).
+	recordedChildClose := false
 	if err := s.Tx.WithinTx(func(tx TxStore) error {
 		tt, err := tx.GetTaskTriage(task.ParentID)
 		if err != nil {
@@ -285,6 +405,7 @@ func (s *TaskWorkflowService) recordChildClosedOnParent(task *orchestrator.Task)
 		if !changed {
 			return nil
 		}
+		recordedChildClose = true
 		tt.Detail = newDetail
 		if err := tx.UpsertTaskTriage(tt); err != nil {
 			return fmt.Errorf("child_closed: upsert parent task_triage: %w", err)
@@ -305,6 +426,29 @@ func (s *TaskWorkflowService) recordChildClosedOnParent(task *orchestrator.Task)
 		return tx.CreateAction(action)
 	}); err != nil {
 		slog.Error("child_closed self-record failed", "task_id", task.ID, "parent_id", task.ParentID, "error", err)
+		return
+	}
+	if !recordedChildClose {
+		return
+	}
+
+	// 決定15 の 2 つ目の評価契機 (PR-5b): a child closing is the event most
+	// likely to have just satisfied 「全子 closed ∧ source 終了」, so evaluate
+	// immediately instead of making the card wait for the next periodic sweep.
+	// autoDone re-checks both halves inside its own transaction and returns a
+	// 409 when they do not hold, which is the ordinary case here (the source is
+	// usually still open, or a sibling child is still running) — so a failure
+	// is logged at debug, not warn. The periodic SweepDone remains the backstop
+	// for every path that does not run through here.
+	s.autoDoneAfterChildClose(task.ParentID)
+}
+
+// autoDoneAfterChildClose is the child_closed → 決定15 evaluation hook, split
+// out so recordChildClosedOnParent stays about the self-record itself.
+func (s *TaskWorkflowService) autoDoneAfterChildClose(parentID string) {
+	ctx := orchestrator.WithActor(context.Background(), orchestrator.ActorDaemon)
+	if _, err := s.autoDone(ctx, parentID); err != nil {
+		slog.Debug("auto done after child_closed did not apply", "parent_id", parentID, "error", err)
 	}
 }
 

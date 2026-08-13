@@ -178,6 +178,8 @@ func parseBoidRequest(args []string) (*BoidRequest, error) {
 			return parseBoidTaskDelete(args[2:])
 		case "wake":
 			return parseBoidTaskWake(args[2:])
+		case "triage":
+			return parseBoidTaskTriage(args[2:])
 		default:
 			return nil, fmt.Errorf("boid shim: unsupported boid task subcommand %q", args[1])
 		}
@@ -715,6 +717,72 @@ func parseBoidTaskWake(args []string) (*BoidRequest, error) {
 		return nil, fmt.Errorf("boid shim: unexpected argument %q for boid task wake", args[1])
 	}
 	return &BoidRequest{Op: BoidOpTaskWake, TaskID: args[0]}, nil
+}
+
+// parseBoidTaskTriage builds the BoidRequest for the triage read surface
+// (docs/plans/cross-project-issue-triage.md Phase 1 PR-5a):
+//
+//	boid task triage <task-id>                        # one task's projection
+//	boid task triage --list [--status S] [--project-id P] [--workspace-id W]
+//
+// The two forms are mutually exclusive: a task id selects the single-task op,
+// --list selects the collection op. Mixing them is an error rather than a
+// silently-ignored argument, so a caller never believes it filtered a listing
+// that actually returned one row (or vice versa).
+func parseBoidTaskTriage(args []string) (*BoidRequest, error) {
+	req := &BoidRequest{Op: BoidOpTaskTriageGet}
+	list := false
+
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		switch {
+		case arg == "--list":
+			list = true
+		case arg == "--status" || strings.HasPrefix(arg, "--status="):
+			value, next, err := takeStringFlagValue(args, i, "--status")
+			if err != nil {
+				return nil, err
+			}
+			i = next
+			req.Status = value
+		case arg == "--project-id" || strings.HasPrefix(arg, "--project-id="):
+			value, next, err := takeStringFlagValue(args, i, "--project-id")
+			if err != nil {
+				return nil, err
+			}
+			i = next
+			req.ProjectID = value
+		case arg == "--workspace-id" || strings.HasPrefix(arg, "--workspace-id="):
+			value, next, err := takeStringFlagValue(args, i, "--workspace-id")
+			if err != nil {
+				return nil, err
+			}
+			i = next
+			req.WorkspaceID = value
+		case strings.HasPrefix(arg, "-"):
+			return nil, fmt.Errorf("boid shim: unsupported flag %q for boid task triage", arg)
+		default:
+			if req.TaskID != "" {
+				return nil, fmt.Errorf("boid shim: unexpected argument %q for boid task triage", arg)
+			}
+			req.TaskID = arg
+		}
+	}
+
+	if list {
+		if req.TaskID != "" {
+			return nil, fmt.Errorf("boid shim: boid task triage takes either a task id or --list, not both")
+		}
+		req.Op = BoidOpTaskTriageList
+		return req, nil
+	}
+	if req.TaskID == "" {
+		return nil, fmt.Errorf("boid shim: boid task triage requires a task id (or --list)")
+	}
+	if req.Status != "" || req.ProjectID != "" || req.WorkspaceID != "" {
+		return nil, fmt.Errorf("boid shim: boid task triage <task-id> takes no filter flags (did you mean --list?)")
+	}
+	return req, nil
 }
 
 func parseBoidTaskNotify(args []string) (*BoidRequest, error) {

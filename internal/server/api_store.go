@@ -80,6 +80,10 @@ func (s apiTxStore) GetTaskTriage(taskID string) (*orchestrator.TaskTriage, erro
 	return s.tasks.GetTaskTriage(taskID)
 }
 
+func (s apiTxStore) SeedTaskTriage(taskID string) error {
+	return s.tasks.SeedTaskTriage(taskID)
+}
+
 func (s apiTxStore) DeleteTaskTriage(taskID string) error {
 	return s.tasks.DeleteTaskTriage(taskID)
 }

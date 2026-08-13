@@ -1792,6 +1792,8 @@ func (s *stubTx) CreateAction(action *orchestrator.Action) error {
 	return nil
 }
 func (s *stubTx) ListActionsByTask(taskID string) ([]*orchestrator.Action, error) { return nil, nil }
+func (s *stubTx) SeedTaskTriage(string) error { return nil }
+
 func (s *stubTx) UpsertTaskTriage(tt *orchestrator.TaskTriage) error              { return nil }
 func (s *stubTx) GetTaskTriage(taskID string) (*orchestrator.TaskTriage, error) {
 	return nil, fmt.Errorf("not found: %w", sql.ErrNoRows)

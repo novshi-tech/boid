@@ -52,6 +52,40 @@ func (s *TaskWorkflowService) notifyQueueEntryIfUrgent(ctx context.Context, task
 	if !queueMemberStatus(task.Status) || queueMemberStatus(fromStatus) {
 		return
 	}
+	s.notifyIfUrgencyNow(ctx, task)
+}
+
+// notifyUrgencyRaised is rule 4's other entry point: urgency arriving on a
+// card that is ALREADY a queue member (Opus review round 3).
+//
+// The entry-transition detector above cannot cover this, and the order it
+// misses is the natural one: khi creates a card as captured, sends `triage`
+// (captured→triaged — a real entry, but urgency is still empty so nothing
+// fires), then sends `attrs_set {"urgency":"now"}`. attrs_set is
+// non-transitioning, so fromStatus == task.Status and the entry check returns
+// early — leaving a now-urgency card sitting in the queue with nose never
+// told, contrary to rule 4's 「now は即時」. Only the reverse order (attrs_set
+// first) used to fire.
+//
+// Deliberately narrow: it fires only when the action actually SET urgency to
+// "now", so a repeated attrs_set that leaves urgency unchanged does not
+// re-notify on every khi sweep.
+func (s *TaskWorkflowService) notifyUrgencyRaised(ctx context.Context, task *orchestrator.Task, patch *attrsSetPatch) {
+	if patch == nil || !patch.HasUrgency || patch.Urgency != orchestrator.UrgencyNow {
+		return
+	}
+	if s.Notifier == nil || s.TaskTriage == nil || task == nil {
+		return
+	}
+	if !queueMemberStatus(task.Status) {
+		return
+	}
+	s.notifyIfUrgencyNow(ctx, task)
+}
+
+// notifyIfUrgencyNow sends rule 4's immediate notification when the task's
+// recorded urgency is "now".
+func (s *TaskWorkflowService) notifyIfUrgencyNow(ctx context.Context, task *orchestrator.Task) {
 	tt, err := s.TaskTriage.GetTaskTriage(task.ID)
 	if err != nil {
 		return // no sidecar row => no urgency recorded => nothing to notify

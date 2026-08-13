@@ -51,6 +51,18 @@ func (s *TaskWorkflowService) ApplyAction(ctx context.Context, taskID string, re
 		return nil, &StatusError{Code: http.StatusNotFound, Message: err.Error()}
 	}
 
+	// 決定17 (PR-5b): route `reopen` on a done/aborted TRIAGE task to the
+	// triage variant (→ triaged) instead of the ordinary one (→ executing).
+	// Done here, right after the task load and before anything downstream
+	// keys off req.Type, so every caller — HTTP, Web UI button, brokered
+	// task.reopen, CLI — gets it with no wiring of its own. See
+	// resolveReopenVariant's doc comment.
+	resolvedType, resolveErr := s.resolveReopenVariant(task, req.Type)
+	if resolveErr != nil {
+		return nil, resolveErr
+	}
+	req.Type = resolvedType
+
 	// Hydrate with workspace.yaml so kit-supplied hooks / env / capabilities
 	// — and, since docs/plans/workspace-default-project.md PR4, the
 	// workspace's default project definition (task_behaviors / base_branch /
@@ -136,8 +148,16 @@ func (s *TaskWorkflowService) ApplyAction(ctx context.Context, taskID string, re
 	// reopen carries an optional `{"instruction": {...}}` payload that appends a
 	// new entry to the task's instruction history. The instruction is recorded
 	// only on the action (audit trail) and not merged into task.payload.
+	//
+	// reopen_triaged is included (Opus review, Medium): 決定17's routing rewrote
+	// req.Type BEFORE this point, so keying on "reopen" alone would drop the
+	// message a caller passed to `boid task reopen <card> -m "..."` (or the Web
+	// UI reopen dialog) AND — because reopen_triaged is not in
+	// sideEffectConsumesPayload either — fall through to MergePayload, polluting
+	// task.Payload with the raw {"instruction":...} object. That is precisely the
+	// pollution PR-4 called a real regression (see the comment below).
 	var reopenPayloadConsumed bool
-	if req.Type == "reopen" && len(req.Payload) > 0 {
+	if (req.Type == "reopen" || req.Type == "reopen_triaged") && len(req.Payload) > 0 {
 		var p struct {
 			Instruction *orchestrator.Instruction `json:"instruction,omitempty"`
 		}
@@ -189,7 +209,7 @@ func (s *TaskWorkflowService) ApplyAction(ctx context.Context, taskID string, re
 	// triage-vocabulary actions — docs/plans/cross-project-issue-triage.md
 	// PR-4 設計メモ 論点4/6).
 	var parkPayloadParsed *parkPayload
-	var attrsSetPatch map[string]json.RawMessage
+	var attrsSetParsed *attrsSetPatch
 	var childAddedParsed *childAddedPayload
 	var childSpeccedParsed *childSpeccedPayload
 	switch req.Type {
@@ -201,7 +221,7 @@ func (s *TaskWorkflowService) ApplyAction(ctx context.Context, taskID string, re
 		}
 	case "attrs_set":
 		var perr error
-		attrsSetPatch, perr = parseAttrsSetPayload(req.Payload)
+		attrsSetParsed, perr = parseAttrsSetPayload(req.Payload)
 		if perr != nil {
 			return nil, perr
 		}
@@ -275,7 +295,7 @@ func (s *TaskWorkflowService) ApplyAction(ctx context.Context, taskID string, re
 		case "park":
 			return applyParkSideEffect(tx, newTask.ID, parkPayloadParsed)
 		case "attrs_set":
-			return applyAttrsSetSideEffect(tx, newTask.ID, attrsSetPatch)
+			return applyAttrsSetSideEffect(tx, newTask.ID, attrsSetParsed)
 		case "child_added":
 			return applyChildAddedSideEffect(tx, newTask.ID, childAddedParsed)
 		case "child_specced":
@@ -328,6 +348,13 @@ func (s *TaskWorkflowService) ApplyAction(ctx context.Context, taskID string, re
 	// for a task nose already Go'd through to execution — only a task that
 	// genuinely RESTS in triaged/ready notifies.
 	s.notifyQueueEntryIfUrgent(ctx, newTask, fromStatus)
+	// rule 4's other entry point: urgency arriving on a card that is already a
+	// queue member (see notifyUrgencyRaised's doc comment for why the
+	// entry-transition detector above cannot see this, and why the order it
+	// misses is the natural one).
+	if req.Type == "attrs_set" {
+		s.notifyUrgencyRaised(ctx, newTask, attrsSetParsed)
+	}
 
 	if s.Coordinator != nil {
 		dispatchCtx := s.dispatchCtx

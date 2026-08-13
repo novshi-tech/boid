@@ -224,11 +224,39 @@ func DefaultMachine() *StateMachine {
 // specced at a time in a sequential PR series is a caller/khi-side
 // convention (決定12 の外側), not something the machine enforces.
 //
-// working deliberately still has NO exit into done/aborted (not even
-// abort/drop). The queue's decision of when/how a working task's done-ness
-// gets evaluated (逆輸入2: 「全子終端 ∧ source 終了で自動」) remains explicit
-// future territory (論点9's "未決" note) — this PR only adds the three
-// re-surfacing exits above, not a terminal one.
+// Phase 1 PR-5b (決定15/17) closes the terminal end of that lifecycle, which
+// PR-4 had left explicitly 未決:
+//
+//	triage_done    : working → done     (Manual:false — machine-internal)
+//	reopen_triaged : done → triaged     (Manual:false — machine-internal)
+//	reopen_triaged : aborted → triaged  (Manual:false — machine-internal)
+//
+// triage_done is DELIBERATELY NOT named "done". IsManualAction is keyed on the
+// action NAME across every rule, and "done" already has Manual:true rules
+// (executing→done, awaiting→done) — reusing the name would have made
+// `boid action send --type done` pushable from working, letting khi assert a
+// completion without the daemon ever evaluating 決定15's 「全子 closed ∧
+// observed.source_closed」. A distinct non-manual name keeps the judgment
+// where 決定12/15 put it: in the daemon's own deterministic sweep
+// (api.TaskWorkflowService.SweepDone / the child_closed hook), never in a
+// pushed assertion. done は承認不要で自動で落ちる (逆輸入2).
+//
+// reopen_triaged is Manual:false for the same reason wake_triaged/wake_ready
+// are: it is an INTERNAL target that a different verb resolves on the
+// caller's behalf. `reopen` stays the single user/khi-facing verb, and
+// api.ApplyAction picks the variant by looking at something the machine
+// cannot see — whether the task has a task_triage sidecar row. A done triage
+// task and a done executor task are indistinguishable by status here, so
+// leaving the choice to the caller would mean every caller (Web UI button,
+// brokered task.reopen, CLI) could pick the one that flips a card into
+// `executing` — i.e. tries to RUN the meta project's card. Wake's doc comment
+// spells out the same principle: resolve internally so no caller can get it
+// wrong. Being Manual:false also keeps reopen_triaged out of AvailableActions,
+// so ordinary tasks never sprout a second, meaningless reopen button.
+//
+// working still has no abort/drop exit: 破棄 stays a pre-execution-only verb
+// (状態機械節 — dropped は nose の判断でしか入らない、 and a card that already
+// has dispatched children is past the point where dropping it is meaningful).
 //
 // Phase 1 PR-4 action vocabulary for khi/agent-driven card updates (論点4/6):
 // attrs_set / child_added / child_specced are non-transitioning (ToStatus
@@ -335,6 +363,13 @@ func NewMachine() *StateMachine {
 		{Action: "ready", FromStatus: "working", ToStatus: "ready", Manual: true},
 		{Action: "triage", FromStatus: "working", ToStatus: "triaged", Manual: true},
 		{Action: "park", FromStatus: "working", ToStatus: "parked", Manual: true},
+
+		// Phase 1 PR-5b (決定15/17) — see the doc comment above NewMachine.
+		// triage_done is Manual:false (machine-only); reopen_triaged is the
+		// manual return path from a done triage task.
+		{Action: "triage_done", FromStatus: "working", ToStatus: "done"},
+		{Action: "reopen_triaged", FromStatus: "done", ToStatus: "triaged"},
+		{Action: "reopen_triaged", FromStatus: "aborted", ToStatus: "triaged"},
 
 		// Phase 1 PR-4 (論点4/6): khi-pushed non-transitioning card-update
 		// actions — see doc comment above NewMachine for why FromStatus is an

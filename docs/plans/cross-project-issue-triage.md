@@ -453,9 +453,24 @@ fail-open なので許容する。
 そのまま残る。 done の triage task と done の通常 task は **status だけでは区別できない**ため、
 状態機械のレイヤでは防げない (`machine.go` は sidecar の存在を知らない)。 Web UI の
 `AvailableActions` には done の task に `reopen` ボタンが出るので、 **nose が誤って押すと
-メタプロジェクトの task が executing に飛ぶ**。 ガードは sidecar が見えるレイヤ =
-`TaskWorkflowService.ApplyAction` に置き、 「`task_triage` 行を持つ task への `reopen` は
-reject し `reopen_triaged` を案内する」形にする (実装時の必須項目。 S7 で pin する)。
+メタプロジェクトの task が executing に飛ぶ**。
+
+**実装時の設計変更 (PR-5b、 2026-08-13)**: 当初は「`task_triage` 行を持つ task への `reopen` を
+reject し `reopen_triaged` を案内する」形を想定していたが、 実装時に **routing に変更**した。
+`reopen_triaged` を `Manual: false` (内部専用) にし、 **`reopen` を唯一の外向き verb のまま
+残して、 `ApplyAction` が sidecar 行の有無で行き先を解決する**。 理由は 2 つ:
+
+1. **Wake の先例と同型**。 `Wake()` が `ParkedFrom` から `wake_triaged` / `wake_ready` を内部
+   解決するのは「どの caller も行き先を間違えられないようにする」ためで、 ここも同じ構造
+   (status だけでは区別できない選択を caller に委ねない)。 reject 方式は「正しい verb を選べ」と
+   caller に要求する形であり、 Web UI の reopen ボタンを押す nose には選びようがない。
+2. **`reopen_triaged` が Manual:true だと `AvailableActions` に載る**。 通常の done task にも
+   意味のない 2 つ目の reopen ボタンが生える (実装中に既存テストが検出)。 Manual:false なら
+   ボタンにも `action send` にも出ず、 内部解決専用に閉じる。
+
+これにより HTTP / Web UI / brokered `task.reopen` / CLI の全 caller が追加配線ゼロで正しく
+振る舞う。 `dropped → triaged` の `reopen` は triage 語彙の一部 (誤破棄からの復帰) なので
+routing 対象外 — 対象は通常 task rule が発火する done / aborted のみ。
 
 ---
 
@@ -1270,6 +1285,137 @@ dispatch 済み。
    を別 verb として追加**する (`Manual: true`、 khi と nose の双方が押せる)。
 4. **canonical source 欠落の watchdog** (第 12 版、 決定 16): `observed.source_closed` を持たない
    triaged 以降の triage task を案内として queue に出す。 起票時の reject はしない。
+5. **`task_triage.urgency` に書き手が存在しない** (2026-08-13、 PR-5a 実装中に発覚)。
+   queue の心臓部である `ListTasks("queue_next")` は `task_triage` を INNER JOIN して
+   `tt.urgency` で絞り・並べ (`internal/orchestrator/store.go`)、 rule 4 の notify
+   (`notifyQueueEntryIfUrgent`) も同じ列を読む。 ところが **daemon 内のどこもこの列を書いて
+   いなかった** — `attrs_set` は urgency も含めて全キーを不透明な `detail.attrs` blob に畳んで
+   いたため、 queue view は恒久的に空・ notify は発火し得ない状態だった。 PR-1/3 が実列にした
+   意図 (実測 c: queue 述語だから実列) と、 PR-4 が書いた fold の間に落ちた穴。
+
+### PR-5 の分割 (2026-08-13)
+
+- **PR-5a (実装済み)**: 読み戻し口 + 上記 5 の穴埋め。 「sidecar を読めるようにし、 かつ実際に
+  埋まるようにする」という 1 テーマ。
+- **PR-5b (実装済み)**: done lifecycle — `working → done` の自動落ち (決定 15)、
+  `reopen` の routing (決定 17)、 canonical source の検知 (決定 16)。
+
+PR-5a の内容:
+
+- `api.TaskTriageView` + `GetTriage` / `ListTriage` (`internal/api/triage_read.go`)。 task 行 +
+  sidecar 実列 + **actions から導出する `parked_from`** + 不透明 `detail` を 1 つに union する。
+- HTTP: `GET /api/triage` (一覧、 `project_id` / `workspace_id` / `status`) と
+  `GET /api/triage/{id}`。 `/api/tasks` 配下でなく独立ルートにしたのは、 一覧が collection
+  endpoint を要るのと、 `{id}` ワイルドカードと同位置に静的 `triage` を置きたくないため。
+- brokered: `BoidOpTaskTriageGet` / `BoidOpTaskTriageList` (`boid task triage <id>` /
+  `boid task triage --list`)。 scoping は `BoidOpTaskGet` / `BoidOpTaskList` と同型
+  (get は task を引いてから `AllowsProject`、 list は明示 project を検査し、 無指定時は
+  `AllowedProjectIDs` を回して**決して無スコープで引かない**)。
+- `attrs_set` の `urgency` / `kind` を**実列へ昇格**し、 blob には二重に持たせない (ドリフト
+  防止)。 語彙は closed set で検証する — これは論点 6 が daemon から排除した policy (「urgency は
+  上げるのみ」= khi の evaluate 管轄) ではなく、 **daemon が自分の SQL 述語を守る**検証。 typo が
+  素通りすると card が queue から永久に落ちるのに何のエラーも出ない、 という queue の信頼を
+  最も損なう形の失敗になるため。
+- **triage task は生成時に sidecar 行を持つ**という不変条件を導入
+  (`TaskAppService.CreateTask` が pre-execution status の task に空行を seed)。 `ListTriage` の
+  「行があれば triage task」述語と PR-5b の reopen routing がこれに乗る — status だけでは判定
+  できない (`done` は通常 task と共有) ため。 既存行には migration 0040 で backfill する
+  (PR-1〜4 期に作られた triage task は最初の side-effect action が来るまで行を持たないため、
+  遡って埋めないと不変条件が成立しない)。 backfill 対象は triage 専用 status のみで、
+  `done` / `aborted` は**意図的に除外** — 通常 task と区別できず、 executor task を誤って
+  triage task と印付けるほうが実害が大きい (working→done は PR-5b で初めて存在するので、
+  既に done に到達した triage task は存在しない)。
+
+PR-5b の内容:
+
+- **決定 15**: `orchestrator.ShouldAutoDone` (純関数、 `ShouldWake` と同型) +
+  `TaskWorkflowService.SweepDone`。 遷移は **`triage_done`** (`working → done`、
+  `Manual: false`)。 **`done` の名前を再利用していない**のが要点 — `IsManualAction` は action
+  名で判定するため、 `done` を使うと `boid action send --type done` が working から通ってしまい、
+  daemon が 決定 15 の条件を評価しないまま khi が完了を主張できてしまう。 評価契機は
+  QueueSweepLoop と `child_closed` 記録直後の 2 点。
+- **決定 16**: `orchestrator.MissingCanonicalSourceGuidance` (純関数、 `WatchdogGuidance` と
+  同型) + `SweepCanonicalSourceBreaches`。 判定は `observed.source_closed` **キーの存在**のみで、
+  source type の知識は持たない (逆輸入 3)。 **スコープ縮小を明示**: queue 節 rule 7 は「案内
+  card を queue に出す」だが、 guidance の提示面は現時点でどこにも存在しない (PR-3 の
+  `WatchdogGuidance` 自体が caller ゼロ)。 1 種類のためだけに提示面を発明せず、 **検知を
+  同じ純関数の形で実装し sweep から log 出力**するに留め、 queue 提示は rule 7 の分と併せて
+  後続で入れる。
+- **決定 17**: 上記の routing (`resolveReopenVariant`)。
+- daemon が `detail` から読むのは `attrs.observed.source_closed` **1 キーのみ**。 これが
+  逆輸入 3 の「共通語」の唯一のメンバーで、 チャネル固有表現 (Jira statusCategory・PR の
+  merged/declined) は workspace 側に留まる。
+
+### PR-5 レビューで出た指摘 (Opus、 2026-08-13)
+
+PR-4 の codex 3 巡と同じく、 **実装時に見落としやすいクラス**として記録する。 High 2 件は
+いずれも PR-4 round 1 と**同じクラス** (「daemon 側の権限/スコープ検査漏れ」) で、 3 回連続で
+同じ場所を踏んでいる:
+
+- **High × 2 — brokered list の scoping を executor 側にだけ書いた**。 `boid task list` の
+  scoping は **broker 側**にあり (project ref の name→UUID 解決もそこ)、 executor 側の
+  `AllowsProject` はあくまで二重化の内側だった。 これを取り違えた結果、
+  (a) `--workspace-id` が無検査で通り、 `ListTasks` の WorkspaceID filter は
+  `project_workspaces` を INNER JOIN する = **他 workspace の triage card を丸ごと読める**
+  (決定 2 の compartment を正面から破る)、 (b) project を**名前**で渡すと UUID 空間の
+  `AllowsProject` と突き合わされて常に失敗する、 の 2 つが同時に発生していた。
+  **教訓: 「既存 op と同じ scoping」と書くときは、 その op の scoping が実際にどの層に
+  あるかを読んでから書く**。 修正後は broker に task_list と同一の 3 段 (ref 解決 +
+  AllowsProject + workspace 一致) を置き、 escape テストで pin した。
+- **Medium — sidecar seed が transient error を「行が無い」と誤認**。 `GetTaskTriage` の
+  エラーを `sql.ErrNoRows` で絞らずに upsert していたため、 SQLITE_BUSY 等の一時失敗時に
+  既存 card の urgency/kind/wake_at と **detail 全体 (children・observed) を空で上書き**し、
+  決定 15 に到達不能な状態にしうる。 `applyParkSideEffect` が同じ罠を明示的に潰していたのに
+  新規コードで再発した。
+- **Medium — routing が reopen の payload 処理より前で `req.Type` を書き換えていた**。
+  `boid task reopen <card> -m "..."` のメッセージが instruction に入らず、 かつ
+  `sideEffectConsumesPayload` にも入らないため raw payload が `task.Payload` に merge される
+  (PR-4 が「a real regression」と呼んだ汚染そのもの)。
+- **Medium — 昇格した urgency/kind の blob 側の古い写しが残る**。 「列に書いて blob には
+  書かない」不変条件は PR-5a 以降の書き込みにしか効かず、 既存 card は blob の古い値を
+  返し続ける。 migration 0040 に「列へ昇格 → blob から削除」を追加し、 実行時にも
+  `StripDetailAttrs` で自己修復するようにした。
+- Low × 2 — machine.go の doc コメントの遷移表が `Manual` を実装と逆に書いていた /
+  `child_closed` フックが通常 task の親子でも毎回余分な Tx を開いていた。
+
+2 巡目 (High 0、 Medium 2 + Low 5):
+
+- **Medium — `resolveReopenVariant` が「行の読み取り失敗」を「triage task ではない」と
+  誤認**。 1 巡目で seed 側の同じ罠を直した直後に、 routing 側で**同じ誤りを再生産**していた
+  (しかも 50 行離れた場所に「ErrNoRows 以外を no-row 扱いしてはいけない」と自分で書いた
+  コメントがある状態で)。 しかもこちらは向きが悪く、 判定不能時に通常経路へ落ちる =
+  **card を job として実行してしまう** = 決定 17 が防ぎたかったもの。 判定不能なら 503 で
+  落とす形に修正。 **教訓: 「error != nil」を単一の分岐で扱う箇所は、 fail-open の向きが
+  どちらかを毎回明示的に問う**。
+- **Medium — 決定 16 の breach を毎分 log していた**。 khi が `observed.source_closed` を
+  送り始めるまで**全 card が breach** なので、 出荷直後から 1 日 1,440 行が他の daemon log を
+  埋め尽くす。 breach 集合が変化したときだけ出す形に修正 (解消時も 1 行出す)。
+- Low × 5 — sweep が `working` を毎分 2 回舐めていた (done 判定と breach 判定を 1 パスに統合、
+  `SweepTriage` に集約) / `ListTriage` が読めない行を無言で落としていた /
+  executor の無フィルタ経路が `ctx.ProjectID` 空のとき daemon 全域を返しうる /
+  `triage_done` が `finalizeTerminal` を迂回していた (card の入れ子が表現可能になった時点で
+  child_closed の取りこぼしになる) / seed が get-then-upsert で TOCTOU を持っていた
+  (`SeedTaskTriage` = `INSERT ... ON CONFLICT DO NOTHING` に置換)。
+
+3 巡目 (High 0、 Medium 1 + Low 3。 ここで収束と判断):
+
+- **Medium (一部 false positive) — dispatch 直後に終端した子の `child_closed` 取りこぼし**。
+  指摘されたシナリオ自体は PR-4 の post-commit reconciliation で既にカバー済みだった。 ただし
+  **決定 15 で blob が load-bearing になった**という指摘は正しい (`ShouldAutoDone` は blob しか
+  見ないので、 blob が現実とズレた card は永久に working)。 sweep 側でも毎 tick
+  `dispatched` な子の実 status を突き合わせて自己修復するようにした。
+- Low × 3 — `resolveReopenVariant` が `TaskTriage == nil` のときだけ危険な向き (通常経路) に
+  倒れていた (エラー時は安全側に倒すよう直した直後の、 同じ関数内の非対称) /
+  `ListTriage` に既定 status が無く無指定で全 task 行を走査していた (`"triage"` =
+  pre-execution ∪ working を新設して床にした) / **rule 4 の notify が khi の自然な順序で
+  発火しない** — `captured → triage → attrs_set{urgency:now}` の順だと urgency 到着時点で
+  card は既に queue member なので entry 検出が空振りする。 `notifyUrgencyRaised` を追加。
+
+**運用メモ**: 1 巡目 High 2 / 2 巡目 Medium 2 / 3 巡目 Medium 1 (一部 FP) と単調に収束したので
+3 巡で打ち切った ([[codex-review-loop-runaway-cutoff-policy]] の規律を Opus レビューにも適用)。
+3 巡すべてで**同じ関数の同じ判断 (`GetTaskTriage` のエラーをどう扱うか) が別の場所で再発**して
+いる点は記録に値する — 「error != nil を単一分岐で潰す箇所は fail-open の向きを毎回明示的に
+問う」。
 
 ### PR-5 (boid 本体): 読み戻し口 + done 自動落ち
 
@@ -1342,8 +1488,9 @@ task + sidecar + **action 導出分**を 1 つにまとめた形:
   片方だけでは落ちないこと。 落ちた事実が action として記録されること
 - **S7: フォローアップによる再浮上** (決定 17) — done の triage task を `ref` で引けること
   (`FindTaskByRef` に status 絞りが無いことの pin)。 `reopen_triaged` で done→triaged に戻り、
-  戻った後は `attrs_set` / `child_added` が再び押せること。 加えて **triage task に `reopen` を
-  押すと reject される**こと (決定 17 の「`reopen` 誤爆」ガードの pin)
+  戻った後は `attrs_set` / `child_added` が再び押せること。 加えて **triage task への `reopen` が
+  `reopen_triaged` に routing される**こと・ 通常 task の `reopen` は executing のままであること・
+  `reopen_triaged` の直接 push が reject されること (決定 17 の「`reopen` 誤爆」対策の pin)
 
 ---
 

@@ -360,6 +360,22 @@ func Apply(conn *sql.DB) error {
 				return tableExists(tx, "workspace_egress_port")
 			},
 		},
+		{
+			// docs/plans/cross-project-issue-triage.md Phase 1 PR-5a: seed
+			// task_triage rows for pre-PR-5a triage tasks so "has a sidecar
+			// row" is a reliable "is a triage task" discriminator (ListTriage
+			// and PR-5b's reopen routing both rest on it).
+			//
+			// No skip func: the statement is itself idempotent (its NOT EXISTS
+			// clause makes a re-run a no-op), and there is no schema object
+			// whose presence could stand in for "the backfill already ran" —
+			// a data migration has no such marker. The normal
+			// schema_migrations version guard already prevents a second run
+			// on an up-to-date DB; the idempotent statement covers the
+			// bootstrap/drift case where it does run again.
+			version: "0040_backfill_task_triage_rows",
+			path:    "migrations/0040_backfill_task_triage_rows.sql",
+		},
 	}
 
 	if err := ensureSchemaMigrationsTable(conn); err != nil {
