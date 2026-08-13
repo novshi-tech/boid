@@ -28,6 +28,7 @@
 package vtsnapshot
 
 import (
+	"fmt"
 	"io"
 	"strings"
 
@@ -88,6 +89,14 @@ func Render(raw []byte, cols, rows int) []byte {
 
 	_, _ = emu.Write(raw)
 
+	// Captured before Close: the cursor position the raw stream actually left
+	// the emulator in. Without this, the client repaints the resolved screen
+	// via term.write() and xterm parks its own cursor wherever the last
+	// written byte landed — the end of the last screen row — instead of
+	// wherever the PTY's cursor really was (mid-prompt, a blank line above the
+	// bottom, etc.). See docs/plans/web-terminal-vt-emulator.md.
+	cursor := emu.CursorPosition()
+
 	// Stop the drain reader by closing only the reply pipe's write end, which
 	// hands the reader a clean EOF. We deliberately do NOT use emu.Close() for
 	// that: it flips an internal `closed` flag the reader checks on every
@@ -121,5 +130,22 @@ func Render(raw []byte, cols, rows int) []byte {
 	// Both the scrollback loop above and emu.Render join rows with a bare LF.
 	// A raw-mode xterm treats LF as line-feed-only (no carriage return), which
 	// staircases the dump, so anchor every row at column 0.
-	return []byte(strings.ReplaceAll(b.String(), "\n", "\r\n"))
+	dump := strings.ReplaceAll(b.String(), "\n", "\r\n")
+
+	// This CUP is correct only when the connecting client's own viewport has
+	// exactly `rows` rows: cursor.Y is a row index into the screen this
+	// function rendered, and the client counts rows from the top of what it
+	// painted (scrollback lines then screen), so the two only line up at
+	// matching row counts. cols/rows is the geometry of the LAST client that
+	// resized this session (or the 80x24 fallback above), not necessarily the
+	// one now attaching — the general cross-width/cross-height mismatch this
+	// package cannot fully resolve, called out as an open axis in
+	// docs/plans/web-terminal-vt-emulator.md. A wrong client geometry means a
+	// wrong cursor row/col, same as it already meant reflowed-wrong screen
+	// content before this change; landing on the right screen (already true)
+	// is strictly better than the unconditional end-of-dump this replaces
+	// even when the geometry guess is off.
+	dump += fmt.Sprintf("\x1b[%d;%dH", cursor.Y+1, cursor.X+1)
+
+	return []byte(dump)
 }
