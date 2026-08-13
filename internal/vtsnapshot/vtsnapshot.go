@@ -28,6 +28,7 @@
 package vtsnapshot
 
 import (
+	"fmt"
 	"io"
 	"strings"
 
@@ -88,6 +89,14 @@ func Render(raw []byte, cols, rows int) []byte {
 
 	_, _ = emu.Write(raw)
 
+	// Captured before Close: the cursor position the raw stream actually left
+	// the emulator in. Without this, the client repaints the resolved screen
+	// via term.write() and xterm parks its own cursor wherever the last
+	// written byte landed — the end of the last screen row — instead of
+	// wherever the PTY's cursor really was (mid-prompt, a blank line above the
+	// bottom, etc.). See docs/plans/web-terminal-vt-emulator.md.
+	cursor := emu.CursorPosition()
+
 	// Stop the drain reader by closing only the reply pipe's write end, which
 	// hands the reader a clean EOF. We deliberately do NOT use emu.Close() for
 	// that: it flips an internal `closed` flag the reader checks on every
@@ -121,5 +130,14 @@ func Render(raw []byte, cols, rows int) []byte {
 	// Both the scrollback loop above and emu.Render join rows with a bare LF.
 	// A raw-mode xterm treats LF as line-feed-only (no carriage return), which
 	// staircases the dump, so anchor every row at column 0.
-	return []byte(strings.ReplaceAll(b.String(), "\n", "\r\n"))
+	dump := strings.ReplaceAll(b.String(), "\n", "\r\n")
+
+	// The scrollback lines and the screen dump together fill exactly the
+	// client's rows x cols viewport (Render is called with the client's own
+	// geometry), so an absolute Cursor Position report lands the cursor
+	// wherever the recorded session actually left it, not at the end of the
+	// last row that term.write() happened to paint.
+	dump += fmt.Sprintf("\x1b[%d;%dH", cursor.Y+1, cursor.X+1)
+
+	return []byte(dump)
 }

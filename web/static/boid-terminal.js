@@ -81,6 +81,71 @@ export function initBoidTerminal(rootEl, { jobId, wsUrl }) {
   let ws = null;
   let ctrlActive = false;
   let exitReceived = false;
+
+  // --- mouse-tracking mode dedup ---
+  //
+  // Claude Code's TUI re-asserts DECSET mouse tracking (\x1b[?1000h etc.) on
+  // every screen repaint, not once at startup: 161 occurrences of each of
+  // 1000/1002/1003/1006 measured on a single 13MB production transcript.
+  // xterm.js's CoreMouseService.activeProtocol setter fires onProtocolChange
+  // unconditionally, even when re-set to the value it already holds, and
+  // xterm's own onProtocolChange handler calls SelectionService.disable(),
+  // which calls clearSelection(). So every repaint silently wipes whatever
+  // selection the user is mid-drag on — including a Shift-forced one, the
+  // escape hatch a few lines below exists for exactly this TUI. A drag has to
+  // start and finish entirely between two repaints or it never survives to
+  // mouseup, which is why the copy toast can appear to never fire even with
+  // Shift held.
+  //
+  // The fix can't live in vendored xterm.js, so it lives here: track the
+  // mouse protocol client-side and strip a DECSET/DECRST that would not
+  // actually change it before term.write() ever sees it, so xterm's own
+  // CoreMouseService never re-fires for a no-op re-assertion. Real changes
+  // (mouse tracking genuinely turning on/off) still pass through untouched.
+  const MOUSE_PROTOCOL_MODES = { '9': 'X10', '1000': 'VT200', '1002': 'DRAG', '1003': 'ANY' };
+  const MOUSE_MODE_RE = /\x1b\[\?([0-9;]+)([hl])/g;
+  let mouseProtocol = 'NONE';
+
+  function stripRedundantMouseModeAssertions(bytes) {
+    let bin = '';
+    for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+
+    // First pass, no mutation: replay every mouse-mode token in this chunk
+    // exactly as xterm's CoreMouseService would (last one wins) to find the
+    // NET protocol this chunk settles on. A burst that cycles through
+    // VT200 -> DRAG -> ANY on every repaint never repeats a value
+    // consecutively, so comparing token-by-token against the prior token
+    // would never catch it as redundant — only the chunk's final resting
+    // value, compared against the value already active before the chunk,
+    // says whether the whole burst changed anything.
+    let finalProtocol = mouseProtocol;
+    let m;
+    MOUSE_MODE_RE.lastIndex = 0;
+    while ((m = MOUSE_MODE_RE.exec(bin))) {
+      m[1].split(';').forEach(function (n) {
+        if (n in MOUSE_PROTOCOL_MODES) finalProtocol = m[2] === 'h' ? MOUSE_PROTOCOL_MODES[n] : 'NONE';
+      });
+    }
+
+    if (finalProtocol === mouseProtocol) {
+      // The whole burst is a no-op: drop just the mouse-relevant numbers
+      // from each token (a token can bundle unrelated modes, e.g. bracketed
+      // paste, in the same param list) so nothing about this chunk reaches
+      // xterm's CoreMouseService and re-fires onProtocolChange.
+      bin = bin.replace(MOUSE_MODE_RE, function (whole, params, hl) {
+        const rest = params.split(';').filter(function (n) { return !(n in MOUSE_PROTOCOL_MODES); });
+        if (rest.length === params.split(';').length) return whole;
+        return rest.length ? '\x1b[?' + rest.join(';') + hl : '';
+      });
+    } else {
+      mouseProtocol = finalProtocol;
+    }
+
+    const out = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+    return out;
+  }
+
   // Transcript bytes already painted. Handed back as ?replay_offset= on the
   // next connect so a reconnect resumes mid-stream instead of repainting the
   // whole session from the top.
@@ -199,11 +264,16 @@ export function initBoidTerminal(rootEl, { jobId, wsUrl }) {
         // is already there. Anything else is a reconnect splice onto a screen
         // we still have.
         const offset = msg.offset || 0;
-        if (offset === 0 || msg.rendered) term.reset();
+        // term.reset() resets xterm's own CoreMouseService.activeProtocol to
+        // NONE (see coreMouseService.reset() in xterm.js's Terminal.reset()),
+        // so the dedup tracker above must follow it back to NONE or the next
+        // real mouse-mode assertion after this reset would be wrongly
+        // dropped as a no-op, leaving xterm's mouse reporting stuck off.
+        if (offset === 0 || msg.rendered) { term.reset(); mouseProtocol = 'NONE'; }
         replayOffset = offset;
       } else if (msg.type === 'output') {
         const bytes = Uint8Array.from(atob(msg.data), c => c.charCodeAt(0));
-        term.write(bytes);
+        term.write(stripRedundantMouseModeAssertions(bytes));
         replayOffset += bytes.length;
       } else if (msg.type === 'exit') {
         exitReceived = true;
