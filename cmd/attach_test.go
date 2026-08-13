@@ -82,3 +82,47 @@ func TestPagerCommands_ContainsLessAndMore(t *testing.T) {
 		t.Error("pagerCommands: expected 'more' in candidates")
 	}
 }
+
+// TestWriteTerminalEpilogue_ResetsMouseReporting pins the fix for the
+// Windows-sleep symptom: a job whose harness turned on mouse reporting
+// (Claude Code's TUI sends DECSET 1000/1002/1003/1006 on startup) normally
+// turns it back off on exit, and those bytes reach the local terminal
+// through the attach stream. When the wire dies instead — a laptop
+// suspending mid-session — the "off" half never arrives and the local
+// terminal is left forwarding drags to nobody, so the user cannot select
+// the very error message that explains the drop. attachLive therefore
+// writes the "off" half itself on the way out.
+func TestWriteTerminalEpilogue_ResetsMouseReporting(t *testing.T) {
+	var buf bytes.Buffer
+	writeTerminalEpilogue(&buf)
+
+	got := buf.String()
+	for _, want := range []string{
+		"\x1b[?1000l", // X10/normal mouse tracking
+		"\x1b[?1002l", // button-event tracking
+		"\x1b[?1003l", // any-event tracking
+		"\x1b[?1006l", // SGR extended coordinates
+		"\x1b[?1015l", // urxvt extended coordinates
+		"\x1b[?2004l", // bracketed paste
+		"\x1b[?25h",   // cursor visible
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("epilogue: missing %q, got %q", want, got)
+		}
+	}
+}
+
+// TestWriteTerminalEpilogue_KeepsAlternateScreen guards the one reset
+// deliberately left out. Leaving the alternate screen (DECRST 1049) would
+// swap the terminal back to the primary buffer and take the drop notice
+// ("connection lost and could not be restored: ...") off screen with it —
+// the exact text the user is trying to copy. Mouse reporting is what breaks
+// selection; the alternate screen does not, so it stays.
+func TestWriteTerminalEpilogue_KeepsAlternateScreen(t *testing.T) {
+	var buf bytes.Buffer
+	writeTerminalEpilogue(&buf)
+
+	if strings.Contains(buf.String(), "\x1b[?1049l") {
+		t.Errorf("epilogue: must not leave the alternate screen, got %q", buf.String())
+	}
+}

@@ -444,3 +444,67 @@ func TestAttachJob_FirstDialFailureIsNotRetried(t *testing.T) {
 		t.Errorf("server saw %d handshake attempts, want 1", requests)
 	}
 }
+
+// TestAttachJob_WedgedReconnectDialTimesOut pins the third failure mode
+// behind the Windows-sleep report. On resume, the pooled TCP connection the
+// reconnect dial reuses can be black-holed rather than reset: the peer is
+// gone but nothing ever says so, so the WS handshake neither succeeds nor
+// fails. Without a bound on the dial, attachOnce parks inside websocket.Dial
+// forever, the reconnect loop never gets back to its deadline check, and the
+// session is lost with no message at all — the same wedge class as the
+// gateway's half-dead upstream connections.
+//
+// The server here accepts the first connection and drops it abnormally, then
+// stops answering entirely. AttachJob must still come back, with the
+// give-up notice, well inside the test's own patience.
+func TestAttachJob_WedgedReconnectDialTimesOut(t *testing.T) {
+	shortenAttachReconnectWaits(t)
+
+	origDialTimeout := attachDialTimeout
+	attachDialTimeout = 50 * time.Millisecond
+	t.Cleanup(func() { attachDialTimeout = origDialTimeout })
+
+	var mu sync.Mutex
+	attempt := 0
+	c := newUnixWSServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		n := attempt
+		attempt++
+		mu.Unlock()
+
+		if n == 0 {
+			conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{InsecureSkipVerify: true})
+			if err != nil {
+				return
+			}
+			writeServerMsg(t, conn, wsAttachServerMsg{Type: "attach"})
+			conn.CloseNow()
+			return
+		}
+		// Never respond: the handshake hangs exactly like a dial onto a
+		// black-holed connection.
+		<-r.Context().Done()
+	}))
+
+	done := make(chan error, 1)
+	go func() {
+		var stdout, notices bytes.Buffer
+		err := c.AttachJob("job-wedged", nil, &stdout, AttachOptions{
+			Notify:          &notices,
+			ReconnectWindow: 100 * time.Millisecond,
+		})
+		if !strings.Contains(notices.String(), "boid attach job-wedged") {
+			t.Errorf("notices = %q, want a `boid attach job-wedged` hint", notices.String())
+		}
+		done <- err
+	}()
+
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("expected an error once the reconnect window elapsed")
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("AttachJob wedged inside a dial that never completes")
+	}
+}
