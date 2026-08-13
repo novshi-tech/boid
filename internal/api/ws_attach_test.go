@@ -13,6 +13,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -35,18 +36,25 @@ import (
 // relied on by an existing test.
 type stubSubscriber struct {
 	snapshot []byte
+	// tty and geometry populate the RuntimeSnapshot fields that decide
+	// whether a fresh attach is handed a rendered screen instead of the raw
+	// transcript. They default to the non-PTY shape, so every test written
+	// before rendering existed keeps asserting on a verbatim replay.
+	tty      bool
+	geometry dispatcher.TerminalSize
 	ch       chan []byte
 	cancel   func()
 	ok       bool
 	finished bool
 }
 
-func (s *stubSubscriber) Subscribe(_ string) ([]byte, <-chan []byte, func(), bool, bool) {
+func (s *stubSubscriber) Subscribe(_ string) (dispatcher.RuntimeSnapshot, <-chan []byte, func(), bool, bool) {
 	cancelFn := s.cancel
 	if cancelFn == nil {
 		cancelFn = func() {}
 	}
-	return s.snapshot, s.ch, cancelFn, s.ok, s.finished
+	snap := dispatcher.RuntimeSnapshot{Raw: s.snapshot, TTY: s.tty, Geometry: s.geometry}
+	return snap, s.ch, cancelFn, s.ok, s.finished
 }
 
 // stubWriter is a fake RuntimeInputWriter for testing.
@@ -825,4 +833,184 @@ func readRawWSFrame(t *testing.T, conn net.Conn, br *bufio.Reader) (opcode byte,
 		t.Fatalf("read frame payload: %v", err)
 	}
 	return opcode, payload
+}
+
+// --- rendered connect snapshots -------------------------------------------
+//
+// The tests below pin resolveReplay's three-way split. The bug they exist for:
+// a fresh attach to a long interactive job replayed the entire raw transcript,
+// so the Web UI terminal scrolled the whole session past on every connect (8.7
+// MB on one measured production job). See internal/vtsnapshot.
+
+// TestWSAttachHandler_TTYSnapshotIsRendered is the headline case: a fresh
+// attach to a PTY session gets the screen the transcript painted, not the
+// transcript.
+func TestWSAttachHandler_TTYSnapshotIsRendered(t *testing.T) {
+	var raw strings.Builder
+	raw.WriteString("\x1b[?1049h")
+	for i := 0; i < 400; i++ {
+		raw.WriteString("\x1b[H")
+		raw.WriteString("OVERDRAWN")
+	}
+	raw.WriteString("\x1b[H")
+	raw.WriteString("CURRENT")
+
+	sub := &stubSubscriber{
+		snapshot: []byte(raw.String()),
+		tty:      true,
+		geometry: dispatcher.TerminalSize{Cols: 80, Rows: 24},
+		ch:       make(chan []byte, 1),
+		ok:       true,
+	}
+	h := &WSAttachHandler{Subscriber: sub}
+	srv := newWSTestServer(h)
+	defer srv.Close()
+
+	conn := dialWSRaw(t, srv, "job-tty", "")
+	defer conn.CloseNow()
+
+	attach := readWSMsg(t, conn)
+	if attach.Type != "attach" {
+		t.Fatalf("first frame type = %q, want %q", attach.Type, "attach")
+	}
+	if !attach.Rendered {
+		t.Error("attach frame did not announce rendered=true for a PTY session's fresh connect")
+	}
+	// The offset must stay anchored to the RAW transcript even though what
+	// follows is a rendered screen, or the client's next ?replay_offset lands
+	// somewhere meaningless.
+	if attach.Offset != len(raw.String()) {
+		t.Errorf("attach offset = %d, want the raw transcript length %d", attach.Offset, raw.Len())
+	}
+
+	payload := readAllOutput(t, conn, sub.ch)
+	if !strings.Contains(payload, "CURRENT") {
+		t.Errorf("rendered snapshot lost the current screen: %q", payload)
+	}
+	if strings.Contains(payload, "OVERDRAWN") {
+		t.Errorf("rendered snapshot still replays overdrawn history: %q", payload)
+	}
+	if len(payload) >= raw.Len() {
+		t.Errorf("payload (%d bytes) did not shrink the raw transcript (%d bytes)", len(payload), raw.Len())
+	}
+}
+
+// TestWSAttachHandler_NonTTYSnapshotIsVerbatim guards the other side of the
+// split: a hook job's log, or `boid exec` on the non-interactive transport, is
+// not a screen recording and must arrive byte-for-byte.
+func TestWSAttachHandler_NonTTYSnapshotIsVerbatim(t *testing.T) {
+	raw := "line one\nline two\n\x1b[H not a screen \n"
+	sub := &stubSubscriber{
+		snapshot: []byte(raw),
+		tty:      false,
+		ch:       make(chan []byte, 1),
+		ok:       true,
+	}
+	h := &WSAttachHandler{Subscriber: sub}
+	srv := newWSTestServer(h)
+	defer srv.Close()
+
+	conn := dialWSRaw(t, srv, "job-log", "")
+	defer conn.CloseNow()
+
+	attach := readWSMsg(t, conn)
+	if attach.Rendered {
+		t.Error("attach frame announced rendered=true for a non-PTY session")
+	}
+	if attach.Offset != 0 {
+		t.Errorf("attach offset = %d, want 0 for a verbatim from-the-top replay", attach.Offset)
+	}
+	if got := readAllOutput(t, conn, sub.ch); got != raw {
+		t.Errorf("non-PTY snapshot = %q, want it replayed verbatim %q", got, raw)
+	}
+}
+
+// TestWSAttachHandler_TTYReconnectSplicesRawTail pins that rendering is a
+// FRESH-connect behavior only. A reconnecting client still has the screen; it
+// needs the exact bytes it missed, and re-rendering would both discard its
+// screen and desync the byte accounting.
+func TestWSAttachHandler_TTYReconnectSplicesRawTail(t *testing.T) {
+	raw := "\x1b[?1049hHEAD-ALREADY-SEEN" + "TAIL-MISSED"
+	seen := len(raw) - len("TAIL-MISSED")
+
+	sub := &stubSubscriber{
+		snapshot: []byte(raw),
+		tty:      true,
+		geometry: dispatcher.TerminalSize{Cols: 80, Rows: 24},
+		ch:       make(chan []byte, 1),
+		ok:       true,
+	}
+	h := &WSAttachHandler{Subscriber: sub}
+	srv := newWSTestServer(h)
+	defer srv.Close()
+
+	conn := dialWSRaw(t, srv, "job-tty", "replay_offset="+strconv.Itoa(seen))
+	defer conn.CloseNow()
+
+	attach := readWSMsg(t, conn)
+	if attach.Rendered {
+		t.Error("a reconnect with a usable replay_offset was answered with a rendered screen; want the raw tail spliced")
+	}
+	if attach.Offset != seen {
+		t.Errorf("attach offset = %d, want the requested %d", attach.Offset, seen)
+	}
+	if got := readAllOutput(t, conn, sub.ch); got != "TAIL-MISSED" {
+		t.Errorf("reconnect replay = %q, want exactly the missed tail %q", got, "TAIL-MISSED")
+	}
+}
+
+// TestWSAttachHandler_EmptyTTYSnapshotSendsNothing keeps a just-launched job
+// from being handed a screenful of blank cells to paint (the emulator would
+// happily render an empty grid) before it has emitted anything.
+func TestWSAttachHandler_EmptyTTYSnapshotSendsNothing(t *testing.T) {
+	ch := make(chan []byte, 1)
+	sub := &stubSubscriber{tty: true, ch: ch, ok: true}
+	h := &WSAttachHandler{Subscriber: sub}
+	srv := newWSTestServer(h)
+	defer srv.Close()
+
+	conn := dialWSRaw(t, srv, "job-fresh", "")
+	defer conn.CloseNow()
+
+	attach := readWSMsg(t, conn)
+	if attach.Rendered || attach.Offset != 0 {
+		t.Errorf("attach frame = %+v, want offset 0 and rendered=false for an empty transcript", attach)
+	}
+
+	// Nothing should precede the first live chunk.
+	ch <- []byte("first live byte")
+	msg := readWSMsg(t, conn)
+	if msg.Type != "output" {
+		t.Fatalf("frame type = %q, want %q", msg.Type, "output")
+	}
+	data, _ := base64.StdEncoding.DecodeString(msg.Data)
+	if string(data) != "first live byte" {
+		t.Errorf("first frame after attach = %q, want the live chunk (an empty snapshot must send no output frame)", data)
+	}
+}
+
+// readAllOutput drains the "output" frames of the connect replay, stopping as
+// soon as the replay is over. The sentinel it uses to find that boundary is a
+// live chunk pushed onto the subscriber channel: the handler emits it strictly
+// after the replay, so its arrival means every replay frame has been read.
+func readAllOutput(t *testing.T, conn *websocket.Conn, ch chan []byte) string {
+	t.Helper()
+	const sentinel = "\x00BOID-REPLAY-END\x00"
+	ch <- []byte(sentinel)
+
+	var b strings.Builder
+	for {
+		msg := readWSMsg(t, conn)
+		if msg.Type != "output" {
+			t.Fatalf("frame type = %q, want %q while draining the replay", msg.Type, "output")
+		}
+		data, err := base64.StdEncoding.DecodeString(msg.Data)
+		if err != nil {
+			t.Fatalf("decode output frame: %v", err)
+		}
+		if s := string(data); s == sentinel {
+			return b.String()
+		}
+		b.Write(data)
+	}
 }

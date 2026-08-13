@@ -523,6 +523,11 @@ type wsAttachServerMsg struct {
 	// byte position the replay that follows starts at. See
 	// ws_attach.go's sendAttach for the server side.
 	Offset int64 `json:"offset,omitempty"`
+	// Rendered is meaningful only on the "attach" frame — true means the
+	// replay that follows is a resolved screen dump rather than raw
+	// transcript bytes, and must be painted onto a cleared screen. See
+	// ws_attach.go's resolveReplay for when the server chooses it.
+	Rendered bool `json:"rendered,omitempty"`
 }
 
 // AttachJob opens a live interactive attach to jobID over WebSocket
@@ -982,6 +987,27 @@ func attachReadOutput(ctx context.Context, conn *websocket.Conn, stdout io.Write
 		switch msg.Type {
 		case "attach":
 			offset = msg.Offset
+			if msg.Rendered {
+				// A rendered screen dump describes an entire screen with
+				// absolute positioning, so it has to land on a cleared one
+				// or it is drawn over whatever was already there.
+				//
+				// Deliberately NARROWER than the Web UI terminal's own wipe
+				// condition (web/static/boid-terminal.js also resets at
+				// offset 0): that client owns a whole xterm and can clear it
+				// freely, while this one writes into the user's real
+				// terminal, where a plain from-the-top replay — `boid exec`
+				// on the non-interactive transport, which never gets a
+				// rendered snapshot — must not erase what the user had on
+				// screen before they ran the command.
+				//
+				// ED 2 + CUP home rather than a full RIS for the same
+				// reason: a reset would also drop scrollback the user may
+				// still want.
+				if _, writeErr := stdout.Write([]byte("\x1b[2J\x1b[H")); writeErr != nil {
+					return offset, true, writeErr
+				}
+			}
 		case "output":
 			data, decodeErr := base64.StdEncoding.DecodeString(msg.Data)
 			if decodeErr != nil || len(data) == 0 {

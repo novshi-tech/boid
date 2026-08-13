@@ -196,7 +196,64 @@ PoC が実証したのはまさにこの形 (transcript を読む → emu に食
 ブロードキャストと並行する Write/Read の concurrency 対策 (`vt.SafeEmulator` または専用ロック) が
 要る。オンデマンド案で崩壊が直るなら急がない。
 
-## 改修箇所 (Phase 1)
+## Phase 1 の退行と再実装 (2026-08-13)
+
+Phase 1 は 2026-06-02 に `internal/dispatcher/runtime_local_linux.go` (userns backend の
+JobRuntime) へ実装したが、`a47f02bf` (PR-4, userns backend 完全撤去) でそのファイルごと
+消え、**container backend 側へ移植されなかった**。結果、container backend は
+attach 時に in-memory transcript を丸ごと raw で返す実装に戻っていた。
+
+退行の痕跡 (再実装時の一次証拠):
+
+- `go.mod` に `github.com/charmbracelet/x/vt` が direct dependency として残存、
+  一方 `grep -rn "x/vt" --include=*.go .` は 0 件
+- `web/static/boid-terminal.js` のコメントが、存在しない
+  `maxSnapshotScrollback in runtime_local_linux.go` を参照
+- `internal/dispatcher/container_backend.go` の `appendTranscript` は
+  `s.transcript = append(...)` のみで上限定数なし
+
+実測 (稼働中の job 1 本、`podman logs` で採取):
+
+| 指標 | 値 |
+|---|---|
+| transcript サイズ | 8,743,014 bytes |
+| 描画フレーム数 (`ESC[?25l` 区切り) | 39,699 |
+| フレームサイズ 中央値 / p90 / p99 | 57 / 102 / 7,492 bytes |
+| alt screen 遷移 (`ESC[?1049h` / `l`) | 1 回 / 0 回 (= 全編フルスクリーン) |
+| vt レンダリング後 | 7,770 bytes (**1125x 縮小**)、0.53 秒 |
+
+**「末尾 N バイトだけ replay する」では直らない**ことがこの数字で確定する:
+フレームの中央値が 57 バイト = Ink の差分更新なので、途中から切ると画面が壊れる。
+また **レンダリング幅は必ず実 PTY 幅でなければならない** — 同じ transcript を
+cols=80 で通すと綺麗に出るが、100/160/240/296 ではいずれも行が重複した崩れになる
+(履歴の途中で resize されていても、resize 後のフル repaint が上書きするので、
+現在の幅で全履歴を通せば収束する)。
+
+### 再実装 (container backend 版) の構成
+
+| ファイル | 変更 |
+|---|---|
+| `internal/vtsnapshot/` (新規) | `Render(raw, cols, rows)` — 旧 `renderTerminalSnapshot` を独立パッケージ化 (sqlite 非依存なので単体でテストできる) |
+| `internal/sandbox/backend/backend.go` | `RuntimeSnapshot{Raw, TTY, Geometry}` を追加し `SandboxSession.Subscribe` の第1返り値に |
+| `internal/dispatcher/container_backend.go` | `containerSession.geometry` を `Resize` で記録、`Subscribe` が `TTY`/`Geometry` を申告 |
+| `internal/api/ws_attach.go` | `resolveReplay` で三分岐 (reconnect splice / TTY = render / 非TTY = verbatim)、attach フレームに `rendered` |
+| `internal/api/job_log_sse.go` | `snapshot.Raw` を verbatim (非対話ログは絶対にレンダリングしない) |
+| `web/static/boid-terminal.js` / `internal/client/client.go` | `rendered` で画面クリア |
+
+旧実装との差分で意図的に変えた点:
+
+- **offset 会計は raw transcript 基準のまま**。rendered を送るときも `attach.offset` は
+  `len(raw)` を返すので、クライアントの `?replay_offset` は従来どおり噛み合う。
+- **再接続 (`replay_offset` 有効) はレンダリングしない**。クライアントは画面を持っている
+  ので、欠けた raw tail を splice する方が小さく正確。
+- **CLI (`internal/client`) の画面クリアは `rendered` のときだけ**。Web UI は xterm を
+  丸ごと所有しているので `offset === 0` でも reset してよいが、CLI は実端末に書くため
+  `boid exec` の verbatim replay で画面を消してはいけない。
+
+## 改修箇所 (Phase 1) — 歴史記録 (userns backend 版・撤去済み)
+
+以下は 2026-06-02 版の改修箇所。ファイルごと `a47f02bf` で消えているので、
+現行の構成は上記「Phase 1 の退行と再実装」を参照。
 
 | ファイル | 箇所 | 変更 |
 |---|---|---|
@@ -221,6 +278,15 @@ PoC が実証したのはまさにこの形 (transcript を読む → emu に食
   - 常駐エミュレータ化 + グリッド serialize で daemon 再起動またぎの永続化。
 
 ## 未解決・決定事項
+
+- **in-memory transcript は依然として無制限** (2026-08-13 時点)。今回の再実装が減らしたのは
+  「attach 時にクライアントへ送る量」であって、`containerSession.transcript` が daemon の
+  ヒープに積む量ではない (実測 8.7MB/job)。これを削るには常駐エミュレータ化 (Phase 2) が要る —
+  raw を捨てるなら reconnect splice 用に末尾だけ残し、それより古い `?replay_offset` は
+  rendered へフォールバックする設計になる。
+- **adopt 直後の初回スナップショットは 80x24 で描かれる**。daemon 再起動後に再構成された
+  session は PTY サイズを知らず、クライアントの resize フレームは attach ハンドシェイク
+  (= スナップショット取得) の**後**に届くため。次の resize 以降は正しい幅になる。
 
 - **複数クライアント異幅**: PTY = 1 本 = 1 幅という制約は残る (後勝ちサイズ)。崩壊はしなくなる
   (ダンプが内部整合 + xterm 再折り返し)。完全な per-client 幅は将来課題。

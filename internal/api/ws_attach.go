@@ -15,6 +15,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/novshi-tech/boid/internal/api/auth"
 	"github.com/novshi-tech/boid/internal/dispatcher"
+	"github.com/novshi-tech/boid/internal/vtsnapshot"
 )
 
 // WSAttachHandler handles WebSocket connections for interactive PTY attach.
@@ -57,6 +58,12 @@ type wsServerMsg struct {
 	// within the job's accumulated transcript that the replay about to
 	// follow starts at. See sendAttach's doc comment.
 	Offset int `json:"offset,omitempty"`
+	// Rendered is meaningful only on the "attach" frame: true means the
+	// replay that follows is a resolved screen dump rather than a slice of
+	// the raw transcript, so the client must clear its terminal before
+	// applying it (a screen dump spliced onto whatever was already there
+	// would double the visible content). See sendAttach.
+	Rendered bool `json:"rendered,omitempty"`
 }
 
 func (h *WSAttachHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -88,14 +95,12 @@ func (h *WSAttachHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	snapshot, ch, cancel, ok, finished := h.Subscriber.Subscribe(jobID)
 	defer cancel()
 
-	replayFrom := clampReplayOffset(replayOffsetFromRequest(r), len(snapshot))
-	if err := h.sendAttach(ctx, conn, replayFrom); err != nil {
+	replay, replayFrom, rendered := resolveReplay(snapshot, replayOffsetFromRequest(r))
+	if err := h.sendAttach(ctx, conn, replayFrom, rendered); err != nil {
 		return
 	}
-	if replayFrom < len(snapshot) {
-		if err := h.sendOutput(ctx, conn, snapshot[replayFrom:]); err != nil {
-			return
-		}
+	if err := h.sendOutput(ctx, conn, replay); err != nil {
+		return
 	}
 
 	if !ok || ch == nil {
@@ -358,17 +363,60 @@ func clampReplayOffset(offset, snapshotLen int) int {
 	return offset
 }
 
+// resolveReplay decides what a connecting client actually receives, and
+// returns it alongside the transcript position it leaves the client at and
+// whether it is a rendered screen rather than raw bytes.
+//
+// Two cases, and the distinction is the whole point:
+//
+//   - A RECONNECT (a usable ?replay_offset) gets the raw tail it missed.
+//     That is a small, exact splice onto a screen the client still has, and
+//     it keeps the transcript byte accounting trivially correct.
+//   - A FRESH connect to a PTY session gets the transcript resolved to the
+//     screen it painted, because replaying it raw is what made the Web UI
+//     terminal scroll the entire session past on every connect: a
+//     full-screen TUI overdraws the same cells for the whole session (8.7 MB
+//     and 39699 frames on one measured job, to describe one 80x60 screen).
+//     The resolved dump is ~1000x smaller and, unlike a naive byte-count
+//     bound on the raw stream, actually correct — see internal/vtsnapshot.
+//
+// A fresh connect to a non-PTY session (a hook job's log, `boid exec` on the
+// non-interactive transport) is NOT a screen recording and keeps replaying
+// verbatim.
+//
+// The returned offset is always a position in the RAW transcript, including
+// in the rendered case, so the client's own byte counting — and the
+// ?replay_offset it hands back on its next reconnect — stays anchored to the
+// one thing both ends agree on, regardless of what was actually painted.
+func resolveReplay(snapshot dispatcher.RuntimeSnapshot, requestedOffset int) (replay []byte, offset int, rendered bool) {
+	from := clampReplayOffset(requestedOffset, len(snapshot.Raw))
+	if from > 0 {
+		return snapshot.Raw[from:], from, false
+	}
+	if !snapshot.TTY || len(snapshot.Raw) == 0 {
+		return snapshot.Raw, 0, false
+	}
+	return vtsnapshot.Render(snapshot.Raw, snapshot.Geometry.Cols, snapshot.Geometry.Rows), len(snapshot.Raw), true
+}
+
 // sendAttach announces, as the first frame of every connection, where the
-// replay that follows starts within the job's transcript. A client tracking
-// its own byte count can add this to the payload bytes it receives and hand
-// the total back as ?replay_offset on its next reconnect, so a reconnect
-// resumes mid-transcript instead of repainting the whole session.
+// replay that follows starts within the job's transcript and whether that
+// replay is a rendered screen. A client tracking its own byte count can add
+// the offset to the payload bytes it receives and hand the total back as
+// ?replay_offset on its next reconnect, so a reconnect resumes mid-transcript
+// instead of repainting the whole session.
 //
 // Clients that predate this frame ignore an unknown frame type (both the
 // CLI's attachReadOutput and the Web UI's onmessage fall through unknown
-// types), so sending it unconditionally is backward compatible.
-func (h *WSAttachHandler) sendAttach(ctx context.Context, conn *websocket.Conn, offset int) error {
-	msg := wsServerMsg{Type: "attach", Offset: offset}
+// types), so sending it unconditionally is backward compatible. A client that
+// knows the frame but not its rendered field is a narrower case worth being
+// explicit about: it reads offset correctly and simply misses the "clear
+// first" instruction, so it paints a correct screen dump onto a terminal it
+// did not clear. That is a cosmetic duplication on first connect, not a
+// desync — offset accounting is unaffected — and it self-corrects on the
+// job's next full repaint.
+func (h *WSAttachHandler) sendAttach(ctx context.Context, conn *websocket.Conn, offset int, rendered bool) error {
+	msg := wsServerMsg{Type: "attach", Offset: offset, Rendered: rendered}
 	b, _ := json.Marshal(msg)
 	return conn.Write(ctx, websocket.MessageText, b)
 }

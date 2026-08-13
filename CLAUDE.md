@@ -36,6 +36,7 @@ E2E テスト（`e2e/run-container.sh`、real docker/podman engine が必要）�
   - `skills/` — 組み込みスキル管理
   - `timeline/` — タイムライン記録
   - `tui/` — TUI（テキスト UI）
+  - `vtsnapshot/` — 録画済み PTY バイト列を「今の画面」へ解決（attach 時のスナップショット）
 - `web/` — Templ テンプレート + 静的ファイル
 - `testutil/` — テストヘルパー
 - `e2e/` — E2E テスト

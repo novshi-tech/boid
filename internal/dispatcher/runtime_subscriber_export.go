@@ -19,7 +19,7 @@ import (
 // MUST NOT collapse into "done" — see ws_attach.go/job_log_sse.go's own
 // handling for what each ingress does with the distinction.
 type RuntimeSubscriber interface {
-	Subscribe(jobID string) (snapshot []byte, ch <-chan []byte, cancel func(), ok bool, finished bool)
+	Subscribe(jobID string) (snapshot RuntimeSnapshot, ch <-chan []byte, cancel func(), ok bool, finished bool)
 }
 
 // RuntimeInputWriter provides write access to a running job's PTY input.
@@ -147,10 +147,10 @@ func (r *Runner) jobFinishedBeforeRuntime(jobID string) bool {
 //     distinguishes this in StopJobRuntime/SignalJobRuntime/
 //     ResizeRuntimeID (this file's own sibling methods) — this is that
 //     same pattern applied to the one method that hadn't used it yet.
-func (r *Runner) Subscribe(jobID string) (snapshot []byte, ch <-chan []byte, cancel func(), ok bool, finished bool) {
+func (r *Runner) Subscribe(jobID string) (snapshot RuntimeSnapshot, ch <-chan []byte, cancel func(), ok bool, finished bool) {
 	runtimeID, found := r.runtimeIDForJob(jobID)
 	if !found {
-		return nil, nil, func() {}, false, r.jobFinishedBeforeRuntime(jobID)
+		return RuntimeSnapshot{}, nil, func() {}, false, r.jobFinishedBeforeRuntime(jobID)
 	}
 	ctx, cancelCtx := context.WithTimeout(context.Background(), sessionControlCallTimeout.Get())
 	defer cancelCtx()
@@ -160,7 +160,7 @@ func (r *Runner) Subscribe(jobID string) (snapshot []byte, ch <-chan []byte, can
 			slog.Warn("subscribe: adopt did not resolve before the control-call deadline; the runtime's live output cannot be attached to",
 				"job_id", jobID, "runtime_id", runtimeID, "timeout", sessionControlCallTimeout.Get())
 		}
-		return nil, nil, func() {}, false, ctx.Err() == nil
+		return RuntimeSnapshot{}, nil, func() {}, false, ctx.Err() == nil
 	}
 	return session.Subscribe()
 }
