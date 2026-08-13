@@ -46,6 +46,11 @@ export function initBoidTerminal(rootEl, { jobId, wsUrl }) {
   const reconnectBtn      = rootEl.querySelector('.boid-terminal-reconnect');
   const disconnectMsg     = rootEl.querySelector('.boid-terminal-disconnect-msg');
   const ctrlBtn      = rootEl.querySelector('.boid-terminal-keybar-ctrl');
+  const copyToast    = rootEl.querySelector('.boid-terminal-copy-toast');
+  const copyBtn      = rootEl.querySelector('.boid-terminal-copy-btn');
+  const copyLabel    = rootEl.querySelector('.boid-terminal-copy-label');
+  const copyPreview  = rootEl.querySelector('.boid-terminal-copy-preview');
+  const copyDismiss  = rootEl.querySelector('.boid-terminal-copy-dismiss');
 
   const term = new window.Terminal({
     fontFamily: "'IBM Plex Mono', 'Menlo', 'Monaco', 'Courier New', monospace",
@@ -54,6 +59,14 @@ export function initBoidTerminal(rootEl, { jobId, wsUrl }) {
     // connect snapshot prepends up to that many scrolled-off history lines, so
     // xterm must retain at least as many for the user to scroll back to them.
     scrollback: 2000,
+    // Force-select escape hatch on macOS. While a TUI has mouse reporting on,
+    // xterm.js disables its SelectionService and only re-admits a drag through
+    // SelectionService.shouldForceSelection, which is `event.shiftKey`
+    // everywhere except macOS — there it is `altKey && macOptionClickForcesSelection`,
+    // and that option defaults to false. Without this line a Mac user has no
+    // way to select terminal text at all, and the copy toast below never
+    // appears for them.
+    macOptionClickForcesSelection: true,
   });
   const fitAddon = new FitAddon();
   term.loadAddon(fitAddon);
@@ -398,6 +411,125 @@ export function initBoidTerminal(rootEl, { jobId, wsUrl }) {
       }
     }, { passive: true });
   })();
+
+  // --- copy toast ---
+  //
+  // Why a toast instead of a plain Ctrl+C: a TUI (claude code, vim, ...) turns
+  // on mouse reporting, and xterm.js reacts by disabling its own
+  // SelectionService and forwarding mouse events to the application. Shift
+  // (Option on macOS, with macOptionClickForcesSelection) still forces a
+  // selection through SelectionService.shouldForceSelection — but only for the
+  // mousedown. The mouseup that ends the drag is still reported to the
+  // application, and xterm.js sends mouse reports as *user input*:
+  //
+  //   triggerMouseEvent(e) { ... this._coreService.triggerDataEvent(report, true) }
+  //
+  // while SelectionService drops the selection on any user input:
+  //
+  //   this._coreService.onUserInput(() => { this.hasSelection && this.clearSelection() })
+  //
+  // So the selection dies the instant the user lets go of the mouse: the
+  // highlight vanishes and term.getSelection() returns "". Two consequences
+  // shape everything below. First, the text has to be captured *while the
+  // selection still exists* — onSelectionChange fires repeatedly during the
+  // drag, so the last non-empty value it reports is the finished selection.
+  // Reading it lazily at copy time is too late. Second, Ctrl+C is deliberately
+  // left alone as SIGINT: with the highlight already gone the user would be
+  // copying something invisible, and a Ctrl+C meant to interrupt a runaway
+  // process must never silently turn into a copy.
+  //
+  // The click is also load-bearing, not just UI garnish: it is the user
+  // gesture navigator.clipboard.writeText demands on Safari/iOS, where a write
+  // from a stray async callback is rejected outright.
+  const COPY_TOAST_TIMEOUT_MS = 8000;
+  const COPY_PREVIEW_MAX = 48;
+  let pendingCopy = null;
+  let copyToastTimer = null;
+
+  function hideCopyToast() {
+    if (copyToastTimer) { clearTimeout(copyToastTimer); copyToastTimer = null; }
+    pendingCopy = null;
+    copyToast.hidden = true;
+    copyToast.classList.remove('boid-terminal-copy-toast-done');
+  }
+
+  function showCopyToast(text) {
+    if (copyToastTimer) clearTimeout(copyToastTimer);
+    pendingCopy = text;
+    copyLabel.textContent = 'コピー';
+    // Collapse newlines so a multi-line selection stays a one-line preview.
+    const flat = text.replace(/\s+/g, ' ').trim();
+    copyPreview.textContent = flat.length > COPY_PREVIEW_MAX
+      ? flat.slice(0, COPY_PREVIEW_MAX) + '…'
+      : flat;
+    copyToast.classList.remove('boid-terminal-copy-toast-done');
+    copyToast.hidden = false;
+    copyToastTimer = setTimeout(hideCopyToast, COPY_TOAST_TIMEOUT_MS);
+  }
+
+  // execCommand('copy') is deprecated but irreplaceable here: navigator.clipboard
+  // does not exist outside a secure context, so a plain-HTTP LAN origin
+  // (http://192.168.x.x:8080, neither TLS nor localhost) has no async clipboard
+  // API to fall back to.
+  function copyViaExecCommand(text) {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.setAttribute('readonly', '');
+    ta.style.position = 'fixed';
+    ta.style.top = '0';
+    ta.style.left = '0';
+    ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.select();
+    let ok = false;
+    try { ok = document.execCommand('copy'); } catch (_) { ok = false; }
+    document.body.removeChild(ta);
+    return ok;
+  }
+
+  function copyText(text) {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      return navigator.clipboard.writeText(text).then(
+        function () { return true; },
+        function () { return copyViaExecCommand(text); }
+      );
+    }
+    return Promise.resolve(copyViaExecCommand(text));
+  }
+
+  function finishCopy(ok) {
+    if (copyToastTimer) clearTimeout(copyToastTimer);
+    copyLabel.textContent = ok ? 'コピーしました' : 'コピーできませんでした';
+    copyPreview.textContent = '';
+    copyToast.classList.add('boid-terminal-copy-toast-done');
+    copyToastTimer = setTimeout(hideCopyToast, 1500);
+    term.focus();
+  }
+
+  // The selection is gone by the time any click lands (see above), so capture
+  // every non-empty value onSelectionChange reports during the drag.
+  term.onSelectionChange(function () {
+    const text = term.getSelection();
+    if (!text || !text.trim()) return;
+    showCopyToast(text);
+  });
+
+  // Clicking a button steals focus from xterm's hidden textarea, which would
+  // leave the terminal unable to receive keystrokes. Suppressing mousedown
+  // keeps focus where it is; finishCopy() re-focuses as a belt-and-braces
+  // measure for the touch path, where no mousedown is involved.
+  copyToast.addEventListener('mousedown', function (e) { e.preventDefault(); });
+
+  copyBtn.addEventListener('click', function () {
+    if (!pendingCopy) return;
+    const text = pendingCopy;
+    copyText(text).then(finishCopy);
+  });
+
+  copyDismiss.addEventListener('click', function () {
+    hideCopyToast();
+    term.focus();
+  });
 
   // --- reconnect button ---
   reconnectBtn.addEventListener('click', function () {

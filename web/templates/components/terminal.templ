@@ -23,6 +23,22 @@ templ Terminal(jobId string, wsPath string) {
 					<button type="button" class="btn btn-primary boid-terminal-reconnect">再接続</button>
 				</div>
 			</div>
+			// Copy toast. Shown when the user selects terminal text; clicking it puts
+			// that text on the clipboard. This is the only copy path available while a
+			// TUI has mouse reporting enabled — xterm.js wipes the selection when the
+			// mouseup is forwarded to the application, so by the time the user could
+			// reach for Ctrl+C the highlight (and term.getSelection()) is already gone.
+			// The click also supplies the user gesture navigator.clipboard.writeText
+			// requires on Safari/iOS. Positioned absolutely inside the xterm wrap so
+			// showing it never changes the terminal's row count (a reflow would trigger
+			// scheduleFit and, on a column change, term.reset()).
+			<div class="boid-terminal-copy-toast" hidden>
+				<button type="button" class="boid-terminal-copy-btn">
+					<span class="boid-terminal-copy-label">コピー</span>
+					<span class="boid-terminal-copy-preview"></span>
+				</button>
+				<button type="button" class="boid-terminal-copy-dismiss" aria-label="閉じる">×</button>
+			</div>
 		</div>
 		<div class="boid-terminal-keybar">
 			<button type="button" class="boid-terminal-keybar-btn" data-key="esc">Esc</button>

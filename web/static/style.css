@@ -1964,6 +1964,79 @@ details[open] > summary {
   margin: 0;
 }
 
+/* ---- Copy toast ---- */
+/* Absolutely positioned inside .boid-terminal-xterm-wrap: showing it must not
+   change the terminal's row count, or the ResizeObserver would fire a fit and
+   a PTY resize every time the user selects text. Sits at the bottom, closest
+   to the thumb on mobile, and below the disconnect overlay's z-index so a
+   dead connection is never obscured by it. */
+.boid-terminal-copy-toast {
+  position: absolute;
+  left: var(--space-2);
+  right: var(--space-2);
+  bottom: var(--space-2);
+  z-index: 80;
+  display: flex;
+  align-items: stretch;
+  gap: 1px;
+  background: #2a2a2a;
+  border: 1px solid #3a3a3a;
+  border-radius: var(--radius-1);
+  overflow: hidden;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.5);
+}
+.boid-terminal-copy-toast[hidden] { display: none; }
+
+.boid-terminal-copy-btn {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: var(--tap-target);
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 0 var(--space-2);
+  background: #2a2a2a;
+  color: #e6e6e6;
+  border: 0;
+  font-size: 0.8rem;
+  text-align: left;
+  cursor: pointer;
+}
+.boid-terminal-copy-btn:active { background: #444; }
+
+.boid-terminal-copy-label {
+  flex-shrink: 0;
+  font-weight: 600;
+  color: #6db3f2;
+}
+
+/* The preview is the part that must give way when the terminal is narrow. */
+.boid-terminal-copy-preview {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: #aaa;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 0.75rem;
+}
+
+.boid-terminal-copy-toast-done .boid-terminal-copy-label { color: #6ac46a; }
+
+.boid-terminal-copy-dismiss {
+  flex-shrink: 0;
+  min-width: var(--tap-target);
+  min-height: var(--tap-target);
+  background: #222;
+  color: #aaa;
+  border: 0;
+  font-size: 1rem;
+  line-height: 1;
+  cursor: pointer;
+}
+.boid-terminal-copy-dismiss:active { background: #444; }
+
 /* ========================================
    Desktop overrides for terminal
    ======================================== */
@@ -1973,6 +2046,12 @@ details[open] > summary {
     min-height: 36px;
     font-size: 0.75rem;
   }
+
+  .boid-terminal-copy-btn,
+  .boid-terminal-copy-dismiss {
+    min-height: 32px;
+  }
+  .boid-terminal-copy-dismiss { min-width: 32px; }
 }
 
 /* --- Project Commands Page --- */

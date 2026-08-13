@@ -81,3 +81,95 @@ func TestTerminalResizeHasNoFixedFloor(t *testing.T) {
 			".site-main's overflow:hidden clips the special keybar. Clamp at 0 only")
 	}
 }
+
+// TestTerminalStashesSelectionOnChange guards the only mechanism that makes
+// text selection copyable while a TUI (claude code, vim, ...) has mouse
+// reporting enabled.
+//
+// xterm.js 5.3 wires SelectionService to drop the selection on any user input:
+//
+//	this._coreService.onUserInput(() => { this.hasSelection && this.clearSelection() })
+//
+// and CoreMouseService reports mouse events through the very same channel:
+//
+//	triggerMouseEvent(e) { ... this._coreService.triggerDataEvent(report, /* wasUserInput */ true) }
+//
+// So the mouseup that ends a shift+drag is forwarded to the application as a
+// mouse report, which fires onUserInput, which wipes the selection the user
+// just made. By the time any copy action runs, term.getSelection() is empty.
+//
+// The workaround is to stash the text from term.onSelectionChange while it is
+// still non-empty (it fires repeatedly during the drag), so the copy toast has
+// something to hand to the clipboard afterwards. Reading the selection lazily
+// at copy time cannot work.
+func TestTerminalStashesSelectionOnChange(t *testing.T) {
+	src, err := os.ReadFile("static/boid-terminal.js")
+	if err != nil {
+		t.Fatalf("read boid-terminal.js: %v", err)
+	}
+	if !strings.Contains(string(src), "onSelectionChange") {
+		t.Error("boid-terminal.js must stash the selection via term.onSelectionChange — " +
+			"xterm.js clears the selection on the mouseup mouse report (onUserInput), " +
+			"so reading term.getSelection() at copy time returns empty")
+	}
+}
+
+// TestTerminalCopyHasExecCommandFallback guards clipboard access over plain
+// HTTP. navigator.clipboard is undefined outside a secure context, so a LAN
+// origin like http://192.168.1.5:8080 (no TLS, not localhost) has no async
+// clipboard API at all. The document.execCommand('copy') path is the only
+// thing that keeps the copy toast working there.
+func TestTerminalCopyHasExecCommandFallback(t *testing.T) {
+	src, err := os.ReadFile("static/boid-terminal.js")
+	if err != nil {
+		t.Fatalf("read boid-terminal.js: %v", err)
+	}
+	if !strings.Contains(string(src), "execCommand") {
+		t.Error("boid-terminal.js must fall back to document.execCommand('copy') — " +
+			"navigator.clipboard is undefined on a non-secure origin (plain-HTTP LAN access)")
+	}
+}
+
+// TestTerminalDoesNotHijackCtrlC pins a deliberate design decision: Ctrl+C in
+// the terminal must keep meaning SIGINT.
+//
+// An earlier design copied the stashed selection on Ctrl+C. It was rejected
+// because the selection highlight is already gone by then (see
+// TestTerminalStashesSelectionOnChange), so the user would be pressing copy on
+// something invisible — and worse, a Ctrl+C meant to interrupt a runaway
+// process would silently copy instead. The copy toast is the only copy
+// affordance; it is an explicit click, which doubles as the user gesture that
+// navigator.clipboard.writeText requires on Safari/iOS.
+func TestTerminalDoesNotHijackCtrlC(t *testing.T) {
+	src, err := os.ReadFile("static/boid-terminal.js")
+	if err != nil {
+		t.Fatalf("read boid-terminal.js: %v", err)
+	}
+	if strings.Contains(string(src), "attachCustomKeyEventHandler") {
+		t.Error("boid-terminal.js must not intercept keys via attachCustomKeyEventHandler — " +
+			"Ctrl+C must stay SIGINT; copying goes through the copy toast")
+	}
+}
+
+// TestTerminalEnablesMacOptionForceSelection guards the macOS half of the
+// selection escape hatch.
+//
+// With mouse reporting on, xterm.js only lets a drag through to its disabled
+// SelectionService via shouldForceSelection:
+//
+//	isMac ? e.altKey && rawOptions.macOptionClickForcesSelection : e.shiftKey
+//
+// macOptionClickForcesSelection defaults to false, so a Mac user cannot select
+// terminal text at all and the copy toast never appears for them. Shift+drag
+// covers Linux/Windows for free; macOS needs this option set explicitly.
+func TestTerminalEnablesMacOptionForceSelection(t *testing.T) {
+	src, err := os.ReadFile("static/boid-terminal.js")
+	if err != nil {
+		t.Fatalf("read boid-terminal.js: %v", err)
+	}
+	if !strings.Contains(string(src), "macOptionClickForcesSelection: true") {
+		t.Error("boid-terminal.js must set macOptionClickForcesSelection: true — " +
+			"it defaults to false, leaving macOS users with no way to force a " +
+			"selection while the TUI has mouse reporting enabled")
+	}
+}
