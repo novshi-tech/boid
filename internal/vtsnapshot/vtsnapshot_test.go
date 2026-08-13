@@ -138,6 +138,26 @@ func TestRender_RestoresCursorPosition(t *testing.T) {
 	}
 }
 
+// TestRender_RestoresCursorPositionWithScrollback pins the assumption
+// TestRender_RestoresCursorPosition alone leaves untested: cursor.Y is a
+// SCREEN-relative row (0..rows-1), not offset by however many scrollback
+// lines were prepended ahead of it. A session that scrolled must still land
+// the CUP within the trailing `rows`-line screen block, not somewhere inside
+// the scrollback block above it.
+func TestRender_RestoresCursorPositionWithScrollback(t *testing.T) {
+	var raw strings.Builder
+	for i := 0; i < 60; i++ {
+		raw.WriteString("filler\r\n")
+	}
+	raw.WriteString("END") // no trailing CRLF: cursor stays right after it
+
+	got := string(Render([]byte(raw.String()), 80, 24))
+	want := "\x1b[24;4H" // last screen row (24, 1-indexed) x column len("END")+1
+	if !strings.HasSuffix(got, want) {
+		t.Fatalf("rendered snapshot does not end with cursor restore %q: %q", want, got)
+	}
+}
+
 func firstLine(b []byte) string {
 	s := string(b)
 	if i := strings.IndexAny(s, "\r\n"); i >= 0 {

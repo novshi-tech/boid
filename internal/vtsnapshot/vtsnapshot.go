@@ -132,11 +132,19 @@ func Render(raw []byte, cols, rows int) []byte {
 	// staircases the dump, so anchor every row at column 0.
 	dump := strings.ReplaceAll(b.String(), "\n", "\r\n")
 
-	// The scrollback lines and the screen dump together fill exactly the
-	// client's rows x cols viewport (Render is called with the client's own
-	// geometry), so an absolute Cursor Position report lands the cursor
-	// wherever the recorded session actually left it, not at the end of the
-	// last row that term.write() happened to paint.
+	// This CUP is correct only when the connecting client's own viewport has
+	// exactly `rows` rows: cursor.Y is a row index into the screen this
+	// function rendered, and the client counts rows from the top of what it
+	// painted (scrollback lines then screen), so the two only line up at
+	// matching row counts. cols/rows is the geometry of the LAST client that
+	// resized this session (or the 80x24 fallback above), not necessarily the
+	// one now attaching — the general cross-width/cross-height mismatch this
+	// package cannot fully resolve, called out as an open axis in
+	// docs/plans/web-terminal-vt-emulator.md. A wrong client geometry means a
+	// wrong cursor row/col, same as it already meant reflowed-wrong screen
+	// content before this change; landing on the right screen (already true)
+	// is strictly better than the unconditional end-of-dump this replaces
+	// even when the geometry guess is off.
 	dump += fmt.Sprintf("\x1b[%d;%dH", cursor.Y+1, cursor.X+1)
 
 	return []byte(dump)
