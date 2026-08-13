@@ -1,9 +1,9 @@
 # プロジェクト横断の課題トリアージ (メタプロジェクト + daemon inbox)
 
-ステータス: **draft (第 11 版 2026-08-13 — khi 統合の方向を「daemon が state の唯一の正」
-(決定 14) で確定し、 論点 5 を決着。 「PR-5 設計メモ」節を新設。 初版 2026-07-30)**。
-Phase 0 dogfood 稼働中・ Phase 1 PR-1/2/3/4 merge 済み・PR-5 (読み戻し口 + done 自動落ち)
-未着手。
+ステータス: **draft (第 12 版 2026-08-13 — done 自動落ちの前提を canonical source 制約
+(決定 16) で確定し、 done からの再浮上経路を PR-5 スコープに追加。 初版 2026-07-30)**。
+Phase 0 dogfood 稼働中・ Phase 1 PR-1/2/3/4 merge 済み・PR-5 (読み戻し口 + done 自動落ち +
+`reopen_triaged`) 未着手。
 発端: nose の構想メモ (音声書き起こし、 2026-07-30) と同日の設計ディスカッション。
 関連: [workspace-default-project.md](workspace-default-project.md) (workspace デフォルト project 定義)、
 [volume-only-daemon.md](volume-only-daemon.md) §論点a/b (project の git URL 化・ bare repo・
@@ -380,6 +380,83 @@ daemon と共有する契約) はむしろ元の意図に近づく — **decisio
 戻ってくると、 queue への信頼 (成功の定義) がその分だけ落ちる。 dropped だけは引き続き nose の
 判断でしか入らない (終わった件と捨てた件の区別が計測に必要、 状態機械節)。
 
+この rule が全 triage task で成立することは、 決定 16 (canonical source 制約) が前提として
+保証する。 制約が無いと `source_closed` を報告できない source (mail / slack / head) の task が
+永久に working に滞留する — 第 12 版でその穴を塞いだ経緯は決定 16 を参照。
+
+### 決定 16 (第 12 版): triaged 以降は canonical source を必ず持つ
+
+**問題**: 決定 15 の `source_closed` を報告できる source は限られる。 jira (statusCategory) と
+bitbucket PR (merged/declined) には終了状態があるが、 **mail・ slack・ head-capture・ agent には
+無い** — メールの既読化は「処理した」であって「案件が終わった」ではないし、 Slack スレッドにも
+発話にも終了の概念が無い。 このまま決定 15 を実装すると、 Jira/PR 由来でない起票が全部 working
+に溜まり続ける。 queue には出ないので目立たないが、 (1) done と dropped の区別が死んで成功の
+定義が計測できない、 (2) 30 日 GC が done/aborted 対象なので永久にゴミが残る、 (3) 自動の範囲を
+広げるという目標に正面から反する。
+
+**決定**: 状態を 3 値化したり猶予期間を設けたりするのではなく、 **「起票するなら
+`source_closed` を報告できる source を必ず作る」を契約にする** (nose 案、 2026-08-13)。 khi なら
+必ず Jira issue を立てる。 他 workspace でも GitHub issue 等、 相当するものは大抵ある。 これに
+より決定 15 の rule は**一切変更せずに全 triage task で成立する**。
+
+- **不変条件の境界は captured → triaged** (起票の確定)。 captured (head-capture 直後、 まだ形に
+  なっていない) は対象外。 `kind: theme` は lifecycle に乗らない常駐なので最初から対象外。
+- **daemon 側の判定はチャネル知識ゼロで済む**: 「canonical source を持つか」は
+  **`observed.source_closed` キーが存在するか**で判定できる。 どの source type が終了概念を
+  持つかという知識は workspace 側に留まったまま (逆輸入 3 の境界原則を守る)。
+- **enforcement は daemon の reject ではなく watchdog** (queue 節 7)。 起票時に弾くと、
+  ingestion が壊れたときに起票そのものが落ちる = 取りこぼし方向に壊れる。 「canonical source を
+  持たない triaged task がある」を案内として queue に出す形にすれば fail-open。
+- **`ref` は canonical source のキーにする**。 `ref` は dedup キー (論点 7) で後から変えられない
+  ため、 起票の順序を「signal 到着 → 起票判断 → **canonical source を作る** → `task create
+  --ref <issue key>`」に固定する。 mail の message-id や slack の thread_ts は claims 側の索引に
+  残るので、 同一案件の束ね (論点 3、 workspace 管轄) の能力は落ちない。
+
+受容する副作用:
+
+- ingestion に **canonical source の起票 write scope** が要る。 決定 11 で source 書き戻しの
+  write scope は既に議論済みだが、 「読んで既読にする」から「読んで issue を立てる」へ一段重く
+  なる。
+- **ノイズ判定が重くなる**。 起票 = Jira issue を立てる、 になるため、 決定 10 の「判断に迷う
+  ものは落とさず低 urgency で起票」と緊張関係に立つ。 Phase 0 の観察で運用が回らなければ論点 d
+  で再考する。
+- 一方で **案件がチームから見える**ようになるのは明確な利得。 boid の中だけで完結していた案件が
+  Jira / GitHub issue として存在するようになる (khi は顧客プロジェクトのため実運用上の価値が
+  大きい)。
+
+### 決定 17 (第 12 版): done からの再浮上経路 `reopen_triaged` を持つ
+
+canonical source があっても、 **Jira issue の再オープンやメールのフォローアップは普通に起きる**。
+決定 15 で done に落ちた triage task を triaged に戻す経路が要る。
+
+実測 (2026-08-13):
+
+- **「done を探しに行く」経路は既に成立している**。 `FindTaskByRef`
+  (`internal/orchestrator/store.go:572`) に status の絞り込みが無いため、 done / dropped の task も
+  ref で引ける。 khi がフォローアップを照合して `task create --ref <key>` を投げれば既存 task が
+  返る。 **足りないのは見つけた後に押せる action だけ**。
+- `attrs_set` / `child_added` / `child_specced` の `FromStatus` は captured/triaged/parked/ready/
+  working の明示列挙 (`machine.go`、 論点 6-3) なので、 **done の task には何も押せない**。
+- 既存の `reopen` は `done → executing` の rule を持つ (通常 task 用)。 triage task にこれを
+  押すと **executing に飛んでメタプロジェクトの task が実行されようとする** — verb を流用しては
+  ならない。
+
+したがって **`reopen_triaged` (done → triaged) を別 verb として足す**。 命名は既存の
+`wake_triaged` / `wake_ready` のパターンに合わせる。 `Manual: true` とし、 khi (Jira 再オープン
+の観測から) と nose の双方が押せる形にする。 誤検知で蘇っても **queue に出てくる方向** =
+fail-open なので許容する。
+
+この経路があることで、 決定 15 の「落としすぎ」がリスクでなくなる — 戻せるなら積極的に自動で
+落としてよい、 という向きに fail-open の向きが変わる。
+
+**残る危険: `reopen` の誤爆**。 verb を分けても、 既存の `reopen` (done → executing) の rule は
+そのまま残る。 done の triage task と done の通常 task は **status だけでは区別できない**ため、
+状態機械のレイヤでは防げない (`machine.go` は sidecar の存在を知らない)。 Web UI の
+`AvailableActions` には done の task に `reopen` ボタンが出るので、 **nose が誤って押すと
+メタプロジェクトの task が executing に飛ぶ**。 ガードは sidecar が見えるレイヤ =
+`TaskWorkflowService.ApplyAction` に置き、 「`task_triage` 行を持つ task への `reopen` は
+reject し `reopen_triaged` を案内する」形にする (実装時の必須項目。 S7 で pin する)。
+
 ---
 
 ## 信頼境界
@@ -508,6 +585,10 @@ meta/  (repo root)
    の失敗・ cron 死・ 棚卸しの放置は、 task ビューの目視でなくこれで検知する (「来ないこと」に
    人間は気づけないため)。 これにより「事象 wake が永遠に来ない parked」と someday が埋もれる
    経路は、 「棚卸しに出る (UC-5)」+「棚卸しの放置は watchdog が刺す」の 2 段で塞がる。
+8. **canonical source 欠落の検知** (第 12 版、 決定 16): `observed.source_closed` を持たない
+   triaged 以降の triage task を案内として queue に出す。 起票時に daemon で reject しないのは、
+   ingestion が壊れたときに起票そのものが落ちる (取りこぼし方向に壊れる) ため — 検知は
+   fail-open な watchdog 側に置く。
 
 ---
 
@@ -1170,6 +1251,7 @@ dispatch 済み。
 | 機械的事実の自己記録 | `child_dispatched` (Dispatch 時) / `child_closed` (`finalizeTerminal` フック) — khi からの push は `IsManualAction` で reject される (論点 9) |
 | 事象 wake | `BoidOpTaskWake` (`protocol.go:159`) |
 | queue の列挙 | brokered `boid task list --status queue_next` (`boid_executor.go:108` の validate で許可済み) |
+| **done の探索** | `FindTaskByRef` (`store.go:572`) に status 絞りが無く、 done / dropped も ref で引ける (決定 17)。 フォローアップ照合に追加実装は不要 |
 
 **足りない (PR-5 のスコープ)**:
 
@@ -1182,6 +1264,12 @@ dispatch 済み。
    ready / triaged / parked の 3 本だけ (論点 8) で、 done への道が無い。 案 A なら khi の
    `evaluate.py` が done を判定していたが、 決定 14 でそれが消えるため、 **card が永久に
    working に溜まる**。 決定 15 の rule として daemon 側に実装する。
+3. **`done → triaged` の再浮上経路が存在しない** (第 12 版、 決定 17)。 done の task には
+   `attrs_set` すら押せない (`FromStatus` の列挙外) 一方、 既存の `reopen` を流用すると
+   `done → executing` に飛んでメタプロジェクトの task が実行されてしまう。 **`reopen_triaged`
+   を別 verb として追加**する (`Manual: true`、 khi と nose の双方が押せる)。
+4. **canonical source 欠落の watchdog** (第 12 版、 決定 16): `observed.source_closed` を持たない
+   triaged 以降の triage task を案内として queue に出す。 起票時の reject はしない。
 
 ### PR-5 (boid 本体): 読み戻し口 + done 自動落ち
 
@@ -1203,18 +1291,20 @@ task + sidecar + **action 導出分**を 1 つにまとめた形:
 (triage task の見出しは workspace 境界を越えてはならない — 決定 2)。
 
 **done 自動落ち** は決定 15 の rule。 評価契機は QueueSweepLoop と `child_closed` 記録直後の
-2 点。 `observed.source_closed` が未設定の card は落ちない (source を持たない head-capture
-由来の扱いは実装時に確認 — 子が全部 closed なら落としてよいはず)。
+2 点。 `observed.source_closed` が未設定の card は落ちない — これは決定 16 (canonical source
+制約) により「起票が契約違反である」ことのサインであり、 watchdog が案内として拾う。 状態の
+3 値化や猶予期間で救う設計は**採らない** (第 12 版で明示的に却下、 決定 16 の経緯を参照)。
 
 ### khi 側の改修
 
 1. **note への改名** (用語注): `issues/` → `notes/`、 `CARD_ISSUES_DIR` 相当の env、 スキル名
    (`card-inbox` / `card-suggest` / `card-promote*`)、 docs (`card-format.md` /
    `card-events.md` / `card-dispatch.md`)。
-2. **起票を daemon 経由にする**: note を起こすときに
-   `boid task create --ref <source_ref> --initial-status triaged` を叩き、 返る task_id を
-   claims 側に記録する。 `ref` の get-or-create (論点 7、 project スコープ込み) があるため、
-   task_id を失っても冪等に再送できる。
+2. **起票を daemon 経由にする**: 順序は「signal 到着 → 起票判断 → **canonical source を作る**
+   (決定 16) → `boid task create --ref <canonical source のキー> --initial-status triaged`」。
+   返る task_id を claims 側に記録する。 `ref` の get-or-create (論点 7、 project スコープ込み)
+   があるため、 task_id を失っても冪等に再送でき、 done に落ちた task も同じ ref で引ける
+   (決定 17)。 mail の message-id / slack の thread_ts は claims 側の索引に残す。
 3. **判断系の push**: `attrs_set` / `child_added` / `child_specced` を `boid action send` で。
    `evaluate.py` の出力先が decisions から daemon の actions に変わる。
 4. **fold の退役**: `card_model.fold()` / `decisions/*.jsonl` / `bootstrap_events.py` /
@@ -1250,6 +1340,10 @@ task + sidecar + **action 導出分**を 1 つにまとめた形:
   (`AllowsProject` gate)
 - **S6: done の自動落ち** — 全子 closed かつ `observed.source_closed` で working→done。
   片方だけでは落ちないこと。 落ちた事実が action として記録されること
+- **S7: フォローアップによる再浮上** (決定 17) — done の triage task を `ref` で引けること
+  (`FindTaskByRef` に status 絞りが無いことの pin)。 `reopen_triaged` で done→triaged に戻り、
+  戻った後は `attrs_set` / `child_added` が再び押せること。 加えて **triage task に `reopen` を
+  押すと reject される**こと (決定 17 の「`reopen` 誤爆」ガードの pin)
 
 ---
 
@@ -1363,6 +1457,10 @@ exit criteria (2 週間程度): (1) nose が「見に行く」頻度が実際に
   のエラーが daemon 全域の一致件数を返すため、 sandbox から cross-workspace の project 存在が
   推測できる (実測 b)。 リークは軽微なので Phase 1 着手前には塞がない。 triage task の流量が
   実際に増えて問題が顕在化した時点で優先度を上げる。
+- **論点 j (2026-08-13 決着): done 自動落ちの前提と再浮上**。 決定 16 (canonical source 制約) と
+  決定 17 (`reopen_triaged`) で決着。 経緯: 決定 15 の `source_closed` を報告できない source
+  (mail / slack / head) の task が永久に working に滞留する穴を、 状態の 3 値化でも猶予期間でも
+  なく「起票するなら報告できる source を必ず作る」という契約で塞いだ。
 
 ---
 
@@ -1451,6 +1549,27 @@ exit criteria (2 週間程度): (1) nose が「見に行く」頻度が実際に
   まま)。
 - **Phase 0 は即開始可能**: khi は customer bitbucket の `khi-task-collector` (メタプロジェクト
   の原型) が登録済みで、 前提が揃っている。
+
+### 第 12 版 (2026-08-13、 done 自動落ちの前提を確定) での変更
+
+第 11 版が積み残した「`observed.source_closed` を持たない triage task が永久に done に落ちない」
+を決着させた (論点 j)。
+
+- **決定 16 を新設**: triaged 以降は canonical source (`source_closed` を報告できる source) を
+  必ず持つ。 `source_closed` を報告できるのは jira / bitbucket PR だけで、 mail / slack /
+  head-capture / agent には終了状態の概念が無い、 という事実がこの穴の正体。 状態の 3 値化や
+  猶予期間で救うのではなく、 **「起票するなら報告できる source を必ず作る」を契約にする**
+  (nose 案) ことで、 決定 15 の rule を一切変えずに全 triage task で成立させる。 daemon 側の
+  判定は「`observed.source_closed` キーが存在するか」だけで済み、 チャネル知識はゼロのまま
+  (逆輸入 3 の境界を守る)。 enforcement は起票時 reject ではなく watchdog (queue 節 8 を新設)。
+  `ref` は canonical source のキーにする。
+- **決定 17 を新設**: `reopen_triaged` (done → triaged) を別 verb で追加。 実測で
+  「done を**探す**経路は既に成立している」ことを確認した (`FindTaskByRef` に status 絞りが
+  無く、 done / dropped も ref で引ける) — 足りないのは見つけた後に押せる action だけだった。
+  併せて **`reopen` 誤爆の危険**を記録: done の triage task と done の通常 task は status だけ
+  では区別できず状態機械では防げないため、 ガードは sidecar が見える `ApplyAction` に置く。
+- **PR-5 のスコープを 2 項目追加** (`reopen_triaged` + `reopen` ガード、 canonical source
+  watchdog)。 検証シナリオに **S7 (フォローアップによる再浮上)** を追加。
 
 ### 第 11 版 (2026-08-13、 khi 統合の方向決定) での変更
 
