@@ -36,6 +36,7 @@ current_allowed=(
   skills
   timeline
   version
+  vtsnapshot
   yamlutil
 )
 
@@ -69,6 +70,7 @@ target_allowed=(
   skills
   timeline
   version
+  vtsnapshot
   yamlutil
 )
 
