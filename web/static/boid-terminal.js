@@ -428,6 +428,26 @@ export function initBoidTerminal(rootEl, { jobId, wsUrl }) {
   // xterm.js の .xterm-viewport はネイティブ scroll を使うが、タッチ慣性の
   // 高頻度 pixel delta と相性が悪くスクロールが詰まる。
   // Touch Events で delta を自前計算し term.scrollLines() に変換する。
+  //
+  // touchmove で stopPropagation() する理由: xterm.js 自身も touchstart/
+  // touchmove を (このハンドラより上位の) this.element に登録していて
+  // (vendored xterm.js の bindMouse() 内)、coreMouseService.
+  // areMouseEventsActive が false のときだけ viewport.handleTouchStart/
+  // handleTouchMove という「xterm 自前のタッチスクロール」を動かす。
+  // Claude Code のような TUI は DECSET 1000/1002/1003 (マウストラッキング)
+  // を有効化するので通常は areMouseEventsActive=true で xterm 側は素通りして
+  // くれるが、term.reset() でモード状態がリセットされる瞬間 (attach 直後・
+  // 幅変更 resize 直後。上の mouse-tracking mode dedup のコメント参照) など
+  // active=false の窓ができると、xterm 自前のタッチスクロールがこのハンドラ
+  // と同じジェスチャーを取り合い、互いの scrollLines 呼び出しが競合して
+  // 「スワイプしてもスクロールが進まない/詰まる」体感になる。touchmove だけ
+  // stopPropagation して this.element まで届かないようにすれば、
+  // areMouseEventsActive の状態に関係なくこのハンドラを唯一の実装として
+  // 確定させられる (xterm 側の touchstart は素通りさせても、対になる
+  // touchmove が来ない以上 handleTouchMove は一度も呼ばれないので無害)。
+  // touchstart/touchend は意図的に stopPropagation しない: xtermWrap の
+  // tap-to-focus (下の attachTapFocus) が同じ 2 イベントを xtermWrap で拾う
+  // 必要があり、viewport は xtermWrap の子孫なのでここで止めると届かなくなる。
   (function attachTouchScroll() {
     const viewport = xtermRoot.querySelector('.xterm-viewport');
     if (!viewport) return;
@@ -456,6 +476,11 @@ export function initBoidTerminal(rootEl, { jobId, wsUrl }) {
       lastT  = e.timeStamp;
       velocityY = 0;
       remainder = 0;
+      // touchstart 自体は stopPropagation しない: xtermWrap の tap-to-focus
+      // (下の attachTapFocus) が touchstart/touchend を xtermWrap で拾う必要が
+      // あり、viewport は xtermWrap の子孫なのでここで止めると届かなくなる。
+      // xterm 自前のタッチスクロールを無力化するのに必要なのは touchmove 側
+      // (実際に scrollLines を呼ぶのはそちら) だけで十分。
     }, { passive: true });
 
     viewport.addEventListener('touchmove', function (e) {
@@ -474,9 +499,11 @@ export function initBoidTerminal(rootEl, { jobId, wsUrl }) {
       lastY = y;
       lastT = e.timeStamp;
       e.preventDefault();
+      e.stopPropagation();
     }, { passive: false });
 
     viewport.addEventListener('touchend', function () {
+      // touchend も stopPropagation しない (理由は touchstart 側のコメント参照)。
       // 慣性減衰スクロール: velocityY (px/ms) を行数に換算しながら減衰させる
       // remainder は touchmove からの端数を引き継ぐ
       const ch = cellHeight();
