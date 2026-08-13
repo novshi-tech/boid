@@ -34,6 +34,36 @@ type TerminalSize struct {
 	Cols int
 }
 
+// RuntimeSnapshot is everything a session has emitted so far, handed to a
+// caller attaching mid-session, together with what that caller needs in
+// order to decide HOW to hand it on.
+//
+// Raw alone was the whole return value until the Web UI's "the entire
+// session scrolls past on connect" report: replaying an interactive TUI's
+// full recording is both enormous (8.7 MB measured on one production job)
+// and, at a width other than the one it was recorded at, incorrect. TTY and
+// Geometry let ingress resolve Raw to the screen it painted instead — see
+// internal/vtsnapshot.Render, and WSAttachHandler for the one caller that
+// does it.
+//
+// A backend that cannot report a geometry leaves Geometry zero, which
+// vtsnapshot.Render reads as "use the default 80x24".
+type RuntimeSnapshot struct {
+	// Raw is the recorded byte stream, verbatim. It stays the canonical
+	// content — the rendered form is derived from it, never stored — and
+	// it is what the reconnect splice (?replay_offset) indexes into, so
+	// its length is the session's transcript byte position.
+	Raw []byte
+	// TTY reports whether Raw came from a PTY, i.e. whether it is a
+	// terminal screen recording (renderable) rather than a plain log
+	// stream (which must be passed through verbatim — see
+	// JobLogSSEHandler, the ingress for exactly those).
+	TTY bool
+	// Geometry is the session's current terminal size, the width Raw's
+	// most recent frames were painted at. Meaningless when TTY is false.
+	Geometry TerminalSize
+}
+
 // RuntimeExit reports how a sandboxed session's underlying process
 // finished. Canonical definition — dispatcher.RuntimeExit is a type alias
 // to this (see internal/dispatcher/runtime.go).
@@ -251,7 +281,7 @@ type SandboxSession interface {
 	// back into "done, exit cleanly" (ws_attach.go/job_log_sse.go's
 	// existing behavior, unchanged) and "not done, surface an error"
 	// (their new behavior).
-	Subscribe() (snapshot []byte, ch <-chan []byte, cancel func(), ok bool, finished bool)
+	Subscribe() (snapshot RuntimeSnapshot, ch <-chan []byte, cancel func(), ok bool, finished bool)
 	// WriteInput forwards raw bytes to the session's input (PTY master or
 	// stdin pipe, depending on session type).
 	WriteInput(data []byte) error

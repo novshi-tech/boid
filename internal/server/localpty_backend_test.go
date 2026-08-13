@@ -145,7 +145,7 @@ var _ backend.SandboxSession = (*localPTYSession)(nil)
 
 func (s *localPTYSession) ID() string { return s.id }
 
-func (s *localPTYSession) Subscribe() (snapshot []byte, ch <-chan []byte, cancel func(), ok bool, finished bool) {
+func (s *localPTYSession) Subscribe() (snapshot backend.RuntimeSnapshot, ch <-chan []byte, cancel func(), ok bool, finished bool) {
 	s.mu.Lock()
 	raw := append([]byte(nil), s.transcript.Bytes()...)
 	running := s.running
@@ -159,10 +159,16 @@ func (s *localPTYSession) Subscribe() (snapshot []byte, ch <-chan []byte, cancel
 	}
 	s.mu.Unlock()
 
+	// TTY is unconditionally true: this fake's transcript comes from a real
+	// PTY master (StartPTY above), so it is a screen recording exactly like
+	// the container backend's interactive sessions. Geometry is left zero —
+	// the fake tracks no size of its own, and zero is what
+	// backend.RuntimeSnapshot documents as "renderer, use your default".
+	snap := backend.RuntimeSnapshot{Raw: raw, TTY: true}
 	if !running {
-		return raw, nil, func() {}, false, true
+		return snap, nil, func() {}, false, true
 	}
-	return raw, subCh, func() { s.unsubscribe(subID) }, true, false
+	return snap, subCh, func() { s.unsubscribe(subID) }, true, false
 }
 
 func (s *localPTYSession) unsubscribe(subID int) {

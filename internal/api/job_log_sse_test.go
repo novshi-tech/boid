@@ -12,6 +12,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/novshi-tech/boid/internal/api/auth"
+	"github.com/novshi-tech/boid/internal/dispatcher"
 )
 
 type fakeRuntimeSubscriber struct {
@@ -30,14 +31,18 @@ type fakeRuntimeSubscriber struct {
 	finished bool
 }
 
-func (f *fakeRuntimeSubscriber) Subscribe(_ string) ([]byte, <-chan []byte, func(), bool, bool) {
+func (f *fakeRuntimeSubscriber) Subscribe(_ string) (dispatcher.RuntimeSnapshot, <-chan []byte, func(), bool, bool) {
 	cancel := func() {
 		select {
 		case f.cancelCalled <- struct{}{}:
 		default:
 		}
 	}
-	return f.snapshot, f.ch, cancel, f.ok, f.finished
+	// TTY is deliberately left false: this handler streams non-interactive
+	// job logs, which must never be resolved to a screen (see
+	// resolveReplay's doc comment in ws_attach.go). A true here would make
+	// these tests stop covering the shape the handler actually serves.
+	return dispatcher.RuntimeSnapshot{Raw: f.snapshot}, f.ch, cancel, f.ok, f.finished
 }
 
 func newSSETestServer(sub *fakeRuntimeSubscriber) *httptest.Server {

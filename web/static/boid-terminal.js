@@ -55,7 +55,7 @@ export function initBoidTerminal(rootEl, { jobId, wsUrl }) {
   const term = new window.Terminal({
     fontFamily: "'IBM Plex Mono', 'Menlo', 'Monaco', 'Courier New', monospace",
     fontSize: 14,
-    // Keep aligned with maxSnapshotScrollback in runtime_local_linux.go: the
+    // Keep aligned with MaxScrollbackLines in internal/vtsnapshot: a rendered
     // connect snapshot prepends up to that many scrolled-off history lines, so
     // xterm must retain at least as many for the user to scroll back to them.
     scrollback: 2000,
@@ -186,12 +186,20 @@ export function initBoidTerminal(rootEl, { jobId, wsUrl }) {
       let msg;
       try { msg = JSON.parse(e.data); } catch (_) { return; }
       if (msg.type === 'attach') {
-        // The server states where the replay that follows starts. offset 0
-        // means it is repainting the whole transcript (a first connect, or a
-        // daemon that rebuilt a shorter one), so wipe the screen first;
-        // anything else splices onto what is already on screen.
+        // The server states where the replay that follows starts, in RAW
+        // transcript bytes — including when what it actually sends is a
+        // rendered screen, so this counter stays comparable with the live
+        // deltas that follow and with the ?replay_offset we hand back.
+        //
+        // Two shapes need the screen wiped first, and they are not the same
+        // condition: offset 0 means a full raw repaint from the top (a first
+        // connect to a non-PTY job, or a daemon that rebuilt a shorter
+        // transcript), while rendered means a resolved screen dump, which
+        // must land on a clear terminal or it would be drawn under whatever
+        // is already there. Anything else is a reconnect splice onto a screen
+        // we still have.
         const offset = msg.offset || 0;
-        if (offset === 0) term.reset();
+        if (offset === 0 || msg.rendered) term.reset();
         replayOffset = offset;
       } else if (msg.type === 'output') {
         const bytes = Uint8Array.from(atob(msg.data), c => c.charCodeAt(0));

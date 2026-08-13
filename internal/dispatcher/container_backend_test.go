@@ -908,11 +908,11 @@ func TestContainerBackend_Adopt_ReattachAfterMidStreamDropDoesNotDuplicateTransc
 
 	snapshot, _, cancel, _, _ := sess.Subscribe()
 	cancel()
-	if n := bytes.Count(snapshot, []byte("EARLY-OUTPUT")); n != 1 {
-		t.Errorf("transcript contains %q %d times, want exactly 1 (must not duplicate on reattach), snapshot = %q", "EARLY-OUTPUT", n, snapshot)
+	if n := bytes.Count(snapshot.Raw, []byte("EARLY-OUTPUT")); n != 1 {
+		t.Errorf("transcript contains %q %d times, want exactly 1 (must not duplicate on reattach), snapshot = %q", "EARLY-OUTPUT", n, snapshot.Raw)
 	}
-	if !bytes.Contains(snapshot, []byte("AFTER-RECOVERY")) {
-		t.Errorf("transcript = %q, want it to also contain the post-recovery output", snapshot)
+	if !bytes.Contains(snapshot.Raw, []byte("AFTER-RECOVERY")) {
+		t.Errorf("transcript = %q, want it to also contain the post-recovery output", snapshot.Raw)
 	}
 }
 
@@ -1242,8 +1242,8 @@ func TestContainerSession_Subscribe_MultipleSubscribersReceiveSameStream(t *test
 	// snapshot.
 	snapshot, _, cancel3, _, _ := sess.Subscribe()
 	cancel3()
-	if !strings.Contains(string(snapshot), want) {
-		t.Errorf("late-subscribe snapshot = %q, want it to contain %q", snapshot, want)
+	if !strings.Contains(string(snapshot.Raw), want) {
+		t.Errorf("late-subscribe snapshot = %q, want it to contain %q", snapshot.Raw, want)
 	}
 }
 
@@ -1269,11 +1269,11 @@ func waitForTranscriptContaining(t *testing.T, sess backend.SandboxSession, want
 	for {
 		snapshot, _, cancel, _, _ := sess.Subscribe()
 		cancel()
-		if bytes.Contains(snapshot, []byte(want)) {
+		if bytes.Contains(snapshot.Raw, []byte(want)) {
 			return
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("timed out waiting for transcript to contain %q; last snapshot = %q", want, snapshot)
+			t.Fatalf("timed out waiting for transcript to contain %q; last snapshot = %q", want, snapshot.Raw)
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
@@ -1544,8 +1544,8 @@ func TestContainerSession_WaitLoop_DrainsAttachBeforeClosingConn(t *testing.T) {
 
 	snapshot, _, cancel, subOK, finished := sess.Subscribe()
 	cancel()
-	if !bytes.Contains(snapshot, finalBurst) {
-		t.Errorf("transcript = %q, want it to contain the final burst %q (drained before close)", snapshot, finalBurst)
+	if !bytes.Contains(snapshot.Raw, finalBurst) {
+		t.Errorf("transcript = %q, want it to contain the final burst %q (drained before close)", snapshot.Raw, finalBurst)
 	}
 	// Regression pin alongside B1/B2's own new tests (Opus review of PR
 	// #864): a genuinely, cleanly exited container must still report
@@ -2187,5 +2187,95 @@ func TestContainerBackend_Launch_BoundsTheTeardownOnAFailedLaunch(t *testing.T) 
 		}
 	default:
 		t.Fatal("ContainerRemove was never called: the half-built container is leaked")
+	}
+}
+
+// --- Subscribe's snapshot metadata ----------------------------------------
+//
+// TTY and Geometry exist so WS attach ingress can resolve an interactive
+// session's transcript to the screen it painted instead of replaying the whole
+// recording (internal/vtsnapshot, internal/api's resolveReplay). Both are
+// pinned here because both are silent when wrong: a dropped TTY flag degrades
+// to the old replay-everything behavior with nothing failing, and a stale
+// geometry renders the right transcript at the wrong width, which produces a
+// plausible-looking but corrupted screen rather than an error.
+
+func TestContainerSession_Subscribe_ReportsTTY(t *testing.T) {
+	for _, tty := range []bool{true, false} {
+		api := &fakeDockerAPI{}
+		be := NewContainerBackend(api, ContainerBackendOptions{})
+		sess := mustLaunch(t, be,
+			sandbox.Spec{ID: "job-tty", Argv: []string{"true"}, TTY: tty},
+			backend.LaunchOptions{JobID: "job-tty"})
+
+		snapshot, _, cancel, _, _ := sess.Subscribe()
+		cancel()
+		if snapshot.TTY != tty {
+			t.Errorf("spec TTY %v: snapshot.TTY = %v, want %v", tty, snapshot.TTY, tty)
+		}
+	}
+}
+
+func TestContainerSession_Subscribe_ReportsLastResizeGeometry(t *testing.T) {
+	api := &fakeDockerAPI{}
+	be := NewContainerBackend(api, ContainerBackendOptions{})
+	sess := mustLaunch(t, be,
+		sandbox.Spec{ID: "job-geom", Argv: []string{"true"}, TTY: true},
+		backend.LaunchOptions{JobID: "job-geom"})
+
+	// Before any resize the geometry is zero, which backend.RuntimeSnapshot
+	// documents as "renderer, use your default" — NOT a width to render at.
+	snapshot, _, cancel, _, _ := sess.Subscribe()
+	cancel()
+	if snapshot.Geometry != (backend.TerminalSize{}) {
+		t.Errorf("geometry before any resize = %+v, want the zero value", snapshot.Geometry)
+	}
+
+	want := backend.TerminalSize{Rows: 60, Cols: 100}
+	if err := sess.Resize(want); err != nil {
+		t.Fatalf("Resize: %v", err)
+	}
+	snapshot, _, cancel, _, _ = sess.Subscribe()
+	cancel()
+	if snapshot.Geometry != want {
+		t.Errorf("geometry after resize = %+v, want %+v", snapshot.Geometry, want)
+	}
+
+	// A rejected (non-positive) resize is a no-op on the engine, so it must
+	// not overwrite the good geometry either.
+	if err := sess.Resize(backend.TerminalSize{Rows: 0, Cols: 0}); err != nil {
+		t.Fatalf("Resize(zero): %v", err)
+	}
+	snapshot, _, cancel, _, _ = sess.Subscribe()
+	cancel()
+	if snapshot.Geometry != want {
+		t.Errorf("geometry after a rejected resize = %+v, want it left at %+v", snapshot.Geometry, want)
+	}
+}
+
+// TestContainerSession_Subscribe_GeometrySurvivesEngineFailure pins the
+// deliberate ordering in Resize: the intended size is recorded even when the
+// engine call fails. A failed resize still tells us more about the client's
+// width than the stale value it would otherwise leave behind, and geometry
+// only ever picks a rendering width — it makes no control decision.
+func TestContainerSession_Subscribe_GeometrySurvivesEngineFailure(t *testing.T) {
+	api := &fakeDockerAPI{
+		ContainerResizeFunc: func(context.Context, string, client.ContainerResizeOptions) (client.ContainerResizeResult, error) {
+			return client.ContainerResizeResult{}, errors.New("engine unreachable")
+		},
+	}
+	be := NewContainerBackend(api, ContainerBackendOptions{})
+	sess := mustLaunch(t, be,
+		sandbox.Spec{ID: "job-geom-fail", Argv: []string{"true"}, TTY: true},
+		backend.LaunchOptions{JobID: "job-geom-fail"})
+
+	want := backend.TerminalSize{Rows: 40, Cols: 120}
+	if err := sess.Resize(want); err == nil {
+		t.Fatal("want an error from a failing engine resize")
+	}
+	snapshot, _, cancel, _, _ := sess.Subscribe()
+	cancel()
+	if snapshot.Geometry != want {
+		t.Errorf("geometry after a failed engine resize = %+v, want the attempted %+v", snapshot.Geometry, want)
 	}
 }

@@ -480,8 +480,8 @@ type hangingControlSession struct {
 var _ backend.SandboxSession = (*hangingControlSession)(nil)
 
 func (s *hangingControlSession) ID() string { return s.id }
-func (s *hangingControlSession) Subscribe() ([]byte, <-chan []byte, func(), bool, bool) {
-	return nil, nil, func() {}, false, true
+func (s *hangingControlSession) Subscribe() (RuntimeSnapshot, <-chan []byte, func(), bool, bool) {
+	return RuntimeSnapshot{}, nil, func() {}, false, true
 }
 func (s *hangingControlSession) WriteInput([]byte) error { return ErrRuntimeUnsupported }
 func (s *hangingControlSession) CloseInput() error       { return ErrRuntimeUnsupported }

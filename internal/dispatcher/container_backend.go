@@ -2470,6 +2470,24 @@ type containerSession struct {
 	nextSubID   int
 	running     bool
 	exit        backend.RuntimeExit
+	// geometry is the PTY size this session's container was last resized
+	// to, recorded here purely so Subscribe can tell a caller the width
+	// the transcript's recent frames were painted at — a snapshot resolved
+	// at any other width is garbage (measured: the same 8.7 MB transcript
+	// renders cleanly at its true 80 columns and into overlapping,
+	// duplicated lines at 100/160/240). Resize is the only writer.
+	//
+	// Zero until the first resize arrives, which is the honest answer for
+	// two real cases and one that only looks like a third: a session
+	// nobody has attached to yet, and a session reconstructed by doAdopt
+	// after a daemon restart (the size lives in the client's resize
+	// frames, and the first of those arrives strictly AFTER the attach
+	// handshake that takes the snapshot — so the very first snapshot of an
+	// adopted session is rendered at vtsnapshot's 80x24 default). That
+	// default matches the engine's own default TTY size for a container
+	// created without one, which is what ContainerCreate does here, so the
+	// untouched-session case is not a guess at all.
+	geometry backend.TerminalSize
 	// attached reports whether the session currently has a live attach
 	// connection with its own readLoop actively feeding appendTranscript —
 	// i.e. whether there is anything for Subscribe to hand a new caller a
@@ -2881,9 +2899,13 @@ func (s *containerSession) appendTranscript(chunk []byte) {
 // wrong (an unconditional false positive is a worse diagnostic than the
 // dead-channel hang it replaced) — the finished return value is what closes
 // that gap.
-func (s *containerSession) Subscribe() ([]byte, <-chan []byte, func(), bool, bool) {
+func (s *containerSession) Subscribe() (backend.RuntimeSnapshot, <-chan []byte, func(), bool, bool) {
 	s.mu.Lock()
-	snapshot := append([]byte(nil), s.transcript...)
+	snapshot := backend.RuntimeSnapshot{
+		Raw:      append([]byte(nil), s.transcript...),
+		TTY:      s.tty,
+		Geometry: s.geometry,
+	}
 	running := s.running
 	live := running && s.attached
 	var subID int
@@ -2964,6 +2986,15 @@ func (s *containerSession) Resize(size backend.TerminalSize) error {
 	if size.Rows <= 0 || size.Cols <= 0 {
 		return nil
 	}
+	// Record before the engine call, not after: a resize that fails to
+	// reach the engine still tells us more about the intended geometry
+	// than the stale value it would otherwise leave behind, and Subscribe
+	// only ever uses this to pick a rendering width (see the field's own
+	// doc comment) — never to make a control decision.
+	s.mu.Lock()
+	s.geometry = size
+	s.mu.Unlock()
+
 	ctx, cancel := context.WithTimeout(context.Background(), sessionControlCallTimeout.Get())
 	defer cancel()
 	_, err := s.api.ContainerResize(ctx, s.id, client.ContainerResizeOptions{

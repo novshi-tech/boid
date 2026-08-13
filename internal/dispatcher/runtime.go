@@ -15,6 +15,12 @@ var ErrRuntimeUnsupported = errors.New("job runtime operation is not supported")
 // has no dependency on dispatcher.
 type TerminalSize = backend.TerminalSize
 
+// RuntimeSnapshot is an alias for backend.RuntimeSnapshot (same rationale as
+// TerminalSize above), and additionally keeps internal/api — which consumes
+// it through RuntimeSubscriber — free of a direct dependency on the sandbox
+// backend package.
+type RuntimeSnapshot = backend.RuntimeSnapshot
+
 // RuntimeExit is an alias for backend.RuntimeExit (same rationale as
 // TerminalSize above). ExitCode is the process exit code; TranscriptPath
 // is the path to a file holding the child process's stdout/stderr full

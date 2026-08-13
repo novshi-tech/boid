@@ -52,7 +52,7 @@ func (h *JobLogSSEHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		flush()
 	}
 
-	sendLines(snapshot)
+	sendLines(snapshot.Raw)
 	flush() // スナップショットが空でもヘッダーをクライアントに送信
 
 	if !ok || ch == nil {

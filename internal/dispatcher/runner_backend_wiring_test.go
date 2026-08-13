@@ -33,8 +33,8 @@ type wireFakeSession struct {
 var _ backend.SandboxSession = (*wireFakeSession)(nil)
 
 func (s *wireFakeSession) ID() string { return s.id }
-func (s *wireFakeSession) Subscribe() ([]byte, <-chan []byte, func(), bool, bool) {
-	return nil, nil, func() {}, false, true
+func (s *wireFakeSession) Subscribe() (RuntimeSnapshot, <-chan []byte, func(), bool, bool) {
+	return RuntimeSnapshot{}, nil, func() {}, false, true
 }
 func (s *wireFakeSession) WriteInput([]byte) error { return ErrRuntimeUnsupported }
 func (s *wireFakeSession) CloseInput() error       { return ErrRuntimeUnsupported }

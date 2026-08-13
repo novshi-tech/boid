@@ -47,8 +47,8 @@ func (s *engineExitSession) ID() string { return s.id }
 // never actually read by anything today; it is set correctly anyway so this
 // fake keeps meaning what its own doc comment says if a future test in this
 // file ever does exercise Subscribe.
-func (s *engineExitSession) Subscribe() ([]byte, <-chan []byte, func(), bool, bool) {
-	return nil, nil, func() {}, false, true
+func (s *engineExitSession) Subscribe() (dispatcher.RuntimeSnapshot, <-chan []byte, func(), bool, bool) {
+	return dispatcher.RuntimeSnapshot{}, nil, func() {}, false, true
 }
 func (s *engineExitSession) WriteInput([]byte) error           { return nil }
 func (s *engineExitSession) CloseInput() error                 { return nil }
