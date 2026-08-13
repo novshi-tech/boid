@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/novshi-tech/boid/internal/orchestrator"
@@ -78,6 +80,11 @@ func (s *TaskWorkflowService) SweepWake(ctx context.Context, now time.Time) (wok
 // *TaskWorkflowService so the loop can be unit tested against a fake.
 type QueueSweepStore interface {
 	SweepWake(ctx context.Context, now time.Time) ([]string, error)
+	// SweepTriage is 決定15/16's periodic evaluation (PR-5b, triage_done.go).
+	// It shares this loop rather than getting a timer of its own: both are
+	// decision-only passes over the same task set, and running them on one
+	// tick keeps "when does the queue re-evaluate itself" a single answer.
+	SweepTriage(ctx context.Context, now time.Time) (TriageSweepResult, error)
 }
 
 // QueueSweepLoop periodically calls SweepWake, mirroring
@@ -88,6 +95,11 @@ type QueueSweepLoop struct {
 	Store        QueueSweepStore
 	Interval     time.Duration
 	InitialDelay time.Duration
+
+	// lastBreachFingerprint is the previously-reported 決定16 breach set, so
+	// the report fires on change instead of on every tick. Only touched from
+	// runOnce, which the loop calls sequentially.
+	lastBreachFingerprint string
 }
 
 // Run blocks until ctx is done. It waits InitialDelay before the first
@@ -115,12 +127,54 @@ func (l *QueueSweepLoop) Run(ctx context.Context) {
 }
 
 func (l *QueueSweepLoop) runOnce(ctx context.Context) {
-	woken, err := l.Store.SweepWake(ctx, time.Now())
+	now := time.Now()
+
+	woken, err := l.Store.SweepWake(ctx, now)
 	if err != nil {
 		slog.Warn("queue wake sweep failed", "error", err)
-		return
-	}
-	if len(woken) > 0 {
+		// Deliberately NOT a return: the done sweep and the canonical-source
+		// report are independent of wake evaluation, and a wake failure must
+		// not silently stop cards from finishing.
+	} else if len(woken) > 0 {
 		slog.Info("queue wake sweep woke tasks", "count", len(woken), "task_ids", woken)
 	}
+
+	result, err := l.Store.SweepTriage(ctx, now)
+	if err != nil {
+		slog.Warn("queue triage sweep failed", "error", err)
+		return
+	}
+	if len(result.Completed) > 0 {
+		slog.Info("queue triage sweep completed tasks", "count", len(result.Completed), "task_ids", result.Completed)
+	}
+	l.logCanonicalSourceBreaches(result.Breaches)
+}
+
+// logCanonicalSourceBreaches reports 決定16 breaches ONLY WHEN THE SET CHANGES.
+//
+// Two reasons, both about this loop's one-minute tick. A breach persists until
+// someone fixes the card (queue 節 rule 7's 「解消されるまで出し続ける」 is about
+// the queue 案内 card, not about a log line), so a per-tick line would emit
+// 1,440 times a day per unfixed card. Worse, until khi starts delivering
+// observed.source_closed — future work in the same 決定14 cutover — EVERY card
+// is a breach, so an unconditional line would bury every other daemon log from
+// the moment this ships (Opus review round 2, Medium). Logging on change keeps
+// the signal (a new breach appears, or the last one clears) without the flood.
+func (l *QueueSweepLoop) logCanonicalSourceBreaches(breaches []CanonicalSourceBreach) {
+	ids := make([]string, 0, len(breaches))
+	for _, b := range breaches {
+		ids = append(ids, b.TaskID)
+	}
+	sort.Strings(ids)
+	fingerprint := strings.Join(ids, ",")
+	if fingerprint == l.lastBreachFingerprint {
+		return
+	}
+	l.lastBreachFingerprint = fingerprint
+	if len(breaches) == 0 {
+		slog.Info("triage tasks with no canonical source: すべて解消しました (決定16)")
+		return
+	}
+	slog.Warn("triage tasks with no canonical source (決定16): これらは done 自動落ちに到達できません",
+		"count", len(breaches), "task_ids", ids, "guidance", breaches[0].Guidance)
 }

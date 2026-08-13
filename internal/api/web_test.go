@@ -168,6 +168,14 @@ func (s *stubWorkflowService) Wake(ctx context.Context, taskID string) (*ActionA
 	return s.ApplyAction(ctx, taskID, ApplyActionRequest{Type: "wake"})
 }
 
+func (s *stubWorkflowService) GetTriage(taskID string) (*TaskTriageView, error) {
+	return &TaskTriageView{TaskID: taskID}, nil
+}
+
+func (s *stubWorkflowService) ListTriage(orchestrator.TaskFilter) ([]*TaskTriageView, error) {
+	return nil, nil
+}
+
 func (s *stubWorkflowService) CompleteJob(ctx context.Context, jobID string, req JobDoneRequest) (*Job, error) {
 	s.completedJobs = append(s.completedJobs, completedJobCall{JobID: jobID, ExitCode: req.ExitCode})
 	return &Job{ID: jobID, Status: JobStatusCompleted, ExitCode: req.ExitCode}, nil

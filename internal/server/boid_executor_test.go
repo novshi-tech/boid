@@ -27,6 +27,13 @@ type recordingWorkflow struct {
 	appliedActor   string
 	applyCallCount int
 	applyErr       error
+
+	// PR-5a triage read surface
+	triageGets    []string
+	triageFilters []orchestrator.TaskFilter
+	triageViews   map[string]*api.TaskTriageView
+	triageList    []*api.TaskTriageView
+	triageErr     error
 }
 
 func (w *recordingWorkflow) ApplyAction(ctx context.Context, taskID string, req api.ApplyActionRequest) (*api.ActionApplication, error) {
@@ -44,6 +51,37 @@ func (w *recordingWorkflow) ApplyAction(ctx context.Context, taskID string, req 
 
 func (w *recordingWorkflow) Wake(ctx context.Context, taskID string) (*api.ActionApplication, error) {
 	return w.ApplyAction(ctx, taskID, api.ApplyActionRequest{Type: "wake"})
+}
+
+// triageViews / triageList back the PR-5a read ops; triageErr lets a test
+// force the failure path.
+func (w *recordingWorkflow) GetTriage(taskID string) (*api.TaskTriageView, error) {
+	w.triageGets = append(w.triageGets, taskID)
+	if w.triageErr != nil {
+		return nil, w.triageErr
+	}
+	if v, ok := w.triageViews[taskID]; ok {
+		return v, nil
+	}
+	return &api.TaskTriageView{TaskID: taskID}, nil
+}
+
+func (w *recordingWorkflow) ListTriage(filter orchestrator.TaskFilter) ([]*api.TaskTriageView, error) {
+	w.triageFilters = append(w.triageFilters, filter)
+	if w.triageErr != nil {
+		return nil, w.triageErr
+	}
+	var out []*api.TaskTriageView
+	for _, v := range w.triageList {
+		if filter.ProjectID != "" && v.ProjectID != filter.ProjectID {
+			continue
+		}
+		if filter.Status != "" && string(v.Status) != filter.Status {
+			continue
+		}
+		out = append(out, v)
+	}
+	return out, nil
 }
 
 func (w *recordingWorkflow) CompleteJob(_ context.Context, _ string, _ api.JobDoneRequest) (*api.Job, error) {
@@ -1591,6 +1629,14 @@ func (w *askWorkflowStub) ApplyAction(_ context.Context, taskID string, req api.
 
 func (w *askWorkflowStub) Wake(ctx context.Context, taskID string) (*api.ActionApplication, error) {
 	return w.ApplyAction(ctx, taskID, api.ApplyActionRequest{Type: "wake"})
+}
+
+func (w *askWorkflowStub) GetTriage(taskID string) (*api.TaskTriageView, error) {
+	return &api.TaskTriageView{TaskID: taskID}, nil
+}
+
+func (w *askWorkflowStub) ListTriage(orchestrator.TaskFilter) ([]*api.TaskTriageView, error) {
+	return nil, nil
 }
 
 func (w *askWorkflowStub) CompleteJob(_ context.Context, _ string, _ api.JobDoneRequest) (*api.Job, error) {

@@ -69,6 +69,16 @@ func (s *sweepFakeStore) CreateAction(action *orchestrator.Action) error {
 func (s *sweepFakeStore) ListActionsByTask(taskID string) ([]*orchestrator.Action, error) {
 	return s.actions[taskID], nil
 }
+func (s *sweepFakeStore) SeedTaskTriage(taskID string) error {
+	if s.triage == nil {
+		s.triage = map[string]*orchestrator.TaskTriage{}
+	}
+	if _, ok := s.triage[taskID]; !ok {
+		s.triage[taskID] = &orchestrator.TaskTriage{TaskID: taskID}
+	}
+	return nil
+}
+
 func (s *sweepFakeStore) UpsertTaskTriage(tt *orchestrator.TaskTriage) error {
 	s.triage[tt.TaskID] = tt
 	return nil

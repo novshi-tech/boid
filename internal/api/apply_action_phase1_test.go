@@ -70,6 +70,16 @@ func (s *recordingTxStore) CreateAction(action *orchestrator.Action) error {
 func (s *recordingTxStore) ListActionsByTask(taskID string) ([]*orchestrator.Action, error) {
 	return nil, nil
 }
+func (s *recordingTxStore) SeedTaskTriage(taskID string) error {
+	if s.triage == nil {
+		s.triage = map[string]*orchestrator.TaskTriage{}
+	}
+	if _, ok := s.triage[taskID]; !ok {
+		s.triage[taskID] = &orchestrator.TaskTriage{TaskID: taskID}
+	}
+	return nil
+}
+
 func (s *recordingTxStore) UpsertTaskTriage(tt *orchestrator.TaskTriage) error {
 	if s.triage == nil {
 		s.triage = map[string]*orchestrator.TaskTriage{}

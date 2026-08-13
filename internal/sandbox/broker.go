@@ -490,6 +490,37 @@ func (b *Broker) handleBoidBuiltin(ctx context.Context, req *ExecRequest, entry 
 			return &ExecResponse{ExitCode: 1, Stderr: "boid task wake requires a task id"}
 		}
 		// project 検証は boid_executor 側で行う (action_send と同じパターン)
+	case BoidOpTaskTriageGet:
+		if boidReq.TaskID == "" {
+			return &ExecResponse{ExitCode: 1, Stderr: "boid task triage requires a task id"}
+		}
+		// project 検証は boid_executor 側で行う (action_send と同じパターン)
+	case BoidOpTaskTriageList:
+		// BoidOpTaskList と**同一の**スコーピングをここで行う (codex/Opus
+		// レビュー High): task_list の scoping は executor ではなく broker 側に
+		// あり、 project ref の解決 (name → UUID) もここでしか行われない。
+		// 「executor 側で AllowedProjectIDs で見る」だけでは
+		// (a) --workspace-id が無検査で通り他 workspace の triage card が
+		// 丸ごと読める (ListTasks の WorkspaceID filter は project_workspaces を
+		// INNER JOIN する = 本当に workspace を跨ぐ)、
+		// (b) project 名を渡すと UUID 空間の AllowsProject と突き合わされて
+		// 常に失敗する、 の 2 つが起きる。
+		if boidReq.ProjectID != "" {
+			resolved, err := b.resolveProjectRef(boidReq.ProjectID)
+			if err != nil {
+				return &ExecResponse{ExitCode: 1, Stderr: fmt.Sprintf("boid task triage: resolve project %q: %s", boidReq.ProjectID, err)}
+			}
+			boidReq.ProjectID = resolved
+			if !entry.Context.AllowsProject(boidReq.ProjectID) {
+				return &ExecResponse{ExitCode: 1, Stderr: "boid task triage: project is outside the current workspace"}
+			}
+		}
+		if boidReq.WorkspaceID != "" && boidReq.WorkspaceID != entry.Context.WorkspaceID {
+			return &ExecResponse{ExitCode: 1, Stderr: "boid task triage: workspace_id is outside the current workspace"}
+		}
+		if boidReq.ProjectID == "" && boidReq.WorkspaceID == "" && entry.Context.WorkspaceID != "" {
+			boidReq.WorkspaceID = entry.Context.WorkspaceID
+		}
 	case BoidOpJobList:
 		if boidReq.TaskID == "" {
 			return &ExecResponse{ExitCode: 1, Stderr: "boid job list requires a task id"}

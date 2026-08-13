@@ -39,6 +39,8 @@ has the same shape:
 22. [orchestrator.Action → timeline.Build renderability](#22-orchestratoraction--timelinebuild-renderability)
 23. [oauth_providers config↔apigateway wiring (type mirror + CredentialProvider.oauth)](#23-oauth_providers-configapigateway-wiring)
 24. [OAuthLoginHandler ↔ apiGatewayLoginAdapter ↔ apigateway.LoginManager](#24-oauthloginhandler--apigatewayloginadapter--apigatewayloginmanager)
+25. [orchestrator.Action.Actor ctx propagation](#25-orchestratoractionactor-ctx-propagation)
+26. [brokered op scoping layer (broker request-shaping ↔ executor re-check)](#26-brokered-op-scoping-layer-broker-request-shaping--executor-re-check)
 
 ---
 
@@ -1472,3 +1474,43 @@ upstream (this seam is about `Action.Actor` being *correct*; #22 is about the wr
   `Action` — grep every existing case in the same switch/file for its `WithActor`/`ActorDaemon`
   pattern before assuming yours doesn't need one, and add a test asserting the actor, not just
   the action `Type`/status transition.
+
+---
+
+## 26. brokered op scoping layer (broker request-shaping ↔ executor re-check)
+
+Which LAYER enforces a brokered op's workspace scoping. Getting this wrong doesn't fail to
+compile and doesn't fail any test that only drives the happy path — it silently opens a
+cross-workspace read.
+
+- **End A (broker, `internal/sandbox/broker.go`'s per-op `switch`)**: **shapes and gates the
+  request** before it ever reaches the daemon. For the list-shaped ops this is where the real
+  work happens: `resolveProjectRef` turns a project **name** into a UUID, `AllowsProject`
+  checks it, a caller-supplied `WorkspaceID` is compared against `entry.Context.WorkspaceID`
+  (no escape hatch), and an unfiltered request gets the caller's own workspace **injected**.
+- **End B (executor, `internal/server/boid_executor.go`)**: re-checks `ctx.AllowsProject` for
+  ops that name a single task/project. This is defense-in-depth for a handwritten request, NOT
+  the primary gate — and it can only check what it can see: a `WorkspaceID` filter or an
+  unresolved project **name** is meaningless to `AllowsProject`, which compares UUIDs.
+- **Invariant**: every caller-supplied selector that widens the result set (`project_id`,
+  `workspace_id`) is validated where it is *resolvable* — project refs and workspace ids in the
+  broker, per-task project ids in the executor. `orchestrator.TaskFilter.WorkspaceID` is
+  implemented as an `INNER JOIN project_workspaces … workspace_id = ?`, so it genuinely crosses
+  the compartment; an unchecked value is a disclosure, not a cosmetic bug.
+- **Past break**: PR-5a's `BoidOpTaskTriageList` (caught in review, not shipped). It was written
+  as "scoping mirrors `BoidOpTaskList`" but placed **all** of it in the executor, because the
+  author assumed task_list's scoping lived there. Two defects at once: `--workspace-id <other>`
+  returned every other workspace's triage cards (ids, titles, urgency, and the whole `detail`
+  blob — summary/source/children/observed), and `--project-id <name>` was unusable because a
+  name never matches `AllowsProject`'s UUID space. Same class as PR-4 round 1's two Blockers
+  (`child_specced`'s `project` field bypassing workspace authorization; root-task ref dedup
+  being workspace-unscoped) — **three consecutive PRs in this plan hit "daemon-side
+  permission/scope check missed"**.
+- **Guard**: `TestBroker_BoidTaskTriageList_WorkspaceIDMismatchDenied` /
+  `_ProjectIDOutsideWorkspaceDenied` / `_UnfilteredInjectsOwnWorkspace`
+  (`internal/sandbox/broker_test.go`), mirroring `TestBroker_BoidTaskList_*`; plus the
+  executor-side `TestBoidBuiltinExecutor_TaskTriage*` cross-workspace tests for End B.
+- **When you touch it**: adding a brokered op that takes a `project_id` or `workspace_id`
+  filter — **read the op you are mirroring and find where its checks physically are** before
+  writing "scoped like X". Then write the denial test at that layer: a test that only proves
+  the allowed case passes proves nothing about the seam.

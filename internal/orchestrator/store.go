@@ -260,6 +260,13 @@ func ListTasks(dbtx db.DBTX, filter TaskFilter) ([]*Task, error) {
 		// 下の "queue_next" — urgency を伴う狭い述語 (queue 節 rule 2/3) —
 		// を新設して使う。
 		conditions = append(conditions, "t.status IN ("+preExecutionStatusSQLList+")")
+	} else if filter.Status == "triage" {
+		// Phase 1 PR-5a: 「今生きている triage task」= pre-execution ∪ working。
+		// ListTriage の既定フィルタ (無指定でのフルスキャン防止) であり、
+		// 「queue」(pre-execution のみ) では working の card が読めず、無条件では
+		// 全 task 行を走査してしまうため、この 1 本を足す。done/dropped は
+		// 明示 status で引く。
+		conditions = append(conditions, "t.status IN ("+preExecutionStatusSQLList+", 'working')")
 	} else if filter.Status == "queue_next" {
 		// queue の決定論的評価 節 rule 2 (queue 所属): state ∈ {ready, triaged}
 		// かつ urgency ∈ {now, today, week}。captured は UC-4 の専用確認

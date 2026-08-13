@@ -261,6 +261,11 @@ type WorkflowService interface {
 	// WebService.Wake's own doc comment for why this needs a separate method
 	// rather than routing through ApplyAction.
 	Wake(ctx context.Context, taskID string) (*ActionApplication, error)
+	// GetTriage / ListTriage are the task_triage read surface (triage_read.go,
+	// Phase 1 PR-5a). Part of WorkflowService because the brokered ops that
+	// expose them to the sandbox reach the daemon through this same interface.
+	GetTriage(taskID string) (*TaskTriageView, error)
+	ListTriage(filter orchestrator.TaskFilter) ([]*TaskTriageView, error)
 	CompleteJob(ctx context.Context, jobID string, req JobDoneRequest) (*Job, error)
 	// StopAgent asks the agent backing runtimeID to terminate gracefully,
 	// without tearing down the surrounding runner-inner-child. The broker's
@@ -314,6 +319,11 @@ type ActionStore interface {
 // fields out of it means they don't auto-expose in every task API response.
 type TaskTriageStore interface {
 	UpsertTaskTriage(tt *orchestrator.TaskTriage) error
+	// SeedTaskTriage creates an empty row only when none exists (INSERT ...
+	// ON CONFLICT DO NOTHING). Distinct from UpsertTaskTriage precisely
+	// because it cannot overwrite: it asserts membership ("this is a triage
+	// task") and nothing else.
+	SeedTaskTriage(taskID string) error
 	GetTaskTriage(taskID string) (*orchestrator.TaskTriage, error)
 	DeleteTaskTriage(taskID string) error
 	// ParkedFrom derives which status (triaged/ready) a parked task was

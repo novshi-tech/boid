@@ -49,5 +49,11 @@ const (
 	// (docs/plans/cross-project-issue-triage.md Phase 1 PR-4 論点10).
 	OpBoidTaskWake = "task_wake"
 
+	// OpBoidTaskTriageGet / OpBoidTaskTriageList back `boid task triage`
+	// from inside the sandbox (docs/plans/cross-project-issue-triage.md Phase
+	// 1 PR-5a 決定14): the read half of "daemon が state の唯一の正".
+	OpBoidTaskTriageGet  = "task_triage_get"
+	OpBoidTaskTriageList = "task_triage_list"
+
 	OpFetchGet = "get"
 )

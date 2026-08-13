@@ -60,6 +60,30 @@ func UpsertTaskTriage(dbtx db.DBTX, tt *TaskTriage) error {
 	return nil
 }
 
+// SeedTaskTriage creates an empty sidecar row for taskID if one does not
+// already exist, and does nothing at all if one does. This is the "assert
+// this task IS a triage task" primitive (Phase 1 PR-5a): unlike
+// UpsertTaskTriage it can never overwrite an existing row's columns, so a
+// caller that only means to mark membership cannot destroy state.
+//
+// Single-statement by design (Opus review round 2, Low): a get-then-upsert
+// from the caller has a TOCTOU window — an attrs_set for the same card
+// committing between the read and the write would be blanked by the seed.
+// ON CONFLICT DO NOTHING closes it in the database rather than relying on
+// the window being narrow.
+func SeedTaskTriage(dbtx db.DBTX, taskID string) error {
+	if taskID == "" {
+		return fmt.Errorf("seed task_triage: task_id is required")
+	}
+	if _, err := dbtx.Exec(
+		`INSERT INTO task_triage (task_id) VALUES (?) ON CONFLICT(task_id) DO NOTHING`,
+		taskID,
+	); err != nil {
+		return fmt.Errorf("seed task_triage: %w", err)
+	}
+	return nil
+}
+
 // GetTaskTriage retrieves the sidecar row for taskID. Returns an error
 // wrapping sql.ErrNoRows when no row exists.
 func GetTaskTriage(dbtx db.DBTX, taskID string) (*TaskTriage, error) {
@@ -203,6 +227,49 @@ func SetDetailChildren(detail json.RawMessage, children []TaskTriageChild) (json
 		return nil, fmt.Errorf("marshal task_triage detail children: %w", err)
 	}
 	m["children"] = childrenJSON
+	out, err := json.Marshal(m)
+	if err != nil {
+		return nil, fmt.Errorf("marshal task_triage detail: %w", err)
+	}
+	return out, nil
+}
+
+// StripDetailAttrs removes keys from detail's top-level "attrs" object,
+// leaving every other top-level key untouched. It backs the promotion of
+// urgency/kind out of the opaque blob and into their real columns (Phase 1
+// PR-5a): those two are queue predicates, and keeping a second copy in the
+// blob would let the value the queue SQL reads drift from the value a
+// workspace-side reader sees. Migration 0040 converges existing rows; this
+// keeps the invariant self-healing for any row that somehow still carries a
+// stale copy, without depending on the migration having run.
+func StripDetailAttrs(detail json.RawMessage, keys ...string) (json.RawMessage, error) {
+	m, err := parseDetailMap(detail)
+	if err != nil {
+		return nil, err
+	}
+	raw, ok := m["attrs"]
+	if !ok || len(raw) == 0 || string(raw) == "null" {
+		return detail, nil
+	}
+	attrs := map[string]json.RawMessage{}
+	if err := json.Unmarshal(raw, &attrs); err != nil {
+		return nil, fmt.Errorf("parse task_triage detail attrs: %w", err)
+	}
+	changed := false
+	for _, k := range keys {
+		if _, present := attrs[k]; present {
+			delete(attrs, k)
+			changed = true
+		}
+	}
+	if !changed {
+		return detail, nil
+	}
+	attrsJSON, err := json.Marshal(attrs)
+	if err != nil {
+		return nil, fmt.Errorf("marshal task_triage detail attrs: %w", err)
+	}
+	m["attrs"] = attrsJSON
 	out, err := json.Marshal(m)
 	if err != nil {
 		return nil, fmt.Errorf("marshal task_triage detail: %w", err)

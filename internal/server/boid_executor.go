@@ -109,7 +109,7 @@ func newBoidBuiltinExecutor(workflow api.WorkflowService, tasks *api.TaskAppServ
 // see store.go's ListTasks), and any exact orchestrator.TaskStatus value are
 // accepted.
 func validateTaskListStatus(status string) error {
-	if status == "" || status == "open" || status == "closed" || status == "queue" || status == "queue_next" {
+	if status == "" || status == "open" || status == "closed" || status == "queue" || status == "queue_next" || status == "triage" {
 		return nil
 	}
 	if _, ok := orchestrator.ParseTaskStatus(status); ok {
@@ -600,6 +600,105 @@ func (e *boidBuiltinExecutor) ExecuteBoidBuiltin(goCtx context.Context, ctx sand
 		return &sandbox.ExecResponse{
 			Stdout: fmt.Sprintf("task woken: %s (%s)\n", app.Task.ID, app.Task.Status),
 		}
+	case sandbox.BoidOpTaskTriageGet:
+		// docs/plans/cross-project-issue-triage.md Phase 1 PR-5a: the read
+		// half of 決定14 (daemon が state の唯一の正). Same scoping pattern as
+		// BoidOpTaskGet — look the task up, then enforce AllowsProject before
+		// returning anything, so a caller that happens to know another
+		// workspace's task UUID still learns nothing about it.
+		if req.TaskID == "" {
+			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid task triage requires a task id"}
+		}
+		if e.tasks == nil || e.workflow == nil {
+			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid task triage unavailable"}
+		}
+		existing, err := e.tasks.GetTask(req.TaskID)
+		if err != nil {
+			return &sandbox.ExecResponse{ExitCode: 1, Stderr: err.Error()}
+		}
+		if !ctx.AllowsProject(existing.ProjectID) {
+			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid task triage is restricted to the current workspace"}
+		}
+		view, err := e.workflow.GetTriage(req.TaskID)
+		if err != nil {
+			return &sandbox.ExecResponse{ExitCode: 1, Stderr: err.Error()}
+		}
+		encoded, err := json.MarshalIndent(view, "", "  ")
+		if err != nil {
+			return &sandbox.ExecResponse{ExitCode: 1, Stderr: err.Error()}
+		}
+		return &sandbox.ExecResponse{Stdout: string(encoded) + "\n"}
+	case sandbox.BoidOpTaskTriageList:
+		if e.workflow == nil {
+			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid task triage unavailable"}
+		}
+		if err := validateTaskListStatus(req.Status); err != nil {
+			return &sandbox.ExecResponse{ExitCode: 1, Stderr: err.Error()}
+		}
+		// Scoping mirrors BoidOpTaskList exactly, in BOTH layers: the broker
+		// resolves the project ref, checks AllowsProject, and rejects a
+		// workspace_id that isn't the caller's own (see broker.go's
+		// BoidOpTaskTriageList case — that is where task_list's scoping lives
+		// too, so putting it only here would leave --workspace-id unchecked);
+		// the AllowsProject re-check below is the defense-in-depth second
+		// layer for a handwritten request that bypassed the shim. With no
+		// filter at all the listing is assembled per allowed project rather
+		// than running unscoped.
+		var views []*api.TaskTriageView
+		switch {
+		case req.ProjectID != "":
+			if !ctx.AllowsProject(req.ProjectID) {
+				return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid task triage is restricted to the current workspace"}
+			}
+			listed, err := e.workflow.ListTriage(orchestrator.TaskFilter{ProjectID: req.ProjectID, Status: req.Status})
+			if err != nil {
+				return &sandbox.ExecResponse{ExitCode: 1, Stderr: err.Error()}
+			}
+			views = listed
+		case req.WorkspaceID != "":
+			// Defense in depth behind the broker's own equality check: the
+			// WorkspaceID filter INNER JOINs project_workspaces, so an
+			// unchecked value here genuinely crosses the compartment 決定2
+			// exists to keep (every other workspace's card titles/summaries).
+			if ctx.WorkspaceID != "" && req.WorkspaceID != ctx.WorkspaceID {
+				return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid task triage is restricted to the current workspace"}
+			}
+			listed, err := e.workflow.ListTriage(orchestrator.TaskFilter{WorkspaceID: req.WorkspaceID, Status: req.Status})
+			if err != nil {
+				return &sandbox.ExecResponse{ExitCode: 1, Stderr: err.Error()}
+			}
+			views = listed
+		default:
+			projectIDs := ctx.AllowedProjectIDs
+			if len(projectIDs) == 0 {
+				// An empty ProjectID here would make the fallback
+				// ListTriage(ProjectID: "") a DAEMON-WIDE listing of every
+				// card's title and detail blob (Opus review round 2). Job
+				// tokens always carry a ProjectID, so this is insurance rather
+				// than a live hole — but the triage payload is far richer than
+				// task_list's id/status/title, so it is refused explicitly
+				// instead of relying on that invariant holding forever.
+				if ctx.ProjectID == "" {
+					return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid task triage: no project scope available for an unfiltered listing"}
+				}
+				projectIDs = []string{ctx.ProjectID}
+			}
+			for _, pid := range projectIDs {
+				listed, err := e.workflow.ListTriage(orchestrator.TaskFilter{ProjectID: pid, Status: req.Status})
+				if err != nil {
+					return &sandbox.ExecResponse{ExitCode: 1, Stderr: err.Error()}
+				}
+				views = append(views, listed...)
+			}
+		}
+		if views == nil {
+			views = []*api.TaskTriageView{}
+		}
+		encoded, err := json.MarshalIndent(views, "", "  ")
+		if err != nil {
+			return &sandbox.ExecResponse{ExitCode: 1, Stderr: err.Error()}
+		}
+		return &sandbox.ExecResponse{Stdout: string(encoded) + "\n"}
 	case sandbox.BoidOpJobList:
 		if e.jobs == nil {
 			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid job list unavailable"}

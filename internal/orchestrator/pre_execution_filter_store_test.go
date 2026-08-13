@@ -388,3 +388,55 @@ func TestListTasks_QueueNext_MembershipAndOrdering(t *testing.T) {
 		}
 	}
 }
+
+// TestListTasks_Triage_ReturnsPreExecutionPlusWorking pins ListTriage's default
+// floor (Phase 1 PR-5a): "the live triage cards" = pre-execution ∪ working.
+// Without a floor an unfiltered triage listing degrades into a full scan of
+// every task row ever created plus one sidecar point query per row; "queue"
+// alone cannot serve as that floor because it omits working, which is where a
+// card spends the whole time its children are running.
+func TestListTasks_Triage_ReturnsPreExecutionPlusWorking(t *testing.T) {
+	d := createTestProject(t)
+	included := []orchestrator.TaskStatus{
+		orchestrator.TaskStatusCaptured,
+		orchestrator.TaskStatusTriaged,
+		orchestrator.TaskStatusParked,
+		orchestrator.TaskStatusReady,
+		orchestrator.TaskStatusWorking,
+	}
+	excluded := []orchestrator.TaskStatus{
+		orchestrator.TaskStatusPending,
+		orchestrator.TaskStatusExecuting,
+		orchestrator.TaskStatusAwaiting,
+		orchestrator.TaskStatusDone,
+		orchestrator.TaskStatusAborted,
+		orchestrator.TaskStatusDropped,
+	}
+	ids := map[orchestrator.TaskStatus]string{}
+	for _, s := range append(append([]orchestrator.TaskStatus{}, included...), excluded...) {
+		task := &orchestrator.Task{ProjectID: "proj-1", Title: "task-" + string(s), Behavior: "dev", Status: s}
+		if err := orchestrator.CreateTask(d.Conn, task); err != nil {
+			t.Fatalf("create %s: %v", s, err)
+		}
+		ids[s] = task.ID
+	}
+
+	got, err := orchestrator.ListTasks(d.Conn, orchestrator.TaskFilter{Status: "triage"})
+	if err != nil {
+		t.Fatalf("ListTasks: %v", err)
+	}
+	gotIDs := map[string]bool{}
+	for _, tk := range got {
+		gotIDs[tk.ID] = true
+	}
+	for _, s := range included {
+		if !gotIDs[ids[s]] {
+			t.Errorf("status %q missing from the triage filter", s)
+		}
+	}
+	for _, s := range excluded {
+		if gotIDs[ids[s]] {
+			t.Errorf("status %q must not appear in the triage filter", s)
+		}
+	}
+}

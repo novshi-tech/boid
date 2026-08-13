@@ -289,6 +289,34 @@ func (s *TaskAppService) CreateTask(req CreateTaskRequest) (*orchestrator.Task, 
 	if err := s.Tasks.CreateTask(task); err != nil {
 		return nil, &StatusError{Code: http.StatusInternalServerError, Message: err.Error()}
 	}
+	// Seed the task_triage sidecar for a task created directly into a
+	// pre-execution status (docs/plans/cross-project-issue-triage.md Phase 1
+	// PR-5a). "Has a sidecar row" is what makes a task identifiable as a
+	// triage task — ListTriage's predicate and PR-5b's reopen guard both rest
+	// on it, and status alone cannot supply it (done is shared with ordinary
+	// tasks). Seeding at birth means khi's freshly ingested cards are visible
+	// immediately rather than only after their first attrs_set lands.
+	//
+	// Checked against task.Status (not req.InitialStatus) so the get-or-create
+	// path above — which can return an EXISTING task in a completely different
+	// status — never mislabels an ordinary task as a triage one. A failure here
+	// is logged rather than failing the create: the task itself is already
+	// committed, and the row is re-created by the first side-effect action
+	// anyway (the pre-PR-5a behavior), so a lazily-seeded row is a strictly
+	// better outcome than a lost card.
+	//
+	// SeedTaskTriage is INSERT ... ON CONFLICT DO NOTHING, so it can never
+	// overwrite an existing row — which matters because the get-or-create path
+	// above can return an EXISTING triaged task on a khi re-ingest, and an
+	// overwrite there would blank that card's urgency/kind and its whole detail
+	// blob (children + observed.source_closed), silently making it unfinishable
+	// under 決定15. Doing the check in one statement also closes the TOCTOU a
+	// get-then-upsert would leave open against a concurrent attrs_set.
+	if s.TaskTriage != nil && orchestrator.IsPreExecutionStatus(task.Status) {
+		if err := s.TaskTriage.SeedTaskTriage(task.ID); err != nil {
+			slog.Error("task create: failed to seed task_triage row", "task_id", task.ID, "error", err)
+		}
+	}
 	// Guard: only fire auto_start for a freshly pending task. When get-or-create
 	// at the store level returns an existing task (e.g. concurrent create race),
 	// the task may already be executing or terminal.

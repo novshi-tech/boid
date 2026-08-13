@@ -101,6 +101,17 @@ func TestBroker_BoidTaskWake_PolicyReject(t *testing.T) {
 	assertBoidOpRejectedByPolicy(t, &sandbox.BoidRequest{Op: sandbox.BoidOpTaskWake, TaskID: "t1"})
 }
 
+// BoidOpTaskTriageGet / BoidOpTaskTriageList (Phase 1 PR-5a): read-only, with
+// workspace-scope enforcement in boid_executor (same as BoidOpTaskGet /
+// BoidOpActionSend) — these close the plain policy-gate manifest entry point.
+func TestBroker_BoidTaskTriageGet_PolicyReject(t *testing.T) {
+	assertBoidOpRejectedByPolicy(t, &sandbox.BoidRequest{Op: sandbox.BoidOpTaskTriageGet, TaskID: "t1"})
+}
+
+func TestBroker_BoidTaskTriageList_PolicyReject(t *testing.T) {
+	assertBoidOpRejectedByPolicy(t, &sandbox.BoidRequest{Op: sandbox.BoidOpTaskTriageList})
+}
+
 // assertBoidOpRejectedByPolicy registers a boid policy that allows only an
 // unrelated op (job_done), then asserts the given request is rejected by the
 // policy gate — before any op-specific dispatch — and never reaches the
@@ -201,6 +212,23 @@ var opEscapeCoverage = map[string]opCoverage{
 	// (TestBoidBuiltinExecutor_TaskWake_*); the plain policy-gate manifest
 	// entry point is TestBroker_BoidTaskWake_PolicyReject.
 	"BoidOpTaskWake": {escapeTest: "TestBroker_BoidTaskWake_PolicyReject"},
+
+	// BoidOpTaskTriageGet / BoidOpTaskTriageList (Phase 1 PR-5a,
+	// docs/plans/cross-project-issue-triage.md 決定14): read-only projections
+	// of the task_triage sidecar. Workspace-scope enforcement lives in
+	// boid_executor exactly as it does for BoidOpTaskGet / BoidOpTaskWake —
+	// the get form looks the task up and checks AllowsProject before
+	// returning anything, and the list form checks an explicit project filter
+	// and otherwise iterates AllowedProjectIDs (never unscoped). Those are
+	// exercised end-to-end by internal/server's
+	// TestBoidBuiltinExecutor_TaskTriage_* tests; the plain policy-gate
+	// manifest entry points are below.
+	"BoidOpTaskTriageGet": {escapeTest: "TestBroker_BoidTaskTriageGet_PolicyReject"},
+	// The list form's filters are scoped in the BROKER (as task_list's are —
+	// the first cut scoped only in the executor, which left --workspace-id
+	// entirely unchecked: an Opus-review High, since ListTasks' WorkspaceID
+	// filter INNER JOINs project_workspaces and really does cross workspaces).
+	"BoidOpTaskTriageList": {escapeTest: "TestBroker_BoidTaskTriageList_WorkspaceIDMismatchDenied"},
 }
 
 // TestOpEscapeCoverage_ManifestComplete asserts opEscapeCoverage covers exactly
