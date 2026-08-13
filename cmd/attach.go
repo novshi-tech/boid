@@ -81,6 +81,11 @@ func attachLive(ctx context.Context, jobID string) error {
 	c := client.FromContext(ctx)
 
 	stdin := io.Reader(os.Stdin)
+	// Registered before the raw-mode restore below so it runs after it
+	// (defers are LIFO): the terminal is back in cooked mode by the time the
+	// epilogue's escape sequences go out.
+	defer writeTerminalEpilogueTo(os.Stdout)
+
 	restore, err := makeRawInput(os.Stdin)
 	if err != nil {
 		return err
@@ -109,6 +114,52 @@ func attachLive(ctx context.Context, jobID string) error {
 	// stream, and splicing boid's own chatter into it would corrupt a TUI
 	// harness's screen state.
 	return c.AttachJob(jobID, stdin, os.Stdout, client.AttachOptions{Notify: os.Stderr})
+}
+
+// writeTerminalEpilogue undoes the terminal modes a job's harness turned on
+// through the attach stream but may never get to turn off.
+//
+// A TUI harness (Claude Code, and anything else bubbletea-shaped) enables
+// mouse reporting and bracketed paste on startup by writing DECSET
+// sequences to its PTY; those bytes travel down the attach stream and take
+// effect on the *local* terminal. The matching DECRST sequences are written
+// on the harness's way out — which never happens when the wire dies first.
+// The reported symptom is a Windows machine suspending mid-session: on
+// resume the attach is gone, and the terminal is still forwarding drags to
+// an application that is no longer there, so the user cannot even select
+// the error text explaining the drop.
+//
+// term.Restore (makeRawInput) does not cover this: it restores the console's
+// line-discipline state, not modes the remote end set by escape sequence.
+//
+// Re-sending a reset the harness already sent is a no-op, so this runs
+// unconditionally on every attach exit rather than trying to detect an
+// unclean one.
+func writeTerminalEpilogueTo(f *os.File) {
+	if f == nil || !term.IsTerminal(int(f.Fd())) {
+		return
+	}
+	writeTerminalEpilogue(f)
+}
+
+// writeTerminalEpilogue writes the reset sequences themselves.
+//
+// Deliberately absent: DECRST 1049 (leave alternate screen). Switching back
+// to the primary buffer would take the drop notice AttachJob just printed
+// ("connection lost and could not be restored: ...", client.go) off screen
+// along with the rest of the session — the very text the user is trying to
+// read and copy. Mouse reporting is what breaks selection; the alternate
+// screen does not.
+func writeTerminalEpilogue(w io.Writer) {
+	_, _ = io.WriteString(w, strings.Join([]string{
+		"\x1b[?1000l", // X10/normal mouse tracking off
+		"\x1b[?1002l", // button-event tracking off
+		"\x1b[?1003l", // any-event tracking off
+		"\x1b[?1006l", // SGR extended mouse coordinates off
+		"\x1b[?1015l", // urxvt extended mouse coordinates off
+		"\x1b[?2004l", // bracketed paste off
+		"\x1b[?25h",   // cursor visible
+	}, ""))
 }
 
 func makeRawInput(f *os.File) (func(), error) {

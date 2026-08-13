@@ -594,6 +594,23 @@ var (
 	// with no idle direction to reap.
 	attachKeepalivePeriod = 30 * time.Second
 	attachPingTimeout     = 10 * time.Second
+
+	// attachDialTimeout bounds one WS handshake. Without it a reconnect
+	// dial can park forever: c.httpClient's transport pools idle
+	// connections, and a machine resuming from sleep can hand that pool a
+	// connection whose peer is gone but which was never reset (the laptop
+	// was not on the network to receive the FIN/RST), so the handshake
+	// neither completes nor errors. attachOnce would then never return, the
+	// reconnect loop would never reach its deadline check, and the session
+	// would be lost silently. Cancelling the request also evicts that dead
+	// connection from net/http's idle pool, so the next attempt dials fresh
+	// rather than re-wedging on the same socket.
+	//
+	// Sized well above a real handshake (a local UNIX socket or a tunnelled
+	// HTTPS origin both answer in well under a second) and well below
+	// defaultAttachReconnectWindow, so a genuinely slow network still gets
+	// several attempts inside the window.
+	attachDialTimeout = 20 * time.Second
 )
 
 // Reconnect (2026-08-10) is what makes an idle interactive session
@@ -801,7 +818,17 @@ func (c *Client) attachOnce(ctx context.Context, st *attachState) (done bool, er
 	if st.offset > 0 {
 		url += "?replay_offset=" + strconv.FormatInt(st.offset, 10)
 	}
-	conn, resp, err := websocket.Dial(ctx, url, &websocket.DialOptions{
+	// The dial gets its own bounded context (see attachDialTimeout); the
+	// established connection does NOT inherit it. websocket.Dial hands the
+	// handshake context to http.Client.Do and keeps the 101 response body as
+	// the connection's ReadWriteCloser, but net/http clears that request's
+	// canceler the moment it sees a writable (protocol-switched) body, so
+	// cancelling here after a successful Dial cannot close the long-lived
+	// attach that follows. coder/websocket relies on the same property for
+	// its own HTTPClient.Timeout handling.
+	dialCtx, cancelDial := context.WithTimeout(ctx, attachDialTimeout)
+	defer cancelDial()
+	conn, resp, err := websocket.Dial(dialCtx, url, &websocket.DialOptions{
 		HTTPClient: c.httpClient,
 		// Origin deliberately mirrors c.baseURL itself rather than one of
 		// the server's allowedOrigins() patterns (localhost/127.0.0.1/
