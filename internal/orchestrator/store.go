@@ -308,13 +308,6 @@ func ListTasks(dbtx db.DBTX, filter TaskFilter) ([]*Task, error) {
 	}
 	if filter.Status == "closed" {
 		query += " ORDER BY t.updated_at DESC"
-	} else if filter.Status == "triage" {
-		// Phase 1 PR-5a: 「今生きている triage task」= pre-execution ∪ working。
-		// ListTriage の既定フィルタ (無指定でのフルスキャン防止) であり、
-		// 「queue」(pre-execution のみ) では working の card が読めず、無条件では
-		// 全 task 行を走査してしまうため、この 1 本を足す。done/dropped は
-		// 明示 status で引く。
-		conditions = append(conditions, "t.status IN ("+preExecutionStatusSQLList+", 'working')")
 	} else if filter.Status == "queue_next" {
 		// queue の決定論的評価 節 rule 3 (並び順、全順序): urgency (now > today
 		// > week) → state (ready が先) → created_at 昇順 (古いものを腐らせない)
