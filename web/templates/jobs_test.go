@@ -304,3 +304,25 @@ func TestJobDetail_WithTask_BackURL(t *testing.T) {
 		t.Errorf("task job back link should be %q, got: %s", want, html)
 	}
 }
+
+// TestJobDetail_InteractiveRunning_EmbedsCopyToast guards the copy affordance
+// for selected terminal text.
+//
+// While a TUI has mouse reporting on, xterm.js disables its own SelectionService
+// and wipes any shift+drag selection as soon as the mouseup is forwarded to the
+// application as a mouse report. The toast is the only way the user can get that
+// text into the clipboard, and clicking it also supplies the user gesture that
+// navigator.clipboard.writeText requires on Safari/iOS. See boid-terminal.js and
+// web/embed_test.go's TestTerminalStashesSelectionOnChange for the mechanism.
+func TestJobDetail_InteractiveRunning_EmbedsCopyToast(t *testing.T) {
+	job := newJobView("running")
+	job.Interactive = true
+	html := renderJobDetail(t, job)
+
+	if !strings.Contains(html, "boid-terminal-copy-toast") {
+		t.Errorf("interactive running job should embed the copy toast, got: %s", html)
+	}
+	if !strings.Contains(html, "boid-terminal-copy-btn") {
+		t.Error("copy toast should contain the copy button (boid-terminal-copy-btn)")
+	}
+}
