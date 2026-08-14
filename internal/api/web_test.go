@@ -573,6 +573,144 @@ func TestWebHandlerPostStartShapingSession_Success(t *testing.T) {
 	}
 }
 
+func TestWebHandlerPostStartShapingSession_UsesSessionBehaviorsDefaults(t *testing.T) {
+	svc := &stubWebService{
+		taskDetail: &TaskDetailView{Task: &orchestrator.Task{
+			ID:        "task-1",
+			ProjectID: "meta-proj",
+			Title:     "運用が回っていない気配",
+			Status:    orchestrator.TaskStatusTriaged,
+		}},
+		projectByID: &orchestrator.Project{
+			ID: "meta-proj",
+			Meta: orchestrator.ProjectMeta{
+				SessionBehaviors: map[string]orchestrator.SessionBehavior{
+					"shape": {HarnessType: "codex", Model: "o3-mini"},
+				},
+			},
+		},
+	}
+	dispatcher := &stubSessionDispatcher{result: &StartSessionResult{JobID: "job-9"}}
+	r := newTestWebHandlerWithShaping(svc, dispatcher, nil)
+
+	req := httptest.NewRequest(http.MethodPost, "/tasks/task-1/shape", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusSeeOther {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusSeeOther)
+	}
+	if dispatcher.lastReq.HarnessType != "codex" {
+		t.Errorf("HarnessType = %q, want codex", dispatcher.lastReq.HarnessType)
+	}
+	if dispatcher.lastReq.Model != "o3-mini" {
+		t.Errorf("Model = %q, want o3-mini", dispatcher.lastReq.Model)
+	}
+}
+
+func TestWebHandlerPostStartShapingSession_FallsBackWhenNoSessionBehaviors(t *testing.T) {
+	svc := &stubWebService{
+		taskDetail: &TaskDetailView{Task: &orchestrator.Task{
+			ID:        "task-1",
+			ProjectID: "meta-proj",
+			Title:     "運用が回っていない気配",
+			Status:    orchestrator.TaskStatusTriaged,
+		}},
+		projectByID: &orchestrator.Project{ID: "meta-proj"},
+	}
+	dispatcher := &stubSessionDispatcher{result: &StartSessionResult{JobID: "job-9"}}
+	r := newTestWebHandlerWithShaping(svc, dispatcher, nil)
+
+	req := httptest.NewRequest(http.MethodPost, "/tasks/task-1/shape", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusSeeOther {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusSeeOther)
+	}
+	if dispatcher.lastReq.HarnessType != "claude" {
+		t.Errorf("HarnessType = %q, want claude (fallback)", dispatcher.lastReq.HarnessType)
+	}
+	if dispatcher.lastReq.Model != "" {
+		t.Errorf("Model = %q, want empty (fallback)", dispatcher.lastReq.Model)
+	}
+}
+
+func TestWebHandlerPostStartShapingSession_FallsBackOnInvalidHarnessType(t *testing.T) {
+	svc := &stubWebService{
+		taskDetail: &TaskDetailView{Task: &orchestrator.Task{
+			ID:        "task-1",
+			ProjectID: "meta-proj",
+			Title:     "運用が回っていない気配",
+			Status:    orchestrator.TaskStatusTriaged,
+		}},
+		projectByID: &orchestrator.Project{
+			ID: "meta-proj",
+			Meta: orchestrator.ProjectMeta{
+				SessionBehaviors: map[string]orchestrator.SessionBehavior{
+					"shape": {HarnessType: "bogus", Model: "o3-mini"},
+				},
+			},
+		},
+	}
+	dispatcher := &stubSessionDispatcher{result: &StartSessionResult{JobID: "job-9"}}
+	r := newTestWebHandlerWithShaping(svc, dispatcher, nil)
+
+	req := httptest.NewRequest(http.MethodPost, "/tasks/task-1/shape", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusSeeOther {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusSeeOther)
+	}
+	if dispatcher.lastReq.HarnessType != "claude" {
+		t.Errorf("HarnessType = %q, want claude (fallback on invalid harness_type)", dispatcher.lastReq.HarnessType)
+	}
+	// The fallback must be all-or-nothing: an invalid harness_type must not
+	// leak the project's chosen model onto the claude fallback (that would
+	// launch claude with a model value nobody actually asked claude to use).
+	if dispatcher.lastReq.Model != "" {
+		t.Errorf("Model = %q, want empty (fallback must not leak model when harness_type is invalid)", dispatcher.lastReq.Model)
+	}
+}
+
+func TestWebHandlerPostStartShapingSession_FallsBackOnEmptyHarnessType(t *testing.T) {
+	svc := &stubWebService{
+		taskDetail: &TaskDetailView{Task: &orchestrator.Task{
+			ID:        "task-1",
+			ProjectID: "meta-proj",
+			Title:     "運用が回っていない気配",
+			Status:    orchestrator.TaskStatusTriaged,
+		}},
+		projectByID: &orchestrator.Project{
+			ID: "meta-proj",
+			Meta: orchestrator.ProjectMeta{
+				// harness_type omitted, model set: the whole entry falls
+				// back rather than launching claude with someone else's model.
+				SessionBehaviors: map[string]orchestrator.SessionBehavior{
+					"shape": {Model: "o3-mini"},
+				},
+			},
+		},
+	}
+	dispatcher := &stubSessionDispatcher{result: &StartSessionResult{JobID: "job-9"}}
+	r := newTestWebHandlerWithShaping(svc, dispatcher, nil)
+
+	req := httptest.NewRequest(http.MethodPost, "/tasks/task-1/shape", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusSeeOther {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusSeeOther)
+	}
+	if dispatcher.lastReq.HarnessType != "claude" {
+		t.Errorf("HarnessType = %q, want claude (fallback on empty harness_type)", dispatcher.lastReq.HarnessType)
+	}
+	if dispatcher.lastReq.Model != "" {
+		t.Errorf("Model = %q, want empty (fallback must not leak model when harness_type is empty)", dispatcher.lastReq.Model)
+	}
+}
+
 func TestWebHandlerPostStartShapingSession_NotTriaged(t *testing.T) {
 	svc := &stubWebService{taskDetail: &TaskDetailView{Task: &orchestrator.Task{
 		ID: "task-1", Status: orchestrator.TaskStatusReady,

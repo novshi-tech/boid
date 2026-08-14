@@ -260,6 +260,66 @@ capabilities:
 	}
 }
 
+// TestGetWithWorkspace_SessionBehaviorsNotMutated verifies cloneProjectMeta
+// deep-copies SessionBehaviors: mutating a hydrated copy's map must not
+// corrupt the ProjectStore's cached meta. Unlike ReadProjectMetaWithKits
+// (which re-reads from disk on every call and so can't distinguish a deep
+// copy from a shallow one), ProjectStore caches the loaded meta and hands
+// out clones on GetWithWorkspace — this is the path where a missed clone in
+// cloneProjectMeta would actually leak a mutation into later reads.
+func TestGetWithWorkspace_SessionBehaviorsNotMutated(t *testing.T) {
+	t.Parallel()
+
+	projectDir := t.TempDir()
+	boidDir := filepath.Join(projectDir, ".boid")
+	if err := os.MkdirAll(boidDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	yaml := `id: proj-sb
+name: Session Behavior Test
+session_behaviors:
+  shape:
+    harness_type: codex
+    model: o3-mini
+`
+	if err := os.WriteFile(filepath.Join(boidDir, "project.yaml"), []byte(yaml), 0o644); err != nil {
+		t.Fatalf("write yaml: %v", err)
+	}
+
+	// A non-empty workspaceID is required: GetWithWorkspace only clones
+	// through cloneProjectMeta when workspaceID != "" — with an unlinked
+	// project it returns the cached pointer directly (see its doc comment),
+	// which would make this test pass even with a shallow-copy bug.
+	wsDir := t.TempDir()
+	setupWorkspaceDir(t, wsDir, "sbws", "")
+
+	s := orchestrator.NewProjectStore()
+	s.SetWorkspaceStore(orchestrator.NewWorkspaceStore(wsDir))
+	loadProjectIntoStore(t, s, []*orchestrator.Project{
+		{ID: "proj-sb", WorkDir: projectDir, WorkspaceID: "sbws"},
+	})
+
+	hydrated, err := s.GetWithWorkspace(context.Background(), "proj-sb")
+	if err != nil {
+		t.Fatalf("GetWithWorkspace: %v", err)
+	}
+	shape, ok := hydrated.SessionBehaviors["shape"]
+	if !ok || shape.HarnessType != "codex" || shape.Model != "o3-mini" {
+		t.Fatalf("session_behaviors not preserved through hydration: %+v", hydrated.SessionBehaviors)
+	}
+
+	// Mutate the returned map; the store's cached meta must be unaffected.
+	hydrated.SessionBehaviors["shape"] = orchestrator.SessionBehavior{HarnessType: "mutated"}
+
+	cached, ok := s.Get("proj-sb")
+	if !ok {
+		t.Fatal("expected cached meta to exist")
+	}
+	if cached.SessionBehaviors["shape"].HarnessType != "codex" {
+		t.Fatalf("mutation leaked into cached meta: %+v", cached.SessionBehaviors)
+	}
+}
+
 // TestGetWithWorkspace_WorkspaceEnvWithKitConflict verifies that duplicate
 // host_commands from workspace kits return an error.
 func TestGetWithWorkspace_WorkspaceHostCommandConflict(t *testing.T) {

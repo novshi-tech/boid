@@ -62,6 +62,75 @@ task_behaviors:
 	}
 }
 
+// TestReadProjectMeta_SessionBehaviors verifies that session_behaviors — a
+// free-naming dictionary distinct from task_behaviors (sessions do not
+// resolve through ResolveBehavior, see PostStartShapingSession's doc
+// comment in internal/api/web.go) — parses into ProjectMeta.SessionBehaviors.
+func TestReadProjectMeta_SessionBehaviors(t *testing.T) {
+	dir := t.TempDir()
+	boidDir := filepath.Join(dir, ".boid")
+	if err := os.MkdirAll(boidDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	yaml := `
+id: test-proj
+name: Test Project
+session_behaviors:
+  shape:
+    harness_type: codex
+    model: o3-mini
+`
+	if err := os.WriteFile(filepath.Join(boidDir, "project.yaml"), []byte(yaml), 0o644); err != nil {
+		t.Fatalf("write yaml: %v", err)
+	}
+
+	meta, err := projectspec.ReadProjectMeta(dir)
+	if err != nil {
+		t.Fatalf("read meta: %v", err)
+	}
+
+	shape, ok := meta.SessionBehaviors["shape"]
+	if !ok {
+		t.Fatalf("expected 'shape' session behavior, got %+v", meta.SessionBehaviors)
+	}
+	if shape.HarnessType != "codex" || shape.Model != "o3-mini" {
+		t.Fatalf("unexpected shape session behavior: %+v", shape)
+	}
+}
+
+// TestReadProjectMeta_SessionBehaviors_Empty verifies that a project.yaml
+// with no session_behaviors key leaves ProjectMeta.SessionBehaviors empty —
+// a regression guard so the new field doesn't synthesize entries out of
+// nothing for the vast majority of projects that don't set it.
+func TestReadProjectMeta_SessionBehaviors_Empty(t *testing.T) {
+	dir := t.TempDir()
+	boidDir := filepath.Join(dir, ".boid")
+	if err := os.MkdirAll(boidDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	yaml := `
+id: test-proj
+name: Test Project
+task_behaviors:
+  dev:
+    name: development
+`
+	if err := os.WriteFile(filepath.Join(boidDir, "project.yaml"), []byte(yaml), 0o644); err != nil {
+		t.Fatalf("write yaml: %v", err)
+	}
+
+	meta, err := projectspec.ReadProjectMeta(dir)
+	if err != nil {
+		t.Fatalf("read meta: %v", err)
+	}
+
+	if len(meta.SessionBehaviors) != 0 {
+		t.Fatalf("expected no session behaviors, got %+v", meta.SessionBehaviors)
+	}
+}
+
 // TestReadProjectMeta_HookCommandField verifies that ReadProjectMeta parses
 // the hooks[].command inline field (docs/plans/script-hook-removal.md) from
 // YAML into Hook.Command. No backing .boid/hooks/<id>.sh file is required —
@@ -434,6 +503,42 @@ func TestReadProjectMeta_DeferredWorktreeTokens(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), `top-level "additional_bindings" is no longer supported`) {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+// TestReadProjectMetaWithKits_SessionBehaviors_Preserved verifies that
+// session_behaviors survives ReadProjectMetaWithKits' meta cloning
+// (cloneProjectMeta) — a field easy to lose silently since it isn't part of
+// the task_behaviors overlay-merge path cloneProjectMeta otherwise exists
+// for. This only checks the value round-trips through the load; the deep
+// -copy guarantee itself (mutating a caller's copy must not corrupt a
+// cached one) is checked where it actually matters — ProjectStore's cache —
+// by TestGetWithWorkspace_SessionBehaviorsNotMutated in
+// project_store_hydrate_test.go (ReadProjectMetaWithKits re-reads from disk
+// every call, so mutating its return value here can never leak into a
+// second call regardless of whether the clone is deep or shallow).
+func TestReadProjectMetaWithKits_SessionBehaviors_Preserved(t *testing.T) {
+	dir := t.TempDir()
+	boidDir := filepath.Join(dir, ".boid")
+	_ = os.MkdirAll(boidDir, 0o755)
+	_ = os.WriteFile(filepath.Join(boidDir, "project.yaml"), []byte(`id: test-proj
+name: Test
+session_behaviors:
+  shape:
+    harness_type: codex
+    model: o3-mini
+task_behaviors:
+  dev:
+    name: dev
+`), 0o644)
+
+	meta, err := projectspec.ReadProjectMetaWithKits(dir)
+	if err != nil {
+		t.Fatalf("read meta: %v", err)
+	}
+	shape, ok := meta.SessionBehaviors["shape"]
+	if !ok || shape.HarnessType != "codex" || shape.Model != "o3-mini" {
+		t.Fatalf("session_behaviors not preserved: %+v", meta.SessionBehaviors)
 	}
 }
 

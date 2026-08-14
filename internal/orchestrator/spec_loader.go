@@ -602,6 +602,7 @@ func cloneProjectMeta(meta *ProjectMeta) *ProjectMeta {
 	result.HostCommands = cloneHostCommands(meta.HostCommands)
 	result.AdditionalBindings = cloneBindMounts(meta.AdditionalBindings)
 	result.TaskBehaviors = cloneTaskBehaviorMap(meta.TaskBehaviors)
+	result.SessionBehaviors = cloneSessionBehaviorMap(meta.SessionBehaviors)
 	return &result
 }
 
@@ -624,6 +625,21 @@ func cloneTaskBehaviorMap(src map[string]TaskBehavior) map[string]TaskBehavior {
 		v.Env = nil
 		v.HostCommands = nil
 		v.AdditionalBindings = nil
+		result[k] = v
+	}
+	return result
+}
+
+// cloneSessionBehaviorMap deep-copies the session behavior map. Unlike
+// TaskBehavior, SessionBehavior has no runtime-overlay fields to reset —
+// every field is plain project.yaml data (two strings) — so a straight
+// value copy of the map entries is already a deep copy.
+func cloneSessionBehaviorMap(src map[string]SessionBehavior) map[string]SessionBehavior {
+	if len(src) == 0 {
+		return nil
+	}
+	result := make(map[string]SessionBehavior, len(src))
+	for k, v := range src {
 		result[k] = v
 	}
 	return result
