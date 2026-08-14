@@ -902,6 +902,25 @@ func (h *WebHandler) PostStartShapingSession(w http.ResponseWriter, r *http.Requ
 // 等 workspace 固有のキー) is passed through verbatim rather than parsed here
 // — the daemon does not interpret task_triage.detail's keys (triage_read.go's
 // TaskTriageView doc comment), and neither does this instruction builder.
+//
+// Deliberately silent on HOW to write the card back (2026-08-14 incident):
+// an earlier revision of this text prescribed "本文ファイルに追記した上で" —
+// a procedural instruction that happened to collide with a workspace's own
+// convention (khi's note.md frontmatter is a derived projection; writing it
+// directly gets silently overwritten by the next sweep, and the correct
+// input layer is a claim + daemon_sync reconcile owned by that workspace's
+// own note-spec skill). The daemon has no business prescribing a workspace's
+// write path — that's exactly the "channel-specific knowledge stays on the
+// workspace side" boundary (triage_read.go's TaskTriageView doc comment)
+// applied to procedure, not just data. This function now states boid's own
+// contract (bring the card to ready) and defers everything about "how" to
+// the target project's own CLAUDE.md / skills, discovered the same way any
+// other session in that project's sandbox would discover them — no
+// project.yaml schema field, no reserved behavior name (see 2026-08-14
+// session's design discussion for the rejected alternatives: a reserved
+// task_behaviors key re-litigates the supervisor/executor alias removal —
+// spec_types.go's TaskBehavior doc comment — and task_behaviors doesn't even
+// reach sessions, only task creation via ResolveBehavior).
 func buildShapingInstruction(task *orchestrator.Task, triage *orchestrator.TaskTriage) string {
 	var b strings.Builder
 	b.WriteString("整形セッション: 以下の triage カードの内容を詰め、対象 project・実行内容・完了条件を確定してください。\n\n")
@@ -925,7 +944,11 @@ func buildShapingInstruction(task *orchestrator.Task, triage *orchestrator.TaskT
 		b.WriteString("\n\ndetail (raw):\n")
 		b.Write(triage.Detail)
 	}
-	b.WriteString("\n\n対話で対象 project・実行内容・完了条件を固めたら、本文ファイルに追記した上で card を ready に更新してください。整形の結果「やらない」と分かった場合は、このセッションでは何もせず nose に破棄 (drop) の判断を委ねてください。")
+	b.WriteString("\n\n対話で対象 project・実行内容・完了条件を固めたら、card を ready に更新してください。" +
+		"更新の具体的な手順 (書き込み先・経路) はこの project 自身の CLAUDE.md やスキルに従うこと — " +
+		"boid 側はここでは手順を指定しません。frontmatter やメタデータの直接編集が禁じられている project では、" +
+		"それに従ってください。" +
+		"整形の結果「やらない」と分かった場合は、このセッションでは何もせず運用者に破棄 (drop) の判断を委ねてください。")
 	return b.String()
 }
 
