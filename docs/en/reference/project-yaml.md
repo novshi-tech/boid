@@ -33,6 +33,7 @@ task_behaviors:
 | `base_branch` | string | (see below) | The PR target branch, resolved at task creation and stored in the row. **When omitted**: root tasks expand to the daemon's current HEAD branch (`${current_branch}` equivalent) at creation time — a detached-HEAD repository returns 400. Child tasks inherit the parent's `base_branch`. Supports `${TASK_REMOTE_ID}` and `${current_branch}` expansion (see [Dynamic base_branch](#dynamic-base_branch)). |
 | `fork_point` | string | (falls back to `origin/HEAD`) | Fork origin for case 3 (when `base_branch` does not yet exist locally or on `origin`). Any ref resolvable by `git rev-parse --verify` (branch / tag / SHA / `origin/main`). Falls back to `refs/remotes/origin/HEAD`; errors if neither is resolvable. |
 | `task_behaviors` | map (string → TaskBehavior) | yes | The kinds of tasks this project can produce. |
+| `session_behaviors` | map (string → SessionBehavior) | no | Per-use-case default `harness_type`/`model` for sessions (task-less interactive sessions). Distinct from `task_behaviors` — see [`session_behaviors.<name>`](#session_behaviorsname). |
 | `default_task_behavior` | string | no | The behavior to use when `boid task create` omits `--behavior`. When unset, the daemon falls back to `supervisor` if that behavior exists (with a deprecation warning); if neither is configured, `boid task create` returns an error. |
 | `kits` | — | **removed** | Rejected at load time (`project.yaml: top-level "kits" is no longer supported`). The kit mechanism itself was retired in Phase 2.5 PR6, and a *workspace's* own `kits:` field (`WorkspaceMeta.Kits`) was removed outright in Phase 2.5 PR7 (`docs/plans/workspace-db-consolidation.md`) — set `host_commands` / `env` directly on a workspace instead (`additional_bindings` was retired in Phase 4 PR4 — use the [workspace home `init.sh`](../guide/workspace-home.md)). See [`KitRef`](#kitref) below and the [kit authoring overview](../kit-authoring/overview.md). |
 | `host_commands` | — | **removed** | Rejected at load time. Set on a workspace instead (`boid workspace create/edit`) — but note a *workspace's* `host_commands:` is a list of reference **names**, not the map-of-specs shape documented under [HostCommands](#hostcommands) below (that map shape is still used by `kit.yaml` and by the daemon-wide `~/.config/boid/host_commands.yaml` registry a workspace's names resolve against). See [Onboarding / Defining host_commands](../guide/onboarding.md#defining-host_commands-the-daemon-wide-registry). |
@@ -142,6 +143,30 @@ The merge command, timing, and target are the **responsibility of the project in
 A single Instruction object. At task creation it is appended to `Task.Instructions` and becomes the active instruction the first time the task enters `executing`.
 
 A `boid task reopen <id> --message "..."` call appends a new Instruction at the end of the array; the last element is what the agent sees, and `agent` / `model` are inherited from the previously active one.
+
+## `session_behaviors.<name>`
+
+The same free-naming dictionary shape as `task_behaviors`, but for **sessions** (task-less interactive sessions, launched from the Web UI's session-start buttons or the `boid agent` CLI — distinct from `boid exec`, a different JobKind that does not read `session_behaviors`) rather than tasks.
+
+Sessions do not go through `ResolveBehavior` (the task-creation-time behavior resolution) — sessions and tasks are separate concepts inside the daemon, so a session never reads `task_behaviors.<name>.default_instruction.model`. If a session needs a default harness/model from project.yaml, it reads `session_behaviors` instead.
+
+The use-case key (the map key) is chosen by the caller. Today the only caller is the Web UI's Shape button (launches a shaping session from a triaged task), using the key `shape`. There are no canonical names like `task_behaviors`' `supervisor`/`executor` — if another caller starts consuming a new use-case key in the future, see that feature's own documentation rather than this section.
+
+```yaml
+session_behaviors:
+  shape:
+    harness_type: codex
+    model: o3-mini
+```
+
+Fields per entry:
+
+| Key | Type | Default | Role |
+|---|---|---|---|
+| `harness_type` | string | (empty — caller falls back) | The harness to launch the session with (`claude` / `codex` / `opencode`). An invalid value causes the caller to fall back to its own default rather than error. |
+| `model` | string | (empty — harness default) | The model to pass to the harness at session launch. |
+
+> **Note:** `session_behaviors` carries no procedure — only data (harness_type/model). How to actually do the work is still left to the target project's own CLAUDE.md / skill discovery.
 
 ## Shared building blocks
 

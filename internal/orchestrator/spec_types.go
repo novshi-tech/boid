@@ -351,6 +351,21 @@ type TaskBehavior struct {
 	AdditionalBindings []BindMount       `yaml:"-" json:"-"`
 }
 
+// SessionBehavior declares the default harness_type/model a project wants
+// for a named session use-case (e.g. "shape" — see WebHandler.
+// PostStartShapingSession in internal/api/web.go). Sessions are not driven
+// by the task state machine's ResolveBehavior, so they cannot reuse
+// TaskBehaviors' default_instruction.model — this is a deliberately
+// separate, session-only free-naming dictionary (ProjectMeta.
+// SessionBehaviors), not a reuse of task_behaviors' key space. Intentionally
+// a minimal struct (no Traits/Hooks/agent-message concept): sessions have no
+// routing or dispatch semantics to configure, only which harness/model to
+// launch with.
+type SessionBehavior struct {
+	HarnessType string `yaml:"harness_type,omitempty" json:"harness_type,omitempty"`
+	Model       string `yaml:"model,omitempty" json:"model,omitempty"`
+}
+
 // BehaviorSpec is an inline behavior specification that can be used instead of
 // referencing a named behavior from project.yaml task_behaviors. This allows
 // kits to self-describe the behavior they need without depending on project config.
@@ -389,6 +404,14 @@ type ProjectMeta struct {
 	ID            string                  `yaml:"id" json:"id"`
 	Name          string                  `yaml:"name" json:"name"`
 	TaskBehaviors map[string]TaskBehavior `yaml:"task_behaviors" json:"task_behaviors"`
+	// SessionBehaviors is a free-naming dictionary (same "any key name"
+	// model as TaskBehaviors) from a use-case key (e.g. "shape") to a
+	// default harness_type/model for sessions launched for that use case.
+	// Sessions do NOT resolve through TaskBehaviors/ResolveBehavior — see
+	// SessionBehavior's doc comment and buildShapingInstruction's doc
+	// comment in internal/api/web.go for the rejected-alternatives history
+	// this deliberately avoids repeating.
+	SessionBehaviors map[string]SessionBehavior `yaml:"session_behaviors,omitempty" json:"session_behaviors,omitempty"`
 	// BaseBranch is the default git base branch for worktrees created by
 	// tasks in this project. It is resolved at task creation time (with
 	// ${TASK_REMOTE_ID} / ${current_branch} expansion) and persisted on

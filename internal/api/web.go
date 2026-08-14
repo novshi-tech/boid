@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"mime/multipart"
 	"net"
 	"net/http"
@@ -909,9 +910,11 @@ func (h *WebHandler) PostStartShapingSession(w http.ResponseWriter, r *http.Requ
 	if h.TaskTriage != nil {
 		triage, _ = h.TaskTriage.GetTaskTriage(id) // best-effort — a missing sidecar row is not fatal, see triage_read.go's GetTriage doc comment
 	}
+	harnessType, model := shapingSessionDefaults(h.Service, task.ProjectID)
 	req := StartSessionRequest{
 		ProjectID:   task.ProjectID,
-		HarnessType: "claude",
+		HarnessType: harnessType,
+		Model:       model,
 		Instruction: buildShapingInstruction(task, triage),
 		DisplayName: "Shape: " + task.Title,
 	}
@@ -921,6 +924,46 @@ func (h *WebHandler) PostStartShapingSession(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	redirectOrHXRedirect(w, r, "/jobs/"+result.JobID)
+}
+
+// shapingSessionKey is the session_behaviors dictionary key the Shape
+// button resolves (project.yaml session_behaviors.shape). It is unrelated
+// to task_behaviors' reserved-name mechanism (a prior design that was
+// rejected — see buildShapingInstruction's doc comment below):
+// session_behaviors is a wholly separate, free-naming dictionary scoped to
+// sessions, and "shape" here is simply the use-case key this one caller
+// happens to look up.
+const shapingSessionKey = "shape"
+
+// shapingSessionDefaults resolves the harness_type/model the Shape button
+// should launch with, from the triage task's own (meta) project's
+// project.yaml session_behaviors.shape entry. It falls back to ("claude",
+// "") — the pre-session_behaviors hardcoded default, with model left
+// unset — when: the project cannot be loaded, the project has no
+// session_behaviors.shape entry, or the entry's harness_type is empty or
+// fails validateHarnessType. The fallback is deliberately all-or-nothing
+// (never harnessType=claude with the project's own model still attached):
+// an invalid harness_type means the whole entry is untrustworthy, and
+// silently forwarding just the model would launch claude with a model
+// value nobody chose for it. A project.yaml typo should not block the
+// operator from launching a shaping session at all; it should just fall
+// back to the known-good default rather than surface a 400.
+func shapingSessionDefaults(svc WebService, projectID string) (harnessType, model string) {
+	const fallbackHarness = "claude"
+	project, err := svc.GetProjectByID(projectID)
+	if err != nil || project == nil {
+		return fallbackHarness, ""
+	}
+	behavior, ok := project.Meta.SessionBehaviors[shapingSessionKey]
+	if !ok {
+		return fallbackHarness, ""
+	}
+	if behavior.HarnessType == "" || validateHarnessType(behavior.HarnessType) != "" {
+		slog.Warn("session_behaviors.shape.harness_type invalid; falling back to default",
+			"project_id", projectID, "harness_type", behavior.HarnessType)
+		return fallbackHarness, ""
+	}
+	return behavior.HarnessType, behavior.Model
 }
 
 // buildShapingInstruction folds a triage card's id/title/description/kind/
@@ -948,6 +991,14 @@ func (h *WebHandler) PostStartShapingSession(w http.ResponseWriter, r *http.Requ
 // task_behaviors key re-litigates the supervisor/executor alias removal —
 // spec_types.go's TaskBehavior doc comment — and task_behaviors doesn't even
 // reach sessions, only task creation via ResolveBehavior).
+//
+// 2026-08-14 follow-up: shapingSessionDefaults (above) later introduced
+// project.yaml session_behaviors.shape to let a project pick the Shape
+// button's default harness_type/model. This does not revisit the decision
+// above — session_behaviors is a wholly separate dictionary from
+// task_behaviors, and what it carries is data (which harness/model to
+// launch with), never procedure. The "no procedure in the instruction"
+// principle this comment documents is unchanged.
 func buildShapingInstruction(task *orchestrator.Task, triage *orchestrator.TaskTriage) string {
 	var b strings.Builder
 	b.WriteString("整形セッション: 以下の triage カードの内容を詰め、対象 project・実行内容・完了条件を確定してください。\n\n")

@@ -33,6 +33,7 @@ task_behaviors:
 | `base_branch` | string | (省略時は後述) | PR ターゲットとなるベースブランチ。 タスク作成時に解決して row に保存される。 **省略時**: root task は daemon の現 HEAD branch (`${current_branch}` 相当) に展開; child task は親の `base_branch` を継承。 detached HEAD で root task 作成時に省略すると 400 エラー。 `${TASK_REMOTE_ID}` / `${current_branch}` の展開をサポート (後述 [動的 base_branch](#動的-base_branch)) |
 | `fork_point` | string | (省略時 `origin/HEAD` フォールバック) | `base_branch` がまだローカル / origin のどちらにも存在しない状態 (case 3) で branch を作るときの fork 起点。 任意の `git rev-parse --verify` で解決可能な ref を指定 (branch / tag / SHA / `origin/main` など)。 **未設定時は `refs/remotes/origin/HEAD` にフォールバック**。 origin/HEAD も未設定なら case 3 はエラー (`git remote set-head origin --auto` を実行するか、 `fork_point` を設定する)。 **project root の作業ツリー HEAD は意図的に参照されない** — タスク作成からディスパッチまでの間にユーザが root で別 branch をチェックアウトしていても、 fork 起点が暴れない。 詳細は [`fork_point` と case 3](#fork_point-と-case-3) を参照 |
 | `task_behaviors` | map (string → TaskBehavior) | はい | このプロジェクトで作れる「タスクの種類」一覧 |
+| `session_behaviors` | map (string → SessionBehavior) | いいえ | session (task を伴わない対話セッション) 起動時の既定 `harness_type`/`model` を用途キーごとに設定する辞書。`task_behaviors` とは別物 — 詳細は [`session_behaviors.<name>`](#session_behaviorsname) を参照 |
 | `default_task_behavior` | string | いいえ | `boid task create` で `--behavior` を省略したときに使う behavior の名前。未指定の場合は `task_behaviors` に `supervisor` があれば暗黙で使う (WARN あり)、なければエラー |
 | `kits` | — | **撤去** | ロード時に reject される (`project.yaml: top-level "kits" is no longer supported`)。 kit 機構自体は Phase 2.5 PR6 で退役済み、 *workspace* 側の `kits` フィールド (`WorkspaceMeta.Kits`) も Phase 2.5 PR7 でコードから完全撤去 (`docs/plans/workspace-db-consolidation.md` 参照)。 `host_commands` / `env` を workspace に直接設定すること (`additional_bindings` は Phase 4 PR4 で撤去済み — [workspace home の `init.sh`](../guide/workspace-home.md) を使う)。 詳細は下記 [`KitRef`](#kitref) と [Kit 作者向け概要](../kit-authoring/overview.md) を参照 |
 | `host_commands` | — | **撤去** | ロード時に reject される。 workspace に設定する (`boid workspace create/edit`) — ただし *workspace* の `host_commands:` は参照 **名前** のリストであり、 下記 [HostCommands](#hostcommands) で説明するマップ形式ではない点に注意 (そのマップ形式は `kit.yaml` と daemon-wide の `~/.config/boid/host_commands.yaml` レジストリで使われ、 workspace の名前はそのレジストリを参照して解決される)。 [オンボーディング / host_commands を定義する](../guide/onboarding.md#host_commands-を定義する-daemon-側の集約レジストリ) を参照 |
@@ -193,6 +194,30 @@ task_behaviors:
 **shell dialect の注意**: `command:` は sandbox 内の `/bin/sh` (多くの環境で dash) 上で実行されます。 dash は `set -o pipefail` や `[[ ]]` などの bash 拡張構文を **reject** します。 これらが必要な hook は body を `bash <<'HEREDOC'` で wrap してください。 詳細とサンプルは [docs/plans/script-hook-removal.md](../../plans/script-hook-removal.md) の §R6 を参照。
 
 hook が宣言を持たない behavior では、 `default_instruction` から virtual agent hook が自動合成されます (`kind: agent` を明示宣言する必要はない) — 通常の `task_behaviors.<name>.default_instruction` を使う運用ではこの節は意識しなくても動きます。
+
+## `session_behaviors.<name>`
+
+`task_behaviors` と同じ free-naming の辞書ですが、対象は task ではなく **session** (task を伴わない対話セッション。Web UI のセッション起動ボタンや `boid agent` CLI から起動されるもので、`boid exec` (別の JobKind、`session_behaviors` は読まない) とは別物です) です。
+
+session は task 作成時に解決される `ResolveBehavior` を経由しません — session と task は daemon 内部で別概念として扱われるため、`task_behaviors.<name>.default_instruction.model` のような値を session が参照することはありません。session が harness/model の既定値を project.yaml から得たい場合は、この `session_behaviors` を使います。
+
+用途キー (map のキー) は呼び出し元が決める識別子です。現在参照しているのは Web UI の Shape ボタン (triaged task から整形セッションを起動する機能) のみで、キーは `shape` です。`task_behaviors` の `supervisor`/`executor` のような canonical name はありません — 今後別の呼び出し元が新しい用途キーを参照するようになった場合も、このセクションではなくその機能自身のドキュメントを参照してください。
+
+```yaml
+session_behaviors:
+  shape:
+    harness_type: codex
+    model: o3-mini
+```
+
+各エントリの設定項目:
+
+| キー | 型 | 既定 | 役割 |
+|---|---|---|---|
+| `harness_type` | string | (空 — 呼び出し元がフォールバック値を使う) | session 起動時の harness (`claude` / `codex` / `opencode`)。不正な値の場合は呼び出し元がフォールバックする (エラーにはならない) |
+| `model` | string | (空 — harness の既定モデル) | session 起動時に harness へ渡すモデル指定 |
+
+> **注意:** `session_behaviors` は procedure (手順) を持ちません。ここで渡せるのは harness_type/model という data のみです — 「どうやって作業するか」は引き続き project 自身の CLAUDE.md / スキルの discovery に委ねられます。
 
 ## 共通の構成要素
 
