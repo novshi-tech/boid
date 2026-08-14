@@ -165,6 +165,50 @@ func TestTaskWorkflowService_Dispatch_SpeccedChildren_CreatesTasksAndMarksDispat
 	}
 }
 
+// docs/plans/cross-project-issue-triage.md の spec スキーマ (note-format.md) は
+// description と instruction を別フィールドとして持つ想定だが、Dispatch は
+// instruction しか CreateTaskRequest に渡していなかった (2026-08-14, khi 側で
+// 実際に子タスクを起こしたところ、Web UI の description が空のまま instruction
+// に全文を詰め込む形になっていて見づらいと判明)。spec.description が子タスクの
+// description に届くことを確認する。
+func TestTaskWorkflowService_Dispatch_SpeccedChild_PassesDescriptionSeparatelyFromInstruction(t *testing.T) {
+	task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusReady, Behavior: "dev", Payload: []byte(`{}`)}
+	detail := []byte(`{
+		"children": [
+			{"id": "ch_00", "title": "do it", "status": "specced", "spec": {
+				"project": "p2", "behavior": "impl",
+				"description": "background context for the Web UI",
+				"instruction": "go do it"
+			}}
+		]
+	}`)
+	txStore := &recordingTxStore{
+		task:   task,
+		triage: map[string]*orchestrator.TaskTriage{"t1": {TaskID: "t1", Detail: detail}},
+	}
+	creator := &fakeTaskCreator{}
+	svc := newDispatchWorkflowService(task, txStore, creator)
+
+	if _, err := svc.Dispatch(context.Background(), task.ID); err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+
+	if len(creator.calls) != 1 {
+		t.Fatalf("CreateTask calls = %d, want 1", len(creator.calls))
+	}
+	call := creator.calls[0]
+	if call.Description != "background context for the Web UI" {
+		t.Fatalf("CreateTask request Description = %q, want spec.description to pass through", call.Description)
+	}
+	var instructions []orchestrator.Instruction
+	if err := json.Unmarshal(call.Instructions, &instructions); err != nil {
+		t.Fatalf("unmarshal instructions: %v", err)
+	}
+	if len(instructions) != 1 || instructions[0].Message != "go do it" {
+		t.Fatalf("instructions = %+v, want spec.instruction unchanged", instructions)
+	}
+}
+
 func TestTaskWorkflowService_Dispatch_RejectsNonReadyTask(t *testing.T) {
 	task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusTriaged, Behavior: "dev", Payload: []byte(`{}`)}
 	txStore := &recordingTxStore{task: task}

@@ -162,8 +162,16 @@ const (
 // routing confirmation is a 整形セッション / Phase 2 concern); an unresolvable
 // Project surfaces as a plain "project not found" error from CreateTask.
 type TaskTriageChildSpec struct {
-	Project     string `json:"project"`
-	Behavior    string `json:"behavior,omitempty"`
+	Project  string `json:"project"`
+	Behavior string `json:"behavior,omitempty"`
+	// Description is the child task's Web UI-visible description — the
+	// narrative/background content (source context, what to do, links).
+	// Kept separate from Instruction so the agent-facing instructions
+	// message can stay a short, reusable procedure while the human-facing
+	// context lives where the Web UI actually renders it (task_triage
+	// dispatch previously crammed everything into Instruction, which left
+	// the child task's description empty — nose 2026-08-14 feedback).
+	Description string `json:"description,omitempty"`
 	Instruction string `json:"instruction,omitempty"`
 }
 

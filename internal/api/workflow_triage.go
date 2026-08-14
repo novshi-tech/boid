@@ -706,6 +706,7 @@ func (s *TaskWorkflowService) Dispatch(ctx context.Context, taskID string) (*Act
 		childTask, cErr := s.TaskCreator.CreateTask(CreateTaskRequest{
 			ProjectID:    children[i].Spec.Project,
 			Title:        children[i].Title,
+			Description:  children[i].Spec.Description,
 			Behavior:     children[i].Spec.Behavior,
 			Instructions: instructions,
 			ParentID:     taskID,
