@@ -273,6 +273,15 @@ pre {
 .badge-ready               { background: #e0e7ff; color: #4338ca; }
 .badge-working             { background: #dcfce7; color: #15803d; }
 .badge-dropped             { background: #f5f5f4; color: #78716c; }
+/* task_triage.detail.children statuses (TaskDetailChildrenSection):
+   - open:       slate, same "not started" hue as pending — spec not written yet
+   - specced:    cyan, matches badge-triaged — understood, not yet task-ified
+   - dispatched: green, matches badge-working — a real task now exists
+   - closed:     neutral gray, matches badge-done */
+.badge-open                { background: #f1f5f9; color: #475569; }
+.badge-specced             { background: #cffafe; color: #0e7490; }
+.badge-dispatched          { background: #dcfce7; color: #15803d; }
+.badge-closed              { background: #e5e7eb; color: #6b7280; }
 
 @media (prefers-color-scheme: dark) {
   .badge-pending             { background: #1e293b; color: #94a3b8; }
@@ -292,6 +301,51 @@ pre {
   .badge-ready               { background: #312e81; color: #a5b4fc; }
   .badge-working             { background: #052e16; color: #4ade80; }
   .badge-dropped             { background: #292524; color: #a8a29e; }
+  .badge-open                { background: #1e293b; color: #94a3b8; }
+  .badge-specced             { background: #164e63; color: #67e8f9; }
+  .badge-dispatched          { background: #052e16; color: #4ade80; }
+  .badge-closed              { background: #1f2937; color: #9ca3af; }
+}
+
+/* --- Task detail: task_triage children list --- */
+.detail-children {
+  margin-top: var(--space-2);
+  padding-top: var(--space-2);
+  border-top: 1px solid var(--border);
+}
+
+.detail-children-label {
+  font-size: 0.8125rem;
+  color: var(--muted);
+  margin-bottom: var(--space-1);
+}
+
+.detail-children-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.detail-children-item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.detail-children-title {
+  flex: 1;
+}
+
+.detail-children-hint {
+  color: var(--muted);
+  font-size: 0.8125rem;
+}
+
+.detail-children-link {
+  font-size: 0.8125rem;
 }
 
 /* --- Card --- */
@@ -531,6 +585,20 @@ pre {
 .badge-urgency-now   { color: #b91c1c; }
 .badge-urgency-today { color: #c2410c; }
 .badge-urgency-week  { color: #1d4ed8; }
+
+/* Children preview (queue row, cross-project-issue-triage 実地テスト
+   2026-08-14 followup): "what does Go dispatch" at a glance, next to the
+   urgency badge — a compact counterpart to task detail's full
+   TaskDetailChildrenSection list. Muted pill so it reads as metadata, not
+   an action. */
+.task-row-children {
+  flex-shrink: 0;
+  padding: 1px var(--space-1);
+  border-radius: var(--radius-1);
+  background: var(--surface-2, rgba(127, 127, 127, 0.12));
+  color: var(--muted);
+  font-size: 0.75rem;
+}
 
 @media (prefers-color-scheme: dark) {
   .badge-urgency-now   { color: #f87171; }

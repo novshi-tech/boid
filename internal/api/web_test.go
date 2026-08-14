@@ -630,6 +630,66 @@ func TestWebHandlerPostStartShapingSession_NoDispatcher(t *testing.T) {
 	}
 }
 
+// TestWebHandler_TaskDetail_ShowsTriageChildren covers the gap nose hit
+// after the Shape launcher's first real dispatch: nothing on the task
+// detail page showed whether a triaged card's children had been specced
+// yet, so Go got pressed with no way to check dispatch-readiness first
+// (cross-project-issue-triage 実地テスト, 2026-08-14).
+func TestWebHandler_TaskDetail_ShowsTriageChildren(t *testing.T) {
+	detail := json.RawMessage(`{"children":[
+		{"id":"c1","title":"specced child","status":"specced","spec":{"project":"proj-a"}},
+		{"id":"c2","title":"open child","status":"open"}
+	]}`)
+	svc := &stubWebService{taskDetail: &TaskDetailView{Task: &orchestrator.Task{
+		ID:     "task-1",
+		Title:  "card title",
+		Status: orchestrator.TaskStatusTriaged,
+	}}}
+	triage := &stubTaskTriageStore{triage: &orchestrator.TaskTriage{TaskID: "task-1", Detail: detail}}
+	h := &WebHandler{Service: svc, TaskTriage: triage}
+	r := chi.NewRouter()
+	r.Get("/tasks/{id}", h.TaskDetail)
+
+	req := httptest.NewRequest(http.MethodGet, "/tasks/task-1", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusOK)
+	}
+	body := w.Body.String()
+	for _, want := range []string{"specced child", "open child", "no spec yet"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("body missing %q; got:\n%s", want, body)
+		}
+	}
+}
+
+// TestWebHandler_TaskDetail_NoTriageChildren_NoSection ensures the vast
+// majority of non-triage tasks render with no children section (nil
+// TaskTriage / missing sidecar row / no children key), not an empty box.
+func TestWebHandler_TaskDetail_NoTriageChildren_NoSection(t *testing.T) {
+	svc := &stubWebService{taskDetail: &TaskDetailView{Task: &orchestrator.Task{
+		ID:     "task-1",
+		Title:  "regular task",
+		Status: orchestrator.TaskStatusExecuting,
+	}}}
+	h := &WebHandler{Service: svc}
+	r := chi.NewRouter()
+	r.Get("/tasks/{id}", h.TaskDetail)
+
+	req := httptest.NewRequest(http.MethodGet, "/tasks/task-1", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusOK)
+	}
+	if strings.Contains(w.Body.String(), "detail-children") {
+		t.Error("body contains detail-children section, want none for a task with no triage children")
+	}
+}
+
 func TestWebHandlerPostDuplicate_Success(t *testing.T) {
 	svc := &stubWebService{duplicateTaskNewID: "new-task-id"}
 	r := newTestWebHandler(svc)

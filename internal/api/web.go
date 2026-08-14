@@ -443,7 +443,33 @@ func (h *WebHandler) TaskDetail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	projectName := h.lookupProjectName(detail.Task.ProjectID)
-	templates.TaskDetail(detail.Task, timelineGroups, jobs, detail.AvailableActions, errorMsg, tab, projectName).Render(r.Context(), w)
+	children := h.triageChildrenFor(id)
+	templates.TaskDetail(detail.Task, timelineGroups, jobs, detail.AvailableActions, errorMsg, tab, projectName, children).Render(r.Context(), w)
+}
+
+// triageChildrenFor returns the task_triage.detail.children for id, or nil
+// when there is no sidecar row / no TaskTriageStore wired / the detail blob
+// doesn't parse. Best-effort like PostStartShapingSession's triage lookup —
+// a task detail page must still render for a task with no triage children
+// (i.e. almost every task; children only exist on triage cards past the
+// note-spec step, cross-project-issue-triage plan doc's データモデル節).
+//
+// This closes the gap nose flagged after the Shape launcher's first real
+// dispatch: Go was pressed on a card with no way to see, from the Web UI,
+// whether any child had actually been specced (2026-08-14).
+func (h *WebHandler) triageChildrenFor(id string) []orchestrator.TaskTriageChild {
+	if h.TaskTriage == nil {
+		return nil
+	}
+	triage, err := h.TaskTriage.GetTaskTriage(id)
+	if err != nil || triage == nil || len(triage.Detail) == 0 {
+		return nil
+	}
+	children, err := orchestrator.DetailChildren(triage.Detail)
+	if err != nil {
+		return nil
+	}
+	return children
 }
 
 // lookupProjectName resolves a project ID to its display name (Meta.Name),
@@ -486,7 +512,8 @@ func (h *WebHandler) TaskDetailFragment(w http.ResponseWriter, r *http.Request) 
 		templates.TaskDetailTimelineSection(detail.Task, detailTimelineGroups(detail)).Render(r.Context(), w)
 	case "status":
 		projectName := h.lookupProjectName(detail.Task.ProjectID)
-		templates.TaskDetailStatusSection(detail.Task, detail.AvailableActions, "", projectName).Render(r.Context(), w)
+		children := h.triageChildrenFor(id)
+		templates.TaskDetailStatusSection(detail.Task, detail.AvailableActions, "", projectName, children).Render(r.Context(), w)
 	case "jobs":
 		templates.TaskDetailJobsSection(detail.Task, jobs).Render(r.Context(), w)
 	default:

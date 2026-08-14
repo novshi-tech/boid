@@ -213,6 +213,48 @@ func TestBuildQueueItems_PopulatesUrgencyAndSummaryFromTriage(t *testing.T) {
 	}
 }
 
+// TestBuildQueueItems_PopulatesChildren covers the queue-row children
+// preview added after the Shape launcher's first real dispatch (nose had
+// no way to see, from the queue list, whether Go would actually dispatch
+// anything — cross-project-issue-triage 実地テスト, 2026-08-14).
+func TestBuildQueueItems_PopulatesChildren(t *testing.T) {
+	t1 := makeTask("t1", "")
+	detail := []byte(`{"children":[
+		{"id":"c1","status":"specced"},
+		{"id":"c2","status":"open"}
+	]}`)
+	triage := map[string]*orchestrator.TaskTriage{
+		"t1": {TaskID: "t1", Detail: detail},
+	}
+
+	items := BuildQueueItems([]*orchestrator.Task{t1}, nil, triage)
+	if len(items) != 1 {
+		t.Fatalf("got %d items, want 1", len(items))
+	}
+	if len(items[0].Children) != 2 {
+		t.Fatalf("Children = %+v, want 2 entries", items[0].Children)
+	}
+	if items[0].Children[0].Status != orchestrator.TaskTriageChildStatusSpecced {
+		t.Errorf("Children[0].Status = %q, want specced", items[0].Children[0].Status)
+	}
+}
+
+// TestBuildQueueItems_MalformedChildrenJSON_LeavesChildrenEmpty mirrors
+// the malformed-summary case: a broken children key must not sink the row.
+func TestBuildQueueItems_MalformedChildrenJSON_LeavesChildrenEmpty(t *testing.T) {
+	t1 := makeTask("t1", "")
+	triage := map[string]*orchestrator.TaskTriage{
+		"t1": {TaskID: "t1", Detail: []byte(`not json`)},
+	}
+	items := BuildQueueItems([]*orchestrator.Task{t1}, nil, triage)
+	if len(items) != 1 {
+		t.Fatalf("got %d items, want 1", len(items))
+	}
+	if items[0].Children != nil {
+		t.Errorf("Children = %+v, want nil for malformed detail", items[0].Children)
+	}
+}
+
 func TestBuildQueueItems_MalformedDetailJSON_LeavesSummaryEmpty(t *testing.T) {
 	t1 := makeTask("t1", "")
 	triage := map[string]*orchestrator.TaskTriage{

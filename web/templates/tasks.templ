@@ -215,7 +215,7 @@ func detailRowClasses(task *orchestrator.Task) []string {
 // (status / behavior / project / updated). Actions are intentionally
 // NOT rendered here — they live in the sticky action bar at the bottom
 // of the page (see TaskActionBar).
-templ TaskDetailStatusSection(task *orchestrator.Task, availableActions []string, errorMsg string, projectName string) {
+templ TaskDetailStatusSection(task *orchestrator.Task, availableActions []string, errorMsg string, projectName string, children []orchestrator.TaskTriageChild) {
 	<div id="task-status">
 		<div class={ detailRowClasses(task) }>
 			<div class="detail-meta">
@@ -233,7 +233,43 @@ templ TaskDetailStatusSection(task *orchestrator.Task, availableActions []string
 		if errorMsg != "" {
 			<div class="action-error">{ errorMsg }</div>
 		}
+		@TaskDetailChildrenSection(children)
 	</div>
+}
+
+// TaskDetailChildrenSection lists a triage card's task_triage.detail.children
+// (id/title/status/spec presence) right under the status row, so "is this
+// card actually dispatch-ready" is answerable before pressing Go — nose hit
+// this blind after the Shape launcher's first real dispatch: no child had
+// been specced yet, and the Web UI gave no signal
+// (cross-project-issue-triage 実地テスト, 2026-08-14). Renders nothing for
+// the (overwhelming majority of) tasks with no children.
+templ TaskDetailChildrenSection(children []orchestrator.TaskTriageChild) {
+	if len(children) > 0 {
+		<div class="detail-children">
+			<div class="detail-children-label">Children ({ fmt.Sprintf("%d", len(children)) })</div>
+			<ul class="detail-children-list">
+				for _, child := range children {
+					<li class="detail-children-item">
+						<span class={ "badge", "badge-" + child.Status }>{ child.Status }</span>
+						<span class="detail-children-title">
+							if child.Title != "" {
+								{ child.Title }
+							} else {
+								{ child.ID }
+							}
+						</span>
+						if child.Status == orchestrator.TaskTriageChildStatusOpen {
+							<span class="detail-children-hint">(no spec yet)</span>
+						}
+						if child.TaskRef != "" {
+							<a href={ templ.SafeURL("/tasks/" + child.TaskRef) } class="detail-children-link">→ task</a>
+						}
+					</li>
+				}
+			</ul>
+		</div>
+	}
 }
 
 // detailPrimaryAction picks the single state-aware "primary" action for the
@@ -906,9 +942,9 @@ templ TaskDetailTabsSection(task *orchestrator.Task, timelineGroups []timeline.S
 	</div>
 }
 
-templ TaskDetail(task *orchestrator.Task, timelineGroups []timeline.StatusGroup, jobs []*JobView, availableActions []string, errorMsg string, activeTab string, projectName string) {
+templ TaskDetail(task *orchestrator.Task, timelineGroups []timeline.StatusGroup, jobs []*JobView, availableActions []string, errorMsg string, activeTab string, projectName string, children []orchestrator.TaskTriageChild) {
 	@Layout(task.Title, "/") {
-		@TaskDetailStatusSection(task, availableActions, errorMsg, projectName)
+		@TaskDetailStatusSection(task, availableActions, errorMsg, projectName, children)
 		@TaskDetailTabsSection(task, timelineGroups, jobs, availableActions, activeTab)
 	}
 }
