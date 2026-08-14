@@ -216,6 +216,74 @@ func TestListTasks_OpenTab_DoneParentExecutingChildDoneGrandchild(t *testing.T) 
 	}
 }
 
+// TestListTasks_OpenTab_ParkedParentDoneChild_NoLiveDescendant is a
+// regression test for the "working→parked にしても done な子が Open タブに
+// 残る" bug: the open_descendants ancestor-rescue CTE used to treat parked
+// (a non-terminal status) the same as executing/triaged, so a done child of
+// a parked parent with no other live descendants kept showing in the open
+// tab forever. parked must gate the descendant-rescue clause like a terminal
+// status does when nothing beneath it is actually still live.
+func TestListTasks_OpenTab_ParkedParentDoneChild_NoLiveDescendant(t *testing.T) {
+	d := setupFilterTestDB(t)
+
+	parent := &orchestrator.Task{ID: "parent-5", ProjectID: "proj-ws1-a", Title: "Parent", Behavior: "dev", Status: orchestrator.TaskStatusParked}
+	if err := orchestrator.CreateTask(d.Conn, parent); err != nil {
+		t.Fatalf("create parent: %v", err)
+	}
+	child := &orchestrator.Task{ID: "child-5", ProjectID: "proj-ws1-a", Title: "Child", Behavior: "dev", Status: orchestrator.TaskStatusDone, ParentID: "parent-5"}
+	if err := orchestrator.CreateTask(d.Conn, child); err != nil {
+		t.Fatalf("create child: %v", err)
+	}
+
+	got, err := orchestrator.ListTasks(d.Conn, orchestrator.TaskFilter{Status: "open"})
+	if err != nil {
+		t.Fatalf("ListTasks(open): %v", err)
+	}
+	if taskInResults(got, "child-5") {
+		t.Errorf("done child of parked parent with no live descendant should NOT appear in open tab, got IDs: %v", taskIDs(got))
+	}
+	if taskInResults(got, "parent-5") {
+		t.Errorf("parked parent with only a done child should NOT appear in open tab, got IDs: %v", taskIDs(got))
+	}
+}
+
+// TestListTasks_OpenTab_ParkedParentDoneChildLiveGrandchild is a regression
+// test for the "親がいないのに子だけ表示されている" orphan bug: a done child
+// of a parked parent that itself has a still-live grandchild must not vanish
+// from the open tab while its grandchild keeps showing — the whole ancestor
+// chain up to the parked root must stay visible via open_ancestors so the
+// tree stays consistent and progress is still trackable.
+func TestListTasks_OpenTab_ParkedParentDoneChildLiveGrandchild(t *testing.T) {
+	d := setupFilterTestDB(t)
+
+	parent := &orchestrator.Task{ID: "parent-7", ProjectID: "proj-ws1-a", Title: "Parent", Behavior: "dev", Status: orchestrator.TaskStatusParked}
+	if err := orchestrator.CreateTask(d.Conn, parent); err != nil {
+		t.Fatalf("create parent: %v", err)
+	}
+	child := &orchestrator.Task{ID: "child-7", ProjectID: "proj-ws1-a", Title: "Child", Behavior: "dev", Status: orchestrator.TaskStatusDone, ParentID: "parent-7"}
+	if err := orchestrator.CreateTask(d.Conn, child); err != nil {
+		t.Fatalf("create child: %v", err)
+	}
+	gc := &orchestrator.Task{ID: "gc-7", ProjectID: "proj-ws1-a", Title: "Grandchild", Behavior: "dev", Status: orchestrator.TaskStatusExecuting, ParentID: "child-7"}
+	if err := orchestrator.CreateTask(d.Conn, gc); err != nil {
+		t.Fatalf("create grandchild: %v", err)
+	}
+
+	got, err := orchestrator.ListTasks(d.Conn, orchestrator.TaskFilter{Status: "open"})
+	if err != nil {
+		t.Fatalf("ListTasks(open): %v", err)
+	}
+	if !taskInResults(got, "gc-7") {
+		t.Errorf("executing grandchild should appear in open tab, got IDs: %v", taskIDs(got))
+	}
+	if !taskInResults(got, "child-7") {
+		t.Errorf("done child that is the direct parent of a live grandchild should appear in open tab (no orphan), got IDs: %v", taskIDs(got))
+	}
+	if !taskInResults(got, "parent-7") {
+		t.Errorf("parked root with a live grandchild deep in its subtree should appear in open tab (no orphan), got IDs: %v", taskIDs(got))
+	}
+}
+
 func taskIDs(tasks []*orchestrator.Task) []string {
 	ids := make([]string, len(tasks))
 	for i, t := range tasks {
