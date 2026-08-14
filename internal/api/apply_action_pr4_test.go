@@ -156,7 +156,7 @@ func TestApplyAction_ChildAddedThenChildSpecced(t *testing.T) {
 
 	if _, err := svc.ApplyAction(context.Background(), task.ID, ApplyActionRequest{
 		Type:    "child_specced",
-		Payload: []byte(`{"id":"c1","project":"proj-2","behavior":"executor","instruction":"fix the review comment"}`),
+		Payload: []byte(`{"id":"c1","project":"proj-2","behavior":"executor","description":"background for the Web UI","instruction":"fix the review comment"}`),
 	}); err != nil {
 		t.Fatalf("ApplyAction(child_specced): %v", err)
 	}
@@ -169,6 +169,13 @@ func TestApplyAction_ChildAddedThenChildSpecced(t *testing.T) {
 	}
 	if children[0].Spec == nil || children[0].Spec.Project != "proj-2" {
 		t.Fatalf("spec not set correctly: %+v", children[0].Spec)
+	}
+	// description must round-trip through the child_specced action payload
+	// (Web UI-visible field, kept separate from Instruction — nose 2026-08-14
+	// feedback: instruction was carrying all the context, leaving the Web UI
+	// description empty).
+	if children[0].Spec.Description != "background for the Web UI" {
+		t.Fatalf("spec.Description = %q, want it to round-trip from the child_specced payload", children[0].Spec.Description)
 	}
 
 	// task row must never be written by either action (論点6-2 payload

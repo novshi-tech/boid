@@ -151,6 +151,7 @@ type childSpeccedPayload struct {
 	Title       string `json:"title,omitempty"`
 	Project     string `json:"project"`
 	Behavior    string `json:"behavior,omitempty"`
+	Description string `json:"description,omitempty"`
 	Instruction string `json:"instruction,omitempty"`
 }
 
@@ -187,6 +188,7 @@ func applyChildSpeccedSideEffect(tx TxStore, taskID string, p *childSpeccedPaylo
 	newDetail, serr := orchestrator.SpecDetailChild(tt.Detail, p.ID, orchestrator.TaskTriageChildSpec{
 		Project:     p.Project,
 		Behavior:    p.Behavior,
+		Description: p.Description,
 		Instruction: p.Instruction,
 	}, p.Title)
 	if serr != nil {
