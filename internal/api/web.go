@@ -886,7 +886,7 @@ func (h *WebHandler) PostStartShapingSession(w http.ResponseWriter, r *http.Requ
 		ProjectID:   task.ProjectID,
 		HarnessType: "claude",
 		Instruction: buildShapingInstruction(task, triage),
-		DisplayName: "整形: " + task.Title,
+		DisplayName: "Shape: " + task.Title,
 	}
 	result, err := h.SessionDispatcher.StartSession(r.Context(), req)
 	if err != nil {
