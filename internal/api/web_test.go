@@ -573,6 +573,36 @@ func TestWebHandlerPostStartShapingSession_Success(t *testing.T) {
 	}
 }
 
+func TestWebHandlerPostStartShapingSession_WorkingWithOpenChild(t *testing.T) {
+	svc := &stubWebService{taskDetail: &TaskDetailView{Task: &orchestrator.Task{
+		ID:          "task-1",
+		ProjectID:   "meta-proj",
+		Title:       "運用が回っていない気配",
+		Description: "詳細不明のsummaryのみ",
+		Status:      orchestrator.TaskStatusWorking,
+	}}}
+	dispatcher := &stubSessionDispatcher{result: &StartSessionResult{JobID: "job-9"}}
+	triage := &stubTaskTriageStore{triage: &orchestrator.TaskTriage{TaskID: "task-1", Kind: "issue", Urgency: "week"}}
+	r := newTestWebHandlerWithShaping(svc, dispatcher, triage)
+
+	req := httptest.NewRequest(http.MethodPost, "/tasks/task-1/shape", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusSeeOther {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusSeeOther)
+	}
+	if !dispatcher.callable {
+		t.Fatal("StartSession was not called for a working task")
+	}
+	if !strings.Contains(dispatcher.lastReq.Instruction, "open") {
+		t.Errorf("Instruction should mention open children for a working task; got:\n%s", dispatcher.lastReq.Instruction)
+	}
+	if strings.Contains(dispatcher.lastReq.Instruction, "card を ready に更新してください") {
+		t.Errorf("working-task instruction should not tell the agent to move the card back to ready; got:\n%s", dispatcher.lastReq.Instruction)
+	}
+}
+
 func TestWebHandlerPostStartShapingSession_UsesSessionBehaviorsDefaults(t *testing.T) {
 	svc := &stubWebService{
 		taskDetail: &TaskDetailView{Task: &orchestrator.Task{

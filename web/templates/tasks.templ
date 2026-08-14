@@ -385,11 +385,16 @@ templ TaskActionBar(task *orchestrator.Task, availableActions []string, activeTa
 				if task.Status == orchestrator.TaskStatusPending {
 					<a href={ templ.SafeURL("/tasks/" + task.ID + "/edit") } class="btn btn-secondary">Edit</a>
 				}
-				if task.Status == orchestrator.TaskStatusTriaged {
+				if task.Status == orchestrator.TaskStatusTriaged || task.Status == orchestrator.TaskStatusWorking {
 					// Shape (UC-3 shaping session launcher, cross-project-issue-triage
 					// plan doc — 整形 in the plan doc's Japanese). Secondary to Go:
 					// shaping is for cards still too fuzzy to Go on directly, not
-					// the default path.
+					// the default path. Also offered on working (2026-08-14
+					// follow-up): a dispatched card can still have open children
+					// (task_triage.detail.children) needing their own spec —
+					// filing a Jira issue, adding work — and there was no Web UI
+					// path to launch a shaping session for those once the parent
+					// left triaged.
 					<form method="post" action={ templ.SafeURL("/tasks/" + task.ID + "/shape") } class="action-bar-primary-form">
 						<button type="submit" class="btn btn-secondary">Shape</button>
 					</form>

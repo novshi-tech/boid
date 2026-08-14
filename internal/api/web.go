@@ -886,10 +886,16 @@ func (h *WebHandler) PostStartSession(w http.ResponseWriter, r *http.Request) {
 // into the bootstrap instruction so the agent has the card in hand at
 // turn one instead of the operator re-typing it.
 //
-// Only reachable from a triaged card (mirrors detailPrimaryAction's
-// triaged→ready gating in tasks.templ) — shaping a card that already has
-// no open question, or one still in captured, is not a state this button
-// is offered from.
+// Reachable from a triaged card (mirrors detailPrimaryAction's
+// triaged→ready gating in tasks.templ) OR a working card — shaping a card
+// that already has no open question, or one still in captured, is not a
+// state this button is offered from. working is included alongside
+// triaged (2026-08-14 follow-up) because a working triage task can still
+// have open children (task_triage.detail.children, see
+// TaskDetailChildrenSection) that need their own spec defined — filing a
+// Jira issue, deciding what work to add — and there was previously no
+// Web UI way to launch a shaping session for those once the parent moved
+// past triaged.
 func (h *WebHandler) PostStartShapingSession(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	if h.SessionDispatcher == nil {
@@ -902,8 +908,8 @@ func (h *WebHandler) PostStartShapingSession(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	task := detail.Task
-	if task.Status != orchestrator.TaskStatusTriaged {
-		redirectTaskErr(w, r, id, fmt.Errorf("shaping session requires a triaged task (status = %s)", task.Status))
+	if task.Status != orchestrator.TaskStatusTriaged && task.Status != orchestrator.TaskStatusWorking {
+		redirectTaskErr(w, r, id, fmt.Errorf("shaping session requires a triaged or working task (status = %s)", task.Status))
 		return
 	}
 	var triage *orchestrator.TaskTriage
@@ -1001,7 +1007,13 @@ func shapingSessionDefaults(svc WebService, projectID string) (harnessType, mode
 // principle this comment documents is unchanged.
 func buildShapingInstruction(task *orchestrator.Task, triage *orchestrator.TaskTriage) string {
 	var b strings.Builder
-	b.WriteString("整形セッション: 以下の triage カードの内容を詰め、対象 project・実行内容・完了条件を確定してください。\n\n")
+	if task.Status == orchestrator.TaskStatusWorking {
+		b.WriteString("整形セッション: この working カードには spec 未確定の子タスク (children, status=open) が" +
+			"含まれています。以下の情報を参考に、open な子タスクそれぞれについて対象 project・実行内容・" +
+			"完了条件を詰めてください（必要なら Jira 起票、作業項目の追加を含む）。\n\n")
+	} else {
+		b.WriteString("整形セッション: 以下の triage カードの内容を詰め、対象 project・実行内容・完了条件を確定してください。\n\n")
+	}
 	fmt.Fprintf(&b, "task_id: %s\n", task.ID)
 	fmt.Fprintf(&b, "title: %s\n", task.Title)
 	if triage != nil {
@@ -1022,11 +1034,20 @@ func buildShapingInstruction(task *orchestrator.Task, triage *orchestrator.TaskT
 		b.WriteString("\n\ndetail (raw):\n")
 		b.Write(triage.Detail)
 	}
-	b.WriteString("\n\n対話で対象 project・実行内容・完了条件を固めたら、card を ready に更新してください。" +
-		"更新の具体的な手順 (書き込み先・経路) はこの project 自身の CLAUDE.md やスキルに従うこと — " +
-		"boid 側はここでは手順を指定しません。frontmatter やメタデータの直接編集が禁じられている project では、" +
-		"それに従ってください。" +
-		"整形の結果「やらない」と分かった場合は、このセッションでは何もせず運用者に破棄 (drop) の判断を委ねてください。")
+	if task.Status == orchestrator.TaskStatusWorking {
+		b.WriteString("\n\n対話で子タスクの対象 project・実行内容・完了条件を固めたら、その子タスクを specced に更新してください" +
+			"（このカード自身を ready に戻す必要はありません — working のまま子タスクの整形だけを行います）。" +
+			"更新の具体的な手順 (書き込み先・経路) はこの project 自身の CLAUDE.md やスキルに従うこと — " +
+			"boid 側はここでは手順を指定しません。frontmatter やメタデータの直接編集が禁じられている project では、" +
+			"それに従ってください。" +
+			"整形の結果「やらない」と分かった子タスクについては、このセッションでは何もせず運用者に破棄の判断を委ねてください。")
+	} else {
+		b.WriteString("\n\n対話で対象 project・実行内容・完了条件を固めたら、card を ready に更新してください。" +
+			"更新の具体的な手順 (書き込み先・経路) はこの project 自身の CLAUDE.md やスキルに従うこと — " +
+			"boid 側はここでは手順を指定しません。frontmatter やメタデータの直接編集が禁じられている project では、" +
+			"それに従ってください。" +
+			"整形の結果「やらない」と分かった場合は、このセッションでは何もせず運用者に破棄 (drop) の判断を委ねてください。")
+	}
 	return b.String()
 }
 
