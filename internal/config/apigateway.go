@@ -58,6 +58,19 @@ type ServiceConfig struct {
 	// SUPPORTED at all (PR1's stated primary use case: an internal test/ops
 	// API that legitimately has no TLS yet).
 	AllowInsecure bool `yaml:"allow_insecure,omitempty"`
+	// AllowReadOnlyWrite opts this service out of the read-only→GET/HEAD-only
+	// gate (apigateway.Server.ServeHTTP / apigateway.ServiceConfig's own doc
+	// comment) so a read-only job token can still POST/PUT/PATCH/DELETE to
+	// it — e.g. a Slack "post completion report" webhook a review job (which
+	// is readonly:true so it can't touch the sandbox workspace) should still
+	// be able to reach. Deliberately config.yaml-only (never a project.yaml/
+	// task_behaviors field): granting it from inside the repo would let a
+	// prompt-injected agent grant itself write access to any service already
+	// reachable from the job token, defeating the readonly gate entirely
+	// (docs/plans/api-gateway.md:59-62's "project.yaml には credential
+	// アクセス権限を置かない" decision). Defaults to false (fail-closed) —
+	// an operator must explicitly opt each service in.
+	AllowReadOnlyWrite bool `yaml:"allow_readonly_write,omitempty"`
 }
 
 // validServiceAuthKinds is the initial AuthKind set docs/plans/api-gateway.md
@@ -301,6 +314,7 @@ func (c Config) APIGatewayServices() []apigateway.ServiceConfig {
 				Query:     sc.Auth.Query,
 				Provider:  sc.Auth.Provider,
 			},
+			AllowReadOnlyWrite: sc.AllowReadOnlyWrite,
 		})
 	}
 	return out

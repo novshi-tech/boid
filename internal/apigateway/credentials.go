@@ -57,6 +57,20 @@ type ServiceConfig struct {
 	Name    string
 	BaseURL string
 	Auth    ServiceAuth
+	// AllowReadOnlyWrite opts this ONE service out of the ordinary
+	// read-only→GET/HEAD-only gate (Server.ServeHTTP, isSafeMethod).
+	// docs/plans/api-gateway.md §論点 (2026-08-14 追加決定): readonly job
+	// tokens still can't touch the sandbox filesystem, but some services
+	// (e.g. a Slack "post completion report" webhook) are safe to let a
+	// read-only job POST to even though the job can't write code. This is
+	// deliberately a daemon-config-only knob — never project.yaml/
+	// task_behaviors — because granting it from inside the repo would let a
+	// prompt-injected agent grant itself write access to any service it can
+	// already reach (docs/plans/api-gateway.md:59-62's "project.yaml には
+	// credential アクセス権限を置かない" decision). Defaults to false
+	// (fail-closed): a service must be explicitly opted in by whoever
+	// controls config.yaml.
+	AllowReadOnlyWrite bool
 }
 
 // SecretResolver resolves a secret-store key reference, scoped to a
@@ -72,8 +86,9 @@ type SecretResolver func(namespace, key string) (string, error)
 // resolvedService is a ServiceConfig with its base_url pre-parsed once at
 // construction time, so per-request handling never re-parses it.
 type resolvedService struct {
-	auth    ServiceAuth
-	baseURL *url.URL
+	auth               ServiceAuth
+	baseURL            *url.URL
+	allowReadOnlyWrite bool
 }
 
 // CredentialProvider knows which services the gateway can reach (name →
@@ -105,7 +120,7 @@ func NewCredentialProvider(services []ServiceConfig, resolver SecretResolver) *C
 				"service", s.Name, "base_url", s.BaseURL, "error", err)
 			continue
 		}
-		m[s.Name] = resolvedService{auth: s.Auth, baseURL: u}
+		m[s.Name] = resolvedService{auth: s.Auth, baseURL: u, allowReadOnlyWrite: s.AllowReadOnlyWrite}
 	}
 	return &CredentialProvider{services: m, resolver: resolver}
 }
@@ -179,6 +194,19 @@ func (c *CredentialProvider) BaseURLFor(name string) (u *url.URL, ok bool) {
 		return nil, false
 	}
 	return rs.baseURL, true
+}
+
+// AllowsReadOnlyWrite reports whether name's ServiceConfig opted into the
+// read-only-write escape hatch (ServiceConfig.AllowReadOnlyWrite's own doc
+// comment). An unknown service (or a nil CredentialProvider) reports false —
+// fail-closed, matching KnowsService/BaseURLFor's own posture for an unknown
+// name.
+func (c *CredentialProvider) AllowsReadOnlyWrite(name string) bool {
+	if c == nil {
+		return false
+	}
+	rs, ok := c.services[name]
+	return ok && rs.allowReadOnlyWrite
 }
 
 // Resolve validates that credential injection for name would succeed —

@@ -240,7 +240,11 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if entry.ReadOnly && !isSafeMethod(r.Method) {
+	// ServiceConfig.AllowReadOnlyWrite (docs/plans/api-gateway.md §論点,
+	// 2026-08-14 追加決定) is a daemon-config-only, per-service opt-out of
+	// this gate — see that field's own doc comment for why it must never be
+	// settable from project.yaml/task_behaviors.
+	if entry.ReadOnly && !isSafeMethod(r.Method) && !s.credentials.AllowsReadOnlyWrite(rt.service) {
 		s.recorder(entry.TaskID, r.Method, rt.service, rt.path, http.StatusForbidden)
 		http.Error(w, "forbidden: read-only job token may only use GET/HEAD", http.StatusForbidden)
 		return
