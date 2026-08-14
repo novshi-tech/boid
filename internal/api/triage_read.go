@@ -27,8 +27,8 @@ import (
 //
 // The view unions three sources:
 //
-//   - the task row (status/project/title) — state itself lives here, not in
-//     the sidecar
+//   - the task row (status/project/title/description) — state itself lives
+//     here, not in the sidecar
 //   - the task_triage columns (kind/urgency/wake_at/wake_task_id)
 //   - ParkedFrom, DERIVED from the actions log and stored nowhere (決定13:
 //     event 追記を正、state は導出). Omitting it would be the exact gap the
@@ -43,6 +43,13 @@ type TaskTriageView struct {
 	ProjectID string                  `json:"project_id"`
 	Title     string                  `json:"title,omitempty"`
 	Status    orchestrator.TaskStatus `json:"status"`
+	// Description is the task row's body. It rides along with Title for the
+	// same reason Title does — a caller rendering the card needs both — but it
+	// was missed in PR-5a. The cost of that omission is concrete: khi's
+	// project_card.py renders the note body FROM this view, so without it every
+	// sweep pays one extra `boid task show --field description` round trip per
+	// card just to diff what it is about to write (2026-08-14).
+	Description string `json:"description,omitempty"`
 
 	Kind       string     `json:"kind,omitempty"`
 	Urgency    string     `json:"urgency,omitempty"`
@@ -149,10 +156,11 @@ func (s *TaskWorkflowService) ListTriage(filter orchestrator.TaskFilter) ([]*Tas
 // already-loaded sidecar row (tt may be nil: "task exists, no sidecar yet").
 func (s *TaskWorkflowService) triageViewFor(task *orchestrator.Task, tt *orchestrator.TaskTriage) *TaskTriageView {
 	view := &TaskTriageView{
-		TaskID:    task.ID,
-		ProjectID: task.ProjectID,
-		Title:     task.Title,
-		Status:    task.Status,
+		TaskID:      task.ID,
+		ProjectID:   task.ProjectID,
+		Title:       task.Title,
+		Description: task.Description,
+		Status:      task.Status,
 	}
 	if tt == nil {
 		return view

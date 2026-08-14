@@ -318,3 +318,43 @@ func (s *filterRecordingTaskStore) ListTasks(filter orchestrator.TaskFilter) ([]
 	s.last = filter
 	return nil, nil
 }
+
+// TestTriageView_CarriesDescription pins that the read surface returns the task
+// row's description. Without it the workspace side has to make a second
+// `boid task show --field description` call per card just to diff its own
+// rendered body against what the daemon holds — which is exactly the
+// "読み戻しが完全でない" gap PR-5a set out to close, only one field further in.
+// khi's project_card.py renders the note body FROM this view, so a missing
+// description means one extra round trip per note on every sweep.
+func TestTriageView_CarriesDescription(t *testing.T) {
+	task := &orchestrator.Task{
+		ID: "t1", ProjectID: "p1", Title: "見積もり依頼",
+		Description: "顧客から見積もりの催促。\n\n- canonical source: ROOKPF-303",
+		Status:      orchestrator.TaskStatusTriaged,
+	}
+	triage := &stubTriageStore{
+		rows: map[string]*orchestrator.TaskTriage{
+			"t1": {TaskID: "t1", Kind: "issue", Urgency: "today"},
+		},
+	}
+	svc := &TaskWorkflowService{Tasks: &multiTaskStore{tasks: []*orchestrator.Task{task}}, TaskTriage: triage}
+
+	view, err := svc.GetTriage("t1")
+	if err != nil {
+		t.Fatalf("GetTriage: %v", err)
+	}
+	if view.Description != task.Description {
+		t.Fatalf("GetTriage description = %q, want %q", view.Description, task.Description)
+	}
+
+	views, err := svc.ListTriage(orchestrator.TaskFilter{})
+	if err != nil {
+		t.Fatalf("ListTriage: %v", err)
+	}
+	if len(views) != 1 {
+		t.Fatalf("ListTriage returned %d views, want 1", len(views))
+	}
+	if views[0].Description != task.Description {
+		t.Fatalf("ListTriage description = %q, want %q", views[0].Description, task.Description)
+	}
+}
