@@ -24,10 +24,10 @@ type recordingRecorder struct {
 	calls []recordedCall
 }
 
-func (r *recordingRecorder) record(taskID, method, service, path string, status int) {
+func (r *recordingRecorder) record(req RecordedRequest) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.calls = append(r.calls, recordedCall{taskID, method, service, path, status})
+	r.calls = append(r.calls, recordedCall{req.TaskID, req.Method, req.Service, req.Path, req.Status})
 }
 
 func (r *recordingRecorder) last() recordedCall {
@@ -57,7 +57,7 @@ func TestServer_ProxiesWithBearerInjection(t *testing.T) {
 	defer upstream.Close()
 
 	registry := NewRegistry()
-	token := registry.Register([]string{"myapp"}, "ws-a", "task-1", false)
+	token := registry.Register(RegisterInput{Services: []string{"myapp"}, Namespace: "ws-a", TaskID: "task-1", ReadOnly: false})
 
 	creds := NewCredentialProvider([]ServiceConfig{
 		{Name: "myapp", BaseURL: upstream.URL, Auth: ServiceAuth{Kind: AuthBearer, SecretKey: "myapp-token"}},
@@ -121,7 +121,7 @@ func TestServer_ProxiesWithOAuth2Injection(t *testing.T) {
 	store.seed("ws-a", OAuthSecretKey("freee", oauthFieldRefreshToken), "refresh-from-boid-secret-set")
 
 	registry := NewRegistry()
-	token := registry.Register([]string{"freee"}, "ws-a", "task-1", false)
+	token := registry.Register(RegisterInput{Services: []string{"freee"}, Namespace: "ws-a", TaskID: "task-1", ReadOnly: false})
 
 	creds := NewCredentialProvider([]ServiceConfig{
 		{Name: "freee", BaseURL: upstream.URL, Auth: ServiceAuth{Kind: AuthOAuth2, Provider: "freee"}},
@@ -175,8 +175,8 @@ func TestServer_RoutesCredentialsByTokenNamespace(t *testing.T) {
 	}, stubResolver(secretsByNamespace))
 
 	registry := NewRegistry()
-	tokenA := registry.Register([]string{"myapp"}, "ws-a", "task-a", false)
-	tokenB := registry.Register([]string{"myapp"}, "ws-b", "task-b", false)
+	tokenA := registry.Register(RegisterInput{Services: []string{"myapp"}, Namespace: "ws-a", TaskID: "task-a", ReadOnly: false})
+	tokenB := registry.Register(RegisterInput{Services: []string{"myapp"}, Namespace: "ws-b", TaskID: "task-b", ReadOnly: false})
 
 	srv := NewServer(registry, creds, nil, nil)
 
@@ -206,7 +206,7 @@ func TestServer_StripsInboundAuthHeaders(t *testing.T) {
 	defer upstream.Close()
 
 	registry := NewRegistry()
-	token := registry.Register([]string{"myapp"}, "ws-a", "", false)
+	token := registry.Register(RegisterInput{Services: []string{"myapp"}, Namespace: "ws-a", TaskID: "", ReadOnly: false})
 	creds := NewCredentialProvider([]ServiceConfig{
 		{Name: "myapp", BaseURL: upstream.URL, Auth: ServiceAuth{Kind: AuthHeader, Header: "X-Api-Key", SecretKey: "k"}},
 	}, stubResolver(map[string]string{"ws-a/k": "v"}))
@@ -250,7 +250,7 @@ func TestServer_UnauthorizedToken(t *testing.T) {
 
 func TestServer_ForbiddenService(t *testing.T) {
 	registry := NewRegistry()
-	token := registry.Register([]string{"other-app"}, "ws-a", "task-1", false)
+	token := registry.Register(RegisterInput{Services: []string{"other-app"}, Namespace: "ws-a", TaskID: "task-1", ReadOnly: false})
 	creds := NewCredentialProvider([]ServiceConfig{
 		{Name: "myapp", BaseURL: "https://myapp.example.com", Auth: ServiceAuth{Kind: AuthBearer, SecretKey: "k"}},
 	}, stubResolver(nil))
@@ -280,7 +280,7 @@ func TestServer_ReadOnlyRejectsWriteMethods(t *testing.T) {
 	defer upstream.Close()
 
 	registry := NewRegistry()
-	token := registry.Register([]string{"myapp"}, "ws-a", "task-1", true /* readOnly */)
+	token := registry.Register(RegisterInput{Services: []string{"myapp"}, Namespace: "ws-a", TaskID: "task-1", ReadOnly: true /* readOnly */})
 	creds := NewCredentialProvider([]ServiceConfig{
 		{Name: "myapp", BaseURL: upstream.URL, Auth: ServiceAuth{Kind: AuthBearer, SecretKey: "k"}},
 	}, stubResolver(map[string]string{"ws-a/k": "v"}))
@@ -307,7 +307,7 @@ func TestServer_ReadOnlyRejectsWriteMethods(t *testing.T) {
 
 func TestServer_UnconfiguredServiceReturnsBadGateway(t *testing.T) {
 	registry := NewRegistry()
-	token := registry.Register([]string{"ghost"}, "ws-a", "", false)
+	token := registry.Register(RegisterInput{Services: []string{"ghost"}, Namespace: "ws-a", TaskID: "", ReadOnly: false})
 	creds := NewCredentialProvider(nil, stubResolver(nil)) // registry allows "ghost" but nothing configures it
 	rec := &recordingRecorder{}
 	srv := NewServer(registry, creds, nil, rec.record)
@@ -343,7 +343,7 @@ func TestServer_TransportErrorDoesNotLeakUpstreamHostToSandbox(t *testing.T) {
 	ln.Close()
 
 	registry := NewRegistry()
-	token := registry.Register([]string{"myapp"}, "ws-a", "task-1", false)
+	token := registry.Register(RegisterInput{Services: []string{"myapp"}, Namespace: "ws-a", TaskID: "task-1", ReadOnly: false})
 	creds := NewCredentialProvider([]ServiceConfig{
 		{Name: "myapp", BaseURL: "http://" + closedAddr, Auth: ServiceAuth{Kind: AuthBearer, SecretKey: "k"}},
 	}, stubResolver(map[string]string{"ws-a/k": "v"}))
@@ -368,7 +368,7 @@ func TestServer_TransportErrorDoesNotLeakUpstreamHostToSandbox(t *testing.T) {
 
 func TestServer_NoResolverConfiguredReturnsServiceUnavailable(t *testing.T) {
 	registry := NewRegistry()
-	token := registry.Register([]string{"myapp"}, "ws-a", "", false)
+	token := registry.Register(RegisterInput{Services: []string{"myapp"}, Namespace: "ws-a", TaskID: "", ReadOnly: false})
 	creds := NewCredentialProvider([]ServiceConfig{
 		{Name: "myapp", BaseURL: "https://myapp.example.com", Auth: ServiceAuth{Kind: AuthBearer, SecretKey: "k"}},
 	}, nil) // no resolver at all
@@ -392,7 +392,7 @@ func TestServer_CredentialResolutionFailureFailsFastWithoutContactingUpstream(t 
 	defer upstream.Close()
 
 	registry := NewRegistry()
-	token := registry.Register([]string{"myapp"}, "ws-a", "", false)
+	token := registry.Register(RegisterInput{Services: []string{"myapp"}, Namespace: "ws-a", TaskID: "", ReadOnly: false})
 	creds := NewCredentialProvider([]ServiceConfig{
 		{Name: "myapp", BaseURL: upstream.URL, Auth: ServiceAuth{Kind: AuthBearer, SecretKey: "missing-key"}},
 	}, stubResolver(nil)) // secret store has nothing for "missing-key"
@@ -427,7 +427,7 @@ func TestServer_UpstreamUnauthorizedNotifies(t *testing.T) {
 	defer upstream.Close()
 
 	registry := NewRegistry()
-	token := registry.Register([]string{"myapp"}, "ws-a", "", false)
+	token := registry.Register(RegisterInput{Services: []string{"myapp"}, Namespace: "ws-a", TaskID: "", ReadOnly: false})
 	creds := NewCredentialProvider([]ServiceConfig{
 		{Name: "myapp", BaseURL: upstream.URL, Auth: ServiceAuth{Kind: AuthBearer, SecretKey: "k"}},
 	}, stubResolver(map[string]string{"ws-a/k": "v"}))
@@ -467,7 +467,7 @@ func TestServer_QueryAuthInjectionPreservesExistingParams(t *testing.T) {
 	defer upstream.Close()
 
 	registry := NewRegistry()
-	token := registry.Register([]string{"legacy"}, "ws-a", "", false)
+	token := registry.Register(RegisterInput{Services: []string{"legacy"}, Namespace: "ws-a", TaskID: "", ReadOnly: false})
 	creds := NewCredentialProvider([]ServiceConfig{
 		{Name: "legacy", BaseURL: upstream.URL, Auth: ServiceAuth{Kind: AuthQuery, Query: "api_key", SecretKey: "k"}},
 	}, stubResolver(map[string]string{"ws-a/k": "qsecret"}))
@@ -526,7 +526,7 @@ func TestServer_RewriteInjectionRaceFailsFastWithoutContactingUpstream(t *testin
 	defer upstream.Close()
 
 	registry := NewRegistry()
-	token := registry.Register([]string{"myapp"}, "ws-a", "", false)
+	token := registry.Register(RegisterInput{Services: []string{"myapp"}, Namespace: "ws-a", TaskID: "", ReadOnly: false})
 	// Call 1 (ServeHTTP's Resolve pre-check) succeeds; call 2 (Rewrite's
 	// Inject) fails — simulating the secret vanishing in between.
 	creds := NewCredentialProvider([]ServiceConfig{
@@ -566,7 +566,7 @@ func TestServer_PercentEncodedSlashWithinSegmentReachesUpstreamUnchanged(t *test
 	defer upstream.Close()
 
 	registry := NewRegistry()
-	token := registry.Register([]string{"myapp"}, "ws-a", "", false)
+	token := registry.Register(RegisterInput{Services: []string{"myapp"}, Namespace: "ws-a", TaskID: "", ReadOnly: false})
 	creds := NewCredentialProvider([]ServiceConfig{
 		{Name: "myapp", BaseURL: upstream.URL, Auth: ServiceAuth{Kind: AuthBearer, SecretKey: "k"}},
 	}, stubResolver(map[string]string{"ws-a/k": "v"}))
@@ -597,7 +597,7 @@ func TestServer_TrailingSlashReachesUpstreamUnchanged(t *testing.T) {
 	defer upstream.Close()
 
 	registry := NewRegistry()
-	token := registry.Register([]string{"myapp"}, "ws-a", "", false)
+	token := registry.Register(RegisterInput{Services: []string{"myapp"}, Namespace: "ws-a", TaskID: "", ReadOnly: false})
 	creds := NewCredentialProvider([]ServiceConfig{
 		{Name: "myapp", BaseURL: upstream.URL, Auth: ServiceAuth{Kind: AuthBearer, SecretKey: "k"}},
 	}, stubResolver(map[string]string{"ws-a/k": "v"}))
@@ -640,7 +640,7 @@ func TestServer_DoubleSlashTailWithPathlessBaseURLIsNotSwallowed(t *testing.T) {
 	defer upstream.Close()
 
 	registry := NewRegistry()
-	token := registry.Register([]string{"myapp"}, "ws-a", "", false)
+	token := registry.Register(RegisterInput{Services: []string{"myapp"}, Namespace: "ws-a", TaskID: "", ReadOnly: false})
 	creds := NewCredentialProvider([]ServiceConfig{
 		// upstream.URL is pathless (e.g. "http://127.0.0.1:PORT", no
 		// trailing path segment) — the exact shape that triggered the bug.
@@ -735,7 +735,7 @@ func TestServer_SSEResponseStreamsIncrementally(t *testing.T) {
 	defer upstream.Close()
 
 	registry := NewRegistry()
-	token := registry.Register([]string{"myapp"}, "ws-a", "task-1", false)
+	token := registry.Register(RegisterInput{Services: []string{"myapp"}, Namespace: "ws-a", TaskID: "task-1", ReadOnly: false})
 	creds := NewCredentialProvider([]ServiceConfig{
 		{Name: "myapp", BaseURL: upstream.URL, Auth: ServiceAuth{Kind: AuthBearer, SecretKey: "k"}},
 	}, stubResolver(map[string]string{"ws-a/k": "sekret"}))
@@ -821,7 +821,7 @@ func TestServer_FlushIntervalNegative_FlushesKnownLengthResponse(t *testing.T) {
 	defer upstream.Close()
 
 	registry := NewRegistry()
-	token := registry.Register([]string{"myapp"}, "ws-a", "task-1", false)
+	token := registry.Register(RegisterInput{Services: []string{"myapp"}, Namespace: "ws-a", TaskID: "task-1", ReadOnly: false})
 	creds := NewCredentialProvider([]ServiceConfig{
 		{Name: "myapp", BaseURL: upstream.URL, Auth: ServiceAuth{Kind: AuthBearer, SecretKey: "k"}},
 	}, stubResolver(map[string]string{"ws-a/k": "sekret"}))

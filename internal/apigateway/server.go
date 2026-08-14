@@ -159,13 +159,13 @@ func NewServer(registry *Registry, credentials *CredentialProvider, notifier Ups
 					"service", info.service)
 				s.notifier.NotifyUpstreamAuthFailure(info.service)
 			}
-			s.recorder(info.taskID, info.method, info.service, info.path, resp.StatusCode)
+			s.recorder(RecordedRequest{TaskID: info.taskID, Method: info.method, Service: info.service, Path: info.path, Status: resp.StatusCode})
 			return nil
 		},
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
 			info, _ := r.Context().Value(routeInfoKey{}).(routeInfo)
 			slog.Warn("apigateway: upstream request failed", "service", info.service, "err", err)
-			s.recorder(info.taskID, info.method, info.service, info.path, http.StatusBadGateway)
+			s.recorder(RecordedRequest{TaskID: info.taskID, Method: info.method, Service: info.service, Path: info.path, Status: http.StatusBadGateway})
 			// The response body sent to the SANDBOX never includes err's own
 			// text (codex review round 6 finding): a genuine transport
 			// failure (DNS lookup, connection refused, TLS handshake) from
@@ -235,20 +235,20 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	allowed := entry.Services[rt.service]
 
 	if !allowed {
-		s.recorder(entry.TaskID, r.Method, rt.service, rt.path, http.StatusForbidden)
+		s.recorder(RecordedRequest{TaskID: entry.TaskID, Method: r.Method, Service: rt.service, Path: rt.path, Status: http.StatusForbidden})
 		http.Error(w, "forbidden: service not permitted for this job token", http.StatusForbidden)
 		return
 	}
 
 	if entry.ReadOnly && !isSafeMethod(r.Method) {
-		s.recorder(entry.TaskID, r.Method, rt.service, rt.path, http.StatusForbidden)
+		s.recorder(RecordedRequest{TaskID: entry.TaskID, Method: r.Method, Service: rt.service, Path: rt.path, Status: http.StatusForbidden})
 		http.Error(w, "forbidden: read-only job token may only use GET/HEAD", http.StatusForbidden)
 		return
 	}
 
 	baseURL, ok := s.credentials.BaseURLFor(rt.service)
 	if !ok {
-		s.recorder(entry.TaskID, r.Method, rt.service, rt.path, http.StatusBadGateway)
+		s.recorder(RecordedRequest{TaskID: entry.TaskID, Method: r.Method, Service: rt.service, Path: rt.path, Status: http.StatusBadGateway})
 		http.Error(w, "bad gateway: service "+rt.service+" is not configured", http.StatusBadGateway)
 		return
 	}
@@ -257,7 +257,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// per-key miss handled by the Resolve pre-check just below — mirrors
 	// internal/gitgateway.Server.ServeHTTP's identical two-tier check.
 	if !s.credentials.Configured() {
-		s.recorder(entry.TaskID, r.Method, rt.service, rt.path, http.StatusServiceUnavailable)
+		s.recorder(RecordedRequest{TaskID: entry.TaskID, Method: r.Method, Service: rt.service, Path: rt.path, Status: http.StatusServiceUnavailable})
 		http.Error(w, "service unavailable: api gateway has no secret resolver configured", http.StatusServiceUnavailable)
 		return
 	}
@@ -275,7 +275,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		slog.Warn("apigateway: credential resolution failed; refusing to forward (fail-fast)",
 			"service", rt.service, "namespace", entry.Namespace, "err", err)
 		s.notifier.NotifyCredentialError(rt.service, err)
-		s.recorder(entry.TaskID, r.Method, rt.service, rt.path, http.StatusBadGateway)
+		s.recorder(RecordedRequest{TaskID: entry.TaskID, Method: r.Method, Service: rt.service, Path: rt.path, Status: http.StatusBadGateway})
 		http.Error(w,
 			"bad gateway: api gateway credential resolution failed for service "+rt.service+": "+err.Error(),
 			http.StatusBadGateway)
@@ -315,7 +315,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// no malformed percent-encoding, and basePath comes from a
 		// config.yaml base_url that internal/config already validated as a
 		// parseable absolute URL — this should be unreachable in practice.
-		s.recorder(entry.TaskID, r.Method, rt.service, rt.path, http.StatusBadGateway)
+		s.recorder(RecordedRequest{TaskID: entry.TaskID, Method: r.Method, Service: rt.service, Path: rt.path, Status: http.StatusBadGateway})
 		http.Error(w, "bad gateway: could not construct upstream path: "+err.Error(), http.StatusBadGateway)
 		return
 	}

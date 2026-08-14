@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"os"
 
+	"github.com/novshi-tech/boid/internal/apigateway"
 	"github.com/novshi-tech/boid/internal/orchestrator"
 )
 
@@ -25,7 +26,12 @@ func (r *Runner) registerAPIGatewayToken(jobID string, spec *orchestrator.JobSpe
 	}
 	services := r.resolveEnabledAPIServices(workspaceID)
 	readOnly := !spec.Visibility.Writable
-	token = r.APIGateway.Register(services, spec.SecretNamespace, spec.TaskID, readOnly)
+	token = r.APIGateway.Register(apigateway.RegisterInput{
+		Services:  services,
+		Namespace: spec.SecretNamespace,
+		TaskID:    spec.TaskID,
+		ReadOnly:  readOnly,
+	})
 
 	r.apiGatewayMu.Lock()
 	if r.apiGatewayTokens == nil {
