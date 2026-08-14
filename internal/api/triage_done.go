@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/novshi-tech/boid/internal/notify"
 	"github.com/novshi-tech/boid/internal/orchestrator"
 )
 
@@ -231,7 +232,42 @@ func (s *TaskWorkflowService) autoDone(ctx context.Context, taskID string) (*Act
 	// call; discovering the omission later costs a stuck queue.
 	s.finalizeTerminal(ctx, newTask)
 
+	// 2026-08-14 追記: このパスは daemon 内部の headless sweep が直接
+	// working→done を適用するだけで、`boid task notify --done` 相当の呼び出しは
+	// 一度も発生しない — 通常タスクの done は agent 自身が
+	// task_notify.go の NotifyTask を叩くので fireUserNotify (root task ゲート)
+	// を通るが、triage card にはそもそも叩く agent が存在しない。ゲートを
+	// 通らない以前に「呼び出し自体が無い」ので、ここで明示的に notify する。
+	// autoDone のドキュメントコメントが言う通り card は常に root task
+	// (parent_id=="") なので、そのゲートと矛盾しない。
+	s.notifyTriageAutoDone(ctx, newTask)
+
 	return &ActionApplication{Task: newTask, Action: action}, nil
+}
+
+// notifyTriageAutoDone fires a best-effort user notification when
+// SweepTriage's autoDone completes a triage card without any agent session
+// ever running (see autoDone's own call site comment for why the ordinary
+// task_notify.go path never reaches this case). Mirrors
+// notifyIfUrgencyNow's own nil-tolerant, timeout-bounded shape — s.Notifier
+// is the same optional dependency, and a hung notify.command must not stall
+// the sweep loop.
+func (s *TaskWorkflowService) notifyTriageAutoDone(ctx context.Context, task *orchestrator.Task) {
+	if s.Notifier == nil || task == nil {
+		return
+	}
+	ev := notify.Event{
+		TaskID:    task.ID,
+		TaskTitle: task.Title,
+		ProjectID: task.ProjectID,
+		Message:   "queue: triage task が完了しました (children 全 closed)",
+		URLPath:   "/tasks/" + task.ID,
+	}
+	notifyCtx, cancel := context.WithTimeout(ctx, notifyTimeout)
+	defer cancel()
+	if err := s.Notifier.Notify(notifyCtx, ev); err != nil {
+		slog.Warn("triage sweep: auto-done notify failed", "task_id", task.ID, "error", err)
+	}
 }
 
 // resolveReopenVariant implements 決定17's routing: `reopen` stays the single
