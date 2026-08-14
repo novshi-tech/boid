@@ -47,6 +47,22 @@ var (
 		append([]TaskStatus{}, filterTaskStatuses(IsTerminalStatus)...),
 		filterTaskStatuses(IsPreExecutionStatus)...,
 	))
+	// notOpenAncestorGateStatusSQLList = terminal ∪ {parked} — used only by the
+	// open_descendants CTE's seed (子孫救済, 項3). "working → parked"
+	// (machine.go) explicitly parks a card aside while its already-dispatched
+	// child keeps running; that live child stays visible on its own status
+	// (self clause) without help from this gate. Once the child terminates,
+	// this gate must stop pulling it (or its done/aborted siblings) into the
+	// open view just because the parent is still "parked" — parked means
+	// "set aside", unlike executing/triaged which represent an actually live
+	// thread. Other pre-execution statuses (captured/triaged/ready) are
+	// deliberately NOT added here: per 逆輸入1, pre-execution tasks don't
+	// normally have real child Task rows yet, so widening the gate further
+	// would be scope creep.
+	notOpenAncestorGateStatusSQLList = sqlStatusInList(append(
+		append([]TaskStatus{}, filterTaskStatuses(IsTerminalStatus)...),
+		TaskStatusParked,
+	))
 )
 
 func filterTaskStatuses(pred func(TaskStatus) bool) []TaskStatus {
@@ -219,34 +235,64 @@ func ListTasks(dbtx db.DBTX, filter TaskFilter) ([]*Task, error) {
 	var joins []string
 	var ctePrefix string
 
-	// "open" は特殊フィルタ: 自身が open 状態 OR open な子を持つ（ヘッダー救済）OR open な祖先を持つ（子孫救済）
+	// "open" は特殊フィルタ: 自身が open 状態 OR open な子を持つ（ヘッダー救済）OR
+	// open な祖先を持つ（子孫救済）OR open な子孫を持つ（祖先救済、複数階層）
 	//
-	// 3箇所の NOT IN は役割が異なるため同じ集合を使わない (Opus指摘#7):
-	//   - CTE seed / 子孫救済 と 子救済 (sqlNotTerminal 相当) は「terminal でなければ open」
-	//     — pre-execution な子・子孫を含めたまま。進行中の triage task (executing な子を
-	//     持つ triaged 親など) を隠さないため。
-	//   - 自身が open かの self clause だけは「terminal でも pre-execution でもなければ open」
-	//     — pre-execution な task 単体は従来の open ビューを汚さない (項1 本来の目的)。
+	// NOT IN は役割ごとに使う集合が異なる (Opus指摘#7):
+	//   - 子救済 (taskChildCountCols 型の直接の子カウント) と祖先救済 CTE
+	//     (open_ancestors) は「terminal でなければ open」— pre-execution な子・
+	//     子孫を含めたまま。進行中の triage task (executing な子を持つ triaged
+	//     親など) を隠さないため。
+	//   - 子孫救済 CTE (open_descendants) の祖先ゲートだけは
+	//     notOpenAncestorGateStatusSQLList (terminal ∪ parked) を使う —
+	//     parked は「意図的に脇に置かれた」状態であり、executing/triaged と
+	//     違って「進行中の thread」ではないため、parked な祖先だけで
+	//     done/aborted な子孫まで救済してしまうと working→parked にした直後に
+	//     もう終わっている子タスクが Open タブに居座り続けるバグになる
+	//     (working→parked は machine.go の設計上、まだ生きている dispatched
+	//     child は self clause だけで開いたままになる)。
+	//   - 自身が open かの self clause だけは「terminal でも pre-execution でも
+	//     なければ open」— pre-execution な task 単体は従来の open ビューを
+	//     汚さない (項1 本来の目的)。
 	if filter.Status == "open" {
-		// open_descendants は「非 terminal な祖先を持つ子孫」だけを表す —
-		// base case を「非 terminal な task 自身」ではなく「非 terminal な
-		// task の直接の子」にすることで、自分自身が seed に紛れ込まない形に
+		// open_descendants は「非 terminal かつ非 parked な祖先を持つ子孫」だけを
+		// 表す — base case を「非 terminal な task 自身」ではなく「非 terminal
+		// な task の直接の子」にすることで、自分自身が seed に紛れ込まない形に
 		// している。当初は自分自身を seed にしていたため、親を持つ
 		// pre-execution task が (親の状態に関係なく) 常に自己マッチして
 		// self clause の pre-execution 除外をすり抜けるバグがあった —
 		// done な親を持つ childless triaged task が open に漏れるケースで
 		// 発覚 (codex レビューで指摘、実装時の parent_id != '' ガードだけでは
 		// 不十分だった)。この形なら「祖先救済」の意味そのまま: 自分の親
-		// (またはその先祖) が非 terminal である場合にのみ子孫としてマッチする。
+		// (またはその先祖) が非 terminal かつ非 parked である場合にのみ子孫と
+		// してマッチする。
+		//
+		// open_ancestors は逆方向 (祖先救済、複数階層) — 「terminal/parked な
+		// 親でも、その部分木のどこかに非 terminal な子孫が居るなら、その子孫
+		// までのパス上の祖先は全部見せる」。既存の子救済 (直接の子だけ見る
+		// taskChildCountCols 相当の条件) は 1 階層しか救済できないため、
+		// 「working→parked にした親 → 完了済みの子 → まだ生きている孫」の
+		// ような 3 階層のケースだと、孫は self clause で表示されるのに、その
+		// 直接の親 (完了済みの子) が Open タブから消えて孫だけ宙に浮く
+		// (「親がいないのに子だけ表示される」) UI 上の孤児表示バグになる。
+		// open_ancestors は base case (直接の子が非 terminal) から親側へ再帰的に
+		// 遡ることで、その部分木全体を一貫して Open タブに表示する。
 		ctePrefix = `WITH RECURSIVE open_descendants(id) AS (` +
 			`SELECT c.id FROM tasks c JOIN tasks p ON c.parent_id = p.id ` +
-			`WHERE p.status NOT IN (` + terminalStatusSQLList + `) ` +
+			`WHERE p.status NOT IN (` + notOpenAncestorGateStatusSQLList + `) ` +
 			`UNION ` +
 			`SELECT c.id FROM tasks c JOIN open_descendants od ON c.parent_id = od.id` +
+			`), open_ancestors(id) AS (` +
+			`SELECT p.id FROM tasks c JOIN tasks p ON c.parent_id = p.id ` +
+			`WHERE c.status NOT IN (` + terminalStatusSQLList + `) ` +
+			`UNION ` +
+			`SELECT p.id FROM tasks c JOIN tasks p ON c.parent_id = p.id ` +
+			`JOIN open_ancestors oa ON oa.id = c.id` +
 			`) `
 		conditions = append(conditions, `(t.status NOT IN (`+notOpenSelfStatusSQLList+`) OR `+
 			`(SELECT COUNT(*) FROM tasks c WHERE c.parent_id = t.id AND c.status NOT IN (`+terminalStatusSQLList+`)) > 0 OR `+
-			`t.id IN (SELECT id FROM open_descendants))`)
+			`t.id IN (SELECT id FROM open_descendants) OR `+
+			`t.id IN (SELECT id FROM open_ancestors))`)
 	} else if filter.Status == "closed" {
 		conditions = append(conditions, "t.status IN ("+terminalStatusSQLList+")")
 	} else if filter.Status == "queue" {
