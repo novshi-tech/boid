@@ -194,13 +194,18 @@ func TestSessionNew_SelectedProjectIsPreselected(t *testing.T) {
 	}
 }
 
-func TestSessionNew_NoInstructionTextarea(t *testing.T) {
+// TestSessionNew_HasInstructionTextarea closes the gap noted in
+// docs/plans/cross-project-issue-triage.md's UC-3 follow-up: the API/CLI
+// (StartSessionRequest.Instruction / `boid agent claude --instruction`)
+// always had a bootstrap-prompt field, but the Web UI [New Session] form
+// had no way to set it (this test used to assert exactly that omission).
+func TestSessionNew_HasInstructionTextarea(t *testing.T) {
 	projects := []*orchestrator.Project{
 		{ID: "proj-1", Meta: orchestrator.ProjectMeta{Name: "My Project"}},
 	}
 	html := renderSessionNew(t, projects, "proj-1")
-	if strings.Contains(html, `name="instruction"`) {
-		t.Error("SessionNew should not render an instruction textarea")
+	if !strings.Contains(html, `name="instruction"`) {
+		t.Error("SessionNew should render an instruction textarea")
 	}
 	// Harness select, readonly checkbox, session name, and start button must still be present.
 	if !strings.Contains(html, `name="harness_type"`) {
