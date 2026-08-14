@@ -450,6 +450,47 @@ func TestAPIGatewayServices_SortedByName(t *testing.T) {
 	}
 }
 
+// TestLoadFromPath_Services_AllowReadOnlyWrite pins the 2026-08-14 addition
+// (docs/plans/api-gateway.md §論点): allow_readonly_write parses into
+// ServiceConfig.AllowReadOnlyWrite and propagates through
+// APIGatewayServices to the apigateway.ServiceConfig the gateway actually
+// gates requests against — a gap here would make the config-level opt-in a
+// no-op at the gateway.
+func TestLoadFromPath_Services_AllowReadOnlyWrite(t *testing.T) {
+	content := `
+services:
+  slack:
+    base_url: https://slack.example.com
+    allow_readonly_write: true
+    auth: { kind: bearer, secret_key: k }
+  myapp:
+    base_url: https://myapp.example.com
+    auth: { kind: bearer, secret_key: k }
+`
+	cfg, err := loadFromPath(writeConfigFile(t, content))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !cfg.Services["slack"].AllowReadOnlyWrite {
+		t.Error("Services[slack].AllowReadOnlyWrite = false, want true")
+	}
+	if cfg.Services["myapp"].AllowReadOnlyWrite {
+		t.Error("Services[myapp].AllowReadOnlyWrite = true, want false (defaults to fail-closed)")
+	}
+
+	services := cfg.APIGatewayServices()
+	byName := make(map[string]bool, len(services))
+	for _, s := range services {
+		byName[s.Name] = s.AllowReadOnlyWrite
+	}
+	if !byName["slack"] {
+		t.Error("APIGatewayServices()[slack].AllowReadOnlyWrite = false, want true (config value was dropped in translation)")
+	}
+	if byName["myapp"] {
+		t.Error("APIGatewayServices()[myapp].AllowReadOnlyWrite = true, want false")
+	}
+}
+
 func TestLoadFromPath_ServicesFloor_Valid(t *testing.T) {
 	content := `
 services:

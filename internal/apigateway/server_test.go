@@ -305,6 +305,43 @@ func TestServer_ReadOnlyRejectsWriteMethods(t *testing.T) {
 	}
 }
 
+// TestServer_ReadOnlyAllowsWriteForAllowlistedService covers the
+// docs/plans/api-gateway.md §論点 (2026-08-14 追加決定) escape hatch: an
+// operator can mark a specific service AllowReadOnlyWrite: true in
+// config.yaml (ServiceConfig, daemon-side — never project.yaml/task_behaviors,
+// since only the daemon operator, not the repo, should be able to grant this)
+// so a read-only job token may still use non-GET/HEAD methods against THAT
+// service. Every other configured service must keep enforcing the ordinary
+// read-only gate — this is a per-service opt-in, not a token-wide bypass.
+func TestServer_ReadOnlyAllowsWriteForAllowlistedService(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusCreated)
+	}))
+	defer upstream.Close()
+
+	registry := NewRegistry()
+	token := registry.Register([]string{"slack", "myapp"}, "ws-a", "task-1", true /* readOnly */)
+	creds := NewCredentialProvider([]ServiceConfig{
+		{Name: "slack", BaseURL: upstream.URL, Auth: ServiceAuth{Kind: AuthBearer, SecretKey: "k"}, AllowReadOnlyWrite: true},
+		{Name: "myapp", BaseURL: upstream.URL, Auth: ServiceAuth{Kind: AuthBearer, SecretKey: "k"}},
+	}, stubResolver(map[string]string{"ws-a/k": "v"}))
+	srv := NewServer(registry, creds, nil, nil)
+
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", "/api/"+token+"/slack/v1/chat.postMessage", nil)
+	srv.ServeHTTP(w, req)
+	if w.Code != http.StatusCreated {
+		t.Errorf("POST to allowlisted service on a read-only token: status = %d, want 201", w.Code)
+	}
+
+	w = httptest.NewRecorder()
+	req = httptest.NewRequest("POST", "/api/"+token+"/myapp/v1/users", nil)
+	srv.ServeHTTP(w, req)
+	if w.Code != http.StatusForbidden {
+		t.Errorf("POST to non-allowlisted service on a read-only token: status = %d, want 403", w.Code)
+	}
+}
+
 func TestServer_UnconfiguredServiceReturnsBadGateway(t *testing.T) {
 	registry := NewRegistry()
 	token := registry.Register([]string{"ghost"}, "ws-a", "", false)

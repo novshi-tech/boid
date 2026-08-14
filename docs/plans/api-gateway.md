@@ -489,7 +489,23 @@ HOME 内、つまり**サンドボックスから読める場所**に置かれ�
 - **confused deputy の残余リスク**: gateway は「エージェントに認証済み API を
   透過的に渡す」機構なので、prompt injection されたエージェントも同じ力を持つ。
   初期の緩和は workspace 有効化 + readonly 写像。method / path allowlist は
-  必要が観測されてから足す。
+  必要が観測されてから足す。**2026-08-14 追記: 必要が観測された**
+  ([[next-session-gateway-readonly-and-silent-completion]] — readonly な
+  review behavior から Slack への完了報告 POST がしたいのにできない、という
+  実運用課題)。method allowlist ではなく **service 単位の
+  `allow_readonly_write` opt-in** (`internal/apigateway.ServiceConfig`,
+  config.yaml `services.<name>.allow_readonly_write`, 既定 `false`) を追加した
+  — readonly job token でもその service だけは GET/HEAD 以外のメソッドを
+  通す。**daemon 側 config.yaml にしか置けない** (project.yaml/
+  task_behaviors には無い) — この decision の §6-補で確定した「project.yaml
+  には credential アクセス権限を置かない」と同じ理由で、repo 側から
+  readonly ゲートを自分で外せるようにしてしまうと確認外し放題になる。
+  投稿前の nose 確認 (課題C) は gateway 側では実装しない —
+  既存の task ask (blocking RPC) を behavior instruction 側の運用ルールとして
+  使う想定 (エージェントが Slack POST 前に `boid task ask` で一時停止し、
+  nose が Web UI で承認してから送信を続ける)。gateway は「許可」だけを
+  担当し、「実際に送ってよいか」は behavior instruction の記述に任せる、
+  という当初の分離案で決着。
 - **WebSocket / gRPC** はスコープ外 (必要が出たら別途)。
 - **MCP / スキルへの実退役作業** は gateway 稼働後に別トラックで行う。
 - **レート制限・クォータ管理** はスコープ外 (upstream 側の責務とみなす)。
