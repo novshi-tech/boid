@@ -19,6 +19,14 @@ type TreeItem struct {
 	// the badge/summary line below simply doesn't render there.
 	Urgency string
 	Summary string
+	// Children is task_triage.detail.children (open/specced/dispatched/
+	// closed sub-tasks), populated only for the queue_next view like
+	// Urgency/Summary above. Gives a "what happens if I press Go" preview
+	// right in the queue row instead of only on the task detail page —
+	// nose flagged after the Shape launcher's first real dispatch that a
+	// specced-vs-not distinction existed nowhere in the Web UI
+	// (cross-project-issue-triage 実地テスト, 2026-08-14).
+	Children []orchestrator.TaskTriageChild
 }
 
 func (i TreeItem) ProjectLabel() string {
@@ -30,6 +38,40 @@ func (i TreeItem) ProjectLabel() string {
 
 func treeStatusClass(s string) string {
 	return "badge badge-" + s
+}
+
+// childrenPreviewLabel summarizes a queue row's children into a compact
+// "N specced, M open" string for the queue list — a preview of what
+// pressing Go actually dispatches (only specced children task-ify;
+// TaskWorkflowService.Dispatch, internal/api/workflow_triage.go). Omits a
+// status entirely once its count is zero, so a fully-specced card just
+// reads "N specced" instead of "N specced, 0 open".
+func childrenPreviewLabel(children []orchestrator.TaskTriageChild) string {
+	var specced, open, other int
+	for _, c := range children {
+		switch c.Status {
+		case orchestrator.TaskTriageChildStatusSpecced:
+			specced++
+		case orchestrator.TaskTriageChildStatusOpen:
+			open++
+		default:
+			other++
+		}
+	}
+	label := ""
+	if specced > 0 {
+		label += fmt.Sprintf("%d specced", specced)
+	}
+	if open > 0 {
+		if label != "" {
+			label += ", "
+		}
+		label += fmt.Sprintf("%d open", open)
+	}
+	if label == "" && other > 0 {
+		label = fmt.Sprintf("%d children", len(children))
+	}
+	return label
 }
 
 // TaskTree renders a flat list of TreeItems as a collapsible task tree.
@@ -134,6 +176,9 @@ templ taskTreeRow(item TreeItem) {
 				<span class={ treeStatusClass(string(item.Task.Status)) }>{ string(item.Task.Status) }</span>
 				if item.Urgency != "" {
 					<span class={ "badge", "badge-urgency-" + item.Urgency }>{ item.Urgency }</span>
+				}
+				if label := childrenPreviewLabel(item.Children); label != "" {
+					<span class="task-row-children" title="What Go dispatches: only specced children task-ify">{ label }</span>
 				}
 				if item.Task.Status == orchestrator.TaskStatusAwaiting && item.Task.ParentID == "" {
 					<span class="badge badge-call-to-action">Needs answer</span>

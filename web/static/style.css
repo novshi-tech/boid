@@ -586,6 +586,20 @@ pre {
 .badge-urgency-today { color: #c2410c; }
 .badge-urgency-week  { color: #1d4ed8; }
 
+/* Children preview (queue row, cross-project-issue-triage 実地テスト
+   2026-08-14 followup): "what does Go dispatch" at a glance, next to the
+   urgency badge — a compact counterpart to task detail's full
+   TaskDetailChildrenSection list. Muted pill so it reads as metadata, not
+   an action. */
+.task-row-children {
+  flex-shrink: 0;
+  padding: 1px var(--space-1);
+  border-radius: var(--radius-1);
+  background: var(--surface-2, rgba(127, 127, 127, 0.12));
+  color: var(--muted);
+  font-size: 0.75rem;
+}
+
 @media (prefers-color-scheme: dark) {
   .badge-urgency-now   { color: #f87171; }
   .badge-urgency-today { color: #fb923c; }

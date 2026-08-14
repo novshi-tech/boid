@@ -98,6 +98,14 @@ func BuildQueueItems(tasks []*orchestrator.Task, projectNames map[string]string,
 		if tt, ok := triageByTaskID[t.ID]; ok && tt != nil {
 			item.Urgency = tt.Urgency
 			item.Summary = triageSummary(tt.Detail)
+			// Best-effort like triageSummary above: a malformed/absent
+			// children key must not sink the whole queue row, so errors
+			// are swallowed rather than propagated (rule 5, 隠さない, is
+			// about the row itself never disappearing, not about every
+			// derived field always being present).
+			if children, err := orchestrator.DetailChildren(tt.Detail); err == nil {
+				item.Children = children
+			}
 		}
 		result = append(result, item)
 	}
