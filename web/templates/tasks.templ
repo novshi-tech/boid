@@ -350,11 +350,12 @@ templ TaskActionBar(task *orchestrator.Task, availableActions []string, activeTa
 					<a href={ templ.SafeURL("/tasks/" + task.ID + "/edit") } class="btn btn-secondary">Edit</a>
 				}
 				if task.Status == orchestrator.TaskStatusTriaged {
-					// 整形 (UC-3 shaping session launcher, cross-project-issue-triage
-					// plan doc). Secondary to Go: shaping is for cards still too
-					// fuzzy to Go on directly, not the default path.
+					// Shape (UC-3 shaping session launcher, cross-project-issue-triage
+					// plan doc — 整形 in the plan doc's Japanese). Secondary to Go:
+					// shaping is for cards still too fuzzy to Go on directly, not
+					// the default path.
 					<form method="post" action={ templ.SafeURL("/tasks/" + task.ID + "/shape") } class="action-bar-primary-form">
-						<button type="submit" class="btn btn-secondary">整形</button>
+						<button type="submit" class="btn btn-secondary">Shape</button>
 					</form>
 				}
 				<details class="action-menu">
