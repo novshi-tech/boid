@@ -240,6 +240,56 @@ func newTestWebHandler(svc WebService) *chi.Mux {
 	return r
 }
 
+// stubSessionDispatcher is a minimal SessionDispatcher for testing
+// PostStartShapingSession (and could back PostStartSession tests too, but
+// none exist yet).
+type stubSessionDispatcher struct {
+	result   *StartSessionResult
+	err      error
+	lastReq  StartSessionRequest
+	callable bool
+}
+
+func (s *stubSessionDispatcher) StartSession(ctx context.Context, req StartSessionRequest) (*StartSessionResult, error) {
+	s.callable = true
+	s.lastReq = req
+	if s.err != nil {
+		return nil, s.err
+	}
+	return s.result, nil
+}
+
+// stubTaskTriageStore backs h.TaskTriage in shaping-session tests. Only
+// GetTaskTriage is exercised; the rest satisfy the interface.
+type stubTaskTriageStore struct {
+	triage *orchestrator.TaskTriage
+	err    error
+}
+
+func (s *stubTaskTriageStore) UpsertTaskTriage(tt *orchestrator.TaskTriage) error { return nil }
+func (s *stubTaskTriageStore) SeedTaskTriage(taskID string) error                { return nil }
+func (s *stubTaskTriageStore) GetTaskTriage(taskID string) (*orchestrator.TaskTriage, error) {
+	return s.triage, s.err
+}
+func (s *stubTaskTriageStore) DeleteTaskTriage(taskID string) error { return nil }
+func (s *stubTaskTriageStore) ParkedFrom(taskID string) (orchestrator.TaskStatus, error) {
+	return "", nil
+}
+
+func newTestWebHandlerWithShaping(svc WebService, dispatcher SessionDispatcher, triage TaskTriageStore) *chi.Mux {
+	h := &WebHandler{Service: svc, SessionDispatcher: dispatcher, TaskTriage: triage}
+	r := chi.NewRouter()
+	r.Post("/tasks/{id}/shape", h.PostStartShapingSession)
+	return r
+}
+
+func newTestWebHandlerWithSessionStart(dispatcher SessionDispatcher) *chi.Mux {
+	h := &WebHandler{SessionDispatcher: dispatcher}
+	r := chi.NewRouter()
+	r.Post("/projects/{id}/sessions/start", h.PostStartSession)
+	return r
+}
+
 func newTestWebHandlerWithTaskList(svc WebService) *chi.Mux {
 	h := &WebHandler{Service: svc}
 	r := chi.NewRouter()
@@ -443,6 +493,140 @@ func TestWebHandlerPostWake_ServiceError(t *testing.T) {
 	}
 	if !strings.Contains(loc, "/tasks/task-1") {
 		t.Errorf("Location = %q, want redirect to task detail", loc)
+	}
+}
+
+func TestWebHandlerPostStartSession_ForwardsInstruction(t *testing.T) {
+	dispatcher := &stubSessionDispatcher{result: &StartSessionResult{JobID: "job-1"}}
+	r := newTestWebHandlerWithSessionStart(dispatcher)
+
+	body := url.Values{
+		"harness_type": {"claude"},
+		"instruction":  {"  このプロジェクトで◯◯をやって  "},
+	}.Encode()
+	req := httptest.NewRequest(http.MethodPost, "/projects/proj-1/sessions/start", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusSeeOther {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusSeeOther)
+	}
+	if dispatcher.lastReq.Instruction != "このプロジェクトで◯◯をやって" {
+		t.Errorf("Instruction = %q, want trimmed instruction text", dispatcher.lastReq.Instruction)
+	}
+}
+
+func TestWebHandlerPostStartSession_EmptyInstructionOK(t *testing.T) {
+	dispatcher := &stubSessionDispatcher{result: &StartSessionResult{JobID: "job-1"}}
+	r := newTestWebHandlerWithSessionStart(dispatcher)
+
+	body := url.Values{"harness_type": {"claude"}}.Encode()
+	req := httptest.NewRequest(http.MethodPost, "/projects/proj-1/sessions/start", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusSeeOther {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusSeeOther)
+	}
+	if dispatcher.lastReq.Instruction != "" {
+		t.Errorf("Instruction = %q, want empty", dispatcher.lastReq.Instruction)
+	}
+}
+
+func TestWebHandlerPostStartShapingSession_Success(t *testing.T) {
+	svc := &stubWebService{taskDetail: &TaskDetailView{Task: &orchestrator.Task{
+		ID:          "task-1",
+		ProjectID:   "meta-proj",
+		Title:       "運用が回っていない気配",
+		Description: "詳細不明のsummaryのみ",
+		Status:      orchestrator.TaskStatusTriaged,
+	}}}
+	dispatcher := &stubSessionDispatcher{result: &StartSessionResult{JobID: "job-9"}}
+	triage := &stubTaskTriageStore{triage: &orchestrator.TaskTriage{TaskID: "task-1", Kind: "issue", Urgency: "week"}}
+	r := newTestWebHandlerWithShaping(svc, dispatcher, triage)
+
+	req := httptest.NewRequest(http.MethodPost, "/tasks/task-1/shape", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusSeeOther {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusSeeOther)
+	}
+	if loc := w.Header().Get("Location"); loc != "/jobs/job-9" {
+		t.Errorf("Location = %q, want /jobs/job-9", loc)
+	}
+	if !dispatcher.callable {
+		t.Fatal("StartSession was not called")
+	}
+	if dispatcher.lastReq.ProjectID != "meta-proj" {
+		t.Errorf("ProjectID = %q, want meta-proj", dispatcher.lastReq.ProjectID)
+	}
+	if dispatcher.lastReq.HarnessType != "claude" {
+		t.Errorf("HarnessType = %q, want claude", dispatcher.lastReq.HarnessType)
+	}
+	for _, want := range []string{"task-1", "運用が回っていない気配", "issue", "week", "詳細不明のsummaryのみ"} {
+		if !strings.Contains(dispatcher.lastReq.Instruction, want) {
+			t.Errorf("Instruction missing %q; got:\n%s", want, dispatcher.lastReq.Instruction)
+		}
+	}
+}
+
+func TestWebHandlerPostStartShapingSession_NotTriaged(t *testing.T) {
+	svc := &stubWebService{taskDetail: &TaskDetailView{Task: &orchestrator.Task{
+		ID: "task-1", Status: orchestrator.TaskStatusReady,
+	}}}
+	dispatcher := &stubSessionDispatcher{}
+	r := newTestWebHandlerWithShaping(svc, dispatcher, nil)
+
+	req := httptest.NewRequest(http.MethodPost, "/tasks/task-1/shape", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusSeeOther {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusSeeOther)
+	}
+	if loc := w.Header().Get("Location"); !strings.Contains(loc, "error=") {
+		t.Errorf("Location = %q, want error param", loc)
+	}
+	if dispatcher.callable {
+		t.Error("StartSession should not be called for a non-triaged task")
+	}
+}
+
+func TestWebHandlerPostStartShapingSession_DispatcherError(t *testing.T) {
+	svc := &stubWebService{taskDetail: &TaskDetailView{Task: &orchestrator.Task{
+		ID: "task-1", ProjectID: "meta-proj", Status: orchestrator.TaskStatusTriaged,
+	}}}
+	dispatcher := &stubSessionDispatcher{err: fmt.Errorf("no sandbox capacity")}
+	r := newTestWebHandlerWithShaping(svc, dispatcher, nil)
+
+	req := httptest.NewRequest(http.MethodPost, "/tasks/task-1/shape", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusSeeOther {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusSeeOther)
+	}
+	loc := w.Header().Get("Location")
+	if !strings.Contains(loc, "/tasks/task-1") || !strings.Contains(loc, "error=") {
+		t.Errorf("Location = %q, want /tasks/task-1 with error param", loc)
+	}
+}
+
+func TestWebHandlerPostStartShapingSession_NoDispatcher(t *testing.T) {
+	svc := &stubWebService{taskDetail: &TaskDetailView{Task: &orchestrator.Task{
+		ID: "task-1", Status: orchestrator.TaskStatusTriaged,
+	}}}
+	r := newTestWebHandlerWithShaping(svc, nil, nil)
+
+	req := httptest.NewRequest(http.MethodPost, "/tasks/task-1/shape", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusNotImplemented {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusNotImplemented)
 	}
 }
 

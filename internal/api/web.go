@@ -109,6 +109,7 @@ func (h *WebHandler) Routes() chi.Router {
 	r.Get("/tasks/{id}/reopen", h.ReopenForm)
 	r.Post("/tasks/{id}/reopen", h.PostReopen)
 	r.Post("/tasks/{id}/delete", h.PostDelete)
+	r.Post("/tasks/{id}/shape", h.PostStartShapingSession)
 	r.Post("/tasks/{id}/answer", h.PostAnswer)
 	r.Get("/tasks/{id}/questions/{question_id}", h.QuestionPage)
 	r.Get("/tasks/{id}/hooks", h.HookReplayList)
@@ -828,6 +829,7 @@ func (h *WebHandler) PostStartSession(w http.ResponseWriter, r *http.Request) {
 		ProjectID:   projectID,
 		HarnessType: strings.TrimSpace(r.FormValue("harness_type")),
 		Model:       strings.TrimSpace(r.FormValue("model")),
+		Instruction: strings.TrimSpace(r.FormValue("instruction")),
 		Readonly:    r.FormValue("readonly") == "on",
 		DisplayName: strings.TrimSpace(r.FormValue("name")),
 	}
@@ -844,6 +846,87 @@ func (h *WebHandler) PostStartSession(w http.ResponseWriter, r *http.Request) {
 	}
 	jobURL := "/jobs/" + result.JobID
 	redirectOrHXRedirect(w, r, jobURL)
+}
+
+// PostStartShapingSession launches the "整形" (shaping) session for a
+// triaged task card (docs/plans/cross-project-issue-triage.md UC-3). Unlike
+// PostStartSession (a blank session the operator configures by hand), this
+// is a one-click launcher: the triage task's own project supplies the
+// workspace context (a triage task always lives in the workspace's meta
+// project — 決定5's "対象 project の確定は整形セッションの仕事", not the
+// caller's), and the card's id/title/description/kind/urgency are folded
+// into the bootstrap instruction so the agent has the card in hand at
+// turn one instead of the operator re-typing it.
+//
+// Only reachable from a triaged card (mirrors detailPrimaryAction's
+// triaged→ready gating in tasks.templ) — shaping a card that already has
+// no open question, or one still in captured, is not a state this button
+// is offered from.
+func (h *WebHandler) PostStartShapingSession(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	if h.SessionDispatcher == nil {
+		http.Error(w, "session dispatcher not wired", http.StatusNotImplemented)
+		return
+	}
+	detail, err := h.Service.GetTaskDetail(id)
+	if err != nil || detail == nil || detail.Task == nil {
+		redirectTaskErr(w, r, id, fmt.Errorf("task not found: %s", id))
+		return
+	}
+	task := detail.Task
+	if task.Status != orchestrator.TaskStatusTriaged {
+		redirectTaskErr(w, r, id, fmt.Errorf("shaping session requires a triaged task (status = %s)", task.Status))
+		return
+	}
+	var triage *orchestrator.TaskTriage
+	if h.TaskTriage != nil {
+		triage, _ = h.TaskTriage.GetTaskTriage(id) // best-effort — a missing sidecar row is not fatal, see triage_read.go's GetTriage doc comment
+	}
+	req := StartSessionRequest{
+		ProjectID:   task.ProjectID,
+		HarnessType: "claude",
+		Instruction: buildShapingInstruction(task, triage),
+		DisplayName: "整形: " + task.Title,
+	}
+	result, err := h.SessionDispatcher.StartSession(r.Context(), req)
+	if err != nil {
+		redirectTaskErr(w, r, id, err)
+		return
+	}
+	redirectOrHXRedirect(w, r, "/jobs/"+result.JobID)
+}
+
+// buildShapingInstruction folds a triage card's id/title/description/kind/
+// urgency into the shaping session's bootstrap prompt (UC-3 手順3: 「payload
+// に card (id・title・content_ref) を同梱」). detail's opaque JSON (content_ref
+// 等 workspace 固有のキー) is passed through verbatim rather than parsed here
+// — the daemon does not interpret task_triage.detail's keys (triage_read.go's
+// TaskTriageView doc comment), and neither does this instruction builder.
+func buildShapingInstruction(task *orchestrator.Task, triage *orchestrator.TaskTriage) string {
+	var b strings.Builder
+	b.WriteString("整形セッション: 以下の triage カードの内容を詰め、対象 project・実行内容・完了条件を確定してください。\n\n")
+	fmt.Fprintf(&b, "task_id: %s\n", task.ID)
+	fmt.Fprintf(&b, "title: %s\n", task.Title)
+	if triage != nil {
+		if triage.Kind != "" {
+			fmt.Fprintf(&b, "kind: %s\n", triage.Kind)
+		}
+		if triage.Urgency != "" {
+			fmt.Fprintf(&b, "urgency: %s\n", triage.Urgency)
+		}
+	}
+	b.WriteString("\n本文:\n")
+	if task.Description != "" {
+		b.WriteString(task.Description)
+	} else {
+		b.WriteString("(本文なし — summary のみで起票された card)")
+	}
+	if triage != nil && len(triage.Detail) > 0 && string(triage.Detail) != "{}" {
+		b.WriteString("\n\ndetail (raw):\n")
+		b.Write(triage.Detail)
+	}
+	b.WriteString("\n\n対話で対象 project・実行内容・完了条件を固めたら、本文ファイルに追記した上で card を ready に更新してください。整形の結果「やらない」と分かった場合は、このセッションでは何もせず nose に破棄 (drop) の判断を委ねてください。")
+	return b.String()
 }
 
 // WebManagementHandler serves the CLI management API at /api/web/*.
