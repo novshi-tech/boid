@@ -437,14 +437,17 @@ func (h *WebHandler) TaskDetail(w http.ResponseWriter, r *http.Request) {
 	}
 	errorMsg := r.URL.Query().Get("error")
 	timelineGroups := detailTimelineGroups(detail)
+	children := h.triageChildrenFor(id)
 	if r.Header.Get("HX-Request") == "true" {
 		// Tab clicks swap the entire #tabs section so the active class on
 		// the visible tabs and the "more" summary label stay in sync.
-		templates.TaskDetailTabsSection(detail.Task, timelineGroups, jobs, detail.AvailableActions, tab).Render(r.Context(), w)
+		// children is needed here too (not just the full-page render below)
+		// because TaskActionBar's Shape button on a working task is gated
+		// on hasOpenChild, and this is the section that re-renders it.
+		templates.TaskDetailTabsSection(detail.Task, timelineGroups, jobs, detail.AvailableActions, tab, children).Render(r.Context(), w)
 		return
 	}
 	projectName := h.lookupProjectName(detail.Task.ProjectID)
-	children := h.triageChildrenFor(id)
 	templates.TaskDetail(detail.Task, timelineGroups, jobs, detail.AvailableActions, errorMsg, tab, projectName, children).Render(r.Context(), w)
 }
 
@@ -471,6 +474,20 @@ func (h *WebHandler) triageChildrenFor(id string) []orchestrator.TaskTriageChild
 		return nil
 	}
 	return children
+}
+
+// hasOpenChild reports whether children contains at least one entry still
+// in status=open — the Shape button's working-status gate (see
+// PostStartShapingSession's doc comment): a working task is only offered
+// Shape when it actually has an un-specced child, not for every working
+// task (ordinary dev/impl tasks have no triage children at all).
+func hasOpenChild(children []orchestrator.TaskTriageChild) bool {
+	for _, c := range children {
+		if c.Status == orchestrator.TaskTriageChildStatusOpen {
+			return true
+		}
+	}
+	return false
 }
 
 // lookupProjectName resolves a project ID to its display name (Meta.Name),
@@ -887,15 +904,19 @@ func (h *WebHandler) PostStartSession(w http.ResponseWriter, r *http.Request) {
 // turn one instead of the operator re-typing it.
 //
 // Reachable from a triaged card (mirrors detailPrimaryAction's
-// triaged→ready gating in tasks.templ) OR a working card — shaping a card
-// that already has no open question, or one still in captured, is not a
-// state this button is offered from. working is included alongside
-// triaged (2026-08-14 follow-up) because a working triage task can still
-// have open children (task_triage.detail.children, see
-// TaskDetailChildrenSection) that need their own spec defined — filing a
-// Jira issue, deciding what work to add — and there was previously no
+// triaged→ready gating in tasks.templ) OR a working card that still has an
+// open child — shaping a card that already has no open question, or one
+// still in captured, is not a state this button is offered from. working
+// is included alongside triaged (2026-08-14 follow-up) because a working
+// triage task can still have open children (task_triage.detail.children,
+// see TaskDetailChildrenSection) that need their own spec defined — filing
+// a Jira issue, deciding what work to add — and there was previously no
 // Web UI way to launch a shaping session for those once the parent moved
-// past triaged.
+// past triaged. Gated on hasOpenChild (not just status=working) because
+// the overwhelming majority of working tasks are ordinary dev/impl tasks
+// with no children at all (triageChildrenFor's doc comment) — offering
+// Shape there would dispatch an instruction that falsely claims open
+// children exist.
 func (h *WebHandler) PostStartShapingSession(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	if h.SessionDispatcher == nil {
@@ -910,6 +931,10 @@ func (h *WebHandler) PostStartShapingSession(w http.ResponseWriter, r *http.Requ
 	task := detail.Task
 	if task.Status != orchestrator.TaskStatusTriaged && task.Status != orchestrator.TaskStatusWorking {
 		redirectTaskErr(w, r, id, fmt.Errorf("shaping session requires a triaged or working task (status = %s)", task.Status))
+		return
+	}
+	if task.Status == orchestrator.TaskStatusWorking && !hasOpenChild(h.triageChildrenFor(id)) {
+		redirectTaskErr(w, r, id, fmt.Errorf("shaping session on a working task requires at least one open child (task_triage.detail.children status=open)"))
 		return
 	}
 	var triage *orchestrator.TaskTriage

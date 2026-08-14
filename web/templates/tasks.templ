@@ -272,6 +272,21 @@ templ TaskDetailChildrenSection(children []orchestrator.TaskTriageChild) {
 	}
 }
 
+// hasOpenChild reports whether children contains at least one entry still
+// in status=open — TaskActionBar's Shape-button gate for a working task
+// (see PostStartShapingSession's doc comment, internal/api/web.go): a
+// working task is only offered Shape when it actually has an un-specced
+// child, not for every working task (ordinary dev/impl tasks have no
+// triage children at all).
+func hasOpenChild(children []orchestrator.TaskTriageChild) bool {
+	for _, c := range children {
+		if c.Status == orchestrator.TaskTriageChildStatusOpen {
+			return true
+		}
+	}
+	return false
+}
+
 // detailPrimaryAction picks the single state-aware "primary" action for the
 // bottom bar. Mirrors TUI semantics:
 //   - pending          → start  (forward, primary)
@@ -345,7 +360,7 @@ func actionPrimaryClass(action string) string {
 // TaskActionBar renders the sticky bottom action bar.
 // Timeline tab: state-aware primary (Start/Abort/Rerun) + "⋯" kebab
 // (duplicate / abort / delete). Other tabs show no bar.
-templ TaskActionBar(task *orchestrator.Task, availableActions []string, activeTab string) {
+templ TaskActionBar(task *orchestrator.Task, availableActions []string, activeTab string, children []orchestrator.TaskTriageChild) {
 	if activeTab == "timeline" {
 		<div class="action-bar">
 			<div class="action-bar-inner">
@@ -385,16 +400,20 @@ templ TaskActionBar(task *orchestrator.Task, availableActions []string, activeTa
 				if task.Status == orchestrator.TaskStatusPending {
 					<a href={ templ.SafeURL("/tasks/" + task.ID + "/edit") } class="btn btn-secondary">Edit</a>
 				}
-				if task.Status == orchestrator.TaskStatusTriaged || task.Status == orchestrator.TaskStatusWorking {
+				if task.Status == orchestrator.TaskStatusTriaged || (task.Status == orchestrator.TaskStatusWorking && hasOpenChild(children)) {
 					// Shape (UC-3 shaping session launcher, cross-project-issue-triage
 					// plan doc — 整形 in the plan doc's Japanese). Secondary to Go:
 					// shaping is for cards still too fuzzy to Go on directly, not
 					// the default path. Also offered on working (2026-08-14
-					// follow-up): a dispatched card can still have open children
-					// (task_triage.detail.children) needing their own spec —
-					// filing a Jira issue, adding work — and there was no Web UI
-					// path to launch a shaping session for those once the parent
-					// left triaged.
+					// follow-up), but only when hasOpenChild(children) — the
+					// overwhelming majority of working tasks are ordinary dev/impl
+					// tasks with no triage children at all, and offering Shape
+					// there would dispatch an instruction that falsely claims open
+					// children exist. When a working card does have an open child
+					// (task_triage.detail.children status=open), it needs its own
+					// spec — filing a Jira issue, adding work — and there was no
+					// Web UI path to launch a shaping session for those once the
+					// parent left triaged.
 					<form method="post" action={ templ.SafeURL("/tasks/" + task.ID + "/shape") } class="action-bar-primary-form">
 						<button type="submit" class="btn btn-secondary">Shape</button>
 					</form>
@@ -916,7 +935,7 @@ templ detailMoreItem(taskID, tab, label, activeTab string) {
 //   - the "more" details element is freshly rendered (closed by default,
 //     summary label reflects the new active tab when it's a hidden one)
 //   - the action bar primary button becomes tab-contextual without a separate swap
-templ TaskDetailTabsSection(task *orchestrator.Task, timelineGroups []timeline.StatusGroup, jobs []*JobView, availableActions []string, activeTab string) {
+templ TaskDetailTabsSection(task *orchestrator.Task, timelineGroups []timeline.StatusGroup, jobs []*JobView, availableActions []string, activeTab string, children []orchestrator.TaskTriageChild) {
 	<div id="tabs" class="tabs">
 		<div class="tab-list" role="tablist">
 			@detailTabLink(task.ID, "timeline", "Timeline", activeTab)
@@ -943,14 +962,14 @@ templ TaskDetailTabsSection(task *orchestrator.Task, timelineGroups []timeline.S
 			</div>
 		</div>
 		@TaskDetailTabPanel(task, timelineGroups, jobs, activeTab)
-		@TaskActionBar(task, availableActions, activeTab)
+		@TaskActionBar(task, availableActions, activeTab, children)
 	</div>
 }
 
 templ TaskDetail(task *orchestrator.Task, timelineGroups []timeline.StatusGroup, jobs []*JobView, availableActions []string, errorMsg string, activeTab string, projectName string, children []orchestrator.TaskTriageChild) {
 	@Layout(task.Title, "/") {
 		@TaskDetailStatusSection(task, availableActions, errorMsg, projectName, children)
-		@TaskDetailTabsSection(task, timelineGroups, jobs, availableActions, activeTab)
+		@TaskDetailTabsSection(task, timelineGroups, jobs, availableActions, activeTab, children)
 	}
 }
 
