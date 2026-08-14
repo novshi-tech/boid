@@ -170,6 +170,73 @@ func TestSweepDone_FallsOnlyWhenBothConditionsHold(t *testing.T) {
 	}
 }
 
+// TestSweepDone_NotifiesOnAutoDone pins the 2026-08-14 fix
+// (次セッション申し送り: implement task が無言で完了する問題の一因):
+// SweepTriage's autoDone runs entirely inside the daemon (no agent session,
+// no `boid task notify` call ever happens for this path), so without an
+// explicit Notifier call here a triage card silently reaching working→done
+// never reaches the user at all — not even the muted "child task" case
+// task_notify.go's fireUserNotify gate covers, since that gate only ever
+// applies to a call that happens; this path has no call. The card itself is
+// always root (parent_id == "", per autoDone's own doc comment), so this
+// mirrors notifyQueueEntryIfUrgent's existing Notifier usage rather than
+// requiring a new distribution mechanism.
+func TestSweepDone_NotifiesOnAutoDone(t *testing.T) {
+	both := &orchestrator.Task{ID: "both", ProjectID: "p1", Title: "cross-project card", Status: orchestrator.TaskStatusWorking, Behavior: "dev", Payload: []byte(`{}`)}
+	closedChildren := `{"attrs":{"observed":{"source_closed":true}},"children":[{"id":"c","status":"closed"}]}`
+	triage := &stubTriageStore{rows: map[string]*orchestrator.TaskTriage{
+		"both": {TaskID: "both", Detail: json.RawMessage(closedChildren)},
+	}}
+	tasks := &multiTaskStore{tasks: []*orchestrator.Task{both}}
+	txStore := &recordingTxStore{
+		tasks:  map[string]*orchestrator.Task{"both": both},
+		triage: map[string]*orchestrator.TaskTriage{"both": {TaskID: "both", Detail: json.RawMessage(closedChildren)}},
+	}
+	notifier := &recordingNotifier{}
+	svc := &TaskWorkflowService{
+		Tasks:      tasks,
+		TaskTriage: triage,
+		Tx:         recordingTransactor{store: txStore},
+		Notifier:   notifier,
+	}
+
+	if _, err := svc.SweepTriage(context.Background(), time.Now()); err != nil {
+		t.Fatalf("SweepTriage: %v", err)
+	}
+
+	if len(notifier.events) != 1 {
+		t.Fatalf("notify events = %v, want exactly 1 (auto-done must notify the user)", notifier.events)
+	}
+	if notifier.events[0].TaskID != "both" {
+		t.Errorf("TaskID = %q, want both", notifier.events[0].TaskID)
+	}
+}
+
+// TestSweepDone_NilNotifierIsNoop pins the existing "Notifier optional"
+// contract (mirrors notifyQueueEntryIfUrgent's own nil tolerance): a daemon
+// with no notify.command configured must not panic or fail the sweep.
+func TestSweepDone_NilNotifierIsNoop(t *testing.T) {
+	both := &orchestrator.Task{ID: "both", ProjectID: "p1", Status: orchestrator.TaskStatusWorking, Behavior: "dev", Payload: []byte(`{}`)}
+	closedChildren := `{"attrs":{"observed":{"source_closed":true}},"children":[{"id":"c","status":"closed"}]}`
+	triage := &stubTriageStore{rows: map[string]*orchestrator.TaskTriage{
+		"both": {TaskID: "both", Detail: json.RawMessage(closedChildren)},
+	}}
+	tasks := &multiTaskStore{tasks: []*orchestrator.Task{both}}
+	txStore := &recordingTxStore{
+		tasks:  map[string]*orchestrator.Task{"both": both},
+		triage: map[string]*orchestrator.TaskTriage{"both": {TaskID: "both", Detail: json.RawMessage(closedChildren)}},
+	}
+	svc := &TaskWorkflowService{
+		Tasks:      tasks,
+		TaskTriage: triage,
+		Tx:         recordingTransactor{store: txStore},
+	}
+
+	if _, err := svc.SweepTriage(context.Background(), time.Now()); err != nil {
+		t.Fatalf("SweepTriage with nil Notifier: %v", err)
+	}
+}
+
 // TestSweepDone_MissingCanonicalSourceIsReported pins 決定16's watchdog half:
 // a working card with no canonical source never falls to done, and the sweep
 // reports it rather than staying silent (a card that can never finish is
