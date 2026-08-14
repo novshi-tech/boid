@@ -33,46 +33,72 @@ func Terminal(jobId string, wsPath string) templ.Component {
 			templ_7745c5c3_Var1 = templ.NopComponent
 		}
 		ctx = templ.ClearChildren(ctx)
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 1, "<link rel=\"stylesheet\" href=\"/static/assets/xterm-5.x/xterm.css\"><script src=\"/static/assets/xterm-5.x/xterm.js\"></script><div class=\"boid-terminal\" data-job-id=\"")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 1, "<link rel=\"stylesheet\" href=\"")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		var templ_7745c5c3_Var2 string
-		templ_7745c5c3_Var2, templ_7745c5c3_Err = templ.JoinStringErrs(jobId)
+		var templ_7745c5c3_Var2 templ.SafeURL
+		templ_7745c5c3_Var2, templ_7745c5c3_Err = templ.JoinURLErrs("/static/assets/xterm-5.x/xterm.css?v=" + BuildID)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/components/terminal.templ`, Line: 12, Col: 21}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/components/terminal.templ`, Line: 8, Col: 80}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var2))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 2, "\" data-ws-url=\"")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 2, "\"><script src=\"")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
 		var templ_7745c5c3_Var3 string
-		templ_7745c5c3_Var3, templ_7745c5c3_Err = templ.JoinStringErrs(wsPath)
+		templ_7745c5c3_Var3, templ_7745c5c3_Err = templ.JoinStringErrs("/static/assets/xterm-5.x/xterm.js?v=" + BuildID)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/components/terminal.templ`, Line: 13, Col: 22}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/components/terminal.templ`, Line: 9, Col: 63}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var3))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 3, "\"><div class=\"boid-terminal-status-bar\"><span class=\"boid-terminal-status boid-terminal-status-connecting\" title=\"接続中\"></span></div><div class=\"boid-terminal-xterm-wrap\"><div class=\"boid-terminal-xterm\"></div><div class=\"boid-terminal-disconnect-overlay\" hidden><div class=\"boid-terminal-disconnect-content\"><p class=\"boid-terminal-disconnect-msg\">接続が切断されました</p><button type=\"button\" class=\"btn btn-primary boid-terminal-reconnect\">再接続</button></div></div><div class=\"boid-terminal-copy-toast\" hidden><button type=\"button\" class=\"boid-terminal-copy-btn\"><span class=\"boid-terminal-copy-label\">コピー</span> <span class=\"boid-terminal-copy-preview\"></span></button> <button type=\"button\" class=\"boid-terminal-copy-dismiss\" aria-label=\"閉じる\">×</button></div></div><div class=\"boid-terminal-keybar\"><button type=\"button\" class=\"boid-terminal-keybar-btn\" data-key=\"esc\">Esc</button> <button type=\"button\" class=\"boid-terminal-keybar-btn\" data-key=\"tab\">Tab</button> <button type=\"button\" class=\"boid-terminal-keybar-btn\" data-key=\"up\">↑</button> <button type=\"button\" class=\"boid-terminal-keybar-btn\" data-key=\"down\">↓</button> <button type=\"button\" class=\"boid-terminal-keybar-btn\" data-key=\"left\">←</button> <button type=\"button\" class=\"boid-terminal-keybar-btn\" data-key=\"right\">→</button> <button type=\"button\" class=\"boid-terminal-keybar-btn boid-terminal-keybar-ctrl\" data-key=\"ctrl\">Ctrl</button></div></div><script type=\"module\" src=\"")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 3, "\"></script><div class=\"boid-terminal\" data-job-id=\"")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
 		var templ_7745c5c3_Var4 string
-		templ_7745c5c3_Var4, templ_7745c5c3_Err = templ.JoinStringErrs("/static/boid-terminal-init.js?v=" + BuildID)
+		templ_7745c5c3_Var4, templ_7745c5c3_Err = templ.JoinStringErrs(jobId)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/components/terminal.templ`, Line: 53, Col: 73}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/components/terminal.templ`, Line: 12, Col: 21}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var4))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 4, "\"></script>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 4, "\" data-ws-url=\"")
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		var templ_7745c5c3_Var5 string
+		templ_7745c5c3_Var5, templ_7745c5c3_Err = templ.JoinStringErrs(wsPath)
+		if templ_7745c5c3_Err != nil {
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/components/terminal.templ`, Line: 13, Col: 22}
+		}
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var5))
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 5, "\"><div class=\"boid-terminal-status-bar\"><span class=\"boid-terminal-status boid-terminal-status-connecting\" title=\"接続中\"></span></div><div class=\"boid-terminal-xterm-wrap\"><div class=\"boid-terminal-xterm\"></div><div class=\"boid-terminal-disconnect-overlay\" hidden><div class=\"boid-terminal-disconnect-content\"><p class=\"boid-terminal-disconnect-msg\">接続が切断されました</p><button type=\"button\" class=\"btn btn-primary boid-terminal-reconnect\">再接続</button></div></div><div class=\"boid-terminal-copy-toast\" hidden><button type=\"button\" class=\"boid-terminal-copy-btn\"><span class=\"boid-terminal-copy-label\">コピー</span> <span class=\"boid-terminal-copy-preview\"></span></button> <button type=\"button\" class=\"boid-terminal-copy-dismiss\" aria-label=\"閉じる\">×</button></div></div><div class=\"boid-terminal-keybar\"><button type=\"button\" class=\"boid-terminal-keybar-btn\" data-key=\"esc\">Esc</button> <button type=\"button\" class=\"boid-terminal-keybar-btn\" data-key=\"tab\">Tab</button> <button type=\"button\" class=\"boid-terminal-keybar-btn\" data-key=\"up\">↑</button> <button type=\"button\" class=\"boid-terminal-keybar-btn\" data-key=\"down\">↓</button> <button type=\"button\" class=\"boid-terminal-keybar-btn\" data-key=\"left\">←</button> <button type=\"button\" class=\"boid-terminal-keybar-btn\" data-key=\"right\">→</button> <button type=\"button\" class=\"boid-terminal-keybar-btn boid-terminal-keybar-ctrl\" data-key=\"ctrl\">Ctrl</button></div></div><script type=\"module\" src=\"")
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		var templ_7745c5c3_Var6 string
+		templ_7745c5c3_Var6, templ_7745c5c3_Err = templ.JoinStringErrs("/static/boid-terminal-init.js?v=" + BuildID)
+		if templ_7745c5c3_Err != nil {
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/components/terminal.templ`, Line: 53, Col: 73}
+		}
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var6))
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 6, "\"></script>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}

@@ -151,6 +151,7 @@ type childSpeccedPayload struct {
 	Title       string `json:"title,omitempty"`
 	Project     string `json:"project"`
 	Behavior    string `json:"behavior,omitempty"`
+	Description string `json:"description,omitempty"`
 	Instruction string `json:"instruction,omitempty"`
 }
 
@@ -187,6 +188,7 @@ func applyChildSpeccedSideEffect(tx TxStore, taskID string, p *childSpeccedPaylo
 	newDetail, serr := orchestrator.SpecDetailChild(tt.Detail, p.ID, orchestrator.TaskTriageChildSpec{
 		Project:     p.Project,
 		Behavior:    p.Behavior,
+		Description: p.Description,
 		Instruction: p.Instruction,
 	}, p.Title)
 	if serr != nil {
@@ -706,6 +708,7 @@ func (s *TaskWorkflowService) Dispatch(ctx context.Context, taskID string) (*Act
 		childTask, cErr := s.TaskCreator.CreateTask(CreateTaskRequest{
 			ProjectID:    children[i].Spec.Project,
 			Title:        children[i].Title,
+			Description:  children[i].Spec.Description,
 			Behavior:     children[i].Spec.Behavior,
 			Instructions: instructions,
 			ParentID:     taskID,
