@@ -267,7 +267,7 @@ type stubTaskTriageStore struct {
 }
 
 func (s *stubTaskTriageStore) UpsertTaskTriage(tt *orchestrator.TaskTriage) error { return nil }
-func (s *stubTaskTriageStore) SeedTaskTriage(taskID string) error                { return nil }
+func (s *stubTaskTriageStore) SeedTaskTriage(taskID string) error                 { return nil }
 func (s *stubTaskTriageStore) GetTaskTriage(taskID string) (*orchestrator.TaskTriage, error) {
 	return s.triage, s.err
 }
@@ -570,6 +570,92 @@ func TestWebHandlerPostStartShapingSession_Success(t *testing.T) {
 		if !strings.Contains(dispatcher.lastReq.Instruction, want) {
 			t.Errorf("Instruction missing %q; got:\n%s", want, dispatcher.lastReq.Instruction)
 		}
+	}
+}
+
+func TestWebHandlerPostStartShapingSession_WorkingWithOpenChild(t *testing.T) {
+	svc := &stubWebService{taskDetail: &TaskDetailView{Task: &orchestrator.Task{
+		ID:          "task-1",
+		ProjectID:   "meta-proj",
+		Title:       "運用が回っていない気配",
+		Description: "詳細不明のsummaryのみ",
+		Status:      orchestrator.TaskStatusWorking,
+	}}}
+	dispatcher := &stubSessionDispatcher{result: &StartSessionResult{JobID: "job-9"}}
+	triage := &stubTaskTriageStore{triage: &orchestrator.TaskTriage{
+		TaskID: "task-1", Kind: "issue", Urgency: "week",
+		Detail: json.RawMessage(`{"children":[{"id":"ch_00","title":"サブ課題A","status":"open"}]}`),
+	}}
+	r := newTestWebHandlerWithShaping(svc, dispatcher, triage)
+
+	req := httptest.NewRequest(http.MethodPost, "/tasks/task-1/shape", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusSeeOther {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusSeeOther)
+	}
+	if !dispatcher.callable {
+		t.Fatal("StartSession was not called for a working task with an open child")
+	}
+	for _, want := range []string{"ch_00", "サブ課題A", "specced"} {
+		if !strings.Contains(dispatcher.lastReq.Instruction, want) {
+			t.Errorf("Instruction missing %q; got:\n%s", want, dispatcher.lastReq.Instruction)
+		}
+	}
+	if strings.Contains(dispatcher.lastReq.Instruction, "card を ready に更新してください") {
+		t.Errorf("working-task instruction should not tell the agent to move the card back to ready; got:\n%s", dispatcher.lastReq.Instruction)
+	}
+}
+
+func TestWebHandlerPostStartShapingSession_WorkingWithoutTriageRow(t *testing.T) {
+	svc := &stubWebService{taskDetail: &TaskDetailView{Task: &orchestrator.Task{
+		ID: "task-1", Status: orchestrator.TaskStatusWorking,
+	}}}
+	dispatcher := &stubSessionDispatcher{}
+	// No triage row at all: an ordinary (non-triage) working task, the
+	// overwhelming majority case — must not be offered Shape, since it has
+	// no children list to add to or shape.
+	r := newTestWebHandlerWithShaping(svc, dispatcher, nil)
+
+	req := httptest.NewRequest(http.MethodPost, "/tasks/task-1/shape", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusSeeOther {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusSeeOther)
+	}
+	if loc := w.Header().Get("Location"); !strings.Contains(loc, "error=") {
+		t.Errorf("Location = %q, want error param", loc)
+	}
+	if dispatcher.callable {
+		t.Error("StartSession should not be called for a working task with no task_triage sidecar row")
+	}
+}
+
+func TestWebHandlerPostStartShapingSession_WorkingWithTriageRowNoChildrenYet(t *testing.T) {
+	svc := &stubWebService{taskDetail: &TaskDetailView{Task: &orchestrator.Task{
+		ID: "task-1", ProjectID: "meta-proj", Status: orchestrator.TaskStatusWorking,
+	}}}
+	dispatcher := &stubSessionDispatcher{result: &StartSessionResult{JobID: "job-9"}}
+	// A triage row exists but has no children yet — the "add a brand-new
+	// child while working" use case must still be reachable, not just
+	// "shape an existing open child".
+	triage := &stubTaskTriageStore{triage: &orchestrator.TaskTriage{TaskID: "task-1", Kind: "issue"}}
+	r := newTestWebHandlerWithShaping(svc, dispatcher, triage)
+
+	req := httptest.NewRequest(http.MethodPost, "/tasks/task-1/shape", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusSeeOther {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusSeeOther)
+	}
+	if !dispatcher.callable {
+		t.Fatal("StartSession should be callable for a working task with a triage row even with no children yet")
+	}
+	if !strings.Contains(dispatcher.lastReq.Instruction, "追加") {
+		t.Errorf("Instruction should mention adding a new child when none exist yet; got:\n%s", dispatcher.lastReq.Instruction)
 	}
 }
 

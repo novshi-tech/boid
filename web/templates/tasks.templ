@@ -345,7 +345,7 @@ func actionPrimaryClass(action string) string {
 // TaskActionBar renders the sticky bottom action bar.
 // Timeline tab: state-aware primary (Start/Abort/Rerun) + "⋯" kebab
 // (duplicate / abort / delete). Other tabs show no bar.
-templ TaskActionBar(task *orchestrator.Task, availableActions []string, activeTab string) {
+templ TaskActionBar(task *orchestrator.Task, availableActions []string, activeTab string, hasTriage bool) {
 	if activeTab == "timeline" {
 		<div class="action-bar">
 			<div class="action-bar-inner">
@@ -385,11 +385,20 @@ templ TaskActionBar(task *orchestrator.Task, availableActions []string, activeTa
 				if task.Status == orchestrator.TaskStatusPending {
 					<a href={ templ.SafeURL("/tasks/" + task.ID + "/edit") } class="btn btn-secondary">Edit</a>
 				}
-				if task.Status == orchestrator.TaskStatusTriaged {
+				if task.Status == orchestrator.TaskStatusTriaged || (task.Status == orchestrator.TaskStatusWorking && hasTriage) {
 					// Shape (UC-3 shaping session launcher, cross-project-issue-triage
 					// plan doc — 整形 in the plan doc's Japanese). Secondary to Go:
 					// shaping is for cards still too fuzzy to Go on directly, not
-					// the default path.
+					// the default path. Also offered on working (2026-08-14
+					// follow-up), gated on hasTriage (a task_triage sidecar row
+					// exists) rather than an open child already being present —
+					// the overwhelming majority of working tasks are ordinary
+					// dev/impl tasks with no sidecar at all and get no button, but
+					// a working triage card's children list keeps needing shaping
+					// work after Go: an existing open child may need its spec
+					// defined, or a brand-new child may need to be added — the
+					// latter needs Shape precisely because no child exists yet, so
+					// this is deliberately not gated on an open child being present.
 					<form method="post" action={ templ.SafeURL("/tasks/" + task.ID + "/shape") } class="action-bar-primary-form">
 						<button type="submit" class="btn btn-secondary">Shape</button>
 					</form>
@@ -911,7 +920,7 @@ templ detailMoreItem(taskID, tab, label, activeTab string) {
 //   - the "more" details element is freshly rendered (closed by default,
 //     summary label reflects the new active tab when it's a hidden one)
 //   - the action bar primary button becomes tab-contextual without a separate swap
-templ TaskDetailTabsSection(task *orchestrator.Task, timelineGroups []timeline.StatusGroup, jobs []*JobView, availableActions []string, activeTab string) {
+templ TaskDetailTabsSection(task *orchestrator.Task, timelineGroups []timeline.StatusGroup, jobs []*JobView, availableActions []string, activeTab string, hasTriage bool) {
 	<div id="tabs" class="tabs">
 		<div class="tab-list" role="tablist">
 			@detailTabLink(task.ID, "timeline", "Timeline", activeTab)
@@ -938,14 +947,14 @@ templ TaskDetailTabsSection(task *orchestrator.Task, timelineGroups []timeline.S
 			</div>
 		</div>
 		@TaskDetailTabPanel(task, timelineGroups, jobs, activeTab)
-		@TaskActionBar(task, availableActions, activeTab)
+		@TaskActionBar(task, availableActions, activeTab, hasTriage)
 	</div>
 }
 
-templ TaskDetail(task *orchestrator.Task, timelineGroups []timeline.StatusGroup, jobs []*JobView, availableActions []string, errorMsg string, activeTab string, projectName string, children []orchestrator.TaskTriageChild) {
+templ TaskDetail(task *orchestrator.Task, timelineGroups []timeline.StatusGroup, jobs []*JobView, availableActions []string, errorMsg string, activeTab string, projectName string, children []orchestrator.TaskTriageChild, hasTriage bool) {
 	@Layout(task.Title, "/") {
 		@TaskDetailStatusSection(task, availableActions, errorMsg, projectName, children)
-		@TaskDetailTabsSection(task, timelineGroups, jobs, availableActions, activeTab)
+		@TaskDetailTabsSection(task, timelineGroups, jobs, availableActions, activeTab, hasTriage)
 	}
 }
 

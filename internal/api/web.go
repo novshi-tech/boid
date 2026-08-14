@@ -437,15 +437,20 @@ func (h *WebHandler) TaskDetail(w http.ResponseWriter, r *http.Request) {
 	}
 	errorMsg := r.URL.Query().Get("error")
 	timelineGroups := detailTimelineGroups(detail)
+	triage := h.loadTriage(id)
+	children := childrenOf(triage)
+	hasTriage := triage != nil
 	if r.Header.Get("HX-Request") == "true" {
 		// Tab clicks swap the entire #tabs section so the active class on
 		// the visible tabs and the "more" summary label stay in sync.
-		templates.TaskDetailTabsSection(detail.Task, timelineGroups, jobs, detail.AvailableActions, tab).Render(r.Context(), w)
+		// hasTriage is needed here too (not just the full-page render below)
+		// because TaskActionBar's Shape button on a working task is gated
+		// on it, and this is the section that re-renders it.
+		templates.TaskDetailTabsSection(detail.Task, timelineGroups, jobs, detail.AvailableActions, tab, hasTriage).Render(r.Context(), w)
 		return
 	}
 	projectName := h.lookupProjectName(detail.Task.ProjectID)
-	children := h.triageChildrenFor(id)
-	templates.TaskDetail(detail.Task, timelineGroups, jobs, detail.AvailableActions, errorMsg, tab, projectName, children).Render(r.Context(), w)
+	templates.TaskDetail(detail.Task, timelineGroups, jobs, detail.AvailableActions, errorMsg, tab, projectName, children, hasTriage).Render(r.Context(), w)
 }
 
 // triageChildrenFor returns the task_triage.detail.children for id, or nil
@@ -459,11 +464,14 @@ func (h *WebHandler) TaskDetail(w http.ResponseWriter, r *http.Request) {
 // dispatch: Go was pressed on a card with no way to see, from the Web UI,
 // whether any child had actually been specced (2026-08-14).
 func (h *WebHandler) triageChildrenFor(id string) []orchestrator.TaskTriageChild {
-	if h.TaskTriage == nil {
-		return nil
-	}
-	triage, err := h.TaskTriage.GetTaskTriage(id)
-	if err != nil || triage == nil || len(triage.Detail) == 0 {
+	return childrenOf(h.loadTriage(id))
+}
+
+// childrenOf parses a (possibly nil) task_triage row's Detail blob into its
+// children list, or nil when the row is nil / has no Detail / the blob
+// doesn't parse.
+func childrenOf(triage *orchestrator.TaskTriage) []orchestrator.TaskTriageChild {
+	if triage == nil || len(triage.Detail) == 0 {
 		return nil
 	}
 	children, err := orchestrator.DetailChildren(triage.Detail)
@@ -471,6 +479,23 @@ func (h *WebHandler) triageChildrenFor(id string) []orchestrator.TaskTriageChild
 		return nil
 	}
 	return children
+}
+
+// loadTriage is the best-effort task_triage sidecar lookup shared by
+// triageChildrenFor and PostStartShapingSession's working-status gate: a
+// missing sidecar row (nil TaskTriage store, no row, lookup error) is not
+// fatal and simply returns nil — most tasks, including most working ones,
+// never had a task_triage row at all (see triageChildrenFor's own doc
+// comment).
+func (h *WebHandler) loadTriage(id string) *orchestrator.TaskTriage {
+	if h.TaskTriage == nil {
+		return nil
+	}
+	triage, err := h.TaskTriage.GetTaskTriage(id)
+	if err != nil {
+		return nil
+	}
+	return triage
 }
 
 // lookupProjectName resolves a project ID to its display name (Meta.Name),
@@ -886,10 +911,24 @@ func (h *WebHandler) PostStartSession(w http.ResponseWriter, r *http.Request) {
 // into the bootstrap instruction so the agent has the card in hand at
 // turn one instead of the operator re-typing it.
 //
-// Only reachable from a triaged card (mirrors detailPrimaryAction's
-// triaged→ready gating in tasks.templ) — shaping a card that already has
-// no open question, or one still in captured, is not a state this button
-// is offered from.
+// Reachable from a triaged card (mirrors detailPrimaryAction's
+// triaged→ready gating in tasks.templ) OR a working card that has a
+// task_triage sidecar row — shaping a card that already has no open
+// question, or one still in captured, is not a state this button is
+// offered from. working is included alongside triaged (2026-08-14
+// follow-up) because a working triage task's children
+// (task_triage.detail.children) keep needing shaping-session work after
+// Go: an existing open child may need its spec defined (filing a Jira
+// issue, deciding what work it covers), or a brand-new child may need to
+// be added altogether — the set of children is not fixed at dispatch time.
+// Gated on the triage row existing (not just status=working) because the
+// overwhelming majority of working tasks are ordinary dev/impl tasks with
+// no task_triage sidecar at all (triageChildrenFor's doc comment); the
+// button is meaningless — there's no children list to add to or shape —
+// without that sidecar. It is deliberately NOT gated on hasOpenChild
+// (2026-08-14 second follow-up): requiring an open child already present
+// would block the "add a brand-new child" use case, which needs a Shape
+// session precisely because no child exists yet.
 func (h *WebHandler) PostStartShapingSession(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	if h.SessionDispatcher == nil {
@@ -902,13 +941,14 @@ func (h *WebHandler) PostStartShapingSession(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	task := detail.Task
-	if task.Status != orchestrator.TaskStatusTriaged {
-		redirectTaskErr(w, r, id, fmt.Errorf("shaping session requires a triaged task (status = %s)", task.Status))
+	if task.Status != orchestrator.TaskStatusTriaged && task.Status != orchestrator.TaskStatusWorking {
+		redirectTaskErr(w, r, id, fmt.Errorf("shaping session requires a triaged or working task (status = %s)", task.Status))
 		return
 	}
-	var triage *orchestrator.TaskTriage
-	if h.TaskTriage != nil {
-		triage, _ = h.TaskTriage.GetTaskTriage(id) // best-effort — a missing sidecar row is not fatal, see triage_read.go's GetTriage doc comment
+	triage := h.loadTriage(id) // best-effort — a missing sidecar row is not fatal, see triage_read.go's GetTriage doc comment
+	if task.Status == orchestrator.TaskStatusWorking && triage == nil {
+		redirectTaskErr(w, r, id, fmt.Errorf("shaping session on a working task requires a task_triage sidecar row"))
+		return
 	}
 	harnessType, model := shapingSessionDefaults(h.Service, task.ProjectID)
 	req := StartSessionRequest{
@@ -1001,7 +1041,14 @@ func shapingSessionDefaults(svc WebService, projectID string) (harnessType, mode
 // principle this comment documents is unchanged.
 func buildShapingInstruction(task *orchestrator.Task, triage *orchestrator.TaskTriage) string {
 	var b strings.Builder
-	b.WriteString("整形セッション: 以下の triage カードの内容を詰め、対象 project・実行内容・完了条件を確定してください。\n\n")
+	if task.Status == orchestrator.TaskStatusWorking {
+		b.WriteString("整形セッション: この working カードの子タスク一覧 (task_triage.detail.children) を編集してください。" +
+			"以下の情報を参考に、既存の open な子タスクがあればそれぞれ対象 project・実行内容・完了条件を詰め、" +
+			"対応が必要な作業を新たに見つけた場合は子タスクとして追加してください（必要なら Jira 起票を含む）。" +
+			"子タスクが1件もない状態から追加を始めても構いません。\n\n")
+	} else {
+		b.WriteString("整形セッション: 以下の triage カードの内容を詰め、対象 project・実行内容・完了条件を確定してください。\n\n")
+	}
 	fmt.Fprintf(&b, "task_id: %s\n", task.ID)
 	fmt.Fprintf(&b, "title: %s\n", task.Title)
 	if triage != nil {
@@ -1022,11 +1069,21 @@ func buildShapingInstruction(task *orchestrator.Task, triage *orchestrator.TaskT
 		b.WriteString("\n\ndetail (raw):\n")
 		b.Write(triage.Detail)
 	}
-	b.WriteString("\n\n対話で対象 project・実行内容・完了条件を固めたら、card を ready に更新してください。" +
-		"更新の具体的な手順 (書き込み先・経路) はこの project 自身の CLAUDE.md やスキルに従うこと — " +
-		"boid 側はここでは手順を指定しません。frontmatter やメタデータの直接編集が禁じられている project では、" +
-		"それに従ってください。" +
-		"整形の結果「やらない」と分かった場合は、このセッションでは何もせず運用者に破棄 (drop) の判断を委ねてください。")
+	if task.Status == orchestrator.TaskStatusWorking {
+		b.WriteString("\n\n対話で子タスクの対象 project・実行内容・完了条件を固めたら、既存の子タスクは specced に更新し、" +
+			"新たに追加した子タスクも同じ形で children に加えてください" +
+			"（このカード自身を ready に戻す必要はありません — working のまま子タスクの追加・整形だけを行います）。" +
+			"更新の具体的な手順 (書き込み先・経路) はこの project 自身の CLAUDE.md やスキルに従うこと — " +
+			"boid 側はここでは手順を指定しません。frontmatter やメタデータの直接編集が禁じられている project では、" +
+			"それに従ってください。" +
+			"整形の結果「やらない」と分かった子タスクについては、このセッションでは何もせず運用者に破棄の判断を委ねてください。")
+	} else {
+		b.WriteString("\n\n対話で対象 project・実行内容・完了条件を固めたら、card を ready に更新してください。" +
+			"更新の具体的な手順 (書き込み先・経路) はこの project 自身の CLAUDE.md やスキルに従うこと — " +
+			"boid 側はここでは手順を指定しません。frontmatter やメタデータの直接編集が禁じられている project では、" +
+			"それに従ってください。" +
+			"整形の結果「やらない」と分かった場合は、このセッションでは何もせず運用者に破棄 (drop) の判断を委ねてください。")
+	}
 	return b.String()
 }
 
