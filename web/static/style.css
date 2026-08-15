@@ -1944,8 +1944,15 @@ details[open] > summary {
   min-width: 0;
   overflow: hidden;
   position: relative;
-  /* モバイル: 縦スワイプをスクロールとして扱い、横は親に委ねる */
-  touch-action: pan-y;
+  /* モバイル: 縦スワイプは Pointer Events (boid-terminal.js の
+     attachTouchScroll) が独自に処理して合成 wheel イベントへ変換するので、
+     ブラウザのネイティブスクロールは完全に無効化する。pointermove で
+     ブラウザ側のスクロールを止める手段は touch-action しかない (
+     preventDefault は passive リスナーやスクロール開始後には効かない)。
+     pan-y の時点で pinch-zoom は既に禁止済みで、ページ自体も
+     `html, body { overflow: hidden }` でスクロールしないため、
+     none にして失うのはダブルタップズームのみ。 */
+  touch-action: none;
   overscroll-behavior: contain;
 }
 
