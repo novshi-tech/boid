@@ -81,6 +81,10 @@ export function initBoidTerminal(rootEl, { jobId, wsUrl }) {
   let ws = null;
   let ctrlActive = false;
   let exitReceived = false;
+  // Set by attachTouchScroll() below to its stopInertia(); called from
+  // disconnect() so a running momentum-scroll rAF loop cannot outlive the
+  // widget/socket.
+  let touchScrollTeardown = function () {};
 
   // --- mouse-tracking mode dedup ---
   //
@@ -424,69 +428,106 @@ export function initBoidTerminal(rootEl, { jobId, wsUrl }) {
     });
   }
 
-  // --- mobile touch scroll (Step B) ---
-  // xterm.js の .xterm-viewport はネイティブ scroll を使うが、タッチ慣性の
-  // 高頻度 pixel delta と相性が悪くスクロールが詰まる。
-  // Touch Events で delta を自前計算し term.scrollLines() に変換する。
+  // --- mobile touch scroll (Step A + B) ---
   //
-  // なぜ .xterm-viewport ではなく xtermWrap にリスナーを付けるか:
-  // .xterm-viewport と実際に文字が描かれる .xterm-screen は xterm.js の DOM
-  // 構造上「親子」ではなく「兄弟」(どちらも xterm.js の this.element 直下)。
-  // .xterm-screen は position:relative で全面を覆い、.xterm-viewport
-  // (position:absolute; inset:0) の上に乗って hit-test を奪うので、端末の
-  // 文字の上を触るタッチは .xterm-screen (→ .xterm-rows の span) に落ちて
-  // .xterm-viewport には一切バブルしない。かつて .xterm-viewport に付けて
-  // いた実装は、スクロールバーの隙間 (デスクトップで数 px、モバイルの
-  // オーバーレイスクロールバーでは実質 0px) でしか発火しておらず、文字の上
-  // でのスワイプに対しては最初から何もしていなかった。
+  // Step A — why term.scrollLines() alone can never work here:
+  // Claude Code is a full-screen TUI; it enters the alternate screen once at
+  // startup and never leaves it (see internal/vtsnapshot/vtsnapshot.go). An
+  // alt-screen buffer has no scrollback (`buffer.active.ybase === 0`), and
+  // xterm's own scrollLines() is `ydisp = clamp(ydisp + n, 0, ybase)` — with
+  // ybase pinned at 0 that is a permanent no-op. No amount of fixing *how*
+  // the touch event reaches this code changes that; the call it reaches was
+  // dead the whole time. vendored xterm.js's own wheel handler
+  // (bindMouse()/registerEvents() in xterm.js) already gets this right by
+  // branching three ways on every wheel event:
+  //   1. mouse tracking active (coreMouseService.areMouseEventsActive) →
+  //      report the wheel to the app as a mouse event (button 4). Claude
+  //      Code keeps DECSET 1000/1002/1003 asserted, so in practice this is
+  //      the common case for it.
+  //   2. no scrollback, i.e. alt screen (`!buffer.hasScrollback`) → translate
+  //      into repeated cursor-key escapes (Up/Down), so the *app* scrolls
+  //      its own view.
+  //   3. otherwise (plain shell) → term.viewport.handleWheel(), the normal
+  //      scrollback path term.scrollLines() also exercises.
+  // Re-implementing that branch here would mean reaching into
+  // coreMouseService/viewport private fields that vendored xterm.js does not
+  // export, and re-deriving CoreMouseService's mouse-report encoding by
+  // hand. Instead we synthesize a real WheelEvent from the touch delta and
+  // dispatch it at .xterm-screen (a descendant of xterm.js's own root
+  // element, so it bubbles straight into the exact listener above) and let
+  // xterm.js itself pick the branch. This is the one point where this file
+  // depends on vendored xterm.js DOM structure (the .xterm-screen class
+  // name and the fact that a dispatched 'wheel' event reaches the same
+  // listener a real one would) rather than a documented public API — if a
+  // future xterm.js upgrade renames that class or stops registering its
+  // wheel listener on an ancestor of it, dispatchSyntheticWheel() below is
+  // the only place that needs to change.
   //
-  // xtermWrap (.boid-terminal-xterm-wrap) は .xterm-viewport と .xterm-screen
-  // 両方の共通祖先なので、ここでリスナーを capture フェーズに登録すれば
-  // どちらに落ちたタッチでも確実に拾える。capture にするのは、bubble
-  // フェーズで先に受け取ると xterm.js 自身が .element (=xtermRoot の中の
-  // .xterm) に登録している touchstart/touchmove (vendored xterm.js の
-  // bindMouse() 内) の方が DOM 上は内側なので先に処理が進んでしまうため。
+  // Step B — why Touch Events alone cannot reliably track the gesture:
+  // xterm.js's DOM renderer replaces the child <span> of a row on every
+  // repaint that touches it (renderRows() does rowElement.replaceChildren(...)
+  // — the row <div> is reused, but its text spans are always rebuilt, even
+  // when unchanged). A touch that started on a character lands on that
+  // span. Per the Touch Events spec, subsequent touchmove/touchend events
+  // for that touch keep targeting the *original* element even after it is
+  // removed from the document — and once a target is detached, dispatch has
+  // no path from the document down to it, so ancestor listeners (including
+  // this file's own xtermWrap capture-phase listener below) simply stop
+  // firing, capture phase included. Because term.scrollLines()'s
+  // refresh(0, rows-1) after every successful scroll re-triggers exactly
+  // that repaint, this used to break after the very first scrolled line
+  // even while the finger kept moving.
   //
-  // touchmove で stopPropagation() する理由: xterm.js の touchmove ハンドラ
-  // は coreMouseService.areMouseEventsActive が false のときだけ
-  // viewport.handleTouchStart/handleTouchMove という「xterm 自前のタッチ
-  // スクロール」を動かす。Claude Code のような TUI は DECSET 1000/1002/1003
-  // (マウストラッキング) を有効化するので通常 areMouseEventsActive=true で
-  // xterm 側は素通りしてくれるが、term.reset() でモード状態がリセットされる
-  // 瞬間 (attach 直後・幅変更 resize 直後。上の mouse-tracking mode dedup の
-  // コメント参照) など active=false の窓ができると、xterm 自前のタッチ
-  // スクロールが同じジェスチャーに介入し、互いの scrollLines 呼び出しが競合
-  // する。capture フェーズで stopPropagation すれば、この後どのフェーズの
-  // どのリスナーにもイベントが渡らなくなるので、areMouseEventsActive の状態
-  // に関係なくこのハンドラだけが動く。touchstart/touchend は意図的に
-  // stopPropagation しない: xtermWrap の tap-to-focus (下の attachTapFocus)
-  // が同じ 2 イベントを xtermWrap の bubble フェーズで拾う必要があるため
-  // (capture で止めなければ、対象要素を経由して戻ってくる bubble フェーズの
-  // リスナーには問題なく届く)。xterm 側の touchstart は
-  // Terminal.cancel()/cancelEvents オプションが既定 false のかぎり無害
-  // (viewport.handleTouchStart は _lastTouchY を代入するだけで見た目に影響
-  // しない) だが、対になる touchmove を止めている以上 handleTouchMove は
-  // 呼ばれない。
+  // Pointer Events sidestep this: Pointer.setPointerCapture() redirects
+  // every later pointer event for that pointerId straight to the capturing
+  // element regardless of hit-testing or whether the original target is
+  // still attached, so xtermWrap keeps receiving pointermove no matter how
+  // many times xterm.js rebuilds the spans underneath. This is a standard
+  // public Web API, not a vendored-library dependency.
+  //
+  // What Pointer Events do NOT replace: xterm.js's own vendored bindMouse()
+  // registers raw Touch Events (touchstart/touchmove) directly on
+  // this.element, independent of anything this file does with Pointer
+  // Events — pointer capture only affects Pointer Events, so those keep
+  // firing in parallel. When coreMouseService.areMouseEventsActive is false
+  // (the DECSET-reset window right after term.reset(), see the
+  // mouse-tracking-mode-dedup comment above), xterm's own touchmove handler
+  // drives viewport.handleTouchMove() and would fight this code's scrolling
+  // over the same gesture. The touchmove capture-phase listener below with
+  // stopPropagation() is what prevents that — it is NOT superseded by the
+  // Pointer Events migration and must stay. Its preventDefault() is equally
+  // load-bearing for an unrelated reason: without it, touch-action:none
+  // (style.css) makes iOS synthesize mousedown/mousemove/mouseup for the
+  // gesture, and xterm's SelectionService starts a text selection on every
+  // swipe, popping the copy toast on every scroll. Do not drop either call.
+  //
+  // Pointer type scoping: only pointerType === 'touch' is handled here.
+  // Capturing a mouse pointerdown would break desktop drag-to-select (the
+  // copy toast feature below) — mouse gestures are left entirely to
+  // xterm.js's own SelectionService.
   (function attachTouchScroll() {
-    const viewport = xtermRoot.querySelector('.xterm-viewport');
-    if (!viewport) return;
+    const screenEl = xtermRoot.querySelector('.xterm-screen');
+    if (!screenEl) return;
 
-    let startY = 0;
-    let lastY = 0;
+    let activePointerId = null;
+    let startX = 0, startY = 0;
+    let lastX = 0, lastY = 0;
     let lastT = 0;
-    let velocityY = 0;  // px/ms
+    let velocityY = 0;  // px/ms, clamped — see MAX_VELOCITY below
     let rafId = null;
-    let remainder = 0;  // 端数行の持ち越し (touchmove/touchend で共有)
-
-    function cellHeight() {
-      // getBoundingClientRect ベースで 1 行の高さを推定する
-      const rows = xtermRoot.querySelector('.xterm-rows');
-      if (rows && rows.children.length > 0) {
-        return rows.children[0].getBoundingClientRect().height || 17;
-      }
-      const totalRows = term.buffer.active.length || 1;
-      return viewport.scrollHeight / totalRows;
-    }
+    // In branches 1/2 above (mouse report / cursor keys) each dispatched
+    // synthetic wheel event becomes real input sent to the remote process
+    // (mouse-report bytes / cursor-key escapes), so the total volume
+    // inertia can inject must be bounded. A frame counter alone does not
+    // bound it: FRICTION decay below only bounds *frame count*, not total
+    // distance, and total distance is linear in the starting velocity
+    // (sum of a geometric series). Coarsened/coalesced pointer timestamps
+    // (seen under e.g. Firefox's privacy.reduceTimerPrecision, or two
+    // pointermove events landing on the same rAF tick) can make dt collapse
+    // toward 0 for one sample and spike velocityY by 1-2 orders of
+    // magnitude — clamping the *velocity* at its source, not the frame
+    // count, is what actually bounds the total.
+    const MAX_VELOCITY = 3;  // px/ms — well above any real flick
 
     // コピートーストや切断オーバーレイは xtermWrap の子だが、これらの上での
     // タッチはボタン操作 (コピー/閉じる/再接続) 用であって端末スクロール
@@ -497,87 +538,137 @@ export function initBoidTerminal(rootEl, { jobId, wsUrl }) {
         (disconnectOverlay && !disconnectOverlay.hidden && disconnectOverlay.contains(e.target));
     }
 
-    xtermWrap.addEventListener('touchstart', function (e) {
+    // dy>0 means an upward swipe (finger moving toward smaller clientY),
+    // which under direct-manipulation scrolling reveals content further
+    // forward (more recent lines) — i.e. the same direction xterm.js's own
+    // scrollLines(+n)/handleWheel(deltaY>0) move in, so no sign flip is
+    // needed when handing dy straight to a WheelEvent's deltaY.
+    function dispatchSyntheticWheel(dy, clientX, clientY) {
+      if (dy === 0) return;
+      screenEl.dispatchEvent(new WheelEvent('wheel', {
+        deltaY: dy,
+        deltaMode: WheelEvent.DOM_DELTA_PIXEL,
+        clientX: clientX,
+        clientY: clientY,
+        bubbles: true,
+        cancelable: true,
+      }));
+    }
+
+    function stopInertia() {
+      if (rafId !== null) { cancelAnimationFrame(rafId); rafId = null; }
+    }
+
+    xtermWrap.addEventListener('pointerdown', function (e) {
+      if (e.pointerType !== 'touch') return;
+      // Stop any running inertia before the overlay check: a tap on the
+      // copy toast / reconnect button while momentum is still running must
+      // silence it too, or it keeps injecting synthetic wheels (real PTY
+      // input in branches 1/2 above) at whatever the last scroll target was.
+      stopInertia();
       if (isOnOverlay(e)) return;
-      if (rafId) { cancelAnimationFrame(rafId); rafId = null; }
-      startY = e.touches[0].clientY;
-      lastY  = startY;
-      lastT  = e.timeStamp;
-      velocityY = 0;
-      remainder = 0;
-      // touchstart 自体は stopPropagation しない (上の説明を参照)。
-    }, { passive: true, capture: true });
-
-    xtermWrap.addEventListener('touchmove', function (e) {
-      if (isOnOverlay(e)) return;
-      const y  = e.touches[0].clientY;
-      const dt = e.timeStamp - lastT || 1;
-      const dy = lastY - y;  // 正 = 上スワイプ = 過去へスクロール
-
-      velocityY = dy / dt;  // px/ms
-
-      // remainder を持ち越して sub-cell delta を捨てない
-      remainder += dy / cellHeight();
-      const rows = Math.trunc(remainder);
-      remainder -= rows;
-      if (rows !== 0) term.scrollLines(rows);
-
-      lastY = y;
+      activePointerId = e.pointerId;
+      startX = lastX = e.clientX;
+      startY = lastY = e.clientY;
       lastT = e.timeStamp;
-      e.preventDefault();
-      e.stopPropagation();
-    }, { passive: false, capture: true });
+      velocityY = 0;
+      xtermWrap.setPointerCapture(e.pointerId);
+    }, { capture: true });
 
-    xtermWrap.addEventListener('touchend', function (e) {
-      if (isOnOverlay(e)) return;
-      // touchend も stopPropagation しない (上の説明を参照)。
-      // 慣性減衰スクロール: velocityY (px/ms) を行数に換算しながら減衰させる
-      // remainder は touchmove からの端数を引き継ぐ
-      const ch = cellHeight();
-      let vel = velocityY;  // px/ms
+    xtermWrap.addEventListener('pointermove', function (e) {
+      if (e.pointerId !== activePointerId) return;
+      const dt = Math.max(e.timeStamp - lastT, 1);
+      const dy = lastY - e.clientY;
+      velocityY = Math.max(-MAX_VELOCITY, Math.min(MAX_VELOCITY, dy / dt));
+      dispatchSyntheticWheel(dy, e.clientX, e.clientY);
+      lastX = e.clientX;
+      lastY = e.clientY;
+      lastT = e.timeStamp;
+    }, { capture: true });
 
+    // Once setPointerCapture() is active, every event for this pointerId is
+    // retargeted to xtermWrap regardless of where it physically lands — so
+    // isOnOverlay(e) is never true here (e.target is always xtermWrap) and
+    // is deliberately not re-checked; the pointerdown-time check already
+    // decided whether this gesture ever became "active" (see
+    // activePointerId), and endGesture()/wasTap below key off that instead.
+    function endGesture(e, withInertia) {
+      if (e.pointerId !== activePointerId) return;
+      activePointerId = null;
+      if (xtermWrap.hasPointerCapture(e.pointerId)) {
+        xtermWrap.releasePointerCapture(e.pointerId);
+      }
+      if (!withInertia) { stopInertia(); return; }
+
+      // 慣性減衰スクロール: velocityY (px/ms, already clamped above) を
+      // 減衰させながら合成 wheel を送る
+      let vel = velocityY;
+      const cx = lastX, cy = lastY;
       const FRICTION = 0.92;  // フレームごとの速度減衰率
       const MIN_VEL  = 0.02;  // この速度以下になったら停止 (px/ms)
 
       function step() {
         vel *= FRICTION;
         if (Math.abs(vel) < MIN_VEL) { rafId = null; return; }
-
         // 16ms/frame 相当の移動量
-        const dy = vel * 16;
-        remainder += dy / ch;
-        const rows = Math.trunc(remainder);
-        remainder -= rows;
-        if (rows !== 0) term.scrollLines(rows);
-
+        dispatchSyntheticWheel(vel * 16, cx, cy);
         rafId = requestAnimationFrame(step);
       }
 
       if (Math.abs(vel) >= MIN_VEL) {
         rafId = requestAnimationFrame(step);
       }
-    }, { passive: true, capture: true });
-  })();
+    }
 
-  // --- mobile tap-to-focus (soft keyboard) ---
-  // On mobile, touchmove's preventDefault() kills synthetic click events, so
-  // xterm.js never receives the click that normally triggers term.focus().
-  // Detect taps on the xterm wrap and focus explicitly so the soft keyboard
-  // appears when the user taps the terminal area.
-  (function attachTapFocus() {
-    let tapX = 0, tapY = 0;
-    xtermWrap.addEventListener('touchstart', function (e) {
-      tapX = e.touches[0].clientX;
-      tapY = e.touches[0].clientY;
-    }, { passive: true });
-    xtermWrap.addEventListener('touchend', function (e) {
-      if (e.changedTouches.length !== 1) return;
-      const dx = e.changedTouches[0].clientX - tapX;
-      const dy = e.changedTouches[0].clientY - tapY;
-      if (Math.abs(dx) < 10 && Math.abs(dy) < 10) {
-        term.focus();
-      }
-    }, { passive: true });
+    xtermWrap.addEventListener('pointerup', function (e) {
+      if (e.pointerType !== 'touch') return;
+      // tap-to-focus: consolidated here (not a separate touchend handler)
+      // so it shares state with the scroll gesture above instead of running
+      // its own touchstart/touchend pair — see the top-of-function comment.
+      // wasTap is only meaningful for the pointer that actually started (and
+      // is still driving) this gesture: with two touches down, a second
+      // finger's pointerdown does not become activePointerId, so lifting it
+      // must not be scored against startX/startY captured by the first.
+      const isActiveGesture = e.pointerId === activePointerId;
+      const dx = e.clientX - startX, dy = e.clientY - startY;
+      const wasTap = isActiveGesture && Math.abs(dx) < 10 && Math.abs(dy) < 10;
+      endGesture(e, /* withInertia */ true);
+      if (wasTap) term.focus();
+    }, { capture: true });
+
+    // pointercancel (browser-initiated gesture takeover, e.g. an OS
+    // edge-swipe) must stop any in-flight inertia rAF loop, not start one —
+    // there is no reliable end velocity to trust here.
+    xtermWrap.addEventListener('pointercancel', function (e) {
+      endGesture(e, /* withInertia */ false);
+    }, { capture: true });
+
+    // Teardown hook: initBoidTerminal's own disconnect() calls this so an
+    // in-flight inertia rAF loop cannot keep dispatching synthetic wheel
+    // events (i.e. real PTY input) for up to ~1-2s after the widget is torn
+    // down or the socket is closed.
+    touchScrollTeardown = stopInertia;
+
+    // --- raw Touch Events: preventDefault/stopPropagation only ---
+    // These do not compute scroll anymore (Pointer Events above own that);
+    // they exist solely to (a) stop xterm.js's own competing
+    // touchmove-driven scroll during the areMouseEventsActive===false
+    // window, and (b) preventDefault so iOS does not synthesize mouse
+    // events that would start a SelectionService drag-select. See the
+    // top-of-function comment for why both still matter.
+    xtermWrap.addEventListener('touchstart', function () {
+      // Intentionally not stopped: see the "Step B" comment above.
+    }, { passive: true, capture: true });
+
+    xtermWrap.addEventListener('touchmove', function (e) {
+      if (isOnOverlay(e)) return;
+      e.preventDefault();
+      e.stopPropagation();
+    }, { passive: false, capture: true });
+
+    xtermWrap.addEventListener('touchend', function () {
+      // Intentionally not stopped: see the "Step B" comment above.
+    }, { passive: true, capture: true });
   })();
 
   // --- copy toast ---
@@ -734,6 +825,7 @@ export function initBoidTerminal(rootEl, { jobId, wsUrl }) {
     term,
     disconnect: function () {
       closedByUser = true;
+      touchScrollTeardown();
       if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
       if (ws) ws.close();
     },
