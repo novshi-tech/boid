@@ -81,6 +81,10 @@ export function initBoidTerminal(rootEl, { jobId, wsUrl }) {
   let ws = null;
   let ctrlActive = false;
   let exitReceived = false;
+  // Set by attachTouchScroll() below to its stopInertia(); called from
+  // disconnect() so a running momentum-scroll rAF loop cannot outlive the
+  // widget/socket.
+  let touchScrollTeardown = function () {};
 
   // --- mouse-tracking mode dedup ---
   //
@@ -509,17 +513,21 @@ export function initBoidTerminal(rootEl, { jobId, wsUrl }) {
     let startX = 0, startY = 0;
     let lastX = 0, lastY = 0;
     let lastT = 0;
-    let velocityY = 0;  // px/ms
+    let velocityY = 0;  // px/ms, clamped — see MAX_VELOCITY below
     let rafId = null;
-    let inertiaFrames = 0;
-    // Hard cap on synthetic wheel events fired from a single inertia run.
     // In branches 1/2 above (mouse report / cursor keys) each dispatched
-    // wheel event becomes real input sent to the remote process, so
-    // inertia must not be able to fire an unbounded stream of it — FRICTION
-    // decay below already bounds this to roughly 60-90 frames for any
-    // realistic flick velocity, but this is a hard backstop independent of
-    // that math.
-    const MAX_INERTIA_FRAMES = 180;
+    // synthetic wheel event becomes real input sent to the remote process
+    // (mouse-report bytes / cursor-key escapes), so the total volume
+    // inertia can inject must be bounded. A frame counter alone does not
+    // bound it: FRICTION decay below only bounds *frame count*, not total
+    // distance, and total distance is linear in the starting velocity
+    // (sum of a geometric series). Coarsened/coalesced pointer timestamps
+    // (seen under e.g. Firefox's privacy.reduceTimerPrecision, or two
+    // pointermove events landing on the same rAF tick) can make dt collapse
+    // toward 0 for one sample and spike velocityY by 1-2 orders of
+    // magnitude — clamping the *velocity* at its source, not the frame
+    // count, is what actually bounds the total.
+    const MAX_VELOCITY = 3;  // px/ms — well above any real flick
 
     // コピートーストや切断オーバーレイは xtermWrap の子だが、これらの上での
     // タッチはボタン操作 (コピー/閉じる/再接続) 用であって端末スクロール
@@ -548,14 +556,17 @@ export function initBoidTerminal(rootEl, { jobId, wsUrl }) {
     }
 
     function stopInertia() {
-      if (rafId) { cancelAnimationFrame(rafId); rafId = null; }
-      inertiaFrames = 0;
+      if (rafId !== null) { cancelAnimationFrame(rafId); rafId = null; }
     }
 
     xtermWrap.addEventListener('pointerdown', function (e) {
       if (e.pointerType !== 'touch') return;
-      if (isOnOverlay(e)) return;
+      // Stop any running inertia before the overlay check: a tap on the
+      // copy toast / reconnect button while momentum is still running must
+      // silence it too, or it keeps injecting synthetic wheels (real PTY
+      // input in branches 1/2 above) at whatever the last scroll target was.
       stopInertia();
+      if (isOnOverlay(e)) return;
       activePointerId = e.pointerId;
       startX = lastX = e.clientX;
       startY = lastY = e.clientY;
@@ -566,15 +577,21 @@ export function initBoidTerminal(rootEl, { jobId, wsUrl }) {
 
     xtermWrap.addEventListener('pointermove', function (e) {
       if (e.pointerId !== activePointerId) return;
-      const dt = e.timeStamp - lastT || 1;
+      const dt = Math.max(e.timeStamp - lastT, 1);
       const dy = lastY - e.clientY;
-      velocityY = dy / dt;  // px/ms
+      velocityY = Math.max(-MAX_VELOCITY, Math.min(MAX_VELOCITY, dy / dt));
       dispatchSyntheticWheel(dy, e.clientX, e.clientY);
       lastX = e.clientX;
       lastY = e.clientY;
       lastT = e.timeStamp;
     }, { capture: true });
 
+    // Once setPointerCapture() is active, every event for this pointerId is
+    // retargeted to xtermWrap regardless of where it physically lands — so
+    // isOnOverlay(e) is never true here (e.target is always xtermWrap) and
+    // is deliberately not re-checked; the pointerdown-time check already
+    // decided whether this gesture ever became "active" (see
+    // activePointerId), and endGesture()/wasTap below key off that instead.
     function endGesture(e, withInertia) {
       if (e.pointerId !== activePointerId) return;
       activePointerId = null;
@@ -583,20 +600,16 @@ export function initBoidTerminal(rootEl, { jobId, wsUrl }) {
       }
       if (!withInertia) { stopInertia(); return; }
 
-      // 慣性減衰スクロール: velocityY (px/ms) を減衰させながら合成 wheel を送る
+      // 慣性減衰スクロール: velocityY (px/ms, already clamped above) を
+      // 減衰させながら合成 wheel を送る
       let vel = velocityY;
       const cx = lastX, cy = lastY;
       const FRICTION = 0.92;  // フレームごとの速度減衰率
       const MIN_VEL  = 0.02;  // この速度以下になったら停止 (px/ms)
-      inertiaFrames = 0;
 
       function step() {
         vel *= FRICTION;
-        inertiaFrames++;
-        if (Math.abs(vel) < MIN_VEL || inertiaFrames > MAX_INERTIA_FRAMES) {
-          rafId = null;
-          return;
-        }
+        if (Math.abs(vel) < MIN_VEL) { rafId = null; return; }
         // 16ms/frame 相当の移動量
         dispatchSyntheticWheel(vel * 16, cx, cy);
         rafId = requestAnimationFrame(step);
@@ -608,12 +621,17 @@ export function initBoidTerminal(rootEl, { jobId, wsUrl }) {
     }
 
     xtermWrap.addEventListener('pointerup', function (e) {
-      if (isOnOverlay(e)) { activePointerId = null; return; }
+      if (e.pointerType !== 'touch') return;
       // tap-to-focus: consolidated here (not a separate touchend handler)
       // so it shares state with the scroll gesture above instead of running
       // its own touchstart/touchend pair — see the top-of-function comment.
+      // wasTap is only meaningful for the pointer that actually started (and
+      // is still driving) this gesture: with two touches down, a second
+      // finger's pointerdown does not become activePointerId, so lifting it
+      // must not be scored against startX/startY captured by the first.
+      const isActiveGesture = e.pointerId === activePointerId;
       const dx = e.clientX - startX, dy = e.clientY - startY;
-      const wasTap = Math.abs(dx) < 10 && Math.abs(dy) < 10;
+      const wasTap = isActiveGesture && Math.abs(dx) < 10 && Math.abs(dy) < 10;
       endGesture(e, /* withInertia */ true);
       if (wasTap) term.focus();
     }, { capture: true });
@@ -624,6 +642,12 @@ export function initBoidTerminal(rootEl, { jobId, wsUrl }) {
     xtermWrap.addEventListener('pointercancel', function (e) {
       endGesture(e, /* withInertia */ false);
     }, { capture: true });
+
+    // Teardown hook: initBoidTerminal's own disconnect() calls this so an
+    // in-flight inertia rAF loop cannot keep dispatching synthetic wheel
+    // events (i.e. real PTY input) for up to ~1-2s after the widget is torn
+    // down or the socket is closed.
+    touchScrollTeardown = stopInertia;
 
     // --- raw Touch Events: preventDefault/stopPropagation only ---
     // These do not compute scroll anymore (Pointer Events above own that);
@@ -801,6 +825,7 @@ export function initBoidTerminal(rootEl, { jobId, wsUrl }) {
     term,
     disconnect: function () {
       closedByUser = true;
+      touchScrollTeardown();
       if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
       if (ws) ws.close();
     },

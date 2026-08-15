@@ -1946,12 +1946,14 @@ details[open] > summary {
   position: relative;
   /* モバイル: 縦スワイプは Pointer Events (boid-terminal.js の
      attachTouchScroll) が独自に処理して合成 wheel イベントへ変換するので、
-     ブラウザのネイティブスクロールは完全に無効化する。pointermove で
-     ブラウザ側のスクロールを止める手段は touch-action しかない (
-     preventDefault は passive リスナーやスクロール開始後には効かない)。
-     pan-y の時点で pinch-zoom は既に禁止済みで、ページ自体も
-     `html, body { overflow: hidden }` でスクロールしないため、
-     none にして失うのはダブルタップズームのみ。 */
+     ブラウザのネイティブスクロール/パン・ジェスチャーは完全に無効化する。
+     pointermove の preventDefault だけではスクロール開始後のブラウザ側
+     ジェスチャーを止められないため、touch-action が唯一の制御手段。
+     pinch-zoom/ダブルタップズームは pan-y の時点で既に禁止されていたので
+     none への変更で新たに失われるものではない。none に上げて実際に失うのは
+     「JS 側の処理が何らかの理由で走らなかった場合のネイティブ縦スクロール
+     フォールバック」で、ページ自体は `html, body { overflow: hidden }`
+     (terminal_page.templ / jobs.templ) でスクロールしないため実害はない。 */
   touch-action: none;
   overscroll-behavior: contain;
 }
@@ -1965,10 +1967,14 @@ details[open] > summary {
 /* Override xterm default background to match our dark bg */
 .xterm-viewport {
   background: #0d0d0d !important;
-  /* iOS 慣性スクロール (Step A フォールバック) */
-  -webkit-overflow-scrolling: touch;
+  /* 注意: -webkit-overflow-scrolling: touch はここでは意味を持たない。
+     祖先の .boid-terminal-xterm-wrap が touch-action: none なので、
+     ブラウザのジェスチャー認識自体がこの要素まで下りてこず、ネイティブの
+     タッチパンは (このプロパティの値に関わらず) そもそも発生しない。
+     スクロールは boid-terminal.js の attachTouchScroll が合成 wheel
+     イベント経由で駆動する。 */
   overscroll-behavior: contain;
-  /* GPU 合成レイヤに昇格してタッチ時の再描画コストを下げる */
+  /* GPU 合成レイヤに昇格して合成 wheel によるスクロール描画コストを下げる */
   will-change: transform;
 }
 
