@@ -435,8 +435,12 @@ templ TaskActionBar(task *orchestrator.Task, availableActions []string, activeTa
 						// 「やっぱり整形し直す」判断のための巻き戻し —
 						// 2026-08-16 follow-up。machine.go の working→triaged
 						// 遷移は既存、欠けていたのはこのメニュー配線のみ。
-						// 破壊的ではないので confirm も danger class も不要)。
-						if hasAction(availableActions, "triage") {
+						// 破壊的ではないので confirm も danger class も不要。
+						// working に限定するのは、captured は既に
+						// detailPrimaryAction で同じ triage を primary
+						// ボタンとして出しており、ここでも出すと重複表示に
+						// なるため — Opus レビュー指摘 (2026-08-16))。
+						if task.Status == orchestrator.TaskStatusWorking && hasAction(availableActions, "triage") {
 							<form method="post" action={ templ.SafeURL("/tasks/" + task.ID + "/action") }>
 								<input type="hidden" name="type" value="triage"/>
 								<button type="submit" class="action-menu-item">triage</button>
