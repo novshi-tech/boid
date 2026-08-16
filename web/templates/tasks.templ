@@ -280,6 +280,9 @@ templ TaskDetailChildrenSection(children []orchestrator.TaskTriageChild) {
 //   - aborted          → reopen+rerun (both primary; see TaskActionBar)
 //   - captured         → triage (cross-project-issue-triage Phase 1 PR-3)
 //   - triaged          → ready  (= Go, 逆輸入2: 「triage task を ready にする判断」)
+//   - working          → ready  (= Go。2026-08-16 follow-up: triage カードが
+//     working に入った後も子を specced にして Go できるようにする。machine.go
+//     は working→ready の Manual 遷移を既に持っている — 欠けていたのは配線だけ)
 //
 // ready itself has no primary action here: the ready→working transition is
 // machine-driven (TaskWorkflowService.Dispatch, PR-2) immediately after Go
@@ -316,7 +319,7 @@ func detailPrimaryAction(task *orchestrator.Task, availableActions []string) (ac
 				return "triage", "Triage"
 			}
 		}
-	case orchestrator.TaskStatusTriaged:
+	case orchestrator.TaskStatusTriaged, orchestrator.TaskStatusWorking:
 		for _, a := range availableActions {
 			if a == "ready" {
 				return "ready", "Go"
@@ -426,6 +429,21 @@ templ TaskActionBar(task *orchestrator.Task, availableActions []string, activeTa
 							<form method="post" action={ templ.SafeURL("/tasks/" + task.ID + "/action") } onsubmit="return confirm('Abort this task?')">
 								<input type="hidden" name="type" value="abort"/>
 								<button type="submit" class="action-menu-item action-menu-item-danger">abort</button>
+							</form>
+						}
+						// triage (working → triaged。working に入った後で
+						// 「やっぱり整形し直す」判断のための巻き戻し —
+						// 2026-08-16 follow-up。machine.go の working→triaged
+						// 遷移は既存、欠けていたのはこのメニュー配線のみ。
+						// 破壊的ではないので confirm も danger class も不要。
+						// working に限定するのは、captured は既に
+						// detailPrimaryAction で同じ triage を primary
+						// ボタンとして出しており、ここでも出すと重複表示に
+						// なるため — Opus レビュー指摘 (2026-08-16))。
+						if task.Status == orchestrator.TaskStatusWorking && hasAction(availableActions, "triage") {
+							<form method="post" action={ templ.SafeURL("/tasks/" + task.ID + "/action") }>
+								<input type="hidden" name="type" value="triage"/>
+								<button type="submit" class="action-menu-item">triage</button>
 							</form>
 						}
 						// park (触れる pre-execution 状態 → parked, queue から
