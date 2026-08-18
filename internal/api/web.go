@@ -271,14 +271,15 @@ func taskFormAttachments(r *http.Request) []*multipart.FileHeader {
 	return r.MultipartForm.File["attachments"]
 }
 
-// queueTriageByTaskID batch-fetches task_triage rows for the queue_next
-// view's enrichment (BuildQueueItems). A single task's lookup failing is
-// logged and skipped rather than aborting the whole page — same "don't let
-// one bad row sink the list" posture as BuildQueueItems/triageSummary
-// themselves. h.TaskTriage == nil degrades to no enrichment (empty map),
-// not an error — queue_next still lists tasks correctly, just without
-// urgency/summary badges.
-func (h *WebHandler) queueTriageByTaskID(tasks []*orchestrator.Task) map[string]*orchestrator.TaskTriage {
+// triageByTaskID batch-fetches task_triage rows for a view's enrichment:
+// the queue_next view (BuildQueueItems: urgency/summary/children/
+// suggestion) and the Parked tab (BuildTreeItemsWithSuggestions:
+// suggestion only). A single task's lookup failing is logged and skipped
+// rather than aborting the whole page — same "don't let one bad row sink
+// the list" posture as BuildQueueItems/triageSummary themselves.
+// h.TaskTriage == nil degrades to no enrichment (empty map), not an error —
+// both views still list tasks correctly, just without the extra badges.
+func (h *WebHandler) triageByTaskID(tasks []*orchestrator.Task) map[string]*orchestrator.TaskTriage {
 	out := map[string]*orchestrator.TaskTriage{}
 	if h.TaskTriage == nil {
 		return out
@@ -329,7 +330,13 @@ func (h *WebHandler) TaskList(w http.ResponseWriter, r *http.Request) {
 		// reads better as a flat priority list than a parent/child tree, and
 		// its SQL ordering (store.go's ListTasks "queue_next" branch) would
 		// be discarded by BuildTreeItems' own grouping/sort anyway.
-		items = BuildQueueItems(tasks, projectNames, h.queueTriageByTaskID(tasks))
+		items = BuildQueueItems(tasks, projectNames, h.triageByTaskID(tasks))
+	case filter.Status == "parked":
+		// Parked tab (BD-8): tree shape like the default case (a parked
+		// card can have dispatched children from before it was parked),
+		// plus the suggestion overlay so "which parked card has a wake
+		// suggestion" is answerable from the list, not just per-task.
+		items = BuildTreeItemsWithSuggestions(tasks, projectNames, h.triageByTaskID(tasks))
 	case filter.Status == "closed":
 		items = BuildFlatItems(tasks, projectNames)
 	default:
@@ -439,6 +446,7 @@ func (h *WebHandler) TaskDetail(w http.ResponseWriter, r *http.Request) {
 	timelineGroups := detailTimelineGroups(detail)
 	triage := h.loadTriage(id)
 	children := childrenOf(triage)
+	suggestion := suggestionOf(triage)
 	hasTriage := triage != nil
 	if r.Header.Get("HX-Request") == "true" {
 		// Tab clicks swap the entire #tabs section so the active class on
@@ -450,7 +458,7 @@ func (h *WebHandler) TaskDetail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	projectName := h.lookupProjectName(detail.Task.ProjectID)
-	templates.TaskDetail(detail.Task, timelineGroups, jobs, detail.AvailableActions, errorMsg, tab, projectName, children, hasTriage).Render(r.Context(), w)
+	templates.TaskDetail(detail.Task, timelineGroups, jobs, detail.AvailableActions, errorMsg, tab, projectName, children, suggestion, hasTriage).Render(r.Context(), w)
 }
 
 // triageChildrenFor returns the task_triage.detail.children for id, or nil
@@ -467,6 +475,12 @@ func (h *WebHandler) triageChildrenFor(id string) []orchestrator.TaskTriageChild
 	return childrenOf(h.loadTriage(id))
 }
 
+// triageSuggestionFor is triageChildrenFor's counterpart for
+// task_triage.detail.suggestion — same best-effort posture (see suggestionOf).
+func (h *WebHandler) triageSuggestionFor(id string) orchestrator.Suggestion {
+	return suggestionOf(h.loadTriage(id))
+}
+
 // childrenOf parses a (possibly nil) task_triage row's Detail blob into its
 // children list, or nil when the row is nil / has no Detail / the blob
 // doesn't parse.
@@ -479,6 +493,19 @@ func childrenOf(triage *orchestrator.TaskTriage) []orchestrator.TaskTriageChild 
 		return nil
 	}
 	return children
+}
+
+// suggestionOf extracts task_triage.detail.suggestion (or detail.attrs.
+// suggestion — orchestrator.DetailSuggestion) from a (possibly nil)
+// task_triage row, mirroring childrenOf's best-effort posture: a missing
+// row / empty detail / malformed suggestion blob all just return the zero
+// Suggestion rather than erroring.
+func suggestionOf(triage *orchestrator.TaskTriage) orchestrator.Suggestion {
+	if triage == nil || len(triage.Detail) == 0 {
+		return orchestrator.Suggestion{}
+	}
+	s, _ := orchestrator.DetailSuggestion(triage.Detail)
+	return s
 }
 
 // loadTriage is the best-effort task_triage sidecar lookup shared by
@@ -539,7 +566,8 @@ func (h *WebHandler) TaskDetailFragment(w http.ResponseWriter, r *http.Request) 
 	case "status":
 		projectName := h.lookupProjectName(detail.Task.ProjectID)
 		children := h.triageChildrenFor(id)
-		templates.TaskDetailStatusSection(detail.Task, detail.AvailableActions, "", projectName, children).Render(r.Context(), w)
+		suggestion := h.triageSuggestionFor(id)
+		templates.TaskDetailStatusSection(detail.Task, detail.AvailableActions, "", projectName, children, suggestion).Render(r.Context(), w)
 	case "jobs":
 		templates.TaskDetailJobsSection(detail.Task, jobs).Render(r.Context(), w)
 	default:

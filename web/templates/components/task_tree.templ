@@ -27,6 +27,12 @@ type TreeItem struct {
 	// specced-vs-not distinction existed nowhere in the Web UI
 	// (cross-project-issue-triage 実地テスト, 2026-08-14).
 	Children []orchestrator.TaskTriageChild
+	// Suggestion is task_triage.detail.suggestion (or detail.attrs.
+	// suggestion — orchestrator.DetailSuggestion), populated for the
+	// queue_next view (BuildQueueItems) and the Parked tab
+	// (BuildTreeItemsWithSuggestions). Zero value everywhere else, so the
+	// verb badge/reason line below simply doesn't render there.
+	Suggestion orchestrator.Suggestion
 }
 
 func (i TreeItem) ProjectLabel() string {
@@ -171,6 +177,14 @@ templ taskTreeRow(item TreeItem) {
 			<div class="task-row-title" title={ item.Task.Title }>{ item.Task.Title }</div>
 			if item.Summary != "" {
 				<div class="task-row-summary">{ item.Summary }</div>
+			}
+			if item.Suggestion.Verb != "" {
+				<div class="task-row-suggestion">
+					<span class={ "badge", "badge-verb-" + item.Suggestion.Verb }>{ item.Suggestion.Verb }</span>
+					if item.Suggestion.Reason != "" {
+						<span class="task-row-suggestion-reason">{ item.Suggestion.Reason }</span>
+					}
+				</div>
 			}
 			<div class="task-row-meta">
 				<span class={ treeStatusClass(string(item.Task.Status)) }>{ string(item.Task.Status) }</span>

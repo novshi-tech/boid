@@ -205,6 +205,54 @@ func DetailChildren(detail json.RawMessage) ([]TaskTriageChild, error) {
 	return wrapper.Children, nil
 }
 
+// Suggestion is task_triage.detail.suggestion — the triage agent's single
+// recommendation, derived from primary sources (docs/plans/
+// cross-project-issue-triage.md:544 のスキーマ案, 逆輸入3). Verb uses the
+// same vocabulary as nose's own response words: go/shape/manual/park/
+// drop/wake.
+type Suggestion struct {
+	Verb   string `json:"verb,omitempty"`
+	Action string `json:"action,omitempty"`
+	Reason string `json:"reason,omitempty"`
+	Basis  string `json:"basis,omitempty"`
+}
+
+// DetailSuggestion extracts task_triage.detail.suggestion from a detail
+// blob, preferring the top-level key (docs/plans/cross-project-issue-triage.md:544
+// のスキーマ案) and falling back to detail.attrs.suggestion. The fallback
+// exists because "suggestion" is not a promoted attrs_set key (see
+// applyAttrsSetSideEffect / FoldDetailAttrs, internal/api/workflow_triage.go)
+// — when khi writes it via attrs_set, it lands under detail.attrs instead of
+// at the top level. Which shape actually arrives cannot be determined from
+// the code alone, so both are read.
+//
+// Returns the zero Suggestion and false on any absence/parse failure —
+// same best-effort posture as triageSummary (internal/api/tree.go): never
+// errors, so a missing/malformed suggestion blob never sinks the row it
+// lives on (rule 5, 隠さない, is about the row surviving, not every derived
+// field always being present).
+func DetailSuggestion(detail json.RawMessage) (Suggestion, bool) {
+	if len(detail) == 0 || string(detail) == "null" {
+		return Suggestion{}, false
+	}
+	var wrapper struct {
+		Suggestion *Suggestion `json:"suggestion"`
+		Attrs      *struct {
+			Suggestion *Suggestion `json:"suggestion"`
+		} `json:"attrs"`
+	}
+	if err := json.Unmarshal(detail, &wrapper); err != nil {
+		return Suggestion{}, false
+	}
+	if wrapper.Suggestion != nil {
+		return *wrapper.Suggestion, true
+	}
+	if wrapper.Attrs != nil && wrapper.Attrs.Suggestion != nil {
+		return *wrapper.Attrs.Suggestion, true
+	}
+	return Suggestion{}, false
+}
+
 // parseDetailMap round-trips a task_triage.Detail blob through a
 // map[string]json.RawMessage so callers can replace a single top-level key
 // (children, attrs, ...) without disturbing keys they don't know about

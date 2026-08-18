@@ -307,6 +307,30 @@ pre {
   .badge-closed              { background: #1f2937; color: #9ca3af; }
 }
 
+/* --- Task detail: task_triage suggestion card (BD-8) --- */
+.detail-suggestion {
+  margin-top: var(--space-2);
+  padding-top: var(--space-2);
+  border-top: 1px solid var(--border);
+}
+
+.detail-suggestion-header {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+}
+
+.detail-suggestion-action {
+  font-weight: 500;
+}
+
+.detail-suggestion-reason,
+.detail-suggestion-basis {
+  font-size: 0.8125rem;
+  color: var(--muted);
+  margin-top: 2px;
+}
+
 /* --- Task detail: task_triage children list --- */
 .detail-children {
   margin-top: var(--space-2);
@@ -586,6 +610,34 @@ pre {
 .badge-urgency-today { color: #c2410c; }
 .badge-urgency-week  { color: #1d4ed8; }
 
+/* Suggestion line (queue row + Parked tab row, task_triage.detail.suggestion
+   — cross-project-issue-triage 逆輸入3 / BD-8). verb badge reuses the same
+   background+text palette shape as the status badges above, chosen to echo
+   the closest-meaning status color (go≈working, wake≈awaiting/parked's
+   attention-needed hue, shape≈triaged/specced, drop≈aborted, manual≈pending)
+   so a nose scanning verbs recognizes the hue before reading the word. */
+.task-row-suggestion {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  margin-top: 2px;
+}
+
+.task-row-suggestion-reason {
+  font-size: 0.8125rem;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.badge-verb-go     { background: #dcfce7; color: #15803d; }
+.badge-verb-wake   { background: #fef9c3; color: #854d0e; }
+.badge-verb-shape  { background: #cffafe; color: #0e7490; }
+.badge-verb-park   { background: #ede9fe; color: #6d28d9; }
+.badge-verb-drop   { background: #fee2e2; color: #b91c1c; }
+.badge-verb-manual { background: #f1f5f9; color: #475569; }
+
 /* Children preview (queue row, cross-project-issue-triage 実地テスト
    2026-08-14 followup): "what does Go dispatch" at a glance, next to the
    urgency badge — a compact counterpart to task detail's full
@@ -604,6 +656,13 @@ pre {
   .badge-urgency-now   { color: #f87171; }
   .badge-urgency-today { color: #fb923c; }
   .badge-urgency-week  { color: #60a5fa; }
+
+  .badge-verb-go     { background: #052e16; color: #4ade80; }
+  .badge-verb-wake   { background: #422006; color: #fbbf24; }
+  .badge-verb-shape  { background: #164e63; color: #67e8f9; }
+  .badge-verb-park   { background: #4c1d95; color: #c4b5fd; }
+  .badge-verb-drop   { background: #450a0a; color: #f87171; }
+  .badge-verb-manual { background: #1e293b; color: #94a3b8; }
 }
 
 /* --- Sessions list ---

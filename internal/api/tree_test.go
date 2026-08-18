@@ -271,3 +271,109 @@ func TestBuildQueueItems_MalformedDetailJSON_LeavesSummaryEmpty(t *testing.T) {
 		t.Errorf("Summary = %q, want empty (malformed detail must not panic or fabricate a summary)", items[0].Summary)
 	}
 }
+
+// TestBuildQueueItems_PopulatesSuggestion_TopLevel covers detail.suggestion
+// at the top level (docs/plans/cross-project-issue-triage.md:544 のスキーマ
+// 案), the shape khi's evaluate step is expected to write.
+func TestBuildQueueItems_PopulatesSuggestion_TopLevel(t *testing.T) {
+	t1 := makeTask("t1", "")
+	triage := map[string]*orchestrator.TaskTriage{
+		"t1": {TaskID: "t1", Detail: []byte(`{"suggestion":{"verb":"wake","action":"re-triage now","reason":"source event fired","basis":"issue #42 reopened"}}`)},
+	}
+
+	items := BuildQueueItems([]*orchestrator.Task{t1}, nil, triage)
+	if len(items) != 1 {
+		t.Fatalf("got %d items, want 1", len(items))
+	}
+	want := orchestrator.Suggestion{Verb: "wake", Action: "re-triage now", Reason: "source event fired", Basis: "issue #42 reopened"}
+	if items[0].Suggestion != want {
+		t.Errorf("Suggestion = %+v, want %+v", items[0].Suggestion, want)
+	}
+}
+
+// TestBuildQueueItems_PopulatesSuggestion_FromAttrs covers detail.attrs.
+// suggestion: "suggestion" is not a promoted attrs_set key (see
+// applyAttrsSetSideEffect / orchestrator.FoldDetailAttrs), so when khi
+// writes it via attrs_set it lands here instead of at the top level.
+func TestBuildQueueItems_PopulatesSuggestion_FromAttrs(t *testing.T) {
+	t1 := makeTask("t1", "")
+	triage := map[string]*orchestrator.TaskTriage{
+		"t1": {TaskID: "t1", Detail: []byte(`{"attrs":{"suggestion":{"verb":"go","action":"dispatch","reason":"fully specced"}}}`)},
+	}
+
+	items := BuildQueueItems([]*orchestrator.Task{t1}, nil, triage)
+	if len(items) != 1 {
+		t.Fatalf("got %d items, want 1", len(items))
+	}
+	want := orchestrator.Suggestion{Verb: "go", Action: "dispatch", Reason: "fully specced"}
+	if items[0].Suggestion != want {
+		t.Errorf("Suggestion = %+v, want %+v", items[0].Suggestion, want)
+	}
+}
+
+// TestBuildQueueItems_MalformedSuggestionJSON_LeavesSuggestionEmpty mirrors
+// the malformed-children/malformed-summary cases: a broken detail blob must
+// not sink the row (rule 5, 隠さない).
+func TestBuildQueueItems_MalformedSuggestionJSON_LeavesSuggestionEmpty(t *testing.T) {
+	t1 := makeTask("t1", "")
+	triage := map[string]*orchestrator.TaskTriage{
+		"t1": {TaskID: "t1", Detail: []byte(`not json`)},
+	}
+
+	items := BuildQueueItems([]*orchestrator.Task{t1}, nil, triage)
+	if len(items) != 1 {
+		t.Fatalf("got %d items, want 1", len(items))
+	}
+	if items[0].Suggestion != (orchestrator.Suggestion{}) {
+		t.Errorf("Suggestion = %+v, want zero value for malformed detail", items[0].Suggestion)
+	}
+}
+
+// TestBuildQueueItems_NoSuggestionKey_LeavesSuggestionEmpty covers the
+// (overwhelming majority) case: a triage row exists but khi hasn't written
+// a suggestion yet.
+func TestBuildQueueItems_NoSuggestionKey_LeavesSuggestionEmpty(t *testing.T) {
+	t1 := makeTask("t1", "")
+	triage := map[string]*orchestrator.TaskTriage{
+		"t1": {TaskID: "t1", Detail: []byte(`{"summary":"no suggestion here yet"}`)},
+	}
+
+	items := BuildQueueItems([]*orchestrator.Task{t1}, nil, triage)
+	if len(items) != 1 {
+		t.Fatalf("got %d items, want 1", len(items))
+	}
+	if items[0].Suggestion != (orchestrator.Suggestion{}) {
+		t.Errorf("Suggestion = %+v, want zero value when detail has no suggestion key", items[0].Suggestion)
+	}
+}
+
+// TestBuildTreeItemsWithSuggestions_OverlaysSuggestionKeepingTreeShape
+// covers the Parked tab path (?status=parked): tree shape (Depth/
+// HasChildren/ParentID) must come through unchanged from BuildTreeItems,
+// with only Suggestion added on top.
+func TestBuildTreeItemsWithSuggestions_OverlaysSuggestionKeepingTreeShape(t *testing.T) {
+	parent := makeTask("p", "")
+	child := makeTask("c", "p")
+	triage := map[string]*orchestrator.TaskTriage{
+		"p": {TaskID: "p", Detail: []byte(`{"suggestion":{"verb":"wake","reason":"event fired"}}`)},
+		// "c" has no triage row at all.
+	}
+
+	items := BuildTreeItemsWithSuggestions([]*orchestrator.Task{parent, child}, nil, triage)
+	if len(items) != 2 {
+		t.Fatalf("got %d items, want 2", len(items))
+	}
+	if items[0].Suggestion.Verb != "wake" || items[0].Suggestion.Reason != "event fired" {
+		t.Errorf("parent Suggestion = %+v, want verb=wake reason=%q", items[0].Suggestion, "event fired")
+	}
+	if items[1].Suggestion != (orchestrator.Suggestion{}) {
+		t.Errorf("child (no triage row) Suggestion = %+v, want zero value", items[1].Suggestion)
+	}
+	// Tree shape must be untouched: same as plain BuildTreeItems would produce.
+	if items[0].Depth != 0 || !items[0].HasChildren {
+		t.Errorf("parent shape wrong: Depth=%d HasChildren=%v", items[0].Depth, items[0].HasChildren)
+	}
+	if items[1].Depth != 1 || items[1].ParentID != "p" {
+		t.Errorf("child shape wrong: Depth=%d ParentID=%q", items[1].Depth, items[1].ParentID)
+	}
+}

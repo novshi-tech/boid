@@ -215,7 +215,7 @@ func detailRowClasses(task *orchestrator.Task) []string {
 // (status / behavior / project / updated). Actions are intentionally
 // NOT rendered here — they live in the sticky action bar at the bottom
 // of the page (see TaskActionBar).
-templ TaskDetailStatusSection(task *orchestrator.Task, availableActions []string, errorMsg string, projectName string, children []orchestrator.TaskTriageChild) {
+templ TaskDetailStatusSection(task *orchestrator.Task, availableActions []string, errorMsg string, projectName string, children []orchestrator.TaskTriageChild, suggestion orchestrator.Suggestion) {
 	<div id="task-status">
 		<div class={ detailRowClasses(task) }>
 			<div class="detail-meta">
@@ -233,8 +233,35 @@ templ TaskDetailStatusSection(task *orchestrator.Task, availableActions []string
 		if errorMsg != "" {
 			<div class="action-error">{ errorMsg }</div>
 		}
+		@TaskDetailSuggestionSection(suggestion)
 		@TaskDetailChildrenSection(children)
 	</div>
+}
+
+// TaskDetailSuggestionSection renders task_triage.detail.suggestion (or
+// detail.attrs.suggestion — orchestrator.DetailSuggestion) as a compact
+// card right under the status row: verb + action, then reason and basis on
+// their own lines. This is the only place Basis is shown (the queue row and
+// Parked tab row, task_tree.templ, only have room for verb + reason).
+// Renders nothing when there is no suggestion — every non-triage task, and
+// any triage task khi hasn't evaluated yet.
+templ TaskDetailSuggestionSection(suggestion orchestrator.Suggestion) {
+	if suggestion.Verb != "" {
+		<div class="detail-suggestion">
+			<div class="detail-suggestion-header">
+				<span class={ "badge", "badge-verb-" + suggestion.Verb }>{ suggestion.Verb }</span>
+				if suggestion.Action != "" {
+					<span class="detail-suggestion-action">{ suggestion.Action }</span>
+				}
+			</div>
+			if suggestion.Reason != "" {
+				<div class="detail-suggestion-reason">{ suggestion.Reason }</div>
+			}
+			if suggestion.Basis != "" {
+				<div class="detail-suggestion-basis">basis: { suggestion.Basis }</div>
+			}
+		</div>
+	}
 }
 
 // TaskDetailChildrenSection lists a triage card's task_triage.detail.children
@@ -969,9 +996,9 @@ templ TaskDetailTabsSection(task *orchestrator.Task, timelineGroups []timeline.S
 	</div>
 }
 
-templ TaskDetail(task *orchestrator.Task, timelineGroups []timeline.StatusGroup, jobs []*JobView, availableActions []string, errorMsg string, activeTab string, projectName string, children []orchestrator.TaskTriageChild, hasTriage bool) {
+templ TaskDetail(task *orchestrator.Task, timelineGroups []timeline.StatusGroup, jobs []*JobView, availableActions []string, errorMsg string, activeTab string, projectName string, children []orchestrator.TaskTriageChild, suggestion orchestrator.Suggestion, hasTriage bool) {
 	@Layout(task.Title, "/") {
-		@TaskDetailStatusSection(task, availableActions, errorMsg, projectName, children)
+		@TaskDetailStatusSection(task, availableActions, errorMsg, projectName, children, suggestion)
 		@TaskDetailTabsSection(task, timelineGroups, jobs, availableActions, activeTab, hasTriage)
 	}
 }
