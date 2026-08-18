@@ -1707,6 +1707,7 @@ type stubTaskStore struct {
 	remoteTasks map[string]*orchestrator.Task // remoteID → task
 	refTasks    map[string]*orchestrator.Task // "ref:parentID" → task
 	createdTask *orchestrator.Task            // captures the last created task
+	getCalls    int                           // counts GetTask invocations (spy for "was Dispatch even attempted")
 }
 
 func (s *stubTaskStore) CreateTask(task *orchestrator.Task) error {
@@ -1720,6 +1721,7 @@ func (s *stubTaskStore) CreateTask(task *orchestrator.Task) error {
 	return nil
 }
 func (s *stubTaskStore) GetTask(id string) (*orchestrator.Task, error) {
+	s.getCalls++
 	if s.err != nil {
 		return nil, s.err
 	}

@@ -422,7 +422,7 @@ func TestTaskWorkflowService_Wake_RejectsNonParkedTask(t *testing.T) {
 // entirely. ApplyAction now derives rejection generically from each rule's
 // own Manual flag (StateMachine.IsManualAction) instead of a separate list.
 func TestTaskWorkflowServiceApplyAction_RejectsNonManualActions(t *testing.T) {
-	for _, actionType := range []string{"job_failed", "progress", "done_request", "fail_request", "wake_triaged", "wake_ready"} {
+	for _, actionType := range []string{"job_failed", "progress", "done_request", "fail_request", "wake_triaged", "wake_ready", "wake_working"} {
 		task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusTriaged, Behavior: "dev", Payload: []byte(`{}`)}
 		svc := newTriageWorkflowService(task, &recordingTxStore{task: task})
 
@@ -456,7 +456,7 @@ func TestDefaultMachine_JobFailed_StillApplicableDirectlyViaSmApply(t *testing.T
 }
 
 func TestTaskWorkflowServiceApplyAction_RejectsInternalOnlyWakeActions(t *testing.T) {
-	for _, actionType := range []string{"wake_triaged", "wake_ready"} {
+	for _, actionType := range []string{"wake_triaged", "wake_ready", "wake_working"} {
 		task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusParked, Behavior: "dev", Payload: []byte(`{}`)}
 		svc := newTriageWorkflowService(task, &recordingTxStore{task: task})
 
@@ -511,6 +511,54 @@ func TestTaskWorkflowService_Wake_FromReady_ChainsIntoDispatch(t *testing.T) {
 	}
 	if result.Task.Status != orchestrator.TaskStatusWorking {
 		t.Fatalf("status = %q, want working (wake_ready must chain into Dispatch, same as ApplyAction(\"ready\"))", result.Task.Status)
+	}
+}
+
+// TestTaskWorkflowService_Wake_FromWorking_ReturnsToWorking_NoDispatch is the
+// BD-9 regression test (穴1): before this fix, Wake's ParkedFrom switch had
+// no case for TaskStatusWorking and fell into `default`, 500ing with
+// `wake: unexpected park origin "working"` — exactly the failure the real
+// khi workspace card (633c4bd9-...) hit. A working-origin park is the 論点8
+// "sequential PR consumption" pattern (park + wake_task_id, re-surfaced by
+// QueueSweepLoop when the dispatched child terminates), so waking it must
+// land back on working, not error.
+//
+// It also pins that Wake's ready→working Dispatch chain (guarded by
+// `newTask.Status == TaskStatusReady`, see Wake's doc comment) must NOT fire
+// for this origin: unlike a ready-origin park, a working-origin park's child
+// is already dispatched, so there is nothing left to (re-)dispatch. The
+// spy's getCalls counter proves s.Dispatch (whose first call is
+// s.Tasks.GetTask) was never even attempted — checking only the final status
+// would not catch a regression here, because Dispatch's own ready-only
+// precondition guard would silently no-op (log-only error) against a
+// "working" task even if Wake's chain condition were mistakenly widened to
+// include working.
+func TestTaskWorkflowService_Wake_FromWorking_ReturnsToWorking_NoDispatch(t *testing.T) {
+	task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusParked, Behavior: "dev", Payload: []byte(`{}`)}
+	txStore := &recordingTxStore{
+		task:         task,
+		parkedFromFn: func(taskID string) (orchestrator.TaskStatus, error) { return orchestrator.TaskStatusWorking, nil },
+	}
+	taskSpy := &stubTaskStore{task: task}
+	svc := &TaskWorkflowService{
+		Tasks:      taskSpy,
+		TaskTriage: txStore,
+		Tx:         recordingTransactor{store: txStore},
+		Meta:       stubMetaStore{meta: &orchestrator.ProjectMeta{TaskBehaviors: map[string]orchestrator.TaskBehavior{"dev": {}}}},
+	}
+
+	result, err := svc.Wake(context.Background(), task.ID)
+	if err != nil {
+		t.Fatalf("Wake: %v", err)
+	}
+	if result.Task.Status != orchestrator.TaskStatusWorking {
+		t.Fatalf("status = %q, want working", result.Task.Status)
+	}
+	if result.Action.Type != "wake_working" {
+		t.Fatalf("action type = %q, want wake_working", result.Action.Type)
+	}
+	if taskSpy.getCalls != 0 {
+		t.Fatalf("s.Tasks.GetTask was called %d time(s); Dispatch must never be attempted for a working-origin wake", taskSpy.getCalls)
 	}
 }
 

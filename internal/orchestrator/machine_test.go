@@ -526,15 +526,33 @@ func TestDefaultMachine_WakeTriagedAndWakeReady(t *testing.T) {
 	}
 }
 
-// wake_triaged/wake_ready は Manual:false — 機構内部専用（TaskWorkflowService.Wake が
-// ParkedFrom を見てどちらを送るか選ぶ）。誤操作で「起点と違う方に wake する」事故を
-// AvailableActions に出さないことで構造的に防ぐ。
+// TestDefaultMachine_WakeWorking is the BD-9 regression pin: PR-4 (論点8) added
+// a third park origin (working, via the "park: working → parked" exit) but
+// PR-3's Wake vocabulary only ever had wake_triaged/wake_ready — a
+// working-origin park had no matching internal action to resolve to and
+// 500'd. This confirms the machine rule itself (the api.TaskWorkflowService.Wake
+// switch-case wiring is pinned separately in internal/api).
+func TestDefaultMachine_WakeWorking(t *testing.T) {
+	sm := orchestrator.DefaultMachine()
+	task := &orchestrator.Task{Status: orchestrator.TaskStatusParked}
+	next, err := sm.Apply(task, &orchestrator.Action{Type: "wake_working"})
+	if err != nil {
+		t.Fatalf("wake_working: %v", err)
+	}
+	if next.Status != orchestrator.TaskStatusWorking {
+		t.Fatalf("wake_working: expected working, got %s", next.Status)
+	}
+}
+
+// wake_triaged/wake_ready/wake_working は Manual:false — 機構内部専用
+// （TaskWorkflowService.Wake が ParkedFrom を見てどれを送るか選ぶ）。誤操作で
+// 「起点と違う方に wake する」事故を AvailableActions に出さないことで構造的に防ぐ。
 func TestDefaultMachine_AvailableActions_Parked_ExcludesWakeActions(t *testing.T) {
 	sm := orchestrator.DefaultMachine()
 	actions := sm.AvailableActions(orchestrator.TaskStatusParked)
 	for _, a := range actions {
-		if a == "wake_triaged" || a == "wake_ready" {
-			t.Errorf("wake_triaged/wake_ready must not appear in AvailableActions(parked), got %v", actions)
+		if a == "wake_triaged" || a == "wake_ready" || a == "wake_working" {
+			t.Errorf("wake_triaged/wake_ready/wake_working must not appear in AvailableActions(parked), got %v", actions)
 		}
 	}
 	want := map[string]bool{"drop": true}
@@ -680,7 +698,7 @@ func TestDefaultMachine_IsManualAction(t *testing.T) {
 	// BoidOpActionSend reject any khi-pushed attempt to send them directly —
 	// see TestApplyAction_ChildDispatchedAndChildClosed_RejectedWhenPushed
 	// in internal/api for the end-to-end version of this guarantee.
-	nonManual := []string{"job_failed", "progress", "done_request", "fail_request", "wake_triaged", "wake_ready", "dispatch", "child_dispatched", "child_closed", "garbage"}
+	nonManual := []string{"job_failed", "progress", "done_request", "fail_request", "wake_triaged", "wake_ready", "wake_working", "dispatch", "child_dispatched", "child_closed", "garbage"}
 	for _, a := range manual {
 		if !sm.IsManualAction(a) {
 			t.Errorf("IsManualAction(%q) = false, want true", a)
