@@ -120,6 +120,83 @@ func TestTaskListContent_OpenTabActiveByDefault(t *testing.T) {
 	}
 }
 
+// TestTaskListFragment_EmptyOpenTab_ShowsCreateFirstTaskCopy pins the
+// unchanged default (BD-8 残件2 must not touch the Open tab's behavior): an
+// empty install with no filter still gets the "create your first task"
+// invitation, not "nothing in this view".
+func TestTaskListFragment_EmptyOpenTab_ShowsCreateFirstTaskCopy(t *testing.T) {
+	filter := orchestrator.TaskFilter{Status: "open"}
+
+	var buf bytes.Buffer
+	if err := TaskListFragment(nil, filter, "/?status=open").Render(context.Background(), &buf); err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	html := buf.String()
+
+	if !strings.Contains(html, "No tasks yet") {
+		t.Errorf("expected the Open tab's empty-install copy, got: %s", html)
+	}
+	if !strings.Contains(html, `href="/tasks/new"`) {
+		t.Errorf("expected the Create CTA on the empty Open tab, got: %s", html)
+	}
+}
+
+// TestTaskListFragment_EmptyNonOpenTabs_ShowsViewSpecificCopy is the BD-8
+// 残件2 regression: Closed / Queue(queue_next) / Parked are each their own
+// status predicate, not "Open minus something" — an empty result on one of
+// them means the view has nothing right now, not that the product has zero
+// tasks. Before this fix, taskFilterActive (which never looks at
+// filter.Status) alone picked the copy, so all three tabs rendered the same
+// misleading "No tasks yet / Create your first task to get started" as a
+// truly-empty install, complete with a Create CTA that has nothing to do
+// with why the tab is empty.
+func TestTaskListFragment_EmptyNonOpenTabs_ShowsViewSpecificCopy(t *testing.T) {
+	for _, status := range []string{"closed", "queue_next", "parked"} {
+		t.Run(status, func(t *testing.T) {
+			filter := orchestrator.TaskFilter{Status: status}
+
+			var buf bytes.Buffer
+			if err := TaskListFragment(nil, filter, "/?status="+status).Render(context.Background(), &buf); err != nil {
+				t.Fatalf("render: %v", err)
+			}
+			html := buf.String()
+
+			if strings.Contains(html, "No tasks yet") {
+				t.Errorf("status=%q must not show the empty-install copy, got: %s", status, html)
+			}
+			if strings.Contains(html, `href="/tasks/new"`) {
+				t.Errorf("status=%q must not show the Create CTA (misleading — creating a task won't populate this view), got: %s", status, html)
+			}
+			if !strings.Contains(html, "Nothing in this view") {
+				t.Errorf("status=%q should show view-specific empty copy, got: %s", status, html)
+			}
+		})
+	}
+}
+
+// TestTaskListFragment_EmptyNonOpenTabWithFilter_ShowsFilterCopy pins the
+// priority order when both conditions hold: an additional filter (e.g.
+// search text) narrows a non-Open tab to zero results. The
+// filter-narrowed-to-nothing copy (with its "clear filters" CTA) wins over
+// the view-specific empty copy, since clearing the filter is the more
+// specific/actionable next step.
+func TestTaskListFragment_EmptyNonOpenTabWithFilter_ShowsFilterCopy(t *testing.T) {
+	filter := orchestrator.TaskFilter{Status: "parked", Title: "no such task"}
+
+	var buf bytes.Buffer
+	if err := TaskListFragment(nil, filter, "/?status=parked&q=no+such+task").Render(context.Background(), &buf); err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	html := buf.String()
+
+	if !strings.Contains(html, "No tasks match the current filters") {
+		t.Errorf("expected the filter-narrowed-to-nothing copy to win, got: %s", html)
+	}
+	if strings.Contains(html, "Nothing in this view") {
+		t.Errorf("view-specific copy should not show when an additional filter is also active, got: %s", html)
+	}
+}
+
 // TestTaskDetailSuggestionSection_RendersVerbActionReasonBasis pins the
 // task detail page's suggestion card (BD-8 作るもの (C) 3): verb badge +
 // action, then reason and basis on their own lines.
@@ -154,5 +231,29 @@ func TestTaskDetailSuggestionSection_EmptyRendersNothing(t *testing.T) {
 	}
 	if html := strings.TrimSpace(buf.String()); html != "" {
 		t.Errorf("expected no output for an empty suggestion, got: %s", html)
+	}
+}
+
+// TestTaskDetailSuggestionSection_UnknownVerb_StillRendersTextWithNeutralClass
+// is the task-detail-page half of BD-8 残件4's regression (the queue/Parked
+// row half is TestTaskTreeRow_UnknownVerb_StillRendersTextWithNeutralClass,
+// web/templates/components/task_tree_test.go): an unrecognized verb must
+// still render its literal text (rule 5, 隠さない) via
+// components.VerbBadgeClass's shared fallback, not a "badge-verb-<word>"
+// class with no matching CSS rule.
+func TestTaskDetailSuggestionSection_UnknownVerb_StillRendersTextWithNeutralClass(t *testing.T) {
+	suggestion := orchestrator.Suggestion{Verb: "mystery", Reason: "unclear"}
+
+	var buf bytes.Buffer
+	if err := TaskDetailSuggestionSection(suggestion).Render(context.Background(), &buf); err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	html := buf.String()
+
+	if !strings.Contains(html, "badge-verb-unknown") {
+		t.Errorf("expected neutral badge-verb-unknown class, got: %s", html)
+	}
+	if !strings.Contains(html, ">mystery<") {
+		t.Errorf("expected the unknown verb's literal text to still render, got: %s", html)
 	}
 }

@@ -138,3 +138,32 @@ func TestDetailSuggestion_MalformedTopLevelStillFallsBackToAttrs(t *testing.T) {
 		t.Errorf("DetailSuggestion.Verb = %q, want %q", got.Verb, "wake")
 	}
 }
+
+// TestDetailSuggestion_EmptyTopLevelObjectFallsBackToAttrs is the regression
+// test for the empty-object-wins bug (BD-8 post-merge review, 2026-08-18):
+// decodeSuggestion used to return (Suggestion{}, true) for `{}` (a
+// successful Unmarshal, just of nothing), so an empty top-level object
+// pre-empted DetailSuggestion's fallback to attrs — a real suggestion under
+// attrs.suggestion would never be read. Same shape for a top-level object
+// whose fields don't match the Suggestion struct at all (e.g. a differently
+// named schema attempt): it decodes to the zero value too and must not win
+// either.
+func TestDetailSuggestion_EmptyTopLevelObjectFallsBackToAttrs(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		detail json.RawMessage
+	}{
+		{"empty object", json.RawMessage(`{"suggestion":{},"attrs":{"suggestion":{"verb":"wake"}}}`)},
+		{"unrecognized fields", json.RawMessage(`{"suggestion":{"v":"wake"},"attrs":{"suggestion":{"verb":"wake"}}}`)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := orchestrator.DetailSuggestion(tc.detail)
+			if !ok {
+				t.Fatal("DetailSuggestion: ok = false, want true (attrs.suggestion is well-formed)")
+			}
+			if got.Verb != "wake" {
+				t.Errorf("DetailSuggestion.Verb = %q, want %q (must fall back to attrs, not stop at the empty-decoding top-level object)", got.Verb, "wake")
+			}
+		})
+	}
+}

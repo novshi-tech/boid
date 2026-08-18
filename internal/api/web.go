@@ -274,22 +274,46 @@ func taskFormAttachments(r *http.Request) []*multipart.FileHeader {
 // triageByTaskID batch-fetches task_triage rows for a view's enrichment:
 // the queue_next view (BuildQueueItems: urgency/summary/children/
 // suggestion) and the Parked tab (BuildTreeItemsWithSuggestions:
-// suggestion only). A single task's lookup failing is logged and skipped
-// rather than aborting the whole page — same "don't let one bad row sink
-// the list" posture as BuildQueueItems/triageSummary themselves.
-// h.TaskTriage == nil degrades to no enrichment (empty map), not an error —
-// both views still list tasks correctly, just without the extra badges.
+// suggestion only). h.TaskTriage == nil degrades to no enrichment (empty
+// map), not an error — both views still list tasks correctly, just without
+// the extra badges.
+//
+// A single ListTaskTriageByTaskIDs call (BD-8 残件1), not a per-task
+// GetTaskTriage loop: #task-list self-polls every 5s (tasks.templ's
+// hx-trigger), and the Parked tab has no upper bound the way queue_next's
+// urgency predicate does (store.go's queue_next branch), so the old N+1
+// loop's query count grew linearly with both poll frequency and however
+// many cards were parked — exactly the shape that gets worse once BD-7's
+// ingest starts landing more of them.
+//
+// Same per-row tolerance as the old loop, just moved into
+// ListTaskTriageByTaskIDs itself (Opus review finding, 2026-08-18: a
+// single-row Scan failure there is still a per-row error that must not
+// sink the rest of the batch — see that function's doc comment,
+// internal/orchestrator/task_triage.go). A non-nil err here means
+// something went wrong for at least one row/chunk; out may still be
+// partially or fully populated, and using it (rather than discarding to an
+// empty map) is what actually preserves "don't let one bad row sink the
+// list" at this call site — silently downgrading to zero enrichment on any
+// error would be the exact "見えていなければ存在しない" failure 決定9
+// exists to prevent, just moved from GetTaskTriage's call site to this
+// one. The error is logged (not swallowed) so an operator has something to
+// grep when a view's badges are missing without an obvious cause.
 func (h *WebHandler) triageByTaskID(tasks []*orchestrator.Task) map[string]*orchestrator.TaskTriage {
-	out := map[string]*orchestrator.TaskTriage{}
 	if h.TaskTriage == nil {
-		return out
+		return map[string]*orchestrator.TaskTriage{}
 	}
-	for _, t := range tasks {
-		tt, err := h.TaskTriage.GetTaskTriage(t.ID)
-		if err != nil {
-			continue
-		}
-		out[t.ID] = tt
+	ids := make([]string, len(tasks))
+	for i, t := range tasks {
+		ids[i] = t.ID
+	}
+	out, err := h.TaskTriage.ListTaskTriageByTaskIDs(ids)
+	if err != nil {
+		slog.Warn("triageByTaskID: ListTaskTriageByTaskIDs returned a partial or empty result",
+			"error", err, "task_count", len(ids), "rows_returned", len(out))
+	}
+	if out == nil {
+		return map[string]*orchestrator.TaskTriage{}
 	}
 	return out
 }

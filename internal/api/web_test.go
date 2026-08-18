@@ -271,6 +271,17 @@ func (s *stubTaskTriageStore) SeedTaskTriage(taskID string) error               
 func (s *stubTaskTriageStore) GetTaskTriage(taskID string) (*orchestrator.TaskTriage, error) {
 	return s.triage, s.err
 }
+func (s *stubTaskTriageStore) ListTaskTriageByTaskIDs(taskIDs []string) (map[string]*orchestrator.TaskTriage, error) {
+	out := map[string]*orchestrator.TaskTriage{}
+	if s.triage != nil {
+		for _, id := range taskIDs {
+			if id == s.triage.TaskID {
+				out[id] = s.triage
+			}
+		}
+	}
+	return out, s.err
+}
 func (s *stubTaskTriageStore) DeleteTaskTriage(taskID string) error { return nil }
 func (s *stubTaskTriageStore) ParkedFrom(taskID string) (orchestrator.TaskStatus, error) {
 	return "", nil

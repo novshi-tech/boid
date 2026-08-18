@@ -109,3 +109,57 @@ func TestTaskTreeRow_NoSuggestion_RendersNoVerbBadge(t *testing.T) {
 		t.Errorf("expected no verb badge for an empty Suggestion, got: %s", html)
 	}
 }
+
+// TestVerbBadgeClass_KnownVerbs pins each of the six vocabulary words
+// (suggestion.verb — orchestrator.Suggestion's doc comment: go/shape/
+// manual/park/drop/wake) to its own class. Deliberately does not derive the
+// expected list from knownSuggestionVerbs itself — a test that reads the
+// same map it's checking can't catch a typo inside that map.
+func TestVerbBadgeClass_KnownVerbs(t *testing.T) {
+	for _, verb := range []string{"go", "shape", "manual", "park", "drop", "wake"} {
+		got := VerbBadgeClass(verb)
+		want := "badge-verb-" + verb
+		if got != want {
+			t.Errorf("VerbBadgeClass(%q) = %q, want %q", verb, got, want)
+		}
+	}
+}
+
+// TestVerbBadgeClass_UnknownVerbFallsBackToNeutral is the BD-8 残件4
+// regression: suggestion.verb is not vocabulary-checked anywhere upstream
+// (see knownSuggestionVerbs' doc comment for why it must not be added to
+// orchestrator's promotedAttrVocabulary), so an unrecognized verb must map
+// to the neutral fallback class rather than to a "badge-verb-<unknown
+// word>" class that has no matching CSS rule (and would render with no
+// color at all).
+func TestVerbBadgeClass_UnknownVerbFallsBackToNeutral(t *testing.T) {
+	for _, verb := range []string{"", "unknown-future-verb", "Go", "WAKE", "go "} {
+		if got := VerbBadgeClass(verb); got != "badge-verb-unknown" {
+			t.Errorf("VerbBadgeClass(%q) = %q, want %q", verb, got, "badge-verb-unknown")
+		}
+	}
+}
+
+// TestTaskTreeRow_UnknownVerb_StillRendersTextWithNeutralClass is the
+// render-level regression for the queue/Parked row half of BD-8 残件4: an
+// unrecognized verb must still show its literal text (rule 5, 隠さない) —
+// only the badge's color/class falls back to neutral.
+func TestTaskTreeRow_UnknownVerb_StillRendersTextWithNeutralClass(t *testing.T) {
+	item := TreeItem{
+		Task:       makeTreeTestTask("t1"),
+		Suggestion: orchestrator.Suggestion{Verb: "mystery", Reason: "unclear"},
+	}
+
+	var buf bytes.Buffer
+	if err := TaskTree([]TreeItem{item}).Render(context.Background(), &buf); err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	html := buf.String()
+
+	if !strings.Contains(html, `class="badge badge-verb-unknown"`) {
+		t.Errorf("expected neutral badge-verb-unknown class, got: %s", html)
+	}
+	if !strings.Contains(html, ">mystery<") {
+		t.Errorf("expected the unknown verb's literal text to still render, got: %s", html)
+	}
+}

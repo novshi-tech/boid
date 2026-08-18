@@ -29,6 +29,22 @@ type stubTriageStore struct {
 	rows       map[string]*orchestrator.TaskTriage
 	parkedFrom map[string]orchestrator.TaskStatus
 	getErr     error
+
+	// listErr, when non-nil, is returned by ListTaskTriageByTaskIDs
+	// alongside whatever partial `out` it can still build from rows — the
+	// same best-effort "a non-nil error means something went wrong, but
+	// out may still be partially or fully useful" contract the real
+	// orchestrator.ListTaskTriageByTaskIDs has (see its doc comment,
+	// internal/orchestrator/task_triage.go). Kept separate from getErr
+	// (which only affects GetTaskTriage) so a test can exercise the batch
+	// path's error handling without also breaking single-row lookups.
+	listErr error
+
+	// listTaskTriageByTaskIDsCalls counts ListTaskTriageByTaskIDs
+	// invocations — used by TestTriageByTaskID_BatchesIntoOneCall
+	// (web_test.go) to pin the N+1 fix (BD-8 残件1): triageByTaskID must
+	// call this once per view render, never once per task.
+	listTaskTriageByTaskIDsCalls int
 }
 
 func (s *stubTriageStore) UpsertTaskTriage(tt *orchestrator.TaskTriage) error {
@@ -57,6 +73,17 @@ func (s *stubTriageStore) GetTaskTriage(taskID string) (*orchestrator.TaskTriage
 		return tt, nil
 	}
 	return nil, errNoTriageRow
+}
+
+func (s *stubTriageStore) ListTaskTriageByTaskIDs(taskIDs []string) (map[string]*orchestrator.TaskTriage, error) {
+	s.listTaskTriageByTaskIDsCalls++
+	out := map[string]*orchestrator.TaskTriage{}
+	for _, id := range taskIDs {
+		if tt, ok := s.rows[id]; ok {
+			out[id] = tt
+		}
+	}
+	return out, s.listErr
 }
 
 func (s *stubTriageStore) DeleteTaskTriage(taskID string) error {

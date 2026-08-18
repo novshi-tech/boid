@@ -1800,6 +1800,9 @@ func (s *stubTx) UpsertTaskTriage(tt *orchestrator.TaskTriage) error            
 func (s *stubTx) GetTaskTriage(taskID string) (*orchestrator.TaskTriage, error) {
 	return nil, fmt.Errorf("not found: %w", sql.ErrNoRows)
 }
+func (s *stubTx) ListTaskTriageByTaskIDs(taskIDs []string) (map[string]*orchestrator.TaskTriage, error) {
+	return map[string]*orchestrator.TaskTriage{}, nil
+}
 func (s *stubTx) DeleteTaskTriage(taskID string) error { return nil }
 func (s *stubTx) ParkedFrom(taskID string) (orchestrator.TaskStatus, error) {
 	return "", fmt.Errorf("not found")
