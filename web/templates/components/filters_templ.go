@@ -130,7 +130,7 @@ func statusTab(filter orchestrator.TaskFilter, status, label string) templ.Compo
 }
 
 // TaskFilters renders the task list toolbar:
-//   - status (open/closed/queue) as the primary view tabs
+//   - status (open/closed/queue/parked) as the primary view tabs
 //   - search as a standalone input (its own hx-target avoids losing focus on each keystroke)
 //   - workspace > project as one logical filter group
 //

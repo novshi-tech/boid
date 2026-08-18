@@ -178,18 +178,16 @@ templ taskTreeRow(item TreeItem) {
 			if item.Summary != "" {
 				<div class="task-row-summary">{ item.Summary }</div>
 			}
-			if item.Suggestion.Verb != "" {
-				<div class="task-row-suggestion">
-					<span class={ "badge", "badge-verb-" + item.Suggestion.Verb }>{ item.Suggestion.Verb }</span>
-					if item.Suggestion.Reason != "" {
-						<span class="task-row-suggestion-reason">{ item.Suggestion.Reason }</span>
-					}
-				</div>
+			if item.Suggestion.Reason != "" {
+				<div class="task-row-summary">{ item.Suggestion.Reason }</div>
 			}
 			<div class="task-row-meta">
 				<span class={ treeStatusClass(string(item.Task.Status)) }>{ string(item.Task.Status) }</span>
 				if item.Urgency != "" {
 					<span class={ "badge", "badge-urgency-" + item.Urgency }>{ item.Urgency }</span>
+				}
+				if item.Suggestion.Verb != "" {
+					<span class={ "badge", "badge-verb-" + item.Suggestion.Verb }>{ item.Suggestion.Verb }</span>
 				}
 				if label := childrenPreviewLabel(item.Children); label != "" {
 					<span class="task-row-children" title="What Go dispatches: only specced children task-ify">{ label }</span>

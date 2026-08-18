@@ -332,10 +332,17 @@ func (h *WebHandler) TaskList(w http.ResponseWriter, r *http.Request) {
 		// be discarded by BuildTreeItems' own grouping/sort anyway.
 		items = BuildQueueItems(tasks, projectNames, h.triageByTaskID(tasks))
 	case filter.Status == "parked":
-		// Parked tab (BD-8): tree shape like the default case (a parked
-		// card can have dispatched children from before it was parked),
-		// plus the suggestion overlay so "which parked card has a wake
-		// suggestion" is answerable from the list, not just per-task.
+		// Parked tab (BD-8): BuildTreeItems' shape (Depth/HasChildren/
+		// ParentID), plus the suggestion overlay so "which parked card has
+		// a wake suggestion" is answerable from the list, not just
+		// per-task. This is not actually a rich tree in practice — the
+		// backing query is the generic `t.status = ?` predicate
+		// (store.go), so a parked task's non-parked children (e.g.
+		// dispatched/working ones from before it was parked) are excluded
+		// from the result set and BuildTreeItems degenerates to a flat
+		// list for them. Using the tree builder here is just "don't
+		// special-case parked-parent-with-parked-child" — not a claim that
+		// this view shows a card's live children.
 		items = BuildTreeItemsWithSuggestions(tasks, projectNames, h.triageByTaskID(tasks))
 	case filter.Status == "closed":
 		items = BuildFlatItems(tasks, projectNames)

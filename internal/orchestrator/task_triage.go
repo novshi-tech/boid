@@ -219,12 +219,22 @@ type Suggestion struct {
 
 // DetailSuggestion extracts task_triage.detail.suggestion from a detail
 // blob, preferring the top-level key (docs/plans/cross-project-issue-triage.md:544
-// のスキーマ案) and falling back to detail.attrs.suggestion. The fallback
-// exists because "suggestion" is not a promoted attrs_set key (see
-// applyAttrsSetSideEffect / FoldDetailAttrs, internal/api/workflow_triage.go)
-// — when khi writes it via attrs_set, it lands under detail.attrs instead of
-// at the top level. Which shape actually arrives cannot be determined from
-// the code alone, so both are read.
+// のスキーマ案) and falling back to detail.attrs.suggestion. The fallback is
+// the one actually exercised today: "suggestion" is not a promoted
+// attrs_set key (see applyAttrsSetSideEffect / FoldDetailAttrs,
+// internal/api/workflow_triage.go), and attrs_set is currently the only
+// write path for it in this repo — so in practice it lands under
+// detail.attrs, not at the top level. Top-level is still checked first per
+// BD-8's design (a future/alternate writer could place it there directly);
+// this doc comment just flags that assumption as unverified against actual
+// writers, not as dead weight to remove.
+//
+// Each candidate (top-level, then attrs) is decoded independently via its
+// own json.Unmarshal call: a malformed or wrong-shaped value in one
+// location must not blank out a well-formed value in the other. (An
+// earlier version decoded both off a single struct/Unmarshal call, so one
+// bad field anywhere in the blob silently zeroed a good suggestion
+// elsewhere in the same blob — Opus review finding, 2026-08-18.)
 //
 // Returns the zero Suggestion and false on any absence/parse failure —
 // same best-effort posture as triageSummary (internal/api/tree.go): never
@@ -235,22 +245,35 @@ func DetailSuggestion(detail json.RawMessage) (Suggestion, bool) {
 	if len(detail) == 0 || string(detail) == "null" {
 		return Suggestion{}, false
 	}
-	var wrapper struct {
-		Suggestion *Suggestion `json:"suggestion"`
-		Attrs      *struct {
-			Suggestion *Suggestion `json:"suggestion"`
-		} `json:"attrs"`
-	}
-	if err := json.Unmarshal(detail, &wrapper); err != nil {
+	var top map[string]json.RawMessage
+	if err := json.Unmarshal(detail, &top); err != nil {
 		return Suggestion{}, false
 	}
-	if wrapper.Suggestion != nil {
-		return *wrapper.Suggestion, true
+	if s, ok := decodeSuggestion(top["suggestion"]); ok {
+		return s, true
 	}
-	if wrapper.Attrs != nil && wrapper.Attrs.Suggestion != nil {
-		return *wrapper.Attrs.Suggestion, true
+	var attrs map[string]json.RawMessage
+	if err := json.Unmarshal(top["attrs"], &attrs); err == nil {
+		if s, ok := decodeSuggestion(attrs["suggestion"]); ok {
+			return s, true
+		}
 	}
 	return Suggestion{}, false
+}
+
+// decodeSuggestion decodes a single candidate "suggestion" value. Returns
+// (zero, false) for an absent/null/malformed value rather than erroring —
+// see DetailSuggestion's doc comment for why each candidate must fail
+// independently of the other.
+func decodeSuggestion(raw json.RawMessage) (Suggestion, bool) {
+	if len(raw) == 0 || string(raw) == "null" {
+		return Suggestion{}, false
+	}
+	var s Suggestion
+	if err := json.Unmarshal(raw, &s); err != nil {
+		return Suggestion{}, false
+	}
+	return s, true
 }
 
 // parseDetailMap round-trips a task_triage.Detail blob through a

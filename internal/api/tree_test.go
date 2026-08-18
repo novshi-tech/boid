@@ -1,9 +1,13 @@
 package api
 
 import (
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/go-chi/chi/v5"
 	"github.com/novshi-tech/boid/internal/orchestrator"
 )
 
@@ -375,5 +379,45 @@ func TestBuildTreeItemsWithSuggestions_OverlaysSuggestionKeepingTreeShape(t *tes
 	}
 	if items[1].Depth != 1 || items[1].ParentID != "p" {
 		t.Errorf("child shape wrong: Depth=%d ParentID=%q", items[1].Depth, items[1].ParentID)
+	}
+}
+
+// TestWebTaskList_ParkedStatus_RendersSuggestion is an end-to-end wiring
+// test for the Parked tab's handler → builder → template path (Opus review
+// finding, 2026-08-18): the unit tests for BuildTreeItemsWithSuggestions
+// and DetailSuggestion above pass even if TaskList's "parked" switch case
+// called plain BuildTreeItems (dropping enrichment entirely) or if
+// h.TaskTriage were never wired to h.triageByTaskID's caller — nothing
+// exercised the handler itself. This drives an actual HTTP request through
+// TaskList with a stubTriageStore attached and checks the rendered HTML.
+func TestWebTaskList_ParkedStatus_RendersSuggestion(t *testing.T) {
+	task := &orchestrator.Task{
+		ID: "t1", Title: "parked card", Status: orchestrator.TaskStatusParked,
+		CreatedAt: time.Now(), UpdatedAt: time.Now(),
+	}
+	svc := &stubWebService{tasks: []*orchestrator.Task{task}}
+	triage := &stubTriageStore{rows: map[string]*orchestrator.TaskTriage{
+		"t1": {TaskID: "t1", Detail: []byte(`{"suggestion":{"verb":"wake","reason":"source event fired"}}`)},
+	}}
+	h := &WebHandler{Service: svc, TaskTriage: triage}
+	r := chi.NewRouter()
+	r.Get("/", h.TaskList)
+
+	req := httptest.NewRequest(http.MethodGet, "/?status=parked", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+	if svc.capturedFilter.Status != "parked" {
+		t.Errorf("Status passed to ListTasks = %q, want %q", svc.capturedFilter.Status, "parked")
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, "badge-verb-wake") {
+		t.Errorf("parked list should render the suggestion verb badge, got: %s", body)
+	}
+	if !strings.Contains(body, "source event fired") {
+		t.Errorf("parked list should render the suggestion reason, got: %s", body)
 	}
 }

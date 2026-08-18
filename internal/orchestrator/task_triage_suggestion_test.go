@@ -89,3 +89,52 @@ func TestDetailSuggestion_MalformedJSON_ReturnsFalseNotError(t *testing.T) {
 		}
 	}
 }
+
+// TestDetailSuggestion_MalformedAttrsDoesNotBlankValidTopLevel is a
+// regression test for an Opus review finding (2026-08-18): an earlier
+// version decoded both the top-level "suggestion" key and
+// "attrs.suggestion" off a single json.Unmarshal call into one struct. A
+// type mismatch on the attrs copy (e.g. khi writing a bare string instead
+// of an object via attrs_set — plausible from an LLM) made that single
+// Unmarshal call fail, which wiped out an otherwise well-formed top-level
+// suggestion too. Each candidate must be decoded independently.
+func TestDetailSuggestion_MalformedAttrsDoesNotBlankValidTopLevel(t *testing.T) {
+	detail := json.RawMessage(`{"suggestion":{"verb":"go"},"attrs":{"suggestion":"just a string"}}`)
+
+	got, ok := orchestrator.DetailSuggestion(detail)
+	if !ok {
+		t.Fatal("DetailSuggestion: ok = false, want true (top-level suggestion is well-formed)")
+	}
+	if got.Verb != "go" {
+		t.Errorf("DetailSuggestion.Verb = %q, want %q", got.Verb, "go")
+	}
+}
+
+// TestDetailSuggestion_NonObjectAttrsDoesNotBlankValidTopLevel covers the
+// sibling case: "attrs" itself is not even an object.
+func TestDetailSuggestion_NonObjectAttrsDoesNotBlankValidTopLevel(t *testing.T) {
+	detail := json.RawMessage(`{"suggestion":{"verb":"go"},"attrs":"oops"}`)
+
+	got, ok := orchestrator.DetailSuggestion(detail)
+	if !ok {
+		t.Fatal("DetailSuggestion: ok = false, want true (top-level suggestion is well-formed)")
+	}
+	if got.Verb != "go" {
+		t.Errorf("DetailSuggestion.Verb = %q, want %q", got.Verb, "go")
+	}
+}
+
+// TestDetailSuggestion_MalformedTopLevelStillFallsBackToAttrs is the
+// mirror direction: a bad top-level "suggestion" must not prevent reading
+// a well-formed one under attrs.
+func TestDetailSuggestion_MalformedTopLevelStillFallsBackToAttrs(t *testing.T) {
+	detail := json.RawMessage(`{"suggestion":"not an object","attrs":{"suggestion":{"verb":"wake"}}}`)
+
+	got, ok := orchestrator.DetailSuggestion(detail)
+	if !ok {
+		t.Fatal("DetailSuggestion: ok = false, want true (attrs.suggestion is well-formed)")
+	}
+	if got.Verb != "wake" {
+		t.Errorf("DetailSuggestion.Verb = %q, want %q", got.Verb, "wake")
+	}
+}
