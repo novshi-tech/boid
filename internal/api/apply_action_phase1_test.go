@@ -422,7 +422,7 @@ func TestTaskWorkflowService_Wake_RejectsNonParkedTask(t *testing.T) {
 // entirely. ApplyAction now derives rejection generically from each rule's
 // own Manual flag (StateMachine.IsManualAction) instead of a separate list.
 func TestTaskWorkflowServiceApplyAction_RejectsNonManualActions(t *testing.T) {
-	for _, actionType := range []string{"job_failed", "progress", "done_request", "fail_request", "wake_triaged", "wake_ready"} {
+	for _, actionType := range []string{"job_failed", "progress", "done_request", "fail_request", "wake_triaged", "wake_ready", "wake_working"} {
 		task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusTriaged, Behavior: "dev", Payload: []byte(`{}`)}
 		svc := newTriageWorkflowService(task, &recordingTxStore{task: task})
 
@@ -456,7 +456,7 @@ func TestDefaultMachine_JobFailed_StillApplicableDirectlyViaSmApply(t *testing.T
 }
 
 func TestTaskWorkflowServiceApplyAction_RejectsInternalOnlyWakeActions(t *testing.T) {
-	for _, actionType := range []string{"wake_triaged", "wake_ready"} {
+	for _, actionType := range []string{"wake_triaged", "wake_ready", "wake_working"} {
 		task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusParked, Behavior: "dev", Payload: []byte(`{}`)}
 		svc := newTriageWorkflowService(task, &recordingTxStore{task: task})
 
@@ -511,6 +511,112 @@ func TestTaskWorkflowService_Wake_FromReady_ChainsIntoDispatch(t *testing.T) {
 	}
 	if result.Task.Status != orchestrator.TaskStatusWorking {
 		t.Fatalf("status = %q, want working (wake_ready must chain into Dispatch, same as ApplyAction(\"ready\"))", result.Task.Status)
+	}
+}
+
+// TestTaskWorkflowService_Wake_FromWorking_ReturnsToWorking_NoDispatch is the
+// BD-9 regression test (穴1): before this fix, Wake's ParkedFrom switch had
+// no case for TaskStatusWorking and fell into `default`, 500ing with
+// `wake: unexpected park origin "working"` — exactly the failure the real
+// khi workspace card (633c4bd9-...) hit. A working-origin park is the 論点8
+// "sequential PR consumption" pattern (park + wake_task_id, re-surfaced by
+// QueueSweepLoop when the dispatched child terminates), so waking it must
+// land back on working, not error.
+//
+// It also pins that Wake's ready→working Dispatch chain (guarded by
+// `newTask.Status == TaskStatusReady`, see Wake's doc comment) must NOT fire
+// for this origin: unlike a ready-origin park, a working-origin park's child
+// is already dispatched, so there is nothing left to (re-)dispatch. The
+// spy's getCalls counter proves s.Dispatch (whose first call is
+// s.Tasks.GetTask) was never even attempted — checking only the final status
+// would not catch a regression here, because Dispatch's own ready-only
+// precondition guard would silently no-op (log-only error) against a
+// "working" task even if Wake's chain condition were mistakenly widened to
+// include working.
+func TestTaskWorkflowService_Wake_FromWorking_ReturnsToWorking_NoDispatch(t *testing.T) {
+	task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusParked, Behavior: "dev", Payload: []byte(`{}`)}
+	txStore := &recordingTxStore{
+		task:         task,
+		parkedFromFn: func(taskID string) (orchestrator.TaskStatus, error) { return orchestrator.TaskStatusWorking, nil },
+	}
+	taskSpy := &stubTaskStore{task: task}
+	svc := &TaskWorkflowService{
+		Tasks:      taskSpy,
+		TaskTriage: txStore,
+		Tx:         recordingTransactor{store: txStore},
+		Meta:       stubMetaStore{meta: &orchestrator.ProjectMeta{TaskBehaviors: map[string]orchestrator.TaskBehavior{"dev": {}}}},
+	}
+
+	result, err := svc.Wake(context.Background(), task.ID)
+	if err != nil {
+		t.Fatalf("Wake: %v", err)
+	}
+	if result.Task.Status != orchestrator.TaskStatusWorking {
+		t.Fatalf("status = %q, want working", result.Task.Status)
+	}
+	if result.Action.Type != "wake_working" {
+		t.Fatalf("action type = %q, want wake_working", result.Action.Type)
+	}
+	if taskSpy.getCalls != 0 {
+		t.Fatalf("s.Tasks.GetTask was called %d time(s); Dispatch must never be attempted for a working-origin wake", taskSpy.getCalls)
+	}
+}
+
+// TestTaskWorkflowService_Wake_ResolvesAllParkOrigins is the api-side half of
+// the BD-9 recurrence guard (internal/orchestrator's
+// TestDefaultMachine_ParkOrigins_AllHaveWakeRule pins the machine-rule half).
+// The named tests above (TriagedThenReady / FromWorking_ReturnsToWorking)
+// pin today's three origins by name; this one instead derives the origin set
+// from DefaultMachine().Rules — deliberately not a hardcoded
+// []orchestrator.TaskStatus{"triaged","ready","working"} literal — and
+// end-to-end pins that Wake resolves ALL of them without error. A fourth
+// park origin added without a matching case in Wake's ParkedFrom switch
+// falls into that switch's `default:` branch and surfaces here as a
+// StatusError, by name, instead of only surfacing as a 500 in production the
+// way BD-9 did.
+//
+// It reuses newTriageWorkflowService (Coordinator intentionally nil), the
+// same harness TestTaskWorkflowService_Wake_RoundTrip_TriagedThenReady uses.
+// Under this harness, Wake's ready→working Dispatch chain always fails
+// (logged, not surfaced — see Wake's doc comment): sm.Apply operates on a
+// COPY of the task (machine.go's Apply: `newTask := *task`), so the
+// underlying stubTaskStore still holds the pre-wake "parked" task when
+// Dispatch's own ready-only precondition guard reads it back
+// (workflow_triage.go's Dispatch: `if task.Status != TaskStatusReady`) and
+// rejects with a 409 the caller never sees. That leaves status at "ready",
+// so under this harness every origin's resulting status equals the origin
+// itself regardless of whether that origin also triggers the Dispatch
+// chain — which is what lets one assertion shape cover every origin
+// generically instead of needing a per-origin special case.
+func TestTaskWorkflowService_Wake_ResolvesAllParkOrigins(t *testing.T) {
+	sm := orchestrator.DefaultMachine()
+	var origins []orchestrator.TaskStatus
+	for _, r := range sm.Rules {
+		if r.Action == "park" && r.ToStatus == string(orchestrator.TaskStatusParked) {
+			origins = append(origins, orchestrator.TaskStatus(r.FromStatus))
+		}
+	}
+	if len(origins) == 0 {
+		t.Fatal("no park rules found in DefaultMachine().Rules — did the rule table's shape change?")
+	}
+
+	for _, origin := range origins {
+		t.Run(string(origin), func(t *testing.T) {
+			task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusParked, Behavior: "dev", Payload: []byte(`{}`)}
+			txStore := &recordingTxStore{
+				task:         task,
+				parkedFromFn: func(taskID string) (orchestrator.TaskStatus, error) { return origin, nil },
+			}
+			svc := newTriageWorkflowService(task, txStore)
+
+			result, err := svc.Wake(context.Background(), task.ID)
+			if err != nil {
+				t.Fatalf("Wake from park origin %q: %v (Wake's ParkedFrom switch is likely missing a case for this origin — BD-9 recurrence)", origin, err)
+			}
+			if result.Task.Status != origin {
+				t.Fatalf("Wake from park origin %q: status = %q, want %q", origin, result.Task.Status, origin)
+			}
+		})
 	}
 }
 

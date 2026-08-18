@@ -526,15 +526,33 @@ func TestDefaultMachine_WakeTriagedAndWakeReady(t *testing.T) {
 	}
 }
 
-// wake_triaged/wake_ready は Manual:false — 機構内部専用（TaskWorkflowService.Wake が
-// ParkedFrom を見てどちらを送るか選ぶ）。誤操作で「起点と違う方に wake する」事故を
-// AvailableActions に出さないことで構造的に防ぐ。
+// TestDefaultMachine_WakeWorking is the BD-9 regression pin: PR-4 (論点8) added
+// a third park origin (working, via the "park: working → parked" exit) but
+// PR-3's Wake vocabulary only ever had wake_triaged/wake_ready — a
+// working-origin park had no matching internal action to resolve to and
+// 500'd. This confirms the machine rule itself (the api.TaskWorkflowService.Wake
+// switch-case wiring is pinned separately in internal/api).
+func TestDefaultMachine_WakeWorking(t *testing.T) {
+	sm := orchestrator.DefaultMachine()
+	task := &orchestrator.Task{Status: orchestrator.TaskStatusParked}
+	next, err := sm.Apply(task, &orchestrator.Action{Type: "wake_working"})
+	if err != nil {
+		t.Fatalf("wake_working: %v", err)
+	}
+	if next.Status != orchestrator.TaskStatusWorking {
+		t.Fatalf("wake_working: expected working, got %s", next.Status)
+	}
+}
+
+// wake_triaged/wake_ready/wake_working は Manual:false — 機構内部専用
+// （TaskWorkflowService.Wake が ParkedFrom を見てどれを送るか選ぶ）。誤操作で
+// 「起点と違う方に wake する」事故を AvailableActions に出さないことで構造的に防ぐ。
 func TestDefaultMachine_AvailableActions_Parked_ExcludesWakeActions(t *testing.T) {
 	sm := orchestrator.DefaultMachine()
 	actions := sm.AvailableActions(orchestrator.TaskStatusParked)
 	for _, a := range actions {
-		if a == "wake_triaged" || a == "wake_ready" {
-			t.Errorf("wake_triaged/wake_ready must not appear in AvailableActions(parked), got %v", actions)
+		if a == "wake_triaged" || a == "wake_ready" || a == "wake_working" {
+			t.Errorf("wake_triaged/wake_ready/wake_working must not appear in AvailableActions(parked), got %v", actions)
 		}
 	}
 	want := map[string]bool{"drop": true}
@@ -680,7 +698,7 @@ func TestDefaultMachine_IsManualAction(t *testing.T) {
 	// BoidOpActionSend reject any khi-pushed attempt to send them directly —
 	// see TestApplyAction_ChildDispatchedAndChildClosed_RejectedWhenPushed
 	// in internal/api for the end-to-end version of this guarantee.
-	nonManual := []string{"job_failed", "progress", "done_request", "fail_request", "wake_triaged", "wake_ready", "dispatch", "child_dispatched", "child_closed", "garbage"}
+	nonManual := []string{"job_failed", "progress", "done_request", "fail_request", "wake_triaged", "wake_ready", "wake_working", "dispatch", "child_dispatched", "child_closed", "garbage"}
 	for _, a := range manual {
 		if !sm.IsManualAction(a) {
 			t.Errorf("IsManualAction(%q) = false, want true", a)
@@ -824,6 +842,59 @@ func TestDefaultMachine_AvailableActions_Working_HasThreeExits(t *testing.T) {
 	for _, a := range actions {
 		if !want[a] {
 			t.Fatalf("AvailableActions(working) contains unexpected action %q (full list: %v)", a, actions)
+		}
+	}
+}
+
+// TestDefaultMachine_ParkOrigins_AllHaveWakeRule is the BD-9 recurrence
+// guard: the bug's actual mechanism was that PR-4 added a third "park: X →
+// parked" rule (working) without PR-3's Wake vocabulary growing a matching
+// "wake_X: parked → X" rule to resolve it, so a working-origin park 500'd
+// (TestDefaultMachine_WakeWorking / TestTaskWorkflowService_Wake_
+// FromWorking_ReturnsToWorking_NoDispatch in internal/api pin that specific
+// case by name, but a name-pinned test does not stop a FOURTH park origin
+// from reproducing the same class of bug later).
+//
+// This test derives the set of park origins directly from
+// DefaultMachine().Rules — deliberately NOT a hardcoded
+// []string{"triaged","ready","working"} literal, since a hardcoded list
+// would silently stop covering a newly-added origin instead of catching it.
+// For every "park" rule's FromStatus, it asserts a "parked → FromStatus"
+// rule (i.e. the corresponding wake_* rule) exists somewhere in the same
+// rule table. If a future PR adds a fourth park origin without adding its
+// wake counterpart, this fails by name instead of waiting for a 500 in
+// production the way BD-9 did.
+func TestDefaultMachine_ParkOrigins_AllHaveWakeRule(t *testing.T) {
+	sm := orchestrator.DefaultMachine()
+
+	var parkOrigins []string
+	for _, r := range sm.Rules {
+		if r.Action == "park" && r.ToStatus == string(orchestrator.TaskStatusParked) {
+			parkOrigins = append(parkOrigins, r.FromStatus)
+		}
+	}
+	if len(parkOrigins) == 0 {
+		t.Fatal("no park rules found in DefaultMachine().Rules — did the rule table's shape change?")
+	}
+
+	for _, origin := range parkOrigins {
+		found := false
+		for _, r := range sm.Rules {
+			// Require an actual wake_* action rule, not merely any
+			// parked→origin transition (e.g. "drop" also starts from parked
+			// but to "dropped", not to a park origin, so it wouldn't match
+			// here anyway — this guards against a hypothetical future
+			// non-wake_* rule that happens to land on the same ToStatus,
+			// which would satisfy "a transition exists" without actually
+			// being what TaskWorkflowService.Wake's ParkedFrom switch
+			// dispatches to).
+			if r.FromStatus == string(orchestrator.TaskStatusParked) && r.ToStatus == origin && strings.HasPrefix(r.Action, "wake_") {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("park origin %q has no matching wake rule (parked → %s) in DefaultMachine().Rules — TaskWorkflowService.Wake's ParkedFrom switch cannot resolve this origin without one (BD-9 recurrence)", origin, origin)
 		}
 	}
 }

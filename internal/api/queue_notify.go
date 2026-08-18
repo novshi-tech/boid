@@ -43,8 +43,9 @@ func queueMemberStatus(status orchestrator.TaskStatus) bool {
 // triaged) FROM a non-member status — a within-queue transition (e.g.
 // triaged->ready, which auto-chains into Dispatch and often never rests at
 // "ready" long enough to matter) does not re-fire. Both ApplyAction (the
-// "triage"/"ready" actions) and Wake (parked->triaged/ready) call this after
-// their state transition commits.
+// "triage"/"ready" actions) and Wake (parked->triaged/ready/working) call
+// this after their state transition commits — a working-origin wake simply
+// produces no notify, since "working" is not a queueMemberStatus (BD-9).
 func (s *TaskWorkflowService) notifyQueueEntryIfUrgent(ctx context.Context, task *orchestrator.Task, fromStatus orchestrator.TaskStatus) {
 	if s.Notifier == nil || s.TaskTriage == nil || task == nil {
 		return

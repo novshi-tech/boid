@@ -236,9 +236,9 @@ type WebService interface {
 	// Wake revives a parked triage task (cross-project-issue-triage Phase 1
 	// PR-3, queue の決定論的評価 節 rule 1) — a dedicated entry point rather
 	// than a generic ApplyAction("wake_...") POST because wake_triaged/
-	// wake_ready are Manual:false in the state machine (see
+	// wake_ready/wake_working are Manual:false in the state machine (see
 	// StateMachine.IsManualAction) and TaskWorkflowService.Wake resolves
-	// which of the two applies internally via ParkedFrom.
+	// which of the three applies internally via ParkedFrom.
 	Wake(taskID string) error
 	DuplicateTask(id string) (string, error)
 	DeleteTask(id string, force bool) error
@@ -326,8 +326,8 @@ type TaskTriageStore interface {
 	SeedTaskTriage(taskID string) error
 	GetTaskTriage(taskID string) (*orchestrator.TaskTriage, error)
 	DeleteTaskTriage(taskID string) error
-	// ParkedFrom derives which status (triaged/ready) a parked task was
-	// parked from, from the actions log (not a stored column — 決定13).
+	// ParkedFrom derives which status (triaged/ready/working) a parked task
+	// was parked from, from the actions log (not a stored column — 決定13).
 	ParkedFrom(taskID string) (orchestrator.TaskStatus, error)
 }
 

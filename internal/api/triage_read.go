@@ -57,10 +57,13 @@ type TaskTriageView struct {
 	WakeTaskID string     `json:"wake_task_id,omitempty"`
 
 	// ParkedFrom is only populated for a parked task: it answers "which side
-	// will this wake back to (triaged or ready)". Deliberately left empty for
-	// every other status rather than reporting the most recent historical park
-	// — a stale origin on a task that is no longer parked would be actively
-	// misleading to a caller deciding whether Go has already been given.
+	// will this wake back to (triaged, ready, or — since BD-9's wake_working
+	// fix, 2026-08-18 — working)". Deliberately left empty for every other
+	// status rather than reporting the most recent historical park — a stale
+	// origin on a task that is no longer parked would be actively misleading
+	// to a caller deciding whether Go has already been given. A consumer
+	// (e.g. khi's project_card.py) that branches on this field must handle
+	// "working" as a valid third value, not just triaged/ready.
 	ParkedFrom orchestrator.TaskStatus `json:"parked_from,omitempty"`
 
 	Detail json.RawMessage `json:"detail,omitempty"`

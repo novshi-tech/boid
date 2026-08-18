@@ -454,14 +454,17 @@ func (s *TaskWorkflowService) autoDoneAfterChildClose(parentID string) {
 	}
 }
 
-// Wake is the single user/PR-2/3-facing verb for reviving a parked task. It
-// resolves the origin (triaged vs ready) via ParkedFrom — derived from the
-// actions log, not a stored column — and applies the matching internal
-// action (wake_triaged/wake_ready, rejected if sent directly through the
-// public ApplyAction path — see StateMachine.IsManualAction, used by
-// ApplyAction's guard in workflow_action.go). This exists specifically so no
-// caller can wake a task to the wrong status: getting triaged vs ready wrong
-// would silently promote a task past Go without nose's judgment (決定9/逆輸入2).
+// Wake is the single user/PR-2/3/4-facing verb for reviving a parked task. It
+// resolves the origin (triaged vs ready vs working) via ParkedFrom — derived
+// from the actions log, not a stored column — and applies the matching
+// internal action (wake_triaged/wake_ready/wake_working, rejected if sent
+// directly through the public ApplyAction path — see
+// StateMachine.IsManualAction, used by ApplyAction's guard in
+// workflow_action.go). This exists specifically so no caller can wake a task
+// to the wrong status: getting triaged vs ready wrong would silently promote
+// a task past Go without nose's judgment (決定9/逆輸入2); getting working
+// wrong would otherwise 500 (BD-9) or, worse, silently drop the working-origin
+// park's ability to ever re-surface.
 //
 // Unlike ApplyAction's general shape (task read, then a separate
 // WithinTx write), Wake re-reads the task AND resolves ParkedFrom from
@@ -471,7 +474,8 @@ func (s *TaskWorkflowService) autoDoneAfterChildClose(parentID string) {
 // read and the write, so a wake in flight could apply against a stale
 // origin (codex review round 1, Major). Reading everything transactionally
 // closes that window: whichever origin is committed at write time is the
-// one that decides wake_triaged vs wake_ready, with no gap to race into.
+// one that decides wake_triaged vs wake_ready vs wake_working, with no gap
+// to race into.
 func (s *TaskWorkflowService) Wake(ctx context.Context, taskID string) (*ActionApplication, error) {
 	if s.Tx == nil {
 		return nil, &StatusError{Code: http.StatusInternalServerError, Message: "wake: Transactor not configured"}
@@ -502,6 +506,8 @@ func (s *TaskWorkflowService) Wake(ctx context.Context, taskID string) (*ActionA
 			resolvedType = "wake_triaged"
 		case orchestrator.TaskStatusReady:
 			resolvedType = "wake_ready"
+		case orchestrator.TaskStatusWorking:
+			resolvedType = "wake_working"
 		default:
 			return &StatusError{Code: http.StatusInternalServerError, Message: fmt.Sprintf("wake: unexpected park origin %q", from)}
 		}

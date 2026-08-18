@@ -251,3 +251,81 @@ func TestSweepWake_MultipleParkedTasks_EachEvaluatedIndependently(t *testing.T) 
 		t.Errorf("not-due status = %s, want still parked", store.tasks["not-due"].Status)
 	}
 }
+
+// TestSweepWake_TaskCondition_WorkingOrigin_WakesToWorking_NoDispatchChain is
+// the BD-9 (2026-08-18) fix's end-to-end pin, and the primary regression test
+// for this bug (穴1 + 穴2 together): a card parked FROM working with a
+// wake_task_id (the 論点8 "park + wake_task_id" sequential-PR-consumption
+// pattern — Go-time park while a child is dispatched, re-surfaced when that
+// child terminates) must actually wake once its referenced child reaches a
+// terminal status. Before this fix, ShouldWake correctly flagged the task as
+// due (穴2 is not the bug here — wake_task_id makes ShouldWake evaluate it),
+// but SweepWake's call into Wake hit the missing wake_working case (穴1) and
+// 500'd, so QueueSweepLoop logged "queue sweep: wake failed" every tick
+// forever and the card could never re-surface — exactly the real khi
+// workspace card (633c4bd9-1e6e-476b-9559-052e32882945) this task starts
+// from.
+//
+// taskStoreSpy wraps sweepFakeStore's TaskStore surface with a per-id
+// GetTask call counter, and is used ONLY for TaskWorkflowService.Tasks below
+// — TaskTriage/Tx keep pointing at the plain *sweepFakeStore. This
+// separation matters: Wake resolves the task and its park origin via
+// tx.GetTask (the Tx path) and SweepWake itself legitimately calls
+// s.Tasks.GetTask(wake_task_id) to check the referenced task's status (queue_
+// sweep.go) — both of those are expected calls that must NOT be attributed
+// to "was Dispatch attempted". Only Dispatch's own first statement,
+// s.Tasks.GetTask(taskID), goes through this spy, so counting GetTask("card")
+// here (and nowhere else) is what actually distinguishes "Dispatch never ran"
+// from "Dispatch ran, its ready-only guard rejected it, and Wake only
+// slog.Error'd the failure" — the latter is invisible to every other
+// assertion in this test (see the outcome-based reasoning in
+// TestTaskWorkflowService_Wake_FromWorking_ReturnsToWorking_NoDispatch,
+// apply_action_phase1_test.go, which hit exactly this trap with a bare
+// action-count check before the getCalls spy was added there).
+type taskStoreSpy struct {
+	*sweepFakeStore
+	getTaskCalls map[string]int
+}
+
+func (s *taskStoreSpy) GetTask(id string) (*orchestrator.Task, error) {
+	s.getTaskCalls[id]++
+	return s.sweepFakeStore.GetTask(id)
+}
+
+// Also confirms the wake does NOT chain into Dispatch (unlike the
+// ready-origin case in TestSweepWake_TaskCondition_WakesWhenReferencedTaskTerminal
+// above): the single wake_working action is recorded, AND — the actual proof,
+// via taskStoreSpy above — Dispatch's own s.Tasks.GetTask("card") call is
+// never made.
+func TestSweepWake_TaskCondition_WorkingOrigin_WakesToWorking_NoDispatchChain(t *testing.T) {
+	store := newSweepFakeStore()
+	now := time.Now()
+
+	store.tasks["child-pr"] = &orchestrator.Task{ID: "child-pr", Status: orchestrator.TaskStatusDone}
+	store.tasks["card"] = &orchestrator.Task{ID: "card", Status: orchestrator.TaskStatusParked}
+	store.triage["card"] = &orchestrator.TaskTriage{TaskID: "card", WakeTaskID: "child-pr"}
+	store.parkedFroms["card"] = orchestrator.TaskStatusWorking
+	spy := &taskStoreSpy{sweepFakeStore: store, getTaskCalls: map[string]int{}}
+
+	svc := &TaskWorkflowService{Tasks: spy, TaskTriage: store, Tx: store}
+	woken, err := svc.SweepWake(context.Background(), now)
+	if err != nil {
+		t.Fatalf("SweepWake: %v", err)
+	}
+	if len(woken) != 1 || woken[0] != "card" {
+		t.Fatalf("woken = %v, want [card]", woken)
+	}
+	if store.tasks["card"].Status != orchestrator.TaskStatusWorking {
+		t.Errorf("card status = %s, want working (its recorded park origin)", store.tasks["card"].Status)
+	}
+	actions := store.actions["card"]
+	if len(actions) != 1 {
+		t.Fatalf("expected exactly 1 recorded action (wake_working only), got %d: %v", len(actions), actions)
+	}
+	if actions[0].Type != "wake_working" {
+		t.Errorf("action type = %q, want wake_working", actions[0].Type)
+	}
+	if n := spy.getTaskCalls["card"]; n != 0 {
+		t.Fatalf("s.Tasks.GetTask(%q) was called %d time(s); Dispatch must never be attempted for a working-origin wake", "card", n)
+	}
+}

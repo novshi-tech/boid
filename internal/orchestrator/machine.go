@@ -167,16 +167,23 @@ func DefaultMachine() *StateMachine {
 //	park         : ready → parked
 //	wake_triaged : parked → triaged  (Manual:false — machine-internal, see below)
 //	wake_ready   : parked → ready    (Manual:false — machine-internal, see below)
+//	wake_working : parked → working  (Manual:false — machine-internal, added by BD-9;
+//	                                   see the Phase 1 PR-4 section further below, where
+//	                                   the matching "park: working → parked" exit lives)
 //	drop         : captured/triaged/parked/ready → dropped
 //	reopen       : dropped → triaged (recovery from a mistaken drop)
 //
-// wake_triaged/wake_ready are deliberately non-manual so they never appear in
-// AvailableActions. A parked task's "起点" (which status it was parked from) decides
-// which one is correct, and getting it wrong would silently promote a task past Go
-// (triaged → ready) without nose's judgment — the one thing 決定9/逆輸入2 protect. The
-// single user-facing verb is TaskWorkflowService.Wake, which looks up the origin via
-// ParkedFrom (derived from the actions log, not a duplicated column — 決定13) and calls
-// sm.Apply with the correct action name.
+// wake_triaged/wake_ready/wake_working are deliberately non-manual so they never
+// appear in AvailableActions. A parked task's "起点" (which status it was parked
+// from) decides which one is correct: getting triaged vs ready wrong would silently
+// promote a task past Go (triaged → ready) without nose's judgment — the one thing
+// 決定9/逆輸入2 protect — and wake_working (BD-9 fix, for 論点8's "park +
+// wake_task_id" sequential-PR pattern) simply returns a task that was already past
+// Go back to where it was, so the same "let the origin decide, not the caller"
+// discipline applies even though there is no Go-gate risk on that particular branch.
+// The single user-facing verb is TaskWorkflowService.Wake, which looks up the origin
+// via ParkedFrom (derived from the actions log, not a duplicated column — 決定13) and
+// calls sm.Apply with the correct action name.
 //
 // drop is intentionally NOT a "*" wildcard like abort: scoping it to the four
 // pre-execution statuses keeps it from becoming a second, overlapping destructive
@@ -223,6 +230,22 @@ func DefaultMachine() *StateMachine {
 // `specced` child in one call — the discipline that only one child should be
 // specced at a time in a sequential PR series is a caller/khi-side
 // convention (決定12 の外側), not something the machine enforces.
+//
+// wake_working : parked → working  (Manual:false — machine-internal, see above)
+//
+// BD-9 (2026-08-18): the park:working exit above needs a matching return path
+// — QueueSweepLoop wakes a working-origin park via the SAME
+// TaskWorkflowService.Wake entry point used for wake_triaged/wake_ready, so
+// Wake's origin switch needs a third case. wake_working was missing since
+// this park:working exit's own PR (the rule set above added the park side
+// but never revisited Wake's ParkedFrom switch to match), so every such wake
+// 500'd with "unexpected park origin \"working\"" and a wake_task_id-carrying
+// working-park could never re-surface — the exact 論点8 sequential-PR-
+// consumption flow this rule set exists for. Waking to working intentionally
+// skips the ready→working Dispatch chain in TaskWorkflowService.Wake
+// (workflow_triage.go — it only chains when newTask.Status ==
+// TaskStatusReady): a working-origin park already has its child dispatched,
+// so there is nothing left to (re-)dispatch.
 //
 // Phase 1 PR-5b (決定15/17) closes the terminal end of that lifecycle, which
 // PR-4 had left explicitly 未決:
@@ -345,9 +368,10 @@ func NewMachine() *StateMachine {
 		{Action: "ready", FromStatus: "triaged", ToStatus: "ready", Manual: true},
 		{Action: "park", FromStatus: "triaged", ToStatus: "parked", Manual: true},
 		{Action: "park", FromStatus: "ready", ToStatus: "parked", Manual: true},
-		// wake_triaged/wake_ready: Manual:false — see doc comment above NewMachine.
+		// wake_triaged/wake_ready/wake_working: Manual:false — see doc comment above NewMachine.
 		{Action: "wake_triaged", FromStatus: "parked", ToStatus: "triaged"},
 		{Action: "wake_ready", FromStatus: "parked", ToStatus: "ready"},
+		{Action: "wake_working", FromStatus: "parked", ToStatus: "working"},
 		{Action: "drop", FromStatus: "captured", ToStatus: "dropped", Manual: true},
 		{Action: "drop", FromStatus: "triaged", ToStatus: "dropped", Manual: true},
 		{Action: "drop", FromStatus: "parked", ToStatus: "dropped", Manual: true},
