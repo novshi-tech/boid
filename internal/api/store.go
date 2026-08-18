@@ -325,6 +325,13 @@ type TaskTriageStore interface {
 	// task") and nothing else.
 	SeedTaskTriage(taskID string) error
 	GetTaskTriage(taskID string) (*orchestrator.TaskTriage, error)
+	// ListTaskTriageByTaskIDs batch-fetches sidecar rows for a set of task
+	// IDs in O(chunks) queries instead of O(N) GetTaskTriage calls (BD-8
+	// 残件1) — see orchestrator.ListTaskTriageByTaskIDs's doc comment for
+	// the chunking rationale and the "batch replaces per-row error
+	// tolerance" tradeoff. A taskID with no sidecar row is simply absent
+	// from the returned map, never an error.
+	ListTaskTriageByTaskIDs(taskIDs []string) (map[string]*orchestrator.TaskTriage, error)
 	DeleteTaskTriage(taskID string) error
 	// ParkedFrom derives which status (triaged/ready/working) a parked task
 	// was parked from, from the actions log (not a stored column — 決定13).

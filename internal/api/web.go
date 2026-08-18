@@ -274,22 +274,36 @@ func taskFormAttachments(r *http.Request) []*multipart.FileHeader {
 // triageByTaskID batch-fetches task_triage rows for a view's enrichment:
 // the queue_next view (BuildQueueItems: urgency/summary/children/
 // suggestion) and the Parked tab (BuildTreeItemsWithSuggestions:
-// suggestion only). A single task's lookup failing is logged and skipped
-// rather than aborting the whole page — same "don't let one bad row sink
-// the list" posture as BuildQueueItems/triageSummary themselves.
-// h.TaskTriage == nil degrades to no enrichment (empty map), not an error —
-// both views still list tasks correctly, just without the extra badges.
+// suggestion only). h.TaskTriage == nil degrades to no enrichment (empty
+// map), not an error — both views still list tasks correctly, just without
+// the extra badges.
+//
+// A single ListTaskTriageByTaskIDs call (BD-8 残件1), not a per-task
+// GetTaskTriage loop: #task-list self-polls every 5s (tasks.templ's
+// hx-trigger), and the Parked tab has no upper bound the way queue_next's
+// urgency predicate does (store.go's queue_next branch), so the old N+1
+// loop's query count grew linearly with both poll frequency and however
+// many cards were parked — exactly the shape that gets worse once BD-7's
+// ingest starts landing more of them.
+//
+// Posture change from the old loop: it skipped and continued past any
+// single task's own lookup error ("don't let one bad row sink the list," a
+// per-row property). A batched IN query has no per-row granularity to
+// preserve — a query-level error fails the whole call — but there is also
+// no longer a "this one row's fetch failed" case to tolerate in the first
+// place, since a missing sidecar row is unexceptional (simply absent from
+// the returned map) rather than an error.
 func (h *WebHandler) triageByTaskID(tasks []*orchestrator.Task) map[string]*orchestrator.TaskTriage {
-	out := map[string]*orchestrator.TaskTriage{}
 	if h.TaskTriage == nil {
-		return out
+		return map[string]*orchestrator.TaskTriage{}
 	}
-	for _, t := range tasks {
-		tt, err := h.TaskTriage.GetTaskTriage(t.ID)
-		if err != nil {
-			continue
-		}
-		out[t.ID] = tt
+	ids := make([]string, len(tasks))
+	for i, t := range tasks {
+		ids[i] = t.ID
+	}
+	out, err := h.TaskTriage.ListTaskTriageByTaskIDs(ids)
+	if err != nil {
+		return map[string]*orchestrator.TaskTriage{}
 	}
 	return out
 }

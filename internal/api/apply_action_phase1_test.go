@@ -97,6 +97,15 @@ func (s *recordingTxStore) GetTaskTriage(taskID string) (*orchestrator.TaskTriag
 	}
 	return tt, nil
 }
+func (s *recordingTxStore) ListTaskTriageByTaskIDs(taskIDs []string) (map[string]*orchestrator.TaskTriage, error) {
+	out := map[string]*orchestrator.TaskTriage{}
+	for _, id := range taskIDs {
+		if tt, ok := s.triage[id]; ok {
+			out[id] = tt
+		}
+	}
+	return out, nil
+}
 func (s *recordingTxStore) DeleteTaskTriage(taskID string) error {
 	delete(s.triage, taskID)
 	return nil

@@ -73,6 +73,10 @@ func (r *TaskRepository) GetTaskTriage(taskID string) (*TaskTriage, error) {
 	return GetTaskTriage(r.db, taskID)
 }
 
+func (r *TaskRepository) ListTaskTriageByTaskIDs(taskIDs []string) (map[string]*TaskTriage, error) {
+	return ListTaskTriageByTaskIDs(r.db, taskIDs)
+}
+
 func (r *TaskRepository) SeedTaskTriage(taskID string) error {
 	return SeedTaskTriage(r.db, taskID)
 }

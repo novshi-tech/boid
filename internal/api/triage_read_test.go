@@ -29,6 +29,12 @@ type stubTriageStore struct {
 	rows       map[string]*orchestrator.TaskTriage
 	parkedFrom map[string]orchestrator.TaskStatus
 	getErr     error
+
+	// listTaskTriageByTaskIDsCalls counts ListTaskTriageByTaskIDs
+	// invocations — used by TestTriageByTaskID_BatchesIntoOneCall
+	// (web_test.go) to pin the N+1 fix (BD-8 残件1): triageByTaskID must
+	// call this once per view render, never once per task.
+	listTaskTriageByTaskIDsCalls int
 }
 
 func (s *stubTriageStore) UpsertTaskTriage(tt *orchestrator.TaskTriage) error {
@@ -57,6 +63,17 @@ func (s *stubTriageStore) GetTaskTriage(taskID string) (*orchestrator.TaskTriage
 		return tt, nil
 	}
 	return nil, errNoTriageRow
+}
+
+func (s *stubTriageStore) ListTaskTriageByTaskIDs(taskIDs []string) (map[string]*orchestrator.TaskTriage, error) {
+	s.listTaskTriageByTaskIDsCalls++
+	out := map[string]*orchestrator.TaskTriage{}
+	for _, id := range taskIDs {
+		if tt, ok := s.rows[id]; ok {
+			out[id] = tt
+		}
+	}
+	return out, nil
 }
 
 func (s *stubTriageStore) DeleteTaskTriage(taskID string) error {

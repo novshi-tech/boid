@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/novshi-tech/boid/internal/db"
@@ -103,6 +104,76 @@ func GetTaskTriage(dbtx db.DBTX, taskID string) (*TaskTriage, error) {
 	}
 	tt.Detail = json.RawMessage(detail)
 	return &tt, nil
+}
+
+// taskTriageInClauseChunkSize bounds how many task IDs go into a single
+// `WHERE task_id IN (...)` query in ListTaskTriageByTaskIDs. sqlite's
+// compiled-in SQLITE_MAX_VARIABLE_NUMBER (modernc.org/sqlite v1.34.5,
+// vendoring sqlite 3.46.0) is 32766 — this chunk size is a wide safety
+// margin under that, not a tuned value: task IDs are short strings (cheap
+// to bind), and there is no evidence yet of a workspace with anywhere near
+// this many parked/queue_next tasks at once, so staying comfortably clear
+// of the placeholder limit matters far more here than minimizing round
+// trips.
+const taskTriageInClauseChunkSize = 500
+
+// ListTaskTriageByTaskIDs batch-fetches task_triage sidecar rows for a set
+// of task IDs in O(chunks) queries instead of O(len(taskIDs)) — the
+// Parked/Queue Web UI views used to call GetTaskTriage once per row
+// (internal/api/web.go's triageByTaskID), and #task-list polls every 5s
+// (tasks.templ's hx-trigger), so that N+1 scaled linearly with poll
+// frequency × view size (BD-8 残件1). A taskID with no sidecar row is simply
+// absent from the returned map — same "missing means no enrichment"
+// contract callers already read off GetTaskTriage's sql.ErrNoRows today,
+// just expressed as map absence instead of a per-call error.
+//
+// Unlike a per-row loop, a single query error here fails the whole call —
+// batching removes the "one row's error, skip and continue" granularity a
+// loop has. See triageByTaskID's doc comment (internal/api/web.go) for why
+// that tradeoff is fine at the actual call site.
+func ListTaskTriageByTaskIDs(dbtx db.DBTX, taskIDs []string) (map[string]*TaskTriage, error) {
+	out := map[string]*TaskTriage{}
+	for start := 0; start < len(taskIDs); start += taskTriageInClauseChunkSize {
+		end := start + taskTriageInClauseChunkSize
+		if end > len(taskIDs) {
+			end = len(taskIDs)
+		}
+		chunk := taskIDs[start:end]
+		placeholders := strings.Repeat("?,", len(chunk))
+		placeholders = placeholders[:len(placeholders)-1]
+		args := make([]any, len(chunk))
+		for i, id := range chunk {
+			args[i] = id
+		}
+		if err := func() error {
+			rows, err := dbtx.Query(
+				`SELECT task_id, kind, urgency, wake_at, wake_task_id, detail FROM task_triage WHERE task_id IN (`+placeholders+`)`,
+				args...,
+			)
+			if err != nil {
+				return err
+			}
+			defer rows.Close()
+			for rows.Next() {
+				var tt TaskTriage
+				var wakeAt sql.NullTime
+				var detail string
+				if err := rows.Scan(&tt.TaskID, &tt.Kind, &tt.Urgency, &wakeAt, &tt.WakeTaskID, &detail); err != nil {
+					return err
+				}
+				if wakeAt.Valid {
+					t := wakeAt.Time
+					tt.WakeAt = &t
+				}
+				tt.Detail = json.RawMessage(detail)
+				out[tt.TaskID] = &tt
+			}
+			return rows.Err()
+		}(); err != nil {
+			return nil, fmt.Errorf("list task_triage by task_ids: %w", err)
+		}
+	}
+	return out, nil
 }
 
 // DeleteTaskTriage removes the sidecar row for taskID. Deleting the parent
@@ -229,6 +300,13 @@ type Suggestion struct {
 // this doc comment just flags that assumption as unverified against actual
 // writers, not as dead weight to remove.
 //
+// Confirmed against real data 2026-08-18 (`GET /api/triage?status=parked`,
+// 4 parked tasks, 3 with a suggestion): every suggestion was under
+// detail.attrs.suggestion; top-level was null on all 4. No writer places
+// suggestion at the top level today. Both paths are kept regardless — see
+// decodeSuggestion's doc comment for why an empty top-level object must not
+// win over a real one in attrs.
+//
 // Each candidate (top-level, then attrs) is decoded independently via its
 // own json.Unmarshal call: a malformed or wrong-shaped value in one
 // location must not blank out a well-formed value in the other. (An
@@ -265,12 +343,24 @@ func DetailSuggestion(detail json.RawMessage) (Suggestion, bool) {
 // (zero, false) for an absent/null/malformed value rather than erroring —
 // see DetailSuggestion's doc comment for why each candidate must fail
 // independently of the other.
+//
+// A value that decodes to the zero Suggestion (e.g. `{}`, or an object with
+// only unrecognized field names) also returns false: DetailSuggestion tries
+// top-level first and only falls back to attrs on (zero, false), so an empty
+// top-level object would otherwise "win" over a real suggestion in attrs and
+// the row would render with no suggestion at all (BD-8 post-merge review,
+// 2026-08-18 — no writer places a non-empty object at the top level today,
+// see DetailSuggestion's doc comment, so this is a guard against a future
+// writer, not a fix for an observed bug).
 func decodeSuggestion(raw json.RawMessage) (Suggestion, bool) {
 	if len(raw) == 0 || string(raw) == "null" {
 		return Suggestion{}, false
 	}
 	var s Suggestion
 	if err := json.Unmarshal(raw, &s); err != nil {
+		return Suggestion{}, false
+	}
+	if s == (Suggestion{}) {
 		return Suggestion{}, false
 	}
 	return s, true

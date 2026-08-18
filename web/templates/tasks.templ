@@ -76,8 +76,31 @@ func instrActiveField(inst *orchestrator.Instruction, field string) string {
 // taskFilterActive reports whether the user has narrowed the list with any
 // filter beyond the default status view. Used to switch the empty-state copy
 // between "no tasks at all" and "filters match nothing".
+//
+// Deliberately excludes f.Status — see taskStatusIsDefaultView, which
+// exists precisely because Status needs its own (not this function's)
+// empty-state branch.
 func taskFilterActive(f orchestrator.TaskFilter) bool {
 	return f.Title != "" || f.ProjectID != "" || f.Behavior != "" || f.WorkspaceID != ""
+}
+
+// taskStatusIsDefaultView reports whether status is the Open tab's status
+// value — "" and "open" both count, matching web.go's TaskList, which
+// normalizes an empty query param to "open" before it ever reaches a
+// template (filters.templ's statusTabActive treats "" the same way, for the
+// same defensive reason: don't assume every caller already normalized it).
+//
+// Used by TaskListFragment's empty state (BD-8 残件2): Closed / Queue /
+// Parked are as-narrow-as-Open views by construction (each is its own
+// status predicate, not "Open with something extra filtered out"), so an
+// empty result on one of them means "this view currently has no matching
+// tasks" — a fact about the view, not about the whole task list. Before
+// this, taskFilterActive(f) alone decided the empty-state copy, and it does
+// not look at f.Status at all, so an empty Parked/Closed/Queue tab rendered
+// the same "No tasks yet / Create your first task to get started" copy as a
+// truly-empty install — misleading on all three tabs, not just Parked.
+func taskStatusIsDefaultView(status string) bool {
+	return status == "" || status == "open"
 }
 
 // TaskListFragment renders only the task list container (for HTMX partial responses).
@@ -96,6 +119,11 @@ templ TaskListFragment(items []components.TreeItem, filter orchestrator.TaskFilt
 					<div class="empty-state-title">No tasks match the current filters</div>
 					<p class="empty-state-hint">Try adjusting your search terms or filters.</p>
 					<a href="/" class="btn btn-secondary empty-state-cta">Clear filters</a>
+				</div>
+			} else if !taskStatusIsDefaultView(filter.Status) {
+				<div class="empty-state">
+					<div class="empty-state-title">Nothing in this view</div>
+					<p class="empty-state-hint">This tab has no matching tasks right now.</p>
 				</div>
 			} else {
 				<div class="empty-state">
@@ -249,7 +277,7 @@ templ TaskDetailSuggestionSection(suggestion orchestrator.Suggestion) {
 	if suggestion.Verb != "" {
 		<div class="detail-suggestion">
 			<div class="detail-suggestion-header">
-				<span class={ "badge", "badge-verb-" + suggestion.Verb }>{ suggestion.Verb }</span>
+				<span class={ "badge", components.VerbBadgeClass(suggestion.Verb) }>{ suggestion.Verb }</span>
 				if suggestion.Action != "" {
 					<span class="detail-suggestion-action">{ suggestion.Action }</span>
 				}

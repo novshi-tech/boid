@@ -204,6 +204,49 @@ func TestListTasks_Queue_ReturnsExactlyPreExecutionSet(t *testing.T) {
 	}
 }
 
+// TestListTasks_Parked_ReturnsOnlyParkedTasks is the store-side half of the
+// wiring-seams #28 pin (BD-8 post-merge review): the Parked tab (filters.templ,
+// web.go) sends `status=parked` as a bare string literal — store.go has no
+// dedicated "parked" branch, it falls through to the generic
+// `else if filter.Status != "" { ... t.status = ? }` case alongside every
+// other status value store.go doesn't special-case. Every other view already
+// has a store-level pin (TestListTasks_Queue_ReturnsExactlyPreExecutionSet /
+// TestListTasks_QueueNext_MembershipAndOrdering / TestListTasks_Triage_
+// ReturnsPreExecutionPlusWorking / TestListTasks_Closed_IncludesDropped
+// above) — parked did not, until now. Without this, a future dedicated
+// "parked" branch (or a typo in one) could silently narrow or widen the
+// result set: no 500, no panic, just a wrong list (決定9 の再発).
+func TestListTasks_Parked_ReturnsOnlyParkedTasks(t *testing.T) {
+	d := createTestProject(t)
+	statuses := []orchestrator.TaskStatus{
+		orchestrator.TaskStatusParked,
+		orchestrator.TaskStatusTriaged,
+		orchestrator.TaskStatusReady,
+		orchestrator.TaskStatusWorking,
+		orchestrator.TaskStatusDone,
+	}
+	ids := map[orchestrator.TaskStatus]string{}
+	for _, s := range statuses {
+		task := &orchestrator.Task{ProjectID: "proj-1", Title: "task-" + string(s), Behavior: "dev", Status: s}
+		if err := orchestrator.CreateTask(d.Conn, task); err != nil {
+			t.Fatalf("create %s: %v", s, err)
+		}
+		ids[s] = task.ID
+	}
+
+	got, err := orchestrator.ListTasks(d.Conn, orchestrator.TaskFilter{Status: "parked"})
+	if err != nil {
+		t.Fatalf("ListTasks: %v", err)
+	}
+	if len(got) != 1 || got[0].ID != ids[orchestrator.TaskStatusParked] {
+		gotIDs := make([]string, len(got))
+		for i, tk := range got {
+			gotIDs[i] = tk.ID + ":" + string(tk.Status)
+		}
+		t.Fatalf(`ListTasks(Status: "parked") = %v, want exactly [%s] (the parked task only)`, gotIDs, ids[orchestrator.TaskStatusParked])
+	}
+}
+
 // TestListTasks_Open_RescuesGreatGrandchildOfOpenAncestor pins down that the
 // open_descendants CTE rewrite (base case = children of a non-terminal
 // parent, not the non-terminal task itself — see the self-match fix above)

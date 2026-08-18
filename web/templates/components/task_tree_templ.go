@@ -54,6 +54,40 @@ func treeStatusClass(s string) string {
 	return "badge badge-" + s
 }
 
+// knownSuggestionVerbs is the single source of truth for suggestion.verb's
+// UI vocabulary (go/shape/manual/park/drop/wake — nose's own response
+// words, orchestrator.Suggestion's doc comment). Deliberately NOT
+// orchestrator.promotedAttrVocabulary: that guard exists so the daemon can
+// trust its own SQL predicates against attrs_set writes (see its doc
+// comment) — verb is neither a stored column nor a query target, and the
+// daemon does not interpret/judge suggestions at all (決定12). An unknown
+// verb is therefore a UI-only rendering concern, handled by VerbBadgeClass
+// below rather than by validating/rejecting the value anywhere upstream.
+var knownSuggestionVerbs = map[string]bool{
+	"go":     true,
+	"shape":  true,
+	"manual": true,
+	"park":   true,
+	"drop":   true,
+	"wake":   true,
+}
+
+// VerbBadgeClass maps a suggestion.verb to its badge CSS class (style.css).
+// Kept in exactly one place and called from both rendering sites — the
+// queue/Parked tab row (taskTreeRow below) and the task detail page's
+// suggestion section (web/templates/tasks.templ's
+// TaskDetailSuggestionSection) — so a future 7th verb, or a change to the
+// unknown-verb fallback, only needs updating here (BD-8 残件4). An unknown
+// verb still gets a class (badge-verb-unknown, style.css) rather than no
+// badge at all: the verb text itself always renders regardless (rule 5,
+// 隠さない) — only the color is what falls back to neutral gray.
+func VerbBadgeClass(verb string) string {
+	if !knownSuggestionVerbs[verb] {
+		return "badge-verb-unknown"
+	}
+	return "badge-verb-" + verb
+}
+
 // childrenPreviewLabel summarizes a queue row's children into a compact
 // "N specced, M open" string for the queue list — a preview of what
 // pressing Go actually dispatches (only specced children task-ify;
@@ -167,7 +201,7 @@ func taskTreeRow(item TreeItem) templ.Component {
 		var templ_7745c5c3_Var4 templ.SafeURL
 		templ_7745c5c3_Var4, templ_7745c5c3_Err = templ.JoinURLErrs(templ.SafeURL("/tasks/" + item.Task.ID))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/components/task_tree.templ`, Line: 157, Col: 48}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/components/task_tree.templ`, Line: 191, Col: 48}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var4))
 		if templ_7745c5c3_Err != nil {
@@ -193,7 +227,7 @@ func taskTreeRow(item TreeItem) templ.Component {
 		var templ_7745c5c3_Var6 string
 		templ_7745c5c3_Var6, templ_7745c5c3_Err = templ.JoinStringErrs(item.Task.ID)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/components/task_tree.templ`, Line: 159, Col: 29}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/components/task_tree.templ`, Line: 193, Col: 29}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var6))
 		if templ_7745c5c3_Err != nil {
@@ -206,7 +240,7 @@ func taskTreeRow(item TreeItem) templ.Component {
 		var templ_7745c5c3_Var7 string
 		templ_7745c5c3_Var7, templ_7745c5c3_Err = templ.JoinStringErrs(item.ParentID)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/components/task_tree.templ`, Line: 160, Col: 32}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/components/task_tree.templ`, Line: 194, Col: 32}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var7))
 		if templ_7745c5c3_Err != nil {
@@ -219,7 +253,7 @@ func taskTreeRow(item TreeItem) templ.Component {
 		var templ_7745c5c3_Var8 string
 		templ_7745c5c3_Var8, templ_7745c5c3_Err = templruntime.SanitizeStyleAttributeValues(fmt.Sprintf("--depth: %d", item.Depth))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/components/task_tree.templ`, Line: 162, Col: 48}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/components/task_tree.templ`, Line: 196, Col: 48}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var8))
 		if templ_7745c5c3_Err != nil {
@@ -237,7 +271,7 @@ func taskTreeRow(item TreeItem) templ.Component {
 			var templ_7745c5c3_Var9 string
 			templ_7745c5c3_Var9, templ_7745c5c3_Err = templ.JoinStringErrs(item.Task.ID)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/components/task_tree.templ`, Line: 168, Col: 31}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/components/task_tree.templ`, Line: 202, Col: 31}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var9))
 			if templ_7745c5c3_Err != nil {
@@ -267,7 +301,7 @@ func taskTreeRow(item TreeItem) templ.Component {
 		var templ_7745c5c3_Var10 string
 		templ_7745c5c3_Var10, templ_7745c5c3_Err = templ.JoinStringErrs(item.Task.Title)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/components/task_tree.templ`, Line: 177, Col: 54}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/components/task_tree.templ`, Line: 211, Col: 54}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var10))
 		if templ_7745c5c3_Err != nil {
@@ -280,7 +314,7 @@ func taskTreeRow(item TreeItem) templ.Component {
 		var templ_7745c5c3_Var11 string
 		templ_7745c5c3_Var11, templ_7745c5c3_Err = templ.JoinStringErrs(item.Task.Title)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/components/task_tree.templ`, Line: 177, Col: 74}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/components/task_tree.templ`, Line: 211, Col: 74}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var11))
 		if templ_7745c5c3_Err != nil {
@@ -298,7 +332,7 @@ func taskTreeRow(item TreeItem) templ.Component {
 			var templ_7745c5c3_Var12 string
 			templ_7745c5c3_Var12, templ_7745c5c3_Err = templ.JoinStringErrs(item.Summary)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/components/task_tree.templ`, Line: 179, Col: 48}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/components/task_tree.templ`, Line: 213, Col: 48}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var12))
 			if templ_7745c5c3_Err != nil {
@@ -317,7 +351,7 @@ func taskTreeRow(item TreeItem) templ.Component {
 			var templ_7745c5c3_Var13 string
 			templ_7745c5c3_Var13, templ_7745c5c3_Err = templ.JoinStringErrs(item.Suggestion.Reason)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/components/task_tree.templ`, Line: 182, Col: 58}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/components/task_tree.templ`, Line: 216, Col: 58}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var13))
 			if templ_7745c5c3_Err != nil {
@@ -357,7 +391,7 @@ func taskTreeRow(item TreeItem) templ.Component {
 		var templ_7745c5c3_Var16 string
 		templ_7745c5c3_Var16, templ_7745c5c3_Err = templ.JoinStringErrs(string(item.Task.Status))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/components/task_tree.templ`, Line: 185, Col: 88}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/components/task_tree.templ`, Line: 219, Col: 88}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var16))
 		if templ_7745c5c3_Err != nil {
@@ -393,7 +427,7 @@ func taskTreeRow(item TreeItem) templ.Component {
 			var templ_7745c5c3_Var19 string
 			templ_7745c5c3_Var19, templ_7745c5c3_Err = templ.JoinStringErrs(item.Urgency)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/components/task_tree.templ`, Line: 187, Col: 76}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/components/task_tree.templ`, Line: 221, Col: 76}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var19))
 			if templ_7745c5c3_Err != nil {
@@ -405,7 +439,7 @@ func taskTreeRow(item TreeItem) templ.Component {
 			}
 		}
 		if item.Suggestion.Verb != "" {
-			var templ_7745c5c3_Var20 = []any{"badge", "badge-verb-" + item.Suggestion.Verb}
+			var templ_7745c5c3_Var20 = []any{"badge", VerbBadgeClass(item.Suggestion.Verb)}
 			templ_7745c5c3_Err = templ.RenderCSSItems(ctx, templ_7745c5c3_Buffer, templ_7745c5c3_Var20...)
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
@@ -430,7 +464,7 @@ func taskTreeRow(item TreeItem) templ.Component {
 			var templ_7745c5c3_Var22 string
 			templ_7745c5c3_Var22, templ_7745c5c3_Err = templ.JoinStringErrs(item.Suggestion.Verb)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/components/task_tree.templ`, Line: 190, Col: 89}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/components/task_tree.templ`, Line: 224, Col: 89}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var22))
 			if templ_7745c5c3_Err != nil {
@@ -449,7 +483,7 @@ func taskTreeRow(item TreeItem) templ.Component {
 			var templ_7745c5c3_Var23 string
 			templ_7745c5c3_Var23, templ_7745c5c3_Err = templ.JoinStringErrs(label)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/components/task_tree.templ`, Line: 193, Col: 103}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/components/task_tree.templ`, Line: 227, Col: 103}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var23))
 			if templ_7745c5c3_Err != nil {
@@ -474,7 +508,7 @@ func taskTreeRow(item TreeItem) templ.Component {
 			var templ_7745c5c3_Var24 string
 			templ_7745c5c3_Var24, templ_7745c5c3_Err = templ.JoinStringErrs(item.ProjectLabel())
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/components/task_tree.templ`, Line: 199, Col: 57}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/components/task_tree.templ`, Line: 233, Col: 57}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var24))
 			if templ_7745c5c3_Err != nil {
@@ -493,7 +527,7 @@ func taskTreeRow(item TreeItem) templ.Component {
 			var templ_7745c5c3_Var25 string
 			templ_7745c5c3_Var25, templ_7745c5c3_Err = templ.JoinStringErrs(item.Task.Behavior)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/components/task_tree.templ`, Line: 202, Col: 57}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/components/task_tree.templ`, Line: 236, Col: 57}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var25))
 			if templ_7745c5c3_Err != nil {
