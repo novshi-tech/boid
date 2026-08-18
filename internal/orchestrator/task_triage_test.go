@@ -190,6 +190,49 @@ func TestListTaskTriageByTaskIDs_ChunksAcrossInClauseLimit(t *testing.T) {
 	}
 }
 
+// TestListTaskTriageByTaskIDs_OneRowScanErrorDoesNotSinkOthers is the Opus
+// review finding (2026-08-18): an earlier version of this function
+// returned early (discarding everything, including rows from earlier
+// chunks) the moment any single row failed to Scan. A malformed wake_at
+// value — written by something other than UpsertTaskTriage's own
+// nullableTime path, e.g. a manual `UPDATE` — is a real, if narrow, way for
+// exactly one row's Scan to fail independent of the query itself
+// succeeding. That must not cost every other row in the batch its
+// enrichment (決定9: a whole tab silently losing every suggestion/urgency
+// badge because of one bad row is the exact failure class this PR exists
+// to close).
+func TestListTaskTriageByTaskIDs_OneRowScanErrorDoesNotSinkOthers(t *testing.T) {
+	conn := newTestDB(t)
+	createTestTask(t, conn, "good1", orchestrator.TaskStatusTriaged)
+	createTestTask(t, conn, "bad", orchestrator.TaskStatusTriaged)
+	createTestTask(t, conn, "good2", orchestrator.TaskStatusTriaged)
+	for _, id := range []string{"good1", "bad", "good2"} {
+		if err := orchestrator.UpsertTaskTriage(conn, &orchestrator.TaskTriage{TaskID: id, Urgency: "now"}); err != nil {
+			t.Fatalf("upsert %s: %v", id, err)
+		}
+	}
+	// Bypass UpsertTaskTriage's nullableTime marshaling with a raw,
+	// non-parseable wake_at — this is what makes rows.Scan fail for this
+	// one row specifically, independent of the query itself.
+	if _, err := conn.Exec(`UPDATE task_triage SET wake_at = 'not-a-real-timestamp' WHERE task_id = 'bad'`); err != nil {
+		t.Fatalf("raw update to induce a malformed wake_at: %v", err)
+	}
+
+	got, err := orchestrator.ListTaskTriageByTaskIDs(conn, []string{"good1", "bad", "good2"})
+	if err == nil {
+		t.Error("expected a non-nil error surfaced from the malformed row's Scan failure")
+	}
+	if got["good1"] == nil || got["good1"].Urgency != "now" {
+		t.Errorf(`got["good1"] = %+v, want a populated row (must survive "bad"'s Scan failure)`, got["good1"])
+	}
+	if got["good2"] == nil || got["good2"].Urgency != "now" {
+		t.Errorf(`got["good2"] = %+v, want a populated row (must survive "bad"'s Scan failure)`, got["good2"])
+	}
+	if _, ok := got["bad"]; ok {
+		t.Error(`got["bad"] should be absent (its row failed to Scan), not a zero-value or partial entry`)
+	}
+}
+
 func TestTaskTriage_DeleteAndCascadeOnTaskDelete(t *testing.T) {
 	conn := newTestDB(t)
 	createTestTask(t, conn, "t1", orchestrator.TaskStatusTriaged)

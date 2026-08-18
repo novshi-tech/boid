@@ -218,12 +218,19 @@ func TestListTasks_Queue_ReturnsExactlyPreExecutionSet(t *testing.T) {
 // result set: no 500, no panic, just a wrong list (決定9 の再発).
 func TestListTasks_Parked_ReturnsOnlyParkedTasks(t *testing.T) {
 	d := createTestProject(t)
+	// Includes captured/dropped specifically (Opus review finding,
+	// 2026-08-18): a future dedicated "parked" branch written as a
+	// superset — e.g. copying queue's pre-execution set (captured/
+	// triaged/parked/ready) instead of an exact-status match — would pass
+	// this test undetected without them in the fixture.
 	statuses := []orchestrator.TaskStatus{
 		orchestrator.TaskStatusParked,
+		orchestrator.TaskStatusCaptured,
 		orchestrator.TaskStatusTriaged,
 		orchestrator.TaskStatusReady,
 		orchestrator.TaskStatusWorking,
 		orchestrator.TaskStatusDone,
+		orchestrator.TaskStatusDropped,
 	}
 	ids := map[orchestrator.TaskStatus]string{}
 	for _, s := range statuses {

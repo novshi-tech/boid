@@ -127,12 +127,35 @@ const taskTriageInClauseChunkSize = 500
 // contract callers already read off GetTaskTriage's sql.ErrNoRows today,
 // just expressed as map absence instead of a per-call error.
 //
-// Unlike a per-row loop, a single query error here fails the whole call —
-// batching removes the "one row's error, skip and continue" granularity a
-// loop has. See triageByTaskID's doc comment (internal/api/web.go) for why
-// that tradeoff is fine at the actual call site.
+// Best-effort across BOTH axes, same posture as the old per-task
+// GetTaskTriage loop it replaces (Opus review finding, 2026-08-18: an
+// earlier version of this function aborted the entire call — discarding
+// rows already scanned from prior chunks — on a single row's Scan error,
+// which is a real, if narrow, possibility independent of the chunk/query
+// succeeding: e.g. a wake_at value written by something other than
+// UpsertTaskTriage's own nullableTime path, in a format sql.NullTime can't
+// parse. That would have turned exactly one malformed row into "every card
+// on the Parked/Queue tab loses its badge" — the class of silent
+// whole-view failure 決定9 exists to prevent):
+//   - a single row's Scan error is skipped, not fatal — every other row in
+//     that chunk, and every other chunk, still gets processed
+//   - a whole chunk's Query failing (or a mid-stream rows.Err()) does not
+//     discard rows already gathered from earlier chunks; remaining chunks
+//     still run
+//
+// The first error encountered (if any) is still returned alongside
+// whatever partial map was gathered, so a caller that wants to log/surface
+// it can — but the map itself, not the error, is the thing to check for
+// "did I get anything useful" (see triageByTaskID's doc comment,
+// internal/api/web.go, for how the actual call site uses this).
 func ListTaskTriageByTaskIDs(dbtx db.DBTX, taskIDs []string) (map[string]*TaskTriage, error) {
 	out := map[string]*TaskTriage{}
+	var firstErr error
+	noteErr := func(err error) {
+		if firstErr == nil {
+			firstErr = err
+		}
+	}
 	for start := 0; start < len(taskIDs); start += taskTriageInClauseChunkSize {
 		end := start + taskTriageInClauseChunkSize
 		if end > len(taskIDs) {
@@ -145,13 +168,14 @@ func ListTaskTriageByTaskIDs(dbtx db.DBTX, taskIDs []string) (map[string]*TaskTr
 		for i, id := range chunk {
 			args[i] = id
 		}
-		if err := func() error {
+		func() {
 			rows, err := dbtx.Query(
 				`SELECT task_id, kind, urgency, wake_at, wake_task_id, detail FROM task_triage WHERE task_id IN (`+placeholders+`)`,
 				args...,
 			)
 			if err != nil {
-				return err
+				noteErr(fmt.Errorf("list task_triage by task_ids: query: %w", err))
+				return
 			}
 			defer rows.Close()
 			for rows.Next() {
@@ -159,7 +183,8 @@ func ListTaskTriageByTaskIDs(dbtx db.DBTX, taskIDs []string) (map[string]*TaskTr
 				var wakeAt sql.NullTime
 				var detail string
 				if err := rows.Scan(&tt.TaskID, &tt.Kind, &tt.Urgency, &wakeAt, &tt.WakeTaskID, &detail); err != nil {
-					return err
+					noteErr(fmt.Errorf("list task_triage by task_ids: scan: %w", err))
+					continue
 				}
 				if wakeAt.Valid {
 					t := wakeAt.Time
@@ -168,12 +193,12 @@ func ListTaskTriageByTaskIDs(dbtx db.DBTX, taskIDs []string) (map[string]*TaskTr
 				tt.Detail = json.RawMessage(detail)
 				out[tt.TaskID] = &tt
 			}
-			return rows.Err()
-		}(); err != nil {
-			return nil, fmt.Errorf("list task_triage by task_ids: %w", err)
-		}
+			if err := rows.Err(); err != nil {
+				noteErr(fmt.Errorf("list task_triage by task_ids: %w", err))
+			}
+		}()
 	}
-	return out, nil
+	return out, firstErr
 }
 
 // DeleteTaskTriage removes the sidecar row for taskID. Deleting the parent
@@ -300,10 +325,14 @@ type Suggestion struct {
 // this doc comment just flags that assumption as unverified against actual
 // writers, not as dead weight to remove.
 //
-// Confirmed against real data 2026-08-18 (`GET /api/triage?status=parked`,
-// 4 parked tasks, 3 with a suggestion): every suggestion was under
-// detail.attrs.suggestion; top-level was null on all 4. No writer places
-// suggestion at the top level today. Both paths are kept regardless — see
+// Spot-checked against real data 2026-08-18 (`GET /api/triage?status=parked`,
+// 4 parked tasks, 3 with a suggestion): consistent with the code-level fact
+// above — every suggestion was under detail.attrs.suggestion, top-level was
+// null on all 4. This is a one-time, small-N sample, not independent proof
+// that no writer ever places it at the top level (that's the attrs_set
+// argument above); treat it as "nothing observed to contradict the code-level
+// reasoning," not as a standing guarantee that would need re-verifying if
+// this comment is trusted later. Both paths are kept regardless — see
 // decodeSuggestion's doc comment for why an empty top-level object must not
 // win over a real one in attrs.
 //

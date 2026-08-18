@@ -1607,13 +1607,18 @@ the receiving end to grep for the status name against.
   (`internal/orchestrator/pre_execution_filter_store_test.go`) pins the store-side half: mixed
   statuses in, only the parked one out, via the literal `"parked"` exactly as the UI sends it.
   `TestParkedTab_StatusString_MatchesStorePredicateAndFiltersCorrectly`
-  (`web/templates/components/filters_test.go`) connects both real ends in one test: it renders the
-  actual `TaskFilters` template and extracts the literal the Parked tab button's `hx-vals` sends
-  (not a hand-typed copy), asserts that literal equals `string(orchestrator.TaskStatusParked)`,
-  then feeds that exact literal into a real `orchestrator.ListTasks` call against a real
-  (`:memory:`) DB and asserts it returns the parked task only. Both were verified by mutation
-  (temporarily breaking `store.go`'s generic-fallback branch and confirming both tests fail by
-  name) before being trusted as guards.
+  (`web/templates/components/filters_test.go`) connects `filters.templ`'s literal to End B in one
+  test: it renders the actual `TaskFilters` template and extracts the literal the Parked tab
+  button's `hx-vals` sends (not a hand-typed copy), asserts that literal equals
+  `string(orchestrator.TaskStatusParked)`, then feeds that exact literal into a real
+  `orchestrator.ListTasks` call against a real (`:memory:`) DB and asserts it returns the parked
+  task only. Both were verified by mutation (temporarily breaking `store.go`'s generic-fallback
+  branch and confirming both tests fail by name) before being trusted as guards. Note this does
+  NOT touch `web.go`'s separate `case filter.Status == "parked":` literal (End A's other half,
+  which picks `BuildTreeItemsWithSuggestions` — an orthogonal concern from which rows come back) —
+  that one is covered by the pre-existing `TestWebTaskList_ParkedStatus_RendersSuggestion`
+  (`internal/api/tree_test.go`), which drives an HTTP request through the real handler with a
+  `stubTriageStore` and checks the rendered suggestion badge.
 - **When you touch it**: adding a new status tab, or a dedicated branch in `store.go` for a status
   that currently falls through the generic fallback — check whether the tab's literal and the new
   branch's membership rule still agree, and add a store-side pin test for that status following

@@ -286,13 +286,19 @@ func taskFormAttachments(r *http.Request) []*multipart.FileHeader {
 // many cards were parked — exactly the shape that gets worse once BD-7's
 // ingest starts landing more of them.
 //
-// Posture change from the old loop: it skipped and continued past any
-// single task's own lookup error ("don't let one bad row sink the list," a
-// per-row property). A batched IN query has no per-row granularity to
-// preserve — a query-level error fails the whole call — but there is also
-// no longer a "this one row's fetch failed" case to tolerate in the first
-// place, since a missing sidecar row is unexceptional (simply absent from
-// the returned map) rather than an error.
+// Same per-row tolerance as the old loop, just moved into
+// ListTaskTriageByTaskIDs itself (Opus review finding, 2026-08-18: a
+// single-row Scan failure there is still a per-row error that must not
+// sink the rest of the batch — see that function's doc comment,
+// internal/orchestrator/task_triage.go). A non-nil err here means
+// something went wrong for at least one row/chunk; out may still be
+// partially or fully populated, and using it (rather than discarding to an
+// empty map) is what actually preserves "don't let one bad row sink the
+// list" at this call site — silently downgrading to zero enrichment on any
+// error would be the exact "見えていなければ存在しない" failure 決定9
+// exists to prevent, just moved from GetTaskTriage's call site to this
+// one. The error is logged (not swallowed) so an operator has something to
+// grep when a view's badges are missing without an obvious cause.
 func (h *WebHandler) triageByTaskID(tasks []*orchestrator.Task) map[string]*orchestrator.TaskTriage {
 	if h.TaskTriage == nil {
 		return map[string]*orchestrator.TaskTriage{}
@@ -303,6 +309,10 @@ func (h *WebHandler) triageByTaskID(tasks []*orchestrator.Task) map[string]*orch
 	}
 	out, err := h.TaskTriage.ListTaskTriageByTaskIDs(ids)
 	if err != nil {
+		slog.Warn("triageByTaskID: ListTaskTriageByTaskIDs returned a partial or empty result",
+			"error", err, "task_count", len(ids), "rows_returned", len(out))
+	}
+	if out == nil {
 		return map[string]*orchestrator.TaskTriage{}
 	}
 	return out

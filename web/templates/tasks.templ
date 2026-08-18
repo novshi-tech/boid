@@ -99,6 +99,18 @@ func taskFilterActive(f orchestrator.TaskFilter) bool {
 // not look at f.Status at all, so an empty Parked/Closed/Queue tab rendered
 // the same "No tasks yet / Create your first task to get started" copy as a
 // truly-empty install — misleading on all three tabs, not just Parked.
+//
+// Open keeps the "create your first task" invitation even when it's empty
+// for the same structural reason (a task-free workspace and "every task is
+// done/aborted, so Open predicate-wise has nothing to show" are
+// indistinguishable from Open's own predicate alone — Opus review finding,
+// 2026-08-18) — deliberately, as first-run onboarding copy: Open is the
+// landing view, so it is the one place "go create something" is always the
+// right next action regardless of why it's empty, unlike Closed/Queue/
+// Parked where a Create CTA would be actively misleading (creating a task
+// doesn't populate those views). TestTaskListFragment_EmptyOpenTab_
+// ShowsCreateFirstTaskCopy pins this as intentional, not merely
+// unaddressed.
 func taskStatusIsDefaultView(status string) bool {
 	return status == "" || status == "open"
 }

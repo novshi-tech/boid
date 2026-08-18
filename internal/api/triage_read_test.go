@@ -30,6 +30,16 @@ type stubTriageStore struct {
 	parkedFrom map[string]orchestrator.TaskStatus
 	getErr     error
 
+	// listErr, when non-nil, is returned by ListTaskTriageByTaskIDs
+	// alongside whatever partial `out` it can still build from rows — the
+	// same best-effort "a non-nil error means something went wrong, but
+	// out may still be partially or fully useful" contract the real
+	// orchestrator.ListTaskTriageByTaskIDs has (see its doc comment,
+	// internal/orchestrator/task_triage.go). Kept separate from getErr
+	// (which only affects GetTaskTriage) so a test can exercise the batch
+	// path's error handling without also breaking single-row lookups.
+	listErr error
+
 	// listTaskTriageByTaskIDsCalls counts ListTaskTriageByTaskIDs
 	// invocations — used by TestTriageByTaskID_BatchesIntoOneCall
 	// (web_test.go) to pin the N+1 fix (BD-8 残件1): triageByTaskID must
@@ -73,7 +83,7 @@ func (s *stubTriageStore) ListTaskTriageByTaskIDs(taskIDs []string) (map[string]
 			out[id] = tt
 		}
 	}
-	return out, nil
+	return out, s.listErr
 }
 
 func (s *stubTriageStore) DeleteTaskTriage(taskID string) error {
