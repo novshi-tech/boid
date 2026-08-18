@@ -140,6 +140,7 @@ workspace 側は「呼び直しの抑止」を履歴から判定している:
 | I-4 | 未着 identity のイベントは**インボックス**に積む。 自動で task 化しない | 起票に値するかは判断。 決定 14 の「判断は Web UI」に寄せる |
 | I-5 | **done では identity を握り続ける**。 `observed.source_closed` が true → false に戻ったら `reopen_triaged` | 同じソースが動いたら普通は reopen したい (nose)。 決定 15 (auto-done) の鏡像で、 読むキーも同じ 1 個だけなので新しい policy が要らない |
 | I-5b | I-5 の前提として、 **done の triage task にも観測 (`attrs_set`) が着地できるようにする** | 下記「I-5 は現行の action 語彙では成立しない」 |
+| I-5c | done の task に着地したイベントは、 reopen 条件を満たさなくても**必ず可視化する** | `source_closed` は canonical source (jira / bitbucket PR) からしか作れない (決定 16)。 slack / mail のみの task が done になった後の続報は、 identity を握っているので done task へ配送されるが reopen トリガが無く **黙って沈む**。 workspace 側の反転前は terminal 除外により新規 card として見えていた |
 | I-6 | **drop では identity を自動解放する** | drop は「この identity との関係を切る」判断そのもの。 握ったままだと、 捨てた件が動いても着地せず・ 自動 reopen の経路も無く (`machine.go:371` の `reopen_triaged` は done/aborted からのみ。 手動の `reopen` dropped→triaged は `machine.go:355` にあるが、 それは誤破棄からの回復経路であって観測に反応するものではない)・ 同じキーで新規起票もできない、 という静かに詰む形になる |
 | I-7 | 却下を **action** として記録する (`suggestion_answered` 相当、 non-transitioning / `Manual: true`)。 payload は `{answer, verb, basis}`、 副作用として `detail.attrs.suggestion` を落とす | 却下は attrs の更新ではなく出来事。 下記の穴を塞ぐ |
 | I-8 | サンドボックスから actions を読む口 (`action_list` 相当の `BoidOp`) を足す | judge ゲートと却下履歴の判定材料を daemon の履歴で賄うため |
@@ -184,6 +185,12 @@ done は握り続ける (I-5)、 drop は解放する (I-6) という **binding 
 identity モデルでは「1 identity は 1 principal」が明示された不変条件になり、 2 枚目が
 同じ identity を link しようとしたら **silent newest-wins ではなく拒否**になる。
 
+ただし引用元が例に挙げている **epic の子 card 群**は、 バグではなく正当な運用である
+(workspace 側は `related_jira_issues` を「無くても害はない助言キー」と定義し、 複数 card の
+重複参照を前提にしている)。 一律拒否にすると newest-wins が first-wins に変わるだけで
+epic ケースの改善にはならない。 **排他的な帰属 (identity) と非排他の言及 (reference) は
+性質が違う** — 昇格させてよいかは未確定。
+
 ## I-7 の動機: 今すでに開いている穴
 
 khi の `fold_claims()` は「同じ根拠で却下済みの提案は出し直さない (`basis` が変わるまで)」を
@@ -218,9 +225,25 @@ I-7 で `suggestion` が 2 個目になる。
 | B-1 | identity 索引テーブル + 解決 + link / unlink op。 **`tasks.ref` 列と `idx_tasks_ref_parent_project` の去就を同時に決める** (下記) | 新規。 migration 1 本 + store + `BoidOp` |
 | B-2 | 未着イベントのインボックス (project スコープ) と、 そこからの起票 / 破棄 | 新規。 Web UI を含む |
 | B-3 | `action_list` 相当の `BoidOp` (workspace スコープ) | 小。 `ListActionsByTask` は既にある (呼び出し `internal/api/task_service.go:413`、 実装 `internal/orchestrator/store.go:431`) |
-| B-4 | `suggestion_answered` action (I-7) と、 Web UI の却下からの発行 | 小〜中 |
+| B-4 | `suggestion_answered` action (I-7) と、 Web UI の却下からの発行。 **併せて `suggestion_reviewed` 相当 (見たが変えなかった) も足す** (下記) | 小〜中 |
 | B-5 | judge 述語 + sweep | 中。 B-3 の後。 下記 |
 | B-6 | `source_closed` 反転による auto-reopen (I-5) | 小。 `reopen` → `reopen_triaged` のルーティングは実装済み (`internal/api/triage_done.go:299`) |
+
+### B-2: インボックスは決定 3 と衝突する
+
+workspace 側は原文を daemon へ渡さない設計になっている (決定 3: 境界を越えるのは card
+粒度、 本文は現地)。 khi の `daemon_sync.desired_description()` はこう明言している:
+
+> note 本文そのものは載せない。 原文は workspace 側に留める設計 (決定 3) で、 ここに
+> 貼ると顧客の生データが daemon 側へ流れ出す。 載せるのは既に開示ポリシーを通った
+> summary と、 導出フィールドだけ。
+
+ところが I-4 + B-2 は **daemon 側のインボックス**に未着イベントを積み、 そこで人が起票
+判断をする。 判断には内容が要る → 生イベント本文が daemon に渡る、 という衝突になる。
+
+素案は **インボックスに置くのはキーと最小メタデータだけにし、 本文は起票後に workspace
+側で取り直す**形だが、 それだと起票判断の材料が薄い。 B-2 の設計を左右するので未確定。
+非目的にも「daemon が原文を保持することを目的としない」を追記した。
 
 ### B-1: `tasks.ref` の去就は I-6 の前提
 
@@ -254,10 +277,20 @@ daemon には既に同じ形のものが並んでいる:
 
 B-3 で actions が読めるようになるなら、 judge の判定材料は全部 daemon の中にある。
 
-**`Action.Actor` は識別に使えない**ことに注意 — workspace の押し込みは観測も提案も同じ
-ingestion task から出るので `Actor` は全部 `task:<id>` に潰れる。 代わりに **payload で
+**`Action.Actor` は識別に使えない**ことに注意 — 粒度が human / daemon / `task:<id>` で
+「どの実行単位か」しか表さず、 観測と提案が同じ実行単位から出れば区別できない
+(現行 khi は観測を `boid exec` の preflight から押しており、 そこでの Actor が何になるかも
+未確認)。 代わりに **payload で
 識別する**: `suggestion` キーを含む `attrs_set` が「エージェントが喋った」、 それ以外の
 `attrs_set` が「事実が来た」。 daemon は依然として値を解釈しない (キーの有無だけ見る)。
+
+**穴: 「読んだが変えなかった」が表現できない。** workspace 側の `SPOKEN` は
+`suggestion_made` と `suggestion_reviewed` の 2 つで、 後者は agent が読んだが変える必要が
+無かった場合を記録している。 payload 識別に寄せると、 変えなかった場合は attrs 差分が
+ゼロなので **`attrs_set` がそもそも飛ばない** → daemon から見て「新しい事実の後に一度も
+喋っていない」が永続 true になり、 同じ task で毎サイクル agent が呼び直される。
+「入力が変わっていないなら、 もう一度喋らせない」という規則がまさに防いでいる現象への
+退行なので、 **B-4 で `suggestion_reviewed` 相当を対にして足す** (Fable レビュー指摘)。
 
 **却下履歴の判定は daemon に置かない。** `rejection_index` は `(verb, basis)` の突合、
 つまり suggestion の**中身**を読む必要があり、 daemon に置くと解釈するキーが
@@ -297,6 +330,8 @@ daemon 側へ行き、 **残りに gate ロジックが 1 つも無くなる**�
 - **identity のチャネル知識を daemon に持たせない**。 名前空間の意味・ 正規化・ 妥当性検査は
   すべて workspace 側 (I-2)
 - **未着インボックスからの自動起票**。 起票は判断であり、 決定 14 の線を越える (I-4)
+- **daemon が原文を保持すること**。 決定 3 (境界を越えるのは card 粒度、 本文は現地) は
+  維持する。 インボックスに何を置くかはその制約の下で決める (上記 B-2)
 
 ## 未確定
 
@@ -312,6 +347,21 @@ daemon 側へ行き、 **残りに gate ロジックが 1 つも無くなる**�
 - **I-5b の置き場所**。 done の triage task に観測を着地させる経路を、 machine の rule に
   done を足す形にするか、 `task_triage` 行の有無を見られる service 層のガードにするか。
   論点 6-3 (通常 task の done に発火させない) を壊さないことが条件
+- **イベント配送 op の payload 契約**。 pump が押す「イベント」とは何か — action 型、
+  payload の形、 task 上で何に畳まれるか。 今 daemon に届いているのは workspace 側で
+  fold + reconcile 済みの attrs 差分であって生イベントではない。 ここが決まらないと
+  judge 述語の `inputs` 側も B-1 の規模見立ても揺れる
+- **インボックスに何を置くか**。 決定 3 と起票判断の材料の両立 (上記 B-2)
+- **イベント push の冪等性**。 現行の冪等性は workspace 側の reconcile (差分 push、
+  self-healing) が担保している。 per-event push にすると actions は append-only なので
+  pump のクラッシュ・ 再送で同じイベントが二重に積まれる。 イベント単位の冪等キーが要る
+- **`description` の組み立ての引き取り手**。 workspace 側の `desired_description()` は
+  summary / canonical URL / suggestion / 子一覧を平文に畳んで task の `description` に
+  書いている (「summary が attrs の中にしか無いと card を開いても何の件か分からず Go の
+  判断ができない」— 2026-08-14 の実害)。 Web UI が `detail.attrs` から直接描画するか、
+  pump が押し続けるかを決める
+- **identity と reference の分離**。 epic の子 card 群のような正当な重複参照を、
+  排他的な identity で表現するか別概念にするか
 - **bind 時の drain 意味論**。 未着イベントが溜まった identity に後から binding ができた
   とき (インボックスからの起票 / `task create --ref` / 既存 task への link の 3 経路)、
   滞留イベントを新 task へ replay して畳むのか捨てるのか。 replay するなら順序と、
