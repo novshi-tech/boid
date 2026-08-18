@@ -845,3 +845,56 @@ func TestDefaultMachine_AvailableActions_Working_HasThreeExits(t *testing.T) {
 		}
 	}
 }
+
+// TestDefaultMachine_ParkOrigins_AllHaveWakeRule is the BD-9 recurrence
+// guard: the bug's actual mechanism was that PR-4 added a third "park: X →
+// parked" rule (working) without PR-3's Wake vocabulary growing a matching
+// "wake_X: parked → X" rule to resolve it, so a working-origin park 500'd
+// (TestDefaultMachine_WakeWorking / TestTaskWorkflowService_Wake_
+// FromWorking_ReturnsToWorking_NoDispatch in internal/api pin that specific
+// case by name, but a name-pinned test does not stop a FOURTH park origin
+// from reproducing the same class of bug later).
+//
+// This test derives the set of park origins directly from
+// DefaultMachine().Rules — deliberately NOT a hardcoded
+// []string{"triaged","ready","working"} literal, since a hardcoded list
+// would silently stop covering a newly-added origin instead of catching it.
+// For every "park" rule's FromStatus, it asserts a "parked → FromStatus"
+// rule (i.e. the corresponding wake_* rule) exists somewhere in the same
+// rule table. If a future PR adds a fourth park origin without adding its
+// wake counterpart, this fails by name instead of waiting for a 500 in
+// production the way BD-9 did.
+func TestDefaultMachine_ParkOrigins_AllHaveWakeRule(t *testing.T) {
+	sm := orchestrator.DefaultMachine()
+
+	var parkOrigins []string
+	for _, r := range sm.Rules {
+		if r.Action == "park" && r.ToStatus == string(orchestrator.TaskStatusParked) {
+			parkOrigins = append(parkOrigins, r.FromStatus)
+		}
+	}
+	if len(parkOrigins) == 0 {
+		t.Fatal("no park rules found in DefaultMachine().Rules — did the rule table's shape change?")
+	}
+
+	for _, origin := range parkOrigins {
+		found := false
+		for _, r := range sm.Rules {
+			// Require an actual wake_* action rule, not merely any
+			// parked→origin transition (e.g. "drop" also starts from parked
+			// but to "dropped", not to a park origin, so it wouldn't match
+			// here anyway — this guards against a hypothetical future
+			// non-wake_* rule that happens to land on the same ToStatus,
+			// which would satisfy "a transition exists" without actually
+			// being what TaskWorkflowService.Wake's ParkedFrom switch
+			// dispatches to).
+			if r.FromStatus == string(orchestrator.TaskStatusParked) && r.ToStatus == origin && strings.HasPrefix(r.Action, "wake_") {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("park origin %q has no matching wake rule (parked → %s) in DefaultMachine().Rules — TaskWorkflowService.Wake's ParkedFrom switch cannot resolve this origin without one (BD-9 recurrence)", origin, origin)
+		}
+	}
+}

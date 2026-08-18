@@ -562,6 +562,64 @@ func TestTaskWorkflowService_Wake_FromWorking_ReturnsToWorking_NoDispatch(t *tes
 	}
 }
 
+// TestTaskWorkflowService_Wake_ResolvesAllParkOrigins is the api-side half of
+// the BD-9 recurrence guard (internal/orchestrator's
+// TestDefaultMachine_ParkOrigins_AllHaveWakeRule pins the machine-rule half).
+// The named tests above (TriagedThenReady / FromWorking_ReturnsToWorking)
+// pin today's three origins by name; this one instead derives the origin set
+// from DefaultMachine().Rules — deliberately not a hardcoded
+// []orchestrator.TaskStatus{"triaged","ready","working"} literal — and
+// end-to-end pins that Wake resolves ALL of them without error. A fourth
+// park origin added without a matching case in Wake's ParkedFrom switch
+// falls into that switch's `default:` branch and surfaces here as a
+// StatusError, by name, instead of only surfacing as a 500 in production the
+// way BD-9 did.
+//
+// It reuses newTriageWorkflowService (Coordinator intentionally nil), the
+// same harness TestTaskWorkflowService_Wake_RoundTrip_TriagedThenReady uses.
+// Under this harness, Wake's ready→working Dispatch chain always fails
+// (logged, not surfaced — see Wake's doc comment): sm.Apply operates on a
+// COPY of the task (machine.go's Apply: `newTask := *task`), so the
+// underlying stubTaskStore still holds the pre-wake "parked" task when
+// Dispatch's own ready-only precondition guard reads it back
+// (workflow_triage.go's Dispatch: `if task.Status != TaskStatusReady`) and
+// rejects with a 409 the caller never sees. That leaves status at "ready",
+// so under this harness every origin's resulting status equals the origin
+// itself regardless of whether that origin also triggers the Dispatch
+// chain — which is what lets one assertion shape cover every origin
+// generically instead of needing a per-origin special case.
+func TestTaskWorkflowService_Wake_ResolvesAllParkOrigins(t *testing.T) {
+	sm := orchestrator.DefaultMachine()
+	var origins []orchestrator.TaskStatus
+	for _, r := range sm.Rules {
+		if r.Action == "park" && r.ToStatus == string(orchestrator.TaskStatusParked) {
+			origins = append(origins, orchestrator.TaskStatus(r.FromStatus))
+		}
+	}
+	if len(origins) == 0 {
+		t.Fatal("no park rules found in DefaultMachine().Rules — did the rule table's shape change?")
+	}
+
+	for _, origin := range origins {
+		t.Run(string(origin), func(t *testing.T) {
+			task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusParked, Behavior: "dev", Payload: []byte(`{}`)}
+			txStore := &recordingTxStore{
+				task:         task,
+				parkedFromFn: func(taskID string) (orchestrator.TaskStatus, error) { return origin, nil },
+			}
+			svc := newTriageWorkflowService(task, txStore)
+
+			result, err := svc.Wake(context.Background(), task.ID)
+			if err != nil {
+				t.Fatalf("Wake from park origin %q: %v (Wake's ParkedFrom switch is likely missing a case for this origin — BD-9 recurrence)", origin, err)
+			}
+			if result.Task.Status != origin {
+				t.Fatalf("Wake from park origin %q: status = %q, want %q", origin, result.Task.Status, origin)
+			}
+		})
+	}
+}
+
 type fixedDispatchResult struct {
 	result *orchestrator.DispatchResult
 }

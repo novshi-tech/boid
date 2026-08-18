@@ -41,6 +41,7 @@ has the same shape:
 24. [OAuthLoginHandler ↔ apiGatewayLoginAdapter ↔ apigateway.LoginManager](#24-oauthloginhandler--apigatewayloginadapter--apigatewayloginmanager)
 25. [orchestrator.Action.Actor ctx propagation](#25-orchestratoractionactor-ctx-propagation)
 26. [brokered op scoping layer (broker request-shaping ↔ executor re-check)](#26-brokered-op-scoping-layer-broker-request-shaping--executor-re-check)
+27. [park rule set ↔ Wake origin resolution](#27-park-rule-set--wake-origin-resolution)
 
 ---
 
@@ -1514,3 +1515,50 @@ cross-workspace read.
   filter — **read the op you are mirroring and find where its checks physically are** before
   writing "scoped like X". Then write the denial test at that layer: a test that only proves
   the allowed case passes proves nothing about the seam.
+
+## 27. park rule set ↔ Wake origin resolution
+
+Which task statuses can be "parked" is declared entirely on one side of the codebase; which
+parked-origins can be "woken" is resolved entirely on the other. Nothing at the type level
+forces them to stay the same set.
+
+- **End A (`internal/orchestrator/machine.go`'s `NewMachine`)**: the set of
+  `{Action: "park", FromStatus: X, ToStatus: "parked", Manual: true}` rules. Each one declares a
+  status a task can be parked FROM. A matching `{Action: "wake_X", FromStatus: "parked",
+  ToStatus: X}` rule (Manual:false — see the doc comment above `NewMachine`) is what makes that
+  origin recoverable.
+- **End B (`internal/api/workflow_triage.go`'s `TaskWorkflowService.Wake`)**: reads
+  `TaskTriage.ParkedFrom` (derived from the actions log, not a stored column) and `switch`es on
+  it to pick which `wake_X` action to apply. This switch is a **hand-maintained mirror** of End
+  A's origin set — it has no way to discover new origins from the rule table itself, since
+  `Wake` calls `sm.Apply` with a resolved action name it already decided on, not a generic
+  "wake this origin" lookup.
+- **Invariant**: the set of `FromStatus` values across all `park` rules in `NewMachine` must
+  equal the set of `case` values (mapped through their `wake_X` counterpart) in `Wake`'s
+  `ParkedFrom` switch. A park origin with no matching `wake_X` rule AND switch case can be
+  parked but never woken.
+- **Past break (BD-9)**: Phase 1 PR-4 (論点8) added a third park rule, `park: working →
+  parked`, to let a dispatched task be parked mid-flight and re-surface later via
+  `wake_task_id` + `SweepWake` (the "sequential PR consumption" pattern). PR-3's `Wake`,
+  written before that rule existed, only had `case triaged` / `case ready` — no state-machine
+  rule named `wake_working` existed either. A working-origin park's `Wake` call fell into the
+  `default:` branch and 500'd (`wake: unexpected park origin "working"`). Worse, the periodic
+  `SweepWake` (`internal/api/queue_sweep.go`) that drives the `wake_task_id` re-surface path
+  swallows `Wake`'s error into a `slog.Warn`, so the failure never surfaced anywhere a human
+  would see it — a real khi workspace card (`633c4bd9-1e6e-476b-9559-052e32882945`) sat
+  permanently un-wakeable, invisible in every Web UI tab, until traced from raw API state.
+- **Guard**: `TestDefaultMachine_ParkOrigins_AllHaveWakeRule` (`internal/orchestrator/
+  machine_test.go`) derives the park-origin set from `DefaultMachine().Rules` itself (never a
+  hardcoded literal) and asserts a matching `parked → origin` rule exists for each one.
+  `TestTaskWorkflowService_Wake_ResolvesAllParkOrigins` (`internal/api/
+  apply_action_phase1_test.go`) does the same derivation and end-to-end pins that `Wake`
+  resolves every derived origin without error. Together these fail by name the next time a park
+  rule is added without a matching wake rule/case, instead of waiting for a production 500.
+  (Named single-origin pins — `TestDefaultMachine_WakeWorking`,
+  `TestTaskWorkflowService_Wake_FromWorking_ReturnsToWorking_NoDispatch`, etc. — still exist
+  alongside these and remain useful for origin-specific behavior like the Dispatch-chain
+  skip, but do not by themselves catch a *new*, as-yet-unnamed origin.)
+- **When you touch it**: adding or removing a `park: X → parked` rule in `machine.go` — add (or
+  remove) the matching `wake_X: parked → X` rule in the same commit, add the matching `case` in
+  `Wake`'s `ParkedFrom` switch, and confirm the two derived guard tests above still pass (they
+  will fail by name if you forget either half).
