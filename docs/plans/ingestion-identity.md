@@ -57,19 +57,21 @@ workspace が自前の畳んだ状態を持たざるを得ない理由は 2 つ�
 索引キーは `source.issue_key` / `source.thread_ts` / `related_jira_issues[]` の 3 つで、
 **そのキーは既に daemon の中にある** (khi が `attrs_set` の opaque key として
 `source` / `related_jira_issues` / `canonical_ref` を毎サイクル押している)。 加えて
-`ref` 列は最初からこの用途で作られている (`internal/api/task_create.go:251` の
-「jira issue_key / slack thread_ts / mail message-id」)。
+`ref` 列は決定 16 以降この用途になっている (`internal/api/task_create.go:251` の
+「jira issue_key / slack thread_ts / mail message-id」)。 元は per-child dedup 用で
+(migration 0010、 PR-2 の `Ref: children[i].ID`)、 root task へ開いたのは Phase 1 PR-4
+(論点 7)。
 
 決定 16 は既に **`ref` は canonical source のキーにする**と決めている。 足りないのは
 **1 task が複数キーを持てないこと**と、 **キーから task を引く口が無いこと**だけ。
 
 ### 理由 2: actions の履歴を読む口が無い
 
-workspace 側の `evaluate.py` は「呼び直しの抑止」を履歴から判定している:
+workspace 側は「呼び直しの抑止」を履歴から判定している:
 
-- `speech_index()`: 「LLM が最後に喋った時刻」と「最後に事実が来た時刻」を分け、
+- `speech_index()` (`evaluate.py`): 「LLM が最後に喋った時刻」と「最後に事実が来た時刻」を分け、
   後者が新しいときだけ LLM を起こす (LLM の発言が自分自身の再トリガーにならない)
-- `rejection_index()`: 却下された提案を `(slug, verb, basis)` で覚え、 同じ根拠の
+- `rejection_index()` (`card_state.py`): 却下された提案を `(slug, verb, basis)` で覚え、 同じ根拠の
   再提案を捨てる
 
 どちらも actions ログがあれば daemon 側で計算できる。 が、 `internal/sandbox/protocol.go`
@@ -137,9 +139,30 @@ workspace 側の `evaluate.py` は「呼び直しの抑止」を履歴から判�
 | I-3 | identity のスコープは **project** | 取り込まれるメタタスクはメタプロジェクトにしか紐づかない。 他プロジェクトへの展開は子 task (`spec.project`) が担い、 子は identity を持たない。 `(ref, parent_id, project_id)` unique (migration 0037) がそのまま使える |
 | I-4 | 未着 identity のイベントは**インボックス**に積む。 自動で task 化しない | 起票に値するかは判断。 決定 14 の「判断は Web UI」に寄せる |
 | I-5 | **done では identity を握り続ける**。 `observed.source_closed` が true → false に戻ったら `reopen_triaged` | 同じソースが動いたら普通は reopen したい (nose)。 決定 15 (auto-done) の鏡像で、 読むキーも同じ 1 個だけなので新しい policy が要らない |
-| I-6 | **drop では identity を自動解放する** | drop は「この identity との関係を切る」判断そのもの。 握ったままだと、 捨てた件が動いても着地せず・ reopen もできず (`machine.go:371` の `reopen_triaged` は done/aborted からのみ)・ 同じキーで新規起票もできない、 という静かに詰む形になる |
+| I-5b | I-5 の前提として、 **done の triage task にも観測 (`attrs_set`) が着地できるようにする** | 下記「I-5 は現行の action 語彙では成立しない」 |
+| I-6 | **drop では identity を自動解放する** | drop は「この identity との関係を切る」判断そのもの。 握ったままだと、 捨てた件が動いても着地せず・ 自動 reopen の経路も無く (`machine.go:371` の `reopen_triaged` は done/aborted からのみ。 手動の `reopen` dropped→triaged は `machine.go:355` にあるが、 それは誤破棄からの回復経路であって観測に反応するものではない)・ 同じキーで新規起票もできない、 という静かに詰む形になる |
 | I-7 | 却下を **action** として記録する (`suggestion_answered` 相当、 non-transitioning / `Manual: true`)。 payload は `{answer, verb, basis}`、 副作用として `detail.attrs.suggestion` を落とす | 却下は attrs の更新ではなく出来事。 下記の穴を塞ぐ |
 | I-8 | サンドボックスから actions を読む口 (`action_list` 相当の `BoidOp`) を足す | judge ゲートと却下履歴の判定材料を daemon の履歴で賄うため |
+
+### I-5 は現行の action 語彙では成立しない (I-5b の動機)
+
+`attrs_set` / `child_added` / `child_specced` の `FromStatus` は `preExecutionStatuses`
+= captured / triaged / parked / ready / working の**明示列挙**である
+(`machine.go:441`。 論点 6-3 が「never `*`」と決めた — `*` にすると通常の非 triage task の
+executing / done に対しても発火してしまうため)。 **done は含まれていない。**
+
+つまり `observed.source_closed` が true → false に戻ったという観測を、 done の task の
+detail に畳む合法経路が現状は存在しない。 I-5 / B-6 の判定材料そのものが更新されない
+ので、 **ルーティング (`reopen` → `reopen_triaged`) が実装済みでも引き金が引けない**。
+本編第 12 版の「done を探す経路は成立している、 足りないのは押せる action だけ」という
+実測は、 探す側と押す側の話であって、 **観測を着地させる側は塞がったまま**だった。
+
+I-6 の根拠として「dropped だと着地しない」を挙げておきながら、 done でも同じことが
+起きる点を見落としていた (Fable レビュー指摘)。
+
+論点 6-3 のガード (通常 task の done に発火させない) と両立させる必要があるため、
+machine の rule に done を足すのではなく、 **`task_triage` 行の有無を見られる service 層で
+判定する**のが素直だと考えるが、 置き場所は未確定 (下記)。
 
 ### I-5 は workspace 側の現行ルールの意図的な反転
 
@@ -192,12 +215,32 @@ I-7 で `suggestion` が 2 個目になる。
 
 | # | もの | 見立て |
 |---|---|---|
-| B-1 | identity 索引テーブル + 解決 + link / unlink op。 `ref` はその特例として吸収 | 新規。 migration 1 本 + store + `BoidOp` |
+| B-1 | identity 索引テーブル + 解決 + link / unlink op。 **`tasks.ref` 列と `idx_tasks_ref_parent_project` の去就を同時に決める** (下記) | 新規。 migration 1 本 + store + `BoidOp` |
 | B-2 | 未着イベントのインボックス (project スコープ) と、 そこからの起票 / 破棄 | 新規。 Web UI を含む |
-| B-3 | `action_list` 相当の `BoidOp` (workspace スコープ) | 小。 `ListActionsByTask` は既にある (`internal/api/task_service.go:413`) |
+| B-3 | `action_list` 相当の `BoidOp` (workspace スコープ) | 小。 `ListActionsByTask` は既にある (呼び出し `internal/api/task_service.go:413`、 実装 `internal/orchestrator/store.go:431`) |
 | B-4 | `suggestion_answered` action (I-7) と、 Web UI の却下からの発行 | 小〜中 |
 | B-5 | judge 述語 + sweep | 中。 B-3 の後。 下記 |
 | B-6 | `source_closed` 反転による auto-reopen (I-5) | 小。 `reopen` → `reopen_triaged` のルーティングは実装済み (`internal/api/triage_done.go:299`) |
+
+### B-1: `tasks.ref` の去就は I-6 の前提
+
+I-6 (drop で identity を解放 → 同じキーで新規起票できる) は、 現行の `ref` の扱いと
+正面衝突する:
+
+- dropped の task も `tasks.ref` を保持したままである
+- `idx_tasks_ref_parent_project` (migration 0037) の unique 制約が生きている
+- `FindTaskByRef` の SQL に **status 絞りが無い** (`store.go` の
+  `WHERE t.ref = ? AND t.parent_id = ? AND t.project_id = ?`)
+
+したがって同じ ref で `task create` を打つと get-or-create が **dropped の既存 task を
+返し**、 新規起票にならない。 I-6 を成立させるには少なくとも次のどちらかが要る:
+
+- (a) uniqueness を identity テーブルへ完全移譲し、 `tasks.ref` 列を退役させる
+- (b) drop 時に `tasks.ref` を空にする — ただしこれは決定 16 の「`ref` は dedup キーで
+  後から変えられない」と矛盾するので、 決定 16 側の再定義が要る
+
+「`ref` は特例として吸収」の一言で済ませていた箇所であり (Fable レビュー指摘)、
+**二重表現のドリフト**をどう防ぐかを含めて B-1 の migration 設計で最初に決める。
 
 ### B-5: judge ゲートは既存の述語群と同じ形
 
@@ -215,6 +258,18 @@ B-3 で actions が読めるようになるなら、 judge の判定材料は全
 ingestion task から出るので `Actor` は全部 `task:<id>` に潰れる。 代わりに **payload で
 識別する**: `suggestion` キーを含む `attrs_set` が「エージェントが喋った」、 それ以外の
 `attrs_set` が「事実が来た」。 daemon は依然として値を解釈しない (キーの有無だけ見る)。
+
+**却下履歴の判定は daemon に置かない。** `rejection_index` は `(verb, basis)` の突合、
+つまり suggestion の**中身**を読む必要があり、 daemon に置くと解釈するキーが
+`suggestion` の内部構造まで広がって逆輸入 3 の境界を実質的に越える。 責務はこう分ける:
+
+| 判定 | どこ |
+|---|---|
+| 「LLM に用があるか」(`spoken` < `inputs`) | daemon の述語 + sweep。 キーの有無だけで足りる |
+| 「この提案は却下済みか」(`verb` / `basis` の突合) | 起こされた task 側が B-3 の `action_list` で自分の履歴を読んで自己抑制する |
+
+daemon が読むキーの closed set は `observed.source_closed` と `suggestion` の**有無**まで
+に留める。
 
 ### workspace 側の cadence は自動で縮む
 
@@ -254,7 +309,21 @@ daemon 側へ行き、 **残りに gate ロジックが 1 つも無くなる**�
   来たときの応答 (拒否して人に見せる、 が素案) を決める必要がある
 - **未着イベントの保持期間と GC**。 インボックスは新しい永続データであり、 既存の GC
   (30 日ルール) に載せるかを決める
+- **I-5b の置き場所**。 done の triage task に観測を着地させる経路を、 machine の rule に
+  done を足す形にするか、 `task_triage` 行の有無を見られる service 層のガードにするか。
+  論点 6-3 (通常 task の done に発火させない) を壊さないことが条件
+- **bind 時の drain 意味論**。 未着イベントが溜まった identity に後から binding ができた
+  とき (インボックスからの起票 / `task create --ref` / 既存 task への link の 3 経路)、
+  滞留イベントを新 task へ replay して畳むのか捨てるのか。 replay するなら順序と、
+  **イベント自体の dedup キー** (再送で二重に積まれないこと) が要る。 「イベント到着と
+  起票が同時」の race はここに集約される
+- **terminal task GC と identity binding の寿命**。 done / dropped の task は 30 日で
+  DB レコードごと GC される。 I-5 の「done では握り続ける」は実質 30 日の期限付きであり、
+  GC 後は同じキーのイベントがインボックス行き (= 事実上の解放) になる。 それでよいのか、
+  identity テーブルを cascade させるのかを決める
 - **移行手順**。 既存 triage task の `source` / `related_jira_issues` / `ref` からの
   identity 一括投入と、 workspace 側 claims の退役順序
 - **本編への取り込み方**。 本 doc を独立 subsystem のまま進めるか、 Phase 2 の項目として
-  本編に畳むか
+  本編に畳むか。 I-5 / I-6 / I-7 は事実上 決定 16 / 17 / 論点 g を書き換える内容なので、
+  畳む時点で**決定番号を振り直さないと**「決定は本編・ 詳細は別 doc」の構造が崩れる
+  (Fable レビュー指摘)。 早めに決着させる
