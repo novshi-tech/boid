@@ -1,100 +1,293 @@
-# 取り込み identity と未着インボックス (設計メモ)
+# 判断スケジューラと取り込み identity (設計メモ)
 
-2026-08-18。 **まだ実装しない。** `cross-project-issue-triage.md` (以下「本編」) の
-Phase 1 完了後に見つかった構造的な積み残しを、 独立した subsystem として切り出した検討。
+2026-08-18。 **まだ実装しない。** `cross-project-issue-triage.md` (以下「本編」) の Phase 1
+完了後に見つかった構造的な積み残しを、 独立した subsystem として切り出した検討。
 
 workspace 側の対になる memo は khi-task-collector リポジトリの
-`docs/plans/ingestion-identity.md`。 そちらは「khi の何が消えるか」を書いており、
-本 doc は **boid コアに何が要るか**を書く。
+`docs/plans/ingestion-identity.md`。 **本 doc が先で、 khi 側はこれを参照する側**である —
+先に daemon の持ち分を決め、 workspace 側は「その持ち分をこう使う」として書く。
 
-## 発端: 決定 14 は fold を 1 つに減らしきれていない
+同日の第 1 版・ 第 2 版は「claims 方言の boid コア移植」「取り込み identity」という部品の
+話から入っており、 決定事項の羅列で全体像が見えないと nose に指摘されたため、 **原則と
+To-Be を先に立てる形へ全面的に組み直した** (第 3 版)。
 
-決定 14 (state の正は daemon ただ 1 つ) は、 workspace 側の `decisions/*.jsonl` を退役
-させた。 その決め手は khi 側 doc (`docs/note-events.md`) にこう記録されている:
+---
 
-> **2 つの fold を並べると、ロジックがズレたときに誰も気づかない** (決定 14 の決め手)
+## 原則
 
-ところが退役したのは `decisions` だけで、 **`claims` + `fold_claims()` は残った**。
-現状の khi はこう動いている:
+| # | 原則 | 帰結 |
+|---|---|---|
+| P-1 | **daemon は決定論的にふるまう。 LLM の判断は workspace 側に置く** | 決定 12 の再確認。 daemon にエージェントを置かない |
+| P-2 | **外部からのシグナル取り込みは workspace 側** | credential 境界 (決定 11 / 論点 h) と、 原文を越境させない設計 (決定 3) の帰結 |
+| P-3 | **判断のトリガは daemon が出す** | P-1 + P-2 から自動的に出る。 下記 |
+
+P-3 は独立した思いつきではなく、 P-1 と P-2 を同時に立てると強制される。 **「いつ判断させるか」を
+判断で決めると循環する**ので、 起動条件は決定論の側にしか置けない。 workspace 側に置くと、
+今の khi のように workspace が自前で cron と preflight を組み、 決定論のロジックが両側に
+散る (それが fold 二本問題の遠因でもある)。
+
+この 3 つから、 daemon の役割が決まる: **daemon は判断のスケジューラになり、 workspace は
+判断の実装になる。**
+
+---
+
+## To-Be
 
 ```
-claims (workspace の JSONL)  ──fold_claims──▶  card (workspace の畳んだ状態)
-                                                    │
-                                              daemon_sync (差分 reconcile)
-                                                    ▼
-actions (daemon のログ)  ──FoldDetailAttrs 等──▶  task_triage.detail
+  daemon (決定論)                              workspace (意味)
+  ────────────────────────────────           ──────────────────────────
+                                        
+  述語が真になる                              
+        │                                     
+        ├──▶ 判断ジョブを起こす ──────────▶  task_behaviors.judge:<kind>
+        │      (project の behavior を        で LLM が判断する
+        │       task として dispatch)                │
+        │                                            │
+        └───── actions を畳む ◀──────────────────────┘
+                 (attrs_set / child_* /
+                  judged / answered)
 ```
 
-daemon 側は既に同じ構造を持っている:
+取り込みも suggest も spec も、 将来増える判断も、 **すべてこの 1 本のループに乗る**。
+今 khi が `run-cycle.sh` + `cycle_preflight.sh` で自作しているものの一般化である。
 
-- `internal/orchestrator/task_triage.go` の `FoldDetailAttrs()` / `AddDetailChild()` /
-  `SpecDetailChild()` が fold の実体
-- `machine.go` の `attrs_set` / `child_added` / `child_specced` が non-transitioning
-  action として登録され、 届くたびに畳む
-- 「決定13: event 追記を正、 state は導出」を `ParkedFrom` で実践している
+### 責務分解
 
-つまり **fold は今も 2 つあり**、 `daemon_sync.py` (572 行) はその 2 つの間の reconcile を
-している。 決定 14 の決め手はまだ完全には満たされていない。
+| 工程 | 持ち主 | 理由 |
+|---|---|---|
+| 外部 API を叩く (窓・ cursor・ credential) | **workspace** | credential 境界。 daemon に渡らない (決定 11 / 論点 h) |
+| チャネル方言 → 共通語の翻訳 | **workspace** | Jira statusCategory → `source_closed`、 Slack ts → identity key。 逆輸入 3 |
+| 原文の保持 | **workspace** | 決定 3。 境界を越えるのは card 粒度 |
+| 起票に値するかの篩い | **workspace の LLM** | 篩いは意味の判断。 P-1 より daemon には置けない |
+| 次の一手の提案・ spec 執筆 | **workspace の LLM** | 同上 |
+| 判断をいつ起こすか | **daemon** | P-3 |
+| 配送先の解決 (キー → task) | **daemon** | 索引引きであって判断ではない |
+| イベントの記録と畳み込み | **daemon** | 決定 13。 台帳は一箇所 |
+| 決定論の rule (auto-done / wake / 呼び直し抑止) | **daemon** | 決定 12 |
+| state 遷移の判断 (park / drop / Go / reopen) | **人 (Web UI)** | 決定 14 |
+| 人への提示 (queue / card 表示) | **daemon** | 横断は daemon にしか作れない |
 
-## なぜ workspace 側の fold が消せなかったか
+一行で言えば **daemon は「同一性」と「時系列」を持ち、 workspace は「意味」を持ち、
+人は「判断」を持つ**。 daemon はイベントが**何であるか**を知らないまま、 **どれと同じか**
+(identity) と **いつ何が起きたか** (actions) だけを扱う。
 
-workspace が自前の畳んだ状態を持たざるを得ない理由は 2 つある。 どちらも
-「workspace の都合」ではなく **daemon 側の口の不足**である。
+---
 
-### 理由 1: イベントの配送先を daemon が解決できない
+## 拡張ポイント: `judge:` 予約名前空間
 
-外部ソースの観測は「Jira issue key」等のキーで飛んでくるが、 対応する triage task が
-まだ存在しないことがある。 現行の action は `task_id` 必須なので、 **宛先未確定の
-イベントを daemon は受け取れない**。 だから workspace 側が「キー → card」の索引を持ち、
-着地させてから push する形になっている。
+daemon が判断の種類ごとにコードを持つと、 種類が増えるたびに boid を変更することになり、
+**LLM が自律的に動く場が育たない**。 そこで daemon が持つのは次の 3 つだけにする:
 
-重要なのは、 **この配送先解決が判断ではない**こと。 khi の `scripts/match_card.py` は
-冒頭でこう明言している:
+| daemon が持つもの | 中身 |
+|---|---|
+| **判断ジョブ** | `(target, kind, 起動理由)`。 `kind` は daemon にとって**ただの文字列** |
+| **述語** | いつ起こすか。 時計と DB だけで決まる (下記の 2 形) |
+| **dispatch** | その project の `task_behaviors.judge:<kind>` を task として起こす |
+
+判断の種類を宣言するのは `project.yaml` 側。 **`judge:` で始まる behavior 名を予約語**とし、
+これを「daemon が起動してよい判断の入口」の印にする。
+
+```yaml
+task_behaviors:
+  judge:intake:                 # 外部ソースを取り込んで起票する判断
+    trigger:
+      every: 10m                # 周期型
+      max_per_sweep: 1
+    instruction: { ... }
+
+  judge:suggest:                # card 1 枚に次の一手を出す判断
+    trigger:
+      on: task_input            # 反応型
+      scope: triage             # 対象は triage task
+      max_per_sweep: 5
+    instruction: { ... }
+```
+
+- `judge:` の**後ろは完全に不透明**。 daemon は `intake` や `suggest` の意味を知らない
+- `trigger` の中身だけが daemon の読む領域で、 `on:` は **closed set** (下記)。 `every:` は duration
+- `instruction` は daemon が読まない。 中身は workspace の言語
+
+判断の種類が増えても daemon は無変更。 workspace が `project.yaml` に behavior を 1 個足せば
+新しい判断の場が増える。 `task_behaviors` は既存機構なので、 新しい概念を導入していない —
+今 khi が `behavior: cycle` の 1 種類に全部を詰め込んでいるのを、 **種類ごとに分ける**だけ。
+
+### 予約語にする理由
+
+`judge:` プレフィクスが無いと、 daemon は「この behavior は自分が起動してよいものか」を
+区別できない。 通常の `dev` behavior を daemon が勝手に起こすのは事故なので、
+**「daemon が起動してよい」を名前で明示する**。 `trigger` を持つ behavior に限る、 という
+形でも同じ効果は出るが、 名前で見えるほうが `project.yaml` を読む人にも伝わる。
+
+---
+
+## 述語は 2 形でよい
+
+種類ごとに述語を書くとやはり daemon が肥大するので、 汎用形に落とす。
+
+### 反応型 (`on: task_input`)
+
+> target に新しい事実が来ていて、 その kind がまだ反応していない
+
+現行 khi の `speech_index()` (「最後に LLM が喋った時刻」対「最後に事実が来た時刻」) を
+**kind で一般化しただけ**である。 `spoken` を「その kind の `judged` action があった時刻」に
+すれば **kind ごとに独立して回り**、 自己トリガ防止 (LLM の発言が自分を再起動しない) も
+一般化されたまま効く。
+
+### 周期型 (`every: <duration>`)
+
+> 前回の起動から N 経った
+
+外部を見に行かないと事実が来ないもの (取り込み poll) 用。 これだけは反応型に落とせない。
+
+### `on:` の closed set
+
+Phase 1 では `task_input` の 1 つで足りる。 将来 `child_specced` など状態の形を足す余地は
+残すが、 **daemon が意味を知らずに評価できるものに限る**。 `on:` に workspace の語彙
+(`jira_reopened` 等) を書けるようにはしない — それは逆輸入 3 の境界を越える。
+
+---
+
+## 判断の記録: `judged` action
+
+反応型述語には「LLM が見た」の記録が要る。 これを **第一級の action** にする。
+
+```
+judged { kind: "suggest", outcome: "changed" | "unchanged" | "error" }
+```
+
+- non-transitioning (`ToStatus: ""`)、 `Manual: true`。 `attrs_set` と同じ枠
+- 判断 task が終わる前に必ず 1 本押す
+- `spoken(kind)` = その kind の `judged` の最新時刻
+- `inputs` = `judged` と人の回答以外の action の最新時刻
+
+これで 3 つが同時に片付く:
+
+1. **「読んだが変えなかった」が表現できる** (`outcome: unchanged`)。 現行 khi の
+   `suggestion_reviewed` の一般形。 これが無いと、 変更ゼロの巡で action が 1 本も飛ばず、
+   daemon から見て「まだ一度も反応していない」が永続 true になり、 毎サイクル呼び直される
+2. **バックオフ**が kind に依存せず書ける (`outcome: error`)
+3. **daemon が payload を詮索しなくてよい**。 第 2 版では「`suggestion` キーを含む
+   `attrs_set` が喋った印」としていたが、 それは daemon が opaque blob の中身を見る形で
+   境界が怪しかった上に、 変更ゼロの巡を取りこぼしていた (Fable レビュー指摘)
+
+### 却下の記録: `answered` action
+
+判断ではなく**人の回答**の記録。 決定 14 で判断を Web UI へ移したのに、 Web UI 側に回答を
+記録する経路が無く、 **却下しても再提案の抑止が効かない**穴が現に開いている (下記「既に
+開いている穴」)。
+
+```
+answered { answer: "accept" | "reject", verb: "...", basis: "..." }
+```
+
+副作用として `detail.attrs.suggestion` を落とす。 `inputs` には数えない (人の回答は世界の
+事実ではないので、 却下のたびに同じ提案を作らせ直すループになる)。
+
+**却下履歴の突合 (`verb` / `basis` の一致) は daemon に置かない。** それは suggestion の
+中身を読むことになり境界を越える。 起こされた判断 task が `action_list` で自分の履歴を
+読んで自己抑制する。
+
+---
+
+## 自律 Go への道筋
+
+この取り組みの目的は生産性であり、 最終的に狙うのは **LLM が自律的に動ける場**である。
+判断スケジューラはそのための器で、 到達点は「Go できそうなものは LLM が自分で Go する」。
+
+| 段階 | 誰が Go を出すか | 状況 |
+|---|---|---|
+| 現在 | 人 (Web UI) | 決定 14 |
+| 段階 1 | LLM が **提案**し、 人が承認 | `suggestion.verb: go`。 ほぼ実装済み |
+| 段階 2 | daemon の**決定論 gate** が、 条件を満たす提案を自動で通す。 人は事後に見る | 本 doc の射程外だが、 器はここで作る |
+
+段階 2 の gate は DB と設定だけで決まる形にする — 例えば「子が `specced` ∧ 対象 project が
+auto-go を opt-in ∧ spec が readonly 相当 ∧ 提案の `basis` が新しい」。 **判断そのものは
+LLM が既に済ませており、 daemon は「その判断を人に見せずに通してよいか」だけを決定論で
+決める**ので、 決定 12 に反しない。
+
+これは **決定 15 (auto-done) の対称**である。 「全子 closed ∧ `source_closed`」で自動的に
+終端させる rule が既にあるなら、 「spec がある ∧ 許可がある」で自動的に開始させる rule は
+新しい思想ではない。
+
+監査は既存機構で成立する: `Action.Actor` に「`task:X` が提案した」「daemon が自動 Go した」が
+両方残るので、 事後に「なぜこれが勝手に走ったか」を辿れる。 人手 Go と同じ台帳に乗るのが
+重要で、 自動化のたびに別系統の記録を作らない。
+
+opt-in は **project 単位**。 最初から全部を自動にしない。
+
+---
+
+## As Is: fold が二本ある
+
+以上が To-Be で、 ここからが「今どうなっていて、 何が足りないか」。
+
+決定 14 (state の正は daemon ただ一つ) は workspace 側の `decisions/*.jsonl` を退役させた。
+決め手は khi 側 doc にこう記録されている:
+
+> **2 つの fold を並べると、 ロジックがズレたときに誰も気づかない** (決定 14 の決め手)
+
+ところが退役したのは `decisions` だけで、 **`claims` + `fold_claims()` は残った**:
+
+```
+claims (workspace の JSONL) ──fold_claims──▶ card (workspace の畳んだ状態)
+                                                   │
+                                             daemon_sync (差分 reconcile)
+                                                   ▼
+actions (daemon のログ) ──FoldDetailAttrs 等──▶ task_triage.detail
+```
+
+daemon 側は既に同じ構造を持っている — `FoldDetailAttrs()` / `AddDetailChild()` /
+`SpecDetailChild()` が fold の実体で、 `machine.go` の `attrs_set` / `child_added` /
+`child_specced` が届くたびに畳み、 「決定 13: event 追記を正、 state は導出」を
+`ParkedFrom` で実践している。 **fold は今も二本あり**、 572 行の `daemon_sync.py` は
+その二本の間の reconcile をしている。
+
+### workspace が自前の fold を持たざるを得なかった理由は 2 つ
+
+どちらも workspace の都合ではなく **daemon 側の口の不足**である。
+
+**理由 1: イベントの配送先を daemon が解決できない。** action は `task_id` 必須なので、
+対応する triage task がまだ無いキーで飛んでくる観測を受け取れない。 だから workspace 側が
+「キー → card」の索引を持ち、 着地させてから push する形になっている。
+
+重要なのは **この配送先解決が判断ではない**こと:
 
 > **照合は判断ではなく索引引き**。 2026-08-07 に同じ PR の card が 2 枚に分裂した事故は、
 > これを LLM にやらせていたために起きた。
+>
+> — khi `scripts/match_card.py`
 
 索引キーは `source.issue_key` / `source.thread_ts` / `related_jira_issues[]` の 3 つで、
-**そのキーは既に daemon の中にある** (khi が `attrs_set` の opaque key として
-`source` / `related_jira_issues` / `canonical_ref` を毎サイクル押している)。 加えて
-`ref` 列は決定 16 以降この用途になっている (`internal/api/task_create.go:251` の
-「jira issue_key / slack thread_ts / mail message-id」)。 元は per-child dedup 用で
-(migration 0010、 PR-2 の `Ref: children[i].ID`)、 root task へ開いたのは Phase 1 PR-4
-(論点 7)。
+**そのキーは既に daemon の中にある** (khi が `attrs_set` の opaque key として毎サイクル
+押している)。 加えて `ref` 列は決定 16 以降この用途になっている
+(`internal/api/task_create.go:251` の「jira issue_key / slack thread_ts / mail message-id」。
+元は per-child dedup 用で、 root task へ開いたのは Phase 1 PR-4 / 論点 7)。
 
-決定 16 は既に **`ref` は canonical source のキーにする**と決めている。 足りないのは
-**1 task が複数キーを持てないこと**と、 **キーから task を引く口が無いこと**だけ。
+足りないのは **1 task が複数キーを持てないこと**と、 **キーから task を引く口が無いこと**
+だけである。
 
-### 理由 2: actions の履歴を読む口が無い
+**理由 2: actions の履歴を読む口が無い。** `internal/sandbox/protocol.go` の `BoidOp` 一覧に
+`action_list` 相当が無く、 `action_send` で書けるのに読めない。 `task_triage_get` /
+`task_triage_list` が返すのは畳んだ後の `detail` だけで、 導出フィールドとして露出して
+いるのは `ParkedFrom` のみ。 だから workspace は呼び直し抑止のために自前の履歴 (claims) を
+持つしかなかった。
 
-workspace 側は「呼び直しの抑止」を履歴から判定している:
+---
 
-- `speech_index()` (`evaluate.py`): 「LLM が最後に喋った時刻」と「最後に事実が来た時刻」を分け、
-  後者が新しいときだけ LLM を起こす (LLM の発言が自分自身の再トリガーにならない)
-- `rejection_index()` (`card_state.py`): 却下された提案を `(slug, verb, basis)` で覚え、 同じ根拠の
-  再提案を捨てる
+## 取り込み identity
 
-どちらも actions ログがあれば daemon 側で計算できる。 が、 `internal/sandbox/protocol.go`
-の `BoidOp` 一覧に **`action_list` 相当が無い**。 `action_send` で書けるのに読めない。
-`task_triage_get` / `task_triage_list` が返すのは畳んだ後の `detail` だけで、 導出
-フィールドとして露出しているのは `ParkedFrom` のみ。
-
-だから workspace は judge ゲートを作るために自前の履歴 (claims) を持つしかなかった。
-
-## 提案: 外部キーを task の identity として扱う
-
-外部データソースのキーを、 **ユーザに対する identity** と同じものとして扱う。 ユーザが
-メールアドレスや GitHub アカウントを複数持ち、 どれからでも同じ本人に解決できるのと
-同じ構造にする (nose 案)。
+理由 1 を塞ぐ形。 外部データソースのキーを、 **ユーザに対する identity** と同じものとして
+扱う (nose 案)。 ユーザがメールアドレスや GitHub アカウントを複数持ち、 どれからでも同じ
+本人に解決できるのと同じ構造にする。
 
 | 認証の世界 | ここでの対応物 |
 |---|---|
 | principal | triage task |
 | identity | 外部キー `jira:ROOKPF-289` / `slack:1785803139.540489` |
-| identity → principal の解決 | イベントの配送先解決 (索引引き、 判断ではない) |
-| サインアップに使った identity | `ref` = 決定 16 の canonical source |
+| identity → principal の解決 | イベントの配送先解決 (索引引き) |
+| 登録に使った identity | `ref` = 決定 16 の canonical source |
 | あとから link した identity | `related_jira_issues` 由来のキー |
-| 未登録 identity でのアクセス | **未着インボックス**行き。 起票するかは判断 |
+| 未登録 identity での到達 | `captured` な triage task として着地 (下記) |
 | アカウント統合 | 分裂した card の identity 付け替え (管理操作) |
 
 不変条件は 2 つ:
@@ -102,75 +295,82 @@ workspace 側は「呼び直しの抑止」を履歴から判定している:
 - 1 つの task は identity を **複数**持てる
 - 1 つの identity は **高々 1 つの task** にしか紐付かない
 
-### identity は名前空間付きの不透明文字列
+identity は `<namespace>:<key>` の**不透明文字列**とし、 daemon は中身を一切解釈しない。
+`jira` が何かも `ROOKPF-289` の意味も知らず、 ただの文字列 → task_id の索引として扱う。
+名前空間を決めるのは workspace 側。 `FoldDetailAttrs` が明言している姿勢
+(“a PURE fold with zero policy”) と逆輸入 3 の境界を、 多対一の索引を足しても崩さない
+ための形である。
 
-`<namespace>:<key>` の形とし、 **daemon は中身を一切解釈しない**。 `jira` が何かも
-`ROOKPF-289` の意味も知らず、 ただの文字列 → task_id の索引として扱う。 名前空間を
-決めるのは workspace 側。
+副次的に、 子 task の `Ref` (`Dispatch` が `children[i].ID` を入れている) と外部キーを
+名前空間で分離できる。 現状は同じ `ref` 空間に内部 ID と外部キーが同居している (実害は
+無い — スコープが `(ref, parent_id, project_id)` で分かれているため。 整理として)。
 
-これは逆輸入 3 の境界 (チャネル固有の知識は workspace 側に置く) と、
-`FoldDetailAttrs` の宣言:
+### 未着キーは `captured` に着地する。 専用の inbox は作らない
 
-> Deliberately a PURE fold with zero policy: it does not know or care what keys mean
+第 2 版は「未着イベントは daemon 側の**未着インボックス**に積み、 そこで人が起票判断を
+する」としていた。 P-2 (取り込みは workspace 側) を立てるとこれは要らなくなる:
 
-を崩さないための形。 **多対一の索引を足しても daemon はチャネル知識ゼロのまま**でいられる。
+**篩いは意味の判断なので workspace 側の LLM に残る。** つまり pump が daemon へ押すのは
+「workspace が起票に値すると判断したもの」だけで、 ゴミメールは **daemon に到達しない**。
+流量は今の card 起票と同じ (= 既に回っている量) で、 メールを足しても増えるのは workspace
+側の篩いの負荷であって daemon 側ではない。
 
-副次的な効果として、 子 task の `Ref` (`Dispatch` が `children[i].ID` を入れている) と
-外部キーを名前空間で分離できる。 現状は同じ `ref` 空間に内部 ID と外部キーが同居している。
+すると未着キーの意味は「**起票に値すると判断されたが、 既存のどの identity にも当たら
+なかったもの**」= **新規 card** になる。 これは本編が既に持っている状態でちょうど表せる:
 
-## 既存の決定との関係
+> **不変条件の境界は captured → triaged** (起票の確定)。 captured (head-capture 直後、
+> まだ形になっていない) は対象外
+>
+> captured: capture 直後、 triage 前。 主に head-capture 経由 (mail / Jira / Slack 経路は
+> **workspace 内 triage を通るため** triaged で到着する、 決定 10)。 **Phase 0 では未使用**
 
-| 既存 | 本 doc の扱い |
-|---|---|
-| **決定 16** (`ref` は canonical source のキー) | **一般化する**。 `ref` は「起票に使った 1 本目の identity」= primary。 決定 16 の契約 (`source_closed` を報告できる source を必ず持つ) はそのまま |
-| **決定 17** (`reopen_triaged`) | **引き金を与える**。 第 12 版は「done を探す経路は既に成立している (`FindTaskByRef` に status 絞りが無い)、 足りないのは押せる action だけ」としたが、 その action を**誰が何を見て押すか**が空いていた。 下記 I-5 が埋める |
-| **論点 g** (洪水対策 = 同一 source ref の再 push を update 扱い) | **置き換わる**。 「1 つの ref で dedup」から「多対一の identity 索引 + binding のライフサイクル」へ一般化される |
-| **論点 b** (定期起動の機構: host cron vs daemon 内 scheduler) | **judge の部分だけ内蔵側に倒れる**。 下記 B-5 |
-| **論点 h** (source 既読化・ cursor は workspace 側) | **変わらない**。 外部 API を叩く窓は workspace のもの |
-| **決定 12** (queue 評価は決定論のみ) | **守る**。 identity 解決も judge 述語もエージェント判断ゼロ |
-| **決定 13** (event 追記を正、 state は導出) | **徹底する側**。 workspace 側の二本目のログを畳む |
+決定 10 の「workspace 内 triage を通るため triaged で到着する」の workspace 内 triage が、
+まさに今 LLM がやっている篩いである。 篩いを LLM に残したまま、 **起票の確定 (どの card に
+なるか) だけを daemon 側の判断に回す**なら、 これらの経路は `captured` で到着するのが本編の
+設計通りということになる。 `triage` (captured → triaged) と `drop` (captured → dropped) の
+遷移も machine に実装済み。
 
-## 決めたこと (workspace 側 memo と共通、 番号も共通)
+したがって:
+
+- **新規テーブルは identity 索引の 1 本だけ**。 inbox 用のテーブルも Web UI も新規には要らない
+- 「未着」の可視化 = `captured` な triage task の一覧
+- 決定 3 とも衝突しない。 daemon が持つのは workspace が開示すると決めた title / summary で、
+  今の card 起票と同じ (第 2 版のインボックス案は、 起票判断の材料として生本文を daemon 側へ
+  置く必要があり、 決定 3 と正面衝突していた)
+
+残る判断は「index が外れたが、 実は既存 card と同じ件ではないか」(例: Jira key を持たない
+Slack スレッドが、 ある issue の話である) の統合で、 これは意味なので **`judge:` の判断**
+として扱う。
+
+`captured` の滞留対策だけは新規に要る: 終端状態ではないので既存の 30 日 GC に乗らず、
+放っておくと溜まり続ける (下記 未確定)。
+
+---
+
+## 決めたこと
 
 | # | 決定 | 根拠 |
 |---|---|---|
 | I-1 | 外部キーを identity として task に多対一でぶら下げる。 `ref` はその特例 | 多対一が実需 — Slack 起票の card に後から Jira のコメントが来る経路がある |
-| I-2 | identity は `<namespace>:<key>` の不透明文字列。 daemon は解釈しない | 逆輸入 3 の境界を越えないため |
-| I-3 | identity のスコープは **project** | 取り込まれるメタタスクはメタプロジェクトにしか紐づかない。 他プロジェクトへの展開は子 task (`spec.project`) が担い、 子は identity を持たない。 `(ref, parent_id, project_id)` unique (migration 0037) がそのまま使える |
-| I-4 | 未着 identity のイベントは**インボックス**に積む。 自動で task 化しない | 起票に値するかは判断。 決定 14 の「判断は Web UI」に寄せる |
-| I-5 | **done では identity を握り続ける**。 `observed.source_closed` が true → false に戻ったら `reopen_triaged` | 同じソースが動いたら普通は reopen したい (nose)。 決定 15 (auto-done) の鏡像で、 読むキーも同じ 1 個だけなので新しい policy が要らない |
-| I-5b | I-5 の前提として、 **done の triage task にも観測 (`attrs_set`) が着地できるようにする** | 下記「I-5 は現行の action 語彙では成立しない」 |
-| I-5c | done の task に着地したイベントは、 reopen 条件を満たさなくても**必ず可視化する** | `source_closed` は canonical source (jira / bitbucket PR) からしか作れない (決定 16)。 slack / mail のみの task が done になった後の続報は、 identity を握っているので done task へ配送されるが reopen トリガが無く **黙って沈む**。 workspace 側の反転前は terminal 除外により新規 card として見えていた |
-| I-6 | **drop では identity を自動解放する** | drop は「この identity との関係を切る」判断そのもの。 握ったままだと、 捨てた件が動いても着地せず・ 自動 reopen の経路も無く (`machine.go:371` の `reopen_triaged` は done/aborted からのみ。 手動の `reopen` dropped→triaged は `machine.go:355` にあるが、 それは誤破棄からの回復経路であって観測に反応するものではない)・ 同じキーで新規起票もできない、 という静かに詰む形になる |
-| I-7 | 却下を **action** として記録する (`suggestion_answered` 相当、 non-transitioning / `Manual: true`)。 payload は `{answer, verb, basis}`、 副作用として `detail.attrs.suggestion` を落とす | 却下は attrs の更新ではなく出来事。 下記の穴を塞ぐ |
-| I-8 | サンドボックスから actions を読む口 (`action_list` 相当の `BoidOp`) を足す | judge ゲートと却下履歴の判定材料を daemon の履歴で賄うため |
-
-### I-5 は現行の action 語彙では成立しない (I-5b の動機)
-
-`attrs_set` / `child_added` / `child_specced` の `FromStatus` は `preExecutionStatuses`
-= captured / triaged / parked / ready / working の**明示列挙**である
-(`machine.go:441`。 論点 6-3 が「never `*`」と決めた — `*` にすると通常の非 triage task の
-executing / done に対しても発火してしまうため)。 **done は含まれていない。**
-
-つまり `observed.source_closed` が true → false に戻ったという観測を、 done の task の
-detail に畳む合法経路が現状は存在しない。 I-5 / B-6 の判定材料そのものが更新されない
-ので、 **ルーティング (`reopen` → `reopen_triaged`) が実装済みでも引き金が引けない**。
-本編第 12 版の「done を探す経路は成立している、 足りないのは押せる action だけ」という
-実測は、 探す側と押す側の話であって、 **観測を着地させる側は塞がったまま**だった。
-
-I-6 の根拠として「dropped だと着地しない」を挙げておきながら、 done でも同じことが
-起きる点を見落としていた (Fable レビュー指摘)。
-
-論点 6-3 のガード (通常 task の done に発火させない) と両立させる必要があるため、
-machine の rule に done を足すのではなく、 **`task_triage` 行の有無を見られる service 層で
-判定する**のが素直だと考えるが、 置き場所は未確定 (下記)。
+| I-2 | identity は `<namespace>:<key>` の不透明文字列。 daemon は解釈しない | 逆輸入 3 の境界 |
+| I-3 | identity のスコープは **project** | 取り込まれるメタタスクはメタプロジェクトにしか紐づかない。 他プロジェクトへの展開は子 task が担い、 子は identity を持たない。 `(ref, parent_id, project_id)` unique (migration 0037) がそのまま使える |
+| I-4 | 未着キーは `captured` な triage task として着地させる。 **専用 inbox は作らない** | 篩いが workspace 側に残るので、 daemon に届く時点で既に「起票に値する」と判断済み (上記) |
+| I-5 | **done では identity を握り続ける**。 `observed.source_closed` が true → false に戻ったら `reopen_triaged` | 同じソースが動いたら普通は reopen したい (nose)。 決定 15 の鏡像で、 読むキーも同じ 1 個だけ |
+| I-5b | I-5 の前提として、 **done の triage task にも観測が着地できるようにする** | `attrs_set` の `FromStatus` は captured/triaged/parked/ready/working の明示列挙で **done を含まない** (`machine.go:441`、 論点 6-3 が「never `*`」と決めた)。 現状は観測を done の task へ畳む合法経路が無く、 I-5 の判定材料そのものが更新されない |
+| I-5c | done の task に着地したイベントは、 reopen 条件を満たさなくても**必ず可視化する** | `source_closed` は canonical source (jira / bitbucket PR) からしか作れない。 slack / mail のみの task が done になった後の続報は、 identity を握っているので配送はされるが reopen トリガが無く**黙って沈む** |
+| I-6 | **drop では identity を自動解放する** | drop は「この identity との関係を切る」判断そのもの。 握ったままだと、 捨てた件が動いても着地せず・ 自動 reopen の経路も無く (`machine.go:371` の `reopen_triaged` は done/aborted からのみ。 手動 `reopen` dropped→triaged は `machine.go:355` にあるが誤破棄からの回復経路であって観測に反応しない)・ 同じキーで新規起票もできない、 という静かに詰む形になる |
+| J-1 | `judge:` を **予約された behavior 名前空間**とし、 daemon が起動してよい判断の入口を名前で明示する | daemon が通常の `dev` behavior を勝手に起こすのは事故。 `project.yaml` を読む人にも伝わる |
+| J-2 | 述語は **反応型 (`on:`) と周期型 (`every:`) の 2 形**。 `on:` は closed set | kind に依存しない形に落とさないと daemon が肥大し、 判断の場が育たない |
+| J-3 | `judged { kind, outcome }` を第一級の action にする | 「読んだが変えなかった」の表現・ バックオフ・ payload 詮索の回避が同時に片付く |
+| J-4 | `answered { answer, verb, basis }` を action にする。 副作用で `suggestion` を落とす | 却下は attrs の更新ではなく出来事。 現に開いている穴を塞ぐ |
+| J-5 | 却下履歴の突合は daemon に置かず、 判断 task が `action_list` で自己抑制する | `verb` / `basis` の一致判定は suggestion の中身を読むことになり境界を越える |
+| J-6 | 自律 Go は **決定論 gate + project 単位 opt-in**。 判断は LLM、 通してよいかは daemon | 決定 15 (auto-done) の対称。 監査は `Action.Actor` で既存台帳に乗る |
 
 ### I-5 は workspace 側の現行ルールの意図的な反転
 
-khi の `match_card.py` は今、 終端 (`done` / `dropped`) の card を索引から除外している
-— 「片付いた件に後から追記すると応答済みのものが動いてしまう」ため。 I-5 はこれを
-引っくり返し、 「動いてしまう」を望ましい挙動と見る。 **退行ではなく意図的な方針変更**
-なので理由ごと記録する。
+khi の `match_card.py` は今、 終端 (done / dropped) の card を索引から除外している —
+「片付いた件に後から追記すると応答済みのものが動いてしまう」ため。 I-5 はこれを引っくり返し、
+「動いてしまう」を望ましい挙動と見る。 **退行ではなく意図的な方針変更**なので理由ごと記録する。
 
 identity モデルにすると、 この規則を「索引からフィルタする」形で書く必要が無くなる。
 done は握り続ける (I-5)、 drop は解放する (I-6) という **binding のライフサイクル**として
@@ -178,202 +378,201 @@ done は握り続ける (I-5)、 drop は解放する (I-6) という **binding 
 
 ### 副産物: 暗黙則が不変条件になる
 
-`match_card.py: build_key_index()` の既知の制約 —「複数の active card が同じ issue を
-参照する場合、 観測は `updated_at` が最新の 1 枚にしか届かない」— は、 配送先が黙って
-変わる形で事故のタネになっている (2026-08-09 に ROOKPF-289 で起きかけた)。
-
-identity モデルでは「1 identity は 1 principal」が明示された不変条件になり、 2 枚目が
-同じ identity を link しようとしたら **silent newest-wins ではなく拒否**になる。
+`match_card.py: build_key_index()` の既知の制約 —「複数の active card が同じ issue を参照する
+場合、 観測は `updated_at` が最新の 1 枚にしか届かない」— は、 配送先が黙って変わる形で
+事故のタネになっている (2026-08-09 に ROOKPF-289 で起きかけた)。 identity モデルでは
+「1 identity は 1 principal」が明示された不変条件になり、 2 枚目の link 要求は
+**silent newest-wins ではなく拒否**になる。
 
 ただし引用元が例に挙げている **epic の子 card 群**は、 バグではなく正当な運用である
 (workspace 側は `related_jira_issues` を「無くても害はない助言キー」と定義し、 複数 card の
 重複参照を前提にしている)。 一律拒否にすると newest-wins が first-wins に変わるだけで
-epic ケースの改善にはならない。 **排他的な帰属 (identity) と非排他の言及 (reference) は
-性質が違う** — 昇格させてよいかは未確定。
+改善にならない。 **排他的な帰属 (identity) と非排他の言及 (reference) は性質が違う** —
+昇格させてよいかは未確定。
 
-## I-7 の動機: 今すでに開いている穴
+---
+
+## 既に開いている穴 (J-4 の動機)
 
 khi の `fold_claims()` は「同じ根拠で却下済みの提案は出し直さない (`basis` が変わるまで)」を
-実装しており、 入力は `suggestion_answered` claim である。 その書き手を確認すると、
-khi の note-inbox スキルにこうある:
+実装しており、 入力は `suggestion_answered` claim である。 その書き手は note-inbox スキルだけで:
 
 > 採用/却下は **Web UI** で出す (決定14)。 ここで答えた場合は
 > `scripts/claim.py suggestion_answered` で却下履歴として残す
 
-つまり **note-inbox で答えたときしか却下履歴が残らない**。 決定 14 で判断を Web UI へ
-移したのに、 Web UI 側に `suggestion_answered` を生む経路が無い。 daemon 側を検索しても
-`suggestion` は完全に opaque key 扱いで、 daemon は存在すら知らない。
+つまり **note-inbox で答えたときしか却下履歴が残らない**。 決定 14 で判断を Web UI へ移した
+のに、 Web UI 側に生む経路が無い。 daemon 側を検索しても `suggestion` は完全に opaque key
+扱いで、 daemon は存在すら知らない。 結果として **Web UI で却下しても再提案の抑止が効かない**
+はずである。
 
-結果として **Web UI で却下しても再提案の抑止が効かない** (次の巡で同じ提案が出し直される)
-はずである。 I-7 はこれを構造的に塞ぐ。
-
-### 境界の判断: 解釈するキーが 2 個目になる
+### 意識しておくこと: 解釈するキーの closed set
 
 `internal/orchestrator/triage_done.go` は、 daemon が opaque blob から読むキーは
 `attrs.observed.source_closed` **ただ 1 つ**だと明言している (逆輸入 3 の境界)。
-I-7 で `suggestion` が 2 個目になる。
+本 doc の後、 daemon が解釈するものは次に限る:
 
-**越境ではないと整理する** — 「エージェントが次の一手を提案し、 人が採否を答える」は
-チャネル固有の知識ではなく、 triage という営みの共通語彙である (決定 16 が
-`source_closed` を「common-language member」として選んだのと同じ基準)。 ただし
-**意識して足した**ことをここに記録する。
+| 対象 | 読む深さ |
+|---|---|
+| `attrs.observed.source_closed` | 値 (bool)。 決定 15 / 16 |
+| `attrs.suggestion` | **有無のみ** (`answered` の副作用で落とすため)。 中身は読まない |
+| `judged.kind` / `judged.outcome` | 値。 ただし `kind` の**意味**は知らない |
+| identity 文字列 | 完全に不透明。 名前空間も解釈しない |
+
+第 2 版は「`suggestion` キーを含む `attrs_set` を『喋った』印にする」としていたが、 J-3 で
+`judged` を入れたことにより **daemon が blob を詮索する必要が消えた**。
+
+---
 
 ## boid 側に要るもの
 
 | # | もの | 見立て |
 |---|---|---|
 | B-1 | identity 索引テーブル + 解決 + link / unlink op。 **`tasks.ref` 列と `idx_tasks_ref_parent_project` の去就を同時に決める** (下記) | 新規。 migration 1 本 + store + `BoidOp` |
-| B-2 | 未着イベントのインボックス (project スコープ) と、 そこからの起票 / 破棄 | 新規。 Web UI を含む |
+| B-2 | 未着キーからの `captured` task 自動生成 (I-4)。 `captured` の可視化と滞留対策 | 小〜中。 状態と遷移は実装済み |
 | B-3 | `action_list` 相当の `BoidOp` (workspace スコープ) | 小。 `ListActionsByTask` は既にある (呼び出し `internal/api/task_service.go:413`、 実装 `internal/orchestrator/store.go:431`) |
-| B-4 | `suggestion_answered` action (I-7) と、 Web UI の却下からの発行。 **併せて `suggestion_reviewed` 相当 (見たが変えなかった) も足す** (下記) | 小〜中 |
-| B-5 | judge 述語 + sweep | 中。 B-3 の後。 下記 |
-| B-6 | `source_closed` 反転による auto-reopen (I-5) | 小。 `reopen` → `reopen_triaged` のルーティングは実装済み (`internal/api/triage_done.go:299`) |
-
-### B-2: インボックスは決定 3 と衝突する
-
-workspace 側は原文を daemon へ渡さない設計になっている (決定 3: 境界を越えるのは card
-粒度、 本文は現地)。 khi の `daemon_sync.desired_description()` はこう明言している:
-
-> note 本文そのものは載せない。 原文は workspace 側に留める設計 (決定 3) で、 ここに
-> 貼ると顧客の生データが daemon 側へ流れ出す。 載せるのは既に開示ポリシーを通った
-> summary と、 導出フィールドだけ。
-
-ところが I-4 + B-2 は **daemon 側のインボックス**に未着イベントを積み、 そこで人が起票
-判断をする。 判断には内容が要る → 生イベント本文が daemon に渡る、 という衝突になる。
-
-素案は **インボックスに置くのはキーと最小メタデータだけにし、 本文は起票後に workspace
-側で取り直す**形だが、 それだと起票判断の材料が薄い。 B-2 の設計を左右するので未確定。
-非目的にも「daemon が原文を保持することを目的としない」を追記した。
+| B-4 | `judged` (J-3) と `answered` (J-4) の action 追加、 Web UI の回答からの発行 | 小〜中 |
+| B-5 | **判断スケジューラ** — `judge:` behavior の発見、 述語 2 形の評価、 dispatch、 直列化、 流量制御 | 中〜大。 本 doc の中核 |
+| B-6 | `source_closed` 反転による auto-reopen (I-5) と、 done への着地経路 (I-5b) | 小。 `reopen` → `reopen_triaged` のルーティングは実装済み (`internal/api/triage_done.go:299`) |
 
 ### B-1: `tasks.ref` の去就は I-6 の前提
 
-I-6 (drop で identity を解放 → 同じキーで新規起票できる) は、 現行の `ref` の扱いと
-正面衝突する:
+I-6 (drop で解放 → 同じキーで新規起票できる) は現行の `ref` と正面衝突する:
 
 - dropped の task も `tasks.ref` を保持したままである
 - `idx_tasks_ref_parent_project` (migration 0037) の unique 制約が生きている
-- `FindTaskByRef` の SQL に **status 絞りが無い** (`store.go` の
-  `WHERE t.ref = ? AND t.parent_id = ? AND t.project_id = ?`)
+- `FindTaskByRef` の SQL に **status 絞りが無い**
+  (`WHERE t.ref = ? AND t.parent_id = ? AND t.project_id = ?`)
 
-したがって同じ ref で `task create` を打つと get-or-create が **dropped の既存 task を
-返し**、 新規起票にならない。 I-6 を成立させるには少なくとも次のどちらかが要る:
+したがって同じ ref で `task create` を打つと get-or-create が **dropped の既存 task を返し**、
+新規起票にならない。 成立させるには少なくともどちらかが要る:
 
 - (a) uniqueness を identity テーブルへ完全移譲し、 `tasks.ref` 列を退役させる
-- (b) drop 時に `tasks.ref` を空にする — ただしこれは決定 16 の「`ref` は dedup キーで
-  後から変えられない」と矛盾するので、 決定 16 側の再定義が要る
+- (b) drop 時に `tasks.ref` を空にする — ただし決定 16 の「`ref` は dedup キーで後から
+  変えられない」と矛盾するので、 決定 16 側の再定義が要る
 
-「`ref` は特例として吸収」の一言で済ませていた箇所であり (Fable レビュー指摘)、
-**二重表現のドリフト**をどう防ぐかを含めて B-1 の migration 設計で最初に決める。
+**二重表現のドリフト**をどう防ぐかを含め、 B-1 の migration 設計で最初に決める。
 
-### B-5: judge ゲートは既存の述語群と同じ形
+### B-5: 部品はほぼ揃っている
 
-`evaluate.py: speech_index()` の判定は **時計と DB だけで決まる純粋述語**であり、
-daemon には既に同じ形のものが並んでいる:
-
-- `orchestrator.ShouldWake()` (`queue.go`)
-- `orchestrator.ShouldAutoDone()` (`triage_done.go`)
-- `orchestrator.WatchdogGuidance()` (`watchdog.go`)
-- これらを回す判断ゼロの周期 sweep — `api.SweepWake()` (`queue_sweep.go`、 `ActorDaemon` を刻む)
-
-B-3 で actions が読めるようになるなら、 judge の判定材料は全部 daemon の中にある。
-
-**`Action.Actor` は識別に使えない**ことに注意 — 粒度が human / daemon / `task:<id>` で
-「どの実行単位か」しか表さず、 観測と提案が同じ実行単位から出れば区別できない
-(現行 khi は観測を `boid exec` の preflight から押しており、 そこでの Actor が何になるかも
-未確認)。 代わりに **payload で
-識別する**: `suggestion` キーを含む `attrs_set` が「エージェントが喋った」、 それ以外の
-`attrs_set` が「事実が来た」。 daemon は依然として値を解釈しない (キーの有無だけ見る)。
-
-**穴: 「読んだが変えなかった」が表現できない。** workspace 側の `SPOKEN` は
-`suggestion_made` と `suggestion_reviewed` の 2 つで、 後者は agent が読んだが変える必要が
-無かった場合を記録している。 payload 識別に寄せると、 変えなかった場合は attrs 差分が
-ゼロなので **`attrs_set` がそもそも飛ばない** → daemon から見て「新しい事実の後に一度も
-喋っていない」が永続 true になり、 同じ task で毎サイクル agent が呼び直される。
-「入力が変わっていないなら、 もう一度喋らせない」という規則がまさに防いでいる現象への
-退行なので、 **B-4 で `suggestion_reviewed` 相当を対にして足す** (Fable レビュー指摘)。
-
-**却下履歴の判定は daemon に置かない。** `rejection_index` は `(verb, basis)` の突合、
-つまり suggestion の**中身**を読む必要があり、 daemon に置くと解釈するキーが
-`suggestion` の内部構造まで広がって逆輸入 3 の境界を実質的に越える。 責務はこう分ける:
-
-| 判定 | どこ |
+| 要るもの | 現状 |
 |---|---|
-| 「LLM に用があるか」(`spoken` < `inputs`) | daemon の述語 + sweep。 キーの有無だけで足りる |
-| 「この提案は却下済みか」(`verb` / `basis` の突合) | 起こされた task 側が B-3 の `action_list` で自分の履歴を読んで自己抑制する |
+| 周期的に述語を評価するループ | **ある**。 `QueueSweepLoop` (`queue_sweep.go`) が interval ticker → 純粋述語 → `ActorDaemon` で action、 という形で動いている |
+| daemon が workspace の task を起こす | **ある**。 `Dispatch` が specced な子から実 task を作っている。 behavior 指定も project 指定もできる |
+| 判断結果を受け取る | **ある**。 `action_send` |
+| 誰が判断したかの記録 | **ある**。 `Action.Actor` |
+| 判断の種類を宣言する場所 | **ある**。 `task_behaviors` |
+| LLM が自分の履歴を読む | **無い** (B-3) |
+| 「見たが変えなかった」の記録 | **無い** (B-4 / J-3) |
+| 判断ジョブの台帳・ 直列化・ 流量制御 | **無い** (B-5 本体) |
 
-daemon が読むキーの closed set は `observed.source_closed` と `suggestion` の**有無**まで
-に留める。
+論点 b (定期起動の機構: host cron vs daemon 内 scheduler) は、 **判断の起動については内蔵側に
+倒れる**。 外部 API を叩く窓 (poll の cursor と頻度) は論点 h の通り workspace 側に残るが、
+その poll を起こすのも `judge:intake` の周期型トリガになるので、 **workspace 側に cron は
+残らない**。
 
-### workspace 側の cadence は自動で縮む
+### 破綻しそうなところ
 
-khi は現在 `run-cycle.sh` (188 行) + `cycle_preflight.sh` (150 行) で「決定論パートを
-boid task 抜きで毎サイクル回し、 LLM に用があるときだけ task を起こす」足場を組んでいる。
-B-1〜B-5 が入ると preflight の 5 ステップのうち `daemon_sync` が消え `evaluate` が
-daemon 側へ行き、 **残りに gate ロジックが 1 つも無くなる**。 「LLM に用があるか」を
-判定するのも task を起こすのも daemon 側になる (`auto_start` / `queue_notify` は既にある)。
+いずれも致命的ではなく、 **今 khi が自作している対策の一般化**になる。
 
-論点 b (host cron vs daemon 内 scheduler) のうち、 **判定と起動だけが内蔵側に倒れる**。
-外部 API を叩く窓 (poll の cursor と頻度) は論点 h の通り workspace 側に残る。
+| 懸念 | 対策 | 現行 khi の実装 |
+|---|---|---|
+| 同一 target への重複起動 | `kind × target` で 1 本の直列化 | flock + 実行中 `[cycle]` task の確認 |
+| 自己トリガ (無限呼び直し) | 反応型述語の `spoken` に `judged` を数える | `speech_index()` の `SPOKEN` |
+| 流量とコスト | `max_per_sweep` と繰り越し | 「note-suggest の fork は 1 巡 5 枚まで」 |
+| 失敗のバックオフ | `judged{outcome: error}` | `suggestion_reviewed` |
+
+第 2 版は「cadence は自動で片付く、 独立した論点ではなかった」としていたが、 これも不正確
+だった。 **片付くのではなく昇格する** — khi の `run-cycle.sh` + `cycle_preflight.sh` は
+判断スケジューラのプロトタイプであり、 上の 4 つは全てそこで実証済みである。
+
+---
+
+## 既存の決定との関係
+
+| 既存 | 本 doc の扱い |
+|---|---|
+| **決定 3** (境界を越えるのは card 粒度、 本文は現地) | **守る**。 第 2 版のインボックス案は衝突していたが、 I-4 の変更で解消 |
+| **決定 10** (mail/Jira/Slack は workspace 内 triage を通るので triaged で到着) | **一部を `captured` へ倒す**。 篩いは workspace に残るが、 起票の確定は daemon 側の判断に回る |
+| **決定 12** (queue 評価は決定論のみ) | **徹底する側**。 identity 解決も述語も gate も判断ゼロ |
+| **決定 13** (event 追記を正、 state は導出) | **徹底する側**。 workspace 側の二本目のログを畳む |
+| **決定 14** (state の正は daemon) | **完成させる側**。 `claims` の退役でようやく fold が一本になる |
+| **決定 15** (auto-done) | **鏡像を足す**。 I-5 の auto-reopen、 J-6 の auto-Go |
+| **決定 16** (`ref` = canonical source のキー) | **一般化する**。 `ref` は「登録に使った 1 本目の identity」。 B-1 で列の去就を決める際に再定義が要る可能性 |
+| **決定 17** (`reopen_triaged`) | **引き金を与える**。 第 12 版は「足りないのは押せる action だけ」としたが、 誰が何を見て押すかが空いていた |
+| **論点 b** (定期起動の機構) | **判断の起動は内蔵側へ**。 外部 poll の窓は workspace |
+| **論点 g** (洪水対策 = 同一 source ref の再 push を update 扱い) | **置き換わる**。 多対一の identity 索引 + binding のライフサイクルへ一般化。 洪水自体は workspace 側の篩いで止まる |
+| **論点 h** (source 既読化・ cursor は workspace 側) | **変わらない** |
+| **逆輸入 3** (チャネル知識は workspace 側) | **守る**。 解釈するキーの closed set を上に明示した |
+
+---
 
 ## 段階
 
-1. **B-1 + B-2** — identity と インボックス。 土台
-2. **B-3 + B-4** — actions の読み口と却下 action。 ここで workspace 側の claims / fold /
-   match / daemon_sync が消える
-3. **B-5 + B-6** — judge 述語と auto-reopen。 ここで workspace 側の `evaluate.py` と
-   cycle の足場が消える
+1. **B-1 + B-2** — identity 索引と `captured` 着地。 土台
+2. **B-3 + B-4** — actions の読み口、 `judged` / `answered`。 ここで workspace 側の
+   claims / fold / match / daemon_sync が消える
+3. **B-5 + B-6** — 判断スケジューラと auto-reopen。 ここで workspace 側の cron と
+   呼び直し抑止が消える
+4. (射程外) 自律 Go の gate
+
+第 2 版の「cadence を先にコアへ持ち上げる」案でこれを始めていたら、 **消える予定のものを
+boid コアへ移植する**ことになっていた。 順序は identity が先。
+
+---
 
 ## 非目的
 
-- **identity を認証・認可に使わない**。 ここでの identity は「イベントの配送先を決める
-  索引」であって、 principal の権限とは無関係。 名前が示唆する以上のことをさせない
-- **identity のチャネル知識を daemon に持たせない**。 名前空間の意味・ 正規化・ 妥当性検査は
+- **daemon にエージェントを置く**こと。 P-1。 gate も述語も決定論のまま
+- **daemon が原文を保持する**こと。 決定 3 を維持する
+- **identity を認証・ 認可に使う**こと。 ここでの identity は配送先を決める索引であって、
+  principal の権限とは無関係。 名前が示唆する以上のことをさせない
+- **identity のチャネル知識を daemon に持たせる**こと。 名前空間の意味・ 正規化・ 妥当性検査は
   すべて workspace 側 (I-2)
-- **未着インボックスからの自動起票**。 起票は判断であり、 決定 14 の線を越える (I-4)
-- **daemon が原文を保持すること**。 決定 3 (境界を越えるのは card 粒度、 本文は現地) は
-  維持する。 インボックスに何を置くかはその制約の下で決める (上記 B-2)
+- **判断の中身を daemon が知る**こと。 `kind` は不透明のまま (J-1 / J-2)
+
+---
 
 ## 未確定
 
+### 設計を左右するもの
+
+- **`tasks.ref` 列を退役させるか、 drop 時に空にするか** (B-1)。 決定 16 の再定義を伴う
+- **判断ジョブの台帳をどう持つか**。 実体のあるテーブルにするか、 述語から毎回導出するか
+  (導出なら「起こした」の記録は `judged` と dispatch した task 自体で足りる可能性がある)
+- **`judge:` behavior の発見経路**。 `project.yaml` の reload / fetch と、 daemon が
+  知っている trigger 定義の同期。 project.yaml の変更が `boid project fetch` を要する現状と
+  どう噛み合うか
+- **`captured` の滞留対策**。 終端でないので 30 日 GC に乗らない。 TTL か自動 drop か、
+  可視化して人に落とさせるか
+- **identity と reference の分離**。 epic の子 card 群のような正当な重複参照を、 排他的な
+  identity で表現するか別概念にするか
+
+### 挙動として決めておくもの
+
 - **auto-reopen のフラップ対策** (I-5)。 ソースが閉じ / 開きを繰り返すと task が ping-pong
-  する。 「自動 reopen は 1 回だけ、 2 回目以降は人に見せる」等が要りそう
-- **インボックスの UI と滞留の扱い**。 未着イベントが溜まり続けたときに誰がどう気づくか
-  (watchdog に載せるか、 件数を出すだけか)。 論点 g の洪水対策がここに移る
-- **identity の link を誰が主張してよいか**。 khi の `related_jira_issues` は今 LLM が
-  書いている。 identity として登録するなら「1 identity 1 principal」に反する link 要求が
-  来たときの応答 (拒否して人に見せる、 が素案) を決める必要がある
-- **未着イベントの保持期間と GC**。 インボックスは新しい永続データであり、 既存の GC
-  (30 日ルール) に載せるかを決める
-- **I-5b の置き場所**。 done の triage task に観測を着地させる経路を、 machine の rule に
-  done を足す形にするか、 `task_triage` 行の有無を見られる service 層のガードにするか。
-  論点 6-3 (通常 task の done に発火させない) を壊さないことが条件
-- **イベント配送 op の payload 契約**。 pump が押す「イベント」とは何か — action 型、
-  payload の形、 task 上で何に畳まれるか。 今 daemon に届いているのは workspace 側で
-  fold + reconcile 済みの attrs 差分であって生イベントではない。 ここが決まらないと
-  judge 述語の `inputs` 側も B-1 の規模見立ても揺れる
-- **インボックスに何を置くか**。 決定 3 と起票判断の材料の両立 (上記 B-2)
+  する。 「自動 reopen は 1 回だけ、 2 回目以降は人に見せる」等
+- **I-5b の置き場所**。 done への着地を machine の rule に足すか、 `task_triage` 行の有無を
+  見られる service 層のガードにするか。 論点 6-3 (通常 task の done に発火させない) を
+  壊さないこと
+- **terminal task GC と identity binding の寿命**。 done / dropped の task は 30 日で GC
+  される。 I-5 の「done では握り続ける」は実質 30 日の期限付きで、 GC 後は同じキーが事実上
+  解放される。 それでよいのか、 identity テーブルを cascade させるのか
 - **イベント push の冪等性**。 現行の冪等性は workspace 側の reconcile (差分 push、
-  self-healing) が担保している。 per-event push にすると actions は append-only なので
+  self-healing) が担保している。 per-event push にすると actions は append-only なので、
   pump のクラッシュ・ 再送で同じイベントが二重に積まれる。 イベント単位の冪等キーが要る
 - **`description` の組み立ての引き取り手**。 workspace 側の `desired_description()` は
   summary / canonical URL / suggestion / 子一覧を平文に畳んで task の `description` に
   書いている (「summary が attrs の中にしか無いと card を開いても何の件か分からず Go の
   判断ができない」— 2026-08-14 の実害)。 Web UI が `detail.attrs` から直接描画するか、
-  pump が押し続けるかを決める
-- **identity と reference の分離**。 epic の子 card 群のような正当な重複参照を、
-  排他的な identity で表現するか別概念にするか
-- **bind 時の drain 意味論**。 未着イベントが溜まった identity に後から binding ができた
-  とき (インボックスからの起票 / `task create --ref` / 既存 task への link の 3 経路)、
-  滞留イベントを新 task へ replay して畳むのか捨てるのか。 replay するなら順序と、
-  **イベント自体の dedup キー** (再送で二重に積まれないこと) が要る。 「イベント到着と
-  起票が同時」の race はここに集約される
-- **terminal task GC と identity binding の寿命**。 done / dropped の task は 30 日で
-  DB レコードごと GC される。 I-5 の「done では握り続ける」は実質 30 日の期限付きであり、
-  GC 後は同じキーのイベントがインボックス行き (= 事実上の解放) になる。 それでよいのか、
-  identity テーブルを cascade させるのかを決める
-- **移行手順**。 既存 triage task の `source` / `related_jira_issues` / `ref` からの
-  identity 一括投入と、 workspace 側 claims の退役順序
-- **本編への取り込み方**。 本 doc を独立 subsystem のまま進めるか、 Phase 2 の項目として
-  本編に畳むか。 I-5 / I-6 / I-7 は事実上 決定 16 / 17 / 論点 g を書き換える内容なので、
-  畳む時点で**決定番号を振り直さないと**「決定は本編・ 詳細は別 doc」の構造が崩れる
-  (Fable レビュー指摘)。 早めに決着させる
+  workspace が押し続けるか
+- **判断 task の失敗の扱い**。 `judged` を押さずに死んだ場合、 述語は永遠に真のままになる。
+  dispatch 側でタイムアウトを見るか、 起動回数で諦めるか
+
+### 移行
+
+- **identity の一括投入**。 既存 triage task の `source` / `related_jira_issues` / `ref` から
+- **履歴の投入**。 過去の却下履歴を写さないと、 **J-4 が塞ごうとしている穴を移行自身が一度
+  開ける** (移行直後に再提案の嵐になる)。 子の到達点も同様
+- **本編への取り込み方**。 独立 subsystem のまま進めるか Phase 2 の項目として畳むか。
+  I-4 / I-5 / I-6 / J-6 は事実上 決定 10 / 16 / 17 / 論点 g を書き換えるので、 畳む時点で
+  **決定番号を振り直さないと**「決定は本編・ 詳細は別 doc」の構造が崩れる

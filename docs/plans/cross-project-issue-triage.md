@@ -1608,16 +1608,22 @@ exit criteria (2 週間程度): (1) nose が「見に行く」頻度が実際に
   決定 17 (`reopen_triaged`) で決着。 経緯: 決定 15 の `source_closed` を報告できない source
   (mail / slack / head) の task が永久に working に滞留する穴を、 状態の 3 値化でも猶予期間でも
   なく「起票するなら報告できる source を必ず作る」という契約で塞いだ。
-- **論点 k (2026-08-18 提起): 取り込み identity と未着インボックス**。 決定 14 が退役させたのは
+- **論点 k (2026-08-18 提起): 判断スケジューラと取り込み identity**。 決定 14 が退役させたのは
   workspace 側の `decisions` だけで `claims` + fold は残ったため、 **fold は今も 2 つある**
   (決定 14 の決め手「2 つの fold を並べるとズレたときに誰も気づかない」がまだ満たされていない)。
   原因は workspace の都合ではなく daemon 側の口の不足 2 点 — (1) 宛先未確定のイベントを
   受け取れない (action は `task_id` 必須) (2) actions の履歴を読む口が無い (`action_send` は
-  あるが `action_list` が無い)。 外部キーを task の **identity** (ユーザに対するメールアドレスや
-  GitHub アカウントと同じもの) として多対一で持たせ、 未着イベントはインボックスに積む形で
-  塞ぐ案を [ingestion-identity.md](ingestion-identity.md) に切り出した。 決定 16 の `ref` を
-  一般化し、 論点 g の dedup を置き換え、 論点 b のうち judge の判定・ 起動だけを内蔵側に倒す。
-  実装はまだ。 本編に畳むかは同 doc の未確定。
+  あるが `action_list` が無い)。
+  検討の過程で、 **「daemon は決定論」「取り込みは workspace」を同時に立てると「判断のトリガは
+  daemon が出す」が強制される** (判断の起動条件を判断で決めると循環する) ことが分かり、
+  daemon を**判断のスケジューラ**、 workspace を**判断の実装**とする To-Be に整理した。
+  `judge:` を予約した behavior 名前空間とし、 述語は反応型 / 周期型の 2 形、 判断の記録は
+  `judged { kind, outcome }` action。 外部キーは task の **identity** として多対一で持たせ、
+  未着キーは専用 inbox ではなく **`captured` な triage task** として着地させる (篩いが
+  workspace 側に残るので daemon 側の流量は今と変わらない)。 詳細は
+  [ingestion-identity.md](ingestion-identity.md)。 決定 16 の `ref` を一般化し、 論点 g の
+  dedup を置き換え、 論点 b の判断起動側を内蔵へ倒し、 決定 10 の到着状態を一部 `captured` へ
+  倒す。 実装はまだ。 本編に畳むかは同 doc の未確定。
 
 ---
 
@@ -1707,23 +1713,27 @@ exit criteria (2 週間程度): (1) nose が「見に行く」頻度が実際に
 - **Phase 0 は即開始可能**: khi は customer bitbucket の `khi-task-collector` (メタプロジェクト
   の原型) が登録済みで、 前提が揃っている。
 
-### 第 13 版 (2026-08-18、 取り込み identity の切り出し) での変更
+### 第 13 版 (2026-08-18、 判断スケジューラの切り出し) での変更
 
 Phase 1 完了後の khi 実機と daemon 側 main を再突合し、 **決定 14 が fold を 1 つに
 減らしきれていない**ことを確認した (退役したのは `decisions` だけで `claims` +
 `fold_claims()` は残っており、 `daemon_sync.py` は fold エンジン 2 つの間の reconcile を
-している)。 原因は daemon 側の口の不足 2 点にあると特定し、 外部キーを task の identity
-として扱う案を **論点 k** として提起、 詳細は [ingestion-identity.md](ingestion-identity.md)
-に分離した。
+している)。 原因を daemon 側の口の不足 2 点に特定し、 そこから **論点 k** を提起、 詳細は
+[ingestion-identity.md](ingestion-identity.md) に分離した。
 
 - 本編の変更は論点 k の追加のみ。 決定の新設・ 変更は行っていない (実装前のため)
-- 同 doc は決定 16 (`ref` = canonical source のキー) を「起票に使った 1 本目の identity」へ
-  一般化し、 論点 g の dedup 案 (同一 source ref の再 push を update 扱い) を多対一の
-  identity 索引 + binding のライフサイクルへ置き換える
+- 同 doc は「daemon は決定論 / LLM 判断は workspace / **トリガは daemon**」の 3 原則から
+  出発し、 daemon を判断のスケジューラとして再定義する。 判断の種類は `judge:` 予約
+  名前空間の behavior として workspace が宣言し、 daemon は `trigger` だけを読む (kind の
+  意味は知らない) ので、 **判断の場を増やしても daemon は無変更**という拡張性を持つ
+- 決定 16 (`ref` = canonical source のキー) を「登録に使った 1 本目の identity」へ一般化し、
+  論点 g の dedup 案を多対一の identity 索引 + binding のライフサイクルへ置き換える
 - 決定 17 (`reopen_triaged`) に**引き金**を与える: 第 12 版は「done を探す経路は既に
   成立している、 足りないのは押せる action だけ」としたが、 誰が何を見て押すかは空いていた
-- 併せて既存の穴を 1 件記録した: 決定 14 で判断を Web UI へ移したのに Web UI 側に
-  `suggestion_answered` を生む経路が無く、 **Web UI で却下しても再提案の抑止が効かない**
+- 決定 10 (mail/Jira/Slack は triaged で到着) の一部を `captured` へ倒す。 篩いは workspace の
+  LLM に残るが、 起票の確定 (どの card になるか) は daemon 側の索引と判断に回る
+- 併せて既存の穴を 1 件記録した: 決定 14 で判断を Web UI へ移したのに Web UI 側に回答を
+  記録する経路が無く、 **Web UI で却下しても再提案の抑止が効かない**
 
 ### 第 12 版 (2026-08-13、 done 自動落ちの前提を確定) での変更
 
