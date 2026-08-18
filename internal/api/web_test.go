@@ -1138,6 +1138,63 @@ func TestTaskDetailFragment_Status(t *testing.T) {
 	}
 }
 
+// TestTaskDetailFragment_Status_RendersSuggestion is a wiring test for the
+// suggestion card on the fragment path (Opus review finding, 2026-08-18):
+// TestTaskDetailFragment_Status above sits right next to this code but
+// never wired a TaskTriage store, so it could not have caught the
+// suggestion parameter being dropped or left at its zero value.
+func TestTaskDetailFragment_Status_RendersSuggestion(t *testing.T) {
+	svc := &stubWebService{taskDetail: makeTaskDetailView()}
+	triage := &stubTriageStore{rows: map[string]*orchestrator.TaskTriage{
+		"task-1": {TaskID: "task-1", Detail: []byte(`{"suggestion":{"verb":"wake","action":"re-triage now","reason":"source event fired","basis":"issue #42 reopened"}}`)},
+	}}
+	h := &WebHandler{Service: svc, TaskTriage: triage}
+	r := chi.NewRouter()
+	r.Get("/tasks/{id}/fragment", h.TaskDetailFragment)
+
+	req := httptest.NewRequest(http.MethodGet, "/tasks/task-1/fragment?kind=status", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+	body := w.Body.String()
+	for _, want := range []string{"badge-verb-wake", "re-triage now", "source event fired", "issue #42 reopened"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("status fragment missing %q; got: %s", want, body)
+		}
+	}
+}
+
+// TestTaskDetail_RendersSuggestion covers the full-page path (not just the
+// HTMX fragment) — the same wiring gap as above, but for TaskDetail →
+// templates.TaskDetail's threaded suggestion parameter.
+func TestTaskDetail_RendersSuggestion(t *testing.T) {
+	svc := &stubWebService{taskDetail: makeTaskDetailView()}
+	triage := &stubTriageStore{rows: map[string]*orchestrator.TaskTriage{
+		"task-1": {TaskID: "task-1", Detail: []byte(`{"suggestion":{"verb":"wake","reason":"source event fired"}}`)},
+	}}
+	h := &WebHandler{Service: svc, TaskTriage: triage}
+	r := chi.NewRouter()
+	r.Get("/tasks/{id}", h.TaskDetail)
+
+	req := httptest.NewRequest(http.MethodGet, "/tasks/task-1", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, "badge-verb-wake") {
+		t.Errorf("task detail page should render the suggestion verb badge, got: %s", body)
+	}
+	if !strings.Contains(body, "source event fired") {
+		t.Errorf("task detail page should render the suggestion reason, got: %s", body)
+	}
+}
+
 func TestTaskDetailFragment_Jobs(t *testing.T) {
 	svc := &stubWebService{taskDetail: makeTaskDetailView()}
 	r := newTestWebHandler(svc)

@@ -1,8 +1,6 @@
 package components
 
-import (
-	"github.com/novshi-tech/boid/internal/orchestrator"
-)
+import "github.com/novshi-tech/boid/internal/orchestrator"
 
 // projectLabel returns the display name for a project, falling back to ID
 // when the meta name is missing.
@@ -13,8 +11,48 @@ func projectLabel(p *orchestrator.Project) string {
 	return p.ID
 }
 
+// statusTabActive reports whether tab is the currently selected status view.
+// filter.Status is normalized to "open" before it ever reaches this
+// template (web.go's TaskList defaults an empty query param), but "" is
+// still treated as "open" here defensively rather than assuming every
+// caller does that normalization. Any other status value (including
+// "parked" before this tab existed, or any future/unknown value) is simply
+// not active — this is the fix for the bug where opening ?status=parked
+// showed Open as the active tab: the old else-branch matched every status
+// that wasn't "closed" or "queue_next".
+func statusTabActive(filterStatus, tab string) bool {
+	status := filterStatus
+	if status == "" {
+		status = "open"
+	}
+	return status == tab
+}
+
+func ariaSelectedAttr(active bool) string {
+	if active {
+		return "true"
+	}
+	return "false"
+}
+
+templ statusTab(filter orchestrator.TaskFilter, status, label string) {
+	<button
+		type="button"
+		hx-get="/"
+		hx-vals={ `{"status":"` + status + `"}` }
+		hx-include="closest form"
+		hx-target="#main-content"
+		hx-swap="innerHTML"
+		hx-select="#main-content"
+		hx-push-url="true"
+		class={ "status-tab", templ.KV("active", statusTabActive(filter.Status, status)) }
+		role="tab"
+		aria-selected={ ariaSelectedAttr(statusTabActive(filter.Status, status)) }
+	>{ label }</button>
+}
+
 // TaskFilters renders the task list toolbar:
-//   - status (open/closed/queue) as the primary view tabs
+//   - status (open/closed/queue/parked) as the primary view tabs
 //   - search as a standalone input (its own hx-target avoids losing focus on each keystroke)
 //   - workspace > project as one logical filter group
 //
@@ -37,19 +75,10 @@ templ TaskFilters(filter orchestrator.TaskFilter, projects []*orchestrator.Proje
 	>
 		<input type="hidden" name="status" value={ filter.Status }/>
 		<div class="status-tabs" role="tablist" aria-label="ステータス">
-			if filter.Status == "closed" {
-				<button type="button" hx-get="/" hx-vals={ `{"status":"open"}` } hx-include="closest form" hx-target="#main-content" hx-swap="innerHTML" hx-select="#main-content" hx-push-url="true" class="status-tab" role="tab" aria-selected="false">Open</button>
-				<button type="button" hx-get="/" hx-vals={ `{"status":"closed"}` } hx-include="closest form" hx-target="#main-content" hx-swap="innerHTML" hx-select="#main-content" hx-push-url="true" class="status-tab active" role="tab" aria-selected="true">Closed</button>
-				<button type="button" hx-get="/" hx-vals={ `{"status":"queue_next"}` } hx-include="closest form" hx-target="#main-content" hx-swap="innerHTML" hx-select="#main-content" hx-push-url="true" class="status-tab" role="tab" aria-selected="false">Queue</button>
-			} else if filter.Status == "queue_next" {
-				<button type="button" hx-get="/" hx-vals={ `{"status":"open"}` } hx-include="closest form" hx-target="#main-content" hx-swap="innerHTML" hx-select="#main-content" hx-push-url="true" class="status-tab" role="tab" aria-selected="false">Open</button>
-				<button type="button" hx-get="/" hx-vals={ `{"status":"closed"}` } hx-include="closest form" hx-target="#main-content" hx-swap="innerHTML" hx-select="#main-content" hx-push-url="true" class="status-tab" role="tab" aria-selected="false">Closed</button>
-				<button type="button" hx-get="/" hx-vals={ `{"status":"queue_next"}` } hx-include="closest form" hx-target="#main-content" hx-swap="innerHTML" hx-select="#main-content" hx-push-url="true" class="status-tab active" role="tab" aria-selected="true">Queue</button>
-			} else {
-				<button type="button" hx-get="/" hx-vals={ `{"status":"open"}` } hx-include="closest form" hx-target="#main-content" hx-swap="innerHTML" hx-select="#main-content" hx-push-url="true" class="status-tab active" role="tab" aria-selected="true">Open</button>
-				<button type="button" hx-get="/" hx-vals={ `{"status":"closed"}` } hx-include="closest form" hx-target="#main-content" hx-swap="innerHTML" hx-select="#main-content" hx-push-url="true" class="status-tab" role="tab" aria-selected="false">Closed</button>
-				<button type="button" hx-get="/" hx-vals={ `{"status":"queue_next"}` } hx-include="closest form" hx-target="#main-content" hx-swap="innerHTML" hx-select="#main-content" hx-push-url="true" class="status-tab" role="tab" aria-selected="false">Queue</button>
-			}
+			@statusTab(filter, "open", "Open")
+			@statusTab(filter, "closed", "Closed")
+			@statusTab(filter, "queue_next", "Queue")
+			@statusTab(filter, "parked", "Parked")
 		</div>
 		<input
 			type="search"

@@ -56,6 +56,31 @@ func BuildTreeItems(tasks []*orchestrator.Task, projectNames map[string]string) 
 	return result
 }
 
+// BuildTreeItemsWithSuggestions is BuildTreeItems plus a best-effort
+// Suggestion overlay from each task's task_triage row (verb/action/reason/
+// basis — cross-project-issue-triage 逆輸入3). Used by the Parked tab
+// (?status=parked): "which parked card has a wake suggestion" is only
+// answerable if the row shows it (BD-8). Tree shape is untouched — this is
+// a second pass over BuildTreeItems' own output, so Depth/HasChildren/
+// ParentID keep meaning exactly what they do there.
+//
+// Same best-effort posture as BuildQueueItems: a task with no triage row,
+// or a Detail blob orchestrator.DetailSuggestion can't parse, just keeps
+// its zero-value Suggestion instead of erroring the whole page.
+func BuildTreeItemsWithSuggestions(tasks []*orchestrator.Task, projectNames map[string]string, triageByTaskID map[string]*orchestrator.TaskTriage) []components.TreeItem {
+	items := BuildTreeItems(tasks, projectNames)
+	for i := range items {
+		tt, ok := triageByTaskID[items[i].Task.ID]
+		if !ok || tt == nil {
+			continue
+		}
+		if s, ok := orchestrator.DetailSuggestion(tt.Detail); ok {
+			items[i].Suggestion = s
+		}
+	}
+	return items
+}
+
 // BuildFlatItems returns tasks as a flat list (Depth=0, HasChildren=false, ParentID="").
 // Used for the "closed" status view where tree structure is irrelevant.
 func BuildFlatItems(tasks []*orchestrator.Task, projectNames map[string]string) []components.TreeItem {
@@ -105,6 +130,9 @@ func BuildQueueItems(tasks []*orchestrator.Task, projectNames map[string]string,
 			// derived field always being present).
 			if children, err := orchestrator.DetailChildren(tt.Detail); err == nil {
 				item.Children = children
+			}
+			if s, ok := orchestrator.DetailSuggestion(tt.Detail); ok {
+				item.Suggestion = s
 			}
 		}
 		result = append(result, item)

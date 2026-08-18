@@ -205,6 +205,77 @@ func DetailChildren(detail json.RawMessage) ([]TaskTriageChild, error) {
 	return wrapper.Children, nil
 }
 
+// Suggestion is task_triage.detail.suggestion — the triage agent's single
+// recommendation, derived from primary sources (docs/plans/
+// cross-project-issue-triage.md:544 のスキーマ案, 逆輸入3). Verb uses the
+// same vocabulary as nose's own response words: go/shape/manual/park/
+// drop/wake.
+type Suggestion struct {
+	Verb   string `json:"verb,omitempty"`
+	Action string `json:"action,omitempty"`
+	Reason string `json:"reason,omitempty"`
+	Basis  string `json:"basis,omitempty"`
+}
+
+// DetailSuggestion extracts task_triage.detail.suggestion from a detail
+// blob, preferring the top-level key (docs/plans/cross-project-issue-triage.md:544
+// のスキーマ案) and falling back to detail.attrs.suggestion. The fallback is
+// the one actually exercised today: "suggestion" is not a promoted
+// attrs_set key (see applyAttrsSetSideEffect / FoldDetailAttrs,
+// internal/api/workflow_triage.go), and attrs_set is currently the only
+// write path for it in this repo — so in practice it lands under
+// detail.attrs, not at the top level. Top-level is still checked first per
+// BD-8's design (a future/alternate writer could place it there directly);
+// this doc comment just flags that assumption as unverified against actual
+// writers, not as dead weight to remove.
+//
+// Each candidate (top-level, then attrs) is decoded independently via its
+// own json.Unmarshal call: a malformed or wrong-shaped value in one
+// location must not blank out a well-formed value in the other. (An
+// earlier version decoded both off a single struct/Unmarshal call, so one
+// bad field anywhere in the blob silently zeroed a good suggestion
+// elsewhere in the same blob — Opus review finding, 2026-08-18.)
+//
+// Returns the zero Suggestion and false on any absence/parse failure —
+// same best-effort posture as triageSummary (internal/api/tree.go): never
+// errors, so a missing/malformed suggestion blob never sinks the row it
+// lives on (rule 5, 隠さない, is about the row surviving, not every derived
+// field always being present).
+func DetailSuggestion(detail json.RawMessage) (Suggestion, bool) {
+	if len(detail) == 0 || string(detail) == "null" {
+		return Suggestion{}, false
+	}
+	var top map[string]json.RawMessage
+	if err := json.Unmarshal(detail, &top); err != nil {
+		return Suggestion{}, false
+	}
+	if s, ok := decodeSuggestion(top["suggestion"]); ok {
+		return s, true
+	}
+	var attrs map[string]json.RawMessage
+	if err := json.Unmarshal(top["attrs"], &attrs); err == nil {
+		if s, ok := decodeSuggestion(attrs["suggestion"]); ok {
+			return s, true
+		}
+	}
+	return Suggestion{}, false
+}
+
+// decodeSuggestion decodes a single candidate "suggestion" value. Returns
+// (zero, false) for an absent/null/malformed value rather than erroring —
+// see DetailSuggestion's doc comment for why each candidate must fail
+// independently of the other.
+func decodeSuggestion(raw json.RawMessage) (Suggestion, bool) {
+	if len(raw) == 0 || string(raw) == "null" {
+		return Suggestion{}, false
+	}
+	var s Suggestion
+	if err := json.Unmarshal(raw, &s); err != nil {
+		return Suggestion{}, false
+	}
+	return s, true
+}
+
 // parseDetailMap round-trips a task_triage.Detail blob through a
 // map[string]json.RawMessage so callers can replace a single top-level key
 // (children, attrs, ...) without disturbing keys they don't know about
