@@ -21,10 +21,22 @@ To-Be を先に立てる形へ全面的に組み直した** (第 3 版)。
 | P-2 | **外部からのシグナル取り込みは workspace 側** | credential 境界 (決定 11 / 論点 h) と、 原文を越境させない設計 (決定 3) の帰結 |
 | P-3 | **判断のトリガは daemon が出す** | P-1 + P-2 から自動的に出る。 下記 |
 
-P-3 は独立した思いつきではなく、 P-1 と P-2 を同時に立てると強制される。 **「いつ判断させるか」を
-判断で決めると循環する**ので、 起動条件は決定論の側にしか置けない。 workspace 側に置くと、
-今の khi のように workspace が自前で cron と preflight を組み、 決定論のロジックが両側に
-散る (それが fold 二本問題の遠因でもある)。
+P-3 は独立した思いつきではなく、 P-1 と P-2 に **決定 13 (台帳は daemon に一箇所)** を
+合わせると出てくる。 論証は 2 段:
+
+1. **反応型の起動条件は daemon にしか書けない。** 「新しい事実が来たのに誰も反応していない」を
+   評価するには actions の台帳が要り、 台帳は決定 13 / 14 で daemon にしか無い。 workspace 側に
+   置こうとすると自前の履歴を持つことになり、 それが今の `claims` = fold 二本問題そのもの
+2. **周期型だけ workspace に残すと決定論が両側に散る。** 周期型 (「N 経った」) は原理的には
+   workspace 側の cron でも書ける — 現に今の `run-cycle.sh` がそうで、 循環はしていない。
+   ただし起動の判定が 2 箇所に分かれ、 流量制御・ 直列化・ バックオフを両側で二重に実装する
+   ことになる。 実際 khi は今それを自作している
+
+つまり P-3 は「循環するから」だけでは導けず、 **反応型は強制・ 周期型は集約の選好**である。
+結論 (daemon に寄せる) は変わらないが、 論拠が違うので分けて書く。
+
+**例外**: 人が明示的に始める対話セッション (khi の `judge:spec` 相当) は述語から起こさない。
+P-3 は「daemon が起こす判断」の話であって、 「人が始める判断」を禁じるものではない。
 
 この 3 つから、 daemon の役割が決まる: **daemon は判断のスケジューラになり、 workspace は
 判断の実装になる。**
@@ -45,8 +57,13 @@ P-3 は独立した思いつきではなく、 P-1 と P-2 を同時に立てる
         │                                            │
         └───── actions を畳む ◀──────────────────────┘
                  (attrs_set / child_* /
-                  judged / answered)
+                  judged / proposed)
+
+              ▲
+              └──── answered ──── 人 (Web UI)
 ```
+
+`answered` だけは書き手が人 (Web UI) であって判断 task ではない。
 
 取り込みも suggest も spec も、 将来増える判断も、 **すべてこの 1 本のループに乗る**。
 今 khi が `run-cycle.sh` + `cycle_preflight.sh` で自作しているものの一般化である。
@@ -65,6 +82,7 @@ P-3 は独立した思いつきではなく、 P-1 と P-2 を同時に立てる
 | イベントの記録と畳み込み | **daemon** | 決定 13。 台帳は一箇所 |
 | 決定論の rule (auto-done / wake / 呼び直し抑止) | **daemon** | 決定 12 |
 | state 遷移の判断 (park / drop / Go / reopen) | **人 (Web UI)** | 決定 14 |
+| **起票の確定 (captured → triaged)** | **未確定** | I-4 で新規 card が `captured` で着地するようになるため毎 card 発生する工程になる。 優先度の判断ではなく「既存 card の続報ではない」という同一性の確定なので、 決定 14 の park/drop/Go とは性質が違う。 下記 未確定 |
 | 人への提示 (queue / card 表示) | **daemon** | 横断は daemon にしか作れない |
 
 一行で言えば **daemon は「同一性」と「時系列」を持ち、 workspace は「意味」を持ち、
@@ -113,6 +131,15 @@ task_behaviors:
 
 ### 予約語にする理由
 
+実装上の裏付け (Fable レビューで実測): behavior 名に**文字種の制約は無い** —
+`LookupBehavior` は「verbatim 比較、 正規化なし」(`behavior_resolve.go:50`) で、 YAML の
+plain scalar key はコロン+スペース以外のコロンを含められる。 したがって `judge:` の判定は
+素朴な `HasPrefix` でよい。 `trigger` フィールドの追加も可能 — project.yaml は非 strict
+パースで未知フィールドは黙って無視される (拒否されるのは `removedBehaviorFieldGuidance` の
+明示リストのみ)。 ただし `TaskBehavior` は (i) legacy loader (ii) workspace default のマージ
+(iii) workspaces テーブルへの JSON 永続化、 の 3 経路を持つので、 追加時は 3 箇所の追従が要る
+(B-5 の見積もりに含める)。
+
 `judge:` プレフィクスが無いと、 daemon は「この behavior は自分が起動してよいものか」を
 区別できない。 通常の `dev` behavior を daemon が勝手に起こすのは事故なので、
 **「daemon が起動してよい」を名前で明示する**。 `trigger` を持つ behavior に限る、 という
@@ -133,17 +160,73 @@ task_behaviors:
 すれば **kind ごとに独立して回り**、 自己トリガ防止 (LLM の発言が自分を再起動しない) も
 一般化されたまま効く。
 
-### 周期型 (`every: <duration>`)
+### 周期型 (`every: <duration>` [+ `probe:`])
 
-> 前回の起動から N 経った
+> 前回の起動から N 経った [∧ probe が「ある」と答えた]
 
 外部を見に行かないと事実が来ないもの (取り込み poll) 用。 これだけは反応型に落とせない。
 
-### `on:` の closed set
+**`probe` が要る理由 (Fable レビュー指摘)。** 「N 経った」だけで起こすと、 新着ゼロでも
+10 分ごとに判断 task が起きる。 これは khi が 2026-08-15 の統合で**明文で潰した問題**の
+巻き戻しになる:
 
-Phase 1 では `task_input` の 1 つで足りる。 将来 `child_specced` など状態の形を足す余地は
-残すが、 **daemon が意味を知らずに評価できるものに限る**。 `on:` に workspace の語彙
-(`jira_reopened` 等) を書けるようにはしない — それは逆輸入 3 の境界を越える。
+> if nothing new, no ingest task is created this cycle (this is what lets cron run
+> frequently without cluttering `boid task list` with empty-cycle tasks)
+>
+> — khi `scripts/poll_ingest.py`
+
+第 3 版初稿は「poll_ingest はトリガが daemon に移れば役目が無い」としていたが誤りで、
+poll_ingest の役目はトリガではなく **周期トリガを条件付きにする決定論の前置ゲート**である。
+トリガが daemon に移っても役目は消えない。
+
+そこで周期型に `probe` を許す。 daemon が workspace サンドボックスで**決定論のチェックを
+走らせ、 exit code (と契約行) だけを読む**:
+
+```yaml
+  judge:intake:
+    trigger:
+      every: 10m
+      probe: python3 scripts/poll_probe.py    # LLM は起きない。exit 0 = 用がある
+```
+
+- probe は `boid exec --readonly` 相当で走る (task を起こさない実行経路は既にある)
+- 中で外部 API を叩くので、 credential と窓は workspace 側のまま (P-2 を守る)
+- LLM は一度も起きないので P-1 も守る
+- daemon は probe の**中身を知らない**。 読むのは exit code だけ
+
+これは `cycle_preflight.sh` の一般化そのものである。 述語は正確には
+**反応型 / 周期型 / 周期型+probe の 3 形**になる。
+
+### `on:` と `scope:` の closed set
+
+`on:` は Phase 1 では `task_input` の 1 つで足りる。 将来 `child_specced` など状態の形を
+足す余地は残すが、 **daemon が意味を知らずに評価できるものに限る**。 `on:` に workspace の
+語彙 (`jira_reopened` 等) を書けるようにはしない — 逆輸入 3 の境界を越える。
+
+`scope:` は対象を絞る **status の集合**で、 これも closed set (`triaged` / `captured` /
+`parked` / …)。 daemon は status を知っているので解釈できる。
+
+### `inputs` に数える action の closed set
+
+反応型述語の `inputs` を「`judged` と人の回答以外の全部」と置くと、 **ある kind の判断が
+書いた action が別の kind にとっての新しい事実になり、 kind 間で相互トリガが起きる**
+(Fable レビュー指摘)。 旧 `speech_index` は「LLM が喋った」を kind 非依存で数えていたので
+自己トリガ防止が全 LLM 発話に効いていたが、 kind に分割するとその防御が自 kind にしか
+効かなくなる。
+
+したがって `inputs` は明示の closed set にする。 素案:
+
+| action | `inputs` に数えるか |
+|---|---|
+| `attrs_set` / `child_*` で **Actor が `task:*`** のもの | **数えない** (判断が書いたものは事実ではない) |
+| `attrs_set` / `child_*` で Actor が daemon / human のもの | 数える |
+| `judged` / `proposed` | 数えない |
+| `answered` | 数えない (人の回答は世界の事実ではない) |
+| 遷移 action (park / ready / dispatch / triage_done 等) | **未確定**。 人が park を押すたびに suggest が起きるのが意図か副作用か |
+
+`Actor` で切れるのがここでの効きどころで、 `Actor` が「どの実行単位か」しか表さない
+(kind を区別できない) という弱点は、 この用途ではむしろ都合がよい — **判断 task 発の
+書き込みを一括で除外できる**。
 
 ---
 
@@ -170,6 +253,29 @@ judged { kind: "suggest", outcome: "changed" | "unchanged" | "error" }
    `attrs_set` が喋った印」としていたが、 それは daemon が opaque blob の中身を見る形で
    境界が怪しかった上に、 変更ゼロの巡を取りこぼしていた (Fable レビュー指摘)
 
+### 提案の記録: `proposed` action
+
+`judged` / `answered` を第一級にしたのと同じ論法を、 提案そのものにも延ばす。
+
+```
+proposed { verb, action, reason, basis, wake }
+```
+
+第 3 版初稿は提案を `attrs.suggestion` (opaque key) に置いたままにしていたが、 それだと
+**自律 Go の gate が矛盾する** — gate の条件例が「`suggestion.verb` が go」「`basis` が
+新しい」なのに、 解釈するキーの closed set では `attrs.suggestion` を「有無のみ、 中身は
+読まない」としていた (Fable レビュー指摘)。
+
+`proposed` を第一級 action にすると:
+
+- **daemon が読むのは自分の action のフィールド**であって、 opaque blob ではない。
+  `verb` は既に daemon の語彙 (park / drop / wake / go)。 逆輸入 3 の境界を越えない
+- daemon は副作用として `detail.suggestion` へ射影する (Web UI が表示するため)。
+  `answered` が落とす
+- 結果として **opaque blob から daemon が解釈するキーは `observed.source_closed` の 1 つに
+  戻る** — 第 2 版で 2 個目を足そうとしていた `suggestion` が不要になる
+- 自律 Go の gate (段階 2) が読むものも第一級のフィールドになる
+
 ### 却下の記録: `answered` action
 
 判断ではなく**人の回答**の記録。 決定 14 で判断を Web UI へ移したのに、 Web UI 側に回答を
@@ -182,6 +288,11 @@ answered { answer: "accept" | "reject", verb: "...", basis: "..." }
 
 副作用として `detail.attrs.suggestion` を落とす。 `inputs` には数えない (人の回答は世界の
 事実ではないので、 却下のたびに同じ提案を作らせ直すループになる)。
+
+**誰が押せるか。** `judged` は `Manual: true` なので、 任意の sandbox task と人が
+`boid action send` で押せる。 バグった task が `judged{kind: suggest}` を押すとその kind が
+一巡沈黙する。 実害は小さく、 **`Actor` で監査できる以上のことは守らない** (詐称防止の
+仕組みは入れない) 方針とする。
 
 **却下履歴の突合 (`verb` / `basis` の一致) は daemon に置かない。** それは suggestion の
 中身を読むことになり境界を越える。 起こされた判断 task が `action_list` で自分の履歴を
@@ -201,7 +312,9 @@ answered { answer: "accept" | "reject", verb: "...", basis: "..." }
 | 段階 2 | daemon の**決定論 gate** が、 条件を満たす提案を自動で通す。 人は事後に見る | 本 doc の射程外だが、 器はここで作る |
 
 段階 2 の gate は DB と設定だけで決まる形にする — 例えば「子が `specced` ∧ 対象 project が
-auto-go を opt-in ∧ spec が readonly 相当 ∧ 提案の `basis` が新しい」。 **判断そのものは
+auto-go を opt-in ∧ spec が readonly 相当 ∧ `proposed.basis` が既存の `answered` と一致
+しない」。 読むのは **`proposed` action のフィールド** (J-7) であって opaque blob ではない
+ので、 逆輸入 3 の境界を保ったまま書ける。 **判断そのものは
 LLM が既に済ませており、 daemon は「その判断を人に見せずに通してよいか」だけを決定論で
 決める**ので、 決定 12 に反しない。
 
@@ -353,11 +466,11 @@ Slack スレッドが、 ある issue の話である) の統合で、 これは
 |---|---|---|
 | I-1 | 外部キーを identity として task に多対一でぶら下げる。 `ref` はその特例 | 多対一が実需 — Slack 起票の card に後から Jira のコメントが来る経路がある |
 | I-2 | identity は `<namespace>:<key>` の不透明文字列。 daemon は解釈しない | 逆輸入 3 の境界 |
-| I-3 | identity のスコープは **project** | 取り込まれるメタタスクはメタプロジェクトにしか紐づかない。 他プロジェクトへの展開は子 task が担い、 子は identity を持たない。 `(ref, parent_id, project_id)` unique (migration 0037) がそのまま使える |
+| I-3 | identity のスコープは **project** | 取り込まれるメタタスクはメタプロジェクトにしか紐づかない。 他プロジェクトへの展開は子 task が担い、 子は identity を持たない。 `(ref, parent_id, project_id)` unique (migration 0037) と同じスコープを踏襲する (B-1 の (a) 案を採ると index 自体は消える) |
 | I-4 | 未着キーは `captured` な triage task として着地させる。 **専用 inbox は作らない** | 篩いが workspace 側に残るので、 daemon に届く時点で既に「起票に値する」と判断済み (上記) |
 | I-5 | **done では identity を握り続ける**。 `observed.source_closed` が true → false に戻ったら `reopen_triaged` | 同じソースが動いたら普通は reopen したい (nose)。 決定 15 の鏡像で、 読むキーも同じ 1 個だけ |
 | I-5b | I-5 の前提として、 **done の triage task にも観測が着地できるようにする** | `attrs_set` の `FromStatus` は captured/triaged/parked/ready/working の明示列挙で **done を含まない** (`machine.go:441`、 論点 6-3 が「never `*`」と決めた)。 現状は観測を done の task へ畳む合法経路が無く、 I-5 の判定材料そのものが更新されない |
-| I-5c | done の task に着地したイベントは、 reopen 条件を満たさなくても**必ず可視化する** | `source_closed` は canonical source (jira / bitbucket PR) からしか作れない。 slack / mail のみの task が done になった後の続報は、 identity を握っているので配送はされるが reopen トリガが無く**黙って沈む** |
+| I-5c | done の task に着地したイベントは、 reopen 条件を満たさなくても**必ず可視化する** | reopen の引き金は `source_closed` の反転だけなので、 **canonical source は closed のままで Slack スレッドにだけ続報が来た**ようなケースは、 identity を握っているので配送はされるが reopen せず**黙って沈む**。 (決定 16 の契約下では canonical source を持たない task は本来 done に到達しないので、 slack-only の done は契約違反ケースの防御にあたる) |
 | I-6 | **drop では identity を自動解放する** | drop は「この identity との関係を切る」判断そのもの。 握ったままだと、 捨てた件が動いても着地せず・ 自動 reopen の経路も無く (`machine.go:371` の `reopen_triaged` は done/aborted からのみ。 手動 `reopen` dropped→triaged は `machine.go:355` にあるが誤破棄からの回復経路であって観測に反応しない)・ 同じキーで新規起票もできない、 という静かに詰む形になる |
 | J-1 | `judge:` を **予約された behavior 名前空間**とし、 daemon が起動してよい判断の入口を名前で明示する | daemon が通常の `dev` behavior を勝手に起こすのは事故。 `project.yaml` を読む人にも伝わる |
 | J-2 | 述語は **反応型 (`on:`) と周期型 (`every:`) の 2 形**。 `on:` は closed set | kind に依存しない形に落とさないと daemon が肥大し、 判断の場が育たない |
@@ -365,6 +478,7 @@ Slack スレッドが、 ある issue の話である) の統合で、 これは
 | J-4 | `answered { answer, verb, basis }` を action にする。 副作用で `suggestion` を落とす | 却下は attrs の更新ではなく出来事。 現に開いている穴を塞ぐ |
 | J-5 | 却下履歴の突合は daemon に置かず、 判断 task が `action_list` で自己抑制する | `verb` / `basis` の一致判定は suggestion の中身を読むことになり境界を越える |
 | J-6 | 自律 Go は **決定論 gate + project 単位 opt-in**。 判断は LLM、 通してよいかは daemon | 決定 15 (auto-done) の対称。 監査は `Action.Actor` で既存台帳に乗る |
+| J-7 | 提案を `proposed { verb, action, reason, basis, wake }` の第一級 action にし、 daemon が `detail.suggestion` へ射影する | opaque blob から daemon が読むキーを `observed.source_closed` の 1 つに保ったまま、 自律 Go の gate が提案を読めるようにするため |
 
 ### I-5 は workspace 側の現行ルールの意図的な反転
 
@@ -413,13 +527,15 @@ khi の `fold_claims()` は「同じ根拠で却下済みの提案は出し直�
 
 | 対象 | 読む深さ |
 |---|---|
-| `attrs.observed.source_closed` | 値 (bool)。 決定 15 / 16 |
-| `attrs.suggestion` | **有無のみ** (`answered` の副作用で落とすため)。 中身は読まない |
-| `judged.kind` / `judged.outcome` | 値。 ただし `kind` の**意味**は知らない |
+| `attrs.observed.source_closed` | 値 (bool)。 決定 15 / 16。 **opaque blob から読むのはこれ 1 つだけ** |
+| `judged.kind` / `judged.outcome` | 第一級 action のフィールド。 ただし `kind` の**意味**は知らない |
+| `proposed.verb` / `basis` 等 | 第一級 action のフィールド。 `verb` は既に daemon の語彙 |
+| `answered.answer` | 第一級 action のフィールド |
 | identity 文字列 | 完全に不透明。 名前空間も解釈しない |
 
-第 2 版は「`suggestion` キーを含む `attrs_set` を『喋った』印にする」としていたが、 J-3 で
-`judged` を入れたことにより **daemon が blob を詮索する必要が消えた**。
+第 2 版は「`suggestion` キーを含む `attrs_set` を『喋った』印にする」としており、 blob を
+詮索する形だった。 `judged` (J-3) と `proposed` (J-7) を第一級にしたことで、 **opaque blob
+から daemon が読むキーは決定 16 当時と同じ 1 つに戻った**。
 
 ---
 
@@ -428,11 +544,28 @@ khi の `fold_claims()` は「同じ根拠で却下済みの提案は出し直�
 | # | もの | 見立て |
 |---|---|---|
 | B-1 | identity 索引テーブル + 解決 + link / unlink op。 **`tasks.ref` 列と `idx_tasks_ref_parent_project` の去就を同時に決める** (下記) | 新規。 migration 1 本 + store + `BoidOp` |
-| B-2 | 未着キーからの `captured` task 自動生成 (I-4)。 `captured` の可視化と滞留対策 | 小〜中。 状態と遷移は実装済み |
+| B-2 | 未着キーからの `captured` task 自動生成 (I-4)。 `captured` の可視化と滞留対策。 **push op の返り値契約** (解決された task_id、 新規 `captured` か既存かの区別、 identity 衝突時のエラー語彙) | 小〜中。 状態と遷移は実装済み。 返り値契約は workspace 側が原文の追記先を決めるのに必須 (下記) |
 | B-3 | `action_list` 相当の `BoidOp` (workspace スコープ) | 小。 `ListActionsByTask` は既にある (呼び出し `internal/api/task_service.go:413`、 実装 `internal/orchestrator/store.go:431`) |
-| B-4 | `judged` (J-3) と `answered` (J-4) の action 追加、 Web UI の回答からの発行 | 小〜中 |
+| B-4 | `judged` (J-3) / `proposed` (J-7) / `answered` (J-4) の action 追加、 `proposed` → `detail.suggestion` の射影、 Web UI の回答からの発行 | 小〜中 |
 | B-5 | **判断スケジューラ** — `judge:` behavior の発見、 述語 2 形の評価、 dispatch、 直列化、 流量制御 | 中〜大。 本 doc の中核 |
 | B-6 | `source_closed` 反転による auto-reopen (I-5) と、 done への着地経路 (I-5b) | 小。 `reopen` → `reopen_triaged` のルーティングは実装済み (`internal/api/triage_done.go:299`) |
+
+### B-2: push op は解決先を返さないといけない
+
+workspace は**原文を現地に残す** (決定 3) ので、 続報が来たとき「どの note に追記するか」を
+知る必要がある。 ところが第 3 版初稿は「workspace はどの card かを一切決めない」と書いており、
+**追記先を知る手段が無くなっていた** (Fable レビュー指摘)。
+
+したがって push op は「押した」だけでなく**解決結果を返す**契約にする:
+
+- 解決された `task_id`
+- 新規に `captured` を起こしたのか、 既存 task に着地したのか
+- identity 衝突 (I-1 の「2 枚目は拒否」) が起きた場合のエラー語彙 — workspace はこれを
+  受けて `judge:` の統合判断へ回す
+
+さらに workspace 側は `task_id` から自分の note (slug) を引けないといけない。 slug ↔ identity
+の対応をどちらが持つかは未確定 (workspace の frontmatter に持つのが素直だが、 identity 読み出し
+op を使う案もある)。
 
 ### B-1: `tasks.ref` の去就は I-6 の前提
 
@@ -480,6 +613,15 @@ I-6 (drop で解放 → 同じキーで新規起票できる) は現行の `ref`
 | 自己トリガ (無限呼び直し) | 反応型述語の `spoken` に `judged` を数える | `speech_index()` の `SPOKEN` |
 | 流量とコスト | `max_per_sweep` と繰り越し | 「note-suggest の fork は 1 巡 5 枚まで」 |
 | 失敗のバックオフ | `judged{outcome: error}` | `suggestion_reviewed` |
+| **判断 1 回のコスト** | dispatch の粒度を決める (下記) | cycle 1 task の中で subagent fork (1 巡 5 枚) |
+| **`judged` を押さずに死ぬ** | dispatch 側でタイムアウト / 起動回数で諦める | — (現行は task 単位で watchdog) |
+
+**dispatch の粒度は決めておく必要がある** (Fable レビュー指摘)。 `max_per_sweep: 5` が
+「5 個の独立 task を dispatch する」なのか「1 dispatch に 5 target を渡す」なのかで、
+コストとレイテンシが変わる。 現行 khi は cycle 1 task の中で subagent を fork しており、
+コンテナ起動・ clone・ セッション起動が 1 回で済んでいる。 per-target dispatch にすると
+card 1 枚ごとにそれが走る。 併せて、 判断 task が通常 task と同じ一覧に混ざると
+`boid task list` が判断で埋まる問題も出る (周期型 10 分なら 30 日で ~4,300 行)。
 
 第 2 版は「cadence は自動で片付く、 独立した論点ではなかった」としていたが、 これも不正確
 だった。 **片付くのではなく昇格する** — khi の `run-cycle.sh` + `cycle_preflight.sh` は
@@ -536,7 +678,22 @@ boid コアへ移植する**ことになっていた。 順序は identity が�
 
 ### 設計を左右するもの
 
+- **`captured` → `triaged` を誰がいつ押すか**。 I-4 で新規 card が `captured` で着地する
+  ようになるため、 毎 card 発生する工程になる。 候補は 3 つ: (i) **人が Web UI で押す** —
+  今より 1 工程増える摩擦 (ii) **`judge:link` が「統合先無し」と判断した後に押す** —
+  LLM が state 遷移を押すことになるが、 これは優先度の判断ではなく**同一性の確定**なので
+  決定 14 の park/drop/Go とは性質が違う、 と整理できるかどうか (iii) **push した
+  `judge:intake` 自身が即押す** — `judge:link` が走る窓が無くなる。
+  現行実装の自然な順序は (iii) (`queue_notify.go:62` が「khi creates a card as captured,
+  sends `triage`」と書いている)。 **B-2 の実装と `judge:link` の成立性が両方これに従属する**
 - **`tasks.ref` 列を退役させるか、 drop 時に空にするか** (B-1)。 決定 16 の再定義を伴う
+- **判断ジョブの dispatch 粒度** (B-5)。 per-target か batched か。 コストとレイテンシに直結
+- **判断 task を通常 task と同じ一覧に出すか**。 出すと `boid task list` と Web UI が
+  判断で埋まる
+- **`inputs` に数える action の closed set の確定**。 特に遷移 action (park / ready 等) を
+  数えるか。 数えると人が park を押すたびに判断が起きる
+- **kind 間の連鎖の収束条件**。 A の判断が書いたものが B の入力になる構成で振動しないこと。
+  `Actor` による一括除外で足りるかを検証する
 - **判断ジョブの台帳をどう持つか**。 実体のあるテーブルにするか、 述語から毎回導出するか
   (導出なら「起こした」の記録は `judged` と dispatch した task 自体で足りる可能性がある)
 - **`judge:` behavior の発見経路**。 `project.yaml` の reload / fetch と、 daemon が
@@ -567,6 +724,14 @@ boid コアへ移植する**ことになっていた。 順序は identity が�
   workspace が押し続けるか
 - **判断 task の失敗の扱い**。 `judged` を押さずに死んだ場合、 述語は永遠に真のままになる。
   dispatch 側でタイムアウトを見るか、 起動回数で諦めるか
+- **無変更の観測をどちら側が抑止するか**。 workspace が毎巡同じ観測を押すと `inputs` が進み、
+  反応型述語が毎サイクル真になって `judged` の効果が消える。 現行は workspace 側の reconcile
+  (差分だけ push) が担っており、 その比較先が自前の fold から daemon の読み戻しに変わる。
+  **「押す前に現況と比べる」は残る** — 消えるのはローカルの fold のほうだけ、 という整理を
+  workspace 側 memo と揃える
+- **`probe` の実行コストと失敗時の方針**。 周期型 + probe は 10 分ごとに sandbox job を
+  起こす (現行 `cycle_preflight.sh` と同じコスト)。 probe が落ちたときフェイルオープン
+  (起こす) かフェイルクローズ (見送る) かは、 現行 khi が step ごとに使い分けている
 
 ### 移行
 
