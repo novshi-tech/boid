@@ -22,9 +22,9 @@ import (
 // lives in the Detail JSON blob instead of growing more columns.
 //
 // There is deliberately no ParkedFrom column: the origin of a park (triaged
-// vs ready) is derived from the actions log (see ParkedFrom below), not
-// duplicated into a second write path that could go stale (決定13: event
-// 追記を正、state は導出).
+// vs ready vs working) is derived from the actions log (see ParkedFrom
+// below), not duplicated into a second write path that could go stale
+// (決定13: event 追記を正、state は導出).
 type TaskTriage struct {
 	TaskID     string          `json:"task_id"`
 	Kind       string          `json:"kind,omitempty"`    // signal|issue|theme
@@ -116,11 +116,11 @@ func DeleteTaskTriage(dbtx db.DBTX, taskID string) error {
 	return nil
 }
 
-// ParkedFrom derives the status a task was parked from (triaged or ready) by
-// looking at the most recent "park" action recorded for it. This is the
-// origin TaskWorkflowService.Wake uses to choose wake_triaged vs wake_ready
-// — see machine.go's NewMachine doc comment for why this is not a stored
-// column.
+// ParkedFrom derives the status a task was parked from (triaged, ready, or
+// working) by looking at the most recent "park" action recorded for it. This
+// is the origin TaskWorkflowService.Wake uses to choose wake_triaged vs
+// wake_ready vs wake_working — see machine.go's NewMachine doc comment for
+// why this is not a stored column.
 func ParkedFrom(dbtx db.DBTX, taskID string) (TaskStatus, error) {
 	row := dbtx.QueryRow(
 		`SELECT from_status FROM actions WHERE task_id = ? AND type = 'park' ORDER BY created_at DESC LIMIT 1`,

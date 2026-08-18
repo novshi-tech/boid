@@ -474,7 +474,8 @@ func (s *TaskWorkflowService) autoDoneAfterChildClose(parentID string) {
 // read and the write, so a wake in flight could apply against a stale
 // origin (codex review round 1, Major). Reading everything transactionally
 // closes that window: whichever origin is committed at write time is the
-// one that decides wake_triaged vs wake_ready, with no gap to race into.
+// one that decides wake_triaged vs wake_ready vs wake_working, with no gap
+// to race into.
 func (s *TaskWorkflowService) Wake(ctx context.Context, taskID string) (*ActionApplication, error) {
 	if s.Tx == nil {
 		return nil, &StatusError{Code: http.StatusInternalServerError, Message: "wake: Transactor not configured"}

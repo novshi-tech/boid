@@ -167,6 +167,9 @@ func DefaultMachine() *StateMachine {
 //	park         : ready → parked
 //	wake_triaged : parked → triaged  (Manual:false — machine-internal, see below)
 //	wake_ready   : parked → ready    (Manual:false — machine-internal, see below)
+//	wake_working : parked → working  (Manual:false — machine-internal, added by BD-9;
+//	                                   see the Phase 1 PR-4 section further below, where
+//	                                   the matching "park: working → parked" exit lives)
 //	drop         : captured/triaged/parked/ready → dropped
 //	reopen       : dropped → triaged (recovery from a mistaken drop)
 //
@@ -233,13 +236,14 @@ func DefaultMachine() *StateMachine {
 // BD-9 (2026-08-18): the park:working exit above needs a matching return path
 // — QueueSweepLoop wakes a working-origin park via the SAME
 // TaskWorkflowService.Wake entry point used for wake_triaged/wake_ready, so
-// Wake's origin switch needs a third case. wake_working was missing from
-// launch (PR-3's Wake predates PR-4's park:working exit by one PR and was
-// never revisited), so every such wake 500'd with "unexpected park origin
-// \"working\"" and a wake_task_id-carrying working-park could never
-// re-surface — the exact 論点8 sequential-PR-consumption flow this rule set
-// exists for. Waking to working intentionally skips the ready→working
-// Dispatch chain below (Wake only chains when newTask.Status ==
+// Wake's origin switch needs a third case. wake_working was missing since
+// this park:working exit's own PR (the rule set above added the park side
+// but never revisited Wake's ParkedFrom switch to match), so every such wake
+// 500'd with "unexpected park origin \"working\"" and a wake_task_id-carrying
+// working-park could never re-surface — the exact 論点8 sequential-PR-
+// consumption flow this rule set exists for. Waking to working intentionally
+// skips the ready→working Dispatch chain in TaskWorkflowService.Wake
+// (workflow_triage.go — it only chains when newTask.Status ==
 // TaskStatusReady): a working-origin park already has its child dispatched,
 // so there is nothing left to (re-)dispatch.
 //
