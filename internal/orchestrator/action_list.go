@@ -35,23 +35,28 @@ import (
 )
 
 // DefaultActionListLimit / MaxActionListLimit bound a single BoidOpActionList
-// call's response size. This is the direct response to the PR-1/PR-2 review
-// finding "wire レベルにサイズ上限がない…返り値側にも limit が要る — 一括読み
-// は大量のデータを返しうる": since action_list is a brand-new read surface
-// added BY this PR, its own default/max limit is where that concern is
-// closed for THIS op (see the PR's report for the separate judgment call on
-// the pre-existing, broker-wide input-side gap, which this PR does not
-// touch).
+// call's ROW COUNT — not its response size. This is the direct response to
+// the PR-1/PR-2 review finding "wire レベルにサイズ上限がない…返り値側にも
+// limit が要る — 一括読み は大量のデータを返しうる": since action_list is a
+// brand-new read surface added BY this PR, its own default/max limit is
+// where that concern is closed for THIS op (see the PR's report for the
+// separate judgment call on the pre-existing, broker-wide input-side gap,
+// which this PR does not touch).
 //
-// Neither value is a measured constant the way MaxContentBytes
-// (content_size.go) is — there is no equivalent real-workspace measurement
-// of "how many actions land per tick" yet (khi does not call this op today;
-// it is this PR's own new consumer). They are chosen to comfortably cover a
-// single 10-minute tick's expected event volume while bounding a single
-// call's worst case (each action's own payload is itself capped at
-// MaxContentBytes = 64KiB) to a large-but-finite size. Revisit with real
-// measurements once a workspace is actually driving this op in production —
-// 12 節 B-3's own framing ("問題になったら…決める") applies here too.
+// MaxActionListLimit (1000) × each action's own payload cap (MaxContentBytes
+// = 64KiB, content_size.go) puts the mathematical worst case at ~64MB —
+// nowhere near "bounded" in an absolute sense. This is deliberately NOT a
+// tight response-size bound; it is a row-count cap chosen against real
+// payload sizes (khi's actual attrs blobs measured max 22,572B, nowhere
+// close to the 64KiB cap — 実測, 2026-08-19), which keep a 1000-row response
+// small in practice today. Neither constant is a measured constant the way
+// MaxContentBytes itself is — there is no equivalent real-workspace
+// measurement of "how many actions land per tick" yet (khi does not call
+// this op today; it is this PR's own new consumer). Revisit (tighten the
+// row cap, or add a real response-byte budget) once a workspace is actually
+// driving this op in production and the gap between "small in practice" and
+// "bounded in the worst case" starts to matter — 12 節 B-3's own framing
+// ("問題になったら…決める") applies here too.
 const (
 	DefaultActionListLimit = 200
 	MaxActionListLimit     = 1000
@@ -112,6 +117,22 @@ type ActionListFilter struct {
 	// the exclusive lower bound of an append-only scan — empty means "from
 	// the beginning". Decoded internally so callers never need to know the
 	// encoding.
+	//
+	// There is deliberately no "start from now, skip all history" sentinel
+	// (a `--since latest` equivalent) alongside this. Opus review
+	// (2026-08-19) raised it as a real gap — a script that loses its cursor,
+	// or connects for the first time, has to page through the ENTIRE
+	// history before it reaches the present. Not adding it now is a
+	// judgment call, not an oversight: khi's current action volume is in
+	// the hundreds (実測, 2026-08-19), so paging the full history at
+	// DefaultActionListLimit=200 is a handful of calls, not a real cost —
+	// and a "latest" mode is a genuinely new piece of API surface (wire
+	// schema, broker/executor scoping, CLI flag, its own tests), not a
+	// one-line fix, so it does not belong bundled into an
+	// already-in-flight review-fix pass. Revisit if/when action volume
+	// grows enough that "page from the beginning" stops being cheap, or a
+	// concrete caller (a fresh workspace's first connect) actually needs
+	// it.
 	Since string
 	// Limit is clamped internally via ClampActionListLimit — any value
 	// (including 0 or negative) is accepted.
@@ -123,14 +144,27 @@ type ActionListFilter struct {
 //
 // id is part of the cursor — not just created_at — because actions.id is a
 // random UUID (migration 0001_initial.sql), not a creation-ordered
-// sequence: two actions created in the same instant (e.g.
-// TaskWorkflowService.persistFiredEvents' loop, which can CreateAction
-// several rows back to back inside one transaction) would otherwise be
+// sequence: two actions created in the same instant would otherwise be
 // indistinguishable by created_at alone, and a cursor that cannot tell them
 // apart risks silently skipping or re-delivering one of the pair. Ordering
 // by (created_at, id) together, consistently on both the SELECT's ORDER BY
 // and the cursor's WHERE threshold, is the standard keyset-pagination
 // technique for exactly this "ties on the primary sort key" case.
+//
+// The real-world source of same-instant ties is
+// internal/dispatcher/store.go's markStaleTasksAborted: it takes ONE
+// now := time.Now().UTC() OUTSIDE its per-task loop and inserts N action
+// rows sharing that exact value (the daemon-restart bulk-abort path) — NOT
+// TaskWorkflowService.persistFiredEvents (internal/api/workflow_action.go),
+// which calls CreateAction once per event inside the loop and so gets a
+// fresh time.Now() per row (measured: three rows in one transaction landed
+// with distinct nanosecond timestamps, never tied). Getting this citation
+// right matters: if a future reader "verifies" that ties don't happen by
+// checking persistFiredEvents alone, they will conclude id is unnecessary
+// and drop it — see
+// TestListActionsSince_TiedCreatedAt_PageBoundary_NoDuplicatesNoGaps
+// (action_list_test.go) for the reproduction against the actual tie
+// source.
 func EncodeActionCursor(createdAt time.Time, id string) string {
 	return createdAt.UTC().Format(time.RFC3339Nano) + "|" + id
 }
@@ -204,8 +238,27 @@ func ListActionsSince(dbtx db.DBTX, filter ActionListFilter) ([]*Action, string,
 		args = append(args, filter.TaskID)
 	}
 	if !sinceCreatedAt.IsZero() || sinceID != "" {
+		// The keyset-pagination threshold itself: strictly greater than
+		// (created_at, id) in tuple order.
 		conditions = append(conditions, "(a.created_at > ? OR (a.created_at = ? AND a.id > ?))")
 		args = append(args, sinceCreatedAt, sinceCreatedAt, sinceID)
+		// Redundant on top of the OR-condition above (logically implied by
+		// it: every row it can match already satisfies created_at >=
+		// sinceCreatedAt) but NOT redundant for SQLite's query planner:
+		// EXPLAIN QUERY PLAN measured (Opus review, 2026-08-19) shows the OR
+		// form alone as "SCAN a USING INDEX idx_actions_created_at_id" — a
+		// full index-order scan from the beginning — because SQLite cannot
+		// derive a range bound from an OR of two AND-clauses. Adding this
+		// single plain inequality flips it to "SEARCH a USING INDEX
+		// idx_actions_created_at_id (created_at>?)", a real range seek.
+		// Without it, a caller reconnecting near the END of a large actions
+		// table (e.g. a long-running workspace catching up after downtime)
+		// pays a full leading-edge index scan on every single page — see
+		// this file's own package doc / the design doc's migration 0042
+		// comment for why that "quietly degrades" shape is exactly what the
+		// index was added to prevent in the first place.
+		conditions = append(conditions, "a.created_at >= ?")
+		args = append(args, sinceCreatedAt)
 	}
 
 	query := `SELECT a.id, a.task_id, a.type, a.payload, a.from_status, a.to_status, a.created_at, a.actor
