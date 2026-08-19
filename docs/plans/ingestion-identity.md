@@ -464,7 +464,7 @@ Slack スレッドが、 ある issue の話である) の統合で、 これは
 | J-7 | 却下履歴の突合は daemon に置かず、 スクリプトか判断 task が `action_list` で自己抑制する | `verb` / `basis` の一致判定は suggestion の中身を読むことになり境界を越える |
 | J-8 | 自律 Go は **決定論 gate + project 単位 opt-in**。 判断は LLM、 通してよいかは daemon | 決定 15 (auto-done) の対称。 監査は `Action.Actor` で既存台帳に乗る。 gate が読む形の第一級化は段階 4 で決める |
 | J-9 | **`captured` → `triaged` は LLM が提案し、 人が Web UI で押す**。 将来は J-8 と同じ器で自動化する | 「最初の時点では」人が押す (2026-08-19、 nose)。 提案は `description` 経由で人に見えるので **daemon は何も解釈せず**、 統合の窓も `captured` のまま残る。 自動化は J-8 の決定論 gate を再利用する形になり、 別系統を作らない |
-| J-10 | **`description` と action payload に**サイズ上限**を置き、 超えたら切り詰めずに**エラー**にする。 値は実測して決める | 決定 3 改訂の帰結 — daemon が機械的に効かせられる開示の枠はサイズとフィールド粒度だけになった。 head / agent 発の source は外部に正本が無く daemon の写しが唯一なので、 黙って切ると復元できない。 エラーなら workspace が要約か分割かを選べる (2026-08-19、 nose) |
+| J-10 | `description` と action payload に**サイズ上限**を置き、 超えたら切り詰めずに**エラー**にする。 値は実測して決める | 決定 3 改訂の帰結 — daemon が機械的に効かせられる開示の枠はサイズとフィールド粒度だけになった。 head / agent 発の source は外部に正本が無く daemon の写しが唯一なので、 黙って切ると復元できない。 エラーなら workspace が要約か分割かを選べる (2026-08-19、 nose) |
 
 ### I-5 は workspace 側の現行ルールの意図的な反転
 
