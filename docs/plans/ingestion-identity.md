@@ -565,7 +565,7 @@ opt-in は **project 単位**。 最初から全部を自動にしない。
 | J-7 | 却下履歴の突合は daemon に置かず、 スクリプトか判断 task が `action_list` で自己抑制する | `verb` / `basis` の一致判定は suggestion の中身を読むことになり境界を越える |
 | J-8 | 自律 Go は **決定論 gate + project 単位 opt-in**。 判断は LLM、 通してよいかは daemon | 決定 15 (auto-done) の対称。 監査は `Action.Actor` で既存台帳に乗る。 gate が読む形の第一級化は段階 4 で決める |
 | J-9 | **`captured` → `triaged` は LLM が提案し、 人が Web UI で押す**。 将来は J-8 と同じ器で自動化する | 「最初の時点では」人が押す (2026-08-19、 nose)。 提案は `description` 経由で人に見えるので **daemon は何も解釈せず**、 統合の窓も `captured` のまま残る。 自動化は J-8 の決定論 gate を再利用する形になり、 別系統を作らない |
-| J-10 | `description` と action payload に**サイズ上限**を置き、 超えたら切り詰めずに**エラー**にする。 値は実測して決める | 決定 3 改訂の帰結 — daemon が機械的に効かせられる開示の枠はサイズとフィールド粒度だけになった。 head / agent 発の source は外部に正本が無く daemon の写しが唯一なので、 黙って切ると復元できない。 エラーなら workspace が要約か分割かを選べる (2026-08-19、 nose) |
+| J-10 | `description` と action payload に**サイズ上限**を置き、 超えたら切り詰めずに**エラー**にする。 **値は 64 KiB (65,536B)** — description 側 (khi note 本文 32 枚実測、 max 15,584B) は約 4.2 倍、 action payload 側 (khi claims/attrs 実測、 畳んだ attrs 全体 max 22,572B) は約 2.9 倍のマージン。 実測の全文は §13 A-5 を参照 | 決定 3 改訂の帰結 — daemon が機械的に効かせられる開示の枠はサイズとフィールド粒度だけになった。 head / agent 発の source は外部に正本が無く daemon の写しが唯一なので、 黙って切ると復元できない。 エラーなら workspace が要約か分割かを選べる (2026-08-19、 nose)。 値は description / payload 両方を別々に実測した上で、 同じ定数を共用する判断込みで PR-2 実装時 (2026-08-19) に確定させた |
 
 ### I-5 は workspace 側の現行ルールの意図的な反転
 
@@ -837,9 +837,14 @@ daemon が既存 `ref` を機械的に identity へ写せないためである �
 受け付ける (`internal/api/task_create.go:75`)。
 
 **サイズ上限 (J-10)**: `description` と action payload に上限を置き、 超えたら **エラー**。
-切り詰めない。 上限の値はこの PR で実測して決める (Jira 課題本文 / Slack スレッド全文の分布)。
-入口は 1 箇所ではないので、 `task_create` / `task_update` / `action_send` /
-`BoidOpTaskResolveOrCapture` のすべてで同じ関数を通す。
+切り詰めない。 **値は 64 KiB (65,536B)** — description 側 (khi note 本文実測 max 15,584B) は
+約 4.2 倍、 action payload 側 (khi 畳んだ attrs 全体実測 max 22,572B) は約 2.9 倍のマージン。
+実測の詳細と「同じ値を両方に使ってよい理由」は §13 A-5 を参照。 入口は 1 箇所ではないので、
+`task_create` / `task_update` / `action_send` / `BoidOpTaskResolveOrCapture` のすべてで同じ
+関数 (`orchestrator.ValidateContentSize`) を通す。 これとは別に、 `action_send`
+(`ApplyAction`) を経由せず `actions.payload` を直接書く経路 (`boid task notify`
+--progress/--done/--fail) も同じ関数を通すよう対応済み — エージェントが渡す自由文字列であり
+「daemon 生成の固定フォーマット」ではないため、 4 箇所の入口と同じ扱いが必要だった。
 
 **`captured` の可視化**: `captured` な triage task が Web UI の一覧に出ること。 **J-9 により
 これ以外に daemon 側で要るものはほぼ無い** — `captured` → `triage` ボタンは Phase 1 PR-3 で
@@ -864,7 +869,15 @@ daemon が既存 `ref` を機械的に identity へ写せないためである �
 
 - 未登録キー → `captured` な task が 1 枚できて identity が link される。 `created: true`
 - 同じキーで再度呼ぶ → **同じ task を返し、 2 枚目を作らない**。 `created: false`
-- 別 task に紐付いたキー → `ErrIdentityConflict` で、 task は作られない
+- 別 task に紐付いたキーで `LinkIdentity` が実際に `ErrIdentityConflict` を返した場合、
+  そのエラーは (未 %w のまま) 呼び出し元まで伝播し、 途中で作った `task` はロールバックされて
+  残らない。 **ただし実運用でこの分岐に到達するのは稀**: `internal/db/db.go` の
+  `conn.SetMaxOpenConns(1)` により daemon 内の tx は完全直列化されるため、 「`ResolveIdentity`
+  で未登録と判定 → その直後の `LinkIdentity` で衝突」という順序は同一 daemon 内では基本的に
+  起こらない — 先に link した側の `WithinTx` が commit を終えてから次の呼び出しが tx を開くので、
+  2 回目の呼び出しはそもそも `ResolveIdentity` の時点で既存 task を見つけ `created: false` を
+  返す (これが通常系)。 この検証項目はエラー種別の**伝播経路**が正しいことの確認であり、
+  「衝突が日常的に起きる」ことの確認ではない
 - 新規作成に失敗したら identity も残らない (トランザクション境界)
 - 上限超過 → エラーになり、 **切り詰められた行が残らない**
 - `captured` な task が Web UI の一覧に出る
@@ -1306,10 +1319,38 @@ pump のクラッシュや再送で同じイベントが二重に積まれる。
 source がある」節)、 daemon の写しが唯一になる。 黙って切ると原文が壊れて復元できない。
 エラーにすれば、 要約に落とすか分割するかを workspace 側が選べる。
 
-**決定 (2026-08-19、 nose): 上限を置き、 超えたらエラー** (→ J-10)。 **値は PR 内で実測して
-決める** (Jira 課題本文 / Slack スレッド全文の分布を見る)。 上限が決まったことは論点 e の
-enforcement の限界 (「daemon が効かせられるのはサイズ / フィールド粒度まで」) を本編に書くときの
-材料にもなる。
+**決定 (2026-08-19、 nose): 上限を置き、 超えたらエラー** (→ J-10)。 **値は PR-2 実装時に
+実測して決めた: 64 KiB (65,536B)**。 上限が決まったことは論点 e の enforcement の限界
+(「daemon が効かせられるのはサイズ / フィールド粒度まで」) を本編に書くときの材料にもなる。
+
+**実測 (2026-08-19、 PR-2 実装時。 `internal/orchestrator/content_size.go` のコメントが
+一次情報)**: `description` と action payload は書き込まれる内容の性質が違うため、 片方だけ
+実測して両方に適用するのは筋が悪い。 **両方を別々に実測**した:
+
+- description 側 — khi の note (取り込み済み 32 枚: jira 23 枚 / slack 8 枚 / frontmatter
+  無しの手動メモ 1 枚) の本文バイト数分布:
+  - jira (n=23): max 15,584B / median 1,259B / min 213B
+  - slack (n=8): max 13,283B / median 6,302B / min 1,298B
+  - 観測された最大は jira の 15,584B。 64 KiB はこれに対し **約 4.2 倍**のマージン
+- action payload 側 — khi の claims / attrs データの実測:
+  - claims JSONL の 1 レコード (n=109): max 5,537B / p95 2,571B / median 251B
+  - 畳んだ attrs 全体・frontmatter 相当 (n=31): max 22,572B / median 1,039B
+  - khi の `daemon_sync.py:497` (`send_action(task_id, "attrs_set", diff)`) は初回 push 時に
+    desired_attrs 全体を 1 発の `attrs_set` payload として送るため、 単発 payload の現実的な
+    最大は「畳んだ attrs 全体」の実測最大 22,572B。 64 KiB はこれに対し **約 2.9 倍**のマージン
+
+**同じ 64 KiB を description / action payload の両方に適用してよい理由**: マージン倍率は
+異なる (4.2 倍 vs 2.9 倍) が、 どちらも「1 回の書き込みで daemon に渡る自由記述/構造化
+データの塊」という同じ形をしており、 フィールド粒度で別々の上限を持つほどの構造的な違いは
+無い。 上限は「日常値を精密に予測する」ためのものではなく「無制限な肥大化を防ぐ安全弁」なので、
+2 つの実測がどちらも同じオーダーに収まっている以上、 値を分けて管理するコストに見合わないと
+判断した。 将来どちらかの分布が大きく変わったら (下記 mail 対応リスクと同様) この判断ごと
+見直すこと。
+
+未確定のまま残るリスク: khi 側は「mail を足したときに本文 + 添付テキストが載ることは未確定」
+としている。 添付テキストの抽出結果は jira/slack の会話ログよりずっと大きくなり得るため、 mail
+対応時にこの実測前提が破れる可能性がある。 そのときは新たに mail の分布を実測し、 この定数を
+見直すこと — 黙って追認しない。
 
 ### 版の経緯
 
