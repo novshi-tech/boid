@@ -897,8 +897,11 @@ daemon が既存 `ref` を機械的に identity へ写せないためである �
   進むので、 スクリプトは「前回の続きから」を自然に書ける
 - scoping は `BoidOpTaskList` と同型 — 明示 project を検査し、 無指定時は `AllowedProjectIDs` を
   回して**決して無スコープで引かない**。 broker 側が権威 (PR-1 と同じ注意)
-- `noted` の retention (仕分け B) はここに乗る: 既定 limit を持ち、 **最新 N 件を返す**。
-  書き込み側の圧縮はしない (payload 不透明なので daemon には潰せない)
+- 既定 limit を持つ (デフォルト値 + 上限)。 **「since カーソルで前進する読み」と「最新 N 件」は
+  本質的に両立しない** ため、 実装は **昇順 (created_at 古い順) + since カーソル**を選ぶ —
+  limit は 1 回の応答の行数を抑えるだけで、 retention (`noted` の蓄積対策) には効かない。
+  `noted` の retention 自体は**未解決のまま残す** (仕分け B、 詳細は 12 節 B-3)。
+  書き込み側の圧縮もしない (payload 不透明なので daemon には潰せない)
 - `ListActionsByTask` (`internal/api/store.go:312`) は per-task なので、 一括読みは新規の
   store メソッドになる
 
@@ -928,7 +931,8 @@ daemon が既存 `ref` を機械的に identity へ写せないためである �
 
 - 却下履歴の突合 (J-7)。 スクリプトか判断 task が `action_list` で自己抑制する
 - `proposed` verb の第一級化 (段階 4)
-- `noted` の圧縮・ 専用 GC (read 口の limit で対処する)
+- `noted` の圧縮・ 専用 GC。 **未解決のまま残す** — read 口の limit はページングの区切りに
+  過ぎず、 retention には効かない (12 節 B-3 参照)
 - workspace 側 `claims` の物理退役 (段階 2 では書き込みを止めるまで)
 
 **検証**
@@ -1141,7 +1145,7 @@ daemon が既存 `ref` を機械的に identity へ写せないためである �
 
 | 項目 | 既定案 |
 |---|---|
-| `noted` の retention | **read 口を「最新 N 件」にし、 書き込み側は圧縮しない**。 payload が不透明なので daemon 側で潰せない (J-5 の対価)。 10 分周期で長寿命の task へ積まれ得るうえ、 終端でない task は 30 日 GC に乗らないので**行は増え続ける**。 それが問題になったら、 件数上限か期間で切るのは workspace 側の語彙を知っている khi が決める |
+| `noted` の retention | **未解決。** 「since カーソルで前進する読み」(I-9 の連動) と「最新 N 件」は本質的に両立しないので、 read 口は昇順 + limit (ページングの区切り) に倒した — これは retention に何の効果も持たない。 書き込み側も圧縮しない (payload が不透明なので daemon 側で潰せない、 J-5 の対価)。 10 分周期で長寿命の task へ積まれ得るうえ、 終端でない task は 30 日 GC に乗らないので**行は増え続ける**。 それが問題になったら、 件数上限か期間で切るのは workspace 側の語彙を知っている khi が決める |
 
 #### B-4 (`noted` / `answered`) の中で
 
