@@ -965,10 +965,13 @@ daemon が既存 `ref` を機械的に identity へ写せないためである �
 - `ProjectMeta` に `Triggers []Trigger` (`yaml:"triggers,omitempty"`) を足す。 **トップレベル**で
   あり `task_behaviors` は変更しない (J-1)
 - `Trigger{Name, Every, Run}`。 `Run` は `sh -c` に渡すコマンド文字列 (J-2)
-- **workspace envelope** (`workspace_envelope.go`) は `KnownFields(true)` の strict decode なので、
-  workspace の default project 定義に `triggers` を書けるようにするならそちらにもスキーマ追加が
-  要る。 **書けないとエラーで落ちる**ため、 「project.yaml だけ」と決めるにしても意識的に決める
-  (仕分け B)
+- **workspace envelope** は `decodeStrictNode` (`workspace_envelope.go`、 `KnownFields(true)`) で
+  strict に読む。 workspace 側の default project 設定は `projects[]` の要素ではなく **`spec` 直下**に
+  並ぶ形 (`WorkspaceEnvelopeProject` は `{name, url}` だけで、 `task_behaviors` / `base_branch` /
+  `fork_point` は `workspaceEnvelopeSpecFields` の allowlist 側にある)。 したがって workspace レベルで
+  `triggers` を書けるようにするなら **allowlist に `"triggers": true` を足し、 envelope 構造体にも
+  フィールドを足す**の 2 手が要る。 足さないまま書くと **unknown field でエラーになる**ので、
+  「project.yaml だけ」と決めるにしても意識的に決める (仕分け B)
 - 旧 daemon は project.yaml を非 strict にパースするので `triggers` を**無警告で無視する**。
   受容する (`triggers` を書く project.yaml は新 daemon 前提)
 
