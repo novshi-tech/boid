@@ -225,6 +225,57 @@ func TestResolveOrCapture_DescriptionOverLimit_RejectsAndCreatesNothing(t *testi
 	}
 }
 
+// TestResolveOrCapture_BaseBranchTemplate_StoredLiteralUnexpanded pins the
+// ResolveOrCapture doc comment's explicit claim (task_resolve_or_capture.go):
+// a templated meta.BaseBranch is stored on a freshly captured task VERBATIM,
+// with neither ExpandTaskBaseBranch (${TASK_REMOTE_ID}) nor ExpandBaseBranch
+// (${current_branch}) applied — unlike TaskAppService.CreateTask, which would
+// 400 on this exact template (task_create.go: ExpandTaskBaseBranch fails when
+// a template references ${TASK_REMOTE_ID} but remoteID is empty, and a
+// ResolveOrCapture request never carries a RemoteID at all). This is safe
+// only because a captured task can never reach executing directly
+// (machine.go), so nothing ever consumes this literal value — see the doc
+// comment for the full argument.
+func TestResolveOrCapture_BaseBranchTemplate_StoredLiteralUnexpanded(t *testing.T) {
+	d, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	t.Cleanup(func() { d.Close() })
+	if err := migrate.Apply(d.Conn); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	if err := orchestrator.CreateProject(d.Conn, &orchestrator.Project{ID: "proj-1", WorkDir: "/tmp/proj-1"}); err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	const template = "feature/${TASK_REMOTE_ID}"
+	svc := &TaskWorkflowService{
+		Tx: realTransactor{conn: d.Conn},
+		Meta: stubMetaStore{meta: &orchestrator.ProjectMeta{
+			DefaultTaskBehavior: "triage",
+			TaskBehaviors:       map[string]orchestrator.TaskBehavior{"triage": {}},
+			BaseBranch:          template,
+		}},
+	}
+
+	result, err := svc.ResolveOrCapture(context.Background(), ResolveOrCaptureRequest{
+		ProjectID: "proj-1", Identity: "jira:TMPL-1", Title: "t",
+	})
+	// The point of this test: no RemoteID is available, yet this must NOT
+	// error the way CreateTask's ExpandTaskBaseBranch would — the template is
+	// left untouched instead.
+	if err != nil {
+		t.Fatalf("ResolveOrCapture() error = %v, want success (template stays unexpanded, not an error)", err)
+	}
+	task, err := orchestrator.GetTask(d.Conn, result.TaskID)
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+	if task.BaseBranch != template {
+		t.Errorf("task.BaseBranch = %q, want the literal unexpanded template %q", task.BaseBranch, template)
+	}
+}
+
 // ---- conflict propagation (mocked TxStore — see file doc comment for why) ----
 
 // mockROCTxStore implements just the TxStore methods ResolveOrCapture calls;

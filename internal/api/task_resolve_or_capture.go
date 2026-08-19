@@ -103,16 +103,53 @@ func (s *TaskWorkflowService) ResolveOrCapture(ctx context.Context, req ResolveO
 		}
 
 		// Unresolved: build a new captured triage task from the project's
-		// resolved default behavior. Deliberately does NOT replicate
-		// CreateTask's `${current_branch}` auto-expand fallback for an empty
-		// BaseBranch (task_create.go) — every real ingestion caller today
-		// (khi's daemon_sync.py ensure_task) already creates captured/
-		// triaged tasks with no base_branch override and relies solely on
-		// meta.BaseBranch (ResolveBehavior always sets res.BaseBranch =
-		// meta.BaseBranch when meta != nil), so that fallback path has never
-		// actually been exercised by ingestion. Skipping it keeps this
-		// atomic block to pure, cheap, in-memory logic — no project workdir
-		// filesystem access inside the transaction.
+		// resolved default behavior. Deliberately does NOT replicate EITHER
+		// of CreateTask's (task_create.go) two base_branch template-expand
+		// steps — and, unlike that earlier version of this comment, both
+		// branches need spelling out because both are skipped:
+		//
+		//   - meta.BaseBranch == "": CreateTask auto-expands `${current_branch}`
+		//     as a fallback. Every real ingestion caller today (khi's
+		//     daemon_sync.py ensure_task) already creates captured/triaged
+		//     tasks with no base_branch override and relies solely on
+		//     meta.BaseBranch (ResolveBehavior always sets res.BaseBranch =
+		//     meta.BaseBranch when meta != nil), so that fallback path has
+		//     never actually been exercised by ingestion.
+		//   - meta.BaseBranch != "" (e.g. a template like
+		//     "feature/${TASK_REMOTE_ID}"): CreateTask runs it through
+		//     ExpandTaskBaseBranch (${TASK_REMOTE_ID}) then ExpandBaseBranch
+		//     (${current_branch}). Neither runs here. ExpandTaskBaseBranch
+		//     can't be called meaningfully: this request never carries a
+		//     RemoteID (a freshly captured task doesn't have one until
+		//     triage assigns it), and ExpandTaskBaseBranch hard-errors when
+		//     a template references ${TASK_REMOTE_ID} but remoteID is empty
+		//     — calling it unconditionally would turn every capture for such
+		//     a project into a failure, which is worse than the status quo.
+		//     ExpandBaseBranch is skipped too: it shells out to git against
+		//     the project workdir, and this whole block deliberately stays
+		//     pure/in-memory with no project workdir filesystem access —
+		//     db.go's SetMaxOpenConns(1) means a git subprocess call here
+		//     would hold the daemon's single DB connection hostage for the
+		//     duration of the shell-out.
+		//
+		// The consequence (stated plainly, not just implied): when
+		// meta.BaseBranch is a template, the LITERAL, UNEXPANDED template
+		// string is what lands in a freshly captured task's
+		// tasks.base_branch column — e.g. "feature/${TASK_REMOTE_ID}"
+		// verbatim, never resolved, never validated, even when RemoteID
+		// would already be available.
+		//
+		// This is acceptable only because a captured/triaged task's own
+		// BaseBranch is dead data while it stays in ingestion-owned
+		// pre-execution status: machine.go's transition table has no rule
+		// from captured/triaged/parked/ready/working to executing — the
+		// ONLY paths to executing are pending→(start) and
+		// done/aborted→(reopen) — so nothing ever reads this literal
+		// template to build a clone. If a future change lets a triage task
+		// reach executing directly (bypassing pending), this landmine
+		// becomes reachable and must be revisited then — either expand here
+		// (accepting the git-shell-out-in-tx cost) or validate/reject a
+		// templated meta.BaseBranch before it ever reaches this path.
 		res, err := orchestrator.ResolveBehavior(meta, orchestrator.BehaviorResolveRequest{})
 		if err != nil {
 			return fmt.Errorf("resolve or capture: resolve behavior: %w", err)
