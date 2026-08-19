@@ -1069,6 +1069,16 @@ daemon が既存 `ref` を機械的に identity へ写せないためである �
   無いと stdin を読むコマンドが永久にハングする (実 podman で確認済み、 詳細は同節末尾)
 - `Readonly: true` 固定 (仕分け B)。 boid op の allowlist は role にも readonly にも依存しない
   ので、 readonly のまま `task_create` / `action_send` が打てる
+- **readonly が効くのは filesystem と API gateway の非 GET/HEAD の 2 つだけ**である
+  (`internal/dispatcher/apigateway_wire.go` の `readOnly := !spec.Visibility.Writable` →
+  `internal/apigateway/server.go` の `isSafeMethod`、 および git push)。 着手前は
+  「Slack Web API は読み取り系でも POST を使う実装が多いので `allow_readonly_write` が
+  要るのでは」という懸念があったが、 **khi の決定論スクリプトは実測で全部 readonly を通った**
+  (2026-08-20): `poll_ingest.py` (`jira-api` / `bitbucket-api` / `slack-api` の 3 サービス) も
+  `observe.py` (`jira-api`) も `gw_get` = **GET しか使わない**ため。
+  `readonly: false` が要るのは **LLM task の中で Jira 課題を起票する場面** (決定 16 の
+  canonical source を立てる POST) だけで、 それはトリガから起こされる task の behavior 側の
+  話である — **トリガ自身は readonly で足りる**
 
 **single-flight と実行記録** (migration 0043)
 
