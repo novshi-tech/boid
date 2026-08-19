@@ -85,6 +85,11 @@ type QueueSweepStore interface {
 	// decision-only passes over the same task set, and running them on one
 	// tick keeps "when does the queue re-evaluate itself" a single answer.
 	SweepTriage(ctx context.Context, now time.Time) (TriageSweepResult, error)
+	// SweepReopen is I-5's periodic evaluation (docs/plans/ingestion-identity.md
+	// PR-5, B-6). Shares this SAME loop rather than a timer of its own per the
+	// design doc's own placement instruction ("評価契機は QueueSweepLoop —
+	// 決定15のSweepDoneと同じ場所に並べる").
+	SweepReopen(ctx context.Context, now time.Time) (ReopenSweepResult, error)
 }
 
 // QueueSweepLoop periodically calls SweepWake, mirroring
@@ -142,12 +147,26 @@ func (l *QueueSweepLoop) runOnce(ctx context.Context) {
 	result, err := l.Store.SweepTriage(ctx, now)
 	if err != nil {
 		slog.Warn("queue triage sweep failed", "error", err)
+	} else {
+		if len(result.Completed) > 0 {
+			slog.Info("queue triage sweep completed tasks", "count", len(result.Completed), "task_ids", result.Completed)
+		}
+		l.logCanonicalSourceBreaches(result.Breaches)
+	}
+
+	// docs/plans/ingestion-identity.md PR-5 (B-6): I-5's auto-reopen, on the
+	// SAME tick as the two sweeps above — deliberately NOT gated behind
+	// either of their errors (Opus review pattern already established for
+	// wake vs triage above): a reopen sweep failure must not depend on the
+	// unrelated done/breach sweep having succeeded, and vice versa.
+	reopenResult, reopenErr := l.Store.SweepReopen(ctx, now)
+	if reopenErr != nil {
+		slog.Warn("queue reopen sweep failed", "error", reopenErr)
 		return
 	}
-	if len(result.Completed) > 0 {
-		slog.Info("queue triage sweep completed tasks", "count", len(result.Completed), "task_ids", result.Completed)
+	if len(reopenResult.Reopened) > 0 {
+		slog.Info("queue reopen sweep reopened tasks", "count", len(reopenResult.Reopened), "task_ids", reopenResult.Reopened)
 	}
-	l.logCanonicalSourceBreaches(result.Breaches)
 }
 
 // logCanonicalSourceBreaches reports 決定16 breaches ONLY WHEN THE SET CHANGES.

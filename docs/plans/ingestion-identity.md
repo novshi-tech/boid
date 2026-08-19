@@ -609,6 +609,21 @@ identity モデルにすると、 この規則を「索引からフィルタす�
 done は握り続ける (I-5)、 drop は解放する (I-6) という **binding のライフサイクル**として
 表現され、 `ref` の unique 制約と衝突しない。
 
+#### 訂正 (PR-5 実装時, 2026-08-19): I-6 の手動 reopen は identity を復元しない
+
+PR-1 レビューで判明していた事実を、 実装時に明文化しておく。 `drop` は `tx.UnlinkAllForTask` で
+その task の identity binding を **全部消す** (I-6)。 誤って `drop` した task を手動
+`reopen` (dropped→triaged、 `machine.go:355`) で救っても、 **binding は戻らない** —
+`reopen` (dropped→triaged) は状態を戻すだけで、 identity を再 link する処理を一切持たない。
+
+結果として、 誤破棄から回復した task は「見た目は triaged に戻ったが、 元の外部キーとは
+もう紐づいていない」状態になる。 その外部キーは (I-6 の設計通り) 別の新規 task が
+自由に link できる状態でもあるので、 **回復が遅れるほど「別の task に奪われている」
+可能性が上がる**。 回復させるには workspace 側が identity link op を再度呼んで
+明示的に再 link する必要がある — daemon 側でこれを自動化する経路は無い
+(そもそも「どの identity を戻すべきか」は drop 時点の履歴からしか分からず、 それを
+読むのは意味の判断に近づくため、 P-1 の線引き上も daemon には向かない)。
+
 ### 副産物: 暗黙則が不変条件になる
 
 `match_card.py: build_key_index()` の既知の制約 —「複数の active card が同じ issue を参照する
@@ -1250,6 +1265,72 @@ per-trigger fail-open dispatch 失敗経路が既にカバーしており、 ト
 - 2 回目のフラップでは自動 reopen せず、 通知に落ちる
 - triage 行を持たない done の task では発火しない
 - done への `attrs_set` が、 triage 行を持つ task でだけ通る
+
+#### 実装時の決定 (PR-5 実装, 2026-08-19)
+
+**I-5b のガードの実装位置**: machine.go の rule には触れず、 `internal/api/workflow_action.go`
+の `ApplyAction` が `sm.Apply` を呼ぶ**手前**で割り込む形にした
+(`resolveAttrsSetDoneTransition`、 `internal/api/attrs_set_done.go`)。 判定は
+`task_triage` 行の有無 (`GetTaskTriage` が `sql.ErrNoRows` を返すかどうか) で、
+pre-Tx の読み (`s.TaskTriage`) と in-Tx の再検証 (`tx.GetTaskTriage`) の**両方**で同じ
+関数を通す — park/attrs_set の他の分岐が持つ「pre-Tx で仮判定 → in-Tx で fresh 再検証」
+の二段構えをそのまま踏襲した。 行が無い場合・ store 未配線の場合はどちらも
+**素通りして `sm.Apply` の既存の reject に委ねる** (安全な方向へ倒す — 誤って通してしまう
+方が危険なので)。 lookup 自体が失敗した場合 (`sql.ErrNoRows` 以外のエラー) は 500 として
+呼び出し元に伝える — reject 扱いに握り潰さない。
+
+**発見 1 (PR-1〜4 レビュー由来) への回答**: `answered` と違い `attrs_set` は今も
+「行が無ければ作る」ままにした。 調べた結果、 これは穴にならないと判断した —
+理由は 3 つ:
+
+1. `attrs_set` の FromStatus 列挙 (`preExecutionStatuses`) には `pending`/`executing`/
+   `awaiting`/`aborted` が無い。 `CreateTask` の既定 (`initial_status` 省略時) は
+   `pending` なので、 **普通に作られた通常 task は `attrs_set` を一度も浴びずに一生を終える**
+   — machine.go 上、 captured/triaged/parked/ready/working のどこにも入る遷移が無い
+2. `parseAttrsSetPayload` は空オブジェクトを拒否するので、 `attrs_set` が作る行は
+   **常に実データ入り** — `answered` の miss-case 修正が対処した「何も残さない空行」とは
+   性質が違う
+3. 唯一の理論的な穴は `CreateTask` の `initial_status=captured`/`triaged` が **project を
+   問わず誰でも呼べる**ことに由来する — これを意図的に使えば「本当の triage task ではない」
+   task を triage 語彙に乗せられる。 しかし乗せた瞬間からその task は `task_triage` 行に
+   実データを持ち、 daemon 視点では「triage task として振る舞っている」以外に区別する
+   材料が無い。 これは決定 13 (state は導出) の帰結として **受け入れる** — 行の有無以外の
+   判定キー (project の allowlist 等) を足すことは、 P-1/逆輸入 3 が禁じる
+   「daemon がプロジェクトの意味を知る」方向の越境になるため選ばなかった
+
+**I-5c は log 側を選んだ**。 決定 16 の `MissingCanonicalSourceGuidance` が確立した
+「提示面が無いので sweep から log に留める」前例と**同じ結論**だが、 評価するタイミングは
+違う。 `MissingCanonicalSourceGuidance` は sweep ごとに再評価する**持続的な状態**なので
+`logCanonicalSourceBreaches` の fingerprint-on-change が要るが、 I-5c は「この
+`attrs_set` が着地した」という**離散イベント**そのものなので、 `attrs_set` が
+実際に done task へ着地した瞬間 (`ApplyAction` の Tx コミット後、 `logAttrsSetOnDoneTriage`、
+`internal/api/attrs_set_done.go`) に 1 回ログを出せば十分で、 fingerprint 機構は要らない
+(イベントの発生頻度自体が workspace の取り込み周期で自然に絞られる)。 SweepReopen 側は
+`source_closed==true` のケースを候補にすら入れない (何もしないので)。
+
+**フラップ回数は actions から数える**。 専用カウンタ列は作らず、
+`orchestrator.CountAutoReopens` (`internal/orchestrator/auto_reopen.go`) が
+`task_id` の action 履歴を `Type=="reopen_triaged" && Actor==ActorDaemon` で filter
+するだけの純関数。 **人間による手動 reopen (`Actor=human`) はカウントしない** — 人が
+何度 reopen し直しても「フラップ」ではなく人の判断だから。 `SweepReopen` の外側ループが
+やる pre-Tx の判定は `source_closed==false` かどうかだけ (Tx を開く価値があるかの安価な
+足切り) — フラップ回数そのものの計算は `autoReopen` (`internal/api/triage_done.go`) の
+中で `tx.ListActionsByTask` を呼んで **Tx 内 1 箇所だけ**で行う (`autoDone` の
+「task_triage を fresh に読み直して判定を再実行する」という再検証の考え方は踏襲しつつ、
+フラップ回数自体は pre-Tx 側で二重に計算していない)。
+
+**フラップ通知の重複抑止**: `notify.command` は呼ぶたびに外部プロセスを実行する副作用の
+ある操作なので、 `logCanonicalSourceBreaches` と同じ fingerprint-on-change が要る
+(1 分ごとの sweep で同じ task が毎回通知を吐き続けたら実害が大きい)。
+`TaskWorkflowService.lastFlappedReopen`
+(`Notifier` と同じ構造体に置いた — sweep loop 側ではなく) が「今 flap 中の task 集合」を
+保持し、 集合に**新しく入った** task だけ通知する。 QueueSweepLoop からの逐次呼び出し
+1 本という前提 (`lastBreachFingerprint` と同じ前提) の上でのみ mutex 無しで安全。
+
+**評価契機は既存の QueueSweepLoop に相乗り** — 新しいループは足していない。 doc の指定通り
+`SweepReopen` を `SweepWake`/`SweepTriage` と同じ `runOnce` に並べただけで、
+`InitialDelay`/`Interval` の新規調整は不要だった (10s/20s/30s の stagger 慣行に
+新規エントリを足す判断そのものが発生しなかった)。
 
 ---
 

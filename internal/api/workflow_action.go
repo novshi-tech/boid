@@ -148,9 +148,18 @@ func (s *TaskWorkflowService) ApplyAction(ctx context.Context, taskID string, re
 		Payload: req.Payload,
 		Actor:   orchestrator.ActorFromContext(ctx),
 	}
-	newTask, err := sm.Apply(task, action)
-	if err != nil {
-		return nil, &StatusError{Code: http.StatusConflict, Message: err.Error()}
+	// docs/plans/ingestion-identity.md PR-5 (B-6), I-5b: sm.Apply alone has no
+	// rule admitting attrs_set against a done task — this pre-Tx call routes
+	// through resolveAttrsSetDoneTransition's service-layer guard first (see
+	// its own doc comment, attrs_set_done.go), which falls straight through
+	// to sm.Apply for every action/status combination this PR does not touch.
+	var getTriage func(string) (*orchestrator.TaskTriage, error)
+	if s.TaskTriage != nil {
+		getTriage = s.TaskTriage.GetTaskTriage
+	}
+	newTask, statusErr := resolveAttrsSetDoneTransition(sm, task, action, getTriage)
+	if statusErr != nil {
+		return nil, statusErr
 	}
 	action.FromStatus = fromStatus
 	action.ToStatus = newTask.Status
@@ -321,9 +330,14 @@ func (s *TaskWorkflowService) ApplyAction(ctx context.Context, taskID string, re
 			if ferr != nil {
 				return statusErrorForGetTaskErr(ferr)
 			}
-			freshApplied, aerr := sm.Apply(fresh, action)
-			if aerr != nil {
-				return &StatusError{Code: http.StatusConflict, Message: aerr.Error()}
+			// docs/plans/ingestion-identity.md PR-5 (B-6), I-5b: re-validate
+			// through the SAME done-status guard, now against the fresh in-Tx
+			// read and tx.GetTaskTriage — mirrors the pre-Tx call above one-for-
+			// one (same helper, same signature; tx.GetTaskTriage's method value
+			// satisfies getTriage's func type directly).
+			freshApplied, statusErr := resolveAttrsSetDoneTransition(sm, fresh, action, tx.GetTaskTriage)
+			if statusErr != nil {
+				return statusErr
 			}
 			action.FromStatus = fresh.Status
 			action.ToStatus = freshApplied.Status
@@ -381,6 +395,18 @@ func (s *TaskWorkflowService) ApplyAction(ctx context.Context, taskID string, re
 				"new_status": string(action.ToStatus),
 			},
 		})
+	}
+
+	// docs/plans/ingestion-identity.md PR-5 (B-6), I-5c: log every attrs_set
+	// that just landed on a done triage task via I-5b's guard above —
+	// regardless of whether it flips source_closed (SweepReopen decides that
+	// separately, on its own tick). See logAttrsSetOnDoneTriage's own doc
+	// comment (attrs_set_done.go) for why "log" was chosen over a queue
+	// surface. fromStatus/newTask.Status are BOTH "done" here precisely when
+	// resolveAttrsSetDoneTransition's guard (not the ordinary
+	// preExecutionStatuses path) is what let this land.
+	if req.Type == "attrs_set" && fromStatus == orchestrator.TaskStatusDone && newTask.Status == orchestrator.TaskStatusDone {
+		logAttrsSetOnDoneTriage(s.TaskTriage, newTask.ID)
 	}
 
 	// Phase 1 PR-2 (docs/plans/cross-project-issue-triage.md, 逆輸入2): "Go 操作

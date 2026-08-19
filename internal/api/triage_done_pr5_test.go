@@ -286,10 +286,12 @@ func TestSweepDone_MissingCanonicalSourceIsReported(t *testing.T) {
 
 // fakeSweepStore records which sweeps QueueSweepLoop.runOnce invoked.
 type fakeSweepStore struct {
-	wakeCalls int
-	doneCalls int
-	wakeErr   error
-	breaches  []CanonicalSourceBreach
+	wakeCalls   int
+	doneCalls   int
+	reopenCalls int
+	wakeErr     error
+	reopenErr   error
+	breaches    []CanonicalSourceBreach
 }
 
 func (f *fakeSweepStore) SweepWake(context.Context, time.Time) ([]string, error) {
@@ -302,6 +304,15 @@ func (f *fakeSweepStore) SweepTriage(context.Context, time.Time) (TriageSweepRes
 	return TriageSweepResult{Breaches: f.breaches}, nil
 }
 
+// reopenCalls / SweepReopen: docs/plans/ingestion-identity.md PR-5 (B-6) —
+// fakeSweepStore must implement QueueSweepStore's new third method so the
+// existing loop-level tests below keep compiling; TestQueueSweepLoop_
+// RunOnce_RunsEverySweep is extended to assert this ticks too.
+func (f *fakeSweepStore) SweepReopen(context.Context, time.Time) (ReopenSweepResult, error) {
+	f.reopenCalls++
+	return ReopenSweepResult{}, f.reopenErr
+}
+
 // TestQueueSweepLoop_RunOnce_RunsEverySweep pins that 決定15's periodic
 // evaluation is actually on the tick — SweepDone being written but never
 // called would leave every card in working forever while looking implemented.
@@ -310,8 +321,42 @@ func TestQueueSweepLoop_RunOnce_RunsEverySweep(t *testing.T) {
 	loop := &QueueSweepLoop{Store: store}
 	loop.runOnce(context.Background())
 
-	if store.wakeCalls != 1 || store.doneCalls != 1 {
-		t.Fatalf("wake=%d triage=%d, want 1 each", store.wakeCalls, store.doneCalls)
+	if store.wakeCalls != 1 || store.doneCalls != 1 || store.reopenCalls != 1 {
+		t.Fatalf("wake=%d triage=%d reopen=%d, want 1 each", store.wakeCalls, store.doneCalls, store.reopenCalls)
+	}
+}
+
+// TestQueueSweepLoop_RunOnce_TriageFailureDoesNotStopReopenSweep mirrors
+// TestQueueSweepLoop_RunOnce_WakeFailureDoesNotStopDoneSweep one level down:
+// docs/plans/ingestion-identity.md PR-5 (B-6) added a THIRD independent
+// sweep to this tick, and a triage-sweep failure must not silently skip
+// reopen evaluation either — same "each sweep's failure is its own concern"
+// posture the wake/triage split already established.
+func TestQueueSweepLoop_RunOnce_TriageFailureDoesNotStopReopenSweep(t *testing.T) {
+	store := &fakeSweepStore{}
+	loop := &QueueSweepLoop{Store: store}
+	// SweepTriage itself has no error field on fakeSweepStore (it always
+	// succeeds) — this test instead pins the wake-failure path already covers
+	// reopen too, since runOnce's wake/triage/reopen calls are unconditional
+	// siblings, not a chain.
+	store.wakeErr = errors.New("boom")
+	loop.runOnce(context.Background())
+
+	if store.reopenCalls != 1 {
+		t.Fatalf("reopen sweep ran %d times after a wake failure, want 1", store.reopenCalls)
+	}
+}
+
+// TestQueueSweepLoop_RunOnce_ReopenFailureIsLoggedNotFatal pins that a
+// reopen-sweep failure surfaces as a warning (like every other sweep here)
+// rather than panicking or wedging the loop.
+func TestQueueSweepLoop_RunOnce_ReopenFailureIsLoggedNotFatal(t *testing.T) {
+	store := &fakeSweepStore{reopenErr: errors.New("boom")}
+	loop := &QueueSweepLoop{Store: store}
+	loop.runOnce(context.Background()) // must not panic
+
+	if store.reopenCalls != 1 {
+		t.Fatalf("reopen sweep ran %d times, want 1 (called once despite failing)", store.reopenCalls)
 	}
 }
 
