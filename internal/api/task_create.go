@@ -104,6 +104,15 @@ func (s *TaskAppService) CreateTask(req CreateTaskRequest) (*orchestrator.Task, 
 		return nil, err
 	}
 
+	// docs/plans/ingestion-identity.md PR-2 (B-2), J-10/A-5: description size
+	// cap. One of the 4 mandatory entry points (task_create / task_update /
+	// action_send / BoidOpTaskResolveOrCapture) — see
+	// orchestrator.ValidateContentSize's own doc comment for the limit's
+	// value and the real-world measurement it's based on.
+	if err := orchestrator.ValidateContentSize("description", []byte(req.Description)); err != nil {
+		return nil, &StatusError{Code: http.StatusBadRequest, Message: err.Error()}
+	}
+
 	var meta *orchestrator.ProjectMeta
 	if s.Meta != nil {
 		// Hydrate with workspace.yaml so a workspace-level default project

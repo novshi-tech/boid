@@ -577,6 +577,28 @@ func (b *Broker) handleBoidBuiltin(ctx context.Context, req *ExecRequest, entry 
 		if !entry.Context.AllowsProject(boidReq.ProjectID) {
 			return &ExecResponse{ExitCode: 1, Stderr: "boid task identity resolve is restricted to the current workspace"}
 		}
+	case BoidOpTaskResolveOrCapture:
+		// docs/plans/ingestion-identity.md PR-2 (B-2): scoping is
+		// broker-authoritative, matching BoidOpTaskIdentityLink/Resolve
+		// exactly (default from ctx, resolve, AllowsProject BEFORE the
+		// executor ever sees the request) — see BoidOpTaskResolveOrCapture's
+		// own doc comment in protocol.go for why no separate task-ownership
+		// check is needed here the way Link needs one for its
+		// caller-supplied TaskID.
+		if boidReq.Identity == "" {
+			return &ExecResponse{ExitCode: 1, Stderr: "boid task resolve-or-capture requires an identity"}
+		}
+		if boidReq.ProjectID == "" {
+			boidReq.ProjectID = entry.Context.ProjectID
+		}
+		resolved, err := b.resolveProjectRef(boidReq.ProjectID)
+		if err != nil {
+			return &ExecResponse{ExitCode: 1, Stderr: fmt.Sprintf("boid task resolve-or-capture: resolve project %q: %s", boidReq.ProjectID, err)}
+		}
+		boidReq.ProjectID = resolved
+		if !entry.Context.AllowsProject(boidReq.ProjectID) {
+			return &ExecResponse{ExitCode: 1, Stderr: "boid task resolve-or-capture is restricted to the current workspace"}
+		}
 	case BoidOpJobList:
 		if boidReq.TaskID == "" {
 			return &ExecResponse{ExitCode: 1, Stderr: "boid job list requires a task id"}

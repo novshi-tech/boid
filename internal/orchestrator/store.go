@@ -38,14 +38,27 @@ func sqlStatusInList(statuses []TaskStatus) string {
 var (
 	terminalStatusSQLList     = sqlStatusInList(filterTaskStatuses(IsTerminalStatus))
 	preExecutionStatusSQLList = sqlStatusInList(filterTaskStatuses(IsPreExecutionStatus))
-	// notOpenSelfStatusSQLList = terminal ∪ pre-execution — used by the
-	// self-clause of the "open" filter (項1, sqlOpenSelf): pre-execution
-	// tasks must not pollute the default open view on their own, distinct
-	// from the child-rescue/descendant clauses which keep pre-execution
-	// visible when they have live (executing) children.
+	// notOpenSelfStatusSQLList = terminal ∪ (pre-execution minus captured) —
+	// used by the self-clause of the "open" filter (項1, sqlOpenSelf):
+	// pre-execution tasks must not pollute the default open view on their
+	// own, distinct from the child-rescue/descendant clauses which keep
+	// pre-execution visible when they have live (executing) children.
+	//
+	// captured is carved OUT of this exclusion (docs/plans/
+	// ingestion-identity.md PR-2, B-2, 「captured の可視化」): unlike
+	// triaged/parked/ready — which already have a dedicated tab (Queue/
+	// Parked, filters.templ) — a bare captured task had NO tab at all before
+	// this change (実物確認: queue_next explicitly excludes captured by
+	// design, parked/closed obviously don't apply). captured means "workspace
+	// already judged this worth triaging, but the identity index missed and
+	// a fresh task landed" (I-4) — closer in spirit to an ordinary open task
+	// awaiting attention than to triaged/parked/ready's "already triaged,
+	// waiting on a Go decision" — so it belongs in Open, not left invisible.
 	notOpenSelfStatusSQLList = sqlStatusInList(append(
 		append([]TaskStatus{}, filterTaskStatuses(IsTerminalStatus)...),
-		filterTaskStatuses(IsPreExecutionStatus)...,
+		filterTaskStatuses(func(s TaskStatus) bool {
+			return IsPreExecutionStatus(s) && s != TaskStatusCaptured
+		})...,
 	))
 	// notOpenAncestorGateStatusSQLList = terminal ∪ {parked} — used only by the
 	// open_descendants CTE's seed (子孫救済, 項3). "working → parked"

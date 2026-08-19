@@ -130,6 +130,14 @@ func TestBroker_BoidTaskIdentityResolve_PolicyReject(t *testing.T) {
 	assertBoidOpRejectedByPolicy(t, &sandbox.BoidRequest{Op: sandbox.BoidOpTaskIdentityResolve, Identity: "jira:X-1"})
 }
 
+// BoidOpTaskResolveOrCapture (docs/plans/ingestion-identity.md PR-2, B-2):
+// same scoping pattern as the identity ops above — see
+// TestBroker_BoidTaskResolveOrCapture_ProjectIDDenied in broker_test.go for
+// the cross-workspace rejection.
+func TestBroker_BoidTaskResolveOrCapture_PolicyReject(t *testing.T) {
+	assertBoidOpRejectedByPolicy(t, &sandbox.BoidRequest{Op: sandbox.BoidOpTaskResolveOrCapture, Identity: "jira:X-1"})
+}
+
 // assertBoidOpRejectedByPolicy registers a boid policy that allows only an
 // unrelated op (job_done), then asserts the given request is rejected by the
 // policy gate — before any op-specific dispatch — and never reaches the
@@ -260,6 +268,14 @@ var opEscapeCoverage = map[string]opCoverage{
 	"BoidOpTaskIdentityLink":    {escapeTest: "TestBroker_BoidTaskIdentityLink_PolicyReject"},
 	"BoidOpTaskIdentityUnlink":  {escapeTest: "TestBroker_BoidTaskIdentityUnlink_PolicyReject"},
 	"BoidOpTaskIdentityResolve": {escapeTest: "TestBroker_BoidTaskIdentityResolve_PolicyReject"},
+
+	// BoidOpTaskResolveOrCapture (docs/plans/ingestion-identity.md PR-2,
+	// B-2): scoping is broker-authoritative for project_id, the SAME pattern
+	// as the PR-1 identity ops above. The project-id cross-workspace
+	// rejection is exercised end-to-end by
+	// TestBroker_BoidTaskResolveOrCapture_ProjectIDDenied; the plain
+	// policy-gate manifest entry point is below.
+	"BoidOpTaskResolveOrCapture": {escapeTest: "TestBroker_BoidTaskResolveOrCapture_PolicyReject"},
 }
 
 // TestOpEscapeCoverage_ManifestComplete asserts opEscapeCoverage covers exactly

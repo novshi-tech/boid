@@ -123,6 +123,12 @@ func (s *TaskAppService) UpdateTask(id string, req UpdateTaskRequest) (*orchestr
 		task.ProjectID = req.ProjectID
 	}
 	if req.Description != "" {
+		// docs/plans/ingestion-identity.md PR-2 (B-2), J-10/A-5: same
+		// description size cap as CreateTask — see
+		// orchestrator.ValidateContentSize's own doc comment.
+		if err := orchestrator.ValidateContentSize("description", []byte(req.Description)); err != nil {
+			return nil, &StatusError{Code: http.StatusBadRequest, Message: err.Error()}
+		}
 		task.Description = req.Description
 	}
 	if req.RemoteID != nil {

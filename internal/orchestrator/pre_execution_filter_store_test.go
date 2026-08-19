@@ -71,6 +71,43 @@ func TestListTasks_Open_ExcludesBarePreExecutionTask(t *testing.T) {
 	}
 }
 
+// TestListTasks_Open_IncludesBareCapturedTask pins
+// docs/plans/ingestion-identity.md PR-2 (B-2)'s "captured の可視化"
+// requirement —実物確認の結果、captured 単体タスクはどの既存タブ
+// (open/closed/queue_next/parked) からも見えなかった (queue_next は明示的に
+// captured を除外、parked は状態が違う、closed は非終端を除外)。この状態を
+// 直したのが notOpenSelfStatusSQLList の carve-out。captured は「起票に値す
+// ると workspace が既に判断したが、まだ index が外れて棚上げされている」状態
+// (I-4) であり、triaged/parked/ready (Queue/Parked タブが既に受け持つ) とは
+// 意味が違う — triaged/parked/ready の除外は変えない (このテストの
+// triaged サブケースが回帰を防ぐ)。
+func TestListTasks_Open_IncludesBareCapturedTask(t *testing.T) {
+	d := createTestProject(t)
+	captured := &orchestrator.Task{ProjectID: "proj-1", Title: "Captured, no children", Behavior: "dev", Status: orchestrator.TaskStatusCaptured}
+	if err := orchestrator.CreateTask(d.Conn, captured); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	triaged := &orchestrator.Task{ProjectID: "proj-1", Title: "Triaged, no children", Behavior: "dev", Status: orchestrator.TaskStatusTriaged}
+	if err := orchestrator.CreateTask(d.Conn, triaged); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	got, err := orchestrator.ListTasks(d.Conn, orchestrator.TaskFilter{Status: "open"})
+	if err != nil {
+		t.Fatalf("ListTasks: %v", err)
+	}
+	ids := map[string]bool{}
+	for _, tk := range got {
+		ids[tk.ID] = true
+	}
+	if !ids[captured.ID] {
+		t.Errorf("open view must include a bare captured task (PR-2 B-2 visibility), got %v", ids)
+	}
+	if ids[triaged.ID] {
+		t.Errorf("open view must still NOT include a bare triaged task (Queue tab owns it) — got it for %s", triaged.ID)
+	}
+}
+
 // TestListTasks_Open_ExcludesChildlessPreExecutionTaskWithTerminalParent は
 // codex レビューで見つかったバグの回帰テスト: 親 (done) を持つ childless な
 // triaged task が、祖先救済 CTE の base case が「自分自身」を含んでいたせいで

@@ -194,6 +194,8 @@ func parseBoidRequest(args []string) (*BoidRequest, error) {
 			default:
 				return nil, fmt.Errorf("boid shim: unsupported boid task identity subcommand %q", args[2])
 			}
+		case "resolve-or-capture":
+			return parseBoidTaskResolveOrCapture(args[2:])
 		default:
 			return nil, fmt.Errorf("boid shim: unsupported boid task subcommand %q", args[1])
 		}
@@ -900,6 +902,72 @@ func parseBoidTaskIdentityResolve(args []string) (*BoidRequest, error) {
 	}
 	if len(positional) > 1 {
 		return nil, fmt.Errorf("boid shim: unexpected argument %q for boid task identity resolve", positional[1])
+	}
+	req.Identity = positional[0]
+	return req, nil
+}
+
+// parseBoidTaskResolveOrCapture builds the BoidRequest for
+// `boid task resolve-or-capture <identity> [--title T]
+// [--description D | --description-file F] [--project-id P]`
+// (docs/plans/ingestion-identity.md PR-2, B-2). --description-file supports
+// "-" for stdin (readFlagContent, same convention as `boid task update
+// --patch-file`) since description can carry a full Jira issue body / Slack
+// thread transcript — too large to pass comfortably as a single argv value.
+// Title/description are only used by the executor when Identity is
+// unresolved; a caller that only wants to check for an existing binding can
+// omit both.
+func parseBoidTaskResolveOrCapture(args []string) (*BoidRequest, error) {
+	req := &BoidRequest{Op: BoidOpTaskResolveOrCapture}
+	var positional []string
+
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		switch {
+		case arg == "--project-id" || strings.HasPrefix(arg, "--project-id="):
+			value, next, err := takeStringFlagValue(args, i, "--project-id")
+			if err != nil {
+				return nil, err
+			}
+			i = next
+			req.ProjectID = value
+		case arg == "--title" || strings.HasPrefix(arg, "--title="):
+			value, next, err := takeStringFlagValue(args, i, "--title")
+			if err != nil {
+				return nil, err
+			}
+			i = next
+			req.Title = value
+		case arg == "--description" || strings.HasPrefix(arg, "--description="):
+			value, next, err := takeStringFlagValue(args, i, "--description")
+			if err != nil {
+				return nil, err
+			}
+			i = next
+			req.Description = value
+		case arg == "--description-file" || strings.HasPrefix(arg, "--description-file="):
+			value, next, err := takeStringFlagValue(args, i, "--description-file")
+			if err != nil {
+				return nil, err
+			}
+			i = next
+			data, err := readFlagContent(value)
+			if err != nil {
+				return nil, fmt.Errorf("boid shim: read description file: %w", err)
+			}
+			req.Description = string(data)
+		case strings.HasPrefix(arg, "-"):
+			return nil, fmt.Errorf("boid shim: unsupported flag %q for boid task resolve-or-capture", arg)
+		default:
+			positional = append(positional, arg)
+		}
+	}
+
+	if len(positional) == 0 {
+		return nil, fmt.Errorf("boid shim: boid task resolve-or-capture requires an identity")
+	}
+	if len(positional) > 1 {
+		return nil, fmt.Errorf("boid shim: unexpected argument %q for boid task resolve-or-capture", positional[1])
 	}
 	req.Identity = positional[0]
 	return req, nil

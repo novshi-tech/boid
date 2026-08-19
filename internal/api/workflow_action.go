@@ -46,6 +46,16 @@ func (s *TaskWorkflowService) ApplyAction(ctx context.Context, taskID string, re
 		}
 	}
 
+	// docs/plans/ingestion-identity.md PR-2 (B-2), J-10/A-5: action payload
+	// size cap. This is action_send's single implementation — HTTP API, Web
+	// UI, brokered action_send (boid_executor.go's BoidOpActionSend), and
+	// `boid action send` all funnel through ApplyAction, so checking here
+	// once covers all of them (one of the 4 mandatory entry points; see
+	// orchestrator.ValidateContentSize's own doc comment).
+	if err := orchestrator.ValidateContentSize("action payload", req.Payload); err != nil {
+		return nil, &StatusError{Code: http.StatusBadRequest, Message: err.Error()}
+	}
+
 	task, err := s.Tasks.GetTask(taskID)
 	if err != nil {
 		return nil, &StatusError{Code: http.StatusNotFound, Message: err.Error()}

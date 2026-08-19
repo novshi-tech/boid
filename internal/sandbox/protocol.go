@@ -221,6 +221,40 @@ const (
 	BoidOpTaskIdentityLink    BoidOp = "task_identity_link"
 	BoidOpTaskIdentityUnlink  BoidOp = "task_identity_unlink"
 	BoidOpTaskIdentityResolve BoidOp = "task_identity_resolve"
+
+	// BoidOpTaskResolveOrCapture backs `boid task resolve-or-capture
+	// <identity> [--title T] [--description D|--description-file F]` from
+	// inside the sandbox (docs/plans/ingestion-identity.md PR-2, B-2): the
+	// destination-resolution half of I-4 — resolve Identity to an existing
+	// task, or atomically create a new `captured` triage task and link
+	// Identity to it when unresolved. This is deliberately a SEPARATE op
+	// from BoidOpTaskIdentityLink/BoidOpActionSend, not a variant of either
+	// — "解決と記録を 1 op に混ぜない" (PR-2 節): the record vocabulary
+	// (attrs_set / child_added / …) already exists on action_send, and
+	// mixing destination-resolution into it would give that op two
+	// responsibilities. When the result's Created is false, the caller is
+	// expected to follow up with a normal BoidOpActionSend (attrs_set) —
+	// this op never touches actions.
+	//
+	// Scoping is broker-authoritative, matching BoidOpTaskIdentityLink
+	// exactly (default from ctx, resolve via ProjectResolver, AllowsProject
+	// BEFORE the executor ever sees the request — broker.go). Unlike Link,
+	// there is no caller-supplied TaskID to separately verify: every task
+	// this op can return or create is scoped to req.ProjectID by
+	// construction (a fresh task is created WITH ProjectID=req.ProjectID;
+	// an existing one is found via ResolveIdentity(req.ProjectID, ...), so
+	// it can only ever be a task already scoped to that same project) — no
+	// analogue of Link's "existing.ProjectID != req.ProjectID" cross-check
+	// is needed here.
+	//
+	// Conflict (Identity already bound to a DIFFERENT task) is represented
+	// the same way BoidOpTaskIdentityLink represents it: IdentityConflictExitCode
+	// below, not a generic ExitCode:1 — the design doc requires PR-1's
+	// ErrIdentityConflict to survive machine-readably ("identity 衝突時の
+	// エラー語彙は PR-1 の ErrIdentityConflict をそのまま返す") so the
+	// caller can route it to the integration judgment call it names
+	// (「統合」の判断) rather than treating it as a generic failure.
+	BoidOpTaskResolveOrCapture BoidOp = "task_resolve_or_capture"
 )
 
 // IdentityNotFoundExitCode is BoidOpTaskIdentityResolve's distinguished exit
@@ -332,12 +366,24 @@ type BoidRequest struct {
 
 	// Identity carries the opaque external-key string for
 	// BoidOpTaskIdentityLink / BoidOpTaskIdentityUnlink /
-	// BoidOpTaskIdentityResolve (docs/plans/ingestion-identity.md PR-1).
-	// Never interpreted by the daemon (I-2) — validated only for
-	// non-emptiness. Link additionally uses TaskID (the task to bind); scope
-	// is ProjectID for all three, same field every other project-scoped op
-	// already uses.
+	// BoidOpTaskIdentityResolve / BoidOpTaskResolveOrCapture
+	// (docs/plans/ingestion-identity.md PR-1/PR-2). Never interpreted by the
+	// daemon (I-2) — validated only for non-emptiness. Link additionally
+	// uses TaskID (the task to bind); scope is ProjectID for all four, same
+	// field every other project-scoped op already uses.
 	Identity string `json:"identity,omitempty"`
+
+	// Title / Description carry BoidOpTaskResolveOrCapture's new-task fields
+	// (docs/plans/ingestion-identity.md PR-2, B-2) — used ONLY when Identity
+	// is unresolved and a fresh `captured` task is created; ignored when the
+	// identity already resolves to an existing task. Deliberately plain
+	// strings rather than a CreatePatch (unlike BoidOpTaskCreate) — the
+	// design doc scopes this op's input to "project + identity + 新規時の
+	// title / description" only, not the full CreateTaskRequest surface
+	// (behavior/traits/readonly/etc. all come from the resolved default
+	// behavior, same as khi's existing captured/triaged ensure_task calls).
+	Title       string `json:"title,omitempty"`
+	Description string `json:"description,omitempty"`
 }
 
 type TokenContext struct {
