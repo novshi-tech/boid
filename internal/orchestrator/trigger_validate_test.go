@@ -63,6 +63,29 @@ func TestValidateTriggers_ZeroOrNegativeEvery_Rejected(t *testing.T) {
 	}
 }
 
+// TestValidateTriggers_BelowSweepResolution_Rejected pins N-6 (Opus
+// review): `every` has an effective floor of TriggerSweepResolution (the
+// TriggerLoop's own sweep Interval, wire.go) — a sub-resolution `every`
+// (e.g. "1s") does NOT mean "once a second", it silently means "once per
+// sweep tick" instead, since triggerIsDue is only ever evaluated once per
+// tick. ValidateTriggers rejects it loudly at project.yaml load time rather
+// than let that surprise happen silently at runtime.
+func TestValidateTriggers_BelowSweepResolution_Rejected(t *testing.T) {
+	err := ValidateTriggers([]Trigger{{Name: "intake", Every: "1s", Run: "true"}})
+	if err == nil {
+		t.Fatal("ValidateTriggers(every=1s) = nil, want an error (below TriggerSweepResolution)")
+	}
+}
+
+// TestValidateTriggers_AtSweepResolution_OK pins the floor's boundary: the
+// resolution value itself (not just values below it) is accepted.
+func TestValidateTriggers_AtSweepResolution_OK(t *testing.T) {
+	err := ValidateTriggers([]Trigger{{Name: "intake", Every: TriggerSweepResolution.String(), Run: "true"}})
+	if err != nil {
+		t.Errorf("ValidateTriggers(every=%s) = %v, want nil (exactly at the floor)", TriggerSweepResolution, err)
+	}
+}
+
 func TestValidateTriggers_DuplicateName_Rejected(t *testing.T) {
 	err := ValidateTriggers([]Trigger{
 		{Name: "intake", Every: "10m", Run: "true"},

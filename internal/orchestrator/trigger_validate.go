@@ -5,6 +5,18 @@ import (
 	"time"
 )
 
+// TriggerSweepResolution is the effective lower bound on `every` (N-6, Opus
+// review): the daemon only ever evaluates triggerIsDue once per
+// TriggerLoop sweep tick (internal/server/wire.go wires TriggerLoop.Interval
+// to this SAME constant, so they cannot drift apart), so an `every` below
+// this value does not mean "run more often than once per sweep tick" — it
+// silently collapses to "once per sweep tick", which is not what a
+// project.yaml author who wrote e.g. `every: 1s` would expect (1 sweep tick
+// = 1 minute here, not 1 second — ~1,440 containers/day, not ~86,400).
+// ValidateTriggers rejects anything below this at project.yaml load time
+// rather than let that surprise happen silently at runtime.
+const TriggerSweepResolution = time.Minute
+
 // ValidateTriggers checks a project.yaml `triggers[]` list at LOAD time
 // (called from parseProjectMetaBytes, spec_loader.go) — the same place
 // validateHookKind validates task_behaviors.*.hooks. A malformed trigger
@@ -33,6 +45,9 @@ func ValidateTriggers(triggers []Trigger) error {
 		}
 		if every <= 0 {
 			return fmt.Errorf("project.yaml: triggers[%d] (%s): every must be > 0, got %q", i, trig.Name, trig.Every)
+		}
+		if every < TriggerSweepResolution {
+			return fmt.Errorf("project.yaml: triggers[%d] (%s): every (%q) is below the daemon's effective sweep resolution (%s) — it would silently run only once per sweep tick, not as often as written", i, trig.Name, trig.Every, TriggerSweepResolution)
 		}
 	}
 	return nil

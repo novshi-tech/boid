@@ -2078,8 +2078,14 @@ func mountRoutes(srv *Server, runtime *appRuntime) error {
 	// startup sweeps don't contend for the single DB connection at once
 	// (db.go's SetMaxOpenConns(1)).
 	srv.triggerLoop = &api.TriggerLoop{
-		Store:        runtime.workflow,
-		Interval:     1 * time.Minute,
+		Store: runtime.workflow,
+		// N-6 (Opus review): tied to orchestrator.TriggerSweepResolution,
+		// not a separate literal — ValidateTriggers rejects any `every`
+		// below that same constant at project.yaml load time specifically
+		// because it assumes this IS the sweep loop's actual Interval. If
+		// the two drifted apart, ValidateTriggers' floor would stop
+		// describing reality.
+		Interval:     orchestrator.TriggerSweepResolution,
 		InitialDelay: 30 * time.Second,
 		Notifier:     srv.notifySvc,
 	}
