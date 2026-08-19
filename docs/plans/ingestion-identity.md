@@ -727,15 +727,339 @@ workspace 側の選択になった。
 
 ## 段階
 
-1. **B-1 + B-2** — identity 索引と `captured` 着地、 push op の返り値契約。 土台
-2. **B-3 + B-4** — `action_list`、 `noted` / `answered`。 workspace は読み口を付け替え、
-   claims への書き込みを止める (物理退役はまだ)
-3. **B-5 + B-6** — トリガ実行機構と auto-reopen。 ここで workspace の cron と自前の履歴が
-   消える
+1. **B-1 + B-2** (→ PR-1 / PR-2) — identity 索引と `captured` 着地、 push op の返り値契約。 土台。
+   間に **workspace 側の一括投入**が挟まる (「PR 分割」節の段取りを参照)
+2. **B-3 + B-4** (→ PR-3) — `action_list`、 `noted` / `answered`。 workspace は読み口を付け替え、
+   claims への書き込みを止める (物理退役はまだ)。 **読みと書きは 1 本にまとめる**
+3. **B-5 + B-6** (→ PR-4 / PR-5) — トリガ実行機構と auto-reopen。 ここで workspace の cron と
+   自前の履歴が消える
 4. (射程外) 自律 Go の gate。 提案を第一級のフィールドへ昇格させるかもここで決める
 
 第 2 版は「cadence を先にコアへ持ち上げる」順序を推していた。 その順で始めると、
 **後で消える予定のものを boid コアへ移植する**ことになるので、 identity を先に置いた。
+
+---
+
+## PR 分割
+
+本編の PR-5 と同じ粒度 (型・ ファイル・ op の形と scoping・ 不変条件・ やらないこと・ 検証) で
+書く。 **本 doc の PR 番号は本編 Phase 1 の PR-1〜5 とは別系列**である (本編 Phase 1 は完了済み)。
+各見出しに対応する B-x を併記した。
+
+着手前の 5 件 (A-1〜A-5) はすべて決定済みなので、 PR-1 から着手できる。
+
+### 全体の順序と、`tasks.ref` 退役の段取り
+
+I-7 (`ref` は子 dedup 専用として残し、 外部キーだけ identity へ) は **1 つの PR では完了しない**。
+daemon が既存 `ref` を機械的に identity へ写せないためである — identity は `<namespace>:<key>`
+だが (I-2)、 既存の `ref` は `ROOKPF-289` のような裸のキーで、 namespace を補うには「どのチャネルの
+キーか」を知る必要があり、 それは daemon には無い知識である (逆輸入 3)。
+
+したがって投入は **workspace 側が自分の索引から link op で流し込む**形になり、 順序は次のとおり:
+
+1. **PR-1** — `task_identities` を作り link / unlink / resolve を通す。 `tasks.ref` には触らない
+2. **(workspace)** — khi が `match_card.py` の key index から namespace 付きで一括 link する
+3. **PR-2** — push の宛先解決を identity 索引へ切り替える。 `ref` による root の get-or-create は
+   fallback として残す
+4. **PR-2 の後** — 切り替えが実地で回ったことを確認してから、 root task の `ref` を空にする
+   migration を出す。 `idx_tasks_ref_parent_project` と子 task の `ref` は**そのまま残す**
+
+「切り替えが回ったのを確認してから元を落とす」のは、 本編 PR-5 の khi 統合と同じ段取りである
+(「fold 退役前の等価性検証」)。
+
+---
+
+### PR-1 (B-1): identity 索引
+
+外部キー → task の索引を daemon に置く (I-1 / I-2 / I-3)。 **この PR だけでは挙動は変わらない** —
+書き手も読み手もまだ居ない。 PR-2 と workspace の一括投入がそれぞれ乗る土台である。
+
+**migration 0041**
+
+- `task_identities` — `identity TEXT NOT NULL` / `project_id TEXT NOT NULL` /
+  `task_id TEXT NOT NULL` / `created_at`
+- `UNIQUE (project_id, identity)` — I-3 のスコープ。 **1 identity は高々 1 task** (I-1) を
+  DB の制約として持つ。 `idx_tasks_ref_parent_project` (migration 0037) と同じスコープの踏襲
+- `INDEX (task_id)` — 逆引き (task の identity 一覧、 drop 時の一括解放)
+- `FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE` — 終端 task の 30 日 GC で
+  binding も落ちる。 I-5 の「done では握り続ける」は実質 30 日の期限付きになるが、 task 行が
+  消えた後も binding だけ残す意味が無いため、 これを受容する (仕分け B)
+- **`tasks.ref` には触らない**。 上記の段取りのとおり
+
+**store** (`internal/orchestrator/task_identity.go`)
+
+- `LinkIdentity(dbtx, projectID, identity, taskID) error` — 既に**別の** task に紐付いていたら
+  `ErrIdentityConflict`。 同じ task への再 link は成功 (冪等)
+- `UnlinkIdentity(dbtx, projectID, identity) error`
+- `UnlinkAllForTask(dbtx, taskID) error` — I-6 の drop 時解放
+- `ResolveIdentity(dbtx, projectID, identity) (*Task, error)` — 未登録は `ErrTaskNotFound` と
+  同型のセンチネル。 `FindTaskByRef` の並び
+- `ListIdentitiesByTask(dbtx, taskID) ([]string, error)`
+
+**drop での解放 (I-6)** は machine ではなく service 層に置く。 `machine.go` は純粋な遷移表で
+副作用を持たないため、 `drop` 遷移が成立した直後の action 記録経路 (`TaskWorkflowService`) から
+`UnlinkAllForTask` を呼ぶ。 done では**呼ばない** (I-5)。
+
+**op** (`boid task identity ...`)
+
+- `BoidOpTaskIdentityLink` / `BoidOpTaskIdentityUnlink` / `BoidOpTaskIdentityResolve`
+- 追加手順は boid-add-builtin スキルの一式 (`protocol.go` / `broker.go` / `boid_shim.go` /
+  `policy_ops.go` / `policy.go` / `boid_executor.go` + policy_test + drift test)
+- **scoping は broker 側に書く**。 `BoidOpTaskCreate` と同型 — project 未指定なら
+  `entry.Context.ProjectID` を埋め、 `resolveProjectRef` で解決してから
+  `entry.Context.AllowsProject` を検査する。 **PR-4 / PR-5 のレビューが 3 回連続で指摘した
+  クラス**がここに当たる (「brokered の scoping を executor 側にだけ書き、 broker 側が素通し」)。
+  executor 側にも検査を置くのは二重化としては良いが、 **broker 側が権威**である
+- resolve の返りは task の ID と status。 task 全体を返さない (workspace は `task_triage_get` で
+  取れる)
+
+**不変条件**
+
+- 1 つの identity は高々 1 つの task に紐付く。 2 枚目の link 要求は **silent newest-wins では
+  なく拒否** (`ErrIdentityConflict`)。 これが `match_card.py: build_key_index()` の
+  「`updated_at` が最新の 1 枚にしか届かない」という暗黙則を、 明示された不変条件へ変える
+- 1 つの task は identity を複数持てる
+- daemon は identity 文字列を**解釈しない**。 検証は「空でない」ことだけで、 namespace の有無も
+  形式も見ない (I-2)
+- done では保持し、 drop で解放する (I-5 / I-6)
+
+**やらないこと**
+
+- namespace の検証・ 正規化・ 妥当性検査 (I-2、 非目的)
+- 非排他の reference (I-8)。 `related_jira_issues` は workspace 側に残る
+- identity から task を作ること (PR-2)
+- `tasks.ref` の root 用途の退役 (PR-2 の後)
+- identity を認証・ 認可に使うこと (非目的)
+
+**検証**
+
+- 同じ `(project_id, identity)` を別 task へ link → `ErrIdentityConflict`。 **同じ task へ再 link
+  すると成功する** (冪等) ことも pin する
+- 別 project なら同じ identity 文字列を link できる (I-3 のスコープ)
+- drop → 解放され、 同じキーで再び link できる (I-6)。 **done では解放されない** (I-5)
+- task 行の削除 (GC) で binding が cascade で消える
+- broker: 別 workspace の project を指す link / resolve が**拒否される** (executor 側だけでなく
+  broker 単体のテストで)
+
+---
+
+### PR-2 (B-2): 宛先解決と `captured` 着地
+
+観測の宛先を identity で解決し、 どの task にも当たらないキーは `captured` な triage task として
+着地させる (I-4)。 **ここで khi が identity を使い始める。**
+
+**op**: 既存の `action_send` / `task_create` を置き換えるのではなく、 **解決を前置する 1 本**を足す。
+
+- `BoidOpTaskResolveOrCapture` — 入力は project + identity + 新規時の title / description。
+  返りは `{task_id, created: bool}` (B-2 の返り値契約)
+- `created: false` なら workspace は続けて既存の `action_send` で `attrs_set` を押す。
+  **解決と記録を 1 op に混ぜない** — 記録の語彙 (`attrs_set` / `child_added` / …) は既に
+  確立していて、 そこへ宛先解決を持ち込むと op が二重の責務を持つ
+- identity 衝突時のエラー語彙は PR-1 の `ErrIdentityConflict` をそのまま返す。 workspace は
+  これを受けて統合の判断へ回す
+- 新規作成時は identity を **同一トランザクションで** link する。 作ったが link されていない
+  task が残ると、 次の巡で同じキーがもう 1 枚作る
+
+**`captured` で着地する** (I-4)。 状態も遷移も実装済みで、 `task_create` は既に `"captured"` を
+受け付ける (`internal/api/task_create.go:75`)。
+
+**サイズ上限 (J-10)**: `description` と action payload に上限を置き、 超えたら **エラー**。
+切り詰めない。 上限の値はこの PR で実測して決める (Jira 課題本文 / Slack スレッド全文の分布)。
+入口は 1 箇所ではないので、 `task_create` / `task_update` / `action_send` /
+`BoidOpTaskResolveOrCapture` のすべてで同じ関数を通す。
+
+**`captured` の可視化**: `captured` な triage task が Web UI の一覧に出ること。 **J-9 により
+これ以外に daemon 側で要るものはほぼ無い** — `captured` → `triage` ボタンは Phase 1 PR-3 で
+実装済み (`web/templates/tasks.templ:281`)、 提案は `desired_description()` の平文として人に
+見えるので daemon は解釈しない。
+
+**不変条件**
+
+- 解決と新規作成は同一トランザクション (上記)
+- 新規は必ず `captured` で着地する。 daemon が `triaged` まで進めることはない (J-9)
+- daemon が opaque blob から読むキーは `attrs.observed.source_closed` の**ままで増えない**
+
+**やらないこと**
+
+- 提案の解釈 (J-9)。 `suggestion` は今までどおり不透明
+- `captured` の TTL / 自動 drop (仕分け B: 可視化のみ)
+- `triaged` への自動遷移 (J-9 の段階 2 以降)
+- 統合 (「index が外れたが実は既存 card と同じ件」) の判断。 workspace 側の LLM の仕事
+- root task の `ref` を空にすること (次の migration)
+
+**検証**
+
+- 未登録キー → `captured` な task が 1 枚できて identity が link される。 `created: true`
+- 同じキーで再度呼ぶ → **同じ task を返し、 2 枚目を作らない**。 `created: false`
+- 別 task に紐付いたキー → `ErrIdentityConflict` で、 task は作られない
+- 新規作成に失敗したら identity も残らない (トランザクション境界)
+- 上限超過 → エラーになり、 **切り詰められた行が残らない**
+- `captured` な task が Web UI の一覧に出る
+
+---
+
+### PR-3 (B-3 + B-4): 読み口と判断の記録
+
+段階 2。 **読みと書きを 1 本にまとめる** — workspace は「読み口を付け替え、 `claims` への書き込みを
+止める」を一度にやるので、 片方だけ先に入れても khi 側が動けない。
+
+**op**: `BoidOpActionList` (`boid action list`)
+
+- **workspace スコープの一括読み**を既定とする (I-9 の連動、 B-3)。 入力は project (省略時は
+  context) / since カーソル / limit / 任意の task_id 絞り、 返りは actions の配列と次のカーソル
+- カーソルは actions が append-only であることに乗る (id または `(created_at, id)`)。 単調に
+  進むので、 スクリプトは「前回の続きから」を自然に書ける
+- scoping は `BoidOpTaskList` と同型 — 明示 project を検査し、 無指定時は `AllowedProjectIDs` を
+  回して**決して無スコープで引かない**。 broker 側が権威 (PR-1 と同じ注意)
+- `noted` の retention (仕分け B) はここに乗る: 既定 limit を持ち、 **最新 N 件を返す**。
+  書き込み側の圧縮はしない (payload 不透明なので daemon には潰せない)
+- `ListActionsByTask` (`internal/api/store.go:312`) は per-task なので、 一括読みは新規の
+  store メソッドになる
+
+**action の追加** (`internal/orchestrator/machine.go`)
+
+- `noted` (J-5) — non-transitioning (`ToStatus: ""`)、 `Manual: true`。 `attrs_set` /
+  `child_added` / `child_specced` を生成している同じループ (`machine.go:428`) に足し、
+  FromStatus は `preExecutionStatuses` を踏襲する (論点 6-3: never `*`)
+- `answered` (J-6) — 同じく non-transitioning、 `Manual: true`。 書き手は Web UI (daemon 自身)
+- **`answered` の副作用 (`suggestion` を落とす) は fold 側に置く**。 `FoldDetailAttrs` が
+  `attrs_set` を畳んでいるのと同じ場所で、 `answered` が `suggestion` キーを落とす形にする。
+  理由は決定 13 (event 追記が正、 state は導出) — service 層で `detail` を別途書き換えると、
+  同じ状態に書き手が 2 人いることになる
+
+**Web UI からの発行** (J-6 の動機): 採用 / 却下のボタンが `answered` を送る。 これが
+「既に開いている穴」(決定 14 で判断を Web UI へ移したのに、 Web UI 側に却下履歴を生む経路が無い)
+の塞ぎである。
+
+**不変条件**
+
+- daemon は `noted` の payload を**一切解釈しない** (J-5)。 記録して `action_list` で返すだけ
+- `answered.answer` は第一級のフィールド。 `verb` / `basis` は記録するが、 **daemon は突合しない**
+  (J-7 — 突合は suggestion の中身を読むことになり境界を越える)
+- 解釈するキーの closed set は `attrs.observed.source_closed` の 1 つのまま増えない
+
+**やらないこと**
+
+- 却下履歴の突合 (J-7)。 スクリプトか判断 task が `action_list` で自己抑制する
+- `proposed` verb の第一級化 (段階 4)
+- `noted` の圧縮・ 専用 GC (read 口の limit で対処する)
+- workspace 側 `claims` の物理退役 (段階 2 では書き込みを止めるまで)
+
+**検証**
+
+- `noted` が任意形状の JSON payload を通し、 `action_list` でそのまま返る (daemon が中身を
+  検証しないことを pin する)
+- since カーソルが単調に進み、 同じ action を 2 度返さない
+- scoping: project 無指定で**無スコープに引かない**
+- `answered` が `detail.attrs.suggestion` を落とす
+- Web UI の却下が `answered` を残す
+
+---
+
+### PR-4 (B-5): トリガ実行機構
+
+本 doc の中核。 **段階 3 に入るので、 PR-1〜3 の実装で分かったことを織り込んでから着手する**。
+
+**スキーマ** (`internal/orchestrator/spec_types.go`)
+
+- `ProjectMeta` に `Triggers []Trigger` (`yaml:"triggers,omitempty"`) を足す。 **トップレベル**で
+  あり `task_behaviors` は変更しない (J-1)
+- `Trigger{Name, Every, Run}`。 `Run` は `sh -c` に渡すコマンド文字列 (J-2)
+- **workspace envelope** (`workspace_envelope.go`) は `KnownFields(true)` の strict decode なので、
+  workspace の default project 定義に `triggers` を書けるようにするならそちらにもスキーマ追加が
+  要る。 **書けないとエラーで落ちる**ため、 「project.yaml だけ」と決めるにしても意識的に決める
+  (仕分け B)
+- 旧 daemon は project.yaml を非 strict にパースするので `triggers` を**無警告で無視する**。
+  受容する (`triggers` を書く project.yaml は新 daemon 前提)
+
+**スケジューラ** (`internal/api/trigger_loop.go`)
+
+- `QueueSweepLoop` (`internal/api/queue_sweep.go:107`) と同型 — `Run(ctx)` が ticker を回し、
+  `runOnce` が 1 巡ぶんを見る。 ctx に `ActorDaemon` を載せるのも同じ
+- 1 巡で「`every` が経過していて、 かつ前回がまだ走っていない」トリガを起こす
+
+**実行** — exec job を daemon 内から起こす
+
+- `api.ExecDispatcher` (`sessionDispatcherAdapter.StartExec`、 `internal/server/wire.go`) が
+  既にあり、 `BuildExecJobSpec` → `runner.Dispatch` を通る。 **新規なのは daemon 内のループから
+  これを呼ぶ配線だけ**で、 job の組み立ても broker 登録も gateway 配線も既存経路に乗る
+  (B-5 の表の「daemon 自身が exec job を起こす経路は新規」は、 正確にはこの配線を指す)
+- `Argv` は `["sh", "-c", trigger.Run]`。 sandbox の `/bin/sh` は dash なので bashism は
+  `bash scripts/x.sh` と明示する側の責任
+- `Readonly: true` 固定 (仕分け B)。 boid op の allowlist は role にも readonly にも依存しない
+  ので、 readonly のまま `task_create` / `action_send` が打てる
+
+**single-flight と実行記録** (migration 0042)
+
+- `trigger_runs` — `project_id` / `trigger_name` / `job_id` / `started_at` / `finished_at` /
+  `exit_code`
+- single-flight は「同じ `(project, trigger)` に `finished_at IS NULL` の行があれば見送る」。
+  **daemon にしか正しく実装できない**部分である (J-4 — workspace 側の flock はホスト単位でしか
+  効かず、 コンテナ化された daemon や複数ホストで破れる)
+- 詰まり検出は N 連続見送りで通知、 失敗はフェイルオープン (次の巡も回す) + 連続失敗で通知
+  (どちらも仕分け B)
+- 手動 1 巡の口 (`boid trigger run <name>`) もここ (仕分け B)
+
+**不変条件**
+
+- daemon は `run` の中身を知らない (J-2 / 非目的)
+- 同じ `(project, trigger)` が同時に 2 つ走らない
+- トリガが task を作るかどうか・ 何個作るかに daemon は関知しない (J-4)
+
+**やらないこと**
+
+- 反応型トリガ (J-3。 `action_list` があればスクリプトが書ける)
+- `probe` / `on:` / `scope:` / `max_per_sweep` / dispatch 粒度 (第 3 版で消えた)
+- 時間帯窓 (仕分け B: スクリプトが時刻で自制する)
+- ホスト側 cron の存続 (論点 b は内蔵側へ倒れた)
+
+**検証**
+
+- `every` の経過でちょうど 1 回起きる
+- 前回が走っている間は見送る (single-flight)
+- コマンドが非ゼロで落ちても次の巡が回り、 exit code が記録に残る
+- **readonly の trigger job から `task_create` が通る** (この PR の前提そのものなので、
+  推論ではなく実際に通して pin する)
+
+---
+
+### PR-5 (B-6): auto-reopen と done への着地
+
+**done への着地 (I-5b)** — 現状 `attrs_set` の FromStatus は `preExecutionStatuses` だけで
+`done` を含まないため (`machine.go:444`)、 I-5 の判定材料そのものが更新されない。 置き場所は
+**service 層のガード** (仕分け B): `task_triage` 行を持つ task に限って done への `attrs_set` を
+通す。 machine の rule に `done` を足すと論点 6-3 (通常 task の done に発火させない) を壊す。
+
+**auto-reopen (I-5)**
+
+- `orchestrator.ShouldAutoReopen` — 純関数。 `ShouldAutoDone` / `ShouldWake` と同型に書く
+- 判定材料は `attrs.observed.source_closed` の **true → false 反転だけ**。 読むキーは増えない
+- 遷移は既存の `reopen_triaged` (routing は `internal/api/triage_done.go` に実装済み)
+- 評価契機は QueueSweepLoop — 決定 15 の `SweepDone` と同じ場所に並べる
+- **フラップ対策**: 自動 reopen は 1 回だけで、 2 回目以降は通知して人に見せる (仕分け B)。
+  回数は actions から数える (決定 13: state は導出、 専用カウンタ列を作らない)
+
+**I-5c の可視化** — canonical source は closed のまま Slack にだけ続報が来た、 のような
+「配送はされたが reopen しない」着地を**必ず可視化する**。 決定 16 の
+`MissingCanonicalSourceGuidance` が「提示面が無いので sweep から log 出力に留める」という前例を
+作っているので、 同じ形にするか queue へ出すかをこの PR で決める。
+
+**不変条件**
+
+- daemon が opaque blob から読むキーは `source_closed` の 1 つのまま
+- `task_triage` 行を持たない done の通常 task には発火しない
+
+**やらないこと**
+
+- 自律 Go の gate (段階 4)
+- 提案の第一級化 (段階 4)
+
+**検証**
+
+- `source_closed` の true → false で `done` → `triaged` になる
+- 2 回目のフラップでは自動 reopen せず、 通知に落ちる
+- triage 行を持たない done の task では発火しない
+- done への `attrs_set` が、 triage 行を持つ task でだけ通る
 
 ---
 
