@@ -437,13 +437,32 @@ func parseAnsweredPayload(payload json.RawMessage) (*answeredPayload, error) {
 // this answered has been acted on and must stop being "the current
 // suggestion" — a fresh one only arrives from a fresh note-suggest cycle,
 // which folds a new attrs_set/suggestion in from scratch.
+//
+// A GetTaskTriage miss (sql.ErrNoRows) is a no-op — UNLIKE
+// applyAttrsSetSideEffect, which creates an empty row on the same miss.
+// `answered` is Manual:true (machine.go), so it can be sent to ANY
+// preExecutionStatuses task via `boid action send --type answered`, not
+// only triage tasks. Creating a phantom row here for every non-triage task
+// that happens to receive one would weaken the invariant 12 節 B-6's I-5b
+// default plan (docs/plans/ingestion-identity.md) depends on — "service 層
+// のガード = task_triage 行の有無を見る" for the future auto-reopen gate
+// (PR-5) — by making an ordinary dev task indistinguishable from a real
+// triage task. Skipping the row is safe here specifically because
+// `answered` has nothing POSITIVE to persist when no row exists: its only
+// effect is stripping a suggestion key that, with no row, cannot be
+// present either. This is deliberately asymmetric with attrs_set, whose
+// patch always carries real triage content (urgency/kind/suggestion) — for
+// attrs_set, creating the row on miss establishes real data, not a bare
+// side effect, so leaving that path alone here is correct rather than an
+// inconsistency (Opus review, 2026-08-19; see
+// TestApplyAction_Answered_NoExistingTriageRow_StillSucceeds).
 func applyAnsweredSideEffect(tx TxStore, taskID string) error {
 	tt, err := tx.GetTaskTriage(taskID)
 	if err != nil {
 		if !errors.Is(err, sql.ErrNoRows) {
 			return fmt.Errorf("answered: get task_triage: %w", err)
 		}
-		tt = &orchestrator.TaskTriage{TaskID: taskID}
+		return nil
 	}
 	stripped, sErr := orchestrator.StripDetailAttrs(tt.Detail, "suggestion")
 	if sErr != nil {

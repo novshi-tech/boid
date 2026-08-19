@@ -218,10 +218,25 @@ func testApplyActionAnsweredStripsSuggestion(t *testing.T, answer string) {
 	}
 }
 
-// TestApplyAction_Answered_NoExistingTriageRow_StillSucceeds pins that
-// applyAnsweredSideEffect's GetTaskTriage-miss path (sql.ErrNoRows) is
-// tolerated the same way applyAttrsSetSideEffect's is — a task_triage row is
-// created (empty) rather than erroring.
+// TestApplyAction_Answered_NoExistingTriageRow_StillSucceeds pins Opus
+// review finding #4 (2026-08-19 revisit of PR-3): applyAnsweredSideEffect's
+// GetTaskTriage-miss path (sql.ErrNoRows) must NOT create an empty
+// task_triage row. `answered` is Manual:true, so it can be sent to any
+// preExecutionStatuses task via `boid action send --type answered` — not
+// just triage tasks — and doing so used to leave a spurious empty
+// task_triage row behind. That silently weakens the invariant 12 節 B-6's
+// I-5b default plan depends on ("service 層のガード = task_triage 行の有無を
+// 見る" for auto-reopen, PR-5): a phantom row on a non-triage task would
+// make that future gate treat an ordinary dev task as if it were a triage
+// task. Unlike applyAttrsSetSideEffect (which keeps creating an empty row
+// on miss — see its own doc comment) `answered` has nothing positive to
+// write when there is no pre-existing row: its only side effect is
+// stripping detail.attrs.suggestion, and a row that never existed has no
+// suggestion to strip, so skipping the row entirely loses no information.
+// That asymmetry with attrs_set is deliberate, not an inconsistency —
+// attrs_set's patch always carries real triage data (urgency/kind/
+// suggestion) to write, so creating the row there is establishing real
+// content, not a bare side effect.
 func TestApplyAction_Answered_NoExistingTriageRow_StillSucceeds(t *testing.T) {
 	task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Status: orchestrator.TaskStatusTriaged, Behavior: "dev", Payload: []byte(`{}`)}
 	txStore := &recordingTxStore{task: task}
@@ -231,7 +246,7 @@ func TestApplyAction_Answered_NoExistingTriageRow_StillSucceeds(t *testing.T) {
 	if _, err := svc.ApplyAction(context.Background(), task.ID, ApplyActionRequest{Type: "answered", Payload: payload}); err != nil {
 		t.Fatalf("ApplyAction(answered) with no pre-existing task_triage row: %v", err)
 	}
-	if txStore.triage["t1"] == nil {
-		t.Fatal("expected an (empty) task_triage row to be created")
+	if txStore.triage["t1"] != nil {
+		t.Fatalf("expected NO task_triage row to be created for a non-triage task with no pre-existing row, got: %+v", txStore.triage["t1"])
 	}
 }
