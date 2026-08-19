@@ -92,6 +92,9 @@ func UnlinkIdentity(dbtx db.DBTX, projectID, identity string) error {
 	if identity == "" {
 		return fmt.Errorf("unlink identity: identity must not be empty")
 	}
+	if projectID == "" {
+		return fmt.Errorf("unlink identity: project id must not be empty")
+	}
 	if _, err := dbtx.Exec(
 		`DELETE FROM task_identities WHERE project_id = ? AND identity = ?`,
 		projectID, identity,
@@ -119,6 +122,9 @@ func UnlinkAllForTask(dbtx db.DBTX, taskID string) error {
 func ResolveIdentity(dbtx db.DBTX, projectID, identity string) (*Task, error) {
 	if identity == "" {
 		return nil, fmt.Errorf("resolve identity: identity must not be empty")
+	}
+	if projectID == "" {
+		return nil, fmt.Errorf("resolve identity: project id must not be empty")
 	}
 	taskID, err := queryIdentityTaskID(dbtx, projectID, identity)
 	if err != nil {

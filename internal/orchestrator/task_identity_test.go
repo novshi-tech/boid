@@ -238,3 +238,68 @@ func TestLinkIdentity_RejectsEmptyIdentity(t *testing.T) {
 		t.Fatal("expected error linking an empty identity string")
 	}
 }
+
+// TestLinkIdentity_RejectsEmptyProjectID / TestUnlinkIdentity_RejectsEmptyProjectID
+// / TestResolveIdentity_RejectsEmptyProjectID pin that all three store
+// entry points reject an empty projectID with the same strength — Opus
+// review found LinkIdentity guarded this but UnlinkIdentity/ResolveIdentity
+// didn't. The broker never lets an empty project_id through today (it
+// defaults from the token context before calling in), but PR-2 calls this
+// store directly, so the guard belongs here, not just at the broker.
+func TestLinkIdentity_RejectsEmptyProjectID(t *testing.T) {
+	d := testutil.NewTestDB(t)
+	if err := orchestrator.CreateProject(d.Conn, &orchestrator.Project{ID: "proj-1", WorkDir: "/tmp/proj-1"}); err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	task := &orchestrator.Task{ProjectID: "proj-1", Title: "T", Behavior: "dev", Payload: []byte(`{}`)}
+	if err := orchestrator.CreateTask(d.Conn, task); err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	if err := orchestrator.LinkIdentity(d.Conn, "", "jira:X-1", task.ID); err == nil {
+		t.Fatal("expected error linking with an empty project id")
+	}
+}
+
+func TestUnlinkIdentity_RejectsEmptyProjectID(t *testing.T) {
+	d := testutil.NewTestDB(t)
+	if err := orchestrator.CreateProject(d.Conn, &orchestrator.Project{ID: "proj-1", WorkDir: "/tmp/proj-1"}); err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	task := &orchestrator.Task{ProjectID: "proj-1", Title: "T", Behavior: "dev", Payload: []byte(`{}`)}
+	if err := orchestrator.CreateTask(d.Conn, task); err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	if err := orchestrator.LinkIdentity(d.Conn, "proj-1", "jira:X-1", task.ID); err != nil {
+		t.Fatalf("link: %v", err)
+	}
+	if err := orchestrator.UnlinkIdentity(d.Conn, "", "jira:X-1"); err == nil {
+		t.Fatal("expected error unlinking with an empty project id")
+	}
+}
+
+func TestResolveIdentity_RejectsEmptyProjectID(t *testing.T) {
+	d := testutil.NewTestDB(t)
+	if err := orchestrator.CreateProject(d.Conn, &orchestrator.Project{ID: "proj-1", WorkDir: "/tmp/proj-1"}); err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	task := &orchestrator.Task{ProjectID: "proj-1", Title: "T", Behavior: "dev", Payload: []byte(`{}`)}
+	if err := orchestrator.CreateTask(d.Conn, task); err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	if err := orchestrator.LinkIdentity(d.Conn, "proj-1", "jira:X-1", task.ID); err != nil {
+		t.Fatalf("link: %v", err)
+	}
+	// A binding DOES exist for ("proj-1", "jira:X-1"), so if the empty
+	// project id were silently allowed through to the query, it would come
+	// back ErrTaskNotFound (no row for project_id="") rather than a
+	// validation error — that would masquerade a caller bug as "not found"
+	// instead of rejecting it outright. Assert the guard fires BEFORE the
+	// query, distinct from ErrTaskNotFound.
+	_, err := orchestrator.ResolveIdentity(d.Conn, "", "jira:X-1")
+	if err == nil {
+		t.Fatal("expected error resolving with an empty project id")
+	}
+	if errors.Is(err, orchestrator.ErrTaskNotFound) {
+		t.Fatalf("err = %v, want a project-id validation error, not ErrTaskNotFound", err)
+	}
+}
