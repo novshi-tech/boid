@@ -424,6 +424,33 @@ func ListTasks(dbtx db.DBTX, filter TaskFilter) ([]*Task, error) {
 	return tasks, nil
 }
 
+// UpdateTask persists every mutable Task column. Compare against CreateTask's
+// INSERT column list before adding a new field to Task: a column missing
+// here while present there is a silent no-op — the caller gets a nil error
+// (and, if it copies the request field onto the in-memory *Task first, a
+// response that *looks* updated) while the row underneath keeps its old
+// value. This exact class of bug shipped for remote_id/project_id/
+// auto_start (fixed together; see update_task_columns_test.go /
+// task_update_persist_test.go) — found via khi-task-collector's self-heal
+// loop patching remote_id every cycle forever without it ever sticking.
+//
+// Two INSERT columns are deliberately absent from this UPDATE, not dropped:
+//   - ref: an immutable dedup key by design (docs/plans/
+//     ingestion-identity.md 決定16 — "後から変えられない dedup キー").
+//     CreateTask is the only writer; there is no
+//     UpdateTaskRequest.Ref field at all (internal/apiwire/task.go), so
+//     there is no API-level "口" that could even attempt to change it.
+//   - behavior: set once at CreateTask time and never exposed on
+//     UpdateTaskRequest either (only CreateTaskRequest has Behavior) — no
+//     update port exists, so there is nothing to silently drop.
+//
+// remote_id and auto_start have no status guard here — callers rely on
+// being able to set them regardless of task status (khi patches remote_id
+// on working/parked tasks; a caller may flip auto_start after the task
+// already left pending). project_id, by contrast, IS gated by
+// IsPreDispatchEditableStatus one layer up in
+// api.TaskAppService.UpdateTask — this function has no status of its own to
+// check, it just persists whatever the caller decided was valid to set.
 func UpdateTask(dbtx db.DBTX, t *Task) error {
 	t.UpdatedAt = time.Now().UTC()
 	traitsJSON, err := marshalTraits(t.Traits)
@@ -435,8 +462,8 @@ func UpdateTask(dbtx db.DBTX, t *Task) error {
 		return fmt.Errorf("marshal instructions: %w", err)
 	}
 	_, err = dbtx.Exec(
-		`UPDATE tasks SET title = ?, description = ?, status = ?, traits = ?, readonly = ?, branch_prefix = ?, base_branch = ?, payload = ?, instructions = ?, parent_id = ?, updated_at = ? WHERE id = ?`,
-		t.Title, t.Description, t.Status, traitsJSON, t.Readonly, t.BranchPrefix, t.BaseBranch, string(t.Payload), instructionsJSON, t.ParentID, t.UpdatedAt, t.ID,
+		`UPDATE tasks SET project_id = ?, remote_id = ?, title = ?, description = ?, status = ?, traits = ?, readonly = ?, branch_prefix = ?, base_branch = ?, payload = ?, instructions = ?, auto_start = ?, parent_id = ?, updated_at = ? WHERE id = ?`,
+		t.ProjectID, t.RemoteID, t.Title, t.Description, t.Status, traitsJSON, t.Readonly, t.BranchPrefix, t.BaseBranch, string(t.Payload), instructionsJSON, t.AutoStart, t.ParentID, t.UpdatedAt, t.ID,
 	)
 	if err != nil {
 		return err
