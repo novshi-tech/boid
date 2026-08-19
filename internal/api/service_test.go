@@ -1793,10 +1793,22 @@ func (s *stubTx) CreateAction(action *orchestrator.Action) error {
 	s.createdAction = action
 	return nil
 }
-func (s *stubTx) ListActionsByTask(taskID string) ([]*orchestrator.Action, error) { return nil, nil }
-func (s *stubTx) SeedTaskTriage(string) error { return nil }
 
-func (s *stubTx) UpsertTaskTriage(tt *orchestrator.TaskTriage) error              { return nil }
+// ListActionsByTask is an unconditional nil stub (2026-08-19 note, Opus
+// review N-6): unlike apply_action_phase1_test.go's recordingTxStore (see
+// ITS ListActionsByTask doc comment), this one does NOT track real actions.
+// Safe today only because stubTx.GetTask above ALSO unconditionally fails
+// ("not found") — any Tx flow that would reach ListActionsByTask
+// (autoReopen/autoDone both call tx.GetTask first and bail on error) can
+// never actually get here through this particular stub. If a future test
+// ever gives stubTx a working GetTask to drive autoReopen through it,
+// orchestrator.CountAutoReopens would silently see an empty action history
+// every time (prior=0 always) — fix this the same way recordingTxStore's
+// ListActionsByTask does before relying on it for that.
+func (s *stubTx) ListActionsByTask(taskID string) ([]*orchestrator.Action, error) { return nil, nil }
+func (s *stubTx) SeedTaskTriage(string) error                                     { return nil }
+
+func (s *stubTx) UpsertTaskTriage(tt *orchestrator.TaskTriage) error { return nil }
 func (s *stubTx) GetTaskTriage(taskID string) (*orchestrator.TaskTriage, error) {
 	return nil, fmt.Errorf("not found: %w", sql.ErrNoRows)
 }
