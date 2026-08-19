@@ -33,7 +33,7 @@ daemon 側の **triage task** として起こしている。 これは既に動�
 
 | 用語 | 意味 |
 |---|---|
-| **triage task** (旧称 card) | 「まだ着手していない課題 1 件」を表す task。 メタプロジェクト所属の task が実行前の状態 (`captured` / `triaged` / `parked` / `ready`) にあるもので、 固有フィールドは sidecar テーブル `task_triage` が持つ |
+| **triage task** | 「まだ着手していない課題 1 件」を表す task。 メタプロジェクト所属の task が実行前の状態 (`captured` / `triaged` / `parked` / `ready`) にあるもので、 固有フィールドは sidecar テーブル `task_triage` が持つ。 **旧称の「card」は本編 第 6 版の task 統合で廃止済み** — 本 doc に残る `card` はファイル名 (`match_card.py` 等) と当時の引用だけである |
 | **action** | daemon 側のイベント。 **append-only**。 状態遷移を伴うもの (`triage` / `drop` / `dispatch`) と、 伴わないもの (`attrs_set` / `child_added`) がある |
 | **fold** | append-only な action 列を畳んで「現在の状態」を作ること。 daemon 側は `FoldDetailAttrs()` 等が実体 |
 | **claims** | workspace 側が持っている JSONL のイベントログ。 daemon の actions と**二重になっている**もの。 本 doc が退役させたい対象 |
@@ -104,7 +104,7 @@ boid が目指しているのは「**提示された課題に応えていくだ�
 ところが退役したのは `decisions` だけで、 **`claims` + `fold_claims()` は残った**:
 
 ```
-claims (workspace の JSONL) ──fold_claims──▶ card (workspace の畳んだ状態)
+claims (workspace の JSONL) ──fold_claims──▶ workspace 側の畳んだ状態
                                                    │
                                              daemon_sync (差分 reconcile)
                                                    ▼
@@ -123,7 +123,7 @@ daemon 側は既に同じ構造を持っている — `FoldDetailAttrs()` / `Add
 
 **理由 1: イベントの配送先を daemon が解決できない。** action は `task_id` 必須なので、
 対応する triage task がまだ無いキーで飛んでくる観測を受け取れない。 だから workspace 側が
-「キー → card」の索引を持ち、 着地させてから push する形になっている。
+「キー → triage task」の索引を持ち、 着地させてから push する形になっている。
 
 重要なのは **この配送先解決が判断ではない**こと:
 
@@ -243,8 +243,8 @@ daemon が引き取る**形である。
 | イベントの記録と畳み込み | **daemon** | 決定 13。 台帳は一箇所 |
 | 決定論の rule (auto-done / wake / 呼び直し抑止) | **daemon** | 決定 12 |
 | state 遷移の判断 (park / drop / Go / reopen) | **人 (Web UI)** | 決定 14 |
-| **起票の確定 (captured → triaged)** | **未確定** | I-4 で新規 card が `captured` で着地するようになるため毎 card 発生する工程になる。 優先度の判断ではなく「既存 card の続報ではない」という同一性の確定なので、 決定 14 の park/drop/Go とは性質が違う。 下記 未確定 |
-| 人への提示 (queue / card 表示) | **daemon** | 横断は daemon にしか作れない |
+| **起票の確定 (captured → triaged)** | **未確定** | I-4 で新規の triage task が `captured` で着地するようになるため毎件発生する工程になる。 優先度の判断ではなく「既存の task の続報ではない」という同一性の確定なので、 決定 14 の park/drop/Go とは性質が違う。 下記 未確定 |
+| 人への提示 (queue / triage task の表示) | **daemon** | 横断は daemon にしか作れない |
 
 一行で言えば **daemon は「同一性」と「時系列」を持ち、 workspace は「意味」を持ち、
 人は「判断」を持つ**。 daemon はイベントが**何であるか**を知らないまま、 **どれと同じか**
@@ -266,7 +266,7 @@ daemon が引き取る**形である。
 | 登録に使った identity | `ref` = 決定 16 の canonical source |
 | あとから link した identity | `related_jira_issues` 由来のキー |
 | 未登録 identity での到達 | `captured` な triage task として着地 (下記) |
-| アカウント統合 | 分裂した card の identity 付け替え (管理操作) |
+| アカウント統合 | 分裂した task の identity 付け替え (管理操作) |
 
 不変条件は 2 つ:
 
@@ -290,11 +290,11 @@ identity は `<namespace>:<key>` の**不透明文字列**とし、 daemon は�
 
 **篩いは意味の判断なので workspace 側の LLM に残る。** つまり pump が daemon へ押すのは
 「workspace が起票に値すると判断したもの」だけで、 ゴミメールは **daemon に到達しない**。
-流量は今の card 起票と同じ (= 既に回っている量) で、 メールを足しても増えるのは workspace
+流量は今の起票と同じ (= 既に回っている量) で、 メールを足しても増えるのは workspace
 側の篩いの負荷であって daemon 側ではない。
 
 すると未着キーの意味は「**起票に値すると判断されたが、 既存のどの identity にも当たら
-なかったもの**」= **新規 card** になる。 これは本編が既に持っている状態でちょうど表せる:
+なかったもの**」= **新規の triage task** になる。 これは本編が既に持っている状態でちょうど表せる:
 
 > **不変条件の境界は captured → triaged** (起票の確定)。 captured (head-capture 直後、
 > まだ形になっていない) は対象外
@@ -303,7 +303,7 @@ identity は `<namespace>:<key>` の**不透明文字列**とし、 daemon は�
 > **workspace 内 triage を通るため** triaged で到着する、 決定 10)。 **Phase 0 では未使用**
 
 決定 10 の「workspace 内 triage を通るため triaged で到着する」の workspace 内 triage が、
-まさに今 LLM がやっている篩いである。 篩いを LLM に残したまま、 **起票の確定 (どの card に
+まさに今 LLM がやっている篩いである。 篩いを LLM に残したまま、 **起票の確定 (どの task に
 なるか) だけを daemon 側の判断に回す**なら、 これらの経路は `captured` で到着するのが本編の
 設計通りということになる。 `triage` (captured → triaged) と `drop` (captured → dropped) の
 遷移も machine に実装済み。
@@ -313,10 +313,10 @@ identity は `<namespace>:<key>` の**不透明文字列**とし、 daemon は�
 - **新規テーブルは identity 索引の 1 本だけ**。 inbox 用のテーブルも Web UI も新規には要らない
 - 「未着」の可視化 = `captured` な triage task の一覧
 - 決定 3 とも衝突しない。 daemon が持つのは workspace が開示すると決めた title / summary で、
-  今の card 起票と同じ (第 2 版のインボックス案は、 起票判断の材料として生本文を daemon 側へ
+  今の起票と同じ (第 2 版のインボックス案は、 起票判断の材料として生本文を daemon 側へ
   置く必要があり、 決定 3 と正面衝突していた)
 
-残る判断は「index が外れたが、 実は既存 card と同じ件ではないか」(例: Jira key を持たない
+残る判断は「index が外れたが、 実は既存の task と同じ件ではないか」(例: Jira key を持たない
 Slack スレッドが、 ある issue の話である) の統合で、 これは意味なので **LLM の判断**として
 扱う (workspace 側で「統合」の判断を 1 つ立てる)。
 
@@ -433,7 +433,7 @@ daemon が持つ必然性があるのは次の 3 つだけになる。
 | 2 | **single-flight** | 前回がまだ走っているなら見送る。 **daemon にしか正しく実装できない** — workspace 側の flock はホスト単位でしか効かず、 コンテナ化された daemon や複数ホストで破れる |
 | 3 | **実行結果の記録** | 落ちたか・ どれだけかかったか。 バックオフと通知の材料 |
 
-この 3 つは**ドメインに一切依存しない**。 逆に「用があるか」「何個起こすか」「どの card か」は
+この 3 つは**ドメインに一切依存しない**。 逆に「用があるか」「何個起こすか」「どの task か」は
 全部 workspace のもの。
 
 失うものもある: **多重起動防止・ バックオフ・ 流量制御のうち、 daemon が持たない部分は各
@@ -446,7 +446,7 @@ daemon に置くのは、 その再実装を最小にするための線引きで
 
 トリガのスクリプトが「LLM に用があるか」を判定するには、 **「LLM が見た」の記録**が要る。
 見たが変えなかった巡で何も残らないと、 daemon の状態からは「まだ誰も反応していない」が
-永続 true になり、 同じ card で毎巡 LLM が呼び直される (現行 khi の `suggestion_reviewed` が
+永続 true になり、 同じ task で毎巡 LLM が呼び直される (現行 khi の `suggestion_reviewed` が
 まさにこれを防いでいる)。
 
 第 3 版初稿は `judged { kind, outcome }` という**専用の verb** を daemon の語彙に足す案だった。
@@ -545,7 +545,7 @@ opt-in は **project 単位**。 最初から全部を自動にしない。
 
 | # | 決定 | 根拠 |
 |---|---|---|
-| I-1 | 外部キーを identity として task に多対一でぶら下げる。 `ref` はその特例 | 多対一が実需 — Slack 起票の card に後から Jira のコメントが来る経路がある |
+| I-1 | 外部キーを identity として task に多対一でぶら下げる。 `ref` はその特例 | 多対一が実需 — Slack 起票の task に後から Jira のコメントが来る経路がある |
 | I-2 | identity は `<namespace>:<key>` の不透明文字列。 daemon は解釈しない | 逆輸入 3 の境界 |
 | I-3 | identity のスコープは **project** | 取り込まれるメタタスクはメタプロジェクトにしか紐づかない。 他プロジェクトへの展開は子 task が担い、 子は identity を持たない。 `(ref, parent_id, project_id)` unique (migration 0037) と同じスコープを踏襲する (B-1 の (a) 案を採ると index 自体は消える) |
 | I-4 | 未着キーは `captured` な triage task として着地させる。 **専用 inbox は作らない** | 篩いが workspace 側に残るので、 daemon に届く時点で既に「起票に値する」と判断済み (上記) |
@@ -554,7 +554,7 @@ opt-in は **project 単位**。 最初から全部を自動にしない。
 | I-5c | done の task に着地したイベントは、 reopen 条件を満たさなくても**必ず可視化する** | reopen の引き金は `source_closed` の反転だけなので、 **canonical source は closed のままで Slack スレッドにだけ続報が来た**ようなケースは、 identity を握っているので配送はされるが reopen せず**黙って沈む**。 (決定 16 の契約下では canonical source を持たない task は本来 done に到達しないので、 slack-only の done は契約違反ケースの防御にあたる) |
 | I-6 | **drop では identity を自動解放する** | drop は「この identity との関係を切る」判断そのもの。 握ったままだと、 捨てた件が動いても着地せず・ 自動 reopen の経路も無く (`machine.go:371` の `reopen_triaged` は done/aborted からのみ。 手動 `reopen` dropped→triaged は `machine.go:355` にあるが誤破棄からの回復経路であって観測に反応しない)・ 同じキーで新規起票もできない、 という静かに詰む形になる |
 | I-7 | **`tasks.ref` 列は子 dedup 専用として残し、 外部キー用途だけ identity テーブルへ移す**。 root task は `ref` を持たなくなる | `Ref` には用途が 2 つ同居していた — 子 task の dedup (`Dispatch` が `children[i].ID` を入れる内部 ID) と外部キー (決定 16)。 退役案は前者の代替が要り、 drop で空にする案は決定 16 と矛盾する。 同居を解消すればどちらも失わない (2026-08-19、 nose) |
-| I-8 | **v1 は排他の identity 1 本だけ**。 非排他の reference (`related_jira_issues`) は workspace 側の助言キーのまま daemon へ押さない | I-1 の実需 (Slack 起票の card に後から Jira のコメント) は排他の identity で表現できる。 epic の重複参照は workspace が「無くても害はない助言キー」と定義している (2026-08-19、 nose) |
+| I-8 | **v1 は排他の identity 1 本だけ**。 非排他の reference (`related_jira_issues`) は workspace 側の助言キーのまま daemon へ押さない | I-1 の実需 (Slack 起票の task に後から Jira のコメント) は排他の identity で表現できる。 epic の重複参照は workspace が「無くても害はない助言キー」と定義している (2026-08-19、 nose) |
 | I-9 | **イベント push は差分 reconcile を続ける**。 per-event push にはしない | 現行の冪等性の担保 (workspace 側の差分 push + self-healing) をそのまま使える。 per-event はイベント単位の冪等キーの設計を伴う (2026-08-19、 nose) |
 | J-1 | トリガを **`project.yaml` のトップレベル `triggers`** に置く。 `task_behaviors` は変更しない | `trigger` は「どう実行するか」ではなく「いつ始まるか」の性質。 既存 behavior には 1 つも要らないフィールドなので、 混ぜると器の概念的な強度が落ちる |
 | J-2 | `run` は **`sh -c` に渡すコマンド文字列**。 パス解決はしない | 既存契約と揃える (script hook の外部パス参照は 2026-07 に撤廃済み)。 `.py` も `.sh` も同じ形で書け、 失敗が普通のコマンド失敗として見える |
@@ -569,7 +569,7 @@ opt-in は **project 単位**。 最初から全部を自動にしない。
 
 ### I-5 は workspace 側の現行ルールの意図的な反転
 
-khi の `match_card.py` は今、 終端 (done / dropped) の card を索引から除外している —
+khi の `match_card.py` は今、 終端 (done / dropped) のものを索引から除外している —
 「片付いた件に後から追記すると応答済みのものが動いてしまう」ため。 I-5 はこれを引っくり返し、
 「動いてしまう」を望ましい挙動と見る。 **退行ではなく意図的な方針変更**なので理由ごと記録する。
 
@@ -585,8 +585,8 @@ done は握り続ける (I-5)、 drop は解放する (I-6) という **binding 
 「1 identity は 1 principal」が明示された不変条件になり、 2 枚目の link 要求は
 **silent newest-wins ではなく拒否**になる。
 
-ただし引用元が例に挙げている **epic の子 card 群**は、 バグではなく正当な運用である
-(workspace 側は `related_jira_issues` を「無くても害はない助言キー」と定義し、 複数 card の
+ただし引用元が例に挙げている **epic の子 task 群**は、 バグではなく正当な運用である
+(workspace 側は `related_jira_issues` を「無くても害はない助言キー」と定義し、 複数 task の
 重複参照を前提にしている)。 一律拒否にすると newest-wins が first-wins に変わるだけで
 改善にならない。 **排他的な帰属 (identity) と非排他の言及 (reference) は性質が違う** —
 昇格させてよいかは未確定。
@@ -648,11 +648,11 @@ I-6 (drop で解放 → 同じキーで新規起票できる) は現行の `ref`
 #### B-3: per-task だけだと tick が O(N) になる
 
 `ListActionsByTask` は task 単位である。 workspace の tick が「新しい事実が来ていて、 まだ
-反応していない card を選ぶ」をやるとき、 per-task の口しか無いと **全 triage task を列挙して
-1 枚ずつ読む**形になり、 10 分ごとに card 数ぶんの brokered op が飛ぶ。 現行 khi はローカル
+反応していない task を選ぶ」をやるとき、 per-task の口しか無いと **全 triage task を列挙して
+1 枚ずつ読む**形になり、 10 分ごとに task の数ぶんの brokered op が飛ぶ。 現行 khi はローカル
 ファイルを舐めているので同じ走査が無料だった (Fable レビュー指摘)。
 
-card が数十枚なら実害は無いが、 **「反応型はスクリプトが書ける」(J-3) という論証の実装コストの
+task が数十枚なら実害は無いが、 **「反応型はスクリプトが書ける」(J-3) という論証の実装コストの
 前提**である。
 
 **決定 (2026-08-19)**: I-9 (差分 reconcile を続ける) を選んだことで、 「押す前に現況と比べる」の
@@ -851,7 +851,7 @@ daemon が既存 `ref` を機械的に identity へ写せないためである �
 - 提案の解釈 (J-9)。 `suggestion` は今までどおり不透明
 - `captured` の TTL / 自動 drop (仕分け B: 可視化のみ)
 - `triaged` への自動遷移 (J-9 の段階 2 以降)
-- 統合 (「index が外れたが実は既存 card と同じ件」) の判断。 workspace 側の LLM の仕事
+- 統合 (「index が外れたが実は既存の task と同じ件」) の判断。 workspace 側の LLM の仕事
 - root task の `ref` を空にすること (次の migration)
 
 **検証**
@@ -1072,7 +1072,7 @@ daemon が既存 `ref` を機械的に identity へ写せないためである �
 
 | 既存 | 本 doc の扱い |
 |---|---|
-| **決定 3** (境界を越えるのは card 粒度) | **改訂した** (2026-08-19)。 「原文そのものは越えない」というハードな上限を外し、 上限を論点 e の開示ポリシーに一本化。 決定 14 の帰結 (「note は残す」) も連動して変わる (下記) |
+| **決定 3** (境界を越えてよい範囲) | **改訂した** (2026-08-19)。 「原文そのものは越えない」というハードな上限を外し、 上限を論点 e の開示ポリシーに一本化。 決定 14 の帰結 (「note は残す」) も連動して変わる (下記) |
 | **決定 10** (mail/Jira/Slack は workspace 内 triage を通るので triaged で到着) | **一部を `captured` へ倒す**。 篩いは workspace に残るが、 起票の確定は daemon 側の判断に回る |
 | **決定 12** (queue 評価は決定論のみ) | **徹底する側**。 identity 解決も gate も判断ゼロ。 トリガが走らせるスクリプトも決定論 (LLM は task の中でだけ動く) |
 | **決定 13** (event 追記を正、 state は導出) | **徹底する側**。 workspace 側の二本目のログを畳む |
@@ -1122,7 +1122,7 @@ daemon が既存 `ref` を機械的に identity へ写せないためである �
 
 | 項目 | 既定案 |
 |---|---|
-| `noted` の retention | **read 口を「最新 N 件」にし、 書き込み側は圧縮しない**。 payload が不透明なので daemon 側で潰せない (J-5 の対価)。 10 分周期で長寿命 card へ積まれ得るうえ、 終端でない task は 30 日 GC に乗らないので**行は増え続ける**。 それが問題になったら、 件数上限か期間で切るのは workspace 側の語彙を知っている khi が決める |
+| `noted` の retention | **read 口を「最新 N 件」にし、 書き込み側は圧縮しない**。 payload が不透明なので daemon 側で潰せない (J-5 の対価)。 10 分周期で長寿命の task へ積まれ得るうえ、 終端でない task は 30 日 GC に乗らないので**行は増え続ける**。 それが問題になったら、 件数上限か期間で切るのは workspace 側の語彙を知っている khi が決める |
 
 #### B-4 (`noted` / `answered`) の中で
 
@@ -1198,7 +1198,7 @@ J-9 / J-10)。 **どの案とどの案があって、 なぜこれを選んだ�
 
 #### A-1. `captured` → `triaged` を誰がいつ押すか  [B-2 をブロック] ✅
 
-I-4 で新規 card が `captured` で着地するようになるため、 毎 card 発生する工程になる。
+I-4 で新規の triage task が `captured` で着地するようになるため、 毎件発生する工程になる。
 
 | 案 | 誰が押すか | 代償 |
 |---|---|---|
@@ -1217,14 +1217,14 @@ Web UI で押す。 「最初の時点では」であって、 **現在のアー
 実装上の含意 (2026-08-19 に実コードで確認):
 
 - **daemon 側に新規に要るものはほぼ無い。** Web UI の `captured` → `triage` ボタンは Phase 1
-  PR-3 で実装済み (`web/templates/tasks.templ:281`)。 残るのは `captured` な card が一覧に
+  PR-3 で実装済み (`web/templates/tasks.templ:281`)。 残るのは `captured` な task が一覧に
   出ること (B-2 の可視化) だけである
 - **daemon は提案を解釈しない。** Go 側で `suggestion` を読んでいる箇所は無く
   (`internal/orchestrator/task_triage.go` は「触らない」とコメントしているだけ)、 提案は
   `desired_description()` に畳まれた平文として人に見えている。 **解釈するキーの closed set は
   `attrs.observed.source_closed` の 1 つのまま**保たれる
 - 提案を書くのは workspace 側 (取り込みの LLM)。 起票と同時に書けるので巡は増えない
-- **統合の窓が残る**。 提案の付いた `captured` が並ぶので、 人が押す前に「これは既存 card と
+- **統合の窓が残る**。 提案の付いた `captured` が並ぶので、 人が押す前に「これは既存の task と
   同じ件では」と気づける。 (iii) が失っていたものを、 摩擦を増やさずに保てる
 - 自動化へ進むときは J-8 と同じ問題 (gate が提案の中身を読む以上、 提案は第一級のフィールドで
   ある必要がある) に当たる。 段階 4 でまとめて決める
@@ -1256,7 +1256,7 @@ I-6 (drop で解放 → 同じキーで新規起票できる) が現行の `ref`
 
 #### A-3. identity と reference を分けるか  [B-1 をブロック] ✅
 
-epic の子 card 群のような**正当な重複参照**を、 排他的な identity で表現するか別概念にするか
+epic の子 task 群のような**正当な重複参照**を、 排他的な identity で表現するか別概念にするか
 (「副産物: 暗黙則が不変条件になる」節)。
 
 | 案 | 中身 | 代償 |
@@ -1264,14 +1264,14 @@ epic の子 card 群のような**正当な重複参照**を、 排他的な ide
 | (a) | v1 は identity だけ。 `related_jira_issues` は workspace 側の助言キーのまま daemon へ押さない | khi は当面 2 経路 (daemon の identity と自前の related 索引) を並べる |
 | (b) | 最初から 2 概念を持つ (排他の identity / 非排他の reference で表を分ける) | 表が 2 本になり、 v1 の表面積が増える |
 
-**決定 (2026-08-19、 nose): (a)** (→ I-8)。 I-1 の実需 (「Slack 起票の card に後から Jira の
+**決定 (2026-08-19、 nose): (a)** (→ I-8)。 I-1 の実需 (「Slack 起票の task に後から Jira の
 コメントが来る」) は排他の identity だけで表現でき、 epic の重複参照は workspace 側が「無くても
 害はない助言キー」と定義しているため。
 
 **残る宿題**: (a) は **fold の一本化をその範囲だけ残す**。 決定 14 の決め手 (「2 つの fold を
 並べると、 ロジックがズレたときに誰も気づかない」) に照らすと、 2 経路をいつまで並べるかの
 条件は切っておきたい。 ただし残るのは索引であって fold ではない (`related_jira_issues` から
-card を引く経路だけで、 state を畳んではいない) ので、 決定 14 が禁じた形そのものではない。
+task を引く経路だけで、 state を畳んではいない) ので、 決定 14 が禁じた形そのものではない。
 khi 側 memo と揃えて扱いを決める。
 
 #### A-4. イベント push の冪等性 — per-event か差分 reconcile か  [B-2 をブロック] ✅
@@ -1287,7 +1287,7 @@ pump のクラッシュや再送で同じイベントが二重に積まれる。
 
 **連動**: (a) を選んだことで **B-3 は「workspace スコープの一括読み」にする理由が立った**。
 「押す前に現況と比べる」の比較先が自前の fold から daemon の読み戻しへ変わるので、 per-task の
-口しか無いと read が 10 分ごとに card 数ぶん飛ぶ — B-3 の O(N) 問題そのものである。 B-3 の op
+口しか無いと read が 10 分ごとに task の数ぶん飛ぶ — B-3 の O(N) 問題そのものである。 B-3 の op
 設計は per-task ではなく **since カーソル付きの一括読み**を既定とする。
 
 #### A-5. `description` と action payload のサイズ上限  [B-2 をブロック] ✅
@@ -1334,7 +1334,7 @@ enforcement の限界 (「daemon が効かせられるのはサイズ / フィ�
 
 - **head-capture** (nose が音声等で頭から直接入れた課題感、 UC-4) は外部に正本が無い。
   UC-4 は本文を workspace 側に着地させることで耐久性を担保していた
-- **agent** 発の card も同様
+- **agent** 発のものも同様
 
 note が退役すると、 これらの原文の**唯一の写しが daemon DB** になる。 「キャッシュにすぎない」
 という論拠はこの class では成立せず、 決定 14 の受容代償を支えていた原則 2 (b)
