@@ -110,12 +110,18 @@ func TestSweepReopen_NoTaskTriageRow_SkippedNotErrored(t *testing.T) {
 	}
 }
 
-// TestSweepReopen_AlreadyAutoReopenedOnce_DoesNotReopenAgain_NotifiesInstead
-// pins 12節 B-6 のフラップ対策: the SAME task, having already been
-// auto-reopened once (a prior reopen_triaged action stamped ActorDaemon
-// sitting in its history), does NOT reopen a second time on another flip —
-// it is surfaced via Notifier instead.
-func TestSweepReopen_AlreadyAutoReopenedOnce_DoesNotReopenAgain_NotifiesInstead(t *testing.T) {
+// TestSweepReopen_SecondAutoReopenWithinSameEpisode_DoesNotReopenAgain_NotifiesInstead
+// pins 12節 B-6 のフラップ対策, エピソード単位版 (2026-08-19, nose 判断 —
+// Opus review): a prior reopen_triaged action stamped ActorDaemon sitting in
+// the task's history counts toward the budget ONLY when no fresh
+// triage_done has landed since (i.e. still the SAME done episode) — see
+// orchestrator.CountAutoReopens's own doc comment for why lifetime counting
+// was wrong (it silently refused every "2周目" reopen forever). This
+// fixture deliberately has NO triage_done between the two events, so the
+// second flip is still within the SAME episode the first reopen already
+// spent its budget on — it does NOT reopen a second time, and is surfaced
+// via Notifier instead.
+func TestSweepReopen_SecondAutoReopenWithinSameEpisode_DoesNotReopenAgain_NotifiesInstead(t *testing.T) {
 	task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Title: "flapping card", Status: orchestrator.TaskStatusDone, Behavior: "dev", Payload: []byte(`{}`)}
 	detail := json.RawMessage(`{"attrs":{"observed":{"source_closed":false}}}`)
 	triage := &stubTriageStore{rows: map[string]*orchestrator.TaskTriage{"t1": {TaskID: "t1", Detail: detail}}}
@@ -123,6 +129,7 @@ func TestSweepReopen_AlreadyAutoReopenedOnce_DoesNotReopenAgain_NotifiesInstead(
 		tasks:  map[string]*orchestrator.Task{"t1": task},
 		triage: map[string]*orchestrator.TaskTriage{"t1": {TaskID: "t1", Detail: detail}},
 		actions: []*orchestrator.Action{
+			{TaskID: "t1", Type: "triage_done", Actor: orchestrator.ActorDaemon},
 			{TaskID: "t1", Type: "reopen_triaged", Actor: orchestrator.ActorDaemon},
 		},
 	}
@@ -149,6 +156,50 @@ func TestSweepReopen_AlreadyAutoReopenedOnce_DoesNotReopenAgain_NotifiesInstead(
 	}
 	if len(notifier.events) != 1 || notifier.events[0].TaskID != "t1" {
 		t.Fatalf("notify events = %v, want exactly 1 for t1", notifier.events)
+	}
+}
+
+// TestSweepReopen_NewDoneEpisode_ResetsBudget_ReopensAgain is the fix's core
+// positive case (2026-08-19, nose 判断 — Opus review): a task that already
+// spent ITS FIRST episode's auto-reopen, then cycled all the way back through
+// triaged→ready→working→triage_done into a FRESH done episode, gets a fresh
+// budget — the SECOND episode's own flip auto-reopens, exactly like the
+// first one did. Before this fix, CountAutoReopens counted the task's
+// entire lifetime, so this second, entirely legitimate reopen would have
+// been silently refused forever.
+func TestSweepReopen_NewDoneEpisode_ResetsBudget_ReopensAgain(t *testing.T) {
+	task := &orchestrator.Task{ID: "t1", ProjectID: "p1", Title: "long-lived card", Status: orchestrator.TaskStatusDone, Behavior: "dev", Payload: []byte(`{}`)}
+	detail := json.RawMessage(`{"attrs":{"observed":{"source_closed":false}}}`)
+	triage := &stubTriageStore{rows: map[string]*orchestrator.TaskTriage{"t1": {TaskID: "t1", Detail: detail}}}
+	txStore := &recordingTxStore{
+		tasks:  map[string]*orchestrator.Task{"t1": task},
+		triage: map[string]*orchestrator.TaskTriage{"t1": {TaskID: "t1", Detail: detail}},
+		actions: []*orchestrator.Action{
+			{TaskID: "t1", Type: "triage_done", Actor: orchestrator.ActorDaemon},    // episode 1 starts
+			{TaskID: "t1", Type: "reopen_triaged", Actor: orchestrator.ActorDaemon}, // episode 1's one auto-reopen
+			{TaskID: "t1", Type: "triage_done", Actor: orchestrator.ActorDaemon},    // episode 2 starts — budget resets
+		},
+	}
+	notifier := &recordingNotifier{}
+	svc := &TaskWorkflowService{
+		Tasks:      &multiTaskStore{tasks: []*orchestrator.Task{task}},
+		TaskTriage: triage,
+		Tx:         recordingTransactor{store: txStore},
+		Notifier:   notifier,
+	}
+
+	result, err := svc.SweepReopen(context.Background(), time.Now())
+	if err != nil {
+		t.Fatalf("SweepReopen: %v", err)
+	}
+	if len(result.Reopened) != 1 || result.Reopened[0] != "t1" {
+		t.Fatalf("reopened = %v, want [t1] (episode 2's budget is fresh)", result.Reopened)
+	}
+	if len(result.Flapped) != 0 {
+		t.Fatalf("flapped = %v, want none", result.Flapped)
+	}
+	if len(notifier.events) != 0 {
+		t.Fatalf("notify events = %v, want none (a successful reopen doesn't fire the フラップ notify)", notifier.events)
 	}
 }
 
