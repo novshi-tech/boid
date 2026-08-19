@@ -83,7 +83,7 @@ daemon が引き取る**形である。
 |---|---|---|
 | 外部 API を叩く (窓・ cursor・ credential) | **workspace** | credential 境界。 daemon に渡らない (決定 11 / 論点 h) |
 | チャネル方言 → 共通語の翻訳 | **workspace** | Jira statusCategory → `source_closed`、 Slack ts → identity key。 逆輸入 3 |
-| 原文の保持 | **workspace** | 決定 3。 境界を越えるのは card 粒度 |
+| 原文の保持 | **daemon** (2026-08-19 変更) | 決定 3 改。 上限は開示ポリシー (論点 e) が決める。 workspace は「原文の保持」という責務を持たない |
 | 起票に値するかの篩い | **workspace の LLM** | 篩いは意味の判断。 P-1 より daemon には置けない |
 | 次の一手の提案・ spec 執筆 | **workspace の LLM** | 同上 |
 | 何かを始める時計と直列化 | **daemon** | P-3。 スケジュール / single-flight / 実行結果の記録 |
@@ -529,22 +529,22 @@ khi の `fold_claims()` は「同じ根拠で却下済みの提案は出し直�
 | B-5 | **トリガ実行機構** — `triggers` の読み取り、 スケジュール、 sandbox でのコマンド実行、 single-flight、 実行結果の記録 | 中。 本 doc の中核。 述語・ 流量制御・ dispatch 粒度を持たないぶん第 3 版初稿の見積もりより小さい |
 | B-6 | `source_closed` 反転による auto-reopen (I-5) と、 done への着地経路 (I-5b) | 小。 `reopen` → `reopen_triaged` のルーティングは実装済み (`internal/api/triage_done.go:299`) |
 
-### B-2: push op は解決先を返さないといけない
+### B-2: push op は解決結果を返す
 
-workspace は**原文を現地に残す** (決定 3) ので、 続報が来たとき「どの note に追記するか」を
-知る必要がある。 ところが第 3 版初稿は「workspace はどの card かを一切決めない」と書いており、
-**追記先を知る手段が無くなっていた** (Fable レビュー指摘)。
-
-したがって push op は「押した」だけでなく**解決結果を返す**契約にする:
+push op は「押した」だけでなく**解決結果を返す**契約にする:
 
 - 解決された `task_id`
 - 新規に `captured` を起こしたのか、 既存 task に着地したのか
 - identity 衝突 (I-1 の「2 枚目は拒否」) が起きた場合のエラー語彙 — workspace はこれを
   受けて統合の判断へ回す
 
-さらに workspace 側は `task_id` から自分の note (slug) を引けないといけない。 slug ↔ identity
-の対応をどちらが持つかは未確定 (workspace の frontmatter に持つのが素直だが、 identity 読み出し
-op を使う案もある)。
+第 3 版はこれを**必須**としていた。 理由は「原文を現地に残す (決定 3) 以上、 続報が来たときに
+どの note へ追記するかを workspace が知る必要がある」というもので、 workspace が
+`task_id` → 自分の note (slug) を引けることまで要求していた。
+
+**決定 3 の改訂 (2026-08-19) でこの要求は消えた** — 原文は description として daemon 側に載り、
+workspace に追記先の概念が無くなったため。 返り値契約自体は「新規か既存か」を知りたい場面
+(起票の通知、 統合判断への接続) で引き続き有用なので残すが、 **ブロッカーではなくなった**。
 
 ### B-1: `tasks.ref` の去就は I-6 の前提
 
@@ -607,7 +607,7 @@ workspace 側の選択になった。
 
 | 既存 | 本 doc の扱い |
 |---|---|
-| **決定 3** (境界を越えるのは card 粒度、 本文は現地) | **守る**。 第 2 版のインボックス案は衝突していたが、 I-4 の変更で解消 |
+| **決定 3** (境界を越えるのは card 粒度) | **改訂した** (2026-08-19)。 「原文そのものは越えない」というハードな上限を外し、 上限を論点 e の開示ポリシーに一本化。 本 doc で本編の決定を変更したのはここだけ |
 | **決定 10** (mail/Jira/Slack は workspace 内 triage を通るので triaged で到着) | **一部を `captured` へ倒す**。 篩いは workspace に残るが、 起票の確定は daemon 側の判断に回る |
 | **決定 12** (queue 評価は決定論のみ) | **徹底する側**。 identity 解決も gate も判断ゼロ。 トリガが走らせるスクリプトも決定論 (LLM は task の中でだけ動く) |
 | **決定 13** (event 追記を正、 state は導出) | **徹底する側**。 workspace 側の二本目のログを畳む |
@@ -639,7 +639,8 @@ workspace 側の選択になった。
 ## 非目的
 
 - **daemon にエージェントを置く**こと。 P-1。 gate も述語も決定論のまま
-- **daemon が原文を保持する**こと。 決定 3 を維持する
+- **credential と外部到達性を daemon に集約する**こと。 決定 3 の改訂後も、 **境界として
+  効いているのはここ**である。 原文が daemon に載るようになったのは、 その境界とは別の話
 - **identity を認証・ 認可に使う**こと。 ここでの identity は配送先を決める索引であって、
   principal の権限とは無関係。 名前が示唆する以上のことをさせない
 - **identity のチャネル知識を daemon に持たせる**こと。 名前空間の意味・ 正規化・ 妥当性検査は
@@ -698,13 +699,18 @@ workspace 側の選択になった。
 - **イベント push の冪等性**。 現行の冪等性は workspace 側の reconcile (差分 push、
   self-healing) が担保している。 per-event push にすると actions は append-only なので、
   pump のクラッシュ・ 再送で同じイベントが二重に積まれる。 イベント単位の冪等キーが要る
-- **`description` の組み立ての引き取り手**。 workspace 側の `desired_description()` は
-  summary / canonical URL / suggestion / 子一覧を平文に畳んで task の `description` に
-  書いている (「summary が attrs の中にしか無いと card を開いても何の件か分からず Go の
-  判断ができない」— 2026-08-14 の実害)。 Web UI が `detail.attrs` から直接描画するか、
-  workspace が押し続けるか
-- **判断 task の失敗の扱い**。 `judged` を押さずに死んだ場合、 述語は永遠に真のままになる。
-  dispatch 側でタイムアウトを見るか、 起動回数で諦めるか
+- **`description` に何を載せるか**。 決定 3 の改訂で本文も載せられるようになった。 今の
+  `desired_description()` は summary / canonical URL / suggestion / 子一覧を平文に畳んでおり
+  (「summary が attrs の中にしか無いと card を開いても何の件か分からず Go の判断ができない」—
+  2026-08-14 の実害)、 そこへ本文をどう組み込むか。 導出フィールド (suggestion / 子一覧) は
+  Web UI が `detail` から描画したほうが二重管理にならない、 という整理もありうる
+- **Web UI の本文の見せ方**。 tunnel 越しに配信される内容が変わるので、 既定で畳んでおく
+  (クリックで開く) 等の扱いを決める。 認証情報が貼られた Slack 本文が肩越しに見える、 という
+  程度のリスクはこれで下がる
+- **開示ポリシー (論点 e) の実装時期**。 決定 3 の上限が論点 e に一本化されたので、 workspace が
+  増えるまでは「khi = 本文まで」の 1 設定で足りるが、 既定を保守的側に置く仕組みは要る
+- **判断 task の失敗の扱い**。 `noted` を押さずに死んだ場合、 スクリプトから見て「まだ反応が
+  無い」が真のままになる。 スクリプト側でタイムアウトを見るか、 起動回数で諦めるか
 - **無変更の観測をどちら側が抑止するか**。 workspace が毎巡同じ観測を押すと `inputs` が進み、
   反応型述語が毎サイクル真になって `judged` の効果が消える。 現行は workspace 側の reconcile
   (差分だけ push) が担っており、 その比較先が自前の fold から daemon の読み戻しに変わる。
