@@ -152,19 +152,74 @@ job の所属 workspace を知っているため、 enforcement は既存 policy
 (自 workspace 由来の情報であり、 露出が増えないため)。 整形セッション (UC-3) やテーマ
 セッションの棚卸し (UC-5) はこの経路を使う。
 
-### 決定 3: 境界を越えるのは card 粒度、 本文は現地
+### 決定 3 (2026-08-19 改): 越えてよい範囲は開示ポリシーが決める
 
-card は見出し・ 緊急度・ 出所ポインタ級の情報のみ持つ。 メール本文や課題の詳細は workspace 内
-(メタプロジェクトのファイル、 または元システム) に留まる。 深掘りしたくなったら、 その
-workspace のセッションを開いて中で読む。 secret と同様、 本文も「最初から持っている場所でしか
-開かない」。
+**当初の形 (〜2026-08-18)**: card は見出し・ 緊急度・ 出所ポインタ級の情報のみ持ち、 メール
+本文や課題の詳細は workspace 内 (メタプロジェクトのファイル、 または元システム) に留まる。
+深掘りは workspace のセッションを開いて中で読む。 secret と同様、 本文も「最初から持っている
+場所でしか開かない」。
 
-card が運べる上限は、 triage が書いた**要約 (summary)** と**実行仕様 (task_spec)** まで
-(UC-1 / UC-3)。 原文そのもの (メール本文・ 添付・ 文書全文) は越えない。 要約にどこまで
-書いてよいかは開示ポリシー (論点 e) の管轄。
+**改訂後**: 越えてよい範囲は **開示ポリシー (論点 e) が決める**。 khi は「本文まで」とし、
+原文は task の `description` として daemon 側に載る。 深掘りのために workspace のセッションを
+開く必要は無くなる。 改訂の理由と受け入れる変化は下記。
 
-開示の粒度 (件名まで出すか、 相手ドメインのみか等) は将来 workspace ごとのポリシー (データ)
-として定義し、 enforcement は daemon 側で行う (論点 e)。
+card が運べる上限は **開示ポリシー (論点 e) が決める**。 開示の粒度 (件名まで出すか、
+相手ドメインのみか、 本文まで載せるか) は workspace ごとのポリシー (データ) として定義し、
+enforcement は daemon 側で行う。
+
+**2026-08-19 改**: 当初この節は上限を二重に書いていた — 「上限は論点 e の管轄」としながら、
+その上に「原文そのもの (メール本文・ 添付・ 文書全文) は越えない」というハードな線を焼き込んで
+いた。 後者を外し、 上限を論点 e に一本化する。 理由 (nose):
+
+- **境界として実際に効いているのは外部接続の credential 分離**であって、 本文が daemon 側の
+  DB に載るかどうかではない。 全体のバランスとして、 前者が保てていれば十分と見る
+- 本文は元システム (Jira / Slack / mail) から workspace がいつでも取り直せるので、 workspace 側の
+  写しは**正本ではなくキャッシュ**である。 「どちらが正本か」ではなく「どこにキャッシュするか」の
+  話にすぎず、 それに設計上の層を 1 つ割く価値が薄い
+- ハードな線を維持すると、 続報の原文の追記先・ slug ↔ identity の対応・ note への射影とその
+  トリガ、 といった層がまるごと必要になる (論点 k の検討で表面化した)
+
+**受け入れる変化**: daemon の Web UI (Cloudflare Tunnel 経由で外部公開しうる) が配信する内容に
+本文が含まれるようになる。 保管そのもの (DB volume / workspace volume) はどちらも同じホストで
+同じようにバックアップされており at rest はほぼ等価だが、 **露出面は変わる**。 とくに Slack や
+mail の本文には認証情報が貼られていることがある。 khi のポリシーは「本文まで」とするが、
+新しい workspace の既定は保守的側 (要約まで) に置く。
+
+**再取得できない source がある** (2026-08-19、 Fable レビュー指摘): 上の理由の 2 つ目
+(「本文は元システムから取り直せるのでキャッシュにすぎない」) は、 `source.type` が
+**`head` (頭から直接 capture) と `agent`** の場合には成立しない。 外部に正本が無いためである。
+note が退役すると、 これらの原文の**唯一の写しが daemon DB** になる。 **daemon volume の
+バックアップを一次の耐久性とする**。 UC-4 は既に「本文は nose 発なので daemon が一時保持しても
+compartment 問題は無い」としており compartment 上は矛盾しないが、 「一時保持」が「正本」に
+変わる点は明示しておく (ストレージ節の原則 2 (b) の fail-open も、 この class では成立しなくなる)。
+
+**enforcement は弱くなる**: 当初のハードな線は「本文を運ぶフィールドが存在しない」という
+構造的な enforcement だった。 改訂後、 daemon は opaque なテキストから「これは要約か原文か」を
+機械的に判別できない (逆輸入 3 の closed set を守る限り意味検査はできない)。 論点 e の
+enforcement の実体は **workspace 側の自制 + サイズ上限**に落ちる。 daemon が機械的に効かせ
+られる唯一の枠として、 `description` と action payload のサイズ上限は別途決める。
+
+**信頼境界の残余リスクが上がる**: 本編の信頼境界節は honeypot 性を「現行の task タイトルの
+daemon 集中と同レベル」と評価していたが、 改訂後の daemon DB は全 workspace の生本文を持つので
+**この評価はもう成り立たない**。 デバイス認証 1 枚の突破・ 端末盗難で全 workspace の本文が
+読める、 が新しい残余リスクである (受容するが、 評価としては格上げする)。
+
+**決定 4 (prompt injection) の再導出が要る**: 改訂前は汚染原文が workspace 内に留まり、
+daemon が運ぶのは triage LLM が書いた summary / spec (一段濾過済み) だった。 改訂後は汚染された
+生の本文が `description` として Web UI・ 整形セッション・ 実行 task の文脈へ配送される。
+決定 4 の結論 (「Go で止まる」) は成立すると考えるが、 **「本文は既定で畳んでおく」と Go の
+判断材料はトレードオフ**である点を含め、 決定 4 側で再導出する (未了)。
+
+なおテーマ文書は引き続きファイル (決定 6)。 ただし実物は `context/thema/` にあり非 git で、
+`kind: theme` の card (運用開始前の机上設計) とは現時点で別物である — 統合は
+capture-and-thema.md で先送り中。
+
+**未反映箇所**: 本 doc には旧決定 3 を前提にした記述がまだ残っている — 概観 (「本文は
+workspace 内に留まり、 深掘りはその workspace のセッションを開いて行う」)、 用語表 (triage 段階の
+task は「本文を含まない」)、 信頼境界表 (「本文は各 workspace セッション経由」)、 スキーマ案
+(summary「原文は含まない」/ `content_ref`)、 UC-1 / UC-3 の手順、 ストレージ表 (「課題・
+テーマ本文 (note) — $HOME workspace volume」)、 検証シナリオ S1 (「daemon には流れない」)。
+実装前の構想 doc なので全文改訂はせず、 **この節を現行とする**。 実装に入る段で棚卸しする。
 
 ### 決定 4: 戻り方向の影響は Go ゲート経由のみ (prompt injection を前提にする)
 
@@ -200,6 +255,9 @@ boid 組み込みの特別なプロジェクト種別は作らない。 役割�
 - **本文 (課題・ テーマ文書) はファイル**: メタプロジェクト (git repo) 内の frontmatter 付き
   markdown。 データモデルは初期に必ず荒れるので、 スキーマ変更耐性の高い形式で始める。
   「ポリシーはデータ、 enforcement は実装」という boid の方針にも合う。
+  **2026-08-19 改**: **課題 (card) の本文はここから外れ**、 daemon の `description` に載る
+  (決定 3 改)。 テーマ文書は引き続きファイルだが、 実物は `context/thema/` にあり非 git で、
+  `kind: theme` の card とは現時点で別物である (統合は capture-and-thema.md で先送り中)。
 - **状態と queue は daemon inbox**: 成功の定義の応答面は Web UI であり、 UI 操作のたびに
   git commit を挟むのはまどろっこしい。 状態遷移 (triaged → ready → dispatched...) は daemon の
   管轄にする。 card はファイル本文への `content_ref` を持つ。
@@ -244,7 +302,7 @@ Phase 1 設計時の実測チェックリスト — **2026-08-10 に (a)(b)(c) �
 
 ### 決定 8: スコープは workspace 単位から、 横断は card メタデータのレベル
 
-full content の workspace 横断集約は行わない (secret の compartment を壊すため、 非目的)。
+credential と外部到達性の workspace 横断集約は行わない (compartment を壊すため、 非目的。 card 本文の扱いは決定 3 改)。
 ただし daemon inbox が daemon 側にあるため、 card メタデータ (件数・ 見出し) レベルの横断
 queue は**最初から自然に成立する**。 「全体を見渡す」要求へはこのレベルで応える。
 
@@ -348,10 +406,14 @@ daemon と共有する契約) はむしろ元の意図に近づく — **decisio
   方言→共通語の翻訳・却下履歴 (`(slug, verb, basis)`)・ urgency 単調性・ 呼び直し抑止。
   `project_card.py` は「decisions を畳んで frontmatter 生成」から「**daemon から読んで note を
   render**」へ役割が変わる。
-- **note は残す** (nose 判断): 本文は daemon 側に載らない (決定 3) ため、 card-suggest の判断
-  根拠として現地に render された 1 枚が必要。 card-events.md の「人間も LLM も読むのは生成
-  された note だけ」の原則は維持する — LLM に daemon の生 JSON を読ませると、 そこで fold させる
-  ことになり本決定を骨抜きにする。
+- ~~**note は残す** (nose 判断): 本文は daemon 側に載らない (決定 3) ため、 card-suggest の判断
+  根拠として現地に render された 1 枚が必要。~~ **2026-08-19 に取り消し** — 決定 3 の改訂で
+  本文が daemon 側に載るようになり、 この判断の根拠が消えた。 note は退役候補
+  (詳細は [ingestion-identity.md](ingestion-identity.md) と khi 側 memo)。
+  なお「**人間も LLM も読むのは生成されたもの**」の原則は維持する — 生 JSON を LLM に読ませると
+  そこで fold させることになる。 退役後は note の代わりに daemon の `description` が
+  「生成された 1 枚」になり、 actions の生ログを読むのは**決定論のスクリプト**だけ、 という
+  形で原則を保つ。
 - **daemon 側に不足が 2 つ生じる**: 読み戻し口 (下記 PR-5 設計メモ) と working→done (決定 15)。
   案 A ではどちらも khi 側が代替していたため顕在化していなかった。
 
@@ -658,7 +720,9 @@ card が実際にどう処理されるかを 6 本の代表フローで示す。
 
 1. [nose] 移動中にスマホから音声で「△△、 そろそろ手を打たないとまずい気がする」と capture。
 2. [daemon] captured card として保持。 本文 (発話テキスト) は nose 発なので、 daemon が一時
-   保持しても compartment 問題は無い。 グローバル層が project カタログから workspace を推定し、
+   保持しても compartment 問題は無い。 **2026-08-19 改**: 決定 3 の改訂と note の退役により、
+   この「一時保持」は**正本**になる (head-capture は外部に取り直す先が無いため)。 耐久性は
+   daemon volume のバックアップが担う。 グローバル層が project カタログから workspace を推定し、
    確認を queue に出す (決定 5 の例外)。
 3. [nose] 推定が合っていれば一発確認。 違えば選び直す。
 4. [daemon] 確定した workspace のメタプロジェクトに取り込み task を dispatch。 payload に
@@ -1561,13 +1625,17 @@ exit criteria (2 週間程度): (1) nose が「見に行く」頻度が実際に
 
 ## 非目的
 
-- **workspace 横断の full content 集約** — secret compartment を壊すため恒久に行わない。
-  横断は card メタデータのレベルまで (決定 8)。
+- **workspace 横断の full content 集約** — 2026-08-19 に範囲を縮小 (決定 3 改)。 恒久に
+  行わないのは **credential と、 外部システムへの到達性の集約**である。 card の本文が daemon に
+  載るかどうかは開示ポリシー (論点 e) の管轄になった。 横断して**一覧・ 検索**する対象は
+  引き続き card メタデータのレベルまで (決定 8)。
 - **チーム共有** — 本仕組みは personal。 workspace export にメタプロジェクトと inbox を
   含めない (論点 f)。
 - **バックアップ機構そのもの** — メタプロジェクトの有無に関わらず必要な別トラック
   (workspace $HOME volume / daemon volume の backup)。 本 doc は依存として参照するのみ。
-- **daemon 内 scheduler** — Phase 0-1 は host cron で足りる。 内蔵化は論点 b で将来判断。
+- ~~**daemon 内 scheduler**~~ — **2026-08-19 に非目的から外した** (論点 k)。 トリガ
+  (`project.yaml` トップレベルの `triggers`) を daemon が持ち、 workspace 側に cron は残らない
+  方針になった。 実装は [ingestion-identity.md](ingestion-identity.md) の B-5。
 
 ---
 
@@ -1577,21 +1645,28 @@ exit criteria (2 週間程度): (1) nose が「見に行く」頻度が実際に
   (ストレージ節 原則 3)。 khi は customer bitbucket 上の `khi-task-collector` で確定済み。
   boid-hosted bare repo (credential ゼロの恒久解) は優先度を上げ、 daemon volume backup 整備後
   に移行する。
-- **論点 b: 定期起動の機構**。 ingester の形態は使い切り task で決定 (実行場所節)。 残る論点は
-  cron の置き場所のみ: host cron (Phase 0) vs daemon 内 scheduler (内蔵化)。
+- **論点 b (2026-08-19 決着): 定期起動の機構**。 **内蔵側に倒れた** (論点 k)。 daemon が
+  トップレベル `triggers` を読んでスケジュール・ single-flight・ 実行結果の記録を持ち、
+  workspace 側に cron は残らない。 外部 API を叩く窓 (cursor と頻度) は論点 h の通り
+  workspace 側。 実装は [ingestion-identity.md](ingestion-identity.md) の B-5。
 - **論点 c: capture UX**。 頭の中からの課題感を最速で入れる経路 (音声入力が第一級)。
   workspace 不定 routing (決定 5 の例外) の確認 UI。 Web UI quick capture か、 既存チャット
   経由か。
 - **論点 d: queue の順位付けと学習**。 urgency の語彙、 並べ方、 再浮上条件の評価。 nose の
   応答傾向 (破棄・ 後回し) をノイズ判定 (決定 10) と順位付けに反映するか。 Phase 0 の観察から
   決める。
-- **論点 e: 開示ポリシーの語彙**。 workspace ごとに「件名まで出す / 相手ドメインのみ」等。
-  デフォルトは保守的に。
+- **論点 e: 開示ポリシーの語彙**。 workspace ごとに「件名まで出す / 相手ドメインのみ /
+  本文まで」等。 デフォルトは保守的に。 **2026-08-19 に決定 3 の上限がここへ一本化された**
+  ため重みが増した。 併せて **enforcement の限界を正直に持つこと**: daemon は opaque な
+  テキストから「要約か原文か」を機械的に判別できないので、 効かせられるのはサイズ /
+  フィールド粒度まで。 意味的な粒度は workspace 側の自制に依る。
 - **論点 f (2026-08-11 決着): export 除外**。 `project.yaml` に明示フラグ (例:
   `meta_project: true`) を持たせ、 workspace export/apply がこれを見てスキップする。 運用ルール
   頼みにせず仕組みで強制する。
-- **論点 g (2026-08-11 決着): card の洪水対策**。 Phase 1 は最小限に留める: dedup は
-  同一 source ref (mail message-id / jira key / slack ts) の再 push を update 扱いにするのみ。
+- **論点 g (2026-08-11 決着、 2026-08-19 前方参照)**: card の洪水対策。 Phase 1 は最小限に留める:
+  dedup は同一 source ref (mail message-id / jira key / slack ts) の再 push を update 扱いに
+  するのみ。 **この dedup は論点 k で多対一の identity 索引 + binding のライフサイクルへ
+  置き換わる**。 洪水そのものは workspace 側の篩いで止まる、 という整理も同じく論点 k。
   TTL・ queue 側の既読 / 未読表示は Phase 1 では入れない。 queue の安定を最優先し、 必要になった
   ら足す。
 - **論点 h (2026-08-11 決着): source 既読化の詳細**。 既読化は **daemon 側の責務にせず、
@@ -1608,6 +1683,28 @@ exit criteria (2 週間程度): (1) nose が「見に行く」頻度が実際に
   決定 17 (`reopen_triaged`) で決着。 経緯: 決定 15 の `source_closed` を報告できない source
   (mail / slack / head) の task が永久に working に滞留する穴を、 状態の 3 値化でも猶予期間でも
   なく「起票するなら報告できる source を必ず作る」という契約で塞いだ。
+- **論点 k (2026-08-18 提起): 判断スケジューラと取り込み identity**。 決定 14 が退役させたのは
+  workspace 側の `decisions` だけで `claims` + fold は残ったため、 **fold は今も 2 つある**
+  (決定 14 の決め手「2 つの fold を並べるとズレたときに誰も気づかない」がまだ満たされていない)。
+  原因は workspace の都合ではなく daemon 側の口の不足 2 点 — (1) 宛先未確定のイベントを
+  受け取れない (action は `task_id` 必須) (2) actions の履歴を読む口が無い (`action_send` は
+  あるが `action_list` が無い)。
+  検討の過程で、 **「daemon は決定論」「取り込みは workspace」を同時に立てると「判断のトリガは
+  daemon が出す」**という線が出てきた。 daemon を**トリガの出所**、 workspace を**判断の実装**と
+  する To-Be に整理し、 `project.yaml` の**トップレベルに `triggers`** を新設する
+  (`task_behaviors` は変更しない — trigger は「どう実行するか」ではなく「いつ始まるか」の
+  性質なので器が違う)。 daemon が持つのは **スケジュール / single-flight / 実行結果の記録**の
+  3 つだけで、 走らせるのは workspace のコマンド (`run: python3 scripts/x.py`)。
+  「LLM に用があるか」の判定は workspace のスクリプトが持つ (決定論なので決定 12 と衝突しない)。
+  判断の記録は payload 不透明の汎用注記 action。 外部キーは task の **identity** として多対一で持たせ、
+  未着キーは専用 inbox ではなく **`captured` な triage task** として着地させる (篩いが
+  workspace 側に残るので daemon 側の流量は今と変わらない)。 詳細は
+  [ingestion-identity.md](ingestion-identity.md)。 決定 16 の `ref` を一般化し、 論点 g の
+  dedup を置き換え、 論点 b の判断起動側を内蔵へ倒し、 決定 10 の到着状態を一部 `captured` へ
+  倒す。 **2026-08-19、 同 doc の未確定 26 件を「着手前 / PR 内 / 後で」に仕分け、 着手前の
+  5 件のうち 4 件を決定した** (`tasks.ref` は子 dedup 専用として残す / v1 は排他 identity のみ /
+  push は差分 reconcile を続ける / `captured` → `triaged` は LLM が提案し人が押す)。 実装はまだ。
+  本編に畳むかは同 doc の未確定。
 
 ---
 
@@ -1644,7 +1741,7 @@ exit criteria (2 週間程度): (1) nose が「見に行く」頻度が実際に
   - 「プロジェクト横断の状態が見えてしまう」 → task DB が既にその形であり、 新規の露出では
     ない (決定 1)。 mail / Jira 等の resource access の隔離は workspace 単位で維持される。
 - **却下した代替**: task の状態拡張 (決定 7 の 3 理由)、 federated 無 store 表示 (決定 1)、
-  full content の横断集約 (非目的)。
+  credential と外部到達性の横断集約 (非目的)。
 
 ### 第 2 版 (2026-07-31、 nose 初読フィードバック) での変更
 
@@ -1696,6 +1793,38 @@ exit criteria (2 週間程度): (1) nose が「見に行く」頻度が実際に
   まま)。
 - **Phase 0 は即開始可能**: khi は customer bitbucket の `khi-task-collector` (メタプロジェクト
   の原型) が登録済みで、 前提が揃っている。
+
+### 第 13 版 (2026-08-18、 判断スケジューラの切り出し) での変更
+
+Phase 1 完了後の khi 実機と daemon 側 main を再突合し、 **決定 14 が fold を 1 つに
+減らしきれていない**ことを確認した (退役したのは `decisions` だけで `claims` +
+`fold_claims()` は残っており、 `daemon_sync.py` は fold エンジン 2 つの間の reconcile を
+している)。 原因を daemon 側の口の不足 2 点に特定し、 そこから **論点 k** を提起、 詳細は
+[ingestion-identity.md](ingestion-identity.md) に分離した。
+
+- 本編の変更は当初、 論点 k の追加のみだった (実装前のため)。 その後 **決定 3 を改訂**し、
+  それに連動して **決定 14 の帰結の一部** (「note は残す」と `project_card.py` の役割)、
+  **決定 6** (課題本文はファイル)、 **非目的の daemon 内 scheduler**、 **論点 b** も
+  変わっている。 「決定 3 だけを変えた」ではないので、 連動分もそれぞれの節に注記した
+- 同 doc は「daemon は決定論 / LLM 判断は workspace / **トリガは daemon**」の 3 原則から
+  出発する。 判断の起動は `project.yaml` トップレベルの `triggers` が宣言し、 daemon は
+  「いつ、 どのコマンドを走らせるか」しか知らない (走らせた先で何が起きるかは関知しない) ので、
+  **判断の場を増やしても daemon は無変更**という拡張性を持つ。 論点 b (定期起動の機構) は
+  内蔵側へ倒れ、 workspace 側に cron は残らない
+- 決定 16 (`ref` = canonical source のキー) を「登録に使った 1 本目の identity」へ一般化し、
+  論点 g の dedup 案を多対一の identity 索引 + binding のライフサイクルへ置き換える
+- 決定 17 (`reopen_triaged`) に**引き金**を与える: 第 12 版は「done を探す経路は既に
+  成立している、 足りないのは押せる action だけ」としたが、 誰が何を見て押すかは空いていた
+- 決定 10 (mail/Jira/Slack は triaged で到着) の一部を `captured` へ倒す。 篩いは workspace の
+  LLM に残るが、 起票の確定 (どの card になるか) は daemon 側の索引と判断に回る
+- 併せて既存の穴を 1 件記録した: 決定 14 で判断を Web UI へ移したのに Web UI 側に回答を
+  記録する経路が無く、 **Web UI で却下しても再提案の抑止が効かない**
+- **決定 3 を改訂** (2026-08-19、 本編で唯一の決定変更): 「原文そのものは越えない」という
+  ハードな上限を外し、 上限を論点 e の開示ポリシーに一本化した。 境界として実際に効いているのは
+  外部接続の credential 分離であって本文の所在ではない、 という判断 (nose)。 これにより
+  workspace 側は「原文の保持」という責務を手放し、 note への射影とその同期、 続報の追記先解決、
+  slug ↔ identity の対応がまとめて不要になる。 受け入れる変化は Web UI の露出面 (詳細は決定 3 の
+  節)。 非目的の「full content の横断集約」も、 credential と外部到達性の集約に範囲を縮小した
 
 ### 第 12 版 (2026-08-13、 done 自動落ちの前提を確定) での変更
 
