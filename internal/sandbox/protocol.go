@@ -198,9 +198,15 @@ const (
 	// broker to pass it through unscoped. BoidOpTaskIdentityLink additionally
 	// carries a caller-supplied TaskID (not itself the scope, since it names
 	// an EXISTING task rather than the project being written into); its
-	// ownership is checked in the executor exactly like BoidOpActionSend's
+	// ownership is checked in the executor the same way as BoidOpActionSend's
 	// TaskID (GetTask + AllowsProject), since the broker has no TaskStore to
-	// resolve it against.
+	// resolve it against — but unlike action_send/task_wake, which merely
+	// re-look-up their TaskID downstream and so tolerate a short (>=8-char)
+	// prefix transparently, Link writes the id it's given straight into
+	// task_identities.task_id, an FK column. It MUST use GetTask's resolved
+	// existing.ID there, never the caller-supplied req.TaskID verbatim — a
+	// still-a-prefix write is a raw SQLite FOREIGN KEY constraint failure,
+	// not a clean error.
 	//
 	// BoidOpTaskIdentityResolve represents "no such binding" via a distinct
 	// ExecResponse.ExitCode (IdentityNotFoundExitCode below) rather than the
@@ -208,6 +214,10 @@ const (
 	// design doc calls this out explicitly ("未登録は「見つからない」を exit
 	// code で表し、エラーにしない"): a caller doing get-or-create needs to
 	// tell "not found" apart from a real error without parsing stderr text.
+	// BoidOpTaskIdentityLink has its own distinguished code for the OTHER
+	// direction the design doc calls out (PR-2 section): a conflicting link
+	// (IdentityConflictExitCode below) must also be machine-distinguishable,
+	// not just a stderr string a caller has to pattern-match.
 	BoidOpTaskIdentityLink    BoidOp = "task_identity_link"
 	BoidOpTaskIdentityUnlink  BoidOp = "task_identity_unlink"
 	BoidOpTaskIdentityResolve BoidOp = "task_identity_resolve"
@@ -220,6 +230,17 @@ const (
 // unavailable executor, ...) purely from the exit code, without parsing
 // stderr text. See BoidOpTaskIdentityResolve's own doc comment.
 const IdentityNotFoundExitCode = 2
+
+// IdentityConflictExitCode is BoidOpTaskIdentityLink's distinguished exit
+// code for "this identity is already bound to a DIFFERENT task"
+// (orchestrator.ErrIdentityConflict) — its own code, distinct from 0
+// (success), 1 (generic failure), and IdentityNotFoundExitCode (a resolve
+// miss). docs/plans/ingestion-identity.md's PR-2 section requires this to be
+// machine-readable ("identity 衝突時のエラー語彙は PR-1 の ErrIdentityConflict
+// をそのまま返す。workspace はこれを受けて統合の判断へ回す") — a caller must be
+// able to tell a conflict apart from any other failure without depending on
+// Stderr's exact wording, which is not a public contract.
+const IdentityConflictExitCode = 3
 
 // PayloadPatchMaxBytes caps the size of a single BoidOpTaskUpdatePayloadPatch
 // request's PayloadPatch content (whether read from a file, stdin, or an
