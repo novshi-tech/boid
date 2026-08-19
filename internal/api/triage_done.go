@@ -382,14 +382,34 @@ var errAutoReopenFlapped = errors.New("auto reopen: already auto-reopened this t
 // the sweep — the same posture SweepWake/SweepTriage already establish.
 func (s *TaskWorkflowService) SweepReopen(ctx context.Context, _ time.Time) (ReopenSweepResult, error) {
 	var result ReopenSweepResult
-	if s.Tasks == nil || s.TaskTriage == nil {
+	// s.Tx is checked here too (Opus review N-7), not just s.Tasks/s.TaskTriage:
+	// without it, a construction gap that leaves Tx nil would let every done
+	// triage task with source_closed==false reach autoReopen below, which
+	// immediately fails with "Transactor not configured" — 500 warned PER TASK,
+	// EVERY tick, for as long as the daemon runs with that gap. Failing the
+	// whole sweep once here (mirroring SweepTriage/SweepWake's own posture:
+	// they don't check Tx because neither of THEM calls into a Tx-requiring
+	// helper before doing per-task work) is one line instead of a warning storm.
+	if s.Tasks == nil || s.TaskTriage == nil || s.Tx == nil {
 		return result, nil
 	}
 	ctx = orchestrator.WithActor(ctx, orchestrator.ActorDaemon)
 
-	tasks, err := s.Tasks.ListTasks(orchestrator.TaskFilter{Status: string(orchestrator.TaskStatusDone)})
+	// docs/plans/ingestion-identity.md PR-5 (B-6), I-5 (Opus review — 修正必須1):
+	// "done_triage" (store.go's ListTasks) INNER JOINs task_triage so the scan
+	// is bounded by the number of triage CARDS (tens), not every done task in
+	// the system (dev tasks + their children, unbounded — done is the largest
+	// status set GC ever leaves standing, 30-day retention, and J-10 lets
+	// description carry up to 64 KiB). Before this, `Status:
+	// string(orchestrator.TaskStatusDone)` fell through to the generic
+	// `t.status = ?` branch: no LIMIT, taskSelectCols' full
+	// description/payload/instructions columns, plus taskChildCountCols' 4
+	// correlated subqueries PER ROW — on a tick that fires every minute
+	// (QueueSweepLoop.Interval, wire.go). See store.go's "done_triage" branch
+	// doc comment for the full query-shape rationale.
+	tasks, err := s.Tasks.ListTasks(orchestrator.TaskFilter{Status: "done_triage"})
 	if err != nil {
-		return result, fmt.Errorf("sweep reopen: list done tasks: %w", err)
+		return result, fmt.Errorf("sweep reopen: list done triage tasks: %w", err)
 	}
 	for _, t := range tasks {
 		tt, ttErr := s.TaskTriage.GetTaskTriage(t.ID)
@@ -406,6 +426,26 @@ func (s *TaskWorkflowService) SweepReopen(ctx context.Context, _ time.Time) (Reo
 			continue // canonical source still closed: nothing to reopen here (I-5c's log already ran at write time)
 		}
 
+		// N-9 (Opus review, 2026-08-19): a card whose source stays reported
+		// OPEN while already フラップ-blocked (s.lastFlappedReopen[t.ID] true)
+		// re-enters autoReopen below and opens a fresh Tx EVERY tick until a
+		// human acts — a real, deliberately-accepted cost, not an oversight.
+		// Judged not worth an extra pre-Tx short-circuit (e.g. skipping via
+		// s.lastFlappedReopen here) for two reasons: (1) 修正必須1's
+		// "done_triage" filter above already bounds the population this loop
+		// walks to the number of triage CARDS (tens), not every done task in
+		// the system — the per-tick cost this would save is one extra Tx open
+		// + ListActionsByTask per ALREADY-SMALL candidate, not per thousands
+		// of rows; (2) the 2026-08-19 episode-scoping fix
+		// (orchestrator.CountAutoReopens's own doc comment) makes a
+		// PERSISTENT flap materially rarer than it was under lifetime
+		// counting — every full triaged→ready→working→triage_done cycle
+		// resets the budget, so a card can only stay flapped by genuinely
+		// double-flipping within one still-open episode, not merely by
+		// having been auto-reopened once, ever, in its whole history (the
+		// old semantics, under which EVERY multi-cycle card eventually
+		// became permanently flapped). Revisit if a workload emerges where
+		// many cards sit flapped for long stretches at once.
 		if _, aErr := s.autoReopen(ctx, t.ID); aErr != nil {
 			if errors.Is(aErr, errAutoReopenFlapped) {
 				result.Flapped = append(result.Flapped, t.ID)
@@ -460,6 +500,18 @@ func (s *TaskWorkflowService) autoReopen(ctx context.Context, taskID string) (*A
 		}
 		tt, tErr := tx.GetTaskTriage(taskID)
 		if tErr != nil {
+			if errors.Is(tErr, sql.ErrNoRows) {
+				// The sidecar row vanished between the pre-Tx read (which
+				// found it, or SweepReopen would never have called in here)
+				// and this Tx opening — e.g. a concurrent `drop` released it
+				// (DeleteTaskTriage, applyDropSideEffect). Self-resolved,
+				// same as the fresh.Status-changed branch above: not this
+				// sweep's problem to warn about (Opus review N-4 — this
+				// used to fall to the generic fmt.Errorf below, surfacing as
+				// a 500 + slog.Warn per tick for as long as the race
+				// persisted, even though nothing is actually wrong).
+				return &StatusError{Code: http.StatusConflict, Message: "auto reopen: task_triage row no longer exists"}
+			}
 			return fmt.Errorf("auto reopen: get task_triage: %w", tErr)
 		}
 		actions, aErr := tx.ListActionsByTask(taskID)
@@ -506,6 +558,33 @@ func (s *TaskWorkflowService) autoReopen(ctx context.Context, taskID string) (*A
 			},
 		})
 	}
+
+	// docs/plans/ingestion-identity.md PR-5 (B-6) — 修正必須2 (Opus review):
+	// autoDone's mirror. This is the SAME headless-sweep gap
+	// notifyTriageAutoDone exists to close (see its own doc comment,
+	// 2026-08-14 追記, above): the daemon applies done→triaged entirely on
+	// its own tick, so no `boid task notify` call — and no fireUserNotify
+	// gate — ever runs for this path either. Without an explicit call here,
+	// a now-urgency card that just came BACK into the queue would land
+	// silently: attrs_set on a done triage task never fires
+	// notifyUrgencyRaised (queue_notify.go's own gate reads
+	// queueMemberStatus(task.Status), and "done" is not a queue-member
+	// status — I-5b's whole point is that attrs_set on a done card is
+	// non-transitioning), so nothing else in the system observes this
+	// arrival at all.
+	//
+	// Reusing notifyQueueEntryIfUrgent (rule 4's existing "now は即時" path)
+	// rather than a new notifyTriageAutoReopen: newTask.Status is "triaged"
+	// (a queueMemberStatus) and fromStatus is explicitly "done" (never a
+	// queueMemberStatus), so the entry-transition check
+	// (!queueMemberStatus(task.Status) || queueMemberStatus(fromStatus))
+	// always evaluates to "this is an entry" for every reopen — the SAME
+	// notify path a human's own reopen already gets via ApplyAction
+	// (workflow_action.go's own call, after ordinary `reopen`/`reopen_triaged`
+	// commits). This also already wraps the notify.Service call in
+	// notifyTimeout (queue_notify.go's notifyIfUrgencyNow), so a hung
+	// notify.command cannot stall SweepReopen's per-task loop.
+	s.notifyQueueEntryIfUrgent(ctx, newTask, orchestrator.TaskStatusDone)
 
 	return &ActionApplication{Task: newTask, Action: action}, nil
 }
