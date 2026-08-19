@@ -1701,7 +1701,10 @@ exit criteria (2 週間程度): (1) nose が「見に行く」頻度が実際に
   workspace 側に残るので daemon 側の流量は今と変わらない)。 詳細は
   [ingestion-identity.md](ingestion-identity.md)。 決定 16 の `ref` を一般化し、 論点 g の
   dedup を置き換え、 論点 b の判断起動側を内蔵へ倒し、 決定 10 の到着状態を一部 `captured` へ
-  倒す。 実装はまだ。 本編に畳むかは同 doc の未確定。
+  倒す。 **2026-08-19、 同 doc の未確定 26 件を「着手前 / PR 内 / 後で」に仕分け、 着手前の
+  5 件のうち 4 件を決定した** (`tasks.ref` は子 dedup 専用として残す / v1 は排他 identity のみ /
+  push は差分 reconcile を続ける / `captured` → `triaged` は LLM が提案し人が押す)。 実装はまだ。
+  本編に畳むかは同 doc の未確定。
 
 ---
 
