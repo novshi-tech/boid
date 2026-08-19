@@ -398,6 +398,11 @@ type TriggerRunStore interface {
 	CompleteTriggerRun(id string, finishedAt time.Time, exitCode int) error
 	ListInFlightTriggerRuns() ([]*orchestrator.TriggerRun, error)
 	LatestTriggerRun(projectID, triggerName string) (*orchestrator.TriggerRun, error)
+	// SetTriggerRunJobID / DeleteTriggerRun back the Opus review Blocker 1
+	// insert-then-dispatch split — see orchestrator.CreateTriggerRun's own
+	// doc comment for the full sequence.
+	SetTriggerRunJobID(id, jobID string) error
+	DeleteTriggerRun(id string) error
 }
 
 type ProjectRepository interface {

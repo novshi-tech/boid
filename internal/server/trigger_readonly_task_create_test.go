@@ -3,15 +3,24 @@ package server
 // docs/plans/ingestion-identity.md PR-4 (B-5): 「readonly の trigger job から
 // task_create が通る」を実際に通して pin する。 doc は「この PR の前提その
 // もの」と明記しているので、推論(「boidPolicy は Role/Readonly を見ないので
-// 通るはずだ」)だけで済ませず、本番の実行パスを実際に走らせる。
+// 通るはずだ」)だけで済ませず、実際に task_create を実行させる。
 //
-// internal/api.TaskWorkflowService.fireTrigger (trigger_loop.go) が dispatch
-// する exec job は api.StartExecRequest{Readonly: true, Argv: ["sh","-c",
-// trig.Run]} — sandbox 内で trig.Run (例: `boid task create ...`) が動くと、
-// そのプロセスは boid_shim 経由でこの daemon プロセスの broker に BoidOp を
-// 送る。broker がそれを許可した後に実際にオペレーションを実行するのが
-// boidBuiltinExecutor.ExecuteBoidBuiltin (boid_executor.go) — このテストは
-// その実行 (task_create) が本当に成功することを確認する。
+// N-5 (Opus review, 実態に合わせて訂正): このテストが実際に呼ぶのは
+// boidBuiltinExecutor.ExecuteBoidBuiltin **単体**であり、sandbox.TokenContext
+// もこのテスト自身が手で組み立てている。すなわち通っていない (=このテストが
+// pin しない) のは:
+//   - dispatcher.BuildExecJobSpec (trig.Readonly が実際に
+//     Visibility.Writable へどう変換されるかの配線)
+//   - runner.Dispatch のブローカー登録
+//   - internal/sandbox/broker.go の validateBoidBuiltinCwd
+//   - boid_shim → brokerclient 経由でこの executor に実際に届く経路
+//
+// 「readonly が BoidOp の allowlist / executor に一切伝播しない」という
+// 結論そのものはレビュアーが独立に確認して正しいと認めており実害は無いが、
+// 旧版のこのコメント (および対応する commit message) の「本番の
+// broker/executor 経路で pin する」という書き方は、このテストの実際の
+// カバレッジより広い主張だった。実際にカバーしているのは
+// ExecuteBoidBuiltin 単体呼び出しのみ、という以下の説明が実態。
 //
 // 「readonly は関係ない」という主張の根拠は構造的に確認できる:
 //   - executor が受け取る唯一のコンテキストは sandbox.TokenContext

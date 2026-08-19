@@ -10,6 +10,8 @@ package orchestrator_test
 //   - project 削除で trigger_runs 行が cascade で消える
 
 import (
+	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -143,6 +145,249 @@ func TestLatestTriggerRun_ReturnsMostRecentByStartedAt(t *testing.T) {
 	// A different trigger name in the same project is scoped independently.
 	if _, err := orchestrator.LatestTriggerRun(d.Conn, "proj-1", "sweep"); err != orchestrator.ErrTriggerRunNotFound {
 		t.Errorf("LatestTriggerRun for a different trigger name: err = %v, want ErrTriggerRunNotFound", err)
+	}
+}
+
+// TestCreateTriggerRun_JobIDOptional pins the Opus review Blocker 1 schema
+// change (migration 0043): job_id is no longer required at insert time — the
+// row is created FIRST (claiming single-flight via the partial UNIQUE index)
+// and job_id is filled in later, once StartExec actually returns one, via
+// SetTriggerRunJobID.
+func TestCreateTriggerRun_JobIDOptional(t *testing.T) {
+	d := testutil.NewTestDB(t)
+	if err := orchestrator.CreateProject(d.Conn, &orchestrator.Project{ID: "proj-1", WorkDir: "/tmp/proj-1"}); err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	run := &orchestrator.TriggerRun{ProjectID: "proj-1", TriggerName: "intake", StartedAt: time.Now()}
+	if err := orchestrator.CreateTriggerRun(d.Conn, run); err != nil {
+		t.Fatalf("CreateTriggerRun with empty JobID: %v", err)
+	}
+	if run.JobID != "" {
+		t.Errorf("JobID = %q, want empty (untouched)", run.JobID)
+	}
+}
+
+// TestCreateTriggerRun_SecondInFlightForSameKey_RejectedByUniqueIndex is the
+// DB-level enforcement Blocker 1 added: idx_trigger_runs_inflight_unique
+// (migration 0043) rejects a second finished_at-IS-NULL row for the same
+// (project_id, trigger_name), surfaced as ErrTriggerRunInFlight — this is
+// what makes single-flight hold even when two callers' own in-memory
+// "is anything in flight" checks both raced and both said "no".
+func TestCreateTriggerRun_SecondInFlightForSameKey_RejectedByUniqueIndex(t *testing.T) {
+	d := testutil.NewTestDB(t)
+	if err := orchestrator.CreateProject(d.Conn, &orchestrator.Project{ID: "proj-1", WorkDir: "/tmp/proj-1"}); err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	first := &orchestrator.TriggerRun{ProjectID: "proj-1", TriggerName: "intake", StartedAt: time.Now()}
+	if err := orchestrator.CreateTriggerRun(d.Conn, first); err != nil {
+		t.Fatalf("create first run: %v", err)
+	}
+
+	second := &orchestrator.TriggerRun{ProjectID: "proj-1", TriggerName: "intake", StartedAt: time.Now()}
+	err := orchestrator.CreateTriggerRun(d.Conn, second)
+	if !errors.Is(err, orchestrator.ErrTriggerRunInFlight) {
+		t.Fatalf("create second in-flight run for the same key: err = %v, want ErrTriggerRunInFlight", err)
+	}
+
+	// A DIFFERENT trigger name in the same project is unaffected (the
+	// constraint is scoped per (project_id, trigger_name), not per project).
+	other := &orchestrator.TriggerRun{ProjectID: "proj-1", TriggerName: "sweep", StartedAt: time.Now()}
+	if err := orchestrator.CreateTriggerRun(d.Conn, other); err != nil {
+		t.Fatalf("create run for a different trigger name: %v", err)
+	}
+
+	// Completing the first run releases the constraint — a new in-flight row
+	// for "intake" can now be created.
+	if err := orchestrator.CompleteTriggerRun(d.Conn, first.ID, time.Now(), 0); err != nil {
+		t.Fatalf("complete first run: %v", err)
+	}
+	third := &orchestrator.TriggerRun{ProjectID: "proj-1", TriggerName: "intake", StartedAt: time.Now()}
+	if err := orchestrator.CreateTriggerRun(d.Conn, third); err != nil {
+		t.Fatalf("create run after the blocking one completed: %v", err)
+	}
+}
+
+// TestSetTriggerRunJobID_FillsInAfterDispatch pins the second half of the
+// insert-then-dispatch split: the row is created with an empty job_id, then
+// SetTriggerRunJobID records the id StartExec actually returned.
+func TestSetTriggerRunJobID_FillsInAfterDispatch(t *testing.T) {
+	d := testutil.NewTestDB(t)
+	if err := orchestrator.CreateProject(d.Conn, &orchestrator.Project{ID: "proj-1", WorkDir: "/tmp/proj-1"}); err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	run := &orchestrator.TriggerRun{ProjectID: "proj-1", TriggerName: "intake", StartedAt: time.Now()}
+	if err := orchestrator.CreateTriggerRun(d.Conn, run); err != nil {
+		t.Fatalf("create run: %v", err)
+	}
+	if err := orchestrator.SetTriggerRunJobID(d.Conn, run.ID, "job-42"); err != nil {
+		t.Fatalf("SetTriggerRunJobID: %v", err)
+	}
+	runs, err := orchestrator.ListInFlightTriggerRuns(d.Conn)
+	if err != nil {
+		t.Fatalf("ListInFlightTriggerRuns: %v", err)
+	}
+	if len(runs) != 1 || runs[0].JobID != "job-42" {
+		t.Fatalf("runs = %+v, want exactly 1 row with JobID=job-42", runs)
+	}
+}
+
+func TestSetTriggerRunJobID_UnknownID_Errors(t *testing.T) {
+	d := testutil.NewTestDB(t)
+	if err := orchestrator.SetTriggerRunJobID(d.Conn, "does-not-exist", "job-1"); err == nil {
+		t.Fatal("SetTriggerRunJobID for an unknown id = nil error, want an error")
+	}
+}
+
+// TestDeleteTriggerRun_ReleasesSingleFlight pins the dispatch-failure cleanup
+// path (fireTrigger, Opus review Blocker 1): deleting a claimed-but-never-
+// dispatched row must free the (project_id, trigger_name) slot immediately,
+// matching the pre-fix "fail-open, retry the very same instant" behavior
+// (TestSweepTriggers_DispatchFailure_FailsOpenAndRetriesImmediately).
+func TestDeleteTriggerRun_ReleasesSingleFlight(t *testing.T) {
+	d := testutil.NewTestDB(t)
+	if err := orchestrator.CreateProject(d.Conn, &orchestrator.Project{ID: "proj-1", WorkDir: "/tmp/proj-1"}); err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	run := &orchestrator.TriggerRun{ProjectID: "proj-1", TriggerName: "intake", StartedAt: time.Now()}
+	if err := orchestrator.CreateTriggerRun(d.Conn, run); err != nil {
+		t.Fatalf("create run: %v", err)
+	}
+	if err := orchestrator.DeleteTriggerRun(d.Conn, run.ID); err != nil {
+		t.Fatalf("DeleteTriggerRun: %v", err)
+	}
+
+	runs, err := orchestrator.ListInFlightTriggerRuns(d.Conn)
+	if err != nil {
+		t.Fatalf("ListInFlightTriggerRuns: %v", err)
+	}
+	if len(runs) != 0 {
+		t.Fatalf("in-flight runs after delete = %+v, want empty", runs)
+	}
+	// The slot is free again: a fresh in-flight row for the SAME key can be
+	// created immediately, with no constraint violation.
+	retry := &orchestrator.TriggerRun{ProjectID: "proj-1", TriggerName: "intake", StartedAt: time.Now()}
+	if err := orchestrator.CreateTriggerRun(d.Conn, retry); err != nil {
+		t.Fatalf("create run after delete: %v", err)
+	}
+}
+
+// TestCreateTriggerRun_NormalizesStartedAtToUTC pins N-9 (Opus review):
+// StartedAt must be stored as UTC even when the caller passes a time with a
+// local/non-UTC offset, so ORDER BY started_at (a TEXT lexicographic
+// comparison) stays correct regardless of the daemon's local timezone.
+func TestCreateTriggerRun_NormalizesStartedAtToUTC(t *testing.T) {
+	d := testutil.NewTestDB(t)
+	if err := orchestrator.CreateProject(d.Conn, &orchestrator.Project{ID: "proj-1", WorkDir: "/tmp/proj-1"}); err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	jst := time.FixedZone("JST", 9*60*60)
+	local := time.Date(2026, 8, 19, 18, 26, 28, 0, jst)
+	run := &orchestrator.TriggerRun{ProjectID: "proj-1", TriggerName: "intake", StartedAt: local}
+	if err := orchestrator.CreateTriggerRun(d.Conn, run); err != nil {
+		t.Fatalf("create run: %v", err)
+	}
+
+	var stored string
+	if err := d.Conn.QueryRow(`SELECT started_at FROM trigger_runs WHERE id = ?`, run.ID).Scan(&stored); err != nil {
+		t.Fatalf("query started_at: %v", err)
+	}
+	if strings.Contains(stored, "+09:00") || strings.Contains(stored, "+0900") {
+		t.Errorf("stored started_at = %q, still carries the local offset — want UTC", stored)
+	}
+
+	latest, err := orchestrator.LatestTriggerRun(d.Conn, "proj-1", "intake")
+	if err != nil {
+		t.Fatalf("LatestTriggerRun: %v", err)
+	}
+	if !local.Equal(latest.StartedAt) {
+		t.Errorf("round-tripped StartedAt = %v, want the same instant as %v", latest.StartedAt, local)
+	}
+	if _, offset := latest.StartedAt.Zone(); offset != 0 {
+		t.Errorf("round-tripped StartedAt offset = %ds, want 0 (UTC) — driver returned %v", offset, latest.StartedAt)
+	}
+}
+
+// TestCompleteTriggerRun_NormalizesFinishedAtToUTC is CompleteTriggerRun's
+// analogous half of N-9 — the GC purge this PR adds (N-2) compares
+// finished_at against a UTC cutoff, so finished_at must be stored as UTC
+// too, not just started_at.
+func TestCompleteTriggerRun_NormalizesFinishedAtToUTC(t *testing.T) {
+	d := testutil.NewTestDB(t)
+	if err := orchestrator.CreateProject(d.Conn, &orchestrator.Project{ID: "proj-1", WorkDir: "/tmp/proj-1"}); err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	run := &orchestrator.TriggerRun{ProjectID: "proj-1", TriggerName: "intake", StartedAt: time.Now().UTC()}
+	if err := orchestrator.CreateTriggerRun(d.Conn, run); err != nil {
+		t.Fatalf("create run: %v", err)
+	}
+	jst := time.FixedZone("JST", 9*60*60)
+	local := time.Date(2026, 8, 19, 19, 0, 0, 0, jst)
+	if err := orchestrator.CompleteTriggerRun(d.Conn, run.ID, local, 0); err != nil {
+		t.Fatalf("CompleteTriggerRun: %v", err)
+	}
+
+	var stored string
+	if err := d.Conn.QueryRow(`SELECT finished_at FROM trigger_runs WHERE id = ?`, run.ID).Scan(&stored); err != nil {
+		t.Fatalf("query finished_at: %v", err)
+	}
+	if strings.Contains(stored, "+09:00") || strings.Contains(stored, "+0900") {
+		t.Errorf("stored finished_at = %q, still carries the local offset — want UTC", stored)
+	}
+}
+
+// TestListInFlightTriggerRuns_UsesIndexNotFullScan pins N-2 (Opus review):
+// EXPLAIN QUERY PLAN for the exact query ListInFlightTriggerRuns runs every
+// sweep tick must not report a full table scan or a temp-b-tree sort, now
+// that migration 0043 adds idx_trigger_runs_inflight_started
+// (started_at, id) WHERE finished_at IS NULL.
+func TestListInFlightTriggerRuns_UsesIndexNotFullScan(t *testing.T) {
+	d := testutil.NewTestDB(t)
+	rows, err := d.Conn.Query(
+		`EXPLAIN QUERY PLAN SELECT id, project_id, trigger_name, job_id, started_at, finished_at, exit_code
+		 FROM trigger_runs WHERE finished_at IS NULL ORDER BY started_at ASC, id ASC`,
+	)
+	if err != nil {
+		t.Fatalf("explain query plan: %v", err)
+	}
+	defer rows.Close()
+
+	var plan []string
+	for rows.Next() {
+		var id, parent, notUsed int
+		var detail string
+		if err := rows.Scan(&id, &parent, &notUsed, &detail); err != nil {
+			t.Fatalf("scan explain row: %v", err)
+		}
+		plan = append(plan, detail)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate explain rows: %v", err)
+	}
+
+	// A bare "SCAN trigger_runs" (no "USING INDEX") means sqlite walked the
+	// whole table; "USE TEMP B-TREE" means it needed a separate sort step on
+	// top of that. Either would reproduce N-2's reported
+	// `SCAN trigger_runs` + `USE TEMP B-TREE FOR ORDER BY`. "SCAN ... USING
+	// INDEX idx_trigger_runs_inflight_started" is the wanted outcome — the
+	// partial index already holds exactly the in-flight rows pre-sorted by
+	// (started_at, id), so walking it in order needs no extra work even
+	// though EXPLAIN QUERY PLAN still labels it "SCAN" rather than "SEARCH"
+	// (there is no equality/range value to seek by; every matching row is
+	// read).
+	usesIndex := false
+	for _, line := range plan {
+		if strings.Contains(line, "USING INDEX idx_trigger_runs_inflight_started") {
+			usesIndex = true
+		}
+		if strings.Contains(line, "TEMP B-TREE") {
+			t.Errorf("query plan = %v, still needs a temp b-tree sort", plan)
+		}
+	}
+	if !usesIndex {
+		t.Errorf("query plan = %v, want it to use idx_trigger_runs_inflight_started", plan)
+	}
+	if len(plan) == 0 {
+		t.Fatal("EXPLAIN QUERY PLAN returned no rows")
 	}
 }
 

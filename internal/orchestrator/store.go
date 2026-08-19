@@ -473,6 +473,11 @@ type GCResult struct {
 	Runtimes   int64
 	SandboxTmp int64 // leaked /tmp/boid-* sandbox artifacts removed
 	Devices    int64 // revoked web devices deleted
+	// TriggerRuns is the count of finished trigger_runs rows GCTriggerRuns
+	// deleted (N-2, Opus review) — trigger_runs otherwise has no retention
+	// at all and grows unbounded (khi's 2 triggers alone project to
+	// ~105,000 rows/year).
+	TriggerRuns int64
 }
 
 // GCTasks deletes terminal tasks older than olderThan and their related data
@@ -599,6 +604,47 @@ func GCTasks(dbtx db.DBTX, statuses []string, olderThan time.Duration, dryRun bo
 	}
 	result.Tasks, _ = res.RowsAffected()
 	return result, nil
+}
+
+// GCTriggerRuns deletes FINISHED trigger_runs rows older than olderThan
+// (N-2, Opus review): with no retention at all, this table grows unbounded
+// (`every: 10m` × 1 trigger = 144 rows/day = ~52,560 rows/year; khi's 2
+// triggers alone project to ~105,000 rows/year). olderThan=0 disables the
+// time filter, matching GCTasks' own convention (every finished row is
+// eligible). In-flight rows (finished_at IS NULL) are NEVER touched
+// regardless of age — they are single-flight's own source of truth, not
+// stale history (the same reason GCTasks never deletes a non-terminal
+// task).
+//
+// Called from TaskGCStore.GC in the SAME transaction as GCTasks, so
+// `boid gc` / POST /api/gc purges trigger_runs on the existing 30-day
+// schedule without a separate GC pass.
+func GCTriggerRuns(dbtx db.DBTX, olderThan time.Duration, dryRun bool) (int64, error) {
+	cond := `finished_at IS NOT NULL`
+	var args []any
+	if olderThan > 0 {
+		cond += ` AND finished_at < ?`
+		args = []any{time.Now().UTC().Add(-olderThan)}
+	}
+
+	if dryRun {
+		var n int64
+		row := dbtx.QueryRow(`SELECT COUNT(*) FROM trigger_runs WHERE `+cond, args...)
+		if err := row.Scan(&n); err != nil {
+			return 0, fmt.Errorf("count trigger_runs: %w", err)
+		}
+		return n, nil
+	}
+
+	res, err := dbtx.Exec(`DELETE FROM trigger_runs WHERE `+cond, args...)
+	if err != nil {
+		return 0, fmt.Errorf("delete trigger_runs: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("delete trigger_runs: rows affected: %w", err)
+	}
+	return n, nil
 }
 
 // FindTaskByRemote returns the most recently created task (by created_at DESC, id DESC)

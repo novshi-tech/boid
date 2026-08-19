@@ -15,6 +15,14 @@ CREATE INDEX idx_task_triage_wake_at
 -- index: idx_tasks_ref_parent_project
 CREATE UNIQUE INDEX idx_tasks_ref_parent_project ON tasks(ref, parent_id, project_id) WHERE ref != '';
 
+-- index: idx_trigger_runs_inflight_started
+CREATE INDEX idx_trigger_runs_inflight_started
+    ON trigger_runs(started_at, id) WHERE finished_at IS NULL;
+
+-- index: idx_trigger_runs_inflight_unique
+CREATE UNIQUE INDEX idx_trigger_runs_inflight_unique
+    ON trigger_runs(project_id, trigger_name) WHERE finished_at IS NULL;
+
 -- index: idx_trigger_runs_project_trigger_started
 CREATE INDEX idx_trigger_runs_project_trigger_started
     ON trigger_runs(project_id, trigger_name, started_at);
@@ -118,7 +126,7 @@ CREATE TABLE trigger_runs (
     id           TEXT PRIMARY KEY,
     project_id   TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
     trigger_name TEXT NOT NULL,
-    job_id       TEXT NOT NULL,
+    job_id       TEXT NOT NULL DEFAULT '',
     started_at   DATETIME NOT NULL,
     finished_at  DATETIME,
     exit_code    INTEGER
