@@ -777,8 +777,14 @@ daemon が既存 `ref` を機械的に identity へ写せないためである �
   `entry.Context.AllowsProject` を検査する。 **PR-4 / PR-5 のレビューが 3 回連続で指摘した
   クラス**がここに当たる (「brokered の scoping を executor 側にだけ書き、 broker 側が素通し」)。
   executor 側にも検査を置くのは二重化としては良いが、 **broker 側が権威**である
-- resolve の返りは task の ID と status。 task 全体を返さない (workspace は `task_triage_get` で
-  取れる)
+- 入出力は `BoidRequest` に `Identity string` を足して表す。 link は `{identity, task_id,
+  project_id?}`、 unlink は `{identity, project_id?}`、 resolve は `{identity, project_id?}`。
+  resolve の返りは **task の ID と status だけ** — task 全体は返さない (workspace は
+  `task_triage_get` で取れる)。 未登録は「見つからない」を exit code で表し、 エラーにしない
+  (get-or-create の判断は呼び手がする)
+- **HTTP ルートは足さない。** 使い手は sandbox 内のスクリプトだけで、 ホスト側 CLI や Web UI から
+  identity を触る用途が今は無い。 `boid task triage` が HTTP と brokered op の両方を持つのは
+  Web UI が読むためで、 identity にはその使い手がまだ居ない (要るようになった PR で足す)
 
 **不変条件**
 
@@ -1078,7 +1084,7 @@ daemon が既存 `ref` を機械的に identity へ写せないためである �
 | **決定 13** (event 追記を正、 state は導出) | **徹底する側**。 workspace 側の二本目のログを畳む |
 | **決定 14** (state の正は daemon) | **完成させる側**。 `claims` の退役でようやく fold が一本になる |
 | **決定 15** (auto-done) | **鏡像を足す**。 I-5 の auto-reopen、 J-6 の auto-Go |
-| **決定 16** (`ref` = canonical source のキー) | **一般化する**。 `ref` は「登録に使った 1 本目の identity」。 B-1 で列の去就を決める際に再定義が要る可能性 |
+| **決定 16** (`ref` = canonical source のキー) | **一般化する**。 `ref` は「登録に使った 1 本目の identity」。 I-7 で (c) を採ったので **再定義が確定した** — root task は `ref` を持たなくなり、 canonical source は identity の 1 本目になる (付録の宿題) |
 | **決定 17** (`reopen_triaged`) | **引き金を与える**。 第 12 版は「足りないのは押せる action だけ」としたが、 誰が何を見て押すかが空いていた |
 | **論点 b** (定期起動の機構) | **内蔵側へ**。 daemon が時計を持ち、 workspace 側に cron は残らない。 外部 poll の窓 (cursor と頻度) は論点 h の通り workspace |
 | **論点 g** (洪水対策 = 同一 source ref の再 push を update 扱い) | **置き換わる**。 多対一の identity 索引 + binding のライフサイクルへ一般化。 洪水自体は workspace 側の篩いで止まる |
@@ -1109,7 +1115,7 @@ daemon が既存 `ref` を機械的に identity へ写せないためである �
 | 項目 | 既定案 |
 |---|---|
 | terminal task GC と identity binding の寿命 | **cascade delete**。 done は 30 日で GC されるので I-5 の「握り続ける」は実質 30 日の期限付きになるが、 task が消えた後も binding だけ残す理由が無い |
-| identity の一括投入 (移行) | migration に含める。 既存 triage task の `source` / `ref` (A-3 が (b) なら `related_jira_issues` も) から |
+| identity の一括投入 (移行) | **daemon 側ではやらない。** namespace を補うにはチャネルの知識が要り、 それは daemon に無い (「PR 分割」節の段取り)。 workspace が自分の索引から link op で流し込む |
 
 #### B-2 (`captured` 着地) の中で
 
@@ -1317,11 +1323,24 @@ enforcement の限界 (「daemon が効かせられるのはサイズ / フィ�
 | 第 3 版 | daemon を判断のスケジューラとし、 `judge:` 予約 behavior 名前空間 + 述語 2 形 | `trigger` は task_behavior の性質ではないという指摘を受け、 トップレベルの `triggers` へ。 予約名前空間・ 述語・ probe・ 流量制御が不要になった |
 | 第 4 版 (現在) | daemon は時計と single-flight だけを持ち、 走らせるのは workspace のスクリプト | — |
 
-### 決定 3 改訂に伴う本編側の宿題
+### 本編側の宿題
+
+本 doc の決定が本編 (`cross-project-issue-triage.md`) の記述を書き換える箇所。 **いずれも本 doc の
+実装をブロックしない**が、 放置すると本編と実装が食い違う。
+
+#### 決定 16 の再定義 (I-7 の帰結)
+
+I-7 で `tasks.ref` を子 dedup 専用にすると決めたので、 **root task は `ref` を持たなくなる**。
+決定 16 は「`ref` = canonical source のキー」と書いているため、 「canonical source は **identity の
+1 本目**」へ再定義する。 決定 16 の「後から変えられない」という性質は identity 側へ移り、
+「1 identity は高々 1 task」(I-1) がその役割を引き継ぐ。 **PR-2 の後、 root の `ref` を空にする
+migration と同じタイミング**で本編を直す。
+
+#### 決定 3 改訂に伴うもの
 
 決定 3 の改訂 (2026-08-19) は本編の 4 箇所にしか入れていない。 **旧決定 3 に依存した記述が本編に
 多数残っている**ことと、 **改訂の中心論拠に反例クラスがある**ことが分かっているので、 両方を
-ここに記録する。 いずれも本 doc の実装をブロックしない。
+ここに記録する。
 
 改訂は本編の 4 箇所 (決定 3 の節・ 決定 8・ 非目的・ 第 13 版) にしか入れていない。 Fable の
 レビューで、 **旧決定 3 に依存した記述が本編に多数残っている**ことと、 **改訂の中心論拠に
