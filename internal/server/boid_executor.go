@@ -36,6 +36,25 @@ type projectLookup interface {
 	GetProject(id string) (*orchestrator.Project, error)
 }
 
+// resolveOrCaptureService is narrowed from api.WorkflowService down to the
+// single method BoidOpTaskResolveOrCapture needs
+// (docs/plans/ingestion-identity.md PR-2, B-2), mirroring
+// jobContextProvider/projectLookup's own narrowing above. Deliberately kept
+// OUT of api.WorkflowService itself (rather than adding a 6th method there)
+// so the 3 existing WorkflowService test doubles in this package and
+// internal/api/web_test.go (recordingWorkflow, askWorkflowStub,
+// stubWorkflowService) do not all need a new pass-through method just to
+// keep compiling — newBoidBuiltinExecutor below does a runtime interface
+// check against the SAME workflow value callers already pass in, so
+// production wiring (wire.go's *api.TaskWorkflowService) picks this up with
+// zero constructor/wire.go changes once TaskWorkflowService.ResolveOrCapture
+// exists, while every test double that doesn't implement it simply leaves
+// this field nil (→ "unavailable", same convention as every other optional
+// dependency here).
+type resolveOrCaptureService interface {
+	ResolveOrCapture(ctx context.Context, req api.ResolveOrCaptureRequest) (*api.ResolveOrCaptureResult, error)
+}
+
 // projectSummary is BoidOpProjectList's per-project JSON shape — deliberately
 // leaner than BoidOpProjectBehaviors' output (no task_behaviors): the list op
 // is for discovery ("what projects can I even ask about"), and a caller that
@@ -84,20 +103,32 @@ type boidBuiltinExecutor struct {
 	// rather than panicking, same convention as every other optional
 	// dependency here.
 	projects projectLookup
+	// resolveOrCapture backs BoidOpTaskResolveOrCapture
+	// (docs/plans/ingestion-identity.md PR-2, B-2). Populated in
+	// newBoidBuiltinExecutor via a runtime interface check against the SAME
+	// workflow value (see resolveOrCaptureService's own doc comment for
+	// why) — nil disables the op with an "unavailable" error, same
+	// convention as every other optional dependency here.
+	resolveOrCapture resolveOrCaptureService
 }
 
 func newBoidBuiltinExecutor(workflow api.WorkflowService, tasks *api.TaskAppService, jobs api.JobStore, logReader api.JobLogReader, jobContexts jobContextProvider, attachmentsRoot string, projects projectLookup) sandbox.BoidExecutor {
 	if workflow == nil && tasks == nil {
 		return nil
 	}
+	var resolveOrCapture resolveOrCaptureService
+	if roc, ok := workflow.(resolveOrCaptureService); ok {
+		resolveOrCapture = roc
+	}
 	return &boidBuiltinExecutor{
-		workflow:        workflow,
-		tasks:           tasks,
-		jobs:            jobs,
-		logReader:       logReader,
-		jobContexts:     jobContexts,
-		attachmentsRoot: attachmentsRoot,
-		projects:        projects,
+		workflow:         workflow,
+		tasks:            tasks,
+		jobs:             jobs,
+		logReader:        logReader,
+		jobContexts:      jobContexts,
+		attachmentsRoot:  attachmentsRoot,
+		projects:         projects,
+		resolveOrCapture: resolveOrCapture,
 	}
 }
 
@@ -795,6 +826,47 @@ func (e *boidBuiltinExecutor) ExecuteBoidBuiltin(goCtx context.Context, ctx sand
 			TaskID string `json:"task_id"`
 			Status string `json:"status"`
 		}{TaskID: resolved.ID, Status: string(resolved.Status)})
+		if err != nil {
+			return &sandbox.ExecResponse{ExitCode: 1, Stderr: err.Error()}
+		}
+		return &sandbox.ExecResponse{Stdout: string(out) + "\n"}
+	case sandbox.BoidOpTaskResolveOrCapture:
+		// docs/plans/ingestion-identity.md PR-2 (B-2): resolves req.Identity
+		// (scoped to req.ProjectID, already broker-resolved+workspace-
+		// checked — see the op's own doc comment in protocol.go) to an
+		// existing task, or atomically creates a new `captured` triage task
+		// and links it when unresolved (I-4). No separate AllowsProject
+		// re-check on the result is needed here the way
+		// BoidOpTaskIdentityResolve does one — every task this call can
+		// return or create is scoped to req.ProjectID by construction (see
+		// TaskWorkflowService.ResolveOrCapture's own doc comment).
+		if req.Identity == "" {
+			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid task resolve-or-capture requires an identity"}
+		}
+		if e.resolveOrCapture == nil {
+			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid task resolve-or-capture unavailable"}
+		}
+		result, err := e.resolveOrCapture.ResolveOrCapture(context.Background(), api.ResolveOrCaptureRequest{
+			ProjectID:   req.ProjectID,
+			Identity:    req.Identity,
+			Title:       req.Title,
+			Description: req.Description,
+		})
+		if err != nil {
+			// PR-2 節: identity 衝突時は PR-1 の ErrIdentityConflict をその
+			// まま返す — machine-readable via IdentityConflictExitCode
+			// (BoidOpTaskIdentityLink and this op share the SAME exit code,
+			// since both represent the identical underlying condition), not
+			// a generic ExitCode:1 a caller has to pattern-match stderr for.
+			if errors.Is(err, orchestrator.ErrIdentityConflict) {
+				return &sandbox.ExecResponse{ExitCode: sandbox.IdentityConflictExitCode, Stderr: err.Error()}
+			}
+			return &sandbox.ExecResponse{ExitCode: 1, Stderr: err.Error()}
+		}
+		out, err := json.Marshal(struct {
+			TaskID  string `json:"task_id"`
+			Created bool   `json:"created"`
+		}{TaskID: result.TaskID, Created: result.Created})
 		if err != nil {
 			return &sandbox.ExecResponse{ExitCode: 1, Stderr: err.Error()}
 		}

@@ -33,9 +33,13 @@ const (
 	// to the "not yet actionable" pre-execution states. Concretely this means
 	// working:
 	//   - is NOT excluded from the default "open" task-list filter the way
-	//     pre-execution statuses are (store.go's notOpenSelfStatusSQLList) —
+	//     triaged/parked/ready are (store.go's notOpenSelfStatusSQLList) —
 	//     an in-progress triage task belongs in the open view, same as an
-	//     executing task.
+	//     executing task. (captured is ALSO not excluded as of
+	//     docs/plans/ingestion-identity.md PR-2, B-2 — see
+	//     notOpenSelfStatusSQLList's own doc comment — so "pre-execution
+	//     statuses are excluded" is no longer true of the whole group;
+	//     triaged/parked/ready remain the excluded ones.)
 	//   - does NOT appear in the "queue" filter (preExecutionStatusSQLList) —
 	//     queue is for things nose still needs to respond to (決定9); a
 	//     working task has already been responded to (Go'd).

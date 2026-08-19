@@ -67,6 +67,18 @@ func (s *TaskAppService) NotifyTask(ctx context.Context, taskID, message, ask, q
 		if err != nil {
 			return &StatusError{Code: http.StatusNotFound, Message: err.Error()}
 		}
+		// docs/plans/ingestion-identity.md PR-2 (B-2), J-10/A-5: action
+		// payload size cap. This method writes actions.payload directly via
+		// s.Actions.CreateAction, bypassing ApplyAction (one of the 4
+		// mandatory ValidateContentSize entry points) entirely — see
+		// orchestrator.MaxContentBytes's own doc comment for why this call
+		// site needed its own check added rather than being covered by
+		// that "4 entry points" claim. progress is an agent-supplied free
+		// string (`boid task notify --progress`), not a daemon-generated
+		// fixed format, so it needs the same cap action_send gets.
+		if err := orchestrator.ValidateContentSize("action payload", []byte(progress)); err != nil {
+			return &StatusError{Code: http.StatusBadRequest, Message: err.Error()}
+		}
 		payload, err := json.Marshal(map[string]string{"message": progress})
 		if err != nil {
 			return &StatusError{Code: http.StatusInternalServerError, Message: "encode progress payload: " + err.Error()}
@@ -215,6 +227,22 @@ func (s *TaskAppService) NotifyTask(ctx context.Context, taskID, message, ask, q
 		}
 		var actionType, msg string
 		if done != "" {
+			actionType, msg = "done_request", done
+		} else {
+			actionType, msg = "fail_request", fail
+		}
+		// docs/plans/ingestion-identity.md PR-2 (B-2), J-10/A-5: action
+		// payload size cap — see the matching progress-mode comment above
+		// for why this call site (bypasses ApplyAction) needs its own
+		// check. done/fail messages are agent-supplied free strings
+		// (`boid task notify --done/--fail`), not a daemon-generated fixed
+		// format. Checked before verifyDoneClaim's git-heavy
+		// anti-confabulation gate so an oversized message fails fast
+		// without paying that cost.
+		if err := orchestrator.ValidateContentSize("action payload", []byte(msg)); err != nil {
+			return &StatusError{Code: http.StatusBadRequest, Message: err.Error()}
+		}
+		if done != "" {
 			// Anti-confabulation gate: reject premature / fabricated done
 			// reports before recording the intent (see verifyDoneClaim). The
 			// agent's notify call fails loudly so it must actually wait /
@@ -222,9 +250,6 @@ func (s *TaskAppService) NotifyTask(ctx context.Context, taskID, message, ask, q
 			if verr := s.verifyDoneClaim(ctx, task); verr != nil {
 				return verr
 			}
-			actionType, msg = "done_request", done
-		} else {
-			actionType, msg = "fail_request", fail
 		}
 		payload, err := json.Marshal(map[string]string{"message": msg})
 		if err != nil {

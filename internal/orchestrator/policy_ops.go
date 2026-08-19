@@ -64,5 +64,13 @@ const (
 	OpBoidTaskIdentityUnlink  = "task_identity_unlink"
 	OpBoidTaskIdentityResolve = "task_identity_resolve"
 
+	// OpBoidTaskResolveOrCapture backs `boid task resolve-or-capture` from
+	// inside the sandbox (docs/plans/ingestion-identity.md PR-2, B-2): the
+	// destination-resolution op — resolve Identity to an existing task, or
+	// atomically create a new `captured` triage task and link it when
+	// unresolved. Same "no HTTP route" scoping as the PR-1 identity ops
+	// above (sandbox shim is the sole caller).
+	OpBoidTaskResolveOrCapture = "task_resolve_or_capture"
+
 	OpFetchGet = "get"
 )
