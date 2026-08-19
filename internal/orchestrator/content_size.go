@@ -20,11 +20,42 @@ import "fmt"
 //	slack (n= 8): max 13,283B / median 6,302B / min 1,298B
 //
 // 観測された最大は jira の 15,584B (ES image registry 起票の課題本文)。
-// MaxContentBytes は 64 KiB (65,536B) — 実測最大の約 4.2 倍のマージンを取り、
-// frontmatter を含めた同ノートのファイル全体サイズの最大 (31,761B) の 2 倍
-// 以上をカバーする。実測 32 件は一度も 16KB を超えていないため、64KiB は
-// 「日常的な Jira 課題本文 / Slack スレッド全文が絶対に切られない」ための
-// 十分な余裕でありながら、1 record が無制限に肥大化するのは防ぐ値として選んだ。
+// MaxContentBytes は 64 KiB (65,536B) — description 側の実測最大に対して
+// 約 4.2 倍のマージンを取り (この「4.2 倍」は description 側限定の数字—
+// action payload 側のマージンは下記の別実測を参照)、frontmatter を含めた
+// 同ノートのファイル全体サイズの最大 (31,761B) の 2 倍以上をカバーする。
+// 実測 32 件は一度も 16KB を超えていないため、64KiB は「日常的な Jira 課題
+// 本文 / Slack スレッド全文が絶対に切られない」ための十分な余裕でありながら、
+// 1 record が無制限に肥大化するのは防ぐ値として選んだ。
+//
+// action payload 側の実測 (2026-08-19、この PR で追加実測): 上の分布は
+// description (本文) 側だけの実測であり、同じ MaxContentBytes が適用される
+// action payload (attrs_set 等) は書き込まれる内容の性質が違うため、
+// 「description で妥当だったから payload でも妥当」とは言えない。そのため
+// khi 側の claims / attrs データで別途実測した:
+//
+//	claims JSONL の 1 レコード          (n=109): max  5,537B / p95 2,571B / median   251B
+//	畳んだ attrs 全体 (frontmatter 相当) (n= 31): max 22,572B /  —        / median 1,039B
+//
+// khi の daemon_sync.py:497 (`send_action(task_id, "attrs_set", diff)`) は
+// 初回 push 時に desired_attrs 全体を 1 発の attrs_set payload として送る
+// ため、単発 attrs_set payload の現実的な最大は「畳んだ attrs 全体」の実測
+// 最大 22,572B — MaxContentBytes 64 KiB に対して約 2.9 倍のマージン。
+//
+// description 側 (4.2 倍) と payload 側 (2.9 倍) でマージン倍率が異なるが、
+// 同じ MaxContentBytes を両方に適用しているのは意図的な判断であり、値を
+// 分ける根拠が無いという放置ではない:
+//   - どちらも「1 回の書き込みで daemon に渡る自由記述/構造化データの塊」
+//     という同じ形をしている (description はタスク本文、attrs_set の
+//     payload は note の frontmatter 相当の属性群) — フィールド粒度で
+//     別々の上限を持つほどの構造的な違いは無い。
+//   - 64 KiB は payload 側の実測最大 22,572B に対しても 2.9 倍の余裕があり、
+//     description 側と同じく「日常的な書き込みが絶対に切られない」を満たす。
+//   - 上限は「日常値を精密に予測する」ためのものではなく「無制限な肥大化を
+//     防ぐ安全弁」なので、2 つの実測がどちらも同じオーダー (10 の 4 乗 B
+//     オーダー) に収まっている以上、値を分けて管理するコストに見合わない
+//     と判断した。将来どちらかの分布が大きく変わったら (khi 側 doc の
+//     mail 対応リスクと同様) この判断ごと見直すこと。
 //
 // 未確定のまま残るリスク (doc 12 節・このコメントに明記): khi 側 doc は
 // 「mail を足したときに本文 + 添付テキストが載ることは未確定」と書いている。
@@ -37,6 +68,11 @@ import "fmt"
 // の入口である action_send (= TaskWorkflowService.ApplyAction) の 4 箇所
 // すべてがこの ValidateContentSize を通る。どれか 1 つでも抜けると迂回路に
 // なるため、新しい書き込み経路を足すときは必ずここを通すこと。
+//
+// この 4 箇所の外にも actions.payload を直接書く経路がある (task_notify.go
+// の progress / done_request / fail_request) — これらは 2026-08-19 時点で
+// 同じ ValidateContentSize("action payload", ...) を通すよう追加対応済み。
+// 詳細は task_notify.go 側のコメントを参照。
 const MaxContentBytes = 64 * 1024 // 65,536 bytes
 
 // ContentSizeError is ValidateContentSize's error type. Exported so a caller
