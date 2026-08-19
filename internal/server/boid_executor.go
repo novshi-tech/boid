@@ -55,6 +55,22 @@ type resolveOrCaptureService interface {
 	ResolveOrCapture(ctx context.Context, req api.ResolveOrCaptureRequest) (*api.ResolveOrCaptureResult, error)
 }
 
+// actionListService is narrowed from api.WorkflowService down to the single
+// method BoidOpActionList needs (docs/plans/ingestion-identity.md PR-3, B-3),
+// mirroring resolveOrCaptureService's own narrowing immediately above — kept
+// OUT of api.WorkflowService itself for the identical reason (every existing
+// WorkflowService test double in this package and internal/api/web_test.go
+// would otherwise need a new pass-through method just to keep compiling).
+// newBoidBuiltinExecutor does the same runtime interface check against the
+// SAME workflow value callers already pass in, so production wiring picks
+// this up with zero constructor/wire.go changes once
+// TaskWorkflowService.ListActions exists (it already does — action_list_read.go),
+// while every test double that doesn't implement it leaves this field nil
+// (→ "unavailable"), same convention as every other optional dependency here.
+type actionListService interface {
+	ListActions(filter orchestrator.ActionListFilter) (*api.ActionListResult, error)
+}
+
 // projectSummary is BoidOpProjectList's per-project JSON shape — deliberately
 // leaner than BoidOpProjectBehaviors' output (no task_behaviors): the list op
 // is for discovery ("what projects can I even ask about"), and a caller that
@@ -110,6 +126,10 @@ type boidBuiltinExecutor struct {
 	// why) — nil disables the op with an "unavailable" error, same
 	// convention as every other optional dependency here.
 	resolveOrCapture resolveOrCaptureService
+	// actionList backs BoidOpActionList (docs/plans/ingestion-identity.md
+	// PR-3, B-3). Same runtime-interface-check wiring as resolveOrCapture
+	// above — see actionListService's own doc comment.
+	actionList actionListService
 }
 
 func newBoidBuiltinExecutor(workflow api.WorkflowService, tasks *api.TaskAppService, jobs api.JobStore, logReader api.JobLogReader, jobContexts jobContextProvider, attachmentsRoot string, projects projectLookup) sandbox.BoidExecutor {
@@ -120,6 +140,10 @@ func newBoidBuiltinExecutor(workflow api.WorkflowService, tasks *api.TaskAppServ
 	if roc, ok := workflow.(resolveOrCaptureService); ok {
 		resolveOrCapture = roc
 	}
+	var actionList actionListService
+	if al, ok := workflow.(actionListService); ok {
+		actionList = al
+	}
 	return &boidBuiltinExecutor{
 		workflow:         workflow,
 		tasks:            tasks,
@@ -129,6 +153,7 @@ func newBoidBuiltinExecutor(workflow api.WorkflowService, tasks *api.TaskAppServ
 		attachmentsRoot:  attachmentsRoot,
 		projects:         projects,
 		resolveOrCapture: resolveOrCapture,
+		actionList:       actionList,
 	}
 }
 
@@ -871,6 +896,65 @@ func (e *boidBuiltinExecutor) ExecuteBoidBuiltin(goCtx context.Context, ctx sand
 			return &sandbox.ExecResponse{ExitCode: 1, Stderr: err.Error()}
 		}
 		return &sandbox.ExecResponse{Stdout: string(out) + "\n"}
+	case sandbox.BoidOpActionList:
+		// docs/plans/ingestion-identity.md PR-3 (B-3). req.ProjectID/
+		// req.WorkspaceID are already broker-resolved+workspace-checked
+		// (broker.go's BoidOpActionList case, mirroring BoidOpTaskTriageList
+		// exactly) — this builds the orchestrator.ActionListFilter the SAME
+		// three-branch shape decides between (project_id / workspace_id /
+		// neither -> ctx.AllowedProjectIDs), but as ONE ProjectIDs slice
+		// rather than BoidOpTaskTriageList's per-project loop: a single SQL
+		// IN(...) query keeps cursor pagination correct across the whole
+		// scope in one pass (see orchestrator.ActionListFilter's own doc
+		// comment for why a loop cannot merge cursors correctly here).
+		if e.actionList == nil {
+			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid action list unavailable"}
+		}
+		filter := orchestrator.ActionListFilter{
+			TaskID: req.TaskID,
+			Since:  req.Since,
+			Limit:  req.Limit,
+		}
+		switch {
+		case req.ProjectID != "":
+			if !ctx.AllowsProject(req.ProjectID) {
+				return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid action list is restricted to the current workspace"}
+			}
+			filter.ProjectIDs = []string{req.ProjectID}
+		case req.WorkspaceID != "":
+			// Defense in depth behind the broker's own equality check —
+			// same rationale as BoidOpTaskTriageList's WorkspaceID branch:
+			// an unchecked value here would cross the compartment 決定2
+			// exists to keep.
+			if ctx.WorkspaceID != "" && req.WorkspaceID != ctx.WorkspaceID {
+				return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid action list is restricted to the current workspace"}
+			}
+			filter.WorkspaceID = req.WorkspaceID
+		default:
+			projectIDs := ctx.AllowedProjectIDs
+			if len(projectIDs) == 0 {
+				// Mirrors BoidOpTaskTriageList's own insurance (Opus review
+				// round 2): an empty ProjectIDs AND empty WorkspaceID would
+				// make ListActionsSince refuse via ErrActionListUnscoped —
+				// which is safe — but only if ctx.ProjectID is also empty;
+				// when it's set, fall back to it exactly like every other
+				// "no explicit scope" branch in this file does.
+				if ctx.ProjectID == "" {
+					return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid action list: no project scope available for an unfiltered listing"}
+				}
+				projectIDs = []string{ctx.ProjectID}
+			}
+			filter.ProjectIDs = projectIDs
+		}
+		result, err := e.actionList.ListActions(filter)
+		if err != nil {
+			return &sandbox.ExecResponse{ExitCode: 1, Stderr: err.Error()}
+		}
+		encoded, err := json.MarshalIndent(result, "", "  ")
+		if err != nil {
+			return &sandbox.ExecResponse{ExitCode: 1, Stderr: err.Error()}
+		}
+		return &sandbox.ExecResponse{Stdout: string(encoded) + "\n"}
 	case sandbox.BoidOpJobList:
 		if e.jobs == nil {
 			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid job list unavailable"}

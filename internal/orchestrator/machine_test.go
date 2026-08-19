@@ -692,7 +692,7 @@ func TestDefaultMachine_Reopen_StillWorksForDoneAndAborted(t *testing.T) {
 // 覚えている必要が無い設計にする。
 func TestDefaultMachine_IsManualAction(t *testing.T) {
 	sm := orchestrator.DefaultMachine()
-	manual := []string{"start", "done", "fail", "reopen", "ask", "answer", "abort", "triage", "ready", "park", "drop", "attrs_set", "child_added", "child_specced"}
+	manual := []string{"start", "done", "fail", "reopen", "ask", "answer", "abort", "triage", "ready", "park", "drop", "attrs_set", "child_added", "child_specced", "noted", "answered"}
 	// child_dispatched/child_closed are Phase 1 PR-4's daemon-self-record-only
 	// actions (論点9): they must stay non-manual so ApplyAction/
 	// BoidOpActionSend reject any khi-pushed attempt to send them directly —
@@ -737,6 +737,11 @@ func TestDefaultMachine_Working_ThreeExits(t *testing.T) {
 
 // ---- Phase 1 PR-4: attrs_set/child_added/child_specced FromStatus is an
 // explicit enumeration, never "*" (論点6-3) ----
+//
+// docs/plans/ingestion-identity.md PR-3 adds noted/answered to the SAME loop
+// (machine.go) that generates these rules, so both lists below include them
+// too — pinning that the shared generator, not a hand-copied rule, produced
+// their FromStatus set.
 
 func TestDefaultMachine_TriageVocabulary_FromStatusEnumerated_NotWildcard(t *testing.T) {
 	sm := orchestrator.DefaultMachine()
@@ -755,7 +760,7 @@ func TestDefaultMachine_TriageVocabulary_FromStatusEnumerated_NotWildcard(t *tes
 		orchestrator.TaskStatusAborted,
 		orchestrator.TaskStatusDropped,
 	}
-	for _, actionType := range []string{"attrs_set", "child_added", "child_specced"} {
+	for _, actionType := range []string{"attrs_set", "child_added", "child_specced", "noted", "answered"} {
 		for _, status := range allowed {
 			task := &orchestrator.Task{Status: status}
 			if _, err := sm.Apply(task, &orchestrator.Action{Type: actionType}); err != nil {
@@ -771,11 +776,11 @@ func TestDefaultMachine_TriageVocabulary_FromStatusEnumerated_NotWildcard(t *tes
 	}
 }
 
-// attrs_set/child_added/child_specced are non-transitioning (ToStatus==""):
-// applying them must leave task.Status unchanged.
+// attrs_set/child_added/child_specced/noted/answered are non-transitioning
+// (ToStatus==""): applying them must leave task.Status unchanged.
 func TestDefaultMachine_TriageVocabulary_NonTransitioning(t *testing.T) {
 	sm := orchestrator.DefaultMachine()
-	for _, actionType := range []string{"attrs_set", "child_added", "child_specced"} {
+	for _, actionType := range []string{"attrs_set", "child_added", "child_specced", "noted", "answered"} {
 		task := &orchestrator.Task{Status: orchestrator.TaskStatusWorking}
 		next, err := sm.Apply(task, &orchestrator.Action{Type: actionType})
 		if err != nil {
@@ -783,6 +788,47 @@ func TestDefaultMachine_TriageVocabulary_NonTransitioning(t *testing.T) {
 		}
 		if next.Status != orchestrator.TaskStatusWorking {
 			t.Fatalf("%s: status changed to %s, want unchanged (working)", actionType, next.Status)
+		}
+	}
+}
+
+// TestDefaultMachine_CanApplyManualAction_Answered pins Opus review finding
+// #3 (2026-08-19 revisit of PR-3): CanApplyManualAction("answered", status)
+// must agree with what sm.Apply actually accepts/rejects for every status —
+// this is the check the Web UI's Accept/Reject buttons gate on BEFORE
+// rendering, so it must never say "yes" for a status Apply would then
+// reject.
+func TestDefaultMachine_CanApplyManualAction_Answered(t *testing.T) {
+	sm := orchestrator.DefaultMachine()
+	answerable := []orchestrator.TaskStatus{
+		orchestrator.TaskStatusCaptured,
+		orchestrator.TaskStatusTriaged,
+		orchestrator.TaskStatusParked,
+		orchestrator.TaskStatusReady,
+		orchestrator.TaskStatusWorking,
+	}
+	notAnswerable := []orchestrator.TaskStatus{
+		orchestrator.TaskStatusDone,
+		orchestrator.TaskStatusAborted,
+		orchestrator.TaskStatusDropped,
+		orchestrator.TaskStatusPending,
+		orchestrator.TaskStatusExecuting,
+		orchestrator.TaskStatusAwaiting,
+	}
+	for _, status := range answerable {
+		if !sm.CanApplyManualAction("answered", status) {
+			t.Errorf("CanApplyManualAction(answered, %s) = false, want true", status)
+		}
+		if _, err := sm.Apply(&orchestrator.Task{Status: status}, &orchestrator.Action{Type: "answered"}); err != nil {
+			t.Errorf("sanity: Apply(answered) from %s unexpectedly errored: %v", status, err)
+		}
+	}
+	for _, status := range notAnswerable {
+		if sm.CanApplyManualAction("answered", status) {
+			t.Errorf("CanApplyManualAction(answered, %s) = true, want false", status)
+		}
+		if _, err := sm.Apply(&orchestrator.Task{Status: status}, &orchestrator.Action{Type: "answered"}); err == nil {
+			t.Errorf("sanity: Apply(answered) from %s unexpectedly succeeded (CanApplyManualAction and Apply must agree)", status)
 		}
 	}
 }

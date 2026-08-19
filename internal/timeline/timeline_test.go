@@ -175,6 +175,70 @@ func TestBuild_StickyRunningJobAppearsInCurrentGroup(t *testing.T) {
 	})
 }
 
+// TestIsAnsweredAction / TestBuildActionLabel_Answered /
+// TestBuild_IncludesAnsweredAction pin Opus review finding #6 (2026-08-19
+// revisit of PR-3): `answered` is the FIRST non-transitioning action a
+// human directly triggers by clicking a Web UI button (the Accept/Reject
+// pair, J-6). Build's filter otherwise drops every non-transitioning,
+// non-progress action (attrs_set/child_added/child_specced/noted included
+// — that is a pre-existing gap this PR does not touch), which would leave
+// a Reject click with literally no human-visible trace anywhere in the UI:
+// the suggestion card just disappears. Decision: SHOW it — see
+// IsAnsweredAction's own doc comment in timeline.go for the reasoning.
+
+func TestIsAnsweredAction(t *testing.T) {
+	if !IsAnsweredAction(&orchestrator.Action{Type: "answered"}) {
+		t.Error("IsAnsweredAction(answered) = false, want true")
+	}
+	if IsAnsweredAction(&orchestrator.Action{Type: "noted"}) {
+		t.Error("IsAnsweredAction(noted) = true, want false (noted stays out of scope for this PR)")
+	}
+	if IsAnsweredAction(&orchestrator.Action{Type: "attrs_set"}) {
+		t.Error("IsAnsweredAction(attrs_set) = true, want false")
+	}
+}
+
+func TestBuildActionLabel_Answered(t *testing.T) {
+	cases := []struct {
+		payload string
+		want    string
+	}{
+		{`{"answer":"reject","verb":"go","basis":"issue #42"}`, "answered: reject"},
+		{`{"answer":"accept"}`, "answered: accept"},
+		{``, "answered"}, // malformed/empty payload falls back to the bare type
+	}
+	for _, c := range cases {
+		a := &orchestrator.Action{Type: "answered", Payload: []byte(c.payload)}
+		if got := BuildActionLabel(a); got != c.want {
+			t.Errorf("BuildActionLabel(answered, payload=%s) = %q, want %q", c.payload, got, c.want)
+		}
+	}
+}
+
+func TestBuild_IncludesAnsweredAction(t *testing.T) {
+	now := time.Now()
+	task := &orchestrator.Task{Status: orchestrator.TaskStatusTriaged, CreatedAt: now.Add(-time.Hour)}
+	actions := []*orchestrator.Action{
+		{Type: "answered", FromStatus: orchestrator.TaskStatusTriaged, ToStatus: orchestrator.TaskStatusTriaged, CreatedAt: now.Add(-time.Minute), Payload: []byte(`{"answer":"reject"}`)},
+	}
+	groups := Build(task, actions, nil)
+
+	found := false
+	for _, g := range groups {
+		for _, ev := range g.Events {
+			if ev.Kind == KindAction && ev.Action != nil && ev.Action.Type == "answered" {
+				found = true
+				if !strings.Contains(ev.Label, "reject") {
+					t.Errorf("answered event label = %q, want it to mention the reject decision", ev.Label)
+				}
+			}
+		}
+	}
+	if !found {
+		t.Fatal("answered action should appear in the timeline, but was not found")
+	}
+}
+
 // Sticky reference rows are non-authoritative — they must not appear when
 // the task has reached a terminal status (done / aborted) because the
 // historic job placement is already correct, and any running job that

@@ -599,6 +599,27 @@ func (b *Broker) handleBoidBuiltin(ctx context.Context, req *ExecRequest, entry 
 		if !entry.Context.AllowsProject(boidReq.ProjectID) {
 			return &ExecResponse{ExitCode: 1, Stderr: "boid task resolve-or-capture is restricted to the current workspace"}
 		}
+	case BoidOpActionList:
+		// docs/plans/ingestion-identity.md PR-3 (B-3): scoping mirrors
+		// BoidOpTaskTriageList EXACTLY — same three branches (project_id /
+		// workspace_id / neither), same reasons (see BoidOpTaskTriageList's
+		// case above and BoidOpActionList's own doc comment in protocol.go).
+		if boidReq.ProjectID != "" {
+			resolved, err := b.resolveProjectRef(boidReq.ProjectID)
+			if err != nil {
+				return &ExecResponse{ExitCode: 1, Stderr: fmt.Sprintf("boid action list: resolve project %q: %s", boidReq.ProjectID, err)}
+			}
+			boidReq.ProjectID = resolved
+			if !entry.Context.AllowsProject(boidReq.ProjectID) {
+				return &ExecResponse{ExitCode: 1, Stderr: "boid action list: project is outside the current workspace"}
+			}
+		}
+		if boidReq.WorkspaceID != "" && boidReq.WorkspaceID != entry.Context.WorkspaceID {
+			return &ExecResponse{ExitCode: 1, Stderr: "boid action list: workspace_id is outside the current workspace"}
+		}
+		if boidReq.ProjectID == "" && boidReq.WorkspaceID == "" && entry.Context.WorkspaceID != "" {
+			boidReq.WorkspaceID = entry.Context.WorkspaceID
+		}
 	case BoidOpJobList:
 		if boidReq.TaskID == "" {
 			return &ExecResponse{ExitCode: 1, Stderr: "boid job list requires a task id"}

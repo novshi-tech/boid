@@ -250,6 +250,15 @@ type WebService interface {
 	RerunTask(id string, req RerunTaskRequest) error
 	ReopenTask(id string, req ReopenTaskRequest) error
 	AnswerTask(ctx context.Context, taskID, questionID, answer string) error
+	// AnswerSuggestion backs docs/plans/ingestion-identity.md PR-3 (B-3+B-4,
+	// J-6)'s accept/reject buttons on the task_triage suggestion card — the
+	// "既に開いている穴" this PR closes (決定14 moved judgment to the Web UI,
+	// but the Web UI had no path to RECORD a reject, so re-suggestion was
+	// never suppressed). A dedicated method rather than routing through
+	// ApplyAction (like Wake/ReopenTask above): the generic
+	// WebService.ApplyAction(taskID, actionType) signature has no payload
+	// parameter, and `answered` needs one ({answer, verb, basis}).
+	AnswerSuggestion(taskID string, req AnswerSuggestionRequest) error
 	ListHooksForStatus(taskID, status string) ([]orchestrator.Hook, error)
 	ReplayHook(ctx context.Context, taskID string, req ReplayHookRequest) (*ReplayHookResult, error)
 	GetProjectByID(id string) (*orchestrator.Project, error)
@@ -359,6 +368,20 @@ type TaskIdentityStore interface {
 	ResolveIdentity(projectID, identity string) (*orchestrator.Task, error)
 	// ListIdentitiesByTask returns every identity bound to taskID.
 	ListIdentitiesByTask(taskID string) ([]string, error)
+}
+
+// ActionListStore provides the workspace-scoped read backing docs/plans/
+// ingestion-identity.md PR-3 (B-3)'s BoidOpActionList. Deliberately separate
+// from ActionStore (ListActionsByTask, per-task, embedded in TxStore) for the
+// same reason TaskTriageStore/TaskIdentityStore are their own interfaces:
+// this is a non-transactional READ used outside WithinTx — the same
+// "TaskWorkflowService.TaskTriage TaskTriageStore" narrowing pattern
+// (workflow.go), not TxStore.
+type ActionListStore interface {
+	// ListActionsSince returns the actions matching filter (oldest first)
+	// plus the next cursor. See orchestrator.ListActionsSince's own doc
+	// comment for the pagination/scoping contract.
+	ListActionsSince(filter orchestrator.ActionListFilter) ([]*orchestrator.Action, string, error)
 }
 
 type ProjectRepository interface {

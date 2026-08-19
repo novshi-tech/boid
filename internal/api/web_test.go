@@ -17,26 +17,33 @@ import (
 
 // stubWebService is a full implementation of WebService for testing.
 type stubWebService struct {
-	tasks              []*orchestrator.Task
-	taskDetail         *TaskDetailView
-	jobDetail          *JobWithContext
-	projects           []*orchestrator.Project
-	behaviors          []string
-	workspaces         []*orchestrator.WorkspaceSummary
-	capturedFilter     orchestrator.TaskFilter
-	applyActionErr     error
-	applyActionCalls   []applyActionCall
-	duplicateTaskNewID string
-	duplicateTaskErr   error
-	createTaskResult   *orchestrator.Task
-	createTaskErr      error
-	createTaskCalls    []CreateTaskRequest
-	updateTaskErr      error
-	updateTaskCalls    []UpdateTaskRequest
-	projectByID        *orchestrator.Project
-	projectByIDErr     error
-	wakeErr            error
-	wakeCalls          []string
+	tasks                 []*orchestrator.Task
+	taskDetail            *TaskDetailView
+	jobDetail             *JobWithContext
+	projects              []*orchestrator.Project
+	behaviors             []string
+	workspaces            []*orchestrator.WorkspaceSummary
+	capturedFilter        orchestrator.TaskFilter
+	applyActionErr        error
+	applyActionCalls      []applyActionCall
+	duplicateTaskNewID    string
+	duplicateTaskErr      error
+	createTaskResult      *orchestrator.Task
+	createTaskErr         error
+	createTaskCalls       []CreateTaskRequest
+	updateTaskErr         error
+	updateTaskCalls       []UpdateTaskRequest
+	projectByID           *orchestrator.Project
+	projectByIDErr        error
+	wakeErr               error
+	wakeCalls             []string
+	answerSuggestionErr   error
+	answerSuggestionCalls []answerSuggestionCall
+}
+
+type answerSuggestionCall struct {
+	taskID string
+	req    AnswerSuggestionRequest
 }
 
 type applyActionCall struct {
@@ -121,6 +128,11 @@ func (s *stubWebService) ReopenTask(id string, req ReopenTaskRequest) error {
 
 func (s *stubWebService) AnswerTask(ctx context.Context, taskID, questionID, answer string) error {
 	return nil
+}
+
+func (s *stubWebService) AnswerSuggestion(taskID string, req AnswerSuggestionRequest) error {
+	s.answerSuggestionCalls = append(s.answerSuggestionCalls, answerSuggestionCall{taskID: taskID, req: req})
+	return s.answerSuggestionErr
 }
 
 func (s *stubWebService) ListHooksForStatus(taskID, status string) ([]orchestrator.Hook, error) {
@@ -235,6 +247,7 @@ func newTestWebHandler(svc WebService) *chi.Mux {
 	r.Get("/tasks/{id}", h.TaskDetail)
 	r.Get("/tasks/{id}/fragment", h.TaskDetailFragment)
 	r.Post("/tasks/{id}/action", h.PostAction)
+	r.Post("/tasks/{id}/suggestion", h.PostAnswerSuggestion)
 	r.Post("/tasks/{id}/wake", h.PostWake)
 	r.Post("/tasks/{id}/duplicate", h.PostDuplicate)
 	return r

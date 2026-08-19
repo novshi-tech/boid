@@ -360,6 +360,121 @@ func applyAttrsSetSideEffect(tx TxStore, taskID string, patch *attrsSetPatch) er
 	return nil
 }
 
+// parseNotedPayload validates ONLY that the "noted" action's payload is
+// syntactically valid JSON (docs/plans/ingestion-identity.md PR-3, J-5).
+// This is deliberately the weakest possible check — noted's payload is
+// "workspace が決める任意の JSON" (any shape: object, array, string, number,
+// bool, or null are all legal; unlike attrs_set there is no "must be a
+// non-empty object" requirement) and the daemon otherwise never interprets
+// a single key inside it. The one thing the daemon DOES need to guarantee
+// is that action_list's JSON-array response stays well-formed — an
+// arbitrary non-JSON byte string stored verbatim into actions.payload would
+// corrupt every action_list call that has to marshal it back out (the
+// payload is a json.RawMessage, copied byte-for-byte into the response) —
+// so "is this valid JSON" is checked here, once, at the write side, rather
+// than trusting every future read site to defend against it individually.
+// An empty payload is accepted (CreateAction defaults it to "{}", same as
+// every other action type).
+func parseNotedPayload(payload json.RawMessage) error {
+	if len(payload) == 0 {
+		return nil
+	}
+	if !json.Valid(payload) {
+		return &StatusError{Code: http.StatusBadRequest, Message: "invalid noted payload: not valid JSON"}
+	}
+	return nil
+}
+
+// answeredPayload is the "answered" action's payload shape (J-6):
+// {"answer": "accept"|"reject", "verb": "...", "basis": "..."}. answer is
+// the one field the daemon validates (closed two-value vocabulary) — it is
+// itself a first-class field consumers can switch on, unlike verb/basis
+// which are recorded but never interpreted (J-7: cross-checking verb/basis
+// against the suggestion they answer would mean reading the opaque
+// suggestion blob, crossing the boundary — that check belongs to the
+// workspace script or judgment task reading action_list, not the daemon).
+type answeredPayload struct {
+	Answer string `json:"answer"`
+	Verb   string `json:"verb,omitempty"`
+	Basis  string `json:"basis,omitempty"`
+}
+
+// answeredAnswerAccept / answeredAnswerReject are answeredPayload.Answer's
+// closed vocabulary (J-6). khi's real suggestion_answered claims data
+// (実測, 2026-08-19) is 25/25 "accept" and 0 "reject" — the design doc calls
+// this out explicitly as the reason the reject path needs its own dedicated
+// test coverage in this PR, not just the already-exercised accept path.
+const (
+	answeredAnswerAccept = "accept"
+	answeredAnswerReject = "reject"
+)
+
+// parseAnsweredPayload validates the "answered" action's payload BEFORE the
+// transaction opens, same 400-before-Tx posture as parseParkPayload /
+// parseAttrsSetPayload.
+func parseAnsweredPayload(payload json.RawMessage) (*answeredPayload, error) {
+	if len(payload) == 0 {
+		return nil, &StatusError{Code: http.StatusBadRequest, Message: "answered requires a payload with at least answer"}
+	}
+	var p answeredPayload
+	if err := json.Unmarshal(payload, &p); err != nil {
+		return nil, &StatusError{Code: http.StatusBadRequest, Message: "invalid answered payload: " + err.Error()}
+	}
+	if p.Answer != answeredAnswerAccept && p.Answer != answeredAnswerReject {
+		return nil, &StatusError{
+			Code:    http.StatusBadRequest,
+			Message: fmt.Sprintf("invalid answered payload: answer must be %q or %q, got %q", answeredAnswerAccept, answeredAnswerReject, p.Answer),
+		}
+	}
+	return &p, nil
+}
+
+// applyAnsweredSideEffect drops detail.attrs.suggestion (J-6's副作用) — the
+// same fold-side placement as applyAttrsSetSideEffect's own promoted-key
+// strip (決定13: event 追記が正, state は導出; a service-layer rewrite of
+// detail outside this fold would give the state two writers). Runs
+// unconditionally for BOTH accept and reject: either way, the suggestion
+// this answered has been acted on and must stop being "the current
+// suggestion" — a fresh one only arrives from a fresh note-suggest cycle,
+// which folds a new attrs_set/suggestion in from scratch.
+//
+// A GetTaskTriage miss (sql.ErrNoRows) is a no-op — UNLIKE
+// applyAttrsSetSideEffect, which creates an empty row on the same miss.
+// `answered` is Manual:true (machine.go), so it can be sent to ANY
+// preExecutionStatuses task via `boid action send --type answered`, not
+// only triage tasks. Creating a phantom row here for every non-triage task
+// that happens to receive one would weaken the invariant 12 節 B-6's I-5b
+// default plan (docs/plans/ingestion-identity.md) depends on — "service 層
+// のガード = task_triage 行の有無を見る" for the future auto-reopen gate
+// (PR-5) — by making an ordinary dev task indistinguishable from a real
+// triage task. Skipping the row is safe here specifically because
+// `answered` has nothing POSITIVE to persist when no row exists: its only
+// effect is stripping a suggestion key that, with no row, cannot be
+// present either. This is deliberately asymmetric with attrs_set, whose
+// patch always carries real triage content (urgency/kind/suggestion) — for
+// attrs_set, creating the row on miss establishes real data, not a bare
+// side effect, so leaving that path alone here is correct rather than an
+// inconsistency (Opus review, 2026-08-19; see
+// TestApplyAction_Answered_NoExistingTriageRow_StillSucceeds).
+func applyAnsweredSideEffect(tx TxStore, taskID string) error {
+	tt, err := tx.GetTaskTriage(taskID)
+	if err != nil {
+		if !errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("answered: get task_triage: %w", err)
+		}
+		return nil
+	}
+	stripped, sErr := orchestrator.StripDetailAttrs(tt.Detail, "suggestion")
+	if sErr != nil {
+		return fmt.Errorf("answered: strip suggestion: %w", sErr)
+	}
+	tt.Detail = stripped
+	if err := tx.UpsertTaskTriage(tt); err != nil {
+		return fmt.Errorf("answered: upsert task_triage: %w", err)
+	}
+	return nil
+}
+
 // recordChildClosedOnParent is the daemon's own self-record of 論点9's
 // child_closed vocabulary entry: when a task that is itself a dispatched
 // triage child (i.e. some triage parent's task_triage.detail.children[i]

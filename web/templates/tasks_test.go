@@ -209,7 +209,7 @@ func TestTaskDetailSuggestionSection_RendersVerbActionReasonBasis(t *testing.T) 
 	}
 
 	var buf bytes.Buffer
-	if err := TaskDetailSuggestionSection(suggestion).Render(context.Background(), &buf); err != nil {
+	if err := TaskDetailSuggestionSection("task-1", orchestrator.TaskStatusTriaged, suggestion).Render(context.Background(), &buf); err != nil {
 		t.Fatalf("render: %v", err)
 	}
 	html := buf.String()
@@ -221,12 +221,78 @@ func TestTaskDetailSuggestionSection_RendersVerbActionReasonBasis(t *testing.T) 
 	}
 }
 
+// TestTaskDetailSuggestionSection_RendersAcceptRejectButtons pins the PR-3
+// (B-3+B-4, J-6) accept/reject buttons: both POST to
+// /tasks/<id>/suggestion, and both carry the suggestion's own verb/basis as
+// hidden fields.
+func TestTaskDetailSuggestionSection_RendersAcceptRejectButtons(t *testing.T) {
+	suggestion := orchestrator.Suggestion{Verb: "go", Basis: "issue #42"}
+
+	var buf bytes.Buffer
+	if err := TaskDetailSuggestionSection("task-7", orchestrator.TaskStatusTriaged, suggestion).Render(context.Background(), &buf); err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	html := buf.String()
+
+	if !strings.Contains(html, `action="/tasks/task-7/suggestion"`) {
+		t.Errorf("suggestion answer form should POST to /tasks/task-7/suggestion; got: %s", html)
+	}
+	if !strings.Contains(html, `name="answer" value="accept"`) {
+		t.Errorf("missing accept button's hidden answer field; got: %s", html)
+	}
+	if !strings.Contains(html, `name="answer" value="reject"`) {
+		t.Errorf("missing reject button's hidden answer field; got: %s", html)
+	}
+	if !strings.Contains(html, `name="verb" value="go"`) {
+		t.Errorf("missing hidden verb field carrying the suggestion's own verb; got: %s", html)
+	}
+	if !strings.Contains(html, `name="basis" value="issue #42"`) {
+		t.Errorf("missing hidden basis field carrying the suggestion's own basis; got: %s", html)
+	}
+	if !strings.Contains(html, ">Accept<") || !strings.Contains(html, ">Reject<") {
+		t.Errorf("missing Accept/Reject button labels; got: %s", html)
+	}
+}
+
+// TestTaskDetailSuggestionSection_DoneStatus_HidesAcceptRejectButtons pins
+// Opus review finding #3 (2026-08-19 revisit of PR-3): a triage task that
+// carries a stale, never-answered suggestion into done (auto-done, or
+// simply nobody clicked before it advanced) must NOT render clickable
+// Accept/Reject buttons — the state machine rejects `answered` from done
+// (TestDefaultMachine_TriageVocabulary_FromStatusEnumerated_NotWildcard),
+// so clicking used to redirect to an opaque
+// `no transition for action "answered" from status "done"` error. The
+// suggestion's own text (verb/reason/basis) still renders — only the
+// buttons are gated — so the historical record stays visible.
+func TestTaskDetailSuggestionSection_DoneStatus_HidesAcceptRejectButtons(t *testing.T) {
+	suggestion := orchestrator.Suggestion{Verb: "go", Reason: "issue reopened", Basis: "issue #42"}
+
+	var buf bytes.Buffer
+	if err := TaskDetailSuggestionSection("task-9", orchestrator.TaskStatusDone, suggestion).Render(context.Background(), &buf); err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	html := buf.String()
+
+	if strings.Contains(html, "<form") {
+		t.Errorf("done task must not render the answer form at all; got: %s", html)
+	}
+	if strings.Contains(html, ">Accept<") || strings.Contains(html, ">Reject<") {
+		t.Errorf("done task must not render Accept/Reject buttons; got: %s", html)
+	}
+	// The suggestion's own content is still shown — only the buttons hide.
+	for _, want := range []string{"go", "issue reopened", "issue #42"} {
+		if !strings.Contains(html, want) {
+			t.Errorf("done task should still show suggestion content %q; got: %s", want, html)
+		}
+	}
+}
+
 // TestTaskDetailSuggestionSection_EmptyRendersNothing pins the "no
 // suggestion" case (the overwhelming majority of tasks): no card at all,
 // not an empty one.
 func TestTaskDetailSuggestionSection_EmptyRendersNothing(t *testing.T) {
 	var buf bytes.Buffer
-	if err := TaskDetailSuggestionSection(orchestrator.Suggestion{}).Render(context.Background(), &buf); err != nil {
+	if err := TaskDetailSuggestionSection("task-1", orchestrator.TaskStatusTriaged, orchestrator.Suggestion{}).Render(context.Background(), &buf); err != nil {
 		t.Fatalf("render: %v", err)
 	}
 	if html := strings.TrimSpace(buf.String()); html != "" {
@@ -245,7 +311,7 @@ func TestTaskDetailSuggestionSection_UnknownVerb_StillRendersTextWithNeutralClas
 	suggestion := orchestrator.Suggestion{Verb: "mystery", Reason: "unclear"}
 
 	var buf bytes.Buffer
-	if err := TaskDetailSuggestionSection(suggestion).Render(context.Background(), &buf); err != nil {
+	if err := TaskDetailSuggestionSection("task-1", orchestrator.TaskStatusTriaged, suggestion).Render(context.Background(), &buf); err != nil {
 		t.Fatalf("render: %v", err)
 	}
 	html := buf.String()

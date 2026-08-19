@@ -50,6 +50,7 @@ func TestDefaultBuiltinPolicies_HookBoidOps(t *testing.T) {
 		OpBoidTaskIdentityUnlink,
 		OpBoidTaskIdentityResolve,
 		OpBoidTaskResolveOrCapture,
+		OpBoidActionList,
 	}
 	if !opsEqual(boidP.AllowedOps, wantOps) {
 		t.Errorf("hook×boid AllowedOps = %v, want %v", boidP.AllowedOps, wantOps)

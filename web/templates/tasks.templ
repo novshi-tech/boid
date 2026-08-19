@@ -273,7 +273,7 @@ templ TaskDetailStatusSection(task *orchestrator.Task, availableActions []string
 		if errorMsg != "" {
 			<div class="action-error">{ errorMsg }</div>
 		}
-		@TaskDetailSuggestionSection(suggestion)
+		@TaskDetailSuggestionSection(task.ID, task.Status, suggestion)
 		@TaskDetailChildrenSection(children)
 	</div>
 }
@@ -285,7 +285,31 @@ templ TaskDetailStatusSection(task *orchestrator.Task, availableActions []string
 // Parked tab row, task_tree.templ, only have room for verb + reason).
 // Renders nothing when there is no suggestion — every non-triage task, and
 // any triage task khi hasn't evaluated yet.
-templ TaskDetailSuggestionSection(suggestion orchestrator.Suggestion) {
+//
+// docs/plans/ingestion-identity.md PR-3 (B-3+B-4, J-6): Accept/Reject
+// buttons close "既に開いている穴" — 決定14 moved judgment to the Web UI, but
+// until this PR the Web UI had no path to RECORD a reject, so khi's
+// re-suggestion suppression (rejection_index) never actually fired for a
+// Web UI click. Each button POSTs an `answered` action
+// (WebHandler.PostAnswerSuggestion) carrying the CURRENTLY-shown
+// suggestion's own verb/basis as hidden fields — the daemon records them
+// but never validates or cross-checks them (J-7). taskID is a plain string
+// (not *orchestrator.Task) so this function's existing unit tests
+// (tasks_test.go) don't need a full Task fixture just to exercise the
+// suggestion-only rendering.
+//
+// status gates the Accept/Reject buttons specifically (Opus review finding
+// #3, 2026-08-19 revisit): `answered` is only a valid transition from
+// preExecutionStatuses (captured/triaged/parked/ready/working, machine.go).
+// A triage task that carries a stale, never-answered suggestion into
+// done/dropped/aborted (auto-done, or nobody clicked before it advanced)
+// used to still render live-looking buttons that redirected to an opaque
+// `no transition for action "answered" from status "done"` error on click.
+// orchestrator.DefaultMachine().CanApplyManualAction is the single source
+// of truth for "would answered actually be accepted from this status" —
+// the suggestion's own text still renders either way; only the buttons
+// hide.
+templ TaskDetailSuggestionSection(taskID string, status orchestrator.TaskStatus, suggestion orchestrator.Suggestion) {
 	if suggestion.Verb != "" {
 		<div class="detail-suggestion">
 			<div class="detail-suggestion-header">
@@ -299,6 +323,22 @@ templ TaskDetailSuggestionSection(suggestion orchestrator.Suggestion) {
 			}
 			if suggestion.Basis != "" {
 				<div class="detail-suggestion-basis">basis: { suggestion.Basis }</div>
+			}
+			if orchestrator.DefaultMachine().CanApplyManualAction("answered", status) {
+				<div class="detail-suggestion-answer">
+					<form method="post" action={ templ.SafeURL("/tasks/" + taskID + "/suggestion") } class="detail-suggestion-answer-form">
+						<input type="hidden" name="answer" value="accept"/>
+						<input type="hidden" name="verb" value={ suggestion.Verb }/>
+						<input type="hidden" name="basis" value={ suggestion.Basis }/>
+						<button type="submit" class="btn btn-primary btn-sm">Accept</button>
+					</form>
+					<form method="post" action={ templ.SafeURL("/tasks/" + taskID + "/suggestion") } class="detail-suggestion-answer-form">
+						<input type="hidden" name="answer" value="reject"/>
+						<input type="hidden" name="verb" value={ suggestion.Verb }/>
+						<input type="hidden" name="basis" value={ suggestion.Basis }/>
+						<button type="submit" class="btn btn-secondary btn-sm">Reject</button>
+					</form>
+				</div>
 			}
 		</div>
 	}

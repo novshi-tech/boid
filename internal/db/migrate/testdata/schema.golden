@@ -1,3 +1,6 @@
+-- index: idx_actions_created_at_id
+CREATE INDEX idx_actions_created_at_id ON actions(created_at, id);
+
 -- index: idx_project_workspaces_workspace_id
 CREATE INDEX idx_project_workspaces_workspace_id
     ON project_workspaces(workspace_id);

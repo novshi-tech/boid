@@ -2960,3 +2960,105 @@ func TestBroker_BoidTaskTriageList_UnfilteredInjectsOwnWorkspace(t *testing.T) {
 		t.Fatalf("broker should inject the caller's own workspace, calls=%+v", exec.calls)
 	}
 }
+
+// docs/plans/ingestion-identity.md PR-3 (B-3): BoidOpActionList's broker
+// scoping mirrors BoidOpTaskTriageList EXACTLY (see broker.go's case and
+// BoidOpActionList's own doc comment in protocol.go) — these three tests
+// mirror the three TaskTriageList tests immediately above, one per branch.
+
+func actionListBoidPolicies() map[string]sandbox.BuiltinPolicy {
+	return map[string]sandbox.BuiltinPolicy{
+		"boid": {
+			AllowedOps: map[string]struct{}{
+				string(sandbox.BoidOpActionList): {},
+			},
+			AllowedCwdRoots: []string{"/tmp"},
+		},
+	}
+}
+
+func TestBroker_BoidActionList_WorkspaceIDMismatchDenied(t *testing.T) {
+	ctx := sandbox.TokenContext{
+		JobID:       "j1",
+		TaskID:      "t1",
+		ProjectID:   "proj-1",
+		WorkspaceID: "ws-1",
+		Role:        testRoleGate,
+	}
+	broker, exec := newBrokerForListTest(t)
+	token := broker.Register(map[string]sandbox.CommandDef{}, actionListBoidPolicies(), ctx)
+
+	resp := broker.Handle(&sandbox.ExecRequest{
+		Command: "boid",
+		Cwd:     "/tmp",
+		Token:   token,
+		Boid: &sandbox.BoidRequest{
+			Op:          sandbox.BoidOpActionList,
+			WorkspaceID: "ws-other",
+		},
+	})
+	if resp.ExitCode == 0 {
+		t.Fatalf("cross-workspace action listing was allowed: %+v", exec.calls)
+	}
+	if len(exec.calls) != 0 {
+		t.Fatalf("executor was reached for a denied workspace: %+v", exec.calls)
+	}
+}
+
+func TestBroker_BoidActionList_ProjectIDOutsideWorkspaceDenied(t *testing.T) {
+	ctx := sandbox.TokenContext{
+		JobID:             "j1",
+		TaskID:            "t1",
+		ProjectID:         "proj-1",
+		WorkspaceID:       "ws-1",
+		AllowedProjectIDs: []string{"proj-1"},
+		Role:              testRoleGate,
+	}
+	broker, exec := newBrokerForListTest(t)
+	token := broker.Register(map[string]sandbox.CommandDef{}, actionListBoidPolicies(), ctx)
+
+	resp := broker.Handle(&sandbox.ExecRequest{
+		Command: "boid",
+		Cwd:     "/tmp",
+		Token:   token,
+		Boid: &sandbox.BoidRequest{
+			Op:        sandbox.BoidOpActionList,
+			ProjectID: "proj-elsewhere",
+		},
+	})
+	if resp.ExitCode == 0 {
+		t.Fatalf("out-of-workspace project was allowed: %+v", exec.calls)
+	}
+	if len(exec.calls) != 0 {
+		t.Fatalf("executor was reached for a denied project: %+v", exec.calls)
+	}
+}
+
+// TestBroker_BoidActionList_UnfilteredInjectsOwnWorkspace pins the other
+// half of the mirror: with no filter the broker injects the caller's own
+// workspace, so the listing is scoped even when the caller asked for
+// everything (I-9's "決して無スコープで引かない").
+func TestBroker_BoidActionList_UnfilteredInjectsOwnWorkspace(t *testing.T) {
+	ctx := sandbox.TokenContext{
+		JobID:       "j1",
+		TaskID:      "t1",
+		ProjectID:   "proj-1",
+		WorkspaceID: "ws-1",
+		Role:        testRoleGate,
+	}
+	broker, exec := newBrokerForListTest(t)
+	token := broker.Register(map[string]sandbox.CommandDef{}, actionListBoidPolicies(), ctx)
+
+	resp := broker.Handle(&sandbox.ExecRequest{
+		Command: "boid",
+		Cwd:     "/tmp",
+		Token:   token,
+		Boid:    &sandbox.BoidRequest{Op: sandbox.BoidOpActionList},
+	})
+	if resp.ExitCode != 0 {
+		t.Fatalf("unfiltered listing should succeed: exit=%d stderr=%q", resp.ExitCode, resp.Stderr)
+	}
+	if len(exec.calls) != 1 || exec.calls[0].WorkspaceID != "ws-1" {
+		t.Fatalf("broker should inject the caller's own workspace, calls=%+v", exec.calls)
+	}
+}

@@ -72,5 +72,11 @@ const (
 	// above (sandbox shim is the sole caller).
 	OpBoidTaskResolveOrCapture = "task_resolve_or_capture"
 
+	// OpBoidActionList backs `boid action list` from inside the sandbox
+	// (docs/plans/ingestion-identity.md PR-3, B-3): the workspace-scoped
+	// since-cursor read over actions — the missing read half of
+	// OpBoidActionSend.
+	OpBoidActionList = "action_list"
+
 	OpFetchGet = "get"
 )

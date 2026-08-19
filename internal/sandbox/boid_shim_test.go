@@ -1324,6 +1324,130 @@ func TestRunBoidShim_ActionSend_NoPayloadIsOptional(t *testing.T) {
 	}
 }
 
+// --- action list (docs/plans/ingestion-identity.md PR-3, B-3) ---
+
+func TestRunBoidShim_ActionList_ParseSuccess(t *testing.T) {
+	dir := t.TempDir()
+	sockPath := filepath.Join(dir, "broker.sock")
+	ln, err := net.Listen("unix", sockPath)
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	t.Cleanup(func() { ln.Close(); os.Remove(sockPath) })
+
+	reqCh := make(chan sandbox.ExecRequest, 1)
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		var req sandbox.ExecRequest
+		if err := json.NewDecoder(conn).Decode(&req); err != nil {
+			return
+		}
+		reqCh <- req
+		_ = json.NewEncoder(conn).Encode(&sandbox.ExecResponse{ExitCode: 0, Stdout: `{"actions":[],"next_cursor":""}` + "\n"})
+	}()
+
+	t.Setenv("BOID_BROKER_SOCKET", sockPath)
+	t.Setenv("BOID_BROKER_TOKEN", "tok-actionlist")
+
+	resp, err := sandbox.RunBoidShim([]string{
+		"action", "list",
+		"--project-id", "proj-1",
+		"--task", "task-1",
+		"--since", "2026-08-19T00:00:00Z|abc",
+		"--limit", "5",
+	})
+	if err != nil {
+		t.Fatalf("RunBoidShim: %v", err)
+	}
+	if resp.ExitCode != 0 {
+		t.Fatalf("exit code = %d, want 0", resp.ExitCode)
+	}
+
+	req := <-reqCh
+	if req.Boid == nil {
+		t.Fatal("expected typed boid request")
+	}
+	if req.Boid.Op != sandbox.BoidOpActionList {
+		t.Fatalf("op = %q, want action_list", req.Boid.Op)
+	}
+	if req.Boid.ProjectID != "proj-1" {
+		t.Errorf("project_id = %q, want proj-1", req.Boid.ProjectID)
+	}
+	if req.Boid.TaskID != "task-1" {
+		t.Errorf("task_id = %q, want task-1", req.Boid.TaskID)
+	}
+	if req.Boid.Since != "2026-08-19T00:00:00Z|abc" {
+		t.Errorf("since = %q, want 2026-08-19T00:00:00Z|abc", req.Boid.Since)
+	}
+	if req.Boid.Limit != 5 {
+		t.Errorf("limit = %d, want 5", req.Boid.Limit)
+	}
+}
+
+func TestRunBoidShim_ActionList_NoFlagsIsValid(t *testing.T) {
+	dir := t.TempDir()
+	sockPath := filepath.Join(dir, "broker.sock")
+	ln, err := net.Listen("unix", sockPath)
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	t.Cleanup(func() { ln.Close(); os.Remove(sockPath) })
+
+	reqCh := make(chan sandbox.ExecRequest, 1)
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		var req sandbox.ExecRequest
+		if err := json.NewDecoder(conn).Decode(&req); err != nil {
+			return
+		}
+		reqCh <- req
+		_ = json.NewEncoder(conn).Encode(&sandbox.ExecResponse{ExitCode: 0, Stdout: `{"actions":[],"next_cursor":""}` + "\n"})
+	}()
+
+	t.Setenv("BOID_BROKER_SOCKET", sockPath)
+	t.Setenv("BOID_BROKER_TOKEN", "tok-actionlist-bare")
+
+	resp, err := sandbox.RunBoidShim([]string{"action", "list"})
+	if err != nil {
+		t.Fatalf("RunBoidShim: %v", err)
+	}
+	if resp.ExitCode != 0 {
+		t.Fatalf("exit code = %d, want 0", resp.ExitCode)
+	}
+
+	req := <-reqCh
+	if req.Boid == nil || req.Boid.Op != sandbox.BoidOpActionList {
+		t.Fatal("expected action_list request")
+	}
+	if req.Boid.ProjectID != "" || req.Boid.WorkspaceID != "" || req.Boid.TaskID != "" || req.Boid.Since != "" || req.Boid.Limit != 0 {
+		t.Errorf("unexpected non-zero field on a bare `boid action list` request: %+v", req.Boid)
+	}
+}
+
+func TestRunBoidShim_ActionList_RejectsUnknownFlag(t *testing.T) {
+	t.Setenv("BOID_BROKER_SOCKET", "/tmp/does-not-matter")
+	_, err := sandbox.RunBoidShim([]string{"action", "list", "--bogus"})
+	if err == nil || !strings.Contains(err.Error(), "--bogus") {
+		t.Fatalf("expected --bogus error, got: %v", err)
+	}
+}
+
+func TestRunBoidShim_ActionList_InvalidLimit(t *testing.T) {
+	t.Setenv("BOID_BROKER_SOCKET", "/tmp/does-not-matter")
+	_, err := sandbox.RunBoidShim([]string{"action", "list", "--limit", "not-a-number"})
+	if err == nil || !strings.Contains(err.Error(), "limit") {
+		t.Fatalf("expected limit error, got: %v", err)
+	}
+}
+
 // --- job list ---
 
 func TestRunBoidShim_JobList_ParseSuccess(t *testing.T) {

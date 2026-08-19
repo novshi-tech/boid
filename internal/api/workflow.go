@@ -27,6 +27,12 @@ type TaskWorkflowService struct {
 	// comment for why child-task creation can't run nested inside one). Nil
 	// is tolerated (treated as "no children"); wire.go always sets this.
 	TaskTriage TaskTriageStore
+	// Actions provides the workspace-scoped BoidOpActionList read (docs/plans/
+	// ingestion-identity.md PR-3, B-3) — same "narrower interface over the
+	// same underlying taskRepo value" pattern as TaskTriage above. Nil is
+	// tolerated (ListActions returns an "unavailable" error), matching every
+	// other optional dependency's convention in this file.
+	Actions ActionListStore
 	// TaskCreator creates the real boid tasks Dispatch task-ifies specced
 	// children into. Nil is tolerated as long as there are no specced
 	// children to dispatch — see Dispatch's own doc comment.

@@ -117,6 +117,37 @@ func (sm *StateMachine) AvailableActions(status TaskStatus) []string {
 	return actions
 }
 
+// CanApplyManualAction reports whether actionType has a Manual:true rule
+// matching status — regardless of whether that rule transitions the task
+// (ToStatus != "") or not (ToStatus == "") and regardless of whether it
+// would be a self-loop. Unlike AvailableActions, which deliberately EXCLUDES
+// non-transitioning and self-loop rules because those don't fit the
+// generic "action button" UI (see AvailableActions' own doc comment), this
+// is the check a caller uses to gate a DEDICATED button for one specific
+// non-transitioning manual action — e.g. the Web UI's `answered`
+// Accept/Reject buttons, which have their own bespoke rendering (verb
+// badge, reason, basis) and their own POST target, not the generic
+// available_actions button row.
+//
+// Added for Opus review finding #3 (2026-08-19 revisit of PR-3): sm.Apply
+// already rejects `answered` from done/dropped/aborted (see
+// TestDefaultMachine_TriageVocabulary_FromStatusEnumerated_NotWildcard),
+// but nothing let the Web UI ask "would this actually be accepted" BEFORE
+// rendering the button — so a triage task's Accept/Reject buttons kept
+// showing after it auto-advanced to done, and clicking them redirected to
+// an opaque `no transition for action "answered" from status "done"` error.
+func (sm *StateMachine) CanApplyManualAction(actionType string, status TaskStatus) bool {
+	for _, r := range sm.Rules {
+		if r.Condition != nil || !r.Manual {
+			continue
+		}
+		if r.Action == actionType && (r.FromStatus == "*" || r.FromStatus == string(status)) {
+			return true
+		}
+	}
+	return false
+}
+
 // IsManualAction reports whether actionType has at least one Manual:true
 // rule anywhere in the machine, regardless of the task's current status.
 // This is the single source of truth for "is this action name allowed
@@ -295,6 +326,26 @@ func DefaultMachine() *StateMachine {
 // established pattern (payload validated before the Tx, read-modify-write on
 // task_triage.detail inside the Tx via GetTaskTriage).
 //
+// docs/plans/ingestion-identity.md PR-3 (B-3+B-4): noted (J-5) and answered
+// (J-6) join the SAME non-transitioning/Manual:true/preExecutionStatuses
+// shape as attrs_set/child_added/child_specced above — same "reachable
+// through ApplyAction, never a Web UI button, FromStatus never *" story.
+//
+//   - noted { <any JSON> } is a fully opaque record ("見たが変えなかった" の
+//     記録): the daemon parses it only far enough to confirm it is valid
+//     JSON (so `action_list`'s JSON-array response stays well-formed) and
+//     never interprets a single key inside it. Consumer is workspace-side
+//     scripts reading it back via action_list, never the daemon.
+//   - answered { answer: "accept"|"reject", verb, basis } is the Web UI's
+//     accept/reject record for a task_triage suggestion (書き手は daemon
+//     自身の Web UI, 決定14). answer is validated (closed two-value set);
+//     verb/basis are recorded but never cross-checked against the
+//     suggestion they answer (J-7 — that would mean reading the opaque
+//     suggestion blob, crossing the boundary). Its side effect (dropping
+//     detail.attrs.suggestion) lives in workflow_triage.go's
+//     applyAnsweredSideEffect, same fold-side placement as attrs_set's own
+//     side effect below (決定13: event 追記が正, state は導出).
+//
 // child_dispatched / child_closed are DELIBERATELY ABSENT from Manual:true
 // here (論点9: 語彙の役割分担 — khi sends attrs_set/child_added/child_specced;
 // the daemon self-records child_dispatched/child_closed as machine facts it
@@ -449,7 +500,15 @@ func NewMachine() *StateMachine {
 	// times to keep the FromStatus set for all three actions mechanically
 	// identical (a hand-copied list risks the three verbs silently drifting
 	// out of sync with each other).
-	for _, action := range []string{"attrs_set", "child_added", "child_specced"} {
+	//
+	// docs/plans/ingestion-identity.md PR-3 (B-3+B-4): noted (J-5) and
+	// answered (J-6) join the same loop — same non-transitioning/Manual:true
+	// shape, same "never *" FromStatus discipline (論点6-3). noted is a
+	// fully opaque record ("見た" の記録) the daemon never interprets;
+	// answered is the Web UI's accept/reject record (its `suggestion`-drop
+	// side effect lives in workflow_triage.go's applyAnsweredSideEffect,
+	// mirroring applyAttrsSetSideEffect — see workflow_action.go's switch).
+	for _, action := range []string{"attrs_set", "child_added", "child_specced", "noted", "answered"} {
 		for _, status := range preExecutionStatuses {
 			rules = append(rules, Rule{Action: action, FromStatus: status, Manual: true})
 		}

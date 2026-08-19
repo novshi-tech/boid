@@ -197,11 +197,22 @@ func (s *TaskWorkflowService) ApplyAction(ctx context.Context, taskID string, re
 	// task.Payload alongside the task_triage upsert — confirmed while
 	// implementing this PR, per 論点6-2's "ついでに確認する" instruction) even
 	// though nothing downstream reads it from there.
+	//
+	// noted/answered (docs/plans/ingestion-identity.md PR-3) join this set
+	// for the SAME reason even though neither has a task_triage side effect
+	// that "consumes" the payload the way attrs_set's fold does: noted's
+	// payload is an opaque workspace-defined blob with no relationship to
+	// task.Payload at all, and answered's ({answer,verb,basis}) belongs in
+	// the action log + the suggestion-drop side effect only. Merging either
+	// into task.Payload would be exactly the pollution bug this map already
+	// exists to prevent for the other four.
 	sideEffectConsumesPayload := map[string]bool{
 		"park":          true,
 		"attrs_set":     true,
 		"child_added":   true,
 		"child_specced": true,
+		"noted":         true,
+		"answered":      true,
 	}
 
 	if !reopenPayloadConsumed && !sideEffectConsumesPayload[req.Type] {
@@ -247,6 +258,23 @@ func (s *TaskWorkflowService) ApplyAction(ctx context.Context, taskID string, re
 		if perr != nil {
 			return nil, perr
 		}
+	case "noted":
+		// docs/plans/ingestion-identity.md PR-3 (J-5): the daemon never
+		// interprets noted's payload — parseNotedPayload only confirms it is
+		// syntactically valid JSON (see its own doc comment).
+		if perr := parseNotedPayload(req.Payload); perr != nil {
+			return nil, perr
+		}
+	case "answered":
+		// The parsed value isn't needed downstream — applyAnsweredSideEffect
+		// (below) strips detail.attrs.suggestion unconditionally regardless
+		// of answer/verb/basis (J-7: the daemon does not act on their
+		// content). parseAnsweredPayload is still called here so a malformed
+		// payload surfaces as 400 before the transaction opens, matching
+		// every other pre-Tx validation above.
+		if _, perr := parseAnsweredPayload(req.Payload); perr != nil {
+			return nil, perr
+		}
 	}
 
 	// attrs_set/child_added/child_specced are non-transitioning (ToStatus==""
@@ -262,7 +290,14 @@ func (s *TaskWorkflowService) ApplyAction(ctx context.Context, taskID string, re
 	// side-effect (the sidecar RMW) correctly read-modified-wrote inside this
 	// same Tx. park is NOT in this set — it genuinely transitions status, so
 	// it still needs the write.
-	skipTaskUpdate := req.Type == "attrs_set" || req.Type == "child_added" || req.Type == "child_specced"
+	//
+	// noted/answered (docs/plans/ingestion-identity.md PR-3) join this set
+	// for the identical reason: both are non-transitioning and their payload
+	// is fully consumed (never merged into task.Payload, per
+	// sideEffectConsumesPayload above) — an unconditional UpdateTask(newTask)
+	// here would risk the same stale-status-stomp race for them too.
+	skipTaskUpdate := req.Type == "attrs_set" || req.Type == "child_added" || req.Type == "child_specced" ||
+		req.Type == "noted" || req.Type == "answered"
 
 	if err := s.Tx.WithinTx(func(tx TxStore) error {
 		if skipTaskUpdate {
@@ -310,6 +345,14 @@ func (s *TaskWorkflowService) ApplyAction(ctx context.Context, taskID string, re
 			return applyChildAddedSideEffect(tx, newTask.ID, childAddedParsed)
 		case "child_specced":
 			return applyChildSpeccedSideEffect(tx, newTask.ID, childSpeccedParsed)
+		case "answered":
+			// docs/plans/ingestion-identity.md PR-3 (J-6): drops
+			// detail.attrs.suggestion — see applyAnsweredSideEffect's own doc
+			// comment (workflow_triage.go) for why this runs unconditionally
+			// for both accept and reject. "noted" has NO case here (falls
+			// through to the default `return nil` below): its payload lives
+			// only in the action row itself (J-5, daemon never interprets it).
+			return applyAnsweredSideEffect(tx, newTask.ID)
 		case "drop":
 			// docs/plans/ingestion-identity.md PR-1 (B-1), I-6: drop releases
 			// every identity bound to this task, atomically with the drop
