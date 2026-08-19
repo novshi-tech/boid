@@ -139,6 +139,16 @@ func TestWebAnswerSuggestion_Reject_RecordsAnsweredAction(t *testing.T) {
 	if answered == nil {
 		t.Fatalf("no answered action recorded; actions = %+v", actions)
 	}
+	// Opus review finding #5 (2026-08-19 revisit of PR-3): web_service.go's
+	// AnswerSuggestion passes orchestrator.WithActor(ctx, ActorHuman) —
+	// same shape as the other 3 Web UI mutation methods — but nothing here
+	// asserted it. Pin it so a future refactor that drops the WithActor
+	// call (e.g. accidentally routing through a helper that defaults to
+	// ActorDaemon) fails a test instead of silently mislabeling every
+	// Web UI accept/reject as daemon-originated.
+	if answered.Actor != orchestrator.ActorHuman {
+		t.Errorf("answered.Actor = %q, want %q (Web UI clicks are human-originated)", answered.Actor, orchestrator.ActorHuman)
+	}
 	if !strings.Contains(string(answered.Payload), `"answer":"reject"`) {
 		t.Errorf("answered payload = %s, want it to carry answer:reject", answered.Payload)
 	}
