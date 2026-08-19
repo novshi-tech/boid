@@ -447,6 +447,80 @@ func TestRunBoidShim_TaskUpdateSendsTypedRequest(t *testing.T) {
 	}
 }
 
+// TestRunBoidShim_TaskUpdate_RemoteIDOnly_PatchFile pins the brokered
+// entry point's (sandbox `boid task update --patch-file -` -> broker ->
+// BoidOpTaskUpdate) side of the HTTP handler bug fixed in task.go's Patch
+// validation: unlike TaskHandler.Patch, this shim-level guard
+// (parseBoidTaskUpdate's `len(merged) == 0` check) never special-cased which
+// keys count — a --patch-file whose content is a bare {"remote_id": "..."}
+// lands in `merged` like any other key and was never rejected here. This
+// test exists to keep it that way as a regression guard, not because a bug
+// was found on this path.
+func TestRunBoidShim_TaskUpdate_RemoteIDOnly_PatchFile(t *testing.T) {
+	dir := t.TempDir()
+	sockPath := filepath.Join(dir, "broker.sock")
+	ln, err := net.Listen("unix", sockPath)
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	t.Cleanup(func() {
+		ln.Close()
+		os.Remove(sockPath)
+	})
+
+	reqCh := make(chan sandbox.ExecRequest, 1)
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+
+		var req sandbox.ExecRequest
+		if err := json.NewDecoder(conn).Decode(&req); err != nil {
+			return
+		}
+		reqCh <- req
+		_ = json.NewEncoder(conn).Encode(&sandbox.ExecResponse{ExitCode: 0})
+	}()
+
+	patchPath := filepath.Join(dir, "patch.yaml")
+	if err := os.WriteFile(patchPath, []byte(`remote_id: ROOKPF-307`), 0o644); err != nil {
+		t.Fatalf("write patch file: %v", err)
+	}
+
+	t.Setenv("BOID_BROKER_SOCKET", sockPath)
+	t.Setenv("BOID_BROKER_TOKEN", "token-remote-id")
+
+	resp, err := sandbox.RunBoidShim([]string{
+		"task", "update", "task-target",
+		"--patch-file", patchPath,
+	})
+	if err != nil {
+		t.Fatalf("RunBoidShim: %v", err)
+	}
+	if resp.ExitCode != 0 {
+		t.Fatalf("exit code = %d, want 0", resp.ExitCode)
+	}
+
+	req := <-reqCh
+	if req.Boid == nil {
+		t.Fatal("expected typed boid request")
+	}
+	if req.Boid.Op != sandbox.BoidOpTaskUpdate {
+		t.Fatalf("op = %q, want %q", req.Boid.Op, sandbox.BoidOpTaskUpdate)
+	}
+	var updatePatch struct {
+		RemoteID *string `json:"remote_id"`
+	}
+	if err := json.Unmarshal(req.Boid.UpdatePatch, &updatePatch); err != nil {
+		t.Fatalf("parse UpdatePatch: %v", err)
+	}
+	if updatePatch.RemoteID == nil || *updatePatch.RemoteID != "ROOKPF-307" {
+		t.Fatalf("remote_id = %v, want ROOKPF-307", updatePatch.RemoteID)
+	}
+}
+
 func TestRunBoidShim_TaskUpdateRequiresAtLeastOneField(t *testing.T) {
 	t.Setenv("BOID_BROKER_SOCKET", "/tmp/does-not-matter")
 

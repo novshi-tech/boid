@@ -352,3 +352,53 @@ func TestRunTaskUpdate_PatchFileFromStdin(t *testing.T) {
 		t.Errorf("Description = %q, want %q", updated.Description, "rewritten")
 	}
 }
+
+// TestRunTaskUpdate_UpdatesRemoteIDOnlyViaPatch_FromStdin is the literal
+// end-to-end repro reported against a deployed daemon:
+//
+//	echo '{"remote_id":"ROOKPF-307"}' | boid task update <id> --patch-file -
+//
+// returned "update task: at least one of title, description, payload,
+// instructions, parent_id, or auto_start is required" (400) even though
+// PR #974 had already fixed UpdateTask's SQL to persist remote_id — because
+// TaskHandler.Patch's own guard (internal/api/task.go) never learned about
+// RemoteID / ProjectID. See internal/api/task_patch_persist_test.go for the
+// same repro pinned directly at the HTTP handler.
+func TestRunTaskUpdate_UpdatesRemoteIDOnlyViaPatch_FromStdin(t *testing.T) {
+	ts := testutil.NewTestServer(t)
+
+	dir := writeImportTestProject(t, "update-remote-id-proj", "Update RemoteID Project")
+	if err := ts.Client.Do("POST", "/api/projects", map[string]string{"work_dir": dir}, nil); err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+
+	var task orchestrator.Task
+	if err := ts.Client.Do("POST", "/api/tasks", map[string]any{
+		"project_id": "update-remote-id-proj",
+		"title":      "remote id target",
+		"behavior":   "dev",
+		"remote_id":  "OLD-1",
+	}, &task); err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+
+	t.Setenv("BOID_SOCKET", ts.Server.SocketPath())
+
+	cmd := newTaskUpdateCmd(t)
+	cmd.SetIn(strings.NewReader(`{"remote_id":"ROOKPF-307"}`))
+	if err := cmd.Flags().Set("patch-file", "-"); err != nil {
+		t.Fatalf("set --patch-file: %v", err)
+	}
+
+	if err := runTaskUpdate(cmd, []string{task.ID}); err != nil {
+		t.Fatalf("runTaskUpdate() error = %v", err)
+	}
+
+	var updated orchestrator.Task
+	if err := ts.Client.Do("GET", "/api/tasks/"+task.ID, nil, &updated); err != nil {
+		t.Fatalf("get updated task: %v", err)
+	}
+	if updated.RemoteID != "ROOKPF-307" {
+		t.Errorf("RemoteID = %q, want %q", updated.RemoteID, "ROOKPF-307")
+	}
+}
