@@ -521,6 +521,62 @@ func (b *Broker) handleBoidBuiltin(ctx context.Context, req *ExecRequest, entry 
 		if boidReq.ProjectID == "" && boidReq.WorkspaceID == "" && entry.Context.WorkspaceID != "" {
 			boidReq.WorkspaceID = entry.Context.WorkspaceID
 		}
+	case BoidOpTaskIdentityLink:
+		// docs/plans/ingestion-identity.md PR-1 (B-1): scoping is
+		// broker-authoritative, matching BoidOpTaskCreate exactly (default
+		// from ctx, resolve, AllowsProject) — see BoidOpTaskIdentityLink's
+		// own doc comment in protocol.go for why this is not left to the
+		// executor alone.
+		if boidReq.Identity == "" {
+			return &ExecResponse{ExitCode: 1, Stderr: "boid task identity link requires an identity"}
+		}
+		if boidReq.TaskID == "" {
+			return &ExecResponse{ExitCode: 1, Stderr: "boid task identity link requires a task id"}
+		}
+		if boidReq.ProjectID == "" {
+			boidReq.ProjectID = entry.Context.ProjectID
+		}
+		resolved, err := b.resolveProjectRef(boidReq.ProjectID)
+		if err != nil {
+			return &ExecResponse{ExitCode: 1, Stderr: fmt.Sprintf("boid task identity link: resolve project %q: %s", boidReq.ProjectID, err)}
+		}
+		boidReq.ProjectID = resolved
+		if !entry.Context.AllowsProject(boidReq.ProjectID) {
+			return &ExecResponse{ExitCode: 1, Stderr: "boid task identity link is restricted to the current workspace"}
+		}
+		// task_id が実際にこの workspace に属するかの検証は boid_executor 側で
+		// 行う (action_send/task_wake と同じパターン — broker には TaskStore が
+		// 無いため task_id から project を引けない)。
+	case BoidOpTaskIdentityUnlink:
+		if boidReq.Identity == "" {
+			return &ExecResponse{ExitCode: 1, Stderr: "boid task identity unlink requires an identity"}
+		}
+		if boidReq.ProjectID == "" {
+			boidReq.ProjectID = entry.Context.ProjectID
+		}
+		resolved, err := b.resolveProjectRef(boidReq.ProjectID)
+		if err != nil {
+			return &ExecResponse{ExitCode: 1, Stderr: fmt.Sprintf("boid task identity unlink: resolve project %q: %s", boidReq.ProjectID, err)}
+		}
+		boidReq.ProjectID = resolved
+		if !entry.Context.AllowsProject(boidReq.ProjectID) {
+			return &ExecResponse{ExitCode: 1, Stderr: "boid task identity unlink is restricted to the current workspace"}
+		}
+	case BoidOpTaskIdentityResolve:
+		if boidReq.Identity == "" {
+			return &ExecResponse{ExitCode: 1, Stderr: "boid task identity resolve requires an identity"}
+		}
+		if boidReq.ProjectID == "" {
+			boidReq.ProjectID = entry.Context.ProjectID
+		}
+		resolved, err := b.resolveProjectRef(boidReq.ProjectID)
+		if err != nil {
+			return &ExecResponse{ExitCode: 1, Stderr: fmt.Sprintf("boid task identity resolve: resolve project %q: %s", boidReq.ProjectID, err)}
+		}
+		boidReq.ProjectID = resolved
+		if !entry.Context.AllowsProject(boidReq.ProjectID) {
+			return &ExecResponse{ExitCode: 1, Stderr: "boid task identity resolve is restricted to the current workspace"}
+		}
 	case BoidOpJobList:
 		if boidReq.TaskID == "" {
 			return &ExecResponse{ExitCode: 1, Stderr: "boid job list requires a task id"}

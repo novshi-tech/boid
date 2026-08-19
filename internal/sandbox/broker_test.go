@@ -2079,6 +2079,258 @@ func TestBroker_BoidProjectBehaviors_PolicyReject(t *testing.T) {
 	assertBoidOpRejectedByPolicy(t, &sandbox.BoidRequest{Op: sandbox.BoidOpProjectBehaviors, ProjectID: "proj-1"})
 }
 
+// ---- docs/plans/ingestion-identity.md PR-1 (B-1): identity index scoping ----
+//
+// These pin the broker as the AUTHORITATIVE scope check for project_id on
+// all three identity ops — mirroring BoidOpTaskCreate/BoidOpProjectBehaviors
+// exactly (resolve, then AllowsProject, BEFORE the executor is ever called).
+// This is a broker-only test (not just an executor test) per the design
+// doc's explicit "検証" requirement and the review history on this exact bug
+// class (PR-4/PR-5 codex review, 3 rounds: scoping written only in the
+// executor while the broker passed the request through unscoped).
+
+func identityBoidPolicies() map[string]sandbox.BuiltinPolicy {
+	return map[string]sandbox.BuiltinPolicy{
+		"boid": {
+			AllowedOps: map[string]struct{}{
+				string(sandbox.BoidOpTaskIdentityLink):    {},
+				string(sandbox.BoidOpTaskIdentityUnlink):  {},
+				string(sandbox.BoidOpTaskIdentityResolve): {},
+			},
+			AllowedCwdRoots: []string{"/tmp"},
+		},
+	}
+}
+
+func TestBroker_BoidTaskIdentityLink_ProjectIDDenied(t *testing.T) {
+	// project_id が異 workspace を指す → 拒否、executor は呼ばれない。
+	ctx := sandbox.TokenContext{
+		JobID:             "j1",
+		TaskID:            "t1",
+		ProjectID:         "proj-1",
+		WorkspaceID:       "ws-1",
+		AllowedProjectIDs: []string{"proj-1"},
+		Role:              testRoleGate,
+	}
+	broker, exec := newBrokerForListTest(t)
+	token := broker.Register(map[string]sandbox.CommandDef{}, identityBoidPolicies(), ctx)
+
+	resp := broker.Handle(&sandbox.ExecRequest{
+		Command: "boid",
+		Cwd:     "/tmp",
+		Token:   token,
+		Boid: &sandbox.BoidRequest{
+			Op:        sandbox.BoidOpTaskIdentityLink,
+			ProjectID: "other-proj",
+			Identity:  "jira:X-1",
+			TaskID:    "some-task",
+		},
+	})
+	if resp.ExitCode == 0 {
+		t.Fatal("cross-workspace project_id should be denied")
+	}
+	if !strings.Contains(resp.Stderr, "workspace") {
+		t.Errorf("error should mention workspace, got %q", resp.Stderr)
+	}
+	if len(exec.calls) != 0 {
+		t.Fatal("executor should not be called on denied request")
+	}
+}
+
+func TestBroker_BoidTaskIdentityLink_ProjectIDAllowed(t *testing.T) {
+	// project_id が自 workspace 内 → OK、executor が呼ばれる。
+	ctx := sandbox.TokenContext{
+		JobID:             "j1",
+		TaskID:            "t1",
+		ProjectID:         "proj-1",
+		WorkspaceID:       "ws-1",
+		AllowedProjectIDs: []string{"proj-1"},
+		Role:              testRoleGate,
+	}
+	broker, exec := newBrokerForListTest(t)
+	token := broker.Register(map[string]sandbox.CommandDef{}, identityBoidPolicies(), ctx)
+
+	resp := broker.Handle(&sandbox.ExecRequest{
+		Command: "boid",
+		Cwd:     "/tmp",
+		Token:   token,
+		Boid: &sandbox.BoidRequest{
+			Op:        sandbox.BoidOpTaskIdentityLink,
+			ProjectID: "proj-1",
+			Identity:  "jira:X-1",
+			TaskID:    "some-task",
+		},
+	})
+	if resp.ExitCode != 0 {
+		t.Fatalf("same-workspace project_id should be allowed, got exit=%d stderr=%q", resp.ExitCode, resp.Stderr)
+	}
+	if len(exec.calls) != 1 {
+		t.Fatalf("executor should be called exactly once, got %d calls", len(exec.calls))
+	}
+}
+
+func TestBroker_BoidTaskIdentityLink_ProjectIDDefaultsFromContext(t *testing.T) {
+	// project_id 未指定 → entry.Context.ProjectID を自動 inject (BoidOpTaskCreate と同型)。
+	ctx := sandbox.TokenContext{
+		JobID:             "j1",
+		TaskID:            "t1",
+		ProjectID:         "proj-1",
+		WorkspaceID:       "ws-1",
+		AllowedProjectIDs: []string{"proj-1"},
+		Role:              testRoleGate,
+	}
+	broker, exec := newBrokerForListTest(t)
+	token := broker.Register(map[string]sandbox.CommandDef{}, identityBoidPolicies(), ctx)
+
+	resp := broker.Handle(&sandbox.ExecRequest{
+		Command: "boid",
+		Cwd:     "/tmp",
+		Token:   token,
+		Boid: &sandbox.BoidRequest{
+			Op:       sandbox.BoidOpTaskIdentityLink,
+			Identity: "jira:X-1",
+			TaskID:   "some-task",
+		},
+	})
+	if resp.ExitCode != 0 {
+		t.Fatalf("expected default-from-context to succeed, got exit=%d stderr=%q", resp.ExitCode, resp.Stderr)
+	}
+	if len(exec.calls) != 1 || exec.calls[0].ProjectID != "proj-1" {
+		t.Fatalf("expected exactly one executor call with ProjectID=proj-1, got %+v", exec.calls)
+	}
+}
+
+func TestBroker_BoidTaskIdentityUnlink_ProjectIDDenied(t *testing.T) {
+	ctx := sandbox.TokenContext{
+		JobID:             "j1",
+		ProjectID:         "proj-1",
+		WorkspaceID:       "ws-1",
+		AllowedProjectIDs: []string{"proj-1"},
+		Role:              testRoleGate,
+	}
+	broker, exec := newBrokerForListTest(t)
+	token := broker.Register(map[string]sandbox.CommandDef{}, identityBoidPolicies(), ctx)
+
+	resp := broker.Handle(&sandbox.ExecRequest{
+		Command: "boid",
+		Cwd:     "/tmp",
+		Token:   token,
+		Boid: &sandbox.BoidRequest{
+			Op:        sandbox.BoidOpTaskIdentityUnlink,
+			ProjectID: "other-proj",
+			Identity:  "jira:X-1",
+		},
+	})
+	if resp.ExitCode == 0 {
+		t.Fatal("cross-workspace project_id should be denied")
+	}
+	if !strings.Contains(resp.Stderr, "workspace") {
+		t.Errorf("error should mention workspace, got %q", resp.Stderr)
+	}
+	if len(exec.calls) != 0 {
+		t.Fatal("executor should not be called on denied request")
+	}
+}
+
+func TestBroker_BoidTaskIdentityResolve_ProjectIDDenied(t *testing.T) {
+	ctx := sandbox.TokenContext{
+		JobID:             "j1",
+		ProjectID:         "proj-1",
+		WorkspaceID:       "ws-1",
+		AllowedProjectIDs: []string{"proj-1"},
+		Role:              testRoleGate,
+	}
+	broker, exec := newBrokerForListTest(t)
+	token := broker.Register(map[string]sandbox.CommandDef{}, identityBoidPolicies(), ctx)
+
+	resp := broker.Handle(&sandbox.ExecRequest{
+		Command: "boid",
+		Cwd:     "/tmp",
+		Token:   token,
+		Boid: &sandbox.BoidRequest{
+			Op:        sandbox.BoidOpTaskIdentityResolve,
+			ProjectID: "other-proj",
+			Identity:  "jira:X-1",
+		},
+	})
+	if resp.ExitCode == 0 {
+		t.Fatal("cross-workspace project_id should be denied")
+	}
+	if !strings.Contains(resp.Stderr, "workspace") {
+		t.Errorf("error should mention workspace, got %q", resp.Stderr)
+	}
+	if len(exec.calls) != 0 {
+		t.Fatal("executor should not be called on denied request")
+	}
+}
+
+func TestBroker_BoidTaskIdentityResolve_ProjectIDAllowed(t *testing.T) {
+	ctx := sandbox.TokenContext{
+		JobID:             "j1",
+		ProjectID:         "proj-1",
+		WorkspaceID:       "ws-1",
+		AllowedProjectIDs: []string{"proj-1"},
+		Role:              testRoleGate,
+	}
+	broker, exec := newBrokerForListTest(t)
+	token := broker.Register(map[string]sandbox.CommandDef{}, identityBoidPolicies(), ctx)
+
+	resp := broker.Handle(&sandbox.ExecRequest{
+		Command: "boid",
+		Cwd:     "/tmp",
+		Token:   token,
+		Boid: &sandbox.BoidRequest{
+			Op:        sandbox.BoidOpTaskIdentityResolve,
+			ProjectID: "proj-1",
+			Identity:  "jira:X-1",
+		},
+	})
+	if resp.ExitCode != 0 {
+		t.Fatalf("same-workspace project_id should be allowed, got exit=%d stderr=%q", resp.ExitCode, resp.Stderr)
+	}
+	if len(exec.calls) != 1 {
+		t.Fatalf("executor should be called exactly once, got %d calls", len(exec.calls))
+	}
+}
+
+func TestBroker_BoidTaskIdentityLink_RequiresIdentity(t *testing.T) {
+	ctx := sandbox.TokenContext{ProjectID: "proj-1", AllowedProjectIDs: []string{"proj-1"}, Role: testRoleGate}
+	broker, exec := newBrokerForListTest(t)
+	token := broker.Register(map[string]sandbox.CommandDef{}, identityBoidPolicies(), ctx)
+
+	resp := broker.Handle(&sandbox.ExecRequest{
+		Command: "boid",
+		Cwd:     "/tmp",
+		Token:   token,
+		Boid:    &sandbox.BoidRequest{Op: sandbox.BoidOpTaskIdentityLink, TaskID: "t1"},
+	})
+	if resp.ExitCode == 0 {
+		t.Fatal("expected rejection for missing identity")
+	}
+	if len(exec.calls) != 0 {
+		t.Fatal("executor should not be called")
+	}
+}
+
+func TestBroker_BoidTaskIdentityLink_RequiresTaskID(t *testing.T) {
+	ctx := sandbox.TokenContext{ProjectID: "proj-1", AllowedProjectIDs: []string{"proj-1"}, Role: testRoleGate}
+	broker, exec := newBrokerForListTest(t)
+	token := broker.Register(map[string]sandbox.CommandDef{}, identityBoidPolicies(), ctx)
+
+	resp := broker.Handle(&sandbox.ExecRequest{
+		Command: "boid",
+		Cwd:     "/tmp",
+		Token:   token,
+		Boid:    &sandbox.BoidRequest{Op: sandbox.BoidOpTaskIdentityLink, Identity: "jira:X-1"},
+	})
+	if resp.ExitCode == 0 {
+		t.Fatal("expected rejection for missing task id")
+	}
+	if len(exec.calls) != 0 {
+		t.Fatal("executor should not be called")
+	}
+}
+
 func TestBroker_BoidTaskList_AutoInjectWorkspaceID(t *testing.T) {
 	// 両方未指定 + entry.WorkspaceID 非空 → WorkspaceID を自動 inject
 	ctx := sandbox.TokenContext{

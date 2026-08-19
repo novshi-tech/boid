@@ -1637,6 +1637,11 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 		// invariant ListTriage's "has a row = is a triage task" predicate
 		// rests on. Same repo the workflow service already uses.
 		TaskTriage: taskRepo,
+		// Identities backs the brokered task_identity_link/_unlink/_resolve
+		// ops (docs/plans/ingestion-identity.md PR-1). Same repo again —
+		// taskRepo already implements api.TaskIdentityStore (see
+		// internal/orchestrator/repository.go).
+		Identities: taskRepo,
 		// runtimesRoot (not a fresh runtimesDirFor(cfg) — codex round-1,
 		// PR834 Minor 1): must agree with runner's own RuntimesDir and
 		// transcriptLogReader.rootDir just below, both already using

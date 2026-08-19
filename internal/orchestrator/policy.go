@@ -113,6 +113,9 @@ func boidPolicy(_ Role, pctx PolicyContext) BuiltinPolicy {
 			OpBoidTaskWake,
 			OpBoidTaskTriageGet,
 			OpBoidTaskTriageList,
+			OpBoidTaskIdentityLink,
+			OpBoidTaskIdentityUnlink,
+			OpBoidTaskIdentityResolve,
 		),
 		AllowedCwdRoots: cwds,
 	}

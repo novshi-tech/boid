@@ -55,5 +55,14 @@ const (
 	OpBoidTaskTriageGet  = "task_triage_get"
 	OpBoidTaskTriageList = "task_triage_list"
 
+	// OpBoidTaskIdentityLink / OpBoidTaskIdentityUnlink / OpBoidTaskIdentityResolve
+	// back `boid task identity link/unlink/resolve` from inside the sandbox
+	// (docs/plans/ingestion-identity.md PR-1, B-1): the identity index's
+	// only external surface. No HTTP route exists for these (the sandbox
+	// shim is the sole caller today).
+	OpBoidTaskIdentityLink    = "task_identity_link"
+	OpBoidTaskIdentityUnlink  = "task_identity_unlink"
+	OpBoidTaskIdentityResolve = "task_identity_resolve"
+
 	OpFetchGet = "get"
 )

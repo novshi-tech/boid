@@ -300,6 +300,16 @@ func (s *TaskWorkflowService) ApplyAction(ctx context.Context, taskID string, re
 			return applyChildAddedSideEffect(tx, newTask.ID, childAddedParsed)
 		case "child_specced":
 			return applyChildSpeccedSideEffect(tx, newTask.ID, childSpeccedParsed)
+		case "drop":
+			// docs/plans/ingestion-identity.md PR-1 (B-1), I-6: drop releases
+			// every identity bound to this task, atomically with the drop
+			// transition itself — so a caller that observes the drop commit
+			// can immediately re-link the freed keys to a fresh task. done
+			// (I-5) deliberately has NO case here: done holds identities.
+			// machine.go stays a pure transition table (zero side effects);
+			// this lives in the service layer alongside park/attrs_set/
+			// child_added/child_specced's own side effects.
+			return tx.UnlinkAllForTask(newTask.ID)
 		}
 		return nil
 	}); err != nil {

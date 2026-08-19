@@ -39,6 +39,15 @@ type TaskAppService struct {
 	// command was killed by a harness command-timeout). Zero falls back to
 	// defaultAskDisconnectGrace.
 	AskDisconnectGrace time.Duration
+	// Identities backs docs/plans/ingestion-identity.md PR-1 (B-1)'s identity
+	// index — the non-transactional path the brokered task_identity_link /
+	// _unlink / _resolve ops (boid_executor.go) call through. The drop side
+	// effect (I-6) instead goes through TxStore.UnlinkAllForTask inside
+	// TaskWorkflowService.ApplyAction's own transaction; this field is only
+	// for the standalone ops, which have no transaction of their own to join.
+	// Nil disables the three ops with an "unavailable" error, same convention
+	// as every other optional dependency here.
+	Identities TaskIdentityStore
 }
 
 // Notifier sends an agent-driven notification for a task. Implementations

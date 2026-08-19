@@ -179,7 +179,47 @@ const (
 	// TokenContext.AllowsProject before returning anything.
 	BoidOpTaskTriageGet  BoidOp = "task_triage_get"
 	BoidOpTaskTriageList BoidOp = "task_triage_list"
+
+	// BoidOpTaskIdentityLink / BoidOpTaskIdentityUnlink / BoidOpTaskIdentityResolve
+	// back `boid task identity link/unlink/resolve` from inside the sandbox
+	// (docs/plans/ingestion-identity.md PR-1, B-1): the identity index
+	// (task_identities table, external key -> task, I-1/I-2/I-3). This PR
+	// only wires the index itself — nothing pushes into it yet (PR-2 wires
+	// the actual observation-resolution path); a workspace's own bulk
+	// migration script is the first real caller of Link.
+	//
+	// Scoping is broker-authoritative, matching BoidOpTaskCreate exactly:
+	// ProjectID defaults from the token's own context when omitted, gets
+	// resolved via ProjectResolver, and is checked against
+	// TokenContext.AllowsProject BEFORE the executor ever sees the request
+	// (broker.go). This is deliberate given the review history on this
+	// exact class of bug (PR-4/PR-5 codex review, 3 separate rounds):
+	// scoping a project-id-bearing op only in the executor and leaving the
+	// broker to pass it through unscoped. BoidOpTaskIdentityLink additionally
+	// carries a caller-supplied TaskID (not itself the scope, since it names
+	// an EXISTING task rather than the project being written into); its
+	// ownership is checked in the executor exactly like BoidOpActionSend's
+	// TaskID (GetTask + AllowsProject), since the broker has no TaskStore to
+	// resolve it against.
+	//
+	// BoidOpTaskIdentityResolve represents "no such binding" via a distinct
+	// ExecResponse.ExitCode (IdentityNotFoundExitCode below) rather than the
+	// generic ExitCode:1 error path every other op uses for failure — the
+	// design doc calls this out explicitly ("未登録は「見つからない」を exit
+	// code で表し、エラーにしない"): a caller doing get-or-create needs to
+	// tell "not found" apart from a real error without parsing stderr text.
+	BoidOpTaskIdentityLink    BoidOp = "task_identity_link"
+	BoidOpTaskIdentityUnlink  BoidOp = "task_identity_unlink"
+	BoidOpTaskIdentityResolve BoidOp = "task_identity_resolve"
 )
+
+// IdentityNotFoundExitCode is BoidOpTaskIdentityResolve's distinguished exit
+// code for "no task is bound to this identity" — deliberately NOT 0
+// (success) or 1 (every other op's generic failure code), so a caller can
+// tell "not found" apart from a real error (broken broker connection,
+// unavailable executor, ...) purely from the exit code, without parsing
+// stderr text. See BoidOpTaskIdentityResolve's own doc comment.
+const IdentityNotFoundExitCode = 2
 
 // PayloadPatchMaxBytes caps the size of a single BoidOpTaskUpdatePayloadPatch
 // request's PayloadPatch content (whether read from a file, stdin, or an
@@ -268,6 +308,15 @@ type BoidRequest struct {
 	// a top-level shallow merge), this is merged via
 	// orchestrator.MergePayloadPatch — see api.TaskAppService.UpdateTaskPayloadPatch.
 	PayloadPatch json.RawMessage `json:"payload_patch,omitempty"`
+
+	// Identity carries the opaque external-key string for
+	// BoidOpTaskIdentityLink / BoidOpTaskIdentityUnlink /
+	// BoidOpTaskIdentityResolve (docs/plans/ingestion-identity.md PR-1).
+	// Never interpreted by the daemon (I-2) — validated only for
+	// non-emptiness. Link additionally uses TaskID (the task to bind); scope
+	// is ProjectID for all three, same field every other project-scoped op
+	// already uses.
+	Identity string `json:"identity,omitempty"`
 }
 
 type TokenContext struct {

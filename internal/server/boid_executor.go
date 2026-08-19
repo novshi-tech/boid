@@ -699,6 +699,75 @@ func (e *boidBuiltinExecutor) ExecuteBoidBuiltin(goCtx context.Context, ctx sand
 			return &sandbox.ExecResponse{ExitCode: 1, Stderr: err.Error()}
 		}
 		return &sandbox.ExecResponse{Stdout: string(encoded) + "\n"}
+	case sandbox.BoidOpTaskIdentityLink:
+		// docs/plans/ingestion-identity.md PR-1 (B-1). req.ProjectID is
+		// already broker-resolved and workspace-checked (broker.go); the
+		// TaskID it links to is a SEPARATE scope the broker cannot verify
+		// (no TaskStore there), so this mirrors BoidOpActionSend/
+		// BoidOpTaskWake's own GetTask + AllowsProject pattern exactly.
+		if req.TaskID == "" {
+			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid task identity link requires a task id"}
+		}
+		if req.Identity == "" {
+			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid task identity link requires an identity"}
+		}
+		if e.tasks == nil {
+			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid task identity link unavailable"}
+		}
+		existing, err := e.tasks.GetTask(req.TaskID)
+		if err != nil {
+			return &sandbox.ExecResponse{ExitCode: 1, Stderr: err.Error()}
+		}
+		if !ctx.AllowsProject(existing.ProjectID) {
+			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid task identity link is restricted to the current workspace"}
+		}
+		if err := e.tasks.LinkIdentity(req.ProjectID, req.Identity, req.TaskID); err != nil {
+			return &sandbox.ExecResponse{ExitCode: 1, Stderr: err.Error()}
+		}
+		return &sandbox.ExecResponse{Stdout: fmt.Sprintf("linked: %s -> %s\n", req.Identity, req.TaskID)}
+	case sandbox.BoidOpTaskIdentityUnlink:
+		if req.Identity == "" {
+			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid task identity unlink requires an identity"}
+		}
+		if e.tasks == nil {
+			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid task identity unlink unavailable"}
+		}
+		if err := e.tasks.UnlinkIdentity(req.ProjectID, req.Identity); err != nil {
+			return &sandbox.ExecResponse{ExitCode: 1, Stderr: err.Error()}
+		}
+		return &sandbox.ExecResponse{Stdout: fmt.Sprintf("unlinked: %s\n", req.Identity)}
+	case sandbox.BoidOpTaskIdentityResolve:
+		// The design doc's explicit contract: "not found" is represented as
+		// a distinguished exit code (sandbox.IdentityNotFoundExitCode), NOT
+		// the generic ExitCode:1 error path — a get-or-create caller needs
+		// to tell the two apart without parsing stderr text. Only
+		// orchestrator.ErrTaskNotFound gets this treatment; every other
+		// error (store unavailable, DB failure, ...) stays generic.
+		if req.Identity == "" {
+			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid task identity resolve requires an identity"}
+		}
+		if e.tasks == nil {
+			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid task identity resolve unavailable"}
+		}
+		resolved, err := e.tasks.ResolveIdentity(req.ProjectID, req.Identity)
+		if err != nil {
+			if errors.Is(err, orchestrator.ErrTaskNotFound) {
+				return &sandbox.ExecResponse{ExitCode: sandbox.IdentityNotFoundExitCode}
+			}
+			return &sandbox.ExecResponse{ExitCode: 1, Stderr: err.Error()}
+		}
+		// Only the task's own ID and status — never the full task (the
+		// design doc is explicit: resolve is a delivery-address lookup, not
+		// a task-detail read; workspace already owns whatever more it needs
+		// via task_triage_get/BoidOpTaskGet).
+		out, err := json.Marshal(struct {
+			TaskID string `json:"task_id"`
+			Status string `json:"status"`
+		}{TaskID: resolved.ID, Status: string(resolved.Status)})
+		if err != nil {
+			return &sandbox.ExecResponse{ExitCode: 1, Stderr: err.Error()}
+		}
+		return &sandbox.ExecResponse{Stdout: string(out) + "\n"}
 	case sandbox.BoidOpJobList:
 		if e.jobs == nil {
 			return &sandbox.ExecResponse{ExitCode: 1, Stderr: "boid job list unavailable"}
