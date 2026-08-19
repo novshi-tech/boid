@@ -260,3 +260,30 @@ func (s *WebAppService) AnswerTask(ctx context.Context, taskID, questionID, answ
 	}
 	return s.Answerer.AnswerTask(ctx, taskID, questionID, answer)
 }
+
+// AnswerSuggestionRequest is the Web UI's accept/reject form payload for a
+// task_triage suggestion (docs/plans/ingestion-identity.md PR-3, J-6). Answer
+// is required; Verb/Basis are optional (recorded, never validated by the
+// daemon — see answeredPayload's own doc comment).
+type AnswerSuggestionRequest struct {
+	Answer string `json:"answer"`
+	Verb   string `json:"verb,omitempty"`
+	Basis  string `json:"basis,omitempty"`
+}
+
+// AnswerSuggestion sends an "answered" action for taskID, recording nose's
+// accept/reject of the currently-shown suggestion (J-6's "既に開いている穴"
+// — see WebService.AnswerSuggestion's own doc comment for why this is a
+// dedicated method rather than routing through the generic ApplyAction,
+// mirroring ReopenTask's own instruction-payload pattern just above).
+func (s *WebAppService) AnswerSuggestion(taskID string, req AnswerSuggestionRequest) error {
+	if s.Workflow == nil {
+		return &StatusError{Code: http.StatusInternalServerError, Message: "workflow service not configured"}
+	}
+	payload, err := json.Marshal(req)
+	if err != nil {
+		return &StatusError{Code: http.StatusInternalServerError, Message: "payload encode: " + err.Error()}
+	}
+	_, err = s.Workflow.ApplyAction(orchestrator.WithActor(context.Background(), orchestrator.ActorHuman), taskID, ApplyActionRequest{Type: "answered", Payload: payload})
+	return err
+}

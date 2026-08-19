@@ -1267,6 +1267,12 @@ func buildRuntime(srv *Server, cfg Config, store *orchestrator.ProjectStore, bro
 		// pre-tx children read (docs/plans/cross-project-issue-triage.md Phase
 		// 1 PR-2).
 		TaskTriage: taskRepo,
+		// Actions: taskRepo already implements ActionListStore (see
+		// internal/orchestrator/repository.go's ListActionsSince) — same
+		// object as Tasks/TaskTriage above, viewed through a narrower
+		// interface for docs/plans/ingestion-identity.md PR-3 (B-3)'s
+		// BoidOpActionList read.
+		Actions: taskRepo,
 		// TaskCreator is wired below, once taskSvc (*api.TaskAppService) is
 		// constructed — see the comment there for why this can't be set here.
 	}

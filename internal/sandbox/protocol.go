@@ -255,6 +255,30 @@ const (
 	// caller can route it to the integration judgment call it names
 	// (「統合」の判断) rather than treating it as a generic failure.
 	BoidOpTaskResolveOrCapture BoidOp = "task_resolve_or_capture"
+
+	// BoidOpActionList backs `boid action list` from inside the sandbox
+	// (docs/plans/ingestion-identity.md PR-3, B-3): the workspace-scoped,
+	// since-cursor read over actions — the missing read half of
+	// BoidOpActionSend (「action_send で書けるのに読めない」, 本 doc 3 節).
+	//
+	// Deliberately a SINGLE workspace-wide read, not per-task
+	// (ListActionsByTask's existing shape): a tick script that has to list
+	// every triage task and read each one's actions separately would issue
+	// O(N) brokered ops per cycle (「B-3: per-task だけだと tick が O(N) に
+	// なる」節) — this op lets the "反応型はスクリプトが書ける" (J-3) argument
+	// hold at the actual implementation-cost level, not just in principle.
+	//
+	// Scoping is broker-authoritative, matching BoidOpTaskTriageList EXACTLY
+	// (project_id resolve+check / workspace_id equality check / neither ->
+	// inject the token's own WorkspaceID — see broker.go's case). TaskID
+	// additionally narrows to one task's actions; unlike
+	// BoidOpTaskIdentityLink's caller-supplied TaskID (which the broker
+	// cannot verify and must defer to the executor's GetTask+AllowsProject),
+	// this TaskID is always ANDed together with the already-broker-verified
+	// project/workspace scope in the SQL query itself
+	// (orchestrator.ListActionsSince) — a TaskID outside the caller's scope
+	// simply matches zero rows, it can never widen what comes back.
+	BoidOpActionList BoidOp = "action_list"
 )
 
 // IdentityNotFoundExitCode is BoidOpTaskIdentityResolve's distinguished exit
@@ -384,6 +408,13 @@ type BoidRequest struct {
 	// behavior, same as khi's existing captured/triaged ensure_task calls).
 	Title       string `json:"title,omitempty"`
 	Description string `json:"description,omitempty"`
+
+	// Since carries BoidOpActionList's opaque cursor (I-9's since カーソル,
+	// orchestrator.EncodeActionCursor's output) — empty means "from the
+	// beginning". TaskID/ProjectID/WorkspaceID/Limit (already declared
+	// above) round out the op's other inputs; no new fields are needed for
+	// those.
+	Since string `json:"since,omitempty"`
 }
 
 type TokenContext struct {

@@ -65,6 +65,13 @@ func (r *TaskRepository) ListActionsByTask(taskID string) ([]*Action, error) {
 	return ListActionsByTask(r.db, taskID)
 }
 
+// ListActionsSince backs docs/plans/ingestion-identity.md PR-3 (B-3)'s
+// workspace-scoped action_list read. Thin wrapper, mirroring every other
+// TaskRepository method's shape.
+func (r *TaskRepository) ListActionsSince(filter ActionListFilter) ([]*Action, string, error) {
+	return ListActionsSince(r.db, filter)
+}
+
 func (r *TaskRepository) UpsertTaskTriage(tt *TaskTriage) error {
 	return UpsertTaskTriage(r.db, tt)
 }

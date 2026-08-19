@@ -1,0 +1,11 @@
+-- docs/plans/ingestion-identity.md PR-3 (B-3): action_list の since カーソル
+-- (created_at, id の組による keyset pagination — orchestrator.ListActionsSince)
+-- が毎呼び出しで舐める列に index を張る。
+--
+-- actions テーブルには元々 created_at / id いずれの index も無い (小規模デー
+-- タ前提のこれまでの設計)。B-3 は「10 分ごとの tick が since カーソルで actions
+-- を読み戻す」ことを狙いとしており (「per-task だけだと tick が O(N) になる」
+-- 節)、その読み戻しが未 index の全表スキャンのままだと、actions が増えるに
+-- つれて tick のコストが静かに劣化する — この PR がまさに解消しようとしてい
+-- る「workspace 側の自作走査」を daemon 側で再現してしまうことになる。
+CREATE INDEX IF NOT EXISTS idx_actions_created_at_id ON actions(created_at, id);

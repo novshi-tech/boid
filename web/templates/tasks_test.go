@@ -209,7 +209,7 @@ func TestTaskDetailSuggestionSection_RendersVerbActionReasonBasis(t *testing.T) 
 	}
 
 	var buf bytes.Buffer
-	if err := TaskDetailSuggestionSection(suggestion).Render(context.Background(), &buf); err != nil {
+	if err := TaskDetailSuggestionSection("task-1", suggestion).Render(context.Background(), &buf); err != nil {
 		t.Fatalf("render: %v", err)
 	}
 	html := buf.String()
@@ -221,12 +221,45 @@ func TestTaskDetailSuggestionSection_RendersVerbActionReasonBasis(t *testing.T) 
 	}
 }
 
+// TestTaskDetailSuggestionSection_RendersAcceptRejectButtons pins the PR-3
+// (B-3+B-4, J-6) accept/reject buttons: both POST to
+// /tasks/<id>/suggestion, and both carry the suggestion's own verb/basis as
+// hidden fields.
+func TestTaskDetailSuggestionSection_RendersAcceptRejectButtons(t *testing.T) {
+	suggestion := orchestrator.Suggestion{Verb: "go", Basis: "issue #42"}
+
+	var buf bytes.Buffer
+	if err := TaskDetailSuggestionSection("task-7", suggestion).Render(context.Background(), &buf); err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	html := buf.String()
+
+	if !strings.Contains(html, `action="/tasks/task-7/suggestion"`) {
+		t.Errorf("suggestion answer form should POST to /tasks/task-7/suggestion; got: %s", html)
+	}
+	if !strings.Contains(html, `name="answer" value="accept"`) {
+		t.Errorf("missing accept button's hidden answer field; got: %s", html)
+	}
+	if !strings.Contains(html, `name="answer" value="reject"`) {
+		t.Errorf("missing reject button's hidden answer field; got: %s", html)
+	}
+	if !strings.Contains(html, `name="verb" value="go"`) {
+		t.Errorf("missing hidden verb field carrying the suggestion's own verb; got: %s", html)
+	}
+	if !strings.Contains(html, `name="basis" value="issue #42"`) {
+		t.Errorf("missing hidden basis field carrying the suggestion's own basis; got: %s", html)
+	}
+	if !strings.Contains(html, ">Accept<") || !strings.Contains(html, ">Reject<") {
+		t.Errorf("missing Accept/Reject button labels; got: %s", html)
+	}
+}
+
 // TestTaskDetailSuggestionSection_EmptyRendersNothing pins the "no
 // suggestion" case (the overwhelming majority of tasks): no card at all,
 // not an empty one.
 func TestTaskDetailSuggestionSection_EmptyRendersNothing(t *testing.T) {
 	var buf bytes.Buffer
-	if err := TaskDetailSuggestionSection(orchestrator.Suggestion{}).Render(context.Background(), &buf); err != nil {
+	if err := TaskDetailSuggestionSection("task-1", orchestrator.Suggestion{}).Render(context.Background(), &buf); err != nil {
 		t.Fatalf("render: %v", err)
 	}
 	if html := strings.TrimSpace(buf.String()); html != "" {
@@ -245,7 +278,7 @@ func TestTaskDetailSuggestionSection_UnknownVerb_StillRendersTextWithNeutralClas
 	suggestion := orchestrator.Suggestion{Verb: "mystery", Reason: "unclear"}
 
 	var buf bytes.Buffer
-	if err := TaskDetailSuggestionSection(suggestion).Render(context.Background(), &buf); err != nil {
+	if err := TaskDetailSuggestionSection("task-1", suggestion).Render(context.Background(), &buf); err != nil {
 		t.Fatalf("render: %v", err)
 	}
 	html := buf.String()

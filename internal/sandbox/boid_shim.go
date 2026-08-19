@@ -19,7 +19,7 @@ Commands:
   task     Manage tasks (create, show, update, list, notify, answer, ask, delete, import, reopen,
            current, instructions, env, payload, attachments list, attachments get)
   job      Manage jobs (done, list, show, log)
-  action   Send actions (send)
+  action   Send and list actions (send, list)
   agent    Manage agent (stop)
   project  Inspect projects (list, behaviors)
 
@@ -126,10 +126,14 @@ func parseBoidRequest(args []string) (*BoidRequest, error) {
 		if len(args) < 2 {
 			return nil, fmt.Errorf("boid shim: missing boid action subcommand")
 		}
-		if args[1] != "send" {
+		switch args[1] {
+		case "send":
+			return parseBoidActionSend(args[2:])
+		case "list":
+			return parseBoidActionList(args[2:])
+		default:
 			return nil, fmt.Errorf("boid shim: unsupported boid action subcommand %q", args[1])
 		}
-		return parseBoidActionSend(args[2:])
 	case "agent":
 		if len(args) < 2 {
 			return nil, fmt.Errorf("boid shim: missing boid agent subcommand")
@@ -1161,6 +1165,66 @@ func parseBoidActionSend(args []string) (*BoidRequest, error) {
 	}
 	if req.ActionType == "" {
 		return nil, fmt.Errorf("boid shim: action send requires --type")
+	}
+
+	return req, nil
+}
+
+// parseBoidActionList builds the BoidRequest for `boid action list
+// [--project-id P] [--workspace-id W] [--task T] [--since CURSOR]
+// [--limit N]` (docs/plans/ingestion-identity.md PR-3, B-3). All flags are
+// optional: with none given, the result is scoped to the caller's own
+// workspace (broker default, see broker.go's BoidOpActionList case) and
+// starts from the beginning (Since == "" — "from the beginning" per
+// orchestrator.DecodeActionCursor's own contract).
+func parseBoidActionList(args []string) (*BoidRequest, error) {
+	req := &BoidRequest{Op: BoidOpActionList}
+
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		switch {
+		case arg == "--project-id" || strings.HasPrefix(arg, "--project-id="):
+			value, next, err := takeStringFlagValue(args, i, "--project-id")
+			if err != nil {
+				return nil, err
+			}
+			i = next
+			req.ProjectID = value
+		case arg == "--workspace-id" || strings.HasPrefix(arg, "--workspace-id="):
+			value, next, err := takeStringFlagValue(args, i, "--workspace-id")
+			if err != nil {
+				return nil, err
+			}
+			i = next
+			req.WorkspaceID = value
+		case arg == "--task" || strings.HasPrefix(arg, "--task="):
+			value, next, err := takeStringFlagValue(args, i, "--task")
+			if err != nil {
+				return nil, err
+			}
+			i = next
+			req.TaskID = value
+		case arg == "--since" || strings.HasPrefix(arg, "--since="):
+			value, next, err := takeStringFlagValue(args, i, "--since")
+			if err != nil {
+				return nil, err
+			}
+			i = next
+			req.Since = value
+		case arg == "--limit" || strings.HasPrefix(arg, "--limit="):
+			value, next, err := takeStringFlagValue(args, i, "--limit")
+			if err != nil {
+				return nil, err
+			}
+			i = next
+			n, err := strconv.Atoi(value)
+			if err != nil {
+				return nil, fmt.Errorf("boid shim: invalid limit %q", value)
+			}
+			req.Limit = n
+		default:
+			return nil, fmt.Errorf("boid shim: unsupported flag %q for boid action list", arg)
+		}
 	}
 
 	return req, nil

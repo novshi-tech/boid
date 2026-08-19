@@ -138,6 +138,16 @@ func TestBroker_BoidTaskResolveOrCapture_PolicyReject(t *testing.T) {
 	assertBoidOpRejectedByPolicy(t, &sandbox.BoidRequest{Op: sandbox.BoidOpTaskResolveOrCapture, Identity: "jira:X-1"})
 }
 
+// BoidOpActionList (docs/plans/ingestion-identity.md PR-3, B-3): scoping is
+// broker-authoritative, the SAME pattern as BoidOpTaskTriageList — see
+// TestBroker_BoidActionList_WorkspaceIDMismatchDenied /
+// TestBroker_BoidActionList_ProjectIDOutsideWorkspaceDenied in broker_test.go
+// for the cross-workspace rejections; this closes the plain policy-gate
+// manifest entry point.
+func TestBroker_BoidActionList_PolicyReject(t *testing.T) {
+	assertBoidOpRejectedByPolicy(t, &sandbox.BoidRequest{Op: sandbox.BoidOpActionList})
+}
+
 // assertBoidOpRejectedByPolicy registers a boid policy that allows only an
 // unrelated op (job_done), then asserts the given request is rejected by the
 // policy gate — before any op-specific dispatch — and never reaches the
@@ -276,6 +286,12 @@ var opEscapeCoverage = map[string]opCoverage{
 	// TestBroker_BoidTaskResolveOrCapture_ProjectIDDenied; the plain
 	// policy-gate manifest entry point is below.
 	"BoidOpTaskResolveOrCapture": {escapeTest: "TestBroker_BoidTaskResolveOrCapture_PolicyReject"},
+
+	// BoidOpActionList (docs/plans/ingestion-identity.md PR-3, B-3): scoping
+	// is broker-authoritative, matching BoidOpTaskTriageList exactly — same
+	// reasoning as that entry above (ListActionsSince's WorkspaceID join
+	// really does cross workspaces if left unchecked).
+	"BoidOpActionList": {escapeTest: "TestBroker_BoidActionList_WorkspaceIDMismatchDenied"},
 }
 
 // TestOpEscapeCoverage_ManifestComplete asserts opEscapeCoverage covers exactly

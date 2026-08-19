@@ -104,6 +104,7 @@ func (h *WebHandler) Routes() chi.Router {
 	r.Get("/tasks/{id}/edit", h.GetTaskEdit)
 	r.Post("/tasks/{id}/edit", h.PostEdit)
 	r.Post("/tasks/{id}/action", h.PostAction)
+	r.Post("/tasks/{id}/suggestion", h.PostAnswerSuggestion)
 	r.Post("/tasks/{id}/wake", h.PostWake)
 	r.Post("/tasks/{id}/duplicate", h.PostDuplicate)
 	r.Post("/tasks/{id}/rerun", h.PostRerun)
@@ -614,6 +615,35 @@ func (h *WebHandler) PostAction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := h.Service.ApplyAction(id, actionType); err != nil {
+		redirectTaskErr(w, r, id, err)
+		return
+	}
+	redirectTask(w, r, id)
+}
+
+// PostAnswerSuggestion handles the task detail page's Accept/Reject buttons
+// on a task_triage suggestion card (docs/plans/ingestion-identity.md PR-3,
+// J-6). answer is required ("accept"/"reject" — validated downstream by
+// answeredPayload); verb/basis are optional and forwarded verbatim (they
+// come from hidden form fields populated from the suggestion currently
+// shown — see TaskDetailSuggestionSection).
+func (h *WebHandler) PostAnswerSuggestion(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	if err := r.ParseForm(); err != nil {
+		redirectTaskErr(w, r, id, err)
+		return
+	}
+	answer := r.FormValue("answer")
+	if answer == "" {
+		redirectTaskErr(w, r, id, errors.New("answer is required"))
+		return
+	}
+	req := AnswerSuggestionRequest{
+		Answer: answer,
+		Verb:   r.FormValue("verb"),
+		Basis:  r.FormValue("basis"),
+	}
+	if err := h.Service.AnswerSuggestion(id, req); err != nil {
 		redirectTaskErr(w, r, id, err)
 		return
 	}

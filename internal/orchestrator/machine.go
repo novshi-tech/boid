@@ -295,6 +295,26 @@ func DefaultMachine() *StateMachine {
 // established pattern (payload validated before the Tx, read-modify-write on
 // task_triage.detail inside the Tx via GetTaskTriage).
 //
+// docs/plans/ingestion-identity.md PR-3 (B-3+B-4): noted (J-5) and answered
+// (J-6) join the SAME non-transitioning/Manual:true/preExecutionStatuses
+// shape as attrs_set/child_added/child_specced above — same "reachable
+// through ApplyAction, never a Web UI button, FromStatus never *" story.
+//
+//   - noted { <any JSON> } is a fully opaque record ("見たが変えなかった" の
+//     記録): the daemon parses it only far enough to confirm it is valid
+//     JSON (so `action_list`'s JSON-array response stays well-formed) and
+//     never interprets a single key inside it. Consumer is workspace-side
+//     scripts reading it back via action_list, never the daemon.
+//   - answered { answer: "accept"|"reject", verb, basis } is the Web UI's
+//     accept/reject record for a task_triage suggestion (書き手は daemon
+//     自身の Web UI, 決定14). answer is validated (closed two-value set);
+//     verb/basis are recorded but never cross-checked against the
+//     suggestion they answer (J-7 — that would mean reading the opaque
+//     suggestion blob, crossing the boundary). Its side effect (dropping
+//     detail.attrs.suggestion) lives in workflow_triage.go's
+//     applyAnsweredSideEffect, same fold-side placement as attrs_set's own
+//     side effect below (決定13: event 追記が正, state は導出).
+//
 // child_dispatched / child_closed are DELIBERATELY ABSENT from Manual:true
 // here (論点9: 語彙の役割分担 — khi sends attrs_set/child_added/child_specced;
 // the daemon self-records child_dispatched/child_closed as machine facts it
@@ -449,7 +469,15 @@ func NewMachine() *StateMachine {
 	// times to keep the FromStatus set for all three actions mechanically
 	// identical (a hand-copied list risks the three verbs silently drifting
 	// out of sync with each other).
-	for _, action := range []string{"attrs_set", "child_added", "child_specced"} {
+	//
+	// docs/plans/ingestion-identity.md PR-3 (B-3+B-4): noted (J-5) and
+	// answered (J-6) join the same loop — same non-transitioning/Manual:true
+	// shape, same "never *" FromStatus discipline (論点6-3). noted is a
+	// fully opaque record ("見た" の記録) the daemon never interprets;
+	// answered is the Web UI's accept/reject record (its `suggestion`-drop
+	// side effect lives in workflow_triage.go's applyAnsweredSideEffect,
+	// mirroring applyAttrsSetSideEffect — see workflow_action.go's switch).
+	for _, action := range []string{"attrs_set", "child_added", "child_specced", "noted", "answered"} {
 		for _, status := range preExecutionStatuses {
 			rules = append(rules, Rule{Action: action, FromStatus: status, Manual: true})
 		}

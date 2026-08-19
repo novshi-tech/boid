@@ -385,6 +385,16 @@ func Apply(conn *sql.DB) error {
 				return tableExists(tx, "task_identities")
 			},
 		},
+		{
+			// docs/plans/ingestion-identity.md PR-3 (B-3): index backing the
+			// action_list since-cursor scan (orchestrator.ListActionsSince).
+			// No skip function: unlike 0041 above, this index never existed
+			// under any prior code path, so there is no pre-migration-system
+			// state to guard against (same as 0035_add_task_triage.sql's own
+			// index, which also has no skip).
+			version: "0042_add_actions_created_at_id_index",
+			path:    "migrations/0042_add_actions_created_at_id_index.sql",
+		},
 	}
 
 	if err := ensureSchemaMigrationsTable(conn); err != nil {

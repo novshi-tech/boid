@@ -117,6 +117,7 @@ func boidPolicy(_ Role, pctx PolicyContext) BuiltinPolicy {
 			OpBoidTaskIdentityUnlink,
 			OpBoidTaskIdentityResolve,
 			OpBoidTaskResolveOrCapture,
+			OpBoidActionList,
 		),
 		AllowedCwdRoots: cwds,
 	}
