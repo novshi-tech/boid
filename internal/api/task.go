@@ -233,8 +233,20 @@ func (h *TaskHandler) Patch(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	if req.Title == "" && req.Description == "" && len(req.Payload) == 0 && len(req.Instructions) == 0 && req.ParentID == nil && req.AutoStart == nil {
-		writeError(w, http.StatusBadRequest, "at least one of title, description, payload, instructions, parent_id, or auto_start is required")
+	// Every field of UpdateTaskRequest (internal/apiwire/task.go) must be
+	// listed here. RemoteID and ProjectID were added to the struct (and to
+	// UpdateTask's SQL column list, PR #974) without ever being added to
+	// this guard, so a {"remote_id": "..."}-only PATCH body — exactly what
+	// khi-task-collector's daemon_sync.py self-heal loop sends — was
+	// rejected with 400 before ever reaching the service layer PR #974
+	// fixed. PR #974's own regression tests (update_task_columns_test.go /
+	// task_update_persist_test.go) called TaskAppService.UpdateTask
+	// directly and so never exercised this handler-level guard at all —
+	// see task_patch_persist_test.go for the HTTP-layer tests that catch
+	// this class of bug going forward.
+	if req.Title == "" && req.Description == "" && req.ProjectID == "" && req.RemoteID == nil &&
+		len(req.Payload) == 0 && len(req.Instructions) == 0 && req.ParentID == nil && req.AutoStart == nil {
+		writeError(w, http.StatusBadRequest, "at least one of title, description, project_id, remote_id, payload, instructions, parent_id, or auto_start is required")
 		return
 	}
 	task, err := h.Service.UpdateTask(id, req)
