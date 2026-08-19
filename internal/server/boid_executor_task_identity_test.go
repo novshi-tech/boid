@@ -5,9 +5,19 @@ package server
 // (project_id) is covered separately (internal/sandbox's
 // TestBroker_BoidTaskIdentity*_ProjectIDDenied) — these pin the
 // executor-side task_id ownership check (Link only, mirroring
-// BoidOpActionSend/BoidOpTaskWake's own GetTask+AllowsProject pattern) and
-// the store-error -> ExecResponse translation, including
-// BoidOpTaskIdentityResolve's distinguished "not found" exit code.
+// BoidOpActionSend/BoidOpTaskWake's own GetTask+AllowsProject pattern), the
+// store-error -> ExecResponse translation (including
+// BoidOpTaskIdentityResolve's distinguished "not found" exit code and
+// BoidOpTaskIdentityLink's distinguished "conflict" exit code), and the
+// project-match / prefix-id fixes from the PR #968 Opus review.
+//
+// A few of these (the ones needing a REAL sqlite-backed store to catch a
+// genuine FOREIGN KEY constraint or a real GetTask prefix fallback —
+// capturingTaskStore below does neither) build their own :memory: DB
+// directly via internal/db + internal/db/migrate rather than
+// testutil.NewTestDB: this file is `package server` (white-box), and
+// testutil imports internal/server (for testutil.NewTestServer), so
+// importing testutil here would be an import cycle.
 
 import (
 	"context"
@@ -16,9 +26,27 @@ import (
 	"testing"
 
 	"github.com/novshi-tech/boid/internal/api"
+	"github.com/novshi-tech/boid/internal/db"
+	"github.com/novshi-tech/boid/internal/db/migrate"
 	"github.com/novshi-tech/boid/internal/orchestrator"
 	"github.com/novshi-tech/boid/internal/sandbox"
 )
+
+// newBoidExecutorTestDB opens a fresh :memory: sqlite DB with migrations
+// applied — see the file-level comment for why this doesn't just use
+// testutil.NewTestDB.
+func newBoidExecutorTestDB(t *testing.T) db.DBTX {
+	t.Helper()
+	d, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	if err := migrate.Apply(d.Conn); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	t.Cleanup(func() { d.Close() })
+	return d.Conn
+}
 
 // fakeIdentityStore is a minimal api.TaskIdentityStore double.
 type fakeIdentityStore struct {
@@ -111,7 +139,15 @@ func TestBoidBuiltinExecutor_TaskIdentityLink_RejectsTaskOutsideWorkspace(t *tes
 	}
 }
 
-func TestBoidBuiltinExecutor_TaskIdentityLink_ConflictSurfacesAsGenericError(t *testing.T) {
+// TestBoidBuiltinExecutor_TaskIdentityLink_ConflictSurfacesAsDistinctExitCode
+// pins docs/plans/ingestion-identity.md's PR-2 section: a workspace doing
+// resolve_or_capture needs to tell "this identity already points elsewhere"
+// apart from any other failure MECHANICALLY, via ExecResponse.ExitCode —
+// not by pattern-matching Stderr's exact wording, which is not a public
+// contract (Opus review, PR #968). Stderr is still populated for a human
+// reading `boid task identity link` output directly, but this test
+// deliberately does NOT assert its exact text.
+func TestBoidBuiltinExecutor_TaskIdentityLink_ConflictSurfacesAsDistinctExitCode(t *testing.T) {
 	store := &capturingTaskStore{created: []*orchestrator.Task{
 		{ID: "t1", ProjectID: "proj-1", Status: orchestrator.TaskStatusCaptured},
 	}}
@@ -125,11 +161,117 @@ func TestBoidBuiltinExecutor_TaskIdentityLink_ConflictSurfacesAsGenericError(t *
 		Identity:  "jira:X-1",
 		TaskID:    "t1",
 	})
-	if resp.ExitCode != 1 {
-		t.Fatalf("exit code = %d, want 1 (conflict is a generic error, not the not-found exit code)", resp.ExitCode)
+	if resp.ExitCode != sandbox.IdentityConflictExitCode {
+		t.Fatalf("exit code = %d, want IdentityConflictExitCode (%d) — a conflict must be distinguishable from a generic failure (exit 1) or a resolve miss (IdentityNotFoundExitCode) purely by exit code", resp.ExitCode, sandbox.IdentityConflictExitCode)
 	}
-	if resp.Stderr != orchestrator.ErrIdentityConflict.Error() {
-		t.Fatalf("stderr = %q, want the ErrIdentityConflict message verbatim (%q)", resp.Stderr, orchestrator.ErrIdentityConflict.Error())
+}
+
+// TestBoidBuiltinExecutor_TaskIdentityLink_ResolvesPrefixTaskID pins the
+// Blocker from the Opus review: e.tasks.GetTask supports an >=8-char prefix
+// fallback (internal/orchestrator/store.go), so a caller may legitimately
+// pass a short task id — but LinkIdentity writes whatever id it's given
+// straight into task_identities.task_id, an FK column. Before the fix, the
+// executor passed the CALLER'S raw (possibly-prefix) req.TaskID to
+// LinkIdentity instead of the GetTask call's resolved existing.ID, which
+// blows up as a raw SQLite "FOREIGN KEY constraint failed" once the FK is
+// enforced for real (capturingTaskStore doesn't enforce FKs, so this needs a
+// real sqlite-backed store to catch — see also the exact ID passed to
+// LinkIdentity below).
+func TestBoidBuiltinExecutor_TaskIdentityLink_ResolvesPrefixTaskID(t *testing.T) {
+	d := newBoidExecutorTestDB(t)
+	if err := orchestrator.CreateProject(d, &orchestrator.Project{ID: "proj-1", WorkDir: "/tmp/proj-1"}); err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	task := &orchestrator.Task{ProjectID: "proj-1", Title: "T", Behavior: "dev", Payload: []byte(`{}`)}
+	if err := orchestrator.CreateTask(d, task); err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	if len(task.ID) < 8 {
+		t.Fatalf("generated task id %q is too short to exercise the >=8-char prefix fallback", task.ID)
+	}
+	prefix := task.ID[:8]
+
+	store := apiTxStore{tasks: orchestrator.NewTaskRepository(d)}
+	exec := &boidBuiltinExecutor{tasks: &api.TaskAppService{Tasks: store, Identities: store}}
+	ctx := sandbox.TokenContext{ProjectID: "proj-1", AllowedProjectIDs: []string{"proj-1"}}
+
+	resp := exec.ExecuteBoidBuiltin(context.Background(), ctx, &sandbox.BoidRequest{
+		Op:        sandbox.BoidOpTaskIdentityLink,
+		ProjectID: "proj-1",
+		Identity:  "jira:PREFIX-1",
+		TaskID:    prefix,
+	})
+	if resp.ExitCode != 0 {
+		t.Fatalf("exit code = %d, want 0 (stderr=%q) — a prefix task id must resolve, not hit a raw FK constraint error", resp.ExitCode, resp.Stderr)
+	}
+
+	resolved, err := orchestrator.ResolveIdentity(d, "proj-1", "jira:PREFIX-1")
+	if err != nil {
+		t.Fatalf("resolve after link: %v", err)
+	}
+	if resolved.ID != task.ID {
+		t.Fatalf("resolved task id = %q, want the FULL id %q (not the prefix %q the caller passed)", resolved.ID, task.ID, prefix)
+	}
+}
+
+// TestBoidBuiltinExecutor_TaskIdentityLink_RejectsCrossProjectTaskWithinWorkspace
+// pins the second Opus review finding: AllowsProject alone only checks the
+// task's project is SOMEWHERE in the caller's workspace, not that it matches
+// the SPECIFIC req.ProjectID the identity is scoped under (I-3). Before the
+// fix, linking proj-1's identity to a task that actually lives in proj-2
+// (both in the same workspace) succeeded silently.
+func TestBoidBuiltinExecutor_TaskIdentityLink_RejectsCrossProjectTaskWithinWorkspace(t *testing.T) {
+	store := &capturingTaskStore{created: []*orchestrator.Task{
+		{ID: "t1", ProjectID: "proj-2", Status: orchestrator.TaskStatusCaptured},
+	}}
+	identities := &fakeIdentityStore{}
+	exec := &boidBuiltinExecutor{tasks: &api.TaskAppService{Tasks: store, Identities: identities}}
+	// Both proj-1 and proj-2 are in the SAME workspace (both allowed) — the
+	// existing AllowsProject check alone must not be enough to let this
+	// through.
+	ctx := sandbox.TokenContext{ProjectID: "proj-1", AllowedProjectIDs: []string{"proj-1", "proj-2"}}
+
+	resp := exec.ExecuteBoidBuiltin(context.Background(), ctx, &sandbox.BoidRequest{
+		Op:        sandbox.BoidOpTaskIdentityLink,
+		ProjectID: "proj-1",
+		Identity:  "jira:X-1",
+		TaskID:    "t1",
+	})
+	if resp.ExitCode != 1 {
+		t.Fatalf("exit code = %d, want 1 (task's actual project proj-2 does not match req.ProjectID proj-1)", resp.ExitCode)
+	}
+	if !strings.Contains(resp.Stderr, "project") {
+		t.Fatalf("stderr = %q, want mention of the project mismatch", resp.Stderr)
+	}
+	if len(identities.linkCalls) != 0 {
+		t.Fatalf("LinkIdentity must not be called when the task's project does not match req.ProjectID, got %d calls", len(identities.linkCalls))
+	}
+}
+
+// TestBoidBuiltinExecutor_TaskIdentityResolve_RejectsTaskOutsideWorkspace
+// pins the third Opus review finding: every OTHER op that hands a task back
+// to the caller (BoidOpTaskGet / BoidOpTaskTriageGet / BoidOpActionSend /
+// BoidOpTaskWake) re-checks AllowsProject on the task it actually got, not
+// just the project the caller asked about — resolve was the one op that
+// didn't.
+func TestBoidBuiltinExecutor_TaskIdentityResolve_RejectsTaskOutsideWorkspace(t *testing.T) {
+	identities := &fakeIdentityStore{resolved: &orchestrator.Task{ID: "t1", ProjectID: "proj-outside", Status: orchestrator.TaskStatusTriaged}}
+	exec := &boidBuiltinExecutor{tasks: &api.TaskAppService{Identities: identities}}
+	ctx := sandbox.TokenContext{ProjectID: "proj-1", AllowedProjectIDs: []string{"proj-1"}}
+
+	resp := exec.ExecuteBoidBuiltin(context.Background(), ctx, &sandbox.BoidRequest{
+		Op:        sandbox.BoidOpTaskIdentityResolve,
+		ProjectID: "proj-1",
+		Identity:  "jira:X-1",
+	})
+	if resp.ExitCode != 1 {
+		t.Fatalf("exit code = %d, want 1 (resolved task's project proj-outside is outside the workspace)", resp.ExitCode)
+	}
+	if !strings.Contains(resp.Stderr, "workspace") {
+		t.Fatalf("stderr = %q, want mention of workspace scoping", resp.Stderr)
+	}
+	if strings.Contains(resp.Stdout, "t1") {
+		t.Fatalf("stdout = %q, must not leak the out-of-workspace task id", resp.Stdout)
 	}
 }
 
